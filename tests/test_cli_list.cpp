@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 extern "C" {
+#include "sapi/cli/ui/runtime_events.h"
+#include "sapi/cli/commands/media.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/cli.h"
 #include "sapi/cli/commands/registry.h"
@@ -9,9 +11,6 @@ extern "C" {
 #include "util/file.h"
 #include "event/event.h"
 
-int cli_handle_media_path(struct cli_context *ctx, const char *input,
-			  int *handled);
-int cli_event_callback(const struct morph_event *event, void *user_data);
 }
 
 #include <cstring>
@@ -321,7 +320,7 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 
 	FILE *input = tmpfile();
 	ASSERT_NE(input, nullptr);
-	fputs(&context, "p\ninvalid\nn\np\nn\nn\nn\n10\n1\n", input);
+	cli_fputs(&context, "p\ninvalid\nn\np\nn\nn\nn\n10\n1\n", input);
 	rewind(input);
 	int saved_stdin = dup(STDIN_FILENO);
 	ASSERT_GE(saved_stdin, 0);
@@ -352,7 +351,7 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 	for (const char *answer : {"q\n", "\n", ""}) {
 		input = tmpfile();
 		ASSERT_NE(input, nullptr);
-		fputs(&context, answer, input);
+		cli_fputs(&context, answer, input);
 		rewind(input);
 		saved_stdin = dup(STDIN_FILENO);
 		ASSERT_GE(saved_stdin, 0);
@@ -406,7 +405,7 @@ TEST(CliListTest, JsonModeWrapsHelpAsCommandEvents)
 	struct cli_context context{};
 
 	context.presentation_mode = CLI_PRESENT_EVENTS_JSON;
-	context.event_cb = cli_event_callback;
+	context.event_cb = cli_runtime_events_callback;
 	context.event_user_data = &context;
 
 	testing::internal::CaptureStdout();
@@ -441,7 +440,7 @@ TEST(CliListTest, JsonModeReportsUnknownCommandWithoutBareText)
 	struct cli_context context{};
 
 	context.presentation_mode = CLI_PRESENT_EVENTS_JSON;
-	context.event_cb = cli_event_callback;
+	context.event_cb = cli_runtime_events_callback;
 	context.event_user_data = &context;
 
 	testing::internal::CaptureStdout();

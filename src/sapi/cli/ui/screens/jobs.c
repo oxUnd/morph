@@ -1,5 +1,7 @@
-#include "sapi/cli/internal.h"
 #include "sapi/cli/ui/screens/jobs.h"
+#include "cJSON.h"
+#include "sapi/cli/ui/event_queue.h"
+#include "sapi/cli/internal.h"
 #include "sapi/cli/ui/application.h"
 #include "sapi/cli/ui/presentation/terminal.h"
 #include "sapi/cli/ui/presentation/list.h"
@@ -8,10 +10,10 @@
 #include <morph/tui/widgets/label.h>
 #include <morph/tui/widgets/stack.h>
 
-#define CLI_JOB_SUCCESS_MS 5000
-#define CLI_JOB_FAILURE_MS 10000
+#define CLI_JOBS_JOB_SUCCESS_MS 5000
+#define CLI_JOBS_JOB_FAILURE_MS 10000
 
-struct cli_job {
+struct cli_jobs_job {
 	cJSON *data;
 	int64_t updated;
 	int seen;
@@ -21,7 +23,7 @@ struct cli_jobs {
 	morph_array_t entries;
 };
 
-static int64_t jobs_now(void)
+static int64_t cli_jobs_now(void)
 {
 	struct timespec now;
 	if (clock_gettime(CLOCK_MONOTONIC, &now))
@@ -29,46 +31,48 @@ static int64_t jobs_now(void)
 	return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
 
-static const char *job_string(const cJSON *data, const char *key)
+static const char *cli_jobs_job_string(const cJSON *data, const char *key)
 {
 	const char *text = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(data, key));
 	return text ? text : "";
 }
 
-static const char *job_short_id(const cJSON *data)
+static const char *cli_jobs_job_short_id(const cJSON *data)
 {
-	const char *id = job_string(data, "session_id");
+	const char *id = cli_jobs_job_string(data, "session_id");
 	return !strncmp(id, "proc_", 5) ? id + 5 : id;
 }
 
-static int job_running(const cJSON *data)
+static int cli_jobs_job_running(const cJSON *data)
 {
-	const char *state = job_string(data, "status");
+	const char *state = cli_jobs_job_string(data, "status");
 	return !strcmp(state, "running") || !strcmp(state, "starting");
 }
 
-static int job_failed(const cJSON *data)
+static int cli_jobs_job_failed(const cJSON *data)
 {
-	return !job_running(data) &&
-	       (strcmp(job_string(data, "status"), "exited") ||
+	return !cli_jobs_job_running(data) &&
+	       (strcmp(cli_jobs_job_string(data, "status"), "exited") ||
 		cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(data, "exit_code")) != 0);
 }
 
-static int job_visible(const struct cli_context *ctx, const struct cli_job *job)
+static int cli_jobs_job_visible(const struct cli_context *ctx, const struct cli_jobs_job *job)
 {
 	int64_t owner = 0;
 	(void)runtime_session_current_id(ctx->runtime, &owner);
 	if (cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(job->data, "owner_session_id")) !=
 	    (double)owner)
 		return 0;
-	int64_t retention = job_failed(job->data) ? CLI_JOB_FAILURE_MS : CLI_JOB_SUCCESS_MS;
-	return job_running(job->data) || (!job->seen && jobs_now() - job->updated < retention);
+	int64_t retention =
+		cli_jobs_job_failed(job->data) ? CLI_JOBS_JOB_FAILURE_MS : CLI_JOBS_JOB_SUCCESS_MS;
+	return cli_jobs_job_running(job->data) ||
+	       (!job->seen && cli_jobs_now() - job->updated < retention);
 }
 
-static int remember_job(struct cli_context *ctx, const cJSON *data)
+static int cli_jobs_remember_job(struct cli_context *ctx, const cJSON *data)
 {
 	if (!ctx->jobs) {
-		struct cli_job entry;
+		struct cli_jobs_job entry;
 		ctx->jobs = calloc(1, sizeof(*ctx->jobs));
 		if (!ctx->jobs)
 			return -ENOMEM;
@@ -82,12 +86,13 @@ static int remember_job(struct cli_context *ctx, const cJSON *data)
 	cJSON *copy = cJSON_Duplicate(data, 1);
 	if (!copy)
 		return -ENOMEM;
-	struct cli_job *job;
-	morph_array_foreach (job, &ctx->jobs->entries, struct cli_job) {
-		if (!strcmp(job_string(job->data, "session_id"), job_string(data, "session_id"))) {
+	struct cli_jobs_job *job;
+	morph_array_foreach (job, &ctx->jobs->entries, struct cli_jobs_job) {
+		if (!strcmp(cli_jobs_job_string(job->data, "session_id"),
+			    cli_jobs_job_string(data, "session_id"))) {
 			cJSON_Delete(job->data);
 			job->data = copy;
-			job->updated = jobs_now();
+			job->updated = cli_jobs_now();
 			return 0;
 		}
 	}
@@ -96,7 +101,7 @@ static int remember_job(struct cli_context *ctx, const cJSON *data)
 		cJSON_Delete(copy);
 		return -ENOMEM;
 	}
-	*job = (struct cli_job){.data = copy, .updated = jobs_now()};
+	*job = (struct cli_jobs_job){.data = copy, .updated = cli_jobs_now()};
 	return 0;
 }
 
@@ -104,8 +109,8 @@ void cli_jobs_cleanup(struct cli_context *ctx)
 {
 	if (!ctx->jobs)
 		return;
-	struct cli_job *job;
-	morph_array_foreach (job, &ctx->jobs->entries, struct cli_job)
+	struct cli_jobs_job *job;
+	morph_array_foreach (job, &ctx->jobs->entries, struct cli_jobs_job)
 		cJSON_Delete(job->data);
 	morph_array_cleanup(&ctx->jobs->entries);
 	free(ctx->jobs);
@@ -117,7 +122,7 @@ int cli_jobs_event(struct cli_context *ctx, const struct morph_event *event)
 	if (!event->name ||
 	    (strcmp(event->name, "process.started") && strcmp(event->name, "process.completed")))
 		return 0;
-	int rc = remember_job(ctx, event->data);
+	int rc = cli_jobs_remember_job(ctx, event->data);
 	if (rc)
 		return rc;
 	if (!strcmp(event->name, "process.completed")) {
@@ -125,19 +130,20 @@ int cli_jobs_event(struct cli_context *ctx, const struct morph_event *event)
 		(void)runtime_session_current_id(ctx->runtime, &owner);
 		if (cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(
 			    event->data, "owner_session_id")) == (double)owner) {
-			const char *description = job_string(event->data, "description");
+			const char *description = cli_jobs_job_string(event->data, "description");
 			char safe[BUFSIZ];
 			(void)cli_list_compact_text(
 				safe, sizeof(safe),
-				description[0] ? description : job_string(event->data, "command"));
+				description[0] ? description
+					       : cli_jobs_job_string(event->data, "command"));
 			cli_terminal_history_begin(ctx);
-			printf(ctx, "  %s %s · %s", job_failed(event->data) ? "✗" : "✓", safe,
-			       job_string(event->data, "status"));
+			printf(ctx, "  %s %s · %s", cli_jobs_job_failed(event->data) ? "✗" : "✓",
+			       safe, cli_jobs_job_string(event->data, "status"));
 			const cJSON *exit_code =
 				cJSON_GetObjectItemCaseSensitive(event->data, "exit_code");
 			if (cJSON_IsNumber(exit_code))
 				printf(ctx, " %d", exit_code->valueint);
-			printf(ctx, " · /jobs %.8s\n", job_short_id(event->data));
+			printf(ctx, " · /jobs %.8s\n", cli_jobs_job_short_id(event->data));
 			cli_terminal_history_end(ctx);
 		}
 	}
@@ -149,16 +155,16 @@ int cli_jobs_visible(const struct cli_context *ctx)
 {
 	if (!ctx->jobs)
 		return 0;
-	struct cli_job *job;
-	morph_array_foreach (job, &ctx->jobs->entries, struct cli_job) {
-		if (job_visible(ctx, job))
+	struct cli_jobs_job *job;
+	morph_array_foreach (job, &ctx->jobs->entries, struct cli_jobs_job) {
+		if (cli_jobs_job_visible(ctx, job))
 			return 1;
 	}
 	return 0;
 }
 
-static int job_row(morph_buf_t *out, const char *prefix, const char *text, const char *meta,
-		   int columns, const char *style)
+static int cli_jobs_job_row(morph_buf_t *out, const char *prefix, const char *text,
+			    const char *meta, int columns, const char *style)
 {
 	char compact[BUFSIZ], clipped[BUFSIZ];
 	cli_list_compact_text(compact, sizeof(compact), text);
@@ -182,18 +188,20 @@ int cli_jobs_render(struct cli_context *ctx, morph_buf_t *out, int columns, int 
 	int rows = 0, shown = 0, total = 0;
 	/* Running work stays ahead of recent failures and successes. */
 	for (int pass = 0; pass < 3; pass++) {
-		struct cli_job *job;
-		morph_array_foreach (job, &ctx->jobs->entries, struct cli_job) {
-			if (!job_visible(ctx, job))
+		struct cli_jobs_job *job;
+		morph_array_foreach (job, &ctx->jobs->entries, struct cli_jobs_job) {
+			if (!cli_jobs_job_visible(ctx, job))
 				continue;
-			int priority = job_running(job->data) ? 0 : job_failed(job->data) ? 1 : 2;
+			int priority = cli_jobs_job_running(job->data)	? 0
+				       : cli_jobs_job_failed(job->data) ? 1
+									: 2;
 			if (priority != pass)
 				continue;
 			total++;
 			if (shown >= max_jobs)
 				continue;
 			shown++;
-			const char *description = job_string(job->data, "description");
+			const char *description = cli_jobs_job_string(job->data, "description");
 			const char *marker = priority == 0   ? CLI_FEED_RUNNING
 					     : priority == 1 ? "✗"
 							     : "✓";
@@ -205,24 +213,29 @@ int cli_jobs_render(struct cli_context *ctx, morph_buf_t *out, int columns, int 
 			int64_t elapsed = (int64_t)cJSON_GetNumberValue(
 				cJSON_GetObjectItemCaseSensitive(job->data, "duration_ms"));
 			if (priority == 0)
-				elapsed += jobs_now() - job->updated;
-			if (priority == 1 && !strcmp(job_string(job->data, "status"), "exited"))
+				elapsed += cli_jobs_now() - job->updated;
+			if (priority == 1 &&
+			    !strcmp(cli_jobs_job_string(job->data, "status"), "exited"))
 				snprintf(meta, sizeof(meta), "exit %d",
 					 (int)cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(
 						 job->data, "exit_code")));
 			else if (priority == 1)
-				snprintf(meta, sizeof(meta), "%s", job_string(job->data, "status"));
+				snprintf(meta, sizeof(meta), "%s",
+					 cli_jobs_job_string(job->data, "status"));
 			else
 				snprintf(meta, sizeof(meta), "%llds", (long long)(elapsed / 1000));
 			snprintf(prefix, sizeof(prefix), "  %s ", marker);
 			if (description[0]) {
-				(void)job_row(out, prefix, description, "", columns, style);
+				(void)cli_jobs_job_row(out, prefix, description, "", columns,
+						       style);
 				rows++;
-				(void)job_row(out, "    └─ ", job_string(job->data, "command"),
-					      meta, columns, styled ? ANSI_DIM : "");
+				(void)cli_jobs_job_row(out, "    └─ ",
+						       cli_jobs_job_string(job->data, "command"),
+						       meta, columns, styled ? ANSI_DIM : "");
 			} else {
-				(void)job_row(out, prefix, job_string(job->data, "command"), meta,
-					      columns, style);
+				(void)cli_jobs_job_row(out, prefix,
+						       cli_jobs_job_string(job->data, "command"),
+						       meta, columns, style);
 			}
 			rows++;
 		}
@@ -230,7 +243,7 @@ int cli_jobs_render(struct cli_context *ctx, morph_buf_t *out, int columns, int 
 	if (total > shown) {
 		char more[64];
 		snprintf(more, sizeof(more), "+%d more · /jobs", total - shown);
-		(void)job_row(out, "  ", more, "", columns, styled ? ANSI_DIM : "");
+		(void)cli_jobs_job_row(out, "  ", more, "", columns, styled ? ANSI_DIM : "");
 		rows++;
 	}
 	return rows;
@@ -240,14 +253,14 @@ void cli_jobs_acknowledge(struct cli_context *ctx, const char *id)
 {
 	if (!ctx->jobs)
 		return;
-	struct cli_job *job;
-	morph_array_foreach (job, &ctx->jobs->entries, struct cli_job) {
-		if (!strcmp(job_string(job->data, "session_id"), id))
+	struct cli_jobs_job *job;
+	morph_array_foreach (job, &ctx->jobs->entries, struct cli_jobs_job) {
+		if (!strcmp(cli_jobs_job_string(job->data, "session_id"), id))
 			job->seen = 1;
 	}
 }
 
-struct jobs_view {
+struct cli_jobs_view {
 	struct cli_context *ctx;
 	cJSON *jobs;
 	cJSON *details;
@@ -261,14 +274,14 @@ struct jobs_view {
 	const char *message;
 };
 
-static int jobs_refresh(struct jobs_view *view)
+static int cli_jobs_refresh(struct cli_jobs_view *view)
 {
 	cJSON *jobs = NULL;
 	int rc = runtime_process_list(view->ctx->runtime, &jobs);
 	if (rc)
 		return rc;
 	cJSON *selected = cJSON_GetArrayItem(view->jobs, (int)view->selection.index);
-	char *selected_id = selected ? strdup(job_string(selected, "session_id")) : NULL;
+	char *selected_id = selected ? strdup(cli_jobs_job_string(selected, "session_id")) : NULL;
 	if (selected && !selected_id) {
 		cJSON_Delete(jobs);
 		return -ENOMEM;
@@ -279,7 +292,7 @@ static int jobs_refresh(struct jobs_view *view)
 		cJSON *entry;
 		size_t index = 0;
 		cJSON_ArrayForEach (entry, jobs) {
-			if (!strcmp(job_string(entry, "session_id"), selected_id)) {
+			if (!strcmp(cli_jobs_job_string(entry, "session_id"), selected_id)) {
 				view->selection.index = index;
 				break;
 			}
@@ -287,33 +300,37 @@ static int jobs_refresh(struct jobs_view *view)
 		}
 		free(selected_id);
 	}
-	view->refreshed = jobs_now();
+	view->refreshed = cli_jobs_now();
 	if (view->detail) {
 		cJSON *job = cJSON_GetArrayItem(jobs, (int)view->selection.index);
 		cJSON *details = NULL;
-		if (job && !runtime_process_read(view->ctx->runtime, job_string(job, "session_id"),
-						 &details)) {
+		if (job &&
+		    !runtime_process_read(view->ctx->runtime,
+					  cli_jobs_job_string(job, "session_id"), &details)) {
 			cJSON_Delete(view->details);
 			view->details = details;
-			if (!job_running(details))
-				cli_jobs_acknowledge(view->ctx, job_string(details, "session_id"));
+			if (!cli_jobs_job_running(details))
+				cli_jobs_acknowledge(view->ctx,
+						     cli_jobs_job_string(details, "session_id"));
 		}
 	}
 	return 0;
 }
 
-static int jobs_document(struct jobs_view *view)
+static int cli_jobs_document(struct cli_jobs_view *view)
 {
 	morph_buf_reset(&view->document);
-	(void)morph_buf_printf(
-		&view->document, "%s\n%s\nDirectory: %s\nStatus: %s",
-		job_string(view->details, "description"), job_string(view->details, "command"),
-		job_string(view->details, "workdir"), job_string(view->details, "status"));
+	(void)morph_buf_printf(&view->document, "%s\n%s\nDirectory: %s\nStatus: %s",
+			       cli_jobs_job_string(view->details, "description"),
+			       cli_jobs_job_string(view->details, "command"),
+			       cli_jobs_job_string(view->details, "workdir"),
+			       cli_jobs_job_string(view->details, "status"));
 	const cJSON *exit_code = cJSON_GetObjectItemCaseSensitive(view->details, "exit_code");
 	if (cJSON_IsNumber(exit_code))
 		(void)morph_buf_printf(&view->document, " · exit %d", exit_code->valueint);
-	(void)morph_buf_printf(&view->document, "\n\n%s%s", job_string(view->details, "stdout"),
-			       job_string(view->details, "stderr"));
+	(void)morph_buf_printf(&view->document, "\n\n%s%s",
+			       cli_jobs_job_string(view->details, "stdout"),
+			       cli_jobs_job_string(view->details, "stderr"));
 	if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(view->details, "stdout_truncated")) ||
 	    cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(view->details, "stderr_truncated")))
 		(void)morph_buf_puts(&view->document,
@@ -321,9 +338,9 @@ static int jobs_document(struct jobs_view *view)
 	return view->document.failed;
 }
 
-static int jobs_draw(void *data, const struct morph_tui_screen *screen)
+static int cli_jobs_draw(void *data, const struct morph_tui_screen *screen)
 {
-	struct jobs_view *view = data;
+	struct cli_jobs_view *view = data;
 	int columns = screen->area.width, rows = screen->area.height;
 	morph_buf_t frame = {0}, line = {0};
 	int rc = morph_buf_init(&frame, BUFSIZ);
@@ -337,7 +354,7 @@ static int jobs_draw(void *data, const struct morph_tui_screen *screen)
 	morph_tui_widget_list_state_layout(&view->selection, (size_t)cJSON_GetArraySize(view->jobs),
 				     (size_t)page);
 	if (view->detail && view->details) {
-		rc = jobs_document(view);
+		rc = cli_jobs_document(view);
 		if (rc) {
 			morph_buf_cleanup(&frame);
 			morph_buf_cleanup(&line);
@@ -382,9 +399,9 @@ static int jobs_draw(void *data, const struct morph_tui_screen *screen)
 				cJSON *job = cJSON_GetArrayItem(view->jobs, (int)index);
 				if (job) {
 					(void)morph_buf_printf(&line, "  %.8s  %-11s  %s",
-							       job_short_id(job),
-							       job_string(job, "status"),
-							       job_string(job, "command"));
+							       cli_jobs_job_short_id(job),
+							       cli_jobs_job_string(job, "status"),
+							       cli_jobs_job_string(job, "command"));
 					if (index == view->selection.index)
 						style = ANSI_CYAN "\033[7m";
 				} else if (!cJSON_GetArraySize(view->jobs) && row == 2)
@@ -411,16 +428,16 @@ static int jobs_draw(void *data, const struct morph_tui_screen *screen)
 	return rc;
 }
 
-static int jobs_update(void *data, const struct morph_tui_event *event)
+static int cli_jobs_update(void *data, const struct morph_tui_event *event)
 {
-	struct jobs_view *view = data;
+	struct cli_jobs_view *view = data;
 	if (event->type == MORPH_TUI_EVENT_TICK) {
 		/* Yield the terminal to permission/interaction dialogs on the owner. */
-		if (cli_ui_owner_call_pending(view->ctx))
+		if (cli_event_queue_owner_call_pending(view->ctx))
 			return MORPH_TUI_SCREEN_CLOSE;
-		if (jobs_now() - view->refreshed < 1000)
+		if (cli_jobs_now() - view->refreshed < 1000)
 			return MORPH_TUI_SCREEN_CONTINUE;
-		int rc = jobs_refresh(view);
+		int rc = cli_jobs_refresh(view);
 		return rc ? rc : MORPH_TUI_SCREEN_REDRAW;
 	}
 	if (event->type != MORPH_TUI_EVENT_KEY || event->pasting)
@@ -435,7 +452,7 @@ static int jobs_update(void *data, const struct morph_tui_event *event)
 		cJSON *job = cJSON_GetArrayItem(view->jobs, (int)view->selection.index);
 		if (job) {
 			int rc = runtime_process_stop(view->ctx->runtime,
-						      job_string(job, "session_id"));
+						      cli_jobs_job_string(job, "session_id"));
 			view->message = rc ? morph_strerror(rc) : "Stop requested";
 		}
 	} else if (key == '\r' || key == '\n') {
@@ -457,11 +474,11 @@ static int jobs_update(void *data, const struct morph_tui_event *event)
 	} else {
 		(void)morph_tui_widget_list_state_update(&view->selection, key);
 	}
-	int rc = jobs_refresh(view);
+	int rc = cli_jobs_refresh(view);
 	return rc ? rc : MORPH_TUI_SCREEN_REDRAW;
 }
 
-static void jobs_cleanup(struct jobs_view *view)
+static void cli_jobs_view_cleanup(struct cli_jobs_view *view)
 {
 	cJSON_Delete(view->jobs);
 	cJSON_Delete(view->details);
@@ -472,28 +489,27 @@ static void jobs_cleanup(struct jobs_view *view)
 
 struct cli_jobs_controller {
 	struct morph_tui_view_controller base;
-	struct jobs_view view;
+	struct cli_jobs_view view;
 	struct morph_tui_view *title, *list, *document, *message;
 	char row[BUFSIZ];
 	int presented;
 };
 
-static const char *jobs_controller_row(void *data, size_t index)
+static const char *cli_jobs_controller_row(void *data, size_t index)
 {
 	struct cli_jobs_controller *page = data;
 	cJSON *job = cJSON_GetArrayItem(page->view.jobs, (int)index);
 
-	snprintf(page->row, sizeof(page->row), "%.8s  %-11s  %s", job_short_id(job),
-		 job_string(job, "status"), job_string(job, "command"));
+	snprintf(page->row, sizeof(page->row), "%.8s  %-11s  %s", cli_jobs_job_short_id(job),
+		 cli_jobs_job_string(job, "status"), cli_jobs_job_string(job, "command"));
 	return page->row;
 }
 
-static int jobs_controller_sync(struct cli_jobs_controller *page, int focus)
+static int cli_jobs_controller_sync(struct cli_jobs_controller *page, int focus)
 {
-	struct jobs_view *view = &page->view;
+	struct cli_jobs_view *view = &page->view;
 	size_t count = (size_t)cJSON_GetArraySize(view->jobs);
-	int rc =
-		morph_tui_widget_list_set_source(page->list, count, jobs_controller_row, page);
+	int rc = morph_tui_widget_list_set_source(page->list, count, cli_jobs_controller_row, page);
 
 	morph_tui_widget_list_state_layout(&view->selection, count, view->selection.page);
 	if (!rc && count)
@@ -511,7 +527,7 @@ static int jobs_controller_sync(struct cli_jobs_controller *page, int focus)
 			view->message ? view->message
 				      : (!count ? "No background jobs in this session." : ""));
 	if (!rc && view->detail && view->details) {
-		rc = jobs_document(view);
+		rc = cli_jobs_document(view);
 		if (!rc)
 			rc = morph_tui_widget_text_view_set_text(page->document,
 								 morph_buf_cstr(&view->document));
@@ -521,11 +537,11 @@ static int jobs_controller_sync(struct cli_jobs_controller *page, int focus)
 	return rc;
 }
 
-static void jobs_controller_build(struct morph_tui_view_controller *controller,
-				  struct morph_tui_builder *builder)
+static void cli_jobs_controller_build(struct morph_tui_view_controller *controller,
+				      struct morph_tui_builder *builder)
 {
 	struct cli_jobs_controller *page = (struct cli_jobs_controller *)controller;
-	struct jobs_view *source = controller->data;
+	struct cli_jobs_view *source = controller->data;
 
 	/* Move the model into the controller. The caller's cleanup remains valid
 	 * when allocation fails before build or construction fails after the move. */
@@ -546,12 +562,12 @@ static void jobs_controller_build(struct morph_tui_view_controller *controller,
 		builder, root, "Up/Down · Enter output · k stop · r refresh · Esc back", NULL);
 	if (!morph_tui_builder_error(builder)) {
 		morph_tui_widget_list_set_navigation(page->list, 0);
-		morph_tui_builder_fail(builder, jobs_controller_sync(page, 1));
+		morph_tui_builder_fail(builder, cli_jobs_controller_sync(page, 1));
 	}
 }
 
-static int jobs_controller_action(struct morph_tui_view_controller *controller,
-				  const struct morph_tui_widget_action *action)
+static int cli_jobs_controller_action(struct morph_tui_view_controller *controller,
+				      const struct morph_tui_widget_action *action)
 {
 	struct cli_jobs_controller *page = (struct cli_jobs_controller *)controller;
 
@@ -559,20 +575,20 @@ static int jobs_controller_action(struct morph_tui_view_controller *controller,
 	if (action->type != MORPH_TUI_WIDGET_ACTION_ACTIVATE)
 		return 0;
 	page->view.detail = 1;
-	int rc = jobs_refresh(&page->view);
+	int rc = cli_jobs_refresh(&page->view);
 
-	return rc ? rc : jobs_controller_sync(page, 1);
+	return rc ? rc : cli_jobs_controller_sync(page, 1);
 }
 
-static int jobs_controller_event(struct morph_tui_view_controller *controller,
-				 const struct morph_tui_event *event)
+static int cli_jobs_controller_event(struct morph_tui_view_controller *controller,
+				     const struct morph_tui_event *event)
 {
 	struct cli_jobs_controller *page = (struct cli_jobs_controller *)controller;
-	struct jobs_view *view = &page->view;
+	struct cli_jobs_view *view = &page->view;
 	int focus = 0;
 
 	if (event->type == MORPH_TUI_EVENT_TICK) {
-		if (jobs_now() - view->refreshed < 1000)
+		if (cli_jobs_now() - view->refreshed < 1000)
 			return 0;
 	} else if (event->type == MORPH_TUI_EVENT_KEY ||
 		   event->type == MORPH_TUI_EVENT_TEXT) {
@@ -583,8 +599,8 @@ static int jobs_controller_event(struct morph_tui_view_controller *controller,
 			cJSON *job = cJSON_GetArrayItem(view->jobs, (int)view->selection.index);
 
 			if (job) {
-				int rc = runtime_process_stop(view->ctx->runtime,
-							      job_string(job, "session_id"));
+				int rc = runtime_process_stop(
+					view->ctx->runtime, cli_jobs_job_string(job, "session_id"));
 
 				view->message = rc ? morph_strerror(rc) : "Stop requested";
 			}
@@ -592,46 +608,46 @@ static int jobs_controller_event(struct morph_tui_view_controller *controller,
 			return 0;
 	} else
 		return 0;
-	int rc = jobs_refresh(view);
+	int rc = cli_jobs_refresh(view);
 
 	if (!rc)
-		rc = jobs_controller_sync(page, focus);
+		rc = cli_jobs_controller_sync(page, focus);
 	return rc ? rc : 1;
 }
 
-static void jobs_controller_cleanup(void *data, int result)
+static void cli_jobs_controller_cleanup(void *data, int result)
 {
 	struct cli_jobs_controller *page = data;
 
 	(void)result;
-	jobs_cleanup(&page->view);
+	cli_jobs_view_cleanup(&page->view);
 }
 
-static int jobs_controller_appear(struct morph_tui_view_controller *controller)
+static int cli_jobs_controller_appear(struct morph_tui_view_controller *controller)
 {
 	((struct cli_jobs_controller *)controller)->presented = 1;
 	return 0;
 }
 
-static void jobs_controller_destroy(struct morph_tui_view_controller *controller, int result)
+static void cli_jobs_controller_destroy(struct morph_tui_view_controller *controller, int result)
 {
 	struct cli_jobs_controller *page = (struct cli_jobs_controller *)controller;
 
 	if (page->presented)
-		cli_application_panel_complete(page->view.ctx, page, jobs_controller_cleanup,
+		cli_application_panel_complete(page->view.ctx, page, cli_jobs_controller_cleanup,
 					       result);
 	else
-		jobs_controller_cleanup(page, result);
+		cli_jobs_controller_cleanup(page, result);
 }
 
 int cli_jobs_view(struct cli_context *ctx, const char *id)
 {
-	struct jobs_view view = {.ctx = ctx};
+	struct cli_jobs_view view = {.ctx = ctx};
 	struct morph_tui_screen screen = {0};
-	const struct morph_tui_screen_ops ops = {.draw = jobs_draw, .update = jobs_update};
+	const struct morph_tui_screen_ops ops = {.draw = cli_jobs_draw, .update = cli_jobs_update};
 	int rc = morph_buf_init(&view.document, BUFSIZ);
 	if (!rc)
-		rc = jobs_refresh(&view);
+		rc = cli_jobs_refresh(&view);
 	if (!rc && id) {
 		cJSON *details = NULL;
 		rc = runtime_process_read(ctx->runtime, id, &details);
@@ -639,8 +655,8 @@ int cli_jobs_view(struct cli_context *ctx, const char *id)
 			cJSON *job;
 			size_t index = 0;
 			cJSON_ArrayForEach (job, view.jobs) {
-				if (!strcmp(job_string(job, "session_id"),
-					    job_string(details, "session_id"))) {
+				if (!strcmp(cli_jobs_job_string(job, "session_id"),
+					    cli_jobs_job_string(details, "session_id"))) {
 					view.selection.index = index;
 					view.detail = 1;
 					break;
@@ -650,18 +666,18 @@ int cli_jobs_view(struct cli_context *ctx, const char *id)
 			if (!view.detail)
 				rc = -ENOENT;
 			else
-				rc = jobs_refresh(&view);
+				rc = cli_jobs_refresh(&view);
 		}
 		cJSON_Delete(details);
 	}
 	if (!rc && ctx->application) {
 		struct cli_jobs_controller page;
 		static const struct morph_tui_view_controller_ops controller_ops = {
-			.build = jobs_controller_build,
-			.action = jobs_controller_action,
-			.event = jobs_controller_event,
-			.destroy = jobs_controller_destroy,
-			.appear = jobs_controller_appear,
+			.build = cli_jobs_controller_build,
+			.action = cli_jobs_controller_action,
+			.event = cli_jobs_controller_event,
+			.destroy = cli_jobs_controller_destroy,
+			.appear = cli_jobs_controller_appear,
 		};
 		const struct morph_tui_view_controller_spec spec = {
 			.ops = &controller_ops,

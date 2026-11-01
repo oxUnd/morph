@@ -1,6 +1,7 @@
 #include "runtime_test_support.hpp"
 
 extern "C" {
+#include "sapi/cli/cli.h"
 #include "sapi/cli/commands/registry.h"
 #include "util/arena.h"
 #include "util/error.h"

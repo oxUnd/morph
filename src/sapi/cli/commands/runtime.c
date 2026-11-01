@@ -1,3 +1,10 @@
+#include "ext/ext.h"
+#include "credits.h"
+#include "config/config.h"
+#include "cJSON.h"
+#include "sapi/cli/internal.h"
+#include "sapi/cli/core.h"
+#include "sapi/cli/ui/recap.h"
 #include "sapi/cli/commands/registry.h"
 
 static int cmd_quit(struct cli_context *ctx, int argc, char **argv)
@@ -549,7 +556,6 @@ static int cmd_clear(struct cli_context *ctx, int argc, char **argv)
 	fflush(stdout);
 	return 0;
 }
-
 
 static int cmd_recap(struct cli_context *ctx, int argc, char **argv)
 {

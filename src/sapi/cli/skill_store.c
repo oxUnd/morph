@@ -1,4 +1,5 @@
 #include "sapi/cli/skill_store.h"
+#include "cJSON.h"
 #include "sapi/cli/manage.h"
 #include "skill/skill_parse.h"
 #include "util/error.h"

@@ -1,3 +1,5 @@
+#include "sapi/cli/ui/presentation/presenter.h"
+#include "sapi/cli/ui/presentation/terminal.h"
 /* Exercise the real CLI with an isolated database and a local model server. */
 #include "sapi/cli/cli.h"
 #include "http/client.h"

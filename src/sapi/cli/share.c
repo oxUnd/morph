@@ -1,4 +1,5 @@
 #include "sapi/cli/share.h"
+#include "cJSON.h"
 #include "util/base64.h"
 #include "util/data.h"
 #include "util/utf8.h"

@@ -1,3 +1,13 @@
+#include "sapi/cli/commands/media.h"
+#include "sapi/cli/internal.h"
+#include "ext/ext.h"
+#include "credits.h"
+#include "config/config.h"
+#include "render/image.h"
+#include "render/video.h"
+#include "stb_image.h"
+#include "sapi/cli/core.h"
+#include "sapi/cli/ui/presentation/markdown.h"
 #include "sapi/cli/commands/registry.h"
 
 int cli_attach_image(struct cli_context *ctx, const char *path)
@@ -176,7 +186,6 @@ static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 	free(expanded);
 	return 0;
 }
-
 
 static const struct cli_command media_commands[] = {
 	{ "/image",   cmd_image,   "Inject an image into context",      "/image <file_path>" },

@@ -1,10 +1,12 @@
+#include "sapi/cli/ui/input/cancel.h"
+#include "sapi/cli/ui/event_queue.h"
 #include "sapi/cli/internal.h"
 #include "http/client.h"
 
 #include <sys/select.h>
 #include <termios.h>
 
-#define CLI_ESCAPE_SEQUENCE_WAIT_US 30000
+#define CLI_CANCEL_ESCAPE_SEQUENCE_WAIT_US 30000
 
 struct cli_cancel_monitor {
 	struct cli_context *ctx;
@@ -14,7 +16,7 @@ struct cli_cancel_monitor {
 	struct termios saved_termios;
 };
 
-static int escape_has_sequence_suffix(int fd)
+static int cli_cancel_escape_has_sequence_suffix(int fd)
 {
 	unsigned char discard[16];
 	struct timeval timeout;
@@ -24,7 +26,7 @@ static int escape_has_sequence_suffix(int fd)
 	FD_ZERO(&read_fds);
 	FD_SET(fd, &read_fds);
 	timeout.tv_sec = 0;
-	timeout.tv_usec = CLI_ESCAPE_SEQUENCE_WAIT_US;
+	timeout.tv_usec = CLI_CANCEL_ESCAPE_SEQUENCE_WAIT_US;
 	do {
 		rc = select(fd + 1, &read_fds, NULL, NULL, &timeout);
 	} while (rc < 0 && errno == EINTR);
@@ -34,7 +36,7 @@ static int escape_has_sequence_suffix(int fd)
 	return 1;
 }
 
-static void *cancel_monitor_thread(void *user_data)
+static void *cli_cancel_monitor_thread(void *user_data)
 {
 	struct cli_cancel_monitor *monitor = user_data;
 
@@ -49,7 +51,7 @@ static void *cancel_monitor_thread(void *user_data)
 		}
 		if (count == 0 || ch != 0x1b)
 			continue;
-		if (escape_has_sequence_suffix(monitor->fd) ||
+		if (cli_cancel_escape_has_sequence_suffix(monitor->fd) ||
 		    morph_signal_flag_get(&monitor->stop))
 			continue;
 		cli_request_cancel(monitor->ctx);
@@ -64,7 +66,7 @@ void cli_request_cancel(struct cli_context *ctx)
 		return;
 	morph_signal_flag_set(&ctx->interrupted, 1);
 	runtime_cancel_turn(ctx->runtime);
-	cli_ui_notify(ctx);
+	cli_event_queue_notify(ctx);
 }
 
 void cli_signal_received(int number, void *opaque)
@@ -81,7 +83,7 @@ void cli_signal_received(int number, void *opaque)
 	if (__atomic_load_n(&ctx->signals_ready, __ATOMIC_ACQUIRE)) {
 		if (number != SIGWINCH)
 			runtime_cancel_turn(ctx->runtime);
-		cli_ui_notify(ctx);
+		cli_event_queue_notify(ctx);
 	}
 }
 
@@ -115,8 +117,7 @@ struct cli_cancel_monitor *cli_cancel_monitor_start(struct cli_context *ctx, int
 		free(monitor);
 		return NULL;
 	}
-	if (pthread_create(&monitor->thread, NULL, cancel_monitor_thread,
-			   monitor) != 0) {
+	if (pthread_create(&monitor->thread, NULL, cli_cancel_monitor_thread, monitor) != 0) {
 		(void)tcsetattr(fd, TCSANOW, &monitor->saved_termios);
 		free(monitor);
 		return NULL;
@@ -132,4 +133,15 @@ void cli_cancel_monitor_stop(struct cli_cancel_monitor *monitor)
 	(void)pthread_join(monitor->thread, NULL);
 	(void)tcsetattr(monitor->fd, TCSANOW, &monitor->saved_termios);
 	free(monitor);
+}
+
+void cli_cancel_monitor_clear(struct cli_context *ctx)
+{
+	struct cli_cancel_monitor *monitor;
+
+	if (!ctx)
+		return;
+	monitor = ctx->cancel_monitor;
+	ctx->cancel_monitor = NULL;
+	cli_cancel_monitor_stop(monitor);
 }

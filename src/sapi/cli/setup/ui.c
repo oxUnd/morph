@@ -1,5 +1,6 @@
-#include <morph/tui/components.h>
 #include "sapi/cli/setup/ui.h"
+#include "config/config.h"
+#include <morph/tui/components.h>
 #include "sapi/cli/setup/mcp.h"
 #include "sapi/cli/cli.h"
 #include "util/error.h"

@@ -29,6 +29,14 @@
 - **Dynamic JS tools**: embedded QuickJS in `src/js_runner/`. See `docs/quickjs-tools.md`.
 
 ## CLI Slash Command Presentation
+- CLI UI module ownership and naming follow
+  [src/sapi/cli/ui/README.md](src/sapi/cli/ui/README.md). Keep Application and
+  Readline implementations under `ui/`, page implementations under `ui/screens/`,
+  and question/approval adapters under `ui/interactions/`. Every implementation
+  includes its sibling module header first and imports other interfaces directly.
+  `internal.h` owns no UI declarations or domain/SDK include collection.
+  Run `cli_ui_layout_conventions` alongside CLI/TUI behavior regressions after
+  moving modules, adding interfaces, or changing private names.
 - TUI View options use four-edge `morph_tui_view_insets` for margin and padding.
   Measure returns the outer size including margin; arrange accepts an outer slot
   and applies margin once. Size limits include padding and exclude margin.

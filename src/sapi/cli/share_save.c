@@ -1,3 +1,4 @@
+#include "cJSON.h"
 #include "sapi/cli/share.h"
 #include "util/file.h"
 #include <errno.h>

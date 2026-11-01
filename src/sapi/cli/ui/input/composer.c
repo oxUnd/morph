@@ -1,18 +1,22 @@
-#include "sapi/cli/internal.h"
 #include "sapi/cli/ui/input/composer.h"
+#include "credits.h"
+#include "config/config.h"
+#include "stb_image.h"
+#include "sapi/cli/core.h"
+#include "sapi/cli/internal.h"
 
-#define CLI_IMAGE_LABEL_MAX 64
+#define CLI_COMPOSER_IMAGE_LABEL_MAX 64
 
-struct cli_input_image {
+struct cli_composer_input_image {
 	char *path;
 	int width;
 	int height;
-	char label[CLI_IMAGE_LABEL_MAX];
+	char label[CLI_COMPOSER_IMAGE_LABEL_MAX];
 };
 
 int cli_composer_init(struct cli_composer *composer)
 {
-	struct cli_input_image image;
+	struct cli_composer_input_image image;
 	int rc;
 
 	memset(composer, 0, sizeof(*composer));
@@ -24,9 +28,9 @@ int cli_composer_init(struct cli_composer *composer)
 
 void cli_composer_cleanup(struct cli_composer *composer)
 {
-	struct cli_input_image *image;
+	struct cli_composer_input_image *image;
 
-	morph_array_foreach(image, &composer->images, struct cli_input_image)
+	morph_array_foreach (image, &composer->images, struct cli_composer_input_image)
 		free(image->path);
 	morph_array_cleanup(&composer->images);
 }
@@ -34,7 +38,7 @@ void cli_composer_cleanup(struct cli_composer *composer)
 int cli_composer_add_image(struct cli_composer *composer, const char *path,
 			   const char **label)
 {
-	struct cli_input_image *image;
+	struct cli_composer_input_image *image;
 	char *expanded = file_expand_path(path);
 	char *absolute;
 	int width;
@@ -152,11 +156,11 @@ void cli_composer_record_images(struct cli_composer *composer,
 				struct cli_context *ctx, const char *input)
 {
 	const struct config *config = runtime_config_get(ctx->runtime);
-	struct cli_input_image *image;
+	struct cli_composer_input_image *image;
 
 	if (!config)
 		return;
-	morph_array_foreach(image, &composer->images, struct cli_input_image) {
+	morph_array_foreach (image, &composer->images, struct cli_composer_input_image) {
 		if (strstr(input, image->label))
 			cli_record_media_credits(ctx, "image_input",
 				credit_image_units_from_size(image->width, image->height), 0,
@@ -172,11 +176,11 @@ char *cli_composer_expand(struct cli_composer *composer, const char *input)
 	if (morph_buf_init(&result, strlen(input) + 1) != 0)
 		return NULL;
 	while (*cursor) {
-		struct cli_input_image *image;
-		struct cli_input_image *matched = NULL;
+		struct cli_composer_input_image *image;
+		struct cli_composer_input_image *matched = NULL;
 		const char *next = NULL;
 
-		morph_array_foreach(image, &composer->images, struct cli_input_image) {
+		morph_array_foreach (image, &composer->images, struct cli_composer_input_image) {
 			const char *found = strstr(cursor, image->label);
 
 			if (found && (!next || found < next)) {
@@ -203,9 +207,9 @@ char *cli_composer_expand(struct cli_composer *composer, const char *input)
 int cli_composer_image_span(struct cli_composer *composer, const char *input,
 			    int point, int backward, int *start, int *end)
 {
-	struct cli_input_image *image;
+	struct cli_composer_input_image *image;
 
-	morph_array_foreach(image, &composer->images, struct cli_input_image) {
+	morph_array_foreach (image, &composer->images, struct cli_composer_input_image) {
 		const char *found = input;
 
 		while ((found = strstr(found, image->label))) {

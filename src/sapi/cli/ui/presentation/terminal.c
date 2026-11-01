@@ -1,5 +1,7 @@
-#include "sapi/cli/internal.h"
 #include "sapi/cli/ui/presentation/terminal.h"
+#include "sapi/cli/command_job.h"
+#include "sapi/cli/ui/presentation/transcript.h"
+#include "sapi/cli/internal.h"
 #include "sapi/cli/ui/screens/jobs.h"
 
 #include <sys/ioctl.h>
@@ -11,12 +13,12 @@
 #define CLI_TERMINAL_STATUS_MAX 2000
 #define CLI_TERMINAL_QUEUE_VISIBLE 3
 
-enum cli_work_state {
-	CLI_WORK_NONE,
-	CLI_WORK_RUNNING,
-	CLI_WORK_COMPLETED,
-	CLI_WORK_STOPPED,
-	CLI_WORK_FAILED,
+enum cli_terminal_work_state {
+	CLI_TERMINAL_WORK_NONE,
+	CLI_TERMINAL_WORK_RUNNING,
+	CLI_TERMINAL_WORK_COMPLETED,
+	CLI_TERMINAL_WORK_STOPPED,
+	CLI_TERMINAL_WORK_FAILED,
 };
 
 struct cli_terminal {
@@ -41,7 +43,7 @@ struct cli_terminal {
 	int content_dirty;
 	int work_rows_below;
 	int work_finalizing;
-	enum cli_work_state work_state;
+	enum cli_terminal_work_state work_state;
 	int64_t work_started_ms;
 	int64_t work_elapsed_ms;
 	time_t work_finished_at;
@@ -71,7 +73,7 @@ void cli_terminal_update_end(struct cli_context *ctx)
 	ctx->terminal->update_active = 0;
 }
 
-static int64_t terminal_now_ms(void)
+static int64_t cli_terminal_now_ms(void)
 {
 	struct timespec now;
 
@@ -85,13 +87,13 @@ void cli_terminal_turn_begin(struct cli_context *ctx)
 	if (!ctx || !ctx->terminal ||
 	    ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
-	ctx->terminal->work_state = CLI_WORK_RUNNING;
-	ctx->terminal->work_started_ms = terminal_now_ms();
+	ctx->terminal->work_state = CLI_TERMINAL_WORK_RUNNING;
+	ctx->terminal->work_started_ms = cli_terminal_now_ms();
 	ctx->terminal->work_elapsed_ms = 0;
 	ctx->terminal->content_dirty = 1;
 }
 
-static void terminal_work_label(struct cli_terminal *terminal, int64_t elapsed)
+static void cli_terminal_work_label(struct cli_terminal *terminal, int64_t elapsed)
 {
 	const char label[] = "Working";
 	int64_t phase = elapsed > 600 ? (elapsed - 600) % 4000 : 0;
@@ -113,7 +115,7 @@ static void terminal_work_label(struct cli_terminal *terminal, int64_t elapsed)
 	fprintf(terminal->output, ANSI_RESET);
 }
 
-static int terminal_work_interval(const struct cli_terminal *terminal, int64_t now)
+static int cli_terminal_work_interval(const struct cli_terminal *terminal, int64_t now)
 {
 	int64_t elapsed = now - terminal->work_started_ms;
 	int64_t phase = elapsed > 600 ? (elapsed - 600) % 4000 : 0;
@@ -125,36 +127,39 @@ static int terminal_work_interval(const struct cli_terminal *terminal, int64_t n
 	return (int)(delay < second ? delay : second);
 }
 
-static void terminal_work_row(struct cli_terminal *terminal, int columns)
+static void cli_terminal_work_row(struct cli_terminal *terminal, int columns)
 {
 	morph_buf_t text;
 	char clipped[BUFSIZ];
-	int64_t elapsed = terminal->work_state == CLI_WORK_RUNNING ?
-		terminal_now_ms() - terminal->work_started_ms : terminal->work_elapsed_ms;
+	int64_t elapsed = terminal->work_state == CLI_TERMINAL_WORK_RUNNING
+				  ? cli_terminal_now_ms() - terminal->work_started_ms
+				  : terminal->work_elapsed_ms;
 	int64_t seconds = elapsed > 0 ? elapsed / 1000 : 0;
 	struct tm finished;
 	char clock[32] = "";
 
 	if (morph_buf_init(&text, 128) != 0)
 		return;
-	(void)morph_buf_puts(&text, terminal->work_state == CLI_WORK_RUNNING ? "" :
-		terminal->work_state == CLI_WORK_COMPLETED ? "Worked for " :
-		terminal->work_state == CLI_WORK_STOPPED ? "Stopped after " : "Failed after ");
+	(void)morph_buf_puts(&text,
+			     terminal->work_state == CLI_TERMINAL_WORK_RUNNING	   ? ""
+			     : terminal->work_state == CLI_TERMINAL_WORK_COMPLETED ? "Worked for "
+			     : terminal->work_state == CLI_TERMINAL_WORK_STOPPED ? "Stopped after "
+										 : "Failed after ");
 	if (seconds >= 60)
 		(void)morph_buf_printf(&text, "%lldm ", (long long)(seconds / 60));
 	(void)morph_buf_printf(&text, "%llds", (long long)(seconds % 60));
-	if (terminal->work_state == CLI_WORK_RUNNING)
+	if (terminal->work_state == CLI_TERMINAL_WORK_RUNNING)
 		(void)morph_buf_puts(&text, " · esc to interrupt");
 	else if (localtime_r(&terminal->work_finished_at, &finished)) {
 		(void)strftime(clock, sizeof(clock), "%H:%M", &finished);
 		(void)morph_buf_printf(&text, " · %s", clock);
 	}
-	int prefix = terminal->work_state == CLI_WORK_RUNNING ? 12 : 2;
+	int prefix = terminal->work_state == CLI_TERMINAL_WORK_RUNNING ? 12 : 2;
 
 	(void)utf8_copy_ellipsized_display_width(clipped, sizeof(clipped),
 		morph_buf_cstr(&text), (size_t)(columns > prefix ? columns - prefix : 1), 0);
-	if (terminal->work_state == CLI_WORK_RUNNING) {
-		terminal_work_label(terminal, elapsed);
+	if (terminal->work_state == CLI_TERMINAL_WORK_RUNNING) {
+		cli_terminal_work_label(terminal, elapsed);
 		fprintf(terminal->output, ANSI_DIM " · ");
 	} else {
 		fprintf(terminal->output, "  ");
@@ -167,26 +172,27 @@ void cli_terminal_turn_end(struct cli_context *ctx, int result)
 {
 	struct cli_terminal *terminal = ctx ? ctx->terminal : NULL;
 
-	if (!terminal || terminal->work_state != CLI_WORK_RUNNING)
+	if (!terminal || terminal->work_state != CLI_TERMINAL_WORK_RUNNING)
 		return;
-	terminal->work_elapsed_ms = terminal_now_ms() - terminal->work_started_ms;
+	terminal->work_elapsed_ms = cli_terminal_now_ms() - terminal->work_started_ms;
 	terminal->work_finished_at = time(NULL);
-	terminal->work_state = result >= 0 ? CLI_WORK_COMPLETED :
-		result == -ECANCELED ? CLI_WORK_STOPPED : CLI_WORK_FAILED;
+	terminal->work_state = result >= 0	      ? CLI_TERMINAL_WORK_COMPLETED
+			       : result == -ECANCELED ? CLI_TERMINAL_WORK_STOPPED
+						      : CLI_TERMINAL_WORK_FAILED;
 	/* A finished duration is immutable history, not a live footer. */
 	if (terminal->transient) {
 		cli_terminal_history_begin(ctx);
 		if (result < 0 || !ctx->final_rendered)
 			fputc('\n', terminal->output);
-		terminal_work_row(terminal, cli_terminal_columns(ctx));
+		cli_terminal_work_row(terminal, cli_terminal_columns(ctx));
 		/* The completed turn owns the gap before the next history block. */
 		fprintf(terminal->output, "\n\n");
 		fflush(terminal->output);
-		terminal->work_state = CLI_WORK_NONE;
+		terminal->work_state = CLI_TERMINAL_WORK_NONE;
 	}
 }
 
-static int terminal_columns(const struct cli_terminal *terminal)
+static int cli_terminal_output_columns(const struct cli_terminal *terminal)
 {
 	struct winsize size;
 	const char *configured;
@@ -211,17 +217,17 @@ static int terminal_columns(const struct cli_terminal *terminal)
 
 int cli_terminal_columns(const struct cli_context *ctx)
 {
-	return terminal_columns(ctx ? ctx->terminal : NULL);
+	return cli_terminal_output_columns(ctx ? ctx->terminal : NULL);
 }
 
-static void terminal_clear_current(struct cli_terminal *terminal)
+static void cli_terminal_clear_current(struct cli_terminal *terminal)
 {
 	if (!terminal || !terminal->is_terminal)
 		return;
 	fprintf(terminal->output, "\r\033[2K");
 }
 
-static void terminal_clear_frame(struct cli_terminal *terminal)
+static void cli_terminal_clear_frame(struct cli_terminal *terminal)
 {
 	int rows;
 
@@ -229,17 +235,17 @@ static void terminal_clear_frame(struct cli_terminal *terminal)
 		return;
 	rows = terminal->live_rows > 0 ? terminal->live_rows : 1;
 	if (terminal->live_anchored) {
-		terminal_clear_current(terminal);
+		cli_terminal_clear_current(terminal);
 		fprintf(terminal->output, "\033[1A");
 	}
 	for (int row = 0; row < rows; row++) {
-		terminal_clear_current(terminal);
+		cli_terminal_clear_current(terminal);
 		if (row + 1 < rows)
 			fprintf(terminal->output, "\033[1A");
 	}
 }
 
-static void terminal_sanitize_line(char *text)
+static void cli_terminal_sanitize_line(char *text)
 {
 	if (!text)
 		return;
@@ -252,8 +258,7 @@ static void terminal_sanitize_line(char *text)
 	}
 }
 
-static int terminal_text_changed(const struct cli_terminal *terminal,
-				 const char *text)
+static int cli_terminal_text_changed(const struct cli_terminal *terminal, const char *text)
 {
 	const char *current;
 
@@ -282,7 +287,7 @@ int cli_terminal_init(struct cli_context *ctx, FILE *output, int output_fd)
 	terminal->output_fd = output_fd;
 	terminal->is_terminal = output_fd >= 0 && isatty(output_fd);
 	terminal->transient = terminal->is_terminal && cli_color_enabled(ctx);
-	terminal->columns = terminal_columns(terminal);
+	terminal->columns = cli_terminal_output_columns(terminal);
 	ctx->terminal = terminal;
 	return 0;
 }
@@ -301,8 +306,8 @@ void cli_terminal_cleanup(struct cli_context *ctx)
 	ctx->terminal = NULL;
 }
 
-static void terminal_live_set(struct cli_context *ctx, const char *text,
-			      int independent, int reasoning)
+static void cli_terminal_set_live_state(struct cli_context *ctx, const char *text, int independent,
+					int reasoning)
 {
 	struct cli_terminal *terminal;
 	char *clean;
@@ -314,8 +319,8 @@ static void terminal_live_set(struct cli_context *ctx, const char *text,
 	clean = utf8_dup_clamped(text, CLI_TERMINAL_STATUS_MAX);
 	if (!clean)
 		return;
-	terminal_sanitize_line(clean);
-	changed = terminal_text_changed(terminal, clean);
+	cli_terminal_sanitize_line(clean);
+	changed = cli_terminal_text_changed(terminal, clean);
 	if (changed) {
 		morph_buf_reset(&terminal->live_text);
 		if (morph_buf_puts(&terminal->live_text, clean) != 0) {
@@ -324,12 +329,12 @@ static void terminal_live_set(struct cli_context *ctx, const char *text,
 		}
 	}
 	if (independent && (!terminal->live_independent || !terminal->live_active || changed))
-		terminal->live_started_ms = terminal_now_ms();
+		terminal->live_started_ms = cli_terminal_now_ms();
 	terminal->live_independent = independent;
 	terminal->live_reasoning = reasoning;
 	terminal->live_active = 1;
 	/* Coalesce content separately from the lightweight animation frames. */
-	int64_t next = terminal_now_ms() + CLI_TERMINAL_FRAME_MS;
+	int64_t next = cli_terminal_now_ms() + CLI_TERMINAL_FRAME_MS;
 
 	terminal->content_dirty = 1;
 	if (terminal->next_content_ms > next)
@@ -350,17 +355,17 @@ static void terminal_live_set(struct cli_context *ctx, const char *text,
 
 void cli_terminal_live_set(struct cli_context *ctx, const char *text)
 {
-	terminal_live_set(ctx, text, 0, 0);
+	cli_terminal_set_live_state(ctx, text, 0, 0);
 }
 
 void cli_terminal_reasoning_set(struct cli_context *ctx, const char *text)
 {
-	terminal_live_set(ctx, text, 0, 1);
+	cli_terminal_set_live_state(ctx, text, 0, 1);
 }
 
 void cli_terminal_activity_set(struct cli_context *ctx, const char *text)
 {
-	terminal_live_set(ctx, text, 1, 0);
+	cli_terminal_set_live_state(ctx, text, 1, 0);
 }
 
 int64_t cli_terminal_activity_elapsed_ms(const struct cli_context *ctx)
@@ -369,7 +374,7 @@ int64_t cli_terminal_activity_elapsed_ms(const struct cli_context *ctx)
 
 	if (!terminal || !terminal->live_active || !terminal->live_independent)
 		return -1;
-	int64_t elapsed = terminal_now_ms() - terminal->live_started_ms;
+	int64_t elapsed = cli_terminal_now_ms() - terminal->live_started_ms;
 
 	return elapsed > 0 ? elapsed : 0;
 }
@@ -382,7 +387,7 @@ void cli_terminal_live_clear(struct cli_context *ctx)
 		return;
 	terminal = ctx->terminal;
 	if (!ctx->details_visible && terminal->transient && terminal->live_visible) {
-		terminal_clear_frame(terminal);
+		cli_terminal_clear_frame(terminal);
 		fflush(terminal->output);
 	}
 	terminal->live_active = 0;
@@ -414,12 +419,12 @@ int cli_terminal_render_tick(struct cli_context *ctx, int cursor_rows)
 {
 	struct cli_terminal *terminal = ctx ? ctx->terminal : NULL;
 	struct winsize size = {0};
-	int64_t now = terminal_now_ms();
+	int64_t now = cli_terminal_now_ms();
 	int distance;
 
 	if (!terminal || terminal->hidden || !terminal->transient || !terminal->live_visible ||
-	    ctx->details_visible || terminal->work_state != CLI_WORK_RUNNING ||
-	    terminal->columns < 20 || terminal_columns(terminal) != terminal->columns)
+	    ctx->details_visible || terminal->work_state != CLI_TERMINAL_WORK_RUNNING ||
+	    terminal->columns < 20 || cli_terminal_output_columns(terminal) != terminal->columns)
 		return 0;
 	if ((terminal->content_dirty || terminal->live_independent || cli_jobs_visible(ctx) ||
 	     terminal->job_rows) &&
@@ -427,7 +432,7 @@ int cli_terminal_render_tick(struct cli_context *ctx, int cursor_rows)
 		return 0;
 	if (now < terminal->next_frame_ms)
 		return 1;
-	terminal->next_frame_ms = now + terminal_work_interval(terminal, now);
+	terminal->next_frame_ms = now + cli_terminal_work_interval(terminal, now);
 	distance = terminal->work_rows_below + cursor_rows + terminal->live_anchored;
 	/* A long wrapped draft can push the status row out of the viewport. */
 	if (ioctl(terminal->output_fd, TIOCGWINSZ, &size) == 0 &&
@@ -439,7 +444,7 @@ int cli_terminal_render_tick(struct cli_context *ctx, int cursor_rows)
 	fprintf(terminal->output, "\0337\r");
 	if (distance > 0)
 		fprintf(terminal->output, "\033[%dA", distance);
-	terminal_work_row(terminal, terminal->columns);
+	cli_terminal_work_row(terminal, terminal->columns);
 	fprintf(terminal->output, "\0338");
 	if (!updating)
 		cli_terminal_update_end(ctx);
@@ -473,8 +478,8 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	if (!terminal->transient)
 		return;
 	status_visible = terminal->live_active;
-	now = terminal_now_ms();
-	columns = terminal_columns(terminal);
+	now = cli_terminal_now_ms();
+	columns = cli_terminal_output_columns(terminal);
 	if (columns != terminal->columns) {
 		terminal->columns = columns;
 		force = 1;
@@ -494,11 +499,12 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	/* Final output already owns its trailing separator. Match the completed
 	 * work row even if persistence keeps the worker alive for another tick. */
 	terminal->work_finalizing = ctx->final_rendered &&
-		terminal->work_state == CLI_WORK_RUNNING && !status_visible && !queue_shown;
+				    terminal->work_state == CLI_TERMINAL_WORK_RUNNING &&
+				    !status_visible && !queue_shown;
 	if (!status_visible && queue_shown == 0 && !terminal->work_state &&
 	    !cli_jobs_visible(ctx)) {
 		if (terminal->live_visible) {
-			terminal_clear_frame(terminal);
+			cli_terminal_clear_frame(terminal);
 			fflush(terminal->output);
 			terminal->live_visible = 0;
 			terminal->live_anchored = 0;
@@ -510,9 +516,9 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	/* Below the layout minimum, keep one bounded row and keep accepting input. */
 	if (columns < 20) {
 		if (terminal->live_visible)
-			terminal_clear_frame(terminal);
+			cli_terminal_clear_frame(terminal);
 		else
-			terminal_clear_current(terminal);
+			cli_terminal_clear_current(terminal);
 		(void)utf8_copy_ellipsized_display_width(status_clipped,
 			sizeof(status_clipped), "Widen terminal", (size_t)(columns - 1), 0);
 		fprintf(terminal->output, ANSI_DIM "%s" ANSI_RESET, status_clipped);
@@ -559,9 +565,9 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 		status_clipped, sizeof(status_clipped), text ? text : "",
 		(size_t)budget);
 	if (terminal->live_visible)
-		terminal_clear_frame(terminal);
+		cli_terminal_clear_frame(terminal);
 	else
-		terminal_clear_current(terminal);
+		cli_terminal_clear_current(terminal);
 	if (status_visible) {
 		/* Match the committed reasoning line from its first streaming frame. */
 		status_gap = (tool_live || terminal->live_reasoning) &&
@@ -596,7 +602,7 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	if (terminal->work_state) {
 		if (!terminal->work_finalizing)
 			fputc('\n', terminal->output);
-		terminal_work_row(terminal, terminal->columns);
+		cli_terminal_work_row(terminal, terminal->columns);
 		if (queue_shown)
 			fputc('\n', terminal->output);
 	}
@@ -613,7 +619,7 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 				" (esc to interrupt)" ANSI_RESET);
 	}
 	for (size_t i = 0; i < queue_shown; i++) {
-		terminal_sanitize_line(queue_items[i]);
+		cli_terminal_sanitize_line(queue_items[i]);
 		(void)utf8_copy_ellipsized_display_width(
 			queue_clipped, sizeof(queue_clipped), queue_items[i],
 			(size_t)(terminal->columns - 6), 0);
@@ -639,8 +645,9 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 		2 + (int)queue_shown + (queue_total > queue_shown) : 0;
 	terminal->content_dirty = 0;
 	terminal->next_content_ms = now + CLI_TERMINAL_WORK_FRAME_MS;
-	terminal->next_frame_ms = now + (terminal->work_state == CLI_WORK_RUNNING ?
-		terminal_work_interval(terminal, now) : CLI_TERMINAL_WORK_FRAME_MS);
+	terminal->next_frame_ms = now + (terminal->work_state == CLI_TERMINAL_WORK_RUNNING
+						 ? cli_terminal_work_interval(terminal, now)
+						 : CLI_TERMINAL_WORK_FRAME_MS);
 }
 
 int cli_terminal_next_frame_ms(const struct cli_context *ctx)
@@ -652,12 +659,12 @@ int cli_terminal_next_frame_ms(const struct cli_context *ctx)
 		return -1;
 	terminal = ctx->terminal;
 	if (!terminal->transient ||
-	    (!terminal->live_active && terminal->work_state != CLI_WORK_RUNNING &&
+	    (!terminal->live_active && terminal->work_state != CLI_TERMINAL_WORK_RUNNING &&
 	     !cli_jobs_visible(ctx) && !terminal->job_rows))
 		return -1;
 	if (!terminal->live_visible)
 		return 0;
-	remaining = terminal->next_frame_ms - terminal_now_ms();
+	remaining = terminal->next_frame_ms - cli_terminal_now_ms();
 	if (remaining <= 0)
 		return 0;
 	return remaining > INT_MAX ? INT_MAX : (int)remaining;
@@ -672,12 +679,12 @@ void cli_terminal_composer_suspend(struct cli_context *ctx)
 	terminal = ctx->terminal;
 	if (!terminal->is_terminal)
 		return;
-	terminal_clear_current(terminal);
+	cli_terminal_clear_current(terminal);
 	while (ctx->input_status.padding_rows > 0) {
 		fprintf(terminal->output, "\033[1A\r\033[2K");
 		ctx->input_status.padding_rows--;
 	}
-	terminal_clear_frame(terminal);
+	cli_terminal_clear_frame(terminal);
 	terminal->live_visible = 0;
 	terminal->live_anchored = 0;
 	terminal->live_rows = 0;
@@ -720,7 +727,7 @@ void cli_terminal_history_begin(struct cli_context *ctx)
 	terminal = ctx->terminal;
 	if (!terminal->transient || !terminal->live_visible)
 		return;
-	terminal_clear_frame(terminal);
+	cli_terminal_clear_frame(terminal);
 	terminal->live_visible = 0;
 	terminal->live_anchored = 0;
 	terminal->live_rows = 0;
@@ -738,7 +745,7 @@ void cli_terminal_resize(struct cli_context *ctx)
 {
 	if (!ctx || !ctx->terminal)
 		return;
-	ctx->terminal->columns = terminal_columns(ctx->terminal);
+	ctx->terminal->columns = cli_terminal_output_columns(ctx->terminal);
 	ctx->terminal->next_frame_ms = 0;
 }
 

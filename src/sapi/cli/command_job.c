@@ -1,3 +1,6 @@
+#include "sapi/cli/command_job.h"
+#include "cJSON.h"
+#include "sapi/cli/ui/event_queue.h"
 #include "sapi/cli/internal.h"
 
 #define CLI_COMMAND_POLL_TIMEOUT_MS 100
@@ -20,7 +23,7 @@ static void *cli_command_job_run(void *opaque)
 	job->result = result;
 	job->done = 1;
 	pthread_mutex_unlock(&job->mutex);
-	cli_ui_notify(job->ctx);
+	cli_event_queue_notify(job->ctx);
 	return NULL;
 }
 
@@ -143,7 +146,7 @@ int cli_command_job_wait(struct cli_command_job *job)
 	ctx = job->ctx;
 	while (!cli_command_job_done(job)) {
 		struct pollfd fd;
-		int wake_fd = cli_ui_wake_fd(ctx);
+		int wake_fd = cli_event_queue_wake_fd(ctx);
 		int nfds = wake_fd >= 0 ? 1 : 0;
 		int rc;
 
@@ -159,9 +162,9 @@ int cli_command_job_wait(struct cli_command_job *job)
 				 strerror(errno));
 			warned = 1;
 		}
-		(void)cli_ui_drain(ctx);
+		(void)cli_event_queue_drain(ctx);
 	}
-	(void)cli_ui_drain(ctx);
+	(void)cli_event_queue_drain(ctx);
 	return cli_command_job_finish(job);
 }
 
@@ -269,7 +272,7 @@ int cli_command_job_drain(void *opaque, struct react_action *out, int timeout)
 	out->type = "prompt";
 	out->payload_json = job->delivered_prompt;
 	if (out->payload_json && job->ctx)
-		cli_ui_notify(job->ctx);
+		cli_event_queue_notify(job->ctx);
 	return out->payload_json ? 1 : 0;
 }
 

@@ -1,3 +1,5 @@
+#include "config/config.h"
+#include "cJSON.h"
 #include "sapi/cli/manage.h"
 #include "sapi/cli/skill_store.h"
 #include "util/data.h"

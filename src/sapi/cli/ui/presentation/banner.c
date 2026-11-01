@@ -1,3 +1,4 @@
+#include "sapi/cli/ui/presentation/banner.h"
 #include "sapi/cli/internal.h"
 #include "sapi/cli/ui/presentation/list.h"
 #include "util/base64.h"
@@ -5,13 +6,13 @@
 
 #include <sys/ioctl.h>
 
-#define WELCOME_ACCENT "\033[38;5;51m"
-#define WELCOME_TEXT "\033[38;5;252m"
-#define WELCOME_MUTED "\033[38;5;248m"
-#define WELCOME_PADDING 2
+#define CLI_BANNER_WELCOME_ACCENT "\033[38;5;51m"
+#define CLI_BANNER_WELCOME_TEXT "\033[38;5;252m"
+#define CLI_BANNER_WELCOME_MUTED "\033[38;5;248m"
+#define CLI_BANNER_WELCOME_PADDING 2
 
 /* Small, inline brand asset; unsupported terminals keep the text wordmark. */
-static int welcome_logo(struct cli_context *ctx)
+static int cli_banner_logo(struct cli_context *ctx)
 {
 	const char *term = getenv("TERM");
 	const char *program = getenv("TERM_PROGRAM");
@@ -63,7 +64,8 @@ static int welcome_logo(struct cli_context *ctx)
 	return rc == 0;
 }
 
-static void welcome_value(struct cli_context *ctx, const char *value, size_t width, int keep_tail)
+static void cli_banner_value(struct cli_context *ctx, const char *value, size_t width,
+			     int keep_tail)
 {
 	char clipped[BUFSIZ];
 	char *safe = utf8_terminal_sanitize_dup(value, strlen(value),
@@ -77,13 +79,13 @@ static void welcome_value(struct cli_context *ctx, const char *value, size_t wid
 	free(safe);
 }
 
-struct welcome_hint {
+struct cli_banner_welcome_hint {
 	const char *key;
 	const char *description;
 };
 
-static void welcome_hints(struct cli_context *ctx, const struct welcome_hint *hints, size_t count,
-			  size_t width, const char *color)
+static void cli_banner_hints(struct cli_context *ctx, const struct cli_banner_welcome_hint *hints,
+			     size_t count, size_t width, const char *color)
 {
 	size_t used = 0;
 
@@ -97,34 +99,34 @@ static void welcome_hints(struct cli_context *ctx, const struct welcome_hint *hi
 			used = 0;
 		}
 		if (used) {
-			printf(ctx, WELCOME_MUTED " · " ANSI_RESET);
+			printf(ctx, CLI_BANNER_WELCOME_MUTED " · " ANSI_RESET);
 			used += 3;
 		}
 		printf(ctx, "%s", color);
-		welcome_value(ctx, hints[i].key, width - used, 0);
-		printf(ctx, ANSI_RESET WELCOME_MUTED " ");
+		cli_banner_value(ctx, hints[i].key, width - used, 0);
+		printf(ctx, ANSI_RESET CLI_BANNER_WELCOME_MUTED " ");
 		size_t key_width = utf8_display_width(hints[i].key) + 1;
 
 		if (key_width < width - used)
-			welcome_value(ctx, hints[i].description, width - used - key_width, 0);
+			cli_banner_value(ctx, hints[i].description, width - used - key_width, 0);
 		printf(ctx, ANSI_RESET);
 		used += length;
 	}
 	putchar(ctx, '\n');
 }
 
-void cli_print_welcome(struct cli_context *ctx, const char *model, const char *directory)
+void cli_banner_print(struct cli_context *ctx, const char *model, const char *directory)
 {
-	static const struct welcome_hint commands[] = {
-		{ "/help", "commands" },
-		{ "/switch", "sessions" },
-		{ "./image.png", "attach" },
+	static const struct cli_banner_welcome_hint commands[] = {
+		{"/help", "commands"},
+		{"/switch", "sessions"},
+		{"./image.png", "attach"},
 	};
-	static const struct welcome_hint keys[] = {
-		{ "Enter", "send/adjust" },
-		{ "Ctrl+J", "newline" },
-		{ "Esc", "cancel" },
-		{ "Ctrl+Cmd+V", "image" },
+	static const struct cli_banner_welcome_hint keys[] = {
+		{"Enter", "send/adjust"},
+		{"Ctrl+J", "newline"},
+		{"Esc", "cancel"},
+		{"Ctrl+Cmd+V", "image"},
 	};
 	struct winsize size = {0};
 	int columns = cli_list_columns();
@@ -134,16 +136,17 @@ void cli_print_welcome(struct cli_context *ctx, const char *model, const char *d
 
 	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col)
 		columns = size.ws_col;
-	width = columns > 2 * WELCOME_PADDING ?
-		(size_t)(columns - 2 * WELCOME_PADDING) : 1;
+	width = columns > 2 * CLI_BANNER_WELCOME_PADDING
+			? (size_t)(columns - 2 * CLI_BANNER_WELCOME_PADDING)
+			: 1;
 	model = model && model[0] ? model : "model";
 	directory = directory && directory[0] ? directory : ".";
 	printf(ctx, "\n  ");
-	if (columns >= 30 && welcome_logo(ctx))
+	if (columns >= 30 && cli_banner_logo(ctx))
 		putchar(ctx, ' ');
 	printf(ctx,
-	       WELCOME_TEXT ANSI_BOLD "morph" ANSI_RESET WELCOME_MUTED "  v%s" ANSI_RESET
-				      "\n  " WELCOME_TEXT,
+	       CLI_BANNER_WELCOME_TEXT ANSI_BOLD "morph" ANSI_RESET CLI_BANNER_WELCOME_MUTED
+						 "  v%s" ANSI_RESET "\n  " CLI_BANNER_WELCOME_TEXT,
 	       MORPH_VERSION);
 	model_width = utf8_display_width(model);
 	path_width = utf8_display_width(directory);
@@ -152,13 +155,16 @@ void cli_print_welcome(struct cli_context *ctx, const char *model, const char *d
 		if (model_width > 24)
 			model_width = 24;
 	}
-	welcome_value(ctx, model, model_width, 0);
+	cli_banner_value(ctx, model, model_width, 0);
 	if (width > model_width + 3) {
-		printf(ctx, ANSI_RESET WELCOME_MUTED " · " ANSI_RESET WELCOME_TEXT);
-		welcome_value(ctx, directory, width - model_width - 3, 1);
+		printf(ctx, ANSI_RESET CLI_BANNER_WELCOME_MUTED
+		       " · " ANSI_RESET CLI_BANNER_WELCOME_TEXT);
+		cli_banner_value(ctx, directory, width - model_width - 3, 1);
 	}
 	printf(ctx, ANSI_RESET "\n\n");
-	welcome_hints(ctx, commands, sizeof(commands) / sizeof(commands[0]), width, WELCOME_ACCENT);
-	welcome_hints(ctx, keys, sizeof(keys) / sizeof(keys[0]), width, WELCOME_TEXT ANSI_BOLD);
+	cli_banner_hints(ctx, commands, sizeof(commands) / sizeof(commands[0]), width,
+			 CLI_BANNER_WELCOME_ACCENT);
+	cli_banner_hints(ctx, keys, sizeof(keys) / sizeof(keys[0]), width,
+			 CLI_BANNER_WELCOME_TEXT ANSI_BOLD);
 	putchar(ctx, '\n');
 }

@@ -1,11 +1,11 @@
 #include "sapi/cli/setup/mcp.h"
+#include "cJSON.h"
 #include "sapi/cli/setup/config.h"
 #include "sapi/cli/setup/role.h"
 #include "sapi/cli/setup/ui.h"
 #include "util/buf.h"
 #include "util/data.h"
 #include "util/error.h"
-#include "cJSON.h"
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>

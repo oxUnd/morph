@@ -41,21 +41,30 @@ add_library(morph-cli STATIC
 	ui/input/cancel.c
 	ui/input/clipboard.c
 	ui/input/composer.c
+	ui/input/keymap.c
+	ui/input/reader.c
+	ui/input/readline.c
 
 	# CLI presentation and media
 	ui/presentation/banner.c
 	ui/presentation/image_loader.c
 	ui/presentation/list.c
-	ui/presentation/output.c
+	ui/presentation/markdown.c
+	ui/presentation/media.c
 	ui/presentation/presenter.c
 	ui/presentation/shell_style.c
 	ui/presentation/terminal.c
 	ui/presentation/transcript.c
 
+	# Runtime interaction adapters
+	ui/interactions/approval.c
+	ui/interactions/question.c
+
 	# Interactive pages
 	ui/screens/history.c
 	ui/screens/hooks.c
 	ui/screens/jobs.c
+	ui/screens/resume.c
 
 	# Setup wizard and configuration
 	setup/config.c

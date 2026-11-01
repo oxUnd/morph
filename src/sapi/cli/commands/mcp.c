@@ -1,3 +1,7 @@
+#include "mcp/mcp.h"
+#include "config/config.h"
+#include "sapi/cli/internal.h"
+#include "sapi/cli/core.h"
 #include "sapi/cli/commands/registry.h"
 
 static int mcp_event_tree_visible(const struct cli_context *ctx)
@@ -183,7 +187,6 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 		  sub);
 	return -EINVAL;
 }
-
 
 static const struct cli_command mcp_commands[] = {
 	{ "/mcp",     cmd_mcp,     "List or manage MCP servers",        "/mcp list" },

@@ -1,3 +1,14 @@
+#include "sapi/cli/core.h"
+#include "sapi/cli/command_job.h"
+#include "agent/turn.h"
+#include "sapi/cli/ui/input/callbacks.h"
+#include "sapi/cli/ui/input/cancel.h"
+#include "sapi/cli/commands/media.h"
+#include "sapi/cli/ui/presentation/presenter.h"
+#include "sapi/cli/scheduler.h"
+#include "sapi/cli/ui/recap.h"
+#include "sapi/cli/ui/presentation/terminal.h"
+#include "sapi/cli/ui/event_queue.h"
 #include "sapi/cli/internal.h"
 #include "sapi/cli/commands/registry.h"
 #include "runtime/runtime.h"
@@ -346,7 +357,7 @@ int cli_print_untrusted_text(struct cli_context *ctx, const char *text,
 	return 0;
 }
 
-void print_padded(struct cli_context *ctx, const char *s, int target_width)
+void cli_print_padded(struct cli_context *ctx, const char *s, int target_width)
 {
 	char *safe;
 	size_t width;
@@ -514,9 +525,9 @@ void cli_shutdown(struct cli_context *ctx)
 	cli_callbacks_cleanup(ctx);
 	runtime_close(ctx->runtime);
 	ctx->runtime = NULL;
-	(void)cli_ui_drain(ctx);
+	(void)cli_event_queue_drain(ctx);
 	cli_presentation_cleanup(ctx);
-	cli_ui_cleanup(ctx);
+	cli_event_queue_cleanup(ctx);
 	cli_terminal_cleanup(ctx);
 	cli_set_structured_output(ctx, 0);
 	log_info(ctx ? ctx->logger : NULL, "cli shutdown complete");

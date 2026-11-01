@@ -1,3 +1,5 @@
+#include "cJSON.h"
+#include "sapi/cli/internal.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/share.h"
 

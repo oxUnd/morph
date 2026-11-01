@@ -1,3 +1,8 @@
+#include "sapi/cli/command_job.h"
+#include "cJSON.h"
+#include "sapi/cli/ui/input/cancel.h"
+#include "sapi/cli/core.h"
+#include "sapi/cli/ui/event_queue.h"
 #include "sapi/cli/internal.h"
 
 static void emit_trace_json(struct cli_context *ctx, double elapsed)
@@ -106,7 +111,7 @@ void cli_run_once(struct cli_context *ctx, const char *prompt)
 	}
 	if (job_rc == 0)
 		job_rc = cli_command_job_wait(&job);
-	(void)cli_ui_drain(ctx);
+	(void)cli_event_queue_drain(ctx);
 	cli_turn_finish(ctx, job_rc);
 	if (job_initialized)
 		cli_command_job_cleanup(&job);

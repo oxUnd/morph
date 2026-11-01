@@ -1,3 +1,7 @@
+#include "agent/plan.h"
+#include "cJSON.h"
+#include "sapi/cli/internal.h"
+#include "sapi/cli/core.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/interaction.h"
 #include "sapi/cli/ui/presentation/list.h"
@@ -93,7 +97,7 @@ static int sync_cmd_conflicts(struct cli_context *ctx)
 	CMD_HEADER(ctx, "sync conflicts (%d)", count);
 	if (count == 0) {
 		printf(ctx, ANSI_DIM);
-		cli_tree_prefix(ctx, NULL, 0, 1, 0);
+		cli_list_tree_prefix(ctx, NULL, 0, 1, 0);
 		printf(ctx, "none" ANSI_RESET "\n");
 		runtime_sync_conflicts_free(items);
 		return 0;
@@ -158,7 +162,7 @@ static int sync_cmd_backups(struct cli_context *ctx, const char *path)
 	CMD_HEADER(ctx, "database backups (%d)", count);
 	if (count == 0) {
 		printf(ctx, ANSI_DIM);
-		cli_tree_prefix(ctx, NULL, 0, 1, 0);
+		cli_list_tree_prefix(ctx, NULL, 0, 1, 0);
 		printf(ctx, "none" ANSI_RESET "\n");
 		morph_sync_backups_free(items);
 		return 0;

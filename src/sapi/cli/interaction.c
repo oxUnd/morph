@@ -1,6 +1,8 @@
-#include "sapi/cli/ui/input/callbacks.h"
-#include "sapi/cli/internal.h"
 #include "sapi/cli/interaction.h"
+#include "sapi/cli/ui/input/reader.h"
+#include "cJSON.h"
+#include "sapi/cli/ui/event_queue.h"
+#include "sapi/cli/internal.h"
 #include "util/child_io.h"
 #include "util/cancel.h"
 
@@ -283,7 +285,7 @@ int cli_interaction_request(struct cli_context *ctx, const char *kind,
 		.validate_user_data = validate_user_data,
 		.response_data = response_data,
 	};
-	return cli_ui_call_owner(ctx, interaction_request_on_owner, &call);
+	return cli_event_queue_call_owner(ctx, interaction_request_on_owner, &call);
 }
 
 static int interaction_validate_decision(const cJSON *response_data,

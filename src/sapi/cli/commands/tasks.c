@@ -1,3 +1,8 @@
+#include "db/scheduled_task.h"
+#include "cJSON.h"
+#include "sapi/cli/internal.h"
+#include "sapi/cli/ui/presentation/markdown.h"
+#include "sapi/cli/scheduler.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/ui/presentation/list.h"
 
@@ -261,7 +266,7 @@ static int cmd_tasks_list(struct cli_context *ctx, int argc, char **argv)
 	CMD_HEADER(ctx, "scheduled tasks (%d)", count);
 	if (count == 0) {
 		printf(ctx, ANSI_DIM);
-		cli_tree_prefix(ctx, NULL, 0, 1, 0);
+		cli_list_tree_prefix(ctx, NULL, 0, 1, 0);
 		printf(ctx, "no tasks" ANSI_RESET "\n");
 	} else {
 		rc = print_task_list_tree(ctx, tasks, count);
@@ -797,7 +802,6 @@ static int cmd_inbox(struct cli_context *ctx, int argc, char **argv)
 	CMD_ERROR(ctx, "usage: /inbox [list [limit]|read <id>]");
 	return -EINVAL;
 }
-
 
 static const struct cli_command task_commands[] = {
 	{ "/tasks",   cmd_tasks,   "Manage scheduled tasks",            "/tasks [list|show|add|every|update|cancel|run]" },

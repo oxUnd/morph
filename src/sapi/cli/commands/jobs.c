@@ -1,3 +1,6 @@
+#include "cJSON.h"
+#include "sapi/cli/internal.h"
+#include "sapi/cli/core.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/ui/screens/jobs.h"
 

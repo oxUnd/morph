@@ -1,3 +1,13 @@
+#include "credits.h"
+#include "config/config.h"
+#include "sapi/cli/ui/interactions/question.h"
+#include "sapi/cli/ui/runtime_events.h"
+#include "sapi/cli/ui/presentation/presenter.h"
+#include "sapi/cli/ui/input/cancel.h"
+#include "sapi/cli/scheduler.h"
+#include "sapi/cli/ui/presentation/terminal.h"
+#include "sapi/cli/ui/event_queue.h"
+#include "sapi/cli/ui/interactions/approval.h"
 #include "sapi/cli/internal.h"
 #include "sapi/cli/commands/registry.h"
 
@@ -53,8 +63,8 @@ static void cli_usage_observer(const struct model_usage *usage,
 		};
 
 		if (ctx->ui)
-			(void)cli_ui_call_owner(
-				ctx, cli_credit_warning_on_owner, &warning);
+			(void)cli_event_queue_call_owner(ctx, cli_credit_warning_on_owner,
+							 &warning);
 		else
 			(void)cli_credit_warning_on_owner(&warning);
 	}
@@ -71,7 +81,7 @@ static int cli_initialize(struct cli_context *ctx, const char *config_path, cons
 		return -EINVAL;
 	ctx->presentation_mode = mode;
 	cli_set_structured_output(ctx, mode == CLI_PRESENT_EVENTS_JSON);
-	ctx->event_cb = cli_event_callback;
+	ctx->event_cb = cli_runtime_events_callback;
 	ctx->event_user_data = ctx;
 	rc = cli_terminal_init(ctx, stdout, STDOUT_FILENO);
 	if (rc != 0)
@@ -81,7 +91,7 @@ static int cli_initialize(struct cli_context *ctx, const char *config_path, cons
 		cli_terminal_cleanup(ctx);
 		return rc;
 	}
-	rc = cli_ui_init(ctx);
+	rc = cli_event_queue_init(ctx);
 	if (rc != 0) {
 		cli_presentation_cleanup(ctx);
 		cli_terminal_cleanup(ctx);
@@ -99,11 +109,11 @@ static int cli_initialize(struct cli_context *ctx, const char *config_path, cons
 	options.event_user_data = ctx;
 	options.usage_observer = cli_usage_observer;
 	options.usage_observer_user_data = ctx;
-	options.hitl_cb = hitl_approval_callback;
+	options.hitl_cb = cli_approval_tool_callback;
 	options.hitl_user_data = ctx;
-	options.ask_user_cb = cli_ask_user_callback;
+	options.ask_user_cb = cli_question_callback;
 	options.ask_user_user_data = ctx;
-	options.operation_approval_cb = operation_approval_callback;
+	options.operation_approval_cb = cli_approval_operation_callback;
 	options.operation_approval_user_data = ctx;
 	options.img_annotate_pause_cb = cli_img_annotate_pause;
 	options.img_annotate_resume_cb = cli_img_annotate_resume;
@@ -121,7 +131,7 @@ static int cli_initialize(struct cli_context *ctx, const char *config_path, cons
 	options.create_new_session = session_name && session_name[0] ? 0 : 1;
 	rc = runtime_open(&options, &ctx->runtime);
 	if (rc != 0) {
-		cli_ui_cleanup(ctx);
+		cli_event_queue_cleanup(ctx);
 		cli_presentation_cleanup(ctx);
 		cli_terminal_cleanup(ctx);
 		return rc;

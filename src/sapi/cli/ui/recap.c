@@ -1,5 +1,9 @@
-#include "sapi/cli/internal.h"
 #include "sapi/cli/ui/recap.h"
+#include "config/config.h"
+#include "cJSON.h"
+#include "sapi/cli/ui/presentation/terminal.h"
+#include "sapi/cli/ui/event_queue.h"
+#include "sapi/cli/internal.h"
 
 #include <poll.h>
 #include <math.h>
@@ -50,7 +54,7 @@ void cli_recap_turn_finished(struct cli_context *ctx, int64_t now)
 	ctx->recap.next_poll = 0;
 }
 
-static void recap_seen(struct cli_recap_state *state, int save)
+static void cli_recap_seen(struct cli_recap_state *state, int save)
 {
 	size_t oldest = 0;
 
@@ -75,7 +79,7 @@ static void recap_seen(struct cli_recap_state *state, int save)
 	}
 }
 
-static void recap_failure(struct cli_context *ctx, int rc, int automatic)
+static void cli_recap_failure(struct cli_context *ctx, int rc, int automatic)
 {
 	if (automatic) {
 		if (!ctx->recap.retried) {
@@ -108,7 +112,7 @@ int cli_recap_start(struct cli_context *ctx, int automatic)
 	else
 		rc = runtime_recap_request(ctx->runtime, automatic, &ctx->recap.request);
 	if (rc != 0) {
-		recap_failure(ctx, rc, automatic);
+		cli_recap_failure(ctx, rc, automatic);
 		return rc;
 	}
 	ctx->recap.pending = 1;
@@ -122,13 +126,13 @@ int cli_recap_start(struct cli_context *ctx, int automatic)
 	}
 	/* A metadata request advances the request revision, not the conversation. */
 	ctx->recap.progress = ctx->recap.request;
-	recap_seen(&ctx->recap, 0);
+	cli_recap_seen(&ctx->recap, 0);
 	/* The interactive loop stays responsive. Other fronts wait only on explicit /recap. */
 	while (!automatic && !ctx->input_status.enabled && ctx->ui && ctx->recap.pending) {
-		struct pollfd wake = {cli_ui_wake_fd(ctx), POLLIN, 0};
+		struct pollfd wake = {cli_event_queue_wake_fd(ctx), POLLIN, 0};
 
 		(void)poll(&wake, 1, 100);
-		(void)cli_ui_drain(ctx);
+		(void)cli_event_queue_drain(ctx);
 	}
 	return ctx->recap.pending ? 0 : ctx->recap.result_code;
 }
@@ -159,7 +163,7 @@ void cli_recap_tick(struct cli_context *ctx, int64_t now)
 	if (progress.session_id != state->progress.session_id) {
 		state->has_recap = 0;
 		state->progress = progress;
-		recap_seen(state, 0);
+		cli_recap_seen(state, 0);
 		state->last_finished = now;
 		state->retry_at = 0;
 		state->retried = 0;
@@ -175,7 +179,7 @@ void cli_recap_tick(struct cli_context *ctx, int64_t now)
 		(void)cli_recap_start(ctx, 1);
 }
 
-static void recap_print_text(struct cli_context *ctx, const char *label, const char *text)
+static void cli_recap_print_text(struct cli_context *ctx, const char *label, const char *text)
 {
 	char *safe = utf8_terminal_sanitize_dup(text, strlen(text),
 		UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
@@ -250,22 +254,22 @@ void cli_recap_event(struct cli_context *ctx, const struct morph_event *event)
 	if (rc < 0 || !summary || !summary[0]) {
 		ctx->recap.result_code = rc < 0 ? rc : MORPH_ERR_PROTOCOL;
 		if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON)
-			recap_failure(ctx, ctx->recap.result_code, automatic);
+			cli_recap_failure(ctx, ctx->recap.result_code, automatic);
 		return;
 	}
 	ctx->recap.last_recapped_turns = progress.completed_turns;
 	ctx->recap.progress = progress;
 	ctx->recap.has_recap = 1;
-	recap_seen(&ctx->recap, 1);
+	cli_recap_seen(&ctx->recap, 1);
 	ctx->recap.retry_at = 0;
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 		return;
 	cli_terminal_history_begin(ctx);
 	if (cli_color_enabled(ctx))
 		printf(ctx, ANSI_DIM "\033[3m");
-	recap_print_text(ctx, "  ↳ Recap: ", summary);
+	cli_recap_print_text(ctx, "  ↳ Recap: ", summary);
 	if (next && next[0])
-		recap_print_text(ctx, "    Next: ", next);
+		cli_recap_print_text(ctx, "    Next: ", next);
 	if (cli_color_enabled(ctx))
 		printf(ctx, ANSI_RESET);
 	printf(ctx, "\n");

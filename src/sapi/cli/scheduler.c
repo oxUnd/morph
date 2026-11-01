@@ -1,3 +1,7 @@
+#include "sapi/cli/scheduler.h"
+#include "db/scheduled_task.h"
+#include "agent/turn.h"
+#include "sapi/cli/ui/event_queue.h"
 #include "sapi/cli/internal.h"
 
 int cli_sync_start(struct cli_context *ctx)
@@ -64,7 +68,7 @@ static void cli_task_notification(const struct notification *notification,
 	struct cli_context *ctx = user_data;
 	if (!notification)
 		return;
-	if (ctx && cli_ui_post_notification(ctx, notification) != 0)
+	if (ctx && cli_event_queue_post_notification(ctx, notification) != 0)
 		log_warn(ctx ? ctx->logger : NULL, "failed to queue task notification");
 }
 

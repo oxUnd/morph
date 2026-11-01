@@ -1,3 +1,6 @@
+#include "agent/memory.h"
+#include "sapi/cli/internal.h"
+#include "sapi/cli/core.h"
 #include "sapi/cli/commands/registry.h"
 
 static const char *memory_scope_display(enum memory_clear_scope scope)
@@ -146,7 +149,6 @@ static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 	CMD_ERROR(ctx, "usage: /memory [show|history|explain|set|unset|clear|jobs]");
 	return -EINVAL;
 }
-
 
 static const struct cli_command memory_commands[] = {
 	{ "/memory",  cmd_memory,  "Show or clear long-term memory",    "/memory [show|history|explain|set|unset|clear|jobs]" },

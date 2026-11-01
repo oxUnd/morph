@@ -1,6 +1,10 @@
 #include <gtest/gtest.h>
 
 extern "C" {
+#include "sapi/cli/ui/interactions/question.h"
+#include "sapi/cli/ui/runtime_events.h"
+#include "sapi/cli/ui/presentation/presenter.h"
+#include "sapi/cli/ui/interactions/approval.h"
 #include "sapi/cli/cli.h"
 #include "sapi/cli/interaction.h"
 #include "sapi/cli/command_job.h"
@@ -11,24 +15,6 @@ extern "C" {
 #include "util/cancel.h"
 #include "event/event.h"
 
-int cli_event_callback(const struct morph_event *event, void *user_data);
-int cli_presentation_init(struct cli_context *ctx);
-void cli_presentation_cleanup(struct cli_context *ctx);
-enum hitl_verdict hitl_approval_callback(const char *tool_name,
-					 const char *tool_args,
-					 void *user_data);
-int cli_ask_user_callback(const char *question,
-			  const char *const *choices,
-			  int choices_count,
-			  const char *selection_mode,
-			  int min_choices,
-			  int max_choices,
-			  const struct ask_user_options *options,
-			  char ***answers,
-			  int *answers_count,
-			  void *user_data);
-enum tool_operation_verdict operation_approval_callback(
-	const struct tool_operation *op, void *user_data);
 }
 
 #include <poll.h>
@@ -52,12 +38,12 @@ protected:
 		ctx.turn_active = 1;
 		ASSERT_EQ(cli_terminal_init(&ctx, stdout, STDOUT_FILENO), 0);
 		ASSERT_EQ(cli_presentation_init(&ctx), 0);
-		ASSERT_EQ(cli_ui_init(&ctx), 0);
+		ASSERT_EQ(cli_event_queue_init(&ctx), 0);
 	}
 
 	void TearDown() override
 	{
-		cli_ui_cleanup(&ctx);
+		cli_event_queue_cleanup(&ctx);
 		cli_presentation_cleanup(&ctx);
 		cli_terminal_cleanup(&ctx);
 		cli_set_color_enabled(&ctx, 1);
@@ -76,7 +62,7 @@ static int cli_owner_call(void *opaque)
 	struct cli_context *ctx = data->ctx;
 	(void)ctx;
 
-	data->ran_on_owner = cli_ui_is_owner(data->ctx);
+	data->ran_on_owner = cli_event_queue_is_owner(data->ctx);
 	return 73;
 }
 
@@ -84,7 +70,7 @@ static int cli_command_with_owner_call(struct cli_context *ctx,
 			       const char *input, void *opaque)
 {
 	(void)input;
-	return cli_ui_call_owner(ctx, cli_owner_call, opaque);
+	return cli_event_queue_call_owner(ctx, cli_owner_call, opaque);
 }
 
 TEST_F(CliUiTest, CrossThreadEventWaitsForOwnerDrain)
@@ -103,16 +89,14 @@ TEST_F(CliUiTest, CrossThreadEventWaitsForOwnerDrain)
 	int callback_rc = -1;
 
 	testing::internal::CaptureStdout();
-	std::thread worker([&] {
-		callback_rc = cli_event_callback(&event, &ctx);
-	});
+	std::thread worker([&] { callback_rc = cli_runtime_events_callback(&event, &ctx); });
 	worker.join();
 	EXPECT_EQ(callback_rc, 0);
 	EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
 	cJSON_Delete(data);
 
 	testing::internal::CaptureStdout();
-	ASSERT_EQ(cli_ui_drain(&ctx), 0);
+	ASSERT_EQ(cli_event_queue_drain(&ctx), 0);
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_NE(output.find("queued error"), std::string::npos);
 }
@@ -126,18 +110,18 @@ TEST_F(CliUiTest, TaskMutationsAvoidDuplicateToolOutput)
 	for (const char *name : {"task.created", "task.updated", "task.cancelled"}) {
 		event.name = name;
 		testing::internal::CaptureStdout();
-		EXPECT_EQ(cli_event_callback(&event, &ctx), 0);
+		EXPECT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
 		EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
 	}
 	event.name = "task.failed";
 	testing::internal::CaptureStdout();
-	EXPECT_EQ(cli_event_callback(&event, &ctx), 0);
+	EXPECT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
 	EXPECT_NE(testing::internal::GetCapturedStdout().find("task changed"),
 		  std::string::npos);
 	ctx.turn_active = 0;
 	event.name = "task.created";
 	testing::internal::CaptureStdout();
-	EXPECT_EQ(cli_event_callback(&event, &ctx), 0);
+	EXPECT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
 	EXPECT_NE(testing::internal::GetCapturedStdout().find("task changed"),
 		  std::string::npos);
 }
@@ -146,18 +130,21 @@ TEST_F(CliUiTest, CancelledOwnerPromptConsumesItsInterruptBeforeComposerRestore)
 {
 	int result = 0;
 	std::thread worker([&] {
-		result = cli_ui_call_owner(&ctx, +[](void *data) {
-			auto *context = static_cast<struct cli_context *>(data);
+		result = cli_event_queue_call_owner(
+			&ctx,
+			+[](void *data) {
+				auto *context = static_cast<struct cli_context *>(data);
 
-			morph_signal_flag_set(&context->interrupted, 1);
-			return -ECANCELED;
-		}, &ctx);
+				morph_signal_flag_set(&context->interrupted, 1);
+				return -ECANCELED;
+			},
+			&ctx);
 	});
 	struct pollfd ready{};
-	ready.fd = cli_ui_wake_fd(&ctx);
+	ready.fd = cli_event_queue_wake_fd(&ctx);
 	ready.events = POLLIN;
 	EXPECT_EQ(poll(&ready, 1, 1000), 1);
-	EXPECT_EQ(cli_ui_drain_batch(&ctx), 0);
+	EXPECT_EQ(cli_event_queue_drain_batch(&ctx), 0);
 	worker.join();
 	EXPECT_EQ(result, -ECANCELED);
 	EXPECT_EQ(morph_signal_flag_get(&ctx.interrupted), 0);
@@ -170,17 +157,17 @@ TEST_F(CliUiTest, BoundedDrainYieldsAndKeepsQueuedEventsOrderedAndSignaled)
 	event.name = "session.title";
 	event.phase = "begin";
 	for (int i = 0; i < 130; i++)
-		ASSERT_EQ(cli_ui_post_morph_event(&ctx, &event), 0);
+		ASSERT_EQ(cli_event_queue_post_morph_event(&ctx, &event), 0);
 	event.phase = "end";
-	ASSERT_EQ(cli_ui_post_morph_event(&ctx, &event), 0);
-	ASSERT_EQ(cli_ui_drain_batch(&ctx), 0);
+	ASSERT_EQ(cli_event_queue_post_morph_event(&ctx, &event), 0);
+	ASSERT_EQ(cli_event_queue_drain_batch(&ctx), 0);
 	EXPECT_GT(ctx.input_status.session_titles_pending, 0);
 	EXPECT_LT(ctx.input_status.session_titles_pending, 130);
 	struct pollfd ready{};
-	ready.fd = cli_ui_wake_fd(&ctx);
+	ready.fd = cli_event_queue_wake_fd(&ctx);
 	ready.events = POLLIN;
 	EXPECT_EQ(poll(&ready, 1, 0), 1);
-	ASSERT_EQ(cli_ui_drain(&ctx), 0);
+	ASSERT_EQ(cli_event_queue_drain(&ctx), 0);
 	EXPECT_EQ(ctx.input_status.session_titles_pending, 129);
 	EXPECT_EQ(poll(&ready, 1, 0), 0);
 }
@@ -198,19 +185,19 @@ TEST_F(CliUiTest, TaskLifecycleWithNotificationDoesNotRepeatResult)
 		"task.notification", "task.rescheduled", "task.failed"}) {
 		event.name = name;
 		testing::internal::CaptureStdout();
-		EXPECT_EQ(cli_event_callback(&event, &ctx), 0);
+		EXPECT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
 		EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
 	}
 	cJSON_DeleteItemFromObject(event.data, "notification_id");
 	event.name = "task.failed";
 	testing::internal::CaptureStdout();
-	EXPECT_EQ(cli_event_callback(&event, &ctx), 0);
+	EXPECT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
 	EXPECT_NE(testing::internal::GetCapturedStdout().find("task lifecycle"),
 		  std::string::npos);
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
 	event.name = "task.notification";
 	testing::internal::CaptureStdout();
-	EXPECT_EQ(cli_event_callback(&event, &ctx), 0);
+	EXPECT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
 	EXPECT_NE(testing::internal::GetCapturedStdout().find("task.notification"),
 		  std::string::npos);
 	cJSON_Delete(event.data);
@@ -223,9 +210,9 @@ TEST_F(CliUiTest, NotificationSeverityUsesDistinctMarkers)
 	std::snprintf(notification.title, sizeof(notification.title), "network check");
 	for (const char *level : {"error", "warning"}) {
 		std::snprintf(notification.level, sizeof(notification.level), "%s", level);
-		ASSERT_EQ(cli_ui_post_notification(&ctx, &notification), 0);
+		ASSERT_EQ(cli_event_queue_post_notification(&ctx, &notification), 0);
 		testing::internal::CaptureStdout();
-		ASSERT_EQ(cli_ui_drain(&ctx), 0);
+		ASSERT_EQ(cli_event_queue_drain(&ctx), 0);
 		std::string output = testing::internal::GetCapturedStdout();
 		EXPECT_EQ(output.find("completed"), std::string::npos);
 		EXPECT_NE(output.find(std::strcmp(level, "error") == 0 ? "⊗" : "◇"),
@@ -246,20 +233,19 @@ TEST_F(CliUiTest, WakePipeSignalsQueuedWorkAndDrains)
 		"| Item | Value |\n|---|---|\n| DNS | 10.1.0.2 |\n");
 	int callback_rc = -1;
 
-	std::thread worker([&] {
-		callback_rc = cli_ui_post_notification(&ctx, &notification);
-	});
+	std::thread worker(
+		[&] { callback_rc = cli_event_queue_post_notification(&ctx, &notification); });
 	worker.join();
 	ASSERT_EQ(callback_rc, 0);
 
 	struct pollfd fd{};
-	fd.fd = cli_ui_wake_fd(&ctx);
+	fd.fd = cli_event_queue_wake_fd(&ctx);
 	fd.events = POLLIN;
 	ASSERT_EQ(poll(&fd, 1, 0), 1);
 	EXPECT_NE(fd.revents & POLLIN, 0);
 
 	testing::internal::CaptureStdout();
-	ASSERT_EQ(cli_ui_drain(&ctx), 0);
+	ASSERT_EQ(cli_event_queue_drain(&ctx), 0);
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_NE(output.find("nightly task"), std::string::npos);
 	EXPECT_NE(output.find("finished safely"), std::string::npos);
@@ -286,9 +272,9 @@ TEST_F(CliUiTest, OwnerThreadEventsRemainImmediate)
 		"turn-ui",
 	};
 
-	ASSERT_TRUE(cli_ui_is_owner(&ctx));
+	ASSERT_TRUE(cli_event_queue_is_owner(&ctx));
 	testing::internal::CaptureStdout();
-	ASSERT_EQ(cli_event_callback(&event, &ctx), 0);
+	ASSERT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_NE(output.find("immediate error"), std::string::npos);
 }
@@ -313,14 +299,12 @@ TEST_F(CliUiTest, QueuedEventsRenderBeforeFollowingOwnerEvent)
 	};
 	int callback_rc = -1;
 
-	std::thread worker([&] {
-		callback_rc = cli_event_callback(&queued_event, &ctx);
-	});
+	std::thread worker([&] { callback_rc = cli_runtime_events_callback(&queued_event, &ctx); });
 	worker.join();
 	ASSERT_EQ(callback_rc, 0);
 
 	testing::internal::CaptureStdout();
-	ASSERT_EQ(cli_event_callback(&owner_event, &ctx), 0);
+	ASSERT_EQ(cli_runtime_events_callback(&owner_event, &ctx), 0);
 	std::string output = testing::internal::GetCapturedStdout();
 	size_t queued_offset = output.find("first queued error");
 	size_t owner_offset = output.find("second owner error");
@@ -345,7 +329,7 @@ TEST_F(CliUiTest, ConcurrentProducersPreserveEveryNotification)
 				std::snprintf(notification.title,
 					      sizeof(notification.title),
 					      "queued-item-%d-%d", worker, index);
-				int rc = cli_ui_post_notification(&ctx, &notification);
+				int rc = cli_event_queue_post_notification(&ctx, &notification);
 				if (rc != 0)
 					results[worker] = rc;
 			}
@@ -357,7 +341,7 @@ TEST_F(CliUiTest, ConcurrentProducersPreserveEveryNotification)
 		ASSERT_EQ(rc, 0);
 
 	testing::internal::CaptureStdout();
-	ASSERT_EQ(cli_ui_drain(&ctx), 0);
+	ASSERT_EQ(cli_event_queue_drain(&ctx), 0);
 	std::string output = testing::internal::GetCapturedStdout();
 	int found = 0;
 	size_t offset = 0;
@@ -372,9 +356,7 @@ TEST_F(CliUiTest, ConcurrentProducersPreserveEveryNotification)
 TEST_F(CliUiTest, NonOwnerCannotDrainPresentationState)
 {
 	int drain_rc = 0;
-	std::thread worker([&] {
-		drain_rc = cli_ui_drain(&ctx);
-	});
+	std::thread worker([&] { drain_rc = cli_event_queue_drain(&ctx); });
 	worker.join();
 	EXPECT_EQ(drain_rc, -EPERM);
 }
@@ -383,15 +365,14 @@ TEST_F(CliUiTest, SynchronousOwnerCallRunsOnUiThread)
 {
 	cli_owner_call_data data{&ctx, 0};
 	int call_rc = 0;
-	std::thread worker([&] {
-		call_rc = cli_ui_call_owner(&ctx, cli_owner_call, &data);
-	});
+	std::thread worker(
+		[&] { call_rc = cli_event_queue_call_owner(&ctx, cli_owner_call, &data); });
 
 	struct pollfd fd{};
-	fd.fd = cli_ui_wake_fd(&ctx);
+	fd.fd = cli_event_queue_wake_fd(&ctx);
 	fd.events = POLLIN;
 	ASSERT_EQ(poll(&fd, 1, 1000), 1);
-	ASSERT_EQ(cli_ui_drain(&ctx), 0);
+	ASSERT_EQ(cli_event_queue_drain(&ctx), 0);
 	worker.join();
 	EXPECT_EQ(call_rc, 73);
 	EXPECT_EQ(data.ran_on_owner, 1);
@@ -419,25 +400,25 @@ TEST_F(CliUiTest, ShutdownCancelsQueuedAndFutureOwnerCallsWithoutDroppingOutput)
 	ASSERT_EQ(cli_command_job_start_fn(&job, &ctx, "test", cli_command_with_owner_call, &data),
 		  0);
 	struct pollfd fd{};
-	fd.fd = cli_ui_wake_fd(&ctx);
+	fd.fd = cli_event_queue_wake_fd(&ctx);
 	fd.events = POLLIN;
 	EXPECT_EQ(poll(&fd, 1, 1000), 1);
 	struct morph_event event{
 		MORPH_EVENT_ERROR, "background.error", "end", "shutdown output", nullptr, nullptr};
-	ASSERT_EQ(cli_ui_post_morph_event(&ctx, &event), 0);
-	ASSERT_EQ(cli_ui_stop_owner_calls(&ctx), 0);
-	EXPECT_FALSE(cli_ui_owner_call_pending(&ctx));
+	ASSERT_EQ(cli_event_queue_post_morph_event(&ctx, &event), 0);
+	ASSERT_EQ(cli_event_queue_stop_owner_calls(&ctx), 0);
+	EXPECT_FALSE(cli_event_queue_owner_call_pending(&ctx));
 	/* Joining cannot depend on pumping a prompt after the UI has stopped. */
 	EXPECT_EQ(cli_command_job_finish(&job), -ECANCELED);
 	EXPECT_EQ(data.ran_on_owner, 0);
-	EXPECT_EQ(cli_ui_call_owner(&ctx, cli_owner_call, &data), -ECANCELED);
+	EXPECT_EQ(cli_event_queue_call_owner(&ctx, cli_owner_call, &data), -ECANCELED);
 	ASSERT_EQ(cli_command_job_start_fn(&job, &ctx, "late test", cli_command_with_owner_call,
 					   &data),
 		  0);
 	EXPECT_EQ(cli_command_job_finish(&job), -ECANCELED);
 	EXPECT_EQ(data.ran_on_owner, 0);
 	testing::internal::CaptureStdout();
-	EXPECT_EQ(cli_ui_drain(&ctx), 0);
+	EXPECT_EQ(cli_event_queue_drain(&ctx), 0);
 	EXPECT_NE(testing::internal::GetCapturedStdout().find("shutdown output"),
 		  std::string::npos);
 	cli_command_job_cleanup(&job);
@@ -447,19 +428,18 @@ TEST_F(CliUiTest, PendingOwnerCallSurvivesConsumedWakeSignal)
 {
 	cli_owner_call_data data{&ctx, 0};
 	int call_rc = 0;
-	std::thread worker([&] {
-		call_rc = cli_ui_call_owner(&ctx, cli_owner_call, &data);
-	});
+	std::thread worker(
+		[&] { call_rc = cli_event_queue_call_owner(&ctx, cli_owner_call, &data); });
 
 	struct pollfd fd{};
-	fd.fd = cli_ui_wake_fd(&ctx);
+	fd.fd = cli_event_queue_wake_fd(&ctx);
 	fd.events = POLLIN;
 	ASSERT_EQ(poll(&fd, 1, 1000), 1);
 	unsigned char wake_byte = 0;
 	ASSERT_EQ(read(fd.fd, &wake_byte, sizeof(wake_byte)), 1);
 	fd.revents = 0;
 	EXPECT_EQ(poll(&fd, 1, 0), 0);
-	ASSERT_EQ(cli_ui_drain(&ctx), 0);
+	ASSERT_EQ(cli_event_queue_drain(&ctx), 0);
 	worker.join();
 	EXPECT_EQ(call_rc, 73);
 	EXPECT_EQ(data.ran_on_owner, 1);
@@ -508,10 +488,10 @@ static std::string run_structured_interaction(
 	testing::internal::CaptureStdout();
 	std::thread worker(worker_fn);
 	struct pollfd fd{};
-	fd.fd = cli_ui_wake_fd(ctx);
+	fd.fd = cli_event_queue_wake_fd(ctx);
 	fd.events = POLLIN;
 	(void)poll(&fd, 1, 1000);
-	(void)cli_ui_drain(ctx);
+	(void)cli_event_queue_drain(ctx);
 	worker.join();
 	if (feeder.joinable())
 		feeder.join();
@@ -551,7 +531,7 @@ static cJSON *find_json_event(const std::string &output, const char *name)
 TEST_F(CliUiTest, StructuredInteractionRejectsMismatchedResponseThenResolves)
 {
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
-	ctx.event_cb = cli_event_callback;
+	ctx.event_cb = cli_runtime_events_callback;
 	ctx.event_user_data = &ctx;
 	cJSON *request = cJSON_CreateObject();
 	cJSON *response = nullptr;
@@ -582,7 +562,7 @@ TEST_F(CliUiTest, StructuredInteractionRejectsMismatchedResponseThenResolves)
 TEST_F(CliUiTest, StructuredAskUserReturnsValidatedAnswers)
 {
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
-	ctx.event_cb = cli_event_callback;
+	ctx.event_cb = cli_runtime_events_callback;
 	ctx.event_user_data = &ctx;
 	const char *choices[] = {"red", "blue"};
 	char **answers = nullptr;
@@ -593,8 +573,8 @@ TEST_F(CliUiTest, StructuredAskUserReturnsValidatedAnswers)
 		"\"interaction-1\",\"data\":{\"answers\":[\"blue\"]}}\n";
 
 	std::string output = run_structured_interaction(&ctx, input, [&] {
-		call_rc = cli_ask_user_callback("pick a color", choices, 2,
-			"single", 1, 1, nullptr, &answers, &answers_count, &ctx);
+		call_rc = cli_question_callback("pick a color", choices, 2, "single", 1, 1, nullptr,
+						&answers, &answers_count, &ctx);
 	});
 	EXPECT_EQ(call_rc, 0);
 	ASSERT_EQ(answers_count, 1);
@@ -616,7 +596,7 @@ TEST_F(CliUiTest, StructuredAskUserReturnsValidatedAnswers)
 TEST_F(CliUiTest, StructuredAskUserAllowsCustomAnswersButChecksLimitsAndDuplicates)
 {
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
-	ctx.event_cb = cli_event_callback;
+	ctx.event_cb = cli_runtime_events_callback;
 	ctx.event_user_data = &ctx;
 	const char *choices[] = {"red", "blue"};
 	char **answers = nullptr;
@@ -630,8 +610,8 @@ TEST_F(CliUiTest, StructuredAskUserAllowsCustomAnswersButChecksLimitsAndDuplicat
 		"{\"type\":\"interaction.response\",\"request_id\":\"interaction-1\","
 		"\"data\":{\"answers\":[\"red\",\"gold\"]}}\n";
 	std::string output = run_structured_interaction(&ctx, input, [&] {
-		rc = cli_ask_user_callback("pick two colors", choices, 2,
-			"multi", 2, 2, nullptr, &answers, &count, &ctx);
+		rc = cli_question_callback("pick two colors", choices, 2, "multi", 2, 2, nullptr,
+					   &answers, &count, &ctx);
 	});
 	ASSERT_EQ(rc, 0);
 	ASSERT_EQ(count, 2);
@@ -646,7 +626,7 @@ TEST_F(CliUiTest, StructuredAskUserAllowsCustomAnswersButChecksLimitsAndDuplicat
 TEST_F(CliUiTest, StructuredOperationApprovalMapsSessionDecision)
 {
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
-	ctx.event_cb = cli_event_callback;
+	ctx.event_cb = cli_runtime_events_callback;
 	ctx.event_user_data = &ctx;
 	struct tool_directory_capability directory{};
 	const char *programs[] = {"make", "ctest"};
@@ -671,9 +651,8 @@ TEST_F(CliUiTest, StructuredOperationApprovalMapsSessionDecision)
 		"{\"type\":\"interaction.response\",\"request_id\":"
 		"\"interaction-1\",\"data\":{\"decision\":\"session\"}}\n";
 
-	std::string output = run_structured_interaction(&ctx, input, [&] {
-		verdict = operation_approval_callback(&operation, &ctx);
-	});
+	std::string output = run_structured_interaction(
+		&ctx, input, [&] { verdict = cli_approval_operation_callback(&operation, &ctx); });
 	EXPECT_EQ(verdict, TOOL_OP_SESSION);
 	cJSON *event = find_json_event(output, "interaction.request");
 	ASSERT_NE(event, nullptr);
@@ -695,7 +674,7 @@ TEST_F(CliUiTest, StructuredOperationApprovalMapsSessionDecision)
 TEST_F(CliUiTest, StructuredToolApprovalMapsPersistentDecision)
 {
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
-	ctx.event_cb = cli_event_callback;
+	ctx.event_cb = cli_runtime_events_callback;
 	ctx.event_user_data = &ctx;
 	enum hitl_verdict verdict = HITL_DENY;
 	std::string input =
@@ -703,8 +682,7 @@ TEST_F(CliUiTest, StructuredToolApprovalMapsPersistentDecision)
 		"\"interaction-1\",\"data\":{\"decision\":\"always\"}}\n";
 
 	std::string output = run_structured_interaction(&ctx, input, [&] {
-		verdict = hitl_approval_callback(
-			"remote_tool", "{\"query\":\"status\"}", &ctx);
+		verdict = cli_approval_tool_callback("remote_tool", "{\"query\":\"status\"}", &ctx);
 	});
 	EXPECT_EQ(verdict, HITL_ALWAYS);
 	cJSON *event = find_json_event(output, "interaction.request");
@@ -798,7 +776,7 @@ TEST_F(CliUiTest, QueuePreservesDisplayTextForSteeringAndNextTurn)
 TEST_F(CliUiTest, StructuredDirectoryApprovalIncludesTheCombinedAccess)
 {
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
-	ctx.event_cb = cli_event_callback;
+	ctx.event_cb = cli_runtime_events_callback;
 	ctx.event_user_data = &ctx;
 	struct tool_operation operation = {};
 	operation.kind = TOOL_OP_PATH_DELETE;
@@ -810,9 +788,8 @@ TEST_F(CliUiTest, StructuredDirectoryApprovalIncludesTheCombinedAccess)
 	enum tool_operation_verdict verdict = TOOL_OP_DENY;
 	std::string input = "{\"type\":\"interaction.response\",\"request_id\":"
 		"\"interaction-1\",\"data\":{\"decision\":\"session\"}}\n";
-	std::string output = run_structured_interaction(&ctx, input, [&] {
-		verdict = operation_approval_callback(&operation, &ctx);
-	});
+	std::string output = run_structured_interaction(
+		&ctx, input, [&] { verdict = cli_approval_operation_callback(&operation, &ctx); });
 	EXPECT_EQ(verdict, TOOL_OP_SESSION);
 	cJSON *event = find_json_event(output, "interaction.request");
 	ASSERT_NE(event, nullptr);
@@ -827,7 +804,7 @@ TEST_F(CliUiTest, StructuredDirectoryApprovalIncludesTheCombinedAccess)
 TEST_F(CliUiTest, OptionalStructuredQuestionExpiresWithoutAReply)
 {
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
-	ctx.event_cb = cli_event_callback;
+	ctx.event_cb = cli_runtime_events_callback;
 	ctx.event_user_data = &ctx;
 	const char *choices[] = {"red", "blue"};
 	ask_user_options options{};
@@ -838,10 +815,13 @@ TEST_F(CliUiTest, OptionalStructuredQuestionExpiresWithoutAReply)
 	char **answers = nullptr;
 	int count = 0;
 	int rc = 0;
-	std::string output = run_structured_interaction(&ctx, "", [&] {
-		rc = cli_ask_user_callback("Pick", choices, 2, "single", 1, 1,
-			&options, &answers, &count, &ctx);
-	}, [](int) { std::this_thread::sleep_for(std::chrono::milliseconds(1400)); });
+	std::string output = run_structured_interaction(
+		&ctx, "",
+		[&] {
+			rc = cli_question_callback("Pick", choices, 2, "single", 1, 1, &options,
+						   &answers, &count, &ctx);
+		},
+		[](int) { std::this_thread::sleep_for(std::chrono::milliseconds(1400)); });
 	EXPECT_EQ(rc, -ETIMEDOUT);
 	EXPECT_EQ(answers, nullptr);
 	EXPECT_EQ(count, 0);
@@ -859,7 +839,7 @@ TEST_F(CliUiTest, OptionalStructuredQuestionExpiresWithoutAReply)
 TEST_F(CliUiTest, StructuredEditingActivityPreventsAutomaticFallback)
 {
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
-	ctx.event_cb = cli_event_callback;
+	ctx.event_cb = cli_runtime_events_callback;
 	ctx.event_user_data = &ctx;
 	ask_user_options options{};
 	options.optional = 1;
@@ -867,16 +847,19 @@ TEST_F(CliUiTest, StructuredEditingActivityPreventsAutomaticFallback)
 	char **answers = nullptr;
 	int count = 0;
 	int rc = 0;
-	std::string output = run_structured_interaction(&ctx,
-		"{\"type\":\"interaction.progress\",\"request_id\":\"interaction-1\"}\n", [&] {
-		rc = cli_ask_user_callback("Describe", nullptr, 0, "single", 0, 0,
-			&options, &answers, &count, &ctx);
-	}, [](int fd) {
-		std::this_thread::sleep_for(std::chrono::milliseconds(1400));
-		const char *reply = "{\"type\":\"interaction.response\","
-			"\"request_id\":\"interaction-1\",\"data\":{\"answers\":[\"custom\"]}}\n";
-		(void)write(fd, reply, strlen(reply));
-	});
+	std::string output = run_structured_interaction(
+		&ctx, "{\"type\":\"interaction.progress\",\"request_id\":\"interaction-1\"}\n",
+		[&] {
+			rc = cli_question_callback("Describe", nullptr, 0, "single", 0, 0, &options,
+						   &answers, &count, &ctx);
+		},
+		[](int fd) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(1400));
+			const char *reply = "{\"type\":\"interaction.response\","
+					    "\"request_id\":\"interaction-1\",\"data\":{"
+					    "\"answers\":[\"custom\"]}}\n";
+			(void)write(fd, reply, strlen(reply));
+		});
 	ASSERT_EQ(rc, 0);
 	ASSERT_EQ(count, 1);
 	EXPECT_STREQ(answers[0], "custom");
@@ -888,7 +871,7 @@ TEST_F(CliUiTest, StructuredEditingActivityPreventsAutomaticFallback)
 TEST_F(CliUiTest, StaleReplyDoesNotDisableNextQuestionDeadline)
 {
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
-	ctx.event_cb = cli_event_callback;
+	ctx.event_cb = cli_runtime_events_callback;
 	ctx.event_user_data = &ctx;
 	ask_user_options options{};
 	options.optional = 1;
@@ -896,12 +879,15 @@ TEST_F(CliUiTest, StaleReplyDoesNotDisableNextQuestionDeadline)
 	char **answers = nullptr;
 	int count = 0;
 	int rc = 0;
-	std::string output = run_structured_interaction(&ctx,
+	std::string output = run_structured_interaction(
+		&ctx,
 		"{\"type\":\"interaction.response\",\"request_id\":\"expired\","
-		"\"data\":{\"answers\":[\"late\"]}}\n", [&] {
-		rc = cli_ask_user_callback("New question", nullptr, 0, "single", 0, 0,
-			&options, &answers, &count, &ctx);
-	}, [](int) { std::this_thread::sleep_for(std::chrono::milliseconds(1400)); });
+		"\"data\":{\"answers\":[\"late\"]}}\n",
+		[&] {
+			rc = cli_question_callback("New question", nullptr, 0, "single", 0, 0,
+						   &options, &answers, &count, &ctx);
+		},
+		[](int) { std::this_thread::sleep_for(std::chrono::milliseconds(1400)); });
 	EXPECT_EQ(rc, -ETIMEDOUT);
 	EXPECT_EQ(answers, nullptr);
 	EXPECT_NE(output.find("interaction.invalid_response"), std::string::npos);
@@ -914,7 +900,7 @@ TEST_F(CliUiTest, StaleReplyDoesNotDisableNextQuestionDeadline)
 TEST_F(CliUiTest, RequiredStructuredQuestionObservesRuntimeCancellation)
 {
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
-	ctx.event_cb = cli_event_callback;
+	ctx.event_cb = cli_runtime_events_callback;
 	ctx.event_user_data = &ctx;
 	morph_cancel_token cancel{};
 	ask_user_options options{};
@@ -922,14 +908,17 @@ TEST_F(CliUiTest, RequiredStructuredQuestionObservesRuntimeCancellation)
 	char **answers = nullptr;
 	int count = 0;
 	int rc = 0;
-	std::string output = run_structured_interaction(&ctx, "", [&] {
-		rc = cli_ask_user_callback("Required", nullptr, 0, "single", 0, 0,
-			&options, &answers, &count, &ctx);
-	}, [&cancel](int) {
-		std::this_thread::sleep_for(std::chrono::milliseconds(200));
-		morph_cancel_token_cancel(&cancel);
-		std::this_thread::sleep_for(std::chrono::milliseconds(300));
-	});
+	std::string output = run_structured_interaction(
+		&ctx, "",
+		[&] {
+			rc = cli_question_callback("Required", nullptr, 0, "single", 0, 0, &options,
+						   &answers, &count, &ctx);
+		},
+		[&cancel](int) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(200));
+			morph_cancel_token_cancel(&cancel);
+			std::this_thread::sleep_for(std::chrono::milliseconds(300));
+		});
 	EXPECT_EQ(rc, -ECANCELED);
 	EXPECT_EQ(answers, nullptr);
 	EXPECT_EQ(ctx.input_cancel_token, nullptr);

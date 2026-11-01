@@ -1,3 +1,8 @@
+#include "ext/ext.h"
+#include "ext/install.h"
+#include "config/config.h"
+#include "sapi/cli/internal.h"
+#include "sapi/cli/core.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/ui/presentation/list.h"
 #include "util/array.h"
@@ -315,7 +320,6 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 	}
 	return ext_print_tools(ctx);
 }
-
 
 static const struct cli_command ext_commands[] = {
 	{ "/ext",     cmd_ext,     "List or manage tools and exts",     "/ext list" },

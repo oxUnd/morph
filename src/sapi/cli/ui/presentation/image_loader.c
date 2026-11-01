@@ -1,8 +1,9 @@
+#include "sapi/cli/ui/presentation/image_loader.h"
+#include "stb_image.h"
 #include "http/client.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/image_util.h"
-#include "stb_image.h"
 #include "stb_image_write.h"
 
 #include <curl/curl.h>
@@ -15,22 +16,22 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define CLI_IMAGE_MAX_BYTES (64u * 1024u * 1024u)
+#define CLI_IMAGE_LOADER_IMAGE_MAX_BYTES (64u * 1024u * 1024u)
 
-static size_t image_receive(char *data, size_t size, size_t count, void *user)
+static size_t cli_image_loader_receive(char *data, size_t size, size_t count, void *user)
 {
 	morph_buf_t *buffer = user;
 	size_t bytes;
 
-	if (size && count > CLI_IMAGE_MAX_BYTES / size)
+	if (size && count > CLI_IMAGE_LOADER_IMAGE_MAX_BYTES / size)
 		return 0;
 	bytes = size * count;
-	if (bytes > CLI_IMAGE_MAX_BYTES - buffer->len)
+	if (bytes > CLI_IMAGE_LOADER_IMAGE_MAX_BYTES - buffer->len)
 		return 0;
 	return morph_buf_append(buffer, data, bytes) == 0 ? bytes : 0;
 }
 
-static int image_fetch(const char *url, morph_buf_t *buffer)
+static int cli_image_loader_fetch(const char *url, morph_buf_t *buffer)
 {
 	CURL *curl = curl_easy_init();
 	CURLcode result;
@@ -47,7 +48,7 @@ static int image_fetch(const char *url, morph_buf_t *buffer)
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, image_receive);
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cli_image_loader_receive);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, buffer);
 	result = curl_easy_perform(curl);
 	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -59,7 +60,7 @@ static int image_fetch(const char *url, morph_buf_t *buffer)
 	return 0;
 }
 
-static int image_read(const char *url, morph_buf_t *buffer)
+static int cli_image_loader_read(const char *url, morph_buf_t *buffer)
 {
 	const char *path = strncmp(url, "file://", 7) == 0 ? url + 7 : url;
 	char bytes[BUFSIZ];
@@ -69,16 +70,16 @@ static int image_read(const char *url, morph_buf_t *buffer)
 	int rc = 0;
 
 	if (strncmp(url, "https://", 8) == 0 || strncmp(url, "http://", 7) == 0)
-		return image_fetch(url, buffer);
+		return cli_image_loader_fetch(url, buffer);
 	if (stat(path, &info) != 0)
 		return -errno;
-	if (!S_ISREG(info.st_mode) || info.st_size > CLI_IMAGE_MAX_BYTES)
+	if (!S_ISREG(info.st_mode) || info.st_size > CLI_IMAGE_LOADER_IMAGE_MAX_BYTES)
 		return -EFBIG;
 	file = fopen(path, "rb");
 	if (!file)
 		return -errno;
 	while ((count = fread(bytes, 1, sizeof(bytes), file)) > 0) {
-		if (image_receive(bytes, 1, count, buffer) != count) {
+		if (cli_image_loader_receive(bytes, 1, count, buffer) != count) {
 			rc = (-EFBIG);
 			break;
 		}
@@ -89,7 +90,7 @@ static int image_read(const char *url, morph_buf_t *buffer)
 	return rc;
 }
 
-static unsigned char *image_decode(const morph_buf_t *buffer, int *w, int *h)
+static unsigned char *cli_image_loader_decode(const morph_buf_t *buffer, int *w, int *h)
 {
 	const unsigned char *data = (const unsigned char *)morph_buf_cstr(buffer);
 	int channels;
@@ -113,7 +114,7 @@ static unsigned char *image_decode(const morph_buf_t *buffer, int *w, int *h)
 	return pixels;
 }
 
-int cli_markdown_load_image(const char *url, char **path, void *user)
+int cli_image_loader_load(const char *url, char **path, void *user)
 {
 	morph_buf_t buffer;
 	unsigned char *pixels;
@@ -127,8 +128,8 @@ int cli_markdown_load_image(const char *url, char **path, void *user)
 	rc = morph_buf_init(&buffer, BUFSIZ);
 	if (rc != 0)
 		return rc;
-	rc = image_read(url, &buffer);
-	pixels = rc == 0 ? image_decode(&buffer, &w, &h) : NULL;
+	rc = cli_image_loader_read(url, &buffer);
+	pixels = rc == 0 ? cli_image_loader_decode(&buffer, &w, &h) : NULL;
 	morph_buf_cleanup(&buffer);
 	if (!pixels)
 		return rc != 0 ? rc : MORPH_ERR_FORMAT;
@@ -150,7 +151,7 @@ int cli_markdown_load_image(const char *url, char **path, void *user)
 	return 0;
 }
 
-void cli_markdown_release_image(char *path, void *user)
+void cli_image_loader_release(char *path, void *user)
 {
 	(void)user;
 	unlink(path);

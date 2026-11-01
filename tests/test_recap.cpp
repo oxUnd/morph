@@ -1,11 +1,11 @@
 #include "model_metadata_test_support.hpp"
 
 extern "C" {
+#include "sapi/cli/ui/presentation/presenter.h"
 #include "runtime/recap.h"
 #include "sapi/cli/cli.h"
 #include "sapi/cli/ui/recap.h"
 #include "sapi/cli/ui/presentation/terminal.h"
-int cli_presentation_event(struct cli_context *ctx, const struct morph_event *event);
 }
 
 class RecapTest : public RuntimeMetadataTest {

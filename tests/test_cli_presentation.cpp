@@ -1,6 +1,15 @@
 #include <gtest/gtest.h>
 
 extern "C" {
+#include "sapi/cli/ui/input/cancel.h"
+#include "sapi/cli/ui/input/readline.h"
+#include "sapi/cli/ui/presentation/image_loader.h"
+#include "sapi/cli/ui/presentation/markdown.h"
+#include "sapi/cli/ui/presentation/presenter.h"
+#include "sapi/cli/ui/presentation/banner.h"
+#include "sapi/cli/ui/interactions/approval.h"
+#include "sapi/cli/ui/presentation/transcript.h"
+#include "sapi/cli/core.h"
 #include "sapi/cli/cli.h"
 #include "sapi/cli/ui/presentation/terminal.h"
 #include "sapi/cli/ui/presentation/list.h"
@@ -14,34 +23,8 @@ extern "C" {
 #include "stb_image_write.h"
 #include "stb_image.h"
 
-void cli_render_tool_approval(struct cli_context *ctx, const char *tool_name,
-			      const char *tool_args);
-void cli_render_operation_approval(struct cli_context *ctx,
-				   const struct tool_operation *op);
-int cli_markdown_load_image(const char *url, char **path, void *user);
-void cli_markdown_release_image(char *path, void *user);
-void cli_markdown_render_ansi(struct cli_context *ctx, const char *md);
-
-int cli_presentation_init(struct cli_context *ctx);
-void cli_presentation_reset(struct cli_context *ctx);
-void cli_presentation_flush_stream(struct cli_context *ctx);
-void cli_presentation_cleanup(struct cli_context *ctx);
-void cli_presentation_prepare_prompt(struct cli_context *ctx);
-int cli_presentation_event(struct cli_context *ctx,
-			   const struct morph_event *ev);
-void cli_turn_begin(struct cli_context *ctx);
-void cli_transcript_toggle(struct cli_context *ctx);
-void cli_transcript_view_render(struct cli_context *ctx, int scroll);
-void cli_transcript_finish(struct cli_context *ctx);
-int cli_transcript_live_body(struct cli_context *ctx, morph_buf_t *body, int styled);
-void cli_presentation_finish(struct cli_context *ctx);
-const char *cli_input_prompt(struct cli_context *ctx);
-void cli_presentation_user_input(struct cli_context *ctx, const char *text);
-void cli_presentation_command_input(struct cli_context *ctx, const char *text);
-void cli_presentation_command_end(struct cli_context *ctx);
 struct cli_cancel_monitor;
 struct cli_cancel_monitor *cli_cancel_monitor_start(struct cli_context *ctx, int fd);
-void cli_cancel_monitor_stop(struct cli_cancel_monitor *monitor);
 }
 
 #include <string>
@@ -101,14 +84,14 @@ TEST(CliMarkdownImageTest, SupportedFormatsRenderInsideTableAndReleaseFiles)
 		}
 		ASSERT_NE(written, 0);
 		char *resolved = nullptr;
-		ASSERT_EQ(cli_markdown_load_image(source.c_str(), &resolved, nullptr), 0);
+		ASSERT_EQ(cli_image_loader_load(source.c_str(), &resolved, nullptr), 0);
 		ASSERT_NE(resolved, nullptr);
 		std::string temporary = resolved;
 		int w, h, channels;
 		EXPECT_EQ(stbi_info(resolved, &w, &h, &channels), 1);
 		EXPECT_EQ(w, 12);
 		EXPECT_EQ(h, 36);
-		cli_markdown_release_image(resolved, nullptr);
+		cli_image_loader_release(resolved, nullptr);
 		EXPECT_FALSE(std::filesystem::exists(temporary));
 		std::string markdown = "before\n\n| image | text |\n|---|---|\n| ![](" +
 			source + ") | beside |\n\nafter\n";
@@ -260,8 +243,8 @@ TEST(CliInputPromptTest, AnsiSequencesAreMarkedAsInvisible)
 	struct cli_context _cli_output_context = {0};
 	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
 	cli_set_color_enabled(_cli_output_context_ptr, 1);
-	const unsigned char *prompt =
-		reinterpret_cast<const unsigned char *>(cli_input_prompt(_cli_output_context_ptr));
+	const unsigned char *prompt = reinterpret_cast<const unsigned char *>(
+		cli_readline_input_prompt(_cli_output_context_ptr));
 	int ignored = 0;
 	int escapes = 0;
 	if (!std::strchr(reinterpret_cast<const char *>(prompt), 0x01))
@@ -2059,12 +2042,12 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 		for (int kind = 0; kind < 4; kind++) {
 			testing::internal::CaptureStdout();
 			if (kind == 0) {
-				cli_render_tool_approval(&ctx, long_value.c_str(),
-					long_value.c_str());
+				cli_approval_render_tool(&ctx, long_value.c_str(),
+							 long_value.c_str());
 			} else {
 				op.kind = kind == 1 ? TOOL_OP_COMMAND : TOOL_OP_PATH_WRITE;
 				op.path_access = kind == 3 ? TOOL_PATH_ACCESS_ALL : 0;
-				cli_render_operation_approval(&ctx, &op);
+				cli_approval_render_operation(&ctx, &op);
 			}
 			std::string output = testing::internal::GetCapturedStdout();
 			char *safe = utf8_terminal_sanitize_dup(output.c_str(),
@@ -2162,9 +2145,6 @@ TEST(CliUserInputTest, ShortMessageHasOuterMarginsWithoutInternalPaddingRows)
 	cli_set_color_enabled(_cli_output_context_ptr, 1);
 }
 
-extern "C" void cli_print_welcome(struct cli_context *ctx, const char *model,
-				  const char *directory);
-
 TEST(CliWelcomeTest, FitsCompactLayoutAndWrapsHintsAtNarrowWidths)
 {
 	struct cli_context _cli_output_context = {0};
@@ -2176,7 +2156,7 @@ TEST(CliWelcomeTest, FitsCompactLayoutAndWrapsHintsAtNarrowWidths)
 	for (int width : {40, 80, 120}) {
 		ASSERT_EQ(setenv("COLUMNS", std::to_string(width).c_str(), 1), 0);
 		testing::internal::CaptureStdout();
-		cli_print_welcome(_cli_output_context_ptr, "deepseek-flash", "~/Work/macos/cat");
+		cli_banner_print(_cli_output_context_ptr, "deepseek-flash", "~/Work/macos/cat");
 		std::string output = testing::internal::GetCapturedStdout();
 		EXPECT_NE(output.find("  morph  v"), std::string::npos);
 		EXPECT_EQ(output.find("session:"), std::string::npos);
@@ -2211,8 +2191,8 @@ TEST(CliWelcomeTest, SanitizesMetadataAndKeepsLongPathTail)
 	ASSERT_EQ(setenv("COLUMNS", "40", 1), 0);
 	cli_set_color_enabled(_cli_output_context_ptr, 0);
 	testing::internal::CaptureStdout();
-	cli_print_welcome(_cli_output_context_ptr, "model\033[2J",
-			  "/very/long/中文/workspace/path/ending");
+	cli_banner_print(_cli_output_context_ptr, "model\033[2J",
+			 "/very/long/中文/workspace/path/ending");
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_EQ(output.find("\033"), std::string::npos);
 	EXPECT_NE(output.find("/ending"), std::string::npos);
@@ -2237,7 +2217,7 @@ TEST(CliApprovalCardTest, DirectoryBatchDisplaysAllRequestedAccessAndLifetime)
 	operation.reason = "Update generated project files";
 	operation.path_access = TOOL_PATH_ACCESS_ALL;
 	testing::internal::CaptureStdout();
-	cli_render_operation_approval(&context, &operation);
+	cli_approval_render_operation(&context, &operation);
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_NE(output.find("Directory Access Approval"), std::string::npos);
 	EXPECT_NE(output.find("read/write/delete"), std::string::npos);

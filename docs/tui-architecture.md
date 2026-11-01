@@ -44,13 +44,14 @@ src/sapi/cli/
   commands/                  slash-command handlers
   setup/                     wizard, providers, roles, and configuration
   ui/
-    application.c, .h        framework-to-CLI controller adapter
+    application.c, .h        Application subclass, root controller, panel lifecycle
     event_queue.c, .h        owner-thread queue and wakeup bridge
     runtime_events.c         runtime event callback
     recap.c, .h              recap presentation state
-    input/                   Readline callbacks, composer, paste, cancellation
-    presentation/            feed, transcript, terminal output, media, styles
-    screens/                 history, hooks, and jobs pages
+    input/                   callback bindings, reader, keymaps, Readline, composer
+    interactions/            questions, approvals, and runtime decision mapping
+    presentation/            feed, transcript, Markdown, terminal, media, styles
+    screens/                 history, hooks, jobs, and resume pages
 ```
 
 - Include domain APIs as `<morph/tui/<object>.h>`, such as
@@ -68,6 +69,11 @@ src/sapi/cli/
   includes such as `"sapi/cli/ui/screens/history.h"`. A file already placed in
   `screens/` does not repeat an `_ui` suffix. The general `event_queue` and
   runtime-specific `runtime_events` names distinguish the two event adapters.
+  Each module owns its interface; `internal.h` carries no UI declarations or
+  domain/SDK dependency collection. Command handlers dispatch pages, while
+  `run.c` selects frontend execution modes. Application/Readline implementations
+  live under `ui/`. See [CLI UI module conventions](../src/sapi/cli/ui/README.md)
+  for the complete module map and naming rules.
 - List source files explicitly in each target's `CMakeLists.txt`, grouped to
   match the directories. Update include sites and documentation in the same
   change as a move. Keep tests in the existing `tests/test_<module>` layout.

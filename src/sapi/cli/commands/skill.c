@@ -1,3 +1,6 @@
+#include "cJSON.h"
+#include "sapi/cli/internal.h"
+#include "sapi/cli/core.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/ui/presentation/list.h"
 #include "util/array.h"
@@ -249,7 +252,6 @@ static int cmd_skill(struct cli_context *ctx, int argc, char **argv)
 	}
 	return skill_print_list(ctx);
 }
-
 
 static const struct cli_command skill_commands[] = {
 	{ "/skill",   cmd_skill,   "List or manage skills",             "/skill list" },

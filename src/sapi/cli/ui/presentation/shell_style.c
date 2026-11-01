@@ -1,7 +1,7 @@
-#include "sapi/cli/internal.h"
 #include "sapi/cli/ui/presentation/shell_style.h"
+#include "sapi/cli/internal.h"
 
-static int shell_operator(char ch)
+static int cli_shell_style_shell_operator(char ch)
 {
 	return ch && strchr("|&;()<>", ch) != NULL;
 }
@@ -31,7 +31,7 @@ const char *cli_shell_summary(const char *text, const char *workdir)
 	while (*p) {
 		char ch = *p;
 
-		if (!quote && (isspace((unsigned char)ch) || shell_operator(ch)))
+		if (!quote && (isspace((unsigned char)ch) || cli_shell_style_shell_operator(ch)))
 			break;
 		p++;
 		if (ch == quote) {
@@ -61,7 +61,7 @@ const char *cli_shell_summary(const char *text, const char *workdir)
 	return *p ? p : text;
 }
 
-static int shell_assignment(const char *text, size_t len)
+static int cli_shell_style_shell_assignment(const char *text, size_t len)
 {
 	size_t i = 0;
 
@@ -72,8 +72,8 @@ static int shell_assignment(const char *text, size_t len)
 	return i < len && text[i] == '=';
 }
 
-static void shell_span(morph_buf_t *out, const char *start, const char *end,
-		       const char *color, int width, int *column)
+static void cli_shell_style_shell_span(morph_buf_t *out, const char *start, const char *end,
+				       const char *color, int width, int *column)
 {
 	int span_width = 0;
 
@@ -136,7 +136,7 @@ int cli_shell_style(morph_buf_t *out, const char *text, int width)
 		} else if (*p == '#') {
 			color = ANSI_DIM;
 			p += strcspn(p, "\n");
-		} else if (shell_operator(*p)) {
+		} else if (cli_shell_style_shell_operator(*p)) {
 			color = ANSI_YELLOW;
 			redirect = *p == '<' || *p == '>';
 			if (!redirect)
@@ -147,7 +147,8 @@ int cli_shell_style(morph_buf_t *out, const char *text, int width)
 		} else {
 			/* Quotes/escapes stay within a word; operators inside them
 			 * must not start a new command. Unknown syntax stays literal. */
-			while (*p && !isspace((unsigned char)*p) && !shell_operator(*p)) {
+			while (*p && !isspace((unsigned char)*p) &&
+			       !cli_shell_style_shell_operator(*p)) {
 				if (*p == '\\' && p[1]) {
 					p += 2;
 				} else if (*p == '\'' || *p == '"') {
@@ -167,13 +168,14 @@ int cli_shell_style(morph_buf_t *out, const char *text, int width)
 			if (*start == '\'' || *start == '"')
 				color = ANSI_GREEN;
 			else if (command && !redirect &&
-				 !shell_assignment(start, (size_t)(p - start)))
+				 !cli_shell_style_shell_assignment(start, (size_t)(p - start)))
 				color = ANSI_CYAN;
-			if (!redirect && !shell_assignment(start, (size_t)(p - start)))
+			if (!redirect &&
+			    !cli_shell_style_shell_assignment(start, (size_t)(p - start)))
 				command = 0;
 			redirect = 0;
 		}
-		shell_span(out, start, p, color, width, &column);
+		cli_shell_style_shell_span(out, start, p, color, width, &column);
 	}
 	free(safe);
 	if (out->failed)

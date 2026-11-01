@@ -7,7 +7,6 @@ struct morph_log;
 #include "sapi/cli/ui/recap.h"
 #include "util/buf.h"
 #include "sapi/cli/ui/input/composer.h"
-#include "sapi/cli/ui/input/callbacks.h"
 #include "util/signals.h"
 #include "util/strmap.h"
 #include "util/utf8.h"
@@ -22,7 +21,7 @@ enum cli_presentation_mode {
 
 struct morph_md_kitty;
 struct cli_cancel_monitor;
-struct cli_ui;
+struct cli_event_queue;
 struct cli_terminal;
 struct cli_command_job;
 struct cli_transcript;
@@ -90,7 +89,7 @@ struct cli_context {
 	struct cli_recap_state recap;
 	struct runtime *runtime;
 	struct config_file_error startup_error;
-	struct cli_ui *ui;
+	struct cli_event_queue *ui;
 	struct morph_tui_application *application;
 	morph_buf_t *application_output;
 	int application_command;

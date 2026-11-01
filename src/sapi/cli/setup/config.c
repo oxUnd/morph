@@ -1,10 +1,10 @@
 #include "sapi/cli/setup/config.h"
-#include "sapi/cli/setup/role.h"
 #include "config/config.h"
+#include "cJSON.h"
+#include "sapi/cli/setup/role.h"
 #include "util/array.h"
 #include "util/buf.h"
 #include "util/error.h"
-#include "cJSON.h"
 #include "tomlc17.h"
 #include <limits.h>
 #include <stdlib.h>

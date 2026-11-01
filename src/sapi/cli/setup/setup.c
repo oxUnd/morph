@@ -1,15 +1,15 @@
 #include "sapi/cli/setup/setup.h"
+#include "config/config.h"
+#include "cJSON.h"
 #include "sapi/cli/setup/ui.h"
 #include "sapi/cli/setup/config.h"
 #include "sapi/cli/setup/mcp.h"
 #include "sapi/cli/manage.h"
-#include "config/config.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/file.h"
 #include "util/utf8.h"
 #include "util/name.h"
-#include "cJSON.h"
 #include "tomlc17.h"
 #include <ctype.h>
 #include <fcntl.h>

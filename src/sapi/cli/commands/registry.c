@@ -1,4 +1,7 @@
 #include "sapi/cli/commands/registry.h"
+#include "sapi/cli/internal.h"
+#include "cJSON.h"
+#include "sapi/cli/core.h"
 #include "sapi/cli/ui/presentation/list.h"
 
 /* Built-in command groups are immutable; lookup requires no registration. */

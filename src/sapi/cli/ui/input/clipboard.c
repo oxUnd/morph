@@ -1,3 +1,6 @@
+#include "sapi/cli/ui/input/clipboard.h"
+#include "config/config.h"
+#include "stb_image.h"
 #include "util/signals.h"
 #include "sapi/cli/internal.h"
 #include "util/id.h"
@@ -5,9 +8,9 @@
 #include <fcntl.h>
 #include <sys/wait.h>
 
-#define CLIPBOARD_ID_SIZE 64
+#define CLI_CLIPBOARD_ID_SIZE 64
 
-static int clipboard_run(const char *const argv[], const char *stdout_path)
+static int cli_clipboard_run(const char *const argv[], const char *stdout_path)
 {
 	pid_t pid;
 	int output_fd = -1;
@@ -58,10 +61,10 @@ static int clipboard_run(const char *const argv[], const char *stdout_path)
 	return 0;
 }
 
-static int clipboard_output_path(struct cli_context *ctx, char **out_path)
+static int cli_clipboard_output_path(struct cli_context *ctx, char **out_path)
 {
 	const struct config *config;
-	char id[CLIPBOARD_ID_SIZE];
+	char id[CLI_CLIPBOARD_ID_SIZE];
 	char *filename;
 	char *path;
 	int rc;
@@ -91,7 +94,7 @@ static int clipboard_output_path(struct cli_context *ctx, char **out_path)
 
 #ifdef __APPLE__
 
-static int clipboard_save_platform_image(const char *png_path)
+static int cli_clipboard_save_platform_image(const char *png_path)
 {
 	static const char script[] =
 		"on run argv\n"
@@ -119,7 +122,7 @@ static int clipboard_save_platform_image(const char *png_path)
 	osascript_argv[2] = script;
 	osascript_argv[3] = tiff_path;
 	osascript_argv[4] = NULL;
-	rc = clipboard_run(osascript_argv, NULL);
+	rc = cli_clipboard_run(osascript_argv, NULL);
 	if (rc == 0) {
 		sips_argv[0] = "sips";
 		sips_argv[1] = "-s";
@@ -129,7 +132,7 @@ static int clipboard_save_platform_image(const char *png_path)
 		sips_argv[5] = "--out";
 		sips_argv[6] = png_path;
 		sips_argv[7] = NULL;
-		rc = clipboard_run(sips_argv, "/dev/null");
+		rc = cli_clipboard_run(sips_argv, "/dev/null");
 	}
 	(void)unlink(tiff_path);
 	free(tiff_path);
@@ -140,7 +143,7 @@ static int clipboard_save_platform_image(const char *png_path)
 
 #else
 
-static int clipboard_save_platform_image(const char *png_path)
+static int cli_clipboard_save_platform_image(const char *png_path)
 {
 	const char *wl_paste_argv[] = {
 		"wl-paste", "--no-newline", "--type", "image/png", NULL
@@ -151,9 +154,9 @@ static int clipboard_save_platform_image(const char *png_path)
 	};
 	int rc;
 
-	rc = clipboard_run(wl_paste_argv, png_path);
+	rc = cli_clipboard_run(wl_paste_argv, png_path);
 	if (rc != 0)
-		rc = clipboard_run(xclip_argv, png_path);
+		rc = cli_clipboard_run(xclip_argv, png_path);
 	if (rc != 0)
 		return rc;
 	return 0;
@@ -172,10 +175,10 @@ int cli_clipboard_save_image(struct cli_context *ctx, char **out_path)
 	if (!out_path)
 		return -EINVAL;
 	*out_path = NULL;
-	rc = clipboard_output_path(ctx, &path);
+	rc = cli_clipboard_output_path(ctx, &path);
 	if (rc != 0)
 		return rc;
-	rc = clipboard_save_platform_image(path);
+	rc = cli_clipboard_save_platform_image(path);
 	if (rc != 0 || !stbi_info(path, &width, &height, &channels)) {
 		(void)unlink(path);
 		free(path);

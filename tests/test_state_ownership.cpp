@@ -1,12 +1,12 @@
 #include <gtest/gtest.h>
 
 extern "C" {
+#include "sapi/cli/ui/input/reader.h"
+#include "sapi/cli/core.h"
 #include "sapi/cli/cli.h"
 #include "sapi/cli/ui/input/callbacks.h"
 #include "http/client.h"
 #include "util/signals.h"
-int cli_command_capture_begin(struct cli_context *, morph_buf_t *);
-void cli_command_capture_end(struct cli_context *);
 }
 
 #include <chrono>

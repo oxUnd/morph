@@ -5,8 +5,8 @@ struct cli_context;
 #include <stddef.h>
 #include <morph/tui/widgets/tree.h>
 
-void cli_tree_prefix(struct cli_context *ctx, const int *last, int depth, int is_last,
-		     int continuation);
+void cli_list_tree_prefix(struct cli_context *ctx, const int *last, int depth, int is_last,
+			  int continuation);
 
 int cli_list_columns(void);
 size_t cli_list_compact_text(char *dst, size_t dst_cap, const char *src);

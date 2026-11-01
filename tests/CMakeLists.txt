@@ -160,6 +160,10 @@ set_target_properties(morph-file-write-tests PROPERTIES
 add_test(NAME file_write_extension COMMAND morph-file-write-tests)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+	add_test(NAME cli_ui_layout_conventions
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_ui_layout.py)
+endif()
 if(ENABLE_GLOBAL_STATE_AUDIT)
 	if(NOT Python3_Interpreter_FOUND)
 		message(FATAL_ERROR "Global state audit requires Python 3")

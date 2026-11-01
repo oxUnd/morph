@@ -1,3 +1,6 @@
+#include "cJSON.h"
+#include "sapi/cli/internal.h"
+#include "sapi/cli/core.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/interaction.h"
 #include "sapi/cli/ui/presentation/list.h"
@@ -65,7 +68,7 @@ static int print_permissions(struct cli_context *ctx)
 	CMD_HEADER(ctx, "persistent permissions (%d)", count);
 	if (count == 0) {
 		printf(ctx, ANSI_DIM);
-		cli_tree_prefix(ctx, NULL, 0, 1, 0);
+		cli_list_tree_prefix(ctx, NULL, 0, 1, 0);
 		printf(ctx, "none for this project" ANSI_RESET "\n");
 		runtime_permission_list_free(grants);
 		return 0;

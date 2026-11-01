@@ -1,5 +1,5 @@
-#include "util/signals.h"
 #include "sapi/cli/manage.h"
+#include "util/signals.h"
 #include "util/error.h"
 #include "util/file.h"
 #include "util/name.h"
