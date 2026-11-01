@@ -52,6 +52,8 @@ The layout includes margins in space allocation and clips drawing to the padded
 content rectangle. Custom components use the same options; their draw callbacks
 receive local content coordinates. `morph_tui_view_insets_all(1)` provides equal
 edges, and `morph_tui_view_set_margin` / `_set_padding` update an existing view.
+See the [box model guide](../../../../docs/tui-box-model.md) for measurement,
+allocation, coordinate, and clipping rules.
 
 ## Where to change the code
 

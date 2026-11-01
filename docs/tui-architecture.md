@@ -256,17 +256,10 @@ const struct morph_tui_view_options box = {
 };
 ```
 
-`morph_tui_view_insets_all(1)` supplies equal edges. The previous scalar
-`.padding = 1` is now `.padding = {1, 1, 1, 1}` in static initializers.
-Fixed/minimum/maximum sizes include padding and exclude margin. Measurement
-returns the outer size including margins; `view_arrange` receives an outer slot
-and stores the frame inside those margins. Custom layouts pass the allocated
-slot directly without subtracting margins themselves. Roots follow the same
-rules. Sibling margins add alongside stack spacing; they do not collapse.
-Margins remain unpainted, while the draw canvas excludes padding. Hidden views
-consume neither margin nor padding. Oversized insets produce bounded empty
-frames; negative or overflowing insets are rejected. `view_set_margin` and
-`view_set_padding` validate owner-thread access and coalesce layout invalidation.
+Frame sizes include padding and exclude margin. Measurement returns outer size;
+arrange applies margin once. Sibling margins add without collapsing. See the
+[TUI box model](tui-box-model.md) for the geometry diagram, size formulas,
+coordinate example, runtime setters, and custom-layout contracts.
 
 Submitted CLI input keeps its colored inner padding and owns one normal-background
 row above and below its box. Reasoning, answers, and tool blocks reuse that

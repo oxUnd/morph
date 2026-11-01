@@ -34,6 +34,7 @@
   and applies margin once. Size limits include padding and exclude margin.
   Custom layouts use `morph_tui_view_content_rect` and pass allocated outer slots
   directly to child arrange calls. Sibling margins add without collapsing.
+  See [the box model](docs/tui-box-model.md) for geometry and extension contracts.
 - Submitted chat boxes own one normal-background row above and below their
   colored padding. Reasoning, answers, and tools share that outer separator;
   streaming previews and committed output keep the same position. Keep local
