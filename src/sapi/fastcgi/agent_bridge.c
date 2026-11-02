@@ -34,9 +34,18 @@ struct bridge_runtime_slot {
 	char session_id[FCGI_RUNTIME_SESSION_ID_MAX];
 };
 
+struct fcgi_turn_ticket {
+	struct fcgi_turn_ticket *next;
+	char session_id[FCGI_RUNTIME_SESSION_ID_MAX];
+	struct timespec deadline;
+	int queued;
+};
+
 struct fcgi_bridge {
 	struct morph_log logger;
 	struct bridge_runtime_slot *slots;
+	struct fcgi_turn_ticket *turn_head;
+	struct fcgi_turn_ticket *turn_tail;
 	int slot_count;
 	int min_workers;
 	int max_workers;
@@ -166,6 +175,48 @@ static int bridge_find_expired_slot(struct fcgi_bridge *pool, time_t now)
 			return i;
 	}
 	return -1;
+}
+
+static int bridge_session_busy(struct fcgi_bridge *pool, const char *session_id)
+{
+	for (int i = 0; i < pool->slot_count; i++)
+		if (pool->slots[i].busy &&
+		    strcmp(pool->slots[i].session_id, session_id) == 0)
+			return 1;
+	return 0;
+}
+
+static struct fcgi_turn_ticket *bridge_first_runnable_ticket(
+	struct fcgi_bridge *pool)
+{
+	for (struct fcgi_turn_ticket *ticket = pool->turn_head; ticket;
+	     ticket = ticket->next)
+		if (!bridge_session_busy(pool, ticket->session_id))
+			return ticket;
+	return NULL;
+}
+
+static void bridge_ticket_unlink(struct fcgi_bridge *pool,
+				 struct fcgi_turn_ticket *ticket)
+{
+	struct fcgi_turn_ticket **link = &pool->turn_head;
+
+	while (*link && *link != ticket)
+		link = &(*link)->next;
+	if (!*link)
+		return;
+	*link = ticket->next;
+	if (pool->turn_tail == ticket)
+		pool->turn_tail = NULL;
+	if (!pool->turn_head)
+		pool->turn_tail = NULL;
+	else if (!pool->turn_tail) {
+		struct fcgi_turn_ticket *tail = pool->turn_head;
+
+		while (tail->next)
+			tail = tail->next;
+		pool->turn_tail = tail;
+	}
 }
 
 static void *bridge_reaper_main(void *user_data)
@@ -369,20 +420,75 @@ struct runtime *fcgi_bridge_runtime(struct fcgi_bridge *pool)
 	return runtime;
 }
 
-int fcgi_bridge_runtime_acquire(struct fcgi_bridge *pool, const char *session_id,
-				struct runtime **out)
+int fcgi_bridge_turn_enqueue(struct fcgi_bridge *pool, const char *session_id,
+			     struct fcgi_turn_ticket **out, int *position)
 {
-	struct timespec deadline;
-	int queued = 0;
-	int deadline_set = 0;
-	int rc;
+	struct fcgi_turn_ticket *ticket;
+	int rc = 0;
 
-	if (!session_id || !session_id[0] || !out)
+	if (!pool || !session_id || !session_id[0] || !out)
+		return -EINVAL;
+	*out = NULL;
+	ticket = calloc(1, sizeof(*ticket));
+	if (!ticket)
+		return -ENOMEM;
+	pthread_mutex_lock(&pool->lock);
+	if (pool->stopping || !pool->slots) {
+		rc = -ESHUTDOWN;
+	} else if (pool->waiting_turns >= pool->queue_max) {
+		rc = -EAGAIN;
+	} else {
+		snprintf(ticket->session_id, sizeof(ticket->session_id),
+			 "%s", session_id);
+		bridge_deadline(&ticket->deadline, pool->wait_seconds);
+		ticket->queued = 1;
+		if (pool->turn_tail)
+			pool->turn_tail->next = ticket;
+		else
+			pool->turn_head = ticket;
+		pool->turn_tail = ticket;
+		pool->waiting_turns++;
+		if (position)
+			*position = pool->waiting_turns;
+		pthread_cond_broadcast(&pool->changed);
+		*out = ticket;
+	}
+	pthread_mutex_unlock(&pool->lock);
+	if (rc != 0)
+		free(ticket);
+	return rc;
+}
+
+void fcgi_bridge_turn_cancel(struct fcgi_bridge *pool,
+			     struct fcgi_turn_ticket *ticket)
+{
+	if (!pool || !ticket)
+		return;
+	pthread_mutex_lock(&pool->lock);
+	if (ticket->queued) {
+		bridge_ticket_unlink(pool, ticket);
+		ticket->queued = 0;
+		if (pool->waiting_turns > 0)
+			pool->waiting_turns--;
+		pthread_cond_broadcast(&pool->changed);
+	}
+	pthread_mutex_unlock(&pool->lock);
+	free(ticket);
+}
+
+int fcgi_bridge_turn_acquire(struct fcgi_bridge *pool,
+			     struct fcgi_turn_ticket *ticket,
+			     struct runtime **out)
+{
+	int rc = 0;
+
+	if (!pool || !ticket || !out)
 		return -EINVAL;
 	*out = NULL;
 	pthread_mutex_lock(&pool->lock);
 	for (;;) {
 		struct runtime *created = NULL;
+		struct fcgi_turn_ticket *first;
 		int session_busy;
 		int free_slot;
 
@@ -390,14 +496,33 @@ int fcgi_bridge_runtime_acquire(struct fcgi_bridge *pool, const char *session_id
 			rc = -ESHUTDOWN;
 			break;
 		}
-		free_slot = bridge_find_free_slot(pool, session_id, &session_busy);
+		if (!ticket->queued) {
+			rc = -ECANCELED;
+			break;
+		}
+		first = bridge_first_runnable_ticket(pool);
+		if (first != ticket) {
+			rc = pthread_cond_timedwait(&pool->changed, &pool->lock,
+						    &ticket->deadline);
+			if (rc == ETIMEDOUT) {
+				rc = -ETIMEDOUT;
+				break;
+			}
+			if (rc != 0) {
+				rc = -rc;
+				break;
+			}
+			continue;
+		}
+		free_slot = bridge_find_free_slot(pool, ticket->session_id,
+						  &session_busy);
 		if (!session_busy && free_slot >= 0) {
 			struct bridge_runtime_slot *slot = &pool->slots[free_slot];
 
 			slot->busy = 1;
 			slot->idle_since = 0;
 			snprintf(slot->session_id, sizeof(slot->session_id),
-				 "%s", session_id);
+				 "%s", ticket->session_id);
 			*out = slot->runtime;
 			rc = 0;
 			break;
@@ -433,30 +558,39 @@ int fcgi_bridge_runtime_acquire(struct fcgi_bridge *pool, const char *session_id
 				 pool->slot_count);
 			continue;
 		}
-		if (!queued) {
-			if (pool->waiting_turns >= pool->queue_max) {
-				rc = -EAGAIN;
-				break;
-			}
-			pool->waiting_turns++;
-			queued = 1;
-		}
-		if (!deadline_set) {
-			bridge_deadline(&deadline, pool->wait_seconds);
-			deadline_set = 1;
-		}
-		rc = pthread_cond_timedwait(&pool->changed, &pool->lock, &deadline);
+		rc = pthread_cond_timedwait(&pool->changed, &pool->lock,
+					    &ticket->deadline);
 		if (rc == ETIMEDOUT) {
 			rc = -ETIMEDOUT;
 			break;
 		}
+		if (rc != 0) {
+			rc = -rc;
+			break;
+		}
 	}
-	if (queued)
-		pool->waiting_turns--;
+	if (ticket->queued) {
+		bridge_ticket_unlink(pool, ticket);
+		ticket->queued = 0;
+		if (pool->waiting_turns > 0)
+			pool->waiting_turns--;
+		pthread_cond_broadcast(&pool->changed);
+	}
 	pthread_mutex_unlock(&pool->lock);
+	free(ticket);
+	return rc;
+}
+
+int fcgi_bridge_runtime_acquire(struct fcgi_bridge *pool, const char *session_id,
+				struct runtime **out)
+{
+	struct fcgi_turn_ticket *ticket = NULL;
+	int rc;
+
+	rc = fcgi_bridge_turn_enqueue(pool, session_id, &ticket, NULL);
 	if (rc != 0)
 		return rc;
-	return 0;
+	return fcgi_bridge_turn_acquire(pool, ticket, out);
 }
 
 void fcgi_bridge_runtime_release(struct fcgi_bridge *pool, struct runtime *runtime)

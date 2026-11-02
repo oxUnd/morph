@@ -70,6 +70,22 @@ static char *artifact_meta_json(const struct artifact_record *a)
 	return json;
 }
 
+static void artifact_safe_filename(const char *src, char out[256])
+{
+	size_t n = 0;
+
+	if (!src || !*src)
+		src = "artifact";
+	for (; *src && n + 1 < 256; src++) {
+		unsigned char c = (unsigned char)*src;
+		if (c == '"' || c == '\\' || c == '\r' || c == '\n' ||
+		    c < 0x20)
+			c = '_';
+		out[n++] = (char)c;
+	}
+	out[n] = '\0';
+}
+
 void handle_list_artifacts(request_t *r)
 {
 	const char *sid = path_param(r, "id");
@@ -117,8 +133,10 @@ void handle_artifact_meta(request_t *r)
 void handle_get_artifact(request_t *r)
 {
 	const char *aid = path_param(r, "artifact");
+	const char *rid;
 	struct artifact_record a;
 	char path[PATH_MAX];
+	char filename[256];
 	struct stat st;
 	FILE *fp;
 	char buf[BUFSIZ];
@@ -145,16 +163,20 @@ void handle_get_artifact(request_t *r)
 		reply_500(r, "open artifact failed");
 		return;
 	}
+	artifact_safe_filename(a.filename[0] ? a.filename : a.id, filename);
+	rid = r->request_id[0] ? r->request_id : "-";
+	fcgi_record_status(r, 200);
 	FCGX_FPrintF(r->fcgx->out,
 		"Status: 200 OK\r\n"
 		"Content-Type: %s\r\n"
 		"Content-Length: %lld\r\n"
 		"Cache-Control: private, no-store\r\n"
+		"X-Request-Id: %s\r\n"
 		"Content-Disposition: attachment; filename=\"%s\"\r\n"
 		"\r\n",
 		a.mime[0] ? a.mime : "application/octet-stream",
 		(long long)st.st_size,
-		a.filename[0] ? a.filename : a.id);
+		rid, filename);
 	while ((rd = fread(buf, 1, sizeof(buf), fp)) > 0)
 		FCGX_PutStr(buf, (int)rd, r->fcgx->out);
 	fclose(fp);

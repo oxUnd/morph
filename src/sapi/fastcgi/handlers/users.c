@@ -39,8 +39,11 @@ static int read_user_password(request_t *r, char **body_out,
 	cJSON *p;
 	cJSON *code;
 
-	if (fcgi_read_body(r, &body, &blen) != 0)
-		return -EFBIG;
+	{
+		int rc = fcgi_read_body(r, &body, &blen);
+		if (rc != 0)
+			return rc;
+	}
 	root = cJSON_Parse(body ? body : "{}");
 	if (!cJSON_IsObject(root)) {
 		cJSON_Delete(root);
@@ -84,7 +87,10 @@ void handle_install(request_t *r)
 				&signup_code);
 	(void)signup_code;
 	if (rc < 0) {
-		reply_400(r, rc == -EFBIG ? "body too large" : "invalid json");
+		if (rc == -EINVAL)
+			reply_400(r, "invalid json");
+		else
+			reply_body_error(r, rc);
 		return;
 	}
 	snprintf(username_buf, sizeof(username_buf), "%s", username);
@@ -137,7 +143,10 @@ void handle_signup(request_t *r)
 	rc = read_user_password(r, &body, &root, &username, &password,
 				&signup_code);
 	if (rc < 0) {
-		reply_400(r, rc == -EFBIG ? "body too large" : "invalid json");
+		if (rc == -EINVAL)
+			reply_400(r, "invalid json");
+		else
+			reply_body_error(r, rc);
 		return;
 	}
 	if (required_code && *required_code &&

@@ -72,6 +72,14 @@ int  store_session_owned_by(struct session_store *s, const char *session_id,
 			    const char *user_id);
 int  store_list_sessions_json(struct session_store *s, const char *user_id,
 			      char **out_json);
+int  store_list_sessions_page_json(struct session_store *s, const char *user_id,
+				   int limit, int offset, char **out_json);
+int  store_update_session(struct session_store *s, const char *session_id,
+			  const char *user_id, const char *name,
+			  const char *model);
+int  store_messages_json(struct session_store *s, const char *session_id,
+			 const char *user_id, int limit, int64_t before,
+			 char **out_json);
 int  store_delete_session(struct session_store *s, const char *session_id,
 			  const char *user_id);
 
@@ -87,6 +95,8 @@ int  store_user_quota_json(struct session_store *s, const char *user_id,
 int  store_quota_begin_turn(struct session_store *s, const char *user_id,
 			    const char *session_id, char out_turn_id[64]);
 void store_quota_end_turn(struct session_store *s, const char *turn_id);
+void store_turn_heartbeat(struct session_store *s, const char *turn_id);
+int  store_maintenance(struct session_store *s);
 
 /* artifacts */
 int  store_artifact_register(struct session_store *s, const char *user_id,
@@ -105,6 +115,10 @@ int  events_publish(struct session_store *s, const char *session_id,
 int  events_wait_after(struct session_store *s, const char *session_id,
 		       int64_t last_id, int timeout_sec,
 		       struct event_record *rec);
+int  events_wait_batch(struct session_store *s, const char *session_id,
+		       int64_t last_id, int timeout_sec,
+		       struct event_record *out, int max, int *count);
+void store_wake_all(struct session_store *s);
 
 /* actions */
 int  actions_enqueue(struct session_store *s, const char *session_id,
@@ -132,5 +146,6 @@ int  login_token_verify(const char *token,
 			char out_username[64],
 			char out_role[24]);
 void login_token_revoke(const char *token);
+int  login_token_prune(void);
 
 #endif

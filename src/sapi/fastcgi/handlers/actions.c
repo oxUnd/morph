@@ -20,7 +20,10 @@ void handle_post_action(request_t *r)
 	if (!store_session_owned_by(r->store, sid, r->user_id)) { reply_403(r); return; }
 
 	char *body = NULL; size_t blen = 0;
-	if (fcgi_read_body(r, &body, &blen) != 0) { reply_400(r, "body too large"); return; }
+	{
+		int rc = fcgi_read_body(r, &body, &blen);
+		if (rc != 0) { reply_body_error(r, rc); return; }
+	}
 
 	cJSON *root = cJSON_Parse(body ? body : "{}");
 	if (!cJSON_IsObject(root)) {

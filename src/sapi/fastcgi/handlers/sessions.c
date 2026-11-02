@@ -16,7 +16,10 @@
 void handle_create_session(request_t *r)
 {
 	char *body = NULL; size_t blen = 0;
-	if (fcgi_read_body(r, &body, &blen) != 0) { reply_400(r, "body too large"); return; }
+	{
+		int rc = fcgi_read_body(r, &body, &blen);
+		if (rc != 0) { reply_body_error(r, rc); return; }
+	}
 
 	cJSON *root = cJSON_Parse(body ? body : "{}");
 	const char *name  = "untitled";
@@ -44,7 +47,15 @@ void handle_create_session(request_t *r)
 void handle_list_sessions(request_t *r)
 {
 	char *json = NULL;
-	if (store_list_sessions_json(r->store, r->user_id, &json) != 0) {
+	int limit = (int)query_i64(r, "limit", 50);
+	int offset = (int)query_i64(r, "offset", 0);
+
+	if (limit <= 0 || limit > 200)
+		limit = 50;
+	if (offset < 0)
+		offset = 0;
+	if (store_list_sessions_page_json(r->store, r->user_id, limit, offset,
+					  &json) != 0) {
 		reply_500(r, "list failed"); return;
 	}
 	reply_200_json(r, json);
@@ -60,6 +71,75 @@ void handle_get_session(request_t *r)
 	char buf[256];
 	snprintf(buf, sizeof(buf), "{\"id\":\"%s\"}", sid);
 	reply_200_json(r, buf);
+}
+
+/* PATCH /api/sessions/:id  { "name": "...", "model": "..." } */
+void handle_update_session(request_t *r)
+{
+	const char *sid = path_param(r, "id");
+	char *body = NULL;
+	size_t blen = 0;
+	cJSON *root;
+	const char *name = NULL;
+	const char *model = NULL;
+	int rc;
+
+	if (!sid) { reply_400(r, "missing id"); return; }
+	rc = fcgi_read_body(r, &body, &blen);
+	if (rc != 0) { reply_body_error(r, rc); return; }
+	root = cJSON_Parse(body ? body : "{}");
+	free(body);
+	if (!cJSON_IsObject(root)) {
+		cJSON_Delete(root);
+		reply_400(r, "invalid JSON body");
+		return;
+	}
+	{
+		cJSON *n = cJSON_GetObjectItem(root, "name");
+		cJSON *m = cJSON_GetObjectItem(root, "model");
+
+		if (n && !cJSON_IsString(n)) {
+			cJSON_Delete(root);
+			reply_400(r, "name must be a string");
+			return;
+		}
+		if (m && !cJSON_IsString(m)) {
+			cJSON_Delete(root);
+			reply_400(r, "model must be a string");
+			return;
+		}
+		name = cJSON_GetStringValue(n);
+		model = cJSON_GetStringValue(m);
+	}
+	rc = store_update_session(r->store, sid, r->user_id, name, model);
+	cJSON_Delete(root);
+	if (rc == -ENOENT) { reply_404(r); return; }
+	if (rc == -EINVAL) { reply_400(r, "nothing to update"); return; }
+	if (rc != 0) { reply_500(r, "update failed"); return; }
+	{
+		char buf[256];
+
+		snprintf(buf, sizeof(buf), "{\"id\":\"%s\"}", sid);
+		reply_200_json(r, buf);
+	}
+}
+
+/* GET /api/sessions/:id/messages?limit=&before= */
+void handle_list_messages(request_t *r)
+{
+	const char *sid = path_param(r, "id");
+	char *json = NULL;
+	int limit = (int)query_i64(r, "limit", 100);
+	int64_t before = query_i64(r, "before", 0);
+	int rc;
+
+	if (!sid) { reply_400(r, "missing id"); return; }
+	rc = store_messages_json(r->store, sid, r->user_id, limit, before,
+				 &json);
+	if (rc == -ENOENT) { reply_404(r); return; }
+	if (rc != 0) { reply_500(r, "messages failed"); return; }
+	reply_200_json(r, json);
+	free(json);
 }
 
 /* DELETE /api/sessions/:id */

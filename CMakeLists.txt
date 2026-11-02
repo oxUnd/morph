@@ -31,6 +31,11 @@ find_package(Threads REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(CURL 7.84 REQUIRED)
 find_package(PkgConfig REQUIRED)
+
+if(NOT TARGET SQLite3::SQLite3 AND TARGET SQLite::SQLite3)
+    add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
+endif()
+
 pkg_check_modules(FREETYPE REQUIRED freetype2)
 pkg_check_modules(HARFBUZZ REQUIRED harfbuzz)
 pkg_check_modules(VIPS REQUIRED vips)
