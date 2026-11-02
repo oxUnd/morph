@@ -3,3 +3,9 @@ build
 .gitignore
 .DS_Store
 **/*.md
+web/node_modules
+web/dist
+web/coverage
+web/.env
+web/.env.*
+output
