@@ -34,6 +34,8 @@ static const route_t ROUTES[] = {
 	{ "POST", "/api/sessions",                     handle_create_session, 1, 0 },
 	{ "GET",  "/api/sessions",                     handle_list_sessions,  1, 0 },
 	{ "GET",  "/api/sessions/:id",                 handle_get_session,    1, 0 },
+	{ "PATCH","/api/sessions/:id",                 handle_update_session, 1, 0 },
+	{ "GET",  "/api/sessions/:id/messages",        handle_list_messages,  1, 0 },
 	{ "DELETE","/api/sessions/:id",                handle_delete_session, 1, 0 },
 
 	/* turns (one ReAct round) */
@@ -104,9 +106,12 @@ static int match_pattern(const char *pattern, const char *path, request_t *r)
 }
 
 /* ------------ entry ------------ */
-void router_dispatch(request_t *r)
+int router_dispatch(request_t *r)
 {
-	if (!r->method || !r->path) { reply_400(r, "missing method/path"); return; }
+	if (!r->method || !r->path) {
+		reply_400(r, "missing method/path");
+		return 0;
+	}
 
 	for (size_t i = 0; i < N_ROUTES; i++) {
 		const route_t *rt = &ROUTES[i];
@@ -115,11 +120,15 @@ void router_dispatch(request_t *r)
 
 		if (!rt->allowed_during_setup && store_setup_required(r->store)) {
 			reply_json(r, 403, "{\"error\":\"setup_required\"}");
-			return;
+			return 0;
 		}
-		if (rt->needs_auth && !auth_check(r)) { reply_401(r); return; }
+		if (rt->needs_auth && !auth_check(r)) {
+			reply_401(r);
+			return 0;
+		}
 		rt->fn(r);
-		return;
+		return r->handed_off ? 1 : 0;
 	}
 	reply_404(r);
+	return 0;
 }

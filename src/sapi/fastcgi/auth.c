@@ -13,6 +13,7 @@
 
 /* ---- in-memory token cache (hash table) ---- */
 #define TOKEN_CACHE_SIZE 256
+#define TOKEN_CACHE_MAX  4096
 
 struct token_entry {
 	char            token[64];
@@ -26,6 +27,7 @@ struct token_entry {
 struct fcgi_auth {
 	char trust_header[64];
 	struct token_entry *tokens[TOKEN_CACHE_SIZE];
+	size_t token_count;
 	pthread_mutex_t lock;
 };
 
@@ -66,6 +68,20 @@ static void cache_put(struct fcgi_auth *ctx, const char *token, const char *user
 		}
 	}
 
+	if (ctx->token_count >= TOKEN_CACHE_MAX) {
+		size_t victim;
+
+		for (victim = 0; victim < TOKEN_CACHE_SIZE; victim++)
+			if (ctx->tokens[victim])
+				break;
+		if (victim < TOKEN_CACHE_SIZE) {
+			e = ctx->tokens[victim];
+			ctx->tokens[victim] = e->next;
+			ctx->token_count--;
+			free(e);
+		}
+	}
+
 	e = calloc(1, sizeof(*e));
 	if (!e) return;
 	snprintf(e->token, sizeof(e->token), "%s", token);
@@ -75,6 +91,7 @@ static void cache_put(struct fcgi_auth *ctx, const char *token, const char *user
 	e->expires_at = expires_at;
 	e->next = ctx->tokens[idx];
 	ctx->tokens[idx] = e;
+	ctx->token_count++;
 }
 
 static void cache_del(struct fcgi_auth *ctx, const char *tok)
@@ -87,6 +104,8 @@ static void cache_del(struct fcgi_auth *ctx, const char *tok)
 		if (strcmp((*pp)->token, tok) == 0) {
 			struct token_entry *del = *pp;
 			*pp = del->next;
+			if (ctx->token_count > 0)
+				ctx->token_count--;
 			free(del);
 			return;
 		}

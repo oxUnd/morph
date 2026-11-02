@@ -8,7 +8,10 @@
 #define _GNU_SOURCE
 #include "handlers.h"
 #include "../session_store.h"
+#include "../stream_pool.h"
+#include "util/signals.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,15 +20,20 @@
 #define SSE_HEARTBEAT_SEC   15
 #define SSE_MAX_LIFETIME    3600
 
-void handle_sse(request_t *r)
+static void sse_serve(request_t *r)
 {
 	const char *sid = path_param(r, "id");
-	if (!sid) { reply_400(r, "missing id"); return; }
-	if (!store_session_owned_by(r->store, sid, r->user_id)) { reply_403(r); return; }
-
 	int64_t last_id = 0;
+	char *end = NULL;
+
+	fprintf(stderr, "sse_serve sid=%s\n", sid ? sid : "(null)");
+	if (!sid)
+		return;
 	if (r->last_event_id && *r->last_event_id) {
-		last_id = strtoll(r->last_event_id, NULL, 10);
+		long long parsed = strtoll(r->last_event_id, &end, 10);
+
+		if (end && *end == '\0' && parsed >= 0)
+			last_id = (int64_t)parsed;
 	}
 
 	sse_write_headers(r);
@@ -41,9 +49,16 @@ void handle_sse(request_t *r)
 
 	while (time(NULL) - start < SSE_MAX_LIFETIME) {
 		struct event_record rec = {0};
+
+		if (r->shutdown && morph_signal_flag_get(r->shutdown))
+			break;
 		int got = events_wait_after(r->store, sid, last_id,
 					    SSE_HEARTBEAT_SEC, &rec);
 		if (got < 0) break;
+		if (r->shutdown && morph_signal_flag_get(r->shutdown)) {
+			free(rec.payload_json);
+			break;
+		}
 		if (got == 1) {
 			sse_write_event(r, rec.id, rec.type,
 					rec.payload_json ? rec.payload_json : "{}");
@@ -54,4 +69,36 @@ void handle_sse(request_t *r)
 		}
 		if (sse_flush(r) != 0) break;
 	}
+}
+
+void handle_sse(request_t *r)
+{
+	const char *sid = path_param(r, "id");
+	int rc;
+
+	fprintf(stderr, "handle_sse sid=%s\n", sid ? sid : "(null)");
+	if (!sid) { reply_400(r, "missing id"); return; }
+	if (!store_session_owned_by(r->store, sid, r->user_id)) {
+		reply_403(r);
+		return;
+	}
+	if (!r->streams) {
+		reply_500(r, "stream pool unavailable");
+		return;
+	}
+	rc = fcgi_stream_pool_submit(r->streams, r, sse_serve);
+	fprintf(stderr, "handle_sse submit rc=%d\n", rc);
+	if (rc == 0) {
+		r->handed_off = 1;
+		return;
+	}
+	if (rc == -EAGAIN) {
+		reply_json(r, 503, "{\"error\":\"stream_queue_full\"}");
+		return;
+	}
+	if (rc == -ESHUTDOWN) {
+		reply_json(r, 503, "{\"error\":\"shutting_down\"}");
+		return;
+	}
+	reply_500(r, "stream unavailable");
 }

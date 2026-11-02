@@ -24,6 +24,8 @@
 #include "util/cancel.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
+#include <time.h>
 #include <limits.h>
 #include <errno.h>
 #include <stdio.h>
@@ -62,6 +64,24 @@ struct turn_job {
 	char pending_type[32];
 	char *pending_payload;
 	unsigned long long ask_sequence;
+	struct fcgi_turn_ticket *ticket;
+	int queue_position;
+	int64_t enqueued_ms;
+	pthread_t heartbeat_thread;
+	atomic_int heartbeat_stop;
+	int heartbeat_started;
+	char pending_thought[2048];
+	size_t pending_thought_len;
+	int64_t pending_thought_ms;
+	char pending_reasoning[2048];
+	size_t pending_reasoning_len;
+	int64_t pending_reasoning_ms;
+	char pending_tool_stream[2048];
+	size_t pending_tool_stream_len;
+	int64_t pending_tool_stream_ms;
+	char pending_tool_name[128];
+	char pending_tool_kind[32];
+	char pending_tool_call_id[128];
 };
 
 static const char *bridge_output_dir(struct turn_job *j)
@@ -402,6 +422,68 @@ static char *event_data_string(cJSON *data, const char *key)
 	return cJSON_PrintUnformatted(item);
 }
 
+static int64_t turn_mono_ms(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static void turn_flush_thought(struct turn_job *j)
+{
+	if (!j || j->pending_thought_len == 0)
+		return;
+	j->pending_thought[j->pending_thought_len] = '\0';
+	event_sink_thought_turn(j->store, j->session_id, j->turn_id,
+				j->pending_thought);
+	j->pending_thought_len = 0;
+}
+
+static void turn_flush_reasoning(struct turn_job *j)
+{
+	if (!j || j->pending_reasoning_len == 0)
+		return;
+	j->pending_reasoning[j->pending_reasoning_len] = '\0';
+	event_sink_reasoning_turn(j->store, j->session_id, j->turn_id,
+				  j->pending_reasoning);
+	j->pending_reasoning_len = 0;
+}
+
+static void turn_flush_tool_stream(struct turn_job *j)
+{
+	if (!j || j->pending_tool_stream_len == 0)
+		return;
+	j->pending_tool_stream[j->pending_tool_stream_len] = '\0';
+	event_sink_tool_stream_turn(j->store, j->session_id, j->turn_id,
+				    j->pending_tool_name,
+				    j->pending_tool_kind,
+				    j->pending_tool_stream,
+				    j->pending_tool_call_id);
+	j->pending_tool_stream_len = 0;
+}
+
+static void turn_flush_pending(struct turn_job *j)
+{
+	turn_flush_thought(j);
+	turn_flush_reasoning(j);
+	turn_flush_tool_stream(j);
+}
+
+static void turn_pending_append(char *buf, size_t *len, int64_t *started,
+				const char *text)
+{
+	size_t n;
+
+	if (!text || !*text)
+		return;
+	n = strlen(text);
+	if (*len == 0)
+		*started = turn_mono_ms();
+	memcpy(buf + *len, text, n);
+	*len += n;
+}
+
 static int bridge_event_cb(const struct morph_event *ev, void *u)
 {
 	struct turn_job *j = (struct turn_job *)u;
@@ -412,6 +494,12 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 		return -EINVAL;
 	data = ev->data;
 	turn_id = ev->turn_id ? ev->turn_id : j->turn_id;
+
+	if (strcmp(ev->name, "react.thought.delta") != 0 &&
+	    strcmp(ev->name, "react.content.delta") != 0 &&
+	    strcmp(ev->name, "react.reasoning.delta") != 0 &&
+	    strcmp(ev->name, "tool.stream.delta") != 0)
+		turn_flush_pending(j);
 
 	if (strcmp(ev->name, "auth.required") == 0) {
 		cJSON *root = cJSON_CreateObject();
@@ -439,18 +527,58 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 	if (strcmp(ev->name, "react.thought.delta") == 0 ||
 		    strcmp(ev->name, "react.content.delta") == 0) {
 		char *text = event_data_string(data, "text");
-		if (text && *text)
-			event_sink_thought_turn(j->store, j->session_id,
-						turn_id, text);
+
+		if (text && *text) {
+			size_t n = strlen(text);
+
+			if (j->pending_thought_len + n + 1 >
+			    sizeof(j->pending_thought))
+				turn_flush_thought(j);
+			if (n + 1 > sizeof(j->pending_thought)) {
+				event_sink_thought_turn(j->store,
+							j->session_id,
+							turn_id, text);
+			} else {
+				turn_pending_append(j->pending_thought,
+						    &j->pending_thought_len,
+						    &j->pending_thought_ms,
+						    text);
+				if (j->pending_thought_len >=
+				    sizeof(j->pending_thought) - 64 ||
+				    turn_mono_ms() -
+				    j->pending_thought_ms >= 100)
+					turn_flush_thought(j);
+			}
+		}
 		free(text);
 		return 0;
 	}
 
 	if (strcmp(ev->name, "react.reasoning.delta") == 0) {
 		char *text = event_data_string(data, "text");
-		if (text && *text)
-			event_sink_reasoning_turn(j->store, j->session_id,
-						  turn_id, text);
+
+		if (text && *text) {
+			size_t n = strlen(text);
+
+			if (j->pending_reasoning_len + n + 1 >
+			    sizeof(j->pending_reasoning))
+				turn_flush_reasoning(j);
+			if (n + 1 > sizeof(j->pending_reasoning)) {
+				event_sink_reasoning_turn(j->store,
+							  j->session_id,
+							  turn_id, text);
+			} else {
+				turn_pending_append(j->pending_reasoning,
+						    &j->pending_reasoning_len,
+						    &j->pending_reasoning_ms,
+						    text);
+				if (j->pending_reasoning_len >=
+				    sizeof(j->pending_reasoning) - 64 ||
+				    turn_mono_ms() -
+				    j->pending_reasoning_ms >= 100)
+					turn_flush_reasoning(j);
+			}
+		}
 		free(text);
 		return 0;
 	}
@@ -974,6 +1102,19 @@ fcgi_turn_operation_approval(const struct tool_operation *op, void *turn_data)
 	return got ? TOOL_OP_ALLOW : TOOL_OP_DENY;
 }
 
+static void *turn_heartbeat_thread(void *arg)
+{
+	struct turn_job *j = (struct turn_job *)arg;
+	const struct timespec tick = {1, 0};
+
+	while (!atomic_load(&j->heartbeat_stop)) {
+		store_turn_heartbeat(j->store, j->turn_id);
+		for (int i = 0; i < 15 && !atomic_load(&j->heartbeat_stop); i++)
+			nanosleep(&tick, NULL);
+	}
+	return NULL;
+}
+
 static void *turn_thread(void *arg)
 {
 	struct turn_job *j = (struct turn_job *)arg;
@@ -982,7 +1123,12 @@ static void *turn_thread(void *arg)
 	struct runtime_request request;
 	struct runtime_result result;
 	int run_rc;
+	int ok = 0;
+	int64_t waited_ms = 0;
 
+	atomic_init(&j->heartbeat_stop, 0);
+	if (pthread_create(&j->heartbeat_thread, NULL, turn_heartbeat_thread, j) == 0)
+		j->heartbeat_started = 1;
 	memset(&result, 0, sizeof(result));
 	if (session_get_by_display_id(&j->store->db, j->session_id, &sess) == 0) {
 		memset(&request, 0, sizeof(request));
@@ -1012,12 +1158,40 @@ static void *turn_thread(void *arg)
 		request.override_action_drain = 1;
 		request.turn_flags = AGENT_TURN_DEFAULT_FLAGS;
 
+		run_rc = fcgi_bridge_turn_acquire(j->bridge, j->ticket, &runtime);
+		j->ticket = NULL;
+		if (run_rc != 0) {
+			cJSON *err = cJSON_CreateObject();
+			char *json = NULL;
+
+			if (err) {
+				cJSON_AddStringToObject(err, "turn_id", j->turn_id);
+				cJSON_AddStringToObject(err, "message",
+							morph_strerror(run_rc));
+				cJSON_AddBoolToObject(err, "retryable",
+						      run_rc == -ETIMEDOUT ||
+						      run_rc == -EAGAIN);
+				json = cJSON_PrintUnformatted(err);
+				cJSON_Delete(err);
+			}
+			events_publish(j->store, j->session_id, "error",
+				       json ? json :
+				       "{\"message\":\"turn failed\"}");
+			free(json);
+			goto out;
+		}
+		waited_ms = morph_io_now_ms() - j->enqueued_ms;
 		{
 			cJSON *start = cJSON_CreateObject();
 			char *json = NULL;
+
 			if (start) {
 				cJSON_AddStringToObject(start, "phase", "begin");
 				cJSON_AddStringToObject(start, "turn_id", j->turn_id);
+				cJSON_AddNumberToObject(start, "queue_position",
+							j->queue_position);
+				cJSON_AddNumberToObject(start, "waited_ms",
+							(double)waited_ms);
 				json = cJSON_PrintUnformatted(start);
 				cJSON_Delete(start);
 			}
@@ -1025,10 +1199,7 @@ static void *turn_thread(void *arg)
 				       json ? json : "{\"phase\":\"begin\"}");
 			free(json);
 		}
-
-		run_rc = fcgi_bridge_runtime_acquire(j->bridge, j->session_id, &runtime);
-		if (run_rc == 0)
-			run_rc = runtime_execute_turn(runtime, &request, &result);
+		run_rc = runtime_execute_turn(runtime, &request, &result);
 		fcgi_bridge_runtime_release(j->bridge, runtime);
 		runtime = NULL;
 		if (run_rc != 0) {
@@ -1060,6 +1231,7 @@ static void *turn_thread(void *arg)
 			}
 			free(fallback);
 		}
+		ok = 1;
 	} else {
 		cJSON *err = cJSON_CreateObject();
 		char *json = NULL;
@@ -1076,12 +1248,27 @@ static void *turn_thread(void *arg)
 		free(json);
 		goto out;
 	}
+
+out:
+	if (j->heartbeat_started) {
+		atomic_store(&j->heartbeat_stop, 1);
+		pthread_join(j->heartbeat_thread, NULL);
+		j->heartbeat_started = 0;
+	}
+	if (j->ticket) {
+		fcgi_bridge_turn_cancel(j->bridge, j->ticket);
+		j->ticket = NULL;
+	}
+	fcgi_bridge_runtime_release(j->bridge, runtime);
 	{
 		cJSON *end = cJSON_CreateObject();
 		char *json = NULL;
+
 		if (end) {
 			cJSON_AddStringToObject(end, "phase", "done");
 			cJSON_AddStringToObject(end, "turn_id", j->turn_id);
+			cJSON_AddStringToObject(end, "status",
+						ok ? "ok" : "error");
 			json = cJSON_PrintUnformatted(end);
 			cJSON_Delete(end);
 		}
@@ -1089,9 +1276,6 @@ static void *turn_thread(void *arg)
 			       json ? json : "{\"phase\":\"done\"}");
 		free(json);
 	}
-
-out:
-	fcgi_bridge_runtime_release(j->bridge, runtime);
 	store_quota_end_turn(j->store, j->turn_id);
 	fcgi_bridge_turn_end(j->bridge);
 	free(j->action_payload);
@@ -1101,6 +1285,35 @@ out:
 	return NULL;
 }
 
+static void turn_job_publish_abort(struct turn_job *j, const char *message)
+{
+	cJSON *err = cJSON_CreateObject();
+	cJSON *end = cJSON_CreateObject();
+	char *err_json = NULL;
+	char *end_json = NULL;
+
+	if (err) {
+		cJSON_AddStringToObject(err, "turn_id", j->turn_id);
+		cJSON_AddStringToObject(err, "message", message ? message : "turn failed");
+		err_json = cJSON_PrintUnformatted(err);
+		cJSON_Delete(err);
+	}
+	events_publish(j->store, j->session_id, "error",
+		       err_json ? err_json : "{\"message\":\"turn failed\"}");
+	free(err_json);
+
+	if (end) {
+		cJSON_AddStringToObject(end, "phase", "done");
+		cJSON_AddStringToObject(end, "turn_id", j->turn_id);
+		cJSON_AddStringToObject(end, "status", "error");
+		end_json = cJSON_PrintUnformatted(end);
+		cJSON_Delete(end);
+	}
+	events_publish(j->store, j->session_id, "turn_end",
+		       end_json ? end_json : "{\"phase\":\"done\"}");
+	free(end_json);
+}
+
 void handle_post_turn(request_t *r)
 {
 	const char *sid = path_param(r, "id");
@@ -1108,7 +1321,10 @@ void handle_post_turn(request_t *r)
 	if (!store_session_owned_by(r->store, sid, r->user_id)) { reply_403(r); return; }
 
 	char *body = NULL; size_t blen = 0;
-	if (fcgi_read_body(r, &body, &blen) != 0) { reply_400(r, "body too large"); return; }
+	{
+		int rc = fcgi_read_body(r, &body, &blen);
+		if (rc != 0) { reply_body_error(r, rc); return; }
+	}
 	cJSON *root = cJSON_Parse(body ? body : "{}");
 	const char *input = "";
 	if (cJSON_IsObject(root)) {
@@ -1150,7 +1366,51 @@ void handle_post_turn(request_t *r)
 		free(j); cJSON_Delete(root); free(body);
 		reply_500(r, "oom"); return;
 	}
+	{
+		int position = 0;
+		int qrc = fcgi_bridge_turn_enqueue(r->bridge, sid, &j->ticket,
+						   &position);
+
+		if (qrc == -EAGAIN) {
+			store_quota_end_turn(r->store, j->turn_id);
+			free(j->input); free(j);
+			cJSON_Delete(root); free(body);
+			reply_json(r, 429,
+				   "{\"error\":\"queue_full\","
+				   "\"retryable\":true}");
+			return;
+		}
+		if (qrc != 0) {
+			store_quota_end_turn(r->store, j->turn_id);
+			free(j->input); free(j);
+			cJSON_Delete(root); free(body);
+			reply_json(r, 503, "{\"error\":\"shutting_down\"}");
+			return;
+		}
+		j->queue_position = position;
+		j->enqueued_ms = morph_io_now_ms();
+		{
+			cJSON *queued = cJSON_CreateObject();
+			char *json = NULL;
+
+			if (queued) {
+				cJSON_AddStringToObject(queued, "turn_id",
+							j->turn_id);
+				cJSON_AddNumberToObject(queued, "position",
+							position);
+				json = cJSON_PrintUnformatted(queued);
+				cJSON_Delete(queued);
+			}
+			events_publish(j->store, j->session_id, "turn_queued",
+				       json ? json :
+				       "{\"position\":1}");
+			free(json);
+		}
+	}
 	if (fcgi_bridge_turn_begin(r->bridge) != 0) {
+		fcgi_bridge_turn_cancel(r->bridge, j->ticket);
+		j->ticket = NULL;
+		turn_job_publish_abort(j, "shutting down");
 		store_quota_end_turn(r->store, j->turn_id);
 		free(j->input); free(j); cJSON_Delete(root); free(body);
 		reply_json(r, 503, "{\"error\":\"shutting_down\"}");
@@ -1159,7 +1419,10 @@ void handle_post_turn(request_t *r)
 
 	pthread_t tid;
 	if (pthread_create(&tid, NULL, turn_thread, j) != 0) {
+		fcgi_bridge_turn_cancel(j->bridge, j->ticket);
+		j->ticket = NULL;
 		fcgi_bridge_turn_end(j->bridge);
+		turn_job_publish_abort(j, "thread spawn failed");
 		store_quota_end_turn(r->store, j->turn_id);
 		free(j->input); free(j); cJSON_Delete(root); free(body);
 		reply_500(r, "thread spawn"); return;
@@ -1168,5 +1431,19 @@ void handle_post_turn(request_t *r)
 
 	cJSON_Delete(root);
 	free(body);
-	reply_202_json(r, "{\"accepted\":true}");
+	{
+		cJSON *accepted = cJSON_CreateObject();
+		char *json = NULL;
+
+		if (accepted) {
+			cJSON_AddBoolToObject(accepted, "accepted", 1);
+			cJSON_AddStringToObject(accepted, "turn_id", j->turn_id);
+			cJSON_AddNumberToObject(accepted, "queue_position",
+						j->queue_position);
+			json = cJSON_PrintUnformatted(accepted);
+			cJSON_Delete(accepted);
+		}
+		reply_202_json(r, json ? json : "{\"accepted\":true}");
+		free(json);
+	}
 }

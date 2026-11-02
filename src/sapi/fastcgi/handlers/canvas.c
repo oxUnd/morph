@@ -28,7 +28,10 @@ void handle_add_canvas_node(request_t *r)
 	if (!store_session_owned_by(r->store, sid, r->user_id)) { reply_403(r); return; }
 
 	char *body = NULL; size_t blen = 0;
-	if (fcgi_read_body(r, &body, &blen) != 0) { reply_400(r, "body too large"); return; }
+	{
+		int rc = fcgi_read_body(r, &body, &blen);
+		if (rc != 0) { reply_body_error(r, rc); return; }
+	}
 
 	char node_id[40] = {0};
 	int rc = canvas_add_node(r->store, sid, body, node_id);
@@ -53,7 +56,10 @@ void handle_patch_canvas_node(request_t *r)
 	if (!store_session_owned_by(r->store, sid, r->user_id)) { reply_403(r); return; }
 
 	char *body = NULL; size_t blen = 0;
-	if (fcgi_read_body(r, &body, &blen) != 0) { reply_400(r, "body too large"); return; }
+	{
+		int rc = fcgi_read_body(r, &body, &blen);
+		if (rc != 0) { reply_body_error(r, rc); return; }
+	}
 
 	int rc = canvas_patch_node(r->store, sid, node, body);
 	free(body);

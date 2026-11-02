@@ -40,6 +40,7 @@ set(FCGI_SOURCES
     router.c
     event_sink.c
     action_pump.c
+    stream_pool.c
     agent_bridge.c
     main.c
     handlers/health.c

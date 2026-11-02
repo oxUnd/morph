@@ -3,6 +3,7 @@
 #include "session_store.h"
 
 #include <errno.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,7 +22,7 @@
 
 struct event_subscriber {
 	char     session_id[64];
-	int64_t  last_seen;
+	pthread_cond_t cv;
 	struct event_subscriber *next;
 };
 
@@ -183,6 +184,7 @@ struct session_store *session_store_open(struct morph_log *logger, const char *d
 		free(s);
 		return NULL;
 	}
+	(void)store_maintenance(s);
 
 	pthread_mutex_init(&s->mu, NULL);
 	pthread_cond_init(&s->cv, NULL);
@@ -194,7 +196,13 @@ void session_store_close(struct session_store *s)
 	if (!s) return;
 	pthread_mutex_lock(&s->mu);
 	struct event_subscriber *p = s->subs;
-	while (p) { struct event_subscriber *n = p->next; free(p); p = n; }
+	while (p) {
+		struct event_subscriber *n = p->next;
+
+		pthread_cond_destroy(&p->cv);
+		free(p);
+		p = n;
+	}
 	pthread_mutex_unlock(&s->mu);
 	pthread_mutex_destroy(&s->mu);
 	pthread_cond_destroy(&s->cv);
@@ -547,6 +555,70 @@ void store_quota_end_turn(struct session_store *s, const char *turn_id)
 	}
 }
 
+static int store_env_int(const char *name, int fallback)
+{
+	const char *value = getenv(name);
+	char *end = NULL;
+	long parsed;
+
+	if (!value || !*value)
+		return fallback;
+	errno = 0;
+	parsed = strtol(value, &end, 10);
+	if (errno != 0 || end == value || *end != '\0' || parsed < 0)
+		return fallback;
+	return parsed > INT_MAX ? INT_MAX : (int)parsed;
+}
+
+void store_turn_heartbeat(struct session_store *s, const char *turn_id)
+{
+	const char *sql =
+		"UPDATE fcgi_running_turns SET heartbeat_at=? WHERE id=?";
+	sqlite3_stmt *st = NULL;
+
+	if (!s || !turn_id || !*turn_id)
+		return;
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
+		return;
+	sqlite3_bind_int64(st, 1, now_unix());
+	sqlite3_bind_text(st, 2, turn_id, -1, SQLITE_TRANSIENT);
+	sqlite3_step(st);
+	sqlite3_finalize(st);
+}
+
+int store_maintenance(struct session_store *s)
+{
+	int event_days = store_env_int("MORPH_FCGI_EVENT_RETENTION_DAYS", 7);
+	int action_days = store_env_int("MORPH_FCGI_ACTION_RETENTION_DAYS", 1);
+	int stale_seconds = store_env_int("MORPH_FCGI_TURN_STALE_SECONDS", 120);
+	char sql[512];
+	int64_t now = now_unix();
+
+	if (!s)
+		return -EINVAL;
+	snprintf(sql, sizeof(sql),
+		 "DELETE FROM fcgi_events WHERE ts < %lld",
+		 (long long)(now - (int64_t)event_days * 86400));
+	if (sqlite3_exec(s->db.handle, sql, NULL, NULL, NULL) != SQLITE_OK)
+		return -EIO;
+	snprintf(sql, sizeof(sql),
+		 "DELETE FROM fcgi_actions WHERE consumed=1 AND ts < %lld",
+		 (long long)(now - (int64_t)action_days * 86400));
+	if (sqlite3_exec(s->db.handle, sql, NULL, NULL, NULL) != SQLITE_OK)
+		return -EIO;
+	snprintf(sql, sizeof(sql),
+		 "DELETE FROM fcgi_running_turns WHERE heartbeat_at < %lld",
+		 (long long)(now - stale_seconds));
+	if (sqlite3_exec(s->db.handle, sql, NULL, NULL, NULL) != SQLITE_OK)
+		return -EIO;
+	snprintf(sql, sizeof(sql),
+		 "DELETE FROM fcgi_artifacts WHERE expires_at IS NOT NULL"
+		 " AND expires_at < %lld", (long long)now);
+	if (sqlite3_exec(s->db.handle, sql, NULL, NULL, NULL) != SQLITE_OK)
+		return -EIO;
+	return 0;
+}
+
 static char *artifact_json_array(sqlite3_stmt *st)
 {
 	cJSON *root = cJSON_CreateObject();
@@ -590,6 +662,55 @@ static char *artifact_json_array(sqlite3_stmt *st)
 	return json;
 }
 
+static int artifact_quota_allows(struct session_store *s, const char *user_id,
+				 const char *kind, int64_t size_bytes)
+{
+	const char *sql =
+		"SELECT p.daily_images,p.daily_videos,p.storage_bytes,"
+		"COALESCE(d.images,0),COALESCE(d.videos,0),"
+		"COALESCE(st.used_bytes,0) "
+		"FROM fcgi_user_quota q "
+		"JOIN fcgi_quota_profiles p ON p.name=q.profile "
+		"LEFT JOIN fcgi_usage_daily d ON d.user_id=q.user_id "
+		" AND d.day=date('now') "
+		"LEFT JOIN fcgi_usage_storage st ON st.user_id=q.user_id "
+		"WHERE q.user_id=?";
+	sqlite3_stmt *st = NULL;
+	int64_t image_limit;
+	int64_t video_limit;
+	int64_t storage_limit;
+	int64_t image_used;
+	int64_t video_used;
+	int64_t storage_used;
+	int rc = 0;
+
+	if (!s || !user_id || !kind || size_bytes < 0)
+		return -EINVAL;
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
+		return -EIO;
+	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
+	if (sqlite3_step(st) == SQLITE_ROW) {
+		image_limit = sqlite3_column_int64(st, 0);
+		video_limit = sqlite3_column_int64(st, 1);
+		storage_limit = sqlite3_column_int64(st, 2);
+		image_used = sqlite3_column_int64(st, 3);
+		video_used = sqlite3_column_int64(st, 4);
+		storage_used = sqlite3_column_int64(st, 5);
+		if (strcmp(kind, "image") == 0 && image_limit >= 0 &&
+		    image_used >= image_limit)
+			rc = -EDQUOT;
+		else if (strcmp(kind, "video") == 0 && video_limit >= 0 &&
+			 video_used >= video_limit)
+			rc = -EDQUOT;
+		else if (storage_limit >= 0 &&
+			 (storage_used > storage_limit ||
+			  size_bytes > storage_limit - storage_used))
+			rc = -EDQUOT;
+	}
+	sqlite3_finalize(st);
+	return rc;
+}
+
 int store_artifact_register(struct session_store *s, const char *user_id,
 			    const char *session_id, const char *kind,
 			    const char *mime, const char *filename,
@@ -608,6 +729,9 @@ int store_artifact_register(struct session_store *s, const char *user_id,
 	if (!s || !user_id || !session_id || !kind || !mime ||
 	    !filename || !relative_path)
 		return -EINVAL;
+	rc = artifact_quota_allows(s, user_id, kind, size_bytes);
+	if (rc != 0)
+		return rc;
 	rc = fcgi_random_id("art_", id, sizeof(id));
 	if (rc < 0)
 		return rc;
@@ -753,51 +877,194 @@ int store_session_owned_by(struct session_store *s, const char *session_id,
 	return rc == SQLITE_ROW ? 1 : 0;
 }
 
-int store_list_sessions_json(struct session_store *s, const char *user_id,
-			     char **out_json) {
+int store_list_sessions_page_json(struct session_store *s, const char *user_id,
+				  int limit, int offset, char **out_json) {
 	const char *sql =
 		"SELECT s.display_id, s.name, s.model, s.created_at, s.updated_at "
 		"FROM fcgi_session_owner o "
 		"JOIN sessions s ON s.display_id = o.session_id "
-		"WHERE o.user_id=? ORDER BY s.updated_at DESC";
+		"WHERE o.user_id=? ORDER BY s.updated_at DESC LIMIT ? OFFSET ?";
 	sqlite3_stmt *st = NULL;
+	int lim = limit > 0 ? limit : -1;
+	int fetch = lim > 0 ? lim + 1 : -1;
+	int n = 0;
+	int has_more = 0;
+	int step_rc = SQLITE_DONE;
+
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -EIO;
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(st, 2, fetch);
+	sqlite3_bind_int(st, 3, offset > 0 ? offset : 0);
 
-	morph_buf_t buf;
-	if (morph_buf_init(&buf, 1024) < 0) { sqlite3_finalize(st); return -ENOMEM; }
-	if (morph_buf_puts(&buf, "{\"items\":[") != 0) {
-		morph_buf_cleanup(&buf);
+	cJSON *root = cJSON_CreateObject();
+	cJSON *items = root ? cJSON_AddArrayToObject(root, "items") : NULL;
+	if (!root || !items) {
+		cJSON_Delete(root);
 		sqlite3_finalize(st);
 		return -ENOMEM;
 	}
-
-	int first = 1;
-	while (sqlite3_step(st) == SQLITE_ROW) {
+	while ((step_rc = sqlite3_step(st)) == SQLITE_ROW) {
 		const char *id    = (const char *)sqlite3_column_text(st, 0);
 		const char *name  = (const char *)sqlite3_column_text(st, 1);
 		const char *model = (const char *)sqlite3_column_text(st, 2);
 		int64_t ca = sqlite3_column_int64(st, 3);
 		int64_t ua = sqlite3_column_int64(st, 4);
+		cJSON *item = cJSON_CreateObject();
 
-		if (morph_buf_printf(&buf,
-			"%s{\"id\":\"%s\",\"name\":\"%s\",\"model\":\"%s\","
-			"\"created_at\":%lld,\"updated_at\":%lld}",
-			first ? "" : ",",
-			id ? id : "", name ? name : "", model ? model : "",
-			(long long)ca, (long long)ua) != 0) {
-			morph_buf_cleanup(&buf);
+		if (lim > 0 && n >= lim) {
+			has_more = 1;
+			cJSON_Delete(item);
+			break;
+		}
+		if (!item) {
+			cJSON_Delete(root);
 			sqlite3_finalize(st);
 			return -ENOMEM;
 		}
-		first = 0;
+		cJSON_AddStringToObject(item, "id", id ? id : "");
+		cJSON_AddStringToObject(item, "name", name ? name : "");
+		cJSON_AddStringToObject(item, "model", model ? model : "");
+		cJSON_AddNumberToObject(item, "created_at", (double)ca);
+		cJSON_AddNumberToObject(item, "updated_at", (double)ua);
+		cJSON_AddItemToArray(items, item);
+		n++;
 	}
 	sqlite3_finalize(st);
-	if (morph_buf_puts(&buf, "]}") != 0) {
-		morph_buf_cleanup(&buf);
+	if (step_rc != SQLITE_DONE && !has_more) {
+		cJSON_Delete(root);
+		return -EIO;
+	}
+	cJSON_AddNumberToObject(root, "limit", lim > 0 ? lim : 0);
+	cJSON_AddNumberToObject(root, "offset", offset > 0 ? offset : 0);
+	cJSON_AddBoolToObject(root, "has_more", has_more);
+	char *json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
+	if (!json) return -ENOMEM;
+	*out_json = json;
+	return 0;
+}
+
+int store_list_sessions_json(struct session_store *s, const char *user_id,
+			     char **out_json) {
+	return store_list_sessions_page_json(s, user_id, 0, 0, out_json);
+}
+
+int store_update_session(struct session_store *s, const char *session_id,
+			 const char *user_id, const char *name,
+			 const char *model)
+{
+	const char *sql =
+		"UPDATE sessions SET name=COALESCE(?,name), "
+		"model=COALESCE(?,model), updated_at=? "
+		"WHERE display_id=? AND EXISTS ("
+		"SELECT 1 FROM fcgi_session_owner o "
+		"WHERE o.session_id=? AND o.user_id=?)";
+	sqlite3_stmt *st = NULL;
+	int rc;
+
+	if (!name && !model)
+		return -EINVAL;
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
+		return -EIO;
+	if (name)
+		sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
+	else
+		sqlite3_bind_null(st, 1);
+	if (model)
+		sqlite3_bind_text(st, 2, model, -1, SQLITE_TRANSIENT);
+	else
+		sqlite3_bind_null(st, 2);
+	sqlite3_bind_int64(st, 3, now_unix());
+	sqlite3_bind_text(st, 4, session_id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 5, session_id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 6, user_id, -1, SQLITE_TRANSIENT);
+	rc = sqlite3_step(st);
+	sqlite3_finalize(st);
+	if (rc != SQLITE_DONE)
+		return -EIO;
+	return sqlite3_changes(s->db.handle) > 0 ? 0 : -ENOENT;
+}
+
+int store_messages_json(struct session_store *s, const char *session_id,
+			const char *user_id, int limit, int64_t before,
+			char **out_json)
+{
+	const char *sql =
+		"SELECT s.id FROM sessions s "
+		"JOIN fcgi_session_owner o ON o.session_id=s.display_id "
+		"WHERE s.display_id=? AND o.user_id=?";
+	sqlite3_stmt *st = NULL;
+	struct message *head;
+	struct message *m;
+	cJSON *root;
+	cJSON *items;
+	int total = 0;
+	int skipped;
+	int added = 0;
+	int64_t internal_id = 0;
+	char *json;
+
+	if (limit <= 0 || limit > 500)
+		limit = 100;
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
+		return -EIO;
+	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
+	if (sqlite3_step(st) == SQLITE_ROW)
+		internal_id = sqlite3_column_int64(st, 0);
+	sqlite3_finalize(st);
+	if (internal_id == 0)
+		return -ENOENT;
+
+	head = message_list(&s->db, internal_id, &total);
+	if (!head && total > 0)
+		return -EIO;
+	for (m = head; m; m = m->next)
+		if (before <= 0 || m->id < before)
+			added++;
+	skipped = added > limit ? added - limit : 0;
+
+	root = cJSON_CreateObject();
+	items = root ? cJSON_AddArrayToObject(root, "items") : NULL;
+	if (!root || !items) {
+		cJSON_Delete(root);
+		message_free_list(head);
 		return -ENOMEM;
 	}
-	*out_json = morph_buf_detach(&buf);
+	added = 0;
+	for (m = head; m; m = m->next) {
+		cJSON *item;
+
+		if (before > 0 && m->id >= before)
+			continue;
+		if (added++ < skipped)
+			continue;
+		item = cJSON_CreateObject();
+		if (!item) {
+			cJSON_Delete(root);
+			message_free_list(head);
+			return -ENOMEM;
+		}
+		cJSON_AddNumberToObject(item, "id", (double)m->id);
+		cJSON_AddStringToObject(item, "role", m->role);
+		cJSON_AddStringToObject(item, "content",
+					m->content ? m->content : "");
+		if (m->turn_id)
+			cJSON_AddStringToObject(item, "turn_id", m->turn_id);
+		cJSON_AddNumberToObject(item, "token_count", m->token_count);
+		cJSON_AddBoolToObject(item, "compressed", m->compressed != 0);
+		cJSON_AddNumberToObject(item, "created_at",
+					(double)m->created_at);
+		cJSON_AddItemToArray(items, item);
+	}
+	message_free_list(head);
+	cJSON_AddNumberToObject(root, "limit", limit);
+	cJSON_AddBoolToObject(root, "has_more", skipped > 0);
+	json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
+	if (!json)
+		return -ENOMEM;
+	*out_json = json;
 	return 0;
 }
 
@@ -889,52 +1156,124 @@ int events_publish(struct session_store *s, const char *session_id,
 	if (rc != SQLITE_DONE) return -EIO;
 
 	pthread_mutex_lock(&s->mu);
-	pthread_cond_broadcast(&s->cv);
+	for (struct event_subscriber *sub = s->subs; sub; sub = sub->next) {
+		if (session_id && strcmp(sub->session_id, session_id) == 0)
+			pthread_cond_signal(&sub->cv);
+	}
 	pthread_mutex_unlock(&s->mu);
 	return 0;
 }
 
-static int events_fetch_after(struct session_store *s, const char *session_id,
-			      int64_t last_id, struct event_record *rec) {
+static int events_fetch_batch(struct session_store *s, const char *session_id,
+			      int64_t last_id, int limit,
+			      struct event_record *out, int *count) {
 	const char *sql =
 		"SELECT id,type,payload,ts FROM fcgi_events "
-		"WHERE session_id=? AND id>? ORDER BY id LIMIT 1";
+		"WHERE session_id=? AND id>? ORDER BY id LIMIT ?";
 	sqlite3_stmt *st = NULL;
+	int n = 0;
+
+	*count = 0;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -EIO;
 	sqlite3_bind_text (st, 1, session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(st, 2, last_id);
+	sqlite3_bind_int  (st, 3, limit);
 
-	int rc = sqlite3_step(st);
-	if (rc == SQLITE_ROW) {
-		rec->id = sqlite3_column_int64(st, 0);
-		const char *t = (const char *)sqlite3_column_text(st, 1);
-		const char *p = (const char *)sqlite3_column_text(st, 2);
-		snprintf(rec->type, sizeof(rec->type), "%s", t ? t : "message");
-		rec->payload_json = strdup(p ? p : "{}");
-		rec->ts = sqlite3_column_int64(st, 3);
-		sqlite3_finalize(st);
-		return 1;
+	for (;;) {
+		int rc = sqlite3_step(st);
+		const char *t;
+		const char *p;
+
+		if (rc == SQLITE_DONE)
+			break;
+		if (rc != SQLITE_ROW) {
+			for (int i = 0; i < n; i++)
+				free(out[i].payload_json);
+			sqlite3_finalize(st);
+			return -EIO;
+		}
+		memset(&out[n], 0, sizeof(out[n]));
+		out[n].id = sqlite3_column_int64(st, 0);
+		t = (const char *)sqlite3_column_text(st, 1);
+		p = (const char *)sqlite3_column_text(st, 2);
+		snprintf(out[n].type, sizeof(out[n].type), "%s",
+			 t ? t : "message");
+		out[n].payload_json = strdup(p ? p : "{}");
+		out[n].ts = sqlite3_column_int64(st, 3);
+		if (!out[n].payload_json) {
+			for (int i = 0; i <= n; i++)
+				free(out[i].payload_json);
+			sqlite3_finalize(st);
+			return -ENOMEM;
+		}
+		n++;
 	}
 	sqlite3_finalize(st);
+	*count = n;
 	return 0;
+}
+
+int events_wait_batch(struct session_store *s, const char *session_id,
+		      int64_t last_id, int timeout_sec,
+		      struct event_record *out, int max, int *count) {
+	struct event_subscriber *sub;
+	struct event_subscriber **pp;
+	struct timespec deadline;
+	int rc;
+
+	if (!s || !session_id || !out || !count || max <= 0)
+		return -EINVAL;
+	*count = 0;
+	pthread_mutex_lock(&s->mu);
+	sub = calloc(1, sizeof(*sub));
+	if (!sub) {
+		pthread_mutex_unlock(&s->mu);
+		return -ENOMEM;
+	}
+	snprintf(sub->session_id, sizeof(sub->session_id), "%s", session_id);
+	if (pthread_cond_init(&sub->cv, NULL) != 0) {
+		free(sub);
+		pthread_mutex_unlock(&s->mu);
+		return -EIO;
+	}
+	sub->next = s->subs;
+	s->subs = sub;
+
+	rc = events_fetch_batch(s, session_id, last_id, max, out, count);
+	if (rc == 0 && *count == 0 && timeout_sec > 0) {
+		clock_gettime(CLOCK_REALTIME, &deadline);
+		deadline.tv_sec += timeout_sec;
+		rc = pthread_cond_timedwait(&sub->cv, &s->mu, &deadline);
+		if (rc == ETIMEDOUT)
+			rc = 0;
+		else if (rc != 0)
+			rc = -EIO;
+		else
+			rc = events_fetch_batch(s, session_id, last_id, max,
+						out, count);
+	}
+	for (pp = &s->subs; *pp; pp = &(*pp)->next) {
+		if (*pp == sub) {
+			*pp = sub->next;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&s->mu);
+	pthread_cond_destroy(&sub->cv);
+	free(sub);
+	return rc;
 }
 
 int events_wait_after(struct session_store *s, const char *session_id,
 		      int64_t last_id, int timeout_sec,
 		      struct event_record *rec) {
-	int got = events_fetch_after(s, session_id, last_id, rec);
-	if (got != 0) return got;
+	int count = 0;
+	int rc = events_wait_batch(s, session_id, last_id, timeout_sec,
+				   rec, 1, &count);
 
-	struct timespec deadline;
-	clock_gettime(CLOCK_REALTIME, &deadline);
-	deadline.tv_sec += timeout_sec;
-
-	pthread_mutex_lock(&s->mu);
-	int rc = pthread_cond_timedwait(&s->cv, &s->mu, &deadline);
-	pthread_mutex_unlock(&s->mu);
-	if (rc == ETIMEDOUT) return 0;
-
-	return events_fetch_after(s, session_id, last_id, rec);
+	if (rc < 0)
+		return rc;
+	return count == 0 ? 0 : 1;
 }
 
 int actions_enqueue(struct session_store *s, const char *session_id,
@@ -1001,6 +1340,17 @@ void actions_signal(struct session_store *s, const char *session_id)
 	pthread_mutex_unlock(&s->mu);
 }
 
+void store_wake_all(struct session_store *s)
+{
+	if (!s)
+		return;
+	pthread_mutex_lock(&s->mu);
+	for (struct event_subscriber *sub = s->subs; sub; sub = sub->next)
+		pthread_cond_signal(&sub->cv);
+	pthread_cond_broadcast(&s->cv);
+	pthread_mutex_unlock(&s->mu);
+}
+
 int actions_wait(struct session_store *s, const char *session_id,
 		 int timeout_sec) {
 	(void)session_id;
@@ -1022,14 +1372,13 @@ int canvas_list_json(struct session_store *s, const char *session_id,
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -EIO;
 	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
 
-	morph_buf_t buf;
-	if (morph_buf_init(&buf, 2048) < 0) { sqlite3_finalize(st); return -ENOMEM; }
-	if (morph_buf_puts(&buf, "{\"nodes\":[") != 0) {
-		morph_buf_cleanup(&buf);
+	cJSON *root = cJSON_CreateObject();
+	cJSON *nodes = root ? cJSON_AddArrayToObject(root, "nodes") : NULL;
+	if (!root || !nodes) {
+		cJSON_Delete(root);
 		sqlite3_finalize(st);
 		return -ENOMEM;
 	}
-	int first = 1;
 	while (sqlite3_step(st) == SQLITE_ROW) {
 		const char *id     = (const char *)sqlite3_column_text(st, 0);
 		const char *parent = (const char *)sqlite3_column_text(st, 1);
@@ -1041,30 +1390,49 @@ int canvas_list_json(struct session_store *s, const char *session_id,
 		const char *cref = (const char *)sqlite3_column_text(st, 7);
 		const char *meta = (const char *)sqlite3_column_text(st, 8);
 		int64_t up = sqlite3_column_int64(st, 9);
-		if (morph_buf_printf(&buf,
-			"%s{\"id\":\"%s\",\"parent\":%s%s%s,\"kind\":\"%s\","
-			"\"x\":%g,\"y\":%g,\"w\":%g,\"h\":%g,"
-			"\"content_ref\":%s%s%s,\"meta\":%s,\"updated_at\":%lld}",
-			first ? "" : ",",
-			id ? id : "",
-			parent ? "\"" : "", parent ? parent : "null", parent ? "\"" : "",
-			kind ? kind : "",
-			x, y, w, h,
-			cref ? "\"" : "", cref ? cref : "null", cref ? "\"" : "",
-			meta && *meta ? meta : "null",
-			(long long)up) != 0) {
-			morph_buf_cleanup(&buf);
+		cJSON *item = cJSON_CreateObject();
+
+		if (!item) {
+			cJSON_Delete(root);
 			sqlite3_finalize(st);
 			return -ENOMEM;
 		}
-		first = 0;
+		cJSON_AddStringToObject(item, "id", id ? id : "");
+		if (parent)
+			cJSON_AddStringToObject(item, "parent", parent);
+		else
+			cJSON_AddNullToObject(item, "parent");
+		cJSON_AddStringToObject(item, "kind", kind ? kind : "");
+		cJSON_AddNumberToObject(item, "x", x);
+		cJSON_AddNumberToObject(item, "y", y);
+		cJSON_AddNumberToObject(item, "w", w);
+		cJSON_AddNumberToObject(item, "h", h);
+		if (cref)
+			cJSON_AddStringToObject(item, "content_ref", cref);
+		else
+			cJSON_AddNullToObject(item, "content_ref");
+		if (meta && *meta) {
+			cJSON *meta_obj = cJSON_Parse(meta);
+			if (meta_obj)
+				cJSON_AddItemToObject(item, "meta", meta_obj);
+			else
+				cJSON_AddNullToObject(item, "meta");
+		} else {
+			cJSON_AddNullToObject(item, "meta");
+		}
+		cJSON_AddNumberToObject(item, "updated_at", (double)up);
+		cJSON_AddItemToArray(nodes, item);
 	}
+	int step_rc = sqlite3_step(st);
 	sqlite3_finalize(st);
-	if (morph_buf_puts(&buf, "]}") != 0) {
-		morph_buf_cleanup(&buf);
-		return -ENOMEM;
+	if (step_rc != SQLITE_DONE) {
+		cJSON_Delete(root);
+		return -EIO;
 	}
-	*out_json = morph_buf_detach(&buf);
+	char *json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
+	if (!json) return -ENOMEM;
+	*out_json = json;
 	return 0;
 }
 
@@ -1231,4 +1599,45 @@ void login_token_revoke(const char *token)
 				  ".json") != 0)
 		return;
 	unlink(path);
+}
+
+int login_token_prune(void)
+{
+	DIR *dir = opendir(SESS_DIR);
+	struct dirent *entry;
+
+	if (!dir)
+		return 0;
+	while ((entry = readdir(dir)) != NULL) {
+		char path[PATH_MAX];
+		char buf[1024];
+		FILE *fp;
+		size_t n;
+		cJSON *obj;
+		int64_t expires;
+
+		if (entry->d_name[0] == '.')
+			continue;
+		if (file_path_join_append(path, sizeof(path), SESS_DIR,
+					  entry->d_name, NULL) != 0)
+			continue;
+		fp = fopen(path, "r");
+		if (!fp)
+			continue;
+		n = fread(buf, 1, sizeof(buf) - 1, fp);
+		fclose(fp);
+		if (n == 0)
+			continue;
+		buf[n] = '\0';
+		obj = cJSON_Parse(buf);
+		if (!obj)
+			continue;
+		expires = (int64_t)cJSON_GetNumberValue(
+			cJSON_GetObjectItem(obj, "expires_at"));
+		cJSON_Delete(obj);
+		if (expires > 0 && expires <= now_unix())
+			(void)unlink(path);
+	}
+	closedir(dir);
+	return 0;
 }

@@ -198,6 +198,16 @@ if(Python3_Interpreter_FOUND AND UNIX)
 				${CMAKE_CURRENT_SOURCE_DIR}/test_fastcgi_ask_user.py
 				$<TARGET_FILE:morph-fastcgi>)
 		set_tests_properties(fastcgi_ask_user_integration PROPERTIES TIMEOUT 45)
+		add_test(NAME fastcgi_queue_integration
+			COMMAND ${Python3_EXECUTABLE}
+				${CMAKE_CURRENT_SOURCE_DIR}/test_fastcgi_queue.py
+				$<TARGET_FILE:morph-fastcgi>)
+		set_tests_properties(fastcgi_queue_integration PROPERTIES TIMEOUT 45)
+		add_test(NAME fastcgi_api_integration
+			COMMAND ${Python3_EXECUTABLE}
+				${CMAKE_CURRENT_SOURCE_DIR}/test_fastcgi_api.py
+				$<TARGET_FILE:morph-fastcgi>)
+		set_tests_properties(fastcgi_api_integration PROPERTIES TIMEOUT 45)
 	endif()
 	add_test(NAME cli_snapshot
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_snapshot.py)

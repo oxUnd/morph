@@ -3,6 +3,7 @@
 
 struct config;
 struct fcgi_bridge;
+struct fcgi_turn_ticket;
 struct runtime;
 
 struct fcgi_bridge_pool_status {
@@ -19,6 +20,13 @@ struct fcgi_bridge_pool_status {
 int fcgi_bridge_init(struct fcgi_bridge **out, const char *db_path);
 void fcgi_bridge_shutdown(struct fcgi_bridge *pool);
 struct runtime *fcgi_bridge_runtime(struct fcgi_bridge *pool);
+int fcgi_bridge_turn_enqueue(struct fcgi_bridge *pool, const char *session_id,
+			     struct fcgi_turn_ticket **out, int *position);
+int fcgi_bridge_turn_acquire(struct fcgi_bridge *pool,
+			     struct fcgi_turn_ticket *ticket,
+			     struct runtime **out);
+void fcgi_bridge_turn_cancel(struct fcgi_bridge *pool,
+			     struct fcgi_turn_ticket *ticket);
 int fcgi_bridge_runtime_acquire(struct fcgi_bridge *pool, const char *session_id,
 				struct runtime **out);
 void fcgi_bridge_runtime_release(struct fcgi_bridge *pool, struct runtime *runtime);

@@ -18,6 +18,8 @@ void handle_me_quota(request_t *r);
 void handle_create_session(request_t *r);
 void handle_list_sessions(request_t *r);
 void handle_get_session(request_t *r);
+void handle_update_session(request_t *r);
+void handle_list_messages(request_t *r);
 void handle_delete_session(request_t *r);
 
 /* turns */
