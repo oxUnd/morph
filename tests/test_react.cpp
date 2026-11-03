@@ -3635,7 +3635,7 @@ TEST_F(MockServerTest, DeepSeekThinkingReplaysReasoningWithoutToolChoice) {
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
 		 srv.port);
 	struct model *model =
-		model_llm_create(NULL, "deepseek", "deepseek-v4-flash", api_base, "test-key");
+		model_llm_create(NULL, "deepseek", "deepseek-flash", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	struct arena *arena = arena_create(8192);
 	ASSERT_NE(arena, nullptr);
@@ -3824,10 +3824,10 @@ TEST_F(MockServerTest, DeepSeekDisabledThinkingUsesToolChoice) {
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
 		 srv.port);
 	struct model *model =
-		model_llm_create(NULL, "deepseek", "deepseek-v4-flash", api_base, "test-key");
+		model_llm_create(NULL, "deepseek", "deepseek-flash", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	std::strcpy(model->extra_body_json,
-		"{\"thinking\":{\"type\":\"disabled\"}}");
+		"{\"reasoning_effort\":\"none\"}");
 	struct arena *arena = arena_create(8192);
 	ASSERT_NE(arena, nullptr);
 	struct chat_message message{};

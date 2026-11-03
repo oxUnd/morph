@@ -63,6 +63,10 @@ ctest --test-dir build -R cli_pty_integration --output-on-failure
 
 ## Configuration
 
+Setup chooses model-specific token budgets and timeout values. See the
+[setup model defaults](docs/setup-model-defaults.md) for the verified provider
+limits, reasoning settings and media presets.
+
 Run `morph` in a terminal; a missing config triggers an interactive wizard
 (↑/↓ choose, Enter select, Esc back, Ctrl-C/Ctrl-D cancel). Provider presets
 fill in model and API URL. Vision, image generation, and video generation are

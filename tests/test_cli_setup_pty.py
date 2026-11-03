@@ -323,12 +323,18 @@ def tests(driver, directory, production):
         t.send('2\r', 'Choose your provider')
         context(t, 'Text')
         t.send('2\r', 'Model settings')
+        assert 'Thinking · On' in '\n'.join(t.screen.display)
+        t.send('6\r', 'How should morph think?')
+        t.send('1\r', 'Model settings')
         assert 'Thinking · Off' in '\n'.join(t.screen.display)
         t.send('6\r', 'How should morph think?')
         context(t, 'Text')
         t.send('2\r', 'Model settings')
         t.send('\r', 'Review your setup')
-        assert thinking_value(t.save(), 'text') == 'enabled'
+        config = t.save()
+        assert thinking_value(config, 'text') == 'enabled'
+        assert 'model = "deepseek-flash"' in config
+        assert 'max_tokens = 65536' in config and 'context_limit = 1048576' in config
 
         # Custom endpoints edit only the selected field and validate URLs/limits.
         t = start('custom', ready=True)
