@@ -2,12 +2,69 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/presentation/presenter.h"
+#include "sapi/cli/presentation/output.h"
+#include "sapi/cli/presentation/style.h"
 #include "sapi/cli/widgets/transcript.h"
 #include "session.h"
 #include "util/error.h"
 #include "util/strmap.h"
 #include "cJSON.h"
 #include <string.h>
+
+static void cli_history_shell_argument(morph_buf_t *command, const char *value)
+{
+	static const char safe[] =
+		"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-";
+
+	(void)morph_buf_putc(command, ' ');
+	if (value[0] && strspn(value, safe) == strlen(value)) {
+		(void)morph_buf_puts(command, value);
+		return;
+	}
+	(void)morph_buf_putc(command, '\'');
+	for (const char *p = value; *p; p++) {
+		if (*p == '\'')
+			(void)morph_buf_puts(command, "'\\''");
+		else
+			(void)morph_buf_putc(command, *p);
+	}
+	(void)morph_buf_putc(command, '\'');
+}
+
+void cli_history_render_resume_hint(struct cli_application *ctx, const char *session_ref,
+				     const char *config_path, const char *workdir)
+{
+	morph_buf_t arguments;
+	int color = cli_output_color_enabled(ctx);
+	const char *command_style = color ? ANSI_BOLD CLI_COMMAND_COLOR : "";
+	const char *dim = color ? ANSI_DIM : "";
+	const char *reset = color ? ANSI_RESET : "";
+
+	if (morph_buf_init(&arguments, 128) != 0)
+		return;
+	(void)morph_buf_puts(&arguments, command_style);
+	(void)morph_buf_puts(&arguments, "resume");
+	if (color)
+		(void)morph_buf_puts(&arguments, ANSI_RESET ANSI_BOLD ANSI_CYAN);
+	cli_history_shell_argument(&arguments, session_ref);
+	(void)morph_buf_puts(&arguments, reset);
+	(void)morph_buf_puts(&arguments, dim);
+	if (config_path && config_path[0]) {
+		(void)morph_buf_puts(&arguments, " -c");
+		cli_history_shell_argument(&arguments, config_path);
+	}
+	if (workdir && workdir[0]) {
+		(void)morph_buf_puts(&arguments, " -w");
+		cli_history_shell_argument(&arguments, workdir);
+	}
+	(void)morph_buf_puts(&arguments, reset);
+	if (!arguments.failed)
+		cli_output_printf(ctx, "\n%sTo resume this session, run:%s\n"
+				       "  %smorph %s\n  %smorphctl %s\n",
+				  dim, reset, command_style, morph_buf_cstr(&arguments),
+				  command_style, morph_buf_cstr(&arguments));
+	morph_buf_cleanup(&arguments);
+}
 
 static const char *cli_history_string(const cJSON *object, const char *key)
 {

@@ -6,6 +6,7 @@
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/services/recap.h"
+#include "sapi/cli/services/session_history.h"
 #include "sapi/cli/commands/registry.h"
 
 static int cli_runtime_command_quit(struct cli_application *ctx, int argc, char **argv)
@@ -14,6 +15,7 @@ static int cli_runtime_command_quit(struct cli_application *ctx, int argc, char 
 	(void)argv;
 	ctx->running = 0;
 	CMD_OK(ctx, "Goodbye!");
+	cli_session_history_print_resume_hint(ctx);
 	return 0;
 }
 

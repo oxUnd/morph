@@ -5,6 +5,25 @@
 #include "sapi/cli/widgets/feed.h"
 #include "runtime/runtime.h"
 #include "util/error.h"
+#include "util/file.h"
+#include <stdlib.h>
+
+void cli_session_history_print_resume_hint(struct cli_application *ctx)
+{
+	struct session session;
+	const char *config_path;
+	char *resolved_config;
+
+	if (!ctx || !ctx->runtime || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
+		return;
+	if (runtime_session_current(ctx->runtime, &session) != 0 || session.id <= 0)
+		return;
+	config_path = runtime_config_path_get(ctx->runtime);
+	resolved_config = config_path && config_path[0] ? file_resolve_path(config_path) : NULL;
+	cli_history_render_resume_hint(ctx, session.display_id,
+		resolved_config ? resolved_config : config_path, runtime_workdir_get(ctx->runtime));
+	free(resolved_config);
+}
 
 int cli_session_history_restore(struct cli_application *ctx)
 {
