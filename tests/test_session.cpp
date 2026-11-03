@@ -751,6 +751,99 @@ TEST_F(SessionTest, ModelHistoryTruncatesUtf8ToolResultsAndRedactsSecrets) {
 	model_history_free_list(items);
 }
 
+TEST_F(SessionTest, ToolResultRedactionPreservesPackageNamesAndJsonBoundaries)
+{
+	struct react_context ctx = {};
+	struct session session;
+	const char *output = "dsh-tool-ask-user\n/tmp/ask-user/docs/sk-example.md\n"
+		"sk-private-secret\nBearer secret-value\nTAIL with \"quoted\" text\n";
+	cJSON *root = cJSON_CreateObject();
+	cJSON *data = cJSON_AddObjectToObject(root, "data");
+	cJSON_AddBoolToObject(root, "ok", 1);
+	cJSON_AddStringToObject(data, "stdout", output);
+	cJSON_AddStringToObject(data, "stderr", "Unrelated diagnostic");
+	cJSON_AddNumberToObject(data, "exit_code", 0);
+	char *source = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
+	ASSERT_NE(source, nullptr);
+	ctx.history_tool_result_tokens = 8000;
+	ASSERT_EQ(session_create(&db, "redaction_boundaries", "test", &session), 0);
+	ctx.history_db = &db;
+	ctx.history_session_id = session.id;
+	ctx.history_enabled = 1;
+	ASSERT_EQ(agent_history_record_tool_result(&ctx, "local", "provider", "exec",
+		source, 0), 0);
+	free(source);
+	int count = 0;
+	auto *items = model_history_list(&db, session.id, 1, &count);
+	ASSERT_EQ(count, 1);
+	ASSERT_NE(items, nullptr);
+	cJSON *payload = cJSON_Parse(items->payload_json);
+	for (const char *text : {items->content,
+	     cJSON_GetStringValue(cJSON_GetObjectItem(payload, "original_content"))}) {
+		ASSERT_NE(text, nullptr);
+		cJSON *prepared = cJSON_Parse(text);
+		ASSERT_NE(prepared, nullptr);
+		auto *prepared_data = cJSON_GetObjectItem(prepared, "data");
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(prepared_data, "stdout")),
+			"dsh-tool-ask-user\n/tmp/ask-user/docs/sk-example.md\n"
+			"[REDACTED]\nBearer [REDACTED]\nTAIL with \"quoted\" text\n");
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(prepared_data, "stderr")),
+			"Unrelated diagnostic");
+		cJSON_Delete(prepared);
+	}
+	cJSON_Delete(payload);
+	model_history_free_list(items);
+}
+
+TEST_F(SessionTest, ToolResultRedactsDecodedCredentialFieldsAndKnownSecrets)
+{
+	struct react_context ctx = {};
+	char *prepared = nullptr;
+	const char *source = "{\"api_key\":\"first-secret\",\"nested\":{"
+		"\"apiKey\":\"second-secret\","
+		"\"DEEPSEEK_API_KEY\":\"third-secret\"},\"payload\":\"{\\\"api_key\\\":"
+		"\\\"fourth-secret\\\"}\",\"stdout\":\"/tmp/sk-known-secret-value/file\\nTAIL\"}";
+
+	ctx.history_tool_result_tokens = 8000;
+	ctx.history_secrets[0] = strdup("sk-known-secret-value");
+	ctx.history_secret_count = 1;
+	ASSERT_EQ(agent_history_prepare_tool_content(&ctx, source, &prepared, nullptr), 0);
+	ASSERT_NE(prepared, nullptr);
+	for (const char *secret : {"first-secret", "second-secret", "third-secret",
+	     "fourth-secret", "sk-known-secret-value"})
+		EXPECT_EQ(strstr(prepared, secret), nullptr);
+	cJSON *root = cJSON_Parse(prepared);
+	ASSERT_NE(root, nullptr);
+	EXPECT_NE(strstr(prepared, "TAIL"), nullptr);
+	cJSON_Delete(root);
+	free(prepared);
+	free(ctx.history_secrets[0]);
+}
+
+TEST_F(SessionTest, ToolResultRedactionPreservesJsonSourceFormatting)
+{
+	struct react_context ctx = {};
+	const char *formatted = "{\n  \"answer\": 42\n}\n";
+	cJSON *root = cJSON_CreateObject();
+	cJSON *data = cJSON_AddObjectToObject(root, "data");
+	cJSON_AddBoolToObject(root, "ok", 1);
+	cJSON_AddStringToObject(data, "stdout", formatted);
+	char *source = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
+	ASSERT_NE(source, nullptr);
+	char *prepared = nullptr;
+	ctx.history_tool_result_tokens = 8000;
+	ASSERT_EQ(agent_history_prepare_tool_content(&ctx, source, &prepared, nullptr), 0);
+	root = cJSON_Parse(prepared);
+	ASSERT_NE(root, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		cJSON_GetObjectItem(root, "data"), "stdout")), formatted);
+	cJSON_Delete(root);
+	free(source);
+	free(prepared);
+}
+
 TEST_F(SessionTest, ToolResultTokenLimitIncludesRedactionAndOmissionMarker)
 {
 	auto *tokenizer = tokenizer_create(NULL, "deepseek-flash", 128000);

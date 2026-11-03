@@ -456,6 +456,35 @@ TEST_F(CliPresentationTest, HookMessagesPersistAndQuietSuccessLeavesNoOutput)
 	EXPECT_EQ(warning.find("\033"), std::string::npos);
 }
 
+TEST_F(CliPresentationTest, BackgroundWarningsAreVisibleAndSanitizedInAllModes)
+{
+	for (auto mode : {CLI_PRESENT_ONCE_PLAIN, CLI_PRESENT_INTERACTIVE,
+	     CLI_PRESENT_EVENTS_JSON}) {
+		ctx.presentation_mode = mode;
+		struct morph_event warning{MORPH_EVENT_BACKGROUND,
+			"history.tool_output.warning", "warning",
+			"3 of 4 tool results were truncated.\033[2J "
+			"Review context.tool_result_max_tokens.",
+			nullptr, "turn_test"};
+
+		testing::internal::CaptureStdout();
+		ASSERT_EQ(cli_presentation_event(&ctx, &warning), 0);
+		std::string output = testing::internal::GetCapturedStdout();
+		EXPECT_NE(output.find("3 of 4 tool results were truncated"), std::string::npos);
+		EXPECT_NE(output.find("context.tool_result_max_tokens"), std::string::npos);
+		EXPECT_EQ(output.find("\033[2J"), std::string::npos);
+		if (mode == CLI_PRESENT_EVENTS_JSON) {
+			cJSON *event = cJSON_Parse(output.c_str());
+			ASSERT_NE(event, nullptr);
+			EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(event, "name")),
+				"history.tool_output.warning");
+			cJSON_Delete(event);
+		} else {
+			EXPECT_NE(output.find("Warning"), std::string::npos);
+		}
+	}
+}
+
 TEST_F(CliPresentationTest, OncePrintsCompactionProgressAndResult)
 {
 	cJSON *begin = cJSON_CreateObject();

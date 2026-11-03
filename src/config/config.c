@@ -913,8 +913,9 @@ static void config_log_warning(
 
 	if (!warning)
 		return;
-	log_warn(logger, "config warning %s:%d:%d: %s; ignoring %s", path ? path : "<config>",
-		 warning->line, warning->column, warning->message, warning->path);
+	log_warn(logger, "config warning %s:%d:%d: %s%s", path ? path : "<config>",
+		 warning->line, warning->column, warning->message,
+		 warning->code == CONFIG_VALIDATION_UNKNOWN_KEY ? "; key ignored" : "");
 }
 
 int config_load(struct morph_log *logger, struct config *cfg, const char *path)

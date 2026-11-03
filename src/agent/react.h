@@ -159,6 +159,10 @@ struct react_context {
 	int history_error;
 	int terminal_tool_error;
 	int history_tool_result_tokens;
+	int tool_result_count;
+	int tool_result_truncated_count;
+	int tool_result_history_truncated_count;
+	int tool_result_output_truncated_count;
 	char *history_compaction_prompt;
 	char *history_secrets[HISTORY_SECRET_MAX];
 	int history_secret_count;

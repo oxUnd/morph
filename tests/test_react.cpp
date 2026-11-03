@@ -36,6 +36,7 @@
 #include <cstdio>
 #include <limits.h>
 #include <memory>
+#include <vector>
 #include <unistd.h>
 
 struct sse_test_info {
@@ -1948,6 +1949,8 @@ TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
 	ctx->compress.summarize = test_compress_cb;
 	ctx->compress.summarize_user_data = nullptr;
 	ASSERT_EQ(react_set_turn_id(ctx, "turn_in_turn_compaction"), 0);
+	/* Keep the synthetic context budget independent of this repository's AGENTS.md. */
+	ctx->workdir = strdup("/tmp");
 	compaction_memory_probe memory_probe = {ctx, &rec};
 	memory_probe.expected_hook_context = "COMPACT_HOOK_CONTEXT";
 	std::string hook_order;
@@ -4750,7 +4753,7 @@ TEST_F(PromptModeTest, ExplicitEmptyReplacementKeepsCoreAndRuntimeLimits)
 	ctx->system_prompt_replace = 1;
 	ctx->system_prompt = strdup("");
 	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
-	std::string expected = std::string(MORPH_CORE_PROMPT) +
+	std::string expected = std::string(MORPH_CORE_PROMPT) + MORPH_CORE_INVESTIGATION_PROMPT +
 		"\nRuntime limits:\n- Maximum " + std::to_string(ctx->max_iterations) +
 		" tool-calling iterations.\n\n";
 	EXPECT_EQ(expected, capt->system_prompt);
@@ -4770,6 +4773,10 @@ TEST_F(PromptModeTest, CoreContractsSurviveReplacementWithoutDuplication)
 		     "The function-calling interface is the source of truth",
 		     "Check tool results and inspect produced artifacts",
 		     "On failure, use the error and current state",
+		     "Organize investigation around specific questions",
+		     "Reuse discovered paths, indexes, and extracted files",
+		     "After truncation, narrow or page retained output",
+		     "do not trade correctness for an arbitrary tool-call limit",
 		     "provide accessible references to actual outputs",
 		     "latest explicit language instruction",
 		     "user-visible reasoning and summaries",
@@ -7666,4 +7673,154 @@ TEST_F(MockLlmTest, HistoryFailureRetiresEveryOutstandingWorker)
 	EXPECT_EQ(state.late_event_rc.load(), -ECANCELED);
 	EXPECT_EQ(state.late_ask_rc.load(), -ECANCELED);
 	db_close(&database);
+}
+
+struct truncation_tool_probe {
+	int calls = 0;
+	int truncate_first = 0;
+	bool large_output = false;
+	bool output_truncated = false;
+};
+
+static int truncation_probe_tool(const char *, struct tool_result *result, void *user_data)
+{
+	auto *probe = static_cast<truncation_tool_probe *>(user_data);
+	bool truncated = probe->calls++ < probe->truncate_first;
+	std::string output = "small result";
+
+	if (truncated && probe->large_output) {
+		output.clear();
+		for (int i = 0; i < 2000; i++)
+			output += "word ";
+	}
+	cJSON *data = cJSON_CreateObject();
+	if (!data)
+		return -ENOMEM;
+	cJSON_AddStringToObject(data, "stdout", output.c_str());
+	cJSON_AddBoolToObject(data, "stdout_truncated", truncated && probe->output_truncated);
+	cJSON_AddBoolToObject(data, "stderr_truncated", 0);
+	return tool_result_success(result, data);
+}
+
+TEST_F(MockLlmTest, FrequentToolTruncationWarnsOncePerTurnAndDistinguishesLayers)
+{
+	struct warning_case {
+		int calls;
+		int truncated;
+		bool history;
+		bool output;
+		int warnings;
+	};
+	for (const auto &test : {warning_case{3, 3, true, false, 1},
+	     warning_case{3, 3, false, true, 1}, warning_case{3, 3, true, true, 1},
+	     warning_case{2, 2, true, true, 0}, warning_case{10, 3, true, true, 0},
+	     warning_case{9, 3, true, true, 1}, warning_case{23, 11, true, false, 1}}) {
+		truncation_tool_probe probe;
+		probe.truncate_first = test.truncated;
+		probe.large_output = test.history;
+		probe.output_truncated = test.output;
+		ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "truncation_probe",
+			"Return a bounded test result", "{}", truncation_probe_tool,
+			&probe, nullptr), 0);
+		std::vector<const char *> responses(static_cast<size_t>(test.calls),
+			"Action: truncation_probe({})\n");
+		responses.push_back("Final: completed");
+		llm = create_multi_mock_llm(responses.data(), static_cast<int>(responses.size()));
+		ASSERT_NE(llm, nullptr);
+		auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+		ASSERT_NE(ctx, nullptr);
+		ctx->llm_model = llm;
+		ctx->history_tool_result_tokens = test.history ? 256 : 8000;
+		struct morph_event_recorder recorder = {};
+		ASSERT_EQ(morph_event_recorder_init(&recorder), 0);
+		ASSERT_EQ(react_set_event_callback(ctx, morph_event_recorder_cb, &recorder), 0);
+		EXPECT_EQ(react_run(ctx, "inspect results", nullptr, nullptr), 0);
+		EXPECT_EQ(ctx->tool_result_count, test.calls);
+		EXPECT_EQ(ctx->tool_result_truncated_count, test.truncated);
+		EXPECT_EQ(event_recorder_count_name(&recorder, "history.tool_output.warning"),
+			test.warnings);
+		for (size_t i = 0; i < morph_event_recorder_count(&recorder); i++) {
+			cJSON *event = cJSON_Parse(morph_event_recorder_get(&recorder, i));
+			const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(event, "name"));
+			if (name && strcmp(name, "history.tool_output.warning") == 0) {
+				cJSON *data = cJSON_GetObjectItem(event, "data");
+				EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data,
+					"history_truncated_results")),
+					test.history ? test.truncated : 0);
+				EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data,
+					"output_truncated_results")),
+					test.output ? test.truncated : 0);
+				EXPECT_STREQ(cJSON_GetStringValue(
+					cJSON_GetObjectItem(event, "turn_id")),
+					ctx->turn_id);
+			}
+			cJSON_Delete(event);
+		}
+		probe.calls = 0;
+		probe.truncate_first = 0;
+		static_cast<multi_mock_data *>(llm->handle)->call_count = 0;
+		morph_event_recorder_cleanup(&recorder);
+		ASSERT_EQ(morph_event_recorder_init(&recorder), 0);
+		EXPECT_EQ(react_run(ctx, "read small results", nullptr, nullptr), 0);
+		EXPECT_EQ(ctx->tool_result_truncated_count, 0);
+		EXPECT_EQ(event_recorder_count_name(&recorder, "history.tool_output.warning"), 0);
+		morph_event_recorder_cleanup(&recorder);
+		react_context_destroy(ctx);
+		model_destroy(llm);
+		llm = nullptr;
+		ASSERT_EQ(tool_unregister(&tools, "truncation_probe"), 0);
+	}
+}
+
+TEST_F(MockServerTest, OutputTokenLimitPreservesPartialTextAndNeverExecutesIncompleteCalls)
+{
+	srv.response_body = "{}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+	struct tool_registry tools = {};
+	tool_registry_init(nullptr, &tools);
+	int executions = 0;
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "Count executions",
+		"{}", call_count_tool_fn, &executions, nullptr), 0);
+	for (int variant : {0, 1, 2}) {
+		std::string delta = variant == 0 ? "\"content\":\"Partial reply.\"" :
+			variant == 1 ? "\"reasoning_content\":\"Reasoning still in progress.\"" :
+			"\"content\":\"Partial tool request.\",\"tool_calls\":[{\"index\":0,"
+			"\"id\":\"cut_call\",\"function\":{\"name\":\"test_tool\","
+			"\"arguments\":\"{\"}}]";
+		std::string body = "{\"choices\":[{\"delta\":{" + delta + "},"
+			"\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":200,"
+			"\"completion_tokens\":16384,\"completion_tokens_details\":{"
+			"\"reasoning_tokens\":13459}}}";
+		srv.response_body = body.c_str();
+		char base[256];
+		snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+		auto *model = model_llm_create(nullptr, "test", "mock-model", base, "test-key");
+		ASSERT_NE(model, nullptr);
+		model->max_tokens = 16384;
+		auto *ctx = react_context_create(&tools, nullptr, nullptr, nullptr);
+		ASSERT_NE(ctx, nullptr);
+		ctx->llm_model = model;
+		ctx->system_prompt_replace = 1;
+		ctx->system_prompt = strdup("");
+		ctx->workdir = strdup("/tmp");
+		struct morph_event_recorder recorder = {};
+		ASSERT_EQ(morph_event_recorder_init(&recorder), 0);
+		ASSERT_EQ(react_set_event_callback(ctx, morph_event_recorder_cb, &recorder), 0);
+		EXPECT_EQ(react_run(ctx, "answer completely", nullptr, nullptr), MORPH_ERR_LLM);
+		EXPECT_EQ(ctx->outcome, REACT_OUTCOME_LLM_ERROR);
+		EXPECT_STREQ(ctx->outcome_reason, "output_token_limit");
+		EXPECT_EQ(event_recorder_count_name(&recorder, "react.output.truncated"), 1);
+		EXPECT_FALSE(event_recorder_has_name(&recorder, "react.final"));
+		EXPECT_EQ(executions, 0);
+		if (variant != 1)
+			EXPECT_STREQ(ctx->final_answer,
+				variant == 0 ? "Partial reply." : "Partial tool request.");
+		EXPECT_EQ(srv.request_count, variant + 1);
+		morph_event_recorder_cleanup(&recorder);
+		react_context_destroy(ctx);
+		model_destroy(model);
+	}
+	tool_registry_cleanup(&tools);
+	mock_server_stop(&srv);
 }

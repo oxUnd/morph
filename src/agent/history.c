@@ -27,7 +27,7 @@ static struct chat_message *history_push_message(morph_array_t *messages)
 	return message;
 }
 
-static int history_secret_prefix(const char *text, size_t *prefix_len,
+static int history_secret_prefix(const char *start, const char *text, size_t *prefix_len,
 				 int *preserve_prefix)
 {
 	static const char *const prefixes[] = {
@@ -39,6 +39,10 @@ static int history_secret_prefix(const char *text, size_t *prefix_len,
 	for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
 		size_t len = strlen(prefixes[i]);
 
+		/* A key-like prefix inside a package, identifier or path is not a key. */
+		if (i >= 1 && i <= 3 && text > start &&
+		    (isalnum((unsigned char)text[-1]) || strchr("_-/.", text[-1])))
+			continue;
 		if (strncmp(text, prefixes[i], len) == 0) {
 			*prefix_len = len;
 			*preserve_prefix = i == 0 || i >= 4;
@@ -83,7 +87,7 @@ static char *history_redact(const char *text)
 			}
 		}
 
-		if (!history_secret_prefix(cur, &prefix_len,
+		if (!history_secret_prefix(text, cur, &prefix_len,
 					   &preserve_prefix)) {
 			rc = morph_buf_putc(&buf, *cur++);
 			if (rc != 0)
@@ -164,17 +168,28 @@ static char *history_redact_all(struct react_context *ctx, const char *text)
  * Tool arguments may themselves contain a serialized JSON object. */
 static char *history_redact_json(struct react_context *ctx, const char *text);
 
-static int history_redact_json_values(struct react_context *ctx, cJSON *value)
+static int history_redact_json_values(struct react_context *ctx, cJSON *value, int *changed)
 {
 	if (cJSON_IsString(value)) {
-		char *safe = history_redact_json(ctx, value->valuestring);
-		int rc = safe && cJSON_SetValuestring(value, safe) ? 0 : -ENOMEM;
+		const char *key = value->string;
+		size_t key_len = key ? strlen(key) : 0;
+		int credential = key && (!strcmp(key, "api_key") || !strcmp(key, "apiKey") ||
+			(key_len >= 8 && !strcmp(key + key_len - 8, "_API_KEY")));
+		char *safe = credential && value->valuestring[0] ?
+			strdup("[REDACTED]") : history_redact_json(ctx, value->valuestring);
+		int rc;
+
+		if (!safe)
+			return -ENOMEM;
+		if (strcmp(value->valuestring, safe) != 0)
+			*changed = 1;
+		rc = cJSON_SetValuestring(value, safe) ? 0 : -ENOMEM;
 
 		free(safe);
 		return rc;
 	}
 	for (cJSON *child = value->child; child; child = child->next) {
-		int rc = history_redact_json_values(ctx, child);
+		int rc = history_redact_json_values(ctx, child, changed);
 
 		if (rc != 0)
 			return rc;
@@ -186,6 +201,7 @@ static char *history_redact_json(struct react_context *ctx, const char *text)
 {
 	cJSON *root;
 	char *safe = NULL;
+	int changed = 0;
 
 	if (!text)
 		return NULL;
@@ -194,8 +210,8 @@ static char *history_redact_json(struct react_context *ctx, const char *text)
 		cJSON_Delete(root);
 		return history_redact_all(ctx, text);
 	}
-	if (history_redact_json_values(ctx, root) == 0)
-		safe = cJSON_PrintUnformatted(root);
+	if (history_redact_json_values(ctx, root, &changed) == 0)
+		safe = changed ? cJSON_PrintUnformatted(root) : strdup(text);
 	cJSON_Delete(root);
 	return safe;
 }
@@ -1172,7 +1188,7 @@ int agent_history_prepare_tool_content(struct react_context *ctx,
 		return -ENOMEM;
 	utf8_sanitize_inplace(limited);
 	/* Redaction may expand short secrets into longer replacement strings. */
-	safe = history_redact_all(ctx, limited);
+	safe = history_redact_json(ctx, limited);
 	free(limited);
 	if (!safe)
 		return -ENOMEM;
@@ -1263,7 +1279,7 @@ int agent_history_record_tool_result_ex(struct react_context *ctx,
 			return -ENOMEM;
 		}
 		utf8_sanitize_inplace(original);
-		redacted = history_redact_all(ctx, original);
+		redacted = history_redact_json(ctx, original);
 		free(original);
 		if (!redacted || !cJSON_AddStringToObject(metadata, "original_content", redacted)) {
 			free(redacted);

@@ -806,7 +806,14 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 		  "smallest "
 		  "additional capability and retry the exact command.";
 	exec_spec.input_schema =
-		"{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},"
+		"{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\","
+		"\"description\":\"Reuse discovered paths, indexes, and extracted files. "
+		"Batch independent reads needed for the next decision. Prefer targeted searches "
+		"and relevant sections over dumping trees or documents. After truncation, narrow "
+		"the query or read relevant ranges from stdout_path/stderr_path. Process cursors "
+		"read additional retained output, but next_cursor does not recover material "
+		"already omitted by history_truncated. "
+		"Do not repeat the same oversized command.\"},"
 		"\"description\":{\"type\":\"string\",\"description\":"
 		"\"Short action summary in the user response language, e.g. Check HTTP timeout settings.\"},"
 		"\"workdir\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\","
