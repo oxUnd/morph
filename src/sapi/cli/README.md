@@ -31,7 +31,8 @@ cli/
     management, skill_store, share_store
     configuration/             provider defaults, validation, roles and storage
   adapters/
-    input/                     Readline, callbacks, keymaps, clipboard and reader
+    input/                     Readline, callbacks, keymaps and reader
+    clipboard/                 native clipboard access and terminal copy requests
     runtime/                   event translation and startup observer
     protocol/                  runtime interaction request/reply mapping
     media/                     external images and terminal media rendering

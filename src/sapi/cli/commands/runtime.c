@@ -7,6 +7,7 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/services/session_history.h"
+#include "sapi/cli/adapters/clipboard/clipboard.h"
 #include "sapi/cli/commands/registry.h"
 
 static int cli_runtime_command_quit(struct cli_application *ctx, int argc, char **argv)
@@ -41,6 +42,42 @@ static int cli_runtime_command_help(struct cli_application *ctx, int argc, char 
 	}
 	cli_print_help(ctx);
 	return 0;
+}
+
+static int cli_runtime_command_copy(struct cli_application *ctx, int argc, char **argv)
+{
+	char *answer = NULL;
+	int rc;
+
+	(void)argv;
+	if (argc != 1) {
+		CMD_ERROR(ctx, "usage: /copy");
+		return -EINVAL;
+	}
+	rc = runtime_session_last_answer(ctx->runtime, &answer);
+	if (rc) {
+		if (rc == -ENODATA)
+			CMD_ERROR(ctx, "no assistant answer to copy in this session");
+		else
+			CMD_ERROR(ctx, "copy failed: %s", morph_strerror(rc));
+		return rc;
+	}
+	rc = cli_clipboard_copy_text(ctx, answer);
+	free(answer);
+	if (rc == CLI_CLIPBOARD_COPIED)
+		CMD_OK(ctx, "copied last answer to clipboard");
+	else if (rc == CLI_CLIPBOARD_REQUESTED) {
+		printf(ctx, ANSI_DIM "Copy unconfirmed: sent a clipboard request to the terminal."
+			   ANSI_RESET "\n");
+		rc = 0;
+	} else {
+		if (rc == -E2BIG)
+			CMD_ERROR(ctx, "copy failed: answer exceeds the terminal "
+				       "clipboard payload limit");
+		else
+			CMD_ERROR(ctx, "copy failed: %s", morph_strerror(rc));
+	}
+	return rc;
 }
 
 static int cli_runtime_command_model(struct cli_application *ctx, int argc, char **argv)
@@ -592,6 +629,7 @@ static const struct cli_command cli_runtime_entries[] = {
 	{"/q", cli_runtime_command_quit, "Alias for /quit", ""},
 	{"/help", cli_runtime_command_help, "Show help for commands", "/help [command]"},
 	{"/h", cli_runtime_command_help, "Alias for /help", "/h [command]"},
+	{"/copy", cli_runtime_command_copy, "Copy the last assistant answer to clipboard", "/copy"},
 	{"/model", cli_runtime_command_model, "View or switch the LLM model", "/model [name]"},
 	{"/m", cli_runtime_command_model, "Alias for /model", "/m [name]"},
 	{"/trace", cli_runtime_command_trace, "Show ReAct trace for current turn",

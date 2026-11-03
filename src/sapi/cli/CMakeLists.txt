@@ -58,9 +58,9 @@ add_library(morph-cli STATIC
 	services/turn.c
 
 	# Platform and protocol adapters
+	adapters/clipboard/clipboard.c
 	adapters/input/callbacks.c
 	adapters/input/cancel.c
-	adapters/input/clipboard.c
 	adapters/input/keymap.c
 	adapters/input/reader.c
 	adapters/input/readline.c

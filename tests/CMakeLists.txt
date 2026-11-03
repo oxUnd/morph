@@ -68,6 +68,7 @@ set(TEST_SOURCES
 	test_event.cpp
 	test_agent_ui.cpp
 	test_cli_share.cpp
+	test_cli_copy.cpp
 	test_cli_list.cpp
 	test_cli_presentation.cpp
 	test_cli_terminal.cpp
@@ -308,6 +309,11 @@ if(Python3_Interpreter_FOUND AND UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIB
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_exit_pty.py
 			$<TARGET_FILE:morph>)
 	set_tests_properties(cli_exit_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 90)
+	add_test(NAME cli_copy_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_copy_pty.py
+			$<TARGET_FILE:morph>)
+	set_tests_properties(cli_copy_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
 	add_test(NAME cli_transcript_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_transcript_pty.py
