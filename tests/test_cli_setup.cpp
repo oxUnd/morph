@@ -73,6 +73,8 @@ TEST_F(CliSetupTest, SkipOptionalModels) {
 	EXPECT_EQ(cfg.exec.network, 1);
 	EXPECT_EQ(cfg.models.text.context_limit, 128000);
 	EXPECT_EQ(cfg.models.text.max_tokens, 16384);
+	EXPECT_EQ(cfg.models.text.timeout_seconds, 600);
+	EXPECT_EQ(cfg.models.text.retry_count, 3);
 	EXPECT_STREQ(cfg.models.vision.model, "");
 	EXPECT_STREQ(cfg.models.image.model, "");
 	EXPECT_STREQ(cfg.models.video.model, "");
@@ -243,14 +245,19 @@ TEST_F(CliSetupTest, ConfigureBothMediaModels) {
 	struct config cfg;
 	ASSERT_EQ(config_load(NULL, &cfg, path.c_str()), 0);
 	EXPECT_STREQ(cfg.models.text.adapter, "deepseek");
-	EXPECT_EQ(cfg.models.text.context_limit, 1000000);
-	EXPECT_EQ(cfg.models.text.max_tokens, 384000);
+	EXPECT_STREQ(cfg.models.text.model, "deepseek-flash");
+	EXPECT_STREQ(cfg.models.text.api_base, "https://api.deepseek.com");
+	EXPECT_EQ(cfg.models.text.context_limit, 1048576);
+	EXPECT_EQ(cfg.models.text.max_tokens, 65536);
 	EXPECT_STREQ(cfg.models.text.extra_body_json,
-		     "{\"thinking\":{\"type\":\"disabled\"}}");
+		     "{\"thinking\":{\"type\":\"enabled\"},\"reasoning_effort\":\"high\"}");
 	EXPECT_STREQ(cfg.models.image.adapter, "volcengine-images");
 	EXPECT_STREQ(cfg.models.video.adapter, "volcengine-videos");
-	EXPECT_STRNE(cfg.models.image.model, "");
+	EXPECT_STREQ(cfg.models.image.model, "doubao-seedream-5-0-flash-260915");
+	EXPECT_EQ(cfg.models.image.timeout_seconds, 300);
 	EXPECT_STREQ(cfg.models.video.model, "doubao-seedance-2-0-mini-260615");
+	EXPECT_EQ(cfg.models.video.poll_interval_seconds, 5);
+	EXPECT_EQ(cfg.models.video.poll_timeout_seconds, 1800);
 }
 
 TEST_F(CliSetupTest, CustomAndInvalidInputsRoundTrip) {
@@ -296,8 +303,8 @@ TEST_F(CliSetupTest, VisionUsesChatAdapterIndependentlyOfImageGeneration) {
 	struct config cfg;
 	ASSERT_EQ(config_load(NULL, &cfg, path.c_str()), 0);
 	EXPECT_STREQ(cfg.models.text.adapter, "deepseek");
-	EXPECT_EQ(cfg.models.text.context_limit, 1000000);
-	EXPECT_EQ(cfg.models.text.max_tokens, 384000);
+	EXPECT_EQ(cfg.models.text.context_limit, 1048576);
+	EXPECT_EQ(cfg.models.text.max_tokens, 65536);
 	EXPECT_STREQ(cfg.models.vision.provider, "openai");
 	EXPECT_STREQ(cfg.models.vision.adapter, "openai-chat-compatible");
 	EXPECT_STREQ(cfg.models.vision.model, "gpt-4o");
@@ -324,7 +331,7 @@ TEST_F(CliSetupTest, VisionAcceptsDeepSeekWithDeepSeekAdapter) {
 	EXPECT_STREQ(cfg.models.vision.provider, "deepseek");
 	EXPECT_STREQ(cfg.models.vision.adapter, "deepseek");
 	EXPECT_STREQ(cfg.models.vision.model, "deepseek-flash");
-	EXPECT_EQ(cfg.models.vision.context_limit, 128000);
+	EXPECT_EQ(cfg.models.vision.context_limit, 1048576);
 	EXPECT_EQ(cfg.models.vision.max_tokens, 16384);
 	EXPECT_STREQ(cfg.models.vision.api_base, "https://api.deepseek.com");
 	EXPECT_STREQ(cfg.models.vision.api_key_env, "DEEPSEEK_API_KEY");
@@ -342,8 +349,10 @@ TEST(CliSetupTokens, ModelChangesResetLimitsToEditableDefaults) {
 	EXPECT_EQ(entry.context_limit, 128000);
 	EXPECT_EQ(entry.max_tokens, 16384);
 	cli_setup_model_defaults(CLI_SETUP_TEXT, 2, &entry);
-	EXPECT_EQ(entry.context_limit, 1000000);
-	EXPECT_EQ(entry.max_tokens, 384000);
+	EXPECT_EQ(entry.context_limit, 1048576);
+	EXPECT_EQ(entry.max_tokens, 65536);
+	EXPECT_EQ(cli_setup_token_ceiling(&entry, 0), 1048576);
+	EXPECT_EQ(cli_setup_token_ceiling(&entry, 1), 393216);
 	cli_setup_model_defaults(CLI_SETUP_VISION, 4, &entry);
 	strcpy(entry.model, "gpt-4o");
 	cli_setup_reset_token_limits(&entry);
@@ -381,7 +390,7 @@ TEST_F(CliSetupTest, DeepSeekThinkingCanBeEnabledInPlainSetup) {
 	EXPECT_STREQ(cfg.models.text.adapter, "deepseek");
 	EXPECT_TRUE(cli_setup_thinking_enabled(&cfg.models.text));
 	EXPECT_STREQ(cfg.models.text.extra_body_json,
-		"{\"thinking\":{\"type\":\"enabled\"}}");
+		"{\"thinking\":{\"type\":\"enabled\"},\"reasoning_effort\":\"high\"}");
 }
 
 TEST_F(CliSetupTest, ThinkingPromptValidatesAndCanBeCancelled) {
@@ -755,4 +764,72 @@ TEST(CliSetupThinking, OnlyDeepSeekChangesAndOtherOptionsSurvive) {
 	EXPECT_NE(strstr(entry.extra_body_json, "\"reasoning_effort\":\"high\""), nullptr);
 	ASSERT_EQ(cli_setup_set_thinking(&entry, 0), 0);
 	EXPECT_FALSE(cli_setup_thinking_enabled(&entry));
+}
+
+TEST(CliSetupTokens, ThinkingBudgetsFollowModeWithoutReplacingCustomLimits) {
+	struct config_model_entry entry{};
+	cli_setup_model_defaults(CLI_SETUP_TEXT, 2, &entry);
+	EXPECT_TRUE(cli_setup_thinking_enabled(&entry));
+	EXPECT_EQ(entry.max_tokens, 65536);
+	ASSERT_EQ(cli_setup_set_thinking(&entry, 0), 0);
+	EXPECT_EQ(entry.max_tokens, 16384);
+	ASSERT_EQ(cli_setup_set_thinking(&entry, 1), 0);
+	EXPECT_EQ(entry.max_tokens, 65536);
+	entry.max_tokens = 8192;
+	ASSERT_EQ(cli_setup_set_thinking(&entry, 0), 0);
+	ASSERT_EQ(cli_setup_set_thinking(&entry, 1), 0);
+	EXPECT_EQ(entry.max_tokens, 8192);
+	strcpy(entry.extra_body_json,
+		"{\"thinking\":{\"type\":\"enabled\"},\"reasoning_effort\":\"max\"}");
+	cli_setup_reset_token_limits(&entry);
+	EXPECT_EQ(entry.max_tokens, 131072);
+	ASSERT_EQ(cli_setup_set_thinking(&entry, 0), 0);
+	EXPECT_EQ(entry.max_tokens, 16384);
+	ASSERT_EQ(cli_setup_set_thinking(&entry, 1), 0);
+	EXPECT_EQ(entry.max_tokens, 131072);
+}
+
+TEST(CliSetupTokens, VerifiedAliasesAndArkLimitsUseExactModelMetadata) {
+	struct config_model_entry entry{};
+	for (const char *model : {"deepseek-flash", "deepseek-v4-flash",
+				  "deepseek-v4-flash-vision-exp", "deepseek-v4-pro"}) {
+		cli_setup_model_defaults(CLI_SETUP_TEXT, 2, &entry);
+		strcpy(entry.model, model);
+		cli_setup_reset_token_limits(&entry);
+		EXPECT_EQ(entry.context_limit, 1048576) << model;
+		EXPECT_EQ(entry.max_tokens, 65536) << model;
+		int value = 0;
+		EXPECT_EQ(cli_setup_parse_token_count("393216", 1,
+			cli_setup_token_ceiling(&entry, 1), &value), 0);
+		EXPECT_LT(cli_setup_parse_token_count("393217", 1,
+			cli_setup_token_ceiling(&entry, 1), &value), 0);
+	}
+	cli_setup_model_defaults(CLI_SETUP_TEXT, 3, &entry);
+	EXPECT_EQ(entry.context_limit, 262144);
+	EXPECT_EQ(entry.max_tokens, 16384);
+	EXPECT_EQ(cli_setup_token_ceiling(&entry, 1), 131072);
+	EXPECT_STREQ(entry.extra_body_json, "{\"thinking\":{\"type\":\"disabled\"}}");
+	strcpy(entry.model, "ep-private-deployment");
+	cli_setup_reset_token_limits(&entry);
+	EXPECT_EQ(entry.context_limit, 128000);
+	EXPECT_EQ(entry.max_tokens, 16384);
+	EXPECT_EQ(cli_setup_token_ceiling(&entry, 1), INT_MAX);
+}
+
+TEST_F(CliSetupTest, ReconfigureKeepsExistingDeepSeekModeBudgetAndTimeout) {
+	const std::string original =
+		"[model.text]\nprovider='deepseek'\nadapter='deepseek'\n"
+		"model='deepseek-v4-flash'\napi_base='https://api.deepseek.com/v1'\n"
+		"api_key_env='DEEPSEEK_API_KEY'\ncontext_limit=1048576\nmax_tokens=8192\n"
+		"timeout_seconds=120\nretry_count=0\n"
+		"extra_body_json='{\"thinking\":{\"type\":\"disabled\"}}'\n";
+	ASSERT_EQ(file_write_all(path.c_str(), original.c_str(), original.size()), 0);
+	ASSERT_GE(run_custom_raw(std::string(20, '\n'), true), 0);
+	struct config cfg;
+	ASSERT_EQ(config_load(nullptr, &cfg, path.c_str()), 0);
+	EXPECT_STREQ(cfg.models.text.model, "deepseek-v4-flash");
+	EXPECT_EQ(cfg.models.text.max_tokens, 8192);
+	EXPECT_EQ(cfg.models.text.timeout_seconds, 120);
+	EXPECT_EQ(cfg.models.text.retry_count, 0);
+	EXPECT_FALSE(cli_setup_thinking_enabled(&cfg.models.text));
 }

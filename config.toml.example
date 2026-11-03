@@ -32,38 +32,42 @@ api_base    = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 context_limit    = 128000
 # Maximum number of tokens the model is allowed to generate per response.
-# Sent as the OpenAI-compatible "max_tokens" field. Default: 4096.
+# Sent as the OpenAI-compatible "max_tokens" field. Fallback when omitted: 4096.
+# Setup uses model-specific recommendations; GPT-4o supports up to 16384.
 # Thinking and visible answer tokens share this budget. Explicit thinking with
 # a budget below 32768 emits an advisory warning; short replies may be intentional.
 # max_tokens must not exceed a positive context_limit. Reserving half or more
 # of the context for output also warns because it can cause earlier compaction.
-max_tokens       = 4096
-# Idle/no-data timeout for one streaming text model request. Default: 300.
-timeout_seconds  = 300
+max_tokens       = 16384
+# Idle/no-data timeout for one streaming text model request. Fallback: 300.
+# Setup gives text requests 600 seconds without imposing a total stream deadline.
+timeout_seconds  = 600
 # Retries after the initial request for transient HTTP errors (0-10). Default: 3.
 retry_count      = 3
 # Optional provider-specific fields merged into the JSON request body.
 # Must be a JSON object and cannot replace fields managed by morph, including
 # model, messages, tools, stream, stream_options, and max_tokens.
-# extra_body_json = '''
-# {
-#   "reasoning_effort": "high",
-#   "chat_template_kwargs": {"enable_thinking": true}
-# }
-# '''
+# Optional GPT-4o sampling example; reasoning options belong to reasoning models.
+# extra_body_json = '''{"temperature":0.7}'''
 
 # ── Volcengine (火山引擎) example ────────────
 # provider    = "volcengine"
-# model       = "ep-2025xxxxxxxx-xxxxx"   # Ark endpoint ID
+# model       = "doubao-seed-2-0-lite-260428"
 # api_base    = "https://ark.cn-beijing.volces.com/api/v3"
 # api_key_env = "VOLCENGINE_API_KEY"
-# context_limit = 128000
+# context_limit = 262144
+# max_tokens = 16384
+# The current chat-compatible adapter does not replay Ark encrypted thinking.
+# extra_body_json = '''{"thinking":{"type":"disabled"}}'''
 
 # ── DeepSeek example ─────────────────────────
 # provider    = "deepseek"
-# model       = "deepseek-v4-flash"
-# api_base    = "https://api.deepseek.com/v1"
+# model       = "deepseek-flash"
+# api_base    = "https://api.deepseek.com"
 # api_key_env = "DEEPSEEK_API_KEY"
+# context_limit = 1048576
+# max_tokens = 65536
+# extra_body_json = '''{"thinking":{"type":"enabled"},"reasoning_effort":"high"}'''
 # The DeepSeek adapter preserves reasoning_content across tool calls and
 # omits tool_choice while thinking is enabled. To disable thinking:
 # extra_body_json = '''{"thinking":{"type":"disabled"}}'''
@@ -78,7 +82,8 @@ retry_count      = 3
 # model       = "gpt-4o"
 # api_base    = "https://api.openai.com/v1"
 # api_key_env = "OPENAI_API_KEY"
-# max_tokens  = 4096
+# context_limit = 128000
+# max_tokens  = 16384
 # timeout_seconds = 300
 # retry_count = 3
 # DeepSeek vision example:
@@ -87,6 +92,8 @@ retry_count      = 3
 # model       = "deepseek-flash"
 # api_base    = "https://api.deepseek.com"
 # api_key_env = "DEEPSEEK_API_KEY"
+# context_limit = 1048576
+# max_tokens = 16384
 # extra_body_json = '''{"thinking":{"type":"disabled"}}'''
 
 # ──────────────────────────────────────────────
@@ -105,9 +112,10 @@ retry_count      = 3
 # ── Volcengine seedream (recommended) ─────────
 adapter     = "volcengine-images"
 provider    = "volcengine"
-model       = "doubao-seedream-5-0-260128"
+model       = "doubao-seedream-5-0-flash-260915"
 api_base    = "https://ark.cn-beijing.volces.com/api/v3"
 api_key_env = "VOLCENGINE_API_KEY"
+timeout_seconds = 300
 
 # ──────────────────────────────────────────────
 # Video generation model
@@ -121,7 +129,7 @@ model               = "doubao-seedance-2-0-mini-260615"
 api_base            = "https://ark.cn-beijing.volces.com/api/v3"
 api_key_env         = "VOLCENGINE_API_KEY"
 poll_interval_seconds = 5
-poll_timeout_seconds  = 600
+poll_timeout_seconds  = 1800
 
 # Alternative Seedance 2.0 variant:
 # model = "doubao-seedance-2-0-fast-260128"

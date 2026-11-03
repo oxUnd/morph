@@ -21,11 +21,11 @@ struct cli_model_setup_preset {
 static const struct cli_model_setup_preset cli_model_presets[] = {
 	{"openai", "https://api.openai.com/v1", "OPENAI_API_KEY", "gpt-4o", "gpt-4o",
 	 "https://api.openai.com/v1", "gpt-image-2"},
-	{"deepseek", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY", "deepseek-v4-flash",
+	{"deepseek", "https://api.deepseek.com", "DEEPSEEK_API_KEY", "deepseek-flash",
 	 "deepseek-flash", "https://api.deepseek.com", ""},
 	{"volcengine", "https://ark.cn-beijing.volces.com/api/v3", "VOLCENGINE_API_KEY",
 	 "doubao-seed-2-0-lite-260428", "doubao-seed-2-0-lite-260428",
-	 "https://ark.cn-beijing.volces.com/api/v3", "doubao-seedream-5-0-260128"},
+	 "https://ark.cn-beijing.volces.com/api/v3", "doubao-seedream-5-0-flash-260915"},
 };
 
 struct cli_model_setup_token_limits {
@@ -33,17 +33,26 @@ struct cli_model_setup_token_limits {
 	const char *model;
 	int context;
 	int output;
+	int recommended_output;
+	int thinking_output;
 };
 
-/* Verified 2026-09-21 against official model / integration documentation:
+/* Verified 2026-11-03 against official model / API documentation:
  * https://developers.openai.com/api/docs/models/gpt-4o
- * https://api-docs.deepseek.com/quick_start/agent_integrations/pi_mono/
+ * https://api-docs.deepseek.com/api/list-models/
+ * https://api-docs.deepseek.com/api/create-chat-completion/
+ * https://docs.volcengine.com/docs/ark/model-list?lang=zh&redirect=1
+ * Recommendation budgets are deployment choices, separate from API ceilings.
  * Match exact model IDs; do not infer limits from a provider or prefix.
  */
 static const struct cli_model_setup_token_limits cli_model_token_limits[] = {
-	{"openai", "gpt-4o", 128000, 16384},
-	{"deepseek", "deepseek-v4-flash", 1000000, 384000},
-	{"deepseek", "deepseek-v4-pro", 1000000, 384000},
+	{"openai", "gpt-4o", 128000, 16384, 16384, 0},
+	{"deepseek", "deepseek-flash", 1048576, 393216, 16384, 65536},
+	{"deepseek", "deepseek-v4-flash", 1048576, 393216, 16384, 65536},
+	{"deepseek", "deepseek-v4-flash-vision-exp", 1048576, 393216, 16384, 65536},
+	{"deepseek", "deepseek-v4-pro", 1048576, 393216, 16384, 65536},
+	{"volcengine", "doubao-seed-2-0-lite-260428", 262144, 131072, 16384, 0},
+	{"volcengine", "doubao-seed-2-0-mini-260428", 262144, 131072, 16384, 0},
 };
 
 static const struct cli_model_setup_token_limits *
@@ -55,6 +64,22 @@ cli_model_find_token_limits(const struct config_model_entry *entry)
 		    strcmp(entry->model, cli_model_token_limits[i].model) == 0)
 			return &cli_model_token_limits[i];
 	return NULL;
+}
+
+static int cli_model_recommended_output(const struct config_model_entry *entry)
+{
+	const struct cli_model_setup_token_limits *limits = cli_model_find_token_limits(entry);
+
+	if (!limits)
+		return 16384;
+	if (!limits->thinking_output || !cli_setup_thinking_enabled(entry))
+		return limits->recommended_output;
+	cJSON *body = cJSON_Parse(entry->extra_body_json);
+	const cJSON *effort = cJSON_GetObjectItemCaseSensitive(body, "reasoning_effort");
+	int maximum_effort = cJSON_IsString(effort) && strcmp(effort->valuestring, "max") == 0;
+
+	cJSON_Delete(body);
+	return maximum_effort ? 131072 : limits->thinking_output;
 }
 
 void cli_setup_model_defaults(int kind, int selected, struct config_model_entry *entry)
@@ -84,10 +109,24 @@ void cli_setup_model_defaults(int kind, int selected, struct config_model_entry 
 				: kind == CLI_SETUP_VISION ? preset->vision_base
 							   : preset->base);
 	strcpy(entry->api_key_env, custom ? "MORPH_API_KEY" : preset->env);
-	if ((kind == CLI_SETUP_TEXT || kind == CLI_SETUP_VISION) && !custom && index == 1)
+	if ((kind == CLI_SETUP_TEXT || kind == CLI_SETUP_VISION) && !custom && index == 1) {
+		strcpy(entry->extra_body_json, kind == CLI_SETUP_TEXT ?
+			"{\"thinking\":{\"type\":\"enabled\"},\"reasoning_effort\":\"high\"}" :
+			"{\"thinking\":{\"type\":\"disabled\"}}");
+	}
+	/* Chat-compatible replay does not preserve Ark's encrypted thinking blocks. */
+	if ((kind == CLI_SETUP_TEXT || kind == CLI_SETUP_VISION) && !custom && index == 2)
 		strcpy(entry->extra_body_json, "{\"thinking\":{\"type\":\"disabled\"}}");
-	if (kind == CLI_SETUP_TEXT || kind == CLI_SETUP_VISION)
+	if (kind == CLI_SETUP_TEXT || kind == CLI_SETUP_VISION) {
 		cli_setup_reset_token_limits(entry);
+		entry->timeout_seconds = kind == CLI_SETUP_TEXT ? 600 : 300;
+		entry->retry_count = 3;
+	} else if (kind == CLI_SETUP_IMAGE) {
+		entry->timeout_seconds = 300;
+	} else {
+		entry->poll_interval_seconds = 5;
+		entry->poll_timeout_seconds = 1800;
+	}
 }
 
 int cli_setup_thinking_enabled(const struct config_model_entry *entry)
@@ -95,7 +134,14 @@ int cli_setup_thinking_enabled(const struct config_model_entry *entry)
 	cJSON *root = cJSON_Parse(entry->extra_body_json);
 	const cJSON *thinking = cJSON_GetObjectItemCaseSensitive(root, "thinking");
 	const cJSON *type = cJSON_GetObjectItemCaseSensitive(thinking, "type");
-	int enabled = cJSON_IsString(type) && strcmp(type->valuestring, "enabled") == 0;
+	const cJSON *effort = cJSON_GetObjectItemCaseSensitive(root, "reasoning_effort");
+	const struct cli_model_setup_token_limits *limits = cli_model_find_token_limits(entry);
+	int enabled = limits && limits->thinking_output;
+
+	if (cJSON_IsString(effort))
+		enabled = strcmp(effort->valuestring, "none") != 0;
+	if (cJSON_IsString(type))
+		enabled = strcmp(type->valuestring, "enabled") == 0;
 
 	cJSON_Delete(root);
 	return enabled;
@@ -110,6 +156,7 @@ int cli_setup_set_thinking(struct config_model_entry *entry, int enabled)
 
 	if (strcmp(entry->adapter, "deepseek") != 0)
 		return -EINVAL;
+	int previous_output = cli_model_recommended_output(entry);
 	if (entry->extra_body_json[0]) {
 		root = cJSON_ParseWithOpts(entry->extra_body_json, NULL, 1);
 		if (!cJSON_IsObject(root)) {
@@ -135,6 +182,14 @@ int cli_setup_set_thinking(struct config_model_entry *entry, int enabled)
 		cJSON_Delete(root);
 		return -ENOMEM;
 	}
+	const cJSON *effort = cJSON_GetObjectItemCaseSensitive(root, "reasoning_effort");
+	if (enabled && (!cJSON_IsString(effort) || strcmp(effort->valuestring, "none") == 0)) {
+		cJSON_DeleteItemFromObjectCaseSensitive(root, "reasoning_effort");
+		if (!cJSON_AddStringToObject(root, "reasoning_effort", "high")) {
+			cJSON_Delete(root);
+			return -ENOMEM;
+		}
+	}
 	json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
 	if (!json)
@@ -144,6 +199,13 @@ int cli_setup_set_thinking(struct config_model_entry *entry, int enabled)
 	else
 		strcpy(entry->extra_body_json, json);
 	free(json);
+	/* Follow mode defaults only while the user has not customized the budget. */
+	if (rc == 0 && entry->max_tokens == previous_output) {
+		int recommended = cli_model_recommended_output(entry);
+
+		if (recommended < entry->context_limit)
+			entry->max_tokens = recommended;
+	}
 	return rc;
 }
 
@@ -152,10 +214,7 @@ void cli_setup_reset_token_limits(struct config_model_entry *entry)
 	const struct cli_model_setup_token_limits *limits = cli_model_find_token_limits(entry);
 	/* Deployment defaults, not claims about an unknown model's capacity. */
 	entry->context_limit = limits ? limits->context : 128000;
-	entry->max_tokens = limits ? limits->output : 16384;
-	if (strcmp(entry->provider, "volcengine") == 0 &&
-	    strcmp(entry->model, "doubao-seed-2-0-lite-260428") == 0)
-		entry->max_tokens = 8192;
+	entry->max_tokens = cli_model_recommended_output(entry);
 }
 
 int cli_setup_token_ceiling(const struct config_model_entry *entry, int output)

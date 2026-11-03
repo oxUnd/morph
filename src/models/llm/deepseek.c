@@ -13,7 +13,8 @@ static int deepseek_thinking_enabled(const struct model *model)
 	if (!model)
 		return 0;
 	enabled = strstr(model->model_id, "reasoner") != NULL ||
-		strstr(model->model_id, "deepseek-v4") != NULL;
+		strstr(model->model_id, "deepseek-v4") != NULL ||
+		strcmp(model->model_id, "deepseek-flash") == 0;
 	if (!model->extra_body_json[0])
 		return enabled;
 	root = cJSON_ParseWithOpts(model->extra_body_json, NULL, 1);
@@ -22,6 +23,9 @@ static int deepseek_thinking_enabled(const struct model *model)
 	thinking = cJSON_GetObjectItem(root, "thinking");
 	type = cJSON_IsObject(thinking) ?
 		cJSON_GetObjectItem(thinking, "type") : NULL;
+	cJSON *effort = cJSON_GetObjectItemCaseSensitive(root, "reasoning_effort");
+	if (cJSON_IsString(effort))
+		enabled = strcmp(effort->valuestring, "none") != 0;
 	if (cJSON_IsString(type) && type->valuestring) {
 		if (strcmp(type->valuestring, "disabled") == 0)
 			enabled = 0;

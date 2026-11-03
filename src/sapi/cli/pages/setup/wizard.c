@@ -552,6 +552,20 @@ static int cli_wizard_save_setup(struct cli_setup_state *state, const char *path
 		if ((i == CLI_SETUP_TEXT || i == CLI_SETUP_VISION) && entry->model[0])
 			morph_buf_printf(&patch, "context_limit = %d\nmax_tokens = %d\n",
 					 entry->context_limit, entry->max_tokens);
+		if (!entry->model[0])
+			continue;
+		if (entry->timeout_seconds > 0)
+			morph_buf_printf(&patch, "timeout_seconds = %d\n", entry->timeout_seconds);
+		if (i == CLI_SETUP_TEXT || i == CLI_SETUP_VISION)
+			morph_buf_printf(&patch, "retry_count = %d\n", entry->retry_count);
+		if (i == CLI_SETUP_VIDEO) {
+			if (entry->poll_interval_seconds > 0)
+				morph_buf_printf(&patch, "poll_interval_seconds = %d\n",
+						 entry->poll_interval_seconds);
+			if (entry->poll_timeout_seconds > 0)
+				morph_buf_printf(&patch, "poll_timeout_seconds = %d\n",
+						 entry->poll_timeout_seconds);
+		}
 	}
 	if (!original)
 		morph_buf_puts(&patch, "\n[exec]\nnetwork = true\n");
