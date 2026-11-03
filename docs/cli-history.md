@@ -11,6 +11,12 @@ morph resume c923843e
 morph resume --config ./dev.toml --workdir /path/to/project
 ```
 
+After `/quit` or `/q`, interactive sessions print both `morph resume ...` and
+`morphctl resume ...` commands below the goodbye message. Each command includes the
+current session's display ID, configuration file and working directory, with shell
+quoting for paths containing spaces or quotes. `morphctl` loads its credentials and
+forwards the resume arguments to `morph`. Unsaved fresh sessions have no resume hint.
+
 Interactive session selection through `/resume`, `/resume <name|id>`, `/switch` or
 `-s <name>` restores saved conversation text to native terminal scrollback. This
 includes inactive messages from before context compression, assistant preambles

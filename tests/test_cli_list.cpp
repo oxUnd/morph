@@ -377,6 +377,65 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 	(void)std::filesystem::remove_all(directory, error);
 }
 
+TEST(CliListTest, QuitPrintsResumeCommandsOnlyForSavedInteractiveSessions)
+{
+	char pattern[] = "/tmp/morph-cli-quit-XXXXXX";
+	char *directory = mkdtemp(pattern);
+	ASSERT_NE(directory, nullptr);
+	std::string database = std::string(directory) + "/data.db";
+	struct runtime_options options{};
+	struct runtime *runtime = nullptr;
+	struct cli_application context{};
+	options.db_path = database.c_str();
+	options.workdir = directory;
+	options.front_name = "test";
+	options.create_new_session = 1;
+	ASSERT_EQ(runtime_open(&options, &runtime), 0);
+	context.runtime = runtime;
+	context.running = 1;
+	cli_output_set_color_enabled(&context, 0);
+	testing::internal::CaptureStdout();
+	int rc = cli_command_dispatch(&context, "/quit");
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(context.running, 0);
+	EXPECT_NE(output.find("Goodbye!"), std::string::npos);
+	EXPECT_EQ(output.find("To resume"), std::string::npos);
+	struct session session{};
+	ASSERT_EQ(runtime_session_create_and_select(runtime, "quit-test", &session), 0);
+	for (auto mode : {CLI_PRESENT_INTERACTIVE, CLI_PRESENT_ONCE_PLAIN,
+			 CLI_PRESENT_EVENTS_JSON}) {
+		context.running = 1;
+		context.presentation_mode = mode;
+		context.event_cb = cli_runtime_events_callback;
+		context.event_user_data = &context;
+		testing::internal::CaptureStdout();
+		rc = cli_command_dispatch(&context, "/q");
+		output = testing::internal::GetCapturedStdout();
+		EXPECT_EQ(rc, 0);
+		EXPECT_EQ(context.running, 0);
+		EXPECT_NE(output.find("Goodbye!"), std::string::npos);
+		if (mode == CLI_PRESENT_INTERACTIVE) {
+			std::string reference = std::string("resume ") + session.display_id;
+			EXPECT_NE(output.find("morph " + reference), std::string::npos);
+			EXPECT_NE(output.find("morphctl " + reference), std::string::npos);
+			EXPECT_NE(output.find(std::string("-w ") + runtime_workdir_get(runtime)),
+				  std::string::npos);
+		} else {
+			EXPECT_EQ(output.find("To resume"), std::string::npos);
+			EXPECT_EQ(output.find("morphctl"), std::string::npos);
+		}
+		if (mode == CLI_PRESENT_EVENTS_JSON) {
+			auto events = cli_test_parse_ndjson(output);
+			EXPECT_EQ(events.size(), 2u);
+			cli_test_delete_events(events);
+		}
+	}
+	runtime_close(runtime);
+	std::error_code error;
+	(void)std::filesystem::remove_all(directory, error);
+}
+
 TEST(CliListTest, HelpUsesTreeLayout)
 {
 	struct cli_application _cli_output_context = {0};
