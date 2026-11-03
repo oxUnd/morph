@@ -27,6 +27,7 @@ cli/
   services/
     command_job, event_queue   workers, owner calls and wakeup bridge
     turn, scheduler, recap     runtime use cases and state coordination
+    session_history            restore persisted conversation to terminal history
     management, skill_store, share_store
     configuration/             provider defaults, validation, roles and storage
   adapters/
@@ -34,7 +35,7 @@ cli/
     runtime/                   event translation and startup observer
     protocol/                  runtime interaction request/reply mapping
     media/                     external images and terminal media rendering
-  presentation/                output, presenter, diagnostics, version, Markdown and HTML
+  presentation/                output, presenter, history, diagnostics, Markdown and HTML
   CMakeLists.txt
   README.md
 ```

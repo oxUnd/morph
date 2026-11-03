@@ -7,6 +7,7 @@ extern "C" {
 #include "sapi/cli/adapters/media/image_loader.h"
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/presentation/presenter.h"
+#include "sapi/cli/presentation/history.h"
 #include "sapi/cli/widgets/banner.h"
 #include "sapi/cli/pages/approval.h"
 #include "sapi/cli/widgets/transcript.h"
@@ -286,6 +287,113 @@ protected:
 		return data;
 	}
 };
+
+TEST_F(CliPresentationTest, RestoresInactiveHistoryAndToolsWithoutInternalRecords)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	ctx.turn_active = 0;
+	struct model_history_item items[7]{};
+	std::string contents[] = {
+		"ORIGINAL_QUESTION", "CHECKING_FILES", R"({"ok":true,"data":{
+		"stdout":"HISTORICAL_TOOL_OUTPUT","exit_code":0,"duration_ms":2400}})",
+		"**ORIGINAL_ANSWER**", "INTERNAL_COMPACTION", "LATEST_QUESTION", "LATEST_ANSWER"
+	};
+	const char *kinds[] = {"user_message", "assistant_tool_calls", "tool_result",
+		"assistant_message", "compaction_summary", "user_message", "assistant_message"};
+	char calls[] = R"({"calls":[{"name":"exec","tool_call_id":"history_tool",
+		"arguments":"{\"command\":\"printf HISTORICAL_COMMAND\"}"}],
+		"reasoning_content":"HISTORICAL_REASONING"})";
+	char id[] = "history_tool";
+	for (size_t i = 0; i < 7; i++) {
+		strcpy(items[i].kind, kinds[i]);
+		items[i].content = contents[i].data();
+		items[i].next = i < 6 ? &items[i + 1] : nullptr;
+	}
+	items[1].payload_json = calls;
+	items[2].tool_call_id = id;
+	testing::internal::CaptureStdout();
+	int rc = cli_history_render_session(&ctx, items, nullptr);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_EQ(rc, 0);
+	EXPECT_LT(output.find("ORIGINAL_QUESTION"), output.find("CHECKING_FILES"));
+	EXPECT_LT(output.find("CHECKING_FILES"), output.find("HISTORICAL_COMMAND"));
+	EXPECT_LT(output.find("HISTORICAL_COMMAND"), output.find("ORIGINAL_ANSWER"));
+	EXPECT_LT(output.find("ORIGINAL_ANSWER"), output.find("LATEST_QUESTION"));
+	EXPECT_LT(output.find("LATEST_QUESTION"), output.find("LATEST_ANSWER"));
+	EXPECT_NE(output.find("HISTORICAL_TOOL_OUTPUT"), std::string::npos);
+	EXPECT_NE(output.find("2.4s"), std::string::npos);
+	EXPECT_EQ(output.find("INTERNAL_COMPACTION"), std::string::npos);
+	EXPECT_EQ(output.find("Worked for"), std::string::npos);
+	EXPECT_EQ(ctx.turn_active, 0);
+}
+
+TEST_F(CliPresentationTest, RestoredPendingToolHasNoLiveTimerOrInventedFailure)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cJSON *call = cJSON_Parse(R"({"name":"exec","tool_call_id":"pending",
+		"arguments":"{\"command\":\"printf PENDING_COMMAND\"}"})");
+	ASSERT_NE(call, nullptr);
+	testing::internal::CaptureStdout();
+	int rc = cli_transcript_restore_tool(&ctx, call, nullptr);
+	cli_transcript_finish(&ctx);
+	std::string output = testing::internal::GetCapturedStdout();
+	cJSON_Delete(call);
+	EXPECT_EQ(rc, 0);
+	EXPECT_NE(output.find("PENDING_COMMAND"), std::string::npos);
+	EXPECT_NE(output.find("no recorded result"), std::string::npos);
+	EXPECT_EQ(output.find("FAILED"), std::string::npos);
+	EXPECT_EQ(output.find("0.0s"), std::string::npos);
+	EXPECT_EQ(output.find("Interrupted before"), std::string::npos);
+}
+
+TEST_F(CliPresentationTest, RestoresOriginalToolOutputAndFailureMetadata)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	ctx.tool_details = 1;
+	cJSON *call = cJSON_Parse(R"({"name":"exec","tool_call_id":"failed",
+		"arguments":"{\"command\":\"printf ORIGINAL_COMMAND\"}"})");
+	ASSERT_NE(call, nullptr);
+	char stored[] = "MODEL_HISTORY_TRUNCATED";
+	char metadata[] = R"({"original_content":"ORIGINAL_TOOL_OUTPUT", "error_code":-13})";
+	struct model_history_item result{};
+	result.content = stored;
+	result.payload_json = metadata;
+	testing::internal::CaptureStdout();
+	int rc = cli_transcript_restore_tool(&ctx, call, &result);
+	std::string output = testing::internal::GetCapturedStdout();
+	cJSON_Delete(call);
+	EXPECT_EQ(rc, 0);
+	EXPECT_NE(output.find("ORIGINAL_TOOL_OUTPUT"), std::string::npos);
+	EXPECT_NE(output.find("ORIGINAL_COMMAND"), std::string::npos);
+	EXPECT_NE(output.find("FAILED"), std::string::npos);
+	EXPECT_EQ(output.find("MODEL_HISTORY_TRUNCATED"), std::string::npos);
+	EXPECT_EQ(output.find("0.0s"), std::string::npos);
+}
+
+TEST_F(CliPresentationTest, RestoresLegacyMessagesWithTerminalControlsSanitized)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	struct message question{}, answer{}, system{};
+	strcpy(question.role, "user");
+	strcpy(answer.role, "assistant");
+	strcpy(system.role, "system");
+	char input[] = "LEGACY_QUESTION\033[2J";
+	char response[] = "**LEGACY_ANSWER**";
+	char internal[] = "INTERNAL_SYSTEM_MESSAGE";
+	question.content = input;
+	answer.content = response;
+	system.content = internal;
+	question.next = &answer;
+	answer.next = &system;
+	testing::internal::CaptureStdout();
+	int rc = cli_history_render_session(&ctx, nullptr, &question);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_EQ(rc, 0);
+	EXPECT_NE(output.find("LEGACY_QUESTION"), std::string::npos);
+	EXPECT_NE(output.find("LEGACY_ANSWER"), std::string::npos);
+	EXPECT_EQ(output.find("\033[2J"), std::string::npos);
+	EXPECT_EQ(output.find("INTERNAL_SYSTEM_MESSAGE"), std::string::npos);
+}
 
 TEST(CliInputPromptTest, AnsiSequencesAreMarkedAsInvisible)
 {

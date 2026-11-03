@@ -92,6 +92,14 @@ Supported providers: `openai`, `volcengine`, `deepseek`.
 - `-p <prompt>`: run one prompt and exit
 - `-s <name>`: select or create a named session (with `-p`, reuse the conversation)
 
+Run `morph resume` to open the session list immediately, or `morph resume <name|id>`
+to enter an existing session directly. `/resume` opens the same list during chat;
+`/resume <name|id>` and `/switch <name|id>` also restore the conversation. Interactive
+resumes (including `-s`) restore saved user messages, answers and tool summaries to
+terminal scrollback, including messages removed from the active model context by
+compression. Restoring history does not call the model or execute saved tools.
+See [session history](docs/cli-history.md) for display and inspection details.
+
 Manage MCP servers and skills directly from the shell, without starting a chat
 or configuring a model:
 

@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/chat.h"
+#include "sapi/cli/pages/resume.h"
 #include "sapi/cli/services/turn.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/command_job.h"
@@ -61,6 +62,12 @@ static int cli_chat_page_appear(void *data, struct morph_tui_application *app)
 		cli_chat_page_schedule(state, app);
 		return 0;
 	}
+	if (ctx->resume_requested) {
+		/* Open after the root controller's initial transition has committed. */
+		cli_chat_page_schedule(state, app);
+		morph_tui_application_schedule(app, 0);
+		return 0;
+	}
 	cli_readline_editor_open(ctx, state->draft, state->point);
 	state->draft = NULL;
 	state->callback_installed = 1;
@@ -106,6 +113,16 @@ static int cli_chat_page_event(void *data, struct morph_tui_application *app,
 		ctx->running = 0;
 		morph_tui_application_stop(app, 0);
 		return 1;
+	}
+	if (ctx->resume_requested && !modal && !morph_tui_application_transition_pending(app)) {
+		ctx->resume_requested = 0;
+		int rc = cli_resume_show(ctx);
+
+		if (rc)
+			CMD_ERROR(ctx, "failed to open sessions: %s", morph_strerror(rc));
+		if (!morph_tui_application_transition_pending(app))
+			rc = cli_chat_page_appear(state, app);
+		return rc ? rc : 1;
 	}
 	if (morph_signal_flag_take(&ctx->resized)) {
 		cli_feed_resize(ctx);

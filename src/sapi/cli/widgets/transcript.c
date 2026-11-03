@@ -7,6 +7,7 @@
 #include "sapi/cli/widgets/list.h"
 #include "sapi/cli/widgets/shell_style.h"
 #include "agent/patch.h"
+#include "session.h"
 #include <sys/ioctl.h>
 
 struct cli_transcript_tool {
@@ -22,6 +23,7 @@ struct cli_transcript_tool {
 	struct utf8_terminal_sanitizer sanitizer;
 	int state;
 	int timed_out;
+	int historical;
 	double started;
 	double ended;
 };
@@ -224,11 +226,14 @@ static int cli_transcript_shell_tool(const struct cli_transcript_tool *tool)
 
 static int cli_transcript_tool_is_running(const struct cli_transcript_tool *tool)
 {
-	return tool->state >= 0 && (!tool->state || strcmp(tool->summary, "running") == 0);
+	return !tool->historical &&
+	       tool->state >= 0 && (!tool->state || strcmp(tool->summary, "running") == 0);
 }
 
 static const char *cli_transcript_tool_state_color(const struct cli_transcript_tool *tool)
 {
+	if (tool->historical && !tool->state)
+		return ANSI_DIM;
 	return tool->timed_out			      ? ANSI_YELLOW
 	       : tool->state < 0		      ? ANSI_RED
 	       : cli_transcript_tool_is_running(tool) ? ANSI_CYAN
@@ -237,6 +242,8 @@ static const char *cli_transcript_tool_state_color(const struct cli_transcript_t
 
 static const char *cli_transcript_tool_state_marker(const struct cli_transcript_tool *tool)
 {
+	if (tool->historical && !tool->state)
+		return "-";
 	return tool->state < 0 && !tool->timed_out    ? CLI_FEED_FAILED
 	       : cli_transcript_tool_is_running(tool) ? CLI_FEED_RUNNING
 						      : CLI_FEED_DONE;
@@ -292,14 +299,19 @@ static void cli_transcript_tool_row(const struct cli_transcript_tool *tool, morp
 		morph_buf_cleanup(&subject);
 		return;
 	}
-	if (tool->timed_out)
-		(void)morph_buf_puts(&meta, "TIMEOUT · ");
+	if (tool->historical && !tool->state)
+		(void)morph_buf_puts(&meta, "no recorded result");
+	else if (tool->timed_out)
+		(void)morph_buf_puts(&meta, "TIMEOUT");
 	else if (tool->state < 0)
-		(void)morph_buf_puts(&meta, "FAILED · ");
+		(void)morph_buf_puts(&meta, "FAILED");
 	else if (tool->state && cli_transcript_tool_is_running(tool))
-		(void)morph_buf_puts(&meta, "RUNNING · ");
-	if (tool->state)
+		(void)morph_buf_puts(&meta, "RUNNING");
+	if (tool->state && (!tool->historical || elapsed > 0)) {
+		if (meta.len)
+			(void)morph_buf_puts(&meta, " · ");
 		(void)morph_buf_printf(&meta, "%.1fs", elapsed);
+	}
 	int available = columns - 5 - (int)utf8_display_width(meta.data);
 
 	if (name_width > available)
@@ -315,11 +327,11 @@ static void cli_transcript_tool_row(const struct cli_transcript_tool *tool, morp
 	else
 		(void)morph_buf_printf(row, "%s%s%s", styled ? ANSI_CYAN : "", subject.data,
 				       styled ? ANSI_RESET : "");
-	if (tool->state) {
+	if (meta.len) {
 		(void)morph_buf_printf(row, "  %s%s%s",
 				       styled ? (tool->state < 0 ? color : ANSI_DIM) : "",
 				       meta.data, styled ? ANSI_RESET : "");
-	} else {
+	} else if (!tool->historical) {
 		(void)morph_buf_puts(row, "…");
 	}
 	morph_buf_cleanup(&meta);
@@ -663,7 +675,8 @@ static void cli_transcript_print_details(struct cli_application *ctx,
 				cli_presentation_patch_diff(ctx, NULL, tool->patch_preview);
 			else
 				cli_presentation_patch_diff(
-					ctx, workdir, cli_transcript_json_string(json, "input"));
+					ctx, tool->historical ? NULL : workdir,
+					cli_transcript_json_string(json, "input"));
 			cJSON_Delete(json);
 		} else if (strcmp(tool->name, "exec") == 0) {
 			cJSON *json = cJSON_Parse(tool->args);
@@ -927,7 +940,7 @@ void cli_transcript_finish(struct cli_application *ctx)
 	if (!tr || tr->finished)
 		return;
 	morph_array_foreach (tool, &tr->tools, struct cli_transcript_tool) {
-		if (!tool->state) {
+		if (!tool->state && !tool->historical) {
 			tool->state = -1;
 			tool->ended = cli_transcript_now();
 			tool->error = "Interrupted before a result was received";
@@ -1157,6 +1170,78 @@ static void cli_transcript_summarize_result(struct cli_transcript *tr,
 		tool->summary = cli_transcript_save_text(tr, morph_buf_cstr(&summary));
 	morph_buf_cleanup(&summary);
 	cJSON_Delete(json);
+}
+
+/* Restore presentation state only; historical calls never enter the tool runtime. */
+int cli_transcript_restore_tool(struct cli_application *ctx, const cJSON *call,
+				const struct model_history_item *result)
+{
+	const char *name = cli_transcript_json_string(call, "name");
+	const char *id = cli_transcript_json_string(call, "tool_call_id");
+	const char *input = cli_transcript_json_string(call, "input");
+	const char *arguments = cli_transcript_json_string(call, "arguments");
+	cJSON *data;
+	cJSON *args;
+	int rc;
+
+	if (!name[0])
+		return 0;
+	if (!ctx->transcript && cli_transcript_init(ctx) != 0)
+		return -ENOMEM;
+	data = cJSON_CreateObject();
+	args = cJSON_Parse(arguments);
+	if (!args) {
+		args = cJSON_CreateObject();
+		if (args && !cJSON_AddStringToObject(args, "input", input)) {
+			cJSON_Delete(args);
+			args = NULL;
+		}
+	}
+	if (!data || !args || !cJSON_AddStringToObject(data, "tool", name) ||
+	    !cJSON_AddStringToObject(data, "tool_call_id", id)) {
+		cJSON_Delete(data);
+		cJSON_Delete(args);
+		return -ENOMEM;
+	}
+	if (!cJSON_AddItemToObject(data, "args", args)) {
+		cJSON_Delete(data);
+		cJSON_Delete(args);
+		return -ENOMEM;
+	}
+	/* No patch previews against today's files, and no synthetic live timing. */
+	rc = cli_transcript_add_tool(ctx->transcript, data, NULL);
+	cJSON_Delete(data);
+	if (rc)
+		return rc;
+	struct cli_transcript *tr = ctx->transcript;
+	struct cli_transcript_tool *tool = morph_array_get(&tr->tools, tr->tools.nelts - 1);
+
+	tool->historical = 1;
+	tool->started = 0;
+	tool->ended = 0;
+	if (result) {
+		cJSON *metadata = result->payload_json ? cJSON_Parse(result->payload_json) : NULL;
+		const cJSON *original =
+			cJSON_GetObjectItemCaseSensitive(metadata, "original_content");
+		const cJSON *code = cJSON_GetObjectItemCaseSensitive(metadata, "error_code");
+
+		tool->state = 1;
+		tool->result = cli_transcript_save_text(tr,
+			cJSON_IsString(original) ? original->valuestring : result->content);
+		cli_transcript_summarize_result(tr, tool);
+		if (cJSON_IsNumber(code) && code->valueint < 0) {
+			tool->state = -1;
+			tool->timed_out = tool->timed_out || code->valueint == -ETIMEDOUT;
+			if (!tool->error[0])
+				tool->error = cli_transcript_save_text(
+					tr, morph_strerror(code->valueint));
+		}
+		cJSON_Delete(metadata);
+	}
+	cli_transcript_print_tool(ctx, tool, !ctx->tool_details);
+	if (ctx->tool_details)
+		cli_transcript_print_details(ctx, tool, 1, cli_transcript_workdir(ctx));
+	return tr->allocation_failed ? -ENOMEM : 0;
 }
 
 /* Return one for events fully presented here, zero for the usual presenter. */

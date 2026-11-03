@@ -84,6 +84,7 @@ static const char cli_options_usage_text[] =
 	"Usage: morph [options]\n"
 	"\n"
 	"Commands:\n"
+	"  resume [NAME|ID]     Resume a session; open the session list without an argument\n"
 	"  setup                Choose a role and configure models; save and exit\n"
 	"  mcp                  Manage MCP servers (add/list/get/remove/test)\n"
 	"  skills (skill)       Install and manage skills from Git or local paths\n"
@@ -116,8 +117,31 @@ int cli_options_parse(int argc, char **argv, struct cli_options *options)
 	memset(options, 0, sizeof(*options));
 	opterr = 0;
 	optind = 1;
-	while ((option = getopt_long(argc, argv, "+:c:w:p:s:vh", cli_options_long_options, NULL)) !=
-	       -1) {
+	for (;;) {
+		option = getopt_long(argc, argv, "+:c:w:p:s:vh", cli_options_long_options, NULL);
+		if (option == -1) {
+			if (optind == argc)
+				break;
+			if (!options->resume && strcmp(argv[optind], "resume") == 0) {
+				options->resume = 1;
+				optind++;
+				continue;
+			}
+			if (options->resume && !options->resume_ref) {
+				options->resume_ref = argv[optind++];
+				continue;
+			}
+			if (!options->resume &&
+			    (strcmp(argv[optind], "setup") == 0 ||
+			     strcmp(argv[optind], "mcp") == 0 ||
+			     strcmp(argv[optind], "skills") == 0 ||
+			     strcmp(argv[optind], "skill") == 0)) {
+				options->command_index = optind;
+				return 0;
+			}
+			fprintf(stderr, "morph: unexpected argument: %s\n", argv[optind]);
+			return 2;
+		}
 		switch (option) {
 		case 'c':
 			options->config_path = optarg;
@@ -157,13 +181,10 @@ int cli_options_parse(int argc, char **argv, struct cli_options *options)
 			return 2;
 		}
 	}
-	if (optind < argc) {
-		if (strcmp(argv[optind], "setup") == 0 || strcmp(argv[optind], "mcp") == 0 ||
-		    strcmp(argv[optind], "skills") == 0 || strcmp(argv[optind], "skill") == 0) {
-			options->command_index = optind;
-			return 0;
-		}
-		fprintf(stderr, "morph: unexpected argument: %s\n", argv[optind]);
+	if (options->resume && (options->one_shot_prompt || options->session_name ||
+			       options->events_json || options->show_version)) {
+		fprintf(stderr, "morph: resume cannot be combined with --prompt, --session, "
+				"--events or --version\n");
 		return 2;
 	}
 	return 0;

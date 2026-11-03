@@ -8,6 +8,8 @@ struct cli_options {
 	const char *workdir;
 	const char *one_shot_prompt;
 	const char *session_name;
+	const char *resume_ref;
+	int resume;
 	int trace_json;
 	int show_version;
 	int show_help;

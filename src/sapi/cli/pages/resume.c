@@ -3,6 +3,7 @@
 #include "sapi/cli/widgets/list.h"
 #include "sapi/cli/pages/setup/controls.h"
 #include "sapi/cli/application.h"
+#include "sapi/cli/services/session_history.h"
 #include <morph/tui/components.h>
 
 static int cli_resume_append_token_number(morph_buf_t *buf, int64_t tokens)
@@ -343,22 +344,30 @@ static int cli_resume_pick(struct session *list, int count, int *selected)
 	return rc;
 }
 
+static int cli_resume_select(struct cli_application *ctx, int64_t id)
+{
+	struct session selected;
+	int rc = runtime_session_select_existing(ctx->runtime, id, &selected);
+
+	if (rc) {
+		CMD_ERROR(ctx, "failed to resume session: %s", morph_strerror(rc));
+		return rc;
+	}
+	ctx->session_auto_named = 1;
+	CMD_OK(ctx, "resumed session: %s", selected.name);
+	rc = cli_session_history_restore(ctx);
+	if (rc)
+		CMD_ERROR(ctx, "failed to restore session history: %s", morph_strerror(rc));
+	return rc;
+}
+
 static void cli_resume_close(void *data, int result)
 {
 	struct cli_resume_picker *picker = data;
 	struct cli_application *ctx = picker->ctx;
 
 	if (!result && picker->selection >= 0) {
-		struct session selected;
-		int rc = runtime_session_select_existing(
-			ctx->runtime, picker->sessions[picker->selection].id, &selected);
-
-		if (!rc) {
-			ctx->session_auto_named = 1;
-			CMD_OK(ctx, "resumed session: %s", selected.name);
-		} else {
-			CMD_ERROR(ctx, "failed to resume session: %s", morph_strerror(rc));
-		}
+		(void)cli_resume_select(ctx, picker->sessions[picker->selection].id);
 	}
 	runtime_session_list_free(picker->sessions);
 	morph_buf_cleanup(&picker->frame);
@@ -395,7 +404,6 @@ static int cli_resume_present(struct cli_application *ctx, struct session *list,
 int cli_resume_show(struct cli_application *ctx)
 {
 	struct session *list = NULL;
-	struct session selected;
 	int64_t current_id = 0;
 	int count = 0;
 	int page = 0;
@@ -421,16 +429,8 @@ int cli_resume_show(struct cli_application *ctx)
 		int index;
 
 		rc = cli_resume_pick(list, count, &index);
-		if (rc == 0 && index >= 0) {
-			rc = runtime_session_select_existing(ctx->runtime, list[index].id,
-							     &selected);
-			if (rc == 0) {
-				ctx->session_auto_named = 1;
-				CMD_OK(ctx, "resumed session: %s", selected.name);
-			} else {
-				CMD_ERROR(ctx, "failed to resume session: %s", morph_strerror(rc));
-			}
-		}
+		if (rc == 0 && index >= 0)
+			rc = cli_resume_select(ctx, list[index].id);
 		runtime_session_list_free(list);
 		return rc;
 	}
@@ -480,15 +480,8 @@ int cli_resume_show(struct cli_application *ctx)
 			CMD_ERROR(ctx, "invalid selection");
 			continue;
 		}
-		rc = runtime_session_select_existing(
-			ctx->runtime, list[page * CLI_RESUME_PAGE_SIZE + (int)number - 1].id,
-			&selected);
-		if (rc == 0) {
-			ctx->session_auto_named = 1;
-			CMD_OK(ctx, "resumed session: %s", selected.name);
-		} else {
-			CMD_ERROR(ctx, "failed to resume session: %s", morph_strerror(rc));
-		}
+		rc = cli_resume_select(ctx,
+			list[page * CLI_RESUME_PAGE_SIZE + (int)number - 1].id);
 		break;
 	}
 	runtime_session_list_free(list);

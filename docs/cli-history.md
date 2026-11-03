@@ -1,5 +1,27 @@
 # History and context inspection
 
+`morph resume` starts with the session picker. Select with the arrow keys and Enter,
+or cancel with Esc to return to a fresh composer. `morph resume <name|id>` accepts a
+session name, display ID or numeric ID and fails if it does not exist. Configuration
+and working-directory options work before or after `resume`:
+
+```bash
+morph resume
+morph resume c923843e
+morph resume --config ./dev.toml --workdir /path/to/project
+```
+
+Interactive session selection through `/resume`, `/resume <name|id>`, `/switch` or
+`-s <name>` restores saved conversation text to native terminal scrollback. This
+includes inactive messages from before context compression, assistant preambles
+and saved tool summaries. Internal summaries and background receipts are omitted.
+Ctrl+O inspects the latest restored turn's tool details and saved reasoning. Tools
+with no saved result are marked accordingly; saved shell durations are displayed
+when available. History restoration never generates a new turn or executes tools.
+Saved original tool output is preferred over the shortened copy used by the model.
+Older sessions without canonical history fall back to saved user/assistant text.
+Plain output and NDJSON session-command contracts remain unchanged.
+
 `/history` opens a read-only inspector in an interactive terminal. It shows the
 saved model history: user and assistant messages, tool-call batches, tool results,
 compaction summaries, and background receipts. Recent activity is selected first.

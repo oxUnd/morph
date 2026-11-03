@@ -30,6 +30,20 @@ def main():
     require(help_result.stdout.startswith("Usage: morph [options]\n"),
             help_result.stdout)
     require("--events json" in help_result.stdout, help_result.stdout)
+    require("resume [NAME|ID]" in help_result.stdout, help_result.stdout)
+    for args in (("resume", "--help"), ("--no-color", "resume", "--help"),
+                 ("resume", "previous-session", "--help")):
+        result = run(binary, *args)
+        require(result.returncode == 0, result.stderr)
+        require(result.stdout == help_result.stdout, result.stdout)
+    for args in (("resume", "--events", "json"), ("resume", "-p", "hello"),
+                 ("-s", "existing", "resume"), ("resume", "-v")):
+        result = run(binary, *args)
+        require(result.returncode == 2, result.stderr)
+        require("resume cannot be combined" in result.stderr, result.stderr)
+    result = run(binary, "resume", "first", "second")
+    require(result.returncode == 2, result.stderr)
+    require("unexpected argument: second" in result.stderr, result.stderr)
 
     event_result = run(binary, "--events=json", "--help")
     require(event_result.returncode == 0, event_result.stderr)

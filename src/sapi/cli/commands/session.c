@@ -8,6 +8,7 @@
 #include "sapi/cli/pages/setup/controls.h"
 #include "sapi/cli/pages/history.h"
 #include "sapi/cli/pages/resume.h"
+#include "sapi/cli/services/session_history.h"
 
 static int cli_session_command_new(struct cli_application *ctx, int argc, char **argv)
 {
@@ -39,7 +40,7 @@ static int cli_session_command_switch(struct cli_application *ctx, int argc, cha
 	}
 
 	struct session s;
-	int rc = -1;
+	int rc = -ENOENT;
 
 	if (name[0] == '^') {
 		int idx = 1;
@@ -61,6 +62,7 @@ static int cli_session_command_switch(struct cli_application *ctx, int argc, cha
 		struct session current;
 		(void)runtime_session_current(ctx->runtime, &current);
 		int picked = 0;
+		rc = -ENOENT;
 		for (int i = 0; i < count; i++) {
 			if (list[i].id == current.id)
 				continue;
@@ -82,6 +84,9 @@ static int cli_session_command_switch(struct cli_application *ctx, int argc, cha
 			return rc;
 		ctx->session_auto_named = 1;
 		CMD_OK(ctx, "switched to session: %s", s.name);
+		rc = cli_session_history_restore(ctx);
+		if (rc)
+			CMD_ERROR(ctx, "failed to restore session history: %s", morph_strerror(rc));
 	} else {
 		CMD_ERROR(ctx, "session not found: %s", name);
 	}
