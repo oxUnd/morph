@@ -80,7 +80,7 @@ def terminal_environment(directory, extra=None):
 
 class Terminal:
     def __init__(self, driver, directory, port, extra_env=None, memory_enabled=False,
-                 hooks_enabled=True, production=False, extra_config=''):
+                 hooks_enabled=True, production=False, extra_config='', extra_arguments=()):
         config = directory / 'config.toml'
         config.write_text(f'''[general]
 output_dir = "{directory}/output"
@@ -99,6 +99,7 @@ retry_count = 0
 ''' + extra_config)
         arguments = (['-c', str(config), '-w', str(directory)] if production else
                      [str(config), str(directory), str(directory / 'data.db')])
+        arguments += list(extra_arguments)
         self.child = pexpect.spawn(str(driver), arguments,
                                    env=terminal_environment(directory, extra_env),
                                    encoding='utf-8', dimensions=(24, 80), timeout=8)

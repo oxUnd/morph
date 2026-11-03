@@ -69,6 +69,8 @@ struct cli_application {
 	enum cli_presentation_mode presentation_mode;
 	int running;
 	int session_auto_named;
+	int resume_requested;
+	int session_history_pending;
 	int presentation_ready;
 	int turn_active;
 	struct cli_cancel_monitor *cancel_monitor;

@@ -8,6 +8,7 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/services/management.h"
+#include "runtime/services.h"
 #include "http/client.h"
 #include "util/log.h"
 #include "util/file.h"
@@ -132,6 +133,24 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 	ctx.trace_json = options.trace_json;
+	ctx.resume_requested = options.resume && !options.resume_ref;
+	if (options.resume_ref) {
+		struct session selected;
+
+		rc = runtime_session_find_ref(ctx.runtime, options.resume_ref, &selected);
+		if (!rc)
+			rc = runtime_session_select_existing(ctx.runtime, selected.id, NULL);
+		if (rc) {
+			fprintf(stderr, "morph: cannot resume session '%s': %s\n",
+				options.resume_ref, morph_strerror(rc));
+			cli_application_shutdown(&ctx);
+			http_cleanup();
+			log_shutdown(&logger);
+			return 1;
+		}
+		ctx.session_auto_named = 1;
+		ctx.session_history_pending = 1;
+	}
 	if (options.one_shot_prompt) {
 		cli_application_run_once(&ctx, options.one_shot_prompt);
 	} else {

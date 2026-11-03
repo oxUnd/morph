@@ -52,6 +52,7 @@ add_library(morph-cli STATIC
 	services/management.c
 	services/recap.c
 	services/scheduler.c
+	services/session_history.c
 	services/share_store.c
 	services/skill_store.c
 	services/turn.c
@@ -72,6 +73,7 @@ add_library(morph-cli STATIC
 	# Application presentation
 	presentation/about.c
 	presentation/diagnostics.c
+	presentation/history.c
 	presentation/markdown.c
 	presentation/output.c
 	presentation/presenter.c

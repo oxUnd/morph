@@ -1,6 +1,8 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/turn.h"
 #include "sapi/cli/pages/chat.h"
+#include "sapi/cli/pages/resume.h"
+#include "sapi/cli/services/session_history.h"
 #include "sapi/cli/adapters/runtime/observer.h"
 #include <stdio.h>
 #include "sapi/cli/services/command_job.h"
@@ -268,6 +270,7 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 	}
 
 	ctx->session_auto_named = session_name && session_name[0] ? 1 : 0;
+	ctx->session_history_pending = ctx->session_auto_named;
 	ctx->running = 1;
 	ctx->presentation_ready = 1;
 	ctx->image_path[0] = '\0';
@@ -501,8 +504,12 @@ void cli_application_run(struct cli_application *ctx)
 	const char *term = getenv("TERM");
 	int plain = !isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO) ||
 		    (term && strcmp(term, "dumb") == 0);
+	int standalone_resume = plain;
 	morph_buf_t directory;
 
+#ifndef HAVE_READLINE
+	standalone_resume = 1;
+#endif
 	if (!ctx)
 		return;
 	if (cli_scheduler_start(ctx) != 0)
@@ -537,6 +544,21 @@ void cli_application_run(struct cli_application *ctx)
 	if (hooks_rc != 0)
 		log_warn(ctx ? ctx->logger : NULL, "hook trust review failed: %s",
 			 morph_strerror(hooks_rc));
+	if (ctx->session_history_pending) {
+		ctx->session_history_pending = 0;
+		int rc = cli_session_history_restore(ctx);
+
+		if (rc)
+			CMD_ERROR(ctx, "failed to restore session history: %s", morph_strerror(rc));
+	}
+	/* The chat controller opens the startup picker on its own controller stack. */
+	if (ctx->resume_requested && standalone_resume) {
+		ctx->resume_requested = 0;
+		int rc = cli_resume_show(ctx);
+
+		if (rc)
+			CMD_ERROR(ctx, "failed to open sessions: %s", morph_strerror(rc));
+	}
 
 	if (plain) {
 		cli_application_run_plain(ctx);
