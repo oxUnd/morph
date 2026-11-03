@@ -1682,6 +1682,17 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 		}
 		return 0;
 	}
+	if (ev->type == MORPH_EVENT_BACKGROUND && ev->phase &&
+	    strcmp(ev->phase, "warning") == 0) {
+		int paused = cli_presenter_pause_status(ctx);
+
+		printf(ctx, "\n" ANSI_YELLOW CLI_FEED_SYSTEM " Warning · ");
+		cli_presenter_print_safe_inline(ctx, ev->message ? ev->message : ev->name,
+			CLI_PRESENTER_EVENT_TEXT_MAX);
+		printf(ctx, ANSI_RESET "\n");
+		cli_presenter_resume_status(ctx, paused);
+		return 0;
+	}
 	int jobs_rc = cli_jobs_event(ctx, ev);
 	if (jobs_rc)
 		return jobs_rc < 0 ? jobs_rc : 0;

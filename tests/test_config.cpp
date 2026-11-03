@@ -456,6 +456,76 @@ TEST(ConfigValidationTest, WarnsAndContinuesForUnknownKeys)
 	EXPECT_EQ(error.code, CONFIG_VALIDATION_NONE);
 }
 
+TEST(ConfigValidationTest, RejectsOutputBudgetsBeyondExplicitContextWindows)
+{
+	for (const char *name : {"text", "vision"}) {
+		struct config_validation_error error = {};
+		std::string path = std::string("model.") + name + ".max_tokens";
+		std::string text = std::string("[model.") + name + "]\n"
+			"context_limit = 128000\nmax_tokens = 131072\n";
+
+		EXPECT_EQ(config_validate_text(text.c_str(), &error), MORPH_ERR_CONFIG);
+		EXPECT_EQ(error.code, CONFIG_VALIDATION_CONFLICT);
+		EXPECT_EQ(error.path, path);
+		EXPECT_NE(std::string(error.message).find("context_limit"), std::string::npos);
+	}
+}
+
+TEST(ConfigValidationTest, WarnsWithoutRejectingSmallThinkingBudgets)
+{
+	for (const char *extra : {
+	     "{\"thinking\":{\"type\":\"enabled\"}}",
+	     "{\"reasoning_effort\":\"high\"}",
+	     "{\"reasoning\":{\"effort\":\"high\"}}",
+	     "{\"chat_template_kwargs\":{\"enable_thinking\":true}}"}) {
+		struct config_validation_error error = {};
+		struct config_warning_state warnings = {};
+		std::string text = "[model.text]\ncontext_limit = 128000\n"
+			"max_tokens = 16384\nextra_body_json = '''" + std::string(extra) + "'''\n";
+
+		EXPECT_EQ(config_validate_text_with_warnings(text.c_str(), &error,
+			collect_config_warning, &warnings), 0);
+		EXPECT_EQ(error.code, CONFIG_VALIDATION_NONE);
+		ASSERT_EQ(warnings.count, 1);
+		EXPECT_EQ(warnings.last.code, CONFIG_VALIDATION_BUDGET);
+		EXPECT_STREQ(warnings.last.path, "model.text.max_tokens");
+		EXPECT_NE(std::string(warnings.last.message).find("reasoning and the answer"),
+			std::string::npos);
+	}
+}
+
+TEST(ConfigValidationTest, TokenBudgetWarningsRespectDisabledThinkingAndHealthyBudgets)
+{
+	for (const char *text : {
+	     "[model.text]\nmax_tokens = 16384\nextra_body_json = "
+	     "'''{\"thinking\":{\"type\":\"disabled\"},\"reasoning_effort\":\"high\"}'''\n",
+	     "[model.text]\nmax_tokens = 16384\n"
+	     "extra_body_json = '''{\"reasoning_effort\":\"none\"}'''\n",
+	     "[model.text]\ncontext_limit = 1048576\nmax_tokens = 65536\n"
+	     "extra_body_json = '''{\"thinking\":{\"type\":\"enabled\"}}'''\n",
+	     "[model.text]\ncontext_limit = 0\nmax_tokens = 131072\n"}) {
+		struct config_validation_error error = {};
+		struct config_warning_state warnings = {};
+
+		EXPECT_EQ(config_validate_text_with_warnings(text, &error,
+			collect_config_warning, &warnings), 0);
+		EXPECT_EQ(warnings.count, 0);
+	}
+}
+
+TEST(ConfigValidationTest, WarnsWhenOutputReservesMostOfTheContext)
+{
+	struct config_validation_error error = {};
+	struct config_warning_state warnings = {};
+
+	EXPECT_EQ(config_validate_text_with_warnings("[model.text]\n"
+		"context_limit = 128000\nmax_tokens = 65536\n", &error,
+		collect_config_warning, &warnings), 0);
+	ASSERT_EQ(warnings.count, 1);
+	EXPECT_STREQ(warnings.last.path, "model.text.max_tokens");
+	EXPECT_NE(std::string(warnings.last.message).find("earlier compaction"), std::string::npos);
+}
+
 TEST(ConfigValidationTest, RejectsWrongTypesAndRanges)
 {
 	struct config_validation_error error = {};

@@ -148,12 +148,27 @@ react.user.steer
 react.compaction.begin
 react.compaction.completed
 react.compaction.failed
+react.output.truncated
+history.tool_output.warning
 react.turn.end
 react.cancelled
 react.timed_out
 react.max_iterations
 react.failed
 ```
+
+`react.output.truncated` is a background event with phase `warning` when a model
+returns `finish_reason=length`. It carries `max_tokens`, `output_tokens`, and
+`reasoning_tokens`. Partial text is retained as content, but the turn ends with
+`llm_error` / `output_token_limit`; incomplete tool calls are not executed or retried.
+
+`history.tool_output.warning` is emitted once at turn end when at least three
+collected tool results were truncated and they comprise at least a third of the results.
+Its data distinguishes `tool_results`, `truncated_results`,
+`history_truncated_results`, and `output_truncated_results`. A result cut at both
+layers counts once in `truncated_results`. History reload and re-preparation do
+not count as new results. CLI warnings persist in normal output; JSON event mode
+preserves the event envelope and counters.
 
 `react.content.delta` carries native assistant response text, separately from
 `react.reasoning.delta`. Its final role is known when the response completes:

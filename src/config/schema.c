@@ -728,7 +728,21 @@ static int validate_relations(const toml_datum_t *root,
 				"context.compress_target_ratio must be less than summarize_threshold_ratio");
 	for (size_t i = 0;
 	     i < sizeof(model_names) / sizeof(model_names[0]); i++) {
-		rc = validate_model_extra_body(table_get(model, model_names[i]),
+		const toml_datum_t *entry = table_get(model, model_names[i]);
+		const toml_datum_t *output = table_get(entry, "max_tokens");
+		const toml_datum_t *window = table_get(entry, "context_limit");
+
+		if (i < 2 && output && window && window->u.int64 > 0 &&
+		    output->u.int64 > window->u.int64) {
+			char path[CONFIG_MAX_KEY_LEN];
+
+			snprintf(path, sizeof(path), "model.%s.max_tokens", model_names[i]);
+			return set_error(error, CONFIG_VALIDATION_CONFLICT, output, path,
+				"%s must not exceed model.%s.context_limit; "
+				"input, reasoning, and answer tokens share the context window",
+				path, model_names[i]);
+		}
+		rc = validate_model_extra_body(entry,
 			model_names[i], error);
 		if (rc != 0)
 			return rc;
@@ -766,6 +780,73 @@ static int validate_relations(const toml_datum_t *root,
 		}
 	}
 	return 0;
+}
+
+static int model_explicit_thinking(const toml_datum_t *entry)
+{
+	const toml_datum_t *body = table_get(entry, "extra_body_json");
+	cJSON *root;
+	cJSON *thinking;
+	cJSON *type;
+	cJSON *effort;
+	cJSON *kwargs;
+	int enabled;
+
+	if (!body || !body->u.s[0])
+		return 0;
+	root = cJSON_Parse(body->u.s);
+	thinking = cJSON_GetObjectItemCaseSensitive(root, "thinking");
+	type = cJSON_GetObjectItemCaseSensitive(thinking, "type");
+	effort = cJSON_GetObjectItemCaseSensitive(root, "reasoning_effort");
+	if (!cJSON_IsString(effort))
+		effort = cJSON_GetObjectItemCaseSensitive(
+			cJSON_GetObjectItemCaseSensitive(root, "reasoning"), "effort");
+	kwargs = cJSON_GetObjectItemCaseSensitive(root, "chat_template_kwargs");
+	enabled = (cJSON_IsString(effort) && strcmp(effort->valuestring, "none") != 0) ||
+		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(kwargs, "enable_thinking"));
+	if (cJSON_IsString(type))
+		enabled = strcmp(type->valuestring, "enabled") == 0 ||
+			strcmp(type->valuestring, "adaptive") == 0;
+	cJSON_Delete(root);
+	return enabled;
+}
+
+static void warn_token_budgets(const toml_datum_t *root,
+	config_validation_warning_fn warning_fn, void *warning_user_data)
+{
+	const toml_datum_t *models = table_get(root, "model");
+	static const char *const names[] = {"text", "vision"};
+
+	if (!warning_fn)
+		return;
+	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+		const toml_datum_t *entry = table_get(models, names[i]);
+		const toml_datum_t *output = table_get(entry, "max_tokens");
+		const toml_datum_t *window = table_get(entry, "context_limit");
+		int64_t budget = output && output->u.int64 > 0 ? output->u.int64 : 4096;
+		struct config_validation_error warning = {0};
+		char path[CONFIG_MAX_KEY_LEN];
+
+		snprintf(path, sizeof(path), "model.%s.max_tokens", names[i]);
+		if (window && window->u.int64 > 0 && budget >= (window->u.int64 + 1) / 2) {
+			(void)set_error(&warning, CONFIG_VALIDATION_BUDGET,
+				output ? output : window, path,
+				"%s reserves at least half of model.%s.context_limit for output; "
+				"this leaves less room for input and may trigger earlier "
+				"compaction. Check the model's actual context and output limits",
+				path, names[i]);
+			warning_fn(&warning, warning_user_data);
+		}
+		/* An advisory, not a model capability limit: short replies may be intentional. */
+		if (model_explicit_thinking(entry) && budget < 32768) {
+			(void)set_error(&warning, CONFIG_VALIDATION_BUDGET,
+				output ? output : table_get(entry, "extra_body_json"), path,
+				"%s is below 32768 with thinking enabled; reasoning and the answer "
+				"share this output budget. For long reasoning tasks, consider "
+				"a larger budget within the model's supported limits", path);
+			warning_fn(&warning, warning_user_data);
+		}
+	}
 }
 
 static int parse_error_line(const char *message)
@@ -837,6 +918,8 @@ static int config_validate_text_internal(const char *text,
 		rc = validate_relations(&parsed.toptab, error);
 	if (rc == 0 && validate_directories)
 		rc = validate_active_permission_directories(&parsed.toptab, error);
+	if (rc == 0)
+		warn_token_budgets(&parsed.toptab, warning_fn, warning_user_data);
 	if (path_ready)
 		morph_buf_cleanup(&path);
 	toml_free(parsed);

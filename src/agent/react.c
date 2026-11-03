@@ -451,8 +451,50 @@ static int react_finish(struct react_context *ctx)
 	return rc;
 }
 
+static void react_warn_tool_truncation(struct react_context *ctx)
+{
+	morph_buf_t message;
+	cJSON *data;
+	int rc;
+
+	if (!ctx || ctx->tool_result_truncated_count < 3 ||
+	    ctx->tool_result_truncated_count <
+		ctx->tool_result_count / 3 + (ctx->tool_result_count % 3 != 0))
+		return;
+	rc = morph_buf_init(&message, 512);
+	if (rc != 0)
+		return;
+	rc = morph_buf_printf(&message, "%d of %d tool results were truncated. "
+		"Use narrower queries or read retained output in ranges.",
+		ctx->tool_result_truncated_count, ctx->tool_result_count);
+	if (rc == 0 && ctx->tool_result_history_truncated_count > 0)
+		rc = morph_buf_printf(&message, " Review context.tool_result_max_tokens "
+			"(currently %d); increasing model.text.max_tokens does not restore "
+			"omitted tool content.", ctx->history_tool_result_tokens > 0 ?
+			ctx->history_tool_result_tokens : 8000);
+	if (rc == 0 && ctx->tool_result_output_truncated_count > 0)
+		rc = morph_buf_puts(&message, " Review exec.max_inline_output and "
+			"exec.max_session_output if larger retained output is needed.");
+	data = rc == 0 ? cJSON_CreateObject() : NULL;
+	if (data) {
+		cJSON_AddNumberToObject(data, "tool_results", ctx->tool_result_count);
+		cJSON_AddNumberToObject(data, "truncated_results",
+			ctx->tool_result_truncated_count);
+		cJSON_AddNumberToObject(data, "history_truncated_results",
+			ctx->tool_result_history_truncated_count);
+		cJSON_AddNumberToObject(data, "output_truncated_results",
+			ctx->tool_result_output_truncated_count);
+		log_warn(ctx->logger, "%s", morph_buf_cstr(&message));
+		(void)react_emit_event(ctx, MORPH_EVENT_BACKGROUND,
+			"history.tool_output.warning", "warning", morph_buf_cstr(&message), data);
+		cJSON_Delete(data);
+	}
+	morph_buf_cleanup(&message);
+}
+
 static int react_finish_run(struct react_context *ctx)
 {
+	react_warn_tool_truncation(ctx);
 	if (ctx && ctx->hook_fn && ctx->outcome == REACT_OUTCOME_CANCELLED) {
 		cJSON *input = cJSON_CreateObject(), *output = NULL;
 
@@ -1413,6 +1455,10 @@ void react_reset(struct react_context *ctx)
 	ctx->tool_fail_name = NULL;
 	ctx->tool_fail_args = NULL;
 	ctx->tool_fail_count = 0;
+	ctx->tool_result_count = 0;
+	ctx->tool_result_truncated_count = 0;
+	ctx->tool_result_history_truncated_count = 0;
+	ctx->tool_result_output_truncated_count = 0;
 	ctx->guardrail_retry_count = 0;
 	ctx->empty_round_count = 0;
 	ctx->hook_revision_count = 0;
@@ -1592,6 +1638,8 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 		return NULL;
 
 	rc = morph_buf_puts(&buf, MORPH_CORE_PROMPT);
+	if (rc == 0)
+		rc = morph_buf_puts(&buf, MORPH_CORE_INVESTIGATION_PROMPT);
 	if (rc != 0)
 		return NULL;
 
@@ -3143,6 +3191,50 @@ static int react_handle_llm_cancelled(struct react_context *ctx,
 	return 1;
 }
 
+static int react_handle_output_limit(struct react_context *ctx,
+	const struct chat_response *response, react_output_cb cb, void *user_data)
+{
+	const char *message = "Model output reached its token limit; the response is incomplete. "
+		"Review model.text.max_tokens and context_limit against the provider's limits. "
+		"Thinking and the answer share the output budget.";
+	cJSON *data;
+
+	if (strcmp(response->usage.finish_reason, "length") != 0)
+		return 0;
+	if (response->content && *response->content) {
+		struct react_step *partial = react_step_create(ctx->turn_arena,
+			REACT_STEP_CONTENT, response->content, NULL, NULL, NULL);
+
+		add_step(ctx, partial);
+		free(ctx->final_answer);
+		ctx->final_answer = strdup(response->content);
+		if (!ctx->final_answer) {
+			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
+				"internal_error");
+			return 1;
+		}
+		react_output_emit(cb, user_data, REACT_STEP_CONTENT, REACT_OUTPUT_FAILED,
+			response->content, NULL, NULL, NULL, MORPH_ERR_LLM, NULL, NULL, NULL);
+		react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.content.end", "end",
+			"incomplete model output", response->content);
+	}
+	data = cJSON_CreateObject();
+	if (data) {
+		cJSON_AddNumberToObject(data, "max_tokens", ctx->llm_model->max_tokens);
+		cJSON_AddNumberToObject(data, "output_tokens",
+			(double)response->usage.output_tokens);
+		cJSON_AddNumberToObject(data, "reasoning_tokens",
+			(double)response->usage.reasoning_tokens);
+		(void)react_emit_event(ctx, MORPH_EVENT_BACKGROUND,
+			"react.output.truncated", "warning", message, data);
+		cJSON_Delete(data);
+	}
+	log_warn(ctx->logger, "%s", message);
+	react_set_error_detail(ctx, message);
+	react_set_result(ctx, REACT_OUTCOME_LLM_ERROR, MORPH_ERR_LLM, "output_token_limit");
+	return 1;
+}
+
 static int react_handle_llm_error(struct react_context *ctx,
 				  struct chat_response *response,
 				  int status, react_output_cb cb,
@@ -3547,6 +3639,29 @@ static int react_drain_actions(struct react_context *ctx,
 			       morph_array_t *messages, int iteration,
 			       int *prompt_count);
 
+static void react_count_tool_truncation(struct react_context *ctx,
+	const char *content, int history_truncated)
+{
+	cJSON *root = content ? cJSON_Parse(content) : NULL;
+	cJSON *data = cJSON_GetObjectItemCaseSensitive(root, "data");
+	int output_truncated =
+		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "stdout_truncated")) ||
+		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "stderr_truncated"));
+
+	history_truncated |=
+		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "history_truncated"));
+	if (ctx->tool_result_count < INT_MAX)
+		ctx->tool_result_count++;
+	if ((history_truncated || output_truncated) &&
+	    ctx->tool_result_truncated_count < INT_MAX)
+		ctx->tool_result_truncated_count++;
+	if (history_truncated && ctx->tool_result_history_truncated_count < INT_MAX)
+		ctx->tool_result_history_truncated_count++;
+	if (output_truncated && ctx->tool_result_output_truncated_count < INT_MAX)
+		ctx->tool_result_output_truncated_count++;
+	cJSON_Delete(root);
+}
+
 static int react_join_tool_calls(struct react_context *ctx,
 				 struct chat_response *response,
 				 struct react_tool_slot *slots,
@@ -3763,8 +3878,9 @@ static int react_join_tool_calls(struct react_context *ctx,
 			goto out_cleanup_tool_calls;
 		}
 		char *prepared_obs = NULL;
+		int history_truncated = 0;
 		int prepare_rc = agent_history_prepare_tool_content(ctx,
-			obs_text, &prepared_obs, NULL);
+			obs_text, &prepared_obs, &history_truncated);
 
 		if (prepare_rc != 0) {
 			free(result);
@@ -3775,6 +3891,7 @@ static int react_join_tool_calls(struct react_context *ctx,
 				prepare_rc, "history_persistence_error");
 			goto out_cleanup_tool_calls;
 		}
+		react_count_tool_truncation(ctx, obs_text, history_truncated);
 		if (react_record_tool_observation(ctx, call, prepared_obs, rc,
 						  &artifacts, data, ui,
 						  messages,
@@ -4542,6 +4659,10 @@ int react_run(struct react_context *ctx, const char *user_input,
 			continue;
 		}
 		if (react_handle_llm_error(ctx, &response, status, cb, user_data)) {
+			chat_response_free(&response);
+			break;
+		}
+		if (react_handle_output_limit(ctx, &response, cb, user_data)) {
 			chat_response_free(&response);
 			break;
 		}
