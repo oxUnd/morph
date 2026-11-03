@@ -133,6 +133,11 @@ newline. Ctrl+O opens the turn's full-screen tool transcript. Pasted and typed
 image paths become `[IMAGE#1]` chips (Backspace removes one); `/render <path>`
 previews, `/image <path>` attaches.
 
+`/copy` copies the current session's latest assistant answer as Markdown, including
+code blocks and original whitespace. It also works after resuming a session.
+macOS uses `pbcopy`; Linux uses `wl-copy`, `xclip` or `xsel`. Remote terminals can
+receive an OSC 52 request, with an explicit unconfirmed-copy receipt.
+
 ## Extensions
 
 Extensions install under `[ext].dir` (default `~/.morph/exts`):

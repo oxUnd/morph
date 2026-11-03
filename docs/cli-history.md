@@ -1,5 +1,20 @@
 # History and context inspection
 
+`/copy` copies the current session's last nonempty assistant answer to the system
+clipboard. It uses the saved Markdown text, preserving code fences, Unicode,
+line endings and trailing spaces. Tool results, preambles, reasoning and internal
+summaries are excluded. Answers remain available after resume or compression;
+switching to an empty session reports that there is no answer to copy. The command
+runs after an active turn finishes, like the other local session commands.
+
+macOS uses `pbcopy`. Linux tries `wl-copy`, `xclip`, then `xsel`; these tools retain
+clipboard ownership as needed. Native writes have a five-second deadline. In SSH
+or tmux the answer is also forwarded to the terminal with OSC 52. If native copying
+fails, terminal forwarding is the fallback. A terminal-only request reports
+`Copy unconfirmed`, because OSC 52 has no delivery acknowledgement. Its 100000-byte
+limit fails explicitly instead of shortening the answer; native copies preserve
+longer answers. Plain/JSON output never includes terminal clipboard escape codes.
+
 `morph resume` starts with the session picker. Select with the arrow keys and Enter,
 or cancel with Esc to return to a fresh composer. `morph resume <name|id>` accepts a
 session name, display ID or numeric ID and fails if it does not exist. Configuration

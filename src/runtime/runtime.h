@@ -136,6 +136,9 @@ const char *runtime_session_current_name(struct runtime *runtime);
 struct message *runtime_session_messages_current(struct runtime *runtime,
 					 int *count);
 void runtime_session_messages_free(struct message *messages);
+/* Last nonempty assistant answer, including inactive history. Caller frees text.
+ * Returns -ENODATA when absent and -EBUSY while a turn owns the session. */
+int runtime_session_last_answer(struct runtime *runtime, char **out);
 /* Read a session without selecting it. Caller frees the JSON on success. */
 /* Latest answered turn, including persisted tool results. Caller owns JSON. */
 int runtime_session_share_current(struct runtime *runtime, cJSON **out);

@@ -225,6 +225,51 @@ void runtime_session_messages_free(struct message *messages)
 	message_free_list(messages);
 }
 
+static int session_read_last_answer(sqlite3 *db, int64_t session_id, const char *sql,
+				    char **out)
+{
+	sqlite3_stmt *stmt = NULL;
+	int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+
+	if (rc != SQLITE_OK)
+		return MORPH_ERR_DB;
+	sqlite3_bind_int64(stmt, 1, session_id);
+	rc = sqlite3_step(stmt);
+	if (rc == SQLITE_ROW) {
+		*out = strdup((const char *)sqlite3_column_text(stmt, 0));
+		rc = *out ? 0 : -ENOMEM;
+	} else {
+		rc = rc == SQLITE_DONE ? -ENODATA : MORPH_ERR_DB;
+	}
+	sqlite3_finalize(stmt);
+	return rc;
+}
+
+int runtime_session_last_answer(struct runtime *runtime, char **out)
+{
+	if (!out)
+		return -EINVAL;
+	*out = NULL;
+	if (!runtime)
+		return -EINVAL;
+	int rc = pthread_mutex_trylock(&runtime->context.execution_lock);
+
+	if (rc)
+		return -rc;
+	struct runtime_context *ctx = &runtime->context;
+
+	rc = session_read_last_answer(ctx->database.handle, ctx->current_session.id,
+		"SELECT content FROM model_history_items WHERE session_id=? "
+		"AND kind='assistant_message' AND length(content)>0 "
+		"ORDER BY sequence_no DESC LIMIT 1", out);
+	if (rc == -ENODATA)
+		rc = session_read_last_answer(ctx->database.handle, ctx->current_session.id,
+			"SELECT content FROM messages WHERE session_id=? AND role='assistant' "
+			"AND length(content)>0 ORDER BY created_at DESC,id DESC LIMIT 1", out);
+	pthread_mutex_unlock(&ctx->execution_lock);
+	return rc;
+}
+
 static int transcript_add_display(sqlite3 *db, int64_t session_id, cJSON *root)
 {
 	sqlite3_stmt *stmt = NULL;

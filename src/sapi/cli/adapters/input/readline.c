@@ -9,7 +9,7 @@
 #include "credits.h"
 #include "sapi/cli/adapters/input/reader.h"
 #include "sapi/cli/adapters/input/keymap.h"
-#include "sapi/cli/adapters/input/clipboard.h"
+#include "sapi/cli/adapters/clipboard/clipboard.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/services/recap.h"
