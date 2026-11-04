@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+KEYCHAIN_SERVICE_PREFIX="morphctl"
+
+usage() {
+    cat <<EOF
+Usage:
+    morphctl run <profile> [args...]
+    morphctl <command> [args...]
+
+    morphctl key set <name> <value>
+    morphctl key get <name>
+    morphctl key delete <name>
+    morphctl key list
+
+Examples:
+    morphctl run dev
+    morphctl run prod --verbose
+
+    morphctl monitor
+    morphctl status
+
+    morphctl key set deepseek sk-xxxx
+    morphctl key set volcengine xxxx
+    morphctl key get deepseek
+    morphctl key set mimo sk-xxxxx
+    morphctl key delete deepseek
+    morphctl key list
+EOF
+}
+
+key_env_name() {
+    case "$1" in
+        deepseek)
+            echo "DEEPSEEK_API_KEY"
+            ;;
+        volcengine)
+            echo "VOLCENGINE_API_KEY"
+            ;;
+        mimo)
+            echo "MIMO_API_KEY"
+            ;;
+        *)
+            echo "morphctl: unknown key: $1" >&2
+            echo "supported keys: deepseek, volcengine" >&2
+            return 1
+            ;;
+    esac
+}
+
+key_service() {
+    echo "${KEYCHAIN_SERVICE_PREFIX}.$1"
+}
+
+key_set() {
+    local name="$1"
+    local value="$2"
+
+    local env_name
+    local service
+
+    env_name="$(key_env_name "$name")"
+    service="$(key_service "$name")"
+
+    security add-generic-password \
+        -U \
+        -a "$USER" \
+        -s "$service" \
+        -w "$value" \
+        >/dev/null
+
+    echo "morphctl: saved $env_name to Keychain"
+}
+
+key_get() {
+    local name="$1"
+
+    local service
+    service="$(key_service "$name")"
+
+    security find-generic-password \
+        -a "$USER" \
+        -s "$service" \
+        -w
+}
+
+key_delete() {
+    local name="$1"
+
+    local env_name
+    local service
+
+    env_name="$(key_env_name "$name")"
+    service="$(key_service "$name")"
+
+    if security delete-generic-password \
+        -a "$USER" \
+        -s "$service" \
+        >/dev/null 2>&1; then
+        echo "morphctl: deleted $env_name from Keychain"
+    else
+        echo "morphctl: $env_name not found in Keychain" >&2
+        return 1
+    fi
+}
+
+key_list() {
+    local name
+    local env_name
+    local service
+
+    for name in deepseek volcengine mimo; do
+        env_name="$(key_env_name "$name")"
+        service="$(key_service "$name")"
+
+        if security find-generic-password \
+            -a "$USER" \
+            -s "$service" \
+            >/dev/null 2>&1; then
+            printf "%-20s %s\n" "$env_name" "set"
+        else
+            printf "%-20s %s\n" "$env_name" "not set"
+        fi
+    done
+}
+
+load_key() {
+    local name="$1"
+
+    local env_name
+    local service
+    local value
+
+    env_name="$(key_env_name "$name")"
+    service="$(key_service "$name")"
+
+    if value="$(
+        security find-generic-password \
+            -a "$USER" \
+            -s "$service" \
+            -w \
+            2>/dev/null
+    )"; then
+        export "$env_name=$value"
+    fi
+}
+
+load_keys() {
+    load_key deepseek
+    load_key volcengine
+    load_key mimo
+}
+
+[[ $# -gt 0 ]] || {
+    usage
+    exit 1
+}
+
+command="$1"
+shift
+
+case "$command" in
+    key)
+        [[ $# -gt 0 ]] || {
+            echo "morphctl: missing key command" >&2
+            echo "Usage: morphctl key <set|get|delete|list> ..." >&2
+            exit 1
+        }
+
+        subcommand="$1"
+        shift
+
+        case "$subcommand" in
+            set)
+                [[ $# -eq 2 ]] || {
+                    echo "Usage: morphctl key set <name> <value>" >&2
+                    exit 1
+                }
+
+                key_set "$1" "$2"
+                ;;
+
+            get)
+                [[ $# -eq 1 ]] || {
+                    echo "Usage: morphctl key get <name>" >&2
+                    exit 1
+                }
+
+                key_get "$1"
+                ;;
+
+            delete|remove|rm)
+                [[ $# -eq 1 ]] || {
+                    echo "Usage: morphctl key delete <name>" >&2
+                    exit 1
+                }
+
+                key_delete "$1"
+                ;;
+
+            list|ls)
+                [[ $# -eq 0 ]] || {
+                    echo "Usage: morphctl key list" >&2
+                    exit 1
+                }
+
+                key_list
+                ;;
+
+            *)
+                echo "morphctl: unknown key command: $subcommand" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+
+    run)
+        [[ $# -gt 0 ]] || {
+            echo "morphctl: missing profile" >&2
+            echo "Usage: morphctl run <profile> [args...]" >&2
+            exit 1
+        }
+
+        profile="$1"
+        shift
+
+        config="$HOME/.morph/${profile}.toml"
+
+        [[ -f "$config" ]] || {
+            echo "morphctl: config not found: $config" >&2
+            exit 1
+        }
+
+        load_keys
+
+        exec morph \
+            -c "$config" \
+            -w "$PWD" \
+            "$@"
+        ;;
+
+    help|-h|--help)
+        usage
+        ;;
+
+    *)
+        load_keys
+
+        # 其他 morph 命令原样透传
+        exec morph "$command" "$@"
+        ;;
+esac
