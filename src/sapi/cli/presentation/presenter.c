@@ -996,6 +996,8 @@ static int cli_presenter_plan(struct cli_application *ctx, const struct morph_ev
 	cJSON *result;
 	cJSON *plans;
 	cJSON *plan;
+	const char *selected;
+	const char *selected_key = "id";
 	int printed = 0;
 
 	if (!ev || !cJSON_IsObject(ev->data) || !cli_presenter_event_string(ev, "tool") ||
@@ -1005,6 +1007,12 @@ static int cli_presenter_plan(struct cli_application *ctx, const struct morph_ev
 	plans = cJSON_IsObject(result) ? cJSON_GetObjectItemCaseSensitive(result, "plans") : NULL;
 	if (!cJSON_IsArray(plans))
 		return 0;
+	selected = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(result, "selected_plan_id"));
+	if (!selected) {
+		selected = cJSON_GetStringValue(
+			cJSON_GetObjectItemCaseSensitive(result, "selected_plan"));
+		selected_key = "name";
+	}
 	cJSON_ArrayForEach (plan, plans) {
 		cJSON *steps;
 		cJSON *step;
@@ -1013,6 +1021,13 @@ static int cli_presenter_plan(struct cli_application *ctx, const struct morph_ev
 
 		if (!cJSON_IsObject(plan))
 			continue;
+		if (selected) {
+			const char *value = cJSON_GetStringValue(
+				cJSON_GetObjectItemCaseSensitive(plan, selected_key));
+
+			if (!value || strcmp(value, selected) != 0)
+				continue;
+		}
 		steps = cJSON_GetObjectItemCaseSensitive(plan, "steps");
 		if (!cJSON_IsArray(steps))
 			continue;
@@ -1052,6 +1067,8 @@ static int cli_presenter_plan(struct cli_application *ctx, const struct morph_ev
 							CLI_PRESENTER_EVENT_TEXT_MAX);
 			printf(ctx, "\n");
 		}
+		if (selected)
+			break;
 	}
 	return printed;
 }

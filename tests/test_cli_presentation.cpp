@@ -2243,6 +2243,90 @@ TEST_F(CliPresentationTest, InteractiveRendersStructuredPlan)
 	cJSON_Delete(event_data);
 }
 
+TEST_F(CliPresentationTest, InteractivePlanOperationsRenderOnlySelectedId)
+{
+	cJSON *event_data = cJSON_Parse(R"({"tool":"plan","text":"plan state","data":{
+		"selected_plan_id":"current","selected_plan":"same","plans":[
+		{"id":"previous","name":"same","steps":[
+			{"description":"Previous completed work","status":"completed"}]},
+		{"id":"current","name":"same","steps":[
+			{"description":"Current work","status":"in_progress","active":true}]},
+		{"id":"other","name":"other","steps":[
+			{"description":"Other pending work","status":"pending"}]}
+	]}})");
+	ASSERT_NE(event_data, nullptr);
+	cJSON *data = cJSON_GetObjectItemCaseSensitive(event_data, "data");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+
+	for (const char *command : {"create", "update", "checkpoint", "verify", "get"}) {
+		SCOPED_TRACE(command);
+		cJSON_DeleteItemFromObjectCaseSensitive(data, "command");
+		cJSON_AddStringToObject(data, "command", command);
+		testing::internal::CaptureStdout();
+		Emit(MORPH_EVENT_REACT, "react.observation", "end", event_data);
+		std::string output = testing::internal::GetCapturedStdout();
+
+		EXPECT_EQ(output, "  Plan · 0/1 completed\n  ◉ Current work\n");
+	}
+
+	/* A selected completed plan must still be visible when queried directly. */
+	cJSON_ReplaceItemInObject(data, "selected_plan_id", cJSON_CreateString("previous"));
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.observation", "end", event_data);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_EQ(output, "  Plan · 1/1 completed\n  ● Previous completed work\n");
+	cJSON_Delete(event_data);
+}
+
+TEST_F(CliPresentationTest, InteractivePlanGetByNameRendersFirstMatch)
+{
+	cJSON *event_data = cJSON_Parse(R"({"tool":"plan","text":"plan state","data":{
+		"command":"get","selected_plan":"same","plans":[
+		{"id":"other","name":"other","steps":[
+			{"description":"Other work","status":"completed"}]},
+		{"id":"first","name":"same","steps":[
+			{"description":"Selected work","status":"completed"}]},
+		{"id":"second","name":"same","steps":[
+			{"description":"Duplicate name work","status":"pending"}]}
+	]}})");
+	ASSERT_NE(event_data, nullptr);
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.observation", "end", event_data);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_EQ(output, "  Plan · 1/1 completed\n  ● Selected work\n");
+	cJSON_Delete(event_data);
+}
+
+TEST_F(CliPresentationTest, InteractivePlanQueriesWithoutSelectionRenderAllPlans)
+{
+	cJSON *event_data = cJSON_Parse(R"({"tool":"plan","text":"plan state","data":{
+		"plans":[
+		{"id":"previous","name":"first","steps":[
+			{"description":"Previous work","status":"completed"}]},
+		{"id":"current","name":"second","steps":[
+			{"description":"Current work","status":"pending"}]}
+	]}})");
+	ASSERT_NE(event_data, nullptr);
+	cJSON *data = cJSON_GetObjectItemCaseSensitive(event_data, "data");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+
+	for (const char *command : {"list", "get"}) {
+		SCOPED_TRACE(command);
+		cJSON_DeleteItemFromObjectCaseSensitive(data, "command");
+		cJSON_AddStringToObject(data, "command", command);
+		testing::internal::CaptureStdout();
+		Emit(MORPH_EVENT_REACT, "react.observation", "end", event_data);
+		std::string output = testing::internal::GetCapturedStdout();
+
+		EXPECT_EQ(output, "  Plan · 1/1 completed\n  ● Previous work\n"
+			"  Plan · 0/1 completed\n  ◯ Current work\n");
+	}
+	cJSON_Delete(event_data);
+}
+
 TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 {
 	const char *configured = getenv("COLUMNS");
