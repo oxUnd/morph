@@ -1,4 +1,5 @@
 #include "tool.h"
+#include "permission/context.h"
 #include "tool_runtime.h"
 #include "util/buf.h"
 #include "util/arena.h"
@@ -1067,6 +1068,7 @@ int tool_registry_copy(struct tool_registry *out, struct tool_registry *source)
 		return -EINVAL;
 	}
 	tool_registry_lock(source);
+	out->permission_context = source->permission_context;
 	for (int i = 0; i < source->count && rc == 0; i++) {
 		const struct tool_entry *entry = &source->entries[i];
 		rc = tool_register_copy(out, entry);
@@ -1128,6 +1130,7 @@ int tool_exec(struct tool_registry *reg, const char *name,
 	struct tool_entry *entry;
 	struct tool_binding *binding;
 	tool_exec_fn execute;
+	unsigned int flags;
 	void *data;
 	const cJSON *ok;
 	int rc;
@@ -1160,9 +1163,41 @@ int tool_exec(struct tool_registry *reg, const char *name,
 		__atomic_add_fetch(&binding->refs, 1, __ATOMIC_RELAXED);
 	}
 	execute = entry->exec;
+	flags = entry->flags;
 	data = entry->user_data;
 	tool_registry_unlock(reg);
-	rc = execute(args_json, result, data);
+	if (reg->permission_context &&
+	    (!(flags & (TOOL_FLAG_READONLY | TOOL_FLAG_INTERNAL_APPROVAL)) ||
+	     (result->runtime && result->runtime->permission_require_user))) {
+		struct permission_review review = {0};
+		struct tool_operation operation = {
+			.review_out = &review,
+			.kind = TOOL_OP_TOOL_CALL, .tool_name = name,
+			.principal = name, .action = args_json,
+			.details_json = args_json,
+			.require_user = result->runtime ?
+				result->runtime->permission_require_user : 0,
+		};
+		rc = tool_context_check_operation(reg->permission_context, &operation);
+		if (rc == -EACCES || rc == -EPERM)
+			(void)tool_result_errorf(result, "permission_denied",
+				"%s Do not retry through another tool or route to bypass this decision.",
+				review.reason[0] ? review.reason : "Permission was not granted.");
+	} else {
+		rc = 0;
+	}
+	if (rc == 0) {
+		const struct tool_runtime_context *saved_runtime = result->runtime;
+		struct tool_runtime_context execution = {0};
+
+		if (saved_runtime)
+			execution = *saved_runtime;
+		execution.permission_context = reg->permission_context;
+		if (reg->permission_context)
+			result->runtime = &execution;
+		rc = execute(args_json, result, data);
+		result->runtime = saved_runtime;
+	}
 	tool_binding_release(binding);
 	if (rc > 0) {
 		rc = MORPH_ERR_PROTOCOL;
@@ -1196,7 +1231,9 @@ int tool_exec(struct tool_registry *reg, const char *name,
 	}
 	if (rc < 0 && result->envelope == NULL) {
 		result_rc = tool_result_error(result,
-					      rc == -EINVAL ? "invalid_arguments" : "tool_failed",
+					      rc == -EINVAL ? "invalid_arguments" :
+				      rc == -EACCES ? "permission_denied" :
+				      rc == -EPERM ? "approval_unavailable" : "tool_failed",
 					      morph_strerror(rc));
 		if (result_rc != 0) {
 			return result_rc;

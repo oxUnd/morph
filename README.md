@@ -153,10 +153,34 @@ Source format: `github:<owner>/<repo>[@ref][//subdir]`. A package contains
 `manifest.toml` or `morph-ext.toml` with `name`, `version`, `type`, `entry`, and
 optional `[build] command` (run only after confirmation unless `--yes`).
 
+## Permissions
+
+`/permissions` opens the permission picker. Applications compose three independent
+settings; the default is Ask for approval:
+
+| Preset | access | approval | reviewer |
+| --- | --- | --- | --- |
+| Ask for approval | workspace | on_request | user |
+| Approve for me | workspace | on_request | model |
+| Full Access | full | never | user |
+| Read Only | read_only | on_request | user |
+
+`/permissions mode auto` selects a preset. `/permissions set read_only never user`
+selects a custom policy. Changes save to the active configuration and update the
+idle runtime; active turns, subagents or process sessions must finish first.
+`/permissions status` reports the effective policy, and `list`, `revoke`, `clear`
+retain persistent grant management. Read Only can request explicit upgrades;
+`approval=never` rejects requests outside existing authority. Automatic review
+uses an isolated model client and falls back to human review on failure or defer.
+
+See [the design](docs/permissions-design.md) and
+[acceptance evidence](docs/permissions-acceptance.md) for integration and migration.
+
 ## Layout
 
 ```
 src/
+  permission/   Shared access/approval/reviewer policy, grants and review routing
   agent/        ReAct loop, context compression, tool dispatch
   agent/tools/  Built-in tools (credits, memory, img_gen, vid_gen, ...)
   runtime/      Process-level owner: lifecycle, sessions, turns, tasks, MCP

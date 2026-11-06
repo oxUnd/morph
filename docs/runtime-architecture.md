@@ -68,7 +68,8 @@ runtime/
   session_title.c   isolated background title generation and conditional persistence
   recap.c           isolated catch-up requests and stale-result validation
   session.c         session lifecycle and switching
-  permissions_service.c persistent permission grant listing and revocation
+  permissions_service.c policy presets, transactional get/set, grant listing/revocation
+  approval.c independent automatic reviewer and human/event adapters
   task_service.c    scheduled-task and notification facade
   task_controller.c scheduled-task execution and worker control
   task_worker.c     background scheduled execution lifecycle
@@ -100,7 +101,9 @@ The agent, runtime, persistence, and util modules each own a `sources.list`
 manifest. Desktop CMake, Android CMake, and the iOS core build read the same
 manifests so splitting a core implementation into new files does not leave
 mobile builds behind. Keep each manifest to one relative source path per line.
-Platform adapters and optional tools remain selected by each frontend.
+Platform adapters and optional tools remain selected by each frontend. The new
+permission library also owns a desktop source manifest. Mobile frontends pin
+a separate core revision; this change does not upgrade those release pins.
 
 ## Context budgets
 
@@ -290,3 +293,23 @@ sessions across navigation. Set `general.auto_recap=false` to disable automatic
 requests. Terminals without focus reporting retain manual `/recap` support.
 
 Runtime state and callback lifetimes are described in [State ownership](state-ownership.md).
+
+## Permission ownership
+
+Runtime owns one `tool_context` backed by `morph-permission`. The independent
+library owns access/approval/reviewer evaluation, grants and review routing;
+it depends on util/database/threads, with no model, config or frontend dependency.
+Copied child registries borrow this same authority. The tool-call gate handles
+opaque tools; path-aware tools and exec describe concrete operations instead.
+`TOOL_FLAG_INTERNAL_APPROVAL` selects that concrete check, never an exemption.
+Hooks run under the same effective sandbox; rewritten arguments are checked
+and mandatory-human decisions bypass cached approvals.
+
+`runtime_permission_get_policy()` and `runtime_permission_set_policy()` are the
+application API. Preset helpers live beside these APIs. A setter validates the
+three dimensions, rejects active turns/children/processes, merges into the active
+configuration under a file lock and writes atomically before updating runtime
+state and clearing transient grants. Global defaults apply to future runtimes;
+other running processes retain their existing policy. See
+[the implementation specification](permissions-design.md) and
+[acceptance evidence](permissions-acceptance.md).

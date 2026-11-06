@@ -31,3 +31,4 @@ hooks.c
 hooks_service.c
 mcp_background.c
 jobs_service.c
+approval.c

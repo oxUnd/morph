@@ -870,7 +870,7 @@ TEST_F(ToolContextTest, PersistentScopedWriteGrantLoadsInNewContext)
 
 TEST_F(ToolContextTest, DeleteSessionGrantIsCapabilityScoped)
 {
-	struct tool_context *tctx = tool_context_create(NULL, "/tmp", "/tmp");
+	struct tool_context *tctx = tool_context_create(NULL, "/usr", "/usr");
 	const char *paths[2] = {};
 	char resolved[PATH_MAX];
 	int calls = 0;

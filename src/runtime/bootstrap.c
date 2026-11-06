@@ -93,7 +93,7 @@ static void runtime_history_load_secrets(struct react_context *react,
 {
 	const struct config_model_entry *models[] = {
 		&config->models.text, &config->models.vision,
-		&config->models.image, &config->models.video
+		&config->models.image, &config->models.video, &config->models.approval
 	};
 
 	for (size_t i = 0; i < sizeof(models) / sizeof(models[0]); i++)
@@ -321,16 +321,7 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 	models->react->history_tool_result_tokens =
 		config->context.tool_result_max_tokens;
 	runtime_history_load_secrets(models->react, config);
-	models->react->hitl.enabled = config->react.hitl_enabled;
-	models->react->hitl.auto_approve_readonly =
-		config->react.hitl_auto_approve_readonly;
-	models->react->hitl.auto_approve_media =
-		config->react.hitl_auto_approve_media;
-	models->react->hitl.tools_count = config->react.hitl_tools_count;
-	for (int i = 0; i < config->react.hitl_tools_count &&
-	     i < HITL_TOOLS_MAX; i++)
-		strncpy(models->react->hitl.tools[i],
-			config->react.hitl_tools[i], HITL_TOOL_NAME_MAX - 1);
+	/* Runtime authorization is supplied by morph-permission, not legacy HITL knobs. */
 	if (profile->hitl_cb) {
 		models->react->hitl.approval_cb = profile->hitl_cb;
 		models->react->hitl.approval_user_data =
@@ -431,6 +422,10 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 			return -ENOMEM;
 	}
 	tctx = *profile->tool_context;
+	profile->tools->permission_context = tctx;
+	rc = tool_context_set_permission_policy(tctx, &config->permissions);
+	if (rc != 0)
+		return rc;
 	rc = tool_context_set_grant_store(tctx, profile->db,
 					   profile->workdir);
 	if (rc != 0)
@@ -625,8 +620,6 @@ int runtime_bootstrap_sub_agents(struct runtime_bootstrap_profile *profile,
 				      &profile->models->react->compress);
 	if (!rt)
 		return -ENOMEM;
-	rt->auto_approve_readonly = profile->config->react.hitl_auto_approve_readonly;
-	rt->auto_approve_media = profile->config->react.hitl_auto_approve_media;
 	sub_agent_runtime_set_event_callback(rt, profile->event_cb,
 					     profile->event_user_data);
 	(void)sub_agent_runtime_set_storage(rt, profile->db);

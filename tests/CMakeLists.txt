@@ -16,6 +16,7 @@ set(TEST_SOURCES
 	test_cli_setup.cpp
 	test_prompt_template.cpp
 	test_config.cpp
+	test_permission.cpp
 	test_config_write.cpp
 	test_credits.cpp
 	test_session.cpp
@@ -164,6 +165,13 @@ find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
 	add_test(NAME cli_application_layout_conventions
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_application_layout.py)
+	if(UNIX)
+		add_test(NAME cli_permissions_pty_integration
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_permissions_pty.py
+				$<TARGET_FILE:morph-cli-pty-driver>)
+		set_tests_properties(cli_permissions_pty_integration PROPERTIES
+			SKIP_RETURN_CODE 77 TIMEOUT 90)
+	endif()
 endif()
 if(ENABLE_GLOBAL_STATE_AUDIT)
 	if(NOT Python3_Interpreter_FOUND)

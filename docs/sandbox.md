@@ -7,27 +7,27 @@ resource ceilings are independent permissions.
 
 ## Explicit host execution
 
-`exec` defaults to sandboxed child execution. For a trusted development setup,
-the user config can opt in to individual host calls:
+`exec` derives its effective policy from the shared permission context. The
+`workspace` and `read_only` boundaries use a child OS sandbox. A call can request
+`network: true` or `host: true`; the unified reviewer must authorize any missing
+access. `approval = "never"` rejects such requests. The `full` boundary uses host
+execution directly. See [the policy contract](permissions-design.md).
 
-```toml
-[exec]
-allow_host_execution = true
-```
+Host execution has the current user's filesystem and network access. Approval
+identifies this scope explicitly. It never happens as an automatic fallback
+from a failed sandbox call. Host children still close inherited descriptors and
+retain process groups, output limits, timeouts and `process` session control.
+The result reports `execution_mode: "host"` or `"sandbox"`. Model-supplied stdin writes
+to any existing session pass the shared review gate again, unless the effective
+policy or an explicit session grant already allows the call. This also covers
+processes retaining earlier filesystem grants after a turn ends. Policy changes return EBUSY while a
+process or subagent remains active.
 
-The caller must additionally pass `host: true` to `exec`. Opting in does not
-change ordinary calls, does not automatically retry failed commands on the
-host, and does not change executable-extension isolation. Command parsing and
-approval still apply; the approval reason identifies host execution. The initial
-result reports `execution_mode: "host"` or `"sandbox"`. Host children close
-inherited descriptors and retain process groups, output limits, timeouts, and
-`process` session control.
-
-Host execution does not apply the child OS sandbox, including its filesystem
-and network restrictions or resource limits. It has the current user's host
-access. Enable it only for trusted tasks that need this access; it is not a
-narrow Apple Events entitlement. A `host: true` call is rejected when the config
-option is disabled, which is the default.
+Legacy `exec.allow_host_execution`, `exec.network` and `react.hitl_*` settings
+are parsed for compatibility. Without `[permissions]`, they migrate to the
+conservative `workspace/on_request/user` policy with a warning. An explicit
+`[permissions]` table wins; mixed legacy settings produce an override warning.
+They are never a second authorization engine.
 
 On macOS this supports AppleScript automation that `System Events` rejects from
 a Seatbelt-sandboxed sender even after profile rules allow Apple Events. It does
@@ -139,19 +139,19 @@ does nothing on Linux.
 - platform-scoped process inspection as described below;
 - POSIX IPC.
 
-System paths are granted automatically so toolchains resolve their runtime,
-while writes and deletion elsewhere remain limited to the workdir, output
-directory, the active permission profile, and approved additional paths:
+System runtime paths are readable so toolchains can start. Business reads use
+the original workspace, output directory and matching read grants. Writes and
+deletion use the original workspace, output directory, active profile and
+approved additional paths. Changing a command's cwd never grants it write access.
+A read grant is independent from a write or delete grant.
 
-```text
-read-only:      /usr  /bin  /sbin  /System  /Library  /opt/homebrew  /private
-read/write/del: /tmp
-```
-
-The command workdir receives read, write, and delete rights. When the workdir
-contains a `.git` file that points elsewhere (a git worktree), that git
-directory is granted write and delete access explicitly because it lives
-outside the workdir.
+In `read_only`, the project, tool caches, metadata and shared temporary roots
+receive no default write/delete rights. Each exec runtime retains isolated
+scratch space. Additional write/delete authority can be requested explicitly;
+ordinary workspace grants are not reused as read-only upgrades. In `workspace`,
+built-in toolchain/cache and temporary roots retain their existing behavior.
+When the original workspace contains a `.git` file (a linked worktree), its git
+metadata directory is added for writes/deletions only outside read-only mode.
 
 Exec adds shared directories and toolchain paths from
 `src/sandbox/tool_paths.c` on both macOS and Linux. Directory rules receive
@@ -167,7 +167,7 @@ Runtime startup registers the same resolved presets with tool-context path
 approval even when exec is disabled. An explicit `skill.dir` is included too. Reads, writes, deletions, and explicit `request_permissions` requests
 inside these roots do not prompt again. Built-in paths use a dynamic collection
 independent of user grant limits. Exec merges all matching scoped, persistent,
-profile, and built-in grants dynamically; bounded compatibility APIs report
+profile, and built-in grants dynamically for each operation; bounded compatibility APIs report
 `ENOSPC` instead of silently dropping paths. Profile write/delete roots are
 recognized by native tools as well. Native write and delete session grants are
 separate. `request_permissions` grants read, write, and delete access to directories

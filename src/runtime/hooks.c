@@ -1,5 +1,8 @@
-#include "util/signals.h"
 #include "runtime/hooks.h"
+#include "util/signals.h"
+#include "permission/context.h"
+#include "sandbox/permission.h"
+#include "runtime/runtime.h"
 #include "exec/process.h"
 #include "agent/tokenizer.h"
 #include "agent/react.h"
@@ -1211,7 +1214,8 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 	cJSON_AddStringToObject(payload, "hook_event_name", event);
 	cJSON_AddStringToObject(payload, "model", manager->model ? manager->model : "");
 	cJSON_AddStringToObject(payload, "turn_id", manager->turn_id ? manager->turn_id : "");
-	cJSON_AddStringToObject(payload, "permission_mode", "default");
+	cJSON_AddStringToObject(payload, "permission_mode", manager->permissions ?
+		runtime_permission_preset_name(&manager->permissions->permissions.policy) : "default");
 	wire = cJSON_PrintUnformatted(payload);
 	if (!wire || strlen(wire) > HOOK_INPUT_MAX) {
 		rc = (wire ? -E2BIG : -ENOMEM);
@@ -1275,7 +1279,21 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 				options.use_stdin_fd = 1;
 				options.stdin_fd = fileno(stdin_file);
 				hook_emit(manager, entry, "hook.started", 0, 0, NULL);
-				run->rc = process_spawn(processes, &options, run->session, NULL);
+				struct arena *permission_arena = NULL;
+				struct sandbox_config sandbox;
+
+				if (manager->permissions) {
+					permission_arena = arena_create(0);
+					run->rc = permission_arena ? sandbox_permission_prepare(
+						manager->permissions, "hook", NULL, permission_arena,
+						&sandbox) : -ENOMEM;
+					options.host_execution = permission_effective_access(
+						&manager->permissions->permissions.policy).host;
+					options.sandbox = options.host_execution ? NULL : &sandbox;
+				}
+				if (run->rc == 0)
+					run->rc = process_spawn(processes, &options, run->session, NULL);
+				arena_destroy(permission_arena);
 			}
 		}
 		if (stdin_file)

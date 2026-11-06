@@ -159,7 +159,7 @@ TEST_F(PromptLoadTest, BootstrapPromptFailureReleasesPartialModels)
 	tool_registry_cleanup(&tools);
 }
 
-TEST_F(PromptLoadTest, BootstrapMediaApprovalUsesConfiguredPolicyAndMutationMetadata)
+TEST_F(PromptLoadTest, BootstrapLegacyMediaSwitchCannotAutoApproveMutations)
 {
 	struct config config{};
 	auto path = write("policy.toml", "[react]\nhitl_auto_approve_media=true\n");
@@ -174,7 +174,7 @@ TEST_F(PromptLoadTest, BootstrapMediaApprovalUsesConfiguredPolicyAndMutationMeta
 	ASSERT_EQ(runtime_bootstrap_models(&profile), 0);
 	ASSERT_NE(models.react, nullptr);
 	ASSERT_EQ(img_gen_init(&tools, nullptr, nullptr), 0);
-	EXPECT_EQ(hitl_needs_approval(models.react, "img_gen"), 0);
+	EXPECT_EQ(hitl_needs_approval(models.react, "img_gen"), 1);
 	EXPECT_FALSE(tool_is_readonly(&tools, "img_gen"));
 	EXPECT_EQ(hitl_needs_approval(models.react, "unknown_mutating_tool"), 1);
 	runtime_bootstrap_cleanup_models(&models);

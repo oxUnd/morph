@@ -1,6 +1,7 @@
 #include "util/signals.h"
 #include "util/child_io.h"
 #include "sandbox/sandbox.h"
+#include "sandbox/permission.h"
 #include "agent/tool_runtime.h"
 #include "dynamic_tools.h"
 #include "ipc/jsonrpc.h"
@@ -382,9 +383,49 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 		unlink(snapshot);
 		return rc;
 	}
+	struct arena *permission_arena = arena_create(0);
+	struct sandbox_config sandbox;
+	char runner_storage[PATH_MAX];
+	const char *runner = runner_path(runner_storage);
+
+	rc = permission_arena ? sandbox_permission_prepare(dt->tctx, dt->name, NULL,
+		permission_arena, &sandbox) : -ENOMEM;
+	if (rc != 0) {
+		arena_destroy(permission_arena);
+		close(stdin_pipe[0]);
+		close(stdin_pipe[1]);
+		close(stdout_pipe[0]);
+		close(stdout_pipe[1]);
+		close(stderr_pipe[0]);
+		close(stderr_pipe[1]);
+		unlink(snapshot);
+		return rc;
+	}
+	if (!sandbox.read_all) {
+		char **reads = arena_alloc(permission_arena,
+			((size_t)sandbox.read_paths_count + 2) * sizeof(*reads));
+
+		if (!reads) {
+			arena_destroy(permission_arena);
+			close(stdin_pipe[0]);
+			close(stdin_pipe[1]);
+			close(stdout_pipe[0]);
+			close(stdout_pipe[1]);
+			close(stderr_pipe[0]);
+			close(stderr_pipe[1]);
+			unlink(snapshot);
+			return -ENOMEM;
+		}
+		memcpy(reads, sandbox.read_paths,
+			(size_t)sandbox.read_paths_count * sizeof(*reads));
+		reads[sandbox.read_paths_count++] = snapshot;
+		reads[sandbox.read_paths_count++] = (char *)runner;
+		sandbox.read_paths = reads;
+	}
 	pid = fork();
 	if (pid < 0) {
 		int e = errno;
+		arena_destroy(permission_arena);
 		close(stdin_pipe[0]);
 		close(stdin_pipe[1]);
 		close(stdout_pipe[0]);
@@ -422,12 +463,14 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 				workdir, strerror(errno));
 			_exit(126);
 		}
-		char runner_storage[PATH_MAX];
-		const char *runner = runner_path(runner_storage);
+		if (sandbox_close_inherited_fds() != 0 ||
+		    (!sandbox.read_all && sandbox_enter(&sandbox) != 0))
+			_exit(126);
 		execl(runner, runner, snapshot, (char *)NULL);
 		execlp("morph-js-runner", "morph-js-runner", snapshot, (char *)NULL);
 		_exit(127);
 	}
+	arena_destroy(permission_arena);
 	close(stdin_pipe[0]);
 	close(stdout_pipe[1]);
 	close(stderr_pipe[1]);

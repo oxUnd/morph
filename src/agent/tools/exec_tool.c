@@ -8,6 +8,7 @@
 #include "exec/process.h"
 #include "sandbox.h"
 #include "sandbox/tool_paths.h"
+#include "sandbox/permission.h"
 #include "path_policy.h"
 #include "util/bash_parse.h"
 #include "util/buf.h"
@@ -23,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #define EXEC_DEFAULT_TIMEOUT_MS 120000u
 #define EXEC_DEFAULT_YIELD_MS 10000u
@@ -36,8 +38,7 @@ struct exec_runtime {
 	uint64_t default_timeout_ms;
 	uint64_t default_yield_time_ms;
 	uint64_t max_wait_ms;
-	int network;
-	int allow_host_execution;
+	char scratch[PATH_MAX];
 };
 
 static void exec_runtime_destroy(void *opaque)
@@ -57,6 +58,8 @@ static void exec_runtime_destroy(void *opaque)
 	process_manager_destroy(runtime->manager);
 	exec_jobs_destroy(runtime->jobs);
 	pthread_mutex_destroy(&runtime->mutex);
+	if (runtime->scratch[0])
+		(void)rmdir(runtime->scratch);
 	free(runtime);
 }
 
@@ -82,6 +85,12 @@ static int exec_runtime_create(struct tool_context *tctx,
 	runtime = calloc(1, sizeof(*runtime));
 	if (!runtime)
 		return -ENOMEM;
+	snprintf(runtime->scratch, sizeof(runtime->scratch), "/tmp/morph-exec-XXXXXX");
+	if (!mkdtemp(runtime->scratch)) {
+		rc = -errno;
+		free(runtime);
+		return rc;
+	}
 	runtime->refs = 2;
 	runtime->tool_context = tctx;
 	runtime->default_timeout_ms = exec_config ?
@@ -90,8 +99,6 @@ static int exec_runtime_create(struct tool_context *tctx,
 		(uint64_t)exec_config->yield_time_ms : EXEC_DEFAULT_YIELD_MS;
 	runtime->max_wait_ms = exec_config && exec_config->max_wait_ms > 0 ?
 		(uint64_t)exec_config->max_wait_ms : EXEC_MAX_WAIT_MS_DEFAULT;
-	runtime->network = exec_config ? exec_config->network : 0;
-	runtime->allow_host_execution = exec_config ? exec_config->allow_host_execution : 0;
 	rc = pthread_mutex_init(&runtime->mutex, NULL);
 	if (rc != 0) {
 		free(runtime);
@@ -144,7 +151,7 @@ static const char *json_string(const cJSON *root, const char *name)
 
 static int policy_check(struct exec_runtime *runtime, const char *command,
 			const char *workdir, const char *args_json,
-			int host, struct tool_result *result)
+			int host, int network, struct tool_result *result)
 {
 	struct bash_parse_result analysis;
 	const char **programs = NULL;
@@ -200,8 +207,13 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 				programs[programs_count++] = "shell";
 		}
 		{
+			struct permission_review review = {0};
 			struct tool_operation operation = {
+				.review_out = &review,
 				.kind = TOOL_OP_COMMAND,
+				.host = host, .network = network,
+				.require_user = result->runtime ?
+					result->runtime->permission_require_user : 0,
 				.tool_name = "exec",
 				.principal = programs_count == 1 ?
 					programs[0] : "shell",
@@ -226,13 +238,14 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 					"approval_unavailable" :
 					"approval_required";
 				const char *message = rc == -EACCES ?
-					"Command approval was denied by the user." :
+					review.reason[0] ? review.reason : "Command permission was denied." :
 					rc == -EPERM ?
 					"Interactive command approval is unavailable." :
 					"Command approval failed.";
 
 				bash_parse_result_cleanup(&analysis);
-				(void)tool_result_error(result, code, message);
+				(void)tool_result_errorf(result, code,
+					"%s Do not bypass a denial through another tool or route.", message);
 				return rc != 0 ? rc : -EPERM;
 			}
 		}
@@ -392,48 +405,6 @@ static void exec_resolve_worktree_git_dir(const char *workdir, char *out,
 	snprintf(out, out_size, "%s", resolved);
 }
 
-static int merge_path_grants(struct tool_context *tctx, const char *principal,
-	struct sandbox_config *cfg, struct arena *arena)
-{
-	if (!tctx)
-		return 0;
-	for (int deletion = 0; deletion < 2; deletion++) {
-		morph_array_t grants;
-		enum tool_path_op op = deletion ? TOOL_PATH_DELETE : TOOL_PATH_WRITE;
-		char **old = deletion ? cfg->delete_paths : cfg->write_paths;
-		int old_count = deletion ? cfg->delete_paths_count : cfg->write_paths_count;
-		int rc = morph_array_init(&grants, 16, sizeof(const char *));
-
-		if (rc != 0)
-			return rc;
-		rc = tool_context_collect_path_grants(tctx, principal, op, &grants);
-		if (rc == 0 && grants.nelts > (size_t)(INT_MAX - old_count))
-			rc = -EOVERFLOW;
-		if (rc != 0) {
-			morph_array_cleanup(&grants);
-			return rc;
-		}
-		size_t count = (size_t)old_count + grants.nelts;
-		char **merged = arena_alloc(arena, count * sizeof(*merged));
-
-		if (!merged) {
-			morph_array_cleanup(&grants);
-			return -ENOMEM;
-		}
-		memcpy(merged, old, (size_t)old_count * sizeof(*merged));
-		memcpy(merged + old_count, grants.elts, grants.nelts * sizeof(*merged));
-		morph_array_cleanup(&grants);
-		if (deletion) {
-			cfg->delete_paths = merged;
-			cfg->delete_paths_count = (int)count;
-		} else {
-			cfg->write_paths = merged;
-			cfg->write_paths_count = (int)count;
-		}
-	}
-	return 0;
-}
-
 static int process_wait_cancelled(void *opaque)
 {
 	const struct tool_runtime_context *runtime = opaque;
@@ -463,6 +434,8 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	struct process_snapshot snapshot;
 	char session_id[PROCESS_SESSION_ID_MAX];
 	int host;
+	int network;
+	int readonly;
 	int rc;
 
 	if (!runtime || !result)
@@ -485,19 +458,23 @@ static int exec_run(const char *args_json, struct tool_result *result,
 			"command is required");
 		return -EINVAL;
 	}
-	host = json_bool(root, "host", 0);
-	if (host && !runtime->allow_host_execution) {
+	readonly = runtime->tool_context &&
+		runtime->tool_context->permissions.policy.access == PERMISSION_READ_ONLY;
+	if (json_bool(root, "host", 0) && !runtime->tool_context) {
 		cJSON_Delete(root);
 		(void)tool_result_error(result, "host_execution_disabled",
-			"Host execution requires exec.allow_host_execution=true in the user config.");
+			"Host execution requires an explicit permission context.");
 		return -EACCES;
 	}
+	host = json_bool(root, "host", 0) || (runtime->tool_context &&
+		runtime->tool_context->permissions.policy.access == PERMISSION_FULL);
+	network = json_bool(root, "network", 0);
 	if (!workdir && runtime->tool_context)
 		workdir = tool_context_workdir(runtime->tool_context);
 	if (runtime->tool_context)
 		(void)tool_context_command_principal(command, principal,
 						     sizeof(principal));
-	rc = policy_check(runtime, command, workdir, args_json, host, result);
+	rc = policy_check(runtime, command, workdir, args_json, host, network, result);
 	if (rc != 0) {
 		cJSON_Delete(root);
 		return rc;
@@ -513,15 +490,14 @@ static int exec_run(const char *args_json, struct tool_result *result,
 		runtime->default_yield_time_ms);
 	options.pty = json_bool(root, "pty", 0);
 	memset(&sandbox, 0, sizeof(sandbox));
-	if (workdir && realpath(workdir, resolved_workdir)) {
+	const char *workspace = runtime->tool_context ?
+		tool_context_workdir(runtime->tool_context) : workdir;
+	if (workspace && realpath(workspace, resolved_workdir)) {
 		read_paths[read_path_count++] = resolved_workdir;
-		write_paths[write_path_count++] = resolved_workdir;
-		delete_paths[delete_path_count++] = resolved_workdir;
-	} else {
-		write_paths[write_path_count++] =
-			(char *)(workdir ? workdir : ".");
-		delete_paths[delete_path_count++] =
-			(char *)(workdir ? workdir : ".");
+		if (!readonly) {
+			write_paths[write_path_count++] = resolved_workdir;
+			delete_paths[delete_path_count++] = resolved_workdir;
+		}
 	}
 	read_paths[read_path_count++] = "/usr";
 	read_paths[read_path_count++] = "/bin";
@@ -531,10 +507,10 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	read_paths[read_path_count++] = "/opt/homebrew";
 	read_paths[read_path_count++] = "/private";
 	read_paths[read_path_count++] = "/tmp";
-	write_paths[write_path_count++] = "/tmp";
-	delete_paths[delete_path_count++] = "/tmp";
-	exec_resolve_worktree_git_dir(workdir, git_dir, sizeof(git_dir));
-	if (git_dir[0]) {
+	write_paths[write_path_count++] = readonly ? runtime->scratch : "/tmp";
+	delete_paths[delete_path_count++] = readonly ? runtime->scratch : "/tmp";
+	exec_resolve_worktree_git_dir(workspace, git_dir, sizeof(git_dir));
+	if (git_dir[0] && !readonly) {
 		write_paths[write_path_count++] = git_dir;
 		delete_paths[delete_path_count++] = git_dir;
 	}
@@ -546,11 +522,11 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	sandbox.write_paths_count = write_path_count;
 	sandbox.delete_paths = delete_paths;
 	sandbox.delete_paths_count = delete_path_count;
-	sandbox.network_access = runtime->network;
+	sandbox.network_access = network || host;
 	sandbox.process_exec = 1;
 	sandbox.allow_pty = options.pty;
 	sandbox.allow_process_info = 1;
-	sandbox.allow_temp = 1;
+	sandbox.allow_temp = !readonly;
 	sandbox.allow_ipc = 1;
 	sandbox.development_runtime = 1;
 	path_arena = arena_create(0);
@@ -561,9 +537,19 @@ static int exec_run(const char *args_json, struct tool_result *result,
 			morph_strerror(-ENOMEM));
 		return -ENOMEM;
 	}
-	rc = merge_path_grants(runtime->tool_context, principal, &sandbox, path_arena);
-	if (rc == 0)
+	rc = 0;
+	if (rc == 0 && runtime->tool_context && git_dir[0] && !readonly) {
+		rc = tool_context_add_builtin_path(runtime->tool_context, TOOL_PATH_WRITE, git_dir);
+		if (rc == 0)
+			rc = tool_context_add_builtin_path(runtime->tool_context, TOOL_PATH_DELETE, git_dir);
+	}
+	if (rc == 0 && runtime->tool_context)
+		rc = sandbox_permission_prepare(runtime->tool_context, principal,
+			runtime->scratch, path_arena, &sandbox);
+	else if (rc == 0)
 		rc = sandbox_prepare_tool_paths(&sandbox, path_arena);
+	sandbox.network_access = network || host;
+	sandbox.allow_pty = options.pty;
 	if (rc != 0) {
 		arena_destroy(path_arena);
 		cJSON_Delete(root);
@@ -596,7 +582,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 			json_string(root, "description"), workdir,
 			context ? context->memory_session_id : 0,
 			context ? context->turn_id : NULL, json_bool(root, "service", 0),
-			json_bool(root, "notify_only", 0));
+			json_bool(root, "notify_only", 0), host, sandbox.network_access);
 		if (rc != 0) {
 			(void)process_session_kill(runtime->manager, session_id);
 			process_snapshot_cleanup(&snapshot);
@@ -691,6 +677,29 @@ static int process_run(const char *args_json, struct tool_result *result,
 		cJSON_Delete(root);
 		return -EINVAL;
 	}
+	if (!strcmp(action, "write") && input && *input && runtime->tool_context) {
+		int host = 0, network = 0;
+
+		rc = exec_jobs_authority(runtime->jobs, session_id, &host, &network);
+		if (rc == 0) {
+			struct tool_operation operation = {
+				.kind = TOOL_OP_TOOL_CALL, .tool_name = "process",
+				.principal = session_id, .action = input, .target = session_id,
+				.scope = "Input to an existing process",
+				.reason = "The process retains its original access, "
+					"including earlier file grants.",
+				.details_json = args_json,
+				.host = host, .network = network,
+			};
+			rc = tool_context_check_operation(runtime->tool_context, &operation);
+		}
+		if (rc != 0) {
+			cJSON_Delete(root);
+			(void)tool_result_error(result, rc == -EPERM ? "approval_unavailable" :
+				"permission_denied", "Process input requires permission for its retained access.");
+			return rc;
+		}
+	}
 	if (strcmp(action, "write") == 0)
 		rc = process_session_write(runtime->manager, session_id,
 			input ? input : "", input ? strlen(input) : 0);
@@ -769,7 +778,8 @@ static void exec_environment(void *opaque, struct prompt_context_input *out)
 
 	out->cwd = tool_context_workdir(runtime->tool_context);
 	out->shell = process_manager_shell(runtime->manager);
-	/* Per-command capability policies cannot be expressed as a single mode. */
+	if (runtime->tool_context)
+		out->sandbox = permission_access_name(runtime->tool_context->permissions.policy.access);
 }
 
 int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
@@ -793,13 +803,15 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	exec_spec.name = "exec";
 	exec_spec.title = "Execute command";
 	exec_spec.description =
-	    runtime->allow_host_execution
+	    runtime->tool_context
 		? "Run a shell command with command approval, timeout, and process sessions. "
 		  "Commands are sandboxed by default. Explicit host=true runs without the child "
 		  "OS sandbox, with the user's file and network access. Use only when the task "
 		  "requires host automation, such as macOS System Events AppleScript. "
 		  "macOS privacy consent still applies. Do not silently retry in host mode. "
-		  "Background sessions have no default timeout; set timeout_ms to limit them."
+		  "For error.code=sandbox_denied, request the smallest additional capability "
+		  "and retry the exact command. Background sessions have no default timeout; "
+		  "set timeout_ms to limit them."
 		: "Run a shell command with workdir, policy, timeout, yield, and process sessions. "
 		  "Host execution is disabled. Background sessions have no default timeout; "
 		  "set timeout_ms to limit them. For error.code=sandbox_denied, request the "
@@ -818,7 +830,7 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 		"\"Short action summary in the user response language, e.g. Check HTTP timeout settings.\"},"
 		"\"workdir\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\","
 		"\"minimum\":0},\"yield_time_ms\":{\"type\":\"integer\",\"minimum\":0},"
-		"\"pty\":{\"type\":\"boolean\"},\"host\":{\"type\":\"boolean\","
+		"\"network\":{\"type\":\"boolean\"},\"pty\":{\"type\":\"boolean\"},\"host\":{\"type\":\"boolean\","
 		"\"description\":\"Explicit host execution; requires exec.allow_host_execution. Default false.\"},"
 		"\"notify_only\":{\"type\":\"boolean\",\"description\":\"Do not wait before ending the turn. Use only when the user explicitly asks to start a task and be notified later. Default false.\"},"
 		"\"service\":{\"type\":\"boolean\",\"description\":\"Persistent server or watcher; do not wait for exit before replying. Default false.\"},"

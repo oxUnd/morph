@@ -1,4 +1,5 @@
 #include "util/signals.h"
+#include "sandbox/permission.h"
 #include "util/child_io.h"
 #include "ext.h"
 #include "loader.h"
@@ -241,8 +242,8 @@ int ext_sandbox_config_prepare(const struct ext *ex,
  * \param[in] user: Borrowed cancellation context until return.
  * \return Zero on success, negative error otherwise; output may contain diagnostics.
  */
-int ext_run_cancelable(struct ext *ex, const char *args_json, char **result_json,
-		       int (*cancelled)(void *), void *user)
+int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
+		       int (*cancelled)(void *), void *user, const struct sandbox_config *limits)
 {
 	if (result_json != NULL) {
 		*result_json = NULL;
@@ -255,7 +256,7 @@ int ext_run_cancelable(struct ext *ex, const char *args_json, char **result_json
 	if (!ex->enabled)
 		return -EACCES;
 	if (ex->run)
-		return ex->run(args_json, result_json);
+		return limits ? -ENOTSUP : ex->run(args_json, result_json);
 
 	if (strcmp(ex->manifest.type, "exec") == 0 && ex->exec_path[0]) {
 		log_info(ex ? ex->logger : NULL, "executing ext: %s", ex->exec_path);
@@ -317,11 +318,22 @@ int ext_run_cancelable(struct ext *ex, const char *args_json, char **result_json
 
 			if (ext_sandbox_config_prepare(ex, &sb_cfg) != 0)
 				_exit(126);
+			struct sandbox_config owned_config = sb_cfg;
+
+			if (limits) {
+				struct arena *permission_arena = arena_create(0);
+
+				if (!permission_arena || sandbox_permission_intersect(
+				    &sb_cfg, limits, permission_arena) != 0)
+					_exit(126);
+				/* The child replaces its image immediately after sandbox setup. */
+			}
+
 			if (sandbox_enter(&sb_cfg) != 0) {
-				ext_sandbox_config_cleanup(&sb_cfg);
+				ext_sandbox_config_cleanup(&owned_config);
 				_exit(126);
 			}
-			ext_sandbox_config_cleanup(&sb_cfg);
+			ext_sandbox_config_cleanup(&owned_config);
 
 			execlp(ex->exec_path, ex->exec_path, (char *)NULL);
 			_exit(127);
@@ -453,6 +465,12 @@ int ext_run_cancelable(struct ext *ex, const char *args_json, char **result_json
 }
 
 /** \brief Execute an extension with the legacy non-cancellable contract. */
+int ext_run_cancelable(struct ext *ex, const char *args_json, char **result_json,
+	int (*cancelled)(void *), void *user)
+{
+	return ext_run_bounded(ex, args_json, result_json, cancelled, user, NULL);
+}
+
 int ext_run(struct ext *ex, const char *args_json, char **result_json)
 {
 	return ext_run_cancelable(ex, args_json, result_json, NULL, NULL);

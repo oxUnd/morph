@@ -170,6 +170,11 @@ int runtime_hooks_snapshot(struct runtime *runtime, cJSON **out);
 int runtime_hooks_manage(struct runtime *runtime, const char *action,
 	const char *id, const char *expected_digest);
 
+int runtime_permission_preset(const char *name, struct permission_policy *out);
+const char *runtime_permission_preset_name(const struct permission_policy *policy);
+int runtime_permission_get_policy(struct runtime *runtime, struct permission_policy *out);
+int runtime_permission_set_policy(struct runtime *runtime, const struct permission_policy *policy);
+
 int runtime_permission_list(struct runtime *runtime,
 			    struct runtime_permission_grant **out,
 			    int *count);

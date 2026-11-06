@@ -9,7 +9,6 @@ context.c
 compress.c
 tokenizer.c
 tool.c
-tool_context.c
 tool_runtime.c
 patch.c
 plan.c

@@ -207,12 +207,20 @@ max_inline_output = 32768
 max_session_output = 1048576
 # Grace period between SIGTERM and SIGKILL.
 kill_grace_ms = 500
-# Network access granted to sandboxed child processes by default.
-network = false
-# Opt in to explicit exec host=true calls (no child OS sandbox).
-# Host calls retain command approval but have the user's file/network access.
-# Useful for macOS AppleScript automation; macOS privacy consent still applies.
-allow_host_execution = false
+# Access and review are configured centrally below. An exec call can request
+# network=true or host=true; the permission layer decides whether it may run.
+
+[permissions]
+# Three independent dimensions. Applications may compose other combinations.
+# Ask: workspace/on_request/user; Auto: workspace/on_request/model;
+# Full: full/never/user; Read Only: read_only/on_request/user.
+access = "workspace"
+approval = "on_request"
+reviewer = "user"
+# Model review uses an isolated client with model.text connection settings.
+# Optional [model.approval] selects a separate reviewer connection/model.
+# The automatic reviewer uses an independent text-model client, with a 30-second
+# deadline. Optionally configure [model.approval] like [model.text].
 
 [react]
 max_iterations      = 2048
@@ -298,22 +306,8 @@ readonly_tools = [
   "agent_status"
 ]
 
-# ── Human-in-the-Loop (HITL) ──────────────────
-# When enabled, the agent asks for user confirmation before executing
-# certain tools. The user can approve (y), deny (n), or always-approve
-# (a) a tool for the rest of the session.
-hitl_enabled = true
-# List of tool names requiring explicit approval.
-# If empty and hitl_enabled is true, ALL tools require approval
-# (except tools covered by the auto-approval settings below).
-# hitl_tools = ["exec", "img_gen", "vid_gen"]
-# Automatically approve tools listed in readonly_tools without prompting.
-hitl_auto_approve_readonly = true
-# Automatically approve built-in image/video generation, editing and analysis.
-# Media tools retain their mutation metadata and filesystem access checks.
-# Auto-approval settings take precedence over hitl_tools.
-# Setup enables this; existing configurations retain the default false.
-hitl_auto_approve_media = false
+# Approval is owned by [permissions]. Legacy hitl_* fields are accepted at
+# load time for configuration migration; they do not add a second runtime gate.
 
 # ── Filesystem permission profiles ────────────
 # Profiles add trusted roots at startup and never disable the OS sandbox.

@@ -146,7 +146,7 @@ void exec_jobs_complete(const char *session_id, void *user_data)
 
 int exec_jobs_add(struct exec_jobs *jobs, const char *id, const char *command,
 		  const char *description, const char *workdir, int64_t owner, const char *turn_id,
-		  int service, int notify_only)
+		  int service, int notify_only, int host, int network)
 {
 	cJSON *data = cJSON_CreateObject();
 	char *safe_command = process_redact_text(jobs->manager, command);
@@ -167,6 +167,8 @@ int exec_jobs_add(struct exec_jobs *jobs, const char *id, const char *command,
 		 cJSON_AddNumberToObject(data, "owner_session_id", (double)owner) &&
 		 cJSON_AddBoolToObject(data, "service", service) &&
 		 cJSON_AddBoolToObject(data, "notify_only", notify_only) &&
+		 cJSON_AddBoolToObject(data, "host", host) &&
+		 cJSON_AddBoolToObject(data, "network", network) &&
 		 cJSON_AddStringToObject(data, "status", "running") &&
 		 cJSON_AddNumberToObject(data, "duration_ms", (double)initial.duration_ms);
 	free(safe_command);
@@ -367,4 +369,46 @@ int exec_jobs_stop(struct exec_jobs *jobs, int64_t owner, const char *id)
 	if (rc)
 		return rc;
 	return process_session_kill(jobs->manager, id);
+}
+
+int exec_jobs_active(struct exec_jobs *jobs)
+{
+	struct exec_job *job;
+	int active = 0;
+
+	if (!jobs)
+		return 0;
+	pthread_mutex_lock(&jobs->lock);
+	morph_array_foreach(job, &jobs->entries, struct exec_job) {
+		struct process_snapshot snapshot = {0};
+
+		int rc = process_session_status(jobs->manager,
+			job_string(job->data, "session_id"), &snapshot);
+		if ((rc == 0 && snapshot.state < PROCESS_EXITED) || (rc != 0 && !job->completed))
+			active = 1;
+		process_snapshot_cleanup(&snapshot);
+		if (active)
+			break;
+	}
+	pthread_mutex_unlock(&jobs->lock);
+	return active;
+}
+
+int exec_jobs_authority(struct exec_jobs *jobs, const char *id, int *host, int *network)
+{
+	struct exec_job *job;
+	int rc = 0;
+
+	if (!jobs || !id || !host || !network)
+		return -EINVAL;
+	pthread_mutex_lock(&jobs->lock);
+	job = find_job(jobs, id);
+	if (!job) {
+		rc = -ENOENT;
+	} else {
+		*host = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(job->data, "host"));
+		*network = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(job->data, "network"));
+	}
+	pthread_mutex_unlock(&jobs->lock);
+	return rc;
 }

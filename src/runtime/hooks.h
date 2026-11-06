@@ -13,7 +13,10 @@ struct morph_log;
 extern "C" {
 #endif
 
+struct tool_context;
+
 struct hook_manager {
+	struct tool_context *permissions;
 	struct morph_log *logger;
 	struct db *db;
 	const struct config *config;

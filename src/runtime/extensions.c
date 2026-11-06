@@ -19,6 +19,8 @@ int runtime_extensions_load(struct runtime_context *ctx,
 #include "ext/ext.h"
 #include "agent/tool_runtime.h"
 #include "util/file.h"
+#include "permission/context.h"
+#include "sandbox/permission.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -39,7 +41,33 @@ static int runtime_ext_exec(const char *args_json, struct tool_result *result,
 
 	if (!extension)
 		return -EINVAL;
-	rc = ext_run_cancelable(extension, args_json, &output, runtime_ext_cancelled, result);
+	struct tool_context *context = result->runtime ? result->runtime->permission_context : NULL;
+	struct sandbox_config limits;
+	struct arena *arena = arena_create(0);
+
+	if (!arena)
+		return -ENOMEM;
+	if (context) {
+		struct tool_operation operation = {
+			.kind = TOOL_OP_TOOL_CALL, .tool_name = extension->manifest.name,
+			.principal = extension->manifest.name, .action = args_json,
+			.details_json = args_json, .scope = extension->path,
+			.network = !!(extension->manifest.permissions & EXT_PERM_NETWORK),
+		};
+		rc = tool_context_check_operation(context, &operation);
+		if (rc == 0)
+			rc = tool_context_add_builtin_path(context, TOOL_PATH_READ, extension->path);
+		if (rc == 0)
+			rc = sandbox_permission_prepare(context, extension->manifest.name, NULL,
+				arena, &limits);
+		limits.network_access = operation.network;
+	} else {
+		rc = -EPERM;
+	}
+	if (rc == 0)
+		rc = ext_run_bounded(extension, args_json, &output, runtime_ext_cancelled, result,
+			permission_effective_access(&context->permissions.policy).host ? NULL : &limits);
+	arena_destroy(arena);
 	if (output)
 		(void)tool_result_success_json_text(result, output);
 	return rc;
@@ -144,6 +172,7 @@ int runtime_extensions_load(struct runtime_context *ctx,
 		spec.input_schema = owned->manifest.input_schema;
 		spec.output_schema = owned->manifest.output_schema;
 		spec.exec = runtime_ext_exec;
+		spec.flags = TOOL_FLAG_INTERNAL_APPROVAL;
 		spec.user_data = owned;
 		spec.user_data_destroy = runtime_ext_destroy;
 		if (tool_register(&ctx->tools, &spec) != 0)

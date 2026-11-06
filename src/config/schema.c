@@ -101,6 +101,11 @@ static const struct schema_entry schema[] = {
 	MODEL_FIELDS("vision"),
 	MODEL_FIELDS("image"),
 	MODEL_FIELDS("video"),
+	MODEL_FIELDS("approval"),
+	TABLE("permissions"),
+	ENUM("permissions.access", 31, "read_only|workspace|full"),
+	ENUM("permissions.approval", 31, "on_request|never"),
+	ENUM("permissions.reviewer", 31, "user|model"),
 	TABLE("credits"),
 	INT("credits.daily_limit", -1, INT_MAX),
 	STRING("credits.currency", 7),
@@ -694,7 +699,7 @@ static int validate_relations(const toml_datum_t *root,
 		"max_session_output");
 	const toml_datum_t *model = table_get(root, "model");
 	static const char *const model_names[] = {
-		"text", "vision", "image", "video"
+		"text", "vision", "image", "video", "approval"
 	};
 	double summarize_ratio = 0.8;
 	double target_ratio = 0.5;
@@ -815,7 +820,7 @@ static void warn_token_budgets(const toml_datum_t *root,
 	config_validation_warning_fn warning_fn, void *warning_user_data)
 {
 	const toml_datum_t *models = table_get(root, "model");
-	static const char *const names[] = {"text", "vision"};
+	static const char *const names[] = {"text", "vision", "approval"};
 
 	if (!warning_fn)
 		return;
