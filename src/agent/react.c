@@ -1,5 +1,7 @@
 #include "react.h"
 #include "react_internal.h"
+#include "react_events.h"
+#include "react_stream.h"
 #include "guardrail.h"
 #include "tokenizer.h"
 #include "plan.h"
@@ -14,7 +16,8 @@
 #include "util/file.h"
 #include "agent/memory.h"
 #include "tool_runtime.h"
-#include "tool_context.h"
+#include "permission/context.h"
+#include "tool_execution.h"
 #include "models/llm.h"
 #include "http/client.h"
 #include "util/log.h"
@@ -33,6 +36,16 @@
 #include <pthread.h>
 #include <time.h>
 #include <limits.h>
+
+static struct react_event_sink react_events(const struct react_context *ctx)
+{
+	return (struct react_event_sink){
+		.callback = ctx ? ctx->event_cb : NULL,
+		.user_data = ctx ? ctx->event_user_data : NULL,
+		.turn_id = ctx ? ctx->turn_id : NULL,
+		.tools = ctx ? ctx->tools : NULL,
+	};
+}
 
 static void react_cancel_background(struct react_context *ctx);
 
@@ -157,157 +170,6 @@ int react_set_tool_runtime_context(
 	return 0;
 }
 
-static int react_events_enabled(struct react_context *ctx)
-{
-	return ctx && ctx->event_cb;
-}
-
-static int react_emit_event(struct react_context *ctx,
-			    enum morph_event_type type, const char *name,
-			    const char *phase, const char *message,
-			    cJSON *data)
-{
-	struct morph_event ev;
-
-	if (!ctx || !ctx->event_cb)
-		return 0;
-	ev.type = type;
-	ev.name = name;
-	ev.phase = phase;
-	ev.message = message;
-	ev.data = data;
-	ev.turn_id = ctx->turn_id[0] ? ctx->turn_id : NULL;
-	return morph_event_emit(ctx->event_cb, ctx->event_user_data, &ev);
-}
-
-static int react_emit_text_event(struct react_context *ctx,
-				 enum morph_event_type type,
-				 const char *name, const char *phase,
-				 const char *message, const char *text)
-{
-	cJSON *data;
-	int rc;
-
-	if (!react_events_enabled(ctx))
-		return 0;
-	data = cJSON_CreateObject();
-	if (!data)
-		return -ENOMEM;
-	cJSON_AddStringToObject(data, "text", text ? text : "");
-	rc = react_emit_event(ctx, type, name, phase, message, data);
-	cJSON_Delete(data);
-	return rc;
-}
-
-static int react_output_emit(react_output_cb cb, void *user_data,
-			     enum react_step_type type,
-			     enum react_output_status status,
-			     const char *text,
-			     const char *tool_name,
-			     const char *tool_args,
-			     const char *tool_call_id,
-			     int error_code,
-			     const struct tool_artifact_list *artifacts,
-			     const cJSON *data, const cJSON *ui)
-{
-	struct react_output_event ev;
-
-	if (!cb)
-		return 0;
-	memset(&ev, 0, sizeof(ev));
-	ev.type = type;
-	ev.status = status;
-	ev.text = text;
-	ev.tool_name = tool_name;
-	ev.tool_args = tool_args;
-	ev.tool_call_id = tool_call_id;
-	ev.error_code = error_code;
-	ev.artifacts = artifacts;
-	ev.data = data;
-	ev.ui = ui;
-	return cb(&ev, user_data);
-}
-
-static int react_emit_observation_event(struct react_context *ctx,
-					const char *text,
-					const char *tool,
-					int error_code,
-					const struct tool_artifact_list *artifacts,
-					const cJSON *result_data,
-					const cJSON *result_ui)
-{
-	cJSON *data;
-	cJSON *artifact_json = NULL;
-	cJSON *data_copy = NULL;
-	cJSON *ui_copy = NULL;
-	int rc;
-
-	if (!react_events_enabled(ctx))
-		return 0;
-	data = cJSON_CreateObject();
-	if (!data)
-		return -ENOMEM;
-	cJSON_AddStringToObject(data, "text", text ? text : "");
-	if (tool)
-		cJSON_AddStringToObject(data, "tool", tool);
-	if (error_code < 0) {
-		cJSON_AddNumberToObject(data, "error_code", error_code);
-		cJSON_AddStringToObject(data, "error",
-					morph_strerror(error_code));
-	}
-	if (artifacts && artifacts->count > 0) {
-		artifact_json = tool_artifact_list_to_json(artifacts);
-		if (artifact_json)
-			cJSON_AddItemToObject(data, "artifacts",
-					      artifact_json);
-	}
-	if (result_data) {
-		data_copy = cJSON_Duplicate(result_data, 1);
-		if (data_copy)
-			cJSON_AddItemToObject(data, "data", data_copy);
-	}
-	if (result_ui) {
-		ui_copy = cJSON_Duplicate(result_ui, 1);
-		if (ui_copy)
-			cJSON_AddItemToObject(data, "ui", ui_copy);
-	}
-	rc = react_emit_event(ctx, MORPH_EVENT_REACT, "react.observation",
-			      error_code < 0 ? "failed" : "end",
-			      "tool observation", data);
-	cJSON_Delete(data);
-	return rc;
-}
-
-static int react_emit_auth_required(struct react_context *ctx,
-				    const char *backend,
-				    const char *provider,
-				    const char *model,
-				    const char *tool,
-				    const char *reason)
-{
-	cJSON *data;
-	int rc;
-
-	if (!react_events_enabled(ctx))
-		return 0;
-	data = cJSON_CreateObject();
-	if (!data)
-		return -ENOMEM;
-	cJSON_AddStringToObject(data, "kind", "auth_required");
-	cJSON_AddStringToObject(data, "backend", backend ? backend : "");
-	cJSON_AddStringToObject(data, "provider", provider ? provider : "");
-	cJSON_AddStringToObject(data, "model", model ? model : "");
-	cJSON_AddStringToObject(data, "env_name", "");
-	cJSON_AddStringToObject(data, "tool", tool ? tool : "");
-	cJSON_AddStringToObject(data, "reason",
-				reason ? reason : "missing_api_key");
-	cJSON_AddBoolToObject(data, "retryable", 1);
-	rc = react_emit_event(ctx, MORPH_EVENT_HITL, "auth.required",
-			      "blocked", "authentication required", data);
-	cJSON_Delete(data);
-	return rc;
-}
-
 static const char *react_auth_backend_for_tool(const char *tool)
 {
 	if (!tool)
@@ -332,7 +194,7 @@ static void react_set_state(struct react_context *ctx, enum react_state state)
 
 static int react_emit_thinking_event(struct react_context *ctx)
 {
-	return react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.thinking",
+	return react_emit_text_event(react_events(ctx), MORPH_EVENT_REACT, "react.thinking",
 				     "begin", "Thinking...", "");
 }
 
@@ -371,7 +233,7 @@ static int react_emit_outcome_event(struct react_context *ctx,
 	cJSON *data;
 	int rc;
 
-	if (!react_events_enabled(ctx))
+	if (!react_events_enabled(react_events(ctx)))
 		return 0;
 	data = cJSON_CreateObject();
 	if (!data)
@@ -391,7 +253,7 @@ static int react_emit_outcome_event(struct react_context *ctx,
 		cJSON_AddStringToObject(data, "error",
 					morph_strerror(ctx->last_error_code));
 	}
-	rc = react_emit_event(ctx, MORPH_EVENT_REACT, name, phase, message,
+	rc = react_emit_event(react_events(ctx), MORPH_EVENT_REACT, name, phase, message,
 			      data);
 	cJSON_Delete(data);
 	return rc;
@@ -485,7 +347,7 @@ static void react_warn_tool_truncation(struct react_context *ctx)
 		cJSON_AddNumberToObject(data, "output_truncated_results",
 			ctx->tool_result_output_truncated_count);
 		log_warn(ctx->logger, "%s", morph_buf_cstr(&message));
-		(void)react_emit_event(ctx, MORPH_EVENT_BACKGROUND,
+		(void)react_emit_event(react_events(ctx), MORPH_EVENT_BACKGROUND,
 			"history.tool_output.warning", "warning", morph_buf_cstr(&message), data);
 		cJSON_Delete(data);
 	}
@@ -517,78 +379,12 @@ static int react_finish_run(struct react_context *ctx)
 	return rc;
 }
 
-static int react_emit_tool_event(struct react_context *ctx,
-				 const char *name, const char *phase,
-				 const char *message, const char *tool,
-				 const char *args_json,
-				 const char *tool_call_id,
-				 const char *result, int error_code)
-{
-	cJSON *data;
-	cJSON *args = NULL;
-	int text_input = 0;
-	int rc;
-
-	if (!react_events_enabled(ctx))
-		return 0;
-	data = cJSON_CreateObject();
-	if (!data)
-		return -ENOMEM;
-	cJSON_AddStringToObject(data, "tool", tool ? tool : "");
-	if (ctx->tools && tool) {
-		tool_registry_lock(ctx->tools);
-		struct tool_entry *entry = tool_lookup(ctx->tools, tool);
-
-		if (entry && entry->desc.title[0])
-			cJSON_AddStringToObject(data, "toolTitle",
-						entry->desc.title);
-		if (entry && entry->desc.input_kind == TOOL_INPUT_TEXT)
-			text_input = 1;
-		tool_registry_unlock(ctx->tools);
-	}
-	cJSON_AddStringToObject(data, "tool_call_id",
-				tool_call_id ? tool_call_id : "");
-	if (text_input) {
-		args = cJSON_CreateObject();
-		if (args)
-			cJSON_AddStringToObject(args, "input",
-				args_json ? args_json : "");
-	} else {
-		args = args_json && *args_json ? cJSON_Parse(args_json) : NULL;
-	}
-	if (!args)
-		args = cJSON_CreateObject();
-	if (!args) {
-		cJSON_Delete(data);
-		return -ENOMEM;
-	}
-	cJSON_AddItemToObject(data, "args", args);
-	if (result)
-		cJSON_AddStringToObject(data, "result", result);
-	if (error_code < 0) {
-		const char *error = morph_strerror(error_code);
-
-		if (result && result[0]) {
-			static const char prefix[] = "tool error: ";
-
-			error = strncmp(result, prefix, sizeof(prefix) - 1) == 0 ?
-				result + sizeof(prefix) - 1 : result;
-		}
-		cJSON_AddNumberToObject(data, "error_code", error_code);
-		cJSON_AddStringToObject(data, "error", error);
-	}
-	rc = react_emit_event(ctx, MORPH_EVENT_TOOL, name, phase, message,
-			      data);
-	cJSON_Delete(data);
-	return rc;
-}
-
 static int react_tool_call_begin(struct react_context *ctx,
 				 const struct tool_call *tc)
 {
 	if (!tc)
 		return 0;
-	return react_emit_tool_event(ctx, "tool.call", "begin",
+	return react_emit_tool_event(react_events(ctx), "tool.call", "begin",
 				     "calling tool", tc->name,
 				     tc->arguments ? tc->arguments : "{}",
 				     tc->tool_call_id, NULL, 0);
@@ -599,7 +395,7 @@ static int react_tool_call_running(struct react_context *ctx,
 {
 	if (!tc)
 		return 0;
-	return react_emit_tool_event(ctx, "tool.running", "begin",
+	return react_emit_tool_event(react_events(ctx), "tool.running", "begin",
 				     "tool running", tc->name,
 				     tc->arguments ? tc->arguments : "{}",
 				     tc->tool_call_id, NULL, 0);
@@ -610,81 +406,10 @@ static int react_tool_call_thread_failed(struct react_context *ctx,
 {
 	if (!tc)
 		return 0;
-	return react_emit_tool_event(ctx, "tool.failed", "failed",
+	return react_emit_tool_event(react_events(ctx), "tool.failed", "failed",
 				     "tool thread failed", tc->name,
 				     tc->arguments ? tc->arguments : "{}",
 				     tc->tool_call_id, NULL, rc);
-}
-
-static int react_emit_artifact_event(struct react_context *ctx,
-				     const char *kind, const char *path,
-				     const char *source)
-{
-	cJSON *data;
-	int rc;
-
-	if (!react_events_enabled(ctx))
-		return 0;
-	data = cJSON_CreateObject();
-	if (!data)
-		return -ENOMEM;
-	cJSON_AddStringToObject(data, "kind", kind ? kind : "");
-	cJSON_AddStringToObject(data, "path", path ? path : "");
-	if (source)
-		cJSON_AddStringToObject(data, "source", source);
-	rc = react_emit_event(ctx, MORPH_EVENT_ARTIFACT, "artifact.ready",
-			      "ready", "artifact ready", data);
-	cJSON_Delete(data);
-	return rc;
-}
-
-static void react_emit_artifacts_from_list(struct react_context *ctx,
-					   const struct tool_artifact_list *artifacts,
-					   const char *source)
-{
-	if (!ctx || !artifacts)
-		return;
-	for (int i = 0; i < artifacts->count; i++) {
-		const struct tool_artifact *artifact = &artifacts->items[i];
-		react_emit_artifact_event(ctx,
-					  tool_artifact_kind_name(artifact->kind),
-					  artifact->path, source);
-	}
-}
-
-static int react_emit_hitl_event(struct react_context *ctx,
-				 const char *name, const char *phase,
-				 const char *message, const char *tool,
-				 const char *args_json,
-				 const char *tool_call_id,
-				 const char *verdict)
-{
-	cJSON *data;
-	cJSON *args = NULL;
-	int rc;
-
-	if (!react_events_enabled(ctx))
-		return 0;
-	data = cJSON_CreateObject();
-	if (!data)
-		return -ENOMEM;
-	cJSON_AddStringToObject(data, "tool", tool ? tool : "");
-	cJSON_AddStringToObject(data, "tool_call_id",
-				tool_call_id ? tool_call_id : "");
-	args = args_json && *args_json ? cJSON_Parse(args_json) : NULL;
-	if (!args)
-		args = cJSON_CreateObject();
-	if (!args) {
-		cJSON_Delete(data);
-		return -ENOMEM;
-	}
-	cJSON_AddItemToObject(data, "args", args);
-	if (verdict)
-		cJSON_AddStringToObject(data, "verdict", verdict);
-	rc = react_emit_event(ctx, MORPH_EVENT_HITL, name, phase, message,
-			      data);
-	cJSON_Delete(data);
-	return rc;
 }
 
 /* Joinable tool execution. The ReAct owner retains cancelled calls until drain.
@@ -928,7 +653,7 @@ static int react_tool_call_cancelled(struct react_context *ctx,
 {
 	if (!call)
 		return 0;
-	return react_emit_tool_event(ctx, "tool.cancelled", "cancelled",
+	return react_emit_tool_event(react_events(ctx), "tool.cancelled", "cancelled",
 				     "tool execution cancelled",
 				     call->name, call->arguments,
 				     call->tool_call_id, NULL, -ECANCELED);
@@ -944,11 +669,11 @@ static int react_tool_call_finish(struct react_context *ctx,
 		const char *backend = react_auth_backend_for_tool(call->tool_name);
 
 		if (backend)
-			react_emit_auth_required(ctx, backend, "", "",
+			react_emit_auth_required(react_events(ctx), backend, "", "",
 						 call->tool_name,
 						 "missing_api_key");
 	}
-	return react_emit_tool_event(ctx,
+	return react_emit_tool_event(react_events(ctx),
 				     rc < 0 ? "tool.failed" : "tool.result",
 				     rc < 0 ? "failed" : "end",
 				     rc < 0 ? "tool failed" : "tool result",
@@ -1075,7 +800,6 @@ static void *async_tool_exec(void *arg)
 		pthread_cond_wait(&call->cond, &call->mutex);
 	pthread_mutex_unlock(&call->mutex);
 
-
 	int notify_done = 0;
 
 	if (tool_is_disabled(call->tools, call->tool_name)) {
@@ -1154,10 +878,14 @@ static void *async_tool_exec(void *arg)
 		enum react_output_status status = call->rc < 0 ?
 			REACT_OUTPUT_FAILED : REACT_OUTPUT_COMPLETED;
 		react_output_emit(call->output_cb, call->output_user_data,
-				  REACT_STEP_ACTION, status,
-				  NULL, call->tool_name, call->tool_args,
-				  call->tool_call_id, call->rc, NULL,
-				  NULL, NULL);
+			&(struct react_output_event){
+				.type = REACT_STEP_ACTION,
+				.status = status,
+				.tool_name = call->tool_name,
+				.tool_args = call->tool_args,
+				.tool_call_id = call->tool_call_id,
+				.error_code = call->rc,
+			});
 		tool_callback_leave(call);
 	}
 
@@ -1554,79 +1282,80 @@ static int react_has_active_tool(struct react_context *ctx, const char *name)
 	return active;
 }
 
-/** \brief Snapshot immutable built-in callbacks while entries may move. */
-static struct tool_entry *react_builtin_snapshot(struct react_context *ctx, const char *name,
-						 struct tool_entry *snapshot)
+/* Retain built-in callback dependencies until the owner releases the handle. */
+static struct tool_handle *react_builtin_acquire(struct react_context *ctx,
+	const char *name, struct tool_handle *handle)
 {
-	struct tool_entry *entry;
-	if (ctx->tools == NULL) {
+	if (tool_registry_acquire(ctx->tools, name, handle) != 0)
+		return NULL;
+	if (handle->origin != TOOL_ORIGIN_BUILTIN) {
+		tool_handle_release(handle);
 		return NULL;
 	}
-	tool_registry_lock(ctx->tools);
-	entry = tool_lookup(ctx->tools, name);
-	if (entry != NULL && entry->origin == TOOL_ORIGIN_BUILTIN) {
-		*snapshot = *entry;
-	} else {
-		entry = NULL;
-	}
-	tool_registry_unlock(ctx->tools);
-	return entry != NULL ? snapshot : NULL;
+	return handle;
 }
 
 static void react_cancel_background(struct react_context *ctx)
 {
-	struct tool_entry snapshot;
-	struct tool_entry *entry = react_builtin_snapshot(ctx, "exec", &snapshot);
+	struct tool_handle handle;
+	struct tool_handle *entry = react_builtin_acquire(ctx, "exec", &handle);
 
 	if (entry && entry->background_cancel)
 		entry->background_cancel(entry->user_data,
 			ctx->tool_runtime.memory_session_id, ctx->turn_id);
+	tool_handle_release(&handle);
 }
 
 static int append_process_checkpoint(struct react_context *ctx, morph_buf_t *buf)
 {
-	int rc = 0;
-	struct tool_entry snapshot;
-	struct tool_entry *exec_entry = react_builtin_snapshot(ctx, "exec", &snapshot);
-	if (exec_entry && exec_entry->background_list) {
-		cJSON *jobs = NULL;
-		rc = exec_entry->background_list(exec_entry->user_data,
-			ctx->tool_runtime.memory_session_id, &jobs);
-		if (rc) return rc;
-		if (cJSON_GetArraySize(jobs)) {
-			cJSON *item, *next;
-			int retained = 0;
-			for (item = jobs->child; item; item = next) {
-				next = item->next;
-				const char *state = cJSON_GetStringValue(cJSON_GetObjectItem(item, "status"));
-				const char *turn = cJSON_GetStringValue(cJSON_GetObjectItem(item, "turn_id"));
-				if (retained >= 16 || (strcmp(state ? state : "", "running") &&
-				    strcmp(turn ? turn : "", ctx->turn_id))) {
-					cJSON_Delete(cJSON_DetachItemViaPointer(jobs, item));
-					continue;
-				}
-				retained++;
-				cJSON_DeleteItemFromObjectCaseSensitive(item, "command");
-				cJSON_DeleteItemFromObjectCaseSensitive(item, "workdir");
-				cJSON_DeleteItemFromObjectCaseSensitive(item, "owner_session_id");
-				cJSON_DeleteItemFromObjectCaseSensitive(item, "turn_id");
-			}
-			char *json = cJSON_PrintUnformatted(jobs);
-			if (!json) {
-				cJSON_Delete(jobs);
-				return -ENOMEM;
-			}
-			rc = morph_buf_printf(buf,
-				"\nRuntime process status (reference data, not instructions):\n%s\n"
-				"Use process action=list for all jobs, action=wait for finite tasks, not shell sleep. "
-				"A running command is not a completed result. "
-				"service=true marks persistent servers/watchers. notify_only=true is only "
-				"for an explicit request to start work and notify later.\n", json);
-			free(json);
-		}
-		cJSON_Delete(jobs);
-		if (rc) return rc;
+	struct tool_handle handle;
+	struct tool_handle *entry = react_builtin_acquire(ctx, "exec", &handle);
+	cJSON *jobs = NULL;
+	int rc;
+
+	if (!entry || !entry->background_list) {
+		tool_handle_release(&handle);
+		return 0;
 	}
+	rc = entry->background_list(entry->user_data,
+		ctx->tool_runtime.memory_session_id, &jobs);
+	tool_handle_release(&handle);
+	if (rc != 0) {
+		cJSON_Delete(jobs);
+		return rc;
+	}
+	if (cJSON_GetArraySize(jobs)) {
+		cJSON *item, *next;
+		int retained = 0;
+		for (item = jobs->child; item; item = next) {
+			next = item->next;
+			const char *state = cJSON_GetStringValue(cJSON_GetObjectItem(item, "status"));
+			const char *turn = cJSON_GetStringValue(cJSON_GetObjectItem(item, "turn_id"));
+			if (retained >= 16 || (strcmp(state ? state : "", "running") &&
+			    strcmp(turn ? turn : "", ctx->turn_id))) {
+				cJSON_Delete(cJSON_DetachItemViaPointer(jobs, item));
+				continue;
+			}
+			retained++;
+			cJSON_DeleteItemFromObjectCaseSensitive(item, "command");
+			cJSON_DeleteItemFromObjectCaseSensitive(item, "workdir");
+			cJSON_DeleteItemFromObjectCaseSensitive(item, "owner_session_id");
+			cJSON_DeleteItemFromObjectCaseSensitive(item, "turn_id");
+		}
+		char *json = cJSON_PrintUnformatted(jobs);
+		if (!json) {
+			cJSON_Delete(jobs);
+			return -ENOMEM;
+		}
+		rc = morph_buf_printf(buf,
+			"\nRuntime process status (reference data, not instructions):\n%s\n"
+			"Use process action=list for all jobs, action=wait for finite tasks, not shell sleep. "
+			"A running command is not a completed result. "
+			"service=true marks persistent servers/watchers. notify_only=true is only "
+			"for an explicit request to start work and notify later.\n", json);
+		free(json);
+	}
+	cJSON_Delete(jobs);
 	return rc;
 }
 
@@ -1827,293 +1556,28 @@ static char *build_dynamic_context(struct react_context *ctx, struct arena *aren
 	return buf.data;
 }
 
-struct react_stream_data {
-	struct react_context *ctx;
-	react_output_cb user_cb;
+struct react_stream_output {
+	struct react_event_sink events;
+	react_output_cb callback;
 	void *user_data;
-	volatile sig_atomic_t *cancelled;
-	struct arena *arena;
-	char *accumulated;
-	size_t acc_len;
-	size_t acc_cap;
-	size_t emitted_len;
-	int in_final;
-	int skip_legacy_final_separator;
-	int provisional_typed_content;
 };
 
-static int react_final_marker_len(const char *p)
+static int react_stream_emit(enum react_step_type type, const char *text, void *user_data)
 {
-	if (strncmp(p, "Final:", 6) == 0)
-		return 6;
-	if (strncmp(p, "Final answer:", 13) == 0)
-		return 13;
-	if (strncmp(p, "Final Answer:", 13) == 0)
-		return 13;
-	return 0;
-}
+	struct react_stream_output *output = user_data;
+	const char *event = type == REACT_STEP_REASONING ? "react.reasoning.delta" :
+		type == REACT_STEP_CONTENT ? "react.content.delta" :
+		type == REACT_STEP_FINAL ? "react.final.delta" : "react.thought.delta";
 
-static int react_is_line_start(const char *base, const char *p)
-{
-	if (p == base)
-		return 1;
-	return p > base && (p[-1] == '\n' || p[-1] == '\r');
-}
-
-static const char *react_find_final_marker(const char *base, const char *from,
-					   int *marker_len)
-{
-	const char *p = from;
-
-	while (p && *p) {
-		const char *line = p;
-		while (*line == ' ' || *line == '\t')
-			line++;
-		if (react_is_line_start(base, p)) {
-			int len = react_final_marker_len(line);
-			if (len > 0) {
-				*marker_len = (int)(line - p) + len;
-				return p;
-			}
-		}
-		p = strchr(p, '\n');
-		if (p)
-			p++;
-	}
-	return NULL;
-}
-
-static int react_emit_thought_delta(struct react_stream_data *sd,
-				    const char *text, size_t len)
-{
-	char *delta;
-
-	if (len == 0)
-		return 0;
-	delta = arena_alloc(sd->arena, len + 1);
-	if (!delta)
-		return -ENOMEM;
-	memcpy(delta, text, len);
-	delta[len] = '\0';
-	react_output_emit(sd->user_cb, sd->user_data,
-			  sd->provisional_typed_content ? REACT_STEP_CONTENT
-			  : REACT_STEP_THOUGHT, REACT_OUTPUT_DELTA, delta, NULL, NULL, NULL, 0,
-			  NULL, NULL, NULL);
-	react_emit_text_event(sd->ctx, MORPH_EVENT_REACT,
-			      sd->provisional_typed_content ? "react.content.delta"
-			      : "react.thought.delta", "delta", NULL, delta);
-	return 0;
-}
-
-static int react_emit_final_delta(struct react_stream_data *sd,
-				  const char *text, size_t len)
-{
-	char *delta;
-
-	while (sd->skip_legacy_final_separator && len > 0 &&
-	       (*text == ' ' || *text == '\t')) {
-		text++;
-		len--;
-	}
-	if (len > 0)
-		sd->skip_legacy_final_separator = 0;
-	if (len == 0)
-		return 0;
-	delta = arena_alloc(sd->arena, len + 1);
-	if (!delta)
-		return -ENOMEM;
-	memcpy(delta, text, len);
-	delta[len] = '\0';
-	react_emit_text_event(sd->ctx, MORPH_EVENT_REACT,
-			      "react.final.delta", "delta", NULL, delta);
-	return 0;
-}
-
-static size_t react_utf8_safe_len(const char *text, size_t len)
-{
-	return utf8_clamp_bytes(text, len);
-}
-
-static int react_stream_parse_emit(struct react_stream_data *sd)
-{
-	const size_t holdback = 16;
-	const char *base = sd->accumulated;
-	const char *start = base + sd->emitted_len;
-	size_t available;
-
-	if (sd->ctx->hook_stop_active)
-		return 0;
-	if (!base || sd->acc_len <= sd->emitted_len)
-		return 0;
-
-	available = sd->acc_len - sd->emitted_len;
-	if (sd->provisional_typed_content) {
-		size_t safe = react_utf8_safe_len(start, available);
-		int rc;
-
-		if (safe == 0)
-			return 0;
-		rc = react_emit_thought_delta(sd, start, safe);
-		if (rc == 0)
-			sd->emitted_len += safe;
-		return rc;
-	}
-	if (sd->in_final) {
-		size_t safe = react_utf8_safe_len(start, available);
-		int rc;
-		if (safe == 0)
-			return 0;
-		rc = react_emit_final_delta(sd, start, safe);
-		if (rc == 0)
-			sd->emitted_len += safe;
-		return rc;
-	}
-
-	{
-		int marker_len = 0;
-		const char *marker = react_find_final_marker(base, start,
-							     &marker_len);
-		if (marker) {
-			int rc = react_emit_thought_delta(sd, start,
-							  (size_t)(marker - start));
-			if (rc != 0)
-				return rc;
-			sd->in_final = 1;
-			sd->skip_legacy_final_separator = 1;
-			sd->emitted_len = (size_t)((marker - base) + marker_len);
-			return react_stream_parse_emit(sd);
-		}
-	}
-
-	if (available <= holdback)
-		return 0;
-	available -= holdback;
-	available = react_utf8_safe_len(start, available);
-	if (available == 0)
-		return 0;
-	{
-		int rc = react_emit_thought_delta(sd, start, available);
-		if (rc == 0)
-			sd->emitted_len += available;
-		return rc;
-	}
-}
-
-static int react_stream_flush(struct react_stream_data *sd)
-{
-	const char *base = sd->accumulated;
-	const char *start;
-	size_t available;
-
-	if (sd->ctx->hook_stop_active)
-		return 0;
-	if (!base || sd->acc_len <= sd->emitted_len)
-		return 0;
-
-	start = base + sd->emitted_len;
-	available = sd->acc_len - sd->emitted_len;
-	if (sd->provisional_typed_content) {
-		size_t safe = react_utf8_safe_len(start, available);
-		int rc;
-
-		if (safe == 0)
-			return 0;
-		rc = react_emit_thought_delta(sd, start, safe);
-		if (rc == 0)
-			sd->emitted_len += safe;
-		return rc;
-	}
-	if (sd->in_final) {
-		size_t safe = react_utf8_safe_len(start, available);
-		int rc;
-		if (safe == 0)
-			return 0;
-		rc = react_emit_final_delta(sd, start, safe);
-		if (rc == 0)
-			sd->emitted_len += safe;
-		return rc;
-	}
-
-	{
-		int marker_len = 0;
-		const char *marker = react_find_final_marker(base, start,
-							     &marker_len);
-		if (marker) {
-			int rc = react_emit_thought_delta(sd, start,
-							  (size_t)(marker - start));
-			if (rc != 0)
-				return rc;
-			sd->in_final = 1;
-			sd->skip_legacy_final_separator = 1;
-			sd->emitted_len = (size_t)((marker - base) + marker_len);
-			return react_stream_flush(sd);
-		}
-	}
-
-	{
-		size_t safe = react_utf8_safe_len(start, available);
-		int rc;
-		if (safe == 0)
-			return 0;
-		rc = react_emit_thought_delta(sd, start, safe);
-		if (rc == 0)
-			sd->emitted_len += safe;
-		return rc;
-	}
-}
-
-static int react_stream_cb(const char *token, void *user_data)
-{
-	struct react_stream_data *sd = user_data;
-	size_t tlen = strlen(token);
-	if (sd->acc_len + tlen + 1 >= sd->acc_cap) {
-		size_t new_cap = (sd->acc_len + tlen + 1) * 2;
-		char *new_acc = arena_alloc(sd->arena, new_cap);
-		if (new_acc) {
-			if (sd->accumulated) {
-				memcpy(new_acc, sd->accumulated, sd->acc_len);
-			}
-			sd->accumulated = new_acc;
-			sd->acc_cap = new_cap;
-		}
-	}
-	if (sd->accumulated && sd->acc_len + tlen < sd->acc_cap) {
-		memcpy(sd->accumulated + sd->acc_len, token, tlen);
-		sd->acc_len += tlen;
-		sd->accumulated[sd->acc_len] = '\0';
-	}
-	if (morph_signal_flag_get(sd->cancelled))
-		return -EINTR;
-	if (sd->ctx->hook_stop_active)
-		return 0;
-	return react_stream_parse_emit(sd);
-}
-
-static int react_typed_stream_cb(enum llm_stream_kind kind, const char *token,
-				 void *user_data)
-{
-	struct react_stream_data *sd = user_data;
-
-	if (kind == LLM_STREAM_REASONING) {
-		if (morph_signal_flag_get(sd->cancelled))
-			return -EINTR;
-		react_output_emit(sd->user_cb, sd->user_data,
-				  REACT_STEP_REASONING, REACT_OUTPUT_DELTA,
-				  token, NULL, NULL, NULL, 0, NULL,
-				  NULL, NULL);
-		react_emit_text_event(sd->ctx, MORPH_EVENT_REACT,
-				      "react.reasoning.delta", "delta",
-				      NULL, token);
-		return 0;
-	}
-	if (kind == LLM_STREAM_CONTENT) {
-		/* Native content is distinct from reasoning. Tool calls may follow,
-		 * so its terminal role is resolved only when the response ends.
-		 */
-		sd->provisional_typed_content = 1;
-		return react_stream_cb(token, user_data);
-	}
-	return react_stream_cb(token, user_data);
+	if (type != REACT_STEP_FINAL)
+		react_output_emit(output->callback, output->user_data,
+			&(struct react_output_event){
+				.type = type,
+				.status = REACT_OUTPUT_DELTA,
+				.text = text,
+			});
+	return react_emit_text_event(output->events, MORPH_EVENT_REACT, event,
+		"delta", NULL, text);
 }
 
 static int react_tool_visible(struct react_context *ctx, const char *name)
@@ -2317,21 +1781,21 @@ static void react_check_hitl_approvals(struct react_context *ctx,
 			}
 			continue;
 		}
-		react_emit_hitl_event(ctx, "hitl.request", "begin",
+		react_emit_hitl_event(react_events(ctx), "hitl.request", "begin",
 				      "approval requested", tool_name,
 				      tool_args, tc->tool_call_id, NULL);
 		enum hitl_verdict v = ctx->hitl.approval_cb(
 			tool_name, tool_args, ctx->hitl.approval_user_data);
 		if (v == HITL_ALWAYS) {
 			hitl_add_auto_approved(&ctx->hitl, tool_name);
-			react_emit_hitl_event(ctx, "hitl.always", "end",
+			react_emit_hitl_event(react_events(ctx), "hitl.always", "end",
 					      "approval persisted",
 					      tool_name, tool_args,
 					      tc->tool_call_id,
 					      "always");
 		} else if (v == HITL_DENY) {
 			slots[i].hitl_denied = 1;
-			react_emit_hitl_event(ctx, "hitl.denied", "failed",
+			react_emit_hitl_event(react_events(ctx), "hitl.denied", "failed",
 					      "approval denied", tool_name,
 					      tool_args, tc->tool_call_id,
 					      "denied");
@@ -2353,12 +1817,12 @@ static void react_check_hitl_approvals(struct react_context *ctx,
 				ctx->turn_arena, REACT_STEP_OBSERVATION,
 				deny_msg, NULL, NULL, NULL);
 			add_step(ctx, obs);
-			react_emit_text_event(ctx, MORPH_EVENT_REACT,
+			react_emit_text_event(react_events(ctx), MORPH_EVENT_REACT,
 					      "react.observation", "failed",
 					      "tool execution denied",
 					      deny_msg);
 		} else {
-			react_emit_hitl_event(ctx, "hitl.approved", "end",
+			react_emit_hitl_event(react_events(ctx), "hitl.approved", "end",
 					      "approval granted", tool_name,
 					      tool_args, tc->tool_call_id,
 					      "approved");
@@ -2423,10 +1887,13 @@ static int react_track_tool_failure(struct react_context *ctx,
 	free(ctx->final_answer);
 	ctx->final_answer = strdup(fail_msg);
 	react_set_state(ctx, REACT_STATE_DONE);
-	react_output_emit(cb, user_data, REACT_STEP_FINAL,
-			  REACT_OUTPUT_COMPLETED, fail_msg, NULL, NULL,
-			  NULL, 0, NULL, NULL, NULL);
-	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.final",
+	react_output_emit(cb, user_data,
+		&(struct react_output_event){
+			.type = REACT_STEP_FINAL,
+			.status = REACT_OUTPUT_COMPLETED,
+			.text = fail_msg,
+		});
+	react_emit_text_event(react_events(ctx), MORPH_EVENT_REACT, "react.final",
 			      "end", "final answer", fail_msg);
 	ctx->tool_fail_name = NULL;
 	ctx->tool_fail_args = NULL;
@@ -2512,10 +1979,13 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 	struct react_step *refl_step = react_step_create(ctx->turn_arena,
 		REACT_STEP_REFLECTION, gr.reason, NULL, NULL, NULL);
 	add_step(ctx, refl_step);
-	react_output_emit(cb, user_data, REACT_STEP_REFLECTION,
-			  REACT_OUTPUT_FAILED, gr.reason, NULL, NULL,
-			  NULL, 0, NULL, NULL, NULL);
-	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.reflection",
+	react_output_emit(cb, user_data,
+		&(struct react_output_event){
+			.type = REACT_STEP_REFLECTION,
+			.status = REACT_OUTPUT_FAILED,
+			.text = gr.reason,
+		});
+	react_emit_text_event(react_events(ctx), MORPH_EVENT_REACT, "react.reflection",
 			      "failed", "guardrail reflection", gr.reason);
 
 	slots = morph_array_push_n(messages, 2);
@@ -2585,7 +2055,7 @@ static int react_check_input_guardrail(struct react_context *ctx,
 	refl = react_step_create(ctx->turn_arena, REACT_STEP_REFLECTION,
 				 msg, NULL, NULL, NULL);
 	add_step(ctx, refl);
-	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.reflection",
+	react_emit_text_event(react_events(ctx), MORPH_EVENT_REACT, "react.reflection",
 			      "failed", "input rejected", msg);
 	free(ctx->final_answer);
 	ctx->final_answer = strdup(msg);
@@ -2784,7 +2254,7 @@ static int react_emit_compaction_event(struct react_context *ctx,
 	cJSON *data;
 	int rc;
 
-	if (!react_events_enabled(ctx))
+	if (!react_events_enabled(react_events(ctx)))
 		return 0;
 	data = cJSON_CreateObject();
 	if (!data)
@@ -2800,7 +2270,7 @@ static int react_emit_compaction_event(struct react_context *ctx,
 		cJSON_AddStringToObject(data, "error",
 			morph_strerror(error_code));
 	}
-	rc = react_emit_event(ctx, MORPH_EVENT_REACT, name, phase,
+	rc = react_emit_event(react_events(ctx), MORPH_EVENT_REACT, name, phase,
 		strcmp(phase, "end") == 0 ? "active context compacted" :
 		"active context compaction", data);
 	cJSON_Delete(data);
@@ -3058,7 +2528,12 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 			   react_output_cb cb, void *user_data,
 			   struct chat_response *response)
 {
-	struct react_stream_data sd;
+	struct react_stream stream;
+	struct react_stream_output output = {react_events(ctx), cb, user_data};
+	struct react_stream_options options = {
+		.emit = react_stream_emit, .user_data = &output,
+		.cancelled = &ctx->cancelled, .suppressed = &ctx->hook_stop_active,
+	};
 	struct arena *arena = ctx->iteration_arena;
 	int status;
 
@@ -3079,7 +2554,7 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 			cJSON_AddNumberToObject(metrics, "tool_count", active_tool_count);
 			cJSON_AddNumberToObject(metrics, "context_recoveries",
 						ctx->context_recovery_count);
-			(void)react_emit_event(ctx, MORPH_EVENT_REACT, "react.context.usage",
+			(void)react_emit_event(react_events(ctx), MORPH_EVENT_REACT, "react.context.usage",
 					       "info", "model request context", metrics);
 			cJSON_Delete(metrics);
 		}
@@ -3094,17 +2569,9 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 		log_warn(ctx ? ctx->logger : NULL, "could not capture model input: %s",
 			 morph_strerror(status));
 
-	memset(&sd, 0, sizeof(sd));
-	sd.ctx = ctx;
-	sd.user_cb = cb;
-	sd.user_data = user_data;
-	sd.cancelled = &ctx->cancelled;
-	sd.arena = arena;
-	sd.accumulated = arena_alloc(arena, 8192);
-	sd.acc_len = 0;
-	sd.acc_cap = 8192;
-	if (sd.accumulated)
-		sd.accumulated[0] = '\0';
+	status = react_stream_init(&stream, &options);
+	if (status != 0)
+		return status;
 
 	struct model request_model = *llm;
 
@@ -3117,12 +2584,12 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 		status = llm->chat_with_tools_stream(
 			llm, arena, system_prompt, messages,
 			msg_count, active_tools, active_tool_count, response,
-			react_typed_stream_cb, &sd);
+			react_typed_stream_cb, &stream);
 	} else if (llm->chat_with_tools) {
 		status = llm->chat_with_tools(llm, arena,
 					      system_prompt, messages, msg_count,
 					      active_tools, active_tool_count,
-					      response, react_stream_cb, &sd);
+					      response, react_stream_cb, &stream);
 	} else {
 		int hist_n = 0;
 		struct message_list *h = ctx->messages;
@@ -3137,6 +2604,7 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 		if (!hist_msgs && hist_n > 0) {
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
 					 -ENOMEM, "internal_error");
+			react_stream_cleanup(&stream);
 			return -ENOMEM;
 		}
 		if (hist_msgs) {
@@ -3148,24 +2616,23 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 		}
 		status = llm->chat(llm, arena, system_prompt,
 				   hist_msgs, hist_n, NULL, react_stream_cb,
-				   &sd);
-		if (status >= 0 && sd.accumulated) {
-			response->content = sd.accumulated;
-			sd.accumulated = NULL;
+				   &stream);
+		if (status >= 0) {
+			response->content = arena_strdup(arena, morph_buf_cstr(&stream.text));
 			response->arena = arena;
+			if (!response->content)
+				status = -ENOMEM;
 		}
 	}
 	ctx->llm_output_started = llm->error_info.output_started;
 	if (status < 0 && llm->last_error[0]) {
 		ctx->llm_error_detail = arena_strdup(arena, llm->last_error);
 		if (!ctx->llm_error_detail)
-			return -ENOMEM;
+			status = -ENOMEM;
 	}
-	if (status >= 0) {
-		int flush_rc = react_stream_flush(&sd);
-		if (flush_rc != 0)
-			return flush_rc;
-	}
+	if (status >= 0)
+		status = react_stream_finish(&stream);
+	react_stream_cleanup(&stream);
 	return status;
 }
 
@@ -3181,7 +2648,7 @@ static int react_handle_llm_cancelled(struct react_context *ctx,
 				"LLM call interrupted by user",
 				NULL, NULL, NULL);
 	add_step(ctx, obs);
-	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.observation",
+	react_emit_text_event(react_events(ctx), MORPH_EVENT_REACT, "react.observation",
 			      "cancelled", "LLM call interrupted",
 			      "LLM call interrupted by user");
 	if (response->content) {
@@ -3215,9 +2682,14 @@ static int react_handle_output_limit(struct react_context *ctx,
 				"internal_error");
 			return 1;
 		}
-		react_output_emit(cb, user_data, REACT_STEP_CONTENT, REACT_OUTPUT_FAILED,
-			response->content, NULL, NULL, NULL, MORPH_ERR_LLM, NULL, NULL, NULL);
-		react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.content.end", "end",
+		react_output_emit(cb, user_data,
+			&(struct react_output_event){
+				.type = REACT_STEP_CONTENT,
+				.status = REACT_OUTPUT_FAILED,
+				.text = response->content,
+				.error_code = MORPH_ERR_LLM,
+			});
+		react_emit_text_event(react_events(ctx), MORPH_EVENT_REACT, "react.content.end", "end",
 			"incomplete model output", response->content);
 	}
 	data = cJSON_CreateObject();
@@ -3227,7 +2699,7 @@ static int react_handle_output_limit(struct react_context *ctx,
 			(double)response->usage.output_tokens);
 		cJSON_AddNumberToObject(data, "reasoning_tokens",
 			(double)response->usage.reasoning_tokens);
-		(void)react_emit_event(ctx, MORPH_EVENT_BACKGROUND,
+		(void)react_emit_event(react_events(ctx), MORPH_EVENT_BACKGROUND,
 			"react.output.truncated", "warning", message, data);
 		cJSON_Delete(data);
 	}
@@ -3258,10 +2730,14 @@ static int react_handle_llm_error(struct react_context *ctx,
 	err = react_step_create(ctx->turn_arena, REACT_STEP_OBSERVATION,
 				err_content, NULL, NULL, NULL);
 	add_step(ctx, err);
-	react_output_emit(cb, user_data, REACT_STEP_OBSERVATION,
-			  REACT_OUTPUT_FAILED, err_content, NULL, NULL,
-			  NULL, status, NULL, NULL, NULL);
-	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.observation",
+	react_output_emit(cb, user_data,
+		&(struct react_output_event){
+			.type = REACT_STEP_OBSERVATION,
+			.status = REACT_OUTPUT_FAILED,
+			.text = err_content,
+			.error_code = status,
+		});
+	react_emit_text_event(react_events(ctx), MORPH_EVENT_REACT, "react.observation",
 			      "failed", "LLM call failed", err_content);
 	react_set_result(ctx, REACT_OUTCOME_LLM_ERROR, status, "llm_error");
 	return 1;
@@ -3409,12 +2885,16 @@ static void react_start_tool_calls(struct react_context *ctx,
 					   tool_name, tool_args,
 					   tc->tool_call_id);
 		add_step(ctx, action);
-		react_output_emit(cb, user_data, REACT_STEP_ACTION,
-				  REACT_OUTPUT_STARTED,
-				  action_text ? action_text : "", tool_name,
-				  tool_args, tc->tool_call_id, 0, NULL,
-				  NULL, NULL);
-		react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.action",
+		react_output_emit(cb, user_data,
+			&(struct react_output_event){
+				.type = REACT_STEP_ACTION,
+				.status = REACT_OUTPUT_STARTED,
+				.text = action_text ? action_text : "",
+				.tool_name = tool_name,
+				.tool_args = tool_args,
+				.tool_call_id = tc->tool_call_id,
+			});
+		react_emit_text_event(react_events(ctx), MORPH_EVENT_REACT, "react.action",
 				      "begin", "tool action",
 				      action_text ? action_text : "");
 		react_tool_call_begin(ctx, tc);
@@ -3488,7 +2968,7 @@ static void react_record_tool_cancelled(struct react_context *ctx)
 				"Tool execution cancelled by user",
 				NULL, NULL, NULL);
 	add_step(ctx, obs);
-	react_emit_text_event(ctx, MORPH_EVENT_REACT,
+	react_emit_text_event(react_events(ctx), MORPH_EVENT_REACT,
 			      "react.observation", "cancelled",
 			      "tool execution cancelled",
 			      "Tool execution cancelled by user");
@@ -3559,11 +3039,16 @@ static const char *react_apply_tool_output_guardrail(
 	grefl = react_step_create(ctx->turn_arena, REACT_STEP_REFLECTION,
 				  ggr.reason, NULL, NULL, NULL);
 	add_step(ctx, grefl);
-	react_output_emit(cb, user_data, REACT_STEP_REFLECTION,
-			  REACT_OUTPUT_FAILED, ggr.reason, call->tool_name,
-			  call->tool_args, call->tool_call_id, 0, NULL,
-			  NULL, NULL);
-	react_emit_text_event(ctx, MORPH_EVENT_REACT,
+	react_output_emit(cb, user_data,
+		&(struct react_output_event){
+			.type = REACT_STEP_REFLECTION,
+			.status = REACT_OUTPUT_FAILED,
+			.text = ggr.reason,
+			.tool_name = call->tool_name,
+			.tool_args = call->tool_args,
+			.tool_call_id = call->tool_call_id,
+		});
+	react_emit_text_event(react_events(ctx), MORPH_EVENT_REACT,
 			      "react.reflection", "failed",
 			      "guardrail reflection", ggr.reason);
 	return arena_strdup(ctx->turn_arena, guard_obs);
@@ -3596,11 +3081,20 @@ static int react_record_tool_observation(struct react_context *ctx,
 		}
 	}
 	add_step(ctx, obs);
-	react_output_emit(cb, user_data, REACT_STEP_OBSERVATION,
-			  rc < 0 ? REACT_OUTPUT_FAILED : REACT_OUTPUT_COMPLETED,
-			  obs_text, call->tool_name, call->tool_args,
-			  call->tool_call_id, rc, artifacts, data, ui);
-	react_emit_observation_event(ctx, obs_text, call->tool_name, rc,
+	react_output_emit(cb, user_data,
+		&(struct react_output_event){
+			.type = REACT_STEP_OBSERVATION,
+			.status = rc < 0 ? REACT_OUTPUT_FAILED : REACT_OUTPUT_COMPLETED,
+			.text = obs_text,
+			.tool_name = call->tool_name,
+			.tool_args = call->tool_args,
+			.tool_call_id = call->tool_call_id,
+			.error_code = rc,
+			.artifacts = artifacts,
+			.data = data,
+			.ui = ui,
+		});
+	react_emit_observation_event(react_events(ctx), obs_text, call->tool_name, rc,
 				     artifacts, data, ui);
 	return react_append_tool_message(messages, obs_text,
 					 call->provider_tool_call_id,
@@ -3622,13 +3116,27 @@ static int react_record_tool_timeout(struct react_context *ctx,
 	if (obs)
 		obs->error_code = -ETIMEDOUT;
 	add_step(ctx, obs);
-	react_output_emit(cb, user_data, REACT_STEP_ACTION,
-			  REACT_OUTPUT_TIMEOUT, timeout_msg, tc->name, args,
-			  tc->tool_call_id, -ETIMEDOUT, NULL, NULL, NULL);
-	react_output_emit(cb, user_data, REACT_STEP_OBSERVATION,
-			  REACT_OUTPUT_FAILED, timeout_msg, tc->name, args,
-			  tc->tool_call_id, -ETIMEDOUT, NULL, NULL, NULL);
-	react_emit_observation_event(ctx, timeout_msg, tc->name, -ETIMEDOUT,
+	react_output_emit(cb, user_data,
+		&(struct react_output_event){
+			.type = REACT_STEP_ACTION,
+			.status = REACT_OUTPUT_TIMEOUT,
+			.text = timeout_msg,
+			.tool_name = tc->name,
+			.tool_args = args,
+			.tool_call_id = tc->tool_call_id,
+			.error_code = -ETIMEDOUT,
+		});
+	react_output_emit(cb, user_data,
+		&(struct react_output_event){
+			.type = REACT_STEP_OBSERVATION,
+			.status = REACT_OUTPUT_FAILED,
+			.text = timeout_msg,
+			.tool_name = tc->name,
+			.tool_args = args,
+			.tool_call_id = tc->tool_call_id,
+			.error_code = -ETIMEDOUT,
+		});
+	react_emit_observation_event(react_events(ctx), timeout_msg, tc->name, -ETIMEDOUT,
 				     NULL, NULL, NULL);
 	if (agent_history_record_tool_result(ctx, tc->tool_call_id, tc->id,
 		tc->name, timeout_msg, -ETIMEDOUT) != 0)
@@ -3733,7 +3241,7 @@ static int react_join_tool_calls(struct react_context *ctx,
 				 "tool error: '%s' timed out after %ds; side effects are unknown; "
 				 "do not retry automatically",
 				 tc->name, react_tool_call_timeout(ctx, tc));
-			react_emit_tool_event(ctx, "tool.failed", "timeout",
+			react_emit_tool_event(react_events(ctx), "tool.failed", "timeout",
 					      "tool timed out", tc->name,
 					      tc->arguments ? tc->arguments : "{}",
 					      tc->tool_call_id, timeout_msg,
@@ -3824,7 +3332,7 @@ static int react_join_tool_calls(struct react_context *ctx,
 
 		react_tool_call_finish(ctx, call, obs_text, rc);
 		if (rc >= 0)
-			react_emit_artifacts_from_list(ctx, &artifacts,
+			react_emit_artifacts_from_list(react_events(ctx), &artifacts,
 						       call->tool_name);
 
 		obs_text = react_apply_tool_output_guardrail(ctx, call,
@@ -3918,7 +3426,6 @@ static int react_join_tool_calls(struct react_context *ctx,
 		cJSON_Delete(ui);
 		cJSON_Delete(meta);
 	}
-
 
 	if (react_drain_actions(ctx, messages, -1, NULL))
 		goto out_cleanup_tool_calls;
@@ -4026,7 +3533,7 @@ static int react_drain_actions(struct react_context *ctx,
 				"internal_error");
 			return 1;
 		}
-		react_emit_event(ctx, MORPH_EVENT_REACT,
+		react_emit_event(react_events(ctx), MORPH_EVENT_REACT,
 			"react.user.steer", "end", "requirement added", event_data);
 		cJSON_Delete(event_data);
 		if (prompt_count)
@@ -4112,7 +3619,7 @@ static void react_split_legacy_final(struct react_context *ctx,
 				     const char **thought_out,
 				     const char **final_out)
 {
-	int marker_len = 0;
+	size_t marker_len = 0;
 	const char *marker;
 	const char *final_start;
 
@@ -4122,7 +3629,7 @@ static void react_split_legacy_final(struct react_context *ctx,
 		*final_out = proposed;
 	if (!ctx || !proposed)
 		return;
-	marker = react_find_final_marker(proposed, proposed, &marker_len);
+	marker = react_stream_find_final(proposed, proposed, &marker_len);
 	if (!marker)
 		return;
 	if (thought_out && marker > proposed) {
@@ -4201,7 +3708,7 @@ static int react_retry_incomplete_final(struct react_context *ctx,
 	ctx->incomplete_final_retry_count++;
 	log_warn(ctx ? ctx->logger : NULL,
 		 "react: rejected continuation note as Final after compaction");
-	(void)react_emit_text_event(ctx, MORPH_EVENT_REACT,
+	(void)react_emit_text_event(react_events(ctx), MORPH_EVENT_REACT,
 		"react.final.retry", "retry", "incomplete final response",
 		proposed);
 	return 1;
@@ -4262,7 +3769,7 @@ static int react_handle_final_response(struct react_context *ctx,
 			react_step_create(ctx->turn_arena, REACT_STEP_THOUGHT,
 					  thought, NULL, NULL, NULL);
 		add_step(ctx, thought_step);
-		react_emit_text_event(ctx, MORPH_EVENT_REACT,
+		react_emit_text_event(react_events(ctx), MORPH_EVENT_REACT,
 				      "react.thought.end", "end",
 				      NULL, thought);
 	}
@@ -4333,11 +3840,13 @@ static int react_handle_final_response(struct react_context *ctx,
 			ctx->terminal_tool_error, "non_retryable_tool_error");
 	else
 		react_set_result(ctx, REACT_OUTCOME_SUCCESS, 0, NULL);
-	react_output_emit(cb, user_data, REACT_STEP_FINAL,
-			  ctx->terminal_tool_error < 0 ? REACT_OUTPUT_FAILED :
-			  REACT_OUTPUT_COMPLETED, final_text, NULL, NULL,
-			  NULL, 0, NULL, NULL, NULL);
-	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.final",
+	react_output_emit(cb, user_data,
+		&(struct react_output_event){
+			.type = REACT_STEP_FINAL,
+			.status = ctx->terminal_tool_error < 0 ? REACT_OUTPUT_FAILED : REACT_OUTPUT_COMPLETED,
+			.text = final_text,
+		});
+	react_emit_text_event(react_events(ctx), MORPH_EVENT_REACT, "react.final",
 			      "end", "final answer", final_text);
 	return 1;
 }
@@ -4352,16 +3861,22 @@ static int react_process_wait_cancelled(void *opaque)
 static int react_collect_background_results(struct react_context *ctx,
 	morph_array_t *messages)
 {
-	struct tool_entry snapshot;
-	struct tool_entry *entry = react_builtin_snapshot(ctx, "exec", &snapshot);
-	if (!entry || !entry->background_wait)
+	struct tool_handle handle;
+	struct tool_handle *entry = react_builtin_acquire(ctx, "exec", &handle);
+	if (!entry || !entry->background_wait) {
+		tool_handle_release(&handle);
 		return 0;
+	}
 	cJSON *results = NULL;
 	int rc = entry->background_wait(entry->user_data, ctx->tool_runtime.memory_session_id,
 		ctx->turn_id, react_process_wait_cancelled, ctx, &results);
-	if (rc == -ECANCELED && !morph_signal_flag_get(&ctx->cancelled))
-		return 1;
-	if (rc) return rc;
+	tool_handle_release(&handle);
+	if (rc != 0) {
+		cJSON_Delete(results);
+		if (rc == -ECANCELED && !morph_signal_flag_get(&ctx->cancelled))
+			return 1;
+		return rc;
+	}
 	if (!cJSON_GetArraySize(results)) { cJSON_Delete(results); return 0; }
 	char *json = cJSON_PrintUnformatted(results);
 	cJSON_Delete(results);
@@ -4402,14 +3917,16 @@ int react_run(struct react_context *ctx, const char *user_input,
 	if (!ctx || !user_input)
 		return -EINVAL;
 	react_drain_tools(ctx);
-	if (ctx->tools) {
-		struct tool_entry permission_snapshot;
-		struct tool_entry *permission_tool =
-			react_builtin_snapshot(ctx, "request_permissions", &permission_snapshot);
+	if (ctx->tools && ctx->tools->permission_context)
+		tool_context_clear_turn_grants(ctx->tools->permission_context);
+	else if (ctx->tools) {
+		struct tool_handle handle;
+		struct tool_handle *permission =
+			react_builtin_acquire(ctx, "request_permissions", &handle);
 
-		if (permission_tool && permission_tool->user_data)
-			tool_context_clear_turn_grants(
-				permission_tool->user_data);
+		if (permission && permission->user_data)
+			tool_context_clear_turn_grants(permission->user_data);
+		tool_handle_release(&handle);
 	}
 	int use_user_turn_id = ctx->turn_id_user_set && ctx->turn_id[0];
 	react_reset(ctx);
@@ -4428,7 +3945,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 	ctx->history_error = 0;
 	morph_cancel_token_reset(&ctx->cancel_token);
 	react_set_state(ctx, REACT_STATE_THINKING);
-	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.turn.begin",
+	react_emit_text_event(react_events(ctx), MORPH_EVENT_REACT, "react.turn.begin",
 			      "begin", "turn started", user_input);
 
 	if (ctx->hook_fn) {
@@ -4461,7 +3978,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 		}
 		(void)cb;
 		(void)user_data;
-		react_emit_auth_required(ctx, "text",
+		react_emit_auth_required(react_events(ctx), "text",
 					 llm ? llm->provider : "",
 					 llm ? llm->model_id : "",
 					 "", "missing_api_key");
@@ -4480,14 +3997,15 @@ int react_run(struct react_context *ctx, const char *user_input,
 	msg_list_append(&ctx->messages, msg);
 
 	struct prompt_context_input environment = { .cwd = ctx->workdir };
-	struct tool_entry snapshot;
-	struct tool_entry *exec_tool = react_builtin_snapshot(ctx, "exec", &snapshot);
+	struct tool_handle environment_handle;
+	struct tool_handle *exec_tool = react_builtin_acquire(ctx, "exec", &environment_handle);
 
 	if (exec_tool && exec_tool->get_environment)
 		exec_tool->get_environment(exec_tool->user_data, &environment);
 	int context_rc = prompt_context_build_default(&environment, ctx->turn_arena,
 		&ctx->runtime_context);
 	if (context_rc != 0) {
+		tool_handle_release(&environment_handle);
 		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, context_rc,
 			"runtime_context_error");
 		return react_finish_run(ctx);
@@ -4499,6 +4017,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 	context_rc = environment_context_collect(&project_environment,
 		&environment, ctx->turn_arena);
+	tool_handle_release(&environment_handle);
 	if (getenv("HOME")) {
 		expanded_global = file_expand_path("~/.morph");
 		if (!expanded_global)
@@ -4540,7 +4059,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 	morph_array_t tool_descriptors = {0};
 
-
 	for (int iteration = 0; iteration < ctx->max_iterations; iteration++) {
 		/* Persistent messages and steps own copies of response data. */
 		arena_reset(ctx->iteration_arena);
@@ -4574,9 +4092,12 @@ int react_run(struct react_context *ctx, const char *user_input,
 		react_set_state(ctx, REACT_STATE_THINKING);
 		react_emit_thinking_event(ctx);
 
-		react_output_emit(cb, user_data, REACT_STEP_THOUGHT,
-				  REACT_OUTPUT_STARTED, "", NULL, NULL,
-				  NULL, 0, NULL, NULL, NULL);
+		react_output_emit(cb, user_data,
+			&(struct react_output_event){
+				.type = REACT_STEP_THOUGHT,
+				.status = REACT_OUTPUT_STARTED,
+				.text = "",
+			});
 
 		struct chat_response response = {0};
 		int status;
@@ -4675,7 +4196,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 			struct react_step *thought = react_step_create(ctx->turn_arena,
 				REACT_STEP_CONTENT, response.content, NULL, NULL, NULL);
 			add_step(ctx, thought);
-			react_emit_text_event(ctx, MORPH_EVENT_REACT,
+			react_emit_text_event(react_events(ctx), MORPH_EVENT_REACT,
 					      "react.content.end", "end",
 					      NULL, response.content);
 		}
@@ -4790,7 +4311,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 		chat_response_free(&response);
 	}
-
 
 	react_complete_max_iterations(ctx);
 	react_append_final_message(ctx);
