@@ -63,6 +63,15 @@ static void exec_runtime_destroy(void *opaque)
 	free(runtime);
 }
 
+static void exec_runtime_discard(struct exec_runtime *runtime)
+{
+	if (!runtime)
+		return;
+	if (runtime->scratch[0])
+		(void)rmdir(runtime->scratch);
+	free(runtime);
+}
+
 static int exec_runtime_create(struct tool_context *tctx,
 			       const struct config_exec *exec_config,
 			       struct exec_runtime **out)
@@ -101,13 +110,13 @@ static int exec_runtime_create(struct tool_context *tctx,
 		(uint64_t)exec_config->max_wait_ms : EXEC_MAX_WAIT_MS_DEFAULT;
 	rc = pthread_mutex_init(&runtime->mutex, NULL);
 	if (rc != 0) {
-		free(runtime);
+		exec_runtime_discard(runtime);
 		return -rc;
 	}
 	rc = exec_jobs_create(&runtime->jobs);
 	if (rc != 0) {
 		pthread_mutex_destroy(&runtime->mutex);
-		free(runtime);
+		exec_runtime_discard(runtime);
 		return rc;
 	}
 	config.completed = exec_jobs_complete;
@@ -116,7 +125,7 @@ static int exec_runtime_create(struct tool_context *tctx,
 	if (rc != 0) {
 		exec_jobs_destroy(runtime->jobs);
 		pthread_mutex_destroy(&runtime->mutex);
-		free(runtime);
+		exec_runtime_discard(runtime);
 		return rc;
 	}
 	exec_jobs_bind(runtime->jobs, runtime->manager, NULL, NULL);

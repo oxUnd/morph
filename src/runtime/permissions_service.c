@@ -145,8 +145,11 @@ int runtime_permission_set_policy(struct runtime *runtime,
 		return -EINVAL;
 	if (pthread_mutex_trylock(&runtime->context.execution_lock) != 0)
 		return -EBUSY;
-	rc = permission_children_active(runtime) ? -EBUSY :
-		permission_save_policy(runtime, policy);
+	rc = permission_children_active(runtime);
+	if (rc > 0)
+		rc = -EBUSY;
+	else if (rc == 0)
+		rc = permission_save_policy(runtime, policy);
 	if (rc == 0) {
 		rc = tool_context_set_permission_policy(runtime->context.tctx, policy);
 		runtime->context.config.permissions = *policy;

@@ -527,6 +527,10 @@ TEST(CliListTest, JsonModeReportsUnknownCommandWithoutBareText)
 
 TEST(CliListTest, SyncQueriesUseGroupedTrees)
 {
+	const char *configured_columns = getenv("COLUMNS");
+	std::string saved_columns = configured_columns ? configured_columns : "";
+	bool had_columns = configured_columns != nullptr;
+	ASSERT_EQ(setenv("COLUMNS", "120", 1), 0);
 	char pattern[] = "/tmp/morph-cli-sync-XXXXXX";
 	char *directory = mkdtemp(pattern);
 	struct runtime_options options{};
@@ -638,6 +642,10 @@ TEST(CliListTest, SyncQueriesUseGroupedTrees)
 	runtime_close(runtime);
 	std::error_code error;
 	(void)std::filesystem::remove_all(root, error);
+	if (had_columns)
+		EXPECT_EQ(setenv("COLUMNS", saved_columns.c_str(), 1), 0);
+	else
+		EXPECT_EQ(unsetenv("COLUMNS"), 0);
 }
 
 TEST(CliListTest, TasksCommandUsesActiveAndCompactHistoryTrees)

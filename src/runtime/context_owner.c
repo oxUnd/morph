@@ -184,6 +184,7 @@ int runtime_context_prepare_turn(struct runtime_context *ctx,
 		request->stored_user_input : request->model_input;
 	if (ctx->tctx)
 		pthread_mutex_lock(&ctx->tctx->authority_lock);
+	ctx->approval_objective[0] = '\0';
 	if (objective) {
 		size_t bytes = utf8_clamp_bytes(objective, sizeof(ctx->approval_objective) - 1);
 		memcpy(ctx->approval_objective, objective, bytes);

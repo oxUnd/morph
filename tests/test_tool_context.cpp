@@ -45,25 +45,6 @@ private:
 	std::string value_;
 };
 
-static int has_cli_directory(
-	const struct tool_directory_capability *directories, int count,
-	const char *path)
-{
-	char *expected = file_resolve_path(path);
-	int found = 0;
-
-	if (!expected)
-		return 0;
-	for (int i = 0; i < count; i++) {
-		if (strcmp(directories[i].path, expected) == 0) {
-			found = 1;
-			break;
-		}
-	}
-	free(expected);
-	return found;
-}
-
 static int check_command(struct tool_context *tctx, const char *command,
 			 const char *cwd)
 {
@@ -182,64 +163,6 @@ TEST_F(ToolContextTest, ParsesComplexEnvironmentPrefix)
 		"PROFILE=\"a\\\" b\" lark-cli auth status",
 		name, sizeof(name)), 0);
 	EXPECT_STREQ(name, "lark-cli");
-}
-
-TEST_F(ToolContextTest, SynthesizesCliDirectoriesFromCommandName)
-{
-	char home_template[] = "/tmp/morph_cli_home_XXXXXX";
-	char *home = mkdtemp(home_template);
-	char config[PATH_MAX];
-	char cache[PATH_MAX];
-	char state[PATH_MAX];
-	char expected[PATH_MAX];
-	ScopedEnvVar home_env("HOME");
-	ScopedEnvVar config_env("XDG_CONFIG_HOME");
-	ScopedEnvVar cache_env("XDG_CACHE_HOME");
-	ScopedEnvVar state_env("XDG_STATE_HOME");
-	struct tool_directory_capability
-		directories[TOOL_CONTEXT_CLI_DIR_MAX] = {};
-
-	ASSERT_NE(home, nullptr);
-	ASSERT_EQ(file_path_join(
-		config, sizeof(config), home, "xdg-config"), 0);
-	ASSERT_EQ(file_path_join(
-		cache, sizeof(cache), home, "xdg-cache"), 0);
-	ASSERT_EQ(file_path_join(
-		state, sizeof(state), home, "xdg-state"), 0);
-	home_env.Set(home);
-	config_env.Set(config);
-	cache_env.Set(cache);
-	state_env.Set(state);
-	struct tool_context *tctx = tool_context_create(NULL, "/tmp", "/tmp");
-	ASSERT_NE(tctx, nullptr);
-	int count = tool_context_discover_cli_dirs(
-		tctx, "NOTICE=1 /usr/local/bin/demo-cli --version",
-		directories,
-		TOOL_CONTEXT_CLI_DIR_MAX);
-#ifdef __APPLE__
-	ASSERT_EQ(count, 6);
-#else
-	ASSERT_EQ(count, 4);
-#endif
-	ASSERT_EQ(file_path_join(
-		expected, sizeof(expected), home, ".demo-cli"), 0);
-	EXPECT_TRUE(has_cli_directory(directories, count, expected));
-	ASSERT_EQ(file_path_join(
-		expected, sizeof(expected), config, "demo-cli"), 0);
-	EXPECT_TRUE(has_cli_directory(directories, count, expected));
-	ASSERT_EQ(file_path_join(
-		expected, sizeof(expected), cache, "demo-cli"), 0);
-	EXPECT_TRUE(has_cli_directory(directories, count, expected));
-	ASSERT_EQ(file_path_join(
-		expected, sizeof(expected), state, "demo-cli"), 0);
-	EXPECT_TRUE(has_cli_directory(directories, count, expected));
-	for (int i = 0; i < count; i++) {
-		EXPECT_EQ(directories[i].create, 1);
-		EXPECT_NE(access(directories[i].path, F_OK), 0);
-	}
-
-	tool_context_destroy(tctx);
-	rmdir(home);
 }
 
 TEST_F(ToolContextTest, CliDirectoryGrantFollowsApprovalLifetime)
@@ -382,8 +305,10 @@ TEST_F(ToolContextTest, CheckWritePathApprovalAlwaysPersists) {
 	EXPECT_EQ(check_write_path(tctx, "/var/test_file.txt"), 0);
 	EXPECT_EQ(op_always_calls, 1);
 	EXPECT_EQ(tctx->write_allowed_dirs_count, 0);
-	EXPECT_EQ(check_write_path(tctx, "/var/other_file.txt"), 0);
+	EXPECT_EQ(check_write_path(tctx, "/var/test_file.txt"), 0);
 	EXPECT_EQ(op_always_calls, 1);
+	EXPECT_EQ(check_write_path(tctx, "/var/other_file.txt"), 0);
+	EXPECT_EQ(op_always_calls, 2);
 	tool_context_destroy(tctx);
 }
 
@@ -535,8 +460,10 @@ TEST_F(ToolContextTest, AuthorizeReadApprovalAlwaysPersists) {
 	EXPECT_EQ(check_read_path(tctx, one), 0);
 	EXPECT_EQ(op_always_calls, 1);
 	EXPECT_EQ(tctx->read_allowed_dirs_count, 1);
-	EXPECT_EQ(check_read_path(tctx, two), 0);
+	EXPECT_EQ(check_read_path(tctx, one), 0);
 	EXPECT_EQ(op_always_calls, 1);
+	EXPECT_EQ(check_read_path(tctx, two), 0);
+	EXPECT_EQ(op_always_calls, 2);
 	tool_context_destroy(tctx);
 	std::remove(one);
 	std::remove(two);

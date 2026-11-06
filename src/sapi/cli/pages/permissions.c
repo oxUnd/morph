@@ -47,6 +47,8 @@ static int cli_permissions_draw(void *opaque, const struct morph_tui_screen *scr
 	};
 	const char *current = runtime_permission_preset_name(&picker->current);
 	morph_buf_t frame = {0}, label = {0};
+	int selected_index = picker->menu.list.index < 4 ?
+		(int)picker->menu.list.index : 0;
 	int budget = screen->area.height > 1 ? screen->area.height - 1 : 1;
 	int header = budget >= 7 ? 3 : 1;
 	int footer = budget >= 10 ? 3 : budget >= 4 ? 1 : 0;
@@ -106,7 +108,7 @@ static int cli_permissions_draw(void *opaque, const struct morph_tui_screen *scr
 	}
 	if (footer == 3) {
 		cli_permissions_line(picker, &frame, "", CLI_INPUT_BACKGROUND, width);
-		cli_permissions_line(picker, &frame, descriptions[picker->menu.list.index],
+		cli_permissions_line(picker, &frame, descriptions[selected_index],
 			CLI_INPUT_BACKGROUND ANSI_DIM, width);
 		rows += 2;
 	}
@@ -163,7 +165,7 @@ static void cli_permissions_complete(void *opaque, int result)
 	struct cli_permissions_picker *picker = opaque;
 	struct cli_application *ctx = picker->application;
 
-	if (result == 0 && picker->selection >= 0) {
+	if (result == 0 && picker->selection >= 0 && picker->selection < 4) {
 		struct permission_policy policy;
 		int rc = runtime_permission_preset(
 			cli_permissions_preset(picker->selection), &policy);

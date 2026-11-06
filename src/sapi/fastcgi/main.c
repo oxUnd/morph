@@ -251,7 +251,7 @@ static void *worker_main(void *arg)
 		long long duration = now_ms() - r.started_ms;
 
 		if (r.status == 0)
-			r.status = r.handed_off ? 200 : 200;
+			r.status = 200;
 		if (r.logger)
 			log_info(r.logger,
 				 "access method=%s path=%s status=%d "

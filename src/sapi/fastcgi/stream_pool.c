@@ -46,11 +46,11 @@ static void stream_job_finish(struct stream_job *job, int status)
 {
 	if (status != 0) {
 		char body[96];
+		const char *error = status == -EAGAIN ?
+			"stream_queue_full" : "shutting_down";
 
-		snprintf(body, sizeof(body),
-			 "{\"error\":\"%s\"}",
-			 status == -EAGAIN ? "stream_queue_full" : "shutting_down");
-		reply_json(&job->r, status == -EAGAIN ? 503 : 503, body);
+		snprintf(body, sizeof(body), "{\"error\":\"%s\"}", error);
+		reply_json(&job->r, 503, body);
 	}
 	FCGX_Finish_r(job->req);
 	free(job->req);

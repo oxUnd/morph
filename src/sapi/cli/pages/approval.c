@@ -469,18 +469,15 @@ cli_approval_json_operation_approval(struct cli_application *ctx, const struct t
 	const char *const *allowed = persistent;
 	int allowed_count = (int)(sizeof(persistent) / sizeof(persistent[0]));
 	cJSON *request;
-	cJSON *directories;
 	cJSON *programs;
 	char decision[16] = {0};
 	int ephemeral;
 	int rc;
 
 	request = cJSON_CreateObject();
-	directories = cJSON_CreateArray();
 	programs = cJSON_CreateArray();
-	if (!request || !directories || !programs) {
+	if (!request || !programs) {
 		cJSON_Delete(request);
-		cJSON_Delete(directories);
 		cJSON_Delete(programs);
 		return TOOL_OP_DENY;
 	}
@@ -498,7 +495,6 @@ cli_approval_json_operation_approval(struct cli_application *ctx, const struct t
 	    cli_approval_json_add_optional_string(request, "scope", op->scope) != 0 ||
 	    cli_approval_json_add_optional_string(request, "reason", op->reason) != 0 ||
 	    cli_approval_json_add_optional_string(request, "details_json", op->details_json) != 0) {
-		cJSON_Delete(directories);
 		cJSON_Delete(programs);
 		cJSON_Delete(request);
 		return TOOL_OP_DENY;
@@ -507,29 +503,13 @@ cli_approval_json_operation_approval(struct cli_application *ctx, const struct t
 		cJSON *program = cJSON_CreateString(op->programs[i]);
 
 		if (!program) {
-			cJSON_Delete(directories);
 			cJSON_Delete(programs);
 			cJSON_Delete(request);
 			return TOOL_OP_DENY;
 		}
 		cJSON_AddItemToArray(programs, program);
 	}
-	for (int i = 0; i < op->directories_count; i++) {
-		cJSON *directory = cJSON_CreateObject();
-
-		if (!directory ||
-		    !cJSON_AddStringToObject(directory, "path", op->directories[i].path) ||
-		    !cJSON_AddBoolToObject(directory, "create", op->directories[i].create)) {
-			cJSON_Delete(directory);
-			cJSON_Delete(directories);
-			cJSON_Delete(programs);
-			cJSON_Delete(request);
-			return TOOL_OP_DENY;
-		}
-		cJSON_AddItemToArray(directories, directory);
-	}
 	cJSON_AddItemToObject(request, "programs", programs);
-	cJSON_AddItemToObject(request, "directories", directories);
 	if (ephemeral) {
 		allowed = ephemeral_decisions;
 		allowed_count = (int)(sizeof(ephemeral_decisions) / sizeof(ephemeral_decisions[0]));
@@ -599,14 +579,6 @@ void cli_approval_render_operation(struct cli_application *ctx, const struct too
 				? "Lifetime"
 				: cli_approval_operation_scope_label(op->kind),
 			op->scope, ANSI_DIM);
-	if (op->kind == TOOL_OP_COMMAND && op->directories_count > 0) {
-		cli_approval_card_field(ctx, width, "Access", "read/write", ANSI_BOLD);
-		for (int i = 0; i < op->directories_count; i++)
-			cli_approval_card_field(
-				ctx, width,
-				morph_tui_widget_tree_branch(i == op->directories_count - 1, 0),
-				op->directories[i].path, ANSI_DIM);
-	}
 	if (op->kind == TOOL_OP_COMMAND)
 		cli_approval_card_field(ctx, width, NULL,
 					"'yes once' runs only the command shown; "
