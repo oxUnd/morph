@@ -20,6 +20,7 @@ cli/
   pages/
     chat.c, .h                 chat controller and page-local editing state
     history, hooks, jobs, resume
+    permissions                inline policy selector in the input area
     approval, question         modal interaction pages
     setup/                     wizard and its terminal controls
   widgets/                     feed, transcript, banner, list and shell styling

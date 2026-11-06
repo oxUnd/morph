@@ -155,8 +155,9 @@ optional `[build] command` (run only after confirmation unless `--yes`).
 
 ## Permissions
 
-`/permissions` opens the permission picker. Applications compose three independent
-settings; the default is Ask for approval:
+`/permissions` opens the permission picker in the input area, keeping the
+conversation visible. Applications compose three independent settings; the
+default is Ask for approval:
 
 | Preset | access | approval | reviewer |
 | --- | --- | --- | --- |
