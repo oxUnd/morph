@@ -2,6 +2,7 @@
 #define MORPH_CLI_MODELS_PRESENTATION_H
 #include "util/buf.h"
 #include "db/scheduled_task.h"
+#include "permission/permission.h"
 #include <stdint.h>
 
 enum cli_presentation_mode {
@@ -22,6 +23,8 @@ struct cli_input_status {
 	int limit;
 	int64_t credits;
 	int session_titles_pending;
+	struct permission_policy permissions;
+	int permissions_ready;
 	struct scheduled_task_counts tasks;
 };
 

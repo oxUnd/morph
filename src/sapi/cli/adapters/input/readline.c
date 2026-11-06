@@ -133,6 +133,31 @@ static void cli_readline_footer_field(struct cli_application *ctx, morph_buf_t *
 	free(safe);
 }
 
+/* Keep the last successful snapshot while an active turn owns the runtime. */
+static void cli_readline_footer_permissions(struct cli_application *ctx, morph_buf_t *text,
+					    int columns)
+{
+	struct permission_policy policy;
+
+	if (runtime_permission_get_policy(ctx->runtime, &policy) == 0) {
+		ctx->input_status.permissions = policy;
+		ctx->input_status.permissions_ready = 1;
+	}
+	const char *name = ctx->input_status.permissions_ready ?
+		runtime_permission_preset_name(&ctx->input_status.permissions) : "?";
+
+	(void)morph_buf_printf(text, "perm: %s", name);
+	if (!strcmp(name, "custom") && columns >= 60) {
+		const struct permission_policy *current = &ctx->input_status.permissions;
+
+		(void)morph_buf_printf(text, " %s/%s/%s",
+			permission_access_name(current->access),
+			permission_approval_name(current->approval),
+			permission_reviewer_name(current->reviewer));
+	}
+	(void)morph_buf_puts(text, " · ");
+}
+
 static void cli_readline_footer_tokens(morph_buf_t *text, int tokens)
 {
 	if (tokens >= 1000000)
@@ -187,6 +212,7 @@ static void cli_readline_footer(struct cli_application *ctx)
 		return;
 	}
 
+	cli_readline_footer_permissions(ctx, &usage, size.ws_col);
 	{
 		int total = runtime_mcp_count(ctx->runtime);
 		int ready = 0, pending = 0, failed = 0;
@@ -217,8 +243,12 @@ static void cli_readline_footer(struct cli_application *ctx)
 	if (ctx->recap.pending)
 		(void)morph_buf_puts(&usage, " · Generating recap...");
 	(void)morph_buf_puts(&text, "  ");
-	cli_readline_footer_field(ctx, &text, "morph", 5, ANSI_BOLD, 0);
-	(void)morph_buf_puts(&text, " · ");
+	/* Preserve permission and usage fields before optional branding. */
+	remaining = (size_t)size.ws_col - 4;
+	if (remaining >= utf8_display_width(morph_buf_cstr(&usage)) + 8) {
+		cli_readline_footer_field(ctx, &text, "morph", 5, ANSI_BOLD, 0);
+		(void)morph_buf_puts(&text, " · ");
+	}
 	remaining = (size_t)size.ws_col - 2 - utf8_display_width_ansi(morph_buf_cstr(&text));
 	if (remaining > utf8_display_width(morph_buf_cstr(&usage)) + 10) {
 		remaining -= utf8_display_width(morph_buf_cstr(&usage)) + 6;

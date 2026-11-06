@@ -169,6 +169,9 @@ default is Ask for approval:
 `/permissions mode auto` selects a preset. `/permissions set read_only never user`
 selects a custom policy. Changes save to the active configuration and update the
 idle runtime; active turns, subagents or process sessions must finish first.
+
+The status bar shows the applied mode as `perm: ask`, `auto`, `full`, or
+`read_only`; custom policies include their three dimensions at standard widths.
 `/permissions status` reports the effective policy, and `list`, `revoke`, `clear`
 retain persistent grant management. Read Only can request explicit upgrades;
 `approval=never` rejects requests outside existing authority. Automatic review

@@ -137,3 +137,34 @@ Verification on the same host:
 Logs: `/tmp/morph-permissions-inline-regression.log`,
 `/tmp/morph-permissions-inline-asan-test.log` and
 `/tmp/morph-permissions-inline-final.log`. Builds reported no compiler warnings.
+
+
+## Permission status footer follow-up
+
+The composer footer now includes the applied policy (`perm: ask`, `auto`, `full`
+or `read_only`). At standard widths, a Custom policy also shows its
+access/approval/reviewer values. The footer reads the runtime facade on each
+render and retains its last successful policy snapshot while the runtime is
+busy. Policy changes therefore appear immediately, independently of the usage
+polling interval, and active execution does not temporarily hide the mode.
+
+Permission and usage fields take precedence over optional branding and paths
+when the terminal is narrow. The existing footer row count and input cursor
+restoration remain unchanged.
+
+Verification:
+
+- Release: all 132 related CLI presentation, terminal, UI lifecycle, MCP, approval,
+  cancellation, slash-command and permission checks passed (58.27 seconds).
+- ASan/UBSan: the same 132 checks passed (62.04 seconds), without sanitizer reports.
+- Permission PTY coverage checks all four presets, Custom dimensions, immediate
+  switching, cancellation, retained state during an active model request and
+  preservation of the editable draft. It covers 120/80/60 columns and compact
+  40/20-column layouts.
+- The general CLI PTY regression confirms that narrow status bars retain context
+  and credit information, and unchanged idle footers do not repaint the draft.
+- Both builds reported no compiler warnings; whitespace checks passed.
+
+Logs: `/tmp/morph-permission-footer-regression.log` and
+`/tmp/morph-permission-footer-asan-test.log`. Existing local approval-card and
+other unrelated changes were preserved.

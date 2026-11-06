@@ -30,6 +30,17 @@ def composer(terminal, expected=''):
     return row
 
 
+def permission_footer(terminal, expected):
+    row = max(i for i, line in enumerate(terminal.screen.display)
+              if line.startswith('› '))
+    text = '\n'.join(terminal.screen.display)
+    footer = terminal.screen.display[row + 2]
+    assert expected in footer, text
+    assert sum('perm: ' in line for line in terminal.screen.display) == 1, text
+    assert 'perm: ?' not in footer, text
+    return footer
+
+
 def result_gap(terminal, result):
     rows = terminal.screen.display
     row = composer(terminal)
@@ -91,6 +102,7 @@ def main():
                     terminal.screen = AlternateScreen(columns, 30)
                     terminal.stream = pyte.Stream(terminal.screen)
                     terminal.pump(.2)
+                    permission_footer(terminal, "perm: ask")
                     marker = f'VISIBLE_CONVERSATION_{columns}'
                     terminal.send('Keep this conversation visible\r')
                     _, release = terminal.request()
@@ -115,6 +127,7 @@ def main():
                         assert 'Approve for me' in terminal.screen.display[panel(terminal, marker)]
                     terminal.send('\x1b')
                     closed(terminal, marker)
+                    permission_footer(terminal, 'perm: ask')
                     result_gap(terminal, '/permissions')
                     no_screen_switch(terminal.raw[start:])
                     terminal.send('\x1b[A')
@@ -134,6 +147,7 @@ def main():
                     wait_for(terminal, lambda: 'permissions: read_only' in
                              '\n'.join(terminal.screen.display))
                     closed(terminal, marker)
+                    permission_footer(terminal, 'perm: read_only')
                     result_gap(terminal, 'permissions: read_only')
                     config = tomllib.loads((directory / 'config.toml').read_text())
                     assert config['permissions'] == {
@@ -144,12 +158,14 @@ def main():
                     wait_for(terminal, lambda: 'permissions: custom' in
                              '\n'.join(terminal.screen.display))
                     composer(terminal)
+                    permission_footer(terminal, 'perm: custom read_only/never/user')
                     terminal.send('/permissions\r')
                     wait_for(terminal, lambda: 'Custom: read_only / never / user' in
                              '\n'.join(terminal.screen.display))
                     assert '(current)' not in '\n'.join(terminal.screen.display)
                     terminal.send('\x03')
                     closed(terminal, "permissions: custom")
+                    permission_footer(terminal, "perm: custom read_only/never/user")
                     result_gap(terminal, '/permissions')
                     terminal.send('/permissions status\r')
                     wait_for(terminal, lambda: 'approval=never' in
@@ -160,8 +176,38 @@ def main():
                              '\n'.join(terminal.screen.display))
                     composer(terminal)
                     assert tomllib.loads((directory / 'config.toml').read_text())['permissions']['access'] == 'workspace'
+                    permission_footer(terminal, 'perm: ask')
+                    for mode in ('ask', 'auto', 'read_only', 'full'):
+                        terminal.send(f'/permissions mode {mode}\r')
+                        wait_for(terminal, lambda: f'permissions: {mode}' in
+                                 '\n'.join(terminal.screen.display))
+                        permission_footer(terminal, f'perm: {mode}')
+                        for narrow in (40, 20, columns):
+                            terminal.child.setwinsize(30, narrow)
+                            terminal.screen.resize(lines=30, columns=narrow)
+                            terminal.pump(.2)
+                            permission_footer(terminal, f'perm: {mode}')
+                    # The runtime getter is busy during a turn; retain its last policy snapshot.
+                    terminal.send('Verify permissions stay visible while working\r')
+                    _, release = terminal.request()
+                    draft = 'preserved permission draft 中文'
+                    terminal.send(draft)
+                    terminal.pump(1.1)
+                    permission_footer(terminal, 'perm: full')
+                    editor_input(terminal, draft)
+                    release.delta = {'content': 'PERMISSION_FOOTER_VERIFIED'}
+                    release.set()
+                    wait_for(terminal, lambda: 'PERMISSION_FOOTER_VERIFIED' in
+                             '\n'.join(terminal.screen.display) and 'Working ·' not in
+                             '\n'.join(terminal.screen.display))
+                    permission_footer(terminal, 'perm: full')
+                    editor_input(terminal, draft)
+                    terminal.send('\x15/permissions mode ask\r')
+                    wait_for(terminal, lambda: 'perm: ask' in
+                             '\n'.join(terminal.screen.display))
+                    permission_footer(terminal, 'perm: ask')
                     no_screen_switch(terminal.raw[start:])
-                    print(f'PASS: inline permissions, history, resize, paste, recall, cancel and apply at {columns} columns')
+                    print(f'PASS: inline permissions and live footer in every mode at {columns} columns')
                     binary = driver.with_name('morph')
                     structured = subprocess.run(
                         [str(binary), '-c', str(directory / 'config.toml'),
