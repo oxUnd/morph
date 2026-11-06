@@ -60,9 +60,9 @@ def main():
                     'index': index, 'id': f'background_job_{index}', 'type': 'function',
                     'function': {'name': 'exec', 'arguments': json.dumps(args)}})
             release.set()
-            until(terminal, lambda text: 'es once' in text or '编译项目' in text)
-            if 'es once' in '\n'.join(terminal.screen.display):
-                terminal.send('s\r')
+            until(terminal, lambda text: 'Yes once' in text or '编译项目' in text)
+            if 'Yes once' in '\n'.join(terminal.screen.display):
+                terminal.send('\x1b[B\r')
             body, release = terminal.request()
             releases.append(release)
             text = terminal.snapshot('background jobs remain visible while model works')

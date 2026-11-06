@@ -8,25 +8,72 @@
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
-#include <morph/tui/widgets/card.h>
+#include <morph/tui/terminal.h>
+#include <morph/tui/widgets/select.h>
 #include <morph/tui/widgets/tree.h>
 #include <sys/ioctl.h>
 
-/*
- * Generic y/n/a prompt shared by HITL and exec approval flows.
- *
- * subject - Short label rendered after the "Approved (...)"/"Denied (...)"
- *           summary so the user knows which decision they made.
- *
- * scoped - Whether to offer separate session and persistent choices.
- */
-static int cli_approval_prompt_approval(struct cli_application *ctx, const char *subject,
-					int scoped, int ephemeral)
+static int cli_approval_select_choice(struct cli_application *ctx, int scoped, int ephemeral)
+{
+	FILE *tty = NULL;
+	FILE *input = stdin;
+	const char *items[4];
+	int verdicts[4];
+	size_t count = 0;
+	int verdict = 0;
+
+	if (!isatty(STDOUT_FILENO))
+		return -ENOTTY;
+	if (!isatty(STDIN_FILENO)) {
+		/* Open the actual device: macOS poll rejects the /dev/tty alias. */
+		const char *path = ttyname(STDOUT_FILENO);
+
+		tty = path ? fopen(path, "r") : NULL;
+		input = tty;
+	}
+	if (!morph_tui_terminal_available(input, stdout)) {
+		if (tty)
+			fclose(tty);
+		return -ENOTTY;
+	}
+	items[count] = "Yes once";
+	verdicts[count++] = 1;
+	if (scoped) {
+		items[count] = "Allow for this session";
+		verdicts[count++] = 2;
+	}
+	if (!ephemeral) {
+		items[count] = scoped ? "Always allow for this project" : "Always allow";
+		verdicts[count++] = scoped ? 3 : 2;
+	}
+	items[count] = "No";
+	verdicts[count++] = 0;
+	struct morph_tui_widget_select state = {0};
+	const struct morph_tui_widget_select_options options = {
+		.items = items,
+		.interrupted = &ctx->interrupted,
+		.color = cli_output_color_enabled(ctx),
+	};
+	int rc = morph_tui_widget_select_init(&state, count, 0, 1, 1);
+
+	if (!rc) {
+		printf(ctx, "\n");
+		fflush(stdout);
+		rc = morph_tui_widget_select_run(&state, &options, input, stdout, NULL);
+	}
+	if (!rc)
+		verdict = verdicts[state.menu.list.index];
+	morph_tui_widget_select_cleanup(&state);
+	if (tty)
+		fclose(tty);
+	return verdict;
+}
+
+/* Preserve the line-oriented fallback for terminals without selector support. */
+static int cli_approval_read_choice(struct cli_application *ctx, int scoped, int ephemeral)
 {
 	int v;
 
-	if (ctx && ctx->prompt_lock_ready)
-		pthread_mutex_lock(&ctx->prompt_lock);
 #ifdef HAVE_READLINE
 	const char *approval_prompt =
 		scoped ? (ephemeral ? "  [y]es once / [s]ession / [n]o: "
@@ -36,9 +83,7 @@ static int cli_approval_prompt_approval(struct cli_application *ctx, const char 
 		cli_readline_prompt(ctx, cli_output_is_structured(ctx) ? "" : approval_prompt);
 	if (!rl_input) {
 		printf(ctx, "\n");
-		if (ctx && ctx->prompt_lock_ready)
-			pthread_mutex_unlock(&ctx->prompt_lock);
-		return 0;
+		return -ECANCELED;
 	}
 	if (!ephemeral && (rl_input[0] == 'a' || rl_input[0] == 'A'))
 		v = scoped ? 3 : 2;
@@ -65,16 +110,12 @@ static int cli_approval_prompt_approval(struct cli_application *ctx, const char 
 	FILE *tty = fopen("/dev/tty", "r");
 	if (!tty) {
 		printf(ctx, "\n");
-		if (ctx && ctx->prompt_lock_ready)
-			pthread_mutex_unlock(&ctx->prompt_lock);
-		return 0;
+		return -ECANCELED;
 	}
 	if (!cli_input_fgets(ctx, buf, sizeof(buf), tty)) {
 		fclose(tty);
 		printf(ctx, "\n");
-		if (ctx && ctx->prompt_lock_ready)
-			pthread_mutex_unlock(&ctx->prompt_lock);
-		return 0;
+		return -ECANCELED;
 	}
 	fclose(tty);
 
@@ -87,12 +128,31 @@ static int cli_approval_prompt_approval(struct cli_application *ctx, const char 
 	else
 		v = 0;
 #endif
+	return v;
+}
+
+/* Both approval flows share decision presentation and scope receipts. */
+static int cli_approval_prompt_approval(struct cli_application *ctx, const char *subject,
+					int scoped, int ephemeral)
+{
+	if (ctx->prompt_lock_ready)
+		pthread_mutex_lock(&ctx->prompt_lock);
+	int v = cli_approval_select_choice(ctx, scoped, ephemeral);
+
+	if (v == -ENOTTY)
+		v = cli_approval_read_choice(ctx, scoped, ephemeral);
+	if (v < 0) {
+		if (ctx->prompt_lock_ready)
+			pthread_mutex_unlock(&ctx->prompt_lock);
+		return 0;
+	}
 
 	if (v > 0) {
 		printf(ctx, ANSI_GREEN CLI_FEED_DONE " Approved" ANSI_RESET " (");
 		(void)cli_output_print_untrusted(ctx, subject ? subject : "",
 						 UTF8_TERMINAL_TEXT_SINGLE_LINE);
-		printf(ctx, "%s)\n", v == 2 ? ", session" : (v == 3 ? ", always" : ""));
+		printf(ctx, "%s)\n",
+		       scoped && v == 2 ? ", session" : (v == (scoped ? 3 : 2) ? ", always" : ""));
 	} else {
 		printf(ctx, ANSI_RED CLI_FEED_SYSTEM " Denied" ANSI_RESET " (");
 		(void)cli_output_print_untrusted(ctx, subject ? subject : "",
@@ -101,7 +161,7 @@ static int cli_approval_prompt_approval(struct cli_application *ctx, const char 
 	}
 
 	fflush(stdout);
-	if (ctx && ctx->prompt_lock_ready)
+	if (ctx->prompt_lock_ready)
 		pthread_mutex_unlock(&ctx->prompt_lock);
 	return v;
 }
@@ -179,7 +239,7 @@ static size_t cli_approval_card_width(void)
 		if (errno == 0 && *end == '\0' && parsed > 0)
 			columns = parsed;
 	}
-	return columns > 82 ? 80u : (columns > 2 ? (size_t)columns - 2u : 1u);
+	return columns > 82 ? 80u : (columns >= 8 ? (size_t)columns - 2u : 0u);
 }
 
 static void cli_approval_card_rule(struct cli_application *ctx, size_t width, const char *title)
@@ -187,8 +247,8 @@ static void cli_approval_card_rule(struct cli_application *ctx, size_t width, co
 	size_t used = 1;
 
 	printf(ctx, ANSI_YELLOW "%s", title ? "╭" : "╰");
-	if (title && width > 4) {
-		const char *end = utf8_advance_display_width(title, width - 4);
+	if (title && width > 5) {
+		const char *end = utf8_advance_display_width(title, width - 5);
 
 		printf(ctx, "─ " ANSI_BOLD);
 		fwrite(title, 1, (size_t)(end - title), stdout);
@@ -196,16 +256,16 @@ static void cli_approval_card_rule(struct cli_application *ctx, size_t width, co
 		/* Approval titles contain only ASCII. */
 		used = 4u + (size_t)(end - title);
 	}
-	for (; used < width; used++)
+	for (; used < width - 1u; used++)
 		printf(ctx, "─");
-	printf(ctx, ANSI_RESET "\n");
+	printf(ctx, "%s" ANSI_RESET "\n", title ? "╮" : "╯");
 }
 
 static void cli_approval_card_field(struct cli_application *ctx, size_t width, const char *label,
 				    const char *value, const char *style)
 {
 	char *safe;
-	const char *line;
+	char *line;
 	size_t indent = label && *label ? 11u : 0u;
 	int first = 1;
 
@@ -222,28 +282,35 @@ static void cli_approval_card_field(struct cli_application *ctx, size_t width, c
 		free(safe);
 		return;
 	}
-	if (indent && width < indent + 4u) {
+	if (indent && width < indent + 6u) {
 		cli_approval_card_field(ctx, width, NULL, label, style);
 		indent = 0;
 	}
 	line = safe;
 	do {
-		size_t budget = width >= 4u ? width - 2u - indent : 2u;
-		const char *end = utf8_advance_display_width(line, budget);
+		size_t budget = width - 4u - indent;
+		char *end = (char *)utf8_advance_display_width(line, budget);
+		char saved = *end;
 
-		if (width >= 4u)
-			printf(ctx, ANSI_YELLOW "│ " ANSI_RESET);
+		*end = '\0';
+		size_t used = indent + utf8_display_width(line);
+
+		printf(ctx, ANSI_YELLOW "│ " ANSI_RESET);
 		if (indent) {
-			size_t used = first ? utf8_display_width(label) : 0u;
+			size_t label_width = first ? utf8_display_width(label) : 0u;
 
 			if (first)
 				printf(ctx, "%s", label);
-			for (; used < indent; used++)
+			for (; label_width < indent; label_width++)
 				putchar(ctx, ' ');
 		}
 		printf(ctx, "%s", style);
 		fwrite(line, 1, (size_t)(end - line), stdout);
-		printf(ctx, ANSI_RESET "\n");
+		*end = saved;
+		printf(ctx, ANSI_RESET);
+		for (; used < width - 4u; used++)
+			putchar(ctx, ' ');
+		printf(ctx, ANSI_YELLOW " │" ANSI_RESET "\n");
 		line = end;
 		first = 0;
 	} while (*line);

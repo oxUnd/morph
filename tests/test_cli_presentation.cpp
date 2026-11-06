@@ -2353,7 +2353,7 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 	op.programs_count = 2;
 	op.directories = &directory;
 	op.directories_count = 1;
-	for (int columns : {12, 24, 40, 80, 120}) {
+	for (int columns : {8, 12, 18, 19, 24, 40, 60, 80, 120}) {
 		EXPECT_EQ(setenv("COLUMNS", std::to_string(columns).c_str(), 1), 0);
 		for (int kind = 0; kind < 4; kind++) {
 			testing::internal::CaptureStdout();
@@ -2381,15 +2381,21 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 				if (line.empty())
 					continue;
 				EXPECT_EQ(utf8valid(line.c_str()), nullptr);
-				EXPECT_LE(utf8_display_width(line.c_str()), width) << line;
+				EXPECT_EQ(utf8_display_width(line.c_str()), width) << line;
 				if (line.rfind("╭", 0) == 0 || line.rfind("╰", 0) == 0) {
-					EXPECT_EQ(utf8_display_width(line.c_str()), width);
+					const std::string corner = line.rfind("╭", 0) == 0 ? "╮" : "╯";
+					EXPECT_EQ(line.substr(line.size() - corner.size()), corner);
 					borders++;
 				} else {
 					EXPECT_EQ(line.rfind("│ ", 0), 0u) << line;
+					const std::string edge = " │";
+					EXPECT_EQ(line.substr(line.size() - edge.size()), edge);
 					size_t prefix = std::string("│ ").size() +
-						(width >= 15 ? 11u : 0u);
-					body += line.substr(std::min(prefix, line.size()));
+						(width >= 17 ? 11u : 0u);
+					std::string content = line.substr(prefix,
+						line.size() - prefix - edge.size());
+					content.erase(content.find_last_not_of(' ') + 1);
+					body += content;
 				}
 			}
 			EXPECT_EQ(borders, 2);
