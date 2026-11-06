@@ -46,6 +46,7 @@ set(TEST_SOURCES
 	test_model_tokens.cpp
 	test_compress.cpp
 	test_react.cpp
+	test_react_stream.cpp
 	test_agent_turn.cpp
 	test_sse.cpp
 	test_http.cpp

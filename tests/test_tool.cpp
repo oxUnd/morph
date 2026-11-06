@@ -275,6 +275,86 @@ TEST_F(ToolTest, UserDataDestroyCalled) {
 	EXPECT_EQ(destruction.last, val);
 }
 
+TEST_F(ToolTest, RetainedHandleSurvivesRegistryGrowthAndUnregistration)
+{
+	auto *payload = static_cast<DestroyPayload *>(malloc(sizeof(DestroyPayload)));
+	ASSERT_NE(payload, nullptr);
+	*payload = {&destruction, 42};
+	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "retained", "test",
+		nullptr, mock_tool_exec, payload, counting_destroy), 0);
+	struct tool_handle handle{};
+
+	ASSERT_EQ(tool_registry_acquire(&reg, "retained", &handle), 0);
+	for (int i = 0; i < 128; i++) {
+		std::string name = "growth-" + std::to_string(i);
+
+		ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, name.c_str(), "test",
+			nullptr, mock_tool_exec, nullptr, nullptr), 0);
+	}
+	ASSERT_EQ(tool_unregister(&reg, "retained"), 0);
+	EXPECT_EQ(destruction.calls, 0);
+	EXPECT_EQ(static_cast<DestroyPayload *>(handle.user_data)->value, 42);
+	struct tool_result result{};
+
+	tool_result_init(&result);
+	EXPECT_EQ(handle.exec("{}", &result, handle.user_data), 0);
+	tool_result_cleanup(&result);
+	tool_handle_release(&handle);
+	EXPECT_EQ(destruction.calls, 1);
+	tool_handle_release(&handle);
+	EXPECT_EQ(destruction.calls, 1);
+}
+
+TEST_F(ToolTest, RetainedHandleKeepsItsOriginalBindingAfterReplacement)
+{
+	auto *payload = static_cast<DestroyPayload *>(malloc(sizeof(DestroyPayload)));
+	ASSERT_NE(payload, nullptr);
+	*payload = {&destruction, 7};
+	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "replace", "old",
+		nullptr, mock_tool_exec, payload, counting_destroy), 0);
+	struct tool_handle original{}, replacement{};
+
+	ASSERT_EQ(tool_registry_acquire(&reg, "replace", &original), 0);
+	struct tool_spec spec{};
+
+	spec.name = "replace";
+	spec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
+	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	spec.exec = error_tool_exec;
+	ASSERT_EQ(tool_register_replace(&reg, &spec, 0), 1);
+	ASSERT_EQ(tool_registry_acquire(&reg, "replace", &replacement), 0);
+	EXPECT_EQ(original.exec, mock_tool_exec);
+	EXPECT_EQ(replacement.exec, error_tool_exec);
+	EXPECT_EQ(static_cast<DestroyPayload *>(original.user_data)->value, 7);
+	EXPECT_EQ(destruction.calls, 0);
+	tool_handle_release(&replacement);
+	tool_handle_release(&original);
+	EXPECT_EQ(destruction.calls, 1);
+}
+
+TEST_F(ToolTest, HandleAcquisitionReportsDisabledToolsAndClearsFailedOutputs)
+{
+	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "disabled", "test",
+		nullptr, mock_tool_exec, nullptr, nullptr), 0);
+	ASSERT_EQ(tool_disable(&reg, "disabled"), 0);
+	struct tool_handle handle{};
+
+	ASSERT_EQ(tool_registry_acquire(&reg, "disabled", &handle), 0);
+	EXPECT_EQ(handle.disabled, 1);
+	tool_handle_release(&handle);
+	EXPECT_EQ(tool_registry_acquire(&reg, "missing", &handle), -ENOENT);
+	EXPECT_EQ(handle.exec, nullptr);
+	EXPECT_EQ(handle.binding, nullptr);
+	EXPECT_EQ(tool_registry_acquire(nullptr, "missing", &handle), -EINVAL);
+	struct tool_registry uninitialized{};
+
+	EXPECT_EQ(tool_registry_acquire(&uninitialized, "missing", &handle),
+		MORPH_ERR_NOT_INITIALIZED);
+	uninitialized.init_error = -ENOMEM;
+	EXPECT_EQ(tool_registry_acquire(&uninitialized, "missing", &handle), -ENOMEM);
+	tool_handle_release(&handle);
+}
+
 TEST_F(ToolTest, UserDataDestroyNullUd) {
 	destruction.calls = 0;
 	destruction.last = nullptr;

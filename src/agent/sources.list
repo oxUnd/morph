@@ -1,4 +1,7 @@
 react.c
+react_events.c
+react_output.c
+react_stream.c
 environment_context.c
 project_context.c
 prompt_context.c
@@ -8,7 +11,10 @@ turn.c
 context.c
 compress.c
 tokenizer.c
-tool.c
+tool_artifact.c
+tool_result.c
+tool_registry.c
+tool_execution.c
 tool_runtime.c
 patch.c
 plan.c

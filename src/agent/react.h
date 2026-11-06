@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 
+#include "agent/react_output.h"
 #include <stdint.h>
 #include <signal.h>
 #include "agent/tool.h"
@@ -16,16 +17,6 @@ extern "C" {
 #include "event/event.h"
 #include "skill/skill.h"
 #include "util/cancel.h"
-
-enum react_step_type {
-	REACT_STEP_THOUGHT,
-	REACT_STEP_ACTION,
-	REACT_STEP_OBSERVATION,
-	REACT_STEP_REFLECTION,
-	REACT_STEP_FINAL,
-	REACT_STEP_REASONING,
-	REACT_STEP_CONTENT,
-};
 
 enum react_state {
 	REACT_STATE_INIT,
@@ -65,31 +56,8 @@ struct react_step {
 	struct react_step *next;
 };
 
-enum react_output_status {
-	REACT_OUTPUT_NONE,
-	REACT_OUTPUT_DELTA,
-	REACT_OUTPUT_STARTED,
-	REACT_OUTPUT_COMPLETED,
-	REACT_OUTPUT_FAILED,
-	REACT_OUTPUT_CANCELLED,
-	REACT_OUTPUT_TIMEOUT,
-};
-
 struct db;
 struct model_history_item;
-
-struct react_output_event {
-	enum react_step_type type;
-	enum react_output_status status;
-	const char *text;
-	const char *tool_name;
-	const char *tool_args;
-	const char *tool_call_id;
-	int error_code;
-	const struct tool_artifact_list *artifacts;
-	const cJSON *data;
-	const cJSON *ui;
-};
 
 #define HITL_TOOLS_MAX 32
 #define HITL_TOOL_NAME_MAX 64
@@ -223,9 +191,6 @@ struct react_context {
 	int turn_id_user_set;
 	struct tool_runtime_context tool_runtime;
 };
-
-typedef int (*react_output_cb)(const struct react_output_event *event,
-			       void *user_data);
 
 struct session_store;
 
