@@ -72,10 +72,10 @@ def main():
                 'command': "trap '' TERM; printf $$ > foreground.pid; "
                            'while :; do sleep .05; done',
                 'yield_time_ms': 10000})])
-            until(terminal, lambda text: 'es once' in text or
+            until(terminal, lambda text: 'Yes once' in text or
                   (directory / 'foreground.pid').exists())
             if not (directory / 'foreground.pid').exists():
-                terminal.send('s\r')
+                terminal.send('\x1b[B\r')
             until(terminal, lambda text: (directory / 'foreground.pid').exists())
             terminal.child.send('\x1b')
             stopped(terminal)

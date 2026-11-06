@@ -252,6 +252,11 @@ if(Python3_Interpreter_FOUND AND UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIB
 			$<TARGET_FILE:morph-cli-pty-driver>)
 	set_tests_properties(cli_select_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
+	add_test(NAME cli_approval_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_approval_pty.py
+			$<TARGET_FILE:morph-cli-pty-driver>)
+	set_tests_properties(cli_approval_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 90)
 	add_test(NAME cli_mcp_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_mcp_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver>)
