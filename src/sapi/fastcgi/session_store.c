@@ -215,6 +215,32 @@ static int64_t now_unix(void)
 	return (int64_t)time(NULL);
 }
 
+static int store_transaction_begin(struct session_store *s)
+{
+	sqlite3_mutex *mutex = sqlite3_db_mutex(s->db.handle);
+
+	/* Hold the FULLMUTEX connection lock across every transaction statement. */
+	if (!mutex)
+		return -ENOTSUP;
+	sqlite3_mutex_enter(mutex);
+	if (sqlite3_exec(s->db.handle, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
+		sqlite3_mutex_leave(mutex);
+		return -EIO;
+	}
+	return 0;
+}
+
+static int store_transaction_end(struct session_store *s, int rc)
+{
+	if (rc == 0 &&
+	    sqlite3_exec(s->db.handle, "COMMIT", NULL, NULL, NULL) != SQLITE_OK)
+		rc = -EIO;
+	if (rc != 0)
+		(void)sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
+	sqlite3_mutex_leave(sqlite3_db_mutex(s->db.handle));
+	return rc;
+}
+
 static int username_valid(const char *username)
 {
 	size_t len;
@@ -486,15 +512,17 @@ int store_quota_begin_turn(struct session_store *s, const char *user_id,
 	if (rc < 0)
 		return rc;
 
-	sqlite3_exec(s->db.handle, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+	rc = store_transaction_begin(s);
+	if (rc != 0)
+		return rc;
 	if (sqlite3_prepare_v2(s->db.handle, qsql, -1, &st, NULL) != SQLITE_OK)
-		goto fail;
+		return store_transaction_end(s, -EIO);
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
-	if (sqlite3_step(st) != SQLITE_ROW) {
+	rc = sqlite3_step(st);
+	if (rc != SQLITE_ROW) {
 		sqlite3_finalize(st);
-		sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
-		return -ENOENT;
+		return store_transaction_end(s, rc == SQLITE_DONE ? -ENOENT : -EIO);
 	}
 	daily_limit = sqlite3_column_int(st, 0);
 	concurrent_limit = sqlite3_column_int(st, 1);
@@ -502,25 +530,21 @@ int store_quota_begin_turn(struct session_store *s, const char *user_id,
 	running = sqlite3_column_int(st, 3);
 	sqlite3_finalize(st);
 
-	if (daily_limit >= 0 && used_turns >= daily_limit) {
-		sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
-		return -EDQUOT;
-	}
-	if (concurrent_limit >= 0 && running >= concurrent_limit) {
-		sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
-		return -EAGAIN;
-	}
+	if (daily_limit >= 0 && used_turns >= daily_limit)
+		return store_transaction_end(s, -EDQUOT);
+	if (concurrent_limit >= 0 && running >= concurrent_limit)
+		return store_transaction_end(s, -EAGAIN);
 
 	if (sqlite3_prepare_v2(s->db.handle, usql, -1, &st, NULL) != SQLITE_OK)
-		goto fail;
+		return store_transaction_end(s, -EIO);
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(st);
 	sqlite3_finalize(st);
 	if (rc != SQLITE_DONE)
-		goto fail;
+		return store_transaction_end(s, -EIO);
 
 	if (sqlite3_prepare_v2(s->db.handle, isql, -1, &st, NULL) != SQLITE_OK)
-		goto fail;
+		return store_transaction_end(s, -EIO);
 	sqlite3_bind_text(st, 1, turn_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 3, session_id, -1, SQLITE_TRANSIENT);
@@ -529,16 +553,14 @@ int store_quota_begin_turn(struct session_store *s, const char *user_id,
 	rc = sqlite3_step(st);
 	sqlite3_finalize(st);
 	if (rc != SQLITE_DONE)
-		goto fail;
+		return store_transaction_end(s, -EIO);
 
-	sqlite3_exec(s->db.handle, "COMMIT", NULL, NULL, NULL);
+	rc = store_transaction_end(s, 0);
+	if (rc != 0)
+		return rc;
 	if (out_turn_id)
 		snprintf(out_turn_id, 64, "%s", turn_id);
 	return 0;
-
-fail:
-	sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
-	return -EIO;
 }
 
 void store_quota_end_turn(struct session_store *s, const char *turn_id)
@@ -729,14 +751,20 @@ int store_artifact_register(struct session_store *s, const char *user_id,
 	if (!s || !user_id || !session_id || !kind || !mime ||
 	    !filename || !relative_path)
 		return -EINVAL;
-	rc = artifact_quota_allows(s, user_id, kind, size_bytes);
+	/* Keep the quota check and both usage records in one transaction. */
+	rc = store_transaction_begin(s);
 	if (rc != 0)
 		return rc;
+	rc = artifact_quota_allows(s, user_id, kind, size_bytes);
+	if (rc != 0)
+		goto out_rollback;
 	rc = fcgi_random_id("art_", id, sizeof(id));
 	if (rc < 0)
-		return rc;
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		return -EIO;
+		goto out_rollback;
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) {
+		rc = -EIO;
+		goto out_rollback;
+	}
 	sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 3, session_id, -1, SQLITE_TRANSIENT);
@@ -748,18 +776,26 @@ int store_artifact_register(struct session_store *s, const char *user_id,
 	sqlite3_bind_int64(st, 9, now_unix());
 	rc = sqlite3_step(st);
 	sqlite3_finalize(st);
-	if (rc != SQLITE_DONE)
-		return -EIO;
+	if (rc != SQLITE_DONE) {
+		rc = -EIO;
+		goto out_rollback;
+	}
 
 	sql = "INSERT INTO fcgi_usage_storage(user_id,used_bytes)"
 	      " VALUES(?,?) "
 	      "ON CONFLICT(user_id) DO UPDATE SET "
 	      "used_bytes=used_bytes+excluded.used_bytes";
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) == SQLITE_OK) {
-		sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
-		sqlite3_bind_int64(st, 2, size_bytes);
-		sqlite3_step(st);
-		sqlite3_finalize(st);
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) {
+		rc = -EIO;
+		goto out_rollback;
+	}
+	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int64(st, 2, size_bytes);
+	rc = sqlite3_step(st);
+	sqlite3_finalize(st);
+	if (rc != SQLITE_DONE) {
+		rc = -EIO;
+		goto out_rollback;
 	}
 	if (strcmp(kind, "image") == 0 || strcmp(kind, "video") == 0) {
 		const char *col = strcmp(kind, "image") == 0 ? "images" : "videos";
@@ -768,17 +804,29 @@ int store_artifact_register(struct session_store *s, const char *user_id,
 			"INSERT INTO fcgi_usage_daily(user_id,day,%s)"
 			" VALUES(?,date('now'),1) "
 			"ON CONFLICT(user_id,day) DO UPDATE SET %s=%s+1",
-			col, col, col);
+				col, col, col);
 		if (sqlite3_prepare_v2(s->db.handle, usage_sql, -1,
-				       &st, NULL) == SQLITE_OK) {
-			sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
-			sqlite3_step(st);
-			sqlite3_finalize(st);
+				       &st, NULL) != SQLITE_OK) {
+			rc = -EIO;
+			goto out_rollback;
+		}
+		sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
+		rc = sqlite3_step(st);
+		sqlite3_finalize(st);
+		if (rc != SQLITE_DONE) {
+			rc = -EIO;
+			goto out_rollback;
 		}
 	}
+	rc = store_transaction_end(s, 0);
+	if (rc != 0)
+		return rc;
 	if (out_artifact_id)
 		snprintf(out_artifact_id, 64, "%s", id);
 	return 0;
+
+out_rollback:
+	return store_transaction_end(s, rc);
 }
 
 int store_artifact_get(struct session_store *s, const char *artifact_id,
@@ -1092,54 +1140,49 @@ int store_delete_session(struct session_store *s, const char *session_id,
 	if (!s || !session_id || !user_id)
 		return -EINVAL;
 
-	sqlite3_exec(s->db.handle, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+	rc = store_transaction_begin(s);
+	if (rc != 0)
+		return rc;
 
 	if (sqlite3_prepare_v2(s->db.handle, chk_owner, -1,
 			       &st, NULL) != SQLITE_OK)
-		goto fail;
+		return store_transaction_end(s, -EIO);
 	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, user_id,    -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(st);
 	sqlite3_finalize(st);
-	if (rc != SQLITE_ROW) {
-		sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
-		return -ENOENT;
-	}
+	if (rc != SQLITE_ROW)
+		return store_transaction_end(s, rc == SQLITE_DONE ? -ENOENT : -EIO);
 
 	if (sqlite3_prepare_v2(s->db.handle, chk_turns, -1,
 			       &st, NULL) != SQLITE_OK)
-		goto fail;
+		return store_transaction_end(s, -EIO);
 	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(st);
 	int running = (rc == SQLITE_ROW) ? sqlite3_column_int(st, 0) : 0;
 	sqlite3_finalize(st);
-	if (running > 0) {
-		sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
-		return -EAGAIN;
-	}
+	if (rc != SQLITE_ROW)
+		return store_transaction_end(s, -EIO);
+	if (running > 0)
+		return store_transaction_end(s, -EAGAIN);
 
 	for (int i = 0; del_tables[i]; i++) {
 		if (sqlite3_prepare_v2(s->db.handle, del_tables[i], -1,
 				       &st, NULL) != SQLITE_OK)
-			goto fail;
+			return store_transaction_end(s, -EIO);
 		sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
 		rc = sqlite3_step(st);
 		sqlite3_finalize(st);
 		if (rc != SQLITE_DONE)
-			goto fail;
+			return store_transaction_end(s, -EIO);
 	}
 
 	if (session_get_by_display_id(&s->db, session_id, &sess) != 0)
-		goto fail;
+		return store_transaction_end(s, -EIO);
 	if (session_delete(&s->db, sess.id) != 0)
-		goto fail;
+		return store_transaction_end(s, -EIO);
 
-	sqlite3_exec(s->db.handle, "COMMIT", NULL, NULL, NULL);
-	return 0;
-
-fail:
-	sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
-	return -EIO;
+	return store_transaction_end(s, 0);
 }
 
 int events_publish(struct session_store *s, const char *session_id,
@@ -1295,14 +1338,15 @@ int actions_enqueue(struct session_store *s, const char *session_id,
 
 int actions_drain_one(struct session_store *s, const char *session_id,
 		      struct action_record *out) {
-	sqlite3_exec(s->db.handle, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+	if (store_transaction_begin(s) != 0)
+		return 0;
 
 	const char *qsql =
 		"SELECT id,type,payload,ts FROM fcgi_actions "
 		"WHERE session_id=? AND consumed=0 ORDER BY id LIMIT 1";
 	sqlite3_stmt *st = NULL;
 	if (sqlite3_prepare_v2(s->db.handle, qsql, -1, &st, NULL) != SQLITE_OK) {
-		sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
+		(void)store_transaction_end(s, -EIO);
 		return 0;
 	}
 	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
@@ -1328,7 +1372,13 @@ int actions_drain_one(struct session_store *s, const char *session_id,
 			sqlite3_finalize(us);
 		}
 	}
-	sqlite3_exec(s->db.handle, "COMMIT", NULL, NULL, NULL);
+	if (store_transaction_end(s, 0) != 0) {
+		if (got) {
+			free(out->payload_json);
+			out->payload_json = NULL;
+		}
+		return 0;
+	}
 	return got;
 }
 

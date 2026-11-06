@@ -26,7 +26,6 @@ static void sse_serve(request_t *r)
 	int64_t last_id = 0;
 	char *end = NULL;
 
-	fprintf(stderr, "sse_serve sid=%s\n", sid ? sid : "(null)");
 	if (!sid)
 		return;
 	if (r->last_event_id && *r->last_event_id) {
@@ -76,7 +75,6 @@ void handle_sse(request_t *r)
 	const char *sid = path_param(r, "id");
 	int rc;
 
-	fprintf(stderr, "handle_sse sid=%s\n", sid ? sid : "(null)");
 	if (!sid) { reply_400(r, "missing id"); return; }
 	if (!store_session_owned_by(r->store, sid, r->user_id)) {
 		reply_403(r);
@@ -87,7 +85,6 @@ void handle_sse(request_t *r)
 		return;
 	}
 	rc = fcgi_stream_pool_submit(r->streams, r, sse_serve);
-	fprintf(stderr, "handle_sse submit rc=%d\n", rc);
 	if (rc == 0) {
 		r->handed_off = 1;
 		return;

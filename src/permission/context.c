@@ -85,16 +85,15 @@ struct tool_scoped_grant {
 	int turn_only;
 };
 
-static int add_persistent_grant(struct tool_context *tctx,
-				const struct permission_grant *grant)
+static int append_persistent_grant(morph_array_t *grants,
+				   const struct permission_grant *grant)
 {
 	struct permission_grant *existing;
 	struct permission_grant *stored;
 
-	if (!tctx || !grant)
+	if (!grants || !grant)
 		return -EINVAL;
-	morph_array_foreach(existing, &tctx->persistent_grants,
-			    struct permission_grant) {
+	morph_array_foreach(existing, grants, struct permission_grant) {
 		if ((grant->id > 0 && existing->id == grant->id) ||
 		    (strcmp(existing->subject, grant->subject) == 0 &&
 		     strcmp(existing->resource_kind,
@@ -102,11 +101,19 @@ static int add_persistent_grant(struct tool_context *tctx,
 		     strcmp(existing->resource, grant->resource) == 0))
 			return 0;
 	}
-	stored = morph_array_push(&tctx->persistent_grants);
+	stored = morph_array_push(grants);
 	if (!stored)
 		return -ENOMEM;
 	*stored = *grant;
 	return 0;
+}
+
+static int add_persistent_grant(struct tool_context *tctx,
+				const struct permission_grant *grant)
+{
+	if (!tctx)
+		return -EINVAL;
+	return append_persistent_grant(&tctx->persistent_grants, grant);
 }
 
 static const char *skip_ws(const char *s)
@@ -238,128 +245,6 @@ int tool_context_command_principal(const char *command, char *out,
 	}
 	snprintf(out, out_size, "%s", program);
 	return 0;
-}
-
-static int add_directory_capability(
-	struct tool_directory_capability *directories, int max_directories,
-	int count, const char *path)
-{
-	char *resolved;
-
-	if (!path || !*path || count >= max_directories)
-		return count;
-	resolved = file_resolve_path(path);
-	if (!resolved)
-		return -ENOMEM;
-	if (!file_path_is_absolute(resolved)) {
-		free(resolved);
-		return count;
-	}
-	for (int i = 0; i < count; i++) {
-		if (strcmp(directories[i].path, resolved) == 0) {
-			free(resolved);
-			return count;
-		}
-	}
-	snprintf(directories[count].path,
-		 sizeof(directories[count].path), "%s", resolved);
-	directories[count].create = 1;
-	free(resolved);
-	return count + 1;
-}
-
-static void add_cli_candidate(
-	char candidates[][PATH_MAX], int *count, const char *base,
-	const char *name)
-{
-	if (!base || !*base || !name || !*name ||
-	    *count >= TOOL_CONTEXT_CLI_DIR_MAX)
-		return;
-	if (file_path_join(candidates[*count], PATH_MAX, base, name) == 0)
-		(*count)++;
-}
-
-static int tool_context_discover_cli_dirs_locked(
-	const struct tool_context *tctx, const char *command,
-	struct tool_directory_capability *directories, int max_directories)
-{
-	char candidates[TOOL_CONTEXT_CLI_DIR_MAX][PATH_MAX];
-	char name[TOOL_CONTEXT_CLI_NAME_MAX];
-	char dot_name[TOOL_CONTEXT_CLI_NAME_MAX + 2];
-	const char *home_env;
-	const char *xdg;
-	char *home = NULL;
-	char config_base[PATH_MAX] = { 0 };
-	char cache_base[PATH_MAX] = { 0 };
-	char state_base[PATH_MAX] = { 0 };
-	int candidate_count = 0;
-	int count = 0;
-
-	if (!tctx || !command || !*command || !directories ||
-	    max_directories <= 0)
-		return -EINVAL;
-	if (tool_context_command_name(command, name, sizeof(name)) != 0)
-		return 0;
-	home_env = getenv("HOME");
-	if (!home_env || !*home_env)
-		return 0;
-	home = file_resolve_path(home_env);
-	if (!home)
-		return -ENOMEM;
-	snprintf(dot_name, sizeof(dot_name), ".%s", name);
-	add_cli_candidate(candidates, &candidate_count, home, dot_name);
-	xdg = getenv("XDG_CONFIG_HOME");
-	if (xdg && *xdg)
-		snprintf(config_base, sizeof(config_base), "%s", xdg);
-	else
-		(void)file_path_join(config_base, sizeof(config_base),
-				    home, ".config");
-	xdg = getenv("XDG_CACHE_HOME");
-	if (xdg && *xdg)
-		snprintf(cache_base, sizeof(cache_base), "%s", xdg);
-	else
-		(void)file_path_join(cache_base, sizeof(cache_base),
-				    home, ".cache");
-	xdg = getenv("XDG_STATE_HOME");
-	if (xdg && *xdg)
-		snprintf(state_base, sizeof(state_base), "%s", xdg);
-	else {
-		char local[PATH_MAX];
-
-		if (file_path_join(local, sizeof(local), home, ".local") == 0)
-			(void)file_path_join(state_base, sizeof(state_base),
-					    local, "state");
-	}
-	add_cli_candidate(candidates, &candidate_count, config_base, name);
-	add_cli_candidate(candidates, &candidate_count, cache_base, name);
-	add_cli_candidate(candidates, &candidate_count, state_base, name);
-#ifdef __APPLE__
-	{
-		char library[PATH_MAX];
-		char base[PATH_MAX];
-
-		if (file_path_join(library, sizeof(library), home,
-				   "Library") == 0 &&
-		    file_path_join(base, sizeof(base), library,
-				   "Application Support") == 0)
-			add_cli_candidate(candidates, &candidate_count,
-					  base, name);
-		if (file_path_join(base, sizeof(base), library,
-				   "Caches") == 0)
-			add_cli_candidate(candidates, &candidate_count,
-					  base, name);
-	}
-#endif
-	for (int i = 0; i < candidate_count; i++) {
-		count = add_directory_capability(
-			directories, max_directories, count, candidates[i]);
-		if (count < 0) {
-			free(home);
-			return count;
-		}
-	}
-	free(home);
-	return count;
 }
 
 static void resolve_into(char *dst, size_t dst_size, const char *src)
@@ -686,21 +571,37 @@ static void tool_context_set_operation_approval_locked(struct tool_context *tctx
 	tctx->operation_approval_user_data = user_data;
 }
 
+struct grant_load_state {
+	morph_array_t grants;
+};
+
 static int load_grant(const struct permission_grant *grant, void *user_data)
 {
-	struct tool_context *tctx = user_data;
+	struct grant_load_state *state = user_data;
 
-	return add_persistent_grant(tctx, grant);
+	return append_persistent_grant(&state->grants, grant);
 }
 
 static int tool_context_reload_persistent_grants_locked(struct tool_context *tctx)
 {
+	struct grant_load_state state;
+	int rc;
+
 	if (!tctx || !tctx->grant_db || !tctx->grant_project_root[0])
 		return -EINVAL;
-	morph_array_clear(&tctx->persistent_grants);
-	return permission_grant_each(tctx->grant_db,
-				     tctx->grant_project_root,
-				     load_grant, tctx);
+	rc = morph_array_init(&state.grants, 8, sizeof(struct permission_grant));
+	if (rc != 0)
+		return rc;
+	rc = permission_grant_each(tctx->grant_db, tctx->grant_project_root,
+				   load_grant, &state);
+	if (rc != 0) {
+		morph_array_cleanup(&state.grants);
+		return rc;
+	}
+	/* Keep the previous grants when the reload fails part-way. */
+	morph_array_cleanup(&tctx->persistent_grants);
+	tctx->persistent_grants = state.grants;
+	return 0;
 }
 
 static int tool_context_set_grant_store_locked(struct tool_context *tctx, struct db *db,
@@ -1155,16 +1056,6 @@ static int check_command_operation(struct tool_context *tctx,
 		log_warn(tctx ? tctx->logger : NULL, "command denied by user: %s", command);
 		return -EACCES;
 	}
-	for (int i = 0; i < op->directories_count; i++) {
-		char resolved[PATH_MAX];
-		int rc = tool_context_grant_write_access(
-			tctx, op->principal ? op->principal : "shell",
-			op->directories[i].path, op->directories[i].create,
-			v, resolved, sizeof(resolved));
-
-		if (rc != 0)
-			return rc;
-	}
 	if (v == TOOL_OP_SESSION || v == TOOL_OP_ALWAYS) {
 		if (!cmd_ok) {
 			int rc = persist_command_programs(tctx, op, v);
@@ -1172,18 +1063,24 @@ static int check_command_operation(struct tool_context *tctx,
 			if (rc != 0)
 				return rc;
 		}
-		if (!cwd_ok && cwd && *cwd) {
-			int rc = v == TOOL_OP_ALWAYS ?
-				save_grant(tctx,
-					   op->principal ? op->principal : "*",
-					   "command_cwd", cwd) :
-				tool_context_allow_command_scope(tctx, cwd);
-			if (rc < 0)
-				return rc;
-			else
-				log_info(tctx ? tctx->logger : NULL, "persisted cwd '%s' %s", cwd,
-					 v == TOOL_OP_ALWAYS ? "always" : "for session");
-		}
+			if (!cwd_ok && cwd && *cwd) {
+				char canonical_cwd[PATH_MAX];
+				const char *stored_cwd = cwd;
+
+				if (realpath(cwd, canonical_cwd))
+					stored_cwd = canonical_cwd;
+				int rc = v == TOOL_OP_ALWAYS ?
+					save_grant(tctx,
+						   op->principal ? op->principal : "*",
+						   "command_cwd", stored_cwd) :
+					tool_context_allow_command_scope(tctx, cwd);
+				if (rc < 0)
+					return rc;
+				else
+					log_info(tctx ? tctx->logger : NULL, "persisted cwd '%s' %s",
+						 stored_cwd,
+						 v == TOOL_OP_ALWAYS ? "always" : "for session");
+			}
 	} else {
 		log_info(tctx ? tctx->logger : NULL, "command approved once by user");
 	}
@@ -1241,27 +1138,16 @@ static int check_path_operation(struct tool_context *tctx,
 	if (v == TOOL_OP_DENY)
 		return -EACCES;
 	if (v == TOOL_OP_SESSION || v == TOOL_OP_ALWAYS) {
-		char parent[PATH_MAX];
-		char *slash;
-		struct stat st;
 		const char *kind = op->kind == TOOL_OP_PATH_WRITE ?
 			"tool_write_path" : op->kind == TOOL_OP_PATH_DELETE ?
 			"delete_path" : "read_path";
-
-		snprintf(parent, sizeof(parent), "%s", canonical);
-		if (stat(canonical, &st) != 0 || !S_ISDIR(st.st_mode)) {
-			slash = strrchr(parent, '/');
-			if (slash == parent)
-				parent[1] = '\0';
-			else if (slash)
-				*slash = '\0';
-		}
 		const char *subject = op->principal ? op->principal : "tool:*";
 
-		rc = v == TOOL_OP_ALWAYS ? save_grant(tctx, subject, kind, parent) :
+		/* Grant the exact approved path, never its parent directory. */
+		rc = v == TOOL_OP_ALWAYS ? save_grant(tctx, subject, kind, canonical) :
 			add_scoped_path_grant(tctx,
 				path_op_is_read(path_op) ? TOOL_PATH_READ : path_op,
-				subject, parent, 0);
+				subject, canonical, 0);
 		if (rc != 0)
 			return rc;
 	}
@@ -2100,19 +1986,6 @@ int tool_context_set_permission_policy(struct tool_context *tctx,
 	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
 	return rc;
 }
-
-int tool_context_discover_cli_dirs(
-	const struct tool_context *tctx, const char *command,
-	struct tool_directory_capability *directories, int max_directories)
-{
-	if (!tctx)
-		return -EINVAL;
-	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
-	int rc = tool_context_discover_cli_dirs_locked(tctx, command, directories, max_directories);
-	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
-	return rc;
-}
-
 
 void tool_context_set_default_timeout(struct tool_context *tctx, int seconds)
 {

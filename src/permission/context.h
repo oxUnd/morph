@@ -15,16 +15,10 @@ extern "C" {
 #define TOOL_CONTEXT_ACTION_MAX 1024
 #define TOOL_CONTEXT_ENV_NAME_MAX 128
 #define TOOL_CONTEXT_CLI_NAME_MAX 256
-#define TOOL_CONTEXT_CLI_DIR_MAX 6
 
 #include "permission/permission.h"
 
 struct db;
-
-struct tool_directory_capability {
-	char path[PATH_MAX];
-	int create;
-};
 
 struct tool_call_grant {
 	char principal[TOOL_CONTEXT_ACTION_MAX];
@@ -104,9 +98,6 @@ int tool_context_command_name(const char *command, char *out,
 			      size_t out_size);
 int tool_context_command_principal(const char *command, char *out,
 				   size_t out_size);
-int tool_context_discover_cli_dirs(
-	const struct tool_context *tctx, const char *command,
-	struct tool_directory_capability *directories, int max_directories);
 int tool_context_grant_write_access(
 	struct tool_context *tctx, const char *principal, const char *path,
 	int create, enum tool_operation_verdict verdict,

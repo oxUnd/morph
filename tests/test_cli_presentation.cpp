@@ -2338,9 +2338,6 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 	for (int i = 0; i < 30; i++)
 		long_value += "中文/path-without-spaces/";
 	const char *programs[] = {long_value.c_str(), "python3"};
-	struct tool_directory_capability directory = {};
-	ASSERT_LT(long_value.size(), sizeof(directory.path));
-	memcpy(directory.path, long_value.c_str(), long_value.size() + 1);
 	struct tool_operation op = {};
 	op.kind = TOOL_OP_COMMAND;
 	op.tool_name = long_value.c_str();
@@ -2351,8 +2348,6 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 	op.target = long_value.c_str();
 	op.programs = programs;
 	op.programs_count = 2;
-	op.directories = &directory;
-	op.directories_count = 1;
 	for (int columns : {8, 12, 18, 19, 24, 40, 60, 80, 120}) {
 		EXPECT_EQ(setenv("COLUMNS", std::to_string(columns).c_str(), 1), 0);
 		for (int kind = 0; kind < 4; kind++) {
@@ -2406,7 +2401,7 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 				values++;
 				offset += long_value.size();
 			}
-			EXPECT_EQ(values, kind == 0 ? 2 : (kind == 1 ? 6 : 5));
+				EXPECT_EQ(values, kind == 0 ? 2 : 5);
 		}
 	}
 	if (had_columns)

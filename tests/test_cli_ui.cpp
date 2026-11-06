@@ -629,10 +629,7 @@ TEST_F(CliUiTest, StructuredOperationApprovalMapsSessionDecision)
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
 	ctx.event_cb = cli_runtime_events_callback;
 	ctx.event_user_data = &ctx;
-	struct tool_directory_capability directory{};
 	const char *programs[] = {"make", "ctest"};
-	std::snprintf(directory.path, sizeof(directory.path), "/tmp/output");
-	directory.create = 1;
 	struct tool_operation operation{
 		TOOL_OP_COMMAND,
 		"exec",
@@ -641,8 +638,6 @@ TEST_F(CliUiTest, StructuredOperationApprovalMapsSessionDecision)
 		nullptr,
 		"/workspace",
 		"{}",
-		&directory,
-		1,
 		"Programs are not trusted yet.",
 		programs,
 		2,
@@ -667,8 +662,6 @@ TEST_F(CliUiTest, StructuredOperationApprovalMapsSessionDecision)
 		     "Programs are not trusted yet.");
 	EXPECT_EQ(cJSON_GetArraySize(
 		cJSON_GetObjectItem(payload, "programs")), 2);
-	EXPECT_EQ(cJSON_GetArraySize(
-		cJSON_GetObjectItem(payload, "directories")), 1);
 	cJSON_Delete(event);
 }
 
