@@ -474,7 +474,7 @@ TEST(ExecToolTest, DynamicScriptsExecuteInsideWorkspace)
 	rmdir(work_template);
 }
 
-TEST(ExecToolTest, ReadsFilesOutsideWorkspaceByDefault)
+TEST(ExecToolTest, ReadsOutsideWorkspaceRequireScopedAuthority)
 {
 	char path[PATH_MAX];
 	char args[PATH_MAX + 128];
@@ -499,9 +499,26 @@ TEST(ExecToolTest, ReadsFilesOutsideWorkspaceByDefault)
 	const char *output = cJSON_GetStringValue(
 		cJSON_GetObjectItem(result.data, "stdout"));
 	ASSERT_NE(output, nullptr);
-	EXPECT_NE(strstr(output, "#include \"exec/process.h\""), nullptr);
-	EXPECT_EQ(cJSON_GetNumberValue(
+	EXPECT_EQ(strstr(output, "#include"), nullptr);
+	EXPECT_NE(cJSON_GetNumberValue(
 		cJSON_GetObjectItem(result.data, "exit_code")), 0);
+	char *slash = strrchr(path, '/');
+	ASSERT_NE(slash, nullptr);
+	*slash = '\0';
+	struct tool_directory_access_request request = {};
+	request.access = TOOL_PATH_ACCESS_READ;
+	char principal[PATH_MAX];
+	ASSERT_EQ(tool_context_command_principal("cat", principal, sizeof(principal)), 0);
+	request.principal = principal;
+	request.command = "Read the test source";
+	request.path = path;
+	request.session_scope = 1;
+	ASSERT_EQ(tool_context_request_directory_access(tctx, &request, nullptr, 0), 0);
+	ASSERT_EQ(tool_exec(&registry, "exec", args, &result), 0);
+	output = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stdout"));
+	ASSERT_NE(output, nullptr);
+	EXPECT_NE(strstr(output, "#include"), nullptr);
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0);
 
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&registry);
@@ -984,6 +1001,8 @@ TEST(ExecToolTest, DirectoryPermissionsFollowPathsAcrossToolsAndPrograms)
 	EXPECT_EQ(approvals, 1);
 	EXPECT_EQ(execute("cd '" + work + "' && sh -c \"printf first > '" +
 		target + "/first'\""), 0);
+	EXPECT_NE(execute("cat '" + target + "/first'"), 0);
+	request("read", "turn");
 	EXPECT_EQ(execute("cp '" + target + "/first' '" + target + "/second'"), 0);
 	EXPECT_EQ(execute("cat '" + target + "/first' > '" + target + "/third'"), 0);
 	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
@@ -998,7 +1017,6 @@ TEST(ExecToolTest, DirectoryPermissionsFollowPathsAcrossToolsAndPrograms)
 	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
 		(target + "/escape/denied").c_str(), nullptr, 0), -EACCES);
 	EXPECT_NE(execute("printf denied > '" + target + "/escape/denied'"), 0);
-	request("read", "turn");
 	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_READ,
 		(target + "/first").c_str(), nullptr, 0), 0);
 	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_LIST,

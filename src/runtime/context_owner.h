@@ -26,6 +26,7 @@
 struct morph_log;
 
 struct runtime_context {
+	char approval_objective[8192];
 	struct morph_log *logger;
 	struct model_usage_sink usage_sink;
 	struct hook_manager hooks;

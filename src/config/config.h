@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include <limits.h>
+#include "permission/permission.h"
 
 #define SUB_AGENT_TOOL_NAME_MAX 64
 
@@ -45,6 +46,7 @@ struct config_model_entry {
 };
 
 struct config_models {
+	struct config_model_entry approval;
 	struct config_model_entry text;
 	struct config_model_entry vision;
 	struct config_model_entry image;
@@ -327,6 +329,8 @@ struct config_sub_agents {
 };
 
 struct config {
+	struct permission_policy permissions;
+	int permissions_explicit;
 	struct morph_log *logger;
 	int hooks_enabled;
 	char hooks_json[CONFIG_HOOKS_JSON_MAX];

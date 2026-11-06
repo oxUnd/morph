@@ -1,5 +1,6 @@
 #include "runtime/runtime_internal.h"
 
+#include "runtime/approval.h"
 #include "runtime/bootstrap.h"
 #include "runtime/mcp.h"
 #include "runtime/session.h"
@@ -348,6 +349,9 @@ static int runtime_start_components(struct runtime *runtime)
 	runtime_emit_startup(runtime, "startup.tools", "begin",
 			     "Loading tools and skills...");
 	rc = runtime_bootstrap_tools(&profile);
+	if (rc == 0)
+		rc = runtime_approval_init(runtime);
+	ctx->hooks.permissions = ctx->tctx;
 	if (rc == 0)
 		rc = runtime_jobs_init(runtime);
 	if (rc != 0)

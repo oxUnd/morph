@@ -8,7 +8,7 @@ target_include_directories(morph-agent PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 )
 target_link_libraries(morph-agent PUBLIC
-	morph-util morph-prompt morph-db morph-session morph-persistence
+	morph-util morph-permission morph-prompt morph-db morph-session morph-persistence
 	morph-models morph-http morph-event Threads::Threads)
 
 add_subdirectory(tools)

@@ -10,6 +10,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+static int authorize_patch_path(const char *path, int deletion, void *opaque)
+{
+	struct tool_context *context = opaque;
+	struct tool_operation operation = {
+		.kind = deletion ? TOOL_OP_PATH_DELETE : TOOL_OP_PATH_WRITE,
+		.tool_name = "apply_patch", .principal = "tool:*", .target = path,
+		.scope = tool_context_workdir(context),
+	};
+	return tool_context_check_operation(context, &operation);
+}
+
 static int apply_patch_exec(const char *input, struct tool_result *result,
 			    void *user_data)
 {
@@ -22,10 +33,11 @@ static int apply_patch_exec(const char *input, struct tool_result *result,
 
 	if (!input || !result || !tool_context)
 		return -EINVAL;
-	rc = patch_apply(tool_context_workdir(tool_context), input,
-			 &patch_result, error, sizeof(error));
+	rc = patch_apply_authorized(tool_context_workdir(tool_context), input,
+			 &patch_result, error, sizeof(error), authorize_patch_path, tool_context);
 	if (rc != 0) {
-		(void)tool_result_error(result, "invalid_patch",
+		(void)tool_result_error(result, rc == -EACCES ? "permission_denied" :
+			rc == -EPERM ? "approval_unavailable" : "invalid_patch",
 			error[0] ? error : morph_strerror(rc));
 		patch_result_cleanup(&patch_result);
 		return rc;

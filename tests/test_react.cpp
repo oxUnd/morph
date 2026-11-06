@@ -7424,11 +7424,24 @@ TEST_F(MockLlmTest, HookRewriteReachesToolAndPostHook)
 	state.rewrite = "{\"value\":\"rewritten\"}";
 	ctx->hook_fn = test_lifecycle_hook;
 	ctx->hook_user = &state;
+	auto *authority = tool_context_create(nullptr, ".", ".");
+	ASSERT_NE(authority, nullptr);
+	std::string reviewed;
+	tool_context_set_operation_approval(authority,
+		[](const struct tool_operation *operation, void *opaque) {
+			*static_cast<std::string *>(opaque) = operation->details_json;
+			return TOOL_OP_ALLOW;
+		}, &reviewed);
+	tools.permission_context = authority;
 	EXPECT_EQ(react_run(ctx, "try tool", nullptr, nullptr), 0);
 	EXPECT_NE(observed.find("rewritten"), std::string::npos);
+	EXPECT_NE(reviewed.find("rewritten"), std::string::npos);
+	EXPECT_EQ(reviewed.find("original"), std::string::npos);
 	EXPECT_EQ(state.tool_before, 1);
 	EXPECT_EQ(state.tool_after, 1);
 	react_context_destroy(ctx);
+	tools.permission_context = nullptr;
+	tool_context_destroy(authority);
 }
 
 TEST_F(MockLlmTest, PostHookReplacesOriginalResultBeforeNextModelRequest)

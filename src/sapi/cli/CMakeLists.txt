@@ -11,6 +11,7 @@ add_library(morph-cli STATIC
 	pages/history.c
 	pages/hooks.c
 	pages/jobs.c
+	pages/permissions.c
 	pages/question.c
 	pages/resume.c
 	pages/setup/controls.c

@@ -464,6 +464,7 @@ void config_set_defaults(struct morph_log *logger, struct config *cfg)
 		return;
 	memset(cfg, 0, sizeof(*cfg));
 	cfg->logger = logger;
+	cfg->permissions = permission_policy_default();
 	cfg->hooks_enabled = 1;
 
 	strncpy(cfg->prompt.mode, "append", sizeof(cfg->prompt.mode) - 1);
@@ -982,6 +983,7 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 	load_model_entry(model_tbl, "vision", &cfg->models.vision);
 	load_model_entry(model_tbl, "image", &cfg->models.image);
 	load_model_entry(model_tbl, "video", &cfg->models.video);
+	load_model_entry(model_tbl, "approval", &cfg->models.approval);
 	load_credits_config(tbl, &cfg->credits);
 
 	cfg_table_t *exec = table_path(tbl, "exec");
@@ -1139,6 +1141,39 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 			}
 			cfg->react.hitl_tools_count = count;
 		}
+	}
+
+	int legacy_permissions =
+		(exec && (cfg_find_const(exec, "network") ||
+		 cfg_find_const(exec, "allow_host_execution"))) ||
+		(react && (cfg_find_const(react, "hitl_enabled") ||
+		 cfg_find_const(react, "hitl_tools") ||
+		 cfg_find_const(react, "hitl_auto_approve_readonly") ||
+		 cfg_find_const(react, "hitl_auto_approve_media")));
+	cfg_table_t *permissions = table_path(tbl, "permissions");
+	if (permissions) {
+		char access[32] = "workspace";
+		char approval[32] = "on_request";
+		char reviewer[32] = "user";
+
+		CFG_STR(permissions, "access", access);
+		CFG_STR(permissions, "approval", approval);
+		CFG_STR(permissions, "reviewer", reviewer);
+		int policy_rc = permission_policy_parse(access, approval, reviewer,
+			&cfg->permissions);
+		if (policy_rc != 0) {
+			toml_free(parsed);
+			return MORPH_ERR_CONFIG;
+		}
+		cfg->permissions_explicit = 1;
+		if (legacy_permissions)
+			log_warn(logger, "[permissions] overrides legacy exec.network, "
+				"exec.allow_host_execution and react.hitl_* settings.");
+	} else if (legacy_permissions) {
+		cfg->permissions = permission_policy_default();
+		log_warn(logger, "Legacy permissions migrate to "
+			"workspace/on_request/user. Legacy host, network and HITL "
+			"switches no longer grant access; set [permissions] explicitly.");
 	}
 
 	cfg_table_t *context = table_path(tbl, "context");
@@ -1462,30 +1497,27 @@ void config_print(const struct config *cfg)
 		 cfg->credits.price_count);
 	log_info(cfg ? cfg->logger : NULL,
 		 "  [react] max_iterations=%d tool_timeout=%d tool_max_retries=%d guardrail=%d/%d "
-		 "max_empty=%d disabled=%d readonly=%d hitl=%d hitl_readonly=%d "
-		 "hitl_media=%d hitl_tools=%d",
+		 "max_empty=%d disabled=%d readonly=%d",
 		 cfg->react.max_iterations, cfg->react.tool_timeout_seconds,
 		 cfg->react.tool_max_retries, cfg->react.guardrail_enabled,
 		 cfg->react.guardrail_max_retries, cfg->react.guardrail_max_empty_rounds,
-		 cfg->react.disabled_tools_count, cfg->react.readonly_tools_count,
-		 cfg->react.hitl_enabled, cfg->react.hitl_auto_approve_readonly,
-		 cfg->react.hitl_auto_approve_media,
-		 cfg->react.hitl_tools_count);
+		 cfg->react.disabled_tools_count, cfg->react.readonly_tools_count);
+	log_info(cfg->logger, "  [permissions] access=%s approval=%s reviewer=%s",
+		 permission_access_name(cfg->permissions.access),
+		 permission_approval_name(cfg->permissions.approval),
+		 permission_reviewer_name(cfg->permissions.reviewer));
 	log_info(cfg ? cfg->logger : NULL,
 		 "  [exec] shell=%s timeout_ms=%d yield_ms=%d max_wait_ms=%d "
-		 "inline=%d session=%d grace_ms=%d network=%d allow_host_execution=%d",
+		 "inline=%d session=%d grace_ms=%d",
 		 cfg->exec.shell, cfg->exec.default_timeout_ms, cfg->exec.yield_time_ms,
 		 cfg->exec.max_wait_ms,
-		 cfg->exec.max_inline_output, cfg->exec.max_session_output, cfg->exec.kill_grace_ms,
-		 cfg->exec.network, cfg->exec.allow_host_execution);
+		 cfg->exec.max_inline_output, cfg->exec.max_session_output, cfg->exec.kill_grace_ms);
 	for (int i = 0; i < cfg->react.disabled_tools_count; i++)
 		log_info(cfg ? cfg->logger : NULL, "    disabled_tool: %s",
 			 cfg->react.disabled_tools[i]);
 	for (int i = 0; i < cfg->react.readonly_tools_count; i++)
 		log_info(cfg ? cfg->logger : NULL, "    readonly_tool: %s",
 			 cfg->react.readonly_tools[i]);
-	for (int i = 0; i < cfg->react.hitl_tools_count; i++)
-		log_info(cfg ? cfg->logger : NULL, "    hitl_tool: %s", cfg->react.hitl_tools[i]);
 	log_info(cfg ? cfg->logger : NULL,
 		 "  [context] threshold=%.1f target=%.1f keep=%d "
 		 "in_turn=%d reserve=%d",

@@ -422,6 +422,7 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		struct tool_operation op = {
 			.kind = TOOL_OP_PATH_WRITE,
 			.tool_name = "config_edit",
+			.require_user = 1,
 			.action = reason,
 			.target = target_expanded,
 			.scope = "active Morph config file",

@@ -26,6 +26,10 @@ struct patch_result {
 	morph_array_t changes;
 };
 
+typedef int (*patch_authorize_fn)(const char *path, int deletion, void *user_data);
+int patch_apply_authorized(const char *workdir, const char *input,
+	struct patch_result *result, char *error, size_t error_size,
+	patch_authorize_fn authorize, void *user_data);
 int patch_apply(const char *workdir, const char *input,
 		struct patch_result *result, char *error, size_t error_size);
 /*

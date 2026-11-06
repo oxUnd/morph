@@ -1,4 +1,4 @@
-#include "tool_context.h"
+#include "context.h"
 #include "cJSON.h"
 #include "db/permission_grant.h"
 #include "util/file.h"
@@ -14,6 +14,60 @@
 #include <unistd.h>
 
 #define TOOL_GRANT_SUBJECT_MAX 256
+
+static int review_user(const struct tool_operation *op,
+	struct permission_review *review, void *opaque)
+{
+	struct tool_context *tctx = opaque;
+
+	if (!tctx->operation_approval_fn)
+		return -EPERM;
+	review->verdict = tctx->operation_approval_fn(op,
+		tctx->operation_approval_user_data);
+	return 0;
+}
+
+static int tool_context_review_locked(struct tool_context *tctx,
+	const struct tool_operation *op, enum tool_operation_verdict *verdict)
+{
+	if (!tctx || !op)
+		return -EINVAL;
+	return permission_authorize(&tctx->permissions, op,
+		permission_check(&tctx->permissions.policy, op, 0), verdict);
+}
+
+static int tool_context_set_permission_policy_locked(struct tool_context *tctx,
+	const struct permission_policy *policy)
+{
+	if (!tctx || permission_policy_validate(policy) != 0)
+		return -EINVAL;
+	tctx->permissions.policy = *policy;
+	tctx->permissions.consecutive_denials = 0;
+	morph_array_clear(&tctx->scoped_grants);
+	tctx->read_allowed_dirs_count = 0;
+	tctx->write_allowed_dirs_count = 0;
+	tctx->delete_allowed_dirs_count = 0;
+	tctx->allowed_commands_count = 0;
+	tctx->tool_calls_count = 0;
+	tctx->exec_allowed_dirs_count = 0;
+	return 0;
+}
+
+static int read_only(const struct tool_context *tctx)
+{
+	return tctx->permissions.policy.access == PERMISSION_READ_ONLY;
+}
+
+static const char *grant_kind(const struct tool_context *tctx, const char *kind)
+{
+	if (!read_only(tctx))
+		return kind;
+	if (!strcmp(kind, "write_path")) return "readonly_write_path";
+	if (!strcmp(kind, "tool_write_path")) return "readonly_tool_write_path";
+	if (!strcmp(kind, "delete_path")) return "readonly_delete_path";
+	if (!strcmp(kind, "tool_call")) return "readonly_tool_call";
+	return kind;
+}
 
 static int configured_path_allowed(const char *path,
 	const char dirs[][TOOL_CONTEXT_ALLOW_PATH_MAX], int count);
@@ -225,7 +279,7 @@ static void add_cli_candidate(
 		(*count)++;
 }
 
-int tool_context_discover_cli_dirs(
+static int tool_context_discover_cli_dirs_locked(
 	const struct tool_context *tctx, const char *command,
 	struct tool_directory_capability *directories, int max_directories)
 {
@@ -351,6 +405,8 @@ static const char *operation_kind_name(enum tool_operation_kind kind)
 		return "delete";
 	case TOOL_OP_DIRECTORY_ACCESS:
 		return "directory_access";
+	case TOOL_OP_TOOL_CALL:
+		return "tool_call";
 	}
 	return "operation";
 }
@@ -491,6 +547,26 @@ struct tool_context *tool_context_create(struct morph_log *logger, const char *w
 	struct tool_context *tctx = calloc(1, sizeof(*tctx));
 	if (!tctx)
 		return NULL;
+	if (permission_context_init(&tctx->permissions) != 0) {
+		free(tctx);
+		return NULL;
+	}
+	pthread_mutexattr_t attributes;
+	int lock_rc = pthread_mutexattr_init(&attributes);
+
+	if (lock_rc == 0) {
+		lock_rc = pthread_mutexattr_settype(&attributes, PTHREAD_MUTEX_RECURSIVE);
+		if (lock_rc == 0)
+			lock_rc = pthread_mutex_init(&tctx->authority_lock, &attributes);
+		pthread_mutexattr_destroy(&attributes);
+	}
+	if (lock_rc != 0) {
+		permission_context_cleanup(&tctx->permissions);
+		free(tctx);
+		return NULL;
+	}
+	tctx->permissions.user_review = review_user;
+	tctx->permissions.user_data = tctx;
 	resolve_into(tctx->workdir, sizeof(tctx->workdir), workdir);
 	resolve_into(tctx->output_dir, sizeof(tctx->output_dir), output_dir);
 	tctx->logger = logger;
@@ -509,12 +585,16 @@ struct tool_context *tool_context_create(struct morph_log *logger, const char *w
 	tctx->exec_allowed_dirs_count = 0;
 	if (morph_array_init(&tctx->scoped_grants, 8,
 			     sizeof(struct tool_scoped_grant)) != 0) {
+		pthread_mutex_destroy(&tctx->authority_lock);
+		permission_context_cleanup(&tctx->permissions);
 		free(tctx);
 		return NULL;
 	}
 	if (morph_array_init(&tctx->persistent_grants, 8,
 			     sizeof(struct permission_grant)) != 0) {
 		morph_array_cleanup(&tctx->scoped_grants);
+		pthread_mutex_destroy(&tctx->authority_lock);
+		permission_context_cleanup(&tctx->permissions);
 		free(tctx);
 		return NULL;
 	}
@@ -522,6 +602,8 @@ struct tool_context *tool_context_create(struct morph_log *logger, const char *w
 			     sizeof(struct tool_builtin_path)) != 0) {
 		morph_array_cleanup(&tctx->scoped_grants);
 		morph_array_cleanup(&tctx->persistent_grants);
+		pthread_mutex_destroy(&tctx->authority_lock);
+		permission_context_cleanup(&tctx->permissions);
 		free(tctx);
 		return NULL;
 	}
@@ -542,6 +624,8 @@ void tool_context_destroy(struct tool_context *tctx)
 		morph_array_cleanup(&tctx->builtin_paths);
 		morph_array_cleanup(&tctx->scoped_grants);
 		morph_array_cleanup(&tctx->persistent_grants);
+		pthread_mutex_destroy(&tctx->authority_lock);
+		permission_context_cleanup(&tctx->permissions);
 	}
 	free(tctx);
 }
@@ -560,21 +644,21 @@ const char *tool_context_output_dir(const struct tool_context *tctx)
 	return tctx->output_dir;
 }
 
-void tool_context_set_default_timeout(struct tool_context *tctx, int seconds)
+static void tool_context_set_default_timeout_locked(struct tool_context *tctx, int seconds)
 {
 	if (!tctx)
 		return;
 	tctx->default_timeout_seconds = seconds > 0 ? seconds : 0;
 }
 
-int tool_context_default_timeout(const struct tool_context *tctx)
+static int tool_context_default_timeout_locked(const struct tool_context *tctx)
 {
 	if (!tctx)
 		return 0;
 	return tctx->default_timeout_seconds;
 }
 
-void tool_context_add_read_allowed_dir(struct tool_context *tctx,
+static void tool_context_add_read_allowed_dir_locked(struct tool_context *tctx,
 				       const char *dir)
 {
 	if (!tctx)
@@ -583,7 +667,7 @@ void tool_context_add_read_allowed_dir(struct tool_context *tctx,
 			&tctx->read_allowed_dirs_count, dir);
 }
 
-void tool_context_add_write_allowed_dir(struct tool_context *tctx,
+static void tool_context_add_write_allowed_dir_locked(struct tool_context *tctx,
 					const char *dir)
 {
 	if (!tctx)
@@ -592,7 +676,7 @@ void tool_context_add_write_allowed_dir(struct tool_context *tctx,
 			&tctx->write_allowed_dirs_count, dir);
 }
 
-void tool_context_set_operation_approval(struct tool_context *tctx,
+static void tool_context_set_operation_approval_locked(struct tool_context *tctx,
 					 tool_operation_approval_fn fn,
 					 void *user_data)
 {
@@ -609,7 +693,7 @@ static int load_grant(const struct permission_grant *grant, void *user_data)
 	return add_persistent_grant(tctx, grant);
 }
 
-int tool_context_reload_persistent_grants(struct tool_context *tctx)
+static int tool_context_reload_persistent_grants_locked(struct tool_context *tctx)
 {
 	if (!tctx || !tctx->grant_db || !tctx->grant_project_root[0])
 		return -EINVAL;
@@ -619,7 +703,7 @@ int tool_context_reload_persistent_grants(struct tool_context *tctx)
 				     load_grant, tctx);
 }
 
-int tool_context_set_grant_store(struct tool_context *tctx, struct db *db,
+static int tool_context_set_grant_store_locked(struct tool_context *tctx, struct db *db,
 				 const char *project_root)
 {
 	char *resolved;
@@ -650,10 +734,14 @@ static int save_grant(struct tool_context *tctx, const char *subject,
 
 	if (!tctx || !kind || !*kind || !resource || !*resource)
 		return -EINVAL;
+	if ((subject && strlen(subject) >= sizeof(grant.subject)) ||
+	    strlen(grant_kind(tctx, kind)) >= sizeof(grant.resource_kind) ||
+	    strlen(resource) >= sizeof(grant.resource))
+		return -ENAMETOOLONG;
 	memset(&grant, 0, sizeof(grant));
 	snprintf(grant.subject, sizeof(grant.subject), "%s",
 		 subject ? subject : "*");
-	snprintf(grant.resource_kind, sizeof(grant.resource_kind), "%s", kind);
+	snprintf(grant.resource_kind, sizeof(grant.resource_kind), "%s", grant_kind(tctx, kind));
 	snprintf(grant.resource, sizeof(grant.resource), "%s", resource);
 	if (tctx->grant_project_root[0])
 		snprintf(grant.project_root, sizeof(grant.project_root), "%s",
@@ -673,7 +761,7 @@ static int persistent_path_is_allowed(const struct tool_context *tctx,
 
 	morph_array_foreach(grant, &tctx->persistent_grants,
 			    struct permission_grant) {
-		if (strcmp(grant->resource_kind, kind) == 0 &&
+		if (strcmp(grant->resource_kind, grant_kind(tctx, kind)) == 0 &&
 		    (strcmp(grant->subject, subject) == 0 || strcmp(grant->subject, "*") == 0) &&
 		    path_is_within(path, grant->resource))
 			return 1;
@@ -681,7 +769,7 @@ static int persistent_path_is_allowed(const struct tool_context *tctx,
 	return 0;
 }
 
-int tool_context_add_builtin_path(struct tool_context *tctx,
+static int tool_context_add_builtin_path_locked(struct tool_context *tctx,
 				 enum tool_path_op op, const char *path)
 {
 	struct tool_builtin_path *entry;
@@ -761,8 +849,18 @@ static int directory_grant_is_allowed(const struct tool_context *tctx,
 static int policy_path_is_allowed(const struct tool_context *tctx,
 				  enum tool_path_op op, const char *path)
 {
-	if (builtin_path_is_allowed(tctx, op, path) ||
-	    directory_grant_is_allowed(tctx, op, path, 0))
+	if (tctx->permissions.policy.access == PERMISSION_FULL)
+		return 1;
+	if (directory_grant_is_allowed(tctx, op, path, 0))
+		return 1;
+	if (read_only(tctx) && !path_op_is_read(op))
+		return 0;
+	if (builtin_path_is_allowed(tctx, op, path))
+		return 1;
+	if (tctx->workdir[0] && path_is_within(path, tctx->workdir))
+		return 1;
+	if (path_op_is_read(op) && tctx->output_dir[0] &&
+	    path_is_within(path, tctx->output_dir))
 		return 1;
 	if (op != TOOL_PATH_DELETE && configured_path_allowed(path,
 			tctx->exec_profile_write_dirs, tctx->exec_profile_write_dirs_count))
@@ -773,7 +871,7 @@ static int policy_path_is_allowed(const struct tool_context *tctx,
 	return 0;
 }
 
-int tool_context_authorize_path(struct tool_context *tctx,
+static int tool_context_authorize_path_locked(struct tool_context *tctx,
 				enum tool_path_op op, const char *path,
 				char *resolved, size_t resolved_size)
 {
@@ -809,7 +907,8 @@ int tool_context_authorize_path(struct tool_context *tctx,
 		op == TOOL_PATH_DELETE ? &tctx->delete_allowed_dirs_count :
 		&tctx->write_allowed_dirs_count;
 
-	if (root && *root && path_is_within(resolved, root))
+	if ((!read_only(tctx) || path_op_is_read(op)) &&
+	    root && *root && path_is_within(resolved, root))
 		return 0;
 	for (int i = 0; i < *allow_count; i++) {
 		if (path_is_within(resolved, allow_dirs[i]))
@@ -836,7 +935,7 @@ int tool_context_authorize_path(struct tool_context *tctx,
 	return rc;
 }
 
-int tool_context_allow_command_pattern(struct tool_context *tctx,
+static int tool_context_allow_command_pattern_locked(struct tool_context *tctx,
 				       const char *pattern)
 {
 	if (!tctx || !pattern || !*pattern)
@@ -855,7 +954,7 @@ int tool_context_allow_command_pattern(struct tool_context *tctx,
 	return 0;
 }
 
-int tool_context_allow_command_scope(struct tool_context *tctx, const char *path)
+static int tool_context_allow_command_scope_locked(struct tool_context *tctx, const char *path)
 {
 	char resolved[PATH_MAX];
 	const char *stored;
@@ -1017,7 +1116,8 @@ static int check_command_operation(struct tool_context *tctx,
 
 	if (!command)
 		return -EINVAL;
-	if (cwd && realpath(cwd, resolved_cwd)) {
+	if (!op->host && !op->network && !op->require_review &&
+	    !op->require_user && !op->forbidden && cwd && realpath(cwd, resolved_cwd)) {
 		if ((tctx->workdir[0] &&
 		     path_is_within(resolved_cwd, tctx->workdir)) ||
 		    path_is_default_temporary(resolved_cwd)) {
@@ -1028,14 +1128,10 @@ static int check_command_operation(struct tool_context *tctx,
 
 	cmd_ok = operation_programs_allowed(tctx, op);
 	cwd_ok = command_scope_is_allowed(tctx, cwd);
-	if (cmd_ok && cwd_ok) {
+	if (cmd_ok && cwd_ok && !op->host && !op->network &&
+	    !op->require_review && !op->require_user && !op->forbidden) {
 		*verdict = TOOL_OP_ALLOW;
 		return 0;
-	}
-	if (!tctx->operation_approval_fn) {
-		log_warn(tctx ? tctx->logger : NULL,
-			 "command not allowed and no approval callback: %s", command);
-		return -EPERM;
 	}
 	approval_operation = *op;
 	if (!approval_operation.reason) {
@@ -1051,8 +1147,9 @@ static int check_command_operation(struct tool_context *tctx,
 				"The working directory is outside the trusted "
 				"command scope.";
 	}
-	v = tctx->operation_approval_fn(&approval_operation,
-					tctx->operation_approval_user_data);
+	int approval_rc = tool_context_review(tctx, &approval_operation, &v);
+	if (approval_rc != 0)
+		return approval_rc;
 	*verdict = v;
 	if (v == TOOL_OP_DENY) {
 		log_warn(tctx ? tctx->logger : NULL, "command denied by user: %s", command);
@@ -1138,10 +1235,9 @@ static int check_path_operation(struct tool_context *tctx,
 		path_op_is_read(path_op) ? "read_path" :
 		path_op == TOOL_PATH_DELETE ? "delete_path" : "tool_write_path", canonical))
 		return 0;
-	if (!tctx->operation_approval_fn)
-		return -EPERM;
-	v = tctx->operation_approval_fn(op,
-					tctx->operation_approval_user_data);
+	int approval_rc = tool_context_review(tctx, op, &v);
+	if (approval_rc != 0)
+		return approval_rc;
 	if (v == TOOL_OP_DENY)
 		return -EACCES;
 	if (v == TOOL_OP_SESSION || v == TOOL_OP_ALWAYS) {
@@ -1190,7 +1286,7 @@ static int scoped_write_is_allowed(const struct tool_context *tctx,
 
 	morph_array_foreach(persistent, &tctx->persistent_grants,
 			    struct permission_grant) {
-		if (strcmp(persistent->resource_kind, "write_path") == 0 &&
+		if (strcmp(persistent->resource_kind, grant_kind(tctx, "write_path")) == 0 &&
 		    strcmp(persistent->subject, principal) == 0 &&
 		    path_is_within(path, persistent->resource))
 			return 1;
@@ -1198,7 +1294,7 @@ static int scoped_write_is_allowed(const struct tool_context *tctx,
 	return 0;
 }
 
-int tool_context_request_write_access(struct tool_context *tctx,
+static int tool_context_request_write_access_locked(struct tool_context *tctx,
 				      const char *principal,
 				      const char *command,
 				      const char *path,
@@ -1231,12 +1327,10 @@ int tool_context_request_write_access(struct tool_context *tctx,
 	snprintf(resolved, resolved_size, "%s", canonical);
 	free(canonical);
 
-	if ((tctx->output_dir[0] &&
+	if ((!read_only(tctx) && tctx->output_dir[0] &&
 	     path_is_within(resolved, tctx->output_dir)) ||
 	    scoped_write_is_allowed(tctx, principal, resolved))
 		return 0;
-	if (!tctx->operation_approval_fn)
-		return -EPERM;
 	memset(&op, 0, sizeof(op));
 	op.kind = TOOL_OP_PATH_WRITE;
 	op.tool_name = "exec";
@@ -1244,8 +1338,9 @@ int tool_context_request_write_access(struct tool_context *tctx,
 	op.action = command;
 	op.target = resolved;
 	op.scope = tctx->grant_project_root;
-	verdict = tctx->operation_approval_fn(
-		&op, tctx->operation_approval_user_data);
+	int approval_rc = tool_context_review(tctx, &op, &verdict);
+	if (approval_rc != 0)
+		return approval_rc;
 	if (verdict == TOOL_OP_DENY)
 		return -EACCES;
 	return tool_context_grant_write_access(
@@ -1253,7 +1348,7 @@ int tool_context_request_write_access(struct tool_context *tctx,
 		resolved, resolved_size);
 }
 
-int tool_context_grant_write_access(
+static int tool_context_grant_write_access_locked(
 	struct tool_context *tctx, const char *principal, const char *path,
 	int create, enum tool_operation_verdict verdict,
 	char *resolved, size_t resolved_size)
@@ -1333,18 +1428,24 @@ static int append_grant_path(morph_array_t *paths, const char *path)
 	return 0;
 }
 
-int tool_context_collect_path_grants(const struct tool_context *tctx,
+static int tool_context_collect_path_grants_locked(const struct tool_context *tctx,
 	const char *principal, enum tool_path_op op, morph_array_t *paths)
 {
 	struct tool_scoped_grant *grant;
 	struct tool_builtin_path *builtin;
 	struct permission_grant *persistent;
-	const char *kind = op == TOOL_PATH_WRITE ? "write_path" : "delete_path";
+	const char *kind = op == TOOL_PATH_READ ? "read_path" :
+		op == TOOL_PATH_WRITE ? "write_path" : "delete_path";
 	int rc;
 
 	if (!tctx || !principal || !paths || paths->size != sizeof(const char *) ||
-	    (op != TOOL_PATH_WRITE && op != TOOL_PATH_DELETE))
+	    (op != TOOL_PATH_READ && op != TOOL_PATH_WRITE && op != TOOL_PATH_DELETE))
 		return -EINVAL;
+	for (int i = 0; op == TOOL_PATH_READ && i < tctx->read_allowed_dirs_count; i++) {
+		rc = append_grant_path(paths, tctx->read_allowed_dirs[i]);
+		if (rc != 0)
+			return rc;
+	}
 	morph_array_foreach(grant, &tctx->scoped_grants, struct tool_scoped_grant) {
 		if (grant->kind != op ||
 		    (strcmp(grant->subject, principal) != 0 &&
@@ -1354,8 +1455,8 @@ int tool_context_collect_path_grants(const struct tool_context *tctx,
 		if (rc != 0)
 			return rc;
 	}
-	int count = op == TOOL_PATH_WRITE ? tctx->exec_profile_write_dirs_count :
-		tctx->exec_profile_delete_dirs_count;
+	int count = read_only(tctx) && op != TOOL_PATH_READ ? 0 : op == TOOL_PATH_WRITE ?
+		tctx->exec_profile_write_dirs_count : tctx->exec_profile_delete_dirs_count;
 
 	for (int i = 0; i < count; i++) {
 		const char *path = op == TOOL_PATH_WRITE ? tctx->exec_profile_write_dirs[i] :
@@ -1365,8 +1466,13 @@ int tool_context_collect_path_grants(const struct tool_context *tctx,
 		if (rc != 0)
 			return rc;
 	}
+	for (int i = 0; op == TOOL_PATH_READ && i < tctx->exec_profile_write_dirs_count; i++) {
+		rc = append_grant_path(paths, tctx->exec_profile_write_dirs[i]);
+		if (rc != 0)
+			return rc;
+	}
 	morph_array_foreach(persistent, &tctx->persistent_grants, struct permission_grant) {
-		if (strcmp(persistent->resource_kind, kind) != 0 ||
+		if (strcmp(persistent->resource_kind, grant_kind(tctx, kind)) != 0 ||
 		    (strcmp(persistent->subject, principal) != 0 &&
 		     strcmp(persistent->subject, "*") != 0))
 			continue;
@@ -1375,7 +1481,8 @@ int tool_context_collect_path_grants(const struct tool_context *tctx,
 			return rc;
 	}
 	morph_array_foreach(builtin, &tctx->builtin_paths, struct tool_builtin_path) {
-		if (!(builtin->operations & (1u << (unsigned int)op)))
+		if ((read_only(tctx) && op != TOOL_PATH_READ) ||
+		    !(builtin->operations & (1u << (unsigned int)op)))
 			continue;
 		rc = append_grant_path(paths, builtin->path);
 		if (rc != 0)
@@ -1406,13 +1513,13 @@ static int collect_bounded_grants(const struct tool_context *tctx,
 	return rc;
 }
 
-int tool_context_collect_write_grants(const struct tool_context *tctx,
+static int tool_context_collect_write_grants_locked(const struct tool_context *tctx,
 	const char *principal, const char **paths, int max_paths)
 {
 	return collect_bounded_grants(tctx, principal, TOOL_PATH_WRITE, paths, max_paths);
 }
 
-int tool_context_add_exec_profile_path(struct tool_context *tctx,
+static int tool_context_add_exec_profile_path_locked(struct tool_context *tctx,
 				       enum tool_path_op op,
 				       const char *path)
 {
@@ -1478,7 +1585,7 @@ static int scoped_delete_is_allowed(const struct tool_context *tctx,
 	struct permission_grant *persistent;
 
 	morph_array_foreach(persistent, &tctx->persistent_grants, struct permission_grant) {
-		if (strcmp(persistent->resource_kind, "delete_path") == 0 &&
+		if (strcmp(persistent->resource_kind, grant_kind(tctx, "delete_path")) == 0 &&
 		    strcmp(persistent->subject, principal) == 0 &&
 		    path_is_within(path, persistent->resource))
 			return 1;
@@ -1486,7 +1593,7 @@ static int scoped_delete_is_allowed(const struct tool_context *tctx,
 	return 0;
 }
 
-int tool_context_request_delete_access(struct tool_context *tctx,
+static int tool_context_request_delete_access_locked(struct tool_context *tctx,
 				       const char *principal,
 				       const char *command,
 				       const char *path,
@@ -1519,8 +1626,6 @@ int tool_context_request_delete_access(struct tool_context *tctx,
 		return 0;
 	}
 	free(canonical);
-	if (!tctx->operation_approval_fn)
-		return -EPERM;
 	memset(&op, 0, sizeof(op));
 	op.kind = TOOL_OP_PATH_DELETE;
 	op.tool_name = "exec";
@@ -1528,8 +1633,9 @@ int tool_context_request_delete_access(struct tool_context *tctx,
 	op.action = command;
 	op.target = resolved;
 	op.scope = tctx->grant_project_root;
-	verdict = tctx->operation_approval_fn(
-		&op, tctx->operation_approval_user_data);
+	int approval_rc = tool_context_review(tctx, &op, &verdict);
+	if (approval_rc != 0)
+		return approval_rc;
 	if (verdict == TOOL_OP_DENY)
 		return -EACCES;
 	if (verdict == TOOL_OP_ALWAYS)
@@ -1539,7 +1645,7 @@ int tool_context_request_delete_access(struct tool_context *tctx,
 	return 0;
 }
 
-int tool_context_grant_delete_access(struct tool_context *tctx,
+static int tool_context_grant_delete_access_locked(struct tool_context *tctx,
 				     const char *principal, const char *path,
 				     char *resolved, size_t resolved_size)
 {
@@ -1658,11 +1764,12 @@ static int directory_access_is_allowed(const struct tool_context *tctx,
 	const struct tool_directory_access_request *request,
 	enum tool_path_op operation, const char *canonical)
 {
-	int already_allowed = (tctx->workdir[0] &&
+	int already_allowed = (!read_only(tctx) || operation == TOOL_PATH_READ) &&
+		((tctx->workdir[0] &&
 		path_is_within(canonical, tctx->workdir)) ||
 		(tctx->output_dir[0] &&
 		 path_is_within(canonical, tctx->output_dir)) ||
-		path_is_default_temporary(canonical);
+		path_is_default_temporary(canonical));
 	already_allowed = already_allowed ||
 		policy_path_is_allowed(tctx, operation, canonical);
 	if (operation == TOOL_PATH_READ)
@@ -1672,15 +1779,15 @@ static int directory_access_is_allowed(const struct tool_context *tctx,
 	else if (operation == TOOL_PATH_WRITE)
 		already_allowed = already_allowed ||
 			scoped_write_is_allowed(tctx, request->principal, canonical) ||
-			configured_path_allowed(canonical,
+			(!read_only(tctx) && configured_path_allowed(canonical,
 				tctx->exec_profile_write_dirs,
-				tctx->exec_profile_write_dirs_count);
+				tctx->exec_profile_write_dirs_count));
 	else
 		already_allowed = already_allowed ||
 			scoped_delete_is_allowed(tctx, request->principal, canonical) ||
-			configured_path_allowed(canonical,
+			(!read_only(tctx) && configured_path_allowed(canonical,
 				tctx->exec_profile_delete_dirs,
-				tctx->exec_profile_delete_dirs_count);
+				tctx->exec_profile_delete_dirs_count));
 	/* Extending a turn grant to a session requires a new approval. */
 	if (request->session_scope && strcmp(request->principal, "*") == 0 &&
 	    directory_grant_is_allowed(tctx, operation, canonical, 0) &&
@@ -1750,7 +1857,7 @@ static char *directory_access_details(const struct tool_operation *operation)
 	return encoded;
 }
 
-int tool_context_request_directory_access(struct tool_context *tctx,
+static int tool_context_request_directory_access_locked(struct tool_context *tctx,
 	const struct tool_directory_access_request *request,
 	char *resolved, size_t resolved_size)
 {
@@ -1783,8 +1890,6 @@ int tool_context_request_directory_access(struct tool_context *tctx,
 	}
 	if (!pending)
 		return 0;
-	if (!tctx->operation_approval_fn)
-		return -EPERM;
 	struct tool_operation operation = {0};
 
 	operation.kind = (pending & (pending - 1u)) ? TOOL_OP_DIRECTORY_ACCESS :
@@ -1797,15 +1902,19 @@ int tool_context_request_directory_access(struct tool_context *tctx,
 	operation.scope = request->session_scope ? "session" : "turn";
 	operation.reason = request->reason;
 	operation.path_access = pending;
+	operation.require_user = request->session_scope &&
+		tctx->permissions.policy.reviewer == PERMISSION_MODEL;
 	char *details = directory_access_details(&operation);
 
 	if (!details)
 		return -ENOMEM;
 	operation.details_json = details;
-	enum tool_operation_verdict verdict = tctx->operation_approval_fn(
-		&operation, tctx->operation_approval_user_data);
+	enum tool_operation_verdict verdict;
+	int approval_rc = tool_context_review(tctx, &operation, &verdict);
 
 	free(details);
+	if (approval_rc != 0)
+		return approval_rc;
 	if (verdict == TOOL_OP_DENY)
 		return -EACCES;
 	if (verdict != TOOL_OP_ALLOW && verdict != TOOL_OP_SESSION && verdict != TOOL_OP_ALWAYS)
@@ -1830,7 +1939,7 @@ int tool_context_request_directory_access(struct tool_context *tctx,
 	return store_directory_access(tctx, request, canonical, pending, verdict);
 }
 
-int tool_context_request_scoped_access(struct tool_context *tctx,
+static int tool_context_request_scoped_access_locked(struct tool_context *tctx,
 				       enum tool_path_op operation,
 				       const char *principal,
 				       const char *command, const char *path,
@@ -1848,7 +1957,7 @@ int tool_context_request_scoped_access(struct tool_context *tctx,
 	return tool_context_request_directory_access(tctx, &request, resolved, resolved_size);
 }
 
-void tool_context_clear_turn_grants(struct tool_context *tctx)
+static void tool_context_clear_turn_grants_locked(struct tool_context *tctx)
 {
 	struct tool_scoped_grant *grants;
 	size_t dst = 0;
@@ -1866,13 +1975,13 @@ void tool_context_clear_turn_grants(struct tool_context *tctx)
 	tctx->scoped_grants.nelts = dst;
 }
 
-int tool_context_collect_delete_grants(const struct tool_context *tctx,
+static int tool_context_collect_delete_grants_locked(const struct tool_context *tctx,
 	const char *principal, const char **paths, int max_paths)
 {
 	return collect_bounded_grants(tctx, principal, TOOL_PATH_DELETE, paths, max_paths);
 }
 
-int tool_context_check_operation(struct tool_context *tctx,
+static int tool_context_check_operation_locked(struct tool_context *tctx,
 				 const struct tool_operation *op)
 {
 	enum tool_operation_verdict verdict;
@@ -1880,7 +1989,48 @@ int tool_context_check_operation(struct tool_context *tctx,
 	return tool_context_check_operation_verdict(tctx, op, &verdict);
 }
 
-int tool_context_check_operation_verdict(
+static int check_tool_call(struct tool_context *tctx, const struct tool_operation *op,
+	enum tool_operation_verdict *verdict)
+{
+	const char *principal = op->principal ? op->principal : op->tool_name;
+	struct permission_grant *grant;
+
+	if (!principal || !*principal || strlen(principal) >= TOOL_CONTEXT_ACTION_MAX)
+		return -EINVAL;
+	for (int i = 0; i < tctx->tool_calls_count; i++) {
+		const struct tool_call_grant *cached = &tctx->tool_calls[i];
+
+		if (!strcmp(cached->principal, principal) && cached->host == !!op->host &&
+		    cached->network == !!op->network) {
+			*verdict = TOOL_OP_ALLOW;
+			return 0;
+		}
+	}
+	morph_array_foreach(grant, &tctx->persistent_grants, struct permission_grant) {
+		if (!op->host && !op->network &&
+		    !strcmp(grant->resource_kind, grant_kind(tctx, "tool_call")) &&
+		    !strcmp(grant->subject, principal)) {
+			*verdict = TOOL_OP_ALLOW;
+			return 0;
+		}
+	}
+	int rc = tool_context_review(tctx, op, verdict);
+
+	if (rc == 0 && *verdict == TOOL_OP_ALWAYS && !op->host && !op->network)
+		return save_grant(tctx, principal, "tool_call", principal);
+	if (rc == 0 && (*verdict == TOOL_OP_SESSION || *verdict == TOOL_OP_ALWAYS)) {
+		if (tctx->tool_calls_count >= TOOL_CONTEXT_ALLOW_MAX)
+			return -ENOSPC;
+		struct tool_call_grant *cached = &tctx->tool_calls[tctx->tool_calls_count++];
+
+		snprintf(cached->principal, sizeof(cached->principal), "%s", principal);
+		cached->host = !!op->host;
+		cached->network = !!op->network;
+	}
+	return rc;
+}
+
+static int tool_context_check_operation_verdict_locked(
 	struct tool_context *tctx, const struct tool_operation *op,
 	enum tool_operation_verdict *verdict)
 {
@@ -1889,6 +2039,8 @@ int tool_context_check_operation_verdict(
 	if (!verdict)
 		return -EINVAL;
 	*verdict = TOOL_OP_DENY;
+	if (op->forbidden || op->require_user || op->require_review)
+		return tool_context_review(tctx, op, verdict);
 	switch (op->kind) {
 	case TOOL_OP_COMMAND:
 		return check_command_operation(tctx, op, verdict);
@@ -1920,13 +2072,329 @@ int tool_context_check_operation_verdict(
 	}
 	case TOOL_OP_NETWORK:
 	case TOOL_OP_EXTERNAL_SEND:
-		if (!tctx->operation_approval_fn)
-			return -EPERM;
-		*verdict = tctx->operation_approval_fn(
-			op, tctx->operation_approval_user_data);
-		if (*verdict == TOOL_OP_DENY)
-			return -EACCES;
-		return 0;
+		return tool_context_review(tctx, op, verdict);
+	case TOOL_OP_TOOL_CALL:
+		return check_tool_call(tctx, op, verdict);
 	}
 	return -EINVAL;
+}
+
+int tool_context_review(struct tool_context *tctx,
+	const struct tool_operation *op, enum tool_operation_verdict *verdict)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_review_locked(tctx, op, verdict);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_set_permission_policy(struct tool_context *tctx,
+	const struct permission_policy *policy)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_set_permission_policy_locked(tctx, policy);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_discover_cli_dirs(
+	const struct tool_context *tctx, const char *command,
+	struct tool_directory_capability *directories, int max_directories)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_discover_cli_dirs_locked(tctx, command, directories, max_directories);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+
+void tool_context_set_default_timeout(struct tool_context *tctx, int seconds)
+{
+	if (!tctx)
+		return;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	tool_context_set_default_timeout_locked(tctx, seconds);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return;
+}
+
+int tool_context_default_timeout(const struct tool_context *tctx)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_default_timeout_locked(tctx);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+void tool_context_add_read_allowed_dir(struct tool_context *tctx,
+				       const char *dir)
+{
+	if (!tctx)
+		return;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	tool_context_add_read_allowed_dir_locked(tctx, dir);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return;
+}
+
+void tool_context_add_write_allowed_dir(struct tool_context *tctx,
+					const char *dir)
+{
+	if (!tctx)
+		return;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	tool_context_add_write_allowed_dir_locked(tctx, dir);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return;
+}
+
+void tool_context_set_operation_approval(struct tool_context *tctx,
+					 tool_operation_approval_fn fn,
+					 void *user_data)
+{
+	if (!tctx)
+		return;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	tool_context_set_operation_approval_locked(tctx, fn, user_data);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return;
+}
+
+int tool_context_reload_persistent_grants(struct tool_context *tctx)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_reload_persistent_grants_locked(tctx);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_set_grant_store(struct tool_context *tctx, struct db *db,
+				 const char *project_root)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_set_grant_store_locked(tctx, db, project_root);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_add_builtin_path(struct tool_context *tctx,
+				 enum tool_path_op op, const char *path)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_add_builtin_path_locked(tctx, op, path);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_authorize_path(struct tool_context *tctx,
+				enum tool_path_op op, const char *path,
+				char *resolved, size_t resolved_size)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_authorize_path_locked(tctx, op, path, resolved, resolved_size);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_allow_command_pattern(struct tool_context *tctx,
+				       const char *pattern)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_allow_command_pattern_locked(tctx, pattern);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_allow_command_scope(struct tool_context *tctx, const char *path)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_allow_command_scope_locked(tctx, path);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_request_write_access(struct tool_context *tctx,
+				      const char *principal,
+				      const char *command,
+				      const char *path,
+				      char *resolved,
+				      size_t resolved_size)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_request_write_access_locked(tctx, principal,
+		command, path, resolved, resolved_size);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_grant_write_access(
+	struct tool_context *tctx, const char *principal, const char *path,
+	int create, enum tool_operation_verdict verdict,
+	char *resolved, size_t resolved_size)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_grant_write_access_locked(tctx, principal, path,
+		create, verdict, resolved, resolved_size);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_collect_path_grants(const struct tool_context *tctx,
+	const char *principal, enum tool_path_op op, morph_array_t *paths)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_collect_path_grants_locked(tctx, principal, op, paths);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_collect_write_grants(const struct tool_context *tctx,
+	const char *principal, const char **paths, int max_paths)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_collect_write_grants_locked(tctx, principal, paths, max_paths);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_add_exec_profile_path(struct tool_context *tctx,
+				       enum tool_path_op op,
+				       const char *path)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_add_exec_profile_path_locked(tctx, op, path);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_request_delete_access(struct tool_context *tctx,
+				       const char *principal,
+				       const char *command,
+				       const char *path,
+				       char *resolved,
+				       size_t resolved_size)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_request_delete_access_locked(tctx, principal,
+		command, path, resolved, resolved_size);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_grant_delete_access(struct tool_context *tctx,
+				     const char *principal, const char *path,
+				     char *resolved, size_t resolved_size)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_grant_delete_access_locked(tctx, principal, path,
+		resolved, resolved_size);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_request_directory_access(struct tool_context *tctx,
+	const struct tool_directory_access_request *request,
+	char *resolved, size_t resolved_size)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_request_directory_access_locked(tctx, request,
+		resolved, resolved_size);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_request_scoped_access(struct tool_context *tctx,
+				       enum tool_path_op operation,
+				       const char *principal,
+				       const char *command, const char *path,
+				       int session_scope,
+				       char *resolved, size_t resolved_size)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_request_scoped_access_locked(tctx, operation,
+		principal, command, path, session_scope, resolved, resolved_size);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+void tool_context_clear_turn_grants(struct tool_context *tctx)
+{
+	if (!tctx)
+		return;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	tool_context_clear_turn_grants_locked(tctx);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return;
+}
+
+int tool_context_collect_delete_grants(const struct tool_context *tctx,
+	const char *principal, const char **paths, int max_paths)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_collect_delete_grants_locked(tctx, principal, paths, max_paths);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_check_operation(struct tool_context *tctx,
+				 const struct tool_operation *op)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_check_operation_locked(tctx, op);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
+}
+
+int tool_context_check_operation_verdict(
+	struct tool_context *tctx, const struct tool_operation *op,
+	enum tool_operation_verdict *verdict)
+{
+	if (!tctx)
+		return -EINVAL;
+	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
+	int rc = tool_context_check_operation_verdict_locked(tctx, op, verdict);
+	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	return rc;
 }

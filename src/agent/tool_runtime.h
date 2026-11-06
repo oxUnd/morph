@@ -17,7 +17,11 @@ typedef int (*tool_runtime_session_visible_fn)(const char *display_id,
 					       const char *user_id,
 					       void *user_data);
 
+struct tool_context;
+
 struct tool_runtime_context {
+	struct tool_context *permission_context;
+	int permission_require_user;
 	struct http_control http;
 	ask_user_callback_fn ask_user_fn;
 	void *ask_user_user_data;

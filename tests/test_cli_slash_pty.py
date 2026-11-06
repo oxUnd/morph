@@ -143,7 +143,7 @@ def main():
             terminal.send('\x1b[A')
             composer(terminal, '/model')
             terminal.send('\x15')
-            for command in ('/help /share', '/credits', '/permissions',
+            for command in ('/help /share', '/credits', '/permissions status',
                             '/tasks', '/memory show'):
                 terminal.send(command + '\r')
                 rows = terminal.screen.display

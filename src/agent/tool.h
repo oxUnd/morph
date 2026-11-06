@@ -172,7 +172,10 @@ struct tool_entry {
 	int timeout_seconds;
 };
 
+struct tool_context;
+
 struct tool_registry {
+	struct tool_context *permission_context;
 	pthread_mutex_t mutex;
 	pthread_mutex_t mutation_mutex;
 	int mutex_ready;

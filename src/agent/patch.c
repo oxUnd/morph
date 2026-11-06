@@ -1463,8 +1463,60 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 	return 0;
 }
 
-int patch_apply(const char *workdir, const char *input,
-		struct patch_result *result, char *error, size_t error_size)
+struct patch_permission_target {
+	char path[PATH_MAX];
+	int deletion;
+};
+
+static int patch_authorize_hunks(const char *root, const morph_array_t *hunks,
+	char *error, size_t error_size, patch_authorize_fn authorize, void *user_data)
+{
+	morph_array_t targets;
+	struct patch_hunk *hunk;
+	struct patch_permission_target *target;
+	int rc = morph_array_init(&targets, hunks->nelts,
+		sizeof(*target));
+
+	if (rc != 0)
+		return rc;
+	morph_array_foreach(hunk, hunks, struct patch_hunk) {
+		target = morph_array_push(&targets);
+		if (!target) {
+			rc = -ENOMEM;
+			break;
+		}
+		rc = patch_resolve_target(root, hunk->path, target->path,
+			sizeof(target->path), error, error_size);
+		target->deletion = hunk->action == PATCH_ACTION_DELETE || hunk->move_path != NULL;
+		if (rc != 0)
+			break;
+		if (!hunk->move_path)
+			continue;
+		target = morph_array_push(&targets);
+		if (!target) {
+			rc = -ENOMEM;
+			break;
+		}
+		rc = patch_resolve_target(root, hunk->move_path, target->path,
+			sizeof(target->path), error, error_size);
+		target->deletion = 0;
+		if (rc != 0)
+			break;
+	}
+	if (rc == 0) {
+		morph_array_foreach(target, &targets, struct patch_permission_target) {
+			rc = authorize(target->path, target->deletion, user_data);
+			if (rc != 0)
+				break;
+		}
+	}
+	morph_array_cleanup(&targets);
+	return rc;
+}
+
+int patch_apply_authorized(const char *workdir, const char *input,
+		struct patch_result *result, char *error, size_t error_size,
+		patch_authorize_fn authorize, void *user_data)
 {
 	morph_array_t hunks;
 	char *root;
@@ -1494,6 +1546,8 @@ int patch_apply(const char *workdir, const char *input,
 	rc = morph_array_init(&hunks, 4, sizeof(struct patch_hunk));
 	if (rc == 0)
 		rc = patch_parse(copy, &hunks, error, error_size);
+	if (rc == 0 && authorize)
+		rc = patch_authorize_hunks(root, &hunks, error, error_size, authorize, user_data);
 	if (rc == 0)
 		rc = morph_array_init(&result->changes, hunks.nelts,
 			sizeof(struct patch_change));
@@ -1510,6 +1564,12 @@ int patch_apply(const char *workdir, const char *input,
 	free(copy);
 	free(root);
 	return rc;
+}
+
+int patch_apply(const char *workdir, const char *input,
+	struct patch_result *result, char *error, size_t error_size)
+{
+	return patch_apply_authorized(workdir, input, result, error, error_size, NULL, NULL);
 }
 
 void patch_result_cleanup(struct patch_result *result)

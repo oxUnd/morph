@@ -82,7 +82,7 @@ def main():
                 terminal.stream = pyte.Stream(terminal.screen)
                 release = None
                 try:
-                    terminal.pump(1)
+                    terminal.wait_for_composer()
                     terminal.child.setwinsize(30, width)
                     terminal.screen.resize(lines=30, columns=width)
                     terminal.pump(.5)

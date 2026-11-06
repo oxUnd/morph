@@ -10,11 +10,12 @@
 - **Models**: `llm` (text chat), `image_gen`, `video_gen`, each configured independently.
 - **Runtime facade** `src/runtime/`: process-level owner. Frontends hold an opaque `struct runtime *` and enter through `runtime_execute_turn()`; they never reimplement init/exec/persistence/shutdown. See `docs/runtime-architecture.md`.
 - **TUI** `src/tui/`: implementation sources stay in `core/`, `terminal/`, `render/`, and `widgets/`. Public APIs name domain objects (`morph_tui_application_*`, `morph_tui_view_*`, `morph_tui_canvas_*`) rather than implementation layers; controls use `morph_tui_widget_*`. Include `<morph/tui/application.h>`, `<morph/tui/view.h>`, or `<morph/tui/widgets/list.h>`; consumers may use `<morph/tui.h>`. Keep implementation headers private and convenience umbrellas out of framework implementations. Application is one extensible object for init/deinit, run/step, messages, embedding, and main; there is no separate public App/runtime object. Custom types embed public base structs first and override optional method tables. Mutable view operations belong to the UI owner thread; workers post model messages. The entire CLI follows the TUI application layout under `src/sapi/cli/`; its root Application owns modes and lifecycle, with pages, widgets, models, services, commands, presentation and adapters. See `docs/tui-application-layout.md`. Samples live in `src/tui/samples/<name>/` with `main.c`, `CMakeLists.txt`, and `README.md`; `customization/` demonstrates custom components, pages, and interactions. See `docs/tui-architecture.md`.
+- **Permissions** `src/permission/`: shared access/approval/reviewer policy, grants and review routing. Runtime owns the context, human/model adapters and application presets; frontends use `runtime_permission_get_policy()` / `_set_policy()`. Concrete tools describe operations; opaque tools use the registry gate. Descendants share authority. See `docs/permissions-design.md` and `docs/permissions-acceptance.md`.
 - **Tools** `src/agent/tools/`:
   - read-only: credits, memory, memory_preference, file_read/list/info, img_info, plan, activate_skill, agent_status, ask_user
   - media: img_gen, img_qa, img_inpaint, img_compose, img_annotate, img_resize, img_convert, vid_gen
   - workspace: apply_patch, config_edit, tasks, request_permissions
-  - shell: `exec`, `process` — `exec` AST-parses a command into its program set, approves per program (allow/session/always/deny), and returns a session for long-running work that `process` manages. `process` supports `list`, `poll`, `wait`, `write`, `interrupt`, `kill`; waits default to 30 seconds, and `wait` collects through intermediate output until exit. Async jobs emit `process.started` / `process.completed`, remain visible in the CLI task area, and are inspected through `/jobs`. Finite jobs are collected before finalizing unless `notify_only` was explicitly requested; persistent servers use `service`. Replaces the former `bash_exec`.
+  - shell: `exec`, `process` — `exec` AST-parses a command into its program set and enters the shared permission layer. Bounded workspace commands run directly; missing authority is reviewed (allow/session/always/deny). It returns a session for long-running work that `process` manages. `process` supports `list`, `poll`, `wait`, `write`, `interrupt`, `kill`; waits default to 30 seconds, and `wait` collects through intermediate output until exit. Async jobs emit `process.started` / `process.completed`, remain visible in the CLI task area, and are inspected through `/jobs`. Finite jobs are collected before finalizing unless `notify_only` was explicitly requested; persistent servers use `service`. Replaces the former `bash_exec`.
   - dynamic tools: tool_create/promote/delete/history/diff/rollback
   - sub-agent: delegate, fanout
   - img_inpaint = bbox+label region i2i; img_compose = arrow+label cross-image fusion; both consume the img_annotate JSON verbatim.
@@ -93,6 +94,7 @@ morph-util (arena, log, file, cJSON, base64, utf8, spin)
   ├─ morph-http (libcurl, SSE) → morph-models
   ├─ morph-event, morph-exec (→ morph-sandbox), morph-render, morph-ipc
   └─ morph-sandbox → morph-ext
+morph-permission (policy, operations, grants; util, db, threads)
 morph-agent (react, context, compress, tokenizer, tool, plan)
 morph-tools, morph-skill, morph-mcp
 morph-config

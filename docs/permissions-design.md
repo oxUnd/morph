@@ -69,6 +69,8 @@ Explicit host and network requests are typed operation fields. Full uses host
 execution; read-only removes default writable project, metadata and tool-cache
 roots while retaining isolated scratch space. Existing process sessions retain
 their spawn-time boundaries, so incompatible live sessions prevent switching.
+Model-supplied stdin enters the review gate again, including sandboxed sessions
+that may retain earlier filesystem grants after those grants expire.
 Remote MCP authority is enforced at the call boundary, not claimed to be an
 OS sandbox around a remote service. Executable extensions and dynamic tools
 receive bounded process policy; restricted native extensions must not claim

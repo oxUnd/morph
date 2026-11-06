@@ -318,6 +318,8 @@ static const char *cli_approval_operation_label(enum tool_operation_kind kind)
 		return "Network Approval";
 	case TOOL_OP_EXTERNAL_SEND:
 		return "External Send Approval";
+	case TOOL_OP_TOOL_CALL:
+		return "Tool Approval";
 	}
 	return "Operation Approval";
 }
@@ -348,6 +350,8 @@ static const char *cli_approval_operation_subject(enum tool_operation_kind kind)
 		return "network";
 	case TOOL_OP_EXTERNAL_SEND:
 		return "external_send";
+	case TOOL_OP_TOOL_CALL:
+		return "tool_call";
 	}
 	return "operation";
 }
@@ -375,6 +379,7 @@ static const char *cli_approval_operation_scope_label(enum tool_operation_kind k
 	case TOOL_OP_NETWORK:
 		return "Scope";
 	case TOOL_OP_EXTERNAL_SEND:
+	case TOOL_OP_TOOL_CALL:
 		return "Scope";
 	}
 	return "Scope";

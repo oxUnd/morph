@@ -20,6 +20,7 @@ target_compile_options(morph-toml PRIVATE
 
 add_library(morph-config STATIC
 	config/config.c
+	config/edit.c
 	config/schema.c
 )
 target_include_directories(morph-config PUBLIC
@@ -27,7 +28,7 @@ target_include_directories(morph-config PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
 )
-target_link_libraries(morph-config PUBLIC morph-util morph-toml)
+target_link_libraries(morph-config PUBLIC morph-util morph-toml morph-permission)
 
 add_library(morph-session STATIC
 	session.c
@@ -50,6 +51,7 @@ target_link_libraries(morph-credits PUBLIC morph-util morph-db morph-config morp
 add_subdirectory(render)
 add_subdirectory(prompt)
 add_subdirectory(agent)
+add_subdirectory(permission)
 add_subdirectory(sandbox)
 add_subdirectory(exec)
 add_subdirectory(ext)

@@ -598,3 +598,12 @@ The process monitor invokes completion observers outside its lock. The CLI event
 queue owns terminal updates; monitor threads never draw directly.
 
 See [asynchronous commands](async-exec.md) for waiting, retention, and UI behavior.
+
+### Permission reviews
+
+`permission.review` uses the existing HITL event category. Its `source` is `user`
+or `model`; phases are `begin`, `end` and `failed`. Completed reviews include a
+`verdict` (`allow`, `deny`, `defer`) and `reason`, plus the tool and turn identity.
+Automatic reviews use a separate model client with usage phase `approval`.
+Human fallback retains the existing operation/HITL callback contracts, so CLI,
+JSON and FastCGI continue to present their existing approval interactions.

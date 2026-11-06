@@ -5,6 +5,8 @@
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
 #include "sapi/cli/widgets/list.h"
+#include "sapi/cli/pages/permissions.h"
+#include "sapi/cli/application.h"
 
 #include <stdint.h>
 
@@ -218,7 +220,37 @@ static int cli_permissions_command_permissions(struct cli_application *ctx, int 
 	int deleted = 0;
 	int rc;
 
-	if (!action || strcmp(action, "list") == 0)
+	if (!action || !strcmp(action, "status")) {
+		struct permission_policy policy;
+
+		if (!action && ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON &&
+		    cli_application_tui(ctx))
+			return cli_permissions_show(ctx);
+		rc = runtime_permission_get_policy(ctx->runtime, &policy);
+		if (rc != 0)
+			return rc;
+		CMD_HEADER(ctx, "permissions");
+		printf(ctx, "  %s: access=%s approval=%s reviewer=%s\n",
+			runtime_permission_preset_name(&policy), permission_access_name(policy.access),
+			permission_approval_name(policy.approval), permission_reviewer_name(policy.reviewer));
+		return 0;
+	}
+	if (!strcmp(action, "mode") || !strcmp(action, "set")) {
+		struct permission_policy policy;
+
+		if (!strcmp(action, "mode") && argc == 3)
+			rc = runtime_permission_preset(argv[2], &policy);
+		else if (!strcmp(action, "set") && argc == 5)
+			rc = permission_policy_parse(argv[2], argv[3], argv[4], &policy);
+		else
+			rc = -EINVAL;
+		if (rc == 0)
+			rc = runtime_permission_set_policy(ctx->runtime, &policy);
+		if (rc == 0)
+			CMD_OK(ctx, "permissions: %s", runtime_permission_preset_name(&policy));
+		return rc;
+	}
+	if (strcmp(action, "list") == 0)
 		return cli_permissions_print_permissions(ctx);
 	if (strcmp(action, "revoke") == 0) {
 		char *end;
@@ -278,8 +310,8 @@ static int cli_permissions_command_permissions(struct cli_application *ctx, int 
 
 static const struct cli_command cli_permissions_entries[] = {
 	{"/permissions", cli_permissions_command_permissions,
-	 "View or revoke persistent tool permissions",
-	 "/permissions [list|revoke <id|program>|"
+	 "Configure access, approval and reviewer; manage grants",
+	 "/permissions [status|mode <ask|auto|full|read_only>|set <access> <approval> <reviewer>|list|revoke <id|program>|"
 	 "clear [--all-projects] [--yes]]"},
 	{"/perms", cli_permissions_command_permissions, "Alias for /permissions",
 	 "/perms [list|revoke <id|program>|clear]"},

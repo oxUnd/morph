@@ -1,5 +1,7 @@
 #include "runtime/context_owner.h"
 #include "util/log.h"
+#include "util/utf8.h"
+#include <stdio.h>
 
 #include "runtime/bootstrap.h"
 #include "runtime/turn_scope.h"
@@ -178,6 +180,19 @@ int runtime_context_prepare_turn(struct runtime_context *ctx,
 
 	if (!ctx || !request || request->session_id <= 0)
 		return -EINVAL;
+	const char *objective = request->stored_user_input ?
+		request->stored_user_input : request->model_input;
+	if (ctx->tctx)
+		pthread_mutex_lock(&ctx->tctx->authority_lock);
+	if (objective) {
+		size_t bytes = utf8_clamp_bytes(objective, sizeof(ctx->approval_objective) - 1);
+		memcpy(ctx->approval_objective, objective, bytes);
+		ctx->approval_objective[bytes] = '\0';
+	}
+	if (ctx->tctx) {
+		ctx->tctx->permissions.consecutive_denials = 0;
+		pthread_mutex_unlock(&ctx->tctx->authority_lock);
+	}
 	if (ctx->sub_agents)
 		(void)sub_agent_runtime_set_parent_session(ctx->sub_agents,
 						   request->session_id);

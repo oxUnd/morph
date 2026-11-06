@@ -2300,6 +2300,8 @@ static void react_check_hitl_approvals(struct react_context *ctx,
 {
 	(void)cb;
 	(void)user_data;
+	if (ctx->tools->permission_context)
+		return;
 	for (int i = 0; i < response->tool_call_count; i++) {
 		struct tool_call *tc = &response->tool_calls[i];
 		const char *tool_name = tc->name;
@@ -3427,6 +3429,7 @@ static void react_start_tool_calls(struct react_context *ctx,
 			break;
 		}
 
+		slots[i].call->runtime.permission_require_user = slots[i].hook_ask;
 		int thread_rc =
 			pthread_create(&slots[i].thread, NULL, async_tool_exec, slots[i].call);
 		if (thread_rc != 0) {
