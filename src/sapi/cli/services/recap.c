@@ -1,4 +1,5 @@
 #include "sapi/cli/services/recap.h"
+#include "sapi/cli/pages/turn_details.h"
 #include "sapi/cli/presentation/output.h"
 #include "config/config.h"
 #include "cJSON.h"
@@ -145,7 +146,8 @@ void cli_recap_tick(struct cli_application *ctx, int64_t now)
 	const struct config *config;
 	int64_t session_id;
 
-	if (!ctx->runtime || ctx->turn_active || ctx->details_open || now < state->next_poll)
+	if (!ctx->runtime || ctx->turn_active || cli_turn_details_is_open(ctx) ||
+	    now < state->next_poll)
 		return;
 	state->next_poll = now + 1000;
 	/* A new CLI has no session until its first submitted turn. */

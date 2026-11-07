@@ -1,5 +1,11 @@
 #include <gtest/gtest.h>
 #include "models/image_gen.h"
+#include "models/media_output.h"
+#include "agent/tools/annotation.h"
+#include <filesystem>
+#include <string>
+#include <thread>
+#include <vector>
 #include "models/image_provider.h"
 #include "models/llm.h"
 #include "agent/tools/img_gen.h"
@@ -1206,4 +1212,139 @@ TEST(ImageEncode, RejectsExcessivePixelsAndDimensionsBeforeAllocation)
 	EXPECT_EQ(w, 16);
 	EXPECT_EQ(h, 16);
 	remove(path);
+}
+
+TEST(MediaOutputTest, ConcurrentArtifactsKeepIndependentBytes)
+{
+	char directory[] = "/tmp/morph-media-output-XXXXXX";
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	constexpr int count = 20;
+	std::vector<std::string> paths(count);
+	std::vector<int> results(count);
+	std::vector<std::thread> workers;
+
+	for (int i = 0; i < count; i++) {
+		workers.emplace_back([&, i] {
+			std::string content = "artifact " + std::to_string(i);
+			char path[PATH_MAX];
+			results[i] = media_output_write(directory, "img", "png", content.data(),
+							content.size(), path, sizeof(path));
+			paths[i] = path;
+		});
+	}
+	for (auto &worker : workers)
+		worker.join();
+	for (int i = 0; i < count; i++) {
+		ASSERT_EQ(results[i], 0);
+		std::string expected = "artifact " + std::to_string(i);
+		char *content = file_read_all(paths[i].c_str(), nullptr);
+		ASSERT_NE(content, nullptr);
+		EXPECT_EQ(std::string(content), expected);
+		free(content);
+		for (int j = 0; j < i; j++)
+			EXPECT_NE(paths[i], paths[j]);
+		EXPECT_EQ(unlink(paths[i].c_str()), 0);
+	}
+	EXPECT_TRUE(std::filesystem::is_empty(directory));
+	EXPECT_EQ(rmdir(directory), 0);
+}
+
+TEST(MediaOutputTest, FailureLeavesNoPublishedOrTemporaryFile)
+{
+	char directory[] = "/tmp/morph-media-failure-XXXXXX";
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	char output[2] = {'x', '\0'};
+
+	EXPECT_EQ(media_output_write(directory, "vid", "mp4", "data", 4, output, sizeof(output)),
+		  -ENAMETOOLONG);
+	EXPECT_EQ(output[0], '\0');
+	EXPECT_TRUE(std::filesystem::is_empty(directory));
+	EXPECT_EQ(rmdir(directory), 0);
+}
+
+TEST(AnnotationTest, SharedParserAcceptsAllEstablishedInputShapes)
+{
+	const char *body = "{\"images\":[{\"path\":\"input.png\",\"width\":200,\"height\":100}],"
+			   "\"bboxes\":[{\"image_index\":0,\"x\":20,\"y\":10,\"w\":40,\"h\":30,"
+			   "\"label\":\"cat\"}]}";
+	for (int shape = 0; shape < 3; shape++) {
+		cJSON *input = cJSON_Parse(body);
+		if (shape > 0) {
+			cJSON *wrapper = cJSON_CreateObject();
+			if (shape == 1)
+				cJSON_AddItemToObject(wrapper, "annotation", input);
+			else {
+				cJSON_AddStringToObject(wrapper, "annotation", body);
+				cJSON_Delete(input);
+			}
+			input = wrapper;
+		}
+		annotation parsed{};
+		ASSERT_EQ(annotation_parse(input, &parsed), 0);
+		ASSERT_EQ(parsed.images.nelts, 1u);
+		ASSERT_EQ(parsed.bboxes.nelts, 1u);
+		const auto *image = annotation_image_at(&parsed, 0);
+		ASSERT_NE(image, nullptr);
+		EXPECT_STREQ(image->path, "input.png");
+		const auto *bbox =
+			static_cast<const annotation_bbox *>(morph_array_get(&parsed.bboxes, 0));
+		annotation_rect normalized{};
+		ASSERT_EQ(annotation_rect_normalize(&bbox->rect, image->width, image->height,
+						    &normalized),
+			  0);
+		EXPECT_DOUBLE_EQ(normalized.x, 0.1);
+		EXPECT_DOUBLE_EQ(normalized.y, 0.1);
+		EXPECT_DOUBLE_EQ(normalized.width, 0.2);
+		EXPECT_DOUBLE_EQ(normalized.height, 0.3);
+		EXPECT_STREQ(bbox->label, "cat");
+		annotation_cleanup(&parsed);
+		cJSON_Delete(input);
+	}
+}
+
+TEST(AnnotationTest, RejectsInvalidCoordinatesAndImageIndices)
+{
+	for (const char *bbox : {"{\"image_index\":0,\"x\":-0.2,\"y\":0,\"w\":0.3,\"h\":0.3}",
+				 "{\"image_index\":0,\"x\":0,\"y\":0,\"w\":0,\"h\":0.3}",
+				 "{\"image_index\":1,\"x\":0,\"y\":0,\"w\":0.3,\"h\":0.3}",
+				 "{\"image_index\":0.5,\"x\":0,\"y\":0,\"w\":0.3,\"h\":0.3}",
+				 "{\"image_index\":0,\"x\":\"bad\",\"y\":0,\"w\":0.3,\"h\":0.3}"}) {
+		std::string json = "{\"images\":[{\"path\":\"input.png\"}],\"bboxes\":[";
+		json += bbox;
+		json += "]}";
+		cJSON *input = cJSON_Parse(json.c_str());
+		annotation parsed{};
+		EXPECT_EQ(annotation_parse(input, &parsed), -EINVAL);
+		annotation_cleanup(&parsed);
+		cJSON_Delete(input);
+	}
+	annotation_rect invalid{-0.1, 0, 0.5, 0.5};
+	annotation_rect out{};
+	EXPECT_EQ(annotation_rect_normalize(&invalid, 100, 100, &out), -EINVAL);
+	annotation_rect normalized{0.1, 0.2, 0.3, 0.4};
+	ASSERT_EQ(annotation_rect_normalize(&normalized, 0, 0, &out), 0);
+	EXPECT_DOUBLE_EQ(out.width, 0.3);
+}
+
+TEST(AnnotationTest, MainImageUsesArrowCountThenSmallestIndex)
+{
+	cJSON *input = cJSON_Parse("{\"images\":[{\"path\":\"a\"},{\"path\":\"b\"}],\"arrows\":["
+				   "{\"from\":{\"image_index\":0,\"x\":0.2,\"y\":0.3},"
+				   "\"to\":{\"image_index\":1,\"x\":20,\"y\":30}},"
+				   "{\"from\":{\"image_index\":1,\"x\":0.2,\"y\":0.3},"
+				   "\"to\":{\"image_index\":0,\"x\":0.4,\"y\":0.5}}]}");
+	annotation parsed{};
+	ASSERT_EQ(annotation_parse(input, &parsed), 0);
+	EXPECT_EQ(annotation_main_image(&parsed), 0);
+	const auto *arrow =
+		static_cast<const annotation_arrow *>(morph_array_get(&parsed.arrows, 0));
+	double x, y;
+	ASSERT_EQ(annotation_point_pixels(&arrow->from, 100, 100, &x, &y), 0);
+	EXPECT_DOUBLE_EQ(x, 20);
+	EXPECT_DOUBLE_EQ(y, 30);
+	ASSERT_EQ(annotation_point_pixels(&arrow->to, 100, 100, &x, &y), 0);
+	EXPECT_DOUBLE_EQ(x, 20);
+	EXPECT_DOUBLE_EQ(y, 30);
+	annotation_cleanup(&parsed);
+	cJSON_Delete(input);
 }

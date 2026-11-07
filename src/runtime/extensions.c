@@ -4,8 +4,7 @@
 
 #include <errno.h>
 
-int runtime_extensions_load(struct runtime_context *ctx,
-			    const char *front_name)
+int runtime_extensions_load(struct runtime_context *ctx, const char *front_name)
 {
 	(void)ctx;
 	(void)front_name;
@@ -32,8 +31,7 @@ static int runtime_ext_cancelled(void *opaque)
 	return result->runtime != NULL && http_wait_cancelable(&result->runtime->http, 0) != 0;
 }
 
-static int runtime_ext_exec(const char *args_json, struct tool_result *result,
-			    void *user_data)
+static int runtime_ext_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct ext *extension = user_data;
 	char *output = NULL;
@@ -43,30 +41,36 @@ static int runtime_ext_exec(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 	struct tool_context *context = result->runtime ? result->runtime->permission_context : NULL;
 	struct sandbox_config limits;
+	struct permission_policy policy = {0};
 	struct arena *arena = arena_create(0);
 
 	if (!arena)
 		return -ENOMEM;
 	if (context) {
+		(void)tool_context_get_permission_policy(context, &policy);
 		struct tool_operation operation = {
-			.kind = TOOL_OP_TOOL_CALL, .tool_name = extension->manifest.name,
-			.principal = extension->manifest.name, .action = args_json,
-			.details_json = args_json, .scope = extension->path,
+			.kind = TOOL_OP_TOOL_CALL,
+			.tool_name = extension->manifest.name,
+			.principal = extension->manifest.name,
+			.action = args_json,
+			.details_json = args_json,
+			.scope = extension->path,
 			.network = !!(extension->manifest.permissions & EXT_PERM_NETWORK),
 		};
 		rc = tool_context_check_operation(context, &operation);
 		if (rc == 0)
-			rc = tool_context_add_builtin_path(context, TOOL_PATH_READ, extension->path);
+			rc = tool_context_add_builtin_path(context, TOOL_PATH_READ,
+							   extension->path);
 		if (rc == 0)
 			rc = sandbox_permission_prepare(context, extension->manifest.name, NULL,
-				arena, &limits);
+							arena, &limits);
 		limits.network_access = operation.network;
 	} else {
 		rc = -EPERM;
 	}
 	if (rc == 0)
 		rc = ext_run_bounded(extension, args_json, &output, runtime_ext_cancelled, result,
-			permission_effective_access(&context->permissions.policy).host ? NULL : &limits);
+				     permission_effective_access(&policy).host ? NULL : &limits);
 	arena_destroy(arena);
 	if (output)
 		(void)tool_result_success_json_text(result, output);
@@ -83,8 +87,7 @@ static void runtime_ext_destroy(void *user_data)
 	free(extension);
 }
 
-static void runtime_register_guardrail_extension(struct runtime_context *ctx,
-						 struct ext *extension,
+static void runtime_register_guardrail_extension(struct runtime_context *ctx, struct ext *extension,
 						 const char *path)
 {
 	enum guardrail_hook hook = GUARDRAIL_HOOK_OUTPUT;
@@ -95,15 +98,12 @@ static void runtime_register_guardrail_extension(struct runtime_context *ctx,
 		hook = GUARDRAIL_HOOK_INPUT;
 	else if (strcmp(extension->manifest.hook, "tool_output") == 0)
 		hook = GUARDRAIL_HOOK_TOOL_OUTPUT;
-	guardrail_rule_register(&ctx->react->guardrail,
-		extension->manifest.name, hook, GUARDRAIL_RULE_EXT, NULL,
-		extension->manifest.description, NULL,
-		extension->manifest.action_text[0]
-			? extension->manifest.action_text : NULL);
-	rule = guardrail_rule_lookup(&ctx->react->guardrail,
-				     extension->manifest.name);
-	if (!rule || file_path_join(entry, sizeof(entry), path,
-				extension->manifest.entry) != 0)
+	guardrail_rule_register(&ctx->react->guardrail, extension->manifest.name, hook,
+				GUARDRAIL_RULE_EXT, NULL, extension->manifest.description, NULL,
+				extension->manifest.action_text[0] ? extension->manifest.action_text
+								   : NULL);
+	rule = guardrail_rule_lookup(&ctx->react->guardrail, extension->manifest.name);
+	if (!rule || file_path_join(entry, sizeof(entry), path, extension->manifest.entry) != 0)
 		return;
 	strncpy(rule->ext_entry, entry, sizeof(rule->ext_entry) - 1);
 	if (strcmp(extension->manifest.type, "so") == 0) {
@@ -114,8 +114,7 @@ static void runtime_register_guardrail_extension(struct runtime_context *ctx,
 	}
 }
 
-int runtime_extensions_load(struct runtime_context *ctx,
-			    const char *front_name)
+int runtime_extensions_load(struct runtime_context *ctx, const char *front_name)
 {
 	char directory[PATH_MAX] = {0};
 	char **names = NULL;
@@ -125,8 +124,7 @@ int runtime_extensions_load(struct runtime_context *ctx,
 
 	if (!ctx)
 		return -EINVAL;
-	expanded = file_expand_path(ctx->config.ext.dir[0]
-		? ctx->config.ext.dir : "~/.morph/exts");
+	expanded = file_expand_path(ctx->config.ext.dir[0] ? ctx->config.ext.dir : "~/.morph/exts");
 	strncpy(directory, expanded ? expanded : "exts", sizeof(directory) - 1);
 	free(expanded);
 	if (!file_exists(directory))

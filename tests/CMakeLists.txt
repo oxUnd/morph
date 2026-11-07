@@ -86,6 +86,13 @@ set(TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/security.c
 	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/agent_bridge.c
 	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/session_store.c
+	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/storage/users.c
+	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/storage/quota.c
+	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/storage/artifacts.c
+	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/storage/sessions.c
+	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/storage/events.c
+	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/storage/canvas.c
+	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/storage/tokens.c
 )
 
 add_executable(morph-tests ${TEST_SOURCES})

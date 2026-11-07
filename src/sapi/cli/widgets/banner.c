@@ -5,8 +5,6 @@
 #include "util/base64.h"
 #include "util/data.h"
 
-#include <sys/ioctl.h>
-
 #define CLI_BANNER_WELCOME_ACCENT "\033[38;5;51m"
 #define CLI_BANNER_WELCOME_TEXT "\033[38;5;252m"
 #define CLI_BANNER_WELCOME_MUTED "\033[38;5;248m"
@@ -129,14 +127,11 @@ void cli_banner_print(struct cli_application *ctx, const char *model, const char
 		{"Esc", "cancel"},
 		{"Ctrl+Cmd+V", "image"},
 	};
-	struct winsize size = {0};
 	int columns = cli_list_columns();
 	size_t width;
 	size_t model_width;
 	size_t path_width;
 
-	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col)
-		columns = size.ws_col;
 	width = columns > 2 * CLI_BANNER_WELCOME_PADDING
 			? (size_t)(columns - 2 * CLI_BANNER_WELCOME_PADDING)
 			: 1;

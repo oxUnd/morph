@@ -2,6 +2,7 @@
 
 #include "db/database.h"
 #include "agent/memory.h"
+#include "persistence/memory_snapshot.h"
 #include "session.h"
 
 #include <cstdio>
@@ -675,4 +676,44 @@ TEST_F(MemoryTest, IndependentWorkersDrainOnlyTheirOwnJobs)
 	EXPECT_EQ(strstr(jobs, "queued"), nullptr);
 	EXPECT_EQ(strstr(jobs, "running"), nullptr);
 	free(jobs);
+}
+
+TEST_F(MemoryTest, SnapshotOwnsFactValuesAcrossLaterDatabaseWrites)
+{
+	struct session session{};
+	ASSERT_EQ(session_create(&db, "memory_snapshot", "mock", &session), 0);
+	ASSERT_EQ(memory_accept_input(&db, session.id, "I live in London.", "first", &opts), 0);
+	struct memory_snapshot_options read{};
+	read.facts_limit = -1;
+	struct memory_snapshot snapshot{};
+	ASSERT_EQ(memory_snapshot_read(&db, session.id, &read, &snapshot), 0);
+	ASSERT_GT(snapshot.facts.nelts, 0u);
+	auto *fact = static_cast<struct memory_fact_record *>(morph_array_get(&snapshot.facts, 0));
+	ASSERT_STREQ(fact->key, "location");
+	EXPECT_STREQ(fact->value, "London");
+	ASSERT_EQ(memory_accept_input(&db, session.id, "I live in Paris.", "second", &opts), 0);
+	EXPECT_STREQ(fact->value, "London");
+	char *current = memory_build_context(&db, session.id, "current location", &opts);
+	ASSERT_NE(current, nullptr);
+	EXPECT_NE(strstr(current, "location: Paris"), nullptr);
+	free(current);
+	memory_snapshot_cleanup(&snapshot);
+	EXPECT_EQ(snapshot.arena, nullptr);
+}
+
+TEST_F(MemoryTest, SnapshotReadFailureReleasesPreviouslyCopiedSections)
+{
+	struct session session{};
+	ASSERT_EQ(session_create(&db, "memory_snapshot_failure", "mock", &session), 0);
+	ASSERT_EQ(memory_accept_input(&db, session.id, "I live in London.", "first", &opts), 0);
+	ASSERT_EQ(db_exec(&db, "DROP TABLE memory_episodes"), 0);
+	struct memory_snapshot_options read{};
+	read.facts_limit = -1;
+	read.episodes_limit = -1;
+	struct memory_snapshot snapshot{};
+	EXPECT_EQ(memory_snapshot_read(&db, session.id, &read, &snapshot), MORPH_ERR_DB);
+	EXPECT_EQ(snapshot.arena, nullptr);
+	EXPECT_EQ(snapshot.facts.elts, nullptr);
+	EXPECT_EQ(snapshot.episodes.elts, nullptr);
+	memory_snapshot_cleanup(&snapshot);
 }

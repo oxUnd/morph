@@ -99,6 +99,17 @@ def main():
     app_header = code_only((CLI / 'application.h').read_text())
     if not re.search(r'struct cli_application\s*{\s*struct morph_tui_application base;', app_header):
         errors.append('application.h: Application must embed its TUI base first')
+    for field in ('event_stream', 'markdown_stream', 'rendered_artifacts',
+                  'completion_sessions', 'readline_ready_input', 'prompt_lock'):
+        if re.search(r'\b' + field + r'\b', app_header):
+            errors.append(f'application.h: {field} belongs to its presentation/input owner')
+    queue = (CLI / 'services/event_queue.c').read_text()
+    if re.search(r'^#include [<"](?:readline/|sapi/cli/(?:pages|widgets|presentation|adapters)/)',
+                 queue, re.M):
+        errors.append('services/event_queue.c: transport imports UI dispatch or presentation')
+    transcript = (CLI / 'widgets/transcript.c').read_text()
+    if '\\033[?1049' in transcript or 'previous_frame' in transcript:
+        errors.append('widgets/transcript.c: modal terminal/frame ownership belongs to the page')
     for source in sorted(CLI.rglob('*')):
         if source.suffix not in ('.c', '.h'):
             continue

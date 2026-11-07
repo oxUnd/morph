@@ -8,7 +8,9 @@ engine beneath that facade.
 
 | Module | Responsibility |
 | --- | --- |
-| `react.c` | Turn orchestration, model/tool decisions, hooks and terminal outcomes. |
+| `react.c` | One explicit turn loop, model/tool decisions, hooks and terminal outcomes. |
+| `react_request.h/.c` | Private prompt/message/schema preparation and compaction budgets. |
+| `react_tool_worker.h/.c` | Private joinable workers, cancellation and borrowed callback closure. |
 | `react_output.h/.c` | Typed output events and synchronous callback dispatch. |
 | `react_events.h/.c` | Structured event serialization, using a borrowed event sink. |
 | `react_stream.h/.c` | Request-local incremental text parsing and channel separation. |
@@ -31,6 +33,22 @@ Legacy final markers are recognized only at line starts, after optional spaces
 or tabs. Native content retains literal marker text. Incremental scanning keeps
 only possible marker prefixes pending, and skips ordinary text in batches. Delta
 delivery borrows slices of reusable buffers without per-delta allocation.
+
+## History and memory
+
+`history.h` remains the agent history contract. Recording is in `history.c`;
+`history_replay.c` owns protocol reconstruction, `history_content.c` owns secret
+redaction and result budgets, `history_compaction.c` owns retained-window commits,
+and `history_inspection.c` owns diagnosis and repair. Their shared helpers stay
+in `history_internal.h`. Model-generated checkpoints are produced outside the
+commit transaction; replay and active-request validation still precede commit.
+
+`memory.c` owns input interpretation, advisory extraction and turn consolidation.
+`memory_context.c` selects relevant context, `memory_render.c` formats the session
+tree, and `memory_query.c` formats filtered and multi-session queries. Persistence
+owns fact versions, generation fences, episode writes and copied record snapshots
+through `memory_repository.h` and `memory_snapshot.h`; it does not format the
+memory query UI. Snapshot strings remain owned until `memory_snapshot_cleanup()`.
 
 ## Tools
 

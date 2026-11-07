@@ -22,3 +22,12 @@ memory.c
 memory_jobs.c
 guardrail.c
 sub_agent.c
+react_tool_worker.c
+react_request.c
+history_content.c
+history_replay.c
+history_compaction.c
+history_inspection.c
+memory_context.c
+memory_render.c
+memory_query.c

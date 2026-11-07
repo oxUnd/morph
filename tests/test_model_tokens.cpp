@@ -142,3 +142,48 @@ TEST(ModelTokenBudgetTest, SaturatesLargeEstimatesAndRejectsInvalidArrays)
 	EXPECT_EQ(model_estimate_input_tokens(&model, "", nullptr, 1,
 		nullptr, 0, count_input_text, nullptr, &tokens), -EINVAL);
 }
+
+TEST(ModelCloneTest, CopiesConfigurationAndResetsRequestState)
+{
+	model *source = model_llm_create(nullptr, "gateway", "model", "http://unit", "key");
+	ASSERT_NE(source, nullptr);
+	strcpy(source->name, "configured");
+	strcpy(source->adapter, "openai-responses");
+	strcpy(source->extra_body_json, "{\"temperature\":0.2}");
+	source->context_limit = 42000;
+	source->max_tokens = 512;
+	source->timeout_seconds = 7;
+	source->retry_count = 2;
+	source->poll_interval_seconds = 3;
+	source->poll_timeout_seconds = 17;
+	morph_cancel_token cancelled{};
+	model_usage_sink sink{};
+	source->http.cancel_token = &cancelled;
+	source->usage_sink = &sink;
+	strcpy(source->last_error, "previous error");
+	source->error_info.kind = MODEL_ERROR_API;
+	model *copy = model_llm_clone(source, nullptr);
+	ASSERT_NE(copy, nullptr);
+	EXPECT_STREQ(copy->name, source->name);
+	EXPECT_STREQ(copy->adapter, source->adapter);
+	EXPECT_STREQ(copy->extra_body_json, source->extra_body_json);
+	EXPECT_STREQ(copy->provider, source->provider);
+	EXPECT_STREQ(copy->model_id, source->model_id);
+	EXPECT_STREQ(copy->api_base, source->api_base);
+	EXPECT_STREQ(copy->api_key, source->api_key);
+	EXPECT_EQ(copy->context_limit, 42000);
+	EXPECT_EQ(copy->max_tokens, 512);
+	EXPECT_EQ(copy->timeout_seconds, 7);
+	EXPECT_EQ(copy->retry_count, 2);
+	EXPECT_EQ(copy->poll_interval_seconds, 3);
+	EXPECT_EQ(copy->poll_timeout_seconds, 17);
+	EXPECT_EQ(copy->http.cancel_token, nullptr);
+	EXPECT_EQ(copy->usage_sink, nullptr);
+	EXPECT_EQ(copy->last_error[0], '\0');
+	EXPECT_EQ(copy->error_info.kind, MODEL_ERROR_NONE);
+	EXPECT_EQ(copy->handle, nullptr);
+	model_destroy(source);
+	EXPECT_STREQ(copy->adapter, "openai-responses");
+	model_destroy(copy);
+	EXPECT_EQ(model_llm_clone(nullptr, nullptr), nullptr);
+}

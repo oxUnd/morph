@@ -3,6 +3,7 @@
 
 extern "C" {
 #include "permission/context.h"
+#include "permission/context_internal.h"
 #include "runtime/approval.h"
 #include "runtime/runtime_internal.h"
 #include "agent/tools/apply_patch.h"

@@ -1,5 +1,7 @@
 add_library(morph-sync STATIC
 	db_backup.c
+	db_restore.c
+	content_hash.c
 	sync.c
 )
 

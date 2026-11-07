@@ -88,14 +88,17 @@ int sandbox_permission_prepare(struct tool_context *context, const char *princip
 	const char *scratch, struct arena *arena, struct sandbox_config *out)
 {
 	struct permission_access_state access;
-	int rc = 0;
+	struct tool_permission_snapshot snapshot;
+	int rc;
 
 	if (!context || !principal || !arena || !out)
 		return -EINVAL;
-	pthread_mutex_lock(&context->authority_lock);
-	access = permission_effective_access(&context->permissions.policy);
+	rc = tool_context_snapshot_permissions(context, principal, arena, &snapshot);
+	if (rc != 0)
+		return rc;
+	access = permission_effective_access(&snapshot.policy);
 	memset(out, 0, sizeof(*out));
-	out->logger = context->logger;
+	out->logger = snapshot.logger;
 	out->path_policy_enabled = 1;
 	out->read_all = access.host;
 	out->network_access = access.network;
@@ -108,25 +111,23 @@ int sandbox_permission_prepare(struct tool_context *context, const char *princip
 	     operation++) {
 		if (operation == TOOL_PATH_LIST)
 			continue;
-		morph_array_t paths = {0}, grants = {0};
+		morph_array_t paths = {0};
+		const struct tool_path_snapshot *grants =
+			operation == TOOL_PATH_READ    ? &snapshot.read
+			: operation == TOOL_PATH_WRITE ? &snapshot.write
+						       : &snapshot.remove;
 		enum tool_path_op op = (enum tool_path_op)operation;
 
-		rc = morph_array_init(&grants, 16, sizeof(const char *));
-		if (rc == 0)
-			rc = tool_context_collect_path_grants(context, principal, op, &grants);
-		if (rc == 0)
-			rc = morph_array_init_arena(&paths, arena, grants.nelts + 3,
-				sizeof(char *));
+		rc = morph_array_init_arena(&paths, arena, (size_t)grants->count + 3,
+					    sizeof(char *));
 		if (rc == 0 && (access.workspace_write || op == TOOL_PATH_READ))
-			rc = append_path(&paths, arena, context->workdir);
+			rc = append_path(&paths, arena, snapshot.workdir);
 		if (rc == 0 && (access.workspace_write || op == TOOL_PATH_READ))
-			rc = append_path(&paths, arena, context->output_dir);
+			rc = append_path(&paths, arena, snapshot.output_dir);
 		if (rc == 0)
 			rc = append_path(&paths, arena, scratch);
-		for (size_t i = 0; rc == 0 && i < grants.nelts; i++)
-			rc = append_path(&paths, arena,
-				*(const char **)morph_array_get(&grants, i));
-		morph_array_cleanup(&grants);
+		for (int i = 0; rc == 0 && i < grants->count; i++)
+			rc = append_path(&paths, arena, grants->paths[i]);
 		if (op == TOOL_PATH_READ) {
 			out->read_paths = paths.elts;
 			out->read_paths_count = (int)paths.nelts;
@@ -140,6 +141,5 @@ int sandbox_permission_prepare(struct tool_context *context, const char *princip
 	}
 	if (rc == 0 && access.workspace_write)
 		rc = sandbox_prepare_tool_paths(out, arena);
-	pthread_mutex_unlock(&context->authority_lock);
 	return rc;
 }

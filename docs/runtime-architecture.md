@@ -40,6 +40,28 @@ state.
 5. Session switching, scheduled execution, cancellation, and shutdown use the
    same runtime lock and lifecycle regardless of frontend.
 
+The private turn scope owns temporary callback, usage, tool-runtime, and hook
+bindings together. Its finish operation restores completed bindings even when
+preparation fails partway through. Request callbacks are closed before workers
+are drained, and worker dependencies outlive every join. Isolated title, recap,
+and approval requests clone model configuration without sharing mutable request
+state; their usage is recorded through the runtime usage owner.
+
+Business services consume typed storage records. `persistence/history_store`
+owns history inspection/export queries, while the runtime services decide which
+records to share and how to present them. `persistence/output_store` owns output
+row mapping and insertion identity; `runtime/output` builds generation recipes
+and emits events. Core session history persistence lives in `session_history`
+and remains available through the compatible `session.h` interface. Memory
+ingestion and presentation consume snapshots and repository operations instead
+of embedding their SQL in the rendering path.
+
+ReAct keeps its decision loop explicit. Worker ownership, request preparation,
+history replay, content normalization, compaction, and inspection are private
+modules with separate responsibilities. Hooks similarly separate configuration,
+protocol decoding, and process execution. These modules do not introduce another
+runtime, service locator, or generic task framework.
+
 ## Request and result
 
 `runtime_request` is the per-turn request context: session identity, model and

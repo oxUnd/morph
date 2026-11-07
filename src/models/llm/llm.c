@@ -1,6 +1,9 @@
 #include "llm.h"
 #include "agent/tool_runtime.h"
 #include "adapter.h"
+#include "codec.h"
+#include "chat_codec.h"
+#include "stream.h"
 #include "agent/tool.h"
 #include "util/log.h"
 #include "util/file.h"
@@ -47,21 +50,6 @@ void model_report_usage(const struct model *model, const struct model_usage *usa
 	}
 }
 
-static int64_t estimate_tokens_from_bytes(size_t bytes)
-{
-	if (bytes == 0)
-		return 0;
-	return (int64_t)((bytes + 3) / 4);
-}
-
-static void usage_strncpy(char *dst, size_t dst_cap, const char *src)
-{
-	if (!dst || dst_cap == 0 || !src)
-		return;
-	strncpy(dst, src, dst_cap - 1);
-	dst[dst_cap - 1] = '\0';
-}
-
 static void model_clear_last_error(struct model *self)
 {
 	if (self) {
@@ -79,525 +67,6 @@ static void model_set_last_error(struct model *self, const char *fmt, ...)
 	va_start(ap, fmt);
 	vsnprintf(self->last_error, sizeof(self->last_error), fmt, ap);
 	va_end(ap);
-}
-
-static int extra_body_key_is_reserved(const char *key)
-{
-	static const char *const reserved[] = {
-		"model", "messages", "tools", "tool_choice", "stream",
-		"stream_options", "max_tokens", "input", "instructions",
-		"parallel_tool_calls", "max_output_tokens"
-	};
-
-	for (size_t i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
-		if (strcmp(key, reserved[i]) == 0)
-			return 1;
-	}
-	return 0;
-}
-
-static int add_extra_body_json(struct morph_log *logger, cJSON *root, const char *json)
-{
-	cJSON *extra;
-	cJSON *item;
-
-	if (!json || !json[0])
-		return 0;
-	extra = cJSON_ParseWithOpts(json, NULL, 1);
-	if (!extra || !cJSON_IsObject(extra)) {
-		cJSON_Delete(extra);
-		log_err(logger, "extra_body_json must contain a valid JSON object");
-		return MORPH_TRACE_ERROR(logger, MORPH_ERR_CONFIG);
-	}
-	cJSON_ArrayForEach(item, extra) {
-		cJSON *copy;
-
-		if (!item->string || extra_body_key_is_reserved(item->string)) {
-			log_err(logger, "extra_body_json contains reserved or invalid field: %s",
-				item->string ? item->string : "<unnamed>");
-			cJSON_Delete(extra);
-			return MORPH_TRACE_ERROR(logger, MORPH_ERR_CONFIG);
-		}
-		copy = cJSON_Duplicate(item, 1);
-		if (!copy || !cJSON_AddItemToObject(root, item->string, copy)) {
-			cJSON_Delete(copy);
-			cJSON_Delete(extra);
-			return MORPH_TRACE_ERROR(logger, -ENOMEM);
-		}
-	}
-	cJSON_Delete(extra);
-	return 0;
-}
-
-static cJSON *build_simple_messages_cjson(const char *system_prompt,
-					  const char **messages, int n)
-{
-	cJSON *arr;
-
-	arr = cJSON_CreateArray();
-	if (!arr)
-		return NULL;
-
-	if (system_prompt && *system_prompt) {
-		cJSON *msg = cJSON_CreateObject();
-		if (!msg) {
-			cJSON_Delete(arr);
-			return NULL;
-		}
-		cJSON_AddStringToObject(msg, "role", "system");
-		cJSON_AddStringToObject(msg, "content", system_prompt);
-		cJSON_AddItemToArray(arr, msg);
-	}
-
-	for (int i = 0; i < n; i++) {
-		const char *role = (i % 2 == 0) ? "user" : "assistant";
-		cJSON *msg = cJSON_CreateObject();
-		if (!msg) {
-			cJSON_Delete(arr);
-			return NULL;
-		}
-		cJSON_AddStringToObject(msg, "role", role);
-		cJSON_AddStringToObject(msg, "content",
-					messages && messages[i] ?
-					messages[i] : "");
-		cJSON_AddItemToArray(arr, msg);
-	}
-	return arr;
-}
-
-static int build_chat_body_json(struct morph_log *logger, struct arena *arena, const char *model_id,
-				const char *system_prompt, const char **messages, int n,
-				int max_tokens, int stream, const char *extra_body_json,
-				const struct llm_adapter *adapter, int disable_thinking,
-				char **out_body, size_t *out_body_len)
-{
-	cJSON *root;
-	cJSON *msgs;
-	char *body;
-
-	if (!arena || !model_id || !out_body || !out_body_len)
-		return -EINVAL;
-	*out_body = NULL;
-	*out_body_len = 0;
-	root = cJSON_CreateObject();
-	msgs = build_simple_messages_cjson(system_prompt, messages, n);
-	if (!root || !msgs) {
-		cJSON_Delete(root);
-		cJSON_Delete(msgs);
-		return -ENOMEM;
-	}
-	cJSON_AddStringToObject(root, "model", model_id);
-	cJSON_AddItemToObject(root, "messages", msgs);
-	if (stream)
-		cJSON_AddBoolToObject(root, "stream", 1);
-	if (stream) {
-		cJSON *opts = cJSON_CreateObject();
-		if (opts) {
-			cJSON_AddBoolToObject(opts, "include_usage", 1);
-			cJSON_AddItemToObject(root, "stream_options", opts);
-		}
-	}
-	cJSON_AddNumberToObject(root, "max_tokens",
-				max_tokens > 0 ? max_tokens : 4096);
-	int rc = add_extra_body_json(logger, root, extra_body_json);
-	if (rc == 0 && disable_thinking && adapter && adapter->disable_thinking)
-		rc = adapter->disable_thinking(root);
-	if (rc < 0) {
-		cJSON_Delete(root);
-		return rc;
-	}
-	body = morph_json_print(arena, root);
-	cJSON_Delete(root);
-	if (!body)
-		return -ENOMEM;
-	*out_body = body;
-	*out_body_len = strlen(body);
-	return 0;
-}
-
-struct llm_stream_ctx {
-	struct morph_log *logger;
-	sse_callback user_cb;
-	llm_stream_callback stream_cb;
-	void *user_data;
-	struct arena *arena;
-	morph_buf_t accumulated;
-	morph_buf_t reasoning;
-	struct tool_call *tool_calls;
-	int tool_call_count;
-	int tool_call_cap;
-	int emitted;
-	struct model_usage usage;
-};
-
-static void llm_stream_init(struct llm_stream_ctx *ctx, struct arena *arena,
-			     sse_callback cb, void *user_data)
-{
-	ctx->logger = NULL;
-	ctx->user_cb = cb;
-	ctx->stream_cb = NULL;
-	ctx->user_data = user_data;
-	ctx->arena = arena;
-	if (morph_buf_init_arena(&ctx->accumulated, arena, 8192) != 0)
-		memset(&ctx->accumulated, 0, sizeof(ctx->accumulated));
-	if (morph_buf_init_arena(&ctx->reasoning, arena, 8192) != 0)
-		memset(&ctx->reasoning, 0, sizeof(ctx->reasoning));
-	ctx->tool_calls = NULL;
-	ctx->tool_call_count = 0;
-	ctx->tool_call_cap = 0;
-	ctx->emitted = 0;
-	memset(&ctx->usage, 0, sizeof(ctx->usage));
-}
-
-static void llm_stream_init_typed(struct llm_stream_ctx *ctx,
-				   struct arena *arena,
-				   llm_stream_callback cb, void *user_data)
-{
-	llm_stream_init(ctx, arena, NULL, user_data);
-	ctx->stream_cb = cb;
-}
-
-static void llm_stream_append(struct llm_stream_ctx *ctx, const char *text)
-{
-	(void)morph_buf_puts(&ctx->accumulated, text);
-}
-
-static int llm_stream_emit(struct llm_stream_ctx *ctx,
-			   enum llm_stream_kind kind, const char *text)
-{
-	if (!ctx || !text || !*text)
-		return 0;
-	ctx->emitted = 1;
-	if (ctx->stream_cb)
-		return ctx->stream_cb(kind, text, ctx->user_data);
-	if (kind == LLM_STREAM_CONTENT && ctx->user_cb)
-		return ctx->user_cb(text, ctx->user_data);
-	return 0;
-}
-
-static struct tool_call *llm_stream_ensure_tool_call(struct llm_stream_ctx *ctx,
-						      int index)
-{
-	if (index >= ctx->tool_call_cap) {
-		int new_cap = index + 4;
-		struct tool_call *new_tc = arena_alloc(ctx->arena, (size_t)new_cap * sizeof(*new_tc));
-		if (!new_tc)
-			return NULL;
-		if (ctx->tool_calls)
-			memcpy(new_tc, ctx->tool_calls, (size_t)ctx->tool_call_cap * sizeof(*new_tc));
-		for (int i = ctx->tool_call_cap; i < new_cap; i++)
-			memset(&new_tc[i], 0, sizeof(new_tc[i]));
-		ctx->tool_calls = new_tc;
-		ctx->tool_call_cap = new_cap;
-	}
-	if (index >= ctx->tool_call_count)
-		ctx->tool_call_count = index + 1;
-	return &ctx->tool_calls[index];
-}
-
-static void llm_stream_transfer_tool_calls(struct llm_stream_ctx *ctx,
-					    struct chat_response *resp)
-{
-	if (ctx->tool_call_count <= 0) {
-		resp->tool_calls = NULL;
-		resp->tool_call_count = 0;
-		return;
-	}
-	resp->tool_calls = arena_alloc(ctx->arena, (size_t)ctx->tool_call_count * sizeof(*resp->tool_calls));
-	if (!resp->tool_calls) {
-		resp->tool_call_count = 0;
-		return;
-	}
-	resp->tool_call_count = ctx->tool_call_count;
-	for (int i = 0; i < ctx->tool_call_count; i++) {
-		strncpy(resp->tool_calls[i].id, ctx->tool_calls[i].id,
-			sizeof(resp->tool_calls[i].id) - 1);
-		strncpy(resp->tool_calls[i].name, ctx->tool_calls[i].name,
-			sizeof(resp->tool_calls[i].name) - 1);
-		resp->tool_calls[i].arguments =
-			ctx->tool_calls[i].arguments
-			? arena_strdup(ctx->arena, ctx->tool_calls[i].arguments)
-			: arena_strdup(ctx->arena, "");
-		resp->tool_calls[i].input_kind =
-			ctx->tool_calls[i].input_kind;
-	}
-}
-
-static void llm_usage_finalize(struct model *self, struct llm_stream_ctx *ctx,
-			       size_t request_bytes)
-{
-	if (!self || !ctx)
-		return;
-	if (!ctx->usage.provider[0])
-		usage_strncpy(ctx->usage.provider,
-			      sizeof(ctx->usage.provider), self->provider);
-	if (!ctx->usage.model[0])
-		usage_strncpy(ctx->usage.model, sizeof(ctx->usage.model),
-			      self->model_id);
-	if (!ctx->usage.kind[0])
-		usage_strncpy(ctx->usage.kind, sizeof(ctx->usage.kind),
-			      "model_text");
-	if (!ctx->usage.usage_source[0]) {
-		ctx->usage.input_tokens = estimate_tokens_from_bytes(request_bytes);
-		ctx->usage.output_tokens =
-			estimate_tokens_from_bytes(ctx->accumulated.len);
-		ctx->usage.total_tokens = ctx->usage.input_tokens +
-			ctx->usage.output_tokens;
-		usage_strncpy(ctx->usage.usage_source,
-			      sizeof(ctx->usage.usage_source), "estimated");
-	}
-	if (ctx->usage.total_tokens == 0)
-		ctx->usage.total_tokens = ctx->usage.input_tokens +
-			ctx->usage.output_tokens;
-}
-
-static void llm_usage_report(struct model *self, struct llm_stream_ctx *ctx,
-			     size_t request_bytes)
-{
-	if (!ctx)
-		return;
-	llm_usage_finalize(self, ctx, request_bytes);
-	model_report_usage(self, &ctx->usage);
-}
-
-static int64_t json_i64(cJSON *obj, const char *name)
-{
-	cJSON *item;
-
-	if (!obj || !name)
-		return 0;
-	item = cJSON_GetObjectItem(obj, name);
-	if (!cJSON_IsNumber(item))
-		return 0;
-	return (int64_t)item->valuedouble;
-}
-
-static void llm_usage_parse_details(struct model_usage *usage,
-				    cJSON *usage_obj)
-{
-	cJSON *prompt_details;
-	cJSON *input_details;
-	cJSON *completion_details;
-	int64_t cached_tokens;
-	int64_t candidate;
-
-	if (!usage || !usage_obj)
-		return;
-	prompt_details = cJSON_GetObjectItem(usage_obj,
-					     "prompt_tokens_details");
-	input_details = cJSON_GetObjectItem(usage_obj,
-					    "input_tokens_details");
-	cached_tokens = json_i64(usage_obj, "cached_tokens");
-	candidate = json_i64(usage_obj, "prompt_cache_hit_tokens");
-	if (candidate > cached_tokens)
-		cached_tokens = candidate;
-	candidate = json_i64(prompt_details, "cached_tokens");
-	if (candidate > cached_tokens)
-		cached_tokens = candidate;
-	candidate = json_i64(input_details, "cached_tokens");
-	if (candidate > cached_tokens)
-		cached_tokens = candidate;
-	if (cached_tokens > usage->cached_tokens)
-		usage->cached_tokens = cached_tokens;
-	if (!prompt_details)
-		prompt_details = input_details;
-	usage->audio_tokens += json_i64(prompt_details, "audio_tokens");
-	usage->image_tokens += json_i64(prompt_details, "image_tokens");
-
-	completion_details = cJSON_GetObjectItem(usage_obj,
-						 "completion_tokens_details");
-	if (!completion_details)
-		completion_details = cJSON_GetObjectItem(usage_obj,
-							 "output_tokens_details");
-	usage->reasoning_tokens += json_i64(completion_details,
-					    "reasoning_tokens");
-	usage->audio_tokens += json_i64(completion_details, "audio_tokens");
-}
-
-static void llm_stream_parse_metadata(struct llm_stream_ctx *ctx, cJSON *root)
-{
-	cJSON *item;
-
-	if (!ctx || !root)
-		return;
-	item = cJSON_GetObjectItem(root, "id");
-	if (cJSON_IsString(item) && item->valuestring &&
-	    !ctx->usage.response_id[0])
-		usage_strncpy(ctx->usage.response_id,
-			      sizeof(ctx->usage.response_id),
-			      item->valuestring);
-	item = cJSON_GetObjectItem(root, "model");
-	if (cJSON_IsString(item) && item->valuestring && !ctx->usage.model[0])
-		usage_strncpy(ctx->usage.model, sizeof(ctx->usage.model),
-			      item->valuestring);
-	item = cJSON_GetObjectItem(root, "system_fingerprint");
-	if (cJSON_IsString(item) && item->valuestring &&
-	    !ctx->usage.system_fingerprint[0])
-		usage_strncpy(ctx->usage.system_fingerprint,
-			      sizeof(ctx->usage.system_fingerprint),
-			      item->valuestring);
-	item = cJSON_GetObjectItem(root, "created");
-	if (cJSON_IsNumber(item) && ctx->usage.created == 0)
-		ctx->usage.created = (int64_t)item->valuedouble;
-}
-
-static void llm_stream_parse_usage(struct llm_stream_ctx *ctx, cJSON *root)
-{
-	cJSON *usage_obj;
-
-	if (!ctx || !root)
-		return;
-	usage_obj = cJSON_GetObjectItem(root, "usage");
-	if (!cJSON_IsObject(usage_obj))
-		return;
-	ctx->usage.input_tokens = json_i64(usage_obj, "prompt_tokens");
-	if (ctx->usage.input_tokens == 0)
-		ctx->usage.input_tokens = json_i64(usage_obj, "input_tokens");
-	ctx->usage.output_tokens = json_i64(usage_obj, "completion_tokens");
-	if (ctx->usage.output_tokens == 0)
-		ctx->usage.output_tokens = json_i64(usage_obj, "output_tokens");
-	ctx->usage.total_tokens = json_i64(usage_obj, "total_tokens");
-	llm_usage_parse_details(&ctx->usage, usage_obj);
-	usage_strncpy(ctx->usage.usage_source,
-		      sizeof(ctx->usage.usage_source), "provider");
-	if (ctx->usage.input_tokens > 0)
-		log_dbg(ctx ? ctx->logger : NULL,
-			"llm usage: prompt cache %lld/%lld input tokens (%.1f%% hit)",
-			(long long)ctx->usage.cached_tokens, (long long)ctx->usage.input_tokens,
-			(double)ctx->usage.cached_tokens * 100.0 / (double)ctx->usage.input_tokens);
-}
-
-static void llm_stream_parse_finish_reason(struct llm_stream_ctx *ctx,
-					   cJSON *choice)
-{
-	cJSON *finish;
-
-	if (!ctx || !choice)
-		return;
-	finish = cJSON_GetObjectItem(choice, "finish_reason");
-	if (cJSON_IsString(finish) && finish->valuestring)
-		usage_strncpy(ctx->usage.finish_reason,
-			      sizeof(ctx->usage.finish_reason),
-			      finish->valuestring);
-}
-
-static int llm_sse_event_cb(const char *event, const char *data, void *ud)
-{
-	struct llm_stream_ctx *ctx = ud;
-	(void)event;
-	if (!data || !*data)
-		return 0;
-
-	if (strcmp(data, "[DONE]") == 0) {
-		log_dbg(ctx ? ctx->logger : NULL, "llm_sse_event_cb: [DONE]");
-		return 0;
-	}
-
-	cJSON *root = cJSON_Parse(data);
-	if (!root)
-		return 0;
-
-	llm_stream_parse_metadata(ctx, root);
-	llm_stream_parse_usage(ctx, root);
-
-	cJSON *choices = cJSON_GetObjectItem(root, "choices");
-	if (!cJSON_IsArray(choices)) {
-		cJSON_Delete(root);
-		return 0;
-	}
-
-	cJSON *first = cJSON_GetArrayItem(choices, 0);
-	if (!first) {
-		cJSON_Delete(root);
-		return 0;
-	}
-	llm_stream_parse_finish_reason(ctx, first);
-
-	cJSON *delta = cJSON_GetObjectItem(first, "delta");
-	if (!delta) {
-		cJSON *text_item = cJSON_GetObjectItem(first, "text");
-		if (cJSON_IsString(text_item) && text_item->valuestring) {
-			llm_stream_append(ctx, text_item->valuestring);
-			if (ctx->user_cb) {
-				int rc = ctx->user_cb(text_item->valuestring,
-						      ctx->user_data);
-				if (rc != 0) {
-					cJSON_Delete(root);
-					return rc;
-				}
-			}
-		}
-		cJSON_Delete(root);
-		return 0;
-	}
-
-	cJSON *content = cJSON_GetObjectItem(delta, "content");
-	if (cJSON_IsString(content) && content->valuestring) {
-		llm_stream_append(ctx, content->valuestring);
-		int rc = llm_stream_emit(ctx, LLM_STREAM_CONTENT,
-					  content->valuestring);
-		if (rc != 0) {
-			cJSON_Delete(root);
-			return rc;
-		}
-	}
-
-	cJSON *reasoning = cJSON_GetObjectItem(delta, "reasoning_content");
-	if (cJSON_IsString(reasoning) && reasoning->valuestring) {
-		(void)morph_buf_puts(&ctx->reasoning, reasoning->valuestring);
-		int rc = llm_stream_emit(ctx, LLM_STREAM_REASONING,
-					  reasoning->valuestring);
-		if (rc != 0) {
-			cJSON_Delete(root);
-			return rc;
-		}
-	}
-
-	cJSON *tool_calls_arr = cJSON_GetObjectItem(delta, "tool_calls");
-	if (cJSON_IsArray(tool_calls_arr)) {
-		cJSON *tc_item;
-		cJSON_ArrayForEach(tc_item, tool_calls_arr) {
-			cJSON *idx_item = cJSON_GetObjectItem(tc_item, "index");
-			int index = cJSON_IsNumber(idx_item) ? (int)idx_item->valuedouble : 0;
-
-			struct tool_call *tc = llm_stream_ensure_tool_call(ctx, index);
-			if (!tc)
-				continue;
-
-			cJSON *id_item = cJSON_GetObjectItem(tc_item, "id");
-			if (cJSON_IsString(id_item) && id_item->valuestring) {
-				strncpy(tc->id, id_item->valuestring,
-					sizeof(tc->id) - 1);
-			}
-
-			cJSON *func_obj = cJSON_GetObjectItem(tc_item, "function");
-			if (func_obj) {
-				cJSON *name_item = cJSON_GetObjectItem(func_obj, "name");
-				if (cJSON_IsString(name_item) && name_item->valuestring) {
-					strncpy(tc->name, name_item->valuestring,
-						sizeof(tc->name) - 1);
-				}
-				cJSON *args_item = cJSON_GetObjectItem(func_obj, "arguments");
-				if (cJSON_IsString(args_item) && args_item->valuestring) {
-					size_t existing = tc->arguments ? strlen(tc->arguments) : 0;
-					size_t add_len = strlen(args_item->valuestring);
-					char *new_args = arena_alloc(ctx->arena, existing + add_len + 1);
-					if (new_args) {
-						if (tc->arguments)
-							memcpy(new_args, tc->arguments, existing);
-						tc->arguments = new_args;
-						memcpy(tc->arguments + existing,
-						       args_item->valuestring,
-						       add_len);
-						tc->arguments[existing + add_len] = '\0';
-					}
-				}
-			}
-		}
-	}
-
-	cJSON_Delete(root);
-	return 0;
 }
 
 struct llm_http_ctx {
@@ -638,14 +107,13 @@ static const char *llm_extract_error(const char *raw, struct arena *arena)
 
 static int llm_retryable_status(int status)
 {
-	return status == 408 || status == 429 || status == 500 ||
-	       status == 502 || status == 503 || status == 504;
+	return status == 408 || status == 429 || status == 500 || status == 502 || status == 503 ||
+	       status == 504;
 }
 
 static int llm_stream_started(const struct llm_stream_ctx *ctx)
 {
-	return ctx->emitted || ctx->accumulated.len > 0 ||
-	       ctx->tool_call_count > 0;
+	return ctx->emitted || ctx->accumulated.len > 0 || ctx->tool_call_count > 0;
 }
 
 static int llm_retry_delay_seconds(int retry_index)
@@ -654,7 +122,8 @@ static int llm_retry_delay_seconds(int retry_index)
 	return seconds > 8 ? 8 : seconds;
 }
 
-static void llm_record_error(struct model *self, int status, const char *raw, int started, long retry_after_seconds)
+static void llm_record_error(struct model *self, int status, const char *raw, int started,
+			     long retry_after_seconds)
 {
 	struct model_error_info *info = &self->error_info;
 	cJSON *json = raw ? cJSON_Parse(raw) : NULL;
@@ -684,7 +153,7 @@ static void llm_record_error(struct model *self, int status, const char *raw, in
 		     !strcmp(code, "context_window_exceeded") || !strcmp(code, "prompt_too_long")))
 			info->kind = MODEL_ERROR_CONTEXT;
 		const char *message =
-		    cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(error, "message"));
+			cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(error, "message"));
 		if (message && (strstr(message, "maximum context length") ||
 				strstr(message, "exceeds the context window") ||
 				strstr(message, "prompt is too long")))
@@ -700,16 +169,12 @@ static void llm_record_error(struct model *self, int status, const char *raw, in
 	cJSON_Delete(json);
 }
 
-static int llm_post_sse_with_retry(struct model *self, struct arena *arena,
-				   const char *operation, const char *usage_phase, const char *url,
-				   const char *body, size_t body_len,
-				   const char **headers, long timeout,
-				   sse_callback cb,
-				   llm_stream_callback stream_cb,
-				   sse_event_cb event_cb,
-				   void *user_data,
-				   struct llm_stream_ctx *result,
-				   const char **error_detail)
+static int llm_post_sse_with_retry(struct model *self, struct arena *arena, const char *operation,
+				   const char *usage_phase, const char *url, const char *body,
+				   size_t body_len, const char **headers, long timeout,
+				   sse_callback cb, llm_stream_callback stream_cb,
+				   sse_event_cb event_cb, void *user_data,
+				   struct llm_stream_ctx *result, const char **error_detail)
 {
 	int retries = self->retry_count;
 	if (retries < 0)
@@ -719,7 +184,7 @@ static int llm_post_sse_with_retry(struct model *self, struct arena *arena,
 	if (error_detail)
 		*error_detail = NULL;
 
-	for (int attempt = 0; ; attempt++) {
+	for (int attempt = 0;; attempt++) {
 		struct llm_stream_ctx ctx;
 		if (stream_cb)
 			llm_stream_init_typed(&ctx, arena, stream_cb, user_data);
@@ -727,10 +192,10 @@ static int llm_post_sse_with_retry(struct model *self, struct arena *arena,
 			llm_stream_init(&ctx, arena, cb, user_data);
 
 		ctx.logger = self->http.logger;
-		snprintf(ctx.usage.phase, sizeof(ctx.usage.phase), "%s", usage_phase ? usage_phase : "turn");
+		snprintf(ctx.usage.phase, sizeof(ctx.usage.phase), "%s",
+			 usage_phase ? usage_phase : "turn");
 		struct sse_parser parser;
-		sse_parser_init(&parser, event_cb ? event_cb : llm_sse_event_cb,
-				&ctx);
+		sse_parser_init(&parser, event_cb ? event_cb : llm_chat_decode_event, &ctx);
 		struct llm_http_ctx hctx = {
 			.parser = &parser,
 			.arena = arena,
@@ -751,15 +216,15 @@ static int llm_post_sse_with_retry(struct model *self, struct arena *arena,
 			*error_detail = detail;
 
 		llm_record_error(self, status, hctx.error_buf.data, llm_stream_started(&ctx),
-			metadata.retry_after_seconds);
+				 metadata.retry_after_seconds);
 		if (self->error_info.kind == MODEL_ERROR_CONTEXT) {
 			*result = ctx;
 			return MORPH_ERR_CONTEXT_LIMIT;
 		}
 		if (self->error_info.retryable && attempt < retries) {
 			long delay = self->error_info.retry_after_seconds > 0
-					 ? self->error_info.retry_after_seconds
-					 : llm_retry_delay_seconds(attempt);
+					     ? self->error_info.retry_after_seconds
+					     : llm_retry_delay_seconds(attempt);
 			if (detail)
 				log_warn(self ? self->http.logger : NULL,
 					 "%s: HTTP %d (%s), retry %d/%d in %lds", operation, status,
@@ -779,10 +244,8 @@ static int llm_post_sse_with_retry(struct model *self, struct arena *arena,
 	}
 }
 
-static int llm_chat(struct model *self, struct arena *arena,
-		    const char *system_prompt,
-		    const char **messages, int n,
-		    const struct model_chat_options *opts,
+static int llm_chat(struct model *self, struct arena *arena, const char *system_prompt,
+		    const char **messages, int n, const struct model_chat_options *opts,
 		    sse_callback cb, void *user_data)
 {
 	int max_tokens;
@@ -790,22 +253,23 @@ static int llm_chat(struct model *self, struct arena *arena,
 
 	if (!self || !self->api_key[0]) {
 		log_err(self ? self->http.logger : NULL, "llm_chat: no API key configured");
-		if (self) { model_clear_last_error(self); self->error_info.kind = MODEL_ERROR_CONFIG; }
+		if (self) {
+			model_clear_last_error(self);
+			self->error_info.kind = MODEL_ERROR_CONFIG;
+		}
 		return MORPH_TRACE_ERROR(self ? self->http.logger : NULL, MORPH_ERR_NOT_CONFIGURED);
 	}
 
 	log_dbg(self ? self->http.logger : NULL, "llm_chat: start, model=%s, api_base=%s",
 		self->model_id, self->api_base);
-	max_tokens = opts && opts->max_tokens > 0
-		? opts->max_tokens
-		: self->max_tokens;
+	max_tokens = opts && opts->max_tokens > 0 ? opts->max_tokens : self->max_tokens;
 	timeout = opts && opts->timeout_seconds > 0
-		? opts->timeout_seconds
-		: (self->timeout_seconds > 0 ? self->timeout_seconds : 300L);
+			  ? opts->timeout_seconds
+			  : (self->timeout_seconds > 0 ? self->timeout_seconds : 300L);
 
 	char *body = NULL;
 	size_t body_len = 0;
-	int rc = build_chat_body_json(self ? self->http.logger : NULL, arena, self->model_id,
+	int rc = llm_chat_encode_body(self ? self->http.logger : NULL, arena, self->model_id,
 				      system_prompt, messages, n, max_tokens, 1,
 				      self->extra_body_json, llm_adapter_resolve(self),
 				      opts ? opts->disable_thinking : 0, &body, &body_len);
@@ -821,16 +285,15 @@ static int llm_chat(struct model *self, struct arena *arena,
 
 	char auth_header[512];
 	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", self->api_key);
-	const char *extra_headers[] = { auth_header };
+	const char *extra_headers[] = {auth_header};
 
 	log_dbg(self ? self->http.logger : NULL,
 		"llm_chat: sending SSE request to %s, timeout=%lds", url, timeout);
 	struct llm_stream_ctx ctx;
 	const char *detail = NULL;
-	int status = llm_post_sse_with_retry(self, arena, "llm_chat", opts ? opts->usage_phase : NULL, url,
-					     body, body_len, extra_headers,
-					     timeout, cb, NULL, NULL, user_data,
-					     &ctx, &detail);
+	int status = llm_post_sse_with_retry(
+		self, arena, "llm_chat", opts ? opts->usage_phase : NULL, url, body, body_len,
+		extra_headers, timeout, cb, NULL, NULL, user_data, &ctx, &detail);
 	log_dbg(self ? self->http.logger : NULL, "llm_chat: SSE request done, status=%d", status);
 
 	if (status < 0) {
@@ -868,12 +331,10 @@ static int add_system_message(cJSON *messages, const char *system_prompt)
 	return 0;
 }
 
-static int llm_chat_with_image(struct model *self, struct arena *arena,
-			       const char *system_prompt,
-			       const char *prompt,
-			       const char *image_path,
-			       const struct model_image_chat_options *opts,
-			       sse_callback cb, void *user_data)
+static int llm_chat_with_image(struct model *self, struct arena *arena, const char *system_prompt,
+			       const char *prompt, const char *image_path,
+			       const struct model_image_chat_options *opts, sse_callback cb,
+			       void *user_data)
 {
 	int max_tokens;
 	int max_dim;
@@ -883,27 +344,29 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	if (!self || !self->api_key[0]) {
 		log_err(self ? self->http.logger : NULL,
 			"llm_chat_with_image: no API key configured");
-		if (self) { model_clear_last_error(self); self->error_info.kind = MODEL_ERROR_CONFIG; }
+		if (self) {
+			model_clear_last_error(self);
+			self->error_info.kind = MODEL_ERROR_CONFIG;
+		}
 		return MORPH_TRACE_ERROR(self ? self->http.logger : NULL, MORPH_ERR_NOT_CONFIGURED);
 	}
 	if (!arena || !prompt || !*prompt || !image_path || !*image_path)
 		return -EINVAL;
 
 	max_tokens = opts && opts->max_tokens > 0
-		? opts->max_tokens
-		: (self->max_tokens > 0 ? self->max_tokens : 4096);
+			     ? opts->max_tokens
+			     : (self->max_tokens > 0 ? self->max_tokens : 4096);
 	max_dim = opts && opts->max_dim > 0 ? opts->max_dim : LLM_IMAGE_QA_MAX_DIM;
 	timeout = opts && opts->timeout_seconds > 0
-		? opts->timeout_seconds
-		: (self->timeout_seconds > 0 ? self->timeout_seconds : 300L);
+			  ? opts->timeout_seconds
+			  : (self->timeout_seconds > 0 ? self->timeout_seconds : 300L);
 
 	char *data_uri = NULL;
 	int encode_rc = image_encode_data_uri(image_path, max_dim, &data_uri);
 	if (encode_rc < 0) {
 		log_err(self ? self->http.logger : NULL,
 			"llm_chat_with_image: failed to encode image: %s", image_path);
-		model_set_last_error(self, "failed to read or encode image: %s",
-				     image_path);
+		model_set_last_error(self, "failed to read or encode image: %s", image_path);
 		return MORPH_TRACE_ERROR(self ? self->http.logger : NULL, encode_rc);
 	}
 
@@ -962,14 +425,12 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 		cJSON *stream_opts = cJSON_CreateObject();
 		if (stream_opts) {
 			cJSON_AddBoolToObject(stream_opts, "include_usage", 1);
-			cJSON_AddItemToObject(root, "stream_options",
-					      stream_opts);
+			cJSON_AddItemToObject(root, "stream_options", stream_opts);
 		}
 	}
-	cJSON_AddNumberToObject(root, "max_tokens",
-				max_tokens);
+	cJSON_AddNumberToObject(root, "max_tokens", max_tokens);
 	int extra_rc =
-		add_extra_body_json(self ? self->http.logger : NULL, root, self->extra_body_json);
+		llm_codec_add_options(self ? self->http.logger : NULL, root, self->extra_body_json);
 	if (extra_rc < 0) {
 		cJSON_Delete(root);
 		return extra_rc;
@@ -989,9 +450,8 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
 
 	char auth_header[512];
-	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s",
-		 self->api_key);
-	const char *extra_headers[] = { auth_header };
+	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", self->api_key);
+	const char *extra_headers[] = {auth_header};
 
 	log_dbg(self ? self->http.logger : NULL,
 		"llm_chat_with_image: sending SSE request to %s, timeout=%lds, max_tokens=%d, "
@@ -999,19 +459,16 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 		url, timeout, max_tokens, max_dim, body_len);
 	struct llm_stream_ctx ctx;
 	const char *detail = NULL;
-	int status = llm_post_sse_with_retry(self, arena,
-					     "llm_chat_with_image", NULL, url,
-					     body, body_len, extra_headers,
-					     timeout, cb, NULL, NULL, user_data,
-					     &ctx, &detail);
+	int status = llm_post_sse_with_retry(self, arena, "llm_chat_with_image", NULL, url, body,
+					     body_len, extra_headers, timeout, cb, NULL, NULL,
+					     user_data, &ctx, &detail);
 	log_dbg(self ? self->http.logger : NULL, "llm_chat_with_image: SSE request done, status=%d",
 		status);
 
 	if (status < 0) {
 		log_err(self ? self->http.logger : NULL,
 			"llm_chat_with_image: SSE request failed: %d", status);
-		model_set_last_error(self, "HTTP/SSE request failed: %s",
-				     morph_strerror(status));
+		model_set_last_error(self, "HTTP/SSE request failed: %s", morph_strerror(status));
 		return status;
 	}
 	if (status >= 400) {
@@ -1022,8 +479,7 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 		} else {
 			log_err(self ? self->http.logger : NULL,
 				"llm_chat_with_image: API returned HTTP %d", status);
-			model_set_last_error(self, "HTTP %d from %s", status,
-					     self->api_base);
+			model_set_last_error(self, "HTTP %d from %s", status, self->api_base);
 		}
 		return MORPH_TRACE_ERROR(self ? self->http.logger : NULL, MORPH_ERR_API);
 	}
@@ -1032,308 +488,9 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	return status;
 }
 
-static char *build_text_tool_arguments_json(const char *input)
-{
-	cJSON *wrapper = cJSON_CreateObject();
-	char *json;
-
-	if (!wrapper)
-		return NULL;
-	cJSON_AddStringToObject(wrapper, "input", input ? input : "");
-	json = cJSON_PrintUnformatted(wrapper);
-	cJSON_Delete(wrapper);
-	return json;
-}
-
-static cJSON *build_structured_messages_cjson(const char *system_prompt,
-					       const struct chat_message *messages,
-					       int msg_count,
-					       const struct llm_adapter *adapter,
-					       const struct model *model)
-{
-	cJSON *arr = cJSON_CreateArray();
-
-	if (system_prompt && *system_prompt) {
-		cJSON *sys_msg = cJSON_CreateObject();
-		cJSON_AddStringToObject(sys_msg, "role", "system");
-		cJSON_AddStringToObject(sys_msg, "content", system_prompt);
-		cJSON_AddItemToArray(arr, sys_msg);
-	}
-
-	for (int i = 0; i < msg_count; i++) {
-		const struct chat_message *m = &messages[i];
-		cJSON *msg = cJSON_CreateObject();
-		cJSON_AddStringToObject(msg, "role", m->role);
-
-		if (m->content && *m->content)
-			cJSON_AddStringToObject(msg, "content", m->content);
-		else if (adapter->assistant_tool_content_nullable &&
-			 strcmp(m->role, "assistant") == 0 && m->tool_calls)
-			cJSON_AddNullToObject(msg, "content");
-		else if (m->content)
-			cJSON_AddStringToObject(msg, "content", m->content);
-		else
-			cJSON_AddStringToObject(msg, "content", "");
-
-		if (adapter->add_message_fields &&
-		    adapter->add_message_fields(model, msg, m) < 0) {
-			cJSON_Delete(msg);
-			cJSON_Delete(arr);
-			return NULL;
-		}
-
-		if (strcmp(m->role, "assistant") == 0 && m->tool_calls && m->tool_call_count > 0) {
-			cJSON *tc_arr = cJSON_CreateArray();
-			for (int j = 0; j < m->tool_call_count; j++) {
-				cJSON *tc_obj = cJSON_CreateObject();
-				char *text_arguments = NULL;
-				const char *arguments =
-					m->tool_calls[j].arguments ?
-					m->tool_calls[j].arguments : "";
-
-				if (m->tool_calls[j].input_kind == TOOL_INPUT_TEXT) {
-					text_arguments =
-						build_text_tool_arguments_json(arguments);
-					if (!text_arguments) {
-						cJSON_Delete(tc_obj);
-						cJSON_Delete(tc_arr);
-						cJSON_Delete(msg);
-						cJSON_Delete(arr);
-						return NULL;
-					}
-					arguments = text_arguments;
-				}
-				cJSON_AddStringToObject(tc_obj, "id", m->tool_calls[j].id);
-				cJSON_AddStringToObject(tc_obj, "type", "function");
-				cJSON *func = cJSON_CreateObject();
-				cJSON_AddStringToObject(func, "name", m->tool_calls[j].name);
-				cJSON_AddStringToObject(func, "arguments", arguments);
-				free(text_arguments);
-				cJSON_AddItemToObject(tc_obj, "function", func);
-				cJSON_AddItemToArray(tc_arr, tc_obj);
-			}
-			cJSON_AddItemToObject(msg, "tool_calls", tc_arr);
-		}
-
-		if (strcmp(m->role, "tool") == 0 && m->tool_call_id) {
-			cJSON_AddStringToObject(msg, "tool_call_id", m->tool_call_id);
-		}
-
-		cJSON_AddItemToArray(arr, msg);
-	}
-
-	return arr;
-}
-
-static cJSON *normalize_params_to_schema(cJSON *params)
-{
-	if (!params)
-		return NULL;
-	if (cJSON_IsObject(params)) {
-		if (!cJSON_HasObjectItem(params, "type"))
-			cJSON_AddStringToObject(params, "type", "object");
-		return params;
-	}
-	if (cJSON_IsArray(params)) {
-		cJSON *schema = cJSON_CreateObject();
-		cJSON_AddStringToObject(schema, "type", "object");
-		cJSON *props = cJSON_CreateObject();
-		cJSON *required = cJSON_CreateArray();
-		cJSON *item;
-		cJSON_ArrayForEach(item, params) {
-			cJSON *name = cJSON_GetObjectItem(item, "name");
-			if (!cJSON_IsString(name))
-				continue;
-			cJSON *prop = cJSON_CreateObject();
-			cJSON_AddStringToObject(prop, "type", "string");
-			cJSON *desc = cJSON_GetObjectItem(item, "description");
-			if (cJSON_IsString(desc))
-				cJSON_AddStringToObject(prop, "description",
-							desc->valuestring);
-			cJSON_AddItemToObject(props, name->valuestring, prop);
-			cJSON *req = cJSON_GetObjectItem(item, "required");
-			if (cJSON_IsBool(req) && cJSON_IsTrue(req))
-				cJSON_AddItemToArray(required,
-						     cJSON_CreateString(name->valuestring));
-		}
-		cJSON_AddItemToObject(schema, "properties", props);
-		if (cJSON_GetArraySize(required) > 0)
-			cJSON_AddItemToObject(schema, "required", required);
-		else
-			cJSON_Delete(required);
-		cJSON_Delete(params);
-		return schema;
-	}
-	cJSON_Delete(params);
-	return NULL;
-}
-
-static cJSON *build_tools_cjson(const struct tool_desc *tools, int tool_count)
-{
-	cJSON *arr = cJSON_CreateArray();
-	for (int i = 0; i < tool_count; i++) {
-		cJSON *tool = cJSON_CreateObject();
-		cJSON_AddStringToObject(tool, "type", "function");
-
-		cJSON *func = cJSON_CreateObject();
-		cJSON_AddStringToObject(func, "name", tools[i].name);
-		cJSON_AddStringToObject(func, "description", tools[i].description);
-
-		cJSON *params = NULL;
-		if (tools[i].input_kind == TOOL_INPUT_TEXT) {
-			params = cJSON_Parse(
-				"{\"type\":\"object\",\"properties\":{"
-				"\"input\":{\"type\":\"string\","
-				"\"description\":\"Raw text input for this tool.\"}},"
-				"\"required\":[\"input\"],"
-				"\"additionalProperties\":false}");
-		} else if ((tools[i].input_schema && tools[i].input_schema[0])) {
-			params = cJSON_Parse(tools[i].input_schema);
-		}
-		params = normalize_params_to_schema(params);
-		if (params)
-			cJSON_AddItemToObject(func, "parameters", params);
-		else
-			cJSON_AddItemToObject(func, "parameters",
-					      cJSON_Parse("{\"type\":\"object\",\"properties\":{}}"));
-
-		cJSON_AddItemToObject(tool, "function", func);
-		cJSON_AddItemToArray(arr, tool);
-	}
-	return arr;
-}
-
-static cJSON *build_responses_tools_cjson(const struct tool_desc *tools,
-					  int tool_count)
-{
-	cJSON *array = cJSON_CreateArray();
-
-	if (!array)
-		return NULL;
-	for (int i = 0; i < tool_count; i++) {
-		cJSON *tool = cJSON_CreateObject();
-
-		if (!tool) {
-			cJSON_Delete(array);
-			return NULL;
-		}
-		if (tools[i].input_kind == TOOL_INPUT_TEXT) {
-			cJSON_AddStringToObject(tool, "type", "custom");
-			cJSON_AddStringToObject(tool, "name", tools[i].name);
-			cJSON_AddStringToObject(tool, "description",
-				tools[i].description);
-			if ((tools[i].input_format && tools[i].input_format[0])) {
-				cJSON *format = cJSON_Parse(tools[i].input_format);
-
-				if (!format) {
-					cJSON_Delete(tool);
-					cJSON_Delete(array);
-					return NULL;
-				}
-				cJSON_AddItemToObject(tool, "format", format);
-			}
-		} else {
-			cJSON *params = (tools[i].input_schema && tools[i].input_schema[0]) ?
-				cJSON_Parse(tools[i].input_schema) : NULL;
-
-			params = normalize_params_to_schema(params);
-			if (!params)
-				params = cJSON_Parse(TOOL_EMPTY_INPUT_SCHEMA);
-			cJSON_AddStringToObject(tool, "type", "function");
-			cJSON_AddStringToObject(tool, "name", tools[i].name);
-			cJSON_AddStringToObject(tool, "description",
-				tools[i].description);
-			cJSON_AddItemToObject(tool, "parameters", params);
-		}
-		cJSON_AddItemToArray(array, tool);
-	}
-	return array;
-}
-
-static enum tool_input_kind responses_call_kind(
-	const struct chat_message *messages, int before, const char *call_id)
-{
-	for (int i = before - 1; i >= 0; i--) {
-		for (int j = 0; j < messages[i].tool_call_count; j++) {
-			struct tool_call *call = &messages[i].tool_calls[j];
-
-			if (strcmp(call->id, call_id) == 0 ||
-			    strcmp(call->tool_call_id, call_id) == 0)
-				return call->input_kind;
-		}
-	}
-	return TOOL_INPUT_JSON;
-}
-
-static cJSON *build_responses_input_cjson(const struct chat_message *messages,
-					  int msg_count)
-{
-	cJSON *array = cJSON_CreateArray();
-
-	if (!array)
-		return NULL;
-	for (int i = 0; i < msg_count; i++) {
-		const struct chat_message *message = &messages[i];
-
-		if (message->tool_calls && message->tool_call_count > 0) {
-			if (message->content && message->content[0]) {
-				cJSON *text = cJSON_CreateObject();
-
-				cJSON_AddStringToObject(text, "role", "assistant");
-				cJSON_AddStringToObject(text, "content",
-					message->content);
-				cJSON_AddItemToArray(array, text);
-			}
-			for (int j = 0; j < message->tool_call_count; j++) {
-				struct tool_call *call = &message->tool_calls[j];
-				cJSON *item = cJSON_CreateObject();
-
-				if (call->input_kind == TOOL_INPUT_TEXT) {
-					cJSON_AddStringToObject(item, "type",
-						"custom_tool_call");
-					cJSON_AddStringToObject(item, "input",
-						call->arguments ? call->arguments : "");
-				} else {
-					cJSON_AddStringToObject(item, "type",
-						"function_call");
-					cJSON_AddStringToObject(item, "arguments",
-						call->arguments ? call->arguments : "{}");
-				}
-				cJSON_AddStringToObject(item, "call_id", call->id);
-				cJSON_AddStringToObject(item, "name", call->name);
-				cJSON_AddItemToArray(array, item);
-			}
-			continue;
-		}
-		if (message->tool_call_id && message->tool_call_id[0]) {
-			cJSON *item = cJSON_CreateObject();
-			enum tool_input_kind kind = responses_call_kind(
-				messages, i, message->tool_call_id);
-
-			cJSON_AddStringToObject(item, "type",
-				kind == TOOL_INPUT_TEXT ?
-				"custom_tool_call_output" : "function_call_output");
-			cJSON_AddStringToObject(item, "call_id",
-				message->tool_call_id);
-			cJSON_AddStringToObject(item, "output",
-				message->content ? message->content : "");
-			cJSON_AddItemToArray(array, item);
-			continue;
-		}
-		cJSON *item = cJSON_CreateObject();
-		cJSON_AddStringToObject(item, "role",
-			message->role ? message->role : "user");
-		cJSON_AddStringToObject(item, "content",
-			message->content ? message->content : "");
-		cJSON_AddItemToArray(array, item);
-	}
-	return array;
-}
-
 /* Count transmitted text, not JSON escaping around message contents. Framing
  * remains an estimate; the caller reserves a separate protocol safety margin. */
-static int64_t input_text_tokens(const cJSON *value, model_token_counter count,
-				 void *user_data)
+static int64_t input_text_tokens(const cJSON *value, model_token_counter count, void *user_data)
 {
 	int64_t total = 0;
 	const cJSON *child;
@@ -1342,36 +499,34 @@ static int64_t input_text_tokens(const cJSON *value, model_token_counter count,
 		return count(value->valuestring, user_data);
 	if (cJSON_IsObject(value))
 		total = 12;
-	cJSON_ArrayForEach(child, value)
+	cJSON_ArrayForEach (child, value)
 		total += input_text_tokens(child, count, user_data);
 	return total;
 }
 
 int model_input_snapshot(const struct model *model, const char *system_prompt,
-	const struct chat_message *messages, int msg_count,
-	const struct tool_desc *tools, int tool_count, cJSON **out)
+			 const struct chat_message *messages, int msg_count,
+			 const struct tool_desc *tools, int tool_count, cJSON **out)
 {
-	const struct llm_adapter *adapter = llm_adapter_resolve(model);
+	const struct llm_codec *codec = llm_codec_resolve(model);
 	cJSON *root;
 	cJSON *input;
 	cJSON *definitions;
 
-	if (!out || msg_count < 0 || tool_count < 0 ||
-	    (msg_count && !messages) || (tool_count && !tools))
+	if (!out || msg_count < 0 || tool_count < 0 || (msg_count && !messages) ||
+	    (tool_count && !tools))
 		return MORPH_TRACE_ERROR(model ? model->http.logger : NULL, -EINVAL);
 	*out = NULL;
 	root = cJSON_CreateObject();
-	input = adapter->responses_api ? build_responses_input_cjson(messages, msg_count) :
-		build_structured_messages_cjson(system_prompt, messages, msg_count, adapter, model);
-	definitions = adapter->responses_api ? build_responses_tools_cjson(tools, tool_count) :
-		build_tools_cjson(tools, tool_count);
+	input = codec->input(model, system_prompt, messages, msg_count);
+	definitions = codec->tools(tools, tool_count);
 	if (!root || !input || !definitions) {
 		cJSON_Delete(root);
 		cJSON_Delete(input);
 		cJSON_Delete(definitions);
 		return MORPH_TRACE_ERROR(model ? model->http.logger : NULL, -ENOMEM);
 	}
-	if (!cJSON_AddItemToObject(root, adapter->responses_api ? "input" : "messages", input)) {
+	if (!cJSON_AddItemToObject(root, codec->input_key, input)) {
 		cJSON_Delete(input);
 		cJSON_Delete(definitions);
 		cJSON_Delete(root);
@@ -1382,8 +537,8 @@ int model_input_snapshot(const struct model *model, const char *system_prompt,
 		cJSON_Delete(root);
 		return MORPH_TRACE_ERROR(model ? model->http.logger : NULL, -ENOMEM);
 	}
-	if (adapter->responses_api && system_prompt && *system_prompt &&
-	    !cJSON_AddStringToObject(root, "instructions", system_prompt)) {
+	if (codec->system_key && system_prompt && *system_prompt &&
+	    !cJSON_AddStringToObject(root, codec->system_key, system_prompt)) {
 		cJSON_Delete(root);
 		return MORPH_TRACE_ERROR(model ? model->http.logger : NULL, -ENOMEM);
 	}
@@ -1391,33 +546,29 @@ int model_input_snapshot(const struct model *model, const char *system_prompt,
 	return 0;
 }
 
-int model_estimate_input_tokens(const struct model *model,
-	const char *system_prompt, const struct chat_message *messages, int msg_count,
-	const struct tool_desc *tools, int tool_count, model_token_counter count,
-	void *user_data, int *tokens)
+int model_estimate_input_tokens(const struct model *model, const char *system_prompt,
+				const struct chat_message *messages, int msg_count,
+				const struct tool_desc *tools, int tool_count,
+				model_token_counter count, void *user_data, int *tokens)
 {
-	const struct llm_adapter *adapter = llm_adapter_resolve(model);
+	const struct llm_codec *codec = llm_codec_resolve(model);
 	cJSON *input;
 	cJSON *wire_tools;
 	char *json;
 	int64_t total;
 
-	if (!count || !tokens || msg_count < 0 || tool_count < 0 ||
-	    (msg_count && !messages) || (tool_count && !tools))
+	if (!count || !tokens || msg_count < 0 || tool_count < 0 || (msg_count && !messages) ||
+	    (tool_count && !tools))
 		return MORPH_TRACE_ERROR(model ? model->http.logger : NULL, -EINVAL);
-	input = adapter->responses_api ? build_responses_input_cjson(messages, msg_count) :
-		build_structured_messages_cjson(system_prompt, messages, msg_count,
-			adapter, model);
+	input = codec->input(model, system_prompt, messages, msg_count);
 	if (!input)
 		return MORPH_TRACE_ERROR(model ? model->http.logger : NULL, -ENOMEM);
 	total = 16 + input_text_tokens(input, count, user_data);
 	cJSON_Delete(input);
-	if (adapter->responses_api && system_prompt && system_prompt[0])
+	if (codec->system_key && system_prompt && system_prompt[0])
 		total += count(system_prompt, user_data);
 	if (tool_count > 0) {
-		wire_tools = adapter->responses_api ?
-			build_responses_tools_cjson(tools, tool_count) :
-			build_tools_cjson(tools, tool_count);
+		wire_tools = codec->tools(tools, tool_count);
 		if (!wire_tools)
 			return MORPH_TRACE_ERROR(model ? model->http.logger : NULL, -ENOMEM);
 		/* Schema keys and constraints are part of the model-visible definition. */
@@ -1432,199 +583,43 @@ int model_estimate_input_tokens(const struct model *model,
 	return 0;
 }
 
-static struct tool_call *responses_find_tool_call(struct llm_stream_ctx *ctx,
-						  const char *item_id)
+static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
+				    const char *system_prompt, struct chat_message *messages,
+				    int msg_count, struct tool_desc *tools, int tool_count,
+				    struct chat_response *response, sse_callback thought_cb,
+				    llm_stream_callback stream_cb, void *stream_ud)
 {
-	if (item_id && *item_id) {
-		for (int i = 0; i < ctx->tool_call_count; i++)
-			if (strcmp(ctx->tool_calls[i].id, item_id) == 0)
-				return &ctx->tool_calls[i];
-	}
-	if (ctx->tool_call_count <= 0)
-		return NULL;
-	return &ctx->tool_calls[ctx->tool_call_count - 1];
-}
-
-static int responses_append_call_input(struct llm_stream_ctx *ctx,
-				       struct tool_call *call,
-				       const char *delta)
-{
-	size_t old_len;
-	size_t add_len;
-	char *next;
-
-	if (!call || !delta)
-		return 0;
-	old_len = call->arguments ? strlen(call->arguments) : 0;
-	add_len = strlen(delta);
-	next = arena_alloc(ctx->arena, old_len + add_len + 1);
-	if (!next)
-		return -ENOMEM;
-	if (call->arguments)
-		memcpy(next, call->arguments, old_len);
-	memcpy(next + old_len, delta, add_len + 1);
-	call->arguments = next;
-	return 0;
-}
-
-static int responses_parse_output_item(struct llm_stream_ctx *ctx,
-				       cJSON *item, int complete)
-{
-	cJSON *type = cJSON_GetObjectItem(item, "type");
-	cJSON *id = cJSON_GetObjectItem(item, "id");
-	cJSON *call_id = cJSON_GetObjectItem(item, "call_id");
-	cJSON *name = cJSON_GetObjectItem(item, "name");
-	cJSON *input;
-	struct tool_call *call;
-	enum tool_input_kind kind;
-
-	if (!cJSON_IsString(type) || !type->valuestring)
-		return 0;
-	if (strcmp(type->valuestring, "custom_tool_call") == 0) {
-		kind = TOOL_INPUT_TEXT;
-		input = cJSON_GetObjectItem(item, "input");
-	} else if (strcmp(type->valuestring, "function_call") == 0) {
-		kind = TOOL_INPUT_JSON;
-		input = cJSON_GetObjectItem(item, "arguments");
-	} else {
-		return 0;
-	}
-	call = responses_find_tool_call(ctx, cJSON_GetStringValue(id));
-	if (!call || (cJSON_IsString(id) && call->id[0] &&
-	    strcmp(call->id, id->valuestring) != 0))
-		call = llm_stream_ensure_tool_call(ctx, ctx->tool_call_count);
-	if (!call)
-		return -ENOMEM;
-	call->input_kind = kind;
-	if (cJSON_IsString(id) && id->valuestring)
-		strncpy(call->id, id->valuestring, sizeof(call->id) - 1);
-	if (complete && cJSON_IsString(call_id) && call_id->valuestring)
-		strncpy(call->id, call_id->valuestring,
-			sizeof(call->id) - 1);
-	if (cJSON_IsString(name) && name->valuestring)
-		strncpy(call->name, name->valuestring, sizeof(call->name) - 1);
-	if (complete && !call->arguments && cJSON_IsString(input) &&
-	    input->valuestring)
-		call->arguments = arena_strdup(ctx->arena, input->valuestring);
-	return 0;
-}
-
-static int llm_responses_sse_event_cb(const char *event, const char *data,
-				      void *user_data)
-{
-	struct llm_stream_ctx *ctx = user_data;
-	cJSON *root;
-	cJSON *type;
-	const char *event_type;
-	int rc = 0;
-
-	(void)event;
-	if (!data || !*data || strcmp(data, "[DONE]") == 0)
-		return 0;
-	root = cJSON_Parse(data);
-	if (!root)
-		return 0;
-	type = cJSON_GetObjectItem(root, "type");
-	event_type = cJSON_GetStringValue(type);
-	if (!event_type) {
-		cJSON_Delete(root);
-		return 0;
-	}
-	if (strcmp(event_type, "response.output_text.delta") == 0) {
-		const char *delta = cJSON_GetStringValue(
-			cJSON_GetObjectItem(root, "delta"));
-
-		if (delta) {
-			llm_stream_append(ctx, delta);
-			rc = llm_stream_emit(ctx, LLM_STREAM_CONTENT, delta);
-		}
-	} else if (strcmp(event_type,
-		   "response.reasoning_summary_text.delta") == 0) {
-		const char *delta = cJSON_GetStringValue(
-			cJSON_GetObjectItem(root, "delta"));
-
-		if (delta)
-			rc = llm_stream_emit(ctx, LLM_STREAM_REASONING, delta);
-	} else if (strcmp(event_type, "response.output_item.added") == 0 ||
-		   strcmp(event_type, "response.output_item.done") == 0) {
-		rc = responses_parse_output_item(ctx,
-			cJSON_GetObjectItem(root, "item"),
-			strcmp(event_type, "response.output_item.done") == 0);
-	} else if (strcmp(event_type,
-		   "response.custom_tool_call_input.delta") == 0 ||
-		   strcmp(event_type,
-		   "response.function_call_arguments.delta") == 0) {
-		const char *item_id = cJSON_GetStringValue(
-			cJSON_GetObjectItem(root, "item_id"));
-		const char *delta = cJSON_GetStringValue(
-			cJSON_GetObjectItem(root, "delta"));
-		struct tool_call *call = responses_find_tool_call(ctx, item_id);
-
-		rc = responses_append_call_input(ctx, call, delta);
-	} else if (strcmp(event_type, "response.completed") == 0) {
-		cJSON *response = cJSON_GetObjectItem(root, "response");
-
-		llm_stream_parse_metadata(ctx, response);
-		llm_stream_parse_usage(ctx, response);
-		usage_strncpy(ctx->usage.finish_reason,
-			sizeof(ctx->usage.finish_reason), "completed");
-	}
-	cJSON_Delete(root);
-	return rc;
-}
-
-static int llm_responses_with_tools_impl(struct model *self,
-	struct arena *arena, const char *system_prompt,
-	struct chat_message *messages, int msg_count, struct tool_desc *tools,
-	int tool_count, struct chat_response *response,
-	sse_callback thought_cb, llm_stream_callback stream_cb, void *stream_ud)
-{
-	cJSON *root;
-	cJSON *input;
-	cJSON *tool_array;
+	const struct llm_codec *codec = llm_codec_resolve(self);
+	const struct llm_adapter *adapter = llm_adapter_resolve(self);
+	struct llm_stream_ctx ctx;
+	cJSON *root = NULL;
 	char *body;
 	char url[512];
-	char auth_header[512];
-	const char *headers[1];
+	char authorization[512];
+	const char *headers[] = {authorization};
 	const char *detail = NULL;
-	struct llm_stream_ctx ctx;
 	long timeout;
-	int status;
 	int rc;
+	int status;
 
 	if (!self || !arena || !response)
-		return MORPH_TRACE_ERROR(self ? self->http.logger : NULL, -EINVAL);
+		return -EINVAL;
+	model_clear_last_error(self);
 	if (!self->api_key[0]) {
-		log_err(self ? self->http.logger : NULL,
-			"llm_responses_with_tools: no API key configured");
-		model_clear_last_error(self);
 		self->error_info.kind = MODEL_ERROR_CONFIG;
 		model_set_last_error(self, "no API key configured");
-		return MORPH_TRACE_ERROR(self ? self->http.logger : NULL, MORPH_ERR_NOT_CONFIGURED);
+		return MORPH_ERR_NOT_CONFIGURED;
 	}
-	model_clear_last_error(self);
 	memset(response, 0, sizeof(*response));
 	response->arena = arena;
-	root = cJSON_CreateObject();
-	input = build_responses_input_cjson(messages, msg_count);
-	tool_array = build_responses_tools_cjson(tools, tool_count);
-	if (!root || !input || !tool_array) {
-		cJSON_Delete(root);
-		cJSON_Delete(input);
-		cJSON_Delete(tool_array);
-		return MORPH_TRACE_ERROR(self ? self->http.logger : NULL, -ENOMEM);
-	}
+	rc = model_input_snapshot(self, system_prompt, messages, msg_count, tools, tool_count,
+				  &root);
+	if (rc != 0)
+		return rc;
 	cJSON_AddStringToObject(root, "model", self->model_id);
-	if (system_prompt && *system_prompt)
-		cJSON_AddStringToObject(root, "instructions", system_prompt);
-	cJSON_AddItemToObject(root, "input", input);
-	cJSON_AddItemToObject(root, "tools", tool_array);
-	cJSON_AddStringToObject(root, "tool_choice", "auto");
-	cJSON_AddBoolToObject(root, "parallel_tool_calls", 0);
 	cJSON_AddBoolToObject(root, "stream", 1);
-	cJSON_AddNumberToObject(root, "max_output_tokens",
-		self->max_tokens > 0 ? self->max_tokens : 4096);
-	rc = add_extra_body_json(self ? self->http.logger : NULL, root, self->extra_body_json);
+	codec->configure(self, root, tool_count);
+	rc = llm_codec_add_options(self->http.logger, root, self->extra_body_json);
 	if (rc != 0) {
 		cJSON_Delete(root);
 		return rc;
@@ -1632,204 +627,55 @@ static int llm_responses_with_tools_impl(struct model *self,
 	body = morph_json_print(arena, root);
 	cJSON_Delete(root);
 	if (!body)
-		return MORPH_TRACE_ERROR(self ? self->http.logger : NULL, -ENOMEM);
-	snprintf(url, sizeof(url), "%s/responses", self->api_base);
-	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s",
-		self->api_key);
-	headers[0] = auth_header;
+		return -ENOMEM;
+	body[utf8_sanitize_into(body, body, strlen(body))] = '\0';
+	snprintf(url, sizeof(url), "%s%s", self->api_base, codec->endpoint);
+	snprintf(authorization, sizeof(authorization), "Authorization: Bearer %s", self->api_key);
 	timeout = self->timeout_seconds > 0 ? self->timeout_seconds : 300L;
-	status = llm_post_sse_with_retry(self, arena,
-		"llm_responses_with_tools", NULL, url, body, strlen(body), headers,
-		timeout, thought_cb, stream_cb, llm_responses_sse_event_cb,
-		stream_ud, &ctx, &detail);
-	if (status < 0)
+	status = llm_post_sse_with_retry(self, arena, "llm_chat_with_tools", NULL, url, body,
+					 strlen(body), headers, timeout, thought_cb, stream_cb,
+					 codec->event, stream_ud, &ctx, &detail);
+	if (status < 0) {
+		model_set_last_error(self, "HTTP/SSE request failed: %s", morph_strerror(status));
 		return status;
+	}
 	if (status >= 400) {
 		model_set_last_error(self, "HTTP %d: %s", status,
-			detail ? detail : "Responses API request failed");
-		return MORPH_TRACE_ERROR(self ? self->http.logger : NULL, MORPH_ERR_API);
+				     detail ? detail : "model request failed");
+		response->content = (char *)detail;
+		return MORPH_ERR_API;
 	}
 	response->content = ctx.accumulated.len > 0 ? ctx.accumulated.data : NULL;
-	llm_stream_transfer_tool_calls(&ctx, response);
-	llm_usage_finalize(self, &ctx, strlen(body));
-	response->usage = ctx.usage;
-	model_report_usage(self, &response->usage);
-	return status;
-}
-
-static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
-				    const char *system_prompt,
-				    struct chat_message *messages,
-				    int msg_count,
-				    struct tool_desc *tools, int tool_count,
-				    struct chat_response *response,
-				    sse_callback thought_cb,
-				    llm_stream_callback stream_cb,
-				    void *stream_ud)
-{
-	const struct llm_adapter *adapter = llm_adapter_resolve(self);
-
-	if (adapter->responses_api)
-		return llm_responses_with_tools_impl(self, arena, system_prompt,
-			messages, msg_count, tools, tool_count, response,
-			thought_cb, stream_cb, stream_ud);
-	if (!self || !self->api_key[0]) {
-		log_err(self ? self->http.logger : NULL,
-			"llm_chat_with_tools: no API key configured");
-		model_clear_last_error(self);
-		self->error_info.kind = MODEL_ERROR_CONFIG;
-		model_set_last_error(self, "no API key configured");
-		return MORPH_TRACE_ERROR(self ? self->http.logger : NULL, MORPH_ERR_NOT_CONFIGURED);
-	}
-	if (!response)
-		return -EINVAL;
-
-	model_clear_last_error(self);
-	memset(response, 0, sizeof(*response));
-	response->arena = arena;
-
-	log_dbg(self ? self->http.logger : NULL,
-		"llm_chat_with_tools: start, model=%s, tools=%d, msgs=%d", self->model_id,
-		tool_count, msg_count);
-
-	cJSON *root = cJSON_CreateObject();
-	if (!root)
-		return MORPH_TRACE_ERROR(self ? self->http.logger : NULL, -ENOMEM);
-	cJSON_AddStringToObject(root, "model", self->model_id);
-
-	cJSON *msgs_arr = build_structured_messages_cjson(system_prompt,
-							   messages, msg_count,
-							   adapter, self);
-	if (!msgs_arr) {
-		cJSON_Delete(root);
-		return MORPH_TRACE_ERROR(self ? self->http.logger : NULL, -ENOMEM);
-	}
-	cJSON_AddItemToObject(root, "messages", msgs_arr);
-
-	if (tools && tool_count > 0) {
-		cJSON *tools_arr = build_tools_cjson(tools, tool_count);
-		if (!tools_arr) {
-			cJSON_Delete(root);
-			return MORPH_TRACE_ERROR(self ? self->http.logger : NULL, -ENOMEM);
-		}
-		cJSON_AddItemToObject(root, "tools", tools_arr);
-		if (!adapter->supports_tool_choice ||
-		    adapter->supports_tool_choice(self))
-			cJSON_AddStringToObject(root, "tool_choice", "auto");
-	}
-
-	cJSON_AddBoolToObject(root, "stream", 1);
-	{
-		cJSON *opts = cJSON_CreateObject();
-		if (opts) {
-			cJSON_AddBoolToObject(opts, "include_usage", 1);
-			cJSON_AddItemToObject(root, "stream_options", opts);
-		}
-	}
-	cJSON_AddNumberToObject(root, "max_tokens",
-				self->max_tokens > 0 ? self->max_tokens : 4096);
-	int extra_rc =
-		add_extra_body_json(self ? self->http.logger : NULL, root, self->extra_body_json);
-	if (extra_rc < 0) {
-		cJSON_Delete(root);
-		return extra_rc;
-	}
-
-	char *body = morph_json_print(arena, root);
-	cJSON_Delete(root);
-
-	if (!body)
-		return -ENOMEM;
-
-	size_t body_len = strlen(body);
-	size_t clean_len = utf8_sanitize_into(body, body, body_len);
-	body[clean_len] = '\0';
-
-	char url[512];
-	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
-
-	char auth_header[512];
-	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", self->api_key);
-	const char *extra_headers[] = { auth_header };
-
-	long timeout = self->timeout_seconds > 0 ? self->timeout_seconds : 300L;
-	log_dbg(self ? self->http.logger : NULL, "llm_chat_with_tools: sending SSE request to %s",
-		url);
-	struct llm_stream_ctx ctx;
-	const char *detail = NULL;
-	int status = llm_post_sse_with_retry(self, arena,
-					     "llm_chat_with_tools", NULL, url,
-					     body, strlen(body), extra_headers,
-					     timeout, thought_cb, stream_cb, NULL,
-					     stream_ud, &ctx, &detail);
-	log_dbg(self ? self->http.logger : NULL, "llm_chat_with_tools: SSE request done, status=%d",
-		status);
-
-	if (status < 0) {
-		log_err(self ? self->http.logger : NULL,
-			"llm_chat_with_tools: SSE request failed: %d", status);
-		model_set_last_error(self, "HTTP/SSE request failed: %s",
-				     morph_strerror(status));
-		return status;
-	}
-	if (status >= 400) {
-		if (detail) {
-			log_err(self ? self->http.logger : NULL,
-				"llm_chat_with_tools: API returned HTTP %d: %s", status, detail);
-			model_set_last_error(self, "HTTP %d: %s", status, detail);
-			response->content = (char *)detail;
-		} else {
-			log_err(self ? self->http.logger : NULL,
-				"llm_chat_with_tools: API returned HTTP %d", status);
-			model_set_last_error(self, "HTTP %d from %s", status, url);
-		}
-		return MORPH_TRACE_ERROR(self ? self->http.logger : NULL, MORPH_ERR_API);
-	}
-
-	if (ctx.accumulated.len > 0)
-		response->content = ctx.accumulated.data;
-	else {
-		response->content = NULL;
-	}
 	if (adapter->capture_reasoning && ctx.reasoning.len > 0)
 		response->reasoning_content = ctx.reasoning.data;
-
 	llm_stream_transfer_tool_calls(&ctx, response);
 	llm_usage_finalize(self, &ctx, strlen(body));
 	response->usage = ctx.usage;
 	model_report_usage(self, &response->usage);
-
 	return status;
 }
 
-static int llm_chat_with_tools(struct model *self, struct arena *arena,
-			       const char *system_prompt,
+static int llm_chat_with_tools(struct model *self, struct arena *arena, const char *system_prompt,
 			       struct chat_message *messages, int msg_count,
 			       struct tool_desc *tools, int tool_count,
-			       struct chat_response *response,
-			       sse_callback thought_cb, void *thought_ud)
+			       struct chat_response *response, sse_callback thought_cb,
+			       void *thought_ud)
 {
-	return llm_chat_with_tools_impl(self, arena, system_prompt, messages,
-					msg_count, tools, tool_count,
-					response, thought_cb, NULL, thought_ud);
+	return llm_chat_with_tools_impl(self, arena, system_prompt, messages, msg_count, tools,
+					tool_count, response, thought_cb, NULL, thought_ud);
 }
 
 static int llm_chat_with_tools_stream(struct model *self, struct arena *arena,
-				      const char *system_prompt,
-				      struct chat_message *messages,
-				      int msg_count,
-				      struct tool_desc *tools, int tool_count,
-				      struct chat_response *response,
-				      llm_stream_callback stream_cb,
+				      const char *system_prompt, struct chat_message *messages,
+				      int msg_count, struct tool_desc *tools, int tool_count,
+				      struct chat_response *response, llm_stream_callback stream_cb,
 				      void *stream_ud)
 {
-	return llm_chat_with_tools_impl(self, arena, system_prompt, messages,
-					msg_count, tools, tool_count,
-					response, NULL, stream_cb, stream_ud);
+	return llm_chat_with_tools_impl(self, arena, system_prompt, messages, msg_count, tools,
+					tool_count, response, NULL, stream_cb, stream_ud);
 }
 
-static int llm_generate(struct model *self, const char *prompt,
-			const char *out_path)
+static int llm_generate(struct model *self, const char *prompt, const char *out_path)
 {
 	if (!self || !prompt)
 		return -EINVAL;
@@ -1838,13 +684,12 @@ static int llm_generate(struct model *self, const char *prompt,
 	if (!arena)
 		return -ENOMEM;
 
-	const char *messages[] = { prompt };
+	const char *messages[] = {prompt};
 	char *body = NULL;
 	size_t body_len = 0;
-	int rc = build_chat_body_json(self ? self->http.logger : NULL, arena, self->model_id, NULL,
-				      messages, 1, self->max_tokens, 0,
-				      self->extra_body_json, NULL, 0,
-				      &body, &body_len);
+	int rc = llm_chat_encode_body(self ? self->http.logger : NULL, arena, self->model_id, NULL,
+				      messages, 1, self->max_tokens, 0, self->extra_body_json, NULL,
+				      0, &body, &body_len);
 	if (rc < 0) {
 		arena_destroy(arena);
 		return rc;
@@ -1855,7 +700,7 @@ static int llm_generate(struct model *self, const char *prompt,
 	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
 	char auth_header[512];
 	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", self->api_key);
-	const char *extra_headers[] = { auth_header };
+	const char *extra_headers[] = {auth_header};
 	rc = http_post_ex(&self->http, url, body, body_len, "application/json", extra_headers, 1,
 			  &resp);
 	arena_destroy(arena);
@@ -1894,8 +739,7 @@ struct model *model_llm_create(struct morph_log *logger, const char *provider, c
 		return NULL;
 	m->http.logger = logger;
 	strncpy(m->provider, provider ? provider : "openai", sizeof(m->provider) - 1);
-	strncpy(m->adapter, llm_adapter_infer(provider),
-		sizeof(m->adapter) - 1);
+	strncpy(m->adapter, llm_adapter_infer(provider), sizeof(m->adapter) - 1);
 	strncpy(m->model_id, model_id ? model_id : "gpt-4o", sizeof(m->model_id) - 1);
 	if (api_base)
 		strncpy(m->api_base, api_base, sizeof(m->api_base) - 1);
@@ -1914,6 +758,28 @@ struct model *model_llm_create(struct morph_log *logger, const char *provider, c
 	m->generate = llm_generate;
 	m->destroy = llm_destroy;
 	return m;
+}
+
+struct model *model_llm_clone(const struct model *source, struct morph_log *logger)
+{
+	struct model *copy;
+
+	if (!source)
+		return NULL;
+	copy = model_llm_create(logger, source->provider, source->model_id, source->api_base,
+				source->api_key);
+	if (!copy)
+		return NULL;
+	memcpy(copy->name, source->name, sizeof(copy->name));
+	memcpy(copy->adapter, source->adapter, sizeof(copy->adapter));
+	memcpy(copy->extra_body_json, source->extra_body_json, sizeof(copy->extra_body_json));
+	copy->context_limit = source->context_limit;
+	copy->max_tokens = source->max_tokens;
+	copy->timeout_seconds = source->timeout_seconds;
+	copy->retry_count = source->retry_count;
+	copy->poll_interval_seconds = source->poll_interval_seconds;
+	copy->poll_timeout_seconds = source->poll_timeout_seconds;
+	return copy;
 }
 
 void model_destroy(struct model *m)

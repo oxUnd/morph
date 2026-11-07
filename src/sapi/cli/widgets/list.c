@@ -1,8 +1,9 @@
 #include "sapi/cli/widgets/list.h"
+#include "util/terminal_size.h"
 #include "cJSON.h"
 #include "sapi/cli/application_internal.h"
 
-#include <sys/ioctl.h>
+#include <morph/tui/terminal.h>
 
 #define CLI_LIST_DEFAULT_COLUMNS 100
 #define CLI_LIST_TEXT_MAX 8192
@@ -23,21 +24,7 @@ void cli_list_tree_prefix(struct cli_application *ctx, const int *last, int dept
 
 int cli_list_columns(void)
 {
-	struct winsize ws;
-	const char *configured;
-	char *end;
-	long columns;
-
-	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
-		return ws.ws_col;
-	configured = getenv("COLUMNS");
-	if (!configured || !configured[0])
-		return CLI_LIST_DEFAULT_COLUMNS;
-	errno = 0;
-	columns = strtol(configured, &end, 10);
-	if (errno != 0 || *end != '\0' || columns <= 0 || columns > INT_MAX)
-		return CLI_LIST_DEFAULT_COLUMNS;
-	return (int)columns;
+	return morph_terminal_columns(STDOUT_FILENO, CLI_LIST_DEFAULT_COLUMNS);
 }
 
 size_t cli_list_compact_text(char *dst, size_t dst_cap, const char *src)

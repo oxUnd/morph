@@ -1,4 +1,6 @@
+#include "runtime/runtime.h"
 #include "runtime/runtime_internal.h"
+#include "persistence/history_store.h"
 #include "util/strmap.h"
 #include "util/arena.h"
 #include "util/error.h"
@@ -19,30 +21,21 @@ static int history_lock(struct runtime *runtime)
 
 static int history_coverage(struct runtime_context *ctx, morph_strmap_t *covered)
 {
-	sqlite3_stmt *stmt = NULL;
-	int rc = sqlite3_prepare_v2(ctx->database.handle,
-		"WITH RECURSIVE covered(id) AS ("
-		"SELECT s.source_item_id FROM history_summary_sources s "
-		"JOIN model_history_items m ON m.id=s.summary_item_id "
-		"WHERE m.session_id=? AND m.active=1 AND m.kind='compaction_summary' "
-		"UNION SELECT s.source_item_id FROM history_summary_sources s "
-		"JOIN covered c ON s.summary_item_id=c.id) SELECT id FROM covered",
-		-1, &stmt, NULL);
-	int error = 0;
+	morph_array_t ids = {0};
+	int rc;
 
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_int64(stmt, 1, ctx->current_session.id);
-	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+	rc = morph_array_init(&ids, 16, sizeof(int64_t));
+	if (rc == 0)
+		rc = history_store_summary_sources(&ctx->database, ctx->current_session.id, &ids);
+	for (size_t i = 0; rc == 0 && i < ids.nelts; i++) {
+		const int64_t *id = morph_array_get(&ids, i);
 		char key[32];
 
-		snprintf(key, sizeof(key), "%lld", (long long)sqlite3_column_int64(stmt, 0));
-		error = morph_strmap_set(covered, key, covered);
-		if (error != 0)
-			break;
+		snprintf(key, sizeof(key), "%lld", (long long)*id);
+		rc = morph_strmap_set(covered, key, covered);
 	}
-	sqlite3_finalize(stmt);
-	return error ? error : rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
+	morph_array_cleanup(&ids);
+	return rc;
 }
 
 static cJSON *history_entry(const struct model_history_item *item,
@@ -245,7 +238,8 @@ int runtime_session_history_entry_input(struct runtime *runtime, int64_t sequenc
 
 int runtime_session_last_request(struct runtime *runtime, cJSON **out)
 {
-	sqlite3_stmt *stmt = NULL;
+	struct history_request_snapshot snapshot;
+	struct arena *arena;
 	cJSON *root = NULL;
 	int rc;
 
@@ -255,36 +249,29 @@ int runtime_session_last_request(struct runtime *runtime, cJSON **out)
 	rc = history_lock(runtime);
 	if (rc != 0)
 		return rc;
-	struct runtime_context *ctx = &runtime->context;
-
-	rc = sqlite3_prepare_v2(ctx->database.handle,
-		"SELECT turn_id,provider,model,input_json,created_at FROM model_request_snapshots "
-		"WHERE session_id=?", -1, &stmt, NULL);
-	if (rc == SQLITE_OK) {
-		sqlite3_bind_int64(stmt, 1, ctx->current_session.id);
-		rc = sqlite3_step(stmt);
+	if (runtime->context.current_session.id <= 0) {
+		pthread_mutex_unlock(&runtime->context.execution_lock);
+		return -ENODATA;
 	}
-	if (rc == SQLITE_ROW) {
+	arena = arena_create(0);
+	rc = arena ? history_store_request_snapshot(&runtime->context.database,
+						    runtime->context.current_session.id, arena,
+						    &snapshot)
+		   : -ENOMEM;
+	if (rc == 0) {
 		root = cJSON_CreateObject();
-		const char *names[] = {"turn_id", "provider", "model", "input_json"};
-
-		for (int i = 0; i < 4; i++) {
-			const char *value = (const char *)sqlite3_column_text(stmt, i);
-
-			if (!root || !cJSON_AddStringToObject(root, names[i], value ? value : "")) {
-				rc = SQLITE_NOMEM;
-				break;
-			}
-		}
-		if (rc == SQLITE_ROW && !cJSON_AddNumberToObject(root, "created_at",
-			(double)sqlite3_column_int64(stmt, 4)))
-			rc = SQLITE_NOMEM;
+		if (!root || !cJSON_AddStringToObject(root, "turn_id", snapshot.turn_id) ||
+		    !cJSON_AddStringToObject(root, "provider", snapshot.provider) ||
+		    !cJSON_AddStringToObject(root, "model", snapshot.model) ||
+		    !cJSON_AddStringToObject(root, "input_json", snapshot.input_json) ||
+		    !cJSON_AddNumberToObject(root, "created_at", (double)snapshot.created_at))
+			rc = -ENOMEM;
 	}
-	sqlite3_finalize(stmt);
-	pthread_mutex_unlock(&ctx->execution_lock);
-	if (rc != SQLITE_ROW) {
+	arena_destroy(arena);
+	pthread_mutex_unlock(&runtime->context.execution_lock);
+	if (rc != 0) {
 		cJSON_Delete(root);
-		return rc == SQLITE_DONE ? -ENODATA : rc == SQLITE_NOMEM ? -ENOMEM : MORPH_ERR_DB;
+		return rc;
 	}
 	*out = root;
 	return 0;

@@ -1,4 +1,5 @@
 #include "sapi/cli/adapters/input/reader.h"
+#include "sapi/cli/adapters/input/state.h"
 #ifdef HAVE_READLINE
 #include <stdio.h>
 #include <readline/readline.h>
@@ -30,7 +31,8 @@ char *cli_input_fgets_until(struct cli_application *ctx, char *buffer, size_t ca
 	while (length + 1 < capacity) {
 		if (ctx && (morph_signal_flag_get(&ctx->interrupted) ||
 			    morph_signal_flag_get(&ctx->terminate_requested) ||
-			    morph_cancel_token_is_cancelled(ctx->input_cancel_token))) {
+			    morph_cancel_token_is_cancelled(
+				    ctx->input ? ctx->input->input_cancel_token : NULL))) {
 			error = EINTR;
 			break;
 		}
@@ -101,12 +103,13 @@ int cli_poll_getc(struct cli_application *ctx, FILE *stream)
 	int fd = fileno(stream);
 
 	while (!ctx || (!morph_signal_flag_get(&ctx->interrupted) &&
-			!morph_cancel_token_is_cancelled(ctx->input_cancel_token))) {
+			!morph_cancel_token_is_cancelled(ctx->input ? ctx->input->input_cancel_token
+								    : NULL))) {
 		int ready = cli_reader_wait(fd, 100);
 
 		if (ready > 0) {
 			if (ctx)
-				ctx->input_deadline_ms = 0;
+				ctx->input->input_deadline_ms = 0;
 			int ch = rl_getc(stream);
 
 			int suffix = 1;
@@ -132,9 +135,9 @@ int cli_poll_getc(struct cli_application *ctx, FILE *stream)
 		}
 		if (ready < 0 && errno != EINTR)
 			return EOF;
-		if (ctx && ctx->input_deadline_ms > 0 &&
-		    morph_io_now_ms() >= ctx->input_deadline_ms) {
-			ctx->input_timed_out = 1;
+		if (ctx && ctx->input->input_deadline_ms > 0 &&
+		    morph_io_now_ms() >= ctx->input->input_deadline_ms) {
+			ctx->input->input_timed_out = 1;
 			rl_done = 1;
 			return EOF;
 		}

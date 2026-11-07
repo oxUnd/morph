@@ -8,44 +8,30 @@ struct morph_log;
 #include "util/buf.h"
 #include "sapi/cli/models/composer.h"
 #include "util/signals.h"
-#include "util/strmap.h"
-#include "util/utf8.h"
 #include <morph/tui/application.h>
 #include "sapi/cli/models/presentation.h"
-#include "sapi/cli/presentation/markdown.h"
 #include <stdint.h>
 #include <stdio.h>
 
-struct morph_md_kitty;
+struct cli_presenter_state;
+struct cli_input_state;
 struct cli_cancel_monitor;
 struct cli_event_queue;
 struct cli_feed;
 struct cli_command_job;
-struct cli_transcript;
+struct cli_transcript_model;
+struct cli_turn_details;
 struct cli_jobs;
 struct cli_chat_page;
 
 struct cli_application {
 	struct morph_tui_application base;
 	struct cli_chat_page *chat;
+	struct cli_presenter_state *presenter;
+	struct cli_input_state *input;
 	struct morph_log *logger;
 	struct cli_output output;
-	pthread_mutex_t prompt_lock;
-	int prompt_lock_ready;
-	struct cli_callback *callbacks;
-	int callback_error;
-	int64_t input_deadline_ms;
-	int input_timed_out;
-	const struct morph_cancel_token *input_cancel_token;
 	struct cli_composer_model composer;
-	char *readline_ready_input;
-	int details_hint_visible;
-	int details_hint_column;
-	char *footer_text;
-	struct session *completion_sessions;
-	int completion_count;
-	int completion_index;
-	int completion_length;
 	struct morph_signal_listener signals;
 	int signals_ready;
 	volatile sig_atomic_t terminate_requested;
@@ -60,12 +46,11 @@ struct cli_application {
 	int application_command;
 	struct cli_feed *terminal;
 	struct cli_command_job *input_job;
-	struct cli_transcript *transcript;
+	struct cli_transcript_model *transcript;
+	struct cli_turn_details *details;
 	struct cli_jobs *jobs;
 	struct cli_input_status input_status;
 	int tool_details;
-	int details_open;
-	int details_visible;
 	enum cli_presentation_mode presentation_mode;
 	int running;
 	int session_auto_named;
@@ -74,29 +59,8 @@ struct cli_application {
 	int presentation_ready;
 	int turn_active;
 	struct cli_cancel_monitor *cancel_monitor;
-	int event_stream_kind;
-	int event_stream_has_delta;
-	int event_stream_complete;
-	int event_stream_visible;
-	size_t reasoning_stream_offset;
-	int final_rendered;
-	int native_content_started;
-	int native_content_visible;
-	int markdown_stream_kind;
-	int markdown_stream_visible;
-	struct cli_markdown_output markdown_output;
-	int mcp_tree_active;
 	char image_path[PATH_MAX];
 	char workdir[PATH_MAX];
-	char mcp_tree_server[MCP_NAME_MAX];
-	morph_buf_t event_stream;
-	morph_buf_t native_content;
-	morph_buf_t markdown_stream_text;
-	struct utf8_terminal_sanitizer event_stream_sanitizer;
-	struct utf8_terminal_sanitizer markdown_stream_sanitizer;
-	morph_strmap_t rendered_artifacts;
-	morph_strmap_t announced_artifacts;
-	struct morph_md_kitty *markdown_stream;
 	int trace_json;
 	int pending_db_restore;
 	uint64_t interaction_sequence;

@@ -1335,3 +1335,98 @@ TEST_F(DynamicToolsTest, ApprovalRegistryGrowthCannotInvalidateTheCheckpointSour
 	EXPECT_NE(std::string(result.text.data).find("\"version\":2"), std::string::npos);
 	tool_result_cleanup(&result);
 }
+
+TEST_F(DynamicToolsTest, RetainedExecutionKeepsItsSourceAfterUpdateAndDeletion)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	tool_result result;
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("retained", "function run(args) { return { version: 1 }; }")
+				    .c_str(),
+			    &result),
+		  0);
+	tool_result_cleanup(&result);
+	tool_handle retained{};
+	ASSERT_EQ(tool_registry_acquire(&reg, "retained", &retained), 0);
+
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("retained", "function run(args) { return { version: 2 }; }")
+				    .c_str(),
+			    &result),
+		  0);
+	tool_result_cleanup(&result);
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&reg, "retained", "{}", &result), 0);
+	EXPECT_NE(std::string(result.text.data ? result.text.data : "").find("\"version\":2"),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&reg, "tool_delete", "{\"name\":\"retained\"}", &result), 0);
+	tool_result_cleanup(&result);
+	EXPECT_EQ(tool_lookup(&reg, "retained"), nullptr);
+
+	tool_result_init(&result);
+	EXPECT_EQ(retained.exec("{}", &result, retained.user_data), 0);
+	EXPECT_EQ(tool_result_finalize(&result), 0);
+	EXPECT_NE(std::string(result.text.data ? result.text.data : "").find("\"version\":1"),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+	tool_handle_release(&retained);
+}
+
+TEST_F(DynamicToolsTest, ImageCanvasFilesystemAndWasmBindingsCoexist)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string source =
+		"async function run(args) {"
+		"  const canvas = morph.canvas.create({ width: 8, height: 4 });"
+		"  const ctx = canvas.getContext('2d');"
+		"  ctx.fillStyle = '#ff0000'; ctx.fillRect(0, 0, 8, 4);"
+		"  const png = morph.canvas.toBuffer({ canvas });"
+		"  morph.fs.writeFile(args.output, png);"
+		"  const loaded = morph.fs.readFile(args.output);"
+		"  const meta = await morph.image.metadata({ input: args.output });"
+		"  const wasm = new Uint8Array(["
+		"    0,97,115,109,1,0,0,0,1,7,1,96,2,127,127,1,"
+		"    127,3,2,1,0,7,7,1,3,97,100,100,0,0,10,9,"
+		"    1,7,0,32,0,32,1,106,11]);"
+		"  const mod = await WebAssembly.instantiate(wasm.buffer, {});"
+		"  return { width: meta.width, height: meta.height,"
+		"    bytes: loaded.byteLength, value: mod.instance.exports.add(20, 22) };"
+		"}";
+	tool_result result;
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create", create_args("all_bindings", source).c_str(),
+			    &result),
+		  0);
+	tool_result_cleanup(&result);
+	tool_result_init(&result);
+	std::string call = "{\"output\":\"" + root + "/all-bindings.png\"}";
+	ASSERT_EQ(tool_exec(&reg, "all_bindings", call.c_str(), &result), 0);
+	cJSON *response = cJSON_Parse(result.text.data);
+	ASSERT_NE(response, nullptr);
+	EXPECT_EQ(cJSON_GetObjectItem(response, "width")->valueint, 8);
+	EXPECT_EQ(cJSON_GetObjectItem(response, "height")->valueint, 4);
+	EXPECT_GT(cJSON_GetObjectItem(response, "bytes")->valueint, 0);
+	EXPECT_EQ(cJSON_GetObjectItem(response, "value")->valueint, 42);
+	cJSON_Delete(response);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, RejectsNodeBufferWhileSupportingHostToBufferMethods)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	tool_result result;
+	tool_result_init(&result);
+	EXPECT_LT(tool_exec(&reg, "tool_create",
+			    create_args("node_buffer",
+					"function run(args) { return Buffer.alloc(8); }")
+				    .c_str(),
+			    &result),
+		  0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("forbidden token"), std::string::npos);
+	tool_result_cleanup(&result);
+}

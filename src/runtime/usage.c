@@ -1,5 +1,5 @@
-#include "models/llm.h"
 #include "runtime/usage.h"
+#include "models/llm.h"
 
 #include "cJSON.h"
 #include "credits.h"
@@ -25,7 +25,7 @@ void runtime_usage_restore(struct model_usage_sink *sink, void *previous)
 int runtime_model_usage_is_billable(const struct model_usage *usage)
 {
 	return usage && (usage->input_tokens > 0 || usage->output_tokens > 0 ||
-		usage->image_units > 0 || usage->video_seconds > 0);
+			 usage->image_units > 0 || usage->video_seconds > 0);
 }
 
 char *runtime_model_usage_metadata(const struct model_usage *usage)
@@ -41,58 +41,48 @@ char *runtime_model_usage_metadata(const struct model_usage *usage)
 	if (usage->phase[0])
 		cJSON_AddStringToObject(obj, "phase", usage->phase);
 	if (usage->response_id[0])
-		cJSON_AddStringToObject(obj, "response_id",
-					usage->response_id);
+		cJSON_AddStringToObject(obj, "response_id", usage->response_id);
 	if (usage->model[0])
 		cJSON_AddStringToObject(obj, "actual_model", usage->model);
 	if (usage->finish_reason[0])
-		cJSON_AddStringToObject(obj, "finish_reason",
-					usage->finish_reason);
+		cJSON_AddStringToObject(obj, "finish_reason", usage->finish_reason);
 	if (usage->system_fingerprint[0])
-		cJSON_AddStringToObject(obj, "system_fingerprint",
-					usage->system_fingerprint);
+		cJSON_AddStringToObject(obj, "system_fingerprint", usage->system_fingerprint);
 	if (usage->usage_source[0])
-		cJSON_AddStringToObject(obj, "usage_source",
-					usage->usage_source);
+		cJSON_AddStringToObject(obj, "usage_source", usage->usage_source);
 	if (usage->created > 0)
-		cJSON_AddNumberToObject(obj, "created",
-					(double)usage->created);
+		cJSON_AddNumberToObject(obj, "created", (double)usage->created);
 	if (usage->total_tokens > 0)
-		cJSON_AddNumberToObject(obj, "total_tokens",
-					(double)usage->total_tokens);
+		cJSON_AddNumberToObject(obj, "total_tokens", (double)usage->total_tokens);
 	if (usage->input_tokens > 0)
-		cJSON_AddNumberToObject(obj, "uncached_input_tokens",
-					(double)(usage->input_tokens > usage->cached_tokens
-						     ? usage->input_tokens - usage->cached_tokens
-						     : 0));
+		cJSON_AddNumberToObject(
+			obj, "uncached_input_tokens",
+			(double)(usage->input_tokens > usage->cached_tokens
+					 ? usage->input_tokens - usage->cached_tokens
+					 : 0));
 	if (usage->cached_tokens > 0)
-		cJSON_AddNumberToObject(obj, "cached_tokens",
-					(double)usage->cached_tokens);
+		cJSON_AddNumberToObject(obj, "cached_tokens", (double)usage->cached_tokens);
 	if (usage->reasoning_tokens > 0)
-		cJSON_AddNumberToObject(obj, "reasoning_tokens",
-					(double)usage->reasoning_tokens);
+		cJSON_AddNumberToObject(obj, "reasoning_tokens", (double)usage->reasoning_tokens);
 	if (usage->audio_tokens > 0)
-		cJSON_AddNumberToObject(obj, "audio_tokens",
-					(double)usage->audio_tokens);
+		cJSON_AddNumberToObject(obj, "audio_tokens", (double)usage->audio_tokens);
 	if (usage->image_tokens > 0)
-		cJSON_AddNumberToObject(obj, "image_tokens",
-					(double)usage->image_tokens);
+		cJSON_AddNumberToObject(obj, "image_tokens", (double)usage->image_tokens);
 	json = cJSON_PrintUnformatted(obj);
 	cJSON_Delete(obj);
 	return json;
 }
 
-int runtime_record_model_usage_for_user(struct db *db,
-			       const struct config *config,
-			       const char *user_id,
-			       const char *session_id,
-			       const struct model_usage *usage)
+int runtime_record_model_usage_with_credits(struct db *db, const struct config_credits *credits,
+					    const char *user_id, const char *session_id,
+					    const struct model_usage *usage, const char *provider,
+					    const char *model)
 {
 	struct credit_event event;
 	char *metadata;
 	int rc;
 
-	if (!db || !config || !user_id || !session_id || !usage)
+	if (!db || !credits || !user_id || !session_id || !usage)
 		return -EINVAL;
 	if (!runtime_model_usage_is_billable(usage))
 		return 0;
@@ -101,26 +91,32 @@ int runtime_record_model_usage_for_user(struct db *db,
 	event.user_id = user_id;
 	event.session_id = session_id;
 	event.kind = usage->kind[0] ? usage->kind : "model_text";
-	event.provider = usage->provider[0] ? usage->provider :
-		config->models.text.provider;
-	event.model = usage->model[0] ? usage->model :
-		config->models.text.model;
+	event.provider = usage->provider[0] ? usage->provider : provider;
+	event.model = usage->model[0] ? usage->model : model;
 	event.input_tokens = usage->input_tokens;
 	event.cached_tokens = usage->cached_tokens;
 	event.output_tokens = usage->output_tokens;
 	event.image_units = usage->image_units;
 	event.video_seconds = usage->video_seconds;
 	event.metadata_json = metadata;
-	rc = credit_record_event(db, &config->credits, &event, NULL);
+	rc = credit_record_event(db, credits, &event, NULL);
 	free(metadata);
 	return rc;
 }
 
-int runtime_record_model_usage(struct db *db,
-			       const struct config *config,
-			       const char *session_id,
+int runtime_record_model_usage_for_user(struct db *db, const struct config *config,
+					const char *user_id, const char *session_id,
+					const struct model_usage *usage)
+{
+	if (!config)
+		return -EINVAL;
+	return runtime_record_model_usage_with_credits(db, &config->credits, user_id, session_id,
+						       usage, config->models.text.provider,
+						       config->models.text.model);
+}
+
+int runtime_record_model_usage(struct db *db, const struct config *config, const char *session_id,
 			       const struct model_usage *usage)
 {
-	return runtime_record_model_usage_for_user(db, config, "local",
-					   session_id, usage);
+	return runtime_record_model_usage_for_user(db, config, "local", session_id, usage);
 }

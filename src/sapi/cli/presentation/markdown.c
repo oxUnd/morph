@@ -1,4 +1,6 @@
 #include "sapi/cli/presentation/markdown.h"
+#include "sapi/cli/pages/turn_details.h"
+#include "sapi/cli/presentation/presenter_state.h"
 #include "morph_markdown_kitty.h"
 #include "agent_ui/agent_ui.h"
 #include "sapi/cli/presentation/output.h"
@@ -48,7 +50,7 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 	captured = cli_output_capture_write(output->ctx, bytes, len);
 	if (captured)
 		return captured < 0 ? captured : 0;
-	if (output->ctx && !output->ctx->details_visible)
+	if (output->ctx && !cli_turn_details_is_visible(output->ctx))
 		cli_output_track_tail(&output->ctx->output.trailing_newlines, bytes, len);
 	if (cli_output_color_enabled(output->ctx))
 		return fwrite(bytes, 1u, len, stdout) == len ? 0 : -EIO;
@@ -162,15 +164,15 @@ out:
 
 void cli_markdown_render_final(struct cli_application *ctx, const char *text)
 {
-	ctx->markdown_output.trailing_newlines =
+	ctx->presenter->markdown_output.trailing_newlines =
 		cli_markdown_render(ctx, text, 2u, 2u, cli_renderer_media, ctx);
 }
 
 void cli_markdown_finish_final(struct cli_application *ctx)
 {
-	while (ctx->markdown_output.trailing_newlines < 2) {
+	while (ctx->presenter->markdown_output.trailing_newlines < 2) {
 		putchar(ctx, '\n');
-		ctx->markdown_output.trailing_newlines++;
+		ctx->presenter->markdown_output.trailing_newlines++;
 	}
 }
 
@@ -181,39 +183,43 @@ int cli_markdown_stream_append(struct cli_application *ctx, const char *delta, i
 
 	if (!ctx || !delta || !delta[0])
 		return 0;
-	if (ctx->markdown_stream && ctx->markdown_stream_kind != kind)
+	if (ctx->presenter->markdown_stream && ctx->presenter->markdown_stream_kind != kind)
 		cli_markdown_stream_reset(ctx, 1);
-	if (!ctx->markdown_stream) {
-		ctx->markdown_output.prefix_pending = 1;
-		ctx->markdown_output.trailing_newlines = 0;
-		ctx->markdown_stream = cli_markdown_create(ctx, 2u, 2u, 1, cli_renderer_media, ctx,
-							   &ctx->markdown_output, 1);
-		if (!ctx->markdown_stream)
+	if (!ctx->presenter->markdown_stream) {
+		ctx->presenter->markdown_output.prefix_pending = 1;
+		ctx->presenter->markdown_output.trailing_newlines = 0;
+		ctx->presenter->markdown_stream =
+			cli_markdown_create(ctx, 2u, 2u, 1, cli_renderer_media, ctx,
+					    &ctx->presenter->markdown_output, 1);
+		if (!ctx->presenter->markdown_stream)
 			return -ENOMEM;
-		ctx->markdown_stream_kind = kind;
-		ctx->markdown_stream_visible = 1;
-		utf8_terminal_sanitizer_init(&ctx->markdown_stream_sanitizer,
+		ctx->presenter->markdown_stream_kind = kind;
+		ctx->presenter->markdown_stream_visible = 1;
+		utf8_terminal_sanitizer_init(&ctx->presenter->markdown_stream_sanitizer,
 					     UTF8_TERMINAL_TEXT_MULTILINE);
 	}
 	rc = morph_buf_init(&safe, strlen(delta) + 16);
 	if (rc != 0)
 		return rc;
-	rc = utf8_terminal_sanitize_feed(&ctx->markdown_stream_sanitizer, &safe, delta,
+	rc = utf8_terminal_sanitize_feed(&ctx->presenter->markdown_stream_sanitizer, &safe, delta,
 					 strlen(delta), 0);
 	if (rc == 0 && safe.len > 0)
-		rc = morph_buf_append(&ctx->markdown_stream_text, morph_buf_cstr(&safe), safe.len);
+		rc = morph_buf_append(&ctx->presenter->markdown_stream_text, morph_buf_cstr(&safe),
+				      safe.len);
 	if (rc == 0 && safe.len > 0)
-		rc = morph_md_kitty_append(ctx->markdown_stream, morph_buf_cstr(&safe), safe.len,
-					   0);
+		rc = morph_md_kitty_append(ctx->presenter->markdown_stream, morph_buf_cstr(&safe),
+					   safe.len, 0);
 	morph_buf_cleanup(&safe);
 	if (rc != 0)
 		return rc;
-	return morph_md_kitty_render(ctx->markdown_stream);
+	return morph_md_kitty_render(ctx->presenter->markdown_stream);
 }
 
 int cli_markdown_stream_refresh(struct cli_application *ctx)
 {
-	return ctx && ctx->markdown_stream ? morph_md_kitty_render(ctx->markdown_stream) : 0;
+	return ctx && ctx->presenter->markdown_stream
+		       ? morph_md_kitty_render(ctx->presenter->markdown_stream)
+		       : 0;
 }
 
 void cli_markdown_stream_reset(struct cli_application *ctx, int finish_output)
@@ -225,30 +231,30 @@ void cli_markdown_stream_reset(struct cli_application *ctx, int finish_output)
 		return;
 	if (ctx->terminal)
 		(void)cli_feed_markdown_preview_set(ctx, NULL, 0u, 0);
-	if (finish_output && ctx->markdown_stream) {
+	if (finish_output && ctx->presenter->markdown_stream) {
 		if (morph_buf_init(&safe, 16) == 0) {
 			safe_ready = 1;
-			if (utf8_terminal_sanitize_feed(&ctx->markdown_stream_sanitizer, &safe,
-							NULL, 0, 1) == 0 &&
+			if (utf8_terminal_sanitize_feed(&ctx->presenter->markdown_stream_sanitizer,
+							&safe, NULL, 0, 1) == 0 &&
 			    safe.len > 0) {
-				(void)morph_buf_append(&ctx->markdown_stream_text,
+				(void)morph_buf_append(&ctx->presenter->markdown_stream_text,
 						       morph_buf_cstr(&safe), safe.len);
-				(void)morph_md_kitty_append(ctx->markdown_stream,
+				(void)morph_md_kitty_append(ctx->presenter->markdown_stream,
 							    morph_buf_cstr(&safe), safe.len, 0);
 			}
 		}
-		if (morph_md_kitty_append(ctx->markdown_stream, NULL, 0u, 1) == 0)
-			(void)morph_md_kitty_render(ctx->markdown_stream);
+		if (morph_md_kitty_append(ctx->presenter->markdown_stream, NULL, 0u, 1) == 0)
+			(void)morph_md_kitty_render(ctx->presenter->markdown_stream);
 	}
 	if (safe_ready)
 		morph_buf_cleanup(&safe);
-	morph_md_kitty_destroy(ctx->markdown_stream);
-	ctx->markdown_stream = NULL;
-	ctx->markdown_stream_kind = 0;
-	ctx->markdown_stream_visible = 0;
-	ctx->markdown_output.prefix_pending = 0;
-	morph_buf_reset(&ctx->markdown_stream_text);
-	utf8_terminal_sanitizer_reset(&ctx->markdown_stream_sanitizer);
+	morph_md_kitty_destroy(ctx->presenter->markdown_stream);
+	ctx->presenter->markdown_stream = NULL;
+	ctx->presenter->markdown_stream_kind = 0;
+	ctx->presenter->markdown_stream_visible = 0;
+	ctx->presenter->markdown_output.prefix_pending = 0;
+	morph_buf_reset(&ctx->presenter->markdown_stream_text);
+	utf8_terminal_sanitizer_reset(&ctx->presenter->markdown_stream_sanitizer);
 }
 
 void cli_markdown_render_ansi(struct cli_application *ctx, const char *md)

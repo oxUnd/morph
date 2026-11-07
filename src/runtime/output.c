@@ -1,4 +1,6 @@
 #include "runtime/output.h"
+#include "persistence/output_store.h"
+#include "util/arena.h"
 
 #include "util/log.h"
 
@@ -21,21 +23,11 @@ static const char *json_string(cJSON *object, const char *name)
 	return cJSON_IsString(item) ? item->valuestring : NULL;
 }
 
-static int output_id_for_path(struct db *db, const char *path)
+static int64_t output_id_for_path(struct db *db, const char *path)
 {
-	sqlite3_stmt *stmt = NULL;
-	int id = 0;
+	int64_t id = 0;
 
-	if (!db || !db->handle || !path)
-		return 0;
-	if (sqlite3_prepare_v2(db->handle,
-		"SELECT id FROM outputs WHERE path=? ORDER BY id DESC LIMIT 1",
-		-1, &stmt, NULL) != SQLITE_OK)
-		return 0;
-	sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
-	if (sqlite3_step(stmt) == SQLITE_ROW)
-		id = sqlite3_column_int(stmt, 0);
-	sqlite3_finalize(stmt);
+	(void)output_store_find_id(db, path, &id);
 	return id;
 }
 
@@ -44,7 +36,7 @@ static void add_reference(struct db *db, cJSON *references, const char *kind,
 {
 	cJSON *item;
 	cJSON *existing;
-	int id;
+	int64_t id;
 
 	if (!references || !path || !path[0])
 		return;
@@ -60,7 +52,7 @@ static void add_reference(struct db *db, cJSON *references, const char *kind,
 	cJSON_AddStringToObject(item, "path", path);
 	id = output_id_for_path(db, path);
 	if (id > 0)
-		cJSON_AddNumberToObject(item, "output_id", id);
+		cJSON_AddNumberToObject(item, "output_id", (double)id);
 	cJSON_AddItemToArray(references, item);
 }
 
@@ -149,59 +141,35 @@ static int insert_output(const struct runtime_output_context *context,
 			 const char *recipe_json, int64_t *output_id)
 {
 	const struct config_model_entry *model;
-	const char *kind;
 	const char *prompt = json_string(arguments, "prompt");
-	sqlite3_stmt *stmt = NULL;
-	int rc;
+	struct output_record record = {0};
 
 	if (artifact->kind == TOOL_ARTIFACT_IMAGE) {
-		kind = "image";
+		record.kind = "image";
 		model = context->config ? &context->config->models.image : NULL;
 	} else if (artifact->kind == TOOL_ARTIFACT_VIDEO) {
-		kind = "video";
+		record.kind = "video";
 		model = context->config ? &context->config->models.video : NULL;
 	} else {
 		return 0;
 	}
-	if (!prompt || !prompt[0])
-		prompt = context->request_prompt;
-	rc = sqlite3_prepare_v2(context->db->handle,
-		"INSERT INTO outputs(session_id,kind,path,prompt,model,request_prompt,"
-		"provider,tool_name,tool_call_id,turn_id,recipe_json,mime,width,height,"
-		"duration_seconds,size_bytes,created_at) "
-		"SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? "
-		"WHERE NOT EXISTS(SELECT 1 FROM outputs WHERE path=?)",
-		-1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return -EIO;
-#define BIND_TEXT(index, value) sqlite3_bind_text(stmt, index, (value) ? (value) : "", -1, SQLITE_TRANSIENT)
-	if (context->session_id > 0)
-		sqlite3_bind_int64(stmt, 1, context->session_id);
-	else
-		sqlite3_bind_null(stmt, 1);
-	BIND_TEXT(2, kind);
-	BIND_TEXT(3, artifact->path);
-	BIND_TEXT(4, prompt);
-	BIND_TEXT(5, model ? model->model : NULL);
-	BIND_TEXT(6, context->request_prompt);
-	BIND_TEXT(7, model ? model->provider : NULL);
-	BIND_TEXT(8, event->tool_name);
-	BIND_TEXT(9, event->tool_call_id);
-	BIND_TEXT(10, context->turn_id);
-	BIND_TEXT(11, recipe_json);
-	BIND_TEXT(12, artifact->mime);
-	sqlite3_bind_int(stmt, 13, artifact->width);
-	sqlite3_bind_int(stmt, 14, artifact->height);
-	sqlite3_bind_int(stmt, 15, artifact->duration_seconds);
-	sqlite3_bind_int64(stmt, 16, artifact->size_bytes);
-	sqlite3_bind_int64(stmt, 17, (sqlite3_int64)time(NULL));
-	BIND_TEXT(18, artifact->path);
-#undef BIND_TEXT
-	rc = sqlite3_step(stmt);
-	if (rc == SQLITE_DONE && sqlite3_changes(context->db->handle) > 0)
-		*output_id = sqlite3_last_insert_rowid(context->db->handle);
-	sqlite3_finalize(stmt);
-	return rc == SQLITE_DONE ? 0 : -EIO;
+	record.session_id = context->session_id;
+	record.path = artifact->path;
+	record.prompt = prompt && prompt[0] ? prompt : context->request_prompt;
+	record.model = model ? model->model : NULL;
+	record.request_prompt = context->request_prompt;
+	record.provider = model ? model->provider : NULL;
+	record.tool_name = event->tool_name;
+	record.tool_call_id = event->tool_call_id;
+	record.turn_id = context->turn_id;
+	record.recipe_json = recipe_json;
+	record.mime = artifact->mime;
+	record.width = artifact->width;
+	record.height = artifact->height;
+	record.duration_seconds = artifact->duration_seconds;
+	record.size_bytes = artifact->size_bytes;
+	record.created_at = (int64_t)time(NULL);
+	return output_store_insert(context->db, &record, output_id);
 }
 
 static void emit_output_created(const struct runtime_output_context *context,
@@ -269,67 +237,58 @@ int runtime_output_record_event(const struct runtime_output_context *context,
 	return rc;
 }
 
-static void add_column(cJSON *root, sqlite3_stmt *stmt, int index,
-		       const char *name)
+static int output_add_text(cJSON *root, const char *name, const char *value)
 {
-	const unsigned char *value = sqlite3_column_text(stmt, index);
-	if (value && value[0])
-		cJSON_AddStringToObject(root, name, (const char *)value);
+	return !value || !value[0] || cJSON_AddStringToObject(root, name, value);
 }
 
 char *runtime_output_get_json_by_path(struct db *db, const char *path)
 {
-	sqlite3_stmt *stmt = NULL;
+	struct output_record record;
+	struct arena *arena;
 	cJSON *root;
 	char *json = NULL;
-	const unsigned char *recipe;
+	int ok;
 
 	if (!db || !db->handle || !path || !path[0])
 		return NULL;
-	if (sqlite3_prepare_v2(db->handle,
-		"SELECT id,session_id,kind,path,prompt,model,request_prompt,provider,"
-		"tool_name,tool_call_id,turn_id,recipe_json,mime,width,height,"
-		"duration_seconds,size_bytes,created_at FROM outputs "
-		"WHERE path=? ORDER BY id DESC LIMIT 1", -1, &stmt, NULL) != SQLITE_OK)
+	arena = arena_create(0);
+	if (!arena)
 		return NULL;
-	sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
-	if (sqlite3_step(stmt) != SQLITE_ROW)
-		goto out;
-	root = cJSON_CreateObject();
-	if (!root)
-		goto out;
-	cJSON_AddNumberToObject(root, "id",
-				(double)sqlite3_column_int64(stmt, 0));
-	cJSON_AddNumberToObject(root, "session_id",
-				(double)sqlite3_column_int64(stmt, 1));
-	add_column(root, stmt, 2, "kind");
-	add_column(root, stmt, 3, "path");
-	add_column(root, stmt, 4, "prompt");
-	add_column(root, stmt, 5, "model");
-	add_column(root, stmt, 6, "request_prompt");
-	add_column(root, stmt, 7, "provider");
-	add_column(root, stmt, 8, "tool_name");
-	add_column(root, stmt, 9, "tool_call_id");
-	add_column(root, stmt, 10, "turn_id");
-	recipe = sqlite3_column_text(stmt, 11);
-	if (recipe) {
-		cJSON *parsed = cJSON_Parse((const char *)recipe);
-		if (parsed)
-			cJSON_AddItemToObject(root, "recipe", parsed);
+	if (output_store_get(db, path, arena, &record) != 0) {
+		arena_destroy(arena);
+		return NULL;
 	}
-	add_column(root, stmt, 12, "mime");
-	cJSON_AddNumberToObject(root, "width", sqlite3_column_int(stmt, 13));
-	cJSON_AddNumberToObject(root, "height", sqlite3_column_int(stmt, 14));
-	cJSON_AddNumberToObject(root, "duration_seconds",
-				sqlite3_column_int(stmt, 15));
-	cJSON_AddNumberToObject(root, "size_bytes",
-				(double)sqlite3_column_int64(stmt, 16));
-	cJSON_AddNumberToObject(root, "created_at",
-				(double)sqlite3_column_int64(stmt, 17));
-	json = cJSON_PrintUnformatted(root);
+	root = cJSON_CreateObject();
+	ok = root && cJSON_AddNumberToObject(root, "id", (double)record.id) &&
+	     cJSON_AddNumberToObject(root, "session_id", (double)record.session_id) &&
+	     output_add_text(root, "kind", record.kind) &&
+	     output_add_text(root, "path", record.path) &&
+	     output_add_text(root, "prompt", record.prompt) &&
+	     output_add_text(root, "model", record.model) &&
+	     output_add_text(root, "request_prompt", record.request_prompt) &&
+	     output_add_text(root, "provider", record.provider) &&
+	     output_add_text(root, "tool_name", record.tool_name) &&
+	     output_add_text(root, "tool_call_id", record.tool_call_id) &&
+	     output_add_text(root, "turn_id", record.turn_id) &&
+	     output_add_text(root, "mime", record.mime) &&
+	     cJSON_AddNumberToObject(root, "width", record.width) &&
+	     cJSON_AddNumberToObject(root, "height", record.height) &&
+	     cJSON_AddNumberToObject(root, "duration_seconds", record.duration_seconds) &&
+	     cJSON_AddNumberToObject(root, "size_bytes", (double)record.size_bytes) &&
+	     cJSON_AddNumberToObject(root, "created_at", (double)record.created_at);
+	if (ok && record.recipe_json) {
+		cJSON *recipe = cJSON_Parse(record.recipe_json);
+
+		if (recipe && !cJSON_AddItemToObject(root, "recipe", recipe)) {
+			cJSON_Delete(recipe);
+			ok = 0;
+		}
+	}
+	if (ok)
+		json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
-out:
-	sqlite3_finalize(stmt);
+	arena_destroy(arena);
 	return json;
 }
 

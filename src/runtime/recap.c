@@ -1,5 +1,5 @@
-#include "runtime/runtime_internal.h"
 #include "runtime/recap.h"
+#include "runtime/runtime_internal.h"
 #include "runtime/usage.h"
 #include "credits.h"
 #include "util/arena.h"
@@ -63,7 +63,7 @@ static int recap_string(cJSON *value, size_t limit, int nullable)
 	if (!text)
 		return 0;
 	ok = (nullable || text[0]) && utf8len(text) <= limit &&
-		cJSON_SetValuestring(value, text) != NULL;
+	     cJSON_SetValuestring(value, text) != NULL;
 	free(text);
 	return ok;
 }
@@ -73,10 +73,9 @@ cJSON *runtime_recap_parse(const char *response)
 	cJSON *root = response ? cJSON_ParseWithOpts(response, NULL, 1) : NULL;
 
 	if (!cJSON_IsObject(root) || cJSON_GetArraySize(root) != 2 ||
-	    !recap_string(cJSON_GetObjectItemCaseSensitive(root, "summary"),
-		RECAP_MAX_CHARS, 0) ||
+	    !recap_string(cJSON_GetObjectItemCaseSensitive(root, "summary"), RECAP_MAX_CHARS, 0) ||
 	    !recap_string(cJSON_GetObjectItemCaseSensitive(root, "next_action"),
-		RECAP_NEXT_MAX_CHARS, 1)) {
+			  RECAP_NEXT_MAX_CHARS, 1)) {
 		cJSON_Delete(root);
 		return NULL;
 	}
@@ -95,9 +94,10 @@ static int recap_progress_locked(struct runtime *runtime, struct runtime_recap_p
 	if (out->session_id <= 0)
 		return 0;
 	rc = sqlite3_prepare_v2(runtime->context.database.handle,
-		"SELECT COALESCE(MAX(id),0),COALESCE(SUM(role='assistant'),0) "
-		"FROM messages WHERE session_id=? AND role IN ('user','assistant') "
-		"AND length(trim(content))>0", -1, &stmt, NULL);
+				"SELECT COALESCE(MAX(id),0),COALESCE(SUM(role='assistant'),0) "
+				"FROM messages WHERE session_id=? AND role IN ('user','assistant') "
+				"AND length(trim(content))>0",
+				-1, &stmt, NULL);
 	if (rc != SQLITE_OK)
 		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, MORPH_ERR_DB);
 	sqlite3_bind_int64(stmt, 1, out->session_id);
@@ -108,7 +108,7 @@ static int recap_progress_locked(struct runtime *runtime, struct runtime_recap_p
 	}
 	sqlite3_finalize(stmt);
 	return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL,
-		rc == SQLITE_ROW ? 0 : MORPH_ERR_DB);
+				 rc == SQLITE_ROW ? 0 : MORPH_ERR_DB);
 }
 
 int runtime_recap_progress(struct runtime *runtime, struct runtime_recap_progress *out)
@@ -124,15 +124,13 @@ int runtime_recap_progress(struct runtime *runtime, struct runtime_recap_progres
 	return rc;
 }
 
-int runtime_recap_is_current(struct runtime *runtime,
-	const struct runtime_recap_progress *progress)
+int runtime_recap_is_current(struct runtime *runtime, const struct runtime_recap_progress *progress)
 {
 	struct runtime_recap_progress current;
 
 	return progress && runtime_recap_progress(runtime, &current) == 0 &&
-		current.session_id == progress->session_id &&
-		current.revision == progress->revision &&
-		current.history_id == progress->history_id;
+	       current.session_id == progress->session_id &&
+	       current.revision == progress->revision && current.history_id == progress->history_id;
 }
 
 /* Preserve both ends of a long message; all cuts use the shared UTF-8 helpers. */
@@ -167,14 +165,17 @@ static char *recap_excerpt(const char *text, size_t budget)
 
 static char *recap_history(struct db *db, int64_t session_id)
 {
-	struct visible_message { char *role; char *text; } message;
+	struct visible_message {
+		char *role;
+		char *text;
+	} message;
 	struct arena *arena = arena_create(0);
 	morph_array_t messages = {0};
 	morph_buf_t prompt = {0};
 	sqlite3_stmt *stmt = NULL;
 	char *result = NULL;
-	size_t budget = (RECAP_PROMPT_MAX_BYTES - strlen(recap_instructions)) /
-		RECAP_HISTORY_MESSAGES - 16;
+	size_t budget =
+		(RECAP_PROMPT_MAX_BYTES - strlen(recap_instructions)) / RECAP_HISTORY_MESSAGES - 16;
 	int rc;
 
 	if (!arena)
@@ -182,19 +183,21 @@ static char *recap_history(struct db *db, int64_t session_id)
 	rc = morph_array_init_arena(&messages, arena, RECAP_HISTORY_MESSAGES, sizeof(message));
 	if (rc == 0)
 		rc = morph_buf_init(&prompt, 1024);
-	if (rc == 0 && sqlite3_prepare_v2(db->handle,
-		"SELECT role,content FROM messages WHERE session_id=? "
-		"AND role IN ('user','assistant') AND length(trim(content))>0 "
-		"ORDER BY id DESC LIMIT 17", -1, &stmt, NULL) != SQLITE_OK)
+	if (rc == 0 &&
+	    sqlite3_prepare_v2(db->handle,
+			       "SELECT role,content FROM messages WHERE session_id=? "
+			       "AND role IN ('user','assistant') AND length(trim(content))>0 "
+			       "ORDER BY id DESC LIMIT 17",
+			       -1, &stmt, NULL) != SQLITE_OK)
 		rc = MORPH_ERR_DB;
 	if (rc == 0) {
 		sqlite3_bind_int64(stmt, 1, session_id);
 		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-			char *excerpt = recap_excerpt((const char *)sqlite3_column_text(stmt, 1),
-				budget);
+			char *excerpt =
+				recap_excerpt((const char *)sqlite3_column_text(stmt, 1), budget);
 
-			message.role = arena_strdup(arena,
-				(const char *)sqlite3_column_text(stmt, 0));
+			message.role =
+				arena_strdup(arena, (const char *)sqlite3_column_text(stmt, 0));
 			message.text = excerpt ? arena_strdup(arena, excerpt) : NULL;
 			free(excerpt);
 			struct visible_message *slot = morph_array_push(&messages);
@@ -208,7 +211,8 @@ static char *recap_history(struct db *db, int64_t session_id)
 	}
 	if (rc == SQLITE_DONE) {
 		while (messages.nelts) {
-			struct visible_message *oldest = morph_array_get(&messages, messages.nelts - 1);
+			struct visible_message *oldest =
+				morph_array_get(&messages, messages.nelts - 1);
 
 			if (strcmp(oldest->role, "assistant") != 0)
 				break;
@@ -228,8 +232,7 @@ static char *recap_history(struct db *db, int64_t session_id)
 	return result;
 }
 
-static void recap_event(struct runtime_recap_job *job, const char *phase,
-	cJSON *result, int rc)
+static void recap_event(struct runtime_recap_job *job, const char *phase, cJSON *result, int rc)
 {
 	cJSON *data = result ? cJSON_Duplicate(result, 1) : cJSON_CreateObject();
 
@@ -241,32 +244,23 @@ static void recap_event(struct runtime_recap_job *job, const char *phase,
 	cJSON_AddNumberToObject(data, "completed_turns", job->progress.completed_turns);
 	cJSON_AddBoolToObject(data, "automatic", job->automatic);
 	cJSON_AddNumberToObject(data, "error_code", rc);
-	(void)morph_event_emit_simple(job->event_cb, job->event_user_data,
-		MORPH_EVENT_BACKGROUND, "session.recap", phase,
-		strcmp(phase, "begin") == 0 ? "Generating conversation recap..." :
-		"Conversation recap finished", data);
+	(void)morph_event_emit_simple(
+		job->event_cb, job->event_user_data, MORPH_EVENT_BACKGROUND, "session.recap", phase,
+		strcmp(phase, "begin") == 0 ? "Generating conversation recap..."
+					    : "Conversation recap finished",
+		data);
 	cJSON_Delete(data);
 }
 
 static void recap_bill(struct runtime_recap_job *job, const struct model_usage *usage)
 {
 	struct db db = {0};
-	char *metadata;
-	struct credit_event event = {
-		.user_id = "local", .session_id = job->identity,
-		.kind = usage->kind[0] ? usage->kind : "model_text",
-		.provider = job->model->provider, .model = job->model->model_id,
-		.input_tokens = usage->input_tokens, .cached_tokens = usage->cached_tokens,
-		.output_tokens = usage->output_tokens,
-	};
-
 	if (!runtime_model_usage_is_billable(usage) || strcmp(job->database, ":memory:") == 0 ||
 	    db_open(job->model ? job->model->http.logger : NULL, &db, job->database) != 0)
 		return;
-	metadata = runtime_model_usage_metadata(usage);
-	event.metadata_json = metadata;
-	(void)credit_record_event(&db, &job->credits, &event, NULL);
-	free(metadata);
+	(void)runtime_record_model_usage_with_credits(&db, &job->credits, "local", job->identity,
+						      usage, job->model->provider,
+						      job->model->model_id);
 	db_close(&db);
 }
 
@@ -282,10 +276,11 @@ static void *recap_worker(void *opaque)
 	recap_event(job, "begin", NULL, 0);
 	job->model->http.cancel_token = &job->cancel;
 	if (arena)
-		rc = job->model->chat_with_tools(job->model, arena, recap_instructions,
-			&message, 1, NULL, 0, &response, NULL, NULL);
+		rc = job->model->chat_with_tools(job->model, arena, recap_instructions, &message, 1,
+						 NULL, 0, &response, NULL, NULL);
 	if (rc >= 0) {
-		result = response.tool_call_count == 0 ? runtime_recap_parse(response.content) : NULL;
+		result = response.tool_call_count == 0 ? runtime_recap_parse(response.content)
+						       : NULL;
 		rc = result ? 0 : MORPH_ERR_PROTOCOL;
 	}
 	recap_bill(job, &response.usage);
@@ -325,14 +320,14 @@ static int recap_start_locked(struct runtime *runtime, int automatic)
 		pthread_mutex_unlock(&job->lock);
 		if (!done)
 			return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL,
-				-EALREADY);
+						 -EALREADY);
 		pthread_join(job->thread, NULL);
 		recap_job_free(job);
 		runtime->recap_job = NULL;
 	}
 	if (!source || !source->api_key[0])
 		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL,
-			MORPH_ERR_NOT_CONFIGURED);
+					 MORPH_ERR_NOT_CONFIGURED);
 	if (ctx->current_session.id <= 0)
 		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, -ENODATA);
 	job = calloc(1, sizeof(*job));
@@ -350,16 +345,11 @@ static int recap_start_locked(struct runtime *runtime, int automatic)
 		rc = session_get_by_id(&ctx->database, job->progress.session_id, &session);
 	if (rc == 0) {
 		job->prompt = recap_history(&ctx->database, session.id);
-		job->model =
-			model_llm_create(runtime ? runtime->options.logger : NULL, source->provider,
-					 source->model_id, source->api_base, source->api_key);
+		job->model = model_llm_clone(source, runtime->options.logger);
 		if (!job->prompt || !job->model)
 			rc = -ENOMEM;
 	}
 	if (rc == 0) {
-		memcpy(job->model->adapter, source->adapter, sizeof(job->model->adapter));
-		memcpy(job->model->extra_body_json, source->extra_body_json,
-			sizeof(job->model->extra_body_json));
 		job->model->max_tokens = RECAP_OUTPUT_TOKENS;
 		job->model->timeout_seconds = RECAP_TIMEOUT_SECONDS;
 		job->model->retry_count = 0;
@@ -382,7 +372,7 @@ static int recap_start_locked(struct runtime *runtime, int automatic)
 }
 
 int runtime_recap_request(struct runtime *runtime, int automatic,
-	struct runtime_recap_progress *out)
+			  struct runtime_recap_progress *out)
 {
 	int rc;
 

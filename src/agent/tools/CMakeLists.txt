@@ -1,30 +1,7 @@
-add_library(morph-tools STATIC
-	img_gen.c
-	img_qa.c
-	img_info.c
-	img_resize.c
-	img_convert.c
-	img_inpaint.c
-	img_compose.c
-	vid_gen.c
-	file_read.c
-	file_list.c
-	file_info.c
-	apply_patch.c
-	config_write.c
-	skill_activate.c
-	request_permissions.c
-	plan.c
-	ask_user.c
-	img_annotate.c
-	sub_agent_tools.c
-	scheduled_tasks.c
-	runtime_query.c
-	dynamic_tools.c
-	exec_tool.c
-	exec_jobs.c
-	path_policy.c
-)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+	"${CMAKE_CURRENT_SOURCE_DIR}/sources.list")
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/sources.list" MORPH_TOOL_SOURCES)
+add_library(morph-tools STATIC ${MORPH_TOOL_SOURCES})
 
 # stb_image_write/resize2 use long-form macros and pragmas; suppress noisy warnings
 set_source_files_properties(img_resize.c img_convert.c img_inpaint.c img_compose.c PROPERTIES

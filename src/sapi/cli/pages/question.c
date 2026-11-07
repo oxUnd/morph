@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/question.h"
+#include "sapi/cli/adapters/input/state.h"
 #include "agent/tools/ask_user.h"
 #include "cJSON.h"
 #include "sapi/cli/adapters/input/reader.h"
@@ -386,19 +387,20 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 		char *input = NULL;
 		const char *readline_prompt = cli_output_is_structured(ctx) ? "" : prompt;
 		FILE *tty = fopen("/dev/tty", "r");
-		int64_t previous_deadline = ctx->input_deadline_ms;
-		int previous_timed_out = ctx->input_timed_out;
-		ctx->input_deadline_ms = timeout ? morph_io_now_ms() + (int64_t)timeout * 1000 : 0;
-		ctx->input_timed_out = 0;
+		int64_t previous_deadline = ctx->input->input_deadline_ms;
+		int previous_timed_out = ctx->input->input_timed_out;
+		ctx->input->input_deadline_ms =
+			timeout ? morph_io_now_ms() + (int64_t)timeout * 1000 : 0;
+		ctx->input->input_timed_out = 0;
 		if (tty) {
 			input = cli_reader_prompt_stream(ctx, readline_prompt, tty);
 			fclose(tty);
 		} else {
 			input = cli_readline_prompt(ctx, readline_prompt);
 		}
-		int timed_out = ctx->input_timed_out;
-		ctx->input_deadline_ms = previous_deadline;
-		ctx->input_timed_out = previous_timed_out;
+		int timed_out = ctx->input->input_timed_out;
+		ctx->input->input_deadline_ms = previous_deadline;
+		ctx->input->input_timed_out = previous_timed_out;
 		if (timed_out) {
 			free(input);
 			return -ETIMEDOUT;
@@ -487,11 +489,11 @@ int cli_question_callback(const char *question, const char *const *choices, int 
 		};
 		return cli_event_queue_call_owner(ctx, cli_question_ask_user_on_owner, &call);
 	}
-	const struct morph_cancel_token *previous = ctx->input_cancel_token;
-	ctx->input_cancel_token = options ? options->cancel_token : NULL;
+	const struct morph_cancel_token *previous = ctx->input->input_cancel_token;
+	ctx->input->input_cancel_token = options ? options->cancel_token : NULL;
 	int rc = cli_question_ask_user_prompt(question, choices, choices_count, selection_mode,
 					      min_choices, max_choices, options, answers,
 					      answers_count, ctx);
-	ctx->input_cancel_token = previous;
+	ctx->input->input_cancel_token = previous;
 	return rc;
 }

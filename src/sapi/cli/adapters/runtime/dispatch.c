@@ -1,0 +1,46 @@
+#include "sapi/cli/adapters/runtime/dispatch.h"
+#include "sapi/cli/services/event_queue.h"
+#include "sapi/cli/services/event_queue_item.h"
+#include "sapi/cli/adapters/input/cancel.h"
+#include "sapi/cli/presentation/output.h"
+#include "sapi/cli/presentation/notifications.h"
+#include "sapi/cli/presentation/presenter.h"
+#include "sapi/cli/widgets/feed.h"
+#ifdef HAVE_READLINE
+#include <readline/readline.h>
+#endif
+#include "sapi/cli/application_internal.h"
+
+int cli_dispatch_event(struct cli_application *ctx, const struct cli_event_queue_item *item)
+{
+	int rc = 0;
+
+	if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_MORPH_EVENT)
+		rc = cli_presentation_event(ctx, &item->event);
+	else if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL) {
+		int updating = cli_feed_update_active(ctx);
+
+#ifdef HAVE_READLINE
+		/* Only interactive owner calls need a blocking prompt. Keep
+		 * normal event refreshes in Readline's terminal mode so input
+		 * cannot be echoed, erased or have CR translated by the TTY. */
+		if (RL_ISSTATE(RL_STATE_CALLBACK))
+			rl_callback_handler_remove();
+#endif
+		cli_feed_update_end(ctx);
+		int result = cli_event_queue_run_owner_call(ctx, item->owner_call);
+
+		/* A prompt consumes its cancellation key. Do not apply that
+		 * key again to the composer draft restored by its adapter. */
+		if (result == -ECANCELED || result == -EINTR)
+			cli_cancel_state_reset(ctx);
+		if (updating)
+			cli_feed_update_begin(ctx);
+	} else if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON) {
+		cli_feed_history_begin(ctx);
+		cli_notifications_render(ctx, item);
+		cli_feed_history_end(ctx);
+	}
+	fflush(stdout);
+	return rc;
+}

@@ -10,8 +10,9 @@ from test_cli_pty import Model, Terminal, http, pexpect, pyte
 
 
 def footer_row(terminal):
+    # Branding is optional at narrow widths; permission and usage identify the footer.
     rows = [index for index, row in enumerate(terminal.screen.display)
-            if 'morph ·' in row and ('ctx ' in row or 'context ' in row)]
+            if 'perm: ' in row and ('ctx ' in row or 'context ' in row)]
     assert len(rows) == 1, '\n'.join(terminal.screen.display)
     return rows[0]
 
@@ -59,7 +60,7 @@ def scenario(driver, server, height, width, wrapped):
                     continue
                 completed_frames += 1
                 footer = [index for index, row in enumerate(replay.display)
-                          if 'morph ·' in row and ('ctx ' in row or 'context ' in row)]
+                          if 'perm: ' in row and ('ctx ' in row or 'context ' in row)]
                 assert footer == [height - 1], '\n'.join(replay.display)
                 assert sum(row.startswith('› ') for row in replay.display) == 1
             assert completed_frames, 'No completed layout commit was captured'

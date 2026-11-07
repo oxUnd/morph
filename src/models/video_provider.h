@@ -19,17 +19,15 @@ struct video_capabilities {
 
 struct video_provider_ops {
 	const char *name;
-	int (*capabilities)(const struct model *model,
-			    struct video_capabilities *caps);
-	int (*execute)(struct model *self, const char *prompt,
-		       const char **image_paths, int num_images,
-		       const char **video_paths, int num_videos,
-		       const char **audio_paths, int num_audios,
-		       int generate_audio,
-		       const struct video_capabilities *caps,
-		       int duration, const char *output_dir,
+	int (*capabilities)(const struct model *model, struct video_capabilities *caps);
+	int (*execute)(struct model *self, const char *prompt, const char **image_paths,
+		       int num_images, const char **video_paths, int num_videos,
+		       const char **audio_paths, int num_audios, int generate_audio,
+		       const struct video_capabilities *caps, int duration, const char *output_dir,
 		       struct video_result *result);
 };
+
+const struct video_provider_ops *video_volcengine_provider(void);
 
 #ifdef __cplusplus
 }

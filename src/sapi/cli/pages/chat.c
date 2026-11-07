@@ -1,4 +1,6 @@
 #include "sapi/cli/pages/chat.h"
+#include "sapi/cli/pages/turn_details.h"
+#include "sapi/cli/adapters/input/state.h"
 #include "sapi/cli/pages/resume.h"
 #include "sapi/cli/services/turn.h"
 #include "sapi/cli/application.h"
@@ -30,13 +32,13 @@ struct cli_chat_page {
 static void cli_chat_page_schedule(struct cli_chat_page *state, struct morph_tui_application *app)
 {
 	struct cli_application *ctx = state->ctx;
-	int timeout = ctx->details_open ? 250 : cli_feed_next_frame_ms(ctx);
+	int timeout = cli_turn_details_is_open(ctx) ? 250 : cli_feed_next_frame_ms(ctx);
 
 	if (timeout < 0 || timeout > 1000)
 		timeout = 1000;
 	if (morph_tui_application_depth(app) > 1)
 		timeout = 1000;
-	else if (!ctx->details_open && cli_command_job_done(state->job))
+	else if (!cli_turn_details_is_open(ctx) && cli_command_job_done(state->job))
 		timeout = 0;
 	morph_tui_application_schedule(app, timeout);
 	morph_tui_application_set_input_enabled(app, ctx->running);
@@ -138,8 +140,8 @@ static int cli_chat_page_event(void *data, struct morph_tui_application *app,
 			if (rc < 0)
 				return rc;
 		} else {
-			if (ctx->details_open)
-				cli_transcript_toggle(ctx);
+			if (cli_turn_details_is_open(ctx))
+				cli_turn_details_toggle(ctx);
 			if (state->callback_installed) {
 				cli_readline_editor_replace(ctx, "", 0);
 			}
@@ -172,7 +174,7 @@ static int cli_chat_page_event(void *data, struct morph_tui_application *app,
 			(void)cli_event_queue_drain_batch(ctx);
 		}
 	}
-	if (!modal && !ctx->details_open && cli_command_job_done(state->job)) {
+	if (!modal && !cli_turn_details_is_open(ctx) && cli_command_job_done(state->job)) {
 		int point;
 
 		cli_feed_update_begin(ctx);
@@ -202,20 +204,16 @@ static int cli_chat_page_input(void *data, struct morph_tui_application *app,
 	if (rc < 0 || !ctx->running)
 		return rc;
 
-	if (ctx->details_open) {
-		cli_readline_details_input(ctx);
-		return 1;
-	}
 	if (!state->job->active)
 		cli_cancel_state_reset(ctx);
 	cli_readline_clear_footer(ctx);
 	cli_readline_editor_read(ctx);
-	if (ctx->readline_ready_input) {
-		char *input = ctx->readline_ready_input;
+	if (ctx->input->readline_ready_input) {
+		char *input = ctx->input->readline_ready_input;
 		char *submitted = input;
 		char *retry_command = NULL;
 
-		ctx->readline_ready_input = NULL;
+		ctx->input->readline_ready_input = NULL;
 		cli_readline_clear_footer(ctx);
 		cli_readline_editor_close();
 		state->callback_installed = 0;
@@ -369,17 +367,17 @@ void cli_chat_destroy(struct cli_chat_page *page, int app_rc)
 		runtime_cancel_turn(ctx->runtime);
 		CMD_ERROR(ctx, "Application failed: %s", morph_strerror(app_rc));
 	}
-	if (ctx->details_open)
-		cli_transcript_toggle(ctx);
+	if (cli_turn_details_is_open(ctx))
+		cli_turn_details_toggle(ctx);
 	if (isatty(STDOUT_FILENO))
 		fprintf(stdout, "\033[?1004l");
-	if (ctx->readline_ready_input) {
-		free(ctx->readline_ready_input);
-		ctx->readline_ready_input = NULL;
+	if (ctx->input->readline_ready_input) {
+		free(ctx->input->readline_ready_input);
+		ctx->input->readline_ready_input = NULL;
 	}
 	cli_readline_clear_footer(ctx);
-	free(ctx->footer_text);
-	ctx->footer_text = NULL;
+	free(ctx->input->footer_text);
+	ctx->input->footer_text = NULL;
 	if (page->callback_installed)
 		cli_readline_editor_close();
 	if (page->finished_job) {

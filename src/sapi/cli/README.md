@@ -16,11 +16,13 @@ cli/
   models/
     composer.c, .h             image labels, path expansion and editing spans
     presentation.h             output/presentation state
+    transcript.c, .h            owned tool/reasoning records
     setup.h                    configuration wizard data
   pages/
     chat.c, .h                 chat controller and page-local editing state
     history, hooks, jobs, resume
     permissions                inline policy selector in the input area
+    turn_details               modal transcript viewport on the same Application
     approval, question         modal interaction pages
     setup/                     wizard and its terminal controls
   widgets/                     feed, transcript, banner, list and shell styling
@@ -32,12 +34,12 @@ cli/
     management, skill_store, share_store
     configuration/             provider defaults, validation, roles and storage
   adapters/
-    input/                     Readline, callbacks, keymaps and reader
+    input/                     input state owner, Readline, callbacks, keymaps and reader
     clipboard/                 native clipboard access and terminal copy requests
-    runtime/                   event translation and startup observer
+    runtime/                   owner-thread UI dispatch, event translation and observer
     protocol/                  runtime interaction request/reply mapping
     media/                     external images and terminal media rendering
-  presentation/                output, presenter, history, diagnostics, Markdown and HTML
+  presentation/                presenter state, notifications, output, history, Markdown and HTML
   CMakeLists.txt
   README.md
 ```
@@ -90,3 +92,19 @@ when changing boundaries. PTY coverage includes modal cancellation, termination
 with an active worker, slash-command spacing, recall, resize and terminal state
 restoration. Keep the slash-command presentation contract in
 [AGENTS.md](../../../AGENTS.md).
+
+## Presentation ownership
+
+Application owns opaque presenter and input objects. Presenter owns stream buffers,
+Markdown renderer lifetime and artifact deduplication; input adapters own callback
+closures, completion storage, prompt constraints and the Readline draft/footer.
+The root keeps runtime and execution lifecycle, rather than exposing renderer
+buffers as application state. Feed and turn services query final-output visibility
+through the presenter interface.
+
+The event queue only copies/transports items, wakes the owner and completes or
+cancels owner calls. `adapters/runtime/dispatch` coordinates input suspension and
+presentation, while notification formatting belongs to `presentation`.
+Transcript records are a model; transcript widgets format those records; the
+`turn_details` page owns scrolling and a shared TUI frame. Application controls
+its terminal session and input handoff just like other modal pages.

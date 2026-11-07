@@ -1,31 +1,17 @@
 #include "sapi/cli/services/event_queue.h"
-#ifdef HAVE_READLINE
-#include <stdio.h>
-#include <readline/readline.h>
-#endif
-#include "db/scheduled_task.h"
+#include "sapi/cli/services/event_queue_item.h"
+#include "sapi/cli/application.h"
 #include "cJSON.h"
-#include "sapi/cli/adapters/input/cancel.h"
-#include "sapi/cli/presentation/output.h"
-#include "sapi/cli/presentation/markdown.h"
-#include "sapi/cli/presentation/presenter.h"
-#include "sapi/cli/widgets/feed.h"
-#include "sapi/cli/widgets/transcript.h"
-#include "sapi/cli/adapters/media/renderer.h"
-#include "sapi/cli/application_internal.h"
+#include "util/error.h"
 #include <morph/tui/application.h>
 
-#include "util/queue.h"
-
+#include <errno.h>
 #include <fcntl.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 #define CLI_EVENT_QUEUE_UI_EVENT_BUDGET 64
-
-enum cli_event_queue_item_kind {
-	CLI_EVENT_QUEUE_UI_ITEM_MORPH_EVENT,
-	CLI_EVENT_QUEUE_UI_ITEM_NOTIFICATION,
-	CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL,
-};
 
 struct cli_event_queue_owner_call {
 	pthread_mutex_t mutex;
@@ -36,26 +22,9 @@ struct cli_event_queue_owner_call {
 	int complete;
 };
 
-struct cli_event_queue_item {
-	morph_queue_t link;
-	enum cli_event_queue_item_kind kind;
-	struct morph_event event;
-	char *name;
-	char *phase;
-	char *message;
-	char *turn_id;
-	char *notification_title;
-	char *notification_body;
-	int64_t notification_id;
-	int64_t notification_task_id;
-	int64_t notification_created_at;
-	int notification_failed;
-	int notification_warning;
-	struct cli_event_queue_owner_call *owner_call;
-};
-
 struct cli_event_queue {
 	struct morph_tui_application *application;
+	cli_event_queue_dispatch_fn dispatch;
 	pthread_mutex_t mutex;
 	morph_queue_t pending;
 	pthread_t owner;
@@ -172,14 +141,14 @@ static int cli_event_queue_enqueue(struct cli_application *ctx, struct cli_event
 	return 0;
 }
 
-int cli_event_queue_init(struct cli_application *ctx)
+int cli_event_queue_init(struct cli_application *ctx, cli_event_queue_dispatch_fn dispatch)
 {
 	struct cli_event_queue *ui;
 	int wake_fds[2] = {-1, -1};
 	int mutex_rc;
 	int rc;
 
-	if (!ctx)
+	if (!ctx || !dispatch)
 		return -EINVAL;
 	ui = calloc(1, sizeof(*ui));
 	if (!ui)
@@ -212,6 +181,7 @@ int cli_event_queue_init(struct cli_application *ctx)
 	ui->wake_read = wake_fds[0];
 	ui->wake_write = wake_fds[1];
 	ui->owner = pthread_self();
+	ui->dispatch = dispatch;
 	ctx->events = ui;
 	return 0;
 }
@@ -433,8 +403,8 @@ int cli_event_queue_stop_owner_calls(struct cli_application *ctx)
 	return 0;
 }
 
-static int cli_event_queue_run_owner_call(struct cli_application *ctx,
-					  struct cli_event_queue_owner_call *call)
+int cli_event_queue_run_owner_call(struct cli_application *ctx,
+				   struct cli_event_queue_owner_call *call)
 {
 	int result;
 
@@ -443,41 +413,6 @@ static int cli_event_queue_run_owner_call(struct cli_application *ctx,
 	result = cli_event_queue_call_owner(ctx, call->fn, call->data);
 	cli_event_queue_complete_owner_call(call, result);
 	return result;
-}
-
-static void cli_event_queue_render_notification(struct cli_application *ctx,
-						const struct cli_event_queue_item *item)
-{
-	const char *color = item->notification_failed	 ? ANSI_RED
-			    : item->notification_warning ? ANSI_YELLOW
-							 : ANSI_GREEN;
-	const char *mark = item->notification_failed	? CLI_FEED_FAILED
-			   : item->notification_warning ? CLI_FEED_SYSTEM
-							: CLI_FEED_DONE;
-	const char *status = item->notification_failed	  ? "failed"
-			     : item->notification_warning ? "attention"
-							  : "completed";
-	char clock[32] = "";
-	struct tm local;
-	time_t created = (time_t)item->notification_created_at;
-
-	printf(ctx, "\n%s%s" ANSI_RESET " " ANSI_CYAN "[task]" ANSI_RESET " ", color, mark);
-	if (item->notification_task_id > 0)
-		printf(ctx, ANSI_DIM "#%lld " ANSI_RESET, (long long)item->notification_task_id);
-	(void)cli_output_print_untrusted(
-		ctx, item->notification_title ? item->notification_title : "Task",
-		UTF8_TERMINAL_TEXT_SINGLE_LINE);
-	printf(ctx, ANSI_DIM " · " ANSI_RESET "%s%s" ANSI_RESET "\n", color, status);
-	if (item->notification_body && item->notification_body[0]) {
-		printf(ctx, "  ");
-		cli_markdown_render_ansi_with_media_indented(ctx, item->notification_body, 2,
-							     cli_renderer_media, ctx);
-	}
-	printf(ctx, "  " ANSI_DIM "inbox #%lld", (long long)item->notification_id);
-	if (created > 0 && localtime_r(&created, &local) &&
-	    strftime(clock, sizeof(clock), "%H:%M:%S", &local) > 0)
-		printf(ctx, " · %s", clock);
-	printf(ctx, ANSI_RESET "\n\n");
 }
 
 static int cli_event_queue_drain_limit(struct cli_application *ctx, int limit)
@@ -513,53 +448,13 @@ static int cli_event_queue_drain_limit(struct cli_application *ctx, int limit)
 	morph_queue_foreach_safe (link, next, &local) {
 		struct cli_event_queue_item *item =
 			morph_queue_data(link, struct cli_event_queue_item, link);
-		int rc = 0;
-		int captured = 0;
-
 		morph_queue_remove(link);
-		if (ctx->details_visible) {
-			if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL)
-				cli_transcript_toggle(ctx);
-			else {
-				rc = cli_transcript_capture_begin(ctx);
-				captured = rc == 0;
-				if (!captured)
-					cli_transcript_toggle(ctx);
-			}
-		}
-		if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_MORPH_EVENT)
-			rc = cli_presentation_event(ctx, &item->event);
-		else if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL) {
-			int updating = cli_feed_update_active(ctx);
+		int rc = ui->dispatch(ctx, item);
 
-#ifdef HAVE_READLINE
-			/* Only interactive owner calls need a blocking prompt. Keep
-			 * normal event refreshes in Readline's terminal mode so input
-			 * cannot be echoed, erased or have CR translated by the TTY. */
-			if (RL_ISSTATE(RL_STATE_CALLBACK))
-				rl_callback_handler_remove();
-#endif
-			cli_feed_update_end(ctx);
-			int result = cli_event_queue_run_owner_call(ctx, item->owner_call);
-
-			/* A prompt consumes its cancellation key. Do not apply that
-			 * key again to the composer draft restored by its adapter. */
-			if (result == -ECANCELED || result == -EINTR)
-				cli_cancel_state_reset(ctx);
-			if (updating)
-				cli_feed_update_begin(ctx);
-		} else if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON) {
-			cli_feed_history_begin(ctx);
-			cli_event_queue_render_notification(ctx, item);
-			cli_feed_history_end(ctx);
-		}
-		if (captured)
-			cli_output_capture_end(ctx);
 		if (first_error == 0 && rc != 0)
 			first_error = rc;
 		cli_event_queue_item_free(item);
 	}
-	fflush(stdout);
 	return first_error;
 }
 

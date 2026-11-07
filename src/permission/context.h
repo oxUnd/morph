@@ -19,54 +19,51 @@ extern "C" {
 #include "permission/permission.h"
 
 struct db;
+struct arena;
 
-struct tool_call_grant {
-	char principal[TOOL_CONTEXT_ACTION_MAX];
-	int host;
-	int network;
+struct tool_context;
+
+struct tool_path_snapshot {
+	char **paths;
+	int count;
 };
 
-struct tool_context {
-	pthread_mutex_t authority_lock;
-	struct permission_context permissions;
-	struct tool_call_grant tool_calls[TOOL_CONTEXT_ALLOW_MAX];
-	int tool_calls_count;
+struct tool_permission_snapshot {
+	struct permission_policy policy;
 	struct morph_log *logger;
-	char workdir[TOOL_CONTEXT_OUTPUT_DIR_MAX];
-	char output_dir[TOOL_CONTEXT_OUTPUT_DIR_MAX];
-	tool_operation_approval_fn operation_approval_fn;
-	void *operation_approval_user_data;
-	char read_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int read_allowed_dirs_count;
-	char write_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int write_allowed_dirs_count;
-	char delete_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int delete_allowed_dirs_count;
-	char allowed_commands[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ACTION_MAX];
-	int allowed_commands_count;
-	char exec_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int exec_allowed_dirs_count;
-	morph_array_t builtin_paths;
-	morph_array_t scoped_grants;
-	morph_array_t persistent_grants;
-	struct db *grant_db;
-	char grant_project_root[TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int default_timeout_seconds;
-	char exec_profile_write_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int exec_profile_write_dirs_count;
-	char exec_profile_delete_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int exec_profile_delete_dirs_count;
+	const char *workdir;
+	const char *output_dir;
+	struct tool_path_snapshot read;
+	struct tool_path_snapshot write;
+	struct tool_path_snapshot remove;
 };
+
+/* Strings and arrays belong to arena and survive subsequent grant changes. */
+int tool_context_snapshot_permissions(const struct tool_context *tctx, const char *principal,
+				      struct arena *arena,
+				      struct tool_permission_snapshot *snapshot);
 
 int tool_context_review(struct tool_context *tctx, const struct tool_operation *op,
 	enum tool_operation_verdict *verdict);
 int tool_context_set_permission_policy(struct tool_context *tctx,
 	const struct permission_policy *policy);
+int tool_context_get_permission_policy(const struct tool_context *tctx,
+				       struct permission_policy *policy);
+void tool_context_get_operation_approval(struct tool_context *tctx,
+					 tool_operation_approval_fn *callback, void **user_data);
+void tool_context_set_review_adapters(struct tool_context *tctx, permission_review_fn user_review,
+				      void *user_data, permission_review_fn model_review,
+				      void *model_data);
+void tool_context_reset_denials(struct tool_context *tctx);
+/* Borrowed by the agent; configuration belongs to the context owner. */
+struct permission_context *tool_context_permission_context(struct tool_context *tctx);
 struct tool_context *tool_context_create(struct morph_log *logger, const char *workdir,
 					 const char *output_dir);
 void tool_context_destroy(struct tool_context *tctx);
 const char *tool_context_workdir(const struct tool_context *tctx);
 const char *tool_context_output_dir(const struct tool_context *tctx);
+const char *tool_context_grant_project_root(const struct tool_context *tctx);
+struct morph_log *tool_context_logger(const struct tool_context *tctx);
 void tool_context_set_default_timeout(struct tool_context *tctx, int seconds);
 int tool_context_default_timeout(const struct tool_context *tctx);
 /* Built-in policy paths are independent of bounded user approval grants. */

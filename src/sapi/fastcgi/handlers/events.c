@@ -7,6 +7,8 @@
  */
 #define _GNU_SOURCE
 #include "handlers.h"
+#include "sapi/fastcgi/storage/sessions.h"
+#include "sapi/fastcgi/storage/events.h"
 #include "../session_store.h"
 #include "../stream_pool.h"
 #include "util/signals.h"
@@ -17,8 +19,8 @@
 #include <string.h>
 #include <time.h>
 
-#define SSE_HEARTBEAT_SEC   15
-#define SSE_MAX_LIFETIME    3600
+#define SSE_HEARTBEAT_SEC 15
+#define SSE_MAX_LIFETIME 3600
 
 static void sse_serve(request_t *r)
 {
@@ -38,11 +40,11 @@ static void sse_serve(request_t *r)
 	sse_write_headers(r);
 	/* opening handshake event */
 	char hello[128];
-	snprintf(hello, sizeof(hello),
-		 "{\"resume_from\":%lld,\"ts\":%lld}",
-		 (long long)last_id, (long long)time(NULL));
+	snprintf(hello, sizeof(hello), "{\"resume_from\":%lld,\"ts\":%lld}", (long long)last_id,
+		 (long long)time(NULL));
 	sse_write_event(r, 0, "ready", hello);
-	if (sse_flush(r) != 0) return;
+	if (sse_flush(r) != 0)
+		return;
 
 	time_t start = time(NULL);
 
@@ -51,9 +53,9 @@ static void sse_serve(request_t *r)
 
 		if (r->shutdown && morph_signal_flag_get(r->shutdown))
 			break;
-		int got = events_wait_after(r->store, sid, last_id,
-					    SSE_HEARTBEAT_SEC, &rec);
-		if (got < 0) break;
+		int got = events_wait_after(r->store, sid, last_id, SSE_HEARTBEAT_SEC, &rec);
+		if (got < 0)
+			break;
 		if (r->shutdown && morph_signal_flag_get(r->shutdown)) {
 			free(rec.payload_json);
 			break;
@@ -66,7 +68,8 @@ static void sse_serve(request_t *r)
 		} else {
 			sse_write_heartbeat(r);
 		}
-		if (sse_flush(r) != 0) break;
+		if (sse_flush(r) != 0)
+			break;
 	}
 }
 
@@ -75,7 +78,10 @@ void handle_sse(request_t *r)
 	const char *sid = path_param(r, "id");
 	int rc;
 
-	if (!sid) { reply_400(r, "missing id"); return; }
+	if (!sid) {
+		reply_400(r, "missing id");
+		return;
+	}
 	if (!store_session_owned_by(r->store, sid, r->user_id)) {
 		reply_403(r);
 		return;

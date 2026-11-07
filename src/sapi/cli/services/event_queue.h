@@ -6,9 +6,15 @@
 
 struct cli_application;
 struct morph_tui_application;
+struct cli_event_queue_item;
+struct cli_event_queue_owner_call;
+typedef int (*cli_event_queue_dispatch_fn)(struct cli_application *,
+					   const struct cli_event_queue_item *);
 typedef int (*cli_event_queue_call_fn)(void *data);
 
-int cli_event_queue_init(struct cli_application *ctx);
+int cli_event_queue_init(struct cli_application *ctx, cli_event_queue_dispatch_fn dispatch);
+int cli_event_queue_run_owner_call(struct cli_application *ctx,
+				   struct cli_event_queue_owner_call *call);
 void cli_event_queue_cleanup(struct cli_application *ctx);
 int cli_event_queue_is_owner(const struct cli_application *ctx);
 int cli_event_queue_wake_fd(const struct cli_application *ctx);

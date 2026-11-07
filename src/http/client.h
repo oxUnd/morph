@@ -73,6 +73,9 @@ int http_wait_cancelable(const struct http_control *control, unsigned int millis
 int http_get(const struct http_control *control, const char *url, struct http_response *resp);
 int http_get_ex(const struct http_control *control, const char *url, const char **extra_headers,
 		int extra_header_count, struct http_response *resp);
+int http_get_ex_timeout(const struct http_control *control, const char *url,
+			const char **extra_headers, int extra_header_count, long timeout_seconds,
+			struct http_response *resp);
 int http_post(const struct http_control *control, const char *url, const char *body,
 	      size_t body_len, const char *content_type, struct http_response *resp);
 int http_post_ex(const struct http_control *control, const char *url, const char *body,

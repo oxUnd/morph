@@ -1,6 +1,8 @@
 /* artifacts.c — zero-copy output_dir artifact access */
 #define _GNU_SOURCE
 #include "handlers.h"
+#include "sapi/fastcgi/storage/artifacts.h"
+#include "sapi/fastcgi/storage/sessions.h"
 #include "../session_store.h"
 
 #include <errno.h>
@@ -22,8 +24,7 @@ static const char *artifact_root(request_t *r)
 	return "/var/lib/morph/output";
 }
 
-static int path_within_root(const char *root, const char *rel,
-			    char out_path[PATH_MAX])
+static int path_within_root(const char *root, const char *rel, char out_path[PATH_MAX])
 {
 	char joined[PATH_MAX];
 	char root_real[PATH_MAX];
@@ -78,8 +79,7 @@ static void artifact_safe_filename(const char *src, char out[256])
 		src = "artifact";
 	for (; *src && n + 1 < 256; src++) {
 		unsigned char c = (unsigned char)*src;
-		if (c == '"' || c == '\\' || c == '\r' || c == '\n' ||
-		    c < 0x20)
+		if (c == '"' || c == '\\' || c == '\r' || c == '\n' || c < 0x20)
 			c = '_';
 		out[n++] = (char)c;
 	}
@@ -167,16 +167,15 @@ void handle_get_artifact(request_t *r)
 	rid = r->request_id[0] ? r->request_id : "-";
 	fcgi_record_status(r, 200);
 	FCGX_FPrintF(r->fcgx->out,
-		"Status: 200 OK\r\n"
-		"Content-Type: %s\r\n"
-		"Content-Length: %lld\r\n"
-		"Cache-Control: private, no-store\r\n"
-		"X-Request-Id: %s\r\n"
-		"Content-Disposition: attachment; filename=\"%s\"\r\n"
-		"\r\n",
-		a.mime[0] ? a.mime : "application/octet-stream",
-		(long long)st.st_size,
-		rid, filename);
+		     "Status: 200 OK\r\n"
+		     "Content-Type: %s\r\n"
+		     "Content-Length: %lld\r\n"
+		     "Cache-Control: private, no-store\r\n"
+		     "X-Request-Id: %s\r\n"
+		     "Content-Disposition: attachment; filename=\"%s\"\r\n"
+		     "\r\n",
+		     a.mime[0] ? a.mime : "application/octet-stream", (long long)st.st_size, rid,
+		     filename);
 	while ((rd = fread(buf, 1, sizeof(buf), fp)) > 0)
 		FCGX_PutStr(buf, (int)rd, r->fcgx->out);
 	fclose(fp);

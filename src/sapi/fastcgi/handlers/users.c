@@ -1,6 +1,9 @@
 /* users.c — install, signup, and current-user quota endpoints */
 #define _GNU_SOURCE
 #include "handlers.h"
+#include "sapi/fastcgi/storage/users.h"
+#include "sapi/fastcgi/storage/quota.h"
+#include "sapi/fastcgi/storage/tokens.h"
 #include "../session_store.h"
 #include "../auth.h"
 #include "../security.h"
@@ -12,8 +15,7 @@
 
 #include "cJSON.h"
 
-static char *user_created_json(const char *user_id, const char *username,
-			       const char *role)
+static char *user_created_json(const char *user_id, const char *username, const char *role)
 {
 	cJSON *root = cJSON_CreateObject();
 	char *json;
@@ -28,9 +30,9 @@ static char *user_created_json(const char *user_id, const char *username,
 	return json;
 }
 
-static int read_user_password(request_t *r, char **body_out,
-			      cJSON **root_out, const char **username,
-			      const char **password, const char **signup_code)
+static int read_user_password(request_t *r, char **body_out, cJSON **root_out,
+			      const char **username, const char **password,
+			      const char **signup_code)
 {
 	char *body = NULL;
 	size_t blen = 0;
@@ -53,8 +55,7 @@ static int read_user_password(request_t *r, char **body_out,
 	u = cJSON_GetObjectItem(root, "username");
 	p = cJSON_GetObjectItem(root, "password");
 	code = cJSON_GetObjectItem(root, "signup_code");
-	if (!cJSON_IsString(u) || !u->valuestring ||
-	    !cJSON_IsString(p) || !p->valuestring) {
+	if (!cJSON_IsString(u) || !u->valuestring || !cJSON_IsString(p) || !p->valuestring) {
 		cJSON_Delete(root);
 		free(body);
 		return -EINVAL;
@@ -83,8 +84,7 @@ void handle_install(request_t *r)
 		reply_json(r, 409, "{\"error\":\"already_installed\"}");
 		return;
 	}
-	rc = read_user_password(r, &body, &root, &username, &password,
-				&signup_code);
+	rc = read_user_password(r, &body, &root, &username, &password, &signup_code);
 	(void)signup_code;
 	if (rc < 0) {
 		if (rc == -EINVAL)
@@ -140,8 +140,7 @@ void handle_signup(request_t *r)
 		reply_json(r, 403, "{\"error\":\"signup_disabled\"}");
 		return;
 	}
-	rc = read_user_password(r, &body, &root, &username, &password,
-				&signup_code);
+	rc = read_user_password(r, &body, &root, &username, &password, &signup_code);
 	if (rc < 0) {
 		if (rc == -EINVAL)
 			reply_400(r, "invalid json");
@@ -204,8 +203,8 @@ void handle_login(request_t *r)
 	int64_t expires;
 	int rc;
 
-	if (!fcgi_basic_decode(r->auth_hdr, username_buf, sizeof(username_buf),
-			       password_buf, sizeof(password_buf))) {
+	if (!fcgi_basic_decode(r->auth_hdr, username_buf, sizeof(username_buf), password_buf,
+			       sizeof(password_buf))) {
 		reply_401(r);
 		return;
 	}
@@ -223,7 +222,10 @@ void handle_login(request_t *r)
 	expires = (int64_t)time(NULL) + 24 * 3600;
 	auth_token_created(r->auth, token, user.user_id, user.username, user.role, expires);
 	obj = cJSON_CreateObject();
-	if (!obj) { reply_500(r, "oom"); return; }
+	if (!obj) {
+		reply_500(r, "oom");
+		return;
+	}
 	cJSON_AddStringToObject(obj, "token", token);
 	cJSON_AddStringToObject(obj, "user_id", user.user_id);
 	cJSON_AddStringToObject(obj, "username", user.username);
@@ -231,7 +233,10 @@ void handle_login(request_t *r)
 	cJSON_AddNumberToObject(obj, "expires_at", (double)expires);
 	json = cJSON_PrintUnformatted(obj);
 	cJSON_Delete(obj);
-	if (!json) { reply_500(r, "oom"); return; }
+	if (!json) {
+		reply_500(r, "oom");
+		return;
+	}
 	reply_200_json(r, json);
 	free(json);
 }

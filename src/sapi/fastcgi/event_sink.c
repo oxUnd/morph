@@ -1,12 +1,13 @@
 /* event_sink.c — produce JSON-shaped event payloads via cJSON */
 #include "event_sink.h"
+#include "sapi/fastcgi/storage/events.h"
 
 #include <stdlib.h>
 
 #include "cJSON.h"
 
-static void publish_obj(struct session_store *s, const char *sid,
-			const char *type, cJSON *root) {
+static void publish_obj(struct session_store *s, const char *sid, const char *type, cJSON *root)
+{
 	char *txt = cJSON_PrintUnformatted(root);
 	events_publish(s, sid, type, txt ? txt : "{}");
 	free(txt);
@@ -30,8 +31,8 @@ void event_sink_thought(struct session_store *s, const char *sid, const char *te
 	event_sink_thought_turn(s, sid, NULL, text);
 }
 
-void event_sink_thought_turn(struct session_store *s, const char *sid,
-			     const char *turn_id, const char *text)
+void event_sink_thought_turn(struct session_store *s, const char *sid, const char *turn_id,
+			     const char *text)
 {
 	cJSON *o = cJSON_CreateObject();
 	add_turn_id(o, turn_id);
@@ -44,8 +45,8 @@ void event_sink_reasoning(struct session_store *s, const char *sid, const char *
 	event_sink_reasoning_turn(s, sid, NULL, text);
 }
 
-void event_sink_reasoning_turn(struct session_store *s, const char *sid,
-			       const char *turn_id, const char *text)
+void event_sink_reasoning_turn(struct session_store *s, const char *sid, const char *turn_id,
+			       const char *text)
 {
 	cJSON *o = cJSON_CreateObject();
 	add_turn_id(o, turn_id);
@@ -53,34 +54,34 @@ void event_sink_reasoning_turn(struct session_store *s, const char *sid,
 	publish_obj(s, sid, "reasoning", o);
 }
 
-void event_sink_tool_call(struct session_store *s, const char *sid,
-			  const char *tool, const char *args_json) {
+void event_sink_tool_call(struct session_store *s, const char *sid, const char *tool,
+			  const char *args_json)
+{
 	event_sink_tool_call_turn(s, sid, NULL, tool, args_json, NULL);
 }
 
-void event_sink_tool_call_turn(struct session_store *s, const char *sid,
-			       const char *turn_id, const char *tool,
-			       const char *args_json,
-			       const char *tool_call_id)
+void event_sink_tool_call_turn(struct session_store *s, const char *sid, const char *turn_id,
+			       const char *tool, const char *args_json, const char *tool_call_id)
 {
 	cJSON *o = cJSON_CreateObject();
 	add_turn_id(o, turn_id);
 	add_tool_call_id(o, tool_call_id);
 	cJSON_AddStringToObject(o, "tool", tool ? tool : "");
 	cJSON *args = args_json ? cJSON_Parse(args_json) : NULL;
-	if (!args) args = cJSON_CreateObject();
+	if (!args)
+		args = cJSON_CreateObject();
 	cJSON_AddItemToObject(o, "args", args);
 	publish_obj(s, sid, "tool_call", o);
 }
 
-void event_sink_tool_result(struct session_store *s, const char *sid,
-			    const char *tool, const char *result_json) {
+void event_sink_tool_result(struct session_store *s, const char *sid, const char *tool,
+			    const char *result_json)
+{
 	event_sink_tool_result_turn(s, sid, NULL, tool, result_json, NULL);
 }
 
-void event_sink_tool_result_turn(struct session_store *s, const char *sid,
-				 const char *turn_id, const char *tool,
-				 const char *result_json,
+void event_sink_tool_result_turn(struct session_store *s, const char *sid, const char *turn_id,
+				 const char *tool, const char *result_json,
 				 const char *tool_call_id)
 {
 	cJSON *o = cJSON_CreateObject();
@@ -96,9 +97,8 @@ void event_sink_tool_result_turn(struct session_store *s, const char *sid,
 	publish_obj(s, sid, "tool_result", o);
 }
 
-void event_sink_tool_stream_turn(struct session_store *s, const char *sid,
-				 const char *turn_id, const char *tool,
-				 const char *kind, const char *text,
+void event_sink_tool_stream_turn(struct session_store *s, const char *sid, const char *turn_id,
+				 const char *tool, const char *kind, const char *text,
 				 const char *tool_call_id)
 {
 	cJSON *o = cJSON_CreateObject();
@@ -115,8 +115,8 @@ void event_sink_final(struct session_store *s, const char *sid, const char *text
 	event_sink_final_turn(s, sid, NULL, text);
 }
 
-void event_sink_final_turn(struct session_store *s, const char *sid,
-			   const char *turn_id, const char *text)
+void event_sink_final_turn(struct session_store *s, const char *sid, const char *turn_id,
+			   const char *text)
 {
 	cJSON *o = cJSON_CreateObject();
 	add_turn_id(o, turn_id);
@@ -129,8 +129,8 @@ void event_sink_error(struct session_store *s, const char *sid, const char *msg)
 	event_sink_error_turn(s, sid, NULL, msg);
 }
 
-void event_sink_error_turn(struct session_store *s, const char *sid,
-			   const char *turn_id, const char *msg)
+void event_sink_error_turn(struct session_store *s, const char *sid, const char *turn_id,
+			   const char *msg)
 {
 	cJSON *o = cJSON_CreateObject();
 	add_turn_id(o, turn_id);

@@ -4,7 +4,7 @@
 #include "util/error.h"
 #include "util/file.h"
 #include "util/log.h"
-#include "blake3.h"
+#include "content_hash.h"
 #include <sqlite3.h>
 #include <dirent.h>
 #include <errno.h>
@@ -77,45 +77,6 @@ static int sync_path_join(char *dst, size_t size, const char *a,
 	rc = file_path_join(dst, size, a, b);
 	if (rc != 0)
 		return rc;
-	return 0;
-}
-
-static void hash_to_hex(const unsigned char hash[BLAKE3_OUT_LEN],
-			char out[MORPH_SYNC_HASH_LEN])
-{
-	static const char hex[] = "0123456789abcdef";
-
-	for (size_t i = 0; i < BLAKE3_OUT_LEN; i++) {
-		out[i * 2] = hex[hash[i] >> 4];
-		out[i * 2 + 1] = hex[hash[i] & 0x0f];
-	}
-	out[BLAKE3_OUT_LEN * 2] = '\0';
-}
-
-static int hash_file(const char *path, char out[MORPH_SYNC_HASH_LEN])
-{
-	unsigned char buf[BUFSIZ];
-	unsigned char hash[BLAKE3_OUT_LEN];
-	blake3_hasher hasher;
-	FILE *f;
-	size_t n;
-
-	if (!path || !out)
-		return -EINVAL;
-	f = fopen(path, "rb");
-	if (!f)
-		return morph_error_from_errno(errno);
-	blake3_hasher_init(&hasher);
-	while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
-		blake3_hasher_update(&hasher, buf, n);
-	}
-	if (ferror(f)) {
-		fclose(f);
-		return -EIO;
-	}
-	fclose(f);
-	blake3_hasher_finalize(&hasher, hash, BLAKE3_OUT_LEN);
-	hash_to_hex(hash, out);
 	return 0;
 }
 
@@ -212,7 +173,7 @@ static int add_file(morph_array_t *pairs, const char *root, const char *rel,
 	file->exists = 1;
 	file->size = (int64_t)st.st_size;
 	file->mtime = (int64_t)st.st_mtime;
-	return hash_file(file->full, file->hash);
+	return sync_hash_file(file->full, file->hash);
 }
 
 static int add_remote_backend_file(morph_array_t *pairs,
@@ -270,7 +231,7 @@ static int refresh_file(struct sync_file *file)
 	file->exists = 1;
 	file->size = (int64_t)st.st_size;
 	file->mtime = (int64_t)st.st_mtime;
-	return hash_file(file->full, file->hash);
+	return sync_hash_file(file->full, file->hash);
 }
 
 static int refresh_remote_backend_file(const struct morph_sync_config *cfg,

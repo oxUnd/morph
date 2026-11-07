@@ -1,4 +1,5 @@
 #include "sapi/cli/adapters/input/callbacks.h"
+#include "sapi/cli/adapters/input/state.h"
 #include "sapi/cli/application_internal.h"
 #include "util/error.h"
 #include <ffi.h>
@@ -74,15 +75,15 @@ static void *cli_callbacks_bind_callback(struct cli_application *ctx, enum cli_c
 	ffi_type *result = &ffi_type_void;
 	unsigned int count = 0;
 
-	if (!ctx)
+	if (!ctx || cli_input_init(ctx))
 		return NULL;
-	for (binding = ctx->callbacks; binding; binding = binding->next) {
+	for (binding = ctx->input->callbacks; binding; binding = binding->next) {
 		if (binding->kind == kind && !memcmp(&binding->target, &target, sizeof(target)))
 			return binding->code;
 	}
 	binding = calloc(1, sizeof(*binding));
 	if (!binding) {
-		ctx->callback_error = -ENOMEM;
+		ctx->input->callback_error = -ENOMEM;
 		return NULL;
 	}
 	binding->ctx = ctx;
@@ -113,11 +114,11 @@ static void *cli_callbacks_bind_callback(struct cli_application *ctx, enum cli_c
 		if (binding->closure)
 			ffi_closure_free(binding->closure);
 		free(binding);
-		ctx->callback_error = -ENOMEM;
+		ctx->input->callback_error = -ENOMEM;
 		return NULL;
 	}
-	binding->next = ctx->callbacks;
-	ctx->callbacks = binding;
+	binding->next = ctx->input->callbacks;
+	ctx->input->callbacks = binding;
 	return binding->code;
 }
 
@@ -150,14 +151,14 @@ CLI_CALLBACKS_DEFINE_BINDING(generate, generate, CLI_CALLBACKS_CALLBACK_GENERATE
 
 void cli_callbacks_cleanup(struct cli_application *ctx)
 {
-	if (!ctx)
+	if (!ctx || !ctx->input)
 		return;
-	while (ctx->callbacks) {
-		struct cli_callback *binding = ctx->callbacks;
+	while (ctx->input->callbacks) {
+		struct cli_callback *binding = ctx->input->callbacks;
 
-		ctx->callbacks = binding->next;
+		ctx->input->callbacks = binding->next;
 		ffi_closure_free(binding->closure);
 		free(binding);
 	}
-	ctx->callback_error = 0;
+	ctx->input->callback_error = 0;
 }

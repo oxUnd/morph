@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "util/terminal_size.h"
 #include <morph/tui/components.h>
 #include <morph/tui/widgets/tree.h>
 #include "util/utf8.h"
@@ -78,6 +79,61 @@ TEST_F(TuiTest, DecodesNavigationPasteAndUtf8Bytes)
 	EXPECT_EQ(morph_tui_input_read(&input_state, -1, 0), -EBADF);
 }
 
+TEST_F(TuiTest, DecodesWheelAndFocusWithoutLeakingEscapeBytes)
+{
+	struct morph_tui_input input{};
+	struct {
+		const char *sequence;
+		int expected;
+	} cases[] = {
+		{"\033[<64;10;20M", MORPH_TUI_KEY_WHEEL_UP},
+		{"\033[<65;10;20M", MORPH_TUI_KEY_WHEEL_DOWN},
+		{"\033[<64;10;20m", 0},
+		{"\033[<0;10;20M", 0},
+		{"\033[I", MORPH_TUI_KEY_FOCUS_IN},
+		{"\033[O", MORPH_TUI_KEY_FOCUS_OUT},
+	};
+
+	for (const auto &item : cases) {
+		SCOPED_TRACE(item.sequence);
+		int result = 0;
+
+		for (const unsigned char *byte =
+			     reinterpret_cast<const unsigned char *>(item.sequence);
+		     *byte; byte++) {
+			EXPECT_EQ(result, 0);
+			result = morph_tui_input_feed(&input, *byte);
+		}
+		EXPECT_EQ(result, item.expected);
+		EXPECT_EQ(morph_tui_input_feed(&input, 'x'), 'x');
+	}
+}
+
+TEST_F(TuiTest, TerminalColumnsValidateEnvironmentAndPreserveCallerFallback)
+{
+	const char *configured = getenv("COLUMNS");
+	const bool had_columns = configured != nullptr;
+	const std::string saved = configured ? configured : "";
+	struct {
+		const char *value;
+		int expected;
+	} cases[] = {{"60", 60},
+		     {"0", 100},
+		     {"-1", 100},
+		     {"80x", 100},
+		     {"999999999999999999999999", 100},
+		     {"", 100}};
+
+	for (const auto &item : cases) {
+		ASSERT_EQ(setenv("COLUMNS", item.value, 1), 0);
+		EXPECT_EQ(morph_terminal_columns(fileno(output), 100), item.expected);
+	}
+	if (had_columns)
+		EXPECT_EQ(setenv("COLUMNS", saved.c_str(), 1), 0);
+	else
+		EXPECT_EQ(unsetenv("COLUMNS"), 0);
+}
+
 TEST_F(TuiTest, PartialSequenceSurvivesPollingBoundaries)
 {
 	struct morph_tui_input input_state{};
@@ -139,12 +195,13 @@ TEST_F(TuiTest, SessionRestoresTermiosAndScreenModes)
 	struct morph_tui_terminal_session session{};
 	ASSERT_EQ(morph_tui_terminal_session_enter(&session, input, output,
 						   MORPH_TUI_TERMINAL_SESSION_ALTERNATE |
-							   MORPH_TUI_TERMINAL_SESSION_PASTE),
+							   MORPH_TUI_TERMINAL_SESSION_PASTE |
+							   MORPH_TUI_TERMINAL_SESSION_MOUSE),
 		  0);
 	ASSERT_EQ(tcgetattr(fileno(input), &during), 0);
 	EXPECT_EQ(during.c_lflag & (ICANON | ECHO | ISIG | IEXTEN), 0U);
 	EXPECT_EQ(morph_tui_terminal_session_enter(&session, input, output, 0), -EBUSY);
-	EXPECT_EQ(take(), "\033[?1049h\033[?25l\033[?2004h");
+	EXPECT_EQ(take(), "\033[?1049h\033[?25l\033[?2004h\033[?1000h\033[?1006h");
 	ASSERT_EQ(morph_tui_terminal_session_leave(&session), 0);
 	ASSERT_EQ(tcgetattr(fileno(input), &after), 0);
 	/* BSD sets PENDIN when changing input processing on a PTY. */
@@ -159,7 +216,7 @@ TEST_F(TuiTest, SessionRestoresTermiosAndScreenModes)
 	EXPECT_EQ(after.c_iflag, before.c_iflag);
 	EXPECT_EQ(after.c_cc[VMIN], before.c_cc[VMIN]);
 	EXPECT_EQ(after.c_cc[VTIME], before.c_cc[VTIME]);
-	EXPECT_EQ(take(), "\033[?2004l\033[0m\033[?25h\033[?1049l");
+	EXPECT_EQ(take(), "\033[?1006l\033[?1000l\033[?2004l\033[0m\033[?25h\033[?1049l");
 	EXPECT_EQ(morph_tui_terminal_session_leave(&session), 0);
 	EXPECT_TRUE(take().empty());
 	/* Inline sessions must preserve NO_COLOR's absence of SGR output. */

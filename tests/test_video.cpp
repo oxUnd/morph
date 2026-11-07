@@ -12,6 +12,13 @@ extern "C" {
 #include <unistd.h>
 }
 
+#include <atomic>
+#include <chrono>
+#include <thread>
+#include <string>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/select.h>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -180,4 +187,193 @@ TEST(VideoAdapterTest, RejectsOversizedLocalVideoBeforeNetworkRequest)
 		nullptr, 0, -1, 5, nullptr, &result), -EFBIG);
 	EXPECT_NE(strstr(result.error_msg, "media reference"), nullptr);
 	unlink(path);
+}
+
+class VideoTaskServer
+{
+      public:
+	enum Mode { WAITING, BLOCK_QUERY, FAILED };
+	std::atomic<bool> submitted{false};
+	std::atomic<bool> queried{false};
+	std::string base;
+
+	explicit VideoTaskServer(Mode mode) : mode(mode)
+	{
+	}
+
+	bool start()
+	{
+		listener = socket(AF_INET, SOCK_STREAM, 0);
+		if (listener < 0)
+			return false;
+		sockaddr_in address{};
+		address.sin_family = AF_INET;
+		address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		if (bind(listener, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0)
+			return false;
+		socklen_t length = sizeof(address);
+		if (getsockname(listener, reinterpret_cast<sockaddr *>(&address), &length) != 0 ||
+		    listen(listener, 4) != 0)
+			return false;
+		base = "http://127.0.0.1:" + std::to_string(ntohs(address.sin_port));
+		worker = std::thread([this] { serve(); });
+		return true;
+	}
+
+	~VideoTaskServer()
+	{
+		stop = true;
+		if (worker.joinable())
+			worker.join();
+		if (listener >= 0)
+			close(listener);
+	}
+
+      private:
+	Mode mode;
+	int listener{-1};
+	std::atomic<bool> stop{false};
+	std::thread worker;
+
+	void serve()
+	{
+		while (!stop) {
+			fd_set readable;
+			FD_ZERO(&readable);
+			FD_SET(listener, &readable);
+			timeval timeout{0, 50000};
+			if (select(listener + 1, &readable, nullptr, nullptr, &timeout) <= 0)
+				continue;
+			int peer = accept(listener, nullptr, nullptr);
+			if (peer < 0)
+				continue;
+			timeval receive_timeout{0, 100000};
+			setsockopt(peer, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout,
+				   sizeof(receive_timeout));
+#ifdef SO_NOSIGPIPE
+			int no_sigpipe = 1;
+			setsockopt(peer, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe));
+#endif
+			std::string request;
+			char bytes[4096];
+			while (!stop) {
+				ssize_t length = recv(peer, bytes, sizeof(bytes), 0);
+				if (length <= 0)
+					break;
+				request.append(bytes, static_cast<size_t>(length));
+				auto header_end = request.find("\r\n\r\n");
+				if (header_end == std::string::npos)
+					continue;
+				auto content_header = request.find("Content-Length:");
+				size_t body_size =
+					content_header == std::string::npos
+						? 0
+						: static_cast<size_t>(std::strtoul(
+							  request.c_str() + content_header + 15,
+							  nullptr, 10));
+				if (request.size() >= header_end + 4 + body_size)
+					break;
+			}
+			bool post = request.rfind("POST ", 0) == 0;
+			std::string body = "{\"id\":\"task\",\"status\":\"running\"}";
+			if (!post) {
+				queried = true;
+				if (mode == BLOCK_QUERY) {
+					while (!stop)
+						std::this_thread::sleep_for(
+							std::chrono::milliseconds(10));
+					close(peer);
+					continue;
+				}
+				if (mode == FAILED)
+					body = "{\"status\":\"failed\",\"error\":{\"code\":\"bad_"
+					       "task\","
+					       "\"message\":\"provider rejected task\"}}";
+			}
+			std::string response =
+				"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+				"Connection: close\r\nContent-Length: " +
+				std::to_string(body.size()) + "\r\n\r\n" + body;
+			(void)send(peer, response.data(), response.size(), 0);
+			if (post)
+				submitted = true;
+			close(peer);
+		}
+	}
+};
+
+static model video_poll_model(const VideoTaskServer &server)
+{
+	model result = make_video_model("volcengine", "", "doubao-seedance-2-0-test");
+	strcpy(result.api_key, "test");
+	std::snprintf(result.api_base, sizeof(result.api_base), "%s", server.base.c_str());
+	result.poll_interval_seconds = 1;
+	result.poll_timeout_seconds = 5;
+	return result;
+}
+
+TEST(VideoPollingTest, CancellationStopsWaitingAndBlockedQueries)
+{
+	for (bool block_query : {false, true}) {
+		SCOPED_TRACE(block_query);
+		VideoTaskServer server(block_query ? VideoTaskServer::BLOCK_QUERY
+						   : VideoTaskServer::WAITING);
+		ASSERT_TRUE(server.start());
+		model model = video_poll_model(server);
+		morph_cancel_token token{};
+		model.http.cancel_token = &token;
+		if (!block_query)
+			model.poll_interval_seconds = 5;
+		video_result result{};
+		std::thread cancel([&] {
+			auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			while (!(block_query ? server.queried.load() : server.submitted.load()) &&
+			       std::chrono::steady_clock::now() < deadline)
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			morph_cancel_token_cancel(&token);
+		});
+		auto start = std::chrono::steady_clock::now();
+		int rc = video_gen_create(&model, "test", nullptr, 0, nullptr, 0, nullptr, 0, -1, 5,
+					  nullptr, &result);
+		cancel.join();
+		EXPECT_EQ(rc, -ECANCELED);
+		EXPECT_TRUE(server.submitted);
+		EXPECT_EQ(server.queried.load(), block_query);
+		EXPECT_LT(std::chrono::steady_clock::now() - start,
+			  std::chrono::milliseconds(block_query ? 2000 : 1000));
+		EXPECT_EQ(strstr(result.error_msg, "timed out"), nullptr);
+	}
+}
+
+TEST(VideoPollingTest, OverallDeadlineBoundsAnIntervalLongerThanTheBudget)
+{
+	VideoTaskServer server(VideoTaskServer::WAITING);
+	ASSERT_TRUE(server.start());
+	model model = video_poll_model(server);
+	model.poll_interval_seconds = 5;
+	model.poll_timeout_seconds = 1;
+	video_result result{};
+	auto start = std::chrono::steady_clock::now();
+	EXPECT_EQ(video_gen_create(&model, "test", nullptr, 0, nullptr, 0, nullptr, 0, -1, 5,
+				   nullptr, &result),
+		  -ETIMEDOUT);
+	EXPECT_TRUE(server.submitted);
+	EXPECT_FALSE(server.queried);
+	EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(1800));
+	EXPECT_NE(strstr(result.error_msg, "timed out"), nullptr);
+}
+
+TEST(VideoPollingTest, ProviderFailureRetainsItsDetails)
+{
+	VideoTaskServer server(VideoTaskServer::FAILED);
+	ASSERT_TRUE(server.start());
+	model model = video_poll_model(server);
+	video_result result{};
+
+	EXPECT_EQ(video_gen_create(&model, "test", nullptr, 0, nullptr, 0, nullptr, 0, -1, 5,
+				   nullptr, &result),
+		  MORPH_ERR_API);
+	EXPECT_NE(strstr(result.error_msg, "bad_task"), nullptr);
+	EXPECT_NE(strstr(result.error_msg, "provider rejected task"), nullptr);
 }

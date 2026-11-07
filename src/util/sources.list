@@ -24,3 +24,4 @@ sha256.c
 
 signals.c
 child_io.c
+terminal_size.c

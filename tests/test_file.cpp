@@ -7,17 +7,34 @@
 #include <cstring>
 #include <limits.h>
 #include <sys/stat.h>
+#include <filesystem>
+#include <string>
 
 class FileTest : public ::testing::Test {
 protected:
-	const char *test_dir = "/tmp/ma_test_dir";
-	const char *test_file = "/tmp/ma_test_file.txt";
-	void SetUp() override {
-		std::remove(test_file);
-	}
-	void TearDown() override {
-		std::remove(test_file);
-	}
+  std::string directory;
+  std::string directory_path;
+  std::string file_path;
+  const char *test_dir = nullptr;
+  const char *test_file = nullptr;
+  void SetUp() override
+  {
+	  char pattern[] = "/tmp/morph-file-tests-XXXXXX";
+	  char *created = mkdtemp(pattern);
+
+	  ASSERT_NE(created, nullptr);
+	  directory = created;
+	  directory_path = directory + "/directory";
+	  file_path = directory + "/file.txt";
+	  test_dir = directory_path.c_str();
+	  test_file = file_path.c_str();
+  }
+  void TearDown() override
+  {
+	  std::error_code ignored;
+
+	  std::filesystem::remove_all(directory, ignored);
+  }
 };
 
 TEST_F(FileTest, WriteAndRead) {

@@ -27,6 +27,7 @@ struct morph_log;
 
 struct runtime_context {
 	char approval_objective[8192];
+	pthread_mutex_t approval_objective_lock;
 	struct morph_log *logger;
 	struct model_usage_sink usage_sink;
 	struct hook_manager hooks;
@@ -66,25 +67,17 @@ void runtime_context_configure_engine(struct runtime_context *ctx);
 struct runtime_models runtime_context_models(struct runtime_context *ctx);
 void runtime_context_update_models(struct runtime_context *ctx,
 				   const struct runtime_models *models);
-void runtime_context_select_plan_session(struct runtime_context *ctx,
-					 int64_t session_id);
-void runtime_context_forget_plan_session(struct runtime_context *ctx,
-					 int64_t session_id);
-int runtime_context_update_tool_runtime_context(struct runtime_context *ctx,
-					       int64_t session_id);
-int runtime_context_tool_credit_session_id(struct runtime_context *ctx,
-					   int64_t session_id,
+void runtime_context_select_plan_session(struct runtime_context *ctx, int64_t session_id);
+void runtime_context_forget_plan_session(struct runtime_context *ctx, int64_t session_id);
+int runtime_context_update_tool_runtime_context(struct runtime_context *ctx, int64_t session_id);
+int runtime_context_tool_credit_session_id(struct runtime_context *ctx, int64_t session_id,
 					   char *buf, size_t buf_size);
-struct memory_options
-runtime_context_memory_options(const struct runtime_context *ctx);
-void runtime_context_credit_session_key(struct runtime_context *ctx,
-					char *buf, size_t buf_size);
-int runtime_context_prepare_turn(struct runtime_context *ctx,
-				 const struct runtime_request *request,
+struct memory_options runtime_context_memory_options(const struct runtime_context *ctx);
+void runtime_context_credit_session_key(struct runtime_context *ctx, char *buf, size_t buf_size);
+int runtime_context_prepare_turn(struct runtime_context *ctx, const struct runtime_request *request,
 				 void *usage_user_data);
 void runtime_context_finish_turn(struct runtime_context *ctx);
-struct runtime_shutdown_resources
-runtime_context_shutdown_resources(struct runtime_context *ctx,
-				   int free_skill_registry);
+struct runtime_shutdown_resources runtime_context_shutdown_resources(struct runtime_context *ctx,
+								     int free_skill_registry);
 
 #endif

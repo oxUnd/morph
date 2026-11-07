@@ -11,6 +11,8 @@
  */
 #define _GNU_SOURCE
 #include <fcgiapp.h>
+#include "sapi/fastcgi/storage/events.h"
+#include "sapi/fastcgi/storage/tokens.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -91,8 +93,7 @@ static void remove_stale_socket(const char *path)
 	fd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (fd < 0)
 		return;
-	if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 &&
-	    errno == ECONNREFUSED)
+	if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 && errno == ECONNREFUSED)
 		(void)unlink(path);
 	close(fd);
 }
@@ -100,12 +101,10 @@ static void remove_stale_socket(const char *path)
 static int open_listen(struct fcgi_server *server, const char *spec)
 {
 	/* libfcgi accepts ":port" / "host:port" / "/path/to/sock" */
-	const char *socket_spec = strncmp(spec, "unix:", 5) == 0
-		? spec + 5 : spec;
+	const char *socket_spec = strncmp(spec, "unix:", 5) == 0 ? spec + 5 : spec;
 	int backlog = 128;
 	if (socket_spec[0] == '/') {
-		snprintf(server->socket_path, sizeof(server->socket_path), "%s",
-			 socket_spec);
+		snprintf(server->socket_path, sizeof(server->socket_path), "%s", socket_spec);
 		remove_stale_socket(socket_spec);
 	}
 	int fd = FCGX_OpenSocket(socket_spec, backlog);
@@ -162,21 +161,22 @@ static void on_signal(int number, void *opaque)
 static void populate_request(struct fcgi_server *server, request_t *r, FCGX_Request *req)
 {
 	memset(r, 0, sizeof(*r));
-	r->fcgx       = req;
-	r->logger     = server->logger_ready ? &server->logger : NULL;
-	r->metrics    = &server->metrics;
+	r->fcgx = req;
+	r->logger = server->logger_ready ? &server->logger : NULL;
+	r->metrics = &server->metrics;
 	r->started_ms = now_ms();
 	__atomic_add_fetch(&server->metrics.requests_total, 1, __ATOMIC_RELAXED);
 	__atomic_add_fetch(&server->metrics.active, 1, __ATOMIC_RELAXED);
-	r->method     = FCGX_GetParam("REQUEST_METHOD",   req->envp);
-	r->path       = FCGX_GetParam("DOCUMENT_URI",     req->envp);
-	if (!r->path) r->path = FCGX_GetParam("REQUEST_URI", req->envp);
-	r->query      = FCGX_GetParam("QUERY_STRING",     req->envp);
-	r->auth_hdr   = FCGX_GetParam("HTTP_AUTHORIZATION", req->envp);
+	r->method = FCGX_GetParam("REQUEST_METHOD", req->envp);
+	r->path = FCGX_GetParam("DOCUMENT_URI", req->envp);
+	if (!r->path)
+		r->path = FCGX_GetParam("REQUEST_URI", req->envp);
+	r->query = FCGX_GetParam("QUERY_STRING", req->envp);
+	r->auth_hdr = FCGX_GetParam("HTTP_AUTHORIZATION", req->envp);
 	r->trust_user =
 		server->trust_param[0] ? FCGX_GetParam(server->trust_param, req->envp) : NULL;
 	r->last_event_id = FCGX_GetParam("HTTP_LAST_EVENT_ID", req->envp);
-	r->content_type  = FCGX_GetParam("CONTENT_TYPE",  req->envp);
+	r->content_type = FCGX_GetParam("CONTENT_TYPE", req->envp);
 	const char *clen = FCGX_GetParam("CONTENT_LENGTH", req->envp);
 	r->content_length = 0;
 	if (clen && *clen) {
@@ -202,21 +202,17 @@ static void populate_request(struct fcgi_server *server, request_t *r, FCGX_Requ
 		size_t n = 0;
 
 		if (incoming) {
-			for (; *incoming && n < sizeof(r->request_id) - 1;
-			     incoming++) {
+			for (; *incoming && n < sizeof(r->request_id) - 1; incoming++) {
 				unsigned char c = (unsigned char)*incoming;
 
-				if (isalnum(c) || c == '-' || c == '_' ||
-				    c == '.')
+				if (isalnum(c) || c == '-' || c == '_' || c == '.')
 					r->request_id[n++] = (char)c;
 			}
 		}
 		if (n == 0)
-			snprintf(r->request_id, sizeof(r->request_id),
-				 "req-%llu-%lld",
-				 (unsigned long long)__atomic_add_fetch(
-					 &server->request_seq, 1,
-					 __ATOMIC_RELAXED),
+			snprintf(r->request_id, sizeof(r->request_id), "req-%llu-%lld",
+				 (unsigned long long)__atomic_add_fetch(&server->request_seq, 1,
+									__ATOMIC_RELAXED),
 				 now_ms());
 		else
 			r->request_id[n] = '\0';
@@ -227,7 +223,8 @@ static void populate_request(struct fcgi_server *server, request_t *r, FCGX_Requ
 	/* strip query from path */
 	if (r->path) {
 		char *q = strchr((char *)r->path, '?');
-		if (q) *q = '\0';
+		if (q)
+			*q = '\0';
 	}
 }
 
@@ -243,7 +240,8 @@ static void *worker_main(void *arg)
 
 	while (!morph_signal_flag_get(&server->shutdown)) {
 		int rc = FCGX_Accept_r(req);
-		if (rc < 0) break;
+		if (rc < 0)
+			break;
 
 		request_t r;
 		populate_request(server, &r, req);
@@ -257,11 +255,9 @@ static void *worker_main(void *arg)
 				 "access method=%s path=%s status=%d "
 				 "duration_ms=%lld request_id=%s user=%s "
 				 "stream=%d",
-				 r.method ? r.method : "-",
-				 r.path ? r.path : "-", r.status, duration,
-				 r.request_id, r.user_id, r.handed_off);
-		__atomic_sub_fetch(&server->metrics.active, 1,
-				   __ATOMIC_RELAXED);
+				 r.method ? r.method : "-", r.path ? r.path : "-", r.status,
+				 duration, r.request_id, r.user_id, r.handed_off);
+		__atomic_sub_fetch(&server->metrics.active, 1, __ATOMIC_RELAXED);
 		if (!dispatched) {
 			FCGX_Finish_r(req);
 			if (FCGX_InitRequest(req, server->listen_fd, 0) != 0)
@@ -292,8 +288,7 @@ static void *maintenance_main(void *arg)
 	while (!morph_signal_flag_get(&server->shutdown)) {
 		(void)store_maintenance(server->store);
 		(void)login_token_prune();
-		for (int i = 0; i < 300 &&
-		     !morph_signal_flag_get(&server->shutdown); i++)
+		for (int i = 0; i < 300 && !morph_signal_flag_get(&server->shutdown); i++)
 			nanosleep(&tick, NULL);
 	}
 	return NULL;
@@ -318,8 +313,7 @@ int main(int argc, char **argv)
 
 	(void)argc;
 	(void)argv;
-	if (log_file && *log_file &&
-	    log_init(&server->logger, log_file, LOG_INFO) == 0)
+	if (log_file && *log_file && log_init(&server->logger, log_file, LOG_INFO) == 0)
 		server->logger_ready = 1;
 	if (workers < 1)
 		workers = 1;
@@ -356,8 +350,7 @@ int main(int argc, char **argv)
 		goto out_stop_server;
 	}
 	server->auth = auth_create(trust_header);
-	server->streams = fcgi_stream_pool_create(stream_threads, stream_queue,
-						  NULL);
+	server->streams = fcgi_stream_pool_create(stream_threads, stream_queue, NULL);
 	threads = calloc((size_t)workers, sizeof(*threads));
 	if (!threads || !server->auth || !server->streams) {
 		result = 6;
@@ -367,8 +360,7 @@ int main(int argc, char **argv)
 		attributes_ready = 1;
 		(void)pthread_attr_setstacksize(&attributes, FCGI_WORKER_STACK_SIZE);
 	}
-	if (pthread_create(&server->maintenance_thread, NULL, maintenance_main,
-			   server) == 0)
+	if (pthread_create(&server->maintenance_thread, NULL, maintenance_main, server) == 0)
 		server->maintenance_started = 1;
 	fprintf(stderr, "morph-fastcgi: listening on %s, %d workers, db=%s\n", listen_spec, workers,
 		database);
