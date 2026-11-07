@@ -15,6 +15,7 @@
 #include <limits.h>
 
 struct morph_log;
+struct exec_tool_jobs_handle;
 
 struct runtime_models {
 	struct model *memory_text;
@@ -66,6 +67,7 @@ struct runtime_shutdown_resources {
 	struct memory_worker **memory_worker;
 	struct db *db;
 	struct tool_registry *tools;
+	struct exec_tool_jobs_handle *jobs_owner;
 	struct tool_context **tool_context;
 	struct skill_registry **skills;
 	struct mcp_registry *mcp;

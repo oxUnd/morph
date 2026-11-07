@@ -23,7 +23,7 @@ static char *read_file(const char *path)
 {
 	size_t len;
 
-	return file_read_all(path, &len);
+	return file_read_all_copy(path, &len);
 }
 
 static int run_tool(struct tool_registry *reg, const char *json,

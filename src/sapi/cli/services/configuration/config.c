@@ -4,19 +4,19 @@
 #include "tomlc17.h"
 #include <string.h>
 
-int cli_setup_config_merge(const char *old, const char *patch, char **out)
+int cli_setup_config_merge_copy(const char *old, const char *patch, char **out)
 {
-	return config_text_merge(old, patch, out);
+	return config_text_merge_copy(old, patch, out);
 }
 
-int cli_setup_config_credentials(const char *text, char **out)
+int cli_setup_config_credentials_copy(const char *text, char **out)
 {
-	return config_text_credentials(text, out);
+	return config_text_credentials_copy(text, out);
 }
 
-int cli_setup_config_mcp_add(const char *text, const char *server, char **out)
+int cli_setup_config_mcp_add_copy(const char *text, const char *server, char **out)
 {
-	return config_text_mcp_add(text, server, out);
+	return config_text_mcp_add_copy(text, server, out);
 }
 
 int cli_setup_config_role(const char *text)

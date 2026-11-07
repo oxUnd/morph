@@ -4,7 +4,8 @@ find_package(Threads REQUIRED)
 
 set(TEST_SOURCES
 	test_stability.cpp
-	test_arena.cpp
+	test_cleanup.cpp
+	cleanup_probe.c
 	test_hooks.cpp
 	test_error.cpp
 	error_macro_probe.c
@@ -34,6 +35,7 @@ set(TEST_SOURCES
 	test_runtime_output.cpp
 	test_dynamic_tools.cpp
 	test_tool.cpp
+	test_tool_ownership.cpp
 	test_file_read.cpp
 	test_file_list.cpp
 	test_plan.cpp
@@ -44,6 +46,7 @@ set(TEST_SOURCES
 	test_project_context.cpp
 	test_tokenizer.cpp
 	test_model_tokens.cpp
+	test_model_ownership.cpp
 	test_compress.cpp
 	test_react.cpp
 	test_react_stream.cpp
@@ -137,6 +140,10 @@ target_compile_definitions(morph-tests PRIVATE
 	MORPH_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
+if(ENABLE_READLINE AND MORPH_READLINE_LIBRARY)
+	target_compile_definitions(morph-tests PRIVATE HAVE_READLINE=1)
+endif()
+
 target_link_libraries(morph-tests PRIVATE
 	morph-cli
 	GTest::gtest_main
@@ -180,7 +187,8 @@ if(Python3_Interpreter_FOUND)
 	set_tests_properties(js_runner_host_io_integration PROPERTIES TIMEOUT 30)
 	add_test(NAME cli_application_layout_conventions
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_application_layout.py)
-	if(UNIX)
+	if(UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIBRARY)
+		# Inline composer geometry requires the Readline input mode.
 		add_test(NAME cli_permissions_pty_integration
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_permissions_pty.py
 				$<TARGET_FILE:morph-cli-pty-driver>)

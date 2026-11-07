@@ -17,6 +17,42 @@
 
 extern char **environ;
 
+void sandbox_path_set_cleanup(struct sandbox_path_set *paths)
+{
+	if (!paths)
+		return;
+	morph_array_t *arrays[] = {&paths->read, &paths->write, &paths->remove};
+	for (size_t i = 0; i < sizeof(arrays) / sizeof(arrays[0]); i++) {
+		char **path;
+		morph_array_foreach (path, arrays[i], char *)
+			free(*path);
+		morph_array_cleanup(arrays[i]);
+	}
+}
+
+void sandbox_config_paths_move(struct sandbox_config *config, struct sandbox_path_set *paths)
+{
+	if (!config || !paths || paths == &config->owned_paths)
+		return;
+	sandbox_path_set_cleanup(&config->owned_paths);
+	config->owned_paths = *paths;
+	memset(paths, 0, sizeof(*paths));
+	config->read_paths = config->owned_paths.read.elts;
+	config->read_paths_count = (int)config->owned_paths.read.nelts;
+	config->write_paths = config->owned_paths.write.elts;
+	config->write_paths_count = (int)config->owned_paths.write.nelts;
+	config->delete_paths = config->owned_paths.remove.elts;
+	config->delete_paths_count = (int)config->owned_paths.remove.nelts;
+}
+
+void sandbox_config_cleanup(struct sandbox_config *config)
+{
+	if (!config)
+		return;
+	sandbox_path_set_cleanup(&config->owned_paths);
+	memset(config, 0, sizeof(*config));
+}
+
 int sandbox_apply_rlimits(struct morph_log *logger, unsigned int permissions, int max_memory_mb,
 			  int max_cpu_seconds, int max_file_size_mb, int max_processes,
 			  int max_open_files)
@@ -1238,7 +1274,7 @@ int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int c
 
 static int fb_append(morph_array_t *fb, struct sock_filter insn)
 {
-	struct sock_filter *slot = morph_array_push(fb);
+	struct sock_filter *slot = morph_array_push_borrow(fb);
 	if (!slot)
 		return -ENOMEM;
 	*slot = insn;

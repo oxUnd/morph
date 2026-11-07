@@ -36,7 +36,7 @@ static void widget_label_destroy(struct morph_tui_view *view)
 	free(((struct widget_label *)view)->text);
 }
 
-int morph_tui_widget_label_set_text(struct morph_tui_view *view, const char *text)
+int morph_tui_widget_label_set_text_copy(struct morph_tui_view *view, const char *text)
 {
 	if (!view || !text || !view->ops || view->ops->draw != widget_label_draw)
 		return -EINVAL;
@@ -63,10 +63,9 @@ int morph_tui_widget_label_set_text(struct morph_tui_view *view, const char *tex
 	return 0;
 }
 
-struct morph_tui_view *morph_tui_widget_label_create(struct morph_tui_builder *builder,
-						     struct morph_tui_view *parent,
-						     const char *text,
-						     const struct morph_tui_view_options *options)
+struct morph_tui_view *
+morph_tui_widget_label_add_borrow(struct morph_tui_builder *builder, struct morph_tui_view *parent,
+				  const char *text, const struct morph_tui_view_options *options)
 {
 	static const struct morph_tui_view_ops ops = {
 		.measure = widget_label_measure,
@@ -74,11 +73,11 @@ struct morph_tui_view *morph_tui_widget_label_create(struct morph_tui_builder *b
 		.destroy = widget_label_destroy,
 	};
 	struct widget_label *label = NULL;
-	label = (struct widget_label *)morph_tui_widget_create(builder, parent, sizeof(*label),
-							       &ops, options);
+	label = (struct widget_label *)morph_tui_widget_add_borrow(builder, parent, sizeof(*label),
+								   &ops, options);
 	struct morph_tui_view *view = label ? &label->base.view : NULL;
 
 	if (view)
-		morph_tui_builder_fail(builder, morph_tui_widget_label_set_text(view, text));
+		morph_tui_builder_fail(builder, morph_tui_widget_label_set_text_copy(view, text));
 	return view;
 }

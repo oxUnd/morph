@@ -110,9 +110,11 @@ static int widget_select_prompt_draw(struct widget_select_prompt_view *view,
 			morph_buf_t input = {0};
 			rc = morph_buf_init(&input, 128);
 			if (!rc)
-				rc = morph_buf_printf(&input, "  %s", morph_buf_cstr(&label));
+				rc = morph_buf_printf(&input, "  %s",
+						      morph_buf_cstr_borrow(&label));
 			if (!rc)
-				widget_select_prompt_line(view, &frame, morph_buf_cstr(&input),
+				widget_select_prompt_line(view, &frame,
+							  morph_buf_cstr_borrow(&input),
 							  WIDGET_SELECT_PROMPT_CYAN);
 			morph_buf_cleanup(&input);
 		}
@@ -144,7 +146,7 @@ static int widget_select_prompt_draw(struct widget_select_prompt_view *view,
 			if (label.failed)
 				frame.failed = label.failed;
 			widget_select_prompt_line(
-				view, &frame, morph_buf_cstr(&label),
+				view, &frame, morph_buf_cstr_borrow(&label),
 				i == list->index
 					? WIDGET_SELECT_PROMPT_BOLD WIDGET_SELECT_PROMPT_CYAN
 					: "");
@@ -158,7 +160,7 @@ static int widget_select_prompt_draw(struct widget_select_prompt_view *view,
 		else if (list->count > list->page)
 			(void)morph_buf_printf(&label, "  %zu/%zu", list->index + 1, list->count);
 		if (label.len && screen->area.height > 3)
-			widget_select_prompt_line(view, &frame, morph_buf_cstr(&label),
+			widget_select_prompt_line(view, &frame, morph_buf_cstr_borrow(&label),
 						  state->invalid ? WIDGET_SELECT_PROMPT_RED
 								 : WIDGET_SELECT_PROMPT_DIM);
 		if (screen->area.height > 2)
@@ -202,7 +204,7 @@ static int widget_select_prompt_update(struct widget_select_prompt_view *view, i
 		} else if (result == MORPH_TUI_WIDGET_SUBMIT) {
 			view->input_invalid = !morph_tui_widget_editor_state_valid(&view->editor);
 			if (!view->input_invalid) {
-				char *answer = strdup(morph_buf_cstr(&view->editor.text));
+				char *answer = strdup(morph_buf_cstr_borrow(&view->editor.text));
 
 				if (!answer) {
 					return -ENOMEM;

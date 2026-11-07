@@ -303,7 +303,7 @@ TEST_F(FileListTest, ListingAnExternalSymlinkDirectoryIsDenied)
 
 TEST_F(FileListTest, ReaddirFailureDoesNotReturnSuccessfulPartialListing)
 {
-	char *canonical = file_resolve_path(directory);
+	char *canonical = file_resolve_path_copy(directory);
 	ASSERT_NE(canonical, nullptr);
 	struct CloseDirectory {
 		const char *path;

@@ -11,7 +11,13 @@ extern "C" {
 struct tool_context;
 struct config_exec;
 struct exec_jobs;
-struct exec_jobs *exec_tool_jobs_handle(struct tool_registry *reg);
+/* Retains the exec binding; jobs borrow its lifetime until release. */
+struct exec_tool_jobs_handle {
+	struct tool_handle tool;
+	struct exec_jobs *jobs;
+};
+int exec_tool_jobs_acquire(struct tool_registry *reg, struct exec_tool_jobs_handle *out);
+void exec_tool_jobs_release(struct exec_tool_jobs_handle *owner);
 
 int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 		   const struct config_exec *config);

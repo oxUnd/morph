@@ -244,7 +244,12 @@ static void *worker_main(void *arg)
 			break;
 
 		request_t r;
+		char log_method[BUFSIZ];
+		char log_path[PATH_MAX];
+
 		populate_request(server, &r, req);
+		snprintf(log_method, sizeof(log_method), "%s", r.method ? r.method : "-");
+		snprintf(log_path, sizeof(log_path), "%s", r.path ? r.path : "-");
 		int dispatched = router_dispatch(&r);
 		long long duration = now_ms() - r.started_ms;
 
@@ -255,8 +260,8 @@ static void *worker_main(void *arg)
 				 "access method=%s path=%s status=%d "
 				 "duration_ms=%lld request_id=%s user=%s "
 				 "stream=%d",
-				 r.method ? r.method : "-", r.path ? r.path : "-", r.status,
-				 duration, r.request_id, r.user_id, r.handed_off);
+				 log_method, log_path, r.status, duration, r.request_id, r.user_id,
+				 r.handed_off);
 		__atomic_sub_fetch(&server->metrics.active, 1, __ATOMIC_RELAXED);
 		if (!dispatched) {
 			FCGX_Finish_r(req);

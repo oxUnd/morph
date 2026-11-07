@@ -20,7 +20,7 @@ static const struct mcp_protocol_adapter adapters[] = {
 	{"2024-11-05", 0},
 };
 
-const struct mcp_protocol_adapter *mcp_protocol_find(const char *version)
+const struct mcp_protocol_adapter *mcp_protocol_borrow(const char *version)
 {
 	if (!version)
 		return NULL;
@@ -57,25 +57,23 @@ static int modern_metadata(cJSON *params)
 	return 0;
 }
 
-static int protocol_headers(struct mcp_client *client,
-	const struct mcp_protocol_adapter *adapter, const char *method,
-	cJSON *params, struct arena *arena, morph_array_t *headers)
+static int protocol_headers(struct mcp_client *client, const struct mcp_protocol_adapter *adapter,
+			    const char *method, cJSON *params, morph_array_t *headers)
 {
 	/* The legacy version is not negotiated until initialize has completed. */
 	if (!adapter->per_request && strcmp(method, "initialize") == 0)
 		return 0;
-	int rc = mcp_protocol_add_header(arena, headers,
-		"MCP-Protocol-Version", adapter->version);
+	int rc = mcp_protocol_add_header_copy(headers, "MCP-Protocol-Version", adapter->version);
 
 	if (rc != 0)
 		return rc;
 	if (!adapter->per_request) {
 		if (client->session_id)
-			return mcp_protocol_add_header(arena, headers,
-				"Mcp-Session-Id", client->session_id);
+			return mcp_protocol_add_header_copy(headers, "Mcp-Session-Id",
+							    client->session_id);
 		return 0;
 	}
-	rc = mcp_protocol_add_header(arena, headers, "Mcp-Method", method);
+	rc = mcp_protocol_add_header_copy(headers, "Mcp-Method", method);
 	if (rc != 0)
 		return rc;
 	const char *key = NULL;
@@ -89,24 +87,26 @@ static int protocol_headers(struct mcp_client *client,
 
 		if (!cJSON_IsString(name))
 			return MORPH_TRACE_ERROR(client ? client->config.logger : NULL, -EINVAL);
-		rc = mcp_protocol_add_header(arena, headers, "Mcp-Name", name->valuestring);
+		rc = mcp_protocol_add_header_copy(headers, "Mcp-Name", name->valuestring);
 		if (rc != 0)
 			return rc;
 	}
 	if (strcmp(method, "tools/call") == 0)
-		return mcp_protocol_tool_headers(client, params, arena, headers);
+		return mcp_protocol_tool_headers_copy(client, params, headers);
 	return 0;
 }
 
-int mcp_protocol_encode(struct mcp_client *client,
-	const struct mcp_protocol_adapter *adapter, int id, const char *method,
-	const char *params_json, struct arena *arena, struct mcp_wire_request *out)
+int mcp_protocol_encode(struct mcp_client *client, const struct mcp_protocol_adapter *adapter,
+			int id, const char *method, const char *params_json,
+			struct mcp_wire_request *out)
 {
-	if (!client || !adapter || !method || !arena || !out)
+	if (!client || !adapter || !method || !out)
 		return MORPH_TRACE_ERROR(client ? client->config.logger : NULL, -EINVAL);
-	memset(out, 0, sizeof(*out));
-	out->id = id;
-	int rc = morph_array_init(&out->headers, 8, sizeof(out->json));
+	if (out->json || out->headers.elts)
+		return -EEXIST;
+	struct mcp_wire_request encoded MORPH_CLEANUP(mcp_wire_request_cleanup) = {0};
+	encoded.id = id;
+	int rc = morph_array_init(&encoded.headers, 8, sizeof(encoded.json));
 
 	if (rc != 0)
 		return rc;
@@ -120,7 +120,7 @@ int mcp_protocol_encode(struct mcp_client *client,
 	if (adapter->per_request)
 		rc = modern_metadata(params);
 	if (rc == 0 && client->config.transport == MCP_TRANSPORT_STREAMABLE_HTTP)
-		rc = protocol_headers(client, adapter, method, params, arena, &out->headers);
+		rc = protocol_headers(client, adapter, method, params, &encoded.headers);
 	cJSON *request = cJSON_CreateObject();
 
 	if (rc == 0 && (!request ||
@@ -135,15 +135,16 @@ int mcp_protocol_encode(struct mcp_client *client,
 			rc = MORPH_TRACE_ERROR(client ? client->config.logger : NULL, -ENOMEM);
 	}
 	if (rc == 0) {
-		char *json = cJSON_PrintUnformatted(request);
-
-		out->json = json ? arena_strdup(arena, json) : NULL;
-		free(json);
-		if (!out->json)
+		encoded.json = cJSON_PrintUnformatted(request);
+		if (!encoded.json)
 			rc = MORPH_TRACE_ERROR(client ? client->config.logger : NULL, -ENOMEM);
 	}
 	cJSON_Delete(params);
 	cJSON_Delete(request);
+	if (rc == 0) {
+		*out = encoded;
+		memset(&encoded, 0, sizeof(encoded));
+	}
 	return rc;
 }
 
@@ -156,8 +157,22 @@ int mcp_request_timeout_ms(const struct mcp_client *client)
 	return MCP_REQUEST_TIMEOUT_MS;
 }
 
+void mcp_wire_request_cleanup(struct mcp_wire_request *request)
+{
+	if (!request)
+		return;
+	char **header;
+	morph_array_foreach (header, &request->headers, char *)
+		free(*header);
+	morph_array_cleanup(&request->headers);
+	cJSON_free(request->json);
+	memset(request, 0, sizeof(*request));
+}
+
 void mcp_wire_reply_cleanup(struct mcp_wire_reply *reply)
 {
+	if (!reply)
+		return;
 	free(reply->json);
 	free(reply->session_id);
 	memset(reply, 0, sizeof(*reply));
@@ -168,28 +183,26 @@ static int protocol_exchange(struct mcp_client *client,
 	const struct mcp_protocol_adapter *adapter, int id, const char *method,
 	const char *params, int timeout_ms, struct mcp_wire_reply *reply)
 {
-	struct arena *arena = arena_create(0);
-	struct mcp_wire_request request = {0};
+	struct mcp_wire_request request MORPH_CLEANUP(mcp_wire_request_cleanup) = {0};
 	int rc;
 
-	if (!arena)
-		return MORPH_TRACE_ERROR(client ? client->config.logger : NULL, -ENOMEM);
-	rc = mcp_protocol_encode(client, adapter, id, method, params, arena, &request);
+	rc = mcp_protocol_encode(client, adapter, id, method, params, &request);
 	if (rc == 0) {
 		if (client->config.transport == MCP_TRANSPORT_STDIO)
 			rc = mcp_stdio_exchange(client, &request, timeout_ms, reply);
 		else
 			rc = mcp_http_exchange(client, &request, timeout_ms, reply);
 	}
-	morph_array_cleanup(&request.headers);
-	arena_destroy(arena);
 	return rc;
 }
 
 int mcp_protocol_decode(struct morph_log *logger, const struct mcp_wire_reply *reply, int id,
 	cJSON **out)
 {
-	*out = NULL;
+	if (!reply || !out)
+		return -EINVAL;
+	if (*out)
+		return -EEXIST;
 	if (reply->http_status == 401 || reply->http_status == 403)
 		return MORPH_TRACE_ERROR(logger, -EACCES);
 	if (reply->http_status >= 500)
@@ -242,6 +255,14 @@ static int result_type(struct morph_log *logger, const struct mcp_protocol_adapt
 	return MORPH_TRACE_ERROR(logger, MORPH_ERR_PROTOCOL);
 }
 
+/* Normalize JSON allocator storage to the request API's malloc-owned text. */
+static char *request_result_copy(const cJSON *value)
+{
+	char *json MORPH_CLEANUP(morph_json_text_cleanup) = morph_json_print_copy(value);
+
+	return json ? strdup(json) : NULL;
+}
+
 static int request_locked(struct mcp_client *client, int id, const char *method,
 	const char *params, char **out)
 {
@@ -262,7 +283,7 @@ static int request_locked(struct mcp_client *client, int id, const char *method,
 
 		rc = result_type(client ? client->config.logger : NULL, adapter, result);
 		if (rc == 0 && out) {
-			*out = cJSON_PrintUnformatted(result);
+			*out = request_result_copy(result);
 			if (!*out)
 				rc = MORPH_TRACE_ERROR(client ? client->config.logger : NULL,
 					-ENOMEM);
@@ -282,7 +303,7 @@ static int request_locked(struct mcp_client *client, int id, const char *method,
 					-ENOSYS);
 		}
 		if (out)
-			*out = cJSON_PrintUnformatted(object);
+			*out = request_result_copy(object);
 	}
 	if (rc != 0)
 		log_warn(client ? client->config.logger : NULL, "mcp: %s on '%s' failed: %s",
@@ -297,8 +318,8 @@ int mcp_request(struct mcp_client *client, const char *method,
 {
 	if (!client || !method)
 		return MORPH_TRACE_ERROR(client ? client->config.logger : NULL, -EINVAL);
-	if (result)
-		*result = NULL;
+	if (result && *result)
+		return -EEXIST;
 	pthread_mutex_lock(&client->lock);
 	int rc;
 
@@ -352,7 +373,7 @@ static void server_details(struct mcp_client *client, cJSON *result, int modern)
 /* Only positive legacy evidence permits downgrade; auth/outages never do. */
 static int modern_probe(struct mcp_client *client, int *legacy)
 {
-	const struct mcp_protocol_adapter *modern = mcp_protocol_find(MCP_PROTOCOL_VERSION);
+	const struct mcp_protocol_adapter *modern = mcp_protocol_borrow(MCP_PROTOCOL_VERSION);
 	struct mcp_wire_reply reply = {0};
 	cJSON *object = NULL;
 	int stdio_transport = client->config.transport == MCP_TRANSPORT_STDIO;
@@ -420,7 +441,7 @@ static int modern_probe(struct mcp_client *client, int *legacy)
 static int legacy_initialize(struct mcp_client *client,
 	const struct mcp_protocol_adapter *legacy, int pinned)
 {
-	morph_buf_t params;
+	morph_buf_t params MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc = morph_buf_init(&params, 128);
 
 	if (rc != 0)
@@ -435,8 +456,8 @@ static int legacy_initialize(struct mcp_client *client,
 	struct mcp_wire_reply reply = {0};
 	cJSON *object = NULL;
 	int id = client->next_req_id++;
-	rc = protocol_exchange(client, legacy, id, "initialize", morph_buf_cstr(&params),
-		mcp_request_timeout_ms(client), &reply);
+	rc = protocol_exchange(client, legacy, id, "initialize", morph_buf_cstr_borrow(&params),
+			       mcp_request_timeout_ms(client), &reply);
 	morph_buf_cleanup(&params);
 
 	if (rc == 0)
@@ -445,8 +466,8 @@ static int legacy_initialize(struct mcp_client *client,
 		cJSON *result = cJSON_GetObjectItemCaseSensitive(object, "result");
 		cJSON *version = cJSON_GetObjectItemCaseSensitive(result, "protocolVersion");
 		cJSON *caps = cJSON_GetObjectItemCaseSensitive(result, "capabilities");
-		const struct mcp_protocol_adapter *selected = cJSON_IsString(version) ?
-			mcp_protocol_find(version->valuestring) : NULL;
+		const struct mcp_protocol_adapter *selected =
+			cJSON_IsString(version) ? mcp_protocol_borrow(version->valuestring) : NULL;
 
 		if (!selected || selected->per_request || !cJSON_IsObject(caps) ||
 		    (pinned && selected != legacy) ||
@@ -483,7 +504,7 @@ int mcp_protocol_initialize(struct mcp_client *client)
 		return MORPH_TRACE_ERROR(client ? client->config.logger : NULL, -EINVAL);
 	const char *version = client->config.protocol_version;
 	int pinned = version[0] && strcmp(version, "auto") != 0;
-	const struct mcp_protocol_adapter *selected = pinned ? mcp_protocol_find(version) : NULL;
+	const struct mcp_protocol_adapter *selected = pinned ? mcp_protocol_borrow(version) : NULL;
 
 	if (pinned && (!selected ||
 	    (client->config.transport == MCP_TRANSPORT_STREAMABLE_HTTP &&
@@ -514,7 +535,7 @@ int mcp_protocol_initialize(struct mcp_client *client)
 		}
 		if (rc == 0)
 			rc = legacy_initialize(client,
-				mcp_protocol_find(MCP_LEGACY_PROTOCOL_VERSION), 0);
+					       mcp_protocol_borrow(MCP_LEGACY_PROTOCOL_VERSION), 0);
 	}
 	if (rc == 0) {
 		snprintf(client->negotiated_version, sizeof(client->negotiated_version),

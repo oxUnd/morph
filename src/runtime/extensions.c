@@ -1,4 +1,6 @@
 #include "runtime/extensions.h"
+#include "util/json.h"
+#include "util/cleanup.h"
 
 #ifdef MORPH_NO_SHELL
 
@@ -34,18 +36,15 @@ static int runtime_ext_cancelled(void *opaque)
 static int runtime_ext_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct ext *extension = user_data;
-	char *output = NULL;
+	char *output MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	int rc;
 
 	if (!extension)
 		return -EINVAL;
 	struct tool_context *context = result->runtime ? result->runtime->permission_context : NULL;
-	struct sandbox_config limits;
+	struct sandbox_config limits MORPH_CLEANUP(sandbox_config_cleanup) = {0};
 	struct permission_policy policy = {0};
-	struct arena *arena = arena_create(0);
 
-	if (!arena)
-		return -ENOMEM;
 	if (context) {
 		(void)tool_context_get_permission_policy(context, &policy);
 		struct tool_operation operation = {
@@ -63,7 +62,7 @@ static int runtime_ext_exec(const char *args_json, struct tool_result *result, v
 							   extension->path);
 		if (rc == 0)
 			rc = sandbox_permission_prepare(context, extension->manifest.name, NULL,
-							arena, &limits);
+							&limits);
 		limits.network_access = operation.network;
 	} else {
 		rc = -EPERM;
@@ -71,9 +70,8 @@ static int runtime_ext_exec(const char *args_json, struct tool_result *result, v
 	if (rc == 0)
 		rc = ext_run_bounded(extension, args_json, &output, runtime_ext_cancelled, result,
 				     permission_effective_access(&policy).host ? NULL : &limits);
-	arena_destroy(arena);
 	if (output)
-		(void)tool_result_success_json_text(result, output);
+		(void)tool_result_success_json_text_copy(result, output);
 	return rc;
 }
 
@@ -85,6 +83,12 @@ static void runtime_ext_destroy(void *user_data)
 		return;
 	ext_unload(extension);
 	free(extension);
+}
+
+static void runtime_ext_move(struct ext *destination, struct ext *source)
+{
+	*destination = *source;
+	memset(source, 0, sizeof(*source));
 }
 
 static void runtime_register_guardrail_extension(struct runtime_context *ctx, struct ext *extension,
@@ -102,7 +106,7 @@ static void runtime_register_guardrail_extension(struct runtime_context *ctx, st
 				GUARDRAIL_RULE_EXT, NULL, extension->manifest.description, NULL,
 				extension->manifest.action_text[0] ? extension->manifest.action_text
 								   : NULL);
-	rule = guardrail_rule_lookup(&ctx->react->guardrail, extension->manifest.name);
+	rule = guardrail_rule_borrow(&ctx->react->guardrail, extension->manifest.name);
 	if (!rule || file_path_join(entry, sizeof(entry), path, extension->manifest.entry) != 0)
 		return;
 	strncpy(rule->ext_entry, entry, sizeof(rule->ext_entry) - 1);
@@ -124,17 +128,18 @@ int runtime_extensions_load(struct runtime_context *ctx, const char *front_name)
 
 	if (!ctx)
 		return -EINVAL;
-	expanded = file_expand_path(ctx->config.ext.dir[0] ? ctx->config.ext.dir : "~/.morph/exts");
+	expanded = file_expand_path_copy(ctx->config.ext.dir[0] ? ctx->config.ext.dir
+								: "~/.morph/exts");
 	strncpy(directory, expanded ? expanded : "exts", sizeof(directory) - 1);
 	free(expanded);
 	if (!file_exists(directory))
 		(void)file_ensure_dir(directory);
-	rc = file_list_dirs(directory, &names, &count);
+	rc = file_list_dirs_copy(directory, &names, &count);
 	if (rc != 0)
 		return rc;
 	for (int i = 0; i < count; i++) {
 		char path[PATH_MAX];
-		struct ext loaded;
+		struct ext loaded = {0};
 		struct ext *owned;
 		struct tool_spec spec;
 
@@ -162,7 +167,7 @@ int runtime_extensions_load(struct runtime_context *ctx, const char *front_name)
 			rc = -ENOMEM;
 			break;
 		}
-		*owned = loaded;
+		runtime_ext_move(owned, &loaded);
 		memset(&spec, 0, sizeof(spec));
 		spec.origin = TOOL_ORIGIN_EXT;
 		spec.name = owned->manifest.name;
@@ -173,7 +178,7 @@ int runtime_extensions_load(struct runtime_context *ctx, const char *front_name)
 		spec.flags = TOOL_FLAG_INTERNAL_APPROVAL;
 		spec.user_data = owned;
 		spec.user_data_destroy = runtime_ext_destroy;
-		if (tool_register(&ctx->tools, &spec) != 0)
+		if (tool_register_take(&ctx->tools, &spec) != 0)
 			runtime_ext_destroy(owned);
 	}
 	file_free_list(names, count);

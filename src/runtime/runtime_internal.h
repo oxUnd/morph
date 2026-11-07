@@ -5,6 +5,7 @@
 #include "runtime/execute.h"
 #include "runtime/runtime.h"
 #include "runtime/task_worker.h"
+#include "agent/tools/exec_tool.h"
 
 struct runtime_mcp_job {
 	struct runtime *runtime;
@@ -39,6 +40,7 @@ struct runtime {
 	uint64_t recap_revision;
 	pthread_mutex_t jobs_lock;
 	int jobs_lock_ready;
+	struct exec_tool_jobs_handle jobs_owner;
 	struct exec_jobs *jobs;
 };
 

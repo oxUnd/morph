@@ -106,7 +106,8 @@ struct react_context {
 	void *hook_user;
 	int hook_stop_active;
 	int hook_revision_count;
-	const char *hook_context;
+	char *hook_context;
+	unsigned int hook_context_generation;
 	struct react_step *steps;
 	struct react_step *steps_tail;
 	int step_count;
@@ -144,8 +145,8 @@ struct react_context {
 	int last_error_code;
 	char outcome_reason[64];
 	char *last_error_detail;
-	/* Borrowed from iteration_arena for the current model request only. */
-	const char *llm_error_detail;
+	/* Owned copy of the last model-request diagnostic. */
+	char *llm_error_detail;
 	int llm_output_started;
 	char *tool_fail_name;
 	char *tool_fail_args;
@@ -156,12 +157,6 @@ struct react_context {
 	int incomplete_final_retry_count;
 	volatile sig_atomic_t cancelled;
 	struct morph_cancel_token cancel_token;
-	struct arena *turn_arena;
-	/* Model requests and responses live until the next iteration. */
-	struct arena *iteration_arena;
-	/* Active model messages; replaced after successful compaction. */
-	struct arena *message_arena;
-	struct arena *session_arena;
 	int force_compaction;
 	int context_recovery_count;
 	int ineffective_compactions;
@@ -172,9 +167,9 @@ struct react_context {
 	const struct memory_options *memory_options;
 	struct skill_registry *skills;
 	char *workdir;
-	/* Turn-arena snapshot, never persisted or compacted as history. */
-	const char *runtime_context;
-	const char *project_context;
+	/* Owned snapshots, never persisted or compacted as history. */
+	char *runtime_context;
+	char *project_context;
 	/* Non-consuming prompt check; interrupts only the current model call. */
 	int (*prompt_pending_fn)(void *user_data);
 	react_action_drain_fn action_drain_fn;
@@ -199,6 +194,7 @@ struct react_context *react_context_create(struct tool_registry *tools,
 					   struct compress_config *cfg,
 					   struct guardrail_config *gcfg);
 void react_context_destroy(struct react_context *ctx);
+void react_context_clear(struct react_context **ctx);
 void react_reset(struct react_context *ctx);
 
 struct react_context *
@@ -215,8 +211,7 @@ int react_run(struct react_context *ctx, const char *user_input,
  * Owner-thread only; may block for a non-cooperative in-process tool. */
 void react_drain_tools(struct react_context *ctx);
 void react_cancel(struct react_context *ctx);
-int react_set_memory_context(struct react_context *ctx, const char *memory_context);
-
+int react_set_memory_context_copy(struct react_context *ctx, const char *memory_context);
 
 int hitl_needs_approval(struct react_context *ctx, const char *tool_name);
 void hitl_add_auto_approved(struct hitl_config *h, const char *tool_name);
@@ -226,19 +221,17 @@ int react_set_action_drain(struct react_context *ctx,
 int react_set_event_callback(struct react_context *ctx,
 			     morph_event_cb cb, void *user);
 int react_set_turn_id(struct react_context *ctx, const char *turn_id);
-const char *react_get_turn_id(const struct react_context *ctx);
+const char *react_turn_id_borrow(const struct react_context *ctx);
 int react_set_tool_runtime_context(
 	struct react_context *ctx,
 	const struct tool_runtime_context *runtime);
 
-struct react_step *react_step_create(struct arena *arena,
-				     enum react_step_type type,
-				     const char *content,
-				     const char *tool_name,
-				     const char *tool_args,
+struct react_step *react_step_create(enum react_step_type type, const char *content,
+				     const char *tool_name, const char *tool_args,
 				     const char *tool_call_id);
 
 void react_step_destroy(struct react_step *step);
+void react_steps_clear(struct react_step **steps);
 
 const char *react_step_type_name(enum react_step_type type);
 const char *react_state_name(enum react_state state);

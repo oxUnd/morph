@@ -43,9 +43,11 @@ int hook_manager_init(struct hook_manager *manager, struct db *db, const struct 
 		      const char *config_path, const char *workdir);
 void hook_manager_cleanup(struct hook_manager *manager);
 int hook_manager_reload(struct hook_manager *manager);
+/* Returns a complete independent JSON owner, or NULL without a partial result. */
 cJSON *hook_manager_list(struct hook_manager *manager);
 int hook_manager_action(struct hook_manager *manager, const char *action, const char *id,
 			const char *expected_digest);
+/* An empty output receives an independent JSON owner only on success. */
 int hook_manager_dispatch(void *manager, const char *event, const cJSON *input, cJSON **output);
 int hook_manager_has(struct hook_manager *manager, const char *event);
 

@@ -145,7 +145,7 @@ static int cli_clipboard_terminal_text(struct cli_application *ctx, const char *
 		return -ENOTSUP;
 	if (strlen(text) > CLI_CLIPBOARD_OSC52_MAX_BYTES)
 		return -E2BIG;
-	encoded = base64_encode((const unsigned char *)text, strlen(text));
+	encoded = base64_encode_copy((const unsigned char *)text, strlen(text));
 	if (!encoded)
 		return -ENOMEM;
 	rc = morph_buf_init(&sequence, strlen(encoded) + 32);
@@ -247,7 +247,7 @@ static int cli_clipboard_output_path(struct cli_application *ctx, char **out_pat
 	if (!ctx || !ctx->runtime || !out_path)
 		return -EINVAL;
 	*out_path = NULL;
-	config = runtime_config_get(ctx->runtime);
+	config = runtime_config_borrow(ctx->runtime);
 	if (!config || !config->general.output_dir[0])
 		return MORPH_ERR_NOT_CONFIGURED;
 	rc = file_ensure_dir(config->general.output_dir);
@@ -344,7 +344,8 @@ int cli_clipboard_save_image(struct cli_application *ctx, char **out_path)
 
 	if (!out_path)
 		return -EINVAL;
-	*out_path = NULL;
+	if (*out_path)
+		return -EEXIST;
 	rc = cli_clipboard_output_path(ctx, &path);
 	if (rc != 0)
 		return rc;

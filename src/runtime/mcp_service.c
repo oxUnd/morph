@@ -1,7 +1,7 @@
 #include "runtime/services.h"
 #include "runtime/mcp.h"
 #include "runtime/runtime_internal.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/error.h"
 
 #include <errno.h>
@@ -11,8 +11,7 @@
 static struct mcp_client *runtime_mcp_lookup_client(struct runtime *runtime,
 						    const char *name)
 {
-	return runtime && name ? mcp_registry_get(&runtime->context.mcp, name)
-		: NULL;
+	return runtime && name ? mcp_registry_borrow(&runtime->context.mcp, name) : NULL;
 }
 
 static int runtime_mcp_busy(struct runtime *runtime, struct mcp_client *client)
@@ -103,8 +102,7 @@ int runtime_mcp_find(const struct runtime *runtime, const char *name,
 	struct mcp_client *client;
 	if (!runtime || !name || !out)
 		return -EINVAL;
-	client = mcp_registry_get((struct mcp_registry *)&runtime->context.mcp,
-				  name);
+	client = mcp_registry_borrow((struct mcp_registry *)&runtime->context.mcp, name);
 	if (!client)
 		return -ENOENT;
 	runtime_mcp_status_copy((struct runtime *)runtime, client, out);
@@ -154,8 +152,13 @@ int runtime_mcp_disconnect(struct runtime *runtime, const char *name)
 static int runtime_mcp_copy_list(void **out, int count, const void *items,
 	size_t item_size, const size_t *offsets, size_t field_count)
 {
-	*out = NULL;
-	if (count <= 0)
+	if (!out || !item_size || (count > 0 && !items))
+		return -EINVAL;
+	if (*out)
+		return -EEXIST;
+	if (count < 0)
+		return -EOVERFLOW;
+	if (count == 0)
 		return 0;
 	if ((size_t)count > SIZE_MAX / item_size)
 		return -EOVERFLOW;
@@ -167,7 +170,7 @@ static int runtime_mcp_copy_list(void **out, int count, const void *items,
 
 			memcpy(&value, (const char *)items + (size_t)i * item_size + offsets[j],
 				sizeof(value));
-			size_t length = strlen(value) + 1;
+			size_t length = value ? strlen(value) + 1 : 0;
 
 			if (length > SIZE_MAX - bytes)
 				return -EOVERFLOW;
@@ -187,11 +190,13 @@ static int runtime_mcp_copy_list(void **out, int count, const void *items,
 			char *field = copy + (size_t)i * item_size + offsets[j];
 
 			memcpy(&value, field, sizeof(value));
-			size_t length = strlen(value) + 1;
+			size_t length = value ? strlen(value) + 1 : 0;
 
-			memcpy(destination, value, length);
-			memcpy(field, &destination, sizeof(destination));
-			destination += length;
+			if (value) {
+				memcpy(destination, value, length);
+				memcpy(field, &destination, sizeof(destination));
+				destination += length;
+			}
 		}
 	}
 	*out = copy;
@@ -203,7 +208,7 @@ int runtime_mcp_list_tools(struct runtime *runtime, const char *name,
 {
 	struct mcp_client *client = runtime_mcp_lookup_client(runtime, name);
 	struct mcp_tool_desc *items = NULL;
-	struct arena *arena;
+	void *copied = NULL;
 	const size_t offsets[] = {
 		offsetof(struct mcp_tool_desc, name),
 		offsetof(struct mcp_tool_desc, title),
@@ -211,21 +216,27 @@ int runtime_mcp_list_tools(struct runtime *runtime, const char *name,
 		offsetof(struct mcp_tool_desc, input_schema)
 	};
 	int rc;
-	if (!client || !out || !count)
-		return client ? -EINVAL : -ENOENT;
+	int item_count = 0;
+	if (!out || !count)
+		return -EINVAL;
+	if (*out)
+		return -EEXIST;
+	*count = 0;
+	if (!client)
+		return -ENOENT;
 	if (runtime_mcp_busy(runtime, client))
 		return -EAGAIN;
-	arena = arena_create(0);
-	if (!arena)
-		return -ENOMEM;
 	rc = mcp_ensure_connected(client);
 	if (rc == 0)
-		rc = mcp_list_tools(client, arena, &items, count);
+		rc = mcp_list_tools_copy(client, &items, &item_count);
 	if (rc == 0)
-		rc = runtime_mcp_copy_list((void **)out, *count, items,
-					   sizeof(**out), offsets,
+		rc = runtime_mcp_copy_list(&copied, item_count, items, sizeof(**out), offsets,
 					   sizeof(offsets) / sizeof(offsets[0]));
-	arena_destroy(arena);
+	mcp_tool_descs_free(items, item_count);
+	if (rc == 0) {
+		*out = copied;
+		*count = item_count;
+	}
 	return rc;
 }
 
@@ -234,7 +245,7 @@ int runtime_mcp_list_resources(struct runtime *runtime, const char *name,
 {
 	struct mcp_client *client = runtime_mcp_lookup_client(runtime, name);
 	struct mcp_resource_desc *items = NULL;
-	struct arena *arena;
+	void *copied = NULL;
 	const size_t offsets[] = {
 		offsetof(struct mcp_resource_desc, uri),
 		offsetof(struct mcp_resource_desc, name),
@@ -242,21 +253,27 @@ int runtime_mcp_list_resources(struct runtime *runtime, const char *name,
 		offsetof(struct mcp_resource_desc, mime_type)
 	};
 	int rc;
-	if (!client || !out || !count)
-		return client ? -EINVAL : -ENOENT;
+	int item_count = 0;
+	if (!out || !count)
+		return -EINVAL;
+	if (*out)
+		return -EEXIST;
+	*count = 0;
+	if (!client)
+		return -ENOENT;
 	if (runtime_mcp_busy(runtime, client))
 		return -EAGAIN;
-	arena = arena_create(0);
-	if (!arena)
-		return -ENOMEM;
 	rc = mcp_ensure_connected(client);
 	if (rc == 0)
-		rc = mcp_list_resources(client, arena, &items, count);
+		rc = mcp_list_resources_copy(client, &items, &item_count);
 	if (rc == 0)
-		rc = runtime_mcp_copy_list((void **)out, *count, items,
-					   sizeof(**out), offsets,
+		rc = runtime_mcp_copy_list(&copied, item_count, items, sizeof(**out), offsets,
 					   sizeof(offsets) / sizeof(offsets[0]));
-	arena_destroy(arena);
+	mcp_resource_descs_free(items, item_count);
+	if (rc == 0) {
+		*out = copied;
+		*count = item_count;
+	}
 	return rc;
 }
 
@@ -265,28 +282,34 @@ int runtime_mcp_list_prompts(struct runtime *runtime, const char *name,
 {
 	struct mcp_client *client = runtime_mcp_lookup_client(runtime, name);
 	struct mcp_prompt_desc *items = NULL;
-	struct arena *arena;
+	void *copied = NULL;
 	const size_t offsets[] = {
 		offsetof(struct mcp_prompt_desc, name),
 		offsetof(struct mcp_prompt_desc, description),
 		offsetof(struct mcp_prompt_desc, arguments_schema)
 	};
 	int rc;
-	if (!client || !out || !count)
-		return client ? -EINVAL : -ENOENT;
+	int item_count = 0;
+	if (!out || !count)
+		return -EINVAL;
+	if (*out)
+		return -EEXIST;
+	*count = 0;
+	if (!client)
+		return -ENOENT;
 	if (runtime_mcp_busy(runtime, client))
 		return -EAGAIN;
-	arena = arena_create(0);
-	if (!arena)
-		return -ENOMEM;
 	rc = mcp_ensure_connected(client);
 	if (rc == 0)
-		rc = mcp_list_prompts(client, arena, &items, count);
+		rc = mcp_list_prompts_copy(client, &items, &item_count);
 	if (rc == 0)
-		rc = runtime_mcp_copy_list((void **)out, *count, items,
-					   sizeof(**out), offsets,
+		rc = runtime_mcp_copy_list(&copied, item_count, items, sizeof(**out), offsets,
 					   sizeof(offsets) / sizeof(offsets[0]));
-	arena_destroy(arena);
+	mcp_prompt_descs_free(items, item_count);
+	if (rc == 0) {
+		*out = copied;
+		*count = item_count;
+	}
 	return rc;
 }
 

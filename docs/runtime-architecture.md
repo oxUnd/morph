@@ -262,7 +262,7 @@ request timeout, and no retries. Only a valid JSON title is accepted; it is
 normalized to one line and limited to 36 Unicode characters. Requests for the
 same session are deduplicated while running, and at most four jobs run at once.
 
-Each worker owns its model, arena, cancellation token, and database connection.
+Each worker owns its model, owned request/response buffers, cancellation token, and database connection.
 The result updates metadata only if both the original display ID and name still
 match. A duplicate title receives a stable display-ID suffix within the length
 limit. Title updates preserve activity timestamps and never enter model history
@@ -291,7 +291,7 @@ Tools, reasoning, and previous recaps are excluded. Model output must contain
 `summary` (up to 700 Unicode characters) and nullable `next_action` (up to 200).
 An invented next step is explicitly forbidden by the prompt.
 
-The runtime owns the worker, model, arena, cancellation, and billing resources.
+The runtime owns the worker, model, owned request buffers, cancellation, and billing resources.
 Requests have no tools, a 30-second timeout, and no model-level retries. Only
 one request runs at a time. `session.recap` events carry begin/end phases,
 session identity, history position, request revision, trigger type, and either

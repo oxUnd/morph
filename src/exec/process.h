@@ -80,11 +80,15 @@ struct process_snapshot {
 	int stderr_truncated;
 };
 
+/* out must be NULL; failure preserves it. Destroy joins all workers. */
 int process_manager_create(const struct process_manager_config *config,
 			   struct process_manager **out);
 void process_manager_destroy(struct process_manager *manager);
-const char *process_manager_shell(const struct process_manager *manager);
+const char *process_manager_shell_borrow(const struct process_manager *manager);
 
+/* Snapshot outputs must have no owned text (initialize with {0}). Success
+ * returns independent text released by process_snapshot_cleanup(); failure
+ * preserves the snapshot. Empty status snapshots contain metadata only. */
 int process_spawn(struct process_manager *manager,
 		  const struct process_spawn_options *options,
 		  char session_id[PROCESS_SESSION_ID_MAX],
@@ -97,7 +101,7 @@ int process_session_wait(struct process_manager *manager, const char *session_id
 			 const struct process_cursor *cursor, uint64_t wait_ms,
 			 int (*cancelled)(void *), void *cancel_data,
 			 struct process_snapshot *snapshot);
-char *process_redact_text(const struct process_manager *manager, const char *text);
+char *process_redact_text_copy(const struct process_manager *manager, const char *text);
 int process_session_inspect(struct process_manager *manager, const char *session_id,
 			    int full_output, struct process_snapshot *snapshot);
 int process_session_status(struct process_manager *manager, const char *session_id,

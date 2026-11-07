@@ -7,6 +7,7 @@ extern "C" {
 #endif
 
 /* On success, out owns the loaded text, or NULL when no source is configured. */
+/* Creates a malloc-owned snapshot in a NULL output; failure preserves NULL. */
 int morph_prompt_load(struct morph_log *logger, const char *file, const char *dir, char **out);
 
 #ifdef __cplusplus

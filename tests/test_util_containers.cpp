@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/json.h"
 #include "util/base64.h"
 #include <unistd.h>
@@ -65,7 +65,7 @@ TEST(UtilArray, PushGetPopAndClear)
 	ASSERT_EQ(morph_array_init(&a, 2, sizeof(int)), 0);
 
 	for (int i = 0; i < 10; i++) {
-		int *slot = static_cast<int *>(morph_array_push(&a));
+		int *slot = static_cast<int *>(morph_array_push_borrow(&a));
 		ASSERT_NE(slot, nullptr);
 		*slot = i * 3;
 	}
@@ -73,11 +73,11 @@ TEST(UtilArray, PushGetPopAndClear)
 	ASSERT_GE(a.cap, 10u);
 	ASSERT_EQ(a.nelts, 10u);
 	for (int i = 0; i < 10; i++) {
-		int *slot = static_cast<int *>(morph_array_get(&a, (size_t)i));
+		int *slot = static_cast<int *>(morph_array_borrow(&a, (size_t)i));
 		ASSERT_NE(slot, nullptr);
 		EXPECT_EQ(*slot, i * 3);
 	}
-	EXPECT_EQ(morph_array_get(&a, 10), nullptr);
+	EXPECT_EQ(morph_array_borrow(&a, 10), nullptr);
 
 	morph_array_pop(&a);
 	EXPECT_EQ(a.nelts, 9u);
@@ -93,28 +93,26 @@ TEST(UtilArray, PushNReturnsContiguousSlots)
 	morph_array_t a;
 	ASSERT_EQ(morph_array_init(&a, 1, sizeof(int)), 0);
 
-	int *slots = static_cast<int *>(morph_array_push_n(&a, 4));
+	int *slots = static_cast<int *>(morph_array_push_n_borrow(&a, 4));
 	ASSERT_NE(slots, nullptr);
 	for (int i = 0; i < 4; i++)
 		slots[i] = i + 10;
 
 	EXPECT_EQ(a.nelts, 4u);
-	EXPECT_EQ(*static_cast<int *>(morph_array_get(&a, 3)), 13);
+	EXPECT_EQ(*static_cast<int *>(morph_array_borrow(&a, 3)), 13);
 	morph_array_cleanup(&a);
 }
 
-TEST(UtilArray, ArenaArrayCannotGrow)
+TEST(UtilArray, AutomaticCleanupSupportsGrowth)
 {
-	struct arena *arena = arena_create(128);
-	ASSERT_NE(arena, nullptr);
-
-	morph_array_t a;
-	ASSERT_EQ(morph_array_init_arena(&a, arena, 1, sizeof(int)), 0);
-	ASSERT_NE(morph_array_push(&a), nullptr);
-	EXPECT_EQ(morph_array_push(&a), nullptr);
-
-	morph_array_cleanup(&a);
-	arena_destroy(arena);
+	morph_array_t values MORPH_CLEANUP(morph_array_cleanup) = {};
+	ASSERT_EQ(morph_array_init(&values, 1, sizeof(int)), 0);
+	for (int i = 0; i < 128; i++) {
+		int *slot = static_cast<int *>(morph_array_push_borrow(&values));
+		ASSERT_NE(slot, nullptr);
+		*slot = i;
+	}
+	EXPECT_EQ(*static_cast<int *>(morph_array_borrow(&values, 127)), 127);
 }
 
 TEST(UtilArray, RejectsOverflowCapacities)
@@ -127,7 +125,7 @@ TEST(UtilArray, RejectsOverflowCapacities)
 	EXPECT_EQ(morph_array_reserve(&a, SIZE_MAX / sizeof(int) + 1),
 	          -EOVERFLOW);
 	a.nelts = SIZE_MAX - 1;
-	EXPECT_EQ(morph_array_push_n(&a, 2), nullptr);
+	EXPECT_EQ(morph_array_push_n_borrow(&a, 2), nullptr);
 	morph_array_cleanup(&a);
 }
 
@@ -141,18 +139,18 @@ TEST(UtilStrmap, SetGetUpdateAndContains)
 	ASSERT_EQ(morph_strmap_init(&m, 2), 0);
 	EXPECT_EQ(morph_strmap_len(&m), 0u);
 
-	ASSERT_EQ(morph_strmap_set(&m, "alpha", &one), 0);
-	ASSERT_EQ(morph_strmap_set(&m, "beta", &two), 0);
+	ASSERT_EQ(morph_strmap_set_borrow(&m, "alpha", &one), 0);
+	ASSERT_EQ(morph_strmap_set_borrow(&m, "beta", &two), 0);
 	EXPECT_EQ(morph_strmap_len(&m), 2u);
-	EXPECT_EQ(morph_strmap_get(&m, "alpha"), &one);
-	EXPECT_EQ(morph_strmap_get(&m, "beta"), &two);
-	EXPECT_EQ(morph_strmap_get(&m, "missing"), nullptr);
+	EXPECT_EQ(morph_strmap_borrow(&m, "alpha"), &one);
+	EXPECT_EQ(morph_strmap_borrow(&m, "beta"), &two);
+	EXPECT_EQ(morph_strmap_borrow(&m, "missing"), nullptr);
 	EXPECT_TRUE(morph_strmap_contains(&m, "alpha"));
 	EXPECT_FALSE(morph_strmap_contains(&m, "missing"));
 
-	ASSERT_EQ(morph_strmap_set(&m, "alpha", &three), 0);
+	ASSERT_EQ(morph_strmap_set_borrow(&m, "alpha", &three), 0);
 	EXPECT_EQ(morph_strmap_len(&m), 2u);
-	EXPECT_EQ(morph_strmap_get(&m, "alpha"), &three);
+	EXPECT_EQ(morph_strmap_borrow(&m, "alpha"), &three);
 
 	morph_strmap_cleanup(&m);
 }
@@ -164,11 +162,11 @@ TEST(UtilStrmap, OwnsCopiedKeys)
 	char key[] = "mutable";
 
 	ASSERT_EQ(morph_strmap_init(&m, 0), 0);
-	ASSERT_EQ(morph_strmap_set(&m, key, &value), 0);
+	ASSERT_EQ(morph_strmap_set_borrow(&m, key, &value), 0);
 	strcpy(key, "changed");
 
-	EXPECT_EQ(morph_strmap_get(&m, "mutable"), &value);
-	EXPECT_EQ(morph_strmap_get(&m, "changed"), nullptr);
+	EXPECT_EQ(morph_strmap_borrow(&m, "mutable"), &value);
+	EXPECT_EQ(morph_strmap_borrow(&m, "changed"), nullptr);
 
 	morph_strmap_cleanup(&m);
 }
@@ -183,7 +181,7 @@ TEST(UtilStrmap, RemoveAndReuseDeletedSlots)
 		char key[16];
 		snprintf(key, sizeof(key), "k%d", i);
 		values[i] = i;
-		ASSERT_EQ(morph_strmap_set(&m, key, &values[i]), 0);
+		ASSERT_EQ(morph_strmap_set_borrow(&m, key, &values[i]), 0);
 	}
 	EXPECT_EQ(morph_strmap_len(&m), 16u);
 
@@ -194,8 +192,8 @@ TEST(UtilStrmap, RemoveAndReuseDeletedSlots)
 	EXPECT_EQ(morph_strmap_len(&m), 14u);
 
 	values[20] = 20;
-	ASSERT_EQ(morph_strmap_set(&m, "new", &values[20]), 0);
-	EXPECT_EQ(morph_strmap_get(&m, "new"), &values[20]);
+	ASSERT_EQ(morph_strmap_set_borrow(&m, "new", &values[20]), 0);
+	EXPECT_EQ(morph_strmap_borrow(&m, "new"), &values[20]);
 	EXPECT_EQ(morph_strmap_len(&m), 15u);
 
 	morph_strmap_cleanup(&m);
@@ -206,9 +204,9 @@ TEST(UtilStrmap, NullValueIsStillContained)
 	morph_strmap_t m;
 
 	ASSERT_EQ(morph_strmap_init(&m, 0), 0);
-	ASSERT_EQ(morph_strmap_set(&m, "nil", nullptr), 0);
+	ASSERT_EQ(morph_strmap_set_borrow(&m, "nil", nullptr), 0);
 
-	EXPECT_EQ(morph_strmap_get(&m, "nil"), nullptr);
+	EXPECT_EQ(morph_strmap_borrow(&m, "nil"), nullptr);
 	EXPECT_TRUE(morph_strmap_contains(&m, "nil"));
 
 	morph_strmap_cleanup(&m);
@@ -220,14 +218,14 @@ TEST(UtilStrmap, ClearKeepsMapReusable)
 	int value = 42;
 
 	ASSERT_EQ(morph_strmap_init(&m, 0), 0);
-	ASSERT_EQ(morph_strmap_set(&m, "a", &value), 0);
-	ASSERT_EQ(morph_strmap_set(&m, "b", &value), 0);
+	ASSERT_EQ(morph_strmap_set_borrow(&m, "a", &value), 0);
+	ASSERT_EQ(morph_strmap_set_borrow(&m, "b", &value), 0);
 	morph_strmap_clear(&m);
 
 	EXPECT_EQ(morph_strmap_len(&m), 0u);
 	EXPECT_FALSE(morph_strmap_contains(&m, "a"));
-	ASSERT_EQ(morph_strmap_set(&m, "c", &value), 0);
-	EXPECT_EQ(morph_strmap_get(&m, "c"), &value);
+	ASSERT_EQ(morph_strmap_set_borrow(&m, "c", &value), 0);
+	EXPECT_EQ(morph_strmap_borrow(&m, "c"), &value);
 
 	morph_strmap_cleanup(&m);
 }
@@ -240,10 +238,10 @@ TEST(UtilStrmap, RejectsInvalidArguments)
 	EXPECT_EQ(morph_strmap_init(nullptr, 0), -EINVAL);
 	ASSERT_EQ(morph_strmap_init(&m, 0), 0);
 
-	EXPECT_EQ(morph_strmap_set(nullptr, "a", &value), -EINVAL);
-	EXPECT_EQ(morph_strmap_set(&m, nullptr, &value), -EINVAL);
-	EXPECT_EQ(morph_strmap_get(nullptr, "a"), nullptr);
-	EXPECT_EQ(morph_strmap_get(&m, nullptr), nullptr);
+	EXPECT_EQ(morph_strmap_set_borrow(nullptr, "a", &value), -EINVAL);
+	EXPECT_EQ(morph_strmap_set_borrow(&m, nullptr, &value), -EINVAL);
+	EXPECT_EQ(morph_strmap_borrow(nullptr, "a"), nullptr);
+	EXPECT_EQ(morph_strmap_borrow(&m, nullptr), nullptr);
 	EXPECT_FALSE(morph_strmap_contains(nullptr, "a"));
 	EXPECT_EQ(morph_strmap_remove(nullptr, "a"), 0);
 
@@ -258,14 +256,14 @@ TEST(UtilBuf, AppendPrintfCstrAndTruncate)
 	ASSERT_EQ(morph_buf_puts(&b, "abc"), 0);
 	ASSERT_EQ(morph_buf_putc(&b, 'd'), 0);
 	ASSERT_EQ(morph_buf_printf(&b, "-%d", 42), 0);
-	EXPECT_STREQ(morph_buf_cstr(&b), "abcd-42");
+	EXPECT_STREQ(morph_buf_cstr_borrow(&b), "abcd-42");
 
-	morph_str_t s = morph_buf_str(&b);
+	morph_str_t s = morph_buf_str_borrow(&b);
 	EXPECT_EQ(s.len, 7u);
 	EXPECT_EQ(memcmp(s.data, "abcd-42", s.len), 0);
 
 	ASSERT_EQ(morph_buf_truncate(&b, 4), 0);
-	EXPECT_STREQ(morph_buf_cstr(&b), "abcd");
+	EXPECT_STREQ(morph_buf_cstr_borrow(&b), "abcd");
 	ASSERT_EQ(morph_buf_truncate(&b, 99), 0);
 	EXPECT_EQ(b.len, 4u);
 
@@ -284,28 +282,31 @@ TEST(UtilBuf, AppendBinaryAndReset)
 
 	ASSERT_EQ(morph_buf_append(&b, bytes, sizeof(bytes)), 0);
 	EXPECT_EQ(b.len, sizeof(bytes));
-	ASSERT_NE(morph_buf_cstr(&b), nullptr);
+	ASSERT_NE(morph_buf_cstr_borrow(&b), nullptr);
 	EXPECT_EQ(memcmp(b.data, bytes, sizeof(bytes)), 0);
 
 	morph_buf_reset(&b);
 	EXPECT_EQ(b.len, 0u);
-	EXPECT_STREQ(morph_buf_cstr(&b), "");
+	EXPECT_STREQ(morph_buf_cstr_borrow(&b), "");
 	morph_buf_cleanup(&b);
 }
 
-TEST(UtilBuf, ArenaBufferGrowsButDoesNotDetach)
+TEST(UtilBuf, DetachTransfersOwnershipAndFailurePreservesSource)
 {
-	struct arena *arena = arena_create(64);
-	ASSERT_NE(arena, nullptr);
-
-	morph_buf_t b;
-	ASSERT_EQ(morph_buf_init_arena(&b, arena, 2), 0);
-	ASSERT_EQ(morph_buf_puts(&b, "abcdef"), 0);
-	EXPECT_STREQ(morph_buf_cstr(&b), "abcdef");
-	EXPECT_EQ(morph_buf_detach(&b), nullptr);
-
-	morph_buf_cleanup(&b);
-	arena_destroy(arena);
+	morph_buf_t buffer MORPH_CLEANUP(morph_buf_cleanup) = {};
+	ASSERT_EQ(morph_buf_init(&buffer, 2), 0);
+	ASSERT_EQ(morph_buf_puts(&buffer, "abcdef"), 0);
+	char *original = buffer.data;
+	buffer.failed = -ENOMEM;
+	EXPECT_EQ(morph_buf_detach(&buffer), nullptr);
+	EXPECT_EQ(buffer.data, original);
+	buffer.failed = 0;
+	char *text MORPH_CLEANUP(morph_charp_cleanup) = morph_buf_detach(&buffer);
+	ASSERT_NE(text, nullptr);
+	EXPECT_EQ(text, original);
+	EXPECT_EQ(buffer.data, nullptr);
+	morph_buf_cleanup(&buffer);
+	EXPECT_STREQ(text, "abcdef");
 }
 
 TEST(UtilBuf, RejectsTooLargeAndOverflow)
@@ -422,42 +423,37 @@ TEST(UtilQueue, MiddleAndStableSort)
 
 TEST(UtilStr, DupCompareAndToC)
 {
-	struct arena *arena = arena_create(128);
-	ASSERT_NE(arena, nullptr);
 	const char raw[] = {'a', '\0', 'b'};
-
-	morph_str_t s = morph_strndup(arena, raw, sizeof(raw));
-	ASSERT_TRUE(morph_str_valid(s));
-	EXPECT_EQ(s.len, sizeof(raw));
-	EXPECT_EQ(memcmp(s.data, raw, sizeof(raw)), 0);
-	EXPECT_EQ(s.data[s.len], '\0');
-
-	morph_str_t same = MORPH_STRLIT("a");
-	EXPECT_GT(morph_strcmp(s, same), 0);
+	char *copy MORPH_CLEANUP(morph_charp_cleanup) = morph_strndup(raw, sizeof(raw));
+	ASSERT_NE(copy, nullptr);
+	morph_str_t view = {sizeof(raw), copy};
+	EXPECT_EQ(memcmp(view.data, raw, sizeof(raw)), 0);
+	EXPECT_EQ(view.data[view.len], '\0');
+	EXPECT_GT(morph_strcmp(view, MORPH_STRLIT("a")), 0);
 	EXPECT_EQ(morph_strcasecmp(MORPH_STRLIT("AbC"), MORPH_STRLIT("aBc")), 0);
 	EXPECT_EQ(morph_strncmp(MORPH_STRLIT("abc"), "abd", 2), 0);
 	EXPECT_LT(morph_strncmp(MORPH_STRLIT("abc"), "abd", 3), 0);
-
-	const char *cstr = morph_str_to_c(arena, s);
+	char *cstr MORPH_CLEANUP(morph_charp_cleanup) = morph_str_cstr_copy(view);
 	ASSERT_NE(cstr, nullptr);
+	EXPECT_NE(cstr, copy);
 	EXPECT_EQ(memcmp(cstr, raw, sizeof(raw)), 0);
-
-	arena_destroy(arena);
+	EXPECT_EQ(morph_strndup(nullptr, 1), nullptr);
+	EXPECT_EQ(morph_strndup("x", SIZE_MAX), nullptr);
 }
 
 TEST(UtilStr, ChrRchrTrimAndInvalidInputs)
 {
 	morph_str_t s = MORPH_STRLIT("\t  alpha beta \r\n");
-	morph_str_t trimmed = morph_str_trim(s);
+	morph_str_t trimmed = morph_str_trim_borrow(s);
 
 	EXPECT_EQ(trimmed.len, strlen("alpha beta"));
 	EXPECT_EQ(memcmp(trimmed.data, "alpha beta", trimmed.len), 0);
-	EXPECT_EQ(morph_str_chr(trimmed, 'a'), trimmed.data);
-	EXPECT_EQ(morph_str_rchr(trimmed, 'a'), trimmed.data + trimmed.len - 1);
-	EXPECT_EQ(morph_str_chr(trimmed, 'z'), nullptr);
+	EXPECT_EQ(morph_str_chr_borrow(trimmed, 'a'), trimmed.data);
+	EXPECT_EQ(morph_str_rchr_borrow(trimmed, 'a'), trimmed.data + trimmed.len - 1);
+	EXPECT_EQ(morph_str_chr_borrow(trimmed, 'z'), nullptr);
 
 	morph_str_t spaces = MORPH_STRLIT(" \t\r\n");
-	morph_str_t empty = morph_str_trim(spaces);
+	morph_str_t empty = morph_str_trim_borrow(spaces);
 	EXPECT_EQ(empty.len, 0u);
 	ASSERT_NE(empty.data, nullptr);
 	EXPECT_STREQ(empty.data, "");
@@ -466,30 +462,26 @@ TEST(UtilStr, ChrRchrTrimAndInvalidInputs)
 	EXPECT_LT(morph_strcmp(invalid, MORPH_STRLIT("abc")), 0);
 	EXPECT_LT(morph_strcasecmp(invalid, MORPH_STRLIT("abc")), 0);
 	EXPECT_LT(morph_strncmp(invalid, "abc", 3), 0);
-	EXPECT_EQ(morph_str_to_c(nullptr, MORPH_STRLIT("x")), nullptr);
+	EXPECT_EQ(morph_str_cstr_copy(invalid), nullptr);
 }
 
-TEST(UtilJson, SerializedDocumentOutlivesTreeAndResetsWithArena)
+TEST(UtilJson, SerializedDocumentHasIndependentOwnership)
 {
-	auto *arena = arena_create(0);
-	ASSERT_NE(arena, nullptr);
 	for (int i = 0; i < 5; i++) {
-		cJSON *root = cJSON_CreateObject();
+		cJSON *root MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
 		std::string payload(1024 * 1024, 'x');
 		payload += "\n\"escaped\"";
+		ASSERT_NE(root, nullptr);
 		ASSERT_NE(cJSON_AddStringToObject(root, "payload", payload.c_str()), nullptr);
-		char *serialized = morph_json_print(arena, root);
+		char *serialized MORPH_CLEANUP(morph_json_text_cleanup) =
+			morph_json_print_copy(root);
 		ASSERT_NE(serialized, nullptr);
-		cJSON_Delete(root);
-		cJSON *parsed = cJSON_Parse(serialized);
+		morph_json_cleanup(&root);
+		cJSON *parsed MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(serialized);
 		ASSERT_NE(parsed, nullptr);
 		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(parsed, "payload")),
-			payload.c_str());
-		cJSON_Delete(parsed);
-		arena_reset(arena);
-		EXPECT_EQ(arena->cleanup, nullptr);
+			     payload.c_str());
 	}
-	arena_destroy(arena);
 }
 
 TEST(UtilBase64, FileChunksPreservePaddingAndEnforceLimit)
@@ -507,15 +499,15 @@ TEST(UtilBase64, FileChunksPreservePaddingAndEnforceLimit)
 		ASSERT_EQ(lseek(fd, 0, SEEK_SET), 0);
 		ASSERT_EQ(write(fd, data.data(), length), (ssize_t)length);
 		char *actual = nullptr;
-		ASSERT_EQ(base64_encode_file_prefixed(path, prefix, length, &actual), 0);
-		char *expected = base64_encode(data.data(), length);
+		ASSERT_EQ(base64_encode_file_prefixed_copy(path, prefix, length, &actual), 0);
+		char *expected = base64_encode_copy(data.data(), length);
 		ASSERT_NE(expected, nullptr);
 		EXPECT_STREQ(actual, (std::string(prefix) + expected).c_str());
 		free(actual);
 		free(expected);
 		actual = nullptr;
-		EXPECT_EQ(base64_encode_file_prefixed(path, prefix, length - 1, &actual),
-			-EFBIG);
+		EXPECT_EQ(base64_encode_file_prefixed_copy(path, prefix, length - 1, &actual),
+			  -EFBIG);
 		EXPECT_EQ(actual, nullptr);
 	}
 	close(fd);
@@ -544,4 +536,26 @@ TEST(UtilName, EnvironmentNamesEnforceFirstCharacter)
 	for (const char *name : {"", "0TOKEN", "API-KEY", "a.b", "a b"})
 		EXPECT_FALSE(morph_env_name_valid(name)) << name;
 	EXPECT_FALSE(morph_env_name_valid(nullptr));
+}
+
+TEST(UtilBase64, PrefixedCopyRetainsInputsAndRejectsOccupiedOutput)
+{
+	char path[] = "/tmp/morph-base64-owner-XXXXXX";
+	int fd = mkstemp(path);
+	ASSERT_GE(fd, 0);
+	ASSERT_EQ(write(fd, "abc", 3), 3);
+	ASSERT_EQ(close(fd), 0);
+	char prefix[] = "copy:";
+	char *encoded MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(base64_encode_file_prefixed_copy(path, prefix, 3, &encoded), 0);
+	char *owner = encoded;
+	prefix[0] = 'X';
+	ASSERT_EQ(unlink(path), 0);
+	EXPECT_STREQ(encoded, "copy:YWJj");
+	EXPECT_EQ(base64_encode_file_prefixed_copy(path, prefix, 3, &encoded), -EALREADY);
+	EXPECT_EQ(encoded, owner);
+	EXPECT_STREQ(encoded, "copy:YWJj");
+	morph_charp_cleanup(&encoded);
+	EXPECT_EQ(base64_encode_file_prefixed_copy(path, prefix, 3, &encoded), -ENOENT);
+	EXPECT_EQ(encoded, nullptr);
 }

@@ -70,6 +70,10 @@ void http_cleanup(void);
 void http_apply_ca_env(CURL *curl);
 int http_wait_cancelable(const struct http_control *control, unsigned int milliseconds);
 
+/* Requests borrow all inputs during the call. Response outputs must have no
+ * owned buffers (initialize with {0}); occupied outputs return -EEXIST. Even
+ * failed transfers can return owned partial responses: always call
+ * http_response_free() before reuse or leaving scope. */
 int http_get(const struct http_control *control, const char *url, struct http_response *resp);
 int http_get_ex(const struct http_control *control, const char *url, const char **extra_headers,
 		int extra_header_count, struct http_response *resp);
@@ -119,9 +123,11 @@ void http_session_reset(struct http_session *s);
 int http_session_post(const struct http_control *control, struct http_session *s, const char *url,
 		      const char *body, size_t body_len, const char *content_type,
 		      const char **extra_headers, int extra_header_count, long timeout_seconds);
-const char *http_session_body(struct http_session *s, size_t *len);
+/* Lends session storage until the next request, reset, or cleanup. */
+const char *http_session_body_borrow(struct http_session *s, size_t *len);
 long http_session_status(struct http_session *s);
-char *http_session_header_get(struct http_session *s, const char *name);
+/* Independent malloc-owned header value; release with free(). */
+char *http_session_header_copy(struct http_session *s, const char *name);
 
 #ifdef __cplusplus
 }

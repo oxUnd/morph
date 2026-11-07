@@ -155,7 +155,7 @@ static int add_file(morph_array_t *pairs, const char *root, const char *rel,
 		return 0;
 	pair = find_pair(pairs, rel);
 	if (!pair) {
-		pair = morph_array_push(pairs);
+		pair = morph_array_push_borrow(pairs);
 		if (!pair)
 			return -ENOMEM;
 		memset(pair, 0, sizeof(*pair));
@@ -195,7 +195,7 @@ static int add_remote_backend_file(morph_array_t *pairs,
 		return 0;
 	pair = find_pair(pairs, rel);
 	if (!pair) {
-		pair = morph_array_push(pairs);
+		pair = morph_array_push_borrow(pairs);
 		if (!pair)
 			return -ENOMEM;
 		memset(pair, 0, sizeof(*pair));
@@ -449,7 +449,7 @@ static int scan_output(morph_array_t *pairs, const struct morph_sync_config *cfg
 			break;
 		pair = find_pair(pairs, path);
 		if (!pair) {
-			pair = morph_array_push(pairs);
+			pair = morph_array_push_borrow(pairs);
 			if (!pair) {
 				rc = (-ENOMEM);
 				break;

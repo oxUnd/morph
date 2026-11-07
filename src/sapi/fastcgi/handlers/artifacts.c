@@ -15,12 +15,12 @@
 #include "cJSON.h"
 #include "util/file.h"
 
-__attribute__((weak)) const char *fcgi_artifact_output_dir(struct fcgi_bridge *bridge);
+__attribute__((weak)) const char *fcgi_artifact_output_dir_borrow(struct fcgi_bridge *bridge);
 
 static const char *artifact_root(request_t *r)
 {
-	if (fcgi_artifact_output_dir)
-		return fcgi_artifact_output_dir(r->bridge);
+	if (fcgi_artifact_output_dir_borrow)
+		return fcgi_artifact_output_dir_borrow(r->bridge);
 	return "/var/lib/morph/output";
 }
 
@@ -88,7 +88,7 @@ static void artifact_safe_filename(const char *src, char out[256])
 
 void handle_list_artifacts(request_t *r)
 {
-	const char *sid = path_param(r, "id");
+	const char *sid = path_param_borrow(r, "id");
 	char *json = NULL;
 
 	if (!sid) {
@@ -109,7 +109,7 @@ void handle_list_artifacts(request_t *r)
 
 void handle_artifact_meta(request_t *r)
 {
-	const char *aid = path_param(r, "artifact");
+	const char *aid = path_param_borrow(r, "artifact");
 	struct artifact_record a;
 	char *json;
 
@@ -132,7 +132,7 @@ void handle_artifact_meta(request_t *r)
 
 void handle_get_artifact(request_t *r)
 {
-	const char *aid = path_param(r, "artifact");
+	const char *aid = path_param_borrow(r, "artifact");
 	const char *rid;
 	struct artifact_record a;
 	char path[PATH_MAX];

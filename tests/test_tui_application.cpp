@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "util/cleanup.h"
 #include <morph/tui/application.h>
 #include <morph/tui/view_controller.h>
 
@@ -155,7 +156,7 @@ class TuiApplicationTest : public ::testing::Test
 		controller.ops = &ops;
 		controller.data = &page;
 		controller.tick_ms = tick_ms;
-		return morph_tui_application_present_controller(app, &controller);
+		return morph_tui_application_present_controller_take(app, &controller);
 	}
 
 	void pump_until(const std::function<bool()> &done)
@@ -185,7 +186,7 @@ TEST_F(TuiApplicationTest, PresentationIsDeferredAndRestoresUnderlyingController
 	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
 	EXPECT_EQ(morph_tui_application_depth(app), 2U);
 	panel.dismiss = true;
-	ASSERT_EQ(morph_tui_application_post(app, 7, nullptr, nullptr), 0);
+	ASSERT_EQ(morph_tui_application_post(app, 7), 0);
 	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
 	EXPECT_EQ(morph_tui_application_depth(app), 1U);
 	EXPECT_EQ(panel.closes, 1);
@@ -207,10 +208,12 @@ TEST_F(TuiApplicationTest, BackgroundPostsKeepOrderAndReleaseEachPayload)
 	int posted = 0;
 	std::thread worker([&] {
 		for (int i = 0; i < 257; i++) {
-			if (morph_tui_application_post(
-				    app, i, &released, +[](void *data) {
-					    static_cast<std::atomic<int> *>(data)->fetch_add(1);
-				    }))
+			struct morph_tui_message message MORPH_CLEANUP(
+				morph_tui_message_cleanup) = {
+				&released, +[](void *data) {
+					static_cast<std::atomic<int> *>(data)->fetch_add(1);
+				}};
+			if (morph_tui_application_post_take(app, i, &message))
 				break;
 			posted++;
 		}
@@ -232,13 +235,18 @@ TEST_F(TuiApplicationTest, StopRejectsPostsAndReleasesAlreadyQueuedMessages)
 	ASSERT_EQ(present(root), 0);
 	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
 	ASSERT_EQ(present(pending), 0);
-	ASSERT_EQ(morph_tui_application_post(
-			  app, 1, &released,
-			  +[](void *data) { static_cast<std::atomic<int> *>(data)->fetch_add(1); }),
-		  0);
+	struct morph_tui_message accepted MORPH_CLEANUP(morph_tui_message_cleanup) = {
+		&released,
+		+[](void *data) { static_cast<std::atomic<int> *>(data)->fetch_add(1); }};
+	ASSERT_EQ(morph_tui_application_post_take(app, 1, &accepted), 0);
+	EXPECT_EQ(accepted.data, nullptr);
+	EXPECT_EQ(accepted.release, nullptr);
 	morph_tui_application_stop(app, -EIO);
 	EXPECT_EQ(morph_tui_application_wake(app), -ECANCELED);
-	EXPECT_EQ(morph_tui_application_post(app, 2, &released, nullptr), -ECANCELED);
+	struct morph_tui_message rejected MORPH_CLEANUP(morph_tui_message_cleanup) = {&released,
+										      nullptr};
+	EXPECT_EQ(morph_tui_application_post_take(app, 2, &rejected), -ECANCELED);
+	EXPECT_EQ(rejected.data, &released);
 	EXPECT_EQ(morph_tui_application_step(app, 0), -EIO);
 	morph_tui_application_destroy(app);
 	app = nullptr;
@@ -300,6 +308,35 @@ TEST_F(TuiApplicationTest, DrawFailureStopsAndCleanupRunsOnce)
 	EXPECT_EQ(root.close_result, -EIO);
 }
 
+TEST_F(TuiApplicationTest, CreateRejectsOccupiedApplicationOwner)
+{
+	auto *saved = app;
+	EXPECT_EQ(morph_tui_application_create(nullptr, &app), -EEXIST);
+	EXPECT_EQ(app, saved);
+	EXPECT_TRUE(morph_tui_application_is_owner(app));
+}
+
+TEST_F(TuiApplicationTest, PresentTakesDescriptorOnlyAfterAcceptance)
+{
+	AppPage &root = page();
+	struct morph_tui_controller controller{};
+	controller.ops = &ops;
+	controller.data = &root;
+	controller.tick_ms = -1;
+	EXPECT_EQ(morph_tui_application_present_controller_take(app, &controller), -EINVAL);
+	EXPECT_EQ(controller.ops, &ops);
+	EXPECT_EQ(controller.data, &root);
+	EXPECT_EQ(root.closes, 0);
+	controller.tick_ms = 0;
+	ASSERT_EQ(morph_tui_application_present_controller_take(app, &controller), 0);
+	EXPECT_EQ(controller.ops, nullptr);
+	EXPECT_EQ(controller.data, nullptr);
+	EXPECT_EQ(morph_tui_application_present_controller_take(app, &controller), -EINVAL);
+	morph_tui_application_destroy(app);
+	app = nullptr;
+	EXPECT_EQ(root.closes, 1);
+}
+
 TEST_F(TuiApplicationTest, FailedTerminalEntryClosesMountedAndQueuedPagesOnce)
 {
 	AppPage &root = page();
@@ -311,7 +348,7 @@ TEST_F(TuiApplicationTest, FailedTerminalEntryClosesMountedAndQueuedPagesOnce)
 	controller.ops = &ops;
 	controller.data = &panel;
 	controller.input_mode = MORPH_TUI_INPUT_KEYS;
-	ASSERT_EQ(morph_tui_application_present_controller(app, &controller), 0);
+	ASSERT_EQ(morph_tui_application_present_controller_take(app, &controller), 0);
 	ASSERT_EQ(present(queued), 0);
 	EXPECT_EQ(morph_tui_application_run(app), -ENOTTY);
 	morph_tui_application_destroy(app);
@@ -378,7 +415,7 @@ TEST_F(TuiApplicationTest, RawPanelRestoresTerminalAndDoesNotReadAhead)
 	controller.input_mode = MORPH_TUI_INPUT_KEYS;
 	controller.terminal_flags =
 		MORPH_TUI_TERMINAL_SESSION_ALTERNATE | MORPH_TUI_TERMINAL_SESSION_PASTE;
-	ASSERT_EQ(morph_tui_application_present_controller(app, &controller), 0);
+	ASSERT_EQ(morph_tui_application_present_controller_take(app, &controller), 0);
 	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
 	EXPECT_EQ(fcntl(fileno(input), F_GETFL) & status_mask, original_flags & status_mask);
 	struct winsize size{};
@@ -437,8 +474,8 @@ TEST_F(TuiApplicationTest, DestroyIsDeferredDuringCallbacksAndDirectStopKeepsIts
 		nullptr};
 	struct morph_tui_controller controller{};
 	controller.ops = &guarded;
-	ASSERT_EQ(morph_tui_application_present_controller(app, &controller), 0);
-	ASSERT_EQ(morph_tui_application_post(app, 1, nullptr, nullptr), 0);
+	ASSERT_EQ(morph_tui_application_present_controller_take(app, &controller), 0);
+	ASSERT_EQ(morph_tui_application_post(app, 1), 0);
 	EXPECT_EQ(morph_tui_application_step(app, 0), 0);
 	morph_tui_application_stop(app, -EIO);
 	EXPECT_EQ(morph_tui_application_step(app, 0), -EIO);

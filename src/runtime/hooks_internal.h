@@ -47,7 +47,7 @@ struct hook_run {
 };
 
 const char *hook_entry_state(struct hook_manager *manager, struct hook_entry *entry);
-const char *hook_json_string(const cJSON *obj, const char *key);
+const char *hook_json_string_borrow(const cJSON *obj, const char *key);
 int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const char *event,
 		       morph_buf_t *context, morph_buf_t *reason, cJSON **updated, int *blocked,
 		       int *ask, int *terminate);

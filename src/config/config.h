@@ -393,7 +393,7 @@ int config_validate_file_with_warnings(const char *path,
 	struct config_validation_error *error,
 	config_validation_warning_fn warning_fn, void *warning_user_data);
 /* Returns a malloc-owned semantic inventory as JSON; the caller must free it. */
-char *config_describe_text(const char *text, struct config_validation_error *error);
+char *config_describe_text_copy(const char *text, struct config_validation_error *error);
 void config_set_defaults(struct morph_log *logger, struct config *cfg);
 void config_print(const struct config *cfg);
 

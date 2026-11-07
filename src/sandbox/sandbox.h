@@ -1,6 +1,8 @@
 #ifndef SANDBOX_H
 #define SANDBOX_H
 
+#include "util/array.h"
+
 struct morph_log;
 #ifdef __cplusplus
 extern "C" {
@@ -15,7 +17,16 @@ extern "C" {
 #define EXT_PERM_IPC		(1 << 6)
 #define EXT_PERM_TEMP		(1 << 7)
 
+/* These arrays own independently allocated path strings. */
+struct sandbox_path_set {
+	morph_array_t read;
+	morph_array_t write;
+	morph_array_t remove;
+};
+
 struct sandbox_config {
+	/* Public path pointers borrow from this owner after preparation. */
+	struct sandbox_path_set owned_paths;
 	struct morph_log *logger;
 	unsigned int permissions;
 	int path_policy_enabled;
@@ -46,6 +57,10 @@ struct sandbox_config {
 	int max_processes;
 	int max_open_files;
 };
+
+void sandbox_path_set_cleanup(struct sandbox_path_set *paths);
+void sandbox_config_paths_move(struct sandbox_config *config, struct sandbox_path_set *paths);
+void sandbox_config_cleanup(struct sandbox_config *config);
 
 int sandbox_enter(struct sandbox_config *cfg);
 int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions);

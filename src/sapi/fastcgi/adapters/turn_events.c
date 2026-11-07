@@ -232,7 +232,7 @@ int fcgi_turn_events_callback(const struct morph_event *ev, void *u)
 				cJSON *kind = cJSON_GetObjectItem(item, "kind");
 				cJSON *path = cJSON_GetObjectItem(item, "path");
 				if (cJSON_IsString(path) && path->valuestring) {
-					(void)fcgi_media_artifact_get(
+					(void)fcgi_media_artifact_borrow(
 						j, path->valuestring,
 						cJSON_GetStringValue(kind)
 							? cJSON_GetStringValue(kind)
@@ -247,7 +247,7 @@ int fcgi_turn_events_callback(const struct morph_event *ev, void *u)
 		char *kind = event_data_string(data, "kind");
 		char *path = event_data_string(data, "path");
 
-		(void)fcgi_media_artifact_get(j, path ? path : "", kind ? kind : "file");
+		(void)fcgi_media_artifact_borrow(j, path ? path : "", kind ? kind : "file");
 		free(kind);
 		free(path);
 		return 0;
@@ -255,7 +255,7 @@ int fcgi_turn_events_callback(const struct morph_event *ev, void *u)
 
 	if (strcmp(ev->name, "react.final") == 0) {
 		char *text = event_data_string(data, "text");
-		char *rendered = fcgi_media_refs_render(j, text ? text : "");
+		char *rendered = fcgi_media_refs_render_copy(j, text ? text : "");
 		event_sink_final_turn(j->store, j->session_id, turn_id,
 				      rendered ? rendered : (text ? text : ""));
 		j->final_sent = 1;

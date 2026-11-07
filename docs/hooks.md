@@ -260,5 +260,5 @@ on 2026-10-30, including the hook runtime, hook history cells, and hook browser.
 From the repository root, copy `examples/hooks/hooks.json` into
 `.morph/hooks.json`, configure/build the project, then complete the review flow.
 The example Stop command runs `examples/hooks/verify_stop.py`, which invokes
-the focused arena tests and requests a revision on failure. It is not enabled
+the focused cleanup/ownership tests and requests a revision on failure. It is not enabled
 by this repository change.

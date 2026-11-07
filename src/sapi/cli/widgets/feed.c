@@ -161,9 +161,9 @@ static void cli_feed_work_row(struct cli_feed *terminal, int columns)
 	}
 	int prefix = terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING ? 12 : 2;
 
-	(void)utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), morph_buf_cstr(&text),
-						 (size_t)(columns > prefix ? columns - prefix : 1),
-						 0);
+	(void)utf8_copy_ellipsized_display_width(
+		clipped, sizeof(clipped), morph_buf_cstr_borrow(&text),
+		(size_t)(columns > prefix ? columns - prefix : 1), 0);
 	if (terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING) {
 		cli_feed_work_label(terminal, elapsed);
 		fprintf(terminal->output, ANSI_DIM " · ");
@@ -262,7 +262,7 @@ static int cli_feed_text_changed(const struct cli_feed *terminal, const char *te
 
 	if (!terminal || !text)
 		return 0;
-	current = morph_buf_cstr(&terminal->live_text);
+	current = morph_buf_cstr_borrow(&terminal->live_text);
 	return !current || strcmp(current, text) != 0;
 }
 
@@ -482,7 +482,7 @@ int cli_feed_markdown_preview_set(struct cli_application *ctx, const char *text,
 static int cli_feed_render_markdown_preview(struct cli_application *ctx, int reserved)
 {
 	struct cli_feed *terminal = ctx->terminal;
-	const char *text = morph_buf_cstr(&terminal->markdown_preview);
+	const char *text = morph_buf_cstr_borrow(&terminal->markdown_preview);
 	const char *cursor;
 	int rows = 1;
 	int limit;
@@ -506,7 +506,7 @@ static int cli_feed_render_markdown_preview(struct cli_application *ctx, int res
 	if (gap)
 		fputc('\n', terminal->output);
 	if (terminal->markdown_preview_prefix) {
-		if (text != morph_buf_cstr(&terminal->markdown_preview) && text[0] == ' ' &&
+		if (text != morph_buf_cstr_borrow(&terminal->markdown_preview) && text[0] == ' ' &&
 		    text[1] == ' ')
 			text += 2;
 		fprintf(terminal->output, ANSI_BOLD "●" ANSI_RESET " ");
@@ -555,8 +555,8 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 	if (!force && !terminal->live_anchored && cli_feed_render_tick(ctx, 0))
 		return;
 	if (ctx->input_job &&
-	    cli_command_job_prompt_snapshot(ctx->input_job, queue_items,
-					    CLI_FEED_TERMINAL_QUEUE_VISIBLE, &queue_total) == 0) {
+	    cli_command_job_prompts_copy(ctx->input_job, queue_items,
+					 CLI_FEED_TERMINAL_QUEUE_VISIBLE, &queue_total) == 0) {
 		queue_shown = queue_total < CLI_FEED_TERMINAL_QUEUE_VISIBLE
 				      ? queue_total
 				      : CLI_FEED_TERMINAL_QUEUE_VISIBLE;
@@ -604,7 +604,7 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 		job_rows = cli_jobs_render(ctx, &job_text, columns, max_jobs,
 					   cli_output_color_enabled(ctx));
 	}
-	text = morph_buf_cstr(&terminal->live_text);
+	text = morph_buf_cstr_borrow(&terminal->live_text);
 	if (status_visible && morph_buf_init(&tool_text, 128) == 0) {
 		if (terminal->live_independent) {
 			char elapsed[32];
@@ -617,12 +617,12 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 				status_clipped, sizeof(status_clipped), text,
 				(size_t)(available > 0 ? available : 1), 0);
 			(void)morph_buf_printf(&tool_text, "%s  %s", status_clipped, elapsed);
-			text = morph_buf_cstr(&tool_text);
+			text = morph_buf_cstr_borrow(&tool_text);
 		} else if (!terminal->live_reasoning) {
 			tool_live = cli_transcript_live_text(ctx->transcript, &tool_text, columns,
 							     cli_output_color_enabled(ctx));
 			if (tool_live)
-				text = morph_buf_cstr(&tool_text);
+				text = morph_buf_cstr_borrow(&tool_text);
 		}
 	}
 	budget = terminal->columns - 4;
@@ -659,7 +659,8 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 			body_rows = cli_transcript_live_body(ctx->transcript, &tool_body, columns,
 							     cli_output_color_enabled(ctx));
 			if (body_rows)
-				fprintf(terminal->output, "\n%s", morph_buf_cstr(&tool_body));
+				fprintf(terminal->output, "\n%s",
+					morph_buf_cstr_borrow(&tool_body));
 		}
 		if (queue_shown || terminal->work_state)
 			fputc('\n', terminal->output);
@@ -667,7 +668,7 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 	if (job_rows) {
 		if (status_visible && !queue_shown && !terminal->work_state)
 			fputc('\n', terminal->output);
-		fprintf(terminal->output, "%s", morph_buf_cstr(&job_text));
+		fprintf(terminal->output, "%s", morph_buf_cstr_borrow(&job_text));
 		if (terminal->work_state || queue_shown)
 			fputc('\n', terminal->output);
 	}

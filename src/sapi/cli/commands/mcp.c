@@ -12,7 +12,7 @@ static int cli_mcp_event_tree_visible(const struct cli_application *ctx)
 
 static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **argv)
 {
-	const char *sub = cli_cmd_arg(argc, argv, 1);
+	const char *sub = cli_cmd_arg_borrow(argc, argv, 1);
 
 	if (!sub || strcmp(sub, "list") == 0 || strcmp(sub, "status") == 0) {
 		int server_count = runtime_mcp_count(ctx->runtime);
@@ -51,7 +51,7 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 	}
 
 	if (strcmp(sub, "tools") == 0) {
-		const char *name = cli_cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR(ctx, "usage: /mcp tools <server_name>");
 			return -EINVAL;
@@ -72,7 +72,7 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 	}
 
 	if (strcmp(sub, "resources") == 0) {
-		const char *name = cli_cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR(ctx, "usage: /mcp resources <server_name>");
 			return -EINVAL;
@@ -94,7 +94,7 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 	}
 
 	if (strcmp(sub, "prompts") == 0) {
-		const char *name = cli_cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR(ctx, "usage: /mcp prompts <server_name>");
 			return -EINVAL;
@@ -115,7 +115,7 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 	}
 
 	if (strcmp(sub, "connect") == 0) {
-		const char *name = cli_cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR(ctx, "usage: /mcp connect <server_name>");
 			return -EINVAL;
@@ -157,7 +157,7 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 	}
 
 	if (strcmp(sub, "disconnect") == 0) {
-		const char *name = cli_cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR(ctx, "usage: /mcp disconnect <server_name>");
 			return -EINVAL;

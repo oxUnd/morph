@@ -1,4 +1,6 @@
 #include "sub_agent_tools.h"
+#include "util/json.h"
+#include "util/cleanup.h"
 #include "agent/tool_runtime.h"
 #include "util/log.h"
 #include "util/error.h"
@@ -25,16 +27,15 @@ static int agent_sync_exec(const char *args_json, struct tool_result *result,
 	if (!task) {
 		if (root)
 			cJSON_Delete(root);
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"missing 'task' parameter\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"missing 'task' parameter\"}");
 		return -EINVAL;
 	}
-	struct sub_agent_entry *entry = sub_agent_find(bind->rt,
-						       bind->agent_name);
+	struct sub_agent_entry *entry = sub_agent_borrow(bind->rt, bind->agent_name);
 	if (!entry) {
 		cJSON_Delete(root);
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"sub-agent not found\"}"));
+		(void)tool_result_success_json_text_copy(result,
+							 "{\"error\":\"sub-agent not found\"}");
 		return -ENOENT;
 	}
 	char *sub_result = NULL;
@@ -61,7 +62,8 @@ static int agent_sync_exec(const char *args_json, struct tool_result *result,
 					: morph_strerror(rc));
 		free(sub_result);
 	}
-	(void)tool_result_success_json_text(result, cJSON_PrintUnformatted(out));
+	char *encoded MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(out);
+	(void)tool_result_success_json_text_copy(result, encoded);
 	cJSON_Delete(out);
 	return rc;
 }
@@ -98,7 +100,7 @@ int sub_agent_sync_init(struct tool_registry *reg,
 				 "\"description\":\"The task to delegate\"}},"
 				 "\"required\":[\"task\"],"
 				 "\"additionalProperties\":false}");
-			struct tool_spec spec = {
+			struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
 				.origin = TOOL_ORIGIN_BUILTIN,
 				.name = name,
 				.description = desc,
@@ -108,11 +110,10 @@ int sub_agent_sync_init(struct tool_registry *reg,
 				.user_data = bind,
 				.user_data_destroy = binding_destroy,
 			};
-			int rc = tool_register(reg, &spec);
-		if (rc < 0) {
-			free(bind);
-			return rc;
-		}
+			int rc = tool_register_take(reg, &spec);
+			if (rc < 0) {
+				return rc;
+			}
 		log_info(reg ? reg->logger : NULL, "registered sub-agent tool: %s", name);
 	}
 	return 0;
@@ -139,8 +140,8 @@ static int delegate_exec(const char *args_json, struct tool_result *result,
 	}
 	if (!agent || !task) {
 		cJSON_Delete(root);
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"missing 'agent' or 'task' parameter\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"missing 'agent' or 'task' parameter\"}");
 		return -EINVAL;
 	}
 	char *task_id = NULL;
@@ -155,7 +156,8 @@ static int delegate_exec(const char *args_json, struct tool_result *result,
 		cJSON_AddStringToObject(out, "error", morph_strerror(rc));
 	}
 	free(task_id);
-	(void)tool_result_success_json_text(result, cJSON_PrintUnformatted(out));
+	char *encoded MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(out);
+	(void)tool_result_success_json_text_copy(result, encoded);
 	cJSON_Delete(out);
 	return rc;
 }
@@ -165,14 +167,24 @@ int sub_agent_delegate_init(struct tool_registry *reg,
 {
 	if (!reg || !rt)
 		return -EINVAL;
-	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "delegate", .description = "Start a sub-agent asynchronously and return a task ID. "
-		"Use agent_status with that ID to retrieve status and results.",
-		.input_schema = "{\"type\":\"object\",\"properties\""
-		":{\"agent\":{\"type\":\"string\","
-		"\"description\":\"Name of the sub-agent to invoke\"},"
-		"\"task\":{\"type\":\"string\","
-		"\"description\":\"The task description\"}},"
-		"\"required\":[\"agent\",\"task\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = delegate_exec, .user_data = rt, .user_data_destroy = NULL });
+	return tool_register_borrow(
+		reg,
+		&(struct tool_spec){
+			.origin = TOOL_ORIGIN_BUILTIN,
+			.name = "delegate",
+			.description =
+				"Start a sub-agent asynchronously and return a task ID. "
+				"Use agent_status with that ID to retrieve status and results.",
+			.input_schema = "{\"type\":\"object\",\"properties\""
+					":{\"agent\":{\"type\":\"string\","
+					"\"description\":\"Name of the sub-agent to invoke\"},"
+					"\"task\":{\"type\":\"string\","
+					"\"description\":\"The task description\"}},"
+					"\"required\":[\"agent\",\"task\"]}",
+			.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+			.exec = delegate_exec,
+			.user_data = rt,
+			.user_data_destroy = NULL});
 }
 
 static int agent_status_exec(const char *args_json, struct tool_result *result,
@@ -192,8 +204,8 @@ static int agent_status_exec(const char *args_json, struct tool_result *result,
 	}
 	if (!task_id) {
 		cJSON_Delete(root);
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"missing 'task_id' parameter\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"missing 'task_id' parameter\"}");
 		return -EINVAL;
 	}
 	enum sub_agent_task_status status = SUB_AGENT_PENDING;
@@ -224,7 +236,8 @@ static int agent_status_exec(const char *args_json, struct tool_result *result,
 		cJSON_AddStringToObject(out, "error", morph_strerror(rc));
 	}
 	free(res);
-	(void)tool_result_success_json_text(result, cJSON_PrintUnformatted(out));
+	char *encoded MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(out);
+	(void)tool_result_success_json_text_copy(result, encoded);
 	cJSON_Delete(out);
 	return rc;
 }
@@ -234,10 +247,20 @@ int sub_agent_status_init(struct tool_registry *reg,
 {
 	if (!reg || !rt)
 		return -EINVAL;
-	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "agent_status", .description = "Check the status of an asynchronously running sub-agent", .input_schema = "{\"type\":\"object\",\"properties\""
-		":{\"task_id\":{\"type\":\"string\","
-		"\"description\":\"The task ID returned by delegate\"}},"
-		"\"required\":[\"task_id\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = agent_status_exec, .user_data = rt, .user_data_destroy = NULL });
+	return tool_register_borrow(
+		reg,
+		&(struct tool_spec){
+			.origin = TOOL_ORIGIN_BUILTIN,
+			.name = "agent_status",
+			.description = "Check the status of an asynchronously running sub-agent",
+			.input_schema = "{\"type\":\"object\",\"properties\""
+					":{\"task_id\":{\"type\":\"string\","
+					"\"description\":\"The task ID returned by delegate\"}},"
+					"\"required\":[\"task_id\"]}",
+			.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+			.exec = agent_status_exec,
+			.user_data = rt,
+			.user_data_destroy = NULL});
 }
 
 static int fanout_exec(const char *args_json, struct tool_result *result,
@@ -263,8 +286,8 @@ static int fanout_exec(const char *args_json, struct tool_result *result,
 	}
 	if (!agent || !tasks_arr || !cJSON_IsArray(tasks_arr)) {
 		cJSON_Delete(root);
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"missing 'agent' or 'tasks' parameter\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"missing 'agent' or 'tasks' parameter\"}");
 		return -EINVAL;
 	}
 	int n = cJSON_GetArraySize(tasks_arr);
@@ -285,7 +308,7 @@ static int fanout_exec(const char *args_json, struct tool_result *result,
 		else if (strcmp(merge_str, "raw") == 0)
 			merge = SUB_AGENT_MERGE_RAW;
 	}
-	char *fanout_result = NULL;
+	char *fanout_result MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	int rc = sub_agent_fanout(rt, result->runtime, agent, tasks, n, merge, &fanout_result);
 	free(tasks);
 	cJSON_Delete(root);
@@ -295,11 +318,12 @@ static int fanout_exec(const char *args_json, struct tool_result *result,
 			cJSON *out = cJSON_CreateObject();
 			cJSON_AddStringToObject(out, "status", "completed");
 			cJSON_AddItemToObject(out, "result", parsed);
-			(void)tool_result_success_json_text(result, cJSON_PrintUnformatted(out));
+			char *encoded MORPH_CLEANUP(morph_json_text_cleanup) =
+				cJSON_PrintUnformatted(out);
+			(void)tool_result_success_json_text_copy(result, encoded);
 			cJSON_Delete(out);
-			free(fanout_result);
 		} else {
-			(void)tool_result_success_json_text(result, fanout_result);
+			(void)tool_result_success_json_text_copy(result, fanout_result);
 		}
 	} else {
 		cJSON *out = cJSON_CreateObject();
@@ -307,9 +331,9 @@ static int fanout_exec(const char *args_json, struct tool_result *result,
 		cJSON_AddStringToObject(out, "error",
 					fanout_result ? fanout_result
 					: morph_strerror(rc));
-		(void)tool_result_success_json_text(result, cJSON_PrintUnformatted(out));
+		char *encoded MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(out);
+		(void)tool_result_success_json_text_copy(result, encoded);
 		cJSON_Delete(out);
-		free(fanout_result);
 	}
 	return rc;
 }
@@ -319,17 +343,27 @@ int sub_agent_fanout_init(struct tool_registry *reg,
 {
 	if (!reg || !rt)
 		return -EINVAL;
-	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "fanout", .description = "Run multiple tasks in parallel using a sub-agent and merge results", .input_schema = "{\"type\":\"object\",\"properties\""
-		":{\"agent\":{\"type\":\"string\","
-		"\"description\":\"Name of the sub-agent\"},"
-		"\"tasks\":{\"type\":\"array\",\"items\""
-		":{\"type\":\"string\"},"
-		"\"description\":\"Array of task descriptions\"},"
-		"\"merge\":{\"type\":\"string\","
-		"\"enum\":[\"synthesize\",\"concat\",\"raw\"],"
-		"\"description\":\"How to merge results "
-		"(default: synthesize)\"}},"
-		"\"required\":[\"agent\",\"tasks\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = fanout_exec, .user_data = rt, .user_data_destroy = NULL });
+	return tool_register_borrow(
+		reg, &(struct tool_spec){.origin = TOOL_ORIGIN_BUILTIN,
+					 .name = "fanout",
+					 .description = "Run multiple tasks in parallel using a "
+							"sub-agent and merge results",
+					 .input_schema =
+						 "{\"type\":\"object\",\"properties\""
+						 ":{\"agent\":{\"type\":\"string\","
+						 "\"description\":\"Name of the sub-agent\"},"
+						 "\"tasks\":{\"type\":\"array\",\"items\""
+						 ":{\"type\":\"string\"},"
+						 "\"description\":\"Array of task descriptions\"},"
+						 "\"merge\":{\"type\":\"string\","
+						 "\"enum\":[\"synthesize\",\"concat\",\"raw\"],"
+						 "\"description\":\"How to merge results "
+						 "(default: synthesize)\"}},"
+						 "\"required\":[\"agent\",\"tasks\"]}",
+					 .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+					 .exec = fanout_exec,
+					 .user_data = rt,
+					 .user_data_destroy = NULL});
 }
 
 void sub_agent_tools_register_all(struct tool_registry *reg,

@@ -3,6 +3,7 @@
 #include "js_canvas.h"
 #include "util/buf.h"
 #include "util/file.h"
+#include "util/cleanup.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -106,11 +107,14 @@ static JSValue new_sharp_object(JSContext *ctx, VipsImage *image, const char *fo
 	JSValue obj;
 
 	img = calloc(1, sizeof(*img));
-	if (!img)
+	if (!img) {
+		if (image)
+			g_object_unref(image);
 		return JS_ThrowOutOfMemory(ctx);
+	}
 	img->image = image;
 	strncpy(img->format, format ? format : ".png", sizeof(img->format) - 1);
-	obj = JS_NewObjectClass(ctx, js_values_state(ctx)->sharp_class_id);
+	obj = JS_NewObjectClass(ctx, js_values_state_borrow(ctx)->sharp_class_id);
 	if (JS_IsException(obj)) {
 		if (img->image)
 			g_object_unref(img->image);
@@ -136,19 +140,40 @@ static JSValue throw_vips_error(JSContext *ctx, const char *prefix)
 	return err;
 }
 
+/* libvips decodes lazily and borrows encoded bytes until the image closes. */
+static VipsImage *sharp_image_from_bytes_copy(const uint8_t *data, size_t len)
+{
+	uint8_t *copy = malloc(len ? len : 1);
+	VipsImage *image;
+
+	if (!copy)
+		return NULL;
+	if (len)
+		memcpy(copy, data, len);
+	image = vips_image_new_from_buffer(copy, len, "", "access", VIPS_ACCESS_SEQUENTIAL, NULL);
+	if (!image) {
+		free(copy);
+		return NULL;
+	}
+	g_object_set_data_full(G_OBJECT(image), "morph-input-buffer", copy, free);
+	return image;
+}
+
 static VipsImage *sharp_load_input(JSContext *ctx, JSValueConst value)
 {
 	const char *path;
 	char *resolved;
-	uint8_t *bytes;
+	struct js_buffer_view view MORPH_CLEANUP(js_buffer_view_cleanup) = {0};
+	const uint8_t *bytes;
 	size_t len;
 	VipsImage *image;
+	int rc;
 
 	if (JS_IsString(value)) {
 		path = JS_ToCString(ctx, value);
 		if (!path)
 			return NULL;
-		resolved = runner_authorize_path(ctx, path, 0);
+		resolved = runner_authorize_path_copy(ctx, path, 0);
 		JS_FreeCString(ctx, path);
 		if (!resolved)
 			return NULL;
@@ -183,13 +208,15 @@ static VipsImage *sharp_load_input(JSContext *ctx, JSValueConst value)
 			(void)throw_vips_error(ctx, "failed to load image");
 		return image;
 	}
-	bytes = js_values_buffer_bytes(ctx, value, &len);
-	if (!bytes) {
-		if (!JS_IsObject(value))
+	rc = js_values_buffer_borrow(ctx, value, &view);
+	if (rc < 0) {
+		if (rc == -ENOTSUP)
 			JS_ThrowTypeError(ctx, "sharp(input) requires a path string, "
 					       "ArrayBuffer, or typed array");
 		return NULL;
 	}
+	bytes = view.data;
+	len = view.length;
 #ifdef __ANDROID__
 	if (len <= (size_t)INT_MAX) {
 		int width = 0;
@@ -203,7 +230,7 @@ static VipsImage *sharp_load_input(JSContext *ctx, JSValueConst value)
 			return image;
 	}
 #endif
-	image = vips_image_new_from_buffer(bytes, len, "", "access", VIPS_ACCESS_SEQUENTIAL, NULL);
+	image = sharp_image_from_bytes_copy(bytes, len);
 	if (!image && len <= (size_t)INT_MAX) {
 		int width = 0;
 		int height = 0;
@@ -579,7 +606,8 @@ JSValue js_image_open_value(JSContext *ctx, JSValueConst this_val, int argc, JSV
 
 static struct sharp_image *sharp_this(JSContext *ctx, JSValueConst val)
 {
-	struct sharp_image *img = JS_GetOpaque2(ctx, val, js_values_state(ctx)->sharp_class_id);
+	struct sharp_image *img =
+		JS_GetOpaque2(ctx, val, js_values_state_borrow(ctx)->sharp_class_id);
 
 	return img;
 }
@@ -884,7 +912,7 @@ static JSValue js_sharp_composite(JSContext *ctx, JSValueConst this_val, int arg
 		(void)JS_ToInt32(ctx, &top, top_val);
 		JS_FreeValue(ctx, left_val);
 		JS_FreeValue(ctx, top_val);
-		overlay_sharp = JS_GetOpaque(input, js_values_state(ctx)->sharp_class_id);
+		overlay_sharp = JS_GetOpaque(input, js_values_state_borrow(ctx)->sharp_class_id);
 		if (overlay_sharp && overlay_sharp->image)
 			overlay = g_object_ref(overlay_sharp->image);
 		else
@@ -938,7 +966,7 @@ static JSValue js_sharp_to_file(JSContext *ctx, JSValueConst this_val, int argc,
 	path = JS_ToCString(ctx, argv[0]);
 	if (!path)
 		return JS_EXCEPTION;
-	resolved = runner_authorize_path(ctx, path, 1);
+	resolved = runner_authorize_path_copy(ctx, path, 1);
 	JS_FreeCString(ctx, path);
 	if (!resolved)
 		return JS_EXCEPTION;
@@ -989,7 +1017,7 @@ static JSValue js_image_open(JSContext *ctx, JSValueConst this_val, int argc, JS
 	(void)this_val;
 	if (argc < 1)
 		return JS_ThrowTypeError(ctx, "morph.image.open(input)");
-	input = js_values_get_arg_or_prop(ctx, argv[0], "input");
+	input = js_values_arg_or_prop_retain(ctx, argv[0], "input");
 	if (JS_IsUndefined(input))
 		return JS_ThrowTypeError(ctx, "morph.image.open requires input");
 	out = js_image_open_value(ctx, JS_UNDEFINED, 1, &input);
@@ -1189,15 +1217,15 @@ static JSValue js_image_frame_fn(JSContext *ctx, JSValueConst this_val, int argc
 		return JS_EXCEPTION;
 	if (argc < 1 || !JS_IsObject(argv[0]))
 		return JS_ThrowTypeError(ctx, "morph.image.frame(options)");
-	output = js_values_object_string_prop(ctx, argv[0], "output");
+	output = js_values_object_string_prop_copy(ctx, argv[0], "output");
 	if (!output)
 		return JS_ThrowTypeError(ctx, "morph.image.frame requires output");
-	resolved_output = runner_authorize_path(ctx, output, 1);
+	resolved_output = runner_authorize_path_copy(ctx, output, 1);
 	if (!resolved_output) {
 		JS_FreeCString(ctx, output);
 		return JS_EXCEPTION;
 	}
-	input_val = js_values_get_arg_or_prop(ctx, argv[0], "input");
+	input_val = js_values_arg_or_prop_retain(ctx, argv[0], "input");
 	image = sharp_load_input(ctx, input_val);
 	JS_FreeValue(ctx, input_val);
 	if (!image) {
@@ -1214,8 +1242,8 @@ static JSValue js_image_frame_fn(JSContext *ctx, JSValueConst this_val, int argc
 		JS_FreeCString(ctx, output);
 		return JS_ThrowInternalError(ctx, "failed to decode image");
 	}
-	style = js_values_object_string_prop(ctx, argv[0], "style");
-	caption = js_values_object_string_prop(ctx, argv[0], "caption");
+	style = js_values_object_string_prop_copy(ctx, argv[0], "style");
+	caption = js_values_object_string_prop_copy(ctx, argv[0], "caption");
 	(void)js_values_object_int_prop(ctx, argv[0], "padding", pad, &pad);
 	if (pad < 8)
 		pad = 8;
@@ -1326,7 +1354,7 @@ static const JSCFunctionListEntry image_funcs[] = {
 void js_image_install(JSContext *ctx, JSValueConst morph)
 {
 	JSRuntime *rt = JS_GetRuntime(ctx);
-	struct runner_state *state = js_values_state(ctx);
+	struct runner_state *state = js_values_state_borrow(ctx);
 	JSClassDef def = {"Sharp", .finalizer = sharp_finalizer};
 	JSValue proto;
 	JSValue image;

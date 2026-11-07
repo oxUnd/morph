@@ -4,7 +4,7 @@
 #include "agent/react.h"
 #include "runtime/tasks.h"
 
-char *runtime_react_error_message(struct react_context *react, int rc);
-char *runtime_react_notification_body(struct react_context *react);
+char *runtime_react_error_message_copy(struct react_context *react, int rc);
+char *runtime_react_notification_body_copy(struct react_context *react);
 
 #endif

@@ -21,7 +21,7 @@ int cli_media_attach_image(struct cli_application *ctx, const char *path)
 
 	if (!ctx || !path || !path[0])
 		return -EINVAL;
-	expanded = file_expand_path(path);
+	expanded = file_expand_path_copy(path);
 	if (!expanded)
 		return -ENOMEM;
 	if (!file_exists(expanded)) {
@@ -36,7 +36,7 @@ int cli_media_attach_image(struct cli_application *ctx, const char *path)
 	}
 	strncpy(ctx->image_path, expanded, sizeof(ctx->image_path) - 1);
 	ctx->image_path[sizeof(ctx->image_path) - 1] = '\0';
-	config = runtime_config_get(ctx->runtime);
+	config = runtime_config_borrow(ctx->runtime);
 	cli_turn_record_media_credits(ctx, "image_input", credit_image_units_from_size(w, h), 0,
 				      config->models.image.provider, config->models.image.model,
 				      NULL);
@@ -47,7 +47,7 @@ int cli_media_attach_image(struct cli_application *ctx, const char *path)
 
 static int cli_media_command_image(struct cli_application *ctx, int argc, char **argv)
 {
-	const char *path = cli_cmd_arg(argc, argv, 1);
+	const char *path = cli_cmd_arg_borrow(argc, argv, 1);
 
 	if (!path) {
 		CMD_ERROR(ctx, "usage: /image <file_path>");
@@ -70,7 +70,7 @@ static int cli_media_path_is_video(const char *path)
 
 static int cli_media_play_video(struct cli_application *ctx, const char *path)
 {
-	const struct config *config = runtime_config_get(ctx->runtime);
+	const struct config *config = runtime_config_borrow(ctx->runtime);
 
 	if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON &&
 	    video_play(ctx ? ctx->logger : NULL, path, config->render.mpv_args) != 0) {
@@ -105,7 +105,7 @@ int cli_media_handle_path(struct cli_application *ctx, const char *input, int *h
 		free(copy);
 		return 0;
 	}
-	expanded = file_expand_path(argv[0]);
+	expanded = file_expand_path_copy(argv[0]);
 	free(copy);
 	if (!expanded)
 		return -ENOMEM;
@@ -127,12 +127,12 @@ int cli_media_handle_path(struct cli_application *ctx, const char *input, int *h
 }
 static int cli_media_command_render(struct cli_application *ctx, int argc, char **argv)
 {
-	const char *path = cli_cmd_arg(argc, argv, 1);
+	const char *path = cli_cmd_arg_borrow(argc, argv, 1);
 	if (!path) {
 		CMD_ERROR(ctx, "usage: /render <file_path>");
 		return -EINVAL;
 	}
-	char *expanded = file_expand_path(path);
+	char *expanded = file_expand_path_copy(path);
 	if (!file_exists(expanded)) {
 		CMD_ERROR(ctx, "file not found: %s", expanded);
 		free(expanded);
@@ -144,7 +144,7 @@ static int cli_media_command_render(struct cli_application *ctx, int argc, char 
 	if (ext && (strcasecmp(ext, "mp4") == 0 || strcasecmp(ext, "mov") == 0 ||
 		    strcasecmp(ext, "avi") == 0 || strcasecmp(ext, "mkv") == 0 ||
 		    strcasecmp(ext, "webm") == 0 || strcasecmp(ext, "flv") == 0)) {
-		const struct config *config = runtime_config_get(ctx->runtime);
+		const struct config *config = runtime_config_borrow(ctx->runtime);
 		if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON &&
 		    video_play(ctx ? ctx->logger : NULL, expanded, config->render.mpv_args) != 0) {
 			CMD_ERROR(ctx, "failed to play video: %s", expanded);
@@ -169,7 +169,7 @@ static int cli_media_command_render(struct cli_application *ctx, int argc, char 
 		CMD_OK(ctx, "image: %s (%dx%d)", expanded, w, h);
 	} else {
 		size_t len = 0;
-		char *text = file_read_all(expanded, &len);
+		char *text = file_read_all_copy(expanded, &len);
 		if (!text) {
 			CMD_ERROR(ctx, "failed to read file: %s", expanded);
 			free(expanded);

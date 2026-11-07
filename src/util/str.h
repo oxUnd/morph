@@ -9,8 +9,6 @@ extern "C" {
 #include <string.h>
 #include "error.h"
 
-struct arena;
-
 typedef struct {
 	size_t      len;
 	const char *data;
@@ -26,18 +24,21 @@ typedef struct {
 		(s)->data = (text);         \
 	} while (0)
 
-morph_str_t morph_strndup(struct arena *a, const char *data, size_t len);
-morph_str_t morph_strdup(struct arena *a, const char *s);
+/* Caller owns each duplicate and releases it with free(). */
+char *morph_strndup(const char *data, size_t len);
+char *morph_strdup(const char *s);
 
 int  morph_strcmp(morph_str_t a, morph_str_t b);
 int  morph_strcasecmp(morph_str_t a, morph_str_t b);
 int  morph_strncmp(morph_str_t a, const char *b, size_t n);
 
-const char *morph_str_to_c(struct arena *a, morph_str_t s);
+/* Copies the view to a NUL-terminated malloc owner; release with free(). */
+char *morph_str_cstr_copy(morph_str_t s);
 
-const char *morph_str_chr(morph_str_t s, char c);
-const char *morph_str_rchr(morph_str_t s, char c);
-morph_str_t morph_str_trim(morph_str_t s);
+/* Subviews borrow the input bytes and share their lifetime. */
+const char *morph_str_chr_borrow(morph_str_t s, char c);
+const char *morph_str_rchr_borrow(morph_str_t s, char c);
+morph_str_t morph_str_trim_borrow(morph_str_t s);
 
 static inline int morph_str_valid(morph_str_t s)
 {

@@ -32,7 +32,7 @@ static int widget_document_layout(struct morph_tui_view *view)
 	int rc = 0;
 
 	if (document->width != width) {
-		rc = morph_tui_widget_text_layout_wrap(
+		rc = morph_tui_widget_text_layout_wrap_borrow(
 			&document->lines, document->text ? document->text : "", (size_t)width);
 		if (!rc)
 			document->width = width;
@@ -50,7 +50,7 @@ static int widget_document_draw(struct morph_tui_view *view, struct morph_tui_ca
 
 	for (int y = 0; y < canvas->height; y++) {
 		struct morph_tui_widget_text_line *line =
-			morph_array_get(&document->lines.lines, document->offset + (size_t)y);
+			morph_array_borrow(&document->lines.lines, document->offset + (size_t)y);
 
 		if (!line)
 			break;
@@ -59,7 +59,8 @@ static int widget_document_draw(struct morph_tui_view *view, struct morph_tui_ca
 					  line->length);
 
 		if (!rc)
-			rc = morph_tui_canvas_text(canvas, 0, y, morph_buf_cstr(&document->row), 0);
+			rc = morph_tui_canvas_text(canvas, 0, y,
+						   morph_buf_cstr_borrow(&document->row), 0);
 		if (rc)
 			return rc;
 	}
@@ -96,7 +97,7 @@ static void widget_document_destroy(struct morph_tui_view *view)
 	free(document->text);
 }
 
-int morph_tui_widget_text_view_set_text(struct morph_tui_view *view, const char *text)
+int morph_tui_widget_text_view_set_text_copy(struct morph_tui_view *view, const char *text)
 {
 	if (!view || !text || !view->ops || view->ops->draw != widget_document_draw)
 		return -EINVAL;
@@ -123,8 +124,9 @@ int morph_tui_widget_text_view_set_text(struct morph_tui_view *view, const char 
 }
 
 struct morph_tui_view *
-morph_tui_widget_text_view_create(struct morph_tui_builder *builder, struct morph_tui_view *parent,
-				  const char *text, const struct morph_tui_view_options *options)
+morph_tui_widget_text_view_add_borrow(struct morph_tui_builder *builder,
+				      struct morph_tui_view *parent, const char *text,
+				      const struct morph_tui_view_options *options)
 {
 	static const struct morph_tui_view_ops ops = {
 		.measure = widget_document_measure,
@@ -135,14 +137,14 @@ morph_tui_widget_text_view_create(struct morph_tui_builder *builder, struct morp
 	};
 	struct widget_document *document = NULL;
 
-	document = (struct widget_document *)morph_tui_widget_create(
+	document = (struct widget_document *)morph_tui_widget_add_borrow(
 		builder, parent, sizeof(*document), &ops, options);
 	if (!document)
 		return NULL;
 	struct morph_tui_view *view = &document->base.view;
 
 	morph_tui_builder_fail(builder, morph_buf_init(&document->row, BUFSIZ));
-	morph_tui_builder_fail(builder, morph_tui_widget_text_view_set_text(view, text));
+	morph_tui_builder_fail(builder, morph_tui_widget_text_view_set_text_copy(view, text));
 	morph_tui_view_set_focusable(view, 1);
 	return view;
 }

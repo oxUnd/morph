@@ -2,6 +2,7 @@
 #include "util/error.h"
 
 #include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 
 void morph_tui_builder_fail(struct morph_tui_builder *builder, int error)
@@ -41,10 +42,10 @@ static int core_view_options_valid(const struct morph_tui_view_options *options)
 	       options->alignment <= MORPH_TUI_VIEW_END;
 }
 
-struct morph_tui_view *morph_tui_view_create(struct morph_tui_builder *builder,
-					     struct morph_tui_view *parent, size_t size,
-					     const struct morph_tui_view_ops *ops,
-					     const struct morph_tui_view_options *options)
+struct morph_tui_view *morph_tui_view_add_borrow(struct morph_tui_builder *builder,
+						 struct morph_tui_view *parent, size_t size,
+						 const struct morph_tui_view_ops *ops,
+						 const struct morph_tui_view_options *options)
 {
 	if (!builder || builder->error)
 		return NULL;
@@ -62,10 +63,12 @@ struct morph_tui_view *morph_tui_view_create(struct morph_tui_builder *builder,
 		morph_tui_builder_fail(builder, -EINVAL);
 		return NULL;
 	}
-	struct morph_tui_view *view = arena_alloc(scope->arena, size);
-	struct morph_tui_view_state *state = arena_alloc(scope->arena, sizeof(*state));
+	struct morph_tui_view *view = calloc(1, size);
+	struct morph_tui_view_state *state = calloc(1, sizeof(*state));
 
 	if (!view || !state) {
+		free(state);
+		free(view);
 		morph_tui_builder_fail(builder, -ENOMEM);
 		return NULL;
 	}
@@ -75,16 +78,18 @@ struct morph_tui_view *morph_tui_view_create(struct morph_tui_builder *builder,
 	state->parent = parent;
 	state->options = opts;
 	int rc = morph_array_init(&state->children, 4, sizeof(view));
-	struct morph_tui_view **slot = rc ? NULL : morph_array_push(&scope->views);
+	struct morph_tui_view **slot = rc ? NULL : morph_array_push_borrow(&scope->views);
 
 	if (!slot) {
 		morph_array_cleanup(&state->children);
+		free(state);
+		free(view);
 		morph_tui_builder_fail(builder, rc ? rc : -ENOMEM);
 		return NULL;
 	}
 	*slot = view;
 	if (parent) {
-		slot = morph_array_push(&parent->state->children);
+		slot = morph_array_push_borrow(&parent->state->children);
 		if (slot)
 			*slot = view;
 		else
@@ -95,7 +100,7 @@ struct morph_tui_view *morph_tui_view_create(struct morph_tui_builder *builder,
 	return view;
 }
 
-struct morph_tui_view_controller *morph_tui_view_owner(const struct morph_tui_view *view)
+struct morph_tui_view_controller *morph_tui_view_owner_borrow(const struct morph_tui_view *view)
 {
 	return view && view->state ? view->state->controller : NULL;
 }
@@ -105,9 +110,10 @@ size_t morph_tui_view_child_count(const struct morph_tui_view *view)
 	return view && view->state ? view->state->children.nelts : 0;
 }
 
-struct morph_tui_view *morph_tui_view_child(const struct morph_tui_view *view, size_t index)
+struct morph_tui_view *morph_tui_view_child_borrow(const struct morph_tui_view *view, size_t index)
 {
-	struct morph_tui_view **slot = view ? morph_array_get(&view->state->children, index) : NULL;
+	struct morph_tui_view **slot =
+		view ? morph_array_borrow(&view->state->children, index) : NULL;
 
 	return slot ? *slot : NULL;
 }
@@ -357,7 +363,7 @@ int core_view_focus_next(struct morph_tui_view_controller *controller, int backw
 			previous = view;
 		}
 		if (morph_tui_view_child_count(view)) {
-			view = morph_tui_view_child(view, 0);
+			view = morph_tui_view_child_borrow(view, 0);
 			continue;
 		}
 		struct morph_tui_view *next = NULL;
@@ -366,8 +372,8 @@ int core_view_focus_next(struct morph_tui_view_controller *controller, int backw
 			struct morph_tui_view *parent = view->state->parent;
 
 			for (size_t i = 0; i + 1 < morph_tui_view_child_count(parent); i++)
-				if (morph_tui_view_child(parent, i) == view) {
-					next = morph_tui_view_child(parent, i + 1);
+				if (morph_tui_view_child_borrow(parent, i) == view) {
+					next = morph_tui_view_child_borrow(parent, i + 1);
 					break;
 				}
 			view = parent;
@@ -381,7 +387,7 @@ int core_view_focus_next(struct morph_tui_view_controller *controller, int backw
 	return 0;
 }
 
-int morph_tui_view_set_layout(struct morph_tui_view *view, struct morph_tui_layout *layout)
+int morph_tui_view_set_layout_borrow(struct morph_tui_view *view, struct morph_tui_layout *layout)
 {
 	if (!view || (layout && !layout->ops))
 		return -EINVAL;
@@ -399,29 +405,30 @@ int core_view_draw(struct morph_tui_view *view, struct morph_tui_canvas *parent)
 	struct morph_tui_view_rect frame = view->state->frame;
 	struct morph_tui_canvas canvas;
 
-	morph_tui_canvas_child(parent, frame.x, frame.y, frame.width, frame.height, &canvas);
+	morph_tui_canvas_child_borrow(parent, frame.x, frame.y, frame.width, frame.height, &canvas);
 	if (canvas.left >= canvas.right || canvas.top >= canvas.bottom)
 		return 0;
 	struct morph_tui_view_rect rect = morph_tui_view_content_rect(view);
 	struct morph_tui_canvas content;
 
-	morph_tui_canvas_child(&canvas, rect.x, rect.y, rect.width, rect.height, &content);
+	morph_tui_canvas_child_borrow(&canvas, rect.x, rect.y, rect.width, rect.height, &content);
 	int rc = view->ops && view->ops->draw ? view->ops->draw(view, &content) : 0;
 
 	for (size_t i = 0; i < view->state->children.nelts && !rc; i++)
-		rc = core_view_draw(morph_tui_view_child(view, i), &canvas);
+		rc = core_view_draw(morph_tui_view_child_borrow(view, i), &canvas);
 	return rc;
 }
 
 void core_view_scope_destroy(struct morph_tui_view_controller *controller)
 {
 	for (size_t i = controller->state->views.nelts; i > 0; i--) {
-		struct morph_tui_view **slot = morph_array_get(&controller->state->views, i - 1);
+		struct morph_tui_view **slot = morph_array_borrow(&controller->state->views, i - 1);
 
 		if ((*slot)->ops && (*slot)->ops->destroy)
 			(*slot)->ops->destroy(*slot);
 		morph_array_cleanup(&(*slot)->state->children);
+		free((*slot)->state);
+		free(*slot);
 	}
 	morph_array_cleanup(&controller->state->views);
-	arena_destroy(controller->state->arena);
 }

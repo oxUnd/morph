@@ -1,11 +1,39 @@
 #include "sapi/cli/models/transcript.h"
 #include "util/error.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "session_history.h"
 #include "cJSON.h"
 #include <string.h>
 
 #include <stdlib.h>
 #include <stdio.h>
+
+static void cli_transcript_tool_cleanup(struct cli_transcript_tool *tool)
+{
+	free(tool->id);
+	free(tool->name);
+	free(tool->args);
+	free(tool->subject);
+	free(tool->result);
+	free(tool->error);
+	free(tool->summary);
+	free(tool->patch_preview);
+	morph_buf_cleanup(&tool->stream);
+	memset(tool, 0, sizeof(*tool));
+}
+
+static int cli_transcript_tool_push_take(struct cli_transcript_model *model,
+					 struct cli_transcript_tool *source)
+{
+	struct cli_transcript_tool *slot = morph_array_push_borrow(&model->tools);
+
+	if (!slot)
+		return -ENOMEM;
+	*slot = *source;
+	memset(source, 0, sizeof(*source));
+	return 0;
+}
 
 int cli_transcript_model_create(struct cli_transcript_model **out)
 {
@@ -16,15 +44,11 @@ int cli_transcript_model_create(struct cli_transcript_model **out)
 
 	if (!out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	model = calloc(1, sizeof(*model));
 	if (!model)
 		return -ENOMEM;
-	model->arena = arena_create(BUFSIZ);
-	if (!model->arena) {
-		free(model);
-		return -ENOMEM;
-	}
 	rc = morph_array_init(&model->tools, MORPH_ARRAY_INIT_CAP, sizeof(tool));
 	if (!rc)
 		rc = morph_array_init(&model->reasoning, MORPH_ARRAY_INIT_CAP, sizeof(reasoning));
@@ -45,8 +69,9 @@ void cli_transcript_model_destroy(struct cli_transcript_model *model)
 	morph_array_foreach (reasoning, &model->reasoning, struct cli_transcript_reasoning)
 		morph_buf_cleanup(&reasoning->text);
 	morph_array_cleanup(&model->reasoning);
+	for (size_t i = 0; i < model->tools.nelts; i++)
+		cli_transcript_tool_cleanup(morph_array_borrow(&model->tools, i));
 	morph_array_cleanup(&model->tools);
-	arena_destroy(model->arena);
 	free(model);
 }
 
@@ -57,13 +82,16 @@ static const char *cli_transcript_json_string(const cJSON *data, const char *key
 	return cJSON_IsString(item) ? item->valuestring : "";
 }
 
-static const char *cli_transcript_save_text(struct cli_transcript_model *tr, const char *text)
+static void cli_transcript_set_text(struct cli_transcript_model *tr, char **field, const char *text)
 {
-	char *copy = arena_strdup(tr->arena, text ? text : "");
+	char *copy = strdup(text ? text : "");
 
-	if (!copy)
+	if (!copy) {
 		tr->allocation_failed = 1;
-	return copy ? copy : "";
+		return;
+	}
+	free(*field);
+	*field = copy;
 }
 
 static struct cli_transcript_tool *cli_transcript_find_tool(struct cli_transcript_model *tr,
@@ -73,7 +101,7 @@ static struct cli_transcript_tool *cli_transcript_find_tool(struct cli_transcrip
 	const char *name = cli_transcript_json_string(data, "tool");
 
 	for (size_t i = tr->tools.nelts; i > 0; i--) {
-		struct cli_transcript_tool *tool = morph_array_get(&tr->tools, i - 1);
+		struct cli_transcript_tool *tool = morph_array_borrow(&tr->tools, i - 1);
 
 		if (id[0] ? strcmp(id, tool->id) == 0 : (!name[0] || strcmp(name, tool->name) == 0))
 			return tool;
@@ -85,8 +113,8 @@ static const char *cli_transcript_find_process_command(struct cli_transcript_mod
 						       const char *session_id)
 {
 	for (size_t i = tr->tools.nelts; i > 0; i--) {
-		struct cli_transcript_tool *candidate = morph_array_get(&tr->tools, i - 1);
-		cJSON *json;
+		struct cli_transcript_tool *candidate = morph_array_borrow(&tr->tools, i - 1);
+		cJSON *json MORPH_CLEANUP(morph_json_cleanup) = NULL;
 		const cJSON *data;
 		const char *candidate_id;
 
@@ -98,10 +126,8 @@ static const char *cli_transcript_find_process_command(struct cli_transcript_mod
 			data = json;
 		candidate_id = cli_transcript_json_string(data, "session_id");
 		if (strcmp(candidate_id, session_id) == 0) {
-			cJSON_Delete(json);
 			return candidate->subject;
 		}
-		cJSON_Delete(json);
 	}
 	return "";
 }
@@ -115,7 +141,7 @@ int cli_transcript_model_reasoning_append(struct cli_transcript_model *tr, const
 	if (!tr || (!text && len))
 		return -EINVAL;
 	if (begin || !tr->reasoning.nelts) {
-		reasoning = morph_array_push(&tr->reasoning);
+		reasoning = morph_array_push_borrow(&tr->reasoning);
 		if (!reasoning)
 			return -ENOMEM;
 		memset(reasoning, 0, sizeof(*reasoning));
@@ -126,7 +152,7 @@ int cli_transcript_model_reasoning_append(struct cli_transcript_model *tr, const
 			return rc;
 		}
 	} else {
-		reasoning = morph_array_get(&tr->reasoning, tr->reasoning.nelts - 1);
+		reasoning = morph_array_borrow(&tr->reasoning, tr->reasoning.nelts - 1);
 	}
 	return morph_buf_append(&reasoning->text, text, len);
 }
@@ -134,33 +160,32 @@ int cli_transcript_model_reasoning_append(struct cli_transcript_model *tr, const
 static int cli_transcript_add_tool(struct cli_transcript_model *tr, const cJSON *data, double now)
 {
 	const cJSON *args = cJSON_GetObjectItemCaseSensitive(data, "args");
-	struct cli_transcript_tool *tool = morph_array_push(&tr->tools);
-	char *json;
+	struct cli_transcript_tool pending MORPH_CLEANUP(cli_transcript_tool_cleanup) = {0};
+	struct cli_transcript_tool *tool = &pending;
+	char *json MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
 	const char *subject = "";
 	static const char *const keys[] = {"command", "file_path", "dir_path", "path",
 					   "query",   "pattern",   "url"};
 
-	if (!tool)
-		return -ENOMEM;
-	memset(tool, 0, sizeof(*tool));
-	tool->id = cli_transcript_save_text(tr, cli_transcript_json_string(data, "tool_call_id"));
-	tool->name = cli_transcript_save_text(tr, cli_transcript_json_string(data, "tool"));
+	cli_transcript_set_text(tr, &tool->id, cli_transcript_json_string(data, "tool_call_id"));
+	cli_transcript_set_text(tr, &tool->name, cli_transcript_json_string(data, "tool"));
 	json = args ? cJSON_PrintUnformatted(args) : NULL;
-	tool->args = cli_transcript_save_text(tr, json ? json : "{}");
-	free(json);
+	cli_transcript_set_text(tr, &tool->args, json ? json : "{}");
 	for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
 		subject = cli_transcript_json_string(args, keys[i]);
 		if (subject[0])
 			break;
 	}
-	tool->subject = cli_transcript_save_text(tr, subject);
-	tool->result = "";
-	tool->error = "";
-	tool->summary = "";
-	tool->patch_preview = "";
+	cli_transcript_set_text(tr, &tool->subject, subject);
+	cli_transcript_set_text(tr, &tool->result, "");
+	cli_transcript_set_text(tr, &tool->error, "");
+	cli_transcript_set_text(tr, &tool->summary, "");
+	cli_transcript_set_text(tr, &tool->patch_preview, "");
+	if (tr->allocation_failed)
+		return -ENOMEM;
 	if (strcmp(tool->name, "activate_skill") == 0) {
-		tool->subject =
-			cli_transcript_save_text(tr, cli_transcript_json_string(args, "name"));
+		cli_transcript_set_text(tr, &tool->subject,
+					cli_transcript_json_string(args, "name"));
 	}
 	tool->shell = strcmp(tool->name, "exec") == 0 || strcmp(tool->name, "process") == 0;
 	if (strcmp(tool->name, "process") == 0) {
@@ -168,20 +193,20 @@ static int cli_transcript_add_tool(struct cli_transcript_model *tr, const cJSON 
 			strcmp(cli_transcript_json_string(args, "action"), "poll") == 0;
 		const char *session_id = cli_transcript_json_string(args, "session_id");
 		const char *command = cli_transcript_find_process_command(tr, session_id);
-		morph_buf_t fallback;
+		morph_buf_t fallback MORPH_CLEANUP(morph_buf_cleanup) = {0};
 
 		if (command[0]) {
-			tool->subject = command;
+			cli_transcript_set_text(tr, &tool->subject, command);
 		} else if (morph_buf_init(&fallback, 64) == 0) {
 			(void)morph_buf_printf(&fallback, "session %s", session_id);
-			tool->subject = cli_transcript_save_text(tr, morph_buf_cstr(&fallback));
-			morph_buf_cleanup(&fallback);
+			cli_transcript_set_text(tr, &tool->subject,
+						morph_buf_cstr_borrow(&fallback));
 		}
 	}
 	if (strcmp(tool->name, "apply_patch") == 0) {
 		const char *input = cli_transcript_json_string(args, "input");
 		const char *path = strstr(input, " File: ");
-		morph_buf_t patch;
+		morph_buf_t patch MORPH_CLEANUP(morph_buf_cleanup) = {0};
 		size_t added = 0;
 		size_t removed = 0;
 
@@ -189,8 +214,8 @@ static int cli_transcript_add_tool(struct cli_transcript_model *tr, const cJSON 
 			if (path) {
 				path += strlen(" File: ");
 				(void)morph_buf_append(&patch, path, strcspn(path, "\r\n"));
-				tool->subject =
-					cli_transcript_save_text(tr, morph_buf_cstr(&patch));
+				cli_transcript_set_text(tr, &tool->subject,
+							morph_buf_cstr_borrow(&patch));
 			}
 			for (const char *p = input; *p; p++) {
 				if (p == input || p[-1] == '\n') {
@@ -200,27 +225,26 @@ static int cli_transcript_add_tool(struct cli_transcript_model *tr, const cJSON 
 			}
 			morph_buf_reset(&patch);
 			(void)morph_buf_printf(&patch, "+%zu -%zu", added, removed);
-			tool->summary = cli_transcript_save_text(tr, morph_buf_cstr(&patch));
-			morph_buf_cleanup(&patch);
+			cli_transcript_set_text(tr, &tool->summary, morph_buf_cstr_borrow(&patch));
 		}
 	}
 	tool->started = now;
 	utf8_terminal_sanitizer_init(&tool->sanitizer, UTF8_TERMINAL_TEXT_MULTILINE);
-	if (morph_buf_init_arena(&tool->stream, tr->arena, 128) != 0)
+	if (morph_buf_init(&tool->stream, 128) != 0)
 		return -ENOMEM;
 	if (tr->allocation_failed)
 		return -ENOMEM;
-	return 0;
+	return cli_transcript_tool_push_take(tr, &pending);
 }
 
 static void cli_transcript_summarize_result(struct cli_transcript_model *tr,
 					    struct cli_transcript_tool *tool)
 {
-	cJSON *json = cJSON_Parse(tool->result);
+	cJSON *json MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(tool->result);
 	const cJSON *data = cJSON_GetObjectItemCaseSensitive(json, "data");
 	const cJSON *error = cJSON_GetObjectItemCaseSensitive(json, "error");
 	const cJSON *value;
-	morph_buf_t summary;
+	morph_buf_t summary MORPH_CLEANUP(morph_buf_cleanup) = {0};
 
 	if (!json)
 		return;
@@ -233,12 +257,11 @@ static void cli_transcript_summarize_result(struct cli_transcript_model *tr,
 		const char *message = cli_transcript_json_string(error, "message");
 
 		if (message[0])
-			tool->error = cli_transcript_save_text(tr, message);
+			cli_transcript_set_text(tr, &tool->error, message);
 	} else if (cJSON_IsString(error)) {
-		tool->error = cli_transcript_save_text(tr, error->valuestring);
+		cli_transcript_set_text(tr, &tool->error, error->valuestring);
 	}
 	if (morph_buf_init(&summary, 64) != 0) {
-		cJSON_Delete(json);
 		return;
 	}
 	value = cJSON_GetObjectItemCaseSensitive(data, "duration_ms");
@@ -255,11 +278,11 @@ static void cli_transcript_summarize_result(struct cli_transcript_model *tr,
 		(void)morph_buf_printf(&summary, "exit %d", value->valueint);
 		if (value->valueint != 0) {
 			tool->state = -1;
-			tool->error = cli_transcript_save_text(
-				tr, cli_transcript_json_string(data, "stderr"));
+			cli_transcript_set_text(tr, &tool->error,
+						cli_transcript_json_string(data, "stderr"));
 			if (!tool->error[0])
-				tool->error =
-					cli_transcript_save_text(tr, morph_buf_cstr(&summary));
+				cli_transcript_set_text(tr, &tool->error,
+							morph_buf_cstr_borrow(&summary));
 		}
 	} else if (cJSON_IsString(value = cJSON_GetObjectItemCaseSensitive(data, "status"))) {
 		(void)morph_buf_puts(&summary, value->valuestring);
@@ -276,20 +299,18 @@ static void cli_transcript_summarize_result(struct cli_transcript_model *tr,
 		const cJSON *tasks = cJSON_GetObjectItemCaseSensitive(data, "tasks");
 		const cJSON *task = cJSON_GetArrayItem(tasks, 0);
 		const char *title = cli_transcript_json_string(task, "title");
-		morph_buf_t subject;
+		morph_buf_t subject MORPH_CLEANUP(morph_buf_cleanup) = {0};
 
 		if (cJSON_IsNumber(id) && id->valuedouble > 0 &&
 		    morph_buf_init(&subject, 64) == 0) {
 			(void)morph_buf_printf(&subject, "#%lld%s%s", (long long)id->valuedouble,
 					       title[0] ? " " : "", title);
-			tool->subject = cli_transcript_save_text(tr, morph_buf_cstr(&subject));
-			morph_buf_cleanup(&subject);
+			cli_transcript_set_text(tr, &tool->subject,
+						morph_buf_cstr_borrow(&subject));
 		}
 	}
 	if (summary.len)
-		tool->summary = cli_transcript_save_text(tr, morph_buf_cstr(&summary));
-	morph_buf_cleanup(&summary);
-	cJSON_Delete(json);
+		cli_transcript_set_text(tr, &tool->summary, morph_buf_cstr_borrow(&summary));
 }
 
 int cli_transcript_model_restore(struct cli_transcript_model *tr, const cJSON *call,
@@ -299,8 +320,8 @@ int cli_transcript_model_restore(struct cli_transcript_model *tr, const cJSON *c
 	const char *id = cli_transcript_json_string(call, "tool_call_id");
 	const char *input = cli_transcript_json_string(call, "input");
 	const char *arguments = cli_transcript_json_string(call, "arguments");
-	cJSON *data;
-	cJSON *args;
+	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	int rc;
 
 	if (!tr || !tool_index)
@@ -313,49 +334,44 @@ int cli_transcript_model_restore(struct cli_transcript_model *tr, const cJSON *c
 	if (!args) {
 		args = cJSON_CreateObject();
 		if (args && !cJSON_AddStringToObject(args, "input", input)) {
-			cJSON_Delete(args);
-			args = NULL;
+			morph_json_cleanup(&args);
 		}
 	}
 	if (!data || !args || !cJSON_AddStringToObject(data, "tool", name) ||
 	    !cJSON_AddStringToObject(data, "tool_call_id", id)) {
-		cJSON_Delete(data);
-		cJSON_Delete(args);
 		return -ENOMEM;
 	}
-	if (!cJSON_AddItemToObject(data, "args", args)) {
-		cJSON_Delete(data);
-		cJSON_Delete(args);
+	if (morph_json_object_take(data, "args", &args) != 0) {
 		return -ENOMEM;
 	}
 	/* No patch previews against today's files, and no synthetic live timing. */
 	rc = cli_transcript_add_tool(tr, data, 0);
-	cJSON_Delete(data);
 	if (rc)
 		return rc;
-	struct cli_transcript_tool *tool = morph_array_get(&tr->tools, tr->tools.nelts - 1);
+	struct cli_transcript_tool *tool = morph_array_borrow(&tr->tools, tr->tools.nelts - 1);
 
 	tool->historical = 1;
 	tool->started = 0;
 	tool->ended = 0;
 	if (result) {
-		cJSON *metadata = result->payload_json ? cJSON_Parse(result->payload_json) : NULL;
+		cJSON *metadata MORPH_CLEANUP(morph_json_cleanup) =
+			result->payload_json ? cJSON_Parse(result->payload_json) : NULL;
 		const cJSON *original =
 			cJSON_GetObjectItemCaseSensitive(metadata, "original_content");
 		const cJSON *code = cJSON_GetObjectItemCaseSensitive(metadata, "error_code");
 
 		tool->state = 1;
-		tool->result = cli_transcript_save_text(
-			tr, cJSON_IsString(original) ? original->valuestring : result->content);
+		cli_transcript_set_text(tr, &tool->result,
+					cJSON_IsString(original) ? original->valuestring
+								 : result->content);
 		cli_transcript_summarize_result(tr, tool);
 		if (cJSON_IsNumber(code) && code->valueint < 0) {
 			tool->state = -1;
 			tool->timed_out = tool->timed_out || code->valueint == -ETIMEDOUT;
 			if (!tool->error[0])
-				tool->error = cli_transcript_save_text(
-					tr, morph_strerror(code->valueint));
+				cli_transcript_set_text(tr, &tool->error,
+							morph_strerror(code->valueint));
 		}
-		cJSON_Delete(metadata);
 	}
 	*tool_index = tr->tools.nelts - 1;
 	return tr->allocation_failed ? -ENOMEM : 0;
@@ -378,8 +394,8 @@ int cli_transcript_model_reduce(struct cli_transcript_model *tr, const struct mo
 		change->kind = CLI_TRANSCRIPT_OBSERVATION;
 		change->tool_index = (size_t)(tool - (struct cli_transcript_tool *)tr->tools.elts);
 		if (!tool->result[0]) {
-			tool->result = cli_transcript_save_text(
-				tr, cli_transcript_json_string(event->data, "text"));
+			cli_transcript_set_text(tr, &tool->result,
+						cli_transcript_json_string(event->data, "text"));
 			change->observation_added = 1;
 		}
 		return tr->allocation_failed ? -ENOMEM : 0;
@@ -417,10 +433,9 @@ int cli_transcript_model_reduce(struct cli_transcript_model *tr, const struct mo
 	change->kind = CLI_TRANSCRIPT_TOOL_FINISHED;
 	tool->state = strcmp(name, "tool.result") == 0 ? 1 : -1;
 	tool->ended = now;
-	tool->result =
-		cli_transcript_save_text(tr, cli_transcript_json_string(event->data, "result"));
-	tool->error =
-		cli_transcript_save_text(tr, cli_transcript_json_string(event->data, "error"));
+	cli_transcript_set_text(tr, &tool->result,
+				cli_transcript_json_string(event->data, "result"));
+	cli_transcript_set_text(tr, &tool->error, cli_transcript_json_string(event->data, "error"));
 	rc = utf8_terminal_sanitize_feed(&tool->sanitizer, &tool->stream, NULL, 0, 1);
 	if (rc != 0)
 		return rc;
@@ -435,10 +450,10 @@ int cli_transcript_model_set_preview(struct cli_transcript_model *tr, size_t ind
 
 	if (!tr || !preview)
 		return -EINVAL;
-	tool = morph_array_get(&tr->tools, index);
+	tool = morph_array_borrow(&tr->tools, index);
 	if (!tool)
 		return -ENOENT;
-	tool->patch_preview = cli_transcript_save_text(tr, preview);
+	cli_transcript_set_text(tr, &tool->patch_preview, preview);
 	return tr->allocation_failed ? -ENOMEM : 0;
 }
 
@@ -453,18 +468,20 @@ void cli_transcript_model_finish(struct cli_transcript_model *tr, double now)
 			tool->state = -1;
 			tool->interrupted = 1;
 			tool->ended = now;
-			tool->error = "Interrupted before a result was received";
+			cli_transcript_set_text(tr, &tool->error,
+						"Interrupted before a result was received");
 		}
 	}
 	tr->finished = 1;
 }
 
-const struct cli_transcript_tool *cli_transcript_model_active(const struct cli_transcript_model *tr)
+const struct cli_transcript_tool *
+cli_transcript_model_active_borrow(const struct cli_transcript_model *tr)
 {
 	if (!tr)
 		return NULL;
 	for (size_t i = tr->tools.nelts; i > 0; i--) {
-		const struct cli_transcript_tool *tool = morph_array_get(&tr->tools, i - 1);
+		const struct cli_transcript_tool *tool = morph_array_borrow(&tr->tools, i - 1);
 
 		if (!tool->state)
 			return tool;

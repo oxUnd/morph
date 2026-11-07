@@ -7,6 +7,7 @@ extern "C" {
 #include "sapi/cli/adapters/runtime/events.h"
 #include "sapi/cli/presentation/output.h"
 #include "util/file.h"
+#include "util/cleanup.h"
 #include "util/child_io.h"
 }
 
@@ -87,7 +88,7 @@ protected:
 	std::string Clipboard()
 	{
 		size_t length = 0;
-		char *bytes = file_read_all(copied.c_str(), &length);
+		char *bytes = file_read_all_copy(copied.c_str(), &length);
 		if (!bytes)
 			return {};
 		std::string result(bytes, length);
@@ -105,11 +106,11 @@ TEST_F(CliCopyTest, SelectsLastAnswerWithoutPreamblesToolsOrCompactionFiltering)
 	Add("tool_result", "Tool output");
 	Add("compaction_summary", "Internal summary");
 	Add("assistant_message", "");
-	char *text = nullptr;
-	ASSERT_EQ(runtime_session_last_answer(instance, &text), 0);
+	char *text MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(runtime_session_last_answer_copy(instance, &text), 0);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, answer);
-	free(text);
+	morph_charp_cleanup(&text);
 	testing::internal::CaptureStdout();
 	int rc = cli_command_dispatch(&ctx, "/copy");
 	std::string receipt = testing::internal::GetCapturedStdout();
@@ -124,12 +125,12 @@ TEST_F(CliCopyTest, LegacyAnswersSurviveReloadAndNeverCrossSessions)
 	ASSERT_EQ(message_add(&db, current.id, "assistant", "Legacy answer", 1), 0);
 	ASSERT_EQ(message_add(&db, current.id, "user", "Unanswered question", 1), 0);
 	ASSERT_EQ(runtime_session_reload_current(instance), 0);
-	char *text = nullptr;
-	ASSERT_EQ(runtime_session_last_answer(instance, &text), 0);
+	char *text MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(runtime_session_last_answer_copy(instance, &text), 0);
 	EXPECT_STREQ(text, "Legacy answer");
-	free(text);
+	morph_charp_cleanup(&text);
 	ASSERT_EQ(runtime_session_create_and_select(instance, "empty", &current), 0);
-	EXPECT_EQ(runtime_session_last_answer(instance, &text), -ENODATA);
+	EXPECT_EQ(runtime_session_last_answer_copy(instance, &text), -ENODATA);
 	EXPECT_EQ(text, nullptr);
 	testing::internal::CaptureStdout();
 	int rc = cli_command_dispatch(&ctx, "/copy");
@@ -172,14 +173,14 @@ TEST_F(CliCopyTest, ClipboardHelperTimeoutIsBounded)
 
 TEST_F(CliCopyTest, CommandArgumentsAndEmptyInputLeaveClipboardAlone)
 {
-	EXPECT_NE(cli_command_find("/copy"), nullptr);
+	EXPECT_NE(cli_command_find_borrow("/copy"), nullptr);
 	testing::internal::CaptureStdout();
 	int rc = cli_command_dispatch(&ctx, "/copy other");
 	std::string receipt = testing::internal::GetCapturedStdout();
 	EXPECT_EQ(rc, -EINVAL);
 	EXPECT_NE(receipt.find("usage: /copy"), std::string::npos);
 	EXPECT_EQ(cli_clipboard_copy_text(&ctx, ""), -ENODATA);
-	EXPECT_EQ(runtime_session_last_answer(nullptr, nullptr), -EINVAL);
+	EXPECT_EQ(runtime_session_last_answer_copy(nullptr, nullptr), -EINVAL);
 	EXPECT_FALSE(file_exists(copied.c_str()));
 }
 

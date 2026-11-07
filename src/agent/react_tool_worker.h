@@ -5,6 +5,10 @@
 
 #include <pthread.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Private worker state. ReAct owns the batch until every worker is joined;
  * retirement closes borrowed request callbacks before control can return. */
 struct async_tool_call {
@@ -53,9 +57,14 @@ int react_tool_worker_start(struct async_tool_call *call, pthread_t *thread, int
 void react_tool_worker_release(struct async_tool_call *call);
 void react_tool_worker_cancel(struct async_tool_call *call);
 /* After joining, collect transfers heap results/JSON to the caller.
- * Destroy frees any payload not collected; artifacts are inline value data. */
+ * NULL optional outputs remain worker-owned. Destroy frees uncollected payloads;
+ * artifacts are inline value data. */
 void react_tool_worker_collect(struct async_tool_call *call, int *rc, char **result,
 			       struct tool_artifact_list *artifacts, cJSON **data, cJSON **ui,
 			       cJSON **meta);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

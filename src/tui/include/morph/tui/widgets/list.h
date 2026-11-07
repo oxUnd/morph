@@ -50,12 +50,13 @@ int morph_tui_widget_menu_state_update(struct morph_tui_widget_menu_state *menu,
 
 /* Retained list control: copied items, built-in drawing, scrolling, focus,
  * invalidation, and ACTIVATE/CHANGED actions. Constructors join builder scope. */
-struct morph_tui_view *morph_tui_widget_list_create(struct morph_tui_builder *,
-						    struct morph_tui_view *parent,
-						    const char *const *items, size_t count, int tag,
-						    const struct morph_tui_view_options *options);
-int morph_tui_widget_list_set_items(struct morph_tui_view *, const char *const *items,
-				    size_t count);
+struct morph_tui_view *
+morph_tui_widget_list_add_borrow(struct morph_tui_builder *, struct morph_tui_view *parent,
+				 const char *const *items, size_t count, int tag,
+				 const struct morph_tui_view_options *options);
+/* Copies the array and every item string; callers retain their inputs. */
+int morph_tui_widget_list_set_items_copy(struct morph_tui_view *, const char *const *items,
+					 size_t count);
 size_t morph_tui_widget_list_selected(const struct morph_tui_view *);
 int morph_tui_widget_list_select(struct morph_tui_view *, size_t index);
 int morph_tui_widget_list_set_navigation(struct morph_tui_view *, unsigned flags);
@@ -63,8 +64,8 @@ int morph_tui_widget_list_set_navigation(struct morph_tui_view *, unsigned flags
 /* Data sources are borrowed until replaced or controller destruction. The
  * callback's text need only survive until the next callback invocation. */
 typedef const char *(*morph_tui_widget_list_source_fn)(void *data, size_t index);
-int morph_tui_widget_list_set_source(struct morph_tui_view *, size_t count,
-				     morph_tui_widget_list_source_fn text, void *data);
+int morph_tui_widget_list_set_source_borrow(struct morph_tui_view *, size_t count,
+					    morph_tui_widget_list_source_fn text, void *data);
 
 #ifdef __cplusplus
 }

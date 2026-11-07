@@ -3,6 +3,8 @@
 #include "agent/tool_context.h"
 #include "cJSON.h"
 #include "util/error.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "util/file.h"
 
 #include <errno.h>
@@ -32,14 +34,14 @@ struct decoded_content {
 
 static int json_result(struct tool_result *result, cJSON *obj)
 {
-	char *s;
+	char *s MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
 
 	if (!result || !obj)
 		return -EINVAL;
 	s = cJSON_PrintUnformatted(obj);
 	if (!s)
 		return -ENOMEM;
-	return tool_result_success_json_text(result, s);
+	return tool_result_success_json_text_copy(result, s);
 }
 
 static int json_error_result(struct tool_result *result, int code,
@@ -938,24 +940,29 @@ int file_write_tool_init(struct tool_registry *reg, struct tool_context *tctx)
 
 	if (!reg)
 		return -EINVAL;
-	ctx = calloc(1, sizeof(*ctx));
-	if (!ctx)
-		return -ENOMEM;
-	ctx->tctx = tctx;
-	return tool_register(reg, &(struct tool_spec){
+	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_EXT,
 		.name = "file_write",
 		.description =
 			"Create, overwrite, append, patch, mkdir, rename, copy, or delete files. "
-			"Decoded content for write/overwrite/append/patch is limited to 10 MiB per call; "
-			"larger files can be built with repeated append or copied/patch-read streamingly. "
-			"Relative write paths resolve under output_dir; outside paths require approval.",
+			"Decoded content for write/overwrite/append/patch is limited to 10 MiB per "
+			"call; "
+			"larger files can be built with repeated append or copied/patch-read "
+			"streamingly. "
+			"Relative write paths resolve under output_dir; outside paths require "
+			"approval.",
 		.input_schema = schema,
 		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
 		.exec = file_write_exec,
-		.user_data = ctx,
 		.user_data_destroy = free,
-	});
+	};
+
+	spec.user_data = calloc(1, sizeof(*ctx));
+	if (!spec.user_data)
+		return -ENOMEM;
+	ctx = spec.user_data;
+	ctx->tctx = tctx;
+	return tool_register_take(reg, &spec);
 }
 
 int ext_run(const char *args_json, char **result_json)

@@ -6,6 +6,8 @@ extern "C" {
 #include "agent/tools/request_permissions.h"
 #include "db/database.h"
 #include "util/file.h"
+#include "permission/context.h"
+#include "util/cleanup.h"
 }
 
 #include <filesystem>
@@ -146,9 +148,13 @@ TEST_F(DirectoryPermissionTest, CanonicalDirectoryIsApprovedOnceForAllRequestedO
 	request(all(alias), "session");
 	EXPECT_TRUE(success());
 	EXPECT_EQ(approvals.size(), 1U);
-	const char *grants[2] = {};
-	EXPECT_EQ(tool_context_collect_write_grants(context, "/bin/cp", grants, 2), 1);
-	EXPECT_EQ(tool_context_collect_delete_grants(context, "/bin/rm", grants, 2), 1);
+	struct tool_permission_snapshot snapshot MORPH_CLEANUP(
+		tool_permission_snapshot_cleanup) = {};
+	ASSERT_EQ(tool_context_permission_snapshot_create(context, "/bin/cp", &snapshot), 0);
+	EXPECT_EQ(snapshot.write.count, 1);
+	EXPECT_STREQ(snapshot.write.paths[0], target.c_str());
+	EXPECT_EQ(snapshot.remove.count, 1);
+	EXPECT_STREQ(snapshot.remove.paths[0], target.c_str());
 }
 
 TEST_F(DirectoryPermissionTest, ExistingAccessPromptsOnlyForMissingOperations)

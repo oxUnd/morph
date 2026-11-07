@@ -201,7 +201,7 @@ static JSValue new_canvas_object(JSContext *ctx, int width, int height)
 	canvas->cr = cairo_create(canvas->surface);
 	if (cairo_status(canvas->cr) != CAIRO_STATUS_SUCCESS)
 		goto fail;
-	obj = JS_NewObjectClass(ctx, js_values_state(ctx)->canvas_class_id);
+	obj = JS_NewObjectClass(ctx, js_values_state_borrow(ctx)->canvas_class_id);
 	if (JS_IsException(obj))
 		goto fail_value;
 	JS_SetOpaque(obj, canvas);
@@ -243,7 +243,8 @@ static JSValue js_create_canvas(JSContext *ctx, JSValueConst this_val, int argc,
 static JSValue canvas_get_context(JSContext *ctx, JSValueConst this_val, int argc,
 				  JSValueConst *argv)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, js_values_state(ctx)->canvas_class_id);
+	struct canvas *canvas =
+		JS_GetOpaque2(ctx, this_val, js_values_state_borrow(ctx)->canvas_class_id);
 	const char *kind;
 
 	if (!canvas)
@@ -311,7 +312,8 @@ static int parse_color(const char *s, double *r, double *g, double *b, double *a
 
 static void canvas_set_source(JSContext *ctx, JSValueConst this_val, const char *prop)
 {
-	struct canvas *canvas = JS_GetOpaque(this_val, js_values_state(ctx)->canvas_class_id);
+	struct canvas *canvas =
+		JS_GetOpaque(this_val, js_values_state_borrow(ctx)->canvas_class_id);
 	JSValue val;
 	const char *style;
 	double r = 0.0;
@@ -334,7 +336,8 @@ static void canvas_set_source(JSContext *ctx, JSValueConst this_val, const char 
 static JSValue canvas_rect_op(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv,
 			      int magic)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, js_values_state(ctx)->canvas_class_id);
+	struct canvas *canvas =
+		JS_GetOpaque2(ctx, this_val, js_values_state_borrow(ctx)->canvas_class_id);
 	double x;
 	double y;
 	double w;
@@ -361,7 +364,8 @@ static JSValue canvas_rect_op(JSContext *ctx, JSValueConst this_val, int argc, J
 static JSValue canvas_simple(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv,
 			     int magic)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, js_values_state(ctx)->canvas_class_id);
+	struct canvas *canvas =
+		JS_GetOpaque2(ctx, this_val, js_values_state_borrow(ctx)->canvas_class_id);
 
 	(void)argc;
 	(void)argv;
@@ -394,7 +398,8 @@ static JSValue canvas_simple(JSContext *ctx, JSValueConst this_val, int argc, JS
 static JSValue canvas_xy(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv,
 			 int magic)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, js_values_state(ctx)->canvas_class_id);
+	struct canvas *canvas =
+		JS_GetOpaque2(ctx, this_val, js_values_state_borrow(ctx)->canvas_class_id);
 	double x;
 	double y;
 
@@ -415,7 +420,8 @@ static JSValue canvas_xy(JSContext *ctx, JSValueConst this_val, int argc, JSValu
 
 static JSValue canvas_arc(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, js_values_state(ctx)->canvas_class_id);
+	struct canvas *canvas =
+		JS_GetOpaque2(ctx, this_val, js_values_state_borrow(ctx)->canvas_class_id);
 	double x;
 	double y;
 	double radius;
@@ -696,7 +702,8 @@ static void canvas_move_to_text(JSContext *ctx, JSValueConst this_val, cairo_t *
 static JSValue canvas_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv,
 			   int magic)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, js_values_state(ctx)->canvas_class_id);
+	struct canvas *canvas =
+		JS_GetOpaque2(ctx, this_val, js_values_state_borrow(ctx)->canvas_class_id);
 	PangoFontDescription *font_desc;
 	PangoLayout *layout;
 	const char *text;
@@ -866,7 +873,8 @@ cairo_surface_t *js_canvas_image_surface(struct sharp_image *img)
 static JSValue canvas_draw_image(JSContext *ctx, JSValueConst this_val, int argc,
 				 JSValueConst *argv)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, js_values_state(ctx)->canvas_class_id);
+	struct canvas *canvas =
+		JS_GetOpaque2(ctx, this_val, js_values_state_borrow(ctx)->canvas_class_id);
 	struct canvas *src_canvas;
 	struct sharp_image *src_sharp;
 	cairo_surface_t *surface = NULL;
@@ -882,8 +890,8 @@ static JSValue canvas_draw_image(JSContext *ctx, JSValueConst this_val, int argc
 		return JS_EXCEPTION;
 	if (argc < 3)
 		return JS_ThrowTypeError(ctx, "drawImage(image, x, y[, w, h])");
-	src_canvas = JS_GetOpaque(argv[0], js_values_state(ctx)->canvas_class_id);
-	src_sharp = JS_GetOpaque(argv[0], js_values_state(ctx)->sharp_class_id);
+	src_canvas = JS_GetOpaque(argv[0], js_values_state_borrow(ctx)->canvas_class_id);
+	src_sharp = JS_GetOpaque(argv[0], js_values_state_borrow(ctx)->sharp_class_id);
 	if (src_canvas) {
 		surface = src_canvas->surface;
 		sw = src_canvas->width;
@@ -929,7 +937,8 @@ static JSValue canvas_draw_image(JSContext *ctx, JSValueConst this_val, int argc
 
 static JSValue canvas_to_file(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, js_values_state(ctx)->canvas_class_id);
+	struct canvas *canvas =
+		JS_GetOpaque2(ctx, this_val, js_values_state_borrow(ctx)->canvas_class_id);
 	const char *path;
 	char *resolved;
 	int rc;
@@ -941,7 +950,7 @@ static JSValue canvas_to_file(JSContext *ctx, JSValueConst this_val, int argc, J
 	path = JS_ToCString(ctx, argv[0]);
 	if (!path)
 		return JS_EXCEPTION;
-	resolved = runner_authorize_path(ctx, path, 1);
+	resolved = runner_authorize_path_copy(ctx, path, 1);
 	JS_FreeCString(ctx, path);
 	if (!resolved)
 		return JS_EXCEPTION;
@@ -954,7 +963,8 @@ static JSValue canvas_to_file(JSContext *ctx, JSValueConst this_val, int argc, J
 
 static JSValue canvas_to_buffer(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, js_values_state(ctx)->canvas_class_id);
+	struct canvas *canvas =
+		JS_GetOpaque2(ctx, this_val, js_values_state_borrow(ctx)->canvas_class_id);
 	morph_buf_t buf;
 	cairo_status_t status;
 	JSValue out;
@@ -1019,7 +1029,7 @@ static JSValue js_canvas_load_image_fn(JSContext *ctx, JSValueConst this_val, in
 	(void)this_val;
 	if (argc < 1)
 		return JS_ThrowTypeError(ctx, "morph.canvas.loadImage(input)");
-	input = js_values_get_arg_or_prop(ctx, argv[0], "input");
+	input = js_values_arg_or_prop_retain(ctx, argv[0], "input");
 	out = js_load_image(ctx, JS_UNDEFINED, 1, &input);
 	JS_FreeValue(ctx, input);
 	return out;
@@ -1091,7 +1101,7 @@ static const JSCFunctionListEntry canvas_funcs[] = {
 void js_canvas_install(JSContext *ctx, JSValueConst morph)
 {
 	JSRuntime *rt = JS_GetRuntime(ctx);
-	struct runner_state *state = js_values_state(ctx);
+	struct runner_state *state = js_values_state_borrow(ctx);
 	JSClassDef canvas_def = {"Canvas", .finalizer = canvas_finalizer};
 	JSClassDef data_def = {"ImageData", .finalizer = image_data_finalizer};
 	JSValue proto;

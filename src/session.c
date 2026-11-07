@@ -197,8 +197,8 @@ int session_list(struct db *db, struct session **out, int *count, int limit, con
 		morph_buf_puts(&sql, " LIMIT ?");
 	if (rc == 0)
 		rc = sql.failed;
-	if (rc == 0 &&
-	    sqlite3_prepare_v2(db->handle, morph_buf_cstr(&sql), -1, &stmt, NULL) != SQLITE_OK)
+	if (rc == 0 && sqlite3_prepare_v2(db->handle, morph_buf_cstr_borrow(&sql), -1, &stmt,
+					  NULL) != SQLITE_OK)
 		rc = MORPH_ERR_DB;
 	morph_buf_cleanup(&sql);
 	if (rc != 0)
@@ -207,8 +207,8 @@ int session_list(struct db *db, struct session **out, int *count, int limit, con
 		rc = morph_buf_init(&pattern, 256);
 		if (rc == 0)
 			rc = morph_buf_printf(&pattern, "%%%s%%", filter);
-		if (rc == 0 && sqlite3_bind_text(stmt, parameter++, morph_buf_cstr(&pattern), -1,
-						 SQLITE_TRANSIENT) != SQLITE_OK)
+		if (rc == 0 && sqlite3_bind_text(stmt, parameter++, morph_buf_cstr_borrow(&pattern),
+						 -1, SQLITE_TRANSIENT) != SQLITE_OK)
 			rc = MORPH_ERR_DB;
 		morph_buf_cleanup(&pattern);
 	}
@@ -217,7 +217,7 @@ int session_list(struct db *db, struct session **out, int *count, int limit, con
 	if (rc == 0)
 		rc = morph_array_init(&sessions, 16, sizeof(struct session));
 	while (rc == 0 && (step = sqlite3_step(stmt)) == SQLITE_ROW) {
-		struct session *session = morph_array_push(&sessions);
+		struct session *session = morph_array_push_borrow(&sessions);
 
 		if (!session) {
 			rc = -ENOMEM;

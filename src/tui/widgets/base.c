@@ -5,13 +5,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct morph_tui_widget *morph_tui_widget_create(struct morph_tui_builder *builder,
-						 struct morph_tui_view *parent, size_t size,
-						 const struct morph_tui_view_ops *ops,
-						 const struct morph_tui_view_options *options)
+struct morph_tui_widget *morph_tui_widget_add_borrow(struct morph_tui_builder *builder,
+						     struct morph_tui_view *parent, size_t size,
+						     const struct morph_tui_view_ops *ops,
+						     const struct morph_tui_view_options *options)
 {
-	return (struct morph_tui_widget *)morph_tui_view_create(builder, parent, size, ops,
-								options);
+	return (struct morph_tui_widget *)morph_tui_view_add_borrow(builder, parent, size, ops,
+								    options);
 }
 
 int morph_tui_widget_set_tag(struct morph_tui_view *view, int tag)
@@ -52,9 +52,10 @@ int morph_tui_widget_emit(struct morph_tui_view *view, enum morph_tui_widget_act
 	return rc;
 }
 
-int morph_tui_widget_set_action(struct morph_tui_view *view,
-				int (*action)(void *, const struct morph_tui_widget_action *),
-				void *data)
+int morph_tui_widget_set_action_borrow(struct morph_tui_view *view,
+				       int (*action)(void *,
+						     const struct morph_tui_widget_action *),
+				       void *data)
 {
 	if (!view)
 		return -EINVAL;

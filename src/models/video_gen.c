@@ -24,7 +24,7 @@ static const struct video_provider_ops *video_provider_resolve(const struct mode
 {
 	if (!model || !video_gen_adapter_supported(model->provider, model->adapter))
 		return NULL;
-	return video_volcengine_provider();
+	return video_volcengine_provider_borrow();
 }
 
 const char *video_gen_adapter_name(const struct model *model)

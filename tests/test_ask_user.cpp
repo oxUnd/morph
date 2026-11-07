@@ -219,7 +219,7 @@ protected:
 TEST_F(AskUserToolTest, RegisterTool) {
 	int rc = ask_user_init(&tools, mock_ask_user_cb, &state);
 	EXPECT_EQ(rc, 0);
-	struct tool_entry *e = tool_lookup(&tools, "ask_user");
+	struct tool_entry *e = tool_borrow(&tools, "ask_user");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->desc.name, "ask_user");
 }

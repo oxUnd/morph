@@ -298,7 +298,7 @@ TEST(BpeCountTest, UnicodeCategoriesDriveCaseAndDigitBoundaries)
 		for (size_t length = 2; length <= strlen(word); length++) {
 			if (!prefixes.insert(std::string(word, length)).second)
 				continue;
-			char *encoded = base64_encode(
+			char *encoded = base64_encode_copy(
 				reinterpret_cast<const unsigned char *>(word), length);
 			ASSERT_NE(encoded, nullptr);
 			vocabulary += std::string(encoded) + " " + std::to_string(rank++) + "\n";

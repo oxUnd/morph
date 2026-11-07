@@ -15,7 +15,8 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 	if (!result)
 		return -EINVAL;
 	if (!skills) {
-		(void)tool_result_success_json_text(result, strdup("{\"error\":\"skill system not initialized\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"skill system not initialized\"}");
 		return MORPH_ERR_NOT_INITIALIZED;
 	}
 
@@ -33,18 +34,18 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 	}
 
 	if (name[0] == '\0') {
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"missing or empty 'name' parameter. "
-			"Usage: activate_skill({\\\"name\\\": \\\"skill-name\\\"})\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"missing or empty 'name' parameter. "
+				"Usage: activate_skill({\\\"name\\\": \\\"skill-name\\\"})\"}");
 		return -EINVAL;
 	}
 
-	struct skill_entry *skill = skill_lookup(skills, name);
+	struct skill_entry *skill = skill_borrow(skills, name);
 	if (!skill) {
 		char err[256];
 		snprintf(err, sizeof(err),
 			 "{\"error\":\"skill '%s' not found\"}", name);
-		(void)tool_result_success_json_text(result, strdup(err));
+		(void)tool_result_success_json_text_copy(result, err);
 		return -ENOENT;
 	}
 
@@ -52,7 +53,7 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 		char err[256];
 		snprintf(err, sizeof(err),
 			 "{\"error\":\"skill '%s' is disabled\"}", name);
-		(void)tool_result_success_json_text(result, strdup(err));
+		(void)tool_result_success_json_text_copy(result, err);
 		return -EACCES;
 	}
 
@@ -61,7 +62,7 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 		snprintf(msg, sizeof(msg),
 			 "Skill '%s' is already active. Its instructions are in context.",
 			 name);
-		(void)tool_result_success_json_text(result, strdup(msg));
+		(void)tool_result_success_json_text_copy(result, msg);
 		return 0;
 	}
 
@@ -71,22 +72,19 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 		snprintf(err, sizeof(err),
 			 "{\"error\":\"failed to activate skill '%s' (code %d)\"}",
 			 name, rc);
-		(void)tool_result_success_json_text(result, strdup(err));
+		(void)tool_result_success_json_text_copy(result, err);
 		return rc;
 	}
 
 	if (!skill->body || !skill->body[0]) {
-		(void)tool_result_success_json_text(result, strdup(
-			"Skill activated but contains no instructions."));
+		(void)tool_result_success_json_text_copy(
+			result, "Skill activated but contains no instructions.");
 		return 0;
 	}
 
-	char *message = strdup(
-		"Skill activated. Its full instructions are supplied in the "
-		"active skill context on the next model request.");
-	if (!message)
-		return -ENOMEM;
-	(void)tool_result_success_json_text(result, message);
+	const char *message = "Skill activated. Its full instructions are supplied in the "
+			      "active skill context on the next model request.";
+	(void)tool_result_success_json_text_copy(result, message);
 	log_info(result && result->runtime ? result->runtime->http.logger : NULL,
 		 "skill_activate: '%s' activated", name);
 	return 0;
@@ -96,17 +94,20 @@ int skill_activate_init(struct tool_registry *reg, struct skill_registry *skills
 {
 	if (!reg || !skills)
 		return -EINVAL;
-	return tool_register(reg, &(struct tool_spec){
-		.origin = TOOL_ORIGIN_BUILTIN,
-		.name = "activate_skill",
-		.description = "Activate a skill by name to load its specialized instructions "
-			"into context. Use when a task matches a skill's description.",
-		.input_schema = "{\"type\":\"object\",\"properties\":{"
-			"\"name\":{\"type\":\"string\","
-			"\"description\":\"The skill name to activate\"}"
-			"},\"required\":[\"name\"]}",
-		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
-		.exec = skill_activate_exec,
-		.user_data = skills,
-	});
+	return tool_register_borrow(
+		reg,
+		&(struct tool_spec){
+			.origin = TOOL_ORIGIN_BUILTIN,
+			.name = "activate_skill",
+			.description =
+				"Activate a skill by name to load its specialized instructions "
+				"into context. Use when a task matches a skill's description.",
+			.input_schema = "{\"type\":\"object\",\"properties\":{"
+					"\"name\":{\"type\":\"string\","
+					"\"description\":\"The skill name to activate\"}"
+					"},\"required\":[\"name\"]}",
+			.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+			.exec = skill_activate_exec,
+			.user_data = skills,
+		});
 }

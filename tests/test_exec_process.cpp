@@ -1,6 +1,8 @@
 #include "exec/process.h"
 #include "config/config.h"
 #include "agent/tools/exec_tool.h"
+#include "agent/tools/exec_jobs.h"
+#include "util/cleanup.h"
 #include "agent/tools/request_permissions.h"
 #include "agent/tool.h"
 #include "agent/tool_runtime.h"
@@ -75,8 +77,8 @@ TEST(ExecToolTest, RegistersExecAndProcessTools)
 
 	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, nullptr, nullptr), 0);
-	EXPECT_NE(tool_lookup(&registry, "exec"), nullptr);
-	EXPECT_NE(tool_lookup(&registry, "process"), nullptr);
+	EXPECT_NE(tool_borrow(&registry, "exec"), nullptr);
+	EXPECT_NE(tool_borrow(&registry, "process"), nullptr);
 	tool_registry_cleanup(&registry);
 }
 
@@ -1242,7 +1244,7 @@ TEST(ExecToolTest, ExplicitNotifyOnlyAndServicesDoNotHoldFinalization)
 		ASSERT_EQ(tool_exec(&registry, "exec", args, &result), 0);
 		tool_result_cleanup(&result);
 	}
-	tool_entry *entry = tool_lookup(&registry, "exec");
+	tool_entry *entry = tool_borrow(&registry, "exec");
 	ASSERT_NE(entry->background_wait, nullptr);
 	cJSON *completed = nullptr;
 	ASSERT_EQ(entry->background_wait(entry->user_data, 42, "notify-test", nullptr,
@@ -1285,7 +1287,7 @@ TEST(ExecToolTest, TurnCancellationStopsOnlyOwnedJobsFromThatTurn)
 		ids.emplace_back(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "session_id")));
 		tool_result_cleanup(&result);
 	}
-	tool_entry *entry = tool_lookup(&registry, "exec");
+	tool_entry *entry = tool_borrow(&registry, "exec");
 	ASSERT_NE(entry->background_cancel, nullptr);
 	entry->background_cancel(entry->user_data, 42, "cancel-turn");
 	for (size_t index = 0; index < ids.size(); index++) {
@@ -1436,7 +1438,7 @@ TEST(ExecToolTest, ConfiguredWaitRangeControlsSchemaRuntimeAndToolTimeout)
 		tool_registry registry{};
 		tool_registry_init(nullptr, &registry);
 		ASSERT_EQ(exec_tool_init(&registry, nullptr, &cfg.exec), 0);
-		auto *entry = tool_lookup(&registry, "process");
+		auto *entry = tool_borrow(&registry, "process");
 		ASSERT_NE(entry, nullptr);
 		EXPECT_GE(entry->timeout_seconds * 1000, maximum);
 		cJSON *schema = cJSON_Parse(entry->desc.input_schema);
@@ -1472,4 +1474,73 @@ TEST(ExecToolTest, ConfiguredWaitRangeControlsSchemaRuntimeAndToolTimeout)
 		tool_result_cleanup(&result);
 		tool_registry_cleanup(&registry);
 	}
+}
+
+TEST(ExecToolTest, RetainedJobsOwnerSurvivesToolUnregistration)
+{
+	struct tool_registry registry;
+	tool_registry_init(nullptr, &registry);
+	ASSERT_EQ(exec_tool_init(&registry, nullptr, nullptr), 0);
+	struct exec_tool_jobs_handle owner MORPH_CLEANUP(exec_tool_jobs_release) = {};
+	ASSERT_EQ(exec_tool_jobs_acquire(&registry, &owner), 0);
+	ASSERT_NE(owner.jobs, nullptr);
+	auto *jobs = owner.jobs;
+	EXPECT_EQ(exec_tool_jobs_acquire(&registry, &owner), -EALREADY);
+	EXPECT_EQ(owner.jobs, jobs);
+	ASSERT_EQ(tool_unregister(&registry, "exec"), 0);
+	ASSERT_EQ(tool_unregister(&registry, "process"), 0);
+	tool_registry_cleanup(&registry);
+	EXPECT_EQ(exec_jobs_active(owner.jobs), 0);
+	exec_tool_jobs_release(&owner);
+	EXPECT_EQ(owner.jobs, nullptr);
+	EXPECT_EQ(owner.tool.binding, nullptr);
+}
+
+TEST_F(ProcessTest, SnapshotCopiesRejectOccupiedOwnersBeforeStartingWork)
+{
+	process_spawn_options options{};
+	options.command = "printf source; printf diagnostic >&2";
+	options.yield_time_ms = 1000;
+	char id[PROCESS_SESSION_ID_MAX];
+	process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	ASSERT_EQ(process_spawn(manager, &options, id, &snapshot), 0);
+	ASSERT_STREQ(snapshot.stdout_text, "source");
+	ASSERT_STREQ(snapshot.stderr_text, "diagnostic");
+	char *saved = snapshot.stdout_text;
+	char rejected_id[PROCESS_SESSION_ID_MAX] = "unchanged";
+	EXPECT_EQ(process_spawn(manager, &options, rejected_id, &snapshot), -EEXIST);
+	EXPECT_STREQ(rejected_id, "unchanged");
+	EXPECT_EQ(process_session_poll(manager, id, nullptr, 0, nullptr, nullptr, &snapshot),
+		  -EEXIST);
+	EXPECT_EQ(process_session_wait(manager, id, nullptr, 0, nullptr, nullptr, &snapshot),
+		  -EEXIST);
+	EXPECT_EQ(process_session_inspect(manager, id, 1, &snapshot), -EEXIST);
+	EXPECT_EQ(process_session_snapshot(manager, id, &snapshot), -EEXIST);
+	EXPECT_EQ(process_session_status(manager, id, &snapshot), -EEXIST);
+	EXPECT_EQ(snapshot.stdout_text, saved);
+	auto *saved_manager = manager;
+	EXPECT_EQ(process_manager_create(nullptr, &manager), -EEXIST);
+	EXPECT_EQ(manager, saved_manager);
+	process_manager_destroy(manager);
+	manager = nullptr;
+	EXPECT_STREQ(snapshot.stdout_text, "source");
+	EXPECT_STREQ(snapshot.stderr_text, "diagnostic");
+}
+
+TEST(ExecToolTest, JobsConstructorsAndSnapshotsRejectOccupiedOwners)
+{
+	struct exec_jobs *jobs = nullptr;
+	ASSERT_EQ(exec_jobs_create(&jobs), 0);
+	auto *owner = jobs;
+	EXPECT_EQ(exec_jobs_create(&jobs), -EALREADY);
+	EXPECT_EQ(jobs, owner);
+	cJSON *snapshot = cJSON_CreateArray();
+	ASSERT_NE(snapshot, nullptr);
+	auto *snapshot_owner = snapshot;
+	EXPECT_EQ(exec_jobs_list(jobs, 1, &snapshot), -EALREADY);
+	EXPECT_EQ(exec_jobs_read(jobs, 1, "missing", &snapshot), -EALREADY);
+	EXPECT_EQ(exec_jobs_wait(jobs, 1, "turn", nullptr, nullptr, &snapshot), -EALREADY);
+	EXPECT_EQ(snapshot, snapshot_owner);
+	cJSON_Delete(snapshot);
+	exec_jobs_destroy(jobs);
 }

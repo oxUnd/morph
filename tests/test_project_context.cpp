@@ -8,7 +8,6 @@
 
 class ProjectContextTest : public ::testing::Test {
 protected:
-	struct arena *storage = nullptr;
 	std::filesystem::path base;
 
 	void SetUp() override {
@@ -16,13 +15,12 @@ protected:
 		char *path = mkdtemp(pattern);
 		ASSERT_NE(path, nullptr);
 		base = path;
-		storage = arena_create(1024);
-		ASSERT_NE(storage, nullptr);
+
 		std::filesystem::create_directories(base / "repo" / "child");
 		std::filesystem::create_directory(base / "global");
 	}
 	void TearDown() override {
-		arena_destroy(storage);
+
 		std::filesystem::remove_all(base);
 	}
 	void write(const std::filesystem::path &path, const std::string &text) {
@@ -35,8 +33,8 @@ protected:
 		environment_context env{};
 		env.cwd = cwd.c_str();
 		env.git_root = git ? root.c_str() : nullptr;
-		const char *out = nullptr;
-		EXPECT_EQ(project_context_build(NULL, &env, global.c_str(), storage, &out), 0);
+		char *out MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+		EXPECT_EQ(project_context_create(NULL, &env, global.c_str(), &out), 0);
 		return out ? out : "";
 	}
 };
@@ -87,4 +85,16 @@ TEST_F(ProjectContextTest, RejectsOversizedInvalidAndSpecialFiles)
 	std::filesystem::remove(path);
 	ASSERT_EQ(mkfifo(path.c_str(), 0600), 0);
 	EXPECT_NE(build().find("unavailable"), std::string::npos);
+}
+
+TEST_F(ProjectContextTest, OccupiedOutputPreservesExistingSnapshot)
+{
+	struct environment_context environment{};
+	char *snapshot = strdup("retained guidance");
+	ASSERT_NE(snapshot, nullptr);
+	char *owner = snapshot;
+	EXPECT_EQ(project_context_create(nullptr, &environment, nullptr, &snapshot), -EALREADY);
+	EXPECT_EQ(snapshot, owner);
+	EXPECT_STREQ(snapshot, "retained guidance");
+	free(snapshot);
 }

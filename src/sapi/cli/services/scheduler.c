@@ -18,7 +18,7 @@ int cli_scheduler_run_task(const struct scheduled_task *task,
 
 	if (!ctx || !task || !result)
 		return -EINVAL;
-	task_prompt = runtime_scheduled_task_prompt(task);
+	task_prompt = runtime_scheduled_task_prompt_copy(task);
 	if (!task_prompt)
 		return -EINVAL;
 	if (morph_buf_init(&prompt, 1024) != 0) {
@@ -38,7 +38,7 @@ int cli_scheduler_run_task(const struct scheduled_task *task,
 		goto out_cleanup_prompt;
 	memset(&request, 0, sizeof(request));
 	request.session_id = session.id;
-	request.model_input = morph_buf_cstr(&prompt);
+	request.model_input = morph_buf_cstr_borrow(&prompt);
 	request.stored_user_input = request.model_input;
 	request.turn_flags = AGENT_TURN_DEFAULT_FLAGS;
 	rc = runtime_execute_turn(ctx->runtime, &request, &turn);

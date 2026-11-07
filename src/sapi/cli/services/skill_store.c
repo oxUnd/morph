@@ -24,7 +24,7 @@ static int cli_skill_store_name_compare(const void *a, const void *b)
 static void cli_skill_store_names_cleanup(morph_array_t *names)
 {
 	for (size_t i = 0; i < names->nelts; i++)
-		free(*(char **)morph_array_get(names, i));
+		free(*(char **)morph_array_borrow(names, i));
 	morph_array_cleanup(names);
 }
 
@@ -48,7 +48,7 @@ static int cli_skill_store_directory_names(const char *path, morph_array_t *name
 
 		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
 			continue;
-		slot = morph_array_push(names);
+		slot = morph_array_push_borrow(names);
 		if (!slot) {
 			rc = (-ENOMEM);
 			break;
@@ -105,7 +105,7 @@ static int cli_skill_store_scan_directory(struct morph_log *logger, const char *
 		rc = cli_management_copy_arg(candidate.path, sizeof(candidate.path), path);
 		if (rc != 0)
 			return rc;
-		slot = morph_array_push(candidates);
+		slot = morph_array_push_borrow(candidates);
 		if (!slot)
 			return -ENOMEM;
 		*slot = candidate;
@@ -117,7 +117,7 @@ static int cli_skill_store_scan_directory(struct morph_log *logger, const char *
 	if (rc != 0)
 		return rc;
 	for (size_t i = 0; rc == 0 && i < names.nelts; i++) {
-		const char *name = *(char **)morph_array_get(&names, i);
+		const char *name = *(char **)morph_array_borrow(&names, i);
 		char child[PATH_MAX];
 
 		if (strcmp(name, ".git") == 0 || strncmp(name, ".morph-install-", 15) == 0)
@@ -223,7 +223,7 @@ static int cli_skill_store_copy_tree(const char *root, const char *source, const
 	if (rc != 0)
 		return rc;
 	for (size_t i = 0; rc == 0 && i < names.nelts; i++) {
-		const char *name = *(char **)morph_array_get(&names, i);
+		const char *name = *(char **)morph_array_borrow(&names, i);
 		char from[PATH_MAX], to[PATH_MAX];
 
 		if (strcmp(name, ".git") == 0 ||
@@ -269,7 +269,7 @@ static int cli_skill_store_remove_tree(const char *path, int depth)
 		char child[PATH_MAX];
 
 		rc = file_path_join(child, sizeof(child), path,
-				    *(char **)morph_array_get(&names, i));
+				    *(char **)morph_array_borrow(&names, i));
 		if (rc == 0)
 			rc = cli_skill_store_remove_tree(child, depth + 1);
 	}
@@ -340,7 +340,7 @@ static int cli_skill_store_digest_tree(blake3_hasher *hasher, const char *path, 
 	if (rc != 0)
 		return rc;
 	for (size_t i = 0; rc == 0 && i < names.nelts; i++) {
-		const char *name = *(char **)morph_array_get(&names, i);
+		const char *name = *(char **)morph_array_borrow(&names, i);
 		char child[PATH_MAX];
 
 		if (depth == 0 && strcmp(name, CLI_SKILL_STORE_INSTALL_METADATA) == 0)
@@ -375,7 +375,7 @@ int cli_skill_store_digest(const char *path, char digest[CLI_SKILL_STORE_DIGEST_
 	return 0;
 }
 
-cJSON *cli_skill_store_metadata(const char *path)
+cJSON *cli_skill_store_metadata_copy(const char *path)
 {
 	char file[PATH_MAX];
 	char *text;
@@ -383,7 +383,7 @@ cJSON *cli_skill_store_metadata(const char *path)
 
 	if (file_path_join(file, sizeof(file), path, CLI_SKILL_STORE_INSTALL_METADATA) != 0)
 		return NULL;
-	text = file_read_all(file, NULL);
+	text = file_read_all_copy(file, NULL);
 	if (!text)
 		return NULL;
 	metadata = cJSON_Parse(text);
@@ -439,7 +439,7 @@ int cli_skill_store_install(const char *root, const struct cli_skill_candidate *
 			return -EEXIST;
 		if (!S_ISDIR(st.st_mode))
 			return -ELOOP;
-		previous = cli_skill_store_metadata(target);
+		previous = cli_skill_store_metadata_copy(target);
 		rc = cli_skill_store_unmodified(target, previous);
 		cJSON_Delete(previous);
 		if (rc != 0)

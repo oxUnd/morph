@@ -55,10 +55,13 @@ struct ext {
 	int enabled;
 };
 
+/* ex must have no owned fields or loaded entrypoint. Success creates an owner;
+ * failure leaves ex unchanged. Descriptor views borrow ex's own storage. */
 int ext_load(struct morph_log *logger, struct ext *ex, const char *dir_path);
 int ext_unload(struct ext *ex);
-/* Borrows ex/args/callback until return; owned *result_json starts NULL.
- * Cancellation terminates and reaps exec extensions; native callbacks must cooperate. */
+/* Borrows ex/args/callback until return; *result_json must be NULL or -EEXIST
+ * leaves it unchanged. Caller frees any returned JSON, including diagnostics on
+ * execution failure. Cancellation reaps exec children; native callbacks cooperate. */
 int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 	int (*cancelled)(void *), void *user, const struct sandbox_config *limits);
 int ext_run_cancelable(struct ext *ex, const char *args_json, char **result_json,

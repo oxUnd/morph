@@ -2,7 +2,7 @@
 
 ## Build & Test
 - CMake ≥ 3.20. Build: `cmake -S . -B build && cmake --build build`; clean: `rm -rf build`
-- Tests ON by default. All: `cd build && ctest --output-on-failure`; one: `ctest -R test_arena`; direct: `./morph-tests --gtest_filter=TestArena*`
+- Tests ON by default. All: `cd build && ctest --output-on-failure`; one: `ctest -R Cleanup`; direct: `./morph-tests --gtest_filter=Cleanup.*`
 - ASAN: add `-DENABLE_ASAN=ON`; FastCGI front-end: add `-DBUILD_FASTCGI=ON`
 
 ## Architecture
@@ -89,7 +89,7 @@
 ## Libraries (all static, from CMake link targets)
 ```
 morph-toml (vendor/tomlc17)
-morph-util (arena, log, file, cJSON, base64, utf8, spin)
+morph-util (cleanup, log, file, cJSON, base64, utf8, spin)
   ├─ morph-db (SQLite) → morph-session → morph-persistence → morph-credits
   ├─ morph-http (libcurl, SSE) → morph-models
   ├─ morph-event, morph-exec (→ morph-sandbox), morph-render, morph-ipc
@@ -113,11 +113,11 @@ Always use `src/util/utf8.h` (`#include "util/utf8.h"` from outside `src/util/`,
 
 ## Core Data Structures (`src/util/`, link `morph-util`)
 Prefer these over hand-rolled equivalents.
-- **Arena** `arena.h` — bump allocator for scope-lived data: `arena_create/destroy/reset`, `arena_alloc` (zeroed), `arena_alloc_aligned`, `arena_strdup`.
-- **`morph_buf_t`** `buf.h` — growable string builder: `morph_buf_init`/`_init_arena`, `append`/`puts`/`putc`/`printf`, `cstr`, `str`, `detach`, `cleanup`. Never `char[N]` + `snprintf` accumulation.
-- **`morph_array_t`** `array.h` — generic dynamic array: `morph_array_init`/`_init_arena`, `push`/`push_n`/`pop`/`get`/`reserve`/`clear`, `foreach`, `cleanup`. `push` may realloc — don't hold element pointers across pushes.
-- **`morph_strmap_t`** `strmap.h` — open-addressing string→`void *`: `init`/`cleanup`/`clear`, `set`/`get`/`contains`/`remove`/`len`.
-- **`morph_str_t`** `str.h` — non-owning `{len, const char *}` view: `morph_strdup`/`strndup`, `morph_strcmp`/`strcasecmp`/`strncmp`, `morph_str_to_c`, `morph_str_chr`/`rchr`/`trim`, `MORPH_STRLIT`.
+- **Scope cleanup** `cleanup.h` — required GCC/Clang `MORPH_CLEANUP(fn)`. Initialize local owners to `NULL`/`{0}`; callbacks are typed. Heap objects own their fields. APIs use `*_borrow` for views, `*_copy`/`*_clone` for independent data, and `*_create` for new owners. Fallible `*_take` receives the owner by address (`T **` for pointers, `T *` for values) and clears it only on success; failure preserves ownership. Typed `*_steal(T **)` transfers without allocating. See `docs/state-ownership.md`.
+- **`morph_buf_t`** `buf.h` — growable string builder: `morph_buf_init`, `append`/`puts`/`putc`/`printf`, `cstr_borrow`, `str_borrow`, `detach`, `cleanup`. Never `char[N]` + `snprintf` accumulation.
+- **`morph_array_t`** `array.h` — generic dynamic array: `morph_array_init`, `push_borrow`/`push_n_borrow`/`pop`/`borrow`/`reserve`/`clear`, `foreach`, `cleanup`. `push_borrow` may realloc — don't hold element pointers across pushes.
+- **`morph_strmap_t`** `strmap.h` — open-addressing string→`void *`: `init`/`cleanup`/`clear`, `set_borrow`/`borrow`/`contains`/`remove`/`len`.
+- **`morph_str_t`** `str.h` — non-owning `{len, const char *}` view: `morph_strdup`/`strndup`, `morph_strcmp`/`strcasecmp`/`strncmp`, `morph_str_cstr_copy`, `morph_str_chr_borrow`/`rchr_borrow`/`trim_borrow`, `MORPH_STRLIT`.
 - **`morph_queue_t`** `queue.h` — intrusive doubly-linked list, header-only (`morph_queue_init`, `insert_head/tail`, `remove`, `foreach`/`foreach_safe`, `morph_queue_data`).
 
 ## Dependencies
@@ -151,7 +151,7 @@ Prefer these over hand-rolled equivalents.
 - `sizeof(var)`, not `sizeof(type)`.
 - Use `<limits.h>` for system limits: paths → `PATH_MAX`; stdio → `BUFSIZ`; `strncpy` uses `sizeof(dst) - 1`. Do **not** use `NAME_MAX` for logical names (tool/skill names) — use app `#define`s like `TOOL_NAME_MAX`.
 - Negatives errno or `MORPH_ERR_*`; use explicit `return code;` for error returns.
-- Memory: arena for scope-lived data, `morph_buf`/`morph_array` for growth; raw `malloc`/`free` needs NULL checks and cleanup on every path.
+- Memory: ordinary heap ownership with required `MORPH_CLEANUP(fn)` for local owners; `morph_buf`/`morph_array` for growth. Every object has typed cleanup/destroy. No bulk allocation contexts. Transfers use success-only `*_take(T **)` or infallible typed steal; failure retains the source. Do not shallow-copy owned fields. Raw allocations need NULL checks and cleanup on every path.
 - Multi-statement macros wrapped in `do { } while (0)`.
 - Naming: functions `snake_case`, types `struct foo`, macros `UPPER_CASE`.
 - Do not introduce global variables.

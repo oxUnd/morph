@@ -166,7 +166,7 @@ static int restore_plan_from_json(const char *journal, struct morph_sync_restore
 			  sizeof(plan->journal), sizeof(plan->expected_hash)};
 	cJSON *item;
 
-	text = file_read_all(journal, NULL);
+	text = file_read_all_copy(journal, NULL);
 	if (!text)
 		return -EIO;
 	root = cJSON_Parse(text);
@@ -398,7 +398,7 @@ static int restore_journals_process(struct morph_log *logger, const char *source
 	rc = file_path_join(directory, sizeof(directory), source_dir, ".morph-sync/restore");
 	if (rc != 0)
 		return rc;
-	rc = file_list_files(directory, &names, &count);
+	rc = file_list_files_copy(directory, &names, &count);
 	if (rc == -ENOENT)
 		return 0;
 	for (int i = 0; rc == 0 && i < count; i++) {

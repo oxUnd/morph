@@ -178,7 +178,7 @@ static JSValue new_wasm_module(JSContext *ctx, const uint8_t *bytes, size_t len)
 		free(module);
 		return JS_ThrowTypeError(ctx, "invalid wasm module");
 	}
-	obj = JS_NewObjectClass(ctx, js_values_state(ctx)->wasm_module_class_id);
+	obj = JS_NewObjectClass(ctx, js_values_state_borrow(ctx)->wasm_module_class_id);
 	if (JS_IsException(obj)) {
 		free(module->bytes);
 		free(module);
@@ -226,7 +226,8 @@ static JSValue wasm_export_call(JSContext *ctx, JSValueConst this_val, int argc,
 	M3Result res;
 
 	(void)this_val;
-	inst = JS_GetOpaque2(ctx, func_data[0], js_values_state(ctx)->wasm_instance_class_id);
+	inst = JS_GetOpaque2(ctx, func_data[0],
+			     js_values_state_borrow(ctx)->wasm_instance_class_id);
 	name = JS_ToCString(ctx, func_data[1]);
 	if (!inst || !name)
 		return JS_EXCEPTION;
@@ -295,7 +296,7 @@ static JSValue build_wasm_instance(JSContext *ctx, struct wasm_module *module)
 	m3_module = NULL;
 	if (res)
 		goto wasm_fail;
-	obj = JS_NewObjectClass(ctx, js_values_state(ctx)->wasm_instance_class_id);
+	obj = JS_NewObjectClass(ctx, js_values_state_borrow(ctx)->wasm_instance_class_id);
 	if (JS_IsException(obj))
 		goto oom;
 	JS_SetOpaque(obj, inst);
@@ -347,7 +348,7 @@ static JSValue js_wasm_instance_ctor(JSContext *ctx, JSValueConst new_target, in
 		return JS_EXCEPTION;
 	if (argc < 1)
 		return JS_ThrowTypeError(ctx, "WebAssembly.Instance(module)");
-	module = JS_GetOpaque2(ctx, argv[0], js_values_state(ctx)->wasm_module_class_id);
+	module = JS_GetOpaque2(ctx, argv[0], js_values_state_borrow(ctx)->wasm_module_class_id);
 	if (!module)
 		return JS_EXCEPTION;
 	return build_wasm_instance(ctx, module);
@@ -372,7 +373,7 @@ static JSValue js_wasm_instantiate(JSContext *ctx, JSValueConst this_val, int ar
 		return JS_EXCEPTION;
 	if (argc < 1)
 		return JS_ThrowTypeError(ctx, "WebAssembly.instantiate(bytes)");
-	module = JS_GetOpaque(argv[0], js_values_state(ctx)->wasm_module_class_id);
+	module = JS_GetOpaque(argv[0], js_values_state_borrow(ctx)->wasm_module_class_id);
 	if (module) {
 		instance = build_wasm_instance(ctx, module);
 		return instance;
@@ -380,7 +381,7 @@ static JSValue js_wasm_instantiate(JSContext *ctx, JSValueConst this_val, int ar
 	module_obj = js_wasm_module_ctor(ctx, JS_UNDEFINED, argc, argv);
 	if (JS_IsException(module_obj))
 		return module_obj;
-	module = JS_GetOpaque2(ctx, module_obj, js_values_state(ctx)->wasm_module_class_id);
+	module = JS_GetOpaque2(ctx, module_obj, js_values_state_borrow(ctx)->wasm_module_class_id);
 	if (!module) {
 		JS_FreeValue(ctx, module_obj);
 		return JS_EXCEPTION;
@@ -430,7 +431,7 @@ static JSValue js_wasm_memory_ctor(JSContext *ctx, JSValueConst new_target, int 
 void js_wasm_install(JSContext *ctx, JSValueConst global)
 {
 	JSRuntime *rt = JS_GetRuntime(ctx);
-	struct runner_state *state = js_values_state(ctx);
+	struct runner_state *state = js_values_state_borrow(ctx);
 	JSClassDef module_def = {"WasmModule", .finalizer = wasm_module_finalizer};
 	JSClassDef instance_def = {"WasmInstance", .finalizer = wasm_instance_finalizer};
 	JSValue wasm = JS_NewObject(ctx);

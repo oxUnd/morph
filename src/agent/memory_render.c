@@ -1,4 +1,5 @@
 #include "agent/memory_internal.h"
+#include "util/cleanup.h"
 
 #include "agent/memory.h"
 #include "persistence/memory_snapshot.h"
@@ -209,8 +210,8 @@ static void memory_parse_episode(const char *summary, struct episode_view *v)
 
 static char *memory_render_archive(struct db *db, int64_t session_id, int max_episodes)
 {
-	struct memory_snapshot snapshot;
-	morph_buf_t buf;
+	struct memory_snapshot snapshot MORPH_CLEANUP(memory_snapshot_cleanup) = {0};
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	/*
 	 * max_episodes is a soft cap: <= 0 means "render everything".
 	 * The /mem command intentionally passes 0 to show the full record.
@@ -282,7 +283,7 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_ep
 		memory_appendf(&buf, MEMORY_RENDER_CAP, "%s Current facts (%d)\n", branch, n_facts);
 		for (size_t row = 0; row < snapshot.facts.nelts; row++) {
 			const struct memory_fact_record *record =
-				morph_array_get(&snapshot.facts, row);
+				morph_array_borrow(&snapshot.facts, row);
 
 			const char *key_name = record->key;
 			const char *value_text = record->value;
@@ -310,7 +311,7 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_ep
 			       n_rules);
 		for (size_t row = 0; row < snapshot.rules.nelts; row++) {
 			const struct memory_rule_record *record =
-				morph_array_get(&snapshot.rules, row);
+				morph_array_borrow(&snapshot.rules, row);
 
 			const char *rule_text = record->text;
 			int evidence = record->evidence;
@@ -335,7 +336,7 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_ep
 			       n_episodes, n_episodes_total);
 		for (size_t row = 0; row < snapshot.episodes.nelts; row++) {
 			const struct memory_episode_record *record =
-				morph_array_get(&snapshot.episodes, row);
+				morph_array_borrow(&snapshot.episodes, row);
 
 			const char *summary = record->summary;
 			const char *decisions = record->decisions;
@@ -427,7 +428,7 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_ep
 		memory_appendf(&buf, MEMORY_RENDER_CAP, "└── Recent changes (%d)\n", n_changes);
 		for (size_t row = 0; row < snapshot.changes.nelts; row++) {
 			const struct memory_change_record *record =
-				morph_array_get(&snapshot.changes, row);
+				morph_array_borrow(&snapshot.changes, row);
 
 			const char *key_name = record->key;
 			const char *old_value = record->old_value;
@@ -448,11 +449,11 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_ep
 	return morph_buf_detach(&buf);
 }
 
-char *memory_render_session(struct db *db, int64_t session_id, int max_episodes)
+char *memory_session_text_create(struct db *db, int64_t session_id, int max_episodes)
 {
-	char *effective = preference_render(db, session_id, 0);
+	char *effective = preference_render_copy(db, session_id, 0);
 	char *archive = memory_render_archive(db, session_id, max_episodes);
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 
 	if (!effective || !*effective) {
 		free(effective);
@@ -477,11 +478,11 @@ char *memory_render_session(struct db *db, int64_t session_id, int max_episodes)
 	return morph_buf_detach(&buf);
 }
 
-char *memory_background_render(struct db *db, int64_t session_id)
+char *memory_background_text_create(struct db *db, int64_t session_id)
 {
-	struct memory_job_records records = {0};
+	struct memory_job_records records MORPH_CLEANUP(memory_job_records_cleanup) = {0};
 	struct memory_job_record *record;
-	morph_buf_t text;
+	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc = memory_job_store_recent(db, session_id, 20, &records);
 
 	if (rc)

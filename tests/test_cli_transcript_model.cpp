@@ -42,9 +42,16 @@ class CliTranscriptModelTest : public ::testing::Test
 	const cli_transcript_tool *Tool(size_t index) const
 	{
 		return static_cast<const cli_transcript_tool *>(
-			morph_array_get(&model->tools, index));
+			morph_array_borrow(&model->tools, index));
 	}
 };
+
+TEST_F(CliTranscriptModelTest, CreatePreservesExistingModelOwner)
+{
+	auto *saved = model;
+	EXPECT_EQ(cli_transcript_model_create(&model), -EEXIST);
+	EXPECT_EQ(model, saved);
+}
 
 TEST_F(CliTranscriptModelTest, InterleavedCallsKeepTheirIdsAndReasoningPositions)
 {
@@ -65,12 +72,12 @@ TEST_F(CliTranscriptModelTest, InterleavedCallsKeepTheirIdsAndReasoningPositions
 	ASSERT_EQ(cli_transcript_model_reasoning_append(model, " after", 6, 0), 0);
 	ASSERT_EQ(model->reasoning.nelts, 2u);
 	const auto *first = static_cast<const cli_transcript_reasoning *>(
-		morph_array_get(&model->reasoning, 0));
+		morph_array_borrow(&model->reasoning, 0));
 	const auto *second = static_cast<const cli_transcript_reasoning *>(
-		morph_array_get(&model->reasoning, 1));
+		morph_array_borrow(&model->reasoning, 1));
 	EXPECT_EQ(first->after_tools, 0u);
 	EXPECT_EQ(second->after_tools, 1u);
-	EXPECT_STREQ(morph_buf_cstr(&second->text), "middle after");
+	EXPECT_STREQ(morph_buf_cstr_borrow(&second->text), "middle after");
 	ASSERT_EQ(Apply(MORPH_EVENT_TOOL, "tool.result",
 			"{\"tool\":\"file_read\",\"tool_call_id\":\"a\","
 			"\"result\":\"{\\\"data\\\":{\\\"returned_lines\\\":3}}\"}",
@@ -83,7 +90,7 @@ TEST_F(CliTranscriptModelTest, InterleavedCallsKeepTheirIdsAndReasoningPositions
 	EXPECT_STREQ(Tool(0)->summary, "3 lines");
 	EXPECT_DOUBLE_EQ(Tool(0)->started, 10);
 	EXPECT_DOUBLE_EQ(Tool(0)->ended, 12);
-	EXPECT_EQ(cli_transcript_model_active(model), Tool(1));
+	EXPECT_EQ(cli_transcript_model_active_borrow(model), Tool(1));
 }
 
 TEST_F(CliTranscriptModelTest, StreamingAndResultSemanticsWorkWithoutAnApplication)
@@ -102,7 +109,7 @@ TEST_F(CliTranscriptModelTest, StreamingAndResultSemanticsWorkWithoutAnApplicati
 		  0);
 	EXPECT_EQ(change.kind, CLI_TRANSCRIPT_TOOL_STREAMED);
 	EXPECT_EQ(change.stream_offset, 6u);
-	EXPECT_STREQ(morph_buf_cstr(&Tool(0)->stream), "hello world");
+	EXPECT_STREQ(morph_buf_cstr_borrow(&Tool(0)->stream), "hello world");
 	ASSERT_EQ(Apply(MORPH_EVENT_TOOL, "tool.result",
 			"{\"tool_call_id\":\"exec\",\"result\":\"{\\\"ok\\\":false,"
 			"\\\"data\\\":{\\\"exit_code\\\":2,\\\"stderr\\\":\\\"failure\\\","
@@ -114,7 +121,7 @@ TEST_F(CliTranscriptModelTest, StreamingAndResultSemanticsWorkWithoutAnApplicati
 	EXPECT_STREQ(Tool(0)->error, "failure");
 	EXPECT_STREQ(Tool(0)->summary, "exit 2");
 	EXPECT_DOUBLE_EQ(Tool(0)->started, 104.5);
-	EXPECT_EQ(cli_transcript_model_active(model), nullptr);
+	EXPECT_EQ(cli_transcript_model_active_borrow(model), nullptr);
 	ASSERT_EQ(Apply(MORPH_EVENT_REACT, "react.observation",
 			"{\"tool_call_id\":\"exec\",\"text\":\"do not replace the result\"}", 106),
 		  0);

@@ -85,10 +85,10 @@ static int cli_ext_collect_tools(struct cli_application *ctx, morph_array_t *ite
 		struct cli_ext_tool_item *item;
 		struct tool_desc desc;
 
-		rc = runtime_tool_info(ctx->runtime, i, &desc);
+		rc = runtime_tool_info_borrow(ctx->runtime, i, &desc);
 		if (rc != 0)
 			goto out;
-		item = morph_array_push(items);
+		item = morph_array_push_borrow(items);
 		if (!item) {
 			rc = -ENOMEM;
 			goto out;
@@ -148,7 +148,7 @@ static void cli_ext_print_group(struct cli_application *ctx, const morph_array_t
 
 		if (cli_ext_origin_rank(item->origin) != group->rank)
 			continue;
-		if (runtime_tool_info(ctx->runtime, item->index, &desc) != 0)
+		if (runtime_tool_info_borrow(ctx->runtime, item->index, &desc) != 0)
 			continue;
 		index++;
 		cli_list_item(ctx, ancestor, index == group->count, cli_ext_tool_marker(item),
@@ -211,7 +211,8 @@ static int cli_ext_find_tool_index(struct cli_application *ctx, const char *name
 	for (int i = 0; i < count; i++) {
 		struct tool_desc desc;
 
-		if (runtime_tool_info(ctx->runtime, i, &desc) != 0 || strcmp(desc.name, name) != 0)
+		if (runtime_tool_info_borrow(ctx->runtime, i, &desc) != 0 ||
+		    strcmp(desc.name, name) != 0)
 			continue;
 		if (runtime_tool_origin(ctx->runtime, i, origin) != 0 ||
 		    runtime_tool_flags(ctx->runtime, i, flags) != 0)
@@ -231,7 +232,7 @@ static int cli_ext_print_info(struct cli_application *ctx, const char *name)
 	int schema_count;
 	int index;
 
-	if (runtime_tool_find(ctx->runtime, name, &desc) != 0) {
+	if (runtime_tool_find_borrow(ctx->runtime, name, &desc) != 0) {
 		CMD_ERROR(ctx, "tool not found: %s", name);
 		return -ENOENT;
 	}
@@ -258,12 +259,12 @@ static int cli_ext_print_info(struct cli_application *ctx, const char *name)
 
 static int cli_ext_command_ext(struct cli_application *ctx, int argc, char **argv)
 {
-	const char *sub = cli_cmd_arg(argc, argv, 1);
+	const char *sub = cli_cmd_arg_borrow(argc, argv, 1);
 	if (sub && strcmp(sub, "list") == 0) {
 		return cli_ext_print_tools(ctx);
 	}
 	if (sub && strcmp(sub, "info") == 0) {
-		const char *name = cli_cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR(ctx, "usage: /ext info <name>");
 			return -EINVAL;
@@ -271,7 +272,7 @@ static int cli_ext_command_ext(struct cli_application *ctx, int argc, char **arg
 		return cli_ext_print_info(ctx, name);
 	}
 	if (sub && strcmp(sub, "install") == 0) {
-		const char *source = cli_cmd_arg(argc, argv, 2);
+		const char *source = cli_cmd_arg_borrow(argc, argv, 2);
 		int yes = 0;
 		for (int i = 3; i < argc; i++) {
 			if (strcmp(argv[i], "--yes") == 0 || strcmp(argv[i], "-y") == 0)
@@ -283,7 +284,7 @@ static int cli_ext_command_ext(struct cli_application *ctx, int argc, char **arg
 		}
 		struct ext_install_options opts;
 		memset(&opts, 0, sizeof(opts));
-		const struct config *config = runtime_config_get(ctx->runtime);
+		const struct config *config = runtime_config_borrow(ctx->runtime);
 		opts.install_dir = config->ext.dir[0] ? config->ext.dir : "~/.morph/exts";
 		opts.yes = yes;
 		opts.in = stdin;

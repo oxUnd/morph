@@ -27,7 +27,7 @@ static struct plan *plan_find_by_name(struct plan_registry *reg, const char *nam
 	return NULL;
 }
 
-struct plan *plan_find_by_id(struct plan_registry *reg, const char *id)
+struct plan *plan_by_id_borrow(struct plan_registry *reg, const char *id)
 {
 	if (!reg || !id)
 		return NULL;
@@ -48,7 +48,7 @@ static int plan_generate_id(struct plan_registry *reg, char *id, size_t size)
 		rc = morph_random_id("pln_", id, size);
 		if (rc < 0)
 			return rc;
-		if (!plan_find_by_id(reg, id))
+		if (!plan_by_id_borrow(reg, id))
 			return 0;
 	}
 	return -EEXIST;
@@ -78,9 +78,8 @@ static int append_str(char *buf, size_t buf_size, size_t *pos, const char *fmt, 
 	return 0;
 }
 
-struct plan *plan_create(struct plan_registry *reg, const char *name,
-			 const char *goal, const char **step_descs,
-			 int step_count)
+struct plan *plan_add_borrow(struct plan_registry *reg, const char *name, const char *goal,
+			     const char **step_descs, int step_count)
 {
 	if (!reg || !name || !step_descs || step_count <= 0)
 		return NULL;
@@ -116,7 +115,7 @@ struct plan *plan_create(struct plan_registry *reg, const char *name,
 	return p;
 }
 
-struct plan *plan_find(struct plan_registry *reg, const char *name)
+struct plan *plan_borrow(struct plan_registry *reg, const char *name)
 {
 	return plan_find_by_name(reg, name);
 }
@@ -185,7 +184,7 @@ int plan_update_step_by_id(struct plan_registry *reg, const char *plan_id,
 
 	if (!reg || !plan_id || !status)
 		return -EINVAL;
-	p = plan_find_by_id(reg, plan_id);
+	p = plan_by_id_borrow(reg, plan_id);
 	if (!p)
 		return -ENOENT;
 	return plan_update_step_ptr(p, step_id, status);
@@ -206,7 +205,7 @@ static const char *status_icon(const char *status)
 	return " ";
 }
 
-int plan_get_formatted(struct plan_registry *reg, char *buf, size_t buf_size)
+int plan_format(struct plan_registry *reg, char *buf, size_t buf_size)
 {
 	if (!reg || !buf || buf_size == 0)
 		return -EINVAL;
@@ -267,8 +266,10 @@ out:
 }
 
 /* A checkpoint is independent of model history and survives compaction. */
-cJSON *plan_registry_json(const struct plan_registry *reg)
+cJSON *plan_registry_json_create(const struct plan_registry *reg)
 {
+	if (!reg)
+		return NULL;
 	cJSON *root = cJSON_CreateArray();
 	if (!root)
 		return NULL;
@@ -282,8 +283,17 @@ cJSON *plan_registry_json(const struct plan_registry *reg)
 			cJSON_Delete(root);
 			return NULL;
 		}
-		cJSON_AddItemToArray(root, obj);
-		cJSON_AddItemToObject(obj, "steps", steps);
+		if (!cJSON_AddItemToObject(obj, "steps", steps)) {
+			cJSON_Delete(steps);
+			cJSON_Delete(obj);
+			cJSON_Delete(root);
+			return NULL;
+		}
+		if (!cJSON_AddItemToArray(root, obj)) {
+			cJSON_Delete(obj);
+			cJSON_Delete(root);
+			return NULL;
+		}
 #define PLAN_WRITE(field)                                                                          \
 	do {                                                                                       \
 		if (!cJSON_AddStringToObject(obj, #field, p->field)) {                             \
@@ -307,7 +317,11 @@ cJSON *plan_registry_json(const struct plan_registry *reg)
 				cJSON_Delete(root);
 				return NULL;
 			}
-			cJSON_AddItemToArray(steps, entry);
+			if (!cJSON_AddItemToArray(steps, entry)) {
+				cJSON_Delete(entry);
+				cJSON_Delete(root);
+				return NULL;
+			}
 #define STEP_WRITE(field)                                                                          \
 	do {                                                                                       \
 		if (!cJSON_AddStringToObject(entry, #field, step->field)) {                        \
@@ -412,7 +426,7 @@ int plan_registry_save(struct plan_registry *reg)
 	int rc;
 	if (!reg || !reg->db || reg->session_id <= 0)
 		return 0;
-	json = plan_registry_json(reg);
+	json = plan_registry_json_create(reg);
 	text = json ? cJSON_PrintUnformatted(json) : NULL;
 	cJSON_Delete(json);
 	if (!text)

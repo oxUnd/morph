@@ -406,36 +406,40 @@ static int validate_table(const toml_datum_t *table, morph_buf_t *path,
 
 		if (rc != 0)
 			return rc;
-		entry = schema_find(morph_buf_cstr(path));
+		entry = schema_find(morph_buf_cstr_borrow(path));
 		if (!entry) {
 			struct config_validation_error warning = {0};
 
 			(void)set_error(&warning, CONFIG_VALIDATION_UNKNOWN_KEY, value,
-				morph_buf_cstr(path), "unknown configuration key: %s",
-				morph_buf_cstr(path));
+					morph_buf_cstr_borrow(path),
+					"unknown configuration key: %s",
+					morph_buf_cstr_borrow(path));
 			if (warning_fn)
 				warning_fn(&warning, warning_user_data);
 			path->len = old_len;
 			path->data[old_len] = '\0';
 			continue;
 		}
-		rc = validate_value(entry, value, morph_buf_cstr(path), error);
+		rc = validate_value(entry, value, morph_buf_cstr_borrow(path), error);
 		if (rc != 0)
 			return rc;
 		if (value->type == TOML_TABLE) {
 			if ((entry->flags & SCHEMA_DYNAMIC_STRINGS) != 0) {
 				if (value->u.tab.size > entry->max_items)
-					return set_error(error, CONFIG_VALIDATION_LIMIT,
-						value, morph_buf_cstr(path),
-						"%s has too many entries", morph_buf_cstr(path));
+					return set_error(error, CONFIG_VALIDATION_LIMIT, value,
+							 morph_buf_cstr_borrow(path),
+							 "%s has too many entries",
+							 morph_buf_cstr_borrow(path));
 				for (int j = 0; j < value->u.tab.size; j++) {
 					const toml_datum_t *child = &value->u.tab.value[j];
 					if (child->type != TOML_STRING ||
 					    (size_t)child->u.str.len > entry->max_len)
 						return set_error(error, CONFIG_VALIDATION_TYPE,
-							child, morph_buf_cstr(path),
-							"%s values must be strings no longer than %zu bytes",
-							morph_buf_cstr(path), entry->max_len);
+								 child, morph_buf_cstr_borrow(path),
+								 "%s values must be strings no "
+								 "longer than %zu bytes",
+								 morph_buf_cstr_borrow(path),
+								 entry->max_len);
 				}
 			} else {
 				rc = validate_table(value, path, error, warning_fn,
@@ -588,7 +592,7 @@ static int validate_active_permission_directories(
 			for (int j = 0; j < paths->u.arr.size; j++) {
 				const toml_datum_t *item = &paths->u.arr.elem[j];
 				char path[CONFIG_MAX_KEY_LEN];
-				char *expanded = file_expand_path(item->u.s);
+				char *expanded = file_expand_path_copy(item->u.s);
 				struct stat st;
 				int stat_rc;
 				int saved_errno;
@@ -957,7 +961,7 @@ int config_validate_file_with_warnings(const char *path,
 	if (!path)
 		return -EINVAL;
 	errno = 0;
-	text = file_read_all(path, &length);
+	text = file_read_all_copy(path, &length);
 	if (!text)
 		return errno ? -errno : -EIO;
 	(void)length;

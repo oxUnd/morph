@@ -704,7 +704,7 @@ input_per_million = 1.25
 cached_input_per_million = 0.25
 )";
 	struct config_validation_error error = {};
-	char *json = config_describe_text(text, &error);
+	char *json = config_describe_text_copy(text, &error);
 
 	ASSERT_NE(json, nullptr);
 	std::string result(json);
@@ -723,7 +723,7 @@ TEST(ConfigValidationTest, ReportsUnstableUnknownArrayTables)
 {
 	const char *text = "[[custom.items]]\nvalue = 1\n";
 	struct config_validation_error error = {};
-	char *json = config_describe_text(text, &error);
+	char *json = config_describe_text_copy(text, &error);
 
 	ASSERT_NE(json, nullptr);
 	std::string result(json);

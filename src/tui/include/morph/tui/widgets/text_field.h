@@ -7,12 +7,16 @@
 extern "C" {
 #endif
 
+/* Adds a controller-owned node, copying initial text. The node is borrowed
+ * until controller destruction/build rollback. */
 struct morph_tui_view *
-morph_tui_widget_text_field_create(struct morph_tui_builder *, struct morph_tui_view *parent,
-				   const char *text, size_t limit, int tag,
-				   const struct morph_tui_view_options *options);
-const char *morph_tui_widget_text_field_text(const struct morph_tui_view *);
-int morph_tui_widget_text_field_set_text(struct morph_tui_view *, const char *text);
+morph_tui_widget_text_field_add_borrow(struct morph_tui_builder *, struct morph_tui_view *parent,
+				       const char *text, size_t limit, int tag,
+				       const struct morph_tui_view_options *options);
+/* Borrowed text, invalidated by an edit/setter or controller destruction. */
+const char *morph_tui_widget_text_field_text_borrow(const struct morph_tui_view *);
+/* Copies text; the caller retains the input. */
+int morph_tui_widget_text_field_set_text_copy(struct morph_tui_view *, const char *text);
 
 #ifdef __cplusplus
 }

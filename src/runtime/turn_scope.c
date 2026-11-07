@@ -189,9 +189,9 @@ void runtime_turn_scope_bind_request(struct runtime_turn_scope *scope,
 	scope->action_drain_fn = react->action_drain_fn;
 	scope->action_drain_user_data = react->action_drain_user_data;
 	if (engine->tool_context)
-		tool_context_get_operation_approval(engine->tool_context,
-						    &scope->operation_approval_fn,
-						    &scope->operation_approval_user_data);
+		tool_context_operation_approval_borrow(engine->tool_context,
+						       &scope->operation_approval_fn,
+						       &scope->operation_approval_user_data);
 	if (!scope->bound && request->bind_usage_user_data) {
 		scope->usage_sink = react->llm_model ? react->llm_model->usage_sink : NULL;
 		scope->previous_usage_user_data =

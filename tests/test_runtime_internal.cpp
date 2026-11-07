@@ -2,6 +2,7 @@
 #include <thread>
 
 extern "C" {
+#include "util/cleanup.h"
 #include "credits.h"
 #include "agent/system_prompt.h"
 #include "agent/tools/img_gen.h"
@@ -41,6 +42,16 @@ protected:
 		return path;
 	}
 };
+
+TEST_F(PromptLoadTest, OccupiedSnapshotIsPreservedBeforeReadingSources)
+{
+	auto path = write("owned.txt", "initial");
+	ASSERT_EQ(morph_prompt_load(nullptr, path.c_str(), nullptr, &text), 0);
+	char *owner = text;
+	EXPECT_EQ(morph_prompt_load(nullptr, "missing", nullptr, &text), -EALREADY);
+	EXPECT_EQ(text, owner);
+	EXPECT_STREQ(text, "initial");
+}
 
 TEST_F(PromptLoadTest, NoSourceDiffersFromExplicitEmptyFile)
 {
@@ -303,7 +314,7 @@ TEST(RuntimeInternalTest, UsageClassificationAndMetadataAreStable)
 	std::strncpy(usage.response_id, "response-1",
 		sizeof(usage.response_id) - 1);
 	EXPECT_EQ(runtime_model_usage_is_billable(&usage), 1);
-	char *metadata = runtime_model_usage_metadata(&usage);
+	char *metadata = runtime_model_usage_metadata_copy(&usage);
 	ASSERT_NE(metadata, nullptr);
 	EXPECT_NE(std::strstr(metadata, "actual-model"), nullptr);
 	EXPECT_NE(std::strstr(metadata, "response-1"), nullptr);
@@ -395,14 +406,14 @@ TEST(RuntimeInternalTest, UsageBindingRestoresPreviousValue)
 
 TEST(RuntimeInternalTest, ScheduledTaskPayloadHelpersHandleValidAndInvalidJson)
 {
-	struct scheduled_task task{};
+	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
 	std::strncpy(task.title, "Daily report", sizeof(task.title) - 1);
-	task.payload_json = const_cast<char *>(
-		"{\"prompt\":\"User request: summarize today\\nDetails\","
-		"\"turn_id\":\"turn-7\"}");
-	char *prompt = runtime_scheduled_task_prompt(&task);
-	char *turn_id = runtime_scheduled_task_turn_id(&task);
-	char *display = runtime_scheduled_task_display_prompt(&task, prompt);
+	task.payload_json = strdup("{\"prompt\":\"User request: summarize today\\nDetails\","
+				   "\"turn_id\":\"turn-7\"}");
+	ASSERT_NE(task.payload_json, nullptr);
+	char *prompt = runtime_scheduled_task_prompt_copy(&task);
+	char *turn_id = runtime_scheduled_task_turn_id_copy(&task);
+	char *display = runtime_scheduled_task_display_prompt_copy(&task, prompt);
 	ASSERT_NE(prompt, nullptr);
 	ASSERT_NE(turn_id, nullptr);
 	ASSERT_NE(display, nullptr);
@@ -412,9 +423,11 @@ TEST(RuntimeInternalTest, ScheduledTaskPayloadHelpersHandleValidAndInvalidJson)
 	std::free(prompt);
 	std::free(turn_id);
 	std::free(display);
-	task.payload_json = const_cast<char *>("not-json");
-	EXPECT_EQ(runtime_scheduled_task_prompt(&task), nullptr);
-	EXPECT_EQ(runtime_scheduled_task_turn_id(&task), nullptr);
+	morph_charp_cleanup(&task.payload_json);
+	task.payload_json = strdup("not-json");
+	ASSERT_NE(task.payload_json, nullptr);
+	EXPECT_EQ(runtime_scheduled_task_prompt_copy(&task), nullptr);
+	EXPECT_EQ(runtime_scheduled_task_turn_id_copy(&task), nullptr);
 }
 
 TEST(RuntimeInternalTest, ErrorAndNotificationTextUseReactSnapshot)
@@ -424,8 +437,8 @@ TEST(RuntimeInternalTest, ErrorAndNotificationTextUseReactSnapshot)
 	std::strncpy(react.outcome_reason, "provider failed",
 		sizeof(react.outcome_reason) - 1);
 	react.final_answer = const_cast<char *>("partial answer");
-	char *error = runtime_react_error_message(&react, -EIO);
-	char *notification = runtime_react_notification_body(&react);
+	char *error = runtime_react_error_message_copy(&react, -EIO);
+	char *notification = runtime_react_notification_body_copy(&react);
 	ASSERT_NE(error, nullptr);
 	ASSERT_NE(notification, nullptr);
 	EXPECT_NE(std::strstr(error, "partial answer"), nullptr);

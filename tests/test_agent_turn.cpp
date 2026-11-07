@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "util/cleanup.h"
 
 #include "agent/react.h"
 #include "agent/history.h"
@@ -361,7 +362,7 @@ TEST_F(AgentTurnTest, FinishDoesNotConsolidateMemoryForAbortedTurn)
 	EXPECT_EQ(model_history_count(&db, sess.id, 1), 1);
 	EXPECT_EQ(model_history_count(&db, sess.id, 0), 1);
 
-	char *rendered = memory_render_session(&db, sess.id, 0);
+	char *rendered = memory_session_text_create(&db, sess.id, 0);
 	ASSERT_NE(rendered, nullptr);
 	EXPECT_NE(strstr(rendered,
 			 "No long-term memory stored for this session."),
@@ -651,30 +652,25 @@ TEST_F(AgentTurnTest, AssistantReasoningSurvivesHistoryReloadAndReset)
 	ASSERT_NE(react->final_reasoning_content, nullptr);
 	ASSERT_EQ(agent_history_record_assistant(react, "Final answer"), 0);
 	ASSERT_EQ(agent_history_reload(react), 0);
-	morph_array_t messages{};
-	struct arena *arena = arena_create(0);
-	ASSERT_NE(arena, nullptr);
+	morph_array_t messages MORPH_CLEANUP(agent_chat_messages_cleanup) = {};
+
 	ASSERT_EQ(morph_array_init(&messages, 2, sizeof(struct chat_message)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(NULL, react->history_items, &messages, arena),
-		  0);
+	ASSERT_EQ(agent_history_messages_copy(NULL, react->history_items, &messages), 0);
 	ASSERT_EQ(messages.nelts, 1U);
-	auto *message = static_cast<struct chat_message *>(morph_array_get(&messages, 0));
+	auto *message = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
 	EXPECT_STREQ(message->content, "Final answer");
 	EXPECT_STREQ(message->reasoning_content, "Original final reasoning");
 	react_reset(react);
 	EXPECT_EQ(react->final_reasoning_content, nullptr);
-	morph_array_cleanup(&messages);
-	arena_destroy(arena);
+	agent_chat_messages_cleanup(&messages);
 }
 
 TEST_F(AgentTurnTest, ChatHistoryPlacesSummaryBeforePreservedUser)
 {
 	struct model_history_item user = {};
 	struct model_history_item summary = {};
-	morph_array_t messages = {};
-	struct arena *arena = arena_create(0);
+	morph_array_t messages MORPH_CLEANUP(agent_chat_messages_cleanup) = {};
 
-	ASSERT_NE(arena, nullptr);
 	std::strcpy(user.kind, "user_message");
 	user.content = const_cast<char *>("exact current request");
 	user.next = &summary;
@@ -682,7 +678,7 @@ TEST_F(AgentTurnTest, ChatHistoryPlacesSummaryBeforePreservedUser)
 	summary.content = const_cast<char *>("earlier context summary");
 	ASSERT_EQ(morph_array_init(&messages, 2,
 		sizeof(struct chat_message)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(NULL, &user, &messages, arena), 0);
+	ASSERT_EQ(agent_history_messages_copy(NULL, &user, &messages), 0);
 	ASSERT_EQ(messages.nelts, 2U);
 	struct chat_message *built =
 		static_cast<struct chat_message *>(messages.elts);
@@ -691,8 +687,7 @@ TEST_F(AgentTurnTest, ChatHistoryPlacesSummaryBeforePreservedUser)
 	EXPECT_NE(strstr(built[0].content, "earlier context summary"), nullptr);
 	EXPECT_STREQ(built[1].role, "user");
 	EXPECT_STREQ(built[1].content, "exact current request");
-	morph_array_cleanup(&messages);
-	arena_destroy(arena);
+	agent_chat_messages_cleanup(&messages);
 }
 
 TEST_F(AgentTurnTest, InTurnCompactionPreservesHistoryWhenSummaryFails)
@@ -758,7 +753,7 @@ TEST_F(AgentTurnTest, PreferenceIsSavedBeforeModelAndSurvivesCancellation)
 	react->state = REACT_STATE_ABORT;
 	react->outcome = REACT_OUTCOME_CANCELLED;
 	ASSERT_EQ(agent_turn_finish(&turn, nullptr), 0);
-	char *effective = preference_render(&db, sess.id, 0);
+	char *effective = preference_render_copy(&db, sess.id, 0);
 	ASSERT_NE(effective, nullptr);
 	EXPECT_NE(strstr(effective, "Chinese"), nullptr);
 	free(effective);
@@ -930,8 +925,7 @@ TEST_F(AgentTurnTest, JsonToolTruncationPreservesExecutionControls)
 	input += "\",\"exit_code\":7,\"session_id\":\"proc_test\"}}";
 	char *prepared = nullptr;
 	int truncated = 0;
-	ASSERT_EQ(agent_history_prepare_tool_content(react, input.c_str(), &prepared, &truncated),
-		  0);
+	ASSERT_EQ(agent_history_tool_content_copy(react, input.c_str(), &prepared, &truncated), 0);
 	EXPECT_EQ(truncated, 1);
 	cJSON *json = cJSON_Parse(prepared);
 	ASSERT_NE(json, nullptr);
@@ -949,8 +943,7 @@ TEST_F(AgentTurnTest, GenericJsonTruncationReturnsAnExplicitPreview)
 	std::string input = "[\"" + std::string(5000, 'x') + "\"]";
 	char *prepared = nullptr;
 	int truncated = 0;
-	ASSERT_EQ(agent_history_prepare_tool_content(react, input.c_str(), &prepared, &truncated),
-		  0);
+	ASSERT_EQ(agent_history_tool_content_copy(react, input.c_str(), &prepared, &truncated), 0);
 	cJSON *json = cJSON_Parse(prepared);
 	ASSERT_NE(json, nullptr);
 	EXPECT_EQ(truncated, 1);

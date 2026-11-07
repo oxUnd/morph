@@ -249,7 +249,7 @@ static int render_kitty(struct morph_log *logger, const char *path)
 			disp_rows = 1;
 	}
 
-	char *b64 = base64_encode(data, rd);
+	char *b64 = base64_encode_copy(data, rd);
 	free(data);
 	if (!b64)
 		return -ENOMEM;
@@ -322,7 +322,7 @@ static int render_iterm2(const char *path)
 	size_t rd = fread(data, 1, (size_t)fsize, f);
 	fclose(f);
 
-	char *b64 = base64_encode(data, rd);
+	char *b64 = base64_encode_copy(data, rd);
 	free(data);
 	if (!b64)
 		return -ENOMEM;

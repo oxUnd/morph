@@ -75,7 +75,7 @@ Application-internal conveniences own no function declarations or domain SDK
 collection. Headers must compile independently as C and C++ headers.
 
 Use an app prefix and semantic module name, for example `cli_application_run`,
-`cli_feed_create`, `cli_composer_model_expand` and `cli_turn_execute`. Do not
+`cli_feed_create`, `cli_composer_model_expand_copy` and `cli_turn_execute`. Do not
 expose framework implementation layer names in application-facing TUI APIs.
 Private functions/types/constants also carry their module prefix; a runtime
 observer can use `cli_runtime_observer_*` to distinguish it from other observers.

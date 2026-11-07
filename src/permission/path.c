@@ -17,7 +17,7 @@ int permission_path_resolve_absolute(const char *path, char *resolved, size_t si
 		return -EINVAL;
 	if (strlen(path) >= PATH_MAX)
 		return -ENAMETOOLONG;
-	canonical = file_resolve_path(path);
+	canonical = file_resolve_path_copy(path);
 	if (!canonical)
 		return -ENOMEM;
 	if (strlen(canonical) >= size)
@@ -37,7 +37,7 @@ int permission_path_resolve_existing_directory(const char *path, int create, cha
 
 	if (!path || !*path || !resolved || !size)
 		return -EINVAL;
-	expanded = file_expand_path(path);
+	expanded = file_expand_path_copy(path);
 	if (!expanded)
 		return -ENOMEM;
 	if (!file_path_is_absolute(expanded)) {
@@ -71,7 +71,7 @@ int tool_context_resolve_directory_access(const char *path, unsigned int access,
 	if (!path || !*path || !access || (access & ~(unsigned int)TOOL_PATH_ACCESS_ALL) ||
 	    !resolved || !resolved_size)
 		return -EINVAL;
-	char *expanded = file_expand_path(path);
+	char *expanded = file_expand_path_copy(path);
 
 	if (!expanded)
 		return -ENOMEM;
@@ -81,7 +81,7 @@ int tool_context_resolve_directory_access(const char *path, unsigned int access,
 		free(expanded);
 		return rc;
 	}
-	char *canonical = file_resolve_path(expanded);
+	char *canonical = file_resolve_path_copy(expanded);
 
 	free(expanded);
 	if (!canonical)

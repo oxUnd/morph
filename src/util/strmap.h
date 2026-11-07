@@ -31,8 +31,11 @@ void morph_strmap_cleanup(morph_strmap_t *m);
 void morph_strmap_clear(morph_strmap_t *m);
 
 size_t morph_strmap_len(const morph_strmap_t *m);
-int morph_strmap_set(morph_strmap_t *m, const char *key, void *value);
-void *morph_strmap_get(const morph_strmap_t *m, const char *key);
+/* Copies key and borrows value until replacement/removal/clear/cleanup.
+ * The map never frees values; their owner must outlive every lookup/use. */
+int morph_strmap_set_borrow(morph_strmap_t *m, const char *key, void *value);
+/* Lends the stored value under the owner's lifetime; does not retain it. */
+void *morph_strmap_borrow(const morph_strmap_t *m, const char *key);
 int morph_strmap_contains(const morph_strmap_t *m, const char *key);
 int morph_strmap_remove(morph_strmap_t *m, const char *key);
 

@@ -1,4 +1,5 @@
 #include "edit.h"
+#include "util/cleanup.h"
 #include "config/config.h"
 #include "cJSON.h"
 #include "util/array.h"
@@ -190,11 +191,11 @@ static struct config_text_edit *config_edit_edit_at(struct config_text_edits *ed
 						  size_t end, int section)
 {
 	for (size_t i = 0; start == end && i < edits->items.nelts; i++) {
-		struct config_text_edit *edit = morph_array_get(&edits->items, i);
+		struct config_text_edit *edit = morph_array_borrow(&edits->items, i);
 		if (edit->start == start && edit->end == end && edit->section == section)
 			return edit;
 	}
-	struct config_text_edit *edit = morph_array_push(&edits->items);
+	struct config_text_edit *edit = morph_array_push_borrow(&edits->items);
 	if (!edit)
 		return NULL;
 	*edit = (struct config_text_edit){.start = start, .end = end, .section = section};
@@ -228,11 +229,11 @@ static int config_edit_new_table(struct config_text_edits *edits, const toml_dat
 	for (int i = 0; rc == 0 && i < table->u.tab.size; i++) {
 		if (table->u.tab.value[i].type != TOML_TABLE)
 			continue;
-		morph_buf_t child = {0};
+		morph_buf_t child MORPH_CLEANUP(morph_buf_cleanup) = {0};
 		rc = config_edit_child_path(&child, path, table->u.tab.key[i]);
 		if (rc == 0)
 			rc = config_edit_new_table(edits, &table->u.tab.value[i],
-						  morph_buf_cstr(&child), depth + 1);
+						   morph_buf_cstr_borrow(&child), depth + 1);
 		morph_buf_cleanup(&child);
 	}
 	return rc;
@@ -288,20 +289,23 @@ static int config_edit_collect_edits(struct config_text_edits *edits, const toml
 		const toml_datum_t *previous = config_edit_member(before, key);
 		if (config_edit_equivalent(previous, next))
 			continue;
-		morph_buf_t child = {0};
-		morph_buf_t local = {0};
+		morph_buf_t child MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		morph_buf_t local MORPH_CLEANUP(morph_buf_cleanup) = {0};
 		int rc = config_edit_child_path(&child, path, key);
 		if (rc == 0)
 			rc = config_edit_child_path(&local, relative, key);
 		if (rc == 0 && previous && previous->type == TOML_TABLE &&
 		    next->type == TOML_TABLE) {
 			rc = config_edit_collect_edits(edits, previous, next,
-				morph_buf_cstr(&child), anchor, morph_buf_cstr(&local), depth + 1);
+						       morph_buf_cstr_borrow(&child), anchor,
+						       morph_buf_cstr_borrow(&local), depth + 1);
 		} else if (rc == 0 && !previous && next->type == TOML_TABLE &&
 			   (!anchor || !(anchor->flag & TOML_FLAG_INLINED))) {
-			rc = config_edit_new_table(edits, next, morph_buf_cstr(&child), depth + 1);
+			rc = config_edit_new_table(edits, next, morph_buf_cstr_borrow(&child),
+						   depth + 1);
 		} else if (rc == 0 && !previous) {
-			rc = config_edit_add_member(edits, anchor, morph_buf_cstr(&local), next);
+			rc = config_edit_add_member(edits, anchor, morph_buf_cstr_borrow(&local),
+						    next);
 		} else if (rc == 0) {
 			/* Setup only replaces scalar values and adds tables. */
 			if (previous->type == TOML_TABLE && !(previous->flag & TOML_FLAG_INLINED)) {
@@ -360,11 +364,12 @@ static int config_edit_merged_matches(const toml_datum_t *before, const toml_dat
 	return 1;
 }
 
-int config_text_merge(const char *old, const char *patch, char **out)
+int config_text_merge_copy(const char *old, const char *patch, char **out)
 {
 	if (!out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	if (!old || !patch)
 		return -EINVAL;
 	if (strlen(old) > INT_MAX || strlen(patch) > INT_MAX)
@@ -373,7 +378,7 @@ int config_text_merge(const char *old, const char *patch, char **out)
 	toml_result_t after = toml_parse(patch, (int)strlen(patch));
 	struct config_text_edits edits = {
 		.source = old, .patch = patch, .eol = strstr(old, "\r\n") ? "\r\n" : "\n"};
-	morph_buf_t result = {0};
+	morph_buf_t result MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	struct config_text_edit sizing = {0};
 	int rc = before.ok && after.ok ? morph_array_init(&edits.items, 16, sizeof(sizing))
 				       : MORPH_ERR_PARSE;
@@ -388,7 +393,7 @@ int config_text_merge(const char *old, const char *patch, char **out)
 			      config_edit_compare_edits);
 		size_t cursor = 0;
 		for (size_t i = 0; rc == 0 && i < edits.items.nelts; i++) {
-			struct config_text_edit *edit = morph_array_get(&edits.items, i);
+			struct config_text_edit *edit = morph_array_borrow(&edits.items, i);
 			if (edit->start < cursor) {
 				rc = MORPH_ERR_FORMAT;
 				break;
@@ -406,7 +411,7 @@ int config_text_merge(const char *old, const char *patch, char **out)
 	if (rc == 0 && result.len > INT_MAX)
 		rc = -EFBIG;
 	if (rc == 0) {
-		toml_result_t checked = toml_parse(morph_buf_cstr(&result), (int)result.len);
+		toml_result_t checked = toml_parse(morph_buf_cstr_borrow(&result), (int)result.len);
 		rc = checked.ok ? 0 : MORPH_ERR_PARSE;
 		if (rc == 0 &&
 		    !config_edit_merged_matches(&before.toptab, &after.toptab, &checked.toptab, 0))
@@ -416,7 +421,7 @@ int config_text_merge(const char *old, const char *patch, char **out)
 	if (rc == 0)
 		*out = morph_buf_detach(&result);
 	for (size_t i = 0; i < edits.items.nelts; i++) {
-		struct config_text_edit *edit = morph_array_get(&edits.items, i);
+		struct config_text_edit *edit = morph_array_borrow(&edits.items, i);
 		morph_buf_cleanup(&edit->text);
 	}
 	morph_array_cleanup(&edits.items);
@@ -536,11 +541,12 @@ static int config_edit_credential_result_matches(const toml_datum_t *before,
 	return count == after->u.tab.size;
 }
 
-int config_text_credentials(const char *text, char **out)
+int config_text_credentials_copy(const char *text, char **out)
 {
 	if (!out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	if (!text)
 		return -EINVAL;
 	if (strlen(text) > INT_MAX)
@@ -548,7 +554,7 @@ int config_text_credentials(const char *text, char **out)
 	toml_result_t parsed = toml_parse(text, (int)strlen(text));
 	struct config_text_edits edits = {.source = text};
 	struct config_text_edit sizing = {0};
-	morph_buf_t result = {0};
+	morph_buf_t result MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc = parsed.ok ? morph_array_init(&edits.items, 8, sizeof(sizing)) : MORPH_ERR_PARSE;
 	const toml_datum_t *models = parsed.ok ? config_edit_member(&parsed.toptab, "model") : NULL;
 	for (int i = 0; rc == 0 && models && models->type == TOML_TABLE && i < models->u.tab.size;
@@ -570,7 +576,7 @@ int config_text_credentials(const char *text, char **out)
 			      config_edit_compare_edits);
 		size_t cursor = 0;
 		for (size_t i = 0; rc == 0 && i < edits.items.nelts; i++) {
-			struct config_text_edit *edit = morph_array_get(&edits.items, i);
+			struct config_text_edit *edit = morph_array_borrow(&edits.items, i);
 			if (edit->start > cursor)
 				rc = morph_buf_append(&result, text + cursor, edit->start - cursor);
 			if (edit->end > cursor)
@@ -580,7 +586,7 @@ int config_text_credentials(const char *text, char **out)
 			rc = morph_buf_puts(&result, text + cursor);
 	}
 	if (rc == 0) {
-		toml_result_t checked = toml_parse(morph_buf_cstr(&result), (int)result.len);
+		toml_result_t checked = toml_parse(morph_buf_cstr_borrow(&result), (int)result.len);
 		rc = checked.ok ? 0 : MORPH_ERR_PARSE;
 		if (rc == 0 &&
 		    !config_edit_credential_result_matches(&parsed.toptab, &checked.toptab, 0))
@@ -590,7 +596,7 @@ int config_text_credentials(const char *text, char **out)
 	if (rc == 0)
 		*out = morph_buf_detach(&result);
 	for (size_t i = 0; i < edits.items.nelts; i++) {
-		struct config_text_edit *edit = morph_array_get(&edits.items, i);
+		struct config_text_edit *edit = morph_array_borrow(&edits.items, i);
 		morph_buf_cleanup(&edit->text);
 	}
 	morph_array_cleanup(&edits.items);
@@ -633,11 +639,12 @@ static int config_edit_same_mcp(const toml_datum_t *before, const toml_datum_t *
 	       strcmp(base ? base + 1 : command, "macos-cu") == 0;
 }
 
-int config_text_mcp_add(const char *text, const char *server, char **out)
+int config_text_mcp_add_copy(const char *text, const char *server, char **out)
 {
 	if (!out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	if (!text || !server)
 		return -EINVAL;
 	if (strlen(text) > INT_MAX || strlen(server) > INT_MAX)
@@ -662,7 +669,7 @@ int config_text_mcp_add(const char *text, const char *server, char **out)
 	for (int i = 0; rc == 0 && i < count; i++)
 		if (config_edit_same_mcp(&servers->u.arr.elem[i], added))
 			exists = 1;
-	morph_buf_t result = {0};
+	morph_buf_t result MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	if (rc == 0 && exists) {
 		*out = strdup(text);
 		if (!*out)
@@ -684,7 +691,7 @@ int config_text_mcp_add(const char *text, const char *server, char **out)
 			if (rc == 0)
 				rc = morph_buf_puts(&result, text + at);
 		} else if (rc == 0 && mcp && (mcp->flag & TOML_FLAG_INLINED)) {
-			morph_buf_t patch = {0};
+			morph_buf_t patch MORPH_CLEANUP(morph_buf_cleanup) = {0};
 			rc = morph_buf_init(&patch, 0);
 			if (rc == 0)
 				rc = morph_buf_puts(&patch, "[mcp]\nservers = [");
@@ -695,7 +702,8 @@ int config_text_mcp_add(const char *text, const char *server, char **out)
 				rc = morph_buf_puts(&patch, "]\n");
 			char *merged = NULL;
 			if (rc == 0)
-				rc = config_text_merge(text, morph_buf_cstr(&patch), &merged);
+				rc = config_text_merge_copy(text, morph_buf_cstr_borrow(&patch),
+							    &merged);
 			if (rc == 0)
 				rc = morph_buf_puts(&result, merged);
 			free(merged);
@@ -712,7 +720,7 @@ int config_text_mcp_add(const char *text, const char *server, char **out)
 		if (rc == 0 && result.len > INT_MAX)
 			rc = -EFBIG;
 		if (rc == 0)
-			rc = config_validate_text(morph_buf_cstr(&result), &error);
+			rc = config_validate_text(morph_buf_cstr_borrow(&result), &error);
 		if (rc == 0)
 			*out = morph_buf_detach(&result);
 	}

@@ -1,4 +1,6 @@
 #include "scheduled_tasks.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "db/scheduled_task.h"
 #include "util/error.h"
 #include "cJSON.h"
@@ -220,7 +222,7 @@ static char *tasks_tool_create(struct scheduled_tasks_tool_context *ctx,
 			       cJSON *root)
 {
 	struct scheduled_task_input input;
-	struct scheduled_task task;
+	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {0};
 	cJSON *out;
 	cJSON *arr;
 	char *owned_payload_json = NULL;
@@ -264,7 +266,7 @@ static char *tasks_tool_update(struct scheduled_tasks_tool_context *ctx,
 			       cJSON *root)
 {
 	struct scheduled_task_input input;
-	struct scheduled_task task;
+	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {0};
 	cJSON *id_item;
 	cJSON *out;
 	cJSON *arr;
@@ -396,13 +398,13 @@ static int scheduled_tasks_tool_run(const char *args_json,
 	cJSON *root;
 	cJSON *op_item;
 	const char *op;
-	char *out;
+	char *out MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
 
 	if (!ctx || !ctx->db || !ctx->db->handle)
 		return -EINVAL;
 	root = cJSON_Parse(args_json ? args_json : "{}");
 	if (!root) {
-		(void)tool_result_success_json_text(result, json_error("invalid JSON"));
+		(void)tool_result_success_json_text_copy(result, "{\"error\":\"invalid JSON\"}");
 		return 0;
 	}
 	op_item = cJSON_GetObjectItem(root, "op");
@@ -426,7 +428,7 @@ static int scheduled_tasks_tool_run(const char *args_json,
 		out = json_error("unknown tasks op");
 
 	cJSON_Delete(root);
-	(void)tool_result_success_json_text(result, out ? out : json_error("oom"));
+	(void)tool_result_success_json_text_copy(result, out ? out : "{\"error\":\"oom\"}");
 	return 0;
 }
 
@@ -446,32 +448,43 @@ int scheduled_tasks_tool_init_events(
 	ctx->time_anchor = (int64_t)time(NULL);
 	if (events)
 		ctx->events = *events;
-	rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "tasks", .description = "Create and manage persistent scheduled tasks and the inbox. "
-		"Use next_run_at for absolute Unix seconds, or delay_seconds "
-		"for relative delays anchored at the current user turn start. "
-		"Tasks run by asking the agent to complete the supplied prompt. "
-		"Supported ops: "
-		"create, update, list, cancel, inbox, mark_read.", .input_schema = "{\"type\":\"object\",\"properties\":{"
-		"\"op\":{\"type\":\"string\",\"enum\":[\"create\",\"list\","
-		"\"update\",\"cancel\",\"inbox\",\"mark_read\"]},"
-		"\"id\":{\"type\":\"integer\",\"description\":\"Task or notification id\"},"
-		"\"title\":{\"type\":\"string\"},"
-		"\"kind\":{\"type\":\"string\",\"enum\":[\"agent\"]},"
-		"\"trigger_type\":{\"type\":\"string\",\"enum\":[\"once\",\"interval\"]},"
-		"\"next_run_at\":{\"type\":\"integer\",\"description\":\"Unix seconds UTC\"},"
-		"\"delay_seconds\":{\"type\":\"integer\",\"description\":\"Relative seconds from current turn start\"},"
-		"\"interval_seconds\":{\"type\":\"integer\"},"
-		"\"timeout_at\":{\"type\":\"integer\"},"
-		"\"max_attempts\":{\"type\":\"integer\"},"
-		"\"prompt\":{\"type\":\"string\",\"description\":\"Agent task prompt to run when due\"},"
-		"\"policy_json\":{\"type\":\"string\"},"
-		"\"notify_json\":{\"type\":\"string\"},"
-		"\"status\":{\"type\":\"string\"},"
-		"\"limit\":{\"type\":\"integer\"},"
-		"\"now\":{\"type\":\"integer\"}"
-		"},\"required\":[\"op\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = scheduled_tasks_tool_run, .user_data = ctx, .user_data_destroy = scheduled_tasks_tool_context_destroy });
-	if (rc != 0)
-		free(ctx);
+	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.name = "tasks",
+		.description = "Create and manage persistent scheduled tasks and the inbox. "
+			       "Use next_run_at for absolute Unix seconds, or delay_seconds "
+			       "for relative delays anchored at the current user turn start. "
+			       "Tasks run by asking the agent to complete the supplied prompt. "
+			       "Supported ops: "
+			       "create, update, list, cancel, inbox, mark_read.",
+		.input_schema =
+			"{\"type\":\"object\",\"properties\":{"
+			"\"op\":{\"type\":\"string\",\"enum\":[\"create\",\"list\","
+			"\"update\",\"cancel\",\"inbox\",\"mark_read\"]},"
+			"\"id\":{\"type\":\"integer\",\"description\":\"Task or notification id\"},"
+			"\"title\":{\"type\":\"string\"},"
+			"\"kind\":{\"type\":\"string\",\"enum\":[\"agent\"]},"
+			"\"trigger_type\":{\"type\":\"string\",\"enum\":[\"once\",\"interval\"]},"
+			"\"next_run_at\":{\"type\":\"integer\",\"description\":\"Unix seconds "
+			"UTC\"},"
+			"\"delay_seconds\":{\"type\":\"integer\",\"description\":\"Relative "
+			"seconds from current turn start\"},"
+			"\"interval_seconds\":{\"type\":\"integer\"},"
+			"\"timeout_at\":{\"type\":\"integer\"},"
+			"\"max_attempts\":{\"type\":\"integer\"},"
+			"\"prompt\":{\"type\":\"string\",\"description\":\"Agent task prompt to "
+			"run when due\"},"
+			"\"policy_json\":{\"type\":\"string\"},"
+			"\"notify_json\":{\"type\":\"string\"},"
+			"\"status\":{\"type\":\"string\"},"
+			"\"limit\":{\"type\":\"integer\"},"
+			"\"now\":{\"type\":\"integer\"}"
+			"},\"required\":[\"op\"]}",
+		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+		.exec = scheduled_tasks_tool_run,
+		.user_data = ctx,
+		.user_data_destroy = scheduled_tasks_tool_context_destroy};
+	rc = tool_register_take(reg, &spec);
 	return rc;
 }
 
@@ -488,7 +501,7 @@ int scheduled_tasks_tool_set_time_anchor(struct tool_registry *reg,
 
 	if (!reg)
 		return -EINVAL;
-	entry = tool_lookup(reg, "tasks");
+	entry = tool_borrow(reg, "tasks");
 	if (!entry || !entry->user_data)
 		return -ENOENT;
 	ctx = entry->user_data;
@@ -504,7 +517,7 @@ int scheduled_tasks_tool_set_source_session(struct tool_registry *reg,
 
 	if (!reg)
 		return -EINVAL;
-	entry = tool_lookup(reg, "tasks");
+	entry = tool_borrow(reg, "tasks");
 	if (!entry || !entry->user_data)
 		return -ENOENT;
 	ctx = entry->user_data;

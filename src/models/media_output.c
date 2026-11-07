@@ -45,7 +45,8 @@ static int media_output_attempt(const char *output_dir, const char *prefix, cons
 	if (!prefix || !*prefix || !extension || !*extension || strchr(prefix, '/') ||
 	    strchr(extension, '/') || (!data && len))
 		return -EINVAL;
-	directory = file_expand_path(output_dir && *output_dir ? output_dir : "~/.morph/output");
+	directory =
+		file_expand_path_copy(output_dir && *output_dir ? output_dir : "~/.morph/output");
 	if (!directory)
 		return -ENOMEM;
 	rc = file_ensure_dir(directory);

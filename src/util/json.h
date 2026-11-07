@@ -2,16 +2,35 @@
 #define MORPH_JSON_H
 
 #include "cJSON.h"
-#include "arena.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* Serialize once; the arena owns the returned heap buffer via cleanup. */
-char *morph_json_print(struct arena *arena, const cJSON *value);
-/* Takes ownership of a malloc-allocated string, including on failure. */
-cJSON *morph_json_take_string(char *text);
+/* Caller owns the serialized text; release it with cJSON_free(). */
+char *morph_json_print_copy(const cJSON *value);
+/* Success consumes and clears a malloc-owned string; failure preserves it. */
+cJSON *morph_json_string_take(char **text);
+/* Sources are independent owners. Failure preserves both owners. */
+int morph_json_object_take(cJSON *object, const char *name, cJSON **source);
+int morph_json_array_take(cJSON *array, cJSON **source);
+
+static inline void morph_json_cleanup(cJSON **owner)
+{
+	if (!owner)
+		return;
+	cJSON_Delete(*owner);
+	*owner = NULL;
+}
+
+static inline void morph_json_text_cleanup(char **owner)
+{
+	if (!owner)
+		return;
+	if (*owner)
+		cJSON_free(*owner);
+	*owner = NULL;
+}
 
 #ifdef __cplusplus
 }

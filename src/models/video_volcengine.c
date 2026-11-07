@@ -6,7 +6,7 @@
 #include "util/file.h"
 #include "util/base64.h"
 #include "util/image_util.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/json.h"
 #include "util/buf.h"
 #include "util/error.h"
@@ -41,35 +41,32 @@ static const char *video_reference_mime(const char *path, int audio)
 	return "video/mp4";
 }
 
-/* Takes ownership of uri on both success and failure. */
-static int video_add_reference(cJSON *content, const char *type, const char *role, char *uri,
-			       size_t *budget)
+/* Success transfers uri into content; failure leaves the source unchanged. */
+static int video_add_reference_take(cJSON *content, const char *type, const char *role, char **uri,
+				    size_t *budget)
 {
-	cJSON *item = cJSON_CreateObject();
-	cJSON *url = item ? cJSON_AddObjectToObject(item, type) : NULL;
-	cJSON *value;
-	size_t len = strlen(uri);
-
-	if (len > *budget) {
-		free(uri);
-		cJSON_Delete(item);
+	if (!content || !uri || !*uri || !budget)
+		return -EINVAL;
+	size_t len = strlen(*uri);
+	if (len > *budget)
 		return -EFBIG;
-	}
-	value = morph_json_take_string(uri);
-	if (!value) {
-		cJSON_Delete(item);
+	cJSON *item MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *url = item ? cJSON_AddObjectToObject(item, type) : NULL;
+	if (!url)
 		return -ENOMEM;
-	}
-	if (!url || !cJSON_AddItemToObject(url, "url", value)) {
+	cJSON *value = cJSON_CreateStringReference(*uri);
+	if (!value)
+		return -ENOMEM;
+	if (!cJSON_AddItemToObject(url, "url", value)) {
 		cJSON_Delete(value);
-		cJSON_Delete(item);
 		return -ENOMEM;
 	}
 	if (!cJSON_AddStringToObject(item, "type", type) ||
-	    !cJSON_AddStringToObject(item, "role", role) || !cJSON_AddItemToArray(content, item)) {
-		cJSON_Delete(item);
+	    !cJSON_AddStringToObject(item, "role", role) || !cJSON_AddItemToArray(content, item))
 		return -ENOMEM;
-	}
+	value->type &= ~cJSON_IsReference;
+	*uri = NULL;
+	item = NULL;
 	*budget -= len;
 	return 0;
 }
@@ -93,7 +90,8 @@ static int video_reference_uri(const char *path, int audio, size_t budget, char 
 		return rc;
 	rc = morph_buf_printf(&prefix, "data:%s;base64,", video_reference_mime(path, audio));
 	if (rc == 0)
-		rc = base64_encode_file_prefixed(path, morph_buf_cstr(&prefix), max_bytes, uri);
+		rc = base64_encode_file_prefixed_copy(path, morph_buf_cstr_borrow(&prefix),
+						      max_bytes, uri);
 	morph_buf_cleanup(&prefix);
 	return rc;
 }
@@ -293,10 +291,6 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 {
 	memset(result, 0, sizeof(*result));
 
-	struct arena *arena = arena_create(8192);
-	if (!arena)
-		return -ENOMEM;
-
 	const char *api_base = self ? self->api_base : "";
 	const char *api_key = (self && self->api_key[0]) ? self->api_key : "";
 	const char *model_id = self ? self->model_id : "";
@@ -309,7 +303,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "video_gen: no api_key configured");
 		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
-		arena_destroy(arena);
+
 		return MORPH_ERR_NOT_CONFIGURED;
 	}
 
@@ -317,7 +311,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "video_gen: no api_base configured");
 		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
-		arena_destroy(arena);
+
 		return MORPH_ERR_NOT_CONFIGURED;
 	}
 
@@ -329,8 +323,8 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 
 	cJSON *content_arr = cJSON_AddArrayToObject(body_json, "content");
 
-	morph_buf_t prompt_buf;
-	int prompt_rc = morph_buf_init_arena(&prompt_buf, arena, 256);
+	morph_buf_t prompt_buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int prompt_rc = morph_buf_init(&prompt_buf, 256);
 	const int counts[] = {num_images > 1 ? num_images : 0, num_videos, num_audios};
 	const char *labels[] = {"image", "video", "audio"};
 	if (prompt_rc == 0)
@@ -348,31 +342,31 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	cJSON *item = cJSON_CreateObject();
 	if (prompt_rc != 0 || !content_arr || !item ||
 	    !cJSON_AddStringToObject(item, "type", "text") ||
-	    !cJSON_AddStringToObject(item, "text", morph_buf_cstr(&prompt_buf)) ||
+	    !cJSON_AddStringToObject(item, "text", morph_buf_cstr_borrow(&prompt_buf)) ||
 	    !cJSON_AddItemToArray(content_arr, item)) {
 		cJSON_Delete(item);
 		cJSON_Delete(body_json);
-		arena_destroy(arena);
+
 		return prompt_rc != 0 ? prompt_rc : -ENOMEM;
 	}
 
 	size_t reference_budget = VIDEO_REFERENCE_MAX_ENCODED_BYTES;
 	for (int i = 0; i < num_images; i++) {
-		char *uri = NULL;
+		char *uri MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 		int rc;
 
 		if (!image_paths || !image_paths[i] || !image_paths[i][0])
 			continue;
-		rc = image_encode_data_uri(image_paths[i], 1024, &uri);
+		rc = image_encode_data_uri_copy(image_paths[i], 1024, &uri);
 		if (rc == 0)
-			rc = video_add_reference(content_arr, "image_url",
-						 caps->supports_multi_reference_images
-							 ? "reference_image"
-							 : "first_frame",
-						 uri, &reference_budget);
+			rc = video_add_reference_take(content_arr, "image_url",
+						      caps->supports_multi_reference_images
+							      ? "reference_image"
+							      : "first_frame",
+						      &uri, &reference_budget);
 		if (rc != 0) {
 			cJSON_Delete(body_json);
-			arena_destroy(arena);
+
 			snprintf(result->error_msg, sizeof(result->error_msg),
 				 "video_gen: image reference: %s", morph_strerror(rc));
 			return rc;
@@ -384,20 +378,20 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 		int count = audio ? num_audios : num_videos;
 
 		for (int i = 0; i < count; i++) {
-			char *uri = NULL;
+			char *uri MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 			int rc;
 
 			if (!paths || !paths[i] || !paths[i][0])
 				continue;
 			rc = video_reference_uri(paths[i], audio, reference_budget, &uri);
 			if (rc == 0)
-				rc = video_add_reference(
+				rc = video_add_reference_take(
 					content_arr, audio ? "audio_url" : "video_url",
-					audio ? "reference_audio" : "reference_video", uri,
+					audio ? "reference_audio" : "reference_video", &uri,
 					&reference_budget);
 			if (rc != 0) {
 				cJSON_Delete(body_json);
-				arena_destroy(arena);
+
 				snprintf(result->error_msg, sizeof(result->error_msg),
 					 "video_gen: media reference: %s", morph_strerror(rc));
 				return rc;
@@ -410,11 +404,11 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	if (generate_audio >= 0)
 		cJSON_AddBoolToObject(body_json, "generate_audio", generate_audio != 0);
 
-	char *body_str = morph_json_print(arena, body_json);
+	char *body_str MORPH_CLEANUP(morph_json_text_cleanup) = morph_json_print_copy(body_json);
 	cJSON_Delete(body_json);
 
 	if (!body_str) {
-		arena_destroy(arena);
+
 		return -ENOMEM;
 	}
 
@@ -429,14 +423,13 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	struct http_response resp = {0};
 	int rc = http_post_ex(&self->http, submit_url, body_str, strlen(body_str),
 			      "application/json", hdrs, 1, &resp);
-	arena_reset(arena);
 
 	if (rc < 0) {
 		http_response_free(&resp);
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "video_gen: submit request failed: %s", morph_strerror(rc));
 		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
-		arena_destroy(arena);
+
 		return rc;
 	}
 
@@ -481,7 +474,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 			snprintf(result->error_msg, sizeof(result->error_msg),
 				 "video_gen: no task id in submit response");
 		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
-		arena_destroy(arena);
+
 		return MORPH_ERR_PROTOCOL;
 	}
 	if (task_status[0])
@@ -498,7 +491,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 		rc = volcengine_video_poll(self, query_url, hdrs, task_id, poll_interval,
 					   poll_timeout, video_url, sizeof(video_url), result);
 	}
-	arena_destroy(arena);
+
 	if (rc != 0)
 		return rc;
 
@@ -526,7 +519,7 @@ static const struct video_provider_ops volcengine_video_provider = {
 	.execute = volcengine_video_execute,
 };
 
-const struct video_provider_ops *video_volcengine_provider(void)
+const struct video_provider_ops *video_volcengine_provider_borrow(void)
 {
 	return &volcengine_video_provider;
 }

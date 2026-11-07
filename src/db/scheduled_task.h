@@ -85,6 +85,9 @@ struct scheduled_task_event_sink {
 	void *user_data;
 };
 
+/* Owned outputs must be zero-initialized and empty; -EEXIST preserves them.
+ * A NULL optional create/update output discards its snapshot. Successful
+ * snapshots own their JSON/body fields until the corresponding cleanup. */
 int scheduled_task_create(struct db *db,
 			  const struct scheduled_task_input *input,
 			  struct scheduled_task *out);

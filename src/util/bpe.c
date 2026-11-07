@@ -578,10 +578,10 @@ try_digits:
 					 * last ws char becomes a prefix
 					 * for the next word.
 					 */
-					it.pos = (size_t)(utf8_prev_codepoint(
-						(const char *)it.text + start,
-						(const char *)it.text + ws_end) -
-						(const char *)it.text);
+					it.pos = (size_t)(utf8_prev_codepoint_borrow(
+								  (const char *)it.text + start,
+								  (const char *)it.text + ws_end) -
+							  (const char *)it.text);
 				} else {
 					/* Alt 8: single whitespace char */
 					iter_next(&it);

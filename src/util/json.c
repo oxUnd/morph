@@ -1,37 +1,46 @@
 #include "json.h"
+#include "error.h"
 #include <stdlib.h>
 
-cJSON *morph_json_take_string(char *text)
+cJSON *morph_json_string_take(char **text)
 {
 	cJSON *value;
 
-	if (!text)
+	if (!text || !*text)
 		return NULL;
-	value = cJSON_CreateStringReference(text);
-	if (!value) {
-		free(text);
+	value = cJSON_CreateString(*text);
+	if (!value)
 		return NULL;
-	}
-	value->type &= ~cJSON_IsReference;
+	free(*text);
+	*text = NULL;
 	return value;
 }
 
-char *morph_json_print(struct arena *arena, const cJSON *value)
+char *morph_json_print_copy(const cJSON *value)
 {
-	struct arena_cleanup *cleanup;
-	char *text;
+	if (!value)
+		return NULL;
+	return cJSON_PrintUnformatted(value);
+}
 
-	if (!arena || !value)
-		return NULL;
-	text = cJSON_PrintUnformatted(value);
-	if (!text)
-		return NULL;
-	cleanup = arena_cleanup_add(arena, 0);
-	if (!cleanup) {
-		cJSON_free(text);
-		return NULL;
-	}
-	cleanup->handler = cJSON_free;
-	cleanup->data = text;
-	return text;
+int morph_json_object_take(cJSON *object, const char *name, cJSON **source)
+{
+	if (!cJSON_IsObject(object) || !name || !source || !*source || object == *source ||
+	    (*source)->prev || (*source)->next)
+		return -EINVAL;
+	if (!cJSON_AddItemToObject(object, name, *source))
+		return -ENOMEM;
+	*source = NULL;
+	return 0;
+}
+
+int morph_json_array_take(cJSON *array, cJSON **source)
+{
+	if (!cJSON_IsArray(array) || !source || !*source || array == *source || (*source)->prev ||
+	    (*source)->next)
+		return -EINVAL;
+	if (!cJSON_AddItemToArray(array, *source))
+		return -ENOMEM;
+	*source = NULL;
+	return 0;
 }

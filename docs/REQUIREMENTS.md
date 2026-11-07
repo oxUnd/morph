@@ -525,7 +525,7 @@ LLM 调用前:
   4. compress_react_trace(messages)          ← 移除已标记的压缩消息
   5. compress_summarize(早期对话 → 单条 summary)
   6. if 仍超阈值: compress_sliding_window(keep=N rounds)
-  7. extract_key_info(messages) → preserve list
+  7. key_info_create(messages) → preserve list
   8. inject(preserve list + 压缩后 messages) → LLM
 ```
 
@@ -1016,7 +1016,7 @@ morph/
 │   ├── agent_ui/               # Agent UI tags / markdown
 │   ├── js_runner/              # QuickJS 动态工具 runner
 │   └── util/
-│       ├── arena / buf / array / str / strmap / queue / utf8 / error
+│       ├── cleanup / buf / array / str / strmap / queue / utf8 / error
 │       └── file / log / spin / base64 / image_util / bpe / id / cancel
 ├── vendor/
 │   ├── cJSON.c/h, toml.c/h, stb_image*.h, utf8proc/, re.c/h
@@ -1032,37 +1032,27 @@ morph/
 
 ### 6.9 关键接口设计
 
-#### 6.9.0 内存管理（Arena）
+#### 6.9.0 Memory ownership and scope cleanup
 
-全局采用 Arena 线性分配器替代逐个 `malloc`/`free`，从架构层面消除内存泄漏与 double-free 风险。
+Use ordinary heap allocations with one explicit owner per object. GCC/Clang
+scope cleanup is required, through `MORPH_CLEANUP(fn)` in `util/cleanup.h`.
+Local pointer owners initialize to `NULL`; value owners initialize to `{0}`.
+Each typed cleanup releases its owned fields and supports empty/partial state.
+Business interfaces carry typed results rather than allocation contexts.
 
-**设计要点**：
-- Bump-pointer 分配，内存零初始化（`memset`），对齐至 `sizeof(void *)`
-- 单个 Arena 由带头链表的 region 组成；当前 region 不够时自动链入新 region（同容量或按需扩容）
-- 默认 region 大小 64KB（内部常量），可按需指定
-- 生命周期：scope 级创建（`arena_create`），scope 退出时整体销毁（`arena_destroy`）；无需逐个释放
-- `arena_reset` 释放溢出 region 并重置主 region，允许复用同一 arena 实例
-- 所有核心结构体（`react_context`、`chat_response` 等）持有 `struct arena *`，内部字符串与动态数据均从 arena 分配
+Fallible `*_take(..., T **source)` transfers and clears the source only on
+success. Failure preserves the source. Typed `*_steal(T **source)` performs an
+infallible local transfer. Owning structures use explicit clone or typed move;
+ordinary assignment must not duplicate ownership. Cross-thread queues commit
+acceptance and source clearing before publishing. Borrowed pointers have an
+explicit lifetime and cannot escape into asynchronous work without copying or
+transferring the owner. See [State ownership](state-ownership.md).
 
-**与裸 `malloc`/`free` 的关系**：仅 arena 内部的 region 创建/销毁、以及少量短生命周期缓冲使用 `malloc`/`free`；业务代码优先通过 `arena_alloc`/`arena_strdup`，或下述 `morph_buf`/`morph_array` 等基础容器分配，避免散落的手动内存管理。
-
-```c
-struct arena {
-	char *buf;		/* 当前 region 缓冲区 */
-	size_t cap;		/* 当前 region 容量 */
-	size_t used;		/* 当前 region 已用字节 */
-	struct arena *next;	/* 溢出 region 链表 */
-};
-
-struct arena *arena_create(size_t cap);		/* 0 使用默认大小 */
-void arena_destroy(struct arena *a);		/* 递归释放所有 region */
-void *arena_alloc(struct arena *a, size_t size);		/* 对齐分配，零填充 */
-void *arena_alloc_aligned(struct arena *a, size_t size, size_t align);
-void arena_reset(struct arena *a);		/* 释放溢出 region，重置主 region */
-char *arena_strdup(struct arena *a, const char *s);		/* arena 内字符串复制 */
-```
-
-> **KPI 关联**：Arena 批量释放保证 Valgrind `0 definitely lost`（§3）；单次 `arena_destroy` 代替 N 次 `free`，降低空闲内存碎片，支撑「空闲常驻 < 15MB」指标。
+Use `morph_buf`, `morph_array` and `morph_strmap` for growth. Container owners
+clean up owned elements before releasing storage. Preserve third-party allocator
+pairs, including `cJSON_free` for serialized cJSON text. Memory safety and peak
+memory are verified through regression tests and sanitizers, not assumed from
+allocation strategy.
 
 #### 6.9.0a 基础数据结构（`src/util/`）
 
@@ -1070,11 +1060,10 @@ char *arena_strdup(struct arena *a, const char *s);		/* arena 内字符串复制
 
 | 结构 | 头文件 | 用途 | 关键 API |
 |------|--------|------|----------|
-| `struct arena` | `arena.h` | scope 级线性分配器 | `arena_create`/`arena_destroy`/`arena_alloc`/`arena_alloc_aligned`/`arena_strdup`/`arena_reset` |
-| `morph_buf_t` | `buf.h` | 可增长字节/字符串构造器 | `morph_buf_init`(堆)/`morph_buf_init_arena`、`append`/`puts`/`putc`/`printf`/`vprintf`、`morph_buf_cstr`/`morph_buf_str`/`morph_buf_detach`、`morph_buf_cleanup` |
-| `morph_array_t` | `array.h` | 泛型动态数组（init 指定元素大小） | `morph_array_init`(堆)/`morph_array_init_arena`、`push`/`push_n`/`pop`/`get`/`reserve`/`clear`、`morph_array_foreach`、`morph_array_cleanup` |
+| `morph_buf_t` | `buf.h` | 可增长字节/字符串构造器 | `morph_buf_init`、`append`/`puts`/`putc`/`printf`/`vprintf`、`morph_buf_cstr_borrow`/`morph_buf_str_borrow`/`morph_buf_detach`、`morph_buf_cleanup` |
+| `morph_array_t` | `array.h` | 泛型动态数组（init 指定元素大小） | `morph_array_init`、`push`/`push_n`/`pop`/`get`/`reserve`/`clear`、`morph_array_foreach`、`morph_array_cleanup` |
 | `morph_strmap_t` | `strmap.h` | 开放寻址 string→`void *` 哈希表 | `morph_strmap_init`/`cleanup`/`clear`、`set`/`get`/`contains`/`remove`/`len` |
-| `morph_str_t` | `str.h` | `{len, const char *}` 字符串视图（常 arena 背书） | `morph_strdup`/`strndup`、`morph_strcmp`/`strcasecmp`/`strncmp`、`morph_str_to_c`、`morph_str_chr`/`rchr`/`trim`、`MORPH_STRLIT` |
+| `morph_str_t` | `str.h` | `{len, const char *}` 字符串视图（非拥有） | `morph_strdup`/`strndup`、`morph_strcmp`/`strcasecmp`/`strncmp`、`morph_str_cstr_copy`、`morph_str_chr_borrow`/`rchr`/`trim`、`MORPH_STRLIT` |
 | `morph_queue_t` | `queue.h` | 侵入式双向链表（`typedef struct morph_queue`，宏 + header-only） | `morph_queue_init`、`insert_head`/`insert_tail`、`remove`、`foreach`/`foreach_safe`、`morph_queue_data`、`sort`/`split`/`middle` |
 
 **使用约定**：
@@ -1089,9 +1078,7 @@ typedef struct {
 	char         *data;
 	size_t        len;
 	size_t        cap;
-	int           heap_alloc;
 	int           failed;
-	struct arena *arena;
 } morph_buf_t;
 
 /* array.h —— 泛型动态数组 */
@@ -1100,7 +1087,6 @@ typedef struct {
 	size_t  nelts;
 	size_t  cap;
 	size_t  size;		/* 元素字节大小 */
-	int     heap_alloc;
 } morph_array_t;
 
 /* strmap.h —— string -> void* 哈希表 */
@@ -1212,8 +1198,6 @@ typedef int (*react_action_drain_fn)(void *user, struct react_action *out,
 	int tool_fail_count;
 	int empty_round_count;
 	volatile sig_atomic_t cancelled;
-	struct arena *arena;
-	struct arena *session;		/* 会话级 arena（跨轮次持久） */
 	char *system_prompt;
 	char *memory_context;		/* 记忆上下文注入 */
 	struct skill_registry *skills;
@@ -1257,7 +1241,7 @@ void react_cancel_active(void);
 extern volatile sig_atomic_t react_sigint_flag;
 
 /* 记忆上下文 */
-int react_set_memory_context(struct react_context *ctx, const char *memory_context);
+int react_set_memory_context_copy(struct react_context *ctx, const char *memory_context);
 
 /* 活跃 ReAct 实例管理（子代理支持） */
 int react_active_count(void);
@@ -1273,8 +1257,7 @@ int hitl_needs_approval(struct react_context *ctx, const char *tool_name);
 void hitl_add_auto_approved(struct hitl_config *h, const char *tool_name);
 
 /* 步骤创建与辅助 */
-struct react_step *react_step_create(struct arena *arena,
-				     enum react_step_type type,
+struct react_step *react_step_create(enum react_step_type type,
 				     const char *content,
 				     const char *tool_name,
 				     const char *tool_args,
@@ -1362,9 +1345,9 @@ struct tool_registry {
 void tool_registry_init(struct tool_registry *reg);
 void tool_registry_cleanup(struct tool_registry *reg);
 const char *tool_origin_name(enum tool_origin origin);
-int tool_register(struct tool_registry *reg, const struct tool_spec *spec);
+int tool_register_borrow(struct tool_registry *reg, const struct tool_spec *spec);
 int tool_unregister(struct tool_registry *reg, const char *name);
-struct tool_entry *tool_lookup(struct tool_registry *reg, const char *name);
+struct tool_entry *tool_borrow(struct tool_registry *reg, const char *name);
 int tool_exec(struct tool_registry *reg, const char *name,
 	      const char *args_json, struct tool_result *result);
 int tool_set_timeout(struct tool_registry *reg, const char *name,
@@ -1381,7 +1364,6 @@ int tool_has_flag(struct tool_registry *reg, const char *name,
 #### 6.9.3 模型接口
 
 ```c
-struct arena;
 
 typedef int (*sse_callback)(const char *token, void *user_data);
 
@@ -1431,7 +1413,6 @@ struct chat_response {
 	struct tool_call *tool_calls;
 	int tool_call_count;
 	struct model_usage usage;
-	struct arena *arena;
 };
 
 struct model_chat_options {
@@ -1456,26 +1437,22 @@ struct model {
 	int max_tokens;		/* 单次响应最大生成 token 数 */
 	long timeout_seconds;
 	void *handle;
-	int (*chat)(struct model *self, struct arena *arena,
-		    const char *system_prompt,
+	int (*chat)(struct model *self, const char *system_prompt,
 		    const char **messages, int n,
 		    const struct model_chat_options *opts,
 		    sse_callback cb, void *user_data);
-	int (*chat_with_tools)(struct model *self, struct arena *arena,
-			       const char *system_prompt,
+	int (*chat_with_tools)(struct model *self, const char *system_prompt,
 			       struct chat_message *messages, int msg_count,
 			       struct tool_desc *tools, int tool_count,
 			       struct chat_response *response,
 			       sse_callback thought_cb, void *thought_ud);
-	int (*chat_with_tools_stream)(struct model *self, struct arena *arena,
-				      const char *system_prompt,
+	int (*chat_with_tools_stream)(struct model *self, const char *system_prompt,
 				      struct chat_message *messages, int msg_count,
 				      struct tool_desc *tools, int tool_count,
 				      struct chat_response *response,
 				      llm_stream_callback stream_cb,
 				      void *stream_ud);
-	int (*chat_with_image)(struct model *self, struct arena *arena,
-			       const char *system_prompt,
+	int (*chat_with_image)(struct model *self, const char *system_prompt,
 			       const char *prompt,
 			       const char *image_path,
 			       const struct model_image_chat_options *opts,
@@ -1490,8 +1467,8 @@ struct model *model_llm_create(const char *provider, const char *model_id,
 void model_destroy(struct model *m);
 
 void chat_response_free(struct chat_response *resp);
-void chat_message_cleanup(struct chat_message *msg, struct arena *arena);
-void tool_call_cleanup(struct tool_call *tc, struct arena *arena);
+void chat_message_cleanup(struct chat_message *msg);
+void tool_call_cleanup(struct tool_call *tc);
 ```
 
 #### 6.9.4 内置工具列表
@@ -1585,9 +1562,9 @@ struct compress_result {
 };
 
 /* 消息链表辅助 */
-struct message_list *msg_list_create(struct arena *session, const char *role,
+struct message_list *msg_list_create(const char *role,
 				      const char *content, int token_count);
-void msg_list_append(struct message_list **head, struct message_list *msg);
+int msg_list_append_take(struct message_list **head, struct message_list **msg);
 void msg_list_destroy(struct message_list *head);
 int msg_list_count(struct message_list *head);
 
@@ -1602,11 +1579,10 @@ int compress_sliding_window(struct message_list **head, int keep_rounds,
 int compress_react_trace(struct message_list **head,
 			 struct compress_result *result);
 int compress_detect_react_cycles(struct message_list *head);
-struct key_info *extract_key_info(struct message_list *head);
+struct key_info *key_info_create(struct message_list *head);
 void key_info_free(struct key_info *head);
 int compress_summarize(struct message_list **head, int keep_rounds,
 		       summarize_fn fn, void *fn_user,
-		       struct arena *session,
 		       struct compress_result *result);
 ```
 
@@ -1707,8 +1683,8 @@ struct jsonrpc_response {
 	char *error_message;
 };
 
-char *jsonrpc_build_request(const struct jsonrpc_request *req);
-int jsonrpc_parse_response(const char *resp_str, struct jsonrpc_response *out);
+char *jsonrpc_request_create(const struct jsonrpc_request *req);
+int jsonrpc_response_copy(const char *resp_str, struct jsonrpc_response *out);
 void jsonrpc_response_free(struct jsonrpc_response *resp);
 ```
 
@@ -1821,7 +1797,6 @@ struct guardrail_eval_ctx {
 	const char *proposed_answer;
 	const void *steps;
 	int empty_round_count;
-	struct arena *arena;
 };
 
 typedef enum guardrail_verdict (*guardrail_rule_fn)(
@@ -1889,7 +1864,7 @@ int guardrail_ext_so_load(struct guardrail_rule *rule);
 void guardrail_ext_so_unload(struct guardrail_rule *rule);
 int guardrail_rule_disable(struct guardrail_config *cfg, const char *name);
 int guardrail_rule_enable(struct guardrail_config *cfg, const char *name);
-struct guardrail_rule *guardrail_rule_lookup(struct guardrail_config *cfg,
+struct guardrail_rule *guardrail_rule_borrow(struct guardrail_config *cfg,
 					      const char *name);
 
 /* 内置规则注册 */
@@ -1949,7 +1924,7 @@ char *memory_build_context(struct db *db, int64_t session_id,
 			   const struct memory_options *opts);
 
 /* 渲染会话记忆摘要 */
-char *memory_render_session(struct db *db, int64_t session_id,
+char *memory_session_text_create(struct db *db, int64_t session_id,
 			    int max_episodes);
 
 /* 同步整合（当前轮次 → 记忆） */
@@ -2065,7 +2040,7 @@ struct mcp_registry {
 /* 注册表管理 */
 void mcp_registry_init(struct mcp_registry *reg);
 int mcp_registry_add(struct mcp_registry *reg, const struct mcp_server_config *cfg);
-struct mcp_client *mcp_registry_get(struct mcp_registry *reg, const char *name);
+struct mcp_client *mcp_registry_borrow(struct mcp_registry *reg, const char *name);
 int mcp_registry_count(struct mcp_registry *reg);
 void mcp_registry_cleanup(struct mcp_registry *reg);
 
@@ -2077,21 +2052,17 @@ void mcp_disconnect(struct mcp_client *client);
 int mcp_ensure_connected(struct mcp_client *client);
 
 /* 工具 */
-int mcp_list_tools(struct mcp_client *client, struct arena *arena,
-		   struct mcp_tool_desc **out_tools, int *out_count);
-int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *name,
+int mcp_list_tools_copy(struct mcp_client *client, struct mcp_tool_desc **out_tools, int *out_count);
+int mcp_call_tool(struct mcp_client *client, const char *name,
 		  const char *args_json, char **out_result_json);
 
 /* 资源 */
-int mcp_list_resources(struct mcp_client *client, struct arena *arena,
-		       struct mcp_resource_desc **out_res, int *out_count);
-int mcp_read_resource(struct mcp_client *client, struct arena *arena,
-		      const char *uri, char **out_content);
+int mcp_list_resources_copy(struct mcp_client *client, struct mcp_resource_desc **out_res, int *out_count);
+int mcp_read_resource(struct mcp_client *client, const char *uri, char **out_content);
 
 /* 提示词 */
-int mcp_list_prompts(struct mcp_client *client, struct arena *arena,
-		     struct mcp_prompt_desc **out_prompts, int *out_count);
-int mcp_get_prompt(struct mcp_client *client, struct arena *arena, const char *name,
+int mcp_list_prompts_copy(struct mcp_client *client, struct mcp_prompt_desc **out_prompts, int *out_count);
+int mcp_get_prompt(struct mcp_client *client, const char *name,
 		   const char *args_json, char **out_result);
 
 /* 工具 */
@@ -2175,9 +2146,9 @@ void sub_agent_runtime_destroy(struct sub_agent_runtime *rt);
 int sub_agent_runtime_load_config(struct sub_agent_runtime *rt,
 				  struct config_sub_agents *cfg);
 struct sub_agent_entry *
-sub_agent_find(struct sub_agent_runtime *rt, const char *name);
+sub_agent_borrow(struct sub_agent_runtime *rt, const char *name);
 struct tool_registry *
-sub_agent_build_tool_registry(struct sub_agent_runtime *rt,
+sub_agent_tool_registry_create(struct sub_agent_runtime *rt,
 			      struct sub_agent_entry *entry);
 struct react_context *
 sub_agent_create_context(struct sub_agent_runtime *rt,
@@ -2296,8 +2267,8 @@ struct tool_context {
 struct tool_context *tool_context_create(const char *workdir,
 					 const char *output_dir);
 void tool_context_destroy(struct tool_context *tctx);
-const char *tool_context_workdir(const struct tool_context *tctx);
-const char *tool_context_output_dir(const struct tool_context *tctx);
+const char *tool_context_workdir_borrow(const struct tool_context *tctx);
+const char *tool_context_output_dir_borrow(const struct tool_context *tctx);
 void tool_context_set_default_timeout(struct tool_context *tctx, int seconds);
 int tool_context_default_timeout(const struct tool_context *tctx);
 int tool_context_authorize_path(struct tool_context *tctx,
@@ -2343,13 +2314,13 @@ struct plan_registry {
 };
 
 void plan_registry_init(struct plan_registry *reg);
-struct plan *plan_create(struct plan_registry *reg, const char *name,
+struct plan *plan_add_borrow(struct plan_registry *reg, const char *name,
 			 const char *goal, const char **step_descs,
 			 int step_count);
-struct plan *plan_find(struct plan_registry *reg, const char *name);
+struct plan *plan_borrow(struct plan_registry *reg, const char *name);
 int plan_update_step(struct plan_registry *reg, const char *plan_name,
 		     int step_id, const char *status);
-int plan_get_formatted(struct plan_registry *reg, char *buf, size_t buf_size);
+int plan_format(struct plan_registry *reg, char *buf, size_t buf_size);
 ```
 
 #### 6.9.16 BPE Tokenizer 接口
@@ -2454,7 +2425,7 @@ struct skill_registry {
 void skill_registry_init(struct skill_registry *reg);
 void skill_registry_cleanup(struct skill_registry *reg);
 int skill_discover(struct skill_registry *reg, const char *dir_path);
-struct skill_entry *skill_lookup(struct skill_registry *reg, const char *name);
+struct skill_entry *skill_borrow(struct skill_registry *reg, const char *name);
 int skill_activate(struct skill_entry *skill);
 void skill_deactivate(struct skill_entry *skill);
 void skill_deactivate_all(struct skill_registry *reg);
@@ -2562,7 +2533,7 @@ void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag)
 - C 风格注释，禁止 `//`
 - `sizeof(var)` 而非 `sizeof(type)`
 - 多语句宏 `do { } while (0)` 包裹
-- 内存：统一通过 arena 分配（见 §6.9.0），禁止业务层直接 `malloc`/`free`；arena_alloc 失败返回 NULL，调用方 `goto out`
+- Memory: explicit heap ownership and required typed scope cleanup (see §6.9.0); take APIs preserve the source on failure.
 - 静态检查：`-Wall -Wextra -Wpedantic -Wshadow -Wconversion`，CI 必须 0 warning
 
 ---
@@ -2630,7 +2601,7 @@ enum morph_error {
 
 | 文件 | 测试模块 |
 |------|---------|
-| `test_arena.cpp` | Arena 内存分配器 |
+| `test_cleanup.cpp` | Scope cleanup and ownership transfer |
 | `test_log.cpp` | 日志系统 |
 | `test_spin.cpp` | Spinner 动画 |
 | `test_sse.cpp` | SSE 解析器 |
@@ -2731,7 +2702,7 @@ enum morph_error {
 | 内容合规风险 | 平台风险 | 输出过滤 + 用户自担提示 | M3 |
 | 终端兼容性 | 图片显示异常 | 三协议探测 + 路径回退 | M2 |
 | C 开发效率 | 进度滞后 | 单文件库优先 + 接口抽象 + CI 强约束 | M1 |
-| 内存管理 | 泄漏/崩溃 | Arena + Valgrind/ASan in CI | M1 |
+| 内存管理 | 泄漏/崩溃 | Typed ownership + cleanup + Valgrind/ASan in CI | M1 |
 | Ext 安全 | 恶意 Ext | 沙箱 + 最小权限 + 审计 | M4 |
 | 沙箱逃逸 | 系统安全 | 专项测试集 + 安全评审 | M4 |
 | 摘要丢关键信息 | 上下文劣化 | 关键信息强制保留 + 用户阈值可调 | M5 |

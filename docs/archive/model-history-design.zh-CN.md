@@ -1,5 +1,10 @@
 # Morph 模型历史与上下文压缩设计
 
+> Historical implementation. Current memory and transfer contracts are in
+> [State ownership](../state-ownership.md); allocation contexts described here
+> are no longer used.
+
+
 > 实现状态（2026-08-03）：阶段 1、2、3 已全部落地。`messages` 继续作为用户可见
 > transcript；`model_history_items` 增量保存模型历史；自动压缩与 `/compress` 使用
 > `history_compactions` 原子 checkpoint；工具自定义 history 视图、运行时 secret 清洗、

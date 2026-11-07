@@ -1,4 +1,5 @@
 #include "react_tool_worker.h"
+#include "util/cleanup.h"
 
 #include "react_internal.h"
 #include "tool_execution.h"
@@ -263,7 +264,7 @@ static char *react_format_tool_error(const struct tool_result *result, int rc)
 	const cJSON *message;
 	const char *raw;
 	const char *detail = NULL;
-	morph_buf_t text;
+	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
 
 	if (result && cJSON_IsObject(result->envelope)) {
 		error = cJSON_GetObjectItemCaseSensitive(result->envelope, "error");
@@ -392,16 +393,19 @@ void react_tool_worker_collect(struct async_tool_call *call, int *rc, char **res
 	*result = call->result;
 	if (artifacts)
 		*artifacts = call->artifacts;
-	if (data)
+	if (data) {
 		*data = call->data;
-	if (ui)
+		call->data = NULL;
+	}
+	if (ui) {
 		*ui = call->ui;
-	if (meta)
+		call->ui = NULL;
+	}
+	if (meta) {
 		*meta = call->meta;
+		call->meta = NULL;
+	}
 	call->result = NULL;
-	call->data = NULL;
-	call->ui = NULL;
-	call->meta = NULL;
 	memset(&call->artifacts, 0, sizeof(call->artifacts));
 	pthread_mutex_unlock(&call->mutex);
 }

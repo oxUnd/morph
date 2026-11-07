@@ -41,14 +41,14 @@ TEST_F(SessionTitleTest, SavesToOriginAfterSwitchAndRecordsSeparateUsage)
 	ASSERT_EQ(runtime_session_create_and_select(instance, "Other task", &other), 0);
 	Release();
 	ASSERT_TRUE(WaitName(origin.id, "Fix session naming"));
-	EXPECT_STREQ(runtime_session_current_name(instance), "Other task");
+	EXPECT_STREQ(runtime_session_current_name_borrow(instance), "Other task");
 	EXPECT_EQ(message_count(&instance->context.database, origin.id), 0);
 	struct credit_summary summary{};
 	ASSERT_EQ(credit_summary_session(&instance->context.database, origin.display_id,
 		&summary), 0);
 	EXPECT_EQ(summary.event_count, 1);
 	ASSERT_EQ(runtime_session_select_existing(instance, origin.id, nullptr), 0);
-	EXPECT_STREQ(runtime_session_current_name(instance), "Fix session naming");
+	EXPECT_STREQ(runtime_session_current_name_borrow(instance), "Fix session naming");
 }
 
 TEST_F(SessionTitleTest, StoresModelSummaryRatherThanPromptPrefix)
@@ -154,9 +154,9 @@ TEST_F(SessionTitleTest, ShutdownCancelsAStalledRequest)
 	EXPECT_EQ(title_phases, (std::vector<std::string>{"begin", "end"}));
 }
 
-static int foreground_reply(struct model *, struct arena *, const char *,
-	struct chat_message *, int, struct tool_desc *, int,
-	struct chat_response *response, sse_callback, void *)
+static int foreground_reply(struct model *, const char *, struct chat_message *, int,
+			    struct tool_desc *, int, struct chat_response *response, sse_callback,
+			    void *)
 {
 	response->content = strdup("Task complete.");
 	return response->content ? 200 : -ENOMEM;
@@ -183,7 +183,7 @@ TEST_F(SessionTitleTest, ForegroundTurnFinishesWhileTitleResponseIsBlocked)
 	Release();
 	ASSERT_TRUE(WaitName(origin.id, "Fix session naming"));
 	EXPECT_EQ(message_count(&instance->context.database, origin.id), 2);
-	EXPECT_STREQ(runtime_session_current_name(instance), "Fix session naming");
+	EXPECT_STREQ(runtime_session_current_name_borrow(instance), "Fix session naming");
 }
 
 TEST_F(SessionTitleTest, ExplicitlyNamedTurnsDoNotScheduleTitles)
@@ -200,7 +200,7 @@ TEST_F(SessionTitleTest, ExplicitlyNamedTurnsDoNotScheduleTitles)
 	ASSERT_EQ(runtime_execute_turn(instance, &request, &result), 0);
 	for (auto *job : instance->title_jobs)
 		EXPECT_EQ(job, nullptr);
-	EXPECT_STREQ(runtime_session_current_name(instance), "My chosen name");
+	EXPECT_STREQ(runtime_session_current_name_borrow(instance), "My chosen name");
 }
 
 TEST_F(SessionTitleTest, InvalidOutputDoesNotRenameOrEnterConversation)

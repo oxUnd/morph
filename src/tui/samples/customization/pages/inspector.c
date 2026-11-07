@@ -16,23 +16,23 @@ static void sample_customization_page_inspector_build(struct morph_tui_view_cont
 						     .padding = {.left = 1, .right = 1}};
 	const struct morph_tui_view_options row = {.height = 3};
 	const struct morph_tui_view_options label = {.width = 12};
-	struct morph_tui_view *root = morph_tui_widget_stack_create(
+	struct morph_tui_view *root = morph_tui_widget_stack_add_borrow(
 		builder, NULL, MORPH_TUI_WIDGET_STACK_VERTICAL, 1, &inset);
 
-	morph_tui_widget_label_create(builder, root, "Inspector / custom page", NULL);
-	morph_tui_widget_label_create(builder, root,
-				      "Same model and custom widget, different layout", NULL);
-	struct morph_tui_view *content = morph_tui_widget_stack_create(
+	morph_tui_widget_label_add_borrow(builder, root, "Inspector / custom page", NULL);
+	morph_tui_widget_label_add_borrow(builder, root,
+					  "Same model and custom widget, different layout", NULL);
+	struct morph_tui_view *content = morph_tui_widget_stack_add_borrow(
 		builder, root, MORPH_TUI_WIDGET_STACK_HORIZONTAL, 1, &row);
 
-	morph_tui_widget_label_create(builder, content, "Shared value", &label);
+	morph_tui_widget_label_add_borrow(builder, content, "Shared value", &label);
 	sample_customization_widget_counter_create(builder, content, 10, app->value, app->step);
-	morph_tui_widget_label_create(builder, root, "Shared name (Enter saves)", NULL);
-	morph_tui_widget_text_field_create(builder, root, morph_buf_cstr(&app->name), 128, 20,
-					   NULL);
-	page->status = morph_tui_widget_label_create(builder, root,
-						     "Changes persist when returning", NULL);
-	morph_tui_widget_label_create(
+	morph_tui_widget_label_add_borrow(builder, root, "Shared name (Enter saves)", NULL);
+	morph_tui_widget_text_field_add_borrow(builder, root, morph_buf_cstr_borrow(&app->name),
+					       128, 20, NULL);
+	page->status = morph_tui_widget_label_add_borrow(builder, root,
+							 "Changes persist when returning", NULL);
+	morph_tui_widget_label_add_borrow(
 		builder, root, "Tab: focus | ?: help | Esc: return to the same dashboard control",
 		NULL);
 }
@@ -47,14 +47,14 @@ static int sample_customization_page_inspector_action(struct morph_tui_view_cont
 	if (action->tag == 10) {
 		app->value = sample_customization_widget_counter_value(action->sender);
 		app->step = sample_customization_widget_counter_step(action->sender);
-		return morph_tui_widget_label_set_text(page->status, action->text);
+		return morph_tui_widget_label_set_text_copy(page->status, action->text);
 	}
 	if (action->type == MORPH_TUI_WIDGET_ACTION_SUBMIT) {
 		int rc = sample_customization_application_set_name(app, action->text);
 
 		return rc ? rc
-			  : morph_tui_widget_label_set_text(page->status,
-							    "Name saved to shared model");
+			  : morph_tui_widget_label_set_text_copy(page->status,
+								 "Name saved to shared model");
 	}
 	return 0;
 }

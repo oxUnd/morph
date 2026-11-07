@@ -13,10 +13,11 @@ struct fcgi_stream_pool *fcgi_stream_pool_create(int threads, int queue_max,
 						 struct morph_log *logger);
 void fcgi_stream_pool_destroy(struct fcgi_stream_pool *pool);
 
-/* Takes ownership of the FastCGI request on success.  Returns 0, -EAGAIN
- * when the queue is full, or -ESHUTDOWN while stopping. */
-int fcgi_stream_pool_submit(struct fcgi_stream_pool *pool, request_t *r,
-			    fcgi_stream_fn fn);
+/* Success takes the wrapper's FCGX_Request, clears wrapper->fcgx, marks it
+ * handed_off, and clears *owner. The wrapper storage itself remains borrowed.
+ * Failure preserves the wrapper and its request. */
+int fcgi_stream_pool_submit_take(struct fcgi_stream_pool *pool, request_t **owner,
+				 fcgi_stream_fn fn);
 
 void fcgi_stream_pool_status(struct fcgi_stream_pool *pool, int *active,
 			     int *queued, int *capacity);

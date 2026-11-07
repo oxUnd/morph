@@ -36,8 +36,8 @@ struct tool_artifact_list {
 
 const char *tool_artifact_kind_name(enum tool_artifact_kind kind);
 enum tool_artifact_kind tool_artifact_kind_from_string(const char *kind);
-cJSON *tool_artifacts_to_json(const struct tool_artifact *items, int count);
-cJSON *tool_artifact_list_to_json(const struct tool_artifact_list *artifacts);
+cJSON *tool_artifacts_json_create(const struct tool_artifact *items, int count);
+cJSON *tool_artifact_list_json_create(const struct tool_artifact_list *artifacts);
 
 #ifdef __cplusplus
 }

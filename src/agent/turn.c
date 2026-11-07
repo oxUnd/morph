@@ -3,7 +3,7 @@
 #include "agent/history.h"
 #include "agent/tokenizer.h"
 #include "session.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/error.h"
 #include "util/id.h"
 #include "cJSON.h"
@@ -34,7 +34,7 @@ static const char *turn_id_value(const struct agent_turn *turn)
 {
 	if (turn->input.turn_id && turn->input.turn_id[0])
 		return turn->input.turn_id;
-	return react_get_turn_id(turn->runtime.react);
+	return react_turn_id_borrow(turn->runtime.react);
 }
 
 static void turn_set_first_error(int *rc, int err)
@@ -87,8 +87,6 @@ int agent_session_load_history(const struct agent_session_runtime *runtime)
 	runtime->react->messages = NULL;
 	model_history_free_list(runtime->react->history_items);
 	runtime->react->history_items = NULL;
-	if (runtime->react->session_arena)
-		arena_reset(runtime->react->session_arena);
 
 	rc = model_history_migrate_messages(runtime->db, runtime->session_id);
 	if (rc != 0)
@@ -106,16 +104,15 @@ int agent_session_load_history(const struct agent_session_runtime *runtime)
 	list = message_list(runtime->db, runtime->session_id, &count);
 	cur = list;
 	while (cur) {
-		struct message_list *m;
+		struct message_list *m MORPH_CLEANUP(msg_list_clear) = NULL;
 
-		m = msg_list_create(runtime->react->session_arena, cur->role,
-				    cur->content, cur->token_count);
+		m = msg_list_create(cur->role, cur->content, cur->token_count);
 		if (!m) {
 			message_free_list(list);
 			return -ENOMEM;
 		}
 		m->compressed = cur->compressed;
-		msg_list_append(&runtime->react->messages, m);
+		(void)msg_list_append_take(&runtime->react->messages, &m);
 		cur = cur->next;
 	}
 	message_free_list(list);
@@ -124,24 +121,22 @@ int agent_session_load_history(const struct agent_session_runtime *runtime)
 
 static int turn_build_memory_context(struct agent_turn *turn)
 {
-	char *memory_ctx;
+	char *memory_ctx MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	int rc;
 
 	if (!(turn_flags(&turn->runtime) & AGENT_TURN_BUILD_MEMORY_CONTEXT))
 		return 0;
 
-	rc = memory_build_context_checked(
-		turn->runtime.db, turn->runtime.session_id,
-		turn_model_input(turn), turn->runtime.memory_options, &memory_ctx);
+	rc = memory_context_create(turn->runtime.db, turn->runtime.session_id,
+				   turn_model_input(turn), turn->runtime.memory_options,
+				   &memory_ctx);
 	if (rc != 0)
 		return rc;
-	rc = react_set_memory_context(turn->runtime.react, memory_ctx);
-	free(memory_ctx);
+	rc = react_set_memory_context_copy(turn->runtime.react, memory_ctx);
 	return rc;
 }
 
-int agent_turn_begin(struct agent_turn *turn,
-		     const struct agent_session_runtime *runtime,
+int agent_turn_begin(struct agent_turn *turn, const struct agent_session_runtime *runtime,
 		     const struct agent_turn_input *input)
 {
 	unsigned flags;
@@ -223,9 +218,8 @@ int agent_turn_begin(struct agent_turn *turn,
 		}
 	}
 
-	rc = memory_accept_input(runtime->db, runtime->session_id,
-		turn_stored_user_input(turn), react_get_turn_id(runtime->react),
-		runtime->memory_options);
+	rc = memory_accept_input(runtime->db, runtime->session_id, turn_stored_user_input(turn),
+				 react_turn_id_borrow(runtime->react), runtime->memory_options);
 	if (rc == 0)
 		rc = turn_build_memory_context(turn);
 	if (rc != 0) {
@@ -299,7 +293,7 @@ static int turn_save_trace(struct agent_turn *turn)
 						cur->error_code);
 		if (cur->artifact_count > 0) {
 			cJSON *artifacts =
-				tool_artifacts_to_json(cur->artifacts, cur->artifact_count);
+				tool_artifacts_json_create(cur->artifacts, cur->artifact_count);
 			if (artifacts)
 				cJSON_AddItemToObject(obj, "artifacts",
 						      artifacts);

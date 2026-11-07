@@ -9,13 +9,21 @@
 
 int fcgi_read_body(request_t *r, char **out, size_t *len)
 {
-	*out = NULL;
-	*len = 0;
+	if (!r || !out || !len)
+		return -EINVAL;
+	if (*out)
+		return -EEXIST;
 	if (r->content_length <= 0) {
-		*out = calloc(1, 1);
-		return *out ? 0 : -ENOMEM;
+		char *empty = calloc(1, 1);
+		if (!empty)
+			return -ENOMEM;
+		*out = empty;
+		*len = 0;
+		return 0;
 	}
 	if (r->content_length > FCGI_MAX_BODY_BYTES) return -EFBIG;
+	if (!r->fcgx || !r->fcgx->in)
+		return -EINVAL;
 
 	char *buf = malloc((size_t)r->content_length + 1);
 	if (!buf) return -ENOMEM;
@@ -34,7 +42,7 @@ int fcgi_read_body(request_t *r, char **out, size_t *len)
 	return 0;
 }
 
-const char *path_param(const request_t *r, const char *key)
+const char *path_param_borrow(const request_t *r, const char *key)
 {
 	for (int i = 0; i < r->n_params; i++)
 		if (strcmp(r->params[i].key, key) == 0)

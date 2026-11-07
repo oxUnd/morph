@@ -11,7 +11,8 @@ extern "C" {
 #include <sys/types.h>
 
 #include "http/client.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "util/strmap.h"
 #include "agent/tool.h"
 
@@ -29,7 +30,7 @@ enum mcp_transport_type {
 	MCP_TRANSPORT_STREAMABLE_HTTP,
 };
 
-/* Discovery strings are owned by the caller-provided arena, without truncation. */
+/* Discovery arrays own every string until the matching descriptor free call. */
 /* MCP tool descriptor returned by tools/list */
 struct morph_log;
 
@@ -126,7 +127,8 @@ struct mcp_registry {
 
 void mcp_registry_init(struct morph_log *logger, struct mcp_registry *reg);
 int mcp_registry_add(struct mcp_registry *reg, const struct mcp_server_config *cfg);
-struct mcp_client *mcp_registry_get(struct mcp_registry *reg, const char *name);
+/* Borrowed client until registry cleanup; callers exclude concurrent cleanup. */
+struct mcp_client *mcp_registry_borrow(struct mcp_registry *reg, const char *name);
 int mcp_registry_count(struct mcp_registry *reg);
 void mcp_registry_cleanup(struct mcp_registry *reg);
 
@@ -140,36 +142,43 @@ void mcp_disconnect(struct mcp_client *client);
 /* Lazy-connect wrapper */
 int mcp_ensure_connected(struct mcp_client *client);
 
+/* Discovery returns independent owned arrays; each matching free releases all
+ * string fields and the array. Outputs must start empty and remain so on error. */
+void mcp_tool_descs_free(struct mcp_tool_desc *items, int count);
+void mcp_resource_descs_free(struct mcp_resource_desc *items, int count);
+void mcp_prompt_descs_free(struct mcp_prompt_desc *items, int count);
+
 /* ----- Tools ----- */
 
-int mcp_list_tools(struct mcp_client *client, struct arena *arena,
-		   struct mcp_tool_desc **out_tools, int *out_count);
-int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *name,
-		  const char *args_json, struct tool_result *out_result);
+int mcp_list_tools_copy(struct mcp_client *client, struct mcp_tool_desc **out_tools,
+			int *out_count);
+int mcp_call_tool(struct mcp_client *client, const char *name, const char *args_json,
+		  struct tool_result *out_result);
 
 /* ----- Resources ----- */
 
-int mcp_list_resources(struct mcp_client *client, struct arena *arena,
-		       struct mcp_resource_desc **out_res, int *out_count);
-int mcp_read_resource(struct mcp_client *client, struct arena *arena,
-		      const char *uri, struct tool_result *out_content);
+int mcp_list_resources_copy(struct mcp_client *client, struct mcp_resource_desc **out_res,
+			    int *out_count);
+int mcp_read_resource(struct mcp_client *client, const char *uri, struct tool_result *out_content);
 
 /* ----- Prompts ----- */
 
-int mcp_list_prompts(struct mcp_client *client, struct arena *arena,
-		     struct mcp_prompt_desc **out_prompts, int *out_count);
-int mcp_get_prompt(struct mcp_client *client, struct arena *arena, const char *name,
-		   const char *args_json, struct tool_result *out_result);
+int mcp_list_prompts_copy(struct mcp_client *client, struct mcp_prompt_desc **out_prompts,
+			  int *out_count);
+int mcp_get_prompt(struct mcp_client *client, const char *name, const char *args_json,
+		   struct tool_result *out_result);
 
 /* ----- Utilities ----- */
 
 int mcp_ping(struct mcp_client *client);
 int mcp_test_connection(const struct mcp_server_config *cfg,
 			char *message, size_t message_cap);
-char *mcp_http_extract_sse_json(const char *raw, size_t len);
+/* Independent malloc-owned text; caller frees it. */
+char *mcp_http_sse_json_create(const char *raw, size_t len);
 int mcp_http_url_uses_auth_token(const char *url);
-int mcp_http_build_request_url(const struct mcp_server_config *cfg,
-			       char **out_url);
+/* *out_url starts NULL; occupied: -EEXIST. Success creates malloc-owned text;
+ * failure preserves the output. */
+int mcp_http_request_url_create(const struct mcp_server_config *cfg, char **out_url);
 
 /* ----- morph tool registry integration ----- */
 

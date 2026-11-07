@@ -1,4 +1,5 @@
 #include "runtime/mcp.h"
+#include "util/cleanup.h"
 
 #include "util/buf.h"
 #include "util/error.h"
@@ -48,7 +49,7 @@ void runtime_mcp_emit(morph_event_cb cb, void *user_data,
 			     int error_code)
 {
 	cJSON *data;
-	morph_buf_t message_buf;
+	morph_buf_t message_buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	const char *effective_message = message;
 	const char *error_text;
 	char error_buf[256];
@@ -88,7 +89,7 @@ void runtime_mcp_emit(morph_event_cb cb, void *user_data,
 			(void)morph_buf_printf(&message_buf, "%s disconnected",
 					       server->name);
 		if (message_buf.len > 0)
-			effective_message = morph_buf_cstr(&message_buf);
+			effective_message = morph_buf_cstr_borrow(&message_buf);
 	}
 	data = cJSON_CreateObject();
 	if (!data) {
@@ -291,7 +292,7 @@ int runtime_mcp_init_from_config(struct morph_log *logger, struct mcp_registry *
 		}
 		if (!connect_configured || !server.auto_connect)
 			continue;
-		client = mcp_registry_get(registry, server.name);
+		client = mcp_registry_borrow(registry, server.name);
 		if (!client)
 			continue;
 		rc = runtime_mcp_client_connect(client, event_cb,

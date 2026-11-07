@@ -63,8 +63,8 @@ static int cli_mcp_program_available(const char *name)
 		if (rc != 0)
 			break;
 		struct stat st;
-		if (stat(morph_buf_cstr(&path), &st) == 0 && S_ISREG(st.st_mode) &&
-		    access(morph_buf_cstr(&path), X_OK) == 0) {
+		if (stat(morph_buf_cstr_borrow(&path), &st) == 0 && S_ISREG(st.st_mode) &&
+		    access(morph_buf_cstr_borrow(&path), X_OK) == 0) {
 			rc = 1;
 			break;
 		}
@@ -79,7 +79,7 @@ static int cli_mcp_program_available(const char *name)
 static int cli_mcp_add_server(char **text, const char *server)
 {
 	char *next = NULL;
-	int rc = cli_setup_config_mcp_add(*text, server, &next);
+	int rc = cli_setup_config_mcp_add_copy(*text, server, &next);
 	if (rc != 0)
 		return rc;
 	free(*text);
@@ -120,17 +120,18 @@ static int cli_mcp_add_desktop(char **text)
 		rc = morph_buf_printf(&server, "auto_connect = %s\nconnect_timeout = 120\n",
 				      uvx && (!found || python) ? "true" : "false");
 	if (rc == 0)
-		rc = cli_mcp_add_server(text, morph_buf_cstr(&server));
+		rc = cli_mcp_add_server(text, morph_buf_cstr_borrow(&server));
 	morph_buf_cleanup(&server);
 	return rc;
 }
 #endif
 
-int cli_setup_mcp_apply(const char *text, int role, char **out)
+int cli_setup_mcp_apply_copy(const char *text, int role, char **out)
 {
 	if (!out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	if (!text)
 		return -EINVAL;
 	char *current = strdup(text);

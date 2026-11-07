@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "util/cleanup.h"
 #include "agent/tool.h"
 #include "agent/guardrail.h"
 #include "config/config.h"
@@ -35,12 +36,12 @@ static tool_spec stability_spec(const char *name, tool_exec_fn fn, void *data = 
 
 static int rejected_tool(const char *, tool_result *out, void *)
 {
-	return tool_result_error(out, "invalid_arguments", "Rejected input");
+	return tool_result_error_copy(out, "invalid_arguments", "Rejected input");
 }
 
 static int conflicting_tool(const char *, tool_result *out, void *)
 {
-	tool_result_success_text(out, "must not be successful");
+	tool_result_success_text_copy(out, "must not be successful");
 	return -EACCES;
 }
 
@@ -59,9 +60,9 @@ TEST(Stability, ToolBusinessFailureAndConflictsAreNormalized)
 	auto rejected = stability_spec("reject", rejected_tool);
 	auto conflict = stability_spec("conflict", conflicting_tool);
 	auto malformed = stability_spec("malformed", malformed_tool);
-	ASSERT_EQ(tool_register(&reg, &rejected), 0);
-	ASSERT_EQ(tool_register(&reg, &conflict), 0);
-	ASSERT_EQ(tool_register(&reg, &malformed), 0);
+	ASSERT_EQ(tool_register_borrow(&reg, &rejected), 0);
+	ASSERT_EQ(tool_register_borrow(&reg, &conflict), 0);
+	ASSERT_EQ(tool_register_borrow(&reg, &malformed), 0);
 	EXPECT_EQ(tool_exec(&reg, "reject", "{}", &out), -EINVAL);
 	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(out.envelope, "ok")));
 	EXPECT_EQ(tool_exec(&reg, "conflict", "{}", &out), -EACCES);
@@ -96,7 +97,7 @@ static int blocking_binding(const char *, tool_result *out, void *opaque)
 	state->entered = true;
 	state->cond.notify_all();
 	state->cond.wait(lock, [&] { return state->release; });
-	return tool_result_success_text(out, "old binding");
+	return tool_result_success_text_copy(out, "old binding");
 }
 
 static void destroy_binding(void *opaque)
@@ -113,7 +114,7 @@ TEST(Stability, ExecutingBindingSurvivesUnregisterAndReplacement)
 	tool_registry_init(nullptr, &reg);
 	auto spec = stability_spec("versioned", blocking_binding, new binding_payload{&state});
 	spec.user_data_destroy = destroy_binding;
-	ASSERT_EQ(tool_register(&reg, &spec), 0);
+	ASSERT_EQ(tool_register_take(&reg, &spec), 0);
 	std::thread worker([&] {
 		tool_result out{};
 		tool_result_init(&out);
@@ -128,7 +129,7 @@ TEST(Stability, ExecutingBindingSurvivesUnregisterAndReplacement)
 	EXPECT_EQ(tool_unregister(&reg, "versioned"), 0);
 	EXPECT_EQ(state.destroyed.load(), 0);
 	auto replacement = stability_spec("versioned", rejected_tool);
-	EXPECT_EQ(tool_register(&reg, &replacement), 0);
+	EXPECT_EQ(tool_register_borrow(&reg, &replacement), 0);
 	{
 		std::lock_guard<std::mutex> lock(state.mutex);
 		state.release = true;
@@ -148,7 +149,7 @@ TEST(Stability, ChildRegistryRetainsParentOwnedBindings)
 	tool_registry_init(nullptr, &child);
 	auto spec = stability_spec("shared", blocking_binding, new binding_payload{&state});
 	spec.user_data_destroy = destroy_binding;
-	ASSERT_EQ(tool_register(&parent, &spec), 0);
+	ASSERT_EQ(tool_register_take(&parent, &spec), 0);
 	ASSERT_EQ(tool_registry_copy(&child, &parent), 0);
 	tool_registry_cleanup(&parent);
 	EXPECT_EQ(state.destroyed.load(), 0);
@@ -182,7 +183,7 @@ class StableTask : public ::testing::Test
 		input.trigger_type = "once";
 		input.next_run_at = 1;
 		input.payload_json = "{}";
-		scheduled_task task{};
+		scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
 		EXPECT_EQ(scheduled_task_create(&database, &input, &task), 0);
 		int64_t id = task.id;
 		scheduled_task_cleanup(&task);
@@ -209,7 +210,7 @@ TEST(Stability, LegacyScheduledTaskMigrationPreservesExistingRows)
 		0);
 	ASSERT_EQ(db_init_schema(&database), 0);
 	ASSERT_EQ(db_init_schema(&database), 0);
-	scheduled_task task{};
+	scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
 	ASSERT_EQ(scheduled_task_get(&database, 1, &task), 0);
 	EXPECT_STREQ(task.title, "legacy");
 	EXPECT_STREQ(task.status, "pending");
@@ -246,7 +247,7 @@ TEST_F(StableTask, ObserverFailureDoesNotUndoOrRepeatSuccessfulExecution)
 		  0);
 	EXPECT_EQ(calls, 1);
 	EXPECT_EQ(ran, 1);
-	scheduled_task task{};
+	scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
 	ASSERT_EQ(scheduled_task_get(&database, id, &task), 0);
 	EXPECT_STREQ(task.status, "completed");
 	scheduled_task_cleanup(&task);
@@ -319,14 +320,14 @@ TEST_F(StableTask, NotificationFailureRollsBackStateAndCleansInitializedOutput)
 		  0);
 	int calls = 0;
 	int count = 123;
-	notification *out = reinterpret_cast<notification *>(1);
+	notification *out = nullptr;
 	EXPECT_LT(scheduled_task_run_due_collect_with_runner(&database, 2, 10, successful_task,
 							     &calls, &out, &count),
 		  0);
 	EXPECT_EQ(out, nullptr);
 	EXPECT_EQ(count, 0);
 	EXPECT_EQ(calls, 1);
-	scheduled_task task{};
+	scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
 	ASSERT_EQ(scheduled_task_get(&database, id, &task), 0);
 	EXPECT_STREQ(task.status, "running");
 	EXPECT_EQ(task.attempts, 0);
@@ -346,7 +347,7 @@ TEST_F(StableTask, CancelledRunCannotOverwriteCancellation)
 	EXPECT_EQ(scheduled_task_run_due_with_runner(&database, 2, 10, cancel_running_task,
 						     &database, &ran),
 		  -ESTALE);
-	scheduled_task task{};
+	scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
 	ASSERT_EQ(scheduled_task_get(&database, id, &task), 0);
 	EXPECT_STREQ(task.status, "cancelled");
 	scheduled_task_cleanup(&task);
@@ -388,7 +389,7 @@ TEST(Stability, ChildIoDrainsStderrWhileSendingLargeInput)
 		  0);
 	EXPECT_TRUE(WIFEXITED(status));
 	EXPECT_EQ(WEXITSTATUS(status), 0);
-	EXPECT_STREQ(morph_buf_cstr(&out), "done");
+	EXPECT_STREQ(morph_buf_cstr_borrow(&out), "done");
 	EXPECT_NE(std::string(err.data + 1024).find("truncated"), std::string::npos);
 	close(output[0]);
 	close(errors[0]);
@@ -512,8 +513,8 @@ TEST(Stability, ReplacementRejectsFailedRegistryInitializationWithoutTakingOwner
 	spec.user_data = &destroyed;
 	spec.user_data_destroy = [](void *data) { ++*static_cast<int *>(data); };
 	reg.init_error = -ENOMEM;
-	EXPECT_EQ(tool_register_replace(&reg, &spec, TOOL_FLAG_DYNAMIC), -ENOMEM);
-	EXPECT_EQ(tool_lookup(&reg, "candidate"), nullptr);
+	EXPECT_EQ(tool_register_replace_take(&reg, &spec, TOOL_FLAG_DYNAMIC), -ENOMEM);
+	EXPECT_EQ(tool_borrow(&reg, "candidate"), nullptr);
 	tool_registry_cleanup(&reg);
 	EXPECT_EQ(destroyed, 0);
 }
@@ -529,7 +530,7 @@ TEST(Stability, AtomicFileReplacementPreservesModeAndRejectsSymlinks)
 	struct stat st{};
 	ASSERT_EQ(stat(path.c_str(), &st), 0);
 	EXPECT_EQ(st.st_mode & 0777, 0640);
-	char *text = file_read_all(path.c_str(), nullptr);
+	char *text = file_read_all_copy(path.c_str(), nullptr);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "new");
 	free(text);
@@ -585,7 +586,7 @@ TEST(Stability, AtomicFileWriteFailurePreservesCommittedContents)
 	ASSERT_EQ(waitpid(pid, &status, 0), pid);
 	ASSERT_TRUE(WIFEXITED(status));
 	EXPECT_EQ(WEXITSTATUS(status), 0);
-	char *contents = file_read_all(path.c_str(), nullptr);
+	char *contents = file_read_all_copy(path.c_str(), nullptr);
 	ASSERT_NE(contents, nullptr);
 	EXPECT_STREQ(contents, "committed");
 	free(contents);
@@ -707,7 +708,7 @@ TEST_F(StableTask, ObsoleteRunCannotOverwriteANewerCompletedGeneration)
 	EXPECT_EQ(scheduled_task_run_due_with_runner(&database, 2, 10, replace_running_generation,
 						     &database, &ran),
 		  -ESTALE);
-	scheduled_task task{};
+	scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
 	ASSERT_EQ(scheduled_task_get(&database, id, &task), 0);
 	EXPECT_STREQ(task.status, "completed");
 	EXPECT_EQ(task.attempts, 1);
@@ -733,9 +734,10 @@ TEST(Stability, OversizedMcpFrameDisconnectsInsteadOfGrowingWithoutBound)
 	std::string frame(MCP_STDIO_MAX_FRAME_BYTES, 'x');
 	ASSERT_EQ(morph_buf_append(&client.read_buffer, frame.data(), frame.size()), 0);
 	ASSERT_EQ(write(output[1], "x", 1), 1);
-	mcp_wire_request request{};
+	mcp_wire_request request MORPH_CLEANUP(mcp_wire_request_cleanup) = {};
 	request.id = 7;
-	request.json = "{}";
+	request.json = strdup("{}");
+	ASSERT_NE(request.json, nullptr);
 	mcp_wire_reply reply{};
 	EXPECT_EQ(mcp_stdio_exchange(&client, &request, 1000, &reply), -EFBIG);
 	EXPECT_EQ(reply.json, nullptr);

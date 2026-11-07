@@ -82,7 +82,7 @@ JSValue runner_throw_cap(JSContext *ctx, const char *cap)
 	return JS_ThrowTypeError(ctx, "dynamic tool capability denied: %s", cap ? cap : "unknown");
 }
 
-char *runner_authorize_path(JSContext *ctx, const char *path, int write)
+char *runner_authorize_path_copy(JSContext *ctx, const char *path, int write)
 {
 	const char *cap = write ? "fs_write" : "fs_read";
 	const char *allow_env =
@@ -115,7 +115,7 @@ char *runner_authorize_path(JSContext *ctx, const char *path, int write)
 		JS_ThrowOutOfMemory(ctx);
 		return NULL;
 	}
-	resolved = file_resolve_path(candidate);
+	resolved = file_resolve_path_copy(candidate);
 	free(candidate);
 	if (!resolved) {
 		JS_ThrowInternalError(ctx, "failed to resolve %s path", write ? "write" : "read");
@@ -281,7 +281,7 @@ static void print_exception(JSContext *ctx, int id)
 		if (morph_buf_puts(&buf, msg ? msg : "JavaScript exception") == 0 && stack_str &&
 		    *stack_str && morph_buf_puts(&buf, "\nStack:\n") == 0 &&
 		    morph_buf_puts(&buf, stack_str) == 0)
-			print_error_response(id, morph_buf_cstr(&buf));
+			print_error_response(id, morph_buf_cstr_borrow(&buf));
 		else
 			print_error_response(id, msg ? msg : "JavaScript exception");
 		morph_buf_cleanup(&buf);
@@ -305,7 +305,7 @@ static int check_script(JSContext *ctx, const char *path)
 	JSValue fn = JS_UNDEFINED;
 	int rc = 0;
 
-	source = file_read_all(path, &len);
+	source = file_read_all_copy(path, &len);
 	if (!source)
 		return -ENOENT;
 	val = JS_Eval(ctx, source, len, path, JS_EVAL_TYPE_GLOBAL);
@@ -346,7 +346,7 @@ static int run_script(JSContext *ctx, const char *path)
 	JSValue json = JS_UNDEFINED;
 	const char *json_str;
 
-	source = file_read_all(path, &source_len);
+	source = file_read_all_copy(path, &source_len);
 	if (!source)
 		return -ENOENT;
 	val = JS_Eval(ctx, source, source_len, path, JS_EVAL_TYPE_GLOBAL);

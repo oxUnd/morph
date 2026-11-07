@@ -7,7 +7,8 @@
 #include "util/file.h"
 #include "util/base64.h"
 #include "util/image_util.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "http/client.h"
@@ -25,23 +26,24 @@
 int image_provider_build_request_meta(const struct model *model, const char *path, morph_buf_t *url,
 				      morph_buf_t *auth)
 {
-	int rc;
-
-	if (!model || !path || !url || !auth)
+	if (!model || !path || !url || !auth || url == auth)
 		return -EINVAL;
-	rc = morph_buf_init(url, strlen(model->api_base) + strlen(path) + 1);
+	if (url->data || auth->data)
+		return -EEXIST;
+	morph_buf_t url_owner MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	morph_buf_t auth_owner MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int rc = morph_buf_init(&url_owner, strlen(model->api_base) + strlen(path) + 1);
+	if (rc == 0)
+		rc = morph_buf_init(&auth_owner, strlen(model->api_key) + 24);
+	if (rc == 0)
+		rc = morph_buf_printf(&url_owner, "%s%s", model->api_base, path);
+	if (rc == 0)
+		rc = morph_buf_printf(&auth_owner, "Authorization: Bearer %s", model->api_key);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_init(auth, strlen(model->api_key) + 24);
-	if (rc == 0)
-		rc = morph_buf_printf(url, "%s%s", model->api_base, path);
-	if (rc == 0)
-		rc = morph_buf_printf(auth, "Authorization: Bearer %s", model->api_key);
-	if (rc != 0) {
-		morph_buf_cleanup(url);
-		morph_buf_cleanup(auth);
-	}
-	return rc;
+	morph_buf_move(url, &url_owner);
+	morph_buf_move(auth, &auth_owner);
+	return 0;
 }
 
 int image_provider_post_json(struct model *model, const char *path, const char *label,
@@ -55,11 +57,13 @@ int image_provider_post_json(struct model *model, const char *path, const char *
 
 	if (!label || !body || !payload)
 		return -EINVAL;
+	if (payload->data)
+		return -EEXIST;
 	rc = image_provider_build_request_meta(model, path, &url, &auth);
 	if (rc != 0)
 		return rc;
-	headers[0] = morph_buf_cstr(&auth);
-	rc = http_post_ex_timeout(&model->http, morph_buf_cstr(&url), body, strlen(body),
+	headers[0] = morph_buf_cstr_borrow(&auth);
+	rc = http_post_ex_timeout(&model->http, morph_buf_cstr_borrow(&url), body, strlen(body),
 				  "application/json", headers, 1, model->timeout_seconds,
 				  &response);
 	morph_buf_cleanup(&auth);
@@ -134,7 +138,7 @@ static int download_url(const struct http_control *control, const char *url, con
 		http_response_free(&resp);
 		return MORPH_ERR_API;
 	}
-	const char *ext = image_gen_ext_from_content_type(morph_buf_cstr(&resp.headers));
+	const char *ext = image_gen_ext_from_content_type(morph_buf_cstr_borrow(&resp.headers));
 	if (!ext)
 		ext = image_gen_ext_from_magic((const unsigned char *)resp.body.data,
 					       resp.body.len);
@@ -241,10 +245,10 @@ static const struct image_provider_ops *image_provider_resolve(const struct mode
 	name = model->adapter[0] ? model->adapter : model->provider;
 	if (strcmp(name, "openai-images") == 0 ||
 	    (!model->adapter[0] && strcmp(name, "openai") == 0))
-		return image_openai_provider();
+		return image_openai_provider_borrow();
 	if (strcmp(name, "volcengine-images") == 0 ||
 	    (!model->adapter[0] && strcmp(name, "volcengine") == 0))
-		return image_volcengine_provider();
+		return image_volcengine_provider_borrow();
 	return NULL;
 }
 
@@ -291,7 +295,7 @@ void image_payload_cleanup(struct image_payload *payload)
 int image_provider_parse_response(struct model *model, const char *response_json,
 				  struct image_payload *payload)
 {
-	cJSON *root = NULL;
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	cJSON *data;
 	cJSON *first;
 	cJSON *value;
@@ -299,61 +303,61 @@ int image_provider_parse_response(struct model *model, const char *response_json
 
 	if (!response_json || !payload)
 		return -EINVAL;
-	memset(payload, 0, sizeof(*payload));
+	if (payload->data)
+		return -EEXIST;
+	struct image_payload parsed MORPH_CLEANUP(image_payload_cleanup) = {0};
 	root = cJSON_Parse(response_json);
 	if (!root)
 		return MORPH_ERR_PARSE;
 	data = cJSON_GetObjectItem(root, "data");
 	if (!cJSON_IsArray(data) || cJSON_GetArraySize(data) == 0) {
-		cJSON_Delete(root);
 		return MORPH_ERR_PROTOCOL;
 	}
 	first = cJSON_GetArrayItem(data, 0);
 	value = cJSON_GetObjectItem(first, "b64_json");
 	if (cJSON_IsString(value) && value->valuestring) {
-		payload->kind = IMAGE_PAYLOAD_BASE64;
-		payload->data = strdup(value->valuestring);
-		if (!payload->data) {
-			cJSON_Delete(root);
+		parsed.kind = IMAGE_PAYLOAD_BASE64;
+		parsed.data = strdup(value->valuestring);
+		if (!parsed.data) {
 			return -ENOMEM;
 		}
 	} else {
 		value = cJSON_GetObjectItem(first, "url");
 		if (cJSON_IsString(value) && value->valuestring) {
-			payload->kind = IMAGE_PAYLOAD_URL;
-			payload->data = strdup(value->valuestring);
-			if (!payload->data) {
-				cJSON_Delete(root);
+			parsed.kind = IMAGE_PAYLOAD_URL;
+			parsed.data = strdup(value->valuestring);
+			if (!parsed.data) {
 				return -ENOMEM;
 			}
 		}
 	}
-	if (!payload->data) {
-		cJSON_Delete(root);
+	if (!parsed.data) {
 		return MORPH_ERR_PROTOCOL;
 	}
 	value = cJSON_GetObjectItem(root, "output_format");
-	snprintf(payload->output_format, sizeof(payload->output_format), "%s",
+	snprintf(parsed.output_format, sizeof(parsed.output_format), "%s",
 		 cJSON_IsString(value) && value->valuestring ? value->valuestring : "png");
 	value = cJSON_GetObjectItem(root, "created");
 	if (cJSON_IsNumber(value))
-		payload->usage.created = (int64_t)value->valuedouble;
+		parsed.usage.created = (int64_t)value->valuedouble;
 	usage = cJSON_GetObjectItem(root, "usage");
 	if (cJSON_IsObject(usage)) {
 		value = cJSON_GetObjectItem(usage, "input_tokens");
 		if (cJSON_IsNumber(value))
-			payload->usage.input_tokens = (int64_t)value->valuedouble;
+			parsed.usage.input_tokens = (int64_t)value->valuedouble;
 		value = cJSON_GetObjectItem(usage, "output_tokens");
 		if (cJSON_IsNumber(value))
-			payload->usage.output_tokens = (int64_t)value->valuedouble;
+			parsed.usage.output_tokens = (int64_t)value->valuedouble;
 		value = cJSON_GetObjectItem(usage, "total_tokens");
 		if (cJSON_IsNumber(value))
-			payload->usage.total_tokens = (int64_t)value->valuedouble;
-		snprintf(payload->usage.usage_source, sizeof(payload->usage.usage_source), "api");
-		payload->has_usage = 1;
+			parsed.usage.total_tokens = (int64_t)value->valuedouble;
+		snprintf(parsed.usage.usage_source, sizeof(parsed.usage.usage_source), "api");
+		parsed.has_usage = 1;
 	}
-	cJSON_Delete(root);
+
 	(void)model;
+	*payload = parsed;
+	memset(&parsed, 0, sizeof(parsed));
 	return 0;
 }
 
@@ -370,7 +374,8 @@ static int image_materialize(const struct http_control *control,
 
 	if (!payload || !payload->data || !result)
 		return -EINVAL;
-	out_dir = file_expand_path(output_dir && output_dir[0] ? output_dir : "~/.morph/output");
+	out_dir =
+		file_expand_path_copy(output_dir && output_dir[0] ? output_dir : "~/.morph/output");
 	if (!out_dir)
 		return -ENOMEM;
 	rc = file_ensure_dir(out_dir);
@@ -382,7 +387,7 @@ static int image_materialize(const struct http_control *control,
 		if (rc != 0)
 			goto out;
 	} else {
-		decoded = base64_decode(payload->data, &decoded_len);
+		decoded = base64_decode_copy(payload->data, &decoded_len);
 		if (!decoded || decoded_len == 0) {
 			rc = MORPH_ERR_PARSE;
 			goto out;
@@ -424,9 +429,9 @@ int image_gen_create(struct model *self, const char *prompt, const char *style, 
 {
 	const struct image_provider_ops *ops;
 	struct image_capabilities caps;
-	struct image_payload payload;
+	struct image_payload payload MORPH_CLEANUP(image_payload_cleanup) = {0};
 	struct image_request request;
-	morph_buf_t prompt_buf;
+	morph_buf_t prompt_buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	char normalized_size[64];
 	int rc;
 
@@ -477,7 +482,7 @@ int image_gen_create(struct model *self, const char *prompt, const char *style, 
 		return rc;
 	}
 	memset(&request, 0, sizeof(request));
-	request.prompt = morph_buf_cstr(&prompt_buf);
+	request.prompt = morph_buf_cstr_borrow(&prompt_buf);
 	request.size = normalized_size;
 	request.reference_images = image_paths;
 	request.reference_image_count = image_count;

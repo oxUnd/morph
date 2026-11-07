@@ -1,4 +1,5 @@
 #include "skill.h"
+#include "util/cleanup.h"
 #include "skill_parse.h"
 #include "util/log.h"
 #include "util/file.h"
@@ -39,7 +40,7 @@ static int find_skill(struct skill_registry *reg, const char *name)
 
 	if (!reg || !name)
 		return -1;
-	e = (struct skill_entry *)morph_strmap_get(&reg->by_name, name);
+	e = (struct skill_entry *)morph_strmap_borrow(&reg->by_name, name);
 	if (e)
 		return (int)(e - reg->entries);
 	for (int i = 0; i < reg->count; i++) {
@@ -49,7 +50,7 @@ static int find_skill(struct skill_registry *reg, const char *name)
 	return -1;
 }
 
-struct skill_entry *skill_lookup(struct skill_registry *reg, const char *name)
+struct skill_entry *skill_borrow(struct skill_registry *reg, const char *name)
 {
 	if (!reg || !name)
 		return NULL;
@@ -74,7 +75,7 @@ int skill_discover_configured(struct skill_registry *reg, const char *workdir,
 
 		if (!project)
 			return -ENOMEM;
-		char *resolved = file_resolve_path(project);
+		char *resolved = file_resolve_path_copy(project);
 
 		rc = resolved ? skill_discover(reg, resolved) : -ENOMEM;
 		free(resolved);
@@ -85,7 +86,7 @@ int skill_discover_configured(struct skill_registry *reg, const char *workdir,
 	rc = skill_discover(reg, user_dir && *user_dir ? user_dir : "~/.morph/skills");
 	if (rc < 0)
 		return rc;
-	char *default_dir = file_expand_path("~/.morph/skills");
+	char *default_dir = file_expand_path_copy("~/.morph/skills");
 	int use_shared = !user_dir || !*user_dir ||
 		strcmp(user_dir, "~/.morph/skills") == 0 ||
 		(default_dir && strcmp(user_dir, default_dir) == 0);
@@ -104,7 +105,7 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 	if (!reg || !dir_path)
 		return -EINVAL;
 
-	char *expanded = file_expand_path(dir_path);
+	char *expanded = file_expand_path_copy(dir_path);
 	if (!expanded)
 		return -ENOMEM;
 
@@ -196,7 +197,7 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 		e->body = NULL;
 		e->body_loaded = 0;
 
-		(void)morph_strmap_set(&reg->by_name, e->fm.name, e);
+		(void)morph_strmap_set_borrow(&reg->by_name, e->fm.name, e);
 		reg->count++;
 		discovered++;
 		log_info(reg ? reg->logger : NULL, "skill_discover: found '%s'", fm.name);
@@ -257,8 +258,8 @@ static int skill_entry_compare(const void *left, const void *right)
 	return strcmp((*a)->fm.name, (*b)->fm.name);
 }
 
-int skill_sorted_entries(const struct skill_registry *reg,
-			 const struct skill_entry **entries, size_t capacity)
+int skill_sorted_entries_borrow(const struct skill_registry *reg,
+				const struct skill_entry **entries, size_t capacity)
 {
 	if (!reg || !entries)
 		return -EINVAL;
@@ -278,19 +279,20 @@ void skill_deactivate_all(struct skill_registry *reg)
 		skill_deactivate(&reg->entries[i]);
 }
 
-int skill_build_activated_instructions_checked(struct skill_registry *reg, char **out)
+int skill_activated_instructions_create(struct skill_registry *reg, char **out)
 {
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc;
 
 	if (!out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	if (!reg)
 		return 0;
 	const struct skill_entry *entries[SKILL_MAX_ENTRIES];
 
-	rc = skill_sorted_entries(reg, entries, SKILL_MAX_ENTRIES);
+	rc = skill_sorted_entries_borrow(reg, entries, SKILL_MAX_ENTRIES);
 	if (rc < 0)
 		return rc;
 	rc = morph_buf_init(&buf, 8192);
@@ -318,20 +320,12 @@ int skill_build_activated_instructions_checked(struct skill_registry *reg, char 
 	return rc;
 }
 
-char *skill_build_activated_instructions(struct skill_registry *reg)
-{
-	char *out = NULL;
-
-	(void)skill_build_activated_instructions_checked(reg, &out);
-	return out;
-}
-
 int skill_build_catalog(struct skill_registry *reg, char *buf, size_t buf_size)
 {
 	if (!reg || !buf || buf_size == 0)
 		return -EINVAL;
 	const struct skill_entry *entries[SKILL_MAX_ENTRIES];
-	int rc = skill_sorted_entries(reg, entries, SKILL_MAX_ENTRIES);
+	int rc = skill_sorted_entries_borrow(reg, entries, SKILL_MAX_ENTRIES);
 
 	if (rc < 0)
 		return rc;

@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-/* All collected strings belong to the caller's turn arena. */
+/* Collected strings are owned until environment_context_cleanup(). */
 struct environment_context {
 	const char *cwd;
 	const char *shell;
@@ -20,8 +20,9 @@ struct environment_context {
 	const char *sandbox;
 };
 
-int environment_context_collect(struct environment_context *out,
-	const struct prompt_context_input *input, struct arena *arena);
+int environment_context_create(struct environment_context *out,
+			       const struct prompt_context_input *input);
+void environment_context_cleanup(struct environment_context *ctx);
 /* Pure serialization; does not read environment variables or the OS. */
 int environment_context_render(const struct environment_context *ctx,
 	morph_buf_t *out);

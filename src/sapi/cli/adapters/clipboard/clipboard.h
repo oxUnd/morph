@@ -3,6 +3,8 @@
 
 struct cli_application;
 
+/* out_path must be NULL; success returns a malloc-owned path. Failure
+ * preserves out_path. The caller owns removal of the saved file. */
 int cli_clipboard_save_image(struct cli_application *ctx, char **out_path);
 
 enum cli_clipboard_copy_result {

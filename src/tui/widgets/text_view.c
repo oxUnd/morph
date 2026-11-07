@@ -4,8 +4,8 @@
 
 #include <string.h>
 
-int morph_tui_widget_text_layout_wrap(struct morph_tui_widget_text_layout *view, const char *text,
-				      size_t width)
+int morph_tui_widget_text_layout_wrap_borrow(struct morph_tui_widget_text_layout *view,
+					     const char *text, size_t width)
 {
 	if (!view || !text || !width)
 		return -EINVAL;
@@ -22,13 +22,13 @@ int morph_tui_widget_text_layout_wrap(struct morph_tui_widget_text_layout *view,
 
 	while (*start) {
 		const char *newline = strchr(start, '\n');
-		const char *end = utf8_advance_display_width(start, width);
+		const char *end = utf8_advance_display_width_borrow(start, width);
 
 		if (newline && newline < end)
 			end = newline;
 		if (end == start && *start != '\n')
-			end = utf8_advance_codepoints(start, 1);
-		struct morph_tui_widget_text_line *line = morph_array_push(&view->lines);
+			end = utf8_advance_codepoints_borrow(start, 1);
+		struct morph_tui_widget_text_line *line = morph_array_push_borrow(&view->lines);
 
 		if (!line)
 			return -ENOMEM;

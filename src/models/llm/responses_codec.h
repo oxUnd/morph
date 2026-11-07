@@ -3,6 +3,6 @@
 
 #include "codec.h"
 
-const struct llm_codec *llm_responses_codec(void);
+const struct llm_codec *llm_responses_codec_borrow(void);
 
 #endif

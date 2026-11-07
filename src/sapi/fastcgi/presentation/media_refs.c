@@ -1,4 +1,5 @@
 #include "sapi/fastcgi/presentation/media_refs.h"
+#include "util/cleanup.h"
 #include "sapi/fastcgi/services/turn_job_internal.h"
 #include "sapi/fastcgi/agent_bridge.h"
 #include "sapi/fastcgi/session_store.h"
@@ -18,7 +19,7 @@
 
 static const char *bridge_output_dir(struct fcgi_turn_job *j)
 {
-	return fcgi_artifact_output_dir(j->bridge);
+	return fcgi_artifact_output_dir_borrow(j->bridge);
 }
 
 static const char *artifact_mime(const char *kind, const char *path)
@@ -99,8 +100,8 @@ static void artifact_publish_ready(struct fcgi_turn_job *j, const struct fcgi_tu
 	free(json);
 }
 
-struct fcgi_turn_artifact *fcgi_media_artifact_get(struct fcgi_turn_job *j, const char *path,
-						   const char *kind)
+struct fcgi_turn_artifact *fcgi_media_artifact_borrow(struct fcgi_turn_job *j, const char *path,
+						      const char *kind)
 {
 	char rel[512];
 	char real[PATH_MAX];
@@ -112,7 +113,7 @@ struct fcgi_turn_artifact *fcgi_media_artifact_get(struct fcgi_turn_job *j, cons
 
 	if (!j || !path || !kind)
 		return NULL;
-	expanded = file_expand_path(path);
+	expanded = file_expand_path_copy(path);
 	if (!expanded)
 		return NULL;
 	if (stat(expanded, &st) != 0 || !S_ISREG(st.st_mode)) {
@@ -251,10 +252,10 @@ static int candidate_path(struct fcgi_turn_job *j, const char *token, char out[P
 	return 1;
 }
 
-char *fcgi_media_refs_render(struct fcgi_turn_job *j, const char *text)
+char *fcgi_media_refs_render_copy(struct fcgi_turn_job *j, const char *text)
 {
 	const char *p;
-	morph_buf_t out;
+	morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {0};
 
 	if (!text)
 		return strdup("");
@@ -289,7 +290,7 @@ char *fcgi_media_refs_render(struct fcgi_turn_job *j, const char *text)
 			morph_buf_append(&out, start, raw_len);
 			continue;
 		}
-		a = fcgi_media_artifact_get(j, path, kind);
+		a = fcgi_media_artifact_borrow(j, path, kind);
 		if (!a) {
 			morph_buf_append(&out, start, raw_len);
 			continue;
@@ -305,14 +306,14 @@ char *fcgi_media_refs_render(struct fcgi_turn_job *j, const char *text)
 	return morph_buf_detach(&out);
 }
 
-char *fcgi_media_refs_store(const char *text, void *user_data)
+char *fcgi_media_refs_store_copy(const char *text, void *user_data)
 {
-	return fcgi_media_refs_render((struct fcgi_turn_job *)user_data, text);
+	return fcgi_media_refs_render_copy((struct fcgi_turn_job *)user_data, text);
 }
 
-char *fcgi_media_refs_summary(struct fcgi_turn_job *j)
+char *fcgi_media_refs_summary_copy(struct fcgi_turn_job *j)
 {
-	morph_buf_t out;
+	morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {0};
 
 	if (!j || j->artifacts_count <= 0)
 		return NULL;

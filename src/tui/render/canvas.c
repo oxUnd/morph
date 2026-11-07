@@ -23,7 +23,8 @@ int morph_tui_surface_create(struct morph_tui_surface **out)
 {
 	if (!out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	struct morph_tui_surface *surface = calloc(1, sizeof(*surface));
 	struct render_canvas_cell cell;
 
@@ -44,7 +45,7 @@ void morph_tui_surface_destroy(struct morph_tui_surface *surface)
 	if (!surface)
 		return;
 	for (size_t i = 0; i < surface->cells.nelts; i++) {
-		struct render_canvas_cell *cell = morph_array_get(&surface->cells, i);
+		struct render_canvas_cell *cell = morph_array_borrow(&surface->cells, i);
 
 		morph_buf_cleanup(&cell->text);
 	}
@@ -87,7 +88,8 @@ int morph_tui_surface_resize(struct morph_tui_surface *surface, int width, int h
 
 	if (count > surface->cells.nelts) {
 		size_t added = count - surface->cells.nelts;
-		struct render_canvas_cell *cells = morph_array_push_n(&surface->cells, added);
+		struct render_canvas_cell *cells =
+			morph_array_push_n_borrow(&surface->cells, added);
 
 		if (!cells)
 			return -ENOMEM;
@@ -105,7 +107,7 @@ void morph_tui_surface_clear(struct morph_tui_surface *surface)
 		return;
 	surface->cursor_visible = 0;
 	for (size_t i = 0; i < surface->cells.nelts; i++) {
-		struct render_canvas_cell *cell = morph_array_get(&surface->cells, i);
+		struct render_canvas_cell *cell = morph_array_borrow(&surface->cells, i);
 
 		morph_buf_reset(&cell->text);
 		cell->span = 1;
@@ -113,7 +115,8 @@ void morph_tui_surface_clear(struct morph_tui_surface *surface)
 	}
 }
 
-void morph_tui_canvas_root(struct morph_tui_surface *surface, struct morph_tui_canvas *canvas)
+void morph_tui_canvas_root_borrow(struct morph_tui_surface *surface,
+				  struct morph_tui_canvas *canvas)
 {
 	*canvas = (struct morph_tui_canvas){
 		.surface = surface,
@@ -124,8 +127,8 @@ void morph_tui_canvas_root(struct morph_tui_surface *surface, struct morph_tui_c
 	};
 }
 
-void morph_tui_canvas_child(const struct morph_tui_canvas *parent, int x, int y, int width,
-			    int height, struct morph_tui_canvas *child)
+void morph_tui_canvas_child_borrow(const struct morph_tui_canvas *parent, int x, int y, int width,
+				   int height, struct morph_tui_canvas *child)
 {
 	*child = *parent;
 	int64_t left = (int64_t)parent->x + x, top = (int64_t)parent->y + y;
@@ -155,7 +158,7 @@ void morph_tui_canvas_child(const struct morph_tui_canvas *parent, int x, int y,
 static struct render_canvas_cell *render_canvas_cell(struct morph_tui_surface *surface, int x,
 						     int y)
 {
-	return morph_array_get(&surface->cells, (size_t)y * (size_t)surface->width + (size_t)x);
+	return morph_array_borrow(&surface->cells, (size_t)y * (size_t)surface->width + (size_t)x);
 }
 
 static void render_canvas_erase(struct morph_tui_surface *surface, int x, int y)

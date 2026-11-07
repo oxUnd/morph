@@ -54,8 +54,9 @@ TEST(ModelInputSnapshotTest, UsesAdapterWireFieldsWithoutHeadersOrGenerationOpti
 		message.role = const_cast<char *>("user");
 		message.content = const_cast<char *>("visible input 中文");
 		cJSON *input = nullptr;
-		ASSERT_EQ(model_input_snapshot(&model, "system instructions", &message, 1,
-			nullptr, 0, &input), 0);
+		ASSERT_EQ(model_input_snapshot_create(&model, "system instructions", &message, 1,
+						      nullptr, 0, &input),
+			  0);
 		bool responses = std::string(adapter) == "openai-responses";
 		EXPECT_TRUE(cJSON_IsArray(cJSON_GetObjectItem(input, responses ? "input" : "messages")));
 		EXPECT_EQ(cJSON_HasObjectItem(input, "instructions"), responses);

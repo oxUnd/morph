@@ -1,4 +1,6 @@
 #include "config_write.h"
+#include "util/json.h"
+#include "util/cleanup.h"
 #include "agent/tool_context.h"
 #include "agent/patch.h"
 #include "util/file.h"
@@ -37,8 +39,8 @@ static int path_equal_config(const char *path, const char *config_path)
 
 	if (!path || !config_path)
 		return 0;
-	a = file_expand_path(path);
-	b = file_expand_path(config_path);
+	a = file_expand_path_copy(path);
+	b = file_expand_path_copy(config_path);
 	if (!a || !b) {
 		free(a);
 		free(b);
@@ -168,8 +170,8 @@ static int build_content_from_patch(const char *old_content,
 	if (rc == 0)
 		rc = patch_apply(temp_dir, patch, &patch_result,
 			error, error_size);
-	change = patch_result.changes.nelts == 1 ?
-		morph_array_get(&patch_result.changes, 0) : NULL;
+	change = patch_result.changes.nelts == 1 ? morph_array_borrow(&patch_result.changes, 0)
+						 : NULL;
 	if (rc == 0 && (!change || change->action != PATCH_ACTION_UPDATE ||
 			strcmp(change->path, CONFIG_EDIT_PATCH_FILE) != 0)) {
 		snprintf(error, error_size,
@@ -177,7 +179,7 @@ static int build_content_from_patch(const char *old_content,
 		rc = -EACCES;
 	}
 	if (rc == 0) {
-		*out = file_read_all(stage_path, NULL);
+		*out = file_read_all_copy(stage_path, NULL);
 		if (!*out)
 			rc = -EIO;
 	}
@@ -244,7 +246,7 @@ static int atomic_write_config(const char *path, const char *content,
 static int content_unchanged(const char *path, int existed,
 			     const char *expected)
 {
-	char *current = file_read_all(path, NULL);
+	char *current = file_read_all_copy(path, NULL);
 	int unchanged;
 
 	if (!existed) {
@@ -285,13 +287,13 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 	if (!result)
 		return -EINVAL;
 	if (!ctx || !ctx->config_path[0]) {
-		(void)tool_result_error(result, "tool_failed",
+		(void)tool_result_error_copy(result, "tool_failed",
 					     "config_edit is not configured");
 		return MORPH_ERR_NOT_CONFIGURED;
 	}
 	root = cJSON_Parse(args_json);
 	if (!root) {
-		(void)tool_result_error(result, "tool_failed", "invalid JSON");
+		(void)tool_result_error_copy(result, "tool_failed", "invalid JSON");
 		return -EINVAL;
 	}
 	cJSON *path_item = cJSON_GetObjectItem(root, "path");
@@ -299,8 +301,8 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 	cJSON *patch_item = cJSON_GetObjectItem(root, "patch");
 	cJSON *reason_item = cJSON_GetObjectItem(root, "reason");
 	if (cJSON_IsString(content_item) && cJSON_IsString(patch_item)) {
-		rc = tool_result_error(result, "tool_failed",
-			"provide only one of 'patch' or 'content'");
+		rc = tool_result_error_copy(result, "tool_failed",
+					    "provide only one of 'patch' or 'content'");
 		rc = rc != 0 ? rc : -EINVAL;
 		goto out;
 	}
@@ -308,17 +310,18 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		path_item->valuestring : ctx->config_path;
 	reason = cJSON_IsString(reason_item) ? reason_item->valuestring : "";
 	if (!reason[0]) {
-		rc = tool_result_error(result, "tool_failed", "missing 'reason' parameter");
+		rc = tool_result_error_copy(result, "tool_failed", "missing 'reason' parameter");
 		rc = rc != 0 ? rc : -EINVAL;
 		goto out;
 	}
 	if (!path_equal_config(path, ctx->config_path)) {
-		rc = tool_result_error(result, "tool_failed",
+		rc = tool_result_error_copy(
+			result, "tool_failed",
 			"config_edit can only edit the active Morph config file");
 		rc = rc != 0 ? rc : -EACCES;
 		goto out;
 	}
-	target_expanded = file_expand_path(ctx->config_path);
+	target_expanded = file_expand_path_copy(ctx->config_path);
 	if (!target_expanded) {
 		rc = -ENOMEM;
 		goto out;
@@ -326,20 +329,21 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 	if (lstat(target_expanded, &target_stat) == 0) {
 		if (S_ISLNK(target_stat.st_mode) ||
 		    !S_ISREG(target_stat.st_mode)) {
-			rc = tool_result_error(result, "tool_failed",
+			rc = tool_result_error_copy(
+				result, "tool_failed",
 				"active config must be a regular file, not a symlink");
 			rc = rc != 0 ? rc : -ELOOP;
 			goto out;
 		}
 		if (target_stat.st_size > (off_t)CONFIG_EDIT_MAX_SIZE) {
-			rc = tool_result_error(result, "tool_failed",
-				"active config is too large to edit safely");
+			rc = tool_result_error_copy(result, "tool_failed",
+						    "active config is too large to edit safely");
 			rc = rc != 0 ? rc : -EFBIG;
 			goto out;
 		}
 		existed = 1;
 		mode = target_stat.st_mode & 0777;
-		old_content = file_read_all(target_expanded, NULL);
+		old_content = file_read_all_copy(target_expanded, NULL);
 		if (!old_content) {
 			rc = -errno;
 			goto out;
@@ -356,7 +360,7 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 	}
 	if (cJSON_IsString(content_item) && content_item->valuestring) {
 		if (strlen(content_item->valuestring) > CONFIG_EDIT_MAX_SIZE) {
-			rc = tool_result_error(result, "tool_failed", "content too large");
+			rc = tool_result_error_copy(result, "tool_failed", "content too large");
 			rc = rc != 0 ? rc : -EFBIG;
 			goto out;
 		}
@@ -367,8 +371,8 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		}
 	} else if (cJSON_IsString(patch_item) && patch_item->valuestring) {
 		if (!existed) {
-			rc = tool_result_error(result, "tool_failed",
-				"patch mode requires an existing config file");
+			rc = tool_result_error_copy(result, "tool_failed",
+						    "patch mode requires an existing config file");
 			rc = rc != 0 ? rc : -ENOENT;
 			goto out;
 		}
@@ -376,30 +380,30 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		rc = build_content_from_patch(old_content, patch, &new_content,
 			errbuf, sizeof(errbuf));
 		if (rc != 0) {
-			(void)tool_result_errorf(result, "tool_failed",
-				"invalid config patch: %s",
-				errbuf[0] ? errbuf : morph_strerror(rc));
+			(void)tool_result_error_format(result, "tool_failed",
+						       "invalid config patch: %s",
+						       errbuf[0] ? errbuf : morph_strerror(rc));
 			goto out;
 		}
 	} else {
-		rc = tool_result_error(result, "tool_failed",
-			"provide 'patch' or complete 'content'");
+		rc = tool_result_error_copy(result, "tool_failed",
+					    "provide 'patch' or complete 'content'");
 		rc = rc != 0 ? rc : -EINVAL;
 		goto out;
 	}
 	if (strlen(new_content) > CONFIG_EDIT_MAX_SIZE) {
-		rc = tool_result_error(result, "tool_failed", "content too large");
+		rc = tool_result_error_copy(result, "tool_failed", "content too large");
 		rc = rc != 0 ? rc : -EFBIG;
 		goto out;
 	}
 	rc = validate_config_content(new_content, errbuf, sizeof(errbuf));
 	if (rc < 0) {
-		(void)tool_result_errorf(result, "tool_failed",
-					      "invalid configuration: %s", errbuf);
+		(void)tool_result_error_format(result, "tool_failed", "invalid configuration: %s",
+					       errbuf);
 		goto out;
 	}
 	if (strcmp(old_content, new_content) == 0) {
-		cJSON *data = cJSON_CreateObject();
+		cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
 
 		if (!data) {
 			rc = -ENOMEM;
@@ -409,12 +413,12 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		cJSON_AddBoolToObject(data, "changed", 0);
 		cJSON_AddBoolToObject(data, "validated", 1);
 		cJSON_AddBoolToObject(data, "restart_required", 0);
-		rc = tool_result_success(result, data);
+		rc = tool_result_success_take(result, &data);
 		goto out;
 	}
 	if (!ctx->tctx) {
-		rc = tool_result_error(result, "tool_failed",
-			"config_edit requires an approval context");
+		rc = tool_result_error_copy(result, "tool_failed",
+					    "config_edit requires an approval context");
 		rc = rc != 0 ? rc : -EACCES;
 		goto out;
 	}
@@ -430,8 +434,8 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		};
 		rc = tool_context_check_operation(ctx->tctx, &op);
 		if (rc < 0) {
-			(void)tool_result_error(result, "tool_failed",
-				"config edit denied or not approved");
+			(void)tool_result_error_copy(result, "tool_failed",
+						     "config edit denied or not approved");
 			goto out;
 		}
 	}
@@ -455,8 +459,8 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		goto out;
 	}
 	if (!content_unchanged(target_expanded, existed, old_content)) {
-		rc = tool_result_error(result, "tool_failed",
-			"config changed during approval; inspect it and retry");
+		rc = tool_result_error_copy(result, "tool_failed",
+					    "config changed during approval; inspect it and retry");
 		rc = rc != 0 ? rc : -EAGAIN;
 		goto out;
 	}
@@ -468,7 +472,7 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 	rc = atomic_write_config(target_expanded, new_content, mode);
 	if (rc != 0)
 		goto out;
-	written_content = file_read_all(target_expanded, NULL);
+	written_content = file_read_all_copy(target_expanded, NULL);
 	if (!written_content ||
 	    validate_config_content(written_content, errbuf,
 				    sizeof(errbuf)) != 0) {
@@ -481,12 +485,14 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		else
 			rollback_rc = unlink(target_expanded) == 0 ? 0 : -errno;
 		if (rollback_rc != 0) {
-			(void)tool_result_errorf(result, "tool_failed",
+			(void)tool_result_error_format(
+				result, "tool_failed",
 				"config verification and rollback failed: %s",
 				morph_strerror(rollback_rc));
 			rc = rollback_rc;
 		} else {
-			(void)tool_result_error(result, "tool_failed",
+			(void)tool_result_error_copy(
+				result, "tool_failed",
 				"written config failed verification and was rolled back");
 			rc = failure;
 		}
@@ -494,7 +500,7 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 	}
 	{
 		cJSON *out_json = cJSON_CreateObject();
-		char *out_str;
+		char *out_str MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
 		if (!out_json) {
 			rc = -ENOMEM;
 			goto out;
@@ -512,7 +518,7 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 			"configuration edited safely; restart Morph to apply it");
 		out_str = cJSON_PrintUnformatted(out_json);
 		cJSON_Delete(out_json);
-		(void)tool_result_success_json_text(result, out_str);
+		(void)tool_result_success_json_text_copy(result, out_str);
 	}
 
 out:
@@ -532,34 +538,31 @@ int config_edit_init(struct tool_registry *reg, struct tool_context *tctx,
 		     const char *config_path)
 {
 	struct config_edit_context *ctx;
-	struct tool_spec spec = {
+	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.name = "config_edit",
-		.description =
-			"Safely edit the active Morph config after user approval. "
-			"Prefer patch mode to preserve comments and formatting. The "
-			"patch must use the Codex patch envelope and update only "
-			"config.toml. The result is schema-validated, backed up, and "
-			"atomically replaced. A Morph restart is required. Prefer "
-			"api_key_env over API key values.",
-		.input_schema =
-			"{\"type\":\"object\",\"properties\":{"
-			"\"path\":{\"type\":\"string\",\"description\":"
-			"\"Optional config path; must match the active Morph config\"},"
-			"\"reason\":{\"type\":\"string\",\"description\":"
-			"\"Human-readable reason shown for approval\"},"
-			"\"patch\":{\"type\":\"string\",\"description\":"
-			"\"Codex patch updating only config.toml\"},"
-			"\"content\":{\"type\":\"string\",\"description\":"
-			"\"Complete TOML fallback for creating a config\"}},"
-			"\"required\":[\"reason\"],"
-			"\"oneOf\":[{\"required\":[\"patch\"]},"
-			"{\"required\":[\"content\"]}],"
-			"\"additionalProperties\":false}",
+		.description = "Safely edit the active Morph config after user approval. "
+			       "Prefer patch mode to preserve comments and formatting. The "
+			       "patch must use the Codex patch envelope and update only "
+			       "config.toml. The result is schema-validated, backed up, and "
+			       "atomically replaced. A Morph restart is required. Prefer "
+			       "api_key_env over API key values.",
+		.input_schema = "{\"type\":\"object\",\"properties\":{"
+				"\"path\":{\"type\":\"string\",\"description\":"
+				"\"Optional config path; must match the active Morph config\"},"
+				"\"reason\":{\"type\":\"string\",\"description\":"
+				"\"Human-readable reason shown for approval\"},"
+				"\"patch\":{\"type\":\"string\",\"description\":"
+				"\"Codex patch updating only config.toml\"},"
+				"\"content\":{\"type\":\"string\",\"description\":"
+				"\"Complete TOML fallback for creating a config\"}},"
+				"\"required\":[\"reason\"],"
+				"\"oneOf\":[{\"required\":[\"patch\"]},"
+				"{\"required\":[\"content\"]}],"
+				"\"additionalProperties\":false}",
 		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
 		.exec = config_edit_exec,
-		.user_data_destroy = config_edit_context_destroy
-	};
+		.user_data_destroy = config_edit_context_destroy};
 	int rc;
 
 	if (!reg || !config_path || !config_path[0])
@@ -570,13 +573,11 @@ int config_edit_init(struct tool_registry *reg, struct tool_context *tctx,
 	ctx->tctx = tctx;
 	strncpy(ctx->config_path, config_path, sizeof(ctx->config_path) - 1);
 	spec.user_data = ctx;
-	rc = tool_register(reg, &spec);
-	if (rc < 0) {
-		free(ctx);
+	rc = tool_register_take(reg, &spec);
+	if (rc < 0)
 		return rc;
-	}
 	{
-		struct tool_entry *e = tool_lookup(reg, "config_edit");
+		struct tool_entry *e = tool_borrow(reg, "config_edit");
 		if (e)
 			e->flags |= TOOL_FLAG_INTERNAL_APPROVAL;
 	}

@@ -27,7 +27,7 @@ void runtime_engine_cleanup(struct runtime_engine *engine)
 		memset(&engine->turn_state, 0, sizeof(engine->turn_state));
 }
 
-struct react_context *runtime_engine_active_react(struct runtime_engine *engine)
+struct react_context *runtime_engine_active_react_borrow(struct runtime_engine *engine)
 {
 	if (!engine)
 		return NULL;

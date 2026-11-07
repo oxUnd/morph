@@ -176,7 +176,7 @@ static void runtime_apply_tool_flags(struct tool_registry *tools, const struct c
 	if (!tools || !config)
 		return;
 	for (int i = 0; i < config->react.readonly_tools_count; i++) {
-		struct tool_entry *entry = tool_lookup(tools, config->react.readonly_tools[i]);
+		struct tool_entry *entry = tool_borrow(tools, config->react.readonly_tools[i]);
 		if (entry)
 			entry->flags |= TOOL_FLAG_READONLY;
 	}
@@ -206,13 +206,13 @@ static void runtime_apply_guardrails(struct react_context *react, const struct c
 						: cr->ext_type,
 					cr->ext_entry, cr->action_text);
 		struct guardrail_rule *configured =
-			guardrail_rule_lookup(&react->guardrail, cr->name);
+			guardrail_rule_borrow(&react->guardrail, cr->name);
 		if (configured != NULL) {
 			configured->block_on_error = !strcmp(cr->on_error, "block");
 		}
 		if (strcmp(cr->ext_type, "so") == 0) {
 			struct guardrail_rule *r =
-				guardrail_rule_lookup(&react->guardrail, cr->name);
+				guardrail_rule_borrow(&react->guardrail, cr->name);
 			if (r) {
 				r->ext_type = GUARDRAIL_EXT_SO;
 				guardrail_ext_so_load(react ? react->logger : NULL, r);
@@ -296,10 +296,10 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 	if (profile->workdir && profile->workdir[0])
 		models->react->workdir = strdup(profile->workdir);
 	if (config->context.compaction_prompt_file[0]) {
-		char *path = file_expand_path(config->context.compaction_prompt_file);
+		char *path = file_expand_path_copy(config->context.compaction_prompt_file);
 
 		if (path)
-			models->react->history_compaction_prompt = file_read_all(path, NULL);
+			models->react->history_compaction_prompt = file_read_all_copy(path, NULL);
 		if (!models->react->history_compaction_prompt)
 			log_warn(profile ? profile->logger : NULL,
 				 "cannot read compaction prompt '%s'; using built-in",
@@ -434,7 +434,7 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 		}
 	}
 	if (config->skill.dir[0]) {
-		char *dir = file_expand_path(config->skill.dir);
+		char *dir = file_expand_path_copy(config->skill.dir);
 
 		if (!dir)
 			return -ENOMEM;
@@ -563,6 +563,8 @@ int runtime_bootstrap_sub_agents(struct runtime_bootstrap_profile *profile,
 
 	if (!profile || !profile->config || !profile->models || !out)
 		return -EINVAL;
+	if (*out)
+		return -EEXIST;
 	if (!profile->enable_sub_agents || profile->config->sub_agents.count == 0)
 		return 0;
 	rt = sub_agent_runtime_create(profile->tools, profile->models->text,
@@ -649,6 +651,8 @@ void runtime_bootstrap_cleanup(struct runtime_shutdown_resources *r)
 	}
 	if (r->tools)
 		tool_registry_cleanup(r->tools);
+	/* Join process workers while their callback context and database remain alive. */
+	exec_tool_jobs_release(r->jobs_owner);
 	if (r->tool_context && *r->tool_context) {
 		tool_context_destroy(*r->tool_context);
 		*r->tool_context = NULL;

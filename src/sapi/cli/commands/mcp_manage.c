@@ -266,7 +266,7 @@ static int cli_mcp_manage_mcp_headers(const toml_datum_t *node, const toml_datum
 		while (*line == ' ' || *line == '\t')
 			line++;
 		if (node->lineno > 0 && *line == '[' && !(node->flag & TOML_FLAG_INLINED)) {
-			struct cli_mcp_manage_mcp_header *header = morph_array_push(headers);
+			struct cli_mcp_manage_mcp_header *header = morph_array_push_borrow(headers);
 
 			if (!header)
 				return -ENOMEM;
@@ -317,9 +317,9 @@ static int cli_mcp_manage_mcp_without_server(const toml_result_t *parsed,
 		qsort(headers.elts, headers.nelts, headers.size, cli_mcp_manage_mcp_header_compare);
 		for (size_t i = 0; i < headers.nelts; i++) {
 			const struct cli_mcp_manage_mcp_header *header =
-				morph_array_get(&headers, i);
+				morph_array_borrow(&headers, i);
 			const struct cli_mcp_manage_mcp_header *next =
-				morph_array_get(&headers, i + 1);
+				morph_array_borrow(&headers, i + 1);
 			const char *start;
 			const char *end;
 
@@ -437,7 +437,7 @@ static int cli_mcp_manage_mcp_apply(struct morph_log *logger,
 				    const struct cli_mcp_manage_mcp_options *options, int argc,
 				    char **argv, const char *path)
 {
-	char *text = file_read_all(path, NULL);
+	char *text = file_read_all_copy(path, NULL);
 	toml_result_t parsed = {0};
 	toml_datum_t servers = {0};
 	const toml_datum_t *selected = NULL;
@@ -506,11 +506,11 @@ static int cli_mcp_manage_mcp_apply(struct morph_log *logger,
 	if (rc == 0 && add)
 		rc = cli_mcp_manage_mcp_build(options, argc, argv, &output);
 	if (rc == 0)
-		rc = config_validate_text(morph_buf_cstr(&output), &error);
+		rc = config_validate_text(morph_buf_cstr_borrow(&output), &error);
 	if (rc != 0 && error.message[0])
 		fprintf(stderr, "morph: invalid config: %s\n", error.message);
 	if (rc == 0)
-		rc = cli_management_atomic_write(path, morph_buf_cstr(&output), output.len);
+		rc = cli_management_atomic_write(path, morph_buf_cstr_borrow(&output), output.len);
 	if (rc == 0)
 		printf("%s MCP server '%s' in %s (user scope).\n", remove ? "Removed" : "Saved",
 		       options->name, path);
@@ -543,7 +543,7 @@ int cli_mcp_manage_run(struct morph_log *logger, int argc, char **argv, const ch
 		cli_mcp_manage_mcp_usage();
 		return 2;
 	}
-	path = file_expand_path(options.config ? options.config : "~/.morph/config.toml");
+	path = file_expand_path_copy(options.config ? options.config : "~/.morph/config.toml");
 	if (!path)
 		return cli_management_error(-ENOMEM, "configuration path");
 	lock_path = file_path_append_alloc(path, ".lock");

@@ -29,7 +29,7 @@ static int append_context(struct hook_manager *manager, morph_buf_t *context,
 	if (utf8valid(text))
 		return MORPH_ERR_PROTOCOL;
 	if (entry->context_limit > 0 && tokenizer_estimate_tokens(text) > entry->context_limit) {
-		directory = file_expand_path(manager->config->general.output_dir);
+		directory = file_expand_path_copy(manager->config->general.output_dir);
 		if (!directory)
 			return -ENOMEM;
 		rc = file_ensure_dir(directory);
@@ -82,7 +82,7 @@ int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const
 		       morph_buf_t *context, morph_buf_t *reason, cJSON **updated, int *blocked,
 		       int *ask, int *terminate)
 {
-	const char *text = morph_buf_cstr(&run->out);
+	const char *text = morph_buf_cstr_borrow(&run->out);
 	const char *feedback = "";
 	cJSON *root;
 	const cJSON *specific;
@@ -93,7 +93,7 @@ int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const
 	if (run->rc < 0)
 		return run->rc;
 	if (run->exit_code == 2) {
-		feedback = morph_buf_cstr(&run->err);
+		feedback = morph_buf_cstr_borrow(&run->err);
 		deny = strcmp(event, "PreToolUse") == 0 || strcmp(event, "Stop") == 0 ||
 		       strcmp(event, "UserPromptSubmit") == 0 || strcmp(event, "PostToolUse") == 0;
 		if (deny) {
@@ -125,7 +125,7 @@ int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const
 	}
 	specific = cJSON_GetObjectItemCaseSensitive(root, "hookSpecificOutput");
 	if (specific && (!cJSON_IsObject(specific) ||
-			 strcmp(hook_json_string(specific, "hookEventName"), event) != 0)) {
+			 strcmp(hook_json_string_borrow(specific, "hookEventName"), event) != 0)) {
 		cJSON_Delete(root);
 		return MORPH_ERR_PROTOCOL;
 	}
@@ -145,17 +145,18 @@ int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const
 		return 0;
 	}
 	if (strcmp(event, "PreToolUse") == 0) {
-		const char *decision = hook_json_string(specific, "permissionDecision");
+		const char *decision = hook_json_string_borrow(specific, "permissionDecision");
 		if (*decision && strcmp(decision, "deny") != 0 && strcmp(decision, "allow") != 0 &&
 		    strcmp(decision, "ask") != 0)
 			rc = MORPH_ERR_PROTOCOL;
 		if (strcmp(decision, "ask") == 0)
 			*ask = 1;
 		deny = strcmp(decision, "deny") == 0 ||
-		       strcmp(hook_json_string(root, "decision"), "block") == 0;
-		feedback = deny ? hook_json_string(specific, "permissionDecisionReason") : "";
+		       strcmp(hook_json_string_borrow(root, "decision"), "block") == 0;
+		feedback =
+			deny ? hook_json_string_borrow(specific, "permissionDecisionReason") : "";
 		if (!*feedback)
-			feedback = hook_json_string(root, "reason");
+			feedback = hook_json_string_borrow(root, "reason");
 		replacement = cJSON_GetObjectItemCaseSensitive(specific, "updatedInput");
 		if (replacement) {
 			if (strcmp(decision, "allow") != 0 || !cJSON_IsObject(replacement)) {
@@ -175,7 +176,7 @@ int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const
 	} else if (strcmp(event, "Stop") == 0 || strcmp(event, "UserPromptSubmit") == 0 ||
 		   strcmp(event, "PostToolUse") == 0 || strcmp(event, "SessionStart") == 0 ||
 		   strcmp(event, "PreCompact") == 0 || strcmp(event, "PostCompact") == 0) {
-		deny = strcmp(hook_json_string(root, "decision"), "block") == 0 ||
+		deny = strcmp(hook_json_string_borrow(root, "decision"), "block") == 0 ||
 		       cJSON_IsFalse(cont);
 		if (strcmp(event, "PreCompact") == 0 || strcmp(event, "PostCompact") == 0 ||
 		    strcmp(event, "SessionStart") == 0)
@@ -185,13 +186,13 @@ int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const
 		if (strcmp(event, "PostToolUse") == 0 &&
 		    (suppress || cJSON_HasObjectItem(specific, "updatedMCPToolOutput")))
 			rc = MORPH_ERR_PROTOCOL;
-		feedback = hook_json_string(root, "reason");
+		feedback = hook_json_string_borrow(root, "reason");
 		if (!*feedback)
-			feedback = hook_json_string(root, "stopReason");
+			feedback = hook_json_string_borrow(root, "stopReason");
 	}
 	if (rc == 0 && strcmp(event, "PreCompact") != 0 && strcmp(event, "PostCompact") != 0)
 		rc = append_context(manager, context, run->entry,
-				    hook_json_string(specific, "additionalContext"));
+				    hook_json_string_borrow(specific, "additionalContext"));
 	if (rc == 0 && deny) {
 		*blocked = 1;
 		rc = morph_buf_printf(reason, "%s\n",

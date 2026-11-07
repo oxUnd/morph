@@ -79,7 +79,7 @@ static int cli_resume_page(struct cli_application *ctx, struct session *list, in
 							    list[i].created_at);
 		if (rc == 0) {
 			snprintf(number, sizeof(number), "%d", i - start + 1);
-			cli_list_row(ctx, number, list[i].name, morph_buf_cstr(&metadata),
+			cli_list_row(ctx, number, list[i].name, morph_buf_cstr_borrow(&metadata),
 				     list[i].id == current_id, i == end - 1, cli_list_columns());
 		}
 		morph_buf_cleanup(&metadata);
@@ -231,7 +231,7 @@ static int cli_resume_frame(morph_buf_t *frame, struct session *list, int count,
 			if (rc != 0)
 				break;
 			cli_resume_cell(frame, layout, row, layout->tokens_column, 12,
-					morph_buf_cstr(&tokens), metadata, 1);
+					morph_buf_cstr_borrow(&tokens), metadata, 1);
 		}
 		if (layout->updated_column) {
 			morph_buf_reset(&tokens);
@@ -240,7 +240,8 @@ static int cli_resume_frame(morph_buf_t *frame, struct session *list, int count,
 			if (rc != 0)
 				break;
 			cli_resume_cell(frame, layout, row, layout->updated_column, 14,
-					morph_buf_cstr(&tokens) + strlen(" · "), metadata, 0);
+					morph_buf_cstr_borrow(&tokens) + strlen(" · "), metadata,
+					0);
 		}
 	}
 	if (layout->rows >= 6) {
@@ -420,7 +421,7 @@ int cli_resume_show(struct cli_application *ctx)
 	if (count == 0)
 		CMD_OK(ctx, "no sessions to resume");
 	if (count > 0 && cli_setup_controls_available(stdin, stdout)) {
-		if (cli_application_tui(ctx)) {
+		if (cli_application_tui_borrow(ctx)) {
 			rc = cli_resume_present(ctx, list, count);
 			if (rc)
 				runtime_session_list_free(list);

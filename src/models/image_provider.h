@@ -43,22 +43,30 @@ struct image_provider_ops {
 			    struct image_capabilities *caps);
 	int (*normalize_size)(const struct model *model, const char *size,
 			      char *out, size_t out_cap);
+	/* payload starts empty; failure preserves it. Occupied: -EEXIST. */
 	int (*execute)(struct model *model, const struct image_request *request,
 		       struct image_payload *payload);
 };
 
-const struct image_provider_ops *image_openai_provider(void);
-const struct image_provider_ops *image_volcengine_provider(void);
+/* Immutable process-lifetime provider views; never free the returned tables. */
+const struct image_provider_ops *image_openai_provider_borrow(void);
+const struct image_provider_ops *image_volcengine_provider_borrow(void);
+/* Both output buffers must be empty and distinct. Success fills both owners;
+ * failure preserves both. Occupied output: -EEXIST. */
 int image_provider_build_request_meta(const struct model *model, const char *path, morph_buf_t *url,
 				      morph_buf_t *auth);
 /* Borrows body for the call; provider request construction and ownership stay
- * with the caller. label identifies the provider in HTTP error diagnostics. */
+ * with the caller. payload must be empty; failure leaves it unchanged.
+ * label identifies the provider in HTTP error diagnostics. */
 int image_provider_post_json(struct model *model, const char *path, const char *label,
 			     const char *body, struct image_payload *payload);
-int image_volcengine_build_request_body(const struct model *model,
-					const struct image_request *request,
-					char **body_out);
+/* Borrow request/model for this call. *body_out must be NULL; success returns an
+ * owned body for cJSON_free. Failure preserves it; occupied output: -EEXIST. */
+int image_volcengine_request_body_create(const struct model *model,
+					 const struct image_request *request, char **body_out);
 
+/* Borrow response_json for the call; payload must have no owned data. Success
+ * creates an independent owner; failure preserves it. Occupied: -EEXIST. */
 int image_provider_parse_response(struct model *model,
 				  const char *response_json,
 				  struct image_payload *payload);

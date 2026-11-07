@@ -113,7 +113,7 @@ static int append_command(const char *source, TSNode node,
 	const char *base;
 	size_t len;
 
-	command = morph_array_push(&result->commands);
+	command = morph_array_push_borrow(&result->commands);
 	if (!command)
 		return -ENOMEM;
 	memset(command, 0, sizeof(*command));
@@ -222,12 +222,12 @@ void bash_parse_result_cleanup(struct bash_parse_result *result)
 	result->has_error = 0;
 }
 
-const struct bash_parse_command *bash_parse_first_command(
-	const struct bash_parse_result *result)
+const struct bash_parse_command *
+bash_parse_first_command_borrow(const struct bash_parse_result *result)
 {
 	if (!result || result->commands.nelts == 0)
 		return NULL;
-	return morph_array_get(&result->commands, 0);
+	return morph_array_borrow(&result->commands, 0);
 }
 
 static int copy_first_field(const char *source, char *out, size_t out_size,
@@ -244,7 +244,7 @@ static int copy_first_field(const char *source, char *out, size_t out_size,
 	rc = bash_parse_analyze(source, &result);
 	if (rc != 0)
 		return rc;
-	command = bash_parse_first_command(&result);
+	command = bash_parse_first_command_borrow(&result);
 	if (!command || result.has_error) {
 		rc = -ENOENT;
 	} else {

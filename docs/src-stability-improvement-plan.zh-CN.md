@@ -144,13 +144,13 @@ P1 表示优先处理的数据一致性、资源生命周期或关键执行错�
 
 ### R01：工具结果的业务状态与返回码不一致（P1，已复现）
 
-位置：`src/agent/tool.c:tool_result_error()`、`tool_exec()`；
+位置：`src/agent/tool.c:tool_result_error_copy()`、`tool_exec()`；
 `src/agent/react.c:async_tool_exec()`、`react_record_tool_observation()`。
 
-现状：`tool_result_error()` 在成功构造错误 envelope 后返回 0；部分工具直接
+现状：`tool_result_error_copy()` 在成功构造错误 envelope 后返回 0；部分工具直接
 返回该值。`tool_exec()` 返回执行函数的 rc，ReAct 又根据 rc 判断成功或失败。
 
-探针行为：注册一个直接返回 `tool_result_error()` 的工具，再通过 `tool_exec()`
+探针行为：注册一个直接返回 `tool_result_error_copy()` 的工具，再通过 `tool_exec()`
 执行，观察到 `rc=0`，但结果为 `{"ok":false,"error":...}`。
 
 影响：模型虽然能够看到错误文本，执行事件、失败计数和依赖 rc 的 guardrail
@@ -181,7 +181,7 @@ P1 表示优先处理的数据一致性、资源生命周期或关键执行错�
 提交的成功任务重新标为待执行。初始 claim 事件失败也需要明确继续/退出语义。
 
 同时检查：通知数组 slot 在 runner 或数据库失败前是否已初始化。当前
-`morph_array_push()` 不清零，错误清理却会释放各 slot 的 `body`；正式修改前应
+`morph_array_push_borrow()` 不清零，错误清理却会释放各 slot 的 `body`；正式修改前应
 通过数据库失败注入验证，避免失败路径读取或释放未初始化字段。
 
 状态取消与旧执行结果覆盖属于后续条件更新问题，见 R10；本项不直接承诺外部
@@ -217,7 +217,7 @@ react、工具注册表和 output userdata，工具上下文还携带数据库�
 
 ### R04：工具注册、注销与执行缺少稳定引用边界（P1，源码确认，竞争待复现）
 
-位置：`src/agent/tool.c:tool_lookup()`、`tool_exec()`、`tool_unregister()`；
+位置：`src/agent/tool.c:tool_borrow()`、`tool_exec()`、`tool_unregister()`；
 `src/agent/tools/dynamic_tools.c:tool_delete_exec()`、注册/回滚路径；
 `src/agent/react.c:react_start_tool_calls()`。
 
@@ -405,9 +405,9 @@ Doxygen 说明 `\brief`、`\param[in]` / `\param[out]` / `\param[in,out]`、
 | --- | --- |
 | tool_exec | 短锁内 retain，锁外执行，完成后 release；最后引用销毁 user_data |
 | tool_unregister | 移除可发现性和注册引用；已开始执行保持有效；析构在短锁外 |
-| tool_register_replace | 预分配描述符后原子发布，失败不接管传入 user_data |
+| tool_register_replace_borrow | 预分配描述符后原子发布，失败不接管传入 user_data |
 | tool_register_copy / tool_registry_copy | 复制 owned 描述符并共享保活绑定；目标由调用者独占；部分失败仍需 cleanup |
-| tool_lookup | 借用视图，需要外部独占或 tool_registry_lock；mutation 后失效 |
+| tool_borrow | 借用视图，需要外部独占或 tool_registry_lock；mutation 后失效 |
 | ReAct / discovery 描述符 | 在锁内复制，后续使用 owned snapshot |
 
 动态工具管理操作通过独立 mutation mutex 串行化文件及注册变更，普通工具执行

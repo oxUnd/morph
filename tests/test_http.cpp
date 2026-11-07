@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "http/client.h"
+#include "util/cleanup.h"
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
@@ -24,7 +25,7 @@ TEST_F(HttpTest, InitCleanup) {
 }
 
 TEST_F(HttpTest, GetInvalid) {
-	struct http_response resp;
+	struct http_response resp MORPH_CLEANUP(http_response_free) = {};
 	int rc = http_get(NULL, "http://127.0.0.1:1/nonexistent", &resp);
 	EXPECT_NE(rc, 0);
 }
@@ -39,12 +40,12 @@ TEST_F(HttpTest, ResponseFreeNull) {
 }
 
 TEST_F(HttpTest, GetNullUrl) {
-	struct http_response resp;
+	struct http_response resp MORPH_CLEANUP(http_response_free) = {};
 	EXPECT_NE(http_get(NULL, nullptr, &resp), 0);
 }
 
 TEST_F(HttpTest, PostNullUrl) {
-	struct http_response resp;
+	struct http_response resp MORPH_CLEANUP(http_response_free) = {};
 	EXPECT_NE(http_post(NULL, nullptr, "", 0, "", &resp), 0);
 }
 
@@ -74,7 +75,7 @@ TEST_F(HttpTest, PostTimeoutReturnsTimedOut) {
 	char url[128];
 	snprintf(url, sizeof(url), "http://127.0.0.1:%u/",
 		 static_cast<unsigned>(ntohs(addr.sin_port)));
-	struct http_response resp = {};
+	struct http_response resp MORPH_CLEANUP(http_response_free) = {};
 	int rc = http_post_ex_timeout(NULL, url, "{}", 2, "application/json", nullptr, 0, 1, &resp);
 
 	EXPECT_EQ(rc, -ETIMEDOUT);
@@ -246,7 +247,7 @@ TEST_F(HttpSessionTest, SessionNullArgs) {
 
 TEST_F(HttpSessionTest, BodyAndStatus) {
 	ASSERT_EQ(http_session_init(NULL, &session), 0);
-	const char *body = http_session_body(&session, nullptr);
+	const char *body = http_session_body_borrow(&session, nullptr);
 	ASSERT_NE(body, nullptr);
 	EXPECT_EQ(body[0], '\0');
 	EXPECT_EQ(http_session_status(&session), 0);
@@ -256,8 +257,7 @@ TEST_F(HttpSessionTest, BodyAndStatus) {
 /* ----- http_response with morph_buf_t ----- */
 
 TEST_F(HttpTest, ResponseFreeWithMorphBuf) {
-	struct http_response resp;
-	memset(&resp, 0, sizeof(resp));
+	struct http_response resp MORPH_CLEANUP(http_response_free) = {};
 	EXPECT_EQ(resp.body.data, nullptr);
 	EXPECT_EQ(resp.headers.data, nullptr);
 	EXPECT_NO_FATAL_FAILURE(http_response_free(&resp));
@@ -314,4 +314,29 @@ TEST_F(HttpTest, SessionAndMultipartPreserveTimeoutErrors)
 		http_session_cleanup(&session);
 		EXPECT_EQ(rc, -ETIMEDOUT);
 	}
+}
+
+TEST_F(HttpTest, RequestsPreserveOccupiedResponseWithoutStartingTransfer)
+{
+	struct http_response response = {};
+	ASSERT_EQ(morph_buf_init(&response.body, 16), 0);
+	ASSERT_EQ(morph_buf_puts(&response.body, "owned"), 0);
+	response.status_code = 201;
+	char *saved = response.body.data;
+	const char *url = "http://127.0.0.1:1/";
+	EXPECT_EQ(http_get(nullptr, url, &response), -EEXIST);
+	EXPECT_EQ(http_get_ex_timeout_limit(nullptr, url, nullptr, 0, 1, 16, &response), -EEXIST);
+	EXPECT_EQ(http_post(nullptr, url, "", 0, nullptr, &response), -EEXIST);
+	EXPECT_EQ(http_post_ex(nullptr, url, "", 0, nullptr, nullptr, 0, &response), -EEXIST);
+	EXPECT_EQ(http_post_ex_timeout(nullptr, url, "", 0, nullptr, nullptr, 0, 1, &response),
+		  -EEXIST);
+	http_multipart_part part{};
+	part.name = "field";
+	part.value = "input";
+	EXPECT_EQ(http_post_multipart_ex(nullptr, url, &part, 1, nullptr, 0, 1, &response),
+		  -EEXIST);
+	EXPECT_EQ(response.body.data, saved);
+	EXPECT_STREQ(response.body.data, "owned");
+	EXPECT_EQ(response.status_code, 201);
+	http_response_free(&response);
 }

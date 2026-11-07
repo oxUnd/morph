@@ -19,6 +19,7 @@ struct image_result {
 	int height;
 };
 
+/* Classifiers and adapter-name queries return immutable process-lifetime labels. */
 const char *image_gen_ext_from_content_type(const char *headers);
 const char *image_gen_ext_from_magic(const unsigned char *data, size_t len);
 int image_gen_validate_size(const char *size);

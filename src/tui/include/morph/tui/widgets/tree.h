@@ -3,7 +3,6 @@
 
 #include <morph/tui/layout.h>
 #include <morph/tui/widgets/list.h>
-#include "util/arena.h"
 #include "util/array.h"
 #include <stdint.h>
 
@@ -19,13 +18,12 @@ struct morph_tui_widget_tree_node {
 	size_t first_child;
 	size_t last_child;
 	size_t next_sibling;
-	const char *label;
-	const char *description;
+	char *label;
+	char *description;
 	int expanded;
 };
 
 struct morph_tui_widget_tree {
-	struct arena *arena;
 	morph_array_t nodes;
 	morph_array_t visible;
 	struct morph_tui_widget_list_state list;

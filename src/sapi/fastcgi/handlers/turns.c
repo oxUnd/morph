@@ -8,7 +8,7 @@
 
 void handle_post_turn(request_t *request)
 {
-	const char *session_id = path_param(request, "id");
+	const char *session_id = path_param_borrow(request, "id");
 	char *body = NULL;
 	size_t body_length = 0;
 	struct fcgi_turn_receipt receipt;

@@ -1,6 +1,8 @@
 #include "util/signals.h"
 #include "sandbox/permission.h"
 #include "util/child_io.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "ext.h"
 #include "loader.h"
 #include "util/file.h"
@@ -23,57 +25,60 @@ int ext_load(struct morph_log *logger, struct ext *ex, const char *dir_path)
 {
 	if (!ex || !dir_path)
 		return -EINVAL;
-	memset(ex, 0, sizeof(*ex));
-	ex->logger = logger;
-	strncpy(ex->path, dir_path, sizeof(ex->path) - 1);
-
+	if (ex->dl_handle || ex->run || ex->enabled || ex->manifest.input_schema ||
+	    ex->manifest.output_schema || ex->manifest.fronts || ex->manifest.categories ||
+	    ex->manifest.allowed_paths || ex->manifest.allowed_env ||
+	    ex->manifest.allowed_mach_services)
+		return -EEXIST;
+	struct ext loaded MORPH_CLEANUP(ext_unload) = {0};
+	if (strlen(dir_path) >= sizeof(loaded.path))
+		return -ENAMETOOLONG;
+	loaded.logger = logger;
+	memcpy(loaded.path, dir_path, strlen(dir_path) + 1);
 	char manifest_path[PATH_MAX];
-	snprintf(manifest_path, sizeof(manifest_path), "%s/manifest.toml", dir_path);
-
-	struct stat st;
-	if (stat(manifest_path, &st) != 0) {
-		snprintf(manifest_path, sizeof(manifest_path),
-			 "%s/morph-ext.toml", dir_path);
-		if (stat(manifest_path, &st) != 0) {
+	int rc = file_path_join(manifest_path, sizeof(manifest_path), dir_path, "manifest.toml");
+	if (rc != 0)
+		return rc;
+	struct stat info;
+	if (stat(manifest_path, &info) != 0) {
+		rc = file_path_join(manifest_path, sizeof(manifest_path), dir_path,
+				    "morph-ext.toml");
+		if (rc != 0)
+			return rc;
+		if (stat(manifest_path, &info) != 0) {
+			rc = morph_error_from_errno(errno);
 			log_err(logger, "ext manifest not found in: %s", dir_path);
-			return -ENOENT;
+			return rc;
 		}
 	}
-
-	int rc = manifest_parse_file(logger, manifest_path, &ex->manifest);
-	if (rc < 0) {
-		log_err(logger, "failed to parse ext manifest: %s", manifest_path);
+	rc = manifest_parse_file(logger, manifest_path, &loaded.manifest);
+	if (rc != 0)
+		return rc;
+	if (strcmp(loaded.manifest.type, "exec") == 0)
+		rc = ext_load_exec(&loaded, dir_path);
+	else if (strcmp(loaded.manifest.type, "so") == 0)
+		rc = ext_load_so(&loaded, dir_path);
+	else {
+		log_warn(logger, "unknown ext type: %s", loaded.manifest.type);
+		rc = -EINVAL;
+	}
+	if (rc != 0) {
+		log_err(logger, "ext_load: failed to load %s: %s", loaded.manifest.name,
+			morph_strerror(rc));
 		return rc;
 	}
-
-	if (strcmp(ex->manifest.type, "exec") == 0) {
-		rc = ext_load_exec(ex, dir_path);
-		if (rc < 0) {
-			log_err(logger, "ext_load: failed to load exec ext %s: %d",
-				ex->manifest.name, rc);
-			return rc;
-		}
-	} else if (strcmp(ex->manifest.type, "so") == 0) {
-		rc = ext_load_so(ex, dir_path);
-		if (rc < 0) {
-			log_err(logger, "ext_load: failed to load so ext %s: %d", ex->manifest.name,
-				rc);
-			return rc;
-		}
-	} else {
-		log_warn(logger, "unknown ext type: %s", ex->manifest.type);
-	}
-
-	if (!ex->manifest.input_schema || !ex->manifest.output_schema)
+	if (!loaded.manifest.input_schema || !loaded.manifest.output_schema)
 		return -EINVAL;
+	loaded.enabled = 1;
+	*ex = loaded;
+	memset(&loaded, 0, sizeof(loaded));
+	/* Embedded descriptor views must refer to the destination's inline arrays. */
 	ex->tool_desc.name = ex->manifest.name;
 	ex->tool_desc.title = "";
 	ex->tool_desc.description = ex->manifest.description;
 	ex->tool_desc.input_schema = ex->manifest.input_schema;
 	ex->tool_desc.output_schema = ex->manifest.output_schema;
 	ex->tool_desc.input_format = "";
-
-	ex->enabled = 1;
 	return 0;
 }
 
@@ -145,7 +150,7 @@ static char *ext_resolve_sandbox_path(const char *path)
 	char *absolute;
 	char *resolved;
 
-	expanded = file_expand_path(path);
+	expanded = file_expand_path_copy(path);
 	if (!expanded)
 		return NULL;
 	if (file_path_is_absolute(expanded)) {
@@ -160,76 +165,81 @@ static char *ext_resolve_sandbox_path(const char *path)
 		if (!absolute)
 			return NULL;
 	}
-	resolved = file_resolve_path(absolute);
+	resolved = file_resolve_path_copy(absolute);
 	free(absolute);
 	return resolved;
 }
 
 void ext_sandbox_config_cleanup(struct sandbox_config *config)
 {
-	if (!config)
-		return;
-	for (int i = 0; i < config->read_paths_count; i++)
-		free(config->read_paths[i]);
-	free(config->read_paths);
-	memset(config, 0, sizeof(*config));
+	sandbox_config_cleanup(config);
 }
 
-int ext_sandbox_config_prepare(const struct ext *ex,
-			       struct sandbox_config *config)
+int ext_sandbox_config_prepare(const struct ext *ex, struct sandbox_config *config)
 {
-	char **read_paths;
-	int count;
-
-	if (!ex || !config)
+	if (!ex || !config || ex->manifest.allowed_paths_count < 0)
 		return -EINVAL;
-	count = ex->manifest.allowed_paths_count;
-	read_paths = calloc((size_t)count + 1, sizeof(*read_paths));
-	if (!read_paths)
-		return -ENOMEM;
-	memset(config, 0, sizeof(*config));
-	config->logger = ex->logger;
-	config->read_paths = read_paths;
-	read_paths[0] = ext_resolve_sandbox_path(ex->path);
-	if (!read_paths[0]) {
-		ext_sandbox_config_cleanup(config);
-		return -ENOENT;
-	}
-	config->read_paths_count = 1;
-	for (int i = 0; i < count; i++) {
-		read_paths[i + 1] = ext_resolve_sandbox_path(
-			ex->manifest.allowed_paths[i]);
-		if (!read_paths[i + 1]) {
-			ext_sandbox_config_cleanup(config);
+	if (config->owned_paths.read.elts || config->owned_paths.write.elts ||
+	    config->owned_paths.remove.elts)
+		return -EEXIST;
+	struct sandbox_config prepared MORPH_CLEANUP(sandbox_config_cleanup) = {0};
+	struct sandbox_path_set paths MORPH_CLEANUP(sandbox_path_set_cleanup) = {0};
+	int count = ex->manifest.allowed_paths_count;
+	int rc = morph_array_init(&paths.read, (size_t)count + 1, sizeof(*prepared.read_paths));
+	if (rc == 0)
+		rc = morph_array_init(&paths.write, (size_t)count + 1,
+				      sizeof(*prepared.read_paths));
+	if (rc == 0)
+		rc = morph_array_init(&paths.remove, (size_t)count + 1,
+				      sizeof(*prepared.read_paths));
+	if (rc != 0)
+		return rc;
+	for (int i = 0; i <= count; i++) {
+		const char *source = i ? ex->manifest.allowed_paths[i - 1] : ex->path;
+		char *resolved MORPH_CLEANUP(morph_charp_cleanup) =
+			ext_resolve_sandbox_path(source);
+		if (!resolved)
 			return -ENOENT;
+		char **slot = morph_array_push_borrow(&paths.read);
+		if (!slot)
+			return -ENOMEM;
+		*slot = morph_charp_steal(&resolved);
+		if (i && (ex->manifest.permissions & EXT_PERM_FILESYS)) {
+			const char *path = *slot;
+			char **write = morph_array_push_borrow(&paths.write);
+			if (!write)
+				return -ENOMEM;
+			*write = strdup(path);
+			if (!*write)
+				return -ENOMEM;
+			char **remove = morph_array_push_borrow(&paths.remove);
+			if (!remove)
+				return -ENOMEM;
+			*remove = strdup(path);
+			if (!*remove)
+				return -ENOMEM;
 		}
-		config->read_paths_count++;
 	}
-
-	config->permissions = ex->manifest.permissions;
-	config->path_policy_enabled = 1;
-	if (ex->manifest.permissions & EXT_PERM_FILESYS) {
-		config->write_paths = read_paths + 1;
-		config->write_paths_count = count;
-		config->delete_paths = read_paths + 1;
-		config->delete_paths_count = count;
-	}
-	config->network_access =
-		!!(ex->manifest.permissions & EXT_PERM_NETWORK);
-	config->process_exec = !!(ex->manifest.permissions & EXT_PERM_EXEC);
-	config->allow_pty = !!(ex->manifest.permissions & EXT_PERM_PTY);
-	config->allow_process_info =
-		!!(ex->manifest.permissions & EXT_PERM_PROCESS_INFO);
-	config->allow_ipc = !!(ex->manifest.permissions & EXT_PERM_IPC);
-	config->allow_temp = !!(ex->manifest.permissions & EXT_PERM_TEMP);
-	config->allowed_env = ex->manifest.allowed_env;
-	config->allowed_env_count = ex->manifest.allowed_env_count;
-	config->allowed_mach_services = ex->manifest.allowed_mach_services;
-	config->allowed_mach_services_count =
-		ex->manifest.allowed_mach_services_count;
-	config->max_memory_mb = ex->manifest.max_memory_mb;
-	config->max_cpu_seconds = ex->manifest.max_cpu_seconds;
-	config->max_open_files = ex->manifest.max_open_files;
+	prepared.logger = ex->logger;
+	prepared.path_policy_enabled = 1;
+	sandbox_config_paths_move(&prepared, &paths);
+	prepared.permissions = ex->manifest.permissions;
+	prepared.path_policy_enabled = 1;
+	prepared.network_access = !!(ex->manifest.permissions & EXT_PERM_NETWORK);
+	prepared.process_exec = !!(ex->manifest.permissions & EXT_PERM_EXEC);
+	prepared.allow_pty = !!(ex->manifest.permissions & EXT_PERM_PTY);
+	prepared.allow_process_info = !!(ex->manifest.permissions & EXT_PERM_PROCESS_INFO);
+	prepared.allow_ipc = !!(ex->manifest.permissions & EXT_PERM_IPC);
+	prepared.allow_temp = !!(ex->manifest.permissions & EXT_PERM_TEMP);
+	prepared.allowed_env = ex->manifest.allowed_env;
+	prepared.allowed_env_count = ex->manifest.allowed_env_count;
+	prepared.allowed_mach_services = ex->manifest.allowed_mach_services;
+	prepared.allowed_mach_services_count = ex->manifest.allowed_mach_services_count;
+	prepared.max_memory_mb = ex->manifest.max_memory_mb;
+	prepared.max_cpu_seconds = ex->manifest.max_cpu_seconds;
+	prepared.max_open_files = ex->manifest.max_open_files;
+	*config = prepared;
+	memset(&prepared, 0, sizeof(prepared));
 	return 0;
 }
 
@@ -237,7 +247,7 @@ int ext_sandbox_config_prepare(const struct ext *ex,
  * \brief Execute a borrowed extension with optional cooperative cancellation.
  * \param[in] ex: Loaded extension; caller keeps it alive until return.
  * \param[in] args_json: Borrowed JSON input until return.
- * \param[out] result_json: Owned JSON to free, initialized to NULL on entry.
+ * \param[out] result_json: Empty owner slot; caller frees returned JSON, including diagnostics.
  * \param[in] cancelled: Optional synchronous predicate; native code must cooperate.
  * \param[in] user: Borrowed cancellation context until return.
  * \return Zero on success, negative error otherwise; output may contain diagnostics.
@@ -245,11 +255,10 @@ int ext_sandbox_config_prepare(const struct ext *ex,
 int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 		       int (*cancelled)(void *), void *user, const struct sandbox_config *limits)
 {
-	if (result_json != NULL) {
-		*result_json = NULL;
-	}
 	if (!ex || !args_json || !result_json)
 		return -EINVAL;
+	if (*result_json)
+		return -EEXIST;
 	if (cancelled != NULL && cancelled(user)) {
 		return -ECANCELED;
 	}
@@ -314,26 +323,21 @@ int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 			if (sandbox_close_inherited_fds() != 0)
 				_exit(126);
 
-			struct sandbox_config sb_cfg;
+			struct sandbox_config sb_cfg MORPH_CLEANUP(sandbox_config_cleanup) = {0};
 
 			if (ext_sandbox_config_prepare(ex, &sb_cfg) != 0)
 				_exit(126);
-			struct sandbox_config owned_config = sb_cfg;
 
-			if (limits) {
-				struct arena *permission_arena = arena_create(0);
-
-				if (!permission_arena || sandbox_permission_intersect(
-				    &sb_cfg, limits, permission_arena) != 0)
-					_exit(126);
-				/* The child replaces its image immediately after sandbox setup. */
+			if (limits && sandbox_permission_intersect(&sb_cfg, limits) != 0) {
+				sandbox_config_cleanup(&sb_cfg);
+				_exit(126);
 			}
 
 			if (sandbox_enter(&sb_cfg) != 0) {
-				ext_sandbox_config_cleanup(&owned_config);
+				sandbox_config_cleanup(&sb_cfg);
 				_exit(126);
 			}
-			ext_sandbox_config_cleanup(&owned_config);
+			sandbox_config_cleanup(&sb_cfg);
 
 			execlp(ex->exec_path, ex->exec_path, (char *)NULL);
 			_exit(127);
@@ -349,7 +353,8 @@ int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 		req.method = "run";
 		req.params_json = args_json;
 
-		char *request_str = jsonrpc_build_request(&req);
+		char *request_str MORPH_CLEANUP(morph_json_text_cleanup) =
+			jsonrpc_request_create(&req);
 		if (!request_str) {
 			close(stdin_pipe[1]);
 			close(stdout_pipe[0]);
@@ -360,7 +365,9 @@ int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 			return -ENOMEM;
 		}
 
-		morph_buf_t request = {0}, output = {0}, errors = {0};
+		morph_buf_t request MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		morph_buf_t errors MORPH_CLEANUP(morph_buf_cleanup) = {0};
 		rc = morph_buf_init(&request, strlen(request_str) + 2);
 		if (rc == 0) {
 			rc = morph_buf_puts(&request, request_str);
@@ -374,11 +381,11 @@ int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 		if (rc == 0) {
 			rc = morph_buf_init(&errors, BUFSIZ);
 		}
-		free(request_str);
+		morph_json_text_cleanup(&request_str);
 		int status = 0;
 		if (rc == 0) {
 			rc = morph_child_exchange(pid, stdin_pipe[1], stdout_pipe[0],
-						  stderr_pipe[0], morph_buf_cstr(&request),
+						  stderr_pipe[0], morph_buf_cstr_borrow(&request),
 						  request.len, 300000, 1024 * 1024, cancelled, user,
 						  &output, &errors, &status);
 		} else {
@@ -430,8 +437,8 @@ int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 		free(child_stderr);
 
 		/* Parse JSON-RPC response and extract result field */
-		struct jsonrpc_response jr;
-		int parse_rc = jsonrpc_parse_response(raw_response, &jr);
+		struct jsonrpc_response jr = {0};
+		int parse_rc = jsonrpc_response_copy(raw_response, &jr);
 		free(raw_response);
 
 		if (parse_rc < 0) {
@@ -446,18 +453,19 @@ int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 						    jr.error_message != NULL
 							    ? jr.error_message
 							    : "Extension protocol error")) {
-				*result_json = cJSON_PrintUnformatted(error);
+				char *text MORPH_CLEANUP(morph_json_text_cleanup) =
+					morph_json_print_copy(error);
+				if (text)
+					*result_json = strdup(text);
 			}
 			cJSON_Delete(error);
 			jsonrpc_response_free(&jr);
 			return *result_json == NULL ? -ENOMEM : MORPH_ERR_PROTOCOL;
 		}
 
-		*result_json = jr.result_json ? jr.result_json : strdup("{}");
-		/* ownership transferred, do not free result_json */
-		jr.result_json = NULL;
+		*result_json = strdup(jr.result_json ? jr.result_json : "{}");
 		jsonrpc_response_free(&jr);
-		return 0;
+		return *result_json ? 0 : -ENOMEM;
 	}
 
 	log_info(ex ? ex->logger : NULL, "ext_run: no run function for %s", ex->manifest.name);

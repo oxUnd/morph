@@ -2,26 +2,34 @@
 #include "runtime/hooks.h"
 #include "util/error.h"
 #include "util/sha256.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
-int runtime_hooks_snapshot(struct runtime *runtime, cJSON **out)
+int runtime_hooks_snapshot_copy(struct runtime *runtime, cJSON **out)
 {
+	cJSON *snapshot MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	int rc;
 
 	if (!runtime || !out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	pthread_mutex_lock(&runtime->context.execution_lock);
 	rc = hook_manager_reload(&runtime->context.hooks);
 	if (rc == 0) {
-		*out = hook_manager_list(&runtime->context.hooks);
-		if (!*out)
+		snapshot = hook_manager_list(&runtime->context.hooks);
+		if (!snapshot)
 			rc = -ENOMEM;
 	}
 	pthread_mutex_unlock(&runtime->context.execution_lock);
+	if (rc == 0) {
+		*out = snapshot;
+		snapshot = NULL;
+	}
 	return rc;
 }
 

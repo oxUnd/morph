@@ -2,6 +2,7 @@
 
 #include "agent/tools/scheduled_tasks.h"
 #include "runtime/task_worker.h"
+#include "util/cleanup.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -10,22 +11,27 @@
 int runtime_tasks_execute(struct runtime *runtime, const char *args_json,
 			  int64_t now, char **out_json)
 {
-	struct tool_result result;
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {0};
+	char *json MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	int rc;
 
 	if (!runtime || !out_json)
 		return -EINVAL;
-	*out_json = NULL;
+	if (*out_json)
+		return -EEXIST;
 	(void)scheduled_tasks_tool_set_time_anchor(&runtime->context.tools, now);
 	(void)scheduled_tasks_tool_set_source_session(&runtime->context.tools,
 		runtime->context.current_session.id);
 	tool_result_init(&result);
 	rc = tool_exec(&runtime->context.tools, "tasks",
 		       args_json ? args_json : "{}", &result);
-	if (rc == 0)
-		*out_json = result.text.data ? strdup(result.text.data) : strdup("{}");
-	tool_result_cleanup(&result);
-	return *out_json ? rc : -ENOMEM;
+	if (rc != 0)
+		return rc;
+	json = strdup(result.text.data ? result.text.data : "{}");
+	if (!json)
+		return -ENOMEM;
+	*out_json = morph_charp_steal(&json);
+	return 0;
 }
 
 int runtime_task_scheduler_start(

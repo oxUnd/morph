@@ -45,10 +45,10 @@ static int cli_memory_parse_scope(const char *name, enum memory_clear_scope *sco
 
 static int cli_memory_command_memory(struct cli_application *ctx, int argc, char **argv)
 {
-	const char *sub = cli_cmd_arg(argc, argv, 1);
+	const char *sub = cli_cmd_arg_borrow(argc, argv, 1);
 
 	if (sub && !strcmp(sub, "jobs")) {
-		char *jobs = runtime_memory_background_render(ctx->runtime);
+		char *jobs = runtime_memory_background_render_copy(ctx->runtime);
 
 		if (!jobs)
 			return MORPH_ERR_DB;
@@ -60,9 +60,9 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 
 	if (sub && (!strcmp(sub, "set") || !strcmp(sub, "unset"))) {
 		int setting = !strcmp(sub, "set");
-		const char *key = cli_cmd_arg(argc, argv, 2);
-		const char *value = setting ? cli_cmd_arg(argc, argv, 3) : NULL;
-		const char *scope = cli_cmd_arg(argc, argv, setting ? 4 : 3);
+		const char *key = cli_cmd_arg_borrow(argc, argv, 2);
+		const char *value = setting ? cli_cmd_arg_borrow(argc, argv, 3) : NULL;
+		const char *scope = cli_cmd_arg_borrow(argc, argv, setting ? 4 : 3);
 		int rc;
 
 		if (!key || (setting && !value) || argc > (setting ? 5 : 4)) {
@@ -84,7 +84,7 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 			       "request.",
 			       scope ? scope : "personal");
 		{
-			char *effective = runtime_preferences_render(ctx->runtime, 0);
+			char *effective = runtime_preferences_render_copy(ctx->runtime, 0);
 
 			(void)cli_output_print_untrusted(ctx, effective ? effective : "",
 							 UTF8_TERMINAL_TEXT_MULTILINE);
@@ -93,8 +93,8 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 		return 0;
 	}
 	if (sub && (!strcmp(sub, "history") || !strcmp(sub, "explain"))) {
-		char *history = runtime_preferences_render(ctx->runtime, 1);
-		char *effective = runtime_preferences_render(ctx->runtime, 0);
+		char *history = runtime_preferences_render_copy(ctx->runtime, 1);
+		char *effective = runtime_preferences_render_copy(ctx->runtime, 0);
 
 		if (!history || !effective) {
 			free(history);
@@ -119,8 +119,8 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 		 * gives the user the full picture; max_episodes is only
 		 * a hint for the React-loop context window.
 		 */
-		char *rendered = runtime_memory_render_current(ctx->runtime, 0);
-		CMD_HEADER(ctx, "memory (%s)", runtime_session_current_name(ctx->runtime));
+		char *rendered = runtime_memory_render_current_copy(ctx->runtime, 0);
+		CMD_HEADER(ctx, "memory (%s)", runtime_session_current_name_borrow(ctx->runtime));
 		(void)cli_output_print_untrusted(
 			ctx, rendered ? rendered : "No long-term memory stored for this session.",
 			UTF8_TERMINAL_TEXT_MULTILINE);
@@ -131,7 +131,7 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 
 	if (strcmp(sub, "clear") == 0) {
 		enum memory_clear_scope scope = MEMORY_CLEAR_ALL;
-		const char *target = cli_cmd_arg(argc, argv, 2);
+		const char *target = cli_cmd_arg_borrow(argc, argv, 2);
 		if (cli_memory_parse_scope(target, &scope) != 0) {
 			CMD_ERROR(ctx, "usage: /memory clear [all|facts|episodes|procedures]");
 			return -EINVAL;
@@ -142,7 +142,8 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 		}
 		CMD_OK(ctx,
 		       "cleared %s memory for session: %s (personal/project preferences retained)",
-		       cli_memory_scope_display(scope), runtime_session_current_name(ctx->runtime));
+		       cli_memory_scope_display(scope),
+		       runtime_session_current_name_borrow(ctx->runtime));
 		return 0;
 	}
 

@@ -1,6 +1,6 @@
 #include "runtime/output.h"
 #include "persistence/output_store.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 
 #include "util/log.h"
 
@@ -142,7 +142,7 @@ static int insert_output(const struct runtime_output_context *context,
 {
 	const struct config_model_entry *model;
 	const char *prompt = json_string(arguments, "prompt");
-	struct output_record record = {0};
+	struct output_record_input record = {0};
 
 	if (artifact->kind == TOOL_ARTIFACT_IMAGE) {
 		record.kind = "image";
@@ -242,23 +242,17 @@ static int output_add_text(cJSON *root, const char *name, const char *value)
 	return !value || !value[0] || cJSON_AddStringToObject(root, name, value);
 }
 
-char *runtime_output_get_json_by_path(struct db *db, const char *path)
+char *runtime_output_json_by_path_copy(struct db *db, const char *path)
 {
-	struct output_record record;
-	struct arena *arena;
+	struct output_record record MORPH_CLEANUP(output_record_cleanup) = {0};
 	cJSON *root;
 	char *json = NULL;
 	int ok;
 
 	if (!db || !db->handle || !path || !path[0])
 		return NULL;
-	arena = arena_create(0);
-	if (!arena)
+	if (output_store_copy(db, path, &record) != 0)
 		return NULL;
-	if (output_store_get(db, path, arena, &record) != 0) {
-		arena_destroy(arena);
-		return NULL;
-	}
 	root = cJSON_CreateObject();
 	ok = root && cJSON_AddNumberToObject(root, "id", (double)record.id) &&
 	     cJSON_AddNumberToObject(root, "session_id", (double)record.session_id) &&
@@ -288,12 +282,11 @@ char *runtime_output_get_json_by_path(struct db *db, const char *path)
 	if (ok)
 		json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
-	arena_destroy(arena);
 	return json;
 }
 
-char *runtime_output_get_json_from_database(struct morph_log *logger, const char *database_path,
-					    const char *artifact_path)
+char *runtime_output_json_from_database_copy(struct morph_log *logger, const char *database_path,
+					     const char *artifact_path)
 {
 	struct db db;
 	char *json = NULL;
@@ -303,7 +296,7 @@ char *runtime_output_get_json_from_database(struct morph_log *logger, const char
 	if (db_open(logger, &db, database_path) != 0)
 		return NULL;
 	if (db_init_schema(&db) == 0)
-		json = runtime_output_get_json_by_path(&db, artifact_path);
+		json = runtime_output_json_by_path_copy(&db, artifact_path);
 	db_close(&db);
 	return json;
 }

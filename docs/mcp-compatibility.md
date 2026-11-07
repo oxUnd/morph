@@ -83,7 +83,7 @@ as successful tool execution. Tool calls are not automatically replayed.
 
 ## Discovery and payload sizes
 
-Discovery descriptors use arena-owned strings. Tool schemas, prompt argument
+Discovery descriptor arrays own their heap strings and have matching typed free functions. Tool schemas, prompt argument
 schemas, titles, descriptions, resource URIs and MIME types are copied in full.
 There is no fixed MCP schema-size limit. The runtime list APIs deep-copy these
 strings into a single allocation, released with `runtime_mcp_list_free()`.

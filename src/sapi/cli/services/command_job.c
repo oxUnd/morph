@@ -61,7 +61,7 @@ void cli_command_job_cleanup(struct cli_command_job *job)
 	if (job->active)
 		(void)cli_command_job_finish(job);
 	for (size_t i = 0; i < job->prompts.nelts; i++) {
-		struct cli_command_job_prompt *prompt = morph_array_get(&job->prompts, i);
+		struct cli_command_job_prompt *prompt = morph_array_borrow(&job->prompts, i);
 
 		free(prompt->text);
 		free(prompt->payload);
@@ -201,7 +201,7 @@ int cli_command_job_prompt(struct cli_command_job *job, const char *text, const 
 		return -ENOMEM;
 	}
 	pthread_mutex_lock(&job->mutex);
-	slot = morph_array_push(&job->prompts);
+	slot = morph_array_push_borrow(&job->prompts);
 	if (slot)
 		*slot = prompt;
 	pthread_mutex_unlock(&job->mutex);
@@ -214,17 +214,24 @@ int cli_command_job_prompt(struct cli_command_job *job, const char *text, const 
 	return 0;
 }
 
-int cli_command_job_prompt_snapshot(struct cli_command_job *job, char **items, size_t capacity,
-				    size_t *total)
+int cli_command_job_prompts_copy(struct cli_command_job *job, char **items, size_t capacity,
+				 size_t *total)
 {
 	size_t copied = 0;
+	size_t available;
 
 	if (!job || (!items && capacity > 0) || !total)
 		return -EINVAL;
+	for (size_t i = 0; i < capacity; i++) {
+		if (items[i])
+			return -EEXIST;
+	}
+	*total = 0;
 	pthread_mutex_lock(&job->mutex);
-	*total = job->prompts.nelts;
-	while (copied < capacity && copied < job->prompts.nelts) {
-		struct cli_command_job_prompt *prompt = morph_array_get(&job->prompts, copied);
+	available = job->prompts.nelts;
+	while (copied < capacity && copied < available) {
+		const struct cli_command_job_prompt *prompt =
+			morph_array_borrow(&job->prompts, copied);
 
 		items[copied] = strdup(prompt->display_text ? prompt->display_text : prompt->text);
 		if (!items[copied])
@@ -232,11 +239,15 @@ int cli_command_job_prompt_snapshot(struct cli_command_job *job, char **items, s
 		copied++;
 	}
 	pthread_mutex_unlock(&job->mutex);
-	if (copied < capacity && copied < *total) {
-		while (copied > 0)
-			free(items[--copied]);
+	if (copied < capacity && copied < available) {
+		while (copied > 0) {
+			copied--;
+			free(items[copied]);
+			items[copied] = NULL;
+		}
 		return -ENOMEM;
 	}
+	*total = available;
 	return 0;
 }
 

@@ -2,7 +2,7 @@
 #include "runtime/session.h"
 
 #include "agent/context.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/error.h"
 #include "util/log.h"
 
@@ -98,6 +98,4 @@ void runtime_session_clear_history(struct react_context *react)
 		return;
 	msg_list_destroy(react->messages);
 	react->messages = NULL;
-	if (react->session_arena)
-		arena_reset(react->session_arena);
 }

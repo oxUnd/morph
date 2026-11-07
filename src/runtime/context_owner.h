@@ -64,7 +64,7 @@ void runtime_context_init_empty(struct runtime_context *ctx);
 int runtime_context_init_lock(struct runtime_context *ctx);
 void runtime_context_cleanup_lock(struct runtime_context *ctx);
 void runtime_context_configure_engine(struct runtime_context *ctx);
-struct runtime_models runtime_context_models(struct runtime_context *ctx);
+struct runtime_models runtime_context_models_borrow(struct runtime_context *ctx);
 void runtime_context_update_models(struct runtime_context *ctx,
 				   const struct runtime_models *models);
 void runtime_context_select_plan_session(struct runtime_context *ctx, int64_t session_id);
@@ -72,7 +72,7 @@ void runtime_context_forget_plan_session(struct runtime_context *ctx, int64_t se
 int runtime_context_update_tool_runtime_context(struct runtime_context *ctx, int64_t session_id);
 int runtime_context_tool_credit_session_id(struct runtime_context *ctx, int64_t session_id,
 					   char *buf, size_t buf_size);
-struct memory_options runtime_context_memory_options(const struct runtime_context *ctx);
+struct memory_options runtime_context_memory_options_borrow(const struct runtime_context *ctx);
 void runtime_context_credit_session_key(struct runtime_context *ctx, char *buf, size_t buf_size);
 int runtime_context_prepare_turn(struct runtime_context *ctx, const struct runtime_request *request,
 				 void *usage_user_data);

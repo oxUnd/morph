@@ -86,7 +86,7 @@ static int cli_history_contains(const char *text, const char *query)
 static int cli_history_filter(struct cli_history_view *view)
 {
 	cJSON *entry;
-	const char *query = morph_buf_cstr(&view->query.text);
+	const char *query = morph_buf_cstr_borrow(&view->query.text);
 
 	morph_array_clear(&view->matches);
 	cJSON_ArrayForEach (entry, cJSON_GetObjectItemCaseSensitive(view->report, "entries")) {
@@ -103,7 +103,7 @@ static int cli_history_filter(struct cli_history_view *view)
 		    !cli_history_contains(sequence, query) &&
 		    !cli_history_contains(cli_history_label(entry), query))
 			continue;
-		cJSON **slot = morph_array_push(&view->matches);
+		cJSON **slot = morph_array_push_borrow(&view->matches);
 
 		if (!slot)
 			return -ENOMEM;
@@ -116,7 +116,7 @@ static int cli_history_filter(struct cli_history_view *view)
 
 static cJSON *cli_history_selected(struct cli_history_view *view)
 {
-	cJSON **slot = morph_array_get(&view->matches, view->selection.index);
+	cJSON **slot = morph_array_borrow(&view->matches, view->selection.index);
 
 	return slot ? *slot : NULL;
 }
@@ -144,7 +144,7 @@ static void cli_history_preview(const cJSON *entry, char *preview, size_t capaci
 			if (cJSON_GetArraySize(calls) > 1)
 				(void)morph_buf_printf(&call, " (+%d calls)",
 						       cJSON_GetArraySize(calls) - 1);
-			content = morph_buf_cstr(&call);
+			content = morph_buf_cstr_borrow(&call);
 		}
 		free(short_arguments);
 	}
@@ -172,7 +172,7 @@ static int cli_history_json_text(const cJSON *json, morph_buf_t *text)
 static int cli_history_request_document(struct cli_application *ctx, morph_buf_t *text)
 {
 	cJSON *snapshot = NULL;
-	int rc = runtime_session_last_request(ctx->runtime, &snapshot);
+	int rc = runtime_session_last_request_copy(ctx->runtime, &snapshot);
 
 	if (rc == -ENODATA)
 		return morph_buf_puts(text,
@@ -233,7 +233,7 @@ static int cli_history_entry_document(struct cli_application *ctx, const cJSON *
 	}
 	cJSON *input = NULL;
 
-	rc = runtime_session_history_entry_input(ctx->runtime, sequence, &input);
+	rc = runtime_session_history_entry_input_copy(ctx->runtime, sequence, &input);
 	if (rc == -ENODATA || rc == -ENOENT)
 		return morph_buf_puts(
 			text, "Original entry is not directly sent in the current window.\n"
@@ -260,7 +260,7 @@ static int cli_history_document(struct cli_history_view *view)
 	else if (cli_history_selected(view))
 		rc = cli_history_entry_document(view->ctx, cli_history_selected(view), view->stored,
 						&text);
-	char *safe = rc == 0 ? utf8_terminal_sanitize_dup(morph_buf_cstr(&text), text.len,
+	char *safe = rc == 0 ? utf8_terminal_sanitize_dup(morph_buf_cstr_borrow(&text), text.len,
 							  UTF8_TERMINAL_TEXT_MULTILINE, NULL)
 			     : NULL;
 
@@ -283,8 +283,8 @@ static int cli_history_wrap(struct cli_history_view *view)
 {
 	size_t width = view->columns > 4 ? (size_t)view->columns - 4 : 1;
 
-	return morph_tui_widget_text_layout_wrap(&view->document_view,
-						 morph_buf_cstr(&view->document), width);
+	return morph_tui_widget_text_layout_wrap_borrow(
+		&view->document_view, morph_buf_cstr_borrow(&view->document), width);
 }
 
 static int cli_history_frame_line(struct cli_application *ctx, morph_buf_t *frame, int columns,
@@ -348,7 +348,7 @@ static int cli_history_render(struct cli_history_view *view)
 							    : "  morph / history");
 			style = ANSI_BOLD;
 		} else if (view->detail && row >= 3 && row < 3 + page) {
-			struct morph_tui_widget_text_line *line = morph_array_get(
+			struct morph_tui_widget_text_line *line = morph_array_borrow(
 				&view->document_view.lines, view->scroll + (size_t)(row - 3));
 
 			if (line) {
@@ -422,7 +422,7 @@ static int cli_history_render(struct cli_history_view *view)
 					       view->columns - 37, "");
 		} else if (!view->detail && row >= 9 && row < 9 + page) {
 			size_t index = first + (size_t)(row - 9);
-			cJSON **slot = morph_array_get(&view->matches, index);
+			cJSON **slot = morph_array_borrow(&view->matches, index);
 
 			if (slot) {
 				char preview[CLI_HISTORY_PREVIEW_MAX + 1];
@@ -438,7 +438,7 @@ static int cli_history_render(struct cli_history_view *view)
 					cli_history_label(entry),
 					cli_history_string(entry, "tool_name"), preview);
 				char *safe = utf8_terminal_sanitize_dup(
-					morph_buf_cstr(&text), text.len,
+					morph_buf_cstr_borrow(&text), text.len,
 					UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
 
 				utf8_copy_ellipsized_display_width(clipped, sizeof(clipped),
@@ -464,7 +464,7 @@ static int cli_history_render(struct cli_history_view *view)
 		} else if (!view->detail && row == view->rows - 1) {
 			(void)morph_buf_printf(&text, "  %s%s%s",
 					       view->searching ? "Search: " : "/ ",
-					       morph_buf_cstr(&view->query.text),
+					       morph_buf_cstr_borrow(&view->query.text),
 					       view->message ? view->message : "");
 		} else if (!view->detail && row == view->rows) {
 			(void)morph_buf_puts(
@@ -476,11 +476,11 @@ static int cli_history_render(struct cli_history_view *view)
 			rc = -ENOMEM;
 		else
 			rc = cli_history_frame_line(view->ctx, &frame, view->columns,
-						    morph_buf_cstr(&text), style);
+						    morph_buf_cstr_borrow(&text), style);
 	}
 	if (rc == 0)
 		rc = morph_tui_frame_present(&view->frame, stdout, view->columns, view->rows,
-					     morph_buf_cstr(&frame));
+					     morph_buf_cstr_borrow(&frame));
 	morph_buf_cleanup(&text);
 	morph_buf_cleanup(&frame);
 	return rc;
@@ -616,7 +616,7 @@ int cli_history_view(struct cli_application *ctx, cJSON *report)
 		rc = cli_history_filter(view);
 	if (rc == 0 && view->matches.nelts)
 		view->selection.index = view->matches.nelts - 1;
-	if (!rc && cli_application_tui(ctx)) {
+	if (!rc && cli_application_tui_borrow(ctx)) {
 		rc = cli_application_present_screen(ctx, &ops, view, cli_history_close);
 		if (!rc)
 			return 0;
@@ -674,7 +674,7 @@ void cli_history_print(struct cli_application *ctx, const cJSON *report, int lim
 				     (long long)cli_history_number(entry, "token_count"),
 				     preview) != 0)
 			break;
-		(void)cli_output_print_untrusted(ctx, morph_buf_cstr(&line),
+		(void)cli_output_print_untrusted(ctx, morph_buf_cstr_borrow(&line),
 						 UTF8_TERMINAL_TEXT_SINGLE_LINE);
 		putchar(ctx, '\n');
 	}
@@ -701,7 +701,7 @@ int cli_history_entry_print(struct cli_application *ctx, const cJSON *report, in
 		}
 	}
 	if (rc == 0)
-		(void)cli_output_print_untrusted(ctx, morph_buf_cstr(&text),
+		(void)cli_output_print_untrusted(ctx, morph_buf_cstr_borrow(&text),
 						 UTF8_TERMINAL_TEXT_MULTILINE);
 	if (rc == 0)
 		putchar(ctx, '\n');
@@ -718,7 +718,7 @@ int cli_history_request_print(struct cli_application *ctx)
 		return rc;
 	rc = cli_history_request_document(ctx, &text);
 	if (rc == 0)
-		(void)cli_output_print_untrusted(ctx, morph_buf_cstr(&text),
+		(void)cli_output_print_untrusted(ctx, morph_buf_cstr_borrow(&text),
 						 UTF8_TERMINAL_TEXT_MULTILINE);
 	if (rc == 0)
 		putchar(ctx, '\n');

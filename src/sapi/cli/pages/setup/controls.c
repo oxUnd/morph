@@ -75,7 +75,7 @@ int cli_setup_print(FILE *output, const char *format, ...)
 	if (rc == 0)
 		rc = morph_buf_vprintf(&text, format, args);
 	va_end(args);
-	char *safe = rc == 0 ? utf8_terminal_sanitize_dup(morph_buf_cstr(&text), text.len,
+	char *safe = rc == 0 ? utf8_terminal_sanitize_dup(morph_buf_cstr_borrow(&text), text.len,
 							  UTF8_TERMINAL_TEXT_MULTILINE, NULL)
 			     : NULL;
 	if (rc == 0 && !safe)
@@ -84,11 +84,11 @@ int cli_setup_print(FILE *output, const char *format, ...)
 	morph_tui_terminal_dimensions(fileno(output), &columns, &rows);
 	size_t width = columns > 4 ? (size_t)columns - 4 : 1;
 	if (rc == 0)
-		rc = morph_tui_widget_text_layout_wrap(&view, safe, width);
+		rc = morph_tui_widget_text_layout_wrap_borrow(&view, safe, width);
 	if (rc == 0)
 		rc = morph_buf_init(&rendered, 0);
 	for (size_t i = 0; rc == 0 && i < view.lines.nelts; i++) {
-		const struct morph_tui_widget_text_line *row = morph_array_get(&view.lines, i);
+		const struct morph_tui_widget_text_line *row = morph_array_borrow(&view.lines, i);
 		if (row->length)
 			rc = morph_buf_puts(&rendered, "  ");
 		if (rc == 0)
@@ -199,7 +199,7 @@ static int cli_controls_frame_start(struct cli_controls_setup_ui *ui, morph_buf_
 				ui->entries[ui->step].model[0] ? ui->entries[ui->step].model
 							       : "Not configured");
 		if (rc == 0)
-			cli_controls_line(ui, frame, "\033[36m", morph_buf_cstr(&scope));
+			cli_controls_line(ui, frame, "\033[36m", morph_buf_cstr_borrow(&scope));
 		morph_buf_cleanup(&scope);
 		if (rc != 0) {
 			morph_buf_cleanup(frame);
@@ -242,7 +242,7 @@ static int cli_controls_record_answer(struct cli_controls_setup_ui *ui, const ch
 	utf8_copy_sanitized_clamped(safe, sizeof(safe), answer, sizeof(safe) - 1);
 	struct morph_tui_widget_text_layout view = {0};
 	size_t width = ui->columns > 15 ? (size_t)ui->columns - 15 : 1;
-	rc = morph_tui_widget_text_layout_wrap(&view, safe, width);
+	rc = morph_tui_widget_text_layout_wrap_borrow(&view, safe, width);
 	if (rc == 0)
 		rc = morph_buf_printf(&frame, "  %s✓ %-6s%s · ", ui->color ? "\033[32m" : "",
 				      ui->step < 0 ? "Role" : names[ui->step],
@@ -250,7 +250,7 @@ static int cli_controls_record_answer(struct cli_controls_setup_ui *ui, const ch
 	if (rc == 0 && !view.lines.nelts)
 		rc = morph_buf_puts(&frame, "\r\n");
 	for (size_t i = 0; rc == 0 && i < view.lines.nelts; i++) {
-		const struct morph_tui_widget_text_line *row = morph_array_get(&view.lines, i);
+		const struct morph_tui_widget_text_line *row = morph_array_borrow(&view.lines, i);
 		if (i)
 			rc = morph_buf_puts(&frame, "             ");
 		if (rc == 0)
@@ -277,7 +277,7 @@ static void cli_controls_card_border(struct cli_controls_setup_ui *ui, morph_buf
 		rc = morph_tui_widget_card_border(&border, width, bottom);
 	if (rc == 0)
 		cli_controls_line(ui, frame, selected ? "\033[36m" : "\033[2m",
-				  morph_buf_cstr(&border));
+				  morph_buf_cstr_borrow(&border));
 	if (rc != 0)
 		frame->failed = (rc);
 	morph_buf_cleanup(&border);
@@ -292,7 +292,7 @@ static void cli_controls_card_text(struct cli_controls_setup_ui *ui, morph_buf_t
 	if (rc == 0)
 		rc = morph_tui_widget_card_row(&row, width, text);
 	if (rc == 0)
-		cli_controls_line(ui, frame, style, morph_buf_cstr(&row));
+		cli_controls_line(ui, frame, style, morph_buf_cstr_borrow(&row));
 	if (rc != 0)
 		frame->failed = (rc);
 	morph_buf_cleanup(&row);
@@ -330,7 +330,7 @@ static int cli_controls_role_preview_init(struct cli_controls_setup_ui *ui, int 
 			rc = morph_buf_puts(&preview->models, models[i]);
 	}
 	struct cli_setup_role role = cli_setup_role_get(selected);
-	const char *text[] = {role.description, morph_buf_cstr(&preview->models),
+	const char *text[] = {role.description, morph_buf_cstr_borrow(&preview->models),
 			      cli_setup_mcp_summary(selected)};
 	size_t width = ui->columns > 4 ? (size_t)ui->columns - 4 : 1;
 	int available = ui->rows - ui->frame_lines - 3;
@@ -341,7 +341,7 @@ static int cli_controls_role_preview_init(struct cli_controls_setup_ui *ui, int 
 		int i = order[n];
 		if ((i == 0 && ui->rows < 14) || (i == 2 && ui->rows < 20))
 			continue;
-		rc = morph_tui_widget_text_layout_wrap(&preview->blocks[i], text[i], width);
+		rc = morph_tui_widget_text_layout_wrap_borrow(&preview->blocks[i], text[i], width);
 		if (rc != 0)
 			break;
 		size_t lines = preview->blocks[i].lines.nelts;
@@ -365,7 +365,7 @@ static void cli_controls_role_preview_draw(struct cli_controls_setup_ui *ui, mor
 		const struct morph_tui_widget_text_layout *block = &preview->blocks[i];
 		for (size_t row = 0; row < preview->visible[i]; row++) {
 			const struct morph_tui_widget_text_line *span =
-				morph_array_get(&block->lines, row);
+				morph_array_borrow(&block->lines, row);
 			morph_buf_puts(frame, ui->color ? "  \033[2m" : "  ");
 			morph_buf_append(frame, block->text + span->offset, span->length);
 			morph_buf_puts(frame, ui->color ? "\033[0m\r\n" : "\r\n");
@@ -430,7 +430,8 @@ static int cli_controls_select_menu(struct cli_controls_setup_ui *ui, const char
 				if (width > 72)
 					width = 72;
 				cli_controls_card_border(ui, &frame, i == selected, width, 0);
-				cli_controls_card_text(ui, &frame, morph_buf_cstr(&label), width,
+				cli_controls_card_text(ui, &frame, morph_buf_cstr_borrow(&label),
+						       width,
 						       i == selected ? "\033[1;36;48;5;235m" : "");
 				cli_controls_card_text(ui, &frame, descriptions[i], width,
 						       i == selected ? "\033[2;36;48;5;235m"
@@ -438,7 +439,7 @@ static int cli_controls_select_menu(struct cli_controls_setup_ui *ui, const char
 				cli_controls_card_border(ui, &frame, i == selected, width, 1);
 			} else {
 				cli_controls_line(ui, &frame, i == selected ? "\033[1;30;46m" : "",
-						  morph_buf_cstr(&label));
+						  morph_buf_cstr_borrow(&label));
 			}
 			if (label.failed)
 				frame.failed = (label.failed);
@@ -514,7 +515,7 @@ static int cli_controls_edit(struct cli_controls_setup_ui *ui, const char *title
 		}
 		int input_row = ui->frame_lines;
 
-		cli_controls_line(ui, &frame, "\033[36m", morph_buf_cstr(&shown));
+		cli_controls_line(ui, &frame, "\033[36m", morph_buf_cstr_borrow(&shown));
 		cli_controls_line(
 			ui, &frame, "\033[2m",
 			ui->columns < 60
@@ -655,7 +656,7 @@ static int cli_controls_edit_token_count(struct cli_controls_setup_ui *ui,
 	for (;;) {
 		rc = cli_controls_edit(ui,
 				       output ? "Max output (tokens)" : "Context window (tokens)",
-				       morph_buf_cstr(&hint), text, sizeof(text), 0);
+				       morph_buf_cstr_borrow(&hint), text, sizeof(text), 0);
 		if (rc < 0)
 			break;
 		rc = cli_setup_parse_token_count(text, output ? 1 : 2, ceiling, value);

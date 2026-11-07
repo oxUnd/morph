@@ -220,8 +220,8 @@ static int cli_share_header(morph_buf_t *html)
 	if (rc)
 		return rc;
 	char *icon = NULL;
-	rc = base64_encode_file_prefixed(path, "data:image/png;base64,", MORPH_MEDIA_MAX_FILE_BYTES,
-					 &icon);
+	rc = base64_encode_file_prefixed_copy(path, "data:image/png;base64,",
+					      MORPH_MEDIA_MAX_FILE_BYTES, &icon);
 	if (rc)
 		return rc;
 	morph_buf_printf(html,

@@ -75,7 +75,7 @@ void handle_list_sessions(request_t *r)
 /* GET /api/sessions/:id */
 void handle_get_session(request_t *r)
 {
-	const char *sid = path_param(r, "id");
+	const char *sid = path_param_borrow(r, "id");
 	if (!sid) {
 		reply_400(r, "missing id");
 		return;
@@ -92,7 +92,7 @@ void handle_get_session(request_t *r)
 /* PATCH /api/sessions/:id  { "name": "...", "model": "..." } */
 void handle_update_session(request_t *r)
 {
-	const char *sid = path_param(r, "id");
+	const char *sid = path_param_borrow(r, "id");
 	char *body = NULL;
 	size_t blen = 0;
 	cJSON *root;
@@ -158,7 +158,7 @@ void handle_update_session(request_t *r)
 /* GET /api/sessions/:id/messages?limit=&before= */
 void handle_list_messages(request_t *r)
 {
-	const char *sid = path_param(r, "id");
+	const char *sid = path_param_borrow(r, "id");
 	char *json = NULL;
 	int limit = (int)query_i64(r, "limit", 100);
 	int64_t before = query_i64(r, "before", 0);
@@ -184,7 +184,7 @@ void handle_list_messages(request_t *r)
 /* DELETE /api/sessions/:id */
 void handle_delete_session(request_t *r)
 {
-	const char *sid = path_param(r, "id");
+	const char *sid = path_param_borrow(r, "id");
 	if (!sid) {
 		reply_400(r, "missing id");
 		return;

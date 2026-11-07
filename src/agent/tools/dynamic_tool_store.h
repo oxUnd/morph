@@ -43,7 +43,7 @@ int dynamic_tool_store_create_tool_checkpoint(const char *tool_dir,
 int dynamic_tool_store_restore_tool_checkpoint(const char *tool_dir, const char *checkpoint_dir,
 					       const struct tool_checkpoint *cp);
 int dynamic_tool_store_remove_tree(const char *path);
-char *dynamic_tool_store_read_optional_file(const char *path);
+char *dynamic_tool_store_optional_text_create(const char *path);
 int dynamic_tool_store_append_whole_file_diff(morph_buf_t *buf, const char *label,
 					      const char *old_text, const char *new_text);
 

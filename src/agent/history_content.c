@@ -3,7 +3,8 @@
 #include "prompt_context.h"
 #include "react.h"
 #include "tokenizer.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/log.h"
@@ -18,6 +19,13 @@
 #include "http/client.h"
 
 #define HISTORY_DEFAULT_TOOL_RESULT_MAX_TOKENS 8000
+
+static char *history_json_text_copy(const cJSON *value)
+{
+	char *printed MORPH_CLEANUP(morph_json_text_cleanup) = morph_json_print_copy(value);
+
+	return printed ? strdup(printed) : NULL;
+}
 
 static int history_secret_prefix(const char *start, const char *text, size_t *prefix_len,
 				 int *preserve_prefix)
@@ -45,7 +53,7 @@ static int history_secret_prefix(const char *start, const char *text, size_t *pr
 
 static char *history_redact(const char *text)
 {
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	const char *cur;
 	int rc;
 
@@ -106,7 +114,7 @@ static char *history_redact(const char *text)
 
 static char *history_redact_exact(const char *text, const char *secret)
 {
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	const char *cur;
 	const char *match;
 	int rc;
@@ -136,7 +144,7 @@ static char *history_redact_exact(const char *text, const char *secret)
 	return morph_buf_detach(&buf);
 }
 
-char *history_redact_all(struct react_context *ctx, const char *text)
+char *history_redacted_text_create(struct react_context *ctx, const char *text)
 {
 	char *safe = history_redact(text);
 
@@ -165,7 +173,7 @@ static int history_redact_json_values(struct react_context *ctx, cJSON *value, i
 					 (key_len >= 8 && !strcmp(key + key_len - 8, "_API_KEY")));
 		char *safe = credential && value->valuestring[0]
 				     ? strdup("[REDACTED]")
-				     : history_redact_json(ctx, value->valuestring);
+				     : history_redacted_json_create(ctx, value->valuestring);
 		int rc;
 
 		if (!safe)
@@ -186,7 +194,7 @@ static int history_redact_json_values(struct react_context *ctx, cJSON *value, i
 	return 0;
 }
 
-char *history_redact_json(struct react_context *ctx, const char *text)
+char *history_redacted_json_create(struct react_context *ctx, const char *text)
 {
 	cJSON *root;
 	char *safe = NULL;
@@ -197,10 +205,10 @@ char *history_redact_json(struct react_context *ctx, const char *text)
 	root = cJSON_ParseWithOpts(text, NULL, 1);
 	if (!cJSON_IsObject(root) && !cJSON_IsArray(root)) {
 		cJSON_Delete(root);
-		return history_redact_all(ctx, text);
+		return history_redacted_text_create(ctx, text);
 	}
 	if (history_redact_json_values(ctx, root, &changed) == 0)
-		safe = changed ? cJSON_PrintUnformatted(root) : strdup(text);
+		safe = changed ? history_json_text_copy(root) : strdup(text);
 	cJSON_Delete(root);
 	return safe;
 }
@@ -209,7 +217,7 @@ static char *history_truncate_result(struct tokenizer *tokenizer, const char *co
 				     int max_tokens, int *truncated)
 {
 	const char *marker = "\n…(tool output truncated)…\n";
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	size_t len = strlen(content);
 	size_t budget;
 	int tokens;
@@ -250,7 +258,7 @@ static char *history_truncate_result(struct tokenizer *tokenizer, const char *co
 			morph_buf_cleanup(&buf);
 			return NULL;
 		}
-		tokens = tokenizer_count(tokenizer, morph_buf_cstr(&buf));
+		tokens = tokenizer_count(tokenizer, morph_buf_cstr_borrow(&buf));
 		if (tokens <= max_tokens)
 			break;
 		next = (size_t)((double)budget * (double)max_tokens / (double)tokens);
@@ -277,7 +285,7 @@ static cJSON *history_largest_payload(cJSON *node, size_t *size)
 			*size = strlen(child->valuestring);
 			best = child;
 		} else if (cJSON_IsArray(child) && cJSON_GetArraySize(child) > 0) {
-			char *json = cJSON_PrintUnformatted(child);
+			char *json = history_json_text_copy(child);
 			if (json && strlen(json) > *size) {
 				*size = strlen(json);
 				best = child;
@@ -301,7 +309,7 @@ static char *history_prepare_json(struct tokenizer *tokenizer, cJSON *root, int 
 	cJSON *next;
 
 	if (!(cJSON_IsBool(ok) && cJSON_IsObject(data))) {
-		char *json = cJSON_PrintUnformatted(root);
+		char *json = history_json_text_copy(root);
 		cJSON *wrapper;
 		char *result;
 
@@ -331,7 +339,7 @@ static char *history_prepare_json(struct tokenizer *tokenizer, cJSON *root, int 
 				break;
 			}
 			free(snippet);
-			result = cJSON_PrintUnformatted(wrapper);
+			result = history_json_text_copy(wrapper);
 			if (result && tokenizer_count(tokenizer, result) <= budget) {
 				*truncated = 1;
 				cJSON_Delete(wrapper);
@@ -356,7 +364,7 @@ static char *history_prepare_json(struct tokenizer *tokenizer, cJSON *root, int 
 		}
 	}
 	for (;;) {
-		char *json = cJSON_PrintUnformatted(root);
+		char *json = history_json_text_copy(root);
 		cJSON *largest;
 		size_t size = 0;
 		char *snippet;
@@ -399,8 +407,8 @@ static char *history_prepare_json(struct tokenizer *tokenizer, cJSON *root, int 
 	}
 }
 
-int agent_history_prepare_tool_content(struct react_context *ctx, const char *content,
-				       char **prepared, int *truncated)
+int agent_history_tool_content_copy(struct react_context *ctx, const char *content, char **prepared,
+				    int *truncated)
 {
 	char *limited;
 	char *safe;
@@ -408,13 +416,15 @@ int agent_history_prepare_tool_content(struct react_context *ctx, const char *co
 
 	if (!ctx || !prepared)
 		return -EINVAL;
+	if (*prepared)
+		return -EALREADY;
 	/* Repair malformed tool bytes before redaction or UTF-8 boundary selection. */
 	limited = strdup(content ? content : "");
 	if (!limited)
 		return -ENOMEM;
 	utf8_sanitize_inplace(limited);
 	/* Redaction may expand short secrets into longer replacement strings. */
-	safe = history_redact_json(ctx, limited);
+	safe = history_redacted_json_create(ctx, limited);
 	free(limited);
 	if (!safe)
 		return -ENOMEM;

@@ -205,7 +205,7 @@ static int cli_interaction_request_on_owner(void *opaque)
 			return rc;
 		}
 		/* Hosts can report editing activity before they have a complete answer. */
-		cJSON *progress = cJSON_Parse(morph_buf_cstr(&line));
+		cJSON *progress = cJSON_Parse(morph_buf_cstr_borrow(&line));
 		cJSON *type = cJSON_GetObjectItemCaseSensitive(progress, "type");
 		cJSON *id = cJSON_GetObjectItemCaseSensitive(progress, "request_id");
 		int editing = cJSON_IsString(type) &&
@@ -218,8 +218,8 @@ static int cli_interaction_request_on_owner(void *opaque)
 			deadline = 0;
 			continue;
 		}
-		rc = cli_interaction_parse_response(morph_buf_cstr(&line), request_id, &response,
-						    &cancelled);
+		rc = cli_interaction_parse_response(morph_buf_cstr_borrow(&line), request_id,
+						    &response, &cancelled);
 		if (rc != 0) {
 			(void)cli_interaction_emit(call->ctx, "interaction.invalid_response",
 						   "failed", request_id, call->kind, NULL,

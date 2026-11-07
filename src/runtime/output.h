@@ -21,8 +21,8 @@ struct runtime_output_context {
 
 int runtime_output_record_event(const struct runtime_output_context *context,
 				const struct react_output_event *event);
-char *runtime_output_get_json_by_path(struct db *db, const char *path);
-char *runtime_output_get_json_from_database(struct morph_log *logger, const char *database_path,
-					    const char *artifact_path);
+char *runtime_output_json_by_path_copy(struct db *db, const char *path);
+char *runtime_output_json_from_database_copy(struct morph_log *logger, const char *database_path,
+					     const char *artifact_path);
 
 #endif

@@ -5,7 +5,6 @@
 #include "agent/tokenizer.h"
 #include "session.h"
 #include "persistence/history_store.h"
-#include "util/arena.h"
 #include "util/array.h"
 #include "util/utf8.h"
 #include <cctype>
@@ -507,22 +506,20 @@ TEST_F(SessionTest, LegacyArchivedAnswerClosesRequestWithoutAssumingSuccess)
 	EXPECT_NE(strstr(items->payload_json, "answered"), nullptr);
 	EXPECT_EQ(strstr(items->payload_json, "success"), nullptr);
 	EXPECT_EQ(items->next->payload_json, nullptr);
-	struct arena *arena = arena_create(0);
 	morph_array_t messages = {};
 	struct chat_message slot = {};
 	ASSERT_EQ(morph_array_init(&messages, 4, sizeof(slot)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(NULL, items, &messages, arena), 0);
-	auto *request = static_cast<struct chat_message *>(morph_array_get(&messages, 0));
+	ASSERT_EQ(agent_history_messages_copy(NULL, items, &messages), 0);
+	auto *request = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
 	EXPECT_NE(strstr(request->content, "execution ended: answered"), nullptr);
 	EXPECT_EQ(tokenizer_count(tok, request->content), items->token_count);
-	request = static_cast<struct chat_message *>(morph_array_get(&messages, 1));
+	request = static_cast<struct chat_message *>(morph_array_borrow(&messages, 1));
 	EXPECT_STREQ(request->content, "Continue testing");
 	struct agent_history_diagnostic diagnostic = {};
 	ASSERT_EQ(agent_history_diagnose(items, tok, &diagnostic), 0);
 	EXPECT_EQ(diagnostic.token_mismatches, 0);
 	model_history_free_list(items);
-	morph_array_cleanup(&messages);
-	arena_destroy(arena);
+	agent_chat_messages_cleanup(&messages);
 	ASSERT_EQ(agent_history_repair(&db, s.id, tok, nullptr, &changed), 0);
 	EXPECT_EQ(changed, 0);
 	tokenizer_destroy(tok);
@@ -539,20 +536,18 @@ TEST_F(SessionTest, SnapshotBoundaryPrecedesLaterFinalAnswer)
 	strcpy(answer.kind, "assistant_message");
 	answer.sequence_no = 11;
 	answer.content = const_cast<char *>("Self-test complete: 34 PASS, 0 FAIL");
-	struct arena *arena = arena_create(0);
 	morph_array_t messages = {};
 	struct chat_message slot = {};
 	ASSERT_EQ(morph_array_init(&messages, 4, sizeof(slot)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(NULL, &summary, &messages, arena), 0);
+	ASSERT_EQ(agent_history_messages_copy(NULL, &summary, &messages), 0);
 	ASSERT_EQ(messages.nelts, 2U);
-	auto *message = static_cast<struct chat_message *>(morph_array_get(&messages, 0));
+	auto *message = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
 	EXPECT_NE(strstr(message->content, "sequence 9"), nullptr);
 	EXPECT_NE(strstr(message->content, "supersede this snapshot"), nullptr);
 	EXPECT_TRUE(message->is_context_summary);
-	message = static_cast<struct chat_message *>(morph_array_get(&messages, 1));
+	message = static_cast<struct chat_message *>(morph_array_borrow(&messages, 1));
 	EXPECT_STREQ(message->content, "Self-test complete: 34 PASS, 0 FAIL");
-	morph_array_cleanup(&messages);
-	arena_destroy(arena);
+	agent_chat_messages_cleanup(&messages);
 }
 
 TEST_F(SessionTest, CompactionDoesNotRetainRequestWithoutItsAnswerOnBudgetLimit)
@@ -835,7 +830,7 @@ TEST_F(SessionTest, ToolResultRedactsDecodedCredentialFieldsAndKnownSecrets)
 	ctx.history_tool_result_tokens = 8000;
 	ctx.history_secrets[0] = strdup("sk-known-secret-value");
 	ctx.history_secret_count = 1;
-	ASSERT_EQ(agent_history_prepare_tool_content(&ctx, source, &prepared, nullptr), 0);
+	ASSERT_EQ(agent_history_tool_content_copy(&ctx, source, &prepared, nullptr), 0);
 	ASSERT_NE(prepared, nullptr);
 	for (const char *secret : {"first-secret", "second-secret", "third-secret",
 	     "fourth-secret", "sk-known-secret-value"})
@@ -861,7 +856,7 @@ TEST_F(SessionTest, ToolResultRedactionPreservesJsonSourceFormatting)
 	ASSERT_NE(source, nullptr);
 	char *prepared = nullptr;
 	ctx.history_tool_result_tokens = 8000;
-	ASSERT_EQ(agent_history_prepare_tool_content(&ctx, source, &prepared, nullptr), 0);
+	ASSERT_EQ(agent_history_tool_content_copy(&ctx, source, &prepared, nullptr), 0);
 	root = cJSON_Parse(prepared);
 	ASSERT_NE(root, nullptr);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
@@ -888,8 +883,9 @@ TEST_F(SessionTest, ToolResultTokenLimitIncludesRedactionAndOmissionMarker)
 			ctx.history_tool_result_tokens = limit;
 			ctx.history_secrets[0] = strdup("short-secret");
 			ctx.history_secret_count = 1;
-			ASSERT_EQ(agent_history_prepare_tool_content(&ctx, text.c_str(),
-				&prepared, &truncated), 0);
+			ASSERT_EQ(agent_history_tool_content_copy(&ctx, text.c_str(), &prepared,
+								  &truncated),
+				  0);
 			ASSERT_NE(prepared, nullptr);
 			EXPECT_EQ(truncated, 1);
 			EXPECT_LE(tokenizer_count(counter, prepared), limit);
@@ -922,8 +918,7 @@ TEST_F(SessionTest, ToolResultLimitPreservesLargeButLowTokenOutput)
 	ctx.tokenizer = tokenizer;
 	ctx.history_tool_result_tokens = 256;
 	ASSERT_LE(tokenizer_count(tokenizer, text.c_str()), 256);
-	ASSERT_EQ(agent_history_prepare_tool_content(&ctx, text.c_str(),
-		&prepared, &truncated), 0);
+	ASSERT_EQ(agent_history_tool_content_copy(&ctx, text.c_str(), &prepared, &truncated), 0);
 	EXPECT_EQ(truncated, 0);
 	EXPECT_STREQ(prepared, text.c_str());
 	free(prepared);
@@ -960,10 +955,8 @@ TEST_F(SessionTest, TranscriptAndModelHistoryWritesAreIdempotent) {
 TEST_F(SessionTest, HistoryBuilderUsesProviderNeutralCallIds) {
 	struct model_history_item call = {};
 	struct model_history_item result = {};
-	struct arena *arena = arena_create(4096);
 	morph_array_t messages;
 
-	ASSERT_NE(arena, nullptr);
 	ASSERT_EQ(morph_array_init(&messages, 2,
 		sizeof(struct chat_message)), 0);
 	std::strcpy(call.kind, "assistant_tool_calls");
@@ -979,28 +972,23 @@ TEST_F(SessionTest, HistoryBuilderUsesProviderNeutralCallIds) {
 	result.tool_call_id = const_cast<char *>("local_1");
 	result.provider_call_id = const_cast<char *>("provider_1");
 	result.active = 1;
-	ASSERT_EQ(agent_history_build_chat_messages(NULL, &call, &messages, arena), 0);
+	ASSERT_EQ(agent_history_messages_copy(NULL, &call, &messages), 0);
 	ASSERT_EQ(messages.nelts, 2U);
-	auto *assistant = static_cast<struct chat_message *>(
-		morph_array_get(&messages, 0));
-	auto *tool = static_cast<struct chat_message *>(
-		morph_array_get(&messages, 1));
+	auto *assistant = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
+	auto *tool = static_cast<struct chat_message *>(morph_array_borrow(&messages, 1));
 	ASSERT_NE(assistant, nullptr);
 	ASSERT_NE(tool, nullptr);
 	ASSERT_EQ(assistant->tool_call_count, 1);
 	EXPECT_STREQ(assistant->reasoning_content, "inspect state");
 	EXPECT_STREQ(assistant->tool_calls[0].id, "local_1");
 	EXPECT_STREQ(tool->tool_call_id, "local_1");
-	morph_array_cleanup(&messages);
-	arena_destroy(arena);
+	agent_chat_messages_cleanup(&messages);
 }
 
 TEST_F(SessionTest, HistoryBuilderMigratesLegacyBashExecCalls) {
 	struct model_history_item item = {};
-	struct arena *arena = arena_create(4096);
 	morph_array_t messages;
 
-	ASSERT_NE(arena, nullptr);
 	ASSERT_EQ(morph_array_init(&messages, 1,
 		sizeof(struct chat_message)), 0);
 	std::strcpy(item.kind, "assistant_tool_calls");
@@ -1013,16 +1001,14 @@ TEST_F(SessionTest, HistoryBuilderMigratesLegacyBashExecCalls) {
 		"\\\"cwd\\\":\\\"/tmp\\\","
 		"\\\"write_paths\\\":[\\\"/tmp\\\"]}\"}]}");
 	item.active = 1;
-	ASSERT_EQ(agent_history_build_chat_messages(NULL, &item, &messages, arena), 0);
+	ASSERT_EQ(agent_history_messages_copy(NULL, &item, &messages), 0);
 	ASSERT_EQ(messages.nelts, 1U);
-	auto *message = static_cast<struct chat_message *>(
-		morph_array_get(&messages, 0));
+	auto *message = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
 	ASSERT_NE(message, nullptr);
 	ASSERT_EQ(message->tool_call_count, 1);
 	EXPECT_STREQ(message->tool_calls[0].name, "exec");
 	EXPECT_STREQ(message->tool_calls[0].arguments, "{\"command\":\"pwd\"}");
-	morph_array_cleanup(&messages);
-	arena_destroy(arena);
+	agent_chat_messages_cleanup(&messages);
 }
 
 TEST_F(SessionTest, MigratesLiveLegacyBashExecCall) {
@@ -1033,7 +1019,7 @@ TEST_F(SessionTest, MigratesLiveLegacyBashExecCall) {
 	call.arguments = strdup(
 		"{\"command\":\"make\",\"timeout_seconds\":60}");
 	ASSERT_NE(call.arguments, nullptr);
-	ASSERT_EQ(agent_history_migrate_legacy_tool_call(&call, nullptr), 0);
+	ASSERT_EQ(agent_history_migrate_legacy_tool_call(&call), 0);
 	EXPECT_STREQ(call.name, "exec");
 	EXPECT_STREQ(call.arguments, "{\"command\":\"make\"}");
 	free(call.arguments);
@@ -1115,7 +1101,6 @@ TEST_F(SessionTest, HistoryDiagnoseAndRepairNormalizesInvalidItems) {
 TEST_F(SessionTest, FreeformToolHistoryPreservesRawInput) {
 	struct model_history_item item = {};
 	morph_array_t messages = {};
-	struct arena *arena = arena_create(4096);
 	const char *raw =
 		"*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch";
 	std::string payload =
@@ -1125,23 +1110,20 @@ TEST_F(SessionTest, FreeformToolHistoryPreservesRawInput) {
 		"\"input\":\"*** Begin Patch\\n*** Add File: a.txt\\n+x\\n"
 		"*** End Patch\"}]}";
 
-	ASSERT_NE(arena, nullptr);
 	std::strcpy(item.kind, "assistant_tool_calls");
 	std::strcpy(item.role, "assistant");
 	item.payload_json = const_cast<char *>(payload.c_str());
 	item.active = 1;
 	ASSERT_EQ(morph_array_init(&messages, 2,
 		sizeof(struct chat_message)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(NULL, &item, &messages, arena), 0);
+	ASSERT_EQ(agent_history_messages_copy(NULL, &item, &messages), 0);
 	ASSERT_EQ(messages.nelts, 1U);
-	auto *message = static_cast<struct chat_message *>(
-		morph_array_get(&messages, 0));
+	auto *message = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
 	ASSERT_NE(message, nullptr);
 	ASSERT_EQ(message->tool_call_count, 1);
 	EXPECT_EQ(message->tool_calls[0].input_kind, TOOL_INPUT_TEXT);
 	EXPECT_STREQ(message->tool_calls[0].arguments, raw);
-	morph_array_cleanup(&messages);
-	arena_destroy(arena);
+	agent_chat_messages_cleanup(&messages);
 }
 
 TEST_F(SessionTest, ToolCallRedactionPreservesJsonAndSourceTemplates) {
@@ -1181,22 +1163,19 @@ TEST_F(SessionTest, ToolCallRedactionPreservesJsonAndSourceTemplates) {
 	EXPECT_EQ(std::strstr(items->payload_json, "secret-value"), nullptr);
 	EXPECT_EQ(items->token_count, tokenizer_count(nullptr, items->payload_json));
 	morph_array_t messages = {};
-	struct arena *arena = arena_create(0);
-	ASSERT_NE(arena, nullptr);
 	ASSERT_EQ(morph_array_init(&messages, 2, sizeof(struct chat_message)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(NULL, items, &messages, arena), 0);
+	ASSERT_EQ(agent_history_messages_copy(NULL, items, &messages), 0);
 	ASSERT_EQ(messages.nelts, 2U);
-	auto *message = static_cast<struct chat_message *>(morph_array_get(&messages, 0));
+	auto *message = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
 	cJSON *args = cJSON_Parse(message->tool_calls[0].arguments);
 	ASSERT_NE(args, nullptr);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(args, "source")), source);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(args, "image")),
 		"[binary data omitted]");
 	cJSON_Delete(args);
-	message = static_cast<struct chat_message *>(morph_array_get(&messages, 1));
+	message = static_cast<struct chat_message *>(morph_array_borrow(&messages, 1));
 	EXPECT_STREQ(message->tool_calls[0].arguments, source);
-	morph_array_cleanup(&messages);
-	arena_destroy(arena);
+	agent_chat_messages_cleanup(&messages);
 	model_history_free_list(items);
 }
 
@@ -1352,11 +1331,9 @@ TEST_F(SessionTest, ManualCompactionFailureLeavesHistoryUnchanged) {
 TEST_F(SessionTest, BackgroundReceiptIsReplayableAndIdempotent) {
 	struct session s;
 	struct react_context react = {};
-	struct arena *arena = arena_create(4096);
 	morph_array_t messages;
 	int count = 0;
 
-	ASSERT_NE(arena, nullptr);
 	ASSERT_EQ(session_create(&db, "history_receipt", "test", &s), 0);
 	react.history_db = &db;
 	react.history_session_id = s.id;
@@ -1374,14 +1351,12 @@ TEST_F(SessionTest, BackgroundReceiptIsReplayableAndIdempotent) {
 	EXPECT_NE(std::strstr(items->content, "ios_release"), nullptr);
 	ASSERT_EQ(morph_array_init(&messages, 1,
 		sizeof(struct chat_message)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(NULL, items, &messages, arena), 0);
+	ASSERT_EQ(agent_history_messages_copy(NULL, items, &messages), 0);
 	ASSERT_EQ(messages.nelts, 1U);
-	auto *message = static_cast<struct chat_message *>(
-		morph_array_get(&messages, 0));
+	auto *message = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
 	ASSERT_NE(message, nullptr);
 	EXPECT_STREQ(message->role, "system");
-	morph_array_cleanup(&messages);
-	arena_destroy(arena);
+	agent_chat_messages_cleanup(&messages);
 	model_history_free_list(items);
 }
 
@@ -1412,17 +1387,14 @@ TEST_F(SessionTest, MemoryMaintenanceIsNeitherPersistedNorReplayed) {
 	meaningful.content = const_cast<char *>("archive created");
 	meaningful.payload_json = const_cast<char *>("{\"task\":\"ios_release\"}");
 	metadata.next = &meaningful;
-	struct arena *arena = arena_create(4096);
-	ASSERT_NE(arena, nullptr);
 	morph_array_t messages;
 	struct chat_message message = {};
 	ASSERT_EQ(morph_array_init(&messages, 4, sizeof(message)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(NULL, &legacy, &messages, arena), 0);
+	ASSERT_EQ(agent_history_messages_copy(NULL, &legacy, &messages), 0);
 	ASSERT_EQ(messages.nelts, 1U);
-	auto *actual = static_cast<struct chat_message *>(morph_array_get(&messages, 0));
+	auto *actual = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
 	EXPECT_STREQ(actual->content, "archive created");
-	morph_array_cleanup(&messages);
-	arena_destroy(arena);
+	agent_chat_messages_cleanup(&messages);
 }
 
 TEST_F(SessionTest, HistoryReadFailureIsDistinctFromEmptyHistory) {
@@ -1574,8 +1546,7 @@ TEST_F(SessionTest, ToolResultRepairsInvalidUtf8AndPreservesUsefulEnds)
 		text += "数据🙂 tail ";
 	text += " TAIL";
 	char *prepared = nullptr;
-	ASSERT_EQ(agent_history_prepare_tool_content(&ctx, text.c_str(),
-		&prepared, nullptr), 0);
+	ASSERT_EQ(agent_history_tool_content_copy(&ctx, text.c_str(), &prepared, nullptr), 0);
 	ASSERT_NE(prepared, nullptr);
 	EXPECT_EQ(utf8valid(prepared), nullptr);
 	EXPECT_LE(tokenizer_count(nullptr, prepared), 128);

@@ -1,6 +1,10 @@
 #ifndef MORPH_EXEC_JOBS_H
 #define MORPH_EXEC_JOBS_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "event/event.h"
 #include "exec/process.h"
 
@@ -26,5 +30,9 @@ int exec_jobs_authorize(struct exec_jobs *jobs, const char *id, int64_t owner);
 void exec_jobs_observed(struct exec_jobs *jobs, const char *id);
 int exec_jobs_wait(struct exec_jobs *jobs, int64_t owner, const char *turn_id,
 		   int (*cancelled)(void *), void *cancel_data, cJSON **out);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

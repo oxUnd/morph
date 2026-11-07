@@ -82,7 +82,7 @@ TEST(Utf8TerminalSanitizeTest, HandlesSequencesAndUtf8AcrossChunks)
 		sizeof(third) - 1, 0), 0);
 	ASSERT_EQ(utf8_terminal_sanitize_feed(&sanitizer, &output, fourth,
 		sizeof(fourth) - 1, 1), 0);
-	EXPECT_STREQ(morph_buf_cstr(&output), "AB 中C");
+	EXPECT_STREQ(morph_buf_cstr_borrow(&output), "AB 中C");
 	morph_buf_cleanup(&output);
 }
 
@@ -128,7 +128,7 @@ TEST(Utf8TerminalSanitizeTest, DropsIncompleteUtf8AtStreamEnd)
 		UTF8_TERMINAL_TEXT_MULTILINE);
 	ASSERT_EQ(utf8_terminal_sanitize_feed(&sanitizer, &output, input,
 		sizeof(input) - 1, 1), 0);
-	EXPECT_STREQ(morph_buf_cstr(&output), "valid ");
+	EXPECT_STREQ(morph_buf_cstr_borrow(&output), "valid ");
 	morph_buf_cleanup(&output);
 }
 
@@ -190,8 +190,8 @@ TEST(Utf8ProcTest, BoundedHelpersDoNotReadPastInputOrSplitCharacters)
 	EXPECT_EQ(utf8_clamp_bytes(text, 7), 4u);
 	EXPECT_EQ(utf8_clamp_bytes(text, 8), 8u);
 	EXPECT_EQ(utf8len(text), 4u);
-	EXPECT_EQ(utf8_prev_codepoint(text, text + 8), text + 4);
-	EXPECT_EQ(utf8_prev_codepoint(text, text + 4), text + 1);
+	EXPECT_EQ(utf8_prev_codepoint_borrow(text, text + 8), text + 4);
+	EXPECT_EQ(utf8_prev_codepoint_borrow(text, text + 4), text + 1);
 }
 
 TEST(Utf8ProcTest, WidthComesFromUnicodeDataWithoutLocaleSetup)
@@ -227,11 +227,11 @@ TEST(Utf8TerminalSanitizeTest, InvalidChunkPrefixPreservesFollowingText)
 	utf8_terminal_sanitizer_init(&sanitizer, UTF8_TERMINAL_TEXT_MULTILINE);
 	ASSERT_EQ(utf8_terminal_sanitize_feed(&sanitizer, &output, "\xe4", 1, 0), 0);
 	ASSERT_EQ(utf8_terminal_sanitize_feed(&sanitizer, &output, "X\xc3\xa9Y", 4, 1), 0);
-	EXPECT_STREQ(morph_buf_cstr(&output), "XéY");
+	EXPECT_STREQ(morph_buf_cstr_borrow(&output), "XéY");
 	morph_buf_reset(&output);
 	ASSERT_EQ(utf8_terminal_sanitize_feed(&sanitizer, &output, "\xe4", 1, 0), 0);
 	ASSERT_EQ(utf8_terminal_sanitize_feed(&sanitizer, &output, "X", 1, 1), 0);
-	EXPECT_STREQ(morph_buf_cstr(&output), "X");
+	EXPECT_STREQ(morph_buf_cstr_borrow(&output), "X");
 	morph_buf_cleanup(&output);
 }
 
@@ -254,7 +254,7 @@ TEST(Utf8TerminalSanitizeTest, EveryChunkBoundaryMatchesWholeInput)
 				input, split, 0), 0);
 			ASSERT_EQ(utf8_terminal_sanitize_feed(&sanitizer, &out,
 				input + split, len - split, 1), 0);
-			EXPECT_STREQ(morph_buf_cstr(&out), expected);
+			EXPECT_STREQ(morph_buf_cstr_borrow(&out), expected);
 			morph_buf_cleanup(&out);
 		}
 		free(expected);

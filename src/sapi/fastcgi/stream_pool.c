@@ -146,13 +146,15 @@ struct fcgi_stream_pool *fcgi_stream_pool_create(int threads, int queue_max,
 	return pool;
 }
 
-int fcgi_stream_pool_submit(struct fcgi_stream_pool *pool, request_t *r,
-			    fcgi_stream_fn fn)
+int fcgi_stream_pool_submit_take(struct fcgi_stream_pool *pool, request_t **owner,
+				 fcgi_stream_fn fn)
 {
 	struct stream_job *job;
+	request_t *r;
 
-	if (!pool || !r || !r->fcgx || !fn)
+	if (!pool || !owner || !*owner || !(*owner)->fcgx || !fn)
 		return -EINVAL;
+	r = *owner;
 	job = calloc(1, sizeof(*job));
 	if (!job)
 		return -ENOMEM;
@@ -178,6 +180,16 @@ int fcgi_stream_pool_submit(struct fcgi_stream_pool *pool, request_t *r,
 		pool->head = job;
 	pool->tail = job;
 	pool->queued++;
+	r->fcgx = NULL;
+	r->method = NULL;
+	r->path = NULL;
+	r->query = NULL;
+	r->auth_hdr = NULL;
+	r->trust_user = NULL;
+	r->last_event_id = NULL;
+	r->content_type = NULL;
+	r->handed_off = 1;
+	*owner = NULL;
 	pthread_cond_signal(&pool->changed);
 	pthread_mutex_unlock(&pool->lock);
 	return 0;

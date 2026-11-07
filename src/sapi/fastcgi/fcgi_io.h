@@ -63,8 +63,10 @@ typedef struct request_s {
 	struct session_store *store;
 } request_t;
 
+/* Borrows request. out must be NULL; success returns independent malloc bytes
+ * and length, failure preserves both outputs. Release with free(). */
 int  fcgi_read_body(request_t *r, char **out, size_t *len);
-const char *path_param(const request_t *r, const char *key);
+const char *path_param_borrow(const request_t *r, const char *key);
 int64_t query_i64(const request_t *r, const char *key, int64_t def);
 void fcgi_record_status(request_t *r, int status);
 

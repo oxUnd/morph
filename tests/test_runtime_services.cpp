@@ -6,7 +6,11 @@ extern "C" {
 #include "runtime/runtime_internal.h"
 #include "runtime/recap.h"
 #include "runtime/sync.h"
+#include "runtime/tasks.h"
 #include "cJSON.h"
+#include "persistence/history_store.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 }
 
 #include <sqlite3.h>
@@ -47,6 +51,7 @@ TEST_F(RuntimeFacadeTest, DeferredSessionPollingIsEmptyAndSilent)
 	ASSERT_EQ(runtime_session_list_all(instance, &sessions, &count, 0), 0);
 	EXPECT_EQ(count, 0);
 	runtime_session_list_free(sessions);
+	sessions = nullptr;
 }
 
 TEST_F(RuntimeFacadeTest, DeferredSessionExportsReportNoDataWithoutCreatingASession)
@@ -58,11 +63,11 @@ TEST_F(RuntimeFacadeTest, DeferredSessionExportsReportNoDataWithoutCreatingASess
 	options.create_new_session = 1;
 	Open(&options);
 	ASSERT_EQ(instance->context.current_session.id, 0);
-	EXPECT_EQ(runtime_session_last_answer(instance, &answer), -ENODATA);
+	EXPECT_EQ(runtime_session_last_answer_copy(instance, &answer), -ENODATA);
 	EXPECT_EQ(answer, nullptr);
 	EXPECT_EQ(runtime_session_share_current(instance, &document), -ENODATA);
 	EXPECT_EQ(document, nullptr);
-	EXPECT_EQ(runtime_session_last_request(instance, &document), -ENODATA);
+	EXPECT_EQ(runtime_session_last_request_copy(instance, &document), -ENODATA);
 	EXPECT_EQ(document, nullptr);
 	EXPECT_EQ(instance->context.current_session.id, 0);
 }
@@ -87,13 +92,13 @@ TEST_F(RuntimeFacadeTest, ManualCompactionRunsTrustedHooksAndHonorsVeto)
 	history.token_count = 10;
 	history.active = 1;
 	ASSERT_EQ(model_history_add(&instance->context.database, &history, nullptr), 0);
-	cJSON *rows = nullptr;
-	ASSERT_EQ(runtime_hooks_snapshot(instance, &rows), 0);
+	cJSON *rows MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_hooks_snapshot_copy(instance, &rows), 0);
 	const cJSON *row = cJSON_GetArrayItem(rows, 0);
 	ASSERT_NE(row, nullptr);
 	ASSERT_EQ(runtime_hooks_manage(instance, "trust-all", "workspace",
 		cJSON_GetObjectItem(row, "review_digest")->valuestring), 0);
-	cJSON_Delete(rows);
+	morph_json_cleanup(&rows);
 	int summaries = 0;
 	react->compress.summarize_user_data = &summaries;
 	react->compress.summarize = [](const char *, void *user, char **out) -> int {
@@ -140,7 +145,7 @@ TEST_F(RuntimeFacadeTest, ProjectSkillsTakePrecedenceOverConfiguredUserSkills)
 	options.allocate_skill_registry = 1;
 	Open(&options);
 	struct skill_entry entry{};
-	ASSERT_EQ(runtime_skill_find(instance, "review", &entry), 0);
+	ASSERT_EQ(runtime_skill_find_borrow(instance, "review", &entry), 0);
 	EXPECT_STREQ(entry.fm.description, "Project review.");
 	EXPECT_EQ(std::filesystem::canonical(entry.skill_dir),
 		std::filesystem::canonical(project));
@@ -188,12 +193,13 @@ TEST_F(RuntimeFacadeTest, SessionImportPreservesLocalHistoryAndRemapsDisplayAndM
 	ASSERT_EQ(count, 2);
 	int64_t imported = sessions[0].id == current.id ? sessions[1].id : sessions[0].id;
 	runtime_session_list_free(sessions);
+	sessions = nullptr;
 	EXPECT_EQ(message_count(&instance->context.database, current.id), 1);
 	EXPECT_EQ(message_count(&instance->context.database, imported), 2);
-	char *json = nullptr;
-	ASSERT_EQ(runtime_session_transcript_json(instance, imported, &json), 0);
+	char *json MORPH_CLEANUP(morph_json_text_cleanup) = nullptr;
+	ASSERT_EQ(runtime_session_transcript_json_copy(instance, imported, &json), 0);
 	cJSON *root = cJSON_Parse(json);
-	free(json);
+	morph_json_text_cleanup(&json);
 	ASSERT_NE(root, nullptr);
 	cJSON *messages = cJSON_GetObjectItem(root, "messages");
 	cJSON *display = cJSON_GetObjectItem(root, "display");
@@ -228,6 +234,7 @@ TEST_F(RuntimeFacadeTest, SessionImportBranchesChangedHistoryAndRollsBackOnMalfo
 	ASSERT_EQ(runtime_session_list_all(instance, &sessions, &before, 0), 0);
 	EXPECT_EQ(before, 3);
 	runtime_session_list_free(sessions);
+	sessions = nullptr;
 	ASSERT_EQ(db_open(NULL, &changed, source.c_str()), 0);
 	ASSERT_EQ(db_exec(&changed, "DROP TABLE messages; CREATE TABLE messages(session_id INTEGER, content TEXT); INSERT INTO messages VALUES(1,'broken');"), 0);
 	db_close(&changed);
@@ -237,6 +244,7 @@ TEST_F(RuntimeFacadeTest, SessionImportBranchesChangedHistoryAndRollsBackOnMalfo
 	ASSERT_EQ(runtime_session_list_all(instance, &sessions, &after, 0), 0);
 	EXPECT_EQ(after, before);
 	runtime_session_list_free(sessions);
+	sessions = nullptr;
 }
 
 TEST_F(RuntimeFacadeTest, SessionImportWriteFailureRollsBackReceiptAndSession)
@@ -255,6 +263,7 @@ TEST_F(RuntimeFacadeTest, SessionImportWriteFailureRollsBackReceiptAndSession)
 	ASSERT_EQ(runtime_session_list_all(instance, &sessions, &count, 0), 0);
 	EXPECT_EQ(count, 1);
 	runtime_session_list_free(sessions);
+	sessions = nullptr;
 	ASSERT_EQ(db_exec(&instance->context.database, "DROP TRIGGER reject_import"), 0);
 	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
 	EXPECT_EQ(result.imported, 1);
@@ -334,7 +343,7 @@ TEST_F(RuntimeFacadeTest, SessionImportPreservesSubagentRelationsAndRejectsOrpha
 
 static int facade_test_tool(const char *, struct tool_result *result, void *)
 {
-	return tool_result_success_text(result, "ok");
+	return tool_result_success_text_copy(result, "ok");
 }
 
 TEST_F(RuntimeFacadeTest, TranscriptReadsDetachedSessionWithoutSelectingIt)
@@ -356,10 +365,10 @@ TEST_F(RuntimeFacadeTest, TranscriptReadsDetachedSessionWithoutSelectingIt)
 		"[]", 1), 0);
 	ASSERT_EQ(trace_save(&instance->context.database, current.id, 1,
 		"[]", 0), 0);
-	char *json = nullptr;
-	ASSERT_EQ(runtime_session_transcript_json(instance, imported.id, &json), 0);
+	char *json MORPH_CLEANUP(morph_json_text_cleanup) = nullptr;
+	ASSERT_EQ(runtime_session_transcript_json_copy(instance, imported.id, &json), 0);
 	cJSON *root = cJSON_Parse(json);
-	free(json);
+	morph_json_text_cleanup(&json);
 	ASSERT_NE(root, nullptr);
 	EXPECT_STREQ(cJSON_GetObjectItem(root, "identity")->valuestring,
 		imported.display_id);
@@ -376,12 +385,11 @@ TEST_F(RuntimeFacadeTest, TranscriptReadsDetachedSessionWithoutSelectingIt)
 	ASSERT_EQ(runtime_session_current_id(instance, &selected), 0);
 	EXPECT_EQ(selected, current.id);
 	json = nullptr;
-	EXPECT_NE(runtime_session_transcript_json(instance, imported.id + 100,
-		&json), 0);
+	EXPECT_NE(runtime_session_transcript_json_copy(instance, imported.id + 100, &json), 0);
 	EXPECT_EQ(json, nullptr);
-	ASSERT_EQ(runtime_session_transcript_json(instance, current.id, &json), 0);
+	ASSERT_EQ(runtime_session_transcript_json_copy(instance, current.id, &json), 0);
 	root = cJSON_Parse(json);
-	free(json);
+	morph_json_text_cleanup(&json);
 	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(root, "messages")), 0);
 	cJSON_Delete(root);
 }
@@ -412,14 +420,14 @@ TEST_F(RuntimeFacadeTest, SessionCrudAndLookupAreConsistent)
 	ASSERT_GT(first.id, 0);
 	ASSERT_EQ(runtime_session_select(instance, "alpha", &second, &created), 0);
 	EXPECT_EQ(created, 1);
-	EXPECT_STREQ(runtime_session_current_name(instance), "alpha");
+	EXPECT_STREQ(runtime_session_current_name_borrow(instance), "alpha");
 	EXPECT_EQ(runtime_session_find_ref(instance, second.display_id, &found), 0);
 	EXPECT_EQ(found.id, second.id);
 	EXPECT_EQ(runtime_session_find_ref(instance,
 		std::to_string(second.id).c_str(), &found), 0);
 	EXPECT_EQ(found.id, second.id);
 	ASSERT_EQ(runtime_session_rename_and_update(instance, second.id, "renamed"), 0);
-	EXPECT_STREQ(runtime_session_current_name(instance), "renamed");
+	EXPECT_STREQ(runtime_session_current_name_borrow(instance), "renamed");
 	ASSERT_EQ(runtime_session_select_existing(instance, first.id, &selected), 0);
 	EXPECT_EQ(selected.id, first.id);
 	EXPECT_EQ(runtime_session_delete_and_update(instance, second.id), 0);
@@ -483,6 +491,7 @@ TEST_F(RuntimeFacadeTest, SessionListFilterModelAndStatsUseRuntimeDatabase)
 	ASSERT_EQ(count, 1);
 	EXPECT_EQ(sessions[0].id, created.id);
 	runtime_session_list_free(sessions);
+	sessions = nullptr;
 	EXPECT_GE(runtime_session_count_all(instance), 2);
 	ASSERT_EQ(runtime_session_set_model(instance, "test-model"), 0);
 	ASSERT_EQ(runtime_session_current(instance, &current), 0);
@@ -509,16 +518,16 @@ TEST_F(RuntimeFacadeTest, ToolRegistrationIsVisibleThroughFacade)
 	spec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
 	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	spec.exec = facade_test_tool;
-	ASSERT_EQ(runtime_register_tool(instance, &spec), 0);
+	ASSERT_EQ(runtime_register_tool_borrow(instance, &spec), 0);
 	EXPECT_EQ(runtime_tool_count(instance), before + 1);
-	ASSERT_EQ(runtime_tool_find(instance, "facade_test", &desc), 0);
+	ASSERT_EQ(runtime_tool_find_borrow(instance, "facade_test", &desc), 0);
 	EXPECT_STREQ(desc.name, "facade_test");
 	ASSERT_EQ(runtime_tool_enabled(instance, before, &enabled), 0);
 	EXPECT_EQ(enabled, 1);
 	ASSERT_EQ(runtime_tool_origin(instance, before, &origin), 0);
 	EXPECT_EQ(origin, TOOL_ORIGIN_EXT);
-	EXPECT_NE(runtime_register_tool(instance, &spec), 0);
-	EXPECT_EQ(runtime_tool_find(instance, "missing", &desc), -ENOENT);
+	EXPECT_NE(runtime_register_tool_borrow(instance, &spec), 0);
+	EXPECT_EQ(runtime_tool_find_borrow(instance, "missing", &desc), -ENOENT);
 }
 
 TEST_F(RuntimeFacadeTest, McpRegistryReturnsCopiedStatusWithoutConnecting)
@@ -558,9 +567,9 @@ TEST_F(RuntimeFacadeTest, TaskCrudRunsEntirelyThroughFacade)
 {
 	struct session current{};
 	struct scheduled_task_input input{};
-	struct scheduled_task created{};
-	struct scheduled_task loaded{};
-	struct scheduled_task updated{};
+	struct scheduled_task created MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task loaded MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task updated MORPH_CLEANUP(scheduled_task_cleanup) = {};
 	struct scheduled_task *items = nullptr;
 	int count = 0;
 
@@ -578,7 +587,7 @@ TEST_F(RuntimeFacadeTest, TaskCrudRunsEntirelyThroughFacade)
 	input.notify_json = "{}";
 	ASSERT_EQ(runtime_task_create(instance, &input, &created), 0);
 	ASSERT_GT(created.id, 0);
-	ASSERT_EQ(runtime_task_get(instance, created.id, &loaded), 0);
+	ASSERT_EQ(runtime_task_copy(instance, created.id, &loaded), 0);
 	EXPECT_STREQ(loaded.title, "runtime task");
 	input.title = "updated task";
 	ASSERT_EQ(runtime_task_update(instance, created.id, &input, &updated), 0);
@@ -588,7 +597,7 @@ TEST_F(RuntimeFacadeTest, TaskCrudRunsEntirelyThroughFacade)
 	scheduled_task_free_list(items, count);
 	ASSERT_EQ(runtime_task_cancel(instance, created.id), 0);
 	scheduled_task_cleanup(&loaded);
-	ASSERT_EQ(runtime_task_get(instance, created.id, &loaded), 0);
+	ASSERT_EQ(runtime_task_copy(instance, created.id, &loaded), 0);
 	EXPECT_STREQ(loaded.status, "cancelled");
 	scheduled_task_cleanup(&created);
 	scheduled_task_cleanup(&loaded);
@@ -599,7 +608,7 @@ TEST_F(RuntimeFacadeTest, DueTaskCreatesAndAcknowledgesNotification)
 {
 	struct session current{};
 	struct scheduled_task_input input{};
-	struct scheduled_task created{};
+	struct scheduled_task created MORPH_CLEANUP(scheduled_task_cleanup) = {};
 	struct notification *notifications = nullptr;
 	int count = 0;
 	int delivered = 0;
@@ -636,7 +645,7 @@ TEST_F(RuntimeFacadeTest, DueTaskCreatesAndAcknowledgesNotification)
 TEST_F(RuntimeFacadeTest, EmptyMemoryCanBeRenderedAndCleared)
 {
 	Open();
-	char *rendered = runtime_memory_render_current(instance, 10);
+	char *rendered = runtime_memory_render_current_copy(instance, 10);
 	ASSERT_NE(rendered, nullptr);
 	std::free(rendered);
 	EXPECT_EQ(runtime_memory_clear_current(instance, MEMORY_CLEAR_ALL), 0);
@@ -670,10 +679,10 @@ TEST(RuntimeFacadeValidationTest, RejectsInvalidFacadeArguments)
 	EXPECT_EQ(runtime_session_current(nullptr, &session), -EINVAL);
 	EXPECT_EQ(runtime_session_current_id(nullptr, nullptr), -EINVAL);
 	EXPECT_EQ(runtime_session_find_ref(nullptr, "x", &session), -EINVAL);
-	EXPECT_EQ(runtime_tool_info(nullptr, 0, &tool), -EINVAL);
+	EXPECT_EQ(runtime_tool_info_borrow(nullptr, 0, &tool), -EINVAL);
 	EXPECT_EQ(runtime_tool_enabled(nullptr, 0, &enabled), -EINVAL);
 	EXPECT_EQ(runtime_tool_origin(nullptr, 0, &origin), -EINVAL);
-	EXPECT_EQ(runtime_turn_status_get(nullptr, &status), -EINVAL);
+	EXPECT_EQ(runtime_turn_status_copy(nullptr, &status), -EINVAL);
 	EXPECT_EQ(runtime_credit_summary_today_get(nullptr, &credits), -EINVAL);
 	EXPECT_EQ(runtime_task_cancel(nullptr, 1), -EINVAL);
 	EXPECT_EQ(runtime_sync_status_instance(nullptr, nullptr), -EINVAL);
@@ -682,4 +691,263 @@ TEST(RuntimeFacadeValidationTest, RejectsInvalidFacadeArguments)
 	runtime_turn_status_cleanup(nullptr);
 	runtime_session_list_free(nullptr);
 	runtime_mcp_list_free(nullptr);
+}
+
+TEST_F(RuntimeFacadeTest, RequestSnapshotRejectsAnOccupiedOwnerWithoutDiscardingItsData)
+{
+	Open();
+	struct history_request_snapshot snapshot MORPH_CLEANUP(
+		history_request_snapshot_cleanup) = {};
+	snapshot.turn_id = strdup("owned-turn");
+	ASSERT_NE(snapshot.turn_id, nullptr);
+	char *original = snapshot.turn_id;
+
+	EXPECT_EQ(history_store_request_snapshot(&instance->context.database, 1, &snapshot),
+		  -EEXIST);
+	EXPECT_EQ(snapshot.turn_id, original);
+	EXPECT_STREQ(snapshot.turn_id, "owned-turn");
+}
+
+TEST_F(RuntimeFacadeTest, TurnStatusCopyOwnsStringsAndStepsIndependentlyOfTheRuntime)
+{
+	Open();
+	struct react_context *react = instance->context.react;
+	ASSERT_NE(react, nullptr);
+	react_steps_clear(&react->steps);
+	react->steps = react_step_create(REACT_STEP_THOUGHT, "original step", "tool", "{}", "call");
+	ASSERT_NE(react->steps, nullptr);
+	react->step_count = 1;
+	free(react->final_answer);
+	react->final_answer = strdup("original answer");
+	ASSERT_NE(react->final_answer, nullptr);
+	struct runtime_turn_status status MORPH_CLEANUP(runtime_turn_status_cleanup) = {};
+
+	ASSERT_EQ(runtime_turn_status_copy(instance, &status), 0);
+	ASSERT_EQ(status.step_count, 1);
+	EXPECT_NE(status.final_answer, react->final_answer);
+	EXPECT_NE(status.steps[0].content, react->steps->content);
+	react_steps_clear(&react->steps);
+	react->step_count = 0;
+	free(react->final_answer);
+	react->final_answer = nullptr;
+	EXPECT_STREQ(status.final_answer, "original answer");
+	EXPECT_STREQ(status.steps[0].content, "original step");
+	EXPECT_STREQ(status.steps[0].tool_name, "tool");
+}
+
+TEST_F(RuntimeFacadeTest, TurnStatusCopyRejectsOccupiedOutputWithoutDroppingTheOwner)
+{
+	Open();
+	struct runtime_turn_status status MORPH_CLEANUP(runtime_turn_status_cleanup) = {};
+	status.final_answer = strdup("already owned");
+	ASSERT_NE(status.final_answer, nullptr);
+	char *original = status.final_answer;
+
+	EXPECT_EQ(runtime_turn_status_copy(instance, &status), -EEXIST);
+	EXPECT_EQ(status.final_answer, original);
+	EXPECT_STREQ(status.final_answer, "already owned");
+}
+
+TEST_F(RuntimeFacadeTest, TurnStatusCopyRejectsInvalidCountsWithoutPublishingPartialState)
+{
+	Open();
+	struct react_context *react = instance->context.react;
+	ASSERT_NE(react, nullptr);
+	int original_count = react->step_count;
+	react->step_count = -1;
+	struct runtime_turn_status status MORPH_CLEANUP(runtime_turn_status_cleanup) = {};
+	int rc = runtime_turn_status_copy(instance, &status);
+	react->step_count = original_count;
+	EXPECT_EQ(rc, -EOVERFLOW);
+	EXPECT_EQ(status.steps, nullptr);
+	EXPECT_EQ(status.final_answer, nullptr);
+	EXPECT_EQ(status.outcome_reason, nullptr);
+	EXPECT_EQ(status.step_count, 0);
+}
+
+struct runtime_tool_payload {
+	int *destroyed;
+};
+
+static void runtime_tool_payload_destroy(void *data)
+{
+	auto *payload = static_cast<struct runtime_tool_payload *>(data);
+
+	++*payload->destroyed;
+	delete payload;
+}
+
+TEST_F(RuntimeFacadeTest, RegisterToolTakeClearsTheSourceAndReleasesItWithTheRuntime)
+{
+	Open();
+	int destroyed = 0;
+	struct tool_spec source MORPH_CLEANUP(tool_spec_cleanup) = {};
+	source.origin = TOOL_ORIGIN_EXT;
+	source.name = "owned-facade-tool";
+	source.description = "Owned runtime facade test";
+	source.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
+	source.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	source.exec = facade_test_tool;
+	source.user_data = new runtime_tool_payload{&destroyed};
+	source.user_data_destroy = runtime_tool_payload_destroy;
+
+	ASSERT_EQ(runtime_register_tool_take(instance, &source), 0);
+	EXPECT_EQ(source.user_data, nullptr);
+	EXPECT_EQ(source.user_data_destroy, nullptr);
+	EXPECT_EQ(destroyed, 0);
+	runtime_close(instance);
+	instance = nullptr;
+	EXPECT_EQ(destroyed, 1);
+}
+
+TEST_F(RuntimeFacadeTest, RegisterToolTakeFailurePreservesTheSourceOwner)
+{
+	Open();
+	struct tool_spec borrowed{};
+	borrowed.origin = TOOL_ORIGIN_EXT;
+	borrowed.name = "existing-facade-tool";
+	borrowed.description = "Borrowed runtime facade test";
+	borrowed.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
+	borrowed.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	borrowed.exec = facade_test_tool;
+	ASSERT_EQ(runtime_register_tool_borrow(instance, &borrowed), 0);
+	int destroyed = 0;
+	struct tool_spec source MORPH_CLEANUP(tool_spec_cleanup) = borrowed;
+	source.user_data = new runtime_tool_payload{&destroyed};
+	source.user_data_destroy = runtime_tool_payload_destroy;
+	void *original = source.user_data;
+
+	EXPECT_EQ(runtime_register_tool_take(instance, &source), -EEXIST);
+	EXPECT_EQ(source.user_data, original);
+	EXPECT_EQ(source.user_data_destroy, runtime_tool_payload_destroy);
+	EXPECT_EQ(destroyed, 0);
+	tool_spec_cleanup(&source);
+	EXPECT_EQ(destroyed, 1);
+}
+
+TEST_F(RuntimeFacadeTest, ProcessServiceRetainsItsBindingAfterToolsAreUnregistered)
+{
+	WriteConfig("[memory]\nenabled=false\n");
+	struct runtime_options options{};
+	options.config_path = config_path.c_str();
+	options.enable_exec = 1;
+	Open(&options);
+	ASSERT_NE(instance->jobs, nullptr);
+	EXPECT_EQ(instance->jobs, instance->jobs_owner.jobs);
+	ASSERT_EQ(tool_unregister(&instance->context.tools, "exec"), 0);
+	ASSERT_EQ(tool_unregister(&instance->context.tools, "process"), 0);
+	cJSON *jobs MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+
+	ASSERT_EQ(runtime_process_list(instance, &jobs), 0);
+	EXPECT_TRUE(cJSON_IsArray(jobs));
+	EXPECT_EQ(cJSON_GetArraySize(jobs), 0);
+}
+
+TEST_F(RuntimeFacadeTest, CopiedHistoryAndHooksRejectOccupiedOwnersWithoutDiscardingThem)
+{
+	Open();
+	char *text MORPH_CLEANUP(morph_charp_cleanup) = strdup("caller-owned text");
+	cJSON *document MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse("{\"caller\":true}");
+	ASSERT_NE(text, nullptr);
+	ASSERT_NE(document, nullptr);
+	char *original_text = text;
+	cJSON *original_document = document;
+	int64_t session_id = instance->context.current_session.id;
+
+	EXPECT_EQ(runtime_session_last_answer_copy(instance, &text), -EEXIST);
+	EXPECT_EQ(runtime_session_transcript_json_copy(instance, session_id, &text), -EEXIST);
+	EXPECT_EQ(history_store_last_answer_copy(&instance->context.database, session_id, &text),
+		  -EEXIST);
+	EXPECT_EQ(history_store_previous_question_copy(&instance->context.database, session_id, 1,
+						       &text),
+		  -EEXIST);
+	EXPECT_EQ(text, original_text);
+	EXPECT_STREQ(text, "caller-owned text");
+	EXPECT_EQ(runtime_session_share_current(instance, &document), -EEXIST);
+	EXPECT_EQ(runtime_process_list(instance, &document), -EEXIST);
+	EXPECT_EQ(runtime_process_read(instance, "proc_missing", &document), -EEXIST);
+	EXPECT_EQ(runtime_session_history_inspect_copy(instance, &document), -EEXIST);
+	EXPECT_EQ(runtime_session_history_entry_input_copy(instance, 1, &document), -EEXIST);
+	EXPECT_EQ(runtime_session_last_request_copy(instance, &document), -EEXIST);
+	EXPECT_EQ(runtime_hooks_snapshot_copy(instance, &document), -EEXIST);
+	EXPECT_EQ(
+		hook_manager_dispatch(&instance->context.hooks, "SessionStart", nullptr, &document),
+		-EEXIST);
+	EXPECT_EQ(document, original_document);
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(document, "caller")));
+}
+
+TEST_F(RuntimeFacadeTest, HistoryCopyLeavesEmptyOutputsOnDatabaseFailure)
+{
+	Open();
+	cJSON *document MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(db_exec(&instance->context.database, "DROP TABLE model_request_snapshots"), 0);
+
+	EXPECT_EQ(runtime_session_last_request_copy(instance, &document), MORPH_ERR_DB);
+	EXPECT_EQ(document, nullptr);
+}
+
+TEST_F(RuntimeFacadeTest, HooksCopyRejectsAllocationFailureWithinARowWithoutPublishingIt)
+{
+	WriteConfig("[memory]\nenabled=false\n");
+	std::ofstream(directory + "/hooks.json") << R"({"hooks":{"PreToolUse":[{"matcher":"*",
+		"hooks":[{"type":"command","command":"printf ok"}]}]}})";
+	struct runtime_options options{};
+	options.config_path = config_path.c_str();
+	Open(&options);
+	cJSON *snapshot MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_hooks_snapshot_copy(instance, &snapshot), 0);
+	ASSERT_GT(cJSON_GetArraySize(snapshot), 0);
+	morph_json_cleanup(&snapshot);
+	cJSON_Hooks hooks{};
+	hooks.malloc_fn = [](size_t bytes) -> void * {
+		return bytes == 65 ? nullptr : malloc(bytes);
+	};
+	hooks.free_fn = free;
+	cJSON_InitHooks(&hooks);
+	int rc = runtime_hooks_snapshot_copy(instance, &snapshot);
+	cJSON_InitHooks(nullptr);
+
+	EXPECT_EQ(rc, -ENOMEM);
+	EXPECT_EQ(snapshot, nullptr);
+	ASSERT_EQ(runtime_hooks_snapshot_copy(instance, &snapshot), 0);
+	EXPECT_GT(cJSON_GetArraySize(snapshot), 0);
+}
+
+TEST_F(RuntimeFacadeTest, OccupiedRuntimeAndSessionListOwnersRemainUsable)
+{
+	Open();
+	struct runtime *original = instance;
+	struct runtime_options options{};
+	options.db_path = database.c_str();
+	EXPECT_EQ(runtime_open(&options, &instance), -EEXIST);
+	EXPECT_EQ(instance, original);
+	struct session *sessions = nullptr;
+	int count = 0;
+	ASSERT_EQ(runtime_session_list_all(instance, &sessions, &count, 0), 0);
+	ASSERT_NE(sessions, nullptr);
+	struct session *retained = sessions;
+	int retained_count = count;
+	EXPECT_EQ(runtime_session_list_query(instance, &sessions, &count, 0, nullptr), -EEXIST);
+	EXPECT_EQ(sessions, retained);
+	EXPECT_EQ(count, retained_count);
+	runtime_session_list_free(sessions);
+}
+
+TEST_F(RuntimeFacadeTest, ProcessAndTaskFailuresKeepOutputsEmptyAndPreserveErrorCodes)
+{
+	Open();
+	ASSERT_EQ(tool_unregister(&instance->context.tools, "tasks"), 0);
+	char *task_json MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	EXPECT_EQ(runtime_tasks_execute(instance, "{}", 0, &task_json), -ENOENT);
+	EXPECT_EQ(task_json, nullptr);
+	std::string sql = "INSERT INTO process_jobs(process_id,session_id,data_json,updated_at) "
+			  "VALUES('proc_broken'," +
+			  std::to_string(instance->context.current_session.id) + ",'not-json',0)";
+	ASSERT_EQ(db_exec(&instance->context.database, sql.c_str()), 0);
+	cJSON *document MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	EXPECT_EQ(runtime_process_list(instance, &document), MORPH_ERR_PARSE);
+	EXPECT_EQ(document, nullptr);
+	EXPECT_EQ(runtime_process_read(instance, "proc_broken", &document), MORPH_ERR_PARSE);
+	EXPECT_EQ(document, nullptr);
 }

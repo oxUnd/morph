@@ -26,8 +26,8 @@ struct bash_parse_result {
 
 int bash_parse_analyze(const char *source, struct bash_parse_result *result);
 void bash_parse_result_cleanup(struct bash_parse_result *result);
-const struct bash_parse_command *bash_parse_first_command(
-	const struct bash_parse_result *result);
+const struct bash_parse_command *
+bash_parse_first_command_borrow(const struct bash_parse_result *result);
 int bash_parse_command_name(const char *source, char *out, size_t out_size);
 int bash_parse_command_program(const char *source, char *out, size_t out_size);
 

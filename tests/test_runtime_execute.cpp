@@ -6,6 +6,8 @@ extern "C" {
 #include "permission/context_internal.h"
 #include "agent/tools/exec_tool.h"
 #include "agent/tool_runtime.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 }
 
 #include <atomic>
@@ -33,10 +35,9 @@ struct RuntimeScriptedModel {
 	std::vector<std::string> observed_messages;
 };
 
-static int runtime_scripted_chat(struct model *self, struct arena *,
-				 const char *, const char **messages, int count,
-				 const struct model_chat_options *,
-				 sse_callback callback, void *user_data)
+static int runtime_scripted_chat(struct model *self, const char *, const char **messages, int count,
+				 const struct model_chat_options *, sse_callback callback,
+				 void *user_data)
 {
 	auto *state = static_cast<RuntimeScriptedModel *>(self->handle);
 	{
@@ -57,10 +58,10 @@ static int runtime_scripted_chat(struct model *self, struct arena *,
 	return 200;
 }
 
-static int runtime_scripted_chat_with_tools(
-	struct model *self, struct arena *, const char *,
-	struct chat_message *messages, int count, struct tool_desc *, int,
-	struct chat_response *response, sse_callback, void *)
+static int runtime_scripted_chat_with_tools(struct model *self, const char *,
+					    struct chat_message *messages, int count,
+					    struct tool_desc *, int, struct chat_response *response,
+					    sse_callback, void *)
 {
 	auto *state = static_cast<RuntimeScriptedModel *>(self->handle);
 	{
@@ -171,7 +172,7 @@ TEST_F(RuntimeExecuteTest, SuccessfulTurnPersistsUserAndAssistantMessages)
 	ASSERT_NE(result.final_text, nullptr);
 	EXPECT_STREQ(result.final_text, "scripted answer");
 	int count = 0;
-	struct message *messages = runtime_session_messages_current(instance, &count);
+	struct message *messages = runtime_session_messages_current_copy(instance, &count);
 	ASSERT_NE(messages, nullptr);
 	EXPECT_EQ(count, 2);
 	EXPECT_STREQ(messages->role, "user");
@@ -196,7 +197,7 @@ TEST_F(RuntimeExecuteTest, SecondTurnReceivesEarlierSessionHistory)
 	}
 	EXPECT_TRUE(saw_first);
 	int count = 0;
-	struct message *messages = runtime_session_messages_current(instance, &count);
+	struct message *messages = runtime_session_messages_current_copy(instance, &count);
 	EXPECT_EQ(count, 4);
 	runtime_session_messages_free(messages);
 }
@@ -206,15 +207,15 @@ TEST_F(RuntimeExecuteTest, CapturesDispatchedInputWithoutTheLaterAssistantAnswer
 	struct runtime_result result{};
 	OpenScripted();
 	ASSERT_EQ(Execute("inspect actual model input", &result), 0);
-	cJSON *snapshot = nullptr;
-	ASSERT_EQ(runtime_session_last_request(instance, &snapshot), 0);
+	cJSON *snapshot MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_session_last_request_copy(instance, &snapshot), 0);
 	const char *input = cJSON_GetStringValue(cJSON_GetObjectItem(snapshot, "input_json"));
 	ASSERT_NE(input, nullptr);
 	EXPECT_NE(strstr(input, "inspect actual model input"), nullptr);
 	EXPECT_EQ(strstr(input, "scripted answer"), nullptr);
 	EXPECT_NE(strstr(input, "messages"), nullptr);
 	EXPECT_NE(strstr(input, "tools"), nullptr);
-	cJSON_Delete(snapshot);
+	morph_json_cleanup(&snapshot);
 }
 
 TEST_F(RuntimeExecuteTest, MemoryMaintenanceNeverEntersTheDispatchedPrompt)
@@ -237,8 +238,8 @@ TEST_F(RuntimeExecuteTest, MemoryMaintenanceNeverEntersTheDispatchedPrompt)
 	ASSERT_EQ(model_history_add(&handle, &item, nullptr), 0);
 	struct runtime_result result{};
 	ASSERT_EQ(Execute("continue after the background build", &result), 0);
-	cJSON *snapshot = nullptr;
-	ASSERT_EQ(runtime_session_last_request(instance, &snapshot), 0);
+	cJSON *snapshot MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_session_last_request_copy(instance, &snapshot), 0);
 	const char *input = cJSON_GetStringValue(cJSON_GetObjectItem(snapshot, "input_json"));
 	ASSERT_NE(input, nullptr);
 	EXPECT_EQ(strstr(input, "memory_consolidation"), nullptr);
@@ -246,7 +247,7 @@ TEST_F(RuntimeExecuteTest, MemoryMaintenanceNeverEntersTheDispatchedPrompt)
 	EXPECT_NE(strstr(input, "archive created"), nullptr);
 	EXPECT_EQ(model_history_count(&handle, session.id, 0), 4);
 	EXPECT_EQ(model_history_count(&handle, session.id, 1), 3);
-	cJSON_Delete(snapshot);
+	morph_json_cleanup(&snapshot);
 	db_close(&handle);
 }
 
@@ -261,8 +262,8 @@ TEST_F(RuntimeExecuteTest, InputSnapshotFailureDoesNotPreventModelDispatch)
 	ASSERT_EQ(Execute("still execute this request", &result), 0);
 	EXPECT_EQ(result.outcome, RUNTIME_OUTCOME_COMPLETED);
 	EXPECT_EQ(scripted.calls, 1);
-	cJSON *snapshot = nullptr;
-	EXPECT_EQ(runtime_session_last_request(instance, &snapshot), -ENODATA);
+	cJSON *snapshot MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	EXPECT_EQ(runtime_session_last_request_copy(instance, &snapshot), -ENODATA);
 	db_close(&database_handle);
 }
 
@@ -272,7 +273,7 @@ TEST_F(RuntimeExecuteTest, TurnStatusIsADeepCopiedSnapshot)
 	struct runtime_turn_status first{};
 	OpenScripted();
 	ASSERT_EQ(Execute("snapshot one", &result), 0);
-	ASSERT_EQ(runtime_turn_status_get(instance, &first), 0);
+	ASSERT_EQ(runtime_turn_status_copy(instance, &first), 0);
 	ASSERT_NE(first.final_answer, nullptr);
 	EXPECT_STREQ(first.final_answer, "scripted answer");
 	scripted.response = "Thought: complete\nFinal: changed answer";
@@ -324,7 +325,7 @@ TEST_F(RuntimeExecuteTest, ModelFailureReturnsFailedOutcomeAndErrorSnapshot)
 	scripted.error = -EIO;
 	EXPECT_EQ(Execute("fail", &result), -EIO);
 	EXPECT_EQ(result.outcome, RUNTIME_OUTCOME_FAILED);
-	char *json = runtime_turn_error_json(instance);
+	char *json = runtime_turn_error_json_copy(instance);
 	ASSERT_NE(json, nullptr);
 	EXPECT_NE(std::strstr(json, "llm_error"), nullptr);
 	std::free(json);
@@ -389,7 +390,7 @@ TEST_F(RuntimeFacadeTest, PathPoliciesAndCustomSkillsLoadWithoutExec)
 		struct tool_context *tctx, void *data) {
 		auto *state = static_cast<State *>(data);
 		state->called = true;
-		EXPECT_EQ(tool_lookup(tools, "exec"), nullptr);
+		EXPECT_EQ(tool_borrow(tools, "exec"), nullptr);
 		EXPECT_GT(tctx->builtin_paths.nelts, 32u);
 		EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
 			(state->skills + "/SKILL.md").c_str(), NULL, 0), 0);
@@ -426,8 +427,8 @@ TEST_F(RuntimeExecuteTest, TrustedStopCommandRunsThroughRuntimeAndPersistsOneAns
 	options.after_models_user_data = &scripted;
 	Open(&options);
 	ASSERT_NE(instance, nullptr);
-	cJSON *hooks = nullptr;
-	ASSERT_EQ(runtime_hooks_snapshot(instance, &hooks), 0);
+	cJSON *hooks MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_hooks_snapshot_copy(instance, &hooks), 0);
 	const cJSON *row;
 	int trusted = 0;
 	cJSON_ArrayForEach(row, hooks) {
@@ -440,14 +441,14 @@ TEST_F(RuntimeExecuteTest, TrustedStopCommandRunsThroughRuntimeAndPersistsOneAns
 			trusted++;
 		}
 	}
-	cJSON_Delete(hooks);
+	morph_json_cleanup(&hooks);
 	ASSERT_EQ(trusted, 1);
 	struct runtime_result result{};
 	ASSERT_EQ(Execute("finish the work", &result), 0);
 	EXPECT_EQ(scripted.calls, 2);
 	EXPECT_EQ(result.outcome, RUNTIME_OUTCOME_COMPLETED);
 	int count = 0, assistant_count = 0;
-	struct message *messages = runtime_session_messages_current(instance, &count);
+	struct message *messages = runtime_session_messages_current_copy(instance, &count);
 	for (auto *msg = messages; msg; msg = msg->next) {
 		if (strcmp(msg->role, "assistant") == 0)
 			assistant_count++;
@@ -501,29 +502,29 @@ TEST_F(RuntimeFacadeTest, ProcessResultsSurviveRestartAndRespectSessionOwnership
 			[&] { return notices.completed > 0; }));
 	}
 	std::string service = start(R"({"command":"sleep 20","service":true})");
-	cJSON *jobs = nullptr;
+	cJSON *jobs MORPH_CLEANUP(morph_json_cleanup) = nullptr;
 	ASSERT_EQ(runtime_process_list(instance, &jobs), 0);
 	EXPECT_EQ(cJSON_GetArraySize(jobs), 2);
-	cJSON_Delete(jobs);
+	morph_json_cleanup(&jobs);
 	runtime_close(instance);
 	instance = nullptr;
 	Open(&options);
-	cJSON *data = nullptr;
+	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = nullptr;
 	ASSERT_EQ(runtime_process_read(instance, finished.c_str(), &data), 0);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "stdout")), "persisted");
 	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data, "exit_code")), 7);
 	EXPECT_EQ(cJSON_GetObjectItem(data, "stdout_path"), nullptr);
-	cJSON_Delete(data);
+	morph_json_cleanup(&data);
 	ASSERT_EQ(runtime_process_read(instance, service.c_str(), &data), 0);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "status")), "unavailable");
-	cJSON_Delete(data);
+	morph_json_cleanup(&data);
 	EXPECT_EQ(runtime_process_stop(instance, service.c_str()), -ENOENT);
 	struct session other{};
 	int created = 0;
 	ASSERT_EQ(runtime_session_select(instance, "other-process-session", &other, &created), 0);
 	ASSERT_EQ(runtime_process_list(instance, &jobs), 0);
 	EXPECT_EQ(cJSON_GetArraySize(jobs), 0);
-	cJSON_Delete(jobs);
+	morph_json_cleanup(&jobs);
 	EXPECT_EQ(runtime_process_read(instance, finished.c_str(), &data), -ENOENT);
 }
 

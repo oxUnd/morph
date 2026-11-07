@@ -60,10 +60,11 @@ void cli_history_render_resume_hint(struct cli_application *ctx, const char *ses
 	}
 	(void)morph_buf_puts(&arguments, reset);
 	if (!arguments.failed)
-		cli_output_printf(ctx, "\n%sTo resume this session, run:%s\n"
-				       "  %smorph %s\n  %smorphctl %s\n",
-				  dim, reset, command_style, morph_buf_cstr(&arguments),
-				  command_style, morph_buf_cstr(&arguments));
+		cli_output_printf(ctx,
+				  "\n%sTo resume this session, run:%s\n"
+				  "  %smorph %s\n  %smorphctl %s\n",
+				  dim, reset, command_style, morph_buf_cstr_borrow(&arguments),
+				  command_style, morph_buf_cstr_borrow(&arguments));
 	morph_buf_cleanup(&arguments);
 }
 
@@ -98,7 +99,7 @@ static int cli_history_assistant(struct cli_application *ctx,
 		if (rc)
 			break;
 		const char *id = cli_history_string(call, "tool_call_id");
-		struct model_history_item *result = morph_strmap_get(results, id);
+		struct model_history_item *result = morph_strmap_borrow(results, id);
 
 		rc = cli_transcript_restore_tool(ctx, call, result);
 	}
@@ -119,7 +120,7 @@ int cli_history_render_session(struct cli_application *ctx, struct model_history
 	for (struct model_history_item *item = items; item; item = item->next) {
 		if (strcmp(item->kind, "tool_result") || !item->tool_call_id)
 			continue;
-		rc = morph_strmap_set(&results, item->tool_call_id, item);
+		rc = morph_strmap_set_borrow(&results, item->tool_call_id, item);
 		if (rc)
 			break;
 	}

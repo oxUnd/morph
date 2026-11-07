@@ -33,8 +33,10 @@ int cli_command_job_done(struct cli_command_job *job);
 int cli_command_job_finish(struct cli_command_job *job);
 int cli_command_job_prompt_pending(void *opaque);
 int cli_command_job_prompt(struct cli_command_job *job, const char *text, const char *display_text);
-int cli_command_job_prompt_snapshot(struct cli_command_job *job, char **items, size_t capacity,
-				    size_t *total);
+/* Each empty items slot receives an independent malloc-owned string. On failure
+ * every created slot is NULL and total is zero; occupied slots return -EEXIST. */
+int cli_command_job_prompts_copy(struct cli_command_job *job, char **items, size_t capacity,
+				 size_t *total);
 char *cli_command_job_take_prompt(struct cli_command_job *job, char **display_text);
 int cli_command_job_drain(void *opaque, struct react_action *out, int timeout);
 int cli_command_job_wait(struct cli_command_job *job);

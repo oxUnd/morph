@@ -9,20 +9,96 @@ state and are outside this rule.
 
 ## Owners and borrowed contexts
 
-Allocation follows the same ownership boundary as other resources. There is no
-process-wide arena or mutable allocator singleton. A turn, background request,
-or snapshot owns its temporary arena; an object's deinit/destroy function releases
-its longer-lived buffers, arrays, and resources. Reuse `morph_buf`, `morph_array`,
-and `morph_strmap` instead of managing growth in callers.
+Allocation follows the ownership boundary of each resource. Objects use ordinary
+heap allocations and own their buffers and fields. There is no allocator context
+passed through business APIs. `morph_buf`, `morph_array`, and `morph_strmap` manage
+growth; an object's typed cleanup releases each owned field.
 
-Cross-module APIs document whether strings and records are borrowed, heap-owned,
-or arena-owned. Storage visitors lend a row only for the duration of the callback;
-they finalize the statement on completion, early stop, and callback failure.
-Permission snapshots copy paths into the caller's arena while holding the
-authority lock, so clearing grants or destroying the context cannot invalidate
-the snapshot. Memory and output snapshots likewise remain valid until their
-documented owner is released. Resource cleanup stays with that owner rather than
-a global release operation.
+GCC/Clang scope cleanup is required. Include `util/cleanup.h` and declare local
+owners with `MORPH_CLEANUP(function)`, initialized to `NULL` for pointers or `{0}`
+for values. Unsupported compilers fail the build rather than silently omitting
+cleanup. A pointer variable passes `T **` to its cleanup callback; an embedded
+value passes `T *`. Use type-correct adapters, never a `void **` cast. Cleanup
+supports empty and partially initialized valid objects and clears released fields.
+
+Ownership contracts are explicit:
+
+- Ordinary input pointers are borrowed. Document the borrow's end, including
+  mutation and asynchronous boundaries; `const` alone does not enforce lifetime.
+- Create/clone outputs go into empty owner slots. Success returns an independent
+  owner; failure leaves the output empty and releases partial construction.
+- A fallible `*_take` receives the owner's address: `T **` for a pointer owner,
+  `T *` for a value owner. It consumes only on success, clearing the pointer or
+  resetting the value after acceptance; failure retains the original owner. Complete all
+  fallible preparation before committing the transfer.
+- An infallible typed `*_steal(T **source)` returns the old pointer and clears the
+  source. Use it when returning a local owner. Do not steal into a fallible
+  receiver: pass the source address to the receiver's take API instead.
+- Owning structures are not copied by ordinary assignment. A typed move operation
+  commits the transfer and resets the source; clone creates independent storage.
+  Container cleanup frees storage, while the containing typed owner cleans up
+  owned elements first.
+
+The API name describes the returned value or the state retained after the call:
+
+| Form | Contract |
+| --- | --- |
+| `*_borrow` | Lends an object/view or retains a borrowed dependency. The header names its owner and invalidation boundary. Never release a borrowed result. |
+| `*_copy`, `*_clone` | Creates independent owned data from borrowed input. The input remains with its caller. |
+| `*_create`, `*_init` | Constructs a caller-owned object in an empty output slot or initialized value. |
+| `*_add_borrow` | Adds an object to a registry/controller and lends its address; the containing owner destroys it. |
+| `*_take` | Accepts an owner by address, clearing it only after success. Rejection preserves it. |
+| `*_move`, `*_steal`, `*_detach` | Explicit transfer operations. Move replaces the destination, steal cannot fail, and a fallible detach preserves its source on failure. |
+| `*_retain`, `*_acquire` / `*_release` | Holds and releases a shared reference. It extends lifetime without copying the underlying object. |
+| `*_cleanup`, `*_destroy` | Releases an owned resource. Typed cleanup supports empty valid owners. |
+
+Ordinary pointer inputs are borrowed for the call unless the header explicitly
+specifies retention. Scalars, caller-buffer formatting, and immutable
+process-lifetime classifiers such as `*_name` keep their ordinary names. Standard
+`*_dup`/`*_alloc` names already denote allocations. The legacy UTF-8 adapters keep
+their documented compatibility names. Third-party declarations and APIs are not
+renamed; adapters state the original allocation/free pairing.
+
+For example, this expression lends the buffer text only while creating an
+independent parsed result:
+
+```c
+return tool_result_success_json_text_copy(result, morph_buf_cstr_borrow(&buf));
+```
+
+The buffer still belongs to its scope. An explicit transfer instead passes the
+owner's address:
+
+```c
+cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+if (!data)
+        return -ENOMEM;
+return tool_result_success_take(result, &data);
+```
+
+The result clears `data` only after acceptance. On failure, scope cleanup still
+releases it. Naming does not add a borrow checker to C: lifecycle checks, typed
+owners, synchronization, and regression tests enforce the implementation.
+
+Cross-thread queues commit enqueue and source clearing under the queue lock,
+then publish/notify. Once accepted, the queue owns consumption, cancellation and
+shutdown cleanup; a later execution failure does not return ownership to the
+producer. Borrowed worker dependencies outlive every worker join.
+
+Execution and transport operations may return owned diagnostics with a negative
+status, for example an HTTP partial response or an extension error reply. Their
+headers explicitly require cleanup on both success and failure. These operations
+still reject an occupied destination before starting work. Constructor/copy
+failure contracts remain separate from execution-status reporting.
+
+Storage visitors lend a row only for the callback duration and finalize their
+statement on every exit. Permission snapshots duplicate paths while holding the
+authority lock and own those paths until typed cleanup. Memory and output
+snapshots likewise own every returned field independently of the source. cJSON
+values use `morph_json_cleanup`; printed cJSON text uses
+`morph_json_text_cleanup`/`cJSON_free`. `morph_json_string_take(char **)` consumes
+a malloc-owned string only after successful construction and preserves it on
+failure. Third-party allocation/free pairs remain matched.
 
 | State | Owner and lifetime |
 | --- | --- |

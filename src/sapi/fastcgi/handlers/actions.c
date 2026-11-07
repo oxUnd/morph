@@ -17,7 +17,7 @@
 
 void handle_post_action(request_t *r)
 {
-	const char *sid = path_param(r, "id");
+	const char *sid = path_param_borrow(r, "id");
 	if (!sid) {
 		reply_400(r, "missing id");
 		return;

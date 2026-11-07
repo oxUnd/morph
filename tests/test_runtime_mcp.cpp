@@ -109,7 +109,7 @@ done
 		options.background_connect_mcp = background;
 		options.event_cb = [](const morph_event *event, void *opaque) {
 			auto *self = static_cast<RuntimeMcpBackgroundTest *>(opaque);
-			char *json = morph_event_to_json_string(event);
+			char *json = morph_event_json_text_copy(event);
 			if (json) {
 				std::lock_guard<std::mutex> guard(self->event_lock);
 				self->events.emplace_back(json);
@@ -170,11 +170,11 @@ TEST_F(RuntimeMcpBackgroundTest, ReturnsBeforeSlowServersAndConnectsIndependentl
 	ASSERT_TRUE(wait([&] { return state("fast", RUNTIME_MCP_READY); }));
 	EXPECT_TRUE(state("slow", RUNTIME_MCP_CONNECTING));
 	struct tool_desc desc = {};
-	EXPECT_EQ(runtime_tool_find(instance, "mcp_fast__echo", &desc), 0);
-	EXPECT_EQ(runtime_tool_find(instance, "mcp_slow__echo", &desc), -ENOENT);
+	EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_fast__echo", &desc), 0);
+	EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_slow__echo", &desc), -ENOENT);
 	release("slow");
 	ASSERT_TRUE(wait([&] { return state("slow", RUNTIME_MCP_READY); }));
-	EXPECT_EQ(runtime_tool_find(instance, "mcp_slow__echo", &desc), 0);
+	EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_slow__echo", &desc), 0);
 }
 
 TEST_F(RuntimeMcpBackgroundTest, PublishesOnlyBetweenTurns)
@@ -286,7 +286,7 @@ TEST_F(RuntimeMcpBackgroundTest, DiscoveryFailureDoesNotPublishPartialTools)
 	ASSERT_EQ(open(), 0);
 	ASSERT_TRUE(wait([&] { return state("invalid", RUNTIME_MCP_FAILED); }));
 	struct tool_desc desc = {};
-	EXPECT_EQ(runtime_tool_find(instance, "mcp_invalid__valid", &desc), -ENOENT);
+	EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_invalid__valid", &desc), -ENOENT);
 }
 
 TEST_F(RuntimeMcpBackgroundTest, DisabledAutoConnectRemainsDisconnected)
@@ -304,7 +304,7 @@ TEST_F(RuntimeMcpBackgroundTest, SynchronousStartupRemainsAvailable)
 	ASSERT_EQ(open(false), 0);
 	EXPECT_TRUE(state("sync", RUNTIME_MCP_READY));
 	struct tool_desc desc = {};
-	EXPECT_EQ(runtime_tool_find(instance, "mcp_sync__echo", &desc), 0);
+	EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_sync__echo", &desc), 0);
 }
 
 TEST_F(RuntimeMcpBackgroundTest, PublicationCollisionRollsBackNewTools)
@@ -317,7 +317,7 @@ TEST_F(RuntimeMcpBackgroundTest, PublicationCollisionRollsBackNewTools)
 	spec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
 	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	spec.exec = [](const char *, struct tool_result *, void *) { return 0; };
-	ASSERT_EQ(runtime_register_tool(instance, &spec), 0);
+	ASSERT_EQ(runtime_register_tool_borrow(instance, &spec), 0);
 	release("capacity");
 	ASSERT_TRUE(wait([&] { return state("capacity", RUNTIME_MCP_FAILED); }));
 	struct runtime_mcp_status status = {};
@@ -325,8 +325,8 @@ TEST_F(RuntimeMcpBackgroundTest, PublicationCollisionRollsBackNewTools)
 	EXPECT_EQ(status.error_code, -EEXIST);
 	struct tool_desc desc = {};
 	EXPECT_EQ(runtime_tool_count(instance), before + 1);
-	EXPECT_EQ(runtime_tool_find(instance, "mcp_capacity__first", &desc), -ENOENT);
-	EXPECT_EQ(runtime_tool_find(instance, "mcp_capacity__second", &desc), 0);
+	EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_capacity__first", &desc), -ENOENT);
+	EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_capacity__second", &desc), 0);
 }
 
 #include <atomic>
@@ -430,7 +430,7 @@ TEST_F(RuntimeMcpBackgroundTest, RegistersPromptArgumentsAsObjectSchema)
 	ASSERT_EQ(open(), 0);
 	ASSERT_TRUE(wait([&] { return state("prompt", RUNTIME_MCP_READY); }));
 	struct tool_desc desc = {};
-	ASSERT_EQ(runtime_tool_find(instance, "mcp_prompt_prompt__review", &desc), 0);
+	ASSERT_EQ(runtime_tool_find_borrow(instance, "mcp_prompt_prompt__review", &desc), 0);
 	cJSON *schema = cJSON_Parse(desc.input_schema);
 	ASSERT_NE(schema, nullptr);
 	cJSON *properties = cJSON_GetObjectItem(schema, "properties");
@@ -448,7 +448,7 @@ TEST_F(RuntimeMcpBackgroundTest, ToolSnapshotsRemainReadableDuringATurn)
 	pthread_mutex_lock(&instance->context.execution_lock);
 	EXPECT_GT(runtime_tool_count(instance), 0);
 	struct tool_desc desc = {};
-	EXPECT_EQ(runtime_tool_info(instance, 0, &desc), 0);
+	EXPECT_EQ(runtime_tool_info_borrow(instance, 0, &desc), 0);
 	pthread_mutex_unlock(&instance->context.execution_lock);
 }
 
@@ -463,7 +463,7 @@ TEST_F(RuntimeMcpBackgroundTest, SynchronousDiscoveryFailureIsVisible)
 	EXPECT_LT(status.error_code, 0);
 }
 
-TEST_F(RuntimeMcpBackgroundTest, DiscoveryListsOwnStringsAfterArenaIsDestroyed)
+TEST_F(RuntimeMcpBackgroundTest, DiscoveryListsOwnStringsAfterDescriptorSourceIsReleased)
 {
 	server("lists", 0, true, "prompt");
 	release("lists");
@@ -503,9 +503,9 @@ TEST_F(RuntimeMcpBackgroundTest, PeekabooSizedSchemasDoNotDisconnectServer)
 	EXPECT_EQ(status.connected, 1);
 	EXPECT_EQ(status.error_code, 0);
 	struct tool_desc desc = {};
-	ASSERT_EQ(runtime_tool_find(instance, "mcp_peekaboo__verify_state", &desc), 0);
+	ASSERT_EQ(runtime_tool_find_borrow(instance, "mcp_peekaboo__verify_state", &desc), 0);
 	EXPECT_EQ(std::string(desc.input_schema), verify);
-	ASSERT_EQ(runtime_tool_find(instance, "mcp_peekaboo__browser", &desc), 0);
+	ASSERT_EQ(runtime_tool_find_borrow(instance, "mcp_peekaboo__browser", &desc), 0);
 	EXPECT_EQ(std::string(desc.input_schema), browser);
 }
 
@@ -519,7 +519,7 @@ TEST_F(RuntimeMcpBackgroundTest, PinnedVersionPassesThroughRuntimeConfiguration)
 	release("pinned");
 	ASSERT_EQ(open(false), 0);
 	EXPECT_TRUE(state("pinned", RUNTIME_MCP_READY));
-	auto *client = mcp_registry_get(&instance->context.mcp, "pinned");
+	auto *client = mcp_registry_borrow(&instance->context.mcp, "pinned");
 	ASSERT_NE(client, nullptr);
 	EXPECT_STREQ(client->config.protocol_version, "2025-06-18");
 	EXPECT_STREQ(client->negotiated_version, "2025-06-18");
@@ -540,7 +540,7 @@ TEST_F(RuntimeMcpBackgroundTest, MissingAdvertisedPromptHandlerPreservesTools)
 		EXPECT_EQ(status.supports_tools, 1);
 		EXPECT_EQ(status.supports_prompts, 0);
 		struct tool_desc desc = {};
-		EXPECT_EQ(runtime_tool_find(instance, "mcp_missing_prompt__echo", &desc), 0);
+		EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_missing_prompt__echo", &desc), 0);
 		runtime_close(instance);
 		instance = nullptr;
 		std::filesystem::remove(config_path);
@@ -574,7 +574,7 @@ TEST_F(RuntimeMcpBackgroundTest, LiveServerPublishesToolsAndBecomesReady)
 	int published = 0;
 	for (int i = 0; i < runtime_tool_count(instance); i++) {
 		struct tool_desc descriptor = {};
-		ASSERT_EQ(runtime_tool_info(instance, i, &descriptor), 0);
+		ASSERT_EQ(runtime_tool_info_borrow(instance, i, &descriptor), 0);
 		if (strncmp(descriptor.name, "mcp_live__", strlen("mcp_live__")) == 0)
 			published++;
 	}

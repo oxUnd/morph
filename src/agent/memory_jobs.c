@@ -1,4 +1,5 @@
 #include "agent/memory.h"
+#include "util/cleanup.h"
 #include "agent/memory_internal.h"
 #include "persistence/memory_job_store.h"
 #include "util/buf.h"
@@ -451,7 +452,7 @@ static struct memory_job *memory_job_restore(struct db *db, const struct memory_
 
 int memory_async_resume(struct db *db, const struct memory_options *opts)
 {
-	struct memory_job_records records = {0};
+	struct memory_job_records records MORPH_CLEANUP(memory_job_records_cleanup) = {0};
 	struct memory_job_record *record;
 	struct memory_worker *worker = opts ? opts->worker : NULL;
 	int rc;

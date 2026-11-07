@@ -29,7 +29,7 @@ static void cli_wizard_mcp_notes(int role, FILE *output)
 		return;
 	rc = cli_setup_mcp_notes(role, &notes);
 	if (!rc)
-		(void)cli_setup_print(output, "%s", morph_buf_cstr(&notes));
+		(void)cli_setup_print(output, "%s", morph_buf_cstr_borrow(&notes));
 	morph_buf_cleanup(&notes);
 }
 
@@ -354,7 +354,7 @@ static int cli_wizard_load_existing(const char *path, struct cli_setup_state *st
 	if (st.st_size > 1024 * 1024)
 		return -EFBIG;
 	size_t len;
-	*original = file_read_all(path, &len);
+	*original = file_read_all_copy(path, &len);
 	if (!*original)
 		return morph_error_from_errno(errno);
 	if (memchr(*original, '\0', len) || utf8nvalid(*original, len))
@@ -441,7 +441,7 @@ static int cli_wizard_role_snapshot(const char *path, int role, const char *text
 		struct stat st;
 		if (lstat(named, &st) == 0 && S_ISREG(st.st_mode) && st.st_size >= 0 &&
 		    (size_t)st.st_size == strlen(text)) {
-			char *current = file_read_all(named, NULL);
+			char *current = file_read_all_copy(named, NULL);
 			int same = current && strcmp(current, text) == 0;
 			free(current);
 			if (same) {
@@ -494,7 +494,7 @@ static int cli_wizard_publish_setup(const char *path, const char *original, cons
 	int rc = lstat(path, &st) == 0 ? 0 : morph_error_from_errno(errno);
 	if (rc == 0 && !S_ISREG(st.st_mode))
 		rc = -EINVAL;
-	char *current = rc == 0 ? file_read_all(path, NULL) : NULL;
+	char *current = rc == 0 ? file_read_all_copy(path, NULL) : NULL;
 	if (rc == 0 && (!current || strcmp(current, original) != 0))
 		rc = -ESTALE;
 	free(current);
@@ -527,7 +527,7 @@ static int cli_wizard_save_setup(struct cli_setup_state *state, const char *path
 	if (rc != 0)
 		return rc;
 	if (state->replace_prompt) {
-		rc = cli_setup_role_render(state->role, &prompt_text);
+		rc = cli_setup_role_render_copy(state->role, &prompt_text);
 		if (rc == 0)
 			rc = cli_wizard_role_snapshot(path, state->role, prompt_text, &snapshot,
 						      &snapshot_created);
@@ -578,17 +578,17 @@ static int cli_wizard_save_setup(struct cli_setup_state *state, const char *path
 	if (rc == 0)
 		rc = patch.failed;
 	if (rc == 0)
-		rc = cli_setup_config_merge(original ? original : "", morph_buf_cstr(&patch),
-					    &merged);
+		rc = cli_setup_config_merge_copy(original ? original : "",
+						 morph_buf_cstr_borrow(&patch), &merged);
 	if (rc == 0) {
 		char *credentials = NULL;
-		rc = cli_setup_config_credentials(merged, &credentials);
+		rc = cli_setup_config_credentials_copy(merged, &credentials);
 		free(merged);
 		merged = credentials;
 	}
 	if (rc == 0) {
 		char *mcp = NULL;
-		rc = cli_setup_mcp_apply(merged, state->role, &mcp);
+		rc = cli_setup_mcp_apply_copy(merged, state->role, &mcp);
 		free(merged);
 		merged = mcp;
 	}
@@ -599,7 +599,7 @@ static int cli_wizard_save_setup(struct cli_setup_state *state, const char *path
 		rc = cli_wizard_publish_setup(path, original, merged, output);
 	if (rc != 0 && snapshot && snapshot_created) {
 		/* A directory sync failure can follow a successful atomic replacement. */
-		char *published = file_read_all(path, NULL);
+		char *published = file_read_all_copy(path, NULL);
 		if (!published || !merged || strcmp(published, merged) != 0)
 			unlink(snapshot);
 		free(published);
@@ -617,7 +617,7 @@ static int cli_wizard_setup_run(struct cli_application *ctx, const char *path, F
 	struct cli_setup_state state = {.reconfigure = reconfigure};
 	char *original = NULL;
 	char current[PATH_MAX];
-	char *expanded = path ? file_expand_path(path) : NULL;
+	char *expanded = path ? file_expand_path_copy(path) : NULL;
 	char *full = expanded && getcwd(current, sizeof(current))
 			     ? file_path_full_alloc(current, expanded)
 			     : NULL;
@@ -709,7 +709,7 @@ int cli_setup_command(struct cli_application *ctx, int argc, char **argv, const 
 
 int cli_setup_if_missing(struct cli_application *ctx, const char *path, int interactive)
 {
-	char *expanded = file_expand_path(path ? path : "~/.morph/config.toml");
+	char *expanded = file_expand_path_copy(path ? path : "~/.morph/config.toml");
 	if (!expanded)
 		return -ENOMEM;
 	struct stat st;

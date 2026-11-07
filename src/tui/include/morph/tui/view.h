@@ -60,15 +60,19 @@ struct morph_tui_view {
 	struct morph_tui_view_state *state;
 };
 
-struct morph_tui_view *morph_tui_view_create(struct morph_tui_builder *builder,
-					     struct morph_tui_view *parent, size_t size,
-					     const struct morph_tui_view_ops *ops,
-					     const struct morph_tui_view_options *options);
+/* Adds a controller-owned node; return value is borrowed until its controller
+ * closes or a failed build is rolled back. The caller never frees the node.
+ * ops is borrowed for that lifetime; options is copied during this call. */
+struct morph_tui_view *morph_tui_view_add_borrow(struct morph_tui_builder *builder,
+						 struct morph_tui_view *parent, size_t size,
+						 const struct morph_tui_view_ops *ops,
+						 const struct morph_tui_view_options *options);
 void morph_tui_builder_fail(struct morph_tui_builder *builder, int error);
 int morph_tui_builder_error(const struct morph_tui_builder *builder);
-struct morph_tui_view_controller *morph_tui_view_owner(const struct morph_tui_view *view);
+/* Borrowed controller/children; valid only while the owning controller lives. */
+struct morph_tui_view_controller *morph_tui_view_owner_borrow(const struct morph_tui_view *view);
 size_t morph_tui_view_child_count(const struct morph_tui_view *view);
-struct morph_tui_view *morph_tui_view_child(const struct morph_tui_view *view, size_t index);
+struct morph_tui_view *morph_tui_view_child_borrow(const struct morph_tui_view *view, size_t index);
 struct morph_tui_view_rect morph_tui_view_frame(const struct morph_tui_view *view);
 /* Local content rectangle after padding; draw receives a canvas of this size. */
 struct morph_tui_view_rect morph_tui_view_content_rect(const struct morph_tui_view *view);
@@ -90,7 +94,7 @@ int morph_tui_view_set_focusable(struct morph_tui_view *view, int focusable);
 int morph_tui_view_focus(struct morph_tui_view *view);
 int morph_tui_view_focused(const struct morph_tui_view *view);
 /* Layout managers are borrowed, normally embedded in a custom container. */
-int morph_tui_view_set_layout(struct morph_tui_view *view, struct morph_tui_layout *layout);
+int morph_tui_view_set_layout_borrow(struct morph_tui_view *view, struct morph_tui_layout *layout);
 
 #ifdef __cplusplus
 }

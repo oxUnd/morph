@@ -18,7 +18,7 @@ void cli_list_tree_prefix(struct cli_application *ctx, const int *last, int dept
 		return;
 	if (morph_tui_widget_tree_prefix(&output, last, (size_t)depth, is_last, continuation, 2) ==
 	    0)
-		fputs(ctx, morph_buf_cstr(&output), stdout);
+		fputs(ctx, morph_buf_cstr_borrow(&output), stdout);
 	morph_buf_cleanup(&output);
 }
 
@@ -113,9 +113,9 @@ void cli_list_group(struct cli_application *ctx, const char *name, int count, in
 	cli_list_compact_text(compact, sizeof(compact), name ? name : "Other");
 	morph_buf_printf(&label, "%s  %d", compact, count);
 	if (!label.failed &&
-	    morph_tui_widget_tree_row(&output, "", is_last, "", morph_buf_cstr(&label), "", 0,
-				      cli_list_columns(), ANSI_BOLD, ANSI_RESET) == 0)
-		fputs(ctx, morph_buf_cstr(&output), stdout);
+	    morph_tui_widget_tree_row(&output, "", is_last, "", morph_buf_cstr_borrow(&label), "",
+				      0, cli_list_columns(), ANSI_BOLD, ANSI_RESET) == 0)
+		fputs(ctx, morph_buf_cstr_borrow(&output), stdout);
 	morph_buf_cleanup(&output);
 	morph_buf_cleanup(&label);
 }
@@ -135,7 +135,7 @@ void cli_list_item(struct cli_application *ctx, const char *ancestor, int is_las
 	if (morph_tui_widget_tree_row(&output, ancestor ? ancestor : "", is_last,
 				      marker ? marker : "", compact, detail, name_width, columns,
 				      ANSI_BOLD, ANSI_RESET) == 0)
-		fputs(ctx, morph_buf_cstr(&output), stdout);
+		fputs(ctx, morph_buf_cstr_borrow(&output), stdout);
 	morph_buf_cleanup(&output);
 }
 
@@ -216,7 +216,7 @@ static const char *cli_list_wrap_end(const char *text, int width)
 	const char *space = NULL;
 	const char *p;
 
-	end = utf8_advance_display_width(text, (size_t)width);
+	end = utf8_advance_display_width_borrow(text, (size_t)width);
 	if (!*end)
 		return end;
 	for (p = text; p < end; p++) {

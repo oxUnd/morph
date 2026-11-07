@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "mcp/mcp_internal.h"
 #include "util/error.h"
+#include "util/cleanup.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -11,12 +12,10 @@ static char *mcp_build_request(int id, const char *method, const char *params)
 {
 	struct mcp_client client = {};
 	struct mcp_wire_request wire = {};
-	struct arena *arena = arena_create(0);
-	int rc = mcp_protocol_encode(&client, mcp_protocol_find("2025-06-18"),
-		id, method, params, arena, &wire);
+	int rc = mcp_protocol_encode(&client, mcp_protocol_borrow("2025-06-18"), id, method, params,
+				     &wire);
 	char *json = rc == 0 ? strdup(wire.json) : nullptr;
-	morph_array_cleanup(&wire.headers);
-	arena_destroy(arena);
+	mcp_wire_request_cleanup(&wire);
 	return json;
 }
 
@@ -30,8 +29,13 @@ static int mcp_parse_result(const char *json, char **out)
 	reply.json = const_cast<char *>(json);
 	cJSON *object = nullptr;
 	int rc = mcp_protocol_decode(nullptr, &reply, request_id, &object);
-	if (rc == 0 && out)
-		*out = cJSON_PrintUnformatted(cJSON_GetObjectItem(object, "result"));
+	if (rc == 0 && out) {
+		char *text MORPH_CLEANUP(morph_json_text_cleanup) =
+			morph_json_print_copy(cJSON_GetObjectItem(object, "result"));
+		*out = text ? strdup(text) : nullptr;
+		if (!*out)
+			rc = -ENOMEM;
+	}
 	cJSON_Delete(object);
 	return rc;
 }
@@ -96,15 +100,15 @@ TEST_F(McpRegistryTest, GetExistingServer) {
 	struct mcp_server_config cfg = make_stdio_cfg("find-me");
 	mcp_registry_add(&reg, &cfg);
 
-	struct mcp_client *client = mcp_registry_get(&reg, "find-me");
+	struct mcp_client *client = mcp_registry_borrow(&reg, "find-me");
 	ASSERT_NE(client, nullptr);
 	EXPECT_STREQ(client->config.name, "find-me");
 	EXPECT_EQ(client->config.transport, MCP_TRANSPORT_STDIO);
-	EXPECT_EQ(morph_strmap_get(&reg.by_name, "find-me"), client);
+	EXPECT_EQ(morph_strmap_borrow(&reg.by_name, "find-me"), client);
 }
 
 TEST_F(McpRegistryTest, GetNonexistentServer) {
-	struct mcp_client *client = mcp_registry_get(&reg, "does-not-exist");
+	struct mcp_client *client = mcp_registry_borrow(&reg, "does-not-exist");
 	EXPECT_EQ(client, nullptr);
 }
 
@@ -126,7 +130,7 @@ TEST_F(McpRegistryTest, NullRegistry) {
 	struct mcp_server_config cfg = make_stdio_cfg("x");
 	EXPECT_EQ(mcp_registry_add(nullptr, &cfg), -EINVAL);
 	EXPECT_EQ(mcp_registry_count(nullptr), 0);
-	EXPECT_EQ(mcp_registry_get(nullptr, "x"), nullptr);
+	EXPECT_EQ(mcp_registry_borrow(nullptr, "x"), nullptr);
 }
 
 TEST_F(McpRegistryTest, NullConfig) {
@@ -134,7 +138,7 @@ TEST_F(McpRegistryTest, NullConfig) {
 }
 
 TEST_F(McpRegistryTest, NullName) {
-	EXPECT_EQ(mcp_registry_get(&reg, nullptr), nullptr);
+	EXPECT_EQ(mcp_registry_borrow(&reg, nullptr), nullptr);
 }
 
 TEST_F(McpRegistryTest, CleanupNull) {
@@ -156,7 +160,7 @@ TEST_F(McpRegistryTest, MaxServers) {
 	TEST_F(McpRegistryTest, ClientInitialState) {
 		struct mcp_server_config cfg = make_stdio_cfg("check-state");
 		mcp_registry_add(&reg, &cfg);
-		struct mcp_client *client = mcp_registry_get(&reg, "check-state");
+		struct mcp_client *client = mcp_registry_borrow(&reg, "check-state");
 		ASSERT_NE(client, nullptr);
 
 		EXPECT_EQ(client->connected, 0);
@@ -174,7 +178,7 @@ TEST_F(McpRegistryTest, MaxServers) {
 		cfg.auto_connect = 1;
 		cfg.connect_timeout = 30;
 		mcp_registry_add(&reg, &cfg);
-		struct mcp_client *client = mcp_registry_get(&reg, "auto-srv");
+		struct mcp_client *client = mcp_registry_borrow(&reg, "auto-srv");
 		ASSERT_NE(client, nullptr);
 		EXPECT_EQ(client->config.auto_connect, 1);
 		EXPECT_EQ(client->config.connect_timeout, 30);
@@ -183,7 +187,7 @@ TEST_F(McpRegistryTest, MaxServers) {
 	TEST_F(McpRegistryTest, AutoConnectDefaultsZero) {
 		struct mcp_server_config cfg = make_stdio_cfg("lazy-srv");
 		mcp_registry_add(&reg, &cfg);
-		struct mcp_client *client = mcp_registry_get(&reg, "lazy-srv");
+		struct mcp_client *client = mcp_registry_borrow(&reg, "lazy-srv");
 		ASSERT_NE(client, nullptr);
 		EXPECT_EQ(client->config.auto_connect, 0);
 		EXPECT_EQ(client->config.connect_timeout, 0);
@@ -336,125 +340,79 @@ protected:
 TEST_F(McpNullParamTest, ListToolsNullClient) {
 	struct mcp_tool_desc *tools = nullptr;
 	int count = 0;
-	struct arena *arena = arena_create(0);
-	EXPECT_EQ(mcp_list_tools(nullptr, arena, &tools, &count), -EINVAL);
-	arena_destroy(arena);
-}
-
-TEST_F(McpNullParamTest, ListToolsNullArena) {
-	struct mcp_tool_desc *tools = nullptr;
-	int count = 0;
-	EXPECT_EQ(mcp_list_tools(&client, nullptr, &tools, &count), -EINVAL);
+	EXPECT_EQ(mcp_list_tools_copy(nullptr, &tools, &count), -EINVAL);
 }
 
 TEST_F(McpNullParamTest, ListToolsNullOutTools) {
 	int count = 0;
-	struct arena *arena = arena_create(0);
-	EXPECT_EQ(mcp_list_tools(&client, arena, nullptr, &count), -EINVAL);
-	arena_destroy(arena);
+	EXPECT_EQ(mcp_list_tools_copy(&client, nullptr, &count), -EINVAL);
 }
 
 TEST_F(McpNullParamTest, ListToolsNullOutCount) {
 	struct mcp_tool_desc *tools = nullptr;
-	struct arena *arena = arena_create(0);
-	EXPECT_EQ(mcp_list_tools(&client, arena, &tools, nullptr), -EINVAL);
-	arena_destroy(arena);
+	EXPECT_EQ(mcp_list_tools_copy(&client, &tools, nullptr), -EINVAL);
 }
 
 TEST_F(McpNullParamTest, CallToolNullClient) {
-	struct arena *arena = arena_create(0);
 	struct tool_result result;
 	tool_result_init(&result);
-	EXPECT_EQ(mcp_call_tool(nullptr, arena, "tool", "{}", &result), -EINVAL);
-	arena_destroy(arena);
+	EXPECT_EQ(mcp_call_tool(nullptr, "tool", "{}", &result), -EINVAL);
 }
 
 TEST_F(McpNullParamTest, CallToolNullName) {
-	struct arena *arena = arena_create(0);
 	struct tool_result result;
 	tool_result_init(&result);
-	EXPECT_EQ(mcp_call_tool(&client, arena, nullptr, "{}", &result), -EINVAL);
-	arena_destroy(arena);
+	EXPECT_EQ(mcp_call_tool(&client, nullptr, "{}", &result), -EINVAL);
 }
 
 TEST_F(McpNullParamTest, CallToolNullOut) {
-	struct arena *arena = arena_create(0);
-	EXPECT_EQ(mcp_call_tool(&client, arena, "tool", "{}", nullptr), -EINVAL);
-	arena_destroy(arena);
+	EXPECT_EQ(mcp_call_tool(&client, "tool", "{}", nullptr), -EINVAL);
 }
 
 TEST_F(McpNullParamTest, ListResourcesNullClient) {
 	struct mcp_resource_desc *res = nullptr;
 	int count = 0;
-	struct arena *arena = arena_create(0);
-	EXPECT_EQ(mcp_list_resources(nullptr, arena, &res, &count), -EINVAL);
-	arena_destroy(arena);
-}
-
-TEST_F(McpNullParamTest, ListResourcesNullArena) {
-	struct mcp_resource_desc *res = nullptr;
-	int count = 0;
-	EXPECT_EQ(mcp_list_resources(&client, nullptr, &res, &count), -EINVAL);
+	EXPECT_EQ(mcp_list_resources_copy(nullptr, &res, &count), -EINVAL);
 }
 
 TEST_F(McpNullParamTest, ReadResourceNullClient) {
-	struct arena *arena = arena_create(0);
 	struct tool_result content;
 	tool_result_init(&content);
-	EXPECT_EQ(mcp_read_resource(nullptr, arena, "uri://x", &content), -EINVAL);
+	EXPECT_EQ(mcp_read_resource(nullptr, "uri://x", &content), -EINVAL);
 	tool_result_cleanup(&content);
-	arena_destroy(arena);
 }
 
 TEST_F(McpNullParamTest, ReadResourceNullUri) {
-	struct arena *arena = arena_create(0);
 	struct tool_result content;
 	tool_result_init(&content);
-	EXPECT_EQ(mcp_read_resource(&client, arena, nullptr, &content), -EINVAL);
+	EXPECT_EQ(mcp_read_resource(&client, nullptr, &content), -EINVAL);
 	tool_result_cleanup(&content);
-	arena_destroy(arena);
 }
 
 TEST_F(McpNullParamTest, ReadResourceNullOut) {
-	struct arena *arena = arena_create(0);
-	EXPECT_EQ(mcp_read_resource(&client, arena, "uri://x", nullptr), -EINVAL);
-	arena_destroy(arena);
+	EXPECT_EQ(mcp_read_resource(&client, "uri://x", nullptr), -EINVAL);
 }
 
 TEST_F(McpNullParamTest, ListPromptsNullClient) {
 	struct mcp_prompt_desc *prompts = nullptr;
 	int count = 0;
-	struct arena *arena = arena_create(0);
-	EXPECT_EQ(mcp_list_prompts(nullptr, arena, &prompts, &count), -EINVAL);
-	arena_destroy(arena);
-}
-
-TEST_F(McpNullParamTest, ListPromptsNullArena) {
-	struct mcp_prompt_desc *prompts = nullptr;
-	int count = 0;
-	EXPECT_EQ(mcp_list_prompts(&client, nullptr, &prompts, &count), -EINVAL);
+	EXPECT_EQ(mcp_list_prompts_copy(nullptr, &prompts, &count), -EINVAL);
 }
 
 TEST_F(McpNullParamTest, GetPromptNullClient) {
-	struct arena *arena = arena_create(0);
 	struct tool_result result;
 	tool_result_init(&result);
-	EXPECT_EQ(mcp_get_prompt(nullptr, arena, "prompt", "{}", &result), -EINVAL);
-	arena_destroy(arena);
+	EXPECT_EQ(mcp_get_prompt(nullptr, "prompt", "{}", &result), -EINVAL);
 }
 
 TEST_F(McpNullParamTest, GetPromptNullName) {
-	struct arena *arena = arena_create(0);
 	struct tool_result result;
 	tool_result_init(&result);
-	EXPECT_EQ(mcp_get_prompt(&client, arena, nullptr, "{}", &result), -EINVAL);
-	arena_destroy(arena);
+	EXPECT_EQ(mcp_get_prompt(&client, nullptr, "{}", &result), -EINVAL);
 }
 
 TEST_F(McpNullParamTest, GetPromptNullOut) {
-	struct arena *arena = arena_create(0);
-	EXPECT_EQ(mcp_get_prompt(&client, arena, "prompt", "{}", nullptr), -EINVAL);
-	arena_destroy(arena);
+	EXPECT_EQ(mcp_get_prompt(&client, "prompt", "{}", nullptr), -EINVAL);
 }
 
 TEST_F(McpNullParamTest, PingNullClient) {
@@ -530,67 +488,42 @@ TEST_F(McpStructTest, TransportEnumValues) {
 	EXPECT_EQ(MCP_TRANSPORT_STREAMABLE_HTTP, 1);
 }
 
-/* ----- Arena lifecycle with MCP operations ----- */
+/* Descriptor cleanup supports partially populated discovery results. */
 
-class McpArenaTest : public ::testing::Test {
-protected:
-	struct arena *arena;
-
-	void SetUp() override {
-		arena = arena_create(4096);
-	}
-
-	void TearDown() override {
-		arena_destroy(arena);
-	}
-};
-
-TEST_F(McpArenaTest, ArenaAllocForDescriptorArray) {
-	void *p = arena_alloc(arena, 10 * sizeof(struct mcp_tool_desc));
-	ASSERT_NE(p, nullptr);
-
-	struct mcp_tool_desc *tools = static_cast<struct mcp_tool_desc *>(p);
-	tools[0].name = arena_strdup(arena, "t");
-	EXPECT_STREQ(tools[0].name, "t");
-}
-
-TEST_F(McpArenaTest, ArenaStrdupForResult) {
-	const char *src = "{\"content\":\"hello\",\"isError\":false}";
-	char *dup = arena_strdup(arena, src);
-	ASSERT_NE(dup, nullptr);
-	EXPECT_STREQ(dup, src);
-}
-
-TEST_F(McpArenaTest, ArenaResetReusesBuffer) {
-	arena_alloc(arena, 1024);
-	arena_alloc(arena, 512);
-	size_t used_before = arena->used;
-	EXPECT_GT(used_before, 0);
-
-	arena_reset(arena);
-	EXPECT_EQ(arena->used, 0);
-	EXPECT_EQ(arena->next, nullptr);
-
-	void *p = arena_alloc(arena, 64);
-	ASSERT_NE(p, nullptr);
-}
-
-TEST_F(McpArenaTest, ArenaAllocAfterListSimulated) {
+TEST(McpOwnedDescriptorsTest, ToolDescriptorsReleaseAllIndependentFields)
+{
 	struct mcp_tool_desc *tools =
-		static_cast<struct mcp_tool_desc *>(arena_alloc(arena, 3 * sizeof(struct mcp_tool_desc)));
+		static_cast<struct mcp_tool_desc *>(calloc(3, sizeof(*tools)));
 	ASSERT_NE(tools, nullptr);
-
-	tools[0].name = arena_strdup(arena, "tool_a");
-	tools[1].name = arena_strdup(arena, "tool_b");
-	tools[2].name = arena_strdup(arena, "tool_c");
-
-	char *result = arena_strdup(arena, "{\"status\":\"ok\"}");
-	ASSERT_NE(result, nullptr);
-
+	tools[0].name = strdup("tool_a");
+	tools[0].title = strdup("Tool A");
+	tools[0].description = strdup("description");
+	tools[0].input_schema = strdup("{}");
+	tools[1].name = strdup("tool_b");
 	EXPECT_STREQ(tools[0].name, "tool_a");
-	EXPECT_STREQ(tools[1].name, "tool_b");
-	EXPECT_STREQ(tools[2].name, "tool_c");
-	EXPECT_STREQ(result, "{\"status\":\"ok\"}");
+	mcp_tool_descs_free(tools, 3);
+	mcp_tool_descs_free(nullptr, 0);
+}
+
+TEST(McpOwnedDescriptorsTest, ResourcesAndPromptsReleasePartialResults)
+{
+	struct mcp_resource_desc *resources =
+		static_cast<struct mcp_resource_desc *>(calloc(2, sizeof(*resources)));
+	struct mcp_prompt_desc *prompts =
+		static_cast<struct mcp_prompt_desc *>(calloc(2, sizeof(*prompts)));
+	ASSERT_NE(resources, nullptr);
+	ASSERT_NE(prompts, nullptr);
+	resources[0].uri = strdup("resource://owned");
+	resources[0].name = strdup("resource");
+	resources[0].description = strdup("description");
+	resources[0].mime_type = strdup("text/plain");
+	prompts[0].name = strdup("prompt");
+	prompts[0].description = strdup("description");
+	prompts[0].arguments_schema = strdup("{}");
+	mcp_resource_descs_free(resources, 2);
+	mcp_prompt_descs_free(prompts, 2);
+	mcp_resource_descs_free(nullptr, 0);
+	mcp_prompt_descs_free(nullptr, 0);
 }
 
 /* ----- mcp_strdup_result behavior ----- */
@@ -607,13 +540,13 @@ class McpSseExtractTest : public ::testing::Test {};
 
 TEST_F(McpSseExtractTest, BareJsonObjectReturnsNull) {
 	const char *raw = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}";
-	char *json = mcp_http_extract_sse_json(raw, strlen(raw));
+	char *json = mcp_http_sse_json_create(raw, strlen(raw));
 	EXPECT_EQ(json, nullptr) << "Plain JSON (no SSE envelope) returns NULL; caller falls back to raw";
 }
 
 TEST_F(McpSseExtractTest, SseWithEventMessage) {
 	const char *raw = "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}\r\n\r\n";
-	char *json = mcp_http_extract_sse_json(raw, strlen(raw));
+	char *json = mcp_http_sse_json_create(raw, strlen(raw));
 	ASSERT_NE(json, nullptr) << "SSE with 'event: message' must extract data";
 	EXPECT_NE(strstr(json, "protocolVersion"), nullptr);
 	free(json);
@@ -621,7 +554,7 @@ TEST_F(McpSseExtractTest, SseWithEventMessage) {
 
 TEST_F(McpSseExtractTest, SseDataOnlyNoEvent) {
 	const char *raw = "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\r\n\r\n";
-	char *json = mcp_http_extract_sse_json(raw, strlen(raw));
+	char *json = mcp_http_sse_json_create(raw, strlen(raw));
 	ASSERT_NE(json, nullptr);
 	EXPECT_NE(strstr(json, "tools"), nullptr);
 	free(json);
@@ -629,7 +562,7 @@ TEST_F(McpSseExtractTest, SseDataOnlyNoEvent) {
 
 TEST_F(McpSseExtractTest, SseMultilineData) {
 	const char *raw = "data: {\"jsonrpc\":\"2.0\",\r\ndata: \"id\":1}\r\n\r\n";
-	char *json = mcp_http_extract_sse_json(raw, strlen(raw));
+	char *json = mcp_http_sse_json_create(raw, strlen(raw));
 	ASSERT_NE(json, nullptr);
 	EXPECT_NE(strstr(json, "jsonrpc"), nullptr);
 	free(json);
@@ -637,31 +570,31 @@ TEST_F(McpSseExtractTest, SseMultilineData) {
 
 TEST_F(McpSseExtractTest, SseWithCustomEvent) {
 	const char *raw = "event: ping\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1}\r\n\r\n";
-	char *json = mcp_http_extract_sse_json(raw, strlen(raw));
+	char *json = mcp_http_sse_json_create(raw, strlen(raw));
 	ASSERT_NE(json, nullptr) << "Custom event types must also extract data";
 	EXPECT_NE(strstr(json, "jsonrpc"), nullptr);
 	free(json);
 }
 
 TEST_F(McpSseExtractTest, NullInput) {
-	char *json = mcp_http_extract_sse_json(nullptr, 0);
+	char *json = mcp_http_sse_json_create(nullptr, 0);
 	EXPECT_EQ(json, nullptr);
 }
 
 TEST_F(McpSseExtractTest, EmptyInput) {
-	char *json = mcp_http_extract_sse_json("", 0);
+	char *json = mcp_http_sse_json_create("", 0);
 	EXPECT_EQ(json, nullptr);
 }
 
 TEST_F(McpSseExtractTest, SseEventOnlyNoData) {
 	const char *raw = "event: message\r\n\r\n";
-	char *json = mcp_http_extract_sse_json(raw, strlen(raw));
+	char *json = mcp_http_sse_json_create(raw, strlen(raw));
 	EXPECT_EQ(json, nullptr) << "No data line means no extraction";
 }
 
 TEST_F(McpSseExtractTest, ParseFullMcpInitializeResponse) {
 	const char *raw = "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{\"tools\":{\"listChanged\":true},\"prompts\":{\"listChanged\":true},\"resources\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"exa-search-server\",\"version\":\"3.2.1\"}}}\r\n\r\n";
-	char *json = mcp_http_extract_sse_json(raw, strlen(raw));
+	char *json = mcp_http_sse_json_create(raw, strlen(raw));
 	ASSERT_NE(json, nullptr);
 	char *result = nullptr;
 	int rc = mcp_parse_result(json, &result);
@@ -704,7 +637,7 @@ TEST_F(McpHttpAuthUrlTest, BuildsUrlWithEncodedAuthToken) {
 		sizeof(cfg.http_auth_token_env) - 1);
 	setenv("MORPH_TEST_MCP_TOKEN", "a b+c/=:?", 1);
 
-	int rc = mcp_http_build_request_url(&cfg, &url);
+	int rc = mcp_http_request_url_create(&cfg, &url);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(url, nullptr);
 	EXPECT_STREQ(url,
@@ -720,7 +653,7 @@ TEST_F(McpHttpAuthUrlTest, BuildsPlainUrlWithoutTokenEnv) {
 	strncpy(cfg.http_url, "https://api.example.com/mcp",
 		sizeof(cfg.http_url) - 1);
 
-	int rc = mcp_http_build_request_url(&cfg, &url);
+	int rc = mcp_http_request_url_create(&cfg, &url);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(url, nullptr);
 	EXPECT_STREQ(url, "https://api.example.com/mcp");
@@ -737,7 +670,7 @@ TEST_F(McpHttpAuthUrlTest, MissingTokenEnvFailsWhenPlaceholderIsUsed) {
 	strncpy(cfg.http_auth_token_env, "MORPH_TEST_MCP_TOKEN",
 		sizeof(cfg.http_auth_token_env) - 1);
 
-	int rc = mcp_http_build_request_url(&cfg, &url);
+	int rc = mcp_http_request_url_create(&cfg, &url);
 	EXPECT_EQ(rc, MORPH_ERR_NOT_CONFIGURED);
 	EXPECT_EQ(url, nullptr);
 }
@@ -765,7 +698,7 @@ protected:
 		response_write = responses[1];
 		client.server_pid = -1;
 		client.next_req_id = 1;
-		client.protocol = mcp_protocol_find("2025-06-18");
+		client.protocol = mcp_protocol_borrow("2025-06-18");
 		pthread_mutex_init(&client.lock, nullptr);
 	}
 
@@ -869,7 +802,7 @@ TEST_F(McpStdioFramingTest, DiscoveryPreservesLargeSchemasAndDescriptions)
 	int rc = mcp_register_server_tools(&client, &registry);
 	producer.join();
 	EXPECT_EQ(rc, 1);
-	auto *entry = tool_lookup(&registry, "mcp_peekaboo__verify_state");
+	auto *entry = tool_borrow(&registry, "mcp_peekaboo__verify_state");
 	ASSERT_NE(entry, nullptr);
 	EXPECT_EQ(std::string(entry->desc.input_schema), schema);
 	EXPECT_EQ(std::string(entry->desc.description), description);
@@ -901,7 +834,7 @@ TEST_F(McpStdioFramingTest, DiscoveryFollowsPagesAndExceedsOldToolCount)
 	producer.join();
 	EXPECT_EQ(rc, 200);
 	EXPECT_EQ(registry.count, 200);
-	EXPECT_NE(tool_lookup(&registry, "mcp_many__tool_199"), nullptr);
+	EXPECT_NE(tool_borrow(&registry, "mcp_many__tool_199"), nullptr);
 	tool_registry_cleanup(&registry);
 }
 
@@ -910,13 +843,11 @@ TEST_F(McpStdioFramingTest, RejectsCyclicPaginationWithoutPartialResults)
 	client.next_req_id = 1;
 	send("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[],\"nextCursor\":\"same\"}}\n"
 		"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[],\"nextCursor\":\"same\"}}\n");
-	struct arena *arena = arena_create(0);
 	struct mcp_tool_desc *entries = nullptr;
 	int count = 0;
-	EXPECT_EQ(mcp_list_tools(&client, arena, &entries, &count), MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(mcp_list_tools_copy(&client, &entries, &count), MORPH_ERR_PROTOCOL);
 	EXPECT_EQ(entries, nullptr);
 	EXPECT_EQ(count, 0);
-	arena_destroy(arena);
 }
 
 TEST_F(McpStdioFramingTest, LargeArgumentsAndEscapedNameAreSentIntact)
@@ -933,7 +864,7 @@ TEST_F(McpStdioFramingTest, LargeArgumentsAndEscapedNameAreSentIntact)
 	});
 	struct tool_result result;
 	tool_result_init(&result);
-	int rc = mcp_call_tool(&client, nullptr, "a\"b\\c", args.c_str(), &result);
+	int rc = mcp_call_tool(&client, "a\"b\\c", args.c_str(), &result);
 	server.join();
 	EXPECT_EQ(rc, 0);
 	cJSON *json = cJSON_Parse(request.c_str());
@@ -956,8 +887,7 @@ TEST_F(McpStdioFramingTest, ResourceContentIsNotTruncated)
 	});
 	struct tool_result result;
 	tool_result_init(&result);
-	struct arena *arena = arena_create(0);
-	int rc = mcp_read_resource(&client, arena, "test://resource", &result);
+	int rc = mcp_read_resource(&client, "test://resource", &result);
 	server.join();
 	EXPECT_EQ(rc, 0);
 	ASSERT_EQ(tool_result_finalize(&result), 0);
@@ -965,7 +895,6 @@ TEST_F(McpStdioFramingTest, ResourceContentIsNotTruncated)
 	EXPECT_STREQ(cJSON_GetObjectItem(result.data, "text")->valuestring,
 		(text + "\ntail").c_str());
 	tool_result_cleanup(&result);
-	arena_destroy(arena);
 }
 
 TEST_F(McpStdioFramingTest, LongPromptSchemaAndResourceMetadataSurviveDiscovery)
@@ -981,13 +910,12 @@ TEST_F(McpStdioFramingTest, LongPromptSchemaAndResourceMetadataSurviveDiscovery)
 		send("{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"resources\":[{\"uri\":\"" + uri +
 			"\",\"name\":\"resource\",\"description\":\"" + description + "\"}]}}\n");
 	});
-	struct arena *arena = arena_create(0);
 	struct mcp_prompt_desc *prompts = nullptr;
 	int count = 0;
-	int prompt_rc = mcp_list_prompts(&client, arena, &prompts, &count);
+	int prompt_rc = mcp_list_prompts_copy(&client, &prompts, &count);
 	struct mcp_resource_desc *resources = nullptr;
 	int resource_count = 0;
-	int resource_rc = mcp_list_resources(&client, arena, &resources, &resource_count);
+	int resource_rc = mcp_list_resources_copy(&client, &resources, &resource_count);
 	server.join();
 	EXPECT_EQ(prompt_rc, 0);
 	EXPECT_EQ(count, 2);
@@ -1004,7 +932,8 @@ TEST_F(McpStdioFramingTest, LongPromptSchemaAndResourceMetadataSurviveDiscovery)
 		EXPECT_EQ(std::string(resources[0].uri), uri);
 		EXPECT_EQ(std::string(resources[0].description), description);
 	}
-	arena_destroy(arena);
+	mcp_prompt_descs_free(prompts, count);
+	mcp_resource_descs_free(resources, resource_count);
 }
 
 TEST_F(McpStdioFramingTest, PreservesStructuredAndNonTextToolResults)
@@ -1016,14 +945,14 @@ TEST_F(McpStdioFramingTest, PreservesStructuredAndNonTextToolResults)
 		"\"structuredContent\":{\"count\":43},\"_meta\":{\"extra\":true}}}\n");
 	struct tool_result result;
 	tool_result_init(&result);
-	EXPECT_EQ(mcp_call_tool(&client, nullptr, "empty", "{}", &result), 0);
+	EXPECT_EQ(mcp_call_tool(&client, "empty", "{}", &result), 0);
 	ASSERT_EQ(tool_result_finalize(&result), 0);
 	ASSERT_NE(result.data, nullptr);
 	EXPECT_EQ(cJSON_GetObjectItem(
 		cJSON_GetObjectItem(result.data, "structuredContent"), "count")->valueint, 42);
 	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(result.data, "content")), 0);
 	tool_result_clear(&result);
-	EXPECT_EQ(mcp_call_tool(&client, nullptr, "mixed", "{}", &result), 0);
+	EXPECT_EQ(mcp_call_tool(&client, "mixed", "{}", &result), 0);
 	ASSERT_EQ(tool_result_finalize(&result), 0);
 	EXPECT_STREQ(cJSON_GetObjectItem(result.data, "content")->valuestring, "hello");
 	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(result.data, "contentBlocks")), 2);
@@ -1085,7 +1014,7 @@ TEST(McpHttpPayloadTest, LongBearerTokenAndSessionHeaderAreNotTruncated)
 	int init_rc = http_init(NULL);
 	int connect_rc = init_rc == 0 ? mcp_connect_http(&client) : init_rc;
 	client.session_id = strdup(session.c_str());
-	client.protocol = mcp_protocol_find("2025-06-18");
+	client.protocol = mcp_protocol_borrow("2025-06-18");
 	int rc = connect_rc == 0 ? mcp_ping(&client) : connect_rc;
 	server.join();
 	close(listener);
@@ -1109,24 +1038,22 @@ TEST_F(McpStdioFramingTest, MissingListHandlersDisableOnlyTheAffectedCapability)
 		"\"message\":\"Unknown method: resources/list\"}}\n"
 		"{\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-32601,"
 		"\"message\":\"Unknown method: tools/list\"}}\n");
-	struct arena *arena = arena_create(0);
 	struct mcp_prompt_desc *prompts = nullptr;
 	struct mcp_resource_desc *resources = nullptr;
 	struct mcp_tool_desc *tools = nullptr;
 	int count = -1;
-	EXPECT_EQ(mcp_list_prompts(&client, arena, &prompts, &count), 0);
+	EXPECT_EQ(mcp_list_prompts_copy(&client, &prompts, &count), 0);
 	EXPECT_EQ(count, 0);
 	EXPECT_EQ(client.supports_prompts, 0);
 	EXPECT_EQ(client.supports_resources, 1);
 	EXPECT_EQ(client.supports_tools, 1);
-	EXPECT_EQ(mcp_list_resources(&client, arena, &resources, &count), 0);
+	EXPECT_EQ(mcp_list_resources_copy(&client, &resources, &count), 0);
 	EXPECT_EQ(count, 0);
 	EXPECT_EQ(client.supports_resources, 0);
 	EXPECT_EQ(client.supports_tools, 1);
-	EXPECT_EQ(mcp_list_tools(&client, arena, &tools, &count), 0);
+	EXPECT_EQ(mcp_list_tools_copy(&client, &tools, &count), 0);
 	EXPECT_EQ(count, 0);
 	EXPECT_EQ(client.supports_tools, 0);
-	arena_destroy(arena);
 }
 
 TEST_F(McpStdioFramingTest, MidPaginationMethodNotFoundRemainsAnError)
@@ -1136,14 +1063,12 @@ TEST_F(McpStdioFramingTest, MidPaginationMethodNotFoundRemainsAnError)
 		"\"nextCursor\":\"next\"}}\n"
 		"{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32601,"
 		"\"message\":\"Missing handler\"}}\n");
-	struct arena *arena = arena_create(0);
 	struct mcp_prompt_desc *prompts = nullptr;
 	int count = -1;
-	EXPECT_EQ(mcp_list_prompts(&client, arena, &prompts, &count), -ENOSYS);
+	EXPECT_EQ(mcp_list_prompts_copy(&client, &prompts, &count), -ENOSYS);
 	EXPECT_EQ(prompts, nullptr);
 	EXPECT_EQ(count, 0);
 	EXPECT_EQ(client.supports_prompts, 1);
-	arena_destroy(arena);
 }
 
 TEST_F(McpStdioFramingTest, OtherRemoteErrorsAndMalformedResultsAreNotMissingCapabilities)
@@ -1153,14 +1078,76 @@ TEST_F(McpStdioFramingTest, OtherRemoteErrorsAndMalformedResultsAreNotMissingCap
 		"\"message\":\"Internal error\"}}\n"
 		"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n"
 		"{\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-32601}}\n");
-	struct arena *arena = arena_create(0);
 	struct mcp_prompt_desc *prompts = nullptr;
 	int count = -1;
 	for (int i = 0; i < 3; i++) {
-		EXPECT_EQ(mcp_list_prompts(&client, arena, &prompts, &count), MORPH_ERR_PROTOCOL);
+		EXPECT_EQ(mcp_list_prompts_copy(&client, &prompts, &count), MORPH_ERR_PROTOCOL);
 		EXPECT_EQ(client.supports_prompts, 1);
 		EXPECT_EQ(prompts, nullptr);
 		EXPECT_EQ(count, 0);
 	}
-	arena_destroy(arena);
+}
+
+TEST_F(McpHttpAuthUrlTest, UrlCreationRejectsAnOccupiedOwner)
+{
+	struct mcp_server_config config = {};
+	strcpy(config.http_url, "https://example.com/mcp");
+	char *url MORPH_CLEANUP(morph_charp_cleanup) = strdup("original");
+	ASSERT_NE(url, nullptr);
+	char *original = url;
+	EXPECT_EQ(mcp_http_request_url_create(&config, &url), -EEXIST);
+	EXPECT_EQ(url, original);
+	EXPECT_STREQ(url, "original");
+}
+
+TEST_F(McpStdioFramingTest, RequestRejectsAnOccupiedOwnerBeforeSending)
+{
+	char *response MORPH_CLEANUP(morph_charp_cleanup) = strdup("original");
+	ASSERT_NE(response, nullptr);
+	char *original = response;
+	int request_id = client.next_req_id;
+	EXPECT_EQ(mcp_request(&client, "ping", nullptr, &response), -EEXIST);
+	EXPECT_EQ(response, original);
+	EXPECT_STREQ(response, "original");
+	EXPECT_EQ(client.next_req_id, request_id);
+	struct pollfd descriptor = {};
+	descriptor.fd = request_read;
+	descriptor.events = POLLIN;
+	EXPECT_EQ(poll(&descriptor, 1, 0), 0);
+}
+
+TEST_F(McpStdioFramingTest, NegativeRemoteStatusRetainsOwnedDiagnostics)
+{
+	send("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,"
+	     "\"message\":\"retained diagnostic\"}}\n");
+	char *response MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	EXPECT_EQ(mcp_request(&client, "unknown", nullptr, &response), -ENOSYS);
+	ASSERT_NE(response, nullptr);
+	EXPECT_NE(strstr(response, "retained diagnostic"), nullptr);
+	cJSON *error MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(response);
+	ASSERT_NE(error, nullptr);
+	EXPECT_EQ(cJSON_GetObjectItem(cJSON_GetObjectItem(error, "error"), "code")->valueint,
+		  -32601);
+}
+
+TEST_F(McpStdioFramingTest, ExchangePreservesOccupiedAndFailedOutput)
+{
+	struct mcp_wire_request request = {};
+	request.id = 1;
+	request.json = const_cast<char *>("{}");
+	struct mcp_wire_reply reply MORPH_CLEANUP(mcp_wire_reply_cleanup) = {};
+	reply.session_id = strdup("original");
+	ASSERT_NE(reply.session_id, nullptr);
+	char *original = reply.session_id;
+	EXPECT_EQ(mcp_stdio_exchange(&client, &request, 1000, &reply), -EEXIST);
+	EXPECT_EQ(reply.session_id, original);
+	EXPECT_STREQ(reply.session_id, "original");
+	mcp_wire_reply_cleanup(&reply);
+	reply.http_status = 418;
+	close(request_read);
+	request_read = -1;
+	EXPECT_EQ(mcp_stdio_exchange(&client, &request, 1000, &reply), -EPIPE);
+	EXPECT_EQ(reply.http_status, 418);
+	EXPECT_EQ(reply.json, nullptr);
+	EXPECT_EQ(reply.session_id, nullptr);
 }

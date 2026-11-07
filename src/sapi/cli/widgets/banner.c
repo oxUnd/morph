@@ -31,10 +31,10 @@ static int cli_banner_logo(struct cli_application *ctx)
 		return 0;
 	if (morph_data_find(path, sizeof(path), "morph-logo.png") != 0)
 		return 0;
-	data = file_read_all(path, &length);
+	data = file_read_all_copy(path, &length);
 	if (!data)
 		return 0;
-	encoded = base64_encode((const unsigned char *)data, length);
+	encoded = base64_encode_copy((const unsigned char *)data, length);
 	free(data);
 	if (!encoded)
 		return 0;

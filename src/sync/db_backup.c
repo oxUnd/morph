@@ -301,7 +301,7 @@ static int device_id_get(const struct morph_sync_config *cfg,
 	rc = file_path_join(path, sizeof(path), directory, "device-id");
 	if (rc != 0)
 		return rc;
-	stored = file_read_all(path, NULL);
+	stored = file_read_all_copy(path, NULL);
 	if (stored) {
 		stored[strcspn(stored, "\r\n")] = '\0';
 		if (stored[0]) {
@@ -344,7 +344,7 @@ static int db_cursor_matches(const struct morph_sync_config *cfg,
 
 	if (db_cursor_path(cfg, database_key, path) != 0)
 		return 0;
-	stored = file_read_all(path, NULL);
+	stored = file_read_all_copy(path, NULL);
 	if (!stored)
 		return 0;
 	snprintf(expected, sizeof(expected), "%s %s", device, database_hash);
@@ -689,7 +689,7 @@ int sync_db_backup_create(const struct morph_sync_config *cfg,
 	if (snprintf(prefix, sizeof(prefix), "%s.conflict.", base) >=
 	    (int)sizeof(prefix))
 		return -ENAMETOOLONG;
-	rc = file_list_files(directory, &names, &count);
+	rc = file_list_files_copy(directory, &names, &count);
 	if (rc == -ENOENT)
 		return 0;
 	for (int i = 0; rc == 0 && i < count; i++) {
@@ -728,13 +728,13 @@ static int manifest_load(const struct morph_sync_config *cfg, const char *name,
 		rc = store_get(cfg, rel, local);
 		if (rc != 0)
 			return rc;
-		text = file_read_all(local, NULL);
+		text = file_read_all_copy(local, NULL);
 		(void)unlink(local);
 	} else {
 		rc = store_path(cfg, rel, direct);
 		if (rc != 0)
 			return rc;
-		text = file_read_all(direct, NULL);
+		text = file_read_all_copy(direct, NULL);
 	}
 	if (!text)
 		return -ENOENT;
@@ -781,7 +781,7 @@ static int snapshot_scan_name(struct snapshot_scan *scan, const char *name)
 	rc = manifest_load(scan->cfg, name, &root);
 	if (rc != 0)
 		return rc;
-	backup = morph_array_push(scan->items);
+	backup = morph_array_push_borrow(scan->items);
 	if (!backup) {
 		cJSON_Delete(root);
 		return -ENOMEM;
@@ -848,7 +848,7 @@ int morph_sync_backups(const struct morph_sync_config *cfg,
 	} else {
 		rc = store_path(cfg, DB_SNAPSHOT_DIR, directory);
 		if (rc == 0)
-			rc = file_list_files(directory, &names, &name_count);
+			rc = file_list_files_copy(directory, &names, &name_count);
 		if (rc == -ENOENT)
 			rc = 0;
 		for (int i = 0; rc == 0 && i < name_count; i++)
@@ -893,7 +893,7 @@ static int restore_chunk(const struct morph_sync_config *cfg, cJSON *item,
 	rc = store_get(cfg, object_rel, temporary_chunk);
 	if (rc != 0)
 		return rc;
-	data = file_read_all(temporary_chunk, &data_size);
+	data = file_read_all_copy(temporary_chunk, &data_size);
 	(void)unlink(temporary_chunk);
 	if (!data)
 		return -EIO;
@@ -1041,7 +1041,7 @@ static int retention_add_name(struct retention_scan *scan, const char *name)
 	rc = manifest_load(scan->cfg, name, &root);
 	if (rc != 0)
 		return rc;
-	stored = morph_array_push(scan->snapshots);
+	stored = morph_array_push_borrow(scan->snapshots);
 	if (!stored) {
 		cJSON_Delete(root);
 		return -ENOMEM;
@@ -1085,7 +1085,7 @@ static int retention_collect(const struct morph_sync_config *cfg,
 	rc = store_path(cfg, DB_SNAPSHOT_DIR, directory);
 	if (rc != 0)
 		return rc;
-	rc = file_list_files(directory, &names, &count);
+	rc = file_list_files_copy(directory, &names, &count);
 	if (rc == -ENOENT)
 		return 0;
 	for (int i = 0; rc == 0 && i < count; i++)
@@ -1137,8 +1137,7 @@ static int live_chunks_add(const struct morph_sync_config *cfg,
 			rc = MORPH_ERR_PARSE;
 			break;
 		}
-		rc = morph_strmap_set(live, hash->valuestring,
-				      (void *)(uintptr_t)1);
+		rc = morph_strmap_set_borrow(live, hash->valuestring, (void *)(uintptr_t)1);
 		if (rc != 0)
 			break;
 	}
@@ -1212,7 +1211,7 @@ static int object_gc_local(struct object_gc *gc)
 	rc = store_path(gc->cfg, DB_OBJECT_DIR, root);
 	if (rc != 0)
 		return rc;
-	rc = file_list_dirs(root, &prefixes, &prefix_count);
+	rc = file_list_dirs_copy(root, &prefixes, &prefix_count);
 	if (rc == -ENOENT)
 		return 0;
 	for (int i = 0; rc == 0 && i < prefix_count; i++) {
@@ -1227,7 +1226,7 @@ static int object_gc_local(struct object_gc *gc)
 		}
 		rc = store_path(gc->cfg, gc->directory, directory);
 		if (rc == 0)
-			rc = file_list_files(directory, &names, &count);
+			rc = file_list_files_copy(directory, &names, &count);
 		for (int j = 0; rc == 0 && j < count; j++)
 			rc = object_gc_one(gc, names[j]);
 		file_free_list(names, count);

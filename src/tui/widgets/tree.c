@@ -1,5 +1,6 @@
 #include <morph/tui/widgets/tree.h>
 #include "util/utf8.h"
+#include "util/cleanup.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -28,9 +29,6 @@ int morph_tui_widget_tree_init(struct morph_tui_widget_tree *tree)
 	memset(tree, 0, sizeof(*tree));
 	tree->first_root = MORPH_TUI_WIDGET_TREE_ROOT;
 	tree->last_root = MORPH_TUI_WIDGET_TREE_ROOT;
-	tree->arena = arena_create(4096);
-	if (!tree->arena)
-		return tree->error = -ENOMEM;
 	int rc = morph_array_init(&tree->nodes, 16, sizeof(struct morph_tui_widget_tree_node));
 	if (!rc)
 		rc = morph_array_init(&tree->visible, 16, sizeof(size_t));
@@ -45,21 +43,21 @@ void morph_tui_widget_tree_cleanup(struct morph_tui_widget_tree *tree)
 {
 	if (!tree)
 		return;
+	for (size_t i = 0; i < tree->nodes.nelts; i++) {
+		struct morph_tui_widget_tree_node *node = morph_array_borrow(&tree->nodes, i);
+
+		free(node->label);
+		free(node->description);
+	}
 	morph_array_cleanup(&tree->nodes);
 	morph_array_cleanup(&tree->visible);
-	arena_destroy(tree->arena);
 	memset(tree, 0, sizeof(*tree));
 }
 
-static const char *widget_tree_copy_text(struct morph_tui_widget_tree *tree, const char *text)
+static char *widget_tree_copy_text(const char *text)
 {
-	char *safe = utf8_terminal_sanitize_dup(text ? text : "", text ? strlen(text) : 0,
-						UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
-	if (!safe)
-		return NULL;
-	const char *copy = arena_strdup(tree->arena, safe);
-	free(safe);
-	return copy;
+	return utf8_terminal_sanitize_dup(text ? text : "", text ? strlen(text) : 0,
+					  UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
 }
 
 size_t morph_tui_widget_tree_add(struct morph_tui_widget_tree *tree, size_t parent,
@@ -67,14 +65,15 @@ size_t morph_tui_widget_tree_add(struct morph_tui_widget_tree *tree, size_t pare
 {
 	if (!tree || tree->error)
 		return MORPH_TUI_WIDGET_TREE_ROOT;
-	if (!tree->arena || (parent != MORPH_TUI_WIDGET_TREE_ROOT && parent >= tree->nodes.nelts)) {
+	if (!tree->nodes.size ||
+	    (parent != MORPH_TUI_WIDGET_TREE_ROOT && parent >= tree->nodes.nelts)) {
 		tree->error = (-EINVAL);
 		return MORPH_TUI_WIDGET_TREE_ROOT;
 	}
-	const char *name = widget_tree_copy_text(tree, label);
-	const char *detail = widget_tree_copy_text(tree, description);
+	char *name MORPH_CLEANUP(morph_charp_cleanup) = widget_tree_copy_text(label);
+	char *detail MORPH_CLEANUP(morph_charp_cleanup) = widget_tree_copy_text(description);
 	struct morph_tui_widget_tree_node *node =
-		name && detail ? morph_array_push(&tree->nodes) : NULL;
+		name && detail ? morph_array_push_borrow(&tree->nodes) : NULL;
 	if (!node) {
 		tree->error = (-ENOMEM);
 		return MORPH_TUI_WIDGET_TREE_ROOT;
@@ -84,14 +83,15 @@ size_t morph_tui_widget_tree_add(struct morph_tui_widget_tree *tree, size_t pare
 						    MORPH_TUI_WIDGET_TREE_ROOT,
 						    MORPH_TUI_WIDGET_TREE_ROOT,
 						    MORPH_TUI_WIDGET_TREE_ROOT,
-						    name,
-						    detail,
+						    morph_charp_steal(&name),
+						    morph_charp_steal(&detail),
 						    1};
 	struct morph_tui_widget_tree_node *owner =
-		parent == MORPH_TUI_WIDGET_TREE_ROOT ? NULL : morph_array_get(&tree->nodes, parent);
+		parent == MORPH_TUI_WIDGET_TREE_ROOT ? NULL
+						     : morph_array_borrow(&tree->nodes, parent);
 	size_t last = owner ? owner->last_child : tree->last_root;
 	if (last != MORPH_TUI_WIDGET_TREE_ROOT) {
-		struct morph_tui_widget_tree_node *sibling = morph_array_get(&tree->nodes, last);
+		struct morph_tui_widget_tree_node *sibling = morph_array_borrow(&tree->nodes, last);
 		sibling->next_sibling = index;
 	} else if (owner) {
 		owner->first_child = index;
@@ -108,7 +108,7 @@ size_t morph_tui_widget_tree_add(struct morph_tui_widget_tree *tree, size_t pare
 static struct morph_tui_widget_tree_node *
 widget_tree_node_at(const struct morph_tui_widget_tree *tree, size_t index)
 {
-	return morph_array_get(&tree->nodes, index);
+	return morph_array_borrow(&tree->nodes, index);
 }
 
 static int widget_tree_has_children(const struct morph_tui_widget_tree *tree, size_t index)
@@ -120,7 +120,7 @@ static int widget_tree_visit(struct morph_tui_widget_tree *tree)
 {
 	size_t index = tree->first_root;
 	while (index != MORPH_TUI_WIDGET_TREE_ROOT) {
-		size_t *entry = morph_array_push(&tree->visible);
+		size_t *entry = morph_array_push_borrow(&tree->visible);
 		if (!entry)
 			return -ENOMEM;
 		*entry = index;
@@ -139,7 +139,7 @@ static int widget_tree_visit(struct morph_tui_widget_tree *tree)
 
 static int widget_tree_refresh(struct morph_tui_widget_tree *tree, size_t page)
 {
-	if (!tree->arena)
+	if (!tree->nodes.size)
 		return -EINVAL;
 	if (tree->error)
 		return tree->error;
@@ -155,7 +155,7 @@ size_t morph_tui_widget_tree_selected(const struct morph_tui_widget_tree *tree)
 {
 	if (!tree)
 		return MORPH_TUI_WIDGET_TREE_ROOT;
-	size_t *entry = morph_array_get(&tree->visible, tree->list.index);
+	size_t *entry = morph_array_borrow(&tree->visible, tree->list.index);
 	return entry ? *entry : MORPH_TUI_WIDGET_TREE_ROOT;
 }
 
@@ -190,7 +190,7 @@ int morph_tui_widget_tree_update(struct morph_tui_widget_tree *tree, int key, si
 				node->expanded = 0;
 			else if (node->parent != MORPH_TUI_WIDGET_TREE_ROOT) {
 				for (size_t i = 0; i < tree->visible.nelts; i++)
-					if (*(size_t *)morph_array_get(&tree->visible, i) ==
+					if (*(size_t *)morph_array_borrow(&tree->visible, i) ==
 					    node->parent)
 						tree->list.index = i;
 			}
@@ -219,7 +219,7 @@ int morph_tui_widget_tree_render(struct morph_tui_widget_tree *tree, morph_buf_t
 	if (rc)
 		return rc;
 	for (size_t row = first; row < tree->visible.nelts && row - first < rows; row++) {
-		size_t index = *(size_t *)morph_array_get(&tree->visible, row);
+		size_t index = *(size_t *)morph_array_borrow(&tree->visible, row);
 		struct morph_tui_widget_tree_node *node = widget_tree_node_at(tree, index);
 		morph_buf_t line = {0};
 		morph_array_t path = {0};
@@ -233,7 +233,7 @@ int morph_tui_widget_tree_render(struct morph_tui_widget_tree *tree, morph_buf_t
 		}
 		for (size_t p = node->parent; p != MORPH_TUI_WIDGET_TREE_ROOT;
 		     p = widget_tree_node_at(tree, p)->parent) {
-			int *entry = morph_array_push(&path);
+			int *entry = morph_array_push_borrow(&path);
 			if (!entry) {
 				rc = -ENOMEM;
 				break;
@@ -241,8 +241,8 @@ int morph_tui_widget_tree_render(struct morph_tui_widget_tree *tree, morph_buf_t
 			*entry = widget_tree_last_sibling(tree, p);
 		}
 		for (size_t i = 0; i < path.nelts / 2; i++) {
-			int *a = morph_array_get(&path, i);
-			int *b = morph_array_get(&path, path.nelts - 1 - i);
+			int *a = morph_array_borrow(&path, i);
+			int *b = morph_array_borrow(&path, path.nelts - 1 - i);
 			int swap = *a;
 			*a = *b;
 			*b = swap;
@@ -278,7 +278,7 @@ int morph_tui_widget_tree_render(struct morph_tui_widget_tree *tree, morph_buf_t
 				rc = -ENOMEM;
 			else {
 				utf8_copy_ellipsized_display_width(clipped, line.len + 4,
-								   morph_buf_cstr(&line),
+								   morph_buf_cstr_borrow(&line),
 								   (size_t)columns, 0);
 				morph_buf_printf(output, "%s\n", clipped);
 				free(clipped);
@@ -355,7 +355,7 @@ int morph_tui_widget_tree_row(morph_buf_t *output, const char *ancestor, int is_
 				(size_t)(columns - prefix - mark - label_width - 2), 0);
 			morph_buf_printf(&line, "%*s  %s", label_width - used, "", clipped_detail);
 		}
-		rc = widget_tree_append_report_line(output, morph_buf_cstr(&line), columns);
+		rc = widget_tree_append_report_line(output, morph_buf_cstr_borrow(&line), columns);
 		if (detail[0] && !inline_detail) {
 			int width = columns - prefix - 2;
 			if (width < 0)
@@ -366,8 +366,8 @@ int morph_tui_widget_tree_row(morph_buf_t *output, const char *ancestor, int is_
 			morph_buf_printf(&line, "  %s%s  %s", ancestor,
 					 morph_tui_widget_tree_branch(is_last, 1), clipped_detail);
 			if (!rc)
-				rc = widget_tree_append_report_line(output, morph_buf_cstr(&line),
-								    columns);
+				rc = widget_tree_append_report_line(
+					output, morph_buf_cstr_borrow(&line), columns);
 		}
 		rc = rc ? rc : (line.failed ? line.failed : output->failed);
 	}

@@ -1,4 +1,5 @@
 #include "system_prompt.h"
+#include "util/cleanup.h"
 #include "util/buf.h"
 #include "util/file.h"
 #include "util/log.h"
@@ -53,7 +54,7 @@ static int prompt_append_directory(struct morph_log *logger, morph_buf_t *buf, c
 {
 	char **files = NULL;
 	int count = 0;
-	int rc = file_list_files(dir, &files, &count);
+	int rc = file_list_files_copy(dir, &files, &count);
 
 	if (rc != 0)
 		return rc;
@@ -76,7 +77,7 @@ static int prompt_append_directory(struct morph_log *logger, morph_buf_t *buf, c
 static int prompt_append_source(struct morph_log *logger, morph_buf_t *buf, const char *source,
 				int is_directory)
 {
-	char *path = file_expand_path(source);
+	char *path = file_expand_path_copy(source);
 	int rc;
 
 	if (!path)
@@ -91,12 +92,13 @@ static int prompt_append_source(struct morph_log *logger, morph_buf_t *buf, cons
 
 int morph_prompt_load(struct morph_log *logger, const char *file, const char *dir, char **out)
 {
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc;
 
 	if (!out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EALREADY;
 	if ((!file || !*file) && (!dir || !*dir))
 		return 0;
 	rc = morph_buf_init(&buf, 1024);

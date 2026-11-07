@@ -4,7 +4,7 @@
 #include "persistence/memory_snapshot.h"
 #include "models/llm.h"
 #include "session.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/buf.h"
 #include "util/log.h"
 #include "util/error.h"
@@ -263,13 +263,13 @@ int memory_appendf(morph_buf_t *b, size_t max_len, const char *fmt, ...)
 
 static int memory_refresh_profile(struct db *db, int64_t session_id)
 {
-	struct memory_snapshot snapshot;
+	struct memory_snapshot snapshot MORPH_CLEANUP(memory_snapshot_cleanup) = {0};
 	struct memory_snapshot_options options = {
 		.facts_limit = -1,
 		.facts_by_recency = 1,
 	};
 	struct memory_fact_record *fact;
-	morph_buf_t profile;
+	morph_buf_t profile MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc = memory_snapshot_read(db, session_id, &options, &snapshot);
 
 	if (rc != 0)
@@ -301,7 +301,7 @@ static int memory_refresh_profile(struct db *db, int64_t session_id)
 			break;
 	}
 	if (rc == 0)
-		rc = memory_store_save_profile(db, session_id, morph_buf_cstr(&profile));
+		rc = memory_store_save_profile(db, session_id, morph_buf_cstr_borrow(&profile));
 	morph_buf_cleanup(&profile);
 	memory_snapshot_cleanup(&snapshot);
 	return rc;
@@ -483,7 +483,7 @@ static int memory_verify_legacy_preference(const char *key, const char *value, c
 {
 	const char *language = memory_explicit_language(source);
 
-	return !strcmp(preference_key(key), "response.language") && language &&
+	return !strcmp(preference_key_borrow(key), "response.language") && language &&
 	       !strcmp(language, value) && memory_preference_request_scope(source);
 }
 
@@ -937,11 +937,10 @@ static char *memory_llm_extract_json(struct model *llm, const char *user_input,
 				     const char *assistant_output, const char *tool_names,
 				     int success)
 {
-	struct arena *arena;
 	char *prompt;
 	size_t prompt_cap;
 	const char *messages[1];
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc;
 
 	if (!llm || !llm->chat || !llm->api_key[0] || !user_input)
@@ -961,22 +960,14 @@ static char *memory_llm_extract_json(struct model *llm, const char *user_input,
 		 (tool_names && *tool_names) ? tool_names : "(none)", user_input,
 		 (assistant_output && *assistant_output) ? assistant_output : "(no answer)");
 
-	arena = arena_create(64 * 1024);
-	if (!arena) {
-		free(prompt);
-		return NULL;
-	}
-
 	rc = morph_buf_init(&buf, 4096);
 	if (rc != 0) {
-		arena_destroy(arena);
 		free(prompt);
 		return NULL;
 	}
 
 	messages[0] = prompt;
-	rc = llm->chat(llm, arena, MEMORY_LLM_SYSTEM, messages, 1, NULL, morph_buf_append_cb, &buf);
-	arena_destroy(arena);
+	rc = llm->chat(llm, MEMORY_LLM_SYSTEM, messages, 1, NULL, morph_buf_append_cb, &buf);
 	free(prompt);
 
 	if (rc != 0 || buf.len == 0) {

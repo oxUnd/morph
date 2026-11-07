@@ -18,7 +18,7 @@ std::string render(const environment_context &ctx)
 	morph_buf_t buf;
 	EXPECT_EQ(morph_buf_init(&buf, 128), 0);
 	EXPECT_EQ(environment_context_render(&ctx, &buf), 0);
-	std::string result = morph_buf_cstr(&buf);
+	std::string result = morph_buf_cstr_borrow(&buf);
 	morph_buf_cleanup(&buf);
 	return result;
 }
@@ -47,9 +47,38 @@ public:
 	}
 };
 
+class OwnedEnvironment : public environment_context
+{
+      public:
+	OwnedEnvironment() : environment_context{}
+	{
+	}
+	~OwnedEnvironment()
+	{
+		environment_context_cleanup(this);
+	}
+	OwnedEnvironment(const OwnedEnvironment &) = delete;
+	OwnedEnvironment &operator=(const OwnedEnvironment &) = delete;
+	OwnedEnvironment(OwnedEnvironment &&source) noexcept : environment_context{}
+	{
+		static_cast<environment_context &>(*this) = source;
+		auto *base = static_cast<environment_context *>(&source);
+		std::memset(base, 0, sizeof(*base));
+	}
+	OwnedEnvironment &operator=(OwnedEnvironment &&source) noexcept
+	{
+		if (this != &source) {
+			environment_context_cleanup(this);
+			static_cast<environment_context &>(*this) = source;
+			auto *base = static_cast<environment_context *>(&source);
+			std::memset(base, 0, sizeof(*base));
+		}
+		return *this;
+	}
+};
+
 class EnvironmentContextTest : public ::testing::Test {
 protected:
-	struct arena *arena = nullptr;
 	std::filesystem::path directory;
 	ScopedVariable git_dir{"GIT_DIR", nullptr};
 	ScopedVariable git_worktree{"GIT_WORK_TREE", nullptr};
@@ -58,20 +87,20 @@ protected:
 	ScopedVariable git_filesystem{"GIT_DISCOVERY_ACROSS_FILESYSTEM", nullptr};
 
 	void SetUp() override {
-		arena = arena_create(1024);
-		ASSERT_NE(arena, nullptr);
+
 		char temp[] = "/tmp/morph-environment-XXXXXX";
 		ASSERT_NE(mkdtemp(temp), nullptr);
 		directory = std::filesystem::canonical(temp);
 	}
 	void TearDown() override {
-		arena_destroy(arena);
+
 		std::filesystem::remove_all(directory);
 	}
-	environment_context collect(const char *cwd = nullptr, const char *shell = nullptr) {
-		environment_context ctx{};
+	OwnedEnvironment collect(const char *cwd = nullptr, const char *shell = nullptr)
+	{
+		OwnedEnvironment ctx;
 		prompt_context_input input{cwd, shell, nullptr};
-		EXPECT_EQ(environment_context_collect(&ctx, &input, arena), 0);
+		EXPECT_EQ(environment_context_create(&ctx, &input), 0);
 		return ctx;
 	}
 	void init_git() {
@@ -302,9 +331,9 @@ TEST_F(EnvironmentContextTest, NearestInvalidGitMarkerDoesNotExposeParentBranch)
 
 TEST_F(EnvironmentContextTest, ExplicitSandboxIsCopiedAndEscaped)
 {
-	environment_context ctx{};
+	environment_context ctx MORPH_CLEANUP(environment_context_cleanup) = {};
 	prompt_context_input input{directory.c_str(), nullptr, "read-only<&>"};
-	ASSERT_EQ(environment_context_collect(&ctx, &input, arena), 0);
+	ASSERT_EQ(environment_context_create(&ctx, &input), 0);
 	EXPECT_NE(render(ctx).find("<sandbox>read-only&lt;&amp;&gt;</sandbox>"),
 		std::string::npos);
 }
@@ -326,11 +355,11 @@ TEST_F(EnvironmentContextTest, GitOverrideIsNotGuessed)
 	EXPECT_EQ(collect(directory.c_str()).git_branch, nullptr);
 }
 
-static int provider_a(const prompt_context_input *, struct arena *, morph_buf_t *out)
+static int provider_a(const prompt_context_input *, morph_buf_t *out)
 {
 	return morph_buf_puts(out, "A\n");
 }
-static int provider_b(const prompt_context_input *, struct arena *, morph_buf_t *out)
+static int provider_b(const prompt_context_input *, morph_buf_t *out)
 {
 	return morph_buf_puts(out, "B\n");
 }
@@ -338,20 +367,32 @@ static int provider_b(const prompt_context_input *, struct arena *, morph_buf_t 
 TEST_F(EnvironmentContextTest, ProvidersPreserveOrderAndRejectDuplicates)
 {
 	prompt_context_provider providers[] = {{"a", provider_a}, {"b", provider_b}};
-	const char *text = nullptr;
-	ASSERT_EQ(prompt_context_build(providers, 2, nullptr, arena, &text), 0);
+	char *text MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(prompt_context_create(providers, 2, nullptr, &text), 0);
 	EXPECT_STREQ(text, "A\nB\n");
+	auto *retained = text;
+	EXPECT_EQ(prompt_context_create(providers, 2, nullptr, &text), -EALREADY);
+	EXPECT_EQ(text, retained);
+	morph_charp_cleanup(&text);
 	providers[1].name = "a";
-	EXPECT_EQ(prompt_context_build(providers, 2, nullptr, arena, &text), -EINVAL);
+	EXPECT_EQ(prompt_context_create(providers, 2, nullptr, &text), -EINVAL);
 	EXPECT_EQ(text, nullptr);
 }
 
 TEST_F(EnvironmentContextTest, InvalidArguments)
 {
 	environment_context ctx{};
-	EXPECT_EQ(environment_context_collect(nullptr, nullptr, arena), -EINVAL);
-	EXPECT_EQ(environment_context_collect(&ctx, nullptr, nullptr), -EINVAL);
+	EXPECT_EQ(environment_context_create(nullptr, nullptr), -EINVAL);
 	EXPECT_EQ(environment_context_render(&ctx, nullptr), -EINVAL);
 }
 
+TEST_F(EnvironmentContextTest, CollectionPreservesOccupiedOwner)
+{
+	auto ctx = collect(directory.c_str(), "/bin/sh");
+	const char *retained = ctx.cwd;
+	prompt_context_input input{directory.c_str(), "/bin/bash", nullptr};
+	EXPECT_EQ(environment_context_create(&ctx, &input), -EALREADY);
+	EXPECT_EQ(ctx.cwd, retained);
+	EXPECT_STREQ(ctx.shell, "/bin/sh");
+}
 }

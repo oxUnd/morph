@@ -393,10 +393,10 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 			timeout ? morph_io_now_ms() + (int64_t)timeout * 1000 : 0;
 		ctx->input->input_timed_out = 0;
 		if (tty) {
-			input = cli_reader_prompt_stream(ctx, readline_prompt, tty);
+			input = cli_reader_prompt_stream_copy(ctx, readline_prompt, tty);
 			fclose(tty);
 		} else {
-			input = cli_readline_prompt(ctx, readline_prompt);
+			input = cli_readline_prompt_copy(ctx, readline_prompt);
 		}
 		int timed_out = ctx->input->input_timed_out;
 		ctx->input->input_deadline_ms = previous_deadline;

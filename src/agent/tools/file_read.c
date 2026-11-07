@@ -1,4 +1,5 @@
 #include "file_read.h"
+#include "util/cleanup.h"
 #include "agent/tool_context.h"
 #include "agent/tool_runtime.h"
 #include "util/buf.h"
@@ -334,7 +335,7 @@ static int read_text_result(struct file_reader *reader, const struct read_option
 		"expected_version=version; omit offset. Line ranges are 0-based, end-exclusive. "
 		"A partial_line continues on the next page without dropping bytes."))
 		return -ENOMEM;
-	if (!cJSON_AddStringToObject(out, "content", morph_buf_cstr(&page->content)))
+	if (!cJSON_AddStringToObject(out, "content", morph_buf_cstr_borrow(&page->content)))
 		return -ENOMEM;
 	return 0;
 }
@@ -344,8 +345,8 @@ static int read_open_file(struct file_reader *reader, const struct read_options 
 {
 	struct stat before;
 	struct stat after;
-	morph_buf_t version = {0};
-	morph_buf_t after_version = {0};
+	morph_buf_t version MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	morph_buf_t after_version MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	struct read_page page = {0};
 	cJSON *out = NULL;
 	int rc;
@@ -365,7 +366,8 @@ static int read_open_file(struct file_reader *reader, const struct read_options 
 	rc = (read_version(&before, &version));
 	if (rc < 0)
 		goto out_cleanup;
-	if (opts->expected_version && strcmp(opts->expected_version, morph_buf_cstr(&version))) {
+	if (opts->expected_version &&
+	    strcmp(opts->expected_version, morph_buf_cstr_borrow(&version))) {
 		rc = (-ESTALE);
 		goto out_cleanup;
 	}
@@ -390,7 +392,7 @@ static int read_open_file(struct file_reader *reader, const struct read_options 
 	    !cJSON_AddNumberToObject(out, "size", (double)reader->size) ||
 	    !cJSON_AddBoolToObject(out, "binary", page.binary) ||
 	    !cJSON_AddStringToObject(out, "encoding", page.encoding) ||
-	    !cJSON_AddStringToObject(out, "version", morph_buf_cstr(&version))) {
+	    !cJSON_AddStringToObject(out, "version", morph_buf_cstr_borrow(&version))) {
 		rc = (-ENOMEM);
 		goto out_cleanup;
 	}
@@ -408,12 +410,11 @@ static int read_open_file(struct file_reader *reader, const struct read_options 
 	rc = (read_version(&after, &after_version));
 	if (rc < 0)
 		goto out_cleanup;
-	if (strcmp(morph_buf_cstr(&version), morph_buf_cstr(&after_version))) {
+	if (strcmp(morph_buf_cstr_borrow(&version), morph_buf_cstr_borrow(&after_version))) {
 		rc = (-ESTALE);
 		goto out_cleanup;
 	}
-	rc = (tool_result_success(result, out));
-	out = NULL;
+	rc = tool_result_success_take(result, &out);
 out_cleanup:
 	cJSON_Delete(out);
 	morph_buf_cleanup(&after_version);
@@ -435,7 +436,8 @@ static int file_read_exec(const char *args_json, struct tool_result *result, voi
 	rc = read_options_parse(root, &opts);
 	if (rc < 0) {
 		cJSON_Delete(root);
-		(void)tool_result_error(result, "invalid_arguments",
+		(void)tool_result_error_copy(
+			result, "invalid_arguments",
 			"Provide file_path, nonnegative integer offset OR byte_offset, "
 			"positive limit/max_lines (up to 1000000), and max_bytes (4..262144).");
 		return rc;
@@ -468,7 +470,7 @@ static int file_read_exec(const char *args_json, struct tool_result *result, voi
 			"File changed; restart reading to obtain a new version." :
 			rc == -EPERM ? "read path outside workspace: permission denied" :
 			morph_strerror(rc);
-		(void)tool_result_error(result, "file_read_failed", message);
+		(void)tool_result_error_copy(result, "file_read_failed", message);
 	}
 	return rc;
 }
@@ -477,26 +479,36 @@ int file_read_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg)
 		return -EINVAL;
-	return tool_register(reg, &(struct tool_spec){
-		.origin = TOOL_ORIGIN_BUILTIN,
-		.name = "file_read",
-		.description = "Read UTF-8 text verbatim with bounded memory. "
-			"offset is a 0-based line index; limit/max_lines defaults to 1000. "
-			"max_bytes defaults to 51200 (4..262144). Lines over 16384 bytes "
-			"return lossless fragments. Continue using byte_offset=next_byte_offset "
-			"and expected_version=version, omitting offset. total_lines is null "
-			"until EOF when known; line_start/line_end are 0-based, end-exclusive. "
-			"Binary/unsupported encodings return a hex preview, not text.",
-		.input_schema = "{\"type\":\"object\",\"properties\":{"
-			"\"file_path\":{\"type\":\"string\"},"
-			"\"offset\":{\"type\":\"integer\",\"minimum\":0},"
-			"\"byte_offset\":{\"type\":\"integer\",\"minimum\":0},"
-			"\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":1000000},"
-			"\"max_lines\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":1000000},"
-			"\"max_bytes\":{\"type\":\"integer\",\"minimum\":4,\"maximum\":262144},"
-			"\"expected_version\":{\"type\":\"string\"}},\"required\":[\"file_path\"]}",
-		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
-		.exec = file_read_exec,
-		.user_data = tctx,
-	});
+	return tool_register_borrow(
+		reg,
+		&(struct tool_spec){
+			.origin = TOOL_ORIGIN_BUILTIN,
+			.name = "file_read",
+			.description =
+				"Read UTF-8 text verbatim with bounded memory. "
+				"offset is a 0-based line index; limit/max_lines defaults to 1000. "
+				"max_bytes defaults to 51200 (4..262144). Lines over 16384 bytes "
+				"return lossless fragments. Continue using "
+				"byte_offset=next_byte_offset "
+				"and expected_version=version, omitting offset. total_lines is "
+				"null "
+				"until EOF when known; line_start/line_end are 0-based, "
+				"end-exclusive. "
+				"Binary/unsupported encodings return a hex preview, not text.",
+			.input_schema = "{\"type\":\"object\",\"properties\":{"
+					"\"file_path\":{\"type\":\"string\"},"
+					"\"offset\":{\"type\":\"integer\",\"minimum\":0},"
+					"\"byte_offset\":{\"type\":\"integer\",\"minimum\":0},"
+					"\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":"
+					"1000000},"
+					"\"max_lines\":{\"type\":\"integer\",\"minimum\":1,"
+					"\"maximum\":1000000},"
+					"\"max_bytes\":{\"type\":\"integer\",\"minimum\":4,"
+					"\"maximum\":262144},"
+					"\"expected_version\":{\"type\":\"string\"}},\"required\":["
+					"\"file_path\"]}",
+			.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+			.exec = file_read_exec,
+			.user_data = tctx,
+		});
 }

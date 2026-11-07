@@ -13,6 +13,8 @@
 #include "util/bash_parse.h"
 #include "util/buf.h"
 #include "util/error.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "util/id.h"
 #include "cJSON.h"
 
@@ -173,8 +175,8 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 		return rc;
 	if (analysis.has_error) {
 		bash_parse_result_cleanup(&analysis);
-		(void)tool_result_error(result, "approval_required",
-			"shell command could not be analyzed safely");
+		(void)tool_result_error_copy(result, "approval_required",
+					     "shell command could not be analyzed safely");
 		return -EPERM;
 	}
 	if (runtime->tool_context) {
@@ -189,7 +191,7 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 		}
 		for (size_t i = 0; i < analysis.commands.nelts; i++) {
 			const struct bash_parse_command *parsed =
-				morph_array_get(&analysis.commands, i);
+				morph_array_borrow(&analysis.commands, i);
 			int duplicate = 0;
 
 			if (!parsed || !parsed->name[0]) {
@@ -253,8 +255,10 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 					"Command approval failed.";
 
 				bash_parse_result_cleanup(&analysis);
-				(void)tool_result_errorf(result, code,
-					"%s Do not bypass a denial through another tool or route.", message);
+				(void)tool_result_error_format(
+					result, code,
+					"%s Do not bypass a denial through another tool or route.",
+					message);
 				return rc != 0 ? rc : -EPERM;
 			}
 		}
@@ -294,7 +298,7 @@ static int result_snapshot(struct tool_result *result,
 			   const struct process_snapshot *snapshot,
 			   const char *execution_mode)
 {
-	cJSON *data = cJSON_CreateObject();
+	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
 	int rc;
 
 	if (!data)
@@ -317,9 +321,7 @@ static int result_snapshot(struct tool_result *result,
 		if (snapshot->stderr_path[0])
 			cJSON_AddStringToObject(data, "stderr_path", snapshot->stderr_path);
 	}
-	rc = tool_result_success(result, data);
-	if (rc != 0)
-		cJSON_Delete(data);
+	rc = tool_result_success_take(result, &data);
 	return rc;
 }
 
@@ -425,12 +427,11 @@ static int exec_run(const char *args_json, struct tool_result *result,
 			void *user_data)
 {
 	struct exec_runtime *runtime = user_data;
-	cJSON *root;
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	const char *command;
 	const char *workdir;
 	struct process_spawn_options options;
-	struct sandbox_config sandbox;
-	struct arena *path_arena;
+	struct sandbox_config sandbox MORPH_CLEANUP(sandbox_config_cleanup) = {0};
 	char resolved_workdir[PATH_MAX];
 	char git_dir[PATH_MAX] = {0};
 	char principal[TOOL_CONTEXT_CLI_NAME_MAX] = "shell";
@@ -440,8 +441,8 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	int read_path_count = 0;
 	int write_path_count = 0;
 	int delete_path_count = 0;
-	struct process_snapshot snapshot;
-	char session_id[PROCESS_SESSION_ID_MAX];
+	struct process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {0};
+	char session_id[PROCESS_SESSION_ID_MAX] = {0};
 	int host;
 	int network;
 	int readonly;
@@ -452,8 +453,8 @@ static int exec_run(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 	root = args_json ? cJSON_Parse(args_json) : NULL;
 	if (!root) {
-		(void)tool_result_error(result, "invalid_request",
-			"exec arguments must be a JSON object");
+		(void)tool_result_error_copy(result, "invalid_request",
+					     "exec arguments must be a JSON object");
 		return -EINVAL;
 	}
 	command = json_string(root, "command");
@@ -463,17 +464,17 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	if (!workdir)
 		workdir = json_string(root, "cwd");
 	if (!command || !*command) {
-		cJSON_Delete(root);
-		(void)tool_result_error(result, "invalid_request",
-			"command is required");
+
+		(void)tool_result_error_copy(result, "invalid_request", "command is required");
 		return -EINVAL;
 	}
 	if (runtime->tool_context)
 		(void)tool_context_get_permission_policy(runtime->tool_context, &policy);
 	readonly = runtime->tool_context && policy.access == PERMISSION_READ_ONLY;
 	if (json_bool(root, "host", 0) && !runtime->tool_context) {
-		cJSON_Delete(root);
-		(void)tool_result_error(result, "host_execution_disabled",
+
+		(void)tool_result_error_copy(
+			result, "host_execution_disabled",
 			"Host execution requires an explicit permission context.");
 		return -EACCES;
 	}
@@ -481,13 +482,13 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	       (runtime->tool_context && policy.access == PERMISSION_FULL);
 	network = json_bool(root, "network", 0);
 	if (!workdir && runtime->tool_context)
-		workdir = tool_context_workdir(runtime->tool_context);
+		workdir = tool_context_workdir_borrow(runtime->tool_context);
 	if (runtime->tool_context)
 		(void)tool_context_command_principal(command, principal,
 						     sizeof(principal));
 	rc = policy_check(runtime, command, workdir, args_json, host, network, result);
 	if (rc != 0) {
-		cJSON_Delete(root);
+
 		return rc;
 	}
 	memset(&options, 0, sizeof(options));
@@ -501,8 +502,9 @@ static int exec_run(const char *args_json, struct tool_result *result,
 		runtime->default_yield_time_ms);
 	options.pty = json_bool(root, "pty", 0);
 	memset(&sandbox, 0, sizeof(sandbox));
-	const char *workspace = runtime->tool_context ?
-		tool_context_workdir(runtime->tool_context) : workdir;
+	const char *workspace = runtime->tool_context
+					? tool_context_workdir_borrow(runtime->tool_context)
+					: workdir;
 	if (workspace && realpath(workspace, resolved_workdir)) {
 		read_paths[read_path_count++] = resolved_workdir;
 		if (!readonly) {
@@ -540,14 +542,6 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	sandbox.allow_temp = !readonly;
 	sandbox.allow_ipc = 1;
 	sandbox.development_runtime = 1;
-	path_arena = arena_create(0);
-
-	if (!path_arena) {
-		cJSON_Delete(root);
-		(void)tool_result_error(result, "sandbox_policy_failed",
-			morph_strerror(-ENOMEM));
-		return -ENOMEM;
-	}
 	rc = 0;
 	if (rc == 0 && runtime->tool_context && git_dir[0] && !readonly) {
 		rc = tool_context_add_builtin_path(runtime->tool_context, TOOL_PATH_WRITE, git_dir);
@@ -555,35 +549,31 @@ static int exec_run(const char *args_json, struct tool_result *result,
 			rc = tool_context_add_builtin_path(runtime->tool_context, TOOL_PATH_DELETE, git_dir);
 	}
 	if (rc == 0 && runtime->tool_context)
-		rc = sandbox_permission_prepare(runtime->tool_context, principal,
-			runtime->scratch, path_arena, &sandbox);
+		rc = sandbox_permission_prepare(runtime->tool_context, principal, runtime->scratch,
+						&sandbox);
 	else if (rc == 0)
-		rc = sandbox_prepare_tool_paths(&sandbox, path_arena);
+		rc = sandbox_prepare_tool_paths(&sandbox);
 	sandbox.network_access = network || host;
 	sandbox.allow_pty = options.pty;
 	if (rc != 0) {
-		arena_destroy(path_arena);
-		cJSON_Delete(root);
-		(void)tool_result_error(result, "sandbox_policy_failed",
-			morph_strerror(rc));
+
+		(void)tool_result_error_copy(result, "sandbox_policy_failed", morph_strerror(rc));
 		return rc;
 	}
-	sandbox.logger = tool_context_logger(runtime->tool_context);
+	sandbox.logger = tool_context_logger_borrow(runtime->tool_context);
 	options.logger = sandbox.logger;
 	options.sandbox = host ? NULL : &sandbox;
 	options.cancelled = process_wait_cancelled;
 	options.cancel_data = (void *)result->runtime;
 	memset(&snapshot, 0, sizeof(snapshot));
 	rc = process_spawn(runtime->manager, &options, session_id, &snapshot);
-	arena_destroy(path_arena);
 	if (rc != 0) {
 		if (rc == -ECANCELED && session_id[0])
 			(void)process_session_kill(runtime->manager, session_id);
 		const char *code = rc == -ENOENT ? "invalid_workdir" :
 			rc == -ENOTDIR ? "invalid_workdir" : "spawn_failed";
 
-		cJSON_Delete(root);
-		(void)tool_result_error(result, code, morph_strerror(rc));
+		(void)tool_result_error_copy(result, code, morph_strerror(rc));
 		process_snapshot_cleanup(&snapshot);
 		return rc;
 	}
@@ -597,7 +587,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 		if (rc != 0) {
 			(void)process_session_kill(runtime->manager, session_id);
 			process_snapshot_cleanup(&snapshot);
-			cJSON_Delete(root);
+
 			return rc;
 		}
 	}
@@ -605,13 +595,13 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	if (process_wait_cancelled((void *)result->runtime)) {
 		(void)process_session_kill(runtime->manager, session_id);
 		process_snapshot_cleanup(&snapshot);
-		cJSON_Delete(root);
+
 		return -ECANCELED;
 	}
 	rc = result_snapshot(result, session_id, command, workdir, &snapshot,
 		host ? "host" : "sandbox");
 	process_snapshot_cleanup(&snapshot);
-	cJSON_Delete(root);
+
 	return rc;
 }
 
@@ -619,48 +609,49 @@ static int process_run(const char *args_json, struct tool_result *result,
 			   void *user_data)
 {
 	struct exec_runtime *runtime = user_data;
-	cJSON *root;
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	const char *session_id;
 	const char *action;
 	const char *input;
-	struct process_snapshot snapshot;
+	struct process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {0};
 	int rc;
 
 	if (!runtime || !result)
 		return -EINVAL;
 	root = args_json ? cJSON_Parse(args_json) : NULL;
 	if (!root) {
-		(void)tool_result_error(result, "invalid_request",
-			"process arguments must be a JSON object");
+		(void)tool_result_error_copy(result, "invalid_request",
+					     "process arguments must be a JSON object");
 		return -EINVAL;
 	}
 	session_id = json_string(root, "session_id");
 	action = json_string(root, "action");
 	input = json_string(root, "input");
 	if (action && !strcmp(action, "list")) {
-		cJSON *jobs = NULL;
+		cJSON *jobs MORPH_CLEANUP(morph_json_cleanup) = NULL;
 		int64_t owner = result->runtime ? result->runtime->memory_session_id : 0;
 		rc = exec_jobs_list(runtime->jobs, owner, &jobs);
-		cJSON_Delete(root);
+
 		if (rc) return rc;
-		cJSON *data = cJSON_CreateObject();
-		if (!data) { cJSON_Delete(jobs); return -ENOMEM; }
-		cJSON_AddItemToObject(data, "jobs", jobs);
-		rc = tool_result_success(result, data);
-		if (rc) cJSON_Delete(data);
+		cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		if (!data || !cJSON_AddItemToObject(data, "jobs", jobs))
+			return -ENOMEM;
+		jobs = NULL;
+		rc = tool_result_success_take(result, &data);
 		return rc;
 	}
 	if (!session_id || !action) {
-		cJSON_Delete(root);
-		(void)tool_result_error(result, "invalid_request",
-			"session_id and action are required");
+
+		(void)tool_result_error_copy(result, "invalid_request",
+					     "session_id and action are required");
 		return -EINVAL;
 	}
 	rc = exec_jobs_authorize(runtime->jobs, session_id,
 		result->runtime ? result->runtime->memory_session_id : 0);
 	if (rc) {
-		cJSON_Delete(root);
-		(void)tool_result_error(result, "process_not_found", "Process not found in this session.");
+
+		(void)tool_result_error_copy(result, "process_not_found",
+					     "Process not found in this session.");
 		return rc;
 	}
 	memset(&snapshot, 0, sizeof(snapshot));
@@ -672,8 +663,9 @@ static int process_run(const char *args_json, struct tool_result *result,
 	if (wait_arg && (!cJSON_IsNumber(wait_arg) || !isfinite(requested_wait_ms) ||
 	    requested_wait_ms < 0 || requested_wait_ms > (double)runtime->max_wait_ms ||
 	    floor(requested_wait_ms) != requested_wait_ms)) {
-		cJSON_Delete(root);
-		(void)tool_result_errorf(result, "invalid_request",
+
+		(void)tool_result_error_format(
+			result, "invalid_request",
 			"wait_ms must be an integer from 0 to %llu; omit it to wait up to %llu ms",
 			(unsigned long long)runtime->max_wait_ms,
 			(unsigned long long)default_wait_ms);
@@ -685,7 +677,7 @@ static int process_run(const char *args_json, struct tool_result *result,
 	if (cursor_text && (sscanf(cursor_text, "%zu:%zu%n", &cursor.stdout_offset,
 				   &cursor.stderr_offset, &used) != 2 ||
 			    cursor_text[used] != '\0')) {
-		cJSON_Delete(root);
+
 		return -EINVAL;
 	}
 	if (!strcmp(action, "write") && input && *input && runtime->tool_context) {
@@ -705,9 +697,10 @@ static int process_run(const char *args_json, struct tool_result *result,
 			rc = tool_context_check_operation(runtime->tool_context, &operation);
 		}
 		if (rc != 0) {
-			cJSON_Delete(root);
-			(void)tool_result_error(result, rc == -EPERM ? "approval_unavailable" :
-				"permission_denied", "Process input requires permission for its retained access.");
+
+			(void)tool_result_error_copy(
+				result, rc == -EPERM ? "approval_unavailable" : "permission_denied",
+				"Process input requires permission for its retained access.");
 			return rc;
 		}
 	}
@@ -727,8 +720,7 @@ static int process_run(const char *args_json, struct tool_result *result,
 			rc == -EPIPE ? "process_not_running" :
 			rc == -EAGAIN ? "io_error" : "invalid_request";
 
-		cJSON_Delete(root);
-		(void)tool_result_error(result, code, strerror(-rc));
+		(void)tool_result_error_copy(result, code, strerror(-rc));
 		return rc;
 	}
 	if (!strcmp(action, "wait"))
@@ -760,7 +752,7 @@ static int process_run(const char *args_json, struct tool_result *result,
 		}
 	}
 	process_snapshot_cleanup(&snapshot);
-	cJSON_Delete(root);
+
 	return rc;
 }
 
@@ -788,8 +780,8 @@ static void exec_environment(void *opaque, struct prompt_context_input *out)
 	struct exec_runtime *runtime = opaque;
 	struct permission_policy policy;
 
-	out->cwd = tool_context_workdir(runtime->tool_context);
-	out->shell = process_manager_shell(runtime->manager);
+	out->cwd = tool_context_workdir_borrow(runtime->tool_context);
+	out->shell = process_manager_shell_borrow(runtime->manager);
 	if (tool_context_get_permission_policy(runtime->tool_context, &policy) == 0)
 		out->sandbox = permission_access_name(policy.access);
 }
@@ -798,8 +790,8 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 		   const struct config_exec *config)
 {
 	struct exec_runtime *runtime;
-	struct tool_spec exec_spec;
-	struct tool_spec process_spec;
+	struct tool_spec exec_spec MORPH_CLEANUP(tool_spec_cleanup) = {0};
+	struct tool_spec process_spec MORPH_CLEANUP(tool_spec_cleanup) = {0};
 	int rc;
 
 	if (!reg)
@@ -856,18 +848,17 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	exec_spec.background_cancel = exec_background_cancel;
 	exec_spec.user_data = runtime;
 	exec_spec.user_data_destroy = exec_runtime_destroy;
+	process_spec.user_data = runtime;
+	process_spec.user_data_destroy = exec_runtime_destroy;
 	exec_spec.flags = TOOL_FLAG_INTERNAL_APPROVAL;
-	rc = tool_register(reg, &exec_spec);
-	if (rc != 0) {
-		exec_runtime_destroy(runtime);
+	rc = tool_register_take(reg, &exec_spec);
+	if (rc != 0)
 		return rc;
-	}
-	memset(&process_spec, 0, sizeof(process_spec));
 	process_spec.origin = TOOL_ORIGIN_BUILTIN;
 	process_spec.name = "process";
 	process_spec.title = "Manage process";
-	morph_buf_t description = {0};
-	morph_buf_t schema = {0};
+	morph_buf_t description MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	morph_buf_t schema MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	rc = morph_buf_init(&description, 1024);
 	if (rc == 0)
 		rc = morph_buf_init(&schema, 1024);
@@ -901,8 +892,8 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 			"\"additionalProperties\":false}",
 			(unsigned long long)runtime->max_wait_ms,
 			(unsigned long long)default_wait_ms);
-	process_spec.description = morph_buf_cstr(&description);
-	process_spec.input_schema = morph_buf_cstr(&schema);
+	process_spec.description = morph_buf_cstr_borrow(&description);
+	process_spec.input_schema = morph_buf_cstr_borrow(&schema);
 	process_spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	process_spec.exec = process_run;
 	process_spec.user_data = runtime;
@@ -910,60 +901,86 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	process_spec.flags = TOOL_FLAG_INTERNAL_APPROVAL;
 	process_spec.timeout_seconds = (int)((runtime->max_wait_ms + 999) / 1000) + 30;
 	if (rc == 0)
-		rc = tool_register(reg, &process_spec);
+		rc = tool_register_take(reg, &process_spec);
 	morph_buf_cleanup(&description);
 	morph_buf_cleanup(&schema);
-	if (rc != 0) {
-		/* The exec registration owns the other runtime reference. */
-		exec_runtime_destroy(runtime);
+	if (rc != 0)
 		return rc;
-	}
 	return 0;
 }
 
-static struct exec_runtime *exec_runtime_lookup(struct tool_registry *reg)
+void exec_tool_jobs_release(struct exec_tool_jobs_handle *owner)
 {
-	struct tool_entry *entry = reg ? tool_lookup(reg, "exec") : NULL;
-	return entry && entry->exec == exec_run ? entry->user_data : NULL;
+	if (!owner)
+		return;
+	owner->jobs = NULL;
+	tool_handle_release(&owner->tool);
 }
 
-int exec_tool_set_event_callback(struct tool_registry *reg, morph_event_cb cb,
-				 void *user_data)
+int exec_tool_jobs_acquire(struct tool_registry *reg, struct exec_tool_jobs_handle *out)
 {
-	struct exec_runtime *runtime = exec_runtime_lookup(reg);
+	struct exec_tool_jobs_handle candidate MORPH_CLEANUP(exec_tool_jobs_release) = {0};
+	int rc;
+
+	if (!reg || !out)
+		return -EINVAL;
+	if (out->tool.binding || out->jobs)
+		return -EALREADY;
+	rc = tool_registry_acquire(reg, "exec", &candidate.tool);
+	if (rc != 0)
+		return rc;
+	if (candidate.tool.exec != exec_run)
+		return -ENOENT;
+	struct exec_runtime *runtime = candidate.tool.user_data;
 	if (!runtime)
 		return -ENOENT;
-	exec_jobs_bind(runtime->jobs, runtime->manager, cb, user_data);
+	candidate.jobs = runtime->jobs;
+	*out = candidate;
+	memset(&candidate, 0, sizeof(candidate));
+	return 0;
+}
+
+int exec_tool_set_event_callback(struct tool_registry *reg, morph_event_cb cb, void *user_data)
+{
+	struct exec_tool_jobs_handle jobs MORPH_CLEANUP(exec_tool_jobs_release) = {0};
+	int rc = exec_tool_jobs_acquire(reg, &jobs);
+
+	if (rc != 0)
+		return rc;
+	struct exec_runtime *runtime = jobs.tool.user_data;
+	exec_jobs_bind(jobs.jobs, runtime->manager, cb, user_data);
 	return 0;
 }
 
 int exec_tool_jobs_list(struct tool_registry *reg, int64_t owner, cJSON **out)
 {
-	struct exec_runtime *runtime = exec_runtime_lookup(reg);
-	if (runtime)
-		return exec_jobs_list(runtime->jobs, owner, out);
-	*out = cJSON_CreateArray();
-	return *out ? 0 : -ENOMEM;
+	struct exec_tool_jobs_handle jobs MORPH_CLEANUP(exec_tool_jobs_release) = {0};
+	int rc;
+
+	if (!out)
+		return -EINVAL;
+	if (*out)
+		return -EALREADY;
+	rc = exec_tool_jobs_acquire(reg, &jobs);
+	if (rc == -ENOENT) {
+		*out = cJSON_CreateArray();
+		return *out ? 0 : -ENOMEM;
+	}
+	return rc == 0 ? exec_jobs_list(jobs.jobs, owner, out) : rc;
 }
 
-int exec_tool_job_read(struct tool_registry *reg, int64_t owner, const char *id,
-			cJSON **out)
+int exec_tool_job_read(struct tool_registry *reg, int64_t owner, const char *id, cJSON **out)
 {
-	struct exec_runtime *runtime = exec_runtime_lookup(reg);
-	if (!runtime)
-		return -ENOENT;
-	return exec_jobs_read(runtime->jobs, owner, id, out);
+	struct exec_tool_jobs_handle jobs MORPH_CLEANUP(exec_tool_jobs_release) = {0};
+	int rc = exec_tool_jobs_acquire(reg, &jobs);
+
+	return rc == 0 ? exec_jobs_read(jobs.jobs, owner, id, out) : rc;
 }
 
 int exec_tool_job_stop(struct tool_registry *reg, int64_t owner, const char *id)
 {
-	struct exec_runtime *runtime = exec_runtime_lookup(reg);
-	if (!runtime) return -ENOENT;
-	return exec_jobs_stop(runtime->jobs, owner, id);
-}
+	struct exec_tool_jobs_handle jobs MORPH_CLEANUP(exec_tool_jobs_release) = {0};
+	int rc = exec_tool_jobs_acquire(reg, &jobs);
 
-struct exec_jobs *exec_tool_jobs_handle(struct tool_registry *reg)
-{
-	struct exec_runtime *runtime = exec_runtime_lookup(reg);
-	return runtime ? runtime->jobs : NULL;
+	return rc == 0 ? exec_jobs_stop(jobs.jobs, owner, id) : rc;
 }

@@ -378,7 +378,7 @@ static int config_describe_table(const cfg_table_t *table, const char *prefix,
 	return 0;
 }
 
-char *config_describe_text(const char *text, struct config_validation_error *error)
+char *config_describe_text_copy(const char *text, struct config_validation_error *error)
 {
 	toml_result_t parsed;
 	cfg_table_t *table;
@@ -873,7 +873,7 @@ static void expand_path_field(char *buf, size_t len)
 {
 	if (!buf[0])
 		return;
-	char *expanded = file_expand_path(buf);
+	char *expanded = file_expand_path_copy(buf);
 	if (expanded) {
 		strncpy(buf, expanded, len - 1);
 		buf[len - 1] = '\0';

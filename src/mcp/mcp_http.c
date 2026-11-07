@@ -17,6 +17,11 @@ struct mcp_sse_extract {
 	int expected_id;
 };
 
+static void mcp_sse_extract_cleanup(struct mcp_sse_extract *ctx)
+{
+	morph_buf_cleanup(&ctx->data);
+}
+
 static int mcp_sse_extract_cb(const char *event, const char *data,
 			      void *user_data)
 {
@@ -47,7 +52,7 @@ static int mcp_sse_extract_cb(const char *event, const char *data,
 
 static char *mcp_http_sse_response(const char *raw, size_t len, int expected_id)
 {
-	struct mcp_sse_extract ctx;
+	struct mcp_sse_extract ctx MORPH_CLEANUP(mcp_sse_extract_cleanup) = {0};
 	struct sse_parser parser;
 	char *json = NULL;
 	int rc;
@@ -74,7 +79,7 @@ static char *mcp_http_sse_response(const char *raw, size_t len, int expected_id)
 	return json;
 }
 
-char *mcp_http_extract_sse_json(const char *raw, size_t len)
+char *mcp_http_sse_json_create(const char *raw, size_t len)
 {
 	return mcp_http_sse_response(raw, len, -1);
 }
@@ -118,20 +123,20 @@ static int mcp_http_url_encode_append(morph_buf_t *buf, const char *src)
 	return 0;
 }
 
-int mcp_http_build_request_url(const struct mcp_server_config *cfg,
-			       char **out_url)
+int mcp_http_request_url_create(const struct mcp_server_config *cfg, char **out_url)
 {
 	const char *url;
 	const char *token;
 	const char *p;
 	const char *match;
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	size_t placeholder_len = strlen(MCP_AUTH_TOKEN_PLACEHOLDER);
 	int rc;
 
 	if (!cfg || !out_url)
 		return -EINVAL;
-	*out_url = NULL;
+	if (*out_url)
+		return -EEXIST;
 
 	url = cfg->http_url;
 	if (!url || !url[0])
@@ -208,7 +213,7 @@ static char *mcp_http_redact_url_for_log(const char *url)
 {
 	const char *q;
 	const char *p;
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc;
 
 	if (!url)
@@ -261,19 +266,22 @@ int mcp_http_exchange(struct mcp_client *client,
 	const struct mcp_wire_request *request, int timeout_ms,
 	struct mcp_wire_reply *reply)
 {
-	morph_array_t headers;
-	morph_buf_t authorization = {0};
+	morph_array_t headers MORPH_CLEANUP(morph_array_cleanup) = {0};
+	struct mcp_wire_reply received MORPH_CLEANUP(mcp_wire_reply_cleanup) = {0};
+	morph_buf_t authorization MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	char *url = NULL;
 	int rc;
 
-	if (!client || !client->session.initialized)
+	if (!client || !request || !request->json || !reply || !client->session.initialized)
 		return -EINVAL;
+	if (reply->json || reply->session_id)
+		return -EEXIST;
 	if (request->headers.nelts > INT_MAX - 2)
 		return -EOVERFLOW;
 	rc = morph_array_init(&headers, request->headers.nelts + 2, sizeof(url));
 	if (rc != 0)
 		return rc;
-	const char **values = morph_array_push_n(&headers, request->headers.nelts + 2);
+	const char **values = morph_array_push_n_borrow(&headers, request->headers.nelts + 2);
 
 	if (!values) {
 		morph_array_cleanup(&headers);
@@ -281,7 +289,7 @@ int mcp_http_exchange(struct mcp_client *client,
 	}
 	values[0] = "Accept: application/json, text/event-stream";
 	for (size_t i = 0; i < request->headers.nelts; i++)
-		values[i + 1] = *(const char **)morph_array_get(&request->headers, i);
+		values[i + 1] = *(const char **)morph_array_borrow(&request->headers, i);
 	headers.nelts = request->headers.nelts + 1;
 	if (client->config.http_auth_token_env[0] &&
 	    !mcp_http_url_uses_auth_token(client->config.http_url)) {
@@ -296,13 +304,13 @@ int mcp_http_exchange(struct mcp_client *client,
 			rc = morph_buf_printf(&authorization, "Authorization: Bearer %s", token);
 		if (rc != 0)
 			goto out_free_headers;
-		values[headers.nelts++] = morph_buf_cstr(&authorization);
+		values[headers.nelts++] = morph_buf_cstr_borrow(&authorization);
 	}
 	if (headers.nelts > INT_MAX) {
 		rc = (-EOVERFLOW);
 		goto out_free_headers;
 	}
-	rc = mcp_http_build_request_url(&client->config, &url);
+	rc = mcp_http_request_url_create(&client->config, &url);
 	if (rc != 0)
 		goto out_free_headers;
 	long timeout = (long)(timeout_ms / 1000) + (timeout_ms % 1000 != 0);
@@ -317,15 +325,15 @@ int mcp_http_exchange(struct mcp_client *client,
 			       (int)headers.nelts, timeout);
 	if (rc != 0)
 		goto out_free_headers;
-	reply->http_status = http_session_status(&client->session);
-	reply->session_id = http_session_header_get(&client->session, "Mcp-Session-Id");
-	const char *body = http_session_body(&client->session, NULL);
+	received.http_status = http_session_status(&client->session);
+	received.session_id = http_session_header_copy(&client->session, "Mcp-Session-Id");
+	const char *body = http_session_body_borrow(&client->session, NULL);
 
 	if (body && body[0]) {
-		reply->json = mcp_http_sse_response(body, strlen(body), request->id);
-		if (!reply->json)
-			reply->json = strdup(body);
-		if (!reply->json)
+		received.json = mcp_http_sse_response(body, strlen(body), request->id);
+		if (!received.json)
+			received.json = strdup(body);
+		if (!received.json)
 			rc = (-ENOMEM);
 	}
 
@@ -333,6 +341,10 @@ out_free_headers:
 	free(url);
 	morph_buf_cleanup(&authorization);
 	morph_array_cleanup(&headers);
+	if (rc == 0) {
+		*reply = received;
+		memset(&received, 0, sizeof(received));
+	}
 	return rc;
 }
 

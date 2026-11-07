@@ -32,6 +32,12 @@ struct sub_agent_entry {
 	struct model *llm;
 };
 
+/* Owns both the agent and its independently retained tool registry. */
+struct sub_agent_context {
+	struct react_context *react;
+	struct tool_registry *tools;
+};
+
 struct tool_runtime_context;
 
 struct sub_agent_task {
@@ -50,6 +56,7 @@ struct sub_agent_task {
 	int64_t ended_at_ms;
 	morph_array_t events;
 	int events_initialized;
+	/* Borrowed from the running context; task mutex protects publication. */
 	struct react_context *child_ctx;
 	pthread_t thread;
 	int joined;
@@ -126,31 +133,34 @@ int sub_agent_runtime_set_parent_session(struct sub_agent_runtime *rt,
 					 int64_t session_id);
 int sub_agent_runtime_select_task(struct sub_agent_runtime *rt,
 				  const char *task_id);
-int sub_agent_runtime_list_tasks(struct sub_agent_runtime *rt,
-				 int64_t parent_session_id,
-				 struct sub_agent_task_info **out,
-				 int *count);
+/* Snapshot constructors require empty pointer outputs. Failure leaves them NULL.
+ * Returned arrays own every string; pair with the matching free function. */
+int sub_agent_runtime_task_list_copy(struct sub_agent_runtime *rt, int64_t parent_session_id,
+				     struct sub_agent_task_info **out, int *count);
 void sub_agent_runtime_free_task_list(struct sub_agent_task_info *tasks,
 				      int count);
-int sub_agent_runtime_task_events(struct sub_agent_runtime *rt,
-				  const char *task_id,
-				  char ***events, int *count);
+int sub_agent_runtime_task_events_copy(struct sub_agent_runtime *rt, const char *task_id,
+				       char ***events, int *count);
 void sub_agent_runtime_free_events(char **events, int count);
 
 int sub_agent_runtime_load_config(struct sub_agent_runtime *rt,
 				  struct config_sub_agents *cfg);
 
-struct sub_agent_entry *
-sub_agent_find(struct sub_agent_runtime *rt, const char *name);
+/* Borrows an entry until runtime destruction or config replacement. */
+struct sub_agent_entry *sub_agent_borrow(struct sub_agent_runtime *rt, const char *name);
 
-struct tool_registry *
-sub_agent_build_tool_registry(struct sub_agent_runtime *rt,
-			      struct sub_agent_entry *entry);
+struct tool_registry *sub_agent_tool_registry_create(struct sub_agent_runtime *rt,
+						     struct sub_agent_entry *entry);
 
-struct react_context *sub_agent_create_context(struct sub_agent_runtime *rt,
-					       const struct tool_runtime_context *runtime,
-					       struct sub_agent_entry *entry, const char *task);
+/* Creates both owners in a zero-initialized output; failure leaves it empty. */
+int sub_agent_context_create(struct sub_agent_runtime *rt,
+			     const struct tool_runtime_context *runtime,
+			     struct sub_agent_entry *entry, const char *task,
+			     struct sub_agent_context *out);
+void sub_agent_context_cleanup(struct sub_agent_context *context);
 
+/* String outputs are independent malloc owners and must be NULL on entry.
+ * Failed calls leave string outputs empty. Delegate permits a NULL output. */
 int sub_agent_invoke_sync(struct sub_agent_runtime *rt, const struct tool_runtime_context *runtime,
 			  struct sub_agent_entry *entry, const char *task, char **result);
 

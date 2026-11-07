@@ -291,9 +291,9 @@ int skill_parse(struct morph_log *logger, const char *data, size_t len,
 {
 	if (!data || !fm)
 		return -EINVAL;
+	if (body_out && *body_out)
+		return -EEXIST;
 	memset(fm, 0, sizeof(*fm));
-	if (body_out)
-		*body_out = NULL;
 
 	const char *closing = find_closing_delim(data, len);
 	if (!closing) {
@@ -328,7 +328,7 @@ int skill_parse_file(struct morph_log *logger, const char *path, struct skill_fr
 		return -EINVAL;
 
 	size_t len = 0;
-	char *data = file_read_all(path, &len);
+	char *data = file_read_all_copy(path, &len);
 	if (!data) {
 		log_err(logger, "skill_parse_file: failed to read %s", path);
 		return -ENOENT;

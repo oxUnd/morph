@@ -1,4 +1,5 @@
 #include "sapi/cli/adapters/input/readline.h"
+#include "util/cleanup.h"
 #include "sapi/cli/pages/turn_details.h"
 #include "sapi/cli/adapters/input/state.h"
 #include "sapi/cli/services/turn.h"
@@ -199,7 +200,7 @@ static void cli_readline_footer(struct cli_application *ctx)
 							  &ctx->input_status.limit);
 		if (ctx->input_status.limit <= 0)
 			ctx->input_status.limit =
-				runtime_config_get(ctx->runtime)->models.text.context_limit;
+				runtime_config_borrow(ctx->runtime)->models.text.context_limit;
 		if (runtime_credit_summary_current_get(ctx->runtime, &credits) == 0)
 			ctx->input_status.credits = credits.credits;
 		(void)runtime_task_count_active(ctx->runtime, &ctx->input_status.tasks);
@@ -245,13 +246,13 @@ static void cli_readline_footer(struct cli_application *ctx)
 	(void)morph_buf_puts(&text, "  ");
 	/* Preserve permission and usage fields before optional branding. */
 	remaining = (size_t)size.ws_col - 4;
-	if (remaining >= utf8_display_width(morph_buf_cstr(&usage)) + 8) {
+	if (remaining >= utf8_display_width(morph_buf_cstr_borrow(&usage)) + 8) {
 		cli_readline_footer_field(ctx, &text, "morph", 5, ANSI_BOLD, 0);
 		(void)morph_buf_puts(&text, " · ");
 	}
-	remaining = (size_t)size.ws_col - 2 - utf8_display_width_ansi(morph_buf_cstr(&text));
-	if (remaining > utf8_display_width(morph_buf_cstr(&usage)) + 10) {
-		remaining -= utf8_display_width(morph_buf_cstr(&usage)) + 6;
+	remaining = (size_t)size.ws_col - 2 - utf8_display_width_ansi(morph_buf_cstr_borrow(&text));
+	if (remaining > utf8_display_width(morph_buf_cstr_borrow(&usage)) + 10) {
+		remaining -= utf8_display_width(morph_buf_cstr_borrow(&usage)) + 6;
 		model_width = remaining / 3;
 		if (model_width > 24)
 			model_width = 24;
@@ -259,10 +260,10 @@ static void cli_readline_footer(struct cli_application *ctx)
 		cli_readline_footer_field(
 			ctx, &text,
 			session.model[0] ? session.model
-					 : runtime_config_get(ctx->runtime)->models.text.model,
+					 : runtime_config_borrow(ctx->runtime)->models.text.model,
 			model_width, ANSI_DIM, 0);
 		(void)morph_buf_puts(&text, " · ");
-		workdir = runtime_workdir_get(ctx->runtime);
+		workdir = runtime_workdir_borrow(ctx->runtime);
 		if (!workdir || !workdir[0])
 			workdir = ctx->workdir;
 		if (home && home[0] && strncmp(workdir, home, strlen(home)) == 0 &&
@@ -276,9 +277,9 @@ static void cli_readline_footer(struct cli_application *ctx)
 					  1);
 		(void)morph_buf_puts(&text, " · ");
 	}
-	cli_readline_footer_field(ctx, &text, morph_buf_cstr(&usage),
+	cli_readline_footer_field(ctx, &text, morph_buf_cstr_borrow(&usage),
 				  (size_t)size.ws_col - 2 -
-					  utf8_display_width_ansi(morph_buf_cstr(&text)),
+					  utf8_display_width_ansi(morph_buf_cstr_borrow(&text)),
 				  ANSI_DIM, 0);
 	footer_rows = 1;
 	if (ctx->input_status.tasks.running || ctx->input_status.tasks.pending) {
@@ -290,7 +291,7 @@ static void cli_readline_footer(struct cli_application *ctx)
 					       (long long)ctx->input_status.tasks.pending);
 			(void)morph_buf_puts(&text, "\r\n\033[2K  ");
 			cli_readline_footer_field(
-				ctx, &text, morph_buf_cstr(&tasks), (size_t)size.ws_col - 4,
+				ctx, &text, morph_buf_cstr_borrow(&tasks), (size_t)size.ws_col - 4,
 				ctx->input_status.tasks.running ? ANSI_YELLOW : ANSI_DIM, 0);
 			morph_buf_cleanup(&tasks);
 			footer_rows++;
@@ -299,13 +300,13 @@ static void cli_readline_footer(struct cli_application *ctx)
 	/* A background poll must not repaint an unchanged footer or touch the draft. */
 	if (ctx->input_status.distance == last_row - row + footer_rows + 1 &&
 	    ctx->input_status.footer_rows == footer_rows && ctx->input->footer_text &&
-	    strcmp(ctx->input->footer_text, morph_buf_cstr(&text)) == 0) {
+	    strcmp(ctx->input->footer_text, morph_buf_cstr_borrow(&text)) == 0) {
 		morph_buf_cleanup(&usage);
 		morph_buf_cleanup(&text);
 		return;
 	}
 	free(ctx->input->footer_text);
-	ctx->input->footer_text = strdup(morph_buf_cstr(&text));
+	ctx->input->footer_text = strdup(morph_buf_cstr_borrow(&text));
 	cli_readline_clear_footer(ctx);
 	/* Reserve a padded input row and footer even at screen bottom. */
 	if (last_row > row)
@@ -314,7 +315,7 @@ static void cli_readline_footer(struct cli_application *ctx)
 		"\033[%dG%s\033[K\r\n\033[2K%s\r\n\033[2K%s"
 		"\033[%dA\033[%dG",
 		last_column + 1, cli_output_color_enabled(ctx) ? CLI_INPUT_BACKGROUND : "",
-		cli_output_color_enabled(ctx) ? ANSI_RESET : "", morph_buf_cstr(&text),
+		cli_output_color_enabled(ctx) ? ANSI_RESET : "", morph_buf_cstr_borrow(&text),
 		last_row - row + footer_rows + 1, column + 1);
 	ctx->input_status.distance = last_row - row + footer_rows + 1;
 	ctx->input_status.footer_rows = footer_rows;
@@ -382,7 +383,7 @@ void cli_readline_line_ready(struct cli_application *ctx, char *input)
 
 /* Readline owns the whole editable area, including wrapped and pasted lines.
  * Erase it through Readline before moving up to the live status row. */
-char *cli_readline_suspend(struct cli_application *ctx, int *point)
+char *cli_readline_suspend_copy(struct cli_application *ctx, int *point)
 {
 	char *draft = strdup(rl_line_buffer ? rl_line_buffer : "");
 	int row;
@@ -403,8 +404,13 @@ char *cli_readline_suspend(struct cli_application *ctx, int *point)
 	return draft;
 }
 
-void cli_readline_resume(struct cli_application *ctx, char *draft, int point)
+void cli_readline_resume_take(struct cli_application *ctx, char **owner, int point)
 {
+	char *draft MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+
+	if (!ctx || !owner || !*owner)
+		return;
+	draft = morph_charp_steal(owner);
 	ctx->input_status.suspended = 0;
 	cli_feed_composer_resume(ctx);
 	/* Resize and callback installation may already have painted a prompt.
@@ -415,7 +421,6 @@ void cli_readline_resume(struct cli_application *ctx, char *draft, int point)
 	rl_point = point;
 	rl_on_new_line();
 	rl_forced_update_display();
-	free(draft);
 }
 
 /* Finish while the composer is suspended, so final output and the idle
@@ -446,14 +451,14 @@ void cli_readline_drain_ui(struct cli_application *ctx)
 {
 	int point;
 	int viewing = cli_turn_details_is_visible(ctx);
-	char *draft;
+	char *draft MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 
 	if (viewing) {
 		point = rl_point;
 		draft = strdup(rl_line_buffer ? rl_line_buffer : "");
 	} else {
 		cli_feed_update_begin(ctx);
-		draft = cli_readline_suspend(ctx, &point);
+		draft = cli_readline_suspend_copy(ctx, &point);
 	}
 
 	if (!draft) {
@@ -470,15 +475,14 @@ void cli_readline_drain_ui(struct cli_application *ctx)
 	if (!RL_ISSTATE(RL_STATE_CALLBACK)) {
 		rl_callback_handler_install("", cli_callback_line(ctx, cli_readline_line_ready));
 		cli_readline_configure(ctx);
-		rl_set_prompt(cli_readline_input_prompt(ctx));
+		rl_set_prompt(cli_readline_input_prompt_borrow(ctx));
 	}
 	if (cli_turn_details_is_visible(ctx)) {
 		rl_replace_line(draft, 0);
 		rl_point = point;
-		free(draft);
 		cli_turn_details_render(ctx, 0);
 	} else {
-		cli_readline_resume(ctx, draft, point);
+		cli_readline_resume_take(ctx, &draft, point);
 	}
 	cli_feed_update_end(ctx);
 }
@@ -486,7 +490,7 @@ void cli_readline_drain_ui(struct cli_application *ctx)
 void cli_readline_render_frame(struct cli_application *ctx, int resized)
 {
 	int point;
-	char *draft;
+	char *draft MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 
 	if (resized)
 		(void)cli_markdown_stream_refresh(ctx);
@@ -514,7 +518,7 @@ void cli_readline_render_frame(struct cli_application *ctx, int resized)
 		}
 	}
 	cli_feed_update_begin(ctx);
-	draft = cli_readline_suspend(ctx, &point);
+	draft = cli_readline_suspend_copy(ctx, &point);
 
 	if (!draft) {
 		cli_feed_update_end(ctx);
@@ -530,7 +534,7 @@ void cli_readline_render_frame(struct cli_application *ctx, int resized)
 		cli_feed_resize(ctx);
 	}
 	cli_feed_render_frame(ctx, resized);
-	cli_readline_resume(ctx, draft, point);
+	cli_readline_resume_take(ctx, &draft, point);
 	cli_feed_update_end(ctx);
 }
 
@@ -550,13 +554,13 @@ static int cli_readline_convert_images(struct cli_application *ctx)
 
 		if (!name)
 			return -ENOMEM;
-		command = cli_command_find(name) != NULL;
+		command = cli_command_find_borrow(name) != NULL;
 		free(name);
 		if (command)
 			return 0;
 	}
 
-	rc = cli_composer_model_convert_paths(&ctx->composer, input, &converted);
+	rc = cli_composer_model_convert_paths_copy(&ctx->composer, input, &converted);
 	if (rc > 0) {
 		rl_begin_undo_group();
 		rl_delete_text(0, rl_end);
@@ -657,7 +661,7 @@ static int cli_readline_paste(struct cli_application *ctx, int count, int key)
 static int cli_readline_accept(struct cli_application *ctx, int count, int key)
 {
 	int point;
-	char *draft;
+	char *draft MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 
 	/* Empty Enter should not commit an orphan prompt into the history.
 	 * Blocking approval/question prompts still accept an empty answer. */
@@ -665,7 +669,7 @@ static int cli_readline_accept(struct cli_application *ctx, int count, int key)
 		return 0;
 	if (cli_readline_convert_images(ctx) != 0)
 		return 0;
-	draft = cli_readline_suspend(ctx, &point);
+	draft = cli_readline_suspend_copy(ctx, &point);
 
 	if (!draft)
 		return 1;
@@ -674,7 +678,6 @@ static int cli_readline_accept(struct cli_application *ctx, int count, int key)
 		rl_replace_line(draft, 0);
 		rl_point = point;
 		rl_done = 1;
-		free(draft);
 		return 0;
 	}
 	/* Commit the submitted input where the live row was, so accepting a
@@ -683,7 +686,6 @@ static int cli_readline_accept(struct cli_application *ctx, int count, int key)
 	rl_point = point;
 	rl_on_new_line();
 	rl_forced_update_display();
-	free(draft);
 	return rl_newline(count, key);
 }
 
@@ -712,13 +714,14 @@ static int cli_readline_paste_image(struct cli_application *ctx, int count, int 
 		rc = cli_readline_compose_image(ctx, path);
 	if (rc != 0) {
 		int point;
-		char *draft = cli_readline_suspend(ctx, &point);
+		char *draft MORPH_CLEANUP(morph_charp_cleanup) =
+			cli_readline_suspend_copy(ctx, &point);
 
 		if (path)
 			(void)unlink(path);
 		if (draft) {
 			CMD_ERROR(ctx, "clipboard does not contain a supported image");
-			cli_readline_resume(ctx, draft, point);
+			cli_readline_resume_take(ctx, &draft, point);
 		}
 		putchar(ctx, '\a');
 	}
@@ -790,15 +793,19 @@ void cli_readline_configure(struct cli_application *ctx)
 #endif
 }
 
-void cli_readline_editor_open(struct cli_application *ctx, char *draft, int point)
+void cli_readline_editor_open_take(struct cli_application *ctx, char **owner, int point)
 {
+	char *draft = owner ? *owner : NULL;
+
+	if (!ctx)
+		return;
 	cli_feed_composer_resume(ctx);
-	rl_callback_handler_install(draft ? "" : cli_readline_input_prompt(ctx),
+	rl_callback_handler_install(draft ? "" : cli_readline_input_prompt_borrow(ctx),
 				    cli_callback_line(ctx, cli_readline_line_ready));
 	cli_readline_configure(ctx);
 	if (draft) {
-		rl_set_prompt(cli_readline_input_prompt(ctx));
-		cli_readline_resume(ctx, draft, point);
+		rl_set_prompt(cli_readline_input_prompt_borrow(ctx));
+		cli_readline_resume_take(ctx, owner, point);
 	}
 }
 
@@ -903,7 +910,7 @@ static char **cli_readline_cmd_completion(struct cli_application *ctx, const cha
 
 #endif
 
-const char *cli_readline_input_prompt(struct cli_application *ctx)
+const char *cli_readline_input_prompt_borrow(struct cli_application *ctx)
 {
 	if (!cli_output_color_enabled(ctx))
 		return "> ";

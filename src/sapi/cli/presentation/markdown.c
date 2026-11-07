@@ -204,11 +204,11 @@ int cli_markdown_stream_append(struct cli_application *ctx, const char *delta, i
 	rc = utf8_terminal_sanitize_feed(&ctx->presenter->markdown_stream_sanitizer, &safe, delta,
 					 strlen(delta), 0);
 	if (rc == 0 && safe.len > 0)
-		rc = morph_buf_append(&ctx->presenter->markdown_stream_text, morph_buf_cstr(&safe),
-				      safe.len);
+		rc = morph_buf_append(&ctx->presenter->markdown_stream_text,
+				      morph_buf_cstr_borrow(&safe), safe.len);
 	if (rc == 0 && safe.len > 0)
-		rc = morph_md_kitty_append(ctx->presenter->markdown_stream, morph_buf_cstr(&safe),
-					   safe.len, 0);
+		rc = morph_md_kitty_append(ctx->presenter->markdown_stream,
+					   morph_buf_cstr_borrow(&safe), safe.len, 0);
 	morph_buf_cleanup(&safe);
 	if (rc != 0)
 		return rc;
@@ -238,9 +238,10 @@ void cli_markdown_stream_reset(struct cli_application *ctx, int finish_output)
 							&safe, NULL, 0, 1) == 0 &&
 			    safe.len > 0) {
 				(void)morph_buf_append(&ctx->presenter->markdown_stream_text,
-						       morph_buf_cstr(&safe), safe.len);
+						       morph_buf_cstr_borrow(&safe), safe.len);
 				(void)morph_md_kitty_append(ctx->presenter->markdown_stream,
-							    morph_buf_cstr(&safe), safe.len, 0);
+							    morph_buf_cstr_borrow(&safe), safe.len,
+							    0);
 			}
 		}
 		if (morph_md_kitty_append(ctx->presenter->markdown_stream, NULL, 0u, 1) == 0)

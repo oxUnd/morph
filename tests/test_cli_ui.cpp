@@ -3,6 +3,7 @@
 extern "C" {
 #include "sapi/cli/adapters/runtime/dispatch.h"
 #include "sapi/cli/adapters/input/state.h"
+#include "sapi/cli/adapters/input/readline.h"
 
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/pages/question.h"
@@ -17,6 +18,7 @@ extern "C" {
 #include "agent/tool_context.h"
 #include "agent/tools/ask_user.h"
 #include "util/cancel.h"
+#include "util/cleanup.h"
 #include "event/event.h"
 }
 
@@ -201,7 +203,7 @@ TEST_F(CliUiTest, TaskLifecycleWithNotificationDoesNotRepeatResult)
 
 TEST_F(CliUiTest, NotificationSeverityUsesDistinctMarkers)
 {
-	struct notification notification{};
+	struct notification notification MORPH_CLEANUP(notification_cleanup) = {};
 	notification.id = 43;
 	std::snprintf(notification.title, sizeof(notification.title), "network check");
 	for (const char *level : {"error", "warning"}) {
@@ -218,13 +220,14 @@ TEST_F(CliUiTest, NotificationSeverityUsesDistinctMarkers)
 
 TEST_F(CliUiTest, WakePipeSignalsQueuedWorkAndDrains)
 {
-	struct notification notification{};
+	struct notification notification MORPH_CLEANUP(notification_cleanup) = {};
 	notification.id = 42;
 	notification.task_id = 17;
 	notification.created_at = 1792639574;
 	std::snprintf(notification.title, sizeof(notification.title), "nightly task");
-	notification.body = const_cast<char *>("**finished safely**\n\n"
-					       "| Item | Value |\n|---|---|\n| DNS | 10.1.0.2 |\n");
+	notification.body = strdup("**finished safely**\n\n"
+				   "| Item | Value |\n|---|---|\n| DNS | 10.1.0.2 |\n");
+	ASSERT_NE(notification.body, nullptr);
 	int callback_rc = -1;
 
 	std::thread worker(
@@ -303,7 +306,8 @@ TEST_F(CliUiTest, ConcurrentProducersPreserveEveryNotification)
 	for (int worker = 0; worker < worker_count; worker++) {
 		workers.emplace_back([&, worker] {
 			for (int index = 0; index < events_per_worker; index++) {
-				struct notification notification{};
+				struct notification notification MORPH_CLEANUP(
+					notification_cleanup) = {};
 
 				notification.id = worker * events_per_worker + index;
 				std::snprintf(notification.title, sizeof(notification.title),
@@ -662,7 +666,7 @@ TEST(CliCommandPrompts, PreservesOrderPayloadLifetimeAndCompletionTail)
 	EXPECT_EQ(cli_command_job_prompt_pending(&job), 1);
 	char *snapshot[2] = {nullptr, nullptr};
 	size_t total = 0;
-	ASSERT_EQ(cli_command_job_prompt_snapshot(&job, snapshot, 2, &total), 0);
+	ASSERT_EQ(cli_command_job_prompts_copy(&job, snapshot, 2, &total), 0);
 	ASSERT_EQ(total, 2);
 	EXPECT_STREQ(snapshot[0], "改成中文🙂");
 	EXPECT_STREQ(snapshot[1], "second\nline");
@@ -692,6 +696,41 @@ TEST(CliCommandPrompts, PreservesOrderPayloadLifetimeAndCompletionTail)
 	cli_command_job_cleanup(&job);
 }
 
+TEST(CliCommandPrompts, CopyRejectsOccupiedSlotsAndPreservesTheirOwners)
+{
+	struct cli_command_job job{};
+	ASSERT_EQ(cli_command_job_init(&job), 0);
+	ASSERT_EQ(cli_command_job_prompt(&job, "queued", nullptr), 0);
+	char *retained MORPH_CLEANUP(morph_charp_cleanup) = strdup("retained");
+	ASSERT_NE(retained, nullptr);
+	char *items[2] = {retained, nullptr};
+	size_t total = 17;
+
+	EXPECT_EQ(cli_command_job_prompts_copy(&job, items, 2, &total), -EEXIST);
+	EXPECT_EQ(items[0], retained);
+	EXPECT_STREQ(items[0], "retained");
+	EXPECT_EQ(items[1], nullptr);
+	EXPECT_EQ(total, 17U);
+	EXPECT_EQ(cli_command_job_prompts_copy(&job, nullptr, 0, &total), 0);
+	EXPECT_EQ(total, 1U);
+	cli_command_job_cleanup(&job);
+}
+
+#ifdef HAVE_READLINE
+TEST(CliReadlineOwnership, InvalidApplicationPreservesDraftForRetry)
+{
+	char *draft MORPH_CLEANUP(morph_charp_cleanup) = strdup("keep this draft");
+	ASSERT_NE(draft, nullptr);
+	char *original = draft;
+
+	cli_readline_resume_take(nullptr, &draft, 3);
+	EXPECT_EQ(draft, original);
+	cli_readline_editor_open_take(nullptr, &draft, 3);
+	EXPECT_EQ(draft, original);
+	EXPECT_STREQ(draft, "keep this draft");
+}
+#endif
+
 TEST_F(CliUiTest, QueuePreservesDisplayTextForSteeringAndNextTurn)
 {
 	struct cli_command_job job;
@@ -703,7 +742,7 @@ TEST_F(CliUiTest, QueuePreservesDisplayTextForSteeringAndNextTurn)
 	ASSERT_EQ(cli_command_job_prompt(&job, model_input, display_input), 0);
 	char *snapshot[1] = {nullptr};
 	size_t total = 0;
-	ASSERT_EQ(cli_command_job_prompt_snapshot(&job, snapshot, 1, &total), 0);
+	ASSERT_EQ(cli_command_job_prompts_copy(&job, snapshot, 1, &total), 0);
 	EXPECT_EQ(total, 2U);
 	EXPECT_STREQ(snapshot[0], display_input);
 	free(snapshot[0]);

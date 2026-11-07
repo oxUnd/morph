@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 extern "C" {
+#include "util/cleanup.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/adapters/runtime/events.h"
 #include "sapi/cli/commands/media.h"
@@ -156,12 +157,11 @@ static int cli_test_write_png(const char *path)
 TEST(CliMediaInputTest, RemovesLegacyMediaCommands)
 {
 
-	EXPECT_EQ(cli_command_find("/img"), nullptr);
-	EXPECT_EQ(cli_command_find("/paste"), nullptr);
-	EXPECT_EQ(cli_command_find("/video"), nullptr);
-	EXPECT_EQ(cli_command_find("/vid"), nullptr);
-	EXPECT_NE(cli_command_find("/image"), nullptr);
-
+	EXPECT_EQ(cli_command_find_borrow("/img"), nullptr);
+	EXPECT_EQ(cli_command_find_borrow("/paste"), nullptr);
+	EXPECT_EQ(cli_command_find_borrow("/video"), nullptr);
+	EXPECT_EQ(cli_command_find_borrow("/vid"), nullptr);
+	EXPECT_NE(cli_command_find_borrow("/image"), nullptr);
 }
 
 TEST(CliMediaInputTest, QuotedImagePathAttachesWithoutCommand)
@@ -419,7 +419,7 @@ TEST(CliListTest, QuitPrintsResumeCommandsOnlyForSavedInteractiveSessions)
 			std::string reference = std::string("resume ") + session.display_id;
 			EXPECT_NE(output.find("morph " + reference), std::string::npos);
 			EXPECT_NE(output.find("morphctl " + reference), std::string::npos);
-			EXPECT_NE(output.find(std::string("-w ") + runtime_workdir_get(runtime)),
+			EXPECT_NE(output.find(std::string("-w ") + runtime_workdir_borrow(runtime)),
 				  std::string::npos);
 		} else {
 			EXPECT_EQ(output.find("To resume"), std::string::npos);
@@ -451,8 +451,8 @@ TEST(CliListTest, HelpUsesTreeLayout)
 	EXPECT_NE(output.find("Core"), std::string::npos);
 	EXPECT_NE(output.find("/help"), std::string::npos);
 	EXPECT_NE(output.find("/resume"), std::string::npos);
-	EXPECT_EQ(cli_command_find("/list"), nullptr);
-	EXPECT_EQ(cli_command_find("/ls"), nullptr);
+	EXPECT_EQ(cli_command_find_borrow("/list"), nullptr);
+	EXPECT_EQ(cli_command_find_borrow("/ls"), nullptr);
 	EXPECT_EQ(output.find("/list"), std::string::npos);
 	EXPECT_EQ(output.find("/ls"), std::string::npos);
 
@@ -657,8 +657,8 @@ TEST(CliListTest, TasksCommandUsesActiveAndCompactHistoryTrees)
 	struct cli_application context{};
 	struct session current{};
 	struct scheduled_task_input input{};
-	struct scheduled_task active{};
-	struct scheduled_task history{};
+	struct scheduled_task active MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task history MORPH_CLEANUP(scheduled_task_cleanup) = {};
 	std::string database;
 
 	ASSERT_NE(directory, nullptr);
@@ -720,7 +720,7 @@ TEST(CliMediaInputTest, ComposerKeepsImageReferencesAndAtomicBoundaries)
 	EXPECT_STREQ(label, "[IMAGE#1]");
 	ASSERT_EQ(cli_composer_model_add_image(&composer, path.c_str(), &label), 0);
 	EXPECT_STREQ(label, "[IMAGE#2]");
-	char *expanded = cli_composer_model_expand(&composer, "只看 [IMAGE#2]");
+	char *expanded = cli_composer_model_expand_copy(&composer, "只看 [IMAGE#2]");
 	ASSERT_NE(expanded, nullptr);
 	EXPECT_NE(std::string(expanded).find(path), std::string::npos);
 	EXPECT_EQ(std::string(expanded).find("IMAGE#1"), std::string::npos);
@@ -737,8 +737,11 @@ TEST(CliMediaInputTest, ComposerKeepsImageReferencesAndAtomicBoundaries)
 	escaped.replace(escaped.find(' '), 1, "\\ ");
 	std::string input = "before\n\t\"" + path + "\"  " + escaped + "\nafter";
 	char *converted = nullptr;
-	ASSERT_EQ(cli_composer_model_convert_paths(&composer, input.c_str(), &converted), 2);
+	ASSERT_EQ(cli_composer_model_convert_paths_copy(&composer, input.c_str(), &converted), 2);
 	ASSERT_NE(converted, nullptr);
+	char *saved = converted;
+	EXPECT_EQ(cli_composer_model_convert_paths_copy(&composer, "", &converted), -EEXIST);
+	EXPECT_EQ(converted, saved);
 	EXPECT_STREQ(converted, "before\n\t[IMAGE#3]  [IMAGE#4]\nafter");
 	free(converted);
 	cli_composer_model_cleanup(&composer);

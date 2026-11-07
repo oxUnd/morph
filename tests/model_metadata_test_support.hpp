@@ -76,7 +76,7 @@ protected:
 				self->title_phases.emplace_back(event->phase);
 			}
 			if (event->name && strcmp(event->name, "session.recap") == 0) {
-				char *json = morph_event_to_json_string(event);
+				char *json = morph_event_json_text_copy(event);
 				std::lock_guard<std::mutex> guard(self->lock);
 
 				if (json)

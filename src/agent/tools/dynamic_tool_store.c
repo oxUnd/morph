@@ -18,7 +18,7 @@ static int next_checkpoint_id(const char *tool_dir, char *id, size_t id_size);
 static int read_definition_text(const char *path, char **text)
 {
 	errno = 0;
-	*text = file_read_all(path, NULL);
+	*text = file_read_all_copy(path, NULL);
 	return *text ? 0 : morph_error_from_errno(errno);
 }
 
@@ -292,7 +292,7 @@ int dynamic_tool_store_latest_checkpoint_id(const char *tool_dir, char *id, size
 		return rc;
 	if (!file_exists(history))
 		return -ENOENT;
-	if (file_list_dirs(history, &dirs, &count) != 0)
+	if (file_list_dirs_copy(history, &dirs, &count) != 0)
 		return -ENOENT;
 	for (int i = 0; i < count; i++) {
 		int value = dynamic_tool_store_checkpoint_id_value(dirs[i]);
@@ -368,7 +368,7 @@ int dynamic_tool_store_read_checkpoint_meta(const char *checkpoint_dir, struct t
 	rc = file_path_join(path, sizeof(path), checkpoint_dir, DYN_TOOL_CHECKPOINT_META_FILE);
 	if (rc < 0)
 		return rc;
-	json = file_read_all(path, NULL);
+	json = file_read_all_copy(path, NULL);
 	if (!json)
 		return -ENOENT;
 	root = cJSON_Parse(json);
@@ -414,7 +414,7 @@ int dynamic_tool_store_remove_checkpoint_ids_from(const char *tool_dir, int min_
 		return rc;
 	if (!file_exists(history))
 		return 0;
-	if (file_list_dirs(history, &dirs, &count) != 0)
+	if (file_list_dirs_copy(history, &dirs, &count) != 0)
 		return 0;
 	for (int i = 0; i < count; i++) {
 		int value = dynamic_tool_store_checkpoint_id_value(dirs[i]);
@@ -442,7 +442,7 @@ int dynamic_tool_store_prune_checkpoint_history(const char *tool_dir)
 		return rc;
 	if (!file_exists(history))
 		return 0;
-	if (file_list_dirs(history, &dirs, &count) != 0)
+	if (file_list_dirs_copy(history, &dirs, &count) != 0)
 		return 0;
 	while (count > DYN_TOOL_HISTORY_LIMIT) {
 		int min_idx = -1;
@@ -524,7 +524,7 @@ int dynamic_tool_store_create_tool_checkpoint(const char *tool_dir,
 								   cp_source);
 		}
 		if (rc == 0) {
-			source = file_read_all(cp_source, &source_len);
+			source = file_read_all_copy(cp_source, &source_len);
 			if (!source)
 				rc = -ENOENT;
 		}
@@ -616,11 +616,11 @@ int dynamic_tool_store_remove_tree(const char *path)
 	return 0;
 }
 
-char *dynamic_tool_store_read_optional_file(const char *path)
+char *dynamic_tool_store_optional_text_create(const char *path)
 {
 	if (!path || !file_exists(path))
 		return strdup("");
-	return file_read_all(path, NULL);
+	return file_read_all_copy(path, NULL);
 }
 
 int dynamic_tool_store_append_whole_file_diff(morph_buf_t *buf, const char *label,

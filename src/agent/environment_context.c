@@ -1,4 +1,5 @@
 #include "environment_context.h"
+#include "util/cleanup.h"
 #include "util/error.h"
 #include "util/utf8.h"
 #include <ctype.h>
@@ -159,14 +160,13 @@ int environment_context_render(const struct environment_context *ctx,
 }
 
 struct environment_collector {
-	struct arena *arena;
 	int error;
 };
 
 #ifdef _WIN32
 static void *collect_alloc(struct environment_collector *collector, size_t size)
 {
-	void *result = arena_alloc(collector->arena, size);
+	void *result = calloc(1, size);
 
 	if (!result)
 		collector->error = (-ENOMEM);
@@ -174,19 +174,25 @@ static void *collect_alloc(struct environment_collector *collector, size_t size)
 }
 #endif
 
-static const char *copy_value(struct environment_collector *collector, const char *value)
+static char *copy_value(struct environment_collector *collector, const char *value)
 {
 	char *copy;
 
 	if (!value || !*value)
 		return NULL;
-	copy = arena_strdup(collector->arena, value);
+	copy = strdup(value);
 	if (!copy)
 		collector->error = (-ENOMEM);
 	return copy;
 }
 
 #ifdef _WIN32
+static void wide_cleanup(wchar_t **value)
+{
+	free(*value);
+	*value = NULL;
+}
+
 static wchar_t *wide_path(struct environment_collector *collector, const char *path)
 {
 	int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
@@ -202,12 +208,13 @@ static wchar_t *wide_path(struct environment_collector *collector, const char *p
 	return wide;
 }
 
-static const char *full_path(struct environment_collector *collector, const char *path)
+static char *full_path(struct environment_collector *collector, const char *path)
 {
-	wchar_t *input = wide_path(collector, path && *path ? path : ".");
+	wchar_t *input MORPH_CLEANUP(wide_cleanup) =
+		wide_path(collector, path && *path ? path : ".");
 	DWORD count;
 	DWORD written;
-	wchar_t *wide;
+	wchar_t *wide MORPH_CLEANUP(wide_cleanup) = NULL;
 	char *utf8;
 	int bytes;
 
@@ -231,7 +238,7 @@ static const char *full_path(struct environment_collector *collector, const char
 	return utf8;
 }
 #else
-static const char *full_path(struct environment_collector *collector, const char *path)
+static char *full_path(struct environment_collector *collector, const char *path)
 {
 	char cwd[PATH_MAX];
 
@@ -245,22 +252,21 @@ static const char *full_path(struct environment_collector *collector, const char
 }
 #endif
 
-static const char *join_path(struct environment_collector *collector, const char *base,
-	const char *name)
+static char *join_path(struct environment_collector *collector, const char *base, const char *name)
 {
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc;
 
 	if (!base)
 		return NULL;
-	rc = morph_buf_init_arena(&buf, collector->arena, 128);
+	rc = morph_buf_init(&buf, 128);
 	if (rc == 0)
 		rc = morph_buf_printf(&buf, "%s/%s", base, name);
 	if (rc != 0) {
 		collector->error = (rc);
 		return NULL;
 	}
-	return morph_buf_cstr(&buf);
+	return morph_buf_detach(&buf);
 }
 
 /* 0: absent, 1: file, 2: directory, -1: unavailable or unsupported. */
@@ -269,7 +275,7 @@ static int path_kind(struct environment_collector *collector, const char *path)
 	if (!path)
 		return -1;
 #ifdef _WIN32
-	wchar_t *wide = wide_path(collector, path);
+	wchar_t *wide MORPH_CLEANUP(wide_cleanup) = wide_path(collector, path);
 	DWORD attributes = wide ? GetFileAttributesW(wide) : INVALID_FILE_ATTRIBUTES;
 
 	if (attributes == INVALID_FILE_ATTRIBUTES)
@@ -287,14 +293,14 @@ static int path_kind(struct environment_collector *collector, const char *path)
 }
 
 /* Bounded regular-file reads only: never block on a FIFO in a workspace. */
-static const char *read_metadata(struct environment_collector *collector, const char *path)
+static char *read_metadata(struct environment_collector *collector, const char *path)
 {
 	char data[ENV_METADATA_MAX + 1];
 	size_t len;
 #ifdef _WIN32
 	if (path_kind(collector, path) != 1)
 		return NULL;
-	wchar_t *wide = wide_path(collector, path);
+	wchar_t *wide MORPH_CLEANUP(wide_cleanup) = wide_path(collector, path);
 	FILE *file = wide ? _wfopen(wide, L"rb") : NULL;
 	struct _stat info;
 
@@ -346,31 +352,30 @@ static int is_absolute(const char *path)
 
 static void collect_git(struct environment_context *out, struct environment_collector *collector)
 {
-	char *dir;
+	char *dir MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 #ifndef _WIN32
 	struct stat origin;
 #endif
 
 	/* Overrides require Git's own resolver; omit rather than guess. */
 	if (!out->cwd || getenv("GIT_DIR") || getenv("GIT_WORK_TREE") ||
-	    getenv("GIT_CEILING_DIRECTORIES") ||
-	    getenv("GIT_COMMON_DIR") ||
+	    getenv("GIT_CEILING_DIRECTORIES") || getenv("GIT_COMMON_DIR") ||
 	    getenv("GIT_DISCOVERY_ACROSS_FILESYSTEM"))
 		return;
 #ifndef _WIN32
 	if (stat(out->cwd, &origin) != 0)
 		return;
 #endif
-	dir = (char *)copy_value(collector, out->cwd);
+	dir = copy_value(collector, out->cwd);
 	while (dir && *dir) {
-		const char *dotgit = join_path(collector, dir, ".git");
+		char *dotgit MORPH_CLEANUP(morph_charp_cleanup) = join_path(collector, dir, ".git");
+		char *link MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+		char *resolved MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+		char *head_path MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+		char *head MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 		const char *gitdir = dotgit;
-		const char *link;
-		const char *head_path;
-		const char *head;
 		char *slash;
 		int kind;
-
 #ifndef _WIN32
 		struct stat current;
 		if (stat(dir, &current) != 0 || current.st_dev != origin.st_dev)
@@ -381,22 +386,34 @@ static void collect_git(struct environment_context *out, struct environment_coll
 		kind = path_kind(collector, dotgit);
 		link = read_metadata(collector, dotgit);
 		if (link && !strncmp(link, "gitdir: ", 8)) {
-			gitdir = is_absolute(link + 8) ? link + 8 :
-				join_path(collector, dir, link + 8);
+			if (is_absolute(link + 8))
+				gitdir = link + 8;
+			else {
+				resolved = join_path(collector, dir, link + 8);
+				gitdir = resolved;
+			}
 		}
 		head_path = join_path(collector, gitdir, "HEAD");
 		if (!head_path)
 			return;
 		head = read_metadata(collector, head_path);
 		if (head && !strchr(head, '\n') && !strchr(head, '\r')) {
-			const char *common_path = join_path(collector, gitdir, "commondir");
-			const char *common = common_path ?
-				read_metadata(collector, common_path) : NULL;
-			const char *base = common ? (is_absolute(common) ? common :
-				join_path(collector, gitdir, common)) : gitdir;
+			char *common_path MORPH_CLEANUP(morph_charp_cleanup) =
+				join_path(collector, gitdir, "commondir");
+			char *common MORPH_CLEANUP(morph_charp_cleanup) =
+				common_path ? read_metadata(collector, common_path) : NULL;
+			char *common_base MORPH_CLEANUP(morph_charp_cleanup) =
+				common && !is_absolute(common)
+					? join_path(collector, gitdir, common)
+					: NULL;
+			const char *base =
+				common ? (is_absolute(common) ? common : common_base) : gitdir;
+			char *objects MORPH_CLEANUP(morph_charp_cleanup) =
+				join_path(collector, base, "objects");
+			char *refs MORPH_CLEANUP(morph_charp_cleanup) =
+				join_path(collector, base, "refs");
 
-			if (path_kind(collector, join_path(collector, base, "objects")) != 2 ||
-			    path_kind(collector, join_path(collector, base, "refs")) != 2)
+			if (path_kind(collector, objects) != 2 || path_kind(collector, refs) != 2)
 				return;
 			if (!strncmp(head, "ref: refs/heads/", 16) && head[16]) {
 				out->git_branch = copy_value(collector, head + 16);
@@ -405,7 +422,7 @@ static void collect_git(struct environment_context *out, struct environment_coll
 			}
 			if ((strlen(head) == 40 || strlen(head) == 64) &&
 			    strspn(head, "0123456789abcdefABCDEF") == strlen(head)) {
-				out->git_branch = "detached";
+				out->git_branch = copy_value(collector, "detached");
 				out->git_root = copy_value(collector, dir);
 				return;
 			}
@@ -445,7 +462,7 @@ static int iana_name(const char *name)
 
 #endif
 
-static const char *timezone_identity(struct environment_collector *collector)
+static char *timezone_identity(struct environment_collector *collector)
 {
 	const char *tz = getenv("TZ");
 	const char *name;
@@ -456,7 +473,8 @@ static const char *timezone_identity(struct environment_collector *collector)
 		name = strstr(tz, "/zoneinfo/");
 		name = name ? name + strlen("/zoneinfo/") : tz;
 #ifndef _WIN32
-		const char *zone_path = join_path(collector, "/usr/share/zoneinfo", name);
+		char *zone_path MORPH_CLEANUP(morph_charp_cleanup) =
+			join_path(collector, "/usr/share/zoneinfo", name);
 		if (iana_name(name) && path_kind(collector, zone_path) == 1)
 			return copy_value(collector, name);
 #else
@@ -480,10 +498,10 @@ static const char *timezone_identity(struct environment_collector *collector)
 	return NULL;
 }
 
-int environment_context_collect(struct environment_context *out,
-	const struct prompt_context_input *input, struct arena *arena)
+int environment_context_create(struct environment_context *out,
+			       const struct prompt_context_input *input)
 {
-	struct environment_collector state = { .arena = arena };
+	struct environment_collector state = {0};
 	struct environment_collector *collector = &state;
 	time_t now;
 	struct tm local;
@@ -491,12 +509,17 @@ int environment_context_collect(struct environment_context *out,
 	char offset[ENV_OFFSET_CAP];
 	int have_local;
 
-	if (!out || !arena)
+	if (!out)
 		return -EINVAL;
+	if (out->cwd || out->shell || out->os || out->arch || out->current_date || out->timezone ||
+	    out->git_branch || out->git_root || out->sandbox)
+		return -EALREADY;
 	memset(out, 0, sizeof(*out));
 	out->cwd = full_path(collector, input ? input->cwd : NULL);
-	if (out->cwd && path_kind(collector, out->cwd) != 2)
+	if (out->cwd && path_kind(collector, out->cwd) != 2) {
+		free((void *)out->cwd);
 		out->cwd = NULL;
+	}
 	out->shell = copy_value(collector, input && input->shell && *input->shell ?
 		input->shell : getenv("SHELL"));
 #ifdef _WIN32
@@ -507,12 +530,20 @@ int environment_context_collect(struct environment_context *out,
 #ifdef _WIN32
 	SYSTEM_INFO info;
 	GetNativeSystemInfo(&info);
-	out->os = "Windows";
+	out->os = copy_value(collector, "Windows");
 	switch (info.wProcessorArchitecture) {
-	case PROCESSOR_ARCHITECTURE_AMD64: out->arch = "x86_64"; break;
-	case PROCESSOR_ARCHITECTURE_ARM64: out->arch = "arm64"; break;
-	case PROCESSOR_ARCHITECTURE_ARM: out->arch = "arm"; break;
-	case PROCESSOR_ARCHITECTURE_INTEL: out->arch = "x86"; break;
+	case PROCESSOR_ARCHITECTURE_AMD64:
+		out->arch = copy_value(collector, "x86_64");
+		break;
+	case PROCESSOR_ARCHITECTURE_ARM64:
+		out->arch = copy_value(collector, "arm64");
+		break;
+	case PROCESSOR_ARCHITECTURE_ARM:
+		out->arch = copy_value(collector, "arm");
+		break;
+	case PROCESSOR_ARCHITECTURE_INTEL:
+		out->arch = copy_value(collector, "x86");
+		break;
 	default: break;
 	}
 #else
@@ -533,16 +564,36 @@ int environment_context_collect(struct environment_context *out,
 	out->timezone = timezone_identity(collector);
 	if (!out->timezone && have_local &&
 	    strftime(offset, sizeof(offset), "%z", &local) == 5) {
-		morph_buf_t buf;
-		int rc = morph_buf_init_arena(&buf, arena, ENV_OFFSET_CAP);
+		morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		int rc = morph_buf_init(&buf, ENV_OFFSET_CAP);
 		if (rc == 0)
 			rc = morph_buf_printf(&buf, "UTC%.3s:%.2s", offset, offset + 3);
-		if (rc != 0)
+		if (rc != 0) {
+			environment_context_cleanup(out);
 			return rc;
-		out->timezone = morph_buf_cstr(&buf);
+		}
+		out->timezone = morph_buf_detach(&buf);
 	}
 	collect_git(out, collector);
-	if (collector->error)
+	if (collector->error) {
+		environment_context_cleanup(out);
 		return collector->error;
+	}
 	return 0;
+}
+
+void environment_context_cleanup(struct environment_context *ctx)
+{
+	if (!ctx)
+		return;
+	free((void *)ctx->cwd);
+	free((void *)ctx->shell);
+	free((void *)ctx->os);
+	free((void *)ctx->arch);
+	free((void *)ctx->current_date);
+	free((void *)ctx->timezone);
+	free((void *)ctx->git_branch);
+	free((void *)ctx->git_root);
+	free((void *)ctx->sandbox);
+	memset(ctx, 0, sizeof(*ctx));
 }

@@ -1,16 +1,16 @@
 #include "memory_snapshot.h"
 
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/error.h"
 
 #include <errno.h>
 #include <string.h>
+#include <stdlib.h>
 
-static const char *snapshot_text(struct memory_snapshot *snapshot, sqlite3_stmt *stmt, int column,
-				 int *error)
+static char *snapshot_text(sqlite3_stmt *stmt, int column, int *error)
 {
 	const char *text = (const char *)sqlite3_column_text(stmt, column);
-	const char *copy = text ? arena_strdup(snapshot->arena, text) : NULL;
+	char *copy = text ? strdup(text) : NULL;
 
 	if (text && !copy)
 		*error = -ENOMEM;
@@ -43,15 +43,16 @@ static int snapshot_facts(struct db *db, int64_t session_id,
 	sqlite3_bind_int64(stmt, 1, session_id);
 	sqlite3_bind_int(stmt, 2, options->facts_limit);
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-		struct memory_fact_record *record = morph_array_push(&snapshot->facts);
+		struct memory_fact_record *record = morph_array_push_borrow(&snapshot->facts);
 
 		if (!record) {
 			error = -ENOMEM;
 			break;
 		}
-		record->key = snapshot_text(snapshot, stmt, 0, &error);
-		record->value = snapshot_text(snapshot, stmt, 1, &error);
-		record->category = snapshot_text(snapshot, stmt, 2, &error);
+		memset(record, 0, sizeof(*record));
+		record->key = snapshot_text(stmt, 0, &error);
+		record->value = snapshot_text(stmt, 1, &error);
+		record->category = snapshot_text(stmt, 2, &error);
 		record->importance = sqlite3_column_double(stmt, 3);
 		if (error)
 			break;
@@ -74,13 +75,14 @@ static int snapshot_rules(struct db *db, int64_t session_id, struct memory_snaps
 		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-		struct memory_rule_record *record = morph_array_push(&snapshot->rules);
+		struct memory_rule_record *record = morph_array_push_borrow(&snapshot->rules);
 
 		if (!record) {
 			error = -ENOMEM;
 			break;
 		}
-		record->text = snapshot_text(snapshot, stmt, 0, &error);
+		memset(record, 0, sizeof(*record));
+		record->text = snapshot_text(stmt, 0, &error);
 		record->evidence = sqlite3_column_int(stmt, 1);
 		if (error)
 			break;
@@ -105,16 +107,17 @@ static int snapshot_episodes(struct db *db, int64_t session_id, int limit,
 	sqlite3_bind_int64(stmt, 1, session_id);
 	sqlite3_bind_int(stmt, 2, limit);
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-		struct memory_episode_record *record = morph_array_push(&snapshot->episodes);
+		struct memory_episode_record *record = morph_array_push_borrow(&snapshot->episodes);
 
 		if (!record) {
 			error = -ENOMEM;
 			break;
 		}
-		record->summary = snapshot_text(snapshot, stmt, 0, &error);
-		record->decisions = snapshot_text(snapshot, stmt, 1, &error);
-		record->artifacts = snapshot_text(snapshot, stmt, 2, &error);
-		record->tools = snapshot_text(snapshot, stmt, 3, &error);
+		memset(record, 0, sizeof(*record));
+		record->summary = snapshot_text(stmt, 0, &error);
+		record->decisions = snapshot_text(stmt, 1, &error);
+		record->artifacts = snapshot_text(stmt, 2, &error);
+		record->tools = snapshot_text(stmt, 3, &error);
 		record->importance = sqlite3_column_double(stmt, 4);
 		record->created_at = sqlite3_column_int64(stmt, 5);
 		if (error)
@@ -153,15 +156,16 @@ static int snapshot_changes(struct db *db, int64_t session_id, int limit,
 	sqlite3_bind_int64(stmt, 1, session_id);
 	sqlite3_bind_int(stmt, 2, limit);
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-		struct memory_change_record *record = morph_array_push(&snapshot->changes);
+		struct memory_change_record *record = morph_array_push_borrow(&snapshot->changes);
 
 		if (!record) {
 			error = -ENOMEM;
 			break;
 		}
-		record->key = snapshot_text(snapshot, stmt, 0, &error);
-		record->old_value = snapshot_text(snapshot, stmt, 1, &error);
-		record->new_value = snapshot_text(snapshot, stmt, 2, &error);
+		memset(record, 0, sizeof(*record));
+		record->key = snapshot_text(stmt, 0, &error);
+		record->old_value = snapshot_text(stmt, 1, &error);
+		record->new_value = snapshot_text(stmt, 2, &error);
 		record->updated_at = sqlite3_column_int64(stmt, 3);
 		record->valid_to = sqlite3_column_int64(stmt, 4);
 		if (error)
@@ -184,7 +188,7 @@ static int snapshot_profile(struct db *db, int64_t session_id, struct memory_sna
 	sqlite3_bind_int64(stmt, 1, session_id);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW)
-		snapshot->profile = snapshot_text(snapshot, stmt, 0, &error);
+		snapshot->profile = snapshot_text(stmt, 0, &error);
 	sqlite3_finalize(stmt);
 	return error ? error : rc == SQLITE_ROW || rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
 }
@@ -193,13 +197,48 @@ void memory_snapshot_cleanup(struct memory_snapshot *snapshot)
 {
 	if (!snapshot)
 		return;
-	arena_destroy(snapshot->arena);
+	for (size_t i = 0; i < snapshot->facts.nelts; i++) {
+		struct memory_fact_record *record = morph_array_borrow(&snapshot->facts, i);
+		free(record->key);
+		free(record->value);
+		free(record->category);
+	}
+	for (size_t i = 0; i < snapshot->rules.nelts; i++) {
+		struct memory_rule_record *record = morph_array_borrow(&snapshot->rules, i);
+		free(record->text);
+	}
+	for (size_t i = 0; i < snapshot->episodes.nelts; i++) {
+		struct memory_episode_record *record = morph_array_borrow(&snapshot->episodes, i);
+		free(record->summary);
+		free(record->decisions);
+		free(record->artifacts);
+		free(record->tools);
+	}
+	for (size_t i = 0; i < snapshot->changes.nelts; i++) {
+		struct memory_change_record *record = morph_array_borrow(&snapshot->changes, i);
+		free(record->key);
+		free(record->old_value);
+		free(record->new_value);
+	}
+	free(snapshot->profile);
+	morph_array_cleanup(&snapshot->facts);
+	morph_array_cleanup(&snapshot->rules);
+	morph_array_cleanup(&snapshot->episodes);
+	morph_array_cleanup(&snapshot->changes);
 	memset(snapshot, 0, sizeof(*snapshot));
+}
+
+static void memory_snapshot_move(struct memory_snapshot *destination,
+				 struct memory_snapshot *source)
+{
+	*destination = *source;
+	memset(source, 0, sizeof(*source));
 }
 
 int memory_snapshot_read(struct db *db, int64_t session_id,
 			 const struct memory_snapshot_options *options, struct memory_snapshot *out)
 {
+	struct memory_snapshot value MORPH_CLEANUP(memory_snapshot_cleanup) = {0};
 	struct memory_fact_record fact;
 	struct memory_rule_record rule;
 	struct memory_episode_record episode;
@@ -208,29 +247,28 @@ int memory_snapshot_read(struct db *db, int64_t session_id,
 
 	if (!db || !db->handle || !options || !out)
 		return -EINVAL;
-	memset(out, 0, sizeof(*out));
-	out->arena = arena_create(0);
-	if (!out->arena)
-		return -ENOMEM;
-	rc = morph_array_init_arena(&out->facts, out->arena, 8, sizeof(fact));
+	if (out->profile || out->facts.elts || out->rules.elts || out->episodes.elts ||
+	    out->changes.elts)
+		return -EEXIST;
+	rc = morph_array_init(&value.facts, 8, sizeof(fact));
 	if (rc == 0)
-		rc = morph_array_init_arena(&out->rules, out->arena, 8, sizeof(rule));
+		rc = morph_array_init(&value.rules, 8, sizeof(rule));
 	if (rc == 0)
-		rc = morph_array_init_arena(&out->episodes, out->arena, 8, sizeof(episode));
+		rc = morph_array_init(&value.episodes, 8, sizeof(episode));
 	if (rc == 0)
-		rc = morph_array_init_arena(&out->changes, out->arena, 8, sizeof(change));
+		rc = morph_array_init(&value.changes, 8, sizeof(change));
 	if (rc == 0 && options->facts_limit)
-		rc = snapshot_facts(db, session_id, options, out);
+		rc = snapshot_facts(db, session_id, options, &value);
 	if (rc == 0 && options->include_rules)
-		rc = snapshot_rules(db, session_id, out);
+		rc = snapshot_rules(db, session_id, &value);
 	if (rc == 0 && options->episodes_limit)
-		rc = snapshot_episodes(db, session_id, options->episodes_limit, out);
+		rc = snapshot_episodes(db, session_id, options->episodes_limit, &value);
 	if (rc == 0 && options->changes_limit)
-		rc = snapshot_changes(db, session_id, options->changes_limit, out);
+		rc = snapshot_changes(db, session_id, options->changes_limit, &value);
 	if (rc == 0 && options->include_profile)
-		rc = snapshot_profile(db, session_id, out);
-	if (rc != 0)
-		memory_snapshot_cleanup(out);
+		rc = snapshot_profile(db, session_id, &value);
+	if (rc == 0)
+		memory_snapshot_move(out, &value);
 	return rc;
 }
 

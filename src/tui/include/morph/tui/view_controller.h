@@ -39,11 +39,14 @@ struct morph_tui_view_controller_spec {
 	int tick_ms;
 };
 
-int morph_tui_view_controller_present(struct morph_tui_application *app,
-				      const struct morph_tui_view_controller_spec *spec);
+/* Copies spec, borrowing its ops/data through the controller's destroy callback,
+ * including failed build. Framework destruction never frees spec->data. */
+int morph_tui_view_controller_present_borrow(struct morph_tui_application *app,
+					     const struct morph_tui_view_controller_spec *spec);
 int morph_tui_view_controller_dismiss(struct morph_tui_view_controller *controller, int result);
+/* Borrows the owning application; never extends its lifetime. */
 struct morph_tui_application *
-morph_tui_view_controller_application(const struct morph_tui_view_controller *controller);
+morph_tui_view_controller_application_borrow(const struct morph_tui_view_controller *controller);
 
 #ifdef __cplusplus
 }

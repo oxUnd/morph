@@ -97,6 +97,8 @@ struct runtime_permission_grant {
 	int64_t created_at;
 };
 
+/* Owned output slots must be initialized empty. Occupied owners return -EEXIST
+ * without losing their resources; failures leave empty slots empty. */
 int runtime_open(const struct runtime_options *options,
 		 struct runtime **out);
 void runtime_close(struct runtime *runtime);
@@ -132,41 +134,45 @@ int runtime_session_context_tokens(struct runtime *runtime, int64_t session_id,
 				   int64_t *out);
 void runtime_session_list_free(struct session *sessions);
 int runtime_session_reload_current(struct runtime *runtime);
-const char *runtime_session_current_name(struct runtime *runtime);
-struct message *runtime_session_messages_current(struct runtime *runtime,
-					 int *count);
+const char *runtime_session_current_name_borrow(struct runtime *runtime);
+struct message *runtime_session_messages_current_copy(struct runtime *runtime, int *count);
 void runtime_session_messages_free(struct message *messages);
-/* Last nonempty assistant answer, including inactive history. Caller frees text.
+/* Copy outputs require NULL owner slots; -EEXIST preserves existing owners.
+ * Last nonempty assistant answer, including inactive history. Caller frees text.
  * Returns -ENODATA when absent and -EBUSY while a turn owns the session. */
-int runtime_session_last_answer(struct runtime *runtime, char **out);
+int runtime_session_last_answer_copy(struct runtime *runtime, char **out);
 /* Read a session without selecting it. Caller frees the JSON on success. */
 /* Latest answered turn, including persisted tool results. Caller owns JSON. */
 int runtime_session_share_current(struct runtime *runtime, cJSON **out);
-int runtime_session_transcript_json(struct runtime *runtime, int64_t session_id,
-				    char **out);
-struct model_history_item *runtime_session_model_history_current(
-	struct runtime *runtime, int active_only, int *count);
+/* The transcript text is owned by the caller and released with cJSON_free(). */
+int runtime_session_transcript_json_copy(struct runtime *runtime, int64_t session_id, char **out);
+struct model_history_item *runtime_session_model_history_current_copy(struct runtime *runtime,
+								      int active_only, int *count);
 void runtime_session_model_history_free(struct model_history_item *items);
-/* Read-only context inspection. Caller owns JSON. Returns -EBUSY during a turn. */
-int runtime_session_history_inspect(struct runtime *runtime, cJSON **out);
-int runtime_session_history_entry_input(struct runtime *runtime, int64_t sequence,
-	cJSON **out);
-int runtime_session_last_request(struct runtime *runtime, cJSON **out);
+/* Empty output slots receive independent JSON owners, released with cJSON_Delete().
+ * Read-only context inspection returns -EBUSY during a turn. */
+int runtime_session_history_inspect_copy(struct runtime *runtime, cJSON **out);
+int runtime_session_history_entry_input_copy(struct runtime *runtime, int64_t sequence,
+					     cJSON **out);
+int runtime_session_last_request_copy(struct runtime *runtime, cJSON **out);
 int runtime_session_history_diagnose(struct runtime *runtime,
 	struct agent_history_diagnostic *diagnostic);
 int runtime_session_history_repair(struct runtime *runtime,
 	struct agent_history_diagnostic *before, int *changed);
 
-int runtime_register_tool(struct runtime *runtime,
-			  const struct tool_spec *spec);
+/* Descriptor text is copied; user_data is borrowed and must have no destructor. */
+int runtime_register_tool_borrow(struct runtime *runtime, const struct tool_spec *spec);
+/* Success consumes and clears spec user_data; failure preserves its owner. */
+int runtime_register_tool_take(struct runtime *runtime, struct tool_spec *spec);
 int runtime_add_mcp_server(struct runtime *runtime,
 			   const struct mcp_server_config *server);
-const struct config *runtime_config_get(const struct runtime *runtime);
-const char *runtime_workdir_get(const struct runtime *runtime);
-const char *runtime_config_path_get(const struct runtime *runtime);
-char *runtime_output_get_json(struct runtime *runtime, const char *path);
-/* Host management only; never register these operations as model tools. */
-int runtime_hooks_snapshot(struct runtime *runtime, cJSON **out);
+const struct config *runtime_config_borrow(const struct runtime *runtime);
+const char *runtime_workdir_borrow(const struct runtime *runtime);
+const char *runtime_config_path_borrow(const struct runtime *runtime);
+char *runtime_output_json_copy(struct runtime *runtime, const char *path);
+/* Host management only; never register these operations as model tools.
+ * An empty output receives independent JSON owned until cJSON_Delete(). */
+int runtime_hooks_snapshot_copy(struct runtime *runtime, cJSON **out);
 int runtime_hooks_manage(struct runtime *runtime, const char *action,
 	const char *id, const char *expected_digest);
 

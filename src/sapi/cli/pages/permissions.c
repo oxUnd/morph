@@ -27,7 +27,7 @@ static const char *cli_permissions_preset(int index)
 static void cli_permissions_line(struct cli_permissions_picker *picker, morph_buf_t *frame,
 				const char *text, const char *style, size_t width)
 {
-	const char *end = utf8_advance_display_width(text, width);
+	const char *end = utf8_advance_display_width_borrow(text, width);
 	int color = cli_output_color_enabled(picker->application);
 
 	(void)morph_buf_puts(frame, color ? style : "");
@@ -90,8 +90,8 @@ static int cli_permissions_draw(void *opaque, const struct morph_tui_screen *scr
 			permission_access_name(picker->current.access),
 			permission_approval_name(picker->current.approval),
 			permission_reviewer_name(picker->current.reviewer));
-		cli_permissions_line(picker, &frame, morph_buf_cstr(&label),
-			CLI_INPUT_BACKGROUND ANSI_DIM, width);
+		cli_permissions_line(picker, &frame, morph_buf_cstr_borrow(&label),
+				     CLI_INPUT_BACKGROUND ANSI_DIM, width);
 		rows++;
 	}
 	for (size_t i = picker->menu.list.first; i < 4 &&
@@ -102,8 +102,8 @@ static int cli_permissions_draw(void *opaque, const struct morph_tui_screen *scr
 		(void)morph_buf_printf(&label, "%s %zu. %s%s", selected ? ">" : " ", i + 1,
 			labels[i], !strcmp(current, cli_permissions_preset((int)i)) ?
 				" (current)" : "");
-		cli_permissions_line(picker, &frame, morph_buf_cstr(&label),
-			selected ? "\033[44;97m" : CLI_INPUT_BACKGROUND, width);
+		cli_permissions_line(picker, &frame, morph_buf_cstr_borrow(&label),
+				     selected ? "\033[44;97m" : CLI_INPUT_BACKGROUND, width);
 		rows++;
 	}
 	if (footer == 3) {
@@ -217,8 +217,8 @@ int cli_permissions_show(struct cli_application *ctx)
 			    cli_permissions_preset(i)))
 				picker->menu.list.index = (size_t)i;
 		}
-		rc = morph_tui_application_present_controller(
-			cli_application_tui(ctx), &controller);
+		rc = morph_tui_application_present_controller_take(cli_application_tui_borrow(ctx),
+								   &controller);
 	}
 	if (rc != 0)
 		free(picker);

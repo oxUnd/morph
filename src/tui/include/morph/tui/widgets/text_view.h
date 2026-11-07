@@ -19,15 +19,19 @@ struct morph_tui_widget_text_layout {
 	morph_array_t lines;
 };
 
-int morph_tui_widget_text_layout_wrap(struct morph_tui_widget_text_layout *view, const char *text,
-				      size_t width);
+int morph_tui_widget_text_layout_wrap_borrow(struct morph_tui_widget_text_layout *view,
+					     const char *text, size_t width);
 void morph_tui_widget_text_layout_cleanup(struct morph_tui_widget_text_layout *view);
 
+/* Returned nodes are controller-owned and borrowed until controller
+ * destruction/build rollback. */
 /* Retained, focusable document control. Text is copied and sanitized. */
 struct morph_tui_view *
-morph_tui_widget_text_view_create(struct morph_tui_builder *, struct morph_tui_view *parent,
-				  const char *text, const struct morph_tui_view_options *options);
-int morph_tui_widget_text_view_set_text(struct morph_tui_view *, const char *text);
+morph_tui_widget_text_view_add_borrow(struct morph_tui_builder *, struct morph_tui_view *parent,
+				      const char *text,
+				      const struct morph_tui_view_options *options);
+/* Copies and sanitizes text; the caller retains the input. */
+int morph_tui_widget_text_view_set_text_copy(struct morph_tui_view *, const char *text);
 
 #ifdef __cplusplus
 }

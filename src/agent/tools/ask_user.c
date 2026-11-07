@@ -1,4 +1,6 @@
 #include "ask_user.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "agent/tool_runtime.h"
 #include "util/log.h"
 #include "cJSON.h"
@@ -190,28 +192,28 @@ static int attach_ask_user_result(struct tool_result *result,
 				  const struct ask_user_options *options,
 				  const char *resolution)
 {
-	cJSON *data = ask_user_data_to_json(question, choices, choices_count,
-					    selection_mode, min_choices,
-					    max_choices, answers, answers_count,
-					    no_input);
+	cJSON *data MORPH_CLEANUP(morph_json_cleanup) =
+		ask_user_data_to_json(question, choices, choices_count, selection_mode, min_choices,
+				      max_choices, answers, answers_count, no_input);
 	if (!data)
 		return -ENOMEM;
 	if (ask_user_options_to_json(data, options) != 0 ||
 	    !cJSON_AddStringToObject(data, "resolution", resolution)) {
-		cJSON_Delete(data);
 		return -ENOMEM;
 	}
 
-	cJSON *ui = ask_user_ui_to_json(data);
+	cJSON *ui MORPH_CLEANUP(morph_json_cleanup) = ask_user_ui_to_json(data);
 	if (!ui) {
-		cJSON_Delete(data);
 		return -ENOMEM;
 	}
 
-	tool_result_clear(result);
-	result->data = data;
-	result->ui = ui;
-	return tool_result_finalize(result);
+	int rc = tool_result_success_take(result, &data);
+
+	if (rc == 0)
+		rc = tool_result_set_ui_take(result, &ui);
+	if (rc == 0)
+		rc = tool_result_finalize(result);
+	return rc;
 }
 
 static int ask_user_exec(const char *args_json, struct tool_result *result,
@@ -230,8 +232,8 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	if (!result)
 		return -EINVAL;
 	if (!callback) {
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"ask_user callback not configured\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"ask_user callback not configured\"}");
 		return MORPH_ERR_NOT_CONFIGURED;
 	}
 
@@ -308,7 +310,8 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	if (options_rc != 0) {
 		for (int i = 0; i < choices_count; i++)
 			free(choice_copies[i]);
-		(void)tool_result_error(result, "invalid_arguments",
+		(void)tool_result_error_copy(
+			result, "invalid_arguments",
 			"Invalid ask_user policy, timeout, or recommended indices.");
 		return options_rc;
 	}
@@ -316,9 +319,9 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	if (question[0] == '\0') {
 		for (int i = 0; i < choices_count; i++)
 			free(choice_copies[i]);
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"missing or empty 'question' parameter. "
-			"Usage: ask_user({\\\"question\\\": \\\"...\\\"})\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"missing or empty 'question' parameter. "
+				"Usage: ask_user({\\\"question\\\": \\\"...\\\"})\"}");
 		return -EINVAL;
 	}
 
@@ -364,8 +367,9 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 		}
 		for (int i = 0; i < choices_count; i++)
 			free(choice_copies[i]);
-		(void)tool_result_errorf(result, "ask_user_failed",
-			"Failed to get user response: %s", morph_strerror(rc));
+		(void)tool_result_error_format(result, "ask_user_failed",
+					       "Failed to get user response: %s",
+					       morph_strerror(rc));
 		return rc;
 	}
 
@@ -419,65 +423,68 @@ static int ask_user_register(struct tool_registry *reg, ask_user_callback_fn cb,
 	ctx->cb = cb;
 	ctx->user_data = user_data;
 
-	int rc = tool_register(reg, &(struct tool_spec){
+	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.name = "ask_user",
-		.description = "Ask the user a question. For optional preferences use "
-		"response_policy=optional, with a 60-second idle timeout by default. "
-		"Use required only for critical missing information; required has no "
-		"automatic answer. Put preferred options in recommended_indices (zero-based). "
-		"Optional timeout adopts recommendations or returns no input. "
-		"Never treat timeout_recommended as the user choosing an answer. "
-		"For no_input or timeout_no_input on optional questions, proceed with "
-		"best judgment and state assumptions; do not repeat the same question. "
-		"For required questions, no input does not supply missing information. "
-		"Permissions must use the approval flow. "
-		"Use when: the request is ambiguous with multiple valid "
-		"interpretations; you need a decision between mutually "
-		"exclusive approaches; you lack critical information. "
-		"Do NOT use when: you can make a reasonable default choice "
-		"(prefer action over inaction); the question is trivial; "
-		"you already have enough context. If unsure, proceed with "
-		"your best judgment and state your assumption. "
-		"When presenting options, use 'choices' for structured "
-		"selection. Use selection_mode='multi' only when the user may "
-		"select more than one choice. Users may also provide their own "
-		"answer instead of the suggested choices.",
-		.input_schema = "{\"type\":\"object\",\"properties\":{"
-		"\"question\":{\"type\":\"string\","
-		"\"description\":\"The question to ask the user\"},"
-		"\"choices\":{\"type\":\"array\","
-		"\"items\":{\"type\":\"string\"},"
-		"\"description\":\"Optional list of choices for the user "
-		"to pick from\"},"
-		"\"selection_mode\":{\"type\":\"string\","
-		"\"enum\":[\"single\",\"multi\"],"
-		"\"description\":\"Whether the user should pick one choice "
-		"or multiple choices. Defaults to single.\"},"
-		"\"min_choices\":{\"type\":\"integer\","
-		"\"description\":\"Minimum number of choices required for "
-		"multi-select.\"},"
-		"\"max_choices\":{\"type\":\"integer\","
-		"\"description\":\"Maximum number of choices allowed for "
-		"multi-select.\"},"
-		"\"recommended_indices\":{\"type\":\"array\",\"uniqueItems\":true,"
-		"\"items\":{\"type\":\"integer\",\"minimum\":0},"
-		"\"description\":\"Zero-based recommended choice indices; "
-		"must satisfy selection limits.\"},"
-		"\"response_policy\":{\"type\":\"string\",\"enum\":[\"optional\",\"required\"],"
-		"\"description\":\"Use optional for preferences; required for "
-		"critical missing input. Defaults to required.\"},"
-		"\"timeout_seconds\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":86400,"
-		"\"description\":\"Idle timeout for optional questions. "
-		"Defaults to 60; ignored for required.\"}"
-		"},\"required\":[\"question\"]}",
+		.description =
+			"Ask the user a question. For optional preferences use "
+			"response_policy=optional, with a 60-second idle timeout by default. "
+			"Use required only for critical missing information; required has no "
+			"automatic answer. Put preferred options in recommended_indices "
+			"(zero-based). "
+			"Optional timeout adopts recommendations or returns no input. "
+			"Never treat timeout_recommended as the user choosing an answer. "
+			"For no_input or timeout_no_input on optional questions, proceed with "
+			"best judgment and state assumptions; do not repeat the same question. "
+			"For required questions, no input does not supply missing information. "
+			"Permissions must use the approval flow. "
+			"Use when: the request is ambiguous with multiple valid "
+			"interpretations; you need a decision between mutually "
+			"exclusive approaches; you lack critical information. "
+			"Do NOT use when: you can make a reasonable default choice "
+			"(prefer action over inaction); the question is trivial; "
+			"you already have enough context. If unsure, proceed with "
+			"your best judgment and state your assumption. "
+			"When presenting options, use 'choices' for structured "
+			"selection. Use selection_mode='multi' only when the user may "
+			"select more than one choice. Users may also provide their own "
+			"answer instead of the suggested choices.",
+		.input_schema =
+			"{\"type\":\"object\",\"properties\":{"
+			"\"question\":{\"type\":\"string\","
+			"\"description\":\"The question to ask the user\"},"
+			"\"choices\":{\"type\":\"array\","
+			"\"items\":{\"type\":\"string\"},"
+			"\"description\":\"Optional list of choices for the user "
+			"to pick from\"},"
+			"\"selection_mode\":{\"type\":\"string\","
+			"\"enum\":[\"single\",\"multi\"],"
+			"\"description\":\"Whether the user should pick one choice "
+			"or multiple choices. Defaults to single.\"},"
+			"\"min_choices\":{\"type\":\"integer\","
+			"\"description\":\"Minimum number of choices required for "
+			"multi-select.\"},"
+			"\"max_choices\":{\"type\":\"integer\","
+			"\"description\":\"Maximum number of choices allowed for "
+			"multi-select.\"},"
+			"\"recommended_indices\":{\"type\":\"array\",\"uniqueItems\":true,"
+			"\"items\":{\"type\":\"integer\",\"minimum\":0},"
+			"\"description\":\"Zero-based recommended choice indices; "
+			"must satisfy selection limits.\"},"
+			"\"response_policy\":{\"type\":\"string\",\"enum\":[\"optional\","
+			"\"required\"],"
+			"\"description\":\"Use optional for preferences; required for "
+			"critical missing input. Defaults to required.\"},"
+			"\"timeout_seconds\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":86400,"
+			"\"description\":\"Idle timeout for optional questions. "
+			"Defaults to 60; ignored for required.\"}"
+			"},\"required\":[\"question\"]}",
 		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
 		.exec = ask_user_exec,
 		.user_data = ctx,
 		.user_data_destroy = ask_user_context_destroy,
-	});
-	if (rc != 0)
-		free(ctx);
+	};
+	int rc = tool_register_take(reg, &spec);
 	return rc;
 }
 

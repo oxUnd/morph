@@ -6,12 +6,12 @@ static void sample_customization_page_help_build(struct morph_tui_view_controlle
 	const struct morph_tui_view_options inset = {.margin = {.top = 1, .bottom = 1},
 						     .padding = {.left = 1, .right = 1}};
 	const struct morph_tui_view_options fill = {.grow = 1};
-	struct morph_tui_view *root = morph_tui_widget_stack_create(
+	struct morph_tui_view *root = morph_tui_widget_stack_add_borrow(
 		builder, NULL, MORPH_TUI_WIDGET_STACK_VERTICAL, 1, &inset);
 
 	(void)base;
-	morph_tui_widget_label_create(builder, root, "Help / interaction routing", NULL);
-	morph_tui_widget_text_view_create(
+	morph_tui_widget_label_add_borrow(builder, root, "Help / interaction routing", NULL);
+	morph_tui_widget_text_view_add_borrow(
 		builder, root,
 		"1. Custom Widget: the counter owns drawing, +/- keys, and Space.\n"
 		"   Enter emits an ACTIVATE action to its page.\n\n"
@@ -26,7 +26,7 @@ static void sample_customization_page_help_build(struct morph_tui_view_controlle
 		"Escape returns with focus, selection, and drafts preserved.\n"
 		"View state is restored from the model only after explicit changes.",
 		&fill);
-	morph_tui_widget_label_create(builder, root, "Up/Down: scroll | Esc/q: return", NULL);
+	morph_tui_widget_label_add_borrow(builder, root, "Up/Down: scroll | Esc/q: return", NULL);
 }
 
 static int sample_customization_page_help_event(struct morph_tui_view_controller *base,

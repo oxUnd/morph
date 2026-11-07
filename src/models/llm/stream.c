@@ -22,29 +22,34 @@ void llm_usage_copy(char *dst, size_t dst_cap, const char *src)
 	dst[dst_cap - 1] = '\0';
 }
 
-void llm_stream_init(struct llm_stream_ctx *ctx, struct arena *arena, sse_callback cb,
-		     void *user_data)
+void llm_stream_cleanup(struct llm_stream_ctx *ctx)
 {
-	ctx->logger = NULL;
-	ctx->user_cb = cb;
-	ctx->stream_cb = NULL;
-	ctx->user_data = user_data;
-	ctx->arena = arena;
-	if (morph_buf_init_arena(&ctx->accumulated, arena, 8192) != 0)
-		memset(&ctx->accumulated, 0, sizeof(ctx->accumulated));
-	if (morph_buf_init_arena(&ctx->reasoning, arena, 8192) != 0)
-		memset(&ctx->reasoning, 0, sizeof(ctx->reasoning));
-	ctx->tool_calls = NULL;
-	ctx->tool_call_count = 0;
-	ctx->tool_call_cap = 0;
-	ctx->emitted = 0;
-	memset(&ctx->usage, 0, sizeof(ctx->usage));
+	if (!ctx)
+		return;
+	morph_buf_cleanup(&ctx->accumulated);
+	morph_buf_cleanup(&ctx->reasoning);
+	for (int i = 0; i < ctx->tool_call_count; i++)
+		tool_call_cleanup(&ctx->tool_calls[i]);
+	free(ctx->tool_calls);
+	memset(ctx, 0, sizeof(*ctx));
 }
 
-void llm_stream_init_typed(struct llm_stream_ctx *ctx, struct arena *arena, llm_stream_callback cb,
-			   void *user_data)
+void llm_stream_init(struct llm_stream_ctx *ctx, sse_callback cb, void *user_data)
 {
-	llm_stream_init(ctx, arena, NULL, user_data);
+	memset(ctx, 0, sizeof(*ctx));
+	ctx->user_cb = cb;
+	ctx->user_data = user_data;
+	int rc = morph_buf_init(&ctx->accumulated, 8192);
+	if (rc != 0)
+		ctx->accumulated.failed = rc;
+	rc = morph_buf_init(&ctx->reasoning, 8192);
+	if (rc != 0)
+		ctx->reasoning.failed = rc;
+}
+
+void llm_stream_init_typed(struct llm_stream_ctx *ctx, llm_stream_callback cb, void *user_data)
+{
+	llm_stream_init(ctx, NULL, user_data);
 	ctx->stream_cb = cb;
 }
 
@@ -65,20 +70,21 @@ int llm_stream_emit(struct llm_stream_ctx *ctx, enum llm_stream_kind kind, const
 	return 0;
 }
 
-struct tool_call *llm_stream_ensure_tool_call(struct llm_stream_ctx *ctx, int index)
+struct tool_call *llm_stream_tool_call_ensure_borrow(struct llm_stream_ctx *ctx, int index)
 {
+	if (index < 0 || index > INT_MAX - 4)
+		return NULL;
 	if (index >= ctx->tool_call_cap) {
 		int new_cap = index + 4;
-		struct tool_call *new_tc =
-			arena_alloc(ctx->arena, (size_t)new_cap * sizeof(*new_tc));
-		if (!new_tc)
+		if ((size_t)new_cap > SIZE_MAX / sizeof(*ctx->tool_calls))
 			return NULL;
-		if (ctx->tool_calls)
-			memcpy(new_tc, ctx->tool_calls,
-			       (size_t)ctx->tool_call_cap * sizeof(*new_tc));
+		struct tool_call *next =
+			realloc(ctx->tool_calls, (size_t)new_cap * sizeof(*ctx->tool_calls));
+		if (!next)
+			return NULL;
 		for (int i = ctx->tool_call_cap; i < new_cap; i++)
-			memset(&new_tc[i], 0, sizeof(new_tc[i]));
-		ctx->tool_calls = new_tc;
+			memset(&next[i], 0, sizeof(next[i]));
+		ctx->tool_calls = next;
 		ctx->tool_call_cap = new_cap;
 	}
 	if (index >= ctx->tool_call_count)
@@ -86,31 +92,18 @@ struct tool_call *llm_stream_ensure_tool_call(struct llm_stream_ctx *ctx, int in
 	return &ctx->tool_calls[index];
 }
 
-void llm_stream_transfer_tool_calls(struct llm_stream_ctx *ctx, struct chat_response *resp)
+void llm_stream_tool_calls_move(struct llm_stream_ctx *ctx, struct chat_response *resp)
 {
-	if (ctx->tool_call_count <= 0) {
-		resp->tool_calls = NULL;
-		resp->tool_call_count = 0;
+	if (!ctx || !resp)
 		return;
-	}
-	resp->tool_calls =
-		arena_alloc(ctx->arena, (size_t)ctx->tool_call_count * sizeof(*resp->tool_calls));
-	if (!resp->tool_calls) {
-		resp->tool_call_count = 0;
-		return;
-	}
+	for (int i = 0; resp->tool_calls && i < resp->tool_call_count; i++)
+		tool_call_cleanup(&resp->tool_calls[i]);
+	free(resp->tool_calls);
+	resp->tool_calls = ctx->tool_calls;
 	resp->tool_call_count = ctx->tool_call_count;
-	for (int i = 0; i < ctx->tool_call_count; i++) {
-		strncpy(resp->tool_calls[i].id, ctx->tool_calls[i].id,
-			sizeof(resp->tool_calls[i].id) - 1);
-		strncpy(resp->tool_calls[i].name, ctx->tool_calls[i].name,
-			sizeof(resp->tool_calls[i].name) - 1);
-		resp->tool_calls[i].arguments =
-			ctx->tool_calls[i].arguments
-				? arena_strdup(ctx->arena, ctx->tool_calls[i].arguments)
-				: arena_strdup(ctx->arena, "");
-		resp->tool_calls[i].input_kind = ctx->tool_calls[i].input_kind;
-	}
+	ctx->tool_calls = NULL;
+	ctx->tool_call_count = 0;
+	ctx->tool_call_cap = 0;
 }
 
 void llm_usage_finalize(struct model *self, struct llm_stream_ctx *ctx, size_t request_bytes)

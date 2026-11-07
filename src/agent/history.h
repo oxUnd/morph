@@ -11,7 +11,6 @@ extern "C" {
 #include "session.h"
 #include "util/array.h"
 
-struct arena;
 struct react_context;
 struct tokenizer;
 
@@ -26,9 +25,12 @@ struct agent_history_diagnostic {
 /* Payload eligibility; callers select the active window separately. */
 int agent_history_item_replayable(const struct model_history_item *item);
 
-int agent_history_build_chat_messages(struct morph_log *logger,
-				      const struct model_history_item *items,
-				      morph_array_t *messages, struct arena *arena);
+/* Copies into an empty array (zeroed or initialized for chat_message).
+ * Failures preserve the empty output; every message field is owned. */
+int agent_history_messages_copy(struct morph_log *logger, const struct model_history_item *items,
+				morph_array_t *messages);
+void agent_chat_messages_cleanup(morph_array_t *messages);
+void agent_chat_messages_move(morph_array_t *out, morph_array_t *source);
 int agent_history_record_request(struct react_context *ctx, const struct model *model,
 	const char *system_prompt, const struct chat_message *messages, int count,
 	const struct tool_desc *tools, int tool_count);
@@ -43,10 +45,9 @@ int agent_history_record_tool_calls(struct react_context *ctx,
 				    const char *reasoning_content,
 				    const struct tool_call *calls,
 				    int call_count);
-int agent_history_normalize_tool_arguments(const char *arguments,
-					   char **normalized);
-int agent_history_migrate_legacy_tool_call(struct tool_call *call,
-					   struct arena *arena);
+/* String outputs must be NULL; successful copies are released with free(). */
+int agent_history_tool_arguments_copy(const char *arguments, char **normalized);
+int agent_history_migrate_legacy_tool_call(struct tool_call *call);
 int agent_history_record_tool_result(struct react_context *ctx,
 				     const char *tool_call_id,
 				     const char *provider_call_id,
@@ -57,8 +58,8 @@ int agent_history_record_tool_result_ex(struct react_context *ctx,
 	const char *tool_call_id, const char *provider_call_id,
 	const char *tool_name, const char *content, int error_code,
 	const struct tool_artifact_list *artifacts, const cJSON *tool_meta);
-int agent_history_prepare_tool_content(struct react_context *ctx,
-	const char *content, char **prepared, int *truncated);
+int agent_history_tool_content_copy(struct react_context *ctx, const char *content, char **prepared,
+				    int *truncated);
 int agent_history_maybe_compact(struct react_context *ctx);
 int agent_history_compact(struct react_context *ctx, int force);
 int agent_history_compact_with_trigger(struct react_context *ctx, int force,

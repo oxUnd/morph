@@ -44,7 +44,7 @@ void cli_runtime_observer_usage(const struct model_usage *usage, void *user_data
 	(void)usage;
 	if (!ctx || !ctx->runtime || ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 		return;
-	config = runtime_config_get(ctx->runtime);
+	config = runtime_config_borrow(ctx->runtime);
 	if (!config || config->credits.daily_limit < 0)
 		return;
 	if (runtime_credit_summary_today_get(ctx->runtime, &today) == 0 &&

@@ -1,4 +1,5 @@
 #include "agent/memory_internal.h"
+#include "util/cleanup.h"
 
 #include "agent/memory.h"
 #include "persistence/memory_snapshot.h"
@@ -36,8 +37,8 @@ static int memory_query_needs_temporal(const char *query)
 static char *memory_build_context_impl(struct db *db, int64_t session_id, const char *query,
 				       const struct memory_options *opts, int *error)
 {
-	struct memory_snapshot snapshot;
-	morph_buf_t buf;
+	struct memory_snapshot snapshot MORPH_CLEANUP(memory_snapshot_cleanup) = {0};
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int max_chars;
 	int max_facts;
 	int max_episodes;
@@ -71,7 +72,7 @@ static char *memory_build_context_impl(struct db *db, int64_t session_id, const 
 	} while (0)
 
 	{
-		char *preferences = preference_render(db, session_id, 0);
+		char *preferences = preference_render_copy(db, session_id, 0);
 
 		if (!preferences) {
 			*error = MORPH_ERR_DB;
@@ -112,14 +113,14 @@ static char *memory_build_context_impl(struct db *db, int64_t session_id, const 
 		int count = 0;
 		for (size_t row = 0; row < snapshot.facts.nelts; row++) {
 			const struct memory_fact_record *record =
-				morph_array_get(&snapshot.facts, row);
+				morph_array_borrow(&snapshot.facts, row);
 
 			const char *key_name = record->key;
 			const char *value_text = record->value;
 			if (!key_name || !value_text)
 				continue;
-			if (!strncmp(preference_key(key_name), "response.", 9) ||
-			    !strcmp(preference_key(key_name), "user.preferred_name"))
+			if (!strncmp(preference_key_borrow(key_name), "response.", 9) ||
+			    !strcmp(preference_key_borrow(key_name), "user.preferred_name"))
 				continue;
 			if (count == 0) {
 				MEMORY_ENSURE_INTRO();
@@ -135,7 +136,7 @@ static char *memory_build_context_impl(struct db *db, int64_t session_id, const 
 		int count = 0;
 		for (size_t row = 0; row < snapshot.episodes.nelts; row++) {
 			const struct memory_episode_record *record =
-				morph_array_get(&snapshot.episodes, row);
+				morph_array_borrow(&snapshot.episodes, row);
 
 			const char *summary = record->summary;
 			if (!summary)
@@ -154,7 +155,7 @@ static char *memory_build_context_impl(struct db *db, int64_t session_id, const 
 		int count = 0;
 		for (size_t row = 0; row < snapshot.changes.nelts; row++) {
 			const struct memory_change_record *record =
-				morph_array_get(&snapshot.changes, row);
+				morph_array_borrow(&snapshot.changes, row);
 
 			const char *key_name = record->key;
 			const char *old_value = record->old_value;
@@ -192,22 +193,15 @@ static char *memory_build_context_impl(struct db *db, int64_t session_id, const 
 	return morph_buf_detach(&buf);
 }
 
-int memory_build_context_checked(struct db *db, int64_t session_id, const char *query,
-				 const struct memory_options *opts, char **out)
+int memory_context_create(struct db *db, int64_t session_id, const char *query,
+			  const struct memory_options *opts, char **out)
 {
 	int rc = 0;
 
 	if (!out)
 		return -EINVAL;
+	if (*out)
+		return -EALREADY;
 	*out = memory_build_context_impl(db, session_id, query, opts, &rc);
 	return rc;
-}
-
-char *memory_build_context(struct db *db, int64_t session_id, const char *query,
-			   const struct memory_options *opts)
-{
-	char *context = NULL;
-
-	(void)memory_build_context_checked(db, session_id, query, opts, &context);
-	return context;
 }

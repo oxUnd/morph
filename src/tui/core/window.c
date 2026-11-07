@@ -6,6 +6,10 @@
 
 int core_window_create(struct morph_tui_application *app, struct morph_tui_window **out)
 {
+	if (!out)
+		return -EINVAL;
+	if (*out)
+		return -EEXIST;
 	struct morph_tui_window *window = calloc(1, sizeof(*window));
 
 	if (!window)
@@ -40,18 +44,18 @@ void core_window_invalidate(struct morph_tui_window *window)
 		window->backend->ops->invalidate(window->backend);
 }
 
-struct morph_tui_view *morph_tui_window_root(const struct morph_tui_window *window)
+struct morph_tui_view *morph_tui_window_root_borrow(const struct morph_tui_window *window)
 {
 	return window && window->controller ? window->controller->state->root : NULL;
 }
 
-struct morph_tui_view *morph_tui_window_focus(const struct morph_tui_window *window)
+struct morph_tui_view *morph_tui_window_focus_borrow(const struct morph_tui_window *window)
 {
 	return window && window->controller ? window->controller->state->focus : NULL;
 }
 
-int morph_tui_window_set_renderer(struct morph_tui_window *window,
-				  struct morph_tui_renderer *backend)
+int morph_tui_window_set_renderer_borrow(struct morph_tui_window *window,
+					 struct morph_tui_renderer *backend)
 {
 	if (!window || (backend && (!backend->ops || !backend->ops->present)))
 		return -EINVAL;
@@ -63,9 +67,9 @@ int morph_tui_window_set_renderer(struct morph_tui_window *window,
 	return 0;
 }
 
-int morph_tui_window_set_event_handler(struct morph_tui_window *window,
-				       int (*event)(void *, const struct morph_tui_event *),
-				       void *data)
+int morph_tui_window_set_event_handler_borrow(struct morph_tui_window *window,
+					      int (*event)(void *, const struct morph_tui_event *),
+					      void *data)
 {
 	if (!window)
 		return -EINVAL;
@@ -83,7 +87,7 @@ int core_window_draw(struct morph_tui_window *window, const struct morph_tui_scr
 
 	if (rc)
 		return rc;
-	morph_tui_canvas_root(window->surface, &canvas);
+	morph_tui_canvas_root_borrow(window->surface, &canvas);
 	rc = core_view_draw(window->controller->state->root, &canvas);
 	if (!rc && window->backend)
 		return window->backend->ops->present(window->backend, window->surface,
@@ -93,7 +97,7 @@ int core_window_draw(struct morph_tui_window *window, const struct morph_tui_scr
 	if (!rc)
 		rc = morph_tui_frame_present(&window->frame, screen->session.output,
 					     screen->area.width, screen->area.height,
-					     morph_buf_cstr(&window->rows));
+					     morph_buf_cstr_borrow(&window->rows));
 	if (!rc) {
 		int x, y;
 		int visible = morph_tui_surface_cursor(window->surface, &x, &y);

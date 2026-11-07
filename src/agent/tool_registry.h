@@ -41,7 +41,7 @@ enum tool_input_kind {
 
 struct morph_log;
 
-/* Non-owning string views; registry entries own their descriptor arena. */
+/* Descriptor strings are borrowed views unless created by tool_desc_clone(). */
 struct tool_desc {
 	const char *name;
 	const char *title;
@@ -51,6 +51,13 @@ struct tool_desc {
 	enum tool_input_kind input_kind;
 	const char *input_format;
 };
+
+/* Clone into an empty owner; failure leaves the output empty. */
+int tool_desc_clone(const struct tool_desc *source, struct tool_desc *out);
+void tool_desc_cleanup(struct tool_desc *owned);
+/* Release the owned destination, move source into it, and clear source.
+ * Moving an object to itself leaves it unchanged. */
+void tool_desc_move(struct tool_desc *out, struct tool_desc *source);
 
 typedef int (*tool_exec_fn)(const char *args_json, struct tool_result *result, void *user_data);
 typedef void (*tool_user_data_destroy_fn)(void *user_data);
@@ -88,7 +95,6 @@ struct tool_binding;
 struct tool_entry {
 	struct tool_binding *binding;
 	struct tool_desc desc;
-	struct arena *descriptor_arena;
 	tool_exec_fn exec;
 	tool_environment_fn get_environment;
 	tool_background_list_fn background_list;
@@ -142,25 +148,33 @@ struct tool_registry {
  * while holding only a raw data lock. Cleanup requires joined execution owners. */
 void tool_registry_lock(struct tool_registry *reg);
 void tool_registry_unlock(struct tool_registry *reg);
-/* Atomic replacement; existing entries must contain replace_flags. Returns 1
- * for replacement, 0 for insertion, negative error without consuming user data. */
-int tool_register_replace(struct tool_registry *reg, const struct tool_spec *spec,
-			  unsigned int replace_flags);
+/* Registration copies descriptors and borrows user_data. Only _take transfers
+ * destruction responsibility: success clears source user_data/destroy under the
+ * registry lock; failure leaves the source unchanged. Descriptor strings remain
+ * borrowed in tool_spec, and tool_spec_cleanup releases only owned user_data. */
+void tool_spec_cleanup(struct tool_spec *spec);
+int tool_register_take(struct tool_registry *reg, struct tool_spec *source);
+/* Atomic replacement requires replace_flags. One means replacement, zero insertion. */
+int tool_register_replace_take(struct tool_registry *reg, struct tool_spec *source,
+			       unsigned int replace_flags);
+int tool_register_replace_borrow(struct tool_registry *reg, const struct tool_spec *spec,
+				 unsigned int replace_flags);
 /* Source entry must remain stable during this call; shares execution ownership. */
 int tool_register_copy(struct tool_registry *out, const struct tool_entry *entry);
 /* Shares retained tool bindings, with owned descriptors. out must be initialized
- * and exclusively owned during copying. Source is locked internally. On failure
- * a partial owned copy remains valid and requires registry cleanup. */
+ * empty and exclusively owned during copying. Source is locked internally.
+ * Failure rolls back additions and preserves the initialized empty target. */
 int tool_registry_copy(struct tool_registry *out, struct tool_registry *source);
 void tool_registry_init(struct morph_log *logger, struct tool_registry *reg);
 void tool_registry_cleanup(struct tool_registry *reg);
 const char *tool_origin_name(enum tool_origin origin);
-int tool_entry_set_descriptor(struct tool_entry *entry, const struct tool_spec *spec);
-int tool_register(struct tool_registry *reg, const struct tool_spec *spec);
+int tool_entry_set_descriptor_copy(struct tool_entry *entry, const struct tool_spec *spec);
+int tool_register_borrow(struct tool_registry *reg, const struct tool_spec *spec);
 int tool_unregister(struct tool_registry *reg, const char *name);
-struct tool_entry *tool_lookup(struct tool_registry *reg, const char *name);
+struct tool_entry *tool_borrow(struct tool_registry *reg, const char *name);
 /* Copies capabilities under the registry lock and retains their user data.
  * A disabled tool is returned with disabled set; dispatch must enforce it.
+ * out must be zero-initialized and empty; occupied handles are preserved.
  * Failure leaves an empty handle. No allocation or descriptor copy is needed. */
 int tool_registry_acquire(struct tool_registry *reg, const char *name, struct tool_handle *out);
 void tool_handle_release(struct tool_handle *handle);

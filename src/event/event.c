@@ -1,4 +1,6 @@
 #include "event/event.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -33,13 +35,15 @@ const char *morph_event_type_name(enum morph_event_type type)
 	}
 }
 
-int morph_event_to_json_object(const struct morph_event *ev, cJSON **out)
+int morph_event_json_create(const struct morph_event *ev, cJSON **out)
 {
-	cJSON *root;
-	cJSON *data_copy;
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *data_copy MORPH_CLEANUP(morph_json_cleanup) = NULL;
 
 	if (!ev || !out)
 		return -EINVAL;
+	if (*out)
+		return -EEXIST;
 
 	root = cJSON_CreateObject();
 	if (!root)
@@ -49,50 +53,44 @@ int morph_event_to_json_object(const struct morph_event *ev, cJSON **out)
 				     morph_event_type_name(ev->type)) ||
 	    !cJSON_AddStringToObject(root, "name",
 				     ev->name ? ev->name : "")) {
-		cJSON_Delete(root);
 		return -ENOMEM;
 	}
 	if (ev->phase &&
 	    !cJSON_AddStringToObject(root, "phase", ev->phase)) {
-		cJSON_Delete(root);
 		return -ENOMEM;
 	}
 	if (ev->message &&
 	    !cJSON_AddStringToObject(root, "message", ev->message)) {
-		cJSON_Delete(root);
 		return -ENOMEM;
 	}
 	if (ev->turn_id &&
 	    !cJSON_AddStringToObject(root, "turn_id", ev->turn_id)) {
-		cJSON_Delete(root);
 		return -ENOMEM;
 	}
 	if (ev->data) {
 		data_copy = cJSON_Duplicate(ev->data, 1);
-		if (!data_copy) {
-			cJSON_Delete(root);
+		if (!data_copy)
 			return -ENOMEM;
-		}
-		cJSON_AddItemToObject(root, "data", data_copy);
 	} else {
 		data_copy = cJSON_CreateObject();
-		if (!data_copy) {
-			cJSON_Delete(root);
+		if (!data_copy)
 			return -ENOMEM;
-		}
-		cJSON_AddItemToObject(root, "data", data_copy);
 	}
+	int rc = morph_json_object_take(root, "data", &data_copy);
+	if (rc < 0)
+		return rc;
 
 	*out = root;
+	root = NULL;
 	return 0;
 }
 
-char *morph_event_to_json_string(const struct morph_event *ev)
+char *morph_event_json_text_copy(const struct morph_event *ev)
 {
 	cJSON *root = NULL;
 	char *json;
 
-	if (morph_event_to_json_object(ev, &root) < 0)
+	if (morph_event_json_create(ev, &root) < 0)
 		return NULL;
 	json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
@@ -140,7 +138,7 @@ void morph_event_recorder_cleanup(struct morph_event_recorder *rec)
 	if (!rec)
 		return;
 	morph_array_foreach(record, &rec->records, struct morph_event_record) {
-		free(record->json);
+		cJSON_free(record->json);
 		record->json = NULL;
 	}
 	morph_array_cleanup(&rec->records);
@@ -154,12 +152,12 @@ int morph_event_recorder_cb(const struct morph_event *ev, void *user_data)
 
 	if (!rec || !ev)
 		return -EINVAL;
-	json = morph_event_to_json_string(ev);
+	json = morph_event_json_text_copy(ev);
 	if (!json)
 		return -ENOMEM;
-	record = morph_array_push(&rec->records);
+	record = morph_array_push_borrow(&rec->records);
 	if (!record) {
-		free(json);
+		cJSON_free(json);
 		return -ENOMEM;
 	}
 	record->json = json;
@@ -173,14 +171,13 @@ size_t morph_event_recorder_count(const struct morph_event_recorder *rec)
 	return rec->records.nelts;
 }
 
-const char *morph_event_recorder_get(const struct morph_event_recorder *rec,
-				     size_t index)
+const char *morph_event_recorder_borrow(const struct morph_event_recorder *rec, size_t index)
 {
 	struct morph_event_record *record;
 
 	if (!rec)
 		return NULL;
-	record = morph_array_get(&rec->records, index);
+	record = morph_array_borrow(&rec->records, index);
 	if (!record)
 		return NULL;
 	return record->json;

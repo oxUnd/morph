@@ -28,7 +28,7 @@ int runtime_model_usage_is_billable(const struct model_usage *usage)
 			 usage->image_units > 0 || usage->video_seconds > 0);
 }
 
-char *runtime_model_usage_metadata(const struct model_usage *usage)
+char *runtime_model_usage_metadata_copy(const struct model_usage *usage)
 {
 	cJSON *obj;
 	char *json;
@@ -86,7 +86,7 @@ int runtime_record_model_usage_with_credits(struct db *db, const struct config_c
 		return -EINVAL;
 	if (!runtime_model_usage_is_billable(usage))
 		return 0;
-	metadata = runtime_model_usage_metadata(usage);
+	metadata = runtime_model_usage_metadata_copy(usage);
 	memset(&event, 0, sizeof(event));
 	event.user_id = user_id;
 	event.session_id = session_id;

@@ -1,4 +1,5 @@
 #include "image_output.h"
+#include "util/cleanup.h"
 
 #include "agent/tool_result.h"
 #include "models/media_output.h"
@@ -94,11 +95,12 @@ static int image_output_error(struct tool_result *result, int error)
 	int rc;
 
 	if (error == -EPERM || error == -EACCES)
-		rc = tool_result_error(result, "permission_denied",
-				       "write path outside output directory: permission denied");
+		rc = tool_result_error_copy(
+			result, "permission_denied",
+			"write path outside output directory: permission denied");
 	else
-		rc = tool_result_errorf(result, "image_write_failed", "failed to write output: %s",
-					morph_strerror(error));
+		rc = tool_result_error_format(result, "image_write_failed",
+					      "failed to write output: %s", morph_strerror(error));
 	return rc != 0 ? rc : error;
 }
 
@@ -137,9 +139,9 @@ int tool_image_write_output(struct tool_context *context, const char *requested_
 		if (explicit_path)
 			rc = file_write_atomic(path, sink.bytes.data, sink.bytes.len);
 		else
-			rc = media_output_write(context ? tool_context_output_dir(context) : NULL,
-						prefix, image->format, sink.bytes.data,
-						sink.bytes.len, path, path_size);
+			rc = media_output_write(
+				context ? tool_context_output_dir_borrow(context) : NULL, prefix,
+				image->format, sink.bytes.data, sink.bytes.len, path, path_size);
 	}
 	morph_buf_cleanup(&sink.bytes);
 	if (rc != 0) {

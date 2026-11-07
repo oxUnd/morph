@@ -6,6 +6,8 @@
 #include <sqlite3.h>
 
 #include <errno.h>
+#include <limits.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -30,7 +32,7 @@ int runtime_sync_config_instance(
 	if (rc == 0)
 		out->logger = runtime->options.logger;
 	if (rc == 0 && runtime->context.tctx) {
-		const char *output = tool_context_output_dir(runtime->context.tctx);
+		const char *output = tool_context_output_dir_borrow(runtime->context.tctx);
 		if (output && output[0] == '/')
 			strncpy(out->output_dir, output, sizeof(out->output_dir) - 1);
 	}
@@ -170,10 +172,12 @@ int runtime_sync_conflicts(struct runtime *runtime,
 	char path[PATH_MAX];
 	int capacity = 0;
 	int used = 0;
+	int step;
 	int rc;
 	if (!runtime || !out || !count)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	*count = 0;
 	rc = runtime_sync_manifest_path(runtime, path, sizeof(path));
 	if (rc != 0)
@@ -195,8 +199,13 @@ int runtime_sync_conflicts(struct runtime *runtime,
 		sqlite3_close(database);
 		return MORPH_ERR_DB;
 	}
-	while (sqlite3_step(statement) == SQLITE_ROW) {
+	while ((step = sqlite3_step(statement)) == SQLITE_ROW) {
 		if (used == capacity) {
+			if (capacity > INT_MAX / 2 ||
+			    (size_t)(capacity ? capacity * 2 : 8) > SIZE_MAX / sizeof(*items)) {
+				rc = -EOVERFLOW;
+				goto out;
+			}
 			int next = capacity ? capacity * 2 : 8;
 			void *resized = realloc(items,
 				(size_t)next * sizeof(*items));
@@ -216,7 +225,7 @@ int runtime_sync_conflicts(struct runtime *runtime,
 		items[used].created_at = sqlite3_column_int64(statement, 2);
 		used++;
 	}
-	rc = 0;
+	rc = step == SQLITE_DONE ? 0 : MORPH_ERR_DB;
 out:
 	sqlite3_finalize(statement);
 	sqlite3_close(database);
@@ -252,6 +261,9 @@ int runtime_sync_backups(struct runtime *runtime, const char *path,
 
 	if (!runtime || !out || !count)
 		return -EINVAL;
+	if (*out)
+		return -EEXIST;
+	*count = 0;
 	rc = runtime_sync_config_instance(runtime, NULL, NULL, &config);
 	return rc == 0 ? morph_sync_backups(&config, path, out, count) : rc;
 }

@@ -1,5 +1,4 @@
 #include "array.h"
-#include "arena.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,30 +29,6 @@ int morph_array_init(morph_array_t *a, size_t init_cap, size_t elem_size)
 	a->nelts = 0;
 	a->cap = init_cap;
 	a->size = elem_size;
-	a->heap_alloc = 1;
-	return 0;
-}
-
-int morph_array_init_arena(morph_array_t *a, struct arena *arena,
-                           size_t init_cap, size_t elem_size)
-{
-	size_t bytes;
-	int rc;
-
-	if (!a || !arena || elem_size == 0)
-		return -EINVAL;
-	if (init_cap == 0)
-		init_cap = MORPH_ARRAY_INIT_CAP;
-	rc = array_bytes(init_cap, elem_size, &bytes);
-	if (rc != 0)
-		return rc;
-	a->elts = arena_alloc(arena, bytes);
-	if (!a->elts)
-		return -ENOMEM;
-	a->nelts = 0;
-	a->cap = init_cap;
-	a->size = elem_size;
-	a->heap_alloc = 0;
 	return 0;
 }
 
@@ -61,13 +36,11 @@ void morph_array_cleanup(morph_array_t *a)
 {
 	if (!a)
 		return;
-	if (a->heap_alloc)
-		free(a->elts);
+	free(a->elts);
 	a->elts = NULL;
 	a->nelts = 0;
 	a->cap = 0;
 	a->size = 0;
-	a->heap_alloc = 0;
 }
 
 static int array_grow(morph_array_t *a, size_t min_cap)
@@ -87,19 +60,26 @@ static int array_grow(morph_array_t *a, size_t min_cap)
 	}
 	if (array_bytes(new_cap, a->size, &bytes) != 0)
 		return -EOVERFLOW;
-	if (a->heap_alloc) {
-		new_elts = realloc(a->elts, bytes);
-		if (!new_elts)
-			return -ENOMEM;
-	} else {
+	new_elts = realloc(a->elts, bytes);
+	if (!new_elts)
 		return -ENOMEM;
-	}
 	a->elts = new_elts;
 	a->cap = new_cap;
 	return 0;
 }
 
-void *morph_array_push(morph_array_t *a)
+int morph_array_take(morph_array_t *destination, morph_array_t *source)
+{
+	if (!destination || !source || destination == source)
+		return -EINVAL;
+	if (destination->elts || destination->nelts)
+		return -EEXIST;
+	*destination = *source;
+	memset(source, 0, sizeof(*source));
+	return 0;
+}
+
+void *morph_array_push_borrow(morph_array_t *a)
 {
 	if (!a)
 		return NULL;
@@ -116,7 +96,7 @@ void *morph_array_push(morph_array_t *a)
 	}
 }
 
-void *morph_array_push_n(morph_array_t *a, size_t n)
+void *morph_array_push_n_borrow(morph_array_t *a, size_t n)
 {
 	void *slot;
 
@@ -140,7 +120,7 @@ void morph_array_pop(morph_array_t *a)
 	a->nelts--;
 }
 
-void *morph_array_get(const morph_array_t *a, size_t i)
+void *morph_array_borrow(const morph_array_t *a, size_t i)
 {
 	if (!a || i >= a->nelts)
 		return NULL;

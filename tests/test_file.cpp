@@ -42,7 +42,7 @@ TEST_F(FileTest, WriteAndRead) {
 	int rc = file_write_all(test_file, data, strlen(data));
 	EXPECT_EQ(rc, 0);
 	size_t len = 0;
-	char *buf = file_read_all(test_file, &len);
+	char *buf = file_read_all_copy(test_file, &len);
 	ASSERT_NE(buf, nullptr);
 	EXPECT_EQ(len, strlen(data));
 	EXPECT_STREQ(buf, data);
@@ -50,7 +50,7 @@ TEST_F(FileTest, WriteAndRead) {
 }
 
 TEST_F(FileTest, ReadNonexistent) {
-	char *buf = file_read_all("/tmp/nonexistent_file_12345", nullptr);
+	char *buf = file_read_all_copy("/tmp/nonexistent_file_12345", nullptr);
 	EXPECT_EQ(buf, nullptr);
 }
 
@@ -77,7 +77,7 @@ TEST_F(FileTest, Exists) {
 }
 
 TEST_F(FileTest, ExpandPath) {
-	char *expanded = file_expand_path("~/test");
+	char *expanded = file_expand_path_copy("~/test");
 	ASSERT_NE(expanded, nullptr);
 	EXPECT_NE(expanded[0], '~');
 	EXPECT_NE(expanded[0], '\0');
@@ -85,7 +85,7 @@ TEST_F(FileTest, ExpandPath) {
 }
 
 TEST_F(FileTest, ExpandPathNotHome) {
-	char *expanded = file_expand_path("/absolute/path");
+	char *expanded = file_expand_path_copy("/absolute/path");
 	ASSERT_NE(expanded, nullptr);
 	EXPECT_STREQ(expanded, "/absolute/path");
 	free(expanded);
@@ -188,7 +188,7 @@ TEST_F(FileTest, ListFiles) {
 	file_write_all("/tmp/ma_test_list/m_mid.txt", "m", 1);
 	char **names = nullptr;
 	int n = 0;
-	int rc = file_list_files(d, &names, &n);
+	int rc = file_list_files_copy(d, &names, &n);
 	EXPECT_EQ(rc, 0);
 	ASSERT_EQ(n, 3);
 	EXPECT_STREQ(names[0], "a_first.txt");
@@ -206,7 +206,7 @@ TEST_F(FileTest, ListFilesEmptyDir) {
 	file_ensure_dir(d);
 	char **names = nullptr;
 	int n = 999;
-	int rc = file_list_files(d, &names, &n);
+	int rc = file_list_files_copy(d, &names, &n);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(n, 0);
 	file_free_list(names, n);
@@ -216,7 +216,7 @@ TEST_F(FileTest, ListFilesEmptyDir) {
 TEST_F(FileTest, ListFilesNoDir) {
 	char **names = nullptr;
 	int n = 0;
-	int rc = file_list_files("/tmp/nonexistent_xyz_12345", &names, &n);
+	int rc = file_list_files_copy("/tmp/nonexistent_xyz_12345", &names, &n);
 	EXPECT_NE(rc, 0);
 }
 
@@ -227,7 +227,7 @@ TEST_F(FileTest, ListFilesSkipsDirs) {
 	file_ensure_dir("/tmp/ma_test_skip/subdir");
 	char **names = nullptr;
 	int n = 0;
-	int rc = file_list_files(d, &names, &n);
+	int rc = file_list_files_copy(d, &names, &n);
 	EXPECT_EQ(rc, 0);
 	ASSERT_EQ(n, 1);
 	EXPECT_STREQ(names[0], "file.txt");
@@ -238,14 +238,14 @@ TEST_F(FileTest, ListFilesSkipsDirs) {
 }
 
 TEST_F(FileTest, ResolvePathAbsolute) {
-	char *resolved = file_resolve_path("/tmp");
+	char *resolved = file_resolve_path_copy("/tmp");
 	ASSERT_NE(resolved, nullptr);
 	EXPECT_NE(resolved[0], '\0');
 	free(resolved);
 }
 
 TEST_F(FileTest, ResolvePathHome) {
-	char *resolved = file_resolve_path("~/test_resolve");
+	char *resolved = file_resolve_path_copy("~/test_resolve");
 	ASSERT_NE(resolved, nullptr);
 	EXPECT_NE(resolved[0], '~');
 	EXPECT_NE(resolved[0], '\0');
@@ -253,7 +253,7 @@ TEST_F(FileTest, ResolvePathHome) {
 }
 
 TEST_F(FileTest, PathIsWithinBasic) {
-	char *resolved = file_resolve_path("/tmp");
+	char *resolved = file_resolve_path_copy("/tmp");
 	ASSERT_NE(resolved, nullptr);
 	char path_buf[512];
 	snprintf(path_buf, sizeof(path_buf), "%s/ma_test_dir/file.txt", resolved);
@@ -278,6 +278,53 @@ TEST_F(FileTest, PathIsWithinNull) {
 }
 
 TEST_F(FileTest, ResolvePathNull) {
-	char *resolved = file_resolve_path(NULL);
+	char *resolved = file_resolve_path_copy(NULL);
 	EXPECT_EQ(resolved, nullptr);
+}
+
+TEST_F(FileTest, ListsRejectOccupiedOwnersAndPreserveCountsOnFailure)
+{
+	ASSERT_EQ(file_write_all(test_file, "data", 4), 0);
+	for (auto list : {file_list_files_copy, file_list_dirs_copy}) {
+		char **names = nullptr;
+		int count = 999;
+		EXPECT_EQ(list(test_file, &names, &count), -ENOTDIR);
+		EXPECT_EQ(names, nullptr);
+		EXPECT_EQ(count, 999);
+		const std::string missing = directory + "/missing";
+		EXPECT_EQ(list(missing.c_str(), &names, &count), -ENOENT);
+		EXPECT_EQ(names, nullptr);
+		EXPECT_EQ(count, 999);
+		ASSERT_EQ(list(directory.c_str(), &names, &count), 0);
+		ASSERT_NE(names, nullptr);
+		char **owner = names;
+		const int owned_count = count;
+		count = 999;
+		EXPECT_EQ(list(directory.c_str(), &names, &count), -EALREADY);
+		EXPECT_EQ(names, owner);
+		EXPECT_EQ(count, 999);
+		file_free_list(names, owned_count);
+	}
+}
+
+TEST_F(FileTest, CopiedNamesSurviveDirectoryEntryRemoval)
+{
+	const std::string file = directory + "/copied.txt";
+	const std::string child = directory + "/copied-dir";
+	ASSERT_EQ(file_write_all(file.c_str(), "x", 1), 0);
+	ASSERT_EQ(file_ensure_dir(child.c_str()), 0);
+	char **files = nullptr;
+	char **dirs = nullptr;
+	int file_count = 999;
+	int dir_count = 999;
+	ASSERT_EQ(file_list_files_copy(directory.c_str(), &files, &file_count), 0);
+	ASSERT_EQ(file_list_dirs_copy(directory.c_str(), &dirs, &dir_count), 0);
+	ASSERT_EQ(file_count, 1);
+	ASSERT_EQ(dir_count, 1);
+	ASSERT_EQ(std::remove(file.c_str()), 0);
+	ASSERT_EQ(std::remove(child.c_str()), 0);
+	EXPECT_STREQ(files[0], "copied.txt");
+	EXPECT_STREQ(dirs[0], "copied-dir");
+	file_free_list(files, file_count);
+	file_free_list(dirs, dir_count);
 }

@@ -25,6 +25,19 @@ protected:
 	}
 };
 
+TEST_F(SkillParseTest, ParsePreservesExistingBodyOwnerAndFrontmatter)
+{
+	body = strdup("owned body");
+	ASSERT_NE(body, nullptr);
+	char *saved = body;
+	strcpy(fm.name, "existing-name");
+	const char *data = "---\nname: replacement\n---\nnew body";
+	EXPECT_EQ(skill_parse(nullptr, data, strlen(data), &fm, &body), -EEXIST);
+	EXPECT_EQ(body, saved);
+	EXPECT_STREQ(body, "owned body");
+	EXPECT_STREQ(fm.name, "existing-name");
+}
+
 TEST_F(SkillParseTest, MinimalFrontmatter) {
 	const char *data =
 		"---\n"
@@ -201,7 +214,7 @@ TEST_F(SkillRegistryTest, BuiltinMorphUsageSkillExists) {
 	skill_registry_init(NULL, &builtin);
 	int rc = skill_discover(&builtin, MORPH_TEST_SOURCE_DIR "/skills");
 	ASSERT_GE(rc, 0);
-	struct skill_entry *e = skill_lookup(&builtin, "morph-usage");
+	struct skill_entry *e = skill_borrow(&builtin, "morph-usage");
 	ASSERT_NE(e, nullptr);
 	EXPECT_NE(strstr(e->fm.description, "configure"), nullptr);
 	skill_registry_cleanup(&builtin);
@@ -224,18 +237,18 @@ TEST_F(SkillRegistryTest, DiscoverNonexistentDir) {
 TEST_F(SkillRegistryTest, Lookup) {
 	create_skill("find-me", "find-me", "Findable.", "X");
 	skill_discover(&reg, tmpdir);
-	struct skill_entry *e = skill_lookup(&reg, "find-me");
+	struct skill_entry *e = skill_borrow(&reg, "find-me");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->fm.name, "find-me");
-	EXPECT_EQ(morph_strmap_get(&reg.by_name, "find-me"), e);
-	EXPECT_EQ(skill_lookup(&reg, "not-here"), nullptr);
+	EXPECT_EQ(morph_strmap_borrow(&reg.by_name, "find-me"), e);
+	EXPECT_EQ(skill_borrow(&reg, "not-here"), nullptr);
 	remove_skill("find-me");
 }
 
 TEST_F(SkillRegistryTest, ActivateAndDeactivate) {
 	create_skill("act-me", "act-me", "Activatable.", "# Instructions\nDo stuff.");
 	skill_discover(&reg, tmpdir);
-	struct skill_entry *e = skill_lookup(&reg, "act-me");
+	struct skill_entry *e = skill_borrow(&reg, "act-me");
 	ASSERT_NE(e, nullptr);
 	EXPECT_EQ(e->activated, 0);
 	EXPECT_EQ(e->body_loaded, 0);
@@ -257,7 +270,7 @@ TEST_F(SkillRegistryTest, ActivateAndDeactivate) {
 TEST_F(SkillRegistryTest, ActivateIdempotent) {
 	create_skill("idem", "idem", "Idempotent.", "Body");
 	skill_discover(&reg, tmpdir);
-	struct skill_entry *e = skill_lookup(&reg, "idem");
+	struct skill_entry *e = skill_borrow(&reg, "idem");
 	ASSERT_NE(e, nullptr);
 	skill_activate(e);
 	int rc = skill_activate(e);
@@ -269,9 +282,10 @@ TEST_F(SkillRegistryTest, BuildActivatedInstructions) {
 	create_skill("s1", "s1", "Skill one.", "# One\nDo one.");
 	create_skill("s2", "s2", "Skill two.", "# Two\nDo two.");
 	skill_discover(&reg, tmpdir);
-	skill_activate(skill_lookup(&reg, "s1"));
-	skill_activate(skill_lookup(&reg, "s2"));
-	char *instr = skill_build_activated_instructions(&reg);
+	skill_activate(skill_borrow(&reg, "s1"));
+	skill_activate(skill_borrow(&reg, "s2"));
+	char *instr = nullptr;
+	ASSERT_EQ(skill_activated_instructions_create(&reg, &instr), 0);
 	ASSERT_NE(instr, nullptr);
 	EXPECT_NE(strstr(instr, "<skill name=\"s1\" "), nullptr);
 	EXPECT_NE(strstr(instr, "# One"), nullptr);
@@ -299,24 +313,25 @@ TEST_F(SkillRegistryTest, SortedOutputPreservesRegistryLookupPointers)
 {
 	create_skill("zeta", "zeta", "Last.", "Z body");
 	ASSERT_EQ(skill_discover(&reg, tmpdir), 1);
-	auto *zeta = skill_lookup(&reg, "zeta");
+	auto *zeta = skill_borrow(&reg, "zeta");
 	create_skill("alpha", "alpha", "First.", "A body");
 	ASSERT_EQ(skill_discover(&reg, tmpdir), 1);
-	auto *alpha = skill_lookup(&reg, "alpha");
+	auto *alpha = skill_borrow(&reg, "alpha");
 	ASSERT_EQ(skill_activate(zeta), 0);
 	ASSERT_EQ(skill_activate(alpha), 0);
 	const struct skill_entry *entries[SKILL_MAX_ENTRIES];
-	EXPECT_EQ(skill_sorted_entries(&reg, entries, 1), -ENOSPC);
-	ASSERT_EQ(skill_sorted_entries(&reg, entries, SKILL_MAX_ENTRIES), 2);
+	EXPECT_EQ(skill_sorted_entries_borrow(&reg, entries, 1), -ENOSPC);
+	ASSERT_EQ(skill_sorted_entries_borrow(&reg, entries, SKILL_MAX_ENTRIES), 2);
 	EXPECT_EQ(entries[0], alpha);
 	EXPECT_EQ(entries[1], zeta);
-	EXPECT_EQ(skill_lookup(&reg, "zeta"), zeta);
-	EXPECT_EQ(skill_lookup(&reg, "alpha"), alpha);
+	EXPECT_EQ(skill_borrow(&reg, "zeta"), zeta);
+	EXPECT_EQ(skill_borrow(&reg, "alpha"), alpha);
 	EXPECT_EQ(&reg.entries[0], zeta);
 	char catalog[4096];
 	ASSERT_EQ(skill_build_catalog(&reg, catalog, sizeof(catalog)), 2);
 	EXPECT_LT(strstr(catalog, "- alpha:"), strstr(catalog, "- zeta:"));
-	char *instructions = skill_build_activated_instructions(&reg);
+	char *instructions = nullptr;
+	ASSERT_EQ(skill_activated_instructions_create(&reg, &instructions), 0);
 	ASSERT_NE(instructions, nullptr);
 	EXPECT_LT(strstr(instructions, "A body"), strstr(instructions, "Z body"));
 	free(instructions);
@@ -350,12 +365,14 @@ TEST_F(SkillRegistryTest, NullParams) {
 	skill_registry_cleanup(nullptr);
 	EXPECT_EQ(skill_discover(nullptr, "/tmp"), -EINVAL);
 	EXPECT_EQ(skill_discover(&reg, nullptr), -EINVAL);
-	EXPECT_EQ(skill_lookup(nullptr, "x"), nullptr);
-	EXPECT_EQ(skill_lookup(&reg, nullptr), nullptr);
+	EXPECT_EQ(skill_borrow(nullptr, "x"), nullptr);
+	EXPECT_EQ(skill_borrow(&reg, nullptr), nullptr);
 	EXPECT_EQ(skill_activate(nullptr), -EINVAL);
 	skill_deactivate(nullptr);
 	skill_deactivate_all(nullptr);
-	EXPECT_EQ(skill_build_activated_instructions(nullptr), nullptr);
+	char *instructions = nullptr;
+	EXPECT_EQ(skill_activated_instructions_create(nullptr, &instructions), 0);
+	EXPECT_EQ(instructions, nullptr);
 	EXPECT_EQ(skill_build_catalog(nullptr, nullptr, 0), -EINVAL);
 }
 
@@ -401,7 +418,7 @@ protected:
 TEST_F(SkillActivateToolTest, RegisterTool) {
 	int rc = skill_activate_init(&tools, &skills);
 	EXPECT_EQ(rc, 0);
-	struct tool_entry *e = tool_lookup(&tools, "activate_skill");
+	struct tool_entry *e = tool_borrow(&tools, "activate_skill");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->desc.name, "activate_skill");
 }
@@ -429,9 +446,9 @@ TEST_F(SkillActivateToolTest, ActivateViaTool) {
 	ASSERT_NE(result.data, nullptr);
 	cJSON *text = cJSON_GetObjectItem(result.data, "text");
 	ASSERT_TRUE(cJSON_IsString(text));
-	EXPECT_EQ(skill_lookup(&skills, "review")->activated, 1);
+	EXPECT_EQ(skill_borrow(&skills, "review")->activated, 1);
 	EXPECT_EQ(strstr(text->valuestring, "Check bugs."), nullptr);
-	EXPECT_STREQ(skill_lookup(&skills, "review")->body, "# Review\nCheck bugs.\n");
+	EXPECT_STREQ(skill_borrow(&skills, "review")->body, "# Review\nCheck bugs.\n");
 	tool_result_cleanup(&result);
 
 	remove_skill_file(tmpdir, "review");
@@ -472,9 +489,9 @@ TEST_F(SkillActivateToolTest, RegistryScopedSkillRegistry) {
 	ASSERT_NE(result1.text.data, nullptr);
 	ASSERT_NE(result2.text.data, nullptr);
 	EXPECT_EQ(strstr(result1.text.data, "First body."), nullptr);
-	EXPECT_STREQ(skill_lookup(&skills, "first")->body, "First body.\n");
+	EXPECT_STREQ(skill_borrow(&skills, "first")->body, "First body.\n");
 	EXPECT_EQ(strstr(result2.text.data, "Second body."), nullptr);
-	EXPECT_STREQ(skill_lookup(&other_skills, "second")->body, "Second body.\n");
+	EXPECT_STREQ(skill_borrow(&other_skills, "second")->body, "Second body.\n");
 
 	tool_result_cleanup(&result1);
 	tool_result_cleanup(&result2);

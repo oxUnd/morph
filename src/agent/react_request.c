@@ -7,7 +7,7 @@
 #include "prompt_context.h"
 #include "agent/tools/plan.h"
 #include "tokenizer.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/log.h"
@@ -30,8 +30,13 @@ struct react_compaction_candidate {
 	int after_tokens;
 	int ineffective_compactions;
 	morph_array_t messages;
-	struct arena *arena;
 };
+
+static void react_compaction_candidate_cleanup(struct react_compaction_candidate *candidate)
+{
+	if (candidate)
+		agent_chat_messages_cleanup(&candidate->messages);
+}
 
 static int react_has_active_tool(struct react_context *ctx, const char *name)
 {
@@ -39,14 +44,14 @@ static int react_has_active_tool(struct react_context *ctx, const char *name)
 		return 0;
 	}
 	tool_registry_lock(ctx->tools);
-	int active = tool_lookup(ctx->tools, name) != NULL && !tool_is_disabled(ctx->tools, name);
+	int active = tool_borrow(ctx->tools, name) != NULL && !tool_is_disabled(ctx->tools, name);
 	tool_registry_unlock(ctx->tools);
 	return active;
 }
 
 static int append_process_checkpoint(struct react_context *ctx, morph_buf_t *buf)
 {
-	struct tool_handle handle;
+	struct tool_handle handle = {0};
 	struct tool_handle *entry = react_builtin_acquire(ctx, "exec", &handle);
 	cJSON *jobs = NULL;
 	int rc;
@@ -101,10 +106,10 @@ static int append_process_checkpoint(struct react_context *ctx, morph_buf_t *buf
 	return rc;
 }
 
-char *react_build_system_prompt(struct react_context *ctx, struct arena *arena)
+char *react_system_prompt_create(struct react_context *ctx)
 {
-	morph_buf_t buf;
-	int rc = morph_buf_init_arena(&buf, arena, 8192);
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int rc = morph_buf_init(&buf, 8192);
 	if (rc != 0)
 		return NULL;
 
@@ -145,7 +150,7 @@ char *react_build_system_prompt(struct react_context *ctx, struct arena *arena)
 		if (rc != 0)
 			return NULL;
 		const struct skill_entry *entries[SKILL_MAX_ENTRIES];
-		int count = skill_sorted_entries(ctx->skills, entries, SKILL_MAX_ENTRIES);
+		int count = skill_sorted_entries_borrow(ctx->skills, entries, SKILL_MAX_ENTRIES);
 
 		if (count < 0)
 			return NULL;
@@ -166,7 +171,7 @@ char *react_build_system_prompt(struct react_context *ctx, struct arena *arena)
 	if (rc != 0)
 		return NULL;
 
-	return buf.data;
+	return morph_buf_detach(&buf);
 }
 
 static int append_artifact_checkpoint(struct react_context *ctx, morph_buf_t *buf)
@@ -232,10 +237,10 @@ static int append_artifact_checkpoint(struct react_context *ctx, morph_buf_t *bu
 	return error;
 }
 
-static char *build_dynamic_context(struct react_context *ctx, struct arena *arena)
+static char *build_dynamic_context(struct react_context *ctx)
 {
-	morph_buf_t buf;
-	int rc = morph_buf_init_arena(&buf, arena, 1024);
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int rc = morph_buf_init(&buf, 1024);
 	if (rc != 0)
 		return NULL;
 
@@ -248,7 +253,7 @@ static char *build_dynamic_context(struct react_context *ctx, struct arena *aren
 	if (ctx->skills) {
 		char *active = NULL;
 
-		rc = skill_build_activated_instructions_checked(ctx->skills, &active);
+		rc = skill_activated_instructions_create(ctx->skills, &active);
 		if (rc != 0)
 			return NULL;
 		if (active) {
@@ -262,7 +267,7 @@ static char *build_dynamic_context(struct react_context *ctx, struct arena *aren
 	if (ctx->plans && ctx->plans->count) {
 		if (plan_tool_refresh_reports(ctx->tools) != 0)
 			return NULL;
-		cJSON *state = plan_registry_json(ctx->plans);
+		cJSON *state = plan_registry_json_create(ctx->plans);
 		cJSON *plan;
 		cJSON_ArrayForEach (plan, state) {
 			cJSON *verification = cJSON_GetObjectItem(plan, "verification");
@@ -301,7 +306,7 @@ static char *build_dynamic_context(struct react_context *ctx, struct arena *aren
 			return NULL;
 	}
 
-	return buf.data;
+	return morph_buf_detach(&buf);
 }
 
 static int react_tool_visible(struct react_context *ctx, const char *name)
@@ -320,46 +325,46 @@ static int count_active_tools(struct react_context *ctx)
 	return count;
 }
 
-static int collect_active_tools(struct react_context *ctx, struct arena *arena,
-				struct tool_desc *out, int max_count)
+void react_tool_descriptors_cleanup(morph_array_t *descriptors)
+{
+	if (!descriptors)
+		return;
+	for (size_t i = 0; i < descriptors->nelts; i++)
+		tool_desc_cleanup(morph_array_borrow(descriptors, i));
+	morph_array_cleanup(descriptors);
+}
+
+static int collect_active_tools(struct react_context *ctx, struct tool_desc *out, int max_count)
 {
 	struct tool_registry *reg = ctx->tools;
 	int idx = 0;
-	for (int i = 0; i < reg->count && idx < max_count; i++) {
-		if (react_tool_visible(ctx, reg->entries[i].desc.name)) {
-			out[idx] = reg->entries[i].desc;
-			const char **fields[] = {&out[idx].name,	  &out[idx].title,
-						 &out[idx].description,	  &out[idx].input_schema,
-						 &out[idx].output_schema, &out[idx].input_format};
-			for (size_t field = 0; field < sizeof(fields) / sizeof(fields[0]);
-			     field++) {
-				*fields[field] =
-					arena_strdup(arena, *fields[field] ? *fields[field] : "");
-				if (*fields[field] == NULL) {
-					return -ENOMEM;
-				}
-			}
-			morph_buf_t description;
-			int rc = morph_buf_init_arena(&description, arena, 128);
 
-			if (rc == 0)
-				rc = morph_buf_printf(&description, "[%s] %s",
-						      tool_origin_name(reg->entries[i].origin),
-						      reg->entries[i].desc.description);
-			if (rc != 0)
-				return rc;
-			out[idx].description = morph_buf_cstr(&description);
-			idx++;
-		}
+	for (int i = 0; i < reg->count && idx < max_count; i++) {
+		if (!react_tool_visible(ctx, reg->entries[i].desc.name))
+			continue;
+		int rc = tool_desc_clone(&reg->entries[i].desc, &out[idx]);
+		morph_buf_t description MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		if (rc == 0)
+			rc = morph_buf_init(&description, 128);
+		if (rc == 0)
+			rc = morph_buf_printf(&description, "[%s] %s",
+					      tool_origin_name(reg->entries[i].origin),
+					      reg->entries[i].desc.description);
+		if (rc != 0)
+			return rc;
+		free((void *)out[idx].description);
+		out[idx].description = morph_buf_detach(&description);
+		idx++;
 	}
 	for (int i = 1; i < idx; i++) {
-		struct tool_desc value = out[i];
+		struct tool_desc value = {0};
+		tool_desc_move(&value, &out[i]);
 		int j = i;
 		while (j > 0 && strcmp(out[j - 1].name, value.name) > 0) {
-			out[j] = out[j - 1];
+			tool_desc_move(&out[j], &out[j - 1]);
 			j--;
 		}
-		out[j] = value;
+		tool_desc_move(&out[j], &value);
 	}
 	return 0;
 }
@@ -384,91 +389,114 @@ static int react_prepare_active_tools_locked(struct react_context *ctx, morph_ar
 		if (rc != 0)
 			return rc;
 	}
+	for (size_t i = 0; i < storage->nelts; i++)
+		tool_desc_cleanup(morph_array_borrow(storage, i));
 	morph_array_clear(storage);
-	*active_tools = morph_array_push_n(storage, (size_t)*active_tool_count);
+	*active_tools = morph_array_push_n_borrow(storage, (size_t)*active_tool_count);
 	if (!*active_tools)
 		return -ENOMEM;
-	/* Refresh in place: tools may be registered or disabled mid-turn. */
-	return collect_active_tools(ctx, ctx->iteration_arena, *active_tools, *active_tool_count);
+	memset(*active_tools, 0, (size_t)*active_tool_count * sizeof(**active_tools));
+	/* Refresh copied descriptors under the registry lock. */
+	return collect_active_tools(ctx, *active_tools, *active_tool_count);
 }
 
 int react_prepare_active_tools(struct react_context *ctx, morph_array_t *storage,
 			       struct tool_desc **tools, int *count)
 {
+	morph_array_t candidate MORPH_CLEANUP(react_tool_descriptors_cleanup) = {0};
+	struct tool_desc *view = NULL;
+	int candidate_count = 0;
+	int rc;
+
+	if (!ctx || !storage || !tools || !count)
+		return -EINVAL;
 	tool_registry_lock(ctx->tools);
-	int rc = react_prepare_active_tools_locked(ctx, storage, tools, count);
+	rc = react_prepare_active_tools_locked(ctx, &candidate, &view, &candidate_count);
 	tool_registry_unlock(ctx->tools);
-	return rc;
+	if (rc != 0)
+		return rc;
+	react_tool_descriptors_cleanup(storage);
+	*storage = candidate;
+	memset(&candidate, 0, sizeof(candidate));
+	*tools = storage->elts;
+	*count = candidate_count;
+	return 0;
 }
 
-int react_prepare_request_messages(struct react_context *ctx, const struct model *llm,
-				   struct arena *arena, const char **system_prompt,
-				   struct chat_message **messages, int *msg_count)
+void react_request_messages_cleanup(struct react_request_messages *request)
 {
-	/* Request-only prefix survives active-history rebuilds without duplication. */
-	if (ctx->runtime_context && (llm->chat_with_tools_stream || llm->chat_with_tools)) {
-		struct chat_message *request;
+	if (!request)
+		return;
+	free(request->system_prompt);
+	request->system_prompt = NULL;
+	agent_chat_messages_cleanup(&request->messages);
+}
 
-		int prefix_count = ctx->project_context ? 2 : 1;
+static int request_append_text(struct react_request_messages *request, const char *role,
+			       const char *text)
+{
+	struct chat_message *message = react_chat_message_push_borrow(&request->messages);
 
-		if (*msg_count < 0 || *msg_count > INT_MAX - prefix_count ||
-		    (size_t)*msg_count + (size_t)prefix_count > SIZE_MAX / sizeof(*request))
-			return -EOVERFLOW;
-		request = arena_alloc(arena, ((size_t)*msg_count + (size_t)prefix_count) *
-						     sizeof(*request));
-		if (!request)
-			return -ENOMEM;
-		request[0].role = "system";
-		request[0].content = (char *)ctx->runtime_context;
-		if (ctx->project_context) {
-			request[1].role = "user";
-			request[1].content = (char *)ctx->project_context;
-		}
-		if (*msg_count)
-			memcpy(request + prefix_count, *messages,
-			       (size_t)*msg_count * sizeof(*request));
-		*messages = request;
-		*msg_count += prefix_count;
-	} else if (ctx->runtime_context) {
-		/* Legacy text-only backends have no role-aware message API. */
-		morph_buf_t combined;
-		int rc = morph_buf_init_arena(&combined, arena, 1024);
+	if (!message)
+		return -ENOMEM;
+	message->role = strdup(role);
+	message->content = strdup(text ? text : "");
+	return message->role && message->content ? 0 : -ENOMEM;
+}
 
-		if (rc == 0)
-			rc = morph_buf_printf(&combined, "%s\n%s", *system_prompt,
-					      ctx->runtime_context);
-		if (rc == 0 && ctx->project_context)
-			rc = morph_buf_printf(&combined, "\n%s", ctx->project_context);
-		if (rc != 0)
-			return rc;
-		*system_prompt = morph_buf_cstr(&combined);
+int react_request_messages_create(struct react_context *ctx, const struct model *llm,
+				  const char *system_prompt, const struct chat_message *messages,
+				  int msg_count, struct react_request_messages *out)
+{
+	struct react_request_messages request MORPH_CLEANUP(react_request_messages_cleanup) = {0};
+	char *dynamic MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	morph_buf_t combined MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int roles = llm && (llm->chat_with_tools_stream || llm->chat_with_tools);
+	int rc;
+
+	if (!ctx || !llm || !out || msg_count < 0 || (msg_count && !messages))
+		return -EINVAL;
+	if (out->system_prompt || out->messages.elts)
+		return -EALREADY;
+	if (msg_count > INT_MAX - 3)
+		return -EOVERFLOW;
+	rc = morph_array_init(&request.messages, (size_t)msg_count + 3,
+			      sizeof(struct chat_message));
+	if (rc != 0)
+		return rc;
+	if (roles && ctx->runtime_context)
+		rc = request_append_text(&request, "system", ctx->runtime_context);
+	if (rc == 0 && roles && ctx->project_context)
+		rc = request_append_text(&request, "user", ctx->project_context);
+	for (int i = 0; rc == 0 && i < msg_count; i++) {
+		struct chat_message *message = react_chat_message_push_borrow(&request.messages);
+		rc = message ? chat_message_clone(&messages[i], message) : -ENOMEM;
 	}
-
-	char *dynamic = build_dynamic_context(ctx, arena);
+	if (rc != 0)
+		return rc;
+	dynamic = build_dynamic_context(ctx);
 	if (!dynamic)
 		return -ENOMEM;
-	if (dynamic[0] && (llm->chat_with_tools_stream || llm->chat_with_tools)) {
-		struct chat_message *request;
-		if (*msg_count < 0 || *msg_count == INT_MAX)
-			return -EOVERFLOW;
-		request = arena_alloc(arena, ((size_t)*msg_count + 1) * sizeof(*request));
-		if (!request)
-			return -ENOMEM;
-		if (*msg_count)
-			memcpy(request, *messages, (size_t)*msg_count * sizeof(*request));
-		request[*msg_count].role = "system";
-		request[*msg_count].content = dynamic;
-		*messages = request;
-		(*msg_count)++;
-	} else if (dynamic[0]) {
-		morph_buf_t combined;
-		int rc = morph_buf_init_arena(&combined, arena, 1024);
-		if (rc == 0)
-			rc = morph_buf_printf(&combined, "%s\n%s", *system_prompt, dynamic);
+	if (roles && dynamic[0]) {
+		rc = request_append_text(&request, "system", dynamic);
 		if (rc != 0)
 			return rc;
-		*system_prompt = combined.data;
 	}
+	rc = morph_buf_init(&combined, 1024);
+	if (rc == 0)
+		rc = morph_buf_puts(&combined, system_prompt ? system_prompt : "");
+	if (rc == 0 && !roles && ctx->runtime_context)
+		rc = morph_buf_printf(&combined, "\n%s", ctx->runtime_context);
+	if (rc == 0 && !roles && ctx->project_context)
+		rc = morph_buf_printf(&combined, "\n%s", ctx->project_context);
+	if (rc == 0 && !roles && dynamic[0])
+		rc = morph_buf_printf(&combined, "\n%s", dynamic);
+	if (rc != 0)
+		return rc;
+	request.system_prompt = morph_buf_detach(&combined);
+	out->system_prompt = request.system_prompt;
+	request.system_prompt = NULL;
+	agent_chat_messages_move(&out->messages, &request.messages);
 	return 0;
 }
 
@@ -481,20 +509,19 @@ static int react_estimate_active_tokens(struct react_context *ctx, const struct 
 					const char *system_prompt, const morph_array_t *messages,
 					const struct tool_desc *tools, int tool_count)
 {
-	struct chat_message *request = messages ? messages->elts : NULL;
-	int count;
+	struct react_request_messages request MORPH_CLEANUP(react_request_messages_cleanup) = {0};
 	int tokens;
 	int rc;
 
 	if (messages && messages->nelts > INT_MAX)
 		return -EOVERFLOW;
-	count = messages ? (int)messages->nelts : 0;
-	rc = react_prepare_request_messages(ctx, llm, ctx->iteration_arena, &system_prompt,
-					    &request, &count);
+	rc = react_request_messages_create(ctx, llm, system_prompt,
+					   messages ? messages->elts : NULL,
+					   messages ? (int)messages->nelts : 0, &request);
 	if (rc == 0)
-		rc = model_estimate_input_tokens(llm, system_prompt, request, count, tools,
-						 tool_count, react_count_input_text, ctx->tokenizer,
-						 &tokens);
+		rc = model_estimate_input_tokens(llm, request.system_prompt, request.messages.elts,
+						 (int)request.messages.nelts, tools, tool_count,
+						 react_count_input_text, ctx->tokenizer, &tokens);
 	return rc != 0 ? rc : tokens;
 }
 
@@ -528,7 +555,7 @@ static int react_emit_compaction_event(struct react_context *ctx, const char *na
 	cJSON *data;
 	int rc;
 
-	if (!react_events_enabled(react_events(ctx)))
+	if (!react_events_enabled(react_events_borrow(ctx)))
 		return 0;
 	data = cJSON_CreateObject();
 	if (!data)
@@ -542,7 +569,7 @@ static int react_emit_compaction_event(struct react_context *ctx, const char *na
 		cJSON_AddNumberToObject(data, "error_code", error_code);
 		cJSON_AddStringToObject(data, "error", morph_strerror(error_code));
 	}
-	rc = react_emit_event(react_events(ctx), MORPH_EVENT_REACT, name, phase,
+	rc = react_emit_event(react_events_borrow(ctx), MORPH_EVENT_REACT, name, phase,
 			      strcmp(phase, "end") == 0 ? "active context compacted"
 							: "active context compaction",
 			      data);
@@ -554,15 +581,13 @@ static int react_validate_compaction(const struct model_history_item *items, voi
 {
 	struct react_compaction_candidate *candidate = data;
 	struct react_context *ctx = candidate->ctx;
+	struct chat_message message;
 	int rc;
 
-	candidate->arena = arena_create(0);
-	if (!candidate->arena)
-		return -ENOMEM;
-	rc = morph_array_init(&candidate->messages, 64, sizeof(struct chat_message));
+	agent_chat_messages_cleanup(&candidate->messages);
+	rc = morph_array_init(&candidate->messages, 64, sizeof(message));
 	if (rc == 0)
-		rc = agent_history_build_chat_messages(ctx->logger, items, &candidate->messages,
-						       candidate->arena);
+		rc = agent_history_messages_copy(ctx->logger, items, &candidate->messages);
 	if (rc != 0)
 		return rc;
 	candidate->after_tokens = react_estimate_active_tokens(
@@ -594,7 +619,8 @@ int react_maybe_compact_active_window(struct react_context *ctx, struct model *l
 				      const struct tool_desc *tools, int tool_count, int iteration)
 {
 	char trigger_kind[64];
-	struct react_compaction_candidate candidate = {0};
+	struct react_compaction_candidate candidate MORPH_CLEANUP(
+		react_compaction_candidate_cleanup) = {0};
 	double previous_target_ratio;
 	int before_tokens;
 	int trigger_tokens;
@@ -612,7 +638,7 @@ int react_maybe_compact_active_window(struct react_context *ctx, struct model *l
 		return 0;
 	ctx->force_compaction = 0;
 	/* Compaction failures must not inherit earlier tool error details. */
-	react_set_error_detail(ctx, NULL);
+	react_set_error_detail_copy(ctx, NULL);
 	ctx->in_turn_compaction_count++;
 	snprintf(trigger_kind, sizeof(trigger_kind), "in_turn_%d", ctx->in_turn_compaction_count);
 	log_info(ctx ? ctx->logger : NULL,
@@ -657,8 +683,6 @@ int react_maybe_compact_active_window(struct react_context *ctx, struct model *l
 	if (rc < 0 || !compacted) {
 		if (rc >= 0)
 			rc = MORPH_ERR_PROTOCOL;
-		morph_array_cleanup(&candidate.messages);
-		arena_destroy(candidate.arena);
 		log_err(ctx->logger,
 			"react: in-turn compaction failed: session=%lld turn=%s "
 			"trigger=%s error=%s detail=%.512s",
@@ -671,10 +695,7 @@ int react_maybe_compact_active_window(struct react_context *ctx, struct model *l
 		return rc;
 	}
 	ctx->ineffective_compactions = candidate.ineffective_compactions;
-	morph_array_cleanup(messages);
-	arena_destroy(ctx->message_arena);
-	ctx->message_arena = candidate.arena;
-	*messages = candidate.messages;
+	agent_chat_messages_move(messages, &candidate.messages);
 	log_info(ctx ? ctx->logger : NULL, "react: in-turn compaction completed (%d -> %d tokens)",
 		 before_tokens, candidate.after_tokens);
 	(void)react_emit_compaction_event(ctx, "react.compaction.completed", "end", iteration,
@@ -682,8 +703,8 @@ int react_maybe_compact_active_window(struct react_context *ctx, struct model *l
 	return 1;
 }
 
-int react_prepare_messages(struct react_context *ctx, morph_array_t *messages,
-			   const char *current_user_input)
+static int react_messages_build(struct react_context *ctx, morph_array_t *messages,
+				const char *current_user_input)
 {
 	struct message_list *hist;
 	struct chat_message *message;
@@ -693,17 +714,16 @@ int react_prepare_messages(struct react_context *ctx, morph_array_t *messages,
 	if (morph_array_init(messages, 64, sizeof(struct chat_message)) < 0)
 		return -ENOMEM;
 	if (ctx->history_enabled) {
-		int rc = agent_history_build_chat_messages(
-			ctx ? ctx->logger : NULL, ctx->history_items, messages, ctx->message_arena);
+		int rc = agent_history_messages_copy(ctx ? ctx->logger : NULL, ctx->history_items,
+						     messages);
 
 		if (rc != 0)
 			return rc;
-		message = react_push_chat_message(messages);
+		message = react_chat_message_push_borrow(messages);
 		if (!message)
 			return -ENOMEM;
-		message->role = arena_strdup(ctx->message_arena, "user");
-		message->content = arena_strdup(ctx->message_arena,
-						current_user_input ? current_user_input : "");
+		message->role = strdup("user");
+		message->content = strdup(current_user_input ? current_user_input : "");
 		if (!message->role || !message->content)
 			return -ENOMEM;
 		return 0;
@@ -712,16 +732,12 @@ int react_prepare_messages(struct react_context *ctx, morph_array_t *messages,
 	hist = ctx->messages;
 	message = NULL;
 	while (hist) {
-		message = react_push_chat_message(messages);
+		message = react_chat_message_push_borrow(messages);
 		if (!message)
 			return -ENOMEM;
-		message->role = arena_strdup(ctx->message_arena,
-					     hist->is_reference ? "assistant" : hist->role);
-		message->content = hist->content ? arena_strdup(ctx->message_arena, hist->content)
-						 : arena_strdup(ctx->message_arena, "");
-		if (hist->is_reference)
-			message->content =
-				prompt_reference_build(ctx->message_arena, hist->content);
+		message->role = strdup(hist->is_reference ? "assistant" : hist->role);
+		message->content = hist->is_reference ? prompt_reference_create(hist->content)
+						      : strdup(hist->content ? hist->content : "");
 		if (!message->role || !message->content)
 			return -ENOMEM;
 		message->tool_call_id = NULL;
@@ -729,6 +745,23 @@ int react_prepare_messages(struct react_context *ctx, morph_array_t *messages,
 		message->tool_call_count = 0;
 		hist = hist->next;
 	}
+	return 0;
+}
+
+int react_messages_create(struct react_context *ctx, morph_array_t *messages,
+			  const char *current_user_input)
+{
+	morph_array_t candidate MORPH_CLEANUP(agent_chat_messages_cleanup) = {0};
+	int rc;
+
+	if (!ctx || !messages)
+		return -EINVAL;
+	if (messages->elts || messages->nelts)
+		return -EALREADY;
+	rc = react_messages_build(ctx, &candidate, current_user_input);
+	if (rc != 0)
+		return rc;
+	agent_chat_messages_move(messages, &candidate);
 	return 0;
 }
 
@@ -747,10 +780,16 @@ static int checkpoint_fields_valid(const char *text)
 	return valid;
 }
 
-int react_summarize_checkpoint(const char *text, void *user_data, char **out)
+int react_checkpoint_create(const char *text, void *user_data, char **out)
 {
 	struct react_context *ctx = user_data;
-	struct model *llm = ctx->llm_model;
+	struct model *llm;
+
+	if (!text || !ctx || !out)
+		return -EINVAL;
+	if (*out)
+		return -EALREADY;
+	llm = ctx->llm_model;
 	if (!llm || !llm->chat || !llm->api_key[0]) {
 		return MORPH_ERR_NOT_CONFIGURED;
 	}
@@ -771,7 +810,7 @@ int react_summarize_checkpoint(const char *text, void *user_data, char **out)
 			  "work into new TODOs. Record the latest request's scope and stopping "
 			  "condition; preserve any explicit request to continue unfinished work.";
 	const char *msgs[] = {text};
-	morph_buf_t b;
+	morph_buf_t b MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	struct model_usage usage = {0};
 	struct model_chat_options options = {0};
 	options.usage_phase = "compaction";
@@ -784,7 +823,7 @@ int react_summarize_checkpoint(const char *text, void *user_data, char **out)
 	if (ctx->compress.compaction_summary_max_tokens > 0 &&
 	    (llm->max_tokens <= 0 || llm->max_tokens > ctx->compress.compaction_summary_max_tokens))
 		options.max_tokens = ctx->compress.compaction_summary_max_tokens;
-	morph_buf_t instructions;
+	morph_buf_t instructions MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	rc = morph_buf_init(&instructions, 1024);
 	if (rc == 0)
 		rc = morph_buf_printf(
@@ -804,7 +843,7 @@ int react_summarize_checkpoint(const char *text, void *user_data, char **out)
 		 "max_tokens=%d input_bytes=%zu",
 		 (long long)ctx->history_session_id, ctx->turn_id, llm->provider, llm->model_id,
 		 options.max_tokens, strlen(text));
-	rc = llm->chat(llm, ctx->iteration_arena, morph_buf_cstr(&instructions), msgs, 1, &options,
+	rc = llm->chat(llm, morph_buf_cstr_borrow(&instructions), msgs, 1, &options,
 		       morph_buf_append_cb, &b);
 	morph_buf_cleanup(&instructions);
 	log_info(ctx->logger,
@@ -814,8 +853,8 @@ int react_summarize_checkpoint(const char *text, void *user_data, char **out)
 		 usage.finish_reason[0] ? usage.finish_reason : "unknown",
 		 (long long)usage.output_tokens, (long long)usage.reasoning_tokens, b.len);
 	if (rc < 0) {
-		react_set_error_detail(ctx,
-				       llm->last_error[0] ? llm->last_error : morph_strerror(rc));
+		react_set_error_detail_copy(ctx, llm->last_error[0] ? llm->last_error
+								    : morph_strerror(rc));
 		log_warn(ctx->logger,
 			 "compaction model request failed: session=%lld turn=%s "
 			 "error=%s received_bytes=%zu detail=%.512s",
@@ -829,19 +868,20 @@ int react_summarize_checkpoint(const char *text, void *user_data, char **out)
 		invalid = "Context compression exhausted the model output budget; "
 			  "the checkpoint is incomplete.";
 	else if ((usage.finish_reason[0] && strcmp(usage.finish_reason, "stop") != 0) ||
-		 strstr(morph_buf_cstr(&b), "<｜｜DSML｜｜") ||
-		 strstr(morph_buf_cstr(&b), "<tool_call>"))
+		 strstr(morph_buf_cstr_borrow(&b), "<｜｜DSML｜｜") ||
+		 strstr(morph_buf_cstr_borrow(&b), "<tool_call>"))
 		invalid = "Context compression returned tool protocol or an unexpected "
 			  "finish reason instead of a checkpoint.";
-	else if (strspn(morph_buf_cstr(&b), " \t\r\n") == b.len)
+	else if (strspn(morph_buf_cstr_borrow(&b), " \t\r\n") == b.len)
 		invalid = "Context compression returned an empty summary from the model.";
-	else if (!ctx->history_compaction_prompt && !checkpoint_fields_valid(morph_buf_cstr(&b)))
+	else if (!ctx->history_compaction_prompt &&
+		 !checkpoint_fields_valid(morph_buf_cstr_borrow(&b)))
 		invalid =
 			"Context compression returned an invalid checkpoint: objective, "
 			"constraints, completed_work, working_state, pending_work and verification "
 			"must be non-empty JSON strings.";
 	if (invalid) {
-		react_set_error_detail(ctx, invalid);
+		react_set_error_detail_copy(ctx, invalid);
 		log_warn(ctx->logger,
 			 "compaction model returned invalid summary: session=%lld turn=%s "
 			 "model_status=%d max_tokens=%d detail=%s",
@@ -850,7 +890,7 @@ int react_summarize_checkpoint(const char *text, void *user_data, char **out)
 		morph_buf_cleanup(&b);
 		return MORPH_ERR_PROTOCOL;
 	}
-	react_set_error_detail(ctx, NULL);
+	react_set_error_detail_copy(ctx, NULL);
 	*out = morph_buf_detach(&b);
 	if (!*out) {
 		return -ENOMEM;

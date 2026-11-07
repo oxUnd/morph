@@ -81,7 +81,7 @@ TEST_F(CliSetupTest, SkipOptionalModels) {
 	EXPECT_TRUE(cfg.exec.allow_host_execution);
 	EXPECT_TRUE(cfg.react.hitl_auto_approve_readonly);
 	EXPECT_TRUE(cfg.react.hitl_auto_approve_media);
-	char *saved = file_read_all(path.c_str(), nullptr);
+	char *saved = file_read_all_copy(path.c_str(), nullptr);
 	ASSERT_NE(saved, nullptr);
 	toml_result_t parsed = toml_parse(saved, static_cast<int>(strlen(saved)));
 	ASSERT_TRUE(parsed.ok);
@@ -121,7 +121,7 @@ TEST_F(CliSetupTest, DefaultsStillRequireSaveAndCannotHideIncompleteCustomModels
 	const std::string old = "[model.text]\nprovider='custom'\nmodel=''\napi_base=''\n";
 	ASSERT_EQ(file_write_all(path.c_str(), old.c_str(), old.size()), 0);
 	EXPECT_EQ(run_input("\n\n", true), -ECANCELED);
-	char *saved = file_read_all(path.c_str(), nullptr);
+	char *saved = file_read_all_copy(path.c_str(), nullptr);
 	ASSERT_NE(saved, nullptr);
 	EXPECT_EQ(std::string(saved), old);
 	free(saved);
@@ -162,7 +162,7 @@ TEST(CliSetupDefaults, NewlyRequiredModelsReuseAnExistingProviderAccount) {
 
 TEST_F(CliSetupTest, SetupWritesOnlyTheSelectedCredentialSource) {
 	ASSERT_GE(run_custom_raw("7\n" + std::string(21, '\n')), 0);
-	char *saved = file_read_all(path.c_str(), nullptr);
+	char *saved = file_read_all_copy(path.c_str(), nullptr);
 	ASSERT_NE(saved, nullptr);
 	toml_result_t parsed = toml_parse(saved, static_cast<int>(strlen(saved)));
 	ASSERT_TRUE(parsed.ok);
@@ -181,7 +181,7 @@ TEST_F(CliSetupTest, ReconfigureRemovesEnvironmentFieldWhenKeepingDirectKey) {
 		"api_key_env='OLD_KEY' # retain this comment\n";
 	ASSERT_EQ(file_write_all(path.c_str(), old.c_str(), old.size()), 0);
 	ASSERT_GE(run_custom_raw(std::string(11, '\n'), true), 0);
-	char *saved = file_read_all(path.c_str(), nullptr);
+	char *saved = file_read_all_copy(path.c_str(), nullptr);
 	ASSERT_NE(saved, nullptr);
 	toml_result_t parsed = toml_parse(saved, static_cast<int>(strlen(saved)));
 	ASSERT_TRUE(parsed.ok);
@@ -218,7 +218,8 @@ TEST_F(CliSetupTest, CredentialCleanupPreservesOtherValuesAndAllTomlLayouts) {
 	for (const char *fixture : fixtures) {
 		SCOPED_TRACE(fixture);
 		char *clean = nullptr;
-		ASSERT_EQ(cli_setup_config_credentials((fixture + unrelated).c_str(), &clean), 0);
+		ASSERT_EQ(cli_setup_config_credentials_copy((fixture + unrelated).c_str(), &clean),
+			  0);
 		ASSERT_NE(clean, nullptr);
 		EXPECT_NE(std::string(clean).find(unrelated), std::string::npos);
 		toml_result_t parsed = toml_parse(clean, static_cast<int>(strlen(clean)));
@@ -232,7 +233,7 @@ TEST_F(CliSetupTest, CredentialCleanupPreservesOtherValuesAndAllTomlLayouts) {
 			if (env.type == TOML_STRING) EXPECT_NE(env.u.s[0], '\0');
 		}
 		char *again = nullptr;
-		EXPECT_EQ(cli_setup_config_credentials(clean, &again), 0);
+		EXPECT_EQ(cli_setup_config_credentials_copy(clean, &again), 0);
 		if (again) EXPECT_STREQ(again, clean);
 		free(again);
 		toml_free(parsed);
@@ -284,7 +285,7 @@ TEST_F(CliSetupTest, NeverOverwriteExistingConfig) {
 	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
 	ASSERT_EQ(file_write_all(path.c_str(), "# keep\n", 7), 0);
 	EXPECT_EQ(run_custom(std::string(9, '\n')), -EEXIST);
-	char *contents = file_read_all(path.c_str(), nullptr);
+	char *contents = file_read_all_copy(path.c_str(), nullptr);
 	ASSERT_NE(contents, nullptr);
 	EXPECT_STREQ(contents, "# keep\n");
 	free(contents);
@@ -460,7 +461,7 @@ TEST_F(CliSetupTest, ReconfigureKeepsValuesCredentialsAndCustomPromptAndCreatesB
 	bool found = false;
 	for (const auto &entry : std::filesystem::directory_iterator(dir)) {
 		if (entry.path().filename().string().find(".backup-") == std::string::npos) continue;
-		char *backup = file_read_all(entry.path().c_str(), nullptr);
+		char *backup = file_read_all_copy(entry.path().c_str(), nullptr);
 		ASSERT_NE(backup, nullptr);
 		EXPECT_EQ(std::string(backup), old);
 		free(backup);
@@ -473,7 +474,7 @@ TEST_F(CliSetupTest, ReconfigureCancelAndInvalidConfigLeaveFilesUntouched) {
 	const std::string old = "[memory]\nenabled=false\n";
 	ASSERT_EQ(file_write_all(path.c_str(), old.c_str(), old.size()), 0);
 	EXPECT_EQ(run_custom_raw("", true), -ECANCELED);
-	char *text = file_read_all(path.c_str(), nullptr);
+	char *text = file_read_all_copy(path.c_str(), nullptr);
 	ASSERT_NE(text, nullptr);
 	EXPECT_EQ(std::string(text), old);
 	free(text);
@@ -492,11 +493,11 @@ TEST_F(CliSetupTest, RolePromptReplacementPreservesOriginalPromptFiles) {
 	struct config cfg;
 	ASSERT_EQ(config_load(nullptr, &cfg, path.c_str()), 0);
 	EXPECT_STRNE(cfg.prompt.system_prompt_file, custom.c_str());
-	char *original = file_read_all(custom.c_str(), nullptr);
+	char *original = file_read_all_copy(custom.c_str(), nullptr);
 	ASSERT_NE(original, nullptr);
 	EXPECT_STREQ(original, "Customized instructions");
 	free(original);
-	char *generated = file_read_all(cfg.prompt.system_prompt_file, nullptr);
+	char *generated = file_read_all_copy(cfg.prompt.system_prompt_file, nullptr);
 	ASSERT_NE(generated, nullptr);
 	EXPECT_NE(std::string(generated).find("author's voice"), std::string::npos);
 	free(generated);
@@ -505,7 +506,7 @@ TEST_F(CliSetupTest, RolePromptReplacementPreservesOriginalPromptFiles) {
 TEST_F(CliSetupTest, EveryRoleRendersAndUsesExplicitModelRequirements) {
 	for (int i = 0; i < CLI_SETUP_ROLE_COUNT; i++) {
 		char *text = nullptr;
-		ASSERT_EQ(cli_setup_role_render(i, &text), 0);
+		ASSERT_EQ(cli_setup_role_render_copy(i, &text), 0);
 		ASSERT_NE(text, nullptr);
 		EXPECT_EQ(std::string(text).find("{{"), std::string::npos);
 		EXPECT_NE(std::string(text).find(cli_setup_role_get(i).label), std::string::npos);
@@ -521,7 +522,7 @@ TEST_F(CliSetupTest, ReconfigureUsesSavedVideoRoleAndNeverAddsSkipSteps) {
 	ASSERT_GE(run_custom_raw(std::string(23, '\n'), true), 0);
 	EXPECT_EQ(transcript.find("1) Skip"), std::string::npos);
 	EXPECT_NE(transcript.find("Video model (required)"), std::string::npos);
-	char *saved = file_read_all(path.c_str(), nullptr);
+	char *saved = file_read_all_copy(path.c_str(), nullptr);
 	ASSERT_NE(saved, nullptr);
 	EXPECT_EQ(cli_setup_config_role(saved), CLI_SETUP_VIDEO_CREATOR);
 	free(saved);
@@ -543,10 +544,11 @@ TEST_F(CliSetupTest, ReconfigureRejectsSymlinksAndPublishesPrivateFiles) {
 
 TEST_F(CliSetupTest, SetupConfigMergeSupportsInlineTablesAndUnrelatedArrays) {
 	char *merged = nullptr;
-	ASSERT_EQ(cli_setup_config_merge(
-		"model={text={provider='custom',model='old',timeout_seconds=77}}\n"
-		"[hooks]\nStop=[{hooks=[{type='command',command='echo keep'}]}]\n",
-		"[model.text]\nmodel='new'\n[setup]\nrole='video_creator'\n", &merged), 0);
+	ASSERT_EQ(cli_setup_config_merge_copy(
+			  "model={text={provider='custom',model='old',timeout_seconds=77}}\n"
+			  "[hooks]\nStop=[{hooks=[{type='command',command='echo keep'}]}]\n",
+			  "[model.text]\nmodel='new'\n[setup]\nrole='video_creator'\n", &merged),
+		  0);
 	ASSERT_NE(merged, nullptr);
 	EXPECT_NE(std::string(merged).find("timeout_seconds=77"), std::string::npos);
 	EXPECT_NE(std::string(merged).find("echo keep"), std::string::npos);
@@ -559,9 +561,13 @@ TEST_F(CliSetupTest, SetupConfigMergeSupportsInlineTablesAndUnrelatedArrays) {
 TEST_F(CliSetupTest, McpDefaultsVaryByRoleAndReapplicationKeepsExistingEntries) {
 	for (int role = 0; role < CLI_SETUP_ROLE_COUNT; role++) {
 		char *configured = nullptr;
-		ASSERT_EQ(cli_setup_mcp_apply("# keep\n[exec]\nnetwork=false\n", role,
-			&configured), 0);
+		ASSERT_EQ(cli_setup_mcp_apply_copy("# keep\n[exec]\nnetwork=false\n", role,
+						   &configured),
+			  0);
 		ASSERT_NE(configured, nullptr);
+		char *saved = configured;
+		EXPECT_EQ(cli_setup_mcp_apply_copy("", role, &configured), -EEXIST);
+		EXPECT_EQ(configured, saved);
 		toml_result_t parsed = toml_parse(configured, static_cast<int>(strlen(configured)));
 		ASSERT_TRUE(parsed.ok);
 		toml_datum_t servers = toml_get(toml_get(parsed.toptab, "mcp"), "servers");
@@ -577,7 +583,7 @@ TEST_F(CliSetupTest, McpDefaultsVaryByRoleAndReapplicationKeepsExistingEntries) 
 #endif
 		EXPECT_EQ(servers.u.arr.size, expected);
 		char *again = nullptr;
-		ASSERT_EQ(cli_setup_mcp_apply(configured, role, &again), 0);
+		ASSERT_EQ(cli_setup_mcp_apply_copy(configured, role, &again), 0);
 		EXPECT_STREQ(again, configured);
 		EXPECT_EQ(std::string(configured).find("# keep\n[exec]\nnetwork=false\n"), 0u);
 		free(again);
@@ -600,14 +606,14 @@ TEST_F(CliSetupTest, McpAdditionPreservesInlineArraysCommentsAndCredentials) {
 	for (const char *fixture : fixtures) {
 		SCOPED_TRACE(fixture);
 		char *configured = nullptr;
-		ASSERT_EQ(cli_setup_config_mcp_add(fixture, server, &configured), 0);
+		ASSERT_EQ(cli_setup_config_mcp_add_copy(fixture, server, &configured), 0);
 		ASSERT_NE(configured, nullptr);
 		if (std::string(fixture).find("TOKEN='keep'") != std::string::npos)
 			EXPECT_NE(std::string(configured).find("TOKEN='keep'"), std::string::npos);
 		if (std::string(fixture).find("# keep") != std::string::npos)
 			EXPECT_NE(std::string(configured).find("# keep"), std::string::npos);
 		char *again = nullptr;
-		ASSERT_EQ(cli_setup_config_mcp_add(configured, server, &again), 0);
+		ASSERT_EQ(cli_setup_config_mcp_add_copy(configured, server, &again), 0);
 		EXPECT_STREQ(again, configured);
 		free(again);
 		free(configured);
@@ -616,7 +622,7 @@ TEST_F(CliSetupTest, McpAdditionPreservesInlineArraysCommentsAndCredentials) {
 		"url='https://mcp.exa.ai/mcp?tools=web_search_exa'\nauto_connect=false\n"
 		"auth_token_env='PRIVATE_TOKEN'\n";
 	char *kept = nullptr;
-	ASSERT_EQ(cli_setup_config_mcp_add(existing.c_str(), server, &kept), 0);
+	ASSERT_EQ(cli_setup_config_mcp_add_copy(existing.c_str(), server, &kept), 0);
 	EXPECT_EQ(std::string(kept), existing);
 	free(kept);
 }
@@ -640,7 +646,7 @@ TEST_F(CliSetupTest, LocalMcpDefaultsReflectLaunchersWithoutRunningOrInstallingT
 			}
 		}
 		char *configured = nullptr;
-		ASSERT_EQ(cli_setup_mcp_apply("", CLI_SETUP_DEVELOPER, &configured), 0);
+		ASSERT_EQ(cli_setup_mcp_apply_copy("", CLI_SETUP_DEVELOPER, &configured), 0);
 		toml_result_t parsed = toml_parse(configured, static_cast<int>(strlen(configured)));
 		ASSERT_TRUE(parsed.ok);
 		toml_datum_t servers = toml_get(toml_get(parsed.toptab, "mcp"), "servers");
@@ -664,8 +670,10 @@ TEST_F(CliSetupTest, SetupConfigMergePreservesMcpCommentsAndUnchangedValuesExact
 	const std::string model = "# Original model settings\n[model.text]\n"
 		"model       = 'old' # chosen model\nmax_tokens  = 4_096\n";
 	char *merged = nullptr;
-	ASSERT_EQ(cli_setup_config_merge((model + "\n" + mcp).c_str(),
-		"[model.text]\nmodel=\"new\"\nmax_tokens=4096\n", &merged), 0);
+	ASSERT_EQ(cli_setup_config_merge_copy((model + "\n" + mcp).c_str(),
+					      "[model.text]\nmodel=\"new\"\nmax_tokens=4096\n",
+					      &merged),
+		  0);
 	ASSERT_NE(merged, nullptr);
 	std::string expected = model;
 	expected.replace(expected.find("'old'"), 5, "\"new\"");
@@ -678,9 +686,11 @@ TEST_F(CliSetupTest, UnchangedSetupPatchDoesNotReformatAnything) {
 		"model = 'custom' # keep\r\nmax_tokens = 4_096\r\n"
 		"[prompt]\r\nmode = 'replace'\r\n";
 	char *merged = nullptr;
-	ASSERT_EQ(cli_setup_config_merge(original.c_str(),
-		"[model.text]\nmodel=\"custom\"\nmax_tokens=4096\n[prompt]\nmode=\"replace\"\n",
-		&merged), 0);
+	ASSERT_EQ(cli_setup_config_merge_copy(original.c_str(),
+					      "[model.text]\nmodel=\"custom\"\nmax_tokens=4096\n["
+					      "prompt]\nmode=\"replace\"\n",
+					      &merged),
+		  0);
 	EXPECT_EQ(std::string(merged), original);
 	free(merged);
 }
@@ -689,8 +699,10 @@ TEST_F(CliSetupTest, SetupEditsMultilineValuesWithoutTouchingDecoyHeadersOrComme
 	const std::string original = "[model.text]\nmodel = '''old\n[mcp]\n''' # keep comment\n"
 		"api_base = \"old\\\"value\" # keep URL comment\n\n[mcp]\nservers = []\n";
 	char *merged = nullptr;
-	ASSERT_EQ(cli_setup_config_merge(original.c_str(),
-		"[model.text]\nmodel='new'\napi_base='https://new.example'\n", &merged), 0);
+	ASSERT_EQ(cli_setup_config_merge_copy(
+			  original.c_str(),
+			  "[model.text]\nmodel='new'\napi_base='https://new.example'\n", &merged),
+		  0);
 	EXPECT_STREQ(merged, "[model.text]\nmodel = 'new' # keep comment\n"
 		"api_base = 'https://new.example' # keep URL comment\n\n[mcp]\nservers = []\n");
 	free(merged);
@@ -705,10 +717,14 @@ TEST_F(CliSetupTest, SetupCanInsertIntoInlineDottedAndFinalHeaderTables) {
 		"[model.text]"}) {
 		SCOPED_TRACE(original);
 		char *merged = nullptr;
-		ASSERT_EQ(cli_setup_config_merge(original,
-			"[prompt]\nmode='replace'\n[model.text]\nmodel='new'\nprovider='custom'\n"
-			"api_base='https://example.test'\n[model.vision]\nmodel='vision'\n",
-			&merged), 0);
+		ASSERT_EQ(
+			cli_setup_config_merge_copy(
+				original,
+				"[prompt]\nmode='replace'\n[model.text]\nmodel='new'\nprovider='"
+				"custom'\n"
+				"api_base='https://example.test'\n[model.vision]\nmodel='vision'\n",
+				&merged),
+			0);
 		if (std::string(original).find("timeout_seconds=77") != std::string::npos)
 			EXPECT_NE(std::string(merged).find("timeout_seconds=77"), std::string::npos);
 		free(merged);
@@ -722,8 +738,9 @@ TEST_F(CliSetupTest, SetupReplacesAllStringFormsWhileRetainingTrailingComments) 
 		std::string original = "[model.text]\nmodel = " + std::string(literal) +
 			" # keep comment\n\n[mcp]\nservers = []\n";
 		char *merged = nullptr;
-		ASSERT_EQ(cli_setup_config_merge(original.c_str(), "[model.text]\nmodel='new'\n",
-			&merged), 0);
+		ASSERT_EQ(cli_setup_config_merge_copy(original.c_str(),
+						      "[model.text]\nmodel='new'\n", &merged),
+			  0);
 		EXPECT_STREQ(merged, "[model.text]\nmodel = 'new' # keep comment\n\n[mcp]\nservers = []\n");
 		free(merged);
 	}
@@ -745,7 +762,7 @@ TEST_F(CliSetupTest, RoleSnapshotsHaveReadableNamesAndReuseUnchangedContent) {
 	EXPECT_NE(next.string(), first);
 	EXPECT_EQ(next.extension(), ".md");
 	EXPECT_EQ(next.filename().string().find("general-"), 0u);
-	char *custom = file_read_all(first.c_str(), nullptr);
+	char *custom = file_read_all_copy(first.c_str(), nullptr);
 	ASSERT_NE(custom, nullptr);
 	EXPECT_STREQ(custom, "Custom instructions");
 	free(custom);
@@ -832,4 +849,17 @@ TEST_F(CliSetupTest, ReconfigureKeepsExistingDeepSeekModeBudgetAndTimeout) {
 	EXPECT_EQ(cfg.models.text.timeout_seconds, 120);
 	EXPECT_EQ(cfg.models.text.retry_count, 0);
 	EXPECT_FALSE(cli_setup_thinking_enabled(&cfg.models.text));
+}
+
+TEST_F(CliSetupTest, ConfigurationCopiesPreserveExistingOwner)
+{
+	char *text = strdup("[exec]\nnetwork=false\n");
+	ASSERT_NE(text, nullptr);
+	char *saved = text;
+	EXPECT_EQ(cli_setup_config_merge_copy("", "", &text), -EEXIST);
+	EXPECT_EQ(cli_setup_config_credentials_copy("", &text), -EEXIST);
+	EXPECT_EQ(cli_setup_config_mcp_add_copy("", "", &text), -EEXIST);
+	EXPECT_EQ(text, saved);
+	EXPECT_STREQ(text, "[exec]\nnetwork=false\n");
+	free(text);
 }

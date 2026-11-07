@@ -15,7 +15,7 @@ void cli_renderer_media(const char *type, const char *path, void *user)
 	if (ctx && ctx->presenter && path && path[0]) {
 		if (morph_strmap_contains(&ctx->presenter->rendered_artifacts, path))
 			return;
-		(void)morph_strmap_set(&ctx->presenter->rendered_artifacts, path, (void *)1);
+		(void)morph_strmap_set_borrow(&ctx->presenter->rendered_artifacts, path, (void *)1);
 	}
 	if (strcmp(type, "image") == 0) {
 		image_render_terminal(ctx ? ctx->logger : NULL, path);

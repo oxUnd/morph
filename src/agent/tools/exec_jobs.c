@@ -45,18 +45,20 @@ static int job_owned(const cJSON *data, int64_t owner)
 	       (double)owner;
 }
 
-static void add_status(cJSON *data, const struct process_snapshot *snapshot)
+static int add_status(cJSON *data, const struct process_snapshot *snapshot)
 {
 	cJSON_DeleteItemFromObjectCaseSensitive(data, "status");
 	cJSON_DeleteItemFromObjectCaseSensitive(data, "duration_ms");
 	cJSON_DeleteItemFromObjectCaseSensitive(data, "exit_code");
 	cJSON_DeleteItemFromObjectCaseSensitive(data, "signal");
-	cJSON_AddStringToObject(data, "status", process_state_name(snapshot->state));
-	cJSON_AddNumberToObject(data, "duration_ms", (double)snapshot->duration_ms);
-	if (snapshot->state == PROCESS_EXITED)
-		cJSON_AddNumberToObject(data, "exit_code", snapshot->exit_code);
-	if (snapshot->signal_number)
-		cJSON_AddNumberToObject(data, "signal", snapshot->signal_number);
+	if (!cJSON_AddStringToObject(data, "status", process_state_name(snapshot->state)) ||
+	    !cJSON_AddNumberToObject(data, "duration_ms", (double)snapshot->duration_ms) ||
+	    (snapshot->state == PROCESS_EXITED &&
+	     !cJSON_AddNumberToObject(data, "exit_code", snapshot->exit_code)) ||
+	    (snapshot->signal_number &&
+	     !cJSON_AddNumberToObject(data, "signal", snapshot->signal_number)))
+		return -ENOMEM;
+	return 0;
 }
 
 static void emit_job(struct exec_jobs *jobs, const char *name, cJSON *data)
@@ -75,7 +77,13 @@ static void emit_job(struct exec_jobs *jobs, const char *name, cJSON *data)
 int exec_jobs_create(struct exec_jobs **out)
 {
 	struct exec_job entry;
-	struct exec_jobs *jobs = calloc(1, sizeof(*jobs));
+	struct exec_jobs *jobs;
+
+	if (!out)
+		return -EINVAL;
+	if (*out)
+		return -EALREADY;
+	jobs = calloc(1, sizeof(*jobs));
 	if (!jobs)
 		return -ENOMEM;
 	int rc = pthread_mutex_init(&jobs->lock, NULL);
@@ -117,7 +125,7 @@ void exec_jobs_bind(struct exec_jobs *jobs, struct process_manager *manager, mor
 void exec_jobs_complete(const char *session_id, void *user_data)
 {
 	struct exec_jobs *jobs = user_data;
-	struct process_snapshot snapshot;
+	struct process_snapshot snapshot = {0};
 	cJSON *event = NULL;
 	if (process_session_status(jobs->manager, session_id, &snapshot) != 0 ||
 	    snapshot.state < PROCESS_EXITED)
@@ -125,7 +133,7 @@ void exec_jobs_complete(const char *session_id, void *user_data)
 	pthread_mutex_lock(&jobs->lock);
 	struct exec_job *job = find_job(jobs, session_id);
 	if (job && job->announced && !job->completed) {
-		add_status(job->data, &snapshot);
+		(void)add_status(job->data, &snapshot);
 		event = cJSON_Duplicate(job->data, 1);
 		if (event)
 			job->completed = 1;
@@ -149,8 +157,9 @@ int exec_jobs_add(struct exec_jobs *jobs, const char *id, const char *command,
 		  int service, int notify_only, int host, int network)
 {
 	cJSON *data = cJSON_CreateObject();
-	char *safe_command = process_redact_text(jobs->manager, command);
-	char *safe_description = process_redact_text(jobs->manager, description ? description : "");
+	char *safe_command = process_redact_text_copy(jobs->manager, command);
+	char *safe_description =
+		process_redact_text_copy(jobs->manager, description ? description : "");
 	if (!data || !safe_command || !safe_description) {
 		cJSON_Delete(data);
 		free(safe_command);
@@ -179,7 +188,7 @@ int exec_jobs_add(struct exec_jobs *jobs, const char *id, const char *command,
 		return -ENOMEM;
 	}
 	pthread_mutex_lock(&jobs->lock);
-	struct exec_job *job = morph_array_push(&jobs->entries);
+	struct exec_job *job = morph_array_push_borrow(&jobs->entries);
 	if (job)
 		*job = (struct exec_job){.data = data};
 	pthread_mutex_unlock(&jobs->lock);
@@ -200,22 +209,28 @@ int exec_jobs_add(struct exec_jobs *jobs, const char *id, const char *command,
 
 int exec_jobs_list(struct exec_jobs *jobs, int64_t owner, cJSON **out)
 {
-	cJSON *array = cJSON_CreateArray();
+	cJSON *array;
 	int rc = 0;
+
+	if (!jobs || !out)
+		return -EINVAL;
+	if (*out)
+		return -EALREADY;
+	array = cJSON_CreateArray();
 	if (!array)
 		return -ENOMEM;
 	pthread_mutex_lock(&jobs->lock);
 	struct exec_job *job;
 	morph_array_foreach(job, &jobs->entries, struct exec_job)
 	{
-		struct process_snapshot snapshot;
+		struct process_snapshot snapshot = {0};
 		if (!job_owned(job->data, owner))
 			continue;
-		if (!process_session_status(jobs->manager, job_string(job->data, "session_id"),
-					    &snapshot))
-			add_status(job->data, &snapshot);
+		int status_rc = process_session_status(
+			jobs->manager, job_string(job->data, "session_id"), &snapshot);
 		cJSON *data = cJSON_Duplicate(job->data, 1);
-		if (!data || !cJSON_AddItemToArray(array, data)) {
+		if (!data || (status_rc == 0 && add_status(data, &snapshot) != 0) ||
+		    !cJSON_AddItemToArray(array, data)) {
 			cJSON_Delete(data);
 			rc = -ENOMEM;
 			break;
@@ -233,6 +248,10 @@ int exec_jobs_list(struct exec_jobs *jobs, int64_t owner, cJSON **out)
 static int read_job(struct exec_jobs *jobs, int64_t owner, const char *id, int full_output,
 		    cJSON **out)
 {
+	if (!jobs || !id || !out)
+		return -EINVAL;
+	if (*out)
+		return -EALREADY;
 	pthread_mutex_lock(&jobs->lock);
 	struct exec_job *job = find_job(jobs, id);
 	int owned = job && job_owned(job->data, owner);
@@ -240,19 +259,25 @@ static int read_job(struct exec_jobs *jobs, int64_t owner, const char *id, int f
 	pthread_mutex_unlock(&jobs->lock);
 	if (!data)
 		return owned ? -ENOMEM : -ENOENT;
-	struct process_snapshot snapshot;
+	struct process_snapshot snapshot = {0};
 	int rc = process_session_inspect(jobs->manager, id, full_output, &snapshot);
 	if (rc) {
 		cJSON_Delete(data);
 		return rc;
 	}
-	add_status(data, &snapshot);
-	cJSON_AddStringToObject(data, "stdout", snapshot.stdout_text ? snapshot.stdout_text : "");
-	cJSON_AddStringToObject(data, "stderr", snapshot.stderr_text ? snapshot.stderr_text : "");
-	cJSON_AddStringToObject(data, "stdout_path", snapshot.stdout_path);
-	cJSON_AddStringToObject(data, "stderr_path", snapshot.stderr_path);
-	cJSON_AddBoolToObject(data, "stdout_truncated", snapshot.stdout_truncated);
-	cJSON_AddBoolToObject(data, "stderr_truncated", snapshot.stderr_truncated);
+	if (add_status(data, &snapshot) != 0 ||
+	    !cJSON_AddStringToObject(data, "stdout",
+				     snapshot.stdout_text ? snapshot.stdout_text : "") ||
+	    !cJSON_AddStringToObject(data, "stderr",
+				     snapshot.stderr_text ? snapshot.stderr_text : "") ||
+	    !cJSON_AddStringToObject(data, "stdout_path", snapshot.stdout_path) ||
+	    !cJSON_AddStringToObject(data, "stderr_path", snapshot.stderr_path) ||
+	    !cJSON_AddBoolToObject(data, "stdout_truncated", snapshot.stdout_truncated) ||
+	    !cJSON_AddBoolToObject(data, "stderr_truncated", snapshot.stderr_truncated)) {
+		process_snapshot_cleanup(&snapshot);
+		cJSON_Delete(data);
+		return -ENOMEM;
+	}
 	process_snapshot_cleanup(&snapshot);
 	*out = data;
 	return 0;
@@ -280,7 +305,13 @@ void exec_jobs_observed(struct exec_jobs *jobs, const char *id)
 int exec_jobs_wait(struct exec_jobs *jobs, int64_t owner, const char *turn_id,
 		   int (*cancelled)(void *), void *cancel_data, cJSON **out)
 {
-	cJSON *results = cJSON_CreateArray();
+	cJSON *results;
+
+	if (!jobs || !out)
+		return -EINVAL;
+	if (*out)
+		return -EALREADY;
+	results = cJSON_CreateArray();
 	if (!results)
 		return -ENOMEM;
 	int rc = 0;

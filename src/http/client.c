@@ -382,11 +382,23 @@ out:
 	return rc;
 }
 
+static int http_response_prepare_empty(struct http_response *response)
+{
+	if (!response)
+		return -EINVAL;
+	if (response->body.data || response->headers.data)
+		return -EEXIST;
+	memset(response, 0, sizeof(*response));
+	return 0;
+}
+
 int http_get(const struct http_control *control, const char *url, struct http_response *resp)
 {
 	if (!url || !resp)
 		return MORPH_TRACE_ERROR(control ? control->logger : NULL, -EINVAL);
-	memset(resp, 0, sizeof(*resp));
+	int rc = http_response_prepare_empty(resp);
+	if (rc != 0)
+		return rc;
 	return do_request(control, url, "GET", NULL, 0, NULL, NULL, 0, resp, 30L, 0);
 }
 
@@ -396,7 +408,9 @@ int http_get_ex_timeout_limit(const struct http_control *control, const char *ur
 {
 	if (!url || !resp || timeout_seconds <= 0)
 		return -EINVAL;
-	memset(resp, 0, sizeof(*resp));
+	int rc = http_response_prepare_empty(resp);
+	if (rc != 0)
+		return rc;
 	return do_request(control, url, "GET", NULL, 0, NULL, extra_headers, extra_header_count,
 			  resp, timeout_seconds, body_limit);
 }
@@ -420,7 +434,9 @@ int http_post(const struct http_control *control, const char *url, const char *b
 {
 	if (!url || !resp)
 		return -EINVAL;
-	memset(resp, 0, sizeof(*resp));
+	int rc = http_response_prepare_empty(resp);
+	if (rc != 0)
+		return rc;
 	return do_request(control, url, "POST", body, body_len, content_type, NULL, 0, resp, 60L,
 			  0);
 }
@@ -431,7 +447,9 @@ int http_post_ex(const struct http_control *control, const char *url, const char
 {
 	if (!url || !resp)
 		return -EINVAL;
-	memset(resp, 0, sizeof(*resp));
+	int rc = http_response_prepare_empty(resp);
+	if (rc != 0)
+		return rc;
 	return do_request(control, url, "POST", body, body_len, content_type, extra_headers,
 			  extra_header_count, resp, 60L, 0);
 }
@@ -442,7 +460,9 @@ int http_post_ex_timeout(const struct http_control *control, const char *url, co
 {
 	if (!url || !resp)
 		return MORPH_TRACE_ERROR(control ? control->logger : NULL, -EINVAL);
-	memset(resp, 0, sizeof(*resp));
+	int rc = http_response_prepare_empty(resp);
+	if (rc != 0)
+		return rc;
 	return do_request(control, url, "POST", body, body_len, content_type, extra_headers,
 			  extra_header_count, resp, timeout_seconds, 0);
 }
@@ -462,7 +482,9 @@ int http_post_multipart_ex(const struct http_control *control, const char *url,
 
 	if (!url || !parts || part_count <= 0 || !resp)
 		return MORPH_TRACE_ERROR(control ? control->logger : NULL, -EINVAL);
-	memset(resp, 0, sizeof(*resp));
+	rc = http_response_prepare_empty(resp);
+	if (rc != 0)
+		return rc;
 	rc = http_init(control ? control->logger : NULL);
 	if (rc != 0)
 		return rc;
@@ -866,13 +888,13 @@ out:
 	return rc;
 }
 
-const char *http_session_body(struct http_session *s, size_t *len)
+const char *http_session_body_borrow(struct http_session *s, size_t *len)
 {
 	if (!s)
 		return NULL;
 	if (len)
 		*len = s->resp_body.len;
-	return morph_buf_cstr(&s->resp_body);
+	return morph_buf_cstr_borrow(&s->resp_body);
 }
 
 long http_session_status(struct http_session *s)
@@ -882,11 +904,11 @@ long http_session_status(struct http_session *s)
 	return s->status_code;
 }
 
-char *http_session_header_get(struct http_session *s, const char *name)
+char *http_session_header_copy(struct http_session *s, const char *name)
 {
 	if (!s || !name)
 		return NULL;
-	const char *hdrs = morph_buf_cstr(&s->resp_headers);
+	const char *hdrs = morph_buf_cstr_borrow(&s->resp_headers);
 	if (!hdrs)
 		return NULL;
 	size_t name_len = strlen(name);

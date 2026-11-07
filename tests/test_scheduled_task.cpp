@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "util/cleanup.h"
 #include "db/database.h"
 #include "db/scheduled_task.h"
 #include "session.h"
@@ -12,6 +13,35 @@
 #include <cstring>
 #include <pthread.h>
 #include <unistd.h>
+
+TEST(ScheduledTaskOwnershipTest, OccupiedSnapshotRejectsWritesAndPreservesTheExistingTask)
+{
+	struct db database{};
+	ASSERT_EQ(db_open(nullptr, &database, ":memory:"), 0);
+	ASSERT_EQ(db_init_schema(&database), 0);
+	struct scheduled_task_input input{};
+	input.title = "original";
+	input.kind = "reminder";
+	input.trigger_type = "once";
+	input.action_type = "notify";
+	input.payload_json = "{}";
+	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	ASSERT_EQ(scheduled_task_create(&database, &input, &task), 0);
+	char *original = task.payload_json;
+	input.title = "replacement";
+	EXPECT_EQ(scheduled_task_create(&database, &input, &task), -EEXIST);
+	EXPECT_EQ(scheduled_task_update(&database, task.id, &input, &task), -EEXIST);
+	EXPECT_EQ(scheduled_task_get(&database, task.id, &task), -EEXIST);
+	EXPECT_EQ(task.payload_json, original);
+	EXPECT_STREQ(task.title, "original");
+	struct scheduled_task *items = nullptr;
+	int count = 0;
+	ASSERT_EQ(scheduled_task_list(&database, nullptr, 10, &items, &count), 0);
+	ASSERT_EQ(count, 1);
+	EXPECT_STREQ(items[0].title, "original");
+	scheduled_task_free_list(items, count);
+	db_close(&database);
+}
 
 static int successful_runner(const struct scheduled_task *task,
 			     struct scheduled_task_action_result *result,
@@ -55,7 +85,7 @@ static int watch_runner(const struct scheduled_task *task,
 
 static cJSON *event_at(struct morph_event_recorder *rec, size_t index)
 {
-	const char *json = morph_event_recorder_get(rec, index);
+	const char *json = morph_event_recorder_borrow(rec, index);
 
 	if (!json)
 		return nullptr;
@@ -111,6 +141,7 @@ static void *inbox_reader_thread(void *arg)
 		if (rc != 0)
 			args->failed->store(1);
 		notification_free_list(notifications, count);
+		notifications = nullptr;
 	}
 	return nullptr;
 }
@@ -143,12 +174,13 @@ TEST_F(ScheduledTaskTest, ConcurrentNotificationInboxAccess) {
 		  0);
 	EXPECT_GT(count, 0);
 	notification_free_list(notifications, count);
+	notifications = nullptr;
 	EXPECT_EQ(failed.load(), 0);
 }
 
 TEST_F(ScheduledTaskTest, CreateAndGetTask) {
 	struct scheduled_task_input input = {};
-	struct scheduled_task task = {};
+	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
 
 	input.title = "Check coffee";
 	input.kind = "watch";
@@ -182,9 +214,9 @@ TEST_F(ScheduledTaskTest, CreateAndGetTask) {
 
 TEST_F(ScheduledTaskTest, TaskAndNotificationTrackSessions) {
 	struct scheduled_task_input input = {};
-	struct scheduled_task task = {};
-	struct scheduled_task fetched = {};
-	struct notification notification = {};
+	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task fetched MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct notification notification MORPH_CLEANUP(notification_cleanup) = {};
 	struct session source = {};
 	struct session run = {};
 
@@ -224,7 +256,7 @@ TEST_F(ScheduledTaskTest, CreateUpdateCancelEmitTaskEvents) {
 	struct morph_event_recorder rec;
 	struct scheduled_task_event_sink events;
 	struct scheduled_task_input input = {};
-	struct scheduled_task task = {};
+	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
 	cJSON *root;
 	cJSON *data;
 	int64_t id;
@@ -299,7 +331,7 @@ TEST_F(ScheduledTaskTest, RejectsInvalidTaskFields) {
 TEST_F(ScheduledTaskTest, UpdateTaskFields) {
 	struct scheduled_task_input input = {};
 	struct scheduled_task_input update = {};
-	struct scheduled_task task = {};
+	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
 
 	input.title = "Original";
 	input.kind = "reminder";
@@ -315,7 +347,9 @@ TEST_F(ScheduledTaskTest, UpdateTaskFields) {
 	update.interval_seconds = 30;
 	update.action_type = "reminder";
 	update.payload_json = "{\"message\":\"updated\"}";
-	ASSERT_EQ(scheduled_task_update(&db, task.id, &update, &task), 0);
+	int64_t task_id = task.id;
+	scheduled_task_cleanup(&task);
+	ASSERT_EQ(scheduled_task_update(&db, task_id, &update, &task), 0);
 	EXPECT_STREQ(task.title, "Updated");
 	EXPECT_STREQ(task.status, "pending");
 	EXPECT_STREQ(task.trigger_type, "interval");
@@ -350,12 +384,13 @@ TEST_F(ScheduledTaskTest, ListDueTasks) {
 	ASSERT_EQ(count, 1);
 	EXPECT_STREQ(tasks[0].title, "Due task");
 	scheduled_task_free_list(tasks, count);
+	tasks = nullptr;
 }
 
 TEST_F(ScheduledTaskTest, CountsActiveTasksAcrossLifecycle) {
 	struct scheduled_task_counts counts = {};
 	struct scheduled_task_input input = {};
-	struct scheduled_task task = {};
+	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
 
 	ASSERT_EQ(scheduled_task_count_active(&db, &counts), 0);
 	EXPECT_EQ(counts.running, 0);
@@ -381,7 +416,7 @@ TEST_F(ScheduledTaskTest, CountsActiveTasksAcrossLifecycle) {
 
 TEST_F(ScheduledTaskTest, ListTasksByStatus) {
 	struct scheduled_task_input input = {};
-	struct scheduled_task task = {};
+	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
 	struct scheduled_task *tasks = nullptr;
 	int count = 0;
 
@@ -397,13 +432,14 @@ TEST_F(ScheduledTaskTest, ListTasksByStatus) {
 	ASSERT_EQ(count, 1);
 	EXPECT_STREQ(tasks[0].status, "cancelled");
 	scheduled_task_free_list(tasks, count);
+	tasks = nullptr;
 	scheduled_task_cleanup(&task);
 }
 
 TEST_F(ScheduledTaskTest, UpdateAndCancelTask) {
 	struct scheduled_task_input input = {};
-	struct scheduled_task task = {};
-	struct scheduled_task fetched = {};
+	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task fetched MORPH_CLEANUP(scheduled_task_cleanup) = {};
 
 	input.title = "Retry task";
 	input.kind = "watch";
@@ -434,7 +470,7 @@ TEST_F(ScheduledTaskTest, UpdateAndCancelTask) {
 }
 
 TEST_F(ScheduledTaskTest, NotificationInboxUnreadFlow) {
-	struct notification notification = {};
+	struct notification notification MORPH_CLEANUP(notification_cleanup) = {};
 	struct notification *notifications = nullptr;
 	int count = 0;
 
@@ -454,12 +490,14 @@ TEST_F(ScheduledTaskTest, NotificationInboxUnreadFlow) {
 	EXPECT_STREQ(notifications[0].delivery_status, "inbox");
 	ASSERT_EQ(notification_mark_read(&db, notifications[0].id, 1234), 0);
 	notification_free_list(notifications, count);
+	notifications = nullptr;
 
 	notifications = nullptr;
 	count = 0;
 	ASSERT_EQ(notification_list_unread(&db, 10, &notifications, &count), 0);
 	EXPECT_EQ(count, 0);
 	notification_free_list(notifications, count);
+	notifications = nullptr;
 }
 
 TEST_F(ScheduledTaskTest, RunDueReminderCreatesInboxNotification) {
@@ -485,6 +523,7 @@ TEST_F(ScheduledTaskTest, RunDueReminderCreatesInboxNotification) {
 	ASSERT_NE(notifications[0].body, nullptr);
 	EXPECT_STREQ(notifications[0].body, "Coffee is ready.");
 	notification_free_list(notifications, count);
+	notifications = nullptr;
 }
 
 TEST_F(ScheduledTaskTest, NotifyJsonControlsDeliveryStatus) {
@@ -505,6 +544,7 @@ TEST_F(ScheduledTaskTest, NotifyJsonControlsDeliveryStatus) {
 	ASSERT_EQ(count, 1);
 	EXPECT_STREQ(notifications[0].delivery_status, "inbox+session");
 	notification_free_list(notifications, count);
+	notifications = nullptr;
 }
 
 TEST_F(ScheduledTaskTest, RunDueCollectReturnsCreatedNotification) {
@@ -527,6 +567,7 @@ TEST_F(ScheduledTaskTest, RunDueCollectReturnsCreatedNotification) {
 	ASSERT_NE(notifications[0].body, nullptr);
 	EXPECT_STREQ(notifications[0].body, "hello");
 	notification_free_list(notifications, count);
+	notifications = nullptr;
 }
 
 TEST_F(ScheduledTaskTest, RunDueRepeatingReminderReschedules) {
@@ -551,6 +592,7 @@ TEST_F(ScheduledTaskTest, RunDueRepeatingReminderReschedules) {
 	EXPECT_EQ(tasks[0].next_run_at, 80);
 	EXPECT_EQ(tasks[0].attempts, 1);
 	scheduled_task_free_list(tasks, count);
+	tasks = nullptr;
 }
 
 TEST_F(ScheduledTaskTest, RunDueActionUsesRunnerAndCompletes) {
@@ -573,11 +615,13 @@ TEST_F(ScheduledTaskTest, RunDueActionUsesRunnerAndCompletes) {
 	ASSERT_EQ(count, 1);
 	EXPECT_STREQ(notifications[0].level, "info");
 	notification_free_list(notifications, count);
+	notifications = nullptr;
 
 	ASSERT_EQ(scheduled_task_list(&db, "completed", 10, &tasks, &count),
 		  0);
 	ASSERT_EQ(count, 1);
 	scheduled_task_free_list(tasks, count);
+	tasks = nullptr;
 }
 
 TEST_F(ScheduledTaskTest, RunDueActionRetriesThenFails) {
@@ -605,6 +649,7 @@ TEST_F(ScheduledTaskTest, RunDueActionRetriesThenFails) {
 	EXPECT_EQ(tasks[0].attempts, 1);
 	EXPECT_EQ(tasks[0].next_run_at, 50);
 	scheduled_task_free_list(tasks, count);
+	tasks = nullptr;
 
 	ASSERT_EQ(scheduled_task_run_due_with_runner(&db, 60, 10,
 		failing_runner, nullptr, &ran), 0);
@@ -613,6 +658,7 @@ TEST_F(ScheduledTaskTest, RunDueActionRetriesThenFails) {
 	ASSERT_EQ(count, 1);
 	EXPECT_STREQ(tasks[0].last_error, "runner failed");
 	scheduled_task_free_list(tasks, count);
+	tasks = nullptr;
 }
 
 TEST_F(ScheduledTaskTest, RunDueWatchReschedulesThenCompletes) {
@@ -639,6 +685,7 @@ TEST_F(ScheduledTaskTest, RunDueWatchReschedulesThenCompletes) {
 	ASSERT_EQ(count, 1);
 	EXPECT_EQ(tasks[0].next_run_at, 25);
 	scheduled_task_free_list(tasks, count);
+	tasks = nullptr;
 
 	ASSERT_EQ(scheduled_task_run_due_with_runner(&db, 30, 10,
 		watch_runner, &runner_count, &ran), 0);
@@ -646,6 +693,7 @@ TEST_F(ScheduledTaskTest, RunDueWatchReschedulesThenCompletes) {
 		  0);
 	ASSERT_EQ(count, 1);
 	scheduled_task_free_list(tasks, count);
+	tasks = nullptr;
 }
 
 TEST_F(ScheduledTaskTest, RunDueClaimPreventsDuplicateProcessing) {
@@ -668,7 +716,7 @@ TEST_F(ScheduledTaskTest, RunDueClaimPreventsDuplicateProcessing) {
 TEST_F(ScheduledTaskTest, ToolCreateDelaySecondsUsesTimeAnchor) {
 	struct tool_registry reg;
 	struct tool_result result;
-	struct scheduled_task task = {};
+	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
 	cJSON *root;
 	cJSON *id_item;
 	int64_t id;
@@ -747,6 +795,7 @@ TEST_F(ScheduledTaskTest, RunDueAgentUsesRunnerAndReschedules) {
 	EXPECT_EQ(tasks[0].next_run_at, 50);
 	EXPECT_EQ(tasks[0].attempts, 1);
 	scheduled_task_free_list(tasks, count);
+	tasks = nullptr;
 }
 
 TEST_F(ScheduledTaskTest, RunDueEmitsTaskLifecycleEvents) {

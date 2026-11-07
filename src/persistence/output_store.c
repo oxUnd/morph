@@ -1,10 +1,11 @@
 #include "output_store.h"
 #include "db/database.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/error.h"
 
 #include <errno.h>
 #include <string.h>
+#include <stdlib.h>
 
 int output_store_find_id(struct db *db, const char *path, int64_t *id)
 {
@@ -26,7 +27,7 @@ int output_store_find_id(struct db *db, const char *path, int64_t *id)
 	return step == SQLITE_ROW || step == SQLITE_DONE ? 0 : MORPH_ERR_DB;
 }
 
-int output_store_insert(struct db *db, const struct output_record *record, int64_t *id)
+int output_store_insert(struct db *db, const struct output_record_input *record, int64_t *id)
 {
 	const char *sql = "INSERT INTO outputs(session_id,kind,path,prompt,model,request_prompt,"
 			  "provider,tool_name,tool_call_id,turn_id,recipe_json,mime,width,height,"
@@ -78,15 +79,43 @@ int output_store_insert(struct db *db, const struct output_record *record, int64
 	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
 }
 
-int output_store_get(struct db *db, const char *path, struct arena *arena,
-		     struct output_record *record)
+void output_record_cleanup(struct output_record *record)
 {
+	if (!record)
+		return;
+	free(record->kind);
+	free(record->path);
+	free(record->prompt);
+	free(record->model);
+	free(record->request_prompt);
+	free(record->provider);
+	free(record->tool_name);
+	free(record->tool_call_id);
+	free(record->turn_id);
+	free(record->recipe_json);
+	free(record->mime);
+	memset(record, 0, sizeof(*record));
+}
+
+static void output_record_move(struct output_record *destination, struct output_record *source)
+{
+	*destination = *source;
+	memset(source, 0, sizeof(*source));
+}
+
+int output_store_copy(struct db *db, const char *path, struct output_record *out)
+{
+	struct output_record value MORPH_CLEANUP(output_record_cleanup) = {0};
+	struct output_record *record = &value;
 	sqlite3_stmt *stmt = NULL;
 	int rc;
 
-	if (!db || !db->handle || !path || !arena || !record)
+	if (!db || !db->handle || !path || !out)
 		return -EINVAL;
-	memset(record, 0, sizeof(*record));
+	if (out->kind || out->path || out->prompt || out->model || out->request_prompt ||
+	    out->provider || out->tool_name || out->tool_call_id || out->turn_id ||
+	    out->recipe_json || out->mime)
+		return -EEXIST;
 	rc = sqlite3_prepare_v2(
 		db->handle,
 		"SELECT id,session_id,kind,path,prompt,model,request_prompt,provider,"
@@ -99,7 +128,7 @@ int output_store_get(struct db *db, const char *path, struct arena *arena,
 	sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {
-		const char **strings[] = {
+		char **strings[] = {
 			&record->kind,	      &record->path,	       &record->prompt,
 			&record->model,	      &record->request_prompt, &record->provider,
 			&record->tool_name,   &record->tool_call_id,   &record->turn_id,
@@ -109,9 +138,9 @@ int output_store_get(struct db *db, const char *path, struct arena *arena,
 		record->id = sqlite3_column_int64(stmt, 0);
 		record->session_id = sqlite3_column_int64(stmt, 1);
 		for (size_t i = 0; i < sizeof(strings) / sizeof(strings[0]); i++) {
-			const char *value = (const char *)sqlite3_column_text(stmt, (int)i + 2);
+			const char *text = (const char *)sqlite3_column_text(stmt, (int)i + 2);
 
-			if (value && !(*strings[i] = arena_strdup(arena, value))) {
+			if (text && !(*strings[i] = strdup(text))) {
 				rc = SQLITE_NOMEM;
 				break;
 			}
@@ -123,6 +152,8 @@ int output_store_get(struct db *db, const char *path, struct arena *arena,
 		record->created_at = sqlite3_column_int64(stmt, 17);
 	}
 	sqlite3_finalize(stmt);
+	if (rc == SQLITE_ROW)
+		output_record_move(out, &value);
 	return rc == SQLITE_ROW	    ? 0
 	       : rc == SQLITE_DONE  ? -ENODATA
 	       : rc == SQLITE_NOMEM ? -ENOMEM

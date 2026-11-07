@@ -15,6 +15,7 @@
 #include "agent/tools/img_compose.h"
 #include "agent/tools/img_info.h"
 #include "agent/tools/img_resize.h"
+#include "agent/tools/image_input.h"
 #include "agent/tools/img_convert.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
@@ -23,6 +24,8 @@
 #include "render/image.h"
 #include "util/file.h"
 #include "util/error.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "util/image_util.h"
 #include "util/base64.h"
 #include "stb_image.h"
@@ -41,16 +44,12 @@ struct FakeImageQaState {
 	const struct morph_cancel_token *cancel_token{};
 };
 
-static int fake_chat_with_image(struct model *self, struct arena *arena,
-				const char *system_prompt,
-				const char *prompt,
-				const char *image_path,
-				const struct model_image_chat_options *opts,
+static int fake_chat_with_image(struct model *self, const char *system_prompt, const char *prompt,
+				const char *image_path, const struct model_image_chat_options *opts,
 				sse_callback cb, void *user_data)
 {
 	auto &qa = *static_cast<FakeImageQaState *>(self->handle);
 	qa.cancel_token = self->http.cancel_token;
-	(void)arena;
 	(void)system_prompt;
 	snprintf(qa.prompt, sizeof(qa.prompt), "%s", prompt ? prompt : "");
 	snprintf(qa.path, sizeof(qa.path), "%s", image_path ? image_path : "");
@@ -66,14 +65,11 @@ static int fake_chat_with_image(struct model *self, struct arena *arena,
 	return 0;
 }
 
-static int fake_chat_with_image_fail(struct model *self, struct arena *arena,
-				     const char *system_prompt,
-				     const char *prompt,
-				     const char *image_path,
-				     const struct model_image_chat_options *opts,
-				     sse_callback cb, void *user_data)
+static int fake_chat_with_image_fail(struct model *self, const char *system_prompt,
+				     const char *prompt, const char *image_path,
+				     const struct model_image_chat_options *opts, sse_callback cb,
+				     void *user_data)
 {
-	(void)arena;
 	(void)system_prompt;
 	(void)prompt;
 	(void)image_path;
@@ -226,8 +222,7 @@ TEST(ImageGen, VolcengineRequestsDisableProviderWatermarkByDefault) {
 		 "doubao-seedream-4-5-251128");
 	request.prompt = "a cinematic landscape";
 	request.size = "2k";
-	ASSERT_EQ(image_volcengine_build_request_body(
-		&image_model, &request, &body), 0);
+	ASSERT_EQ(image_volcengine_request_body_create(&image_model, &request, &body), 0);
 	ASSERT_NE(body, nullptr);
 	cJSON *json = cJSON_Parse(body);
 	free(body);
@@ -273,7 +268,7 @@ TEST(ImageGen, KeepsDalleSizeProfile) {
 }
 
 TEST(ImageGen, ParsesUrlAndBase64Responses) {
-	struct image_payload payload = {};
+	struct image_payload payload MORPH_CLEANUP(image_payload_cleanup) = {};
 	const char *url_json =
 		"{\"data\":[{\"url\":\"https://example.com/a.png\"}]}";
 	const char *b64_json =
@@ -297,7 +292,7 @@ TEST(ImageGen, ParsesUrlAndBase64Responses) {
 }
 
 TEST(ImageGen, RejectsMalformedImageResponses) {
-	struct image_payload payload = {};
+	struct image_payload payload MORPH_CLEANUP(image_payload_cleanup) = {};
 
 	EXPECT_NE(image_provider_parse_response(NULL, "{}", &payload), 0);
 	EXPECT_NE(image_provider_parse_response(
@@ -305,15 +300,81 @@ TEST(ImageGen, RejectsMalformedImageResponses) {
 	EXPECT_NE(image_provider_parse_response(NULL, "not json", &payload), 0);
 }
 
+TEST(ImageGen, ResponseParsingRejectsOccupiedPayloadAndPreservesFailureOutput)
+{
+	struct image_payload payload MORPH_CLEANUP(image_payload_cleanup) = {};
+	payload.data = strdup("original");
+	ASSERT_NE(payload.data, nullptr);
+	payload.kind = IMAGE_PAYLOAD_BASE64;
+	strcpy(payload.output_format, "webp");
+	char *original = payload.data;
+	EXPECT_EQ(image_provider_parse_response(NULL, "{\"data\":[{\"url\":\"new\"}]}", &payload),
+		  -EEXIST);
+	EXPECT_EQ(payload.data, original);
+	EXPECT_EQ(payload.kind, IMAGE_PAYLOAD_BASE64);
+	EXPECT_STREQ(payload.output_format, "webp");
+	struct model model = {};
+	struct image_request request = {};
+	request.prompt = "example";
+	EXPECT_EQ(image_openai_provider_borrow()->execute(&model, &request, &payload), -EEXIST);
+	EXPECT_EQ(image_volcengine_provider_borrow()->execute(&model, &request, &payload), -EEXIST);
+	EXPECT_EQ(payload.data, original);
+	image_payload_cleanup(&payload);
+	payload.kind = IMAGE_PAYLOAD_BASE64;
+	payload.usage.total_tokens = 73;
+	strcpy(payload.output_format, "unchanged");
+	EXPECT_EQ(image_provider_parse_response(NULL, "not json", &payload), MORPH_ERR_PARSE);
+	EXPECT_EQ(image_provider_parse_response(NULL, "{\"data\":[{}]}", &payload),
+		  MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(payload.data, nullptr);
+	EXPECT_EQ(payload.kind, IMAGE_PAYLOAD_BASE64);
+	EXPECT_EQ(payload.usage.total_tokens, 73);
+	EXPECT_STREQ(payload.output_format, "unchanged");
+}
+
+TEST(ImageGen, ParsedPayloadOutlivesItsBorrowedResponse)
+{
+	struct image_payload payload MORPH_CLEANUP(image_payload_cleanup) = {};
+	{
+		char response[] = "{\"data\":[{\"url\":\"independent\"}]}";
+		ASSERT_EQ(image_provider_parse_response(NULL, response, &payload), 0);
+		memset(response, 'x', sizeof(response) - 1);
+	}
+	EXPECT_STREQ(payload.data, "independent");
+}
+
+TEST(ImageGen, RequestBuildersPreserveOccupiedOutputs)
+{
+	struct model model = {};
+	struct image_request request = {};
+	request.prompt = "example";
+	cJSON *value MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateString("original");
+	ASSERT_NE(value, nullptr);
+	char *body MORPH_CLEANUP(morph_json_text_cleanup) = morph_json_print_copy(value);
+	ASSERT_NE(body, nullptr);
+	char *original = body;
+	EXPECT_EQ(image_volcengine_request_body_create(&model, &request, &body), -EEXIST);
+	EXPECT_EQ(body, original);
+	morph_buf_t url MORPH_CLEANUP(morph_buf_cleanup) = {};
+	morph_buf_t auth MORPH_CLEANUP(morph_buf_cleanup) = {};
+	ASSERT_EQ(morph_buf_init(&auth, 32), 0);
+	ASSERT_EQ(morph_buf_puts(&auth, "original"), 0);
+	char *auth_storage = auth.data;
+	EXPECT_EQ(image_provider_build_request_meta(&model, "/images", &url, &auth), -EEXIST);
+	EXPECT_EQ(url.data, nullptr);
+	EXPECT_EQ(auth.data, auth_storage);
+	EXPECT_STREQ(morph_buf_cstr_borrow(&auth), "original");
+}
+
 TEST(ImageGen, DecodesBase64Payloads) {
 	size_t decoded_len = 0;
-	unsigned char *decoded = base64_decode("aGVsbG8=", &decoded_len);
+	unsigned char *decoded = base64_decode_copy("aGVsbG8=", &decoded_len);
 
 	ASSERT_NE(decoded, nullptr);
 	ASSERT_EQ(decoded_len, 5);
 	EXPECT_EQ(memcmp(decoded, "hello", decoded_len), 0);
 	free(decoded);
-	EXPECT_EQ(base64_decode("bad", &decoded_len), nullptr);
+	EXPECT_EQ(base64_decode_copy("bad", &decoded_len), nullptr);
 	EXPECT_EQ(decoded_len, 0);
 }
 
@@ -323,14 +384,14 @@ TEST(ImageEncode, PreservesSmallPngWithoutTranscoding) {
 	size_t decoded_len = 0;
 
 	ASSERT_EQ(create_solid_png(path, 64, 32), 0);
-	ASSERT_EQ(image_encode_base64(path, 360, &encoded), 0);
+	ASSERT_EQ(image_encode_base64_copy(path, 360, &encoded), 0);
 	ASSERT_NE(encoded.base64, nullptr);
 	EXPECT_STREQ(encoded.mime_type, "image/png");
-	char *original = base64_encode_file(path);
+	char *original = base64_encode_file_copy(path);
 	ASSERT_NE(original, nullptr);
 	EXPECT_STREQ(encoded.base64, original);
 	free(original);
-	unsigned char *decoded = base64_decode(encoded.base64, &decoded_len);
+	unsigned char *decoded = base64_decode_copy(encoded.base64, &decoded_len);
 	ASSERT_NE(decoded, nullptr);
 	ASSERT_GE(decoded_len, 8u);
 	EXPECT_EQ(memcmp(decoded, "\x89PNG\r\n\x1a\n", 8), 0);
@@ -345,14 +406,14 @@ TEST(ImageEncode, PreservesSmallJpegWithoutTranscoding) {
 	size_t decoded_len = 0;
 
 	ASSERT_EQ(create_solid_jpeg(path, 64, 32), 0);
-	ASSERT_EQ(image_encode_base64(path, 360, &encoded), 0);
+	ASSERT_EQ(image_encode_base64_copy(path, 360, &encoded), 0);
 	ASSERT_NE(encoded.base64, nullptr);
 	EXPECT_STREQ(encoded.mime_type, "image/jpeg");
-	char *original = base64_encode_file(path);
+	char *original = base64_encode_file_copy(path);
 	ASSERT_NE(original, nullptr);
 	EXPECT_STREQ(encoded.base64, original);
 	free(original);
-	unsigned char *decoded = base64_decode(encoded.base64, &decoded_len);
+	unsigned char *decoded = base64_decode_copy(encoded.base64, &decoded_len);
 	ASSERT_NE(decoded, nullptr);
 	ASSERT_GE(decoded_len, 3u);
 	EXPECT_EQ(decoded[0], 0xff);
@@ -372,9 +433,9 @@ TEST(ImageEncode, ResizesJpegAndKeepsJpegMime) {
 	int channels = 0;
 
 	ASSERT_EQ(create_solid_jpeg(path, 800, 400), 0);
-	ASSERT_EQ(image_encode_base64(path, 360, &encoded), 0);
+	ASSERT_EQ(image_encode_base64_copy(path, 360, &encoded), 0);
 	EXPECT_STREQ(encoded.mime_type, "image/jpeg");
-	unsigned char *decoded = base64_decode(encoded.base64, &decoded_len);
+	unsigned char *decoded = base64_decode_copy(encoded.base64, &decoded_len);
 	ASSERT_NE(decoded, nullptr);
 	ASSERT_TRUE(stbi_info_from_memory(decoded, (int)decoded_len,
 					  &width, &height, &channels));
@@ -394,9 +455,9 @@ TEST(ImageEncode, ResizesPngAndKeepsPngMime) {
 	int channels = 0;
 
 	ASSERT_EQ(create_solid_png(path, 800, 400), 0);
-	ASSERT_EQ(image_encode_base64(path, 360, &encoded), 0);
+	ASSERT_EQ(image_encode_base64_copy(path, 360, &encoded), 0);
 	EXPECT_STREQ(encoded.mime_type, "image/png");
-	unsigned char *decoded = base64_decode(encoded.base64, &decoded_len);
+	unsigned char *decoded = base64_decode_copy(encoded.base64, &decoded_len);
 	ASSERT_NE(decoded, nullptr);
 	ASSERT_TRUE(stbi_info_from_memory(decoded, (int)decoded_len,
 					  &width, &height, &channels));
@@ -513,7 +574,7 @@ TEST_F(ImgGenToolTest, RegisterTool) {
 	int rc = img_gen_init(&reg, NULL, NULL);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(reg.count, 1);
-	struct tool_entry *e = tool_lookup(&reg, "img_gen");
+	struct tool_entry *e = tool_borrow(&reg, "img_gen");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->desc.name, "img_gen");
 	EXPECT_EQ(strstr(e->desc.description, "auto"), nullptr);
@@ -632,7 +693,7 @@ TEST_F(ImgGenToolTest, ExecRejectsInvalidReferenceArrayItem) {
 TEST_F(ImgGenToolTest, InpaintRegister) {
 	int rc = img_inpaint_init(&reg, NULL, NULL);
 	EXPECT_EQ(rc, 0);
-	struct tool_entry *e = tool_lookup(&reg, "img_inpaint");
+	struct tool_entry *e = tool_borrow(&reg, "img_inpaint");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->desc.name, "img_inpaint");
 }
@@ -651,7 +712,7 @@ TEST_F(ImgGenToolTest, InpaintExecBadJson) {
 TEST_F(ImgGenToolTest, ComposeRegister) {
 	int rc = img_compose_init(&reg, NULL, NULL);
 	EXPECT_EQ(rc, 0);
-	struct tool_entry *e = tool_lookup(&reg, "img_compose");
+	struct tool_entry *e = tool_borrow(&reg, "img_compose");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->desc.name, "img_compose");
 }
@@ -670,7 +731,7 @@ TEST_F(ImgGenToolTest, ComposeExecBadJson) {
 TEST_F(ImgGenToolTest, InfoRegister) {
 	int rc = img_info_init(&reg, NULL);
 	EXPECT_EQ(rc, 0);
-	struct tool_entry *e = tool_lookup(&reg, "img_info");
+	struct tool_entry *e = tool_borrow(&reg, "img_info");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->desc.name, "img_info");
 }
@@ -727,7 +788,7 @@ TEST_F(ImgGenToolTest, QaRegister) {
 	fake.handle = &qa;
 	int rc = img_qa_init(&reg, &fake, NULL);
 	EXPECT_EQ(rc, 0);
-	struct tool_entry *e = tool_lookup(&reg, "img_qa");
+	struct tool_entry *e = tool_borrow(&reg, "img_qa");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->desc.name, "img_qa");
 }
@@ -805,7 +866,7 @@ TEST_F(ImgGenToolTest, QaCallsMultimodalLlm) {
 	EXPECT_GE(morph_event_recorder_count(&rec), 3u);
 	bool saw_stream = false;
 	for (size_t i = 0; i < morph_event_recorder_count(&rec); i++) {
-		const char *json = morph_event_recorder_get(&rec, i);
+		const char *json = morph_event_recorder_borrow(&rec, i);
 		if (json && strstr(json, "\"name\":\"tool.stream.delta\"") &&
 		    strstr(json, "\"turn_id\":\"turn_img_qa\""))
 			saw_stream = true;
@@ -867,7 +928,7 @@ TEST_F(ImgGenToolTest, QaReturnsProviderFailureDetail) {
 TEST_F(ImgGenToolTest, ResizeRegister) {
 	int rc = img_resize_init(&reg, NULL);
 	EXPECT_EQ(rc, 0);
-	struct tool_entry *e = tool_lookup(&reg, "img_resize");
+	struct tool_entry *e = tool_borrow(&reg, "img_resize");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->desc.name, "img_resize");
 }
@@ -920,7 +981,7 @@ TEST_F(ImgGenToolTest, ResizeDeniesOutsideInput) {
 TEST_F(ImgGenToolTest, ConvertRegister) {
 	int rc = img_convert_init(&reg, NULL);
 	EXPECT_EQ(rc, 0);
-	struct tool_entry *e = tool_lookup(&reg, "img_convert");
+	struct tool_entry *e = tool_borrow(&reg, "img_convert");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->desc.name, "img_convert");
 }
@@ -1240,7 +1301,7 @@ TEST(MediaOutputTest, ConcurrentArtifactsKeepIndependentBytes)
 	for (int i = 0; i < count; i++) {
 		ASSERT_EQ(results[i], 0);
 		std::string expected = "artifact " + std::to_string(i);
-		char *content = file_read_all(paths[i].c_str(), nullptr);
+		char *content = file_read_all_copy(paths[i].c_str(), nullptr);
 		ASSERT_NE(content, nullptr);
 		EXPECT_EQ(std::string(content), expected);
 		free(content);
@@ -1265,7 +1326,7 @@ TEST(MediaOutputTest, FailureLeavesNoPublishedOrTemporaryFile)
 	EXPECT_EQ(rmdir(directory), 0);
 }
 
-TEST(AnnotationTest, SharedParserAcceptsAllEstablishedInputShapes)
+TEST(AnnotationTest, ParsedCopySurvivesSourceReleaseForAllEstablishedShapes)
 {
 	const char *body = "{\"images\":[{\"path\":\"input.png\",\"width\":200,\"height\":100}],"
 			   "\"bboxes\":[{\"image_index\":0,\"x\":20,\"y\":10,\"w\":40,\"h\":30,"
@@ -1283,14 +1344,16 @@ TEST(AnnotationTest, SharedParserAcceptsAllEstablishedInputShapes)
 			input = wrapper;
 		}
 		annotation parsed{};
-		ASSERT_EQ(annotation_parse(input, &parsed), 0);
+		ASSERT_EQ(annotation_parse_copy(input, &parsed), 0);
+		cJSON_Delete(input);
+		input = nullptr;
 		ASSERT_EQ(parsed.images.nelts, 1u);
 		ASSERT_EQ(parsed.bboxes.nelts, 1u);
-		const auto *image = annotation_image_at(&parsed, 0);
+		const auto *image = annotation_image_borrow(&parsed, 0);
 		ASSERT_NE(image, nullptr);
 		EXPECT_STREQ(image->path, "input.png");
 		const auto *bbox =
-			static_cast<const annotation_bbox *>(morph_array_get(&parsed.bboxes, 0));
+			static_cast<const annotation_bbox *>(morph_array_borrow(&parsed.bboxes, 0));
 		annotation_rect normalized{};
 		ASSERT_EQ(annotation_rect_normalize(&bbox->rect, image->width, image->height,
 						    &normalized),
@@ -1305,6 +1368,20 @@ TEST(AnnotationTest, SharedParserAcceptsAllEstablishedInputShapes)
 	}
 }
 
+TEST(AnnotationTest, OccupiedOutputPreservesExistingOwner)
+{
+	cJSON *input = cJSON_Parse("{\"images\":[{\"path\":\"source.png\"}]}");
+	ASSERT_NE(input, nullptr);
+	annotation parsed{};
+	ASSERT_EQ(annotation_parse_copy(input, &parsed), 0);
+	cJSON *owner = parsed.owned;
+	EXPECT_EQ(annotation_parse_copy(input, &parsed), -EALREADY);
+	EXPECT_EQ(parsed.owned, owner);
+	cJSON_Delete(input);
+	EXPECT_STREQ(annotation_image_borrow(&parsed, 0)->path, "source.png");
+	annotation_cleanup(&parsed);
+}
+
 TEST(AnnotationTest, RejectsInvalidCoordinatesAndImageIndices)
 {
 	for (const char *bbox : {"{\"image_index\":0,\"x\":-0.2,\"y\":0,\"w\":0.3,\"h\":0.3}",
@@ -1317,7 +1394,7 @@ TEST(AnnotationTest, RejectsInvalidCoordinatesAndImageIndices)
 		json += "]}";
 		cJSON *input = cJSON_Parse(json.c_str());
 		annotation parsed{};
-		EXPECT_EQ(annotation_parse(input, &parsed), -EINVAL);
+		EXPECT_EQ(annotation_parse_copy(input, &parsed), -EINVAL);
 		annotation_cleanup(&parsed);
 		cJSON_Delete(input);
 	}
@@ -1337,10 +1414,10 @@ TEST(AnnotationTest, MainImageUsesArrowCountThenSmallestIndex)
 				   "{\"from\":{\"image_index\":1,\"x\":0.2,\"y\":0.3},"
 				   "\"to\":{\"image_index\":0,\"x\":0.4,\"y\":0.5}}]}");
 	annotation parsed{};
-	ASSERT_EQ(annotation_parse(input, &parsed), 0);
+	ASSERT_EQ(annotation_parse_copy(input, &parsed), 0);
 	EXPECT_EQ(annotation_main_image(&parsed), 0);
 	const auto *arrow =
-		static_cast<const annotation_arrow *>(morph_array_get(&parsed.arrows, 0));
+		static_cast<const annotation_arrow *>(morph_array_borrow(&parsed.arrows, 0));
 	double x, y;
 	ASSERT_EQ(annotation_point_pixels(&arrow->from, 100, 100, &x, &y), 0);
 	EXPECT_DOUBLE_EQ(x, 20);
@@ -1531,7 +1608,7 @@ TEST_F(ImgGenToolTest, ExplicitTransformsKeepTheirOwnFormatSelection)
 		ASSERT_EQ(result.artifacts.count, 1);
 		EXPECT_TRUE(std::filesystem::equivalent(result.artifacts.items[0].path, output));
 		size_t bytes = 0;
-		char *encoded = file_read_all(output.c_str(), &bytes);
+		char *encoded = file_read_all_copy(output.c_str(), &bytes);
 		ASSERT_NE(encoded, nullptr);
 		ASSERT_GE(bytes, item.magic_length);
 		EXPECT_EQ(memcmp(encoded, item.magic, item.magic_length), 0);
@@ -1552,7 +1629,7 @@ TEST_F(ImgGenToolTest, ExplicitTransformsKeepTheirOwnFormatSelection)
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "img_resize", args.c_str(), &result), 0);
 	EXPECT_TRUE(std::filesystem::is_symlink(alias));
-	char *encoded = file_read_all(target.c_str(), nullptr);
+	char *encoded = file_read_all_copy(target.c_str(), nullptr);
 	ASSERT_NE(encoded, nullptr);
 	EXPECT_EQ(memcmp(encoded, "\x89PNG", 4), 0);
 	free(encoded);
@@ -1587,7 +1664,7 @@ TEST_F(ImgGenToolTest, TransformOutputFailuresLeaveNoArtifactOrTemporaryFiles)
 		EXPECT_NE(strstr(result.text.data, "failed to write output"), nullptr);
 		tool_result_cleanup(&result);
 	}
-	char *contents = file_read_all(marker.c_str(), nullptr);
+	char *contents = file_read_all_copy(marker.c_str(), nullptr);
 	ASSERT_NE(contents, nullptr);
 	EXPECT_STREQ(contents, "unchanged");
 	free(contents);
@@ -1621,9 +1698,88 @@ TEST_F(ImgGenToolTest, ConvertRejectsUnboundedQualityBeforeWriting)
 		EXPECT_EQ(result.artifacts.count, 0);
 		tool_result_cleanup(&result);
 	}
-	char *contents = file_read_all(output.c_str(), nullptr);
+	char *contents = file_read_all_copy(output.c_str(), nullptr);
 	ASSERT_NE(contents, nullptr);
 	EXPECT_STREQ(contents, "unchanged");
 	free(contents);
 	std::filesystem::remove_all(directory);
+}
+
+TEST(ImageEncode, CopiesSurviveSourceRemovalAndPreserveOccupiedOwners)
+{
+	for (int max_dim : {64, 4}) {
+		char path[] = "/tmp/morph-image-owner-XXXXXX";
+		int fd = mkstemp(path);
+		ASSERT_GE(fd, 0);
+		ASSERT_EQ(close(fd), 0);
+		ASSERT_EQ(create_solid_png(path, 8, 4), 0);
+		struct image_encoded encoded MORPH_CLEANUP(image_encoded_cleanup) = {};
+		char *uri MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+		ASSERT_EQ(image_encode_base64_copy(path, max_dim, &encoded), 0);
+		ASSERT_EQ(image_encode_data_uri_copy(path, max_dim, &uri), 0);
+		char *base64_owner = encoded.base64;
+		const char *mime_owner = encoded.mime_type;
+		char *uri_owner = uri;
+		ASSERT_EQ(unlink(path), 0);
+		EXPECT_EQ(image_encode_base64_copy(path, max_dim, &encoded), -EALREADY);
+		EXPECT_EQ(encoded.base64, base64_owner);
+		EXPECT_EQ(encoded.mime_type, mime_owner);
+		EXPECT_EQ(image_encode_data_uri_copy(path, max_dim, &uri), -EALREADY);
+		EXPECT_EQ(uri, uri_owner);
+		EXPECT_STREQ(encoded.mime_type, "image/png");
+		EXPECT_EQ(std::string(uri), std::string("data:image/png;base64,") + encoded.base64);
+		size_t length = 0;
+		unsigned char *decoded = base64_decode_copy(encoded.base64, &length);
+		ASSERT_NE(decoded, nullptr);
+		int width = 0;
+		int height = 0;
+		int channels = 0;
+		EXPECT_TRUE(stbi_info_from_memory(decoded, static_cast<int>(length), &width,
+						  &height, &channels));
+		EXPECT_EQ(width, max_dim == 64 ? 8 : 4);
+		EXPECT_EQ(height, max_dim == 64 ? 4 : 2);
+		free(decoded);
+	}
+}
+
+TEST(ImageEncode, InvalidSourceLeavesBothOutputOwnersEmpty)
+{
+	char path[] = "/tmp/morph-image-invalid-XXXXXX";
+	int fd = mkstemp(path);
+	ASSERT_GE(fd, 0);
+	ASSERT_EQ(write(fd, "invalid", 7), 7);
+	ASSERT_EQ(close(fd), 0);
+	struct image_encoded encoded MORPH_CLEANUP(image_encoded_cleanup) = {};
+	char *uri MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	EXPECT_EQ(image_encode_base64_copy(path, 64, &encoded), MORPH_ERR_FORMAT);
+	EXPECT_EQ(encoded.base64, nullptr);
+	EXPECT_EQ(encoded.mime_type, nullptr);
+	EXPECT_EQ(image_encode_data_uri_copy(path, 64, &uri), MORPH_ERR_FORMAT);
+	EXPECT_EQ(uri, nullptr);
+	ASSERT_EQ(unlink(path), 0);
+}
+
+TEST(ImageEncode, SharedInputOwnerRejectsReplacementAndClearsAfterRelease)
+{
+	char path[] = "/tmp/morph-image-input-owner-XXXXXX";
+	int fd = mkstemp(path);
+	ASSERT_GE(fd, 0);
+	ASSERT_EQ(close(fd), 0);
+	ASSERT_EQ(create_solid_png(path, 8, 4), 0);
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_image_input image MORPH_CLEANUP(tool_image_input_cleanup) = {};
+	ASSERT_EQ(tool_image_load_input(nullptr, path, &result, &image), 0);
+	ASSERT_NE(image.pixels, nullptr);
+	auto *owner = image.pixels;
+	ASSERT_EQ(unlink(path), 0);
+	EXPECT_EQ(tool_image_load_input(nullptr, path, &result, &image), -EALREADY);
+	EXPECT_EQ(image.pixels, owner);
+	EXPECT_EQ(image.width, 8);
+	EXPECT_EQ(image.height, 4);
+	tool_image_input_cleanup(&image);
+	EXPECT_EQ(image.pixels, nullptr);
+	EXPECT_EQ(image.width, 0);
+	EXPECT_LT(tool_image_load_input(nullptr, path, &result, &image), 0);
+	EXPECT_EQ(image.pixels, nullptr);
+	EXPECT_EQ(image.width, 0);
 }

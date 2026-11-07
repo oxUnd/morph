@@ -156,7 +156,7 @@ TEST(VideoToolTest, SchemaExposesAudioInputs)
 
 	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(vid_gen_init(&registry, nullptr, nullptr), 0);
-	struct tool_entry *entry = tool_lookup(&registry, "vid_gen");
+	struct tool_entry *entry = tool_borrow(&registry, "vid_gen");
 	ASSERT_NE(entry, nullptr);
 	EXPECT_NE(std::strstr(entry->desc.input_schema, "reference_audios"),
 		  nullptr);

@@ -6,7 +6,7 @@ struct morph_log;
 extern "C" {
 #endif
 
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/cancel.h"
 #include <limits.h>
 #include <stddef.h>
@@ -55,7 +55,6 @@ struct guardrail_eval_ctx {
 	const void *steps;
 	int empty_round_count;
 	int max_empty_rounds;
-	struct arena *arena;
 };
 
 typedef enum guardrail_verdict (*guardrail_rule_fn)(
@@ -127,8 +126,7 @@ void guardrail_ext_so_unload(struct guardrail_rule *rule);
 
 int guardrail_rule_disable(struct guardrail_config *cfg, const char *name);
 int guardrail_rule_enable(struct guardrail_config *cfg, const char *name);
-struct guardrail_rule *guardrail_rule_lookup(struct guardrail_config *cfg,
-					      const char *name);
+struct guardrail_rule *guardrail_rule_borrow(struct guardrail_config *cfg, const char *name);
 
 void guardrail_register_builtin_rules(struct guardrail_config *cfg);
 

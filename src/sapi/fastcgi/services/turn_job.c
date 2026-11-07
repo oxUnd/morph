@@ -64,7 +64,7 @@ static void *turn_thread(void *arg)
 		request.model_input = j->input ? j->input : "";
 		request.stored_user_input = request.model_input;
 		request.turn_id = j->turn_id;
-		request.render_assistant = fcgi_media_refs_store;
+		request.render_assistant = fcgi_media_refs_store_copy;
 		request.render_user_data = j;
 		request.user_id = j->user_id;
 		request.restrict_memory_to_user = 1;
@@ -87,7 +87,7 @@ static void *turn_thread(void *arg)
 		request.turn_flags = AGENT_TURN_DEFAULT_FLAGS;
 
 		run_rc = fcgi_bridge_turn_acquire(j->bridge, j->ticket, &runtime);
-		j->ticket = NULL;
+		fcgi_turn_ticket_cleanup(&j->ticket);
 		if (run_rc != 0) {
 			cJSON *err = cJSON_CreateObject();
 			char *json = NULL;
@@ -141,9 +141,9 @@ static void *turn_thread(void *arg)
 			goto out;
 		}
 		if (!j->final_sent) {
-			char *fallback = fcgi_media_refs_summary(j);
+			char *fallback = fcgi_media_refs_summary_copy(j);
 			if (!fallback && result.final_text)
-				fallback = fcgi_media_refs_render(j, result.final_text);
+				fallback = fcgi_media_refs_render_copy(j, result.final_text);
 			if (fallback && *fallback) {
 				event_sink_final_turn(j->store, j->session_id, j->turn_id,
 						      fallback);
@@ -174,10 +174,7 @@ out:
 		pthread_join(j->heartbeat_thread, NULL);
 		j->heartbeat_started = 0;
 	}
-	if (j->ticket) {
-		fcgi_bridge_turn_cancel(j->bridge, j->ticket);
-		j->ticket = NULL;
-	}
+	fcgi_turn_ticket_cleanup(&j->ticket);
 	fcgi_bridge_runtime_release(j->bridge, runtime);
 	{
 		cJSON *end = cJSON_CreateObject();
@@ -301,7 +298,7 @@ int fcgi_turn_job_submit(struct fcgi_bridge *bridge, struct session_store *store
 		rc = -error;
 		fcgi_bridge_turn_end(bridge);
 	}
-	fcgi_bridge_turn_cancel(bridge, job->ticket);
+	fcgi_turn_ticket_cleanup(&job->ticket);
 	turn_job_publish_abort(job, morph_strerror(rc));
 	store_quota_end_turn(store, job->turn_id);
 	free(job->input);

@@ -6,6 +6,7 @@
 #include "util/error.h"
 #include "util/log.h"
 #include "util/name.h"
+#include "util/cleanup.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -487,7 +488,7 @@ int ext_install_source(struct morph_log *logger, const char *source,
 	char target_dir[PATH_MAX];
 	char target_tmp[PATH_MAX];
 	char resolved_ref[64];
-	struct ext_manifest m;
+	struct ext_manifest m MORPH_CLEANUP(ext_manifest_cleanup) = {0};
 	int rc = 0;
 	int cleanup_tmp = 0;
 	const char *install_dir = opts && opts->install_dir ?
@@ -563,7 +564,7 @@ int ext_install_source(struct morph_log *logger, const char *source,
 		goto out;
 	}
 
-	char *expanded_install = file_expand_path(install_dir);
+	char *expanded_install = file_expand_path_copy(install_dir);
 	if (!expanded_install) {
 		rc = -ENOMEM;
 		goto out;

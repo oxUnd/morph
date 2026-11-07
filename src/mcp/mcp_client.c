@@ -1,7 +1,8 @@
-#include "agent/tool_runtime.h"
 #include "mcp/mcp_internal.h"
+#include "agent/tool_runtime.h"
 #include "cJSON.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "util/buf.h"
 #include "util/array.h"
 #include "util/log.h"
@@ -13,13 +14,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-static char *mcp_strdup_result(struct arena *arena, const char *s)
+static int mcp_result_json_copy(struct tool_result *out, const char *text)
 {
-	if (!s)
-		return NULL;
-	/* tool_result_success_json_text takes ownership and frees its input. */
-	(void)arena;
-	return strdup(s);
+	return tool_result_success_json_text_copy(out, text);
 }
 
 /* ----- Registry ----- */
@@ -40,7 +37,7 @@ int mcp_registry_add(struct mcp_registry *reg, const struct mcp_server_config *c
 	if (reg->count >= MCP_MAX_SERVERS)
 		return -ENOSPC;
 
-	if (mcp_registry_get(reg, cfg->name))
+	if (mcp_registry_borrow(reg, cfg->name))
 		return -EEXIST;
 
 	struct mcp_client *client = calloc(1, sizeof(*client));
@@ -57,7 +54,7 @@ int mcp_registry_add(struct mcp_registry *reg, const struct mcp_server_config *c
 	pthread_mutex_init(&client->lock, NULL);
 
 	reg->servers[reg->count] = client;
-	(void)morph_strmap_set(&reg->by_name, client->config.name, client);
+	(void)morph_strmap_set_borrow(&reg->by_name, client->config.name, client);
 	reg->count++;
 
 	log_info(reg ? reg->logger : NULL, "mcp: registered server '%s' (transport=%s)", cfg->name,
@@ -65,13 +62,13 @@ int mcp_registry_add(struct mcp_registry *reg, const struct mcp_server_config *c
 	return 0;
 }
 
-struct mcp_client *mcp_registry_get(struct mcp_registry *reg, const char *name)
+struct mcp_client *mcp_registry_borrow(struct mcp_registry *reg, const char *name)
 {
 	struct mcp_client *client;
 
 	if (!reg || !name)
 		return NULL;
-	client = (struct mcp_client *)morph_strmap_get(&reg->by_name, name);
+	client = (struct mcp_client *)morph_strmap_borrow(&reg->by_name, name);
 	if (client)
 		return client;
 	for (int i = 0; i < reg->count; i++) {
@@ -210,7 +207,7 @@ int mcp_test_connection(const struct mcp_server_config *cfg,
 		return rc;
 	}
 
-	client = mcp_registry_get(&reg, cfg->name);
+	client = mcp_registry_borrow(&reg, cfg->name);
 	rc = mcp_ensure_connected(client);
 	if (rc == 0) {
 		if (client && client->server_name[0]) {
@@ -272,7 +269,7 @@ static int mcp_list_all(struct mcp_client *client, const char *method,
 		int first_page = params == NULL;
 
 		rc = mcp_request(client, method, params, &result);
-		free(params);
+		cJSON_free(params);
 		params = NULL;
 		if (rc == -ENOSYS && first_page) {
 			mcp_disable_list_capability(client, key, method);
@@ -310,7 +307,7 @@ static int mcp_list_all(struct mcp_client *client, const char *method,
 			rc = (MORPH_ERR_PROTOCOL);
 			break;
 		}
-		rc = morph_strmap_set(&cursors, next->valuestring, client);
+		rc = morph_strmap_set_borrow(&cursors, next->valuestring, client);
 		if (rc != 0)
 			break;
 		cJSON *request = cJSON_CreateObject();
@@ -326,7 +323,7 @@ static int mcp_list_all(struct mcp_client *client, const char *method,
 		page = NULL;
 	}
 	free(result);
-	free(params);
+	cJSON_free(params);
 	cJSON_Delete(page);
 	morph_strmap_cleanup(&cursors);
 	if (rc != 0) {
@@ -339,20 +336,88 @@ static int mcp_list_all(struct mcp_client *client, const char *method,
 	return 0;
 }
 
-static const char *mcp_string(struct arena *arena, cJSON *item, const char *key)
+static const char *mcp_string(cJSON *item, const char *key)
 {
 	cJSON *value = cJSON_GetObjectItemCaseSensitive(item, key);
 
-	return arena_strdup(arena, cJSON_IsString(value) ? value->valuestring : "");
+	return strdup(cJSON_IsString(value) ? value->valuestring : "");
 }
 
-static const char *mcp_schema(struct arena *arena, cJSON *value)
+static const char *mcp_schema(cJSON *value)
 {
-	char *json = value ? cJSON_PrintUnformatted(value) : NULL;
-	const char *copy = json ? arena_strdup(arena, json) : NULL;
+	if (value)
+		return cJSON_PrintUnformatted(value);
+	const char *empty = TOOL_EMPTY_INPUT_SCHEMA;
+	char *schema = cJSON_malloc(strlen(empty) + 1);
+	if (schema)
+		memcpy(schema, empty, strlen(empty) + 1);
+	return schema;
+}
 
-	free(json);
-	return copy;
+void mcp_tool_descs_free(struct mcp_tool_desc *items, int count)
+{
+	if (!items)
+		return;
+	for (int i = 0; i < count; i++) {
+		free((void *)items[i].name);
+		free((void *)items[i].title);
+		free((void *)items[i].description);
+		cJSON_free((void *)items[i].input_schema);
+	}
+	free(items);
+}
+
+void mcp_resource_descs_free(struct mcp_resource_desc *items, int count)
+{
+	if (!items)
+		return;
+	for (int i = 0; i < count; i++) {
+		free((void *)items[i].uri);
+		free((void *)items[i].name);
+		free((void *)items[i].description);
+		free((void *)items[i].mime_type);
+	}
+	free(items);
+}
+
+void mcp_prompt_descs_free(struct mcp_prompt_desc *items, int count)
+{
+	if (!items)
+		return;
+	for (int i = 0; i < count; i++) {
+		free((void *)items[i].name);
+		free((void *)items[i].description);
+		cJSON_free((void *)items[i].arguments_schema);
+	}
+	free(items);
+}
+
+struct mcp_tool_batch {
+	struct mcp_tool_desc *items;
+	int count;
+};
+struct mcp_resource_batch {
+	struct mcp_resource_desc *items;
+	int count;
+};
+struct mcp_prompt_batch {
+	struct mcp_prompt_desc *items;
+	int count;
+};
+
+static void mcp_tool_batch_cleanup(struct mcp_tool_batch *batch)
+{
+	mcp_tool_descs_free(batch->items, batch->count);
+}
+
+static void mcp_resource_batch_cleanup(struct mcp_resource_batch *batch)
+{
+	mcp_resource_descs_free(batch->items, batch->count);
+}
+
+static void mcp_prompt_batch_cleanup(struct mcp_prompt_batch *batch)
+{
+	mcp_prompt_descs_free(batch->items, batch->count);
 }
 
 /* Build parameters with JSON escaping and no fixed size ceiling. */
@@ -388,35 +453,36 @@ static int mcp_named_request(struct mcp_client *client, const char *method,
 	if (!json)
 		return -ENOMEM;
 	rc = mcp_request(client, method, json, result);
-	free(json);
+	cJSON_free(json);
 	return rc;
 }
 
-int mcp_list_tools(struct mcp_client *client, struct arena *arena,
-	struct mcp_tool_desc **out_tools, int *out_count)
+int mcp_list_tools_copy(struct mcp_client *client, struct mcp_tool_desc **out_tools, int *out_count)
 {
-	if (!client || !arena || !out_tools || !out_count)
+	if (!client || !out_tools || !out_count)
 		return -EINVAL;
-	*out_tools = NULL;
+	if (*out_tools)
+		return -EEXIST;
 	*out_count = 0;
-	cJSON *items = NULL;
+	cJSON *items MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	int rc = mcp_list_all(client, "tools/list", "tools", &items);
 
 	if (rc != 0)
 		return rc;
 	int count = cJSON_GetArraySize(items);
+	struct mcp_tool_batch batch MORPH_CLEANUP(mcp_tool_batch_cleanup) = {0};
 	struct mcp_tool_desc *entries = NULL;
 
 	if ((size_t)count > SIZE_MAX / sizeof(*entries)) {
-		cJSON_Delete(items);
 		return -EOVERFLOW;
 	}
 	if (count > 0)
-		entries = arena_alloc(arena, (size_t)count * sizeof(*entries));
+		entries = calloc((size_t)count, sizeof(*entries));
 	if (count > 0 && !entries) {
-		cJSON_Delete(items);
 		return -ENOMEM;
 	}
+	batch.items = entries;
+	batch.count = count;
 	cJSON *item;
 	int i = 0;
 
@@ -425,7 +491,7 @@ int mcp_list_tools(struct mcp_client *client, struct arena *arena,
 		cJSON *name = cJSON_GetObjectItemCaseSensitive(item, "name");
 
 		if (schema && cJSON_IsString(name)) {
-			rc = mcp_protocol_cache_tool(client, name->valuestring, schema);
+			rc = mcp_protocol_cache_tool_copy(client, name->valuestring, schema);
 			if (rc == -EINVAL) {
 				log_warn(
 					client ? client->config.logger : NULL,
@@ -435,34 +501,32 @@ int mcp_list_tools(struct mcp_client *client, struct arena *arena,
 				continue;
 			}
 			if (rc != 0) {
-				cJSON_Delete(items);
 				return rc;
 			}
 		}
-		entries[i].name = mcp_string(arena, item, "name");
-		entries[i].title = mcp_string(arena, item, "title");
-		entries[i].description = mcp_string(arena, item, "description");
-		entries[i].input_schema = schema ? mcp_schema(arena, schema) :
-			arena_strdup(arena, TOOL_EMPTY_INPUT_SCHEMA);
+		entries[i].name = mcp_string(item, "name");
+		entries[i].title = mcp_string(item, "title");
+		entries[i].description = mcp_string(item, "description");
+		entries[i].input_schema = mcp_schema(schema);
 		if (rc != 0 || !entries[i].name ||
 		    !entries[i].title ||
 		    !entries[i].description ||
 		    !entries[i].input_schema) {
-			cJSON_Delete(items);
 			return rc != 0 ? rc : -ENOMEM;
 		}
 		i++;
 	}
-	cJSON_Delete(items);
 	*out_tools = entries;
+	batch.items = NULL;
+	batch.count = 0;
 	*out_count = i;
 	return 0;
 }
 
 /* ----- MCP tools/call ----- */
 
-int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *name,
-		  const char *args_json, struct tool_result *out_result)
+int mcp_call_tool(struct mcp_client *client, const char *name, const char *args_json,
+		  struct tool_result *out_result)
 {
 	if (!client || !name || !out_result)
 		return -EINVAL;
@@ -473,15 +537,12 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 		int cached = morph_strmap_contains(&client->tool_schemas, name);
 		pthread_mutex_unlock(&client->lock);
 		if (!cached) {
-			struct arena *discovery = arena_create(0);
 			struct mcp_tool_desc *tools = NULL;
 			int count = 0;
 
-			if (!discovery)
-				return -ENOMEM;
-			int rc = mcp_list_tools(client, discovery, &tools, &count);
+			int rc = mcp_list_tools_copy(client, &tools, &count);
 
-			arena_destroy(discovery);
+			mcp_tool_descs_free(tools, count);
 			if (rc != 0)
 				return rc;
 		}
@@ -493,24 +554,25 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 
 	if (rc < 0 || !result) {
 		if (rc >= 0 && !result) {
-			(void)tool_result_success_json_text(out_result, strdup("{\"error\":\"empty response\",\"isError\":true}"));
+			(void)mcp_result_json_copy(
+				out_result, "{\"error\":\"empty response\",\"isError\":true}");
 			return MORPH_ERR_PROTOCOL;
 		}
-		(void)tool_result_successf(out_result,
-					 "{\"error\":\"MCP call failed\","
-					 "\"code\":%d,\"isError\":true}",
-					 rc);
+		(void)tool_result_success_format(out_result,
+						 "{\"error\":\"MCP call failed\","
+						 "\"code\":%d,\"isError\":true}",
+						 rc);
 		free(result);
 		return rc;
 	}
 
-	(void)arena;
 	/* Parse the tools/call response without discarding structured content. */
 	cJSON *obj = cJSON_Parse(result);
 	if (!obj) {
 		log_err(out_result && out_result->runtime ? out_result->runtime->http.logger : NULL,
 			"mcp: tools/call response parse error");
-		(void)tool_result_success_json_text(out_result, strdup("{\"error\":\"response parse error\",\"isError\":true}"));
+		(void)mcp_result_json_copy(out_result,
+					   "{\"error\":\"response parse error\",\"isError\":true}");
 		free(result);
 		return MORPH_ERR_PARSE;
 	}
@@ -520,7 +582,7 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 
 	/* Keep every content block and extension field alongside readable text. */
 	cJSON *content = cJSON_GetObjectItemCaseSensitive(obj, "content");
-	morph_buf_t combined;
+	morph_buf_t combined MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	rc = morph_buf_init(&combined, BUFSIZ);
 	cJSON *item;
 
@@ -551,9 +613,9 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 	}
 	morph_buf_cleanup(&combined);
 	if (rc == 0) {
-		char *json = cJSON_PrintUnformatted(obj);
+		char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(obj);
 
-		rc = tool_result_success_json_text(out_result, json);
+		rc = tool_result_success_json_text_copy(out_result, json);
 	}
 	if (rc != 0) {
 		cJSON_Delete(obj);
@@ -567,58 +629,59 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 
 /* ----- MCP resources/list ----- */
 
-int mcp_list_resources(struct mcp_client *client, struct arena *arena,
-	struct mcp_resource_desc **out_res, int *out_count)
+int mcp_list_resources_copy(struct mcp_client *client, struct mcp_resource_desc **out_res,
+			    int *out_count)
 {
-	if (!client || !arena || !out_res || !out_count)
+	if (!client || !out_res || !out_count)
 		return -EINVAL;
-	*out_res = NULL;
+	if (*out_res)
+		return -EEXIST;
 	*out_count = 0;
-	cJSON *items = NULL;
+	cJSON *items MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	int rc = mcp_list_all(client, "resources/list", "resources", &items);
 
 	if (rc != 0)
 		return rc;
 	int count = cJSON_GetArraySize(items);
+	struct mcp_resource_batch batch MORPH_CLEANUP(mcp_resource_batch_cleanup) = {0};
 	struct mcp_resource_desc *entries = NULL;
 
 	if ((size_t)count > SIZE_MAX / sizeof(*entries)) {
-		cJSON_Delete(items);
 		return -EOVERFLOW;
 	}
 	if (count > 0)
-		entries = arena_alloc(arena, (size_t)count * sizeof(*entries));
+		entries = calloc((size_t)count, sizeof(*entries));
 	if (count > 0 && !entries) {
-		cJSON_Delete(items);
 		return -ENOMEM;
 	}
+	batch.items = entries;
+	batch.count = count;
 	cJSON *item;
 	int i = 0;
 
 	cJSON_ArrayForEach(item, items) {
-		entries[i].uri = mcp_string(arena, item, "uri");
-		entries[i].name = mcp_string(arena, item, "name");
-		entries[i].description = mcp_string(arena, item, "description");
-		entries[i].mime_type = mcp_string(arena, item, "mimeType");
+		entries[i].uri = mcp_string(item, "uri");
+		entries[i].name = mcp_string(item, "name");
+		entries[i].description = mcp_string(item, "description");
+		entries[i].mime_type = mcp_string(item, "mimeType");
 		if (rc != 0 || !entries[i].uri ||
 		    !entries[i].name ||
 		    !entries[i].description ||
 		    !entries[i].mime_type) {
-			cJSON_Delete(items);
 			return rc != 0 ? rc : -ENOMEM;
 		}
 		i++;
 	}
-	cJSON_Delete(items);
 	*out_res = entries;
+	batch.items = NULL;
+	batch.count = 0;
 	*out_count = count;
 	return 0;
 }
 
 /* ----- MCP resources/read ----- */
 
-int mcp_read_resource(struct mcp_client *client, struct arena *arena,
-		      const char *uri, struct tool_result *out_content)
+int mcp_read_resource(struct mcp_client *client, const char *uri, struct tool_result *out_content)
 {
 	if (!client || !uri || !out_content)
 		return -EINVAL;
@@ -644,7 +707,7 @@ int mcp_read_resource(struct mcp_client *client, struct arena *arena,
 	/* Extract text from contents array */
 	cJSON *contents = cJSON_GetObjectItem(obj, "contents");
 	if (contents && cJSON_IsArray(contents)) {
-		morph_buf_t combined;
+		morph_buf_t combined MORPH_CLEANUP(morph_buf_cleanup) = {0};
 		rc = morph_buf_init(&combined, BUFSIZ);
 		cJSON *item;
 
@@ -662,7 +725,8 @@ int mcp_read_resource(struct mcp_client *client, struct arena *arena,
 					rc = morph_buf_puts(&combined, value->valuestring);
 			}
 		}
-		char *text = rc == 0 ? mcp_strdup_result(arena, morph_buf_cstr(&combined)) : NULL;
+		char *text MORPH_CLEANUP(morph_charp_cleanup) =
+			rc == 0 ? morph_buf_detach(&combined) : NULL;
 
 		morph_buf_cleanup(&combined);
 		if (!text) {
@@ -670,20 +734,19 @@ int mcp_read_resource(struct mcp_client *client, struct arena *arena,
 			free(result);
 			return rc != 0 ? rc : -ENOMEM;
 		}
-		(void)tool_result_success_json_text(out_content, text);
+		rc = tool_result_success_json_text_take(out_content, &text);
 	} else {
-		(void)tool_result_success_json_text(out_content, mcp_strdup_result(arena, result));
+		rc = mcp_result_json_copy(out_content, result);
 	}
 
 	cJSON_Delete(obj);
 	free(result);
-	return 0;
+	return rc;
 }
 
 /* ----- MCP prompts/list ----- */
 
-static int mcp_prompt_arguments_schema(struct arena *arena, cJSON *arguments,
-	const char **destination)
+static int mcp_prompt_arguments_schema(cJSON *arguments, const char **destination)
 {
 	cJSON *schema = cJSON_CreateObject();
 	cJSON *properties;
@@ -728,10 +791,7 @@ static int mcp_prompt_arguments_schema(struct arena *arena, cJSON *arguments,
 	encoded = cJSON_PrintUnformatted(schema);
 	if (!encoded)
 		goto out_free_schema_oom;
-	*destination = arena_strdup(arena, encoded);
-	if (!*destination)
-		rc = (-ENOMEM);
-	free(encoded);
+	*destination = encoded;
 	cJSON_Delete(schema);
 	return rc;
 
@@ -740,58 +800,60 @@ out_free_schema_oom:
 	return -ENOMEM;
 }
 
-int mcp_list_prompts(struct mcp_client *client, struct arena *arena,
-	struct mcp_prompt_desc **out_prompts, int *out_count)
+int mcp_list_prompts_copy(struct mcp_client *client, struct mcp_prompt_desc **out_prompts,
+			  int *out_count)
 {
-	if (!client || !arena || !out_prompts || !out_count)
+	if (!client || !out_prompts || !out_count)
 		return -EINVAL;
-	*out_prompts = NULL;
+	if (*out_prompts)
+		return -EEXIST;
 	*out_count = 0;
-	cJSON *items = NULL;
+	cJSON *items MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	int rc = mcp_list_all(client, "prompts/list", "prompts", &items);
 
 	if (rc != 0)
 		return rc;
 	int count = cJSON_GetArraySize(items);
+	struct mcp_prompt_batch batch MORPH_CLEANUP(mcp_prompt_batch_cleanup) = {0};
 	struct mcp_prompt_desc *entries = NULL;
 
 	if ((size_t)count > SIZE_MAX / sizeof(*entries)) {
-		cJSON_Delete(items);
 		return -EOVERFLOW;
 	}
 	if (count > 0)
-		entries = arena_alloc(arena, (size_t)count * sizeof(*entries));
+		entries = calloc((size_t)count, sizeof(*entries));
 	if (count > 0 && !entries) {
-		cJSON_Delete(items);
 		return -ENOMEM;
 	}
+	batch.items = entries;
+	batch.count = count;
 	cJSON *item;
 	int i = 0;
 
 	cJSON_ArrayForEach(item, items) {
-		entries[i].name = mcp_string(arena, item, "name");
-		entries[i].description = mcp_string(arena, item, "description");
-		rc = mcp_prompt_arguments_schema(arena,
+		entries[i].name = mcp_string(item, "name");
+		entries[i].description = mcp_string(item, "description");
+		rc = mcp_prompt_arguments_schema(
 			cJSON_GetObjectItemCaseSensitive(item, "arguments"),
 			&entries[i].arguments_schema);
 		if (rc != 0 || !entries[i].name ||
 		    !entries[i].description ||
 		    !entries[i].arguments_schema) {
-			cJSON_Delete(items);
 			return rc != 0 ? rc : -ENOMEM;
 		}
 		i++;
 	}
-	cJSON_Delete(items);
 	*out_prompts = entries;
+	batch.items = NULL;
+	batch.count = 0;
 	*out_count = count;
 	return 0;
 }
 
 /* ----- MCP prompts/get ----- */
 
-int mcp_get_prompt(struct mcp_client *client, struct arena *arena, const char *name,
-		   const char *args_json, struct tool_result *out_result)
+int mcp_get_prompt(struct mcp_client *client, const char *name, const char *args_json,
+		   struct tool_result *out_result)
 {
 	if (!client || !name || !out_result)
 		return -EINVAL;
@@ -805,9 +867,9 @@ int mcp_get_prompt(struct mcp_client *client, struct arena *arena, const char *n
 		return rc ? rc : MORPH_ERR_PROTOCOL;
 	}
 
-	(void)tool_result_success_json_text(out_result, mcp_strdup_result(arena, result));
+	rc = mcp_result_json_copy(out_result, result);
 	free(result);
-	return 0;
+	return rc;
 }
 
 /* ----- morph tool registry integration ----- */
@@ -833,15 +895,14 @@ static int mcp_tool_exec(const char *args_json, struct tool_result *result, void
 
 	int rc = mcp_ensure_connected(binding->client);
 	if (rc < 0) {
-		(void)tool_result_successf(result,
-					 "{\"error\":\"MCP server '%s' not "
-					 "connected\",\"code\":%d}",
-					 binding->client->config.name, rc);
+		(void)tool_result_success_format(result,
+						 "{\"error\":\"MCP server '%s' not "
+						 "connected\",\"code\":%d}",
+						 binding->client->config.name, rc);
 		return rc;
 	}
 
-	return mcp_call_tool(binding->client, NULL, binding->mcp_tool_name,
-			     args_json, result);
+	return mcp_call_tool(binding->client, binding->mcp_tool_name, args_json, result);
 }
 
 int mcp_register_server_tools(struct mcp_client *client,
@@ -856,15 +917,11 @@ int mcp_register_server_tools(struct mcp_client *client,
 	if (!client->supports_tools)
 		return 0;
 
-	struct arena *arena = arena_create(0);
-	if (!arena)
-		return -ENOMEM;
-
 	struct mcp_tool_desc *tools = NULL;
 	int count = 0;
-	rc = mcp_list_tools(client, arena, &tools, &count);
+	rc = mcp_list_tools_copy(client, &tools, &count);
 	if (rc < 0 || count == 0) {
-		arena_destroy(arena);
+		mcp_tool_descs_free(tools, count);
 		return rc;
 	}
 
@@ -901,7 +958,7 @@ int mcp_register_server_tools(struct mcp_client *client,
 		if (!schema || !schema[0])
 			schema = TOOL_EMPTY_INPUT_SCHEMA;
 
-		struct tool_spec spec = {
+		struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
 			.origin = TOOL_ORIGIN_MCP,
 			.name = tool_name,
 			.title = tools[i].title,
@@ -912,24 +969,22 @@ int mcp_register_server_tools(struct mcp_client *client,
 			.user_data = binding,
 			.user_data_destroy = (tool_user_data_destroy_fn)free,
 		};
-		struct tool_entry *existing = tool_lookup(reg, spec.name);
+		struct tool_entry *existing = tool_borrow(reg, spec.name);
 		if (existing && existing->exec == spec.exec && existing->user_data) {
 			struct mcp_tool_binding *previous = existing->user_data;
 
 			if (previous->client == client &&
 			    strcmp(previous->mcp_tool_name, binding->mcp_tool_name) == 0) {
-				free(binding);
 				registered++;
 				continue;
 			}
 		}
 
-		rc = tool_register(reg, &spec);
+		rc = tool_register_take(reg, &spec);
 		if (rc < 0) {
 			log_warn(client ? client->config.logger : NULL,
 				 "mcp: failed to register tool '%s': %s", tool_name,
 				 morph_strerror(rc));
-			free(binding);
 			if (first_error == 0)
 				first_error = rc;
 		} else {
@@ -939,7 +994,7 @@ int mcp_register_server_tools(struct mcp_client *client,
 		}
 	}
 
-	arena_destroy(arena);
+	mcp_tool_descs_free(tools, count);
 	return first_error != 0 ? first_error : registered;
 }
 
@@ -956,15 +1011,15 @@ static int mcp_resource_exec(const char *args_json, struct tool_result *result, 
 
 	int rc = mcp_ensure_connected(binding->client);
 	if (rc < 0) {
-		(void)tool_result_successf(result,
-					 "{\"error\":\"MCP server '%s' not "
-					 "connected\",\"code\":%d}",
-					 binding->client->config.name, rc);
+		(void)tool_result_success_format(result,
+						 "{\"error\":\"MCP server '%s' not "
+						 "connected\",\"code\":%d}",
+						 binding->client->config.name, rc);
 		return rc;
 	}
 
 	(void)args_json;
-	return mcp_read_resource(binding->client, NULL, binding->uri, result);
+	return mcp_read_resource(binding->client, binding->uri, result);
 }
 
 int mcp_register_server_resources(struct mcp_client *client,
@@ -979,15 +1034,11 @@ int mcp_register_server_resources(struct mcp_client *client,
 	if (!client->supports_resources)
 		return 0;
 
-	struct arena *arena = arena_create(0);
-	if (!arena)
-		return -ENOMEM;
-
 	struct mcp_resource_desc *res = NULL;
 	int count = 0;
-	rc = mcp_list_resources(client, arena, &res, &count);
+	rc = mcp_list_resources_copy(client, &res, &count);
 	if (rc < 0 || count == 0) {
-		arena_destroy(arena);
+		mcp_resource_descs_free(res, count);
 		return rc;
 	}
 
@@ -1020,8 +1071,8 @@ int mcp_register_server_resources(struct mcp_client *client,
 
 		sanitize_tool_name(tool_name);
 
-		morph_buf_t description;
-		rc = morph_buf_init_arena(&description, arena, 128);
+		morph_buf_t description MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		rc = morph_buf_init(&description, 128);
 		if (rc == 0)
 			rc = morph_buf_printf(&description, "Read MCP resource: %s (%s)",
 				res[i].name, res[i].uri);
@@ -1031,10 +1082,10 @@ int mcp_register_server_resources(struct mcp_client *client,
 			break;
 		}
 
-		struct tool_spec spec = {
+		struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
 			.origin = TOOL_ORIGIN_MCP,
 			.name = tool_name,
-			.description = morph_buf_cstr(&description),
+			.description = morph_buf_cstr_borrow(&description),
 			.input_schema = TOOL_EMPTY_INPUT_SCHEMA,
 			.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
 			.exec = mcp_resource_exec,
@@ -1042,28 +1093,26 @@ int mcp_register_server_resources(struct mcp_client *client,
 			.user_data_destroy = (tool_user_data_destroy_fn)free,
 			.flags = TOOL_FLAG_READONLY,
 		};
-		struct tool_entry *existing = tool_lookup(reg, spec.name);
+		struct tool_entry *existing = tool_borrow(reg, spec.name);
 		if (existing && existing->exec == spec.exec && existing->user_data) {
 			struct mcp_resource_binding *previous = existing->user_data;
 
 			if (previous->client == client &&
 			    strcmp(previous->uri, binding->uri) == 0) {
-				free(binding);
 				registered++;
 				continue;
 			}
 		}
 
-		rc = tool_register(reg, &spec);
+		rc = tool_register_take(reg, &spec);
 		if (rc < 0) {
 			log_warn(client ? client->config.logger : NULL,
 				 "mcp: failed to register resource '%s': %s", tool_name,
 				 morph_strerror(rc));
-			free(binding);
 			if (first_error == 0)
 				first_error = rc;
 		} else {
-			struct tool_entry *e = tool_lookup(reg, tool_name);
+			struct tool_entry *e = tool_borrow(reg, tool_name);
 			if (e)
 				e->flags |= TOOL_FLAG_READONLY;
 			log_info(client ? client->config.logger : NULL,
@@ -1072,7 +1121,7 @@ int mcp_register_server_resources(struct mcp_client *client,
 		}
 	}
 
-	arena_destroy(arena);
+	mcp_resource_descs_free(res, count);
 	return first_error != 0 ? first_error : registered;
 }
 
@@ -1089,15 +1138,14 @@ static int mcp_prompt_exec(const char *args_json, struct tool_result *result, vo
 
 	int rc = mcp_ensure_connected(binding->client);
 	if (rc < 0) {
-		(void)tool_result_successf(result,
-					 "{\"error\":\"MCP server '%s' not "
-					 "connected\",\"code\":%d}",
-					 binding->client->config.name, rc);
+		(void)tool_result_success_format(result,
+						 "{\"error\":\"MCP server '%s' not "
+						 "connected\",\"code\":%d}",
+						 binding->client->config.name, rc);
 		return rc;
 	}
 
-	return mcp_get_prompt(binding->client, NULL, binding->mcp_prompt_name,
-			      args_json, result);
+	return mcp_get_prompt(binding->client, binding->mcp_prompt_name, args_json, result);
 }
 
 int mcp_register_server_prompts(struct mcp_client *client,
@@ -1112,15 +1160,11 @@ int mcp_register_server_prompts(struct mcp_client *client,
 	if (!client->supports_prompts)
 		return 0;
 
-	struct arena *arena = arena_create(0);
-	if (!arena)
-		return -ENOMEM;
-
 	struct mcp_prompt_desc *prompts = NULL;
 	int count = 0;
-	rc = mcp_list_prompts(client, arena, &prompts, &count);
+	rc = mcp_list_prompts_copy(client, &prompts, &count);
 	if (rc < 0 || count == 0) {
-		arena_destroy(arena);
+		mcp_prompt_descs_free(prompts, count);
 		return rc;
 	}
 
@@ -1157,7 +1201,7 @@ int mcp_register_server_prompts(struct mcp_client *client,
 		if (!schema || !schema[0])
 			schema = TOOL_EMPTY_INPUT_SCHEMA;
 
-		struct tool_spec spec = {
+		struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
 			.origin = TOOL_ORIGIN_MCP,
 			.name = tool_name,
 			.description = prompts[i].description,
@@ -1167,28 +1211,26 @@ int mcp_register_server_prompts(struct mcp_client *client,
 			.user_data = binding,
 			.user_data_destroy = (tool_user_data_destroy_fn)free,
 		};
-		struct tool_entry *existing = tool_lookup(reg, spec.name);
+		struct tool_entry *existing = tool_borrow(reg, spec.name);
 		if (existing && existing->exec == spec.exec && existing->user_data) {
 			struct mcp_prompt_binding *previous = existing->user_data;
 
 			if (previous->client == client &&
 			    strcmp(previous->mcp_prompt_name, binding->mcp_prompt_name) == 0) {
-				free(binding);
 				registered++;
 				continue;
 			}
 		}
 
-		rc = tool_register(reg, &spec);
+		rc = tool_register_take(reg, &spec);
 		if (rc < 0) {
 			log_warn(client ? client->config.logger : NULL,
 				 "mcp: failed to register prompt '%s': %s", tool_name,
 				 morph_strerror(rc));
-			free(binding);
 			if (first_error == 0)
 				first_error = rc;
 		} else {
-			struct tool_entry *e = tool_lookup(reg, tool_name);
+			struct tool_entry *e = tool_borrow(reg, tool_name);
 			if (e)
 				e->flags |= TOOL_FLAG_READONLY;
 			log_info(client ? client->config.logger : NULL,
@@ -1197,6 +1239,6 @@ int mcp_register_server_prompts(struct mcp_client *client,
 		}
 	}
 
-	arena_destroy(arena);
+	mcp_prompt_descs_free(prompts, count);
 	return first_error != 0 ? first_error : registered;
 }

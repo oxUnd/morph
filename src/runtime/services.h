@@ -11,6 +11,9 @@
 
 struct runtime;
 
+/* Owned outputs require zero-initialized empty slots. Existing owners return
+ * -EEXIST unchanged; failed construction leaves empty outputs empty. */
+
 struct runtime_trace_step {
 	enum react_step_type type;
 	char *content;
@@ -18,6 +21,7 @@ struct runtime_trace_step {
 	char *tool_args;
 };
 
+/* Owns every returned string and trace step until cleanup. */
 struct runtime_turn_status {
 	enum react_state state;
 	enum react_outcome outcome;
@@ -29,12 +33,12 @@ struct runtime_turn_status {
 	int step_count;
 };
 
-int runtime_turn_status_get(struct runtime *runtime,
-			    struct runtime_turn_status *out);
+/* Copy into a zero-initialized empty owner; -EEXIST preserves occupied output. */
+int runtime_turn_status_copy(struct runtime *runtime, struct runtime_turn_status *out);
 void runtime_turn_status_cleanup(struct runtime_turn_status *status);
-char *runtime_turn_notification_body(struct runtime *runtime);
-char *runtime_turn_error_message(struct runtime *runtime, int rc);
-char *runtime_turn_error_json(struct runtime *runtime);
+char *runtime_turn_notification_body_copy(struct runtime *runtime);
+char *runtime_turn_error_message_copy(struct runtime *runtime, int rc);
+char *runtime_turn_error_json_copy(struct runtime *runtime);
 
 int runtime_session_list_query(struct runtime *runtime, struct session **out,
 			       int *count, int limit, const char *filter);
@@ -59,8 +63,7 @@ struct runtime_history_compaction_status {
 };
 int runtime_session_compaction_status(struct runtime *runtime,
 	struct runtime_history_compaction_status *status);
-char *runtime_trace_load_latest_current(struct runtime *runtime,
-					int *round_no, int *aborted);
+char *runtime_trace_latest_current_copy(struct runtime *runtime, int *round_no, int *aborted);
 int runtime_session_compress(struct runtime *runtime,
 				     int *trace_removed,
 				     int *window_removed, int *kept);
@@ -68,32 +71,31 @@ int runtime_session_compress(struct runtime *runtime,
 int runtime_tool_count(const struct runtime *runtime);
 /* Descriptor strings are borrowed until registry mutation or destruction.
  * Callers must arrange quiescence while using strings; scalar queries synchronize internally. */
-int runtime_tool_info(const struct runtime *runtime, int index,
-		      struct tool_desc *out);
+int runtime_tool_info_borrow(const struct runtime *runtime, int index, struct tool_desc *out);
 int runtime_tool_flags(const struct runtime *runtime, int index,
 		       unsigned *out);
 int runtime_tool_enabled(const struct runtime *runtime, int index,
 			 int *out);
 int runtime_tool_origin(const struct runtime *runtime, int index,
 			enum tool_origin *out);
-/* Same borrowed lifetime as runtime_tool_info. */
-int runtime_tool_find(const struct runtime *runtime, const char *name,
-		      struct tool_desc *out);
+/* Same borrowed lifetime as runtime_tool_info_borrow. */
+int runtime_tool_find_borrow(const struct runtime *runtime, const char *name,
+			     struct tool_desc *out);
 
+/* Skill views borrow registry strings/body until reload or runtime close. */
 int runtime_skill_count(const struct runtime *runtime);
-int runtime_skill_info(const struct runtime *runtime, int index,
-		       struct skill_entry *out);
-int runtime_skill_find(const struct runtime *runtime, const char *name,
-		       struct skill_entry *out);
+int runtime_skill_info_borrow(const struct runtime *runtime, int index, struct skill_entry *out);
+int runtime_skill_find_borrow(const struct runtime *runtime, const char *name,
+			      struct skill_entry *out);
 int runtime_skill_set_active(struct runtime *runtime, const char *name,
 			     int active, int *changed);
 
-char *runtime_memory_background_render(struct runtime *runtime);
-char *runtime_preferences_render(struct runtime *runtime, int history);
+char *runtime_memory_background_render_copy(struct runtime *runtime);
+char *runtime_preferences_render_copy(struct runtime *runtime, int history);
 int runtime_preference_set(struct runtime *runtime, const char *scope,
 			   const char *key, const char *value);
 
-char *runtime_memory_render_current(struct runtime *runtime, int max_episodes);
+char *runtime_memory_render_current_copy(struct runtime *runtime, int max_episodes);
 int runtime_memory_clear_current(struct runtime *runtime,
 				 enum memory_clear_scope scope);
 
@@ -116,8 +118,7 @@ int runtime_task_count_active(struct runtime *runtime,
 			      struct scheduled_task_counts *out);
 int runtime_task_list(struct runtime *runtime, const char *status, int limit,
 		      struct scheduled_task **out, int *count);
-int runtime_task_get(struct runtime *runtime, int64_t id,
-		     struct scheduled_task *out);
+int runtime_task_copy(struct runtime *runtime, int64_t id, struct scheduled_task *out);
 int runtime_task_cancel(struct runtime *runtime, int64_t id);
 int runtime_notification_list(struct runtime *runtime, int limit,
 			      struct notification **out, int *count);
@@ -153,6 +154,7 @@ int runtime_mcp_connect(struct runtime *runtime, const char *name);
 int runtime_mcp_disconnect(struct runtime *runtime, const char *name);
 int runtime_mcp_discover(struct runtime *runtime, const char *name,
 			 int *tools, int *resources, int *prompts);
+/* List output owners must be initialized to NULL; occupied outputs return -EEXIST. */
 int runtime_mcp_list_tools(struct runtime *runtime, const char *name,
 			   struct mcp_tool_desc **out, int *count);
 int runtime_mcp_list_resources(struct runtime *runtime, const char *name,

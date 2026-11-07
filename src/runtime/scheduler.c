@@ -1,4 +1,5 @@
 #include "runtime/scheduler.h"
+#include "util/cleanup.h"
 
 #include "cJSON.h"
 #include "util/array.h"
@@ -9,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-char *runtime_scheduled_task_prompt(const struct scheduled_task *task)
+char *runtime_scheduled_task_prompt_copy(const struct scheduled_task *task)
 {
 	cJSON *payload;
 	cJSON *prompt;
@@ -27,7 +28,7 @@ char *runtime_scheduled_task_prompt(const struct scheduled_task *task)
 	return out;
 }
 
-char *runtime_scheduled_task_turn_id(const struct scheduled_task *task)
+char *runtime_scheduled_task_turn_id_copy(const struct scheduled_task *task)
 {
 	cJSON *payload;
 	cJSON *turn_id;
@@ -46,14 +47,14 @@ char *runtime_scheduled_task_turn_id(const struct scheduled_task *task)
 	return out;
 }
 
-char *runtime_scheduled_task_display_prompt(const struct scheduled_task *task,
-					    const char *task_prompt)
+char *runtime_scheduled_task_display_prompt_copy(const struct scheduled_task *task,
+						 const char *task_prompt)
 {
 	const char *label = "Scheduled task";
 	const char *user_req;
 	const char *line_end;
 	size_t req_len;
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	char *out;
 
 	if (!task)
@@ -84,9 +85,9 @@ char *runtime_scheduled_task_display_prompt(const struct scheduled_task *task,
 	return out;
 }
 
-char *runtime_react_error_message(struct react_context *react, int rc)
+char *runtime_react_error_message_copy(struct react_context *react, int rc)
 {
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	const char *answer;
 	const char *reason;
 	const char *error;
@@ -122,7 +123,7 @@ static int runtime_artifact_path_seen(morph_array_t *paths, const char *path)
 	if (!paths || !path)
 		return 0;
 	for (size_t i = 0; i < paths->nelts; i++) {
-		const char **seen = morph_array_get(paths, i);
+		const char **seen = morph_array_borrow(paths, i);
 		if (seen && *seen && strcmp(*seen, path) == 0)
 			return 1;
 	}
@@ -158,7 +159,7 @@ static int runtime_append_react_artifact_markdown(morph_buf_t *body,
 				continue;
 			if (runtime_artifact_path_seen(&paths, artifact->path))
 				continue;
-			slot = morph_array_push(&paths);
+			slot = morph_array_push_borrow(&paths);
 			if (!slot) {
 				rc = -ENOMEM;
 				goto out;
@@ -191,9 +192,9 @@ out:
 	return rc;
 }
 
-char *runtime_react_notification_body(struct react_context *react)
+char *runtime_react_notification_body_copy(struct react_context *react)
 {
-	morph_buf_t body;
+	morph_buf_t body MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	const char *answer;
 	char *out = NULL;
 	int body_ready = 0;

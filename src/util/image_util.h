@@ -12,17 +12,19 @@ extern "C" {
 
 int image_pixel_bytes(int width, int height, int channels, size_t *bytes);
 int image_validate_file(const char *path);
-unsigned char *image_load_bounded(const char *path, int *width, int *height,
-				 int *channels, int desired_channels);
+/* Independent decoded pixels; release with stbi_image_free(). */
+unsigned char *image_load_bounded_copy(const char *path, int *width, int *height, int *channels,
+				       int desired_channels);
 
 struct image_encoded {
 	char *base64;
 	const char *mime_type;
 };
 
-int image_encode_base64(const char *path, int max_dim,
-			struct image_encoded *encoded);
-int image_encode_data_uri(const char *path, int max_dim, char **uri);
+/* Independent encoded data. Output owners must be empty. Release with
+ * image_encoded_cleanup() or free(*uri), respectively. */
+int image_encode_base64_copy(const char *path, int max_dim, struct image_encoded *encoded);
+int image_encode_data_uri_copy(const char *path, int max_dim, char **uri);
 void image_encoded_cleanup(struct image_encoded *encoded);
 int image_probe_size(const char *path, int *width, int *height);
 int image_resize_file_exact(const char *path, int width, int height);

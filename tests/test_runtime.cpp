@@ -198,7 +198,7 @@ TEST_F(RuntimeLifecycleTest, EmitsStartupProgress)
 
 	std::string events;
 	for (size_t i = 0; i < morph_event_recorder_count(&recorder); i++) {
-		events += morph_event_recorder_get(&recorder, i);
+		events += morph_event_recorder_borrow(&recorder, i);
 		events += "\n";
 	}
 	EXPECT_NE(events.find("\"name\":\"startup.begin\""), std::string::npos);
@@ -268,13 +268,12 @@ TEST_F(RuntimeLifecycleTest, ReportsConfiguredPathsAndRejectsInvalidDatabase)
 	ASSERT_EQ(runtime_open(&options, &instance), 0);
 	char resolved[PATH_MAX];
 	ASSERT_NE(realpath(directory, resolved), nullptr);
-	EXPECT_STREQ(runtime_workdir_get(instance), resolved);
-	EXPECT_NE(runtime_config_get(instance), nullptr);
+	EXPECT_STREQ(runtime_workdir_borrow(instance), resolved);
+	EXPECT_NE(runtime_config_borrow(instance), nullptr);
 	const char *home = std::getenv("HOME");
 	ASSERT_NE(home, nullptr);
 	std::string expected_output = std::string(home) + "/.morph/output";
-	EXPECT_STREQ(runtime_config_get(instance)->general.output_dir,
-		     expected_output.c_str());
+	EXPECT_STREQ(runtime_config_borrow(instance)->general.output_dir, expected_output.c_str());
 	runtime_close(instance);
 	instance = nullptr;
 	options.db_path = "/definitely/missing/morph/data.db";
@@ -298,8 +297,8 @@ TEST_F(RuntimeLifecycleTest, KeepsConfiguredOutputWithoutExplicitWorkdir)
 	options.db_path = database;
 	options.front_name = "test";
 	ASSERT_EQ(runtime_open(&options, &instance), 0);
-	ASSERT_NE(runtime_config_get(instance), nullptr);
-	EXPECT_STREQ(runtime_config_get(instance)->general.output_dir,
+	ASSERT_NE(runtime_config_borrow(instance), nullptr);
+	EXPECT_STREQ(runtime_config_borrow(instance)->general.output_dir,
 		     configured_output.c_str());
 	runtime_close(instance);
 	instance = nullptr;
@@ -324,8 +323,8 @@ TEST_F(RuntimeLifecycleTest, WorkdirPreservesConfiguredOutput)
 	options.workdir = directory;
 	options.front_name = "test";
 	ASSERT_EQ(runtime_open(&options, &instance), 0);
-	ASSERT_NE(runtime_config_get(instance), nullptr);
-	EXPECT_STREQ(runtime_config_get(instance)->general.output_dir,
+	ASSERT_NE(runtime_config_borrow(instance), nullptr);
+	EXPECT_STREQ(runtime_config_borrow(instance)->general.output_dir,
 		     configured_output.c_str());
 	struct stat output_stat{};
 	ASSERT_EQ(stat(configured_output.c_str(), &output_stat), 0);

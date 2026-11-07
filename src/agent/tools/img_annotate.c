@@ -1,4 +1,6 @@
 #include "util/signals.h"
+#include "util/json.h"
+#include "util/cleanup.h"
 #include "agent/tool_runtime.h"
 #include "img_annotate.h"
 #include "agent/tool_context.h"
@@ -90,11 +92,11 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 
 	if (!args_json || !*args_json) {
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"missing arguments. "
-			"Usage: img_annotate({\\\"path\\\": \\\"image.jpg\\\"}) "
-			"or img_annotate({\\\"paths\\\": "
-			"[\\\"a.jpg\\\",\\\"b.jpg\\\"]})\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"missing arguments. "
+				"Usage: img_annotate({\\\"path\\\": \\\"image.jpg\\\"}) "
+				"or img_annotate({\\\"paths\\\": "
+				"[\\\"a.jpg\\\",\\\"b.jpg\\\"]})\"}");
 		return -EINVAL;
 	}
 
@@ -102,8 +104,8 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		cJSON *root = cJSON_Parse(args_json);
 
 		if (!root) {
-			(void)tool_result_success_json_text(result, strdup(
-				"{\"error\":\"invalid JSON arguments\"}"));
+			(void)tool_result_success_json_text_copy(
+				result, "{\"error\":\"invalid JSON arguments\"}");
 			return -EINVAL;
 		}
 
@@ -116,8 +118,8 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 			int sz = cJSON_GetArraySize(arr);
 			if (sz <= 0) {
 				cJSON_Delete(root);
-				(void)tool_result_success_json_text(result, strdup(
-					"{\"error\":\"'paths' array is empty\"}"));
+				(void)tool_result_success_json_text_copy(
+					result, "{\"error\":\"'paths' array is empty\"}");
 				return -EINVAL;
 			}
 			if (sz > MAX_IMAGES) {
@@ -126,7 +128,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 				snprintf(err, sizeof(err),
 					 "{\"error\":\"too many images "
 					 "(max %d)\"}", MAX_IMAGES);
-				(void)tool_result_success_json_text(result, strdup(err));
+				(void)tool_result_success_json_text_copy(result, err);
 				return -EINVAL;
 			}
 			for (i = 0; i < sz; i++) {
@@ -137,9 +139,9 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 					cJSON_Delete(root);
 					for (int j = 0; j < npaths; j++)
 						free(paths[j]);
-					(void)tool_result_success_json_text(result, strdup(
-						"{\"error\":\"'paths' contains "
-						"invalid entry\"}"));
+					(void)tool_result_success_json_text_copy(
+						result, "{\"error\":\"'paths' contains "
+							"invalid entry\"}");
 					return -EINVAL;
 				}
 				paths[npaths++] = strdup(item->valuestring);
@@ -149,13 +151,13 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 			if (!cJSON_IsString(p) || !p->valuestring ||
 			    !p->valuestring[0]) {
 				cJSON_Delete(root);
-				(void)tool_result_success_json_text(result, strdup(
-					"{\"error\":\"missing 'path' or "
-					"'paths' parameter. "
-					"Usage: img_annotate({\\\"path\\\": "
-					"\\\"image.jpg\\\"}) or "
-					"img_annotate({\\\"paths\\\": "
-					"[\\\"a.jpg\\\",\\\"b.jpg\\\"]})\"}"));
+				(void)tool_result_success_json_text_copy(
+					result, "{\"error\":\"missing 'path' or "
+						"'paths' parameter. "
+						"Usage: img_annotate({\\\"path\\\": "
+						"\\\"image.jpg\\\"}) or "
+						"img_annotate({\\\"paths\\\": "
+						"[\\\"a.jpg\\\",\\\"b.jpg\\\"]})\"}");
 				return -EINVAL;
 			}
 			paths[npaths++] = strdup(p->valuestring);
@@ -178,7 +180,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 				else
 					snprintf(err, sizeof(err),
 						 "{\"error\":\"read path outside workspace: permission denied\"}");
-				(void)tool_result_success_json_text(result, strdup(err));
+				(void)tool_result_success_json_text_copy(result, err);
 				for (int j = 0; j < npaths; j++)
 					free(paths[j]);
 				return rc;
@@ -195,7 +197,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 			snprintf(err, sizeof(err),
 				 "{\"error\":\"image file not found: %s\"}",
 				 paths[i]);
-			(void)tool_result_success_json_text(result, strdup(err));
+			(void)tool_result_success_json_text_copy(result, err);
 			for (int j = 0; j < npaths; j++)
 				free(paths[j]);
 			return -ENOENT;
@@ -207,9 +209,9 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 	if (!editor_path) {
 		for (i = 0; i < npaths; i++)
 			free(paths[i]);
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"could not locate morph-editor binary. "
-			"Set MORPH_EDITOR env var or install morph-editor.\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"could not locate morph-editor binary. "
+				"Set MORPH_EDITOR env var or install morph-editor.\"}");
 		return -ENOENT;
 	}
 
@@ -218,8 +220,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		free(editor_path);
 		for (i = 0; i < npaths; i++)
 			free(paths[i]);
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"pipe() failed\"}"));
+		(void)tool_result_success_json_text_copy(result, "{\"error\":\"pipe() failed\"}");
 		return -err;
 	}
 
@@ -239,8 +240,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		free(editor_path);
 		for (i = 0; i < npaths; i++)
 			free(paths[i]);
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"fork() failed\"}"));
+		(void)tool_result_success_json_text_copy(result, "{\"error\":\"fork() failed\"}");
 		return -err;
 	}
 
@@ -292,7 +292,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 	close(pipefd[1]);
 
 	{
-		morph_buf_t buf;
+		morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 		int buf_init_rc = morph_buf_init(&buf, 4096);
 
 		if (buf_init_rc != 0) {
@@ -303,9 +303,9 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 			free(editor_path);
 			for (i = 0; i < npaths; i++)
 				free(paths[i]);
-			(void)tool_result_success_json_text(result, strdup(
-				"{\"error\":\"out of memory "
-				"reading editor output\"}"));
+			(void)tool_result_success_json_text_copy(result,
+								 "{\"error\":\"out of memory "
+								 "reading editor output\"}");
 			return -ENOMEM;
 		}
 
@@ -324,9 +324,9 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 					free(editor_path);
 					for (i = 0; i < npaths; i++)
 						free(paths[i]);
-					(void)tool_result_success_json_text(result, strdup(
-						"{\"error\":\"out of memory "
-						"reading editor output\"}"));
+					(void)tool_result_success_json_text_copy(
+						result, "{\"error\":\"out of memory "
+							"reading editor output\"}");
 					return -ENOMEM;
 				}
 			}
@@ -370,11 +370,11 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 					 "{\"error\":\"morph-editor exited "
 					 "with code %d\"}",
 					 WEXITSTATUS(status));
-				(void)tool_result_success_json_text(result, strdup(err));
+				(void)tool_result_success_json_text_copy(result, err);
 				return -EIO;
 			}
-			(void)tool_result_success_json_text(result, strdup(
-				"{\"images\":[],\"bboxes\":[],\"arrows\":[]}"));
+			(void)tool_result_success_json_text_copy(
+				result, "{\"images\":[],\"bboxes\":[],\"arrows\":[]}");
 			return 0;
 		}
 
@@ -579,10 +579,11 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 				}
 
 				{
-					char *out = cJSON_PrintUnformatted(root);
+					char *out MORPH_CLEANUP(morph_json_text_cleanup) =
+						cJSON_PrintUnformatted(root);
 					cJSON_Delete(root);
 					morph_buf_cleanup(&buf);
-					(void)tool_result_success_json_text(result, out);
+					(void)tool_result_success_json_text_copy(result, out);
 				}
 				free(editor_path);
 				for (i = 0; i < npaths; i++)
@@ -597,7 +598,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		 */
 		{
 			cJSON *out = cJSON_CreateObject();
-			char *tmp_str;
+			char *tmp_str MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
 
 			cJSON_AddStringToObject(out, "error",
 						"editor output was not "
@@ -609,7 +610,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 			free(editor_path);
 			for (i = 0; i < npaths; i++)
 				free(paths[i]);
-			(void)tool_result_success_json_text(result, tmp_str);
+			(void)tool_result_success_json_text_copy(result, tmp_str);
 			return MORPH_ERR_PARSE;
 		}
 	}
@@ -634,59 +635,63 @@ int img_annotate_init(struct tool_registry *reg,
 	ctx->cb_user_data = user_data;
 	ctx->tctx = tctx;
 
-	int rc = tool_register(reg, &(struct tool_spec){
+	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.flags = TOOL_FLAG_MEDIA,
 		.name = "img_annotate",
 		.description = "Open one or more images in the interactive terminal "
-		"image editor (morph-editor) for manual annotation. "
-		"Supports two annotation types: "
-		"1) bounding boxes (bboxes) to label regions of "
-		"interest; "
-		"2) arrows to specify compositing — the object at "
-		"the arrow's source end will be blended/composited "
-		"into the target position the arrow points to "
-		"(cross-image compositing is supported). "
-		"The editor takes over the terminal: the user draws "
-		"bboxes and arrows with the mouse, labels them, then "
-		"presses 'q' to quit. On exit the annotations are "
-		"returned as JSON: "
-		"{\"images\":[{\"path\":\"...\",\"width\":N,"
-		"\"height\":N},...],"
-		"\"bboxes\":[{\"id\":1,\"image_index\":N,"
-		"\"x\":...,\"y\":...,\"w\":...,\"h\":...,"
-		"\"label\":\"...\"},...],"
-		"\"arrows\":[{\"id\":1,\"from\":{\"image_index\":N,"
-		"\"x\":...,\"y\":...},\"to\":{\"image_index\":N,"
-		"\"x\":...,\"y\":...},\"label\":\"...\","
-		"\"color\":\"#rrggbb\"},...]}. "
-		"Use this tool when you need the user to manually "
-		"identify regions of interest or specify "
-		"compositing instructions across images "
-		"(e.g. 'mark objects in these photos' or "
-		"'composite the chair from image 1 into image 2'). "
-		"When arrows are present the output also contains "
-		"a 'compositing_plan' field: 'main_image_index' "
-		"is the image that receives the most arrow "
-		"pointers (the base/main image); 'sources' lists "
-		"each source image with its from/to coordinates "
-		"and label; 'main_bboxes' lists all bboxes on "
-		"the main image. Use compositing_plan to drive "
-		"image generation: use the main image as the "
-		"base and composite source content at the "
-		"indicated positions. "
-		"Do NOT use this for automated image operations "
-		"like resize, crop, or format conversion.", .input_schema = "{\"type\":\"object\",\"properties\":{"
-		"\"path\":{\"type\":\"string\","
-		"\"description\":\"Path to a single image file to "
-		"annotate (use either 'path' or 'paths', not both)\"},"
-		"\"paths\":{\"type\":\"array\",\"items\":{"
-		"\"type\":\"string\"},"
-		"\"description\":\"Array of image file paths to "
-		"annotate together (use either 'path' or 'paths', "
-		"not both)\"}"
-		"},\"required\":[]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = img_annotate_exec, .user_data = ctx, .user_data_destroy = img_annotate_context_destroy });
-	if (rc != 0)
-		free(ctx);
+			       "image editor (morph-editor) for manual annotation. "
+			       "Supports two annotation types: "
+			       "1) bounding boxes (bboxes) to label regions of "
+			       "interest; "
+			       "2) arrows to specify compositing — the object at "
+			       "the arrow's source end will be blended/composited "
+			       "into the target position the arrow points to "
+			       "(cross-image compositing is supported). "
+			       "The editor takes over the terminal: the user draws "
+			       "bboxes and arrows with the mouse, labels them, then "
+			       "presses 'q' to quit. On exit the annotations are "
+			       "returned as JSON: "
+			       "{\"images\":[{\"path\":\"...\",\"width\":N,"
+			       "\"height\":N},...],"
+			       "\"bboxes\":[{\"id\":1,\"image_index\":N,"
+			       "\"x\":...,\"y\":...,\"w\":...,\"h\":...,"
+			       "\"label\":\"...\"},...],"
+			       "\"arrows\":[{\"id\":1,\"from\":{\"image_index\":N,"
+			       "\"x\":...,\"y\":...},\"to\":{\"image_index\":N,"
+			       "\"x\":...,\"y\":...},\"label\":\"...\","
+			       "\"color\":\"#rrggbb\"},...]}. "
+			       "Use this tool when you need the user to manually "
+			       "identify regions of interest or specify "
+			       "compositing instructions across images "
+			       "(e.g. 'mark objects in these photos' or "
+			       "'composite the chair from image 1 into image 2'). "
+			       "When arrows are present the output also contains "
+			       "a 'compositing_plan' field: 'main_image_index' "
+			       "is the image that receives the most arrow "
+			       "pointers (the base/main image); 'sources' lists "
+			       "each source image with its from/to coordinates "
+			       "and label; 'main_bboxes' lists all bboxes on "
+			       "the main image. Use compositing_plan to drive "
+			       "image generation: use the main image as the "
+			       "base and composite source content at the "
+			       "indicated positions. "
+			       "Do NOT use this for automated image operations "
+			       "like resize, crop, or format conversion.",
+		.input_schema = "{\"type\":\"object\",\"properties\":{"
+				"\"path\":{\"type\":\"string\","
+				"\"description\":\"Path to a single image file to "
+				"annotate (use either 'path' or 'paths', not both)\"},"
+				"\"paths\":{\"type\":\"array\",\"items\":{"
+				"\"type\":\"string\"},"
+				"\"description\":\"Array of image file paths to "
+				"annotate together (use either 'path' or 'paths', "
+				"not both)\"}"
+				"},\"required\":[]}",
+		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+		.exec = img_annotate_exec,
+		.user_data = ctx,
+		.user_data_destroy = img_annotate_context_destroy};
+	int rc = tool_register_take(reg, &spec);
 	return rc;
 }

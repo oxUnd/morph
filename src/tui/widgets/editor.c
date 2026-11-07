@@ -41,7 +41,7 @@ int morph_tui_widget_editor_state_init(struct morph_tui_widget_editor_state *edi
 int morph_tui_widget_editor_state_valid(const struct morph_tui_widget_editor_state *editor)
 {
 	return editor && !editor->overflow && !editor->text.failed && editor->text.len &&
-	       !utf8valid(morph_buf_cstr(&editor->text));
+	       !utf8valid(morph_buf_cstr_borrow(&editor->text));
 }
 
 int morph_tui_widget_editor_state_update(struct morph_tui_widget_editor_state *editor, int key)
@@ -74,9 +74,9 @@ int morph_tui_widget_editor_state_update(struct morph_tui_widget_editor_state *e
 		return MORPH_TUI_WIDGET_CHANGED;
 	}
 	if ((key == 127 || key == 8) && editor->cursor) {
-		size_t previous =
-			(size_t)(utf8_prev_codepoint(text->data, text->data + editor->cursor) -
-				 text->data);
+		size_t previous = (size_t)(utf8_prev_codepoint_borrow(text->data,
+								      text->data + editor->cursor) -
+					   text->data);
 
 		memmove(text->data + previous, text->data + editor->cursor,
 			text->len - editor->cursor + 1);
@@ -86,9 +86,9 @@ int morph_tui_widget_editor_state_update(struct morph_tui_widget_editor_state *e
 		return MORPH_TUI_WIDGET_CHANGED;
 	}
 	if (key == MORPH_TUI_KEY_LEFT && editor->cursor) {
-		editor->cursor =
-			(size_t)(utf8_prev_codepoint(text->data, text->data + editor->cursor) -
-				 text->data);
+		editor->cursor = (size_t)(utf8_prev_codepoint_borrow(text->data,
+								     text->data + editor->cursor) -
+					  text->data);
 		return MORPH_TUI_WIDGET_CHANGED;
 	}
 	if (key == MORPH_TUI_KEY_RIGHT && editor->cursor < text->len) {
@@ -140,11 +140,11 @@ int morph_tui_widget_editor_state_view(struct morph_tui_widget_editor_state *edi
 	char saved = data[editor->cursor];
 
 	data[editor->cursor] = '\0';
-	const char *start = utf8_suffix_display_width(data, width - 1);
+	const char *start = utf8_suffix_display_width_borrow(data, width - 1);
 
 	*cursor_column = utf8_display_width(start);
 	data[editor->cursor] = saved;
-	const char *end = utf8_advance_display_width(start, width);
+	const char *end = utf8_advance_display_width_borrow(start, width);
 
 	return morph_buf_append(text, start, (size_t)(end - start));
 }

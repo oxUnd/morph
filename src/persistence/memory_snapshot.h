@@ -8,33 +8,31 @@
 extern "C" {
 #endif
 
-struct arena;
-
 struct memory_fact_record {
-	const char *key;
-	const char *value;
-	const char *category;
+	char *key;
+	char *value;
+	char *category;
 	double importance;
 };
 
 struct memory_rule_record {
-	const char *text;
+	char *text;
 	int evidence;
 };
 
 struct memory_episode_record {
-	const char *summary;
-	const char *decisions;
-	const char *artifacts;
-	const char *tools;
+	char *summary;
+	char *decisions;
+	char *artifacts;
+	char *tools;
 	double importance;
 	int64_t created_at;
 };
 
 struct memory_change_record {
-	const char *key;
-	const char *old_value;
-	const char *new_value;
+	char *key;
+	char *old_value;
+	char *new_value;
 	int64_t updated_at;
 	int64_t valid_to;
 };
@@ -51,8 +49,7 @@ struct memory_snapshot_options {
 };
 
 struct memory_snapshot {
-	struct arena *arena;
-	const char *profile;
+	char *profile;
 	morph_array_t facts;
 	morph_array_t rules;
 	morph_array_t episodes;
@@ -60,6 +57,7 @@ struct memory_snapshot {
 	int episode_total;
 };
 
+/* Outputs must be zero-initialized and empty. Occupied owners return -EEXIST. */
 /* A snapshot owns every row and string until cleanup. No SQLite view escapes. */
 int memory_snapshot_read(struct db *db, int64_t session_id,
 			 const struct memory_snapshot_options *options,

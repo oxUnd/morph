@@ -6,7 +6,8 @@ extern "C" {
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/commands/registry.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "util/error.h"
 #include "persistence/history_store.h"
 }
@@ -67,8 +68,8 @@ TEST_F(HistoryInspectionTest, DistinguishesExactSummaryAncestryAndInactiveRecord
 			  "," + std::to_string(old) + "),(" + std::to_string(current) + "," +
 			  std::to_string(first) + ")";
 	ASSERT_EQ(db_exec(&db, sql.c_str()), 0);
-	cJSON *report = nullptr;
-	ASSERT_EQ(runtime_session_history_inspect(instance, &report), 0);
+	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_session_history_inspect_copy(instance, &report), 0);
 	cJSON *entries = cJSON_GetObjectItem(report, "entries");
 	ASSERT_EQ(cJSON_GetArraySize(entries), 6);
 	EXPECT_EQ(Field(cJSON_GetArrayItem(entries, 0), "status"), "VIA SUMMARY");
@@ -81,7 +82,7 @@ TEST_F(HistoryInspectionTest, DistinguishesExactSummaryAncestryAndInactiveRecord
 	EXPECT_EQ(Field(cJSON_GetArrayItem(entries, 5), "status"), "OUT");
 	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(report, "active_items")), 2);
 	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(report, "history_tokens")), 14);
-	cJSON_Delete(report);
+	morph_json_cleanup(&report);
 	EXPECT_EQ(model_history_count(&db, session.id, 0), 6);
 }
 
@@ -89,15 +90,15 @@ TEST_F(HistoryInspectionTest, EntryInputUsesRealSummaryWrapperAndDoesNotReplayIn
 {
 	Add("assistant_message", "inactive text", false);
 	Add("compaction_summary", "summary facts");
-	cJSON *input = nullptr;
-	EXPECT_EQ(runtime_session_history_entry_input(instance, 1, &input), -ENODATA);
-	ASSERT_EQ(runtime_session_history_entry_input(instance, 2, &input), 0);
+	cJSON *input MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	EXPECT_EQ(runtime_session_history_entry_input_copy(instance, 1, &input), -ENODATA);
+	ASSERT_EQ(runtime_session_history_entry_input_copy(instance, 2, &input), 0);
 	char *text = cJSON_PrintUnformatted(input);
 	ASSERT_NE(text, nullptr);
 	EXPECT_NE(std::string(text).find("Snapshot through history sequence 1"), std::string::npos);
 	EXPECT_NE(std::string(text).find("summary facts"), std::string::npos);
 	free(text);
-	cJSON_Delete(input);
+	morph_json_cleanup(&input);
 }
 
 TEST_F(HistoryInspectionTest, InternalMemoryReceiptsStayOutEvenAfterImportOrSummaryCoverage)
@@ -115,17 +116,17 @@ TEST_F(HistoryInspectionTest, InternalMemoryReceiptsStayOutEvenAfterImportOrSumm
 					" WHERE id=" + std::to_string(receipt))
 					       .c_str()),
 			  0);
-		cJSON *report = nullptr;
-		ASSERT_EQ(runtime_session_history_inspect(instance, &report), 0);
+		cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+		ASSERT_EQ(runtime_session_history_inspect_copy(instance, &report), 0);
 		cJSON *entry = cJSON_GetArrayItem(cJSON_GetObjectItem(report, "entries"), 0);
 		EXPECT_EQ(Field(entry, "status"), "OUT");
 		EXPECT_NE(Field(entry, "reason").find("Internal memory-maintenance"),
 			  std::string::npos);
 		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(report, "active_items")), 1);
 		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(report, "history_tokens")), 7);
-		cJSON_Delete(report);
-		cJSON *input = nullptr;
-		EXPECT_EQ(runtime_session_history_entry_input(instance, 1, &input), -ENODATA);
+		morph_json_cleanup(&report);
+		cJSON *input MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+		EXPECT_EQ(runtime_session_history_entry_input_copy(instance, 1, &input), -ENODATA);
 	}
 }
 
@@ -149,22 +150,22 @@ TEST_F(HistoryInspectionTest, InactiveCallDoesNotHideAnActiveOrphanResult)
 	result.provider_call_id = "remote";
 	result.active = 1;
 	ASSERT_EQ(model_history_add(&db, &result, nullptr), 0);
-	cJSON *report = nullptr;
-	ASSERT_EQ(runtime_session_history_inspect(instance, &report), 0);
+	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_session_history_inspect_copy(instance, &report), 0);
 	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(report, "needs_repair")));
-	cJSON_Delete(report);
+	morph_json_cleanup(&report);
 }
 
 TEST_F(HistoryInspectionTest, LegacyDisplayHistoryIsReadOnlyAndNotClaimedAsConfirmedInput)
 {
 	ASSERT_EQ(message_add(&db, session.id, "user", "legacy 中文", 7), 0);
-	cJSON *report = nullptr;
-	ASSERT_EQ(runtime_session_history_inspect(instance, &report), 0);
+	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_session_history_inspect_copy(instance, &report), 0);
 	cJSON *entries = cJSON_GetObjectItem(report, "entries");
 	ASSERT_EQ(cJSON_GetArraySize(entries), 1);
 	EXPECT_EQ(Field(cJSON_GetArrayItem(entries, 0), "status"), "LEGACY");
 	EXPECT_EQ(model_history_count(&db, session.id, 0), 0);
-	cJSON_Delete(report);
+	morph_json_cleanup(&report);
 }
 
 TEST_F(HistoryInspectionTest, CapturedInputIsRedactedReplacedPersistedAndSessionScoped)
@@ -192,14 +193,14 @@ TEST_F(HistoryInspectionTest, CapturedInputIsRedactedReplacedPersistedAndSession
 	ASSERT_EQ(agent_history_record_request(react, &model, "Instructions and memory", &message,
 					       1, &tool, 1),
 		  0);
-	cJSON *snapshot = nullptr;
-	ASSERT_EQ(runtime_session_last_request(instance, &snapshot), 0);
+	cJSON *snapshot MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_session_last_request_copy(instance, &snapshot), 0);
 	std::string input = Field(snapshot, "input_json");
 	EXPECT_EQ(input.find("exact-secret-value"), std::string::npos);
 	EXPECT_NE(input.find("[REDACTED]"), std::string::npos);
 	EXPECT_NE(input.find("Instructions and memory"), std::string::npos);
 	EXPECT_NE(input.find("Inspection tool schema"), std::string::npos);
-	cJSON_Delete(snapshot);
+	morph_json_cleanup(&snapshot);
 	message.content = const_cast<char *>("replacement input");
 	ASSERT_EQ(agent_history_record_request(react, &model, "new instructions", &message, 1,
 					       nullptr, 0),
@@ -209,13 +210,13 @@ TEST_F(HistoryInspectionTest, CapturedInputIsRedactedReplacedPersistedAndSession
 	instance = nullptr;
 	Open();
 	ASSERT_EQ(runtime_session_select_existing(instance, session.id, nullptr), 0);
-	ASSERT_EQ(runtime_session_last_request(instance, &snapshot), 0);
+	ASSERT_EQ(runtime_session_last_request_copy(instance, &snapshot), 0);
 	EXPECT_NE(Field(snapshot, "input_json").find("replacement input"), std::string::npos);
 	EXPECT_EQ(Field(snapshot, "input_json").find("first input"), std::string::npos);
-	cJSON_Delete(snapshot);
+	morph_json_cleanup(&snapshot);
 	struct session other{};
 	ASSERT_EQ(runtime_session_create_and_select(instance, "other", &other), 0);
-	EXPECT_EQ(runtime_session_last_request(instance, &snapshot), -ENODATA);
+	EXPECT_EQ(runtime_session_last_request_copy(instance, &snapshot), -ENODATA);
 }
 
 TEST_F(HistoryInspectionTest, CompactionRecordsOnlyActualSummarySources)
@@ -236,12 +237,12 @@ TEST_F(HistoryInspectionTest, CompactionRecordsOnlyActualSummarySources)
 	ASSERT_EQ(agent_history_reload(react), 0);
 	ASSERT_EQ(agent_history_compact(react, 1), 1);
 	react_context_destroy(react);
-	cJSON *report = nullptr;
-	ASSERT_EQ(runtime_session_history_inspect(instance, &report), 0);
+	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_session_history_inspect_copy(instance, &report), 0);
 	cJSON *entries = cJSON_GetObjectItem(report, "entries");
 	EXPECT_EQ(Field(cJSON_GetArrayItem(entries, 0), "status"), "VIA SUMMARY");
 	EXPECT_EQ(Field(cJSON_GetArrayItem(entries, 1), "status"), "OUT");
-	cJSON_Delete(report);
+	morph_json_cleanup(&report);
 }
 
 TEST_F(HistoryInspectionTest, PlainHistoryIncludesToolsAndPreservesCompatibilityCommands)
@@ -307,12 +308,12 @@ TEST_F(HistoryInspectionTest, FailedSummarizerPreservesActiveHistory)
 	ASSERT_EQ(agent_history_reload(react), 0);
 	ASSERT_EQ(agent_history_compact_with_trigger(react, 1, "in_turn_1"), -EIO);
 	react_context_destroy(react);
-	cJSON *report = nullptr;
-	ASSERT_EQ(runtime_session_history_inspect(instance, &report), 0);
+	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_session_history_inspect_copy(instance, &report), 0);
 	cJSON *entries = cJSON_GetObjectItem(report, "entries");
 	EXPECT_EQ(cJSON_GetArraySize(entries), 1);
 	EXPECT_EQ(Field(cJSON_GetArrayItem(entries, 0), "status"), "IN");
-	cJSON_Delete(report);
+	morph_json_cleanup(&report);
 }
 
 TEST_F(HistoryInspectionTest, TransientSummaryFailureRetriesBeforeCommit)

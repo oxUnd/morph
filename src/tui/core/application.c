@@ -76,7 +76,7 @@ static int64_t core_app_now(void)
 static struct core_app_controller *core_app_top(const struct core_application_loop *app)
 {
 	return app->controllers.nelts
-		       ? morph_array_get(&app->controllers, app->controllers.nelts - 1)
+		       ? morph_array_borrow(&app->controllers, app->controllers.nelts - 1)
 		       : NULL;
 }
 
@@ -341,8 +341,8 @@ static int core_app_terminal_mode(struct core_application_loop *app)
 	return rc;
 }
 
-int core_application_loop_present(struct core_application_loop *app,
-				  const struct morph_tui_controller *controller)
+int core_application_loop_present_take(struct core_application_loop *app,
+				       struct morph_tui_controller *controller)
 {
 	if (!core_application_loop_is_owner(app))
 		return -EPERM;
@@ -357,7 +357,7 @@ int core_application_loop_present(struct core_application_loop *app,
 
 	if (rc)
 		return rc;
-	struct core_app_transition *transition = morph_array_push(&app->transitions);
+	struct core_app_transition *transition = morph_array_push_borrow(&app->transitions);
 
 	if (!transition)
 		return -ENOMEM;
@@ -365,6 +365,7 @@ int core_application_loop_present(struct core_application_loop *app,
 							   .descriptor = *controller,
 							   .id = ++app->sequence,
 						   }};
+	memset(controller, 0, sizeof(*controller));
 	return 0;
 }
 
@@ -376,7 +377,7 @@ int core_application_loop_dismiss(struct core_application_loop *app, int result)
 
 	if (!top || app->stopping)
 		return -ECANCELED;
-	struct core_app_transition *transition = morph_array_push(&app->transitions);
+	struct core_app_transition *transition = morph_array_push_borrow(&app->transitions);
 
 	if (!transition)
 		return -ENOMEM;
@@ -433,7 +434,7 @@ static int core_app_transitions_commit(struct core_application_loop *app)
 	 * cannot survive callbacks, which may grow the transition array. */
 	for (size_t i = 0; i < count && !app->stopping; i++) {
 		struct core_app_transition transition =
-			*(struct core_app_transition *)morph_array_get(&app->transitions, i);
+			*(struct core_app_transition *)morph_array_borrow(&app->transitions, i);
 		struct core_app_controller *top = core_app_top(app);
 
 		if (transition.dismiss_id && (!top || top->id != transition.dismiss_id)) {
@@ -455,14 +456,15 @@ static int core_app_transitions_commit(struct core_application_loop *app)
 			if (rc)
 				return rc;
 		} else {
-			struct core_app_controller *entry = morph_array_push(&app->controllers);
+			struct core_app_controller *entry =
+				morph_array_push_borrow(&app->controllers);
 
 			if (!entry)
 				return -ENOMEM;
 			*entry = transition.controller;
 		}
 		/* Mark a presented transition consumed before callbacks can fail. */
-		struct core_app_transition *consumed = morph_array_get(&app->transitions, i);
+		struct core_app_transition *consumed = morph_array_borrow(&app->transitions, i);
 
 		consumed->controller.id = 0;
 		processed = i + 1;
@@ -561,23 +563,25 @@ int core_application_loop_wake(struct core_application_loop *app)
 	return rc;
 }
 
-int core_application_loop_post(struct core_application_loop *app, int code, void *payload,
-			       void (*release)(void *payload))
+int core_application_loop_post_take(struct core_application_loop *app, int code,
+				    struct morph_tui_message *source)
 {
-	if (!app)
+	if (!app || !source)
 		return -EINVAL;
 	struct core_app_message *message = calloc(1, sizeof(*message));
 
 	if (!message)
 		return -ENOMEM;
 	message->code = code;
-	message->payload = payload;
-	message->release = release;
+	message->payload = source->data;
+	message->release = source->release;
 	pthread_mutex_lock(&app->mutex);
 	int rc = app->accepting ? uv_async_send(&app->wake) : -ECANCELED;
 
-	if (!rc)
+	if (!rc) {
 		morph_queue_insert_tail(&app->messages, &message->link);
+		memset(source, 0, sizeof(*source));
+	}
 	pthread_mutex_unlock(&app->mutex);
 	if (rc)
 		free(message);
@@ -589,7 +593,8 @@ int core_application_loop_create(const struct core_application_loop_options *opt
 {
 	if (!out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	if (!options || !options->input || !options->output)
 		return -EINVAL;
 	struct core_application_loop *app = calloc(1, sizeof(*app));
@@ -699,7 +704,7 @@ void core_application_loop_destroy(struct core_application_loop *app)
 			controller.descriptor.ops->close(controller.descriptor.data, close_result);
 	}
 	for (size_t i = 0; i < app->transitions.nelts; i++) {
-		struct core_app_transition *transition = morph_array_get(&app->transitions, i);
+		struct core_app_transition *transition = morph_array_borrow(&app->transitions, i);
 		struct morph_tui_controller *controller = &transition->controller.descriptor;
 
 		if (transition->controller.id && controller->ops->close)
