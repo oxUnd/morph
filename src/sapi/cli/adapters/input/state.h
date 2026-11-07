@@ -21,6 +21,8 @@ struct cli_input_state {
 	char *readline_ready_input;
 	int details_hint_visible;
 	int details_hint_column;
+	int display_columns;
+	int display_rows;
 	char *footer_text;
 	struct session *completion_sessions;
 	int completion_count;

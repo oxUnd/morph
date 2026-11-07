@@ -169,6 +169,19 @@ static void cli_readline_footer_tokens(morph_buf_t *text, int tokens)
 		(void)morph_buf_printf(text, "%d", tokens);
 }
 
+static void cli_readline_draw_hint(struct cli_application *ctx, const struct winsize *size)
+{
+	if (ctx->input_status.suspended || !RL_ISSTATE(RL_STATE_CALLBACK) || rl_end != 0 ||
+	    size->ws_col <= 24)
+		return;
+	ctx->input->details_hint_column = size->ws_col - 17;
+	fprintf(stdout,
+		"\0337\033[%dG" ANSI_DIM CLI_INPUT_BACKGROUND "ctrl+o details" ANSI_RESET "\0338",
+		ctx->input->details_hint_column);
+	ctx->input->details_hint_visible = 1;
+	fflush(stdout);
+}
+
 static void cli_readline_footer(struct cli_application *ctx)
 {
 	struct winsize size = {0};
@@ -282,7 +295,9 @@ static void cli_readline_footer(struct cli_application *ctx)
 					  utf8_display_width_ansi(morph_buf_cstr_borrow(&text)),
 				  ANSI_DIM, 0);
 	footer_rows = 1;
-	if (ctx->input_status.tasks.running || ctx->input_status.tasks.pending) {
+	/* The composer and lower padding must remain above every footer row. */
+	if ((ctx->input_status.tasks.running || ctx->input_status.tasks.pending) &&
+	    last_row + footer_rows + 2 < size.ws_row) {
 		morph_buf_t tasks;
 
 		if (morph_buf_init(&tasks, 64) == 0) {
@@ -305,9 +320,19 @@ static void cli_readline_footer(struct cli_application *ctx)
 		morph_buf_cleanup(&text);
 		return;
 	}
+	char *footer_text = strdup(morph_buf_cstr_borrow(&text));
+
+	if (!footer_text) {
+		morph_buf_cleanup(&usage);
+		morph_buf_cleanup(&text);
+		return;
+	}
 	free(ctx->input->footer_text);
-	ctx->input->footer_text = strdup(morph_buf_cstr_borrow(&text));
+	ctx->input->footer_text = footer_text;
 	cli_readline_clear_footer(ctx);
+	int restore_hint = ctx->input->details_hint_visible;
+
+	ctx->input->details_hint_visible = 0;
 	/* Reserve a padded input row and footer even at screen bottom. */
 	if (last_row > row)
 		fprintf(stdout, "\033[%dB", last_row - row);
@@ -319,6 +344,8 @@ static void cli_readline_footer(struct cli_application *ctx)
 		last_row - row + footer_rows + 1, column + 1);
 	ctx->input_status.distance = last_row - row + footer_rows + 1;
 	ctx->input_status.footer_rows = footer_rows;
+	if (restore_hint)
+		cli_readline_draw_hint(ctx, &size);
 	morph_buf_cleanup(&usage);
 	morph_buf_cleanup(&text);
 	fflush(stdout);
@@ -347,17 +374,12 @@ void cli_readline_redisplay(struct cli_application *ctx)
 		fputs(ctx, ANSI_RESET, stdout);
 	cli_readline_color_images(ctx);
 	cli_readline_footer(ctx);
-	if (!ctx->input_status.suspended && RL_ISSTATE(RL_STATE_CALLBACK) && rl_end == 0 &&
-	    isatty(STDOUT_FILENO) && ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 &&
-	    size.ws_col > 24) {
-		ctx->input->details_hint_column = size.ws_col - 17;
-		fprintf(stdout,
-			"\0337\033[%dG" ANSI_DIM CLI_INPUT_BACKGROUND "ctrl+o details" ANSI_RESET
-			"\0338",
-			ctx->input->details_hint_column);
-		ctx->input->details_hint_visible = 1;
-		fflush(stdout);
+	if (!ctx->input_status.suspended && RL_ISSTATE(RL_STATE_CALLBACK) &&
+	    isatty(STDOUT_FILENO) && ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0) {
+		ctx->input->display_columns = size.ws_col;
+		ctx->input->display_rows = size.ws_row;
 	}
+	cli_readline_draw_hint(ctx, &size);
 }
 
 void cli_readline_line_ready(struct cli_application *ctx, char *input)
@@ -381,10 +403,115 @@ void cli_readline_line_ready(struct cli_application *ctx, char *input)
 	ctx->input->readline_ready_input = input;
 }
 
+/* A terminal reflows stored cells before notifying the application. The old
+ * right hint and footer can therefore occupy more rows than their last paint. */
+static int cli_readline_reflow_tail(struct cli_application *ctx, int columns, int row, int last_row,
+				    int *out)
+{
+	char *footer MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	int tail = last_row - row;
+
+	if (ctx->input->details_hint_visible && rl_end == 0) {
+		int width = ctx->input->details_hint_column - 1 + (int)strlen("ctrl+o details");
+		int hint_rows = width > 0 ? (width - 1) / columns : 0;
+
+		if (hint_rows > tail)
+			tail = hint_rows;
+	}
+	if (ctx->input_status.distance && ctx->input_status.footer_rows) {
+		if (!ctx->input->footer_text)
+			return -ENOMEM;
+		footer = utf8_terminal_sanitize_dup(ctx->input->footer_text,
+						    strlen(ctx->input->footer_text),
+						    UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+		if (!footer)
+			return -ENOMEM;
+		if (tail > INT_MAX - 2)
+			return -EOVERFLOW;
+		tail += 2;
+		int column = 0;
+		const char *cursor = footer;
+		const char *end = footer + strlen(footer);
+
+		while (cursor < end) {
+			unsigned cp;
+			size_t length;
+
+			if (!utf8_decode_codepoint(cursor, (size_t)(end - cursor), &cp, &length))
+				return -EILSEQ;
+			cursor += length;
+			int width = utf8_codepoint_width(cp);
+
+			if (cp != '\n' && width <= 0)
+				continue;
+			if (cp == '\n' || column + width > columns) {
+				if (tail == INT_MAX)
+					return -EOVERFLOW;
+				tail++;
+				column = 0;
+			}
+			if (cp != '\n')
+				column += width;
+			if (column < 0)
+				return -EOVERFLOW;
+		}
+	}
+	*out = tail;
+	return 0;
+}
+
+static char *cli_readline_suspend_resized_copy(struct cli_application *ctx, int *point,
+					       const struct winsize *size)
+{
+	char *draft MORPH_CLEANUP(morph_charp_cleanup) =
+		strdup(rl_line_buffer ? rl_line_buffer : "");
+	int row, column, last_row, last_column;
+	int tail;
+
+	if (!draft)
+		return NULL;
+	cli_readline_position(ctx, rl_point, size->ws_col, &row, &column);
+	cli_readline_position(ctx, rl_end, size->ws_col, &last_row, &last_column);
+	if (cli_readline_reflow_tail(ctx, size->ws_col, row, last_row, &tail) != 0)
+		return NULL;
+	*point = rl_point;
+	/* Reflow below the cursor can scroll the prompt upward while the terminal
+	 * leaves its cursor on the former row. Moving down to the reflowed tail
+	 * and back uses the bottom clamp to recover the owned area's origin. */
+	if (tail >= size->ws_row)
+		tail = size->ws_row - 1;
+	if (tail > 0)
+		fprintf(stdout, "\033[%dB\033[%dA", tail, tail);
+	if (row > 0)
+		fprintf(stdout, "\033[%dA", row);
+	/* Everything below the draft's first row belongs to the transient editor.
+	 * Clear that reflowed area before any Readline redraw using stale rows. */
+	fprintf(stdout, "\r\033[J");
+	ctx->input_status.distance = 0;
+	ctx->input_status.footer_rows = 0;
+	ctx->input_status.suspended = 1;
+	ctx->input_status.composer_rows = last_row + 1;
+	ctx->input->details_hint_visible = 0;
+	ctx->input->display_columns = size->ws_col;
+	ctx->input->display_rows = size->ws_row;
+	rl_set_screen_size(size->ws_row, size->ws_col);
+	rl_replace_line("", 0);
+	rl_point = 0;
+	rl_on_new_line();
+	cli_feed_composer_suspend(ctx);
+	return morph_charp_steal(&draft);
+}
+
 /* Readline owns the whole editable area, including wrapped and pasted lines.
  * Erase it through Readline before moving up to the live status row. */
 char *cli_readline_suspend_copy(struct cli_application *ctx, int *point)
 {
+	struct winsize size = {0};
+
+	if (ctx->input->display_columns > 0 && ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 &&
+	    size.ws_col > 0 && size.ws_row > 0 &&
+	    (size.ws_col != ctx->input->display_columns || size.ws_row != ctx->input->display_rows))
+		return cli_readline_suspend_resized_copy(ctx, point, &size);
 	char *draft = strdup(rl_line_buffer ? rl_line_buffer : "");
 	int row;
 	int column;
@@ -491,6 +618,12 @@ void cli_readline_render_frame(struct cli_application *ctx, int resized)
 {
 	int point;
 	char *draft MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	struct winsize size = {0};
+
+	if (ctx->input->display_columns > 0 &&
+	    ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 &&
+	    (size.ws_col != ctx->input->display_columns || size.ws_row != ctx->input->display_rows))
+		resized = 1;
 
 	if (resized)
 		(void)cli_markdown_stream_refresh(ctx);
@@ -525,8 +658,6 @@ void cli_readline_render_frame(struct cli_application *ctx, int resized)
 		return;
 	}
 	if (resized) {
-		struct winsize size = {0};
-
 		/* rl_resize_terminal also repaints the suspended prompt. Update
 		 * geometry without drawing; resume owns the sole composer redraw. */
 		if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0)
@@ -823,6 +954,19 @@ void cli_readline_editor_replace(struct cli_application *ctx, const char *text, 
 
 void cli_readline_editor_read(struct cli_application *ctx)
 {
+	struct winsize size = {0};
+
+	/* Input can become ready before the resize signal reaches the UI owner.
+	 * Preserve the previous paint geometry until its reflowed area is erased. */
+	if (ctx->input->display_columns > 0 &&
+	    ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col > 0 && size.ws_row > 0 &&
+	    (size.ws_col != ctx->input->display_columns || size.ws_row != ctx->input->display_rows)) {
+		cli_readline_render_frame(ctx, 1);
+		if (size.ws_col != ctx->input->display_columns ||
+		    size.ws_row != ctx->input->display_rows)
+			return;
+	}
+	cli_readline_clear_footer(ctx);
 	int previous_point = rl_point;
 	int image_start;
 	int image_end;

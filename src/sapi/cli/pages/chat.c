@@ -126,7 +126,8 @@ static int cli_chat_page_event(void *data, struct morph_tui_application *app,
 			rc = cli_chat_page_appear(state, app);
 		return rc ? rc : 1;
 	}
-	if (morph_signal_flag_take(&ctx->resized)) {
+	int resized = morph_signal_flag_take(&ctx->resized);
+	if (resized || event->type == MORPH_TUI_EVENT_RESIZE) {
 		cli_feed_resize(ctx);
 		if (modal)
 			morph_tui_application_invalidate(app, MORPH_TUI_INVALIDATE_LAYOUT);
@@ -207,7 +208,6 @@ static int cli_chat_page_input(void *data, struct morph_tui_application *app,
 
 	if (!state->job->active)
 		cli_cancel_state_reset(ctx);
-	cli_readline_clear_footer(ctx);
 	cli_readline_editor_read(ctx);
 	if (ctx->input->readline_ready_input) {
 		char *input = ctx->input->readline_ready_input;
