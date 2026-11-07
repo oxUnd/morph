@@ -233,6 +233,34 @@ static size_t write_cb(void *ptr, size_t size, size_t nmemb, void *data)
 	return total;
 }
 
+struct response_writer {
+	struct http_response *response;
+	size_t limit;
+	int error;
+};
+
+static size_t bounded_write_cb(void *data, size_t size, size_t count, void *opaque)
+{
+	struct response_writer *writer = opaque;
+	size_t length;
+	size_t written;
+
+	if (size && count > SIZE_MAX / size) {
+		writer->error = -EOVERFLOW;
+		return 0;
+	}
+	length = size * count;
+	if (writer->limit && (writer->response->body.len > writer->limit ||
+			      length > writer->limit - writer->response->body.len)) {
+		writer->error = -EFBIG;
+		return 0;
+	}
+	written = write_cb(data, size, count, writer->response);
+	if (written != length && writer->response->body.failed)
+		writer->error = writer->response->body.failed;
+	return written;
+}
+
 static size_t header_cb(char *ptr, size_t size, size_t nmemb, void *data)
 {
 	struct http_response *resp = data;
@@ -290,8 +318,9 @@ static int append_extra_headers(struct curl_slist **headers, const char **extra_
 static int do_request(const struct http_control *control, const char *url, const char *method,
 		      const char *body, size_t body_len, const char *content_type,
 		      const char **extra_headers, int extra_header_count,
-		      struct http_response *resp, long timeout)
+		      struct http_response *resp, long timeout, size_t body_limit)
 {
+	struct response_writer writer = {.response = resp, .limit = body_limit};
 	CURLcode curl_rc;
 	struct curl_slist *headers = NULL;
 	char errbuf[CURL_ERROR_SIZE];
@@ -318,8 +347,8 @@ static int do_request(const struct http_control *control, const char *url, const
 		goto out;
 	if (headers)
 		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, resp);
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, bounded_write_cb);
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writer);
 	curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
 	curl_easy_setopt(curl, CURLOPT_HEADERDATA, resp);
 	http_configure_transfer(curl, control, url, timeout, 0, errbuf);
@@ -338,7 +367,7 @@ static int do_request(const struct http_control *control, const char *url, const
 	}
 
 	curl_rc = http_perform_cancelable(curl, NULL, control);
-	rc = http_transfer_result(control, curl_rc, errbuf);
+	rc = writer.error ? writer.error : http_transfer_result(control, curl_rc, errbuf);
 	if (rc != 0)
 		goto out;
 
@@ -358,18 +387,26 @@ int http_get(const struct http_control *control, const char *url, struct http_re
 	if (!url || !resp)
 		return MORPH_TRACE_ERROR(control ? control->logger : NULL, -EINVAL);
 	memset(resp, 0, sizeof(*resp));
-	return do_request(control, url, "GET", NULL, 0, NULL, NULL, 0, resp, 30L);
+	return do_request(control, url, "GET", NULL, 0, NULL, NULL, 0, resp, 30L, 0);
+}
+
+int http_get_ex_timeout_limit(const struct http_control *control, const char *url,
+			      const char **extra_headers, int extra_header_count,
+			      long timeout_seconds, size_t body_limit, struct http_response *resp)
+{
+	if (!url || !resp || timeout_seconds <= 0)
+		return -EINVAL;
+	memset(resp, 0, sizeof(*resp));
+	return do_request(control, url, "GET", NULL, 0, NULL, extra_headers, extra_header_count,
+			  resp, timeout_seconds, body_limit);
 }
 
 int http_get_ex_timeout(const struct http_control *control, const char *url,
 			const char **extra_headers, int extra_header_count, long timeout_seconds,
 			struct http_response *resp)
 {
-	if (!url || !resp || timeout_seconds <= 0)
-		return -EINVAL;
-	memset(resp, 0, sizeof(*resp));
-	return do_request(control, url, "GET", NULL, 0, NULL, extra_headers, extra_header_count,
-			  resp, timeout_seconds);
+	return http_get_ex_timeout_limit(control, url, extra_headers, extra_header_count,
+					 timeout_seconds, 0, resp);
 }
 
 int http_get_ex(const struct http_control *control, const char *url, const char **extra_headers,
@@ -384,7 +421,8 @@ int http_post(const struct http_control *control, const char *url, const char *b
 	if (!url || !resp)
 		return -EINVAL;
 	memset(resp, 0, sizeof(*resp));
-	return do_request(control, url, "POST", body, body_len, content_type, NULL, 0, resp, 60L);
+	return do_request(control, url, "POST", body, body_len, content_type, NULL, 0, resp, 60L,
+			  0);
 }
 
 int http_post_ex(const struct http_control *control, const char *url, const char *body,
@@ -395,7 +433,7 @@ int http_post_ex(const struct http_control *control, const char *url, const char
 		return -EINVAL;
 	memset(resp, 0, sizeof(*resp));
 	return do_request(control, url, "POST", body, body_len, content_type, extra_headers,
-			  extra_header_count, resp, 60L);
+			  extra_header_count, resp, 60L, 0);
 }
 
 int http_post_ex_timeout(const struct http_control *control, const char *url, const char *body,
@@ -406,7 +444,7 @@ int http_post_ex_timeout(const struct http_control *control, const char *url, co
 		return MORPH_TRACE_ERROR(control ? control->logger : NULL, -EINVAL);
 	memset(resp, 0, sizeof(*resp));
 	return do_request(control, url, "POST", body, body_len, content_type, extra_headers,
-			  extra_header_count, resp, timeout_seconds);
+			  extra_header_count, resp, timeout_seconds, 0);
 }
 
 int http_post_multipart_ex(const struct http_control *control, const char *url,

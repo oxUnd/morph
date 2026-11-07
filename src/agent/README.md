@@ -50,6 +50,18 @@ owns fact versions, generation fences, episode writes and copied record snapshot
 through `memory_repository.h` and `memory_snapshot.h`; it does not format the
 memory query UI. Snapshot strings remain owned until `memory_snapshot_cleanup()`.
 
+`memory_jobs.c` owns worker/queue lifecycle and recovery decisions. The concrete
+`persistence/memory_job_store` owns job SQL, conditional state changes and copied
+record snapshots; background status formatting stays in `memory_render.c`.
+Memory write transactions begin and finish through `memory_repository` APIs.
+Generation checks guard derived writes after model requests complete, so model
+latency never extends a memory write transaction.
+
+`persistence/history_store` also owns the visible-message reads shared with recap,
+retention-row token writes, repair updates and summary-source inserts. Agent code
+selects token/counting and compaction policies and keeps its short savepoint
+boundaries explicit; the storage layer does not run model or retry policies.
+
 ## Tools
 
 | Interface | Responsibility |

@@ -1,15 +1,19 @@
 #include "runtime_test_support.hpp"
 
+#include <vector>
+
 extern "C" {
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/commands/registry.h"
 #include "util/arena.h"
 #include "util/error.h"
+#include "persistence/history_store.h"
 }
 
-class HistoryInspectionTest : public RuntimeFacadeTest {
-protected:
+class HistoryInspectionTest : public RuntimeFacadeTest
+{
+      protected:
 	struct db db{};
 	struct session session{};
 
@@ -45,7 +49,8 @@ protected:
 
 	static std::string Field(const cJSON *json, const char *key)
 	{
-		const char *value = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(json, key));
+		const char *value =
+			cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(json, key));
 		return value ? value : "";
 	}
 };
@@ -59,8 +64,8 @@ TEST_F(HistoryInspectionTest, DistinguishesExactSummaryAncestryAndInactiveRecord
 	Add("tool_result", "shortened tool output", true, true);
 	Add("audit_metadata", "never replayed");
 	std::string sql = "INSERT INTO history_summary_sources VALUES(" + std::to_string(first) +
-		"," + std::to_string(old) + "),(" + std::to_string(current) + "," +
-		std::to_string(first) + ")";
+			  "," + std::to_string(old) + "),(" + std::to_string(current) + "," +
+			  std::to_string(first) + ")";
 	ASSERT_EQ(db_exec(&db, sql.c_str()), 0);
 	cJSON *report = nullptr;
 	ASSERT_EQ(runtime_session_history_inspect(instance, &report), 0);
@@ -72,7 +77,7 @@ TEST_F(HistoryInspectionTest, DistinguishesExactSummaryAncestryAndInactiveRecord
 	EXPECT_EQ(Field(cJSON_GetArrayItem(entries, 3), "status"), "IN");
 	EXPECT_EQ(Field(cJSON_GetArrayItem(entries, 4), "status"), "IN / TRIMMED");
 	EXPECT_NE(Field(cJSON_GetArrayItem(entries, 4), "reason").find("original is unavailable"),
-		std::string::npos);
+		  std::string::npos);
 	EXPECT_EQ(Field(cJSON_GetArrayItem(entries, 5), "status"), "OUT");
 	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(report, "active_items")), 2);
 	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(report, "history_tokens")), 14);
@@ -97,21 +102,25 @@ TEST_F(HistoryInspectionTest, EntryInputUsesRealSummaryWrapperAndDoesNotReplayIn
 
 TEST_F(HistoryInspectionTest, InternalMemoryReceiptsStayOutEvenAfterImportOrSummaryCoverage)
 {
-	int64_t receipt = Add("background_receipt",
-		"[Background receipt] memory_consolidation: memory consolidation queued");
+	int64_t receipt =
+		Add("background_receipt",
+		    "[Background receipt] memory_consolidation: memory consolidation queued");
 	int64_t summary = Add("compaction_summary", "retained summary");
-	std::string sql = "INSERT INTO history_summary_sources VALUES(" +
-		std::to_string(summary) + "," + std::to_string(receipt) + ")";
+	std::string sql = "INSERT INTO history_summary_sources VALUES(" + std::to_string(summary) +
+			  "," + std::to_string(receipt) + ")";
 	ASSERT_EQ(db_exec(&db, sql.c_str()), 0);
 	for (bool active : {true, false}) {
 		ASSERT_EQ(db_exec(&db, ("UPDATE model_history_items SET active=" +
-			std::string(active ? "1" : "0") + " WHERE id=" +
-			std::to_string(receipt)).c_str()), 0);
+					std::string(active ? "1" : "0") +
+					" WHERE id=" + std::to_string(receipt))
+					       .c_str()),
+			  0);
 		cJSON *report = nullptr;
 		ASSERT_EQ(runtime_session_history_inspect(instance, &report), 0);
 		cJSON *entry = cJSON_GetArrayItem(cJSON_GetObjectItem(report, "entries"), 0);
 		EXPECT_EQ(Field(entry, "status"), "OUT");
-		EXPECT_NE(Field(entry, "reason").find("Internal memory-maintenance"), std::string::npos);
+		EXPECT_NE(Field(entry, "reason").find("Internal memory-maintenance"),
+			  std::string::npos);
 		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(report, "active_items")), 1);
 		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(report, "history_tokens")), 7);
 		cJSON_Delete(report);
@@ -126,7 +135,8 @@ TEST_F(HistoryInspectionTest, InactiveCallDoesNotHideAnActiveOrphanResult)
 	call.session_id = session.id;
 	call.kind = "assistant_tool_calls";
 	call.role = "assistant";
-	call.payload_json = "{\"calls\":[{\"tool_call_id\":\"local\","
+	call.payload_json =
+		"{\"calls\":[{\"tool_call_id\":\"local\","
 		"\"provider_call_id\":\"remote\",\"name\":\"exec\",\"arguments\":\"{}\"}]}";
 	call.active = 0;
 	ASSERT_EQ(model_history_add(&db, &call, nullptr), 0);
@@ -180,7 +190,8 @@ TEST_F(HistoryInspectionTest, CapturedInputIsRedactedReplacedPersistedAndSession
 	tool.description = "Inspection tool schema";
 	tool.input_schema = "{\"type\":\"object\",\"properties\":{}}";
 	ASSERT_EQ(agent_history_record_request(react, &model, "Instructions and memory", &message,
-		1, &tool, 1), 0);
+					       1, &tool, 1),
+		  0);
 	cJSON *snapshot = nullptr;
 	ASSERT_EQ(runtime_session_last_request(instance, &snapshot), 0);
 	std::string input = Field(snapshot, "input_json");
@@ -190,8 +201,9 @@ TEST_F(HistoryInspectionTest, CapturedInputIsRedactedReplacedPersistedAndSession
 	EXPECT_NE(input.find("Inspection tool schema"), std::string::npos);
 	cJSON_Delete(snapshot);
 	message.content = const_cast<char *>("replacement input");
-	ASSERT_EQ(agent_history_record_request(react, &model, "new instructions", &message,
-		1, nullptr, 0), 0);
+	ASSERT_EQ(agent_history_record_request(react, &model, "new instructions", &message, 1,
+					       nullptr, 0),
+		  0);
 	react_context_destroy(react);
 	runtime_close(instance);
 	instance = nullptr;
@@ -258,8 +270,10 @@ TEST_F(HistoryInspectionTest, PlainHistoryIncludesToolsAndPreservesCompatibility
 TEST_F(HistoryInspectionTest, SourceRecordingFailureRollsBackTheEntireCompaction)
 {
 	Add("user_message", "source must survive");
-	ASSERT_EQ(db_exec(&db, "CREATE TRIGGER fail_summary_sources BEFORE INSERT ON "
-		"history_summary_sources BEGIN SELECT RAISE(ABORT,'test failure'); END"), 0);
+	ASSERT_EQ(db_exec(&db,
+			  "CREATE TRIGGER fail_summary_sources BEFORE INSERT ON "
+			  "history_summary_sources BEGIN SELECT RAISE(ABORT,'test failure'); END"),
+		  0);
 	struct react_context *react = react_context_create(nullptr, nullptr, nullptr, nullptr);
 	ASSERT_NE(react, nullptr);
 	react->history_enabled = 1;
@@ -392,4 +406,36 @@ TEST_F(HistoryInspectionTest, OverflowPrunesOnlyCandidateToolGroupsAndKeepsRequi
 	EXPECT_EQ(attempts, 2);
 	EXPECT_GE(model_history_count(&db, session.id, 0), 3);
 	react_context_destroy(react);
+}
+
+TEST_F(HistoryInspectionTest, RecentVisibleRecordsAndProgressUseTheSameRows)
+{
+	ASSERT_EQ(message_add(&db, session.id, "user", "first", 1), 0);
+	ASSERT_EQ(message_add(&db, session.id, "assistant", "answer", 1), 0);
+	ASSERT_EQ(message_add(&db, session.id, "tool", "private tool result", 1), 0);
+	ASSERT_EQ(message_add(&db, session.id, "user", "latest", 1), 0);
+	int64_t latest = sqlite3_last_insert_rowid(db.handle);
+	ASSERT_EQ(message_add(&db, session.id, "assistant", "  ", 1), 0);
+	struct history_message_progress progress{};
+	ASSERT_EQ(history_store_visible_progress(&db, session.id, &progress), 0);
+	EXPECT_EQ(progress.latest_id, latest);
+	EXPECT_EQ(progress.completed_turns, 1);
+	std::vector<std::string> messages;
+	auto copy = [](const struct message *message, void *data) -> int {
+		auto *values = static_cast<std::vector<std::string> *>(data);
+
+		values->push_back(std::string(message->role) + ":" + message->content);
+		return 0;
+	};
+	ASSERT_EQ(history_store_visit_recent_messages(&db, session.id, 2, copy, &messages), 0);
+	ASSERT_EQ(messages.size(), 2u);
+	EXPECT_EQ(messages[0], "user:latest");
+	EXPECT_EQ(messages[1], "assistant:answer");
+	EXPECT_EQ(history_store_visit_recent_messages(
+			  &db, session.id, 2,
+			  [](const struct message *, void *) -> int { return -ECANCELED; },
+			  nullptr),
+		  -ECANCELED);
+	ASSERT_EQ(history_store_visible_progress(&db, session.id, &progress), 0);
+	EXPECT_EQ(progress.latest_id, latest);
 }

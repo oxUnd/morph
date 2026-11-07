@@ -110,6 +110,17 @@ def main():
     transcript = (CLI / 'widgets/transcript.c').read_text()
     if '\\033[?1049' in transcript or 'previous_frame' in transcript:
         errors.append('widgets/transcript.c: modal terminal/frame ownership belongs to the page')
+    if re.search(r'\b(?:morph_array_push|arena_strdup|utf8_terminal_sanitize_feed|patch_preview)\s*\(',
+                 code_only(transcript)):
+        errors.append('widgets/transcript.c: state reduction and workspace reads belong outside rendering')
+    if '#include "sapi/cli/application_internal.h"' in transcript:
+        errors.append('widgets/transcript.c: rendering must import its actual interfaces')
+    model = (CLI / 'models/transcript.c').read_text()
+    if re.search(r'^#include [<"](?:agent/patch|util/file|sapi/cli/presentation)', model, re.M):
+        errors.append('models/transcript.c: projection updates must not render or read workspace files')
+    feed = code_only((CLI / 'widgets/feed.c').read_text())
+    if re.search(r'\b(?:ioctl|TIOCGWINSZ|winsize)\b', feed):
+        errors.append('widgets/feed.c: terminal dimensions belong to the shared size helper')
     for source in sorted(CLI.rglob('*')):
         if source.suffix not in ('.c', '.h'):
             continue

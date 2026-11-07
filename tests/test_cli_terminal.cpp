@@ -458,3 +458,62 @@ TEST_F(CliTerminalTest, CompletedJobExpirySchedulesOneLastFrameWithoutAnActiveTu
 	close(slave);
 	close(master);
 }
+
+TEST_F(CliTerminalTest, MarkdownPreviewUsesOutputHeightAndSharedFallbackDuringResize)
+{
+	int master = posix_openpt(O_RDWR | O_NOCTTY);
+	ASSERT_GE(master, 0);
+	ASSERT_EQ(grantpt(master), 0);
+	ASSERT_EQ(unlockpt(master), 0);
+	int slave = open(ptsname(master), O_RDWR | O_NOCTTY);
+	ASSERT_GE(slave, 0);
+	FILE *output = fdopen(dup(slave), "w");
+	ASSERT_NE(output, nullptr);
+	ASSERT_NE(fcntl(master, F_SETFL, O_NONBLOCK), -1);
+	winsize size{};
+	size.ws_col = 80;
+	size.ws_row = 16;
+	ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
+	cli_output_set_color_enabled(&ctx, 1);
+	ASSERT_EQ(cli_feed_init(&ctx, output, slave), 0);
+	std::string text;
+	for (int i = 0; i < 30; i++) {
+		char line[32];
+		snprintf(line, sizeof(line), "preview-%02d", i);
+		if (i)
+			text += '\n';
+		text += line;
+	}
+	ASSERT_EQ(cli_feed_markdown_preview_set(&ctx, text.data(), text.size(), 0), 0);
+	auto take = [&] {
+		std::string bytes;
+		char buffer[BUFSIZ];
+		ssize_t length;
+		while ((length = read(master, buffer, sizeof(buffer))) > 0)
+			bytes.append(buffer, static_cast<size_t>(length));
+		return bytes;
+	};
+	cli_feed_render_frame(&ctx, 1);
+	std::string small = take();
+	EXPECT_EQ(small.find("preview-25"), std::string::npos);
+	EXPECT_NE(small.find("preview-26"), std::string::npos);
+	EXPECT_NE(small.find("preview-29"), std::string::npos);
+
+	for (unsigned short height :
+	     {static_cast<unsigned short>(24), static_cast<unsigned short>(0)}) {
+		size.ws_row = height;
+		ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
+		cli_feed_render_frame(&ctx, 1);
+		std::string normal = take();
+		EXPECT_EQ(normal.find("preview-17"), std::string::npos);
+		EXPECT_NE(normal.find("preview-18"), std::string::npos);
+		EXPECT_NE(normal.find("preview-29"), std::string::npos);
+	}
+	ctx.input_status.composer_rows = 20;
+	cli_feed_render_frame(&ctx, 1);
+	EXPECT_EQ(take().find("preview-"), std::string::npos);
+	cli_feed_cleanup(&ctx);
+	fclose(output);
+	close(slave);
+	close(master);
+}

@@ -5,3 +5,5 @@ js_image.c
 js_canvas.c
 js_fs.c
 js_wasm.c
+js_process.c
+js_fetch.c

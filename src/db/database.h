@@ -21,6 +21,8 @@ int db_open(struct morph_log *logger, struct db *db, const char *path);
 void db_close(struct db *db);
 int db_exec(struct db *db, const char *sql);
 int db_init_schema(struct db *db);
+/* Initializes only the shared credit ledger, without unrelated application tables. */
+int db_init_credit_schema(struct db *db);
 
 #ifdef __cplusplus
 }

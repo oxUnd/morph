@@ -1,6 +1,7 @@
 #include "runtime/recap.h"
 #include "runtime/runtime_internal.h"
 #include "runtime/usage.h"
+#include "persistence/history_store.h"
 #include "credits.h"
 #include "util/arena.h"
 #include "util/buf.h"
@@ -84,31 +85,20 @@ cJSON *runtime_recap_parse(const char *response)
 
 static int recap_progress_locked(struct runtime *runtime, struct runtime_recap_progress *out)
 {
-	sqlite3_stmt *stmt;
+	struct history_message_progress stored;
 	int rc;
 
 	memset(out, 0, sizeof(*out));
 	out->session_id = runtime->context.current_session.id;
 	out->revision = runtime->recap_revision;
-	/* A deferred session has no history yet; polling it is a valid empty snapshot. */
 	if (out->session_id <= 0)
 		return 0;
-	rc = sqlite3_prepare_v2(runtime->context.database.handle,
-				"SELECT COALESCE(MAX(id),0),COALESCE(SUM(role='assistant'),0) "
-				"FROM messages WHERE session_id=? AND role IN ('user','assistant') "
-				"AND length(trim(content))>0",
-				-1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, MORPH_ERR_DB);
-	sqlite3_bind_int64(stmt, 1, out->session_id);
-	rc = sqlite3_step(stmt);
-	if (rc == SQLITE_ROW) {
-		out->history_id = sqlite3_column_int64(stmt, 0);
-		out->completed_turns = sqlite3_column_int(stmt, 1);
+	rc = history_store_visible_progress(&runtime->context.database, out->session_id, &stored);
+	if (!rc) {
+		out->history_id = stored.latest_id;
+		out->completed_turns = stored.completed_turns;
 	}
-	sqlite3_finalize(stmt);
-	return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL,
-				 rc == SQLITE_ROW ? 0 : MORPH_ERR_DB);
+	return MORPH_TRACE_ERROR(runtime->options.logger, rc);
 }
 
 int runtime_recap_progress(struct runtime *runtime, struct runtime_recap_progress *out)
@@ -163,55 +153,59 @@ static char *recap_excerpt(const char *text, size_t budget)
 	return result;
 }
 
+struct recap_visible_message {
+	char *role;
+	char *text;
+};
+
+struct recap_history_input {
+	struct arena *arena;
+	morph_array_t messages;
+	size_t budget;
+};
+
+static int recap_collect_message(const struct message *message, void *data)
+{
+	struct recap_history_input *input = data;
+	char *excerpt = recap_excerpt(message->content, input->budget);
+	struct recap_visible_message row;
+
+	row.role = arena_strdup(input->arena, message->role);
+	row.text = excerpt ? arena_strdup(input->arena, excerpt) : NULL;
+	free(excerpt);
+	struct recap_visible_message *slot = morph_array_push(&input->messages);
+
+	if (!row.role || !row.text || !slot)
+		return -ENOMEM;
+	*slot = row;
+	return 0;
+}
+
 static char *recap_history(struct db *db, int64_t session_id)
 {
-	struct visible_message {
-		char *role;
-		char *text;
-	} message;
-	struct arena *arena = arena_create(0);
-	morph_array_t messages = {0};
+	struct recap_history_input input = {0};
+	struct recap_visible_message message;
 	morph_buf_t prompt = {0};
-	sqlite3_stmt *stmt = NULL;
 	char *result = NULL;
-	size_t budget =
-		(RECAP_PROMPT_MAX_BYTES - strlen(recap_instructions)) / RECAP_HISTORY_MESSAGES - 16;
 	int rc;
 
-	if (!arena)
+	input.arena = arena_create(0);
+	if (!input.arena)
 		return NULL;
-	rc = morph_array_init_arena(&messages, arena, RECAP_HISTORY_MESSAGES, sizeof(message));
-	if (rc == 0)
+	input.budget =
+		(RECAP_PROMPT_MAX_BYTES - strlen(recap_instructions)) / RECAP_HISTORY_MESSAGES - 16;
+	rc = morph_array_init_arena(&input.messages, input.arena, RECAP_HISTORY_MESSAGES,
+				    sizeof(message));
+	if (!rc)
 		rc = morph_buf_init(&prompt, 1024);
-	if (rc == 0 &&
-	    sqlite3_prepare_v2(db->handle,
-			       "SELECT role,content FROM messages WHERE session_id=? "
-			       "AND role IN ('user','assistant') AND length(trim(content))>0 "
-			       "ORDER BY id DESC LIMIT 17",
-			       -1, &stmt, NULL) != SQLITE_OK)
-		rc = MORPH_ERR_DB;
-	if (rc == 0) {
-		sqlite3_bind_int64(stmt, 1, session_id);
-		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-			char *excerpt =
-				recap_excerpt((const char *)sqlite3_column_text(stmt, 1), budget);
+	if (!rc)
+		rc = history_store_visit_recent_messages(db, session_id, RECAP_HISTORY_MESSAGES,
+							 recap_collect_message, &input);
+	morph_array_t messages = input.messages;
 
-			message.role =
-				arena_strdup(arena, (const char *)sqlite3_column_text(stmt, 0));
-			message.text = excerpt ? arena_strdup(arena, excerpt) : NULL;
-			free(excerpt);
-			struct visible_message *slot = morph_array_push(&messages);
-
-			if (!message.role || !message.text || !slot) {
-				rc = SQLITE_NOMEM;
-				break;
-			}
-			*slot = message;
-		}
-	}
-	if (rc == SQLITE_DONE) {
+	if (!rc) {
 		while (messages.nelts) {
-			struct visible_message *oldest =
+			struct recap_visible_message *oldest =
 				morph_array_get(&messages, messages.nelts - 1);
 
 			if (strcmp(oldest->role, "assistant") != 0)
@@ -219,16 +213,15 @@ static char *recap_history(struct db *db, int64_t session_id)
 			morph_array_pop(&messages);
 		}
 		for (size_t i = messages.nelts; i > 0; i--) {
-			struct visible_message *item = morph_array_get(&messages, i - 1);
+			struct recap_visible_message *item = morph_array_get(&messages, i - 1);
 
 			(void)morph_buf_printf(&prompt, "%s: %s\n\n", item->role, item->text);
 		}
 		if (messages.nelts && !prompt.failed)
 			result = morph_buf_detach(&prompt);
 	}
-	sqlite3_finalize(stmt);
 	morph_buf_cleanup(&prompt);
-	arena_destroy(arena);
+	arena_destroy(input.arena);
 	return result;
 }
 

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 extern "C" {
 #include "agent/tools/dynamic_tools.h"
+#include "agent/tools/dynamic_tool_store.h"
 #include "agent/tool_context.h"
 #include "config/config.h"
 #include "cJSON.h"
@@ -1429,4 +1430,147 @@ TEST_F(DynamicToolsTest, RejectsNodeBufferWhileSupportingHostToBufferMethods)
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(std::string(result.text.data).find("forbidden token"), std::string::npos);
 	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, DefinitionReadCopyAndUpdateUseTheSameSourceErrors)
+{
+	const std::string dir = root + "/legacy";
+	const std::string meta = dir + "/tool.json";
+	const std::string source = dir + "/tool.js";
+	const std::string destination_meta = root + "/copy.json";
+	const std::string destination_source = root + "/copy.js";
+	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
+	struct {
+		const char *metadata;
+		int error;
+	} cases[] = {
+		{"{\"name\":\"legacy\"}", -ENOENT},
+		{"{invalid", MORPH_ERR_PARSE},
+		{"{\"name\":\"legacy\",\"source\":42}", MORPH_ERR_FORMAT},
+	};
+	for (const auto &item : cases) {
+		SCOPED_TRACE(item.metadata);
+		ASSERT_EQ(file_write_all(meta.c_str(), item.metadata, strlen(item.metadata)), 0);
+		struct dynamic_tool_definition definition{};
+		EXPECT_EQ(dynamic_tool_store_load_definition(meta.c_str(), source.c_str(),
+							     &definition),
+			  item.error);
+		EXPECT_EQ(definition.document, nullptr);
+		dynamic_tool_store_definition_cleanup(&definition);
+		EXPECT_EQ(dynamic_tool_store_copy_tool_snapshot(meta.c_str(), source.c_str(),
+								destination_meta.c_str(),
+								destination_source.c_str()),
+			  item.error);
+		struct dynamic_tool tool{};
+		snprintf(tool.dir, sizeof(tool.dir), "%s", dir.c_str());
+		snprintf(tool.source_path, sizeof(tool.source_path), "%s", source.c_str());
+		EXPECT_EQ(dynamic_tool_store_write_tool_files(
+				  &tool, "function run(args) { return args; }"),
+			  item.error);
+		EXPECT_EQ(tool.source, nullptr);
+		EXPECT_FALSE(file_exists(source.c_str()));
+		EXPECT_FALSE(file_exists(destination_meta.c_str()));
+		EXPECT_FALSE(file_exists(destination_source.c_str()));
+	}
+}
+
+TEST_F(DynamicToolsTest, DefinitionCopyUsesCommittedSourceAndPreservesUnknownMetadata)
+{
+	const std::string dir = root + "/definition";
+	const std::string meta = dir + "/tool.json";
+	const std::string mirror = dir + "/tool.js";
+	const std::string copy_meta = root + "/copied.json";
+	const std::string copy_source = root + "/copied.js";
+	const char metadata[] = "{\"name\":\"committed\",\"source\":\"committed source\","
+				"\"extension\":{\"version\":7}}";
+	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
+	ASSERT_EQ(file_write_all(meta.c_str(), metadata, strlen(metadata)), 0);
+	ASSERT_FALSE(file_exists(mirror.c_str()));
+	EXPECT_EQ(dynamic_tool_store_copy_tool_snapshot(meta.c_str(), mirror.c_str(),
+							copy_meta.c_str(), copy_source.c_str()),
+		  0);
+	struct dynamic_tool_definition definition{};
+	ASSERT_EQ(dynamic_tool_store_load_definition(copy_meta.c_str(), copy_source.c_str(),
+						     &definition),
+		  0);
+	EXPECT_STREQ(definition.name, "committed");
+	EXPECT_STREQ(definition.source, "committed source");
+	EXPECT_STREQ(definition.input_schema, TOOL_EMPTY_INPUT_SCHEMA);
+	EXPECT_STREQ(definition.output_schema, TOOL_OBJECT_OUTPUT_SCHEMA);
+	EXPECT_FALSE(definition.legacy_source);
+	const cJSON *extension = cJSON_GetObjectItem(definition.document, "extension");
+	ASSERT_TRUE(cJSON_IsObject(extension));
+	EXPECT_EQ(cJSON_GetObjectItem(extension, "version")->valueint, 7);
+	dynamic_tool_store_definition_cleanup(&definition);
+	char *copied = file_read_all(copy_source.c_str(), nullptr);
+	ASSERT_NE(copied, nullptr);
+	EXPECT_STREQ(copied, "committed source");
+	free(copied);
+}
+
+TEST_F(DynamicToolsTest, SessionReloadUsesCommittedDefinitionWithoutASourceMirror)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	struct tool_result result;
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("without_mirror",
+					"function run(args) { return { value: 42 }; }")
+				    .c_str(),
+			    &result),
+		  0);
+	tool_result_cleanup(&result);
+	ASSERT_EQ(unlink((root + "/session/sess/without_mirror/tool.js").c_str()), 0);
+	tool_registry_cleanup(&reg);
+	tool_registry_init(nullptr, &reg);
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&reg, "without_mirror", "{}", &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"value\":42"), std::string::npos);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, LegacyDefinitionsNormalizeBeforeCopyAndUpdate)
+{
+	const std::string dir = root + "/legacy";
+	const std::string meta = dir + "/tool.json";
+	const std::string source = dir + "/tool.js";
+	const std::string copied_meta = root + "/copied.json";
+	const std::string copied_source = root + "/copied.js";
+	const char metadata[] = "{\"name\":\"legacy\",\"input_schema\":{\"type\":\"object\"}}";
+	const char original[] = "function run(args) { return { value: 1 }; }";
+	const char updated[] = "function run(args) { return { value: 2 }; }";
+	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
+	ASSERT_EQ(file_write_all(meta.c_str(), metadata, strlen(metadata)), 0);
+	ASSERT_EQ(file_write_all(source.c_str(), original, strlen(original)), 0);
+	struct dynamic_tool_definition definition{};
+	ASSERT_EQ(dynamic_tool_store_load_definition(meta.c_str(), source.c_str(), &definition), 0);
+	EXPECT_TRUE(definition.legacy_source);
+	EXPECT_STREQ(definition.source, original);
+	EXPECT_STREQ(definition.input_schema, TOOL_EMPTY_INPUT_SCHEMA);
+	dynamic_tool_store_definition_cleanup(&definition);
+	ASSERT_EQ(dynamic_tool_store_copy_tool_snapshot(meta.c_str(), source.c_str(),
+							copied_meta.c_str(), copied_source.c_str()),
+		  0);
+	ASSERT_EQ(unlink(copied_source.c_str()), 0);
+	ASSERT_EQ(dynamic_tool_store_load_definition(copied_meta.c_str(), copied_source.c_str(),
+						     &definition),
+		  0);
+	EXPECT_FALSE(definition.legacy_source);
+	EXPECT_STREQ(definition.source, original);
+	dynamic_tool_store_definition_cleanup(&definition);
+	struct dynamic_tool tool{};
+	snprintf(tool.name, sizeof(tool.name), "%s", "legacy");
+	snprintf(tool.input_schema, sizeof(tool.input_schema), "%s", TOOL_EMPTY_INPUT_SCHEMA);
+	snprintf(tool.output_schema, sizeof(tool.output_schema), "%s", TOOL_OBJECT_OUTPUT_SCHEMA);
+	snprintf(tool.dir, sizeof(tool.dir), "%s", dir.c_str());
+	snprintf(tool.source_path, sizeof(tool.source_path), "%s", source.c_str());
+	ASSERT_EQ(dynamic_tool_store_write_tool_files(&tool, updated), 0);
+	free(tool.source);
+	ASSERT_EQ(unlink(source.c_str()), 0);
+	ASSERT_EQ(dynamic_tool_store_load_definition(meta.c_str(), source.c_str(), &definition), 0);
+	EXPECT_FALSE(definition.legacy_source);
+	EXPECT_STREQ(definition.source, updated);
+	dynamic_tool_store_definition_cleanup(&definition);
 }

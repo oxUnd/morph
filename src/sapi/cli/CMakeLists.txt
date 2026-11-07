@@ -58,6 +58,7 @@ add_library(morph-cli STATIC
 	services/session_history.c
 	services/share_store.c
 	services/skill_store.c
+	services/transcript.c
 	services/turn.c
 
 	# Platform and protocol adapters
@@ -83,6 +84,7 @@ add_library(morph-cli STATIC
 	presentation/notifications.c
 	presentation/output.c
 	presentation/presenter.c
+	presentation/tool_preview.c
 	presentation/share.c
 
 )

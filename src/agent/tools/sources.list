@@ -3,6 +3,8 @@ img_qa.c
 img_info.c
 img_resize.c
 img_convert.c
+image_input.c
+image_output.c
 annotation.c
 img_inpaint.c
 img_compose.c

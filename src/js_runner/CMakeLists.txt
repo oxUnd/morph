@@ -28,6 +28,7 @@ list(REMOVE_DUPLICATES MORPH_JS_MEDIA_LIBRARIES)
 
 target_link_libraries(morph-js-runner PRIVATE
 	quickjs
+	morph-http
 	morph-util
 	m3
 	${MORPH_JS_MEDIA_LIBRARIES}

@@ -4,6 +4,7 @@
 #include "agent/tools/annotation.h"
 #include <filesystem>
 #include <string>
+#include <set>
 #include <thread>
 #include <vector>
 #include "models/image_provider.h"
@@ -37,6 +38,7 @@ struct FakeImageQaState {
 	int max_tokens{};
 	long timeout_seconds{};
 	int max_dim{};
+	const struct morph_cancel_token *cancel_token{};
 };
 
 static int fake_chat_with_image(struct model *self, struct arena *arena,
@@ -47,6 +49,7 @@ static int fake_chat_with_image(struct model *self, struct arena *arena,
 				sse_callback cb, void *user_data)
 {
 	auto &qa = *static_cast<FakeImageQaState *>(self->handle);
+	qa.cancel_token = self->http.cancel_token;
 	(void)arena;
 	(void)system_prompt;
 	snprintf(qa.prompt, sizeof(qa.prompt), "%s", prompt ? prompt : "");
@@ -1347,4 +1350,280 @@ TEST(AnnotationTest, MainImageUsesArrowCountThenSmallestIndex)
 	EXPECT_DOUBLE_EQ(y, 30);
 	annotation_cleanup(&parsed);
 	cJSON_Delete(input);
+}
+
+TEST_F(ImgGenToolTest, QaRequestControlsDoNotMutateTheConfiguredModel)
+{
+	char directory[] = "/tmp/morph-image-control-XXXXXX";
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	const std::string path = std::string(directory) + "/input.png";
+	ASSERT_EQ(create_test_png(path.c_str()), 0);
+	struct morph_cancel_token original{};
+	struct morph_cancel_token first{};
+	struct morph_cancel_token second{};
+	struct model fake{};
+	fake.api_key[0] = 'x';
+	fake.chat_with_image = fake_chat_with_image;
+	fake.http.cancel_token = &original;
+	fake.handle = &qa;
+	ASSERT_EQ(img_qa_init(&reg, &fake, nullptr), 0);
+	const std::string arguments = "{\"file_path\":\"" + path + "\"}";
+	struct tool_runtime_context runtime{};
+	struct tool_result result;
+	tool_result_init(&result);
+	result.runtime = &runtime;
+	runtime.http.cancel_token = &first;
+	ASSERT_EQ(tool_exec(&reg, "img_qa", arguments.c_str(), &result), 0);
+	EXPECT_EQ(qa.cancel_token, &first);
+	EXPECT_EQ(fake.http.cancel_token, &original);
+	runtime.http.cancel_token = &second;
+	ASSERT_EQ(tool_exec(&reg, "img_qa", arguments.c_str(), &result), 0);
+	EXPECT_EQ(qa.cancel_token, &second);
+	EXPECT_EQ(fake.http.cancel_token, &original);
+	tool_result_cleanup(&result);
+	std::filesystem::remove_all(directory);
+}
+
+TEST_F(ImgGenToolTest, ResizeAndConvertShareAuthorizedDecodeFailures)
+{
+	char directory[] = "/tmp/morph-image-input-XXXXXX";
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	const std::string broken = std::string(directory) + "/broken.png";
+	const std::string missing = std::string(directory) + "/missing.png";
+	const std::string output = std::string(directory) + "/output.png";
+	ASSERT_EQ(file_write_all(broken.c_str(), "not an image", 12), 0);
+	struct tool_context *context = tool_context_create(nullptr, directory, directory);
+	ASSERT_NE(context, nullptr);
+	ASSERT_EQ(img_resize_init(&reg, context), 0);
+	ASSERT_EQ(img_convert_init(&reg, context), 0);
+	for (const auto &path : {missing, broken}) {
+		const int expected = path == missing ? -ENOENT : MORPH_ERR_FORMAT;
+		for (const char *name : {"img_resize", "img_convert"}) {
+			SCOPED_TRACE(name);
+			const std::string arguments =
+				"{\"file_path\":\"" + path +
+				"\","
+				"\"width\":4,\"format\":\"png\",\"output_path\":\"" +
+				output + "\"}";
+			struct tool_result result;
+			tool_result_init(&result);
+			EXPECT_EQ(tool_exec(&reg, name, arguments.c_str(), &result), expected);
+			ASSERT_NE(result.text.data, nullptr);
+			EXPECT_NE(strstr(result.text.data, "failed to load image"), nullptr);
+			EXPECT_FALSE(file_exists(output.c_str()));
+			tool_result_cleanup(&result);
+		}
+	}
+	tool_context_destroy(context);
+	std::filesystem::remove_all(directory);
+}
+
+TEST_F(ImgGenToolTest, ResizeThenConvertPreservesAuthorizedImageContent)
+{
+	char directory[] = "/tmp/morph-image-transform-XXXXXX";
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	const std::string original = std::string(directory) + "/original.png";
+	const std::string resized = std::string(directory) + "/resized.png";
+	const std::string converted = std::string(directory) + "/converted.jpg";
+	ASSERT_EQ(create_solid_png(original.c_str(), 8, 4), 0);
+	struct tool_context *context = tool_context_create(nullptr, directory, directory);
+	ASSERT_NE(context, nullptr);
+	ASSERT_EQ(img_resize_init(&reg, context), 0);
+	ASSERT_EQ(img_convert_init(&reg, context), 0);
+	const std::string resize_args = "{\"file_path\":\"" + original +
+					"\",\"width\":4,\"output_path\":\"" + resized + "\"}";
+	const std::string convert_args = "{\"file_path\":\"" + resized +
+					 "\",\"format\":\"jpg\",\"output_path\":\"" + converted +
+					 "\"}";
+	struct tool_result result;
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "img_resize", resize_args.c_str(), &result), 0);
+	ASSERT_EQ(tool_exec(&reg, "img_convert", convert_args.c_str(), &result), 0);
+	tool_result_cleanup(&result);
+	int width = 0, height = 0, channels = 0;
+	unsigned char *pixels = stbi_load(converted.c_str(), &width, &height, &channels, 3);
+	ASSERT_NE(pixels, nullptr);
+	EXPECT_EQ(width, 4);
+	EXPECT_EQ(height, 2);
+	EXPECT_NEAR(pixels[0], 0x40, 4);
+	EXPECT_NEAR(pixels[1], 0x80, 4);
+	EXPECT_NEAR(pixels[2], 0xC0, 4);
+	stbi_image_free(pixels);
+	tool_context_destroy(context);
+	std::filesystem::remove_all(directory);
+}
+
+TEST_F(ImgGenToolTest, DefaultTransformsPublishDistinctCompleteImages)
+{
+	char directory[] = "/tmp/morph-image-unique-XXXXXX";
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	const std::string input = std::string(directory) + "/input.png";
+	ASSERT_EQ(create_solid_png(input.c_str(), 8, 4), 0);
+	struct tool_context *context = tool_context_create(nullptr, directory, directory);
+	ASSERT_NE(context, nullptr);
+	ASSERT_EQ(img_resize_init(&reg, context), 0);
+	ASSERT_EQ(img_convert_init(&reg, context), 0);
+	std::set<std::string> paths;
+	for (const char *name : {"img_resize", "img_convert"}) {
+		for (int attempt = 0; attempt < 3; attempt++) {
+			struct tool_result result;
+			tool_result_init(&result);
+			const std::string args =
+				"{\"file_path\":\"" + input + "\",\"width\":4,\"format\":\"png\"}";
+			ASSERT_EQ(tool_exec(&reg, name, args.c_str(), &result), 0);
+			ASSERT_EQ(result.artifacts.count, 1);
+			const auto &artifact = result.artifacts.items[0];
+			EXPECT_TRUE(paths.insert(artifact.path).second);
+			EXPECT_EQ(std::filesystem::path(artifact.path).parent_path(),
+				  std::filesystem::canonical(directory));
+			int width = 0, height = 0, channels = 0;
+			unsigned char *pixels =
+				stbi_load(artifact.path, &width, &height, &channels, 4);
+			ASSERT_NE(pixels, nullptr);
+			EXPECT_EQ(width, strcmp(name, "img_resize") == 0 ? 4 : 8);
+			EXPECT_EQ(height, strcmp(name, "img_resize") == 0 ? 2 : 4);
+			EXPECT_EQ(pixels[0], 0x40);
+			EXPECT_EQ(pixels[1], 0x80);
+			EXPECT_EQ(pixels[2], 0xC0);
+			stbi_image_free(pixels);
+			tool_result_cleanup(&result);
+		}
+	}
+	EXPECT_EQ(paths.size(), 6u);
+	for (const auto &entry : std::filesystem::directory_iterator(directory))
+		EXPECT_EQ(entry.path().filename().string().find(".morph"), std::string::npos);
+	tool_context_destroy(context);
+	std::filesystem::remove_all(directory);
+}
+
+TEST_F(ImgGenToolTest, ExplicitTransformsKeepTheirOwnFormatSelection)
+{
+	char directory[] = "/tmp/morph-image-explicit-XXXXXX";
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	const std::string input = std::string(directory) + "/input.png";
+	ASSERT_EQ(create_solid_png(input.c_str(), 8, 4), 0);
+	struct tool_context *context = tool_context_create(nullptr, directory, directory);
+	ASSERT_NE(context, nullptr);
+	ASSERT_EQ(img_resize_init(&reg, context), 0);
+	ASSERT_EQ(img_convert_init(&reg, context), 0);
+	struct {
+		const char *tool;
+		const char *filename;
+		const char *format;
+		const char *magic;
+		size_t magic_length;
+	} cases[] = {
+		{"img_resize", "resized.jpg", "png", "\xff\xd8", 2},
+		{"img_resize", "resized.bmp", "png", "BM", 2},
+		{"img_resize", "resized.tga", "png", "", 0},
+		{"img_convert", "converted.png", "bmp", "BM", 2},
+		{"img_convert", "converted.tga", "tga", "", 0},
+	};
+	for (const auto &item : cases) {
+		SCOPED_TRACE(item.filename);
+		const std::string output = std::string(directory) + "/" + item.filename;
+		const std::string args = "{\"file_path\":\"" + input +
+					 "\",\"width\":4,\"format\":\"" + item.format +
+					 "\",\"output_path\":\"" + output + "\"}";
+		struct tool_result result;
+		tool_result_init(&result);
+		ASSERT_EQ(tool_exec(&reg, item.tool, args.c_str(), &result), 0);
+		ASSERT_EQ(result.artifacts.count, 1);
+		EXPECT_TRUE(std::filesystem::equivalent(result.artifacts.items[0].path, output));
+		size_t bytes = 0;
+		char *encoded = file_read_all(output.c_str(), &bytes);
+		ASSERT_NE(encoded, nullptr);
+		ASSERT_GE(bytes, item.magic_length);
+		EXPECT_EQ(memcmp(encoded, item.magic, item.magic_length), 0);
+		free(encoded);
+		int width = 0, height = 0, channels = 0;
+		EXPECT_NE(stbi_info(output.c_str(), &width, &height, &channels), 0);
+		EXPECT_EQ(width, strcmp(item.tool, "img_resize") == 0 ? 4 : 8);
+		EXPECT_EQ(height, strcmp(item.tool, "img_resize") == 0 ? 2 : 4);
+		tool_result_cleanup(&result);
+	}
+	const std::string target = std::string(directory) + "/canonical.png";
+	const std::string alias = std::string(directory) + "/alias.jpg";
+	ASSERT_EQ(file_write_all(target.c_str(), "old", 3), 0);
+	ASSERT_EQ(symlink("canonical.png", alias.c_str()), 0);
+	const std::string args =
+		"{\"file_path\":\"" + input + "\",\"width\":4,\"output_path\":\"" + alias + "\"}";
+	struct tool_result result;
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "img_resize", args.c_str(), &result), 0);
+	EXPECT_TRUE(std::filesystem::is_symlink(alias));
+	char *encoded = file_read_all(target.c_str(), nullptr);
+	ASSERT_NE(encoded, nullptr);
+	EXPECT_EQ(memcmp(encoded, "\x89PNG", 4), 0);
+	free(encoded);
+	tool_result_cleanup(&result);
+	tool_context_destroy(context);
+	std::filesystem::remove_all(directory);
+}
+
+TEST_F(ImgGenToolTest, TransformOutputFailuresLeaveNoArtifactOrTemporaryFiles)
+{
+	char directory[] = "/tmp/morph-image-output-failure-XXXXXX";
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	const std::string input = std::string(directory) + "/input.png";
+	const std::string blocked = std::string(directory) + "/blocked";
+	const std::string marker = blocked + "/marker.txt";
+	ASSERT_EQ(create_solid_png(input.c_str(), 8, 4), 0);
+	ASSERT_EQ(file_ensure_dir(blocked.c_str()), 0);
+	ASSERT_EQ(file_write_all(marker.c_str(), "unchanged", 9), 0);
+	struct tool_context *context = tool_context_create(nullptr, directory, directory);
+	ASSERT_NE(context, nullptr);
+	ASSERT_EQ(img_resize_init(&reg, context), 0);
+	ASSERT_EQ(img_convert_init(&reg, context), 0);
+	for (const char *name : {"img_resize", "img_convert"}) {
+		const std::string args = "{\"file_path\":\"" + input +
+					 "\",\"width\":4,\"format\":\"png\",\"output_path\":\"" +
+					 blocked + "\"}";
+		struct tool_result result;
+		tool_result_init(&result);
+		EXPECT_LT(tool_exec(&reg, name, args.c_str(), &result), 0);
+		EXPECT_EQ(result.artifacts.count, 0);
+		ASSERT_NE(result.text.data, nullptr);
+		EXPECT_NE(strstr(result.text.data, "failed to write output"), nullptr);
+		tool_result_cleanup(&result);
+	}
+	char *contents = file_read_all(marker.c_str(), nullptr);
+	ASSERT_NE(contents, nullptr);
+	EXPECT_STREQ(contents, "unchanged");
+	free(contents);
+	EXPECT_EQ(std::distance(std::filesystem::directory_iterator(directory),
+				std::filesystem::directory_iterator()),
+		  2);
+	EXPECT_EQ(std::distance(std::filesystem::directory_iterator(blocked),
+				std::filesystem::directory_iterator()),
+		  1);
+	tool_context_destroy(context);
+	std::filesystem::remove_all(directory);
+}
+
+TEST_F(ImgGenToolTest, ConvertRejectsUnboundedQualityBeforeWriting)
+{
+	char directory[] = "/tmp/morph-image-quality-XXXXXX";
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	const std::string input = std::string(directory) + "/input.png";
+	const std::string output = std::string(directory) + "/existing.jpg";
+	ASSERT_EQ(create_solid_png(input.c_str(), 8, 4), 0);
+	ASSERT_EQ(file_write_all(output.c_str(), "unchanged", 9), 0);
+	ASSERT_EQ(img_convert_init(&reg, nullptr), 0);
+	for (const char *quality : {"1e400", "1e100", "-1", "101"}) {
+		SCOPED_TRACE(quality);
+		const std::string args = "{\"file_path\":\"" + input +
+					 "\",\"format\":\"jpg\",\"output_path\":\"" + output +
+					 "\",\"quality\":" + quality + "}";
+		struct tool_result result;
+		tool_result_init(&result);
+		EXPECT_EQ(tool_exec(&reg, "img_convert", args.c_str(), &result), -EINVAL);
+		EXPECT_EQ(result.artifacts.count, 0);
+		tool_result_cleanup(&result);
+	}
+	char *contents = file_read_all(output.c_str(), nullptr);
+	ASSERT_NE(contents, nullptr);
+	EXPECT_STREQ(contents, "unchanged");
+	free(contents);
+	std::filesystem::remove_all(directory);
 }

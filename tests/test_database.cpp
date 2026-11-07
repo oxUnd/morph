@@ -34,6 +34,26 @@ TEST_F(DatabaseTest, InitSchema) {
 	EXPECT_EQ(rc, 0);
 }
 
+TEST_F(DatabaseTest, StandaloneCreditInitializationSurvivesFullSchemaInitialization)
+{
+	sqlite3_stmt *statement = nullptr;
+
+	ASSERT_EQ(db_open(nullptr, &db, db_path), 0);
+	ASSERT_EQ(db_init_credit_schema(&db), 0);
+	ASSERT_EQ(db_exec(&db, "INSERT INTO credit_events(kind,credits,created_at) "
+			       "VALUES('test',7,1)"),
+		  0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(db_init_credit_schema(&db), 0);
+	ASSERT_EQ(sqlite3_prepare_v2(db.handle, "SELECT credits FROM credit_events", -1, &statement,
+				     nullptr),
+		  SQLITE_OK);
+	ASSERT_EQ(sqlite3_step(statement), SQLITE_ROW);
+	EXPECT_EQ(sqlite3_column_int(statement, 0), 7);
+	EXPECT_EQ(sqlite3_step(statement), SQLITE_DONE);
+	sqlite3_finalize(statement);
+}
+
 TEST_F(DatabaseTest, OpenNull) {
 	int rc = db_open(NULL, nullptr, "/tmp/test.db");
 	EXPECT_NE(rc, 0);

@@ -76,6 +76,10 @@ int http_get_ex(const struct http_control *control, const char *url, const char 
 int http_get_ex_timeout(const struct http_control *control, const char *url,
 			const char **extra_headers, int extra_header_count, long timeout_seconds,
 			struct http_response *resp);
+/* Zero body_limit preserves the unbounded response contract of the other APIs. */
+int http_get_ex_timeout_limit(const struct http_control *control, const char *url,
+			      const char **extra_headers, int extra_header_count,
+			      long timeout_seconds, size_t body_limit, struct http_response *resp);
 int http_post(const struct http_control *control, const char *url, const char *body,
 	      size_t body_len, const char *content_type, struct http_response *resp);
 int http_post_ex(const struct http_control *control, const char *url, const char *body,

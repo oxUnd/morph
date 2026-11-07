@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "models/llm.h"
+#include "util/buf.h"
 #include <stddef.h>
 
 enum image_payload_kind {
@@ -48,6 +49,12 @@ struct image_provider_ops {
 
 const struct image_provider_ops *image_openai_provider(void);
 const struct image_provider_ops *image_volcengine_provider(void);
+int image_provider_build_request_meta(const struct model *model, const char *path, morph_buf_t *url,
+				      morph_buf_t *auth);
+/* Borrows body for the call; provider request construction and ownership stay
+ * with the caller. label identifies the provider in HTTP error diagnostics. */
+int image_provider_post_json(struct model *model, const char *path, const char *label,
+			     const char *body, struct image_payload *payload);
 int image_volcengine_build_request_body(const struct model *model,
 					const struct image_request *request,
 					char **body_out);

@@ -495,7 +495,7 @@ static int auto_decompose(const struct tool_runtime_context *runtime, struct mod
 
 	struct model request_model;
 
-	llm = model_bind_tool_request(llm, runtime, &request_model);
+	llm = model_bind_http_request(llm, runtime ? &runtime->http : NULL, &request_model);
 	const char *messages[] = { prompt };
 	stream.runtime = runtime;
 	stream.tool = "plan";

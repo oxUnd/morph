@@ -15,6 +15,7 @@ extern "C" {
 #include "sapi/cli/widgets/banner.h"
 #include "sapi/cli/pages/approval.h"
 #include "sapi/cli/widgets/transcript.h"
+#include "sapi/cli/services/transcript.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/widgets/feed.h"
@@ -2098,7 +2099,7 @@ TEST_F(CliPresentationTest, LiveToolPreviewFollowsTailAndRetainsFullStream)
 	(void)testing::internal::GetCapturedStdout();
 	morph_buf_t body;
 	ASSERT_EQ(morph_buf_init(&body, 128), 0);
-	EXPECT_EQ(cli_transcript_live_body(&ctx, &body, 0), 3);
+	EXPECT_EQ(cli_transcript_live_body(ctx.transcript, &body, 100, 0), 3);
 	EXPECT_STREQ(morph_buf_cstr(&body), "  └ second\n    third\n    中文 progress");
 	EXPECT_EQ(utf8valid(morph_buf_cstr(&body)), nullptr);
 	morph_buf_cleanup(&body);

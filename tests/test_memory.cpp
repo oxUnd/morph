@@ -3,6 +3,8 @@
 #include "db/database.h"
 #include "agent/memory.h"
 #include "persistence/memory_snapshot.h"
+#include "persistence/memory_job_store.h"
+#include "persistence/memory_repository.h"
 #include "session.h"
 
 #include <cstdio>
@@ -15,16 +17,16 @@
 #include <chrono>
 #include "models/llm.h"
 
-class MemoryTest : public ::testing::Test {
-protected:
+class MemoryTest : public ::testing::Test
+{
+      protected:
 	struct db db;
 	char db_path[256];
 	struct memory_options opts;
 
 	void SetUp() override
 	{
-		std::snprintf(db_path, sizeof(db_path),
-			      "/tmp/ma_test_memory_%d.db", getpid());
+		std::snprintf(db_path, sizeof(db_path), "/tmp/ma_test_memory_%d.db", getpid());
 		std::remove(db_path);
 		std::memset(&db, 0, sizeof(db));
 		ASSERT_EQ(db_open(NULL, &db, db_path), 0);
@@ -49,14 +51,15 @@ protected:
 	}
 };
 
-static int consolidate_accepted_turn(struct db *database, int64_t session_id,
-	const char *input, const char *answer, const struct react_step *steps,
-	int success, const struct memory_options *options)
+static int consolidate_accepted_turn(struct db *database, int64_t session_id, const char *input,
+				     const char *answer, const struct react_step *steps,
+				     int success, const struct memory_options *options)
 {
 	int rc = memory_accept_input(database, session_id, input, nullptr, options);
 	if (rc != 0)
 		return rc;
-	return memory_consolidate_turn(database, session_id, input, answer, steps, success, options);
+	return memory_consolidate_turn(database, session_id, input, answer, steps, success,
+				       options);
 }
 
 TEST_F(MemoryTest, PreferencesHaveOneAuthorityAndNoDuplicateRules)
@@ -64,7 +67,9 @@ TEST_F(MemoryTest, PreferencesHaveOneAuthorityAndNoDuplicateRules)
 	struct session session;
 	ASSERT_EQ(session_create(&db, "memory_session", "mock", &session), 0);
 	ASSERT_EQ(memory_accept_input(&db, session.id,
-		"Please always reply in Chinese and be concise.", "input1", &opts), 0);
+				      "Please always reply in Chinese and be concise.", "input1",
+				      &opts),
+		  0);
 	char *context = memory_build_context(&db, session.id, "always", &opts);
 	ASSERT_NE(context, nullptr);
 	EXPECT_NE(strstr(context, "response.language: Chinese"), nullptr);
@@ -78,10 +83,8 @@ TEST_F(MemoryTest, UpdatedFactSupersedesOlderValue)
 {
 	struct session session;
 	ASSERT_EQ(session_create(&db, "memory_temporal", "mock", &session), 0);
-	ASSERT_EQ(memory_accept_input(&db, session.id,
-		"以后都用英文回答", "input1", &opts), 0);
-	ASSERT_EQ(memory_accept_input(&db, session.id,
-		"以后都用中文回答", "input2", &opts), 0);
+	ASSERT_EQ(memory_accept_input(&db, session.id, "以后都用英文回答", "input1", &opts), 0);
+	ASSERT_EQ(memory_accept_input(&db, session.id, "以后都用中文回答", "input2", &opts), 0);
 	char *effective = preference_render(&db, session.id, 0);
 	char *history = preference_render(&db, session.id, 1);
 	ASSERT_NE(effective, nullptr);
@@ -102,30 +105,20 @@ TEST_F(MemoryTest, BuildContextIncludesEpisodesAndChanges)
 	action.tool_name = const_cast<char *>("file_read");
 
 	ASSERT_EQ(session_create(&db, "memory_context", "gpt-4o", &s), 0);
-	ASSERT_EQ(consolidate_accepted_turn(
-			  &db, s.id,
-			  "My name is Alice. I live in London.",
-			  "Sure, I will reply in English.",
-			  &action, 1, &opts),
+	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "My name is Alice. I live in London.",
+					    "Sure, I will reply in English.", &action, 1, &opts),
 		  0);
-	ASSERT_EQ(consolidate_accepted_turn(
-			  &db, s.id,
-			  "My name is Alice. I live in Tokyo.",
-			  "好的，之后默认使用中文。",
-			  &action, 1, &opts),
+	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "My name is Alice. I live in Tokyo.",
+					    "好的，之后默认使用中文。", &action, 1, &opts),
 		  0);
 
-	char *temporal = memory_build_context(&db, s.id,
-					      "现在还是英文吗，什么时候改的？",
-					      &opts);
+	char *temporal = memory_build_context(&db, s.id, "现在还是英文吗，什么时候改的？", &opts);
 	ASSERT_NE(temporal, nullptr);
 	EXPECT_NE(std::strstr(temporal, "Recent changes"), nullptr);
 	EXPECT_NE(std::strstr(temporal, "location"), nullptr);
 	free(temporal);
 
-	char *episodic = memory_build_context(&db, s.id,
-					      "上次你是怎么做的？",
-					      &opts);
+	char *episodic = memory_build_context(&db, s.id, "上次你是怎么做的？", &opts);
 	ASSERT_NE(episodic, nullptr);
 	EXPECT_NE(std::strstr(episodic, "Relevant episodes"), nullptr);
 	EXPECT_NE(std::strstr(episodic, "file_read"), nullptr);
@@ -140,11 +133,9 @@ TEST_F(MemoryTest, RenderSessionShowsStoredSections)
 	action.tool_name = const_cast<char *>("file_read");
 
 	ASSERT_EQ(session_create(&db, "memory_render", "gpt-4o", &s), 0);
-	ASSERT_EQ(consolidate_accepted_turn(
-			  &db, s.id,
-			  "Please always reply in Chinese and be concise.",
-			  "好的，我之后会用中文简洁回答。",
-			  &action, 1, &opts),
+	ASSERT_EQ(consolidate_accepted_turn(&db, s.id,
+					    "Please always reply in Chinese and be concise.",
+					    "好的，我之后会用中文简洁回答。", &action, 1, &opts),
 		  0);
 
 	char *rendered = memory_render_session(&db, s.id, 4);
@@ -164,11 +155,8 @@ TEST_F(MemoryTest, ClearFactsKeepsEpisodes)
 	action.tool_name = const_cast<char *>("file_read");
 
 	ASSERT_EQ(session_create(&db, "memory_clear_facts", "gpt-4o", &s), 0);
-	ASSERT_EQ(consolidate_accepted_turn(
-			  &db, s.id,
-			  "Please reply in English.",
-			  "Sure, I will reply in English.",
-			  &action, 1, &opts),
+	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "Please reply in English.",
+					    "Sure, I will reply in English.", &action, 1, &opts),
 		  0);
 
 	ASSERT_EQ(memory_clear(&db, s.id, MEMORY_CLEAR_FACTS), 0);
@@ -185,11 +173,8 @@ TEST_F(MemoryTest, ClearAllRemovesEverything)
 	struct session s;
 
 	ASSERT_EQ(session_create(&db, "memory_clear_all", "gpt-4o", &s), 0);
-	ASSERT_EQ(consolidate_accepted_turn(
-			  &db, s.id,
-			  "这个会话用中文回答，默认简洁。",
-			  "好的，我之后会用中文简洁回答。",
-			  nullptr, 1, &opts),
+	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "这个会话用中文回答，默认简洁。",
+					    "好的，我之后会用中文简洁回答。", nullptr, 1, &opts),
 		  0);
 
 	ASSERT_EQ(memory_clear(&db, s.id, MEMORY_CLEAR_ALL), 0);
@@ -200,15 +185,12 @@ TEST_F(MemoryTest, ClearAllRemovesEverything)
 	free(rendered);
 }
 
-static int memory_count_fact(struct db *db, int64_t session_id,
-			     const char *key_name)
+static int memory_count_fact(struct db *db, int64_t session_id, const char *key_name)
 {
 	sqlite3_stmt *stmt = nullptr;
-	const char *sql =
-		"SELECT COUNT(*) FROM memory_facts "
-		"WHERE session_id=? AND key_name=? AND is_current=1";
-	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, nullptr) !=
-	    SQLITE_OK)
+	const char *sql = "SELECT COUNT(*) FROM memory_facts "
+			  "WHERE session_id=? AND key_name=? AND is_current=1";
+	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, nullptr) != SQLITE_OK)
 		return -1;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	sqlite3_bind_text(stmt, 2, key_name, -1, SQLITE_TRANSIENT);
@@ -226,39 +208,34 @@ TEST_F(MemoryTest, AmbiguousAnchorsDoNotPolluteFacts)
 
 	/* "I am in Tokyo" used to also land as user_name="in Tokyo".
 	 * It should now only set location. */
-	ASSERT_EQ(consolidate_accepted_turn(
-			  &db, s.id, "I am in Tokyo.",
-			  "Got it.", nullptr, 1, &opts),
+	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "I am in Tokyo.", "Got it.", nullptr, 1,
+					    &opts),
 		  0);
 	EXPECT_EQ(memory_count_fact(&db, s.id, "user_name"), 0);
 	EXPECT_EQ(memory_count_fact(&db, s.id, "location"), 1);
 
 	/* "我想知道..." should not be misread as a goal anchor. */
-	ASSERT_EQ(consolidate_accepted_turn(
-			  &db, s.id, "我想知道天气如何。",
-			  "天气晴朗。", nullptr, 1, &opts),
+	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "我想知道天气如何。", "天气晴朗。", nullptr,
+					    1, &opts),
 		  0);
 	EXPECT_EQ(memory_count_fact(&db, s.id, "goal"), 0);
 
 	/* "我在想..." should not be misread as a location anchor. */
-	ASSERT_EQ(consolidate_accepted_turn(
-			  &db, s.id, "我在想这个问题。",
-			  "嗯。", nullptr, 1, &opts),
-		  0);
+	ASSERT_EQ(
+		consolidate_accepted_turn(&db, s.id, "我在想这个问题。", "嗯。", nullptr, 1, &opts),
+		0);
 	/* Still only one location fact, from the Tokyo turn above. */
 	EXPECT_EQ(memory_count_fact(&db, s.id, "location"), 1);
 
 	/* "我叫了一辆出租车" should not be misread as user_name. */
-	ASSERT_EQ(consolidate_accepted_turn(
-			  &db, s.id, "我叫了一辆出租车。",
-			  "好的。", nullptr, 1, &opts),
+	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "我叫了一辆出租车。", "好的。", nullptr, 1,
+					    &opts),
 		  0);
 	EXPECT_EQ(memory_count_fact(&db, s.id, "user_name"), 0);
 
 	/* Sanity check: a clean anchor still works. */
-	ASSERT_EQ(consolidate_accepted_turn(
-			  &db, s.id, "Please call me Alice.",
-			  "Sure, Alice.", nullptr, 1, &opts),
+	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "Please call me Alice.", "Sure, Alice.",
+					    nullptr, 1, &opts),
 		  0);
 	char *name = preference_render(&db, s.id, 0);
 	ASSERT_NE(name, nullptr);
@@ -283,32 +260,32 @@ TEST_F(MemoryTest, LanguageMentionsComplaintsAndNegationsDoNotChangePreference)
 {
 	struct session s;
 	ASSERT_EQ(session_create(&db, "language_guard", "mock", &s), 0);
-	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "你现在回答为啥过程中都是英文？",
-		"我会检查", nullptr, 1, &opts), 0);
+	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "你现在回答为啥过程中都是英文？", "我会检查",
+					    nullptr, 1, &opts),
+		  0);
 	sqlite3_stmt *check = nullptr;
 	ASSERT_EQ(sqlite3_prepare_v2(db.handle,
-		"SELECT COUNT(*) FROM memory_facts WHERE session_id=? "
-		"AND key_name='preferred_language' AND is_current=1",
-		-1, &check, nullptr), SQLITE_OK);
+				     "SELECT COUNT(*) FROM memory_facts WHERE session_id=? "
+				     "AND key_name='preferred_language' AND is_current=1",
+				     -1, &check, nullptr),
+		  SQLITE_OK);
 	sqlite3_bind_int64(check, 1, s.id);
 	ASSERT_EQ(sqlite3_step(check), SQLITE_ROW);
 	EXPECT_EQ(sqlite3_column_int(check, 0), 0);
 	sqlite3_finalize(check);
-	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "后续回答我的语言改成中文",
-		"好的", nullptr, 1, &opts), 0);
+	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "后续回答我的语言改成中文", "好的", nullptr,
+					    1, &opts),
+		  0);
 	const char *inputs[] = {
-		"你现在回答为啥过程中都是英文？",
-		"不要用英文回答我。",
-		"Please do not reply in English.",
-		"Why do you reply in English?",
-		"请把这个词翻译成英文。",
-		"今天学习中文和英文。",
+		"你现在回答为啥过程中都是英文？",  "不要用英文回答我。",
+		"Please do not reply in English.", "Why do you reply in English?",
+		"请把这个词翻译成英文。",	   "今天学习中文和英文。",
 		"请解释“用英文回答”这句话。",
 	};
 	for (const char *input : inputs) {
 		SCOPED_TRACE(input);
-		ASSERT_EQ(consolidate_accepted_turn(&db, s.id, input, "好的",
-			nullptr, 1, &opts), 0);
+		ASSERT_EQ(consolidate_accepted_turn(&db, s.id, input, "好的", nullptr, 1, &opts),
+			  0);
 		char *effective = preference_render(&db, s.id, 0);
 		ASSERT_NE(effective, nullptr);
 		EXPECT_NE(strstr(effective, "Chinese"), nullptr);
@@ -321,10 +298,12 @@ TEST_F(MemoryTest, ExplicitLanguageSwitchReplacesConflictingStandingRule)
 {
 	struct session s;
 	ASSERT_EQ(session_create(&db, "language_switch", "mock", &s), 0);
-	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "Please always reply in English.",
-		"OK", nullptr, 1, &opts), 0);
-	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "以后请用中文回答，不要用英文。",
-		"好的", nullptr, 1, &opts), 0);
+	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "Please always reply in English.", "OK",
+					    nullptr, 1, &opts),
+		  0);
+	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "以后请用中文回答，不要用英文。", "好的",
+					    nullptr, 1, &opts),
+		  0);
 	char *context = memory_build_context(&db, s.id, "How should you always respond?", &opts);
 	ASSERT_NE(context, nullptr);
 	EXPECT_NE(strstr(context, "response.language: Chinese"), nullptr);
@@ -386,10 +365,15 @@ TEST_F(MemoryTest, TemporaryQuestionsAndQuotesNeverOverwriteDurablePreference)
 	ASSERT_EQ(memory_accept_input(&db, session.id, "以后默认用中文，回答简洁", "1", &opts), 0);
 	std::string before = effective_preferences(&db, session.id);
 	const char *inputs[] = {
-		"这次用英文详细回答", "这封邮件用英文", "Please reply in English.",
-		"以后用英文回答吗？", "我希望了解为什么回答总是详细的？",
-		"请解释：‘以后用英文’是什么意思？", "Translate always use English into Chinese.",
-		"以后不要用英文", "Why do you always use English?",
+		"这次用英文详细回答",
+		"这封邮件用英文",
+		"Please reply in English.",
+		"以后用英文回答吗？",
+		"我希望了解为什么回答总是详细的？",
+		"请解释：‘以后用英文’是什么意思？",
+		"Translate always use English into Chinese.",
+		"以后不要用英文",
+		"Why do you always use English?",
 	};
 	for (const char *input : inputs) {
 		SCOPED_TRACE(input);
@@ -407,10 +391,13 @@ TEST_F(MemoryTest, ReplayCannotResurrectDeletedPreferenceOrOverrideNewValue)
 	std::string current = effective_preferences(&db, session.id);
 	ASSERT_EQ(memory_accept_input(&db, session.id, "以后都用英文", "old", &opts), 0);
 	EXPECT_EQ(effective_preferences(&db, session.id), current);
-	ASSERT_EQ(preference_set(&db, session.id, "personal", "language", nullptr, "forget", "delete"), 0);
+	ASSERT_EQ(preference_set(&db, session.id, "personal", "language", nullptr, "forget",
+				 "delete"),
+		  0);
 	ASSERT_EQ(memory_accept_input(&db, session.id, "以后都用英文", "old", &opts), 0);
 	EXPECT_EQ(effective_preferences(&db, session.id), "");
-	ASSERT_EQ(memory_consolidate_turn(&db, session.id, "以后都用英文", "OK", nullptr, 1, &opts), 0);
+	ASSERT_EQ(memory_consolidate_turn(&db, session.id, "以后都用英文", "OK", nullptr, 1, &opts),
+		  0);
 	EXPECT_EQ(effective_preferences(&db, session.id), "");
 }
 
@@ -424,7 +411,9 @@ TEST_F(MemoryTest, ClearedMemoryRejectsOlderBackgroundGeneration)
 	old_job.generation_bound = 1;
 	old_job.generation = 0;
 	ASSERT_EQ(memory_clear(&db, session.id, MEMORY_CLEAR_ALL), 0);
-	EXPECT_EQ(memory_consolidate_turn(&db, session.id, "old work", "done", nullptr, 1, &old_job), -ESTALE);
+	EXPECT_EQ(
+		memory_consolidate_turn(&db, session.id, "old work", "done", nullptr, 1, &old_job),
+		-ESTALE);
 	char *render = memory_render_session(&db, session.id, 0);
 	ASSERT_NE(render, nullptr);
 	EXPECT_STREQ(render, "No long-term memory stored for this session.");
@@ -435,13 +424,17 @@ TEST_F(MemoryTest, OldProfilesAndRulesCannotCompeteWithEffectivePreference)
 {
 	struct session session;
 	ASSERT_EQ(session_create(&db, "legacy", "mock", &session), 0);
-	ASSERT_EQ(db_exec(&db,
-		"INSERT INTO memory_profiles VALUES(1,'Respond in English',1);"
-		"INSERT INTO memory_procedures(session_id,rule_text,trigger_text,updated_at) "
-		"VALUES(1,'Always speak English','complaint',1);"
-		"INSERT INTO memory_facts(session_id,key_name,value_text,source_text,category,"
-		"valid_from,created_at,updated_at) VALUES(1,'preferred_language','English',"
-		"'你现在回答为啥过程中都是英文？','preference',1,1,1);"), 0);
+	ASSERT_EQ(
+		db_exec(&db,
+			"INSERT INTO memory_profiles VALUES(1,'Respond in English',1);"
+			"INSERT INTO "
+			"memory_procedures(session_id,rule_text,trigger_text,updated_at) "
+			"VALUES(1,'Always speak English','complaint',1);"
+			"INSERT INTO "
+			"memory_facts(session_id,key_name,value_text,source_text,category,"
+			"valid_from,created_at,updated_at) VALUES(1,'preferred_language','English',"
+			"'你现在回答为啥过程中都是英文？','preference',1,1,1);"),
+		0);
 	ASSERT_EQ(memory_accept_input(&db, session.id, "以后都用中文", "new", &opts), 0);
 	char *context = memory_build_context(&db, session.id, "always reply", &opts);
 	ASSERT_NE(context, nullptr);
@@ -456,14 +449,19 @@ TEST_F(MemoryTest, LegacyMigrationIsIdempotentAndCannotOverrideNewExplicitSettin
 {
 	struct session session;
 	ASSERT_EQ(session_create(&db, "legacy_good", "mock", &session), 0);
-	ASSERT_EQ(db_exec(&db,
-		"INSERT INTO memory_facts(session_id,key_name,value_text,source_text,category,"
-		"valid_from,created_at,updated_at) VALUES(1,'preferred_language','English',"
-		"'以后都用英文','preference',1,1,1);"), 0);
+	ASSERT_EQ(
+		db_exec(&db,
+			"INSERT INTO "
+			"memory_facts(session_id,key_name,value_text,source_text,category,"
+			"valid_from,created_at,updated_at) VALUES(1,'preferred_language','English',"
+			"'以后都用英文','preference',1,1,1);"),
+		0);
 	ASSERT_EQ(memory_accept_input(&db, session.id, "hello", "first", &opts), 0);
-	EXPECT_NE(effective_preferences(&db, session.id).find("English [session"), std::string::npos);
+	EXPECT_NE(effective_preferences(&db, session.id).find("English [session"),
+		  std::string::npos);
 	ASSERT_EQ(memory_accept_input(&db, session.id, "以后都用中文", "second", &opts), 0);
-	EXPECT_NE(effective_preferences(&db, session.id).find("Chinese [personal"), std::string::npos);
+	EXPECT_NE(effective_preferences(&db, session.id).find("Chinese [personal"),
+		  std::string::npos);
 	ASSERT_EQ(memory_clear(&db, session.id, MEMORY_CLEAR_ALL), 0);
 	ASSERT_EQ(memory_accept_input(&db, session.id, "hello", "third", &opts), 0);
 	EXPECT_EQ(effective_preferences(&db, session.id).find("English"), std::string::npos);
@@ -474,10 +472,10 @@ TEST_F(MemoryTest, DurableJobsRecoverAndDoNotDuplicateEpisodes)
 	struct session session;
 	ASSERT_EQ(session_create(&db, "recovery", "mock", &session), 0);
 	ASSERT_EQ(preference_bind(&db, session.id, "local", "/project"), 0);
-	ASSERT_EQ(db_exec(&db,
-		"INSERT INTO memory_jobs(session_id,generation,payload) VALUES(1,0,"
-		"'{\"input\":\"old task\",\"answer\":\"done\",\"success\":true,"
-		"\"episodes\":true,\"llm\":false,\"tools\":[\"file_read\"]}');"), 0);
+	ASSERT_EQ(db_exec(&db, "INSERT INTO memory_jobs(session_id,generation,payload) VALUES(1,0,"
+			       "'{\"input\":\"old task\",\"answer\":\"done\",\"success\":true,"
+			       "\"episodes\":true,\"llm\":false,\"tools\":[\"file_read\"]}');"),
+		  0);
 	ASSERT_EQ(memory_async_resume(&db, &opts), 0);
 	memory_async_shutdown(opts.worker);
 	char *jobs = memory_background_render(&db, session.id);
@@ -489,7 +487,9 @@ TEST_F(MemoryTest, DurableJobsRecoverAndDoNotDuplicateEpisodes)
 	ASSERT_EQ(memory_async_resume(&db, &opts), 0);
 	memory_async_shutdown(opts.worker);
 	sqlite3_stmt *stmt = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(db.handle, "SELECT COUNT(*) FROM memory_episodes", -1, &stmt, nullptr), SQLITE_OK);
+	ASSERT_EQ(sqlite3_prepare_v2(db.handle, "SELECT COUNT(*) FROM memory_episodes", -1, &stmt,
+				     nullptr),
+		  SQLITE_OK);
 	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
 	EXPECT_EQ(sqlite3_column_int(stmt, 0), 1);
 	sqlite3_finalize(stmt);
@@ -509,8 +509,8 @@ struct DelayedMemoryModel {
 	bool released = false;
 };
 
-static int delayed_memory_chat(struct model *self, struct arena *, const char *,
-	const char **, int, const struct model_chat_options *, sse_callback cb, void *data)
+static int delayed_memory_chat(struct model *self, struct arena *, const char *, const char **, int,
+			       const struct model_chat_options *, sse_callback cb, void *data)
 {
 	auto *state = static_cast<DelayedMemoryModel *>(self->handle);
 	{
@@ -519,8 +519,10 @@ static int delayed_memory_chat(struct model *self, struct arena *, const char *,
 		state->cv.notify_all();
 		state->cv.wait_for(lock, std::chrono::seconds(5), [&] { return state->released; });
 	}
-	return cb("{\"facts\":[{\"key\":\"language\",\"value\":\"English\",\"category\":\"preference\"}],"
-		"\"rules\":[{\"rule_text\":\"Always speak English\"}]}", data);
+	return cb("{\"facts\":[{\"key\":\"language\",\"value\":\"English\",\"category\":"
+		  "\"preference\"}],"
+		  "\"rules\":[{\"rule_text\":\"Always speak English\"}]}",
+		  data);
 }
 
 TEST_F(MemoryTest, InFlightExtractionCannotOverrideOrResurrectPreference)
@@ -535,13 +537,18 @@ TEST_F(MemoryTest, InFlightExtractionCannotOverrideOrResurrectPreference)
 	std::strcpy(model.api_key, "mock");
 	opts.llm = &model;
 	opts.llm_extract_enabled = 1;
-	ASSERT_EQ(memory_consolidate_turn_async(&db, session.id, "以后都用英文", "OK", nullptr, 1, &opts), 0);
+	ASSERT_EQ(memory_consolidate_turn_async(&db, session.id, "以后都用英文", "OK", nullptr, 1,
+						&opts),
+		  0);
 	{
 		std::unique_lock<std::mutex> lock(state.mutex);
-		EXPECT_TRUE(state.cv.wait_for(lock, std::chrono::seconds(5), [&] { return state.entered; }));
+		EXPECT_TRUE(state.cv.wait_for(lock, std::chrono::seconds(5),
+					      [&] { return state.entered; }));
 	}
 	EXPECT_EQ(memory_accept_input(&db, session.id, "以后都用中文", "new", &opts), 0);
-	EXPECT_EQ(preference_set(&db, session.id, "personal", "language", nullptr, "forget", "delete"), 0);
+	EXPECT_EQ(preference_set(&db, session.id, "personal", "language", nullptr, "forget",
+				 "delete"),
+		  0);
 	EXPECT_EQ(memory_clear(&db, session.id, MEMORY_CLEAR_ALL), 0);
 	{
 		std::lock_guard<std::mutex> lock(state.mutex);
@@ -569,7 +576,8 @@ TEST_F(MemoryTest, IndependentWritersResolveOneValuePerCanonicalKey)
 			return;
 		}
 		for (int i = 0; i < 20; i++) {
-			if (preference_set(&connection, session.id, "personal", key, value, "writer", nullptr))
+			if (preference_set(&connection, session.id, "personal", key, value,
+					   "writer", nullptr))
 				failures++;
 		}
 		db_close(&connection);
@@ -581,7 +589,8 @@ TEST_F(MemoryTest, IndependentWritersResolveOneValuePerCanonicalKey)
 	EXPECT_EQ(failures, 0);
 	std::string effective = effective_preferences(&db, session.id);
 	EXPECT_NE(effective.find("response.language:"), std::string::npos);
-	EXPECT_EQ(effective.find("response.language:", effective.find("response.language:") + 1), std::string::npos);
+	EXPECT_EQ(effective.find("response.language:", effective.find("response.language:") + 1),
+		  std::string::npos);
 }
 
 TEST_F(MemoryTest, SourceMessageOrderWinsEvenWhenOlderInputCommitsLater)
@@ -616,7 +625,8 @@ TEST_F(MemoryTest, PreferenceReadFailureIsNotTreatedAsEmptyMemory)
 	ASSERT_EQ(memory_accept_input(&db, session.id, "以后都用中文", "input", &opts), 0);
 	ASSERT_EQ(db_exec(&db, "DROP TABLE memory_preferences"), 0);
 	char *context = nullptr;
-	EXPECT_EQ(memory_build_context_checked(&db, session.id, "hello", &opts, &context), MORPH_ERR_DB);
+	EXPECT_EQ(memory_build_context_checked(&db, session.id, "hello", &opts, &context),
+		  MORPH_ERR_DB);
 	EXPECT_EQ(context, nullptr);
 }
 
@@ -649,17 +659,19 @@ TEST_F(MemoryTest, IndependentWorkersDrainOnlyTheirOwnJobs)
 	second.worker = other.get();
 	opts.llm = &model;
 	opts.llm_extract_enabled = 1;
-	ASSERT_EQ(memory_consolidate_turn_async(&db, session.id,
-		"first task", "first answer", nullptr, 1, &opts), 0);
+	ASSERT_EQ(memory_consolidate_turn_async(&db, session.id, "first task", "first answer",
+						nullptr, 1, &opts),
+		  0);
 	{
 		std::unique_lock<std::mutex> lock(state.mutex);
 		EXPECT_TRUE(state.cv.wait_for(lock, std::chrono::seconds(5),
-			[&] { return state.entered; }));
+					      [&] { return state.entered; }));
 	}
 	EXPECT_NE(memory_async_pending(opts.worker), 0);
 	EXPECT_EQ(memory_async_pending(other.get()), 0);
-	EXPECT_EQ(memory_consolidate_turn_async(&db, session.id,
-		"second task", "second answer", nullptr, 1, &second), 0);
+	EXPECT_EQ(memory_consolidate_turn_async(&db, session.id, "second task", "second answer",
+						nullptr, 1, &second),
+		  0);
 	memory_async_shutdown(other.get());
 	EXPECT_EQ(memory_async_pending(other.get()), 0);
 	EXPECT_NE(memory_async_pending(opts.worker), 0);
@@ -716,4 +728,63 @@ TEST_F(MemoryTest, SnapshotReadFailureReleasesPreviouslyCopiedSections)
 	EXPECT_EQ(snapshot.facts.elts, nullptr);
 	EXPECT_EQ(snapshot.episodes.elts, nullptr);
 	memory_snapshot_cleanup(&snapshot);
+}
+
+TEST_F(MemoryTest, JobSnapshotsOwnPayloadAndStateChangesRequireTheExpectedState)
+{
+	struct session session{};
+	ASSERT_EQ(session_create(&db, "job-store", "mock", &session), 0);
+	int64_t id = 0;
+	ASSERT_EQ(memory_job_store_add(&db, session.id, 7, "original payload", &id), 0);
+	ASSERT_GT(id, 0);
+	struct memory_job_records records{};
+	ASSERT_EQ(memory_job_store_recoverable(&db, &records), 0);
+	ASSERT_EQ(records.rows.nelts, 1u);
+	auto *record = static_cast<struct memory_job_record *>(morph_array_get(&records.rows, 0));
+	ASSERT_NE(record, nullptr);
+	EXPECT_EQ(record->id, id);
+	EXPECT_EQ(record->generation, 7);
+	ASSERT_EQ(db_exec(&db, "UPDATE memory_jobs SET payload='replacement'"), 0);
+	EXPECT_STREQ(record->payload_json, "original payload");
+	EXPECT_STREQ(record->state, "queued");
+	EXPECT_EQ(memory_job_store_claim(&db, id, getpid()), 1);
+	EXPECT_EQ(memory_job_store_claim(&db, id, getpid()), 0);
+	EXPECT_EQ(memory_job_store_complete(&db, id, -ESTALE), 0);
+	EXPECT_EQ(memory_job_store_requeue(&db, id, "running"), 0);
+	memory_job_records_cleanup(&records);
+	ASSERT_EQ(memory_job_store_recent(&db, session.id, 20, &records), 0);
+	ASSERT_EQ(records.rows.nelts, 1u);
+	record = static_cast<struct memory_job_record *>(morph_array_get(&records.rows, 0));
+	EXPECT_STREQ(record->state, "cancelled");
+	EXPECT_EQ(record->error_code, -ESTALE);
+	EXPECT_EQ(record->attempts, 1);
+	EXPECT_EQ(record->payload_json, nullptr);
+	memory_job_records_cleanup(&records);
+	ASSERT_EQ(memory_job_store_recent(&db, 0, 20, &records), 0);
+	EXPECT_EQ(records.rows.nelts, 0u);
+	memory_job_records_cleanup(&records);
+}
+
+TEST_F(MemoryTest, GenerationWriteRollbackKeepsFactsAndTheFenceConsistent)
+{
+	struct session session{};
+	ASSERT_EQ(session_create(&db, "generation-store", "mock", &session), 0);
+	ASSERT_EQ(memory_store_prepare_session(&db, session.id), 0);
+	int64_t generation = 0;
+	ASSERT_EQ(memory_store_generation(&db, session.id, &generation), 0);
+	ASSERT_EQ(memory_store_begin_generation(&db, session.id, generation), 0);
+	ASSERT_EQ(memory_store_write_fact(&db, session.id, "project", "temporary", "test",
+					  "general", .5),
+		  0);
+	EXPECT_EQ(memory_store_finish_write(&db, -ECANCELED), -ECANCELED);
+	EXPECT_NE(sqlite3_get_autocommit(db.handle), 0);
+	EXPECT_EQ(memory_count_fact(&db, session.id, "project"), 0);
+	ASSERT_EQ(memory_clear(&db, session.id, MEMORY_CLEAR_ALL), 0);
+	EXPECT_EQ(memory_store_begin_generation(&db, session.id, generation), -ESTALE);
+	EXPECT_NE(sqlite3_get_autocommit(db.handle), 0);
+	ASSERT_EQ(memory_store_begin_write(&db), 0);
+	EXPECT_NE(memory_store_begin_generation(&db, session.id, generation), 0);
+	EXPECT_EQ(sqlite3_get_autocommit(db.handle), 0);
+	EXPECT_EQ(memory_store_finish_write(&db, -ECANCELED), -ECANCELED);
+	EXPECT_NE(sqlite3_get_autocommit(db.handle), 0);
 }

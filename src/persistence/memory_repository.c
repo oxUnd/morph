@@ -9,6 +9,22 @@
 #include <string.h>
 #include <time.h>
 
+int memory_store_begin_write(struct db *db)
+{
+	if (!db || !db->handle)
+		return -EINVAL;
+	return db_exec(db, "BEGIN IMMEDIATE");
+}
+
+int memory_store_finish_write(struct db *db, int result)
+{
+	if (result == 0)
+		result = db_exec(db, "COMMIT");
+	if (result != 0)
+		(void)db_exec(db, "ROLLBACK");
+	return result;
+}
+
 int memory_store_write_fact(struct db *db, int64_t session_id, const char *key_name,
 			    const char *value_text, const char *source_text, const char *category,
 			    double importance)
@@ -140,17 +156,13 @@ int memory_store_upsert_fact(struct db *db, int64_t session_id, const char *key_
 			     const char *value_text, const char *source_text, const char *category,
 			     double importance)
 {
-	int rc = db_exec(db, "BEGIN IMMEDIATE");
+	int rc = memory_store_begin_write(db);
 
 	if (rc != 0)
 		return rc;
 	rc = memory_store_write_fact(db, session_id, key_name, value_text, source_text, category,
 				     importance);
-	if (rc == 0)
-		rc = db_exec(db, "COMMIT");
-	if (rc != 0)
-		(void)db_exec(db, "ROLLBACK");
-	return rc;
+	return memory_store_finish_write(db, rc);
 }
 
 int memory_store_prepare_session(struct db *db, int64_t session_id)
@@ -193,7 +205,7 @@ int memory_store_generation(struct db *db, int64_t session_id, int64_t *generati
 int memory_store_begin_generation(struct db *db, int64_t session_id, int64_t expected)
 {
 	int64_t current = 0;
-	int rc = db_exec(db, "BEGIN IMMEDIATE");
+	int rc = memory_store_begin_write(db);
 
 	if (rc != 0)
 		return rc;
@@ -201,8 +213,8 @@ int memory_store_begin_generation(struct db *db, int64_t session_id, int64_t exp
 	if (rc == 0 && current != expected)
 		rc = -ESTALE;
 	if (rc != 0)
-		(void)db_exec(db, "ROLLBACK");
-	return rc;
+		return memory_store_finish_write(db, rc);
+	return 0;
 }
 
 int memory_store_clear(struct db *db, int64_t session_id, enum memory_clear_scope scope)
@@ -215,7 +227,7 @@ int memory_store_clear(struct db *db, int64_t session_id, enum memory_clear_scop
 	rc = memory_store_prepare_session(db, session_id);
 	if (rc != 0)
 		return rc;
-	rc = db_exec(db, "BEGIN IMMEDIATE");
+	rc = memory_store_begin_write(db);
 	if (rc != 0)
 		return rc;
 	rc = sqlite3_prepare_v2(db->handle,
@@ -272,11 +284,7 @@ int memory_store_clear(struct db *db, int64_t session_id, enum memory_clear_scop
 		sqlite3_finalize(stmt);
 		rc = rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
 	}
-	if (rc == 0)
-		rc = db_exec(db, "COMMIT");
-	if (rc != 0)
-		(void)db_exec(db, "ROLLBACK");
-	return rc;
+	return memory_store_finish_write(db, rc);
 }
 
 /* Additive, idempotent migration. Old rows remain available for audit.

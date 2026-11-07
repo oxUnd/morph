@@ -230,104 +230,66 @@ static int load_tool_from_dir(struct tool_registry *reg, struct tool_context *tc
 			      const struct config_dynamic_tools *cfg, const char *dir,
 			      enum tool_origin origin)
 {
+	struct dynamic_tool_definition definition;
+	struct dynamic_tool *dt;
 	char meta_path[PATH_MAX];
 	char source_path[PATH_MAX];
-	char *meta_text;
-	cJSON *meta;
-	struct dynamic_tool *dt;
-	char *schema;
 	int rc;
 
 	if (!reg || !cfg || !dir)
 		return -EINVAL;
-	rc = file_path_join(meta_path, sizeof(meta_path), dir, DYN_TOOL_META_FILE);
-	if (rc < 0)
+	rc = dynamic_tool_store_tool_file_paths(dir, meta_path, sizeof(meta_path), source_path,
+						sizeof(source_path));
+	if (rc != 0)
 		return rc;
-	rc = file_path_join(source_path, sizeof(source_path), dir, DYN_TOOL_SOURCE_FILE);
-	if (rc < 0)
+	rc = dynamic_tool_store_load_definition(meta_path, source_path, &definition);
+	if (rc != 0)
 		return rc;
-	if (!file_exists(meta_path))
-		return -ENOENT;
-	meta_text = file_read_all(meta_path, NULL);
-	if (!meta_text)
-		return -ENOENT;
-	meta = cJSON_Parse(meta_text);
-	free(meta_text);
-	if (!meta)
+	if (!valid_tool_name(definition.name)) {
+		dynamic_tool_store_definition_cleanup(&definition);
 		return -EINVAL;
+	}
 	dt = calloc(1, sizeof(*dt));
 	if (!dt) {
-		cJSON_Delete(meta);
+		dynamic_tool_store_definition_cleanup(&definition);
 		return -ENOMEM;
 	}
-	{
-		cJSON *name = cJSON_GetObjectItem(meta, "name");
-		cJSON *desc = cJSON_GetObjectItem(meta, "description");
-		cJSON *args = cJSON_GetObjectItem(meta, "input_schema");
-		cJSON *output = cJSON_GetObjectItem(meta, "output_schema");
-		if (!cJSON_IsString(name) || !name->valuestring ||
-		    !valid_tool_name(name->valuestring)) {
-			cJSON_Delete(meta);
-			dynamic_tool_runner_destroy(dt);
-			return -EINVAL;
-		}
-		strncpy(dt->name, name->valuestring, sizeof(dt->name) - 1);
-		if (cJSON_IsString(desc) && desc->valuestring)
-			strncpy(dt->description, desc->valuestring, sizeof(dt->description) - 1);
-		if (!args || (cJSON_IsObject(args) && !cJSON_GetObjectItem(args, "properties"))) {
-			schema = strdup(TOOL_EMPTY_INPUT_SCHEMA);
-		} else {
-			schema = schema_to_string(args);
-		}
-		if (!schema) {
-			cJSON_Delete(meta);
-			dynamic_tool_runner_destroy(dt);
-			return -ENOMEM;
-		}
-		strncpy(dt->input_schema, schema, sizeof(dt->input_schema) - 1);
-		free(schema);
-		if (!output) {
-			schema = strdup(TOOL_OBJECT_OUTPUT_SCHEMA);
-		} else {
-			schema = schema_to_string(output);
-		}
-		if (!schema) {
-			cJSON_Delete(meta);
-			dynamic_tool_runner_destroy(dt);
-			return -ENOMEM;
-		}
-		strncpy(dt->output_schema, schema, sizeof(dt->output_schema) - 1);
-		free(schema);
-	}
-	const cJSON *source_field = cJSON_GetObjectItem(meta, "source");
-	if (source_field != NULL && !cJSON_IsString(source_field)) {
-		cJSON_Delete(meta);
+	if (strlen(definition.name) >= sizeof(dt->name) ||
+	    (definition.description && strlen(definition.description) >= sizeof(dt->description)) ||
+	    strlen(definition.input_schema) >= sizeof(dt->input_schema) ||
+	    strlen(definition.output_schema) >= sizeof(dt->output_schema)) {
+		dynamic_tool_store_definition_cleanup(&definition);
 		dynamic_tool_runner_destroy(dt);
-		return MORPH_ERR_FORMAT;
+		return -ENAMETOOLONG;
 	}
-	const char *embedded_source = cJSON_GetStringValue(source_field);
-	dt->source = embedded_source != NULL ? strdup(embedded_source)
-					     : file_read_all(source_path, NULL);
-	if (dt->source == NULL) {
-		cJSON_Delete(meta);
+	memcpy(dt->name, definition.name, strlen(definition.name) + 1);
+	if (definition.description)
+		memcpy(dt->description, definition.description, strlen(definition.description) + 1);
+	memcpy(dt->input_schema, definition.input_schema, strlen(definition.input_schema) + 1);
+	memcpy(dt->output_schema, definition.output_schema, strlen(definition.output_schema) + 1);
+	dt->source = strdup(definition.source);
+	dynamic_tool_store_definition_cleanup(&definition);
+	if (!dt->source) {
 		dynamic_tool_runner_destroy(dt);
 		return -ENOMEM;
 	}
-	strncpy(dt->source_path, source_path, sizeof(dt->source_path) - 1);
-	strncpy(dt->dir, dir, sizeof(dt->dir) - 1);
+	memcpy(dt->source_path, source_path, strlen(source_path) + 1);
+	if (strlen(dir) >= sizeof(dt->dir)) {
+		dynamic_tool_runner_destroy(dt);
+		return -ENAMETOOLONG;
+	}
+	memcpy(dt->dir, dir, strlen(dir) + 1);
 	dt->cfg = cfg;
 	dt->tctx = tctx;
 	dt->origin = origin;
-	cJSON_Delete(meta);
 	if (tool_lookup(reg, dt->name) &&
 	    !(tool_lookup(reg, dt->name)->flags & TOOL_FLAG_DYNAMIC)) {
 		dynamic_tool_runner_destroy(dt);
 		return -EEXIST;
 	}
 	rc = register_dynamic_tool(reg, dt);
-	if (rc < 0) {
+	if (rc < 0)
 		dynamic_tool_runner_destroy(dt);
-	}
 	return rc;
 }
 
