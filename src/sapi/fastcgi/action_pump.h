@@ -12,12 +12,13 @@
 #define MORPH_FCGI_ACTION_PUMP_H
 
 #include "session_store.h"
+#include "sapi/fastcgi/storage/events.h"
 
 /* Block until an action arrives or `timeout_sec` expires.
  * On success: fills `out`, returns 1.  On timeout/empty: returns 0.
  * Caller frees `out->payload_json`.
  */
-int action_pump_wait(struct session_store *s, const char *session_id,
-		     int timeout_sec, struct action_record *out);
+int action_pump_wait(struct session_store *s, const char *session_id, int timeout_sec,
+		     struct action_record *out);
 
 #endif

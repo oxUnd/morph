@@ -1,4 +1,6 @@
 #include "auth.h"
+#include "sapi/fastcgi/storage/users.h"
+#include "sapi/fastcgi/storage/tokens.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -10,17 +12,16 @@
 #include "session_store.h"
 #include "util/file.h"
 
-
 /* ---- in-memory token cache (hash table) ---- */
 #define TOKEN_CACHE_SIZE 256
-#define TOKEN_CACHE_MAX  4096
+#define TOKEN_CACHE_MAX 4096
 
 struct token_entry {
-	char            token[64];
-	char            user_id[64];
-	char            username[64];
-	char            role[24];
-	int64_t         expires_at;
+	char token[64];
+	char user_id[64];
+	char username[64];
+	char role[24];
+	int64_t expires_at;
 	struct token_entry *next;
 };
 
@@ -34,7 +35,8 @@ struct fcgi_auth {
 static unsigned token_hash(const char *s)
 {
 	unsigned h = 5381;
-	while (*s) h = h * 33 + (unsigned char)*s++;
+	while (*s)
+		h = h * 33 + (unsigned char)*s++;
 	return h;
 }
 
@@ -83,7 +85,8 @@ static void cache_put(struct fcgi_auth *ctx, const char *token, const char *user
 	}
 
 	e = calloc(1, sizeof(*e));
-	if (!e) return;
+	if (!e)
+		return;
 	snprintf(e->token, sizeof(e->token), "%s", token);
 	snprintf(e->user_id, sizeof(e->user_id), "%s", user_id);
 	snprintf(e->username, sizeof(e->username), "%s", username);
@@ -161,8 +164,8 @@ int auth_check(request_t *r)
 		char username[128];
 		char password[256];
 		struct fcgi_user user = {0};
-		if (fcgi_basic_decode(r->auth_hdr, username, sizeof(username),
-				      password, sizeof(password)) &&
+		if (fcgi_basic_decode(r->auth_hdr, username, sizeof(username), password,
+				      sizeof(password)) &&
 		    store_verify_user(r->store, username, password, &user)) {
 			snprintf(r->user_id, sizeof(r->user_id), "%s", user.user_id);
 			snprintf(r->username, sizeof(r->username), "%s", user.username);
@@ -194,8 +197,7 @@ int auth_check(request_t *r)
 		if (login_token_verify(tok, uid, uname, urole)) {
 			/* re-read file to get expires_at for caching */
 			char path[512];
-			if (file_path_join_append(path, sizeof(path),
-						  "/tmp/morph-sess", tok,
+			if (file_path_join_append(path, sizeof(path), "/tmp/morph-sess", tok,
 						  ".json") != 0)
 				return 1;
 			FILE *fp = fopen(path, "r");
@@ -209,7 +211,8 @@ int auth_check(request_t *r)
 					const char *p = strstr(buf, "\"expires_at\"");
 					if (p) {
 						p = strchr(p + 12, ':');
-						if (p) expires = strtoll(p + 1, NULL, 10);
+						if (p)
+							expires = strtoll(p + 1, NULL, 10);
 					}
 				}
 			}

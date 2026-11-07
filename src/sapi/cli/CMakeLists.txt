@@ -4,6 +4,7 @@ add_library(morph-cli STATIC
 
 	# Application models
 	models/composer.c
+	models/transcript.c
 
 	# Page controllers
 	pages/approval.c
@@ -14,6 +15,7 @@ add_library(morph-cli STATIC
 	pages/permissions.c
 	pages/question.c
 	pages/resume.c
+	pages/turn_details.c
 	pages/setup/controls.c
 	pages/setup/wizard.c
 
@@ -65,10 +67,12 @@ add_library(morph-cli STATIC
 	adapters/input/keymap.c
 	adapters/input/reader.c
 	adapters/input/readline.c
+	adapters/input/state.c
 	adapters/media/image_loader.c
 	adapters/media/renderer.c
 	adapters/protocol/interaction.c
 	adapters/runtime/events.c
+	adapters/runtime/dispatch.c
 	adapters/runtime/observer.c
 
 	# Application presentation
@@ -76,6 +80,7 @@ add_library(morph-cli STATIC
 	presentation/diagnostics.c
 	presentation/history.c
 	presentation/markdown.c
+	presentation/notifications.c
 	presentation/output.c
 	presentation/presenter.c
 	presentation/share.c

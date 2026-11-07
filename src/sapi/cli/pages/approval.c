@@ -1,4 +1,7 @@
 #include "sapi/cli/pages/approval.h"
+#include "util/terminal_size.h"
+#include <morph/tui/terminal.h>
+#include "sapi/cli/adapters/input/state.h"
 #include "agent/tool_context.h"
 #include "cJSON.h"
 #include "sapi/cli/adapters/input/reader.h"
@@ -135,15 +138,15 @@ static int cli_approval_read_choice(struct cli_application *ctx, int scoped, int
 static int cli_approval_prompt_approval(struct cli_application *ctx, const char *subject,
 					int scoped, int ephemeral)
 {
-	if (ctx->prompt_lock_ready)
-		pthread_mutex_lock(&ctx->prompt_lock);
+	if (ctx->input->prompt_lock_ready)
+		pthread_mutex_lock(&ctx->input->prompt_lock);
 	int v = cli_approval_select_choice(ctx, scoped, ephemeral);
 
 	if (v == -ENOTTY)
 		v = cli_approval_read_choice(ctx, scoped, ephemeral);
 	if (v < 0) {
-		if (ctx->prompt_lock_ready)
-			pthread_mutex_unlock(&ctx->prompt_lock);
+		if (ctx->input->prompt_lock_ready)
+			pthread_mutex_unlock(&ctx->input->prompt_lock);
 		return 0;
 	}
 
@@ -161,8 +164,8 @@ static int cli_approval_prompt_approval(struct cli_application *ctx, const char 
 	}
 
 	fflush(stdout);
-	if (ctx->prompt_lock_ready)
-		pthread_mutex_unlock(&ctx->prompt_lock);
+	if (ctx->input->prompt_lock_ready)
+		pthread_mutex_unlock(&ctx->input->prompt_lock);
 	return v;
 }
 
@@ -225,20 +228,8 @@ static int cli_approval_operation_on_owner(void *opaque)
 /* Reserve a right gutter so terminal autowrap never owns card layout. */
 static size_t cli_approval_card_width(void)
 {
-	struct winsize size;
-	const char *configured = getenv("COLUMNS");
-	char *end;
-	long columns = 80;
+	int columns = morph_terminal_columns(STDOUT_FILENO, 80);
 
-	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col > 0) {
-		columns = size.ws_col;
-	} else if (configured && *configured) {
-		errno = 0;
-		long parsed = strtol(configured, &end, 10);
-
-		if (errno == 0 && *end == '\0' && parsed > 0)
-			columns = parsed;
-	}
 	return columns > 82 ? 80u : (columns >= 8 ? (size_t)columns - 2u : 0u);
 }
 

@@ -49,6 +49,24 @@ TEST_F(RuntimeFacadeTest, DeferredSessionPollingIsEmptyAndSilent)
 	runtime_session_list_free(sessions);
 }
 
+TEST_F(RuntimeFacadeTest, DeferredSessionExportsReportNoDataWithoutCreatingASession)
+{
+	struct runtime_options options{};
+	char *answer = nullptr;
+	cJSON *document = nullptr;
+
+	options.create_new_session = 1;
+	Open(&options);
+	ASSERT_EQ(instance->context.current_session.id, 0);
+	EXPECT_EQ(runtime_session_last_answer(instance, &answer), -ENODATA);
+	EXPECT_EQ(answer, nullptr);
+	EXPECT_EQ(runtime_session_share_current(instance, &document), -ENODATA);
+	EXPECT_EQ(document, nullptr);
+	EXPECT_EQ(runtime_session_last_request(instance, &document), -ENODATA);
+	EXPECT_EQ(document, nullptr);
+	EXPECT_EQ(instance->context.current_session.id, 0);
+}
+
 TEST_F(RuntimeFacadeTest, ManualCompactionRunsTrustedHooksAndHonorsVeto)
 {
 	WriteConfig("[memory]\nenabled=false\n");

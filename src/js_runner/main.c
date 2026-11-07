@@ -29,9 +29,8 @@ int runner_has_cap(const char *cap)
 	while (*p) {
 		while (*p == ',' || *p == ' ' || *p == '\t')
 			p++;
-		if (strncmp(p, cap, cap_len) == 0 &&
-		    (p[cap_len] == '\0' || p[cap_len] == ',' ||
-		     p[cap_len] == ' ' || p[cap_len] == '\t'))
+		if (strncmp(p, cap, cap_len) == 0 && (p[cap_len] == '\0' || p[cap_len] == ',' ||
+						      p[cap_len] == ' ' || p[cap_len] == '\t'))
 			return 1;
 		while (*p && *p != ',')
 			p++;
@@ -62,15 +61,13 @@ int runner_list_allows(const char *env_name, const char *value)
 		while (*p && *p != ',')
 			p++;
 		len = (size_t)(p - start);
-		while (len > 0 &&
-		       (start[len - 1] == ' ' || start[len - 1] == '\t'))
+		while (len > 0 && (start[len - 1] == ' ' || start[len - 1] == '\t'))
 			len--;
 		if (len == 1 && start[0] == '*')
 			return 1;
-		if (len > 0 && value_len >= len &&
-		    strncmp(value, start, len) == 0) {
+		if (len > 0 && value_len >= len && strncmp(value, start, len) == 0) {
 			int filesystem = strcmp(env_name, "MORPH_DYNAMIC_ALLOWED_READ") == 0 ||
-				strcmp(env_name, "MORPH_DYNAMIC_ALLOWED_WRITE") == 0;
+					 strcmp(env_name, "MORPH_DYNAMIC_ALLOWED_WRITE") == 0;
 
 			if (!filesystem || value_len == len || start[len - 1] == '/' ||
 			    value[len] == '/')
@@ -82,17 +79,15 @@ int runner_list_allows(const char *env_name, const char *value)
 
 JSValue runner_throw_cap(JSContext *ctx, const char *cap)
 {
-	return JS_ThrowTypeError(ctx, "dynamic tool capability denied: %s",
-				 cap ? cap : "unknown");
+	return JS_ThrowTypeError(ctx, "dynamic tool capability denied: %s", cap ? cap : "unknown");
 }
 
 char *runner_authorize_path(JSContext *ctx, const char *path, int write)
 {
 	const char *cap = write ? "fs_write" : "fs_read";
-	const char *allow_env = write ? "MORPH_DYNAMIC_ALLOWED_WRITE" :
-		"MORPH_DYNAMIC_ALLOWED_READ";
-	const char *root_env = write ? "MORPH_DYNAMIC_OUTPUT_DIR" :
-		"MORPH_DYNAMIC_WORKDIR";
+	const char *allow_env =
+		write ? "MORPH_DYNAMIC_ALLOWED_WRITE" : "MORPH_DYNAMIC_ALLOWED_READ";
+	const char *root_env = write ? "MORPH_DYNAMIC_OUTPUT_DIR" : "MORPH_DYNAMIC_WORKDIR";
 	const char *root;
 	char *candidate;
 	char *resolved;
@@ -102,8 +97,7 @@ char *runner_authorize_path(JSContext *ctx, const char *path, int write)
 		return NULL;
 	}
 	if (!path || !*path) {
-		JS_ThrowTypeError(ctx, "%s path is empty",
-				  write ? "write" : "read");
+		JS_ThrowTypeError(ctx, "%s path is empty", write ? "write" : "read");
 		return NULL;
 	}
 	if (file_path_is_absolute(path)) {
@@ -111,9 +105,8 @@ char *runner_authorize_path(JSContext *ctx, const char *path, int write)
 	} else {
 		root = getenv(root_env);
 		if (!root || !*root) {
-			JS_ThrowInternalError(ctx,
-				"dynamic tool %s directory is unavailable",
-				write ? "output" : "work");
+			JS_ThrowInternalError(ctx, "dynamic tool %s directory is unavailable",
+					      write ? "output" : "work");
 			return NULL;
 		}
 		candidate = file_path_full_alloc(root, path);
@@ -125,77 +118,15 @@ char *runner_authorize_path(JSContext *ctx, const char *path, int write)
 	resolved = file_resolve_path(candidate);
 	free(candidate);
 	if (!resolved) {
-		JS_ThrowInternalError(ctx, "failed to resolve %s path",
-				      write ? "write" : "read");
+		JS_ThrowInternalError(ctx, "failed to resolve %s path", write ? "write" : "read");
 		return NULL;
 	}
 	if (!runner_list_allows(allow_env, resolved)) {
 		free(resolved);
-		JS_ThrowTypeError(ctx, "%s path denied",
-				  write ? "write" : "read");
+		JS_ThrowTypeError(ctx, "%s path denied", write ? "write" : "read");
 		return NULL;
 	}
 	return resolved;
-}
-
-static JSValue js_fs_read_text(JSContext *ctx, JSValueConst this_val,
-			       int argc, JSValueConst *argv)
-{
-	const char *path;
-	char *resolved;
-	char *data;
-	size_t len;
-
-	(void)this_val;
-	if (argc < 1)
-		return JS_ThrowTypeError(ctx, "readText(path) requires path");
-	path = JS_ToCString(ctx, argv[0]);
-	if (!path)
-		return JS_EXCEPTION;
-	resolved = runner_authorize_path(ctx, path, 0);
-	JS_FreeCString(ctx, path);
-	if (!resolved)
-		return JS_EXCEPTION;
-	data = file_read_all(resolved, &len);
-	free(resolved);
-	if (!data)
-		return JS_ThrowInternalError(ctx, "failed to read file");
-	JSValue out = JS_NewStringLen(ctx, data, len);
-	free(data);
-	return out;
-}
-
-static JSValue js_fs_write_text(JSContext *ctx, JSValueConst this_val,
-				int argc, JSValueConst *argv)
-{
-	const char *path;
-	char *resolved;
-	const char *text;
-	size_t len;
-	int rc;
-
-	(void)this_val;
-	if (argc < 2)
-		return JS_ThrowTypeError(ctx,
-					 "writeText(path, text) requires two args");
-	path = JS_ToCString(ctx, argv[0]);
-	if (!path)
-		return JS_EXCEPTION;
-	resolved = runner_authorize_path(ctx, path, 1);
-	JS_FreeCString(ctx, path);
-	if (!resolved)
-		return JS_EXCEPTION;
-	text = JS_ToCStringLen(ctx, &len, argv[1]);
-	if (!text) {
-		free(resolved);
-		return JS_EXCEPTION;
-	}
-	rc = file_write_all(resolved, text, len);
-	free(resolved);
-	JS_FreeCString(ctx, text);
-	if (rc < 0)
-		return JS_ThrowInternalError(ctx, "failed to write file");
-	return JS_NewBool(ctx, 1);
 }
 
 static char *capture_command(const char *cmd)
@@ -226,8 +157,7 @@ static char *capture_command(const char *cmd)
 	return morph_buf_detach(&buf);
 }
 
-static JSValue js_exec(JSContext *ctx, JSValueConst this_val,
-		       int argc, JSValueConst *argv)
+static JSValue js_exec(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
 	const char *cmd;
 	char *out;
@@ -280,11 +210,9 @@ fail:
 	return NULL;
 }
 
-static JSValue make_fetch_response(JSContext *ctx, const char *url,
-				   const char *body);
+static JSValue make_fetch_response(JSContext *ctx, const char *url, const char *body);
 
-static JSValue js_fetch(JSContext *ctx, JSValueConst this_val,
-			int argc, JSValueConst *argv)
+static JSValue js_fetch(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
 	const char *url;
 	char *quoted;
@@ -328,8 +256,7 @@ static JSValue js_fetch(JSContext *ctx, JSValueConst this_val,
 	return value;
 }
 
-static JSValue js_fetch_text(JSContext *ctx, JSValueConst this_val,
-			     int argc, JSValueConst *argv)
+static JSValue js_fetch_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
 	JSValue body;
 
@@ -341,14 +268,14 @@ static JSValue js_fetch_text(JSContext *ctx, JSValueConst this_val,
 	return body;
 }
 
-static JSValue js_fetch_to_string(JSContext *ctx, JSValueConst this_val,
-				  int argc, JSValueConst *argv)
+static JSValue js_fetch_to_string(JSContext *ctx, JSValueConst this_val, int argc,
+				  JSValueConst *argv)
 {
 	return js_fetch_text(ctx, this_val, argc, argv);
 }
 
-static JSValue js_fetch_index_of(JSContext *ctx, JSValueConst this_val,
-				 int argc, JSValueConst *argv)
+static JSValue js_fetch_index_of(JSContext *ctx, JSValueConst this_val, int argc,
+				 JSValueConst *argv)
 {
 	JSValue body_val;
 	const char *body;
@@ -374,8 +301,7 @@ static JSValue js_fetch_index_of(JSContext *ctx, JSValueConst this_val,
 	return JS_NewInt32(ctx, pos);
 }
 
-static JSValue js_fetch_slice(JSContext *ctx, JSValueConst this_val,
-			      int argc, JSValueConst *argv)
+static JSValue js_fetch_slice(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
 	JSValue body_val;
 	const char *body;
@@ -415,8 +341,7 @@ static JSValue js_fetch_slice(JSContext *ctx, JSValueConst this_val,
 	return out;
 }
 
-static JSValue make_fetch_response(JSContext *ctx, const char *url,
-				   const char *body)
+static JSValue make_fetch_response(JSContext *ctx, const char *url, const char *body)
 {
 	JSValue obj;
 	size_t len;
@@ -430,22 +355,16 @@ static JSValue make_fetch_response(JSContext *ctx, const char *url,
 	JS_SetPropertyStr(ctx, obj, "content", JS_NewStringLen(ctx, body, len));
 	JS_SetPropertyStr(ctx, obj, "length", JS_NewInt64(ctx, (int64_t)len));
 	JS_SetPropertyStr(ctx, obj, "_body", JS_NewStringLen(ctx, body, len));
-	JS_SetPropertyStr(ctx, obj, "text",
-			  JS_NewCFunction(ctx, js_fetch_text, "text", 0));
+	JS_SetPropertyStr(ctx, obj, "text", JS_NewCFunction(ctx, js_fetch_text, "text", 0));
 	JS_SetPropertyStr(ctx, obj, "toString",
-			  JS_NewCFunction(ctx, js_fetch_to_string,
-					  "toString", 0));
+			  JS_NewCFunction(ctx, js_fetch_to_string, "toString", 0));
 	JS_SetPropertyStr(ctx, obj, "valueOf",
-			  JS_NewCFunction(ctx, js_fetch_to_string,
-					  "valueOf", 0));
-	JS_SetPropertyStr(ctx, obj, "slice",
-			  JS_NewCFunction(ctx, js_fetch_slice, "slice", 2));
+			  JS_NewCFunction(ctx, js_fetch_to_string, "valueOf", 0));
+	JS_SetPropertyStr(ctx, obj, "slice", JS_NewCFunction(ctx, js_fetch_slice, "slice", 2));
 	JS_SetPropertyStr(ctx, obj, "substring",
-			  JS_NewCFunction(ctx, js_fetch_slice,
-					  "substring", 2));
+			  JS_NewCFunction(ctx, js_fetch_slice, "substring", 2));
 	JS_SetPropertyStr(ctx, obj, "indexOf",
-			  JS_NewCFunction(ctx, js_fetch_index_of,
-					  "indexOf", 1));
+			  JS_NewCFunction(ctx, js_fetch_index_of, "indexOf", 1));
 	return obj;
 }
 
@@ -488,8 +407,7 @@ static int resolve_promise(JSContext *ctx, JSValue *value)
 	return 0;
 }
 
-static JSValue js_env_get(JSContext *ctx, JSValueConst this_val,
-			  int argc, JSValueConst *argv)
+static JSValue js_env_get(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
 	const char *name;
 	const char *value;
@@ -509,8 +427,7 @@ static JSValue js_env_get(JSContext *ctx, JSValueConst this_val,
 	return out;
 }
 
-static JSValue js_tool_call(JSContext *ctx, JSValueConst this_val,
-			    int argc, JSValueConst *argv)
+static JSValue js_tool_call(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
 	(void)this_val;
 	(void)argc;
@@ -524,27 +441,15 @@ static void install_morph_api(JSContext *ctx)
 {
 	JSValue global = JS_GetGlobalObject(ctx);
 	JSValue morph = JS_NewObject(ctx);
-	JSValue fs = JS_NewObject(ctx);
 	JSValue env = JS_NewObject(ctx);
 	JSValue tool = JS_NewObject(ctx);
 
-	JS_SetPropertyStr(ctx, fs, "readText",
-			  JS_NewCFunction(ctx, js_fs_read_text,
-					  "readText", 1));
-	JS_SetPropertyStr(ctx, fs, "writeText",
-			  JS_NewCFunction(ctx, js_fs_write_text,
-					  "writeText", 2));
-	JS_SetPropertyStr(ctx, env, "get",
-			  JS_NewCFunction(ctx, js_env_get, "get", 1));
-	JS_SetPropertyStr(ctx, tool, "call",
-			  JS_NewCFunction(ctx, js_tool_call, "call", 2));
-	JS_SetPropertyStr(ctx, morph, "fs", fs);
+	JS_SetPropertyStr(ctx, env, "get", JS_NewCFunction(ctx, js_env_get, "get", 1));
+	JS_SetPropertyStr(ctx, tool, "call", JS_NewCFunction(ctx, js_tool_call, "call", 2));
 	JS_SetPropertyStr(ctx, morph, "env", env);
 	JS_SetPropertyStr(ctx, morph, "tool", tool);
-	JS_SetPropertyStr(ctx, morph, "exec",
-			  JS_NewCFunction(ctx, js_exec, "exec", 1));
-	JS_SetPropertyStr(ctx, morph, "fetch",
-			  JS_NewCFunction(ctx, js_fetch, "fetch", 1));
+	JS_SetPropertyStr(ctx, morph, "exec", JS_NewCFunction(ctx, js_exec, "exec", 1));
+	JS_SetPropertyStr(ctx, morph, "fetch", JS_NewCFunction(ctx, js_fetch, "fetch", 1));
 	JS_SetPropertyStr(ctx, global, "morph", morph);
 	install_media_api(ctx);
 	JS_FreeValue(ctx, global);
@@ -563,8 +468,7 @@ static int interrupt_handler(JSRuntime *rt, void *opaque)
 static void print_json_string(FILE *out, const char *s)
 {
 	fputc('"', out);
-	for (const unsigned char *p = (const unsigned char *)(s ? s : "");
-	     *p; p++) {
+	for (const unsigned char *p = (const unsigned char *)(s ? s : ""); *p; p++) {
 		switch (*p) {
 		case '\\':
 			fputs("\\\\", out);
@@ -613,15 +517,12 @@ static void print_exception(JSContext *ctx, int id)
 	if (!JS_IsUndefined(stack) && !JS_IsNull(stack))
 		stack_str = JS_ToCString(ctx, stack);
 	if (morph_buf_init(&buf, 512) == 0) {
-		if (morph_buf_puts(&buf, msg ? msg :
-				   "JavaScript exception") == 0 &&
-		    stack_str && *stack_str &&
-		    morph_buf_puts(&buf, "\nStack:\n") == 0 &&
+		if (morph_buf_puts(&buf, msg ? msg : "JavaScript exception") == 0 && stack_str &&
+		    *stack_str && morph_buf_puts(&buf, "\nStack:\n") == 0 &&
 		    morph_buf_puts(&buf, stack_str) == 0)
 			print_error_response(id, morph_buf_cstr(&buf));
 		else
-			print_error_response(id, msg ? msg :
-					     "JavaScript exception");
+			print_error_response(id, msg ? msg : "JavaScript exception");
 		morph_buf_cleanup(&buf);
 	} else {
 		print_error_response(id, msg ? msg : "JavaScript exception");
@@ -656,9 +557,8 @@ static int check_script(JSContext *ctx, const char *path)
 	global = JS_GetGlobalObject(ctx);
 	fn = JS_GetPropertyStr(ctx, global, "run");
 	if (!JS_IsFunction(ctx, fn)) {
-		print_error_response(1,
-			"script must define global run(args). Example: "
-			"async function run(args) { return { ok: true }; }");
+		print_error_response(1, "script must define global run(args). Example: "
+					"async function run(args) { return { ok: true }; }");
 		rc = -EINVAL;
 	}
 	JS_FreeValue(ctx, fn);
@@ -760,8 +660,7 @@ static int run_script(JSContext *ctx, const char *path)
 		rc = -EINVAL;
 		goto out;
 	}
-	fprintf(stdout, "{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":%s}\n",
-		id, json_str);
+	fprintf(stdout, "{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":%s}\n", id, json_str);
 	if (!JS_IsUndefined(json))
 		JS_FreeCString(ctx, json_str);
 

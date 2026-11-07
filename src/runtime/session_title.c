@@ -1,5 +1,5 @@
-#include "runtime/runtime_internal.h"
 #include "runtime/session_title.h"
+#include "runtime/runtime_internal.h"
 #include "runtime/usage.h"
 #include "credits.h"
 #include "util/buf.h"
@@ -53,10 +53,10 @@ static void title_event(struct runtime_title_job *job, const char *phase)
 	cJSON_AddNumberToObject(data, "session_id", (double)job->session.id);
 	cJSON_AddStringToObject(data, "identity", job->session.display_id);
 	cJSON_AddBoolToObject(data, "background", 1);
-	(void)morph_event_emit_simple(job->event_cb, job->event_user_data,
-		MORPH_EVENT_BACKGROUND, "session.title", phase,
-		strcmp(phase, "begin") == 0 ? "Naming session..." :
-		"Session naming finished", data);
+	(void)morph_event_emit_simple(
+		job->event_cb, job->event_user_data, MORPH_EVENT_BACKGROUND, "session.title", phase,
+		strcmp(phase, "begin") == 0 ? "Naming session..." : "Session naming finished",
+		data);
 	cJSON_Delete(data);
 }
 
@@ -70,8 +70,8 @@ char *runtime_title_parse(const char *response)
 	size_t characters = 0;
 	char *out = NULL;
 
-	if (!cJSON_IsObject(root) || !cJSON_IsString(field) ||
-	    cJSON_GetArraySize(root) != 1 || utf8valid(field->valuestring)) {
+	if (!cJSON_IsObject(root) || !cJSON_IsString(field) || cJSON_GetArraySize(root) != 1 ||
+	    utf8valid(field->valuestring)) {
 		cJSON_Delete(root);
 		return NULL;
 	}
@@ -121,9 +121,9 @@ char *runtime_title_parse(const char *response)
 static int title_save(struct db *db, const struct session *session, const char *title)
 {
 	sqlite3_stmt *stmt;
-	int rc = sqlite3_prepare_v2(db->handle,
-		"UPDATE sessions SET name=? WHERE id=? AND display_id=? AND name=?",
-		-1, &stmt, NULL);
+	int rc = sqlite3_prepare_v2(
+		db->handle, "UPDATE sessions SET name=? WHERE id=? AND display_id=? AND name=?", -1,
+		&stmt, NULL);
 
 	if (rc != SQLITE_OK)
 		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
@@ -138,8 +138,7 @@ static int title_save(struct db *db, const struct session *session, const char *
 	return MORPH_TRACE_ERROR(db->logger, rc == SQLITE_DONE ? 0 : MORPH_ERR_DB);
 }
 
-static int title_save_unique(struct db *db, const struct session *session,
-			     const char *title)
+static int title_save_unique(struct db *db, const struct session *session, const char *title)
 {
 	morph_buf_t unique;
 	size_t suffix_chars = strlen(session->display_id) + 3;
@@ -154,33 +153,9 @@ static int title_save_unique(struct db *db, const struct session *session,
 		return MORPH_TRACE_ERROR(db->logger, rc);
 	(void)morph_buf_append(&unique, title, (size_t)(end - title));
 	(void)morph_buf_printf(&unique, " [%s]", session->display_id);
-	rc = unique.failed ? unique.failed :
-		title_save(db, session, morph_buf_cstr(&unique));
+	rc = unique.failed ? unique.failed : title_save(db, session, morph_buf_cstr(&unique));
 	morph_buf_cleanup(&unique);
 	return MORPH_TRACE_ERROR(db->logger, rc);
-}
-
-static void title_record_usage(struct runtime_title_job *job, struct db *db,
-			       const struct model_usage *usage)
-{
-	char *metadata;
-	struct credit_event event = {
-		.user_id = job->user_id,
-		.session_id = job->session.display_id,
-		.kind = usage->kind[0] ? usage->kind : "model_text",
-		.provider = job->model->provider,
-		.model = job->model->model_id,
-		.input_tokens = usage->input_tokens,
-		.cached_tokens = usage->cached_tokens,
-		.output_tokens = usage->output_tokens,
-	};
-
-	if (!runtime_model_usage_is_billable(usage))
-		return;
-	metadata = runtime_model_usage_metadata(usage);
-	event.metadata_json = metadata;
-	(void)credit_record_event(db, &job->credits, &event, NULL);
-	free(metadata);
 }
 
 static void *title_worker(void *opaque)
@@ -197,12 +172,14 @@ static void *title_worker(void *opaque)
 	/* Isolate cancellation and billing from the foreground turn's TLS state. */
 	job->model->http.cancel_token = &job->cancel;
 	if (arena && !morph_cancel_token_is_cancelled(&job->cancel))
-		rc = job->model->chat_with_tools(job->model, arena,
-			title_instructions, &message, 1, NULL, 0, &response, NULL, NULL);
+		rc = job->model->chat_with_tools(job->model, arena, title_instructions, &message, 1,
+						 NULL, 0, &response, NULL, NULL);
 	if (rc >= 0 && response.tool_call_count == 0)
 		title = runtime_title_parse(response.content);
 	if (db_open(job->model ? job->model->http.logger : NULL, &db, job->database) == 0) {
-		title_record_usage(job, &db, &response.usage);
+		(void)runtime_record_model_usage_with_credits(
+			&db, &job->credits, job->user_id, job->session.display_id, &response.usage,
+			job->model->provider, job->model->model_id);
 		pthread_mutex_lock(&job->lock);
 		if (title && !morph_cancel_token_is_cancelled(&job->cancel))
 			rc = title_save_unique(&db, &job->session, title);
@@ -236,8 +213,8 @@ int runtime_title_start(struct runtime *runtime, const struct runtime_request *r
 	struct runtime_context *ctx = &runtime->context;
 	struct runtime_title_job *job;
 	const struct model *source = ctx->llm;
-	const char *input = request->stored_user_input ?
-		request->stored_user_input : request->model_input;
+	const char *input =
+		request->stored_user_input ? request->stored_user_input : request->model_input;
 	int slot = -1;
 	int rc;
 
@@ -275,19 +252,14 @@ int runtime_title_start(struct runtime *runtime, const struct runtime_request *r
 	}
 	rc = session_get_by_id(&ctx->database, request->session_id, &job->session);
 	if (rc == 0) {
-		job->model =
-			model_llm_create(runtime ? runtime->options.logger : NULL, source->provider,
-					 source->model_id, source->api_base, source->api_key);
-		job->prompt = utf8_dup_clamped(input,
-			SESSION_TITLE_PROMPT_MAX_BYTES - strlen(title_instructions));
+		job->model = model_llm_clone(source, runtime->options.logger);
+		job->prompt = utf8_dup_clamped(input, SESSION_TITLE_PROMPT_MAX_BYTES -
+							      strlen(title_instructions));
 		job->user_id = strdup(request->user_id ? request->user_id : "local");
 		if (!job->model || !job->prompt || !job->user_id)
 			rc = -ENOMEM;
 	}
 	if (rc == 0) {
-		memcpy(job->model->adapter, source->adapter, sizeof(job->model->adapter));
-		memcpy(job->model->extra_body_json, source->extra_body_json,
-			sizeof(job->model->extra_body_json));
 		job->model->timeout_seconds = SESSION_TITLE_TIMEOUT_SECONDS;
 		job->model->max_tokens = SESSION_TITLE_OUTPUT_TOKENS;
 		job->model->retry_count = 0;

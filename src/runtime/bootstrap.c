@@ -50,8 +50,7 @@ static const char *runtime_api_key(const struct config_model_entry *model)
 	return getenv(model->api_key_env);
 }
 
-static void runtime_history_add_secret(struct react_context *react,
-				       const char *value)
+static void runtime_history_add_secret(struct react_context *react, const char *value)
 {
 	if (!react || !value || strlen(value) < 4 ||
 	    react->history_secret_count >= HISTORY_SECRET_MAX)
@@ -68,9 +67,7 @@ static void runtime_history_add_secret(struct react_context *react,
 
 static int runtime_secret_env_name(const char *name)
 {
-	static const char *const markers[] = {
-		"KEY", "TOKEN", "SECRET", "PASSWORD"
-	};
+	static const char *const markers[] = {"KEY", "TOKEN", "SECRET", "PASSWORD"};
 	char upper[HISTORY_SECRET_ENV_NAME_MAX];
 	size_t len;
 
@@ -88,52 +85,47 @@ static int runtime_secret_env_name(const char *name)
 	return 0;
 }
 
-static void runtime_history_load_secrets(struct react_context *react,
-					 const struct config *config)
+static void runtime_history_load_secrets(struct react_context *react, const struct config *config)
 {
-	const struct config_model_entry *models[] = {
-		&config->models.text, &config->models.vision,
-		&config->models.image, &config->models.video, &config->models.approval
-	};
+	const struct config_model_entry *models[] = {&config->models.text, &config->models.vision,
+						     &config->models.image, &config->models.video,
+						     &config->models.approval};
 
 	for (size_t i = 0; i < sizeof(models) / sizeof(models[0]); i++)
 		runtime_history_add_secret(react, runtime_api_key(models[i]));
 	for (int i = 0; i < config->mcp.server_count; i++) {
 		const struct config_mcp_server *server = &config->mcp.servers[i];
-		const char *token = server->http_auth_token_env[0] ?
-			getenv(server->http_auth_token_env) : NULL;
+		const char *token =
+			server->http_auth_token_env[0] ? getenv(server->http_auth_token_env) : NULL;
 
 		runtime_history_add_secret(react, token);
 		for (int j = 0; j < server->env_count; j++) {
 			const char *key = server->env_keys[j];
 
 			if (runtime_secret_env_name(key))
-				runtime_history_add_secret(react,
-					server->env_vals[j]);
+				runtime_history_add_secret(react, server->env_vals[j]);
 		}
 	}
 }
 
-static const struct config_permission_profile *active_permission_profile(
-	const struct config_react *react)
+static const struct config_permission_profile *
+active_permission_profile(const struct config_react *react)
 {
 	if (!react || !react->permission_active_profile[0])
 		return NULL;
 	for (int i = 0; i < react->permission_profile_count; i++)
-		if (strcmp(react->permission_profiles[i].name,
-			   react->permission_active_profile) == 0)
+		if (strcmp(react->permission_profiles[i].name, react->permission_active_profile) ==
+		    0)
 			return &react->permission_profiles[i];
 	return NULL;
 }
 
-static void runtime_configure_model(struct model *model,
-				    const struct config_model_entry *cfg)
+static void runtime_configure_model(struct model *model, const struct config_model_entry *cfg)
 {
 	if (!model || !cfg)
 		return;
 	if (cfg->adapter[0])
-		strncpy(model->adapter, cfg->adapter,
-			sizeof(model->adapter) - 1);
+		strncpy(model->adapter, cfg->adapter, sizeof(model->adapter) - 1);
 	if (cfg->extra_body_json[0])
 		strncpy(model->extra_body_json, cfg->extra_body_json,
 			sizeof(model->extra_body_json) - 1);
@@ -162,8 +154,7 @@ static struct model *runtime_create_model(struct morph_log *logger,
 	return model;
 }
 
-static int runtime_apply_system_prompt(struct react_context *react,
-				       const struct config *config)
+static int runtime_apply_system_prompt(struct react_context *react, const struct config *config)
 {
 	char *content = NULL;
 	int rc;
@@ -176,26 +167,22 @@ static int runtime_apply_system_prompt(struct react_context *react,
 		return rc;
 	free(react->system_prompt);
 	react->system_prompt = content;
-	react->system_prompt_replace =
-		strcmp(config->prompt.mode, "replace") == 0;
+	react->system_prompt_replace = strcmp(config->prompt.mode, "replace") == 0;
 	return 0;
 }
 
-static void runtime_apply_tool_flags(struct tool_registry *tools,
-				     const struct config *config)
+static void runtime_apply_tool_flags(struct tool_registry *tools, const struct config *config)
 {
 	if (!tools || !config)
 		return;
 	for (int i = 0; i < config->react.readonly_tools_count; i++) {
-		struct tool_entry *entry =
-			tool_lookup(tools, config->react.readonly_tools[i]);
+		struct tool_entry *entry = tool_lookup(tools, config->react.readonly_tools[i]);
 		if (entry)
 			entry->flags |= TOOL_FLAG_READONLY;
 	}
 }
 
-static void runtime_apply_guardrails(struct react_context *react,
-				     const struct config *config,
+static void runtime_apply_guardrails(struct react_context *react, const struct config *config,
 				     struct model *llm)
 {
 	react->guardrail.logger = react->logger;
@@ -203,25 +190,20 @@ static void runtime_apply_guardrails(struct react_context *react,
 		return;
 	guardrail_register_builtin_rules(&react->guardrail);
 	for (int i = 0; i < config->react.guardrail_llm_rule_count; i++) {
-		const struct config_guardrail_llm_rule *cr =
-			&config->react.guardrail_llm_rules[i];
-		enum guardrail_hook hook = strcmp(cr->hook, "input") == 0
-			? GUARDRAIL_HOOK_INPUT : GUARDRAIL_HOOK_OUTPUT;
-		guardrail_rule_register(&react->guardrail, cr->name, hook,
-					GUARDRAIL_RULE_LLM, NULL,
-					cr->description, NULL,
-					cr->action_text);
+		const struct config_guardrail_llm_rule *cr = &config->react.guardrail_llm_rules[i];
+		enum guardrail_hook hook = strcmp(cr->hook, "input") == 0 ? GUARDRAIL_HOOK_INPUT
+									  : GUARDRAIL_HOOK_OUTPUT;
+		guardrail_rule_register(&react->guardrail, cr->name, hook, GUARDRAIL_RULE_LLM, NULL,
+					cr->description, NULL, cr->action_text);
 	}
 	for (int i = 0; i < config->react.guardrail_ext_rule_count; i++) {
-		const struct config_guardrail_ext_rule *cr =
-			&config->react.guardrail_ext_rules[i];
-		enum guardrail_hook hook = strcmp(cr->hook, "input") == 0
-			? GUARDRAIL_HOOK_INPUT : GUARDRAIL_HOOK_OUTPUT;
-		guardrail_rule_register(&react->guardrail, cr->name, hook,
-					GUARDRAIL_RULE_EXT, NULL,
-					cr->ext_type[0] == '\0' ||
-					strcmp(cr->ext_type, "exec") == 0 ?
-					NULL : cr->ext_type,
+		const struct config_guardrail_ext_rule *cr = &config->react.guardrail_ext_rules[i];
+		enum guardrail_hook hook = strcmp(cr->hook, "input") == 0 ? GUARDRAIL_HOOK_INPUT
+									  : GUARDRAIL_HOOK_OUTPUT;
+		guardrail_rule_register(&react->guardrail, cr->name, hook, GUARDRAIL_RULE_EXT, NULL,
+					cr->ext_type[0] == '\0' || strcmp(cr->ext_type, "exec") == 0
+						? NULL
+						: cr->ext_type,
 					cr->ext_entry, cr->action_text);
 		struct guardrail_rule *configured =
 			guardrail_rule_lookup(&react->guardrail, cr->name);
@@ -230,8 +212,7 @@ static void runtime_apply_guardrails(struct react_context *react,
 		}
 		if (strcmp(cr->ext_type, "so") == 0) {
 			struct guardrail_rule *r =
-				guardrail_rule_lookup(&react->guardrail,
-						      cr->name);
+				guardrail_rule_lookup(&react->guardrail, cr->name);
 			if (r) {
 				r->ext_type = GUARDRAIL_EXT_SO;
 				guardrail_ext_so_load(react ? react->logger : NULL, r);
@@ -242,7 +223,7 @@ static void runtime_apply_guardrails(struct react_context *react,
 		guardrail_set_llm(&react->guardrail, llm);
 	for (int i = 0; i < config->react.guardrail_disabled_rule_count; i++)
 		guardrail_rule_disable(&react->guardrail,
-			config->react.guardrail_disabled_rules[i]);
+				       config->react.guardrail_disabled_rules[i]);
 }
 
 int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
@@ -252,8 +233,7 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 	struct runtime_models *models;
 	struct config *config;
 
-	if (!profile || !profile->config || !profile->tools ||
-	    !profile->models)
+	if (!profile || !profile->config || !profile->tools || !profile->models)
 		return -EINVAL;
 	config = profile->config;
 	models = profile->models;
@@ -284,58 +264,42 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 		return -ENOMEM;
 	memset(&compress_cfg, 0, sizeof(compress_cfg));
 	compress_cfg.max_context_tokens = config->models.text.context_limit;
-	compress_cfg.max_history_rounds =
-		config->context.keep_recent_rounds;
-	compress_cfg.in_turn_compaction =
-		config->context.in_turn_compaction;
-	compress_cfg.protocol_reserve_tokens =
-		config->context.protocol_reserve_tokens;
-	compress_cfg.summarize_threshold_ratio =
-		config->context.summarize_threshold_ratio;
-	compress_cfg.compress_target_ratio =
-		config->context.compress_target_ratio;
-	compress_cfg.tool_result_max_tokens =
-		config->context.tool_result_max_tokens;
+	compress_cfg.max_history_rounds = config->context.keep_recent_rounds;
+	compress_cfg.in_turn_compaction = config->context.in_turn_compaction;
+	compress_cfg.protocol_reserve_tokens = config->context.protocol_reserve_tokens;
+	compress_cfg.summarize_threshold_ratio = config->context.summarize_threshold_ratio;
+	compress_cfg.compress_target_ratio = config->context.compress_target_ratio;
+	compress_cfg.tool_result_max_tokens = config->context.tool_result_max_tokens;
 	compress_cfg.compaction_user_message_tokens =
 		config->context.compaction_user_message_tokens;
-	compress_cfg.compaction_summary_max_tokens =
-		config->context.compaction_summary_max_tokens;
-	compress_cfg.compaction_warning_count =
-		config->context.compaction_warning_count;
+	compress_cfg.compaction_summary_max_tokens = config->context.compaction_summary_max_tokens;
+	compress_cfg.compaction_warning_count = config->context.compaction_warning_count;
 	memset(&guardrail_cfg, 0, sizeof(guardrail_cfg));
 	guardrail_cfg.enabled = config->react.guardrail_enabled;
 	guardrail_cfg.max_retries = config->react.guardrail_max_retries;
-	guardrail_cfg.max_empty_rounds =
-		config->react.guardrail_max_empty_rounds;
-	models->react = react_context_create(profile->tools,
-					     models->tokenizer,
-					     &compress_cfg, &guardrail_cfg);
+	guardrail_cfg.max_empty_rounds = config->react.guardrail_max_empty_rounds;
+	models->react = react_context_create(profile->tools, models->tokenizer, &compress_cfg,
+					     &guardrail_cfg);
 	if (!models->react)
 		return -ENOMEM;
-	react_set_event_callback(models->react, profile->event_cb,
-				 profile->event_user_data);
-	models->react->tool_timeout_seconds =
-		config->react.tool_timeout_seconds;
+	react_set_event_callback(models->react, profile->event_cb, profile->event_user_data);
+	models->react->tool_timeout_seconds = config->react.tool_timeout_seconds;
 	models->react->tool_max_retries = config->react.tool_max_retries;
 	models->react->max_iterations = config->react.max_iterations;
-	models->react->history_tool_result_tokens =
-		config->context.tool_result_max_tokens;
+	models->react->history_tool_result_tokens = config->context.tool_result_max_tokens;
 	runtime_history_load_secrets(models->react, config);
 	/* Runtime authorization is supplied by morph-permission, not legacy HITL knobs. */
 	if (profile->hitl_cb) {
 		models->react->hitl.approval_cb = profile->hitl_cb;
-		models->react->hitl.approval_user_data =
-			profile->hitl_user_data;
+		models->react->hitl.approval_user_data = profile->hitl_user_data;
 	}
 	if (profile->workdir && profile->workdir[0])
 		models->react->workdir = strdup(profile->workdir);
 	if (config->context.compaction_prompt_file[0]) {
-		char *path = file_expand_path(
-			config->context.compaction_prompt_file);
+		char *path = file_expand_path(config->context.compaction_prompt_file);
 
 		if (path)
-			models->react->history_compaction_prompt =
-				file_read_all(path, NULL);
+			models->react->history_compaction_prompt = file_read_all(path, NULL);
 		if (!models->react->history_compaction_prompt)
 			log_warn(profile ? profile->logger : NULL,
 				 "cannot read compaction prompt '%s'; using built-in",
@@ -382,8 +346,8 @@ static int runtime_discover_skills(struct runtime_bootstrap_profile *profile)
 		return 0;
 	skills = *profile->skills;
 	skill_registry_init(profile ? profile->logger : NULL, skills);
-	int discover_rc = skill_discover_configured(skills,
-		profile->workdir ? profile->workdir : ".", profile->config->skill.dir);
+	int discover_rc = skill_discover_configured(
+		skills, profile->workdir ? profile->workdir : ".", profile->config->skill.dir);
 
 	if (discover_rc < 0)
 		return discover_rc;
@@ -409,8 +373,8 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	struct runtime_models *models;
 	int rc = 0;
 
-	if (!profile || !profile->config || !profile->db ||
-	    !profile->tools || !profile->tool_context || !profile->models)
+	if (!profile || !profile->config || !profile->db || !profile->tools ||
+	    !profile->tool_context || !profile->models)
 		return -EINVAL;
 	config = profile->config;
 	models = profile->models;
@@ -426,36 +390,29 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	rc = tool_context_set_permission_policy(tctx, &config->permissions);
 	if (rc != 0)
 		return rc;
-	rc = tool_context_set_grant_store(tctx, profile->db,
-					   profile->workdir);
+	rc = tool_context_set_grant_store(tctx, profile->db, profile->workdir);
 	if (rc != 0)
 		log_warn(profile ? profile->logger : NULL,
 			 "failed to load persistent permission grants: %s", morph_strerror(rc));
-	tctx->logger = profile->logger;
 	if (profile->operation_approval_cb)
-		tool_context_set_operation_approval(
-			tctx, profile->operation_approval_cb,
-			profile->operation_approval_user_data);
-	tool_context_set_default_timeout(tctx,
-					 config->react.tool_timeout_seconds);
+		tool_context_set_operation_approval(tctx, profile->operation_approval_cb,
+						    profile->operation_approval_user_data);
+	tool_context_set_default_timeout(tctx, config->react.tool_timeout_seconds);
 	rc = tool_path_policy_init(tctx);
 	if (rc != 0)
 		return rc;
 	const struct config_permission_profile *permission_profile;
 
 	permission_profile = active_permission_profile(&config->react);
-	if (config->react.permission_active_profile[0] &&
-	    !permission_profile) {
+	if (config->react.permission_active_profile[0] && !permission_profile) {
 		log_err(profile ? profile->logger : NULL, "active permission profile not found: %s",
 			config->react.permission_active_profile);
 		return -ENOENT;
 	}
 	if (permission_profile) {
-		for (int i = 0;
-		     i < permission_profile->workspace_roots_count; i++) {
+		for (int i = 0; i < permission_profile->workspace_roots_count; i++) {
 			rc = tool_context_add_exec_profile_path(
-				tctx, TOOL_PATH_WRITE,
-				permission_profile->workspace_roots[i]);
+				tctx, TOOL_PATH_WRITE, permission_profile->workspace_roots[i]);
 			if (rc == 0)
 				rc = tool_context_add_exec_profile_path(
 					tctx, TOOL_PATH_DELETE,
@@ -464,16 +421,14 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 				return rc;
 		}
 		for (int i = 0; i < permission_profile->write_paths_count; i++) {
-			rc = tool_context_add_exec_profile_path(
-				tctx, TOOL_PATH_WRITE,
-				permission_profile->write_paths[i]);
+			rc = tool_context_add_exec_profile_path(tctx, TOOL_PATH_WRITE,
+								permission_profile->write_paths[i]);
 			if (rc != 0)
 				return rc;
 		}
 		for (int i = 0; i < permission_profile->delete_paths_count; i++) {
 			rc = tool_context_add_exec_profile_path(
-				tctx, TOOL_PATH_DELETE,
-				permission_profile->delete_paths[i]);
+				tctx, TOOL_PATH_DELETE, permission_profile->delete_paths[i]);
 			if (rc != 0)
 				return rc;
 		}
@@ -527,8 +482,7 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 			if (rc != 0)
 				return rc;
 		}
-		tool_set_timeout(profile->tools, "exec",
-				 config->react.tool_timeout_seconds);
+		tool_set_timeout(profile->tools, "exec", config->react.tool_timeout_seconds);
 	}
 #else
 	if (profile->enable_config_write)
@@ -546,8 +500,7 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	}
 	if (profile->plans) {
 		plan_registry_init(profile->plans);
-		rc = plan_tool_init(profile->tools, profile->plans,
-				    models->text);
+		rc = plan_tool_init(profile->tools, profile->plans, models->text);
 		if (rc == 0 && profile->tool_context)
 			plan_tool_set_context(profile->tools, *profile->tool_context);
 		if (rc < 0)
@@ -555,8 +508,7 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 				 "failed to register plan tool: %s", morph_strerror(rc));
 	}
 	if (profile->task_events)
-		rc = scheduled_tasks_tool_init_events(profile->tools,
-						      profile->db,
+		rc = scheduled_tasks_tool_init_events(profile->tools, profile->db,
 						      profile->task_events);
 	else
 		rc = scheduled_tasks_tool_init(profile->tools, profile->db);
@@ -565,10 +517,9 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 			 morph_strerror(rc));
 #ifndef MORPH_NO_SHELL
 	if (profile->enable_img_annotate) {
-		img_annotate_init(profile->tools,
-				  profile->img_annotate_pause_cb,
-				  profile->img_annotate_resume_cb,
-				  profile->img_annotate_user_data, tctx);
+		img_annotate_init(profile->tools, profile->img_annotate_pause_cb,
+				  profile->img_annotate_resume_cb, profile->img_annotate_user_data,
+				  tctx);
 	} else {
 		log_info(profile ? profile->logger : NULL,
 			 "img_annotate disabled for this runtime profile");
@@ -597,8 +548,8 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 int runtime_bootstrap_dynamic_tools(struct runtime_bootstrap_profile *profile,
 				    const char *session_id)
 {
-	if (!profile || !profile->tool_context || !*profile->tool_context ||
-	    !profile->tools || !profile->config || !session_id)
+	if (!profile || !profile->tool_context || !*profile->tool_context || !profile->tools ||
+	    !profile->config || !session_id)
 		return -EINVAL;
 	return dynamic_tools_init(profile->tools, *profile->tool_context,
 				  &profile->config->dynamic_tools, session_id);
@@ -612,16 +563,14 @@ int runtime_bootstrap_sub_agents(struct runtime_bootstrap_profile *profile,
 
 	if (!profile || !profile->config || !profile->models || !out)
 		return -EINVAL;
-	if (!profile->enable_sub_agents ||
-	    profile->config->sub_agents.count == 0)
+	if (!profile->enable_sub_agents || profile->config->sub_agents.count == 0)
 		return 0;
 	rt = sub_agent_runtime_create(profile->tools, profile->models->text,
 				      profile->models->tokenizer,
 				      &profile->models->react->compress);
 	if (!rt)
 		return -ENOMEM;
-	sub_agent_runtime_set_event_callback(rt, profile->event_cb,
-					     profile->event_user_data);
+	sub_agent_runtime_set_event_callback(rt, profile->event_cb, profile->event_user_data);
 	(void)sub_agent_runtime_set_storage(rt, profile->db);
 	rc = sub_agent_runtime_load_config(rt, &profile->config->sub_agents);
 	if (rc < 0) {
@@ -631,24 +580,20 @@ int runtime_bootstrap_sub_agents(struct runtime_bootstrap_profile *profile,
 	sub_agent_tools_register_all(profile->tools, rt);
 	profile->models->react->sub_agent_depth = 0;
 	if (rt->entry_count > 0) {
-		profile->models->react->sub_agent_info =
-			calloc((size_t)rt->entry_count,
-			       sizeof(*profile->models->react->sub_agent_info));
+		profile->models->react->sub_agent_info = calloc(
+			(size_t)rt->entry_count, sizeof(*profile->models->react->sub_agent_info));
 		if (profile->models->react->sub_agent_info) {
 			for (int i = 0; i < rt->entry_count; i++) {
-				strncpy(profile->models->react
-						->sub_agent_info[i].name,
+				strncpy(profile->models->react->sub_agent_info[i].name,
 					rt->entries[i].cfg.name,
-					sizeof(profile->models->react
-						->sub_agent_info[i].name) - 1);
-				strncpy(profile->models->react
-						->sub_agent_info[i].description,
+					sizeof(profile->models->react->sub_agent_info[i].name) - 1);
+				strncpy(profile->models->react->sub_agent_info[i].description,
 					rt->entries[i].cfg.description,
-					sizeof(profile->models->react
-						->sub_agent_info[i].description) - 1);
+					sizeof(profile->models->react->sub_agent_info[i]
+						       .description) -
+						1);
 			}
-			profile->models->react->sub_agent_info_count =
-				rt->entry_count;
+			profile->models->react->sub_agent_info_count = rt->entry_count;
 		}
 	}
 	*out = rt;

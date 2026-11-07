@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "image_gen.h"
 #include "image_provider.h"
+#include "media_output.h"
 #include "models/llm.h"
 #include "util/log.h"
 #include "util/file.h"
@@ -23,33 +24,38 @@
 
 const char *image_gen_ext_from_content_type(const char *headers)
 {
-	if (!headers) return NULL;
+	if (!headers)
+		return NULL;
 	const char *p = headers;
 	while ((p = strcasestr(p, "content-type:")) != NULL) {
 		p += 13;
-		while (*p == ' ') p++;
-		if (strncasecmp(p, "image/png", 9) == 0) return "png";
-		if (strncasecmp(p, "image/jpeg", 10) == 0) return "jpg";
-		if (strncasecmp(p, "image/webp", 10) == 0) return "webp";
-		if (strncasecmp(p, "image/gif", 9) == 0) return "gif";
-		if (strncasecmp(p, "image/bmp", 9) == 0) return "bmp";
+		while (*p == ' ')
+			p++;
+		if (strncasecmp(p, "image/png", 9) == 0)
+			return "png";
+		if (strncasecmp(p, "image/jpeg", 10) == 0)
+			return "jpg";
+		if (strncasecmp(p, "image/webp", 10) == 0)
+			return "webp";
+		if (strncasecmp(p, "image/gif", 9) == 0)
+			return "gif";
+		if (strncasecmp(p, "image/bmp", 9) == 0)
+			return "bmp";
 	}
 	return NULL;
 }
 
 const char *image_gen_ext_from_magic(const unsigned char *data, size_t len)
 {
-	if (!data || len < 2) return "png";
-	if (len >= 8 && data[0] == 0x89 && data[1] == 'P' &&
-	    data[2] == 'N' && data[3] == 'G')
+	if (!data || len < 2)
+		return "png";
+	if (len >= 8 && data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G')
 		return "png";
 	if (data[0] == 0xFF && data[1] == 0xD8)
 		return "jpg";
-	if (len >= 12 && memcmp(data, "RIFF", 4) == 0 &&
-	    memcmp(data + 8, "WEBP", 4) == 0)
+	if (len >= 12 && memcmp(data, "RIFF", 4) == 0 && memcmp(data + 8, "WEBP", 4) == 0)
 		return "webp";
-	if (len >= 6 && (memcmp(data, "GIF87a", 6) == 0 ||
-			 memcmp(data, "GIF89a", 6) == 0))
+	if (len >= 6 && (memcmp(data, "GIF87a", 6) == 0 || memcmp(data, "GIF89a", 6) == 0))
 		return "gif";
 	if (len >= 2 && data[0] == 'B' && data[1] == 'M')
 		return "bmp";
@@ -62,6 +68,7 @@ static int download_url(const struct http_control *control, const char *url, con
 	struct http_response resp = {0};
 	int rc = http_get(control, url, &resp);
 	if (rc < 0) {
+		http_response_free(&resp);
 		log_err(control ? control->logger : NULL, "download failed: %s", url);
 		return rc;
 	}
@@ -75,9 +82,8 @@ static int download_url(const struct http_control *control, const char *url, con
 	if (!ext)
 		ext = image_gen_ext_from_magic((const unsigned char *)resp.body.data,
 					       resp.body.len);
-	snprintf(out_path, out_cap, "%s/img_%lld.%s",
-		 out_dir, (long long)time(NULL), ext);
-	rc = file_write_all(out_path, resp.body.data, resp.body.len);
+	rc = media_output_write(out_dir, "img", ext, resp.body.data, resp.body.len, out_path,
+				out_cap);
 	http_response_free(&resp);
 	return rc;
 }
@@ -86,14 +92,22 @@ static const char *style_prefix(const char *style)
 {
 	if (!style || !*style)
 		return "";
-	if (strcmp(style, "realistic") == 0) return "Realistic photography style: ";
-	if (strcmp(style, "cartoon") == 0) return "Cartoon/anime style: ";
-	if (strcmp(style, "oil-painting") == 0) return "Oil painting style: ";
-	if (strcmp(style, "watercolor") == 0) return "Watercolor painting style: ";
-	if (strcmp(style, "sketch") == 0) return "Pencil sketch style: ";
-	if (strcmp(style, "cyberpunk") == 0) return "Cyberpunk style: ";
-	if (strcmp(style, "vintage") == 0) return "Vintage/retro style: ";
-	if (strcmp(style, "minimalist") == 0) return "Minimalist flat design: ";
+	if (strcmp(style, "realistic") == 0)
+		return "Realistic photography style: ";
+	if (strcmp(style, "cartoon") == 0)
+		return "Cartoon/anime style: ";
+	if (strcmp(style, "oil-painting") == 0)
+		return "Oil painting style: ";
+	if (strcmp(style, "watercolor") == 0)
+		return "Watercolor painting style: ";
+	if (strcmp(style, "sketch") == 0)
+		return "Pencil sketch style: ";
+	if (strcmp(style, "cyberpunk") == 0)
+		return "Cyberpunk style: ";
+	if (strcmp(style, "vintage") == 0)
+		return "Vintage/retro style: ";
+	if (strcmp(style, "minimalist") == 0)
+		return "Minimalist flat design: ";
 	return "";
 }
 
@@ -144,8 +158,7 @@ static int64_t image_units_from_dims(int width, int height)
 	return (pixels + 999999) / 1000000;
 }
 
-static void image_report_usage(struct model *self,
-			       const struct image_payload *payload,
+static void image_report_usage(struct model *self, const struct image_payload *payload,
 			       const struct image_result *result)
 {
 	struct model_usage usage;
@@ -154,21 +167,16 @@ static void image_report_usage(struct model *self,
 		usage = payload->usage;
 	else
 		memset(&usage, 0, sizeof(usage));
-	snprintf(usage.provider, sizeof(usage.provider), "%s",
-		 self ? self->provider : "openai");
-	snprintf(usage.model, sizeof(usage.model), "%s",
-		 self ? self->model_id : "");
+	snprintf(usage.provider, sizeof(usage.provider), "%s", self ? self->provider : "openai");
+	snprintf(usage.model, sizeof(usage.model), "%s", self ? self->model_id : "");
 	snprintf(usage.kind, sizeof(usage.kind), "model_image");
 	if (!usage.usage_source[0])
-		snprintf(usage.usage_source, sizeof(usage.usage_source),
-			 "estimated");
-	usage.image_units = result ?
-		image_units_from_dims(result->width, result->height) : 1;
+		snprintf(usage.usage_source, sizeof(usage.usage_source), "estimated");
+	usage.image_units = result ? image_units_from_dims(result->width, result->height) : 1;
 	model_report_usage(self, &usage);
 }
 
-static const struct image_provider_ops *image_provider_resolve(
-	const struct model *model)
+static const struct image_provider_ops *image_provider_resolve(const struct model *model)
 {
 	const char *name;
 
@@ -191,12 +199,10 @@ int image_gen_adapter_supported(const char *provider, const char *adapter)
 	if (!provider)
 		return 0;
 	name = adapter && adapter[0] ? adapter : provider;
-	if (strcmp(name, "openai-images") == 0 ||
-	    strcmp(name, "volcengine-images") == 0)
+	if (strcmp(name, "openai-images") == 0 || strcmp(name, "volcengine-images") == 0)
 		return 1;
 	if ((!adapter || !adapter[0]) &&
-	    (strcmp(name, "openai") == 0 ||
-	     strcmp(name, "volcengine") == 0))
+	    (strcmp(name, "openai") == 0 || strcmp(name, "volcengine") == 0))
 		return 1;
 	return 0;
 }
@@ -208,16 +214,14 @@ const char *image_gen_adapter_name(const struct model *model)
 	return ops ? ops->name : NULL;
 }
 
-int image_gen_validate_size_for_model(const struct model *model,
-				      const char *size)
+int image_gen_validate_size_for_model(const struct model *model, const char *size)
 {
 	const struct image_provider_ops *ops = image_provider_resolve(model);
 	char normalized[64];
 
 	if (!ops)
 		return -ENOTSUP;
-	return ops->normalize_size(model, size, normalized,
-				   sizeof(normalized));
+	return ops->normalize_size(model, size, normalized, sizeof(normalized));
 }
 
 void image_payload_cleanup(struct image_payload *payload)
@@ -228,8 +232,7 @@ void image_payload_cleanup(struct image_payload *payload)
 	memset(payload, 0, sizeof(*payload));
 }
 
-int image_provider_parse_response(struct model *model,
-				  const char *response_json,
+int image_provider_parse_response(struct model *model, const char *response_json,
 				  struct image_payload *payload)
 {
 	cJSON *root = NULL;
@@ -275,8 +278,7 @@ int image_provider_parse_response(struct model *model,
 	}
 	value = cJSON_GetObjectItem(root, "output_format");
 	snprintf(payload->output_format, sizeof(payload->output_format), "%s",
-		 cJSON_IsString(value) && value->valuestring
-			 ? value->valuestring : "png");
+		 cJSON_IsString(value) && value->valuestring ? value->valuestring : "png");
 	value = cJSON_GetObjectItem(root, "created");
 	if (cJSON_IsNumber(value))
 		payload->usage.created = (int64_t)value->valuedouble;
@@ -284,18 +286,14 @@ int image_provider_parse_response(struct model *model,
 	if (cJSON_IsObject(usage)) {
 		value = cJSON_GetObjectItem(usage, "input_tokens");
 		if (cJSON_IsNumber(value))
-			payload->usage.input_tokens =
-				(int64_t)value->valuedouble;
+			payload->usage.input_tokens = (int64_t)value->valuedouble;
 		value = cJSON_GetObjectItem(usage, "output_tokens");
 		if (cJSON_IsNumber(value))
-			payload->usage.output_tokens =
-				(int64_t)value->valuedouble;
+			payload->usage.output_tokens = (int64_t)value->valuedouble;
 		value = cJSON_GetObjectItem(usage, "total_tokens");
 		if (cJSON_IsNumber(value))
-			payload->usage.total_tokens =
-				(int64_t)value->valuedouble;
-		snprintf(payload->usage.usage_source,
-			 sizeof(payload->usage.usage_source), "api");
+			payload->usage.total_tokens = (int64_t)value->valuedouble;
+		snprintf(payload->usage.usage_source, sizeof(payload->usage.usage_source), "api");
 		payload->has_usage = 1;
 	}
 	cJSON_Delete(root);
@@ -316,16 +314,14 @@ static int image_materialize(const struct http_control *control,
 
 	if (!payload || !payload->data || !result)
 		return -EINVAL;
-	out_dir = file_expand_path(output_dir && output_dir[0]
-				   ? output_dir : "~/.morph/output");
+	out_dir = file_expand_path(output_dir && output_dir[0] ? output_dir : "~/.morph/output");
 	if (!out_dir)
 		return -ENOMEM;
 	rc = file_ensure_dir(out_dir);
 	if (rc != 0)
 		goto out;
 	if (payload->kind == IMAGE_PAYLOAD_URL) {
-		snprintf(result->url, sizeof(result->url), "%s",
-			 payload->data);
+		snprintf(result->url, sizeof(result->url), "%s", payload->data);
 		rc = download_url(control, payload->data, out_dir, out_path, sizeof(out_path));
 		if (rc != 0)
 			goto out;
@@ -345,19 +341,16 @@ static int image_materialize(const struct http_control *control,
 		} else {
 			ext = image_gen_ext_from_magic(decoded, decoded_len);
 		}
-		snprintf(out_path, sizeof(out_path), "%s/img_%lld.%s",
-			 out_dir, (long long)time(NULL), ext);
-		rc = file_write_all(out_path, (const char *)decoded,
-				    decoded_len);
+		rc = media_output_write(out_dir, "img", ext, decoded, decoded_len, out_path,
+					sizeof(out_path));
 		if (rc != 0)
 			goto out;
 	}
 	snprintf(result->path, sizeof(result->path), "%s", out_path);
 	{
 		int channels = 0;
-		unsigned char *image = stbi_load(
-			out_path, &result->width, &result->height,
-			&channels, 0);
+		unsigned char *image =
+			stbi_load(out_path, &result->width, &result->height, &channels, 0);
 		if (image)
 			stbi_image_free(image);
 	}
@@ -369,10 +362,8 @@ out:
 	return rc;
 }
 
-int image_gen_create(struct model *self, const char *prompt, const char *style,
-		     const char *size, const char **image_paths,
-		     int image_count,
-		     const char *output_dir,
+int image_gen_create(struct model *self, const char *prompt, const char *style, const char *size,
+		     const char **image_paths, int image_count, const char *output_dir,
 		     struct image_result *result)
 {
 	const struct image_provider_ops *ops;
@@ -383,8 +374,7 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 	char normalized_size[64];
 	int rc;
 
-	if (!prompt || !result || image_count < 0 ||
-	    image_count > IMAGE_GEN_MAX_REFERENCE_IMAGES ||
+	if (!prompt || !result || image_count < 0 || image_count > IMAGE_GEN_MAX_REFERENCE_IMAGES ||
 	    (image_count > 0 && !image_paths))
 		return -EINVAL;
 	for (int i = 0; i < image_count; i++) {
@@ -398,12 +388,10 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 	ops = image_provider_resolve(self);
 	if (!ops) {
 		snprintf(self->last_error, sizeof(self->last_error),
-			 "unsupported image adapter for provider '%s'",
-			 self->provider);
+			 "unsupported image adapter for provider '%s'", self->provider);
 		return -ENOTSUP;
 	}
-	rc = ops->normalize_size(self, size, normalized_size,
-				 sizeof(normalized_size));
+	rc = ops->normalize_size(self, size, normalized_size, sizeof(normalized_size));
 	if (rc != 0)
 		return rc;
 	rc = ops->capabilities(self, &caps);
@@ -412,13 +400,15 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 	if (image_count > 1 && !caps.supports_multi_reference) {
 		snprintf(self->last_error, sizeof(self->last_error),
 			 "image adapter '%s' does not support multiple reference "
-			 "images for model '%s'", ops->name, self->model_id);
+			 "images for model '%s'",
+			 ops->name, self->model_id);
 		return -ENOTSUP;
 	}
 	if (image_count > 0 && !caps.supports_edit) {
 		snprintf(self->last_error, sizeof(self->last_error),
 			 "image adapter '%s' does not support reference edits "
-			 "for model '%s'", ops->name, self->model_id);
+			 "for model '%s'",
+			 ops->name, self->model_id);
 		return -ENOTSUP;
 	}
 	if (morph_buf_init(&prompt_buf, strlen(prompt) + 64) != 0)

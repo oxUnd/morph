@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 #include "agent/tool_context.h"
+#include "permission/context_internal.h"
 #include "db/database.h"
 #include "db/permission_grant.h"
 #include "util/file.h"
+#include "util/arena.h"
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -86,6 +88,63 @@ TEST_F(ToolContextTest, CreateDestroy) {
 	EXPECT_NE(tool_context_workdir(tctx)[0], '\0');
 	EXPECT_NE(tool_context_workdir(tctx)[0], '~');
 	tool_context_destroy(tctx);
+}
+
+TEST_F(ToolContextTest, CommandPathResolutionNeverApprovesATruncatedPath)
+{
+	char directory[] = "/tmp/morph_path_buffer_XXXXXX";
+	char resolved[4] = "old";
+	struct tool_context *context;
+
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	context = tool_context_create(nullptr, "/tmp", "/tmp");
+	ASSERT_NE(context, nullptr);
+	tool_context_set_operation_approval(
+		context,
+		[](const struct tool_operation *, void *data) {
+			++*static_cast<int *>(data);
+			return TOOL_OP_ALWAYS;
+		},
+		&op_always_calls);
+	EXPECT_EQ(tool_context_request_write_access(context, "test", "test", directory, resolved,
+						    sizeof(resolved)),
+		  -ENAMETOOLONG);
+	EXPECT_STREQ(resolved, "old");
+	EXPECT_EQ(tool_context_request_delete_access(context, "test", "test", directory, resolved,
+						     sizeof(resolved)),
+		  -ENAMETOOLONG);
+	EXPECT_STREQ(resolved, "old");
+	EXPECT_EQ(op_always_calls, 0);
+	tool_context_destroy(context);
+	EXPECT_EQ(rmdir(directory), 0);
+}
+
+TEST_F(ToolContextTest, PermissionSnapshotOwnsPathsAfterGrantsAndContextAreDestroyed)
+{
+	char directory[] = "/tmp/morph_grant_snapshot_XXXXXX";
+	struct tool_permission_snapshot snapshot = {};
+	struct arena *arena = arena_create(0);
+	struct tool_context *context;
+	bool found = false;
+
+	ASSERT_NE(arena, nullptr);
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	context = tool_context_create(nullptr, "/tmp", "/tmp");
+	ASSERT_NE(context, nullptr);
+	ASSERT_EQ(tool_context_grant_write_access(context, "test", directory, 0, TOOL_OP_SESSION,
+						  nullptr, 0),
+		  0);
+	ASSERT_EQ(tool_context_snapshot_permissions(context, "test", arena, &snapshot), 0);
+	tool_context_destroy(context);
+	char *canonical = file_resolve_path(directory);
+	ASSERT_NE(canonical, nullptr);
+	for (int i = 0; i < snapshot.write.count; i++)
+		found = found || !strcmp(snapshot.write.paths[i], canonical);
+	EXPECT_TRUE(found);
+	EXPECT_EQ(snapshot.policy.access, PERMISSION_WORKSPACE);
+	free(canonical);
+	arena_destroy(arena);
+	EXPECT_EQ(rmdir(directory), 0);
 }
 
 TEST_F(ToolContextTest, PersistentGrantReloadRevokesImmediately)

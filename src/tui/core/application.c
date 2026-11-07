@@ -6,6 +6,7 @@
 
 #include <fcntl.h>
 #include <pthread.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -192,9 +193,17 @@ static void core_app_input_ready(uv_poll_t *handle, int status, int events)
 	if (!top || app->transitions.nelts || app->stopping ||
 	    !(events & (UV_READABLE | UV_DISCONNECT)))
 		return;
-	if (top->descriptor.input_mode == MORPH_TUI_INPUT_KEYS)
-		core_app_read_key(app);
-	else {
+	if (top->descriptor.input_mode == MORPH_TUI_INPUT_KEYS) {
+		for (int i = 0; i < CORE_APP_EVENT_BUDGET; i++) {
+			core_app_read_key(app);
+			if (app->transitions.nelts || app->stopping)
+				break;
+			struct pollfd input = {.fd = fileno(app->options.input), .events = POLLIN};
+
+			if (poll(&input, 1, 0) <= 0 || !(input.revents & POLLIN))
+				break;
+		}
+	} else {
 		struct morph_tui_event event = {.type = MORPH_TUI_EVENT_INPUT_READY};
 
 		core_app_dispatch(app, &event);

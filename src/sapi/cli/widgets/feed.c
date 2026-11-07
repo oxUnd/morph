@@ -1,4 +1,8 @@
 #include "sapi/cli/widgets/feed.h"
+#include "util/terminal_size.h"
+#include <morph/tui/terminal.h>
+#include "sapi/cli/pages/turn_details.h"
+#include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/services/command_job.h"
 #include "sapi/cli/widgets/transcript.h"
@@ -185,7 +189,7 @@ void cli_feed_turn_end(struct cli_application *ctx, int result)
 	/* A finished duration is immutable history, not a live footer. */
 	if (terminal->transient) {
 		cli_feed_history_begin(ctx);
-		if (result < 0 || !ctx->final_rendered)
+		if (result < 0 || !cli_presentation_final_visible(ctx))
 			fputc('\n', terminal->output);
 		cli_feed_work_row(terminal, cli_feed_columns(ctx));
 		/* The completed turn owns the gap before the next history block. */
@@ -197,23 +201,8 @@ void cli_feed_turn_end(struct cli_application *ctx, int result)
 
 static int cli_feed_output_columns(const struct cli_feed *terminal)
 {
-	struct winsize size;
-	const char *configured;
-	char *end;
-	long columns;
-
-	memset(&size, 0, sizeof(size));
-	if (terminal && terminal->output_fd >= 0 &&
-	    ioctl(terminal->output_fd, TIOCGWINSZ, &size) == 0 && size.ws_col > 0)
-		return size.ws_col;
-	configured = getenv("COLUMNS");
-	if (!configured || !configured[0])
-		return CLI_FEED_TERMINAL_DEFAULT_COLUMNS;
-	errno = 0;
-	columns = strtol(configured, &end, 10);
-	if (errno != 0 || *end != '\0' || columns <= 0 || columns > INT_MAX)
-		return CLI_FEED_TERMINAL_DEFAULT_COLUMNS;
-	return (int)columns;
+	return morph_terminal_columns(terminal ? terminal->output_fd : -1,
+				      CLI_FEED_TERMINAL_DEFAULT_COLUMNS);
 }
 
 int cli_feed_columns(const struct cli_application *ctx)
@@ -394,7 +383,7 @@ void cli_feed_live_clear(struct cli_application *ctx)
 	if (!ctx || !ctx->terminal)
 		return;
 	terminal = ctx->terminal;
-	if (!ctx->details_visible && terminal->transient && terminal->live_visible) {
+	if (!cli_turn_details_is_visible(ctx) && terminal->transient && terminal->live_visible) {
 		cli_feed_clear_frame(terminal);
 		fflush(terminal->output);
 	}
@@ -417,7 +406,7 @@ void cli_feed_queue_changed(struct cli_application *ctx)
 		return;
 	terminal = ctx->terminal;
 	terminal->next_frame_ms = 0;
-	if (terminal->transient && !ctx->details_visible)
+	if (terminal->transient && !cli_turn_details_is_visible(ctx))
 		cli_feed_render_frame(ctx, 1);
 }
 
@@ -431,8 +420,9 @@ int cli_feed_render_tick(struct cli_application *ctx, int cursor_rows)
 	int distance;
 
 	if (!terminal || terminal->hidden || !terminal->transient || !terminal->live_visible ||
-	    ctx->details_visible || terminal->work_state != CLI_FEED_TERMINAL_WORK_RUNNING ||
-	    terminal->columns < 20 || cli_feed_output_columns(terminal) != terminal->columns)
+	    cli_turn_details_is_visible(ctx) ||
+	    terminal->work_state != CLI_FEED_TERMINAL_WORK_RUNNING || terminal->columns < 20 ||
+	    cli_feed_output_columns(terminal) != terminal->columns)
 		return 0;
 	if ((terminal->content_dirty || terminal->live_independent || cli_jobs_visible(ctx) ||
 	     terminal->job_rows) &&
@@ -464,8 +454,8 @@ int cli_feed_can_preview(const struct cli_application *ctx)
 	return ctx && ctx->terminal && ctx->terminal->transient;
 }
 
-int cli_feed_markdown_preview_set(struct cli_application *ctx, const char *text,
-				 size_t len, int prefix)
+int cli_feed_markdown_preview_set(struct cli_application *ctx, const char *text, size_t len,
+				  int prefix)
 {
 	struct cli_feed *terminal = ctx ? ctx->terminal : NULL;
 	int rc;
@@ -512,8 +502,8 @@ static int cli_feed_render_markdown_preview(struct cli_application *ctx, int res
 	if (gap)
 		fputc('\n', terminal->output);
 	if (terminal->markdown_preview_prefix) {
-		if (text != morph_buf_cstr(&terminal->markdown_preview) &&
-		    text[0] == ' ' && text[1] == ' ')
+		if (text != morph_buf_cstr(&terminal->markdown_preview) && text[0] == ' ' &&
+		    text[1] == ' ')
 			text += 2;
 		fprintf(terminal->output, ANSI_BOLD "●" ANSI_RESET " ");
 	}
@@ -544,7 +534,7 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 	int preview_rows = 0;
 	int preview_reserved;
 
-	if (!ctx || !ctx->terminal || ctx->terminal->hidden || ctx->details_visible)
+	if (!ctx || !ctx->terminal || ctx->terminal->hidden || cli_turn_details_is_visible(ctx))
 		return;
 	terminal = ctx->terminal;
 	if (!terminal->transient)
@@ -569,12 +559,11 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 	}
 	/* Final output already owns its trailing separator. Match the completed
 	 * work row even if persistence keeps the worker alive for another tick. */
-	terminal->work_finalizing = ctx->final_rendered &&
+	terminal->work_finalizing = cli_presentation_final_visible(ctx) &&
 				    terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING &&
 				    !status_visible && !queue_shown;
-	if (!status_visible && !terminal->markdown_preview.len &&
-	    queue_shown == 0 && !terminal->work_state &&
-	    !cli_jobs_visible(ctx)) {
+	if (!status_visible && !terminal->markdown_preview.len && queue_shown == 0 &&
+	    !terminal->work_state && !cli_jobs_visible(ctx)) {
 		if (terminal->live_visible) {
 			cli_feed_clear_frame(terminal);
 			fflush(terminal->output);
@@ -645,8 +634,8 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 	preview_reserved = ctx->input_status.composer_rows + 6;
 	if (preview_reserved < CLI_FEED_PREVIEW_RESERVED_ROWS)
 		preview_reserved = CLI_FEED_PREVIEW_RESERVED_ROWS;
-	preview_rows = cli_feed_render_markdown_preview(
-		ctx, preview_reserved + job_rows + (int)queue_shown);
+	preview_rows = cli_feed_render_markdown_preview(ctx, preview_reserved + job_rows +
+								     (int)queue_shown);
 	if (preview_rows && (status_visible || job_rows || terminal->work_state || queue_shown))
 		fputc('\n', terminal->output);
 	if (status_visible) {
@@ -737,10 +726,9 @@ int cli_feed_next_frame_ms(const struct cli_application *ctx)
 	if (!ctx || !ctx->terminal)
 		return -1;
 	terminal = ctx->terminal;
-	if (!terminal->transient ||
-	    (!terminal->live_active && !terminal->markdown_preview.len &&
-	     terminal->work_state != CLI_FEED_TERMINAL_WORK_RUNNING &&
-	     !cli_jobs_visible(ctx) && !terminal->job_rows))
+	if (!terminal->transient || (!terminal->live_active && !terminal->markdown_preview.len &&
+				     terminal->work_state != CLI_FEED_TERMINAL_WORK_RUNNING &&
+				     !cli_jobs_visible(ctx) && !terminal->job_rows))
 		return -1;
 	if (!terminal->live_visible)
 		return 0;
@@ -802,7 +790,7 @@ void cli_feed_history_begin(struct cli_application *ctx)
 {
 	struct cli_feed *terminal;
 
-	if (!ctx || !ctx->terminal || ctx->details_visible)
+	if (!ctx || !ctx->terminal || cli_turn_details_is_visible(ctx))
 		return;
 	terminal = ctx->terminal;
 	if (!terminal->transient || !terminal->live_visible)

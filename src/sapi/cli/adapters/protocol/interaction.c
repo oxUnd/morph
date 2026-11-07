@@ -1,4 +1,5 @@
 #include "sapi/cli/adapters/protocol/interaction.h"
+#include "sapi/cli/adapters/input/state.h"
 #include "sapi/cli/adapters/input/reader.h"
 #include "cJSON.h"
 #include "sapi/cli/services/event_queue.h"
@@ -87,7 +88,8 @@ static int cli_interaction_read_line(struct cli_application *ctx, morph_buf_t *l
 				clearerr(stdin);
 				if (morph_signal_flag_take(&ctx->interrupted) ||
 				    morph_signal_flag_get(&ctx->terminate_requested) ||
-				    morph_cancel_token_is_cancelled(ctx->input_cancel_token)) {
+				    morph_cancel_token_is_cancelled(
+					    ctx->input ? ctx->input->input_cancel_token : NULL)) {
 					return -ECANCELED;
 				}
 				continue;

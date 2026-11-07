@@ -1,4 +1,5 @@
 #include "sapi/cli/adapters/media/renderer.h"
+#include "sapi/cli/presentation/presenter_state.h"
 #include "render/image.h"
 #include "render/video.h"
 #include "sapi/cli/application_internal.h"
@@ -11,10 +12,10 @@ void cli_renderer_media(const char *type, const char *path, void *user)
 	 * Markdown invokes this adapter at the media node's document position.
 	 * Artifact/observation events only announce paths and never call it.
 	 */
-	if (ctx && path && path[0]) {
-		if (morph_strmap_contains(&ctx->rendered_artifacts, path))
+	if (ctx && ctx->presenter && path && path[0]) {
+		if (morph_strmap_contains(&ctx->presenter->rendered_artifacts, path))
 			return;
-		(void)morph_strmap_set(&ctx->rendered_artifacts, path, (void *)1);
+		(void)morph_strmap_set(&ctx->presenter->rendered_artifacts, path, (void *)1);
 	}
 	if (strcmp(type, "image") == 0) {
 		image_render_terminal(ctx ? ctx->logger : NULL, path);

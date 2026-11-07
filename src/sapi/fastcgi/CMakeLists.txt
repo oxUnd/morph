@@ -36,6 +36,13 @@ set(FCGI_SOURCES
     fcgi_io.c
     security.c
     session_store.c
+    storage/users.c
+    storage/quota.c
+    storage/artifacts.c
+    storage/sessions.c
+    storage/events.c
+    storage/canvas.c
+    storage/tokens.c
     auth.c
     router.c
     event_sink.c
@@ -47,6 +54,10 @@ set(FCGI_SOURCES
     handlers/users.c
     handlers/sessions.c
     handlers/turns.c
+    services/turn_job.c
+    adapters/turn_events.c
+    adapters/turn_interactions.c
+    presentation/media_refs.c
     handlers/canvas.c
     handlers/actions.c
     handlers/artifacts.c

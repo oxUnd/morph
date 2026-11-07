@@ -3,6 +3,7 @@
 
 #include <limits.h>
 #include <poll.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -43,6 +44,17 @@ static int terminal_input_sequence_key(const char *sequence)
 		return MORPH_TUI_KEY_PASTE_BEGIN;
 	if (strcmp(sequence, "201~") == 0)
 		return MORPH_TUI_KEY_PASTE_END;
+	if (strcmp(sequence, "I") == 0)
+		return MORPH_TUI_KEY_FOCUS_IN;
+	if (strcmp(sequence, "O") == 0)
+		return MORPH_TUI_KEY_FOCUS_OUT;
+	unsigned button, column, row;
+	char action;
+	int consumed = 0;
+
+	if (sscanf(sequence, "<%u;%u;%u%c%n", &button, &column, &row, &action, &consumed) == 4 &&
+	    !sequence[consumed] && action == 'M' && (button & 64U))
+		return button & 1U ? MORPH_TUI_KEY_WHEEL_DOWN : MORPH_TUI_KEY_WHEEL_UP;
 	return 0;
 }
 

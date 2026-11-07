@@ -2,11 +2,15 @@
 
 extern "C" {
 #include "runtime/output.h"
+#include "persistence/output_store.h"
 }
 
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <atomic>
+#include <thread>
+#include <vector>
 
 class RuntimeOutputTest : public ::testing::Test {
 protected:
@@ -118,6 +122,38 @@ TEST_F(RuntimeOutputTest, DuplicateArtifactPathIsIdempotent)
 	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
 	EXPECT_EQ(sqlite3_column_int(stmt, 0), 1);
 	sqlite3_finalize(stmt);
+}
+
+TEST_F(RuntimeOutputTest, ConcurrentOutputRecordsKeepTheirOwnInsertedIdentity)
+{
+	std::atomic<int> ready{0};
+	std::atomic<int> errors{0};
+	std::vector<std::thread> workers;
+
+	for (int worker = 0; worker < 4; worker++) {
+		workers.emplace_back([&, worker] {
+			ready.fetch_add(1);
+			while (ready.load() != 4)
+				std::this_thread::yield();
+			for (int i = 0; i < 32; i++) {
+				std::string path = directory + "/" + std::to_string(worker) + "-" +
+						   std::to_string(i) + ".png";
+				struct output_record record{};
+				int64_t id = 0;
+				int64_t found = 0;
+
+				record.kind = "image";
+				record.path = path.c_str();
+				if (output_store_insert(&db, &record, &id) != 0 || id <= 0 ||
+				    output_store_find_id(&db, path.c_str(), &found) != 0 ||
+				    found != id)
+					errors.fetch_add(1);
+			}
+		});
+	}
+	for (auto &worker : workers)
+		worker.join();
+	EXPECT_EQ(errors.load(), 0);
 }
 
 TEST_F(RuntimeOutputTest, RecordsVideoImageAndAudioReferences)

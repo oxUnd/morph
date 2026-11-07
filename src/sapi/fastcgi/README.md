@@ -26,7 +26,11 @@ src/sapi/fastcgi/
 ├── auth.{c,h}          # session token + Basic Auth + X-Remote-User
 ├── security.{c,h}      # PBKDF2-SHA256, random ID, constant-time compare
 ├── fcgi_io.{c,h}       # request_t, JSON & SSE helpers
-├── session_store.{c,h} # SQLite WAL multi-session backend + login tokens
+├── session_store.{c,h} # one SQLite connection, schema and maintenance
+├── storage/            # users, tokens, quota, artifacts, sessions, events/actions, canvas
+├── services/           # turn job submission, worker lifetime and runtime execution
+├── adapters/           # runtime events and interaction protocol
+├── presentation/       # media path/artifact references for Web output
 ├── event_sink.{c,h}    # convenience wrappers around events_publish
 ├── action_pump.{c,h}   # drain-with-wait for Web → Agent commands
 ├── agent_bridge.c      # shared runtime lifecycle integration
@@ -41,6 +45,17 @@ src/sapi/fastcgi/
     ├── events.c        # GET  /api/sessions/:id/events  (SSE)
     └── artifacts.c     # GET  /api/sessions/:id/artifacts, /api/artifacts/:id
 ```
+
+Turn handlers validate HTTP input and submit a job. The turn service copies an
+acceptance receipt before starting the worker, so handlers never borrow worker
+storage. Adapters bridge runtime events and questions/approvals; media rendering
+stays separate from execution. All turns still enter `runtime_execute_turn`.
+
+Storage modules borrow the same `session_store` connection. The shared transaction
+helpers hold its SQLite connection mutex across the complete transaction. Artifact
+registration and quota updates remain atomic, and deleting a session still removes
+its frontend/core records in one cross-table transaction. Domain modules do not
+create independent connections. Login token files belong to `storage/tokens`.
 
 ---
 

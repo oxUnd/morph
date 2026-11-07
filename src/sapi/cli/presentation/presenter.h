@@ -8,6 +8,7 @@ struct cli_application;
 void cli_presentation_user_input(struct cli_application *ctx, const char *text);
 void cli_presentation_command_input(struct cli_application *ctx, const char *text);
 void cli_presentation_command_end(struct cli_application *ctx);
+int cli_presentation_final_visible(const struct cli_application *ctx);
 int cli_presentation_init(struct cli_application *ctx);
 void cli_presentation_reset(struct cli_application *ctx);
 void cli_presentation_finish(struct cli_application *ctx);

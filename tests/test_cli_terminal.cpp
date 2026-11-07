@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
 extern "C" {
+#include "sapi/cli/presentation/presenter_state.h"
+#include "sapi/cli/adapters/input/state.h"
+
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/application.h"
@@ -18,12 +21,21 @@ extern "C" {
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-class CliTerminalTest : public ::testing::Test {
-protected:
+class CliTerminalTest : public ::testing::Test
+{
+      protected:
 	struct cli_application ctx{};
+
+	void SetUp() override
+	{
+		ASSERT_EQ(cli_input_init(&ctx), 0);
+		ASSERT_EQ(cli_presentation_init(&ctx), 0);
+	}
 
 	void TearDown() override
 	{
+		cli_presentation_cleanup(&ctx);
+		cli_input_cleanup(&ctx);
 		cli_jobs_cleanup(&ctx);
 		cli_feed_cleanup(&ctx);
 		cli_output_set_color_enabled(&ctx, 1);
@@ -208,9 +220,8 @@ TEST_F(CliTerminalTest, IndependentActivityOverridesToolAndKeepsTimerAfterResize
 	ctx.presentation_ready = 1;
 	ctx.turn_active = 1;
 	ASSERT_EQ(cli_feed_init(&ctx, output, slave), 0);
-	ASSERT_EQ(cli_presentation_init(&ctx), 0);
-	cJSON *data = cJSON_Parse(
-		"{\"tool\":\"exec\",\"tool_call_id\":\"active\",\"args\":{\"command\":\"sleep 30\"}}");
+	cJSON *data = cJSON_Parse("{\"tool\":\"exec\",\"tool_call_id\":\"active\",\"args\":{"
+				  "\"command\":\"sleep 30\"}}");
 	struct morph_event event{MORPH_EVENT_TOOL, "tool.call", "begin", nullptr, data, "turn"};
 	testing::internal::CaptureStdout();
 	ASSERT_EQ(cli_presentation_event(&ctx, &event), 0);
@@ -245,7 +256,6 @@ TEST_F(CliTerminalTest, IndependentActivityOverridesToolAndKeepsTimerAfterResize
 	EXPECT_EQ(std::string(bytes).find('\n'), std::string::npos);
 	cli_feed_live_clear(&ctx);
 	EXPECT_EQ(cli_feed_activity_elapsed_ms(&ctx), -1);
-	cli_presentation_cleanup(&ctx);
 	cJSON_Delete(data);
 	cli_feed_cleanup(&ctx);
 	fclose(output);
@@ -329,14 +339,14 @@ TEST_F(CliTerminalTest, FinalOutputKeepsComposerRowWhileWorkerFinishes)
 	ASSERT_EQ(cli_feed_init(&ctx, output, slave), 0);
 	cli_feed_turn_begin(&ctx);
 	/* Final is visible while the worker still owns persistence/cleanup. */
-	ctx.final_rendered = 1;
+	ctx.presenter->final_rendered = 1;
 	cli_feed_composer_resume(&ctx);
 	fflush(output);
 	char bytes[BUFSIZ];
 	ssize_t count = read(master, bytes, sizeof(bytes));
 	ASSERT_GT(count, 0);
 	EXPECT_NE(std::string(bytes, static_cast<size_t>(count)).find("esc to interrupt"),
-		std::string::npos);
+		  std::string::npos);
 	cli_feed_composer_suspend(&ctx);
 	cli_feed_turn_end(&ctx, 0);
 	cli_feed_composer_resume(&ctx);

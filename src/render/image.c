@@ -1,4 +1,5 @@
 #include "image.h"
+#include "util/terminal_size.h"
 #include "morph_kitty_protocol.h"
 #include "util/buf.h"
 #include "util/log.h"
@@ -49,28 +50,12 @@ int image_detect_fmt(const unsigned char *data, size_t len)
 	return 0;
 }
 
-static int terminal_cols(void)
-{
-	struct winsize ws;
-	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
-		return (int)ws.ws_col;
-	return 80;
-}
-
-static int terminal_rows(void)
-{
-	struct winsize ws;
-
-	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
-		return (int)ws.ws_row;
-	return 24;
-}
-
 static void write_all(int fd, const char *buf, size_t len)
 {
 	while (len > 0) {
 		ssize_t n = write(fd, buf, len);
-		if (n <= 0) break;
+		if (n <= 0)
+			break;
 		buf += n;
 		len -= (size_t)n;
 	}
@@ -82,8 +67,7 @@ static int kitty_stdout_write(const char *bytes, size_t len, void *user_data)
 
 	(void)user_data;
 	while (offset < len) {
-		ssize_t count = write(
-			STDOUT_FILENO, bytes + offset, len - offset);
+		ssize_t count = write(STDOUT_FILENO, bytes + offset, len - offset);
 
 		if (count < 0)
 			return -errno;
@@ -103,7 +87,8 @@ struct png_sink {
 static void png_sink_write(void *ctx, void *data, int size)
 {
 	struct png_sink *s = ctx;
-	if (s->oom || size <= 0) return;
+	if (s->oom || size <= 0)
+		return;
 	if (morph_buf_append(&s->buf, data, (size_t)size) != 0)
 		s->oom = 1;
 }
@@ -116,16 +101,32 @@ static void png_sink_write(void *ctx, void *data, int size)
 static int read_file_all(const char *path, unsigned char **out, size_t *out_len)
 {
 	FILE *f = fopen(path, "rb");
-	if (!f) return -EIO;
-	if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -EIO; }
+	if (!f)
+		return -EIO;
+	if (fseek(f, 0, SEEK_END) != 0) {
+		fclose(f);
+		return -EIO;
+	}
 	long fsize = ftell(f);
-	if (fsize <= 0) { fclose(f); return -EIO; }
-	if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return -EIO; }
+	if (fsize <= 0) {
+		fclose(f);
+		return -EIO;
+	}
+	if (fseek(f, 0, SEEK_SET) != 0) {
+		fclose(f);
+		return -EIO;
+	}
 	unsigned char *data = malloc((size_t)fsize);
-	if (!data) { fclose(f); return -ENOMEM; }
+	if (!data) {
+		fclose(f);
+		return -ENOMEM;
+	}
 	size_t rd = fread(data, 1, (size_t)fsize, f);
 	fclose(f);
-	if (rd != (size_t)fsize) { free(data); return -EIO; }
+	if (rd != (size_t)fsize) {
+		free(data);
+		return -EIO;
+	}
 	*out = data;
 	*out_len = rd;
 	return 0;
@@ -146,7 +147,8 @@ static int load_as_png(struct morph_log *logger, const char *path, unsigned char
 	unsigned char *raw = NULL;
 	size_t raw_len = 0;
 	int rc = read_file_all(path, &raw, &raw_len);
-	if (rc != 0) return rc;
+	if (rc != 0)
+		return rc;
 
 	int fmt = image_detect_fmt(raw, raw_len);
 	if (fmt == 100) {
@@ -158,8 +160,7 @@ static int load_as_png(struct morph_log *logger, const char *path, unsigned char
 
 	/* Not PNG (JPEG, or unknown like WebP/GIF/BMP). Decode + reencode. */
 	int w = 0, h = 0, ch = 0;
-	unsigned char *pixels = stbi_load_from_memory(raw, (int)raw_len,
-						      &w, &h, &ch, 4);
+	unsigned char *pixels = stbi_load_from_memory(raw, (int)raw_len, &w, &h, &ch, 4);
 	free(raw);
 	if (!pixels) {
 		log_warn(logger, "render_kitty: stbi_load_from_memory failed for '%s': %s", path,
@@ -173,8 +174,7 @@ static int load_as_png(struct morph_log *logger, const char *path, unsigned char
 		stbi_image_free(pixels);
 		return -ENOMEM;
 	}
-	int wrote = stbi_write_png_to_func(png_sink_write, &sink,
-					   w, h, 4, pixels, w * 4);
+	int wrote = stbi_write_png_to_func(png_sink_write, &sink, w, h, 4, pixels, w * 4);
 	stbi_image_free(pixels);
 	if (!wrote || sink.oom || sink.buf.len == 0) {
 		morph_buf_cleanup(&sink.buf);
@@ -198,8 +198,10 @@ static int render_kitty(struct morph_log *logger, const char *path)
 		return rc;
 	}
 
-	int cols = terminal_cols();
-	int rows_limit = terminal_rows();
+	int cols;
+	int rows_limit;
+
+	morph_terminal_dimensions(STDOUT_FILENO, &cols, &rows_limit);
 	int pixel_width;
 	int pixel_height;
 	int channels;
@@ -209,16 +211,16 @@ static int render_kitty(struct morph_log *logger, const char *path)
 	double cell_height = 16.0;
 	struct winsize ws;
 	/*
-	 * 默认按终端宽度的 50% 显示，避免大图占满整个屏幕。
-	 * kitty 在只指定 c= 时会自动保持宽高比，按列数缩放。
+	 * Use half the terminal width while preserving the source aspect ratio.
+	 * Kitty scales by columns when only the c parameter is specified.
 	 */
 	int disp_cols = cols / 2;
-	if (disp_cols < 1) disp_cols = 1;
+	if (disp_cols < 1)
+		disp_cols = 1;
 	if (disp_cols > (int)MORPH_KITTY_PLACEHOLDER_LIMIT)
 		disp_cols = (int)MORPH_KITTY_PLACEHOLDER_LIMIT;
 	if (rd > (size_t)INT_MAX ||
-	    !stbi_info_from_memory(
-		    data, (int)rd, &pixel_width, &pixel_height, &channels) ||
+	    !stbi_info_from_memory(data, (int)rd, &pixel_width, &pixel_height, &channels) ||
 	    pixel_width <= 0 || pixel_height <= 0) {
 		free(data);
 		return -EINVAL;
@@ -232,11 +234,10 @@ static int render_kitty(struct morph_log *logger, const char *path)
 	}
 	if (rows_limit > (int)MORPH_KITTY_PLACEHOLDER_LIMIT)
 		rows_limit = (int)MORPH_KITTY_PLACEHOLDER_LIMIT;
-	placement_rows = (double)pixel_height * disp_cols * cell_width /
-		((double)pixel_width * cell_height);
+	placement_rows =
+		(double)pixel_height * disp_cols * cell_width / ((double)pixel_width * cell_height);
 	if (placement_rows > rows_limit) {
-		double scaled_columns = (double)disp_cols * rows_limit /
-			placement_rows;
+		double scaled_columns = (double)disp_cols * rows_limit / placement_rows;
 
 		disp_cols = (int)(scaled_columns + 0.999999);
 		if (disp_cols < 1)
@@ -250,7 +251,8 @@ static int render_kitty(struct morph_log *logger, const char *path)
 
 	char *b64 = base64_encode(data, rd);
 	free(data);
-	if (!b64) return -ENOMEM;
+	if (!b64)
+		return -ENOMEM;
 	size_t b64_len = strlen(b64);
 
 	uint32_t image_id = morph_kitty_image_id_new();
@@ -272,19 +274,16 @@ static int render_kitty(struct morph_log *logger, const char *path)
 		if (i == 0) {
 			if (is_last)
 				hdr_len = snprintf(hdr, sizeof(hdr),
-					"\033_Ga=T,f=%d,i=%u,U=1,q=2,"
-					"c=%d,r=%d;",
-					fmt, image_id, disp_cols,
-					disp_rows);
+						   "\033_Ga=T,f=%d,i=%u,U=1,q=2,"
+						   "c=%d,r=%d;",
+						   fmt, image_id, disp_cols, disp_rows);
 			else
 				hdr_len = snprintf(hdr, sizeof(hdr),
-					"\033_Ga=T,f=%d,i=%u,U=1,q=2,"
-					"c=%d,r=%d,m=1;",
-					fmt, image_id, disp_cols,
-					disp_rows);
+						   "\033_Ga=T,f=%d,i=%u,U=1,q=2,"
+						   "c=%d,r=%d,m=1;",
+						   fmt, image_id, disp_cols, disp_rows);
 		} else {
-			hdr_len = snprintf(hdr, sizeof(hdr),
-				"\033_Gm=%d;", is_last ? 0 : 1);
+			hdr_len = snprintf(hdr, sizeof(hdr), "\033_Gm=%d;", is_last ? 0 : 1);
 		}
 
 		write_all(STDOUT_FILENO, hdr, (size_t)hdr_len);
@@ -294,9 +293,8 @@ static int render_kitty(struct morph_log *logger, const char *path)
 	free(b64);
 
 	for (int row = 0; row < disp_rows; row++) {
-		rc = morph_kitty_write_placeholder_row(
-			kitty_stdout_write, NULL, image_id,
-			(unsigned int)row, (unsigned int)disp_cols);
+		rc = morph_kitty_write_placeholder_row(kitty_stdout_write, NULL, image_id,
+						       (unsigned int)row, (unsigned int)disp_cols);
 		if (rc != 0)
 			return rc;
 		write_all(STDOUT_FILENO, "\n", 1);
@@ -312,21 +310,27 @@ static int render_iterm2(const char *path)
 	fseek(f, 0, SEEK_END);
 	long fsize = ftell(f);
 	fseek(f, 0, SEEK_SET);
-	if (fsize <= 0) { fclose(f); return -EIO; }
+	if (fsize <= 0) {
+		fclose(f);
+		return -EIO;
+	}
 	unsigned char *data = malloc((size_t)fsize);
-	if (!data) { fclose(f); return -ENOMEM; }
+	if (!data) {
+		fclose(f);
+		return -ENOMEM;
+	}
 	size_t rd = fread(data, 1, (size_t)fsize, f);
 	fclose(f);
 
 	char *b64 = base64_encode(data, rd);
 	free(data);
-	if (!b64) return -ENOMEM;
+	if (!b64)
+		return -ENOMEM;
 	size_t b64_len = strlen(b64);
 
 	fflush(stdout);
 	char hdr[128];
-	int hdr_len = snprintf(hdr, sizeof(hdr),
-		"\033]1337;File=inline=1;size=%zu:", rd);
+	int hdr_len = snprintf(hdr, sizeof(hdr), "\033]1337;File=inline=1;size=%zu:", rd);
 	write_all(STDOUT_FILENO, hdr, (size_t)hdr_len);
 	write_all(STDOUT_FILENO, b64, b64_len);
 	write_all(STDOUT_FILENO, "\a", 1);
@@ -338,8 +342,10 @@ static int render_sixel(const char *path)
 {
 	(void)path;
 	char cmd[512];
-	snprintf(cmd, sizeof(cmd), "chafa -f sixel \"%s\" 2>/dev/null || "
-		 "img2sixel \"%s\" 2>/dev/null || echo \"(sixel: need chafa or img2sixel)\"", path, path);
+	snprintf(cmd, sizeof(cmd),
+		 "chafa -f sixel \"%s\" 2>/dev/null || "
+		 "img2sixel \"%s\" 2>/dev/null || echo \"(sixel: need chafa or img2sixel)\"",
+		 path, path);
 	fflush(stdout);
 	return system(cmd);
 }

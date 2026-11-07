@@ -446,6 +446,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	int network;
 	int readonly;
 	int rc;
+	struct permission_policy policy = permission_policy_default();
 
 	if (!runtime || !result)
 		return -EINVAL;
@@ -467,16 +468,17 @@ static int exec_run(const char *args_json, struct tool_result *result,
 			"command is required");
 		return -EINVAL;
 	}
-	readonly = runtime->tool_context &&
-		runtime->tool_context->permissions.policy.access == PERMISSION_READ_ONLY;
+	if (runtime->tool_context)
+		(void)tool_context_get_permission_policy(runtime->tool_context, &policy);
+	readonly = runtime->tool_context && policy.access == PERMISSION_READ_ONLY;
 	if (json_bool(root, "host", 0) && !runtime->tool_context) {
 		cJSON_Delete(root);
 		(void)tool_result_error(result, "host_execution_disabled",
 			"Host execution requires an explicit permission context.");
 		return -EACCES;
 	}
-	host = json_bool(root, "host", 0) || (runtime->tool_context &&
-		runtime->tool_context->permissions.policy.access == PERMISSION_FULL);
+	host = json_bool(root, "host", 0) ||
+	       (runtime->tool_context && policy.access == PERMISSION_FULL);
 	network = json_bool(root, "network", 0);
 	if (!workdir && runtime->tool_context)
 		workdir = tool_context_workdir(runtime->tool_context);
@@ -566,7 +568,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 			morph_strerror(rc));
 		return rc;
 	}
-	sandbox.logger = runtime->tool_context ? runtime->tool_context->logger : NULL;
+	sandbox.logger = tool_context_logger(runtime->tool_context);
 	options.logger = sandbox.logger;
 	options.sandbox = host ? NULL : &sandbox;
 	options.cancelled = process_wait_cancelled;
@@ -784,11 +786,12 @@ static void exec_background_cancel(void *opaque, int64_t owner, const char *turn
 static void exec_environment(void *opaque, struct prompt_context_input *out)
 {
 	struct exec_runtime *runtime = opaque;
+	struct permission_policy policy;
 
 	out->cwd = tool_context_workdir(runtime->tool_context);
 	out->shell = process_manager_shell(runtime->manager);
-	if (runtime->tool_context)
-		out->sandbox = permission_access_name(runtime->tool_context->permissions.policy.access);
+	if (tool_context_get_permission_policy(runtime->tool_context, &policy) == 0)
+		out->sandbox = permission_access_name(policy.access);
 }
 
 int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,

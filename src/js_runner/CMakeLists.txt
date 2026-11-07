@@ -1,7 +1,7 @@
-add_executable(morph-js-runner
-	main.c
-	js_media.c
-)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+	"${CMAKE_CURRENT_SOURCE_DIR}/sources.list")
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/sources.list" MORPH_JS_RUNNER_SOURCES)
+add_executable(morph-js-runner ${MORPH_JS_RUNNER_SOURCES})
 
 set_target_properties(morph-js-runner PROPERTIES
 	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR}

@@ -1,9 +1,9 @@
 #include <morph/tui/terminal.h>
 #include "util/error.h"
+#include "util/terminal_size.h"
 
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
 #include <unistd.h>
 
 int morph_tui_terminal_available(FILE *input, FILE *output)
@@ -16,16 +16,7 @@ int morph_tui_terminal_available(FILE *input, FILE *output)
 
 void morph_tui_terminal_dimensions(int output_fd, int *columns, int *rows)
 {
-	struct winsize size = {0};
-
-	*columns = 80;
-	*rows = 24;
-	if (ioctl(output_fd, TIOCGWINSZ, &size) == 0) {
-		if (size.ws_col)
-			*columns = size.ws_col;
-		if (size.ws_row)
-			*rows = size.ws_row;
-	}
+	morph_terminal_dimensions(output_fd, columns, rows);
 }
 
 int morph_tui_terminal_session_enter(struct morph_tui_terminal_session *session, FILE *input,
@@ -57,6 +48,8 @@ int morph_tui_terminal_session_enter(struct morph_tui_terminal_session *session,
 	fputs("\033[?25l", output);
 	if (flags & MORPH_TUI_TERMINAL_SESSION_PASTE)
 		fputs("\033[?2004h", output);
+	if (flags & MORPH_TUI_TERMINAL_SESSION_MOUSE)
+		fputs("\033[?1000h\033[?1006h", output);
 	if (fflush(output) != 0 || ferror(output)) {
 		int rc = errno ? -errno : -EIO;
 
@@ -72,6 +65,8 @@ int morph_tui_terminal_session_leave(struct morph_tui_terminal_session *session)
 
 	if (!session || !session->active)
 		return 0;
+	if (session->flags & MORPH_TUI_TERMINAL_SESSION_MOUSE)
+		fputs("\033[?1006l\033[?1000l", session->output);
 	if (session->flags & MORPH_TUI_TERMINAL_SESSION_PASTE)
 		fputs("\033[?2004l", session->output);
 	if (session->flags & MORPH_TUI_TERMINAL_SESSION_ALTERNATE)

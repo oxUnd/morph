@@ -471,3 +471,54 @@ TEST(RuntimeInternalTest, UsageSinksRemainIndependentAcrossThreads)
 	EXPECT_EQ(first_count, 100);
 	EXPECT_EQ(second_count, 201);
 }
+
+TEST(RuntimeInternalTest, PartialTurnScopePreparationRestoresUsageBeforeRetry)
+{
+	struct db db{};
+	struct config config{};
+	struct session current{};
+	struct react_context react{};
+	struct model model{};
+	struct model_usage_sink sink{};
+	struct plan_registry plans{};
+	struct runtime_turn_scope scope{};
+	struct runtime_turn_scope_context context{};
+	struct runtime_request request{};
+	int original_usage = 0;
+	int request_usage = 0;
+
+	ASSERT_EQ(db_open(nullptr, &db, ":memory:"), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(session_create(&db, "scope-prepare-failure", "mock", &current), 0);
+	ASSERT_EQ(db_exec(&db, "DROP TABLE session_plans"), 0);
+	plan_registry_init(&plans);
+	sink.user_data = &original_usage;
+	model.usage_sink = &sink;
+	react.llm_model = &model;
+	context.db = &db;
+	context.config = &config;
+	context.react = &react;
+	context.current_session = &current;
+	context.active_plans = &plans;
+	context.scope = &scope;
+	request.session_id = current.id;
+	request.bind_usage_user_data = 1;
+	request.usage_user_data = &request_usage;
+	EXPECT_EQ(runtime_turn_scope_begin(&context, &request), MORPH_ERR_DB);
+	EXPECT_EQ(sink.user_data, &original_usage);
+	EXPECT_FALSE(scope.bound);
+	EXPECT_EQ(scope.memory_session_id, 0);
+	EXPECT_STREQ(scope.user_id, "");
+	EXPECT_STREQ(scope.credit_session_id, "");
+	runtime_turn_scope_finish(&context);
+	EXPECT_EQ(sink.user_data, &original_usage);
+	ASSERT_EQ(db_exec(&db, "CREATE TABLE session_plans("
+			       "session_id INTEGER PRIMARY KEY,state_json TEXT NOT NULL)"),
+		  0);
+	ASSERT_EQ(runtime_turn_scope_begin(&context, &request), 0);
+	EXPECT_EQ(sink.user_data, &request_usage);
+	runtime_turn_scope_finish(&context);
+	EXPECT_EQ(sink.user_data, &original_usage);
+	EXPECT_FALSE(scope.bound);
+	db_close(&db);
+}

@@ -10,7 +10,8 @@ extern "C" {
 
 enum morph_tui_terminal_session_flags {
 	MORPH_TUI_TERMINAL_SESSION_ALTERNATE = 1,
-	MORPH_TUI_TERMINAL_SESSION_PASTE = 2
+	MORPH_TUI_TERMINAL_SESSION_PASTE = 2,
+	MORPH_TUI_TERMINAL_SESSION_MOUSE = 4
 };
 
 /* Zero-initialize, enter once, then leave on every exit path. Sessions must

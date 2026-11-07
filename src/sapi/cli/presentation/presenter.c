@@ -1,4 +1,6 @@
 #include "sapi/cli/presentation/presenter.h"
+#include "sapi/cli/pages/turn_details.h"
+#include "sapi/cli/presentation/presenter_state.h"
 #include "sapi/cli/presentation/output.h"
 #include "agent/plan.h"
 #include "config/config.h"
@@ -13,7 +15,6 @@
 #include "sapi/cli/widgets/list.h"
 #include "agent/patch.h"
 #include <morph/tui/view.h>
-#include <sys/ioctl.h>
 
 #define CLI_PRESENTER_STREAM_NONE 0
 #define CLI_PRESENTER_STREAM_THOUGHT 1
@@ -124,12 +125,8 @@ void cli_presentation_user_input(struct cli_application *ctx, const char *text)
 	};
 	char *safe;
 	char *line;
-	struct winsize size = {0};
 	int width = cli_list_columns() - 1;
 	int first = 1;
-
-	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col)
-		width = size.ws_col - 1;
 
 	if (!ctx || !text || !*text)
 		return;
@@ -565,18 +562,19 @@ static void cli_presenter_print_stream(struct cli_application *ctx)
 	int already_streamed;
 	int reasoning_streamed;
 
-	if (!ctx || ctx->event_stream_kind == CLI_PRESENTER_STREAM_NONE)
+	if (!ctx || ctx->presenter->event_stream_kind == CLI_PRESENTER_STREAM_NONE)
 		return;
-	reasoning_streamed = ctx->event_stream_kind == CLI_PRESENTER_STREAM_REASONING &&
+	reasoning_streamed = ctx->presenter->event_stream_kind == CLI_PRESENTER_STREAM_REASONING &&
 			     ctx->presentation_mode == CLI_PRESENT_INTERACTIVE;
 	already_streamed =
-		ctx->markdown_stream_visible && ctx->markdown_stream_kind == ctx->event_stream_kind;
+		ctx->presenter->markdown_stream_visible &&
+		ctx->presenter->markdown_stream_kind == ctx->presenter->event_stream_kind;
 	if (already_streamed)
 		cli_markdown_stream_reset(ctx, 1);
 	cli_presenter_clear_status(ctx);
-	(void)utf8_terminal_sanitize_feed(&ctx->event_stream_sanitizer, &ctx->event_stream, NULL, 0,
-					  1);
-	content = morph_buf_cstr(&ctx->event_stream);
+	(void)utf8_terminal_sanitize_feed(&ctx->presenter->event_stream_sanitizer,
+					  &ctx->presenter->event_stream, NULL, 0, 1);
+	content = morph_buf_cstr(&ctx->presenter->event_stream);
 	if (!content || !content[0])
 		goto reset;
 	if (reasoning_streamed) {
@@ -585,10 +583,11 @@ static void cli_presenter_print_stream(struct cli_application *ctx)
 	}
 	if (already_streamed)
 		goto reset;
-	label = ctx->event_stream_kind == CLI_PRESENTER_STREAM_REASONING
+	label = ctx->presenter->event_stream_kind == CLI_PRESENTER_STREAM_REASONING
 			? "reasoning"
-			: (ctx->event_stream_kind == CLI_PRESENTER_STREAM_CONTENT ? "content"
-										  : "thought");
+			: (ctx->presenter->event_stream_kind == CLI_PRESENTER_STREAM_CONTENT
+				   ? "content"
+				   : "thought");
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		cli_presenter_print_plain_labeled(ctx, label, content);
 	} else {
@@ -598,15 +597,15 @@ static void cli_presenter_print_stream(struct cli_application *ctx)
 							     ctx);
 	}
 reset:
-	if (ctx->event_stream_kind == CLI_PRESENTER_STREAM_CONTENT)
-		ctx->native_content_visible = 1;
-	morph_buf_reset(&ctx->event_stream);
-	utf8_terminal_sanitizer_reset(&ctx->event_stream_sanitizer);
-	ctx->event_stream_kind = CLI_PRESENTER_STREAM_NONE;
-	ctx->event_stream_has_delta = 0;
-	ctx->event_stream_complete = 0;
-	ctx->event_stream_visible = 0;
-	ctx->reasoning_stream_offset = 0;
+	if (ctx->presenter->event_stream_kind == CLI_PRESENTER_STREAM_CONTENT)
+		ctx->presenter->native_content_visible = 1;
+	morph_buf_reset(&ctx->presenter->event_stream);
+	utf8_terminal_sanitizer_reset(&ctx->presenter->event_stream_sanitizer);
+	ctx->presenter->event_stream_kind = CLI_PRESENTER_STREAM_NONE;
+	ctx->presenter->event_stream_has_delta = 0;
+	ctx->presenter->event_stream_complete = 0;
+	ctx->presenter->event_stream_visible = 0;
+	ctx->presenter->reasoning_stream_offset = 0;
 }
 
 static void cli_presenter_discard_stream(struct cli_application *ctx)
@@ -614,13 +613,13 @@ static void cli_presenter_discard_stream(struct cli_application *ctx)
 	if (!ctx)
 		return;
 	cli_markdown_stream_reset(ctx, 1);
-	morph_buf_reset(&ctx->event_stream);
-	utf8_terminal_sanitizer_reset(&ctx->event_stream_sanitizer);
-	ctx->event_stream_kind = CLI_PRESENTER_STREAM_NONE;
-	ctx->event_stream_has_delta = 0;
-	ctx->event_stream_complete = 0;
-	ctx->event_stream_visible = 0;
-	ctx->reasoning_stream_offset = 0;
+	morph_buf_reset(&ctx->presenter->event_stream);
+	utf8_terminal_sanitizer_reset(&ctx->presenter->event_stream_sanitizer);
+	ctx->presenter->event_stream_kind = CLI_PRESENTER_STREAM_NONE;
+	ctx->presenter->event_stream_has_delta = 0;
+	ctx->presenter->event_stream_complete = 0;
+	ctx->presenter->event_stream_visible = 0;
+	ctx->presenter->reasoning_stream_offset = 0;
 }
 
 static void cli_presenter_plain_content(struct cli_application *ctx, const char *text)
@@ -630,7 +629,7 @@ static void cli_presenter_plain_content(struct cli_application *ctx, const char 
 	if (ctx->presentation_mode != CLI_PRESENT_ONCE_PLAIN)
 		return;
 	if (!text || !*text)
-		text = morph_buf_cstr(&ctx->native_content);
+		text = morph_buf_cstr(&ctx->presenter->native_content);
 	if (text && *text) {
 		safe = cli_presenter_safe_dup(text, SIZE_MAX, UTF8_TERMINAL_TEXT_MULTILINE);
 		if (safe) {
@@ -641,7 +640,7 @@ static void cli_presenter_plain_content(struct cli_application *ctx, const char 
 			free(safe);
 		}
 	}
-	morph_buf_reset(&ctx->native_content);
+	morph_buf_reset(&ctx->presenter->native_content);
 }
 
 void cli_presentation_flush_stream(struct cli_application *ctx)
@@ -661,40 +660,42 @@ static int cli_presenter_append_stream(struct cli_application *ctx, int kind, co
 		return 0;
 	if (appended_text)
 		*appended_text = "";
-	if (ctx->event_stream_kind != CLI_PRESENTER_STREAM_NONE && ctx->event_stream_kind != kind)
+	if (ctx->presenter->event_stream_kind != CLI_PRESENTER_STREAM_NONE &&
+	    ctx->presenter->event_stream_kind != kind)
 		cli_presenter_print_stream(ctx);
-	if (ctx->event_stream_kind == CLI_PRESENTER_STREAM_NONE) {
-		ctx->event_stream_kind = kind;
-		utf8_terminal_sanitizer_init(&ctx->event_stream_sanitizer,
+	if (ctx->presenter->event_stream_kind == CLI_PRESENTER_STREAM_NONE) {
+		ctx->presenter->event_stream_kind = kind;
+		utf8_terminal_sanitizer_init(&ctx->presenter->event_stream_sanitizer,
 					     UTF8_TERMINAL_TEXT_MULTILINE);
 	}
-	if (!is_delta && ctx->event_stream_has_delta) {
-		rc = utf8_terminal_sanitize_feed(&ctx->event_stream_sanitizer, &ctx->event_stream,
-						 NULL, 0, 1);
+	if (!is_delta && ctx->presenter->event_stream_has_delta) {
+		rc = utf8_terminal_sanitize_feed(&ctx->presenter->event_stream_sanitizer,
+						 &ctx->presenter->event_stream, NULL, 0, 1);
 		if (rc != 0)
 			return rc;
-		ctx->event_stream_complete = is_complete;
+		ctx->presenter->event_stream_complete = is_complete;
 		return 0;
 	}
-	offset = ctx->event_stream.len;
-	rc = utf8_terminal_sanitize_feed(&ctx->event_stream_sanitizer, &ctx->event_stream, text,
-					 strlen(text), !is_delta);
+	offset = ctx->presenter->event_stream.len;
+	rc = utf8_terminal_sanitize_feed(&ctx->presenter->event_stream_sanitizer,
+					 &ctx->presenter->event_stream, text, strlen(text),
+					 !is_delta);
 	if (rc != 0)
 		return rc;
 	if (appended_text)
-		*appended_text = morph_buf_cstr(&ctx->event_stream) + offset;
+		*appended_text = morph_buf_cstr(&ctx->presenter->event_stream) + offset;
 	if (is_delta)
-		ctx->event_stream_has_delta = 1;
+		ctx->presenter->event_stream_has_delta = 1;
 	if (is_complete)
-		ctx->event_stream_complete = 1;
+		ctx->presenter->event_stream_complete = 1;
 	return 0;
 }
 
 /* The terminal owns the live row; commit its preview only when the stream ends. */
 static void cli_presenter_reasoning_flush(struct cli_application *ctx, int finish)
 {
-	const char *content = morph_buf_cstr(&ctx->event_stream);
-	size_t offset = ctx->reasoning_stream_offset;
+	const char *content = morph_buf_cstr(&ctx->presenter->event_stream);
+	size_t offset = ctx->presenter->reasoning_stream_offset;
 	const char *start;
 	const char *end;
 	const char *newline;
@@ -703,17 +704,17 @@ static void cli_presenter_reasoning_flush(struct cli_application *ctx, int finis
 	size_t width = columns > 4 ? (size_t)(columns - 4) : 1u;
 	int rc;
 
-	if (offset < ctx->event_stream.len) {
+	if (offset < ctx->presenter->event_stream.len) {
 		rc = cli_transcript_reasoning_append(ctx, content + offset,
-						     ctx->event_stream.len - offset,
-						     !ctx->event_stream_visible);
+						     ctx->presenter->event_stream.len - offset,
+						     !ctx->presenter->event_stream_visible);
 		if (rc != 0) {
 			log_warn(ctx ? ctx->logger : NULL, "Could not retain reasoning details: %s",
 				 morph_strerror(rc));
 			return;
 		}
-		ctx->reasoning_stream_offset = ctx->event_stream.len;
-		ctx->event_stream_visible = 1;
+		ctx->presenter->reasoning_stream_offset = ctx->presenter->event_stream.len;
+		ctx->presenter->event_stream_visible = 1;
 	}
 	start = content + strspn(content, " \t\r\n");
 	if (!*start || morph_buf_init(&preview, 128) != 0)
@@ -1007,7 +1008,8 @@ static int cli_presenter_plan(struct cli_application *ctx, const struct morph_ev
 	plans = cJSON_IsObject(result) ? cJSON_GetObjectItemCaseSensitive(result, "plans") : NULL;
 	if (!cJSON_IsArray(plans))
 		return 0;
-	selected = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(result, "selected_plan_id"));
+	selected =
+		cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(result, "selected_plan_id"));
 	if (!selected) {
 		selected = cJSON_GetStringValue(
 			cJSON_GetObjectItemCaseSensitive(result, "selected_plan"));
@@ -1217,19 +1219,19 @@ static void cli_presenter_compaction(struct cli_application *ctx, const struct m
 static void cli_presenter_final(struct cli_application *ctx, const struct morph_event *ev)
 {
 	const char *text = cli_presenter_event_string(ev, "text");
-	int had_stream = ctx->markdown_stream_visible &&
-			 (ctx->markdown_stream_kind == CLI_PRESENTER_STREAM_THOUGHT ||
-			  ctx->markdown_stream_kind == CLI_PRESENTER_STREAM_CONTENT ||
-			  ctx->markdown_stream_kind == CLI_PRESENTER_STREAM_FINAL);
-	had_stream = had_stream || ctx->native_content_visible;
-	morph_buf_reset(&ctx->native_content);
-	ctx->native_content_started = 0;
-	ctx->native_content_visible = 0;
+	int had_stream = ctx->presenter->markdown_stream_visible &&
+			 (ctx->presenter->markdown_stream_kind == CLI_PRESENTER_STREAM_THOUGHT ||
+			  ctx->presenter->markdown_stream_kind == CLI_PRESENTER_STREAM_CONTENT ||
+			  ctx->presenter->markdown_stream_kind == CLI_PRESENTER_STREAM_FINAL);
+	had_stream = had_stream || ctx->presenter->native_content_visible;
+	morph_buf_reset(&ctx->presenter->native_content);
+	ctx->presenter->native_content_started = 0;
+	ctx->presenter->native_content_visible = 0;
 
 	cli_presenter_clear_status(ctx);
-	if ((ctx->event_stream_kind == CLI_PRESENTER_STREAM_THOUGHT ||
-	     ctx->event_stream_kind == CLI_PRESENTER_STREAM_CONTENT) &&
-	    !ctx->event_stream_complete)
+	if ((ctx->presenter->event_stream_kind == CLI_PRESENTER_STREAM_THOUGHT ||
+	     ctx->presenter->event_stream_kind == CLI_PRESENTER_STREAM_CONTENT) &&
+	    !ctx->presenter->event_stream_complete)
 		cli_presenter_discard_stream(ctx);
 	else
 		cli_presenter_print_stream(ctx);
@@ -1253,11 +1255,11 @@ static void cli_presenter_final(struct cli_application *ctx, const struct morph_
 			cli_markdown_render_final(ctx, text);
 		} else if (!had_stream) {
 			printf(ctx, "\n");
-			ctx->markdown_output.trailing_newlines = 1;
+			ctx->presenter->markdown_output.trailing_newlines = 1;
 		}
 		cli_markdown_finish_final(ctx);
 	}
-	ctx->final_rendered = 1;
+	ctx->presenter->final_rendered = 1;
 }
 
 static void cli_presenter_turn_end(struct cli_application *ctx, const struct morph_event *ev)
@@ -1268,7 +1270,7 @@ static void cli_presenter_turn_end(struct cli_application *ctx, const struct mor
 
 	if (!ev->phase || strcmp(ev->phase, "end") == 0)
 		return;
-	if (ctx->final_rendered)
+	if (ctx->presenter->final_rendered)
 		return;
 	cli_presenter_plain_content(ctx, NULL);
 	cli_presenter_clear_status(ctx);
@@ -1282,7 +1284,7 @@ static void cli_presenter_turn_end(struct cli_application *ctx, const struct mor
 			printf(ctx, "cancelled\n");
 		else
 			printf(ctx, "\n" ANSI_DIM CLI_FEED_SYSTEM " Cancelled" ANSI_RESET "\n");
-		ctx->final_rendered = 1;
+		ctx->presenter->final_rendered = 1;
 		return;
 	}
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
@@ -1308,7 +1310,7 @@ static void cli_presenter_turn_end(struct cli_application *ctx, const struct mor
 		}
 		printf(ctx, "\n");
 	}
-	ctx->final_rendered = 1;
+	ctx->presenter->final_rendered = 1;
 }
 
 static void cli_presenter_auth(struct cli_application *ctx, const struct morph_event *ev)
@@ -1371,10 +1373,10 @@ static void cli_presenter_artifact(struct cli_application *ctx, const struct mor
 
 	if (!ev->name || strcmp(ev->name, "artifact.ready") != 0 || !path || !path[0])
 		return;
-	if (morph_strmap_contains(&ctx->announced_artifacts, path))
+	if (morph_strmap_contains(&ctx->presenter->announced_artifacts, path))
 		return;
 	status_paused = cli_presenter_pause_status(ctx);
-	(void)morph_strmap_set(&ctx->announced_artifacts, path, (void *)1);
+	(void)morph_strmap_set(&ctx->presenter->announced_artifacts, path, (void *)1);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		printf(ctx, "artifact: ");
 		cli_presenter_print_safe_inline(ctx, kind ? kind : "file",
@@ -1400,9 +1402,10 @@ static void cli_presenter_mcp_tree_start(struct cli_application *ctx, const char
 	printf(ctx, "\n" ANSI_DIM CLI_FEED_SYSTEM ANSI_RESET " " ANSI_BOLD "MCP ");
 	cli_presenter_print_safe_inline(ctx, server, CLI_PRESENTER_EVENT_TEXT_MAX);
 	printf(ctx, ANSI_RESET "\n");
-	strncpy(ctx->mcp_tree_server, server, sizeof(ctx->mcp_tree_server) - 1);
-	ctx->mcp_tree_server[sizeof(ctx->mcp_tree_server) - 1] = '\0';
-	ctx->mcp_tree_active = 1;
+	strncpy(ctx->presenter->mcp_tree_server, server,
+		sizeof(ctx->presenter->mcp_tree_server) - 1);
+	ctx->presenter->mcp_tree_server[sizeof(ctx->presenter->mcp_tree_server) - 1] = '\0';
+	ctx->presenter->mcp_tree_active = 1;
 }
 
 static void cli_presenter_mcp_ready(struct cli_application *ctx, const struct morph_event *ev)
@@ -1432,7 +1435,8 @@ static void cli_presenter_mcp(struct cli_application *ctx, const struct morph_ev
 	if (!server || !server[0])
 		server = "server";
 	status_paused = cli_presenter_pause_status(ctx);
-	if (!ctx->mcp_tree_active || strcmp(ctx->mcp_tree_server, server) != 0)
+	if (!ctx->presenter->mcp_tree_active ||
+	    strcmp(ctx->presenter->mcp_tree_server, server) != 0)
 		cli_presenter_mcp_tree_start(ctx, server);
 	failed = ev->name && strcmp(ev->name, "mcp.failed") == 0;
 	is_last = failed || (ev->name && (strcmp(ev->name, "mcp.ready") == 0 ||
@@ -1462,8 +1466,8 @@ static void cli_presenter_mcp(struct cli_application *ctx, const struct morph_ev
 	}
 	printf(ctx, "\n");
 	if (is_last) {
-		ctx->mcp_tree_active = 0;
-		ctx->mcp_tree_server[0] = '\0';
+		ctx->presenter->mcp_tree_active = 0;
+		ctx->presenter->mcp_tree_server[0] = '\0';
 	}
 	cli_presenter_resume_status(ctx, status_paused);
 }
@@ -1558,69 +1562,53 @@ int cli_presentation_init(struct cli_application *ctx)
 
 	if (!ctx)
 		return -EINVAL;
-	if (!ctx->prompt_lock_ready) {
-		int error = pthread_mutex_init(&ctx->prompt_lock, NULL);
-
-		if (error)
-			return -error;
-		ctx->prompt_lock_ready = 1;
-	}
-	rc = morph_buf_init(&ctx->event_stream, BUFSIZ);
-	if (rc != 0)
-		return rc;
-	rc = morph_buf_init(&ctx->markdown_stream_text, BUFSIZ);
-	if (rc != 0) {
-		morph_buf_cleanup(&ctx->event_stream);
-		return rc;
-	}
-	utf8_terminal_sanitizer_init(&ctx->event_stream_sanitizer, UTF8_TERMINAL_TEXT_MULTILINE);
-	utf8_terminal_sanitizer_init(&ctx->markdown_stream_sanitizer, UTF8_TERMINAL_TEXT_MULTILINE);
-	rc = morph_strmap_init(&ctx->rendered_artifacts, MORPH_STRMAP_INIT_CAP);
-	if (rc != 0) {
-		morph_buf_cleanup(&ctx->markdown_stream_text);
-		morph_buf_cleanup(&ctx->event_stream);
+	if (ctx->presenter)
+		return -EALREADY;
+	ctx->presenter = calloc(1, sizeof(*ctx->presenter));
+	if (!ctx->presenter)
+		return -ENOMEM;
+	rc = morph_buf_init(&ctx->presenter->event_stream, BUFSIZ);
+	if (!rc)
+		rc = morph_buf_init(&ctx->presenter->markdown_stream_text, BUFSIZ);
+	if (!rc)
+		rc = morph_buf_init(&ctx->presenter->native_content, BUFSIZ);
+	if (!rc)
+		rc = morph_strmap_init(&ctx->presenter->rendered_artifacts, MORPH_STRMAP_INIT_CAP);
+	if (!rc)
+		rc = morph_strmap_init(&ctx->presenter->announced_artifacts, MORPH_STRMAP_INIT_CAP);
+	if (rc) {
+		cli_presentation_cleanup(ctx);
 		return rc;
 	}
-	rc = morph_strmap_init(&ctx->announced_artifacts, MORPH_STRMAP_INIT_CAP);
-	if (rc != 0) {
-		morph_strmap_cleanup(&ctx->rendered_artifacts);
-		morph_buf_cleanup(&ctx->markdown_stream_text);
-		morph_buf_cleanup(&ctx->event_stream);
-		return rc;
-	}
-	rc = morph_buf_init(&ctx->native_content, BUFSIZ);
-	if (rc != 0) {
-		morph_strmap_cleanup(&ctx->announced_artifacts);
-		morph_strmap_cleanup(&ctx->rendered_artifacts);
-		morph_buf_cleanup(&ctx->markdown_stream_text);
-		morph_buf_cleanup(&ctx->event_stream);
-		return rc;
-	}
+	utf8_terminal_sanitizer_init(&ctx->presenter->event_stream_sanitizer,
+				     UTF8_TERMINAL_TEXT_MULTILINE);
+	utf8_terminal_sanitizer_init(&ctx->presenter->markdown_stream_sanitizer,
+				     UTF8_TERMINAL_TEXT_MULTILINE);
 	return 0;
 }
 
 void cli_presentation_reset(struct cli_application *ctx)
 {
-	if (!ctx)
+	if (!ctx || !ctx->presenter)
 		return;
 	cli_transcript_reset(ctx);
-	morph_buf_reset(&ctx->native_content);
-	ctx->native_content_started = 0;
-	ctx->native_content_visible = 0;
-	morph_buf_reset(&ctx->event_stream);
-	utf8_terminal_sanitizer_reset(&ctx->event_stream_sanitizer);
-	morph_strmap_clear(&ctx->rendered_artifacts);
-	morph_strmap_clear(&ctx->announced_artifacts);
+	morph_buf_reset(&ctx->presenter->native_content);
+	ctx->presenter->native_content_started = 0;
+	ctx->presenter->native_content_visible = 0;
+	morph_buf_reset(&ctx->presenter->event_stream);
+	utf8_terminal_sanitizer_reset(&ctx->presenter->event_stream_sanitizer);
+	morph_strmap_clear(&ctx->presenter->rendered_artifacts);
+	morph_strmap_clear(&ctx->presenter->announced_artifacts);
 	cli_markdown_stream_reset(ctx, 1);
-	ctx->event_stream_kind = CLI_PRESENTER_STREAM_NONE;
-	ctx->event_stream_has_delta = 0;
-	ctx->event_stream_complete = 0;
-	ctx->event_stream_visible = 0;
-	ctx->reasoning_stream_offset = 0;
-	ctx->final_rendered = 0;
+	ctx->presenter->event_stream_kind = CLI_PRESENTER_STREAM_NONE;
+	ctx->presenter->event_stream_has_delta = 0;
+	ctx->presenter->event_stream_complete = 0;
+	ctx->presenter->event_stream_visible = 0;
+	ctx->presenter->reasoning_stream_offset = 0;
+	ctx->presenter->final_rendered = 0;
 	cli_feed_live_clear(ctx);
-	ctx->mcp_tree_active = 0;
-	ctx->mcp_tree_server[0] = '\0';
+	ctx->presenter->mcp_tree_active = 0;
+	ctx->presenter->mcp_tree_server[0] = '\0';
 }
 
 void cli_presentation_finish(struct cli_application *ctx)
@@ -1631,23 +1619,22 @@ void cli_presentation_finish(struct cli_application *ctx)
 
 void cli_presentation_cleanup(struct cli_application *ctx)
 {
-	if (!ctx)
+	if (!ctx || !ctx->presenter)
 		return;
-	if (ctx->prompt_lock_ready) {
-		pthread_mutex_destroy(&ctx->prompt_lock);
-		ctx->prompt_lock_ready = 0;
-	}
-	if (ctx->details_open)
-		cli_transcript_toggle(ctx);
+	if (cli_turn_details_is_open(ctx))
+		cli_turn_details_toggle(ctx);
 	cli_jobs_cleanup(ctx);
+	cli_turn_details_cleanup(ctx);
 	cli_transcript_reset(ctx);
 	cli_presenter_clear_status(ctx);
 	cli_markdown_stream_reset(ctx, 0);
-	morph_buf_cleanup(&ctx->native_content);
-	morph_buf_cleanup(&ctx->markdown_stream_text);
-	morph_buf_cleanup(&ctx->event_stream);
-	morph_strmap_cleanup(&ctx->rendered_artifacts);
-	morph_strmap_cleanup(&ctx->announced_artifacts);
+	morph_buf_cleanup(&ctx->presenter->native_content);
+	morph_buf_cleanup(&ctx->presenter->markdown_stream_text);
+	morph_buf_cleanup(&ctx->presenter->event_stream);
+	morph_strmap_cleanup(&ctx->presenter->rendered_artifacts);
+	morph_strmap_cleanup(&ctx->presenter->announced_artifacts);
+	free(ctx->presenter);
+	ctx->presenter = NULL;
 }
 
 int cli_presentation_event(struct cli_application *ctx, const struct morph_event *ev)
@@ -1699,13 +1686,12 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 		}
 		return 0;
 	}
-	if (ev->type == MORPH_EVENT_BACKGROUND && ev->phase &&
-	    strcmp(ev->phase, "warning") == 0) {
+	if (ev->type == MORPH_EVENT_BACKGROUND && ev->phase && strcmp(ev->phase, "warning") == 0) {
 		int paused = cli_presenter_pause_status(ctx);
 
 		printf(ctx, "\n" ANSI_YELLOW CLI_FEED_SYSTEM " Warning · ");
 		cli_presenter_print_safe_inline(ctx, ev->message ? ev->message : ev->name,
-			CLI_PRESENTER_EVENT_TEXT_MAX);
+						CLI_PRESENTER_EVENT_TEXT_MAX);
 		printf(ctx, ANSI_RESET "\n");
 		cli_presenter_resume_status(ctx, paused);
 		return 0;
@@ -1750,9 +1736,9 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 			return 0;
 		}
 		if (strcmp(ev->name, "react.user.steer") == 0) {
-			morph_buf_reset(&ctx->native_content);
-			ctx->native_content_started = 0;
-			ctx->native_content_visible = 0;
+			morph_buf_reset(&ctx->presenter->native_content);
+			ctx->presenter->native_content_started = 0;
+			ctx->presenter->native_content_visible = 0;
 			cli_presenter_clear_status(ctx);
 			cli_presenter_discard_stream(ctx);
 			if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
@@ -1771,9 +1757,10 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 			return 0;
 		}
 		if (strcmp(ev->name, "react.content.delta") == 0) {
-			ctx->native_content_started = 1;
+			ctx->presenter->native_content_started = 1;
 			if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
-				return text ? morph_buf_puts(&ctx->native_content, text) : 0;
+				return text ? morph_buf_puts(&ctx->presenter->native_content, text)
+					    : 0;
 			int rc = cli_presenter_append_stream(ctx, CLI_PRESENTER_STREAM_CONTENT,
 							     text, 1, 0, NULL);
 			if (rc == 0) {
@@ -1787,8 +1774,9 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 			if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 				cli_presenter_plain_content(ctx, text);
 			} else {
-				if (!ctx->native_content_started ||
-				    ctx->event_stream_kind == CLI_PRESENTER_STREAM_CONTENT) {
+				if (!ctx->presenter->native_content_started ||
+				    ctx->presenter->event_stream_kind ==
+					    CLI_PRESENTER_STREAM_CONTENT) {
 					int rc = cli_presenter_append_stream(
 						ctx, CLI_PRESENTER_STREAM_CONTENT, text, 0, 1,
 						NULL);
@@ -1797,8 +1785,8 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 				}
 				cli_presenter_print_stream(ctx);
 			}
-			ctx->native_content_started = 0;
-			ctx->native_content_visible = 0;
+			ctx->presenter->native_content_started = 0;
+			ctx->presenter->native_content_visible = 0;
 			return 0;
 		}
 		if (strcmp(ev->name, "react.thought.delta") == 0) {
@@ -1827,7 +1815,7 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 			if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 				return 0;
 			cli_presenter_clear_status(ctx);
-			if (ctx->event_stream_kind != CLI_PRESENTER_STREAM_NONE)
+			if (ctx->presenter->event_stream_kind != CLI_PRESENTER_STREAM_NONE)
 				cli_presenter_print_stream(ctx);
 			return cli_markdown_stream_append(ctx, text, CLI_PRESENTER_STREAM_FINAL);
 		}
@@ -1874,4 +1862,9 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 	cli_presenter_auxiliary(ctx, ev);
 	fflush(stdout);
 	return 0;
+}
+
+int cli_presentation_final_visible(const struct cli_application *ctx)
+{
+	return ctx && ctx->presenter && ctx->presenter->final_rendered;
 }

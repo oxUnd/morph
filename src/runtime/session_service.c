@@ -1,4 +1,6 @@
+#include "runtime/runtime.h"
 #include "runtime/runtime_internal.h"
+#include "persistence/history_store.h"
 
 #include "runtime/session.h"
 #include "util/error.h"
@@ -155,33 +157,11 @@ int runtime_session_list_all(struct runtime *runtime, struct session **out,
 			    recent_first, NULL);
 }
 
-int runtime_session_context_tokens(struct runtime *runtime, int64_t session_id,
-				   int64_t *out)
+int runtime_session_context_tokens(struct runtime *runtime, int64_t session_id, int64_t *out)
 {
-	sqlite3_stmt *stmt = NULL;
-	int rc;
-
-	if (!runtime || session_id <= 0 || !out)
+	if (!runtime)
 		return -EINVAL;
-	*out = 0;
-	rc = sqlite3_prepare_v2(runtime->context.database.handle,
-		"SELECT COALESCE(SUM(CASE WHEN active=1 THEN token_count "
-		"ELSE 0 END),0),COUNT(*),"
-		"EXISTS(SELECT 1 FROM messages WHERE session_id=?1) "
-		"FROM model_history_items WHERE session_id=?1", -1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_int64(stmt, 1, session_id);
-	rc = sqlite3_step(stmt);
-	if (rc == SQLITE_ROW) {
-		*out = sqlite3_column_int64(stmt, 0);
-		rc = sqlite3_column_int64(stmt, 1) == 0 &&
-			sqlite3_column_int(stmt, 2) ? -ENODATA : 0;
-	} else {
-		rc = MORPH_ERR_DB;
-	}
-	sqlite3_finalize(stmt);
-	return rc;
+	return history_store_context_tokens(&runtime->context.database, session_id, out);
 }
 
 void runtime_session_list_free(struct session *sessions)
@@ -225,164 +205,104 @@ void runtime_session_messages_free(struct message *messages)
 	message_free_list(messages);
 }
 
-static int session_read_last_answer(sqlite3 *db, int64_t session_id, const char *sql,
-				    char **out)
-{
-	sqlite3_stmt *stmt = NULL;
-	int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
-
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_int64(stmt, 1, session_id);
-	rc = sqlite3_step(stmt);
-	if (rc == SQLITE_ROW) {
-		*out = strdup((const char *)sqlite3_column_text(stmt, 0));
-		rc = *out ? 0 : -ENOMEM;
-	} else {
-		rc = rc == SQLITE_DONE ? -ENODATA : MORPH_ERR_DB;
-	}
-	sqlite3_finalize(stmt);
-	return rc;
-}
-
 int runtime_session_last_answer(struct runtime *runtime, char **out)
 {
+	int rc;
+
 	if (!out)
 		return -EINVAL;
 	*out = NULL;
 	if (!runtime)
 		return -EINVAL;
-	int rc = pthread_mutex_trylock(&runtime->context.execution_lock);
-
-	if (rc)
+	rc = pthread_mutex_trylock(&runtime->context.execution_lock);
+	if (rc != 0)
 		return -rc;
-	struct runtime_context *ctx = &runtime->context;
-
-	rc = session_read_last_answer(ctx->database.handle, ctx->current_session.id,
-		"SELECT content FROM model_history_items WHERE session_id=? "
-		"AND kind='assistant_message' AND length(content)>0 "
-		"ORDER BY sequence_no DESC LIMIT 1", out);
-	if (rc == -ENODATA)
-		rc = session_read_last_answer(ctx->database.handle, ctx->current_session.id,
-			"SELECT content FROM messages WHERE session_id=? AND role='assistant' "
-			"AND length(content)>0 ORDER BY created_at DESC,id DESC LIMIT 1", out);
-	pthread_mutex_unlock(&ctx->execution_lock);
+	rc = runtime->context.current_session.id > 0
+		     ? history_store_last_answer(&runtime->context.database,
+						 runtime->context.current_session.id, out)
+		     : -ENODATA;
+	pthread_mutex_unlock(&runtime->context.execution_lock);
 	return rc;
 }
 
-static int transcript_add_display(sqlite3 *db, int64_t session_id, cJSON *root)
+static int transcript_message(const struct message *message, void *data)
 {
-	sqlite3_stmt *stmt = NULL;
-	cJSON *items;
-	int rc;
-	int step;
+	cJSON *items = data;
+	cJSON *item = cJSON_CreateObject();
 
-	if (sqlite3_prepare_v2(db,
-		"SELECT 1 FROM sqlite_master WHERE type='table' "
-		"AND name='sync_ui_messages'", -1, &stmt, NULL) != SQLITE_OK)
-		return MORPH_ERR_DB;
-	step = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	if (step == SQLITE_DONE)
-		return 0;
-	if (step != SQLITE_ROW)
-		return MORPH_ERR_DB;
-	items = cJSON_AddArrayToObject(root, "display");
-	if (!items)
+	if (!item || !cJSON_AddNumberToObject(item, "id", (double)message->id) ||
+	    !cJSON_AddStringToObject(item, "role", message->role) ||
+	    !cJSON_AddStringToObject(item, "content", message->content ? message->content : "") ||
+	    !cJSON_AddStringToObject(item, "turn_id", message->turn_id ? message->turn_id : "") ||
+	    !cJSON_AddNumberToObject(item, "created_at", (double)message->created_at) ||
+	    !cJSON_AddItemToArray(items, item)) {
+		cJSON_Delete(item);
 		return -ENOMEM;
-	if (sqlite3_prepare_v2(db,
-		"SELECT type,content,attachments_json,structured_data,agent_ui_ir,"
-		"hitl_verdict,core_message_id,created_at,turn_id FROM sync_ui_messages "
-		"WHERE session_id=? ORDER BY seq", -1, &stmt, NULL) != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_int64(stmt, 1, session_id);
-	rc = 0;
-	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
-		cJSON *item = cJSON_CreateObject();
-		if (!item) {
-			rc = (-ENOMEM);
-			break;
-		}
-		for (int i = 0; i < sqlite3_column_count(stmt); i++) {
-			const char *key = sqlite3_column_name(stmt, i);
-			cJSON *value;
-			if (sqlite3_column_type(stmt, i) == SQLITE_NULL)
-				continue;
-			if (sqlite3_column_type(stmt, i) == SQLITE_INTEGER)
-				value = cJSON_AddNumberToObject(item, key,
-					(double)sqlite3_column_int64(stmt, i));
-			else
-				value = cJSON_AddStringToObject(item, key,
-					(const char *)sqlite3_column_text(stmt, i));
-			if (!value) {
-				rc = (-ENOMEM);
-				break;
-			}
-		}
-		if (rc != 0 || !cJSON_AddItemToArray(items, item)) {
-			cJSON_Delete(item);
-			rc = (-ENOMEM);
-			break;
-		}
 	}
-	if (rc == 0 && step != SQLITE_DONE)
-		rc = (MORPH_ERR_DB);
-	sqlite3_finalize(stmt);
-	return rc;
+	return 0;
 }
 
-static int transcript_add_traces(sqlite3 *db, int64_t session_id, cJSON *root)
+static int transcript_nullable_text(cJSON *item, const char *key, const char *value)
 {
-	sqlite3_stmt *stmt = NULL;
-	cJSON *items = cJSON_AddArrayToObject(root, "traces");
-	int rc = 0;
-	int step;
-
-	if (!items)
-		return -ENOMEM;
-	if (sqlite3_prepare_v2(db,
-		"SELECT id,steps_json,created_at FROM react_traces "
-		"WHERE session_id=? AND aborted=0 ORDER BY created_at,id",
-		-1, &stmt, NULL) != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_int64(stmt, 1, session_id);
-	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
-		cJSON *item = cJSON_CreateObject();
-		const char *steps = (const char *)sqlite3_column_text(stmt, 1);
-		if (!item ||
-		    !cJSON_AddNumberToObject(item, "id",
-			(double)sqlite3_column_int64(stmt, 0)) ||
-		    !cJSON_AddStringToObject(item, "steps_json", steps ? steps : "[]") ||
-		    !cJSON_AddNumberToObject(item, "created_at",
-			(double)sqlite3_column_int64(stmt, 2)) ||
-		    !cJSON_AddItemToArray(items, item)) {
-			cJSON_Delete(item);
-			rc = (-ENOMEM);
-			break;
-		}
-	}
-	if (rc == 0 && step != SQLITE_DONE)
-		rc = (MORPH_ERR_DB);
-	sqlite3_finalize(stmt);
-	return rc;
+	return !value || cJSON_AddStringToObject(item, key, value);
 }
 
-int runtime_session_transcript_json(struct runtime *runtime, int64_t session_id,
-				    char **out)
+static int transcript_display(const struct history_display_record *record, void *data)
+{
+	cJSON *item = cJSON_CreateObject();
+	int ok = item && transcript_nullable_text(item, "type", record->type) &&
+		 transcript_nullable_text(item, "content", record->content) &&
+		 transcript_nullable_text(item, "attachments_json", record->attachments_json) &&
+		 transcript_nullable_text(item, "structured_data", record->structured_data) &&
+		 transcript_nullable_text(item, "agent_ui_ir", record->agent_ui_ir) &&
+		 transcript_nullable_text(item, "turn_id", record->turn_id);
+
+	if (ok && (record->present & HISTORY_DISPLAY_VERDICT))
+		ok = cJSON_AddNumberToObject(item, "hitl_verdict", (double)record->hitl_verdict) !=
+		     NULL;
+	if (ok && (record->present & HISTORY_DISPLAY_MESSAGE))
+		ok = cJSON_AddNumberToObject(item, "core_message_id",
+					     (double)record->core_message_id) != NULL;
+	if (ok && (record->present & HISTORY_DISPLAY_CREATED))
+		ok = cJSON_AddNumberToObject(item, "created_at", (double)record->created_at) !=
+		     NULL;
+	if (!ok || !cJSON_AddItemToArray(data, item)) {
+		cJSON_Delete(item);
+		return -ENOMEM;
+	}
+	return 0;
+}
+
+static int transcript_trace(const struct history_trace_record *record, void *data)
+{
+	cJSON *item = cJSON_CreateObject();
+
+	if (!item || !cJSON_AddNumberToObject(item, "id", (double)record->id) ||
+	    !cJSON_AddStringToObject(item, "steps_json",
+				     record->steps_json ? record->steps_json : "[]") ||
+	    !cJSON_AddNumberToObject(item, "created_at", (double)record->created_at) ||
+	    !cJSON_AddItemToArray(data, item)) {
+		cJSON_Delete(item);
+		return -ENOMEM;
+	}
+	return 0;
+}
+
+int runtime_session_transcript_json(struct runtime *runtime, int64_t session_id, char **out)
 {
 	struct session session;
-	sqlite3_stmt *stmt = NULL;
-	cJSON *root = NULL;
+	struct db *db;
+	cJSON *root;
 	cJSON *items;
 	int rc;
-	int step;
 
 	if (!out)
 		return -EINVAL;
 	*out = NULL;
 	if (!runtime || session_id <= 0)
 		return -EINVAL;
-	rc = session_get_by_id(&runtime->context.database, session_id, &session);
+	db = &runtime->context.database;
+	rc = session_get_by_id(db, session_id, &session);
 	if (rc != 0)
 		return rc;
 	root = cJSON_CreateObject();
@@ -391,45 +311,25 @@ int runtime_session_transcript_json(struct runtime *runtime, int64_t session_id,
 		cJSON_Delete(root);
 		return -ENOMEM;
 	}
-	rc = sqlite3_prepare_v2(runtime->context.database.handle,
-		"SELECT id,role,content,turn_id,created_at FROM messages "
-		"WHERE session_id=? ORDER BY created_at,id", -1, &stmt, NULL);
-	if (rc != SQLITE_OK) {
-		cJSON_Delete(root);
-		return MORPH_ERR_DB;
-	}
-	sqlite3_bind_int64(stmt, 1, session_id);
-	rc = 0;
-	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
-		cJSON *item = cJSON_CreateObject();
-		const char *role = (const char *)sqlite3_column_text(stmt, 1);
-		const char *content = (const char *)sqlite3_column_text(stmt, 2);
-		const char *turn = (const char *)sqlite3_column_text(stmt, 3);
-		if (!item ||
-		    !cJSON_AddNumberToObject(item, "id",
-			(double)sqlite3_column_int64(stmt, 0)) ||
-		    !cJSON_AddStringToObject(item, "role", role ? role : "") ||
-		    !cJSON_AddStringToObject(item, "content", content ? content : "") ||
-		    !cJSON_AddStringToObject(item, "turn_id", turn ? turn : "") ||
-		    !cJSON_AddNumberToObject(item, "created_at",
-			(double)sqlite3_column_int64(stmt, 4)) ||
-		    !cJSON_AddItemToArray(items, item)) {
-			cJSON_Delete(item);
-			rc = (-ENOMEM);
-			break;
+	rc = history_store_visit_messages(db, session_id, transcript_message, items);
+	if (rc == 0) {
+		items = cJSON_AddArrayToObject(root, "display");
+		rc = items ? history_store_visit_display(db, session_id, transcript_display, items)
+			   : -ENOMEM;
+		if (rc == -ENODATA) {
+			cJSON_DeleteItemFromObjectCaseSensitive(root, "display");
+			rc = 0;
 		}
 	}
-	if (rc == 0 && step != SQLITE_DONE)
-		rc = (MORPH_ERR_DB);
-	sqlite3_finalize(stmt);
-	if (rc == 0)
-		rc = transcript_add_display(runtime->context.database.handle, session_id, root);
-	if (rc == 0)
-		rc = transcript_add_traces(runtime->context.database.handle, session_id, root);
+	if (rc == 0) {
+		items = cJSON_AddArrayToObject(root, "traces");
+		rc = items ? history_store_visit_traces(db, session_id, transcript_trace, items)
+			   : -ENOMEM;
+	}
 	if (rc == 0) {
 		*out = cJSON_PrintUnformatted(root);
 		if (!*out)
-			rc = (-ENOMEM);
+			rc = -ENOMEM;
 	}
 	cJSON_Delete(root);
 	return rc;

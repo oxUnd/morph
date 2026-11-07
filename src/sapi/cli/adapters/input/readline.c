@@ -1,4 +1,6 @@
 #include "sapi/cli/adapters/input/readline.h"
+#include "sapi/cli/pages/turn_details.h"
+#include "sapi/cli/adapters/input/state.h"
 #include "sapi/cli/services/turn.h"
 #ifdef HAVE_READLINE
 #include <stdio.h>
@@ -14,7 +16,6 @@
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/widgets/feed.h"
-#include "sapi/cli/widgets/transcript.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/adapters/input/callbacks.h"
@@ -23,7 +24,6 @@
 #include "sapi/cli/models/composer.h"
 #include <sys/ioctl.h>
 
-#define CLI_READLINE_DETAILS_INPUT_BURST_MAX 1024
 
 #ifdef HAVE_READLINE
 
@@ -143,17 +143,17 @@ static void cli_readline_footer_permissions(struct cli_application *ctx, morph_b
 		ctx->input_status.permissions = policy;
 		ctx->input_status.permissions_ready = 1;
 	}
-	const char *name = ctx->input_status.permissions_ready ?
-		runtime_permission_preset_name(&ctx->input_status.permissions) : "?";
+	const char *name = ctx->input_status.permissions_ready
+				   ? runtime_permission_preset_name(&ctx->input_status.permissions)
+				   : "?";
 
 	(void)morph_buf_printf(text, "perm: %s", name);
 	if (!strcmp(name, "custom") && columns >= 60) {
 		const struct permission_policy *current = &ctx->input_status.permissions;
 
-		(void)morph_buf_printf(text, " %s/%s/%s",
-			permission_access_name(current->access),
-			permission_approval_name(current->approval),
-			permission_reviewer_name(current->reviewer));
+		(void)morph_buf_printf(text, " %s/%s/%s", permission_access_name(current->access),
+				       permission_approval_name(current->approval),
+				       permission_reviewer_name(current->reviewer));
 	}
 	(void)morph_buf_puts(text, " · ");
 }
@@ -298,14 +298,14 @@ static void cli_readline_footer(struct cli_application *ctx)
 	}
 	/* A background poll must not repaint an unchanged footer or touch the draft. */
 	if (ctx->input_status.distance == last_row - row + footer_rows + 1 &&
-	    ctx->input_status.footer_rows == footer_rows && ctx->footer_text &&
-	    strcmp(ctx->footer_text, morph_buf_cstr(&text)) == 0) {
+	    ctx->input_status.footer_rows == footer_rows && ctx->input->footer_text &&
+	    strcmp(ctx->input->footer_text, morph_buf_cstr(&text)) == 0) {
 		morph_buf_cleanup(&usage);
 		morph_buf_cleanup(&text);
 		return;
 	}
-	free(ctx->footer_text);
-	ctx->footer_text = strdup(morph_buf_cstr(&text));
+	free(ctx->input->footer_text);
+	ctx->input->footer_text = strdup(morph_buf_cstr(&text));
 	cli_readline_clear_footer(ctx);
 	/* Reserve a padded input row and footer even at screen bottom. */
 	if (last_row > row)
@@ -325,17 +325,17 @@ static void cli_readline_footer(struct cli_application *ctx)
 
 static void cli_readline_clear_hint(struct cli_application *ctx)
 {
-	if (!ctx->details_hint_visible)
+	if (!ctx->input->details_hint_visible)
 		return;
-	fprintf(stdout, "\0337\033[%dG\033[K\0338", ctx->details_hint_column);
-	ctx->details_hint_visible = 0;
+	fprintf(stdout, "\0337\033[%dG\033[K\0338", ctx->input->details_hint_column);
+	ctx->input->details_hint_visible = 0;
 }
 
 void cli_readline_redisplay(struct cli_application *ctx)
 {
 	struct winsize size = {0};
 
-	if (ctx && ctx->details_visible)
+	if (ctx && cli_turn_details_is_visible(ctx))
 		return;
 	cli_readline_clear_footer(ctx);
 	cli_readline_clear_hint(ctx);
@@ -349,12 +349,12 @@ void cli_readline_redisplay(struct cli_application *ctx)
 	if (!ctx->input_status.suspended && RL_ISSTATE(RL_STATE_CALLBACK) && rl_end == 0 &&
 	    isatty(STDOUT_FILENO) && ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 &&
 	    size.ws_col > 24) {
-		ctx->details_hint_column = size.ws_col - 17;
+		ctx->input->details_hint_column = size.ws_col - 17;
 		fprintf(stdout,
 			"\0337\033[%dG" ANSI_DIM CLI_INPUT_BACKGROUND "ctrl+o details" ANSI_RESET
 			"\0338",
-			ctx->details_hint_column);
-		ctx->details_hint_visible = 1;
+			ctx->input->details_hint_column);
+		ctx->input->details_hint_visible = 1;
 		fflush(stdout);
 	}
 }
@@ -376,8 +376,8 @@ void cli_readline_line_ready(struct cli_application *ctx, char *input)
 	/* The event loop installs the next composer after committing this input.
 	 * Stop Readline from painting an automatic empty prompt in between. */
 	rl_callback_handler_remove();
-	free(ctx->readline_ready_input);
-	ctx->readline_ready_input = input;
+	free(ctx->input->readline_ready_input);
+	ctx->input->readline_ready_input = input;
 }
 
 /* Readline owns the whole editable area, including wrapped and pasted lines.
@@ -393,7 +393,6 @@ char *cli_readline_suspend(struct cli_application *ctx, int *point)
 		return NULL;
 	cli_readline_position(ctx, rl_end, cli_feed_columns(ctx), &row, &column);
 	ctx->input_status.composer_rows = row + 1;
-	cli_transcript_view_suspend(ctx);
 	cli_readline_clear_footer(ctx);
 	ctx->input_status.suspended = 1;
 	rl_replace_line("", 0);
@@ -417,7 +416,6 @@ void cli_readline_resume(struct cli_application *ctx, char *draft, int point)
 	rl_on_new_line();
 	rl_forced_update_display();
 	free(draft);
-	cli_transcript_view_resume(ctx);
 }
 
 /* Finish while the composer is suspended, so final output and the idle
@@ -447,7 +445,7 @@ void cli_readline_finish_job(struct cli_application *ctx)
 void cli_readline_drain_ui(struct cli_application *ctx)
 {
 	int point;
-	int viewing = ctx->details_visible;
+	int viewing = cli_turn_details_is_visible(ctx);
 	char *draft;
 
 	if (viewing) {
@@ -463,9 +461,9 @@ void cli_readline_drain_ui(struct cli_application *ctx)
 		return;
 	}
 	(void)cli_event_queue_drain_batch(ctx);
-	if (!ctx->details_open && cli_command_job_done(ctx->input_job))
+	if (!cli_turn_details_is_open(ctx) && cli_command_job_done(ctx->input_job))
 		cli_readline_finish_job(ctx);
-	if (!ctx->details_visible)
+	if (!cli_turn_details_is_visible(ctx))
 		cli_feed_composer_resume(ctx);
 	/* Installing a callback paints its prompt immediately. Restore with an
 	 * empty prompt so the draft redraw is the sole prompt renderer. */
@@ -474,11 +472,11 @@ void cli_readline_drain_ui(struct cli_application *ctx)
 		cli_readline_configure(ctx);
 		rl_set_prompt(cli_readline_input_prompt(ctx));
 	}
-	if (ctx->details_visible) {
+	if (cli_turn_details_is_visible(ctx)) {
 		rl_replace_line(draft, 0);
 		rl_point = point;
 		free(draft);
-		cli_transcript_view_render(ctx, 0);
+		cli_turn_details_render(ctx, 0);
 	} else {
 		cli_readline_resume(ctx, draft, point);
 	}
@@ -492,10 +490,10 @@ void cli_readline_render_frame(struct cli_application *ctx, int resized)
 
 	if (resized)
 		(void)cli_markdown_stream_refresh(ctx);
-	if (ctx->details_visible) {
+	if (cli_turn_details_is_visible(ctx)) {
 		if (resized)
 			cli_feed_resize(ctx);
-		cli_transcript_view_render(ctx, 0);
+		cli_turn_details_render(ctx, 0);
 		return;
 	}
 	if (!resized && cli_feed_next_frame_ms(ctx) < 0) {
@@ -734,114 +732,8 @@ static int cli_readline_toggle_details(struct cli_application *ctx, int count, i
 	(void)key;
 	if (!ctx || !RL_ISSTATE(RL_STATE_CALLBACK))
 		return 0;
-	if (!ctx->details_open) {
-		int point;
-		char *draft = cli_readline_suspend(ctx, &point);
-
-		if (!draft)
-			return 0;
-		rl_replace_line(draft, 0);
-		rl_point = point;
-		free(draft);
-	}
-	cli_transcript_toggle(ctx);
+	cli_turn_details_toggle(ctx);
 	return 0;
-}
-
-static void cli_readline_close_details(struct cli_application *ctx)
-{
-	int point = rl_point;
-	char *draft = strdup(rl_line_buffer ? rl_line_buffer : "");
-
-	cli_transcript_toggle(ctx);
-	if (draft)
-		cli_readline_resume(ctx, draft, point);
-}
-
-static int cli_readline_details_escape(struct cli_application *ctx, int page, int *scroll)
-{
-	char sequence[16] = {0};
-	size_t count = 0;
-	struct pollfd fd = {.fd = STDIN_FILENO, .events = POLLIN};
-	unsigned button;
-	unsigned column;
-	unsigned row;
-	char action;
-
-	while (count < sizeof(sequence) - 1 && poll(&fd, 1, 30) > 0) {
-		if (read(STDIN_FILENO, sequence + count, 1) != 1)
-			break;
-		count++;
-		if ((count > 1 && sequence[count - 1] >= 'A' && sequence[count - 1] <= 'Z') ||
-		    sequence[count - 1] == '~' || sequence[count - 1] == 'm')
-			break;
-	}
-	if (!count)
-		return 1;
-	if (strcmp(sequence, "[A") == 0)
-		*scroll = -1;
-	else if (strcmp(sequence, "[B") == 0)
-		*scroll = 1;
-	else if (strcmp(sequence, "[5~") == 0)
-		*scroll = -page;
-	else if (strcmp(sequence, "[6~") == 0)
-		*scroll = page;
-	else if (strcmp(sequence, "[H") == 0 || strcmp(sequence, "[1~") == 0)
-		*scroll = INT_MIN;
-	else if (strcmp(sequence, "[F") == 0 || strcmp(sequence, "[4~") == 0)
-		*scroll = INT_MAX;
-	else if (strcmp(sequence, "[I") == 0)
-		cli_recap_focus(ctx, 1, cli_recap_now());
-	else if (strcmp(sequence, "[O") == 0)
-		cli_recap_focus(ctx, 0, cli_recap_now());
-	else if (sscanf(sequence, "[<%u;%u;%u%c", &button, &column, &row, &action) == 4 &&
-		 action == 'M' && (button & 64U))
-		*scroll = (button & 1U) ? 3 : -3;
-	return 0;
-}
-
-void cli_readline_details_input(struct cli_application *ctx)
-{
-	struct winsize size = {0};
-	struct pollfd fd = {.fd = STDIN_FILENO, .events = POLLIN};
-	int pending_scroll = 0;
-	int page = 20;
-
-	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_row > 4)
-		page = size.ws_row - 4;
-	for (int i = 0; i < CLI_READLINE_DETAILS_INPUT_BURST_MAX; i++) {
-		unsigned char key;
-		int scroll = 0;
-
-		if (read(STDIN_FILENO, &key, 1) != 1) {
-			cli_readline_close_details(ctx);
-			return;
-		}
-		if (key == 0x1b) {
-			if (cli_readline_details_escape(ctx, page, &scroll)) {
-				cli_readline_close_details(ctx);
-				return;
-			}
-		} else if (key == 0x0f) {
-			cli_readline_close_details(ctx);
-			return;
-		}
-		if (scroll == INT_MIN || scroll == INT_MAX) {
-			if (pending_scroll)
-				cli_transcript_view_render(ctx, pending_scroll);
-			cli_transcript_view_render(ctx, scroll);
-			pending_scroll = 0;
-		} else if (scroll) {
-			if ((scroll > 0 && pending_scroll <= INT_MAX - scroll) ||
-			    (scroll < 0 && pending_scroll >= INT_MIN - scroll))
-				pending_scroll += scroll;
-		}
-		fd.revents = 0;
-		if (poll(&fd, 1, 0) <= 0)
-			break;
-	}
-	if (pending_scroll)
-		cli_transcript_view_render(ctx, pending_scroll);
 }
 
 #ifdef HAVE_RL_BIND_KEYSEQ
@@ -929,7 +821,7 @@ void cli_readline_editor_read(struct cli_application *ctx)
 	int image_end;
 
 	rl_callback_read_char();
-	if (!ctx->readline_ready_input &&
+	if (!ctx->input->readline_ready_input &&
 	    cli_composer_model_image_span(&ctx->composer, rl_line_buffer, rl_point, 0, &image_start,
 					  &image_end) &&
 	    rl_point > image_start) {
@@ -948,34 +840,35 @@ static char *cli_readline_session_completion_generator(struct cli_application *c
 {
 
 	if (state == 0) {
-		if (ctx->completion_sessions) {
-			free(ctx->completion_sessions);
-			ctx->completion_sessions = NULL;
+		if (ctx->input->completion_sessions) {
+			free(ctx->input->completion_sessions);
+			ctx->input->completion_sessions = NULL;
 		}
-		ctx->completion_count = 0;
-		ctx->completion_index = 0;
-		ctx->completion_length = (int)strlen(text);
+		ctx->input->completion_count = 0;
+		ctx->input->completion_index = 0;
+		ctx->input->completion_length = (int)strlen(text);
 		if (!ctx)
 			return NULL;
-		(void)runtime_session_list_query(ctx->runtime, &ctx->completion_sessions,
-						 &ctx->completion_count, 0, NULL);
+		(void)runtime_session_list_query(ctx->runtime, &ctx->input->completion_sessions,
+						 &ctx->input->completion_count, 0, NULL);
 	}
 
-	while (ctx->completion_index < ctx->completion_count) {
-		struct session *s = &ctx->completion_sessions[ctx->completion_index];
-		ctx->completion_index++;
+	while (ctx->input->completion_index < ctx->input->completion_count) {
+		struct session *s = &ctx->input->completion_sessions[ctx->input->completion_index];
+		ctx->input->completion_index++;
 		if (s->display_id[0] &&
-		    strncmp(s->display_id, text, (size_t)ctx->completion_length) == 0)
+		    strncmp(s->display_id, text, (size_t)ctx->input->completion_length) == 0)
 			return strdup(s->display_id);
-		if (s->name[0] && strncmp(s->name, text, (size_t)ctx->completion_length) == 0)
+		if (s->name[0] &&
+		    strncmp(s->name, text, (size_t)ctx->input->completion_length) == 0)
 			return strdup(s->name);
 	}
 
-	if (ctx->completion_sessions) {
-		free(ctx->completion_sessions);
-		ctx->completion_sessions = NULL;
+	if (ctx->input->completion_sessions) {
+		free(ctx->input->completion_sessions);
+		ctx->input->completion_sessions = NULL;
 	}
-	ctx->completion_count = 0;
+	ctx->input->completion_count = 0;
 	return NULL;
 }
 
@@ -1049,7 +942,7 @@ void cli_readline_run(struct cli_application *ctx, struct cli_command_job *job,
 	rl_set_keymap(owned_keymap);
 	memset(&ctx->input_status, 0, sizeof(ctx->input_status));
 	ctx->input_status.enabled = 1;
-	ctx->readline_ready_input = NULL;
+	ctx->input->readline_ready_input = NULL;
 	int (*reader)(FILE *) = cli_callback_getc(ctx, cli_poll_getc);
 	void (*display)(void) = cli_callback_display(ctx, cli_readline_redisplay);
 	char **(*completion)(const char *, int, int) =
@@ -1057,9 +950,9 @@ void cli_readline_run(struct cli_application *ctx, struct cli_command_job *job,
 	void (*line_ready)(char *) = cli_callback_line(ctx, cli_readline_line_ready);
 
 	cli_readline_configure(ctx);
-	if (ctx->callback_error) {
+	if (ctx->input->callback_error) {
 		CMD_ERROR(ctx, "failed to create input callbacks: %s",
-			  morph_strerror(ctx->callback_error));
+			  morph_strerror(ctx->input->callback_error));
 		goto out_release_readline;
 	}
 	rl_getc_function = reader;
@@ -1070,8 +963,8 @@ void cli_readline_run(struct cli_application *ctx, struct cli_command_job *job,
 out_release_readline:
 	memset(&ctx->input_status, 0, sizeof(ctx->input_status));
 	cli_composer_model_cleanup(&ctx->composer);
-	free(ctx->completion_sessions);
-	ctx->completion_sessions = NULL;
+	free(ctx->input->completion_sessions);
+	ctx->input->completion_sessions = NULL;
 	rl_set_keymap(previous_keymap);
 	cli_keymap_free(owned_keymap);
 	rl_getc_function = previous_getc;

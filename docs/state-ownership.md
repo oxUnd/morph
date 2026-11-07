@@ -9,6 +9,21 @@ state and are outside this rule.
 
 ## Owners and borrowed contexts
 
+Allocation follows the same ownership boundary as other resources. There is no
+process-wide arena or mutable allocator singleton. A turn, background request,
+or snapshot owns its temporary arena; an object's deinit/destroy function releases
+its longer-lived buffers, arrays, and resources. Reuse `morph_buf`, `morph_array`,
+and `morph_strmap` instead of managing growth in callers.
+
+Cross-module APIs document whether strings and records are borrowed, heap-owned,
+or arena-owned. Storage visitors lend a row only for the duration of the callback;
+they finalize the statement on completion, early stop, and callback failure.
+Permission snapshots copy paths into the caller's arena while holding the
+authority lock, so clearing grants or destroying the context cannot invalidate
+the snapshot. Memory and output snapshots likewise remain valid until their
+documented owner is released. Resource cleanup stays with that owner rather than
+a global release operation.
+
 | State | Owner and lifetime |
 | --- | --- |
 | Logging | CLI `main` or `fcgi_bridge` owns a `morph_log`; runtime components and background jobs borrow its address. Stop writers before `log_shutdown`. A null logger disables logging and diagnostics. Error macros never write to stdout or stderr. |

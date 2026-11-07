@@ -4,6 +4,7 @@
 #include "agent/react.h"
 #include "agent/tokenizer.h"
 #include "session.h"
+#include "persistence/history_store.h"
 #include "util/arena.h"
 #include "util/array.h"
 #include "util/utf8.h"
@@ -56,6 +57,32 @@ TEST_F(SessionTest, CreateDuplicate) {
 	EXPECT_EQ(rc, 0);
 	rc = session_create(&db, "dup_session", "gpt-4o", &s2);
 	EXPECT_NE(rc, 0);
+}
+
+TEST_F(SessionTest, HistoryVisitorPropagatesFailureAndReleasesItsStatement)
+{
+	struct session session{};
+	int visited = 0;
+
+	ASSERT_EQ(session_create(&db, "visitor_failure", "test", &session), 0);
+	ASSERT_EQ(message_add(&db, session.id, "user", "first", 1), 0);
+	ASSERT_EQ(message_add(&db, session.id, "assistant", "second", 1), 0);
+	EXPECT_EQ(history_store_visit_messages(
+			  &db, session.id, [](const struct message *, void *) { return -EPIPE; },
+			  nullptr),
+		  -EPIPE);
+	EXPECT_EQ(sqlite3_next_stmt(db.handle, nullptr), nullptr);
+	EXPECT_EQ(history_store_visit_messages(
+			  &db, session.id,
+			  [](const struct message *message, void *data) {
+				  ++*static_cast<int *>(data);
+				  EXPECT_STREQ(message->content, "first");
+				  return 1;
+			  },
+			  &visited),
+		  0);
+	EXPECT_EQ(visited, 1);
+	EXPECT_EQ(sqlite3_next_stmt(db.handle, nullptr), nullptr);
 }
 
 TEST_F(SessionTest, GetByName) {

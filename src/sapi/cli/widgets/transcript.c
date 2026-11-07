@@ -1,4 +1,5 @@
 #include "sapi/cli/widgets/transcript.h"
+#include "util/terminal_size.h"
 #include "cJSON.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/presenter.h"
@@ -8,44 +9,8 @@
 #include "sapi/cli/widgets/shell_style.h"
 #include "agent/patch.h"
 #include "session.h"
-#include <sys/ioctl.h>
-
-struct cli_transcript_tool {
-	const char *id;
-	const char *name;
-	const char *args;
-	const char *subject;
-	const char *result;
-	const char *error;
-	const char *summary;
-	const char *patch_preview;
-	morph_buf_t stream;
-	struct utf8_terminal_sanitizer sanitizer;
-	int state;
-	int timed_out;
-	int historical;
-	double started;
-	double ended;
-};
-
-struct cli_transcript_reasoning {
-	size_t after_tools;
-	morph_buf_t text;
-};
-
-struct cli_transcript {
-	struct arena *arena;
-	morph_array_t tools;
-	morph_array_t reasoning;
-	int finished;
-	int allocation_failed;
-	int view_follow;
-	size_t view_offset;
-	morph_buf_t deferred;
-	morph_buf_t previous_frame;
-	int frame_rows;
-	int frame_columns;
-};
+#include <morph/tui/terminal.h>
+#include "sapi/cli/models/transcript.h"
 
 static double cli_transcript_now(void)
 {
@@ -58,14 +23,7 @@ static double cli_transcript_now(void)
 
 static int cli_transcript_columns(void)
 {
-	struct winsize size = {0};
-	const char *configured = getenv("COLUMNS");
-
-	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col)
-		return size.ws_col;
-	if (configured && configured[0])
-		return cli_feed_columns(NULL);
-	return cli_list_columns();
+	return morph_terminal_columns(STDOUT_FILENO, 100);
 }
 
 static const char *cli_transcript_workdir(struct cli_application *ctx)
@@ -84,7 +42,7 @@ static const char *cli_transcript_json_string(const cJSON *data, const char *key
 	return cJSON_IsString(item) ? item->valuestring : "";
 }
 
-static const char *cli_transcript_save_text(struct cli_transcript *tr, const char *text)
+static const char *cli_transcript_save_text(struct cli_transcript_model *tr, const char *text)
 {
 	char *copy = arena_strdup(tr->arena, text ? text : "");
 
@@ -95,53 +53,12 @@ static const char *cli_transcript_save_text(struct cli_transcript *tr, const cha
 
 static int cli_transcript_init(struct cli_application *ctx)
 {
-	struct cli_transcript *tr = calloc(1, sizeof(*tr));
-	struct cli_transcript_tool tool;
-	struct cli_transcript_reasoning reasoning;
-
-	if (!tr)
-		return -ENOMEM;
-	tr->arena = arena_create(BUFSIZ);
-	if (!tr->arena) {
-		free(tr);
-		return -ENOMEM;
-	}
-	/* Arena-backed arrays have fixed capacity; event/tool counts are unbounded. */
-	if (morph_array_init(&tr->tools, MORPH_ARRAY_INIT_CAP, sizeof(tool)) != 0) {
-		morph_array_cleanup(&tr->tools);
-		arena_destroy(tr->arena);
-		free(tr);
-		return -ENOMEM;
-	}
-	ctx->transcript = tr;
-	if (morph_array_init(&tr->reasoning, MORPH_ARRAY_INIT_CAP, sizeof(reasoning)) != 0) {
-		cli_transcript_reset(ctx);
-		return -ENOMEM;
-	}
-	if (morph_buf_init(&tr->deferred, BUFSIZ) != 0 ||
-	    morph_buf_init(&tr->previous_frame, BUFSIZ) != 0) {
-		cli_transcript_reset(ctx);
-		return -ENOMEM;
-	}
-	return 0;
+	return cli_transcript_model_create(&ctx->transcript);
 }
 
 void cli_transcript_reset(struct cli_application *ctx)
 {
-	struct cli_transcript *tr = ctx->transcript;
-	struct cli_transcript_reasoning *reasoning;
-
-	if (!tr)
-		return;
-
-	morph_array_foreach (reasoning, &tr->reasoning, struct cli_transcript_reasoning)
-		morph_buf_cleanup(&reasoning->text);
-	morph_array_cleanup(&tr->reasoning);
-	morph_array_cleanup(&tr->tools);
-	morph_buf_cleanup(&tr->deferred);
-	morph_buf_cleanup(&tr->previous_frame);
-	arena_destroy(tr->arena);
-	free(tr);
+	cli_transcript_model_destroy(ctx->transcript);
 	ctx->transcript = NULL;
 }
 
@@ -149,7 +66,7 @@ void cli_transcript_reset(struct cli_application *ctx)
 int cli_transcript_reasoning_append(struct cli_application *ctx, const char *text, size_t len,
 				    int begin)
 {
-	struct cli_transcript *tr;
+	struct cli_transcript_model *tr;
 	struct cli_transcript_reasoning *reasoning;
 	int rc;
 
@@ -173,17 +90,7 @@ int cli_transcript_reasoning_append(struct cli_application *ctx, const char *tex
 	return morph_buf_append(&reasoning->text, text, len);
 }
 
-int cli_transcript_capture_begin(struct cli_application *ctx)
-{
-	if (!ctx->transcript)
-		return -EINVAL;
-	int rc = cli_output_capture_styled_begin(ctx, &ctx->transcript->deferred);
-	if (!rc)
-		ctx->output.capture_history = 1;
-	return rc;
-}
-
-static struct cli_transcript_tool *cli_transcript_find_tool(struct cli_transcript *tr,
+static struct cli_transcript_tool *cli_transcript_find_tool(struct cli_transcript_model *tr,
 							    const cJSON *data)
 {
 	const char *id = cli_transcript_json_string(data, "tool_call_id");
@@ -226,8 +133,8 @@ static int cli_transcript_shell_tool(const struct cli_transcript_tool *tool)
 
 static int cli_transcript_tool_is_running(const struct cli_transcript_tool *tool)
 {
-	return !tool->historical &&
-	       tool->state >= 0 && (!tool->state || strcmp(tool->summary, "running") == 0);
+	return !tool->historical && tool->state >= 0 &&
+	       (!tool->state || strcmp(tool->summary, "running") == 0);
 }
 
 static const char *cli_transcript_tool_state_color(const struct cli_transcript_tool *tool)
@@ -341,7 +248,7 @@ static void cli_transcript_tool_row(const struct cli_transcript_tool *tool, morp
 
 static struct cli_transcript_tool *cli_transcript_active_tool(struct cli_application *ctx)
 {
-	struct cli_transcript *tr = ctx->transcript;
+	struct cli_transcript_model *tr = ctx->transcript;
 	struct cli_transcript_tool *tool;
 
 	if (!tr)
@@ -751,66 +658,18 @@ static void cli_transcript_print_details(struct cli_application *ctx,
 		cli_transcript_print_lines(ctx, tool->error);
 }
 
-static void cli_transcript_present_frame(struct cli_application *ctx, struct cli_transcript *tr,
-					 morph_buf_t *frame, int rows, int columns)
+int cli_transcript_render_details(struct cli_application *ctx, morph_buf_t *page)
 {
-	const char *current = morph_buf_cstr(frame);
-	const char *previous = morph_buf_cstr(&tr->previous_frame);
-	int resized = rows != tr->frame_rows || columns != tr->frame_columns;
-	int writing = 0;
-	int row = 1;
-
-	while (*current || *previous) {
-		size_t len = strcspn(current, "\n");
-		size_t old_len = strcspn(previous, "\n");
-
-		if (resized || len != old_len || memcmp(current, previous, len) != 0) {
-			if (!writing) {
-				fprintf(stdout, "\033[?2026h");
-				if (resized)
-					fprintf(stdout, "\033[H\033[2J");
-				writing = 1;
-			}
-			fprintf(stdout, "\033[%d;1H", row);
-			printf(ctx, "%.*s" ANSI_RESET, (int)len, current);
-			fprintf(stdout, "\033[K");
-		}
-		current += len + (current[len] == '\n');
-		previous += old_len + (previous[old_len] == '\n');
-		row++;
-	}
-	if (writing) {
-		fprintf(stdout, "\033[?2026l");
-		fflush(stdout);
-	}
-	morph_buf_reset(&tr->previous_frame);
-	(void)morph_buf_puts(&tr->previous_frame, morph_buf_cstr(frame));
-	tr->frame_rows = rows;
-	tr->frame_columns = columns;
-}
-
-void cli_transcript_view_render(struct cli_application *ctx, int scroll)
-{
-	struct cli_transcript *tr = ctx->transcript;
+	struct cli_transcript_model *tr = ctx->transcript;
 	struct cli_transcript_tool *tool;
-	struct winsize size = {0};
-	morph_buf_t page;
-	morph_buf_t frame;
-	const char *line;
-	size_t lines = 0;
-	size_t first;
-	int rows = 24;
-	int height;
+	int rc;
 
-	if (!ctx->details_visible || !tr || morph_buf_init(&page, BUFSIZ) != 0)
-		return;
-	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_row)
-		rows = size.ws_row;
-	height = rows > 5 ? rows - 4 : 1;
-	if (cli_output_capture_styled_begin(ctx, &page) != 0) {
-		morph_buf_cleanup(&page);
-		return;
-	}
+	if (!tr)
+		return -ENOENT;
+	rc = cli_output_color_enabled(ctx) ? cli_output_capture_styled_begin(ctx, page)
+					   : cli_output_capture_begin(ctx, page);
+	if (rc)
+		return rc;
 	size_t reasoning_index = 0;
 
 	for (size_t i = 0; i <= tr->tools.nelts; i++) {
@@ -835,106 +694,12 @@ void cli_transcript_view_render(struct cli_application *ctx, int scroll)
 	if (!tr->tools.nelts && !tr->reasoning.nelts)
 		printf(ctx, "  No activity yet.\n");
 	cli_output_capture_end(ctx);
-	for (const char *p = morph_buf_cstr(&page); *p; p++)
-		lines += *p == '\n';
-	if (scroll == INT_MAX)
-		tr->view_follow = 1;
-	else if (scroll == INT_MIN) {
-		tr->view_follow = 0;
-		tr->view_offset = 0;
-	} else if (scroll) {
-		size_t step = (size_t)(scroll < 0 ? -scroll : scroll);
-
-		tr->view_follow = 0;
-		if (scroll < 0)
-			tr->view_offset = step > tr->view_offset ? 0 : tr->view_offset - step;
-		else
-			tr->view_offset += step;
-	}
-	first = lines > (size_t)height ? lines - (size_t)height : 0;
-	if (tr->view_follow || tr->view_offset > first)
-		tr->view_offset = first;
-	if (morph_buf_init(&frame, BUFSIZ) != 0) {
-		morph_buf_cleanup(&page);
-		return;
-	}
-	if (cli_output_capture_styled_begin(ctx, &frame) != 0) {
-		morph_buf_cleanup(&frame);
-		morph_buf_cleanup(&page);
-		return;
-	}
-	printf(ctx, ANSI_BOLD "  Turn details" ANSI_RESET ANSI_DIM "  · %zu calls\n\n" ANSI_RESET,
-	       tr->tools.nelts);
-	line = morph_buf_cstr(&page);
-	for (size_t i = 0; i < tr->view_offset && *line; i++) {
-		const char *next = strchr(line, '\n');
-
-		line = next ? next + 1 : line + strlen(line);
-	}
-	for (int i = 0; i < height; i++) {
-		const char *next = strchr(line, '\n');
-		size_t len = next ? (size_t)(next - line) : strlen(line);
-		const char *style =
-			strncmp(line, "    +", 5) == 0
-				? ANSI_GREEN
-				: (strncmp(line, "    -", 5) == 0 ? ANSI_RED : ANSI_DIM);
-
-		printf(ctx, "%s%.*s" ANSI_RESET "\n", style, (int)len, line);
-		line = next ? next + 1 : line + len;
-	}
-	printf(ctx, "\n");
-	cli_transcript_print_inline(ctx, "  ctrl+o / esc back · PgUp/PgDn scroll · End follow",
-				    cli_transcript_columns() - 1);
-	cli_output_capture_end(ctx);
-	cli_transcript_present_frame(ctx, tr, &frame, rows, cli_transcript_columns());
-	morph_buf_cleanup(&frame);
-	morph_buf_cleanup(&page);
-}
-
-void cli_transcript_view_suspend(struct cli_application *ctx)
-{
-	if (!ctx || !ctx->details_visible)
-		return;
-	fprintf(stdout, "\033[?1006l\033[?1000l\033[?1049l\033[?25h");
-	if (ctx->transcript) {
-		morph_buf_t *pending = &ctx->transcript->deferred;
-
-		(void)fwrite(morph_buf_cstr(pending), 1, pending->len, stdout);
-		morph_buf_reset(pending);
-	}
-	fflush(stdout);
-	ctx->details_visible = 0;
-}
-
-void cli_transcript_view_resume(struct cli_application *ctx)
-{
-	if (!ctx || !ctx->details_open || ctx->details_visible)
-		return;
-	fprintf(stdout, "\033[?1049h\033[?25l\033[?1000h\033[?1006h");
-	morph_buf_reset(&ctx->transcript->previous_frame);
-	ctx->details_visible = 1;
-	cli_transcript_view_render(ctx, 0);
-}
-
-void cli_transcript_toggle(struct cli_application *ctx)
-{
-	if (!ctx || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
-		return;
-	if (ctx->details_open) {
-		cli_transcript_view_suspend(ctx);
-		ctx->details_open = 0;
-	} else {
-		if (!ctx->transcript && cli_transcript_init(ctx) != 0)
-			return;
-		ctx->transcript->view_follow = 1;
-		ctx->details_open = 1;
-		cli_transcript_view_resume(ctx);
-	}
+	return page->failed;
 }
 
 void cli_transcript_finish(struct cli_application *ctx)
 {
-	struct cli_transcript *tr = ctx->transcript;
+	struct cli_transcript_model *tr = ctx->transcript;
 	struct cli_transcript_tool *tool;
 
 	if (!tr || tr->finished)
@@ -950,7 +715,7 @@ void cli_transcript_finish(struct cli_application *ctx)
 	tr->finished = 1;
 }
 
-static const char *cli_transcript_find_process_command(struct cli_transcript *tr,
+static const char *cli_transcript_find_process_command(struct cli_transcript_model *tr,
 						       const char *session_id)
 {
 	for (size_t i = tr->tools.nelts; i > 0; i--) {
@@ -1006,7 +771,7 @@ static int cli_transcript_process_poll_is_running(const struct cli_transcript_to
 	return running;
 }
 
-static int cli_transcript_add_tool(struct cli_transcript *tr, const cJSON *data,
+static int cli_transcript_add_tool(struct cli_transcript_model *tr, const cJSON *data,
 				   const char *workdir)
 {
 	const cJSON *args = cJSON_GetObjectItemCaseSensitive(data, "args");
@@ -1095,7 +860,7 @@ static int cli_transcript_add_tool(struct cli_transcript *tr, const cJSON *data,
 	return 0;
 }
 
-static void cli_transcript_summarize_result(struct cli_transcript *tr,
+static void cli_transcript_summarize_result(struct cli_transcript_model *tr,
 					    struct cli_transcript_tool *tool)
 {
 	cJSON *json = cJSON_Parse(tool->result);
@@ -1213,7 +978,7 @@ int cli_transcript_restore_tool(struct cli_application *ctx, const cJSON *call,
 	cJSON_Delete(data);
 	if (rc)
 		return rc;
-	struct cli_transcript *tr = ctx->transcript;
+	struct cli_transcript_model *tr = ctx->transcript;
 	struct cli_transcript_tool *tool = morph_array_get(&tr->tools, tr->tools.nelts - 1);
 
 	tool->historical = 1;
@@ -1226,8 +991,8 @@ int cli_transcript_restore_tool(struct cli_application *ctx, const cJSON *call,
 		const cJSON *code = cJSON_GetObjectItemCaseSensitive(metadata, "error_code");
 
 		tool->state = 1;
-		tool->result = cli_transcript_save_text(tr,
-			cJSON_IsString(original) ? original->valuestring : result->content);
+		tool->result = cli_transcript_save_text(
+			tr, cJSON_IsString(original) ? original->valuestring : result->content);
 		cli_transcript_summarize_result(tr, tool);
 		if (cJSON_IsNumber(code) && code->valueint < 0) {
 			tool->state = -1;
@@ -1247,7 +1012,7 @@ int cli_transcript_restore_tool(struct cli_application *ctx, const cJSON *call,
 /* Return one for events fully presented here, zero for the usual presenter. */
 int cli_transcript_event(struct cli_application *ctx, const struct morph_event *ev)
 {
-	struct cli_transcript *tr;
+	struct cli_transcript_model *tr;
 	struct cli_transcript_tool *tool;
 	const char *name = ev->name ? ev->name : "";
 	int rc;

@@ -3,6 +3,11 @@
 
 #include "sync/sync.h"
 
+int sync_db_backend_valid(const struct morph_sync_config *cfg);
+int sync_db_quick_check(const char *path);
+int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *rel,
+			      const char *path, struct morph_sync_status *status,
+			      int update_cursor);
 int sync_db_is_sqlite(const char *path);
 int sync_db_backup_create(const struct morph_sync_config *cfg,
 			  const char *rel, const char *path,

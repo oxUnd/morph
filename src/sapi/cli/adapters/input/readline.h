@@ -24,7 +24,6 @@ void cli_readline_resume(struct cli_application *, char *draft, int point);
 void cli_readline_finish_job(struct cli_application *);
 void cli_readline_drain_ui(struct cli_application *);
 void cli_readline_render_frame(struct cli_application *, int resized);
-void cli_readline_details_input(struct cli_application *);
 #endif
 
 #endif

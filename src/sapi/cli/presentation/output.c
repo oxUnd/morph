@@ -1,4 +1,5 @@
 #include "sapi/cli/presentation/output.h"
+#include "sapi/cli/pages/turn_details.h"
 #include "sapi/cli/services/command_job.h"
 #include "agent/turn.h"
 #include "sapi/cli/adapters/input/callbacks.h"
@@ -233,7 +234,7 @@ static int cli_output_write_output(struct cli_application *ctx, const char *text
 			return -EIO;
 	}
 	int rc = cli_output_write_terminal_safe(text, !ctx || !ctx->output.color_disabled);
-	if (!rc && ctx && !ctx->details_visible)
+	if (!rc && ctx && !cli_turn_details_is_visible(ctx))
 		cli_output_track_tail(&ctx->output.trailing_newlines, text, strlen(text));
 	return rc;
 }
@@ -312,7 +313,7 @@ int cli_output_putchar(struct cli_application *ctx, int ch)
 			return EOF;
 	}
 	int rc = fputc(ch, stdout);
-	if (rc != EOF && ctx && !ctx->details_visible)
+	if (rc != EOF && ctx && !cli_turn_details_is_visible(ctx))
 		cli_output_track_tail(&ctx->output.trailing_newlines, text, 1);
 	return rc;
 }

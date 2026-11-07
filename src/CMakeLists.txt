@@ -32,6 +32,7 @@ target_link_libraries(morph-config PUBLIC morph-util morph-toml morph-permission
 
 add_library(morph-session STATIC
 	session.c
+	session_history.c
 )
 target_include_directories(morph-session PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}

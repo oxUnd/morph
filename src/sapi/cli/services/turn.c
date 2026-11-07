@@ -156,7 +156,7 @@ void cli_turn_finish(struct cli_application *ctx, int turn_rc)
 	ctx->turn_active = 0;
 	cli_recap_turn_finished(ctx, cli_recap_now());
 	cli_feed_turn_end(ctx, turn_rc);
-	if (turn_rc >= 0 || ctx->final_rendered ||
+	if (turn_rc >= 0 || cli_presentation_final_visible(ctx) ||
 	    ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 		return;
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)

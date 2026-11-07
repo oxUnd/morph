@@ -1,4 +1,6 @@
 #include "sapi/cli/application.h"
+#include "sapi/cli/adapters/input/state.h"
+#include "sapi/cli/adapters/runtime/dispatch.h"
 #include "sapi/cli/services/turn.h"
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/pages/resume.h"
@@ -216,18 +218,25 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 	cli_output_set_structured(ctx, mode == CLI_PRESENT_EVENTS_JSON);
 	ctx->event_cb = cli_runtime_events_callback;
 	ctx->event_user_data = ctx;
-	rc = cli_feed_init(ctx, stdout, STDOUT_FILENO);
-	if (rc != 0)
+	rc = cli_input_init(ctx);
+	if (rc)
 		return rc;
+	rc = cli_feed_init(ctx, stdout, STDOUT_FILENO);
+	if (rc) {
+		cli_input_cleanup(ctx);
+		return rc;
+	}
 	rc = cli_presentation_init(ctx);
 	if (rc != 0) {
 		cli_feed_cleanup(ctx);
+		cli_input_cleanup(ctx);
 		return rc;
 	}
-	rc = cli_event_queue_init(ctx);
+	rc = cli_event_queue_init(ctx, cli_dispatch_event);
 	if (rc != 0) {
 		cli_presentation_cleanup(ctx);
 		cli_feed_cleanup(ctx);
+		cli_input_cleanup(ctx);
 		return rc;
 	}
 	memset(&options, 0, sizeof(options));
@@ -266,6 +275,7 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 		cli_event_queue_cleanup(ctx);
 		cli_presentation_cleanup(ctx);
 		cli_feed_cleanup(ctx);
+		cli_input_cleanup(ctx);
 		return rc;
 	}
 
@@ -701,6 +711,7 @@ void cli_application_shutdown(struct cli_application *ctx)
 	cli_presentation_cleanup(ctx);
 	cli_event_queue_cleanup(ctx);
 	cli_feed_cleanup(ctx);
+	cli_input_cleanup(ctx);
 	cli_output_set_structured(ctx, 0);
 	log_info(ctx ? ctx->logger : NULL, "cli shutdown complete");
 }

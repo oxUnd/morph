@@ -2,6 +2,7 @@
 
 extern "C" {
 #include "sapi/cli/adapters/input/reader.h"
+#include "sapi/cli/adapters/input/state.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/adapters/input/callbacks.h"
@@ -18,8 +19,8 @@ extern "C" {
 
 static int instance_key(struct cli_application *ctx, int count, int key)
 {
-	ctx->completion_index += count;
-	return ctx->completion_index + key;
+	ctx->input->completion_index += count;
+	return ctx->input->completion_index + key;
 }
 
 TEST(StateOwnershipTest, NativeCallbacksKeepTheirOwnContext)
@@ -36,9 +37,9 @@ TEST(StateOwnershipTest, NativeCallbacksKeepTheirOwnContext)
 	EXPECT_EQ(first_key(2, 10), 15);
 	EXPECT_EQ(first_key(0, INT_MIN), INT_MIN + 5);
 	EXPECT_EQ(second_key(0, -8), -1);
-	cli_callbacks_cleanup(&first);
+	cli_input_cleanup(&first);
 	EXPECT_EQ(second_key(1, 20), 28);
-	cli_callbacks_cleanup(&second);
+	cli_input_cleanup(&second);
 }
 
 TEST(StateOwnershipTest, OutputCaptureAndPresentationOptionsAreIndependent)

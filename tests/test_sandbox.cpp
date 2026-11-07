@@ -3,6 +3,7 @@ extern "C" {
 #include "sandbox/sandbox.h"
 #include "sandbox/tool_paths.h"
 #include "agent/tool_context.h"
+#include "permission/context_internal.h"
 #include "agent/tool.h"
 #include "agent/tools/exec_tool.h"
 #include "agent/tools/request_permissions.h"

@@ -59,9 +59,9 @@ int runtime_permission_get_policy(struct runtime *runtime, struct permission_pol
 		return -EINVAL;
 	if (pthread_mutex_trylock(&runtime->context.execution_lock) != 0)
 		return -EBUSY;
-	*out = runtime->context.tctx->permissions.policy;
+	int rc = tool_context_get_permission_policy(runtime->context.tctx, out);
 	pthread_mutex_unlock(&runtime->context.execution_lock);
-	return 0;
+	return rc;
 }
 
 static int permission_children_active(struct runtime *runtime)
@@ -71,12 +71,14 @@ static int permission_children_active(struct runtime *runtime)
 	int active = exec_jobs_active(runtime->jobs);
 
 	if (runtime->context.sub_agents) {
-		int rc = sub_agent_runtime_list_tasks(runtime->context.sub_agents, 0, &tasks, &count);
+		int rc = sub_agent_runtime_list_tasks(runtime->context.sub_agents, 0, &tasks,
+						      &count);
 
 		if (rc != 0)
 			return rc;
 		for (int i = 0; i < count; i++) {
-			if (tasks[i].status == SUB_AGENT_PENDING || tasks[i].status == SUB_AGENT_RUNNING)
+			if (tasks[i].status == SUB_AGENT_PENDING ||
+			    tasks[i].status == SUB_AGENT_RUNNING)
 				active = 1;
 		}
 		sub_agent_runtime_free_task_list(tasks, count);
@@ -84,8 +86,7 @@ static int permission_children_active(struct runtime *runtime)
 	return active;
 }
 
-static int permission_save_policy(struct runtime *runtime,
-	const struct permission_policy *policy)
+static int permission_save_policy(struct runtime *runtime, const struct permission_policy *policy)
 {
 	morph_buf_t patch = {0};
 	morph_buf_t lock_path = {0};
@@ -116,7 +117,8 @@ static int permission_save_policy(struct runtime *runtime,
 	if (rc == 0)
 		rc = morph_buf_init(&patch, 128);
 	if (rc == 0)
-		rc = morph_buf_printf(&patch,
+		rc = morph_buf_printf(
+			&patch,
 			"[permissions]\naccess = \"%s\"\napproval = \"%s\"\nreviewer = \"%s\"\n",
 			permission_access_name(policy->access),
 			permission_approval_name(policy->approval),
@@ -136,8 +138,7 @@ static int permission_save_policy(struct runtime *runtime,
 	return rc;
 }
 
-int runtime_permission_set_policy(struct runtime *runtime,
-	const struct permission_policy *policy)
+int runtime_permission_set_policy(struct runtime *runtime, const struct permission_policy *policy)
 {
 	int rc;
 
@@ -163,8 +164,7 @@ struct permission_list_state {
 	morph_array_t grants;
 };
 
-static int collect_permission(const struct permission_grant *grant,
-			      void *user_data)
+static int collect_permission(const struct permission_grant *grant, void *user_data)
 {
 	struct permission_list_state *state = user_data;
 	struct runtime_permission_grant *item;
@@ -176,17 +176,13 @@ static int collect_permission(const struct permission_grant *grant,
 	item->id = grant->id;
 	item->created_at = grant->created_at;
 	snprintf(item->subject, sizeof(item->subject), "%s", grant->subject);
-	snprintf(item->resource_kind, sizeof(item->resource_kind), "%s",
-		 grant->resource_kind);
-	snprintf(item->resource, sizeof(item->resource), "%s",
-		 grant->resource);
-	snprintf(item->project_root, sizeof(item->project_root), "%s",
-		 grant->project_root);
+	snprintf(item->resource_kind, sizeof(item->resource_kind), "%s", grant->resource_kind);
+	snprintf(item->resource, sizeof(item->resource), "%s", grant->resource);
+	snprintf(item->project_root, sizeof(item->project_root), "%s", grant->project_root);
 	return 0;
 }
 
-int runtime_permission_list(struct runtime *runtime,
-			    struct runtime_permission_grant **out,
+int runtime_permission_list(struct runtime *runtime, struct runtime_permission_grant **out,
 			    int *count)
 {
 	struct permission_list_state state;
@@ -198,16 +194,15 @@ int runtime_permission_list(struct runtime *runtime,
 	*out = NULL;
 	*count = 0;
 	tctx = runtime->context.tctx;
-	if (!tctx || !tctx->grant_project_root[0])
+	if (!tctx || !tool_context_grant_project_root(tctx)[0])
 		return -ENOENT;
-	rc = morph_array_init(&state.grants, 8,
-			      sizeof(struct runtime_permission_grant));
+	rc = morph_array_init(&state.grants, 8, sizeof(struct runtime_permission_grant));
 	if (rc != 0)
 		return rc;
 	pthread_mutex_lock(&runtime->context.execution_lock);
 	rc = permission_grant_each(&runtime->context.database,
-				   tctx->grant_project_root,
-				   collect_permission, &state);
+				   tool_context_grant_project_root(tctx), collect_permission,
+				   &state);
 	pthread_mutex_unlock(&runtime->context.execution_lock);
 	if (rc != 0) {
 		morph_array_cleanup(&state.grants);
@@ -228,13 +223,11 @@ void runtime_permission_list_free(struct runtime_permission_grant *grants)
 static int reload_after_delete(struct runtime *runtime, int rc, int deleted)
 {
 	if (rc == 0 && deleted > 0)
-		rc = tool_context_reload_persistent_grants(
-			runtime->context.tctx);
+		rc = tool_context_reload_persistent_grants(runtime->context.tctx);
 	return rc;
 }
 
-int runtime_permission_revoke_id(struct runtime *runtime, int64_t id,
-				 int *deleted)
+int runtime_permission_revoke_id(struct runtime *runtime, int64_t id, int *deleted)
 {
 	struct tool_context *tctx;
 	int rc;
@@ -242,19 +235,17 @@ int runtime_permission_revoke_id(struct runtime *runtime, int64_t id,
 	if (!runtime || !deleted || id <= 0)
 		return -EINVAL;
 	tctx = runtime->context.tctx;
-	if (!tctx || !tctx->grant_project_root[0])
+	if (!tctx || !tool_context_grant_project_root(tctx)[0])
 		return -ENOENT;
 	pthread_mutex_lock(&runtime->context.execution_lock);
 	rc = permission_grant_delete_id(&runtime->context.database,
-					tctx->grant_project_root,
-					id, deleted);
+					tool_context_grant_project_root(tctx), id, deleted);
 	rc = reload_after_delete(runtime, rc, *deleted);
 	pthread_mutex_unlock(&runtime->context.execution_lock);
 	return rc;
 }
 
-int runtime_permission_revoke_subject(struct runtime *runtime,
-				      const char *subject, int *deleted)
+int runtime_permission_revoke_subject(struct runtime *runtime, const char *subject, int *deleted)
 {
 	struct tool_context *tctx;
 	int rc;
@@ -262,19 +253,18 @@ int runtime_permission_revoke_subject(struct runtime *runtime,
 	if (!runtime || !subject || !*subject || !deleted)
 		return -EINVAL;
 	tctx = runtime->context.tctx;
-	if (!tctx || !tctx->grant_project_root[0])
+	if (!tctx || !tool_context_grant_project_root(tctx)[0])
 		return -ENOENT;
 	pthread_mutex_lock(&runtime->context.execution_lock);
 	rc = permission_grant_delete_subject(&runtime->context.database,
-					     tctx->grant_project_root,
-					     subject, deleted);
+					     tool_context_grant_project_root(tctx), subject,
+					     deleted);
 	rc = reload_after_delete(runtime, rc, *deleted);
 	pthread_mutex_unlock(&runtime->context.execution_lock);
 	return rc;
 }
 
-int runtime_permission_clear(struct runtime *runtime, int all_projects,
-			     int *deleted)
+int runtime_permission_clear(struct runtime *runtime, int all_projects, int *deleted)
 {
 	struct tool_context *tctx;
 	int rc;
@@ -282,16 +272,14 @@ int runtime_permission_clear(struct runtime *runtime, int all_projects,
 	if (!runtime || !deleted)
 		return -EINVAL;
 	tctx = runtime->context.tctx;
-	if (!tctx || !tctx->grant_project_root[0])
+	if (!tctx || !tool_context_grant_project_root(tctx)[0])
 		return -ENOENT;
 	pthread_mutex_lock(&runtime->context.execution_lock);
 	if (all_projects)
-		rc = permission_grant_clear_all(&runtime->context.database,
-						deleted);
+		rc = permission_grant_clear_all(&runtime->context.database, deleted);
 	else
-		rc = permission_grant_clear_project(
-			&runtime->context.database, tctx->grant_project_root,
-			deleted);
+		rc = permission_grant_clear_project(&runtime->context.database,
+						    tool_context_grant_project_root(tctx), deleted);
 	rc = reload_after_delete(runtime, rc, *deleted);
 	pthread_mutex_unlock(&runtime->context.execution_lock);
 	return rc;

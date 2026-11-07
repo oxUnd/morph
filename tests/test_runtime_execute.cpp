@@ -3,6 +3,7 @@
 extern "C" {
 #include "models/llm.h"
 #include "runtime/runtime_internal.h"
+#include "permission/context_internal.h"
 #include "agent/tools/exec_tool.h"
 #include "agent/tool_runtime.h"
 }
@@ -28,6 +29,7 @@ struct RuntimeScriptedModel {
 	bool released = false;
 	int error = 0;
 	int calls = 0;
+	void *observed_usage_user_data = nullptr;
 	std::vector<std::string> observed_messages;
 };
 
@@ -40,6 +42,8 @@ static int runtime_scripted_chat(struct model *self, struct arena *,
 	{
 		std::unique_lock<std::mutex> lock(state->mutex);
 		state->calls++;
+		state->observed_usage_user_data =
+			self->usage_sink ? self->usage_sink->user_data : nullptr;
 		for (int i = 0; i < count; i++)
 			state->observed_messages.emplace_back(messages[i] ? messages[i] : "");
 		state->entered = true;
@@ -62,6 +66,8 @@ static int runtime_scripted_chat_with_tools(
 	{
 		std::unique_lock<std::mutex> lock(state->mutex);
 		state->calls++;
+		state->observed_usage_user_data =
+			self->usage_sink ? self->usage_sink->user_data : nullptr;
 		for (int i = 0; i < count; i++) {
 			std::string item = messages[i].role ? messages[i].role : "";
 			item += ":";
@@ -519,4 +525,76 @@ TEST_F(RuntimeFacadeTest, ProcessResultsSurviveRestartAndRespectSessionOwnership
 	EXPECT_EQ(cJSON_GetArraySize(jobs), 0);
 	cJSON_Delete(jobs);
 	EXPECT_EQ(runtime_process_read(instance, finished.c_str(), &data), -ENOENT);
+}
+
+TEST_F(RuntimeExecuteTest, HookPreparationFailureRestoresBorrowedCallbacksAndUsage)
+{
+	OpenScripted();
+	struct react_context *react = instance->context.react;
+	morph_event_cb previous_event = react->event_cb;
+	void *previous_event_data = react->event_user_data;
+	react_action_drain_fn previous_drain = react->action_drain_fn;
+	void *previous_drain_data = react->action_drain_user_data;
+	int original_usage = 0;
+	int temporary_usage = 0;
+	int temporary_events = 0;
+	int temporary_drains = 0;
+	struct model_usage_sink sink{};
+	sink.user_data = &original_usage;
+	scripted.model->usage_sink = &sink;
+	const std::string hooks_path = directory + "/hooks.json";
+	std::ofstream(hooks_path) << "{invalid";
+
+	struct runtime_request request{};
+	struct runtime_result result{};
+	request.model_input = "first request";
+	request.event_cb = runtime_count_events;
+	request.event_user_data = &temporary_events;
+	request.override_action_drain = 1;
+	request.action_drain_fn = runtime_count_action_drains;
+	request.action_drain_user_data = &temporary_drains;
+	request.bind_usage_user_data = 1;
+	request.usage_user_data = &temporary_usage;
+	EXPECT_LT(runtime_execute_turn(instance, &request, &result), 0);
+	EXPECT_EQ(scripted.calls, 0);
+	EXPECT_EQ(react->event_cb, previous_event);
+	EXPECT_EQ(react->event_user_data, previous_event_data);
+	EXPECT_EQ(react->action_drain_fn, previous_drain);
+	EXPECT_EQ(react->action_drain_user_data, previous_drain_data);
+	EXPECT_EQ(sink.user_data, &original_usage);
+	EXPECT_EQ(instance->context.hooks.event_cb, nullptr);
+	EXPECT_EQ(instance->context.hooks.cancel_token, nullptr);
+	EXPECT_FALSE(instance->context.turn_scope.bound);
+	EXPECT_FALSE(instance->context.turn_scope.request_bound);
+
+	ASSERT_TRUE(std::filesystem::remove(hooks_path));
+	const int failed_request_events = temporary_events;
+	EXPECT_EQ(Execute("second request", &result), 0);
+	EXPECT_EQ(scripted.calls, 1);
+	EXPECT_EQ(temporary_events, failed_request_events);
+	EXPECT_EQ(temporary_drains, 0);
+	EXPECT_EQ(sink.user_data, &original_usage);
+	scripted.model->usage_sink = nullptr;
+}
+
+TEST_F(RuntimeExecuteTest, UsageOverrideIsBoundOnceAndRestoredForTheNextTurn)
+{
+	OpenScripted();
+	int original_usage = 0;
+	int request_usage = 0;
+	struct model_usage_sink sink{};
+	sink.user_data = &original_usage;
+	scripted.model->usage_sink = &sink;
+	struct runtime_request request{};
+	struct runtime_result result{};
+	request.model_input = "request with separate usage owner";
+	request.bind_usage_user_data = 1;
+	request.usage_user_data = &request_usage;
+	EXPECT_EQ(runtime_execute_turn(instance, &request, &result), 0);
+	EXPECT_EQ(scripted.observed_usage_user_data, &request_usage);
+	EXPECT_EQ(sink.user_data, &original_usage);
+	EXPECT_EQ(Execute("next request", &result), 0);
+	EXPECT_EQ(scripted.observed_usage_user_data, instance);
+	EXPECT_EQ(sink.user_data, &original_usage);
+	scripted.model->usage_sink = nullptr;
 }

@@ -262,3 +262,56 @@ TEST_F(HttpTest, ResponseFreeWithMorphBuf) {
 	EXPECT_EQ(resp.headers.data, nullptr);
 	EXPECT_NO_FATAL_FAILURE(http_response_free(&resp));
 }
+
+TEST_F(HttpTest, SessionAndMultipartPreserveTimeoutErrors)
+{
+	for (bool persistent : {false, true}) {
+		SCOPED_TRACE(persistent);
+		int listener = socket(AF_INET, SOCK_STREAM, 0);
+		ASSERT_GE(listener, 0);
+		sockaddr_in address{};
+		address.sin_family = AF_INET;
+		address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		ASSERT_EQ(bind(listener, reinterpret_cast<sockaddr *>(&address), sizeof(address)),
+			  0);
+		socklen_t length = sizeof(address);
+		ASSERT_EQ(getsockname(listener, reinterpret_cast<sockaddr *>(&address), &length),
+			  0);
+		ASSERT_EQ(listen(listener, 1), 0);
+		std::mutex mutex;
+		std::condition_variable condition;
+		bool finished = false;
+		std::thread server([&] {
+			int peer = accept(listener, nullptr, nullptr);
+			std::unique_lock<std::mutex> lock(mutex);
+			condition.wait_for(lock, std::chrono::seconds(3), [&] { return finished; });
+			if (peer >= 0)
+				close(peer);
+			close(listener);
+		});
+		char url[128];
+		snprintf(url, sizeof(url), "http://127.0.0.1:%u/",
+			 static_cast<unsigned>(ntohs(address.sin_port)));
+		http_response response{};
+		http_session session{};
+		http_multipart_part part{HTTP_MULTIPART_TEXT, "text", "test", nullptr};
+		int rc;
+
+		EXPECT_EQ(http_session_init(nullptr, &session), 0);
+		if (persistent)
+			rc = http_session_post(nullptr, &session, url, "{}", 2, "application/json",
+					       nullptr, 0, 1);
+		else
+			rc = http_post_multipart_ex(nullptr, url, &part, 1, nullptr, 0, 1,
+						    &response);
+		{
+			std::lock_guard<std::mutex> lock(mutex);
+			finished = true;
+		}
+		condition.notify_all();
+		server.join();
+		http_response_free(&response);
+		http_session_cleanup(&session);
+		EXPECT_EQ(rc, -ETIMEDOUT);
+	}
+}
