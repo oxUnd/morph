@@ -60,14 +60,14 @@ TEST_F(SessionTitleTest, StoresModelSummaryRatherThanPromptPrefix)
 		"现在还是截取，感觉很生硬！";
 	ASSERT_EQ(Generate(input), 0);
 	ASSERT_TRUE(WaitRequest());
-	struct json *body = json_parse_prefix(request_body.c_str(), NULL, NULL);
+	cJSON *body = cJSON_Parse(request_body.c_str());
 	ASSERT_NE(body, nullptr);
-	const struct json *messages = json_member_ci(body, "messages");
-	const char *instructions =
-		json_string_value(json_member_ci(json_at(messages, 0), "content"));
+	const cJSON *messages = cJSON_GetObjectItem(body, "messages");
+	const char *instructions = cJSON_GetStringValue(cJSON_GetObjectItem(
+		cJSON_GetArrayItem(messages, 0), "content"));
 	ASSERT_NE(instructions, nullptr);
 	EXPECT_NE(strstr(instructions, "do not simply copy or truncate"), nullptr);
-	json_free(body);
+	cJSON_Delete(body);
 	Release();
 	ASSERT_TRUE(WaitName(instance->context.current_session.id,
 		"改用模型总结会话标题"));
@@ -123,21 +123,21 @@ TEST_F(SessionTitleTest, InFlightRequestsAreDeduplicatedAndInputIsBounded)
 	ASSERT_EQ(Generate(prompt), 0);
 	ASSERT_TRUE(WaitRequest());
 	ASSERT_EQ(Generate("A second request"), 0);
-	struct json *body = json_parse_prefix(request_body.c_str(), NULL, NULL);
+	cJSON *body = cJSON_Parse(request_body.c_str());
 	ASSERT_NE(body, nullptr);
-	EXPECT_EQ(json_member_ci(body, "tools"), nullptr);
-	const struct json *messages = json_member_ci(body, "messages");
-	ASSERT_EQ(json_count(messages), 2);
+	EXPECT_EQ(cJSON_GetObjectItem(body, "tools"), nullptr);
+	const cJSON *messages = cJSON_GetObjectItem(body, "messages");
+	ASSERT_EQ(cJSON_GetArraySize(messages), 2);
 	size_t bytes = 0;
 	for (int i = 0; i < 2; i++) {
-		const char *text =
-			json_string_value(json_member_ci(json_at(messages, i), "content"));
+		const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(
+			cJSON_GetArrayItem(messages, i), "content"));
 		ASSERT_NE(text, nullptr);
 		EXPECT_EQ(utf8valid(text), nullptr);
 		bytes += strlen(text);
 	}
 	EXPECT_LE(bytes, SESSION_TITLE_PROMPT_MAX_BYTES);
-	json_free(body);
+	cJSON_Delete(body);
 	Release();
 	EXPECT_TRUE(WaitName(instance->context.current_session.id, "Fix session naming"));
 }

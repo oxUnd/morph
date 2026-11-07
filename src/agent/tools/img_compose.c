@@ -10,7 +10,7 @@
 #include "util/error.h"
 #include "util/buf.h"
 #include "util/image_util.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
 #include "stb_image_resize2.h"
@@ -149,14 +149,14 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 	if (!result)
 		return -EINVAL;
 
-	struct json *root = json_parse_prefix(args_json, NULL, NULL);
+	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
 	if (!ctx || !ctx->image_llm || !ctx->image_llm->api_key[0]) {
-		json_free(root);
+		cJSON_Delete(root);
 		(void)tool_result_success_json_text(
 			result, strdup("{\"error\":\"no image model configured\"}"));
 		return MORPH_ERR_NOT_CONFIGURED;
@@ -166,26 +166,26 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 	int parse_rc = annotation_parse(root, &annotation);
 
 	if (parse_rc != 0) {
-		json_free(root);
+		cJSON_Delete(root);
 		(void)tool_result_success_json_text(
 			result, strdup("{\"error\":\"missing or invalid annotation\"}"));
 		return parse_rc;
 	}
 
 	const char *user_prompt = NULL, *style = NULL, *size = NULL;
-	struct json *up = json_member_ci(root, "prompt");
-	if (json_is_string_value(up))
-		user_prompt = json_string_value(up);
-	struct json *st = json_member_ci(root, "style");
-	if (json_is_string_value(st))
-		style = json_string_value(st);
-	struct json *sz = json_member_ci(root, "size");
-	if (json_is_string_value(sz))
-		size = json_string_value(sz);
+	cJSON *up = cJSON_GetObjectItem(root, "prompt");
+	if (cJSON_IsString(up))
+		user_prompt = up->valuestring;
+	cJSON *st = cJSON_GetObjectItem(root, "style");
+	if (cJSON_IsString(st))
+		style = st->valuestring;
+	cJSON *sz = cJSON_GetObjectItem(root, "size");
+	if (cJSON_IsString(sz))
+		size = sz->valuestring;
 
 	if (image_gen_validate_size_for_model(ctx->image_llm, size) < 0) {
 		annotation_cleanup(&annotation);
-		json_free(root);
+		cJSON_Delete(root);
 		(void)tool_result_success_json_text(
 			result,
 			strdup("{\"error\":\"invalid size for the configured image model\"}"));
@@ -194,7 +194,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 
 	if (annotation.arrows.nelts == 0) {
 		annotation_cleanup(&annotation);
-		json_free(root);
+		cJSON_Delete(root);
 		(void)tool_result_success_json_text(
 			result, strdup("{\"error\":\"img_compose needs arrows (arrow + label = "
 				       "cross-image fusion). For bbox region generation use "
@@ -205,7 +205,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 	int main_idx = annotation_main_image(&annotation);
 	if (main_idx < 0) {
 		annotation_cleanup(&annotation);
-		json_free(root);
+		cJSON_Delete(root);
 		(void)tool_result_success_json_text(
 			result,
 			strdup("{\"error\":\"could not determine target image from arrows\"}"));
@@ -216,7 +216,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 	const char *main_path = main_image ? main_image->path : NULL;
 	if (!main_path) {
 		annotation_cleanup(&annotation);
-		json_free(root);
+		cJSON_Delete(root);
 		(void)tool_result_success_json_text(
 			result, strdup("{\"error\":\"no path for target image\"}"));
 		return -EINVAL;
@@ -228,7 +228,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 						     sizeof(resolved_main));
 		if (rc < 0) {
 			annotation_cleanup(&annotation);
-			json_free(root);
+			cJSON_Delete(root);
 			(void)tool_result_success_json_text(
 				result, strdup("{\"error\":\"cannot read target image "
 					       "(outside workspace?)\"}"));
@@ -243,13 +243,13 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 	unsigned char *canvas = load_rgba(resolved_main, &cw, &ch);
 	if (!canvas) {
 		annotation_cleanup(&annotation);
-		json_free(root);
+		cJSON_Delete(root);
 		(void)tool_result_success_json_text(
 			result, strdup("{\"error\":\"failed to load target image\"}"));
 		return MORPH_ERR_FORMAT;
 	}
 
-	struct json *labels = json_array();
+	cJSON *labels = cJSON_CreateArray();
 	int fused = 0;
 	const struct annotation_arrow *arrow;
 	morph_array_foreach (arrow, &annotation.arrows, const struct annotation_arrow) {
@@ -339,14 +339,14 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 		fused++;
 
 		if (arrow->label[0])
-			json_array_add(labels, json_string(arrow->label));
+			cJSON_AddItemToArray(labels, cJSON_CreateString(arrow->label));
 	}
 
 	if (fused == 0) {
 		free(canvas);
-		json_free(labels);
+		cJSON_Delete(labels);
 		annotation_cleanup(&annotation);
-		json_free(root);
+		cJSON_Delete(root);
 		(void)tool_result_success_json_text(
 			result,
 			strdup("{\"error\":\"no arrows could be applied to the target image\"}"));
@@ -370,9 +370,9 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 	morph_buf_cleanup(&draft.bytes);
 	free(canvas);
 	if (draft_rc != 0) {
-		json_free(labels);
+		cJSON_Delete(labels);
 		annotation_cleanup(&annotation);
-		json_free(root);
+		cJSON_Delete(root);
 		(void)tool_result_success_json_text(
 			result, strdup("{\"error\":\"failed to write draft composite\"}"));
 		return draft_rc;
@@ -381,12 +381,12 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 	/* Build a deterministic harmonization prompt and refine via i2i. */
 	morph_buf_t lb;
 	morph_buf_init(&lb, 128);
-	int nl = json_count(labels);
+	int nl = cJSON_GetArraySize(labels);
 	for (int i = 0; i < nl; i++) {
-		struct json *l = json_at(labels, i);
-		if (!json_is_string_value(l))
+		cJSON *l = cJSON_GetArrayItem(labels, i);
+		if (!cJSON_IsString(l))
 			continue;
-		morph_buf_printf(&lb, "%s%s", lb.len ? ", " : "", json_string_value(l));
+		morph_buf_printf(&lb, "%s%s", lb.len ? ", " : "", l->valuestring);
 	}
 	int have_labels = lb.len > 0;
 
@@ -410,27 +410,27 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 	morph_buf_cleanup(&lb);
 	morph_buf_cleanup(&pb);
 
-	struct json *out = json_object();
+	cJSON *out = cJSON_CreateObject();
 	if (rc < 0) {
-		json_add_string(out, "error", "harmonization failed; rough draft saved");
-		json_add_string(out, "draft_path", draft_path);
+		cJSON_AddStringToObject(out, "error", "harmonization failed; rough draft saved");
+		cJSON_AddStringToObject(out, "draft_path", draft_path);
 		(void)tool_result_add_image(result, draft_path, 0, 0);
 	} else {
-		json_add_string(out, "output_path", r.path);
-		json_add_string(out, "draft_path", draft_path);
+		cJSON_AddStringToObject(out, "output_path", r.path);
+		cJSON_AddStringToObject(out, "draft_path", draft_path);
 		(void)tool_result_add_image(result, r.path, r.width, r.height);
 		(void)tool_result_add_image(result, draft_path, 0, 0);
-		json_add_number(out, "fused", fused);
-		json_object_add(out, "elements", labels);
+		cJSON_AddNumberToObject(out, "fused", fused);
+		cJSON_AddItemToObject(out, "elements", labels);
 		labels = NULL;
 	}
 
 	if (labels)
-		json_free(labels);
-	char *out_str = json_stringify(out);
-	json_free(out);
+		cJSON_Delete(labels);
+	char *out_str = cJSON_PrintUnformatted(out);
+	cJSON_Delete(out);
 	annotation_cleanup(&annotation);
-	json_free(root);
+	cJSON_Delete(root);
 
 	(void)tool_result_success_json_text(result,
 					    out_str ? out_str : strdup("{\"error\":\"oom\"}"));

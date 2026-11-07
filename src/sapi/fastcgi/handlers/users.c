@@ -13,66 +13,65 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "util/json.h"
+#include "cJSON.h"
 
 static char *user_created_json(const char *user_id, const char *username, const char *role)
 {
-	struct json *root = json_object();
+	cJSON *root = cJSON_CreateObject();
 	char *json;
 
 	if (!root)
 		return NULL;
-	json_add_string(root, "user_id", user_id ? user_id : "");
-	json_add_string(root, "username", username ? username : "");
-	json_add_string(root, "role", role ? role : "user");
-	json = json_stringify(root);
-	json_free(root);
+	cJSON_AddStringToObject(root, "user_id", user_id ? user_id : "");
+	cJSON_AddStringToObject(root, "username", username ? username : "");
+	cJSON_AddStringToObject(root, "role", role ? role : "user");
+	json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
 	return json;
 }
 
-static int read_user_password(request_t *r, char **body_out, struct json **root_out,
+static int read_user_password(request_t *r, char **body_out, cJSON **root_out,
 			      const char **username, const char **password,
 			      const char **signup_code)
 {
 	char *body = NULL;
 	size_t blen = 0;
-	struct json *root;
-	struct json *u;
-	struct json *p;
-	struct json *code;
+	cJSON *root;
+	cJSON *u;
+	cJSON *p;
+	cJSON *code;
 
 	{
 		int rc = fcgi_read_body(r, &body, &blen);
 		if (rc != 0)
 			return rc;
 	}
-	root = json_parse_prefix(body ? body : "{}", NULL, NULL);
-	if (!json_is_object_value(root)) {
-		json_free(root);
+	root = cJSON_Parse(body ? body : "{}");
+	if (!cJSON_IsObject(root)) {
+		cJSON_Delete(root);
 		free(body);
 		return -EINVAL;
 	}
-	u = json_member_ci(root, "username");
-	p = json_member_ci(root, "password");
-	code = json_member_ci(root, "signup_code");
-	if (!json_is_string_value(u) || !json_string_value(u) || !json_is_string_value(p) ||
-	    !json_string_value(p)) {
-		json_free(root);
+	u = cJSON_GetObjectItem(root, "username");
+	p = cJSON_GetObjectItem(root, "password");
+	code = cJSON_GetObjectItem(root, "signup_code");
+	if (!cJSON_IsString(u) || !u->valuestring || !cJSON_IsString(p) || !p->valuestring) {
+		cJSON_Delete(root);
 		free(body);
 		return -EINVAL;
 	}
 	*body_out = body;
 	*root_out = root;
-	*username = json_string_value(u);
-	*password = json_string_value(p);
-	*signup_code = json_is_string_value(code) ? json_string_value(code) : NULL;
+	*username = u->valuestring;
+	*password = p->valuestring;
+	*signup_code = cJSON_IsString(code) ? code->valuestring : NULL;
 	return 0;
 }
 
 void handle_install(request_t *r)
 {
 	char *body = NULL;
-	struct json *root = NULL;
+	cJSON *root = NULL;
 	const char *username = NULL;
 	const char *password = NULL;
 	const char *signup_code = NULL;
@@ -96,7 +95,7 @@ void handle_install(request_t *r)
 	}
 	snprintf(username_buf, sizeof(username_buf), "%s", username);
 	rc = store_create_user(r->store, username, password, "admin", user_id);
-	json_free(root);
+	cJSON_Delete(root);
 	free(body);
 	if (rc == -EEXIST) {
 		reply_json(r, 409, "{\"error\":\"user_exists\"}");
@@ -124,7 +123,7 @@ void handle_signup(request_t *r)
 	const char *allow = getenv("MORPH_FCGI_ALLOW_SIGNUP");
 	const char *required_code = getenv("MORPH_FCGI_SIGNUP_CODE");
 	char *body = NULL;
-	struct json *root = NULL;
+	cJSON *root = NULL;
 	const char *username = NULL;
 	const char *password = NULL;
 	const char *signup_code = NULL;
@@ -151,14 +150,14 @@ void handle_signup(request_t *r)
 	}
 	if (required_code && *required_code &&
 	    (!signup_code || strcmp(signup_code, required_code) != 0)) {
-		json_free(root);
+		cJSON_Delete(root);
 		free(body);
 		reply_json(r, 403, "{\"error\":\"invalid_signup_code\"}");
 		return;
 	}
 	snprintf(username_buf, sizeof(username_buf), "%s", username);
 	rc = store_create_user(r->store, username, password, "user", user_id);
-	json_free(root);
+	cJSON_Delete(root);
 	free(body);
 	if (rc == -EEXIST) {
 		reply_json(r, 409, "{\"error\":\"user_exists\"}");
@@ -199,7 +198,7 @@ void handle_login(request_t *r)
 	char password_buf[256] = {0};
 	struct fcgi_user user = {0};
 	char token[64] = {0};
-	struct json *obj = NULL;
+	cJSON *obj = NULL;
 	char *json = NULL;
 	int64_t expires;
 	int rc;
@@ -222,18 +221,18 @@ void handle_login(request_t *r)
 
 	expires = (int64_t)time(NULL) + 24 * 3600;
 	auth_token_created(r->auth, token, user.user_id, user.username, user.role, expires);
-	obj = json_object();
+	obj = cJSON_CreateObject();
 	if (!obj) {
 		reply_500(r, "oom");
 		return;
 	}
-	json_add_string(obj, "token", token);
-	json_add_string(obj, "user_id", user.user_id);
-	json_add_string(obj, "username", user.username);
-	json_add_string(obj, "role", user.role);
-	json_add_number(obj, "expires_at", (double)expires);
-	json = json_stringify(obj);
-	json_free(obj);
+	cJSON_AddStringToObject(obj, "token", token);
+	cJSON_AddStringToObject(obj, "user_id", user.user_id);
+	cJSON_AddStringToObject(obj, "username", user.username);
+	cJSON_AddStringToObject(obj, "role", user.role);
+	cJSON_AddNumberToObject(obj, "expires_at", (double)expires);
+	json = cJSON_PrintUnformatted(obj);
+	cJSON_Delete(obj);
 	if (!json) {
 		reply_500(r, "oom");
 		return;

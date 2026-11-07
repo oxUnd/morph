@@ -94,7 +94,7 @@ static int runtime_emit_background(void *user_data, const char *name,
 	struct runtime *runtime = user_data;
 	morph_event_cb cb;
 	void *event_user_data;
-	struct json *data;
+	cJSON *data;
 	int rc;
 
 	if (!runtime)
@@ -109,20 +109,21 @@ static int runtime_emit_background(void *user_data, const char *name,
 		runtime->options.event_user_data;
 	if (!cb)
 		return 0;
-	data = json_object();
+	data = cJSON_CreateObject();
 	if (!data)
 		return -ENOMEM;
-	json_add_string(data, "task", task ? task : "");
+	cJSON_AddStringToObject(data, "task", task ? task : "");
 	if (count >= 0)
-		json_add_number(data, "count", count);
+		cJSON_AddNumberToObject(data, "count", count);
 	if (error_code < 0) {
-		json_add_number(data, "error_code", error_code);
-		json_add_string(data, "error", morph_strerror(error_code));
+		cJSON_AddNumberToObject(data, "error_code", error_code);
+		cJSON_AddStringToObject(data, "error",
+					morph_strerror(error_code));
 	}
 	rc = morph_event_emit_simple(cb, event_user_data,
 				     MORPH_EVENT_BACKGROUND, name, phase,
 				     message, data);
-	json_free(data);
+	cJSON_Delete(data);
 	return rc;
 }
 
@@ -520,42 +521,40 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 		}
 	}
 	if (rc != 0) {
-		struct json *data = json_object();
+		cJSON *data = cJSON_CreateObject();
 
 		if (options->startup_error)
 			*options->startup_error = error;
 		if (data) {
-			json_add_number(data, "error_code", rc);
+			cJSON_AddNumberToObject(data, "error_code", rc);
 			if (error.file[0]) {
-				json_add_string(data, "file", error.file);
-				json_add_number(data, "line", error.detail.line);
-				json_add_number(data, "column", error.detail.column);
-				json_add_string(data, "key", error.detail.path);
+				cJSON_AddStringToObject(data, "file", error.file);
+				cJSON_AddNumberToObject(data, "line", error.detail.line);
+				cJSON_AddNumberToObject(data, "column", error.detail.column);
+				cJSON_AddStringToObject(data, "key", error.detail.path);
 			}
 		}
 		(void)morph_event_emit_simple(options->event_cb, options->event_user_data,
 			MORPH_EVENT_STARTUP, "startup.failed", "failed",
 			error.detail.message[0] ? error.detail.message : morph_strerror(rc), data);
-		json_free(data);
+		cJSON_Delete(data);
 		runtime_close(runtime);
 		return rc;
 	}
 	{
-		struct json *hooks = hook_manager_list(&runtime->context.hooks);
-		const struct json *row;
+		cJSON *hooks = hook_manager_list(&runtime->context.hooks);
+		const cJSON *row;
 		int pending = 0;
-		json_foreach (row, hooks) {
-			const struct json *state = json_member_ci(row, "state");
-			if (json_is_string_value(state) &&
-			    strcmp(json_string_value(state), "trusted") != 0 &&
-			    strcmp(json_string_value(state), "off") != 0 &&
-			    strcmp(json_string_value(state), "disabled") != 0)
+		cJSON_ArrayForEach(row, hooks) {
+			const cJSON *state = cJSON_GetObjectItem(row, "state");
+			if (cJSON_IsString(state) && strcmp(state->valuestring, "trusted") != 0 &&
+			    strcmp(state->valuestring, "off") != 0 && strcmp(state->valuestring, "disabled") != 0)
 				pending++;
 		}
 		if (pending)
 			runtime_emit_startup(runtime, "startup.hooks", "ready",
 				"Hooks need review or are unsupported; inspect /hooks");
-		json_free(hooks);
+		cJSON_Delete(hooks);
 	}
 	runtime_emit_startup(runtime, "startup.ready", "ready",
 			     "Morph is ready");
@@ -580,8 +579,8 @@ void runtime_close(struct runtime *runtime)
 	runtime_title_stop(runtime);
 	runtime_recap_stop(runtime);
 	if (runtime->context.hooks.ready && runtime->context.hooks.session_id) {
-		struct json *input = json_object(), *output = NULL;
-		json_add_string(input, "reason", "other");
+		cJSON *input = cJSON_CreateObject(), *output = NULL;
+		cJSON_AddStringToObject(input, "reason", "other");
 		runtime->context.hooks.remaining_ms = 1000;
 		runtime->context.hooks.event_cb = runtime->options.event_cb;
 		runtime->context.hooks.event_user = runtime->options.event_user_data;
@@ -589,8 +588,8 @@ void runtime_close(struct runtime *runtime)
 		runtime->context.hooks.cancel_token = NULL;
 		(void)hook_manager_dispatch(&runtime->context.hooks,
 			"SessionEnd", input, &output);
-		json_free(input);
-		json_free(output);
+		cJSON_Delete(input);
+		cJSON_Delete(output);
 	}
 	hook_manager_cleanup(&runtime->context.hooks);
 	cleanup = runtime_context_shutdown_resources(

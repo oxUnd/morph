@@ -3,7 +3,7 @@
 extern "C" {
 #include "sapi/cli/models/transcript.h"
 #include "session_history.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "util/error.h"
 }
 
@@ -27,7 +27,7 @@ class CliTranscriptModelTest : public ::testing::Test
 
 	int Apply(enum morph_event_type type, const char *name, const char *json, double now)
 	{
-		struct json *data = json_parse_prefix(json, NULL, NULL);
+		cJSON *data = cJSON_Parse(json);
 		if (!data)
 			return -EINVAL;
 		morph_event event{};
@@ -35,7 +35,7 @@ class CliTranscriptModelTest : public ::testing::Test
 		event.name = name;
 		event.data = data;
 		int rc = cli_transcript_model_reduce(model, &event, now, &change);
-		json_free(data);
+		cJSON_Delete(data);
 		return rc;
 	}
 
@@ -181,15 +181,13 @@ TEST_F(CliTranscriptModelTest, ObservationIsOwnedAndAddedOnlyOnce)
 
 TEST_F(CliTranscriptModelTest, HistoricalReplayDoesNotSynthesizePatchPreviewsOrInterruptedCalls)
 {
-	struct json *call =
-		json_parse_prefix("{\"name\":\"apply_patch\",\"tool_call_id\":\"historical\","
+	cJSON *call = cJSON_Parse("{\"name\":\"apply_patch\",\"tool_call_id\":\"historical\","
 				  "\"input\":\"*** Begin Patch\\n*** Update File: "
-				  "absent.c\\n-old\\n+new\\n*** End Patch\"}",
-				  NULL, NULL);
+				  "absent.c\\n-old\\n+new\\n*** End Patch\"}");
 	ASSERT_NE(call, nullptr);
 	size_t index;
 	ASSERT_EQ(cli_transcript_model_restore(model, call, nullptr, &index), 0);
-	json_free(call);
+	cJSON_Delete(call);
 	EXPECT_EQ(index, 0u);
 	EXPECT_TRUE(Tool(0)->historical);
 	EXPECT_EQ(Tool(0)->state, 0);
@@ -205,10 +203,8 @@ TEST_F(CliTranscriptModelTest, HistoricalReplayDoesNotSynthesizePatchPreviewsOrI
 
 TEST_F(CliTranscriptModelTest, HistoricalFailuresKeepOriginalResultAndErrorMetadata)
 {
-	struct json *call =
-		json_parse_prefix("{\"name\":\"exec\",\"tool_call_id\":\"history\","
-				  "\"arguments\":\"{\\\"command\\\":\\\"sleep 10\\\"}\"}",
-				  NULL, NULL);
+	cJSON *call = cJSON_Parse("{\"name\":\"exec\",\"tool_call_id\":\"history\","
+				  "\"arguments\":\"{\\\"command\\\":\\\"sleep 10\\\"}\"}");
 	ASSERT_NE(call, nullptr);
 	model_history_item result{};
 	result.content = const_cast<char *>("stored abbreviated result");
@@ -217,7 +213,7 @@ TEST_F(CliTranscriptModelTest, HistoricalFailuresKeepOriginalResultAndErrorMetad
 	result.payload_json = metadata.data();
 	size_t index;
 	ASSERT_EQ(cli_transcript_model_restore(model, call, &result, &index), 0);
-	json_free(call);
+	cJSON_Delete(call);
 	EXPECT_STREQ(Tool(index)->result, "full result");
 	EXPECT_EQ(Tool(index)->state, -1);
 	EXPECT_STREQ(Tool(index)->error, morph_strerror(-ETIMEDOUT));

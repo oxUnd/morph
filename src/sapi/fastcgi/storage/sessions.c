@@ -1,6 +1,6 @@
 #include "sapi/fastcgi/storage/sessions.h"
 #include "sapi/fastcgi/session_store_internal.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "util/error.h"
 
 #include <errno.h>
@@ -66,10 +66,10 @@ int store_list_sessions_page_json(struct session_store *s, const char *user_id, 
 	sqlite3_bind_int(st, 2, fetch);
 	sqlite3_bind_int(st, 3, offset > 0 ? offset : 0);
 
-	struct json *root = json_object();
-	struct json *items = root ? json_add_array(root, "items") : NULL;
+	cJSON *root = cJSON_CreateObject();
+	cJSON *items = root ? cJSON_AddArrayToObject(root, "items") : NULL;
 	if (!root || !items) {
-		json_free(root);
+		cJSON_Delete(root);
 		sqlite3_finalize(st);
 		return -ENOMEM;
 	}
@@ -79,42 +79,36 @@ int store_list_sessions_page_json(struct session_store *s, const char *user_id, 
 		const char *model = (const char *)sqlite3_column_text(st, 2);
 		int64_t ca = sqlite3_column_int64(st, 3);
 		int64_t ua = sqlite3_column_int64(st, 4);
-		struct json *item = json_object();
+		cJSON *item = cJSON_CreateObject();
 
 		if (lim > 0 && n >= lim) {
 			has_more = 1;
-			json_free(item);
+			cJSON_Delete(item);
 			break;
 		}
 		if (!item) {
-			json_free(root);
+			cJSON_Delete(root);
 			sqlite3_finalize(st);
 			return -ENOMEM;
 		}
-		json_add_string(item, "id", id ? id : "");
-		json_add_string(item, "name", name ? name : "");
-		json_add_string(item, "model", model ? model : "");
-		json_add_number(item, "created_at", (double)ca);
-		json_add_number(item, "updated_at", (double)ua);
-		int rc = json_array_add(items, item);
-		if (rc) {
-			json_free(item);
-			json_free(root);
-			sqlite3_finalize(st);
-			return rc;
-		}
+		cJSON_AddStringToObject(item, "id", id ? id : "");
+		cJSON_AddStringToObject(item, "name", name ? name : "");
+		cJSON_AddStringToObject(item, "model", model ? model : "");
+		cJSON_AddNumberToObject(item, "created_at", (double)ca);
+		cJSON_AddNumberToObject(item, "updated_at", (double)ua);
+		cJSON_AddItemToArray(items, item);
 		n++;
 	}
 	sqlite3_finalize(st);
 	if (step_rc != SQLITE_DONE && !has_more) {
-		json_free(root);
+		cJSON_Delete(root);
 		return -EIO;
 	}
-	json_add_number(root, "limit", lim > 0 ? lim : 0);
-	json_add_number(root, "offset", offset > 0 ? offset : 0);
-	json_add_bool(root, "has_more", has_more);
-	char *json = json_stringify(root);
-	json_free(root);
+	cJSON_AddNumberToObject(root, "limit", lim > 0 ? lim : 0);
+	cJSON_AddNumberToObject(root, "offset", offset > 0 ? offset : 0);
+	cJSON_AddBoolToObject(root, "has_more", has_more);
+	char *json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
 	if (!json)
 		return -ENOMEM;
 	*out_json = json;
@@ -169,8 +163,8 @@ int store_messages_json(struct session_store *s, const char *session_id, const c
 	sqlite3_stmt *st = NULL;
 	struct message *head;
 	struct message *m;
-	struct json *root;
-	struct json *items;
+	cJSON *root;
+	cJSON *items;
 	int total = 0;
 	int skipped;
 	int added = 0;
@@ -197,48 +191,42 @@ int store_messages_json(struct session_store *s, const char *session_id, const c
 			added++;
 	skipped = added > limit ? added - limit : 0;
 
-	root = json_object();
-	items = root ? json_add_array(root, "items") : NULL;
+	root = cJSON_CreateObject();
+	items = root ? cJSON_AddArrayToObject(root, "items") : NULL;
 	if (!root || !items) {
-		json_free(root);
+		cJSON_Delete(root);
 		message_free_list(head);
 		return -ENOMEM;
 	}
 	added = 0;
 	for (m = head; m; m = m->next) {
-		struct json *item;
+		cJSON *item;
 
 		if (before > 0 && m->id >= before)
 			continue;
 		if (added++ < skipped)
 			continue;
-		item = json_object();
+		item = cJSON_CreateObject();
 		if (!item) {
-			json_free(root);
+			cJSON_Delete(root);
 			message_free_list(head);
 			return -ENOMEM;
 		}
-		json_add_number(item, "id", (double)m->id);
-		json_add_string(item, "role", m->role);
-		json_add_string(item, "content", m->content ? m->content : "");
+		cJSON_AddNumberToObject(item, "id", (double)m->id);
+		cJSON_AddStringToObject(item, "role", m->role);
+		cJSON_AddStringToObject(item, "content", m->content ? m->content : "");
 		if (m->turn_id)
-			json_add_string(item, "turn_id", m->turn_id);
-		json_add_number(item, "token_count", m->token_count);
-		json_add_bool(item, "compressed", m->compressed != 0);
-		json_add_number(item, "created_at", (double)m->created_at);
-		int rc = json_array_add(items, item);
-		if (rc) {
-			json_free(item);
-			json_free(root);
-			message_free_list(head);
-			return rc;
-		}
+			cJSON_AddStringToObject(item, "turn_id", m->turn_id);
+		cJSON_AddNumberToObject(item, "token_count", m->token_count);
+		cJSON_AddBoolToObject(item, "compressed", m->compressed != 0);
+		cJSON_AddNumberToObject(item, "created_at", (double)m->created_at);
+		cJSON_AddItemToArray(items, item);
 	}
 	message_free_list(head);
-	json_add_number(root, "limit", limit);
-	json_add_bool(root, "has_more", skipped > 0);
-	json = json_stringify(root);
-	json_free(root);
+	cJSON_AddNumberToObject(root, "limit", limit);
+	cJSON_AddBoolToObject(root, "has_more", skipped > 0);
+	json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
 	if (!json)
 		return -ENOMEM;
 	*out_json = json;

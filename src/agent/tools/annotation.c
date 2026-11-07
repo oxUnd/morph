@@ -4,18 +4,18 @@
 #include <math.h>
 #include <string.h>
 
-static int annotation_number(const struct json *object, const char *name, double *out)
+static int annotation_number(const cJSON *object, const char *name, double *out)
 {
-	const struct json *value = json_member(object, name);
+	const cJSON *value = cJSON_GetObjectItemCaseSensitive(object, name);
 
-	if (!json_is_number_value(value) || !isfinite(json_number_value(value)) ||
-	    json_number_value(value) < 0 || json_number_value(value) > INT_MAX)
+	if (!cJSON_IsNumber(value) || !isfinite(value->valuedouble) || value->valuedouble < 0 ||
+	    value->valuedouble > INT_MAX)
 		return -EINVAL;
-	*out = json_number_value(value);
+	*out = value->valuedouble;
 	return 0;
 }
 
-static int annotation_index(const struct json *object, int count, int *out)
+static int annotation_index(const cJSON *object, int count, int *out)
 {
 	double number;
 	int rc = annotation_number(object, "image_index", &number);
@@ -26,34 +26,41 @@ static int annotation_index(const struct json *object, int count, int *out)
 	return 0;
 }
 
-static int annotation_images(const struct json *items, struct annotation *out)
+static const char *annotation_label(const cJSON *object)
 {
-	const struct json *item;
+	const char *label = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(object, "label"));
 
-	if (!json_is_array_value(items) || json_count(items) == 0)
+	return label ? label : "";
+}
+
+static int annotation_images(const cJSON *items, struct annotation *out)
+{
+	const cJSON *item;
+
+	if (!cJSON_IsArray(items) || cJSON_GetArraySize(items) == 0)
 		return -EINVAL;
-	json_foreach (item, items) {
+	cJSON_ArrayForEach (item, items) {
 		struct annotation_image image = {0};
-		const struct json *width = json_member(item, "width");
-		const struct json *height = json_member(item, "height");
+		const cJSON *width = cJSON_GetObjectItemCaseSensitive(item, "width");
+		const cJSON *height = cJSON_GetObjectItemCaseSensitive(item, "height");
 		struct annotation_image *slot;
 
-		image.path = json_string_value(json_member(item, "path"));
+		image.path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "path"));
 		if (!image.path || !*image.path)
 			return -EINVAL;
 		if (width) {
-			if (!json_is_number_value(width) || json_number_value(width) < 0 ||
-			    json_number_value(width) > INT_MAX ||
-			    json_number_value(width) != floor(json_number_value(width)))
+			if (!cJSON_IsNumber(width) || width->valuedouble < 0 ||
+			    width->valuedouble > INT_MAX ||
+			    width->valuedouble != floor(width->valuedouble))
 				return -EINVAL;
-			image.width = json_int_value(width);
+			image.width = width->valueint;
 		}
 		if (height) {
-			if (!json_is_number_value(height) || json_number_value(height) < 0 ||
-			    json_number_value(height) > INT_MAX ||
-			    json_number_value(height) != floor(json_number_value(height)))
+			if (!cJSON_IsNumber(height) || height->valuedouble < 0 ||
+			    height->valuedouble > INT_MAX ||
+			    height->valuedouble != floor(height->valuedouble))
 				return -EINVAL;
-			image.height = json_int_value(height);
+			image.height = height->valueint;
 		}
 		slot = morph_array_push(&out->images);
 		if (!slot)
@@ -63,15 +70,15 @@ static int annotation_images(const struct json *items, struct annotation *out)
 	return 0;
 }
 
-static int annotation_bboxes(const struct json *items, struct annotation *out)
+static int annotation_bboxes(const cJSON *items, struct annotation *out)
 {
-	const struct json *item;
+	const cJSON *item;
 
 	if (!items)
 		return 0;
-	if (!json_is_array_value(items))
+	if (!cJSON_IsArray(items))
 		return -EINVAL;
-	json_foreach (item, items) {
+	cJSON_ArrayForEach (item, items) {
 		struct annotation_bbox bbox = {0};
 		struct annotation_bbox *slot;
 
@@ -82,7 +89,7 @@ static int annotation_bboxes(const struct json *items, struct annotation *out)
 		    annotation_number(item, "h", &bbox.rect.height) != 0 || bbox.rect.width <= 0 ||
 		    bbox.rect.height <= 0)
 			return -EINVAL;
-		bbox.label = json_str_or(item, "label", "");
+		bbox.label = annotation_label(item);
 		slot = morph_array_push(&out->bboxes);
 		if (!slot)
 			return -ENOMEM;
@@ -91,8 +98,7 @@ static int annotation_bboxes(const struct json *items, struct annotation *out)
 	return 0;
 }
 
-static int annotation_point_parse(const struct json *item, int count,
-				  struct annotation_point *point)
+static int annotation_point_parse(const cJSON *item, int count, struct annotation_point *point)
 {
 	if (annotation_index(item, count, &point->image_index) != 0 ||
 	    annotation_number(item, "x", &point->x) != 0 ||
@@ -101,23 +107,25 @@ static int annotation_point_parse(const struct json *item, int count,
 	return 0;
 }
 
-static int annotation_arrows(const struct json *items, struct annotation *out)
+static int annotation_arrows(const cJSON *items, struct annotation *out)
 {
-	const struct json *item;
+	const cJSON *item;
 
 	if (!items)
 		return 0;
-	if (!json_is_array_value(items))
+	if (!cJSON_IsArray(items))
 		return -EINVAL;
-	json_foreach (item, items) {
+	cJSON_ArrayForEach (item, items) {
 		struct annotation_arrow arrow = {0};
 		struct annotation_arrow *slot;
 		int count = (int)out->images.nelts;
 
-		if (annotation_point_parse(json_member(item, "from"), count, &arrow.from) != 0 ||
-		    annotation_point_parse(json_member(item, "to"), count, &arrow.to) != 0)
+		if (annotation_point_parse(cJSON_GetObjectItemCaseSensitive(item, "from"), count,
+					   &arrow.from) != 0 ||
+		    annotation_point_parse(cJSON_GetObjectItemCaseSensitive(item, "to"), count,
+					   &arrow.to) != 0)
 			return -EINVAL;
-		arrow.label = json_str_or(item, "label", "");
+		arrow.label = annotation_label(item);
 		slot = morph_array_push(&out->arrows);
 		if (!slot)
 			return -ENOMEM;
@@ -133,13 +141,13 @@ void annotation_cleanup(struct annotation *annotation)
 	morph_array_cleanup(&annotation->arrows);
 	morph_array_cleanup(&annotation->bboxes);
 	morph_array_cleanup(&annotation->images);
-	json_free(annotation->owned);
+	cJSON_Delete(annotation->owned);
 	memset(annotation, 0, sizeof(*annotation));
 }
 
-int annotation_parse(const struct json *input, struct annotation *out)
+int annotation_parse(const cJSON *input, struct annotation *out)
 {
-	const struct json *body;
+	const cJSON *body;
 	struct annotation_image image;
 	struct annotation_bbox bbox;
 	struct annotation_arrow arrow;
@@ -148,16 +156,16 @@ int annotation_parse(const struct json *input, struct annotation *out)
 	if (!out)
 		return -EINVAL;
 	memset(out, 0, sizeof(*out));
-	if (!json_is_object_value(input))
+	if (!cJSON_IsObject(input))
 		return -EINVAL;
-	body = json_member(input, "annotation");
+	body = cJSON_GetObjectItemCaseSensitive(input, "annotation");
 	if (!body)
 		body = input;
-	if (json_is_string_value(body)) {
-		out->owned = json_parse_prefix(json_string_value(body), NULL, NULL);
+	if (cJSON_IsString(body)) {
+		out->owned = cJSON_Parse(body->valuestring);
 		body = out->owned;
 	}
-	if (!json_is_object_value(body)) {
+	if (!cJSON_IsObject(body)) {
 		annotation_cleanup(out);
 		return -EINVAL;
 	}
@@ -167,11 +175,11 @@ int annotation_parse(const struct json *input, struct annotation *out)
 	if (rc == 0)
 		rc = morph_array_init(&out->arrows, 4, sizeof(arrow));
 	if (rc == 0)
-		rc = annotation_images(json_member(body, "images"), out);
+		rc = annotation_images(cJSON_GetObjectItemCaseSensitive(body, "images"), out);
 	if (rc == 0)
-		rc = annotation_bboxes(json_member(body, "bboxes"), out);
+		rc = annotation_bboxes(cJSON_GetObjectItemCaseSensitive(body, "bboxes"), out);
 	if (rc == 0)
-		rc = annotation_arrows(json_member(body, "arrows"), out);
+		rc = annotation_arrows(cJSON_GetObjectItemCaseSensitive(body, "arrows"), out);
 	if (rc != 0)
 		annotation_cleanup(out);
 	return rc;

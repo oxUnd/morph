@@ -23,7 +23,7 @@
 #include <time.h>
 #include <unistd.h>
 
-static int hook_matches(struct hook_entry *entry, const char *event, const struct json *input)
+static int hook_matches(struct hook_entry *entry, const char *event, const cJSON *input)
 {
 	const char *name;
 	const char *alias = "";
@@ -32,13 +32,13 @@ static int hook_matches(struct hook_entry *entry, const char *event, const struc
 		return 0;
 	if (!entry->regex_ready || hook_event_ignores_matcher(event))
 		return 1;
-	name = json_str_or(input, "tool_name", "");
+	name = hook_json_string(input, "tool_name");
 	if (strcmp(event, "SessionStart") == 0)
-		name = json_str_or(input, "source", "");
+		name = hook_json_string(input, "source");
 	if (strcmp(event, "SessionEnd") == 0)
-		name = json_str_or(input, "reason", "");
+		name = hook_json_string(input, "reason");
 	if (strcmp(event, "PreCompact") == 0 || strcmp(event, "PostCompact") == 0)
-		name = json_str_or(input, "trigger", "");
+		name = hook_json_string(input, "trigger");
 	if (strcmp(name, "exec") == 0)
 		alias = "Bash";
 	if (regexec(&entry->regex, name, 0, NULL, 0) == 0 ||
@@ -67,28 +67,28 @@ int hook_manager_has(struct hook_manager *manager, const char *event)
 static void hook_emit(struct hook_manager *manager, struct hook_entry *entry, const char *name,
 		      int rc, int blocked, const struct hook_run *run)
 {
-	struct json *data = json_object();
+	cJSON *data = cJSON_CreateObject();
 
 	if (!data)
 		return;
-	json_add_string(data, "hook_id", entry->id);
-	json_add_string(data, "digest", entry->digest);
-	json_add_string(data, "event", entry->event);
-	json_add_string(data, "state", hook_entry_state(manager, entry));
-	json_add_bool(data, "blocked", blocked);
+	cJSON_AddStringToObject(data, "hook_id", entry->id);
+	cJSON_AddStringToObject(data, "digest", entry->digest);
+	cJSON_AddStringToObject(data, "event", entry->event);
+	cJSON_AddStringToObject(data, "state", hook_entry_state(manager, entry));
+	cJSON_AddBoolToObject(data, "blocked", blocked);
 	if (run) {
-		json_add_number(data, "duration_ms", (double)run->duration_ms);
-		json_add_number(data, "exit_code", run->exit_code);
+		cJSON_AddNumberToObject(data, "duration_ms", (double)run->duration_ms);
+		cJSON_AddNumberToObject(data, "exit_code", run->exit_code);
 	}
 	if (rc < 0) {
-		json_add_number(data, "error_code", rc);
-		json_add_string(data, "error", morph_strerror(rc));
+		cJSON_AddNumberToObject(data, "error_code", rc);
+		cJSON_AddStringToObject(data, "error", morph_strerror(rc));
 	}
 	if (strcmp(name, "hook.started") != 0 && manager->recent) {
-		json_add_string(data, "name", name);
-		if (json_count(manager->recent) >= 64)
-			json_array_remove(manager->recent, 0);
-		json_array_add(manager->recent, json_clone(data, 1));
+		cJSON_AddStringToObject(data, "name", name);
+		if (cJSON_GetArraySize(manager->recent) >= 64)
+			cJSON_DeleteItemFromArray(manager->recent, 0);
+		cJSON_AddItemToArray(manager->recent, cJSON_Duplicate(data, 1));
 	}
 	(void)morph_event_emit_simple(
 		manager->event_cb, manager->event_user, MORPH_EVENT_BACKGROUND, name,
@@ -102,7 +102,7 @@ static void hook_emit(struct hook_manager *manager, struct hook_entry *entry, co
 			? entry->status_message
 			: "Hook lifecycle",
 		data);
-	json_free(data);
+	cJSON_Delete(data);
 }
 
 static int collect_run(struct process_manager *processes, struct hook_run *run)
@@ -145,8 +145,7 @@ static uint64_t hook_now_ms(void)
 	return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
 
-int hook_manager_dispatch(void *opaque, const char *event, const struct json *input,
-			  struct json **output)
+int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, cJSON **output)
 {
 	struct hook_manager *manager = opaque;
 	struct process_manager *processes = NULL;
@@ -159,7 +158,7 @@ int hook_manager_dispatch(void *opaque, const char *event, const struct json *in
 	morph_array_t runs = {0};
 	morph_buf_t context = {0}, reason = {0};
 	struct hook_entry *entry;
-	struct json *payload = NULL, *updated = NULL;
+	cJSON *payload = NULL, *updated = NULL;
 	char *wire = NULL;
 	int rc = 0, blocked = 0, ask = 0, terminate = 0;
 	uint64_t started = hook_now_ms();
@@ -183,9 +182,9 @@ int hook_manager_dispatch(void *opaque, const char *event, const struct json *in
 	}
 	if (!matching) {
 		if (strcmp(event, "UserPromptSubmit") == 0 && manager->session_context) {
-			*output = json_object();
+			*output = cJSON_CreateObject();
 			if (!*output ||
-			    !json_add_string(*output, "context", manager->session_context))
+			    !cJSON_AddStringToObject(*output, "context", manager->session_context))
 				return -ENOMEM;
 		}
 		return 0;
@@ -194,25 +193,25 @@ int hook_manager_dispatch(void *opaque, const char *event, const struct json *in
 	    (morph_signal_flag_get(manager->cancelled) ||
 	     morph_cancel_token_is_cancelled(manager->cancel_token)))
 		return -ECANCELED;
-	payload = input ? json_clone(input, 1) : json_object();
+	payload = input ? cJSON_Duplicate(input, 1) : cJSON_CreateObject();
 	if (!payload)
 		return -ENOMEM;
 	char sid[32];
 	snprintf(sid, sizeof(sid), "%lld", (long long)manager->session_id);
-	json_add_string(payload, "session_id", sid);
-	json_add_null(payload, "transcript_path");
-	json_add_string(payload, "cwd", manager->workdir);
-	json_add_string(payload, "hook_event_name", event);
-	json_add_string(payload, "model", manager->model ? manager->model : "");
-	json_add_string(payload, "turn_id", manager->turn_id ? manager->turn_id : "");
+	cJSON_AddStringToObject(payload, "session_id", sid);
+	cJSON_AddNullToObject(payload, "transcript_path");
+	cJSON_AddStringToObject(payload, "cwd", manager->workdir);
+	cJSON_AddStringToObject(payload, "hook_event_name", event);
+	cJSON_AddStringToObject(payload, "model", manager->model ? manager->model : "");
+	cJSON_AddStringToObject(payload, "turn_id", manager->turn_id ? manager->turn_id : "");
 	struct permission_policy policy;
 	const char *preset = "default";
 
 	if (manager->permissions &&
 	    tool_context_get_permission_policy(manager->permissions, &policy) == 0)
 		preset = runtime_permission_preset_name(&policy);
-	json_add_string(payload, "permission_mode", preset);
-	wire = json_stringify(payload);
+	cJSON_AddStringToObject(payload, "permission_mode", preset);
+	wire = cJSON_PrintUnformatted(payload);
 	if (!wire || strlen(wire) > HOOK_INPUT_MAX) {
 		rc = (wire ? -E2BIG : -ENOMEM);
 		goto out_cleanup;
@@ -349,7 +348,7 @@ int hook_manager_dispatch(void *opaque, const char *event, const struct json *in
 	morph_array_foreach (run, &runs, struct hook_run) {
 		int decision = 0;
 		size_t context_before = context.len, reason_before = reason.len;
-		struct json *updated_before = updated;
+		cJSON *updated_before = updated;
 		int ask_before = ask, terminate_before = terminate;
 		int decode_rc = hook_decode_output(manager, run, event, &context, &reason, &updated,
 						   &decision, &ask, &terminate);
@@ -359,7 +358,7 @@ int hook_manager_dispatch(void *opaque, const char *event, const struct json *in
 			(void)morph_buf_truncate(&context, context_before);
 			(void)morph_buf_truncate(&reason, reason_before);
 			if (updated != updated_before)
-				json_free(updated);
+				cJSON_Delete(updated);
 			updated = updated_before;
 			ask = ask_before;
 			terminate = terminate_before;
@@ -367,41 +366,41 @@ int hook_manager_dispatch(void *opaque, const char *event, const struct json *in
 		}
 		blocked |= decision;
 		if (decode_rc == 0) {
-			struct json *parsed =
-				json_parse_prefix(morph_buf_cstr(&run->out), NULL, NULL);
-			const char *message = json_str_or(parsed, "systemMessage", "");
+			cJSON *parsed = cJSON_Parse(morph_buf_cstr(&run->out));
+			const char *message = hook_json_string(parsed, "systemMessage");
 			if (*message)
 				(void)morph_event_emit_simple(manager->event_cb,
 							      manager->event_user,
 							      MORPH_EVENT_BACKGROUND,
 							      "hook.message", "end", message, NULL);
-			json_free(parsed);
+			cJSON_Delete(parsed);
 		}
 		hook_emit(manager, run->entry,
 			  decode_rc < 0 ? "hook.failed"
 			  : decision	? "hook.blocked"
 					: "hook.completed",
 			  decode_rc, decision, run);
-		struct json *last = json_at(manager->recent, json_count(manager->recent) - 1);
+		cJSON *last = cJSON_GetArrayItem(manager->recent,
+						 cJSON_GetArraySize(manager->recent) - 1);
 		char *diagnostic = utf8_dup_clamped(morph_buf_cstr(&run->err), 16384);
 		if (diagnostic) {
-			json_add_string(last, "stderr", diagnostic);
+			cJSON_AddStringToObject(last, "stderr", diagnostic);
 			free(diagnostic);
 		}
 	}
 	manager->context_bytes += context.len;
-	*output = json_object();
+	*output = cJSON_CreateObject();
 	if (!*output) {
 		rc = (-ENOMEM);
 		goto out_cleanup;
 	}
-	json_add_string(*output, "context", morph_buf_cstr(&context));
-	json_add_string(*output, "reason", morph_buf_cstr(&reason));
-	json_add_bool(*output, "blocked", blocked);
-	json_add_bool(*output, "ask", ask);
-	json_add_bool(*output, "terminate", terminate);
+	cJSON_AddStringToObject(*output, "context", morph_buf_cstr(&context));
+	cJSON_AddStringToObject(*output, "reason", morph_buf_cstr(&reason));
+	cJSON_AddBoolToObject(*output, "blocked", blocked);
+	cJSON_AddBoolToObject(*output, "ask", ask);
+	cJSON_AddBoolToObject(*output, "terminate", terminate);
 	if (strcmp(event, "SessionStart") == 0 &&
-	    strcmp(json_str_or(input, "source", ""), "compact") == 0) {
+	    strcmp(hook_json_string(input, "source"), "compact") == 0) {
 		char *saved = strdup(morph_buf_cstr(&context));
 
 		if (!saved) {
@@ -412,9 +411,7 @@ int hook_manager_dispatch(void *opaque, const char *event, const struct json *in
 		manager->session_context = saved;
 	}
 	if (updated) {
-		rc = json_object_add(*output, "updatedInput", updated);
-		if (rc != 0)
-			goto out_cleanup;
+		cJSON_AddItemToObject(*output, "updatedInput", updated);
 		updated = NULL;
 	}
 
@@ -431,8 +428,8 @@ out_cleanup:
 	morph_array_cleanup(&runs);
 	morph_buf_cleanup(&context);
 	morph_buf_cleanup(&reason);
-	json_free(payload);
-	json_free(updated);
+	cJSON_Delete(payload);
+	cJSON_Delete(updated);
 	free(wire);
 	return rc;
 }

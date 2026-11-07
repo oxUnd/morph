@@ -27,9 +27,11 @@ static int error_tool_exec(const char *args_json, struct tool_result *result, vo
 	return -EIO;
 }
 
-static int register_test_tool(enum tool_origin origin, struct tool_registry *reg, const char *name,
-			      const char *description, const char *input_schema, tool_exec_fn exec,
-			      void *user_data, tool_user_data_destroy_fn user_data_destroy)
+static int register_test_tool(enum tool_origin origin, struct tool_registry *reg,
+			      const char *name, const char *description,
+			      const char *input_schema, tool_exec_fn exec,
+			      void *user_data,
+			      tool_user_data_destroy_fn user_data_destroy)
 {
 	struct tool_spec spec = {};
 	spec.origin = origin;
@@ -56,30 +58,24 @@ struct DestroyPayload {
 	int value;
 };
 
-class ToolTest : public ::testing::Test
-{
-      protected:
-	DestroyState destruction;
-	struct tool_registry reg;
-	void SetUp() override
-	{
-		tool_registry_init(NULL, &reg);
-	}
-	void TearDown() override
-	{
-		tool_registry_cleanup(&reg);
-	}
+class ToolTest : public ::testing::Test {
+protected:
+  DestroyState destruction;
+  struct tool_registry reg;
+  void SetUp() override
+  {
+	  tool_registry_init(NULL, &reg);
+  }
+	void TearDown() override { tool_registry_cleanup(&reg); }
 };
 
-TEST_F(ToolTest, Init)
-{
+TEST_F(ToolTest, Init) {
 	EXPECT_EQ(reg.count, 0);
 }
 
-TEST_F(ToolTest, RegisterAndLookup)
-{
+TEST_F(ToolTest, RegisterAndLookup) {
 	int rc = register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "test_tool", "A test tool",
-				    TOOL_EMPTY_INPUT_SCHEMA, mock_tool_exec, nullptr, nullptr);
+			       TOOL_EMPTY_INPUT_SCHEMA, mock_tool_exec, nullptr, nullptr);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(reg.count, 1);
 	struct tool_entry *e = tool_lookup(&reg, "test_tool");
@@ -88,8 +84,7 @@ TEST_F(ToolTest, RegisterAndLookup)
 	EXPECT_EQ(morph_strmap_get(&reg.by_name, "test_tool"), e);
 }
 
-TEST_F(ToolTest, RegisterStoresOptionalTitle)
-{
+TEST_F(ToolTest, RegisterStoresOptionalTitle) {
 	struct tool_spec spec = {};
 	spec.origin = TOOL_ORIGIN_MCP;
 	spec.name = "mcp_test";
@@ -105,15 +100,15 @@ TEST_F(ToolTest, RegisterStoresOptionalTitle)
 	EXPECT_STREQ(e->desc.title, "Friendly MCP title");
 }
 
-TEST_F(ToolTest, RegisterStoresFreeformInputContract)
-{
+TEST_F(ToolTest, RegisterStoresFreeformInputContract) {
 	struct tool_spec spec = {};
 	spec.origin = TOOL_ORIGIN_BUILTIN;
 	spec.name = "text_tool";
 	spec.description = "Accept raw text";
 	spec.input_kind = TOOL_INPUT_TEXT;
-	spec.input_format = "{\"type\":\"grammar\",\"syntax\":\"regex\","
-			    "\"definition\":\"^ok$\"}";
+	spec.input_format =
+		"{\"type\":\"grammar\",\"syntax\":\"regex\","
+		"\"definition\":\"^ok$\"}";
 	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	spec.exec = mock_tool_exec;
 
@@ -124,29 +119,21 @@ TEST_F(ToolTest, RegisterStoresFreeformInputContract)
 	EXPECT_STREQ(entry->desc.input_format, spec.input_format);
 }
 
-TEST_F(ToolTest, RegisterMultiple)
-{
-	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "tool1", "First", nullptr, mock_tool_exec,
-			   nullptr, nullptr);
-	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "tool2", "Second", nullptr, mock_tool_exec,
-			   nullptr, nullptr);
-	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "tool3", "Third", nullptr, mock_tool_exec,
-			   nullptr, nullptr);
+TEST_F(ToolTest, RegisterMultiple) {
+	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "tool1", "First", nullptr, mock_tool_exec, nullptr, nullptr);
+	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "tool2", "Second", nullptr, mock_tool_exec, nullptr, nullptr);
+	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "tool3", "Third", nullptr, mock_tool_exec, nullptr, nullptr);
 	EXPECT_EQ(reg.count, 3);
 }
 
-TEST_F(ToolTest, DuplicateName)
-{
-	int rc1 = register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "dup", "First", nullptr,
-				     mock_tool_exec, nullptr, nullptr);
+TEST_F(ToolTest, DuplicateName) {
+	int rc1 = register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "dup", "First", nullptr, mock_tool_exec, nullptr, nullptr);
 	EXPECT_EQ(rc1, 0);
-	int rc2 = register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "dup", "Second", nullptr,
-				     mock_tool_exec, nullptr, nullptr);
+	int rc2 = register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "dup", "Second", nullptr, mock_tool_exec, nullptr, nullptr);
 	EXPECT_NE(rc2, 0);
 }
 
-TEST_F(ToolTest, DisableUsesNameIndex)
-{
+TEST_F(ToolTest, DisableUsesNameIndex) {
 	EXPECT_EQ(tool_disable(&reg, "blocked"), 0);
 	EXPECT_TRUE(tool_is_disabled(&reg, "blocked"));
 	EXPECT_TRUE(morph_strmap_contains(&reg.disabled_by_name, "blocked"));
@@ -154,16 +141,13 @@ TEST_F(ToolTest, DisableUsesNameIndex)
 	EXPECT_EQ(reg.disabled_count, 1);
 }
 
-TEST_F(ToolTest, LookupNotFound)
-{
+TEST_F(ToolTest, LookupNotFound) {
 	struct tool_entry *e = tool_lookup(&reg, "nonexistent");
 	EXPECT_EQ(e, nullptr);
 }
 
-TEST_F(ToolTest, ExecTool)
-{
-	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "exec_test", "Exec test", nullptr,
-			   mock_tool_exec, nullptr, nullptr);
+TEST_F(ToolTest, ExecTool) {
+	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "exec_test", "Exec test", nullptr, mock_tool_exec, nullptr, nullptr);
 	struct tool_result result;
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "exec_test", "{}", &result);
@@ -172,8 +156,7 @@ TEST_F(ToolTest, ExecTool)
 	tool_result_cleanup(&result);
 }
 
-TEST_F(ToolTest, ExecNotFound)
-{
+TEST_F(ToolTest, ExecNotFound) {
 	struct tool_result result;
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "nonexistent", "{}", &result);
@@ -181,34 +164,31 @@ TEST_F(ToolTest, ExecNotFound)
 	tool_result_cleanup(&result);
 }
 
-TEST_F(ToolTest, ExecError)
-{
-	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "error_tool", "Error tool", nullptr,
-			   error_tool_exec, nullptr, nullptr);
+TEST_F(ToolTest, ExecError) {
+	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "error_tool", "Error tool", nullptr, error_tool_exec, nullptr, nullptr);
 	struct tool_result result;
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "error_tool", "{}", &result);
 	EXPECT_EQ(rc, -EIO);
 	ASSERT_NE(result.envelope, nullptr);
-	struct json *ok = json_member_ci(result.envelope, "ok");
-	struct json *error = json_member_ci(result.envelope, "error");
-	struct json *code = json_member_ci(error, "code");
-	struct json *message = json_member_ci(error, "message");
-	EXPECT_TRUE(json_is_false(ok));
-	ASSERT_TRUE(json_is_string_value(code));
-	EXPECT_STREQ(json_string_value(code), "tool_failed");
-	ASSERT_TRUE(json_is_string_value(message));
-	EXPECT_STREQ(json_string_value(message), "Input/output error");
+	cJSON *ok = cJSON_GetObjectItem(result.envelope, "ok");
+	cJSON *error = cJSON_GetObjectItem(result.envelope, "error");
+	cJSON *code = cJSON_GetObjectItem(error, "code");
+	cJSON *message = cJSON_GetObjectItem(error, "message");
+	EXPECT_TRUE(cJSON_IsFalse(ok));
+	ASSERT_TRUE(cJSON_IsString(code));
+	EXPECT_STREQ(code->valuestring, "tool_failed");
+	ASSERT_TRUE(cJSON_IsString(message));
+	EXPECT_STREQ(message->valuestring, "Input/output error");
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(strstr(result.text.data, "\"ok\":false"), nullptr);
 	tool_result_cleanup(&result);
 }
 
-TEST_F(ToolTest, TimeoutCanBeConfiguredPerTool)
-{
-	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "timed_tool", "Timed tool", nullptr,
-				     mock_tool_exec, nullptr, nullptr),
-		  0);
+TEST_F(ToolTest, TimeoutCanBeConfiguredPerTool) {
+	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "timed_tool",
+				"Timed tool", nullptr, mock_tool_exec, nullptr,
+				nullptr), 0);
 	EXPECT_EQ(tool_timeout_seconds(&reg, "timed_tool"), 0);
 	EXPECT_EQ(tool_set_timeout(&reg, "timed_tool", 42), 0);
 	EXPECT_EQ(tool_timeout_seconds(&reg, "timed_tool"), 42);
@@ -217,18 +197,17 @@ TEST_F(ToolTest, TimeoutCanBeConfiguredPerTool)
 	EXPECT_NE(tool_set_timeout(&reg, "missing", 42), 0);
 }
 
-TEST_F(ToolTest, StructuredResultFieldsAreOwnedAndCleared)
-{
+TEST_F(ToolTest, StructuredResultFieldsAreOwnedAndCleared) {
 	struct tool_result result;
 	tool_result_init(&result);
 
-	struct json *data = json_object();
+	cJSON *data = cJSON_CreateObject();
 	ASSERT_NE(data, nullptr);
-	ASSERT_NE(json_add_string(data, "kind", "test"), nullptr);
+	ASSERT_NE(cJSON_AddStringToObject(data, "kind", "test"), nullptr);
 
-	struct json *ui = json_object();
+	cJSON *ui = cJSON_CreateObject();
 	ASSERT_NE(ui, nullptr);
-	ASSERT_NE(json_add_string(ui, "component", "test"), nullptr);
+	ASSERT_NE(cJSON_AddStringToObject(ui, "component", "test"), nullptr);
 
 	result.data = data;
 	result.ui = ui;
@@ -249,30 +228,22 @@ TEST_F(ToolTest, StructuredResultFieldsAreOwnedAndCleared)
 	tool_result_cleanup(&result);
 }
 
-TEST_F(ToolTest, NullParams)
-{
-	EXPECT_NE(register_test_tool(TOOL_ORIGIN_BUILTIN, nullptr, "x", "x", nullptr,
-				     mock_tool_exec, nullptr, nullptr),
-		  0);
-	EXPECT_NE(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, nullptr, "x", nullptr,
-				     mock_tool_exec, nullptr, nullptr),
-		  0);
+TEST_F(ToolTest, NullParams) {
+	EXPECT_NE(register_test_tool(TOOL_ORIGIN_BUILTIN, nullptr, "x", "x", nullptr, mock_tool_exec, nullptr, nullptr), 0);
+	EXPECT_NE(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, nullptr, "x", nullptr, mock_tool_exec, nullptr, nullptr), 0);
 	EXPECT_EQ(tool_lookup(nullptr, "x"), nullptr);
 	EXPECT_EQ(tool_lookup(&reg, nullptr), nullptr);
 	EXPECT_NE(tool_exec(nullptr, "x", "{}", nullptr), 0);
 }
 
-TEST_F(ToolTest, GrowsBeyondOldEntryLimit)
-{
+TEST_F(ToolTest, GrowsBeyondOldEntryLimit) {
 	for (int i = 0; i < TOOL_REGISTRY_INITIAL_CAP * 2; i++) {
 		char name[32];
 		snprintf(name, sizeof(name), "tool_%d", i);
-		int rc = register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, name, "desc", nullptr,
-					    mock_tool_exec, nullptr, nullptr);
+		int rc = register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, name, "desc", nullptr, mock_tool_exec, nullptr, nullptr);
 		EXPECT_EQ(rc, 0);
 	}
-	int rc = register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "overflow", "desc", nullptr,
-				    mock_tool_exec, nullptr, nullptr);
+	int rc = register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "overflow", "desc", nullptr, mock_tool_exec, nullptr, nullptr);
 	EXPECT_EQ(rc, 0);
 }
 
@@ -291,15 +262,14 @@ static void dummy_dtor(void *ud)
 	(void)ud;
 }
 
-TEST_F(ToolTest, UserDataDestroyCalled)
-{
+TEST_F(ToolTest, UserDataDestroyCalled) {
 	destruction.calls = 0;
 	destruction.last = nullptr;
 	auto *val = static_cast<DestroyPayload *>(malloc(sizeof(DestroyPayload)));
 	ASSERT_NE(val, nullptr);
 	*val = {&destruction, 42};
-	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "dtor_tool", "has dtor", nullptr,
-			   mock_tool_exec, val, counting_destroy);
+	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "dtor_tool", "has dtor", nullptr, mock_tool_exec,
+		      val, counting_destroy);
 	tool_registry_cleanup(&reg);
 	EXPECT_EQ(destruction.calls, 1);
 	EXPECT_EQ(destruction.last, val);
@@ -310,9 +280,8 @@ TEST_F(ToolTest, RetainedHandleSurvivesRegistryGrowthAndUnregistration)
 	auto *payload = static_cast<DestroyPayload *>(malloc(sizeof(DestroyPayload)));
 	ASSERT_NE(payload, nullptr);
 	*payload = {&destruction, 42};
-	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "retained", "test", nullptr,
-				     mock_tool_exec, payload, counting_destroy),
-		  0);
+	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "retained", "test",
+		nullptr, mock_tool_exec, payload, counting_destroy), 0);
 	struct tool_handle handle{};
 
 	ASSERT_EQ(tool_registry_acquire(&reg, "retained", &handle), 0);
@@ -320,8 +289,7 @@ TEST_F(ToolTest, RetainedHandleSurvivesRegistryGrowthAndUnregistration)
 		std::string name = "growth-" + std::to_string(i);
 
 		ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, name.c_str(), "test",
-					     nullptr, mock_tool_exec, nullptr, nullptr),
-			  0);
+			nullptr, mock_tool_exec, nullptr, nullptr), 0);
 	}
 	ASSERT_EQ(tool_unregister(&reg, "retained"), 0);
 	EXPECT_EQ(destruction.calls, 0);
@@ -342,9 +310,8 @@ TEST_F(ToolTest, RetainedHandleKeepsItsOriginalBindingAfterReplacement)
 	auto *payload = static_cast<DestroyPayload *>(malloc(sizeof(DestroyPayload)));
 	ASSERT_NE(payload, nullptr);
 	*payload = {&destruction, 7};
-	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "replace", "old", nullptr,
-				     mock_tool_exec, payload, counting_destroy),
-		  0);
+	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "replace", "old",
+		nullptr, mock_tool_exec, payload, counting_destroy), 0);
 	struct tool_handle original{}, replacement{};
 
 	ASSERT_EQ(tool_registry_acquire(&reg, "replace", &original), 0);
@@ -367,9 +334,8 @@ TEST_F(ToolTest, RetainedHandleKeepsItsOriginalBindingAfterReplacement)
 
 TEST_F(ToolTest, HandleAcquisitionReportsDisabledToolsAndClearsFailedOutputs)
 {
-	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "disabled", "test", nullptr,
-				     mock_tool_exec, nullptr, nullptr),
-		  0);
+	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "disabled", "test",
+		nullptr, mock_tool_exec, nullptr, nullptr), 0);
 	ASSERT_EQ(tool_disable(&reg, "disabled"), 0);
 	struct tool_handle handle{};
 
@@ -383,90 +349,82 @@ TEST_F(ToolTest, HandleAcquisitionReportsDisabledToolsAndClearsFailedOutputs)
 	struct tool_registry uninitialized{};
 
 	EXPECT_EQ(tool_registry_acquire(&uninitialized, "missing", &handle),
-		  MORPH_ERR_NOT_INITIALIZED);
+		MORPH_ERR_NOT_INITIALIZED);
 	uninitialized.init_error = -ENOMEM;
 	EXPECT_EQ(tool_registry_acquire(&uninitialized, "missing", &handle), -ENOMEM);
 	tool_handle_release(&handle);
 }
 
-TEST_F(ToolTest, UserDataDestroyNullUd)
-{
+TEST_F(ToolTest, UserDataDestroyNullUd) {
 	destruction.calls = 0;
 	destruction.last = nullptr;
 	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "null_ud", "null ud", nullptr, mock_tool_exec,
-			   nullptr, counting_destroy);
+		      nullptr, counting_destroy);
 	tool_registry_cleanup(&reg);
 	EXPECT_EQ(destruction.calls, 0);
 }
 
-TEST_F(ToolTest, UserDataDestroyFnNull)
-{
+TEST_F(ToolTest, UserDataDestroyFnNull) {
 	int *val = (int *)malloc(sizeof(int));
 	*val = 99;
 	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "no_dtor", "no dtor", nullptr, mock_tool_exec,
-			   val, nullptr);
+		      val, nullptr);
 	tool_registry_cleanup(&reg);
 }
 
-TEST_F(ToolTest, RegisterStoresUserDataDestroy)
-{
+TEST_F(ToolTest, RegisterStoresUserDataDestroy) {
 	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "stored", "test", nullptr, mock_tool_exec,
-			   nullptr, dummy_dtor);
+		      nullptr, dummy_dtor);
 	struct tool_entry *e = tool_lookup(&reg, "stored");
 	ASSERT_NE(e, nullptr);
 	EXPECT_EQ(e->user_data_destroy, dummy_dtor);
 }
 
-TEST_F(ToolTest, MixedUserDataDestroyTypes)
-{
+TEST_F(ToolTest, MixedUserDataDestroyTypes) {
 	destruction.calls = 0;
 
 	int *mcp_ud = (int *)calloc(1, sizeof(int));
 	*mcp_ud = 1;
 	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "mcp_tool", "mcp", nullptr, mock_tool_exec,
-			   mcp_ud, (tool_user_data_destroy_fn)free);
+		      mcp_ud, (tool_user_data_destroy_fn)free);
 
 	auto *ext_ud = static_cast<DestroyPayload *>(malloc(sizeof(DestroyPayload)));
 	ASSERT_NE(ext_ud, nullptr);
 	*ext_ud = {&destruction, 2};
 	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "ext_tool", "ext", nullptr, mock_tool_exec,
-			   ext_ud, counting_destroy);
+		      ext_ud, counting_destroy);
 
 	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "builtin", "builtin", nullptr, mock_tool_exec,
-			   nullptr, nullptr);
+		      nullptr, nullptr);
 
 	tool_registry_cleanup(&reg);
 	EXPECT_EQ(destruction.calls, 1);
 	EXPECT_EQ(destruction.last, ext_ud);
 }
 
-TEST_F(ToolTest, RegisterStoresOrigin)
-{
-	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_MCP, &reg, "mcp_tool", "mcp", nullptr,
-				     mock_tool_exec, nullptr, nullptr),
-		  0);
+TEST_F(ToolTest, RegisterStoresOrigin) {
+	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_MCP, &reg, "mcp_tool", "mcp",
+				nullptr, mock_tool_exec, nullptr, nullptr), 0);
 	struct tool_entry *e = tool_lookup(&reg, "mcp_tool");
 	ASSERT_NE(e, nullptr);
 	EXPECT_EQ(e->origin, TOOL_ORIGIN_MCP);
-	EXPECT_STREQ(tool_origin_name(TOOL_ORIGIN_DYNAMIC_SESSION), "dynamic session");
+	EXPECT_STREQ(tool_origin_name(TOOL_ORIGIN_DYNAMIC_SESSION),
+		     "dynamic session");
 }
 
-TEST_F(ToolTest, UnregisterRemovesEntryAndRebuildsIndex)
-{
-	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "first", "first", nullptr,
-				     mock_tool_exec, nullptr, nullptr),
-		  0);
-	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "middle", "middle", nullptr,
-				     mock_tool_exec, nullptr, nullptr),
-		  0);
-	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "last", "last", nullptr,
-				     mock_tool_exec, nullptr, nullptr),
-		  0);
+TEST_F(ToolTest, UnregisterRemovesEntryAndRebuildsIndex) {
+	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "first", "first",
+				nullptr, mock_tool_exec, nullptr, nullptr), 0);
+	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "middle", "middle",
+				nullptr, mock_tool_exec, nullptr, nullptr), 0);
+	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "last", "last",
+				nullptr, mock_tool_exec, nullptr, nullptr), 0);
 	ASSERT_EQ(tool_unregister(&reg, "middle"), 0);
 	EXPECT_EQ(reg.count, 2);
 	EXPECT_EQ(tool_lookup(&reg, "middle"), nullptr);
 	ASSERT_NE(tool_lookup(&reg, "last"), nullptr);
-	EXPECT_EQ(morph_strmap_get(&reg.by_name, "last"), tool_lookup(&reg, "last"));
+	EXPECT_EQ(morph_strmap_get(&reg.by_name, "last"),
+		  tool_lookup(&reg, "last"));
 
 	struct tool_result result;
 	tool_result_init(&result);
@@ -474,16 +432,15 @@ TEST_F(ToolTest, UnregisterRemovesEntryAndRebuildsIndex)
 	tool_result_cleanup(&result);
 }
 
-TEST_F(ToolTest, UnregisterCallsDestroyAndClearsDisabled)
-{
+TEST_F(ToolTest, UnregisterCallsDestroyAndClearsDisabled) {
 	destruction.calls = 0;
 	destruction.last = nullptr;
 	auto *val = static_cast<DestroyPayload *>(malloc(sizeof(DestroyPayload)));
 	ASSERT_NE(val, nullptr);
 	*val = {&destruction, 7};
-	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "drop_me", "drop", nullptr,
-				     mock_tool_exec, val, counting_destroy),
-		  0);
+	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "drop_me", "drop",
+				nullptr, mock_tool_exec, val,
+				counting_destroy), 0);
 	ASSERT_EQ(tool_disable(&reg, "drop_me"), 0);
 	ASSERT_EQ(tool_unregister(&reg, "drop_me"), 0);
 	EXPECT_EQ(destruction.calls, 1);
@@ -493,17 +450,15 @@ TEST_F(ToolTest, UnregisterCallsDestroyAndClearsDisabled)
 	EXPECT_EQ(tool_unregister(&reg, "drop_me"), -ENOENT);
 }
 
-TEST_F(ToolTest, CleanupIdempotent)
-{
+TEST_F(ToolTest, CleanupIdempotent) {
 	int *val = (int *)malloc(sizeof(int));
-	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "once", "once", nullptr, mock_tool_exec, val,
-			   (tool_user_data_destroy_fn)free);
+	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "once", "once", nullptr, mock_tool_exec,
+		      val, (tool_user_data_destroy_fn)free);
 	tool_registry_cleanup(&reg);
 	tool_registry_cleanup(&reg);
 }
 
-TEST_F(ToolTest, FileReadUsesWorkdirPolicy)
-{
+TEST_F(ToolTest, FileReadUsesWorkdirPolicy) {
 	const char *work = "/tmp/morph_tool_work";
 	const char *path = "/tmp/morph_tool_work/read.txt";
 	file_ensure_dir(work);
@@ -513,7 +468,8 @@ TEST_F(ToolTest, FileReadUsesWorkdirPolicy)
 	ASSERT_EQ(file_read_init(&reg, tctx), 0);
 	struct tool_result result;
 	tool_result_init(&result);
-	int rc = tool_exec(&reg, "file_read", "{\"file_path\":\"read.txt\"}", &result);
+	int rc = tool_exec(&reg, "file_read",
+			   "{\"file_path\":\"read.txt\"}", &result);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(strstr(result.text.data, "hello"), nullptr);
@@ -523,8 +479,7 @@ TEST_F(ToolTest, FileReadUsesWorkdirPolicy)
 	rmdir(work);
 }
 
-TEST_F(ToolTest, FileReadDeniesSymlinkEscape)
-{
+TEST_F(ToolTest, FileReadDeniesSymlinkEscape) {
 	const char *work = "/tmp/morph_tool_work";
 	const char *secret = "/tmp/morph_tool_secret.txt";
 	const char *link_path = "/tmp/morph_tool_work/link.txt";
@@ -537,7 +492,8 @@ TEST_F(ToolTest, FileReadDeniesSymlinkEscape)
 	ASSERT_EQ(file_read_init(&reg, tctx), 0);
 	struct tool_result result;
 	tool_result_init(&result);
-	int rc = tool_exec(&reg, "file_read", "{\"file_path\":\"link.txt\"}", &result);
+	int rc = tool_exec(&reg, "file_read",
+			   "{\"file_path\":\"link.txt\"}", &result);
 	EXPECT_EQ(rc, -EPERM);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(strstr(result.text.data, "permission denied"), nullptr);
@@ -548,8 +504,7 @@ TEST_F(ToolTest, FileReadDeniesSymlinkEscape)
 	rmdir(work);
 }
 
-TEST_F(ToolTest, FileListDeniesParentTraversal)
-{
+TEST_F(ToolTest, FileListDeniesParentTraversal) {
 	const char *work = "/tmp/morph_tool_work";
 	const char *outside = "/tmp/morph_tool_outside";
 	file_ensure_dir(work);
@@ -559,7 +514,9 @@ TEST_F(ToolTest, FileListDeniesParentTraversal)
 	ASSERT_EQ(file_list_init(&reg, tctx), 0);
 	struct tool_result result;
 	tool_result_init(&result);
-	int rc = tool_exec(&reg, "file_list", "{\"dir_path\":\"../morph_tool_outside\"}", &result);
+	int rc = tool_exec(&reg, "file_list",
+			   "{\"dir_path\":\"../morph_tool_outside\"}",
+			   &result);
 	EXPECT_EQ(rc, -EPERM);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(strstr(result.text.data, "permission denied"), nullptr);
@@ -569,8 +526,7 @@ TEST_F(ToolTest, FileListDeniesParentTraversal)
 	rmdir(work);
 }
 
-TEST_F(ToolTest, FileListAllowsOutputDir)
-{
+TEST_F(ToolTest, FileListAllowsOutputDir) {
 	const char *work = "/tmp/morph_tool_work";
 	const char *out = "/tmp/morph_tool_out";
 	const char *artifact = "/tmp/morph_tool_out/artifact.txt";
@@ -582,7 +538,9 @@ TEST_F(ToolTest, FileListAllowsOutputDir)
 	ASSERT_EQ(file_list_init(&reg, tctx), 0);
 	struct tool_result result;
 	tool_result_init(&result);
-	int rc = tool_exec(&reg, "file_list", "{\"dir_path\":\"/tmp/morph_tool_out\"}", &result);
+	int rc = tool_exec(&reg, "file_list",
+			   "{\"dir_path\":\"/tmp/morph_tool_out\"}",
+			   &result);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(strstr(result.text.data, "artifact.txt"), nullptr);
@@ -593,8 +551,7 @@ TEST_F(ToolTest, FileListAllowsOutputDir)
 	rmdir(work);
 }
 
-TEST_F(ToolTest, FileInfoUsesResolvedWorkdirPath)
-{
+TEST_F(ToolTest, FileInfoUsesResolvedWorkdirPath) {
 	const char *work = "/tmp/morph_tool_work";
 	const char *path = "/tmp/morph_tool_work/info.txt";
 	file_ensure_dir(work);
@@ -604,7 +561,8 @@ TEST_F(ToolTest, FileInfoUsesResolvedWorkdirPath)
 	ASSERT_EQ(file_info_init(&reg, tctx), 0);
 	struct tool_result result;
 	tool_result_init(&result);
-	int rc = tool_exec(&reg, "file_info", "{\"file_path\":\"info.txt\"}", &result);
+	int rc = tool_exec(&reg, "file_info",
+			   "{\"file_path\":\"info.txt\"}", &result);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(strstr(result.text.data, "\"type\":\"file\""), nullptr);
@@ -642,149 +600,4 @@ TEST_F(ToolTest, DescriptorOwnsExactStringsAcrossGrowthAndRemoval)
 	ASSERT_NE(entry, nullptr);
 	EXPECT_EQ(tool_unregister(&reg, entry->desc.name), 0);
 	EXPECT_EQ(tool_lookup(&reg, "owned_tool"), nullptr);
-}
-
-static struct json *tool_test_max_depth_value()
-{
-	struct json *value = json_null();
-
-	for (int depth = 1; value && depth < JSON_MAX_DEPTH; depth++) {
-		struct json *parent = json_array();
-
-		if (!parent || json_array_add(parent, value) != 0) {
-			json_free(parent);
-			json_free(value);
-			return nullptr;
-		}
-		value = parent;
-	}
-	return value;
-}
-
-TEST_F(ToolTest, ResultDepthFailureConsumesDataAndLeavesCleanableState)
-{
-	struct tool_result result;
-	tool_result_init(&result);
-	struct json *data = tool_test_max_depth_value();
-	ASSERT_NE(data, nullptr);
-	EXPECT_EQ(tool_result_success(&result, data), -E2BIG);
-	EXPECT_EQ(result.envelope, nullptr);
-	EXPECT_EQ(result.data, nullptr);
-	EXPECT_EQ(result.ui, nullptr);
-	EXPECT_EQ(result.meta, nullptr);
-	tool_result_cleanup(&result);
-}
-
-TEST_F(ToolTest, ResultRejectsReusedAndAncestorFieldsWithoutChangingTheirOwner)
-{
-	struct tool_result result;
-	tool_result_init(&result);
-	struct json *ui = json_object();
-	ASSERT_NE(ui, nullptr);
-	ASSERT_NE(json_add_string(ui, "component", "original"), nullptr);
-	ASSERT_EQ(tool_result_set_ui(&result, ui), 0);
-	EXPECT_EQ(tool_result_set_meta(&result, ui), -EINVAL);
-	EXPECT_EQ(tool_result_success(&result, ui), -EINVAL);
-	EXPECT_EQ(result.ui, ui);
-	EXPECT_EQ(result.meta, nullptr);
-	EXPECT_STREQ(json_str(ui, "component"), "original");
-	struct json *ancestor = json_object();
-	ASSERT_NE(ancestor, nullptr);
-	ASSERT_EQ(json_object_add(ancestor, "ui", ui), 0);
-	EXPECT_EQ(tool_result_set_meta(&result, ancestor), -EINVAL);
-	EXPECT_EQ(json_member(ancestor, "ui"), ui);
-	EXPECT_EQ(json_detach(ancestor, ui), ui);
-	json_free(ancestor);
-	tool_result_clear(&result);
-	EXPECT_EQ(result.ui, nullptr);
-	tool_result_cleanup(&result);
-}
-
-TEST_F(ToolTest, ResultReplacementRetainsItsBorrowedAliasesAfterFailure)
-{
-	struct tool_result result;
-	tool_result_init(&result);
-	ASSERT_EQ(tool_result_success(&result, json_object()), 0);
-	ASSERT_EQ(tool_result_finalize(&result), 0);
-	struct json *ui = json_object();
-	ASSERT_NE(ui, nullptr);
-	ASSERT_NE(json_add_string(ui, "component", "original"), nullptr);
-	ASSERT_EQ(tool_result_set_ui(&result, ui), 0);
-	EXPECT_EQ(tool_result_set_ui(&result, ui), 0);
-	EXPECT_EQ(tool_result_set_meta(&result, ui), -EINVAL);
-	struct json *replacement = tool_test_max_depth_value();
-	ASSERT_NE(replacement, nullptr);
-	EXPECT_EQ(tool_result_set_ui(&result, replacement), -E2BIG);
-	EXPECT_EQ(result.ui, ui);
-	EXPECT_EQ(json_member(result.envelope, "ui"), ui);
-	EXPECT_STREQ(json_str(ui, "component"), "original");
-	ASSERT_EQ(tool_result_finalize(&result), 0);
-	tool_result_cleanup(&result);
-}
-
-TEST_F(ToolTest, RuntimeStreamPreservesUtf8FragmentsForTheReceivingSanitizer)
-{
-	std::string text;
-	struct tool_runtime_context runtime{};
-	runtime.event_user_data = &text;
-	runtime.event_cb = [](const struct morph_event *event, void *data) -> int {
-		auto *received = static_cast<std::string *>(data);
-		const char *chunk = json_str(event->data, "text");
-
-		EXPECT_NE(chunk, nullptr);
-		if (chunk)
-			received->append(chunk);
-		return 0;
-	};
-	EXPECT_EQ(tool_runtime_emit_stream(&runtime, "test", "text", "\xe4\xb8"), 0);
-	EXPECT_EQ(tool_runtime_emit_stream(&runtime, "test", "text", "\xad"), 0);
-	EXPECT_EQ(text, "\xe4\xb8\xad");
-}
-
-TEST_F(ToolTest, ErrorReplacementCopiesBorrowedResultStringsBeforeClearingThem)
-{
-	struct tool_result result;
-	tool_result_init(&result);
-	ASSERT_EQ(tool_result_success_text(&result, "borrowed original text"), 0);
-	ASSERT_EQ(tool_result_finalize(&result), 0);
-	const char *text = json_str(result.data, "text");
-	ASSERT_NE(text, nullptr);
-	ASSERT_EQ(tool_result_error(&result, text, text), 0);
-	EXPECT_STREQ(json_str(result.envelope, "error.code"), "borrowed original text");
-	EXPECT_STREQ(json_str(result.envelope, "error.message"), "borrowed original text");
-	const char *code = json_str(result.envelope, "error.code");
-	const char *message = json_str(result.envelope, "error.message");
-	ASSERT_EQ(tool_result_error(&result, code, message + 9), 0);
-	EXPECT_STREQ(json_str(result.envelope, "error.code"), "borrowed original text");
-	EXPECT_STREQ(json_str(result.envelope, "error.message"), "original text");
-	tool_result_cleanup(&result);
-}
-
-TEST_F(ToolTest, NullResultTextHelpersRejectSafelyAndConsumeOwnedText)
-{
-	EXPECT_EQ(tool_result_success_text(nullptr, "borrowed text"), -EINVAL);
-	EXPECT_EQ(tool_result_success_json_text(nullptr, nullptr), -EINVAL);
-	for (const char *text : {"{\"error\":\"failed\"}", "{\"value\":1}", "plain text"}) {
-		char *owned = strdup(text);
-		ASSERT_NE(owned, nullptr);
-		EXPECT_EQ(tool_result_success_json_text(nullptr, owned), -EINVAL);
-	}
-	struct json *data = json_object();
-	ASSERT_NE(data, nullptr);
-	EXPECT_EQ(tool_result_success(nullptr, data), -EINVAL);
-	EXPECT_TRUE(json_is_object_value(data));
-	json_free(data);
-}
-
-TEST_F(ToolTest, FailedErrorEncodingPreservesTheOriginalResult)
-{
-	struct tool_result result;
-	tool_result_init(&result);
-	ASSERT_EQ(tool_result_success_text(&result, "keep this value"), 0);
-	ASSERT_EQ(tool_result_finalize(&result), 0);
-	struct json *envelope = result.envelope;
-	EXPECT_LT(tool_result_error(&result, "invalid_text", "\xff"), 0);
-	EXPECT_EQ(result.envelope, envelope);
-	EXPECT_STREQ(json_str(result.data, "text"), "keep this value");
-	tool_result_cleanup(&result);
 }

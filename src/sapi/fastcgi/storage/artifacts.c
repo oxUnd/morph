@@ -1,6 +1,6 @@
 #include "sapi/fastcgi/storage/artifacts.h"
 #include "sapi/fastcgi/session_store_internal.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "util/error.h"
 
 #include <errno.h>
@@ -13,40 +13,38 @@
 
 static char *artifact_json_array(sqlite3_stmt *st)
 {
-	struct json *root = json_object();
-	struct json *items = root ? json_add_array(root, "items") : NULL;
+	cJSON *root = cJSON_CreateObject();
+	cJSON *items = cJSON_CreateArray();
 	char *json;
 
 	if (!root || !items) {
-		json_free(root);
+		cJSON_Delete(root);
 		return NULL;
 	}
+	cJSON_AddItemToObject(root, "items", items);
 	while (sqlite3_step(st) == SQLITE_ROW) {
-		struct json *obj = json_object();
+		cJSON *obj = cJSON_CreateObject();
 		const char *id = (const char *)sqlite3_column_text(st, 0);
 		char url[128];
 		if (!obj) {
-			json_free(root);
+			cJSON_Delete(root);
 			return NULL;
 		}
 		snprintf(url, sizeof(url), "/api/artifacts/%s", id ? id : "");
-		json_add_string(obj, "id", id ? id : "");
-		json_add_string(obj, "session_id", (const char *)sqlite3_column_text(st, 1));
-		json_add_string(obj, "kind", (const char *)sqlite3_column_text(st, 2));
-		json_add_string(obj, "mime", (const char *)sqlite3_column_text(st, 3));
-		json_add_string(obj, "filename", (const char *)sqlite3_column_text(st, 4));
-		json_add_number(obj, "size_bytes", (double)sqlite3_column_int64(st, 5));
-		json_add_string(obj, "status", (const char *)sqlite3_column_text(st, 6));
-		json_add_number(obj, "created_at", (double)sqlite3_column_int64(st, 7));
-		json_add_string(obj, "url", url);
-		if (json_array_add(items, obj)) {
-			json_free(obj);
-			json_free(root);
-			return NULL;
-		}
+		cJSON_AddStringToObject(obj, "id", id ? id : "");
+		cJSON_AddStringToObject(obj, "session_id",
+					(const char *)sqlite3_column_text(st, 1));
+		cJSON_AddStringToObject(obj, "kind", (const char *)sqlite3_column_text(st, 2));
+		cJSON_AddStringToObject(obj, "mime", (const char *)sqlite3_column_text(st, 3));
+		cJSON_AddStringToObject(obj, "filename", (const char *)sqlite3_column_text(st, 4));
+		cJSON_AddNumberToObject(obj, "size_bytes", (double)sqlite3_column_int64(st, 5));
+		cJSON_AddStringToObject(obj, "status", (const char *)sqlite3_column_text(st, 6));
+		cJSON_AddNumberToObject(obj, "created_at", (double)sqlite3_column_int64(st, 7));
+		cJSON_AddStringToObject(obj, "url", url);
+		cJSON_AddItemToArray(items, obj);
 	}
-	json = json_stringify(root);
-	json_free(root);
+	json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
 	return json;
 }
 

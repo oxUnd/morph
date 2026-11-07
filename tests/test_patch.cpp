@@ -357,15 +357,16 @@ TEST_F(PatchTest, ToolAcceptsRawTextAndPublishesGrammar)
 	EXPECT_NE(strstr(entry->desc.description, "Codex patch"), nullptr);
 	EXPECT_NE(strstr(entry->desc.description, dir), nullptr);
 	EXPECT_NE(strstr(entry->desc.description, "copied verbatim"), nullptr);
-	struct json *format = json_parse_prefix(entry->desc.input_format, NULL, NULL);
+	cJSON *format = cJSON_Parse(entry->desc.input_format);
 	ASSERT_NE(format, nullptr);
-	EXPECT_STREQ(json_string_value(json_member_ci(format, "syntax")), "lark");
-	json_free(format);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(format, "syntax")),
+		"lark");
+	cJSON_Delete(format);
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&registry, "apply_patch", input, &result), 0);
 	EXPECT_EQ(read_file("tool.txt"), "raw input\n");
 	ASSERT_NE(result.envelope, nullptr);
-	EXPECT_TRUE(json_is_true(json_member_ci(result.envelope, "ok")));
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(result.envelope, "ok")));
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&registry);
 	tool_context_destroy(context);

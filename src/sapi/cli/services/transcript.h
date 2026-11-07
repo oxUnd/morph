@@ -5,12 +5,12 @@
 
 struct cli_application;
 struct morph_event;
-struct json;
+struct cJSON;
 struct model_history_item;
 
 /* Coordinates model updates and their presentation on the UI owner thread. */
 int cli_transcript_event(struct cli_application *ctx, const struct morph_event *event);
-int cli_transcript_restore_tool(struct cli_application *ctx, const struct json *call,
+int cli_transcript_restore_tool(struct cli_application *ctx, const struct cJSON *call,
 				const struct model_history_item *result);
 int cli_transcript_reasoning_append(struct cli_application *ctx, const char *text, size_t length,
 				    int begin);

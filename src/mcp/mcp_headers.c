@@ -69,21 +69,20 @@ static int header_token_valid(const char *name)
 	return 1;
 }
 
-static int validate_annotation(const struct json *schema, int property, morph_strmap_t *seen)
+static int validate_annotation(const cJSON *schema, int property,
+	morph_strmap_t *seen)
 {
-	const struct json *header = json_member(schema, "x-mcp-header");
+	const cJSON *header = cJSON_GetObjectItemCaseSensitive(schema, "x-mcp-header");
 
 	if (!header)
 		return 0;
-	const struct json *type = json_member(schema, "type");
+	const cJSON *type = cJSON_GetObjectItemCaseSensitive(schema, "type");
 
-	if (!property || !json_is_string_value(header) ||
-	    !header_token_valid(json_string_value(header)) || !json_is_string_value(type) ||
-	    (strcmp(json_string_value(type), "string") != 0 &&
-	     strcmp(json_string_value(type), "integer") != 0 &&
-	     strcmp(json_string_value(type), "boolean") != 0))
+	if (!property || !cJSON_IsString(header) || !header_token_valid(header->valuestring) ||
+	    !cJSON_IsString(type) || (strcmp(type->valuestring, "string") != 0 &&
+	    strcmp(type->valuestring, "integer") != 0 && strcmp(type->valuestring, "boolean") != 0))
 		return -EINVAL;
-	char *key = strdup(json_string_value(header));
+	char *key = strdup(header->valuestring);
 
 	if (!key)
 		return -ENOMEM;
@@ -101,19 +100,19 @@ static int validate_annotation(const struct json *schema, int property, morph_st
 /* Only properties chains can emit headers; other schema positions are checked
  * so annotations hidden under $ref/composition/arrays are rejected as specified.
  * Instance values in enum/const/default/examples are data, not schemas. */
-static int validate_schema(const struct json *schema, int reachable, int property,
-			   morph_strmap_t *seen)
+static int validate_schema(const cJSON *schema, int reachable, int property,
+	morph_strmap_t *seen)
 {
-	if (!json_is_object_value(schema))
+	if (!cJSON_IsObject(schema))
 		return 0;
 	int rc = validate_annotation(schema, reachable && property, seen);
 
 	if (rc != 0)
 		return rc;
-	const struct json *item;
+	const cJSON *item;
 
-	json_foreach (item, schema) {
-		const char *key = json_key(item);
+	cJSON_ArrayForEach(item, schema) {
+		const char *key = item->string;
 		int properties = strcmp(key, "properties") == 0;
 		int map = properties || strcmp(key, "patternProperties") == 0 ||
 			strcmp(key, "$defs") == 0 || strcmp(key, "definitions") == 0 ||
@@ -128,9 +127,9 @@ static int validate_schema(const struct json *schema, int reachable, int propert
 			strcmp(key, "unevaluatedItems") == 0 || strcmp(key, "propertyNames") == 0;
 
 		if (map || list) {
-			const struct json *child;
+			const cJSON *child;
 
-			json_foreach (child, item) {
+			cJSON_ArrayForEach(child, item) {
 				rc = validate_schema(child, reachable && properties,
 					properties, seen);
 				if (rc != 0)
@@ -145,7 +144,8 @@ static int validate_schema(const struct json *schema, int reachable, int propert
 	return 0;
 }
 
-int mcp_protocol_cache_tool(struct mcp_client *client, const char *name, const struct json *schema)
+int mcp_protocol_cache_tool(struct mcp_client *client, const char *name,
+	const cJSON *schema)
 {
 	if (!client->protocol || !client->protocol->per_request ||
 	    client->config.transport != MCP_TRANSPORT_STREAMABLE_HTTP)
@@ -159,54 +159,54 @@ int mcp_protocol_cache_tool(struct mcp_client *client, const char *name, const s
 	morph_strmap_cleanup(&seen);
 	if (rc != 0)
 		return rc;
-	struct json *copy = json_clone(schema, 1);
+	cJSON *copy = cJSON_Duplicate(schema, 1);
 
 	if (!copy)
 		return -ENOMEM;
 	pthread_mutex_lock(&client->lock);
 	if (!client->tool_schemas.entries)
 		rc = morph_strmap_init(&client->tool_schemas, 16);
-	struct json *previous = morph_strmap_get(&client->tool_schemas, name);
+	cJSON *previous = morph_strmap_get(&client->tool_schemas, name);
 
 	if (rc == 0)
 		rc = morph_strmap_set(&client->tool_schemas, name, copy);
 	if (rc == 0)
-		json_free(previous);
+		cJSON_Delete(previous);
 	else
-		json_free(copy);
+		cJSON_Delete(copy);
 	pthread_mutex_unlock(&client->lock);
 	return rc;
 }
 
-static int parameter_header(const struct json *schema, const struct json *value,
-			    struct arena *arena, morph_array_t *headers)
+static int parameter_header(const cJSON *schema, const cJSON *value,
+	struct arena *arena, morph_array_t *headers)
 {
-	const struct json *annotation = json_member(schema, "x-mcp-header");
+	const cJSON *annotation = cJSON_GetObjectItemCaseSensitive(schema, "x-mcp-header");
 
-	if (!annotation || !value || json_is_null_value(value))
+	if (!annotation || !value || cJSON_IsNull(value))
 		return 0;
-	const struct json *type = json_member(schema, "type");
+	const cJSON *type = cJSON_GetObjectItemCaseSensitive(schema, "type");
 	morph_buf_t name;
 	morph_buf_t text;
 	int rc = morph_buf_init_arena(&name, arena, 64);
 
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_printf(&name, "Mcp-Param-%s", json_string_value(annotation));
+	rc = morph_buf_printf(&name, "Mcp-Param-%s", annotation->valuestring);
 	if (rc != 0)
 		return rc;
 	rc = morph_buf_init_arena(&text, arena, 64);
 	if (rc != 0)
 		return rc;
-	if (strcmp(json_string_value(type), "string") == 0 && json_is_string_value(value))
-		rc = morph_buf_puts(&text, json_string_value(value));
-	else if (strcmp(json_string_value(type), "boolean") == 0 && json_is_bool_value(value))
-		rc = morph_buf_puts(&text, json_is_true(value) ? "true" : "false");
-	else if (strcmp(json_string_value(type), "integer") == 0 && json_is_number_value(value) &&
-		 json_number_value(value) >= -9007199254740991.0 &&
-		 json_number_value(value) <= 9007199254740991.0 &&
-		 (double)(int64_t)json_number_value(value) == json_number_value(value))
-		rc = morph_buf_printf(&text, "%.0f", json_number_value(value));
+	if (strcmp(type->valuestring, "string") == 0 && cJSON_IsString(value))
+		rc = morph_buf_puts(&text, value->valuestring);
+	else if (strcmp(type->valuestring, "boolean") == 0 && cJSON_IsBool(value))
+		rc = morph_buf_puts(&text, cJSON_IsTrue(value) ? "true" : "false");
+	else if (strcmp(type->valuestring, "integer") == 0 && cJSON_IsNumber(value) &&
+	    value->valuedouble >= -9007199254740991.0 &&
+	    value->valuedouble <= 9007199254740991.0 &&
+	    (double)(int64_t)value->valuedouble == value->valuedouble)
+		rc = morph_buf_printf(&text, "%.0f", value->valuedouble);
 	else
 		return -EINVAL;
 	if (rc != 0)
@@ -215,19 +215,18 @@ static int parameter_header(const struct json *schema, const struct json *value,
 		morph_buf_cstr(&text));
 }
 
-static int property_headers(const struct json *schema, const struct json *arguments,
-			    struct arena *arena, morph_array_t *headers)
+static int property_headers(const cJSON *schema, const cJSON *arguments,
+	struct arena *arena, morph_array_t *headers)
 {
-	const struct json *properties = json_member(schema, "properties");
-	const struct json *property;
+	const cJSON *properties = cJSON_GetObjectItemCaseSensitive(schema, "properties");
+	const cJSON *property;
 
-	json_foreach (property, properties) {
-		const struct json *value = json_is_object_value(arguments)
-						   ? json_member(arguments, json_key(property))
-						   : NULL;
+	cJSON_ArrayForEach(property, properties) {
+		const cJSON *value = cJSON_IsObject(arguments) ?
+			cJSON_GetObjectItemCaseSensitive(arguments, property->string) : NULL;
 		int rc = parameter_header(property, value, arena, headers);
 
-		if (rc == 0 && json_is_object_value(value))
+		if (rc == 0 && cJSON_IsObject(value))
 			rc = property_headers(property, value, arena, headers);
 		if (rc != 0)
 			return rc;
@@ -236,15 +235,13 @@ static int property_headers(const struct json *schema, const struct json *argume
 }
 
 /* Caller holds the connection lock, including access to the schema cache. */
-int mcp_protocol_tool_headers(struct mcp_client *client, const struct json *params,
-			      struct arena *arena, morph_array_t *headers)
+int mcp_protocol_tool_headers(struct mcp_client *client, const cJSON *params,
+	struct arena *arena, morph_array_t *headers)
 {
-	const struct json *name = json_member(params, "name");
-	const struct json *arguments = json_member(params, "arguments");
-	const struct json *schema =
-		json_is_string_value(name)
-			? morph_strmap_get(&client->tool_schemas, json_string_value(name))
-			: NULL;
+	const cJSON *name = cJSON_GetObjectItemCaseSensitive(params, "name");
+	const cJSON *arguments = cJSON_GetObjectItemCaseSensitive(params, "arguments");
+	const cJSON *schema = cJSON_IsString(name) ?
+		morph_strmap_get(&client->tool_schemas, name->valuestring) : NULL;
 
 	if (!schema)
 		return -ENOENT;

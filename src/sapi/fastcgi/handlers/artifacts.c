@@ -12,7 +12,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include "util/json.h"
+#include "cJSON.h"
 #include "util/file.h"
 
 __attribute__((weak)) const char *fcgi_artifact_output_dir(struct fcgi_bridge *bridge);
@@ -50,24 +50,24 @@ static int path_within_root(const char *root, const char *rel, char out_path[PAT
 
 static char *artifact_meta_json(const struct artifact_record *a)
 {
-	struct json *root = json_object();
+	cJSON *root = cJSON_CreateObject();
 	char url[128];
 	char *json;
 
 	if (!root)
 		return NULL;
 	snprintf(url, sizeof(url), "/api/artifacts/%s", a->id);
-	json_add_string(root, "id", a->id);
-	json_add_string(root, "session_id", a->session_id);
-	json_add_string(root, "kind", a->kind);
-	json_add_string(root, "mime", a->mime);
-	json_add_string(root, "filename", a->filename);
-	json_add_number(root, "size_bytes", (double)a->size_bytes);
-	json_add_string(root, "status", a->status);
-	json_add_number(root, "created_at", (double)a->created_at);
-	json_add_string(root, "url", url);
-	json = json_stringify(root);
-	json_free(root);
+	cJSON_AddStringToObject(root, "id", a->id);
+	cJSON_AddStringToObject(root, "session_id", a->session_id);
+	cJSON_AddStringToObject(root, "kind", a->kind);
+	cJSON_AddStringToObject(root, "mime", a->mime);
+	cJSON_AddStringToObject(root, "filename", a->filename);
+	cJSON_AddNumberToObject(root, "size_bytes", (double)a->size_bytes);
+	cJSON_AddStringToObject(root, "status", a->status);
+	cJSON_AddNumberToObject(root, "created_at", (double)a->created_at);
+	cJSON_AddStringToObject(root, "url", url);
+	json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
 	return json;
 }
 

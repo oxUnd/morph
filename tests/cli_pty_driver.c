@@ -26,21 +26,21 @@ static int replay_feed(const char *path)
 	if (rc == 0)
 		rc = cli_presentation_init(&ctx);
 	while (rc == 0 && getline(&line, &capacity, input) >= 0) {
-		struct json *json = json_parse_prefix(line, NULL, NULL);
-		const struct json *name = json_member(json, "name");
+		cJSON *json = cJSON_Parse(line);
+		const cJSON *name = cJSON_GetObjectItemCaseSensitive(json, "name");
 		struct morph_event event = {0};
 
-		if (!json_is_string_value(name)) {
-			json_free(json);
+		if (!cJSON_IsString(name)) {
+			cJSON_Delete(json);
 			rc = (MORPH_ERR_PARSE);
 			break;
 		}
-		event.name = json_string_value(name);
+		event.name = name->valuestring;
 		event.type = strncmp(event.name, "tool.", 5) == 0 ?
 			MORPH_EVENT_TOOL : MORPH_EVENT_REACT;
-		event.data = json_member(json, "data");
+		event.data = cJSON_GetObjectItemCaseSensitive(json, "data");
 		rc = cli_presentation_event(&ctx, &event);
-		json_free(json);
+		cJSON_Delete(json);
 	}
 	free(line);
 	fclose(input);

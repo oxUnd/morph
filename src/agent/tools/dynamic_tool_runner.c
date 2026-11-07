@@ -11,7 +11,7 @@
 #include "util/file.h"
 #include "util/name.h"
 #include "util/log.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>

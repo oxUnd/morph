@@ -2,7 +2,7 @@
 
 extern "C" {
 #include "event/event.h"
-#include "util/json.h"
+#include "cJSON.h"
 }
 
 TEST(EventTest, TypeName)
@@ -21,10 +21,10 @@ TEST(EventTest, TypeName)
 
 TEST(EventTest, SerializesStructuredPayload)
 {
-	struct json *data = json_object();
+	cJSON *data = cJSON_CreateObject();
 	ASSERT_NE(nullptr, data);
-	json_add_string(data, "server", "filesystem");
-	json_add_number(data, "tools", 4);
+	cJSON_AddStringToObject(data, "server", "filesystem");
+	cJSON_AddNumberToObject(data, "tools", 4);
 
 	struct morph_event ev = {
 		MORPH_EVENT_MCP,
@@ -38,21 +38,24 @@ TEST(EventTest, SerializesStructuredPayload)
 	char *json = morph_event_to_json_string(&ev);
 	ASSERT_NE(nullptr, json);
 
-	struct json *root = json_parse_prefix(json, NULL, NULL);
+	cJSON *root = cJSON_Parse(json);
 	ASSERT_NE(nullptr, root);
-	EXPECT_STREQ("mcp", json_string_value(json_member_ci(root, "type")));
-	EXPECT_STREQ("mcp.ready", json_string_value(json_member_ci(root, "name")));
-	EXPECT_STREQ("ready", json_string_value(json_member_ci(root, "phase")));
-	EXPECT_STREQ("MCP server ready", json_string_value(json_member_ci(root, "message")));
-	EXPECT_STREQ("turn_test", json_string_value(json_member_ci(root, "turn_id")));
-	struct json *payload = json_member_ci(root, "data");
-	ASSERT_TRUE(json_is_object_value(payload));
-	EXPECT_STREQ("filesystem", json_string_value(json_member_ci(payload, "server")));
-	EXPECT_EQ(4, json_int_value(json_member_ci(payload, "tools")));
+	EXPECT_STREQ("mcp", cJSON_GetObjectItem(root, "type")->valuestring);
+	EXPECT_STREQ("mcp.ready", cJSON_GetObjectItem(root, "name")->valuestring);
+	EXPECT_STREQ("ready", cJSON_GetObjectItem(root, "phase")->valuestring);
+	EXPECT_STREQ("MCP server ready",
+		     cJSON_GetObjectItem(root, "message")->valuestring);
+	EXPECT_STREQ("turn_test",
+		     cJSON_GetObjectItem(root, "turn_id")->valuestring);
+	cJSON *payload = cJSON_GetObjectItem(root, "data");
+	ASSERT_TRUE(cJSON_IsObject(payload));
+	EXPECT_STREQ("filesystem",
+		     cJSON_GetObjectItem(payload, "server")->valuestring);
+	EXPECT_EQ(4, cJSON_GetObjectItem(payload, "tools")->valueint);
 
-	json_free(root);
+	cJSON_Delete(root);
 	free(json);
-	json_free(data);
+	cJSON_Delete(data);
 }
 
 TEST(EventTest, RecorderUsesEventSerialization)
@@ -73,12 +76,13 @@ TEST(EventTest, RecorderUsesEventSerialization)
 	const char *json = morph_event_recorder_get(&rec, 0);
 	ASSERT_NE(nullptr, json);
 
-	struct json *root = json_parse_prefix(json, NULL, NULL);
+	cJSON *root = cJSON_Parse(json);
 	ASSERT_NE(nullptr, root);
-	EXPECT_STREQ("startup", json_string_value(json_member_ci(root, "type")));
-	EXPECT_STREQ("startup.begin", json_string_value(json_member_ci(root, "name")));
-	EXPECT_TRUE(json_is_object_value(json_member_ci(root, "data")));
+	EXPECT_STREQ("startup", cJSON_GetObjectItem(root, "type")->valuestring);
+	EXPECT_STREQ("startup.begin",
+		     cJSON_GetObjectItem(root, "name")->valuestring);
+	EXPECT_TRUE(cJSON_IsObject(cJSON_GetObjectItem(root, "data")));
 
-	json_free(root);
+	cJSON_Delete(root);
 	morph_event_recorder_cleanup(&rec);
 }

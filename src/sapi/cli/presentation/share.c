@@ -1,5 +1,5 @@
 #include "sapi/cli/presentation/share.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "util/base64.h"
 #include "util/data.h"
 #include "util/utf8.h"
@@ -10,6 +10,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+
+static const char *cli_share_text(const cJSON *object, const char *key)
+{
+	const cJSON *value = cJSON_GetObjectItemCaseSensitive(object, key);
+	return cJSON_IsString(value) ? value->valuestring : "";
+}
 
 static int cli_share_escape(morph_buf_t *html, const char *text)
 {
@@ -107,14 +113,14 @@ static int cli_share_markdown(morph_buf_t *html, const char *text)
 	return rc;
 }
 
-static int cli_share_questions(const struct json *questions, morph_buf_t *html)
+static int cli_share_questions(const cJSON *questions, morph_buf_t *html)
 {
 	morph_buf_puts(html, "<section><h2 class=label>YOU</h2>");
-	const struct json *question;
-	json_foreach (question, questions) {
+	const cJSON *question;
+	cJSON_ArrayForEach (question, questions) {
 		morph_buf_puts(html, "<div class=question>");
-		int rc = cli_share_escape(
-			html, json_is_string_value(question) ? json_string_value(question) : "");
+		int rc = cli_share_escape(html,
+					  cJSON_IsString(question) ? question->valuestring : "");
 		if (rc)
 			return rc;
 		morph_buf_puts(html, "</div>");
@@ -123,40 +129,40 @@ static int cli_share_questions(const struct json *questions, morph_buf_t *html)
 	return html->failed;
 }
 
-static int cli_share_step_html(const struct json *step, morph_buf_t *html)
+static int cli_share_step_html(const cJSON *step, morph_buf_t *html)
 {
 	morph_buf_puts(html, "<li><div class=step-title>");
-	int rc = cli_share_escape(html, json_str_or(json_member(step, "name"), NULL, ""));
+	int rc = cli_share_escape(html, cli_share_text(step, "name"));
 	if (rc)
 		return rc;
 	morph_buf_puts(html, "<span class=status>");
-	rc = cli_share_escape(html, json_str_or(json_member(step, "status"), NULL, ""));
+	rc = cli_share_escape(html, cli_share_text(step, "status"));
 	if (rc)
 		return rc;
 	morph_buf_puts(html, "</span></div><details class=tool-output>"
 			     "<summary>View result</summary><pre>");
-	rc = cli_share_escape(html, json_str_or(json_member(step, "content"), NULL, ""));
+	rc = cli_share_escape(html, cli_share_text(step, "content"));
 	if (rc)
 		return rc;
 	morph_buf_puts(html, "</pre>");
-	if (json_is_true(json_member(step, "truncated")))
+	if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(step, "truncated")))
 		morph_buf_puts(html, "<p class=note>This result was shortened "
 				     "before it was stored.</p>");
 	morph_buf_puts(html, "</details></li>");
 	return html->failed;
 }
 
-static int cli_share_process(const struct json *steps, morph_buf_t *html)
+static int cli_share_process(const cJSON *steps, morph_buf_t *html)
 {
-	int count = json_count(steps);
+	int count = cJSON_GetArraySize(steps);
 	if (count == 0)
 		return 0;
 	morph_buf_printf(html,
 			 "<details class=process><summary>Execution process · "
 			 "%d step%s</summary><ol class=steps>",
 			 count, count == 1 ? "" : "s");
-	const struct json *step;
-	json_foreach (step, steps) {
+	const cJSON *step;
+	cJSON_ArrayForEach (step, steps) {
 		int rc = cli_share_step_html(step, html);
 		if (rc)
 			return rc;
@@ -234,10 +240,11 @@ static int cli_share_header(morph_buf_t *html)
 	return html->failed;
 }
 
-int cli_share_html(const struct json *document, time_t shared_at, morph_buf_t *html)
+int cli_share_html(const cJSON *document, time_t shared_at, morph_buf_t *html)
 {
-	if (!document || !html || !json_is_array_value(json_member(document, "questions")) ||
-	    !json_str_or(json_member(document, "answer"), NULL, "")[0])
+	if (!document || !html ||
+	    !cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(document, "questions")) ||
+	    !cli_share_text(document, "answer")[0])
 		return -EINVAL;
 	if (html->failed)
 		return html->failed;
@@ -249,14 +256,14 @@ int cli_share_html(const struct json *document, time_t shared_at, morph_buf_t *h
 	int rc = cli_share_header(html);
 	if (rc)
 		return rc;
-	rc = cli_share_questions(json_member(document, "questions"), html);
+	rc = cli_share_questions(cJSON_GetObjectItemCaseSensitive(document, "questions"), html);
 	if (rc)
 		return rc;
-	rc = cli_share_process(json_member(document, "steps"), html);
+	rc = cli_share_process(cJSON_GetObjectItemCaseSensitive(document, "steps"), html);
 	if (rc)
 		return rc;
 	morph_buf_puts(html, "<section><h2 class=label>MORPH</h2><article class=answer>");
-	rc = cli_share_markdown(html, json_str_or(json_member(document, "answer"), NULL, ""));
+	rc = cli_share_markdown(html, cli_share_text(document, "answer"));
 	if (rc)
 		return rc;
 	morph_buf_puts(html, "</article></section><footer><span>Shared from morph</span>"

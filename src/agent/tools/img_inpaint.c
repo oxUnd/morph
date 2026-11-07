@@ -9,7 +9,7 @@
 #include "util/buf.h"
 #include "util/array.h"
 #include "util/image_util.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "stb_image.h"
 
 #include <errno.h>
@@ -70,14 +70,14 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result, v
 	if (!result)
 		return -EINVAL;
 
-	struct json *root = json_parse_prefix(args_json, NULL, NULL);
+	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
 	if (!ctx || !ctx->image_llm || !ctx->image_llm->api_key[0]) {
-		json_free(root);
+		cJSON_Delete(root);
 		(void)tool_result_success_json_text(
 			result, strdup("{\"error\":\"no image model configured\"}"));
 		return MORPH_ERR_NOT_CONFIGURED;
@@ -87,26 +87,26 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result, v
 	int parse_rc = annotation_parse(root, &annotation);
 
 	if (parse_rc != 0) {
-		json_free(root);
+		cJSON_Delete(root);
 		(void)tool_result_success_json_text(
 			result, strdup("{\"error\":\"missing or invalid annotation\"}"));
 		return parse_rc;
 	}
 
 	const char *user_prompt = NULL, *style = NULL, *size = NULL;
-	struct json *up = json_member_ci(root, "prompt");
-	if (json_is_string_value(up))
-		user_prompt = json_string_value(up);
-	struct json *st = json_member_ci(root, "style");
-	if (json_is_string_value(st))
-		style = json_string_value(st);
-	struct json *sz = json_member_ci(root, "size");
-	if (json_is_string_value(sz))
-		size = json_string_value(sz);
+	cJSON *up = cJSON_GetObjectItem(root, "prompt");
+	if (cJSON_IsString(up))
+		user_prompt = up->valuestring;
+	cJSON *st = cJSON_GetObjectItem(root, "style");
+	if (cJSON_IsString(st))
+		style = st->valuestring;
+	cJSON *sz = cJSON_GetObjectItem(root, "size");
+	if (cJSON_IsString(sz))
+		size = sz->valuestring;
 
 	if (image_gen_validate_size_for_model(ctx->image_llm, size) < 0) {
 		annotation_cleanup(&annotation);
-		json_free(root);
+		cJSON_Delete(root);
 		(void)tool_result_success_json_text(
 			result,
 			strdup("{\"error\":\"invalid size for the configured image model\"}"));
@@ -115,7 +115,7 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result, v
 
 	if (annotation.bboxes.nelts == 0) {
 		annotation_cleanup(&annotation);
-		json_free(root);
+		cJSON_Delete(root);
 		(void)tool_result_success_json_text(
 			result,
 			strdup("{\"error\":\"img_inpaint needs at least one bbox with a "
@@ -129,7 +129,7 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result, v
 	struct inpaint_img *it;
 	if (morph_array_init(&imgs, MORPH_ARRAY_INIT_CAP, sizeof(*it)) != 0) {
 		annotation_cleanup(&annotation);
-		json_free(root);
+		cJSON_Delete(root);
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"oom\"}"));
 		return -ENOMEM;
 	}
@@ -239,34 +239,34 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result, v
 		st_img->applied++;
 	}
 
-	struct json *results = json_array();
+	cJSON *results = cJSON_CreateArray();
 	morph_array_foreach (it, &imgs, struct inpaint_img) {
 		if (it->applied == 0)
 			continue;
-		struct json *one = json_object();
-		json_add_number(one, "image_index", it->image_index);
-		json_add_string(one, "output_path", it->final_path);
-		json_add_number(one, "edits_applied", it->applied);
-		json_array_add(results, one);
+		cJSON *one = cJSON_CreateObject();
+		cJSON_AddNumberToObject(one, "image_index", it->image_index);
+		cJSON_AddStringToObject(one, "output_path", it->final_path);
+		cJSON_AddNumberToObject(one, "edits_applied", it->applied);
+		cJSON_AddItemToArray(results, one);
 	}
 
-	struct json *out = json_object();
-	json_object_add(out, "results", results);
+	cJSON *out = cJSON_CreateObject();
+	cJSON_AddItemToObject(out, "results", results);
 	if (hard_error)
-		json_add_string(out, "error", err_msg);
+		cJSON_AddStringToObject(out, "error", err_msg);
 
-	int produced = json_count(results);
-	struct json *it_json = NULL;
-	json_foreach (it_json, results) {
-		struct json *path = json_member_ci(it_json, "output_path");
-		if (json_is_string_value(path) && json_string_value(path))
-			(void)tool_result_add_image(result, json_string_value(path), 0, 0);
+	int produced = cJSON_GetArraySize(results);
+	cJSON *it_json = NULL;
+	cJSON_ArrayForEach (it_json, results) {
+		cJSON *path = cJSON_GetObjectItem(it_json, "output_path");
+		if (cJSON_IsString(path) && path->valuestring)
+			(void)tool_result_add_image(result, path->valuestring, 0, 0);
 	}
-	char *out_str = json_stringify(out);
-	json_free(out);
+	char *out_str = cJSON_PrintUnformatted(out);
+	cJSON_Delete(out);
 	morph_array_cleanup(&imgs);
 	annotation_cleanup(&annotation);
-	json_free(root);
+	cJSON_Delete(root);
 
 	(void)tool_result_success_json_text(result,
 					    out_str ? out_str : strdup("{\"error\":\"oom\"}"));

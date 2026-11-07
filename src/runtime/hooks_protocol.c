@@ -79,14 +79,14 @@ static int append_context(struct hook_manager *manager, morph_buf_t *context,
 }
 
 int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const char *event,
-		       morph_buf_t *context, morph_buf_t *reason, struct json **updated,
-		       int *blocked, int *ask, int *terminate)
+		       morph_buf_t *context, morph_buf_t *reason, cJSON **updated, int *blocked,
+		       int *ask, int *terminate)
 {
 	const char *text = morph_buf_cstr(&run->out);
 	const char *feedback = "";
-	struct json *root;
-	const struct json *specific;
-	const struct json *replacement;
+	cJSON *root;
+	const cJSON *specific;
+	const cJSON *replacement;
 	int deny = 0;
 	int rc = 0;
 
@@ -109,7 +109,7 @@ int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const
 		return 0;
 	if (utf8valid(text))
 		return MORPH_ERR_PROTOCOL;
-	root = json_parse_ex(text, NULL, 1, NULL);
+	root = cJSON_ParseWithOpts(text, NULL, 1);
 	if (!root) {
 		if (strcmp(event, "SessionStart") == 0 || strcmp(event, "UserPromptSubmit") == 0)
 			return append_context(manager, context, run->entry, text);
@@ -119,54 +119,53 @@ int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const
 			return 0;
 		return MORPH_ERR_PROTOCOL;
 	}
-	if (!json_is_object_value(root) || !hook_json_unique_fields(root, 0)) {
-		json_free(root);
+	if (!cJSON_IsObject(root) || !hook_json_unique_fields(root, 0)) {
+		cJSON_Delete(root);
 		return MORPH_ERR_PROTOCOL;
 	}
-	specific = json_member(root, "hookSpecificOutput");
-	if (specific && (!json_is_object_value(specific) ||
-			 strcmp(json_str_or(specific, "hookEventName", ""), event) != 0)) {
-		json_free(root);
+	specific = cJSON_GetObjectItemCaseSensitive(root, "hookSpecificOutput");
+	if (specific && (!cJSON_IsObject(specific) ||
+			 strcmp(hook_json_string(specific, "hookEventName"), event) != 0)) {
+		cJSON_Delete(root);
 		return MORPH_ERR_PROTOCOL;
 	}
-	const struct json *cont = json_member(root, "continue");
-	const struct json *stop = json_member(root, "stopReason");
-	const struct json *message = json_member(root, "systemMessage");
-	const struct json *suppress = json_member(root, "suppressOutput");
-	const struct json *extra = json_member(specific, "additionalContext");
-	if ((cont && !json_is_bool_value(cont)) || (stop && !json_is_string_value(stop)) ||
-	    (message && !json_is_string_value(message)) ||
-	    (suppress && !json_is_bool_value(suppress)) ||
-	    (extra && !json_is_string_value(extra))) {
-		json_free(root);
+	const cJSON *cont = cJSON_GetObjectItemCaseSensitive(root, "continue");
+	const cJSON *stop = cJSON_GetObjectItemCaseSensitive(root, "stopReason");
+	const cJSON *message = cJSON_GetObjectItemCaseSensitive(root, "systemMessage");
+	const cJSON *suppress = cJSON_GetObjectItemCaseSensitive(root, "suppressOutput");
+	const cJSON *extra = cJSON_GetObjectItemCaseSensitive(specific, "additionalContext");
+	if ((cont && !cJSON_IsBool(cont)) || (stop && !cJSON_IsString(stop)) ||
+	    (message && !cJSON_IsString(message)) || (suppress && !cJSON_IsBool(suppress)) ||
+	    (extra && !cJSON_IsString(extra))) {
+		cJSON_Delete(root);
 		return MORPH_ERR_PROTOCOL;
 	}
 	if (strcmp(event, "SessionEnd") == 0 || strcmp(event, "Interrupt") == 0) {
-		json_free(root);
+		cJSON_Delete(root);
 		return 0;
 	}
 	if (strcmp(event, "PreToolUse") == 0) {
-		const char *decision = json_str_or(specific, "permissionDecision", "");
+		const char *decision = hook_json_string(specific, "permissionDecision");
 		if (*decision && strcmp(decision, "deny") != 0 && strcmp(decision, "allow") != 0 &&
 		    strcmp(decision, "ask") != 0)
 			rc = MORPH_ERR_PROTOCOL;
 		if (strcmp(decision, "ask") == 0)
 			*ask = 1;
 		deny = strcmp(decision, "deny") == 0 ||
-		       strcmp(json_str_or(root, "decision", ""), "block") == 0;
-		feedback = deny ? json_str_or(specific, "permissionDecisionReason", "") : "";
+		       strcmp(hook_json_string(root, "decision"), "block") == 0;
+		feedback = deny ? hook_json_string(specific, "permissionDecisionReason") : "";
 		if (!*feedback)
-			feedback = json_str_or(root, "reason", "");
-		replacement = json_member(specific, "updatedInput");
+			feedback = hook_json_string(root, "reason");
+		replacement = cJSON_GetObjectItemCaseSensitive(specific, "updatedInput");
 		if (replacement) {
-			if (strcmp(decision, "allow") != 0 || !json_is_object_value(replacement)) {
+			if (strcmp(decision, "allow") != 0 || !cJSON_IsObject(replacement)) {
 				rc = MORPH_ERR_PROTOCOL;
-			} else if (*updated && !json_equal(*updated, replacement, 1)) {
+			} else if (*updated && !cJSON_Compare(*updated, replacement, 1)) {
 				/* Never execute a nondeterministically selected rewrite. */
 				deny = 1;
 				feedback = "Conflicting hook input rewrites.";
 			} else if (!*updated) {
-				*updated = json_clone(replacement, 1);
+				*updated = cJSON_Duplicate(replacement, 1);
 				if (!*updated)
 					rc = -ENOMEM;
 			}
@@ -176,28 +175,28 @@ int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const
 	} else if (strcmp(event, "Stop") == 0 || strcmp(event, "UserPromptSubmit") == 0 ||
 		   strcmp(event, "PostToolUse") == 0 || strcmp(event, "SessionStart") == 0 ||
 		   strcmp(event, "PreCompact") == 0 || strcmp(event, "PostCompact") == 0) {
-		deny = strcmp(json_str_or(root, "decision", ""), "block") == 0 ||
-		       json_is_false(cont);
+		deny = strcmp(hook_json_string(root, "decision"), "block") == 0 ||
+		       cJSON_IsFalse(cont);
 		if (strcmp(event, "PreCompact") == 0 || strcmp(event, "PostCompact") == 0 ||
 		    strcmp(event, "SessionStart") == 0)
-			deny = json_is_false(cont);
-		if (json_is_false(cont) && strcmp(event, "PostToolUse") != 0)
+			deny = cJSON_IsFalse(cont);
+		if (cJSON_IsFalse(cont) && strcmp(event, "PostToolUse") != 0)
 			*terminate = 1;
 		if (strcmp(event, "PostToolUse") == 0 &&
-		    (suppress || json_has_member_ci(specific, "updatedMCPToolOutput")))
+		    (suppress || cJSON_HasObjectItem(specific, "updatedMCPToolOutput")))
 			rc = MORPH_ERR_PROTOCOL;
-		feedback = json_str_or(root, "reason", "");
+		feedback = hook_json_string(root, "reason");
 		if (!*feedback)
-			feedback = json_str_or(root, "stopReason", "");
+			feedback = hook_json_string(root, "stopReason");
 	}
 	if (rc == 0 && strcmp(event, "PreCompact") != 0 && strcmp(event, "PostCompact") != 0)
 		rc = append_context(manager, context, run->entry,
-				    json_str_or(specific, "additionalContext", ""));
+				    hook_json_string(specific, "additionalContext"));
 	if (rc == 0 && deny) {
 		*blocked = 1;
 		rc = morph_buf_printf(reason, "%s\n",
 				      *feedback ? feedback : "Hook blocked this operation.");
 	}
-	json_free(root);
+	cJSON_Delete(root);
 	return rc;
 }

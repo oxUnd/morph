@@ -22,7 +22,7 @@ int agent_history_record_request(struct react_context *ctx, const struct model *
 				 const char *system_prompt, const struct chat_message *messages,
 				 int count, const struct tool_desc *tools, int tool_count)
 {
-	struct json *input = NULL;
+	cJSON *input = NULL;
 	char *json;
 	char *safe;
 	sqlite3_stmt *stmt = NULL;
@@ -35,8 +35,8 @@ int agent_history_record_request(struct react_context *ctx, const struct model *
 	rc = model_input_snapshot(model, system_prompt, messages, count, tools, tool_count, &input);
 	if (rc != 0)
 		return rc;
-	json = json_stringify(input);
-	json_free(input);
+	json = cJSON_PrintUnformatted(input);
+	cJSON_Delete(input);
 	if (!json)
 		return -ENOMEM;
 	safe = history_redact_json(ctx, json);
@@ -167,18 +167,19 @@ int agent_history_record_assistant(struct react_context *ctx, const char *conten
 		 ctx && ctx->turn_id[0] ? ctx->turn_id : "unknown");
 	item.idempotency_key = key;
 	if (ctx && ctx->final_reasoning_content) {
-		struct json *payload = json_object();
+		cJSON *payload = cJSON_CreateObject();
 		char *json;
 		int rc;
 
 		if (!payload)
 			return -ENOMEM;
-		if (!json_add_string(payload, "reasoning_content", ctx->final_reasoning_content)) {
-			json_free(payload);
+		if (!cJSON_AddStringToObject(payload, "reasoning_content",
+					     ctx->final_reasoning_content)) {
+			cJSON_Delete(payload);
 			return -ENOMEM;
 		}
-		json = json_stringify(payload);
-		json_free(payload);
+		json = cJSON_PrintUnformatted(payload);
+		cJSON_Delete(payload);
 		if (!json)
 			return -ENOMEM;
 		item.payload_json = json;
@@ -223,40 +224,40 @@ int history_store_turn_outcomes(struct db *db, int64_t session_id, const char *t
 		sqlite3_bind_text(select, 2, turn_id, -1, SQLITE_TRANSIENT);
 	while ((rc = sqlite3_step(select)) == SQLITE_ROW) {
 		const char *old = (const char *)sqlite3_column_text(select, 2);
-		struct json *payload = old ? json_parse_prefix(old, NULL, NULL) : json_object();
-		struct json *outcome = json_object();
+		cJSON *payload = old ? cJSON_Parse(old) : cJSON_CreateObject();
+		cJSON *outcome = cJSON_CreateObject();
 		char *json = NULL;
 		char *rendered = NULL;
 		struct model_history_item item = {0};
 
-		if (!turn_id && json_has_member_ci(payload, "turn_outcome")) {
-			json_free(outcome);
-			json_free(payload);
+		if (!turn_id && cJSON_HasObjectItem(payload, "turn_outcome")) {
+			cJSON_Delete(outcome);
+			cJSON_Delete(payload);
 			continue;
 		}
-		if (old && !json_is_object_value(payload)) {
-			json_free(outcome);
-			json_free(payload);
+		if (old && !cJSON_IsObject(payload)) {
+			cJSON_Delete(outcome);
+			cJSON_Delete(payload);
 			error = (MORPH_ERR_PARSE);
 			break;
 		}
-		if (!payload || !outcome || !json_add_string(outcome, "status", status) ||
-		    !json_add_bool(outcome, "finished", 1) ||
-		    !json_add_number(outcome, "error_code", error_code)) {
-			json_free(outcome);
-			json_free(payload);
+		if (!payload || !outcome || !cJSON_AddStringToObject(outcome, "status", status) ||
+		    !cJSON_AddBoolToObject(outcome, "finished", 1) ||
+		    !cJSON_AddNumberToObject(outcome, "error_code", error_code)) {
+			cJSON_Delete(outcome);
+			cJSON_Delete(payload);
 			error = (-ENOMEM);
 			break;
 		}
-		json_object_remove(payload, "turn_outcome");
-		if (json_object_add(payload, "turn_outcome", outcome) != 0) {
-			json_free(outcome);
-			json_free(payload);
+		cJSON_DeleteItemFromObjectCaseSensitive(payload, "turn_outcome");
+		if (!cJSON_AddItemToObject(payload, "turn_outcome", outcome)) {
+			cJSON_Delete(outcome);
+			cJSON_Delete(payload);
 			error = (-ENOMEM);
 			break;
 		}
-		json = json_stringify(payload);
-		json_free(payload);
+		json = cJSON_PrintUnformatted(payload);
+		cJSON_Delete(payload);
 		item.content = (char *)sqlite3_column_text(select, 1);
 		item.payload_json = json;
 		if (json)
@@ -308,53 +309,53 @@ int agent_history_record_tool_calls(struct react_context *ctx, const char *conte
 {
 	struct model_history_insert item = {0};
 	char key[256];
-	struct json *array;
-	struct json *root;
+	cJSON *array;
+	cJSON *root;
 	char *json;
 	int rc;
 
 	if (!ctx || !calls || call_count <= 0)
 		return -EINVAL;
-	root = json_object();
-	array = json_array();
+	root = cJSON_CreateObject();
+	array = cJSON_CreateArray();
 	if (!root || !array) {
-		json_free(root);
-		json_free(array);
+		cJSON_Delete(root);
+		cJSON_Delete(array);
 		return -ENOMEM;
 	}
-	json_object_add(root, "calls", array);
+	cJSON_AddItemToObject(root, "calls", array);
 	if (reasoning_content)
-		json_add_string(root, "reasoning_content", reasoning_content);
+		cJSON_AddStringToObject(root, "reasoning_content", reasoning_content);
 	for (int i = 0; i < call_count; i++) {
-		struct json *call = json_object();
+		cJSON *call = cJSON_CreateObject();
 		char *arguments = NULL;
 
 		if (!call) {
-			json_free(root);
+			cJSON_Delete(root);
 			return -ENOMEM;
 		}
-		json_add_string(call, "tool_call_id", calls[i].tool_call_id);
-		json_add_string(call, "provider_call_id", calls[i].id);
-		json_add_string(call, "name", calls[i].name);
+		cJSON_AddStringToObject(call, "tool_call_id", calls[i].tool_call_id);
+		cJSON_AddStringToObject(call, "provider_call_id", calls[i].id);
+		cJSON_AddStringToObject(call, "name", calls[i].name);
 		if (calls[i].input_kind == TOOL_INPUT_TEXT) {
-			json_add_string(call, "input_kind", "text");
-			json_add_string(call, "input",
-					calls[i].arguments ? calls[i].arguments : "");
+			cJSON_AddStringToObject(call, "input_kind", "text");
+			cJSON_AddStringToObject(call, "input",
+						calls[i].arguments ? calls[i].arguments : "");
 		} else {
 			rc = agent_history_normalize_tool_arguments(calls[i].arguments, &arguments);
 			if (rc != 0) {
-				json_free(call);
-				json_free(root);
+				cJSON_Delete(call);
+				cJSON_Delete(root);
 				return rc;
 			}
-			json_add_string(call, "input_kind", "json");
-			json_add_string(call, "arguments", arguments);
+			cJSON_AddStringToObject(call, "input_kind", "json");
+			cJSON_AddStringToObject(call, "arguments", arguments);
 		}
 		free(arguments);
-		json_array_add(array, call);
+		cJSON_AddItemToArray(array, call);
 	}
-	json = json_stringify(root);
-	json_free(root);
+	json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
 	if (!json)
 		return -ENOMEM;
 	item.session_id = ctx->history_session_id;
@@ -378,11 +379,11 @@ int agent_history_record_tool_result_ex(struct react_context *ctx, const char *t
 					const char *provider_call_id, const char *tool_name,
 					const char *content, int error_code,
 					const struct tool_artifact_list *artifacts,
-					const struct json *tool_meta)
+					const cJSON *tool_meta)
 {
 	struct model_history_insert item = {0};
 	char key[256];
-	struct json *metadata;
+	cJSON *metadata;
 	char *payload = NULL;
 	char *stored;
 	int truncated = 0;
@@ -403,62 +404,63 @@ int agent_history_record_tool_result_ex(struct react_context *ctx, const char *t
 	item.tool_name = tool_name;
 	snprintf(key, sizeof(key), "result:%s", tool_call_id ? tool_call_id : "unknown");
 	item.idempotency_key = key;
-	metadata = json_object();
+	metadata = cJSON_CreateObject();
 	if (!metadata) {
 		free(stored);
 		return -ENOMEM;
 	}
-	json_add_string(metadata, "status",
-			error_code == -ETIMEDOUT   ? "timed_out"
-			: error_code == -ECANCELED ? "cancelled"
-			: error_code < 0	   ? "failed"
-						   : "completed");
-	json_add_number(metadata, "error_code", error_code);
-	json_add_string(metadata, "tool_call_id", tool_call_id ? tool_call_id : "");
-	json_add_string(metadata, "provider_call_id", provider_call_id ? provider_call_id : "");
-	json_add_string(metadata, "tool_name", tool_name ? tool_name : "");
-	json_add_string(metadata, "content", stored);
+	cJSON_AddStringToObject(metadata, "status",
+				error_code == -ETIMEDOUT   ? "timed_out"
+				: error_code == -ECANCELED ? "cancelled"
+				: error_code < 0	   ? "failed"
+							   : "completed");
+	cJSON_AddNumberToObject(metadata, "error_code", error_code);
+	cJSON_AddStringToObject(metadata, "tool_call_id", tool_call_id ? tool_call_id : "");
+	cJSON_AddStringToObject(metadata, "provider_call_id",
+				provider_call_id ? provider_call_id : "");
+	cJSON_AddStringToObject(metadata, "tool_name", tool_name ? tool_name : "");
+	cJSON_AddStringToObject(metadata, "content", stored);
 	{
 		char *original = strdup(content ? content : "");
 		char *redacted;
 
 		if (!original) {
-			json_free(metadata);
+			cJSON_Delete(metadata);
 			free(stored);
 			return -ENOMEM;
 		}
 		utf8_sanitize_inplace(original);
 		redacted = history_redact_json(ctx, original);
 		free(original);
-		if (!redacted || !json_add_string(metadata, "original_content", redacted)) {
+		if (!redacted || !cJSON_AddStringToObject(metadata, "original_content", redacted)) {
 			free(redacted);
-			json_free(metadata);
+			cJSON_Delete(metadata);
 			free(stored);
 			return -ENOMEM;
 		}
 		free(redacted);
 	}
 	if (artifacts && artifacts->count > 0) {
-		struct json *artifact_json = tool_artifact_list_to_json(artifacts);
+		cJSON *artifact_json = tool_artifact_list_to_json(artifacts);
 
 		if (artifact_json)
-			json_object_add(metadata, "artifacts", artifact_json);
+			cJSON_AddItemToObject(metadata, "artifacts", artifact_json);
 	}
 	if (tool_meta)
-		json_object_add(metadata, "tool_meta", json_clone(tool_meta, 1));
+		cJSON_AddItemToObject(metadata, "tool_meta", cJSON_Duplicate(tool_meta, 1));
 	{
-		struct json *storage = json_object();
+		cJSON *storage = cJSON_CreateObject();
 
 		if (storage) {
-			json_add_bool(storage, "truncated", truncated);
-			json_add_number(storage, "original_bytes",
-					content ? (double)strlen(content) : 0.0);
-			json_add_number(storage, "stored_bytes", (double)strlen(stored));
-			json_object_add(metadata, "storage", storage);
+			cJSON_AddBoolToObject(storage, "truncated", truncated);
+			cJSON_AddNumberToObject(storage, "original_bytes",
+						content ? (double)strlen(content) : 0.0);
+			cJSON_AddNumberToObject(storage, "stored_bytes", (double)strlen(stored));
+			cJSON_AddItemToObject(metadata, "storage", storage);
 		}
 	}
-	payload = json_stringify(metadata);
-	json_free(metadata);
+	payload = cJSON_PrintUnformatted(metadata);
+	cJSON_Delete(metadata);
 	if (!payload) {
 		free(stored);
 		return -ENOMEM;
@@ -486,7 +488,7 @@ int agent_history_record_receipt(struct react_context *ctx, const char *name, co
 {
 	struct model_history_insert item = {0};
 	morph_buf_t text;
-	struct json *payload;
+	cJSON *payload;
 	char *json;
 	char key[320];
 	int rc;
@@ -508,18 +510,18 @@ int agent_history_record_receipt(struct react_context *ctx, const char *name, co
 		morph_buf_cleanup(&text);
 		return rc;
 	}
-	payload = json_object();
+	payload = cJSON_CreateObject();
 	if (!payload) {
 		morph_buf_cleanup(&text);
 		return -ENOMEM;
 	}
-	json_add_string(payload, "name", name ? name : "");
-	json_add_string(payload, "phase", phase ? phase : "");
-	json_add_string(payload, "task", task ? task : "");
-	json_add_number(payload, "count", count);
-	json_add_number(payload, "error_code", error_code);
-	json = json_stringify(payload);
-	json_free(payload);
+	cJSON_AddStringToObject(payload, "name", name ? name : "");
+	cJSON_AddStringToObject(payload, "phase", phase ? phase : "");
+	cJSON_AddStringToObject(payload, "task", task ? task : "");
+	cJSON_AddNumberToObject(payload, "count", count);
+	cJSON_AddNumberToObject(payload, "error_code", error_code);
+	json = cJSON_PrintUnformatted(payload);
+	cJSON_Delete(payload);
 	if (!json) {
 		morph_buf_cleanup(&text);
 		return -ENOMEM;

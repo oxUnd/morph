@@ -49,35 +49,35 @@ struct runtime_recap_job {
 	void *event_user_data;
 };
 
-static int recap_string(struct json *value, size_t limit, int nullable)
+static int recap_string(cJSON *value, size_t limit, int nullable)
 {
 	morph_str_t trimmed;
 	char *text;
 	int ok;
 
-	if (nullable && json_is_null_value(value))
+	if (nullable && cJSON_IsNull(value))
 		return 1;
-	if (!json_is_string_value(value) || utf8valid(json_string_value(value)))
+	if (!cJSON_IsString(value) || utf8valid(value->valuestring))
 		return 0;
-	trimmed = morph_str_trim(
-		(morph_str_t){strlen(json_string_value(value)), json_string_value(value)});
+	trimmed = morph_str_trim((morph_str_t){strlen(value->valuestring), value->valuestring});
 	text = strndup(trimmed.data, trimmed.len);
 	if (!text)
 		return 0;
 	ok = (nullable || text[0]) && utf8len(text) <= limit &&
-	     json_string_update(value, text) != NULL;
+	     cJSON_SetValuestring(value, text) != NULL;
 	free(text);
 	return ok;
 }
 
-struct json *runtime_recap_parse(const char *response)
+cJSON *runtime_recap_parse(const char *response)
 {
-	struct json *root = response ? json_parse_ex(response, NULL, 1, NULL) : NULL;
+	cJSON *root = response ? cJSON_ParseWithOpts(response, NULL, 1) : NULL;
 
-	if (!json_is_object_value(root) || json_count(root) != 2 ||
-	    !recap_string(json_member(root, "summary"), RECAP_MAX_CHARS, 0) ||
-	    !recap_string(json_member(root, "next_action"), RECAP_NEXT_MAX_CHARS, 1)) {
-		json_free(root);
+	if (!cJSON_IsObject(root) || cJSON_GetArraySize(root) != 2 ||
+	    !recap_string(cJSON_GetObjectItemCaseSensitive(root, "summary"), RECAP_MAX_CHARS, 0) ||
+	    !recap_string(cJSON_GetObjectItemCaseSensitive(root, "next_action"),
+			  RECAP_NEXT_MAX_CHARS, 1)) {
+		cJSON_Delete(root);
 		return NULL;
 	}
 	return root;
@@ -225,25 +225,24 @@ static char *recap_history(struct db *db, int64_t session_id)
 	return result;
 }
 
-static void recap_event(struct runtime_recap_job *job, const char *phase, struct json *result,
-			int rc)
+static void recap_event(struct runtime_recap_job *job, const char *phase, cJSON *result, int rc)
 {
-	struct json *data = result ? json_clone(result, 1) : json_object();
+	cJSON *data = result ? cJSON_Duplicate(result, 1) : cJSON_CreateObject();
 
 	if (!data)
 		return;
-	json_add_number(data, "session_id", (double)job->progress.session_id);
-	json_add_number(data, "history_id", (double)job->progress.history_id);
-	json_add_number(data, "revision", (double)job->progress.revision);
-	json_add_number(data, "completed_turns", job->progress.completed_turns);
-	json_add_bool(data, "automatic", job->automatic);
-	json_add_number(data, "error_code", rc);
+	cJSON_AddNumberToObject(data, "session_id", (double)job->progress.session_id);
+	cJSON_AddNumberToObject(data, "history_id", (double)job->progress.history_id);
+	cJSON_AddNumberToObject(data, "revision", (double)job->progress.revision);
+	cJSON_AddNumberToObject(data, "completed_turns", job->progress.completed_turns);
+	cJSON_AddBoolToObject(data, "automatic", job->automatic);
+	cJSON_AddNumberToObject(data, "error_code", rc);
 	(void)morph_event_emit_simple(
 		job->event_cb, job->event_user_data, MORPH_EVENT_BACKGROUND, "session.recap", phase,
 		strcmp(phase, "begin") == 0 ? "Generating conversation recap..."
 					    : "Conversation recap finished",
 		data);
-	json_free(data);
+	cJSON_Delete(data);
 }
 
 static void recap_bill(struct runtime_recap_job *job, const struct model_usage *usage)
@@ -264,7 +263,7 @@ static void *recap_worker(void *opaque)
 	struct arena *arena = arena_create(0);
 	struct chat_response response = {0};
 	struct chat_message message = {.role = "user", .content = job->prompt};
-	struct json *result = NULL;
+	cJSON *result = NULL;
 	int rc = -ENOMEM;
 
 	recap_event(job, "begin", NULL, 0);
@@ -281,7 +280,7 @@ static void *recap_worker(void *opaque)
 	if (morph_cancel_token_is_cancelled(&job->cancel))
 		rc = -ECANCELED;
 	recap_event(job, "end", rc == 0 ? result : NULL, rc);
-	json_free(result);
+	cJSON_Delete(result);
 	chat_response_free(&response);
 	arena_destroy(arena);
 	pthread_mutex_lock(&job->lock);

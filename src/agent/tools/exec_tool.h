@@ -18,8 +18,9 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 
 int exec_tool_set_event_callback(struct tool_registry *reg, morph_event_cb cb,
 				 void *user_data);
-int exec_tool_jobs_list(struct tool_registry *reg, int64_t owner, struct json **out);
-int exec_tool_job_read(struct tool_registry *reg, int64_t owner, const char *id, struct json **out);
+int exec_tool_jobs_list(struct tool_registry *reg, int64_t owner, cJSON **out);
+int exec_tool_job_read(struct tool_registry *reg, int64_t owner, const char *id,
+			cJSON **out);
 int exec_tool_job_stop(struct tool_registry *reg, int64_t owner, const char *id);
 
 #ifdef __cplusplus

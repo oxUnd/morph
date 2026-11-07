@@ -1,7 +1,7 @@
 #include "sapi/cli/commands/mcp_manage.h"
 #include "mcp/mcp.h"
 #include "config/config.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "sapi/cli/services/management.h"
 #include "http/client.h"
 #include "runtime/mcp.h"
@@ -152,11 +152,11 @@ static int cli_mcp_manage_mcp_parse(int argc, char **argv, const char *path,
 /* JSON string quoting is also valid TOML basic-string quoting. */
 static int cli_mcp_manage_mcp_quote(morph_buf_t *buffer, const char *text)
 {
-	struct json *item = json_string(text);
-	char *quoted = item ? json_stringify(item) : NULL;
+	cJSON *item = cJSON_CreateString(text);
+	char *quoted = item ? cJSON_PrintUnformatted(item) : NULL;
 	int rc;
 
-	json_free(item);
+	cJSON_Delete(item);
 	if (!quoted)
 		return buffer->failed = -ENOMEM;
 	rc = morph_buf_puts(buffer, quoted);

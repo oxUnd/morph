@@ -16,8 +16,6 @@ strmap.c
 buf.c
 array.c
 json.c
-json_parse.c
-json_path.c
 bash_parse.c
 ../../vendor/cJSON.c
 ../../vendor/utf8proc/utf8proc.c

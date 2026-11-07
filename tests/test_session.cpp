@@ -784,14 +784,14 @@ TEST_F(SessionTest, ToolResultRedactionPreservesPackageNamesAndJsonBoundaries)
 	struct session session;
 	const char *output = "dsh-tool-ask-user\n/tmp/ask-user/docs/sk-example.md\n"
 		"sk-private-secret\nBearer secret-value\nTAIL with \"quoted\" text\n";
-	struct json *root = json_object();
-	struct json *data = json_add_object(root, "data");
-	json_add_bool(root, "ok", 1);
-	json_add_string(data, "stdout", output);
-	json_add_string(data, "stderr", "Unrelated diagnostic");
-	json_add_number(data, "exit_code", 0);
-	char *source = json_stringify(root);
-	json_free(root);
+	cJSON *root = cJSON_CreateObject();
+	cJSON *data = cJSON_AddObjectToObject(root, "data");
+	cJSON_AddBoolToObject(root, "ok", 1);
+	cJSON_AddStringToObject(data, "stdout", output);
+	cJSON_AddStringToObject(data, "stderr", "Unrelated diagnostic");
+	cJSON_AddNumberToObject(data, "exit_code", 0);
+	char *source = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
 	ASSERT_NE(source, nullptr);
 	ctx.history_tool_result_tokens = 8000;
 	ASSERT_EQ(session_create(&db, "redaction_boundaries", "test", &session), 0);
@@ -805,24 +805,21 @@ TEST_F(SessionTest, ToolResultRedactionPreservesPackageNamesAndJsonBoundaries)
 	auto *items = model_history_list(&db, session.id, 1, &count);
 	ASSERT_EQ(count, 1);
 	ASSERT_NE(items, nullptr);
-	struct json *payload = json_parse_prefix(items->payload_json, NULL, NULL);
-	const char *contents[] = {
-		items->content,
-		json_string_value(json_member_ci(payload, "original_content")),
-	};
-	for (const char *text : contents) {
+	cJSON *payload = cJSON_Parse(items->payload_json);
+	for (const char *text : {items->content,
+	     cJSON_GetStringValue(cJSON_GetObjectItem(payload, "original_content"))}) {
 		ASSERT_NE(text, nullptr);
-		struct json *prepared = json_parse_prefix(text, NULL, NULL);
+		cJSON *prepared = cJSON_Parse(text);
 		ASSERT_NE(prepared, nullptr);
-		auto *prepared_data = json_member_ci(prepared, "data");
-		EXPECT_STREQ(json_string_value(json_member_ci(prepared_data, "stdout")),
-			     "dsh-tool-ask-user\n/tmp/ask-user/docs/sk-example.md\n"
-			     "[REDACTED]\nBearer [REDACTED]\nTAIL with \"quoted\" text\n");
-		EXPECT_STREQ(json_string_value(json_member_ci(prepared_data, "stderr")),
-			     "Unrelated diagnostic");
-		json_free(prepared);
+		auto *prepared_data = cJSON_GetObjectItem(prepared, "data");
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(prepared_data, "stdout")),
+			"dsh-tool-ask-user\n/tmp/ask-user/docs/sk-example.md\n"
+			"[REDACTED]\nBearer [REDACTED]\nTAIL with \"quoted\" text\n");
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(prepared_data, "stderr")),
+			"Unrelated diagnostic");
+		cJSON_Delete(prepared);
 	}
-	json_free(payload);
+	cJSON_Delete(payload);
 	model_history_free_list(items);
 }
 
@@ -843,10 +840,10 @@ TEST_F(SessionTest, ToolResultRedactsDecodedCredentialFieldsAndKnownSecrets)
 	for (const char *secret : {"first-secret", "second-secret", "third-secret",
 	     "fourth-secret", "sk-known-secret-value"})
 		EXPECT_EQ(strstr(prepared, secret), nullptr);
-	struct json *root = json_parse_prefix(prepared, NULL, NULL);
+	cJSON *root = cJSON_Parse(prepared);
 	ASSERT_NE(root, nullptr);
 	EXPECT_NE(strstr(prepared, "TAIL"), nullptr);
-	json_free(root);
+	cJSON_Delete(root);
 	free(prepared);
 	free(ctx.history_secrets[0]);
 }
@@ -855,21 +852,21 @@ TEST_F(SessionTest, ToolResultRedactionPreservesJsonSourceFormatting)
 {
 	struct react_context ctx = {};
 	const char *formatted = "{\n  \"answer\": 42\n}\n";
-	struct json *root = json_object();
-	struct json *data = json_add_object(root, "data");
-	json_add_bool(root, "ok", 1);
-	json_add_string(data, "stdout", formatted);
-	char *source = json_stringify(root);
-	json_free(root);
+	cJSON *root = cJSON_CreateObject();
+	cJSON *data = cJSON_AddObjectToObject(root, "data");
+	cJSON_AddBoolToObject(root, "ok", 1);
+	cJSON_AddStringToObject(data, "stdout", formatted);
+	char *source = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
 	ASSERT_NE(source, nullptr);
 	char *prepared = nullptr;
 	ctx.history_tool_result_tokens = 8000;
 	ASSERT_EQ(agent_history_prepare_tool_content(&ctx, source, &prepared, nullptr), 0);
-	root = json_parse_prefix(prepared, NULL, NULL);
+	root = cJSON_Parse(prepared);
 	ASSERT_NE(root, nullptr);
-	EXPECT_STREQ(json_string_value(json_member_ci(json_member_ci(root, "data"), "stdout")),
-		     formatted);
-	json_free(root);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		cJSON_GetObjectItem(root, "data"), "stdout")), formatted);
+	cJSON_Delete(root);
 	free(source);
 	free(prepared);
 }
@@ -1160,12 +1157,12 @@ TEST_F(SessionTest, ToolCallRedactionPreservesJsonAndSourceTemplates) {
 	react.history_enabled = 1;
 	for (int i = 0; i < 2; i++) {
 		struct tool_call call = {};
-		struct json *args = json_object();
-		json_add_string(args, "source", source);
-		json_add_string(args, "image", binary);
-		json_add_string(args, "key", "Bearer secret-value");
-		char *json = json_stringify(args);
-		json_free(args);
+		cJSON *args = cJSON_CreateObject();
+		cJSON_AddStringToObject(args, "source", source);
+		cJSON_AddStringToObject(args, "image", binary);
+		cJSON_AddStringToObject(args, "key", "Bearer secret-value");
+		char *json = cJSON_PrintUnformatted(args);
+		cJSON_Delete(args);
 		ASSERT_NE(json, nullptr);
 		std::snprintf(call.id, sizeof(call.id), "provider_%d", i);
 		std::snprintf(call.tool_call_id, sizeof(call.tool_call_id), "local_%d", i);
@@ -1190,11 +1187,12 @@ TEST_F(SessionTest, ToolCallRedactionPreservesJsonAndSourceTemplates) {
 	ASSERT_EQ(agent_history_build_chat_messages(NULL, items, &messages, arena), 0);
 	ASSERT_EQ(messages.nelts, 2U);
 	auto *message = static_cast<struct chat_message *>(morph_array_get(&messages, 0));
-	struct json *args = json_parse_prefix(message->tool_calls[0].arguments, NULL, NULL);
+	cJSON *args = cJSON_Parse(message->tool_calls[0].arguments);
 	ASSERT_NE(args, nullptr);
-	EXPECT_STREQ(json_string_value(json_member_ci(args, "source")), source);
-	EXPECT_STREQ(json_string_value(json_member_ci(args, "image")), "[binary data omitted]");
-	json_free(args);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(args, "source")), source);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(args, "image")),
+		"[binary data omitted]");
+	cJSON_Delete(args);
 	message = static_cast<struct chat_message *>(morph_array_get(&messages, 1));
 	EXPECT_STREQ(message->tool_calls[0].arguments, source);
 	morph_array_cleanup(&messages);
@@ -1206,7 +1204,7 @@ TEST_F(SessionTest, ToolResultEnvelopeKeepsArtifactsMetaAndRemovesBinary) {
 	struct session s;
 	struct react_context react = {};
 	struct tool_artifact_list artifacts = {};
-	struct json *meta = json_object();
+	cJSON *meta = cJSON_CreateObject();
 	int count = 0;
 
 	ASSERT_NE(meta, nullptr);
@@ -1221,7 +1219,7 @@ TEST_F(SessionTest, ToolResultEnvelopeKeepsArtifactsMetaAndRemovesBinary) {
 	artifacts.items[0].kind = TOOL_ARTIFACT_FILE;
 	std::strcpy(artifacts.items[0].path, "/tmp/report.txt");
 	std::strcpy(artifacts.items[0].mime, "text/plain");
-	json_add_string(meta, "history_content", "concise result");
+	cJSON_AddStringToObject(meta, "history_content", "concise result");
 	ASSERT_EQ(agent_history_record_tool_result_ex(&react, "local_1",
 		"provider_1", "tool", "data:image/png;base64,QUJDRA== "
 		"runtime-exact-secret", 0, &artifacts, meta), 0);
@@ -1237,7 +1235,7 @@ TEST_F(SessionTest, ToolResultEnvelopeKeepsArtifactsMetaAndRemovesBinary) {
 	EXPECT_NE(std::strstr(items->payload_json, "history_content"), nullptr);
 	model_history_free_list(items);
 	free(react.history_secrets[0]);
-	json_free(meta);
+	cJSON_Delete(meta);
 }
 
 TEST_F(SessionTest, CompactionFailureRollsBackWithoutChangingHistory) {

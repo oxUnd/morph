@@ -2,7 +2,7 @@
 #include "sapi/fastcgi/services/turn_job_internal.h"
 #include "sapi/fastcgi/storage/events.h"
 #include "sapi/fastcgi/event_sink.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "util/error.h"
 #include "util/child_io.h"
 
@@ -13,18 +13,18 @@
 #include "sapi/fastcgi/presentation/media_refs.h"
 #include "event/event.h"
 
-static char *event_data_string(struct json *data, const char *key)
+static char *event_data_string(cJSON *data, const char *key)
 {
-	struct json *item;
+	cJSON *item;
 
 	if (!data || !key)
 		return NULL;
-	item = json_member_ci(data, key);
+	item = cJSON_GetObjectItem(data, key);
 	if (!item)
 		return NULL;
-	if (json_is_string_value(item))
-		return strdup(json_string_value(item) ? json_string_value(item) : "");
-	return json_stringify(item);
+	if (cJSON_IsString(item))
+		return strdup(item->valuestring ? item->valuestring : "");
+	return cJSON_PrintUnformatted(item);
 }
 
 static int64_t turn_mono_ms(void)
@@ -87,7 +87,7 @@ static void turn_pending_append(char *buf, size_t *len, int64_t *started, const 
 int fcgi_turn_events_callback(const struct morph_event *ev, void *u)
 {
 	struct fcgi_turn_job *j = (struct fcgi_turn_job *)u;
-	struct json *data;
+	cJSON *data;
 	const char *turn_id;
 
 	if (!j || !ev)
@@ -102,31 +102,24 @@ int fcgi_turn_events_callback(const struct morph_event *ev, void *u)
 		turn_flush_pending(j);
 
 	if (strcmp(ev->name, "auth.required") == 0) {
-		struct json *root = json_object();
-		struct json *copy = data ? json_clone(data, 1) : NULL;
+		cJSON *root = cJSON_CreateObject();
+		cJSON *copy = data ? cJSON_Duplicate(data, 1) : NULL;
 		char *txt;
 
-		if (!root) {
-			json_free(copy);
+		if (!root)
 			return -ENOMEM;
-		}
-		json_add_string(root, "turn_id", turn_id ? turn_id : "");
+		cJSON_AddStringToObject(root, "turn_id", turn_id ? turn_id : "");
 		if (!copy)
-			copy = json_object();
+			copy = cJSON_CreateObject();
 		if (!copy) {
-			json_free(root);
+			cJSON_Delete(root);
 			return -ENOMEM;
 		}
-		int rc = json_object_add(root, "data", copy);
-		if (rc) {
-			json_free(copy);
-			json_free(root);
-			return rc;
-		}
-		txt = json_stringify(root);
+		cJSON_AddItemToObject(root, "data", copy);
+		txt = cJSON_PrintUnformatted(root);
 		events_publish(j->store, j->session_id, "auth_required", txt ? txt : "{}");
 		free(txt);
-		json_free(root);
+		cJSON_Delete(root);
 		return 0;
 	}
 
@@ -232,17 +225,18 @@ int fcgi_turn_events_callback(const struct morph_event *ev, void *u)
 	}
 
 	if (strcmp(ev->name, "react.observation") == 0) {
-		struct json *artifacts = json_member_ci(data, "artifacts");
-		struct json *item;
-		if (json_is_array_value(artifacts)) {
-			json_foreach (item, artifacts) {
-				struct json *kind = json_member_ci(item, "kind");
-				struct json *path = json_member_ci(item, "path");
-				if (json_is_string_value(path) && json_string_value(path)) {
+		cJSON *artifacts = cJSON_GetObjectItem(data, "artifacts");
+		cJSON *item;
+		if (cJSON_IsArray(artifacts)) {
+			cJSON_ArrayForEach (item, artifacts) {
+				cJSON *kind = cJSON_GetObjectItem(item, "kind");
+				cJSON *path = cJSON_GetObjectItem(item, "path");
+				if (cJSON_IsString(path) && path->valuestring) {
 					(void)fcgi_media_artifact_get(
-						j, json_string_value(path),
-						json_string_value(kind) ? json_string_value(kind)
-									: "file");
+						j, path->valuestring,
+						cJSON_GetStringValue(kind)
+							? cJSON_GetStringValue(kind)
+							: "file");
 				}
 			}
 		}

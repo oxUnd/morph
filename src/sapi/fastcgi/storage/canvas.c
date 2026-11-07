@@ -1,6 +1,6 @@
 #include "sapi/fastcgi/storage/canvas.h"
 #include "sapi/fastcgi/session_store_internal.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "util/error.h"
 
 #include <errno.h>
@@ -19,10 +19,10 @@ int canvas_list_json(struct session_store *s, const char *session_id, char **out
 		return -EIO;
 	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
 
-	struct json *root = json_object();
-	struct json *nodes = root ? json_add_array(root, "nodes") : NULL;
+	cJSON *root = cJSON_CreateObject();
+	cJSON *nodes = root ? cJSON_AddArrayToObject(root, "nodes") : NULL;
 	if (!root || !nodes) {
-		json_free(root);
+		cJSON_Delete(root);
 		sqlite3_finalize(st);
 		return -ENOMEM;
 	}
@@ -39,60 +39,46 @@ int canvas_list_json(struct session_store *s, const char *session_id, char **out
 		const char *cref = (const char *)sqlite3_column_text(st, 7);
 		const char *meta = (const char *)sqlite3_column_text(st, 8);
 		int64_t up = sqlite3_column_int64(st, 9);
-		struct json *item = json_object();
+		cJSON *item = cJSON_CreateObject();
 
 		if (!item) {
-			json_free(root);
+			cJSON_Delete(root);
 			sqlite3_finalize(st);
 			return -ENOMEM;
 		}
-		json_add_string(item, "id", id ? id : "");
+		cJSON_AddStringToObject(item, "id", id ? id : "");
 		if (parent)
-			json_add_string(item, "parent", parent);
+			cJSON_AddStringToObject(item, "parent", parent);
 		else
-			json_add_null(item, "parent");
-		json_add_string(item, "kind", kind ? kind : "");
-		json_add_number(item, "x", x);
-		json_add_number(item, "y", y);
-		json_add_number(item, "w", w);
-		json_add_number(item, "h", h);
+			cJSON_AddNullToObject(item, "parent");
+		cJSON_AddStringToObject(item, "kind", kind ? kind : "");
+		cJSON_AddNumberToObject(item, "x", x);
+		cJSON_AddNumberToObject(item, "y", y);
+		cJSON_AddNumberToObject(item, "w", w);
+		cJSON_AddNumberToObject(item, "h", h);
 		if (cref)
-			json_add_string(item, "content_ref", cref);
+			cJSON_AddStringToObject(item, "content_ref", cref);
 		else
-			json_add_null(item, "content_ref");
+			cJSON_AddNullToObject(item, "content_ref");
 		if (meta && *meta) {
-			struct json *meta_obj = json_parse_prefix(meta, NULL, NULL);
-			if (meta_obj) {
-				int rc = json_object_add(item, "meta", meta_obj);
-				if (rc) {
-					json_free(meta_obj);
-					json_free(item);
-					json_free(root);
-					sqlite3_finalize(st);
-					return rc;
-				}
-			} else {
-				json_add_null(item, "meta");
-			}
+			cJSON *meta_obj = cJSON_Parse(meta);
+			if (meta_obj)
+				cJSON_AddItemToObject(item, "meta", meta_obj);
+			else
+				cJSON_AddNullToObject(item, "meta");
 		} else {
-			json_add_null(item, "meta");
+			cJSON_AddNullToObject(item, "meta");
 		}
-		json_add_number(item, "updated_at", (double)up);
-		int rc = json_array_add(nodes, item);
-		if (rc) {
-			json_free(item);
-			json_free(root);
-			sqlite3_finalize(st);
-			return rc;
-		}
+		cJSON_AddNumberToObject(item, "updated_at", (double)up);
+		cJSON_AddItemToArray(nodes, item);
 	}
 	sqlite3_finalize(st);
 	if (step_rc != SQLITE_DONE) {
-		json_free(root);
+		cJSON_Delete(root);
 		return -EIO;
 	}
-	char *json = json_stringify(root);
-	json_free(root);
+	char *json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
 	if (!json)
 		return -ENOMEM;
 	*out_json = json;

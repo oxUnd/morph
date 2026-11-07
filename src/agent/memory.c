@@ -9,7 +9,7 @@
 #include "util/log.h"
 #include "util/error.h"
 #include "util/utf8.h"
-#include "util/json.h"
+#include "cJSON.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -815,11 +815,11 @@ static char *memory_llm_extract_json(struct model *llm, const char *user_input,
 				     const char *assistant_output, const char *tool_names,
 				     int success);
 
-static struct json *memory_llm_parse_envelope(const char *raw)
+static cJSON *memory_llm_parse_envelope(const char *raw)
 {
 	const char *p;
 	const char *end;
-	struct json *root;
+	cJSON *root;
 
 	if (!raw)
 		return NULL;
@@ -836,29 +836,36 @@ static struct json *memory_llm_parse_envelope(const char *raw)
 			return NULL;
 		memcpy(trimmed, p, len);
 		trimmed[len] = '\0';
-		root = json_parse_prefix(trimmed, NULL, NULL);
+		root = cJSON_Parse(trimmed);
 		free(trimmed);
 	}
 	return root;
 }
 
-static const char *memory_json_string(const struct json *obj, const char *field,
-				      const char *fallback)
+static const char *memory_json_string(const cJSON *obj, const char *field, const char *fallback)
 {
-	const struct json *item = json_member(obj, field);
-	if (json_is_string_value(item) && json_string_value(item) && *json_string_value(item))
-		return json_string_value(item);
+	const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, field);
+	if (cJSON_IsString(item) && item->valuestring && *item->valuestring)
+		return item->valuestring;
+	return fallback;
+}
+
+static double memory_json_number(const cJSON *obj, const char *field, double fallback)
+{
+	const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, field);
+	if (cJSON_IsNumber(item))
+		return item->valuedouble;
 	return fallback;
 }
 
 static int memory_apply_llm_envelope(struct db *db, int64_t session_id, const char *user_input,
-				     struct json *root, char **out_entities, char **out_decisions,
+				     cJSON *root, char **out_entities, char **out_decisions,
 				     char **out_artifacts, double *out_importance)
 {
-	struct json *facts;
-	struct json *rules;
-	struct json *episode;
-	struct json *item;
+	cJSON *facts;
+	cJSON *rules;
+	cJSON *episode;
+	cJSON *item;
 	int dirty = 0;
 	int worst = 0;
 	int rc;
@@ -866,13 +873,13 @@ static int memory_apply_llm_envelope(struct db *db, int64_t session_id, const ch
 	if (!root)
 		return -EINVAL;
 
-	facts = json_member(root, "facts");
-	if (json_is_array_value(facts)) {
-		json_foreach (item, facts) {
+	facts = cJSON_GetObjectItemCaseSensitive(root, "facts");
+	if (cJSON_IsArray(facts)) {
+		cJSON_ArrayForEach (item, facts) {
 			const char *key = memory_json_string(item, "key", NULL);
 			const char *value = memory_json_string(item, "value", NULL);
 			const char *category = memory_json_string(item, "category", "general");
-			double importance = json_num_or(item, "importance", 0.5);
+			double importance = memory_json_number(item, "importance", 0.5);
 			if (!key || !value)
 				continue;
 			if (!*key || !*value)
@@ -888,9 +895,9 @@ static int memory_apply_llm_envelope(struct db *db, int64_t session_id, const ch
 		}
 	}
 
-	rules = json_member(root, "rules");
-	if (json_is_array_value(rules)) {
-		json_foreach (item, rules) {
+	rules = cJSON_GetObjectItemCaseSensitive(root, "rules");
+	if (cJSON_IsArray(rules)) {
+		cJSON_ArrayForEach (item, rules) {
 			const char *rule = memory_json_string(item, "rule_text", NULL);
 			const char *trigger = memory_json_string(item, "trigger", user_input);
 			if (!rule || !*rule)
@@ -902,12 +909,12 @@ static int memory_apply_llm_envelope(struct db *db, int64_t session_id, const ch
 		}
 	}
 
-	episode = json_member(root, "episode");
-	if (json_is_object_value(episode)) {
+	episode = cJSON_GetObjectItemCaseSensitive(root, "episode");
+	if (cJSON_IsObject(episode)) {
 		const char *ent = memory_json_string(episode, "entities", "");
 		const char *kd = memory_json_string(episode, "key_decisions", "");
 		const char *ar = memory_json_string(episode, "artifacts", "");
-		double imp = json_num_or(episode, "importance", 0.5);
+		double imp = memory_json_number(episode, "importance", 0.5);
 		if (out_entities)
 			*out_entities = strdup(ent);
 		if (out_decisions)
@@ -989,7 +996,7 @@ static int memory_capture_llm_path(struct db *db, int64_t session_id, const char
 {
 	char tools[256];
 	char *raw;
-	struct json *root;
+	cJSON *root;
 	int rc;
 
 	memory_collect_tools(steps, tools, sizeof(tools));
@@ -1002,12 +1009,12 @@ static int memory_capture_llm_path(struct db *db, int64_t session_id, const char
 		return -EINVAL;
 	rc = memory_store_begin_generation(db, session_id, generation);
 	if (rc != 0) {
-		json_free(root);
+		cJSON_Delete(root);
 		return rc;
 	}
 	rc = memory_apply_llm_envelope(db, session_id, user_input, root, out_entities,
 				       out_decisions, out_artifacts, out_importance);
-	json_free(root);
+	cJSON_Delete(root);
 	return memory_store_finish_write(db, rc);
 }
 

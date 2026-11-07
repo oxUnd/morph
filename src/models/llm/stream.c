@@ -67,8 +67,6 @@ int llm_stream_emit(struct llm_stream_ctx *ctx, enum llm_stream_kind kind, const
 
 struct tool_call *llm_stream_ensure_tool_call(struct llm_stream_ctx *ctx, int index)
 {
-	if (!ctx || index < 0 || index > INT_MAX - 4)
-		return NULL;
 	if (index >= ctx->tool_call_cap) {
 		int new_cap = index + 4;
 		struct tool_call *new_tc =
@@ -144,26 +142,30 @@ void llm_usage_report(struct model *self, struct llm_stream_ctx *ctx, size_t req
 	model_report_usage(self, &ctx->usage);
 }
 
-static int64_t json_i64(const struct json *object, const char *name)
+static int64_t json_i64(cJSON *obj, const char *name)
 {
-	int64_t value = 0;
+	cJSON *item;
 
-	(void)json_read_int(json_member_ci(object, name), &value);
-	return value;
+	if (!obj || !name)
+		return 0;
+	item = cJSON_GetObjectItem(obj, name);
+	if (!cJSON_IsNumber(item))
+		return 0;
+	return (int64_t)item->valuedouble;
 }
 
-static void llm_usage_parse_details(struct model_usage *usage, const struct json *usage_obj)
+static void llm_usage_parse_details(struct model_usage *usage, cJSON *usage_obj)
 {
-	const struct json *prompt_details;
-	const struct json *input_details;
-	const struct json *completion_details;
+	cJSON *prompt_details;
+	cJSON *input_details;
+	cJSON *completion_details;
 	int64_t cached_tokens;
 	int64_t candidate;
 
 	if (!usage || !usage_obj)
 		return;
-	prompt_details = json_member_ci(usage_obj, "prompt_tokens_details");
-	input_details = json_member_ci(usage_obj, "input_tokens_details");
+	prompt_details = cJSON_GetObjectItem(usage_obj, "prompt_tokens_details");
+	input_details = cJSON_GetObjectItem(usage_obj, "input_tokens_details");
 	cached_tokens = json_i64(usage_obj, "cached_tokens");
 	candidate = json_i64(usage_obj, "prompt_cache_hit_tokens");
 	if (candidate > cached_tokens)
@@ -181,41 +183,43 @@ static void llm_usage_parse_details(struct model_usage *usage, const struct json
 	usage->audio_tokens += json_i64(prompt_details, "audio_tokens");
 	usage->image_tokens += json_i64(prompt_details, "image_tokens");
 
-	completion_details = json_member_ci(usage_obj, "completion_tokens_details");
+	completion_details = cJSON_GetObjectItem(usage_obj, "completion_tokens_details");
 	if (!completion_details)
-		completion_details = json_member_ci(usage_obj, "output_tokens_details");
+		completion_details = cJSON_GetObjectItem(usage_obj, "output_tokens_details");
 	usage->reasoning_tokens += json_i64(completion_details, "reasoning_tokens");
 	usage->audio_tokens += json_i64(completion_details, "audio_tokens");
 }
 
-void llm_stream_parse_metadata(struct llm_stream_ctx *ctx, const struct json *root)
+void llm_stream_parse_metadata(struct llm_stream_ctx *ctx, cJSON *root)
 {
-	const char *text;
+	cJSON *item;
 
 	if (!ctx || !root)
 		return;
-	text = json_string_value(json_member_ci(root, "id"));
-	if (text && !ctx->usage.response_id[0])
-		llm_usage_copy(ctx->usage.response_id, sizeof(ctx->usage.response_id), text);
-	text = json_string_value(json_member_ci(root, "model"));
-	if (text && !ctx->usage.model[0])
-		llm_usage_copy(ctx->usage.model, sizeof(ctx->usage.model), text);
-	text = json_string_value(json_member_ci(root, "system_fingerprint"));
-	if (text && !ctx->usage.system_fingerprint[0])
+	item = cJSON_GetObjectItem(root, "id");
+	if (cJSON_IsString(item) && item->valuestring && !ctx->usage.response_id[0])
+		llm_usage_copy(ctx->usage.response_id, sizeof(ctx->usage.response_id),
+			       item->valuestring);
+	item = cJSON_GetObjectItem(root, "model");
+	if (cJSON_IsString(item) && item->valuestring && !ctx->usage.model[0])
+		llm_usage_copy(ctx->usage.model, sizeof(ctx->usage.model), item->valuestring);
+	item = cJSON_GetObjectItem(root, "system_fingerprint");
+	if (cJSON_IsString(item) && item->valuestring && !ctx->usage.system_fingerprint[0])
 		llm_usage_copy(ctx->usage.system_fingerprint, sizeof(ctx->usage.system_fingerprint),
-			       text);
-	if (ctx->usage.created == 0)
-		ctx->usage.created = json_i64(root, "created");
+			       item->valuestring);
+	item = cJSON_GetObjectItem(root, "created");
+	if (cJSON_IsNumber(item) && ctx->usage.created == 0)
+		ctx->usage.created = (int64_t)item->valuedouble;
 }
 
-void llm_stream_parse_usage(struct llm_stream_ctx *ctx, const struct json *root)
+void llm_stream_parse_usage(struct llm_stream_ctx *ctx, cJSON *root)
 {
-	const struct json *usage_obj;
+	cJSON *usage_obj;
 
 	if (!ctx || !root)
 		return;
-	usage_obj = json_member_ci(root, "usage");
-	if (!json_is_object_value(usage_obj))
+	usage_obj = cJSON_GetObjectItem(root, "usage");
+	if (!cJSON_IsObject(usage_obj))
 		return;
 	ctx->usage.input_tokens = json_i64(usage_obj, "prompt_tokens");
 	if (ctx->usage.input_tokens == 0)
@@ -233,13 +237,14 @@ void llm_stream_parse_usage(struct llm_stream_ctx *ctx, const struct json *root)
 			(double)ctx->usage.cached_tokens * 100.0 / (double)ctx->usage.input_tokens);
 }
 
-void llm_stream_parse_finish_reason(struct llm_stream_ctx *ctx, const struct json *choice)
+void llm_stream_parse_finish_reason(struct llm_stream_ctx *ctx, cJSON *choice)
 {
-	const char *finish;
+	cJSON *finish;
 
 	if (!ctx || !choice)
 		return;
-	finish = json_string_value(json_member_ci(choice, "finish_reason"));
-	if (finish)
-		llm_usage_copy(ctx->usage.finish_reason, sizeof(ctx->usage.finish_reason), finish);
+	finish = cJSON_GetObjectItem(choice, "finish_reason");
+	if (cJSON_IsString(finish) && finish->valuestring)
+		llm_usage_copy(ctx->usage.finish_reason, sizeof(ctx->usage.finish_reason),
+			       finish->valuestring);
 }

@@ -1,5 +1,5 @@
 #include "sapi/cli/services/configuration/mcp.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "sapi/cli/services/configuration/config.h"
 #include "sapi/cli/services/configuration/role.h"
 #include "sapi/cli/models/setup.h"
@@ -103,9 +103,9 @@ static int cli_mcp_add_desktop(char **text)
 			&server,
 			"[[mcp.servers]]\nname = 'macos-computer-use'\ntransport = 'stdio'\n");
 	if (rc == 0 && found) {
-		struct json *value = json_string(adapter);
-		char *encoded = value ? json_stringify(value) : NULL;
-		json_free(value);
+		cJSON *value = cJSON_CreateString(adapter);
+		char *encoded = value ? cJSON_PrintUnformatted(value) : NULL;
+		cJSON_Delete(value);
 		rc = encoded ? morph_buf_printf(&server,
 						"command = 'python3'\nargs = [%s, '--', "
 						"'uvx', 'macos-computer-use-kit==0.3.2', 'mcp']\n",

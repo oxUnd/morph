@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-#include "util/json.h"
+#include "cJSON.h"
 #include "util/array.h"
 #include "util/error.h"
 
@@ -28,7 +28,7 @@ struct morph_event {
 	const char *name;
 	const char *phase;
 	const char *message;
-	struct json *data;
+	cJSON *data;
 	const char *turn_id;
 };
 
@@ -43,18 +43,21 @@ struct morph_event_recorder {
 };
 
 const char *morph_event_type_name(enum morph_event_type type);
-int morph_event_to_json_object(const struct morph_event *ev, struct json **out);
+int morph_event_to_json_object(const struct morph_event *ev, cJSON **out);
 char *morph_event_to_json_string(const struct morph_event *ev);
-int morph_event_emit(morph_event_cb cb, void *user_data, const struct morph_event *ev);
-int morph_event_emit_simple(morph_event_cb cb, void *user_data, enum morph_event_type type,
-			    const char *name, const char *phase, const char *message,
-			    struct json *data);
+int morph_event_emit(morph_event_cb cb, void *user_data,
+		     const struct morph_event *ev);
+int morph_event_emit_simple(morph_event_cb cb, void *user_data,
+			    enum morph_event_type type, const char *name,
+			    const char *phase, const char *message,
+			    cJSON *data);
 
 int morph_event_recorder_init(struct morph_event_recorder *rec);
 void morph_event_recorder_cleanup(struct morph_event_recorder *rec);
 int morph_event_recorder_cb(const struct morph_event *ev, void *user_data);
 size_t morph_event_recorder_count(const struct morph_event_recorder *rec);
-const char *morph_event_recorder_get(const struct morph_event_recorder *rec, size_t index);
+const char *morph_event_recorder_get(const struct morph_event_recorder *rec,
+				     size_t index);
 
 #ifdef __cplusplus
 }

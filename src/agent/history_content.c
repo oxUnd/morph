@@ -156,28 +156,28 @@ char *history_redact_all(struct react_context *ctx, const char *text)
 /* Redact decoded values so replacements cannot corrupt JSON escaping.
  * Tool arguments may themselves contain a serialized JSON object. */
 
-static int history_redact_json_values(struct react_context *ctx, struct json *value, int *changed)
+static int history_redact_json_values(struct react_context *ctx, cJSON *value, int *changed)
 {
-	if (json_is_string_value(value)) {
-		const char *key = json_key(value);
+	if (cJSON_IsString(value)) {
+		const char *key = value->string;
 		size_t key_len = key ? strlen(key) : 0;
 		int credential = key && (!strcmp(key, "api_key") || !strcmp(key, "apiKey") ||
 					 (key_len >= 8 && !strcmp(key + key_len - 8, "_API_KEY")));
-		char *safe = credential && json_string_value(value)[0]
+		char *safe = credential && value->valuestring[0]
 				     ? strdup("[REDACTED]")
-				     : history_redact_json(ctx, json_string_value(value));
+				     : history_redact_json(ctx, value->valuestring);
 		int rc;
 
 		if (!safe)
 			return -ENOMEM;
-		if (strcmp(json_string_value(value), safe) != 0)
+		if (strcmp(value->valuestring, safe) != 0)
 			*changed = 1;
-		rc = json_string_update(value, safe) ? 0 : -ENOMEM;
+		rc = cJSON_SetValuestring(value, safe) ? 0 : -ENOMEM;
 
 		free(safe);
 		return rc;
 	}
-	for (struct json *child = json_first(value); child; child = json_next(child)) {
+	for (cJSON *child = value->child; child; child = child->next) {
 		int rc = history_redact_json_values(ctx, child, changed);
 
 		if (rc != 0)
@@ -188,20 +188,20 @@ static int history_redact_json_values(struct react_context *ctx, struct json *va
 
 char *history_redact_json(struct react_context *ctx, const char *text)
 {
-	struct json *root;
+	cJSON *root;
 	char *safe = NULL;
 	int changed = 0;
 
 	if (!text)
 		return NULL;
-	root = json_parse_ex(text, NULL, 1, NULL);
-	if (!json_is_object_value(root) && !json_is_array_value(root)) {
-		json_free(root);
+	root = cJSON_ParseWithOpts(text, NULL, 1);
+	if (!cJSON_IsObject(root) && !cJSON_IsArray(root)) {
+		cJSON_Delete(root);
 		return history_redact_all(ctx, text);
 	}
 	if (history_redact_json_values(ctx, root, &changed) == 0)
-		safe = changed ? json_stringify(root) : strdup(text);
-	json_free(root);
+		safe = changed ? cJSON_PrintUnformatted(root) : strdup(text);
+	cJSON_Delete(root);
 	return safe;
 }
 
@@ -261,30 +261,30 @@ static char *history_truncate_result(struct tokenizer *tokenizer, const char *co
 }
 
 /* Only payload fields are expendable; execution control fields stay intact. */
-static struct json *history_largest_payload(struct json *node, size_t *size)
+static cJSON *history_largest_payload(cJSON *node, size_t *size)
 {
-	struct json *best = NULL;
-	struct json *child;
+	cJSON *best = NULL;
+	cJSON *child;
 
-	json_foreach (child, node) {
-		const char *key = json_key(child);
+	cJSON_ArrayForEach (child, node) {
+		const char *key = child->string;
 		if (key &&
 		    (!strcmp(key, "ok") || !strcmp(key, "error") || !strcmp(key, "exit_code") ||
 		     !strcmp(key, "status") || !strcmp(key, "session_id") ||
 		     !strcmp(key, "artifacts") || !strcmp(key, "ui")))
 			continue;
-		if (json_is_string_value(child) && strlen(json_string_value(child)) > *size) {
-			*size = strlen(json_string_value(child));
+		if (cJSON_IsString(child) && strlen(child->valuestring) > *size) {
+			*size = strlen(child->valuestring);
 			best = child;
-		} else if (json_is_array_value(child) && json_count(child) > 0) {
-			char *json = json_stringify(child);
+		} else if (cJSON_IsArray(child) && cJSON_GetArraySize(child) > 0) {
+			char *json = cJSON_PrintUnformatted(child);
 			if (json && strlen(json) > *size) {
 				*size = strlen(json);
 				best = child;
 			}
 			free(json);
-		} else if (json_is_object_value(child)) {
-			struct json *nested = history_largest_payload(child, size);
+		} else if (cJSON_IsObject(child)) {
+			cJSON *nested = history_largest_payload(child, size);
 			if (nested)
 				best = nested;
 		}
@@ -292,72 +292,72 @@ static struct json *history_largest_payload(struct json *node, size_t *size)
 	return best;
 }
 
-static char *history_prepare_json(struct tokenizer *tokenizer, struct json *root, int budget,
+static char *history_prepare_json(struct tokenizer *tokenizer, cJSON *root, int budget,
 				  int *truncated)
 {
-	struct json *data = json_member(root, "data");
-	struct json *ok = json_member(root, "ok");
-	struct json *child;
-	struct json *next;
+	cJSON *data = cJSON_GetObjectItemCaseSensitive(root, "data");
+	cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+	cJSON *child;
+	cJSON *next;
 
-	if (!(json_is_bool_value(ok) && json_is_object_value(data))) {
-		char *json = json_stringify(root);
-		struct json *wrapper;
+	if (!(cJSON_IsBool(ok) && cJSON_IsObject(data))) {
+		char *json = cJSON_PrintUnformatted(root);
+		cJSON *wrapper;
 		char *result;
 
 		if (!json || tokenizer_count(tokenizer, json) <= budget)
 			return json;
-		wrapper = json_object();
+		wrapper = cJSON_CreateObject();
 		if (!wrapper) {
 			free(json);
 			return NULL;
 		}
-		if (!json_add_bool(wrapper, "history_truncated", 1) ||
-		    !json_add_string(wrapper, "preview", json)) {
+		if (!cJSON_AddBoolToObject(wrapper, "history_truncated", 1) ||
+		    !cJSON_AddStringToObject(wrapper, "preview", json)) {
 			free(json);
-			json_free(wrapper);
+			cJSON_Delete(wrapper);
 			return NULL;
 		}
 		free(json);
 		for (int preview_budget = budget; preview_budget > 0; preview_budget /= 2) {
 			int ignored;
-			struct json *preview = json_member(wrapper, "preview");
-			char *snippet = history_truncate_result(
-				tokenizer, json_string_value(preview), preview_budget, &ignored);
+			cJSON *preview = cJSON_GetObjectItemCaseSensitive(wrapper, "preview");
+			char *snippet = history_truncate_result(tokenizer, preview->valuestring,
+								preview_budget, &ignored);
 			if (!snippet)
 				break;
-			if (!json_string_update(preview, snippet)) {
+			if (!cJSON_SetValuestring(preview, snippet)) {
 				free(snippet);
 				break;
 			}
 			free(snippet);
-			result = json_stringify(wrapper);
+			result = cJSON_PrintUnformatted(wrapper);
 			if (result && tokenizer_count(tokenizer, result) <= budget) {
 				*truncated = 1;
-				json_free(wrapper);
+				cJSON_Delete(wrapper);
 				return result;
 			}
 			free(result);
 		}
 		result = NULL;
-		json_free(wrapper);
+		cJSON_Delete(wrapper);
 		return result;
 	}
-	if (json_is_bool_value(ok) && json_is_object_value(data)) {
-		for (child = json_first(root); child; child = next) {
-			struct json *original;
+	if (cJSON_IsBool(ok) && cJSON_IsObject(data)) {
+		for (child = root->child; child; child = next) {
+			cJSON *original;
 
-			next = json_next(child);
-			if (child == data || !json_key(child))
+			next = child->next;
+			if (child == data || !child->string)
 				continue;
-			original = json_member(data, json_key(child));
-			if (original && json_equal(original, child, 1))
-				json_object_remove(root, json_key(child));
+			original = cJSON_GetObjectItemCaseSensitive(data, child->string);
+			if (original && cJSON_Compare(original, child, 1))
+				cJSON_DeleteItemFromObjectCaseSensitive(root, child->string);
 		}
 	}
 	for (;;) {
-		char *json = json_stringify(root);
-		struct json *largest;
+		char *json = cJSON_PrintUnformatted(root);
+		cJSON *largest;
 		size_t size = 0;
 		char *snippet;
 		int ignored;
@@ -365,10 +365,10 @@ static char *history_prepare_json(struct tokenizer *tokenizer, struct json *root
 
 		if (!json)
 			return NULL;
-		if (*truncated && json_is_object_value(root) &&
-		    !json_member(root, "history_truncated")) {
+		if (*truncated && cJSON_IsObject(root) &&
+		    !cJSON_GetObjectItemCaseSensitive(root, "history_truncated")) {
 			free(json);
-			if (!json_add_bool(root, "history_truncated", 1))
+			if (!cJSON_AddBoolToObject(root, "history_truncated", 1))
 				return NULL;
 			continue;
 		}
@@ -379,18 +379,18 @@ static char *history_prepare_json(struct tokenizer *tokenizer, struct json *root
 		largest = history_largest_payload(root, &size);
 		if (!largest || size < 16)
 			return NULL;
-		if (json_is_array_value(largest)) {
-			json_array_remove(largest, json_count(largest) - 1);
+		if (cJSON_IsArray(largest)) {
+			cJSON_DeleteItemFromArray(largest, cJSON_GetArraySize(largest) - 1);
 			*truncated = 1;
 			continue;
 		}
-		int text_tokens = tokenizer_count(tokenizer, json_string_value(largest));
+		int text_tokens = tokenizer_count(tokenizer, largest->valuestring);
 		int text_budget = text_tokens - (total_tokens - budget) - 16;
-		snippet = history_truncate_result(tokenizer, json_string_value(largest),
+		snippet = history_truncate_result(tokenizer, largest->valuestring,
 						  text_budget > 0 ? text_budget : 1, &ignored);
 		if (!snippet)
 			return NULL;
-		if (!json_string_update(largest, snippet)) {
+		if (!cJSON_SetValuestring(largest, snippet)) {
 			free(snippet);
 			return NULL;
 		}
@@ -419,7 +419,7 @@ int agent_history_prepare_tool_content(struct react_context *ctx, const char *co
 	if (!safe)
 		return -ENOMEM;
 	{
-		struct json *root = json_parse_ex(safe, NULL, 1, NULL);
+		cJSON *root = cJSON_ParseWithOpts(safe, NULL, 1);
 		int budget = ctx->history_tool_result_tokens > 0
 				     ? ctx->history_tool_result_tokens
 				     : HISTORY_DEFAULT_TOOL_RESULT_MAX_TOKENS;
@@ -427,7 +427,7 @@ int agent_history_prepare_tool_content(struct react_context *ctx, const char *co
 		if (root) {
 			limited =
 				history_prepare_json(ctx->tokenizer, root, budget, &was_truncated);
-			json_free(root);
+			cJSON_Delete(root);
 			if (!limited) {
 				free(safe);
 				return -E2BIG;

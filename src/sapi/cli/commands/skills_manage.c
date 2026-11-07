@@ -1,6 +1,6 @@
 #include "sapi/cli/commands/skills_manage.h"
 #include "config/config.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "sapi/cli/services/management.h"
 #include "sapi/cli/services/skill_store.h"
 #include "util/data.h"
@@ -465,26 +465,26 @@ static int cli_skills_manage_skills_select(const struct cli_skills_manage_skills
 	return count ? 0 : -ECANCELED;
 }
 
-static struct json *
+static cJSON *
 cli_skills_manage_skills_metadata_create(const struct cli_skills_manage_skills_source *source,
 					 const struct cli_skill_candidate *candidate,
 					 const char *ref)
 {
-	struct json *metadata = json_object();
+	cJSON *metadata = cJSON_CreateObject();
 	const char *path = candidate->path + strlen(source->root);
 
 	while (*path == '/')
 		path++;
 	if (!metadata)
 		return NULL;
-	if (!json_add_number(metadata, "version", 1) ||
-	    !json_add_string(metadata, "name", candidate->fm.name) ||
-	    !json_add_string(metadata, "kind", source->git ? "git" : "local") ||
-	    !json_add_string(metadata, "source", source->source) ||
-	    !json_add_string(metadata, "path", *path ? path : ".") ||
-	    !json_add_string(metadata, "ref", ref ? ref : "") ||
-	    !json_add_string(metadata, "commit", source->commit)) {
-		json_free(metadata);
+	if (!cJSON_AddNumberToObject(metadata, "version", 1) ||
+	    !cJSON_AddStringToObject(metadata, "name", candidate->fm.name) ||
+	    !cJSON_AddStringToObject(metadata, "kind", source->git ? "git" : "local") ||
+	    !cJSON_AddStringToObject(metadata, "source", source->source) ||
+	    !cJSON_AddStringToObject(metadata, "path", *path ? path : ".") ||
+	    !cJSON_AddStringToObject(metadata, "ref", ref ? ref : "") ||
+	    !cJSON_AddStringToObject(metadata, "commit", source->commit)) {
+		cJSON_Delete(metadata);
 		return NULL;
 	}
 	return metadata;
@@ -524,16 +524,16 @@ static int cli_skills_manage_skills_add(struct morph_log *logger,
 			else if (!S_ISDIR(st.st_mode))
 				rc = -ELOOP;
 			else {
-				struct json *metadata = cli_skill_store_metadata(target);
+				cJSON *metadata = cli_skill_store_metadata(target);
 
 				rc = cli_skill_store_unmodified(target, metadata);
-				json_free(metadata);
+				cJSON_Delete(metadata);
 			}
 		}
 	}
 	for (size_t i = 0; rc == 0 && !options->list && i < candidates.nelts; i++) {
 		const struct cli_skill_candidate *candidate = morph_array_get(&candidates, i);
-		struct json *metadata;
+		cJSON *metadata;
 
 		if (!selected[i])
 			continue;
@@ -541,7 +541,7 @@ static int cli_skills_manage_skills_add(struct morph_log *logger,
 			cli_skills_manage_skills_metadata_create(&source, candidate, options->ref);
 		rc = metadata ? cli_skill_store_install(root, candidate, metadata, options->replace)
 			      : -ENOMEM;
-		json_free(metadata);
+		cJSON_Delete(metadata);
 		if (rc == 0)
 			printf("Installed '%s' in %s (%s scope).\n", candidate->fm.name, root,
 			       options->global ? "user" : "project");
@@ -577,17 +577,16 @@ static int cli_skills_manage_skills_list(const struct cli_skills_manage_skills_o
 	if (rc >= 0) {
 		for (int i = 0; i < registry->count; i++) {
 			const struct skill_entry *entry = &registry->entries[i];
-			struct json *metadata = cli_skill_store_metadata(entry->skill_dir);
-			struct json *source = json_member(metadata, "source");
-			struct json *commit = json_member(metadata, "commit");
+			cJSON *metadata = cli_skill_store_metadata(entry->skill_dir);
+			cJSON *source = cJSON_GetObjectItemCaseSensitive(metadata, "source");
+			cJSON *commit = cJSON_GetObjectItemCaseSensitive(metadata, "commit");
 
 			printf("%s\t%s\t%s", entry->fm.name, entry->skill_dir,
-			       json_is_string_value(source) ? json_string_value(source)
-							    : "unmanaged");
-			if (json_is_string_value(commit) && json_string_value(commit)[0])
-				printf("\t%.12s", json_string_value(commit));
+			       cJSON_IsString(source) ? source->valuestring : "unmanaged");
+			if (cJSON_IsString(commit) && commit->valuestring[0])
+				printf("\t%.12s", commit->valuestring);
 			putchar('\n');
-			json_free(metadata);
+			cJSON_Delete(metadata);
 		}
 		rc = 0;
 	}
@@ -596,13 +595,20 @@ static int cli_skills_manage_skills_list(const struct cli_skills_manage_skills_o
 	return rc;
 }
 
+static const char *cli_skills_manage_metadata_string(const cJSON *metadata, const char *key)
+{
+	cJSON *item = cJSON_GetObjectItemCaseSensitive(metadata, key);
+
+	return cJSON_IsString(item) ? item->valuestring : NULL;
+}
+
 static int cli_skills_manage_skills_update_one(struct morph_log *logger, const char *root,
 					       const char *name)
 {
 	char target[PATH_MAX];
 	struct cli_skills_manage_skills_source source = {0};
 	morph_array_t candidates = {0};
-	struct json *metadata = NULL;
+	cJSON *metadata = NULL;
 	int rc = file_path_join(target, sizeof(target), root, name);
 
 	if (rc != 0)
@@ -611,10 +617,10 @@ static int cli_skills_manage_skills_update_one(struct morph_log *logger, const c
 	rc = cli_skill_store_unmodified(target, metadata);
 	if (rc != 0)
 		goto out;
-	const char *origin = json_string_value(json_member(metadata, "source"));
-	const char *kind = json_string_value(json_member(metadata, "kind"));
-	const char *path = json_string_value(json_member(metadata, "path"));
-	const char *ref = json_string_value(json_member(metadata, "ref"));
+	const char *origin = cli_skills_manage_metadata_string(metadata, "source");
+	const char *kind = cli_skills_manage_metadata_string(metadata, "kind");
+	const char *path = cli_skills_manage_metadata_string(metadata, "path");
+	const char *ref = cli_skills_manage_metadata_string(metadata, "ref");
 
 	if (!origin || !kind || !path || !ref) {
 		rc = (MORPH_ERR_FORMAT);
@@ -638,12 +644,12 @@ static int cli_skills_manage_skills_update_one(struct morph_log *logger, const c
 		if (!candidate)
 			rc = (-ENOENT);
 		else {
-			struct json *updated = cli_skills_manage_skills_metadata_create(
+			cJSON *updated = cli_skills_manage_skills_metadata_create(
 				&source, candidate, *ref ? ref : NULL);
 
 			rc = updated ? cli_skill_store_install(root, candidate, updated, 1)
 				     : -ENOMEM;
-			json_free(updated);
+			cJSON_Delete(updated);
 			if (rc == 0)
 				printf("Updated '%s' in %s.\n", name, root);
 		}
@@ -656,7 +662,7 @@ out:
 			rc = cleanup_rc;
 	}
 	morph_array_cleanup(&candidates);
-	json_free(metadata);
+	cJSON_Delete(metadata);
 	return rc;
 }
 
@@ -679,7 +685,7 @@ static int cli_skills_manage_skills_modify(struct morph_log *logger,
 	for (int i = 0; i < count; i++) {
 		const char *name = options->name_count ? options->names[i] : names[i];
 		char target[PATH_MAX];
-		struct json *metadata;
+		cJSON *metadata;
 		struct stat st;
 
 		if (!cli_management_name_valid(name))
@@ -708,7 +714,7 @@ static int cli_skills_manage_skills_modify(struct morph_log *logger,
 		} else {
 			rc = cli_skills_manage_skills_update_one(logger, root, name);
 		}
-		json_free(metadata);
+		cJSON_Delete(metadata);
 		if (rc != 0) {
 			cli_management_error(rc, name);
 			result = rc;

@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 #include "mcp/mcp_internal.h"
 #include "util/child_io.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "util/error.h"
 #include "util/log.h"
 #include <errno.h>
@@ -62,11 +62,11 @@ static int mcp_stdio_recv(struct mcp_client *client, int req_id,
 			memmove(buffer->data, newline + 1, buffer->len - length - 1);
 			buffer->len -= length + 1;
 			buffer->data[buffer->len] = '\0';
-			struct json *object = json_parse_prefix(line, NULL, NULL);
-			struct json *id = json_member(object, "id");
-			int matches = json_is_number_value(id) && json_int_value(id) == req_id;
+			cJSON *object = cJSON_Parse(line);
+			cJSON *id = cJSON_GetObjectItemCaseSensitive(object, "id");
+			int matches = cJSON_IsNumber(id) && id->valueint == req_id;
 
-			json_free(object);
+			cJSON_Delete(object);
 			if (matches) {
 				*response = line;
 				return 0;

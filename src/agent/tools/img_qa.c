@@ -6,7 +6,7 @@
 #include "util/arena.h"
 #include "util/buf.h"
 #include "util/error.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,21 +22,21 @@ static void img_qa_context_destroy(void *user_data)
 	free(user_data);
 }
 
-static int img_qa_int_arg(struct json *root, const char *name, int fallback, int min, int max,
-			  struct tool_result *result)
+static int img_qa_int_arg(cJSON *root, const char *name, int fallback,
+			  int min, int max, struct tool_result *result)
 {
-	struct json *item;
+	cJSON *item;
 	int value;
 
-	item = json_member_ci(root, name);
+	item = cJSON_GetObjectItem(root, name);
 	if (!item)
 		return fallback;
-	if (!json_is_number_value(item)) {
+	if (!cJSON_IsNumber(item)) {
 		(void)tool_result_errorf(result, "tool_failed",
 			"'%s' must be an integer", name);
 		return -EINVAL;
 	}
-	value = json_int_value(item);
+	value = item->valueint;
 	if (value < min || value > max) {
 		(void)tool_result_errorf(result, "tool_failed",
 			"'%s' must be between %d and %d", name, min, max);
@@ -48,24 +48,24 @@ static int img_qa_int_arg(struct json *root, const char *name, int fallback, int
 static int img_qa_take_call_error(struct tool_result *result,
 				  struct model *llm)
 {
-	struct json *root;
+	cJSON *root;
 	char *json;
 	int rc;
 
 	if (!result)
 		return -EINVAL;
-	root = json_object();
+	root = cJSON_CreateObject();
 	if (!root)
 		return -ENOMEM;
-	json_add_string(root, "error", "image QA LLM call failed");
+	cJSON_AddStringToObject(root, "error", "image QA LLM call failed");
 	if (llm && llm->last_error[0])
-		json_add_string(root, "detail", llm->last_error);
-	json_add_string(root, "hint",
-			"img_qa uses [model.vision]; configure it to a vision-capable "
-			"chat model. img_gen uses [model.image], so image generation "
-			"can work while image QA fails.");
-	json = json_stringify(root);
-	json_free(root);
+		cJSON_AddStringToObject(root, "detail", llm->last_error);
+	cJSON_AddStringToObject(root, "hint",
+		"img_qa uses [model.vision]; configure it to a vision-capable "
+		"chat model. img_gen uses [model.image], so image generation "
+		"can work while image QA fails.");
+	json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
 	if (!json)
 		return -ENOMEM;
 	rc = tool_result_success_json_text(result, json);
@@ -89,7 +89,7 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
 	struct model *llm = ctx ? ctx->llm : NULL;
 	int rc = 0;
-	struct json *root = NULL;
+	cJSON *root = NULL;
 	struct arena *arena = NULL;
 	morph_buf_t buf;
 	struct tool_runtime_stream_sink stream;
@@ -114,19 +114,18 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 		return -ENOSYS;
 	}
 
-	root = json_parse_prefix(args_json, NULL, NULL);
+	root = cJSON_Parse(args_json);
 	if (!root) {
 		(void)tool_result_success_json_text(result,
 			strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
-	struct json *fp = json_member_ci(root, "file_path");
-	struct json *pr = json_member_ci(root, "prompt");
-	file_path = json_is_string_value(fp) ? json_string_value(fp) : NULL;
-	prompt = json_is_string_value(pr) && json_string_value(pr) && json_string_value(pr)[0]
-			 ? json_string_value(pr)
-			 : "Analyze this image.";
+	cJSON *fp = cJSON_GetObjectItem(root, "file_path");
+	cJSON *pr = cJSON_GetObjectItem(root, "prompt");
+	file_path = cJSON_IsString(fp) ? fp->valuestring : NULL;
+	prompt = cJSON_IsString(pr) && pr->valuestring && pr->valuestring[0]
+		? pr->valuestring : "Analyze this image.";
 	opts.max_tokens = img_qa_int_arg(root, "max_tokens", 1024, 1, 4096,
 					 result);
 	if (opts.max_tokens < 0) {
@@ -216,7 +215,7 @@ out:
 	if (arena)
 		arena_destroy(arena);
 	if (root)
-		json_free(root);
+		cJSON_Delete(root);
 	return rc;
 }
 

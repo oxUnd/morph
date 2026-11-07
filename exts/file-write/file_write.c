@@ -1,7 +1,7 @@
 #include "file_write.h"
 
 #include "agent/tool_context.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "util/error.h"
 #include "util/file.h"
 
@@ -19,6 +19,7 @@
 
 #define FILE_WRITE_MAX_CONTENT (10 * 1024 * 1024)
 #define FILE_WRITE_COPY_BUFSIZ BUFSIZ
+#define FILE_WRITE_JSON_INT_MAX 9007199254740991.0
 
 struct file_write_context {
 	struct tool_context *tctx;
@@ -29,13 +30,13 @@ struct decoded_content {
 	size_t len;
 };
 
-static int json_result(struct tool_result *result, struct json *obj)
+static int json_result(struct tool_result *result, cJSON *obj)
 {
 	char *s;
 
 	if (!result || !obj)
 		return -EINVAL;
-	s = json_stringify(obj);
+	s = cJSON_PrintUnformatted(obj);
 	if (!s)
 		return -ENOMEM;
 	return tool_result_success_json_text(result, s);
@@ -44,40 +45,58 @@ static int json_result(struct tool_result *result, struct json *obj)
 static int json_error_result(struct tool_result *result, int code,
 			     const char *message)
 {
-	struct json *out;
+	cJSON *out;
 	int rc;
 
-	out = json_object();
+	out = cJSON_CreateObject();
 	if (!out)
 		return -ENOMEM;
-	json_add_bool(out, "ok", 0);
-	json_add_number(out, "code", code);
-	json_add_string(out, "error", message ? message : "error");
+	cJSON_AddBoolToObject(out, "ok", 0);
+	cJSON_AddNumberToObject(out, "code", code);
+	cJSON_AddStringToObject(out, "error", message ? message : "error");
 	rc = json_result(result, out);
-	json_free(out);
+	cJSON_Delete(out);
 	return rc;
 }
 
-static int json_off_t(struct json *root, const char *name, int required, off_t default_value,
-		      off_t *out)
+static const char *json_string(cJSON *root, const char *name)
 {
-	struct json *item;
+	cJSON *item;
+
+	item = cJSON_GetObjectItem(root, name);
+	return cJSON_IsString(item) ? item->valuestring : NULL;
+}
+
+static int json_bool(cJSON *root, const char *name, int default_value)
+{
+	cJSON *item;
+
+	item = cJSON_GetObjectItem(root, name);
+	if (cJSON_IsBool(item))
+		return cJSON_IsTrue(item) ? 1 : 0;
+	return default_value;
+}
+
+static int json_off_t(cJSON *root, const char *name, int required,
+		      off_t default_value, off_t *out)
+{
+	cJSON *item;
 	double value;
 	off_t converted;
 
 	if (!root || !name || !out)
 		return -EINVAL;
-	item = json_member_ci(root, name);
+	item = cJSON_GetObjectItem(root, name);
 	if (!item) {
 		if (required)
 			return -EINVAL;
 		*out = default_value;
 		return 0;
 	}
-	if (!json_is_number_value(item))
+	if (!cJSON_IsNumber(item))
 		return -EINVAL;
-	value = json_number_value(item);
-	if (value < 0 || value > (double)JSON_SAFE_INTEGER)
+	value = item->valuedouble;
+	if (value < 0 || value > FILE_WRITE_JSON_INT_MAX)
 		return -EINVAL;
 	converted = (off_t)value;
 	if ((double)converted != value)
@@ -544,24 +563,26 @@ static int copy_file(const char *src, const char *dst, int overwrite,
 	return 0;
 }
 
-static int add_success(struct json *out, const char *op, const char *path, const char *resolved,
-		       const char *dst_path, const char *resolved_dst)
+static int add_success(cJSON *out, const char *op, const char *path,
+		       const char *resolved, const char *dst_path,
+		       const char *resolved_dst)
 {
 	if (!out)
 		return -EINVAL;
-	json_add_bool(out, "ok", 1);
-	json_add_string(out, "op", op);
-	json_add_string(out, "path", path ? path : "");
-	json_add_string(out, "resolved_path", resolved ? resolved : "");
+	cJSON_AddBoolToObject(out, "ok", 1);
+	cJSON_AddStringToObject(out, "op", op);
+	cJSON_AddStringToObject(out, "path", path ? path : "");
+	cJSON_AddStringToObject(out, "resolved_path", resolved ? resolved : "");
 	if (dst_path)
-		json_add_string(out, "dst_path", dst_path);
+		cJSON_AddStringToObject(out, "dst_path", dst_path);
 	if (resolved_dst)
-		json_add_string(out, "resolved_dst_path", resolved_dst);
+		cJSON_AddStringToObject(out, "resolved_dst_path", resolved_dst);
 	return 0;
 }
 
-static int op_write_like(struct file_write_context *ctx, struct json *root,
-			 struct tool_result *result, const char *op, int create_parent_dirs)
+static int op_write_like(struct file_write_context *ctx, cJSON *root,
+			 struct tool_result *result, const char *op,
+			 int create_parent_dirs)
 {
 	const char *path;
 	const char *content;
@@ -570,11 +591,11 @@ static int op_write_like(struct file_write_context *ctx, struct json *root,
 	struct decoded_content decoded;
 	int rc;
 	int existed;
-	struct json *out;
+	cJSON *out;
 
-	path = json_string_value(json_member_ci(root, "path"));
-	content = json_string_value(json_member_ci(root, "content"));
-	encoding = json_string_value(json_member_ci(root, "encoding"));
+	path = json_string(root, "path");
+	content = json_string(root, "content");
+	encoding = json_string(root, "encoding");
 	memset(&decoded, 0, sizeof(decoded));
 	rc = authorize_path(ctx ? ctx->tctx : NULL, TOOL_PATH_WRITE, path,
 			    resolved, sizeof(resolved));
@@ -601,17 +622,18 @@ static int op_write_like(struct file_write_context *ctx, struct json *root,
 	if (rc < 0)
 		goto out_error;
 
-	out = json_object();
+	out = cJSON_CreateObject();
 	if (!out) {
 		free(decoded.data);
 		return -ENOMEM;
 	}
 	add_success(out, op, path, resolved, NULL, NULL);
-	json_add_number(out, "bytes_written", (double)decoded.len);
-	json_add_bool(out, "created", existed ? 0 : 1);
-	json_add_bool(out, "overwritten", strcmp(op, "overwrite") == 0 && existed);
+	cJSON_AddNumberToObject(out, "bytes_written", (double)decoded.len);
+	cJSON_AddBoolToObject(out, "created", existed ? 0 : 1);
+	cJSON_AddBoolToObject(out, "overwritten",
+			      strcmp(op, "overwrite") == 0 && existed);
 	rc = json_result(result, out);
-	json_free(out);
+	cJSON_Delete(out);
 	free(decoded.data);
 	return rc;
 
@@ -620,16 +642,17 @@ out_error:
 	return json_error_result(result, rc, "file write failed");
 }
 
-static int op_mkdir(struct file_write_context *ctx, struct json *root, struct tool_result *result)
+static int op_mkdir(struct file_write_context *ctx, cJSON *root,
+		    struct tool_result *result)
 {
 	const char *path;
 	char resolved[PATH_MAX];
 	int rc;
 	int existed;
 	struct stat st;
-	struct json *out;
+	cJSON *out;
 
-	path = json_string_value(json_member_ci(root, "path"));
+	path = json_string(root, "path");
 	rc = authorize_path(ctx ? ctx->tctx : NULL, TOOL_PATH_WRITE, path,
 			    resolved, sizeof(resolved));
 	if (rc < 0)
@@ -639,17 +662,18 @@ static int op_mkdir(struct file_write_context *ctx, struct json *root, struct to
 	if (rc < 0)
 		return json_error_result(result, rc, "mkdir failed");
 
-	out = json_object();
+	out = cJSON_CreateObject();
 	if (!out)
 		return -ENOMEM;
 	add_success(out, "mkdir", path, resolved, NULL, NULL);
-	json_add_bool(out, "created", existed ? 0 : 1);
+	cJSON_AddBoolToObject(out, "created", existed ? 0 : 1);
 	rc = json_result(result, out);
-	json_free(out);
+	cJSON_Delete(out);
 	return rc;
 }
 
-static int op_patch(struct file_write_context *ctx, struct json *root, struct tool_result *result)
+static int op_patch(struct file_write_context *ctx, cJSON *root,
+		    struct tool_result *result)
 {
 	const char *path;
 	const char *content;
@@ -661,11 +685,11 @@ static int op_patch(struct file_write_context *ctx, struct json *root, struct to
 	off_t file_size_before;
 	off_t file_size_after;
 	int rc;
-	struct json *out;
+	cJSON *out;
 
-	path = json_string_value(json_member_ci(root, "path"));
-	content = json_string_value(json_member_ci(root, "content"));
-	encoding = json_string_value(json_member_ci(root, "encoding"));
+	path = json_string(root, "path");
+	content = json_string(root, "content");
+	encoding = json_string(root, "encoding");
 	memset(&decoded, 0, sizeof(decoded));
 	rc = authorize_path(ctx ? ctx->tctx : NULL, TOOL_PATH_WRITE, path,
 			    resolved, sizeof(resolved));
@@ -689,25 +713,27 @@ static int op_patch(struct file_write_context *ctx, struct json *root, struct to
 		return json_error_result(result, rc, "patch failed");
 	}
 
-	out = json_object();
+	out = cJSON_CreateObject();
 	if (!out) {
 		free(decoded.data);
 		return -ENOMEM;
 	}
 	add_success(out, "patch", path, resolved, NULL, NULL);
-	json_add_number(out, "offset", (double)offset);
-	json_add_number(out, "length", (double)old_len);
-	json_add_number(out, "bytes_written", (double)decoded.len);
-	json_add_number(out, "file_size_before", (double)file_size_before);
-	json_add_number(out, "file_size_after", (double)file_size_after);
+	cJSON_AddNumberToObject(out, "offset", (double)offset);
+	cJSON_AddNumberToObject(out, "length", (double)old_len);
+	cJSON_AddNumberToObject(out, "bytes_written", (double)decoded.len);
+	cJSON_AddNumberToObject(out, "file_size_before",
+				(double)file_size_before);
+	cJSON_AddNumberToObject(out, "file_size_after",
+				(double)file_size_after);
 	rc = json_result(result, out);
-	json_free(out);
+	cJSON_Delete(out);
 	free(decoded.data);
 	return rc;
 }
 
-static int op_copy(struct file_write_context *ctx, struct json *root, struct tool_result *result,
-		   int create_parent_dirs)
+static int op_copy(struct file_write_context *ctx, cJSON *root,
+		   struct tool_result *result, int create_parent_dirs)
 {
 	const char *path;
 	const char *dst_path;
@@ -716,11 +742,11 @@ static int op_copy(struct file_write_context *ctx, struct json *root, struct too
 	int overwrite;
 	int rc;
 	size_t bytes_written;
-	struct json *out;
+	cJSON *out;
 
-	path = json_string_value(json_member_ci(root, "path"));
-	dst_path = json_string_value(json_member_ci(root, "dst_path"));
-	overwrite = json_bool_or(json_member_ci(root, "overwrite"), NULL, false);
+	path = json_string(root, "path");
+	dst_path = json_string(root, "dst_path");
+	overwrite = json_bool(root, "overwrite", 0);
 	if (!dst_path)
 		return json_error_result(result, -EINVAL, "missing dst_path");
 	rc = authorize_path(ctx ? ctx->tctx : NULL, TOOL_PATH_READ, path,
@@ -741,19 +767,19 @@ static int op_copy(struct file_write_context *ctx, struct json *root, struct too
 	if (rc < 0)
 		return json_error_result(result, rc, "copy failed");
 
-	out = json_object();
+	out = cJSON_CreateObject();
 	if (!out)
 		return -ENOMEM;
 	add_success(out, "copy", path, resolved, dst_path, resolved_dst);
-	json_add_number(out, "bytes_written", (double)bytes_written);
-	json_add_bool(out, "overwritten", overwrite);
+	cJSON_AddNumberToObject(out, "bytes_written", (double)bytes_written);
+	cJSON_AddBoolToObject(out, "overwritten", overwrite);
 	rc = json_result(result, out);
-	json_free(out);
+	cJSON_Delete(out);
 	return rc;
 }
 
-static int op_rename(struct file_write_context *ctx, struct json *root, struct tool_result *result,
-		     int create_parent_dirs)
+static int op_rename(struct file_write_context *ctx, cJSON *root,
+		     struct tool_result *result, int create_parent_dirs)
 {
 	const char *path;
 	const char *dst_path;
@@ -762,11 +788,11 @@ static int op_rename(struct file_write_context *ctx, struct json *root, struct t
 	int overwrite;
 	int exists;
 	int rc;
-	struct json *out;
+	cJSON *out;
 
-	path = json_string_value(json_member_ci(root, "path"));
-	dst_path = json_string_value(json_member_ci(root, "dst_path"));
-	overwrite = json_bool_or(json_member_ci(root, "overwrite"), NULL, false);
+	path = json_string(root, "path");
+	dst_path = json_string(root, "dst_path");
+	overwrite = json_bool(root, "overwrite", 0);
 	if (!dst_path)
 		return json_error_result(result, -EINVAL, "missing dst_path");
 	rc = authorize_path(ctx ? ctx->tctx : NULL, TOOL_PATH_WRITE, path,
@@ -797,25 +823,26 @@ static int op_rename(struct file_write_context *ctx, struct json *root, struct t
 	if (rename(resolved, resolved_dst) != 0)
 		return json_error_result(result, -errno, "rename failed");
 
-	out = json_object();
+	out = cJSON_CreateObject();
 	if (!out)
 		return -ENOMEM;
 	add_success(out, "rename", path, resolved, dst_path, resolved_dst);
-	json_add_bool(out, "overwritten", exists);
+	cJSON_AddBoolToObject(out, "overwritten", exists);
 	rc = json_result(result, out);
-	json_free(out);
+	cJSON_Delete(out);
 	return rc;
 }
 
-static int op_delete(struct file_write_context *ctx, struct json *root, struct tool_result *result)
+static int op_delete(struct file_write_context *ctx, cJSON *root,
+		     struct tool_result *result)
 {
 	const char *path;
 	char resolved[PATH_MAX];
 	int rc;
 	int is_dir;
-	struct json *out;
+	cJSON *out;
 
-	path = json_string_value(json_member_ci(root, "path"));
+	path = json_string(root, "path");
 	rc = authorize_path(ctx ? ctx->tctx : NULL, TOOL_PATH_WRITE, path,
 			    resolved, sizeof(resolved));
 	if (rc < 0)
@@ -832,14 +859,14 @@ static int op_delete(struct file_write_context *ctx, struct json *root, struct t
 		return json_error_result(result, -errno, "delete file failed");
 	}
 
-	out = json_object();
+	out = cJSON_CreateObject();
 	if (!out)
 		return -ENOMEM;
 	add_success(out, "delete", path, resolved, NULL, NULL);
-	json_add_bool(out, "deleted", 1);
-	json_add_bool(out, "directory", is_dir);
+	cJSON_AddBoolToObject(out, "deleted", 1);
+	cJSON_AddBoolToObject(out, "directory", is_dir);
 	rc = json_result(result, out);
-	json_free(out);
+	cJSON_Delete(out);
 	return rc;
 }
 
@@ -847,27 +874,27 @@ static int file_write_exec(const char *args_json, struct tool_result *result,
 			   void *user_data)
 {
 	struct file_write_context *ctx = user_data;
-	struct json *root;
+	cJSON *root;
 	const char *op;
 	int create_parent_dirs;
 	int rc;
 
 	if (!result)
 		return -EINVAL;
-	root = json_parse_prefix(args_json ? args_json : "{}", NULL, NULL);
+	root = cJSON_Parse(args_json ? args_json : "{}");
 	if (!root)
 		return json_error_result(result, -EINVAL, "invalid JSON");
-	op = json_string_value(json_member_ci(root, "op"));
+	op = json_string(root, "op");
 	if (!op) {
-		json_free(root);
+		cJSON_Delete(root);
 		return json_error_result(result, -EINVAL, "missing op");
 	}
-	if (!json_string_value(json_member_ci(root, "path"))) {
-		json_free(root);
+	if (!json_string(root, "path")) {
+		cJSON_Delete(root);
 		return json_error_result(result, -EINVAL, "missing path");
 	}
 
-	create_parent_dirs = json_bool_or(json_member_ci(root, "create_parent_dirs"), NULL, true);
+	create_parent_dirs = json_bool(root, "create_parent_dirs", 1);
 	if (strcmp(op, "write") == 0 || strcmp(op, "overwrite") == 0 ||
 	    strcmp(op, "append") == 0) {
 		rc = op_write_like(ctx, root, result, op, create_parent_dirs);
@@ -884,7 +911,7 @@ static int file_write_exec(const char *args_json, struct tool_result *result,
 	} else {
 		rc = json_error_result(result, -EINVAL, "unknown op");
 	}
-	json_free(root);
+	cJSON_Delete(root);
 	return rc;
 }
 

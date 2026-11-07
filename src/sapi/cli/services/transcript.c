@@ -80,7 +80,7 @@ static int cli_transcript_capture_preview(struct cli_application *ctx, size_t in
 	return rc;
 }
 
-int cli_transcript_restore_tool(struct cli_application *ctx, const struct json *call,
+int cli_transcript_restore_tool(struct cli_application *ctx, const struct cJSON *call,
 				const struct model_history_item *result)
 {
 	size_t index;

@@ -6,7 +6,7 @@ extern "C" {
 #include "sapi/fastcgi/storage/sessions.h"
 #include "sapi/fastcgi/storage/events.h"
 #include "sapi/fastcgi/storage/canvas.h"
-#include "util/json.h"
+#include "cJSON.h"
 
 #include "sapi/fastcgi/session_store.h"
 }
@@ -103,22 +103,22 @@ TEST_F(FastcgiSessionStoreTest, CanvasListsEmptyAndPopulatedSessions)
 	char id[40];
 
 	ASSERT_EQ(canvas_list_json(store, "session", &text), 0);
-	struct json *document = json_parse_prefix(text, NULL, NULL);
+	cJSON *document = cJSON_Parse(text);
 	free(text);
 	ASSERT_NE(document, nullptr);
-	EXPECT_EQ(json_count(json_member_ci(document, "nodes")), 0);
-	json_free(document);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(document, "nodes")), 0);
+	cJSON_Delete(document);
 	ASSERT_EQ(canvas_add_node(store, "session", "{\"label\":\"first\"}", id), 0);
 	ASSERT_EQ(canvas_add_node(store, "other", "{}", id), 0);
 	ASSERT_EQ(canvas_list_json(store, "session", &text), 0);
-	document = json_parse_prefix(text, NULL, NULL);
+	document = cJSON_Parse(text);
 	free(text);
 	ASSERT_NE(document, nullptr);
-	struct json *nodes = json_member_ci(document, "nodes");
-	ASSERT_EQ(json_count(nodes), 1);
-	struct json *meta = json_member_ci(json_at(nodes, 0), "meta");
-	EXPECT_STREQ(json_string_value(json_member_ci(meta, "label")), "first");
-	json_free(document);
+	cJSON *nodes = cJSON_GetObjectItem(document, "nodes");
+	ASSERT_EQ(cJSON_GetArraySize(nodes), 1);
+	cJSON *meta = cJSON_GetObjectItem(cJSON_GetArrayItem(nodes, 0), "meta");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(meta, "label")), "first");
+	cJSON_Delete(document);
 }
 
 TEST_F(FastcgiSessionStoreTest, CanvasReadFailureDoesNotReturnPartialOutput)

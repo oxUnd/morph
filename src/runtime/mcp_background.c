@@ -139,7 +139,7 @@ static int job_event(const struct morph_event *event, void *opaque)
 	struct runtime *runtime = job->runtime;
 
 	if (event->data)
-		json_add_bool(event->data, "background", 1);
+		cJSON_AddBoolToObject(event->data, "background", 1);
 	return runtime->options.event_cb ? runtime->options.event_cb(event,
 		runtime->options.event_user_data) : 0;
 }
