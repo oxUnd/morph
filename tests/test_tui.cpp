@@ -326,7 +326,7 @@ TEST_F(TuiTest, FrameInvalidationAndOutputFailureForceFullRepaint)
 	ASSERT_NE(unwritable, nullptr);
 	EXPECT_LT(morph_tui_frame_present(&frame, unwritable, 80, 2, "two\n"), 0);
 	fclose(unwritable);
-	EXPECT_EQ(std::string(morph_buf_cstr(&frame.previous)), "one\n");
+	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&frame.previous)), "one\n");
 	ASSERT_EQ(morph_tui_frame_present(&frame, output, 80, 2, "two\n"), 0);
 	EXPECT_NE(take().find("\033[2J"), std::string::npos);
 	FILE *other = tmpfile();
@@ -355,7 +355,7 @@ TEST_F(TuiTest, LayoutRegionsClampAndClipAtTheirOwnBoundary)
 	morph_buf_t commands{};
 	ASSERT_EQ(morph_buf_init(&commands, 128), 0);
 	ASSERT_EQ(morph_tui_draw_region_cell(&commands, title, 0, 15, 8, "abc", ""), 0);
-	EXPECT_EQ(std::string(morph_buf_cstr(&commands)), "\033[2;18H…");
+	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&commands)), "\033[2;18H…");
 	morph_buf_reset(&commands);
 	EXPECT_EQ(morph_tui_draw_region_cell(&commands, body, 0, 0, 2, "x", ""), 0);
 	EXPECT_EQ(commands.len, 0U);
@@ -495,17 +495,17 @@ TEST_F(TuiTest, EditorEditsUnicodeInTheMiddleAndKeepsCursorVisible)
 		  MORPH_TUI_WIDGET_CHANGED);
 	EXPECT_EQ(editor.cursor, 3U);
 	EXPECT_EQ(morph_tui_widget_editor_state_update(&editor, 'x'), MORPH_TUI_WIDGET_CHANGED);
-	EXPECT_EQ(std::string(morph_buf_cstr(&editor.text)), "中x文ab");
+	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&editor.text)), "中x文ab");
 	EXPECT_EQ(morph_tui_widget_editor_state_update(&editor, 127), MORPH_TUI_WIDGET_CHANGED);
 	EXPECT_EQ(morph_tui_widget_editor_state_update(&editor, 127), MORPH_TUI_WIDGET_CHANGED);
-	EXPECT_EQ(std::string(morph_buf_cstr(&editor.text)), "文ab");
+	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&editor.text)), "文ab");
 	EXPECT_EQ(morph_tui_widget_editor_state_update(&editor, MORPH_TUI_KEY_END),
 		  MORPH_TUI_WIDGET_CHANGED);
 	morph_buf_t visible{};
 	ASSERT_EQ(morph_buf_init(&visible, 32), 0);
 	size_t column = 0;
 	ASSERT_EQ(morph_tui_widget_editor_state_view(&editor, &visible, 3, &column), 0);
-	EXPECT_EQ(std::string(morph_buf_cstr(&visible)), "ab");
+	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&visible)), "ab");
 	EXPECT_EQ(column, 2U);
 	EXPECT_TRUE(morph_tui_widget_editor_state_valid(&editor));
 	morph_tui_widget_editor_state_cleanup(&editor);
@@ -535,7 +535,7 @@ TEST_F(TuiTest, EditorBoundsPasteAndSecretRendering)
 	ASSERT_EQ(morph_buf_init(&visible, 32), 0);
 	size_t column = 0;
 	ASSERT_EQ(morph_tui_widget_editor_state_view(&editor, &visible, 3, &column), 0);
-	EXPECT_EQ(std::string(morph_buf_cstr(&visible)), "•••");
+	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&visible)), "•••");
 	EXPECT_EQ(column, 3U);
 	EXPECT_EQ(morph_tui_widget_editor_state_update(&editor, 21), MORPH_TUI_WIDGET_CHANGED);
 	EXPECT_EQ(editor.text.len, 0U);
@@ -553,18 +553,18 @@ TEST_F(TuiTest, CardAndDocumentComponentsRespectDisplayWidth)
 	morph_buf_t row{};
 	ASSERT_EQ(morph_buf_init(&row, 32), 0);
 	ASSERT_EQ(morph_tui_widget_card_row(&row, 8, "中文abc\033[2J"), 0);
-	EXPECT_EQ(std::string(morph_buf_cstr(&row)), "│ 中…  │");
+	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&row)), "│ 中…  │");
 	morph_buf_reset(&row);
 	ASSERT_EQ(morph_tui_widget_card_border(&row, 8, 0), 0);
-	EXPECT_EQ(std::string(morph_buf_cstr(&row)), "┌──────┐");
+	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&row)), "┌──────┐");
 	morph_buf_cleanup(&row);
 	struct morph_tui_widget_text_layout view{};
-	ASSERT_EQ(morph_tui_widget_text_layout_wrap(&view, "中文ab\n\nlast", 3), 0);
+	ASSERT_EQ(morph_tui_widget_text_layout_wrap_borrow(&view, "中文ab\n\nlast", 3), 0);
 	ASSERT_EQ(view.lines.nelts, 6U);
-	auto line =
-		static_cast<struct morph_tui_widget_text_line *>(morph_array_get(&view.lines, 0));
+	auto line = static_cast<struct morph_tui_widget_text_line *>(
+		morph_array_borrow(&view.lines, 0));
 	EXPECT_EQ(std::string(view.text + line->offset, line->length), "中");
-	ASSERT_EQ(morph_tui_widget_text_layout_wrap(&view, "中", 1), 0);
+	ASSERT_EQ(morph_tui_widget_text_layout_wrap_borrow(&view, "中", 1), 0);
 	EXPECT_EQ(view.lines.nelts, 1U);
 	morph_tui_widget_text_layout_cleanup(&view);
 }
@@ -760,7 +760,7 @@ TEST_F(TuiTest, NumericCellsAlignInsideTheirAllocatedWidth)
 	morph_buf_t commands{};
 	ASSERT_EQ(morph_buf_init(&commands, 128), 0);
 	ASSERT_EQ(morph_tui_draw_cell_append_aligned(&commands, 10, 2, 1, 2, 5, "42", "", 1), 0);
-	EXPECT_EQ(std::string(morph_buf_cstr(&commands)), "\033[1;2H   42");
+	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&commands)), "\033[1;2H   42");
 	morph_buf_cleanup(&commands);
 }
 
@@ -774,7 +774,7 @@ TEST_F(TuiTest, TreeTraversesOutOfOrderChildrenAndCollapses)
 	morph_buf_t text{};
 	ASSERT_EQ(morph_buf_init(&text, 128), 0);
 	ASSERT_EQ(morph_tui_widget_tree_render(&tree, &text, 40, 0, 10), 0);
-	EXPECT_STREQ(morph_buf_cstr(&text), "  ├ ▾ Root\n  │ └ Child\n  └ Other\n");
+	EXPECT_STREQ(morph_buf_cstr_borrow(&text), "  ├ ▾ Root\n  │ └ Child\n  └ Other\n");
 	EXPECT_EQ(morph_tui_widget_tree_selected(&tree), root);
 	EXPECT_EQ(morph_tui_widget_tree_update(&tree, MORPH_TUI_KEY_RIGHT, 2),
 		  MORPH_TUI_WIDGET_CHANGED);
@@ -802,7 +802,7 @@ TEST_F(TuiTest, TreeClipsUtf8AndSanitizesTerminalControls)
 		morph_buf_t text{};
 		ASSERT_EQ(morph_buf_init(&text, 128), 0);
 		ASSERT_EQ(morph_tui_widget_tree_render(&tree, &text, width, 0, 10), 0);
-		std::string row = morph_buf_cstr(&text);
+		std::string row = morph_buf_cstr_borrow(&text);
 		row.pop_back();
 		EXPECT_LE(utf8_display_width(row.c_str()), static_cast<size_t>(width));
 		EXPECT_EQ(row.find('\033'), std::string::npos);
@@ -839,7 +839,7 @@ TEST_F(TuiTest, TreeViewportScrollsAndErasesUnusedRows)
 	ASSERT_EQ(morph_buf_init(&commands, 256), 0);
 	ASSERT_EQ(morph_tui_widget_tree_draw(&tree, &commands, {2, 3, 20, 3}, "\033[0m", "\033[7m"),
 		  0);
-	std::string text = morph_buf_cstr(&commands);
+	std::string text = morph_buf_cstr_borrow(&commands);
 	EXPECT_NE(text.find("Node 29"), std::string::npos);
 	EXPECT_EQ(text.find("Node 0"), std::string::npos);
 	EXPECT_NE(text.find("\033[5;2H\033[7m"), std::string::npos);
@@ -856,7 +856,7 @@ TEST_F(TuiTest, StreamingTreeRowsBoundLongNamesAndDeepPrefixes)
 				  &text, "│ │ │ ", 1, "○", "中文很长的名称名称名称",
 				  "description description description", 28, width, "", ""),
 			  0);
-		std::string value = morph_buf_cstr(&text);
+		std::string value = morph_buf_cstr_borrow(&text);
 		size_t start = 0;
 		for (size_t end; (end = value.find('\n', start)) != std::string::npos;) {
 			std::string row = value.substr(start, end - start);

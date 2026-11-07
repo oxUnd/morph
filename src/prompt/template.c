@@ -1,4 +1,5 @@
 #include "template.h"
+#include "util/cleanup.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/str.h"
@@ -354,7 +355,7 @@ static int render_file(struct template_context *ctx, const char *path, int emit)
 		return template_fail(ctx, &source, 0, rc,
 			"Template must be a regular file within limits, without include cycles.");
 	}
-	morph_buf_t text = {0};
+	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	rc = morph_buf_init(&text, 0);
 	if (rc == 0)
 		rc = template_read(ctx, fd, &text);
@@ -366,7 +367,7 @@ static int render_file(struct template_context *ctx, const char *path, int emit)
 		morph_buf_cleanup(&text);
 		return template_fail(ctx, &source, 0, rc, "Cannot read a valid UTF-8 template within limits.");
 	}
-	source.text = morph_buf_cstr(&text);
+	source.text = morph_buf_cstr_borrow(&text);
 	ctx->active[ctx->depth].device = st.st_dev;
 	ctx->active[ctx->depth].inode = st.st_ino;
 	ctx->depth++;

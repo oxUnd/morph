@@ -77,7 +77,7 @@ TEST_F(ReactStreamTest, LegacyMarkersAndUtf8SurviveEveryByteBoundary)
 		ASSERT_EQ(react_stream_finish(&stream), 0);
 		EXPECT_EQ(text(REACT_STEP_THOUGHT), thought);
 		EXPECT_EQ(text(REACT_STEP_FINAL), answer);
-		EXPECT_EQ(morph_buf_cstr(&stream.text), input);
+		EXPECT_EQ(morph_buf_cstr_borrow(&stream.text), input);
 		struct react_stream_options options = stream.options;
 
 		react_stream_cleanup(&stream);
@@ -105,7 +105,7 @@ TEST_F(ReactStreamTest, NativeContentKeepsLiteralMarkersAndSeparateReasoning)
 	EXPECT_EQ(text(REACT_STEP_REASONING), reasoning);
 	EXPECT_EQ(text(REACT_STEP_CONTENT), content);
 	EXPECT_TRUE(text(REACT_STEP_FINAL).empty());
-	EXPECT_EQ(morph_buf_cstr(&stream.text), content);
+	EXPECT_EQ(morph_buf_cstr_borrow(&stream.text), content);
 }
 
 TEST_F(ReactStreamTest, InlineAndIncompleteMarkersRemainOrdinaryText)
@@ -159,7 +159,7 @@ TEST_F(ReactStreamTest, SinkFailureIsStickyAndNeverReplaysAcceptedBytes)
 	EXPECT_EQ(react_stream_cb("two", &stream), -EIO);
 	EXPECT_EQ(react_stream_finish(&stream), -EIO);
 	EXPECT_EQ(calls, 1);
-	EXPECT_EQ(morph_buf_cstr(&stream.text), std::string("one"));
+	EXPECT_EQ(morph_buf_cstr_borrow(&stream.text), std::string("one"));
 }
 
 TEST_F(ReactStreamTest, IncompleteUtf8FailsInsteadOfSilentlyDroppingBytes)
@@ -177,7 +177,7 @@ TEST_F(ReactStreamTest, ReentrantInputCannotInvalidateTheBorrowedDelta)
 	EXPECT_EQ(reentrant_result, -EBUSY);
 	ASSERT_EQ(react_stream_finish(&stream), 0);
 	EXPECT_EQ(text(REACT_STEP_CONTENT), "original");
-	EXPECT_EQ(morph_buf_cstr(&stream.text), std::string("original"));
+	EXPECT_EQ(morph_buf_cstr_borrow(&stream.text), std::string("original"));
 }
 
 TEST_F(ReactStreamTest, LargeResponsesPreserveAllBytesAcrossBufferGrowth)
@@ -191,5 +191,5 @@ TEST_F(ReactStreamTest, LargeResponsesPreserveAllBytesAcrossBufferGrowth)
 	}
 	ASSERT_EQ(react_stream_finish(&stream), 0);
 	EXPECT_EQ(text(REACT_STEP_CONTENT), input);
-	EXPECT_EQ(morph_buf_cstr(&stream.text), input);
+	EXPECT_EQ(morph_buf_cstr_borrow(&stream.text), input);
 }

@@ -253,52 +253,42 @@ static const struct tool_path tool_paths[] = {
 #endif
 };
 
-static int append_unique(morph_array_t *paths, char *path)
+static int append_unique(morph_array_t *paths, const char *path)
 {
 	for (size_t i = 0; i < paths->nelts; i++) {
-		char **existing = morph_array_get(paths, i);
-
+		char **existing = morph_array_borrow(paths, i);
 		if (strcmp(*existing, path) == 0)
 			return 0;
 	}
-	char **slot = morph_array_push(paths);
-
+	char *owned MORPH_CLEANUP(morph_charp_cleanup) = strdup(path);
+	if (!owned)
+		return -ENOMEM;
+	char **slot = morph_array_push_borrow(paths);
 	if (!slot)
 		return -ENOMEM;
-	*slot = path;
+	*slot = morph_charp_steal(&owned);
 	return 0;
 }
 
-static int copy_paths(morph_array_t *dst, char **src, int count,
-		      struct arena *arena)
+static int copy_paths(morph_array_t *dst, char **src, int count)
 {
 	for (int i = 0; i < count; i++) {
 		char resolved[PATH_MAX];
-		char *path;
-		int rc;
-
 		if (!src || !src[i])
 			continue;
-		path = src[i];
-		if (realpath(path, resolved)) {
-			path = arena_strdup(arena, resolved);
-			if (!path)
-				return -ENOMEM;
-		}
-		rc = append_unique(dst, path);
+		const char *path = realpath(src[i], resolved) ? resolved : src[i];
+		int rc = append_unique(dst, path);
 		if (rc != 0)
 			return rc;
 	}
 	return 0;
 }
 
-static int resolve_tool_path(struct arena *arena,
-			     const struct tool_path *entry, const char *home,
-			     char **result)
+static int resolve_tool_path(const struct tool_path *entry, const char *home, char **result)
 {
 	const char *override = entry->env ? getenv(entry->env) : NULL;
 	const char *cache = getenv("XDG_CACHE_HOME");
-	morph_buf_t path;
+	morph_buf_t path MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc;
 
 #ifdef __APPLE__
@@ -308,13 +298,13 @@ static int resolve_tool_path(struct arena *arena,
 
 		if (length == 0 || length > sizeof(temp))
 			return 0;
-		*result = arena_strdup(arena, temp);
+		*result = strdup(temp);
 		if (!*result)
 			return -ENOMEM;
 		return 0;
 	}
 #endif
-	rc = morph_buf_init_arena(&path, arena, 128);
+	rc = morph_buf_init(&path, 128);
 	if (rc != 0)
 		return rc;
 	if (override && *override) {
@@ -344,7 +334,7 @@ static int resolve_tool_path(struct arena *arena,
 	}
 	if (path.failed)
 		return path.failed;
-	*result = (char *)morph_buf_cstr(&path);
+	*result = morph_buf_detach(&path);
 	return 0;
 }
 
@@ -365,12 +355,11 @@ static int prepare_path(const char *path, enum path_kind kind)
 	return 0;
 }
 
-static int append_tool_path(struct morph_log *logger, struct arena *arena,
-			    const struct tool_path *entry, const char *path, const char *home,
-			    morph_array_t *reads, morph_array_t *writes, morph_array_t *deletes)
+static int append_tool_path(struct morph_log *logger, const struct tool_path *entry,
+			    const char *path, const char *home, morph_array_t *reads,
+			    morph_array_t *writes, morph_array_t *deletes)
 {
 	char resolved[PATH_MAX];
-	char *owned;
 	int rc;
 
 	if (!path || path[0] != '/' || strlen(path) >= PATH_MAX ||
@@ -383,30 +372,24 @@ static int append_tool_path(struct morph_log *logger, struct arena *arena,
 	if (path_is_within(home, resolved))
 		return 0;
 	log_dbg(logger, "sandbox: tool path %s: %s", entry->tool, resolved);
-	owned = arena_strdup(arena, resolved);
-	if (!owned)
-		return -ENOMEM;
-	rc = append_unique(reads, owned);
+	rc = append_unique(reads, resolved);
 	if (rc == 0)
-		rc = append_unique(writes, owned);
+		rc = append_unique(writes, resolved);
 	if (rc == 0 && entry->kind != PATH_DEVICE)
-		rc = append_unique(deletes, owned);
+		rc = append_unique(deletes, resolved);
 	return rc;
 }
 
-int sandbox_prepare_tool_paths(struct sandbox_config *cfg, struct arena *arena)
+int sandbox_prepare_tool_paths(struct sandbox_config *cfg)
 {
-	morph_array_t reads;
-	morph_array_t writes;
-	morph_array_t deletes;
+	struct sandbox_path_set paths MORPH_CLEANUP(sandbox_path_set_cleanup) = {0};
 	const char *home_env = getenv("HOME");
 	char home[PATH_MAX];
 	size_t extra = sizeof(tool_paths) / sizeof(tool_paths[0]);
 	int rc;
 
-	if (!cfg || !arena || !cfg->path_policy_enabled ||
-	    cfg->read_paths_count < 0 || cfg->write_paths_count < 0 ||
-	    cfg->delete_paths_count < 0)
+	if (!cfg || !cfg->path_policy_enabled || cfg->read_paths_count < 0 ||
+	    cfg->write_paths_count < 0 || cfg->delete_paths_count < 0)
 		return -EINVAL;
 	if (!home_env || !realpath(home_env, home) || strcmp(home, "/") == 0)
 		return 0;
@@ -421,31 +404,31 @@ int sandbox_prepare_tool_paths(struct sandbox_config *cfg, struct arena *arena)
 			}
 		}
 	}
-	rc = morph_array_init_arena(&reads, arena,
-		(size_t)cfg->read_paths_count + extra, sizeof(char *));
+	rc = morph_array_init(&paths.read, (size_t)cfg->read_paths_count + extra,
+			      sizeof(*cfg->read_paths));
 	if (rc == 0)
-		rc = morph_array_init_arena(&writes, arena,
-			(size_t)cfg->write_paths_count + extra, sizeof(char *));
+		rc = morph_array_init(&paths.write, (size_t)cfg->write_paths_count + extra,
+				      sizeof(*cfg->write_paths));
 	if (rc == 0)
-		rc = morph_array_init_arena(&deletes, arena,
-			(size_t)cfg->delete_paths_count + extra, sizeof(char *));
+		rc = morph_array_init(&paths.remove, (size_t)cfg->delete_paths_count + extra,
+				      sizeof(*cfg->delete_paths));
 	if (rc == 0)
-		rc = copy_paths(&reads, cfg->read_paths, cfg->read_paths_count, arena);
+		rc = copy_paths(&paths.read, cfg->read_paths, cfg->read_paths_count);
 	if (rc == 0)
-		rc = copy_paths(&writes, cfg->write_paths, cfg->write_paths_count, arena);
+		rc = copy_paths(&paths.write, cfg->write_paths, cfg->write_paths_count);
 	if (rc == 0)
-		rc = copy_paths(&deletes, cfg->delete_paths, cfg->delete_paths_count, arena);
+		rc = copy_paths(&paths.remove, cfg->delete_paths, cfg->delete_paths_count);
 	if (rc != 0)
 		return rc;
 	for (size_t i = 0; i < sizeof(tool_paths) / sizeof(tool_paths[0]); i++) {
 		const struct tool_path *entry = &tool_paths[i];
-		char *path = NULL;
+		char *path MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 		const char *value = entry->env ? getenv(entry->env) : NULL;
 
 		if (entry->kind == PATH_TEMP_DIRECTORY && !cfg->allow_temp)
 			continue;
 		if (entry->base == PATH_LIST && value && *value) {
-			char *parts = arena_strdup(arena, value);
+			char *parts MORPH_CLEANUP(morph_charp_cleanup) = strdup(value);
 			char *part;
 			char *save = NULL;
 
@@ -453,28 +436,23 @@ int sandbox_prepare_tool_paths(struct sandbox_config *cfg, struct arena *arena)
 				return -ENOMEM;
 			for (part = strtok_r(parts, ":", &save); part;
 			     part = strtok_r(NULL, ":", &save)) {
-				rc = append_tool_path(cfg ? cfg->logger : NULL, arena, entry, part,
-						      home, &reads, &writes, &deletes);
+				rc = append_tool_path(cfg ? cfg->logger : NULL, entry, part, home,
+						      &paths.read, &paths.write, &paths.remove);
 				if (rc != 0)
 					return rc;
 			}
 			continue;
 		}
-		rc = resolve_tool_path(arena, entry, home, &path);
+		rc = resolve_tool_path(entry, home, &path);
 		if (rc == 0)
-			rc = append_tool_path(cfg ? cfg->logger : NULL, arena, entry, path, home,
-					      &reads, &writes, &deletes);
+			rc = append_tool_path(cfg ? cfg->logger : NULL, entry, path, home,
+					      &paths.read, &paths.write, &paths.remove);
 		if (rc != 0)
 			return rc;
 	}
-	if (reads.nelts > INT_MAX || writes.nelts > INT_MAX ||
-	    deletes.nelts > INT_MAX)
+	if (paths.read.nelts > INT_MAX || paths.write.nelts > INT_MAX ||
+	    paths.remove.nelts > INT_MAX)
 		return -EOVERFLOW;
-	cfg->read_paths = reads.elts;
-	cfg->read_paths_count = (int)reads.nelts;
-	cfg->write_paths = writes.elts;
-	cfg->write_paths_count = (int)writes.nelts;
-	cfg->delete_paths = deletes.elts;
-	cfg->delete_paths_count = (int)deletes.nelts;
+	sandbox_config_paths_move(cfg, &paths);
 	return 0;
 }

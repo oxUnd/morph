@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-const char *preference_key(const char *key)
+const char *preference_key_borrow(const char *key)
 {
 	if (!key)
 		return NULL;
@@ -64,7 +64,7 @@ int preference_set(struct db *db, int64_t session_id, const char *scope,
 	char token[64];
 	int rc;
 
-	key = preference_key(key);
+	key = preference_key_borrow(key);
 	if (!db || !db->handle || !preference_valid_key(key) || !scope ||
 	    (strcmp(scope, "personal") && strcmp(scope, "project") &&
 	     strcmp(scope, "session")) ||
@@ -150,7 +150,7 @@ int preference_set(struct db *db, int64_t session_id, const char *scope,
 	return 0;
 }
 
-char *preference_render(struct db *db, int64_t session_id, int history)
+char *preference_render_copy(struct db *db, int64_t session_id, int history)
 {
 	const char *sql = history ?
 		"SELECT p.key,p.value,p.scope,p.id,p.source FROM memory_preferences p "

@@ -61,8 +61,8 @@ TEST(StateOwnershipTest, OutputCaptureAndPresentationOptionsAreIndependent)
 	cli_output_printf(&second, "second %d", 2);
 	cli_output_capture_end(&first);
 	cli_output_printf(&second, " continued");
-	EXPECT_STREQ(morph_buf_cstr(&first_text), "first 1");
-	EXPECT_STREQ(morph_buf_cstr(&second_text), "second 2 continued");
+	EXPECT_STREQ(morph_buf_cstr_borrow(&first_text), "first 1");
+	EXPECT_STREQ(morph_buf_cstr_borrow(&second_text), "second 2 continued");
 	cli_output_capture_end(&second);
 	morph_buf_cleanup(&first_text);
 	morph_buf_cleanup(&second_text);

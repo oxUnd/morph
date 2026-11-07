@@ -57,7 +57,7 @@ static int widget_list_view_draw(struct morph_tui_view *view, struct morph_tui_c
 								: MORPH_TUI_STYLE_NORMAL;
 		struct morph_tui_canvas line;
 
-		morph_tui_canvas_child(canvas, 0, row, canvas->width, 1, &line);
+		morph_tui_canvas_child_borrow(canvas, 0, row, canvas->width, 1, &line);
 		int rc = morph_tui_canvas_fill(&line, style);
 
 		if (!rc)
@@ -110,8 +110,8 @@ static int widget_list_view_valid(const struct morph_tui_view *view)
 	return view && view->ops && view->ops->draw == widget_list_view_draw;
 }
 
-int morph_tui_widget_list_set_items(struct morph_tui_view *view, const char *const *items,
-				    size_t count)
+int morph_tui_widget_list_set_items_copy(struct morph_tui_view *view, const char *const *items,
+					 size_t count)
 {
 	if (!widget_list_view_valid(view) || (count && !items))
 		return -EINVAL;
@@ -154,8 +154,8 @@ int morph_tui_widget_list_set_items(struct morph_tui_view *view, const char *con
 	return 0;
 }
 
-int morph_tui_widget_list_set_source(struct morph_tui_view *view, size_t count,
-				     morph_tui_widget_list_source_fn text, void *data)
+int morph_tui_widget_list_set_source_borrow(struct morph_tui_view *view, size_t count,
+					    morph_tui_widget_list_source_fn text, void *data)
 {
 	if (!widget_list_view_valid(view) || (count && !text))
 		return -EINVAL;
@@ -208,10 +208,10 @@ int morph_tui_widget_list_select(struct morph_tui_view *view, size_t index)
 	return 0;
 }
 
-struct morph_tui_view *morph_tui_widget_list_create(struct morph_tui_builder *builder,
-						    struct morph_tui_view *parent,
-						    const char *const *items, size_t count, int tag,
-						    const struct morph_tui_view_options *options)
+struct morph_tui_view *
+morph_tui_widget_list_add_borrow(struct morph_tui_builder *builder, struct morph_tui_view *parent,
+				 const char *const *items, size_t count, int tag,
+				 const struct morph_tui_view_options *options)
 {
 	static const struct morph_tui_view_ops ops = {
 		.measure = widget_list_view_measure,
@@ -222,8 +222,8 @@ struct morph_tui_view *morph_tui_widget_list_create(struct morph_tui_builder *bu
 	};
 	struct widget_list_view *list = NULL;
 
-	list = (struct widget_list_view *)morph_tui_widget_create(builder, parent, sizeof(*list),
-								  &ops, options);
+	list = (struct widget_list_view *)morph_tui_widget_add_borrow(builder, parent,
+								      sizeof(*list), &ops, options);
 	if (!list)
 		return NULL;
 	struct morph_tui_view *view = &list->base.view;
@@ -231,6 +231,6 @@ struct morph_tui_view *morph_tui_widget_list_create(struct morph_tui_builder *bu
 	list->menu.list.flags = MORPH_TUI_WIDGET_LIST_VIM;
 	morph_tui_view_set_focusable(view, 1);
 	morph_tui_widget_set_tag(view, tag);
-	morph_tui_builder_fail(builder, morph_tui_widget_list_set_items(view, items, count));
+	morph_tui_builder_fail(builder, morph_tui_widget_list_set_items_copy(view, items, count));
 	return view;
 }

@@ -3,6 +3,7 @@
 extern "C" {
 #include "runtime/output.h"
 #include "persistence/output_store.h"
+#include "util/cleanup.h"
 }
 
 #include <cstring>
@@ -76,7 +77,7 @@ TEST_F(RuntimeOutputTest, RecordsRecipeMetadataReferencesAndEmitsEvent)
 	};
 	ASSERT_EQ(runtime_output_record_event(&context, &event), 0);
 	EXPECT_EQ(events, 1);
-	char *json = runtime_output_get_json_by_path(&db, "/tmp/generated.png");
+	char *json = runtime_output_json_by_path_copy(&db, "/tmp/generated.png");
 	ASSERT_NE(json, nullptr);
 	cJSON *root = cJSON_Parse(json);
 	free(json);
@@ -138,7 +139,7 @@ TEST_F(RuntimeOutputTest, ConcurrentOutputRecordsKeepTheirOwnInsertedIdentity)
 			for (int i = 0; i < 32; i++) {
 				std::string path = directory + "/" + std::to_string(worker) + "-" +
 						   std::to_string(i) + ".png";
-				struct output_record record{};
+				struct output_record_input record{};
 				int64_t id = 0;
 				int64_t found = 0;
 
@@ -175,8 +176,7 @@ TEST_F(RuntimeOutputTest, RecordsVideoImageAndAudioReferences)
 	struct runtime_output_context context{&db, nullptr, 0, "request", "turn",
 					      nullptr, nullptr};
 	ASSERT_EQ(runtime_output_record_event(&context, &event), 0);
-	char *json = runtime_output_get_json_by_path(&db,
-						      "/tmp/mixed-result.mp4");
+	char *json = runtime_output_json_by_path_copy(&db, "/tmp/mixed-result.mp4");
 	ASSERT_NE(json, nullptr);
 	cJSON *root = cJSON_Parse(json);
 	free(json);
@@ -219,4 +219,59 @@ TEST(RuntimeOutputMigrationTest, AddsRecipeColumnsToExistingOutputsTable)
 	db_close(&db);
 	std::error_code ignored;
 	std::filesystem::remove_all(directory, ignored);
+}
+
+TEST_F(RuntimeOutputTest, ReturnedOutputOwnsItsStringsAfterTheStoredRowIsDeleted)
+{
+	struct output_record_input input{};
+	input.kind = "image";
+	input.path = "/tmp/owned-output.png";
+	input.prompt = "original prompt";
+	input.provider = "provider";
+	input.recipe_json = "{\"seed\":42}";
+	int64_t id = 0;
+	ASSERT_EQ(output_store_insert(&db, &input, &id), 0);
+	ASSERT_GT(id, 0);
+	struct output_record first MORPH_CLEANUP(output_record_cleanup) = {};
+	struct output_record second MORPH_CLEANUP(output_record_cleanup) = {};
+	ASSERT_EQ(output_store_copy(&db, input.path, &first), 0);
+	ASSERT_EQ(output_store_copy(&db, input.path, &second), 0);
+	EXPECT_NE(first.prompt, second.prompt);
+	ASSERT_EQ(sqlite3_exec(db.handle, "DELETE FROM outputs", nullptr, nullptr, nullptr),
+		  SQLITE_OK);
+	output_record_cleanup(&first);
+	EXPECT_STREQ(second.prompt, "original prompt");
+	EXPECT_STREQ(second.recipe_json, "{\"seed\":42}");
+	EXPECT_STREQ(input.prompt, "original prompt");
+}
+
+TEST_F(RuntimeOutputTest, MissingOutputReturnsAnEmptyAndSafelyCleanableOwner)
+{
+	struct output_record record MORPH_CLEANUP(output_record_cleanup) = {};
+	EXPECT_EQ(output_store_copy(&db, "/tmp/missing-output.png", &record), -ENODATA);
+	EXPECT_EQ(record.path, nullptr);
+	EXPECT_EQ(record.prompt, nullptr);
+	EXPECT_EQ(record.id, 0);
+	output_record_cleanup(&record);
+}
+
+TEST_F(RuntimeOutputTest, OutputReadRejectsAnOccupiedOwnerWithoutChangingItsFields)
+{
+	struct output_record_input input{};
+	input.kind = "image";
+	input.path = "/tmp/occupied-output.png";
+	input.prompt = "owned prompt";
+	int64_t id = 0;
+	ASSERT_EQ(output_store_insert(&db, &input, &id), 0);
+	struct output_record record MORPH_CLEANUP(output_record_cleanup) = {};
+	ASSERT_EQ(output_store_copy(&db, input.path, &record), 0);
+	char *path = record.path;
+	char *prompt = record.prompt;
+
+	EXPECT_EQ(output_store_copy(&db, input.path, &record), -EEXIST);
+	EXPECT_EQ(record.path, path);
+	EXPECT_EQ(record.prompt, prompt);
+	EXPECT_STREQ(record.prompt, "owned prompt");
+	output_record_cleanup(&record);
+	EXPECT_EQ(output_store_copy(&db, input.path, &record), 0);
 }

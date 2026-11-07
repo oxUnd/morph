@@ -61,7 +61,7 @@ void runtime_context_configure_engine(struct runtime_context *ctx)
 	ctx->engine.turn_scope = &ctx->turn_scope;
 }
 
-struct runtime_models runtime_context_models(struct runtime_context *ctx)
+struct runtime_models runtime_context_models_borrow(struct runtime_context *ctx)
 {
 	struct runtime_models models;
 
@@ -141,7 +141,7 @@ int runtime_context_tool_credit_session_id(struct runtime_context *ctx, int64_t 
 	return 0;
 }
 
-struct memory_options runtime_context_memory_options(const struct runtime_context *ctx)
+struct memory_options runtime_context_memory_options_borrow(const struct runtime_context *ctx)
 {
 	struct memory_options opts = runtime_memory_options_from_config(ctx ? &ctx->config : NULL);
 

@@ -37,7 +37,7 @@ int cli_about_print(struct cli_application *ctx, const char *config_path)
 	struct config cfg;
 	config_set_defaults(ctx ? ctx->logger : NULL, &cfg);
 
-	char *cfg_path = file_expand_path(config_path ? config_path : "~/.morph/config.toml");
+	char *cfg_path = file_expand_path_copy(config_path ? config_path : "~/.morph/config.toml");
 	if (cfg_path) {
 		rc = config_load(ctx ? ctx->logger : NULL, &cfg, cfg_path);
 		if (rc != 0) {
@@ -63,9 +63,9 @@ int cli_about_print(struct cli_application *ctx, const char *config_path)
 
 	int ext_count = 0;
 	char **ext_dirs = NULL;
-	char *exts_path = file_expand_path(cfg.ext.dir[0] ? cfg.ext.dir : "~/.morph/exts");
+	char *exts_path = file_expand_path_copy(cfg.ext.dir[0] ? cfg.ext.dir : "~/.morph/exts");
 	if (exts_path) {
-		file_list_dirs(exts_path, &ext_dirs, &ext_count);
+		file_list_dirs_copy(exts_path, &ext_dirs, &ext_count);
 		free(exts_path);
 	}
 

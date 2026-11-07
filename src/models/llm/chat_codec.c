@@ -2,7 +2,7 @@
 #include "util/log.h"
 #include "util/json.h"
 #include "util/error.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -44,19 +44,19 @@ static cJSON *build_simple_messages_cjson(const char *system_prompt, const char 
 	return arr;
 }
 
-int llm_chat_encode_body(struct morph_log *logger, struct arena *arena, const char *model_id,
-			 const char *system_prompt, const char **messages, int n, int max_tokens,
-			 int stream, const char *extra_body_json, const struct llm_adapter *adapter,
+int llm_chat_body_create(struct morph_log *logger, const char *model_id, const char *system_prompt,
+			 const char **messages, int n, int max_tokens, int stream,
+			 const char *extra_body_json, const struct llm_adapter *adapter,
 			 int disable_thinking, char **out_body, size_t *out_body_len)
 {
 	cJSON *root;
 	cJSON *msgs;
 	char *body;
 
-	if (!arena || !model_id || !out_body || !out_body_len)
+	if (!model_id || !out_body || !out_body_len)
 		return -EINVAL;
-	*out_body = NULL;
-	*out_body_len = 0;
+	if (*out_body)
+		return -EEXIST;
 	root = cJSON_CreateObject();
 	msgs = build_simple_messages_cjson(system_prompt, messages, n);
 	if (!root || !msgs) {
@@ -83,7 +83,7 @@ int llm_chat_encode_body(struct morph_log *logger, struct arena *arena, const ch
 		cJSON_Delete(root);
 		return rc;
 	}
-	body = morph_json_print(arena, root);
+	body = morph_json_print_copy(root);
 	cJSON_Delete(root);
 	if (!body)
 		return -ENOMEM;
@@ -168,9 +168,11 @@ int llm_chat_decode_event(const char *event, const char *data, void *ud)
 			cJSON *idx_item = cJSON_GetObjectItem(tc_item, "index");
 			int index = cJSON_IsNumber(idx_item) ? (int)idx_item->valuedouble : 0;
 
-			struct tool_call *tc = llm_stream_ensure_tool_call(ctx, index);
-			if (!tc)
-				continue;
+			struct tool_call *tc = llm_stream_tool_call_ensure_borrow(ctx, index);
+			if (!tc) {
+				cJSON_Delete(root);
+				return -ENOMEM;
+			}
 
 			cJSON *id_item = cJSON_GetObjectItem(tc_item, "id");
 			if (cJSON_IsString(id_item) && id_item->valuestring) {
@@ -188,11 +190,17 @@ int llm_chat_decode_event(const char *event, const char *data, void *ud)
 				if (cJSON_IsString(args_item) && args_item->valuestring) {
 					size_t existing = tc->arguments ? strlen(tc->arguments) : 0;
 					size_t add_len = strlen(args_item->valuestring);
+					if (add_len > SIZE_MAX - existing - 1) {
+						cJSON_Delete(root);
+						return -EOVERFLOW;
+					}
 					char *new_args =
-						arena_alloc(ctx->arena, existing + add_len + 1);
-					if (new_args) {
-						if (tc->arguments)
-							memcpy(new_args, tc->arguments, existing);
+						realloc(tc->arguments, existing + add_len + 1);
+					if (!new_args) {
+						cJSON_Delete(root);
+						return -ENOMEM;
+					}
+					{
 						tc->arguments = new_args;
 						memcpy(tc->arguments + existing,
 						       args_item->valuestring, add_len);
@@ -280,7 +288,7 @@ static cJSON *build_structured_messages_cjson(const char *system_prompt,
 				cJSON *func = cJSON_CreateObject();
 				cJSON_AddStringToObject(func, "name", m->tool_calls[j].name);
 				cJSON_AddStringToObject(func, "arguments", arguments);
-				free(text_arguments);
+				cJSON_free(text_arguments);
 				cJSON_AddItemToObject(tc_obj, "function", func);
 				cJSON_AddItemToArray(tc_arr, tc_obj);
 			}
@@ -299,49 +307,54 @@ static cJSON *build_structured_messages_cjson(const char *system_prompt,
 
 static cJSON *build_tools_cjson(const struct tool_desc *tools, int tool_count)
 {
-	cJSON *arr = cJSON_CreateArray();
+	cJSON *array MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
+	if (!array)
+		return NULL;
 	for (int i = 0; i < tool_count; i++) {
-		cJSON *tool = cJSON_CreateObject();
-		cJSON_AddStringToObject(tool, "type", "function");
-
-		cJSON *func = cJSON_CreateObject();
-		cJSON_AddStringToObject(func, "name", tools[i].name);
-		cJSON_AddStringToObject(func, "description", tools[i].description);
-
-		cJSON *params = NULL;
+		cJSON *tool MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		cJSON *function MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		cJSON *params MORPH_CLEANUP(morph_json_cleanup) = NULL;
+		if (!tool || !function || !cJSON_AddStringToObject(tool, "type", "function") ||
+		    !cJSON_AddStringToObject(function, "name", tools[i].name) ||
+		    !cJSON_AddStringToObject(function, "description",
+					     tools[i].description ? tools[i].description : ""))
+			return NULL;
 		if (tools[i].input_kind == TOOL_INPUT_TEXT) {
-			params = cJSON_Parse("{\"type\":\"object\",\"properties\":{"
-					     "\"input\":{\"type\":\"string\","
-					     "\"description\":\"Raw text input for this tool.\"}},"
-					     "\"required\":[\"input\"],"
-					     "\"additionalProperties\":false}");
-		} else if ((tools[i].input_schema && tools[i].input_schema[0])) {
+			params = cJSON_Parse(
+				"{\"type\":\"object\",\"properties\":{"
+				"\"input\":{\"type\":\"string\","
+				"\"description\":\"Raw text input for this tool.\"}},"
+				"\"required\":[\"input\"],\"additionalProperties\":false}");
+			if (!params)
+				return NULL;
+		} else if (tools[i].input_schema && tools[i].input_schema[0]) {
 			params = cJSON_Parse(tools[i].input_schema);
 		}
-		params = llm_codec_schema(params);
-		if (params)
-			cJSON_AddItemToObject(func, "parameters", params);
-		else
-			cJSON_AddItemToObject(
-				func, "parameters",
-				cJSON_Parse("{\"type\":\"object\",\"properties\":{}}"));
-
-		cJSON_AddItemToObject(tool, "function", func);
-		cJSON_AddItemToArray(arr, tool);
+		cJSON *schema MORPH_CLEANUP(morph_json_cleanup) = llm_codec_schema_copy(params);
+		if (!schema && (cJSON_IsObject(params) || cJSON_IsArray(params)))
+			return NULL;
+		if (!schema)
+			schema = cJSON_Parse("{\"type\":\"object\",\"properties\":{}}");
+		if (!schema || morph_json_object_take(function, "parameters", &schema) != 0 ||
+		    morph_json_object_take(tool, "function", &function) != 0 ||
+		    morph_json_array_take(array, &tool) != 0)
+			return NULL;
 	}
-	return arr;
+	cJSON *owned = array;
+	array = NULL;
+	return owned;
 }
 
 static cJSON *chat_input(const struct model *model, const char *system_prompt,
 			 const struct chat_message *messages, int count)
 {
 	return build_structured_messages_cjson(system_prompt, messages, count,
-					       llm_adapter_resolve(model), model);
+					       llm_adapter_borrow(model), model);
 }
 
 static void chat_configure(const struct model *model, cJSON *request, int tool_count)
 {
-	const struct llm_adapter *adapter = llm_adapter_resolve(model);
+	const struct llm_adapter *adapter = llm_adapter_borrow(model);
 	cJSON *options = cJSON_CreateObject();
 
 	if (tool_count == 0)
@@ -356,7 +369,7 @@ static void chat_configure(const struct model *model, cJSON *request, int tool_c
 				model->max_tokens > 0 ? model->max_tokens : 4096);
 }
 
-const struct llm_codec *llm_chat_codec(void)
+const struct llm_codec *llm_chat_codec_borrow(void)
 {
 	static const struct llm_codec codec = {
 		.endpoint = "/chat/completions",

@@ -140,7 +140,7 @@ static JSValue js_exec(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
 		value = JS_ThrowInternalError(ctx, "command exited with status %d",
 					      WIFEXITED(status) ? WEXITSTATUS(status) : 1);
 	else
-		value = JS_NewStringLen(ctx, morph_buf_cstr(&output), output.len);
+		value = JS_NewStringLen(ctx, morph_buf_cstr_borrow(&output), output.len);
 	morph_buf_cleanup(&error);
 	morph_buf_cleanup(&output);
 	return value;

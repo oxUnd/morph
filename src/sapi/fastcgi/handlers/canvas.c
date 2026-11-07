@@ -12,7 +12,7 @@
 
 void handle_get_canvas(request_t *r)
 {
-	const char *sid = path_param(r, "id");
+	const char *sid = path_param_borrow(r, "id");
 	if (!sid) {
 		reply_400(r, "missing id");
 		return;
@@ -33,7 +33,7 @@ void handle_get_canvas(request_t *r)
 
 void handle_add_canvas_node(request_t *r)
 {
-	const char *sid = path_param(r, "id");
+	const char *sid = path_param_borrow(r, "id");
 	if (!sid) {
 		reply_400(r, "missing id");
 		return;
@@ -74,8 +74,8 @@ void handle_add_canvas_node(request_t *r)
 
 void handle_patch_canvas_node(request_t *r)
 {
-	const char *sid = path_param(r, "id");
-	const char *node = path_param(r, "node");
+	const char *sid = path_param_borrow(r, "id");
+	const char *node = path_param_borrow(r, "node");
 	if (!sid || !node) {
 		reply_400(r, "missing id");
 		return;

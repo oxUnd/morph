@@ -17,7 +17,8 @@
 #include "agent/tokenizer.h"
 #include "models/llm.h"
 #include "models/video_gen.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "http/client.h"
 #include "http/sse.h"
 #include "config/config.h"
@@ -39,6 +40,13 @@
 #include <vector>
 #include <unistd.h>
 
+static void append_message_owned(struct message_list **head, struct message_list *message)
+{
+	struct message_list *owned MORPH_CLEANUP(msg_list_clear) = message;
+	if (owned)
+		EXPECT_EQ(msg_list_append_take(head, &owned), 0);
+}
+
 struct sse_test_info {
 	int count;
 	std::string last_data;
@@ -57,7 +65,7 @@ static int test_tool_fn(const char *args_json, struct tool_result *result, void 
 {
 	(void)args_json;
 	(void)user_data;
-	(void)tool_result_success_json_text(result, strdup("{\"result\":\"test\"}"));
+	(void)tool_result_success_json_text_copy(result, "{\"result\":\"test\"}");
 	return 0;
 }
 
@@ -65,7 +73,7 @@ static int large_tool_fn(const char *args_json, struct tool_result *result,
 			 void *user_data)
 {
 	size_t bytes = *(size_t *)user_data;
-	char *text;
+	char *text MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
 
 	(void)args_json;
 	text = (char *)malloc(bytes + 1);
@@ -74,7 +82,7 @@ static int large_tool_fn(const char *args_json, struct tool_result *result,
 	for (size_t i = 0; i < bytes; i++)
 		text[i] = "word "[i % 5];
 	text[bytes] = '\0';
-	(void)tool_result_success_json_text(result, text);
+	(void)tool_result_success_json_text_copy(result, text);
 	return 0;
 }
 
@@ -87,7 +95,7 @@ static int streaming_tool_fn(const char *args_json, struct tool_result *result,
 	(void)user_data;
 	(void)tool_runtime_emit_stream(result->runtime, "stream_tool", "text", "alpha ");
 	(void)tool_runtime_emit_stream(result->runtime, "stream_tool", "text", "beta");
-	(void)tool_result_success_json_text(result, strdup("{\"result\":\"done\"}"));
+	(void)tool_result_success_json_text_copy(result, "{\"result\":\"done\"}");
 	return 0;
 }
 
@@ -95,7 +103,7 @@ static int failing_tool_fn(const char *args_json, struct tool_result *result, vo
 {
 	(void)args_json;
 	(void)user_data;
-	(void)tool_result_success_json_text(result, strdup("tool failed"));
+	(void)tool_result_success_json_text_copy(result, "tool failed");
 	return -EIO;
 }
 
@@ -108,13 +116,13 @@ static int json_object_tool_fn(const char *args_json,
 	root = args_json ? cJSON_Parse(args_json) : nullptr;
 	if (!cJSON_IsObject(root)) {
 		cJSON_Delete(root);
-		(void)tool_result_error(result, "invalid_arguments",
+		(void)tool_result_error_copy(
+			result, "invalid_arguments",
 			"arguments must be a valid JSON object; correct them and retry");
 		return -EINVAL;
 	}
 	cJSON_Delete(root);
-	(void)tool_result_success_json_text(result,
-		strdup("{\"result\":\"ok\"}"));
+	(void)tool_result_success_json_text_copy(result, "{\"result\":\"ok\"}");
 	return 0;
 }
 
@@ -132,12 +140,11 @@ static int text_tool_fn(const char *input, struct tool_result *result,
 	capture->calls++;
 	capture->last_input = input ? input : "";
 	if (!input || strstr(input, "*** Begin Patch") == nullptr) {
-		(void)tool_result_error(result, "invalid_patch",
-			"input must be a patch; correct it and retry");
+		(void)tool_result_error_copy(result, "invalid_patch",
+					     "input must be a patch; correct it and retry");
 		return -EINVAL;
 	}
-	(void)tool_result_success_json_text(result,
-		strdup("{\"result\":\"ok\"}"));
+	(void)tool_result_success_json_text_copy(result, "{\"result\":\"ok\"}");
 	return 0;
 }
 
@@ -147,7 +154,7 @@ static int slow_tool_fn(const char *args_json, struct tool_result *result,
 	(void)args_json;
 	(void)user_data;
 	std::this_thread::sleep_for(std::chrono::milliseconds(2500));
-	(void)tool_result_success_json_text(result, strdup("{\"result\":\"late\"}"));
+	(void)tool_result_success_json_text_copy(result, "{\"result\":\"late\"}");
 	return 0;
 }
 
@@ -157,8 +164,7 @@ static int not_configured_tool_fn(const char *args_json,
 {
 	(void)args_json;
 	(void)user_data;
-	(void)tool_result_success_json_text(result,
-				    strdup("{\"error\":\"missing api key\"}"));
+	(void)tool_result_success_json_text_copy(result, "{\"error\":\"missing api key\"}");
 	return MORPH_ERR_NOT_CONFIGURED;
 }
 
@@ -168,7 +174,7 @@ static int call_count_tool_fn(const char *args_json, struct tool_result *result,
 	(*count)++;
 	char buf[128];
 	snprintf(buf, sizeof(buf), "{\"calls\":%d}", *count);
-	(void)tool_result_success_json_text(result, strdup(buf));
+	(void)tool_result_success_json_text_copy(result, buf);
 	return 0;
 }
 
@@ -177,18 +183,15 @@ static int artifact_tool_fn(const char *args_json, struct tool_result *result,
 {
 	(void)args_json;
 	(void)user_data;
-	(void)tool_result_success_json_text(result,
-		strdup("{\"message\":\"artifact ready\"}"));
-	(void)tool_result_add_image(result, "/tmp/morph-event-test.png",
-				    640, 480);
+	(void)tool_result_success_json_text_copy(result, "{\"message\":\"artifact ready\"}");
+	(void)tool_result_add_image_copy(result, "/tmp/morph-event-test.png", 640, 480);
 	return 0;
 }
 
-static int tool_register(enum tool_origin origin, struct tool_registry *reg,
-			 const char *name, const char *description,
-			 const char *input_schema, tool_exec_fn exec,
-			 void *user_data,
-			 tool_user_data_destroy_fn user_data_destroy)
+static int tool_register_borrow(enum tool_origin origin, struct tool_registry *reg,
+				const char *name, const char *description, const char *input_schema,
+				tool_exec_fn exec, void *user_data,
+				tool_user_data_destroy_fn user_data_destroy)
 {
 	struct tool_spec spec = {};
 	spec.origin = origin;
@@ -203,7 +206,7 @@ static int tool_register(enum tool_origin origin, struct tool_registry *reg,
 	spec.exec = exec;
 	spec.user_data = user_data;
 	spec.user_data_destroy = user_data_destroy;
-	return ::tool_register(reg, &spec);
+	return ::tool_register_take(reg, &spec);
 }
 
 /* ---- mock LLM helpers ---- */
@@ -240,13 +243,11 @@ struct mock_llm_data {
 	int sleep_ms;
 };
 
-static int mock_llm_chat(struct model *self, struct arena *arena,
-			  const char *system_prompt,
-			  const char **messages, int n,
-			  const struct model_chat_options *opts,
-			  sse_callback cb, void *user_data)
+static int mock_llm_chat(struct model *self, const char *system_prompt, const char **messages,
+			 int n, const struct model_chat_options *opts, sse_callback cb,
+			 void *user_data)
 {
-	(void)arena;
+
 	(void)system_prompt;
 	(void)messages;
 	(void)n;
@@ -265,13 +266,12 @@ static int mock_llm_chat(struct model *self, struct arena *arena,
 	return 200;
 }
 
-static int mock_llm_streaming_chat(struct model *self, struct arena *arena,
-				    const char *system_prompt,
-				    const char **messages, int n,
-				    const struct model_chat_options *opts,
-				    sse_callback cb, void *user_data)
+static int mock_llm_streaming_chat(struct model *self, const char *system_prompt,
+				   const char **messages, int n,
+				   const struct model_chat_options *opts, sse_callback cb,
+				   void *user_data)
 {
-	(void)arena;
+
 	(void)system_prompt;
 	(void)messages;
 	(void)n;
@@ -337,14 +337,13 @@ static void mock_emit_legacy_thought(const char *buf, char *final_pos,
 	free(thought);
 }
 
-static int mock_chat_with_tools(struct model *self, struct arena *arena,
-				const char *system_prompt,
+static int mock_chat_with_tools(struct model *self, const char *system_prompt,
 				struct chat_message *messages, int msg_count,
 				struct tool_desc *tools, int tool_count,
-				struct chat_response *response,
-				sse_callback thought_cb, void *thought_ud)
+				struct chat_response *response, sse_callback thought_cb,
+				void *thought_ud)
 {
-	(void)arena;
+
 	(void)system_prompt;
 	(void)messages;
 	(void)msg_count;
@@ -356,8 +355,7 @@ static int mock_chat_with_tools(struct model *self, struct arena *arena,
 	cd.cap = 8192;
 	cd.buf[0] = '\0';
 
-	int status = self->chat(self, arena, nullptr, nullptr, 0, nullptr,
-				mock_collect_cb, &cd);
+	int status = self->chat(self, nullptr, nullptr, 0, nullptr, mock_collect_cb, &cd);
 	if (status < 0) {
 		free(cd.buf);
 		return status;
@@ -490,7 +488,6 @@ struct direct_stream_data {
 };
 
 static int direct_stream_chat_with_tools(struct model *self,
-					 struct arena *arena,
 					 const char *system_prompt,
 					 struct chat_message *messages,
 					 int msg_count,
@@ -500,7 +497,7 @@ static int direct_stream_chat_with_tools(struct model *self,
 					 llm_stream_callback stream_cb,
 					 void *stream_ud)
 {
-	(void)arena;
+
 	(void)system_prompt;
 	(void)messages;
 	(void)msg_count;
@@ -578,13 +575,11 @@ struct multi_mock_data {
 	int last_tool_count;
 };
 
-static int multi_mock_chat(struct model *self, struct arena *arena,
-			   const char *system_prompt,
-			   const char **messages, int n,
-			   const struct model_chat_options *opts,
-			   sse_callback cb, void *user_data)
+static int multi_mock_chat(struct model *self, const char *system_prompt, const char **messages,
+			   int n, const struct model_chat_options *opts, sse_callback cb,
+			   void *user_data)
 {
-	(void)arena;
+
 	(void)system_prompt;
 	(void)messages;
 	(void)n;
@@ -599,14 +594,13 @@ static int multi_mock_chat(struct model *self, struct arena *arena,
 	return 200;
 }
 
-static int multi_mock_chat_with_tools(struct model *self, struct arena *arena,
-				      const char *system_prompt,
+static int multi_mock_chat_with_tools(struct model *self, const char *system_prompt,
 				      struct chat_message *messages, int msg_count,
 				      struct tool_desc *tools, int tool_count,
-				      struct chat_response *response,
-				      sse_callback thought_cb, void *thought_ud)
+				      struct chat_response *response, sse_callback thought_cb,
+				      void *thought_ud)
 {
-	(void)arena;
+
 	(void)system_prompt;
 	(void)messages;
 	(void)msg_count;
@@ -767,14 +761,12 @@ struct slot_mock_data {
 	char tool_message_ids[2][128];
 };
 
-static int slot_mock_chat(struct model *self, struct arena *arena,
-			  const char *system_prompt,
-			  const char **messages, int n,
-			  const struct model_chat_options *opts,
-			  sse_callback cb, void *user_data)
+static int slot_mock_chat(struct model *self, const char *system_prompt, const char **messages,
+			  int n, const struct model_chat_options *opts, sse_callback cb,
+			  void *user_data)
 {
 	(void)self;
-	(void)arena;
+
 	(void)system_prompt;
 	(void)messages;
 	(void)n;
@@ -784,17 +776,14 @@ static int slot_mock_chat(struct model *self, struct arena *arena,
 	return 200;
 }
 
-static int slot_mock_chat_with_tools(struct model *self, struct arena *arena,
-				     const char *system_prompt,
-				     struct chat_message *messages,
-				     int msg_count,
+static int slot_mock_chat_with_tools(struct model *self, const char *system_prompt,
+				     struct chat_message *messages, int msg_count,
 				     struct tool_desc *tools, int tool_count,
-				     struct chat_response *response,
-				     sse_callback thought_cb, void *thought_ud)
+				     struct chat_response *response, sse_callback thought_cb,
+				     void *thought_ud)
 {
 	struct slot_mock_data *d = (struct slot_mock_data *)self->handle;
 
-	(void)arena;
 	(void)system_prompt;
 	(void)tools;
 	(void)tool_count;
@@ -895,7 +884,7 @@ protected:
 	struct tool_registry tools;
 	struct tokenizer *tok;
 	struct compress_config cfg;
-	struct arena *ar;
+
 	void SetUp() override {
 		tool_registry_init(NULL, &tools);
 		tok = tokenizer_create(NULL, "gpt-4o", 128000);
@@ -904,11 +893,10 @@ protected:
 		cfg.max_history_rounds = 6;
 		cfg.summarize_threshold_ratio = 0.8;
 		cfg.compress_target_ratio = 0.5;
-		ar = arena_create(0);
 	}
 	void TearDown() override {
 		tokenizer_destroy(tok);
-		arena_destroy(ar);
+
 		tool_registry_cleanup(&tools);
 	}
 };
@@ -955,37 +943,18 @@ protected:
 struct iteration_memory_probe {
 	struct react_context *ctx;
 	int calls = 0;
-	int pending = 0;
-	int reclaimed = 0;
 	int final_call = 40;
 	int terminal_error = 0;
 };
 
-static void reclaim_iteration_probe(void *data)
-{
-	auto *probe = static_cast<iteration_memory_probe *>(data);
-	probe->pending--;
-	probe->reclaimed++;
-}
-
-static int iteration_memory_chat(struct model *self, struct arena *arena,
-	const char *, struct chat_message *messages, int message_count,
-	struct tool_desc *tools, int tool_count, struct chat_response *response,
-	sse_callback, void *)
+static int iteration_memory_chat(struct model *self, const char *, struct chat_message *messages,
+				 int message_count, struct tool_desc *tools, int tool_count,
+				 struct chat_response *response, sse_callback, void *)
 {
 	auto *probe = static_cast<iteration_memory_probe *>(self->handle);
 
-	EXPECT_EQ(probe->pending, 0);
-	EXPECT_EQ(probe->reclaimed, probe->calls);
 	probe->calls++;
-	auto *cleanup = arena_cleanup_add(arena, 0);
-	if (!cleanup)
-		return -ENOMEM;
-	cleanup->handler = reclaim_iteration_probe;
-	cleanup->data = probe;
-	probe->pending++;
-	/* Overwrite reused request storage before inspecting retained messages. */
-	void *scratch = arena_alloc(arena, 1024 * 1024);
+	char *scratch MORPH_CLEANUP(morph_charp_cleanup) = static_cast<char *>(malloc(1024 * 1024));
 	if (!scratch)
 		return -ENOMEM;
 	memset(scratch, 'x', 1024 * 1024);
@@ -1000,22 +969,22 @@ static int iteration_memory_chat(struct model *self, struct arena *arena,
 	EXPECT_EQ(tool_count, probe->calls == 1 ? 1 : 2);
 	if (tool_count == 2)
 		EXPECT_STREQ(tools[0].name, "late_tool");
-	response->arena = arena;
+
 	if (probe->calls == probe->final_call) {
-		response->content = arena_strdup(arena, "completed");
+		response->content = strdup("completed");
 		if (probe->terminal_error == -ECANCELED)
 			react_cancel(probe->ctx);
 		return probe->terminal_error;
 	}
-	response->content = arena_strdup(arena, "thinking");
-	response->reasoning_content = arena_strdup(arena, "reasoning");
-	response->tool_calls = static_cast<struct tool_call *>(
-		arena_alloc(arena, sizeof(*response->tool_calls)));
+	response->content = strdup("thinking");
+	response->reasoning_content = strdup("reasoning");
+	response->tool_calls =
+		static_cast<struct tool_call *>(calloc(1, sizeof(*response->tool_calls)));
 	if (!response->tool_calls)
 		return -ENOMEM;
 	response->tool_call_count = 1;
 	strcpy(response->tool_calls[0].name, "test_tool");
-	response->tool_calls[0].arguments = arena_strdup(arena, "{}");
+	response->tool_calls[0].arguments = strdup("{}");
 	return 0;
 }
 
@@ -1023,16 +992,16 @@ static int register_late_tool(const char *, struct tool_result *result, void *da
 {
 	auto *probe = static_cast<iteration_memory_probe *>(data);
 	if (probe->calls == 1) {
-		int rc = tool_register(TOOL_ORIGIN_BUILTIN, probe->ctx->tools,
-			"late_tool", "Registered during a turn", "{}", test_tool_fn,
-			nullptr, nullptr);
+		int rc = tool_register_borrow(TOOL_ORIGIN_BUILTIN, probe->ctx->tools, "late_tool",
+					      "Registered during a turn", "{}", test_tool_fn,
+					      nullptr, nullptr);
 		if (rc != 0)
 			return rc;
 	}
-	return tool_result_success_text(result, "ok");
+	return tool_result_success_text_copy(result, "ok");
 }
 
-TEST_F(ReactTest, ReclaimsRequestMemoryAndPreservesMessagesAcrossIterations)
+TEST_F(ReactTest, OwnedResponsesPreserveMessagesAcrossIterations)
 {
 	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
@@ -1043,12 +1012,12 @@ TEST_F(ReactTest, ReclaimsRequestMemoryAndPreservesMessagesAcrossIterations)
 	model.chat_with_tools = iteration_memory_chat;
 	ctx->llm_model = &model;
 	ctx->hitl.enabled = 0;
-	EXPECT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool",
-		"Test tool", "{}", register_late_tool, &probe, nullptr), 0);
+	EXPECT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "Test tool", "{}",
+				       register_late_tool, &probe, nullptr),
+		  0);
 	EXPECT_EQ(react_run(ctx, "Exercise request lifetimes", nullptr, nullptr), 0);
 	EXPECT_EQ(probe.calls, 40);
-	EXPECT_EQ(probe.pending, 0);
-	EXPECT_EQ(probe.reclaimed, probe.calls);
+
 	EXPECT_STREQ(ctx->final_answer, "completed");
 	EXPECT_NE(ctx->steps, nullptr);
 	if (ctx->steps)
@@ -1056,7 +1025,7 @@ TEST_F(ReactTest, ReclaimsRequestMemoryAndPreservesMessagesAcrossIterations)
 	react_context_destroy(ctx);
 }
 
-TEST_F(ReactTest, ReclaimsRequestMemoryOnErrorCancellationAndIterationLimit)
+TEST_F(ReactTest, OwnedResponsesHandleErrorCancellationAndIterationLimit)
 {
 	for (int terminal : {-EIO, -ECANCELED, 0}) {
 		auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
@@ -1071,12 +1040,13 @@ TEST_F(ReactTest, ReclaimsRequestMemoryOnErrorCancellationAndIterationLimit)
 		ctx->llm_model = &model;
 		ctx->hitl.enabled = 0;
 		ctx->max_iterations = terminal == 0 ? 2 : 3;
-		EXPECT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool",
-			"Test tool", "{}", register_late_tool, &probe, nullptr), 0);
+		EXPECT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool",
+					       "Test tool", "{}", register_late_tool, &probe,
+					       nullptr),
+			  0);
 		EXPECT_LT(react_run(ctx, "Exercise early exit", nullptr, nullptr), 0);
 		EXPECT_EQ(probe.calls, ctx->max_iterations);
-		EXPECT_EQ(probe.pending, 0);
-		EXPECT_EQ(probe.reclaimed, probe.calls);
+
 		react_context_destroy(ctx);
 		EXPECT_EQ(tool_unregister(&tools, "test_tool"), 0);
 		EXPECT_EQ(tool_unregister(&tools, "late_tool"), 0);
@@ -1138,23 +1108,22 @@ TEST_F(ReactTest, CancelFn) {
 }
 
 TEST_F(ReactTest, CreateStep) {
-	struct arena *arena = arena_create(1024);
-	struct react_step *s = react_step_create(arena, REACT_STEP_THOUGHT, "thinking", nullptr, nullptr, nullptr);
+
+	struct react_step *s MORPH_CLEANUP(react_steps_clear) =
+		react_step_create(REACT_STEP_THOUGHT, "thinking", nullptr, nullptr, nullptr);
 	ASSERT_NE(s, nullptr);
 	EXPECT_EQ(s->type, REACT_STEP_THOUGHT);
 	EXPECT_STREQ(s->content, "thinking");
-	arena_destroy(arena);
 }
 
 TEST_F(ReactTest, CreateStepWithTool) {
-	struct arena *arena = arena_create(1024);
-	struct react_step *s = react_step_create(arena, REACT_STEP_ACTION, "calling tool",
-						 "test_tool", "{\"prompt\":\"hi\"}", nullptr);
+
+	struct react_step *s MORPH_CLEANUP(react_steps_clear) = react_step_create(
+		REACT_STEP_ACTION, "calling tool", "test_tool", "{\"prompt\":\"hi\"}", nullptr);
 	ASSERT_NE(s, nullptr);
 	EXPECT_EQ(s->type, REACT_STEP_ACTION);
 	EXPECT_STREQ(s->tool_name, "test_tool");
 	EXPECT_STREQ(s->tool_args, "{\"prompt\":\"hi\"}");
-	arena_destroy(arena);
 }
 
 TEST_F(ReactTest, StepNames) {
@@ -1204,12 +1173,12 @@ TEST_F(ReactTest, StepDestroyNull) {
 }
 
 TEST_F(ReactTest, ToolRegistryIntegration) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "Generate text",
-		      "{\"type\":\"object\"}", test_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "Generate text",
+			     "{\"type\":\"object\"}", test_tool_fn, nullptr, nullptr);
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	EXPECT_EQ(ctx->tools->count, 1);
-	struct tool_entry *e = tool_lookup(ctx->tools, "test_tool");
+	struct tool_entry *e = tool_borrow(ctx->tools, "test_tool");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->desc.name, "test_tool");
 	react_context_destroy(ctx);
@@ -1253,8 +1222,8 @@ TEST_F(ReactTest, RunWithCallback) {
 }
 
 TEST_F(MockLlmTest, CallbackReceivesStructuredToolStatus) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}",
-		      test_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}",
+			     test_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: use tool.\nAction: test_tool({\"prompt\":\"hi\"})\n",
 		"Final: done"
@@ -1304,8 +1273,8 @@ TEST_F(ReactTest, MaxIterationsAbort) {
 }
 
 TEST_F(ReactTest, ToolFailThresholdThree) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "failing_tool", "Always fails",
-		      "{}", failing_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "failing_tool", "Always fails", "{}",
+			     failing_tool_fn, nullptr, nullptr);
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	EXPECT_EQ(ctx->tool_max_retries, 3);
@@ -1354,7 +1323,8 @@ TEST_F(MockLlmTest, LlmThoughtAndFinal) {
 }
 
 TEST_F(MockLlmTest, LlmActionToolCall) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}",
+			     test_tool_fn, nullptr, nullptr);
 	setup_llm_with_response("Thought: Using test tool.\nAction: test_tool({\"prompt\":\"hi\"})\n\nFinal: Done.");
 	struct react_context *ctx2 = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx2, nullptr);
@@ -1386,8 +1356,8 @@ TEST_F(MockLlmTest, LlmStreamingFinal) {
 
 TEST_F(MockLlmTest, LlmToolFailRetries) {
 	int call_count = 0;
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "fail_tool", "Fails every time", "{}",
-		      failing_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "fail_tool", "Fails every time", "{}",
+			     failing_tool_fn, nullptr, nullptr);
 	setup_llm_with_response("Thought: try fail_tool.\nAction: fail_tool({\"q\":\"test\"})");
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
@@ -1401,8 +1371,8 @@ TEST_F(MockLlmTest, LlmToolFailRetries) {
 }
 
 TEST_F(MockLlmTest, LlmToolFailMaxRetries) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "fail_tool", "Fails every time", "{}",
-		      failing_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "fail_tool", "Fails every time", "{}",
+			     failing_tool_fn, nullptr, nullptr);
 	setup_llm_with_response("Thought: try again.\nAction: fail_tool({\"q\":\"test\"})");
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
@@ -1427,7 +1397,8 @@ TEST_F(MockLlmTest, LlmCallCount) {
 }
 
 TEST_F(MockLlmTest, LlmMultiStepCallCount) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}",
+			     test_tool_fn, nullptr, nullptr);
 	setup_llm_with_response(
 		"Thought: Step 1.\nAction: test_tool({\"prompt\":\"hi\"})");
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
@@ -1442,7 +1413,8 @@ TEST_F(MockLlmTest, LlmMultiStepCallCount) {
 /* ---- Multi-response termination tests ---- */
 
 TEST_F(MockLlmTest, ActionThenFinal) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}",
+			     test_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: Using tool.\nAction: test_tool({\"p\":\"1\"})\n",
 		"Thought: Tool done.\nFinal: The answer is here."
@@ -1464,7 +1436,7 @@ static bool event_recorder_has_name(struct morph_event_recorder *rec,
 				    const char *name)
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
-		const char *json = morph_event_recorder_get(rec, i);
+		const char *json = morph_event_recorder_borrow(rec, i);
 		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
@@ -1482,7 +1454,7 @@ static std::string event_recorder_data_string(
 	struct morph_event_recorder *rec, const char *name, const char *key)
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
-		const char *json = morph_event_recorder_get(rec, i);
+		const char *json = morph_event_recorder_borrow(rec, i);
 		cJSON *root = cJSON_Parse(json);
 		cJSON *name_item;
 		cJSON *data;
@@ -1513,7 +1485,7 @@ static int event_recorder_count_name(struct morph_event_recorder *rec,
 	int count = 0;
 
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
-		const char *json = morph_event_recorder_get(rec, i);
+		const char *json = morph_event_recorder_borrow(rec, i);
 		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
@@ -1530,7 +1502,7 @@ static int event_recorder_index_name(struct morph_event_recorder *rec,
 				     const char *name)
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
-		const char *json = morph_event_recorder_get(rec, i);
+		const char *json = morph_event_recorder_borrow(rec, i);
 		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
@@ -1548,7 +1520,7 @@ static bool event_recorder_observation_has_artifacts(
 	struct morph_event_recorder *rec)
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
-		const char *json = morph_event_recorder_get(rec, i);
+		const char *json = morph_event_recorder_borrow(rec, i);
 		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
@@ -1573,7 +1545,7 @@ static int event_recorder_nth_index_name(struct morph_event_recorder *rec,
 	int seen = 0;
 
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
-		const char *json = morph_event_recorder_get(rec, i);
+		const char *json = morph_event_recorder_borrow(rec, i);
 		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
@@ -1595,7 +1567,7 @@ static bool event_recorder_has_outcome(struct morph_event_recorder *rec,
 				       const char *outcome)
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
-		const char *json = morph_event_recorder_get(rec, i);
+		const char *json = morph_event_recorder_borrow(rec, i);
 		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
@@ -1619,7 +1591,7 @@ static bool event_recorder_has_auth_required(struct morph_event_recorder *rec,
 					     const char *tool)
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
-		const char *json = morph_event_recorder_get(rec, i);
+		const char *json = morph_event_recorder_borrow(rec, i);
 		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
@@ -1656,7 +1628,7 @@ static std::string event_recorder_turn_id(struct morph_event_recorder *rec,
 					  const char *name)
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
-		const char *json = morph_event_recorder_get(rec, i);
+		const char *json = morph_event_recorder_borrow(rec, i);
 		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
@@ -1679,7 +1651,7 @@ static std::string event_recorder_tool_call_id(
 	int seen = 0;
 
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
-		const char *json = morph_event_recorder_get(rec, i);
+		const char *json = morph_event_recorder_borrow(rec, i);
 		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
@@ -1705,7 +1677,7 @@ static std::string event_recorder_tool_input(
 	struct morph_event_recorder *rec, const char *tool)
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
-		const char *json = morph_event_recorder_get(rec, i);
+		const char *json = morph_event_recorder_borrow(rec, i);
 		cJSON *root = cJSON_Parse(json);
 
 		if (!root)
@@ -1736,7 +1708,7 @@ static bool event_recorder_all_turn_ids_match(struct morph_event_recorder *rec,
 					      const char *turn_id)
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
-		const char *json = morph_event_recorder_get(rec, i);
+		const char *json = morph_event_recorder_borrow(rec, i);
 		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
@@ -1762,7 +1734,7 @@ static bool event_recorder_named_text_valid_utf8(struct morph_event_recorder *re
 	bool seen = false;
 
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
-		const char *json = morph_event_recorder_get(rec, i);
+		const char *json = morph_event_recorder_borrow(rec, i);
 		if (utf8valid(json) != nullptr)
 			return false;
 		cJSON *root = cJSON_Parse(json);
@@ -1792,7 +1764,7 @@ static std::string event_recorder_join_text(struct morph_event_recorder *rec,
 {
 	std::string out;
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
-		const char *json = morph_event_recorder_get(rec, i);
+		const char *json = morph_event_recorder_borrow(rec, i);
 		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
@@ -1811,27 +1783,14 @@ static std::string event_recorder_join_text(struct morph_event_recorder *rec,
 struct compaction_memory_probe {
 	struct react_context *ctx;
 	struct morph_event_recorder *recorder;
-	int reclaimed = 0;
 	int observed = 0;
 	const char *expected_hook_context = nullptr;
 };
 
-static void compaction_memory_reclaimed(void *data)
-{
-	static_cast<compaction_memory_probe *>(data)->reclaimed++;
-}
-
 static int record_compaction_memory(const struct morph_event *event, void *data)
 {
 	auto *probe = static_cast<compaction_memory_probe *>(data);
-	if (strcmp(event->name, "react.compaction.begin") == 0) {
-		auto *cleanup = arena_cleanup_add(probe->ctx->message_arena, 0);
-		if (!cleanup)
-			return -ENOMEM;
-		cleanup->handler = compaction_memory_reclaimed;
-		cleanup->data = probe;
-	} else if (strcmp(event->name, "react.compaction.completed") == 0) {
-		EXPECT_EQ(probe->reclaimed, 1);
+	if (strcmp(event->name, "react.compaction.completed") == 0) {
 		if (probe->expected_hook_context) {
 			EXPECT_NE(probe->ctx->hook_context, nullptr);
 			if (probe->ctx->hook_context)
@@ -1925,9 +1884,10 @@ TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
 	ASSERT_EQ(db_init_schema(&db), 0);
 	ASSERT_EQ(session_create(&db, "compact", "mock-model", &session), 0);
 	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "large_tool",
-		"Return a large result", "{}", large_tool_fn, &result_bytes,
-		nullptr), 0);
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "large_tool",
+				       "Return a large result", "{}", large_tool_fn, &result_bytes,
+				       nullptr),
+		  0);
 	cfg.max_context_tokens = 18000;
 	cfg.max_history_rounds = 6;
 	cfg.in_turn_compaction = 1;
@@ -1980,7 +1940,6 @@ TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.observation"));
 	EXPECT_GT(model_history_count(&db, session.id, 0), 1);
 	EXPECT_EQ(ctx->in_turn_compaction_count, 1);
-	EXPECT_EQ(memory_probe.reclaimed, 1);
 	EXPECT_EQ(memory_probe.observed, 1);
 	EXPECT_EQ(hook_order, "PreCompact:PostCompact:SessionStart:compact");
 	EXPECT_EQ(ctx->incomplete_final_retry_count, 1);
@@ -2107,8 +2066,8 @@ TEST_F(MockLlmTest, StreamsNativeContentSeparatelyFromThoughtUntilFinal) {
 }
 
 TEST_F(MockLlmTest, StreamsNativeContentBeforeToolsAndPromotesLastResponse) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool",
-		      "A test tool", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}",
+			     test_tool_fn, nullptr, nullptr);
 	const char *chunks[] = {"I will ", "inspect first."};
 	llm = create_direct_stream_tool_llm(
 		chunks, 2, "I will inspect first.", "Done.");
@@ -2170,7 +2129,8 @@ TEST_F(MockLlmTest, StreamingDeltasDoNotSplitUtf8Codepoints) {
 }
 
 TEST_F(MockLlmTest, EmitsStructuredToolEvents) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}",
+			     test_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: Using tool.\nAction: test_tool({\"p\":\"1\"})\n",
 		"Thought: Tool done.\nFinal: The answer is here."
@@ -2211,8 +2171,8 @@ TEST_F(MockLlmTest, EmitsStructuredToolEvents) {
 }
 
 TEST_F(MockLlmTest, EmitsToolStreamEventsFromToolThread) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "stream_tool", "Streams from tool", "{}",
-		      streaming_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "stream_tool", "Streams from tool", "{}",
+			     streaming_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: Using streaming tool.\nAction: stream_tool({})\n",
 		"Thought: Tool done.\nFinal: Streamed."
@@ -2266,7 +2226,7 @@ TEST_F(MockLlmTest, UsesInjectedTurnIdForEvents) {
 
 	int rc = react_run(ctx, "do it", nullptr, nullptr);
 	EXPECT_EQ(rc, 0);
-	EXPECT_STREQ("turn_external", react_get_turn_id(ctx));
+	EXPECT_STREQ("turn_external", react_turn_id_borrow(ctx));
 	EXPECT_TRUE(event_recorder_all_turn_ids_match(&rec, "turn_external"));
 
 	morph_event_recorder_cleanup(&rec);
@@ -2299,8 +2259,8 @@ TEST_F(MockLlmTest, EmitsAuthRequiredWhenLlmKeyMissing) {
 }
 
 TEST_F(MockLlmTest, EmitsAuthRequiredWhenToolKeyMissing) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "img_qa", "Needs key", "{}",
-		      not_configured_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "img_qa", "Needs key", "{}",
+			     not_configured_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: Need tool.\nAction: img_qa({})\n",
 		"Thought: Tool failed.\nFinal: cannot continue."
@@ -2329,8 +2289,8 @@ TEST_F(MockLlmTest, EmitsAuthRequiredWhenToolKeyMissing) {
 }
 
 TEST_F(MockLlmTest, EmitsStructuredArtifactEvents) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "artifact_tool", "Returns artifact", "{}",
-		      artifact_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "artifact_tool", "Returns artifact", "{}",
+			     artifact_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: Creating artifact.\nAction: artifact_tool({})\n",
 		"Thought: Done.\nFinal: Artifact is ready."
@@ -2374,10 +2334,10 @@ TEST_F(MockLlmTest, MultipleToolCallsUseSlotArray) {
 	int slot_b_count = 0;
 	struct slot_mock_data *slot_data = nullptr;
 
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slot_a", "Slot A", "{}",
-		      call_count_tool_fn, &slot_a_count, nullptr);
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slot_b", "Slot B", "{}",
-		      call_count_tool_fn, &slot_b_count, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "slot_a", "Slot A", "{}",
+			     call_count_tool_fn, &slot_a_count, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "slot_b", "Slot B", "{}",
+			     call_count_tool_fn, &slot_b_count, nullptr);
 	llm = create_slot_mock_llm(&slot_data);
 	ASSERT_NE(llm, nullptr);
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
@@ -2427,10 +2387,10 @@ TEST_F(MockLlmTest, LocalToolCallIdsSurviveDuplicateProviderIds) {
 	int slot_b_count = 0;
 	struct slot_mock_data *slot_data = nullptr;
 
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slot_a", "Slot A", "{}",
-		      call_count_tool_fn, &slot_a_count, nullptr);
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slot_b", "Slot B", "{}",
-		      call_count_tool_fn, &slot_b_count, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "slot_a", "Slot A", "{}",
+			     call_count_tool_fn, &slot_a_count, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "slot_b", "Slot B", "{}",
+			     call_count_tool_fn, &slot_b_count, nullptr);
 	llm = create_slot_mock_llm(&slot_data);
 	ASSERT_NE(llm, nullptr);
 	ASSERT_NE(slot_data, nullptr);
@@ -2469,10 +2429,10 @@ TEST_F(MockLlmTest, MissingProviderIdsGetProtocolFallbacks) {
 	int slot_b_count = 0;
 	struct slot_mock_data *slot_data = nullptr;
 
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slot_a", "Slot A", "{}",
-		      call_count_tool_fn, &slot_a_count, nullptr);
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slot_b", "Slot B", "{}",
-		      call_count_tool_fn, &slot_b_count, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "slot_a", "Slot A", "{}",
+			     call_count_tool_fn, &slot_a_count, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "slot_b", "Slot B", "{}",
+			     call_count_tool_fn, &slot_b_count, nullptr);
 	llm = create_slot_mock_llm(&slot_data);
 	ASSERT_NE(llm, nullptr);
 	ASSERT_NE(slot_data, nullptr);
@@ -2531,7 +2491,7 @@ TEST_F(MockLlmTest, EnvironmentCollectedOncePerTurnAcrossToolIterations)
 	spec.exec = test_tool_fn;
 	spec.user_data = &collections;
 	spec.get_environment = counting_environment;
-	ASSERT_EQ(tool_register(&tools, &spec), 0);
+	ASSERT_EQ(tool_register_borrow(&tools, &spec), 0);
 	const char *responses[] = {
 		"Thought: run.\nAction: exec({})\n",
 		"Final: done", "Final: next"
@@ -2561,11 +2521,9 @@ TEST_F(MockLlmTest, MessageArrayGrowsBeyondInitialCapacity) {
 	for (int i = 0; i < 70; i++) {
 		char content[64];
 		snprintf(content, sizeof(content), "history %d", i);
-		msg_list_append(&ctx->messages,
-				msg_list_create(ctx->session_arena,
-						i % 2 == 0 ? "user" :
-						"assistant",
-						content, 1));
+		append_message_owned(
+			&ctx->messages,
+			msg_list_create(i % 2 == 0 ? "user" : "assistant", content, 1));
 	}
 
 	int rc = react_run(ctx, "final prompt", nullptr, nullptr);
@@ -2580,7 +2538,8 @@ TEST_F(MockLlmTest, MessageArrayGrowsBeyondInitialCapacity) {
 }
 
 TEST_F(MockLlmTest, ActionActionThenFinal) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}",
+			     test_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: Step 1.\nAction: test_tool({\"p\":\"1\"})\n",
 		"Thought: Step 2.\nAction: test_tool({\"p\":\"2\"})\n",
@@ -2600,7 +2559,8 @@ TEST_F(MockLlmTest, ActionActionThenFinal) {
 }
 
 TEST_F(MockLlmTest, ActionNeverFinal) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}",
+			     test_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: Step 1.\nAction: test_tool({\"p\":\"1\"})\n",
 		"Thought: Step 2.\nAction: test_tool({\"p\":\"2\"})\n",
@@ -2623,8 +2583,8 @@ TEST_F(MockLlmTest, ActionNeverFinal) {
 }
 
 TEST_F(MockLlmTest, ToolFailThenFinal) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "fail_tool", "Fails always", "{}",
-		      failing_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "fail_tool", "Fails always", "{}",
+			     failing_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: Try failing tool.\nAction: fail_tool({\"q\":\"x\"})\n",
 		"Thought: It failed, giving up.\nFinal: Sorry, tool failed."
@@ -2643,9 +2603,8 @@ TEST_F(MockLlmTest, ToolFailThenFinal) {
 }
 
 TEST_F(MockLlmTest, InvalidToolArgumentsAreReplayedSafelyAndRetried) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "json_tool",
-		"Requires a JSON object", "{}", json_object_tool_fn,
-		nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "json_tool", "Requires a JSON object",
+			     "{}", json_object_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: malformed.\nAction: json_tool({not-json)\n",
 		"Thought: correct arguments.\nAction: json_tool({\"ok\":true})\n",
@@ -2701,7 +2660,7 @@ TEST_F(MockLlmTest, TextToolFallbackFailureIsObservedAndRetried) {
 	spec.input_kind = TOOL_INPUT_TEXT;
 	spec.exec = text_tool_fn;
 	spec.user_data = &capture;
-	ASSERT_EQ(::tool_register(&tools, &spec), 0);
+	ASSERT_EQ(::tool_register_borrow(&tools, &spec), 0);
 	llm = create_multi_mock_llm(responses, 3);
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
 		nullptr);
@@ -2741,8 +2700,8 @@ TEST_F(MockLlmTest, TextToolFallbackFailureIsObservedAndRetried) {
 }
 
 TEST_F(MockLlmTest, MaxIterationsDoesNotUseToolErrorAsFinal) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "fail_tool", "Fails always", "{}",
-		      failing_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "fail_tool", "Fails always", "{}",
+			     failing_tool_fn, nullptr, nullptr);
 	setup_llm_with_response("Thought: Try failing tool.\nAction: fail_tool({\"q\":\"x\"})");
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
@@ -2785,8 +2744,8 @@ TEST_F(MockLlmTest, SharedModelKeepsRequestErrorsIsolated)
 	llm = create_mock_llm("unused");
 	llm_data = static_cast<struct mock_llm_data *>(llm->handle);
 	llm->chat_with_tools = nullptr;
-	llm->chat = [](struct model *self, struct arena *, const char *, const char **messages,
-		       int count, const struct model_chat_options *, sse_callback, void *) {
+	llm->chat = [](struct model *self, const char *, const char **messages, int count,
+		       const struct model_chat_options *, sse_callback, void *) {
 		std::snprintf(self->last_error, sizeof(self->last_error), "request failed: %s",
 			      count ? messages[count - 1] : "empty");
 		self->error_info.kind = MODEL_ERROR_SERVER;
@@ -2832,7 +2791,7 @@ TEST_F(MockLlmTest, LlmFailurePreservesProviderErrorDetail) {
 	bool found_detail = false;
 	for (size_t i = 0; i < rec.records.nelts; i++) {
 		auto *record = static_cast<struct morph_event_record *>(
-			morph_array_get(&rec.records, i));
+			morph_array_borrow(&rec.records, i));
 		if (std::strstr(record->json, "react.turn.end") &&
 		    std::strstr(record->json, "HTTP 400: reasoning_content is required"))
 			found_detail = true;
@@ -2986,7 +2945,7 @@ TEST_F(MockLlmTest, ActionDrainInjectsPromptIntoCurrentLoop) {
 	int displayed = 0;
 	for (size_t i = 0; i < rec.records.nelts; i++) {
 		auto *record = static_cast<struct morph_event_record *>(
-			morph_array_get(&rec.records, i));
+			morph_array_borrow(&rec.records, i));
 		cJSON *event = cJSON_Parse(record->json);
 		const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(event, "name"));
 		if (name && strcmp(name, "react.user.steer") == 0) {
@@ -3027,8 +2986,8 @@ TEST_F(MockLlmTest, PromptArrivingDuringModelCallContinuesCurrentLoop) {
 
 TEST_F(MockLlmTest, SteeringDiscardsToolsChosenBeforeRequirementChanged) {
 	setup_llm_with_response("Thought: old plan.\nAction: test_tool({})");
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "Test", "{}",
-		      test_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "Test", "{}", test_tool_fn,
+			     nullptr, nullptr);
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
@@ -3055,7 +3014,8 @@ TEST_F(MockLlmTest, ModelTimeoutField) {
 
 TEST_F(MockLlmTest, ConfigurableMaxIterations) {
 	setup_llm_with_response("Thought: looping.\nAction: test_tool({})");
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "Test", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "Test", "{}", test_tool_fn,
+			     nullptr, nullptr);
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
@@ -3070,8 +3030,8 @@ TEST_F(MockLlmTest, ConfigurableMaxIterations) {
 
 TEST_F(MockLlmTest, ToolCallCount) {
 	int call_count = 0;
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "counter", "Counts calls", "{}",
-		      call_count_tool_fn, &call_count, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "counter", "Counts calls", "{}",
+			     call_count_tool_fn, &call_count, nullptr);
 	setup_llm_with_response("Thought: call counter.\nAction: counter({})");
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
@@ -3083,9 +3043,9 @@ TEST_F(MockLlmTest, ToolCallCount) {
 }
 
 TEST_F(MockLlmTest, GlobalToolTimeoutLetsLoopContinue) {
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slow_tool",
-				"Slow tool", "{}", slow_tool_fn, nullptr,
-				nullptr), 0);
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "slow_tool", "Slow tool", "{}",
+				       slow_tool_fn, nullptr, nullptr),
+		  0);
 	const char *responses[] = {
 		"Thought: call slow.\nAction: slow_tool({})",
 		"Final: done after timeout"
@@ -3553,8 +3513,6 @@ TEST_F(MockServerTest, LlmStreamsReasoningWithoutAccumulatingIt) {
 	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 
-	struct arena *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
 
 	struct chat_message msg = {
 		(char *)"user",
@@ -3563,11 +3521,11 @@ TEST_F(MockServerTest, LlmStreamsReasoningWithoutAccumulatingIt) {
 		NULL,
 		0,
 	};
-	struct chat_response response;
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
 	std::string streamed;
 
 	int rc = model->chat_with_tools_stream(
-		model, arena, NULL, &msg, 1, NULL, 0, &response,
+		model, NULL, &msg, 1, NULL, 0, &response,
 		[](enum llm_stream_kind kind, const char *token, void *ud) -> int {
 			auto *out = static_cast<std::string *>(ud);
 			if (kind == LLM_STREAM_REASONING)
@@ -3584,7 +3542,6 @@ TEST_F(MockServerTest, LlmStreamsReasoningWithoutAccumulatingIt) {
 	ASSERT_NE(response.content, nullptr);
 	EXPECT_STREQ(response.content, "answer");
 
-	arena_destroy(arena);
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -3605,22 +3562,20 @@ TEST_F(MockServerTest, DeepSeekAdapterCapturesReasoningContent) {
 		model_llm_create(NULL, "deepseek", "deepseek-v4-flash", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	EXPECT_STREQ(model->adapter, "deepseek");
-	struct arena *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
+
 	struct chat_message message{};
 	message.role = const_cast<char *>("user");
 	message.content = const_cast<char *>("lookup");
-	struct chat_response response{};
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
 
-	int rc = model->chat_with_tools_stream(model, arena, nullptr,
-		&message, 1, nullptr, 0, &response, nullptr, nullptr);
+	int rc = model->chat_with_tools_stream(model, nullptr, &message, 1, nullptr, 0, &response,
+					       nullptr, nullptr);
 	EXPECT_EQ(rc, 200);
 	ASSERT_NE(response.reasoning_content, nullptr);
 	EXPECT_STREQ(response.reasoning_content, "plan next");
 	ASSERT_EQ(response.tool_call_count, 1);
 	EXPECT_STREQ(response.tool_calls[0].id, "call_1");
 
-	arena_destroy(arena);
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -3637,8 +3592,7 @@ TEST_F(MockServerTest, DeepSeekThinkingReplaysReasoningWithoutToolChoice) {
 	struct model *model =
 		model_llm_create(NULL, "deepseek", "deepseek-flash", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
-	struct arena *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
+
 	struct tool_call prior_call{};
 	std::strcpy(prior_call.id, "call_1");
 	std::strcpy(prior_call.name, "lookup");
@@ -3656,10 +3610,10 @@ TEST_F(MockServerTest, DeepSeekThinkingReplaysReasoningWithoutToolChoice) {
 	struct tool_desc tool{};
 	tool.name = "lookup";
 	tool.description = "Lookup data";
-	struct chat_response response{};
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
 
-	int rc = model->chat_with_tools_stream(model, arena, nullptr,
-		messages, 3, &tool, 1, &response, nullptr, nullptr);
+	int rc = model->chat_with_tools_stream(model, nullptr, messages, 3, &tool, 1, &response,
+					       nullptr, nullptr);
 	EXPECT_EQ(rc, 200);
 	const char *body = std::strstr(srv.last_request, "\r\n\r\n");
 	ASSERT_NE(body, nullptr);
@@ -3674,7 +3628,6 @@ TEST_F(MockServerTest, DeepSeekThinkingReplaysReasoningWithoutToolChoice) {
 		cJSON_GetObjectItem(assistant, "reasoning_content")), "plan next");
 	cJSON_Delete(request);
 
-	arena_destroy(arena);
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -3688,8 +3641,7 @@ TEST_F(MockServerTest, DeepSeekCompactedHistoryKeepsReasoningFields) {
 	struct model *model =
 		model_llm_create(NULL, "deepseek", "deepseek-v4-flash", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
-	struct arena *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
+
 	struct model_history_item summary{};
 	struct model_history_item answer{};
 	std::strcpy(summary.kind, "compaction_summary");
@@ -3698,24 +3650,26 @@ TEST_F(MockServerTest, DeepSeekCompactedHistoryKeepsReasoningFields) {
 	std::strcpy(answer.kind, "assistant_message");
 	answer.content = const_cast<char *>("Earlier answer");
 	answer.payload_json = const_cast<char *>("{\"reasoning_content\":\"Original reasoning\"}");
-	morph_array_t messages{};
+	morph_array_t messages MORPH_CLEANUP(agent_chat_messages_cleanup) = {};
 	ASSERT_EQ(morph_array_init(&messages, 4, sizeof(struct chat_message)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(model ? model->http.logger : NULL, &summary,
-						    &messages, arena),
-		  0);
+	ASSERT_EQ(
+		agent_history_messages_copy(model ? model->http.logger : NULL, &summary, &messages),
+		0);
 	/* Old non-thinking history has no reasoning to replay. */
-	struct chat_message *legacy = static_cast<struct chat_message *>(morph_array_push(&messages));
+	struct chat_message *legacy =
+		static_cast<struct chat_message *>(morph_array_push_borrow(&messages));
 	ASSERT_NE(legacy, nullptr);
 	*legacy = {};
-	legacy->role = const_cast<char *>("assistant");
-	legacy->content = const_cast<char *>("Legacy answer");
+	legacy->role = strdup("assistant");
+	legacy->content = strdup("Legacy answer");
 	struct tool_desc tool{};
 	tool.name = "lookup";
 	tool.description = "Lookup data";
-	struct chat_response response{};
-	EXPECT_EQ(model->chat_with_tools_stream(model, arena, nullptr,
-		static_cast<struct chat_message *>(messages.elts), (int)messages.nelts,
-		&tool, 1, &response, nullptr, nullptr), 200);
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
+	EXPECT_EQ(model->chat_with_tools_stream(
+			  model, nullptr, static_cast<struct chat_message *>(messages.elts),
+			  (int)messages.nelts, &tool, 1, &response, nullptr, nullptr),
+		  200);
 	const char *body = std::strstr(srv.last_request, "\r\n\r\n");
 	ASSERT_NE(body, nullptr);
 	cJSON *request = cJSON_Parse(body + 4);
@@ -3729,8 +3683,8 @@ TEST_F(MockServerTest, DeepSeekCompactedHistoryKeepsReasoningFields) {
 		cJSON_GetArrayItem(sent, 2), "reasoning_content")), "");
 	cJSON_Delete(request);
 	chat_response_free(&response);
-	morph_array_cleanup(&messages);
-	arena_destroy(arena);
+	agent_chat_messages_cleanup(&messages);
+
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -3777,11 +3731,11 @@ TEST_F(MockServerTest, AdapterSelectionScopesDeepSeekHistoryRules) {
 		messages[1].reasoning_content = const_cast<char *>("Original trace");
 		messages[2].role = const_cast<char *>("assistant");
 		messages[2].content = const_cast<char *>("Legacy reply");
-		struct arena *arena = arena_create(8192);
-		ASSERT_NE(arena, nullptr);
-		struct chat_response response{};
-		EXPECT_EQ(model->chat_with_tools_stream(model, arena, nullptr,
-			messages, 3, nullptr, 0, &response, nullptr, nullptr), 200);
+
+		struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
+		EXPECT_EQ(model->chat_with_tools_stream(model, nullptr, messages, 3, nullptr, 0,
+							&response, nullptr, nullptr),
+			  200);
 		const char *body = std::strstr(srv.last_request, "\r\n\r\n");
 		ASSERT_NE(body, nullptr);
 		cJSON *request = cJSON_Parse(body + 4);
@@ -3808,7 +3762,7 @@ TEST_F(MockServerTest, AdapterSelectionScopesDeepSeekHistoryRules) {
 		EXPECT_EQ(messages[2].reasoning_content, nullptr);
 		cJSON_Delete(request);
 		chat_response_free(&response);
-		arena_destroy(arena);
+
 		model_destroy(model);
 	}
 	mock_server_stop(&srv);
@@ -3828,23 +3782,21 @@ TEST_F(MockServerTest, DeepSeekDisabledThinkingUsesToolChoice) {
 	ASSERT_NE(model, nullptr);
 	std::strcpy(model->extra_body_json,
 		"{\"reasoning_effort\":\"none\"}");
-	struct arena *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
+
 	struct chat_message message{};
 	message.role = const_cast<char *>("user");
 	message.content = const_cast<char *>("lookup");
 	struct tool_desc tool{};
 	tool.name = "lookup";
 	tool.description = "Lookup data";
-	struct chat_response response{};
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
 
-	int rc = model->chat_with_tools_stream(model, arena, nullptr,
-		&message, 1, &tool, 1, &response, nullptr, nullptr);
+	int rc = model->chat_with_tools_stream(model, nullptr, &message, 1, &tool, 1, &response,
+					       nullptr, nullptr);
 	EXPECT_EQ(rc, 200);
 	EXPECT_NE(std::strstr(srv.last_request,
 		"\"tool_choice\":\"auto\""), nullptr);
 
-	arena_destroy(arena);
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -3865,14 +3817,12 @@ TEST_F(MockServerTest, LlmMergesExtraBodyJsonIntoToolRequest) {
 		"{\"enable_thinking\":true}}",
 		sizeof(model->extra_body_json) - 1);
 
-	struct arena *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
 	struct chat_message msg = {
 		(char *)"user", (char *)"hello", NULL, NULL, 0,
 	};
-	struct chat_response response;
-	int rc = model->chat_with_tools_stream(
-		model, arena, NULL, &msg, 1, NULL, 0, &response, NULL, NULL);
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
+	int rc =
+		model->chat_with_tools_stream(model, NULL, &msg, 1, NULL, 0, &response, NULL, NULL);
 
 	EXPECT_EQ(rc, 200);
 	EXPECT_NE(strstr(srv.last_request,
@@ -3882,7 +3832,6 @@ TEST_F(MockServerTest, LlmMergesExtraBodyJsonIntoToolRequest) {
 		nullptr);
 	EXPECT_NE(strstr(srv.last_request, "\"stream\":true"), nullptr);
 
-	arena_destroy(arena);
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -3909,8 +3858,7 @@ TEST_F(MockServerTest, ResponsesAdapterStreamsNativeCustomToolInput) {
 	struct model *model = model_llm_create(NULL, "openai", "gpt-test", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	std::strcpy(model->adapter, "openai-responses");
-	struct arena *arena = arena_create(16384);
-	ASSERT_NE(arena, nullptr);
+
 	struct chat_message message{};
 	message.role = const_cast<char *>("user");
 	message.content = const_cast<char *>("edit the file");
@@ -3918,10 +3866,10 @@ TEST_F(MockServerTest, ResponsesAdapterStreamsNativeCustomToolInput) {
 	tool.name = "apply_patch";
 	tool.description = "Apply a source patch";
 	tool.input_kind = TOOL_INPUT_TEXT;
-	struct chat_response response{};
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
 
-	int rc = model->chat_with_tools_stream(model, arena, nullptr,
-		&message, 1, &tool, 1, &response, nullptr, nullptr);
+	int rc = model->chat_with_tools_stream(model, nullptr, &message, 1, &tool, 1, &response,
+					       nullptr, nullptr);
 	ASSERT_EQ(rc, 200);
 	ASSERT_EQ(response.tool_call_count, 1);
 	EXPECT_STREQ(response.tool_calls[0].id, "call_patch");
@@ -3933,7 +3881,6 @@ TEST_F(MockServerTest, ResponsesAdapterStreamsNativeCustomToolInput) {
 	EXPECT_NE(std::strstr(srv.last_request,
 		"\"type\":\"custom\",\"name\":\"apply_patch\""), nullptr);
 
-	arena_destroy(arena);
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -3943,19 +3890,17 @@ TEST_F(MockServerTest, ResponsesAdapterRejectsMissingApiKeyBeforeRequest) {
 		model_llm_create(NULL, "openai", "gpt-test", "http://127.0.0.1:1/v1", "");
 	ASSERT_NE(model, nullptr);
 	std::strcpy(model->adapter, "openai-responses");
-	struct arena *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
+
 	struct chat_message message{};
 	message.role = const_cast<char *>("user");
 	message.content = const_cast<char *>("edit");
-	struct chat_response response{};
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
 
-	int rc = model->chat_with_tools_stream(model, arena, nullptr,
-		&message, 1, nullptr, 0, &response, nullptr, nullptr);
+	int rc = model->chat_with_tools_stream(model, nullptr, &message, 1, nullptr, 0, &response,
+					       nullptr, nullptr);
 	EXPECT_EQ(rc, MORPH_ERR_NOT_CONFIGURED);
 	EXPECT_NE(strstr(model->last_error, "no API key"), nullptr);
 
-	arena_destroy(arena);
 	model_destroy(model);
 }
 
@@ -3970,8 +3915,7 @@ TEST_F(MockServerTest, ChatAdapterFallsBackToStringFunctionArgument) {
 		 srv.port);
 	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
-	struct arena *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
+
 	struct tool_call prior_call{};
 	std::strcpy(prior_call.id, "call_patch");
 	std::strcpy(prior_call.name, "apply_patch");
@@ -3991,10 +3935,10 @@ TEST_F(MockServerTest, ChatAdapterFallsBackToStringFunctionArgument) {
 	tool.name = "apply_patch";
 	tool.description = "Apply patch";
 	tool.input_kind = TOOL_INPUT_TEXT;
-	struct chat_response response{};
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
 
-	int rc = model->chat_with_tools_stream(model, arena, nullptr,
-		messages, 3, &tool, 1, &response, nullptr, nullptr);
+	int rc = model->chat_with_tools_stream(model, nullptr, messages, 3, &tool, 1, &response,
+					       nullptr, nullptr);
 	EXPECT_EQ(rc, 200);
 	EXPECT_NE(std::strstr(srv.last_request,
 		"\"required\":[\"input\"]"), nullptr);
@@ -4019,7 +3963,6 @@ TEST_F(MockServerTest, ChatAdapterFallsBackToStringFunctionArgument) {
 	cJSON_Delete(wrapper);
 	cJSON_Delete(request);
 
-	arena_destroy(arena);
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -4040,27 +3983,26 @@ TEST_F(MockServerTest, LlmRetriesTransientHttpErrorsBeforeStreaming) {
 	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	EXPECT_EQ(model->retry_count, 3);
-	struct arena *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
+
 	struct chat_message msg = {
 		(char *)"user", (char *)"hello", NULL, NULL, 0,
 	};
-	struct chat_response response;
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
 	std::string streamed;
 
 	int rc = model->chat_with_tools(
-		model, arena, NULL, &msg, 1, NULL, 0, &response,
+		model, NULL, &msg, 1, NULL, 0, &response,
 		[](const char *token, void *ud) -> int {
 			static_cast<std::string *>(ud)->append(token ? token : "");
 			return 0;
-		}, &streamed);
+		},
+		&streamed);
 	EXPECT_EQ(rc, 200);
 	EXPECT_EQ(srv.request_count, 3);
 	EXPECT_EQ(streamed, "recovered");
 	ASSERT_NE(response.content, nullptr);
 	EXPECT_STREQ(response.content, "recovered");
 
-	arena_destroy(arena);
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -4080,21 +4022,18 @@ TEST_F(MockServerTest, LlmStopsAfterConfiguredRetriesAndKeepsLastError) {
 	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	model->retry_count = 1;
-	struct arena *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
+
 	struct chat_message msg = {
 		(char *)"user", (char *)"hello", NULL, NULL, 0,
 	};
-	struct chat_response response;
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
 
-	int rc = model->chat_with_tools(model, arena, NULL, &msg, 1,
-					NULL, 0, &response, NULL, NULL);
+	int rc = model->chat_with_tools(model, NULL, &msg, 1, NULL, 0, &response, NULL, NULL);
 	EXPECT_EQ(rc, MORPH_ERR_API);
 	EXPECT_EQ(srv.request_count, 2);
 	EXPECT_NE(strstr(model->last_error, "HTTP 503"), nullptr);
 	EXPECT_NE(strstr(model->last_error, "engine overloaded"), nullptr);
 
-	arena_destroy(arena);
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -4109,19 +4048,16 @@ TEST_F(MockServerTest, LlmDoesNotRetryNonTransientHttpErrors) {
 		 srv.port);
 	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
-	struct arena *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
+
 	struct chat_message msg = {
 		(char *)"user", (char *)"hello", NULL, NULL, 0,
 	};
-	struct chat_response response;
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
 
-	int rc = model->chat_with_tools(model, arena, NULL, &msg, 1,
-					NULL, 0, &response, NULL, NULL);
+	int rc = model->chat_with_tools(model, NULL, &msg, 1, NULL, 0, &response, NULL, NULL);
 	EXPECT_EQ(rc, MORPH_ERR_API);
 	EXPECT_EQ(srv.request_count, 1);
 
-	arena_destroy(arena);
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -4136,8 +4072,7 @@ TEST_F(MockServerTest, UsagePhaseIsPassedPerCallWithoutLeakingToTheNextCall)
 	snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
 	auto *model = model_llm_create(NULL, "test", "mock-model", base, "test-key");
 	ASSERT_NE(model, nullptr);
-	auto *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
+
 	struct model_usage captured{};
 	struct model_usage_sink sink{};
 	sink.user_data = &captured;
@@ -4148,11 +4083,11 @@ TEST_F(MockServerTest, UsagePhaseIsPassedPerCallWithoutLeakingToTheNextCall)
 	const char *messages[] = {"hello"};
 	struct model_chat_options options{};
 	options.usage_phase = "compaction";
-	EXPECT_EQ(model->chat(model, arena, nullptr, messages, 1, &options, nullptr, nullptr), 200);
+	EXPECT_EQ(model->chat(model, nullptr, messages, 1, &options, nullptr, nullptr), 200);
 	EXPECT_STREQ(captured.phase, "compaction");
-	EXPECT_EQ(model->chat(model, arena, nullptr, messages, 1, nullptr, nullptr, nullptr), 200);
+	EXPECT_EQ(model->chat(model, nullptr, messages, 1, nullptr, nullptr, nullptr), 200);
 	EXPECT_STREQ(captured.phase, "turn");
-	arena_destroy(arena);
+
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -4195,8 +4130,7 @@ TEST_F(MockServerTest, CompactionDisablesThinkingWithoutChangingNormalRequests)
 	cJSON_Delete(request);
 	EXPECT_STREQ(model->extra_body_json, extra);
 	const char *messages[] = {"normal turn"};
-	ASSERT_EQ(model->chat(model, ctx->iteration_arena, nullptr, messages, 1,
-		nullptr, nullptr, nullptr), 200);
+	ASSERT_EQ(model->chat(model, nullptr, messages, 1, nullptr, nullptr, nullptr), 200);
 	EXPECT_NE(std::strstr(srv.last_request, "\"type\":\"enabled\""), nullptr);
 	EXPECT_NE(std::strstr(srv.last_request, "\"enable_thinking\":true"), nullptr);
 	react_context_destroy(ctx);
@@ -4279,21 +4213,18 @@ TEST_F(MockServerTest, LlmPreservesRetryAfterAndRateLimitCategory)
 	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	model->retry_count = 0;
-	struct arena *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
+
 	struct chat_message msg = {
 	    (char *)"user", (char *)"hello", NULL, NULL, 0,
 	};
-	struct chat_response response;
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
 
-	int rc =
-	    model->chat_with_tools(model, arena, NULL, &msg, 1, NULL, 0, &response, NULL, NULL);
+	int rc = model->chat_with_tools(model, NULL, &msg, 1, NULL, 0, &response, NULL, NULL);
 	EXPECT_EQ(rc, MORPH_ERR_API);
 	EXPECT_EQ(srv.request_count, 1);
 	EXPECT_EQ(model->error_info.kind, MODEL_ERROR_RATE_LIMIT);
 	EXPECT_EQ(model->error_info.retry_after_seconds, 3);
 
-	arena_destroy(arena);
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -4309,21 +4240,18 @@ TEST_F(MockServerTest, LlmClassifiesContextOverflowWithoutBlindRetry)
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1", srv.port);
 	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
-	struct arena *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
+
 	struct chat_message msg = {
 	    (char *)"user", (char *)"hello", NULL, NULL, 0,
 	};
-	struct chat_response response;
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
 
-	int rc =
-	    model->chat_with_tools(model, arena, NULL, &msg, 1, NULL, 0, &response, NULL, NULL);
+	int rc = model->chat_with_tools(model, NULL, &msg, 1, NULL, 0, &response, NULL, NULL);
 	EXPECT_EQ(rc, MORPH_ERR_CONTEXT_LIMIT);
 	EXPECT_EQ(model->error_info.kind, MODEL_ERROR_CONTEXT);
 	EXPECT_STREQ(model->error_info.provider_code, "context_length_exceeded");
 	EXPECT_EQ(srv.request_count, 1);
 
-	arena_destroy(arena);
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -4343,25 +4271,24 @@ TEST_F(MockServerTest, LlmDoesNotRetryAfterStreamContentWasEmitted) {
 		 srv.port);
 	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
-	struct arena *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
+
 	struct chat_message msg = {
 		(char *)"user", (char *)"hello", NULL, NULL, 0,
 	};
-	struct chat_response response;
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
 	std::string streamed;
 
 	int rc = model->chat_with_tools(
-		model, arena, NULL, &msg, 1, NULL, 0, &response,
+		model, NULL, &msg, 1, NULL, 0, &response,
 		[](const char *token, void *ud) -> int {
 			static_cast<std::string *>(ud)->append(token ? token : "");
 			return 0;
-		}, &streamed);
+		},
+		&streamed);
 	EXPECT_EQ(rc, MORPH_ERR_API);
 	EXPECT_EQ(srv.request_count, 1);
 	EXPECT_EQ(streamed, "partial");
 
-	arena_destroy(arena);
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -4380,21 +4307,18 @@ TEST_F(MockServerTest, LlmParsesKimiTopLevelCachedTokens) {
 		 srv.port);
 	struct model *model = model_llm_create(NULL, "moonshot", "kimi-k3", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
-	struct arena *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
+
 	struct chat_message msg = {
 		(char *)"user", (char *)"hello", NULL, NULL, 0,
 	};
-	struct chat_response response;
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
 
-	int rc = model->chat_with_tools(model, arena, NULL, &msg, 1, NULL, 0,
-					&response, NULL, NULL);
+	int rc = model->chat_with_tools(model, NULL, &msg, 1, NULL, 0, &response, NULL, NULL);
 	EXPECT_EQ(rc, 200);
 	EXPECT_EQ(response.usage.input_tokens, 100);
 	EXPECT_EQ(response.usage.cached_tokens, 80);
 	EXPECT_EQ(response.usage.output_tokens, 10);
 
-	arena_destroy(arena);
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -4413,18 +4337,17 @@ TEST_F(MockServerTest, LlmParsesDeepSeekCacheHitsWithoutDoubleCounting)
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1", srv.port);
 	auto *model = model_llm_create(NULL, "deepseek", "deepseek-flash", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
-	auto *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
+
 	struct chat_message msg = {
 		(char *)"user", (char *)"hello", NULL, NULL, 0,
 	};
-	struct chat_response response{};
-	EXPECT_EQ(model->chat_with_tools(model, arena, NULL, &msg, 1, NULL, 0,
-		&response, NULL, NULL), 200);
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
+	EXPECT_EQ(model->chat_with_tools(model, NULL, &msg, 1, NULL, 0, &response, NULL, NULL),
+		  200);
 	EXPECT_EQ(response.usage.input_tokens, 100);
 	EXPECT_EQ(response.usage.cached_tokens, 80);
 	EXPECT_EQ(response.usage.output_tokens, 10);
-	arena_destroy(arena);
+
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -4446,20 +4369,17 @@ TEST_F(MockServerTest, LlmUsesLargestCompatibleCachedTokenDetailOnce) {
 		 srv.port);
 	struct model *model = model_llm_create(NULL, "openai", "gpt-test", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
-	struct arena *arena = arena_create(8192);
-	ASSERT_NE(arena, nullptr);
+
 	struct chat_message msg = {
 		(char *)"user", (char *)"hello", NULL, NULL, 0,
 	};
-	struct chat_response response;
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
 
-	int rc = model->chat_with_tools(model, arena, NULL, &msg, 1, NULL, 0,
-					&response, NULL, NULL);
+	int rc = model->chat_with_tools(model, NULL, &msg, 1, NULL, 0, &response, NULL, NULL);
 	EXPECT_EQ(rc, 200);
 	EXPECT_EQ(response.usage.input_tokens, 100);
 	EXPECT_EQ(response.usage.cached_tokens, 90);
 
-	arena_destroy(arena);
 	model_destroy(model);
 	mock_server_stop(&srv);
 }
@@ -4533,13 +4453,11 @@ static void capt_store_structured_messages(struct capt_prompt_data *d,
 	d->prompt = strdup(os.str().c_str());
 }
 
-static int capt_prompt_chat(struct model *self, struct arena *arena,
-			    const char *system_prompt,
-			    const char **messages, int n,
-			    const struct model_chat_options *opts,
-			    sse_callback cb, void *user_data)
+static int capt_prompt_chat(struct model *self, const char *system_prompt, const char **messages,
+			    int n, const struct model_chat_options *opts, sse_callback cb,
+			    void *user_data)
 {
-	(void)arena;
+
 	(void)user_data;
 	(void)opts;
 	struct capt_prompt_data *d = (struct capt_prompt_data *)self->handle;
@@ -4552,14 +4470,13 @@ static int capt_prompt_chat(struct model *self, struct arena *arena,
 	return 200;
 }
 
-static int capt_prompt_chat_with_tools(struct model *self, struct arena *arena,
-				       const char *system_prompt,
+static int capt_prompt_chat_with_tools(struct model *self, const char *system_prompt,
 				       struct chat_message *messages, int msg_count,
 				       struct tool_desc *tools, int tool_count,
-				       struct chat_response *response,
-				       sse_callback thought_cb, void *thought_ud)
+				       struct chat_response *response, sse_callback thought_cb,
+				       void *thought_ud)
 {
-	(void)arena;
+
 	(void)messages;
 	(void)msg_count;
 	struct capt_prompt_data *d = (struct capt_prompt_data *)self->handle;
@@ -4717,7 +4634,7 @@ TEST_F(PromptModeTest, ReplaceRemovesDefaultsButPreservesContextAndTools)
 	ctx->system_prompt_replace = 1;
 	ctx->system_prompt = strdup("Answer as a specialist. Literal %s %d.");
 	ctx->workdir = strdup("/tmp");
-	ASSERT_EQ(react_set_memory_context(ctx, "Remember this fact."), 0);
+	ASSERT_EQ(react_set_memory_context_copy(ctx, "Remember this fact."), 0);
 	ASSERT_EQ(apply_patch_init(&tools, tctx), 0);
 	ASSERT_EQ(exec_tool_init(&tools, tctx, nullptr), 0);
 	ASSERT_EQ(request_permissions_init(&tools, tctx), 0);
@@ -4814,7 +4731,7 @@ TEST_F(PromptModeTest, DynamicContextPreservesTheFullSkillPrefix)
 		free(ctx->system_prompt);
 		ctx->system_prompt = strdup("Stable custom prompt");
 		ctx->max_iterations = 3;
-		ASSERT_EQ(react_set_memory_context(ctx, "MEMORY_FIRST"), 0);
+		ASSERT_EQ(react_set_memory_context_copy(ctx, "MEMORY_FIRST"), 0);
 		ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
 		std::string first = capt->system_prompt;
 		auto boundary = first.find("Runtime limits:");
@@ -4828,7 +4745,7 @@ TEST_F(PromptModeTest, DynamicContextPreservesTheFullSkillPrefix)
 		EXPECT_EQ(first.find("<skill name="), std::string::npos);
 		EXPECT_NE(dynamic.find("MEMORY_FIRST"), std::string::npos);
 		ctx->max_iterations = 17;
-		ASSERT_EQ(react_set_memory_context(ctx, "MEMORY_SECOND"), 0);
+		ASSERT_EQ(react_set_memory_context_copy(ctx, "MEMORY_SECOND"), 0);
 		ASSERT_EQ(react_run(ctx, "next", nullptr, nullptr), 0);
 		std::string second = capt->system_prompt;
 		EXPECT_EQ(first.substr(0, boundary),
@@ -4960,7 +4877,7 @@ TEST_F(MockLlmTest, SystemPromptOmitsDisabledApplyPatchInstructions) {
 	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	spec.input_kind = TOOL_INPUT_TEXT;
 	spec.exec = test_tool_fn;
-	ASSERT_EQ(::tool_register(&tools, &spec), 0);
+	ASSERT_EQ(::tool_register_borrow(&tools, &spec), 0);
 	ASSERT_EQ(tool_disable(&tools, "apply_patch"), 0);
 
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
@@ -5000,9 +4917,9 @@ TEST_F(MockLlmTest, DisabledToolsAreAbsentFromPromptAndFunctionSurface) {
 	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	spec.exec = test_tool_fn;
 	spec.name = "file_list";
-	ASSERT_EQ(::tool_register(&tools, &spec), 0);
+	ASSERT_EQ(::tool_register_borrow(&tools, &spec), 0);
 	spec.name = "exec";
-	ASSERT_EQ(::tool_register(&tools, &spec), 0);
+	ASSERT_EQ(::tool_register_borrow(&tools, &spec), 0);
 	ASSERT_EQ(tool_disable(&tools, "file_list"), 0);
 	ASSERT_EQ(tool_disable(&tools, "exec"), 0);
 
@@ -5090,15 +5007,15 @@ TEST_F(MockLlmTest, ToolDescriptionsIncludeOriginPrefixes) {
 	llm->handle = cd;
 	llm_data = nullptr;
 
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "builtin_tool",
-				"builtin desc", "{}", test_tool_fn, nullptr,
-				nullptr), 0);
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_DYNAMIC_SESSION, &tools,
-				"session_tool", "session desc", "{}",
-				test_tool_fn, nullptr, nullptr), 0);
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_DYNAMIC_PERSISTENT, &tools,
-				"persistent_tool", "persistent desc", "{}",
-				test_tool_fn, nullptr, nullptr), 0);
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "builtin_tool", "builtin desc",
+				       "{}", test_tool_fn, nullptr, nullptr),
+		  0);
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_DYNAMIC_SESSION, &tools, "session_tool",
+				       "session desc", "{}", test_tool_fn, nullptr, nullptr),
+		  0);
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_DYNAMIC_PERSISTENT, &tools, "persistent_tool",
+				       "persistent desc", "{}", test_tool_fn, nullptr, nullptr),
+		  0);
 
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
 							 nullptr);
@@ -5136,8 +5053,9 @@ TEST_F(MockLlmTest, MemoryContextAppearsInPrompt) {
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
-	ASSERT_EQ(react_set_memory_context(ctx,
-			"Persistent memory for this session.\n- Preferred language: Chinese\n"),
+	ASSERT_EQ(react_set_memory_context_copy(
+			  ctx,
+			  "Persistent memory for this session.\n- Preferred language: Chinese\n"),
 		  0);
 	react_run(ctx, "hello", nullptr, nullptr);
 	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
@@ -5334,7 +5252,8 @@ TEST_F(MockLlmTest, CompressPreservesAfterFlow) {
 /* ============================================= */
 
 TEST_F(MockLlmTest, ActionToolNotFound) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "good_tool", "Works", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "good_tool", "Works", "{}", test_tool_fn,
+			     nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: try bad tool.\nAction: bad_tool({\"x\":1})\n",
 		"Thought: it failed.\nFinal: tool not available"
@@ -5353,7 +5272,8 @@ TEST_F(MockLlmTest, ActionToolNotFound) {
 }
 
 TEST_F(MockLlmTest, ActionInvalidFormat) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "Test", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "Test", "{}", test_tool_fn,
+			     nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: bad format.\nAction: test_tool({\"x\")\n",
 		"Thought: adjusting.\nFinal: recovered"
@@ -5392,8 +5312,8 @@ static int null_result_tool_fn(const char *args_json, struct tool_result *result
 }
 
 TEST_F(MockLlmTest, ToolNullResult) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "null_tool", "Returns null result", "{}",
-		      null_result_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "null_tool", "Returns null result", "{}",
+			     null_result_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: calling null tool.\nAction: null_tool({})\n",
 		"Thought: got null.\nFinal: handled null result"
@@ -5462,7 +5382,7 @@ static int self_cancel_tool_fn(const char *args_json, struct tool_result *result
 	(void)args_json;
 	struct react_context *ctx = (struct react_context *)user_data;
 	react_cancel(ctx);
-	(void)tool_result_success_json_text(result, strdup("{\"cancelled\":true}"));
+	(void)tool_result_success_json_text_copy(result, "{\"cancelled\":true}");
 	return 0;
 }
 
@@ -5481,7 +5401,7 @@ static int slow_signal_tool_fn(const char *args_json, struct tool_result *result
 	state->entered.store(1);
 	std::this_thread::sleep_for(std::chrono::milliseconds(1500));
 	state->finished.store(1);
-	(void)tool_result_success_json_text(result, strdup("{\"done\":true}"));
+	(void)tool_result_success_json_text_copy(result, "{\"done\":true}");
 	return 0;
 }
 
@@ -5493,8 +5413,8 @@ TEST_F(MockLlmTest, CancelDuringToolExecution) {
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "self_cancel", "Cancels context", "{}",
-		      self_cancel_tool_fn, ctx, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "self_cancel", "Cancels context", "{}",
+			     self_cancel_tool_fn, ctx, nullptr);
 	ctx->max_iterations = 5;
 	int rc = react_run(ctx, "cancel me", nullptr, nullptr);
 	EXPECT_EQ(rc, -ECANCELED);
@@ -5519,8 +5439,8 @@ TEST_F(MockLlmTest, SigintCancelsBlockedToolJoinPromptly) {
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->max_iterations = 5;
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slow_signal", "Slow tool", "{}",
-		      slow_signal_tool_fn, &state, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "slow_signal", "Slow tool", "{}",
+			     slow_signal_tool_fn, &state, nullptr);
 
 	std::thread interrupter([&state, ctx]() {
 		for (int i = 0; i < 50 && !state.entered.load(); i++)
@@ -5563,8 +5483,8 @@ TEST_F(MockLlmTest, StepLinkedListTraversal) {
 		"Thought: step 2.\nFinal: done after two steps"
 	};
 	int call_count = 0;
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "counter", "Counts", "{}",
-		      call_count_tool_fn, &call_count, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "counter", "Counts", "{}",
+			     call_count_tool_fn, &call_count, nullptr);
 	llm = create_multi_mock_llm(responses, 2);
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
@@ -5614,7 +5534,8 @@ TEST_F(MockLlmTest, ReuseContextAfterDone) {
 /* ============================================= */
 
 TEST_F(ReactTest, MsgListWithFilePaths) {
-	struct message_list *m = msg_list_create(ar, "user", "check file", 2);
+	struct message_list *m MORPH_CLEANUP(msg_list_clear) =
+		msg_list_create("user", "check file", 2);
 	ASSERT_NE(m, nullptr);
 	m->file_paths = (char **)calloc(2, sizeof(char *));
 	m->file_paths[0] = strdup("/tmp/test.txt");
@@ -5624,15 +5545,15 @@ TEST_F(ReactTest, MsgListWithFilePaths) {
 }
 
 TEST_F(ReactTest, MsgListCreateNullContent) {
-	struct message_list *m = msg_list_create(ar, "user", nullptr, 1);
+	struct message_list *m MORPH_CLEANUP(msg_list_clear) = msg_list_create("user", nullptr, 1);
 	ASSERT_NE(m, nullptr);
 	EXPECT_STREQ(m->content, "");
 }
 
 TEST_F(ReactTest, MsgListAppendToNullHead) {
-	struct message_list *head = nullptr;
-	msg_list_append(nullptr, nullptr);
-	EXPECT_NO_FATAL_FAILURE(msg_list_append(&head, nullptr));
+	struct message_list *head MORPH_CLEANUP(msg_list_clear) = nullptr;
+	append_message_owned(nullptr, nullptr);
+	EXPECT_NO_FATAL_FAILURE(append_message_owned(&head, nullptr));
 	EXPECT_EQ(msg_list_count(head), 0);
 }
 
@@ -5642,9 +5563,9 @@ TEST_F(ReactTest, ContextNeedsCompressExactThreshold) {
 		.max_history_rounds = 2,
 		.summarize_threshold_ratio = 0.5,
 	};
-	struct message_list *head = nullptr;
+	struct message_list *head MORPH_CLEANUP(msg_list_clear) = nullptr;
 	for (int i = 0; i < 5; i++)
-		msg_list_append(&head, msg_list_create(ar, "user", "msg", 1));
+		append_message_owned(&head, msg_list_create("user", "msg", 1));
 	int needs = context_needs_compress(head, nullptr, &test_cfg);
 	EXPECT_EQ(needs, 1);
 }
@@ -5655,8 +5576,8 @@ TEST_F(ReactTest, ContextNeedsCompressBelowThreshold) {
 		.max_history_rounds = 2,
 		.summarize_threshold_ratio = 0.5,
 	};
-	struct message_list *head = nullptr;
-	msg_list_append(&head, msg_list_create(ar, "user", "hi", 1));
+	struct message_list *head MORPH_CLEANUP(msg_list_clear) = nullptr;
+	append_message_owned(&head, msg_list_create("user", "hi", 1));
 	int needs = context_needs_compress(head, nullptr, &test_cfg);
 	EXPECT_EQ(needs, 0);
 }
@@ -5887,8 +5808,8 @@ TEST_F(MockLlmTest, EmptyOutputHonorsMaxEmptyRounds) {
 }
 
 TEST_F(MockLlmTest, ToolOutputGuardrailRewritesObservation) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}",
-		      test_tool_fn, nullptr, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}",
+			     test_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: use tool.\nAction: test_tool({})\n",
 		"Final: done after guarded observation"
@@ -5963,7 +5884,8 @@ static enum hitl_verdict hitl_approve_all_callback(const char *tool_name,
 TEST(HitlTest, NeedsApprovalDisabled) {
 	struct tool_registry reg;
 	tool_registry_init(NULL, &reg);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "test_tool", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &reg, "test_tool", "desc", "{}", test_tool_fn,
+			     NULL, NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
 	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
@@ -5976,7 +5898,8 @@ TEST(HitlTest, NeedsApprovalDisabled) {
 TEST(HitlTest, NeedsApprovalEnabledAllTools) {
 	struct tool_registry reg;
 	tool_registry_init(NULL, &reg);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "test_tool", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &reg, "test_tool", "desc", "{}", test_tool_fn,
+			     NULL, NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
 	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
@@ -5991,8 +5914,10 @@ TEST(HitlTest, NeedsApprovalEnabledAllTools) {
 TEST(HitlTest, NeedsApprovalSpecificTool) {
 	struct tool_registry reg;
 	tool_registry_init(NULL, &reg);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "exec", "desc", "{}", test_tool_fn, NULL, NULL);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &reg, "exec", "desc", "{}", test_tool_fn, NULL,
+			     NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "desc", "{}", test_tool_fn,
+			     NULL, NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
 	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
@@ -6008,10 +5933,11 @@ TEST(HitlTest, NeedsApprovalSpecificTool) {
 TEST(HitlTest, NeedsApprovalInternalApprovalTool) {
 	struct tool_registry reg;
 	tool_registry_init(NULL, &reg);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "exec", "desc", "{}", test_tool_fn, NULL, NULL);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "dangerous_tool", "desc", "{}", test_tool_fn, NULL,
-		      NULL);
-	struct tool_entry *e = tool_lookup(&reg, "exec");
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &reg, "exec", "desc", "{}", test_tool_fn, NULL,
+			     NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &reg, "dangerous_tool", "desc", "{}",
+			     test_tool_fn, NULL, NULL);
+	struct tool_entry *e = tool_borrow(&reg, "exec");
 	ASSERT_NE(e, nullptr);
 	e->flags |= TOOL_FLAG_INTERNAL_APPROVAL;
 	struct compress_config ccfg = {0};
@@ -6030,7 +5956,8 @@ TEST(HitlTest, NeedsApprovalInternalApprovalTool) {
 TEST(HitlTest, NeedsApprovalAutoApproved) {
 	struct tool_registry reg;
 	tool_registry_init(NULL, &reg);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "exec", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &reg, "exec", "desc", "{}", test_tool_fn, NULL,
+			     NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
 	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
@@ -6046,8 +5973,9 @@ TEST(HitlTest, NeedsApprovalAutoApproved) {
 TEST(HitlTest, NeedsApprovalReadonlyAutoApprove) {
 	struct tool_registry reg;
 	tool_registry_init(NULL, &reg);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "desc", "{}", test_tool_fn, NULL, NULL);
-	struct tool_entry *e = tool_lookup(&reg, "file_read");
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "desc", "{}", test_tool_fn,
+			     NULL, NULL);
+	struct tool_entry *e = tool_borrow(&reg, "file_read");
 	ASSERT_NE(e, nullptr);
 	e->flags |= TOOL_FLAG_READONLY;
 	struct compress_config ccfg = {0};
@@ -6064,8 +5992,9 @@ TEST(HitlTest, NeedsApprovalReadonlyAutoApprove) {
 TEST(HitlTest, NeedsApprovalReadonlyNoAutoApprove) {
 	struct tool_registry reg;
 	tool_registry_init(NULL, &reg);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "desc", "{}", test_tool_fn, NULL, NULL);
-	struct tool_entry *e = tool_lookup(&reg, "file_read");
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "desc", "{}", test_tool_fn,
+			     NULL, NULL);
+	struct tool_entry *e = tool_borrow(&reg, "file_read");
 	ASSERT_NE(e, nullptr);
 	e->flags |= TOOL_FLAG_READONLY;
 	struct compress_config ccfg = {0};
@@ -6083,12 +6012,14 @@ TEST(HitlTest, ReadonlyAndMediaAutoApprovalOverrideExplicitListWithoutDisablingO
 	struct tool_registry reg;
 	tool_registry_init(NULL, &reg);
 	for (const char *name : {"media", "remote_read", "remote_write"})
-		ASSERT_EQ(tool_register(strcmp(name, "media") == 0 ?
-			TOOL_ORIGIN_BUILTIN : TOOL_ORIGIN_MCP, &reg, name, "test tool",
-			"{}", test_tool_fn, nullptr, nullptr), 0);
-	tool_lookup(&reg, "media")->flags |= TOOL_FLAG_MEDIA;
-	tool_lookup(&reg, "remote_read")->flags |= TOOL_FLAG_READONLY;
-	tool_lookup(&reg, "remote_write")->flags |= TOOL_FLAG_MEDIA;
+		ASSERT_EQ(tool_register_borrow(strcmp(name, "media") == 0 ? TOOL_ORIGIN_BUILTIN
+									  : TOOL_ORIGIN_MCP,
+					       &reg, name, "test tool", "{}", test_tool_fn, nullptr,
+					       nullptr),
+			  0);
+	tool_borrow(&reg, "media")->flags |= TOOL_FLAG_MEDIA;
+	tool_borrow(&reg, "remote_read")->flags |= TOOL_FLAG_READONLY;
+	tool_borrow(&reg, "remote_write")->flags |= TOOL_FLAG_MEDIA;
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
 	struct react_context *ctx = react_context_create(&reg, nullptr, &ccfg, &gcfg);
@@ -6134,9 +6065,10 @@ TEST(HitlTest, ConfigDefaultsEnabled) {
 TEST(HitlTest, ToolIsReadonly) {
 	struct tool_registry reg;
 	tool_registry_init(NULL, &reg);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "desc", "{}", test_tool_fn,
+			     NULL, NULL);
 	EXPECT_EQ(tool_is_readonly(&reg, "file_read"), 0);
-	struct tool_entry *e = tool_lookup(&reg, "file_read");
+	struct tool_entry *e = tool_borrow(&reg, "file_read");
 	ASSERT_NE(e, nullptr);
 	e->flags |= TOOL_FLAG_READONLY;
 	EXPECT_EQ(tool_is_readonly(&reg, "file_read"), 1);
@@ -6146,8 +6078,10 @@ TEST(HitlTest, ToolIsReadonly) {
 TEST(HitlTest, DenyCallbackPreventsExecution) {
 	struct tool_registry reg;
 	tool_registry_init(NULL, &reg);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "dangerous_tool", "desc", "{}", test_tool_fn, NULL, NULL);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "safe_tool", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &reg, "dangerous_tool", "desc", "{}",
+			     test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &reg, "safe_tool", "desc", "{}", test_tool_fn,
+			     NULL, NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
 	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
@@ -6181,8 +6115,8 @@ TEST(HitlTest, DenyDuringReactRunSkipsToolExecution) {
 	struct multi_mock_data *data = (struct multi_mock_data *)llm->handle;
 
 	tool_registry_init(NULL, &reg);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "dangerous_tool", "desc", "{}",
-		      call_count_tool_fn, &dangerous_count, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &reg, "dangerous_tool", "desc", "{}",
+			     call_count_tool_fn, &dangerous_count, NULL);
 	ccfg.max_context_tokens = 128000;
 	ccfg.max_history_rounds = 6;
 	ccfg.summarize_threshold_ratio = 0.8;
@@ -6225,7 +6159,8 @@ TEST(HitlTest, DenyDuringReactRunSkipsToolExecution) {
 TEST(HitlTest, AlwaysCallbackAutoApproves) {
 	struct tool_registry reg;
 	tool_registry_init(NULL, &reg);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "dangerous_tool", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &reg, "dangerous_tool", "desc", "{}",
+			     test_tool_fn, NULL, NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
 	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
@@ -6255,12 +6190,12 @@ TEST(Guardrail, RegisterBuiltinRules) {
 	cfg.max_empty_rounds = 2;
 	guardrail_register_builtin_rules(&cfg);
 	EXPECT_EQ(cfg.rule_count, 6);
-	EXPECT_NE(guardrail_rule_lookup(&cfg, "empty_answer"), nullptr);
-	EXPECT_NE(guardrail_rule_lookup(&cfg, "consecutive_empty"), nullptr);
-	EXPECT_NE(guardrail_rule_lookup(&cfg, "tools_all_failed"), nullptr);
-	EXPECT_NE(guardrail_rule_lookup(&cfg, "creative_no_media"), nullptr);
-	EXPECT_NE(guardrail_rule_lookup(&cfg, "creative_file_missing"), nullptr);
-	EXPECT_NE(guardrail_rule_lookup(&cfg, "final_local_file_missing"), nullptr);
+	EXPECT_NE(guardrail_rule_borrow(&cfg, "empty_answer"), nullptr);
+	EXPECT_NE(guardrail_rule_borrow(&cfg, "consecutive_empty"), nullptr);
+	EXPECT_NE(guardrail_rule_borrow(&cfg, "tools_all_failed"), nullptr);
+	EXPECT_NE(guardrail_rule_borrow(&cfg, "creative_no_media"), nullptr);
+	EXPECT_NE(guardrail_rule_borrow(&cfg, "creative_file_missing"), nullptr);
+	EXPECT_NE(guardrail_rule_borrow(&cfg, "final_local_file_missing"), nullptr);
 }
 
 TEST(Guardrail, RuleEnableDisable) {
@@ -6271,9 +6206,9 @@ TEST(Guardrail, RuleEnableDisable) {
 	cfg.max_empty_rounds = 2;
 	guardrail_register_builtin_rules(&cfg);
 	EXPECT_EQ(guardrail_rule_disable(&cfg, "empty_answer"), 0);
-	EXPECT_EQ(guardrail_rule_lookup(&cfg, "empty_answer")->enabled, 0);
+	EXPECT_EQ(guardrail_rule_borrow(&cfg, "empty_answer")->enabled, 0);
 	EXPECT_EQ(guardrail_rule_enable(&cfg, "empty_answer"), 0);
-	EXPECT_EQ(guardrail_rule_lookup(&cfg, "empty_answer")->enabled, 1);
+	EXPECT_EQ(guardrail_rule_borrow(&cfg, "empty_answer")->enabled, 1);
 	EXPECT_EQ(guardrail_rule_disable(&cfg, "nonexistent"), -ENOENT);
 }
 
@@ -6284,15 +6219,14 @@ TEST(Guardrail, EmptyAnswerFail) {
 	cfg.max_retries = 1;
 	cfg.max_empty_rounds = 2;
 	guardrail_register_builtin_rules(&cfg);
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.proposed_answer = "";
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
 	EXPECT_STREQ(r.triggered_rule->name, "empty_answer");
-	arena_destroy(a);
 }
 
 TEST(Guardrail, EmptyAnswerPass) {
@@ -6302,14 +6236,13 @@ TEST(Guardrail, EmptyAnswerPass) {
 	cfg.max_retries = 1;
 	cfg.max_empty_rounds = 2;
 	guardrail_register_builtin_rules(&cfg);
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.proposed_answer = "Hello world";
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
-	arena_destroy(a);
 }
 
 TEST(Guardrail, ExplicitTerminalToolFailureAllowsBlockerReport)
@@ -6382,24 +6315,28 @@ TEST(Guardrail, TerminalCreativeFailureDoesNotForceRegeneration)
 
 static int screen_locked_tool(const char *, struct tool_result *result, void *)
 {
-	(void)tool_result_error(result, "screen_locked",
+	(void)tool_result_error_copy(
+		result, "screen_locked",
 		"{\"ok\":false,\"reason\":\"screen_locked\",\"retry\":\"never\"}");
 	return -EIO;
 }
 
 static int stale_target_tool(const char *, struct tool_result *result, void *)
 {
-	(void)tool_result_error(result, "app_not_found",
+	(void)tool_result_error_copy(
+		result, "app_not_found",
 		"{\"ok\":false,\"reason\":\"app_not_found\",\"retry\":\"never\"}");
 	return -EIO;
 }
 
 TEST_F(MockLlmTest, StaleTargetDoesNotPreventRecoveryUsingFreshLookup)
 {
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "old_pid", "Activate PID",
-		"{}", stale_target_tool, nullptr, nullptr), 0);
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "fresh_app", "Find app",
-		"{}", test_tool_fn, nullptr, nullptr), 0);
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "old_pid", "Activate PID", "{}",
+				       stale_target_tool, nullptr, nullptr),
+		  0);
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "fresh_app", "Find app", "{}",
+				       test_tool_fn, nullptr, nullptr),
+		  0);
 	const char *responses[] = {
 		"Thought: Activate the known PID.\nAction: old_pid({})",
 		"Thought: That PID is stale. Find the app by name.\nAction: fresh_app({})",
@@ -6423,8 +6360,9 @@ TEST_F(MockLlmTest, StaleTargetDoesNotPreventRecoveryUsingFreshLookup)
 
 TEST_F(MockLlmTest, ScreenLockBlockerDoesNotForceAdditionalToolCalls)
 {
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "locked_app", "Activate app",
-		"{}", screen_locked_tool, nullptr, nullptr), 0);
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "locked_app", "Activate app",
+				       "{}", screen_locked_tool, nullptr, nullptr),
+		  0);
 	const char *responses[] = {
 		"Thought: Activate the app.\nAction: locked_app({})",
 		"Final: The screen is locked. Unlock it before continuing.",
@@ -6460,7 +6398,7 @@ TEST(Guardrail, CreativeNoMediaIgnoresTextFileReferences) {
 	cfg.max_retries = 1;
 	cfg.max_empty_rounds = 2;
 	guardrail_register_builtin_rules(&cfg);
-	struct arena *a = arena_create(4096);
+
 	struct react_step action;
 	struct react_step obs;
 	memset(&action, 0, sizeof(action));
@@ -6476,12 +6414,11 @@ TEST(Guardrail, CreativeNoMediaIgnoresTextFileReferences) {
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.proposed_answer = "done";
 	ctx.steps = &action;
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
 	ASSERT_NE(r.triggered_rule, nullptr);
 	EXPECT_STREQ(r.triggered_rule->name, "creative_no_media");
-	arena_destroy(a);
 }
 
 TEST(Guardrail, CreativeFileMissingUsesStructuredArtifactsOnly) {
@@ -6491,13 +6428,13 @@ TEST(Guardrail, CreativeFileMissingUsesStructuredArtifactsOnly) {
 	cfg.max_retries = 1;
 	cfg.max_empty_rounds = 2;
 	guardrail_register_builtin_rules(&cfg);
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.tool_name = "img_gen";
 	ctx.tool_result = "image generated: /tmp/missing-from-text.png";
 	ctx.tool_error_code = 0;
-	ctx.arena = a;
+
 	auto pass = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_TOOL_OUTPUT, &ctx);
 	EXPECT_EQ(pass.verdict, GUARDRAIL_PASS);
 
@@ -6512,7 +6449,6 @@ TEST(Guardrail, CreativeFileMissingUsesStructuredArtifactsOnly) {
 	EXPECT_EQ(fail.verdict, GUARDRAIL_FAIL);
 	ASSERT_NE(fail.triggered_rule, nullptr);
 	EXPECT_STREQ(fail.triggered_rule->name, "creative_file_missing");
-	arena_destroy(a);
 }
 
 TEST(Guardrail, FinalLocalFileMissingFailsForFileUrl) {
@@ -6522,19 +6458,18 @@ TEST(Guardrail, FinalLocalFileMissingFailsForFileUrl) {
 	cfg.max_retries = 1;
 	cfg.max_empty_rounds = 2;
 	guardrail_register_builtin_rules(&cfg);
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.proposed_answer =
 		"done [artifact](file:///tmp/morph_missing_final_file.txt)";
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
 	ASSERT_NE(r.triggered_rule, nullptr);
 	EXPECT_STREQ(r.triggered_rule->name, "final_local_file_missing");
 	EXPECT_NE(strstr(r.reason, "Referenced local file does not exist"),
 		  nullptr);
-	arena_destroy(a);
 }
 
 TEST(Guardrail, FinalLocalFileMissingFailsForAbsolutePath) {
@@ -6544,17 +6479,16 @@ TEST(Guardrail, FinalLocalFileMissingFailsForAbsolutePath) {
 	cfg.max_retries = 1;
 	cfg.max_empty_rounds = 2;
 	guardrail_register_builtin_rules(&cfg);
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.proposed_answer =
 		"done ![image](/tmp/morph_missing_final_image.png)";
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
 	ASSERT_NE(r.triggered_rule, nullptr);
 	EXPECT_STREQ(r.triggered_rule->name, "final_local_file_missing");
-	arena_destroy(a);
 }
 
 TEST(Guardrail, FinalLocalFileMissingPassesForExistingFile) {
@@ -6567,15 +6501,14 @@ TEST(Guardrail, FinalLocalFileMissingPassesForExistingFile) {
 	cfg.max_retries = 1;
 	cfg.max_empty_rounds = 2;
 	guardrail_register_builtin_rules(&cfg);
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.proposed_answer = "done [artifact](/tmp/morph_existing_final_file.txt)";
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
 	std::remove(path);
-	arena_destroy(a);
 }
 
 TEST(Guardrail, FinalLocalFileMissingIgnoresNonLocalLinks) {
@@ -6585,16 +6518,15 @@ TEST(Guardrail, FinalLocalFileMissingIgnoresNonLocalLinks) {
 	cfg.max_retries = 1;
 	cfg.max_empty_rounds = 2;
 	guardrail_register_builtin_rules(&cfg);
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.proposed_answer =
 		"[site](https://example.com) [mail](mailto:a@example.com) "
 		"[anchor](#section) [data](data:text/plain,hello)";
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
-	arena_destroy(a);
 }
 
 TEST(Guardrail, FinalLocalFileMissingIgnoresPlainTextPaths) {
@@ -6604,14 +6536,13 @@ TEST(Guardrail, FinalLocalFileMissingIgnoresPlainTextPaths) {
 	cfg.max_retries = 1;
 	cfg.max_empty_rounds = 2;
 	guardrail_register_builtin_rules(&cfg);
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.proposed_answer = "The file is /tmp/morph_missing_bare_path.txt";
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
-	arena_destroy(a);
 }
 
 TEST(Guardrail, CustomCRule) {
@@ -6630,29 +6561,27 @@ TEST(Guardrail, CustomCRule) {
 	guardrail_rule_register(&cfg, "no_forbidden", GUARDRAIL_HOOK_INPUT,
 		GUARDRAIL_RULE_C, my_check, NULL, NULL, "Do not use forbidden words.");
 	EXPECT_EQ(cfg.rule_count, 7);
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.user_input = "this is forbidden text";
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_INPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
 	EXPECT_STREQ(r.triggered_rule->name, "no_forbidden");
-	arena_destroy(a);
 }
 
 TEST(Guardrail, DisabledConfigPasses) {
 	struct guardrail_config cfg;
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.enabled = 0;
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.proposed_answer = "";
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
-	arena_destroy(a);
 }
 
 TEST(Guardrail, DuplicateNameRejected) {
@@ -6675,24 +6604,23 @@ TEST(Guardrail, ConsecutiveEmptyFail) {
 	cfg.max_empty_rounds = 2;
 	guardrail_register_builtin_rules(&cfg);
 	guardrail_rule_disable(&cfg, "empty_answer");
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.proposed_answer = "";
 	ctx.empty_round_count = 3;
 	ctx.max_empty_rounds = 3;
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
 	EXPECT_STREQ(r.triggered_rule->name, "consecutive_empty");
-	arena_destroy(a);
 }
 
 TEST(Guardrail, RuleLookupNull) {
-	EXPECT_EQ(guardrail_rule_lookup(NULL, "test"), nullptr);
+	EXPECT_EQ(guardrail_rule_borrow(NULL, "test"), nullptr);
 	struct guardrail_config cfg;
 	memset(&cfg, 0, sizeof(cfg));
-	EXPECT_EQ(guardrail_rule_lookup(&cfg, "test"), nullptr);
+	EXPECT_EQ(guardrail_rule_borrow(&cfg, "test"), nullptr);
 }
 
 TEST(Guardrail, HookIsolation) {
@@ -6700,14 +6628,13 @@ TEST(Guardrail, HookIsolation) {
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.enabled = 1;
 	guardrail_register_builtin_rules(&cfg);
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.proposed_answer = "";
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_INPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
-	arena_destroy(a);
 }
 
 TEST(Guardrail, LlmRuleNoModelPasses) {
@@ -6717,14 +6644,13 @@ TEST(Guardrail, LlmRuleNoModelPasses) {
 	cfg.llm = NULL;
 	guardrail_rule_register(&cfg, "llm_check", GUARDRAIL_HOOK_INPUT,
 		GUARDRAIL_RULE_LLM, NULL, "Check for bad content", NULL, "Fix it.");
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.user_input = "bad stuff";
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_INPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
-	arena_destroy(a);
 }
 
 TEST(Guardrail, ExtRuleNoEntryPasses) {
@@ -6733,14 +6659,13 @@ TEST(Guardrail, ExtRuleNoEntryPasses) {
 	cfg.enabled = 1;
 	guardrail_rule_register(&cfg, "ext_check", GUARDRAIL_HOOK_OUTPUT,
 		GUARDRAIL_RULE_EXT, NULL, NULL, "", "Fix it.");
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.proposed_answer = "answer";
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
-	arena_destroy(a);
 }
 
 TEST(Guardrail, SetLlm) {
@@ -6763,8 +6688,8 @@ TEST(Guardrail, BuiltinRulesAutoRegistered) {
 	struct react_context *ctx = react_context_create(nullptr, nullptr, &ccfg, &gcfg);
 	ASSERT_NE(ctx, nullptr);
 	EXPECT_EQ(ctx->guardrail.rule_count, 6);
-	EXPECT_NE(guardrail_rule_lookup(&ctx->guardrail, "empty_answer"), nullptr);
-	EXPECT_NE(guardrail_rule_lookup(&ctx->guardrail, "final_local_file_missing"), nullptr);
+	EXPECT_NE(guardrail_rule_borrow(&ctx->guardrail, "empty_answer"), nullptr);
+	EXPECT_NE(guardrail_rule_borrow(&ctx->guardrail, "final_local_file_missing"), nullptr);
 	react_context_destroy(ctx);
 }
 
@@ -6788,7 +6713,7 @@ static void register_agent_ui_tags_ext(struct guardrail_config *cfg,
 		GUARDRAIL_HOOK_OUTPUT, GUARDRAIL_RULE_EXT, NULL,
 		"Validate supported Agent UI tags.", so_path.c_str(),
 		"Regenerate using only supported Agent UI tags.");
-	struct guardrail_rule *rule = guardrail_rule_lookup(cfg, "guardrail-agent-ui-tags");
+	struct guardrail_rule *rule = guardrail_rule_borrow(cfg, "guardrail-agent-ui-tags");
 	ASSERT_NE(rule, nullptr);
 	rule->ext_type = GUARDRAIL_EXT_SO;
 	ASSERT_EQ(guardrail_ext_so_load(NULL, rule), 0);
@@ -6801,18 +6726,18 @@ TEST(Guardrail, AgentUiTagsExtSupportedTagsPass) {
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.enabled = 1;
 	register_agent_ui_tags_ext(&cfg, so);
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.proposed_answer =
 		"<m:vocab word=\"access\" lang=\"en-US\">获取</m:vocab>\n"
 		"<m:sentence lang=\"en-US\">I can access it.</m:sentence>\n"
 		"<m:button label=\"继续\" action=\"practice.next\" />";
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
-	guardrail_ext_so_unload(guardrail_rule_lookup(&cfg, "guardrail-agent-ui-tags"));
-	arena_destroy(a);
+	guardrail_ext_so_unload(guardrail_rule_borrow(&cfg, "guardrail-agent-ui-tags"));
+
 	unlink(so.c_str());
 }
 
@@ -6823,20 +6748,20 @@ TEST(Guardrail, AgentUiTagsExtUnsupportedTagFails) {
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.enabled = 1;
 	register_agent_ui_tags_ext(&cfg, so);
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.proposed_answer =
 		"<m:ask_user question=\"认识 access 吗?\" />\n"
 		"<m:vocab word=\"access\">获取</m:vocab>";
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
 	ASSERT_NE(r.triggered_rule, nullptr);
 	EXPECT_STREQ(r.triggered_rule->name, "guardrail-agent-ui-tags");
 	EXPECT_NE(strstr(r.reason, "ask_user"), nullptr);
-	guardrail_ext_so_unload(guardrail_rule_lookup(&cfg, "guardrail-agent-ui-tags"));
-	arena_destroy(a);
+	guardrail_ext_so_unload(guardrail_rule_borrow(&cfg, "guardrail-agent-ui-tags"));
+
 	unlink(so.c_str());
 }
 
@@ -6847,18 +6772,18 @@ TEST(Guardrail, AgentUiTagsExtUnknownTagFails) {
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.enabled = 1;
 	register_agent_ui_tags_ext(&cfg, so);
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.proposed_answer = "Choose: <m:quiz id=\"q1\">...</m:quiz>";
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
 	ASSERT_NE(r.triggered_rule, nullptr);
 	EXPECT_STREQ(r.triggered_rule->name, "guardrail-agent-ui-tags");
 	EXPECT_NE(strstr(r.reason, "quiz"), nullptr);
-	guardrail_ext_so_unload(guardrail_rule_lookup(&cfg, "guardrail-agent-ui-tags"));
-	arena_destroy(a);
+	guardrail_ext_so_unload(guardrail_rule_borrow(&cfg, "guardrail-agent-ui-tags"));
+
 	unlink(so.c_str());
 }
 
@@ -6880,15 +6805,14 @@ TEST(Guardrail, ExtSoRuleWithCheckFn) {
 	cfg.enabled = 1;
 	guardrail_rule_register(&cfg, "so_check", GUARDRAIL_HOOK_OUTPUT,
 		GUARDRAIL_RULE_C, mock_so_check_fn, NULL, NULL, "Fix it.");
-	struct arena *a = arena_create(4096);
+
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.proposed_answer = "This is BLOCK content";
-	ctx.arena = a;
+
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
 	EXPECT_STREQ(r.triggered_rule->name, "so_check");
-	arena_destroy(a);
 }
 
 TEST(Guardrail, ExtSoLoadBadPathFails) {
@@ -6955,7 +6879,7 @@ TEST_F(PromptModeTest, ActivatedSkillRefreshesUnderReplacementWithoutMemory)
 	entry->enabled = 1;
 	entry->body_loaded = 1;
 	entry->body = strdup("UNIQUE_SKILL_BODY_MARKER");
-	ASSERT_EQ(morph_strmap_set(&skills->by_name, entry->fm.name, entry), 0);
+	ASSERT_EQ(morph_strmap_set_borrow(&skills->by_name, entry->fm.name, entry), 0);
 	ctx->skills = skills;
 	ASSERT_EQ(skill_activate_init(&tools, skills), 0);
 	capt->activate_on_first_call = 1;
@@ -7015,9 +6939,9 @@ TEST_F(PromptModeTest, EnabledToolsStayVisibleAcrossCompactionAndSessions)
 	remote.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
 	remote.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	remote.exec = test_tool_fn;
-	ASSERT_EQ(tool_register(&tools, &remote), 0);
+	ASSERT_EQ(tool_register_borrow(&tools, &remote), 0);
 	remote.name = "remote_disabled";
-	ASSERT_EQ(tool_register(&tools, &remote), 0);
+	ASSERT_EQ(tool_register_borrow(&tools, &remote), 0);
 	ASSERT_EQ(tool_disable(&tools, remote.name), 0);
 	capt->first_tool_name = "remote_render";
 	char path[] = "/tmp/morph-tools-XXXXXX";
@@ -7089,7 +7013,7 @@ TEST_F(PromptModeTest, AllEnabledToolOriginsAreAdvertisedBeforeUse)
 		spec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
 		spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 		spec.exec = test_tool_fn;
-		ASSERT_EQ(tool_register(&tools, &spec), 0);
+		ASSERT_EQ(tool_register_borrow(&tools, &spec), 0);
 	}
 	ASSERT_EQ(tool_disable(&tools, "extension_test"), 0);
 	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
@@ -7126,7 +7050,7 @@ TEST_F(PromptModeTest, DurableArtifactsAndPlanEvidenceSurviveCompactionAndRestor
 	plan_registry_init(plans.get());
 	ASSERT_EQ(plan_registry_bind(plans.get(), &db, session.id), 0);
 	const char *steps[] = {"Render video", "Visual review"};
-	auto *plan = plan_create(plans.get(), "video", "Deliver reviewed video", steps, 2);
+	auto *plan = plan_add_borrow(plans.get(), "video", "Deliver reviewed video", steps, 2);
 	ASSERT_NE(plan, nullptr);
 	ASSERT_EQ(plan_update_step(plans.get(), "video", 1, "completed"), 0);
 	std::strcpy(plan->steps[0].evidence, "ffprobe exit 0: duration 40 seconds");
@@ -7184,7 +7108,7 @@ TEST_F(PromptModeTest, ProcessCheckpointRefreshesWithinTheSameTurn)
 		cJSON_AddItemToArray(*out, item);
 		return 0;
 	};
-	ASSERT_EQ(tool_register(&tools, &exec), 0);
+	ASSERT_EQ(tool_register_borrow(&tools, &exec), 0);
 	capt->first_tool_name = "exec";
 	ASSERT_EQ(react_set_event_callback(ctx,
 		[](const struct morph_event *event, void *data) -> int {
@@ -7248,11 +7172,10 @@ TEST_F(PromptModeTest, SkillCatalogIncludesAllEnabledDescriptions)
 
 TEST_F(PromptModeTest, LegacyCheckpointIsSentAsAssistantReference)
 {
-	auto *checkpoint = msg_list_create(ctx->session_arena, "system",
-		"CHECKPOINT_MARKER", 10);
+	auto *checkpoint = msg_list_create("system", "CHECKPOINT_MARKER", 10);
 	ASSERT_NE(checkpoint, nullptr);
 	checkpoint->is_reference = 1;
-	msg_list_append(&ctx->messages, checkpoint);
+	ASSERT_EQ(msg_list_append_take(&ctx->messages, &checkpoint), 0);
 	ASSERT_EQ(react_run(ctx, "continue", nullptr, nullptr), 0);
 	EXPECT_NE(strstr(capt->prompt, "assistant:Historical reference checkpoint"), nullptr);
 	EXPECT_NE(strstr(capt->prompt, "CHECKPOINT_MARKER"), nullptr);
@@ -7384,10 +7307,10 @@ TEST_F(MockLlmTest, PreToolHookDenialSkipsExecutionAndPostHook)
 	int executions = 0;
 	auto tool = [](const char *, struct tool_result *result, void *ud) -> int {
 		++*static_cast<int *>(ud);
-		return tool_result_success_json_text(result, strdup("executed"));
+		return tool_result_success_json_text_copy(result, "executed");
 	};
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "test", "{}",
-		tool, &executions, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "test", "{}", tool,
+			     &executions, nullptr);
 	const char *responses[] = {"Action: test_tool({})", "Final: respected denial"};
 	llm = create_multi_mock_llm(responses, 2);
 	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
@@ -7410,10 +7333,10 @@ TEST_F(MockLlmTest, HookRewriteReachesToolAndPostHook)
 	std::string observed;
 	auto tool = [](const char *args, struct tool_result *result, void *ud) -> int {
 		*static_cast<std::string *>(ud) = args;
-		return tool_result_success_json_text(result, strdup("executed"));
+		return tool_result_success_json_text_copy(result, "executed");
 	};
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "test", "{}",
-		tool, &observed, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "test", "{}", tool,
+			     &observed, nullptr);
 	const char *responses[] = {"Action: test_tool({\"value\":\"original\"})", "Final: done"};
 	llm = create_multi_mock_llm(responses, 2);
 	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
@@ -7447,23 +7370,25 @@ TEST_F(MockLlmTest, HookRewriteReachesToolAndPostHook)
 TEST_F(MockLlmTest, PostHookReplacesOriginalResultBeforeNextModelRequest)
 {
 	auto tool = [](const char *, struct tool_result *result, void *) -> int {
-		return tool_result_success_json_text(result, strdup("ORIGINAL_PRIVATE_TOOL_RESULT"));
+		return tool_result_success_json_text_copy(result, "ORIGINAL_PRIVATE_TOOL_RESULT");
 	};
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "test", "{}",
-		tool, nullptr, nullptr), 0);
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "test", "{}", tool,
+				       nullptr, nullptr),
+		  0);
 	const char *responses[] = {"Action: test_tool({})", "Final: done"};
 	llm = create_multi_mock_llm(responses, 2);
-	llm->chat_with_tools = [](struct model *self, struct arena *arena, const char *prompt,
-		struct chat_message *messages, int count, struct tool_desc *descriptors, int tool_count,
-		struct chat_response *response, sse_callback cb, void *user) -> int {
+	llm->chat_with_tools =
+		[](struct model *self, const char *prompt, struct chat_message *messages, int count,
+		   struct tool_desc *descriptors, int tool_count, struct chat_response *response,
+		   sse_callback cb, void *user) -> int {
 		for (int i = 0; i < count; i++) {
 			if (messages[i].role && strcmp(messages[i].role, "tool") == 0) {
 				EXPECT_EQ(strstr(messages[i].content, "ORIGINAL_PRIVATE_TOOL_RESULT"), nullptr);
 				EXPECT_NE(strstr(messages[i].content, "Run the focused verification."), nullptr);
 			}
 		}
-		return mock_chat_with_tools(self, arena, prompt, messages, count, descriptors,
-			tool_count, response, cb, user);
+		return mock_chat_with_tools(self, prompt, messages, count, descriptors, tool_count,
+					    response, cb, user);
 	};
 	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
@@ -7515,7 +7440,7 @@ TEST_F(MockLlmTest, HookTextToolRewritePreservesRawInputAndOwnership)
 	spec.input_kind = TOOL_INPUT_TEXT;
 	spec.exec = text_tool_fn;
 	spec.user_data = &capture;
-	ASSERT_EQ(::tool_register(&tools, &spec), 0);
+	ASSERT_EQ(::tool_register_borrow(&tools, &spec), 0);
 	const char *responses[] = {
 		"Action: apply_text({\"input\":\"*** Begin Patch\\n*** End Patch\"})",
 		"Final: done"
@@ -7540,10 +7465,10 @@ TEST_F(MockLlmTest, HookAskDoesNotExecuteWithoutAnApprovalHandler)
 	int executions = 0;
 	auto tool = [](const char *, struct tool_result *result, void *ud) -> int {
 		++*static_cast<int *>(ud);
-		return tool_result_success_json_text(result, strdup("executed"));
+		return tool_result_success_json_text_copy(result, "executed");
 	};
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "test", "{}",
-		tool, &executions, nullptr);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "test", "{}", tool,
+			     &executions, nullptr);
 	const char *responses[] = {"Action: test_tool({})", "Final: permission needed"};
 	llm = create_multi_mock_llm(responses, 2);
 	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
@@ -7584,7 +7509,7 @@ static int late_callback_tool(const char *, tool_result *result, void *opaque)
 							      &answers, &count,
 							      result->runtime->ask_user_user_data));
 	state->finished.store(1);
-	return tool_result_success_text(result, "late result");
+	return tool_result_success_text_copy(result, "late result");
 }
 
 TEST_F(MockLlmTest, CancelledWorkersCannotCallAnExpiredRequest)
@@ -7595,8 +7520,8 @@ TEST_F(MockLlmTest, CancelledWorkersCannotCallAnExpiredRequest)
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	late_tool_state state;
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "late_callback", "Late callbacks",
-				"{}", late_callback_tool, &state, nullptr),
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "late_callback",
+				       "Late callbacks", "{}", late_callback_tool, &state, nullptr),
 		  0);
 	std::thread canceller([&] {
 		while (!state.entered.load()) {
@@ -7629,8 +7554,8 @@ TEST_F(MockLlmTest, JoinFailureRetiresWorkerAndReportsInfrastructureFailure)
 		return calls == 1 ? EINVAL : pthread_join(thread, nullptr);
 	};
 	ctx->thread_ops = &ops;
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "join_failure", "Join failure", "{}",
-				test_tool_fn, nullptr, nullptr),
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "join_failure", "Join failure",
+				       "{}", test_tool_fn, nullptr, nullptr),
 		  0);
 	int rc = react_run(ctx, "run tool", nullptr, nullptr);
 	EXPECT_EQ(rc, -EINVAL);
@@ -7648,7 +7573,7 @@ static int wait_for_peer_tool(const char *, tool_result *result, void *opaque)
 	while (!state->entered.load()) {
 		std::this_thread::yield();
 	}
-	return tool_result_success_text(result, "first result");
+	return tool_result_success_text_copy(result, "first result");
 }
 
 TEST_F(MockLlmTest, HistoryFailureRetiresEveryOutstandingWorker)
@@ -7671,11 +7596,11 @@ TEST_F(MockLlmTest, HistoryFailureRetiresEveryOutstandingWorker)
 	ctx->history_session_id = 1;
 	ctx->history_enabled = 1;
 	late_tool_state state;
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slot_a", "First result", "{}",
-				wait_for_peer_tool, &state, nullptr),
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "slot_a", "First result", "{}",
+				       wait_for_peer_tool, &state, nullptr),
 		  0);
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slot_b", "Blocked peer", "{}",
-				late_callback_tool, &state, nullptr),
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "slot_b", "Blocked peer", "{}",
+				       late_callback_tool, &state, nullptr),
 		  0);
 	EXPECT_EQ(react_run(ctx, "run both tools", nullptr, nullptr), MORPH_ERR_DB);
 	EXPECT_NE(ctx->retired_tool_calls, nullptr);
@@ -7706,13 +7631,13 @@ static int truncation_probe_tool(const char *, struct tool_result *result, void 
 		for (int i = 0; i < 2000; i++)
 			output += "word ";
 	}
-	cJSON *data = cJSON_CreateObject();
+	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
 	if (!data)
 		return -ENOMEM;
 	cJSON_AddStringToObject(data, "stdout", output.c_str());
 	cJSON_AddBoolToObject(data, "stdout_truncated", truncated && probe->output_truncated);
 	cJSON_AddBoolToObject(data, "stderr_truncated", 0);
-	return tool_result_success(result, data);
+	return tool_result_success_take(result, &data);
 }
 
 TEST_F(MockLlmTest, FrequentToolTruncationWarnsOncePerTurnAndDistinguishesLayers)
@@ -7732,9 +7657,10 @@ TEST_F(MockLlmTest, FrequentToolTruncationWarnsOncePerTurnAndDistinguishesLayers
 		probe.truncate_first = test.truncated;
 		probe.large_output = test.history;
 		probe.output_truncated = test.output;
-		ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "truncation_probe",
-			"Return a bounded test result", "{}", truncation_probe_tool,
-			&probe, nullptr), 0);
+		ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "truncation_probe",
+					       "Return a bounded test result", "{}",
+					       truncation_probe_tool, &probe, nullptr),
+			  0);
 		std::vector<const char *> responses(static_cast<size_t>(test.calls),
 			"Action: truncation_probe({})\n");
 		responses.push_back("Final: completed");
@@ -7753,7 +7679,7 @@ TEST_F(MockLlmTest, FrequentToolTruncationWarnsOncePerTurnAndDistinguishesLayers
 		EXPECT_EQ(event_recorder_count_name(&recorder, "history.tool_output.warning"),
 			test.warnings);
 		for (size_t i = 0; i < morph_event_recorder_count(&recorder); i++) {
-			cJSON *event = cJSON_Parse(morph_event_recorder_get(&recorder, i));
+			cJSON *event = cJSON_Parse(morph_event_recorder_borrow(&recorder, i));
 			const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(event, "name"));
 			if (name && strcmp(name, "history.tool_output.warning") == 0) {
 				cJSON *data = cJSON_GetObjectItem(event, "data");
@@ -7793,8 +7719,9 @@ TEST_F(MockServerTest, OutputTokenLimitPreservesPartialTextAndNeverExecutesIncom
 	struct tool_registry tools = {};
 	tool_registry_init(nullptr, &tools);
 	int executions = 0;
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "Count executions",
-		"{}", call_count_tool_fn, &executions, nullptr), 0);
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "Count executions",
+				       "{}", call_count_tool_fn, &executions, nullptr),
+		  0);
 	for (int variant : {0, 1, 2}) {
 		std::string delta = variant == 0 ? "\"content\":\"Partial reply.\"" :
 			variant == 1 ? "\"reasoning_content\":\"Reasoning still in progress.\"" :

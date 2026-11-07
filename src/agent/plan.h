@@ -52,24 +52,23 @@ struct plan_registry {
 
 int plan_registry_bind(struct plan_registry *reg, struct db *db, int64_t session_id);
 int plan_registry_save(struct plan_registry *reg);
-cJSON *plan_registry_json(const struct plan_registry *reg);
+cJSON *plan_registry_json_create(const struct plan_registry *reg);
 int plan_registry_restore(struct plan_registry *reg, const cJSON *json);
 
 void plan_registry_init(struct plan_registry *reg);
 
-struct plan *plan_create(struct plan_registry *reg, const char *name,
-			 const char *goal, const char **step_descs,
-			 int step_count);
+struct plan *plan_add_borrow(struct plan_registry *reg, const char *name, const char *goal,
+			     const char **step_descs, int step_count);
 
-struct plan *plan_find(struct plan_registry *reg, const char *name);
-struct plan *plan_find_by_id(struct plan_registry *reg, const char *id);
+struct plan *plan_borrow(struct plan_registry *reg, const char *name);
+struct plan *plan_by_id_borrow(struct plan_registry *reg, const char *id);
 
 int plan_update_step(struct plan_registry *reg, const char *plan_name,
 		     int step_id, const char *status);
 int plan_update_step_by_id(struct plan_registry *reg, const char *plan_id,
 			   int step_id, const char *status);
 
-int plan_get_formatted(struct plan_registry *reg, char *buf, size_t buf_size);
+int plan_format(struct plan_registry *reg, char *buf, size_t buf_size);
 
 #ifdef __cplusplus
 }

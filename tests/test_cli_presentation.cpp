@@ -101,7 +101,7 @@ TEST(CliShellStyleTest, ColorsCommandsStringsAndOperatorsWithoutChangingText)
 	const char *source = "MODE=1 rg '中文 | text' src/ && head -20 > out";
 	ASSERT_EQ(morph_buf_init(&styled, 128), 0);
 	ASSERT_EQ(cli_shell_style(&styled, source, 0), 0);
-	std::string output = morph_buf_cstr(&styled);
+	std::string output = morph_buf_cstr_borrow(&styled);
 	EXPECT_NE(output.find("\033[36mrg\033[0m"), std::string::npos);
 	EXPECT_NE(output.find("\033[32m'中文 | text'\033[0m"), std::string::npos);
 	EXPECT_NE(output.find("\033[33m&&\033[0m"), std::string::npos);
@@ -227,7 +227,7 @@ TEST(CliShellStyleTest, WrapsUtf8AndDropsTerminalControls)
 	morph_buf_t styled;
 	ASSERT_EQ(morph_buf_init(&styled, 128), 0);
 	ASSERT_EQ(cli_shell_style(&styled, "printf '中文🙂abcdef'\033]0;unsafe\a | cat", 12), 0);
-	std::string output = morph_buf_cstr(&styled);
+	std::string output = morph_buf_cstr_borrow(&styled);
 	EXPECT_EQ(output.find("unsafe"), std::string::npos);
 	EXPECT_EQ(utf8valid(output.c_str()), nullptr);
 	EXPECT_NE(output.find("\n    "), std::string::npos);
@@ -237,14 +237,15 @@ TEST(CliShellStyleTest, WrapsUtf8AndDropsTerminalControls)
 
 TEST(CliShellStyleTest, SummaryHidesOnlyLiteralCurrentDirectoryPrefix)
 {
-	EXPECT_STREQ(cli_shell_summary("cd /work && ls -la", "/work"), "ls -la");
-	EXPECT_STREQ(cli_shell_summary("cd '/work dir'; git status", "/work dir"), "git status");
-	EXPECT_STREQ(cli_shell_summary("cd -- \"/work dir\" && pwd", "/work dir"), "pwd");
-	EXPECT_STREQ(cli_shell_summary("cd . && ls", "/work"), "ls");
+	EXPECT_STREQ(cli_shell_summary_borrow("cd /work && ls -la", "/work"), "ls -la");
+	EXPECT_STREQ(cli_shell_summary_borrow("cd '/work dir'; git status", "/work dir"),
+		     "git status");
+	EXPECT_STREQ(cli_shell_summary_borrow("cd -- \"/work dir\" && pwd", "/work dir"), "pwd");
+	EXPECT_STREQ(cli_shell_summary_borrow("cd . && ls", "/work"), "ls");
 	for (const char *source : {"cd /other && ls", "cd $PWD && ls", "cd /work || ls",
 				   "cd /work & ls", "cd /work", "cd /work && ", "cd '/work && ls",
 				   "cd /work;; ls", "cd /work extra && ls", "echo cd /work && ls"})
-		EXPECT_STREQ(cli_shell_summary(source, "/work"), source);
+		EXPECT_STREQ(cli_shell_summary_borrow(source, "/work"), source);
 }
 
 class CliPresentationTest : public ::testing::Test
@@ -302,10 +303,11 @@ class CliPresentationTest : public ::testing::Test
 			options.external_signals = 1;
 			ASSERT_EQ(morph_tui_application_init(&ctx.base, &options), 0);
 			static const struct morph_tui_controller_ops root_ops{};
-			const struct morph_tui_controller root = {&root_ops, nullptr,
-								  MORPH_TUI_INPUT_EXTERNAL, 0, 0};
+			struct morph_tui_controller root = {&root_ops, nullptr,
+							    MORPH_TUI_INPUT_EXTERNAL, 0, 0};
 
-			ASSERT_EQ(morph_tui_application_present_controller(&ctx.base, &root), 0);
+			ASSERT_EQ(morph_tui_application_present_controller_take(&ctx.base, &root),
+				  0);
 			ASSERT_EQ(morph_tui_application_step(&ctx.base, 0), 0);
 		}
 		cli_turn_details_toggle(&ctx);
@@ -440,7 +442,7 @@ TEST(CliInputPromptTest, AnsiSequencesAreMarkedAsInvisible)
 	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
 	cli_output_set_color_enabled(_cli_output_context_ptr, 1);
 	const unsigned char *prompt = reinterpret_cast<const unsigned char *>(
-		cli_readline_input_prompt(_cli_output_context_ptr));
+		cli_readline_input_prompt_borrow(_cli_output_context_ptr));
 	int ignored = 0;
 	int escapes = 0;
 	if (!std::strchr(reinterpret_cast<const char *>(prompt), 0x01))
@@ -2100,8 +2102,8 @@ TEST_F(CliPresentationTest, LiveToolPreviewFollowsTailAndRetainsFullStream)
 	morph_buf_t body;
 	ASSERT_EQ(morph_buf_init(&body, 128), 0);
 	EXPECT_EQ(cli_transcript_live_body(ctx.transcript, &body, 100, 0), 3);
-	EXPECT_STREQ(morph_buf_cstr(&body), "  └ second\n    third\n    中文 progress");
-	EXPECT_EQ(utf8valid(morph_buf_cstr(&body)), nullptr);
+	EXPECT_STREQ(morph_buf_cstr_borrow(&body), "  └ second\n    third\n    中文 progress");
+	EXPECT_EQ(utf8valid(morph_buf_cstr_borrow(&body)), nullptr);
 	morph_buf_cleanup(&body);
 	testing::internal::CaptureStdout();
 	ToggleDetails();

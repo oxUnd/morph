@@ -29,7 +29,7 @@ void cli_turn_record_media_credits(struct cli_application *ctx, const char *kind
 static void cli_turn_record_image(void *data, int width, int height)
 {
 	struct cli_application *ctx = data;
-	const struct config *config = runtime_config_get(ctx->runtime);
+	const struct config *config = runtime_config_borrow(ctx->runtime);
 
 	if (config)
 		cli_turn_record_media_credits(
@@ -91,7 +91,7 @@ int cli_turn_execute(struct cli_application *ctx, const char *input)
 			morph_buf_cleanup(&input_buf);
 			return rc;
 		}
-		effective_input = morph_buf_cstr(&input_buf);
+		effective_input = morph_buf_cstr_borrow(&input_buf);
 		ctx->image_path[0] = '\0';
 	}
 

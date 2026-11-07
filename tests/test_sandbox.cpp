@@ -2,6 +2,7 @@
 extern "C" {
 #include "sandbox/sandbox.h"
 #include "sandbox/tool_paths.h"
+#include "util/cleanup.h"
 #include "agent/tool_context.h"
 #include "permission/context_internal.h"
 #include "agent/tool.h"
@@ -289,7 +290,7 @@ TEST(SandboxEnterTest, MacOSDevelopmentRuntimeAllowsSurfaceAndHostProcessProbe)
 	EXPECT_EXIT({
 	int rc = [&]() {
 		pid_t parent = getppid();
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
 		cfg.development_runtime = 1;
@@ -319,7 +320,7 @@ TEST(SandboxEnterTest, MacOSMetadataAccessDoesNotGrantFileContents)
 	close(fd);
 	int rc = run_in_child([&]() {
 		char *read_paths[] = { (char *)"/dev" };
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_paths = read_paths;
@@ -386,7 +387,7 @@ TEST(SandboxEnterTest, MacOSAllowsOptInProcessTempReadWriteCreateAndChmod)
 	close(fd);
 
 	int rc = run_in_child([&]() {
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 		char created_path[PATH_MAX];
 		cfg.allow_temp = 1;
 		cfg.path_policy_enabled = 1;
@@ -434,7 +435,7 @@ TEST(SandboxEnterTest, MacOSAllowsOptInProcessTempReadWriteCreateAndChmod)
 TEST(SandboxEnterTest, MacOSAllowsOptInPtyAllocation)
 {
 	int rc = run_in_child([]() {
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
@@ -460,7 +461,7 @@ TEST(SandboxEnterTest, MacOSAllowsOptInPtyAllocation)
 TEST(SandboxEnterTest, LinuxAllowsOptInPtyAllocation)
 {
 	int rc = run_in_child([]() {
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
@@ -489,7 +490,7 @@ TEST(SandboxEnterTest, LinuxAllowsOptInPosixSharedMemory)
 			   static_cast<long>(getpid())), 0);
 	shm_unlink(shm_name);
 	int rc = run_in_child([&]() {
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
@@ -521,7 +522,7 @@ TEST(SandboxEnterTest, LinuxProcessInfoControlsOtherProcEntries)
 	ASSERT_GT(snprintf(parent_cmdline, sizeof(parent_cmdline),
 			   "/proc/%ld/cmdline", static_cast<long>(getpid())), 0);
 	int rc = run_in_child([&]() {
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.process_exec = 1;
@@ -545,7 +546,7 @@ TEST(SandboxEnterTest, LinuxProcessInfoAllowsOtherProcEntries)
 	ASSERT_GT(snprintf(parent_cmdline, sizeof(parent_cmdline),
 			   "/proc/%ld/cmdline", static_cast<long>(getpid())), 0);
 	int rc = run_in_child([&]() {
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.process_exec = 1;
@@ -573,7 +574,7 @@ TEST(SandboxEnterTest, LinuxProcessInfoAllowsOtherProcEntries)
 TEST(SandboxSeccompTest, AllowsUnlistedSyscalls)
 {
 	int rc = run_in_child([]() {
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
@@ -593,7 +594,7 @@ TEST(SandboxSeccompTest, DeniesDangerousSyscallsWithEperm)
 {
 #if defined(SYS_io_uring_setup)
 	int rc = run_in_child([]() {
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
@@ -615,7 +616,7 @@ TEST(SandboxSeccompTest, DeniesDangerousSyscallsWithEperm)
 TEST(SandboxSeccompTest, AllowsUnixSocketpairWithoutNetwork)
 {
 	int rc = run_in_child([]() {
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 		int fds[2];
 
 		cfg.path_policy_enabled = 1;
@@ -635,7 +636,7 @@ TEST(SandboxSeccompTest, AllowsUnixSocketpairWithoutNetwork)
 TEST(SandboxSeccompTest, DeniesInternetSocketsWithoutNetwork)
 {
 	int rc = run_in_child([]() {
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
@@ -661,7 +662,7 @@ TEST(SandboxSeccompTest, RunsPythonIfAvailable)
 		GTEST_SKIP() << "python3 not installed";
 
 	int rc = run_in_child([]() {
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 		char *write_paths[] = { (char *)"/tmp" };
 
 		cfg.path_policy_enabled = 1;
@@ -714,7 +715,7 @@ TEST(SandboxEnterTest, PathPolicySeparatesWriteAndDelete)
 	int rc = run_in_child([&]() {
 		char *write_paths[] = {write_dir, resolved_write_dir};
 		char *delete_paths[] = {delete_dir, resolved_delete_dir};
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
@@ -759,7 +760,7 @@ TEST(SandboxEnterTest, PathPolicyAllowsDevNullWrite)
 	ASSERT_GE(fd, 0);
 	close(fd);
 	int rc = run_in_child([&]() {
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
@@ -788,7 +789,7 @@ TEST(SandboxEnterTest, PathPolicyAllowsDevNullWrite)
 TEST(SandboxEnterTest, LegacyPolicyAllowsDevNullWrite)
 {
 	int rc = run_in_child([]() {
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 
 		if (sandbox_enter(&cfg) != 0)
 			return 10;
@@ -832,7 +833,7 @@ static int create_loopback_listener(uint16_t *port)
 static int sandbox_loopback_connect(uint16_t port, int network_access)
 {
 	return run_in_child([=]() {
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 		struct sockaddr_in address = {};
 
 		cfg.path_policy_enabled = 1;
@@ -898,13 +899,10 @@ TEST(SandboxToolPathsTest, CacheLifecycleAndIsolation)
 		if (mkdir((home + "/runtime").c_str(), 0700) != 0)
 			return 23;
 		setenv("npm_config_cache", (home + "/custom-npm").c_str(), 1);
-		struct arena *arena = arena_create(8192);
-		if (!arena)
-			return 10;
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
-		if (sandbox_prepare_tool_paths(&cfg, arena) != 0)
+		if (sandbox_prepare_tool_paths(&cfg) != 0)
 			return 11;
 		std::string cache = home + "/custom-npm";
 		std::string pip = home + "/cache/pip";
@@ -915,9 +913,9 @@ TEST(SandboxToolPathsTest, CacheLifecycleAndIsolation)
 		/* Invalid overrides must not widen the policy or create cwd caches. */
 		setenv("npm_config_cache", "/", 1);
 		setenv("PIP_CACHE_DIR", "relative-cache", 1);
-		struct sandbox_config invalid = {};
+		struct sandbox_config invalid MORPH_CLEANUP(sandbox_config_cleanup) = {};
 		invalid.path_policy_enabled = 1;
-		if (sandbox_prepare_tool_paths(&invalid, arena) != 0)
+		if (sandbox_prepare_tool_paths(&invalid) != 0)
 			return 21;
 		for (int i = 0; i < invalid.write_paths_count; i++) {
 			if (strcmp(invalid.write_paths[i], "/") == 0 ||
@@ -1002,7 +1000,6 @@ TEST(SandboxToolPathsTest, CacheLifecycleAndIsolation)
 			close(fd);
 			return 18;
 		}
-		arena_destroy(arena);
 		return 0;
 	});
 	EXPECT_EQ(rc, 0);
@@ -1013,13 +1010,9 @@ TEST(SandboxToolPathsTest, CacheLifecycleAndIsolation)
 
 TEST(SandboxToolPathsTest, RejectsInvalidArguments)
 {
-	struct sandbox_config cfg = {};
-	struct arena *arena = arena_create(1024);
-	ASSERT_NE(arena, nullptr);
-	EXPECT_EQ(sandbox_prepare_tool_paths(nullptr, arena), -EINVAL);
-	EXPECT_EQ(sandbox_prepare_tool_paths(&cfg, nullptr), -EINVAL);
-	EXPECT_EQ(sandbox_prepare_tool_paths(&cfg, arena), -EINVAL);
-	arena_destroy(arena);
+	struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+	EXPECT_EQ(sandbox_prepare_tool_paths(nullptr), -EINVAL);
+	EXPECT_EQ(sandbox_prepare_tool_paths(&cfg), -EINVAL);
 }
 
 TEST(SandboxEnterTest, VarTmpFollowsTempCapability)
@@ -1029,7 +1022,7 @@ TEST(SandboxEnterTest, VarTmpFollowsTempCapability)
 	std::string path = std::string(dir) + "/state";
 	for (int allow : {0, 1}) {
 		int rc = run_in_child([&]() {
-			struct sandbox_config cfg = {};
+			struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 			cfg.path_policy_enabled = 1;
 			cfg.read_all = 1;
 			cfg.allow_temp = allow;
@@ -1070,7 +1063,7 @@ TEST(SandboxEnterTest, CustomTmpdirFollowsTempCapability)
 	for (int mode : {0, 1, 2, 3}) {
 		int rc = run_in_child([&]() {
 			setenv("TMPDIR", mode == 2 ? "/" : mode == 3 ? home : dir, 1);
-			struct sandbox_config cfg = {};
+			struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 			cfg.path_policy_enabled = 1;
 			cfg.read_all = 1;
 			cfg.allow_temp = mode != 0;
@@ -1119,19 +1112,17 @@ TEST(SandboxToolPathsTest, OverridesListsAndExistingGrants)
 		setenv("GOPATH", gopath.c_str(), 1);
 		std::string explicit_path = base + "/explicit";
 		char *grants[] = {explicit_path.data()};
-		struct sandbox_config cfg = {};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
 		cfg.write_paths = grants;
 		cfg.write_paths_count = 1;
 		cfg.delete_paths = grants;
 		cfg.delete_paths_count = 1;
-		struct arena *arena = arena_create(1024);
-		if (!arena || sandbox_prepare_tool_paths(&cfg, arena) != 0)
+		if (sandbox_prepare_tool_paths(&cfg) != 0)
 			return 11;
 		int count = cfg.write_paths_count;
-		if (sandbox_prepare_tool_paths(&cfg, arena) != 0 ||
-		    cfg.write_paths_count != count)
+		if (sandbox_prepare_tool_paths(&cfg) != 0 || cfg.write_paths_count != count)
 			return 12;
 		if (sandbox_enter(&cfg) != 0)
 			return 13;
@@ -1153,7 +1144,6 @@ TEST(SandboxToolPathsTest, OverridesListsAndExistingGrants)
 			close(fd);
 			return 16;
 		}
-		arena_destroy(arena);
 		return 0;
 	});
 	EXPECT_EQ(rc, 0);

@@ -8,8 +8,6 @@
 extern "C" {
 #endif
 
-struct arena;
-
 #define MEMORY_JOB_STATE_MAX 16
 
 struct memory_job_record {
@@ -17,17 +15,17 @@ struct memory_job_record {
 	int64_t session_id;
 	int64_t generation;
 	int64_t worker_pid;
-	const char *payload_json;
+	char *payload_json;
 	char state[MEMORY_JOB_STATE_MAX];
 	int attempts;
 	int error_code;
 };
 
 struct memory_job_records {
-	struct arena *arena;
 	morph_array_t rows;
 };
 
+/* Outputs must be zero-initialized and empty. Occupied owners return -EEXIST. */
 /* Record strings are copied and remain valid until records cleanup. */
 int memory_job_store_recoverable(struct db *db, struct memory_job_records *out);
 int memory_job_store_recent(struct db *db, int64_t session_id, int limit,

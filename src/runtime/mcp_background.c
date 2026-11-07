@@ -113,7 +113,7 @@ static int job_publish(struct runtime_mcp_job *job, struct tool_registry *pendin
 			.timeout_seconds = entry->timeout_seconds,
 		};
 
-		if (tool_lookup(&ctx->tools, spec.name)) {
+		if (tool_borrow(&ctx->tools, spec.name)) {
 			rc = -EEXIST;
 			break;
 		}

@@ -2,7 +2,7 @@
 
 void runtime_cancel(struct runtime_engine *engine)
 {
-	struct react_context *react = runtime_engine_active_react(engine);
+	struct react_context *react = runtime_engine_active_react_borrow(engine);
 
 	if (react)
 		react_cancel(react);

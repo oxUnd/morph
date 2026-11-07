@@ -92,7 +92,7 @@ static int cli_image_loader_read(const char *url, morph_buf_t *buffer)
 
 static unsigned char *cli_image_loader_decode(const morph_buf_t *buffer, int *w, int *h)
 {
-	const unsigned char *data = (const unsigned char *)morph_buf_cstr(buffer);
+	const unsigned char *data = (const unsigned char *)morph_buf_cstr_borrow(buffer);
 	int channels;
 	size_t bytes;
 	unsigned char *pixels;
@@ -124,7 +124,8 @@ int cli_image_loader_load(const char *url, char **path, void *user)
 	(void)user;
 	if (!url || !path)
 		return -EINVAL;
-	*path = NULL;
+	if (*path)
+		return -EEXIST;
 	rc = morph_buf_init(&buffer, BUFSIZ);
 	if (rc != 0)
 		return rc;

@@ -21,8 +21,12 @@ struct jsonrpc_response {
 	char *error_message;
 };
 
-char *jsonrpc_build_request(const struct jsonrpc_request *req);
-int jsonrpc_parse_response(const char *resp_str, struct jsonrpc_response *out);
+/* Independent serialized JSON; release with cJSON_free(). */
+char *jsonrpc_request_create(const struct jsonrpc_request *req);
+/* Borrows input only during parsing; out must have no owned fields.
+ * Success owns independent fields; failure preserves out. Release using
+ * jsonrpc_response_free(), including partially constructed valid owners. */
+int jsonrpc_response_copy(const char *resp_str, struct jsonrpc_response *out);
 void jsonrpc_response_free(struct jsonrpc_response *resp);
 
 #ifdef __cplusplus

@@ -83,7 +83,7 @@ static int cli_approval_read_choice(struct cli_application *ctx, int scoped, int
 				    : "  [y]es once / [s]ession / [a]lways / [n]o: ")
 		       : "  [y]es / [n]o / [a]lways: ";
 	char *rl_input =
-		cli_readline_prompt(ctx, cli_output_is_structured(ctx) ? "" : approval_prompt);
+		cli_readline_prompt_copy(ctx, cli_output_is_structured(ctx) ? "" : approval_prompt);
 	if (!rl_input) {
 		printf(ctx, "\n");
 		return -ECANCELED;
@@ -239,7 +239,7 @@ static void cli_approval_card_rule(struct cli_application *ctx, size_t width, co
 
 	printf(ctx, ANSI_YELLOW "%s", title ? "╭" : "╰");
 	if (title && width > 5) {
-		const char *end = utf8_advance_display_width(title, width - 5);
+		const char *end = utf8_advance_display_width_borrow(title, width - 5);
 
 		printf(ctx, "─ " ANSI_BOLD);
 		fwrite(title, 1, (size_t)(end - title), stdout);
@@ -280,7 +280,7 @@ static void cli_approval_card_field(struct cli_application *ctx, size_t width, c
 	line = safe;
 	do {
 		size_t budget = width - 4u - indent;
-		char *end = (char *)utf8_advance_display_width(line, budget);
+		char *end = (char *)utf8_advance_display_width_borrow(line, budget);
 		char saved = *end;
 
 		*end = '\0';
@@ -553,7 +553,8 @@ void cli_approval_render_operation(struct cli_application *ctx, const struct too
 					(void)morph_buf_puts(&programs, op->programs[i]);
 				}
 				cli_approval_card_field(ctx, width, "Programs",
-							morph_buf_cstr(&programs), ANSI_BOLD);
+							morph_buf_cstr_borrow(&programs),
+							ANSI_BOLD);
 				morph_buf_cleanup(&programs);
 			}
 		}

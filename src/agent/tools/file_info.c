@@ -1,4 +1,6 @@
 #include "file_info.h"
+#include "util/json.h"
+#include "util/cleanup.h"
 #include "agent/tool_context.h"
 #include "util/log.h"
 #include "util/file.h"
@@ -30,7 +32,7 @@ static int file_info_exec(const char *args_json, struct tool_result *result, voi
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
+		(void)tool_result_success_json_text_copy(result, "{\"error\":\"invalid JSON\"}");
 		return -EINVAL;
 	}
 
@@ -38,9 +40,9 @@ static int file_info_exec(const char *args_json, struct tool_result *result, voi
 	const char *file_path = cJSON_IsString(fp) ? fp->valuestring : NULL;
 	if (!file_path) {
 		cJSON_Delete(root);
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"missing 'file_path' parameter. "
-			"Usage: file_info({\\\"file_path\\\": \\\"path/to/file\\\"})\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"missing 'file_path' parameter. "
+				"Usage: file_info({\\\"file_path\\\": \\\"path/to/file\\\"})\"}");
 		return -EINVAL;
 	}
 
@@ -52,11 +54,12 @@ static int file_info_exec(const char *args_json, struct tool_result *result, voi
 		if (rc < 0) {
 			cJSON_Delete(root);
 			if (rc == -ENOENT)
-				(void)tool_result_success_json_text(result, strdup(
-					"{\"error\":\"path does not exist\"}"));
+				(void)tool_result_success_json_text_copy(
+					result, "{\"error\":\"path does not exist\"}");
 			else
-				(void)tool_result_success_json_text(result, strdup(
-					"{\"error\":\"read path outside workspace: permission denied\"}"));
+				(void)tool_result_success_json_text_copy(
+					result, "{\"error\":\"read path outside workspace: "
+						"permission denied\"}");
 			return rc;
 		}
 	} else {
@@ -67,7 +70,8 @@ static int file_info_exec(const char *args_json, struct tool_result *result, voi
 	struct stat st;
 	if (stat(resolved_path, &st) != 0) {
 		cJSON_Delete(root);
-		(void)tool_result_success_json_text(result, strdup("{\"error\":\"path does not exist\"}"));
+		(void)tool_result_success_json_text_copy(result,
+							 "{\"error\":\"path does not exist\"}");
 		return -ENOENT;
 	}
 
@@ -98,15 +102,28 @@ static int file_info_exec(const char *args_json, struct tool_result *result, voi
 	         localtime(&st.st_mtime));
 	cJSON_AddStringToObject(out, "modified", timebuf);
 
-	char *str = cJSON_PrintUnformatted(out);
+	char *str MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(out);
 	cJSON_Delete(out);
 	cJSON_Delete(root);
-	(void)tool_result_success_json_text(result, str);
+	(void)tool_result_success_json_text_copy(result, str);
 	return 0;
 }
 
 int file_info_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg) return -EINVAL;
-	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "file_info", .description = "Get file or directory metadata (type, size, permissions, modification time, extension). Provide file_path.", .input_schema = "{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the file or directory\"}},\"required\":[\"file_path\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = file_info_exec, .user_data = tctx, .user_data_destroy = NULL });
+	return tool_register_borrow(
+		reg,
+		&(struct tool_spec){
+			.origin = TOOL_ORIGIN_BUILTIN,
+			.name = "file_info",
+			.description = "Get file or directory metadata (type, size, permissions, "
+				       "modification time, extension). Provide file_path.",
+			.input_schema = "{\"type\":\"object\",\"properties\":{\"file_path\":{"
+					"\"type\":\"string\",\"description\":\"Path to the file or "
+					"directory\"}},\"required\":[\"file_path\"]}",
+			.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+			.exec = file_info_exec,
+			.user_data = tctx,
+			.user_data_destroy = NULL});
 }

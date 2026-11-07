@@ -139,7 +139,7 @@ static int runtime_sync_source_directory(const struct runtime *runtime,
 		if (expanded_database) {
 			base = expanded_database;
 		} else {
-			expanded = file_expand_path(runtime->options.db_path);
+			expanded = file_expand_path_copy(runtime->options.db_path);
 			if (!expanded)
 				return -ENOMEM;
 			base = expanded;
@@ -169,7 +169,7 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 
 	config_set_defaults(runtime ? runtime->options.logger : NULL, &ctx->config);
 	if (runtime->options.config_path && runtime->options.config_path[0]) {
-		expanded = file_expand_path(runtime->options.config_path);
+		expanded = file_expand_path_copy(runtime->options.config_path);
 		if (!expanded)
 			return -ENOMEM;
 		strncpy(ctx->config_path, expanded,
@@ -190,8 +190,7 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 	}
 	if (runtime->options.output_dir_override &&
 	    runtime->options.output_dir_override[0]) {
-		expanded_output = file_expand_path(
-			runtime->options.output_dir_override);
+		expanded_output = file_expand_path_copy(runtime->options.output_dir_override);
 		if (!expanded_output) {
 			free(expanded);
 			return -ENOMEM;
@@ -201,7 +200,7 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 		ctx->config.general.output_dir[
 			sizeof(ctx->config.general.output_dir) - 1] = '\0';
 	} else if (ctx->config.general.output_dir[0] == '~') {
-		expanded_output = file_expand_path(ctx->config.general.output_dir);
+		expanded_output = file_expand_path_copy(ctx->config.general.output_dir);
 		if (!expanded_output) {
 			free(expanded);
 			return -ENOMEM;
@@ -233,7 +232,7 @@ static int runtime_open_database(struct runtime *runtime)
 
 	if (!runtime->options.db_path || !runtime->options.db_path[0])
 		return -EINVAL;
-	expanded = file_expand_path(runtime->options.db_path);
+	expanded = file_expand_path_copy(runtime->options.db_path);
 	if (!expanded)
 		return -ENOMEM;
 	rc = runtime_sync_source_directory(runtime, expanded, source);
@@ -244,7 +243,7 @@ static int runtime_open_database(struct runtime *runtime)
 		free(expanded);
 		return rc;
 	}
-	dir = file_expand_path("~/.morph");
+	dir = file_expand_path_copy("~/.morph");
 	if (dir) {
 		(void)file_ensure_dir(dir);
 		free(dir);
@@ -263,9 +262,9 @@ static int runtime_set_workdir(struct runtime *runtime)
 	int rc;
 
 	if (runtime->options.workdir && runtime->options.workdir[0]) {
-		resolved = file_resolve_path(runtime->options.workdir);
+		resolved = file_resolve_path_copy(runtime->options.workdir);
 		if (!resolved)
-			resolved = file_expand_path(runtime->options.workdir);
+			resolved = file_expand_path_copy(runtime->options.workdir);
 		strncpy(ctx->workdir, resolved ? resolved : runtime->options.workdir,
 			sizeof(ctx->workdir) - 1);
 		free(resolved);
@@ -386,7 +385,7 @@ static int runtime_start_components(struct runtime *runtime)
 	runtime_emit_startup(runtime, "startup.mcp", "end",
 			     "Services configured");
 	runtime_context_configure_engine(ctx);
-	ctx->memory_options = runtime_context_memory_options(ctx);
+	ctx->memory_options = runtime_context_memory_options_borrow(ctx);
 	ctx->memory_options.worker = memory_worker_create(runtime ? runtime->options.logger : NULL);
 	if (!ctx->memory_options.worker)
 		return -ENOMEM;
@@ -438,7 +437,7 @@ static int runtime_start_components(struct runtime *runtime)
 	}
 	{
 		char session_id[32] = "";
-		struct runtime_models dynamic_models = runtime_context_models(ctx);
+		struct runtime_models dynamic_models = runtime_context_models_borrow(ctx);
 
 		if (ctx->current_session.id > 0) {
 			snprintf(session_id, sizeof(session_id), "%lld",
@@ -466,7 +465,8 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 
 	if (!options || !out || !options->db_path)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	if (options->startup_error)
 		memset(options->startup_error, 0, sizeof(*options->startup_error));
 	runtime = calloc(1, sizeof(*runtime));
@@ -592,9 +592,9 @@ void runtime_close(struct runtime *runtime)
 		cJSON_Delete(output);
 	}
 	hook_manager_cleanup(&runtime->context.hooks);
-	cleanup = runtime_context_shutdown_resources(
-		&runtime->context,
-		runtime->options.allocate_skill_registry);
+	cleanup = runtime_context_shutdown_resources(&runtime->context,
+						     runtime->options.allocate_skill_registry);
+	cleanup.jobs_owner = &runtime->jobs_owner;
 	runtime_bootstrap_cleanup(&cleanup);
 	runtime_jobs_cleanup(runtime);
 	if (runtime->context.execution_lock_ready)
@@ -681,23 +681,22 @@ void runtime_finish_turn(void *user_data, const struct runtime_request *request,
 	runtime_context_finish_turn(&((struct runtime *)user_data)->context);
 }
 
-const struct config *runtime_config_get(const struct runtime *runtime)
+const struct config *runtime_config_borrow(const struct runtime *runtime)
 {
 	return runtime ? &runtime->context.config : NULL;
 }
 
-const char *runtime_workdir_get(const struct runtime *runtime)
+const char *runtime_workdir_borrow(const struct runtime *runtime)
 {
 	return runtime ? runtime->context.workdir : NULL;
 }
 
-const char *runtime_config_path_get(const struct runtime *runtime)
+const char *runtime_config_path_borrow(const struct runtime *runtime)
 {
 	return runtime ? runtime->context.config_path : NULL;
 }
 
-char *runtime_output_get_json(struct runtime *runtime, const char *path)
+char *runtime_output_json_copy(struct runtime *runtime, const char *path)
 {
-	return runtime ? runtime_output_get_json_by_path(
-		&runtime->context.database, path) : NULL;
+	return runtime ? runtime_output_json_by_path_copy(&runtime->context.database, path) : NULL;
 }

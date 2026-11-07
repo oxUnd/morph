@@ -1,4 +1,5 @@
 #include "agent/memory.h"
+#include "util/cleanup.h"
 
 #include "persistence/memory_snapshot.h"
 #include "session.h"
@@ -20,7 +21,7 @@ static int memory_query_append_type(struct db *db, int64_t session_id,
 				    const struct memory_query_options *options, morph_buf_t *buf)
 {
 	struct memory_snapshot_options read = {0};
-	struct memory_snapshot snapshot;
+	struct memory_snapshot snapshot MORPH_CLEANUP(memory_snapshot_cleanup) = {0};
 	struct memory_fact_record *fact;
 	struct memory_rule_record *rule;
 	struct memory_episode_record *episode;
@@ -140,7 +141,7 @@ static int memory_query_append_one_session(struct db *db, const struct session *
 	if (opts->type == MEMORY_QUERY_PROFILE || opts->type == MEMORY_QUERY_FACTS ||
 	    opts->type == MEMORY_QUERY_CHANGES) {
 		char *preferences =
-			preference_render(db, s->id, opts->type == MEMORY_QUERY_CHANGES);
+			preference_render_copy(db, s->id, opts->type == MEMORY_QUERY_CHANGES);
 
 		if (!preferences)
 			return MORPH_ERR_DB;
@@ -151,7 +152,7 @@ static int memory_query_append_one_session(struct db *db, const struct session *
 			return rc;
 	}
 	if (opts->type == MEMORY_QUERY_ALL) {
-		rendered = memory_render_session(db, s->id, opts->max_episodes);
+		rendered = memory_session_text_create(db, s->id, opts->max_episodes);
 		if (!rendered)
 			return -ENOMEM;
 		rc = morph_buf_puts(buf, rendered);
@@ -215,11 +216,11 @@ static int memory_query_append_current_session(struct db *db, int64_t current_se
 	return 0;
 }
 
-char *memory_query_render(struct db *db, int64_t current_session_id,
-			  const struct memory_query_options *opts)
+char *memory_query_text_create(struct db *db, int64_t current_session_id,
+			       const struct memory_query_options *opts)
 {
 	struct memory_query_options local_opts;
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc;
 
 	if (!db || !db->handle)

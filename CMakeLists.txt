@@ -8,6 +8,17 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+include(CheckCSourceCompiles)
+check_c_source_compiles("\
+#include \"${CMAKE_CURRENT_SOURCE_DIR}/src/util/cleanup.h\"
+int main(void) {
+    char *text MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+    return text != NULL;
+}" MORPH_HAS_SCOPE_CLEANUP)
+if(NOT MORPH_HAS_SCOPE_CLEANUP)
+    message(FATAL_ERROR "morph requires GCC/Clang cleanup attribute support")
+endif()
+
 set(CMAKE_C_FLAGS_DEBUG "-g -O0 -DDEBUG")
 set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG")
 
@@ -219,6 +230,15 @@ set(MORPH_MARKDOWN_BUILD_KITTY ON CACHE BOOL "" FORCE)
 set(MORPH_MARKDOWN_BUILD_KITTY_DEMO OFF CACHE BOOL "" FORCE)
 add_subdirectory(fronts/morph-markdown)
 include(cmake/FixCmarkGfm.cmake)
+
+# Keep strict adapter warnings while treating upstream headers as external.
+FetchContent_GetProperties(cmark-gfm
+	SOURCE_DIR MORPH_CMARK_SOURCE_DIR
+	BINARY_DIR MORPH_CMARK_BINARY_DIR)
+target_include_directories(morph-markdown-render SYSTEM PRIVATE
+	${MORPH_CMARK_SOURCE_DIR}/src
+	${MORPH_CMARK_SOURCE_DIR}/extensions
+	${MORPH_CMARK_BINARY_DIR}/src)
 
 add_compile_options(
 	$<$<COMPILE_LANGUAGE:C>:-Wall>

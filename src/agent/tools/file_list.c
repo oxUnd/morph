@@ -154,7 +154,7 @@ static int list_keep_entry(morph_array_t *items, const struct list_entry *entry,
 		return -ENOMEM;
 
 	if (items->nelts < capacity) {
-		struct list_entry *slot = morph_array_push(items);
+		struct list_entry *slot = morph_array_push_borrow(items);
 		if (!slot) {
 			free(name);
 			return -ENOMEM;
@@ -271,7 +271,7 @@ static int list_result(const struct list_options *opts, morph_array_t *items,
 			if (rc < 0)
 				goto out_free_json;
 		}
-		const struct list_entry *entry = morph_array_get(items, i);
+		const struct list_entry *entry = morph_array_borrow(items, i);
 		cJSON *item = list_entry_json(entry);
 		char *json = item ? cJSON_PrintUnformatted(item) : NULL;
 		if (!json) {
@@ -298,8 +298,8 @@ static int list_result(const struct list_options *opts, morph_array_t *items,
 		returned++;
 	}
 	int more = returned < eligible;
-	cJSON *next = more && returned ? list_entry_json(morph_array_get(items, returned - 1)) :
-		cJSON_CreateNull();
+	cJSON *next = more && returned ? list_entry_json(morph_array_borrow(items, returned - 1))
+				       : cJSON_CreateNull();
 	if (!next || !cJSON_AddItemToObject(out, "next_after", next)) {
 		cJSON_Delete(next);
 		rc = (-ENOMEM);
@@ -320,8 +320,7 @@ static int list_result(const struct list_options *opts, morph_array_t *items,
 		rc = (-ENOMEM);
 		goto out_free_json;
 	}
-	rc = (tool_result_success(result, out));
-	out = NULL;
+	rc = tool_result_success_take(result, &out);
 out_free_json:
 	cJSON_Delete(out);
 	return rc;
@@ -343,7 +342,8 @@ static int file_list_exec(const char *args_json, struct tool_result *result, voi
 	int rc = list_options_parse(root, &opts);
 	if (rc < 0) {
 		cJSON_Delete(root);
-		(void)tool_result_error(result, "invalid_arguments",
+		(void)tool_result_error_copy(
+			result, "invalid_arguments",
 			"Provide dir_path, limit (1..10000), max_bytes (2048..1048576), "
 			"and optional after={name,type} from next_after.");
 		return rc;
@@ -394,7 +394,7 @@ out_cleanup:
 			rc == -EFBIG ? "Directory entry exceeds max_bytes; increase max_bytes." :
 			rc == -EILSEQ ? "Directory contains a name that is not valid UTF-8." :
 			morph_strerror(rc);
-		(void)tool_result_error(result, "file_list_failed", message);
+		(void)tool_result_error_copy(result, "file_list_failed", message);
 	}
 	return rc;
 }
@@ -403,23 +403,31 @@ int file_list_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg)
 		return -EINVAL;
-	return tool_register(reg, &(struct tool_spec){
-		.origin = TOOL_ORIGIN_BUILTIN,
-		.name = "file_list",
-		.description = "List one directory, including hidden and ignored entries. "
-			"Directories first, then other entries, sorted by name. Symlinks are not followed. "
-			"limit defaults to 1000 (1..10000); max_bytes bounds the entries JSON array "
-			"and defaults to 51200 (2048..1048576). If truncated, pass next_after as after "
-			"with the same dir_path to continue. Pagination is best effort if contents change.",
-		.input_schema = "{\"type\":\"object\",\"properties\":{"
-			"\"dir_path\":{\"type\":\"string\"},"
-			"\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":10000},"
-			"\"max_bytes\":{\"type\":\"integer\",\"minimum\":2048,\"maximum\":1048576},"
-			"\"after\":{\"type\":\"object\",\"properties\":{"
-			"\"name\":{\"type\":\"string\"},\"type\":{\"type\":\"string\"}},"
-			"\"required\":[\"name\",\"type\"]}},\"required\":[\"dir_path\"]}",
-		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
-		.exec = file_list_exec,
-		.user_data = tctx,
-	});
+	return tool_register_borrow(
+		reg,
+		&(struct tool_spec){
+			.origin = TOOL_ORIGIN_BUILTIN,
+			.name = "file_list",
+			.description = "List one directory, including hidden and ignored entries. "
+				       "Directories first, then other entries, sorted by name. "
+				       "Symlinks are not followed. "
+				       "limit defaults to 1000 (1..10000); max_bytes bounds the "
+				       "entries JSON array "
+				       "and defaults to 51200 (2048..1048576). If truncated, pass "
+				       "next_after as after "
+				       "with the same dir_path to continue. Pagination is best "
+				       "effort if contents change.",
+			.input_schema =
+				"{\"type\":\"object\",\"properties\":{"
+				"\"dir_path\":{\"type\":\"string\"},"
+				"\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":10000},"
+				"\"max_bytes\":{\"type\":\"integer\",\"minimum\":2048,\"maximum\":"
+				"1048576},"
+				"\"after\":{\"type\":\"object\",\"properties\":{"
+				"\"name\":{\"type\":\"string\"},\"type\":{\"type\":\"string\"}},"
+				"\"required\":[\"name\",\"type\"]}},\"required\":[\"dir_path\"]}",
+			.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+			.exec = file_list_exec,
+			.user_data = tctx,
+		});
 }

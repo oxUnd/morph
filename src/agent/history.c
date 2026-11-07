@@ -4,7 +4,7 @@
 #include "prompt_context.h"
 #include "react.h"
 #include "tokenizer.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/log.h"
@@ -32,14 +32,15 @@ int agent_history_record_request(struct react_context *ctx, const struct model *
 		return -EINVAL;
 	if (!ctx->history_enabled || !ctx->history_db || ctx->history_session_id <= 0)
 		return 0;
-	rc = model_input_snapshot(model, system_prompt, messages, count, tools, tool_count, &input);
+	rc = model_input_snapshot_create(model, system_prompt, messages, count, tools, tool_count,
+					 &input);
 	if (rc != 0)
 		return rc;
 	json = cJSON_PrintUnformatted(input);
 	cJSON_Delete(input);
 	if (!json)
 		return -ENOMEM;
-	safe = history_redact_json(ctx, json);
+	safe = history_redacted_json_create(ctx, json);
 	free(json);
 	if (!safe)
 		return -ENOMEM;
@@ -77,8 +78,8 @@ static int history_store(struct react_context *ctx, const struct model_history_i
 	 * Replacing secrets again here could expand them beyond that budget. */
 	content = strcmp(insert->kind, "tool_result") == 0
 			  ? (insert->content ? strdup(insert->content) : NULL)
-			  : history_redact_all(ctx, insert->content);
-	payload = history_redact_json(ctx, insert->payload_json);
+			  : history_redacted_text_create(ctx, insert->content);
+	payload = history_redacted_json_create(ctx, insert->payload_json);
 	if ((insert->content && !content) || (insert->payload_json && !payload)) {
 		free(content);
 		free(payload);
@@ -261,7 +262,7 @@ int history_store_turn_outcomes(struct db *db, int64_t session_id, const char *t
 		item.content = (char *)sqlite3_column_text(select, 1);
 		item.payload_json = json;
 		if (json)
-			rendered = history_user_content(&item);
+			rendered = history_user_content_create(&item);
 		if (!rendered) {
 			free(json);
 			error = (-ENOMEM);
@@ -342,7 +343,7 @@ int agent_history_record_tool_calls(struct react_context *ctx, const char *conte
 			cJSON_AddStringToObject(call, "input",
 						calls[i].arguments ? calls[i].arguments : "");
 		} else {
-			rc = agent_history_normalize_tool_arguments(calls[i].arguments, &arguments);
+			rc = agent_history_tool_arguments_copy(calls[i].arguments, &arguments);
 			if (rc != 0) {
 				cJSON_Delete(call);
 				cJSON_Delete(root);
@@ -385,13 +386,13 @@ int agent_history_record_tool_result_ex(struct react_context *ctx, const char *t
 	char key[256];
 	cJSON *metadata;
 	char *payload = NULL;
-	char *stored;
+	char *stored = NULL;
 	int truncated = 0;
 	int rc;
 
 	if (!ctx)
 		return -EINVAL;
-	rc = agent_history_prepare_tool_content(ctx, content, &stored, &truncated);
+	rc = agent_history_tool_content_copy(ctx, content, &stored, &truncated);
 	if (rc != 0)
 		return rc;
 	item.session_id = ctx->history_session_id;
@@ -430,7 +431,7 @@ int agent_history_record_tool_result_ex(struct react_context *ctx, const char *t
 			return -ENOMEM;
 		}
 		utf8_sanitize_inplace(original);
-		redacted = history_redact_json(ctx, original);
+		redacted = history_redacted_json_create(ctx, original);
 		free(original);
 		if (!redacted || !cJSON_AddStringToObject(metadata, "original_content", redacted)) {
 			free(redacted);
@@ -441,7 +442,7 @@ int agent_history_record_tool_result_ex(struct react_context *ctx, const char *t
 		free(redacted);
 	}
 	if (artifacts && artifacts->count > 0) {
-		cJSON *artifact_json = tool_artifact_list_to_json(artifacts);
+		cJSON *artifact_json = tool_artifact_list_json_create(artifacts);
 
 		if (artifact_json)
 			cJSON_AddItemToObject(metadata, "artifacts", artifact_json);
@@ -487,7 +488,7 @@ int agent_history_record_receipt(struct react_context *ctx, const char *name, co
 				 const char *message, const char *task, int count, int error_code)
 {
 	struct model_history_insert item = {0};
-	morph_buf_t text;
+	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	cJSON *payload;
 	char *json;
 	char key[320];
@@ -533,7 +534,7 @@ int agent_history_record_receipt(struct react_context *ctx, const char *name, co
 	item.turn_id = ctx->turn_id;
 	item.kind = "background_receipt";
 	item.role = "system";
-	item.content = morph_buf_cstr(&text);
+	item.content = morph_buf_cstr_borrow(&text);
 	item.payload_json = json;
 	item.idempotency_key = key;
 	item.token_count = tokenizer_count(ctx->tokenizer, item.content);

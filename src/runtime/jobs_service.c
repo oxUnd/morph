@@ -3,6 +3,8 @@
 #include "agent/tools/exec_jobs.h"
 #include "util/strmap.h"
 #include "util/log.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -68,13 +70,18 @@ int runtime_jobs_init(struct runtime *runtime)
 		NULL, NULL, NULL);
 	if (rc != SQLITE_OK)
 		return MORPH_ERR_DB;
-	runtime->jobs = exec_tool_jobs_handle(&runtime->context.tools);
+	rc = exec_tool_jobs_acquire(&runtime->context.tools, &runtime->jobs_owner);
+	if (rc && rc != -ENOENT)
+		return rc;
+	runtime->jobs = runtime->jobs_owner.jobs;
 	rc = exec_tool_set_event_callback(&runtime->context.tools, runtime_process_event, runtime);
 	return rc == -ENOENT ? 0 : rc;
 }
 
 void runtime_jobs_cleanup(struct runtime *runtime)
 {
+	runtime->jobs = NULL;
+	exec_tool_jobs_release(&runtime->jobs_owner);
 	if (runtime->jobs_lock_ready) {
 		pthread_mutex_destroy(&runtime->jobs_lock);
 		runtime->jobs_lock_ready = 0;
@@ -97,6 +104,8 @@ int runtime_process_list(struct runtime *runtime, cJSON **out)
 {
 	if (!runtime || !out || !runtime->jobs_lock_ready)
 		return -EINVAL;
+	if (*out)
+		return -EEXIST;
 	int64_t owner = runtime->context.current_session.id;
 	cJSON *jobs = NULL;
 	int rc = runtime->jobs ? exec_jobs_list(runtime->jobs, owner, &jobs) : 0;
@@ -116,7 +125,7 @@ int runtime_process_list(struct runtime *runtime, cJSON **out)
 	cJSON *job;
 	cJSON_ArrayForEach(job, jobs)
 	{
-		rc = morph_strmap_set(&live, job_string(job, "session_id"), job);
+		rc = morph_strmap_set_borrow(&live, job_string(job, "session_id"), job);
 		if (rc)
 			break;
 	}
@@ -196,13 +205,18 @@ static int resolve_job(struct runtime *runtime, const char *id, char **resolved)
 
 int runtime_process_read(struct runtime *runtime, const char *id, cJSON **out)
 {
-	char *resolved = NULL;
+	char *resolved MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	cJSON *result MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	if (!runtime || !out || !runtime->jobs_lock_ready)
+		return -EINVAL;
+	if (*out)
+		return -EEXIST;
 	int rc = resolve_job(runtime, id, &resolved);
 	if (rc)
 		return rc;
 	rc = runtime->jobs
 		     ? exec_jobs_read_retained(runtime->jobs, runtime->context.current_session.id,
-					       resolved, out)
+					       resolved, &result)
 		     : -ENOENT;
 	if (rc == -ENOENT) {
 		sqlite3_stmt *stmt = NULL;
@@ -216,19 +230,22 @@ int runtime_process_read(struct runtime *runtime, const char *id, cJSON **out)
 			sqlite3_bind_int64(stmt, 2, runtime->context.current_session.id);
 			sql_rc = sqlite3_step(stmt);
 		}
-		*out = sql_rc == SQLITE_ROW
-			       ? cJSON_Parse((const char *)sqlite3_column_text(stmt, 0))
-			       : NULL;
+		result = sql_rc == SQLITE_ROW
+				 ? cJSON_Parse((const char *)sqlite3_column_text(stmt, 0))
+				 : NULL;
 		sqlite3_finalize(stmt);
 		pthread_mutex_unlock(&runtime->jobs_lock);
-		rc = *out		     ? 0
+		rc = result		     ? 0
 		     : sql_rc == SQLITE_DONE ? -ENOENT
 		     : sql_rc == SQLITE_ROW  ? MORPH_ERR_PARSE
 					     : MORPH_ERR_DB;
-		if (*out)
-			stored_job_unavailable(*out);
+		if (result)
+			stored_job_unavailable(result);
 	}
-	free(resolved);
+	if (rc == 0) {
+		*out = result;
+		result = NULL;
+	}
 	return rc;
 }
 

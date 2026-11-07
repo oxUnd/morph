@@ -58,15 +58,17 @@ int skill_discover(struct skill_registry *reg, const char *dir_path);
 /* Project skills take precedence; NULL workdir omits project discovery. */
 int skill_discover_configured(struct skill_registry *reg, const char *workdir,
 			     const char *user_dir);
-struct skill_entry *skill_lookup(struct skill_registry *reg, const char *name);
+/* Registry-owned slot, valid until registry cleanup; activation mutates it. */
+struct skill_entry *skill_borrow(struct skill_registry *reg, const char *name);
 /* Sort a pointer view without moving registry entries or invalidating lookups. */
-int skill_sorted_entries(const struct skill_registry *reg,
-			 const struct skill_entry **entries, size_t capacity);
+int skill_sorted_entries_borrow(const struct skill_registry *reg,
+				const struct skill_entry **entries, size_t capacity);
 int skill_activate(struct skill_entry *skill);
 void skill_deactivate(struct skill_entry *skill);
 void skill_deactivate_all(struct skill_registry *reg);
-int skill_build_activated_instructions_checked(struct skill_registry *reg, char **out);
-char *skill_build_activated_instructions(struct skill_registry *reg);
+/* Independent malloc-owned instructions, or NULL for no instructions.
+ * out must be NULL; failure preserves it. Release with free(). */
+int skill_activated_instructions_create(struct skill_registry *reg, char **out);
 int skill_build_catalog(struct skill_registry *reg, char *buf, size_t buf_size);
 
 #ifdef __cplusplus

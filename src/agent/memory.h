@@ -44,15 +44,14 @@ const char *memory_preference_request_scope(const char *input);
 int memory_accept_input(struct db *db, int64_t session_id, const char *input,
 			const char *event_token, const struct memory_options *opts);
 
-int memory_build_context_checked(struct db *db, int64_t session_id, const char *query,
-				 const struct memory_options *opts, char **out);
-char *memory_build_context(struct db *db, int64_t session_id, const char *query,
-			   const struct memory_options *opts);
+/* Creates owned context text in an empty output; no relevant memory yields NULL. */
+int memory_context_create(struct db *db, int64_t session_id, const char *query,
+			  const struct memory_options *opts, char **out);
 
-char *memory_render_session(struct db *db, int64_t session_id, int max_episodes);
+char *memory_session_text_create(struct db *db, int64_t session_id, int max_episodes);
 
-char *memory_query_render(struct db *db, int64_t current_session_id,
-			  const struct memory_query_options *opts);
+char *memory_query_text_create(struct db *db, int64_t current_session_id,
+			       const struct memory_query_options *opts);
 
 int memory_consolidate_turn(struct db *db, int64_t session_id, const char *user_input,
 			    const char *assistant_output, const struct react_step *steps,
@@ -75,7 +74,7 @@ int memory_consolidate_turn_async(struct db *db, int64_t session_id, const char 
 void memory_async_shutdown(struct memory_worker *worker);
 /* Recover queued/crashed advisory jobs; preferences are already committed. */
 int memory_async_resume(struct db *db, const struct memory_options *opts);
-char *memory_background_render(struct db *db, int64_t session_id);
+char *memory_background_text_create(struct db *db, int64_t session_id);
 
 /* Return non-zero when async memory consolidation has queued or in-flight
  * work that shutdown may need to wait for. */

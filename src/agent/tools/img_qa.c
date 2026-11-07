@@ -3,7 +3,8 @@
 #include "models/llm.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "cJSON.h"
@@ -32,46 +33,37 @@ static int img_qa_int_arg(cJSON *root, const char *name, int fallback,
 	if (!item)
 		return fallback;
 	if (!cJSON_IsNumber(item)) {
-		(void)tool_result_errorf(result, "tool_failed",
-			"'%s' must be an integer", name);
+		(void)tool_result_error_format(result, "tool_failed", "'%s' must be an integer",
+					       name);
 		return -EINVAL;
 	}
 	value = item->valueint;
 	if (value < min || value > max) {
-		(void)tool_result_errorf(result, "tool_failed",
-			"'%s' must be between %d and %d", name, min, max);
+		(void)tool_result_error_format(result, "tool_failed",
+					       "'%s' must be between %d and %d", name, min, max);
 		return -EINVAL;
 	}
 	return value;
 }
 
-static int img_qa_take_call_error(struct tool_result *result,
-				  struct model *llm)
+static int img_qa_report_call_error(struct tool_result *result, struct model *llm)
 {
-	cJSON *root;
-	char *json;
-	int rc;
-
 	if (!result)
 		return -EINVAL;
-	root = cJSON_CreateObject();
-	if (!root)
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	if (!root || !cJSON_AddStringToObject(root, "error", "image QA LLM call failed"))
 		return -ENOMEM;
-	cJSON_AddStringToObject(root, "error", "image QA LLM call failed");
-	if (llm && llm->last_error[0])
-		cJSON_AddStringToObject(root, "detail", llm->last_error);
-	cJSON_AddStringToObject(root, "hint",
-		"img_qa uses [model.vision]; configure it to a vision-capable "
-		"chat model. img_gen uses [model.image], so image generation "
-		"can work while image QA fails.");
-	json = cJSON_PrintUnformatted(root);
-	cJSON_Delete(root);
+	if (llm && llm->last_error[0] && !cJSON_AddStringToObject(root, "detail", llm->last_error))
+		return -ENOMEM;
+	if (!cJSON_AddStringToObject(root, "hint",
+				     "img_qa uses [model.vision]; configure it to a vision-capable "
+				     "chat model. img_gen uses [model.image], so image generation "
+				     "can work while image QA fails."))
+		return -ENOMEM;
+	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(root);
 	if (!json)
 		return -ENOMEM;
-	rc = tool_result_success_json_text(result, json);
-	if (rc < 0)
-		free(json);
-	return rc;
+	return tool_result_success_json_text_copy(result, json);
 }
 
 static int img_qa_exec(const char *args_json, struct tool_result *result,
@@ -82,16 +74,15 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 
 	if (user_data)
 		local = *(struct img_qa_context *)user_data;
-	local.llm = model_bind_http_request(
+	local.llm = model_request_view_init(
 		local.llm, result && result->runtime ? &result->runtime->http : NULL,
 		&request_model);
 	struct img_qa_context *ctx = user_data ? &local : NULL;
 	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
 	struct model *llm = ctx ? ctx->llm : NULL;
 	int rc = 0;
-	cJSON *root = NULL;
-	struct arena *arena = NULL;
-	morph_buf_t buf;
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	struct tool_runtime_stream_sink stream;
 	struct model_image_chat_options opts;
 	char resolved_path[PATH_MAX];
@@ -104,20 +95,19 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 	if (!result)
 		return -EINVAL;
 	if (!llm || !llm->api_key[0]) {
-		(void)tool_result_success_json_text(result,
-			strdup("{\"error\":\"no multimodal LLM configured\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"no multimodal LLM configured\"}");
 		return MORPH_ERR_NOT_CONFIGURED;
 	}
 	if (!llm->chat_with_image) {
-		(void)tool_result_success_json_text(result,
-			strdup("{\"error\":\"LLM does not support image input\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"LLM does not support image input\"}");
 		return -ENOSYS;
 	}
 
 	root = cJSON_Parse(args_json);
 	if (!root) {
-		(void)tool_result_success_json_text(result,
-			strdup("{\"error\":\"invalid JSON\"}"));
+		(void)tool_result_success_json_text_copy(result, "{\"error\":\"invalid JSON\"}");
 		return -EINVAL;
 	}
 
@@ -130,27 +120,27 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 					 result);
 	if (opts.max_tokens < 0) {
 		rc = opts.max_tokens;
-		goto out;
+		return rc;
 	}
 	opts.timeout_seconds = img_qa_int_arg(root, "timeout_seconds", 120,
 					     5, 300, result);
 	if (opts.timeout_seconds < 0) {
 		rc = (int)opts.timeout_seconds;
-		goto out;
+		return rc;
 	}
 	opts.max_dim = img_qa_int_arg(root, "max_dim", 360, 128, 1024,
 				      result);
 	if (opts.max_dim < 0) {
 		rc = opts.max_dim;
-		goto out;
+		return rc;
 	}
 	if (!file_path || !*file_path) {
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"missing 'file_path' parameter. "
-			"Usage: img_qa({\\\"file_path\\\": \\\"img.png\\\", "
-			"\\\"prompt\\\": \\\"What is in this image?\\\"})\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"missing 'file_path' parameter. "
+				"Usage: img_qa({\\\"file_path\\\": \\\"img.png\\\", "
+				"\\\"prompt\\\": \\\"What is in this image?\\\"})\"}");
 		rc = -EINVAL;
-		goto out;
+		return rc;
 	}
 
 	if (tctx) {
@@ -159,30 +149,24 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 						 sizeof(resolved_path));
 		if (rc < 0) {
 			if (rc == -ENOENT)
-				(void)tool_result_success_json_text(result, strdup(
-					"{\"error\":\"image file not found\"}"));
+				(void)tool_result_success_json_text_copy(
+					result, "{\"error\":\"image file not found\"}");
 			else
-				(void)tool_result_success_json_text(result, strdup(
-					"{\"error\":\"read path outside workspace: permission denied\"}"));
-			goto out;
+				(void)tool_result_success_json_text_copy(
+					result, "{\"error\":\"read path outside workspace: "
+						"permission denied\"}");
+			return rc;
 		}
 	} else {
 		strncpy(resolved_path, file_path, sizeof(resolved_path) - 1);
 		resolved_path[sizeof(resolved_path) - 1] = '\0';
 	}
 
-	arena = arena_create(128 * 1024);
-	if (!arena) {
-		rc = -ENOMEM;
-		(void)tool_result_success_json_text(result,
-			strdup("{\"error\":\"memory allocation failed\"}"));
-		goto out;
-	}
 	rc = morph_buf_init(&buf, 8192);
 	if (rc != 0) {
-		(void)tool_result_success_json_text(result,
-			strdup("{\"error\":\"buffer allocation failed\"}"));
-		goto out;
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"buffer allocation failed\"}");
+		return rc;
 	}
 
 	stream.runtime = result->runtime;
@@ -191,31 +175,23 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 	stream.kind = "text";
 	(void)tool_runtime_emit_stream(result->runtime, "img_qa", "status",
 				       "sending image question to model");
-	rc = llm->chat_with_image(
-		llm, arena,
-		"You answer questions about the provided image. "
-		"Use only visual evidence from the image. If the task asks for "
-		"OCR, transcribe visible text and say when text is unclear.",
-		prompt, resolved_path, &opts, tool_runtime_stream_to_buf_cb,
-		&stream);
+	rc = llm->chat_with_image(llm,
+				  "You answer questions about the provided image. "
+				  "Use only visual evidence from the image. If the task asks for "
+				  "OCR, transcribe visible text and say when text is unclear.",
+				  prompt, resolved_path, &opts, tool_runtime_stream_to_buf_cb,
+				  &stream);
 	if (rc < 0) {
 		morph_buf_cleanup(&buf);
-		(void)img_qa_take_call_error(result, llm);
-		goto out;
+		(void)img_qa_report_call_error(result, llm);
+		return rc;
 	}
 
-	rc = tool_result_success_json_text(result, morph_buf_detach(&buf));
+	rc = tool_result_success_json_text_copy(result, morph_buf_cstr_borrow(&buf));
 	if (rc < 0)
-		(void)tool_result_success_json_text(result,
-			strdup("{\"error\":\"buffer allocation failed\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"buffer allocation failed\"}");
 
-out:
-	if (buf.data)
-		morph_buf_cleanup(&buf);
-	if (arena)
-		arena_destroy(arena);
-	if (root)
-		cJSON_Delete(root);
 	return rc;
 }
 
@@ -229,37 +205,42 @@ int img_qa_init(struct tool_registry *reg, struct model *llm,
 		return -ENOMEM;
 	ctx->llm = llm;
 	ctx->tctx = tctx;
-	int rc = tool_register(reg, &(struct tool_spec){
+	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.flags = TOOL_FLAG_READONLY | TOOL_FLAG_MEDIA,
 		.name = "img_qa",
 		.description = "Answer questions about an image using the multimodal LLM. "
-		"Use this for image understanding, OCR, scene description, "
-		"visual comparison, and content analysis. User messages reference "
-		"local images as [Image: <path>]; pass that path as file_path and "
-		"ask the relevant question in prompt. Use the returned analysis "
-		"instead of guessing from the filename or just repeating the path. "
-		"Before upload, the "
-		"image is prepared within max_dim while preserving its format "
-		"and aspect "
-		"ratio. Provide file_path and prompt. Optional max_tokens "
-		"(default 1024), timeout_seconds (default 120), and max_dim "
-		"(default 360).", .input_schema = "{\"type\":\"object\",\"properties\":{"
-		"\"file_path\":{\"type\":\"string\","
-		"\"description\":\"Path to the image file\"},"
-		"\"prompt\":{\"type\":\"string\","
-		"\"description\":\"Question or instruction for image analysis, "
-		"such as OCR or scene description\"},"
-		"\"max_tokens\":{\"type\":\"integer\","
-		"\"description\":\"Maximum output tokens (default 1024)\"},"
-		"\"timeout_seconds\":{\"type\":\"integer\","
-		"\"description\":\"Hard request timeout in seconds (default 120)\"},"
-		"\"max_dim\":{\"type\":\"integer\","
-		"\"description\":\"Maximum image side sent to model (default 360)\"}},"
-		"\"required\":[\"file_path\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = img_qa_exec, .user_data = ctx, .user_data_destroy = img_qa_context_destroy });
-	if (rc < 0)
-		free(ctx);
-	else
+			       "Use this for image understanding, OCR, scene description, "
+			       "visual comparison, and content analysis. User messages reference "
+			       "local images as [Image: <path>]; pass that path as file_path and "
+			       "ask the relevant question in prompt. Use the returned analysis "
+			       "instead of guessing from the filename or just repeating the path. "
+			       "Before upload, the "
+			       "image is prepared within max_dim while preserving its format "
+			       "and aspect "
+			       "ratio. Provide file_path and prompt. Optional max_tokens "
+			       "(default 1024), timeout_seconds (default 120), and max_dim "
+			       "(default 360).",
+		.input_schema =
+			"{\"type\":\"object\",\"properties\":{"
+			"\"file_path\":{\"type\":\"string\","
+			"\"description\":\"Path to the image file\"},"
+			"\"prompt\":{\"type\":\"string\","
+			"\"description\":\"Question or instruction for image analysis, "
+			"such as OCR or scene description\"},"
+			"\"max_tokens\":{\"type\":\"integer\","
+			"\"description\":\"Maximum output tokens (default 1024)\"},"
+			"\"timeout_seconds\":{\"type\":\"integer\","
+			"\"description\":\"Hard request timeout in seconds (default 120)\"},"
+			"\"max_dim\":{\"type\":\"integer\","
+			"\"description\":\"Maximum image side sent to model (default 360)\"}},"
+			"\"required\":[\"file_path\"]}",
+		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+		.exec = img_qa_exec,
+		.user_data = ctx,
+		.user_data_destroy = img_qa_context_destroy};
+	int rc = tool_register_take(reg, &spec);
+	if (rc == 0)
 		tool_set_timeout(reg, "img_qa", 120);
 	return rc;
 }

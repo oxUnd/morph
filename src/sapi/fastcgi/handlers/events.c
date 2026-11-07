@@ -24,7 +24,7 @@
 
 static void sse_serve(request_t *r)
 {
-	const char *sid = path_param(r, "id");
+	const char *sid = path_param_borrow(r, "id");
 	int64_t last_id = 0;
 	char *end = NULL;
 
@@ -75,7 +75,7 @@ static void sse_serve(request_t *r)
 
 void handle_sse(request_t *r)
 {
-	const char *sid = path_param(r, "id");
+	const char *sid = path_param_borrow(r, "id");
 	int rc;
 
 	if (!sid) {
@@ -90,11 +90,9 @@ void handle_sse(request_t *r)
 		reply_500(r, "stream pool unavailable");
 		return;
 	}
-	rc = fcgi_stream_pool_submit(r->streams, r, sse_serve);
-	if (rc == 0) {
-		r->handed_off = 1;
+	rc = fcgi_stream_pool_submit_take(r->streams, &r, sse_serve);
+	if (rc == 0)
 		return;
-	}
 	if (rc == -EAGAIN) {
 		reply_json(r, 503, "{\"error\":\"stream_queue_full\"}");
 		return;

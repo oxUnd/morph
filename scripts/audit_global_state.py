@@ -211,6 +211,11 @@ def main():
             if source.suffix != ".c" or source.resolve() in compiled:
                 continue
             args = [arg for arg in template_args if arg != template["file"]]
+            args.append("-I" + str(root / "src/tui/include"))
+            samples = root / "src/tui/samples"
+            if source.is_relative_to(samples):
+                module = source.relative_to(samples).parts[0]
+                args.append("-I" + str(samples / module))
             if sys.platform == "darwin" and source == root / "exts/locate/locate.c":
                 args.extend(["-x", "objective-c"])
             extras.append(dict(file=str(source), directory=template["directory"],

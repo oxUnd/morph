@@ -4,7 +4,7 @@
 #include "db/database.h"
 #include "db/permission_grant.h"
 #include "util/file.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -83,10 +83,10 @@ TEST_F(ToolContextTest, CreateDestroy) {
 	struct tool_context *tctx =
 		tool_context_create(NULL, "/tmp/test_workdir", "/tmp/test_output");
 	ASSERT_NE(tctx, nullptr);
-	EXPECT_NE(tool_context_output_dir(tctx)[0], '\0');
-	EXPECT_NE(tool_context_output_dir(tctx)[0], '~');
-	EXPECT_NE(tool_context_workdir(tctx)[0], '\0');
-	EXPECT_NE(tool_context_workdir(tctx)[0], '~');
+	EXPECT_NE(tool_context_output_dir_borrow(tctx)[0], '\0');
+	EXPECT_NE(tool_context_output_dir_borrow(tctx)[0], '~');
+	EXPECT_NE(tool_context_workdir_borrow(tctx)[0], '\0');
+	EXPECT_NE(tool_context_workdir_borrow(tctx)[0], '~');
 	tool_context_destroy(tctx);
 }
 
@@ -122,28 +122,28 @@ TEST_F(ToolContextTest, CommandPathResolutionNeverApprovesATruncatedPath)
 TEST_F(ToolContextTest, PermissionSnapshotOwnsPathsAfterGrantsAndContextAreDestroyed)
 {
 	char directory[] = "/tmp/morph_grant_snapshot_XXXXXX";
-	struct tool_permission_snapshot snapshot = {};
-	struct arena *arena = arena_create(0);
+	struct tool_permission_snapshot snapshot MORPH_CLEANUP(
+		tool_permission_snapshot_cleanup) = {};
+
 	struct tool_context *context;
 	bool found = false;
 
-	ASSERT_NE(arena, nullptr);
 	ASSERT_NE(mkdtemp(directory), nullptr);
 	context = tool_context_create(nullptr, "/tmp", "/tmp");
 	ASSERT_NE(context, nullptr);
 	ASSERT_EQ(tool_context_grant_write_access(context, "test", directory, 0, TOOL_OP_SESSION,
 						  nullptr, 0),
 		  0);
-	ASSERT_EQ(tool_context_snapshot_permissions(context, "test", arena, &snapshot), 0);
+	ASSERT_EQ(tool_context_permission_snapshot_create(context, "test", &snapshot), 0);
 	tool_context_destroy(context);
-	char *canonical = file_resolve_path(directory);
+	char *canonical = file_resolve_path_copy(directory);
 	ASSERT_NE(canonical, nullptr);
 	for (int i = 0; i < snapshot.write.count; i++)
 		found = found || !strcmp(snapshot.write.paths[i], canonical);
 	EXPECT_TRUE(found);
 	EXPECT_EQ(snapshot.policy.access, PERMISSION_WORKSPACE);
 	free(canonical);
-	arena_destroy(arena);
+
 	EXPECT_EQ(rmdir(directory), 0);
 }
 
@@ -191,8 +191,8 @@ TEST_F(ToolContextTest, PersistentGrantReloadRevokesImmediately)
 TEST_F(ToolContextTest, CreateWithTilde) {
 	struct tool_context *tctx = tool_context_create(NULL, "~/test", "~/.morph/output");
 	ASSERT_NE(tctx, nullptr);
-	EXPECT_NE(tool_context_output_dir(tctx)[0], '~');
-	EXPECT_NE(tool_context_workdir(tctx)[0], '~');
+	EXPECT_NE(tool_context_output_dir_borrow(tctx)[0], '~');
+	EXPECT_NE(tool_context_workdir_borrow(tctx)[0], '~');
 	tool_context_destroy(tctx);
 }
 
@@ -230,7 +230,8 @@ TEST_F(ToolContextTest, CliDirectoryGrantFollowsApprovalLifetime)
 	char *base = mkdtemp(dir_template);
 	char once_dir[PATH_MAX];
 	char session_dir[PATH_MAX];
-	const char *paths[4] = {};
+	struct tool_permission_snapshot snapshot MORPH_CLEANUP(
+		tool_permission_snapshot_cleanup) = {};
 	char resolved[PATH_MAX];
 
 	ASSERT_NE(base, nullptr);
@@ -244,16 +245,17 @@ TEST_F(ToolContextTest, CliDirectoryGrantFollowsApprovalLifetime)
 		tctx, "/usr/bin/demo", once_dir, 1, TOOL_OP_ALLOW,
 		resolved, sizeof(resolved)), 0);
 	EXPECT_EQ(access(once_dir, F_OK), 0);
-	EXPECT_EQ(tool_context_collect_write_grants(
-		tctx, "/usr/bin/demo", paths, 4), 0);
+	ASSERT_EQ(tool_context_permission_snapshot_create(tctx, "/usr/bin/demo", &snapshot), 0);
+	EXPECT_EQ(snapshot.write.count, 0);
+	tool_permission_snapshot_cleanup(&snapshot);
 	ASSERT_EQ(tool_context_grant_write_access(
 		tctx, "/usr/bin/demo", session_dir, 1, TOOL_OP_SESSION,
 		resolved, sizeof(resolved)), 0);
-	ASSERT_EQ(tool_context_collect_write_grants(
-		tctx, "/usr/bin/demo", paths, 4), 1);
-	char *expected = file_resolve_path(session_dir);
+	ASSERT_EQ(tool_context_permission_snapshot_create(tctx, "/usr/bin/demo", &snapshot), 0);
+	ASSERT_EQ(snapshot.write.count, 1);
+	char *expected = file_resolve_path_copy(session_dir);
 	ASSERT_NE(expected, nullptr);
-	EXPECT_STREQ(paths[0], expected);
+	EXPECT_STREQ(snapshot.write.paths[0], expected);
 	free(expected);
 
 	tool_context_destroy(tctx);
@@ -263,7 +265,7 @@ TEST_F(ToolContextTest, CliDirectoryGrantFollowsApprovalLifetime)
 }
 
 TEST_F(ToolContextTest, OutputDirNull) {
-	EXPECT_EQ(tool_context_output_dir(NULL), nullptr);
+	EXPECT_EQ(tool_context_output_dir_borrow(NULL), nullptr);
 }
 
 TEST_F(ToolContextTest, CheckWritePathWithinOutputDir) {
@@ -401,7 +403,7 @@ TEST_F(ToolContextTest, AuthorizeReadRelativeWithinWorkdir) {
 					     "in.txt", resolved,
 					     sizeof(resolved));
 	EXPECT_EQ(rc, 0);
-	char *expected = file_resolve_path(path);
+	char *expected = file_resolve_path_copy(path);
 	ASSERT_NE(expected, nullptr);
 	EXPECT_STREQ(resolved, expected);
 	free(expected);
@@ -461,7 +463,7 @@ TEST_F(ToolContextTest, AuthorizeReadApprovalAllow) {
 					     secret, resolved,
 					     sizeof(resolved));
 	EXPECT_EQ(rc, 0);
-	char *expected = file_resolve_path(secret);
+	char *expected = file_resolve_path_copy(secret);
 	ASSERT_NE(expected, nullptr);
 	EXPECT_STREQ(resolved, expected);
 	free(expected);
@@ -818,7 +820,8 @@ TEST_F(ToolContextTest, PersistentScopedWriteGrantLoadsInNewContext)
 	struct tool_context *first;
 	struct tool_context *second;
 	char resolved[PATH_MAX];
-	const char *paths[2] = {};
+	struct tool_permission_snapshot snapshot MORPH_CLEANUP(
+		tool_permission_snapshot_cleanup) = {};
 
 	std::remove(db_path);
 	file_ensure_dir(state_dir);
@@ -842,11 +845,11 @@ TEST_F(ToolContextTest, PersistentScopedWriteGrantLoadsInNewContext)
 	EXPECT_EQ(tool_context_request_write_access(
 		second, "lark-cli", "lark-cli auth status", state_dir,
 		resolved, sizeof(resolved)), 0);
-	EXPECT_EQ(tool_context_collect_write_grants(
-		second, "lark-cli", paths, 2), 1);
-	char *expected = file_resolve_path(state_dir);
+	ASSERT_EQ(tool_context_permission_snapshot_create(second, "lark-cli", &snapshot), 0);
+	ASSERT_EQ(snapshot.write.count, 1);
+	char *expected = file_resolve_path_copy(state_dir);
 	ASSERT_NE(expected, nullptr);
-	EXPECT_STREQ(paths[0], expected);
+	EXPECT_STREQ(snapshot.write.paths[0], expected);
 	free(expected);
 	tool_context_destroy(second);
 	db_close(&db);
@@ -857,7 +860,8 @@ TEST_F(ToolContextTest, PersistentScopedWriteGrantLoadsInNewContext)
 TEST_F(ToolContextTest, DeleteSessionGrantIsCapabilityScoped)
 {
 	struct tool_context *tctx = tool_context_create(NULL, "/usr", "/usr");
-	const char *paths[2] = {};
+	struct tool_permission_snapshot snapshot MORPH_CLEANUP(
+		tool_permission_snapshot_cleanup) = {};
 	char resolved[PATH_MAX];
 	int calls = 0;
 
@@ -867,10 +871,9 @@ TEST_F(ToolContextTest, DeleteSessionGrantIsCapabilityScoped)
 		tctx, "/bin/rm", "rm file", "/tmp",
 		resolved, sizeof(resolved)), 0);
 	EXPECT_EQ(calls, 1);
-	EXPECT_EQ(tool_context_collect_delete_grants(
-		tctx, "/bin/rm", paths, 2), 1);
-	EXPECT_EQ(tool_context_collect_write_grants(
-		tctx, "/bin/rm", paths, 2), 0);
+	ASSERT_EQ(tool_context_permission_snapshot_create(tctx, "/bin/rm", &snapshot), 0);
+	EXPECT_EQ(snapshot.remove.count, 1);
+	EXPECT_EQ(snapshot.write.count, 0);
 	EXPECT_EQ(tool_context_request_delete_access(
 		tctx, "/bin/rm", "rm file", "/tmp",
 		resolved, sizeof(resolved)), 0);
@@ -881,19 +884,19 @@ TEST_F(ToolContextTest, DeleteSessionGrantIsCapabilityScoped)
 TEST_F(ToolContextTest, ExecProfilePathsAreCollectedAsCapabilities)
 {
 	struct tool_context *tctx = tool_context_create(NULL, "/tmp", "/tmp");
-	const char *paths[2] = {};
+	struct tool_permission_snapshot snapshot MORPH_CLEANUP(
+		tool_permission_snapshot_cleanup) = {};
 
 	ASSERT_NE(tctx, nullptr);
 	ASSERT_EQ(tool_context_add_exec_profile_path(
 		tctx, TOOL_PATH_WRITE, "/tmp"), 0);
 	ASSERT_EQ(tool_context_add_exec_profile_path(
 		tctx, TOOL_PATH_DELETE, "/tmp"), 0);
-	ASSERT_EQ(tool_context_collect_write_grants(
-		tctx, "shell", paths, 2), 1);
-	EXPECT_TRUE(path_is_within("/tmp", paths[0]));
-	ASSERT_EQ(tool_context_collect_delete_grants(
-		tctx, "shell", paths, 2), 1);
-	EXPECT_TRUE(path_is_within("/tmp", paths[0]));
+	ASSERT_EQ(tool_context_permission_snapshot_create(tctx, "shell", &snapshot), 0);
+	ASSERT_EQ(snapshot.write.count, 1);
+	EXPECT_TRUE(path_is_within("/tmp", snapshot.write.paths[0]));
+	ASSERT_EQ(snapshot.remove.count, 1);
+	EXPECT_TRUE(path_is_within("/tmp", snapshot.remove.paths[0]));
 	tool_context_destroy(tctx);
 }
 
@@ -998,14 +1001,10 @@ TEST_F(ToolContextTest, CollectAllGrantsWithoutTruncatingProfile)
 			TOOL_OP_SESSION, NULL, 0), 0);
 	}
 	ASSERT_EQ(tool_context_add_exec_profile_path(tctx, TOOL_PATH_WRITE, temp), 0);
-	morph_array_t paths;
-	ASSERT_EQ(morph_array_init(&paths, 4, sizeof(const char *)), 0);
-	ASSERT_EQ(tool_context_collect_path_grants(tctx, "gradle", TOOL_PATH_WRITE, &paths), 0);
-	EXPECT_EQ(paths.nelts, 41u);
-	const char *limited[TOOL_CONTEXT_ALLOW_MAX];
-	EXPECT_EQ(tool_context_collect_write_grants(tctx, "gradle", limited,
-		TOOL_CONTEXT_ALLOW_MAX), -ENOSPC);
-	morph_array_cleanup(&paths);
+	struct tool_permission_snapshot snapshot MORPH_CLEANUP(
+		tool_permission_snapshot_cleanup) = {};
+	ASSERT_EQ(tool_context_permission_snapshot_create(tctx, "gradle", &snapshot), 0);
+	EXPECT_EQ(snapshot.write.count, 41);
 	tool_context_destroy(tctx);
 	for (int i = 0; i < 40; i++)
 		rmdir((std::string(temp) + "/grant-" + std::to_string(i)).c_str());
@@ -1262,10 +1261,15 @@ TEST_F(ToolContextTest, PersistentDirectoryGrantsAreSharedAndProjectScoped)
 			op.target = file.c_str();
 			EXPECT_EQ(tool_context_check_operation(tctx, &op), expected);
 			if (operation != TOOL_PATH_READ) {
-				const char *paths[2] = {};
-				int count = operation == TOOL_PATH_WRITE ?
-					tool_context_collect_write_grants(tctx, "/bin/sh", paths, 2) :
-					tool_context_collect_delete_grants(tctx, "/bin/rm", paths, 2);
+				struct tool_permission_snapshot snapshot MORPH_CLEANUP(
+					tool_permission_snapshot_cleanup) = {};
+				const char *principal =
+					operation == TOOL_PATH_WRITE ? "/bin/sh" : "/bin/rm";
+				ASSERT_EQ(tool_context_permission_snapshot_create(tctx, principal,
+										  &snapshot),
+					  0);
+				int count = operation == TOOL_PATH_WRITE ? snapshot.write.count
+									 : snapshot.remove.count;
 				EXPECT_EQ(count, attempt == 2 ? 0 : 1);
 			}
 		}

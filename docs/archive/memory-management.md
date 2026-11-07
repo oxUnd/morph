@@ -1,5 +1,10 @@
 # Memory lifetimes and media limits
 
+> Historical implementation and measurements. Current ownership rules and APIs
+> are documented in [State ownership](../state-ownership.md); the allocator
+> described below has been removed. These RSS measurements do not characterize
+> the current implementation.
+
 ReAct separates allocations by lifetime:
 
 - `iteration_arena` holds model request/response data, stream buffers and tool

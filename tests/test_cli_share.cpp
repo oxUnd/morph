@@ -1,4 +1,5 @@
 #include "runtime_test_support.hpp"
+#include "util/json.h"
 
 extern "C" {
 #include "sapi/cli/services/share_store.h"
@@ -80,12 +81,12 @@ TEST_F(ShareTest, SkipsInterruptedAnswerAndDoesNotCrossSessions)
 	Add("good", "user_message", "Question");
 	Add("good", "assistant_message", "Complete answer");
 	Add("cancelled", "user_message", "Interrupted question",
-		"{\"turn_outcome\":{\"status\":\"interrupted\"}}");
+	    "{\"turn_outcome\":{\"status\":\"interrupted\"}}");
 	Add("cancelled", "assistant_message", "Partial answer");
 	cJSON *document = Document();
 	ASSERT_NE(document, nullptr);
 	EXPECT_STREQ(cJSON_GetObjectItem(document, "answer")->valuestring, "Complete answer");
-	cJSON_Delete(document);
+	morph_json_cleanup(&document);
 	ASSERT_EQ(runtime_session_create_and_select(instance, "empty", &current), 0);
 	EXPECT_EQ(runtime_session_share_current(instance, &document), -ENODATA);
 	EXPECT_EQ(document, nullptr);
@@ -103,7 +104,7 @@ TEST_F(ShareTest, HtmlIsSelfContainedAndEscapesUntrustedContent)
 	morph_buf_t output{};
 	ASSERT_EQ(morph_buf_init(&output, 1024), 0);
 	ASSERT_EQ(cli_share_html(document, 1793172600, &output), 0);
-	std::string html = morph_buf_cstr(&output);
+	std::string html = morph_buf_cstr_borrow(&output);
 	EXPECT_NE(html.find("data:image/png;base64,"), std::string::npos);
 	EXPECT_NE(html.find("Shared from morph"), std::string::npos);
 	EXPECT_NE(html.find("UTC"), std::string::npos);
@@ -132,10 +133,14 @@ TEST_F(ShareTest, RepeatedExportsPublishDistinctVisibleFiles)
 	char *second = nullptr;
 	int first_rc = cli_share_store_save(document, &first);
 	int second_rc = cli_share_store_save(document, &second);
+	char *saved_first = first;
+	int occupied_rc = cli_share_store_save(document, &first);
 	if (home) setenv("HOME", saved.c_str(), 1);
 	else unsetenv("HOME");
 	ASSERT_EQ(first_rc, 0);
 	ASSERT_EQ(second_rc, 0);
+	EXPECT_EQ(occupied_rc, -EEXIST);
+	EXPECT_EQ(first, saved_first);
 	ASSERT_NE(first, nullptr);
 	ASSERT_NE(second, nullptr);
 	EXPECT_STRNE(first, second);
@@ -201,7 +206,7 @@ TEST_F(ShareTest, NestedImagesUseTheMarkdownResourcePolicy)
 	morph_buf_t output{};
 	ASSERT_EQ(morph_buf_init(&output, 1024), 0);
 	ASSERT_EQ(cli_share_html(document, 1793172600, &output), 0);
-	std::string html = morph_buf_cstr(&output);
+	std::string html = morph_buf_cstr_borrow(&output);
 	EXPECT_NE(html.find("before "), std::string::npos);
 	EXPECT_NE(html.find(" middle "), std::string::npos);
 	EXPECT_NE(html.find(" after"), std::string::npos);
@@ -300,7 +305,7 @@ TEST_F(ShareTest, MarkdownExporterPreservesMathFootnotesAndSafeLinks)
 	morph_buf_t output{};
 	ASSERT_EQ(morph_buf_init(&output, 1024), 0);
 	ASSERT_EQ(cli_share_html(document, 1793172600, &output), 0);
-	std::string html = morph_buf_cstr(&output);
+	std::string html = morph_buf_cstr_borrow(&output);
 	EXPECT_NE(html.find("class=\"morph-markdown\""), std::string::npos);
 	EXPECT_NE(html.find("<math "), std::string::npos);
 	EXPECT_NE(html.find("<mfrac>"), std::string::npos);

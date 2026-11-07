@@ -1,4 +1,5 @@
 #include "project_context.h"
+#include "util/cleanup.h"
 #include "util/error.h"
 #include "util/file.h"
 #include "util/log.h"
@@ -12,7 +13,7 @@
 #include <unistd.h>
 
 /* Read only bounded regular files. Never wait for a workspace FIFO. */
-static int read_guidance(const char *path, struct arena *arena, char **text)
+static int read_guidance(const char *path, char **text)
 {
 	struct stat info;
 	int flags = O_RDONLY;
@@ -23,7 +24,7 @@ static int read_guidance(const char *path, struct arena *arena, char **text)
 #endif
 	int fd = open(path, flags);
 	size_t len = 0;
-	char *data;
+	char *data MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 
 	*text = NULL;
 	if (fd < 0) {
@@ -40,7 +41,7 @@ static int read_guidance(const char *path, struct arena *arena, char **text)
 		close(fd);
 		return -EFBIG;
 	}
-	data = arena_alloc(arena, PROJECT_CONTEXT_MAX_BYTES + 1);
+	data = calloc(1, PROJECT_CONTEXT_MAX_BYTES + 1);
 	if (!data) {
 		close(fd);
 		return -ENOMEM;
@@ -64,24 +65,26 @@ static int read_guidance(const char *path, struct arena *arena, char **text)
 	if (memchr(data, '\0', len) || utf8nvalid(data, len))
 		return -EILSEQ;
 	data[len] = '\0';
-	if (strspn(data, " \t\r\n") != len)
+	if (strspn(data, " \t\r\n") != len) {
 		*text = data;
+		data = NULL;
+	}
 	return 0;
 }
 
 static int append_directory(struct morph_log *logger, morph_buf_t *buf, const char *directory,
-			    int global, struct arena *arena, size_t *used)
+			    int global, size_t *used)
 {
 	static const char *const names[] = { "AGENTS.override.md", "AGENTS.md" };
 
 	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
 		char path[PATH_MAX];
-		char *body = NULL;
+		char *body MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 		int rc = file_path_join(path, sizeof(path), directory, names[i]);
 
 		if (rc != 0)
 			return rc;
-		rc = read_guidance(path, arena, &body);
+		rc = read_guidance(path, &body);
 		if (rc == -ENOMEM)
 			return rc;
 		if (rc != 0) {
@@ -105,26 +108,27 @@ static int append_directory(struct morph_log *logger, morph_buf_t *buf, const ch
 	return 0;
 }
 
-int project_context_build(struct morph_log *logger, const struct environment_context *environment,
-			  const char *global_dir, struct arena *arena, const char **out)
+int project_context_create(struct morph_log *logger, const struct environment_context *environment,
+			   const char *global_dir, char **out)
 {
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	size_t used = 0;
 	int rc;
 
-	if (!environment || !arena || !out)
+	if (!environment || !out)
 		return -EINVAL;
-	*out = NULL;
-	rc = morph_buf_init_arena(&buf, arena, 1024);
+	if (*out)
+		return -EALREADY;
+	rc = morph_buf_init(&buf, 1024);
 	if (rc != 0)
 		return rc;
 	if (global_dir && *global_dir)
-		rc = append_directory(logger, &buf, global_dir, 1, arena, &used);
+		rc = append_directory(logger, &buf, global_dir, 1, &used);
 	if (rc != 0)
 		return rc;
 	if (environment->cwd) {
 		const char *root = environment->git_root;
-		char *directory = arena_strdup(arena, environment->cwd);
+		char *directory MORPH_CLEANUP(morph_charp_cleanup) = strdup(environment->cwd);
 
 		if (!directory)
 			return -ENOMEM;
@@ -136,7 +140,7 @@ int project_context_build(struct morph_log *logger, const struct environment_con
 			char saved = directory[end];
 
 			directory[end] = '\0';
-			rc = append_directory(logger, &buf, directory, 0, arena, &used);
+			rc = append_directory(logger, &buf, directory, 0, &used);
 			directory[end] = saved;
 			if (rc != 0)
 				return rc;
@@ -149,9 +153,9 @@ int project_context_build(struct morph_log *logger, const struct environment_con
 		}
 	}
 	if (buf.len) {
-		morph_buf_t context;
+		morph_buf_t context MORPH_CLEANUP(morph_buf_cleanup) = {0};
 
-		rc = morph_buf_init_arena(&context, arena, buf.len + 256);
+		rc = morph_buf_init(&context, buf.len + 256);
 		if (rc == 0)
 			rc = morph_buf_puts(&context,
 				"Project guidance snapshot. Apply each source only to its "
@@ -162,7 +166,7 @@ int project_context_build(struct morph_log *logger, const struct environment_con
 			rc = morph_buf_puts(&context, buf.data);
 		if (rc != 0)
 			return rc;
-		*out = context.data;
+		*out = morph_buf_detach(&context);
 	}
 	return 0;
 }

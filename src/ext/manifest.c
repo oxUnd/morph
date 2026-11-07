@@ -1,35 +1,40 @@
 #include "manifest.h"
 #include "util/log.h"
 #include "util/error.h"
+#include "util/cleanup.h"
+#include <limits.h>
 #include "tomlc17.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static void parse_string_list(toml_datum_t arr, char ***out_list, int *out_count)
+static int parse_string_list(toml_datum_t arr, char ***out_list, int *out_count)
 {
-	*out_list = NULL;
-	*out_count = 0;
-	if (arr.type != TOML_ARRAY)
-		return;
+	if (arr.type != TOML_ARRAY || arr.u.arr.size <= 0)
+		return 0;
 	int n = arr.u.arr.size;
-	if (n <= 0)
-		return;
-	char **list = calloc((size_t)n, sizeof(char *));
+	char **list = calloc((size_t)n, sizeof(*list));
 	if (!list)
-		return;
-	int count = 0;
-	for (int i = 0; i < n; i++) {
-		toml_datum_t d = arr.u.arr.elem[i];
-		if (d.type == TOML_STRING) {
-			list[count] = strdup(d.u.s);
-			if (list[count])
-				count++;
-		}
-	}
+		return -ENOMEM;
 	*out_list = list;
-	*out_count = count;
+	*out_count = 0;
+	for (int i = 0; i < n; i++) {
+		toml_datum_t value = arr.u.arr.elem[i];
+		if (value.type != TOML_STRING)
+			continue;
+		list[*out_count] = strdup(value.u.s);
+		if (!list[*out_count])
+			return -ENOMEM;
+		(*out_count)++;
+	}
+	return 0;
+}
+
+static int manifest_output_occupied(const struct ext_manifest *out)
+{
+	return out->input_schema || out->output_schema || out->fronts || out->categories ||
+	       out->allowed_paths || out->allowed_env || out->allowed_mach_services;
 }
 
 static enum ext_purpose parse_purpose(const char *s)
@@ -96,24 +101,13 @@ static char *schema_default_output(void)
 	return strdup("{\"type\":\"object\",\"properties\":{}}");
 }
 
-static char *normalize_manifest_schema(char *schema, int is_output)
+static char *normalize_manifest_schema_copy(const char *schema, int is_output)
 {
-	char *out;
-
-	if (!schema || !*schema) {
-		free(schema);
-		return is_output ? schema_default_output() :
-			schema_default_input();
-	}
-	if (strcmp(schema, "object") == 0 || strcmp(schema, "string") == 0) {
-		free(schema);
+	if (!schema || !*schema)
+		return is_output ? schema_default_output() : schema_default_input();
+	if (strcmp(schema, "object") == 0 || strcmp(schema, "string") == 0 || schema[0] != '{')
 		return schema_default_output();
-	}
-	if (schema[0] == '{')
-		return schema;
-	out = schema_default_output();
-	free(schema);
-	return out;
+	return strdup(schema);
 }
 
 static int manifest_parse_table(struct morph_log *logger, toml_datum_t tbl,
@@ -167,7 +161,9 @@ static int manifest_parse_table(struct morph_log *logger, toml_datum_t tbl,
 			return capability_rc;
 	}
 	toml_datum_t ap = toml_get(tbl, "allowed_paths");
-	parse_string_list(ap, &out->allowed_paths, &out->allowed_paths_count);
+	int rc = parse_string_list(ap, &out->allowed_paths, &out->allowed_paths_count);
+	if (rc != 0)
+		return rc;
 	if (named_filesystem && out->allowed_paths_count == 0) {
 		log_err(logger, "filesystem capability requires allowed_paths");
 		return -EINVAL;
@@ -180,21 +176,27 @@ static int manifest_parse_table(struct morph_log *logger, toml_datum_t tbl,
 	if (is.type != TOML_STRING)
 		is = toml_get(tbl, "args_schema");
 	if (is.type == TOML_STRING)
-		out->input_schema = normalize_manifest_schema(strdup(is.u.s), 0);
+		out->input_schema = normalize_manifest_schema_copy(is.u.s, 0);
 	else
 		out->input_schema = schema_default_input();
 
 	toml_datum_t os = toml_get(tbl, "output_schema");
 	if (os.type == TOML_STRING)
-		out->output_schema = normalize_manifest_schema(strdup(os.u.s), 1);
+		out->output_schema = normalize_manifest_schema_copy(os.u.s, 1);
 	else
 		out->output_schema = schema_default_output();
 
+	if (!out->input_schema || !out->output_schema)
+		return -ENOMEM;
 	toml_datum_t fronts = toml_get(tbl, "fronts");
-	parse_string_list(fronts, &out->fronts, &out->fronts_count);
+	rc = parse_string_list(fronts, &out->fronts, &out->fronts_count);
+	if (rc != 0)
+		return rc;
 
 	toml_datum_t cats = toml_get(tbl, "categories");
-	parse_string_list(cats, &out->categories, &out->categories_count);
+	rc = parse_string_list(cats, &out->categories, &out->categories_count);
+	if (rc != 0)
+		return rc;
 
 	toml_datum_t build = toml_get(tbl, "build");
 	if (build.type == TOML_TABLE) {
@@ -206,11 +208,14 @@ static int manifest_parse_table(struct morph_log *logger, toml_datum_t tbl,
 	}
 
 	toml_datum_t ae = toml_get(tbl, "allowed_env");
-	parse_string_list(ae, &out->allowed_env, &out->allowed_env_count);
+	rc = parse_string_list(ae, &out->allowed_env, &out->allowed_env_count);
+	if (rc != 0)
+		return rc;
 
 	toml_datum_t am = toml_get(tbl, "allowed_mach_services");
-	parse_string_list(am, &out->allowed_mach_services,
-		&out->allowed_mach_services_count);
+	rc = parse_string_list(am, &out->allowed_mach_services, &out->allowed_mach_services_count);
+	if (rc != 0)
+		return rc;
 
 	log_info(logger, "manifest parsed: name=%s type=%s purpose=%d", out->name, out->type,
 		 out->purpose);
@@ -221,7 +226,11 @@ int manifest_parse(struct morph_log *logger, const char *toml_data, struct ext_m
 {
 	if (!toml_data || !out)
 		return -EINVAL;
-
+	if (manifest_output_occupied(out))
+		return -EEXIST;
+	if (strlen(toml_data) > INT_MAX)
+		return -EFBIG;
+	struct ext_manifest manifest MORPH_CLEANUP(ext_manifest_cleanup) = {0};
 	toml_result_t parsed = toml_parse(toml_data, (int)strlen(toml_data));
 	if (!parsed.ok) {
 		log_err(logger, "manifest parse error: %s", parsed.errmsg);
@@ -229,8 +238,12 @@ int manifest_parse(struct morph_log *logger, const char *toml_data, struct ext_m
 		return MORPH_ERR_PARSE;
 	}
 
-	int rc = manifest_parse_table(logger, parsed.toptab, out);
+	int rc = manifest_parse_table(logger, parsed.toptab, &manifest);
 	toml_free(parsed);
+	if (rc == 0) {
+		*out = manifest;
+		memset(&manifest, 0, sizeof(manifest));
+	}
 	return rc;
 }
 
@@ -242,6 +255,9 @@ int manifest_parse_file(struct morph_log *logger, const char *path, struct ext_m
 
 	if (!path || !out)
 		return -EINVAL;
+	if (manifest_output_occupied(out))
+		return -EEXIST;
+	struct ext_manifest manifest MORPH_CLEANUP(ext_manifest_cleanup) = {0};
 	file = fopen(path, "r");
 	if (!file)
 		return morph_error_from_errno(errno);
@@ -253,7 +269,11 @@ int manifest_parse_file(struct morph_log *logger, const char *path, struct ext_m
 		return MORPH_ERR_PARSE;
 	}
 
-	rc = manifest_parse_table(logger, parsed.toptab, out);
+	rc = manifest_parse_table(logger, parsed.toptab, &manifest);
 	toml_free(parsed);
+	if (rc == 0) {
+		*out = manifest;
+		memset(&manifest, 0, sizeof(manifest));
+	}
 	return rc;
 }

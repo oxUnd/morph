@@ -8,7 +8,6 @@ extern "C" {
 #include "agent/tool.h"
 #include <stdint.h>
 
-struct arena;
 
 struct message_list {
 	char *role;
@@ -63,9 +62,10 @@ struct tokenizer {
 	struct bpe_encoder *encoder;
 };
 
-struct message_list *msg_list_create(struct arena *session, const char *role, const char *content,
-				      int token_count);
-void msg_list_append(struct message_list **head, struct message_list *msg);
+struct message_list *msg_list_create(const char *role, const char *content, int token_count);
+int msg_list_append_take(struct message_list **head, struct message_list **msg);
+void msg_list_clear(struct message_list **head);
+struct message_list *msg_list_steal(struct message_list **source);
 void msg_list_destroy(struct message_list *head);
 int msg_list_count(struct message_list *head);
 int context_token_count(struct message_list *head, struct tokenizer *tok);

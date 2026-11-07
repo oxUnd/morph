@@ -67,7 +67,7 @@ int react_emit_observation_event(struct react_event_sink sink, const char *text,
 		cJSON_AddStringToObject(data, "error", morph_strerror(error_code));
 	}
 	if (artifacts && artifacts->count > 0) {
-		artifact_json = tool_artifact_list_to_json(artifacts);
+		artifact_json = tool_artifact_list_json_create(artifacts);
 		if (artifact_json)
 			cJSON_AddItemToObject(data, "artifacts", artifact_json);
 	}
@@ -130,7 +130,7 @@ int react_emit_tool_event(struct react_event_sink sink, const char *name, const 
 	cJSON_AddStringToObject(data, "tool", tool ? tool : "");
 	if (sink.tools && tool) {
 		tool_registry_lock(sink.tools);
-		struct tool_entry *entry = tool_lookup(sink.tools, tool);
+		struct tool_entry *entry = tool_borrow(sink.tools, tool);
 
 		if (entry && entry->desc.title[0])
 			cJSON_AddStringToObject(data, "toolTitle", entry->desc.title);

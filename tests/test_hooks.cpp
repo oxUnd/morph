@@ -4,7 +4,6 @@
 #include "agent/react.h"
 #include "agent/tokenizer.h"
 #include "models/llm.h"
-#include "util/arena.h"
 #include "util/file.h"
 #include "util/sha256.h"
 #include "util/error.h"
@@ -767,7 +766,7 @@ TEST_F(HooksTest, JsonSyntaxDiagnosticSurvivesRuntimeFailure)
 	options.startup_error = &error;
 	options.event_cb = [](const struct morph_event *event, void *data) {
 		if (strcmp(event->name, "startup.failed") == 0) {
-			char *json = morph_event_to_json_string(event);
+			char *json = morph_event_json_text_copy(event);
 			if (json) {
 				*static_cast<std::string *>(data) = json;
 				free(json);

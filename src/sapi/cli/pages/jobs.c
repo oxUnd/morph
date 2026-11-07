@@ -97,7 +97,7 @@ static int cli_jobs_remember_job(struct cli_application *ctx, const cJSON *data)
 			return 0;
 		}
 	}
-	job = morph_array_push(&ctx->jobs->entries);
+	job = morph_array_push_borrow(&ctx->jobs->entries);
 	if (!job) {
 		cJSON_Delete(copy);
 		return -ENOMEM;
@@ -361,7 +361,7 @@ static int cli_jobs_draw(void *data, const struct morph_tui_screen *screen)
 			morph_buf_cleanup(&line);
 			return rc;
 		}
-		char *safe = utf8_terminal_sanitize_dup(morph_buf_cstr(&view->document),
+		char *safe = utf8_terminal_sanitize_dup(morph_buf_cstr_borrow(&view->document),
 							view->document.len,
 							UTF8_TERMINAL_TEXT_MULTILINE, NULL);
 		if (!safe)
@@ -372,8 +372,8 @@ static int cli_jobs_draw(void *data, const struct morph_tui_screen *screen)
 		}
 		free(safe);
 		if (!rc)
-			rc = morph_tui_widget_text_layout_wrap(
-				&view->lines, morph_buf_cstr(&view->document),
+			rc = morph_tui_widget_text_layout_wrap_borrow(
+				&view->lines, morph_buf_cstr_borrow(&view->document),
 				(size_t)(columns > 4 ? columns - 4 : 1));
 		view->scroll = morph_tui_widget_scroll_update(view->scroll, view->lines.lines.nelts,
 							      (size_t)page, 0);
@@ -387,7 +387,7 @@ static int cli_jobs_draw(void *data, const struct morph_tui_screen *screen)
 			style = ANSI_BOLD;
 		} else if (row >= 2 && row < page + 2) {
 			if (view->detail) {
-				struct morph_tui_widget_text_line *text = morph_array_get(
+				struct morph_tui_widget_text_line *text = morph_array_borrow(
 					&view->lines.lines, view->scroll + (size_t)(row - 2));
 				if (text) {
 					(void)morph_buf_puts(&line, "  ");
@@ -415,7 +415,7 @@ static int cli_jobs_draw(void *data, const struct morph_tui_screen *screen)
 			(void)morph_buf_puts(
 				&line, "  Up/Down · Enter output · k stop · r refresh · Esc back");
 		char compact[BUFSIZ], clipped[BUFSIZ];
-		cli_list_compact_text(compact, sizeof(compact), morph_buf_cstr(&line));
+		cli_list_compact_text(compact, sizeof(compact), morph_buf_cstr_borrow(&line));
 		utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), compact,
 						   (size_t)(columns > 1 ? columns - 1 : 0), 0);
 		rc = morph_buf_printf(&frame, "%s%s%s\n",
@@ -424,7 +424,7 @@ static int cli_jobs_draw(void *data, const struct morph_tui_screen *screen)
 	}
 	if (!rc)
 		rc = morph_tui_frame_present(&view->frame, stdout, columns, rows,
-					     morph_buf_cstr(&frame));
+					     morph_buf_cstr_borrow(&frame));
 	morph_buf_cleanup(&frame);
 	morph_buf_cleanup(&line);
 	return rc;
@@ -511,7 +511,8 @@ static int cli_jobs_controller_sync(struct cli_jobs_controller *page, int focus)
 {
 	struct cli_jobs_view *view = &page->view;
 	size_t count = (size_t)cJSON_GetArraySize(view->jobs);
-	int rc = morph_tui_widget_list_set_source(page->list, count, cli_jobs_controller_row, page);
+	int rc = morph_tui_widget_list_set_source_borrow(page->list, count, cli_jobs_controller_row,
+							 page);
 
 	morph_tui_widget_list_state_layout(&view->selection, count, view->selection.page);
 	if (!rc && count)
@@ -521,18 +522,18 @@ static int cli_jobs_controller_sync(struct cli_jobs_controller *page, int focus)
 	if (!rc)
 		rc = morph_tui_view_set_hidden(page->document, !view->detail);
 	if (!rc)
-		rc = morph_tui_widget_label_set_text(
+		rc = morph_tui_widget_label_set_text_copy(
 			page->title, view->detail ? "morph / jobs / output" : "morph / jobs");
 	if (!rc)
-		rc = morph_tui_widget_label_set_text(
+		rc = morph_tui_widget_label_set_text_copy(
 			page->message,
 			view->message ? view->message
 				      : (!count ? "No background jobs in this session." : ""));
 	if (!rc && view->detail && view->details) {
 		rc = cli_jobs_document(view);
 		if (!rc)
-			rc = morph_tui_widget_text_view_set_text(page->document,
-								 morph_buf_cstr(&view->document));
+			rc = morph_tui_widget_text_view_set_text_copy(
+				page->document, morph_buf_cstr_borrow(&view->document));
 	}
 	if (!rc && focus)
 		rc = morph_tui_view_focus(view->detail ? page->document : page->list);
@@ -552,15 +553,15 @@ static void cli_jobs_controller_build(struct morph_tui_view_controller *controll
 	controller->data = NULL;
 	const struct morph_tui_view_options inset = {.padding = {1, 1, 1, 1}};
 	const struct morph_tui_view_options fill = {.grow = 1};
-	struct morph_tui_view *root = morph_tui_widget_stack_create(
+	struct morph_tui_view *root = morph_tui_widget_stack_add_borrow(
 		builder, NULL, MORPH_TUI_WIDGET_STACK_VERTICAL, 0, &inset);
 
-	page->title = morph_tui_widget_label_create(builder, root, "morph / jobs", NULL);
-	morph_tui_widget_label_create(builder, root, "", NULL);
-	page->list = morph_tui_widget_list_create(builder, root, NULL, 0, 0, &fill);
-	page->document = morph_tui_widget_text_view_create(builder, root, "", &fill);
-	page->message = morph_tui_widget_label_create(builder, root, "", NULL);
-	morph_tui_widget_label_create(
+	page->title = morph_tui_widget_label_add_borrow(builder, root, "morph / jobs", NULL);
+	morph_tui_widget_label_add_borrow(builder, root, "", NULL);
+	page->list = morph_tui_widget_list_add_borrow(builder, root, NULL, 0, 0, &fill);
+	page->document = morph_tui_widget_text_view_add_borrow(builder, root, "", &fill);
+	page->message = morph_tui_widget_label_add_borrow(builder, root, "", NULL);
+	morph_tui_widget_label_add_borrow(
 		builder, root, "Up/Down · Enter output · k stop · r refresh · Esc back", NULL);
 	if (!morph_tui_builder_error(builder)) {
 		morph_tui_widget_list_set_navigation(page->list, 0);
@@ -671,7 +672,7 @@ int cli_jobs_view(struct cli_application *ctx, const char *id)
 		}
 		cJSON_Delete(details);
 	}
-	if (!rc && cli_application_tui(ctx)) {
+	if (!rc && cli_application_tui_borrow(ctx)) {
 		struct cli_jobs_controller page;
 		static const struct morph_tui_view_controller_ops controller_ops = {
 			.build = cli_jobs_controller_build,
@@ -688,7 +689,8 @@ int cli_jobs_view(struct cli_application *ctx, const char *id)
 			.tick_ms = 1000,
 		};
 
-		rc = morph_tui_view_controller_present(cli_application_tui(ctx), &spec);
+		rc = morph_tui_view_controller_present_borrow(cli_application_tui_borrow(ctx),
+							      &spec);
 		if (!rc)
 			return 0;
 	}

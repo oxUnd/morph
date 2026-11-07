@@ -1,5 +1,10 @@
 # Runtime prompt contexts
 
+> Historical implementation. Current memory and transfer contracts are in
+> [State ownership](../state-ownership.md); allocation contexts described here
+> are no longer used.
+
+
 `agent/prompt_context` builds an ordered set of runtime-context providers once
 per `react_run`. The default provider collects and renders `environment_context`.
 A provider has a stable name and a collection/render callback. Declaration order

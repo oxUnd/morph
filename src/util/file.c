@@ -1,6 +1,7 @@
 #include "file.h"
 #include "array.h"
 #include "buf.h"
+#include "cleanup.h"
 #include <unistd.h>
 #include <fcntl.h>
 #include "error.h"
@@ -13,7 +14,7 @@
 #include <errno.h>
 #include <limits.h>
 
-char *file_read_all(const char *path, size_t *out_len)
+char *file_read_all_copy(const char *path, size_t *out_len)
 {
 	FILE *f = fopen(path, "rb");
 	if (!f)
@@ -192,7 +193,7 @@ int file_exists(const char *path)
 	return stat(path, &st) == 0;
 }
 
-char *file_expand_path(const char *path)
+char *file_expand_path_copy(const char *path)
 {
 	if (path[0] == '~') {
 		const char *home = getenv("HOME");
@@ -357,81 +358,89 @@ int file_path_join_append(char *dst, size_t dst_size,
 	return file_path_append(dst, dst_size, suffix);
 }
 
+static void file_directory_cleanup(DIR **directory)
+{
+	if (directory && *directory) {
+		closedir(*directory);
+		*directory = NULL;
+	}
+}
+
+static void file_name_array_cleanup(morph_array_t *list)
+{
+	char **names = list->elts;
+
+	for (size_t i = 0; i < list->nelts; i++)
+		free(names[i]);
+	morph_array_cleanup(list);
+}
+
 static int file_list_entries(const char *dir, int want_dir,
 			     char ***out_names, int *out_count)
 {
+	morph_array_t list MORPH_CLEANUP(file_name_array_cleanup) = {0};
+	DIR *directory MORPH_CLEANUP(file_directory_cleanup) = NULL;
+	int rc;
+
 	if (!dir || !out_names || !out_count)
 		return -EINVAL;
-	DIR *d = opendir(dir);
-	if (!d)
-		return -ENOENT;
-
-	morph_array_t list;
-	int rc = morph_array_init(&list, 16, sizeof(char *));
-	if (rc != 0) {
-		closedir(d);
+	if (*out_names)
+		return -EALREADY;
+	directory = opendir(dir);
+	if (!directory)
+		return -errno;
+	rc = morph_array_init(&list, 16, sizeof(char *));
+	if (rc != 0)
 		return rc;
-	}
 
-	struct dirent *entry;
-	while ((entry = readdir(d)) != NULL) {
+	for (;;) {
+		struct dirent *entry;
+		char full[PATH_MAX + NAME_MAX + 2];
+		struct stat st;
+		char **slot;
+
+		errno = 0;
+		entry = readdir(directory);
+		if (!entry) {
+			if (errno != 0)
+				return -errno;
+			break;
+		}
 		if (want_dir &&
 		    (strcmp(entry->d_name, ".") == 0 ||
 		     strcmp(entry->d_name, "..") == 0))
 			continue;
 		if (!want_dir && entry->d_name[0] == '.')
 			continue;
-
-		char full[PATH_MAX + NAME_MAX + 2];
-		if (file_path_join(full, sizeof(full), dir, entry->d_name) != 0)
-			continue;
-		struct stat st;
+		rc = file_path_join(full, sizeof(full), dir, entry->d_name);
+		if (rc != 0)
+			return rc;
 		if (stat(full, &st) != 0)
 			continue;
 		if (want_dir && !S_ISDIR(st.st_mode))
 			continue;
 		if (!want_dir && !S_ISREG(st.st_mode))
 			continue;
-
-		char **slot = morph_array_push(&list);
-		if (!slot) {
-			char **names = list.elts;
-			for (size_t i = 0; i < list.nelts; i++)
-				free(names[i]);
-			morph_array_cleanup(&list);
-			closedir(d);
+		slot = morph_array_push_borrow(&list);
+		if (!slot)
 			return -ENOMEM;
-		}
 		*slot = strdup(entry->d_name);
-		if (!*slot) {
-			char **names = list.elts;
-			for (size_t i = 0; i + 1 < list.nelts; i++)
-				free(names[i]);
-			morph_array_cleanup(&list);
-			closedir(d);
+		if (!*slot)
 			return -ENOMEM;
-		}
-		if (list.nelts > (size_t)INT_MAX) {
-			char **names = list.elts;
-			for (size_t i = 0; i < list.nelts; i++)
-				free(names[i]);
-			morph_array_cleanup(&list);
-			closedir(d);
+		if (list.nelts > (size_t)INT_MAX)
 			return -EOVERFLOW;
-		}
 	}
-	closedir(d);
+	rc = closedir(directory);
+	directory = NULL;
+	if (rc != 0)
+		return -errno;
 	*out_names = list.elts;
 	*out_count = (int)list.nelts;
-	list.elts = NULL;
-	list.nelts = 0;
-	list.cap = 0;
-	list.size = 0;
-	list.heap_alloc = 0;
+	memset(&list, 0, sizeof(list));
 	return 0;
 }
 
-int file_list_dirs(const char *dir, char ***out_names, int *out_count)
+int file_list_dirs_copy(const char *dir, char ***out_names, int *out_count)
 {
 	return file_list_entries(dir, 1, out_names, out_count);
 }
@@ -441,7 +450,7 @@ static int name_cmp(const void *a, const void *b)
 	return strcmp(*(const char **)a, *(const char **)b);
 }
 
-int file_list_files(const char *dir, char ***out_names, int *out_count)
+int file_list_files_copy(const char *dir, char ***out_names, int *out_count)
 {
 	int rc = file_list_entries(dir, 0, out_names, out_count);
 	if (rc != 0)
@@ -459,11 +468,11 @@ void file_free_list(char **list, int count)
 	free(list);
 }
 
-char *file_resolve_path(const char *path)
+char *file_resolve_path_copy(const char *path)
 {
 	if (!path)
 		return NULL;
-	char *expanded = file_expand_path(path);
+	char *expanded = file_expand_path_copy(path);
 	if (!expanded)
 		return NULL;
 	char resolved[PATH_MAX];
@@ -492,8 +501,8 @@ int path_is_within(const char *path, const char *dir)
 {
 	if (!path || !dir)
 		return 0;
-	char *resolved_path = file_resolve_path(path);
-	char *resolved_dir = file_resolve_path(dir);
+	char *resolved_path = file_resolve_path_copy(path);
+	char *resolved_dir = file_resolve_path_copy(dir);
 	if (!resolved_path || !resolved_dir) {
 		free(resolved_path);
 		free(resolved_dir);

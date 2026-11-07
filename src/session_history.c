@@ -361,12 +361,12 @@ int model_history_migrate_messages(struct db *db, int64_t session_id)
 static int64_t *history_preserved_add(morph_array_t *preserved, int64_t id)
 {
 	for (size_t i = 0; i < preserved->nelts; i++) {
-		int64_t *existing = morph_array_get(preserved, i);
+		int64_t *existing = morph_array_borrow(preserved, i);
 
 		if (*existing == id)
 			return existing;
 	}
-	int64_t *slot = morph_array_push(preserved);
+	int64_t *slot = morph_array_push_borrow(preserved);
 
 	if (slot)
 		*slot = id;
@@ -377,7 +377,7 @@ static int64_t *history_preserved_add(morph_array_t *preserved, int64_t id)
 static int history_preserved_contains(const morph_array_t *preserved, int64_t id)
 {
 	for (size_t i = 0; i < preserved->nelts; i++) {
-		const int64_t *existing = morph_array_get(preserved, i);
+		const int64_t *existing = morph_array_borrow(preserved, i);
 
 		if (*existing == id)
 			return 1;
@@ -623,7 +623,7 @@ static int history_compact_window(struct db *db, int64_t session_id, const char 
 		return rc;
 	}
 	if (selected) {
-		int64_t *ids = morph_array_push_n(&preserved, selected->nelts);
+		int64_t *ids = morph_array_push_n_borrow(&preserved, selected->nelts);
 		if (selected->nelts && !ids) {
 			failure = (-ENOMEM);
 			goto out_rollback;
@@ -669,7 +669,7 @@ static int history_compact_window(struct db *db, int64_t session_id, const char 
 	if (rc != SQLITE_DONE)
 		goto out_rollback;
 	for (size_t i = 0; i < preserved.nelts; i++) {
-		int64_t *id = morph_array_get(&preserved, i);
+		int64_t *id = morph_array_borrow(&preserved, i);
 
 		rc = sqlite3_prepare_v2(db->handle, restore_sql, -1, &stmt, NULL);
 		if (rc != SQLITE_OK)

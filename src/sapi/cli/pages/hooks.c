@@ -4,7 +4,8 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/pages/setup/controls.h"
 #include "runtime/runtime.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "util/array.h"
 #include "util/buf.h"
 #include "util/error.h"
@@ -29,7 +30,7 @@
 #define CLI_HOOKS_UI_RULE "\033[0;38;2;48;57;65;48;2;16;18;20m"
 
 struct cli_hooks_hook_line {
-	const char *text;
+	char *text;
 	const char *style;
 };
 
@@ -245,11 +246,10 @@ static void cli_hooks_events_frame(struct cli_hooks_hook_screen *screen, const c
 		       "↑↓ Select  Enter Handlers  r Refresh  Esc All hooks", CLI_HOOKS_UI_DIM);
 }
 
-static int cli_hooks_add_line(struct arena *arena, morph_array_t *lines, const char *text,
-			      const char *style, int width)
+static int cli_hooks_add_line(morph_array_t *lines, const char *text, const char *style, int width)
 {
-	char *safe = utf8_terminal_sanitize_dup(text, strlen(text), UTF8_TERMINAL_TEXT_SINGLE_LINE,
-						NULL);
+	char *safe MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
+		text, strlen(text), UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
 
 	if (!safe)
 		return -ENOMEM;
@@ -257,12 +257,12 @@ static int cli_hooks_add_line(struct arena *arena, morph_array_t *lines, const c
 	int rc = 0;
 
 	do {
-		const char *end = utf8_advance_display_width(cursor, (size_t)width);
+		const char *end = utf8_advance_display_width_borrow(cursor, (size_t)width);
 		if (*cursor && end == cursor)
-			end = utf8_advance_codepoints(cursor, 1);
+			end = utf8_advance_codepoints_borrow(cursor, 1);
 		size_t length = (size_t)(end - cursor);
-		char *copy = arena_alloc(arena, length + 1);
-		struct cli_hooks_hook_line *line = morph_array_push(lines);
+		char *copy MORPH_CLEANUP(morph_charp_cleanup) = malloc(length + 1);
+		struct cli_hooks_hook_line *line = copy ? morph_array_push_borrow(lines) : NULL;
 
 		if (!copy || !line) {
 			rc = (-ENOMEM);
@@ -270,66 +270,61 @@ static int cli_hooks_add_line(struct arena *arena, morph_array_t *lines, const c
 		}
 		memcpy(copy, cursor, length);
 		copy[length] = '\0';
-		*line = (struct cli_hooks_hook_line){copy, style};
+		*line = (struct cli_hooks_hook_line){morph_charp_steal(&copy), style};
 		cursor = end;
 	} while (*cursor);
-	free(safe);
 	return rc;
 }
 
-static int cli_hooks_detail_field(struct arena *arena, morph_array_t *lines, morph_buf_t *buffer,
-				  const char *label, const char *value, int width)
+static int cli_hooks_detail_field(morph_array_t *lines, morph_buf_t *buffer, const char *label,
+				  const char *value, int width)
 {
 	morph_buf_reset(buffer);
 	int rc = morph_buf_printf(buffer, "%-13s %s", label, *value ? value : "—");
 
-	return rc == 0 ? cli_hooks_add_line(arena, lines, morph_buf_cstr(buffer), CLI_HOOKS_UI_TEXT,
+	return rc == 0 ? cli_hooks_add_line(lines, morph_buf_cstr_borrow(buffer), CLI_HOOKS_UI_TEXT,
 					    width)
 		       : rc;
 }
 
-static int cli_hooks_diff_property(struct arena *arena, morph_array_t *lines, morph_buf_t *buffer,
-				   const cJSON *value, const char *prefix, const char *style,
-				   int width)
+static int cli_hooks_diff_property(morph_array_t *lines, morph_buf_t *buffer, const cJSON *value,
+				   const char *prefix, const char *style, int width)
 {
-	char *json = cJSON_PrintUnformatted(value);
+	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(value);
 	if (!json)
 		return -ENOMEM;
 	morph_buf_reset(buffer);
 	int rc = morph_buf_printf(buffer, "%s  \"%s\": %s%s", prefix, value->string, json,
 				  value->next ? "," : "");
-	free(json);
-	return rc == 0 ? cli_hooks_add_line(arena, lines, morph_buf_cstr(buffer), style, width)
+	return rc == 0 ? cli_hooks_add_line(lines, morph_buf_cstr_borrow(buffer), style, width)
 		       : rc;
 }
 
-static int cli_hooks_definition_lines(struct arena *arena, morph_array_t *lines,
-				      morph_buf_t *buffer, const cJSON *row, int width)
+static int cli_hooks_definition_lines(morph_array_t *lines, morph_buf_t *buffer, const cJSON *row,
+				      int width)
 {
-	cJSON *current = cJSON_Parse(cli_hooks_field(row, "definition"));
-	cJSON *previous = cJSON_Parse(cli_hooks_field(row, "previous_definition"));
+	cJSON *current MORPH_CLEANUP(morph_json_cleanup) =
+		cJSON_Parse(cli_hooks_field(row, "definition"));
+	cJSON *previous MORPH_CLEANUP(morph_json_cleanup) =
+		cJSON_Parse(cli_hooks_field(row, "previous_definition"));
 	const cJSON *value;
 	if (previous && cJSON_Compare(current, previous, 1)) {
-		cJSON_Delete(previous);
-		previous = NULL;
+		morph_json_cleanup(&previous);
 	}
 	if (!cJSON_IsObject(current)) {
-		cJSON_Delete(current);
-		cJSON_Delete(previous);
 		return MORPH_ERR_PARSE;
 	}
-	int rc = cli_hooks_add_line(arena, lines,
-				    previous ? "Definition changes" : "Current definition",
+	int rc = cli_hooks_add_line(lines, previous ? "Definition changes" : "Current definition",
 				    CLI_HOOKS_UI_TEXT "\033[1m", width);
 
 	if (rc == 0)
-		rc = cli_hooks_add_line(arena, lines, "{", CLI_HOOKS_UI_DIM, width);
+		rc = cli_hooks_add_line(lines, "{", CLI_HOOKS_UI_DIM, width);
 	cJSON_ArrayForEach (value, previous) {
 		if (rc != 0)
 			break;
 		if (!cJSON_HasObjectItem(current, value->string))
-			rc = cli_hooks_diff_property(arena, lines, buffer, value, "-",
-						     CLI_HOOKS_UI_RED, width);
+			rc = cli_hooks_diff_property(lines, buffer, value, "-", CLI_HOOKS_UI_RED,
+						     width);
 	}
 	cJSON_ArrayForEach (value, current) {
 		if (rc != 0)
@@ -338,25 +333,22 @@ static int cli_hooks_definition_lines(struct arena *arena, morph_array_t *lines,
 		int changed = previous && !cJSON_Compare(old, value, 1);
 
 		if (changed && old)
-			rc = cli_hooks_diff_property(arena, lines, buffer, old, "-",
-						     CLI_HOOKS_UI_RED, width);
+			rc = cli_hooks_diff_property(lines, buffer, old, "-", CLI_HOOKS_UI_RED,
+						     width);
 		if (rc == 0)
-			rc = cli_hooks_diff_property(
-				arena, lines, buffer, value, changed ? "+" : " ",
-				changed ? CLI_HOOKS_UI_ADD : CLI_HOOKS_UI_TEXT, width);
+			rc = cli_hooks_diff_property(lines, buffer, value, changed ? "+" : " ",
+						     changed ? CLI_HOOKS_UI_ADD : CLI_HOOKS_UI_TEXT,
+						     width);
 	}
 	if (rc == 0)
-		rc = cli_hooks_add_line(arena, lines, "}", CLI_HOOKS_UI_DIM, width);
-	cJSON_Delete(current);
-	cJSON_Delete(previous);
+		rc = cli_hooks_add_line(lines, "}", CLI_HOOKS_UI_DIM, width);
 	return rc;
 }
 
-static int cli_hooks_document(struct arena *arena, morph_array_t *lines, const cJSON *row,
-			      int width, int review)
+static int cli_hooks_document(morph_array_t *lines, const cJSON *row, int width, int review)
 {
-	morph_buf_t buffer;
-	int rc = morph_buf_init_arena(&buffer, arena, 256);
+	morph_buf_t buffer MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int rc = morph_buf_init(&buffer, 256);
 	const char *keys[] = {"id", "command", "matcher", "source", "cwd"};
 	const char *labels[] = {"ID", "Command", "Matcher", "Source", "Working dir"};
 
@@ -364,18 +356,18 @@ static int cli_hooks_document(struct arena *arena, morph_array_t *lines, const c
 		rc = morph_buf_printf(&buffer, "%s · %s", cli_hooks_field(row, "event"),
 				      cli_hooks_state_label(row));
 		if (rc == 0)
-			rc = cli_hooks_add_line(arena, lines, morph_buf_cstr(&buffer),
+			rc = cli_hooks_add_line(lines, morph_buf_cstr_borrow(&buffer),
 						CLI_HOOKS_UI_TEXT "\033[1m", width);
 	}
 
 	for (size_t i = 0; rc == 0 && i < sizeof(keys) / sizeof(keys[0]); i++)
-		rc = cli_hooks_detail_field(arena, lines, &buffer, labels[i],
+		rc = cli_hooks_detail_field(lines, &buffer, labels[i],
 					    cli_hooks_field(row, keys[i]), width);
 	if (rc == 0 && *cli_hooks_field(row, "diagnostic"))
-		rc = cli_hooks_detail_field(arena, lines, &buffer, "Unavailable",
+		rc = cli_hooks_detail_field(lines, &buffer, "Unavailable",
 					    cli_hooks_field(row, "diagnostic"), width);
 	if (rc == 0 && *cli_hooks_field(row, "statusMessage"))
-		rc = cli_hooks_detail_field(arena, lines, &buffer, "While running",
+		rc = cli_hooks_detail_field(lines, &buffer, "While running",
 					    cli_hooks_field(row, "statusMessage"), width);
 	if (rc == 0) {
 		const cJSON *timeout = cJSON_GetObjectItemCaseSensitive(row, "timeout");
@@ -383,16 +375,16 @@ static int cli_hooks_document(struct arena *arena, morph_array_t *lines, const c
 
 		snprintf(number, sizeof(number), "%ds",
 			 cJSON_IsNumber(timeout) ? timeout->valueint : 0);
-		rc = cli_hooks_detail_field(arena, lines, &buffer, "Timeout", number, width);
+		rc = cli_hooks_detail_field(lines, &buffer, "Timeout", number, width);
 	}
 	if (rc == 0 && review)
-		rc = cli_hooks_add_line(arena, lines, "", CLI_HOOKS_UI_DIM, width);
+		rc = cli_hooks_add_line(lines, "", CLI_HOOKS_UI_DIM, width);
 	if (rc == 0 && review)
-		rc = cli_hooks_definition_lines(arena, lines, &buffer, row, width);
+		rc = cli_hooks_definition_lines(lines, &buffer, row, width);
 	if (rc == 0)
-		rc = cli_hooks_add_line(arena, lines, "", CLI_HOOKS_UI_DIM, width);
+		rc = cli_hooks_add_line(lines, "", CLI_HOOKS_UI_DIM, width);
 	if (rc == 0)
-		rc = cli_hooks_add_line(arena, lines, "Last execution", CLI_HOOKS_UI_TEXT "\033[1m",
+		rc = cli_hooks_add_line(lines, "Last execution", CLI_HOOKS_UI_TEXT "\033[1m",
 					width);
 	const cJSON *last = cJSON_GetObjectItemCaseSensitive(row, "last_run");
 	if (rc == 0 && last) {
@@ -406,23 +398,23 @@ static int cli_hooks_document(struct arena *arena, morph_array_t *lines, const c
 		if (rc == 0 && cJSON_IsNumber(duration))
 			rc = morph_buf_printf(&buffer, " · %.0f ms", duration->valuedouble);
 		if (rc == 0)
-			rc = cli_hooks_add_line(arena, lines, morph_buf_cstr(&buffer),
+			rc = cli_hooks_add_line(lines, morph_buf_cstr_borrow(&buffer),
 						CLI_HOOKS_UI_DIM, width);
 		if (rc == 0 && *cli_hooks_field(last, "error"))
-			rc = cli_hooks_detail_field(arena, lines, &buffer, "Error",
+			rc = cli_hooks_detail_field(lines, &buffer, "Error",
 						    cli_hooks_field(last, "error"), width);
 		if (rc == 0 && *cli_hooks_field(last, "stderr"))
-			rc = cli_hooks_detail_field(arena, lines, &buffer, "Stderr",
+			rc = cli_hooks_detail_field(lines, &buffer, "Stderr",
 						    cli_hooks_field(last, "stderr"), width);
 	} else if (rc == 0) {
-		rc = cli_hooks_add_line(arena, lines, "Not run", CLI_HOOKS_UI_DIM, width);
+		rc = cli_hooks_add_line(lines, "Not run", CLI_HOOKS_UI_DIM, width);
 	}
 	if (rc == 0 && review)
 		rc = cli_hooks_add_line(
-			arena, lines, "Trust covers this definition, not mutable script contents.",
+			lines, "Trust covers this definition, not mutable script contents.",
 			CLI_HOOKS_UI_DIM, width);
 	if (rc == 0 && strcmp(cli_hooks_field(row, "state"), "project_untrusted") == 0)
-		rc = cli_hooks_add_line(arena, lines,
+		rc = cli_hooks_add_line(lines,
 					"Review this workspace path before trusting it; then "
 					"review the hook definition.",
 					CLI_HOOKS_UI_AMBER, width);
@@ -567,6 +559,16 @@ static void cli_hooks_render_batch(struct cli_hooks_hook_screen *screen, const c
 		       "↑↓ Choose  Enter Confirm  Esc Keep unchanged", CLI_HOOKS_UI_DIM);
 }
 
+static void cli_hooks_lines_cleanup(morph_array_t *lines)
+{
+	for (size_t i = 0; i < lines->nelts; i++) {
+		struct cli_hooks_hook_line *line = morph_array_borrow(lines, i);
+
+		free(line->text);
+	}
+	morph_array_cleanup(lines);
+}
+
 static int cli_hooks_render(struct cli_hooks_hook_screen *screen, const cJSON *rows)
 {
 	const cJSON *row = cli_hooks_view_row(screen, rows, screen->focus);
@@ -574,17 +576,12 @@ static int cli_hooks_render(struct cli_hooks_hook_screen *screen, const cJSON *r
 	int detail_start;
 	struct cli_hooks_hook_action items[4];
 	int action_count = cli_hooks_actions(row, items);
-	struct arena *arena = arena_create(BUFSIZ);
-	morph_array_t lines = {0};
+	morph_array_t lines MORPH_CLEANUP(cli_hooks_lines_cleanup) = {0};
 
-	if (!arena)
-		return -ENOMEM;
 	struct cli_hooks_hook_line element;
 	int rc = morph_array_init(&lines, 32, sizeof(element));
-	if (rc != 0) {
-		arena_destroy(arena);
+	if (rc != 0)
 		return rc;
-	}
 
 	if (!screen->frame.data)
 		rc = morph_buf_init(&screen->frame, BUFSIZ);
@@ -658,7 +655,7 @@ static int cli_hooks_render(struct cli_hooks_hook_screen *screen, const cJSON *r
 		if (screen->document_height < 0)
 			screen->document_height = 0;
 		if (rc == 0 && row)
-			rc = cli_hooks_document(arena, &lines, row, screen->width, screen->review);
+			rc = cli_hooks_document(&lines, row, screen->width, screen->review);
 		screen->document_lines = lines.nelts > INT_MAX ? INT_MAX : (int)lines.nelts;
 		int max_scroll = screen->document_lines - screen->document_height;
 		if (max_scroll < 0)
@@ -667,7 +664,7 @@ static int cli_hooks_render(struct cli_hooks_hook_screen *screen, const cJSON *r
 			screen->scroll = max_scroll;
 		for (int i = 0; rc == 0 && i < screen->document_height; i++) {
 			struct cli_hooks_hook_line *line =
-				morph_array_get(&lines, (size_t)(screen->scroll + i));
+				morph_array_borrow(&lines, (size_t)(screen->scroll + i));
 			if (!line)
 				break;
 			cli_hooks_cell(screen, detail_start + i, 3, screen->width, line->text,
@@ -713,8 +710,6 @@ static int cli_hooks_render(struct cli_hooks_hook_screen *screen, const cJSON *r
 		rc = morph_buf_puts(&screen->frame, "\033[0m\033[?2026l");
 	if (rc == 0)
 		rc = morph_tui_draw_write(stdout, &screen->frame);
-	morph_array_cleanup(&lines);
-	arena_destroy(arena);
 	return rc;
 }
 
@@ -726,7 +721,7 @@ static int cli_hooks_refresh(struct cli_application *ctx, cJSON **rows,
 	char id[65];
 
 	snprintf(id, sizeof(id), "%s", cli_hooks_field(row, "id"));
-	int rc = runtime_hooks_snapshot(ctx->runtime, &fresh);
+	int rc = runtime_hooks_snapshot_copy(ctx->runtime, &fresh);
 	if (rc != 0)
 		return rc;
 	cJSON_Delete(*rows);
@@ -973,7 +968,7 @@ static int cli_hooks_present(struct cli_application *ctx, cJSON **rows, const ch
 
 		screen->choice = cli_hooks_actions(row, items) - 1;
 	}
-	if (cli_application_tui(ctx)) {
+	if (cli_application_tui_borrow(ctx)) {
 		struct cli_hooks_hook_controller *owned = calloc(1, sizeof(*owned));
 
 		if (!owned)
@@ -1021,7 +1016,7 @@ int cli_hooks_startup(struct cli_application *ctx)
 
 	if (!cli_setup_controls_available(stdin, stdout))
 		return 0;
-	rc = runtime_hooks_snapshot(ctx->runtime, &rows);
+	rc = runtime_hooks_snapshot_copy(ctx->runtime, &rows);
 	if (rc != 0)
 		return rc;
 	cJSON_ArrayForEach (row, rows) {

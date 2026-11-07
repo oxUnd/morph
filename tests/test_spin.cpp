@@ -165,7 +165,7 @@ TEST(SpinUpdate, InvalidUtf8IsSanitized)
 TEST(Utf8Util, TailColumnsKeepsWholeCodepoints)
 {
 	const char *s = "ab\xe4\xb8\xad" "cd";
-	const char *tail = utf8_suffix_display_width(s, 4);
+	const char *tail = utf8_suffix_display_width_borrow(s, 4);
 
 	EXPECT_STREQ(tail, "\xe4\xb8\xad" "cd");
 	EXPECT_EQ(utf8_display_width(tail), 4u);
@@ -271,11 +271,11 @@ TEST(Utf8AdvanceDisplayWidth, DoesNotSplitWideCharacters)
 {
 	const char *s = "A\xe4\xb8\xad""B";
 
-	EXPECT_EQ(utf8_advance_display_width(s, 0), s);
-	EXPECT_EQ(utf8_advance_display_width(s, 1), s + 1);
-	EXPECT_EQ(utf8_advance_display_width(s, 2), s + 1);
-	EXPECT_EQ(utf8_advance_display_width(s, 3), s + 4);
-	EXPECT_EQ(utf8_advance_display_width(s, 4), s + 5);
+	EXPECT_EQ(utf8_advance_display_width_borrow(s, 0), s);
+	EXPECT_EQ(utf8_advance_display_width_borrow(s, 1), s + 1);
+	EXPECT_EQ(utf8_advance_display_width_borrow(s, 2), s + 1);
+	EXPECT_EQ(utf8_advance_display_width_borrow(s, 3), s + 4);
+	EXPECT_EQ(utf8_advance_display_width_borrow(s, 4), s + 5);
 }
 
 TEST(SpinSetSub, ExactBufferSize)

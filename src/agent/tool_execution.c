@@ -44,7 +44,7 @@ static int tool_error_code(const cJSON *envelope)
 int tool_exec(struct tool_registry *reg, const char *name, const char *args_json,
 	      struct tool_result *result)
 {
-	struct tool_handle handle;
+	struct tool_handle handle = {0};
 	const cJSON *ok;
 	int rc;
 	int result_rc;
@@ -85,11 +85,11 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 		};
 		rc = tool_context_check_operation(handle.permission_context, &operation);
 		if (rc == -EACCES || rc == -EPERM)
-			(void)tool_result_errorf(result, "permission_denied",
-						 "%s Do not retry through another tool or route to "
-						 "bypass this decision.",
-						 review.reason[0] ? review.reason
-								  : "Permission was not granted.");
+			(void)tool_result_error_format(
+				result, "permission_denied",
+				"%s Do not retry through another tool or route to "
+				"bypass this decision.",
+				review.reason[0] ? review.reason : "Permission was not granted.");
 	} else {
 		rc = 0;
 	}
@@ -128,8 +128,8 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 				tool_result_clear(result);
 				return -ENOMEM;
 			}
-			result_rc = tool_result_error(result, "tool_failed",
-						      owned != NULL ? owned : morph_strerror(rc));
+			result_rc = tool_result_error_copy(
+				result, "tool_failed", owned != NULL ? owned : morph_strerror(rc));
 			free(owned);
 			if (result_rc != 0) {
 				return result_rc;
@@ -137,12 +137,12 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 		}
 	}
 	if (rc < 0 && result->envelope == NULL) {
-		result_rc = tool_result_error(result,
-					      rc == -EINVAL   ? "invalid_arguments"
-					      : rc == -EACCES ? "permission_denied"
-					      : rc == -EPERM  ? "approval_unavailable"
-							      : "tool_failed",
-					      morph_strerror(rc));
+		result_rc = tool_result_error_copy(result,
+						   rc == -EINVAL   ? "invalid_arguments"
+						   : rc == -EACCES ? "permission_denied"
+						   : rc == -EPERM  ? "approval_unavailable"
+								   : "tool_failed",
+						   morph_strerror(rc));
 		if (result_rc != 0) {
 			return result_rc;
 		}

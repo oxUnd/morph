@@ -28,17 +28,18 @@ static int header_needs_encoding(const char *value)
 	return 0;
 }
 
-int mcp_protocol_add_header(struct arena *arena, morph_array_t *headers,
-	const char *name, const char *value)
+int mcp_protocol_add_header_copy(morph_array_t *headers, const char *name, const char *value)
 {
-	morph_buf_t buffer;
+	if (!headers || headers->size != sizeof(char *) || !name || !value)
+		return -EINVAL;
+	morph_buf_t buffer MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	char *encoded = NULL;
-	int rc = morph_buf_init_arena(&buffer, arena, 128);
+	int rc = morph_buf_init(&buffer, 128);
 
 	if (rc != 0)
 		return rc;
 	if (header_needs_encoding(value)) {
-		encoded = base64_encode((const unsigned char *)value, strlen(value));
+		encoded = base64_encode_copy((const unsigned char *)value, strlen(value));
 		if (!encoded)
 			return -ENOMEM;
 		rc = morph_buf_printf(&buffer, "%s: =?base64?%s?=", name, encoded);
@@ -48,11 +49,14 @@ int mcp_protocol_add_header(struct arena *arena, morph_array_t *headers,
 	free(encoded);
 	if (rc != 0)
 		return rc;
-	const char **slot = morph_array_push(headers);
+	char *text MORPH_CLEANUP(morph_charp_cleanup) = morph_buf_detach(&buffer);
+	if (!text)
+		return -ENOMEM;
+	char **slot = morph_array_push_borrow(headers);
 
 	if (!slot)
 		return -ENOMEM;
-	*slot = morph_buf_cstr(&buffer);
+	*slot = morph_charp_steal(&text);
 	return 0;
 }
 
@@ -90,8 +94,8 @@ static int validate_annotation(const cJSON *schema, int property,
 		if (*p >= 'A' && *p <= 'Z')
 			*p = (char)(*p - 'A' + 'a');
 	}
-	int rc = morph_strmap_contains(seen, key) ? -EINVAL :
-		morph_strmap_set(seen, key, seen);
+	int rc = morph_strmap_contains(seen, key) ? -EINVAL
+						  : morph_strmap_set_borrow(seen, key, seen);
 
 	free(key);
 	return rc;
@@ -144,8 +148,7 @@ static int validate_schema(const cJSON *schema, int reachable, int property,
 	return 0;
 }
 
-int mcp_protocol_cache_tool(struct mcp_client *client, const char *name,
-	const cJSON *schema)
+int mcp_protocol_cache_tool_copy(struct mcp_client *client, const char *name, const cJSON *schema)
 {
 	if (!client->protocol || !client->protocol->per_request ||
 	    client->config.transport != MCP_TRANSPORT_STREAMABLE_HTTP)
@@ -166,10 +169,10 @@ int mcp_protocol_cache_tool(struct mcp_client *client, const char *name,
 	pthread_mutex_lock(&client->lock);
 	if (!client->tool_schemas.entries)
 		rc = morph_strmap_init(&client->tool_schemas, 16);
-	cJSON *previous = morph_strmap_get(&client->tool_schemas, name);
+	cJSON *previous = morph_strmap_borrow(&client->tool_schemas, name);
 
 	if (rc == 0)
-		rc = morph_strmap_set(&client->tool_schemas, name, copy);
+		rc = morph_strmap_set_borrow(&client->tool_schemas, name, copy);
 	if (rc == 0)
 		cJSON_Delete(previous);
 	else
@@ -178,24 +181,23 @@ int mcp_protocol_cache_tool(struct mcp_client *client, const char *name,
 	return rc;
 }
 
-static int parameter_header(const cJSON *schema, const cJSON *value,
-	struct arena *arena, morph_array_t *headers)
+static int parameter_header(const cJSON *schema, const cJSON *value, morph_array_t *headers)
 {
 	const cJSON *annotation = cJSON_GetObjectItemCaseSensitive(schema, "x-mcp-header");
 
 	if (!annotation || !value || cJSON_IsNull(value))
 		return 0;
 	const cJSON *type = cJSON_GetObjectItemCaseSensitive(schema, "type");
-	morph_buf_t name;
-	morph_buf_t text;
-	int rc = morph_buf_init_arena(&name, arena, 64);
+	morph_buf_t name MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int rc = morph_buf_init(&name, 64);
 
 	if (rc != 0)
 		return rc;
 	rc = morph_buf_printf(&name, "Mcp-Param-%s", annotation->valuestring);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_init_arena(&text, arena, 64);
+	rc = morph_buf_init(&text, 64);
 	if (rc != 0)
 		return rc;
 	if (strcmp(type->valuestring, "string") == 0 && cJSON_IsString(value))
@@ -211,12 +213,11 @@ static int parameter_header(const cJSON *schema, const cJSON *value,
 		return -EINVAL;
 	if (rc != 0)
 		return rc;
-	return mcp_protocol_add_header(arena, headers, morph_buf_cstr(&name),
-		morph_buf_cstr(&text));
+	return mcp_protocol_add_header_copy(headers, morph_buf_cstr_borrow(&name),
+					    morph_buf_cstr_borrow(&text));
 }
 
-static int property_headers(const cJSON *schema, const cJSON *arguments,
-	struct arena *arena, morph_array_t *headers)
+static int property_headers(const cJSON *schema, const cJSON *arguments, morph_array_t *headers)
 {
 	const cJSON *properties = cJSON_GetObjectItemCaseSensitive(schema, "properties");
 	const cJSON *property;
@@ -224,26 +225,50 @@ static int property_headers(const cJSON *schema, const cJSON *arguments,
 	cJSON_ArrayForEach(property, properties) {
 		const cJSON *value = cJSON_IsObject(arguments) ?
 			cJSON_GetObjectItemCaseSensitive(arguments, property->string) : NULL;
-		int rc = parameter_header(property, value, arena, headers);
+		int rc = parameter_header(property, value, headers);
 
 		if (rc == 0 && cJSON_IsObject(value))
-			rc = property_headers(property, value, arena, headers);
+			rc = property_headers(property, value, headers);
 		if (rc != 0)
 			return rc;
 	}
 	return 0;
 }
 
-/* Caller holds the connection lock, including access to the schema cache. */
-int mcp_protocol_tool_headers(struct mcp_client *client, const cJSON *params,
-	struct arena *arena, morph_array_t *headers)
+static void header_copies_cleanup(morph_array_t *headers)
 {
+	char **header;
+	morph_array_foreach (header, headers, char *)
+		free(*header);
+	morph_array_cleanup(headers);
+}
+
+/* Caller holds the connection lock, including access to the schema cache. */
+int mcp_protocol_tool_headers_copy(struct mcp_client *client, const cJSON *params,
+				   morph_array_t *headers)
+{
+	if (!client || !params || !headers || headers->size != sizeof(char *))
+		return -EINVAL;
 	const cJSON *name = cJSON_GetObjectItemCaseSensitive(params, "name");
 	const cJSON *arguments = cJSON_GetObjectItemCaseSensitive(params, "arguments");
-	const cJSON *schema = cJSON_IsString(name) ?
-		morph_strmap_get(&client->tool_schemas, name->valuestring) : NULL;
+	const cJSON *schema =
+		cJSON_IsString(name) ? morph_strmap_borrow(&client->tool_schemas, name->valuestring)
+				     : NULL;
 
 	if (!schema)
 		return -ENOENT;
-	return property_headers(schema, arguments, arena, headers);
+	morph_array_t copies MORPH_CLEANUP(header_copies_cleanup) = {0};
+	int rc = morph_array_init(&copies, 8, sizeof(char *));
+	if (rc == 0)
+		rc = property_headers(schema, arguments, &copies);
+	if (rc != 0 || !copies.nelts)
+		return rc;
+	if (copies.nelts > SIZE_MAX - headers->nelts)
+		return -EOVERFLOW;
+	char **destination = morph_array_push_n_borrow(headers, copies.nelts);
+	if (!destination)
+		return -ENOMEM;
+	memcpy(destination, copies.elts, copies.nelts * sizeof(*destination));
+	copies.nelts = 0;
+	return 0;
 }

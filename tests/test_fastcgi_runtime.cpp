@@ -5,6 +5,7 @@ extern "C" {
 #include "config/config.h"
 #include "runtime/services.h"
 #include "sapi/fastcgi/agent_bridge.h"
+#include "util/cleanup.h"
 }
 
 #include <cstdlib>
@@ -67,27 +68,28 @@ TEST(FastcgiRuntimeTest, SharedBootstrapLoadsSkillsMcpAndServerTools)
 	setenv("MORPH_FCGI_RUNTIME_MAX_WORKERS", "2", 1);
 	setenv("MORPH_FCGI_RUNTIME_QUEUE_MAX", "1", 1);
 	setenv("MORPH_FCGI_RUNTIME_IDLE_SECONDS", "1", 1);
+	setenv("MORPH_FCGI_RUNTIME_WAIT_SECONDS", "1", 1);
 	struct fcgi_bridge *bridge = nullptr;
 	ASSERT_EQ(fcgi_bridge_init(&bridge, database.c_str()), 0);
 	EXPECT_EQ(fcgi_bridge_runtime_count(bridge), 1);
-	struct runtime *runtime = fcgi_bridge_runtime(bridge);
+	struct runtime *runtime = fcgi_bridge_runtime_borrow(bridge);
 	ASSERT_NE(runtime, nullptr);
 	EXPECT_GT(runtime_skill_count(runtime), 0);
 	struct skill_entry skill{};
-	EXPECT_EQ(runtime_skill_find(runtime, "fastcgi-test", &skill), 0);
+	EXPECT_EQ(runtime_skill_find_borrow(runtime, "fastcgi-test", &skill), 0);
 	struct tool_desc tool{};
-	EXPECT_EQ(runtime_tool_find(runtime, "activate_skill", &tool), 0);
-	EXPECT_EQ(runtime_tool_find(runtime, "tasks", &tool), 0);
-	EXPECT_EQ(runtime_tool_find(runtime, "ask_user", &tool), 0);
-	EXPECT_EQ(runtime_tool_find(runtime, "apply_patch", &tool), 0);
+	EXPECT_EQ(runtime_tool_find_borrow(runtime, "activate_skill", &tool), 0);
+	EXPECT_EQ(runtime_tool_find_borrow(runtime, "tasks", &tool), 0);
+	EXPECT_EQ(runtime_tool_find_borrow(runtime, "ask_user", &tool), 0);
+	EXPECT_EQ(runtime_tool_find_borrow(runtime, "apply_patch", &tool), 0);
 	EXPECT_EQ(runtime_mcp_count(runtime), 1);
 	struct runtime_mcp_status mcp{};
 	EXPECT_EQ(runtime_mcp_find(runtime, "fastcgi-disabled", &mcp), 0);
 	EXPECT_EQ(mcp.connected, 0);
-	const struct config *loaded = fcgi_bridge_config(bridge);
+	const struct config *loaded = fcgi_bridge_config_borrow(bridge);
 	ASSERT_NE(loaded, nullptr);
 	EXPECT_STREQ(loaded->dynamic_tools.mode, "server");
-	EXPECT_STREQ(fcgi_artifact_output_dir(bridge), output.c_str());
+	EXPECT_STREQ(fcgi_artifact_output_dir_borrow(bridge), output.c_str());
 	struct runtime *first = nullptr;
 	struct runtime *second = nullptr;
 	ASSERT_EQ(fcgi_bridge_runtime_acquire(bridge, "session-a", &first), 0);
@@ -141,24 +143,67 @@ TEST(FastcgiRuntimeTest, SharedBootstrapLoadsSkillsMcpAndServerTools)
 	EXPECT_EQ(queued_result.first, 0);
 	fcgi_bridge_runtime_release(bridge, queued_result.second);
 	fcgi_bridge_runtime_release(bridge, second);
+	first = nullptr;
+	ASSERT_EQ(fcgi_bridge_runtime_acquire(bridge, "ticket-held", &first), 0);
+	struct fcgi_turn_ticket *ticket MORPH_CLEANUP(fcgi_turn_ticket_cleanup) = nullptr;
+	ASSERT_EQ(fcgi_bridge_turn_enqueue(bridge, "ticket-held", &ticket, nullptr), 0);
+	struct fcgi_turn_ticket *original = ticket;
+	struct runtime *timed_out = nullptr;
+	EXPECT_EQ(fcgi_bridge_turn_acquire(bridge, ticket, &timed_out), -ETIMEDOUT);
+	EXPECT_EQ(ticket, original);
+	EXPECT_EQ(timed_out, nullptr);
+	fcgi_bridge_pool_status(bridge, &pool);
+	EXPECT_EQ(pool.waiting_turns, 0);
+	fcgi_turn_ticket_cleanup(&ticket);
+	EXPECT_EQ(ticket, nullptr);
+	ASSERT_EQ(fcgi_bridge_turn_enqueue(bridge, "ticket-held", &ticket, nullptr), 0);
+	original = ticket;
+	auto cancelled = std::async(std::launch::async, [bridge, ticket] {
+		struct runtime *acquired = nullptr;
+		int rc = fcgi_bridge_turn_acquire(bridge, ticket, &acquired);
+
+		return std::make_pair(rc, acquired);
+	});
+	EXPECT_EQ(cancelled.wait_for(std::chrono::milliseconds(30)), std::future_status::timeout);
+	fcgi_bridge_turn_cancel(bridge, ticket);
+	ASSERT_EQ(cancelled.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+	auto cancelled_result = cancelled.get();
+	EXPECT_EQ(cancelled_result.first, -ECANCELED);
+	EXPECT_EQ(cancelled_result.second, nullptr);
+	EXPECT_EQ(ticket, original);
+	fcgi_turn_ticket_cleanup(&ticket);
+	fcgi_turn_ticket_cleanup(&ticket);
+	fcgi_bridge_runtime_release(bridge, first);
+	ASSERT_EQ(fcgi_bridge_turn_enqueue(bridge, "ticket-success", &ticket, nullptr), 0);
+	first = nullptr;
+	ASSERT_EQ(fcgi_bridge_turn_acquire(bridge, ticket, &first), 0);
+	fcgi_turn_ticket_cleanup(&ticket);
+	fcgi_bridge_pool_status(bridge, &pool);
+	EXPECT_EQ(pool.waiting_turns, 0);
+	EXPECT_EQ(pool.busy_workers, 1);
+	fcgi_bridge_runtime_release(bridge, first);
 	const std::string second_output = root + "/second-output";
 	const std::string second_database = root + "/second.db";
 	setenv("MORPH_FCGI_OUTPUT_DIR", second_output.c_str(), 1);
 	struct fcgi_bridge *other = nullptr;
 	ASSERT_EQ(fcgi_bridge_init(&other, second_database.c_str()), 0);
-	EXPECT_NE(fcgi_bridge_runtime(bridge), fcgi_bridge_runtime(other));
-	EXPECT_STREQ(fcgi_artifact_output_dir(bridge), output.c_str());
-	EXPECT_STREQ(fcgi_artifact_output_dir(other), second_output.c_str());
+	EXPECT_NE(fcgi_bridge_runtime_borrow(bridge), fcgi_bridge_runtime_borrow(other));
+	EXPECT_STREQ(fcgi_artifact_output_dir_borrow(bridge), output.c_str());
+	EXPECT_STREQ(fcgi_artifact_output_dir_borrow(other), second_output.c_str());
 	fcgi_bridge_shutdown(other);
-	EXPECT_NE(fcgi_bridge_runtime(bridge), nullptr);
+	EXPECT_NE(fcgi_bridge_runtime_borrow(bridge), nullptr);
 	ASSERT_EQ(fcgi_bridge_turn_begin(bridge), 0);
+	ASSERT_EQ(fcgi_bridge_turn_enqueue(bridge, "shutdown-ticket", &ticket, nullptr), 0);
+	first = nullptr;
+	ASSERT_EQ(fcgi_bridge_turn_acquire(bridge, ticket, &first), 0);
 
 	auto shutdown = std::async(std::launch::async, [bridge] { fcgi_bridge_shutdown(bridge); });
-	EXPECT_EQ(shutdown.wait_for(std::chrono::milliseconds(50)),
-		  std::future_status::timeout);
+	EXPECT_EQ(shutdown.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout);
+	fcgi_turn_ticket_cleanup(&ticket);
 	fcgi_bridge_turn_end(bridge);
-	ASSERT_EQ(shutdown.wait_for(std::chrono::seconds(2)),
-		  std::future_status::ready);
+	EXPECT_EQ(shutdown.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout);
+	fcgi_bridge_runtime_release(bridge, first);
+	ASSERT_EQ(shutdown.wait_for(std::chrono::seconds(2)), std::future_status::ready);
 	shutdown.get();
 	unsetenv("MORPH_FCGI_CONFIG");
 	unsetenv("MORPH_FCGI_OUTPUT_DIR");
@@ -167,5 +212,6 @@ TEST(FastcgiRuntimeTest, SharedBootstrapLoadsSkillsMcpAndServerTools)
 	unsetenv("MORPH_FCGI_RUNTIME_MAX_WORKERS");
 	unsetenv("MORPH_FCGI_RUNTIME_QUEUE_MAX");
 	unsetenv("MORPH_FCGI_RUNTIME_IDLE_SECONDS");
+	unsetenv("MORPH_FCGI_RUNTIME_WAIT_SECONDS");
 	std::filesystem::remove_all(root);
 }

@@ -75,7 +75,7 @@ int cli_application_init(struct cli_application *ctx, struct morph_log *logger,
 void cli_application_run(struct cli_application *ctx);
 void cli_application_run_once(struct cli_application *ctx, const char *prompt);
 void cli_application_shutdown(struct cli_application *ctx);
-struct morph_tui_application *cli_application_tui(struct cli_application *);
+struct morph_tui_application *cli_application_tui_borrow(struct cli_application *);
 int cli_application_present_screen(struct cli_application *, const struct morph_tui_screen_ops *,
 				   void *data, void (*complete)(void *, int));
 int cli_application_flush(struct cli_application *);

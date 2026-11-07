@@ -31,6 +31,7 @@ int video_gen_create(struct model *self, const char *prompt,
 		    int duration, const char *output_dir,
 		    struct video_result *result);
 
+/* Immutable process-lifetime label; callers never free it. */
 const char *video_gen_adapter_name(const struct model *model);
 int video_gen_adapter_supported(const char *provider, const char *adapter);
 int video_gen_capabilities(const struct model *model,

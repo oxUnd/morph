@@ -1,4 +1,6 @@
 #include "img_resize.h"
+#include "util/json.h"
+#include "util/cleanup.h"
 #include "image_input.h"
 #include "image_output.h"
 #include "agent/tool_runtime.h"
@@ -27,7 +29,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
+		(void)tool_result_success_json_text_copy(result, "{\"error\":\"invalid JSON\"}");
 		return -EINVAL;
 	}
 
@@ -42,7 +44,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 	    (cJSON_IsNumber(chh) && (!isfinite(chh->valuedouble) || chh->valuedouble < 0 ||
 				     chh->valuedouble > MORPH_IMAGE_MAX_DIMENSION))) {
 		cJSON_Delete(root);
-		(void)tool_result_error(result, "image_too_large", "Invalid image dimensions");
+		(void)tool_result_error_copy(result, "image_too_large", "Invalid image dimensions");
 		return -EFBIG;
 	}
 	int target_w = cJSON_IsNumber(cw) ? (int)cw->valuedouble : 0;
@@ -51,15 +53,14 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 
 	if (!file_path || (target_w <= 0 && target_h <= 0)) {
 		cJSON_Delete(root);
-		(void)tool_result_success_json_text(
-			result,
-			strdup("{\"error\":\"missing 'file_path' or 'width'/'height' parameter. "
-			       "Usage: img_resize({\\\"file_path\\\": \\\"img.png\\\", "
-			       "\\\"width\\\": 800, \\\"height\\\": 600})\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"missing 'file_path' or 'width'/'height' parameter. "
+				"Usage: img_resize({\\\"file_path\\\": \\\"img.png\\\", "
+				"\\\"width\\\": 800, \\\"height\\\": 600})\"}");
 		return -EINVAL;
 	}
 
-	struct tool_image_input input;
+	struct tool_image_input input MORPH_CLEANUP(tool_image_input_cleanup) = {0};
 	int input_rc = tool_image_load_input(tctx, file_path, result, &input);
 
 	if (input_rc != 0) {
@@ -82,29 +83,29 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 	size_t dst_bytes;
 	int size_rc = image_pixel_bytes(target_w, target_h, src_ch, &dst_bytes);
 	if (size_rc != 0) {
-		stbi_image_free(src);
+		tool_image_input_cleanup(&input);
 		cJSON_Delete(root);
-		(void)tool_result_error(result, "image_too_large", "Image exceeds pixel limit");
+		(void)tool_result_error_copy(result, "image_too_large",
+					     "Image exceeds pixel limit");
 		return size_rc;
 	}
 	unsigned char *dst = malloc(dst_bytes);
 	if (!dst) {
-		stbi_image_free(src);
+		tool_image_input_cleanup(&input);
 		cJSON_Delete(root);
-		(void)tool_result_success_json_text(result, strdup("{\"error\":\"oom\"}"));
+		(void)tool_result_success_json_text_copy(result, "{\"error\":\"oom\"}");
 		return -ENOMEM;
 	}
 
 	if (!stbir_resize_uint8_linear(src, src_w, src_h, 0, dst, target_w, target_h, 0,
 				       (stbir_pixel_layout)src_ch)) {
-		stbi_image_free(src);
+		tool_image_input_cleanup(&input);
 		free(dst);
 		cJSON_Delete(root);
-		(void)tool_result_success_json_text(result,
-						    strdup("{\"error\":\"resize failed\"}"));
+		(void)tool_result_success_json_text_copy(result, "{\"error\":\"resize failed\"}");
 		return MORPH_ERR_PROCESSING;
 	}
-	stbi_image_free(src);
+	tool_image_input_cleanup(&input);
 
 	char final_path[PATH_MAX];
 	struct tool_image_output output = {
@@ -125,14 +126,14 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 	}
 
 	size_t msg_len = strlen(final_path) + 64;
-	char *msg = malloc(msg_len);
+	char *msg MORPH_CLEANUP(morph_charp_cleanup) = malloc(msg_len);
 	if (!msg) {
 		cJSON_Delete(root);
 		return -ENOMEM;
 	}
 	snprintf(msg, msg_len, "image resized: %s (%dx%d)", final_path, target_w, target_h);
-	(void)tool_result_success_json_text(result, msg);
-	(void)tool_result_add_image(result, final_path, target_w, target_h);
+	(void)tool_result_success_json_text_copy(result, msg);
+	(void)tool_result_add_image_copy(result, final_path, target_w, target_h);
 	log_dbg(result && result->runtime ? result->runtime->http.logger : NULL, "img_resize: %s",
 		msg);
 
@@ -144,7 +145,7 @@ int img_resize_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg)
 		return -EINVAL;
-	return tool_register(
+	return tool_register_borrow(
 		reg,
 		&(struct tool_spec){
 			.origin = TOOL_ORIGIN_BUILTIN,

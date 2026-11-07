@@ -1,37 +1,26 @@
 #include "str.h"
-#include "arena.h"
+#include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include <ctype.h>
 
-morph_str_t morph_strndup(struct arena *a, const char *data, size_t len)
+char *morph_strndup(const char *data, size_t len)
 {
-	morph_str_t s = MORPH_STR_NULL;
-	char *dst;
+	char *copy;
 
-	if (!data) {
-		s.len = 0;
-		s.data = NULL;
-		return s;
-	}
-	if (!a || len == SIZE_MAX)
-		return s;
-	dst = arena_alloc(a, len + 1);
-	if (!dst) {
-		s.len = 0;
-		s.data = NULL;
-		return s;
-	}
-	memcpy(dst, data, len);
-	dst[len] = '\0';
-	s.len = len;
-	s.data = dst;
-	return s;
+	if (!data || len == SIZE_MAX)
+		return NULL;
+	copy = malloc(len + 1);
+	if (!copy)
+		return NULL;
+	memcpy(copy, data, len);
+	copy[len] = '\0';
+	return copy;
 }
 
-morph_str_t morph_strdup(struct arena *a, const char *s)
+char *morph_strdup(const char *text)
 {
-	return morph_strndup(a, s, s ? strlen(s) : 0);
+	return morph_strndup(text, text ? strlen(text) : 0);
 }
 
 int morph_strcmp(morph_str_t a, morph_str_t b)
@@ -84,23 +73,12 @@ int morph_strncmp(morph_str_t a, const char *b, size_t n)
 	return -1;
 }
 
-const char *morph_str_to_c(struct arena *a, morph_str_t s)
+char *morph_str_cstr_copy(morph_str_t text)
 {
-	char *dst;
-
-	if (!s.data)
-		return NULL;
-	if (!a || s.len == SIZE_MAX)
-		return NULL;
-	dst = arena_alloc(a, s.len + 1);
-	if (!dst)
-		return NULL;
-	memcpy(dst, s.data, s.len);
-	dst[s.len] = '\0';
-	return dst;
+	return morph_strndup(text.data, text.len);
 }
 
-const char *morph_str_chr(morph_str_t s, char c)
+const char *morph_str_chr_borrow(morph_str_t s, char c)
 {
 	size_t i;
 
@@ -113,7 +91,7 @@ const char *morph_str_chr(morph_str_t s, char c)
 	return NULL;
 }
 
-const char *morph_str_rchr(morph_str_t s, char c)
+const char *morph_str_rchr_borrow(morph_str_t s, char c)
 {
 	if (!s.data || s.len == 0)
 		return NULL;
@@ -128,7 +106,7 @@ const char *morph_str_rchr(morph_str_t s, char c)
 	return NULL;
 }
 
-morph_str_t morph_str_trim(morph_str_t s)
+morph_str_t morph_str_trim_borrow(morph_str_t s)
 {
 	size_t start = 0;
 	size_t end;

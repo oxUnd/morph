@@ -110,7 +110,7 @@ def main():
     transcript = (CLI / 'widgets/transcript.c').read_text()
     if '\\033[?1049' in transcript or 'previous_frame' in transcript:
         errors.append('widgets/transcript.c: modal terminal/frame ownership belongs to the page')
-    if re.search(r'\b(?:morph_array_push|arena_strdup|utf8_terminal_sanitize_feed|patch_preview)\s*\(',
+    if re.search(r'\b(?:morph_array_push_borrow|utf8_terminal_sanitize_feed|patch_preview)\s*\(',
                  code_only(transcript)):
         errors.append('widgets/transcript.c: state reduction and workspace reads belong outside rendering')
     if '#include "sapi/cli/application_internal.h"' in transcript:

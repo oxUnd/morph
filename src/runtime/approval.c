@@ -1,4 +1,5 @@
 #include "runtime/approval.h"
+#include "util/cleanup.h"
 
 #include "runtime/runtime_internal.h"
 #include "util/buf.h"
@@ -87,7 +88,7 @@ static int review_user(const struct tool_operation *operation, struct permission
 	tool_operation_approval_fn approval = NULL;
 	void *approval_user_data = NULL;
 
-	tool_context_get_operation_approval(ctx->tctx, &approval, &approval_user_data);
+	tool_context_operation_approval_borrow(ctx->tctx, &approval, &approval_user_data);
 	if (morph_cancel_token_is_cancelled(&ctx->react->cancel_token))
 		return -ECANCELED;
 	approval_event(runtime, operation, "user", "begin", NULL);
@@ -120,8 +121,7 @@ static int review_model(const struct tool_operation *operation, struct permissio
 	const struct model *source = ctx->llm;
 	struct model *model;
 	struct model_usage_sink usage_sink = {.callback = approval_usage};
-	struct arena *arena;
-	struct chat_response response = {0};
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {0};
 	struct chat_message message = {.role = "user"};
 	cJSON *input;
 	char *payload;
@@ -184,20 +184,17 @@ static int review_model(const struct tool_operation *operation, struct permissio
 
 	payload = complete ? cJSON_PrintUnformatted(input) : NULL;
 	cJSON_Delete(input);
-	arena = arena_create(0);
 	message.content = payload;
-	rc = payload && arena ? model->chat_with_tools(model, arena, instructions, &message, 1,
-						       NULL, 0, &response, NULL, NULL)
-			      : -ENOMEM;
+	rc = payload ? model->chat_with_tools(model, instructions, &message, 1, NULL, 0, &response,
+					      NULL, NULL)
+		     : -ENOMEM;
 	if (rc >= 0)
 		rc = response.tool_call_count ? -EPROTO
 					      : runtime_approval_parse(response.content, out);
 	if (rc != 0)
 		out->defer = 1;
 	approval_event(runtime, operation, "model", rc == 0 ? "end" : "failed", out);
-	chat_response_free(&response);
-	arena_destroy(arena);
-	free(payload);
+	cJSON_free(payload);
 	model_destroy(model);
 	return rc;
 }

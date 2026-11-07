@@ -1,6 +1,7 @@
 #include "runtime/services.h"
 #include "runtime/runtime_internal.h"
 #include "util/error.h"
+#include "util/cleanup.h"
 
 #include <errno.h>
 
@@ -10,6 +11,8 @@ int runtime_task_create(struct runtime *runtime,
 {
 	if (!runtime || !input || !out)
 		return -EINVAL;
+	if (out->payload_json || out->policy_json || out->notify_json)
+		return -EEXIST;
 	return scheduled_task_create_with_events(&runtime->context.database,
 		input, out, runtime->options.task_events);
 }
@@ -20,6 +23,8 @@ int runtime_task_update(struct runtime *runtime, int64_t id,
 {
 	if (!runtime || !input || !out)
 		return -EINVAL;
+	if (out->payload_json || out->policy_json || out->notify_json)
+		return -EEXIST;
 	return scheduled_task_update_with_events(&runtime->context.database, id,
 		input, out, runtime->options.task_events);
 }
@@ -35,13 +40,21 @@ int runtime_task_count_active(struct runtime *runtime,
 int runtime_task_list(struct runtime *runtime, const char *status, int limit,
 		      struct scheduled_task **out, int *count)
 {
+	if (!out || !count)
+		return -EINVAL;
+	if (*out)
+		return -EEXIST;
+	*count = 0;
 	return runtime ? scheduled_task_list(&runtime->context.database, status,
 		limit, out, count) : -EINVAL;
 }
 
-int runtime_task_get(struct runtime *runtime, int64_t id,
-		     struct scheduled_task *out)
+int runtime_task_copy(struct runtime *runtime, int64_t id, struct scheduled_task *out)
 {
+	if (!out)
+		return -EINVAL;
+	if (out->payload_json || out->policy_json || out->notify_json)
+		return -EEXIST;
 	return runtime ? scheduled_task_get(&runtime->context.database, id, out)
 		: -EINVAL;
 }
@@ -56,6 +69,11 @@ int runtime_task_cancel(struct runtime *runtime, int64_t id)
 int runtime_notification_list(struct runtime *runtime, int limit,
 			      struct notification **out, int *count)
 {
+	if (!out || !count)
+		return -EINVAL;
+	if (*out)
+		return -EEXIST;
+	*count = 0;
 	return runtime ? notification_list_unread(&runtime->context.database,
 		limit, out, count) : -EINVAL;
 }

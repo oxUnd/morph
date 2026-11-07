@@ -43,7 +43,7 @@ static int cli_options_emit_option_event(const char *name, const char *phase, co
 		.data = data,
 		.turn_id = NULL,
 	};
-	json = morph_event_to_json_string(&event);
+	json = morph_event_json_text_copy(&event);
 	cJSON_Delete(data);
 	if (!json)
 		return -ENOMEM;

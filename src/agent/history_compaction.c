@@ -4,7 +4,8 @@
 #include "prompt_context.h"
 #include "react.h"
 #include "tokenizer.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/log.h"
@@ -24,7 +25,7 @@ static const char *history_compaction_text(const struct model_history_item *item
 	if (!agent_history_item_replayable(item))
 		return NULL;
 	if (strcmp(item->kind, "user_message") == 0) {
-		*rendered = history_user_content(item);
+		*rendered = history_user_content_create(item);
 		return *rendered;
 	}
 	if (strcmp(item->kind, "assistant_tool_calls") == 0 && item->payload_json) {
@@ -38,7 +39,8 @@ static const char *history_compaction_text(const struct model_history_item *item
 			cJSON_Delete(payload);
 			return NULL;
 		}
-		*rendered = cJSON_PrintUnformatted(payload);
+		char *json MORPH_CLEANUP(morph_json_text_cleanup) = morph_json_print_copy(payload);
+		*rendered = json ? strdup(json) : NULL;
 		cJSON_Delete(payload);
 		return *rendered;
 	}
@@ -48,7 +50,7 @@ static const char *history_compaction_text(const struct model_history_item *item
 static int history_retained(const morph_array_t *preserved, const struct model_history_item *item)
 {
 	for (size_t i = 0; preserved && i < preserved->nelts; i++) {
-		const int64_t *id = morph_array_get(preserved, i);
+		const int64_t *id = morph_array_borrow(preserved, i);
 		if (*id == item->id)
 			return 1;
 	}
@@ -143,7 +145,7 @@ int agent_history_reload(struct react_context *ctx)
 	for (struct model_history_item *item = items; item; item = item->next) {
 		cJSON *payload;
 		const cJSON *original;
-		char *prepared;
+		char *prepared = NULL;
 		int truncated;
 		int rc;
 
@@ -151,7 +153,7 @@ int agent_history_reload(struct react_context *ctx)
 			continue;
 		payload = item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
 		original = cJSON_GetObjectItemCaseSensitive(payload, "original_content");
-		rc = agent_history_prepare_tool_content(
+		rc = agent_history_tool_content_copy(
 			ctx, cJSON_IsString(original) ? original->valuestring : item->content,
 			&prepared, &truncated);
 		cJSON_Delete(payload);
@@ -171,15 +173,12 @@ int agent_history_reload(struct react_context *ctx)
 
 static int history_validate_replay(struct morph_log *logger, const struct model_history_item *items)
 {
-	struct arena *arena = arena_create(0);
-	morph_array_t messages = {0};
+	morph_array_t messages MORPH_CLEANUP(agent_chat_messages_cleanup) = {0};
 	int rc;
 
-	if (!arena)
-		return -ENOMEM;
 	rc = morph_array_init(&messages, 64, sizeof(struct chat_message));
 	if (rc == 0)
-		rc = agent_history_build_chat_messages(logger, items, &messages, arena);
+		rc = agent_history_messages_copy(logger, items, &messages);
 	if (rc == 0) {
 		struct agent_history_diagnostic diagnostic;
 
@@ -188,8 +187,7 @@ static int history_validate_replay(struct morph_log *logger, const struct model_
 				diagnostic.orphan_results))
 			rc = MORPH_ERR_PROTOCOL;
 	}
-	morph_array_cleanup(&messages);
-	arena_destroy(arena);
+
 	return rc;
 }
 
@@ -225,7 +223,7 @@ static int history_record_summary_sources(struct react_context *ctx, int64_t sum
 			break;
 		if (!has_text)
 			continue;
-		int64_t *slot = morph_array_push(&ids);
+		int64_t *slot = morph_array_push_borrow(&ids);
 
 		if (!slot) {
 			rc = -ENOMEM;
@@ -286,8 +284,8 @@ static char *history_finish_summary(struct react_context *ctx, const char *summa
 				    int pruned_groups)
 {
 	if (!pruned_groups)
-		return history_redact_all(ctx, summary);
-	morph_buf_t marked;
+		return history_redacted_text_create(ctx, summary);
+	morph_buf_t marked MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	if (morph_buf_init(&marked, 256) != 0)
 		return NULL;
 	cJSON *root = cJSON_ParseWithOpts(summary, NULL, 1);
@@ -297,14 +295,14 @@ static char *history_finish_summary(struct react_context *ctx, const char *summa
 		pruned_groups, cJSON_IsString(state) ? state->valuestring : summary);
 	char *text = NULL;
 	if (rc == 0 && cJSON_IsString(state)) {
-		if (cJSON_SetValuestring(state, morph_buf_cstr(&marked)))
+		if (cJSON_SetValuestring(state, morph_buf_cstr_borrow(&marked)))
 			text = cJSON_PrintUnformatted(root);
 	} else if (rc == 0) {
 		text = morph_buf_detach(&marked);
 	}
 	cJSON_Delete(root);
 	morph_buf_cleanup(&marked);
-	char *redacted = text ? history_redact_all(ctx, text) : NULL;
+	char *redacted = text ? history_redacted_text_create(ctx, text) : NULL;
 	free(text);
 	return redacted;
 }
@@ -325,7 +323,7 @@ static int history_compact_selected(struct react_context *ctx, int force,
 				    history_compaction_validator validate, void *user_data,
 				    const morph_array_t *preserved, int64_t cutoff)
 {
-	morph_buf_t input;
+	morph_buf_t input MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	char *summary = NULL;
 	int max_summary_tokens;
 	int user_budget;
@@ -369,7 +367,7 @@ static int history_compact_selected(struct react_context *ctx, int force,
 				 (long long)ctx->history_session_id, ctx->turn_id, trigger_kind,
 				 attempt + 1, input.len, input_tokens,
 				 ctx->compress.compaction_summary_max_tokens, pruned_groups);
-			rc = ctx->compress.summarize(morph_buf_cstr(&input),
+			rc = ctx->compress.summarize(morph_buf_cstr_borrow(&input),
 						     ctx->compress.summarize_user_data, &summary);
 			if (rc == 0 && summary && summary[0]) {
 				char *prepared =

@@ -26,13 +26,13 @@ const char *llm_adapter_infer(const char *provider)
 	return "openai-chat-compatible";
 }
 
-const struct llm_adapter *llm_adapter_resolve(const struct model *model)
+const struct llm_adapter *llm_adapter_borrow(const struct model *model)
 {
 	const char *name = model && model->adapter[0] ? model->adapter :
 		llm_adapter_infer(model ? model->provider : NULL);
 
 	if (strcmp(name, "deepseek") == 0)
-		return llm_deepseek_adapter();
+		return llm_deepseek_adapter_borrow();
 	if (strcmp(name, "openai-responses") == 0)
 		return &responses_adapter;
 	return &compatible_adapter;

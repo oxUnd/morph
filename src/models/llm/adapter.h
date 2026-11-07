@@ -15,8 +15,9 @@ struct llm_adapter {
 				  const struct chat_message *chat_message);
 };
 
-const struct llm_adapter *llm_adapter_resolve(const struct model *model);
+/* Immutable process-lifetime views; callers never free adapters or names. */
+const struct llm_adapter *llm_adapter_borrow(const struct model *model);
 const char *llm_adapter_infer(const char *provider);
-const struct llm_adapter *llm_deepseek_adapter(void);
+const struct llm_adapter *llm_deepseek_adapter_borrow(void);
 
 #endif

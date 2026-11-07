@@ -1,44 +1,77 @@
 #include "context.h"
 #include "agent/tokenizer.h"
 #include "util/bpe.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include <stdlib.h>
 #include <limits.h>
 #include <string.h>
 
-struct message_list *msg_list_create(struct arena *session, const char *role, const char *content,
-				      int token_count)
+struct message_list *msg_list_create(const char *role, const char *content, int token_count)
 {
-	struct message_list *m = arena_alloc(session, sizeof(*m));
+	struct message_list *m MORPH_CLEANUP(msg_list_clear) = calloc(1, sizeof(*m));
 	if (!m)
 		return NULL;
-	m->role = arena_strdup(session, role ? role : "");
-	m->content = arena_strdup(session, content ? content : "");
+	m->role = strdup(role ? role : "");
+	m->content = strdup(content ? content : "");
+	if (!m->role || !m->content)
+		return NULL;
 	m->token_count = token_count;
 	m->file_paths = NULL;
 	m->file_count = 0;
 	m->compressed = 0;
 	m->next = NULL;
-	return m;
+	return msg_list_steal(&m);
 }
 
-void msg_list_append(struct message_list **head, struct message_list *msg)
+int msg_list_append_take(struct message_list **head, struct message_list **msg)
 {
-	if (!head || !msg)
-		return;
-	if (!*head) {
-		*head = msg;
-		return;
+	struct message_list **tail;
+
+	if (!head || !msg || !*msg || head == msg)
+		return -EINVAL;
+	tail = head;
+	while (*tail) {
+		if (*tail == *msg)
+			return -EINVAL;
+		tail = &(*tail)->next;
 	}
-	struct message_list *cur = *head;
-	while (cur->next)
-		cur = cur->next;
-	cur->next = msg;
+	*tail = *msg;
+	*msg = NULL;
+	return 0;
 }
 
 void msg_list_destroy(struct message_list *head)
 {
-	(void)head;
+	while (head) {
+		struct message_list *next = head->next;
+
+		free(head->role);
+		free(head->content);
+		for (int i = 0; i < head->file_count; i++)
+			free(head->file_paths[i]);
+		free(head->file_paths);
+		free(head);
+		head = next;
+	}
+}
+
+void msg_list_clear(struct message_list **head)
+{
+	if (!head)
+		return;
+	msg_list_destroy(*head);
+	*head = NULL;
+}
+
+struct message_list *msg_list_steal(struct message_list **source)
+{
+	struct message_list *value;
+
+	if (!source)
+		return NULL;
+	value = *source;
+	*source = NULL;
+	return value;
 }
 
 int msg_list_count(struct message_list *head)

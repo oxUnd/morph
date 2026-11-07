@@ -27,6 +27,7 @@ struct dynamic_tool {
 };
 
 struct dynamic_tools_context {
+	unsigned int refs;
 	struct tool_registry *reg;
 	struct tool_context *tctx;
 	const struct config_dynamic_tools *cfg;

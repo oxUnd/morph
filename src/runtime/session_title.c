@@ -1,4 +1,5 @@
 #include "runtime/session_title.h"
+#include "util/cleanup.h"
 #include "runtime/runtime_internal.h"
 #include "runtime/usage.h"
 #include "credits.h"
@@ -64,7 +65,7 @@ char *runtime_title_parse(const char *response)
 {
 	cJSON *root = response ? cJSON_ParseWithOpts(response, NULL, 1) : NULL;
 	const cJSON *field = cJSON_GetObjectItemCaseSensitive(root, "title");
-	morph_buf_t title;
+	morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	const char *cursor;
 	int pending_space = 0;
 	size_t characters = 0;
@@ -140,20 +141,21 @@ static int title_save(struct db *db, const struct session *session, const char *
 
 static int title_save_unique(struct db *db, const struct session *session, const char *title)
 {
-	morph_buf_t unique;
+	morph_buf_t unique MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	size_t suffix_chars = strlen(session->display_id) + 3;
 	const char *end;
 	int rc = title_save(db, session, title);
 
 	if (rc != -EEXIST)
 		return rc;
-	end = utf8_advance_codepoints(title, SESSION_TITLE_MAX_CHARS - suffix_chars);
+	end = utf8_advance_codepoints_borrow(title, SESSION_TITLE_MAX_CHARS - suffix_chars);
 	rc = morph_buf_init(&unique, SESSION_TITLE_MAX_CHARS * 4 + 1);
 	if (rc != 0)
 		return MORPH_TRACE_ERROR(db->logger, rc);
 	(void)morph_buf_append(&unique, title, (size_t)(end - title));
 	(void)morph_buf_printf(&unique, " [%s]", session->display_id);
-	rc = unique.failed ? unique.failed : title_save(db, session, morph_buf_cstr(&unique));
+	rc = unique.failed ? unique.failed
+			   : title_save(db, session, morph_buf_cstr_borrow(&unique));
 	morph_buf_cleanup(&unique);
 	return MORPH_TRACE_ERROR(db->logger, rc);
 }
@@ -161,8 +163,7 @@ static int title_save_unique(struct db *db, const struct session *session, const
 static void *title_worker(void *opaque)
 {
 	struct runtime_title_job *job = opaque;
-	struct arena *arena = arena_create(0);
-	struct chat_response response = {0};
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {0};
 	struct chat_message message = {.role = "user", .content = job->prompt};
 	struct db db = {0};
 	char *title = NULL;
@@ -171,9 +172,9 @@ static void *title_worker(void *opaque)
 	title_event(job, "begin");
 	/* Isolate cancellation and billing from the foreground turn's TLS state. */
 	job->model->http.cancel_token = &job->cancel;
-	if (arena && !morph_cancel_token_is_cancelled(&job->cancel))
-		rc = job->model->chat_with_tools(job->model, arena, title_instructions, &message, 1,
-						 NULL, 0, &response, NULL, NULL);
+	if (!morph_cancel_token_is_cancelled(&job->cancel))
+		rc = job->model->chat_with_tools(job->model, title_instructions, &message, 1, NULL,
+						 0, &response, NULL, NULL);
 	if (rc >= 0 && response.tool_call_count == 0)
 		title = runtime_title_parse(response.content);
 	if (db_open(job->model ? job->model->http.logger : NULL, &db, job->database) == 0) {
@@ -190,8 +191,6 @@ static void *title_worker(void *opaque)
 		log_dbg(job->model ? job->model->http.logger : NULL,
 			"session title generation failed: %s", morph_strerror(rc));
 	free(title);
-	chat_response_free(&response);
-	arena_destroy(arena);
 	title_event(job, "end");
 	pthread_mutex_lock(&job->lock);
 	job->done = 1;

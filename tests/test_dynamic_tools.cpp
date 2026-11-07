@@ -6,6 +6,7 @@ extern "C" {
 #include "config/config.h"
 #include "cJSON.h"
 #include "util/file.h"
+#include "util/cleanup.h"
 }
 #include <cstdio>
 #include <cstdlib>
@@ -40,7 +41,7 @@ static int static_tool_exec(const char *args_json, struct tool_result *result,
 {
 	(void)args_json;
 	(void)user_data;
-	return tool_result_success_json_text(result, strdup("{\"static\":true}"));
+	return tool_result_success_json_text_copy(result, "{\"static\":true}");
 }
 
 static std::string json_string_field(const char *json, const char *field)
@@ -104,6 +105,34 @@ struct DynamicToolsTest : public ::testing::Test {
 		return args;
 	}
 };
+
+TEST_F(DynamicToolsTest, ManagementContextSurvivesCreateToolRemoval)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	ASSERT_EQ(tool_unregister(&reg, "tool_create"), 0);
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	ASSERT_EQ(tool_exec(&reg, "tool_history", "{\"name\":\"not_created\"}", &result), 0);
+	ASSERT_NE(result.data, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "name")), "not_created");
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(result.data, "checkpoints")), 0);
+}
+
+TEST_F(DynamicToolsTest, RetainedManagementHandleOwnsContextAfterAllToolsAreRemoved)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	struct tool_handle retained MORPH_CLEANUP(tool_handle_release) = {};
+	ASSERT_EQ(tool_registry_acquire(&reg, "tool_history", &retained), 0);
+	const char *names[] = {"tool_create",  "tool_promote", "tool_delete",
+			       "tool_history", "tool_diff",    "tool_rollback"};
+	for (const char *name : names)
+		ASSERT_EQ(tool_unregister(&reg, name), 0);
+	EXPECT_EQ(reg.count, 0);
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	ASSERT_EQ(retained.exec("{\"name\":\"not_created\"}", &result, retained.user_data), 0);
+	ASSERT_NE(result.data, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "name")), "not_created");
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(result.data, "checkpoints")), 0);
+}
 
 TEST_F(DynamicToolsTest, CreateAndCallSessionTool)
 {
@@ -178,7 +207,7 @@ TEST_F(DynamicToolsTest, InitLoadsExistingSessionTools)
 	ASSERT_NE(tctx2, nullptr);
 	ASSERT_EQ(dynamic_tools_init(&reg2, tctx2, &cfg.dynamic_tools,
 				     "sess"), 0);
-	EXPECT_NE(tool_lookup(&reg2, "session_reload"), nullptr);
+	EXPECT_NE(tool_borrow(&reg2, "session_reload"), nullptr);
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg2, "session_reload", "{\"value\":41}",
 			    &result), 0);
@@ -211,9 +240,9 @@ TEST_F(DynamicToolsTest, SetSessionIdLoadsExistingSessionTools)
 	ASSERT_EQ(file_write_all(js.c_str(), source, strlen(source)), 0);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools,
 				     "default"), 0);
-	EXPECT_EQ(tool_lookup(&reg, "later_tool"), nullptr);
+	EXPECT_EQ(tool_borrow(&reg, "later_tool"), nullptr);
 	ASSERT_EQ(dynamic_tools_set_session_id(&reg, "sess_later"), 0);
-	ASSERT_NE(tool_lookup(&reg, "later_tool"), nullptr);
+	ASSERT_NE(tool_borrow(&reg, "later_tool"), nullptr);
 
 	struct tool_result result;
 	tool_result_init(&result);
@@ -244,7 +273,7 @@ TEST_F(DynamicToolsTest, EmptySessionDoesNotFallbackToDefault)
 	ASSERT_EQ(file_write_all(js.c_str(), source, strlen(source)), 0);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, ""),
 		  0);
-	EXPECT_EQ(tool_lookup(&reg, "default_tool"), nullptr);
+	EXPECT_EQ(tool_borrow(&reg, "default_tool"), nullptr);
 
 	tool_result_init(&result);
 	ASSERT_LT(tool_exec(&reg, "tool_create", create_args("empty_session_tool", source).c_str(),
@@ -397,7 +426,7 @@ TEST_F(DynamicToolsTest, ToolRollbackCreationRemovesSessionTool)
 	EXPECT_NE(std::string(result.text.data).find("\"checkpoint_id\":\"0001\""),
 		  std::string::npos);
 	tool_result_cleanup(&result);
-	ASSERT_NE(tool_lookup(&reg, "new_then_undo"), nullptr);
+	ASSERT_NE(tool_borrow(&reg, "new_then_undo"), nullptr);
 	ASSERT_TRUE(file_exists(dir.c_str()));
 
 	tool_result_init(&result);
@@ -409,7 +438,7 @@ TEST_F(DynamicToolsTest, ToolRollbackCreationRemovesSessionTool)
 		  std::string::npos);
 	tool_result_cleanup(&result);
 
-	EXPECT_EQ(tool_lookup(&reg, "new_then_undo"), nullptr);
+	EXPECT_EQ(tool_borrow(&reg, "new_then_undo"), nullptr);
 	EXPECT_FALSE(file_exists(dir.c_str()));
 }
 
@@ -423,7 +452,7 @@ TEST_F(DynamicToolsTest, ToolCreateDoesNotOverwriteStaticTool)
 		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
 		.exec = static_tool_exec,
 	};
-	ASSERT_EQ(tool_register(&reg, &static_spec), 0);
+	ASSERT_EQ(tool_register_borrow(&reg, &static_spec), 0);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 	std::string source =
 		"function run(args) { return { static: false }; }";
@@ -492,7 +521,7 @@ TEST_F(DynamicToolsTest, ToolUsesProfileCapabilitiesWithoutArgs)
 		std::string meta_path =
 			root + "/session/sess/read_profile/tool.json";
 		size_t meta_len = 0;
-		char *meta = file_read_all(meta_path.c_str(), &meta_len);
+		char *meta = file_read_all_copy(meta_path.c_str(), &meta_len);
 
 		ASSERT_NE(meta, nullptr);
 		(void)meta_len;
@@ -546,13 +575,12 @@ TEST_F(DynamicToolsTest, RelativeFsPathsAndExecUseToolContextRoots)
 		<< (result.text.data ? result.text.data : "(no result)");
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_EQ(json_string_field(result.text.data, "text"), "from-workdir");
-	EXPECT_EQ(json_string_field(result.text.data, "cwd"),
-		  tool_context_workdir(tctx));
+	EXPECT_EQ(json_string_field(result.text.data, "cwd"), tool_context_workdir_borrow(tctx));
 	EXPECT_TRUE(file_exists(output.c_str()));
 	EXPECT_FALSE(file_exists((workdir + "/result.txt").c_str()));
 	{
 		size_t len = 0;
-		char *written = file_read_all(output.c_str(), &len);
+		char *written = file_read_all_copy(output.c_str(), &len);
 
 		ASSERT_NE(written, nullptr);
 		EXPECT_EQ(std::string(written, len), "from-workdir-written");
@@ -658,7 +686,7 @@ TEST_F(DynamicToolsTest, PromoteLoadsInNewRegistry)
 	tool_registry_init(NULL, &reg2);
 	ASSERT_EQ(dynamic_tools_init(&reg2, tctx2, &cfg.dynamic_tools,
 				     "other"), 0);
-	EXPECT_NE(tool_lookup(&reg2, "inc_js"), nullptr);
+	EXPECT_NE(tool_borrow(&reg2, "inc_js"), nullptr);
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg2, "inc_js", "{\"value\":41}", &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
@@ -681,7 +709,7 @@ TEST_F(DynamicToolsTest, ToolDeleteRemovesSessionTool)
 			    create_args("delete_session", source).c_str(),
 			    &result), 0);
 	tool_result_cleanup(&result);
-	struct tool_entry *entry = tool_lookup(&reg, "delete_session");
+	struct tool_entry *entry = tool_borrow(&reg, "delete_session");
 	ASSERT_NE(entry, nullptr);
 	EXPECT_EQ(entry->origin, TOOL_ORIGIN_DYNAMIC_SESSION);
 	std::string dir = root + "/session/sess/delete_session";
@@ -691,7 +719,7 @@ TEST_F(DynamicToolsTest, ToolDeleteRemovesSessionTool)
 	ASSERT_EQ(tool_exec(&reg, "tool_delete",
 			    "{\"name\":\"delete_session\"}", &result), 0);
 	tool_result_cleanup(&result);
-	EXPECT_EQ(tool_lookup(&reg, "delete_session"), nullptr);
+	EXPECT_EQ(tool_borrow(&reg, "delete_session"), nullptr);
 	EXPECT_FALSE(file_exists(dir.c_str()));
 }
 
@@ -711,7 +739,7 @@ TEST_F(DynamicToolsTest, ToolDeleteRemovesPersistentTool)
 	ASSERT_EQ(tool_exec(&reg, "tool_promote",
 			    "{\"name\":\"delete_persistent\"}", &result), 0);
 	tool_result_cleanup(&result);
-	struct tool_entry *entry = tool_lookup(&reg, "delete_persistent");
+	struct tool_entry *entry = tool_borrow(&reg, "delete_persistent");
 	ASSERT_NE(entry, nullptr);
 	EXPECT_EQ(entry->origin, TOOL_ORIGIN_DYNAMIC_PERSISTENT);
 	std::string dir = root + "/persistent/delete_persistent";
@@ -721,7 +749,7 @@ TEST_F(DynamicToolsTest, ToolDeleteRemovesPersistentTool)
 	ASSERT_EQ(tool_exec(&reg, "tool_delete",
 			    "{\"name\":\"delete_persistent\"}", &result), 0);
 	tool_result_cleanup(&result);
-	EXPECT_EQ(tool_lookup(&reg, "delete_persistent"), nullptr);
+	EXPECT_EQ(tool_borrow(&reg, "delete_persistent"), nullptr);
 	EXPECT_FALSE(file_exists(dir.c_str()));
 }
 
@@ -735,7 +763,7 @@ TEST_F(DynamicToolsTest, ToolDeleteRejectsStaticTool)
 		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
 		.exec = static_tool_exec,
 	};
-	ASSERT_EQ(tool_register(&reg, &static_spec), 0);
+	ASSERT_EQ(tool_register_borrow(&reg, &static_spec), 0);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 	struct tool_result result;
 
@@ -745,7 +773,7 @@ TEST_F(DynamicToolsTest, ToolDeleteRejectsStaticTool)
 	EXPECT_NE(std::string(result.text.data).find("only delete dynamic"),
 		  std::string::npos);
 	tool_result_cleanup(&result);
-	EXPECT_NE(tool_lookup(&reg, "static_tool"), nullptr);
+	EXPECT_NE(tool_borrow(&reg, "static_tool"), nullptr);
 }
 
 TEST_F(DynamicToolsTest, ToolDeleteSessionReloadsShadowedPersistentTool)
@@ -770,7 +798,7 @@ TEST_F(DynamicToolsTest, ToolDeleteSessionReloadsShadowedPersistentTool)
 				 strlen(persistent_source)), 0);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"),
 		  0);
-	struct tool_entry *entry = tool_lookup(&reg, "shadowed_tool");
+	struct tool_entry *entry = tool_borrow(&reg, "shadowed_tool");
 	ASSERT_NE(entry, nullptr);
 	EXPECT_EQ(entry->origin, TOOL_ORIGIN_DYNAMIC_PERSISTENT);
 
@@ -780,7 +808,7 @@ TEST_F(DynamicToolsTest, ToolDeleteSessionReloadsShadowedPersistentTool)
 					session_source).c_str(),
 			    &result), 0);
 	tool_result_cleanup(&result);
-	entry = tool_lookup(&reg, "shadowed_tool");
+	entry = tool_borrow(&reg, "shadowed_tool");
 	ASSERT_NE(entry, nullptr);
 	EXPECT_EQ(entry->origin, TOOL_ORIGIN_DYNAMIC_SESSION);
 
@@ -788,7 +816,7 @@ TEST_F(DynamicToolsTest, ToolDeleteSessionReloadsShadowedPersistentTool)
 	ASSERT_EQ(tool_exec(&reg, "tool_delete",
 			    "{\"name\":\"shadowed_tool\"}", &result), 0);
 	tool_result_cleanup(&result);
-	entry = tool_lookup(&reg, "shadowed_tool");
+	entry = tool_borrow(&reg, "shadowed_tool");
 	ASSERT_NE(entry, nullptr);
 	EXPECT_EQ(entry->origin, TOOL_ORIGIN_DYNAMIC_PERSISTENT);
 
@@ -821,7 +849,7 @@ TEST_F(DynamicToolsTest, ToolDeleteRefusesPersistentPathMismatch)
 	ASSERT_EQ(file_write_all(js.c_str(), source, strlen(source)), 0);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"),
 		  0);
-	ASSERT_NE(tool_lookup(&reg, "mismatch_tool"), nullptr);
+	ASSERT_NE(tool_borrow(&reg, "mismatch_tool"), nullptr);
 
 	tool_result_init(&result);
 	ASSERT_LT(tool_exec(&reg, "tool_delete", "{\"name\":\"mismatch_tool\"}", &result), 0);
@@ -830,7 +858,7 @@ TEST_F(DynamicToolsTest, ToolDeleteRefusesPersistentPathMismatch)
 		  std::string::npos);
 	tool_result_cleanup(&result);
 	EXPECT_TRUE(file_exists(dir.c_str()));
-	EXPECT_NE(tool_lookup(&reg, "mismatch_tool"), nullptr);
+	EXPECT_NE(tool_borrow(&reg, "mismatch_tool"), nullptr);
 }
 
 TEST_F(DynamicToolsTest, ToolDeleteRefusesSessionPathMismatch)
@@ -852,7 +880,7 @@ TEST_F(DynamicToolsTest, ToolDeleteRefusesSessionPathMismatch)
 	ASSERT_EQ(file_write_all(js.c_str(), source, strlen(source)), 0);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"),
 		  0);
-	ASSERT_NE(tool_lookup(&reg, "session_mismatch"), nullptr);
+	ASSERT_NE(tool_borrow(&reg, "session_mismatch"), nullptr);
 
 	tool_result_init(&result);
 	ASSERT_LT(tool_exec(&reg, "tool_delete", "{\"name\":\"session_mismatch\"}", &result), 0);
@@ -861,7 +889,7 @@ TEST_F(DynamicToolsTest, ToolDeleteRefusesSessionPathMismatch)
 		  std::string::npos);
 	tool_result_cleanup(&result);
 	EXPECT_TRUE(file_exists(dir.c_str()));
-	EXPECT_NE(tool_lookup(&reg, "session_mismatch"), nullptr);
+	EXPECT_NE(tool_borrow(&reg, "session_mismatch"), nullptr);
 }
 
 TEST_F(DynamicToolsTest, CanvasApiCreatesImage)
@@ -1285,7 +1313,7 @@ TEST_F(DynamicToolsTest, InvalidSourceNeverCreatesAPublishedToolDirectory)
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(std::string(result.text.data).find("check_js"), std::string::npos);
 	EXPECT_FALSE(file_exists((root + "/session/sess/invalid_candidate").c_str()));
-	EXPECT_EQ(tool_lookup(&reg, "invalid_candidate"), nullptr);
+	EXPECT_EQ(tool_borrow(&reg, "invalid_candidate"), nullptr);
 	tool_result_cleanup(&result);
 }
 
@@ -1300,7 +1328,7 @@ static enum tool_operation_verdict grow_registry_during_approval(const tool_oper
 		spec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
 		spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 		spec.exec = static_tool_exec;
-		if (tool_register(reg, &spec) != 0) {
+		if (tool_register_borrow(reg, &spec) != 0) {
 			return TOOL_OP_DENY;
 		}
 	}
@@ -1366,7 +1394,7 @@ TEST_F(DynamicToolsTest, RetainedExecutionKeepsItsSourceAfterUpdateAndDeletion)
 	tool_result_init(&result);
 	EXPECT_EQ(tool_exec(&reg, "tool_delete", "{\"name\":\"retained\"}", &result), 0);
 	tool_result_cleanup(&result);
-	EXPECT_EQ(tool_lookup(&reg, "retained"), nullptr);
+	EXPECT_EQ(tool_borrow(&reg, "retained"), nullptr);
 
 	tool_result_init(&result);
 	EXPECT_EQ(retained.exec("{}", &result, retained.user_data), 0);
@@ -1430,6 +1458,86 @@ TEST_F(DynamicToolsTest, RejectsNodeBufferWhileSupportingHostToBufferMethods)
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(std::string(result.text.data).find("forbidden token"), std::string::npos);
 	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, FilesystemRetainsTemporaryBufferAndRejectsInvalidRanges)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	const std::string source =
+		"function run(args) {"
+		"  morph.fs.writeFile(args.output, {"
+		"    get buffer() { return new Uint8Array([17,34,51,68]).buffer; },"
+		"    byteOffset: 1, byteLength: 2 });"
+		"  const bytes = new Uint8Array(morph.fs.readFile(args.output));"
+		"  let rangeError = false; let indexError = false;"
+		"  let getterError = false; let detachedError = false;"
+		"  try { morph.fs.writeFile(args.output, {"
+		"    buffer: new ArrayBuffer(2), byteOffset: 1, byteLength: 2 });"
+		"  } catch (error) { rangeError = error instanceof RangeError; }"
+		"  try { morph.fs.writeFile(args.output, {"
+		"    buffer: new ArrayBuffer(2), byteOffset: -1, byteLength: 1 });"
+		"  } catch (error) { indexError = error instanceof RangeError; }"
+		"  const sentinel = new Error('buffer getter failed');"
+		"  try { morph.fs.writeFile(args.output, {"
+		"    get buffer() { throw sentinel; } });"
+		"  } catch (error) { getterError = error === sentinel; }"
+		"  const detached = new ArrayBuffer(2); detached.transfer();"
+		"  try { morph.fs.writeFile(args.output, detached);"
+		"  } catch (error) { detachedError = error instanceof TypeError; }"
+		"  morph.fs.writeFile(args.output, new ArrayBuffer(0));"
+		"  const emptyBytes = morph.fs.readFile(args.output).byteLength;"
+		"  return { first: bytes[0], second: bytes[1], rangeError, indexError,"
+		"    getterError, detachedError, emptyBytes };"
+		"}";
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&result);
+	ASSERT_EQ(
+		tool_exec(&reg, "tool_create", create_args("buffer_view", source).c_str(), &result),
+		0);
+	tool_result_cleanup(&result);
+	tool_result_init(&result);
+	const std::string call = "{\"output\":\"" + root + "/buffer-view.bin\"}";
+	ASSERT_EQ(tool_exec(&reg, "buffer_view", call.c_str(), &result), 0);
+	cJSON *response = cJSON_Parse(result.text.data);
+	ASSERT_NE(response, nullptr);
+	EXPECT_EQ(cJSON_GetObjectItem(response, "first")->valueint, 34);
+	EXPECT_EQ(cJSON_GetObjectItem(response, "second")->valueint, 51);
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(response, "rangeError")));
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(response, "indexError")));
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(response, "getterError")));
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(response, "detachedError")));
+	EXPECT_EQ(cJSON_GetObjectItem(response, "emptyBytes")->valueint, 0);
+	cJSON_Delete(response);
+}
+
+TEST_F(DynamicToolsTest, LazyImageOwnsEncodedInputAfterSourceMutation)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	const std::string source =
+		"function run(args) {"
+		"  const canvas = morph.canvas.create({ width: 8, height: 4 });"
+		"  const context = canvas.getContext('2d');"
+		"  context.fillStyle = '#ff0000'; context.fillRect(0, 0, 8, 4);"
+		"  const bytes = new Uint8Array(morph.canvas.toBuffer({ canvas }));"
+		"  const image = morph.image.open(bytes);"
+		"  bytes.fill(0);"
+		"  const result = image.resize(4, 2).png().toBuffer();"
+		"  const metadata = morph.image.open(result).metadata();"
+		"  return { width: metadata.width, height: metadata.height };"
+		"}";
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&result);
+	ASSERT_EQ(
+		tool_exec(&reg, "tool_create", create_args("image_copy", source).c_str(), &result),
+		0);
+	tool_result_cleanup(&result);
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "image_copy", "{}", &result), 0);
+	cJSON *response = cJSON_Parse(result.text.data);
+	ASSERT_NE(response, nullptr);
+	EXPECT_EQ(cJSON_GetObjectItem(response, "width")->valueint, 4);
+	EXPECT_EQ(cJSON_GetObjectItem(response, "height")->valueint, 2);
+	cJSON_Delete(response);
 }
 
 TEST_F(DynamicToolsTest, DefinitionReadCopyAndUpdateUseTheSameSourceErrors)
@@ -1502,7 +1610,7 @@ TEST_F(DynamicToolsTest, DefinitionCopyUsesCommittedSourceAndPreservesUnknownMet
 	ASSERT_TRUE(cJSON_IsObject(extension));
 	EXPECT_EQ(cJSON_GetObjectItem(extension, "version")->valueint, 7);
 	dynamic_tool_store_definition_cleanup(&definition);
-	char *copied = file_read_all(copy_source.c_str(), nullptr);
+	char *copied = file_read_all_copy(copy_source.c_str(), nullptr);
 	ASSERT_NE(copied, nullptr);
 	EXPECT_STREQ(copied, "committed source");
 	free(copied);

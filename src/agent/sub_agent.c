@@ -11,11 +11,12 @@
 #include "models/llm.h"
 #include "http/client.h"
 #include "util/log.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/buf.h"
 #include "util/utf8.h"
 #include "util/error.h"
 #include "util/file.h"
+#include "util/json.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <limits.h>
@@ -257,11 +258,11 @@ static int sub_agent_child_event(const struct morph_event *ev,
 		(double)task->parent_session_id);
 	scoped = *ev;
 	scoped.data = data;
-	json = morph_event_to_json_string(&scoped);
+	json = morph_event_json_text_copy(&scoped);
 	if (json) {
 		pthread_mutex_lock(&task->mutex);
 		if (task->events_initialized) {
-			char **slot = morph_array_push(&task->events);
+			char **slot = morph_array_push_borrow(&task->events);
 			if (slot)
 				*slot = json;
 			else
@@ -273,7 +274,7 @@ static int sub_agent_child_event(const struct morph_event *ev,
 	}
 	if (rt->db && rt->db->handle && task->child_session_id > 0) {
 		sqlite3_stmt *stmt = NULL;
-		char *stored = morph_event_to_json_string(&scoped);
+		char *stored = morph_event_json_text_copy(&scoped);
 
 		if (stored) {
 			pthread_mutex_lock(&rt->storage_mutex);
@@ -324,7 +325,7 @@ sub_agent_runtime_create(struct tool_registry *parent_tools,
 	pthread_mutex_init(&rt->storage_mutex, NULL);
 	rt->mutexes_initialized = 1;
 	{
-		char *home = file_expand_path("~/.morph/log");
+		char *home = file_expand_path_copy("~/.morph/log");
 		if (home) {
 			file_ensure_dir(home);
 			snprintf(rt->trace_file, sizeof(rt->trace_file),
@@ -530,8 +531,7 @@ int sub_agent_runtime_load_config(struct sub_agent_runtime *rt,
 	return 0;
 }
 
-struct sub_agent_entry *
-sub_agent_find(struct sub_agent_runtime *rt, const char *name)
+struct sub_agent_entry *sub_agent_borrow(struct sub_agent_runtime *rt, const char *name)
 {
 	if (!rt || !name)
 		return NULL;
@@ -542,9 +542,8 @@ sub_agent_find(struct sub_agent_runtime *rt, const char *name)
 	return NULL;
 }
 
-struct tool_registry *
-sub_agent_build_tool_registry(struct sub_agent_runtime *rt,
-			      struct sub_agent_entry *entry)
+struct tool_registry *sub_agent_tool_registry_create(struct sub_agent_runtime *rt,
+						     struct sub_agent_entry *entry)
 {
 	if (!rt || !entry)
 		return NULL;
@@ -576,46 +575,56 @@ sub_agent_build_tool_registry(struct sub_agent_runtime *rt,
 	return child;
 }
 
-struct react_context *sub_agent_create_context(struct sub_agent_runtime *rt,
-					       const struct tool_runtime_context *runtime,
-					       struct sub_agent_entry *entry, const char *task)
+void sub_agent_context_cleanup(struct sub_agent_context *context)
 {
-	if (!rt || !entry || !task)
-		return NULL;
-	struct tool_registry *child_tools =
-		sub_agent_build_tool_registry(rt, entry);
-	if (!child_tools)
-		return NULL;
-	struct guardrail_config gcfg = {0};
-	gcfg.enabled = 0;
-	gcfg.max_retries = 1;
-	gcfg.max_empty_rounds = 2;
-	struct react_context *child = react_context_create(
-		child_tools, rt->tokenizer, rt->compress, &gcfg);
-	if (!child) {
-		tool_registry_cleanup(child_tools);
-		free(child_tools);
-		return NULL;
+	if (!context)
+		return;
+	react_context_destroy(context->react);
+	context->react = NULL;
+	if (context->tools) {
+		tool_registry_cleanup(context->tools);
+		free(context->tools);
+		context->tools = NULL;
 	}
+}
+
+int sub_agent_context_create(struct sub_agent_runtime *rt,
+			     const struct tool_runtime_context *runtime,
+			     struct sub_agent_entry *entry, const char *task,
+			     struct sub_agent_context *out)
+{
+	struct sub_agent_context candidate MORPH_CLEANUP(sub_agent_context_cleanup) = {0};
+	struct guardrail_config guardrail = {0};
+
+	if (!rt || !entry || !task || !out)
+		return -EINVAL;
+	if (out->react || out->tools)
+		return -EALREADY;
+	candidate.tools = sub_agent_tool_registry_create(rt, entry);
+	if (!candidate.tools)
+		return -ENOMEM;
+	guardrail.max_retries = 1;
+	guardrail.max_empty_rounds = 2;
+	candidate.react =
+		react_context_create(candidate.tools, rt->tokenizer, rt->compress, &guardrail);
+	if (!candidate.react)
+		return -ENOMEM;
+	struct react_context *child = candidate.react;
 	child->llm_model = entry->llm;
 	child->hitl.auto_approve_readonly = rt->auto_approve_readonly;
 	child->hitl.auto_approve_media = rt->auto_approve_media;
 	react_set_event_callback(child, NULL, NULL);
 	child->max_iterations = entry->cfg.max_iterations;
 	child->sub_agent_depth = (runtime ? runtime->sub_agent_depth : rt->depth) + 1;
-	child->system_prompt_replace =
-		strcmp(entry->cfg.system_prompt_mode, "replace") == 0;
+	child->system_prompt_replace = strcmp(entry->cfg.system_prompt_mode, "replace") == 0;
 	if (entry->system_prompt) {
-		free(child->system_prompt);
 		child->system_prompt = strdup(entry->system_prompt);
-		if (!child->system_prompt) {
-			react_context_destroy(child);
-			tool_registry_cleanup(child_tools);
-			free(child_tools);
-			return NULL;
-		}
+		if (!child->system_prompt)
+			return -ENOMEM;
 	}
-	return child;
+	*out = candidate;
+	memset(&candidate, 0, sizeof(candidate));
+	return 0;
 }
 
 static int sub_agent_run_task(struct sub_agent_runtime *rt,
@@ -626,8 +635,9 @@ static int sub_agent_run_task(struct sub_agent_runtime *rt,
 	struct react_context *child;
 	struct agent_session_runtime session_runtime;
 	struct agent_turn turn;
-	struct tool_registry *child_tools;
-	char *final_result = NULL;
+	struct sub_agent_context context MORPH_CLEANUP(sub_agent_context_cleanup) = {0};
+	char *final_result MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *result_copy MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	int64_t start;
 	int64_t end;
 	int rc;
@@ -638,10 +648,10 @@ static int sub_agent_run_task(struct sub_agent_runtime *rt,
 		return -ELOOP;
 	struct tool_runtime_context runtime = {.sub_agent_depth = task->depth};
 
-	child = sub_agent_create_context(rt, &runtime, entry, task->task_description);
-	if (!child) {
-		return -ENOMEM;
-	}
+	rc = sub_agent_context_create(rt, &runtime, entry, task->task_description, &context);
+	if (rc != 0)
+		return rc;
+	child = context.react;
 	sink.rt = rt;
 	sink.task = task;
 	react_set_event_callback(child, sub_agent_child_event, &sink);
@@ -690,6 +700,13 @@ static int sub_agent_run_task(struct sub_agent_runtime *rt,
 	} else {
 		final_result = strdup("(no answer)");
 	}
+	if (!final_result && rc == 0)
+		rc = -ENOMEM;
+	if (result && rc == 0) {
+		result_copy = strdup(final_result);
+		if (!result_copy)
+			rc = -ENOMEM;
+	}
 	{
 		struct sub_agent_trace_event ev = {0};
 
@@ -705,23 +722,20 @@ static int sub_agent_run_task(struct sub_agent_runtime *rt,
 		sub_agent_trace_write(rt, &ev);
 		free(ev.result_preview);
 	}
-	child_tools = child->tools;
 	pthread_mutex_lock(&task->mutex);
 	task->child_ctx = NULL;
 	task->iteration_count = child->step_count;
 	pthread_mutex_unlock(&task->mutex);
-	react_context_destroy(child);
-	tool_registry_cleanup(child_tools);
-	free(child_tools);
+	sub_agent_context_cleanup(&context);
 
 	pthread_mutex_lock(&task->mutex);
-	task->result = final_result;
+	task->result = morph_charp_steal(&final_result);
 	task->error_code = rc < 0 ? rc : 0;
 	task->status = rc == 0 ? SUB_AGENT_COMPLETED :
 		(rc == -ECANCELED ? SUB_AGENT_CANCELLED : SUB_AGENT_FAILED);
 	task->ended_at_ms = end;
-	if (result)
-		*result = strdup(task->result ? task->result : "(no answer)");
+	if (result && rc == 0)
+		*result = morph_charp_steal(&result_copy);
 	pthread_mutex_unlock(&task->mutex);
 	sub_agent_storage_update_task(rt, task);
 	return rc;
@@ -736,6 +750,8 @@ int sub_agent_invoke_sync(struct sub_agent_runtime *rt, const struct tool_runtim
 
 	if (!rt || !entry || !task || !result)
 		return -EINVAL;
+	if (*result)
+		return -EALREADY;
 	if ((runtime ? runtime->sub_agent_depth : rt->depth) >= SUB_AGENT_MAX_DEPTH)
 		return -ELOOP;
 	task_record =
@@ -763,6 +779,12 @@ struct delegate_thread_arg {
 	struct sub_agent_entry *entry;
 	struct sub_agent_task *task;
 };
+
+static void delegate_arg_cleanup(struct delegate_thread_arg **owner)
+{
+	free(*owner);
+	*owner = NULL;
+}
 
 static void *delegate_thread_fn(void *arg)
 {
@@ -796,105 +818,107 @@ static void *delegate_thread_fn(void *arg)
 int sub_agent_delegate(struct sub_agent_runtime *rt, const struct tool_runtime_context *runtime,
 		       const char *agent_name, const char *task, char **task_id_out)
 {
+	struct delegate_thread_arg *argument MORPH_CLEANUP(delegate_arg_cleanup) = NULL;
+	char *task_id MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	struct sub_agent_entry *entry;
-	struct sub_agent_task *t;
-	struct delegate_thread_arg *da;
+	struct sub_agent_task *record;
 	int create_rc;
 	int rc;
 
 	if (!rt || !agent_name || !task)
 		return -EINVAL;
+	if (task_id_out && *task_id_out)
+		return -EALREADY;
 	if ((runtime ? runtime->sub_agent_depth : rt->depth) >= SUB_AGENT_MAX_DEPTH)
 		return -ELOOP;
-	entry = sub_agent_find(rt, agent_name);
+	entry = sub_agent_borrow(rt, agent_name);
 	if (!entry)
 		return -ENOENT;
-	t = sub_agent_task_create(rt, entry, task, "delegate", 0,
-				  runtime ? runtime->sub_agent_depth : rt->depth, &create_rc);
-	if (!t)
-		return create_rc;
-	sub_agent_emit_background_event(rt, "background.started", "begin",
-					"sub-agent delegate started",
-					entry->cfg.name, t->id, task, 0);
-	da = calloc(1, sizeof(*da));
-	if (!da) {
-		pthread_mutex_lock(&t->mutex);
-		t->status = SUB_AGENT_FAILED;
-		t->error_code = -ENOMEM;
-		t->ended_at_ms = now_ms();
-		pthread_mutex_unlock(&t->mutex);
-		sub_agent_storage_update_task(rt, t);
-		sub_agent_emit_background_event(rt, "background.failed",
-						"failed",
-						"sub-agent delegate failed",
-						entry->cfg.name, t->id, task,
-						-ENOMEM);
+	argument = calloc(1, sizeof(*argument));
+	if (!argument)
 		return -ENOMEM;
+	if (task_id_out) {
+		task_id = malloc(SUB_AGENT_TASK_ID_MAX);
+		if (!task_id)
+			return -ENOMEM;
 	}
-	da->rt = rt;
-	da->entry = entry;
-	da->task = t;
-	rc = pthread_create(&t->thread, NULL, delegate_thread_fn, da);
+	record = sub_agent_task_create(rt, entry, task, "delegate", 0,
+				       runtime ? runtime->sub_agent_depth : rt->depth, &create_rc);
+	if (!record)
+		return create_rc;
+	if (task_id)
+		snprintf(task_id, SUB_AGENT_TASK_ID_MAX, "%s", record->id);
+	argument->rt = rt;
+	argument->entry = entry;
+	argument->task = record;
+	sub_agent_emit_background_event(rt, "background.started", "begin",
+					"sub-agent delegate started", entry->cfg.name, record->id,
+					task, 0);
+	rc = pthread_create(&record->thread, NULL, delegate_thread_fn, argument);
 	if (rc != 0) {
-		free(da);
-		pthread_mutex_lock(&t->mutex);
-		t->status = SUB_AGENT_FAILED;
-		t->error_code = -rc;
-		t->ended_at_ms = now_ms();
-		pthread_mutex_unlock(&t->mutex);
-		sub_agent_storage_update_task(rt, t);
-		sub_agent_emit_background_event(rt, "background.failed",
-						"failed",
-						"sub-agent delegate failed",
-						entry->cfg.name, t->id, task,
-						-rc);
+		pthread_mutex_lock(&record->mutex);
+		record->status = SUB_AGENT_FAILED;
+		record->joined = 1;
+		record->error_code = -rc;
+		record->ended_at_ms = now_ms();
+		pthread_mutex_unlock(&record->mutex);
+		sub_agent_storage_update_task(rt, record);
+		sub_agent_emit_background_event(rt, "background.failed", "failed",
+						"sub-agent delegate failed", entry->cfg.name,
+						record->id, task, -rc);
 		return -rc;
 	}
+	argument = NULL;
 	if (task_id_out)
-		*task_id_out = strdup(t->id);
+		*task_id_out = morph_charp_steal(&task_id);
 	return 0;
 }
 
-int sub_agent_check_status(struct sub_agent_runtime *rt,
-			   const char *task_id,
-			   enum sub_agent_task_status *status_out,
-			   char **result_out)
+int sub_agent_check_status(struct sub_agent_runtime *rt, const char *task_id,
+			   enum sub_agent_task_status *status_out, char **result_out)
 {
+	char *result MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	struct sub_agent_task *found;
-	enum sub_agent_task_status st;
-	char *res;
+	enum sub_agent_task_status status;
+	int join_needed;
 
 	if (!rt || !task_id)
 		return -EINVAL;
+	if (result_out && *result_out)
+		return -EALREADY;
 	pthread_mutex_lock(&rt->mutex);
 	found = sub_agent_task_find_locked(rt, task_id);
 	pthread_mutex_unlock(&rt->mutex);
 	if (!found)
 		return -ENOENT;
 	pthread_mutex_lock(&found->mutex);
-	st = found->status;
-	res = found->result ? strdup(found->result) : NULL;
-	if ((st == SUB_AGENT_COMPLETED || st == SUB_AGENT_FAILED ||
-	     st == SUB_AGENT_CANCELLED) && !found->joined) {
-		found->joined = 1;
-		pthread_mutex_unlock(&found->mutex);
-		pthread_join(found->thread, NULL);
-		if (found->child_ctx) {
-			struct tool_registry *ct = found->child_ctx->tools;
-			react_context_destroy(found->child_ctx);
-			found->child_ctx = NULL;
-			tool_registry_cleanup(ct);
-			free(ct);
+	status = found->status;
+	if (result_out && found->result) {
+		result = strdup(found->result);
+		if (!result) {
+			pthread_mutex_unlock(&found->mutex);
+			return -ENOMEM;
 		}
-	} else {
-		pthread_mutex_unlock(&found->mutex);
+	}
+	join_needed = (status == SUB_AGENT_COMPLETED || status == SUB_AGENT_FAILED ||
+		       status == SUB_AGENT_CANCELLED) &&
+		      !found->joined;
+	if (join_needed)
+		found->joined = 1;
+	pthread_mutex_unlock(&found->mutex);
+	if (join_needed) {
+		int rc = pthread_join(found->thread, NULL);
+		if (rc != 0) {
+			pthread_mutex_lock(&found->mutex);
+			found->joined = 0;
+			pthread_mutex_unlock(&found->mutex);
+			return -rc;
+		}
 	}
 	if (status_out)
-		*status_out = st;
+		*status_out = status;
 	if (result_out)
-		*result_out = res;
-	else
-		free(res);
+		*result_out = morph_charp_steal(&result);
 	return 0;
 }
 
@@ -908,6 +932,25 @@ void sub_agent_runtime_free_task_list(struct sub_agent_task_info *tasks,
 		free(tasks[i].result);
 	}
 	free(tasks);
+}
+
+static void sub_agent_task_info_array_cleanup(morph_array_t *items)
+{
+	for (size_t i = 0; i < items->nelts; i++) {
+		struct sub_agent_task_info *item = morph_array_borrow(items, i);
+		free(item->description);
+		free(item->result);
+	}
+	morph_array_cleanup(items);
+}
+
+static void sub_agent_events_array_cleanup(morph_array_t *events)
+{
+	for (size_t i = 0; i < events->nelts; i++) {
+		char **event = morph_array_borrow(events, i);
+		free(*event);
+	}
+	morph_array_cleanup(events);
 }
 
 static int sub_agent_task_info_from_runtime(struct sub_agent_runtime *rt,
@@ -924,7 +967,7 @@ static int sub_agent_task_info_from_runtime(struct sub_agent_runtime *rt,
 		if (parent_session_id > 0 &&
 		    task->parent_session_id != parent_session_id)
 			continue;
-		info = morph_array_push(items);
+		info = morph_array_push_borrow(items);
 		if (!info) {
 			pthread_mutex_unlock(&rt->mutex);
 			return -ENOMEM;
@@ -939,6 +982,12 @@ static int sub_agent_task_info_from_runtime(struct sub_agent_runtime *rt,
 		info->description = task->task_description ?
 			strdup(task->task_description) : NULL;
 		info->result = task->result ? strdup(task->result) : NULL;
+		if ((task->task_description && !info->description) ||
+		    (task->result && !info->result)) {
+			pthread_mutex_unlock(&task->mutex);
+			pthread_mutex_unlock(&rt->mutex);
+			return -ENOMEM;
+		}
 		info->status = task->status;
 		info->error_code = task->error_code;
 		info->iteration_count = task->iteration_count;
@@ -952,18 +1001,17 @@ static int sub_agent_task_info_from_runtime(struct sub_agent_runtime *rt,
 	return 0;
 }
 
-int sub_agent_runtime_list_tasks(struct sub_agent_runtime *rt,
-				 int64_t parent_session_id,
-				 struct sub_agent_task_info **out,
-				 int *count)
+int sub_agent_runtime_task_list_copy(struct sub_agent_runtime *rt, int64_t parent_session_id,
+				     struct sub_agent_task_info **out, int *count)
 {
-	morph_array_t items;
+	morph_array_t items MORPH_CLEANUP(sub_agent_task_info_array_cleanup) = {0};
 	sqlite3_stmt *stmt = NULL;
 	int rc;
 
 	if (!rt || !out || !count || parent_session_id < 0)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EALREADY;
 	*count = 0;
 	rc = morph_array_init(&items, MORPH_ARRAY_INIT_CAP,
 			      sizeof(struct sub_agent_task_info));
@@ -973,7 +1021,6 @@ int sub_agent_runtime_list_tasks(struct sub_agent_runtime *rt,
 		rc = sub_agent_task_info_from_runtime(rt, parent_session_id,
 						      &items);
 		if (rc != 0) {
-			morph_array_cleanup(&items);
 			return rc;
 		}
 	} else {
@@ -988,8 +1035,7 @@ int sub_agent_runtime_list_tasks(struct sub_agent_runtime *rt,
 			sqlite3_bind_int64(stmt, 1, parent_session_id);
 			sqlite3_bind_int64(stmt, 2, parent_session_id);
 			while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-				struct sub_agent_task_info *info =
-					morph_array_push(&items);
+				struct sub_agent_task_info *info = morph_array_push_borrow(&items);
 				const char *value;
 
 				if (!info) {
@@ -1011,10 +1057,18 @@ int sub_agent_runtime_list_tasks(struct sub_agent_runtime *rt,
 						sizeof(info->mode) - 1);
 				value = (const char *)sqlite3_column_text(stmt, 3);
 				info->description = value ? strdup(value) : NULL;
+				if (value && !info->description) {
+					rc = SQLITE_NOMEM;
+					break;
+				}
 				info->status = (enum sub_agent_task_status)
 					sqlite3_column_int(stmt, 4);
 				value = (const char *)sqlite3_column_text(stmt, 5);
 				info->result = value ? strdup(value) : NULL;
+				if (value && !info->result) {
+					rc = SQLITE_NOMEM;
+					break;
+				}
 				info->error_code = sqlite3_column_int(stmt, 6);
 				info->iteration_count = sqlite3_column_int(stmt, 7);
 				info->parent_session_id = sqlite3_column_int64(stmt, 8);
@@ -1026,20 +1080,15 @@ int sub_agent_runtime_list_tasks(struct sub_agent_runtime *rt,
 		sqlite3_finalize(stmt);
 		pthread_mutex_unlock(&rt->storage_mutex);
 		if (rc != SQLITE_DONE) {
-			sub_agent_runtime_free_task_list(
-				(struct sub_agent_task_info *)items.elts,
-				(int)items.nelts);
 			return rc == SQLITE_NOMEM ? -ENOMEM : MORPH_ERR_DB;
 		}
 	}
 	if (items.nelts > INT_MAX) {
-		sub_agent_runtime_free_task_list(
-			(struct sub_agent_task_info *)items.elts,
-			(int)items.nelts);
 		return -EOVERFLOW;
 	}
 	*out = items.elts;
 	*count = (int)items.nelts;
+	memset(&items, 0, sizeof(items));
 	return 0;
 }
 
@@ -1052,18 +1101,18 @@ void sub_agent_runtime_free_events(char **events, int count)
 	free(events);
 }
 
-int sub_agent_runtime_task_events(struct sub_agent_runtime *rt,
-				  const char *task_id,
-				  char ***events, int *count)
+int sub_agent_runtime_task_events_copy(struct sub_agent_runtime *rt, const char *task_id,
+				       char ***events, int *count)
 {
-	morph_array_t out;
+	morph_array_t out MORPH_CLEANUP(sub_agent_events_array_cleanup) = {0};
 	struct sub_agent_task *task = NULL;
 	sqlite3_stmt *stmt = NULL;
 	int rc;
 
 	if (!rt || !task_id || !events || !count)
 		return -EINVAL;
-	*events = NULL;
+	if (*events)
+		return -EALREADY;
 	*count = 0;
 	rc = morph_array_init(&out, MORPH_ARRAY_INIT_CAP, sizeof(char *));
 	if (rc != 0)
@@ -1078,7 +1127,7 @@ int sub_agent_runtime_task_events(struct sub_agent_runtime *rt,
 			while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 				const char *value =
 					(const char *)sqlite3_column_text(stmt, 0);
-				char **slot = morph_array_push(&out);
+				char **slot = morph_array_push_borrow(&out);
 
 				if (!slot || !(*slot = strdup(value ? value : ""))) {
 					rc = SQLITE_NOMEM;
@@ -1089,8 +1138,6 @@ int sub_agent_runtime_task_events(struct sub_agent_runtime *rt,
 		sqlite3_finalize(stmt);
 		pthread_mutex_unlock(&rt->storage_mutex);
 		if (rc != SQLITE_DONE) {
-			sub_agent_runtime_free_events((char **)out.elts,
-						      (int)out.nelts);
 			return rc == SQLITE_NOMEM ? -ENOMEM : MORPH_ERR_DB;
 		}
 	} else {
@@ -1098,29 +1145,26 @@ int sub_agent_runtime_task_events(struct sub_agent_runtime *rt,
 		task = sub_agent_task_find_locked(rt, task_id);
 		pthread_mutex_unlock(&rt->mutex);
 		if (!task) {
-			morph_array_cleanup(&out);
 			return -ENOENT;
 		}
 		pthread_mutex_lock(&task->mutex);
 		for (size_t i = 0; i < task->events.nelts; i++) {
-			char **source = morph_array_get(&task->events, i);
-			char **slot = morph_array_push(&out);
+			char **source = morph_array_borrow(&task->events, i);
+			char **slot = morph_array_push_borrow(&out);
 
 			if (!slot || !(*slot = strdup(*source))) {
 				pthread_mutex_unlock(&task->mutex);
-				sub_agent_runtime_free_events((char **)out.elts,
-							      (int)out.nelts);
 				return -ENOMEM;
 			}
 		}
 		pthread_mutex_unlock(&task->mutex);
 	}
 	if (out.nelts > INT_MAX) {
-		sub_agent_runtime_free_events((char **)out.elts, (int)out.nelts);
 		return -EOVERFLOW;
 	}
 	*events = out.elts;
 	*count = (int)out.nelts;
+	memset(&out, 0, sizeof(out));
 	return 0;
 }
 
@@ -1133,6 +1177,48 @@ struct fanout_worker_arg {
 	char *result;
 	int rc;
 };
+
+struct fanout_workers {
+	struct fanout_worker_arg *items;
+	pthread_t *threads;
+	int count;
+};
+
+static void fanout_workers_cleanup(struct fanout_workers *owner)
+{
+	if (owner->items) {
+		for (int i = 0; i < owner->count; i++)
+			free(owner->items[i].result);
+	}
+	free(owner->items);
+	free(owner->threads);
+	memset(owner, 0, sizeof(*owner));
+}
+
+static int fanout_raw_result_create(const struct fanout_worker_arg *workers, const char **tasks,
+				    int count, char **out)
+{
+	cJSON *array MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
+	char *text MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
+
+	if (!array)
+		return -ENOMEM;
+	for (int i = 0; i < count; i++) {
+		cJSON *item MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+
+		if (!item || !cJSON_AddStringToObject(item, "task", tasks[i]) ||
+		    !cJSON_AddStringToObject(item, "result",
+					     workers[i].result ? workers[i].result : "(no result)"))
+			return -ENOMEM;
+		if (morph_json_array_take(array, &item) != 0)
+			return -ENOMEM;
+	}
+	text = morph_json_print_copy(array);
+	if (!text)
+		return -ENOMEM;
+	*out = strdup(text);
+	return *out ? 0 : -ENOMEM;
+}
 
 static void *fanout_worker_fn(void *arg)
 {
@@ -1150,7 +1236,7 @@ static void *fanout_worker_fn(void *arg)
  * \param[in] tasks: Borrowed task strings through worker completion.
  * \param[in] task_count: Positive number of tasks.
  * \param[in] merge: Existing result merge policy.
- * \param[out] result: Owned merged text to free, initialized to NULL on entry.
+ * \param[out] result: Owned merged text in an empty output; failures preserve NULL.
  * \param[in] ops: Optional borrowed platform seam; NULL uses pthread directly.
  * \return Zero on success, negative error after reclaiming every started worker.
  */
@@ -1160,17 +1246,18 @@ int sub_agent_fanout_with_ops(struct sub_agent_runtime *rt,
 			      enum sub_agent_merge_strategy merge, char **result,
 			      const struct sub_agent_thread_ops *ops)
 {
+	struct fanout_workers owner MORPH_CLEANUP(fanout_workers_cleanup) = {0};
+	char *merged MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	int started = 0;
 	int thread_rc = 0;
 
-	if (result != NULL) {
-		*result = NULL;
-	}
 	if (!rt || !agent_name || !tasks || task_count <= 0 || !result)
 		return -EINVAL;
+	if (*result)
+		return -EALREADY;
 	if ((runtime ? runtime->sub_agent_depth : rt->depth) >= SUB_AGENT_MAX_DEPTH)
 		return -ELOOP;
-	struct sub_agent_entry *entry = sub_agent_find(rt, agent_name);
+	struct sub_agent_entry *entry = sub_agent_borrow(rt, agent_name);
 	if (!entry)
 		return -ENOENT;
 	sub_agent_emit_background_event(rt, "background.started", "begin",
@@ -1178,12 +1265,16 @@ int sub_agent_fanout_with_ops(struct sub_agent_runtime *rt,
 					entry->cfg.name, NULL, agent_name, 0);
 	int n = task_count > SUB_AGENT_TASK_MAX
 		? SUB_AGENT_TASK_MAX : task_count;
-	struct fanout_worker_arg *workers = calloc((size_t)n,
-						   sizeof(*workers));
-	pthread_t *threads = calloc((size_t)n, sizeof(*threads));
+	for (int i = 0; i < n; i++) {
+		if (!tasks[i])
+			return -EINVAL;
+	}
+	owner.count = n;
+	owner.items = calloc((size_t)n, sizeof(*owner.items));
+	owner.threads = calloc((size_t)n, sizeof(*owner.threads));
+	struct fanout_worker_arg *workers = owner.items;
+	pthread_t *threads = owner.threads;
 	if (!workers || !threads) {
-		free(workers);
-		free(threads);
 		sub_agent_emit_background_event(rt, "background.failed",
 						"failed",
 						"sub-agent fanout failed",
@@ -1229,11 +1320,6 @@ int sub_agent_fanout_with_ops(struct sub_agent_runtime *rt,
 		}
 	}
 	if (thread_rc != 0) {
-		for (int i = 0; i < started; i++) {
-			free(workers[i].result);
-		}
-		free(workers);
-		free(threads);
 		return thread_rc;
 	}
 	int any_success = 0;
@@ -1243,10 +1329,6 @@ int sub_agent_fanout_with_ops(struct sub_agent_runtime *rt,
 	}
 	if (!any_success) {
 		int first_err = workers[0].rc;
-		for (int i = 0; i < n; i++)
-			free(workers[i].result);
-		free(workers);
-		free(threads);
 		sub_agent_emit_background_event(rt, "background.failed",
 						"failed",
 						"sub-agent fanout failed",
@@ -1256,28 +1338,14 @@ int sub_agent_fanout_with_ops(struct sub_agent_runtime *rt,
 		return first_err ? first_err : -EIO;
 	}
 	if (merge == SUB_AGENT_MERGE_RAW) {
-		cJSON *arr = cJSON_CreateArray();
-		for (int i = 0; i < n; i++) {
-			cJSON *item = cJSON_CreateObject();
-			cJSON_AddStringToObject(item, "task", tasks[i]);
-			if (workers[i].result)
-				cJSON_AddStringToObject(item, "result",
-							workers[i].result);
-			else
-				cJSON_AddStringToObject(item, "result",
-							"(no result)");
-			cJSON_AddItemToArray(arr, item);
-		}
-		*result = cJSON_PrintUnformatted(arr);
-		cJSON_Delete(arr);
+		int merge_rc = fanout_raw_result_create(workers, tasks, n, &merged);
+
+		if (merge_rc != 0)
+			return merge_rc;
 	} else if (merge == SUB_AGENT_MERGE_SYNTHESIZE) {
-		morph_buf_t combined_buf;
+		morph_buf_t combined_buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 		int buf_rc = morph_buf_init(&combined_buf, 4096);
 		if (buf_rc != 0) {
-			for (int i = 0; i < n; i++)
-				free(workers[i].result);
-			free(workers);
-			free(threads);
 			return buf_rc;
 		}
 		for (int i = 0; i < n; i++) {
@@ -1288,17 +1356,12 @@ int sub_agent_fanout_with_ops(struct sub_agent_runtime *rt,
 						  i + 1, tasks[i], r);
 			if (buf_rc != 0) {
 				morph_buf_cleanup(&combined_buf);
-				for (int j = 0; j < n; j++)
-					free(workers[j].result);
-				free(workers);
-				free(threads);
 				return buf_rc;
 			}
 		}
 		struct model *llm = entry->llm;
 		if (llm && llm->chat && llm->api_key[0]) {
-			struct arena *arena = arena_create(64 * 1024);
-			if (arena) {
+			{
 				const char *sys =
 					"You are a synthesis engine. "
 					"Given the following results from "
@@ -1308,36 +1371,29 @@ int sub_agent_fanout_with_ops(struct sub_agent_runtime *rt,
 					"and insights. Do not lose any "
 					"important information.";
 				const char *msgs[] = { combined_buf.data };
-				morph_buf_t syn_buf;
+				morph_buf_t syn_buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 				if (morph_buf_init(&syn_buf, 8192) == 0) {
 					struct tool_runtime_stream_sink stream = {.runtime =
 											  runtime};
 					stream.tool = "fanout";
 					stream.kind = "text";
 					stream.buf = &syn_buf;
-					int src = llm->chat(llm, arena, sys,
-							    msgs, 1, NULL,
-							    tool_runtime_stream_to_buf_cb,
-							    &stream);
+					int src = llm->chat(llm, sys, msgs, 1, NULL,
+							    tool_runtime_stream_to_buf_cb, &stream);
 					if (src == 0 && syn_buf.len > 0) {
 						morph_buf_cleanup(&combined_buf);
-						combined_buf = syn_buf;
+						morph_buf_move(&combined_buf, &syn_buf);
 					} else {
 						morph_buf_cleanup(&syn_buf);
 					}
 				}
-				arena_destroy(arena);
 			}
 		}
-		*result = morph_buf_detach(&combined_buf);
+		merged = morph_buf_detach(&combined_buf);
 	} else {
-		morph_buf_t combined_buf;
+		morph_buf_t combined_buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 		int buf_rc = morph_buf_init(&combined_buf, 4096);
 		if (buf_rc != 0) {
-			for (int i = 0; i < n; i++)
-				free(workers[i].result);
-			free(workers);
-			free(threads);
 			return buf_rc;
 		}
 		for (int i = 0; i < n; i++) {
@@ -1346,76 +1402,61 @@ int sub_agent_fanout_with_ops(struct sub_agent_runtime *rt,
 			buf_rc = morph_buf_printf(&combined_buf, "%s\n", r);
 			if (buf_rc != 0) {
 				morph_buf_cleanup(&combined_buf);
-				for (int j = 0; j < n; j++)
-					free(workers[j].result);
-				free(workers);
-				free(threads);
 				return buf_rc;
 			}
 		}
-		*result = morph_buf_detach(&combined_buf);
+		merged = morph_buf_detach(&combined_buf);
 	}
-	for (int i = 0; i < n; i++)
-		free(workers[i].result);
-	free(workers);
-	free(threads);
+	if (!merged)
+		return -ENOMEM;
+	*result = morph_charp_steal(&merged);
 	sub_agent_emit_background_event(rt, "background.completed", "end",
 					"sub-agent fanout completed",
 					entry->cfg.name, NULL, agent_name, 0);
 	return 0;
 }
 
-int sub_agent_apply_output_schema(const char *text,
-				  const char *schema,
-				  struct model *llm,
+int sub_agent_apply_output_schema(const char *text, const char *schema, struct model *llm,
 				  char **result)
 {
+	morph_buf_t prompt MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	morph_buf_t response MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int rc;
+
 	if (!text || !schema || !result)
 		return -EINVAL;
+	if (*result)
+		return -EALREADY;
 	if (!llm || !llm->chat || !llm->api_key[0]) {
 		*result = strdup(text);
-		return 0;
+		return *result ? 0 : -ENOMEM;
 	}
-	struct arena *arena = arena_create(64 * 1024);
-	if (!arena) {
-		*result = strdup(text);
-		return 0;
+	rc = morph_buf_init(&prompt, 4096);
+	if (rc == 0)
+		rc = morph_buf_printf(&prompt,
+				      "Extract information from the following text according "
+				      "to this JSON schema. Return ONLY valid JSON matching "
+				      "the schema, no other text.\n\nSchema: %s\n\nText: %s",
+				      schema, text);
+	if (rc == 0)
+		rc = morph_buf_init(&response, 8192);
+	if (rc != 0)
+		return rc;
+	const char *messages[] = {morph_buf_cstr_borrow(&prompt)};
+	rc = llm->chat(llm,
+		       "You are a structured data extraction engine. "
+		       "Return ONLY valid JSON.",
+		       messages, 1, NULL, morph_buf_append_cb, &response);
+	if (rc >= 0 && response.len) {
+		cJSON *parsed = cJSON_ParseWithOpts(morph_buf_cstr_borrow(&response), NULL, 1);
+		if (parsed) {
+			cJSON_Delete(parsed);
+			*result = morph_buf_detach(&response);
+			return 0;
+		}
 	}
-	char prompt[4096];
-	snprintf(prompt, sizeof(prompt),
-		 "Extract information from the following text according "
-		 "to this JSON schema. Return ONLY valid JSON matching "
-		 "the schema, no other text.\n\nSchema: %s\n\nText: %s",
-		 schema, text);
-	const char *msgs[] = { prompt };
-	char *response = NULL;
-	size_t res_cap = 8192;
-	response = malloc(res_cap);
-	if (!response) {
-		arena_destroy(arena);
-		*result = strdup(text);
-		return 0;
-	}
-	response[0] = '\0';
-	int rc = llm->chat(llm, arena,
-		"You are a structured data extraction engine. "
-		"Return ONLY valid JSON.",
-		msgs, 1, NULL, NULL, NULL);
-	arena_destroy(arena);
-	if (rc < 0 || !response[0]) {
-		free(response);
-		*result = strdup(text);
-		return 0;
-	}
-	cJSON *parsed = cJSON_Parse(response);
-	if (parsed) {
-		cJSON_Delete(parsed);
-		*result = response;
-		return 0;
-	}
-	free(response);
 	*result = strdup(text);
-	return 0;
+	return *result ? 0 : -ENOMEM;
 }
 
 void sub_agent_trace_write(struct sub_agent_runtime *rt,

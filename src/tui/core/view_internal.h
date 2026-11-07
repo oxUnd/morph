@@ -5,7 +5,6 @@
 #include <morph/tui/layout.h>
 #include <morph/tui/window.h>
 #include <morph/tui/frame.h>
-#include "util/arena.h"
 #include "util/array.h"
 #include "util/utf8.h"
 
@@ -28,7 +27,6 @@ struct morph_tui_builder {
 
 struct morph_tui_view_controller_state {
 	struct morph_tui_application *app;
-	struct arena *arena;
 	morph_array_t views;
 	struct morph_tui_builder builder;
 	struct morph_tui_view *root, *focus;

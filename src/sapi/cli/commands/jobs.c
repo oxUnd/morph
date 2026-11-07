@@ -7,9 +7,9 @@
 
 static int cli_jobs_command_jobs(struct cli_application *ctx, int argc, char **argv)
 {
-	const char *id = cli_cmd_arg(argc, argv, 1);
+	const char *id = cli_cmd_arg_borrow(argc, argv, 1);
 	if (id && !strcmp(id, "stop")) {
-		id = cli_cmd_arg(argc, argv, 2);
+		id = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!id) {
 			CMD_ERROR(ctx, "usage: /jobs stop <id>");
 			return -EINVAL;

@@ -20,7 +20,7 @@ int morph_tui_widget_select_init(struct morph_tui_widget_select *select, size_t 
 
 	if (rc != 0)
 		return rc;
-	void *items = morph_array_push_n(&select->checked, count);
+	void *items = morph_array_push_n_borrow(&select->checked, count);
 
 	if (!items) {
 		morph_tui_widget_select_cleanup(select);
@@ -36,7 +36,7 @@ int morph_tui_widget_select_selected(const struct morph_tui_widget_select *selec
 		return 0;
 	if (!select->multi)
 		return index == select->menu.list.index;
-	const unsigned char *checked = morph_array_get(&select->checked, index);
+	const unsigned char *checked = morph_array_borrow(&select->checked, index);
 
 	return checked && *checked;
 }
@@ -50,7 +50,8 @@ int morph_tui_widget_select_update(struct morph_tui_widget_select *select, int k
 	if (select->menu.pasting || key == MORPH_TUI_KEY_PASTE_END)
 		return MORPH_TUI_WIDGET_UNHANDLED;
 	if (select->multi && key == ' ') {
-		unsigned char *checked = morph_array_get(&select->checked, select->menu.list.index);
+		unsigned char *checked =
+			morph_array_borrow(&select->checked, select->menu.list.index);
 
 		select->invalid = !*checked && select->selected_count == select->maximum;
 		if (!select->invalid) {

@@ -186,7 +186,7 @@ static int cli_permissions_revoke_subject_matches(struct cli_application *ctx, c
 		}
 		if (exists)
 			continue;
-		stored = morph_array_push(&subjects);
+		stored = morph_array_push_borrow(&subjects);
 		if (!stored) {
 			rc = -ENOMEM;
 			goto out;
@@ -215,7 +215,7 @@ out:
 
 static int cli_permissions_command_permissions(struct cli_application *ctx, int argc, char **argv)
 {
-	const char *action = cli_cmd_arg(argc, argv, 1);
+	const char *action = cli_cmd_arg_borrow(argc, argv, 1);
 	const char *target;
 	int deleted = 0;
 	int rc;
@@ -224,7 +224,7 @@ static int cli_permissions_command_permissions(struct cli_application *ctx, int 
 		struct permission_policy policy;
 
 		if (!action && ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON &&
-		    cli_application_tui(ctx))
+		    cli_application_tui_borrow(ctx))
 			return cli_permissions_show(ctx);
 		rc = runtime_permission_get_policy(ctx->runtime, &policy);
 		if (rc != 0)
@@ -256,7 +256,7 @@ static int cli_permissions_command_permissions(struct cli_application *ctx, int 
 		char *end;
 		long long id;
 
-		target = cli_cmd_arg(argc, argv, 2);
+		target = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!target) {
 			CMD_ERROR(ctx, "usage: /permissions revoke <id|program>");
 			return -EINVAL;

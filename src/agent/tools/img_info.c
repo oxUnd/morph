@@ -1,4 +1,6 @@
 #include "img_info.h"
+#include "util/json.h"
+#include "util/cleanup.h"
 #include "agent/tool_context.h"
 #include "util/log.h"
 #include "util/error.h"
@@ -29,16 +31,16 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
+		(void)tool_result_success_json_text_copy(result, "{\"error\":\"invalid JSON\"}");
 		return -EINVAL;
 	}
 	cJSON *f = cJSON_GetObjectItem(root, "file_path");
 	const char *file_path = cJSON_IsString(f) ? f->valuestring : NULL;
 	if (!file_path) {
 		cJSON_Delete(root);
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"missing 'file_path' parameter. "
-			"Usage: img_info({\\\"file_path\\\": \\\"img.png\\\"})\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"missing 'file_path' parameter. "
+				"Usage: img_info({\\\"file_path\\\": \\\"img.png\\\"})\"}");
 		return -EINVAL;
 	}
 
@@ -50,11 +52,12 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 		if (rc < 0) {
 			cJSON_Delete(root);
 			if (rc == -ENOENT)
-				(void)tool_result_success_json_text(result, strdup(
-					"{\"error\":\"not a valid image\"}"));
+				(void)tool_result_success_json_text_copy(
+					result, "{\"error\":\"not a valid image\"}");
 			else
-				(void)tool_result_success_json_text(result, strdup(
-					"{\"error\":\"read path outside workspace: permission denied\"}"));
+				(void)tool_result_success_json_text_copy(
+					result, "{\"error\":\"read path outside workspace: "
+						"permission denied\"}");
 			return rc;
 		}
 	} else {
@@ -65,7 +68,8 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 	int w = 0, h = 0, ch = 0;
 	if (!stbi_info(resolved_path, &w, &h, &ch)) {
 		cJSON_Delete(root);
-		(void)tool_result_success_json_text(result, strdup("{\"error\":\"not a valid image\"}"));
+		(void)tool_result_success_json_text_copy(result,
+							 "{\"error\":\"not a valid image\"}");
 		return MORPH_ERR_FORMAT;
 	}
 
@@ -75,27 +79,30 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 	cJSON_AddNumberToObject(out, "height", h);
 	cJSON_AddNumberToObject(out, "channels", ch);
 	cJSON_AddStringToObject(out, "format", fmt_name(file_path));
-	char *str = cJSON_PrintUnformatted(out);
+	char *str MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(out);
 	cJSON_Delete(out);
 	cJSON_Delete(root);
-	(void)tool_result_success_json_text(result, str);
+	(void)tool_result_success_json_text_copy(result, str);
 	return 0;
 }
 
 int img_info_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg) return -EINVAL;
-	return tool_register(reg, &(struct tool_spec){
-		.origin = TOOL_ORIGIN_BUILTIN,
-		.flags = TOOL_FLAG_READONLY,
-		.name = "img_info",
-		.description = "Get image metadata (dimensions, format, color channels). "
-			"Provide file_path.",
-		.input_schema = "{\"type\":\"object\",\"properties\":{\"file_path\":{"
-			"\"type\":\"string\",\"description\":\"Path to the image file\"}},"
-			"\"required\":[\"file_path\"]}",
-		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
-		.exec = img_info_exec,
-		.user_data = tctx,
-	});
+	return tool_register_borrow(
+		reg,
+		&(struct tool_spec){
+			.origin = TOOL_ORIGIN_BUILTIN,
+			.flags = TOOL_FLAG_READONLY,
+			.name = "img_info",
+			.description = "Get image metadata (dimensions, format, color channels). "
+				       "Provide file_path.",
+			.input_schema =
+				"{\"type\":\"object\",\"properties\":{\"file_path\":{"
+				"\"type\":\"string\",\"description\":\"Path to the image file\"}},"
+				"\"required\":[\"file_path\"]}",
+			.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+			.exec = img_info_exec,
+			.user_data = tctx,
+		});
 }

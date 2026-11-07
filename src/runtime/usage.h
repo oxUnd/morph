@@ -8,7 +8,7 @@
 void *runtime_usage_bind(struct model_usage_sink *sink, void *user_data);
 void runtime_usage_restore(struct model_usage_sink *sink, void *previous);
 int runtime_model_usage_is_billable(const struct model_usage *usage);
-char *runtime_model_usage_metadata(const struct model_usage *usage);
+char *runtime_model_usage_metadata_copy(const struct model_usage *usage);
 int runtime_record_model_usage_with_credits(struct db *db, const struct config_credits *credits,
 					    const char *user_id, const char *session_id,
 					    const struct model_usage *usage, const char *provider,

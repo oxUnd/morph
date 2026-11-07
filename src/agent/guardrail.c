@@ -1,4 +1,5 @@
 #include "util/signals.h"
+#include "util/cleanup.h"
 #include "util/child_io.h"
 #include <spawn.h>
 #include "guardrail.h"
@@ -285,7 +286,7 @@ static char *markdown_local_path_from_url(const char *url)
 		path += 7;
 
 	if (path[0] == '~')
-		return file_expand_path(path);
+		return file_expand_path_copy(path);
 	return strdup(path);
 }
 
@@ -406,7 +407,8 @@ int guardrail_rule_register(struct guardrail_config *cfg,
 {
 	if (!cfg || !name) return -EINVAL;
 	if (cfg->rule_count >= GUARDRAIL_RULES_MAX) return -ENOSPC;
-	if (guardrail_rule_lookup(cfg, name)) return -EEXIST;
+	if (guardrail_rule_borrow(cfg, name))
+		return -EEXIST;
 	struct guardrail_rule *r = &cfg->rules[cfg->rule_count];
 	memset(r, 0, sizeof(*r));
 	strncpy(r->name, name, sizeof(r->name) - 1);
@@ -428,7 +430,7 @@ int guardrail_rule_register(struct guardrail_config *cfg,
 
 int guardrail_rule_disable(struct guardrail_config *cfg, const char *name)
 {
-	struct guardrail_rule *r = guardrail_rule_lookup(cfg, name);
+	struct guardrail_rule *r = guardrail_rule_borrow(cfg, name);
 	if (!r) return -ENOENT;
 	r->enabled = 0;
 	return 0;
@@ -436,14 +438,13 @@ int guardrail_rule_disable(struct guardrail_config *cfg, const char *name)
 
 int guardrail_rule_enable(struct guardrail_config *cfg, const char *name)
 {
-	struct guardrail_rule *r = guardrail_rule_lookup(cfg, name);
+	struct guardrail_rule *r = guardrail_rule_borrow(cfg, name);
 	if (!r) return -ENOENT;
 	r->enabled = 1;
 	return 0;
 }
 
-struct guardrail_rule *guardrail_rule_lookup(struct guardrail_config *cfg,
-					      const char *name)
+struct guardrail_rule *guardrail_rule_borrow(struct guardrail_config *cfg, const char *name)
 {
 	if (!cfg || !name) return NULL;
 	for (int i = 0; i < cfg->rule_count; i++)
@@ -491,14 +492,12 @@ guardrail_llm_check(const struct guardrail_rule *rule,
 		"Do not include any other text.",
 		rule->description, check_text);
 
-	morph_buf_t collect;
+	morph_buf_t collect MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	if (morph_buf_init(&collect, 4096) != 0)
 		return GUARDRAIL_PASS;
 
 	const char *msgs[1] = { prompt };
-	int status = cfg->llm->chat(cfg->llm, ctx->arena, NULL,
-				    msgs, 1, NULL,
-				    llm_collect_cb, &collect);
+	int status = cfg->llm->chat(cfg->llm, NULL, msgs, 1, NULL, llm_collect_cb, &collect);
 	if (status < 0 || collect.len == 0) {
 		log_warn(cfg ? cfg->logger : NULL,
 			 "guardrail: LLM call failed for rule '%s', defaulting PASS", rule->name);
@@ -679,7 +678,7 @@ static enum guardrail_verdict guardrail_ext_exec_check(const struct guardrail_ru
 		return GUARDRAIL_ERROR;
 	}
 	struct jsonrpc_request wire = {.id = 1, .method = "check", .params_json = params_json};
-	json = jsonrpc_build_request(&wire);
+	json = jsonrpc_request_create(&wire);
 	free(params_json);
 	if (json == NULL) {
 		return GUARDRAIL_ERROR;
@@ -764,15 +763,15 @@ static enum guardrail_verdict guardrail_ext_exec_check(const struct guardrail_ru
 		rc = -rc;
 		goto out_free_buffers;
 	}
-	rc = morph_child_exchange(pid, input_pipe[1], output_pipe[0], -1, morph_buf_cstr(&request),
-				  request.len, 30000, 1024 * 1024, guardrail_cancelled, (void *)ctx,
-				  &output, &errors, &status);
+	rc = morph_child_exchange(pid, input_pipe[1], output_pipe[0], -1,
+				  morph_buf_cstr_borrow(&request), request.len, 30000, 1024 * 1024,
+				  guardrail_cancelled, (void *)ctx, &output, &errors, &status);
 	close(output_pipe[0]);
 	if (rc == 0 && (!WIFEXITED(status) || WEXITSTATUS(status) != 0)) {
 		rc = -ECHILD;
 	}
 	if (rc == 0) {
-		rc = jsonrpc_parse_response(morph_buf_cstr(&output), &response);
+		rc = jsonrpc_response_copy(morph_buf_cstr_borrow(&output), &response);
 	}
 	if (rc == 0 && (response.has_error || response.result_json == NULL)) {
 		rc = MORPH_ERR_PROTOCOL;

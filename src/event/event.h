@@ -42,9 +42,12 @@ struct morph_event_recorder {
 	morph_array_t records;
 };
 
+/* Immutable process-lifetime text. */
 const char *morph_event_type_name(enum morph_event_type type);
-int morph_event_to_json_object(const struct morph_event *ev, cJSON **out);
-char *morph_event_to_json_string(const struct morph_event *ev);
+/* Borrow ev only for this call; return independent owned JSON/text.
+ * JSON output must be NULL. Release with cJSON_Delete()/cJSON_free(). */
+int morph_event_json_create(const struct morph_event *ev, cJSON **out);
+char *morph_event_json_text_copy(const struct morph_event *ev);
 int morph_event_emit(morph_event_cb cb, void *user_data,
 		     const struct morph_event *ev);
 int morph_event_emit_simple(morph_event_cb cb, void *user_data,
@@ -56,8 +59,8 @@ int morph_event_recorder_init(struct morph_event_recorder *rec);
 void morph_event_recorder_cleanup(struct morph_event_recorder *rec);
 int morph_event_recorder_cb(const struct morph_event *ev, void *user_data);
 size_t morph_event_recorder_count(const struct morph_event_recorder *rec);
-const char *morph_event_recorder_get(const struct morph_event_recorder *rec,
-				     size_t index);
+/* Lends record text until recorder cleanup. Appending keeps text addresses. */
+const char *morph_event_recorder_borrow(const struct morph_event_recorder *rec, size_t index);
 
 #ifdef __cplusplus
 }

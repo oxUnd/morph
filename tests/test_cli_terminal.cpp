@@ -388,7 +388,7 @@ TEST_F(CliTerminalTest, JobsUseDescriptionAndIndentedCommandWithoutDefaultLogs)
 	morph_buf_t output{};
 	ASSERT_EQ(morph_buf_init(&output, 128), 0);
 	EXPECT_EQ(cli_jobs_render(&ctx, &output, 80, 3, 0), 2);
-	std::string text = morph_buf_cstr(&output);
+	std::string text = morph_buf_cstr_borrow(&output);
 	EXPECT_NE(text.find("编译项目\n    └─ cmake --build build -j8"), std::string::npos);
 	EXPECT_EQ(text.find("PRIVATE LOG"), std::string::npos);
 	EXPECT_NE(text.find("42s"), std::string::npos);
@@ -412,8 +412,8 @@ TEST_F(CliTerminalTest, JobsWithoutDescriptionStayOneLineAndInspectionHidesFailu
 	morph_buf_t output{};
 	ASSERT_EQ(morph_buf_init(&output, 128), 0);
 	EXPECT_EQ(cli_jobs_render(&ctx, &output, 40, 3, 0), 1);
-	EXPECT_EQ(std::string(morph_buf_cstr(&output)).find("└"), std::string::npos);
-	EXPECT_NE(std::string(morph_buf_cstr(&output)).find("exit 7"), std::string::npos);
+	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&output)).find("└"), std::string::npos);
+	EXPECT_NE(std::string(morph_buf_cstr_borrow(&output)).find("exit 7"), std::string::npos);
 	EXPECT_EQ(cli_jobs_visible(&ctx), 1);
 	cli_jobs_acknowledge(&ctx, "proc_job12345");
 	EXPECT_EQ(cli_jobs_visible(&ctx), 0);

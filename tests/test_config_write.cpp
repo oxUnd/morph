@@ -102,10 +102,10 @@ static std::string exec_config_edit(struct tool_registry *reg,
 TEST_F(ConfigEditTest, InitRegistersTool)
 {
 	ASSERT_EQ(config_edit_init(&reg, tctx, config_path), 0);
-	struct tool_entry *e = tool_lookup(&reg, "config_edit");
+	struct tool_entry *e = tool_borrow(&reg, "config_edit");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->desc.name, "config_edit");
-	EXPECT_EQ(tool_lookup(&reg, "config_write"), nullptr);
+	EXPECT_EQ(tool_borrow(&reg, "config_write"), nullptr);
 	EXPECT_TRUE(e->flags & TOOL_FLAG_INTERNAL_APPROVAL);
 	EXPECT_NE(std::strstr(e->desc.description, "atomically"), nullptr);
 }
@@ -248,9 +248,8 @@ TEST_F(ConfigEditTest, PatchPreservesFormattingAndCreatesBackup)
 
 	EXPECT_EQ(rc, 0) << out;
 	EXPECT_EQ(state.calls, 1);
-	char *edited = file_read_all(config_path, nullptr);
-	char *backup = file_read_all(
-		(std::string(config_path) + ".bak").c_str(), nullptr);
+	char *edited = file_read_all_copy(config_path, nullptr);
+	char *backup = file_read_all_copy((std::string(config_path) + ".bak").c_str(), nullptr);
 	ASSERT_NE(edited, nullptr);
 	ASSERT_NE(backup, nullptr);
 	EXPECT_NE(std::strstr(edited, "# keep this comment"), nullptr);
@@ -281,7 +280,7 @@ TEST_F(ConfigEditTest, RejectsPatchForAnotherFile)
 	EXPECT_EQ(rc, -EACCES);
 	EXPECT_EQ(state.calls, 0);
 	EXPECT_NE(out.find("only update config.toml"), std::string::npos);
-	char *current = file_read_all(config_path, nullptr);
+	char *current = file_read_all_copy(config_path, nullptr);
 	ASSERT_NE(current, nullptr);
 	EXPECT_STREQ(current, original);
 	std::free(current);
@@ -306,7 +305,7 @@ TEST_F(ConfigEditTest, RejectsInvalidPatchedConfigBeforeApproval)
 	EXPECT_EQ(rc, MORPH_ERR_CONFIG);
 	EXPECT_EQ(state.calls, 0);
 	EXPECT_NE(out.find("react.max_iterations"), std::string::npos);
-	char *current = file_read_all(config_path, nullptr);
+	char *current = file_read_all_copy(config_path, nullptr);
 	ASSERT_NE(current, nullptr);
 	EXPECT_STREQ(current, original);
 	std::free(current);
@@ -331,7 +330,7 @@ TEST_F(ConfigEditTest, DetectsConcurrentConfigChange)
 	EXPECT_EQ(rc, -EAGAIN);
 	EXPECT_EQ(state.calls, 1);
 	EXPECT_NE(out.find("changed during approval"), std::string::npos);
-	char *current = file_read_all(config_path, nullptr);
+	char *current = file_read_all_copy(config_path, nullptr);
 	ASSERT_NE(current, nullptr);
 	EXPECT_STREQ(current, concurrent);
 	std::free(current);
@@ -368,7 +367,7 @@ TEST_F(ConfigEditTest, RejectsSymlinkConfig)
 	EXPECT_EQ(rc, -ELOOP);
 	EXPECT_EQ(state.calls, 0);
 	EXPECT_NE(out.find("not a symlink"), std::string::npos);
-	char *current = file_read_all(other_path, nullptr);
+	char *current = file_read_all_copy(other_path, nullptr);
 	ASSERT_NE(current, nullptr);
 	EXPECT_STREQ(current, original);
 	std::free(current);

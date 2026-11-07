@@ -3,55 +3,65 @@
 #include "responses_codec.h"
 #include "util/log.h"
 #include "util/error.h"
+#include "util/json.h"
+#include "util/cleanup.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
-const struct llm_codec *llm_codec_resolve(const struct model *model)
+const struct llm_codec *llm_codec_borrow(const struct model *model)
 {
-	return llm_adapter_resolve(model)->responses_api ? llm_responses_codec() : llm_chat_codec();
+	return llm_adapter_borrow(model)->responses_api ? llm_responses_codec_borrow()
+							: llm_chat_codec_borrow();
 }
 
-cJSON *llm_codec_schema(cJSON *params)
+cJSON *llm_codec_schema_copy(const cJSON *params)
 {
-	if (!params)
-		return NULL;
+	cJSON *schema MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	if (cJSON_IsObject(params)) {
-		if (!cJSON_HasObjectItem(params, "type"))
-			cJSON_AddStringToObject(params, "type", "object");
-		return params;
-	}
-	if (cJSON_IsArray(params)) {
-		cJSON *schema = cJSON_CreateObject();
-		cJSON_AddStringToObject(schema, "type", "object");
-		cJSON *props = cJSON_CreateObject();
-		cJSON *required = cJSON_CreateArray();
-		cJSON *item;
+		schema = cJSON_Duplicate(params, 1);
+		if (!schema)
+			return NULL;
+		if (!cJSON_HasObjectItem(schema, "type") &&
+		    !cJSON_AddStringToObject(schema, "type", "object"))
+			return NULL;
+	} else if (cJSON_IsArray(params)) {
+		schema = cJSON_CreateObject();
+		cJSON *required MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
+		cJSON *properties = schema ? cJSON_AddObjectToObject(schema, "properties") : NULL;
+		if (!schema || !required || !properties ||
+		    !cJSON_AddStringToObject(schema, "type", "object"))
+			return NULL;
+		const cJSON *item;
 		cJSON_ArrayForEach (item, params) {
-			cJSON *name = cJSON_GetObjectItem(item, "name");
-			if (!cJSON_IsString(name))
+			const cJSON *name = cJSON_GetObjectItemCaseSensitive(item, "name");
+			if (!cJSON_IsString(name) || !name->valuestring)
 				continue;
-			cJSON *prop = cJSON_CreateObject();
-			cJSON_AddStringToObject(prop, "type", "string");
-			cJSON *desc = cJSON_GetObjectItem(item, "description");
-			if (cJSON_IsString(desc))
-				cJSON_AddStringToObject(prop, "description", desc->valuestring);
-			cJSON_AddItemToObject(props, name->valuestring, prop);
-			cJSON *req = cJSON_GetObjectItem(item, "required");
-			if (cJSON_IsBool(req) && cJSON_IsTrue(req))
-				cJSON_AddItemToArray(required,
-						     cJSON_CreateString(name->valuestring));
+			cJSON *property = cJSON_AddObjectToObject(properties, name->valuestring);
+			if (!property || !cJSON_AddStringToObject(property, "type", "string"))
+				return NULL;
+			const cJSON *description =
+				cJSON_GetObjectItemCaseSensitive(item, "description");
+			if (cJSON_IsString(description) &&
+			    !cJSON_AddStringToObject(property, "description",
+						     description->valuestring))
+				return NULL;
+			if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(item, "required"))) {
+				cJSON *entry MORPH_CLEANUP(morph_json_cleanup) =
+					cJSON_CreateString(name->valuestring);
+				if (!entry || morph_json_array_take(required, &entry) != 0)
+					return NULL;
+			}
 		}
-		cJSON_AddItemToObject(schema, "properties", props);
-		if (cJSON_GetArraySize(required) > 0)
-			cJSON_AddItemToObject(schema, "required", required);
-		else
-			cJSON_Delete(required);
-		cJSON_Delete(params);
-		return schema;
+		if (cJSON_GetArraySize(required) &&
+		    morph_json_object_take(schema, "required", &required) != 0)
+			return NULL;
+	} else {
+		return NULL;
 	}
-	cJSON_Delete(params);
-	return NULL;
+	cJSON *owned = schema;
+	schema = NULL;
+	return owned;
 }
 
 static int extra_body_key_is_reserved(const char *key)

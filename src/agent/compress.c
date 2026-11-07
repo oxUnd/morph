@@ -1,6 +1,6 @@
 #include "compress.h"
 #include "agent/tokenizer.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/buf.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -16,7 +16,10 @@ static const char *const key_patterns[] = {
 
 static void msg_free(struct message_list *msg)
 {
-	(void)msg;
+	if (msg) {
+		msg->next = NULL;
+		msg_list_destroy(msg);
+	}
 }
 
 static const char *is_system_role(struct message_list *msg)
@@ -45,6 +48,12 @@ static struct key_info *key_info_add(struct key_info *head, const char *key,
 	if (!n) return head;
 	n->key = strdup(key);
 	n->value = strndup(ls, (size_t)(le - ls));
+	if (!n->key || !n->value) {
+		free(n->key);
+		free(n->value);
+		free(n);
+		return head;
+	}
 	n->next = head;
 	return n;
 }
@@ -56,6 +65,8 @@ int compress_sliding_window(struct message_list **head, int keep_rounds,
 		return -EINVAL;
 	if (!result)
 		return -EINVAL;
+	if (result->summary || result->preserved)
+		return -EALREADY;
 
 	int total = msg_list_count(*head);
 	int to_preserve = keep_rounds * 2;
@@ -94,6 +105,8 @@ int compress_react_trace(struct message_list **head,
 {
 	if (!head || !result)
 		return -EINVAL;
+	if (result->summary || result->preserved)
+		return -EALREADY;
 	struct message_list *cur = *head;
 	struct message_list *prev = NULL;
 	int removed = 0;
@@ -149,7 +162,7 @@ int compress_detect_react_cycles(struct message_list *head)
 	return marked;
 }
 
-struct key_info *extract_key_info(struct message_list *head)
+struct key_info *key_info_create(struct message_list *head)
 {
 	struct key_info *info = NULL;
 	struct message_list *cur = head;
@@ -174,15 +187,15 @@ void key_info_free(struct key_info *head)
 	}
 }
 
-int compress_summarize(struct message_list **head, int keep_rounds,
-		       summarize_fn fn, void *fn_user,
-		       struct arena *session,
-		       struct compress_result *result)
+static int compress_summarize_into(struct message_list **head, int keep_rounds, summarize_fn fn,
+				   void *fn_user, struct compress_result *result)
 {
-	if (!head || !*head || keep_rounds < 0 || !fn || !session)
+	if (!head || !*head || keep_rounds < 0 || !fn)
 		return -EINVAL;
 	if (!result)
 		return -EINVAL;
+	if (result->summary || result->preserved)
+		return -EALREADY;
 
 	memset(result, 0, sizeof(*result));
 	result->original_tokens = context_token_count(*head, NULL);
@@ -196,7 +209,7 @@ int compress_summarize(struct message_list **head, int keep_rounds,
 	struct message_list *cur = *head;
 	struct message_list *split = NULL;
 	int idx = 0;
-	morph_buf_t text_buf;
+	morph_buf_t text_buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int text_ok = morph_buf_init(&text_buf, 8192);
 	if (text_ok != 0)
 		return text_ok;
@@ -224,22 +237,16 @@ int compress_summarize(struct message_list **head, int keep_rounds,
 	}
 
 	char *summary = NULL;
-	int rc = fn(morph_buf_cstr(&text_buf), fn_user, &summary);
+	int rc = fn(morph_buf_cstr_borrow(&text_buf), fn_user, &summary);
 	morph_buf_cleanup(&text_buf);
 	if (rc < 0 || !summary || !summary[0]) {
 		free(summary);
 		return rc < 0 ? rc : MORPH_ERR_PROTOCOL;
 	}
 
-	struct message_list *summary_msg = arena_alloc(session, sizeof(*summary_msg));
-	if (!summary_msg) {
-		free(summary);
-		return -ENOMEM;
-	}
-	summary_msg->role = arena_strdup(session, "system");
-	summary_msg->content = arena_strdup(session, summary);
+	struct message_list *summary_msg = msg_list_create("system", summary, 0);
 	free(summary);
-	if (!summary_msg->role || !summary_msg->content)
+	if (!summary_msg)
 		return -ENOMEM;
 	summary_msg->token_count = tokenizer_estimate_tokens(summary_msg->content);
 	summary_msg->is_reference = 1;
@@ -281,4 +288,31 @@ int compress_summarize(struct message_list **head, int keep_rounds,
 
 	result->compressed_tokens = context_token_count(*head, NULL);
 	return 1;
+}
+
+int compress_summarize(struct message_list **head, int keep_rounds, summarize_fn fn, void *fn_user,
+		       struct compress_result *result)
+{
+	struct compress_result candidate MORPH_CLEANUP(compress_result_cleanup) = {0};
+	int rc;
+
+	if (!result)
+		return -EINVAL;
+	if (result->summary || result->preserved)
+		return -EALREADY;
+	rc = compress_summarize_into(head, keep_rounds, fn, fn_user, &candidate);
+	if (rc < 0)
+		return rc;
+	*result = candidate;
+	memset(&candidate, 0, sizeof(candidate));
+	return rc;
+}
+
+void compress_result_cleanup(struct compress_result *result)
+{
+	if (!result)
+		return;
+	free(result->summary);
+	key_info_free(result->preserved);
+	memset(result, 0, sizeof(*result));
 }

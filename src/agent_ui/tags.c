@@ -103,8 +103,8 @@ static int opening_tag_prefix_len(const struct agent_ui_parser *p,
 	ok = tag_name_at(p, p->pos, 2, &name);
 	if (!ok)
 		return 0;
-	ok = supported_tag(morph_buf_cstr(&name)) ||
-	     strcmp(morph_buf_cstr(&name), "ask_user") == 0;
+	ok = supported_tag(morph_buf_cstr_borrow(&name)) ||
+	     strcmp(morph_buf_cstr_borrow(&name), "ask_user") == 0;
 	morph_buf_cleanup(&name);
 	if (!ok)
 		return 0;
@@ -161,8 +161,8 @@ static int missing_colon_closing_supported_at(const struct agent_ui_parser *p)
 	ok = tag_name_at(p, p->pos, 3, &name);
 	if (!ok)
 		return 0;
-	ok = supported_tag(morph_buf_cstr(&name)) ||
-	     strcmp(morph_buf_cstr(&name), "ask_user") == 0;
+	ok = supported_tag(morph_buf_cstr_borrow(&name)) ||
+	     strcmp(morph_buf_cstr_borrow(&name), "ask_user") == 0;
 	morph_buf_cleanup(&name);
 	return ok;
 }
@@ -243,8 +243,7 @@ static int json_add_string_n(cJSON *obj, const char *name,
 	if (rc < 0)
 		return rc;
 	rc = append_decoded(&buf, s, len);
-	if (rc == 0 && !cJSON_AddStringToObject(obj, name,
-						morph_buf_cstr(&buf)))
+	if (rc == 0 && !cJSON_AddStringToObject(obj, name, morph_buf_cstr_borrow(&buf)))
 		rc = -ENOMEM;
 	morph_buf_cleanup(&buf);
 	return rc;
@@ -381,13 +380,10 @@ add_attr:
 				morph_buf_cleanup(&key);
 				return rc;
 			}
-			if (morph_buf_append(&key, p->input + key_start,
-					     key_len) < 0 ||
-			    append_decoded(&value, p->input + val_start,
-					   value_len) < 0 ||
-			    !cJSON_AddStringToObject(attrs,
-						     morph_buf_cstr(&key),
-						     morph_buf_cstr(&value))) {
+			if (morph_buf_append(&key, p->input + key_start, key_len) < 0 ||
+			    append_decoded(&value, p->input + val_start, value_len) < 0 ||
+			    !cJSON_AddStringToObject(attrs, morph_buf_cstr_borrow(&key),
+						     morph_buf_cstr_borrow(&value))) {
 				morph_buf_cleanup(&value);
 				morph_buf_cleanup(&key);
 				return -ENOMEM;
@@ -478,8 +474,8 @@ static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes,
 		morph_buf_cleanup(&name_buf);
 		return -ENOMEM;
 	}
-	if (!supported_tag(morph_buf_cstr(&name_buf))) {
-		if (strcmp(morph_buf_cstr(&name_buf), "ask_user") == 0)
+	if (!supported_tag(morph_buf_cstr_borrow(&name_buf))) {
+		if (strcmp(morph_buf_cstr_borrow(&name_buf), "ask_user") == 0)
 			add_warning(p, "m:ask_user ignored; use ask_user tool");
 		else
 			add_warning(p, "unsupported m tag left as text");
@@ -505,7 +501,7 @@ static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes,
 					p->len - start, plain);
 	}
 	self_closing = tag_end > start && p->input[tag_end - 1] == '/';
-	if (bodyless_tag(morph_buf_cstr(&name_buf)) && !self_closing) {
+	if (bodyless_tag(morph_buf_cstr_borrow(&name_buf)) && !self_closing) {
 		self_closing = 1;
 		add_warning(p, "bodyless tag treated as self closing");
 	}
@@ -517,8 +513,7 @@ static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes,
 		goto out;
 	}
 	if (!cJSON_AddStringToObject(node, "type", "component") ||
-	    !cJSON_AddStringToObject(node, "component",
-				     morph_buf_cstr(&name_buf))) {
+	    !cJSON_AddStringToObject(node, "component", morph_buf_cstr_borrow(&name_buf))) {
 		rc = -ENOMEM;
 		goto out;
 	}
@@ -532,13 +527,11 @@ static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes,
 		goto out;
 	body_ready = 1;
 	if (!self_closing) {
-		rc = parse_nodes(p, morph_buf_cstr(&name_buf), depth + 1,
-				 children, &body);
+		rc = parse_nodes(p, morph_buf_cstr_borrow(&name_buf), depth + 1, children, &body);
 		if (rc < 0)
 			goto out;
 	}
-	if (plain && morph_buf_append(plain, morph_buf_cstr(&body),
-				      body.len) < 0) {
+	if (plain && morph_buf_append(plain, morph_buf_cstr_borrow(&body), body.len) < 0) {
 		rc = -ENOMEM;
 		goto out;
 	}
@@ -547,7 +540,7 @@ static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes,
 		goto out;
 	}
 	attrs = NULL;
-	if (!cJSON_AddStringToObject(node, "text", morph_buf_cstr(&body))) {
+	if (!cJSON_AddStringToObject(node, "text", morph_buf_cstr_borrow(&body))) {
 		rc = -ENOMEM;
 		goto out;
 	}

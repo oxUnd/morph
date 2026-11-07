@@ -238,7 +238,7 @@ void spin_render(struct spin_context *ctx)
 						% (scroll_range + 8);
 					if (offset > scroll_range)
 						offset = scroll_range;
-					const char *start = utf8_advance_display_width(
+					const char *start = utf8_advance_display_width_borrow(
 						ctx->submessage, offset);
 					copied_vis = utf8_copy_display_width(
 						sub_buf, sizeof(sub_buf),

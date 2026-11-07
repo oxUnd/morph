@@ -1,7 +1,6 @@
 #ifndef MORPH_CLI_MODELS_TRANSCRIPT_H
 #define MORPH_CLI_MODELS_TRANSCRIPT_H
 
-#include "util/arena.h"
 #include "util/array.h"
 #include "util/buf.h"
 #include "util/utf8.h"
@@ -11,14 +10,14 @@ struct cJSON;
 struct model_history_item;
 
 struct cli_transcript_tool {
-	const char *id;
-	const char *name;
-	const char *args;
-	const char *subject;
-	const char *result;
-	const char *error;
-	const char *summary;
-	const char *patch_preview;
+	char *id;
+	char *name;
+	char *args;
+	char *subject;
+	char *result;
+	char *error;
+	char *summary;
+	char *patch_preview;
 	morph_buf_t stream;
 	struct utf8_terminal_sanitizer sanitizer;
 	int state;
@@ -38,13 +37,13 @@ struct cli_transcript_reasoning {
 };
 
 struct cli_transcript_model {
-	struct arena *arena;
 	morph_array_t tools;
 	morph_array_t reasoning;
 	int finished;
 	int allocation_failed;
 };
 
+/* out must be NULL; destroy releases the model and its owned contents. */
 int cli_transcript_model_create(struct cli_transcript_model **out);
 void cli_transcript_model_destroy(struct cli_transcript_model *model);
 
@@ -75,7 +74,7 @@ int cli_transcript_model_set_preview(struct cli_transcript_model *model, size_t 
 				     const char *preview);
 void cli_transcript_model_finish(struct cli_transcript_model *model, double now);
 const struct cli_transcript_tool *
-cli_transcript_model_active(const struct cli_transcript_model *model);
+cli_transcript_model_active_borrow(const struct cli_transcript_model *model);
 int cli_transcript_tool_is_running(const struct cli_transcript_tool *tool);
 
 #endif

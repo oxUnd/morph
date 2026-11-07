@@ -2,6 +2,7 @@
 #include "js_values.h"
 #include "util/buf.h"
 #include "util/file.h"
+#include "util/cleanup.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -24,11 +25,11 @@ static JSValue js_fs_read_text(JSContext *ctx, JSValueConst this_val, int argc, 
 	path = JS_ToCString(ctx, argv[0]);
 	if (!path)
 		return JS_EXCEPTION;
-	resolved = runner_authorize_path(ctx, path, 0);
+	resolved = runner_authorize_path_copy(ctx, path, 0);
 	JS_FreeCString(ctx, path);
 	if (!resolved)
 		return JS_EXCEPTION;
-	data = file_read_all(resolved, &len);
+	data = file_read_all_copy(resolved, &len);
 	free(resolved);
 	if (!data)
 		return JS_ThrowInternalError(ctx, "failed to read file");
@@ -51,7 +52,7 @@ static JSValue js_fs_write_text(JSContext *ctx, JSValueConst this_val, int argc,
 	path = JS_ToCString(ctx, argv[0]);
 	if (!path)
 		return JS_EXCEPTION;
-	resolved = runner_authorize_path(ctx, path, 1);
+	resolved = runner_authorize_path_copy(ctx, path, 1);
 	JS_FreeCString(ctx, path);
 	if (!resolved)
 		return JS_EXCEPTION;
@@ -86,11 +87,11 @@ static JSValue js_fs_read_file(JSContext *ctx, JSValueConst this_val, int argc, 
 	path = JS_ToCString(ctx, argv[0]);
 	if (!path)
 		return JS_EXCEPTION;
-	resolved = runner_authorize_path(ctx, path, 0);
+	resolved = runner_authorize_path_copy(ctx, path, 0);
 	JS_FreeCString(ctx, path);
 	if (!resolved)
 		return JS_EXCEPTION;
-	data = file_read_all(resolved, &len);
+	data = file_read_all_copy(resolved, &len);
 	free(resolved);
 	if (!data)
 		return JS_ThrowInternalError(ctx, "failed to read file");
@@ -105,7 +106,7 @@ static JSValue js_fs_write_file_sync(JSContext *ctx, JSValueConst this_val, int 
 	const char *path;
 	char *resolved;
 	const char *text;
-	uint8_t *bytes;
+	struct js_buffer_view view MORPH_CLEANUP(js_buffer_view_cleanup) = {0};
 	size_t len = 0;
 	int rc;
 
@@ -115,18 +116,22 @@ static JSValue js_fs_write_file_sync(JSContext *ctx, JSValueConst this_val, int 
 	path = JS_ToCString(ctx, argv[0]);
 	if (!path)
 		return JS_EXCEPTION;
-	resolved = runner_authorize_path(ctx, path, 1);
+	resolved = runner_authorize_path_copy(ctx, path, 1);
 	JS_FreeCString(ctx, path);
 	if (!resolved)
 		return JS_EXCEPTION;
-	bytes = js_values_buffer_bytes(ctx, argv[1], &len);
-	if (bytes) {
-		rc = file_write_all(resolved, (const char *)bytes, len);
+	rc = js_values_buffer_borrow(ctx, argv[1], &view);
+	if (rc == 0) {
+		rc = file_write_all(resolved, (const char *)view.data, view.length);
 		free(resolved);
 		if (rc < 0)
 			return JS_ThrowInternalError(ctx, "failed to write file: %s",
 						     strerror(-rc));
 		return JS_UNDEFINED;
+	}
+	if (rc != -ENOTSUP) {
+		free(resolved);
+		return JS_EXCEPTION;
 	}
 	text = JS_ToCStringLen(ctx, &len, argv[1]);
 	if (!text) {

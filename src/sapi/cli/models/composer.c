@@ -1,4 +1,5 @@
 #include "sapi/cli/models/composer.h"
+#include "util/cleanup.h"
 #include "stb_image.h"
 #include "util/buf.h"
 #include "util/error.h"
@@ -44,7 +45,7 @@ int cli_composer_model_add_image(struct cli_composer_model *composer, const char
 				 const char **label)
 {
 	struct cli_composer_model_input_image *image;
-	char *expanded = file_expand_path(path);
+	char *expanded = file_expand_path_copy(path);
 	char *absolute;
 	int width;
 	int height;
@@ -64,7 +65,7 @@ int cli_composer_model_add_image(struct cli_composer_model *composer, const char
 		free(absolute);
 		return -EOVERFLOW;
 	}
-	image = morph_array_push(&composer->images);
+	image = morph_array_push_borrow(&composer->images);
 	if (!image) {
 		free(absolute);
 		return -ENOMEM;
@@ -80,17 +81,20 @@ int cli_composer_model_add_image(struct cli_composer_model *composer, const char
 
 /* Preserve source spans while decoding dragged paths (quotes and escaped
  * spaces). Ordinary text, including its whitespace, remains byte-for-byte. */
-int cli_composer_model_convert_paths(struct cli_composer_model *composer, const char *input,
-				     char **output)
+int cli_composer_model_convert_paths_copy(struct cli_composer_model *composer, const char *input,
+					  char **output)
 {
-	morph_buf_t path;
-	morph_buf_t result;
+	morph_buf_t path MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	morph_buf_t result MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	const char *cursor = input;
 	const char *consumed = input;
 	int converted = 0;
 	int rc;
 
-	*output = NULL;
+	if (!composer || !input || !output)
+		return -EINVAL;
+	if (*output)
+		return -EEXIST;
 	rc = morph_buf_init(&path, BUFSIZ);
 	if (rc != 0)
 		return rc;
@@ -126,7 +130,7 @@ int cli_composer_model_convert_paths(struct cli_composer_model *composer, const 
 		}
 		if (quote || path.failed)
 			break;
-		expanded = file_expand_path(morph_buf_cstr(&path));
+		expanded = file_expand_path_copy(morph_buf_cstr_borrow(&path));
 		if (!expanded)
 			break;
 		if (!file_exists(expanded)) {
@@ -167,9 +171,9 @@ void cli_composer_model_visit_images(struct cli_composer_model *composer, const 
 	}
 }
 
-char *cli_composer_model_expand(struct cli_composer_model *composer, const char *input)
+char *cli_composer_model_expand_copy(struct cli_composer_model *composer, const char *input)
 {
-	morph_buf_t result;
+	morph_buf_t result MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	const char *cursor = input;
 
 	if (morph_buf_init(&result, strlen(input) + 1) != 0)

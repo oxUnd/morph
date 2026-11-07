@@ -69,6 +69,7 @@ struct permission_policy permission_policy_default(void);
 int permission_policy_validate(const struct permission_policy *policy);
 int permission_policy_parse(const char *access, const char *approval,
 	const char *reviewer, struct permission_policy *out);
+/* Name strings are immutable process-lifetime labels and must not be freed. */
 const char *permission_access_name(enum permission_access access);
 const char *permission_approval_name(enum permission_approval approval);
 const char *permission_reviewer_name(enum permission_reviewer reviewer);

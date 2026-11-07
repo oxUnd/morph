@@ -204,7 +204,7 @@ size_t morph_strmap_len(const morph_strmap_t *m)
 	return m ? m->count : 0;
 }
 
-int morph_strmap_set(morph_strmap_t *m, const char *key, void *value)
+int morph_strmap_set_borrow(morph_strmap_t *m, const char *key, void *value)
 {
 	size_t key_len;
 	uint32_t hash;
@@ -227,7 +227,7 @@ int morph_strmap_set(morph_strmap_t *m, const char *key, void *value)
 	return rc;
 }
 
-void *morph_strmap_get(const morph_strmap_t *m, const char *key)
+void *morph_strmap_borrow(const morph_strmap_t *m, const char *key)
 {
 	size_t key_len;
 	uint32_t hash;

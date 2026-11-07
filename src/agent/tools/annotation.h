@@ -39,8 +39,7 @@ struct annotation_arrow {
 	const char *label;
 };
 
-/* Strings borrow the input JSON, except string-encoded annotation owns its
- * parsed tree. Keep the input alive until annotation_cleanup. */
+/* Owns an independent parsed tree; field views remain valid until cleanup. */
 struct annotation {
 	cJSON *owned;
 	morph_array_t images;
@@ -48,9 +47,10 @@ struct annotation {
 	morph_array_t arrows;
 };
 
-int annotation_parse(const cJSON *input, struct annotation *out);
+int annotation_parse_copy(const cJSON *input, struct annotation *out);
 void annotation_cleanup(struct annotation *annotation);
-const struct annotation_image *annotation_image_at(const struct annotation *annotation, int index);
+const struct annotation_image *annotation_image_borrow(const struct annotation *annotation,
+						       int index);
 int annotation_rect_normalize(const struct annotation_rect *input, int width, int height,
 			      struct annotation_rect *out);
 int annotation_point_pixels(const struct annotation_point *point, int width, int height, double *x,

@@ -21,7 +21,8 @@ static int sample_customization_widget_counter_draw(struct morph_tui_view *view,
 		rc = morph_buf_printf(&counter->row, "Custom Counter | value %d | step %d",
 				      counter->value, counter->step);
 	if (!rc)
-		rc = morph_tui_canvas_text(canvas, 0, 0, morph_buf_cstr(&counter->row), style);
+		rc = morph_tui_canvas_text(canvas, 0, 0, morph_buf_cstr_borrow(&counter->row),
+					   style);
 	morph_buf_reset(&counter->row);
 	morph_buf_putc(&counter->row, '[');
 	for (int i = 0; i < 20; i++)
@@ -30,7 +31,8 @@ static int sample_customization_widget_counter_draw(struct morph_tui_view *view,
 	if (!rc)
 		rc = counter->row.failed;
 	if (!rc)
-		rc = morph_tui_canvas_text(canvas, 0, 1, morph_buf_cstr(&counter->row), style);
+		rc = morph_tui_canvas_text(canvas, 0, 1, morph_buf_cstr_borrow(&counter->row),
+					   style);
 	if (!rc)
 		rc = morph_tui_canvas_text(canvas, 0, 2,
 					   "+/- or Left/Right: value; Space: step; Enter: inspect",
@@ -104,7 +106,7 @@ static int sample_customization_widget_counter_event(struct morph_tui_view *view
 				      counter->value, counter->step);
 	if (!rc)
 		rc = morph_tui_widget_emit(view, action, (size_t)counter->value,
-					   morph_buf_cstr(&counter->row));
+					   morph_buf_cstr_borrow(&counter->row));
 	return rc ? rc : 1;
 }
 
@@ -125,7 +127,7 @@ struct morph_tui_view *sample_customization_widget_counter_create(struct morph_t
 	const struct morph_tui_view_options options = {.height = 3, .grow = 1};
 	struct sample_customization_widget_counter *counter = NULL;
 
-	counter = (struct sample_customization_widget_counter *)morph_tui_widget_create(
+	counter = (struct sample_customization_widget_counter *)morph_tui_widget_add_borrow(
 		builder, parent, sizeof(*counter), &methods, &options);
 	if (!counter)
 		return NULL;

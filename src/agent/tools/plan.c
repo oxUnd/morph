@@ -4,7 +4,8 @@
 #include "agent/tool_runtime.h"
 #include "models/llm.h"
 #include "util/log.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "util/buf.h"
 #include "cJSON.h"
 #include <stdio.h>
@@ -39,7 +40,7 @@ static char *format_plan(struct plan *p)
 	if (!p)
 		return strdup("(no plan)");
 
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc = morph_buf_init(&buf, 4096);
 	if (rc != 0)
 		return NULL;
@@ -123,7 +124,7 @@ static char *format_plans(struct plan_registry *reg)
 	if (!reg || reg->count == 0)
 		return strdup("No plans yet. Use plan create to start one.");
 
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc = morph_buf_init(&buf, 4096);
 	if (rc != 0)
 		return NULL;
@@ -349,27 +350,23 @@ fail:
 	return NULL;
 }
 
-static int attach_plan_state(struct tool_result *result,
-			     struct plan_registry *reg,
-			     const char *command,
-			     const char *selected_plan_id,
+static int attach_plan_state(struct tool_result *result, struct plan_registry *reg,
+			     const char *command, const char *selected_plan_id,
 			     const char *selected_plan)
 {
-	cJSON *data = plan_registry_to_json(reg, command, selected_plan_id,
-					    selected_plan);
+	cJSON *data MORPH_CLEANUP(morph_json_cleanup) =
+		plan_registry_to_json(reg, command, selected_plan_id, selected_plan);
 	if (!data)
 		return -ENOMEM;
-
-	cJSON *ui = plan_ui_to_json(data);
-	if (!ui) {
-		cJSON_Delete(data);
+	cJSON *ui MORPH_CLEANUP(morph_json_cleanup) = plan_ui_to_json(data);
+	if (!ui)
 		return -ENOMEM;
-	}
-
-	tool_result_clear(result);
-	result->data = data;
-	result->ui = ui;
-	return tool_result_finalize(result);
+	int rc = tool_result_success_take(result, &data);
+	if (rc == 0)
+		rc = tool_result_set_ui_take(result, &ui);
+	if (rc == 0)
+		rc = tool_result_finalize(result);
+	return rc;
 }
 
 static int set_resultf(struct tool_result *result, const char *fmt, ...)
@@ -377,7 +374,7 @@ static int set_resultf(struct tool_result *result, const char *fmt, ...)
 
 static int set_resultf(struct tool_result *result, const char *fmt, ...)
 {
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	va_list ap;
 	int rc;
 
@@ -396,7 +393,7 @@ static int set_resultf(struct tool_result *result, const char *fmt, ...)
 		return rc;
 	}
 
-	return tool_result_success_json_text(result, morph_buf_detach(&buf));
+	return tool_result_success_json_text_copy(result, morph_buf_cstr_borrow(&buf));
 }
 
 static int parse_steps_from_text(const char *text, const char **descs,
@@ -478,44 +475,34 @@ static int auto_decompose(const struct tool_runtime_context *runtime, struct mod
 		"Be concise.\n\nGoal: %s",
 		2, max_steps, goal);
 
-	struct arena *arena = arena_create(64 * 1024);
-	if (!arena)
-		return -ENOMEM;
-
 	const char *sys = "You are a task planner. Break goals into numbered steps. "
 			  "Output ONLY the numbered list, no preamble.";
 
-	morph_buf_t buf;
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	struct tool_runtime_stream_sink stream;
 	int rc2 = morph_buf_init(&buf, 8192);
 	if (rc2 != 0) {
-		arena_destroy(arena);
 		return rc2;
 	}
 
 	struct model request_model;
 
-	llm = model_bind_http_request(llm, runtime ? &runtime->http : NULL, &request_model);
+	llm = model_request_view_init(llm, runtime ? &runtime->http : NULL, &request_model);
 	const char *messages[] = { prompt };
 	stream.runtime = runtime;
 	stream.tool = "plan";
 	stream.kind = "text";
 	stream.buf = &buf;
-	int status = llm->chat(llm, arena, sys, messages, 1, NULL,
-			       tool_runtime_stream_to_buf_cb, &stream);
-	arena_destroy(arena);
+	int status = llm->chat(llm, sys, messages, 1, NULL, tool_runtime_stream_to_buf_cb, &stream);
 
 	if (status < 0 || buf.len == 0) {
 		morph_buf_cleanup(&buf);
 		return MORPH_ERR_LLM;
 	}
 
-	char *text = morph_buf_detach(&buf);
-	if (!text)
-		return -ENOMEM;
-	int count = parse_steps_from_text(text, step_descs, max_steps);
-	free(text);
-	return count;
+	if (buf.failed)
+		return buf.failed;
+	return parse_steps_from_text(morph_buf_cstr_borrow(&buf), step_descs, max_steps);
 }
 
 static void free_step_descs(const char **descs, int count)
@@ -533,18 +520,18 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 	if (!ctx || !ctx->plans)
 		return MORPH_ERR_NOT_CONFIGURED;
 
-	cJSON *root = cJSON_Parse(args_json);
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(args_json);
 	if (!root) {
-		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
+		(void)tool_result_success_json_text_copy(result, "{\"error\":\"invalid JSON\"}");
 		return -EINVAL;
 	}
 
 	cJSON *cmd = cJSON_GetObjectItem(root, "command");
 	if (!cJSON_IsString(cmd)) {
-		cJSON_Delete(root);
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"missing 'command' parameter. "
-			"Commands: create, update, get, list\"}"));
+
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"missing 'command' parameter. "
+				"Commands: create, update, get, list\"}");
 		return -EINVAL;
 	}
 
@@ -557,9 +544,9 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 		cJSON *steps_item = cJSON_GetObjectItem(root, "steps");
 
 		if (!cJSON_IsString(name_item) || !name_item->valuestring) {
-			cJSON_Delete(root);
-			(void)tool_result_success_json_text(result, strdup(
-				"{\"error\":\"create requires 'name' (string)\"}"));
+
+			(void)tool_result_success_json_text_copy(
+				result, "{\"error\":\"create requires 'name' (string)\"}");
 			return -EINVAL;
 		}
 
@@ -588,9 +575,9 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 					    PLAN_MAX_STEPS);
 			if (rc < 0) {
 				free_step_descs(tmp_descs, PLAN_MAX_STEPS);
-				cJSON_Delete(root);
-				(void)tool_result_success_json_text(result, strdup(
-					"{\"error\":\"auto-decompose failed\"}"));
+
+				(void)tool_result_success_json_text_copy(
+					result, "{\"error\":\"auto-decompose failed\"}");
 				return rc;
 			}
 			if (rc > 0) {
@@ -602,32 +589,33 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 		}
 
 		if (step_count == 0) {
-			cJSON_Delete(root);
-			(void)tool_result_success_json_text(result, strdup(
-				"{\"error\":\"create requires 'steps' (array of strings) "
-				"or a 'goal' string to auto-decompose\"}"));
+
+			(void)tool_result_success_json_text_copy(
+				result, "{\"error\":\"create requires 'steps' (array of strings) "
+					"or a 'goal' string to auto-decompose\"}");
 			return -EINVAL;
 		}
 
-		struct plan *p = plan_create(ctx->plans, name_item->valuestring,
-			goal, step_descs, step_count);
+		struct plan *p = plan_add_borrow(ctx->plans, name_item->valuestring, goal,
+						 step_descs, step_count);
 
 		if (!p) {
 			if (auto_decomposed)
 				free_step_descs(step_descs, step_count);
-			cJSON_Delete(root);
-			(void)tool_result_success_json_text(result, strdup(
-				"{\"error\":\"failed to create plan "
-				"(max 8 plans, max 32 steps each)\"}"));
+
+			(void)tool_result_success_json_text_copy(
+				result, "{\"error\":\"failed to create plan "
+					"(max 8 plans, max 32 steps each)\"}");
 			return -ENOSPC;
 		}
 
-		char *formatted = format_plan(p);
+		char *formatted MORPH_CLEANUP(morph_charp_cleanup) = format_plan(p);
 		if (!formatted) {
 			if (auto_decomposed)
 				free_step_descs(step_descs, step_count);
-			cJSON_Delete(root);
-			(void)tool_result_success_json_text(result, strdup("{\"error\":\"out of memory\"}"));
+
+			(void)tool_result_success_json_text_copy(result,
+								 "{\"error\":\"out of memory\"}");
 			return -ENOMEM;
 		}
 
@@ -640,15 +628,15 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 			rc = set_resultf(result, "Plan created.\n%s",
 					 formatted);
 		}
-		free(formatted);
+
 		if (rc != 0) {
-			cJSON_Delete(root);
+
 			return rc;
 		}
 		rc = attach_plan_state(result, ctx->plans, command, p->id,
 				       p->name);
 		if (rc != 0) {
-			cJSON_Delete(root);
+
 			return rc;
 		}
 		log_info(result && result->runtime ? result->runtime->http.logger : NULL,
@@ -671,12 +659,12 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 				    ? status_item->valuestring : NULL;
 
 		if ((!plan_id && !plan_name) || step_id < 0 || !status) {
-			cJSON_Delete(root);
-			(void)tool_result_success_json_text(result, strdup(
-				"{\"error\":\"update requires 'plan_id' or 'plan', "
-				"'step_id' (int), and 'status' (string). "
-				"Status: pending, in_progress, completed, "
-				"failed, skipped\"}"));
+
+			(void)tool_result_success_json_text_copy(
+				result, "{\"error\":\"update requires 'plan_id' or 'plan', "
+					"'step_id' (int), and 'status' (string). "
+					"Status: pending, in_progress, completed, "
+					"failed, skipped\"}");
 			return -EINVAL;
 		}
 
@@ -693,29 +681,28 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 				msg = "invalid parameters";
 			snprintf(err, sizeof(err),
 				"{\"error\":\"%s\"}", msg);
-			(void)tool_result_success_json_text(result, strdup(err));
-			cJSON_Delete(root);
+			(void)tool_result_success_json_text_copy(result, err);
+
 			return rc;
 		}
 
-		struct plan *p = plan_id ? plan_find_by_id(ctx->plans,
-							   plan_id) :
-					   plan_find(ctx->plans, plan_name);
-		char *formatted = p ? format_plan(p) : NULL;
+		struct plan *p = plan_id ? plan_by_id_borrow(ctx->plans, plan_id)
+					 : plan_borrow(ctx->plans, plan_name);
+		char *formatted MORPH_CLEANUP(morph_charp_cleanup) = p ? format_plan(p) : NULL;
 
 		rc = set_resultf(result, "Step %d marked as '%s'.\n%s",
 				 step_id, status,
 				 formatted ? formatted : "");
-		free(formatted);
+
 		if (rc != 0) {
-			cJSON_Delete(root);
+
 			return rc;
 		}
 		rc = attach_plan_state(result, ctx->plans, command,
 				       p ? p->id : plan_id,
 				       p ? p->name : plan_name);
 		if (rc != 0) {
-			cJSON_Delete(root);
+
 			return rc;
 		}
 		log_info(result && result->runtime ? result->runtime->http.logger : NULL,
@@ -730,29 +717,26 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 
 		if (plan_id || (cJSON_IsString(plan_item) &&
 		    plan_item->valuestring)) {
-			struct plan *p = plan_id ? plan_find_by_id(ctx->plans,
-								   plan_id) :
-						   plan_find(ctx->plans,
-							     plan_item->valuestring);
+			struct plan *p = plan_id ? plan_by_id_borrow(ctx->plans, plan_id)
+						 : plan_borrow(ctx->plans, plan_item->valuestring);
 			if (!p) {
 				rc = set_resultf(result,
 					"Plan \"%s\" not found.",
 					plan_id ? plan_id :
 					plan_item->valuestring);
 			} else {
-				char *formatted = format_plan(p);
+				char *formatted MORPH_CLEANUP(morph_charp_cleanup) = format_plan(p);
 				rc = set_resultf(result, "%s",
 					formatted ? formatted : "(empty)");
-				free(formatted);
 			}
 		} else {
-			char *formatted = format_plans(ctx->plans);
+			char *formatted MORPH_CLEANUP(morph_charp_cleanup) =
+				format_plans(ctx->plans);
 			rc = set_resultf(result, "%s",
 					 formatted ? formatted : "(empty)");
-			free(formatted);
 		}
 		if (rc != 0) {
-			cJSON_Delete(root);
+
 			return rc;
 		}
 		rc = attach_plan_state(result, ctx->plans, command,
@@ -760,22 +744,22 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 				       cJSON_IsString(plan_item)
 				       ? plan_item->valuestring : NULL);
 		if (rc != 0) {
-			cJSON_Delete(root);
+
 			return rc;
 		}
 
 	} else if (strcmp(command, "list") == 0) {
-		char *formatted = format_plans(ctx->plans);
+		char *formatted MORPH_CLEANUP(morph_charp_cleanup) = format_plans(ctx->plans);
 		rc = set_resultf(result, "%s",
 				 formatted ? formatted : "(empty)");
-		free(formatted);
+
 		if (rc != 0) {
-			cJSON_Delete(root);
+
 			return rc;
 		}
 		rc = attach_plan_state(result, ctx->plans, command, NULL, NULL);
 		if (rc != 0) {
-			cJSON_Delete(root);
+
 			return rc;
 		}
 
@@ -784,11 +768,10 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 			"{\"error\":\"unknown command '%s'. "
 			"Commands: create, update, get, list\"}",
 			command);
-		cJSON_Delete(root);
+
 		return rc != 0 ? rc : -EINVAL;
 	}
 
-	cJSON_Delete(root);
 	return 0;
 }
 
@@ -905,7 +888,7 @@ static int plan_capture_report(struct plan_tool_context *ctx, const cJSON *args,
 
 void plan_tool_set_context(struct tool_registry *reg, struct tool_context *tctx)
 {
-	struct tool_entry *entry = tool_lookup(reg, "plan");
+	struct tool_entry *entry = tool_borrow(reg, "plan");
 	if (entry && entry->user_data)
 		((struct plan_tool_context *)entry->user_data)->tctx = tctx;
 }
@@ -957,7 +940,7 @@ static int plan_refresh_reports(struct plan_tool_context *ctx)
 
 int plan_tool_refresh_reports(struct tool_registry *reg)
 {
-	struct tool_entry *entry = reg ? tool_lookup(reg, "plan") : NULL;
+	struct tool_entry *entry = reg ? tool_borrow(reg, "plan") : NULL;
 	struct plan_tool_context *ctx = entry ? entry->user_data : NULL;
 	if (!ctx) return 0;
 	pthread_mutex_lock(&ctx->mutex);
@@ -983,7 +966,7 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 		cJSON_Delete(args);
 		return rc;
 	}
-	before = plan_registry_json(ctx->plans);
+	before = plan_registry_json_create(ctx->plans);
 	if (!before) {
 		cJSON_Delete(args);
 		return -ENOMEM;
@@ -992,7 +975,7 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 		rc = 0;
 	else
 		rc = plan_tool_exec_inner(args_json, result, user_data);
-	state = rc == 0 ? plan_registry_json(ctx->plans) : NULL;
+	state = rc == 0 ? plan_registry_json_create(ctx->plans) : NULL;
 	if (rc == 0 && !state)
 		rc = -ENOMEM;
 	if (rc == 0 && (!strcmp(command, "checkpoint") || !strcmp(command, "create") ||
@@ -1064,7 +1047,7 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 	}
 	if (rc != 0) {
 		(void)plan_registry_restore(ctx->plans, before);
-		(void)tool_result_error(result, "plan_checkpoint_failed", morph_strerror(rc));
+		(void)tool_result_error_copy(result, "plan_checkpoint_failed", morph_strerror(rc));
 	}
 	cJSON_Delete(state);
 	cJSON_Delete(before);
@@ -1097,9 +1080,7 @@ int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 	ctx->plans = plans;
 	ctx->llm = llm;
 
-	int rc = tool_register(
-	    reg,
-	    &(struct tool_spec){
+	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.name = "plan",
 		.description = "Create and manage multi-step plans. "
@@ -1118,37 +1099,44 @@ int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 			       "If 'goal' is provided without 'steps', the plan is "
 			       "auto-decomposed into steps using AI.",
 		.input_schema =
-		    "{\"type\":\"object\",\"properties\":{"
-		    "\"command\":{\"type\":\"string\",\"description\":\"create|update|get|list\","
-		    "\"enum\":[\"create\",\"update\",\"get\",\"list\",\"checkpoint\",\"verify\"]},"
-		    "\"name\":{\"type\":\"string\",\"description\":\"Plan name (for create)\"},"
-		    "\"goal\":{\"type\":\"string\",\"description\":\"Plan goal/objective. If steps "
-		    "not provided, auto-decomposed into steps\"},"
-		    "\"steps\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
-		    "\"description\":\"Array of step descriptions (optional if goal provided)\"},"
-		    "\"plan_id\":{\"type\":\"string\",\"description\":\"Stable plan id to act on "
-		    "(preferred for update/get)\"},"
-		    "\"plan\":{\"type\":\"string\",\"description\":\"Plan name to act on (for "
-		    "update/get)\"},"
-		    "\"step_id\":{\"type\":\"integer\",\"description\":\"Step ID (for update)\"},"
-		    "\"files\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},"
-		    "\"report\":{\"type\":\"string\"},\"outcome\":{\"type\":\"string\",\"enum\":["
-		    "\"passed\",\"failed\"]},"
-		    "\"request\":{\"type\":\"string\"},"
-		    "\"constraints\":{\"type\":\"string\"},"
-		    "\"acceptance\":{\"type\":\"string\"},"
-		    "\"rejected\":{\"type\":\"string\"},"
-		    "\"evidence\":{\"type\":\"string\"},"
-		    "\"blocker\":{\"type\":\"string\"},"
-		    "\"artifact\":{\"type\":\"string\"},"
-		    "\"status\":{\"type\":\"string\",\"description\":\"New status (for update): "
-		    "pending, in_progress, completed, failed, skipped\"}"
-		    "},\"required\":[\"command\"]}",
+			"{\"type\":\"object\",\"properties\":{"
+			"\"command\":{\"type\":\"string\",\"description\":\"create|update|get|"
+			"list\","
+			"\"enum\":[\"create\",\"update\",\"get\",\"list\",\"checkpoint\","
+			"\"verify\"]},"
+			"\"name\":{\"type\":\"string\",\"description\":\"Plan name (for create)\"},"
+			"\"goal\":{\"type\":\"string\",\"description\":\"Plan goal/objective. If "
+			"steps "
+			"not provided, auto-decomposed into steps\"},"
+			"\"steps\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
+			"\"description\":\"Array of step descriptions (optional if goal "
+			"provided)\"},"
+			"\"plan_id\":{\"type\":\"string\",\"description\":\"Stable plan id to act "
+			"on "
+			"(preferred for update/get)\"},"
+			"\"plan\":{\"type\":\"string\",\"description\":\"Plan name to act on (for "
+			"update/get)\"},"
+			"\"step_id\":{\"type\":\"integer\",\"description\":\"Step ID (for "
+			"update)\"},"
+			"\"files\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},"
+			"\"report\":{\"type\":\"string\"},\"outcome\":{\"type\":\"string\","
+			"\"enum\":["
+			"\"passed\",\"failed\"]},"
+			"\"request\":{\"type\":\"string\"},"
+			"\"constraints\":{\"type\":\"string\"},"
+			"\"acceptance\":{\"type\":\"string\"},"
+			"\"rejected\":{\"type\":\"string\"},"
+			"\"evidence\":{\"type\":\"string\"},"
+			"\"blocker\":{\"type\":\"string\"},"
+			"\"artifact\":{\"type\":\"string\"},"
+			"\"status\":{\"type\":\"string\",\"description\":\"New status (for "
+			"update): "
+			"pending, in_progress, completed, failed, skipped\"}"
+			"},\"required\":[\"command\"]}",
 		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
 		.exec = plan_tool_exec,
 		.user_data = ctx,
-		.user_data_destroy = plan_tool_context_destroy});
-	if (rc != 0)
-		plan_tool_context_destroy(ctx);
+		.user_data_destroy = plan_tool_context_destroy};
+	int rc = tool_register_take(reg, &spec);
 	return rc;
 }

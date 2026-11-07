@@ -1,4 +1,6 @@
 #include "vid_gen.h"
+#include "util/json.h"
+#include "util/cleanup.h"
 #include "agent/tool_runtime.h"
 #include "models/llm.h"
 #include "agent/tool_context.h"
@@ -48,7 +50,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 
 	if (user_data)
 		local = *(struct vid_gen_context *)user_data;
-	local.video_llm = model_bind_http_request(
+	local.video_llm = model_request_view_init(
 		local.video_llm, result && result->runtime ? &result->runtime->http : NULL,
 		&request_model);
 	struct vid_gen_context *ctx = user_data ? &local : NULL;
@@ -84,8 +86,8 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 			int n = cJSON_GetArraySize(ri);
 			if (n > VIDEO_GEN_MAX_REFERENCE_IMAGES) {
 				cJSON_Delete(root);
-				(void)tool_result_success_json_text(result, strdup(
-					"{\"error\":\"too many reference images\"}"));
+				(void)tool_result_success_json_text_copy(
+					result, "{\"error\":\"too many reference images\"}");
 				return -EINVAL;
 			}
 			for (int i = 0; i < n; i++) {
@@ -104,8 +106,8 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 			int n = cJSON_GetArraySize(rv);
 			if (n > VIDEO_GEN_MAX_REFERENCE_VIDEOS) {
 				cJSON_Delete(root);
-				(void)tool_result_success_json_text(result, strdup(
-					"{\"error\":\"too many reference videos\"}"));
+				(void)tool_result_success_json_text_copy(
+					result, "{\"error\":\"too many reference videos\"}");
 				return -EINVAL;
 			}
 			for (int i = 0; i < n; i++) {
@@ -124,8 +126,8 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 			int n = cJSON_GetArraySize(ra);
 			if (n > VIDEO_GEN_MAX_REFERENCE_AUDIOS) {
 				cJSON_Delete(root);
-				(void)tool_result_success_json_text(result, strdup(
-					"{\"error\":\"too many reference audios\"}"));
+				(void)tool_result_success_json_text_copy(
+					result, "{\"error\":\"too many reference audios\"}");
 				return -EINVAL;
 			}
 			for (int i = 0; i < n; i++) {
@@ -145,12 +147,12 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 
 	if (!prompt) {
 		cJSON_Delete(root);
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"missing 'prompt' parameter. "
-			"Usage: vid_gen({\\\"prompt\\\": \\\"a flying drone\\\", "
-			"\\\"reference_images\\\": [\\\"img1.jpg\\\", \\\"img2.png\\\"], "
-			"\\\"reference_videos\\\": [\\\"clip1.mp4\\\"], "
-			"\\\"reference_audios\\\": [\\\"music.mp3\\\"]})\"}"));
+		(void)tool_result_success_json_text_copy(
+			result, "{\"error\":\"missing 'prompt' parameter. "
+				"Usage: vid_gen({\\\"prompt\\\": \\\"a flying drone\\\", "
+				"\\\"reference_images\\\": [\\\"img1.jpg\\\", \\\"img2.png\\\"], "
+				"\\\"reference_videos\\\": [\\\"clip1.mp4\\\"], "
+				"\\\"reference_audios\\\": [\\\"music.mp3\\\"]})\"}");
 		return -EINVAL;
 	}
 
@@ -170,11 +172,13 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 			if (rc < 0) {
 				cJSON_Delete(root);
 				if (rc == -ENOENT)
-					(void)tool_result_success_json_text(result, strdup(
-						"{\"error\":\"reference image not found\"}"));
+					(void)tool_result_success_json_text_copy(
+						result,
+						"{\"error\":\"reference image not found\"}");
 				else
-					(void)tool_result_success_json_text(result, strdup(
-						"{\"error\":\"read path outside workspace: permission denied\"}"));
+					(void)tool_result_success_json_text_copy(
+						result, "{\"error\":\"read path outside workspace: "
+							"permission denied\"}");
 				return rc;
 			}
 			image_paths_to_send[i] = resolved_images[i];
@@ -191,11 +195,13 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 			if (rc < 0) {
 				cJSON_Delete(root);
 				if (rc == -ENOENT)
-					(void)tool_result_success_json_text(result, strdup(
-						"{\"error\":\"reference video not found\"}"));
+					(void)tool_result_success_json_text_copy(
+						result,
+						"{\"error\":\"reference video not found\"}");
 				else
-					(void)tool_result_success_json_text(result, strdup(
-						"{\"error\":\"read path outside workspace: permission denied\"}"));
+					(void)tool_result_success_json_text_copy(
+						result, "{\"error\":\"read path outside workspace: "
+							"permission denied\"}");
 				return rc;
 			}
 			video_paths_to_send[i] = resolved_videos[i];
@@ -206,8 +212,8 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 		audio_paths_to_send[i] = audio_paths[i];
 		if (!is_supported_audio_path(audio_paths[i])) {
 			cJSON_Delete(root);
-			(void)tool_result_success_json_text(result, strdup(
-				"{\"error\":\"reference audio must be MP3 or WAV\"}"));
+			(void)tool_result_success_json_text_copy(
+				result, "{\"error\":\"reference audio must be MP3 or WAV\"}");
 			return -EINVAL;
 		}
 		if (tctx && !is_http_url(audio_paths[i])) {
@@ -217,18 +223,20 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 			if (auth_rc < 0) {
 				cJSON_Delete(root);
 				if (auth_rc == -ENOENT)
-					(void)tool_result_success_json_text(result, strdup(
-						"{\"error\":\"reference audio not found\"}"));
+					(void)tool_result_success_json_text_copy(
+						result,
+						"{\"error\":\"reference audio not found\"}");
 				else
-					(void)tool_result_success_json_text(result, strdup(
-						"{\"error\":\"read path outside workspace: permission denied\"}"));
+					(void)tool_result_success_json_text_copy(
+						result, "{\"error\":\"read path outside workspace: "
+							"permission denied\"}");
 				return auth_rc;
 			}
 			audio_paths_to_send[i] = resolved_audios[i];
 		}
 	}
 
-	const char *output_dir = tctx ? tool_context_output_dir(tctx) : NULL;
+	const char *output_dir = tctx ? tool_context_output_dir_borrow(tctx) : NULL;
 	struct video_result vid_res = {0};
 	int rc = video_gen_create(ctx ? ctx->video_llm : NULL, prompt,
 				  num_images > 0 ? image_paths_to_send : NULL,
@@ -242,33 +250,34 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 
 	if (rc < 0) {
 		if (vid_res.error_msg[0]) {
-			char *buf = malloc(strlen(vid_res.error_msg) + 64);
+			char *buf MORPH_CLEANUP(morph_charp_cleanup) =
+				malloc(strlen(vid_res.error_msg) + 64);
 			if (buf) {
 				snprintf(buf, strlen(vid_res.error_msg) + 64,
 					 "{\"error\":\"%s\"}", vid_res.error_msg);
-				(void)tool_result_success_json_text(result, buf);
+				(void)tool_result_success_json_text_copy(result, buf);
 			} else {
-				(void)tool_result_success_json_text(result, strdup("{\"error\":\"video generation failed\"}"));
+				(void)tool_result_success_json_text_copy(
+					result, "{\"error\":\"video generation failed\"}");
 			}
 		} else {
 			char err_buf[256];
 			snprintf(err_buf, sizeof(err_buf),
 				 "{\"error\":\"video generation failed: %s\"}",
 				 morph_strerror(rc));
-			(void)tool_result_success_json_text(result, strdup(err_buf));
+			(void)tool_result_success_json_text_copy(result, err_buf);
 		}
 		return rc;
 	}
 
 	size_t msg_len = strlen(vid_res.path) + 64;
-	char *msg = malloc(msg_len);
+	char *msg MORPH_CLEANUP(morph_charp_cleanup) = malloc(msg_len);
 	if (!msg)
 		return -ENOMEM;
 	snprintf(msg, msg_len, "video generated: %s (%ds)",
 		 vid_res.path, vid_res.duration_seconds);
-	(void)tool_result_success_json_text(result, msg);
-	(void)tool_result_add_video(result, vid_res.path,
-				    vid_res.duration_seconds);
+	(void)tool_result_success_json_text_copy(result, msg);
+	(void)tool_result_add_video_copy(result, vid_res.path, vid_res.duration_seconds);
 	log_dbg(result && result->runtime ? result->runtime->http.logger : NULL, "vid_gen: %s",
 		msg);
 
@@ -313,7 +322,7 @@ int vid_gen_init(struct tool_registry *reg, struct model *video_llm,
 		"with reference_audios\"},"
 		"\"duration\":{\"type\":\"integer\",\"description\":\"Video duration "
 		"in seconds\"}},\"required\":[\"prompt\"]}";
-	struct tool_spec spec = {
+	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.flags = TOOL_FLAG_MEDIA,
 		.name = "vid_gen",
@@ -324,10 +333,8 @@ int vid_gen_init(struct tool_registry *reg, struct model *video_llm,
 		.user_data = ctx,
 		.user_data_destroy = vid_gen_context_destroy,
 	};
-	int rc = tool_register(reg, &spec);
-	if (rc != 0)
-		free(ctx);
-	else
+	int rc = tool_register_take(reg, &spec);
+	if (rc == 0)
 		tool_set_timeout(reg, "vid_gen", 600);
 	return rc;
 }

@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/tasks.h"
+#include "util/cleanup.h"
 #include "db/scheduled_task.h"
 #include "cJSON.h"
 #include "sapi/cli/application_internal.h"
@@ -30,7 +31,7 @@ static int cli_tasks_parse_task_time_arg(const char *arg, int64_t *out)
 
 static char *cli_tasks_task_join_title(int argc, char **argv, int start)
 {
-	morph_buf_t title;
+	morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc;
 
 	rc = morph_buf_init(&title, 128);
@@ -60,7 +61,7 @@ static int cli_tasks_append_task_show_markdown(morph_buf_t *buf, const struct sc
 static int cli_tasks_command_tasks_add(struct cli_application *ctx, int argc, char **argv)
 {
 	struct scheduled_task_input input;
-	struct scheduled_task task;
+	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {0};
 	struct session current;
 	cJSON *payload = NULL;
 	char *payload_json = NULL;
@@ -122,7 +123,7 @@ static int cli_tasks_command_tasks_add(struct cli_application *ctx, int argc, ch
 static int cli_tasks_command_tasks_every(struct cli_application *ctx, int argc, char **argv)
 {
 	struct scheduled_task_input input;
-	struct scheduled_task task;
+	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {0};
 	struct session current;
 	cJSON *payload = NULL;
 	char *payload_json = NULL;
@@ -185,7 +186,7 @@ static int cli_tasks_command_tasks_every(struct cli_application *ctx, int argc, 
 static int cli_tasks_command_tasks_update(struct cli_application *ctx, int argc, char **argv)
 {
 	struct scheduled_task_input input;
-	struct scheduled_task task;
+	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {0};
 	struct session current;
 	cJSON *payload = NULL;
 	char *payload_json = NULL;
@@ -277,8 +278,8 @@ static int cli_tasks_command_tasks_list(struct cli_application *ctx, int argc, c
 
 static int cli_tasks_command_tasks_show(struct cli_application *ctx, int argc, char **argv)
 {
-	struct scheduled_task task;
-	morph_buf_t md;
+	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {0};
+	morph_buf_t md MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	char *end = NULL;
 	long long id;
 	int md_ready = 0;
@@ -294,7 +295,7 @@ static int cli_tasks_command_tasks_show(struct cli_application *ctx, int argc, c
 		return -EINVAL;
 	}
 	memset(&task, 0, sizeof(task));
-	rc = runtime_task_get(ctx->runtime, (int64_t)id, &task);
+	rc = runtime_task_copy(ctx->runtime, (int64_t)id, &task);
 	if (rc != 0) {
 		CMD_ERROR(ctx, "failed to load task: %s", morph_strerror(rc));
 		return rc;
@@ -307,9 +308,9 @@ static int cli_tasks_command_tasks_show(struct cli_application *ctx, int argc, c
 	rc = cli_tasks_append_task_show_markdown(&md, &task);
 	if (rc == 0) {
 		if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
-			printf(ctx, "%s", morph_buf_cstr(&md));
+			printf(ctx, "%s", morph_buf_cstr_borrow(&md));
 		else
-			cli_markdown_render_ansi(ctx, morph_buf_cstr(&md));
+			cli_markdown_render_ansi(ctx, morph_buf_cstr_borrow(&md));
 	}
 out:
 	if (md_ready)
@@ -542,7 +543,7 @@ static int cli_tasks_print_active_task(struct cli_application *ctx,
 			      task->status, schedule, due, attempts);
 	if (rc == 0)
 		cli_list_item(ctx, ancestor, is_last, cli_tasks_task_status_marker(task->status),
-			      morph_buf_cstr(&summary), prompt, 46, columns);
+			      morph_buf_cstr_borrow(&summary), prompt, 46, columns);
 	morph_buf_cleanup(&summary);
 	cJSON_Delete(payload);
 	return rc;
@@ -740,9 +741,9 @@ static int cli_tasks_command_inbox_list(struct cli_application *ctx, int argc, c
 			rc = cli_tasks_append_notification_table_row(&md, &notifications[i]);
 		if (rc == 0) {
 			if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
-				printf(ctx, "%s", morph_buf_cstr(&md));
+				printf(ctx, "%s", morph_buf_cstr_borrow(&md));
 			else
-				cli_markdown_render_ansi(ctx, morph_buf_cstr(&md));
+				cli_markdown_render_ansi(ctx, morph_buf_cstr_borrow(&md));
 		}
 	}
 out:

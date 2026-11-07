@@ -70,7 +70,7 @@ static int cli_turn_details_compose(struct cli_turn_details *page, int scroll, F
 		morph_buf_cleanup(&frame);
 		return rc;
 	}
-	const char *line = morph_buf_cstr(&body);
+	const char *line = morph_buf_cstr_borrow(&body);
 
 	for (const char *p = line; *p; p++)
 		lines += *p == '\n';
@@ -112,13 +112,13 @@ static int cli_turn_details_compose(struct cli_turn_details *page, int scroll, F
 	}
 	morph_buf_putc(&frame, '\n');
 	const char *hint = "  ctrl+o / esc back · PgUp/PgDn scroll · End follow";
-	const char *end =
-		utf8_advance_display_width(hint, page->columns > 1 ? (size_t)page->columns - 1 : 0);
+	const char *end = utf8_advance_display_width_borrow(
+		hint, page->columns > 1 ? (size_t)page->columns - 1 : 0);
 
 	morph_buf_append(&frame, hint, (size_t)(end - hint));
 	rc = frame.failed ? frame.failed
 			  : morph_tui_frame_present(&page->frame, output, page->columns, page->rows,
-						    morph_buf_cstr(&frame));
+						    morph_buf_cstr_borrow(&frame));
 	morph_buf_cleanup(&frame);
 	morph_buf_cleanup(&body);
 	return rc;
@@ -240,7 +240,7 @@ static void cli_turn_details_close(void *data, int result)
 
 void cli_turn_details_toggle(struct cli_application *ctx)
 {
-	struct morph_tui_application *app = cli_application_tui(ctx);
+	struct morph_tui_application *app = cli_application_tui_borrow(ctx);
 
 	if (!app || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
@@ -259,7 +259,7 @@ void cli_turn_details_toggle(struct cli_application *ctx)
 		.disappear = cli_turn_details_disappear,
 		.close = cli_turn_details_close,
 	};
-	const struct morph_tui_controller controller = {
+	struct morph_tui_controller controller = {
 		.ops = &ops,
 		.data = ctx->details,
 		.input_mode = MORPH_TUI_INPUT_KEYS,
@@ -269,7 +269,7 @@ void cli_turn_details_toggle(struct cli_application *ctx)
 	};
 
 	ctx->details->follow = 1;
-	if (!morph_tui_application_present_controller(app, &controller))
+	if (!morph_tui_application_present_controller_take(app, &controller))
 		ctx->details->open = 1;
 }
 

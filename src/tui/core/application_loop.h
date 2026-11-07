@@ -34,14 +34,14 @@ int core_application_loop_step(struct core_application_loop *app, int wait);
 int core_application_loop_is_owner(const struct core_application_loop *app);
 void core_application_loop_stop(struct core_application_loop *app, int result);
 int core_application_loop_wake(struct core_application_loop *app);
-int core_application_loop_post(struct core_application_loop *app, int code, void *payload,
-			       void (*release)(void *payload));
+int core_application_loop_post_take(struct core_application_loop *app, int code,
+				    struct morph_tui_message *source);
 
-/* Present copies the descriptor and borrows ops until close. On failure the
- * caller retains data. Transitions commit outside event callbacks; dismiss
- * targets the controller that was active when requested. */
-int core_application_loop_present(struct core_application_loop *app,
-				  const struct morph_tui_controller *controller);
+/* Present takes and clears the descriptor, borrowing ops through close.
+ * Failure preserves the descriptor and its close obligation. Transitions commit outside event
+ * callbacks; dismiss targets the controller that was active when requested. */
+int core_application_loop_present_take(struct core_application_loop *app,
+				       struct morph_tui_controller *controller);
 int core_application_loop_dismiss(struct core_application_loop *app, int result);
 size_t core_application_loop_depth(const struct core_application_loop *app);
 int core_application_loop_transition_pending(const struct core_application_loop *app);

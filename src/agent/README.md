@@ -18,8 +18,9 @@ engine beneath that facade.
 The output, event and stream modules do not depend on `react_context`. The owner
 supplies the callbacks, cancellation flag and output-suppression flag. A stream
 owns its buffers until `react_stream_cleanup()`; the model response owns its
-separate response data. Legacy text-only responses are copied into the request
-arena before the stream is destroyed.
+separate response data. Legacy text-only responses are copied into an independently owned model
+response before the stream is destroyed. Local request and response owners use
+typed scope cleanup; transfers clear the source only after acceptance.
 
 Stream callbacks borrow their text only until return. They must copy text they
 retain, and cannot feed the same stream reentrantly. Sink and allocation failures

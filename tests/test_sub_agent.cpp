@@ -60,13 +60,13 @@ static char *strcasestr_local(const char *haystack, const char *needle)
 	return nullptr;
 }
 
-static int mock_llm_chat(struct model *self, struct arena *arena,
-			  const char *system_prompt,
-			  const char **messages, int n,
-			  const struct model_chat_options *opts,
-			  sse_callback cb, void *user_data)
+static int mock_llm_chat(struct model *self, const char *system_prompt, const char **messages,
+			 int n, const struct model_chat_options *opts, sse_callback cb,
+			 void *user_data)
 {
-	(void)arena; (void)system_prompt; (void)messages; (void)n;
+	(void)system_prompt;
+	(void)messages;
+	(void)n;
 	(void)opts;
 	struct mock_llm_data *data = (struct mock_llm_data *)self->handle;
 	data->call_count++;
@@ -77,14 +77,14 @@ static int mock_llm_chat(struct model *self, struct arena *arena,
 	return 200;
 }
 
-static int mock_chat_with_tools(struct model *self, struct arena *arena,
-				const char *system_prompt,
+static int mock_chat_with_tools(struct model *self, const char *system_prompt,
 				struct chat_message *messages, int msg_count,
 				struct tool_desc *tools, int tool_count,
-				struct chat_response *response,
-				sse_callback thought_cb, void *thought_ud)
+				struct chat_response *response, sse_callback thought_cb,
+				void *thought_ud)
 {
-	(void)arena; (void)system_prompt; (void)messages;
+	(void)system_prompt;
+	(void)messages;
 	(void)msg_count; (void)tools; (void)tool_count;
 
 	struct mock_collect_data cd = {nullptr, 0, 0};
@@ -92,8 +92,7 @@ static int mock_chat_with_tools(struct model *self, struct arena *arena,
 	cd.cap = 8192;
 	cd.buf[0] = '\0';
 
-	int status = self->chat(self, arena, nullptr, nullptr, 0, nullptr,
-				mock_collect_cb, &cd);
+	int status = self->chat(self, nullptr, nullptr, 0, nullptr, mock_collect_cb, &cd);
 	if (status < 0) { free(cd.buf); return status; }
 
 	memset(response, 0, sizeof(*response));
@@ -180,15 +179,14 @@ static struct model *create_mock_llm(const char *response)
 static int sa_test_tool_fn(const char *args_json, struct tool_result *result, void *user_data)
 {
 	(void)args_json; (void)user_data;
-	(void)tool_result_success_json_text(result, strdup("{\"result\":\"sub_agent_test\"}"));
+	(void)tool_result_success_json_text_copy(result, "{\"result\":\"sub_agent_test\"}");
 	return 0;
 }
 
-static int tool_register(enum tool_origin origin, struct tool_registry *reg,
-			 const char *name, const char *description,
-			 const char *input_schema, tool_exec_fn exec,
-			 void *user_data,
-			 tool_user_data_destroy_fn user_data_destroy)
+static int tool_register_borrow(enum tool_origin origin, struct tool_registry *reg,
+				const char *name, const char *description, const char *input_schema,
+				tool_exec_fn exec, void *user_data,
+				tool_user_data_destroy_fn user_data_destroy)
 {
 	struct tool_spec spec = {};
 	spec.origin = origin;
@@ -202,7 +200,7 @@ static int tool_register(enum tool_origin origin, struct tool_registry *reg,
 	spec.exec = exec;
 	spec.user_data = user_data;
 	spec.user_data_destroy = user_data_destroy;
-	return ::tool_register(reg, &spec);
+	return ::tool_register_take(reg, &spec);
 }
 
 /* ---- fixture ---- */
@@ -481,7 +479,7 @@ TEST_F(SubAgentTest, FindExisting) {
 		sizeof(sa_cfg.entries[0].name) - 1);
 	sa_cfg.count = 1;
 	sub_agent_runtime_load_config(rt, &sa_cfg);
-	struct sub_agent_entry *e = sub_agent_find(rt, "finder");
+	struct sub_agent_entry *e = sub_agent_borrow(rt, "finder");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->cfg.name, "finder");
 	sub_agent_runtime_destroy(rt);
@@ -490,14 +488,14 @@ TEST_F(SubAgentTest, FindExisting) {
 TEST_F(SubAgentTest, FindNonexistent) {
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
-	EXPECT_EQ(sub_agent_find(rt, "ghost"), nullptr);
+	EXPECT_EQ(sub_agent_borrow(rt, "ghost"), nullptr);
 	sub_agent_runtime_destroy(rt);
 }
 
 TEST_F(SubAgentTest, FindNullName) {
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
-	EXPECT_EQ(sub_agent_find(rt, nullptr), nullptr);
+	EXPECT_EQ(sub_agent_borrow(rt, nullptr), nullptr);
 	sub_agent_runtime_destroy(rt);
 }
 
@@ -506,14 +504,14 @@ TEST_F(SubAgentTest, FindNullName) {
 /* ====================================================== */
 
 TEST_F(SubAgentTest, BuildRegistryNoAllowedTools) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
-		      sa_test_tool_fn, NULL, NULL);
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "file_read", "desc", "{}",
-		      sa_test_tool_fn, NULL, NULL);
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "delegate", "desc", "{}",
-		      sa_test_tool_fn, NULL, NULL);
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "agent_status", "desc", "{}",
-		      sa_test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
+			     sa_test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "file_read", "desc", "{}",
+			     sa_test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "delegate", "desc", "{}", sa_test_tool_fn,
+			     NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "agent_status", "desc", "{}",
+			     sa_test_tool_fn, NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
 	struct config_sub_agents sa_cfg = {};
@@ -521,26 +519,25 @@ TEST_F(SubAgentTest, BuildRegistryNoAllowedTools) {
 		sizeof(sa_cfg.entries[0].name) - 1);
 	sa_cfg.count = 1;
 	sub_agent_runtime_load_config(rt, &sa_cfg);
-	struct tool_registry *child = sub_agent_build_tool_registry(
-		rt, &rt->entries[0]);
+	struct tool_registry *child = sub_agent_tool_registry_create(rt, &rt->entries[0]);
 	ASSERT_NE(child, nullptr);
 	EXPECT_GE(child->count, 2);
-	EXPECT_NE(tool_lookup(child, "test_tool"), nullptr);
-	EXPECT_NE(tool_lookup(child, "file_read"), nullptr);
-	EXPECT_EQ(tool_lookup(child, "delegate"), nullptr);
-	EXPECT_EQ(tool_lookup(child, "agent_status"), nullptr);
+	EXPECT_NE(tool_borrow(child, "test_tool"), nullptr);
+	EXPECT_NE(tool_borrow(child, "file_read"), nullptr);
+	EXPECT_EQ(tool_borrow(child, "delegate"), nullptr);
+	EXPECT_EQ(tool_borrow(child, "agent_status"), nullptr);
 	tool_registry_cleanup(child);
 	free(child);
 	sub_agent_runtime_destroy(rt);
 }
 
 TEST_F(SubAgentTest, BuildRegistryWithAllowedTools) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
-		      sa_test_tool_fn, NULL, NULL);
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "file_read", "desc", "{}",
-		      sa_test_tool_fn, NULL, NULL);
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "exec", "desc", "{}",
-		      sa_test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
+			     sa_test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "file_read", "desc", "{}",
+			     sa_test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "exec", "desc", "{}", sa_test_tool_fn,
+			     NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
 	struct config_sub_agents sa_cfg = {};
@@ -551,12 +548,11 @@ TEST_F(SubAgentTest, BuildRegistryWithAllowedTools) {
 	sa_cfg.entries[0].allowed_tools_count = 1;
 	sa_cfg.count = 1;
 	sub_agent_runtime_load_config(rt, &sa_cfg);
-	struct tool_registry *child = sub_agent_build_tool_registry(
-		rt, &rt->entries[0]);
+	struct tool_registry *child = sub_agent_tool_registry_create(rt, &rt->entries[0]);
 	ASSERT_NE(child, nullptr);
 	EXPECT_EQ(child->count, 1);
-	EXPECT_NE(tool_lookup(child, "test_tool"), nullptr);
-	EXPECT_EQ(tool_lookup(child, "file_read"), nullptr);
+	EXPECT_NE(tool_borrow(child, "test_tool"), nullptr);
+	EXPECT_EQ(tool_borrow(child, "file_read"), nullptr);
 	tool_registry_cleanup(child);
 	free(child);
 	sub_agent_runtime_destroy(rt);
@@ -572,7 +568,7 @@ TEST_F(SubAgentTest, BuildRegistryPreservesTextInputMetadata) {
 	spec.input_kind = TOOL_INPUT_TEXT;
 	spec.input_format = "start: PATCH";
 	spec.exec = sa_test_tool_fn;
-	ASSERT_EQ(::tool_register(&tools, &spec), 0);
+	ASSERT_EQ(::tool_register_borrow(&tools, &spec), 0);
 
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
@@ -585,10 +581,9 @@ TEST_F(SubAgentTest, BuildRegistryPreservesTextInputMetadata) {
 	sa_cfg.count = 1;
 	sub_agent_runtime_load_config(rt, &sa_cfg);
 
-	struct tool_registry *child = sub_agent_build_tool_registry(
-		rt, &rt->entries[0]);
+	struct tool_registry *child = sub_agent_tool_registry_create(rt, &rt->entries[0]);
 	ASSERT_NE(child, nullptr);
-	struct tool_entry *copied = tool_lookup(child, "patch_tool");
+	struct tool_entry *copied = tool_borrow(child, "patch_tool");
 	ASSERT_NE(copied, nullptr);
 	EXPECT_STREQ(copied->desc.title, "Patch tool");
 	EXPECT_EQ(copied->desc.input_kind, TOOL_INPUT_TEXT);
@@ -600,10 +595,10 @@ TEST_F(SubAgentTest, BuildRegistryPreservesTextInputMetadata) {
 }
 
 TEST_F(SubAgentTest, BuildRegistryWithDisabledTools) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
-		      sa_test_tool_fn, NULL, NULL);
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "exec", "desc", "{}",
-		      sa_test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
+			     sa_test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "exec", "desc", "{}", sa_test_tool_fn,
+			     NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
 	struct config_sub_agents sa_cfg = {};
@@ -614,10 +609,9 @@ TEST_F(SubAgentTest, BuildRegistryWithDisabledTools) {
 	sa_cfg.entries[0].disabled_tools_count = 1;
 	sa_cfg.count = 1;
 	sub_agent_runtime_load_config(rt, &sa_cfg);
-	struct tool_registry *child = sub_agent_build_tool_registry(
-		rt, &rt->entries[0]);
+	struct tool_registry *child = sub_agent_tool_registry_create(rt, &rt->entries[0]);
 	ASSERT_NE(child, nullptr);
-	EXPECT_NE(tool_lookup(child, "exec"), nullptr);
+	EXPECT_NE(tool_borrow(child, "exec"), nullptr);
 	EXPECT_TRUE(tool_is_disabled(child, "exec"));
 	tool_registry_cleanup(child);
 	free(child);
@@ -627,8 +621,8 @@ TEST_F(SubAgentTest, BuildRegistryWithDisabledTools) {
 TEST_F(SubAgentTest, BuildRegistryNullEntry) {
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
-	EXPECT_EQ(sub_agent_build_tool_registry(rt, nullptr), nullptr);
-	EXPECT_EQ(sub_agent_build_tool_registry(nullptr, nullptr), nullptr);
+	EXPECT_EQ(sub_agent_tool_registry_create(rt, nullptr), nullptr);
+	EXPECT_EQ(sub_agent_tool_registry_create(nullptr, nullptr), nullptr);
 	sub_agent_runtime_destroy(rt);
 }
 
@@ -645,25 +639,30 @@ TEST_F(SubAgentTest, CreateContextBasic) {
 	sa_cfg.entries[0].max_iterations = 3;
 	sa_cfg.count = 1;
 	sub_agent_runtime_load_config(rt, &sa_cfg);
-	struct react_context *child =
-		sub_agent_create_context(rt, nullptr, &rt->entries[0], "test task");
+	struct sub_agent_context context MORPH_CLEANUP(sub_agent_context_cleanup) = {};
+	ASSERT_EQ(sub_agent_context_create(rt, nullptr, &rt->entries[0], "test task", &context), 0);
+	struct react_context *child = context.react;
 	ASSERT_NE(child, nullptr);
 	EXPECT_EQ(child->llm_model, llm);
 	EXPECT_EQ(child->max_iterations, 3);
 	EXPECT_EQ(child->sub_agent_depth, 1);
-	struct tool_registry *child_tools = child->tools;
-	react_context_destroy(child);
-	tool_registry_cleanup(child_tools);
-	free(child_tools);
+	EXPECT_EQ(sub_agent_context_create(rt, nullptr, &rt->entries[0], "replacement", &context),
+		  -EALREADY);
+	EXPECT_EQ(context.react, child);
+	sub_agent_context_cleanup(&context);
+	EXPECT_EQ(context.react, nullptr);
+	EXPECT_EQ(context.tools, nullptr);
 	sub_agent_runtime_destroy(rt);
 }
 
 TEST_F(SubAgentTest, CreateContextInheritsExemptionsWithoutChangingToolAccess) {
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "media", "desc", "{}",
-		sa_test_tool_fn, nullptr, nullptr), 0);
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "write", "desc", "{}",
-		sa_test_tool_fn, nullptr, nullptr), 0);
-	tool_lookup(&tools, "media")->flags |= TOOL_FLAG_MEDIA;
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "media", "desc", "{}",
+				       sa_test_tool_fn, nullptr, nullptr),
+		  0);
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "write", "desc", "{}",
+				       sa_test_tool_fn, nullptr, nullptr),
+		  0);
+	tool_borrow(&tools, "media")->flags |= TOOL_FLAG_MEDIA;
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(&tools, llm, tok, &cfg);
 	ASSERT_NE(rt, nullptr);
 	rt->auto_approve_media = 1;
@@ -673,16 +672,15 @@ TEST_F(SubAgentTest, CreateContextInheritsExemptionsWithoutChangingToolAccess) {
 	sa_cfg.entries[0].disabled_tools_count = 1;
 	sa_cfg.count = 1;
 	ASSERT_EQ(sub_agent_runtime_load_config(rt, &sa_cfg), 0);
-	struct react_context *child = sub_agent_create_context(rt, nullptr, &rt->entries[0], "task");
+	struct sub_agent_context context MORPH_CLEANUP(sub_agent_context_cleanup) = {};
+	ASSERT_EQ(sub_agent_context_create(rt, nullptr, &rt->entries[0], "task", &context), 0);
+	struct react_context *child = context.react;
 	ASSERT_NE(child, nullptr);
 	EXPECT_EQ(hitl_needs_approval(child, "media"), 0);
 	EXPECT_FALSE(tool_is_readonly(child->tools, "media"));
 	EXPECT_TRUE(tool_is_disabled(child->tools, "write"));
 	EXPECT_EQ(hitl_needs_approval(child, "write"), 1);
-	struct tool_registry *child_tools = child->tools;
-	react_context_destroy(child);
-	tool_registry_cleanup(child_tools);
-	free(child_tools);
+	sub_agent_context_cleanup(&context);
 	sub_agent_runtime_destroy(rt);
 	tool_registry_cleanup(&tools);
 }
@@ -695,16 +693,15 @@ TEST_F(SubAgentTest, CreateContextSystemPrompt) {
 		sizeof(sa_cfg.entries[0].name) - 1);
 	rt->entries[0].system_prompt = strdup("You are a specialist.");
 	rt->entry_count = 1;
-	struct react_context *child =
-		sub_agent_create_context(rt, nullptr, &rt->entries[0], "do something");
+	struct sub_agent_context context MORPH_CLEANUP(sub_agent_context_cleanup) = {};
+	ASSERT_EQ(sub_agent_context_create(rt, nullptr, &rt->entries[0], "do something", &context),
+		  0);
+	struct react_context *child = context.react;
 	ASSERT_NE(child, nullptr);
 	ASSERT_NE(child->system_prompt, nullptr);
 	EXPECT_STREQ(child->system_prompt, "You are a specialist.");
 	EXPECT_EQ(child->system_prompt_replace, 0);
-	struct tool_registry *child_tools = child->tools;
-	react_context_destroy(child);
-	tool_registry_cleanup(child_tools);
-	free(child_tools);
+	sub_agent_context_cleanup(&context);
 	sub_agent_runtime_destroy(rt);
 }
 
@@ -723,17 +720,15 @@ TEST_F(SubAgentTest, CreateContextWithEmptyPromptReplacement)
 	strncpy(entry.system_prompt_file, config_path,
 		sizeof(entry.system_prompt_file) - 1);
 	ASSERT_EQ(sub_agent_runtime_load_config(rt, &sa_cfg), 0);
-	struct react_context *child =
-		sub_agent_create_context(rt, nullptr, &rt->entries[0], "task");
+	struct sub_agent_context context MORPH_CLEANUP(sub_agent_context_cleanup) = {};
+	ASSERT_EQ(sub_agent_context_create(rt, nullptr, &rt->entries[0], "task", &context), 0);
+	struct react_context *child = context.react;
 	ASSERT_NE(child, nullptr);
 	EXPECT_EQ(child->system_prompt_replace, 1);
 	ASSERT_NE(child->system_prompt, nullptr);
 	EXPECT_STREQ(child->system_prompt, "");
 	EXPECT_NE(child->system_prompt, rt->entries[0].system_prompt);
-	struct tool_registry *child_tools = child->tools;
-	react_context_destroy(child);
-	tool_registry_cleanup(child_tools);
-	free(child_tools);
+	sub_agent_context_cleanup(&context);
 	sub_agent_runtime_destroy(rt);
 }
 
@@ -748,9 +743,8 @@ TEST_F(SubAgentTest, ReplacementRequestPreservesCoreAndChildRuntimeLimits)
 	strcpy(entry->cfg.system_prompt_mode, "replace");
 	entry->system_prompt = strdup("Child JSON-only behavior.");
 	llm->chat_with_tools = nullptr;
-	llm->chat = [](struct model *self, struct arena *, const char *system,
-		const char **, int, const struct model_chat_options *,
-		sse_callback cb, void *user_data) {
+	llm->chat = [](struct model *self, const char *system, const char **, int,
+		       const struct model_chat_options *, sse_callback cb, void *user_data) {
 		auto *data = static_cast<mock_llm_data *>(self->handle);
 		data->call_count++;
 		EXPECT_NE(system, nullptr);
@@ -766,14 +760,13 @@ TEST_F(SubAgentTest, ReplacementRequestPreservesCoreAndChildRuntimeLimits)
 			cb("Done", user_data);
 		return 200;
 	};
-	auto *child = sub_agent_create_context(rt, nullptr, entry, "task");
+	struct sub_agent_context context MORPH_CLEANUP(sub_agent_context_cleanup) = {};
+	ASSERT_EQ(sub_agent_context_create(rt, nullptr, entry, "task", &context), 0);
+	struct react_context *child = context.react;
 	ASSERT_NE(child, nullptr);
 	EXPECT_EQ(react_run(child, "task", nullptr, nullptr), 0);
 	EXPECT_EQ(static_cast<mock_llm_data *>(llm->handle)->call_count, 1);
-	auto *child_tools = child->tools;
-	react_context_destroy(child);
-	tool_registry_cleanup(child_tools);
-	free(child_tools);
+	sub_agent_context_cleanup(&context);
 	sub_agent_runtime_destroy(rt);
 }
 
@@ -803,14 +796,13 @@ TEST_F(SubAgentTest, CreateContextDepthIncrement) {
 		sizeof(sa_cfg.entries[0].name) - 1);
 	sa_cfg.count = 1;
 	sub_agent_runtime_load_config(rt, &sa_cfg);
-	struct react_context *child =
-		sub_agent_create_context(rt, nullptr, &rt->entries[0], "nested task");
+	struct sub_agent_context context MORPH_CLEANUP(sub_agent_context_cleanup) = {};
+	ASSERT_EQ(sub_agent_context_create(rt, nullptr, &rt->entries[0], "nested task", &context),
+		  0);
+	struct react_context *child = context.react;
 	ASSERT_NE(child, nullptr);
 	EXPECT_EQ(child->sub_agent_depth, 2);
-	struct tool_registry *child_tools = child->tools;
-	react_context_destroy(child);
-	tool_registry_cleanup(child_tools);
-	free(child_tools);
+	sub_agent_context_cleanup(&context);
 	sub_agent_runtime_destroy(rt);
 }
 
@@ -819,8 +811,8 @@ TEST_F(SubAgentTest, CreateContextDepthIncrement) {
 /* ====================================================== */
 
 TEST_F(SubAgentTest, InvokeSyncWithMockLlm) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
-		      sa_test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
+			     sa_test_tool_fn, NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
 	struct config_sub_agents sa_cfg = {};
@@ -889,8 +881,8 @@ TEST_F(SubAgentTest, InvokeSyncLlmFailure) {
 /* ====================================================== */
 
 TEST_F(SubAgentTest, DelegateAndCheckStatus) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
-		      sa_test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
+			     sa_test_tool_fn, NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
 	struct config_sub_agents sa_cfg = {};
@@ -956,8 +948,8 @@ TEST_F(SubAgentTest, CheckStatusInvalidId) {
 /* ====================================================== */
 
 TEST_F(SubAgentTest, FanoutRaw) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
-		      sa_test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
+			     sa_test_tool_fn, NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
 	struct config_sub_agents sa_cfg = {};
@@ -981,8 +973,8 @@ TEST_F(SubAgentTest, FanoutRaw) {
 }
 
 TEST_F(SubAgentTest, FanoutConcat) {
-	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
-		      sa_test_tool_fn, NULL, NULL);
+	tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
+			     sa_test_tool_fn, NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
 	struct config_sub_agents sa_cfg = {};
@@ -1242,8 +1234,7 @@ TEST_F(SubAgentTest, ChildSessionPersistsTaskEventsAndMessages) {
 	ASSERT_NE(result, nullptr);
 	EXPECT_STREQ(result, "sub-agent result");
 	free(result);
-	ASSERT_EQ(sub_agent_runtime_list_tasks(rt, parent.id, &tasks,
-		&task_count), 0);
+	ASSERT_EQ(sub_agent_runtime_task_list_copy(rt, parent.id, &tasks, &task_count), 0);
 	ASSERT_EQ(task_count, 1);
 	EXPECT_EQ(tasks[0].status, SUB_AGENT_COMPLETED);
 	EXPECT_GT(tasks[0].child_session_id, 0);
@@ -1254,11 +1245,10 @@ TEST_F(SubAgentTest, ChildSessionPersistsTaskEventsAndMessages) {
 	ASSERT_EQ(visible_count, 1);
 	EXPECT_EQ(visible_sessions[0].id, parent.id);
 	free(visible_sessions);
-	ASSERT_EQ(sub_agent_runtime_task_events(rt, tasks[0].id, &events,
-		&event_count), 0);
+	ASSERT_EQ(sub_agent_runtime_task_events_copy(rt, tasks[0].id, &events, &event_count), 0);
 	EXPECT_GT(event_count, 0);
 	for (size_t i = 0; i < morph_event_recorder_count(&recorder); i++) {
-		cJSON *event = cJSON_Parse(morph_event_recorder_get(&recorder, i));
+		cJSON *event = cJSON_Parse(morph_event_recorder_borrow(&recorder, i));
 		ASSERT_NE(event, nullptr);
 		cJSON *type = cJSON_GetObjectItem(event, "type");
 		ASSERT_TRUE(cJSON_IsString(type));
@@ -1283,7 +1273,7 @@ TEST_F(SubAgentTest, SelectedChildStreamsOnlyItsOwnEvents) {
 	char *task_id = nullptr;
 	char *result = nullptr;
 	enum sub_agent_task_status status = SUB_AGENT_PENDING;
-	int react_events = 0;
+	int react_events_borrow = 0;
 
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
@@ -1305,13 +1295,13 @@ TEST_F(SubAgentTest, SelectedChildStreamsOnlyItsOwnEvents) {
 	}
 	EXPECT_EQ(status, SUB_AGENT_COMPLETED);
 	for (size_t i = 0; i < morph_event_recorder_count(&recorder); i++) {
-		cJSON *event = cJSON_Parse(morph_event_recorder_get(&recorder, i));
+		cJSON *event = cJSON_Parse(morph_event_recorder_borrow(&recorder, i));
 		cJSON *type = cJSON_GetObjectItem(event, "type");
 		if (cJSON_IsString(type) && strcmp(type->valuestring, "react") == 0)
-			react_events++;
+			react_events_borrow++;
 		cJSON_Delete(event);
 	}
-	EXPECT_GT(react_events, 0);
+	EXPECT_GT(react_events_borrow, 0);
 	free(task_id);
 	morph_event_recorder_cleanup(&recorder);
 	sub_agent_runtime_destroy(rt);
@@ -1346,8 +1336,7 @@ TEST_F(SubAgentTest, PersistedTasksSurviveRuntimeRecreation) {
 		&tools, llm, tok, &cfg);
 	configure_worker(second, "review");
 	ASSERT_EQ(sub_agent_runtime_set_storage(second, &db), 0);
-	ASSERT_EQ(sub_agent_runtime_list_tasks(second, parent.id, &tasks,
-		&count), 0);
+	ASSERT_EQ(sub_agent_runtime_task_list_copy(second, parent.id, &tasks, &count), 0);
 	ASSERT_EQ(count, 1);
 	EXPECT_STREQ(tasks[0].agent_name, "review");
 	EXPECT_EQ(tasks[0].status, SUB_AGENT_COMPLETED);
@@ -1370,15 +1359,16 @@ TEST_F(SubAgentTest, FanoutKeepsEachChildEventStreamSeparate) {
 				   &merged),
 		  0);
 	free(merged);
-	ASSERT_EQ(sub_agent_runtime_list_tasks(rt, 0, &tasks, &count), 0);
+	ASSERT_EQ(sub_agent_runtime_task_list_copy(rt, 0, &tasks, &count), 0);
 	ASSERT_EQ(count, 3);
 	for (int i = 0; i < count; i++) {
 		char **events = nullptr;
 		int event_count = 0;
 
 		EXPECT_EQ(tasks[i].status, SUB_AGENT_COMPLETED);
-		ASSERT_EQ(sub_agent_runtime_task_events(rt, tasks[i].id,
-			&events, &event_count), 0);
+		ASSERT_EQ(
+			sub_agent_runtime_task_events_copy(rt, tasks[i].id, &events, &event_count),
+			0);
 		EXPECT_GT(event_count, 0);
 		sub_agent_runtime_free_events(events, event_count);
 	}
@@ -1428,7 +1418,7 @@ TEST_F(SubAgentTest, FanoutSubmissionAndJoinFailuresReclaimStartedWorkers)
 		injection.fail_join = scenario == 2;
 		sub_agent_thread_ops ops{injected_create, injected_join, &injection};
 		const char *tasks[] = {"first", "second"};
-		char *result = reinterpret_cast<char *>(1);
+		char *result = nullptr;
 		EXPECT_LT(sub_agent_fanout_with_ops(rt, nullptr, "worker", tasks, 2,
 						    SUB_AGENT_MERGE_RAW, &result, &ops),
 			  0);
@@ -1436,4 +1426,45 @@ TEST_F(SubAgentTest, FanoutSubmissionAndJoinFailuresReclaimStartedWorkers)
 		EXPECT_EQ(injection.joined, injection.submitted);
 		sub_agent_runtime_destroy(rt);
 	}
+}
+
+TEST_F(SubAgentTest, OccupiedOutputsPreserveOwnersWithoutStartingWork)
+{
+	auto *rt = sub_agent_runtime_create(&tools, llm, tok, &cfg);
+	ASSERT_NE(rt, nullptr);
+	char *text MORPH_CLEANUP(morph_charp_cleanup) = strdup("retained");
+	ASSERT_NE(text, nullptr);
+	char *owner = text;
+	const char *tasks[] = {"first"};
+	enum sub_agent_task_status status = SUB_AGENT_PENDING;
+	EXPECT_EQ(sub_agent_delegate(rt, nullptr, "missing", "task", &text), -EALREADY);
+	EXPECT_EQ(sub_agent_check_status(rt, "missing", &status, &text), -EALREADY);
+	EXPECT_EQ(sub_agent_fanout(rt, nullptr, "missing", tasks, 1, SUB_AGENT_MERGE_RAW, &text),
+		  -EALREADY);
+	EXPECT_EQ(sub_agent_apply_output_schema("new", "{}", nullptr, &text), -EALREADY);
+	EXPECT_EQ(text, owner);
+	EXPECT_STREQ(text, "retained");
+	EXPECT_EQ(rt->task_count, 0);
+	sub_agent_runtime_destroy(rt);
+}
+
+TEST_F(SubAgentTest, TaskSnapshotsRejectOccupiedOutputsAndLeaveFailureEmpty)
+{
+	auto *rt = sub_agent_runtime_create(&tools, llm, tok, &cfg);
+	ASSERT_NE(rt, nullptr);
+	sub_agent_task_info *rows = nullptr;
+	int count = -1;
+	ASSERT_EQ(sub_agent_runtime_task_list_copy(rt, 0, &rows, &count), 0);
+	ASSERT_NE(rows, nullptr);
+	auto *owner = rows;
+	EXPECT_EQ(count, 0);
+	EXPECT_EQ(sub_agent_runtime_task_list_copy(rt, 0, &rows, &count), -EALREADY);
+	EXPECT_EQ(rows, owner);
+	sub_agent_runtime_free_task_list(rows, count);
+	char **events = nullptr;
+	count = -1;
+	EXPECT_EQ(sub_agent_runtime_task_events_copy(rt, "missing", &events, &count), -ENOENT);
+	EXPECT_EQ(events, nullptr);
+	EXPECT_EQ(count, 0);
+	sub_agent_runtime_destroy(rt);
 }

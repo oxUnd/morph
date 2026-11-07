@@ -18,10 +18,12 @@ void cli_session_history_print_resume_hint(struct cli_application *ctx)
 		return;
 	if (runtime_session_current(ctx->runtime, &session) != 0 || session.id <= 0)
 		return;
-	config_path = runtime_config_path_get(ctx->runtime);
-	resolved_config = config_path && config_path[0] ? file_resolve_path(config_path) : NULL;
+	config_path = runtime_config_path_borrow(ctx->runtime);
+	resolved_config =
+		config_path && config_path[0] ? file_resolve_path_copy(config_path) : NULL;
 	cli_history_render_resume_hint(ctx, session.display_id,
-		resolved_config ? resolved_config : config_path, runtime_workdir_get(ctx->runtime));
+				       resolved_config ? resolved_config : config_path,
+				       runtime_workdir_borrow(ctx->runtime));
 	free(resolved_config);
 }
 
@@ -37,9 +39,9 @@ int cli_session_history_restore(struct cli_application *ctx)
 	/* Session commands retain their existing plain and NDJSON contracts. */
 	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return 0;
-	items = runtime_session_model_history_current(ctx->runtime, 0, &count);
+	items = runtime_session_model_history_current_copy(ctx->runtime, 0, &count);
 	if (!items)
-		messages = runtime_session_messages_current(ctx->runtime, &count);
+		messages = runtime_session_messages_current_copy(ctx->runtime, &count);
 	cli_feed_history_begin(ctx);
 	cli_presentation_reset(ctx);
 	rc = cli_history_render_session(ctx, items, messages);

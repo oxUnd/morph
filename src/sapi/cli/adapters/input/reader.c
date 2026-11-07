@@ -146,7 +146,7 @@ int cli_poll_getc(struct cli_application *ctx, FILE *stream)
 	return EOF;
 }
 
-char *cli_reader_prompt_stream(struct cli_application *ctx, const char *prompt, FILE *stream)
+char *cli_reader_prompt_stream_copy(struct cli_application *ctx, const char *prompt, FILE *stream)
 {
 	FILE *previous_stream = rl_instream;
 	int (*previous)(FILE *) = rl_getc_function;
@@ -170,9 +170,9 @@ char *cli_reader_prompt_stream(struct cli_application *ctx, const char *prompt, 
 	return line;
 }
 
-char *cli_readline_prompt(struct cli_application *ctx, const char *prompt)
+char *cli_readline_prompt_copy(struct cli_application *ctx, const char *prompt)
 {
-	return cli_reader_prompt_stream(ctx, prompt, NULL);
+	return cli_reader_prompt_stream_copy(ctx, prompt, NULL);
 }
 
 void cli_reader_remember(const char *text)

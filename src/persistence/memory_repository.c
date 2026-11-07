@@ -331,7 +331,7 @@ int memory_store_migrate_preferences(struct db *db, int64_t session_id,
 
 				snprintf(token, sizeof(token), "legacy:%lld",
 					 (long long)sqlite3_column_int64(stmt, 0));
-				sqlite3_bind_text(insert, 1, preference_key(key), -1,
+				sqlite3_bind_text(insert, 1, preference_key_borrow(key), -1,
 						  SQLITE_TRANSIENT);
 				sqlite3_bind_text(insert, 2, value, -1, SQLITE_TRANSIENT);
 				sqlite3_bind_text(insert, 3, source, -1, SQLITE_TRANSIENT);

@@ -17,7 +17,7 @@ static int final_marker_match(const char *text, size_t length)
 	return 0;
 }
 
-const char *react_stream_find_final(const char *base, const char *from, size_t *marker_len)
+const char *react_stream_final_borrow(const char *base, const char *from, size_t *marker_len)
 {
 	const char *position = from;
 

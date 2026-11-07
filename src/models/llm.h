@@ -14,8 +14,6 @@ extern "C" {
 #define MORPH_MODEL_EXTRA_BODY_MAX 8192
 #endif
 
-struct arena;
-
 typedef int (*sse_callback)(const char *token, void *user_data);
 
 enum llm_stream_kind {
@@ -62,6 +60,8 @@ struct model_usage_sink {
 };
 
 struct chat_message {
+	/* Clone results own these fields. Model input views borrow them for the call;
+	 * only an owned message may be passed to chat_message_cleanup(). */
 	char *role;
 	char *content;
 	char *tool_call_id;
@@ -73,11 +73,11 @@ struct chat_message {
 };
 
 struct chat_response {
+	/* Owns every pointer field, including optional provider-error details. */
 	char *content;
 	struct tool_call *tool_calls;
 	int tool_call_count;
 	struct model_usage usage;
-	struct arena *arena;
 	char *reasoning_content;
 };
 
@@ -137,23 +137,21 @@ struct model {
 	int poll_interval_seconds;
 	int poll_timeout_seconds;
 	void *handle;
-	int (*chat)(struct model *self, struct arena *arena, const char *system_prompt,
-		    const char **messages, int n, const struct model_chat_options *opts,
-		    sse_callback cb, void *user_data);
-	int (*chat_with_tools)(struct model *self, struct arena *arena, const char *system_prompt,
+	int (*chat)(struct model *self, const char *system_prompt, const char **messages, int n,
+		    const struct model_chat_options *opts, sse_callback cb, void *user_data);
+	int (*chat_with_tools)(struct model *self, const char *system_prompt,
 			       struct chat_message *messages, int msg_count,
 			       struct tool_desc *tools, int tool_count,
 			       struct chat_response *response, sse_callback thought_cb,
 			       void *thought_ud);
-	int (*chat_with_tools_stream)(struct model *self, struct arena *arena,
-				      const char *system_prompt, struct chat_message *messages,
-				      int msg_count, struct tool_desc *tools, int tool_count,
+	int (*chat_with_tools_stream)(struct model *self, const char *system_prompt,
+				      struct chat_message *messages, int msg_count,
+				      struct tool_desc *tools, int tool_count,
 				      struct chat_response *response, llm_stream_callback stream_cb,
 				      void *stream_ud);
-	int (*chat_with_image)(struct model *self, struct arena *arena, const char *system_prompt,
-			       const char *prompt, const char *image_path,
-			       const struct model_image_chat_options *opts, sse_callback cb,
-			       void *user_data);
+	int (*chat_with_image)(struct model *self, const char *system_prompt, const char *prompt,
+			       const char *image_path, const struct model_image_chat_options *opts,
+			       sse_callback cb, void *user_data);
 	int (*generate)(struct model *self, const char *prompt, const char *out_path);
 	void (*destroy)(struct model *self);
 };
@@ -167,23 +165,28 @@ int model_estimate_input_tokens(const struct model *model, const char *system_pr
 				model_token_counter count, void *user_data, int *tokens);
 /* Adapter-normalized model input, without transport headers or generation options.
  * Caller owns the JSON. Used by local request inspection, not model tools. */
-int model_input_snapshot(const struct model *model, const char *system_prompt,
-			 const struct chat_message *messages, int msg_count,
-			 const struct tool_desc *tools, int tool_count, cJSON **out);
+int model_input_snapshot_create(const struct model *model, const char *system_prompt,
+				const struct chat_message *messages, int msg_count,
+				const struct tool_desc *tools, int tool_count, cJSON **out);
 
 struct model *model_llm_create(struct morph_log *logger, const char *provider, const char *model_id,
 			       const char *api_base, const char *api_key);
 /* Independent configured LLM; request cancellation, errors and usage are reset. */
 struct model *model_llm_clone(const struct model *source, struct morph_log *logger);
 void model_destroy(struct model *m);
-/* Borrow configuration into caller-owned request storage; no ownership transfer. */
-struct model *model_bind_http_request(const struct model *source,
+/* Initialize a request view in caller storage. Resources and callback state are
+ * borrowed from source/control and must survive the request. The returned
+ * pointer aliases storage; never pass this view to model_destroy(). */
+struct model *model_request_view_init(const struct model *source,
 				      const struct http_control *control, struct model *storage);
 void model_report_usage(const struct model *model, const struct model_usage *usage);
 
+/* Each clone owns its fields; destination must be zero-initialized. */
+int tool_call_clone(const struct tool_call *source, struct tool_call *out);
+int chat_message_clone(const struct chat_message *source, struct chat_message *out);
 void chat_response_free(struct chat_response *resp);
-void chat_message_cleanup(struct chat_message *msg, struct arena *arena);
-void tool_call_cleanup(struct tool_call *tc, struct arena *arena);
+void chat_message_cleanup(struct chat_message *msg);
+void tool_call_cleanup(struct tool_call *tc);
 
 #ifdef __cplusplus
 }

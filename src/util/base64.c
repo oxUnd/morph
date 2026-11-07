@@ -1,5 +1,6 @@
 #include "base64.h"
 #include "error.h"
+#include "cleanup.h"
 #include <errno.h>
 #include <stdint.h>
 #include <sys/stat.h>
@@ -44,7 +45,7 @@ static size_t base64_encode_into(const unsigned char *data, size_t data_len,
 	return j;
 }
 
-char *base64_encode(const unsigned char *data, size_t data_len)
+char *base64_encode_copy(const unsigned char *data, size_t data_len)
 {
 	char *b64;
 
@@ -56,46 +57,50 @@ char *base64_encode(const unsigned char *data, size_t data_len)
 	return b64;
 }
 
-int base64_encode_file_prefixed(const char *path, const char *prefix,
-			       size_t max_bytes, char **out)
+static void base64_file_cleanup(FILE **file)
+{
+	if (file && *file) {
+		fclose(*file);
+		*file = NULL;
+	}
+}
+
+int base64_encode_file_prefixed_copy(const char *path, const char *prefix, size_t max_bytes,
+				     char **out)
 {
 	unsigned char chunk[BUFSIZ - BUFSIZ % 3];
 	struct stat st;
-	FILE *file;
-	char *encoded;
+	FILE *file MORPH_CLEANUP(base64_file_cleanup) = NULL;
+	char *encoded MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	size_t length, prefix_len, remaining, offset, capacity;
 	int rc = 0;
 
 	if (!path || !prefix || !out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EALREADY;
 	file = fopen(path, "rb");
 	if (!file)
 		return -errno;
 	if (fstat(fileno(file), &st) != 0) {
 		rc = -errno;
-		fclose(file);
 		return rc;
 	}
 	if (!S_ISREG(st.st_mode) || st.st_size <= 0) {
-		fclose(file);
 		return -EINVAL;
 	}
 	if ((uintmax_t)st.st_size > max_bytes ||
 	    (uintmax_t)st.st_size > (SIZE_MAX / 4) * 3 - 2) {
-		fclose(file);
 		return -EFBIG;
 	}
 	length = (size_t)st.st_size;
 	prefix_len = strlen(prefix);
 	capacity = (length + 2) / 3 * 4 + 1;
 	if (prefix_len > SIZE_MAX - capacity) {
-		fclose(file);
 		return -EOVERFLOW;
 	}
 	encoded = malloc(prefix_len + capacity);
 	if (!encoded) {
-		fclose(file);
 		return -ENOMEM;
 	}
 	memcpy(encoded, prefix, prefix_len);
@@ -116,26 +121,25 @@ int base64_encode_file_prefixed(const char *path, const char *prefix,
 		rc = -EFBIG;
 	if (rc == 0 && ferror(file))
 		rc = errno ? -errno : -EIO;
-	fclose(file);
-	if (rc != 0) {
-		free(encoded);
+	if (fclose(file) != 0 && rc == 0)
+		rc = errno ? -errno : -EIO;
+	file = NULL;
+	if (rc != 0)
 		return rc;
-	}
-	*out = encoded;
+	*out = morph_charp_steal(&encoded);
 	return 0;
 }
 
-char *base64_encode_file(const char *path)
+char *base64_encode_file_copy(const char *path)
 {
 	char *encoded = NULL;
 
-	if (base64_encode_file_prefixed(path, "", MORPH_MEDIA_MAX_FILE_BYTES,
-				       &encoded) != 0)
+	if (base64_encode_file_prefixed_copy(path, "", MORPH_MEDIA_MAX_FILE_BYTES, &encoded) != 0)
 		return NULL;
 	return encoded;
 }
 
-unsigned char *base64_decode(const char *text, size_t *out_len)
+unsigned char *base64_decode_copy(const char *text, size_t *out_len)
 {
 	unsigned char *out = NULL;
 	size_t len;

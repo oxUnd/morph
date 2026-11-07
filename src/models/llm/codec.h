@@ -7,6 +7,10 @@
 #include "http/sse.h"
 #include "cJSON.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct llm_codec {
 	const char *endpoint;
 	const char *input_key;
@@ -18,9 +22,16 @@ struct llm_codec {
 	sse_event_cb event;
 };
 
-const struct llm_codec *llm_codec_resolve(const struct model *model);
-cJSON *llm_codec_schema(cJSON *params);
+/* Immutable process-lifetime codec; callbacks borrow inputs and return owned JSON. */
+const struct llm_codec *llm_codec_borrow(const struct model *model);
+/* Borrow params and create an independent normalized schema. Invalid input or
+ * allocation failure returns NULL without modifying or consuming params. */
+cJSON *llm_codec_schema_copy(const cJSON *params);
 
 int llm_codec_add_options(struct morph_log *logger, cJSON *root, const char *json);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

@@ -18,7 +18,7 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 	cJSON *rows = NULL;
 	const cJSON *row;
 	const char *action = argc > 1 ? argv[1] : "list";
-	int rc = runtime_hooks_snapshot(ctx->runtime, &rows);
+	int rc = runtime_hooks_snapshot_copy(ctx->runtime, &rows);
 
 	if (rc != 0)
 		return rc;
@@ -34,7 +34,7 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 		return rc;
 	}
 	if (strcmp(action, "project") == 0) {
-		const char *cwd = runtime_workdir_get(ctx->runtime);
+		const char *cwd = runtime_workdir_borrow(ctx->runtime);
 		struct sha256_ctx sha;
 		unsigned char hash[32];
 		char digest[65];

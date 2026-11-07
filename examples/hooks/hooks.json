@@ -1,5 +1,5 @@
 {
-  "description": "Run the focused arena tests before accepting completion.",
+  "description": "Run the focused cleanup and ownership tests before accepting completion.",
   "hooks": {
     "Stop": [
       {

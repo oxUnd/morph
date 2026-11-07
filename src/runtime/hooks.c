@@ -1,10 +1,12 @@
 #include "runtime/hooks.h"
+#include "util/cleanup.h"
 #include "runtime/hooks_internal.h"
 
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/file.h"
 #include "util/log.h"
+#include "util/json.h"
 #include "util/sha256.h"
 #include "util/utf8.h"
 
@@ -17,7 +19,7 @@
 #include <time.h>
 #include <unistd.h>
 
-const char *hook_json_string(const cJSON *obj, const char *key)
+const char *hook_json_string_borrow(const cJSON *obj, const char *key)
 {
 	const cJSON *value = cJSON_GetObjectItemCaseSensitive(obj, key);
 
@@ -139,19 +141,19 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 		cJSON_Delete(canonical);
 		return canonical ? -E2BIG : -ENOMEM;
 	}
-	entry = morph_array_push(&manager->entries);
+	entry = morph_array_push_borrow(&manager->entries);
 	if (!entry) {
 		cJSON_Delete(canonical);
 		return -ENOMEM;
 	}
 	memset(entry, 0, sizeof(*entry));
-	entry->source = file_resolve_path(source);
+	entry->source = file_resolve_path_copy(source);
 	if (!entry->source)
 		entry->source = strdup(source);
 	entry->event = strdup(event);
 	entry->matcher = strdup(matcher);
-	entry->command = strdup(hook_json_string(handler, "command"));
-	entry->status_message = strdup(hook_json_string(handler, "statusMessage"));
+	entry->command = strdup(hook_json_string_borrow(handler, "command"));
+	entry->status_message = strdup(hook_json_string_borrow(handler, "statusMessage"));
 	entry->project = project;
 	entry->timeout = cJSON_IsNumber(timeout) ? timeout->valueint
 						 : (event_short_timeout(event) ? 1 : 600);
@@ -168,8 +170,9 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 	    (limit && (!cJSON_IsNumber(limit) || limit->valuedouble != (double)limit->valueint)) ||
 	    entry->context_limit < 0 || entry->context_limit > 32768 || strlen(matcher) > 1024 ||
 	    strlen(entry->command) >= PROCESS_COMMAND_MAX ||
-	    (!entry->command[0] && strcmp(hook_json_string(handler, "type"), "command") == 0) ||
-	    !*hook_json_string(handler, "type"))
+	    (!entry->command[0] &&
+	     strcmp(hook_json_string_borrow(handler, "type"), "command") == 0) ||
+	    !*hook_json_string_borrow(handler, "type"))
 		valid = 0;
 	if (*matcher && strcmp(matcher, "*") != 0 && !hook_event_ignores_matcher(event)) {
 		entry->regex_ready = regcomp(&entry->regex, matcher, REG_EXTENDED | REG_NOSUB) == 0;
@@ -177,14 +180,17 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 			valid = 0;
 	}
 	/* Stable field order makes formatting and JSON key order irrelevant. */
-	cJSON_AddStringToObject(canonical, "event", event);
-	cJSON_AddStringToObject(canonical, "matcher", matcher);
-	cJSON_AddStringToObject(canonical, "type", hook_json_string(handler, "type"));
-	cJSON_AddStringToObject(canonical, "command", entry->command);
-	cJSON_AddStringToObject(canonical, "statusMessage",
-				hook_json_string(handler, "statusMessage"));
-	cJSON_AddNumberToObject(canonical, "timeout", entry->timeout);
-	cJSON_AddNumberToObject(canonical, "additionalContextLimit", entry->context_limit);
+	if (!cJSON_AddStringToObject(canonical, "event", event) ||
+	    !cJSON_AddStringToObject(canonical, "matcher", matcher) ||
+	    !cJSON_AddStringToObject(canonical, "type", hook_json_string_borrow(handler, "type")) ||
+	    !cJSON_AddStringToObject(canonical, "command", entry->command) ||
+	    !cJSON_AddStringToObject(canonical, "statusMessage",
+				     hook_json_string_borrow(handler, "statusMessage")) ||
+	    !cJSON_AddNumberToObject(canonical, "timeout", entry->timeout) ||
+	    !cJSON_AddNumberToObject(canonical, "additionalContextLimit", entry->context_limit)) {
+		cJSON_Delete(canonical);
+		return -ENOMEM;
+	}
 	entry->definition = cJSON_PrintUnformatted(canonical);
 	cJSON_Delete(canonical);
 	if (!entry->definition)
@@ -195,12 +201,12 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 				      project ? manager->workdir : "user", entry->source, event,
 				      group_index, handler_index);
 	if (rc == 0) {
-		digest_text(morph_buf_cstr(&identity), entry->id);
+		digest_text(morph_buf_cstr_borrow(&identity), entry->id);
 		morph_buf_reset(&identity);
 		rc = morph_buf_printf(&identity, "%s\n%s", entry->id, entry->definition);
 	}
 	if (rc == 0)
-		digest_text(morph_buf_cstr(&identity), entry->digest);
+		digest_text(morph_buf_cstr_borrow(&identity), entry->digest);
 	morph_buf_cleanup(&identity);
 	if (rc != 0)
 		return rc;
@@ -214,11 +220,11 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 			portable = 0;
 	}
 	entry->supported = portable && valid && event_supported(event) &&
-			   strcmp(hook_json_string(handler, "type"), "command") == 0;
+			   strcmp(hook_json_string_borrow(handler, "type"), "command") == 0;
 	entry->diagnostic = !valid ? "Invalid command, timeout, context limit, or matcher regex."
 			    : !event_supported(event)
 				    ? "This lifecycle event is not supported by Morph."
-			    : strcmp(hook_json_string(handler, "type"), "command") != 0
+			    : strcmp(hook_json_string_borrow(handler, "type"), "command") != 0
 				    ? "Only command handlers are supported."
 			    : !portable ? "Handler contains unsupported fields (for example async "
 					  "or commandWindows)."
@@ -230,7 +236,7 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 	if (rc == 0 && !project && !entry->recorded) {
 		char legacy_id[65];
 		char legacy_digest[65];
-		morph_buf_t legacy;
+		morph_buf_t legacy MORPH_CLEANUP(morph_buf_cleanup) = {0};
 		sqlite3_stmt *stmt = NULL;
 
 		rc = morph_buf_init(&legacy, 128);
@@ -239,12 +245,12 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 		rc = morph_buf_printf(&legacy, "%s\n%s\n%s\n%d\n%d", manager->workdir, source,
 				      event, group_index, handler_index);
 		if (rc == 0) {
-			digest_text(morph_buf_cstr(&legacy), legacy_id);
+			digest_text(morph_buf_cstr_borrow(&legacy), legacy_id);
 			morph_buf_reset(&legacy);
 			rc = morph_buf_printf(&legacy, "%s\n%s", legacy_id, entry->definition);
 		}
 		if (rc == 0)
-			digest_text(morph_buf_cstr(&legacy), legacy_digest);
+			digest_text(morph_buf_cstr_borrow(&legacy), legacy_digest);
 		morph_buf_cleanup(&legacy);
 		if (rc != 0)
 			return rc;
@@ -385,7 +391,7 @@ static int load_json_file(struct hook_manager *manager, const char *path, int pr
 		return hook_load_error(
 			manager, path, -EFBIG,
 			"Hooks configuration must be a regular file within the size limit.");
-	text = file_read_all(path, NULL);
+	text = file_read_all_copy(path, NULL);
 	if (!text)
 		return hook_load_error(manager, path, -EIO, NULL);
 	root = cJSON_ParseWithOpts(text, &parse_end, 1);
@@ -450,7 +456,7 @@ int hook_manager_reload(struct hook_manager *manager)
 {
 	struct hook_entry *entry;
 	char path[PATH_MAX];
-	char *home = file_expand_path("~/.morph/hooks.json");
+	char *home = file_expand_path_copy("~/.morph/hooks.json");
 	int rc;
 	int enabled = manager ? manager->config->hooks_enabled : 0;
 
@@ -539,7 +545,7 @@ int hook_manager_init(struct hook_manager *manager, struct db *db, const struct 
 	manager->config = config;
 	snprintf(manager->config_path, sizeof(manager->config_path), "%s",
 		 config_path ? config_path : "");
-	char *resolved = file_resolve_path(workdir);
+	char *resolved = file_resolve_path_copy(workdir);
 	snprintf(manager->workdir, sizeof(manager->workdir), "%s", resolved ? resolved : workdir);
 	free(resolved);
 	rc = db_exec(db,
@@ -592,7 +598,7 @@ const char *hook_entry_state(struct hook_manager *manager, struct hook_entry *en
 
 static int hook_review_digest(struct hook_manager *manager, char digest[65])
 {
-	morph_buf_t text;
+	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	struct hook_entry *entry;
 	int rc = morph_buf_init(&text, 256);
 
@@ -605,60 +611,63 @@ static int hook_review_digest(struct hook_manager *manager, char digest[65])
 					      entry->supported);
 	}
 	if (rc == 0)
-		digest_text(morph_buf_cstr(&text), digest);
+		digest_text(morph_buf_cstr_borrow(&text), digest);
 	morph_buf_cleanup(&text);
 	return rc;
 }
 
 cJSON *hook_manager_list(struct hook_manager *manager)
 {
-	cJSON *list = cJSON_CreateArray();
+	cJSON *list MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
 	struct hook_entry *entry;
 	char review_digest[65];
 
-	if (!manager || !manager->ready || !list ||
-	    hook_review_digest(manager, review_digest) != 0) {
-		cJSON_Delete(list);
+	if (!manager || !manager->ready || !list || hook_review_digest(manager, review_digest) != 0)
 		return NULL;
-	}
 	morph_array_foreach (entry, &manager->entries, struct hook_entry) {
-		cJSON *row = cJSON_CreateObject();
-		if (!row || hook_refresh_trust(manager, entry) != 0) {
-			cJSON_Delete(row);
-			cJSON_Delete(list);
-			return NULL;
-		}
-		cJSON_AddStringToObject(row, "review_digest", review_digest);
-		cJSON_AddBoolToObject(row, "project", entry->project);
-		cJSON_AddStringToObject(row, "id", entry->id);
-		cJSON_AddStringToObject(row, "digest", entry->digest);
-		cJSON_AddStringToObject(row, "source", entry->source);
-		cJSON_AddStringToObject(row, "event", entry->event);
-		cJSON_AddStringToObject(row, "matcher", entry->matcher);
-		cJSON_AddStringToObject(row, "command", entry->command);
-		cJSON_AddStringToObject(row, "definition", entry->definition);
-		cJSON_AddStringToObject(row, "previous_definition",
-					entry->previous ? entry->previous : "");
-		cJSON_AddStringToObject(row, "state", hook_entry_state(manager, entry));
-		cJSON_AddStringToObject(row, "diagnostic", entry->diagnostic);
-		cJSON_AddStringToObject(row, "statusMessage", entry->status_message);
-		cJSON_AddNumberToObject(row, "additionalContextLimit", entry->context_limit);
-		cJSON_AddStringToObject(row, "cwd", manager->workdir);
+		cJSON *row MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
 		char workspace_digest[65];
+
+		if (!row || hook_refresh_trust(manager, entry) != 0)
+			return NULL;
 		digest_text(manager->workdir, workspace_digest);
-		cJSON_AddStringToObject(row, "workspace_digest", workspace_digest);
-		cJSON_AddBoolToObject(row, "workspace_trusted", project_trusted(manager));
-		cJSON_AddNumberToObject(row, "timeout", entry->timeout);
+		if (!cJSON_AddStringToObject(row, "review_digest", review_digest) ||
+		    !cJSON_AddBoolToObject(row, "project", entry->project) ||
+		    !cJSON_AddStringToObject(row, "id", entry->id) ||
+		    !cJSON_AddStringToObject(row, "digest", entry->digest) ||
+		    !cJSON_AddStringToObject(row, "source", entry->source) ||
+		    !cJSON_AddStringToObject(row, "event", entry->event) ||
+		    !cJSON_AddStringToObject(row, "matcher", entry->matcher) ||
+		    !cJSON_AddStringToObject(row, "command", entry->command) ||
+		    !cJSON_AddStringToObject(row, "definition", entry->definition) ||
+		    !cJSON_AddStringToObject(row, "previous_definition",
+					     entry->previous ? entry->previous : "") ||
+		    !cJSON_AddStringToObject(row, "state", hook_entry_state(manager, entry)) ||
+		    !cJSON_AddStringToObject(row, "diagnostic", entry->diagnostic) ||
+		    !cJSON_AddStringToObject(row, "statusMessage", entry->status_message) ||
+		    !cJSON_AddNumberToObject(row, "additionalContextLimit", entry->context_limit) ||
+		    !cJSON_AddStringToObject(row, "cwd", manager->workdir) ||
+		    !cJSON_AddStringToObject(row, "workspace_digest", workspace_digest) ||
+		    !cJSON_AddBoolToObject(row, "workspace_trusted", project_trusted(manager)) ||
+		    !cJSON_AddNumberToObject(row, "timeout", entry->timeout))
+			return NULL;
 		const cJSON *last;
 		cJSON_ArrayForEach (last, manager->recent) {
-			if (strcmp(hook_json_string(last, "hook_id"), entry->id) == 0) {
+			if (strcmp(hook_json_string_borrow(last, "hook_id"), entry->id) == 0) {
+				cJSON *run MORPH_CLEANUP(morph_json_cleanup) =
+					cJSON_Duplicate(last, 1);
+
 				cJSON_DeleteItemFromObject(row, "last_run");
-				cJSON_AddItemToObject(row, "last_run", cJSON_Duplicate(last, 1));
+				if (!run || morph_json_object_take(row, "last_run", &run) != 0)
+					return NULL;
 			}
 		}
-		cJSON_AddItemToArray(list, row);
+		if (morph_json_array_take(list, &row) != 0)
+			return NULL;
 	}
-	return list;
+	cJSON *result = list;
+	list = NULL;
+	return result;
 }
 
 static int hook_manager_batch(struct hook_manager *manager, int trust, const char *expected_digest)
@@ -763,7 +772,7 @@ int hook_manager_action(struct hook_manager *manager, const char *action, const 
 			return rc;
 		entry = NULL;
 		for (size_t i = 0; i < manager->entries.nelts; i++) {
-			struct hook_entry *candidate = morph_array_get(&manager->entries, i);
+			struct hook_entry *candidate = morph_array_borrow(&manager->entries, i);
 			if (strcmp(candidate->id, id) == 0)
 				entry = candidate;
 		}

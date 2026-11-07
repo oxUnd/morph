@@ -9,7 +9,6 @@ struct cli_application;
 #include "util/file.h"
 #include "util/buf.h"
 #include "util/error.h"
-#include "util/arena.h"
 #include "util/utf8.h"
 #include <errno.h>
 #include <limits.h>

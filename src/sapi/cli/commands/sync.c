@@ -278,7 +278,7 @@ static int cli_sync_command_replace_db(struct cli_application *ctx, const char *
 
 static int cli_sync_cmd(struct cli_application *ctx, int argc, char **argv)
 {
-	const char *sub = cli_cmd_arg(argc, argv, 1);
+	const char *sub = cli_cmd_arg_borrow(argc, argv, 1);
 
 	if (!sub || strcmp(sub, "status") == 0)
 		return cli_sync_command_status(ctx);
@@ -287,12 +287,12 @@ static int cli_sync_cmd(struct cli_application *ctx, int argc, char **argv)
 	if (strcmp(sub, "conflicts") == 0)
 		return cli_sync_command_conflicts(ctx);
 	if (strcmp(sub, "restore") == 0)
-		return cli_sync_command_restore(ctx, cli_cmd_arg(argc, argv, 2));
+		return cli_sync_command_restore(ctx, cli_cmd_arg_borrow(argc, argv, 2));
 	if (strcmp(sub, "backups") == 0)
-		return cli_sync_command_backups(ctx, cli_cmd_arg(argc, argv, 2));
+		return cli_sync_command_backups(ctx, cli_cmd_arg_borrow(argc, argv, 2));
 	if (strcmp(sub, "restore-db") == 0) {
-		const char *snapshot_id = cli_cmd_arg(argc, argv, 2);
-		const char *destination = cli_cmd_arg(argc, argv, 3);
+		const char *snapshot_id = cli_cmd_arg_borrow(argc, argv, 2);
+		const char *destination = cli_cmd_arg_borrow(argc, argv, 3);
 		int yes = destination &&
 			  (strcmp(destination, "--yes") == 0 || strcmp(destination, "-y") == 0);
 

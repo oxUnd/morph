@@ -39,10 +39,10 @@ static int cli_skill_collect(struct cli_application *ctx, morph_array_t *items, 
 		struct skill_entry entry;
 		struct cli_skill_list_item *item;
 
-		rc = runtime_skill_info(ctx->runtime, i, &entry);
+		rc = runtime_skill_info_borrow(ctx->runtime, i, &entry);
 		if (rc != 0)
 			goto out;
-		item = morph_array_push(items);
+		item = morph_array_push_borrow(items);
 		if (!item) {
 			rc = -ENOMEM;
 			goto out;
@@ -92,7 +92,7 @@ static int cli_skill_print_list(struct cli_application *ctx)
 		struct skill_entry entry;
 		morph_buf_t label = {0};
 
-		if (runtime_skill_info(ctx->runtime, item->index, &entry) != 0)
+		if (runtime_skill_info_borrow(ctx->runtime, item->index, &entry) != 0)
 			continue;
 		rc = morph_buf_init(&label, 128);
 		if (rc != 0)
@@ -105,7 +105,8 @@ static int cli_skill_print_list(struct cli_application *ctx)
 			rc = label.failed;
 		else
 			morph_tui_widget_tree_add(&tree, MORPH_TUI_WIDGET_TREE_ROOT,
-						  morph_buf_cstr(&label), entry.fm.description);
+						  morph_buf_cstr_borrow(&label),
+						  entry.fm.description);
 		morph_buf_cleanup(&label);
 		if (rc != 0)
 			break;
@@ -113,7 +114,7 @@ static int cli_skill_print_list(struct cli_application *ctx)
 	if (rc == 0)
 		rc = morph_tui_widget_tree_render(&tree, &output, columns, 0, SIZE_MAX);
 	if (rc == 0)
-		fputs(ctx, morph_buf_cstr(&output), stdout);
+		fputs(ctx, morph_buf_cstr_borrow(&output), stdout);
 	morph_buf_cleanup(&output);
 out_tree:
 	morph_tui_widget_tree_cleanup(&tree);
@@ -171,7 +172,7 @@ static int cli_skill_print_info(struct cli_application *ctx, const char *name)
 	int columns = cli_list_columns();
 	int optional;
 
-	if (runtime_skill_find(ctx->runtime, name, &entry) != 0) {
+	if (runtime_skill_find_borrow(ctx->runtime, name, &entry) != 0) {
 		CMD_ERROR(ctx, "skill not found: %s", name);
 		return -ENOENT;
 	}
@@ -201,12 +202,12 @@ static int cli_skill_print_info(struct cli_application *ctx, const char *name)
 
 static int cli_skill_command_skill(struct cli_application *ctx, int argc, char **argv)
 {
-	const char *sub = cli_cmd_arg(argc, argv, 1);
+	const char *sub = cli_cmd_arg_borrow(argc, argv, 1);
 	if (sub && strcmp(sub, "list") == 0) {
 		return cli_skill_print_list(ctx);
 	}
 	if (sub && strcmp(sub, "info") == 0) {
-		const char *name = cli_cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR(ctx, "usage: /skill info <name>");
 			return -EINVAL;
@@ -214,13 +215,13 @@ static int cli_skill_command_skill(struct cli_application *ctx, int argc, char *
 		return cli_skill_print_info(ctx, name);
 	}
 	if (sub && strcmp(sub, "activate") == 0) {
-		const char *name = cli_cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR(ctx, "usage: /skill activate <name>");
 			return -EINVAL;
 		}
 		struct skill_entry entry;
-		if (runtime_skill_find(ctx->runtime, name, &entry) != 0) {
+		if (runtime_skill_find_borrow(ctx->runtime, name, &entry) != 0) {
 			CMD_ERROR(ctx, "skill not found: %s", name);
 			return -ENOENT;
 		}
@@ -236,13 +237,13 @@ static int cli_skill_command_skill(struct cli_application *ctx, int argc, char *
 		return rc < 0 ? rc : 0;
 	}
 	if (sub && strcmp(sub, "deactivate") == 0) {
-		const char *name = cli_cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR(ctx, "usage: /skill deactivate <name>");
 			return -EINVAL;
 		}
 		struct skill_entry entry;
-		if (runtime_skill_find(ctx->runtime, name, &entry) != 0) {
+		if (runtime_skill_find_borrow(ctx->runtime, name, &entry) != 0) {
 			CMD_ERROR(ctx, "skill not found: %s", name);
 			return -ENOENT;
 		}

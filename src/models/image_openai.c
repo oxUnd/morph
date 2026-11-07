@@ -1,6 +1,8 @@
 #include "image_provider.h"
 #include "http/client.h"
 #include "util/buf.h"
+#include "util/json.h"
+#include "util/cleanup.h"
 #include "util/error.h"
 #include "util/file.h"
 #include "cJSON.h"
@@ -123,7 +125,7 @@ static int openai_post_json(struct model *model,
 			    struct image_payload *payload)
 {
 	cJSON *body = NULL;
-	char *body_text = NULL;
+	char *body_text MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
 	int rc = 0;
 
 	body = cJSON_CreateObject();
@@ -142,7 +144,7 @@ static int openai_post_json(struct model *model,
 
 	rc = image_provider_post_json(model, "/images/generations", "OpenAI image API", body_text,
 				      payload);
-	free(body_text);
+
 	return rc;
 }
 
@@ -203,9 +205,9 @@ static int openai_post_edit(struct model *model,
 		free(parts);
 		return rc;
 	}
-	headers[0] = morph_buf_cstr(&auth);
-	rc = http_post_multipart_ex(&model->http, morph_buf_cstr(&url), parts, idx, headers, 1,
-				    model->timeout_seconds, &resp);
+	headers[0] = morph_buf_cstr_borrow(&auth);
+	rc = http_post_multipart_ex(&model->http, morph_buf_cstr_borrow(&url), parts, idx, headers,
+				    1, model->timeout_seconds, &resp);
 	free(parts);
 	morph_buf_cleanup(&url);
 	morph_buf_cleanup(&auth);
@@ -232,6 +234,8 @@ static int openai_execute(struct model *model,
 {
 	if (!model || !request || !request->prompt || !payload)
 		return -EINVAL;
+	if (payload->data)
+		return -EEXIST;
 	if (request->reference_image_count > 0) {
 		if (!openai_is_gpt_image(model))
 			return -ENOTSUP;
@@ -240,7 +244,7 @@ static int openai_execute(struct model *model,
 	return openai_post_json(model, request, payload);
 }
 
-const struct image_provider_ops *image_openai_provider(void)
+const struct image_provider_ops *image_openai_provider_borrow(void)
 {
 	static const struct image_provider_ops ops = {
 		.name = "openai-images",

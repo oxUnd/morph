@@ -39,7 +39,6 @@ static int mcp_stdio_recv(struct mcp_client *client, int req_id,
 	char chunk[BUFSIZ];
 	int rc;
 
-	*response = NULL;
 	if (!buffer->data) {
 		rc = morph_buf_init(buffer, BUFSIZ);
 		if (rc != 0)
@@ -107,6 +106,11 @@ static int mcp_stdio_recv(struct mcp_client *client, int req_id,
 int mcp_stdio_exchange(struct mcp_client *client, const struct mcp_wire_request *request,
 		       int timeout_ms, struct mcp_wire_reply *reply)
 {
+	if (!client || !request || !request->json || !reply)
+		return -EINVAL;
+	if (reply->json || reply->session_id)
+		return -EEXIST;
+	struct mcp_wire_reply received MORPH_CLEANUP(mcp_wire_reply_cleanup) = {0};
 	int64_t deadline = morph_io_now_ms() + timeout_ms;
 	int rc = morph_io_write(client->stdin_fd, request->json, strlen(request->json), deadline,
 				client->interrupt_check, client->interrupt_user_data);
@@ -126,15 +130,26 @@ int mcp_stdio_exchange(struct mcp_client *client, const struct mcp_wire_request 
 	if (remaining <= 0) {
 		return -ETIMEDOUT;
 	}
-	rc = mcp_stdio_recv(client, request->id, (int)remaining, &reply->json);
+	rc = mcp_stdio_recv(client, request->id, (int)remaining, &received.json);
 	if (rc == -EFBIG) {
 		mcp_stdio_disconnect(client);
+	}
+	if (rc == 0) {
+		*reply = received;
+		memset(&received, 0, sizeof(received));
 	}
 	return rc;
 }
 
 /* ----- Public stdio transport functions ----- */
 
+static void mcp_environment_cleanup(morph_array_t *environment)
+{
+	char **entry;
+	morph_array_foreach (entry, environment, char *)
+		free(*entry);
+	morph_array_cleanup(environment);
+}
 
 static int mcp_stdio_spawn(struct mcp_client *client)
 {
@@ -156,26 +171,19 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 		return pipe_rc;
 	}
 
-	struct arena *arena = arena_create(0);
-	morph_array_t environment;
+	morph_array_t environment MORPH_CLEANUP(mcp_environment_cleanup) = {0};
 	posix_spawn_file_actions_t actions;
 	posix_spawnattr_t attributes;
 	char *argv[MCP_CMD_MAX + 2];
 	pid_t pid = -1;
 	int rc;
 
-	if (!arena) {
-		close(to_child[0]);
-		close(to_child[1]);
-		close(from_child[0]);
-		close(from_child[1]);
-		return -ENOMEM;
-	}
 	size_t environment_count = 0;
 	for (char **item = environ; *item; item++)
 		environment_count++;
-	rc = morph_array_init_arena(&environment, arena,
-		environment_count + (size_t)client->config.env_count + 1, sizeof(*argv));
+	rc = morph_array_init(&environment,
+			      environment_count + (size_t)client->config.env_count + 1,
+			      sizeof(*argv));
 	if (rc != 0)
 		goto out_close_pipes;
 	for (char **item = environ; *item; item++) {
@@ -189,34 +197,38 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 				overridden = 1;
 		}
 		if (!overridden) {
-			char **slot = morph_array_push(&environment);
+			char **slot = morph_array_push_borrow(&environment);
 
 			if (!slot) {
 				rc = (-ENOMEM);
 				goto out_close_pipes;
 			}
-			*slot = *item;
+			*slot = strdup(*item);
+			if (!*slot) {
+				rc = -ENOMEM;
+				goto out_close_pipes;
+			}
 		}
 	}
 	for (int i = 0; i < client->config.env_count; i++) {
-		morph_buf_t value;
+		morph_buf_t value MORPH_CLEANUP(morph_buf_cleanup) = {0};
 		char **slot;
 
-		rc = morph_buf_init_arena(&value, arena, 64);
+		rc = morph_buf_init(&value, 64);
 		if (rc != 0)
 			goto out_close_pipes;
 		rc = morph_buf_printf(&value, "%s=%s", client->config.env_keys[i],
 			client->config.env_vals[i]);
 		if (rc != 0)
 			goto out_close_pipes;
-		slot = morph_array_push(&environment);
+		slot = morph_array_push_borrow(&environment);
 		if (!slot) {
 			rc = (-ENOMEM);
 			goto out_close_pipes;
 		}
-		*slot = (char *)morph_buf_cstr(&value);
+		*slot = morph_buf_detach(&value);
 	}
-	char **last = morph_array_push(&environment);
+	char **last = morph_array_push_borrow(&environment);
 	if (!last) {
 		rc = (-ENOMEM);
 		goto out_close_pipes;
@@ -262,7 +274,6 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 		rc = (-rc);
 		goto out_close_pipes;
 	}
-	arena_destroy(arena);
 	close(to_child[0]);
 	close(from_child[1]);
 
@@ -275,7 +286,6 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 	return 0;
 
 out_close_pipes:
-	arena_destroy(arena);
 	close(to_child[0]);
 	close(to_child[1]);
 	close(from_child[0]);

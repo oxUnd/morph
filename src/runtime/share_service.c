@@ -1,7 +1,8 @@
 #include "runtime/runtime.h"
 #include "runtime/runtime_internal.h"
 #include "persistence/history_store.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "util/error.h"
 
 #include <errno.h>
@@ -129,8 +130,8 @@ static int share_answer(const struct model_history_item *item, void *data)
 	if (migrated) {
 		char *question = NULL;
 
-		rc = history_store_previous_question(context->db, context->session_id,
-						     item->sequence_no, &question);
+		rc = history_store_previous_question_copy(context->db, context->session_id,
+							  item->sequence_no, &question);
 		if (rc == 0)
 			rc = share_question(document, question);
 		free(question);
@@ -156,20 +157,16 @@ static int share_history(struct db *db, int64_t session_id, cJSON **out)
 
 static int share_legacy(struct db *db, int64_t session_id, cJSON **out)
 {
-	struct arena *arena = arena_create(0);
-	const char *answer;
-	const char *question;
+	char *answer MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *question MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	cJSON *document = NULL;
 	int rc;
 
-	if (!arena)
-		return -ENOMEM;
-	rc = history_store_legacy_answer(db, session_id, arena, &answer, &question);
+	rc = history_store_legacy_answer_copy(db, session_id, &answer, &question);
 	if (rc == 0) {
 		document = share_document(answer);
 		rc = document ? share_question(document, question) : -ENOMEM;
 	}
-	arena_destroy(arena);
 	if (rc == 0)
 		*out = document;
 	else
@@ -180,11 +177,13 @@ static int share_legacy(struct db *db, int64_t session_id, cJSON **out)
 int runtime_session_share_current(struct runtime *runtime, cJSON **out)
 {
 	struct runtime_context *context;
+	cJSON *document MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	int rc;
 
 	if (!out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	if (!runtime)
 		return -EINVAL;
 	context = &runtime->context;
@@ -194,10 +193,15 @@ int runtime_session_share_current(struct runtime *runtime, cJSON **out)
 	if (context->current_session.id <= 0) {
 		rc = -ENODATA;
 	} else {
-		rc = share_history(&context->database, context->current_session.id, out);
+		rc = share_history(&context->database, context->current_session.id, &document);
 		if (rc == -ENODATA)
-			rc = share_legacy(&context->database, context->current_session.id, out);
+			rc = share_legacy(&context->database, context->current_session.id,
+					  &document);
 	}
 	pthread_mutex_unlock(&context->execution_lock);
+	if (rc == 0) {
+		*out = document;
+		document = NULL;
+	}
 	return rc;
 }

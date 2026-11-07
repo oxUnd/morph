@@ -53,7 +53,7 @@ import application state. Configuration services do not import wizard pages.
 ## Execution and teardown
 
 `main` initializes `cli_application`, invokes interactive, single-turn or JSON
-execution, then shuts the same application down. `cli_application_tui` returns
+execution, then shuts the same application down. `cli_application_tui_borrow` returns
 its initialized base or NULL for a mode without a terminal host. It never
 allocates another framework application.
 

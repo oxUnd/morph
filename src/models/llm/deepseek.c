@@ -88,7 +88,7 @@ static int deepseek_add_message_fields(const struct model *model, cJSON *message
 	return 0;
 }
 
-const struct llm_adapter *llm_deepseek_adapter(void)
+const struct llm_adapter *llm_deepseek_adapter_borrow(void)
 {
 	static const struct llm_adapter adapter = {
 		.name = "deepseek",

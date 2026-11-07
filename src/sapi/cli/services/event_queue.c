@@ -3,6 +3,7 @@
 #include "sapi/cli/application.h"
 #include "cJSON.h"
 #include "util/error.h"
+#include "util/cleanup.h"
 #include <morph/tui/application.h>
 
 #include <errno.h>
@@ -46,6 +47,12 @@ static void cli_event_queue_item_free(struct cli_event_queue_item *item)
 	free(item->notification_title);
 	free(item->notification_body);
 	free(item);
+}
+
+static void cli_event_queue_item_clear(struct cli_event_queue_item **owner)
+{
+	cli_event_queue_item_free(*owner);
+	*owner = NULL;
 }
 
 static void cli_event_queue_complete_owner_call(struct cli_event_queue_owner_call *call, int result)
@@ -123,12 +130,15 @@ static void cli_event_queue_consume_wake(struct cli_event_queue *ui)
 	} while (count > 0 || (count < 0 && errno == EINTR));
 }
 
-static int cli_event_queue_enqueue(struct cli_application *ctx, struct cli_event_queue_item *item)
+static int cli_event_queue_enqueue_take(struct cli_application *ctx,
+					struct cli_event_queue_item **owner)
 {
 	struct cli_event_queue *ui;
 
-	if (!ctx || !ctx->events || !item)
+	if (!ctx || !ctx->events || !owner || !*owner)
 		return -EINVAL;
+	struct cli_event_queue_item *item = *owner;
+
 	ui = ctx->events;
 	pthread_mutex_lock(&ui->mutex);
 	if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL && ui->owner_calls_stopped) {
@@ -136,6 +146,7 @@ static int cli_event_queue_enqueue(struct cli_application *ctx, struct cli_event
 		return -ECANCELED;
 	}
 	morph_queue_insert_tail(&ui->pending, &item->link);
+	*owner = NULL;
 	pthread_mutex_unlock(&ui->mutex);
 	cli_event_queue_wake(ui);
 	return 0;
@@ -244,7 +255,7 @@ void cli_event_queue_attach_app(struct cli_application *ctx, struct morph_tui_ap
 
 int cli_event_queue_post_morph_event(struct cli_application *ctx, const struct morph_event *event)
 {
-	struct cli_event_queue_item *item;
+	struct cli_event_queue_item *item MORPH_CLEANUP(cli_event_queue_item_clear) = NULL;
 	int rc;
 
 	if (!ctx || !event)
@@ -267,16 +278,14 @@ int cli_event_queue_post_morph_event(struct cli_application *ctx, const struct m
 			rc = -ENOMEM;
 	}
 	if (rc != 0) {
-		cli_event_queue_item_free(item);
 		return rc;
 	}
 	item->event.name = item->name;
 	item->event.phase = item->phase;
 	item->event.message = item->message;
 	item->event.turn_id = item->turn_id;
-	rc = cli_event_queue_enqueue(ctx, item);
+	rc = cli_event_queue_enqueue_take(ctx, &item);
 	if (rc != 0) {
-		cli_event_queue_item_free(item);
 		return rc;
 	}
 	return 0;
@@ -285,7 +294,7 @@ int cli_event_queue_post_morph_event(struct cli_application *ctx, const struct m
 int cli_event_queue_post_notification(struct cli_application *ctx,
 				      const struct notification *notification)
 {
-	struct cli_event_queue_item *item;
+	struct cli_event_queue_item *item MORPH_CLEANUP(cli_event_queue_item_clear) = NULL;
 	int rc;
 
 	if (!ctx || !notification)
@@ -303,12 +312,10 @@ int cli_event_queue_post_notification(struct cli_application *ctx,
 	if (rc == 0)
 		rc = cli_event_queue_dup_optional(notification->body, &item->notification_body);
 	if (rc != 0) {
-		cli_event_queue_item_free(item);
 		return rc;
 	}
-	rc = cli_event_queue_enqueue(ctx, item);
+	rc = cli_event_queue_enqueue_take(ctx, &item);
 	if (rc != 0) {
-		cli_event_queue_item_free(item);
 		return rc;
 	}
 	return 0;
@@ -317,7 +324,7 @@ int cli_event_queue_post_notification(struct cli_application *ctx,
 int cli_event_queue_call_owner(struct cli_application *ctx, cli_event_queue_call_fn fn, void *data)
 {
 	struct cli_event_queue_owner_call call;
-	struct cli_event_queue_item *item;
+	struct cli_event_queue_item *item MORPH_CLEANUP(cli_event_queue_item_clear) = NULL;
 	int mutex_rc;
 	int cond_rc;
 	int rc;
@@ -352,9 +359,8 @@ int cli_event_queue_call_owner(struct cli_application *ctx, cli_event_queue_call
 	}
 	item->kind = CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL;
 	item->owner_call = &call;
-	rc = cli_event_queue_enqueue(ctx, item);
+	rc = cli_event_queue_enqueue_take(ctx, &item);
 	if (rc != 0) {
-		free(item);
 		pthread_cond_destroy(&call.cond);
 		pthread_mutex_destroy(&call.mutex);
 		return rc;

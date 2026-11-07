@@ -85,10 +85,10 @@ names such as `core` and `render` do not appear in public object names.
 | Object | Example public name | Header |
 | --- | --- | --- |
 | Application | `morph_tui_application_run` | `application.h` |
-| View / ViewController | `morph_tui_view_set_hidden`, `morph_tui_view_controller_present` | `view.h`, `view_controller.h` |
-| Window / Layout | `morph_tui_window_set_renderer`, `morph_tui_layout` | `window.h`, `layout.h` |
+| View / ViewController | `morph_tui_view_set_hidden`, `morph_tui_view_controller_present_borrow` | `view.h`, `view_controller.h` |
+| Window / Layout | `morph_tui_window_set_renderer_borrow`, `morph_tui_layout` | `window.h`, `layout.h` |
 | Canvas / Renderer | `morph_tui_canvas_text`, `morph_tui_renderer` | `canvas.h`, `renderer.h` |
-| Widget / Control | `morph_tui_widget_create`, `morph_tui_widget_list_create` | `widget.h`, `widgets/list.h` |
+| Widget / Control | `morph_tui_widget_add_borrow`, `morph_tui_widget_list_add_borrow` | `widget.h`, `widgets/list.h` |
 
 Constants follow the same vocabulary, for example `MORPH_TUI_EVENT_KEY`,
 `MORPH_TUI_STYLE_SELECTED`, and `MORPH_TUI_WIDGET_ACTION_CHANGED`. Low-level
@@ -117,7 +117,7 @@ application has one terminal window, an active controller stack, and deferred
 presentation transitions. It does not use the default libuv loop or a singleton.
 
 The owner thread creates, steps/runs, and destroys the application. Workers can
-call `morph_tui_application_wake` and `morph_tui_application_post`. Posts transfer payload ownership
+call `morph_tui_application_wake` and `morph_tui_application_post_take`. A successful post clears its source message and transfers payload ownership
 only on success, preserve order, and release each payload once after delivery or
 shutdown. An async wake is a notification, never a message count; queued messages
 remain distinct when libuv coalesces wakeups. Dispatch uses a bounded batch before
@@ -214,8 +214,8 @@ record the first error, and subsequent constructors stop. Call
 steps. A failed build never presents a partial interface.
 
 The controller owns all view instances and their hierarchy. View instance/state
-storage uses an arena; growing child arrays and replaceable strings have
-explicit cleanup. Children are destroyed before their parents, exactly once.
+storage uses zeroed heap objects; growing child arrays and replaceable strings
+are released by each typed destructor. Children are destroyed before their parents, exactly once.
 Controller `destroy` follows view teardown and must not dereference released
 views. It also runs for build/presentation failure after scope initialization.
 Argument or allocation failures before scope initialization leave caller data
@@ -497,8 +497,8 @@ and restoring the chat composer after closing a modal screen.
 
 `morph/tui/widgets/tree.h` supports both retained trees and incremental reports. Initialize a
 `morph_tui_widget_tree`, add roots with `MORPH_TUI_WIDGET_TREE_ROOT` and children with their parent index,
-then render or draw it. Labels and descriptions are copied into its arena and
-sanitized; callers can release their input immediately. Indices remain stable
+then render or draw it. Labels and descriptions are separately owned heap copies and
+are sanitized; callers can release their input immediately. Indices remain stable
 when storage grows. Adding a node with an invalid parent records a sticky error.
 Cleanup releases the complete model. Initialize each instance once per lifetime.
 

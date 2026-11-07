@@ -6,14 +6,14 @@
 #include "util/array.h"
 
 /* Internal history contracts; transformations return owned strings. */
-char *history_redact_all(struct react_context *ctx, const char *text);
-char *history_redact_json(struct react_context *ctx, const char *text);
-char *history_user_content(const struct model_history_item *item);
+char *history_redacted_text_create(struct react_context *ctx, const char *text);
+char *history_redacted_json_create(struct react_context *ctx, const char *text);
+char *history_user_content_create(const struct model_history_item *item);
 int history_item_tokens(const struct model_history_item *item, struct tokenizer *tokenizer,
 			const char *text);
 int history_store_turn_outcomes(struct db *db, int64_t session_id, const char *turn_id,
 				const char *status, int error_code, struct tokenizer *tokenizer,
 				int *changed);
-int history_tool_call_input(const cJSON *call, enum tool_input_kind *kind, const char **input);
+int history_tool_input_borrow(const cJSON *call, enum tool_input_kind *kind, const char **input);
 
 #endif

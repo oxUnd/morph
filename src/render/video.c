@@ -127,18 +127,18 @@ int video_render_terminal_preview(struct morph_log *logger, const char *path)
 	}
 	if (image_terminal_protocol_available() &&
 	    video_extract_preview(path, preview, sizeof(preview)) == 0) {
-		printf("\n\033]8;;%s\033\\", morph_buf_cstr(&url));
+		printf("\n\033]8;;%s\033\\", morph_buf_cstr_borrow(&url));
 		fflush(stdout);
 		rc = image_render_terminal(logger, preview);
 		printf("\033]8;;\033\\");
 		unlink(preview);
 		if (rc == 0) {
-			video_print_open_link(morph_buf_cstr(&url));
+			video_print_open_link(morph_buf_cstr_borrow(&url));
 			morph_buf_cleanup(&url);
 			return 0;
 		}
 	}
-	video_print_open_link(morph_buf_cstr(&url));
+	video_print_open_link(morph_buf_cstr_borrow(&url));
 	morph_buf_cleanup(&url);
 	return 0;
 }

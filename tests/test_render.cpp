@@ -180,14 +180,14 @@ TEST(RenderVideo, PreviewFallsBackToClickableFileLink) {
 /* ---- render command: path expansion ---- */
 
 TEST(RenderPath, TildeExpansion) {
-	char *expanded = file_expand_path("~/test.txt");
+	char *expanded = file_expand_path_copy("~/test.txt");
 	ASSERT_NE(expanded, nullptr);
 	EXPECT_NE(strstr(expanded, "/test.txt"), nullptr);
 	free(expanded);
 }
 
 TEST(RenderPath, AbsolutePath) {
-	char *expanded = file_expand_path("/tmp/test.txt");
+	char *expanded = file_expand_path_copy("/tmp/test.txt");
 	ASSERT_NE(expanded, nullptr);
 	EXPECT_STREQ(expanded, "/tmp/test.txt");
 	free(expanded);

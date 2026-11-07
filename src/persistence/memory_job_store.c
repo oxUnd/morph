@@ -1,41 +1,49 @@
 #include "memory_job_store.h"
 
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/error.h"
 
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 void memory_job_records_cleanup(struct memory_job_records *records)
 {
 	if (!records)
 		return;
+	for (size_t i = 0; i < records->rows.nelts; i++) {
+		struct memory_job_record *row = morph_array_borrow(&records->rows, i);
+		free(row->payload_json);
+	}
 	morph_array_cleanup(&records->rows);
-	arena_destroy(records->arena);
 	memset(records, 0, sizeof(*records));
+}
+
+static void memory_job_records_move(struct memory_job_records *destination,
+				    struct memory_job_records *source)
+{
+	*destination = *source;
+	memset(source, 0, sizeof(*source));
 }
 
 static int read_records(struct db *db, const char *sql, int64_t session_id, int limit,
 			struct memory_job_records *out)
 {
+	struct memory_job_records value MORPH_CLEANUP(memory_job_records_cleanup) = {0};
 	struct memory_job_record row;
 	sqlite3_stmt *stmt = NULL;
 	int rc;
 
 	if (!db || !db->handle || !out)
 		return -EINVAL;
-	memset(out, 0, sizeof(*out));
-	out->arena = arena_create(BUFSIZ);
-	if (!out->arena)
-		return -ENOMEM;
-	rc = morph_array_init(&out->rows, MORPH_ARRAY_INIT_CAP, sizeof(row));
+	if (out->rows.elts)
+		return -EEXIST;
+	rc = morph_array_init(&value.rows, MORPH_ARRAY_INIT_CAP, sizeof(row));
 	if (rc) {
-		memory_job_records_cleanup(out);
 		return rc;
 	}
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK) {
-		memory_job_records_cleanup(out);
 		return MORPH_ERR_DB;
 	}
 	if (limit > 0) {
@@ -57,20 +65,26 @@ static int read_records(struct db *db, const char *sql, int64_t session_id, int 
 		row.attempts = sqlite3_column_int(stmt, 6);
 		row.error_code = sqlite3_column_int(stmt, 7);
 		snprintf(row.state, sizeof(row.state), "%s", state ? state : "");
-		row.payload_json = payload ? arena_strdup(out->arena, payload) : NULL;
-		struct memory_job_record *slot = morph_array_push(&out->rows);
+		row.payload_json = payload ? strdup(payload) : NULL;
+		if (payload && !row.payload_json) {
+			rc = -ENOMEM;
+			break;
+		}
+		struct memory_job_record *slot = morph_array_push_borrow(&value.rows);
 
-		if ((payload && !row.payload_json) || !slot) {
+		if (!slot) {
+			free(row.payload_json);
 			rc = -ENOMEM;
 			break;
 		}
 		*slot = row;
+		row.payload_json = NULL;
 	}
 	sqlite3_finalize(stmt);
 	if (!rc && step != SQLITE_DONE)
 		rc = MORPH_ERR_DB;
-	if (rc)
-		memory_job_records_cleanup(out);
+	if (rc == 0)
+		memory_job_records_move(out, &value);
 	return rc;
 }
 

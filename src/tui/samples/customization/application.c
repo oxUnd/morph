@@ -12,7 +12,7 @@ static int sample_customization_application_launch(struct morph_tui_application 
 	if (!rc)
 		rc = morph_buf_puts(&app->name, "Ada");
 	if (!rc)
-		rc = morph_tui_application_post(base, SAMPLE_CUSTOMIZATION_READY, NULL, NULL);
+		rc = morph_tui_application_post(base, SAMPLE_CUSTOMIZATION_READY);
 	return rc;
 }
 
@@ -26,10 +26,10 @@ static int sample_customization_application_event(struct morph_tui_application *
 	if (event->key == '?') {
 		struct morph_tui_view_controller_spec help = sample_customization_page_help_spec();
 
-		rc = morph_tui_view_controller_present(base, &help);
+		rc = morph_tui_view_controller_present_borrow(base, &help);
 	} else if (event->key == 12) {
 		morph_tui_application_invalidate(base, MORPH_TUI_INVALIDATE_DISPLAY);
-		rc = morph_tui_application_post(base, SAMPLE_CUSTOMIZATION_REDRAW, NULL, NULL);
+		rc = morph_tui_application_post(base, SAMPLE_CUSTOMIZATION_REDRAW);
 	} else
 		return 0;
 	return rc ? rc : 1;

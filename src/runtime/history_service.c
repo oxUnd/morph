@@ -2,8 +2,9 @@
 #include "runtime/runtime_internal.h"
 #include "persistence/history_store.h"
 #include "util/strmap.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/error.h"
+#include "util/json.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -28,11 +29,11 @@ static int history_coverage(struct runtime_context *ctx, morph_strmap_t *covered
 	if (rc == 0)
 		rc = history_store_summary_sources(&ctx->database, ctx->current_session.id, &ids);
 	for (size_t i = 0; rc == 0 && i < ids.nelts; i++) {
-		const int64_t *id = morph_array_get(&ids, i);
+		const int64_t *id = morph_array_borrow(&ids, i);
 		char key[32];
 
 		snprintf(key, sizeof(key), "%lld", (long long)*id);
-		rc = morph_strmap_set(covered, key, covered);
+		rc = morph_strmap_set_borrow(covered, key, covered);
 	}
 	morph_array_cleanup(&ids);
 	return rc;
@@ -119,11 +120,11 @@ static int history_legacy_entries(struct runtime_context *ctx, cJSON *entries)
 	return rc;
 }
 
-int runtime_session_history_inspect(struct runtime *runtime, cJSON **out)
+int runtime_session_history_inspect_copy(struct runtime *runtime, cJSON **out)
 {
 	struct model_history_item *items = NULL;
 	morph_strmap_t covered = {0};
-	cJSON *root = NULL;
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	cJSON *entries = NULL;
 	int count = 0;
 	int64_t tokens = 0;
@@ -134,7 +135,8 @@ int runtime_session_history_inspect(struct runtime *runtime, cJSON **out)
 
 	if (!out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	rc = history_lock(runtime);
 	if (rc != 0)
 		return rc;
@@ -171,38 +173,40 @@ int runtime_session_history_inspect(struct runtime *runtime, cJSON **out)
 		rc = history_legacy_entries(ctx, entries);
 	if (rc == 0)
 		rc = agent_history_diagnose(items, ctx->tokenizer, &diagnostic);
-	if (rc == 0 && (!cJSON_AddNumberToObject(root, "active_items", active) ||
-	    !cJSON_AddBoolToObject(root, "needs_repair", diagnostic.dangling_calls ||
-		 diagnostic.orphan_results || diagnostic.invalid_payloads) ||
-	    !cJSON_AddNumberToObject(root, "history_tokens", (double)tokens) ||
-	    !cJSON_AddNumberToObject(root, "summary_tokens", (double)summary_tokens) ||
-	    !cJSON_AddNumberToObject(root, "context_limit",
-		ctx->tokenizer ? ctx->tokenizer->context_limit : 0) ||
-	    !cJSON_AddStringToObject(root, "model", ctx->llm ? ctx->llm->model_id : "")))
+	if (rc == 0 &&
+	    (!cJSON_AddNumberToObject(root, "active_items", active) ||
+	     !cJSON_AddBoolToObject(root, "needs_repair",
+				    diagnostic.dangling_calls || diagnostic.orphan_results ||
+					    diagnostic.invalid_payloads) ||
+	     !cJSON_AddNumberToObject(root, "history_tokens", (double)tokens) ||
+	     !cJSON_AddNumberToObject(root, "summary_tokens", (double)summary_tokens) ||
+	     !cJSON_AddNumberToObject(root, "context_limit",
+				      ctx->tokenizer ? ctx->tokenizer->context_limit : 0) ||
+	     !cJSON_AddStringToObject(root, "model", ctx->llm ? ctx->llm->model_id : "")))
 		rc = -ENOMEM;
 	model_history_free_list(items);
 	morph_strmap_cleanup(&covered);
 	pthread_mutex_unlock(&ctx->execution_lock);
-	if (rc != 0) {
-		cJSON_Delete(root);
+	if (rc != 0)
 		return rc;
-	}
 	*out = root;
+	root = NULL;
 	return 0;
 }
 
-int runtime_session_history_entry_input(struct runtime *runtime, int64_t sequence, cJSON **out)
+int runtime_session_history_entry_input_copy(struct runtime *runtime, int64_t sequence, cJSON **out)
 {
 	struct model_history_item *items;
 	struct model_history_item *item;
-	struct arena *arena = NULL;
-	morph_array_t messages = {0};
+	morph_array_t messages MORPH_CLEANUP(agent_chat_messages_cleanup) = {0};
+	cJSON *snapshot MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	int count = 0;
 	int rc;
 
 	if (!out || sequence <= 0)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	rc = history_lock(runtime);
 	if (rc != 0)
 		return rc;
@@ -216,36 +220,38 @@ int runtime_session_history_entry_input(struct runtime *runtime, int64_t sequenc
 	if (rc == 0) {
 		struct chat_message message;
 
-		arena = arena_create(0);
-		rc = arena ? morph_array_init(&messages, 4, sizeof(message)) : -ENOMEM;
+		rc = morph_array_init(&messages, 4, sizeof(message));
 	}
 	if (rc == 0) {
 		struct model_history_item one = *item;
 
 		one.next = NULL;
-		rc = agent_history_build_chat_messages(runtime ? runtime->options.logger : NULL,
-						       &one, &messages, arena);
+		rc = agent_history_messages_copy(runtime ? runtime->options.logger : NULL, &one,
+						 &messages);
 	}
 	if (rc == 0)
-		rc = model_input_snapshot(ctx->llm, NULL, messages.elts, (int)messages.nelts,
-			NULL, 0, out);
-	morph_array_cleanup(&messages);
-	arena_destroy(arena);
+		rc = model_input_snapshot_create(ctx->llm, NULL, messages.elts, (int)messages.nelts,
+						 NULL, 0, &snapshot);
 	model_history_free_list(items);
 	pthread_mutex_unlock(&ctx->execution_lock);
+	if (rc == 0) {
+		*out = snapshot;
+		snapshot = NULL;
+	}
 	return rc;
 }
 
-int runtime_session_last_request(struct runtime *runtime, cJSON **out)
+int runtime_session_last_request_copy(struct runtime *runtime, cJSON **out)
 {
-	struct history_request_snapshot snapshot;
-	struct arena *arena;
-	cJSON *root = NULL;
+	struct history_request_snapshot snapshot MORPH_CLEANUP(history_request_snapshot_cleanup) = {
+		0};
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	int rc;
 
 	if (!out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	rc = history_lock(runtime);
 	if (rc != 0)
 		return rc;
@@ -253,11 +259,8 @@ int runtime_session_last_request(struct runtime *runtime, cJSON **out)
 		pthread_mutex_unlock(&runtime->context.execution_lock);
 		return -ENODATA;
 	}
-	arena = arena_create(0);
-	rc = arena ? history_store_request_snapshot(&runtime->context.database,
-						    runtime->context.current_session.id, arena,
-						    &snapshot)
-		   : -ENOMEM;
+	rc = history_store_request_snapshot(&runtime->context.database,
+					    runtime->context.current_session.id, &snapshot);
 	if (rc == 0) {
 		root = cJSON_CreateObject();
 		if (!root || !cJSON_AddStringToObject(root, "turn_id", snapshot.turn_id) ||
@@ -267,12 +270,10 @@ int runtime_session_last_request(struct runtime *runtime, cJSON **out)
 		    !cJSON_AddNumberToObject(root, "created_at", (double)snapshot.created_at))
 			rc = -ENOMEM;
 	}
-	arena_destroy(arena);
 	pthread_mutex_unlock(&runtime->context.execution_lock);
-	if (rc != 0) {
-		cJSON_Delete(root);
+	if (rc != 0)
 		return rc;
-	}
 	*out = root;
+	root = NULL;
 	return 0;
 }

@@ -11,7 +11,7 @@ def main():
         return 0
     try:
         result = subprocess.run(
-            ["ctest", "--test-dir", "build", "--output-on-failure", "-R", r"^ArenaTest\.", "--no-tests=error"],
+            ["ctest", "--test-dir", "build", "--output-on-failure", "-R", r"^Cleanup\.", "--no-tests=error"],
             capture_output=True,
             text=True,
             timeout=20,

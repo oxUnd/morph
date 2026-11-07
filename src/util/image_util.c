@@ -1,4 +1,5 @@
 #include "image_util.h"
+#include "cleanup.h"
 #include "base64.h"
 #include "buf.h"
 #include "error.h"
@@ -56,8 +57,8 @@ int image_validate_file(const char *path)
 	return image_pixel_bytes(w, h, 4, &bytes);
 }
 
-unsigned char *image_load_bounded(const char *path, int *width, int *height,
-				 int *channels, int desired_channels)
+unsigned char *image_load_bounded_copy(const char *path, int *width, int *height, int *channels,
+				       int desired_channels)
 {
 	if (image_validate_file(path) != 0)
 		return NULL;
@@ -143,13 +144,36 @@ void image_encoded_cleanup(struct image_encoded *encoded)
 	encoded->mime_type = NULL;
 }
 
-int image_encode_base64(const char *path, int max_dim,
-			struct image_encoded *encoded)
+static void image_pixels_cleanup(unsigned char **pixels)
 {
-	struct image_encode_sink sink;
+	if (!pixels)
+		return;
+	stbi_image_free(*pixels);
+	*pixels = NULL;
+}
+
+static void image_resized_pixels_cleanup(unsigned char **pixels)
+{
+	if (!pixels)
+		return;
+	free(*pixels);
+	*pixels = NULL;
+}
+
+static void image_encode_sink_cleanup(struct image_encode_sink *sink)
+{
+	morph_buf_cleanup(&sink->buf);
+	sink->rc = 0;
+}
+
+int image_encode_base64_copy(const char *path, int max_dim, struct image_encoded *encoded)
+{
+	struct image_encoded candidate MORPH_CLEANUP(image_encoded_cleanup) = {0};
+	struct image_encode_sink sink MORPH_CLEANUP(image_encode_sink_cleanup) = {0};
+	unsigned char *pixels MORPH_CLEANUP(image_pixels_cleanup) = NULL;
+	unsigned char *resized MORPH_CLEANUP(image_resized_pixels_cleanup) = NULL;
+	const unsigned char *encoded_pixels;
 	enum image_encode_format format;
-	unsigned char *pixels = NULL;
-	unsigned char *resized = NULL;
 	int width = 0;
 	int height = 0;
 	int channels = 0;
@@ -161,7 +185,8 @@ int image_encode_base64(const char *path, int max_dim,
 
 	if (!path || max_dim < 1 || !encoded)
 		return -EINVAL;
-	memset(encoded, 0, sizeof(*encoded));
+	if (encoded->base64 || encoded->mime_type)
+		return -EALREADY;
 	rc = image_validate_file(path);
 	if (rc != 0)
 		return rc;
@@ -171,118 +196,92 @@ int image_encode_base64(const char *path, int max_dim,
 	format = image_encode_detect_format(path);
 	if (width <= max_dim && height <= max_dim &&
 	    format != IMAGE_ENCODE_OTHER) {
-		rc = base64_encode_file_prefixed(path, "", MORPH_MEDIA_MAX_FILE_BYTES,
-			&encoded->base64);
+		rc = base64_encode_file_prefixed_copy(path, "", MORPH_MEDIA_MAX_FILE_BYTES,
+						      &candidate.base64);
 		if (rc != 0)
 			return rc;
-		encoded->mime_type = format == IMAGE_ENCODE_JPEG
-			? "image/jpeg" : "image/png";
-		return 0;
-	}
-
-	output_channels = format == IMAGE_ENCODE_JPEG ? 3 : channels;
-	if (output_channels < 1 || output_channels > 4)
-		output_channels = 4;
-	pixels = stbi_load(path, &width, &height, &channels, output_channels);
-	if (!pixels)
-		return MORPH_ERR_FORMAT;
-	resized_width = width;
-	resized_height = height;
-	resized = pixels;
-	if (width > max_dim || height > max_dim) {
-		double scale = width > height
-			? (double)max_dim / (double)width
-			: (double)max_dim / (double)height;
-
-		resized_width = (int)((double)width * scale);
-		resized_height = (int)((double)height * scale);
-		if (resized_width < 1)
-			resized_width = 1;
-		if (resized_height < 1)
-			resized_height = 1;
-		resized = malloc((size_t)resized_width *
-				 (size_t)resized_height * (size_t)output_channels);
-		if (!resized) {
-			stbi_image_free(pixels);
-			return -ENOMEM;
-		}
-		if (!stbir_resize_uint8_linear(
-				pixels, width, height, 0, resized,
-				resized_width, resized_height, 0,
-				(stbir_pixel_layout)output_channels)) {
-			free(resized);
-			stbi_image_free(pixels);
-			return MORPH_ERR_PROCESSING;
-		}
-	}
-
-	if (resized != pixels) {
-		stbi_image_free(pixels);
-		pixels = resized;
-	}
-
-	memset(&sink, 0, sizeof(sink));
-	rc = morph_buf_init(&sink.buf,
-			    (size_t)resized_width * (size_t)resized_height);
-	if (rc != 0) {
-		if (resized != pixels)
-			free(resized);
-		stbi_image_free(pixels);
-		return rc;
-	}
-	if (format == IMAGE_ENCODE_JPEG) {
-		write_ok = stbi_write_jpg_to_func(
-			image_encode_sink_write, &sink, resized_width,
-			resized_height, output_channels, resized,
-			IMAGE_JPEG_QUALITY);
-		encoded->mime_type = "image/jpeg";
+		candidate.mime_type = format == IMAGE_ENCODE_JPEG ? "image/jpeg" : "image/png";
 	} else {
-		write_ok = stbi_write_png_to_func(
-			image_encode_sink_write, &sink, resized_width,
-			resized_height, output_channels, resized,
-			resized_width * output_channels);
-		encoded->mime_type = "image/png";
+		output_channels = format == IMAGE_ENCODE_JPEG ? 3 : channels;
+		if (output_channels < 1 || output_channels > 4)
+			output_channels = 4;
+		pixels = stbi_load(path, &width, &height, &channels, output_channels);
+		if (!pixels)
+			return MORPH_ERR_FORMAT;
+		resized_width = width;
+		resized_height = height;
+		encoded_pixels = pixels;
+		if (width > max_dim || height > max_dim) {
+			double scale = width > height ? (double)max_dim / (double)width
+						      : (double)max_dim / (double)height;
+			size_t resized_bytes;
+
+			resized_width = (int)((double)width * scale);
+			resized_height = (int)((double)height * scale);
+			if (resized_width < 1)
+				resized_width = 1;
+			if (resized_height < 1)
+				resized_height = 1;
+			rc = image_pixel_bytes(resized_width, resized_height, output_channels,
+					       &resized_bytes);
+			if (rc != 0)
+				return rc;
+			resized = malloc(resized_bytes);
+			if (!resized)
+				return -ENOMEM;
+			if (!stbir_resize_uint8_linear(pixels, width, height, 0, resized,
+						       resized_width, resized_height, 0,
+						       (stbir_pixel_layout)output_channels))
+				return MORPH_ERR_PROCESSING;
+			encoded_pixels = resized;
+		}
+		rc = morph_buf_init(&sink.buf, (size_t)resized_width * (size_t)resized_height);
+		if (rc != 0)
+			return rc;
+		if (format == IMAGE_ENCODE_JPEG) {
+			write_ok = stbi_write_jpg_to_func(
+				image_encode_sink_write, &sink, resized_width, resized_height,
+				output_channels, encoded_pixels, IMAGE_JPEG_QUALITY);
+			candidate.mime_type = "image/jpeg";
+		} else {
+			write_ok = stbi_write_png_to_func(
+				image_encode_sink_write, &sink, resized_width, resized_height,
+				output_channels, encoded_pixels, resized_width * output_channels);
+			candidate.mime_type = "image/png";
+		}
+		if (!write_ok || sink.rc != 0 || sink.buf.len == 0)
+			return sink.rc != 0 ? sink.rc : MORPH_ERR_PROCESSING;
+		candidate.base64 =
+			base64_encode_copy((const unsigned char *)sink.buf.data, sink.buf.len);
+		if (!candidate.base64)
+			return -ENOMEM;
 	}
-	if (resized != pixels)
-		free(resized);
-	stbi_image_free(pixels);
-	if (!write_ok || sink.rc != 0 || sink.buf.len == 0) {
-		rc = sink.rc != 0 ? sink.rc : MORPH_ERR_PROCESSING;
-		morph_buf_cleanup(&sink.buf);
-		encoded->mime_type = NULL;
-		return rc;
-	}
-	encoded->base64 = base64_encode(
-		(const unsigned char *)sink.buf.data, sink.buf.len);
-	morph_buf_cleanup(&sink.buf);
-	if (!encoded->base64) {
-		encoded->mime_type = NULL;
-		return -ENOMEM;
-	}
+	*encoded = candidate;
+	memset(&candidate, 0, sizeof(candidate));
 	return 0;
 }
 
-int image_encode_data_uri(const char *path, int max_dim, char **uri)
+int image_encode_data_uri_copy(const char *path, int max_dim, char **uri)
 {
-	struct image_encoded encoded = {0};
-	morph_buf_t buf = {0};
+	struct image_encoded encoded MORPH_CLEANUP(image_encoded_cleanup) = {0};
+	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc;
 
 	if (!uri)
 		return -EINVAL;
-	*uri = NULL;
-	rc = image_encode_base64(path, max_dim, &encoded);
+	if (*uri)
+		return -EALREADY;
+	rc = image_encode_base64_copy(path, max_dim, &encoded);
 	if (rc != 0)
 		return rc;
 	rc = morph_buf_init(&buf, strlen(encoded.base64) + strlen(encoded.mime_type) + 14);
 	if (rc == 0)
 		rc = morph_buf_printf(&buf, "data:%s;base64,%s", encoded.mime_type,
 			encoded.base64);
-	image_encoded_cleanup(&encoded);
-	if (rc == 0)
-		*uri = morph_buf_detach(&buf);
-	morph_buf_cleanup(&buf);
-	return rc;
+	if (rc != 0)
+		return rc;
+	*uri = morph_buf_detach(&buf);
+	return *uri ? 0 : -ENOMEM;
 }
 
 int image_probe_size(const char *path, int *width, int *height)

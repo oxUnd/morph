@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "util/cleanup.h"
 
 #include "db/database.h"
 #include "agent/memory.h"
@@ -70,13 +71,14 @@ TEST_F(MemoryTest, PreferencesHaveOneAuthorityAndNoDuplicateRules)
 				      "Please always reply in Chinese and be concise.", "input1",
 				      &opts),
 		  0);
-	char *context = memory_build_context(&db, session.id, "always", &opts);
+	char *context MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(memory_context_create(&db, session.id, "always", &opts, &context), 0);
 	ASSERT_NE(context, nullptr);
 	EXPECT_NE(strstr(context, "response.language: Chinese"), nullptr);
 	EXPECT_NE(strstr(context, "response.detail: concise"), nullptr);
 	EXPECT_EQ(strstr(context, "Standing rules"), nullptr);
 	EXPECT_EQ(strstr(context, "Profile"), nullptr);
-	free(context);
+	morph_charp_cleanup(&context);
 }
 
 TEST_F(MemoryTest, UpdatedFactSupersedesOlderValue)
@@ -85,8 +87,8 @@ TEST_F(MemoryTest, UpdatedFactSupersedesOlderValue)
 	ASSERT_EQ(session_create(&db, "memory_temporal", "mock", &session), 0);
 	ASSERT_EQ(memory_accept_input(&db, session.id, "以后都用英文回答", "input1", &opts), 0);
 	ASSERT_EQ(memory_accept_input(&db, session.id, "以后都用中文回答", "input2", &opts), 0);
-	char *effective = preference_render(&db, session.id, 0);
-	char *history = preference_render(&db, session.id, 1);
+	char *effective = preference_render_copy(&db, session.id, 0);
+	char *history = preference_render_copy(&db, session.id, 1);
 	ASSERT_NE(effective, nullptr);
 	ASSERT_NE(history, nullptr);
 	EXPECT_NE(strstr(effective, "Chinese"), nullptr);
@@ -112,17 +114,21 @@ TEST_F(MemoryTest, BuildContextIncludesEpisodesAndChanges)
 					    "好的，之后默认使用中文。", &action, 1, &opts),
 		  0);
 
-	char *temporal = memory_build_context(&db, s.id, "现在还是英文吗，什么时候改的？", &opts);
+	char *temporal MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(memory_context_create(&db, s.id, "现在还是英文吗，什么时候改的？", &opts,
+					&temporal),
+		  0);
 	ASSERT_NE(temporal, nullptr);
 	EXPECT_NE(std::strstr(temporal, "Recent changes"), nullptr);
 	EXPECT_NE(std::strstr(temporal, "location"), nullptr);
-	free(temporal);
+	morph_charp_cleanup(&temporal);
 
-	char *episodic = memory_build_context(&db, s.id, "上次你是怎么做的？", &opts);
+	char *episodic MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(memory_context_create(&db, s.id, "上次你是怎么做的？", &opts, &episodic), 0);
 	ASSERT_NE(episodic, nullptr);
 	EXPECT_NE(std::strstr(episodic, "Relevant episodes"), nullptr);
 	EXPECT_NE(std::strstr(episodic, "file_read"), nullptr);
-	free(episodic);
+	morph_charp_cleanup(&episodic);
 }
 
 TEST_F(MemoryTest, RenderSessionShowsStoredSections)
@@ -138,7 +144,7 @@ TEST_F(MemoryTest, RenderSessionShowsStoredSections)
 					    "好的，我之后会用中文简洁回答。", &action, 1, &opts),
 		  0);
 
-	char *rendered = memory_render_session(&db, s.id, 4);
+	char *rendered = memory_session_text_create(&db, s.id, 4);
 	ASSERT_NE(rendered, nullptr);
 	EXPECT_NE(std::strstr(rendered, "Effective preferences"), nullptr);
 	EXPECT_NE(std::strstr(rendered, "response.language"), nullptr);
@@ -161,7 +167,7 @@ TEST_F(MemoryTest, ClearFactsKeepsEpisodes)
 
 	ASSERT_EQ(memory_clear(&db, s.id, MEMORY_CLEAR_FACTS), 0);
 
-	char *rendered = memory_render_session(&db, s.id, 4);
+	char *rendered = memory_session_text_create(&db, s.id, 4);
 	ASSERT_NE(rendered, nullptr);
 	EXPECT_EQ(std::strstr(rendered, "Current facts"), nullptr);
 	EXPECT_NE(std::strstr(rendered, "Recent episodes"), nullptr);
@@ -179,7 +185,7 @@ TEST_F(MemoryTest, ClearAllRemovesEverything)
 
 	ASSERT_EQ(memory_clear(&db, s.id, MEMORY_CLEAR_ALL), 0);
 
-	char *rendered = memory_render_session(&db, s.id, 4);
+	char *rendered = memory_session_text_create(&db, s.id, 4);
 	ASSERT_NE(rendered, nullptr);
 	EXPECT_STREQ(rendered, "No long-term memory stored for this session.");
 	free(rendered);
@@ -237,7 +243,7 @@ TEST_F(MemoryTest, AmbiguousAnchorsDoNotPolluteFacts)
 	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "Please call me Alice.", "Sure, Alice.",
 					    nullptr, 1, &opts),
 		  0);
-	char *name = preference_render(&db, s.id, 0);
+	char *name = preference_render_copy(&db, s.id, 0);
 	ASSERT_NE(name, nullptr);
 	EXPECT_NE(strstr(name, "user.preferred_name: Alice"), nullptr);
 	free(name);
@@ -251,9 +257,10 @@ TEST_F(MemoryTest, BuildContextReturnsNullWhenEmpty)
 	/* No turns consolidated; build_context should return NULL (i.e.
 	 * skip the prompt injection entirely) instead of emitting just the
 	 * intro line. */
-	char *ctx_str = memory_build_context(&db, s.id, "anything", &opts);
+	char *ctx_str MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(memory_context_create(&db, s.id, "anything", &opts, &ctx_str), 0);
 	EXPECT_EQ(ctx_str, nullptr);
-	free(ctx_str);
+	morph_charp_cleanup(&ctx_str);
 }
 
 TEST_F(MemoryTest, LanguageMentionsComplaintsAndNegationsDoNotChangePreference)
@@ -286,7 +293,7 @@ TEST_F(MemoryTest, LanguageMentionsComplaintsAndNegationsDoNotChangePreference)
 		SCOPED_TRACE(input);
 		ASSERT_EQ(consolidate_accepted_turn(&db, s.id, input, "好的", nullptr, 1, &opts),
 			  0);
-		char *effective = preference_render(&db, s.id, 0);
+		char *effective = preference_render_copy(&db, s.id, 0);
 		ASSERT_NE(effective, nullptr);
 		EXPECT_NE(strstr(effective, "Chinese"), nullptr);
 		EXPECT_EQ(strstr(effective, "English"), nullptr);
@@ -304,16 +311,19 @@ TEST_F(MemoryTest, ExplicitLanguageSwitchReplacesConflictingStandingRule)
 	ASSERT_EQ(consolidate_accepted_turn(&db, s.id, "以后请用中文回答，不要用英文。", "好的",
 					    nullptr, 1, &opts),
 		  0);
-	char *context = memory_build_context(&db, s.id, "How should you always respond?", &opts);
+	char *context MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(
+		memory_context_create(&db, s.id, "How should you always respond?", &opts, &context),
+		0);
 	ASSERT_NE(context, nullptr);
 	EXPECT_NE(strstr(context, "response.language: Chinese"), nullptr);
 	EXPECT_EQ(strstr(context, "Respond in English"), nullptr);
-	free(context);
+	morph_charp_cleanup(&context);
 }
 
 static std::string effective_preferences(struct db *database, int64_t session_id)
 {
-	char *text = preference_render(database, session_id, 0);
+	char *text = preference_render_copy(database, session_id, 0);
 	std::string result = text ? text : "<error>";
 	free(text);
 	return result;
@@ -414,7 +424,7 @@ TEST_F(MemoryTest, ClearedMemoryRejectsOlderBackgroundGeneration)
 	EXPECT_EQ(
 		memory_consolidate_turn(&db, session.id, "old work", "done", nullptr, 1, &old_job),
 		-ESTALE);
-	char *render = memory_render_session(&db, session.id, 0);
+	char *render = memory_session_text_create(&db, session.id, 0);
 	ASSERT_NE(render, nullptr);
 	EXPECT_STREQ(render, "No long-term memory stored for this session.");
 	free(render);
@@ -436,12 +446,13 @@ TEST_F(MemoryTest, OldProfilesAndRulesCannotCompeteWithEffectivePreference)
 			"'你现在回答为啥过程中都是英文？','preference',1,1,1);"),
 		0);
 	ASSERT_EQ(memory_accept_input(&db, session.id, "以后都用中文", "new", &opts), 0);
-	char *context = memory_build_context(&db, session.id, "always reply", &opts);
+	char *context MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(memory_context_create(&db, session.id, "always reply", &opts, &context), 0);
 	ASSERT_NE(context, nullptr);
 	EXPECT_NE(strstr(context, "response.language: Chinese"), nullptr);
 	EXPECT_EQ(strstr(context, "English"), nullptr);
 	EXPECT_EQ(strstr(context, "preferred_language"), nullptr);
-	free(context);
+	morph_charp_cleanup(&context);
 	EXPECT_EQ(effective_preferences(&db, session.id).find("English"), std::string::npos);
 }
 
@@ -478,7 +489,7 @@ TEST_F(MemoryTest, DurableJobsRecoverAndDoNotDuplicateEpisodes)
 		  0);
 	ASSERT_EQ(memory_async_resume(&db, &opts), 0);
 	memory_async_shutdown(opts.worker);
-	char *jobs = memory_background_render(&db, session.id);
+	char *jobs = memory_background_text_create(&db, session.id);
 	ASSERT_NE(jobs, nullptr);
 	EXPECT_NE(strstr(jobs, "completed"), nullptr);
 	free(jobs);
@@ -496,7 +507,7 @@ TEST_F(MemoryTest, DurableJobsRecoverAndDoNotDuplicateEpisodes)
 	ASSERT_EQ(memory_clear(&db, session.id, MEMORY_CLEAR_ALL), 0);
 	ASSERT_EQ(memory_async_resume(&db, &opts), 0);
 	memory_async_shutdown(opts.worker);
-	char *render = memory_render_session(&db, session.id, 0);
+	char *render = memory_session_text_create(&db, session.id, 0);
 	ASSERT_NE(render, nullptr);
 	EXPECT_STREQ(render, "No long-term memory stored for this session.");
 	free(render);
@@ -509,7 +520,7 @@ struct DelayedMemoryModel {
 	bool released = false;
 };
 
-static int delayed_memory_chat(struct model *self, struct arena *, const char *, const char **, int,
+static int delayed_memory_chat(struct model *self, const char *, const char **, int,
 			       const struct model_chat_options *, sse_callback cb, void *data)
 {
 	auto *state = static_cast<DelayedMemoryModel *>(self->handle);
@@ -558,9 +569,10 @@ TEST_F(MemoryTest, InFlightExtractionCannotOverrideOrResurrectPreference)
 	memory_async_shutdown(opts.worker);
 	opts.llm = nullptr;
 	EXPECT_EQ(effective_preferences(&db, session.id), "");
-	char *context = memory_build_context(&db, session.id, "上次 always", &opts);
+	char *context MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(memory_context_create(&db, session.id, "上次 always", &opts, &context), 0);
 	EXPECT_EQ(context, nullptr);
-	free(context);
+	morph_charp_cleanup(&context);
 }
 
 TEST_F(MemoryTest, IndependentWritersResolveOneValuePerCanonicalKey)
@@ -625,8 +637,7 @@ TEST_F(MemoryTest, PreferenceReadFailureIsNotTreatedAsEmptyMemory)
 	ASSERT_EQ(memory_accept_input(&db, session.id, "以后都用中文", "input", &opts), 0);
 	ASSERT_EQ(db_exec(&db, "DROP TABLE memory_preferences"), 0);
 	char *context = nullptr;
-	EXPECT_EQ(memory_build_context_checked(&db, session.id, "hello", &opts, &context),
-		  MORPH_ERR_DB);
+	EXPECT_EQ(memory_context_create(&db, session.id, "hello", &opts, &context), MORPH_ERR_DB);
 	EXPECT_EQ(context, nullptr);
 }
 
@@ -636,11 +647,12 @@ TEST_F(MemoryTest, EssentialLanguageSurvivesSmallGeneralMemoryBudget)
 	ASSERT_EQ(session_create(&db, "budget", "mock", &session), 0);
 	ASSERT_EQ(memory_accept_input(&db, session.id, "以后都用中文", "input", &opts), 0);
 	opts.max_context_chars = 32;
-	char *context = memory_build_context(&db, session.id, "hello", &opts);
+	char *context MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(memory_context_create(&db, session.id, "hello", &opts, &context), 0);
 	ASSERT_NE(context, nullptr);
 	EXPECT_NE(strstr(context, "response.language: Chinese"), nullptr);
 	EXPECT_LE(strlen(context), 512u);
-	free(context);
+	morph_charp_cleanup(&context);
 }
 
 TEST_F(MemoryTest, IndependentWorkersDrainOnlyTheirOwnJobs)
@@ -683,7 +695,7 @@ TEST_F(MemoryTest, IndependentWorkersDrainOnlyTheirOwnJobs)
 	memory_async_shutdown(opts.worker);
 	opts.llm = nullptr;
 	EXPECT_EQ(memory_async_pending(opts.worker), 0);
-	char *jobs = memory_background_render(&db, session.id);
+	char *jobs = memory_background_text_create(&db, session.id);
 	ASSERT_NE(jobs, nullptr);
 	EXPECT_EQ(strstr(jobs, "queued"), nullptr);
 	EXPECT_EQ(strstr(jobs, "running"), nullptr);
@@ -697,20 +709,22 @@ TEST_F(MemoryTest, SnapshotOwnsFactValuesAcrossLaterDatabaseWrites)
 	ASSERT_EQ(memory_accept_input(&db, session.id, "I live in London.", "first", &opts), 0);
 	struct memory_snapshot_options read{};
 	read.facts_limit = -1;
-	struct memory_snapshot snapshot{};
+	struct memory_snapshot snapshot MORPH_CLEANUP(memory_snapshot_cleanup) = {0};
 	ASSERT_EQ(memory_snapshot_read(&db, session.id, &read, &snapshot), 0);
 	ASSERT_GT(snapshot.facts.nelts, 0u);
-	auto *fact = static_cast<struct memory_fact_record *>(morph_array_get(&snapshot.facts, 0));
+	auto *fact =
+		static_cast<struct memory_fact_record *>(morph_array_borrow(&snapshot.facts, 0));
 	ASSERT_STREQ(fact->key, "location");
 	EXPECT_STREQ(fact->value, "London");
 	ASSERT_EQ(memory_accept_input(&db, session.id, "I live in Paris.", "second", &opts), 0);
 	EXPECT_STREQ(fact->value, "London");
-	char *current = memory_build_context(&db, session.id, "current location", &opts);
+	char *current MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(memory_context_create(&db, session.id, "current location", &opts, &current), 0);
 	ASSERT_NE(current, nullptr);
 	EXPECT_NE(strstr(current, "location: Paris"), nullptr);
-	free(current);
+	morph_charp_cleanup(&current);
 	memory_snapshot_cleanup(&snapshot);
-	EXPECT_EQ(snapshot.arena, nullptr);
+	EXPECT_EQ(snapshot.facts.elts, nullptr);
 }
 
 TEST_F(MemoryTest, SnapshotReadFailureReleasesPreviouslyCopiedSections)
@@ -722,9 +736,9 @@ TEST_F(MemoryTest, SnapshotReadFailureReleasesPreviouslyCopiedSections)
 	struct memory_snapshot_options read{};
 	read.facts_limit = -1;
 	read.episodes_limit = -1;
-	struct memory_snapshot snapshot{};
+	struct memory_snapshot snapshot MORPH_CLEANUP(memory_snapshot_cleanup) = {0};
 	EXPECT_EQ(memory_snapshot_read(&db, session.id, &read, &snapshot), MORPH_ERR_DB);
-	EXPECT_EQ(snapshot.arena, nullptr);
+	EXPECT_EQ(snapshot.facts.elts, nullptr);
 	EXPECT_EQ(snapshot.facts.elts, nullptr);
 	EXPECT_EQ(snapshot.episodes.elts, nullptr);
 	memory_snapshot_cleanup(&snapshot);
@@ -737,10 +751,11 @@ TEST_F(MemoryTest, JobSnapshotsOwnPayloadAndStateChangesRequireTheExpectedState)
 	int64_t id = 0;
 	ASSERT_EQ(memory_job_store_add(&db, session.id, 7, "original payload", &id), 0);
 	ASSERT_GT(id, 0);
-	struct memory_job_records records{};
+	struct memory_job_records records MORPH_CLEANUP(memory_job_records_cleanup) = {0};
 	ASSERT_EQ(memory_job_store_recoverable(&db, &records), 0);
 	ASSERT_EQ(records.rows.nelts, 1u);
-	auto *record = static_cast<struct memory_job_record *>(morph_array_get(&records.rows, 0));
+	auto *record =
+		static_cast<struct memory_job_record *>(morph_array_borrow(&records.rows, 0));
 	ASSERT_NE(record, nullptr);
 	EXPECT_EQ(record->id, id);
 	EXPECT_EQ(record->generation, 7);
@@ -754,7 +769,7 @@ TEST_F(MemoryTest, JobSnapshotsOwnPayloadAndStateChangesRequireTheExpectedState)
 	memory_job_records_cleanup(&records);
 	ASSERT_EQ(memory_job_store_recent(&db, session.id, 20, &records), 0);
 	ASSERT_EQ(records.rows.nelts, 1u);
-	record = static_cast<struct memory_job_record *>(morph_array_get(&records.rows, 0));
+	record = static_cast<struct memory_job_record *>(morph_array_borrow(&records.rows, 0));
 	EXPECT_STREQ(record->state, "cancelled");
 	EXPECT_EQ(record->error_code, -ESTALE);
 	EXPECT_EQ(record->attempts, 1);
@@ -787,4 +802,56 @@ TEST_F(MemoryTest, GenerationWriteRollbackKeepsFactsAndTheFenceConsistent)
 	EXPECT_EQ(sqlite3_get_autocommit(db.handle), 0);
 	EXPECT_EQ(memory_store_finish_write(&db, -ECANCELED), -ECANCELED);
 	EXPECT_NE(sqlite3_get_autocommit(db.handle), 0);
+}
+
+TEST_F(MemoryTest, SnapshotReadRejectsAnOccupiedOwnerWithoutChangingItsRows)
+{
+	struct session session{};
+	ASSERT_EQ(session_create(&db, "occupied-snapshot", "mock", &session), 0);
+	ASSERT_EQ(memory_accept_input(&db, session.id, "I live in London.", "first", &opts), 0);
+	struct memory_snapshot_options read{};
+	read.facts_limit = -1;
+	struct memory_snapshot snapshot MORPH_CLEANUP(memory_snapshot_cleanup) = {};
+	ASSERT_EQ(memory_snapshot_read(&db, session.id, &read, &snapshot), 0);
+	ASSERT_GT(snapshot.facts.nelts, 0u);
+	void *original = snapshot.facts.elts;
+	auto *fact =
+		static_cast<struct memory_fact_record *>(morph_array_borrow(&snapshot.facts, 0));
+	char *value = fact->value;
+
+	EXPECT_EQ(memory_snapshot_read(&db, session.id, &read, &snapshot), -EEXIST);
+	EXPECT_EQ(snapshot.facts.elts, original);
+	EXPECT_EQ(fact->value, value);
+	EXPECT_STREQ(fact->value, "London");
+	memory_snapshot_cleanup(&snapshot);
+	EXPECT_EQ(memory_snapshot_read(&db, session.id, &read, &snapshot), 0);
+}
+
+TEST_F(MemoryTest, JobSnapshotReadRejectsAnOccupiedOwnerWithoutChangingItsPayload)
+{
+	struct session session{};
+	ASSERT_EQ(session_create(&db, "occupied-jobs", "mock", &session), 0);
+	int64_t id = 0;
+	ASSERT_EQ(memory_job_store_add(&db, session.id, 1, "owned payload", &id), 0);
+	struct memory_job_records records MORPH_CLEANUP(memory_job_records_cleanup) = {};
+	ASSERT_EQ(memory_job_store_recoverable(&db, &records), 0);
+	ASSERT_EQ(records.rows.nelts, 1u);
+	void *original = records.rows.elts;
+	auto *row = static_cast<struct memory_job_record *>(morph_array_borrow(&records.rows, 0));
+	char *payload = row->payload_json;
+
+	EXPECT_EQ(memory_job_store_recent(&db, session.id, 20, &records), -EEXIST);
+	EXPECT_EQ(records.rows.elts, original);
+	EXPECT_EQ(row->payload_json, payload);
+	EXPECT_STREQ(row->payload_json, "owned payload");
+}
+
+TEST_F(MemoryTest, ContextOutputRejectsOccupiedOwner)
+{
+	char *context MORPH_CLEANUP(morph_charp_cleanup) = strdup("retained");
+	ASSERT_NE(context, nullptr);
+	char *owner = context;
+	EXPECT_EQ(memory_context_create(&db, 0, "hello", &opts, &context), -EALREADY);
+	EXPECT_EQ(context, owner);
+	EXPECT_STREQ(context, "retained");
 }

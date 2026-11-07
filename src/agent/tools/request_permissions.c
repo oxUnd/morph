@@ -3,9 +3,10 @@
 #include "agent/tool_context.h"
 #include "util/error.h"
 #include "util/buf.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/array.h"
 #include "cJSON.h"
+#include "util/json.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -13,7 +14,7 @@
 #include <string.h>
 
 struct directory_request {
-	const char *path;
+	char *path;
 	unsigned int access;
 };
 
@@ -26,8 +27,7 @@ static const struct {
 	{"delete", TOOL_PATH_ACCESS_DELETE},
 };
 
-static int collect_requests(cJSON *file_system, struct arena *arena,
-	morph_array_t *requests, const char **failed_path)
+static int collect_requests(cJSON *file_system, morph_array_t *requests, const char **failed_path)
 {
 	for (size_t i = 0; i < sizeof(permissions) / sizeof(permissions[0]); i++) {
 		cJSON *paths = cJSON_GetObjectItemCaseSensitive(file_system, permissions[i].name);
@@ -61,12 +61,13 @@ static int collect_requests(cJSON *file_system, struct arena *arena,
 			}
 			if (found)
 				continue;
-			const char *copy = arena_strdup(arena, canonical);
+			char *copy MORPH_CLEANUP(morph_charp_cleanup) = strdup(canonical);
 
-			entry = copy ? morph_array_push(requests) : NULL;
+			entry = copy ? morph_array_push_borrow(requests) : NULL;
 			if (!entry)
 				return -ENOMEM;
 			entry->path = copy;
+			copy = NULL;
 			entry->access = permissions[i].access;
 		}
 	}
@@ -84,6 +85,18 @@ static int collect_requests(cJSON *file_system, struct arena *arena,
 			return rc;
 	}
 	return 0;
+}
+
+static void directory_requests_cleanup(morph_array_t *requests)
+{
+	if (!requests)
+		return;
+	for (size_t i = 0; i < requests->nelts; i++) {
+		struct directory_request *entry = morph_array_borrow(requests, i);
+		free(entry->path);
+		entry->path = NULL;
+	}
+	morph_array_cleanup(requests);
 }
 
 static int request_parent_first(const void *left, const void *right)
@@ -105,26 +118,26 @@ static int permission_error(struct tool_result *result, int error,
 		error == -EACCES ? "permission_denied" :
 		error == -EPERM ? "approval_unavailable" : "permission_request_failed";
 
-	return tool_result_errorf(result, code, "Directory permission request failed%s%s: %s",
-		path ? " for " : "", path ? path : "", morph_strerror(error));
+	return tool_result_error_format(result, code, "Directory permission request failed%s%s: %s",
+					path ? " for " : "", path ? path : "",
+					morph_strerror(error));
 }
 
 static int request_permissions_run(const char *args_json,
 	struct tool_result *result, void *user_data)
 {
 	struct tool_context *tctx = user_data;
-	cJSON *root = args_json ? cJSON_ParseWithOpts(args_json, NULL, 1) : NULL;
-	cJSON *data = NULL;
-	struct arena *arena = NULL;
-	morph_array_t requests = {0};
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) =
+		args_json ? cJSON_ParseWithOpts(args_json, NULL, 1) : NULL;
+	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	morph_array_t requests MORPH_CLEANUP(directory_requests_cleanup) = {0};
 	const char *failed_path = NULL;
 	struct directory_request *entry;
 	int rc;
 
 	if (!tctx || !cJSON_IsObject(root)) {
-		cJSON_Delete(root);
-		return tool_result_error(result, "invalid_arguments",
-			"Expected a permission request.");
+		return tool_result_error_copy(result, "invalid_arguments",
+					      "Expected a permission request.");
 	}
 	const char *command = cJSON_GetStringValue(cJSON_GetObjectItem(root, "command"));
 	const char *scope = cJSON_GetStringValue(cJSON_GetObjectItem(root, "scope"));
@@ -138,22 +151,17 @@ static int request_permissions_run(const char *args_json,
 		scope = "turn";
 	if ((strcmp(scope, "turn") != 0 && strcmp(scope, "session") != 0) ||
 	    !cJSON_IsObject(file_system)) {
-		cJSON_Delete(root);
-		return tool_result_error(result, "invalid_arguments",
+		return tool_result_error_copy(
+			result, "invalid_arguments",
 			"permissions.file_system is required; scope must be turn or session.");
-	}
-	arena = arena_create(0);
-	if (!arena) {
-		cJSON_Delete(root);
-		return -ENOMEM;
 	}
 	rc = morph_array_init(&requests, 8, sizeof(*entry));
 	if (rc != 0)
-		goto out_free_request;
-	rc = collect_requests(file_system, arena, &requests, &failed_path);
+		return rc;
+	rc = collect_requests(file_system, &requests, &failed_path);
 	if (rc != 0) {
 		rc = permission_error(result, rc, failed_path, 1);
-		goto out_free_request;
+		return rc;
 	}
 	qsort(requests.elts, requests.nelts, requests.size, request_parent_first);
 	data = cJSON_CreateObject();
@@ -162,13 +170,13 @@ static int request_permissions_run(const char *args_json,
 	if (!data || !cJSON_AddStringToObject(data, "scope", scope) ||
 	    !cJSON_AddStringToObject(data, "principal", "*")) {
 		rc = (-ENOMEM);
-		goto out_free_request;
+		return rc;
 	}
 	for (size_t i = 0; i < sizeof(permissions) / sizeof(permissions[0]); i++) {
 		granted[i] = cJSON_AddArrayToObject(data, permissions[i].name);
 		if (!granted[i]) {
 			rc = (-ENOMEM);
-			goto out_free_request;
+			return rc;
 		}
 	}
 	morph_array_foreach(entry, &requests, struct directory_request) {
@@ -183,7 +191,7 @@ static int request_permissions_run(const char *args_json,
 			resolved, sizeof(resolved));
 		if (rc != 0) {
 			rc = permission_error(result, rc, entry->path, 0);
-			goto out_free_request;
+			return rc;
 		}
 		for (size_t i = 0; i < sizeof(permissions) / sizeof(permissions[0]); i++) {
 			if (!(entry->access & permissions[i].access))
@@ -193,18 +201,12 @@ static int request_permissions_run(const char *args_json,
 			if (!path || !cJSON_AddItemToArray(granted[i], path)) {
 				cJSON_Delete(path);
 				rc = (-ENOMEM);
-				goto out_free_request;
+				return rc;
 			}
 		}
 	}
-	rc = tool_result_success(result, data);
-	data = NULL;
+	rc = tool_result_success_take(result, &data);
 
-out_free_request:
-	cJSON_Delete(data);
-	morph_array_cleanup(&requests);
-	arena_destroy(arena);
-	cJSON_Delete(root);
 	return rc;
 }
 
@@ -230,26 +232,33 @@ int request_permissions_init(struct tool_registry *reg,
 
 	if (!reg || !tctx)
 		return -EINVAL;
-	rc = tool_register(reg, &(struct tool_spec){
-		.origin = TOOL_ORIGIN_BUILTIN,
-		.name = "request_permissions",
-		.description = "Request the smallest additional directory permissions for this workflow. "
-			"Combine every anticipated read, write and delete permission for each "
-			"directory in one call; approve each directory once for the listed access. "
-			"Reuse existing grants rather than requesting operations one at a time. "
-			"Read, write and delete grants apply to all tools and commands "
-			"within the approved directories, for this turn by default or "
-			"the session when scope=session. Command is optional context. "
-			"Write does not include deletion; atomic replacement and "
-			"installers may also need delete. Use scope=turn unless "
-			"repeated operations need scope=session.",
-		.input_schema = schema,
-		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
-		.exec = request_permissions_run,
-		.user_data = tctx,
-	});
+	rc = tool_register_borrow(
+		reg,
+		&(struct tool_spec){
+			.origin = TOOL_ORIGIN_BUILTIN,
+			.name = "request_permissions",
+			.description =
+				"Request the smallest additional directory permissions for this "
+				"workflow. "
+				"Combine every anticipated read, write and delete permission for "
+				"each "
+				"directory in one call; approve each directory once for the listed "
+				"access. "
+				"Reuse existing grants rather than requesting operations one at a "
+				"time. "
+				"Read, write and delete grants apply to all tools and commands "
+				"within the approved directories, for this turn by default or "
+				"the session when scope=session. Command is optional context. "
+				"Write does not include deletion; atomic replacement and "
+				"installers may also need delete. Use scope=turn unless "
+				"repeated operations need scope=session.",
+			.input_schema = schema,
+			.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+			.exec = request_permissions_run,
+			.user_data = tctx,
+		});
 	if (rc == 0) {
-		struct tool_entry *entry = tool_lookup(reg, "request_permissions");
+		struct tool_entry *entry = tool_borrow(reg, "request_permissions");
 
 		if (entry)
 			entry->flags |= TOOL_FLAG_INTERNAL_APPROVAL;

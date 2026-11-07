@@ -4,7 +4,7 @@
 #include "prompt_context.h"
 #include "react.h"
 #include "tokenizer.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/log.h"
@@ -71,7 +71,7 @@ int agent_history_repair_interrupted(struct db *db, int64_t session_id)
 
 			if (!cJSON_IsString(local) || !cJSON_IsString(provider) ||
 			    !cJSON_IsString(name) ||
-			    !history_tool_call_input(call, &input_kind, &input) ||
+			    !history_tool_input_borrow(call, &input_kind, &input) ||
 			    history_result_exists(items, local->valuestring, provider->valuestring))
 				continue;
 			repair.session_id = session_id;
@@ -126,7 +126,7 @@ static int history_call_exists(const struct model_history_item *items, const cha
 
 				if (!cJSON_IsString(local) || !cJSON_IsString(provider) ||
 				    !cJSON_IsString(name) ||
-				    !history_tool_call_input(call, &input_kind, &input))
+				    !history_tool_input_borrow(call, &input_kind, &input))
 					continue;
 				if (local_id && local_id[0] && local->valuestring[0]) {
 					if (strcmp(local_id, local->valuestring) == 0)
@@ -181,7 +181,7 @@ int agent_history_diagnose(const struct model_history_item *items, struct tokeni
 
 					if (!cJSON_IsString(local) || !cJSON_IsString(provider) ||
 					    !cJSON_IsString(name) ||
-					    !history_tool_call_input(call, &input_kind, &input)) {
+					    !history_tool_input_borrow(call, &input_kind, &input)) {
 						diagnostic->invalid_payloads++;
 						continue;
 					}
@@ -269,8 +269,8 @@ int agent_history_repair(struct db *db, int64_t session_id, struct tokenizer *to
 					cJSON *call = cJSON_GetArrayItem(calls, i);
 					const char *input;
 					enum tool_input_kind input_kind;
-					int input_valid =
-						history_tool_call_input(call, &input_kind, &input);
+					int input_valid = history_tool_input_borrow(
+						call, &input_kind, &input);
 
 					if (!cJSON_IsString(
 						    cJSON_GetObjectItem(call, "tool_call_id")) ||

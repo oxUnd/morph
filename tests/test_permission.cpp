@@ -10,6 +10,7 @@ extern "C" {
 #include "agent/tools/exec_tool.h"
 #include "config/edit.h"
 #include "sandbox/permission.h"
+#include "util/cleanup.h"
 #include "ext/ext.h"
 }
 
@@ -352,9 +353,9 @@ TEST_F(RuntimeFacadeTest, OpaqueToolsAndChildRegistriesShareAuthority)
 	spec.user_data = &executions;
 	spec.exec = [](const char *, struct tool_result *result, void *opaque) {
 		++*static_cast<int *>(opaque);
-		return tool_result_success_text(result, "executed");
+		return tool_result_success_text_copy(result, "executed");
 	};
-	ASSERT_EQ(tool_register(&registry, &spec), 0);
+	ASSERT_EQ(tool_register_borrow(&registry, &spec), 0);
 	ASSERT_EQ(tool_registry_copy(&child, &registry), 0);
 	EXPECT_EQ(child.permission_context, context);
 	struct tool_result result{};
@@ -410,14 +411,13 @@ TEST_F(RuntimeFacadeTest, ExecHostRequestInWorkspaceCannotBypassApproval)
 
 TEST(Permission, SandboxIntersectionCannotExceedManifestOrApplication)
 {
-	struct arena *arena = arena_create(0);
-	ASSERT_NE(arena, nullptr);
 	char manifest_root[] = "/workspace/project";
 	char parent_root[] = "/workspace";
 	char sibling[] = "/other";
 	char *manifest[] = {manifest_root, sibling};
 	char *parent[] = {parent_root};
-	struct sandbox_config requested{}, ceiling{};
+	struct sandbox_config requested MORPH_CLEANUP(sandbox_config_cleanup) = {};
+	struct sandbox_config ceiling{};
 	requested.write_paths = manifest;
 	requested.write_paths_count = 2;
 	requested.delete_paths = manifest;
@@ -426,13 +426,12 @@ TEST(Permission, SandboxIntersectionCannotExceedManifestOrApplication)
 	requested.allow_temp = 1;
 	ceiling.write_paths = parent;
 	ceiling.write_paths_count = 1;
-	ASSERT_EQ(sandbox_permission_intersect(&requested, &ceiling, arena), 0);
+	ASSERT_EQ(sandbox_permission_intersect(&requested, &ceiling), 0);
 	ASSERT_EQ(requested.write_paths_count, 1);
 	EXPECT_STREQ(requested.write_paths[0], manifest_root);
 	EXPECT_EQ(requested.delete_paths_count, 0);
 	EXPECT_EQ(requested.network_access, 0);
 	EXPECT_EQ(requested.allow_temp, 0);
-	arena_destroy(arena);
 }
 
 TEST_F(RuntimeFacadeTest, LiveBackgroundProcessBlocksPolicyChangeUntilStopped)
@@ -604,7 +603,7 @@ TEST(Permission, NativeExtensionCannotClaimRestrictedProcessEnforcement)
 	extension.enabled = 1;
 	std::snprintf(extension.manifest.type, sizeof(extension.manifest.type), "so");
 	extension.run = [](const char *, char **) { return 0; };
-	struct sandbox_config limits{};
+	struct sandbox_config limits MORPH_CLEANUP(sandbox_config_cleanup) = {};
 	limits.path_policy_enabled = 1;
 	char *output = nullptr;
 	EXPECT_EQ(ext_run_bounded(&extension, "{}", &output, nullptr, nullptr, &limits), -ENOTSUP);
@@ -633,16 +632,13 @@ TEST_F(RuntimeFacadeTest, ExecutableExtensionIntersectionEnforcesReadOnlyAtTheOs
 	ASSERT_NE(context, nullptr);
 	struct permission_policy policy{PERMISSION_READ_ONLY, PERMISSION_NEVER, PERMISSION_USER};
 	ASSERT_EQ(tool_context_set_permission_policy(context, &policy), 0);
-	struct arena *arena = arena_create(0);
-	ASSERT_NE(arena, nullptr);
-	struct sandbox_config limits{};
-	ASSERT_EQ(sandbox_permission_prepare(context, "bounded", nullptr, arena, &limits), 0);
+	struct sandbox_config limits MORPH_CLEANUP(sandbox_config_cleanup) = {};
+	ASSERT_EQ(sandbox_permission_prepare(context, "bounded", nullptr, &limits), 0);
 	char *output = nullptr;
 	EXPECT_EQ(ext_run_bounded(&extension, "{}", &output, nullptr, nullptr, &limits), 0);
 	ASSERT_NE(output, nullptr);
 	EXPECT_NE(std::string(output).find("bounded"), std::string::npos);
 	EXPECT_FALSE(std::filesystem::exists(target));
 	free(output);
-	arena_destroy(arena);
 	tool_context_destroy(context);
 }

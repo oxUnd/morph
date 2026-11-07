@@ -72,7 +72,7 @@ void cli_diagnostics_config_error(struct cli_application *ctx, const char *confi
 {
 	struct config_validation_error error = {0};
 	const char *requested = config_path ? config_path : "~/.morph/config.toml";
-	char *expanded = file_expand_path(requested);
+	char *expanded = file_expand_path_copy(requested);
 	const char *display = expanded ? expanded : requested;
 	int validation_rc = expanded ? config_validate_file(expanded, &error) : -EINVAL;
 
@@ -90,7 +90,7 @@ int cli_diagnostics_preflight(struct cli_application *ctx, const char *config_pa
 {
 	struct config_validation_error error = {0};
 	const char *requested = config_path ? config_path : "~/.morph/config.toml";
-	char *expanded = file_expand_path(requested);
+	char *expanded = file_expand_path_copy(requested);
 	int rc;
 
 	if (!expanded)

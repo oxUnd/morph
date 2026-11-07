@@ -44,7 +44,7 @@ int react_stream_finish(struct react_stream *stream);
 int react_stream_cb(const char *token, void *user_data);
 int react_typed_stream_cb(enum llm_stream_kind kind, const char *token, void *user_data);
 /* Shares legacy final-marker recognition with final-response normalization. */
-const char *react_stream_find_final(const char *base, const char *from, size_t *marker_len);
+const char *react_stream_final_borrow(const char *base, const char *from, size_t *marker_len);
 
 #ifdef __cplusplus
 }

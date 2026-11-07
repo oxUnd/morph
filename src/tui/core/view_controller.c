@@ -20,13 +20,14 @@ static int core_view_controller_draw(void *data, const struct morph_tui_screen *
 {
 	struct morph_tui_view_controller *controller = data;
 
-	return core_window_draw(morph_tui_application_window(controller->state->app), screen);
+	return core_window_draw(morph_tui_application_window_borrow(controller->state->app),
+				screen);
 }
 
 static int core_view_controller_appear(void *data, struct morph_tui_application *app)
 {
 	struct morph_tui_view_controller *controller = data;
-	struct morph_tui_window *window = morph_tui_application_window(app);
+	struct morph_tui_window *window = morph_tui_application_window_borrow(app);
 
 	controller->state->visible = 1;
 	window->controller = controller;
@@ -39,7 +40,7 @@ static int core_view_controller_appear(void *data, struct morph_tui_application 
 static void core_view_controller_disappear(void *data, struct morph_tui_application *app)
 {
 	struct morph_tui_view_controller *controller = data;
-	struct morph_tui_window *window = morph_tui_application_window(app);
+	struct morph_tui_window *window = morph_tui_application_window_borrow(app);
 
 	controller->state->visible = 0;
 	if (window->controller == controller)
@@ -92,7 +93,7 @@ static int core_view_controller_dispatch(void *data, struct morph_tui_applicatio
 		rc = controller->ops->event(controller, event);
 	if (rc || morph_tui_application_transition_pending(app))
 		return rc;
-	struct morph_tui_window *window = morph_tui_application_window(app);
+	struct morph_tui_window *window = morph_tui_application_window_borrow(app);
 
 	if ((event->type == MORPH_TUI_EVENT_KEY || event->type == MORPH_TUI_EVENT_TEXT) &&
 	    window->event)
@@ -143,7 +144,7 @@ static int core_view_controller_event(void *data, struct morph_tui_application *
 		if (!state->text.len)
 			return 1;
 		text.type = event->pasting ? MORPH_TUI_EVENT_PASTE : MORPH_TUI_EVENT_TEXT;
-		text.text = morph_buf_cstr(&state->text);
+		text.text = morph_buf_cstr_borrow(&state->text);
 		text.text_length = state->text.len;
 		return core_view_controller_dispatch(data, app, &text);
 	}
@@ -156,8 +157,8 @@ static int core_view_controller_event(void *data, struct morph_tui_application *
 	return rc;
 }
 
-int morph_tui_view_controller_present(struct morph_tui_application *app,
-				      const struct morph_tui_view_controller_spec *spec)
+int morph_tui_view_controller_present_borrow(struct morph_tui_application *app,
+					     const struct morph_tui_view_controller_spec *spec)
 {
 	if (!morph_tui_application_is_owner(app))
 		return -EPERM;
@@ -183,9 +184,8 @@ int morph_tui_view_controller_present(struct morph_tui_application *app,
 	state->app = app;
 	state->quit_key = spec->quit_key;
 	state->builder.controller = controller;
-	state->arena = arena_create(BUFSIZ);
 	struct morph_tui_view *view;
-	int rc = state->arena ? morph_array_init(&state->views, 16, sizeof(view)) : -ENOMEM;
+	int rc = morph_array_init(&state->views, 16, sizeof(view));
 
 	if (!rc)
 		rc = morph_buf_init(&state->text, 16);
@@ -215,7 +215,7 @@ int morph_tui_view_controller_present(struct morph_tui_application *app,
 	};
 
 	if (!rc)
-		rc = morph_tui_application_present_controller(app, &descriptor);
+		rc = morph_tui_application_present_controller_take(app, &descriptor);
 	if (rc)
 		core_view_controller_close(controller, rc);
 	return rc;
@@ -229,7 +229,7 @@ int morph_tui_view_controller_dismiss(struct morph_tui_view_controller *controll
 }
 
 struct morph_tui_application *
-morph_tui_view_controller_application(const struct morph_tui_view_controller *controller)
+morph_tui_view_controller_application_borrow(const struct morph_tui_view_controller *controller)
 {
 	return controller ? controller->state->app : NULL;
 }

@@ -165,19 +165,19 @@ static int cli_skills_manage_skills_parse(int argc, char **argv, const char *con
 
 static int cli_skills_manage_skills_user_dir(const char *config_path, char **out)
 {
-	char *path = file_expand_path(config_path ? config_path : "~/.morph/config.toml");
+	char *path = file_expand_path_copy(config_path ? config_path : "~/.morph/config.toml");
 	char *text;
 	toml_result_t parsed;
 	toml_datum_t dir;
 
 	if (!path)
 		return -ENOMEM;
-	text = file_read_all(path, NULL);
+	text = file_read_all_copy(path, NULL);
 	free(path);
 	if (!text) {
 		if (config_path || errno != ENOENT)
 			return -EIO;
-		*out = file_expand_path("~/.morph/skills");
+		*out = file_expand_path_copy("~/.morph/skills");
 		return *out ? 0 : -ENOMEM;
 	}
 	if (strlen(text) > 1024 * 1024) {
@@ -192,8 +192,8 @@ static int cli_skills_manage_skills_user_dir(const char *config_path, char **out
 		return MORPH_ERR_PARSE;
 	}
 	dir = toml_get(toml_get(parsed.toptab, "skill"), "dir");
-	*out = file_expand_path(dir.type == TOML_STRING && dir.u.s[0] ? dir.u.s
-								      : "~/.morph/skills");
+	*out = file_expand_path_copy(dir.type == TOML_STRING && dir.u.s[0] ? dir.u.s
+									   : "~/.morph/skills");
 	toml_free(parsed);
 	return *out ? 0 : -ENOMEM;
 }
@@ -279,7 +279,7 @@ static int cli_skills_manage_skills_prepare(const char *source, const char *ref,
 	}
 	if (prepared->source[0] == '-')
 		return -EINVAL;
-	cache = file_expand_path("~/.morph/cache/skills");
+	cache = file_expand_path_copy("~/.morph/cache/skills");
 	if (!cache)
 		return -ENOMEM;
 	rc = file_ensure_dir(cache);
@@ -370,10 +370,11 @@ cli_skills_manage_skills_scan_source(struct morph_log *logger,
 	if (!candidates->nelts)
 		return -ENOENT;
 	for (size_t i = 0; i < candidates->nelts; i++) {
-		const struct cli_skill_candidate *candidate = morph_array_get(candidates, i);
+		const struct cli_skill_candidate *candidate = morph_array_borrow(candidates, i);
 
 		for (size_t j = 0; j < i; j++) {
-			const struct cli_skill_candidate *previous = morph_array_get(candidates, j);
+			const struct cli_skill_candidate *previous =
+				morph_array_borrow(candidates, j);
 
 			if (strcmp(candidate->fm.name, previous->fm.name) == 0) {
 				fprintf(stderr,
@@ -390,7 +391,7 @@ cli_skills_manage_skills_scan_source(struct morph_log *logger,
 static void cli_skills_manage_skills_candidates_print(const morph_array_t *candidates)
 {
 	for (size_t i = 0; i < candidates->nelts; i++) {
-		const struct cli_skill_candidate *candidate = morph_array_get(candidates, i);
+		const struct cli_skill_candidate *candidate = morph_array_borrow(candidates, i);
 
 		printf("%zu. %s\t%s\n", i + 1, candidate->fm.name, candidate->fm.description);
 	}
@@ -411,7 +412,7 @@ static int cli_skills_manage_skills_select(const struct cli_skills_manage_skills
 
 			for (size_t j = 0; j < candidates->nelts; j++) {
 				const struct cli_skill_candidate *candidate =
-					morph_array_get(candidates, j);
+					morph_array_borrow(candidates, j);
 
 				if (strcmp(candidate->fm.name, options->names[i]) == 0) {
 					selected[j] = 1;
@@ -511,7 +512,7 @@ static int cli_skills_manage_skills_add(struct morph_log *logger,
 		rc = cli_skills_manage_skills_select(options, &candidates, selected);
 	/* Check every destination before installing any selected skill. */
 	for (size_t i = 0; rc == 0 && !options->list && i < candidates.nelts; i++) {
-		const struct cli_skill_candidate *candidate = morph_array_get(&candidates, i);
+		const struct cli_skill_candidate *candidate = morph_array_borrow(&candidates, i);
 		char target[PATH_MAX];
 		struct stat st;
 
@@ -524,7 +525,7 @@ static int cli_skills_manage_skills_add(struct morph_log *logger,
 			else if (!S_ISDIR(st.st_mode))
 				rc = -ELOOP;
 			else {
-				cJSON *metadata = cli_skill_store_metadata(target);
+				cJSON *metadata = cli_skill_store_metadata_copy(target);
 
 				rc = cli_skill_store_unmodified(target, metadata);
 				cJSON_Delete(metadata);
@@ -532,7 +533,7 @@ static int cli_skills_manage_skills_add(struct morph_log *logger,
 		}
 	}
 	for (size_t i = 0; rc == 0 && !options->list && i < candidates.nelts; i++) {
-		const struct cli_skill_candidate *candidate = morph_array_get(&candidates, i);
+		const struct cli_skill_candidate *candidate = morph_array_borrow(&candidates, i);
 		cJSON *metadata;
 
 		if (!selected[i])
@@ -577,7 +578,7 @@ static int cli_skills_manage_skills_list(const struct cli_skills_manage_skills_o
 	if (rc >= 0) {
 		for (int i = 0; i < registry->count; i++) {
 			const struct skill_entry *entry = &registry->entries[i];
-			cJSON *metadata = cli_skill_store_metadata(entry->skill_dir);
+			cJSON *metadata = cli_skill_store_metadata_copy(entry->skill_dir);
 			cJSON *source = cJSON_GetObjectItemCaseSensitive(metadata, "source");
 			cJSON *commit = cJSON_GetObjectItemCaseSensitive(metadata, "commit");
 
@@ -613,7 +614,7 @@ static int cli_skills_manage_skills_update_one(struct morph_log *logger, const c
 
 	if (rc != 0)
 		return rc;
-	metadata = cli_skill_store_metadata(target);
+	metadata = cli_skill_store_metadata_copy(target);
 	rc = cli_skill_store_unmodified(target, metadata);
 	if (rc != 0)
 		goto out;
@@ -636,7 +637,8 @@ static int cli_skills_manage_skills_update_one(struct morph_log *logger, const c
 		const struct cli_skill_candidate *candidate = NULL;
 
 		for (size_t i = 0; i < candidates.nelts; i++) {
-			const struct cli_skill_candidate *entry = morph_array_get(&candidates, i);
+			const struct cli_skill_candidate *entry =
+				morph_array_borrow(&candidates, i);
 
 			if (strcmp(entry->fm.name, name) == 0)
 				candidate = entry;
@@ -678,7 +680,7 @@ static int cli_skills_manage_skills_modify(struct morph_log *logger,
 	if (options->name_count) {
 		count = options->name_count;
 	} else {
-		rc = file_list_dirs(root, &names, &count);
+		rc = file_list_dirs_copy(root, &names, &count);
 		if (rc != 0)
 			return rc;
 	}
@@ -702,7 +704,7 @@ static int cli_skills_manage_skills_modify(struct morph_log *logger,
 			result = rc;
 			continue;
 		}
-		metadata = cli_skill_store_metadata(target);
+		metadata = cli_skill_store_metadata_copy(target);
 		if (!metadata && !options->name_count)
 			continue;
 		if (strcmp(options->action, "remove") == 0) {

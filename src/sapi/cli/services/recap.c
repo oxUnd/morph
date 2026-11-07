@@ -177,7 +177,7 @@ void cli_recap_tick(struct cli_application *ctx, int64_t now)
 		cli_recap_turn_finished(ctx, now);
 	}
 	state->progress = progress;
-	config = runtime_config_get(ctx->runtime);
+	config = runtime_config_borrow(ctx->runtime);
 	if (config && config->general.auto_recap && cli_recap_due(state, now))
 		(void)cli_recap_start(ctx, 1);
 }
@@ -200,10 +200,10 @@ static void cli_recap_print_text(struct cli_application *ctx, const char *label,
 	}
 	while (*line) {
 		size_t width = columns > indent + 1 ? columns - indent - 1 : 2;
-		const char *end = utf8_advance_display_width(line, width);
+		const char *end = utf8_advance_display_width_borrow(line, width);
 
 		if (end == line)
-			end = utf8_advance_codepoints(line, 1);
+			end = utf8_advance_codepoints_borrow(line, 1);
 		printf(ctx, "%s%.*s%.*s\n", first ? label : "", first ? 0 : (int)indent,
 		       "                                  ", (int)(end - line), line);
 		first = 0;
@@ -255,7 +255,7 @@ void cli_recap_event(struct cli_application *ctx, const struct morph_event *even
 	ctx->recap.result_code = rc;
 	if (ctx->turn_active || !runtime_recap_is_current(ctx->runtime, &progress))
 		return;
-	if (automatic && !runtime_config_get(ctx->runtime)->general.auto_recap)
+	if (automatic && !runtime_config_borrow(ctx->runtime)->general.auto_recap)
 		return;
 	if (rc < 0 || !summary || !summary[0]) {
 		ctx->recap.result_code = rc < 0 ? rc : MORPH_ERR_PROTOCOL;

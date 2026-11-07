@@ -69,7 +69,7 @@ TEST(BashParseTest, QuotedAmpersandIsNotCompound)
 	EXPECT_FALSE(result.is_compound);
 	ASSERT_EQ(result.commands.nelts, 1u);
 	const auto *command = static_cast<const struct bash_parse_command *>(
-		morph_array_get(&result.commands, 0));
+		morph_array_borrow(&result.commands, 0));
 	ASSERT_NE(command, nullptr);
 	EXPECT_STREQ(command->name, "lark-cli");
 	bash_parse_result_cleanup(&result);
@@ -87,7 +87,7 @@ TEST(BashParseTest, PythonOperatorsInsideQuotedArgumentAreNotShellSyntax)
 	EXPECT_FALSE(result.is_compound);
 	ASSERT_EQ(result.commands.nelts, 1u);
 	const auto *command = static_cast<const struct bash_parse_command *>(
-		morph_array_get(&result.commands, 0));
+		morph_array_borrow(&result.commands, 0));
 	ASSERT_NE(command, nullptr);
 	EXPECT_STREQ(command->name, "python3");
 	bash_parse_result_cleanup(&result);
@@ -104,7 +104,7 @@ TEST(BashParseTest, SingleQuotedShellSyntaxIsLiteral)
 	EXPECT_FALSE(result.is_compound);
 	ASSERT_EQ(result.commands.nelts, 1u);
 	const auto *command = static_cast<const struct bash_parse_command *>(
-		morph_array_get(&result.commands, 0));
+		morph_array_borrow(&result.commands, 0));
 	ASSERT_NE(command, nullptr);
 	EXPECT_STREQ(command->name, "python3");
 	bash_parse_result_cleanup(&result);
@@ -120,11 +120,11 @@ TEST(BashParseTest, CollectsPipelineAndCommandSubstitution)
 	EXPECT_TRUE(result.is_compound);
 	ASSERT_EQ(result.commands.nelts, 3u);
 	const auto *first = static_cast<const struct bash_parse_command *>(
-		morph_array_get(&result.commands, 0));
+		morph_array_borrow(&result.commands, 0));
 	const auto *nested = static_cast<const struct bash_parse_command *>(
-		morph_array_get(&result.commands, 1));
+		morph_array_borrow(&result.commands, 1));
 	const auto *last = static_cast<const struct bash_parse_command *>(
-		morph_array_get(&result.commands, 2));
+		morph_array_borrow(&result.commands, 2));
 	ASSERT_NE(first, nullptr);
 	ASSERT_NE(nested, nullptr);
 	ASSERT_NE(last, nullptr);
@@ -144,7 +144,7 @@ TEST(BashParseTest, HeredocBodyDoesNotCreateCommands)
 	EXPECT_FALSE(result.has_error);
 	ASSERT_EQ(result.commands.nelts, 1u);
 	const auto *command = static_cast<const struct bash_parse_command *>(
-		morph_array_get(&result.commands, 0));
+		morph_array_borrow(&result.commands, 0));
 	ASSERT_NE(command, nullptr);
 	EXPECT_STREQ(command->name, "cat");
 	bash_parse_result_cleanup(&result);

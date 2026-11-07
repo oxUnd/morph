@@ -10,10 +10,10 @@ struct runtime;
 typedef void (*runtime_task_notification_fn)(
 	const struct notification *notification, void *user_data);
 
-char *runtime_scheduled_task_prompt(const struct scheduled_task *task);
-char *runtime_scheduled_task_turn_id(const struct scheduled_task *task);
-char *runtime_scheduled_task_display_prompt(const struct scheduled_task *task,
-					    const char *task_prompt);
+char *runtime_scheduled_task_prompt_copy(const struct scheduled_task *task);
+char *runtime_scheduled_task_turn_id_copy(const struct scheduled_task *task);
+char *runtime_scheduled_task_display_prompt_copy(const struct scheduled_task *task,
+						 const char *task_prompt);
 
 int runtime_tasks_execute(struct runtime *runtime, const char *args_json,
 			  int64_t now, char **out_json);

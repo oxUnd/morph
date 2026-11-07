@@ -76,10 +76,10 @@ customization/
 
 | Customization | Read first | Framework contract |
 | --- | --- | --- |
-| Component shape and behavior | `widgets/counter.c` | Embed `struct morph_tui_widget`; supply optional View methods; allocate with `morph_tui_widget_create` |
+| Component shape and behavior | `widgets/counter.c` | Embed `struct morph_tui_widget`; supply optional View methods; allocate with `morph_tui_widget_add_borrow` |
 | Page structure and navigation | `pages/dashboard.c`, `pages/inspector.c` | Embed `struct morph_tui_view_controller`; provide build/action/event methods and an instance size |
 | Component-owned input | Counter event method | Consume handled input with 1; return 0 to continue along the responder chain |
-| A directly bound action | Dashboard name callback | `morph_tui_widget_set_action` overrides that control's controller action dispatch |
+| A directly bound action | Dashboard name callback | `morph_tui_widget_set_action_borrow` overrides that control's controller action dispatch |
 | Page-specific commands | Dashboard event method | Handle an unconsumed key without intercepting focused text input |
 | Application-wide commands | Application event method | Receive input declined by the view tree and page; present Help or post a message |
 | Shared state and appearance | Dashboard appear method | Sync explicitly changed model data while retaining drafts and focus |

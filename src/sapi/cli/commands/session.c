@@ -13,7 +13,7 @@
 static int cli_session_command_new(struct cli_application *ctx, int argc, char **argv)
 {
 	char name_buf[256];
-	const char *name = cli_cmd_arg(argc, argv, 1);
+	const char *name = cli_cmd_arg_borrow(argc, argv, 1);
 	int auto_named = 0;
 	if (!name) {
 		auto_named = 1;
@@ -33,7 +33,7 @@ static int cli_session_command_new(struct cli_application *ctx, int argc, char *
 
 static int cli_session_command_switch(struct cli_application *ctx, int argc, char **argv)
 {
-	const char *name = cli_cmd_arg(argc, argv, 1);
+	const char *name = cli_cmd_arg_borrow(argc, argv, 1);
 	if (!name) {
 		CMD_ERROR(ctx, "usage: /switch <name|id|^N>");
 		return -EINVAL;
@@ -54,7 +54,7 @@ static int cli_session_command_switch(struct cli_application *ctx, int argc, cha
 			}
 			idx = (int)n;
 		}
-		struct session *list;
+		struct session *list = NULL;
 		int count = 0;
 		rc = runtime_session_list_query(ctx->runtime, &list, &count, 0, NULL);
 		if (rc != 0)
@@ -102,7 +102,7 @@ static int cli_session_command_resume(struct cli_application *ctx, int argc, cha
 
 static int cli_session_command_rename(struct cli_application *ctx, int argc, char **argv)
 {
-	const char *new_name = cli_cmd_arg(argc, argv, 1);
+	const char *new_name = cli_cmd_arg_borrow(argc, argv, 1);
 	if (!new_name) {
 		CMD_ERROR(ctx, "usage: /rename <new_name>");
 		return -EINVAL;
@@ -120,7 +120,7 @@ static int cli_session_command_rename(struct cli_application *ctx, int argc, cha
 
 static int cli_session_command_delete(struct cli_application *ctx, int argc, char **argv)
 {
-	const char *name = cli_cmd_arg(argc, argv, 1);
+	const char *name = cli_cmd_arg_borrow(argc, argv, 1);
 	if (!name) {
 		CMD_ERROR(ctx, "usage: /delete <name|id>");
 		return -EINVAL;
@@ -193,7 +193,7 @@ static int cli_session_history_export_items(struct model_history_item *items, co
 	cJSON_Delete(array);
 	if (!json)
 		return -ENOMEM;
-	expanded = file_expand_path(path);
+	expanded = file_expand_path_copy(path);
 	if (!expanded) {
 		free(json);
 		return -ENOMEM;
@@ -286,7 +286,7 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 	}
 	if (export_path) {
 		int count = 0;
-		struct model_history_item *items = runtime_session_model_history_current(
+		struct model_history_item *items = runtime_session_model_history_current_copy(
 			ctx->runtime, show_all ? 0 : 1, &count);
 		int rc = cli_session_history_export_items(items, export_path);
 
@@ -300,14 +300,14 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 	}
 	if (show_model) {
 		int count = 0;
-		struct model_history_item *items = runtime_session_model_history_current(
+		struct model_history_item *items = runtime_session_model_history_current_copy(
 			ctx->runtime, show_all ? 0 : 1, &count);
 		struct model_history_item *cur = items;
 		int show = show_all ? count : (n > count ? count : n);
 		int skip = show_all ? 0 : count - show;
 
 		CMD_HEADER(ctx, "%s model history (showing %s %d of %d)",
-			   runtime_session_current_name(ctx->runtime),
+			   runtime_session_current_name_borrow(ctx->runtime),
 			   show_all ? "all" : "active last", show, count);
 		for (int i = 0; i < skip && cur; i++)
 			cur = cur->next;
@@ -334,7 +334,7 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 		return cli_history_request_print(ctx);
 	if (!show_messages) {
 		cJSON *report = NULL;
-		int rc = runtime_session_history_inspect(ctx->runtime, &report);
+		int rc = runtime_session_history_inspect_copy(ctx->runtime, &report);
 
 		if (rc == 0 && sequence)
 			rc = cli_history_entry_print(ctx, report, sequence, stored);
@@ -350,11 +350,12 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 		return rc;
 	}
 	int count = 0;
-	struct message *msgs = runtime_session_messages_current(ctx->runtime, &count);
+	struct message *msgs = runtime_session_messages_current_copy(ctx->runtime, &count);
 	int show = show_all ? count : (n > count ? count : n);
 	int skip = show_all ? 0 : (count - show);
-	CMD_HEADER(ctx, "%s (showing %s %d of %d)", runtime_session_current_name(ctx->runtime),
-		   show_all ? "all" : "last", show, count);
+	CMD_HEADER(ctx, "%s (showing %s %d of %d)",
+		   runtime_session_current_name_borrow(ctx->runtime), show_all ? "all" : "last",
+		   show, count);
 	struct message *cur = msgs;
 	for (int i = 0; i < skip && cur; i++)
 		cur = cur->next;

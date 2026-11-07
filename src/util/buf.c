@@ -1,5 +1,4 @@
 #include "buf.h"
-#include "arena.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,25 +43,13 @@ static int buf_grow(morph_buf_t *b, size_t needed)
 		return b->failed;
 	}
 
-	if (b->heap_alloc) {
-		char *new_data = realloc(b->data, new_cap);
-		if (!new_data) {
-			b->failed = (-ENOMEM);
-			return b->failed;
-		}
-		b->data = new_data;
-	} else if (b->arena) {
-		char *new_data = arena_alloc(b->arena, new_cap);
-		if (!new_data) {
-			b->failed = (-ENOMEM);
-			return b->failed;
-		}
-		memcpy(new_data, b->data, b->len);
-		b->data = new_data;
-	} else {
-		b->failed = (-ENOMEM);
+	char *new_data = realloc(b->data, new_cap);
+
+	if (!new_data) {
+		b->failed = -ENOMEM;
 		return b->failed;
 	}
+	b->data = new_data;
 	b->cap = new_cap;
 	rc = buf_add_size(b->len, 1, &needed);
 	if (rc != 0) {
@@ -87,29 +74,7 @@ int morph_buf_init(morph_buf_t *b, size_t init_cap)
 		return -ENOMEM;
 	b->len = 0;
 	b->cap = init_cap;
-	b->heap_alloc = 1;
 	b->failed = 0;
-	b->arena = NULL;
-	b->data[0] = '\0';
-	return 0;
-}
-
-int morph_buf_init_arena(morph_buf_t *b, struct arena *a, size_t init_cap)
-{
-	if (!b || !a)
-		return -EINVAL;
-	if (init_cap == 0)
-		init_cap = MORPH_BUF_DEFAULT_CAP;
-	if (init_cap > MORPH_BUF_MAX_CAP)
-		return -EFBIG;
-	b->data = arena_alloc(a, init_cap);
-	if (!b->data)
-		return -ENOMEM;
-	b->len = 0;
-	b->cap = init_cap;
-	b->heap_alloc = 0;
-	b->failed = 0;
-	b->arena = a;
 	b->data[0] = '\0';
 	return 0;
 }
@@ -118,14 +83,11 @@ void morph_buf_cleanup(morph_buf_t *b)
 {
 	if (!b)
 		return;
-	if (b->heap_alloc)
-		free(b->data);
+	free(b->data);
 	b->data = NULL;
 	b->len = 0;
 	b->cap = 0;
-	b->heap_alloc = 0;
 	b->failed = 0;
-	b->arena = NULL;
 }
 
 void morph_buf_reset(morph_buf_t *b)
@@ -136,6 +98,15 @@ void morph_buf_reset(morph_buf_t *b)
 	b->failed = 0;
 	if (b->data && b->cap > 0)
 		b->data[0] = '\0';
+}
+
+void morph_buf_move(morph_buf_t *destination, morph_buf_t *source)
+{
+	if (!destination || !source || destination == source)
+		return;
+	morph_buf_cleanup(destination);
+	*destination = *source;
+	memset(source, 0, sizeof(*source));
 }
 
 int morph_buf_append(morph_buf_t *b, const char *src, size_t n)
@@ -237,7 +208,7 @@ int morph_buf_printf(morph_buf_t *b, const char *fmt, ...)
 	return rc;
 }
 
-morph_str_t morph_buf_str(const morph_buf_t *b)
+morph_str_t morph_buf_str_borrow(const morph_buf_t *b)
 {
 	morph_str_t s;
 
@@ -251,7 +222,7 @@ morph_str_t morph_buf_str(const morph_buf_t *b)
 	return s;
 }
 
-const char *morph_buf_cstr(const morph_buf_t *b)
+const char *morph_buf_cstr_borrow(const morph_buf_t *b)
 {
 	if (!b || !b->data)
 		return NULL;
@@ -269,11 +240,7 @@ char *morph_buf_detach(morph_buf_t *b)
 
 	if (!b)
 		return NULL;
-	if (b->failed) {
-		morph_buf_cleanup(b);
-		return NULL;
-	}
-	if (!b->heap_alloc)
+	if (b->failed)
 		return NULL;
 	if (b->data && b->len < b->cap)
 		b->data[b->len] = '\0';
@@ -281,8 +248,6 @@ char *morph_buf_detach(morph_buf_t *b)
 	b->data = NULL;
 	b->len = 0;
 	b->cap = 0;
-	b->heap_alloc = 0;
-	b->arena = NULL;
 	return data;
 }
 

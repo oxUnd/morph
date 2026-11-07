@@ -1,4 +1,5 @@
 #include "sapi/cli/application.h"
+#include "util/cleanup.h"
 #include "sapi/cli/adapters/input/state.h"
 #include "sapi/cli/adapters/runtime/dispatch.h"
 #include "sapi/cli/services/turn.h"
@@ -67,7 +68,8 @@ int cli_application_flush(struct cli_application *ctx)
 	if (pending && pending->failed)
 		return pending->failed;
 	if (pending && pending->len) {
-		if (fwrite(morph_buf_cstr(pending), 1, pending->len, stdout) != pending->len ||
+		if (fwrite(morph_buf_cstr_borrow(pending), 1, pending->len, stdout) !=
+			    pending->len ||
 		    fflush(stdout) != 0)
 			return errno ? -errno : -EIO;
 		morph_buf_reset(pending);
@@ -78,17 +80,17 @@ int cli_application_flush(struct cli_application *ctx)
 void cli_application_panel_complete(struct cli_application *ctx, void *data,
 				    void (*complete)(void *, int), int result)
 {
-	if (morph_tui_application_depth(cli_application_tui(ctx)) <= 1) {
+	if (morph_tui_application_depth(cli_application_tui_borrow(ctx)) <= 1) {
 		int rc = cli_application_flush(ctx);
 
 		if (rc) {
 			result = rc;
-			morph_tui_application_stop(cli_application_tui(ctx), rc);
+			morph_tui_application_stop(cli_application_tui_borrow(ctx), rc);
 		}
 	}
 	complete(data, result);
 	if (ctx->application_command &&
-	    morph_tui_application_depth(cli_application_tui(ctx)) <= 1) {
+	    morph_tui_application_depth(cli_application_tui_borrow(ctx)) <= 1) {
 		ctx->application_command = 0;
 		if (result < 0 && result != -ECANCELED)
 			CMD_ERROR(ctx, "%s", morph_strerror(result));
@@ -108,7 +110,8 @@ int cli_application_present_screen(struct cli_application *ctx,
 				   const struct morph_tui_screen_ops *ops, void *data,
 				   void (*complete)(void *data, int result))
 {
-	if (!ctx || !cli_application_tui(ctx) || !ops || !ops->update || !ops->draw || !complete)
+	if (!ctx || !cli_application_tui_borrow(ctx) || !ops || !ops->update || !ops->draw ||
+	    !complete)
 		return -EINVAL;
 	struct cli_application_screen *screen = calloc(1, sizeof(*screen));
 
@@ -129,7 +132,8 @@ int cli_application_present_screen(struct cli_application *ctx,
 			MORPH_TUI_TERMINAL_SESSION_ALTERNATE | MORPH_TUI_TERMINAL_SESSION_PASTE,
 		.tick_ms = 100,
 	};
-	int rc = morph_tui_application_present_controller(cli_application_tui(ctx), &controller);
+	int rc = morph_tui_application_present_controller_take(cli_application_tui_borrow(ctx),
+							       &controller);
 
 	if (rc)
 		free(screen);
@@ -161,7 +165,7 @@ static void cli_application_run_session(struct cli_application *ctx, struct cli_
 		return;
 	}
 	const struct morph_tui_application_options options = cli_chat_options(page);
-	const struct morph_tui_controller controller = cli_chat_controller(page);
+	struct morph_tui_controller controller = cli_chat_controller(page);
 	static const struct morph_tui_application_ops methods = {
 		.prepare_termination = cli_application_prepare_termination,
 	};
@@ -170,7 +174,7 @@ static void cli_application_run_session(struct cli_application *ctx, struct cli_
 	app_rc = morph_tui_application_init(&ctx->base, &options);
 	if (!app_rc) {
 		cli_event_queue_attach_app(ctx, &ctx->base);
-		app_rc = morph_tui_application_present_controller(&ctx->base, &controller);
+		app_rc = morph_tui_application_present_controller_take(&ctx->base, &controller);
 		if (!app_rc)
 			app_rc = morph_tui_application_run(&ctx->base);
 		morph_tui_application_deinit(&ctx->base);
@@ -200,7 +204,7 @@ static void cli_application_run_interactive(struct cli_application *ctx)
 }
 #endif
 
-struct morph_tui_application *cli_application_tui(struct cli_application *ctx)
+struct morph_tui_application *cli_application_tui_borrow(struct cli_application *ctx)
 {
 	return ctx && ctx->base.state ? &ctx->base : NULL;
 }
@@ -285,7 +289,7 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 	ctx->presentation_ready = 1;
 	ctx->image_path[0] = '\0';
 	{
-		const char *resolved_workdir = runtime_workdir_get(ctx->runtime);
+		const char *resolved_workdir = runtime_workdir_borrow(ctx->runtime);
 
 		if (resolved_workdir && resolved_workdir[0])
 			strncpy(ctx->workdir, resolved_workdir, sizeof(ctx->workdir) - 1);
@@ -413,9 +417,11 @@ static void cli_application_run_structured(struct cli_application *ctx)
 					break;
 				}
 			}
-			if (input.len > 0 && !cli_interaction_is_frame(morph_buf_cstr(&input))) {
+			if (input.len > 0 &&
+			    !cli_interaction_is_frame(morph_buf_cstr_borrow(&input))) {
 				cli_turn_begin(ctx);
-				rc = cli_command_job_start(&job, ctx, morph_buf_cstr(&input));
+				rc = cli_command_job_start(&job, ctx,
+							   morph_buf_cstr_borrow(&input));
 				if (rc != 0)
 					cli_turn_finish(ctx, rc);
 			}
@@ -497,7 +503,7 @@ static void cli_application_run_plain(struct cli_application *ctx)
 			int turn_rc;
 
 			cli_turn_begin(ctx);
-			turn_rc = cli_turn_execute(ctx, morph_buf_cstr(&input));
+			turn_rc = cli_turn_execute(ctx, morph_buf_cstr_borrow(&input));
 			(void)cli_event_queue_drain(ctx);
 			cli_turn_finish(ctx, turn_rc);
 		}
@@ -533,8 +539,8 @@ void cli_application_run(struct cli_application *ctx)
 		cli_output_set_color_enabled(ctx, 0);
 		ctx->presentation_mode = CLI_PRESENT_ONCE_PLAIN;
 	}
-	config = runtime_config_get(ctx->runtime);
-	workdir = runtime_workdir_get(ctx->runtime);
+	config = runtime_config_borrow(ctx->runtime);
+	workdir = runtime_workdir_borrow(ctx->runtime);
 	memset(&directory, 0, sizeof(directory));
 	if (morph_buf_init(&directory, BUFSIZ) != 0)
 		return;
@@ -548,7 +554,7 @@ void cli_application_run(struct cli_application *ctx)
 	}
 	if (isatty(STDIN_FILENO) && isatty(STDOUT_FILENO))
 		cli_banner_print(ctx, config ? config->models.text.model : NULL,
-				 morph_buf_cstr(&directory));
+				 morph_buf_cstr_borrow(&directory));
 	morph_buf_cleanup(&directory);
 	int hooks_rc = cli_hooks_startup(ctx);
 	if (hooks_rc != 0)
@@ -585,16 +591,15 @@ void cli_application_run(struct cli_application *ctx)
 
 static void cli_application_emit_trace_json(struct cli_application *ctx, double elapsed)
 {
-	struct runtime_turn_status status;
+	struct runtime_turn_status status MORPH_CLEANUP(runtime_turn_status_cleanup) = {0};
 	cJSON *root;
 	cJSON *steps;
 	char *json;
 
-	if (runtime_turn_status_get(ctx->runtime, &status) != 0)
+	if (runtime_turn_status_copy(ctx->runtime, &status) != 0)
 		return;
 	root = cJSON_CreateObject();
 	if (!root) {
-		runtime_turn_status_cleanup(&status);
 		return;
 	}
 	switch (status.state) {
@@ -646,7 +651,6 @@ static void cli_application_emit_trace_json(struct cli_application *ctx, double 
 		free(json);
 	}
 	cJSON_Delete(root);
-	runtime_turn_status_cleanup(&status);
 }
 
 void cli_application_run_once(struct cli_application *ctx, const char *prompt)

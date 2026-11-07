@@ -32,7 +32,8 @@ static int widget_text_field_draw(struct morph_tui_view *view, struct morph_tui_
 			&field->editor, &field->display,
 			canvas->width > 0 ? (size_t)canvas->width : 0, &cursor);
 	if (!rc)
-		rc = morph_tui_canvas_text(canvas, 0, 0, morph_buf_cstr(&field->display), style);
+		rc = morph_tui_canvas_text(canvas, 0, 0, morph_buf_cstr_borrow(&field->display),
+					   style);
 	if (!rc && morph_tui_view_focused(view))
 		morph_tui_canvas_cursor(canvas, (int)cursor, 0);
 	return rc;
@@ -69,7 +70,7 @@ static int widget_text_field_event(struct morph_tui_view *view, const struct mor
 				       result == MORPH_TUI_WIDGET_SUBMIT
 					       ? MORPH_TUI_WIDGET_ACTION_SUBMIT
 					       : MORPH_TUI_WIDGET_ACTION_CHANGED,
-				       0, morph_buf_cstr(&field->editor.text));
+				       0, morph_buf_cstr_borrow(&field->editor.text));
 
 	return rc ? rc : 1;
 }
@@ -82,14 +83,14 @@ static void widget_text_field_destroy(struct morph_tui_view *view)
 	morph_buf_cleanup(&field->display);
 }
 
-const char *morph_tui_widget_text_field_text(const struct morph_tui_view *view)
+const char *morph_tui_widget_text_field_text_borrow(const struct morph_tui_view *view)
 {
 	if (!view || !view->ops || view->ops->draw != widget_text_field_draw)
 		return "";
-	return morph_buf_cstr(&((const struct widget_text_field *)view)->editor.text);
+	return morph_buf_cstr_borrow(&((const struct widget_text_field *)view)->editor.text);
 }
 
-int morph_tui_widget_text_field_set_text(struct morph_tui_view *view, const char *text)
+int morph_tui_widget_text_field_set_text_copy(struct morph_tui_view *view, const char *text)
 {
 	if (!view || !view->ops || view->ops->draw != widget_text_field_draw)
 		return -EINVAL;
@@ -108,10 +109,9 @@ int morph_tui_widget_text_field_set_text(struct morph_tui_view *view, const char
 	return 0;
 }
 
-struct morph_tui_view *
-morph_tui_widget_text_field_create(struct morph_tui_builder *builder, struct morph_tui_view *parent,
-				   const char *text, size_t limit, int tag,
-				   const struct morph_tui_view_options *options)
+struct morph_tui_view *morph_tui_widget_text_field_add_borrow(
+	struct morph_tui_builder *builder, struct morph_tui_view *parent, const char *text,
+	size_t limit, int tag, const struct morph_tui_view_options *options)
 {
 	static const struct morph_tui_view_ops ops = {
 		.measure = widget_text_field_measure,
@@ -121,8 +121,8 @@ morph_tui_widget_text_field_create(struct morph_tui_builder *builder, struct mor
 	};
 	struct widget_text_field *field = NULL;
 
-	field = (struct widget_text_field *)morph_tui_widget_create(builder, parent, sizeof(*field),
-								    &ops, options);
+	field = (struct widget_text_field *)morph_tui_widget_add_borrow(
+		builder, parent, sizeof(*field), &ops, options);
 	if (!field)
 		return NULL;
 	int rc = morph_tui_widget_editor_state_init(&field->editor, text, limit, 0);

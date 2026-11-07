@@ -1,4 +1,5 @@
 #include "agent_ui.h"
+#include "util/cleanup.h"
 
 #include "util/buf.h"
 #include "util/utf8.h"
@@ -359,7 +360,7 @@ static int append_normalized_line(morph_buf_t *out, const char *line,
 				  int *in_fence, char *fence_marker,
 				  int *fence_len)
 {
-	morph_buf_t normalized;
+	morph_buf_t normalized MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	enum markdown_line_kind kind;
 	char line_fence_marker = 0;
 	int line_fence_len = 0;
@@ -399,7 +400,7 @@ static int append_normalized_line(morph_buf_t *out, const char *line,
 		goto out;
 	}
 
-	line = morph_buf_cstr(&normalized);
+	line = morph_buf_cstr_borrow(&normalized);
 	len = normalized.len;
 	/* Code is literal: blank rows, whitespace and fence-like source survive. */
 	if (was_in_fence && !is_fence) {
@@ -485,7 +486,7 @@ out:
 
 char *agent_ui_normalize_markdown(const char *input)
 {
-	morph_buf_t out;
+	morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	const char *s;
 	size_t len;
 	size_t pos = 0;

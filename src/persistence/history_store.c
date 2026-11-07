@@ -1,5 +1,5 @@
 #include "history_store.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/error.h"
 
 #include <errno.h>
@@ -66,6 +66,7 @@ int history_store_context_tokens(struct db *db, int64_t session_id, int64_t *tok
 static int read_text(struct db *db, int64_t session_id, const char *sql, int64_t sequence,
 		     char **out)
 {
+	char *text_value MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	sqlite3_stmt *stmt = NULL;
 	int rc = prepare_session_query(db, sql, session_id, &stmt);
 
@@ -77,22 +78,25 @@ static int read_text(struct db *db, int64_t session_id, const char *sql, int64_t
 	if (rc == SQLITE_ROW) {
 		const char *text = column_text(stmt, 0);
 
-		*out = strdup(text ? text : "");
-		rc = *out ? 0 : -ENOMEM;
+		text_value = strdup(text ? text : "");
+		rc = text_value ? 0 : -ENOMEM;
 	} else {
 		rc = rc == SQLITE_DONE ? -ENODATA : MORPH_ERR_DB;
 	}
 	sqlite3_finalize(stmt);
+	if (rc == 0)
+		*out = morph_charp_steal(&text_value);
 	return rc;
 }
 
-int history_store_last_answer(struct db *db, int64_t session_id, char **answer)
+int history_store_last_answer_copy(struct db *db, int64_t session_id, char **answer)
 {
 	int rc;
 
 	if (!answer)
 		return -EINVAL;
-	*answer = NULL;
+	if (*answer)
+		return -EEXIST;
 	rc = read_text(db, session_id,
 		       "SELECT content FROM model_history_items WHERE session_id=? "
 		       "AND kind='assistant_message' AND length(content)>0 "
@@ -107,12 +111,13 @@ int history_store_last_answer(struct db *db, int64_t session_id, char **answer)
 	return rc;
 }
 
-int history_store_previous_question(struct db *db, int64_t session_id, int64_t before_sequence,
-				    char **question)
+int history_store_previous_question_copy(struct db *db, int64_t session_id, int64_t before_sequence,
+					 char **question)
 {
 	if (!question)
 		return -EINVAL;
-	*question = NULL;
+	if (*question)
+		return -EEXIST;
 	return read_text(db, session_id,
 			 "SELECT content FROM model_history_items WHERE session_id=? "
 			 "AND sequence_no<? AND kind='user_message' "
@@ -140,7 +145,7 @@ int history_store_summary_sources(struct db *db, int64_t session_id, morph_array
 	if (rc != 0)
 		return rc;
 	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
-		int64_t *id = morph_array_push(ids);
+		int64_t *id = morph_array_push_borrow(ids);
 
 		if (!id) {
 			rc = -ENOMEM;
@@ -151,15 +156,36 @@ int history_store_summary_sources(struct db *db, int64_t session_id, morph_array
 	return finish_query(stmt, step, rc);
 }
 
-int history_store_request_snapshot(struct db *db, int64_t session_id, struct arena *arena,
-				   struct history_request_snapshot *snapshot)
+void history_request_snapshot_cleanup(struct history_request_snapshot *snapshot)
 {
+	if (!snapshot)
+		return;
+	free(snapshot->turn_id);
+	free(snapshot->provider);
+	free(snapshot->model);
+	free(snapshot->input_json);
+	memset(snapshot, 0, sizeof(*snapshot));
+}
+
+static void history_request_snapshot_move(struct history_request_snapshot *destination,
+					  struct history_request_snapshot *source)
+{
+	*destination = *source;
+	memset(source, 0, sizeof(*source));
+}
+
+int history_store_request_snapshot(struct db *db, int64_t session_id,
+				   struct history_request_snapshot *out)
+{
+	struct history_request_snapshot value MORPH_CLEANUP(history_request_snapshot_cleanup) = {0};
+	struct history_request_snapshot *snapshot = &value;
 	sqlite3_stmt *stmt = NULL;
 	int rc;
 
-	if (!arena || !snapshot)
+	if (!out)
 		return -EINVAL;
-	memset(snapshot, 0, sizeof(*snapshot));
+	if (out->turn_id || out->provider || out->model || out->input_json)
+		return -EEXIST;
 	rc = prepare_session_query(
 		db,
 		"SELECT turn_id,provider,model,input_json,created_at FROM model_request_snapshots "
@@ -169,7 +195,7 @@ int history_store_request_snapshot(struct db *db, int64_t session_id, struct are
 		return rc;
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {
-		const char **fields[] = {
+		char **fields[] = {
 			&snapshot->turn_id,
 			&snapshot->provider,
 			&snapshot->model,
@@ -179,7 +205,7 @@ int history_store_request_snapshot(struct db *db, int64_t session_id, struct are
 		for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
 			const char *text = column_text(stmt, (int)i);
 
-			*fields[i] = arena_strdup(arena, text ? text : "");
+			*fields[i] = strdup(text ? text : "");
 			if (!*fields[i]) {
 				rc = SQLITE_NOMEM;
 				break;
@@ -188,6 +214,8 @@ int history_store_request_snapshot(struct db *db, int64_t session_id, struct are
 		snapshot->created_at = sqlite3_column_int64(stmt, 4);
 	}
 	sqlite3_finalize(stmt);
+	if (rc == SQLITE_ROW)
+		history_request_snapshot_move(out, &value);
 	return rc == SQLITE_ROW	    ? 0
 	       : rc == SQLITE_DONE  ? -ENODATA
 	       : rc == SQLITE_NOMEM ? -ENOMEM
@@ -395,16 +423,18 @@ int history_store_visit_turn(struct db *db, int64_t session_id, const char *turn
 		turn_id, before_sequence, visitor, data);
 }
 
-int history_store_legacy_answer(struct db *db, int64_t session_id, struct arena *arena,
-				const char **answer, const char **question)
+int history_store_legacy_answer_copy(struct db *db, int64_t session_id, char **answer,
+				     char **question)
 {
+	char *answer_value MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *question_value MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	sqlite3_stmt *stmt = NULL;
 	int rc;
 
-	if (!arena || !answer || !question)
+	if (!answer || !question || answer == question)
 		return -EINVAL;
-	*answer = NULL;
-	*question = NULL;
+	if (*answer || *question)
+		return -EEXIST;
 	rc = prepare_session_query(
 		db,
 		"SELECT a.content,u.content FROM messages a JOIN messages u ON u.id=("
@@ -419,13 +449,20 @@ int history_store_legacy_answer(struct db *db, int64_t session_id, struct arena 
 		return rc;
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {
-		*answer = arena_strdup(arena, column_text(stmt, 0));
-		*question = arena_strdup(arena, column_text(stmt, 1));
-		rc = *answer && *question ? 0 : -ENOMEM;
+		const char *answer_text = column_text(stmt, 0);
+		const char *question_text = column_text(stmt, 1);
+
+		answer_value = strdup(answer_text ? answer_text : "");
+		question_value = strdup(question_text ? question_text : "");
+		rc = answer_value && question_value ? 0 : -ENOMEM;
 	} else {
 		rc = rc == SQLITE_DONE ? -ENODATA : MORPH_ERR_DB;
 	}
 	sqlite3_finalize(stmt);
+	if (rc == 0) {
+		*answer = morph_charp_steal(&answer_value);
+		*question = morph_charp_steal(&question_value);
+	}
 	return rc;
 }
 

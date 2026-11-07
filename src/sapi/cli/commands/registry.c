@@ -98,7 +98,7 @@ static int cli_registry_command_event_emit(struct cli_application *ctx, const ch
 	return rc;
 }
 
-const struct cli_command *cli_command_find(const char *name)
+const struct cli_command *cli_command_find_borrow(const char *name)
 {
 	const struct cli_command *command;
 
@@ -111,7 +111,7 @@ const struct cli_command *cli_command_find(const char *name)
 	return NULL;
 }
 
-const struct cli_command *cli_command_find_input(const char *input)
+const struct cli_command *cli_command_find_input_borrow(const char *input)
 {
 	const struct cli_command *command;
 
@@ -160,7 +160,7 @@ int cli_argv_split(const char *input, char **argv, int max_args)
 	return argc;
 }
 
-const char *cli_cmd_arg(int argc, char **argv, int idx)
+const char *cli_cmd_arg_borrow(int argc, char **argv, int idx)
 {
 	return (idx >= 0 && idx < argc) ? argv[idx] : NULL;
 }
@@ -197,7 +197,7 @@ int cli_command_dispatch(struct cli_application *ctx, const char *input)
 		}
 		capture_active = 1;
 	}
-	e = cli_command_find(argv[0]);
+	e = cli_command_find_borrow(argv[0]);
 	if (!e) {
 		CMD_ERROR(ctx, "unknown command: %s. Try /help", argv[0]);
 		rc = -ENOENT;
@@ -209,7 +209,7 @@ int cli_command_dispatch(struct cli_application *ctx, const char *input)
 	cli_output_capture_end(ctx);
 	event_rc = cli_registry_command_event_emit(
 		ctx, rc < 0 ? "command.failed" : "command.completed", rc < 0 ? "failed" : "end",
-		input, argc, argv, morph_buf_cstr(&output), rc);
+		input, argc, argv, morph_buf_cstr_borrow(&output), rc);
 	morph_buf_cleanup(&output);
 	if (event_rc != 0)
 		return event_rc;

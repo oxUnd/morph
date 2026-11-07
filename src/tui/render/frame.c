@@ -13,7 +13,7 @@ int morph_tui_frame_present(struct morph_tui_frame *frame, FILE *output, int col
 	size_t size = strlen(lines);
 
 	if (!resized && frame->previous.len == size &&
-	    memcmp(morph_buf_cstr(&frame->previous), lines, size) == 0)
+	    memcmp(morph_buf_cstr_borrow(&frame->previous), lines, size) == 0)
 		return 0;
 	if (!frame->previous.data) {
 		int rc = morph_buf_init(&frame->previous, BUFSIZ);
@@ -34,7 +34,7 @@ int morph_tui_frame_present(struct morph_tui_frame *frame, FILE *output, int col
 	if (rc != 0)
 		return rc;
 	const char *current = lines;
-	const char *previous = morph_buf_cstr(&frame->previous);
+	const char *previous = morph_buf_cstr_borrow(&frame->previous);
 	morph_buf_t *commands = &frame->output;
 
 	morph_buf_reset(commands);

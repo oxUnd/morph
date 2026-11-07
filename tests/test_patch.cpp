@@ -47,7 +47,7 @@ protected:
 
 	std::string read_file(const char *name)
 	{
-		char *content = file_read_all(path(name).c_str(), nullptr);
+		char *content = file_read_all_copy(path(name).c_str(), nullptr);
 		EXPECT_NE(content, nullptr);
 		std::string value = content ? content : "";
 		std::free(content);
@@ -70,7 +70,7 @@ protected:
 			return text;
 		*rc = patch_preview(dir, input, &out, error, error_size);
 		if (*rc == 0)
-			text = morph_buf_cstr(&out);
+			text = morph_buf_cstr_borrow(&out);
 		morph_buf_cleanup(&out);
 		return text;
 	}
@@ -347,7 +347,7 @@ TEST_F(PatchTest, ToolAcceptsRawTextAndPublishesGrammar)
 	ASSERT_NE(context, nullptr);
 	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(apply_patch_init(&registry, context), 0);
-	struct tool_entry *entry = tool_lookup(&registry, "apply_patch");
+	struct tool_entry *entry = tool_borrow(&registry, "apply_patch");
 	ASSERT_NE(entry, nullptr);
 	EXPECT_EQ(entry->desc.input_kind, TOOL_INPUT_TEXT);
 	EXPECT_NE(entry->flags & TOOL_FLAG_INTERNAL_APPROVAL, 0);

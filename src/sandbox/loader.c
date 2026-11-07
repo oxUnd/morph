@@ -13,6 +13,8 @@ int ext_load_so(struct ext *ex, const char *path)
 {
 	if (!ex || !path)
 		return -EINVAL;
+	if (ex->dl_handle || ex->run)
+		return -EEXIST;
 
 	char full_path[PATH_MAX];
 	int rc = file_path_join(full_path, sizeof(full_path), path,

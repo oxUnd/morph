@@ -76,7 +76,8 @@ int cli_share_store_save(const cJSON *document, char **out_path)
 {
 	if (!out_path)
 		return -EINVAL;
-	*out_path = NULL;
+	if (*out_path)
+		return -EEXIST;
 	morph_buf_t html = {0};
 	int rc = morph_buf_init(&html, 4096);
 	if (rc)

@@ -1,4 +1,5 @@
 #include "util/signals.h"
+#include "util/cleanup.h"
 #include "process.h"
 #include "sandbox.h"
 #include "util/buf.h"
@@ -188,7 +189,7 @@ static int stream_append(struct process_manager *manager,
 static char *redact_text(const struct process_manager *manager,
 			 const char *input, size_t length)
 {
-	morph_buf_t output;
+	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	const char *cursor = input;
 	const char *end = input + length;
 
@@ -245,7 +246,7 @@ static int append_snapshot_stream(const struct process_manager *manager,
 {
 	size_t start;
 	size_t length;
-	morph_buf_t value;
+	morph_buf_t value MORPH_CLEANUP(morph_buf_cleanup) = {0};
 
 	*out = NULL;
 	*omitted = stream->omitted;
@@ -333,33 +334,34 @@ static int snapshot_budget_locked(struct process_manager *manager,
 				   struct process_session *session,
 				   struct process_snapshot *snapshot, size_t limit)
 {
-	memset(snapshot, 0, sizeof(*snapshot));
-	snapshot->state = session->state;
-	snapshot->exit_code = session->exit_code;
-	snapshot->signal_number = session->signal_number;
-	snapshot->duration_ms = (session->ended_ms ? session->ended_ms : process_now_ms()) -
-		session->started_ms;
-	if (append_snapshot_stream(manager, &session->stdout_stream,
-				   &snapshot->stdout_text,
-				   &snapshot->stdout_omitted_bytes,
-				   &snapshot->stdout_truncated, limit) != 0)
+	struct process_snapshot candidate MORPH_CLEANUP(process_snapshot_cleanup) = {0};
+
+	if (snapshot->stdout_text || snapshot->stderr_text)
+		return -EEXIST;
+	candidate.state = session->state;
+	candidate.exit_code = session->exit_code;
+	candidate.signal_number = session->signal_number;
+	candidate.duration_ms =
+		(session->ended_ms ? session->ended_ms : process_now_ms()) - session->started_ms;
+	if (append_snapshot_stream(manager, &session->stdout_stream, &candidate.stdout_text,
+				   &candidate.stdout_omitted_bytes, &candidate.stdout_truncated,
+				   limit) != 0)
 		return -ENOMEM;
-	if (append_snapshot_stream(manager, &session->stderr_stream,
-				   &snapshot->stderr_text,
-				   &snapshot->stderr_omitted_bytes,
-				   &snapshot->stderr_truncated, limit) != 0) {
-		free(snapshot->stdout_text);
-		snapshot->stdout_text = NULL;
+	if (append_snapshot_stream(manager, &session->stderr_stream, &candidate.stderr_text,
+				   &candidate.stderr_omitted_bytes, &candidate.stderr_truncated,
+				   limit) != 0) {
 		return -ENOMEM;
 	}
 	session->stdout_stream.cursor = session->stdout_stream.base +
 		session->stdout_stream.data.len;
 	session->stderr_stream.cursor = session->stderr_stream.base +
 		session->stderr_stream.data.len;
-	snapshot->next_cursor.stdout_offset = session->stdout_stream.cursor;
-	snapshot->next_cursor.stderr_offset = session->stderr_stream.cursor;
-	stream_spool(manager, &session->stdout_stream, snapshot->stdout_path);
-	stream_spool(manager, &session->stderr_stream, snapshot->stderr_path);
+	candidate.next_cursor.stdout_offset = session->stdout_stream.cursor;
+	candidate.next_cursor.stderr_offset = session->stderr_stream.cursor;
+	stream_spool(manager, &session->stdout_stream, candidate.stdout_path);
+	stream_spool(manager, &session->stderr_stream, candidate.stderr_path);
+	*snapshot = candidate;
+	memset(&candidate, 0, sizeof(candidate));
 	return 0;
 }
 
@@ -584,7 +586,7 @@ static int spawn_pipe_process(struct process_manager *manager,
 	}
 	if (pid == 0) {
 		morph_signals_reset_child();
-		const char *shell = process_manager_shell(manager);
+		const char *shell = process_manager_shell_borrow(manager);
 
 		(void)setpgid(0, 0);
 		if (options->workdir && chdir(options->workdir) != 0)
@@ -651,7 +653,7 @@ static int spawn_pty_process(struct process_manager *manager,
 		return morph_error_from_errno(errno);
 	if (pid == 0) {
 		morph_signals_reset_child();
-		const char *shell = process_manager_shell(manager);
+		const char *shell = process_manager_shell_borrow(manager);
 
 		(void)setpgid(0, 0);
 		if (options->workdir && chdir(options->workdir) != 0)
@@ -690,7 +692,8 @@ int process_manager_create(const struct process_manager_config *config,
 
 	if (!out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	manager = calloc(1, sizeof(*manager));
 	if (!manager)
 		return -ENOMEM;
@@ -797,6 +800,8 @@ int process_spawn(struct process_manager *manager,
 
 	if (!manager || !options || !options->command || !session_id)
 		return -EINVAL;
+	if (snapshot && (snapshot->stdout_text || snapshot->stderr_text))
+		return -EEXIST;
 	session_id[0] = '\0';
 	if (options->cancelled && options->cancelled(options->cancel_data))
 		return -ECANCELED;
@@ -898,6 +903,8 @@ static int session_collect(struct process_manager *manager, const char *session_
 	int rc = 0;
 	if (!manager || !session_id || !snapshot)
 		return -EINVAL;
+	if (snapshot->stdout_text || snapshot->stderr_text)
+		return -EEXIST;
 	uint64_t now = process_now_ms();
 	if (wait_ms > UINT64_MAX - now)
 		return -EOVERFLOW;
@@ -974,7 +981,7 @@ int process_session_wait(struct process_manager *manager, const char *session_id
 			       cancel_data, snapshot, 1);
 }
 
-char *process_redact_text(const struct process_manager *manager, const char *text)
+char *process_redact_text_copy(const struct process_manager *manager, const char *text)
 {
 	return manager && text ? redact_text(manager, text, strlen(text)) : NULL;
 }
@@ -984,6 +991,8 @@ int process_session_inspect(struct process_manager *manager, const char *session
 {
 	if (!manager || !session_id || !snapshot)
 		return -EINVAL;
+	if (snapshot->stdout_text || snapshot->stderr_text)
+		return -EEXIST;
 	pthread_mutex_lock(&manager->mutex);
 	struct process_session *session = find_session(manager, session_id);
 	int rc = -ENOENT;
@@ -1006,6 +1015,8 @@ int process_session_status(struct process_manager *manager, const char *session_
 {
 	if (!manager || !session_id || !snapshot)
 		return -EINVAL;
+	if (snapshot->stdout_text || snapshot->stderr_text)
+		return -EEXIST;
 	pthread_mutex_lock(&manager->mutex);
 	struct process_session *session = find_session(manager, session_id);
 	if (session) {
@@ -1031,6 +1042,8 @@ int process_session_snapshot(struct process_manager *manager,
 
 	if (!manager || !session_id || !snapshot)
 		return -EINVAL;
+	if (snapshot->stdout_text || snapshot->stderr_text)
+		return -EEXIST;
 	pthread_mutex_lock(&manager->mutex);
 	session = find_session(manager, session_id);
 	if (!session)
@@ -1143,7 +1156,7 @@ const char *process_state_name(enum process_state state)
 	}
 }
 
-const char *process_manager_shell(const struct process_manager *manager)
+const char *process_manager_shell_borrow(const struct process_manager *manager)
 {
 	return manager && manager->shell[0] ? manager->shell : "/bin/bash";
 }

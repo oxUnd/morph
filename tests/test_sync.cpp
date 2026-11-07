@@ -261,7 +261,7 @@ TEST_F(SyncTest, CopiesLocalFileToRemote) {
 				 "a=1\n", 4), 0);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
 	snprintf(dst, sizeof(dst), "%s/data/config.toml", remote);
-	char *text = file_read_all(dst, nullptr);
+	char *text = file_read_all_copy(dst, nullptr);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "a=1\n");
 	free(text);
@@ -287,8 +287,7 @@ TEST_F(SyncTest, CopiesLocalFileThroughRemoteBackend) {
 				 "backend", 7), 0);
 	int rc = morph_sync_once(&cfg, &st);
 	ASSERT_EQ(rc, 0) << st.last_error;
-	char *text = file_read_all((std::string(remote) + "/config.toml").c_str(),
-				   nullptr);
+	char *text = file_read_all_copy((std::string(remote) + "/config.toml").c_str(), nullptr);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "backend");
 	free(text);
@@ -312,8 +311,7 @@ TEST_F(SyncTest, CopiesRemoteBackendFileToLocal) {
 	ASSERT_EQ(file_write_all((std::string(remote) + "/config.toml").c_str(),
 				 "remote-backend", 14), 0);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
-	char *text = file_read_all((std::string(local) + "/config.toml").c_str(),
-				   nullptr);
+	char *text = file_read_all_copy((std::string(local) + "/config.toml").c_str(), nullptr);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "remote-backend");
 	free(text);
@@ -376,8 +374,7 @@ TEST_F(SyncTest, CopiesRemoteFileToLocal) {
 	snprintf(src, sizeof(src), "%s/item.txt", dir);
 	ASSERT_EQ(file_write_all(src, "remote", 6), 0);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
-	char *text = file_read_all((std::string(local) + "/output/item.txt").c_str(),
-				   nullptr);
+	char *text = file_read_all_copy((std::string(local) + "/output/item.txt").c_str(), nullptr);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "remote");
 	free(text);
@@ -398,7 +395,7 @@ TEST_F(SyncTest, KeepsBothCopiesOnConflict) {
 	EXPECT_GE(st.conflicts, 1);
 	char **files = nullptr;
 	int count = 0;
-	ASSERT_EQ(file_list_files(local, &files, &count), 0);
+	ASSERT_EQ(file_list_files_copy(local, &files, &count), 0);
 	int found = 0;
 	for (int i = 0; i < count; i++) {
 		if (strncmp(files[i], "config.toml.conflict", 20) == 0)
@@ -426,7 +423,7 @@ TEST_F(SyncTest, SoftDeletesIntoTrash) {
 	snprintf(trash_dir, sizeof(trash_dir), "%s/.morph-sync/trash", remote);
 	char **files = nullptr;
 	int count = 0;
-	ASSERT_EQ(file_list_files(trash_dir, &files, &count), 0);
+	ASSERT_EQ(file_list_files_copy(trash_dir, &files, &count), 0);
 	EXPECT_GE(count, 1);
 	file_free_list(files, count);
 }
@@ -445,8 +442,7 @@ TEST_F(SyncTest, DoesNotOverwriteLocalDatabaseFromRemote) {
 	snprintf(remote_db, sizeof(remote_db), "%s/data.db", data_root);
 	ASSERT_EQ(file_write_all(remote_db, "remote-db", 9), 0);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
-	char *text = file_read_all((std::string(local) + "/data.db").c_str(),
-				   nullptr);
+	char *text = file_read_all_copy((std::string(local) + "/data.db").c_str(), nullptr);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "local-db");
 	free(text);
@@ -771,7 +767,7 @@ TEST_F(SyncTest, RecoversCrashAfterCurrentDatabaseWasMovedAside) {
 	ASSERT_EQ(morph_sync_prepare_db_replace(&cfg, backups[0].snapshot_id,
 		&plan), 0);
 	ASSERT_EQ(std::rename(plan.target, plan.rollback), 0);
-	char *text = file_read_all(plan.journal, nullptr);
+	char *text = file_read_all_copy(plan.journal, nullptr);
 	ASSERT_NE(text, nullptr);
 	cJSON *json = cJSON_Parse(text);
 	free(text);
@@ -843,7 +839,7 @@ TEST_F(SyncTest, RejectsTamperedRestorePlanAndSnapshotPathTraversal) {
 	snprintf(manifest, sizeof(manifest),
 		 "%s/.morph-sync/db/v1/snapshots/%s.json", remote,
 		 backups[0].snapshot_id);
-	char *text = file_read_all(manifest, nullptr);
+	char *text = file_read_all_copy(manifest, nullptr);
 	ASSERT_NE(text, nullptr);
 	cJSON *json = cJSON_Parse(text);
 	free(text);
@@ -875,7 +871,7 @@ TEST_F(SyncTest, IgnoresUntrustedRecoveryJournalWithoutTouchingTarget) {
 	ASSERT_EQ(morph_sync_backups(&cfg, "actual.db", &backups, &count), 0);
 	ASSERT_EQ(morph_sync_prepare_db_replace(&cfg, backups[0].snapshot_id,
 		&plan), 0);
-	original = file_read_all(plan.journal, nullptr);
+	original = file_read_all_copy(plan.journal, nullptr);
 	ASSERT_NE(original, nullptr);
 	cJSON *json = cJSON_Parse(original);
 	ASSERT_NE(json, nullptr);
@@ -917,11 +913,11 @@ TEST_F(SyncTest, RejectsCorruptDatabaseChunkWithoutPublishingRestore) {
 	ASSERT_EQ(count, 1);
 	snprintf(object_root, sizeof(object_root), "%s/.morph-sync/db/v1/objects",
 		 remote);
-	ASSERT_EQ(file_list_dirs(object_root, &prefixes, &prefix_count), 0);
+	ASSERT_EQ(file_list_dirs_copy(object_root, &prefixes, &prefix_count), 0);
 	ASSERT_GT(prefix_count, 0);
 	snprintf(prefix_path, sizeof(prefix_path), "%s/%s", object_root,
 		 prefixes[0]);
-	ASSERT_EQ(file_list_files(prefix_path, &objects, &object_count), 0);
+	ASSERT_EQ(file_list_files_copy(prefix_path, &objects, &object_count), 0);
 	ASSERT_GT(object_count, 0);
 	snprintf(object_path, sizeof(object_path), "%s/%s", prefix_path,
 		 objects[0]);
@@ -1036,7 +1032,7 @@ TEST_F(SyncTest, RetentionKeepsLatestSnapshotAndCollectsOldChunks) {
 	snprintf(manifest, sizeof(manifest),
 		 "%s/.morph-sync/db/v1/snapshots/%s.json", remote,
 		 backups[1].snapshot_id);
-	char *text = file_read_all(manifest, nullptr);
+	char *text = file_read_all_copy(manifest, nullptr);
 	ASSERT_NE(text, nullptr);
 	cJSON *json = cJSON_Parse(text);
 	free(text);
@@ -1052,14 +1048,14 @@ TEST_F(SyncTest, RetentionKeepsLatestSnapshotAndCollectsOldChunks) {
 
 	snprintf(object_root, sizeof(object_root), "%s/.morph-sync/db/v1/objects",
 		 remote);
-	ASSERT_EQ(file_list_dirs(object_root, &prefixes, &prefix_count), 0);
+	ASSERT_EQ(file_list_dirs_copy(object_root, &prefixes, &prefix_count), 0);
 	for (int i = 0; i < prefix_count; i++) {
 		char directory[PATH_MAX];
 		char **objects = nullptr;
 		int object_count = 0;
 		snprintf(directory, sizeof(directory), "%s/%s", object_root,
 			 prefixes[i]);
-		ASSERT_EQ(file_list_files(directory, &objects, &object_count), 0);
+		ASSERT_EQ(file_list_files_copy(directory, &objects, &object_count), 0);
 		for (int j = 0; j < object_count; j++) {
 			char object[PATH_MAX];
 			struct utimbuf old_time = { 1, 1 };
@@ -1078,14 +1074,14 @@ TEST_F(SyncTest, RetentionKeepsLatestSnapshotAndCollectsOldChunks) {
 	prefixes = nullptr;
 	prefix_count = 0;
 	int remaining_objects = 0;
-	ASSERT_EQ(file_list_dirs(object_root, &prefixes, &prefix_count), 0);
+	ASSERT_EQ(file_list_dirs_copy(object_root, &prefixes, &prefix_count), 0);
 	for (int i = 0; i < prefix_count; i++) {
 		char directory[PATH_MAX];
 		char **objects = nullptr;
 		int object_count = 0;
 		snprintf(directory, sizeof(directory), "%s/%s", object_root,
 			 prefixes[i]);
-		ASSERT_EQ(file_list_files(directory, &objects, &object_count), 0);
+		ASSERT_EQ(file_list_files_copy(directory, &objects, &object_count), 0);
 		remaining_objects += object_count;
 		file_free_list(objects, object_count);
 	}
@@ -1111,8 +1107,7 @@ TEST_F(SyncTest, RestoreTrashClearsTombstone) {
 		  0);
 	EXPECT_EQ(QueryInt("SELECT tombstone FROM entries WHERE path='config.toml'"),
 		  0);
-	char *text = file_read_all((std::string(local) + "/config.toml").c_str(),
-				   nullptr);
+	char *text = file_read_all_copy((std::string(local) + "/config.toml").c_str(), nullptr);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "base");
 	free(text);

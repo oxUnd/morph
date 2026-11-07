@@ -13,6 +13,8 @@ extern "C" {
 typedef char utf8_int8_t;
 typedef int32_t utf8_int32_t;
 
+/* Legacy pointer walkers lend a position in the input; utf8dup creates an
+ * independent malloc owner. Compatibility names remain stable. */
 const char *utf8valid(const char *s);
 const char *utf8nvalid(const char *s, size_t len);
 size_t utf8len(const char *s);
@@ -64,11 +66,12 @@ size_t utf8_display_width(const char *s);
  * so the column count reflects what the terminal actually shows. */
 size_t utf8_display_width_ansi(const char *s);
 
-const char *utf8_advance_codepoints(const char *s, size_t chars);
+/* Pointer walkers lend positions in s and share its lifetime. */
+const char *utf8_advance_codepoints_borrow(const char *s, size_t chars);
 
-const char *utf8_advance_display_width(const char *s, size_t cols);
+const char *utf8_advance_display_width_borrow(const char *s, size_t cols);
 
-const char *utf8_suffix_display_width(const char *s, size_t cols);
+const char *utf8_suffix_display_width_borrow(const char *s, size_t cols);
 
 size_t utf8_copy_display_width(char *dst, size_t dst_cap,
 			       const char *src, size_t max_width);
@@ -82,7 +85,7 @@ size_t utf8_copy_ellipsized_display_width(char *dst, size_t dst_cap,
 					  size_t max_width,
 					  int keep_tail);
 
-const char *utf8_prev_codepoint(const char *start, const char *p);
+const char *utf8_prev_codepoint_borrow(const char *start, const char *p);
 
 int utf8_is_cjk_cp(unsigned cp);
 int utf8_is_hiragana_cp(unsigned cp);

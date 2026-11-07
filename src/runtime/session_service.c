@@ -4,6 +4,8 @@
 
 #include "runtime/session.h"
 #include "util/error.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "cJSON.h"
 
 #include <errno.h>
@@ -153,6 +155,9 @@ int runtime_session_list_all(struct runtime *runtime, struct session **out,
 {
 	if (!runtime || !out || !count)
 		return -EINVAL;
+	if (*out)
+		return -EEXIST;
+	*count = 0;
 	return session_list(&runtime->context.database, out, count,
 			    recent_first, NULL);
 }
@@ -178,7 +183,7 @@ int runtime_session_reload_current(struct runtime *runtime)
 	return 0;
 }
 
-const char *runtime_session_current_name(struct runtime *runtime)
+const char *runtime_session_current_name_borrow(struct runtime *runtime)
 {
 	struct session session;
 
@@ -191,8 +196,7 @@ const char *runtime_session_current_name(struct runtime *runtime)
 	return runtime->context.current_session.name;
 }
 
-struct message *runtime_session_messages_current(struct runtime *runtime,
-					 int *count)
+struct message *runtime_session_messages_current_copy(struct runtime *runtime, int *count)
 {
 	if (!runtime || !count || runtime->context.current_session.id <= 0)
 		return NULL;
@@ -205,23 +209,27 @@ void runtime_session_messages_free(struct message *messages)
 	message_free_list(messages);
 }
 
-int runtime_session_last_answer(struct runtime *runtime, char **out)
+int runtime_session_last_answer_copy(struct runtime *runtime, char **out)
 {
+	char *answer MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	int rc;
 
 	if (!out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	if (!runtime)
 		return -EINVAL;
 	rc = pthread_mutex_trylock(&runtime->context.execution_lock);
 	if (rc != 0)
 		return -rc;
 	rc = runtime->context.current_session.id > 0
-		     ? history_store_last_answer(&runtime->context.database,
-						 runtime->context.current_session.id, out)
+		     ? history_store_last_answer_copy(&runtime->context.database,
+						      runtime->context.current_session.id, &answer)
 		     : -ENODATA;
 	pthread_mutex_unlock(&runtime->context.execution_lock);
+	if (rc == 0)
+		*out = morph_charp_steal(&answer);
 	return rc;
 }
 
@@ -288,17 +296,19 @@ static int transcript_trace(const struct history_trace_record *record, void *dat
 	return 0;
 }
 
-int runtime_session_transcript_json(struct runtime *runtime, int64_t session_id, char **out)
+int runtime_session_transcript_json_copy(struct runtime *runtime, int64_t session_id, char **out)
 {
 	struct session session;
 	struct db *db;
-	cJSON *root;
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	char *text MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
 	cJSON *items;
 	int rc;
 
 	if (!out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	if (!runtime || session_id <= 0)
 		return -EINVAL;
 	db = &runtime->context.database;
@@ -308,7 +318,6 @@ int runtime_session_transcript_json(struct runtime *runtime, int64_t session_id,
 	root = cJSON_CreateObject();
 	items = root ? cJSON_AddArrayToObject(root, "messages") : NULL;
 	if (!items || !cJSON_AddStringToObject(root, "identity", session.display_id)) {
-		cJSON_Delete(root);
 		return -ENOMEM;
 	}
 	rc = history_store_visit_messages(db, session_id, transcript_message, items);
@@ -327,21 +336,22 @@ int runtime_session_transcript_json(struct runtime *runtime, int64_t session_id,
 			   : -ENOMEM;
 	}
 	if (rc == 0) {
-		*out = cJSON_PrintUnformatted(root);
-		if (!*out)
+		text = morph_json_print_copy(root);
+		if (!text)
 			rc = -ENOMEM;
 	}
-	cJSON_Delete(root);
+	if (rc == 0)
+		*out = morph_charp_steal(&text);
 	return rc;
 }
 
-struct model_history_item *runtime_session_model_history_current(
-	struct runtime *runtime, int active_only, int *count)
+struct model_history_item *runtime_session_model_history_current_copy(struct runtime *runtime,
+								      int active_only, int *count)
 {
 	if (!runtime || !count || runtime->context.current_session.id <= 0)
 		return NULL;
-	return model_history_list(&runtime->context.database,
-		runtime->context.current_session.id, active_only, count);
+	return model_history_list(&runtime->context.database, runtime->context.current_session.id,
+				  active_only, count);
 }
 
 void runtime_session_model_history_free(struct model_history_item *items)

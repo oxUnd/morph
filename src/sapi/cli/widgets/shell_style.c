@@ -7,7 +7,7 @@ static int cli_shell_style_shell_operator(char ch)
 }
 
 /* Recognize only a literal leading cd, never evaluate shell syntax. */
-const char *cli_shell_summary(const char *text, const char *workdir)
+const char *cli_shell_summary_borrow(const char *text, const char *workdir)
 {
 	const char *p = text;
 	morph_buf_t path;

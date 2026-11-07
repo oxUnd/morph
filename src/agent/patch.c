@@ -1,4 +1,5 @@
 #include "patch.h"
+#include "util/cleanup.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/file.h"
@@ -161,7 +162,7 @@ static void patch_string_array_cleanup(morph_array_t *array)
 static int patch_string_array_push(morph_array_t *array, const char *text,
 				   size_t len)
 {
-	char **slot = morph_array_push(array);
+	char **slot = morph_array_push_borrow(array);
 
 	if (!slot)
 		return -ENOMEM;
@@ -195,8 +196,7 @@ static void patch_hunks_cleanup(morph_array_t *hunks)
 		free(hunk->add_content);
 		for (size_t chunk_index = 0;
 		     chunk_index < hunk->chunks.nelts; chunk_index++) {
-			struct patch_chunk *chunk = morph_array_get(&hunk->chunks,
-				chunk_index);
+			struct patch_chunk *chunk = morph_array_borrow(&hunk->chunks, chunk_index);
 
 			patch_chunk_cleanup(chunk);
 		}
@@ -215,7 +215,7 @@ static int patch_split_lines(char *copy, morph_array_t *lines)
 			char **slot;
 
 			*cursor = '\0';
-			slot = morph_array_push(lines);
+			slot = morph_array_push_borrow(lines);
 			if (!slot)
 				return -ENOMEM;
 			*slot = start;
@@ -228,7 +228,7 @@ static int patch_split_lines(char *copy, morph_array_t *lines)
 			int done = *cursor == '\0';
 
 			*cursor = '\0';
-			slot = morph_array_push(lines);
+			slot = morph_array_push_borrow(lines);
 			if (!slot)
 				return -ENOMEM;
 			*slot = start;
@@ -333,7 +333,7 @@ static int patch_parse_update(char **lines, size_t *index, size_t end,
 		if (header == PATCH_HEADER_ADD || header == PATCH_HEADER_UPDATE ||
 		    header == PATCH_HEADER_DELETE || header == PATCH_HEADER_END)
 			break;
-		chunk = morph_array_push(&hunk->chunks);
+		chunk = morph_array_push_borrow(&hunk->chunks);
 		if (!chunk)
 			return -ENOMEM;
 		rc = patch_chunk_init(chunk);
@@ -454,7 +454,7 @@ static int patch_parse(char *copy, morph_array_t *hunks, char *error,
 				line[index]);
 			break;
 		}
-		hunk = morph_array_push(hunks);
+		hunk = morph_array_push_borrow(hunks);
 		if (!hunk) {
 			rc = -ENOMEM;
 			break;
@@ -474,7 +474,7 @@ static int patch_parse(char *copy, morph_array_t *hunks, char *error,
 			break;
 		index++;
 		if (hunk->action == PATCH_ACTION_ADD) {
-			morph_buf_t content;
+			morph_buf_t content MORPH_CLEANUP(morph_buf_cleanup) = {0};
 
 			rc = morph_buf_init(&content, 128);
 			if (rc != 0)
@@ -677,8 +677,8 @@ static int patch_lines_equal(const char *left, const char *right, int mode)
 			memcmp(left_text, right_text, left_len) == 0;
 	}
 	{
-		morph_buf_t left_normalized;
-		morph_buf_t right_normalized;
+		morph_buf_t left_normalized MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		morph_buf_t right_normalized MORPH_CLEANUP(morph_buf_cleanup) = {0};
 		int equal;
 		int normalize_rc;
 
@@ -704,8 +704,8 @@ static int patch_lines_equal(const char *left, const char *right, int mode)
 			free(right_copy);
 			return 0;
 		}
-		equal = strcmp(morph_buf_cstr(&left_normalized),
-			morph_buf_cstr(&right_normalized)) == 0;
+		equal = strcmp(morph_buf_cstr_borrow(&left_normalized),
+			       morph_buf_cstr_borrow(&right_normalized)) == 0;
 		morph_buf_cleanup(&left_normalized);
 		morph_buf_cleanup(&right_normalized);
 		free(left_copy);
@@ -802,7 +802,7 @@ static int patch_compute_replacements(morph_array_t *source,
 			memset(&context, 0, sizeof(context));
 			if (morph_array_init(&context, 1, sizeof(char *)) != 0)
 				return -ENOMEM;
-			char **slot = morph_array_push(&context);
+			char **slot = morph_array_push_borrow(&context);
 			if (!slot) {
 				morph_array_cleanup(&context);
 				return -ENOMEM;
@@ -844,7 +844,7 @@ static int patch_compute_replacements(morph_array_t *source,
 					hunk->path);
 			cursor = found + old_count;
 		}
-		replacement = morph_array_push(replacements);
+		replacement = morph_array_push_borrow(replacements);
 		if (!replacement)
 			return -ENOMEM;
 		*replacement = (struct patch_replacement){
@@ -881,7 +881,7 @@ static int patch_build_updated_content(const char *original,
 {
 	morph_array_t source;
 	morph_array_t replacements;
-	morph_buf_t output;
+	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	size_t source_index = 0;
 	int rc;
 
@@ -912,8 +912,7 @@ static int patch_build_updated_content(const char *original,
 		return rc;
 	}
 	for (size_t i = 0; i < replacements.nelts; i++) {
-		struct patch_replacement *replacement =
-			morph_array_get(&replacements, i);
+		struct patch_replacement *replacement = morph_array_borrow(&replacements, i);
 		char **source_lines = source.elts;
 		char **new_lines = replacement->chunk->new_lines.elts;
 
@@ -969,7 +968,7 @@ struct patch_diff_op {
 static int patch_diff_push(morph_array_t *ops, enum patch_diff_kind kind,
 			   const char *text)
 {
-	struct patch_diff_op *op = morph_array_push(ops);
+	struct patch_diff_op *op = morph_array_push_borrow(ops);
 
 	if (!op)
 		return -ENOMEM;
@@ -1249,7 +1248,7 @@ static int patch_render_delete_preview(morph_buf_t *out, const char *path,
 				       const char *resolved, char *error,
 				       size_t error_size)
 {
-	char *content = file_read_all(resolved, NULL);
+	char *content = file_read_all_copy(resolved, NULL);
 	morph_array_t lines;
 	char **entries;
 	int rc;
@@ -1288,7 +1287,7 @@ static int patch_render_hunk_preview(morph_buf_t *out, const char *root,
 	if (hunk->action == PATCH_ACTION_DELETE)
 		return patch_render_delete_preview(out, hunk->path, source_path,
 			error, error_size);
-	original = file_read_all(source_path, NULL);
+	original = file_read_all_copy(source_path, NULL);
 	if (!original)
 		return patch_error(error, error_size, -errno,
 			"failed to read file to update %s", source_path);
@@ -1326,7 +1325,7 @@ int patch_preview(const char *workdir, const char *input, morph_buf_t *out,
 	if (utf8valid(input) != NULL)
 		return patch_error(error, error_size, -EINVAL,
 			"patch is not valid UTF-8");
-	root = file_resolve_path(workdir);
+	root = file_resolve_path_copy(workdir);
 	if (!root)
 		return -ENOMEM;
 	copy = strdup(input);
@@ -1363,7 +1362,7 @@ static int patch_atomic_write(const char *path, const char *content, mode_t mode
 static int patch_result_add(struct patch_result *result,
 			    struct patch_hunk *hunk, const char *path)
 {
-	struct patch_change *change = morph_array_push(&result->changes);
+	struct patch_change *change = morph_array_push_borrow(&result->changes);
 
 	if (!change)
 		return -ENOMEM;
@@ -1419,7 +1418,7 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 		if (!source_exists)
 			return patch_error(error, error_size, -ENOENT,
 				"failed to read file to update %s", source_path);
-		original = file_read_all(source_path, NULL);
+		original = file_read_all_copy(source_path, NULL);
 		if (!original)
 			return patch_error(error, error_size, -errno,
 				"failed to read file to update %s", source_path);
@@ -1480,7 +1479,7 @@ static int patch_authorize_hunks(const char *root, const morph_array_t *hunks,
 	if (rc != 0)
 		return rc;
 	morph_array_foreach(hunk, hunks, struct patch_hunk) {
-		target = morph_array_push(&targets);
+		target = morph_array_push_borrow(&targets);
 		if (!target) {
 			rc = -ENOMEM;
 			break;
@@ -1492,7 +1491,7 @@ static int patch_authorize_hunks(const char *root, const morph_array_t *hunks,
 			break;
 		if (!hunk->move_path)
 			continue;
-		target = morph_array_push(&targets);
+		target = morph_array_push_borrow(&targets);
 		if (!target) {
 			rc = -ENOMEM;
 			break;
@@ -1518,6 +1517,7 @@ int patch_apply_authorized(const char *workdir, const char *input,
 		struct patch_result *result, char *error, size_t error_size,
 		patch_authorize_fn authorize, void *user_data)
 {
+	struct patch_result candidate MORPH_CLEANUP(patch_result_cleanup) = {0};
 	morph_array_t hunks;
 	char *root;
 	char *copy;
@@ -1525,7 +1525,8 @@ int patch_apply_authorized(const char *workdir, const char *input,
 
 	if (!workdir || !input || !result)
 		return -EINVAL;
-	memset(result, 0, sizeof(*result));
+	if (result->changes.elts || result->changes.nelts)
+		return -EALREADY;
 	memset(&hunks, 0, sizeof(hunks));
 	if (error && error_size > 0)
 		error[0] = '\0';
@@ -1535,7 +1536,7 @@ int patch_apply_authorized(const char *workdir, const char *input,
 	if (utf8valid(input) != NULL)
 		return patch_error(error, error_size, -EINVAL,
 			"patch is not valid UTF-8");
-	root = file_resolve_path(workdir);
+	root = file_resolve_path_copy(workdir);
 	if (!root)
 		return -ENOMEM;
 	copy = strdup(input);
@@ -1549,13 +1550,12 @@ int patch_apply_authorized(const char *workdir, const char *input,
 	if (rc == 0 && authorize)
 		rc = patch_authorize_hunks(root, &hunks, error, error_size, authorize, user_data);
 	if (rc == 0)
-		rc = morph_array_init(&result->changes, hunks.nelts,
-			sizeof(struct patch_change));
+		rc = morph_array_init(&candidate.changes, hunks.nelts, sizeof(struct patch_change));
 	if (rc == 0) {
 		struct patch_hunk *hunk;
 
 		morph_array_foreach(hunk, &hunks, struct patch_hunk) {
-			rc = patch_apply_hunk(root, hunk, result, error, error_size);
+			rc = patch_apply_hunk(root, hunk, &candidate, error, error_size);
 			if (rc != 0)
 				break;
 		}
@@ -1563,6 +1563,10 @@ int patch_apply_authorized(const char *workdir, const char *input,
 	patch_hunks_cleanup(&hunks);
 	free(copy);
 	free(root);
+	if (rc == 0) {
+		*result = candidate;
+		memset(&candidate, 0, sizeof(candidate));
+	}
 	return rc;
 }
 

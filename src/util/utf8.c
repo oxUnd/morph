@@ -333,7 +333,7 @@ osc_done:
 	return n;
 }
 
-const char *utf8_advance_codepoints(const char *s, size_t chars)
+const char *utf8_advance_codepoints_borrow(const char *s, size_t chars)
 {
 	if (!s)
 		return NULL;
@@ -345,7 +345,7 @@ const char *utf8_advance_codepoints(const char *s, size_t chars)
 	return s;
 }
 
-const char *utf8_advance_display_width(const char *s, size_t cols)
+const char *utf8_advance_display_width_borrow(const char *s, size_t cols)
 {
 	size_t vis = 0;
 
@@ -364,7 +364,7 @@ const char *utf8_advance_display_width(const char *s, size_t cols)
 	return s;
 }
 
-const char *utf8_suffix_display_width(const char *s, size_t cols)
+const char *utf8_suffix_display_width_borrow(const char *s, size_t cols)
 {
 	const char *start;
 	const char *p;
@@ -504,14 +504,14 @@ size_t utf8_copy_ellipsized_display_width(char *dst, size_t dst_cap,
 	}
 	memcpy(dst, ellipsis, ellipsis_bytes);
 	dst[ellipsis_bytes] = '\0';
-	start = utf8_suffix_display_width(src, max_width - 1);
+	start = utf8_suffix_display_width_borrow(src, max_width - 1);
 	copied = utf8_copy_sanitized_display_width(
 		dst + ellipsis_bytes, dst_cap - ellipsis_bytes, start,
 		max_width - 1);
 	return copied + 1;
 }
 
-const char *utf8_prev_codepoint(const char *start, const char *p)
+const char *utf8_prev_codepoint_borrow(const char *start, const char *p)
 {
 	if (!start || !p || p <= start)
 		return start;

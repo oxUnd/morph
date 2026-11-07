@@ -17,6 +17,7 @@
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/application_internal.h"
+#include "util/cleanup.h"
 
 #ifdef HAVE_READLINE
 struct cli_chat_page {
@@ -70,8 +71,7 @@ static int cli_chat_page_appear(void *data, struct morph_tui_application *app)
 		morph_tui_application_schedule(app, 0);
 		return 0;
 	}
-	cli_readline_editor_open(ctx, state->draft, state->point);
-	state->draft = NULL;
+	cli_readline_editor_open_take(ctx, &state->draft, state->point);
 	state->callback_installed = 1;
 	cli_chat_page_schedule(state, app);
 	return 0;
@@ -85,7 +85,7 @@ static void cli_chat_page_disappear(void *data, struct morph_tui_application *ap
 	(void)app;
 	if (state->callback_installed) {
 		free(state->draft);
-		state->draft = cli_readline_suspend(ctx, &state->point);
+		state->draft = cli_readline_suspend_copy(ctx, &state->point);
 		cli_readline_editor_close();
 		state->callback_installed = 0;
 	}
@@ -178,11 +178,12 @@ static int cli_chat_page_event(void *data, struct morph_tui_application *app,
 		int point;
 
 		cli_feed_update_begin(ctx);
-		char *draft = cli_readline_suspend(ctx, &point);
+		char *draft MORPH_CLEANUP(morph_charp_cleanup) =
+			cli_readline_suspend_copy(ctx, &point);
 
 		cli_readline_finish_job(ctx);
 		if (draft)
-			cli_readline_resume(ctx, draft, point);
+			cli_readline_resume_take(ctx, &draft, point);
 		cli_feed_update_end(ctx);
 	}
 	if (!modal && event->type == MORPH_TUI_EVENT_TICK)
@@ -230,7 +231,8 @@ static int cli_chat_page_input(void *data, struct morph_tui_application *app,
 				cli_presentation_user_input(ctx, input);
 			cli_readline_editor_remember(input);
 			if (input[0] != '/') {
-				char *expanded = cli_composer_model_expand(&ctx->composer, input);
+				char *expanded =
+					cli_composer_model_expand_copy(&ctx->composer, input);
 
 				if (expanded) {
 					cli_turn_record_input_images(ctx, input);
@@ -248,7 +250,7 @@ static int cli_chat_page_input(void *data, struct morph_tui_application *app,
 				command_rc = cli_command_dispatch(ctx, input);
 				handled = 1;
 			} else if (!handled && state->job->active && input[0] == '/') {
-				if (!cli_command_find_input(input))
+				if (!cli_command_find_input_borrow(input))
 					CMD_ERROR(ctx, "unknown command: %s. Try /help", input);
 				else {
 					CMD_ERROR(ctx, "wait for the active turn "
@@ -291,7 +293,7 @@ static int cli_chat_page_input(void *data, struct morph_tui_application *app,
 		if (ctx->running && !morph_tui_application_transition_pending(app)) {
 			ctx->input_status.updated = 0;
 			ctx->input_status.suspended = 0;
-			cli_readline_editor_open(ctx, NULL, 0);
+			cli_readline_editor_open_take(ctx, NULL, 0);
 			state->callback_installed = 1;
 			if (retry_command)
 				cli_readline_editor_replace(ctx, retry_command, -1);

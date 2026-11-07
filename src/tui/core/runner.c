@@ -89,8 +89,8 @@ int morph_tui_application_init(struct morph_tui_application *app,
 	int rc = core_application_loop_create(&config, &state->loop);
 
 	if (!rc)
-		rc = morph_tui_window_set_event_handler(morph_tui_application_window(app),
-							core_runner_input, app);
+		rc = morph_tui_window_set_event_handler_borrow(
+			morph_tui_application_window_borrow(app), core_runner_input, app);
 	if (!rc && !state->options.external_signals)
 		rc = morph_signal_listener_start(&state->signals, core_runner_signal, app);
 	if (rc) {
@@ -186,7 +186,8 @@ int morph_tui_application_create(const struct morph_tui_application_options *opt
 {
 	if (!out)
 		return -EINVAL;
-	*out = NULL;
+	if (*out)
+		return -EEXIST;
 	struct morph_tui_application *app = calloc(1, sizeof(*app));
 
 	if (!app)
@@ -214,13 +215,29 @@ int morph_tui_application_wake(struct morph_tui_application *app)
 	return core_application_loop_wake(core_runner_loop(app));
 }
 
-int morph_tui_application_post(struct morph_tui_application *app, int code, void *payload,
-			       void (*release)(void *))
+void morph_tui_message_cleanup(struct morph_tui_message *message)
 {
-	return core_application_loop_post(core_runner_loop(app), code, payload, release);
+	if (!message)
+		return;
+	if (message->release)
+		message->release(message->data);
+	memset(message, 0, sizeof(*message));
 }
 
-struct morph_tui_window *morph_tui_application_window(struct morph_tui_application *app)
+int morph_tui_application_post(struct morph_tui_application *app, int code)
+{
+	struct morph_tui_message message = {0};
+
+	return morph_tui_application_post_take(app, code, &message);
+}
+
+int morph_tui_application_post_take(struct morph_tui_application *app, int code,
+				    struct morph_tui_message *message)
+{
+	return core_application_loop_post_take(core_runner_loop(app), code, message);
+}
+
+struct morph_tui_window *morph_tui_application_window_borrow(struct morph_tui_application *app)
 {
 	return core_application_loop_window(core_runner_loop(app));
 }
@@ -250,10 +267,10 @@ void morph_tui_application_set_input_enabled(struct morph_tui_application *app, 
 	core_application_loop_set_input_enabled(core_runner_loop(app), enabled);
 }
 
-int morph_tui_application_present_controller(struct morph_tui_application *app,
-					     const struct morph_tui_controller *controller)
+int morph_tui_application_present_controller_take(struct morph_tui_application *app,
+						  struct morph_tui_controller *controller)
 {
-	return core_application_loop_present(core_runner_loop(app), controller);
+	return core_application_loop_present_take(core_runner_loop(app), controller);
 }
 
 int morph_tui_application_dismiss_controller(struct morph_tui_application *app, int result)
@@ -275,7 +292,7 @@ int morph_tui_application_main(struct morph_tui_application *app,
 	}
 
 	if (!rc)
-		rc = morph_tui_view_controller_present(app, root);
+		rc = morph_tui_view_controller_present_borrow(app, root);
 	if (!rc)
 		rc = morph_tui_application_run(app);
 	if (initialized) {

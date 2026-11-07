@@ -2,7 +2,7 @@
 #include "util/log.h"
 #include "util/json.h"
 #include "util/error.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -11,47 +11,46 @@
 
 static cJSON *build_responses_tools_cjson(const struct tool_desc *tools, int tool_count)
 {
-	cJSON *array = cJSON_CreateArray();
-
+	cJSON *array MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
 	if (!array)
 		return NULL;
 	for (int i = 0; i < tool_count; i++) {
-		cJSON *tool = cJSON_CreateObject();
-
-		if (!tool) {
-			cJSON_Delete(array);
+		cJSON *tool MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		if (!tool)
 			return NULL;
-		}
 		if (tools[i].input_kind == TOOL_INPUT_TEXT) {
-			cJSON_AddStringToObject(tool, "type", "custom");
-			cJSON_AddStringToObject(tool, "name", tools[i].name);
-			cJSON_AddStringToObject(tool, "description", tools[i].description);
-			if ((tools[i].input_format && tools[i].input_format[0])) {
-				cJSON *format = cJSON_Parse(tools[i].input_format);
-
-				if (!format) {
-					cJSON_Delete(tool);
-					cJSON_Delete(array);
+			if (!cJSON_AddStringToObject(tool, "type", "custom"))
+				return NULL;
+			if (tools[i].input_format && tools[i].input_format[0]) {
+				cJSON *format MORPH_CLEANUP(morph_json_cleanup) =
+					cJSON_Parse(tools[i].input_format);
+				if (!format || morph_json_object_take(tool, "format", &format) != 0)
 					return NULL;
-				}
-				cJSON_AddItemToObject(tool, "format", format);
 			}
 		} else {
-			cJSON *params = (tools[i].input_schema && tools[i].input_schema[0])
-						? cJSON_Parse(tools[i].input_schema)
-						: NULL;
-
-			params = llm_codec_schema(params);
-			if (!params)
-				params = cJSON_Parse(TOOL_EMPTY_INPUT_SCHEMA);
-			cJSON_AddStringToObject(tool, "type", "function");
-			cJSON_AddStringToObject(tool, "name", tools[i].name);
-			cJSON_AddStringToObject(tool, "description", tools[i].description);
-			cJSON_AddItemToObject(tool, "parameters", params);
+			cJSON *params MORPH_CLEANUP(morph_json_cleanup) =
+				tools[i].input_schema && tools[i].input_schema[0]
+					? cJSON_Parse(tools[i].input_schema)
+					: NULL;
+			cJSON *schema MORPH_CLEANUP(morph_json_cleanup) =
+				llm_codec_schema_copy(params);
+			if (!schema && (cJSON_IsObject(params) || cJSON_IsArray(params)))
+				return NULL;
+			if (!schema)
+				schema = cJSON_Parse(TOOL_EMPTY_INPUT_SCHEMA);
+			if (!schema || !cJSON_AddStringToObject(tool, "type", "function") ||
+			    morph_json_object_take(tool, "parameters", &schema) != 0)
+				return NULL;
 		}
-		cJSON_AddItemToArray(array, tool);
+		if (!cJSON_AddStringToObject(tool, "name", tools[i].name) ||
+		    !cJSON_AddStringToObject(tool, "description",
+					     tools[i].description ? tools[i].description : "") ||
+		    morph_json_array_take(array, &tool) != 0)
+			return NULL;
 	}
-	return array;
+	cJSON *owned = array;
+	array = NULL;
+	return owned;
 }
 
 static enum tool_input_kind responses_call_kind(const struct chat_message *messages, int before,
@@ -144,6 +143,7 @@ static struct tool_call *responses_find_tool_call(struct llm_stream_ctx *ctx, co
 static int responses_append_call_input(struct llm_stream_ctx *ctx, struct tool_call *call,
 				       const char *delta)
 {
+	(void)ctx;
 	size_t old_len;
 	size_t add_len;
 	char *next;
@@ -152,11 +152,11 @@ static int responses_append_call_input(struct llm_stream_ctx *ctx, struct tool_c
 		return 0;
 	old_len = call->arguments ? strlen(call->arguments) : 0;
 	add_len = strlen(delta);
-	next = arena_alloc(ctx->arena, old_len + add_len + 1);
+	if (add_len > SIZE_MAX - old_len - 1)
+		return -EOVERFLOW;
+	next = realloc(call->arguments, old_len + add_len + 1);
 	if (!next)
 		return -ENOMEM;
-	if (call->arguments)
-		memcpy(next, call->arguments, old_len);
 	memcpy(next + old_len, delta, add_len + 1);
 	call->arguments = next;
 	return 0;
@@ -185,7 +185,7 @@ static int responses_parse_output_item(struct llm_stream_ctx *ctx, cJSON *item, 
 	}
 	call = responses_find_tool_call(ctx, cJSON_GetStringValue(id));
 	if (!call || (cJSON_IsString(id) && call->id[0] && strcmp(call->id, id->valuestring) != 0))
-		call = llm_stream_ensure_tool_call(ctx, ctx->tool_call_count);
+		call = llm_stream_tool_call_ensure_borrow(ctx, ctx->tool_call_count);
 	if (!call)
 		return -ENOMEM;
 	call->input_kind = kind;
@@ -195,8 +195,11 @@ static int responses_parse_output_item(struct llm_stream_ctx *ctx, cJSON *item, 
 		strncpy(call->id, call_id->valuestring, sizeof(call->id) - 1);
 	if (cJSON_IsString(name) && name->valuestring)
 		strncpy(call->name, name->valuestring, sizeof(call->name) - 1);
-	if (complete && !call->arguments && cJSON_IsString(input) && input->valuestring)
-		call->arguments = arena_strdup(ctx->arena, input->valuestring);
+	if (complete && !call->arguments && cJSON_IsString(input) && input->valuestring) {
+		call->arguments = strdup(input->valuestring);
+		if (!call->arguments)
+			return -ENOMEM;
+	}
 	return 0;
 }
 
@@ -273,7 +276,7 @@ static void responses_configure(const struct model *model, cJSON *request, int t
 				model->max_tokens > 0 ? model->max_tokens : 4096);
 }
 
-const struct llm_codec *llm_responses_codec(void)
+const struct llm_codec *llm_responses_codec_borrow(void)
 {
 	static const struct llm_codec codec = {
 		.endpoint = "/responses",

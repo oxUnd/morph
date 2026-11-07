@@ -3,7 +3,7 @@
 #include "runtime/usage.h"
 #include "persistence/history_store.h"
 #include "credits.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/str.h"
@@ -59,7 +59,8 @@ static int recap_string(cJSON *value, size_t limit, int nullable)
 		return 1;
 	if (!cJSON_IsString(value) || utf8valid(value->valuestring))
 		return 0;
-	trimmed = morph_str_trim((morph_str_t){strlen(value->valuestring), value->valuestring});
+	trimmed = morph_str_trim_borrow(
+		(morph_str_t){strlen(value->valuestring), value->valuestring});
 	text = strndup(trimmed.data, trimmed.len);
 	if (!text)
 		return 0;
@@ -127,7 +128,7 @@ int runtime_recap_is_current(struct runtime *runtime, const struct runtime_recap
 static char *recap_excerpt(const char *text, size_t budget)
 {
 	static const char marker[] = "\n[... excerpted ...]\n";
-	morph_buf_t out;
+	morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	size_t length = strlen(text);
 	size_t half;
 	size_t offset;
@@ -142,7 +143,7 @@ static char *recap_excerpt(const char *text, size_t budget)
 	offset = length - half;
 	tail = text + utf8_clamp_bytes(text, offset);
 	if (tail < text + offset)
-		tail = utf8_advance_codepoints(tail, 1);
+		tail = utf8_advance_codepoints_borrow(tail, 1);
 	if (morph_buf_init(&out, budget + 1) != 0)
 		return NULL;
 	(void)morph_buf_append(&out, text, utf8_clamp_bytes(text, half));
@@ -159,7 +160,6 @@ struct recap_visible_message {
 };
 
 struct recap_history_input {
-	struct arena *arena;
 	morph_array_t messages;
 	size_t budget;
 };
@@ -167,61 +167,70 @@ struct recap_history_input {
 static int recap_collect_message(const struct message *message, void *data)
 {
 	struct recap_history_input *input = data;
-	char *excerpt = recap_excerpt(message->content, input->budget);
-	struct recap_visible_message row;
+	char *role MORPH_CLEANUP(morph_charp_cleanup) = strdup(message->role);
+	char *text MORPH_CLEANUP(morph_charp_cleanup) =
+		recap_excerpt(message->content, input->budget);
 
-	row.role = arena_strdup(input->arena, message->role);
-	row.text = excerpt ? arena_strdup(input->arena, excerpt) : NULL;
-	free(excerpt);
-	struct recap_visible_message *slot = morph_array_push(&input->messages);
-
-	if (!row.role || !row.text || !slot)
+	if (!role || !text)
 		return -ENOMEM;
-	*slot = row;
+	struct recap_visible_message *slot = morph_array_push_borrow(&input->messages);
+
+	if (!slot)
+		return -ENOMEM;
+	slot->role = role;
+	slot->text = text;
+	role = NULL;
+	text = NULL;
 	return 0;
+}
+
+static void recap_history_input_cleanup(struct recap_history_input *input)
+{
+	for (size_t i = 0; i < input->messages.nelts; i++) {
+		struct recap_visible_message *message = morph_array_borrow(&input->messages, i);
+
+		free(message->role);
+		free(message->text);
+	}
+	morph_array_cleanup(&input->messages);
 }
 
 static char *recap_history(struct db *db, int64_t session_id)
 {
-	struct recap_history_input input = {0};
+	struct recap_history_input input MORPH_CLEANUP(recap_history_input_cleanup) = {0};
 	struct recap_visible_message message;
-	morph_buf_t prompt = {0};
+	morph_buf_t prompt MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	char *result = NULL;
 	int rc;
 
-	input.arena = arena_create(0);
-	if (!input.arena)
-		return NULL;
 	input.budget =
 		(RECAP_PROMPT_MAX_BYTES - strlen(recap_instructions)) / RECAP_HISTORY_MESSAGES - 16;
-	rc = morph_array_init_arena(&input.messages, input.arena, RECAP_HISTORY_MESSAGES,
-				    sizeof(message));
+	rc = morph_array_init(&input.messages, RECAP_HISTORY_MESSAGES, sizeof(message));
 	if (!rc)
 		rc = morph_buf_init(&prompt, 1024);
 	if (!rc)
 		rc = history_store_visit_recent_messages(db, session_id, RECAP_HISTORY_MESSAGES,
 							 recap_collect_message, &input);
-	morph_array_t messages = input.messages;
+	size_t visible_count = input.messages.nelts;
 
 	if (!rc) {
-		while (messages.nelts) {
+		while (visible_count) {
 			struct recap_visible_message *oldest =
-				morph_array_get(&messages, messages.nelts - 1);
+				morph_array_borrow(&input.messages, visible_count - 1);
 
 			if (strcmp(oldest->role, "assistant") != 0)
 				break;
-			morph_array_pop(&messages);
+			visible_count--;
 		}
-		for (size_t i = messages.nelts; i > 0; i--) {
-			struct recap_visible_message *item = morph_array_get(&messages, i - 1);
+		for (size_t i = visible_count; i > 0; i--) {
+			struct recap_visible_message *item =
+				morph_array_borrow(&input.messages, i - 1);
 
 			(void)morph_buf_printf(&prompt, "%s: %s\n\n", item->role, item->text);
 		}
-		if (messages.nelts && !prompt.failed)
+		if (visible_count && !prompt.failed)
 			result = morph_buf_detach(&prompt);
 	}
-	morph_buf_cleanup(&prompt);
-	arena_destroy(input.arena);
 	return result;
 }
 
@@ -260,17 +269,15 @@ static void recap_bill(struct runtime_recap_job *job, const struct model_usage *
 static void *recap_worker(void *opaque)
 {
 	struct runtime_recap_job *job = opaque;
-	struct arena *arena = arena_create(0);
-	struct chat_response response = {0};
+	struct chat_response response MORPH_CLEANUP(chat_response_free) = {0};
 	struct chat_message message = {.role = "user", .content = job->prompt};
 	cJSON *result = NULL;
 	int rc = -ENOMEM;
 
 	recap_event(job, "begin", NULL, 0);
 	job->model->http.cancel_token = &job->cancel;
-	if (arena)
-		rc = job->model->chat_with_tools(job->model, arena, recap_instructions, &message, 1,
-						 NULL, 0, &response, NULL, NULL);
+	rc = job->model->chat_with_tools(job->model, recap_instructions, &message, 1, NULL, 0,
+					 &response, NULL, NULL);
 	if (rc >= 0) {
 		result = response.tool_call_count == 0 ? runtime_recap_parse(response.content)
 						       : NULL;
@@ -281,8 +288,6 @@ static void *recap_worker(void *opaque)
 		rc = -ECANCELED;
 	recap_event(job, "end", rc == 0 ? result : NULL, rc);
 	cJSON_Delete(result);
-	chat_response_free(&response);
-	arena_destroy(arena);
 	pthread_mutex_lock(&job->lock);
 	job->done = 1;
 	pthread_mutex_unlock(&job->lock);

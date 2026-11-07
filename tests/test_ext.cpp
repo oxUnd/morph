@@ -3,7 +3,11 @@ extern "C" {
 #include "ext/ext.h"
 #include "ext/install.h"
 #include "ext/manifest.h"
+#include "ipc/jsonrpc.h"
+#include "sandbox/loader.h"
 #include "util/file.h"
+#include "util/cleanup.h"
+#include "util/error.h"
 }
 #include <cerrno>
 #include <cstdio>
@@ -83,7 +87,7 @@ TEST(ExtManifestTest, ParsesFrontsCategoriesAndBuildCommand)
 		"categories = [\"text\", \"workflow\"]\n"
 		"[build]\n"
 		"command = \"make build\"\n";
-	struct ext_manifest m;
+	struct ext_manifest m MORPH_CLEANUP(ext_manifest_cleanup) = {};
 	ASSERT_EQ(manifest_parse(NULL, data, &m), 0);
 	EXPECT_STREQ(m.type, "exec");
 	EXPECT_STREQ(m.entry, "bin/demo");
@@ -104,7 +108,7 @@ TEST(ExtManifestTest, MissingFrontsMeansAllFronts)
 	const char *data =
 		"name = \"legacy\"\n"
 		"entry = \"legacy.sh\"\n";
-	struct ext_manifest m;
+	struct ext_manifest m MORPH_CLEANUP(ext_manifest_cleanup) = {};
 	ASSERT_EQ(manifest_parse(NULL, data, &m), 0);
 	EXPECT_TRUE(ext_manifest_supports_front(&m, "cli"));
 	EXPECT_TRUE(ext_manifest_supports_front(&m, "fastcgi"));
@@ -118,7 +122,7 @@ TEST(ExtManifestTest, ParsesNamedSandboxCapabilities)
 		"entry = \"capable.sh\"\n"
 		"sandbox_capabilities = [\"exec\", \"pty\", "
 		"\"process_info\", \"ipc\", \"temporary_directory\"]\n";
-	struct ext_manifest m;
+	struct ext_manifest m MORPH_CLEANUP(ext_manifest_cleanup) = {};
 
 	ASSERT_EQ(manifest_parse(NULL, data, &m), 0);
 	EXPECT_NE(m.permissions & EXT_PERM_EXEC, 0U);
@@ -135,7 +139,7 @@ TEST(ExtManifestTest, RejectsUnknownSandboxCapability)
 		"name = \"bad-capability\"\n"
 		"entry = \"bad.sh\"\n"
 		"sandbox_capabilities = [\"unrestricted_device\"]\n";
-	struct ext_manifest m;
+	struct ext_manifest m MORPH_CLEANUP(ext_manifest_cleanup) = {};
 
 	EXPECT_EQ(manifest_parse(NULL, data, &m), -EINVAL);
 }
@@ -146,7 +150,7 @@ TEST(ExtManifestTest, NamedFilesystemRequiresAllowedPaths)
 		"name = \"bad-filesystem\"\n"
 		"entry = \"bad.sh\"\n"
 		"sandbox_capabilities = [\"filesystem\"]\n";
-	struct ext_manifest m;
+	struct ext_manifest m MORPH_CLEANUP(ext_manifest_cleanup) = {};
 
 	EXPECT_EQ(manifest_parse(NULL, data, &m), -EINVAL);
 }
@@ -162,7 +166,7 @@ TEST(ExtManifestTest, ExampleExtManifestsFollowInstallSchema)
 	};
 
 	for (const auto &dir : dirs) {
-		struct ext_manifest m;
+		struct ext_manifest m MORPH_CLEANUP(ext_manifest_cleanup) = {};
 		std::string full_dir = std::string(MORPH_TEST_SOURCE_DIR) +
 			"/" + dir;
 		std::string manifest = full_dir + "/manifest.toml";
@@ -184,7 +188,7 @@ TEST(ExtManifestTest, ExampleExtManifestsFollowInstallSchema)
 
 TEST(ExtRuntimeTest, ExecExtensionSandboxCanReadItsOwnEntry)
 {
-	struct ext extension = {};
+	struct ext extension MORPH_CLEANUP(ext_unload) = {};
 	struct sandbox_config config = {};
 	std::string directory = std::string(MORPH_TEST_SOURCE_DIR) +
 		"/tests/fixtures/exec-sandbox";
@@ -201,6 +205,132 @@ TEST(ExtRuntimeTest, ExecExtensionSandboxCanReadItsOwnEntry)
 	EXPECT_TRUE(config.process_exec);
 	ext_sandbox_config_cleanup(&config);
 	ext_unload(&extension);
+}
+
+TEST(ExtManifestTest, OccupiedOwnerIsRejectedWithoutLosingItsStorage)
+{
+	struct ext_manifest manifest MORPH_CLEANUP(ext_manifest_cleanup) = {};
+	ASSERT_EQ(manifest_parse(NULL, "name = \"original\"\nfronts = [\"cli\"]\n", &manifest), 0);
+	char *schema = manifest.input_schema;
+	char **fronts = manifest.fronts;
+	EXPECT_EQ(manifest_parse(NULL, "name = \"replacement\"\n", &manifest), -EEXIST);
+	EXPECT_EQ(manifest_parse_file(NULL, "/missing/manifest.toml", &manifest), -EEXIST);
+	EXPECT_EQ(manifest.input_schema, schema);
+	EXPECT_EQ(manifest.fronts, fronts);
+	EXPECT_STREQ(manifest.name, "original");
+	ASSERT_EQ(manifest.fronts_count, 1);
+	EXPECT_STREQ(manifest.fronts[0], "cli");
+}
+
+TEST(ExtManifestTest, FailurePreservesAnEmptyOwnersMetadata)
+{
+	struct ext_manifest manifest MORPH_CLEANUP(ext_manifest_cleanup) = {};
+	strcpy(manifest.name, "untouched");
+	manifest.max_cpu_seconds = 19;
+	const char *invalid = "name = \"partial\"\n"
+			      "sandbox_capabilities = [\"filesystem\"]\n";
+	EXPECT_EQ(manifest_parse(NULL, invalid, &manifest), -EINVAL);
+	EXPECT_STREQ(manifest.name, "untouched");
+	EXPECT_EQ(manifest.max_cpu_seconds, 19);
+	EXPECT_EQ(manifest.input_schema, nullptr);
+	EXPECT_EQ(manifest.fronts, nullptr);
+	EXPECT_EQ(manifest_parse(NULL, "invalid = [", &manifest), MORPH_ERR_PARSE);
+	EXPECT_STREQ(manifest.name, "untouched");
+	EXPECT_EQ(manifest_parse_file(NULL, "/missing/manifest.toml", &manifest), -ENOENT);
+	EXPECT_STREQ(manifest.name, "untouched");
+}
+
+TEST(ExtRuntimeTest, LoadPreservesExistingOwnerAndRebindsDescriptorViews)
+{
+	struct ext extension MORPH_CLEANUP(ext_unload) = {};
+	std::string directory = std::string(MORPH_TEST_SOURCE_DIR) + "/tests/fixtures/exec-sandbox";
+	ASSERT_EQ(ext_load(NULL, &extension, directory.c_str()), 0);
+	EXPECT_EQ(extension.tool_desc.name, extension.manifest.name);
+	EXPECT_EQ(extension.tool_desc.description, extension.manifest.description);
+	EXPECT_EQ(extension.tool_desc.input_schema, extension.manifest.input_schema);
+	char *schema = extension.manifest.input_schema;
+	EXPECT_EQ(ext_load(NULL, &extension, "/missing/extension"), -EEXIST);
+	EXPECT_EQ(extension.manifest.input_schema, schema);
+	EXPECT_EQ(extension.tool_desc.name, extension.manifest.name);
+	EXPECT_TRUE(extension.enabled);
+}
+
+TEST(ExtRuntimeTest, FailedLoadDoesNotPublishAPartialOwner)
+{
+	struct ext extension MORPH_CLEANUP(ext_unload) = {};
+	strcpy(extension.path, "untouched");
+	char temporary[] = "/tmp/morph_ext_owner_XXXXXX";
+	char *directory = mkdtemp(temporary);
+	ASSERT_NE(directory, nullptr);
+	std::string manifest_path = std::string(directory) + "/manifest.toml";
+	write_text(manifest_path, "name = \"partial\"\nentry = \"missing\"\n"
+				  "fronts = [\"cli\"]\n");
+	int rc = ext_load(NULL, &extension, directory);
+	EXPECT_EQ(unlink(manifest_path.c_str()), 0);
+	EXPECT_EQ(rmdir(directory), 0);
+	EXPECT_EQ(rc, -ENOENT);
+	EXPECT_STREQ(extension.path, "untouched");
+	EXPECT_EQ(extension.manifest.input_schema, nullptr);
+	EXPECT_EQ(extension.tool_desc.name, nullptr);
+	EXPECT_FALSE(extension.enabled);
+}
+
+static int ext_test_native_run(const char *args, char **result)
+{
+	*result = strdup(args);
+	return *result ? 0 : -ENOMEM;
+}
+
+TEST(ExtRuntimeTest, ExecutionRejectsAnOccupiedResultOwner)
+{
+	struct ext extension = {};
+	extension.enabled = 1;
+	extension.run = ext_test_native_run;
+	char *result MORPH_CLEANUP(morph_charp_cleanup) = strdup("original");
+	ASSERT_NE(result, nullptr);
+	char *original = result;
+	EXPECT_EQ(ext_run(&extension, "{}", &result), -EEXIST);
+	EXPECT_EQ(result, original);
+	EXPECT_STREQ(result, "original");
+	morph_charp_cleanup(&result);
+	ASSERT_EQ(ext_run(&extension, "{\"ok\":true}", &result), 0);
+	EXPECT_STREQ(result, "{\"ok\":true}");
+}
+
+TEST(ExtJsonRpcTest, ParsedResponseOwnsStorageAfterInputIsReleased)
+{
+	struct jsonrpc_response response MORPH_CLEANUP(jsonrpc_response_free) = {};
+	char *input MORPH_CLEANUP(morph_charp_cleanup) =
+		strdup("{\"id\":7,\"result\":{\"message\":\"independent\"}}");
+	ASSERT_NE(input, nullptr);
+	ASSERT_EQ(jsonrpc_response_copy(input, &response), 0);
+	morph_charp_cleanup(&input);
+	EXPECT_EQ(response.id, 7);
+	EXPECT_STREQ(response.result_json, "{\"message\":\"independent\"}");
+	jsonrpc_response_free(&response);
+	input = strdup("{\"error\":{\"code\":-5,\"message\":\"independent error\"}}");
+	ASSERT_NE(input, nullptr);
+	ASSERT_EQ(jsonrpc_response_copy(input, &response), 0);
+	morph_charp_cleanup(&input);
+	EXPECT_TRUE(response.has_error);
+	EXPECT_EQ(response.error_code, -5);
+	EXPECT_STREQ(response.error_message, "independent error");
+}
+
+TEST(ExtJsonRpcTest, RejectedAndInvalidResponsesPreserveOutput)
+{
+	struct jsonrpc_response response MORPH_CLEANUP(jsonrpc_response_free) = {};
+	ASSERT_EQ(jsonrpc_response_copy("{\"result\":\"original\"}", &response), 0);
+	char *original = response.result_json;
+	EXPECT_EQ(jsonrpc_response_copy("{\"result\":\"new\"}", &response), -EEXIST);
+	EXPECT_EQ(response.result_json, original);
+	EXPECT_STREQ(response.result_json, "\"original\"");
+	jsonrpc_response_free(&response);
+	response.id = 37;
+	EXPECT_EQ(jsonrpc_response_copy("invalid json", &response), -EPROTO);
+	EXPECT_EQ(response.id, 37);
+	EXPECT_EQ(response.result_json, nullptr);
+	EXPECT_EQ(response.error_message, nullptr);
 }
 
 TEST(ExtInstallTest, InstallsTaggedMonorepoPackageWithBuild)
@@ -258,4 +388,13 @@ TEST(ExtInstallTest, InstallsTaggedMonorepoPackageWithBuild)
 	EXPECT_FALSE(file_exists((install_dir + "/demo-install/.git").c_str()));
 
 	ASSERT_EQ(test_cmd("rm -rf " + root_dir), 0);
+}
+
+TEST(ExtRuntimeTest, SharedLibraryBackendRejectsAnExistingEntrypoint)
+{
+	struct ext extension = {};
+	extension.run = ext_test_native_run;
+	EXPECT_EQ(ext_load_so(&extension, "/missing/library"), -EEXIST);
+	EXPECT_EQ(extension.run, ext_test_native_run);
+	EXPECT_EQ(extension.dl_handle, nullptr);
 }

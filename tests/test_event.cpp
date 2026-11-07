@@ -3,6 +3,8 @@
 extern "C" {
 #include "event/event.h"
 #include "cJSON.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 }
 
 TEST(EventTest, TypeName)
@@ -35,7 +37,7 @@ TEST(EventTest, SerializesStructuredPayload)
 		"turn_test",
 	};
 
-	char *json = morph_event_to_json_string(&ev);
+	char *json = morph_event_json_text_copy(&ev);
 	ASSERT_NE(nullptr, json);
 
 	cJSON *root = cJSON_Parse(json);
@@ -54,7 +56,7 @@ TEST(EventTest, SerializesStructuredPayload)
 	EXPECT_EQ(4, cJSON_GetObjectItem(payload, "tools")->valueint);
 
 	cJSON_Delete(root);
-	free(json);
+	cJSON_free(json);
 	cJSON_Delete(data);
 }
 
@@ -73,7 +75,7 @@ TEST(EventTest, RecorderUsesEventSerialization)
 
 	EXPECT_EQ(0, morph_event_recorder_cb(&ev, &rec));
 	ASSERT_EQ(1u, morph_event_recorder_count(&rec));
-	const char *json = morph_event_recorder_get(&rec, 0);
+	const char *json = morph_event_recorder_borrow(&rec, 0);
 	ASSERT_NE(nullptr, json);
 
 	cJSON *root = cJSON_Parse(json);
@@ -85,4 +87,23 @@ TEST(EventTest, RecorderUsesEventSerialization)
 
 	cJSON_Delete(root);
 	morph_event_recorder_cleanup(&rec);
+}
+
+TEST(EventTest, JsonCopyOwnsPayloadAndPreservesOccupiedOutput)
+{
+	cJSON *data = cJSON_CreateString("source");
+	ASSERT_NE(data, nullptr);
+	struct morph_event event{};
+	event.type = MORPH_EVENT_TOOL;
+	event.name = "tool.completed";
+	event.data = data;
+	cJSON *output MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(morph_event_json_create(&event, &output), 0);
+	cJSON_Delete(data);
+	event.data = nullptr;
+	EXPECT_STREQ(cJSON_GetObjectItem(output, "data")->valuestring, "source");
+	cJSON *saved = output;
+	EXPECT_EQ(morph_event_json_create(&event, &output), -EEXIST);
+	EXPECT_EQ(output, saved);
+	EXPECT_STREQ(cJSON_GetObjectItem(output, "data")->valuestring, "source");
 }

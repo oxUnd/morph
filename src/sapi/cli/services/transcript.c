@@ -54,26 +54,26 @@ static void cli_transcript_restore_live(struct cli_application *ctx)
 	if (morph_buf_init(&live, 128) != 0)
 		return;
 	if (cli_transcript_live_text(ctx->transcript, &live, cli_feed_columns(ctx), 0))
-		cli_feed_live_set(ctx, morph_buf_cstr(&live));
+		cli_feed_live_set(ctx, morph_buf_cstr_borrow(&live));
 	morph_buf_cleanup(&live);
 }
 
 static int cli_transcript_capture_preview(struct cli_application *ctx, size_t index)
 {
-	const struct cli_transcript_tool *tool = morph_array_get(&ctx->transcript->tools, index);
+	const struct cli_transcript_tool *tool = morph_array_borrow(&ctx->transcript->tools, index);
 	const char *workdir;
 	morph_buf_t preview;
 	int rc;
 
 	if (!tool || strcmp(tool->name, "apply_patch") != 0)
 		return 0;
-	workdir = ctx->workdir[0] ? ctx->workdir : runtime_workdir_get(ctx->runtime);
+	workdir = ctx->workdir[0] ? ctx->workdir : runtime_workdir_borrow(ctx->runtime);
 	if (morph_buf_init(&preview, 256) != 0)
 		return 0;
 	rc = cli_tool_patch_preview(tool, workdir, &preview);
 	if (rc == 0)
 		rc = cli_transcript_model_set_preview(ctx->transcript, index,
-						      morph_buf_cstr(&preview));
+						      morph_buf_cstr_borrow(&preview));
 	else
 		rc = 0;
 	morph_buf_cleanup(&preview);
@@ -91,7 +91,7 @@ int cli_transcript_restore_tool(struct cli_application *ctx, const struct cJSON 
 	rc = cli_transcript_model_restore(ctx->transcript, call, result, &index);
 	if (rc != 0 || index == SIZE_MAX)
 		return rc;
-	const struct cli_transcript_tool *tool = morph_array_get(&ctx->transcript->tools, index);
+	const struct cli_transcript_tool *tool = morph_array_borrow(&ctx->transcript->tools, index);
 
 	cli_transcript_render_tool(ctx, tool, !ctx->tool_details);
 	if (ctx->tool_details)
@@ -117,7 +117,7 @@ int cli_transcript_event(struct cli_application *ctx, const struct morph_event *
 		return rc;
 	if (change.kind == CLI_TRANSCRIPT_UNCHANGED)
 		return 0;
-	tool = morph_array_get(&ctx->transcript->tools, change.tool_index);
+	tool = morph_array_borrow(&ctx->transcript->tools, change.tool_index);
 	switch (change.kind) {
 	case CLI_TRANSCRIPT_OBSERVATION:
 		if (change.observation_added && ctx->tool_details)

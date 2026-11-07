@@ -47,7 +47,8 @@ int main(int argc, char *argv[])
 	if (options.command_index) {
 		char *command = argv[options.command_index];
 		char current[PATH_MAX];
-		char *expanded = options.config_path ? file_expand_path(options.config_path) : NULL;
+		char *expanded =
+			options.config_path ? file_expand_path_copy(options.config_path) : NULL;
 		char *management_config =
 			options.config_path ? (expanded && getcwd(current, sizeof(current))
 						       ? file_path_full_alloc(current, expanded)
@@ -96,7 +97,7 @@ int main(int argc, char *argv[])
 			return cli_options_emit_result("--version", MORPH_VERSION) == 0 ? 0 : 1;
 		return cli_about_print(startup_ctx, options.config_path) == 0 ? 0 : 1;
 	}
-	log_dir = file_expand_path("~/.morph/log");
+	log_dir = file_expand_path_copy("~/.morph/log");
 	if (!log_dir)
 		return 1;
 	rc = file_ensure_dir(log_dir);

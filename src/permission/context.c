@@ -1,7 +1,7 @@
 #include "context.h"
 #include "context_internal.h"
 #include "path.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "cJSON.h"
 #include "db/permission_grant.h"
 #include "util/file.h"
@@ -104,7 +104,7 @@ static int append_persistent_grant(morph_array_t *grants,
 		     strcmp(existing->resource, grant->resource) == 0))
 			return 0;
 	}
-	stored = morph_array_push(grants);
+	stored = morph_array_push_borrow(grants);
 	if (!stored)
 		return -ENOMEM;
 	*stored = *grant;
@@ -212,7 +212,7 @@ int tool_context_command_principal(const char *command, char *out,
 	if (rc != 0)
 		return rc;
 	if (strchr(program, '/')) {
-		char *resolved = file_resolve_path(program);
+		char *resolved = file_resolve_path_copy(program);
 		if (!resolved)
 			return -ENOENT;
 		snprintf(out, out_size, "%s", resolved);
@@ -236,7 +236,7 @@ int tool_context_command_principal(const char *command, char *out,
 					   program) != 0 ||
 			    access(candidate, X_OK) != 0)
 				continue;
-			resolved = file_resolve_path(candidate);
+			resolved = file_resolve_path_copy(candidate);
 			if (resolved) {
 				snprintf(out, out_size, "%s", resolved);
 				free(resolved);
@@ -256,13 +256,13 @@ static void resolve_into(char *dst, size_t dst_size, const char *src)
 		dst[0] = '\0';
 		return;
 	}
-	char *resolved = file_resolve_path(src);
+	char *resolved = file_resolve_path_copy(src);
 	if (resolved) {
 		strncpy(dst, resolved, dst_size - 1);
 		dst[dst_size - 1] = '\0';
 		free(resolved);
 	} else {
-		char *expanded = file_expand_path(src);
+		char *expanded = file_expand_path_copy(src);
 		if (expanded) {
 			strncpy(dst, expanded, dst_size - 1);
 			dst[dst_size - 1] = '\0';
@@ -333,7 +333,7 @@ static int resolve_user_path(struct tool_context *tctx,
 	if (!tctx || !path || !resolved || resolved_size == 0)
 		return -EINVAL;
 
-	expanded = file_expand_path(path);
+	expanded = file_expand_path_copy(path);
 	if (!expanded)
 		return -ENOMEM;
 
@@ -346,7 +346,7 @@ static int resolve_user_path(struct tool_context *tctx,
 	}
 	free(expanded);
 
-	rp = file_resolve_path(candidate);
+	rp = file_resolve_path_copy(candidate);
 	if (!rp)
 		return -ENOENT;
 	snprintf(resolved, resolved_size, "%s", rp);
@@ -362,7 +362,7 @@ static int add_allowed_dir(char dirs[][TOOL_CONTEXT_ALLOW_PATH_MAX],
 
 	if (!dirs || !count || !dir)
 		return -EINVAL;
-	resolved = file_resolve_path(dir);
+	resolved = file_resolve_path_copy(dir);
 	to_store = resolved ? resolved : dir;
 	for (int i = 0; i < *count; i++) {
 		if (strcmp(dirs[i], to_store) == 0) {
@@ -409,7 +409,7 @@ static int add_scoped_path_grant(struct tool_context *tctx,
 	snprintf(grant.path, sizeof(grant.path), "%s", path);
 	grant.kind = kind;
 	grant.turn_only = !!turn_only;
-	existing = morph_array_push(&tctx->scoped_grants);
+	existing = morph_array_push_borrow(&tctx->scoped_grants);
 	if (!existing)
 		return -ENOMEM;
 	*existing = grant;
@@ -518,14 +518,14 @@ void tool_context_destroy(struct tool_context *tctx)
 	free(tctx);
 }
 
-const char *tool_context_workdir(const struct tool_context *tctx)
+const char *tool_context_workdir_borrow(const struct tool_context *tctx)
 {
 	if (!tctx)
 		return NULL;
 	return tctx->workdir;
 }
 
-const char *tool_context_output_dir(const struct tool_context *tctx)
+const char *tool_context_output_dir_borrow(const struct tool_context *tctx)
 {
 	if (!tctx)
 		return NULL;
@@ -615,7 +615,7 @@ static int tool_context_set_grant_store_locked(struct tool_context *tctx, struct
 
 	if (!tctx || !db || !project_root || !*project_root)
 		return -EINVAL;
-	resolved = file_resolve_path(project_root);
+	resolved = file_resolve_path_copy(project_root);
 	if (!resolved)
 		return -ENOMEM;
 	snprintf(tctx->grant_project_root, sizeof(tctx->grant_project_root),
@@ -685,7 +685,7 @@ static int tool_context_add_builtin_path_locked(struct tool_context *tctx,
 		return -EINVAL;
 	if (stat(path, &st) != 0)
 		return morph_error_from_errno(errno);
-	canonical = file_resolve_path(path);
+	canonical = file_resolve_path_copy(path);
 	if (!canonical)
 		return -ENOMEM;
 	operations = 1u << (unsigned int)op;
@@ -699,7 +699,7 @@ static int tool_context_add_builtin_path_locked(struct tool_context *tctx,
 			return 0;
 		}
 	}
-	entry = morph_array_push(&tctx->builtin_paths);
+	entry = morph_array_push_borrow(&tctx->builtin_paths);
 	if (!entry) {
 		free(canonical);
 		return -ENOMEM;
@@ -1203,7 +1203,7 @@ static int request_command_path(struct tool_context *tctx, enum tool_path_op ope
 		resolved_size = sizeof(local);
 	}
 	if (operation == TOOL_PATH_WRITE) {
-		expanded = file_expand_path(path);
+		expanded = file_expand_path_copy(path);
 		if (!expanded)
 			return -ENOMEM;
 		path = expanded;
@@ -1267,12 +1267,12 @@ static int tool_context_grant_write_access_locked(struct tool_context *tctx, con
 static int append_grant_path(morph_array_t *paths, const char *path)
 {
 	for (size_t i = 0; i < paths->nelts; i++) {
-		const char **existing = morph_array_get(paths, i);
+		const char **existing = morph_array_borrow(paths, i);
 
 		if (strcmp(*existing, path) == 0)
 			return 0;
 	}
-	const char **slot = morph_array_push(paths);
+	const char **slot = morph_array_push_borrow(paths);
 
 	if (!slot)
 		return -ENOMEM;
@@ -1343,34 +1343,6 @@ static int tool_context_collect_path_grants_locked(const struct tool_context *tc
 	return 0;
 }
 
-static int collect_bounded_grants(const struct tool_context *tctx,
-	const char *principal, enum tool_path_op op, const char **paths, int max_paths)
-{
-	morph_array_t collected;
-	int rc;
-
-	if (!tctx || !principal || !paths || max_paths <= 0)
-		return 0;
-	rc = morph_array_init(&collected, 16, sizeof(const char *));
-	if (rc != 0)
-		return rc;
-	rc = tool_context_collect_path_grants(tctx, principal, op, &collected);
-	if (rc == 0 && collected.nelts > (size_t)max_paths)
-		rc = -ENOSPC;
-	if (rc == 0) {
-		memcpy(paths, collected.elts, collected.nelts * sizeof(*paths));
-		rc = (int)collected.nelts;
-	}
-	morph_array_cleanup(&collected);
-	return rc;
-}
-
-static int tool_context_collect_write_grants_locked(const struct tool_context *tctx,
-	const char *principal, const char **paths, int max_paths)
-{
-	return collect_bounded_grants(tctx, principal, TOOL_PATH_WRITE, paths, max_paths);
-}
-
 static int tool_context_add_exec_profile_path_locked(struct tool_context *tctx,
 				       enum tool_path_op op,
 				       const char *path)
@@ -1393,7 +1365,7 @@ static int tool_context_add_exec_profile_path_locked(struct tool_context *tctx,
 	} else {
 		return -EINVAL;
 	}
-	expanded = file_expand_path(path);
+	expanded = file_expand_path_copy(path);
 	if (!expanded)
 		return -ENOMEM;
 	if (!file_path_is_absolute(expanded)) {
@@ -1410,7 +1382,7 @@ static int tool_context_add_exec_profile_path_locked(struct tool_context *tctx,
 		free(expanded);
 		return -ENOTDIR;
 	}
-	resolved = file_resolve_path(expanded);
+	resolved = file_resolve_path_copy(expanded);
 	free(expanded);
 	if (!resolved)
 		return -ENOMEM;
@@ -1686,12 +1658,6 @@ static void tool_context_clear_turn_grants_locked(struct tool_context *tctx)
 	tctx->scoped_grants.nelts = dst;
 }
 
-static int tool_context_collect_delete_grants_locked(const struct tool_context *tctx,
-	const char *principal, const char **paths, int max_paths)
-{
-	return collect_bounded_grants(tctx, principal, TOOL_PATH_DELETE, paths, max_paths);
-}
-
 static int tool_context_check_operation_locked(struct tool_context *tctx,
 				 const struct tool_operation *op)
 {
@@ -1823,8 +1789,8 @@ int tool_context_get_permission_policy(const struct tool_context *tctx,
 	return 0;
 }
 
-void tool_context_get_operation_approval(struct tool_context *tctx,
-					 tool_operation_approval_fn *callback, void **user_data)
+void tool_context_operation_approval_borrow(struct tool_context *tctx,
+					    tool_operation_approval_fn *callback, void **user_data)
 {
 	if (callback)
 		*callback = NULL;
@@ -1863,7 +1829,7 @@ void tool_context_reset_denials(struct tool_context *tctx)
 	pthread_mutex_unlock(&tctx->authority_lock);
 }
 
-struct permission_context *tool_context_permission_context(struct tool_context *tctx)
+struct permission_context *tool_context_permission_context_borrow(struct tool_context *tctx)
 {
 	return tctx ? &tctx->permissions : NULL;
 }
@@ -2017,28 +1983,6 @@ int tool_context_grant_write_access(
 	return rc;
 }
 
-int tool_context_collect_path_grants(const struct tool_context *tctx,
-	const char *principal, enum tool_path_op op, morph_array_t *paths)
-{
-	if (!tctx)
-		return -EINVAL;
-	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
-	int rc = tool_context_collect_path_grants_locked(tctx, principal, op, paths);
-	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
-	return rc;
-}
-
-int tool_context_collect_write_grants(const struct tool_context *tctx,
-	const char *principal, const char **paths, int max_paths)
-{
-	if (!tctx)
-		return -EINVAL;
-	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
-	int rc = tool_context_collect_write_grants_locked(tctx, principal, paths, max_paths);
-	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
-	return rc;
-}
-
 int tool_context_add_exec_profile_path(struct tool_context *tctx,
 				       enum tool_path_op op,
 				       const char *path)
@@ -2119,17 +2063,6 @@ void tool_context_clear_turn_grants(struct tool_context *tctx)
 	return;
 }
 
-int tool_context_collect_delete_grants(const struct tool_context *tctx,
-	const char *principal, const char **paths, int max_paths)
-{
-	if (!tctx)
-		return -EINVAL;
-	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
-	int rc = tool_context_collect_delete_grants_locked(tctx, principal, paths, max_paths);
-	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
-	return rc;
-}
-
 int tool_context_check_operation(struct tool_context *tctx,
 				 const struct tool_operation *op)
 {
@@ -2153,69 +2086,87 @@ int tool_context_check_operation_verdict(
 	return rc;
 }
 
-const char *tool_context_grant_project_root(const struct tool_context *tctx)
+const char *tool_context_grant_project_root_borrow(const struct tool_context *tctx)
 {
 	return tctx ? tctx->grant_project_root : NULL;
 }
 
-struct morph_log *tool_context_logger(const struct tool_context *tctx)
+struct morph_log *tool_context_logger_borrow(const struct tool_context *tctx)
 {
 	return tctx ? tctx->logger : NULL;
 }
 
-static int snapshot_path_grants(const struct tool_context *tctx, const char *principal,
-				enum tool_path_op operation, struct arena *arena,
-				struct tool_path_snapshot *snapshot)
+static void tool_path_snapshot_cleanup(struct tool_path_snapshot *snapshot)
 {
-	morph_array_t borrowed = {0};
-	morph_array_t copied = {0};
-	int rc;
-
-	rc = morph_array_init(&borrowed, 16, sizeof(const char *));
-	if (rc == 0)
-		rc = tool_context_collect_path_grants_locked(tctx, principal, operation, &borrowed);
-	if (rc == 0 && borrowed.nelts > INT_MAX)
-		rc = -EOVERFLOW;
-	if (rc == 0)
-		rc = morph_array_init_arena(&copied, arena, borrowed.nelts + 1, sizeof(char *));
-	for (size_t i = 0; rc == 0 && i < borrowed.nelts; i++) {
-		const char **path = morph_array_get(&borrowed, i);
-		char **slot = morph_array_push(&copied);
-
-		if (!slot || !(*slot = arena_strdup(arena, *path)))
-			rc = -ENOMEM;
-	}
-	if (rc == 0) {
-		snapshot->paths = copied.elts;
-		snapshot->count = (int)copied.nelts;
-	}
-	morph_array_cleanup(&borrowed);
-	return rc;
+	for (int i = 0; i < snapshot->count; i++)
+		free(snapshot->paths[i]);
+	free(snapshot->paths);
+	memset(snapshot, 0, sizeof(*snapshot));
 }
 
-int tool_context_snapshot_permissions(const struct tool_context *tctx, const char *principal,
-				      struct arena *arena,
-				      struct tool_permission_snapshot *snapshot)
+void tool_permission_snapshot_cleanup(struct tool_permission_snapshot *snapshot)
 {
-	int rc;
-
-	if (!tctx || !principal || !arena || !snapshot)
-		return -EINVAL;
+	if (!snapshot)
+		return;
+	free(snapshot->workdir);
+	free(snapshot->output_dir);
+	tool_path_snapshot_cleanup(&snapshot->read);
+	tool_path_snapshot_cleanup(&snapshot->write);
+	tool_path_snapshot_cleanup(&snapshot->remove);
 	memset(snapshot, 0, sizeof(*snapshot));
+}
+
+static int snapshot_path_grants(const struct tool_context *tctx, const char *principal,
+				enum tool_path_op operation, struct tool_path_snapshot *snapshot)
+{
+	morph_array_t borrowed MORPH_CLEANUP(morph_array_cleanup) = {0};
+	int rc = morph_array_init(&borrowed, 16, sizeof(*snapshot->paths));
+	if (rc == 0)
+		rc = tool_context_collect_path_grants_locked(tctx, principal, operation, &borrowed);
+	if (rc != 0)
+		return rc;
+	if (borrowed.nelts > INT_MAX || borrowed.nelts > SIZE_MAX / sizeof(*snapshot->paths))
+		return -EOVERFLOW;
+	if (!borrowed.nelts)
+		return 0;
+	snapshot->paths = calloc(borrowed.nelts, sizeof(*snapshot->paths));
+	if (!snapshot->paths)
+		return -ENOMEM;
+	snapshot->count = (int)borrowed.nelts;
+	for (size_t i = 0; i < borrowed.nelts; i++) {
+		const char **path = morph_array_borrow(&borrowed, i);
+		snapshot->paths[i] = strdup(*path);
+		if (!snapshot->paths[i])
+			return -ENOMEM;
+	}
+	return 0;
+}
+
+int tool_context_permission_snapshot_create(const struct tool_context *tctx, const char *principal,
+					    struct tool_permission_snapshot *snapshot)
+{
+	if (!tctx || !principal || !snapshot)
+		return -EINVAL;
+	if (snapshot->workdir || snapshot->output_dir || snapshot->read.paths ||
+	    snapshot->write.paths || snapshot->remove.paths)
+		return -EEXIST;
+	struct tool_permission_snapshot owned MORPH_CLEANUP(tool_permission_snapshot_cleanup) = {0};
 	pthread_mutex_lock((pthread_mutex_t *)&tctx->authority_lock);
-	snapshot->policy = tctx->permissions.policy;
-	snapshot->logger = tctx->logger;
-	snapshot->workdir = arena_strdup(arena, tctx->workdir);
-	snapshot->output_dir = arena_strdup(arena, tctx->output_dir);
-	rc = snapshot->workdir && snapshot->output_dir ? 0 : -ENOMEM;
+	owned.policy = tctx->permissions.policy;
+	owned.logger = tctx->logger;
+	owned.workdir = strdup(tctx->workdir);
+	owned.output_dir = strdup(tctx->output_dir);
+	int rc = owned.workdir && owned.output_dir ? 0 : -ENOMEM;
 	if (rc == 0)
-		rc = snapshot_path_grants(tctx, principal, TOOL_PATH_READ, arena, &snapshot->read);
+		rc = snapshot_path_grants(tctx, principal, TOOL_PATH_READ, &owned.read);
 	if (rc == 0)
-		rc = snapshot_path_grants(tctx, principal, TOOL_PATH_WRITE, arena,
-					  &snapshot->write);
+		rc = snapshot_path_grants(tctx, principal, TOOL_PATH_WRITE, &owned.write);
 	if (rc == 0)
-		rc = snapshot_path_grants(tctx, principal, TOOL_PATH_DELETE, arena,
-					  &snapshot->remove);
+		rc = snapshot_path_grants(tctx, principal, TOOL_PATH_DELETE, &owned.remove);
 	pthread_mutex_unlock((pthread_mutex_t *)&tctx->authority_lock);
+	if (rc == 0) {
+		*snapshot = owned;
+		memset(&owned, 0, sizeof(owned));
+	}
 	return rc;
 }

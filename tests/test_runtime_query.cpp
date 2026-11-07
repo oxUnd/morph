@@ -65,8 +65,8 @@ protected:
 
 TEST_F(RuntimeQueryTest, RegistersReadOnlyTools)
 {
-	struct tool_entry *credits = tool_lookup(&tools, "credits");
-	struct tool_entry *memory_tool = tool_lookup(&tools, "memory");
+	struct tool_entry *credits = tool_borrow(&tools, "credits");
+	struct tool_entry *memory_tool = tool_borrow(&tools, "memory");
 
 	ASSERT_NE(credits, nullptr);
 	ASSERT_NE(memory_tool, nullptr);
@@ -330,7 +330,7 @@ TEST_F(RuntimeQueryTest, ExplicitPreferenceToolReplacesGenericPreferenceAndRejec
 			&result),
 		0);
 	tool_result_cleanup(&result);
-	char *effective = preference_render(&db, session.id, 0);
+	char *effective = preference_render_copy(&db, session.id, 0);
 	ASSERT_NE(effective, nullptr);
 	EXPECT_NE(strstr(effective, "code.indent: tab"), nullptr);
 	EXPECT_EQ(strstr(effective, "four spaces"), nullptr);
@@ -365,7 +365,7 @@ TEST_F(RuntimeQueryTest, PreferenceToolCannotPromoteComplaintOrTemporaryRequest)
 		tool_result_cleanup(&result);
 		free(json);
 		cJSON_Delete(args);
-		char *effective = preference_render(&db, session.id, 0);
+		char *effective = preference_render_copy(&db, session.id, 0);
 		ASSERT_NE(effective, nullptr);
 		EXPECT_STREQ(effective, "");
 		free(effective);
@@ -401,7 +401,7 @@ TEST_F(RuntimeQueryTest, ExtractionOfSameInputCannotContradictCommittedLanguage)
 			    &result),
 		  0);
 	tool_result_cleanup(&result);
-	char *effective = preference_render(&db, session.id, 0);
+	char *effective = preference_render_copy(&db, session.id, 0);
 	ASSERT_NE(effective, nullptr);
 	EXPECT_NE(strstr(effective, "Chinese"), nullptr);
 	EXPECT_EQ(strstr(effective, "English"), nullptr);

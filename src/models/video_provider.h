@@ -27,7 +27,8 @@ struct video_provider_ops {
 		       struct video_result *result);
 };
 
-const struct video_provider_ops *video_volcengine_provider(void);
+/* Immutable process-lifetime provider view; never free the returned table. */
+const struct video_provider_ops *video_volcengine_provider_borrow(void);
 
 #ifdef __cplusplus
 }

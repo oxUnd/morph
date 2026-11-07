@@ -4,26 +4,32 @@
 #include "agent/compress.h"
 #include "agent/history.h"
 #include "agent/turn.h"
-#include "util/arena.h"
+#include "util/cleanup.h"
 #include "util/id.h"
+#include "util/json.h"
 #include "runtime/scheduler.h"
 #include "cJSON.h"
 
 #include <errno.h>
+#include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static char *runtime_strdup_nullable(const char *value)
+static int runtime_string_copy(const char *source, char **out)
 {
-	return value ? strdup(value) : NULL;
+	if (!source)
+		return 0;
+	*out = strdup(source);
+	return *out ? 0 : -ENOMEM;
 }
 
 void runtime_turn_status_cleanup(struct runtime_turn_status *status)
 {
 	if (!status)
 		return;
-	for (int i = 0; i < status->step_count; i++) {
+	for (int i = 0; status->steps && i < status->step_count; i++) {
 		free(status->steps[i].content);
 		free(status->steps[i].tool_name);
 		free(status->steps[i].tool_args);
@@ -35,105 +41,127 @@ void runtime_turn_status_cleanup(struct runtime_turn_status *status)
 	memset(status, 0, sizeof(*status));
 }
 
-int runtime_turn_status_get(struct runtime *runtime,
-			    struct runtime_turn_status *out)
+static void runtime_turn_status_move(struct runtime_turn_status *destination,
+				     struct runtime_turn_status *source)
 {
-	struct react_context *react;
-	struct react_step *step;
-	int index = 0;
+	*destination = *source;
+	memset(source, 0, sizeof(*source));
+}
 
-	if (!runtime || !out)
-		return -EINVAL;
-	memset(out, 0, sizeof(*out));
-	pthread_mutex_lock(&runtime->context.execution_lock);
-	react = runtime->context.react;
-	if (!react) {
-		pthread_mutex_unlock(&runtime->context.execution_lock);
-		return -ENOENT;
+static int runtime_turn_status_copy_locked(const struct react_context *react,
+					   struct runtime_turn_status *out)
+{
+	size_t count = 0;
+	int rc;
+
+	if (react->step_count < 0 || (size_t)react->step_count > SIZE_MAX / sizeof(*out->steps))
+		return -EOVERFLOW;
+	for (const struct react_step *step = react->steps; step; step = step->next) {
+		if (count == INT_MAX || count >= SIZE_MAX / sizeof(*out->steps))
+			return -EOVERFLOW;
+		count++;
 	}
 	out->state = react->state;
 	out->outcome = react->outcome;
 	out->last_error_code = react->last_error_code;
-	out->outcome_reason = runtime_strdup_nullable(react->outcome_reason[0]
-		? react->outcome_reason : NULL);
-	out->error_detail = runtime_strdup_nullable(react->last_error_detail);
-	out->final_answer = runtime_strdup_nullable(react->final_answer);
-	out->step_count = react->step_count;
-	if (out->step_count > 0) {
-		out->steps = calloc((size_t)out->step_count, sizeof(*out->steps));
+	rc = runtime_string_copy(react->outcome_reason[0] ? react->outcome_reason : NULL,
+				 &out->outcome_reason);
+	if (rc == 0)
+		rc = runtime_string_copy(react->last_error_detail, &out->error_detail);
+	if (rc == 0)
+		rc = runtime_string_copy(react->final_answer, &out->final_answer);
+	if (rc != 0)
+		return rc;
+	if (count) {
+		out->steps = calloc(count, sizeof(*out->steps));
 		if (!out->steps)
-			goto nomem;
+			return -ENOMEM;
 	}
-	for (step = react->steps; step && index < out->step_count;
-	     step = step->next, index++) {
-		out->steps[index].type = step->type;
-		out->steps[index].content = runtime_strdup_nullable(step->content);
-		out->steps[index].tool_name = runtime_strdup_nullable(step->tool_name);
-		out->steps[index].tool_args = runtime_strdup_nullable(step->tool_args);
+	out->step_count = (int)count;
+	size_t index = 0;
+
+	for (const struct react_step *step = react->steps; step; step = step->next, index++) {
+		struct runtime_trace_step *copy = &out->steps[index];
+
+		copy->type = step->type;
+		rc = runtime_string_copy(step->content, &copy->content);
+		if (rc == 0)
+			rc = runtime_string_copy(step->tool_name, &copy->tool_name);
+		if (rc == 0)
+			rc = runtime_string_copy(step->tool_args, &copy->tool_args);
+		if (rc != 0)
+			return rc;
 	}
-	out->step_count = index;
-	pthread_mutex_unlock(&runtime->context.execution_lock);
 	return 0;
-nomem:
-	pthread_mutex_unlock(&runtime->context.execution_lock);
-	runtime_turn_status_cleanup(out);
-	return -ENOMEM;
 }
 
-char *runtime_turn_notification_body(struct runtime *runtime)
+int runtime_turn_status_copy(struct runtime *runtime, struct runtime_turn_status *out)
 {
-	char *out;
-	if (!runtime)
-		return NULL;
-	pthread_mutex_lock(&runtime->context.execution_lock);
-	out = runtime_react_notification_body(runtime->context.react);
-	pthread_mutex_unlock(&runtime->context.execution_lock);
-	return out;
-}
-
-char *runtime_turn_error_message(struct runtime *runtime, int rc)
-{
-	char *out;
-	if (!runtime)
-		return NULL;
-	pthread_mutex_lock(&runtime->context.execution_lock);
-	out = runtime_react_error_message(runtime->context.react, rc);
-	pthread_mutex_unlock(&runtime->context.execution_lock);
-	return out;
-}
-
-char *runtime_turn_error_json(struct runtime *runtime)
-{
-	struct runtime_turn_status status;
-	cJSON *root;
-	char *out;
+	struct runtime_turn_status value MORPH_CLEANUP(runtime_turn_status_cleanup) = {0};
 	int rc;
 
-	if (runtime_turn_status_get(runtime, &status) != 0)
+	if (!runtime || !out)
+		return -EINVAL;
+	if (out->steps || out->outcome_reason || out->error_detail || out->final_answer)
+		return -EEXIST;
+	pthread_mutex_lock(&runtime->context.execution_lock);
+	rc = runtime->context.react
+		     ? runtime_turn_status_copy_locked(runtime->context.react, &value)
+		     : -ENOENT;
+	pthread_mutex_unlock(&runtime->context.execution_lock);
+	if (rc == 0)
+		runtime_turn_status_move(out, &value);
+	return rc;
+}
+
+char *runtime_turn_notification_body_copy(struct runtime *runtime)
+{
+	char *out;
+	if (!runtime)
+		return NULL;
+	pthread_mutex_lock(&runtime->context.execution_lock);
+	out = runtime_react_notification_body_copy(runtime->context.react);
+	pthread_mutex_unlock(&runtime->context.execution_lock);
+	return out;
+}
+
+char *runtime_turn_error_message_copy(struct runtime *runtime, int rc)
+{
+	char *out;
+	if (!runtime)
+		return NULL;
+	pthread_mutex_lock(&runtime->context.execution_lock);
+	out = runtime_react_error_message_copy(runtime->context.react, rc);
+	pthread_mutex_unlock(&runtime->context.execution_lock);
+	return out;
+}
+
+char *runtime_turn_error_json_copy(struct runtime *runtime)
+{
+	struct runtime_turn_status status MORPH_CLEANUP(runtime_turn_status_cleanup) = {0};
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	int rc;
+
+	if (runtime_turn_status_copy(runtime, &status) != 0)
 		return NULL;
 	root = cJSON_CreateObject();
-	if (!root) {
-		runtime_turn_status_cleanup(&status);
+	if (!root)
 		return NULL;
-	}
 	rc = status.last_error_code < 0 ? status.last_error_code : 0;
-	cJSON_AddNumberToObject(root, "rc", rc);
-	cJSON_AddStringToObject(root, "outcome",
-		react_outcome_name(status.outcome));
-	if (status.outcome_reason)
-		cJSON_AddStringToObject(root, "reason", status.outcome_reason);
-	if (status.error_detail)
-		cJSON_AddStringToObject(root, "detail", status.error_detail);
+	if (!cJSON_AddNumberToObject(root, "rc", rc) ||
+	    !cJSON_AddStringToObject(root, "outcome", react_outcome_name(status.outcome)) ||
+	    (status.outcome_reason &&
+	     !cJSON_AddStringToObject(root, "reason", status.outcome_reason)) ||
+	    (status.error_detail && !cJSON_AddStringToObject(root, "detail", status.error_detail)))
+		return NULL;
 	if (rc < 0) {
-		cJSON_AddNumberToObject(root, "error_code", rc);
-		cJSON_AddStringToObject(root, "error", morph_strerror(rc));
+		if (!cJSON_AddNumberToObject(root, "error_code", rc) ||
+		    !cJSON_AddStringToObject(root, "error", morph_strerror(rc)))
+			return NULL;
 	}
-	if (status.final_answer)
-		cJSON_AddStringToObject(root, "text", status.final_answer);
-	out = cJSON_PrintUnformatted(root);
-	cJSON_Delete(root);
-	runtime_turn_status_cleanup(&status);
-	return out;
+	if (status.final_answer && !cJSON_AddStringToObject(root, "text", status.final_answer))
+		return NULL;
+	return morph_json_print_copy(root);
 }
 
 int runtime_session_list_query(struct runtime *runtime, struct session **out,
@@ -141,6 +169,9 @@ int runtime_session_list_query(struct runtime *runtime, struct session **out,
 {
 	if (!runtime || !out || !count)
 		return -EINVAL;
+	if (*out)
+		return -EEXIST;
+	*count = 0;
 	return session_list(&runtime->context.database, out, count, limit, filter);
 }
 
@@ -153,10 +184,15 @@ int runtime_sub_agent_list(struct runtime *runtime,
 			   int64_t parent_session_id,
 			   struct sub_agent_task_info **out, int *count)
 {
+	if (!out || !count)
+		return -EINVAL;
+	if (*out)
+		return -EEXIST;
+	*count = 0;
 	if (!runtime || !runtime->context.sub_agents)
 		return -ENOENT;
-	return sub_agent_runtime_list_tasks(runtime->context.sub_agents,
-					    parent_session_id, out, count);
+	return sub_agent_runtime_task_list_copy(runtime->context.sub_agents, parent_session_id, out,
+						count);
 }
 
 void runtime_sub_agent_list_free(struct sub_agent_task_info *tasks,
@@ -176,10 +212,15 @@ int runtime_sub_agent_select(struct runtime *runtime, const char *task_id)
 int runtime_sub_agent_events(struct runtime *runtime, const char *task_id,
 			     char ***events, int *count)
 {
+	if (!events || !count)
+		return -EINVAL;
+	if (*events)
+		return -EEXIST;
+	*count = 0;
 	if (!runtime || !runtime->context.sub_agents)
 		return -ENOENT;
-	return sub_agent_runtime_task_events(runtime->context.sub_agents,
-					     task_id, events, count);
+	return sub_agent_runtime_task_events_copy(runtime->context.sub_agents, task_id, events,
+						  count);
 }
 
 void runtime_sub_agent_events_free(char **events, int count)
@@ -381,8 +422,7 @@ int runtime_session_compaction_status(struct runtime *runtime,
 	return rc;
 }
 
-char *runtime_trace_load_latest_current(struct runtime *runtime,
-					int *round_no, int *aborted)
+char *runtime_trace_latest_current_copy(struct runtime *runtime, int *round_no, int *aborted)
 {
 	if (!runtime)
 		return NULL;
@@ -519,7 +559,7 @@ static int runtime_tool_get(const struct runtime *runtime, int index,
 	return rc;
 }
 
-int runtime_tool_info(const struct runtime *runtime, int index, struct tool_desc *out)
+int runtime_tool_info_borrow(const struct runtime *runtime, int index, struct tool_desc *out)
 {
 	return out ? runtime_tool_get(runtime, index, out, NULL, NULL, NULL) : -EINVAL;
 }
@@ -539,7 +579,7 @@ int runtime_tool_origin(const struct runtime *runtime, int index, enum tool_orig
 	return out ? runtime_tool_get(runtime, index, NULL, NULL, NULL, out) : -EINVAL;
 }
 
-int runtime_tool_find(const struct runtime *runtime, const char *name, struct tool_desc *out)
+int runtime_tool_find_borrow(const struct runtime *runtime, const char *name, struct tool_desc *out)
 {
 	struct tool_entry *entry;
 
@@ -547,7 +587,7 @@ int runtime_tool_find(const struct runtime *runtime, const char *name, struct to
 		return -EINVAL;
 	pthread_mutex_lock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
 	tool_registry_lock((struct tool_registry *)&runtime->context.tools);
-	entry = tool_lookup((struct tool_registry *)&runtime->context.tools, name);
+	entry = tool_borrow((struct tool_registry *)&runtime->context.tools, name);
 	if (entry)
 		*out = entry->desc;
 	tool_registry_unlock((struct tool_registry *)&runtime->context.tools);
@@ -560,8 +600,7 @@ int runtime_skill_count(const struct runtime *runtime)
 	return runtime && runtime->context.skills ? runtime->context.skills->count : 0;
 }
 
-int runtime_skill_info(const struct runtime *runtime, int index,
-		       struct skill_entry *out)
+int runtime_skill_info_borrow(const struct runtime *runtime, int index, struct skill_entry *out)
 {
 	if (!runtime || !runtime->context.skills || !out || index < 0 ||
 	    index >= runtime->context.skills->count)
@@ -570,13 +609,13 @@ int runtime_skill_info(const struct runtime *runtime, int index,
 	return 0;
 }
 
-int runtime_skill_find(const struct runtime *runtime, const char *name,
-		       struct skill_entry *out)
+int runtime_skill_find_borrow(const struct runtime *runtime, const char *name,
+			      struct skill_entry *out)
 {
 	struct skill_entry *entry;
 	if (!runtime || !runtime->context.skills || !name || !out)
 		return -EINVAL;
-	entry = skill_lookup(runtime->context.skills, name);
+	entry = skill_borrow(runtime->context.skills, name);
 	if (!entry)
 		return -ENOENT;
 	*out = *entry;
@@ -591,7 +630,7 @@ int runtime_skill_set_active(struct runtime *runtime, const char *name,
 	int rc = 0;
 	if (!runtime || !runtime->context.skills || !name)
 		return -EINVAL;
-	entry = skill_lookup(runtime->context.skills, name);
+	entry = skill_borrow(runtime->context.skills, name);
 	if (!entry)
 		return -ENOENT;
 	before = entry->activated;
@@ -619,20 +658,20 @@ static int runtime_preferences_bind(struct runtime *runtime)
 		runtime->context.workdir);
 }
 
-char *runtime_memory_background_render(struct runtime *runtime)
+char *runtime_memory_background_render_copy(struct runtime *runtime)
 {
 	if (runtime_preferences_bind(runtime) != 0)
 		return NULL;
-	return memory_background_render(&runtime->context.database,
-		runtime->context.current_session.id);
+	return memory_background_text_create(&runtime->context.database,
+					     runtime->context.current_session.id);
 }
 
-char *runtime_preferences_render(struct runtime *runtime, int history)
+char *runtime_preferences_render_copy(struct runtime *runtime, int history)
 {
 	if (runtime_preferences_bind(runtime) != 0)
 		return NULL;
-	return preference_render(&runtime->context.database,
-		runtime->context.current_session.id, history);
+	return preference_render_copy(&runtime->context.database,
+				      runtime->context.current_session.id, history);
 }
 
 int runtime_preference_set(struct runtime *runtime, const char *scope,
@@ -647,13 +686,12 @@ int runtime_preference_set(struct runtime *runtime, const char *scope,
 		"explicit /memory command", NULL);
 }
 
-char *runtime_memory_render_current(struct runtime *runtime, int max_episodes)
+char *runtime_memory_render_current_copy(struct runtime *runtime, int max_episodes)
 {
 	if (!runtime)
 		return NULL;
-	return memory_render_session(&runtime->context.database,
-				     runtime->context.current_session.id,
-				     max_episodes);
+	return memory_session_text_create(&runtime->context.database,
+					  runtime->context.current_session.id, max_episodes);
 }
 
 int runtime_memory_clear_current(struct runtime *runtime,
@@ -665,7 +703,7 @@ int runtime_memory_clear_current(struct runtime *runtime,
 	rc = memory_clear(&runtime->context.database,
 			  runtime->context.current_session.id, scope);
 	if (rc == 0 && runtime->context.react)
-		react_set_memory_context(runtime->context.react, NULL);
+		react_set_memory_context_copy(runtime->context.react, NULL);
 	return rc;
 }
 

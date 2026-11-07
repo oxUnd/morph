@@ -1,4 +1,5 @@
 #include "annotation.h"
+#include "util/cleanup.h"
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
@@ -62,7 +63,7 @@ static int annotation_images(const cJSON *items, struct annotation *out)
 				return -EINVAL;
 			image.height = height->valueint;
 		}
-		slot = morph_array_push(&out->images);
+		slot = morph_array_push_borrow(&out->images);
 		if (!slot)
 			return -ENOMEM;
 		*slot = image;
@@ -90,7 +91,7 @@ static int annotation_bboxes(const cJSON *items, struct annotation *out)
 		    bbox.rect.height <= 0)
 			return -EINVAL;
 		bbox.label = annotation_label(item);
-		slot = morph_array_push(&out->bboxes);
+		slot = morph_array_push_borrow(&out->bboxes);
 		if (!slot)
 			return -ENOMEM;
 		*slot = bbox;
@@ -126,7 +127,7 @@ static int annotation_arrows(const cJSON *items, struct annotation *out)
 					   &arrow.to) != 0)
 			return -EINVAL;
 		arrow.label = annotation_label(item);
-		slot = morph_array_push(&out->arrows);
+		slot = morph_array_push_borrow(&out->arrows);
 		if (!slot)
 			return -ENOMEM;
 		*slot = arrow;
@@ -145,51 +146,61 @@ void annotation_cleanup(struct annotation *annotation)
 	memset(annotation, 0, sizeof(*annotation));
 }
 
-int annotation_parse(const cJSON *input, struct annotation *out)
+int annotation_parse_copy(const cJSON *input, struct annotation *out)
 {
+	struct annotation candidate MORPH_CLEANUP(annotation_cleanup) = {0};
 	const cJSON *body;
 	struct annotation_image image;
 	struct annotation_bbox bbox;
 	struct annotation_arrow arrow;
 	int rc;
 
-	if (!out)
+	if (!out || !cJSON_IsObject(input))
 		return -EINVAL;
-	memset(out, 0, sizeof(*out));
-	if (!cJSON_IsObject(input))
-		return -EINVAL;
+	if (out->owned || out->images.elts || out->bboxes.elts || out->arrows.elts)
+		return -EALREADY;
 	body = cJSON_GetObjectItemCaseSensitive(input, "annotation");
 	if (!body)
 		body = input;
 	if (cJSON_IsString(body)) {
-		out->owned = cJSON_Parse(body->valuestring);
-		body = out->owned;
+		candidate.owned = cJSON_ParseWithOpts(body->valuestring, NULL, 1);
+		if (!candidate.owned)
+			return -EINVAL;
+	} else {
+		candidate.owned = cJSON_Duplicate(body, 1);
+		if (!candidate.owned)
+			return -ENOMEM;
 	}
-	if (!cJSON_IsObject(body)) {
-		annotation_cleanup(out);
+	body = candidate.owned;
+	if (!cJSON_IsObject(body))
 		return -EINVAL;
-	}
-	rc = morph_array_init(&out->images, 4, sizeof(image));
+	rc = morph_array_init(&candidate.images, 4, sizeof(image));
 	if (rc == 0)
-		rc = morph_array_init(&out->bboxes, 4, sizeof(bbox));
+		rc = morph_array_init(&candidate.bboxes, 4, sizeof(bbox));
 	if (rc == 0)
-		rc = morph_array_init(&out->arrows, 4, sizeof(arrow));
+		rc = morph_array_init(&candidate.arrows, 4, sizeof(arrow));
 	if (rc == 0)
-		rc = annotation_images(cJSON_GetObjectItemCaseSensitive(body, "images"), out);
+		rc = annotation_images(cJSON_GetObjectItemCaseSensitive(body, "images"),
+				       &candidate);
 	if (rc == 0)
-		rc = annotation_bboxes(cJSON_GetObjectItemCaseSensitive(body, "bboxes"), out);
+		rc = annotation_bboxes(cJSON_GetObjectItemCaseSensitive(body, "bboxes"),
+				       &candidate);
 	if (rc == 0)
-		rc = annotation_arrows(cJSON_GetObjectItemCaseSensitive(body, "arrows"), out);
+		rc = annotation_arrows(cJSON_GetObjectItemCaseSensitive(body, "arrows"),
+				       &candidate);
 	if (rc != 0)
-		annotation_cleanup(out);
-	return rc;
+		return rc;
+	*out = candidate;
+	memset(&candidate, 0, sizeof(candidate));
+	return 0;
 }
 
-const struct annotation_image *annotation_image_at(const struct annotation *annotation, int index)
+const struct annotation_image *annotation_image_borrow(const struct annotation *annotation,
+						       int index)
 {
 	if (!annotation || index < 0)
 		return NULL;
-	return morph_array_get(&annotation->images, (size_t)index);
+	return morph_array_borrow(&annotation->images, (size_t)index);
 }
 
 int annotation_rect_normalize(const struct annotation_rect *input, int width, int height,
@@ -237,7 +248,7 @@ int annotation_main_image(const struct annotation *annotation)
 		int count = 0;
 
 		for (size_t j = 0; j < annotation->arrows.nelts; j++) {
-			other = morph_array_get(&annotation->arrows, j);
+			other = morph_array_borrow(&annotation->arrows, j);
 			if (other->to.image_index == arrow->to.image_index)
 				count++;
 		}

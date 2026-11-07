@@ -155,7 +155,8 @@ void cli_presentation_user_input(struct cli_application *ctx, const char *text)
 		if (newline)
 			*newline = '\0';
 		do {
-			const char *end = utf8_advance_display_width(cursor, (size_t)(width - 2));
+			const char *end =
+				utf8_advance_display_width_borrow(cursor, (size_t)(width - 2));
 
 			cli_presenter_user_row(ctx, cursor, (size_t)(end - cursor), first);
 			first = 0;
@@ -289,7 +290,7 @@ static const char *cli_presenter_tree_wrap_end(const char *text, size_t width, i
 	const char *end;
 	const char *space = NULL;
 
-	end = utf8_advance_display_width(text, width);
+	end = utf8_advance_display_width_borrow(text, width);
 	if (!*end) {
 		*has_break = 0;
 		return end;
@@ -343,7 +344,7 @@ static void cli_presenter_print_tree_string(struct cli_application *ctx, const c
 								     is_last, label_width);
 		}
 		if (*end && !has_break)
-			end = utf8_advance_display_width(line, (size_t)(available - 1));
+			end = utf8_advance_display_width_borrow(line, (size_t)(available - 1));
 		printf(ctx, "%.*s", (int)(end - line), line);
 		if (*end && !has_break) {
 			printf(ctx, "…\n");
@@ -575,7 +576,7 @@ static void cli_presenter_print_stream(struct cli_application *ctx)
 	cli_presenter_clear_status(ctx);
 	(void)utf8_terminal_sanitize_feed(&ctx->presenter->event_stream_sanitizer,
 					  &ctx->presenter->event_stream, NULL, 0, 1);
-	content = morph_buf_cstr(&ctx->presenter->event_stream);
+	content = morph_buf_cstr_borrow(&ctx->presenter->event_stream);
 	if (!content || !content[0])
 		goto reset;
 	if (reasoning_streamed) {
@@ -630,7 +631,7 @@ static void cli_presenter_plain_content(struct cli_application *ctx, const char 
 	if (ctx->presentation_mode != CLI_PRESENT_ONCE_PLAIN)
 		return;
 	if (!text || !*text)
-		text = morph_buf_cstr(&ctx->presenter->native_content);
+		text = morph_buf_cstr_borrow(&ctx->presenter->native_content);
 	if (text && *text) {
 		safe = cli_presenter_safe_dup(text, SIZE_MAX, UTF8_TERMINAL_TEXT_MULTILINE);
 		if (safe) {
@@ -684,7 +685,7 @@ static int cli_presenter_append_stream(struct cli_application *ctx, int kind, co
 	if (rc != 0)
 		return rc;
 	if (appended_text)
-		*appended_text = morph_buf_cstr(&ctx->presenter->event_stream) + offset;
+		*appended_text = morph_buf_cstr_borrow(&ctx->presenter->event_stream) + offset;
 	if (is_delta)
 		ctx->presenter->event_stream_has_delta = 1;
 	if (is_complete)
@@ -695,7 +696,7 @@ static int cli_presenter_append_stream(struct cli_application *ctx, int kind, co
 /* The terminal owns the live row; commit its preview only when the stream ends. */
 static void cli_presenter_reasoning_flush(struct cli_application *ctx, int finish)
 {
-	const char *content = morph_buf_cstr(&ctx->presenter->event_stream);
+	const char *content = morph_buf_cstr_borrow(&ctx->presenter->event_stream);
 	size_t offset = ctx->presenter->reasoning_stream_offset;
 	const char *start;
 	const char *end;
@@ -721,7 +722,7 @@ static void cli_presenter_reasoning_flush(struct cli_application *ctx, int finis
 	if (!*start || morph_buf_init(&preview, 128) != 0)
 		return;
 	newline = strchr(start, '\n');
-	end = utf8_advance_display_width(start, width - 1u);
+	end = utf8_advance_display_width_borrow(start, width - 1u);
 	if (newline && newline < end)
 		end = newline;
 	(void)morph_buf_append(&preview, start, (size_t)(end - start));
@@ -731,9 +732,10 @@ static void cli_presenter_reasoning_flush(struct cli_application *ctx, int finis
 		cli_presenter_clear_status(ctx);
 		/* Commit one quiet narration line between tool blocks. */
 		printf(ctx, "%s" ANSI_DIM "\033[3m%s" ANSI_RESET "\n",
-		       ctx->output.trailing_newlines < 2 ? "\n" : "", morph_buf_cstr(&preview));
+		       ctx->output.trailing_newlines < 2 ? "\n" : "",
+		       morph_buf_cstr_borrow(&preview));
 	} else if (isatty(STDOUT_FILENO)) {
-		cli_feed_reasoning_set(ctx, morph_buf_cstr(&preview));
+		cli_feed_reasoning_set(ctx, morph_buf_cstr_borrow(&preview));
 	}
 	morph_buf_cleanup(&preview);
 }
@@ -744,7 +746,7 @@ static const char *cli_presenter_workdir(struct cli_application *ctx)
 		return NULL;
 	if (ctx->workdir[0])
 		return ctx->workdir;
-	return runtime_workdir_get(ctx->runtime);
+	return runtime_workdir_borrow(ctx->runtime);
 }
 
 static const char *cli_presenter_patch_style(const char *line)
@@ -824,7 +826,7 @@ void cli_presentation_patch_diff(struct cli_application *ctx, const char *workdi
 		if (morph_buf_init(&preview, 256) == 0) {
 			if (patch_preview(workdir, input, &preview, preview_error,
 					  sizeof(preview_error)) == 0) {
-				text = morph_buf_cstr(&preview);
+				text = morph_buf_cstr_borrow(&preview);
 				preview_ready = 1;
 			} else {
 				morph_buf_cleanup(&preview);
@@ -1095,7 +1097,7 @@ static void cli_presenter_observation(struct cli_application *ctx, const struct 
 		if (morph_buf_init(&prefix, 64) == 0) {
 			morph_tui_widget_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
 			morph_buf_puts(&prefix, ANSI_RED "Error: " ANSI_RESET);
-			cli_presenter_print_indented(ctx, morph_buf_cstr(&prefix), text);
+			cli_presenter_print_indented(ctx, morph_buf_cstr_borrow(&prefix), text);
 			morph_buf_cleanup(&prefix);
 		}
 	} else {
@@ -1119,7 +1121,8 @@ static void cli_presenter_observation(struct cli_application *ctx, const struct 
 			morph_buf_t prefix = {0};
 			if (morph_buf_init(&prefix, 32) == 0) {
 				morph_tui_widget_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
-				cli_presenter_print_indented(ctx, morph_buf_cstr(&prefix), text);
+				cli_presenter_print_indented(ctx, morph_buf_cstr_borrow(&prefix),
+							     text);
 				morph_buf_cleanup(&prefix);
 			}
 		}
@@ -1325,7 +1328,7 @@ static void cli_presenter_auth(struct cli_application *ctx, const struct morph_e
 	cli_presenter_print_stream(ctx);
 	if (!backend)
 		backend = "configured";
-	config = ctx->runtime ? runtime_config_get(ctx->runtime) : NULL;
+	config = ctx->runtime ? runtime_config_borrow(ctx->runtime) : NULL;
 	if ((!env_name || !env_name[0]) && config) {
 		if (strcmp(backend, "image") == 0)
 			env_name = config->models.image.api_key_env;
@@ -1377,7 +1380,7 @@ static void cli_presenter_artifact(struct cli_application *ctx, const struct mor
 	if (morph_strmap_contains(&ctx->presenter->announced_artifacts, path))
 		return;
 	status_paused = cli_presenter_pause_status(ctx);
-	(void)morph_strmap_set(&ctx->presenter->announced_artifacts, path, (void *)1);
+	(void)morph_strmap_set_borrow(&ctx->presenter->announced_artifacts, path, (void *)1);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		printf(ctx, "artifact: ");
 		cli_presenter_print_safe_inline(ctx, kind ? kind : "file",
@@ -1648,7 +1651,7 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 		if (ev->type == MORPH_EVENT_BACKGROUND && ev->name &&
 		    strcmp(ev->name, "session.recap") == 0)
 			cli_recap_event(ctx, ev);
-		char *json = morph_event_to_json_string(ev);
+		char *json = morph_event_json_text_copy(ev);
 
 		if (!json)
 			return -ENOMEM;
