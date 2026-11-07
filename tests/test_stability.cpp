@@ -46,7 +46,7 @@ static int conflicting_tool(const char *, tool_result *out, void *)
 
 static int malformed_tool(const char *, tool_result *out, void *)
 {
-	out->envelope = json_object();
+	out->envelope = cJSON_CreateObject();
 	return 0;
 }
 
@@ -63,9 +63,9 @@ TEST(Stability, ToolBusinessFailureAndConflictsAreNormalized)
 	ASSERT_EQ(tool_register(&reg, &conflict), 0);
 	ASSERT_EQ(tool_register(&reg, &malformed), 0);
 	EXPECT_EQ(tool_exec(&reg, "reject", "{}", &out), -EINVAL);
-	EXPECT_TRUE(json_is_false(json_member_ci(out.envelope, "ok")));
+	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(out.envelope, "ok")));
 	EXPECT_EQ(tool_exec(&reg, "conflict", "{}", &out), -EACCES);
-	EXPECT_TRUE(json_is_false(json_member_ci(out.envelope, "ok")));
+	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(out.envelope, "ok")));
 	EXPECT_EQ(tool_exec(&reg, "malformed", "{}", &out), MORPH_ERR_PROTOCOL);
 	EXPECT_EQ(tool_exec(&reg, "missing", "{}", &out), -ENOENT);
 	EXPECT_EQ(out.envelope, nullptr);
@@ -656,36 +656,29 @@ TEST(Stability, CancellationTokenIsSafeForConcurrentReaders)
 	EXPECT_FALSE(morph_cancel_token_is_cancelled(&token));
 }
 
-TEST(Stability, ConcurrentJsonParsingKeepsErrorsOwnedByEachCall)
+TEST(Stability, ConcurrentJsonParsingKeepsErrorCursorsThreadLocal)
 {
 	std::atomic<int> stage{0};
 	std::thread failed([&] {
-		struct json_error error = {};
-		struct json *value = json_parse_n("{invalid", 8, &error);
+		cJSON *value = cJSON_Parse("{invalid");
 		EXPECT_EQ(value, nullptr);
-		json_free(value);
-		EXPECT_EQ(error.code, -EINVAL);
-		EXPECT_EQ(error.offset, 1u);
-		const char *message = error.message;
-		EXPECT_NE(message, nullptr);
+		cJSON_Delete(value);
+		const char *error = cJSON_GetErrorPtr();
+		EXPECT_NE(error, nullptr);
 		stage.store(1);
 		while (stage.load() != 2) {
 			std::this_thread::yield();
 		}
-		EXPECT_EQ(error.code, -EINVAL);
-		EXPECT_EQ(error.offset, 1u);
-		EXPECT_EQ(error.message, message);
+		EXPECT_EQ(cJSON_GetErrorPtr(), error);
 	});
 	std::thread successful([&] {
 		while (stage.load() != 1) {
 			std::this_thread::yield();
 		}
-		struct json_error error = {};
-		struct json *value = json_parse_n("{}", 2, &error);
+		cJSON *value = cJSON_Parse("{}");
 		EXPECT_NE(value, nullptr);
-		EXPECT_EQ(error.code, 0);
-		EXPECT_EQ(error.message, nullptr);
-		json_free(value);
+		EXPECT_EQ(cJSON_GetErrorPtr(), nullptr);
+		cJSON_Delete(value);
 		stage.store(2);
 	});
 	failed.join();

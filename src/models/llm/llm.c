@@ -14,6 +14,7 @@
 #include "util/image_util.h"
 #include "http/client.h"
 #include "http/sse.h"
+#include "cJSON.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -88,17 +89,17 @@ static const char *llm_extract_error(const char *raw, struct arena *arena)
 {
 	if (!raw || !*raw)
 		return NULL;
-	struct json *root = json_parse_prefix(raw, NULL, NULL);
+	cJSON *root = cJSON_Parse(raw);
 	if (!root)
 		return NULL;
 	const char *msg = NULL;
-	const struct json *err_obj = json_member_ci(root, "error");
-	if (json_is_object_value(err_obj)) {
-		const char *message = json_string_value(json_member_ci(err_obj, "message"));
-		if (message)
-			msg = arena_strdup(arena, message);
+	cJSON *err_obj = cJSON_GetObjectItem(root, "error");
+	if (cJSON_IsObject(err_obj)) {
+		cJSON *msg_item = cJSON_GetObjectItem(err_obj, "message");
+		if (cJSON_IsString(msg_item) && msg_item->valuestring)
+			msg = arena_strdup(arena, msg_item->valuestring);
 	}
-	json_free(root);
+	cJSON_Delete(root);
 	return msg;
 }
 
@@ -123,11 +124,11 @@ static void llm_record_error(struct model *self, int status, const char *raw, in
 			     long retry_after_seconds)
 {
 	struct model_error_info *info = &self->error_info;
-	struct json *json = raw ? json_parse_prefix(raw, NULL, NULL) : NULL;
-	const struct json *error = json_member(json, "error");
-	const char *code = json_string_value(json_member(error, "code"));
+	cJSON *json = raw ? cJSON_Parse(raw) : NULL;
+	const cJSON *error = cJSON_GetObjectItemCaseSensitive(json, "error");
+	const char *code = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(error, "code"));
 	if (!code)
-		code = json_string_value(json_member(error, "type"));
+		code = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(error, "type"));
 	memset(info, 0, sizeof(*info));
 	info->http_status = status > 0 ? status : 0;
 	info->output_started = started;
@@ -149,7 +150,8 @@ static void llm_record_error(struct model *self, int status, const char *raw, in
 		    (!strcmp(code, "context_length_exceeded") ||
 		     !strcmp(code, "context_window_exceeded") || !strcmp(code, "prompt_too_long")))
 			info->kind = MODEL_ERROR_CONTEXT;
-		const char *message = json_string_value(json_member(error, "message"));
+		const char *message =
+			cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(error, "message"));
 		if (message && (strstr(message, "maximum context length") ||
 				strstr(message, "exceeds the context window") ||
 				strstr(message, "prompt is too long")))
@@ -162,7 +164,7 @@ static void llm_record_error(struct model *self, int status, const char *raw, in
 				       llm_retryable_status(status));
 	if (status == -ECANCELED || status == -EINTR)
 		info->retryable = 0;
-	json_free(json);
+	cJSON_Delete(json);
 }
 
 static int llm_post_sse_with_retry(struct model *self, struct arena *arena, const char *operation,
@@ -314,16 +316,16 @@ static int llm_chat(struct model *self, struct arena *arena, const char *system_
 	return status;
 }
 
-static int add_system_message(struct json *messages, const char *system_prompt)
+static int add_system_message(cJSON *messages, const char *system_prompt)
 {
 	if (!messages || !system_prompt || !*system_prompt)
 		return 0;
-	struct json *msg = json_object();
+	cJSON *msg = cJSON_CreateObject();
 	if (!msg)
 		return -ENOMEM;
-	json_add_string(msg, "role", "system");
-	json_add_string(msg, "content", system_prompt);
-	json_array_add(messages, msg);
+	cJSON_AddStringToObject(msg, "role", "system");
+	cJSON_AddStringToObject(msg, "content", system_prompt);
+	cJSON_AddItemToArray(messages, msg);
 	return 0;
 }
 
@@ -366,74 +368,74 @@ static int llm_chat_with_image(struct model *self, struct arena *arena, const ch
 		return MORPH_TRACE_ERROR(self ? self->http.logger : NULL, encode_rc);
 	}
 
-	struct json *root = json_object();
-	struct json *messages = json_array();
+	cJSON *root = cJSON_CreateObject();
+	cJSON *messages = cJSON_CreateArray();
 	if (!root || !messages) {
-		json_free(root);
-		json_free(messages);
+		cJSON_Delete(root);
+		cJSON_Delete(messages);
 		free(data_uri);
 		return -ENOMEM;
 	}
-	json_add_string(root, "model", self->model_id);
-	json_object_add(root, "messages", messages);
+	cJSON_AddStringToObject(root, "model", self->model_id);
+	cJSON_AddItemToObject(root, "messages", messages);
 	if (add_system_message(messages, system_prompt) < 0) {
-		json_free(root);
+		cJSON_Delete(root);
 		free(data_uri);
 		return -ENOMEM;
 	}
 
-	struct json *user = json_object();
-	struct json *content = json_array();
-	struct json *text = json_object();
-	struct json *image = json_object();
-	struct json *image_url = json_object();
+	cJSON *user = cJSON_CreateObject();
+	cJSON *content = cJSON_CreateArray();
+	cJSON *text = cJSON_CreateObject();
+	cJSON *image = cJSON_CreateObject();
+	cJSON *image_url = cJSON_CreateObject();
 	if (!user || !content || !text || !image || !image_url) {
-		json_free(user);
-		json_free(content);
-		json_free(text);
-		json_free(image);
-		json_free(image_url);
-		json_free(root);
+		cJSON_Delete(user);
+		cJSON_Delete(content);
+		cJSON_Delete(text);
+		cJSON_Delete(image);
+		cJSON_Delete(image_url);
+		cJSON_Delete(root);
 		free(data_uri);
 		return -ENOMEM;
 	}
-	json_add_string(user, "role", "user");
-	json_object_add(user, "content", content);
-	json_add_string(text, "type", "text");
-	json_add_string(text, "text", prompt);
-	json_array_add(content, text);
+	cJSON_AddStringToObject(user, "role", "user");
+	cJSON_AddItemToObject(user, "content", content);
+	cJSON_AddStringToObject(text, "type", "text");
+	cJSON_AddStringToObject(text, "text", prompt);
+	cJSON_AddItemToArray(content, text);
 
-	json_add_string(image, "type", "image_url");
-	struct json *uri_value = json_take_string(data_uri);
-	if (!uri_value || json_object_add(image_url, "url", uri_value) != 0) {
-		json_free(uri_value);
-		json_free(image_url);
-		json_free(image);
-		json_free(user);
-		json_free(root);
+	cJSON_AddStringToObject(image, "type", "image_url");
+	cJSON *uri_value = morph_json_take_string(data_uri);
+	if (!uri_value || !cJSON_AddItemToObject(image_url, "url", uri_value)) {
+		cJSON_Delete(uri_value);
+		cJSON_Delete(image_url);
+		cJSON_Delete(image);
+		cJSON_Delete(user);
+		cJSON_Delete(root);
 		return MORPH_TRACE_ERROR(self ? self->http.logger : NULL, -ENOMEM);
 	}
-	json_object_add(image, "image_url", image_url);
-	json_array_add(content, image);
-	json_array_add(messages, user);
-	json_add_bool(root, "stream", 1);
+	cJSON_AddItemToObject(image, "image_url", image_url);
+	cJSON_AddItemToArray(content, image);
+	cJSON_AddItemToArray(messages, user);
+	cJSON_AddBoolToObject(root, "stream", 1);
 	{
-		struct json *stream_opts = json_object();
+		cJSON *stream_opts = cJSON_CreateObject();
 		if (stream_opts) {
-			json_add_bool(stream_opts, "include_usage", 1);
-			json_object_add(root, "stream_options", stream_opts);
+			cJSON_AddBoolToObject(stream_opts, "include_usage", 1);
+			cJSON_AddItemToObject(root, "stream_options", stream_opts);
 		}
 	}
-	json_add_number(root, "max_tokens", max_tokens);
+	cJSON_AddNumberToObject(root, "max_tokens", max_tokens);
 	int extra_rc =
 		llm_codec_add_options(self ? self->http.logger : NULL, root, self->extra_body_json);
 	if (extra_rc < 0) {
-		json_free(root);
+		cJSON_Delete(root);
 		return extra_rc;
 	}
 
-	char *body = json_stringify_arena(arena, root);
-	json_free(root);
+	char *body = morph_json_print(arena, root);
+	cJSON_Delete(root);
 	if (!body)
 		return -ENOMEM;
 
@@ -486,57 +488,56 @@ static int llm_chat_with_image(struct model *self, struct arena *arena, const ch
 
 /* Count transmitted text, not JSON escaping around message contents. Framing
  * remains an estimate; the caller reserves a separate protocol safety margin. */
-static int64_t input_text_tokens(const struct json *value, model_token_counter count,
-				 void *user_data)
+static int64_t input_text_tokens(const cJSON *value, model_token_counter count, void *user_data)
 {
 	int64_t total = 0;
-	const struct json *child;
+	const cJSON *child;
 
-	if (json_is_string_value(value))
-		return count(json_string_value(value), user_data);
-	if (json_is_object_value(value))
+	if (cJSON_IsString(value))
+		return count(value->valuestring, user_data);
+	if (cJSON_IsObject(value))
 		total = 12;
-	json_foreach (child, value)
+	cJSON_ArrayForEach (child, value)
 		total += input_text_tokens(child, count, user_data);
 	return total;
 }
 
 int model_input_snapshot(const struct model *model, const char *system_prompt,
 			 const struct chat_message *messages, int msg_count,
-			 const struct tool_desc *tools, int tool_count, struct json **out)
+			 const struct tool_desc *tools, int tool_count, cJSON **out)
 {
 	const struct llm_codec *codec = llm_codec_resolve(model);
-	struct json *root;
-	struct json *input;
-	struct json *definitions;
+	cJSON *root;
+	cJSON *input;
+	cJSON *definitions;
 
 	if (!out || msg_count < 0 || tool_count < 0 || (msg_count && !messages) ||
 	    (tool_count && !tools))
 		return MORPH_TRACE_ERROR(model ? model->http.logger : NULL, -EINVAL);
 	*out = NULL;
-	root = json_object();
+	root = cJSON_CreateObject();
 	input = codec->input(model, system_prompt, messages, msg_count);
 	definitions = codec->tools(tools, tool_count);
 	if (!root || !input || !definitions) {
-		json_free(root);
-		json_free(input);
-		json_free(definitions);
+		cJSON_Delete(root);
+		cJSON_Delete(input);
+		cJSON_Delete(definitions);
 		return MORPH_TRACE_ERROR(model ? model->http.logger : NULL, -ENOMEM);
 	}
-	if (json_object_add(root, codec->input_key, input) != 0) {
-		json_free(input);
-		json_free(definitions);
-		json_free(root);
+	if (!cJSON_AddItemToObject(root, codec->input_key, input)) {
+		cJSON_Delete(input);
+		cJSON_Delete(definitions);
+		cJSON_Delete(root);
 		return MORPH_TRACE_ERROR(model ? model->http.logger : NULL, -ENOMEM);
 	}
-	if (json_object_add(root, "tools", definitions) != 0) {
-		json_free(definitions);
-		json_free(root);
+	if (!cJSON_AddItemToObject(root, "tools", definitions)) {
+		cJSON_Delete(definitions);
+		cJSON_Delete(root);
 		return MORPH_TRACE_ERROR(model ? model->http.logger : NULL, -ENOMEM);
 	}
 	if (codec->system_key && system_prompt && *system_prompt &&
-	    !json_add_string(root, codec->system_key, system_prompt)) {
-		json_free(root);
+	    !cJSON_AddStringToObject(root, codec->system_key, system_prompt)) {
+		cJSON_Delete(root);
 		return MORPH_TRACE_ERROR(model ? model->http.logger : NULL, -ENOMEM);
 	}
 	*out = root;
@@ -549,8 +550,8 @@ int model_estimate_input_tokens(const struct model *model, const char *system_pr
 				model_token_counter count, void *user_data, int *tokens)
 {
 	const struct llm_codec *codec = llm_codec_resolve(model);
-	struct json *input;
-	struct json *wire_tools;
+	cJSON *input;
+	cJSON *wire_tools;
 	char *json;
 	int64_t total;
 
@@ -561,7 +562,7 @@ int model_estimate_input_tokens(const struct model *model, const char *system_pr
 	if (!input)
 		return MORPH_TRACE_ERROR(model ? model->http.logger : NULL, -ENOMEM);
 	total = 16 + input_text_tokens(input, count, user_data);
-	json_free(input);
+	cJSON_Delete(input);
 	if (codec->system_key && system_prompt && system_prompt[0])
 		total += count(system_prompt, user_data);
 	if (tool_count > 0) {
@@ -569,8 +570,8 @@ int model_estimate_input_tokens(const struct model *model, const char *system_pr
 		if (!wire_tools)
 			return MORPH_TRACE_ERROR(model ? model->http.logger : NULL, -ENOMEM);
 		/* Schema keys and constraints are part of the model-visible definition. */
-		json = json_stringify(wire_tools);
-		json_free(wire_tools);
+		json = cJSON_PrintUnformatted(wire_tools);
+		cJSON_Delete(wire_tools);
 		if (!json)
 			return MORPH_TRACE_ERROR(model ? model->http.logger : NULL, -ENOMEM);
 		total += count(json, user_data);
@@ -589,7 +590,7 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 	const struct llm_codec *codec = llm_codec_resolve(self);
 	const struct llm_adapter *adapter = llm_adapter_resolve(self);
 	struct llm_stream_ctx ctx;
-	struct json *root = NULL;
+	cJSON *root = NULL;
 	char *body;
 	char url[512];
 	char authorization[512];
@@ -613,16 +614,16 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 				  &root);
 	if (rc != 0)
 		return rc;
-	json_add_string(root, "model", self->model_id);
-	json_add_bool(root, "stream", 1);
+	cJSON_AddStringToObject(root, "model", self->model_id);
+	cJSON_AddBoolToObject(root, "stream", 1);
 	codec->configure(self, root, tool_count);
 	rc = llm_codec_add_options(self->http.logger, root, self->extra_body_json);
 	if (rc != 0) {
-		json_free(root);
+		cJSON_Delete(root);
 		return rc;
 	}
-	body = json_stringify_arena(arena, root);
-	json_free(root);
+	body = morph_json_print(arena, root);
+	cJSON_Delete(root);
 	if (!body)
 		return -ENOMEM;
 	body[utf8_sanitize_into(body, body, strlen(body))] = '\0';

@@ -3,7 +3,7 @@
 extern "C" {
 #include "agent/tool.h"
 #include "agent/tools/vid_gen.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "models/llm.h"
 #include "models/video_gen.h"
 #include "models/video_provider.h"
@@ -164,9 +164,9 @@ TEST(VideoToolTest, SchemaExposesAudioInputs)
 		  nullptr);
 	EXPECT_NE(std::strstr(entry->desc.input_schema, "\"maxItems\":3"),
 		  nullptr);
-	struct json *schema = json_parse_prefix(entry->desc.input_schema, NULL, NULL);
+	cJSON *schema = cJSON_Parse(entry->desc.input_schema);
 	EXPECT_NE(schema, nullptr);
-	json_free(schema);
+	cJSON_Delete(schema);
 	tool_registry_cleanup(&registry);
 }
 

@@ -1,5 +1,5 @@
 #include "sapi/cli/commands/session.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/markdown.h"
@@ -157,52 +157,40 @@ static int cli_session_command_delete(struct cli_application *ctx, int argc, cha
 
 static int cli_session_history_export_items(struct model_history_item *items, const char *path)
 {
-	struct json *array = json_array();
+	cJSON *array = cJSON_CreateArray();
 	char *expanded;
 	char *json;
 	int rc;
 
 	if (!array || !path) {
-		json_free(array);
+		cJSON_Delete(array);
 		return -EINVAL;
 	}
 	for (struct model_history_item *item = items; item; item = item->next) {
-		struct json *entry = json_object();
+		cJSON *entry = cJSON_CreateObject();
 
 		if (!entry) {
-			json_free(array);
+			cJSON_Delete(array);
 			return -ENOMEM;
 		}
-		json_add_number(entry, "sequence_no", (double)item->sequence_no);
-		json_add_string(entry, "turn_id", item->turn_id ? item->turn_id : "");
-		json_add_string(entry, "kind", item->kind);
-		json_add_string(entry, "role", item->role);
-		json_add_string(entry, "content", item->content ? item->content : "");
+		cJSON_AddNumberToObject(entry, "sequence_no", (double)item->sequence_no);
+		cJSON_AddStringToObject(entry, "turn_id", item->turn_id ? item->turn_id : "");
+		cJSON_AddStringToObject(entry, "kind", item->kind);
+		cJSON_AddStringToObject(entry, "role", item->role);
+		cJSON_AddStringToObject(entry, "content", item->content ? item->content : "");
 		if (item->payload_json) {
-			struct json *payload = json_parse_prefix(item->payload_json, NULL, NULL);
+			cJSON *payload = cJSON_Parse(item->payload_json);
 
-			if (payload) {
-				rc = json_object_add(entry, "payload", payload);
-				if (rc) {
-					json_free(payload);
-					json_free(entry);
-					json_free(array);
-					return rc;
-				}
-			}
+			if (payload)
+				cJSON_AddItemToObject(entry, "payload", payload);
 		}
-		json_add_bool(entry, "active", item->active);
-		json_add_bool(entry, "truncated", item->truncated);
-		json_add_number(entry, "token_count", item->token_count);
-		rc = json_array_add(array, entry);
-		if (rc) {
-			json_free(entry);
-			json_free(array);
-			return rc;
-		}
+		cJSON_AddBoolToObject(entry, "active", item->active);
+		cJSON_AddBoolToObject(entry, "truncated", item->truncated);
+		cJSON_AddNumberToObject(entry, "token_count", item->token_count);
+		cJSON_AddItemToArray(array, entry);
 	}
-	json = json_stringify_pretty(array);
-	json_free(array);
+	json = cJSON_Print(array);
+	cJSON_Delete(array);
 	if (!json)
 		return -ENOMEM;
 	expanded = file_expand_path(path);
@@ -345,7 +333,7 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 	if (last_request)
 		return cli_history_request_print(ctx);
 	if (!show_messages) {
-		struct json *report = NULL;
+		cJSON *report = NULL;
 		int rc = runtime_session_history_inspect(ctx->runtime, &report);
 
 		if (rc == 0 && sequence)
@@ -356,7 +344,7 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 			rc = cli_history_view(ctx, report);
 		else if (rc == 0)
 			cli_history_print(ctx, report, n, show_all);
-		json_free(report);
+		cJSON_Delete(report);
 		if (rc != 0)
 			CMD_ERROR(ctx, "history inspection failed: %s", morph_strerror(rc));
 		return rc;

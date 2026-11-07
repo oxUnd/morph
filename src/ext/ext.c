@@ -32,7 +32,8 @@ int ext_load(struct morph_log *logger, struct ext *ex, const char *dir_path)
 
 	struct stat st;
 	if (stat(manifest_path, &st) != 0) {
-		snprintf(manifest_path, sizeof(manifest_path), "%s/morph-ext.toml", dir_path);
+		snprintf(manifest_path, sizeof(manifest_path),
+			 "%s/morph-ext.toml", dir_path);
 		if (stat(manifest_path, &st) != 0) {
 			log_err(logger, "ext manifest not found in: %s", dir_path);
 			return -ENOENT;
@@ -114,7 +115,8 @@ void ext_manifest_cleanup(struct ext_manifest *m)
 	memset(m, 0, sizeof(*m));
 }
 
-int ext_manifest_supports_front(const struct ext_manifest *m, const char *front)
+int ext_manifest_supports_front(const struct ext_manifest *m,
+				const char *front)
 {
 	if (!m || !front || !front[0])
 		return 0;
@@ -173,7 +175,8 @@ void ext_sandbox_config_cleanup(struct sandbox_config *config)
 	memset(config, 0, sizeof(*config));
 }
 
-int ext_sandbox_config_prepare(const struct ext *ex, struct sandbox_config *config)
+int ext_sandbox_config_prepare(const struct ext *ex,
+			       struct sandbox_config *config)
 {
 	char **read_paths;
 	int count;
@@ -194,7 +197,8 @@ int ext_sandbox_config_prepare(const struct ext *ex, struct sandbox_config *conf
 	}
 	config->read_paths_count = 1;
 	for (int i = 0; i < count; i++) {
-		read_paths[i + 1] = ext_resolve_sandbox_path(ex->manifest.allowed_paths[i]);
+		read_paths[i + 1] = ext_resolve_sandbox_path(
+			ex->manifest.allowed_paths[i]);
 		if (!read_paths[i + 1]) {
 			ext_sandbox_config_cleanup(config);
 			return -ENOENT;
@@ -210,16 +214,19 @@ int ext_sandbox_config_prepare(const struct ext *ex, struct sandbox_config *conf
 		config->delete_paths = read_paths + 1;
 		config->delete_paths_count = count;
 	}
-	config->network_access = !!(ex->manifest.permissions & EXT_PERM_NETWORK);
+	config->network_access =
+		!!(ex->manifest.permissions & EXT_PERM_NETWORK);
 	config->process_exec = !!(ex->manifest.permissions & EXT_PERM_EXEC);
 	config->allow_pty = !!(ex->manifest.permissions & EXT_PERM_PTY);
-	config->allow_process_info = !!(ex->manifest.permissions & EXT_PERM_PROCESS_INFO);
+	config->allow_process_info =
+		!!(ex->manifest.permissions & EXT_PERM_PROCESS_INFO);
 	config->allow_ipc = !!(ex->manifest.permissions & EXT_PERM_IPC);
 	config->allow_temp = !!(ex->manifest.permissions & EXT_PERM_TEMP);
 	config->allowed_env = ex->manifest.allowed_env;
 	config->allowed_env_count = ex->manifest.allowed_env_count;
 	config->allowed_mach_services = ex->manifest.allowed_mach_services;
-	config->allowed_mach_services_count = ex->manifest.allowed_mach_services_count;
+	config->allowed_mach_services_count =
+		ex->manifest.allowed_mach_services_count;
 	config->max_memory_mb = ex->manifest.max_memory_mb;
 	config->max_cpu_seconds = ex->manifest.max_cpu_seconds;
 	config->max_open_files = ex->manifest.max_open_files;
@@ -236,7 +243,7 @@ int ext_sandbox_config_prepare(const struct ext *ex, struct sandbox_config *conf
  * \return Zero on success, negative error otherwise; output may contain diagnostics.
  */
 int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
-		    int (*cancelled)(void *), void *user, const struct sandbox_config *limits)
+		       int (*cancelled)(void *), void *user, const struct sandbox_config *limits)
 {
 	if (result_json != NULL) {
 		*result_json = NULL;
@@ -316,9 +323,8 @@ int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 			if (limits) {
 				struct arena *permission_arena = arena_create(0);
 
-				if (!permission_arena ||
-				    sandbox_permission_intersect(&sb_cfg, limits,
-								 permission_arena) != 0)
+				if (!permission_arena || sandbox_permission_intersect(
+				    &sb_cfg, limits, permission_arena) != 0)
 					_exit(126);
 				/* The child replaces its image immediately after sandbox setup. */
 			}
@@ -407,15 +413,16 @@ int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 			*result_json = strdup("{\"error\":\"ext process was terminated\"}");
 			return MORPH_ERR_SANDBOX;
 		}
-		if (WIFEXITED(status) && WEXITSTATUS(status) != 0 && raw_response[0] == '\0') {
+		if (WIFEXITED(status) && WEXITSTATUS(status) != 0 &&
+		    raw_response[0] == '\0') {
 			int exit_code = WEXITSTATUS(status);
 
 			free(child_stderr);
 			free(raw_response);
-			*result_json = strdup(
-				exit_code == 126 ? "{\"error\":\"extension sandbox setup failed\"}"
-						 : "{\"error\":\"extension process exited before "
-						   "producing a JSON-RPC response\"}");
+			*result_json = strdup(exit_code == 126 ?
+				"{\"error\":\"extension sandbox setup failed\"}" :
+				"{\"error\":\"extension process exited before "
+				"producing a JSON-RPC response\"}");
 			if (exit_code == 126)
 				return MORPH_ERR_SANDBOX;
 			return -ECHILD;
@@ -433,15 +440,15 @@ int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 		}
 
 		if (jr.has_error) {
-			struct json *error = json_object();
+			cJSON *error = cJSON_CreateObject();
 			if (error != NULL &&
-			    json_add_string(error, "error",
-					    jr.error_message != NULL
-						    ? jr.error_message
-						    : "Extension protocol error")) {
-				*result_json = json_stringify(error);
+			    cJSON_AddStringToObject(error, "error",
+						    jr.error_message != NULL
+							    ? jr.error_message
+							    : "Extension protocol error")) {
+				*result_json = cJSON_PrintUnformatted(error);
 			}
-			json_free(error);
+			cJSON_Delete(error);
 			jsonrpc_response_free(&jr);
 			return *result_json == NULL ? -ENOMEM : MORPH_ERR_PROTOCOL;
 		}
@@ -459,7 +466,7 @@ int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 
 /** \brief Execute an extension with the legacy non-cancellable contract. */
 int ext_run_cancelable(struct ext *ex, const char *args_json, char **result_json,
-		       int (*cancelled)(void *), void *user)
+	int (*cancelled)(void *), void *user)
 {
 	return ext_run_bounded(ex, args_json, result_json, cancelled, user, NULL);
 }

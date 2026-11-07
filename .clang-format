@@ -21,4 +21,4 @@ ForEachMacros:
   - morph_array_foreach
   - morph_queue_foreach
   - morph_queue_foreach_safe
-  - json_foreach
+  - cJSON_ArrayForEach

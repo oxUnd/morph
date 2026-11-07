@@ -1,5 +1,5 @@
 #include "sapi/cli/pages/history.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "sapi/cli/presentation/output.h"
 #include <morph/tui/components.h>
 #include "sapi/cli/application_internal.h"
@@ -11,7 +11,7 @@
 
 struct cli_history_view {
 	struct cli_application *ctx;
-	struct json *report;
+	cJSON *report;
 	morph_array_t matches;
 	struct morph_tui_widget_text_layout document_view;
 	morph_buf_t document;
@@ -28,16 +28,23 @@ struct cli_history_view {
 	const char *message;
 };
 
-static int64_t cli_history_number(const struct json *object, const char *key)
+static const char *cli_history_string(const cJSON *object, const char *key)
 {
-	const struct json *value = json_member(object, key);
+	const cJSON *value = cJSON_GetObjectItemCaseSensitive(object, key);
 
-	return json_is_number_value(value) ? (int64_t)json_number_value(value) : 0;
+	return cJSON_IsString(value) ? value->valuestring : "";
 }
 
-static const char *cli_history_label(const struct json *entry)
+static int64_t cli_history_number(const cJSON *object, const char *key)
 {
-	const char *kind = json_str_or(json_member(entry, "kind"), NULL, "");
+	const cJSON *value = cJSON_GetObjectItemCaseSensitive(object, key);
+
+	return cJSON_IsNumber(value) ? (int64_t)value->valuedouble : 0;
+}
+
+static const char *cli_history_label(const cJSON *entry)
+{
+	const char *kind = cli_history_string(entry, "kind");
 
 	if (strcmp(kind, "user_message") == 0)
 		return "You";
@@ -54,9 +61,9 @@ static const char *cli_history_label(const struct json *entry)
 	return kind;
 }
 
-static int cli_history_matches_filter(const struct json *entry, int filter)
+static int cli_history_matches_filter(const cJSON *entry, int filter)
 {
-	const char *status = json_str_or(json_member(entry, "status"), NULL, "");
+	const char *status = cli_history_string(entry, "status");
 
 	return filter == 0 || (filter == 1 && strncmp(status, "IN", 2) == 0) ||
 	       (filter == 2 && strcmp(status, "VIA SUMMARY") == 0) ||
@@ -78,29 +85,25 @@ static int cli_history_contains(const char *text, const char *query)
 
 static int cli_history_filter(struct cli_history_view *view)
 {
-	struct json *entry;
+	cJSON *entry;
 	const char *query = morph_buf_cstr(&view->query.text);
 
 	morph_array_clear(&view->matches);
-	json_foreach (entry, json_member(view->report, "entries")) {
+	cJSON_ArrayForEach (entry, cJSON_GetObjectItemCaseSensitive(view->report, "entries")) {
 		char sequence[32];
 
 		snprintf(sequence, sizeof(sequence), "#%lld",
 			 (long long)cli_history_number(entry, "sequence_no"));
 		if (!cli_history_matches_filter(entry, view->filter))
 			continue;
-		if (!cli_history_contains(json_str_or(json_member(entry, "content"), NULL, ""),
-					  query) &&
-		    !cli_history_contains(json_str_or(json_member(entry, "payload_json"), NULL, ""),
-					  query) &&
-		    !cli_history_contains(json_str_or(json_member(entry, "tool_name"), NULL, ""),
-					  query) &&
-		    !cli_history_contains(json_str_or(json_member(entry, "tool_call_id"), NULL, ""),
-					  query) &&
+		if (!cli_history_contains(cli_history_string(entry, "content"), query) &&
+		    !cli_history_contains(cli_history_string(entry, "payload_json"), query) &&
+		    !cli_history_contains(cli_history_string(entry, "tool_name"), query) &&
+		    !cli_history_contains(cli_history_string(entry, "tool_call_id"), query) &&
 		    !cli_history_contains(sequence, query) &&
 		    !cli_history_contains(cli_history_label(entry), query))
 			continue;
-		struct json **slot = morph_array_push(&view->matches);
+		cJSON **slot = morph_array_push(&view->matches);
 
 		if (!slot)
 			return -ENOMEM;
@@ -111,55 +114,52 @@ static int cli_history_filter(struct cli_history_view *view)
 	return 0;
 }
 
-static struct json *cli_history_selected(struct cli_history_view *view)
+static cJSON *cli_history_selected(struct cli_history_view *view)
 {
-	struct json **slot = morph_array_get(&view->matches, view->selection.index);
+	cJSON **slot = morph_array_get(&view->matches, view->selection.index);
 
 	return slot ? *slot : NULL;
 }
 
-static void cli_history_preview(const struct json *entry, char *preview, size_t capacity)
+static void cli_history_preview(const cJSON *entry, char *preview, size_t capacity)
 {
-	const char *content = json_str_or(json_member(entry, "content"), NULL, "");
-	struct json *payload = NULL;
+	const char *content = cli_history_string(entry, "content");
+	cJSON *payload = NULL;
 	morph_buf_t call = {0};
 	char *limited;
 
-	if (strcmp(json_str_or(json_member(entry, "kind"), NULL, ""), "assistant_tool_calls") ==
-	    0) {
-		payload = json_parse_prefix(
-			json_str_or(json_member(entry, "payload_json"), NULL, ""), NULL, NULL);
-		struct json *calls = json_member(payload, "calls");
-		struct json *first = json_at(calls, 0);
-		const char *arguments = json_str_or(json_member(first, "arguments"), NULL, "");
+	if (strcmp(cli_history_string(entry, "kind"), "assistant_tool_calls") == 0) {
+		payload = cJSON_Parse(cli_history_string(entry, "payload_json"));
+		cJSON *calls = cJSON_GetObjectItemCaseSensitive(payload, "calls");
+		cJSON *first = cJSON_GetArrayItem(calls, 0);
+		const char *arguments = cli_history_string(first, "arguments");
 
 		if (!*arguments)
-			arguments = json_str_or(json_member(first, "input"), NULL, "");
+			arguments = cli_history_string(first, "input");
 		char *short_arguments = utf8_dup_clamped(arguments, CLI_HISTORY_PREVIEW_MAX);
 
 		if (first && short_arguments && morph_buf_init(&call, 128) == 0) {
-			(void)morph_buf_printf(&call, "%s %s",
-					       json_str_or(json_member(first, "name"), NULL, ""),
+			(void)morph_buf_printf(&call, "%s %s", cli_history_string(first, "name"),
 					       short_arguments);
-			if (json_count(calls) > 1)
+			if (cJSON_GetArraySize(calls) > 1)
 				(void)morph_buf_printf(&call, " (+%d calls)",
-						       json_count(calls) - 1);
+						       cJSON_GetArraySize(calls) - 1);
 			content = morph_buf_cstr(&call);
 		}
 		free(short_arguments);
 	}
 	if (!*content)
-		content = json_str_or(json_member(entry, "payload_json"), NULL, "");
+		content = cli_history_string(entry, "payload_json");
 	limited = utf8_dup_clamped(content, CLI_HISTORY_PREVIEW_MAX);
 	cli_list_compact_text(preview, capacity, limited ? limited : "");
 	free(limited);
 	morph_buf_cleanup(&call);
-	json_free(payload);
+	cJSON_Delete(payload);
 }
 
-static int cli_history_json_text(const struct json *json, morph_buf_t *text)
+static int cli_history_json_text(const cJSON *json, morph_buf_t *text)
 {
-	char *pretty = json_stringify_pretty(json);
+	char *pretty = cJSON_Print(json);
 	int rc;
 
 	if (!pretty)
@@ -171,7 +171,7 @@ static int cli_history_json_text(const struct json *json, morph_buf_t *text)
 
 static int cli_history_request_document(struct cli_application *ctx, morph_buf_t *text)
 {
-	struct json *snapshot = NULL;
+	cJSON *snapshot = NULL;
 	int rc = runtime_session_last_request(ctx->runtime, &snapshot);
 
 	if (rc == -ENODATA)
@@ -186,54 +186,52 @@ static int cli_history_request_document(struct cli_application *ctx, morph_buf_t
 			      "Captured before dispatch; provider acceptance is not implied.\n"
 			      "Adapter-normalized input; credentials redacted, headers and "
 			      "generation options omitted.\n\n",
-			      json_str_or(json_member(snapshot, "provider"), NULL, ""),
-			      json_str_or(json_member(snapshot, "model"), NULL, ""),
-			      json_str_or(json_member(snapshot, "turn_id"), NULL, ""),
+			      cli_history_string(snapshot, "provider"),
+			      cli_history_string(snapshot, "model"),
+			      cli_history_string(snapshot, "turn_id"),
 			      (long long)cli_history_number(snapshot, "created_at"));
-	struct json *input = json_parse_prefix(
-		json_str_or(json_member(snapshot, "input_json"), NULL, ""), NULL, NULL);
+	cJSON *input = cJSON_Parse(cli_history_string(snapshot, "input_json"));
 
 	if (rc == 0)
 		rc = input ? cli_history_json_text(input, text) : MORPH_ERR_PARSE;
-	json_free(input);
-	json_free(snapshot);
+	cJSON_Delete(input);
+	cJSON_Delete(snapshot);
 	return rc;
 }
 
-static int cli_history_entry_document(struct cli_application *ctx, const struct json *entry,
-				      int stored, morph_buf_t *text)
+static int cli_history_entry_document(struct cli_application *ctx, const cJSON *entry, int stored,
+				      morph_buf_t *text)
 {
 	int64_t sequence = cli_history_number(entry, "sequence_no");
-	int rc = morph_buf_printf(text,
-				  "#%lld  %s  %s\nNext turn: %s · %lld stored tokens\n"
-				  "%s\nTurn: %s\nCall ID: %s\n\n%s\n\n",
-				  (long long)sequence, cli_history_label(entry),
-				  json_str_or(json_member(entry, "tool_name"), NULL, ""),
-				  json_str_or(json_member(entry, "status"), NULL, ""),
-				  (long long)cli_history_number(entry, "token_count"),
-				  json_str_or(json_member(entry, "reason"), NULL, ""),
-				  json_str_or(json_member(entry, "turn_id"), NULL, ""),
-				  json_str_or(json_member(entry, "tool_call_id"), NULL, ""),
-				  stored ? "Stored view" : "Estimated request view");
+	int rc = morph_buf_printf(
+		text,
+		"#%lld  %s  %s\nNext turn: %s · %lld stored tokens\n"
+		"%s\nTurn: %s\nCall ID: %s\n\n%s\n\n",
+		(long long)sequence, cli_history_label(entry),
+		cli_history_string(entry, "tool_name"), cli_history_string(entry, "status"),
+		(long long)cli_history_number(entry, "token_count"),
+		cli_history_string(entry, "reason"), cli_history_string(entry, "turn_id"),
+		cli_history_string(entry, "tool_call_id"),
+		stored ? "Stored view" : "Estimated request view");
 
 	if (rc != 0)
 		return rc;
 	if (stored) {
-		rc = morph_buf_puts(text, json_str_or(json_member(entry, "content"), NULL, ""));
-		const char *payload = json_str_or(json_member(entry, "payload_json"), NULL, "");
+		rc = morph_buf_puts(text, cli_history_string(entry, "content"));
+		const char *payload = cli_history_string(entry, "payload_json");
 
 		if (rc == 0 && *payload) {
-			struct json *json = json_parse_prefix(payload, NULL, NULL);
+			cJSON *json = cJSON_Parse(payload);
 
 			rc = morph_buf_puts(text, "\n\nStored metadata\n");
 			if (rc == 0)
 				rc = json ? cli_history_json_text(json, text)
 					  : morph_buf_puts(text, payload);
-			json_free(json);
+			cJSON_Delete(json);
 		}
 		return rc;
 	}
-	struct json *input = NULL;
+	cJSON *input = NULL;
 
 	rc = runtime_session_history_entry_input(ctx->runtime, sequence, &input);
 	if (rc == -ENODATA || rc == -ENOENT)
@@ -244,7 +242,7 @@ static int cli_history_entry_document(struct cli_application *ctx, const struct 
 			      "LEGACY entries require migration and validation before replay.\n");
 	if (rc == 0)
 		rc = cli_history_json_text(input, text);
-	json_free(input);
+	cJSON_Delete(input);
 	return rc;
 }
 
@@ -376,13 +374,13 @@ static int cli_history_render(struct cli_history_view *view)
 						    : "  v request/stored · s last request · "
 						      "PgUp/PgDn scroll · Esc back");
 		} else if (!view->detail && row == 2) {
-			(void)morph_buf_printf(&text, "  %d saved entries · %zu matching",
-					       json_count(json_member_ci(view->report, "entries")),
-					       view->matches.nelts);
+			(void)morph_buf_printf(
+				&text, "  %d saved entries · %zu matching",
+				cJSON_GetArraySize(cJSON_GetObjectItem(view->report, "entries")),
+				view->matches.nelts);
 			if (view->columns >= 76)
-				(void)morph_buf_printf(
-					&text, " · %s",
-					json_str_or(json_member(view->report, "model"), NULL, ""));
+				(void)morph_buf_printf(&text, " · %s",
+						       cli_history_string(view->report, "model"));
 		} else if (!view->detail && row == 4) {
 			if (view->columns < 76)
 				(void)morph_buf_printf(
@@ -401,7 +399,7 @@ static int cli_history_render(struct cli_history_view *view)
 		} else if (!view->detail && row == 5) {
 			(void)morph_buf_puts(
 				&text,
-				json_is_true(json_member_ci(view->report, "needs_repair"))
+				cJSON_IsTrue(cJSON_GetObjectItem(view->report, "needs_repair"))
 					? "  Replay needs repair before send; current membership "
 					  "may change."
 				: view->columns < 76 ? "  History only; prompt/tools are extra."
@@ -424,13 +422,13 @@ static int cli_history_render(struct cli_history_view *view)
 					       view->columns - 37, "");
 		} else if (!view->detail && row >= 9 && row < 9 + page) {
 			size_t index = first + (size_t)(row - 9);
-			struct json **slot = morph_array_get(&view->matches, index);
+			cJSON **slot = morph_array_get(&view->matches, index);
 
 			if (slot) {
 				char preview[CLI_HISTORY_PREVIEW_MAX + 1];
 				char clipped[BUFSIZ];
 				int left = view->columns - 20;
-				struct json *entry = *slot;
+				cJSON *entry = *slot;
 
 				cli_history_preview(entry, preview, sizeof(preview));
 				(void)morph_buf_printf(
@@ -438,8 +436,7 @@ static int cli_history_render(struct cli_history_view *view)
 					index == view->selection.index ? ">" : " ",
 					(long long)cli_history_number(entry, "sequence_no"),
 					cli_history_label(entry),
-					json_str_or(json_member(entry, "tool_name"), NULL, ""),
-					preview);
+					cli_history_string(entry, "tool_name"), preview);
 				char *safe = utf8_terminal_sanitize_dup(
 					morph_buf_cstr(&text), text.len,
 					UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
@@ -449,12 +446,10 @@ static int cli_history_render(struct cli_history_view *view)
 								   0);
 				free(safe);
 				morph_buf_reset(&text);
-				(void)morph_buf_printf(
-					&text, "%s%*s%s", clipped,
-					left - (int)utf8_display_width(clipped) + 1, "",
-					json_str_or(json_member(entry, "status"), NULL, ""));
-				const char *status =
-					json_str_or(json_member(entry, "status"), NULL, "");
+				(void)morph_buf_printf(&text, "%s%*s%s", clipped,
+						       left - (int)utf8_display_width(clipped) + 1,
+						       "", cli_history_string(entry, "status"));
+				const char *status = cli_history_string(entry, "status");
 
 				style = index == view->selection.index ? ANSI_CYAN "\033[7m"
 					: strcmp(status, "OUT") == 0   ? ANSI_DIM
@@ -595,21 +590,21 @@ static void cli_history_close(void *data, int result)
 	morph_buf_cleanup(&view->document);
 	morph_tui_frame_cleanup(&view->frame);
 	morph_tui_widget_editor_state_cleanup(&view->query);
-	json_free(view->report);
+	cJSON_Delete(view->report);
 	free(view);
 }
 
-int cli_history_view(struct cli_application *ctx, struct json *report)
+int cli_history_view(struct cli_application *ctx, cJSON *report)
 {
 	struct cli_history_view *view = calloc(1, sizeof(*view));
 	struct morph_tui_screen screen = {0};
-	struct json *entry;
+	cJSON *entry;
 	const struct morph_tui_screen_ops ops = {.update = cli_history_update,
 						 .draw = cli_history_draw};
 	if (!view)
 		return -ENOMEM;
 	*view = (struct cli_history_view){.ctx = ctx, .rows = 24, .columns = 80};
-	view->report = json_clone(report, 1);
+	view->report = cJSON_Duplicate(report, 1);
 	int rc = view->report ? morph_array_init(&view->matches, 32, sizeof(entry)) : -ENOMEM;
 
 	view->selection.flags = MORPH_TUI_WIDGET_LIST_VIM;
@@ -649,10 +644,10 @@ int cli_history_view(struct cli_application *ctx, struct json *report)
 	return rc;
 }
 
-void cli_history_print(struct cli_application *ctx, const struct json *report, int limit, int all)
+void cli_history_print(struct cli_application *ctx, const cJSON *report, int limit, int all)
 {
-	const struct json *entries = json_member(report, "entries");
-	int count = json_count(entries);
+	const cJSON *entries = cJSON_GetObjectItemCaseSensitive(report, "entries");
+	int count = cJSON_GetArraySize(entries);
 	int first = !all && count > limit ? count - limit : 0;
 	morph_buf_t line;
 
@@ -667,16 +662,15 @@ void cli_history_print(struct cli_application *ctx, const struct json *report, i
 		    "additional.\n"
 		    "Selection may change after validation or compaction before send.\n");
 	for (int i = first; i < count; i++) {
-		const struct json *entry = json_at(entries, i);
+		const cJSON *entry = cJSON_GetArrayItem(entries, i);
 		char preview[CLI_HISTORY_PREVIEW_MAX + 1];
 
 		cli_history_preview(entry, preview, sizeof(preview));
 		morph_buf_reset(&line);
 		if (morph_buf_printf(&line, "[#%lld %s] %s %s · %lld tokens · %s",
 				     (long long)cli_history_number(entry, "sequence_no"),
-				     json_str_or(json_member(entry, "status"), NULL, ""),
-				     cli_history_label(entry),
-				     json_str_or(json_member(entry, "tool_name"), NULL, ""),
+				     cli_history_string(entry, "status"), cli_history_label(entry),
+				     cli_history_string(entry, "tool_name"),
 				     (long long)cli_history_number(entry, "token_count"),
 				     preview) != 0)
 			break;
@@ -690,17 +684,17 @@ void cli_history_print(struct cli_application *ctx, const struct json *report, i
 	       "/history --entry N [--stored] · /history --last-request · /history --messages\n");
 }
 
-int cli_history_entry_print(struct cli_application *ctx, const struct json *report,
-			    int64_t sequence, int stored)
+int cli_history_entry_print(struct cli_application *ctx, const cJSON *report, int64_t sequence,
+			    int stored)
 {
-	struct json *entry;
+	cJSON *entry;
 	morph_buf_t text;
 	int rc = morph_buf_init(&text, BUFSIZ);
 
 	if (rc != 0)
 		return rc;
 	rc = -ENOENT;
-	json_foreach (entry, json_member(report, "entries")) {
+	cJSON_ArrayForEach (entry, cJSON_GetObjectItemCaseSensitive(report, "entries")) {
 		if (cli_history_number(entry, "sequence_no") == sequence) {
 			rc = cli_history_entry_document(ctx, entry, stored, &text);
 			break;

@@ -5,7 +5,7 @@
 #include "agent/memory.h"
 #include "credits.h"
 #include "session.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include <cstdio>
 #include <cstring>
 #include <unistd.h>
@@ -76,14 +76,14 @@ TEST_F(RuntimeQueryTest, RegistersReadOnlyTools)
 			      "only when the user explicitly asks"),
 		  nullptr);
 
-	struct json *schema = json_parse_prefix(memory_tool->desc.input_schema, NULL, NULL);
+	cJSON *schema = cJSON_Parse(memory_tool->desc.input_schema);
 	ASSERT_NE(schema, nullptr);
-	struct json *required = json_member_ci(schema, "required");
-	ASSERT_TRUE(json_is_array_value(required));
-	ASSERT_EQ(json_count(required), 2);
-	EXPECT_STREQ(json_string_value(json_at(required, 0)), "type");
-	EXPECT_STREQ(json_string_value(json_at(required, 1)), "scope");
-	json_free(schema);
+	cJSON *required = cJSON_GetObjectItem(schema, "required");
+	ASSERT_TRUE(cJSON_IsArray(required));
+	ASSERT_EQ(cJSON_GetArraySize(required), 2);
+	EXPECT_STREQ(cJSON_GetArrayItem(required, 0)->valuestring, "type");
+	EXPECT_STREQ(cJSON_GetArrayItem(required, 1)->valuestring, "scope");
+	cJSON_Delete(schema);
 }
 
 TEST_F(RuntimeQueryTest, CreditsReportsTodaySessionAndTotal)
@@ -111,18 +111,18 @@ TEST_F(RuntimeQueryTest, CreditsReportsTodaySessionAndTotal)
 	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "credits", "{}", &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
-	struct json *root = result.data;
+	cJSON *root = result.data;
 	ASSERT_NE(root, nullptr);
-	struct json *today = json_member_ci(root, "today");
-	struct json *session = json_member_ci(root, "session");
-	struct json *total = json_member_ci(root, "total");
-	ASSERT_TRUE(json_is_object_value(today));
-	ASSERT_TRUE(json_is_object_value(session));
-	ASSERT_TRUE(json_is_object_value(total));
-	EXPECT_EQ(json_int_value(json_member_ci(today, "credits")), 7);
-	EXPECT_EQ(json_int_value(json_member_ci(session, "credits")), 7);
-	EXPECT_EQ(json_int_value(json_member_ci(total, "credits")), 7);
-	EXPECT_TRUE(json_is_true(json_member_ci(root, "over_daily_limit")));
+	cJSON *today = cJSON_GetObjectItem(root, "today");
+	cJSON *session = cJSON_GetObjectItem(root, "session");
+	cJSON *total = cJSON_GetObjectItem(root, "total");
+	ASSERT_TRUE(cJSON_IsObject(today));
+	ASSERT_TRUE(cJSON_IsObject(session));
+	ASSERT_TRUE(cJSON_IsObject(total));
+	EXPECT_EQ(cJSON_GetObjectItem(today, "credits")->valueint, 7);
+	EXPECT_EQ(cJSON_GetObjectItem(session, "credits")->valueint, 7);
+	EXPECT_EQ(cJSON_GetObjectItem(total, "credits")->valueint, 7);
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(root, "over_daily_limit")));
 	tool_result_cleanup(&result);
 }
 
@@ -157,13 +157,13 @@ TEST_F(RuntimeQueryTest, MemoryQueriesSessionAndType)
 			    "{\"scope\":\"session\",\"type\":\"facts\"}",
 			    &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
-	struct json *root = json_parse_prefix(result.text.data, NULL, NULL);
+	cJSON *root = cJSON_Parse(result.text.data);
 	ASSERT_NE(root, nullptr);
-	struct json *text = json_member_ci(root, "text");
-	ASSERT_TRUE(json_is_string_value(text));
-	EXPECT_NE(std::strstr(json_string_value(text), "facts"), nullptr);
-	EXPECT_EQ(std::strstr(json_string_value(text), "episodes"), nullptr);
-	json_free(root);
+	cJSON *text = cJSON_GetObjectItem(root, "text");
+	ASSERT_TRUE(cJSON_IsString(text));
+	EXPECT_NE(std::strstr(text->valuestring, "facts"), nullptr);
+	EXPECT_EQ(std::strstr(text->valuestring, "episodes"), nullptr);
+	cJSON_Delete(root);
 	tool_result_cleanup(&result);
 }
 
@@ -199,16 +199,16 @@ TEST_F(RuntimeQueryTest, MemoryAllScopeIncludesMultipleSessions)
 	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "memory", "{}", &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
-	struct json *root = json_parse_prefix(result.text.data, NULL, NULL);
+	cJSON *root = cJSON_Parse(result.text.data);
 	ASSERT_NE(root, nullptr);
-	struct json *scope = json_member_ci(root, "scope");
-	struct json *text = json_member_ci(root, "text");
-	ASSERT_TRUE(json_is_string_value(scope));
-	ASSERT_TRUE(json_is_string_value(text));
-	EXPECT_STREQ(json_string_value(scope), "session");
-	EXPECT_NE(std::strstr(json_string_value(text), "runtime_memory_one"), nullptr);
-	EXPECT_EQ(std::strstr(json_string_value(text), "runtime_memory_two"), nullptr);
-	json_free(root);
+	cJSON *scope = cJSON_GetObjectItem(root, "scope");
+	cJSON *text = cJSON_GetObjectItem(root, "text");
+	ASSERT_TRUE(cJSON_IsString(scope));
+	ASSERT_TRUE(cJSON_IsString(text));
+	EXPECT_STREQ(scope->valuestring, "session");
+	EXPECT_NE(std::strstr(text->valuestring, "runtime_memory_one"), nullptr);
+	EXPECT_EQ(std::strstr(text->valuestring, "runtime_memory_two"), nullptr);
+	cJSON_Delete(root);
 	tool_result_cleanup(&result);
 
 	tool_result_init(&result);
@@ -217,13 +217,13 @@ TEST_F(RuntimeQueryTest, MemoryAllScopeIncludesMultipleSessions)
 			    "{\"scope\":\"all\",\"type\":\"all\"}", &result),
 		  0);
 	ASSERT_NE(result.text.data, nullptr);
-	root = json_parse_prefix(result.text.data, NULL, NULL);
+	root = cJSON_Parse(result.text.data);
 	ASSERT_NE(root, nullptr);
-	text = json_member_ci(root, "text");
-	ASSERT_TRUE(json_is_string_value(text));
-	EXPECT_NE(std::strstr(json_string_value(text), "runtime_memory_one"), nullptr);
-	EXPECT_NE(std::strstr(json_string_value(text), "runtime_memory_two"), nullptr);
-	json_free(root);
+	text = cJSON_GetObjectItem(root, "text");
+	ASSERT_TRUE(cJSON_IsString(text));
+	EXPECT_NE(std::strstr(text->valuestring, "runtime_memory_one"), nullptr);
+	EXPECT_NE(std::strstr(text->valuestring, "runtime_memory_two"), nullptr);
+	cJSON_Delete(root);
 	tool_result_cleanup(&result);
 }
 
@@ -262,12 +262,12 @@ TEST_F(RuntimeQueryTest, MemoryUsesConfiguredEpisodeLimitByDefault)
 	ASSERT_EQ(tool_exec(&tools, "memory",
 			    "{\"scope\":\"session\",\"type\":\"episodes\"}",
 			    &result), 0);
-	struct json *root = json_parse_prefix(result.text.data, NULL, NULL);
+	cJSON *root = cJSON_Parse(result.text.data);
 	ASSERT_NE(root, nullptr);
-	struct json *text = json_member_ci(root, "text");
-	ASSERT_TRUE(json_is_string_value(text));
-	EXPECT_EQ(CountOccurrences(json_string_value(text), "episode-"), 2);
-	json_free(root);
+	cJSON *text = cJSON_GetObjectItem(root, "text");
+	ASSERT_TRUE(cJSON_IsString(text));
+	EXPECT_EQ(CountOccurrences(text->valuestring, "episode-"), 2);
+	cJSON_Delete(root);
 	tool_result_cleanup(&result);
 
 	tool_result_init(&result);
@@ -278,12 +278,12 @@ TEST_F(RuntimeQueryTest, MemoryUsesConfiguredEpisodeLimitByDefault)
 			  "\"max_episodes\":1}",
 			  &result),
 		  0);
-	root = json_parse_prefix(result.text.data, NULL, NULL);
+	root = cJSON_Parse(result.text.data);
 	ASSERT_NE(root, nullptr);
-	text = json_member_ci(root, "text");
-	ASSERT_TRUE(json_is_string_value(text));
-	EXPECT_EQ(CountOccurrences(json_string_value(text), "episode-"), 1);
-	json_free(root);
+	text = cJSON_GetObjectItem(root, "text");
+	ASSERT_TRUE(cJSON_IsString(text));
+	EXPECT_EQ(CountOccurrences(text->valuestring, "episode-"), 1);
+	cJSON_Delete(root);
 	tool_result_cleanup(&result);
 }
 
@@ -352,19 +352,19 @@ TEST_F(RuntimeQueryTest, PreferenceToolCannotPromoteComplaintOrTemporaryRequest)
 		input.active = 1;
 		input.content = text;
 		ASSERT_EQ(model_history_add(&db, &input, nullptr), 0);
-		struct json *args = json_object();
-		json_add_string(args, "key", "language");
-		json_add_string(args, "value", "English");
-		json_add_string(args, "scope", "personal");
-		json_add_string(args, "evidence", text);
-		char *json = json_stringify(args);
+		cJSON *args = cJSON_CreateObject();
+		cJSON_AddStringToObject(args, "key", "language");
+		cJSON_AddStringToObject(args, "value", "English");
+		cJSON_AddStringToObject(args, "scope", "personal");
+		cJSON_AddStringToObject(args, "evidence", text);
+		char *json = cJSON_PrintUnformatted(args);
 		struct tool_result result;
 		tool_result_init(&result);
 		result.runtime = &rt;
 		EXPECT_LT(tool_exec(&tools, "memory_preference", json, &result), 0);
 		tool_result_cleanup(&result);
 		free(json);
-		json_free(args);
+		cJSON_Delete(args);
 		char *effective = preference_render(&db, session.id, 0);
 		ASSERT_NE(effective, nullptr);
 		EXPECT_STREQ(effective, "");

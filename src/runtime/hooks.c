@@ -17,6 +17,13 @@
 #include <time.h>
 #include <unistd.h>
 
+const char *hook_json_string(const cJSON *obj, const char *key)
+{
+	const cJSON *value = cJSON_GetObjectItemCaseSensitive(obj, key);
+
+	return cJSON_IsString(value) ? value->valuestring : "";
+}
+
 static void digest_text(const char *text, char out[65])
 {
 	struct sha256_ctx ctx;
@@ -113,28 +120,28 @@ static int project_trusted(struct hook_manager *manager)
 }
 
 static int add_entry(struct hook_manager *manager, const char *source, const char *event,
-		     const char *matcher, const struct json *handler, int project, int group_index,
+		     const char *matcher, const cJSON *handler, int project, int group_index,
 		     int handler_index)
 {
 	struct hook_entry *entry;
 	morph_buf_t identity = {0};
-	struct json *canonical = json_object();
-	const struct json *timeout = json_member(handler, "timeout");
-	const struct json *limit = json_member(handler, "additionalContextLimit");
-	int valid = json_is_object_value(handler);
+	cJSON *canonical = cJSON_CreateObject();
+	const cJSON *timeout = cJSON_GetObjectItemCaseSensitive(handler, "timeout");
+	const cJSON *limit = cJSON_GetObjectItemCaseSensitive(handler, "additionalContextLimit");
+	int valid = cJSON_IsObject(handler);
 	int rc;
 
 	if (!valid) {
-		json_free(canonical);
+		cJSON_Delete(canonical);
 		return MORPH_ERR_CONFIG;
 	}
 	if (!canonical || manager->entries.nelts >= HOOK_LIMIT) {
-		json_free(canonical);
+		cJSON_Delete(canonical);
 		return canonical ? -E2BIG : -ENOMEM;
 	}
 	entry = morph_array_push(&manager->entries);
 	if (!entry) {
-		json_free(canonical);
+		cJSON_Delete(canonical);
 		return -ENOMEM;
 	}
 	memset(entry, 0, sizeof(*entry));
@@ -143,27 +150,26 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 		entry->source = strdup(source);
 	entry->event = strdup(event);
 	entry->matcher = strdup(matcher);
-	entry->command = strdup(json_str_or(handler, "command", ""));
-	entry->status_message = strdup(json_str_or(handler, "statusMessage", ""));
+	entry->command = strdup(hook_json_string(handler, "command"));
+	entry->status_message = strdup(hook_json_string(handler, "statusMessage"));
 	entry->project = project;
-	entry->timeout = json_is_number_value(timeout) ? json_int_value(timeout)
-						       : (event_short_timeout(event) ? 1 : 600);
-	entry->context_limit = json_is_number_value(limit) ? json_int_value(limit) : 2500;
+	entry->timeout = cJSON_IsNumber(timeout) ? timeout->valueint
+						 : (event_short_timeout(event) ? 1 : 600);
+	entry->context_limit = cJSON_IsNumber(limit) ? limit->valueint : 2500;
 	if (!entry->source || !entry->event || !entry->matcher || !entry->command ||
 	    !entry->status_message) {
-		json_free(canonical);
+		cJSON_Delete(canonical);
 		return -ENOMEM;
 	}
-	if ((timeout && (!json_is_number_value(timeout) ||
-			 json_number_value(timeout) != (double)json_int_value(timeout))) ||
+	if ((timeout &&
+	     (!cJSON_IsNumber(timeout) || timeout->valuedouble != (double)timeout->valueint)) ||
 	    entry->timeout < 1 || entry->timeout > 600 ||
 	    (event_short_timeout(event) && entry->timeout > 3) ||
-	    (limit && (!json_is_number_value(limit) ||
-		       json_number_value(limit) != (double)json_int_value(limit))) ||
+	    (limit && (!cJSON_IsNumber(limit) || limit->valuedouble != (double)limit->valueint)) ||
 	    entry->context_limit < 0 || entry->context_limit > 32768 || strlen(matcher) > 1024 ||
 	    strlen(entry->command) >= PROCESS_COMMAND_MAX ||
-	    (!entry->command[0] && strcmp(json_str_or(handler, "type", ""), "command") == 0) ||
-	    !*json_str_or(handler, "type", ""))
+	    (!entry->command[0] && strcmp(hook_json_string(handler, "type"), "command") == 0) ||
+	    !*hook_json_string(handler, "type"))
 		valid = 0;
 	if (*matcher && strcmp(matcher, "*") != 0 && !hook_event_ignores_matcher(event)) {
 		entry->regex_ready = regcomp(&entry->regex, matcher, REG_EXTENDED | REG_NOSUB) == 0;
@@ -171,15 +177,16 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 			valid = 0;
 	}
 	/* Stable field order makes formatting and JSON key order irrelevant. */
-	json_add_string(canonical, "event", event);
-	json_add_string(canonical, "matcher", matcher);
-	json_add_string(canonical, "type", json_str_or(handler, "type", ""));
-	json_add_string(canonical, "command", entry->command);
-	json_add_string(canonical, "statusMessage", json_str_or(handler, "statusMessage", ""));
-	json_add_number(canonical, "timeout", entry->timeout);
-	json_add_number(canonical, "additionalContextLimit", entry->context_limit);
-	entry->definition = json_stringify(canonical);
-	json_free(canonical);
+	cJSON_AddStringToObject(canonical, "event", event);
+	cJSON_AddStringToObject(canonical, "matcher", matcher);
+	cJSON_AddStringToObject(canonical, "type", hook_json_string(handler, "type"));
+	cJSON_AddStringToObject(canonical, "command", entry->command);
+	cJSON_AddStringToObject(canonical, "statusMessage",
+				hook_json_string(handler, "statusMessage"));
+	cJSON_AddNumberToObject(canonical, "timeout", entry->timeout);
+	cJSON_AddNumberToObject(canonical, "additionalContextLimit", entry->context_limit);
+	entry->definition = cJSON_PrintUnformatted(canonical);
+	cJSON_Delete(canonical);
 	if (!entry->definition)
 		return -ENOMEM;
 	rc = morph_buf_init(&identity, 128);
@@ -198,21 +205,20 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 	if (rc != 0)
 		return rc;
 	int portable = 1;
-	const struct json *field;
-	json_foreach (field, handler) {
-		if (strcmp(json_key(field), "type") != 0 &&
-		    strcmp(json_key(field), "command") != 0 &&
-		    strcmp(json_key(field), "timeout") != 0 &&
-		    strcmp(json_key(field), "statusMessage") != 0 &&
-		    strcmp(json_key(field), "additionalContextLimit") != 0)
+	const cJSON *field;
+	cJSON_ArrayForEach (field, handler) {
+		if (strcmp(field->string, "type") != 0 && strcmp(field->string, "command") != 0 &&
+		    strcmp(field->string, "timeout") != 0 &&
+		    strcmp(field->string, "statusMessage") != 0 &&
+		    strcmp(field->string, "additionalContextLimit") != 0)
 			portable = 0;
 	}
 	entry->supported = portable && valid && event_supported(event) &&
-			   strcmp(json_str_or(handler, "type", ""), "command") == 0;
+			   strcmp(hook_json_string(handler, "type"), "command") == 0;
 	entry->diagnostic = !valid ? "Invalid command, timeout, context limit, or matcher regex."
 			    : !event_supported(event)
 				    ? "This lifecycle event is not supported by Morph."
-			    : strcmp(json_str_or(handler, "type", ""), "command") != 0
+			    : strcmp(hook_json_string(handler, "type"), "command") != 0
 				    ? "Only command handlers are supported."
 			    : !portable ? "Handler contains unsupported fields (for example async "
 					  "or commandWindows)."
@@ -265,53 +271,52 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 	return rc;
 }
 
-int hook_json_unique_fields(const struct json *value, int depth)
+int hook_json_unique_fields(const cJSON *value, int depth)
 {
-	const struct json *child;
+	const cJSON *child;
 
 	if (depth > 16)
 		return 0;
-	json_foreach (child, value) {
-		if (json_is_object_value(value)) {
-			for (const struct json *next = json_next(child); next;
-			     next = json_next(next)) {
-				if (strcmp(json_key(child), json_key(next)) == 0)
+	cJSON_ArrayForEach (child, value) {
+		if (cJSON_IsObject(value)) {
+			for (const cJSON *next = child->next; next; next = next->next) {
+				if (strcmp(child->string, next->string) == 0)
 					return 0;
 			}
 		}
-		if ((json_is_object_value(child) || json_is_array_value(child)) &&
+		if ((cJSON_IsObject(child) || cJSON_IsArray(child)) &&
 		    !hook_json_unique_fields(child, depth + 1))
 			return 0;
 	}
 	return 1;
 }
 
-static int load_object(struct hook_manager *manager, const struct json *hooks, const char *source,
+static int load_object(struct hook_manager *manager, const cJSON *hooks, const char *source,
 		       int project)
 {
-	const struct json *event;
+	const cJSON *event;
 
-	if (!json_is_object_value(hooks) || !hook_json_unique_fields(hooks, 0))
+	if (!cJSON_IsObject(hooks) || !hook_json_unique_fields(hooks, 0))
 		return MORPH_ERR_CONFIG;
-	json_foreach (event, hooks) {
-		const struct json *group;
+	cJSON_ArrayForEach (event, hooks) {
+		const cJSON *group;
 		int gi = 0;
 
-		if (!json_is_array_value(event))
+		if (!cJSON_IsArray(event))
 			return MORPH_ERR_CONFIG;
-		json_foreach (group, event) {
-			const struct json *handlers = json_member(group, "hooks");
-			const struct json *matcher = json_member(group, "matcher");
-			const struct json *handler;
+		cJSON_ArrayForEach (group, event) {
+			const cJSON *handlers = cJSON_GetObjectItemCaseSensitive(group, "hooks");
+			const cJSON *matcher = cJSON_GetObjectItemCaseSensitive(group, "matcher");
+			const cJSON *handler;
 			int hi = 0;
 
-			if (!json_is_object_value(group) || !json_is_array_value(handlers) ||
-			    (matcher && !json_is_string_value(matcher)))
+			if (!cJSON_IsObject(group) || !cJSON_IsArray(handlers) ||
+			    (matcher && !cJSON_IsString(matcher)))
 				return MORPH_ERR_CONFIG;
-			json_foreach (handler, handlers) {
-				int rc = add_entry(manager, source, json_key(event),
-						   matcher ? json_string_value(matcher) : "",
-						   handler, project, gi, hi++);
+			cJSON_ArrayForEach (handler, handlers) {
+				int rc = add_entry(manager, source, event->string,
+						   matcher ? matcher->valuestring : "", handler,
+						   project, gi, hi++);
 				if (rc != 0)
 					return rc;
 			}
@@ -360,7 +365,7 @@ static int load_json_file(struct hook_manager *manager, const char *path, int pr
 {
 	struct stat st;
 	char *text;
-	struct json *root;
+	cJSON *root;
 	int rc;
 	const char *parse_end = NULL;
 	char canonical[PATH_MAX];
@@ -383,7 +388,7 @@ static int load_json_file(struct hook_manager *manager, const char *path, int pr
 	text = file_read_all(path, NULL);
 	if (!text)
 		return hook_load_error(manager, path, -EIO, NULL);
-	root = json_parse_ex(text, &parse_end, 1, NULL);
+	root = cJSON_ParseWithOpts(text, &parse_end, 1);
 	if (!root) {
 		hook_json_error_position(manager, text, parse_end);
 		rc = hook_load_error(
@@ -396,8 +401,8 @@ static int load_json_file(struct hook_manager *manager, const char *path, int pr
 		return rc;
 	}
 	free(text);
-	rc = load_object(manager, json_member(root, "hooks"), path, project);
-	json_free(root);
+	rc = load_object(manager, cJSON_GetObjectItemCaseSensitive(root, "hooks"), path, project);
+	cJSON_Delete(root);
 	if (rc != 0)
 		return hook_load_error(manager, path, rc,
 				       rc == MORPH_ERR_CONFIG ? "Invalid hooks structure: expected "
@@ -410,7 +415,7 @@ static int load_json_file(struct hook_manager *manager, const char *path, int pr
 static int load_inline(struct hook_manager *manager, const char *path, const char *json,
 		       int project)
 {
-	struct json *hooks;
+	cJSON *hooks;
 	int rc;
 
 	if (!json || !*json)
@@ -430,12 +435,12 @@ static int load_inline(struct hook_manager *manager, const char *path, const cha
 			}
 		}
 	}
-	hooks = json_parse_ex(json, NULL, 1, NULL);
+	hooks = cJSON_ParseWithOpts(json, NULL, 1);
 	if (!hooks)
 		return hook_load_error(manager, path, MORPH_ERR_PARSE,
 				       "Invalid inline hooks JSON.");
 	rc = load_object(manager, hooks, path, project);
-	json_free(hooks);
+	cJSON_Delete(hooks);
 	if (rc != 0)
 		return hook_load_error(manager, path, rc, "Invalid inline hooks structure.");
 	return 0;
@@ -546,7 +551,7 @@ int hook_manager_init(struct hook_manager *manager, struct db *db, const struct 
 		rc = morph_array_init(&manager->entries, 8, sizeof(struct hook_entry));
 	if (rc != 0)
 		return rc;
-	manager->recent = json_array();
+	manager->recent = cJSON_CreateArray();
 	if (!manager->recent) {
 		morph_array_cleanup(&manager->entries);
 		return -ENOMEM;
@@ -566,7 +571,7 @@ void hook_manager_cleanup(struct hook_manager *manager)
 		entry_cleanup(entry);
 	morph_array_cleanup(&manager->entries);
 	free(manager->session_context);
-	json_free(manager->recent);
+	cJSON_Delete(manager->recent);
 	memset(manager, 0, sizeof(*manager));
 }
 
@@ -605,52 +610,53 @@ static int hook_review_digest(struct hook_manager *manager, char digest[65])
 	return rc;
 }
 
-struct json *hook_manager_list(struct hook_manager *manager)
+cJSON *hook_manager_list(struct hook_manager *manager)
 {
-	struct json *list = json_array();
+	cJSON *list = cJSON_CreateArray();
 	struct hook_entry *entry;
 	char review_digest[65];
 
 	if (!manager || !manager->ready || !list ||
 	    hook_review_digest(manager, review_digest) != 0) {
-		json_free(list);
+		cJSON_Delete(list);
 		return NULL;
 	}
 	morph_array_foreach (entry, &manager->entries, struct hook_entry) {
-		struct json *row = json_object();
+		cJSON *row = cJSON_CreateObject();
 		if (!row || hook_refresh_trust(manager, entry) != 0) {
-			json_free(row);
-			json_free(list);
+			cJSON_Delete(row);
+			cJSON_Delete(list);
 			return NULL;
 		}
-		json_add_string(row, "review_digest", review_digest);
-		json_add_bool(row, "project", entry->project);
-		json_add_string(row, "id", entry->id);
-		json_add_string(row, "digest", entry->digest);
-		json_add_string(row, "source", entry->source);
-		json_add_string(row, "event", entry->event);
-		json_add_string(row, "matcher", entry->matcher);
-		json_add_string(row, "command", entry->command);
-		json_add_string(row, "definition", entry->definition);
-		json_add_string(row, "previous_definition", entry->previous ? entry->previous : "");
-		json_add_string(row, "state", hook_entry_state(manager, entry));
-		json_add_string(row, "diagnostic", entry->diagnostic);
-		json_add_string(row, "statusMessage", entry->status_message);
-		json_add_number(row, "additionalContextLimit", entry->context_limit);
-		json_add_string(row, "cwd", manager->workdir);
+		cJSON_AddStringToObject(row, "review_digest", review_digest);
+		cJSON_AddBoolToObject(row, "project", entry->project);
+		cJSON_AddStringToObject(row, "id", entry->id);
+		cJSON_AddStringToObject(row, "digest", entry->digest);
+		cJSON_AddStringToObject(row, "source", entry->source);
+		cJSON_AddStringToObject(row, "event", entry->event);
+		cJSON_AddStringToObject(row, "matcher", entry->matcher);
+		cJSON_AddStringToObject(row, "command", entry->command);
+		cJSON_AddStringToObject(row, "definition", entry->definition);
+		cJSON_AddStringToObject(row, "previous_definition",
+					entry->previous ? entry->previous : "");
+		cJSON_AddStringToObject(row, "state", hook_entry_state(manager, entry));
+		cJSON_AddStringToObject(row, "diagnostic", entry->diagnostic);
+		cJSON_AddStringToObject(row, "statusMessage", entry->status_message);
+		cJSON_AddNumberToObject(row, "additionalContextLimit", entry->context_limit);
+		cJSON_AddStringToObject(row, "cwd", manager->workdir);
 		char workspace_digest[65];
 		digest_text(manager->workdir, workspace_digest);
-		json_add_string(row, "workspace_digest", workspace_digest);
-		json_add_bool(row, "workspace_trusted", project_trusted(manager));
-		json_add_number(row, "timeout", entry->timeout);
-		const struct json *last;
-		json_foreach (last, manager->recent) {
-			if (strcmp(json_str_or(last, "hook_id", ""), entry->id) == 0) {
-				json_object_remove_ci(row, "last_run");
-				json_object_add(row, "last_run", json_clone(last, 1));
+		cJSON_AddStringToObject(row, "workspace_digest", workspace_digest);
+		cJSON_AddBoolToObject(row, "workspace_trusted", project_trusted(manager));
+		cJSON_AddNumberToObject(row, "timeout", entry->timeout);
+		const cJSON *last;
+		cJSON_ArrayForEach (last, manager->recent) {
+			if (strcmp(hook_json_string(last, "hook_id"), entry->id) == 0) {
+				cJSON_DeleteItemFromObject(row, "last_run");
+				cJSON_AddItemToObject(row, "last_run", cJSON_Duplicate(last, 1));
 			}
 		}
-		json_array_add(list, row);
+		cJSON_AddItemToArray(list, row);
 	}
 	return list;
 }

@@ -229,12 +229,12 @@ TEST(ImageGen, VolcengineRequestsDisableProviderWatermarkByDefault) {
 	ASSERT_EQ(image_volcengine_build_request_body(
 		&image_model, &request, &body), 0);
 	ASSERT_NE(body, nullptr);
-	struct json *json = json_parse_prefix(body, NULL, NULL);
+	cJSON *json = cJSON_Parse(body);
 	free(body);
 	ASSERT_NE(json, nullptr);
-	struct json *watermark = json_member_ci(json, "watermark");
-	EXPECT_TRUE(json_is_false(watermark));
-	json_free(json);
+	cJSON *watermark = cJSON_GetObjectItem(json, "watermark");
+	EXPECT_TRUE(cJSON_IsFalse(watermark));
+	cJSON_Delete(json);
 }
 
 TEST(ImageGen, ValidatesGptImageSizes) {
@@ -793,9 +793,9 @@ TEST_F(ImgGenToolTest, QaCallsMultimodalLlm) {
 	ASSERT_NE(result.text.data, nullptr);
 	ASSERT_NE(result.data, nullptr);
 	{
-		struct json *text = json_member_ci(result.data, "text");
-		ASSERT_TRUE(json_is_string_value(text));
-		EXPECT_STREQ(json_string_value(text), "fake image answer");
+		cJSON *text = cJSON_GetObjectItem(result.data, "text");
+		ASSERT_TRUE(cJSON_IsString(text));
+		EXPECT_STREQ(text->valuestring, "fake image answer");
 	}
 	EXPECT_STREQ(qa.prompt, "OCR this");
 	EXPECT_STREQ(qa.path, path);
@@ -1271,14 +1271,14 @@ TEST(AnnotationTest, SharedParserAcceptsAllEstablishedInputShapes)
 			   "\"bboxes\":[{\"image_index\":0,\"x\":20,\"y\":10,\"w\":40,\"h\":30,"
 			   "\"label\":\"cat\"}]}";
 	for (int shape = 0; shape < 3; shape++) {
-		struct json *input = json_parse_prefix(body, NULL, NULL);
+		cJSON *input = cJSON_Parse(body);
 		if (shape > 0) {
-			struct json *wrapper = json_object();
+			cJSON *wrapper = cJSON_CreateObject();
 			if (shape == 1)
-				json_object_add(wrapper, "annotation", input);
+				cJSON_AddItemToObject(wrapper, "annotation", input);
 			else {
-				json_add_string(wrapper, "annotation", body);
-				json_free(input);
+				cJSON_AddStringToObject(wrapper, "annotation", body);
+				cJSON_Delete(input);
 			}
 			input = wrapper;
 		}
@@ -1301,7 +1301,7 @@ TEST(AnnotationTest, SharedParserAcceptsAllEstablishedInputShapes)
 		EXPECT_DOUBLE_EQ(normalized.height, 0.3);
 		EXPECT_STREQ(bbox->label, "cat");
 		annotation_cleanup(&parsed);
-		json_free(input);
+		cJSON_Delete(input);
 	}
 }
 
@@ -1315,11 +1315,11 @@ TEST(AnnotationTest, RejectsInvalidCoordinatesAndImageIndices)
 		std::string json = "{\"images\":[{\"path\":\"input.png\"}],\"bboxes\":[";
 		json += bbox;
 		json += "]}";
-		struct json *input = json_parse_prefix(json.c_str(), NULL, NULL);
+		cJSON *input = cJSON_Parse(json.c_str());
 		annotation parsed{};
 		EXPECT_EQ(annotation_parse(input, &parsed), -EINVAL);
 		annotation_cleanup(&parsed);
-		json_free(input);
+		cJSON_Delete(input);
 	}
 	annotation_rect invalid{-0.1, 0, 0.5, 0.5};
 	annotation_rect out{};
@@ -1331,13 +1331,11 @@ TEST(AnnotationTest, RejectsInvalidCoordinatesAndImageIndices)
 
 TEST(AnnotationTest, MainImageUsesArrowCountThenSmallestIndex)
 {
-	struct json *input =
-		json_parse_prefix("{\"images\":[{\"path\":\"a\"},{\"path\":\"b\"}],\"arrows\":["
-				  "{\"from\":{\"image_index\":0,\"x\":0.2,\"y\":0.3},"
-				  "\"to\":{\"image_index\":1,\"x\":20,\"y\":30}},"
-				  "{\"from\":{\"image_index\":1,\"x\":0.2,\"y\":0.3},"
-				  "\"to\":{\"image_index\":0,\"x\":0.4,\"y\":0.5}}]}",
-				  NULL, NULL);
+	cJSON *input = cJSON_Parse("{\"images\":[{\"path\":\"a\"},{\"path\":\"b\"}],\"arrows\":["
+				   "{\"from\":{\"image_index\":0,\"x\":0.2,\"y\":0.3},"
+				   "\"to\":{\"image_index\":1,\"x\":20,\"y\":30}},"
+				   "{\"from\":{\"image_index\":1,\"x\":0.2,\"y\":0.3},"
+				   "\"to\":{\"image_index\":0,\"x\":0.4,\"y\":0.5}}]}");
 	annotation parsed{};
 	ASSERT_EQ(annotation_parse(input, &parsed), 0);
 	EXPECT_EQ(annotation_main_image(&parsed), 0);
@@ -1351,7 +1349,7 @@ TEST(AnnotationTest, MainImageUsesArrowCountThenSmallestIndex)
 	EXPECT_DOUBLE_EQ(x, 20);
 	EXPECT_DOUBLE_EQ(y, 30);
 	annotation_cleanup(&parsed);
-	json_free(input);
+	cJSON_Delete(input);
 }
 
 TEST_F(ImgGenToolTest, QaRequestControlsDoNotMutateTheConfiguredModel)

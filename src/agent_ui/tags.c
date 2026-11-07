@@ -4,7 +4,7 @@
 #include "util/strmap.h"
 #include "util/name.h"
 #include "util/utf8.h"
-#include "util/json.h"
+#include "cJSON.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -20,7 +20,7 @@ struct agent_ui_parser {
 	size_t len;
 	size_t pos;
 	int recognized;
-	struct json *warnings;
+	cJSON *warnings;
 };
 
 static int is_name_char(char c)
@@ -40,13 +40,16 @@ static int starts_with(const struct agent_ui_parser *p, const char *s)
 	if (!p || !s)
 		return 0;
 	n = strlen(s);
-	return p->pos + n <= p->len && strncmp(p->input + p->pos, s, n) == 0;
+	return p->pos + n <= p->len &&
+	       strncmp(p->input + p->pos, s, n) == 0;
 }
 
 static int supported_tag(const char *name)
 {
-	static const char *const tags[] = {"speak",    "vocab",	    "sentence", "button",
-					   "navigate", "highlight", "copy",	NULL};
+	static const char *const tags[] = {
+		"speak", "vocab", "sentence", "button", "navigate",
+		"highlight", "copy", NULL
+	};
 
 	if (!name)
 		return 0;
@@ -57,8 +60,8 @@ static int supported_tag(const char *name)
 	return 0;
 }
 
-static int tag_name_at(const struct agent_ui_parser *p, size_t pos, size_t prefix_len,
-		       morph_buf_t *name)
+static int tag_name_at(const struct agent_ui_parser *p, size_t pos,
+		       size_t prefix_len, morph_buf_t *name)
 {
 	size_t name_start;
 	size_t name_len = 0;
@@ -67,7 +70,8 @@ static int tag_name_at(const struct agent_ui_parser *p, size_t pos, size_t prefi
 	if (!p || pos + prefix_len >= p->len || !name)
 		return 0;
 	name_start = pos + prefix_len;
-	while (name_start + name_len < p->len && is_name_char(p->input[name_start + name_len]))
+	while (name_start + name_len < p->len &&
+	       is_name_char(p->input[name_start + name_len]))
 		name_len++;
 	if (name_len == 0)
 		return 0;
@@ -81,7 +85,8 @@ static int tag_name_at(const struct agent_ui_parser *p, size_t pos, size_t prefi
 	return 1;
 }
 
-static int opening_tag_prefix_len(const struct agent_ui_parser *p, int *missing_colon)
+static int opening_tag_prefix_len(const struct agent_ui_parser *p,
+				  int *missing_colon)
 {
 	morph_buf_t name;
 	int ok;
@@ -90,13 +95,16 @@ static int opening_tag_prefix_len(const struct agent_ui_parser *p, int *missing_
 		*missing_colon = 0;
 	if (starts_with(p, "<m:"))
 		return 3;
-	if (!p || p->pos + 2 >= p->len || p->input[p->pos] != '<' || p->input[p->pos + 1] != 'm' ||
-	    p->input[p->pos + 2] == ':' || !is_name_char(p->input[p->pos + 2]))
+	if (!p || p->pos + 2 >= p->len ||
+	    p->input[p->pos] != '<' || p->input[p->pos + 1] != 'm' ||
+	    p->input[p->pos + 2] == ':' ||
+	    !is_name_char(p->input[p->pos + 2]))
 		return 0;
 	ok = tag_name_at(p, p->pos, 2, &name);
 	if (!ok)
 		return 0;
-	ok = supported_tag(morph_buf_cstr(&name)) || strcmp(morph_buf_cstr(&name), "ask_user") == 0;
+	ok = supported_tag(morph_buf_cstr(&name)) ||
+	     strcmp(morph_buf_cstr(&name), "ask_user") == 0;
 	morph_buf_cleanup(&name);
 	if (!ok)
 		return 0;
@@ -105,8 +113,8 @@ static int opening_tag_prefix_len(const struct agent_ui_parser *p, int *missing_
 	return 2;
 }
 
-static int closing_tag_prefix_len(const struct agent_ui_parser *p, const char *name,
-				  int *missing_colon)
+static int closing_tag_prefix_len(const struct agent_ui_parser *p,
+				  const char *name, int *missing_colon)
 {
 	size_t start;
 	size_t n;
@@ -118,15 +126,19 @@ static int closing_tag_prefix_len(const struct agent_ui_parser *p, const char *n
 	n = strlen(name);
 	if (starts_with(p, "</m:")) {
 		start = p->pos + 4;
-		if (start + n + 1 <= p->len && strncmp(p->input + start, name, n) == 0 &&
+		if (start + n + 1 <= p->len &&
+		    strncmp(p->input + start, name, n) == 0 &&
 		    p->input[start + n] == '>')
 			return 4;
 	}
-	if (p->pos + 3 > p->len || p->input[p->pos] != '<' || p->input[p->pos + 1] != '/' ||
+	if (p->pos + 3 > p->len ||
+	    p->input[p->pos] != '<' ||
+	    p->input[p->pos + 1] != '/' ||
 	    p->input[p->pos + 2] != 'm')
 		return 0;
 	start = p->pos + 3;
-	if (start + n + 1 <= p->len && strncmp(p->input + start, name, n) == 0 &&
+	if (start + n + 1 <= p->len &&
+	    strncmp(p->input + start, name, n) == 0 &&
 	    p->input[start + n] == '>') {
 		if (missing_colon)
 			*missing_colon = 1;
@@ -140,32 +152,34 @@ static int missing_colon_closing_supported_at(const struct agent_ui_parser *p)
 	morph_buf_t name;
 	int ok;
 
-	if (!p || p->pos + 3 >= p->len || p->input[p->pos] != '<' || p->input[p->pos + 1] != '/' ||
-	    p->input[p->pos + 2] != 'm' || !is_name_char(p->input[p->pos + 3]))
+	if (!p || p->pos + 3 >= p->len ||
+	    p->input[p->pos] != '<' ||
+	    p->input[p->pos + 1] != '/' ||
+	    p->input[p->pos + 2] != 'm' ||
+	    !is_name_char(p->input[p->pos + 3]))
 		return 0;
 	ok = tag_name_at(p, p->pos, 3, &name);
 	if (!ok)
 		return 0;
-	ok = supported_tag(morph_buf_cstr(&name)) || strcmp(morph_buf_cstr(&name), "ask_user") == 0;
+	ok = supported_tag(morph_buf_cstr(&name)) ||
+	     strcmp(morph_buf_cstr(&name), "ask_user") == 0;
 	morph_buf_cleanup(&name);
 	return ok;
 }
 
 static int bodyless_tag(const char *name)
 {
-	return name && (strcmp(name, "button") == 0 || strcmp(name, "navigate") == 0 ||
-			strcmp(name, "copy") == 0);
+	return name &&
+	       (strcmp(name, "button") == 0 ||
+		strcmp(name, "navigate") == 0 ||
+		strcmp(name, "copy") == 0);
 }
 
 static void add_warning(struct agent_ui_parser *p, const char *message)
 {
-	struct json *warning;
-
 	if (!p || !p->warnings || !message)
 		return;
-	warning = json_string(message);
-	if (warning && json_array_add(p->warnings, warning) != 0)
-		json_free(warning);
+	cJSON_AddItemToArray(p->warnings, cJSON_CreateString(message));
 }
 
 static int decode_entity_at(const char *s, size_t len, size_t *used, char *out)
@@ -174,8 +188,14 @@ static int decode_entity_at(const char *s, size_t len, size_t *used, char *out)
 		const char *name;
 		char value;
 	};
-	static const struct entity entities[] = {{"&quot;", '"'}, {"&apos;", '\''}, {"&lt;", '<'},
-						 {"&gt;", '>'},	  {"&amp;", '&'},   {NULL, 0}};
+	static const struct entity entities[] = {
+		{ "&quot;", '"' },
+		{ "&apos;", '\'' },
+		{ "&lt;", '<' },
+		{ "&gt;", '>' },
+		{ "&amp;", '&' },
+		{ NULL, 0 }
+	};
 
 	for (int i = 0; entities[i].name; i++) {
 		size_t n = strlen(entities[i].name);
@@ -197,7 +217,8 @@ static int append_decoded(morph_buf_t *buf, const char *s, size_t len)
 		size_t used = 0;
 		char decoded = 0;
 
-		if (s[i] == '&' && decode_entity_at(s + i, len - i, &used, &decoded)) {
+		if (s[i] == '&' &&
+		    decode_entity_at(s + i, len - i, &used, &decoded)) {
 			int rc = morph_buf_putc(buf, decoded);
 
 			if (rc < 0)
@@ -212,7 +233,8 @@ static int append_decoded(morph_buf_t *buf, const char *s, size_t len)
 	return 0;
 }
 
-static int json_add_string_n(struct json *obj, const char *name, const char *s, size_t len)
+static int json_add_string_n(cJSON *obj, const char *name,
+			     const char *s, size_t len)
 {
 	morph_buf_t buf;
 	int rc;
@@ -221,7 +243,8 @@ static int json_add_string_n(struct json *obj, const char *name, const char *s, 
 	if (rc < 0)
 		return rc;
 	rc = append_decoded(&buf, s, len);
-	if (rc == 0 && !json_add_string(obj, name, morph_buf_cstr(&buf)))
+	if (rc == 0 && !cJSON_AddStringToObject(obj, name,
+						morph_buf_cstr(&buf)))
 		rc = -ENOMEM;
 	morph_buf_cleanup(&buf);
 	return rc;
@@ -250,17 +273,20 @@ static size_t find_tag_end(const struct agent_ui_parser *p, size_t from)
 
 static void skip_spaces(struct agent_ui_parser *p)
 {
-	while (p->pos < p->len && isspace((unsigned char)p->input[p->pos])) {
+	while (p->pos < p->len &&
+	       isspace((unsigned char)p->input[p->pos])) {
 		p->pos++;
 	}
 }
 
-static int consume_utf8_quote(const struct agent_ui_parser *p, size_t *pos, char *quote)
+static int consume_utf8_quote(const struct agent_ui_parser *p, size_t *pos,
+			      char *quote)
 {
 	unsigned cp;
 	size_t count;
 
-	if (*pos >= p->len || !utf8_decode_codepoint(p->input + *pos, p->len - *pos, &cp, &count))
+	if (*pos >= p->len ||
+	    !utf8_decode_codepoint(p->input + *pos, p->len - *pos, &cp, &count))
 		return 0;
 	if (cp == '"' || cp == 0x201c || cp == 0x201d)
 		*quote = '"';
@@ -272,22 +298,23 @@ static int consume_utf8_quote(const struct agent_ui_parser *p, size_t *pos, char
 	return 1;
 }
 
-static int at_matching_utf8_quote(const struct agent_ui_parser *p, size_t pos, char quote,
-				  size_t *width)
+static int at_matching_utf8_quote(const struct agent_ui_parser *p,
+				  size_t pos, char quote, size_t *width)
 {
 	unsigned cp;
 	size_t count;
 
-	if (pos >= p->len || !utf8_decode_codepoint(p->input + pos, p->len - pos, &cp, &count))
+	if (pos >= p->len ||
+	    !utf8_decode_codepoint(p->input + pos, p->len - pos, &cp, &count))
 		return 0;
-	if (cp != (unsigned char)quote && !(quote == '"' && cp == 0x201d) &&
-	    !(quote == '\'' && cp == 0x2019))
+	if (cp != (unsigned char)quote &&
+	    !(quote == '"' && cp == 0x201d) && !(quote == '\'' && cp == 0x2019))
 		return 0;
 	*width = count;
 	return 1;
 }
 
-static int parse_attrs(struct agent_ui_parser *p, size_t end, struct json *attrs)
+static int parse_attrs(struct agent_ui_parser *p, size_t end, cJSON *attrs)
 {
 	while (p->pos < end) {
 		size_t key_start;
@@ -319,7 +346,8 @@ static int parse_attrs(struct agent_ui_parser *p, size_t end, struct json *attrs
 			while (p->pos < end) {
 				size_t width = 0;
 
-				if (at_matching_utf8_quote(p, p->pos, quote, &width)) {
+				if (at_matching_utf8_quote(p, p->pos, quote,
+							   &width)) {
 					val_end = p->pos;
 					p->pos += width;
 					goto add_attr;
@@ -336,7 +364,7 @@ static int parse_attrs(struct agent_ui_parser *p, size_t end, struct json *attrs
 			add_warning(p, "unquoted attribute value accepted");
 		}
 
-	add_attr:
+add_attr:
 		{
 			morph_buf_t key;
 			morph_buf_t value;
@@ -353,9 +381,13 @@ static int parse_attrs(struct agent_ui_parser *p, size_t end, struct json *attrs
 				morph_buf_cleanup(&key);
 				return rc;
 			}
-			if (morph_buf_append(&key, p->input + key_start, key_len) < 0 ||
-			    append_decoded(&value, p->input + val_start, value_len) < 0 ||
-			    !json_add_string(attrs, morph_buf_cstr(&key), morph_buf_cstr(&value))) {
+			if (morph_buf_append(&key, p->input + key_start,
+					     key_len) < 0 ||
+			    append_decoded(&value, p->input + val_start,
+					   value_len) < 0 ||
+			    !cJSON_AddStringToObject(attrs,
+						     morph_buf_cstr(&key),
+						     morph_buf_cstr(&value))) {
 				morph_buf_cleanup(&value);
 				morph_buf_cleanup(&key);
 				return -ENOMEM;
@@ -367,25 +399,23 @@ static int parse_attrs(struct agent_ui_parser *p, size_t end, struct json *attrs
 	return 0;
 }
 
-static int append_text_node(struct json *nodes, const char *s, size_t len, morph_buf_t *plain)
+static int append_text_node(cJSON *nodes, const char *s, size_t len,
+			    morph_buf_t *plain)
 {
-	struct json *node;
+	cJSON *node;
 	int rc = 0;
 
 	if (len == 0)
 		return 0;
-	node = json_object();
+	node = cJSON_CreateObject();
 	if (!node)
 		return -ENOMEM;
-	if (!json_add_string(node, "type", "text") || json_add_string_n(node, "text", s, len) < 0) {
-		json_free(node);
+	if (!cJSON_AddStringToObject(node, "type", "text") ||
+	    json_add_string_n(node, "text", s, len) < 0) {
+		cJSON_Delete(node);
 		return -ENOMEM;
 	}
-	rc = json_array_add(nodes, node);
-	if (rc) {
-		json_free(node);
-		return rc;
-	}
+	cJSON_AddItemToArray(nodes, node);
 	if (plain)
 		rc = append_decoded(plain, s, len);
 	return rc;
@@ -405,10 +435,10 @@ static int consume_closing(struct agent_ui_parser *p, const char *name)
 	return 1;
 }
 
-static int parse_nodes(struct agent_ui_parser *p, const char *stop_name, int depth,
-		       struct json *nodes, morph_buf_t *plain);
+static int parse_nodes(struct agent_ui_parser *p, const char *stop_name,
+		       int depth, cJSON *nodes, morph_buf_t *plain);
 
-static int parse_element(struct agent_ui_parser *p, int depth, struct json *nodes,
+static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes,
 			 morph_buf_t *plain)
 {
 	size_t start = p->pos;
@@ -419,9 +449,9 @@ static int parse_element(struct agent_ui_parser *p, int depth, struct json *node
 	int missing_colon = 0;
 	int self_closing;
 	morph_buf_t name_buf;
-	struct json *node = NULL;
-	struct json *attrs = NULL;
-	struct json *children = NULL;
+	cJSON *node = NULL;
+	cJSON *attrs = NULL;
+	cJSON *children = NULL;
 	morph_buf_t body;
 	int body_ready = 0;
 	int rc = 0;
@@ -430,7 +460,8 @@ static int parse_element(struct agent_ui_parser *p, int depth, struct json *node
 	if (prefix_len == 0)
 		return append_text_node(nodes, p->input + start, 1, plain);
 	if (p->recognized >= AGENT_UI_MAX_TAGS || depth >= AGENT_UI_MAX_DEPTH)
-		return append_text_node(nodes, p->input + start, (size_t)prefix_len, plain);
+		return append_text_node(nodes, p->input + start,
+					(size_t)prefix_len, plain);
 	p->pos += (size_t)prefix_len;
 	name_start = p->pos;
 	while (p->pos < p->len && is_name_char(p->input[p->pos]))
@@ -460,7 +491,8 @@ static int parse_element(struct agent_ui_parser *p, int depth, struct json *node
 		else
 			tag_end++;
 		p->pos = tag_end;
-		return append_text_node(nodes, p->input + start, tag_end - start, plain);
+		return append_text_node(nodes, p->input + start,
+					tag_end - start, plain);
 	}
 	if (missing_colon)
 		add_warning(p, "missing colon in opening m tag accepted");
@@ -469,22 +501,24 @@ static int parse_element(struct agent_ui_parser *p, int depth, struct json *node
 		add_warning(p, "unterminated m tag left as text");
 		morph_buf_cleanup(&name_buf);
 		p->pos = p->len;
-		return append_text_node(nodes, p->input + start, p->len - start, plain);
+		return append_text_node(nodes, p->input + start,
+					p->len - start, plain);
 	}
 	self_closing = tag_end > start && p->input[tag_end - 1] == '/';
 	if (bodyless_tag(morph_buf_cstr(&name_buf)) && !self_closing) {
 		self_closing = 1;
 		add_warning(p, "bodyless tag treated as self closing");
 	}
-	node = json_object();
-	attrs = json_object();
-	children = json_array();
+	node = cJSON_CreateObject();
+	attrs = cJSON_CreateObject();
+	children = cJSON_CreateArray();
 	if (!node || !attrs || !children) {
 		rc = -ENOMEM;
 		goto out;
 	}
-	if (!json_add_string(node, "type", "component") ||
-	    !json_add_string(node, "component", morph_buf_cstr(&name_buf))) {
+	if (!cJSON_AddStringToObject(node, "type", "component") ||
+	    !cJSON_AddStringToObject(node, "component",
+				     morph_buf_cstr(&name_buf))) {
 		rc = -ENOMEM;
 		goto out;
 	}
@@ -498,47 +532,47 @@ static int parse_element(struct agent_ui_parser *p, int depth, struct json *node
 		goto out;
 	body_ready = 1;
 	if (!self_closing) {
-		rc = parse_nodes(p, morph_buf_cstr(&name_buf), depth + 1, children, &body);
+		rc = parse_nodes(p, morph_buf_cstr(&name_buf), depth + 1,
+				 children, &body);
 		if (rc < 0)
 			goto out;
 	}
-	if (plain && morph_buf_append(plain, morph_buf_cstr(&body), body.len) < 0) {
+	if (plain && morph_buf_append(plain, morph_buf_cstr(&body),
+				      body.len) < 0) {
 		rc = -ENOMEM;
 		goto out;
 	}
-	rc = json_object_add(node, "attrs", attrs);
-	if (rc) {
+	if (!cJSON_AddItemToObject(node, "attrs", attrs)) {
+		rc = -ENOMEM;
 		goto out;
 	}
 	attrs = NULL;
-	if (!json_add_string(node, "text", morph_buf_cstr(&body))) {
+	if (!cJSON_AddStringToObject(node, "text", morph_buf_cstr(&body))) {
 		rc = -ENOMEM;
 		goto out;
 	}
-	if (json_count(children) > 0) {
-		rc = json_object_add(node, "children", children);
-		if (rc) {
+	if (cJSON_GetArraySize(children) > 0) {
+		if (!cJSON_AddItemToObject(node, "children", children)) {
+			rc = -ENOMEM;
 			goto out;
 		}
 		children = NULL;
 	}
-	rc = json_array_add(nodes, node);
-	if (rc)
-		goto out;
+	cJSON_AddItemToArray(nodes, node);
 	node = NULL;
 
 out:
 	if (body_ready)
 		morph_buf_cleanup(&body);
-	json_free(children);
-	json_free(attrs);
-	json_free(node);
+	cJSON_Delete(children);
+	cJSON_Delete(attrs);
+	cJSON_Delete(node);
 	morph_buf_cleanup(&name_buf);
 	return rc;
 }
 
-static int parse_nodes(struct agent_ui_parser *p, const char *stop_name, int depth,
-		       struct json *nodes, morph_buf_t *plain)
+static int parse_nodes(struct agent_ui_parser *p, const char *stop_name,
+		       int depth, cJSON *nodes, morph_buf_t *plain)
 {
 	while (p->pos < p->len) {
 		size_t text_start;
@@ -548,7 +582,8 @@ static int parse_nodes(struct agent_ui_parser *p, const char *stop_name, int dep
 
 		if (stop_name && consume_closing(p, stop_name))
 			return 0;
-		if (starts_with(p, "</m:") || missing_colon_closing_supported_at(p)) {
+		if (starts_with(p, "</m:") ||
+		    missing_colon_closing_supported_at(p)) {
 			size_t end = find_tag_end(p, p->pos);
 
 			add_warning(p, "unmatched closing tag ignored");
@@ -576,16 +611,20 @@ static int parse_nodes(struct agent_ui_parser *p, const char *stop_name, int dep
 				next_open = i;
 				break;
 			}
-			if (i + 4 <= p->len && strncmp(p->input + i, "</m:", 4) == 0) {
+			if (i + 4 <= p->len &&
+			    strncmp(p->input + i, "</m:", 4) == 0) {
 				next_close = i;
 				break;
 			}
-			if (i + 3 < p->len && p->input[i] == '<' && p->input[i + 1] == '/' &&
+			if (i + 3 < p->len &&
+			    p->input[i] == '<' &&
+			    p->input[i + 1] == '/' &&
 			    p->input[i + 2] == 'm') {
 				struct agent_ui_parser close_probe = *p;
 
 				close_probe.pos = i;
-				if (!missing_colon_closing_supported_at(&close_probe))
+				if (!missing_colon_closing_supported_at(
+					    &close_probe))
 					continue;
 				next_close = i;
 				break;
@@ -593,7 +632,8 @@ static int parse_nodes(struct agent_ui_parser *p, const char *stop_name, int dep
 		}
 		next = next_open < next_close ? next_open : next_close;
 		p->pos = next;
-		if (append_text_node(nodes, p->input + text_start, next - text_start, plain) < 0)
+		if (append_text_node(nodes, p->input + text_start,
+				     next - text_start, plain) < 0)
 			return -ENOMEM;
 	}
 	if (stop_name)
@@ -604,8 +644,8 @@ static int parse_nodes(struct agent_ui_parser *p, const char *stop_name, int dep
 char *agent_ui_parse_tags_json(const char *input)
 {
 	struct agent_ui_parser parser;
-	struct json *root = NULL;
-	struct json *nodes = NULL;
+	cJSON *root = NULL;
+	cJSON *nodes = NULL;
 	char *json = NULL;
 	int rc;
 
@@ -614,29 +654,31 @@ char *agent_ui_parse_tags_json(const char *input)
 	memset(&parser, 0, sizeof(parser));
 	parser.input = input;
 	parser.len = strlen(input);
-	root = json_object();
-	nodes = json_array();
-	parser.warnings = json_array();
+	root = cJSON_CreateObject();
+	nodes = cJSON_CreateArray();
+	parser.warnings = cJSON_CreateArray();
 	if (!root || !nodes || !parser.warnings)
 		goto out;
-	if (!json_add_string(root, "kind", "agent_ui") || !json_add_number(root, "version", 1))
+	if (!cJSON_AddStringToObject(root, "kind", "agent_ui") ||
+	    !cJSON_AddNumberToObject(root, "version", 1))
 		goto out;
 	rc = parse_nodes(&parser, NULL, 0, nodes, NULL);
 	if (rc < 0)
 		goto out;
-	if (!json_add_number(root, "recognized_tags", parser.recognized))
+	if (!cJSON_AddNumberToObject(root, "recognized_tags",
+				     parser.recognized))
 		goto out;
-	if (json_object_add(root, "nodes", nodes) != 0)
+	if (!cJSON_AddItemToObject(root, "nodes", nodes))
 		goto out;
 	nodes = NULL;
-	if (json_object_add(root, "warnings", parser.warnings) != 0)
+	if (!cJSON_AddItemToObject(root, "warnings", parser.warnings))
 		goto out;
 	parser.warnings = NULL;
-	json = json_stringify(root);
+	json = cJSON_PrintUnformatted(root);
 
 out:
-	json_free(parser.warnings);
-	json_free(nodes);
-	json_free(root);
+	cJSON_Delete(parser.warnings);
+	cJSON_Delete(nodes);
+	cJSON_Delete(root);
 	return json;
 }

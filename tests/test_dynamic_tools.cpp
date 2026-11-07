@@ -4,7 +4,7 @@ extern "C" {
 #include "agent/tools/dynamic_tool_store.h"
 #include "agent/tool_context.h"
 #include "config/config.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "util/file.h"
 }
 #include <cstdio>
@@ -45,14 +45,14 @@ static int static_tool_exec(const char *args_json, struct tool_result *result,
 
 static std::string json_string_field(const char *json, const char *field)
 {
-	struct json *root = json_parse_prefix(json, NULL, NULL);
+	cJSON *root = cJSON_Parse(json);
 	if (!root)
 		return "";
-	struct json *item = json_member_ci(root, field);
+	cJSON *item = cJSON_GetObjectItem(root, field);
 	std::string out;
-	if (json_is_string_value(item) && json_string_value(item))
-		out = json_string_value(item);
-	json_free(root);
+	if (cJSON_IsString(item) && item->valuestring)
+		out = item->valuestring;
+	cJSON_Delete(root);
 	return out;
 }
 
@@ -122,12 +122,12 @@ TEST_F(DynamicToolsTest, CreateAndCallSessionTool)
 	ASSERT_EQ(tool_exec(&reg, "upper_js", "{\"text\":\"hello\"}",
 			    &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
-	struct json *root_json = json_parse_prefix(result.text.data, NULL, NULL);
+	cJSON *root_json = cJSON_Parse(result.text.data);
 	ASSERT_NE(root_json, nullptr);
-	struct json *text = json_member_ci(root_json, "text");
-	ASSERT_TRUE(json_is_string_value(text));
-	EXPECT_STREQ(json_string_value(text), "HELLO");
-	json_free(root_json);
+	cJSON *text = cJSON_GetObjectItem(root_json, "text");
+	ASSERT_TRUE(cJSON_IsString(text));
+	EXPECT_STREQ(text->valuestring, "HELLO");
+	cJSON_Delete(root_json);
 	tool_result_cleanup(&result);
 }
 
@@ -1406,13 +1406,13 @@ TEST_F(DynamicToolsTest, ImageCanvasFilesystemAndWasmBindingsCoexist)
 	tool_result_init(&result);
 	std::string call = "{\"output\":\"" + root + "/all-bindings.png\"}";
 	ASSERT_EQ(tool_exec(&reg, "all_bindings", call.c_str(), &result), 0);
-	struct json *response = json_parse_prefix(result.text.data, NULL, NULL);
+	cJSON *response = cJSON_Parse(result.text.data);
 	ASSERT_NE(response, nullptr);
-	EXPECT_EQ(json_int_value(json_member_ci(response, "width")), 8);
-	EXPECT_EQ(json_int_value(json_member_ci(response, "height")), 4);
-	EXPECT_GT(json_int_value(json_member_ci(response, "bytes")), 0);
-	EXPECT_EQ(json_int_value(json_member_ci(response, "value")), 42);
-	json_free(response);
+	EXPECT_EQ(cJSON_GetObjectItem(response, "width")->valueint, 8);
+	EXPECT_EQ(cJSON_GetObjectItem(response, "height")->valueint, 4);
+	EXPECT_GT(cJSON_GetObjectItem(response, "bytes")->valueint, 0);
+	EXPECT_EQ(cJSON_GetObjectItem(response, "value")->valueint, 42);
+	cJSON_Delete(response);
 	tool_result_cleanup(&result);
 }
 
@@ -1498,9 +1498,9 @@ TEST_F(DynamicToolsTest, DefinitionCopyUsesCommittedSourceAndPreservesUnknownMet
 	EXPECT_STREQ(definition.input_schema, TOOL_EMPTY_INPUT_SCHEMA);
 	EXPECT_STREQ(definition.output_schema, TOOL_OBJECT_OUTPUT_SCHEMA);
 	EXPECT_FALSE(definition.legacy_source);
-	const struct json *extension = json_member_ci(definition.document, "extension");
-	ASSERT_TRUE(json_is_object_value(extension));
-	EXPECT_EQ(json_int_value(json_member_ci(extension, "version")), 7);
+	const cJSON *extension = cJSON_GetObjectItem(definition.document, "extension");
+	ASSERT_TRUE(cJSON_IsObject(extension));
+	EXPECT_EQ(cJSON_GetObjectItem(extension, "version")->valueint, 7);
 	dynamic_tool_store_definition_cleanup(&definition);
 	char *copied = file_read_all(copy_source.c_str(), nullptr);
 	ASSERT_NE(copied, nullptr);

@@ -124,16 +124,16 @@ protected:
 				condition.notify_all();
 				condition.wait(guard, [this] { return released; });
 			}
-			struct json *delta = json_object();
-			json_add_string(delta, "content", answer.c_str());
-			char *json = json_stringify(delta);
+			cJSON *delta = cJSON_CreateObject();
+			cJSON_AddStringToObject(delta, "content", answer.c_str());
+			char *json = cJSON_PrintUnformatted(delta);
 			std::string body = "data: {\"choices\":[{\"delta\":" + std::string(json) +
 				",\"finish_reason\":null}]}\n\n"
 				"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],"
 				"\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":8,"
 				"\"total_tokens\":28}}\n\ndata: [DONE]\n\n";
 			free(json);
-			json_free(delta);
+			cJSON_Delete(delta);
 			std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
 				"Connection: close\r\nContent-Length: " + std::to_string(body.size()) +
 				"\r\n\r\n" + body;

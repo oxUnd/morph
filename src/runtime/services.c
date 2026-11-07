@@ -7,7 +7,7 @@
 #include "util/arena.h"
 #include "util/id.h"
 #include "runtime/scheduler.h"
-#include "util/json.h"
+#include "cJSON.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -105,32 +105,33 @@ char *runtime_turn_error_message(struct runtime *runtime, int rc)
 char *runtime_turn_error_json(struct runtime *runtime)
 {
 	struct runtime_turn_status status;
-	struct json *root;
+	cJSON *root;
 	char *out;
 	int rc;
 
 	if (runtime_turn_status_get(runtime, &status) != 0)
 		return NULL;
-	root = json_object();
+	root = cJSON_CreateObject();
 	if (!root) {
 		runtime_turn_status_cleanup(&status);
 		return NULL;
 	}
 	rc = status.last_error_code < 0 ? status.last_error_code : 0;
-	json_add_number(root, "rc", rc);
-	json_add_string(root, "outcome", react_outcome_name(status.outcome));
+	cJSON_AddNumberToObject(root, "rc", rc);
+	cJSON_AddStringToObject(root, "outcome",
+		react_outcome_name(status.outcome));
 	if (status.outcome_reason)
-		json_add_string(root, "reason", status.outcome_reason);
+		cJSON_AddStringToObject(root, "reason", status.outcome_reason);
 	if (status.error_detail)
-		json_add_string(root, "detail", status.error_detail);
+		cJSON_AddStringToObject(root, "detail", status.error_detail);
 	if (rc < 0) {
-		json_add_number(root, "error_code", rc);
-		json_add_string(root, "error", morph_strerror(rc));
+		cJSON_AddNumberToObject(root, "error_code", rc);
+		cJSON_AddStringToObject(root, "error", morph_strerror(rc));
 	}
 	if (status.final_answer)
-		json_add_string(root, "text", status.final_answer);
-	out = json_stringify(root);
-	json_free(root);
+		cJSON_AddStringToObject(root, "text", status.final_answer);
+	out = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
 	runtime_turn_status_cleanup(&status);
 	return out;
 }

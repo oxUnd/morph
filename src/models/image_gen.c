@@ -11,7 +11,7 @@
 #include "util/buf.h"
 #include "util/error.h"
 #include "http/client.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -291,55 +291,68 @@ void image_payload_cleanup(struct image_payload *payload)
 int image_provider_parse_response(struct model *model, const char *response_json,
 				  struct image_payload *payload)
 {
-	struct json *root;
-	const struct json *first;
-	const struct json *usage;
-	const char *data;
-	const char *format;
+	cJSON *root = NULL;
+	cJSON *data;
+	cJSON *first;
+	cJSON *value;
+	cJSON *usage;
 
 	if (!response_json || !payload)
 		return -EINVAL;
 	memset(payload, 0, sizeof(*payload));
-	root = json_parse_prefix(response_json, NULL, NULL);
+	root = cJSON_Parse(response_json);
 	if (!root)
 		return MORPH_ERR_PARSE;
-	first = json_at(json_member_ci(root, "data"), 0);
-	if (!first) {
-		json_free(root);
+	data = cJSON_GetObjectItem(root, "data");
+	if (!cJSON_IsArray(data) || cJSON_GetArraySize(data) == 0) {
+		cJSON_Delete(root);
 		return MORPH_ERR_PROTOCOL;
 	}
-	data = json_string_value(json_member_ci(first, "b64_json"));
-	if (data) {
+	first = cJSON_GetArrayItem(data, 0);
+	value = cJSON_GetObjectItem(first, "b64_json");
+	if (cJSON_IsString(value) && value->valuestring) {
 		payload->kind = IMAGE_PAYLOAD_BASE64;
+		payload->data = strdup(value->valuestring);
+		if (!payload->data) {
+			cJSON_Delete(root);
+			return -ENOMEM;
+		}
 	} else {
-		data = json_string_value(json_member_ci(first, "url"));
-		payload->kind = IMAGE_PAYLOAD_URL;
+		value = cJSON_GetObjectItem(first, "url");
+		if (cJSON_IsString(value) && value->valuestring) {
+			payload->kind = IMAGE_PAYLOAD_URL;
+			payload->data = strdup(value->valuestring);
+			if (!payload->data) {
+				cJSON_Delete(root);
+				return -ENOMEM;
+			}
+		}
 	}
-	if (!data) {
-		json_free(root);
+	if (!payload->data) {
+		cJSON_Delete(root);
 		return MORPH_ERR_PROTOCOL;
 	}
-	payload->data = strdup(data);
-	if (!payload->data) {
-		json_free(root);
-		return -ENOMEM;
-	}
-	format = json_string_value(json_member_ci(root, "output_format"));
+	value = cJSON_GetObjectItem(root, "output_format");
 	snprintf(payload->output_format, sizeof(payload->output_format), "%s",
-		 format ? format : "png");
-	(void)json_read_int(json_member_ci(root, "created"), &payload->usage.created);
-	usage = json_member_ci(root, "usage");
-	if (json_is_object_value(usage)) {
-		(void)json_read_int(json_member_ci(usage, "input_tokens"),
-				    &payload->usage.input_tokens);
-		(void)json_read_int(json_member_ci(usage, "output_tokens"),
-				    &payload->usage.output_tokens);
-		(void)json_read_int(json_member_ci(usage, "total_tokens"),
-				    &payload->usage.total_tokens);
+		 cJSON_IsString(value) && value->valuestring ? value->valuestring : "png");
+	value = cJSON_GetObjectItem(root, "created");
+	if (cJSON_IsNumber(value))
+		payload->usage.created = (int64_t)value->valuedouble;
+	usage = cJSON_GetObjectItem(root, "usage");
+	if (cJSON_IsObject(usage)) {
+		value = cJSON_GetObjectItem(usage, "input_tokens");
+		if (cJSON_IsNumber(value))
+			payload->usage.input_tokens = (int64_t)value->valuedouble;
+		value = cJSON_GetObjectItem(usage, "output_tokens");
+		if (cJSON_IsNumber(value))
+			payload->usage.output_tokens = (int64_t)value->valuedouble;
+		value = cJSON_GetObjectItem(usage, "total_tokens");
+		if (cJSON_IsNumber(value))
+			payload->usage.total_tokens = (int64_t)value->valuedouble;
 		snprintf(payload->usage.usage_source, sizeof(payload->usage.usage_source), "api");
 		payload->has_usage = 1;
 	}
-	json_free(root);
+	cJSON_Delete(root);
 	(void)model;
 	return 0;
 }

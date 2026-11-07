@@ -220,27 +220,27 @@ void react_set_error_detail(struct react_context *ctx, const char *detail)
 static int react_emit_outcome_event(struct react_context *ctx, const char *name, const char *phase,
 				    const char *message, const char *text)
 {
-	struct json *data;
+	cJSON *data;
 	int rc;
 
 	if (!react_events_enabled(react_events(ctx)))
 		return 0;
-	data = json_object();
+	data = cJSON_CreateObject();
 	if (!data)
 		return -ENOMEM;
-	json_add_string(data, "text", text ? text : "");
-	json_add_string(data, "outcome",
-			react_outcome_name(ctx ? ctx->outcome : REACT_OUTCOME_NONE));
+	cJSON_AddStringToObject(data, "text", text ? text : "");
+	cJSON_AddStringToObject(data, "outcome",
+				react_outcome_name(ctx ? ctx->outcome : REACT_OUTCOME_NONE));
 	if (ctx && ctx->outcome_reason[0])
-		json_add_string(data, "reason", ctx->outcome_reason);
+		cJSON_AddStringToObject(data, "reason", ctx->outcome_reason);
 	if (ctx && ctx->last_error_detail)
-		json_add_string(data, "detail", ctx->last_error_detail);
+		cJSON_AddStringToObject(data, "detail", ctx->last_error_detail);
 	if (ctx && ctx->last_error_code < 0) {
-		json_add_number(data, "error_code", ctx->last_error_code);
-		json_add_string(data, "error", morph_strerror(ctx->last_error_code));
+		cJSON_AddNumberToObject(data, "error_code", ctx->last_error_code);
+		cJSON_AddStringToObject(data, "error", morph_strerror(ctx->last_error_code));
 	}
 	rc = react_emit_event(react_events(ctx), MORPH_EVENT_REACT, name, phase, message, data);
-	json_free(data);
+	cJSON_Delete(data);
 	return rc;
 }
 
@@ -299,7 +299,7 @@ static int react_finish(struct react_context *ctx)
 static void react_warn_tool_truncation(struct react_context *ctx)
 {
 	morph_buf_t message;
-	struct json *data;
+	cJSON *data;
 	int rc;
 
 	if (!ctx || ctx->tool_result_truncated_count < 3 ||
@@ -325,19 +325,20 @@ static void react_warn_tool_truncation(struct react_context *ctx)
 		rc = morph_buf_puts(&message,
 				    " Review exec.max_inline_output and "
 				    "exec.max_session_output if larger retained output is needed.");
-	data = rc == 0 ? json_object() : NULL;
+	data = rc == 0 ? cJSON_CreateObject() : NULL;
 	if (data) {
-		json_add_number(data, "tool_results", ctx->tool_result_count);
-		json_add_number(data, "truncated_results", ctx->tool_result_truncated_count);
-		json_add_number(data, "history_truncated_results",
-				ctx->tool_result_history_truncated_count);
-		json_add_number(data, "output_truncated_results",
-				ctx->tool_result_output_truncated_count);
+		cJSON_AddNumberToObject(data, "tool_results", ctx->tool_result_count);
+		cJSON_AddNumberToObject(data, "truncated_results",
+					ctx->tool_result_truncated_count);
+		cJSON_AddNumberToObject(data, "history_truncated_results",
+					ctx->tool_result_history_truncated_count);
+		cJSON_AddNumberToObject(data, "output_truncated_results",
+					ctx->tool_result_output_truncated_count);
 		log_warn(ctx->logger, "%s", morph_buf_cstr(&message));
 		(void)react_emit_event(react_events(ctx), MORPH_EVENT_BACKGROUND,
 				       "history.tool_output.warning", "warning",
 				       morph_buf_cstr(&message), data);
-		json_free(data);
+		cJSON_Delete(data);
 	}
 	morph_buf_cleanup(&message);
 }
@@ -346,12 +347,12 @@ static int react_finish_run(struct react_context *ctx)
 {
 	react_warn_tool_truncation(ctx);
 	if (ctx && ctx->hook_fn && ctx->outcome == REACT_OUTCOME_CANCELLED) {
-		struct json *input = json_object(), *output = NULL;
+		cJSON *input = cJSON_CreateObject(), *output = NULL;
 
 		if (input)
 			(void)ctx->hook_fn(ctx->hook_user, "Interrupt", input, &output);
-		json_free(input);
-		json_free(output);
+		cJSON_Delete(input);
+		cJSON_Delete(output);
 	}
 	int rc = react_finish(ctx);
 
@@ -437,8 +438,8 @@ static int react_tool_call_finish(struct react_context *ctx, const struct async_
 static int react_tool_call_timeout(struct react_context *ctx, const struct tool_call *tc)
 {
 	int timeout;
-	struct json *root;
-	struct json *arg_timeout;
+	cJSON *root;
+	cJSON *arg_timeout;
 
 	/* Question callbacks own their idle deadline, including user activity. */
 	if (strcmp(tc->name, "ask_user") == 0)
@@ -449,14 +450,14 @@ static int react_tool_call_timeout(struct react_context *ctx, const struct tool_
 	if (!tc->arguments)
 		return timeout;
 
-	root = json_parse_prefix(tc->arguments, NULL, NULL);
+	root = cJSON_Parse(tc->arguments);
 	if (!root)
 		return timeout;
-	arg_timeout = json_member_ci(root, "timeout_seconds");
-	if (json_is_number_value(arg_timeout) && json_number_value(arg_timeout) > 0 &&
-	    json_number_value(arg_timeout) <= INT_MAX)
-		timeout = (int)json_number_value(arg_timeout);
-	json_free(root);
+	arg_timeout = cJSON_GetObjectItem(root, "timeout_seconds");
+	if (cJSON_IsNumber(arg_timeout) && arg_timeout->valuedouble > 0 &&
+	    arg_timeout->valuedouble <= INT_MAX)
+		timeout = (int)arg_timeout->valuedouble;
+	cJSON_Delete(root);
 	return timeout;
 }
 
@@ -847,19 +848,18 @@ static int react_normalize_tool_inputs(struct react_context *ctx, struct chat_re
 		}
 		if (call->input_kind == TOOL_INPUT_TEXT)
 			continue;
-		struct json *root =
-			json_parse_prefix(call->arguments ? call->arguments : "", NULL, NULL);
-		struct json *input = root ? json_member_ci(root, "input") : NULL;
+		cJSON *root = cJSON_Parse(call->arguments ? call->arguments : "");
+		cJSON *input = root ? cJSON_GetObjectItem(root, "input") : NULL;
 
-		if (!json_is_string_value(input) || !json_string_value(input)) {
-			json_free(root);
+		if (!cJSON_IsString(input) || !input->valuestring) {
+			cJSON_Delete(root);
 			call->input_kind = TOOL_INPUT_TEXT;
 			continue;
 		}
 		char *normalized = response->arena
-					   ? arena_strdup(response->arena, json_string_value(input))
-					   : strdup(json_string_value(input));
-		json_free(root);
+					   ? arena_strdup(response->arena, input->valuestring)
+					   : strdup(input->valuestring);
+		cJSON_Delete(root);
 		if (!normalized)
 			return -ENOMEM;
 		if (!response->arena)
@@ -884,8 +884,9 @@ static int react_normalize_tool_inputs(struct react_context *ctx, struct chat_re
  * cb - Output callback for step notifications
  * user_data - Opaque pointer passed to cb
  */
-static int react_hook_invoke(struct react_context *ctx, const char *event, struct json *input,
-			     struct json **output);
+static const char *react_hook_text(const cJSON *obj, const char *key);
+static int react_hook_invoke(struct react_context *ctx, const char *event, cJSON *input,
+			     cJSON **output);
 
 static void react_check_hitl_approvals(struct react_context *ctx, struct chat_response *response,
 				       struct react_tool_slot *slots, react_output_cb cb,
@@ -1171,25 +1172,25 @@ static int react_check_input_guardrail(struct react_context *ctx, const char *us
 
 int agent_hook_compaction(struct react_context *ctx, const char *event, const char *trigger)
 {
-	struct json *input, *output = NULL;
+	cJSON *input, *output = NULL;
 	int rc;
 
 	if (!ctx || !ctx->hook_fn)
 		return 0;
-	input = json_object();
+	input = cJSON_CreateObject();
 	if (!input ||
-	    !json_add_string(input, strcmp(event, "SessionStart") == 0 ? "source" : "trigger",
-			     trigger)) {
-		json_free(input);
+	    !cJSON_AddStringToObject(
+		    input, strcmp(event, "SessionStart") == 0 ? "source" : "trigger", trigger)) {
+		cJSON_Delete(input);
 		return -ENOMEM;
 	}
 	rc = react_hook_invoke(ctx, event, input, &output);
-	if (rc == 0 && (json_is_true(json_member_ci(output, "blocked")) ||
-			json_is_true(json_member_ci(output, "terminate")))) {
-		react_set_error_detail(ctx, json_str_or(output, "reason", ""));
+	if (rc == 0 && (cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked")) ||
+			cJSON_IsTrue(cJSON_GetObjectItem(output, "terminate")))) {
+		react_set_error_detail(ctx, react_hook_text(output, "reason"));
 		rc = -EPERM;
 	}
-	json_free(output);
+	cJSON_Delete(output);
 	return rc;
 }
 
@@ -1261,15 +1262,16 @@ static int react_chat_once(struct react_context *ctx, struct model *llm, const c
 	if (model_estimate_input_tokens(llm, system_prompt, messages, msg_count, active_tools,
 					active_tool_count, react_count_input_text, ctx->tokenizer,
 					&estimate) == 0) {
-		struct json *metrics = json_object();
+		cJSON *metrics = cJSON_CreateObject();
 		if (metrics) {
-			json_add_number(metrics, "active_input_tokens_estimate", estimate);
-			json_add_number(metrics, "tool_count", active_tool_count);
-			json_add_number(metrics, "context_recoveries", ctx->context_recovery_count);
+			cJSON_AddNumberToObject(metrics, "active_input_tokens_estimate", estimate);
+			cJSON_AddNumberToObject(metrics, "tool_count", active_tool_count);
+			cJSON_AddNumberToObject(metrics, "context_recoveries",
+						ctx->context_recovery_count);
 			(void)react_emit_event(react_events(ctx), MORPH_EVENT_REACT,
 					       "react.context.usage", "info",
 					       "model request context", metrics);
-			json_free(metrics);
+			cJSON_Delete(metrics);
 		}
 	}
 
@@ -1374,7 +1376,7 @@ static int react_handle_output_limit(struct react_context *ctx,
 		"Model output reached its token limit; the response is incomplete. "
 		"Review model.text.max_tokens and context_limit against the provider's limits. "
 		"Thinking and the answer share the output budget.";
-	struct json *data;
+	cJSON *data;
 
 	if (strcmp(response->usage.finish_reason, "length") != 0)
 		return 0;
@@ -1400,14 +1402,16 @@ static int react_handle_output_limit(struct react_context *ctx,
 		react_emit_text_event(react_events(ctx), MORPH_EVENT_REACT, "react.content.end",
 				      "end", "incomplete model output", response->content);
 	}
-	data = json_object();
+	data = cJSON_CreateObject();
 	if (data) {
-		json_add_number(data, "max_tokens", ctx->llm_model->max_tokens);
-		json_add_number(data, "output_tokens", (double)response->usage.output_tokens);
-		json_add_number(data, "reasoning_tokens", (double)response->usage.reasoning_tokens);
+		cJSON_AddNumberToObject(data, "max_tokens", ctx->llm_model->max_tokens);
+		cJSON_AddNumberToObject(data, "output_tokens",
+					(double)response->usage.output_tokens);
+		cJSON_AddNumberToObject(data, "reasoning_tokens",
+					(double)response->usage.reasoning_tokens);
 		(void)react_emit_event(react_events(ctx), MORPH_EVENT_BACKGROUND,
 				       "react.output.truncated", "warning", message, data);
-		json_free(data);
+		cJSON_Delete(data);
 	}
 	log_warn(ctx->logger, "%s", message);
 	react_set_error_detail(ctx, message);
@@ -1508,38 +1512,37 @@ static int react_pre_tool_hooks(struct react_context *ctx, struct chat_response 
 		return 0;
 	for (int i = 0; i < response->tool_call_count; i++) {
 		struct tool_call *tc = &response->tool_calls[i];
-		struct json *input = json_object(), *output = NULL;
-		struct json *args =
-			tc->input_kind == TOOL_INPUT_TEXT
-				? json_object()
-				: json_parse_prefix(tc->arguments ? tc->arguments : "{}", NULL,
-						    NULL);
+		cJSON *input = cJSON_CreateObject(), *output = NULL;
+		cJSON *args = tc->input_kind == TOOL_INPUT_TEXT
+				      ? cJSON_CreateObject()
+				      : cJSON_Parse(tc->arguments ? tc->arguments : "{}");
 		if (args && tc->input_kind == TOOL_INPUT_TEXT)
-			json_add_string(args, "command", tc->arguments ? tc->arguments : "");
+			cJSON_AddStringToObject(args, "command",
+						tc->arguments ? tc->arguments : "");
 		if (!args)
-			args = json_object();
+			args = cJSON_CreateObject();
 		int rc;
 
 		if (!input || !args) {
-			json_free(input);
-			json_free(args);
+			cJSON_Delete(input);
+			cJSON_Delete(args);
 			return -ENOMEM;
 		}
-		json_add_string(input, "tool_name", tc->name);
-		json_add_string(input, "tool_use_id", tc->tool_call_id);
-		json_object_add(input, "tool_input", args);
+		cJSON_AddStringToObject(input, "tool_name", tc->name);
+		cJSON_AddStringToObject(input, "tool_use_id", tc->tool_call_id);
+		cJSON_AddItemToObject(input, "tool_input", args);
 		rc = react_hook_invoke(ctx, "PreToolUse", input, &output);
-		if (rc == 0 && json_is_true(json_member_ci(output, "blocked"))) {
+		if (rc == 0 && cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked"))) {
 			slots[i].hitl_denied = 1;
 			slots[i].hook_denial =
-				arena_strdup(ctx->turn_arena, json_str_or(output, "reason", ""));
+				arena_strdup(ctx->turn_arena, react_hook_text(output, "reason"));
 		}
-		slots[i].hook_ask = json_is_true(json_member_ci(output, "ask"));
-		const struct json *updated = json_member_ci(output, "updatedInput");
+		slots[i].hook_ask = cJSON_IsTrue(cJSON_GetObjectItem(output, "ask"));
+		const cJSON *updated = cJSON_GetObjectItem(output, "updatedInput");
 		if (rc == 0 && updated && !slots[i].hitl_denied) {
 			char *json = tc->input_kind == TOOL_INPUT_TEXT
-					     ? strdup(json_str_or(updated, "command", ""))
-					     : json_stringify(updated);
+					     ? strdup(react_hook_text(updated, "command"))
+					     : cJSON_PrintUnformatted(updated);
 			char *replacement = json && response->arena
 						    ? arena_strdup(response->arena, json)
 						    : json;
@@ -1553,7 +1556,7 @@ static int react_pre_tool_hooks(struct react_context *ctx, struct chat_response 
 				tc->arguments = replacement;
 			}
 		}
-		json_free(output);
+		cJSON_Delete(output);
 		if (rc < 0)
 			return rc;
 	}
@@ -1721,7 +1724,7 @@ static const char *react_apply_tool_output_guardrail(struct react_context *ctx,
 static int react_record_tool_observation(struct react_context *ctx, struct async_tool_call *call,
 					 const char *obs_text, int rc,
 					 const struct tool_artifact_list *artifacts,
-					 const struct json *data, const struct json *ui,
+					 const cJSON *data, const cJSON *ui,
 					 morph_array_t *messages, react_output_cb cb,
 					 void *user_data)
 {
@@ -1811,12 +1814,14 @@ static int react_drain_actions(struct react_context *ctx, morph_array_t *message
 static void react_count_tool_truncation(struct react_context *ctx, const char *content,
 					int history_truncated)
 {
-	struct json *root = content ? json_parse_prefix(content, NULL, NULL) : NULL;
-	struct json *data = json_member(root, "data");
-	int output_truncated = json_is_true(json_member(data, "stdout_truncated")) ||
-			       json_is_true(json_member(data, "stderr_truncated"));
+	cJSON *root = content ? cJSON_Parse(content) : NULL;
+	cJSON *data = cJSON_GetObjectItemCaseSensitive(root, "data");
+	int output_truncated =
+		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "stdout_truncated")) ||
+		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "stderr_truncated"));
 
-	history_truncated |= json_is_true(json_member(root, "history_truncated"));
+	history_truncated |=
+		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "history_truncated"));
 	if (ctx->tool_result_count < INT_MAX)
 		ctx->tool_result_count++;
 	if ((history_truncated || output_truncated) && ctx->tool_result_truncated_count < INT_MAX)
@@ -1825,7 +1830,7 @@ static void react_count_tool_truncation(struct react_context *ctx, const char *c
 		ctx->tool_result_history_truncated_count++;
 	if (output_truncated && ctx->tool_result_output_truncated_count < INT_MAX)
 		ctx->tool_result_output_truncated_count++;
-	json_free(root);
+	cJSON_Delete(root);
 }
 
 static int react_join_tool_calls(struct react_context *ctx, struct chat_response *response,
@@ -1841,9 +1846,9 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 		char *result;
 		const char *obs_text;
 		struct tool_artifact_list artifacts = {0};
-		struct json *data = NULL;
-		struct json *ui = NULL;
-		struct json *meta = NULL;
+		cJSON *data = NULL;
+		cJSON *ui = NULL;
+		cJSON *meta = NULL;
 
 		if (slots[i].hitl_denied) {
 			struct tool_call *tc = &response->tool_calls[i];
@@ -1936,12 +1941,11 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 		if (rc < 0)
 			react_set_error_detail(ctx, obs_text);
 		{
-			struct json *history_content =
-				meta ? json_member_ci(meta, "history_content") : NULL;
+			cJSON *history_content =
+				meta ? cJSON_GetObjectItem(meta, "history_content") : NULL;
 
-			if (json_is_string_value(history_content) &&
-			    json_string_value(history_content))
-				obs_text = json_string_value(history_content);
+			if (cJSON_IsString(history_content) && history_content->valuestring)
+				obs_text = history_content->valuestring;
 		}
 
 		if (react_track_tool_failure(ctx, call->tool_name, call->tool_args, rc, cb,
@@ -1960,9 +1964,9 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 				}
 			}
 			free(result);
-			json_free(data);
-			json_free(ui);
-			json_free(meta);
+			cJSON_Delete(data);
+			cJSON_Delete(ui);
+			cJSON_Delete(meta);
 			goto out_cleanup_tool_calls;
 		}
 
@@ -1976,39 +1980,39 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 		if (!obs_text)
 			obs_text = "";
 		if (ctx->hook_fn) {
-			struct json *input = json_object(), *output = NULL;
-			json_add_string(input, "tool_name", call->tool_name);
-			json_add_string(input, "tool_use_id", call->tool_call_id);
-			struct json *hook_args = json_parse_prefix(call->tool_args, NULL, NULL);
+			cJSON *input = cJSON_CreateObject(), *output = NULL;
+			cJSON_AddStringToObject(input, "tool_name", call->tool_name);
+			cJSON_AddStringToObject(input, "tool_use_id", call->tool_call_id);
+			cJSON *hook_args = cJSON_Parse(call->tool_args);
 			if (!hook_args) {
-				hook_args = json_object();
-				json_add_string(hook_args, "command", call->tool_args);
+				hook_args = cJSON_CreateObject();
+				cJSON_AddStringToObject(hook_args, "command", call->tool_args);
 			}
-			json_object_add(input, "tool_input", hook_args);
-			json_add_string(input, "tool_response", obs_text);
-			json_add_number(input, "error_code", rc);
+			cJSON_AddItemToObject(input, "tool_input", hook_args);
+			cJSON_AddStringToObject(input, "tool_response", obs_text);
+			cJSON_AddNumberToObject(input, "error_code", rc);
 			int hook_rc = react_hook_invoke(ctx, "PostToolUse", input, &output);
-			if (hook_rc == 0 && json_is_true(json_member_ci(output, "blocked"))) {
-				const char *feedback = json_str_or(output, "reason", "");
+			if (hook_rc == 0 && cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked"))) {
+				const char *feedback = react_hook_text(output, "reason");
 
 				if (!meta)
-					meta = json_object();
+					meta = cJSON_CreateObject();
 				char *replacement = arena_strdup(ctx->turn_arena, feedback);
 				if (!meta || !replacement ||
-				    !json_add_string(meta, "hook_original_tool_response",
-						     obs_text)) {
-					json_free(output);
+				    !cJSON_AddStringToObject(meta, "hook_original_tool_response",
+							     obs_text)) {
+					cJSON_Delete(output);
 					free(result);
-					json_free(data);
-					json_free(ui);
-					json_free(meta);
+					cJSON_Delete(data);
+					cJSON_Delete(ui);
+					cJSON_Delete(meta);
 					react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
 							 "hook_feedback_error");
 					goto out_cleanup_tool_calls;
 				}
 				obs_text = replacement;
 			}
-			json_free(output);
+			cJSON_Delete(output);
 		}
 		int persist_rc = agent_history_record_tool_result_ex(
 			ctx, call->tool_call_id, call->provider_tool_call_id, call->tool_name,
@@ -2016,9 +2020,9 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 
 		if (persist_rc != 0) {
 			free(result);
-			json_free(data);
-			json_free(ui);
-			json_free(meta);
+			cJSON_Delete(data);
+			cJSON_Delete(ui);
+			cJSON_Delete(meta);
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, persist_rc,
 					 "history_persistence_error");
 			goto out_cleanup_tool_calls;
@@ -2030,9 +2034,9 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 
 		if (prepare_rc != 0) {
 			free(result);
-			json_free(data);
-			json_free(ui);
-			json_free(meta);
+			cJSON_Delete(data);
+			cJSON_Delete(ui);
+			cJSON_Delete(meta);
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, prepare_rc,
 					 "history_persistence_error");
 			goto out_cleanup_tool_calls;
@@ -2043,9 +2047,9 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 			int history_rc = ctx->history_error ? ctx->history_error : MORPH_ERR_DB;
 
 			free(result);
-			json_free(data);
-			json_free(ui);
-			json_free(meta);
+			cJSON_Delete(data);
+			cJSON_Delete(ui);
+			cJSON_Delete(meta);
 			free(prepared_obs);
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, history_rc,
 					 "history_persistence_error");
@@ -2053,9 +2057,9 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 		}
 		free(prepared_obs);
 		free(result);
-		json_free(data);
-		json_free(ui);
-		json_free(meta);
+		cJSON_Delete(data);
+		cJSON_Delete(ui);
+		cJSON_Delete(meta);
 	}
 
 	if (react_drain_actions(ctx, messages, -1, NULL))
@@ -2077,8 +2081,8 @@ static int react_drain_actions(struct react_context *ctx, morph_array_t *message
 		*prompt_count = 0;
 
 	while (ctx->action_drain_fn) {
-		struct json *payload;
-		struct json *text;
+		cJSON *payload;
+		cJSON *text;
 		struct chat_message *message;
 		struct message_list *history_message;
 		const char *content;
@@ -2094,16 +2098,17 @@ static int react_drain_actions(struct react_context *ctx, morph_array_t *message
 		}
 		if (!messages || !act.type || strcmp(act.type, "prompt") != 0 || !act.payload_json)
 			continue;
-		payload = json_parse_prefix(act.payload_json, NULL, NULL);
-		text = json_is_object_value(payload) ? json_member(payload, "text") : NULL;
-		content = json_is_string_value(text) ? json_string_value(text) : NULL;
+		payload = cJSON_Parse(act.payload_json);
+		text = cJSON_IsObject(payload) ? cJSON_GetObjectItemCaseSensitive(payload, "text")
+					       : NULL;
+		content = cJSON_IsString(text) ? text->valuestring : NULL;
 		if (!content || !content[0]) {
-			json_free(payload);
+			cJSON_Delete(payload);
 			continue;
 		}
 		message = react_push_chat_message(messages);
 		if (!message) {
-			json_free(payload);
+			cJSON_Delete(payload);
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
 					 "internal_error");
 			return 1;
@@ -2111,14 +2116,14 @@ static int react_drain_actions(struct react_context *ctx, morph_array_t *message
 		message->role = arena_strdup(ctx->message_arena, "user");
 		message->content = arena_strdup(ctx->message_arena, content);
 		if (!message->role || !message->content) {
-			json_free(payload);
+			cJSON_Delete(payload);
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
 					 "internal_error");
 			return 1;
 		}
 		ctx->steer_count++;
 		if (agent_history_record_user_steer(ctx, content, ctx->steer_count) != 0) {
-			json_free(payload);
+			cJSON_Delete(payload);
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, ctx->history_error,
 					 "history_persistence_error");
 			return 1;
@@ -2136,7 +2141,7 @@ static int react_drain_actions(struct react_context *ctx, morph_array_t *message
 							 ctx->memory_options);
 			morph_buf_cleanup(&token);
 			if (rc != 0) {
-				json_free(payload);
+				cJSON_Delete(payload);
 				react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, rc,
 						 "preference_persistence_error");
 				return 1;
@@ -2146,24 +2151,24 @@ static int react_drain_actions(struct react_context *ctx, morph_array_t *message
 						  tokenizer_count(ctx->tokenizer, content));
 		if (history_message)
 			msg_list_append(&ctx->messages, history_message);
-		struct json *event_data = json_object();
-		const struct json *display = json_member(payload, "display_text");
+		cJSON *event_data = cJSON_CreateObject();
+		const cJSON *display = cJSON_GetObjectItemCaseSensitive(payload, "display_text");
 
-		if (!event_data || !json_add_string(event_data, "text", content) ||
-		    (json_is_string_value(display) &&
-		     !json_add_string(event_data, "display_text", json_string_value(display)))) {
-			json_free(event_data);
-			json_free(payload);
+		if (!event_data || !cJSON_AddStringToObject(event_data, "text", content) ||
+		    (cJSON_IsString(display) &&
+		     !cJSON_AddStringToObject(event_data, "display_text", display->valuestring))) {
+			cJSON_Delete(event_data);
+			cJSON_Delete(payload);
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
 					 "internal_error");
 			return 1;
 		}
 		react_emit_event(react_events(ctx), MORPH_EVENT_REACT, "react.user.steer", "end",
 				 "requirement added", event_data);
-		json_free(event_data);
+		cJSON_Delete(event_data);
 		if (prompt_count)
 			(*prompt_count)++;
-		json_free(payload);
+		cJSON_Delete(payload);
 	}
 
 	if (!morph_signal_flag_get(&ctx->cancelled))
@@ -2320,8 +2325,15 @@ static int react_retry_incomplete_final(struct react_context *ctx, const char *p
 	return 1;
 }
 
-static int react_hook_invoke(struct react_context *ctx, const char *event, struct json *input,
-			     struct json **output)
+static const char *react_hook_text(const cJSON *obj, const char *key)
+{
+	const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+
+	return cJSON_IsString(item) ? item->valuestring : "";
+}
+
+static int react_hook_invoke(struct react_context *ctx, const char *event, cJSON *input,
+			     cJSON **output)
 {
 	int rc;
 	const char *extra;
@@ -2329,14 +2341,14 @@ static int react_hook_invoke(struct react_context *ctx, const char *event, struc
 
 	*output = NULL;
 	if (!ctx->hook_fn) {
-		json_free(input);
+		cJSON_Delete(input);
 		return 0;
 	}
 	rc = ctx->hook_fn(ctx->hook_user, event, input, output);
-	json_free(input);
+	cJSON_Delete(input);
 	if (rc < 0)
 		return rc;
-	extra = json_str_or(*output, "context", "");
+	extra = react_hook_text(*output, "context");
 	if (*extra) {
 		rc = morph_buf_init_arena(&joined, ctx->turn_arena, 256);
 		if (rc == 0)
@@ -2387,26 +2399,26 @@ static int react_handle_final_response(struct react_context *ctx, const char *pr
 	if (gr == 2)
 		return 1;
 	if (ctx->hook_fn) {
-		struct json *input = json_object(), *output = NULL;
-		json_add_string(input, "last_assistant_message", final_text);
-		json_add_bool(input, "stop_hook_active", ctx->hook_revision_count > 0);
+		cJSON *input = cJSON_CreateObject(), *output = NULL;
+		cJSON_AddStringToObject(input, "last_assistant_message", final_text);
+		cJSON_AddBoolToObject(input, "stop_hook_active", ctx->hook_revision_count > 0);
 		int hook_rc = react_hook_invoke(ctx, "Stop", input, &output);
-		int blocked = json_is_true(json_member_ci(output, "blocked"));
-		if (hook_rc < 0 || json_is_true(json_member_ci(output, "terminate")) ||
+		int blocked = cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked"));
+		if (hook_rc < 0 || cJSON_IsTrue(cJSON_GetObjectItem(output, "terminate")) ||
 		    (blocked && ctx->hook_revision_count >= 2)) {
-			react_set_error_detail(ctx, blocked ? json_str_or(output, "reason", "")
+			react_set_error_detail(ctx, blocked ? react_hook_text(output, "reason")
 							    : morph_strerror(hook_rc));
 			react_set_result(ctx,
 					 hook_rc == -ECANCELED ? REACT_OUTCOME_CANCELLED
 							       : REACT_OUTCOME_GUARDRAIL_DENIED,
 					 hook_rc < 0 ? hook_rc : -EPERM, "hook_completion_blocked");
-			json_free(output);
+			cJSON_Delete(output);
 			return 1;
 		}
 		if (blocked) {
 			struct chat_message *feedback = morph_array_push(messages);
 			if (!feedback) {
-				json_free(output);
+				cJSON_Delete(output);
 				react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
 						 "hook_failed");
 				return 1;
@@ -2414,16 +2426,16 @@ static int react_handle_final_response(struct react_context *ctx, const char *pr
 			memset(feedback, 0, sizeof(*feedback));
 			feedback->role = "user";
 			feedback->content =
-				arena_strdup(ctx->message_arena, json_str_or(output, "reason", ""));
+				arena_strdup(ctx->message_arena, react_hook_text(output, "reason"));
 			add_step(ctx,
 				 react_step_create(ctx->turn_arena, REACT_STEP_REFLECTION,
 						   arena_strdup(ctx->turn_arena, feedback->content),
 						   NULL, NULL, NULL));
 			ctx->hook_revision_count++;
-			json_free(output);
+			cJSON_Delete(output);
 			return 0;
 		}
-		json_free(output);
+		cJSON_Delete(output);
 	}
 	final_step =
 		react_step_create(ctx->turn_arena, REACT_STEP_FINAL, final_text, NULL, NULL, NULL);
@@ -2462,22 +2474,22 @@ static int react_collect_background_results(struct react_context *ctx, morph_arr
 		tool_handle_release(&handle);
 		return 0;
 	}
-	struct json *results = NULL;
+	cJSON *results = NULL;
 	int rc = entry->background_wait(entry->user_data, ctx->tool_runtime.memory_session_id,
 					ctx->turn_id, react_process_wait_cancelled, ctx, &results);
 	tool_handle_release(&handle);
 	if (rc != 0) {
-		json_free(results);
+		cJSON_Delete(results);
 		if (rc == -ECANCELED && !morph_signal_flag_get(&ctx->cancelled))
 			return 1;
 		return rc;
 	}
-	if (!json_count(results)) {
-		json_free(results);
+	if (!cJSON_GetArraySize(results)) {
+		cJSON_Delete(results);
 		return 0;
 	}
-	char *json = json_stringify(results);
-	json_free(results);
+	char *json = cJSON_PrintUnformatted(results);
+	cJSON_Delete(results);
 	if (!json)
 		return -ENOMEM;
 	morph_buf_t text;
@@ -2552,21 +2564,21 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 			      "turn started", user_input);
 
 	if (ctx->hook_fn) {
-		struct json *input = json_object(), *output = NULL;
-		json_add_string(input, "prompt", user_input);
+		cJSON *input = cJSON_CreateObject(), *output = NULL;
+		cJSON_AddStringToObject(input, "prompt", user_input);
 		int hook_rc = react_hook_invoke(ctx, "UserPromptSubmit", input, &output);
-		int blocked = json_is_true(json_member_ci(output, "blocked"));
+		int blocked = cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked"));
 		if (hook_rc < 0 || blocked) {
-			react_set_error_detail(ctx, blocked ? json_str_or(output, "reason", "")
+			react_set_error_detail(ctx, blocked ? react_hook_text(output, "reason")
 							    : morph_strerror(hook_rc));
 			react_set_result(ctx,
 					 hook_rc == -ECANCELED ? REACT_OUTCOME_CANCELLED
 							       : REACT_OUTCOME_GUARDRAIL_DENIED,
 					 hook_rc < 0 ? hook_rc : -EPERM, "hook_input_blocked");
-			json_free(output);
+			cJSON_Delete(output);
 			return react_finish_run(ctx);
 		}
-		json_free(output);
+		cJSON_Delete(output);
 	}
 	if (react_check_input_guardrail(ctx, user_input) > 0)
 		return react_finish_run(ctx);

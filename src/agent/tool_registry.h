@@ -58,10 +58,9 @@ typedef void (*tool_user_data_destroy_fn)(void *user_data);
 struct prompt_context_input;
 typedef void (*tool_environment_fn)(void *user_data, struct prompt_context_input *out);
 
-typedef int (*tool_background_list_fn)(void *user_data, int64_t owner, struct json **out);
+typedef int (*tool_background_list_fn)(void *user_data, int64_t owner, cJSON **out);
 typedef int (*tool_background_wait_fn)(void *user_data, int64_t owner, const char *turn_id,
-				       int (*cancelled)(void *), void *cancel_data,
-				       struct json **out);
+				       int (*cancelled)(void *), void *cancel_data, cJSON **out);
 typedef void (*tool_background_cancel_fn)(void *user_data, int64_t owner, const char *turn_id);
 
 struct tool_spec {

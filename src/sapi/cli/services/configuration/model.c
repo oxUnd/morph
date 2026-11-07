@@ -1,7 +1,7 @@
 #include "sapi/cli/services/configuration/model.h"
 #include "sapi/cli/services/configuration/role.h"
 #include "util/error.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -74,12 +74,11 @@ static int cli_model_recommended_output(const struct config_model_entry *entry)
 		return 16384;
 	if (!limits->thinking_output || !cli_setup_thinking_enabled(entry))
 		return limits->recommended_output;
-	struct json *body = json_parse_prefix(entry->extra_body_json, NULL, NULL);
-	const struct json *effort = json_member(body, "reasoning_effort");
-	int maximum_effort =
-		json_is_string_value(effort) && strcmp(json_string_value(effort), "max") == 0;
+	cJSON *body = cJSON_Parse(entry->extra_body_json);
+	const cJSON *effort = cJSON_GetObjectItemCaseSensitive(body, "reasoning_effort");
+	int maximum_effort = cJSON_IsString(effort) && strcmp(effort->valuestring, "max") == 0;
 
-	json_free(body);
+	cJSON_Delete(body);
 	return maximum_effort ? 131072 : limits->thinking_output;
 }
 
@@ -132,26 +131,26 @@ void cli_setup_model_defaults(int kind, int selected, struct config_model_entry 
 
 int cli_setup_thinking_enabled(const struct config_model_entry *entry)
 {
-	struct json *root = json_parse_prefix(entry->extra_body_json, NULL, NULL);
-	const struct json *thinking = json_member(root, "thinking");
-	const struct json *type = json_member(thinking, "type");
-	const struct json *effort = json_member(root, "reasoning_effort");
+	cJSON *root = cJSON_Parse(entry->extra_body_json);
+	const cJSON *thinking = cJSON_GetObjectItemCaseSensitive(root, "thinking");
+	const cJSON *type = cJSON_GetObjectItemCaseSensitive(thinking, "type");
+	const cJSON *effort = cJSON_GetObjectItemCaseSensitive(root, "reasoning_effort");
 	const struct cli_model_setup_token_limits *limits = cli_model_find_token_limits(entry);
 	int enabled = limits && limits->thinking_output;
 
-	if (json_is_string_value(effort))
-		enabled = strcmp(json_string_value(effort), "none") != 0;
-	if (json_is_string_value(type))
-		enabled = strcmp(json_string_value(type), "enabled") == 0;
+	if (cJSON_IsString(effort))
+		enabled = strcmp(effort->valuestring, "none") != 0;
+	if (cJSON_IsString(type))
+		enabled = strcmp(type->valuestring, "enabled") == 0;
 
-	json_free(root);
+	cJSON_Delete(root);
 	return enabled;
 }
 
 int cli_setup_set_thinking(struct config_model_entry *entry, int enabled)
 {
-	struct json *root;
-	struct json *thinking;
+	cJSON *root;
+	cJSON *thinking;
 	char *json;
 	int rc = 0;
 
@@ -159,41 +158,40 @@ int cli_setup_set_thinking(struct config_model_entry *entry, int enabled)
 		return -EINVAL;
 	int previous_output = cli_model_recommended_output(entry);
 	if (entry->extra_body_json[0]) {
-		root = json_parse_ex(entry->extra_body_json, NULL, 1, NULL);
-		if (!json_is_object_value(root)) {
-			json_free(root);
+		root = cJSON_ParseWithOpts(entry->extra_body_json, NULL, 1);
+		if (!cJSON_IsObject(root)) {
+			cJSON_Delete(root);
 			return MORPH_ERR_PARSE;
 		}
 	} else {
-		root = json_object();
+		root = cJSON_CreateObject();
 		if (!root)
 			return -ENOMEM;
 	}
-	thinking = json_member(root, "thinking");
-	if (!json_is_object_value(thinking)) {
-		json_object_remove(root, "thinking");
-		thinking = json_add_object(root, "thinking");
+	thinking = cJSON_GetObjectItemCaseSensitive(root, "thinking");
+	if (!cJSON_IsObject(thinking)) {
+		cJSON_DeleteItemFromObjectCaseSensitive(root, "thinking");
+		thinking = cJSON_AddObjectToObject(root, "thinking");
 	}
 	if (!thinking) {
-		json_free(root);
+		cJSON_Delete(root);
 		return -ENOMEM;
 	}
-	json_object_remove(thinking, "type");
-	if (!json_add_string(thinking, "type", enabled ? "enabled" : "disabled")) {
-		json_free(root);
+	cJSON_DeleteItemFromObjectCaseSensitive(thinking, "type");
+	if (!cJSON_AddStringToObject(thinking, "type", enabled ? "enabled" : "disabled")) {
+		cJSON_Delete(root);
 		return -ENOMEM;
 	}
-	const struct json *effort = json_member(root, "reasoning_effort");
-	if (enabled &&
-	    (!json_is_string_value(effort) || strcmp(json_string_value(effort), "none") == 0)) {
-		json_object_remove(root, "reasoning_effort");
-		if (!json_add_string(root, "reasoning_effort", "high")) {
-			json_free(root);
+	const cJSON *effort = cJSON_GetObjectItemCaseSensitive(root, "reasoning_effort");
+	if (enabled && (!cJSON_IsString(effort) || strcmp(effort->valuestring, "none") == 0)) {
+		cJSON_DeleteItemFromObjectCaseSensitive(root, "reasoning_effort");
+		if (!cJSON_AddStringToObject(root, "reasoning_effort", "high")) {
+			cJSON_Delete(root);
 			return -ENOMEM;
 		}
 	}
-	json = json_stringify(root);
-	json_free(root);
+	json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
 	if (!json)
 		return -ENOMEM;
 	if (strlen(json) >= sizeof(entry->extra_body_json))

@@ -206,15 +206,15 @@ TEST_F(RuntimeExecuteTest, CapturesDispatchedInputWithoutTheLaterAssistantAnswer
 	struct runtime_result result{};
 	OpenScripted();
 	ASSERT_EQ(Execute("inspect actual model input", &result), 0);
-	struct json *snapshot = nullptr;
+	cJSON *snapshot = nullptr;
 	ASSERT_EQ(runtime_session_last_request(instance, &snapshot), 0);
-	const char *input = json_string_value(json_member_ci(snapshot, "input_json"));
+	const char *input = cJSON_GetStringValue(cJSON_GetObjectItem(snapshot, "input_json"));
 	ASSERT_NE(input, nullptr);
 	EXPECT_NE(strstr(input, "inspect actual model input"), nullptr);
 	EXPECT_EQ(strstr(input, "scripted answer"), nullptr);
 	EXPECT_NE(strstr(input, "messages"), nullptr);
 	EXPECT_NE(strstr(input, "tools"), nullptr);
-	json_free(snapshot);
+	cJSON_Delete(snapshot);
 }
 
 TEST_F(RuntimeExecuteTest, MemoryMaintenanceNeverEntersTheDispatchedPrompt)
@@ -237,16 +237,16 @@ TEST_F(RuntimeExecuteTest, MemoryMaintenanceNeverEntersTheDispatchedPrompt)
 	ASSERT_EQ(model_history_add(&handle, &item, nullptr), 0);
 	struct runtime_result result{};
 	ASSERT_EQ(Execute("continue after the background build", &result), 0);
-	struct json *snapshot = nullptr;
+	cJSON *snapshot = nullptr;
 	ASSERT_EQ(runtime_session_last_request(instance, &snapshot), 0);
-	const char *input = json_string_value(json_member_ci(snapshot, "input_json"));
+	const char *input = cJSON_GetStringValue(cJSON_GetObjectItem(snapshot, "input_json"));
 	ASSERT_NE(input, nullptr);
 	EXPECT_EQ(strstr(input, "memory_consolidation"), nullptr);
 	EXPECT_EQ(strstr(input, "memory consolidation queued"), nullptr);
 	EXPECT_NE(strstr(input, "archive created"), nullptr);
 	EXPECT_EQ(model_history_count(&handle, session.id, 0), 4);
 	EXPECT_EQ(model_history_count(&handle, session.id, 1), 3);
-	json_free(snapshot);
+	cJSON_Delete(snapshot);
 	db_close(&handle);
 }
 
@@ -261,7 +261,7 @@ TEST_F(RuntimeExecuteTest, InputSnapshotFailureDoesNotPreventModelDispatch)
 	ASSERT_EQ(Execute("still execute this request", &result), 0);
 	EXPECT_EQ(result.outcome, RUNTIME_OUTCOME_COMPLETED);
 	EXPECT_EQ(scripted.calls, 1);
-	struct json *snapshot = nullptr;
+	cJSON *snapshot = nullptr;
 	EXPECT_EQ(runtime_session_last_request(instance, &snapshot), -ENODATA);
 	db_close(&database_handle);
 }
@@ -426,23 +426,21 @@ TEST_F(RuntimeExecuteTest, TrustedStopCommandRunsThroughRuntimeAndPersistsOneAns
 	options.after_models_user_data = &scripted;
 	Open(&options);
 	ASSERT_NE(instance, nullptr);
-	struct json *hooks = nullptr;
+	cJSON *hooks = nullptr;
 	ASSERT_EQ(runtime_hooks_snapshot(instance, &hooks), 0);
-	const struct json *row;
+	const cJSON *row;
 	int trusted = 0;
-	json_foreach (row, hooks) {
-		const struct json *source = json_member_ci(row, "source");
+	cJSON_ArrayForEach(row, hooks) {
+		const cJSON *source = cJSON_GetObjectItem(row, "source");
 		if (source && std::filesystem::canonical(config_path) ==
-				      std::filesystem::canonical(json_string_value(source))) {
-			ASSERT_EQ(runtime_hooks_manage(
-					  instance, "trust",
-					  json_string_value(json_member_ci(row, "id")),
-					  json_string_value(json_member_ci(row, "digest"))),
-				  0);
+		    std::filesystem::canonical(source->valuestring)) {
+			ASSERT_EQ(runtime_hooks_manage(instance, "trust",
+				cJSON_GetObjectItem(row, "id")->valuestring,
+				cJSON_GetObjectItem(row, "digest")->valuestring), 0);
 			trusted++;
 		}
 	}
-	json_free(hooks);
+	cJSON_Delete(hooks);
 	ASSERT_EQ(trusted, 1);
 	struct runtime_result result{};
 	ASSERT_EQ(Execute("finish the work", &result), 0);
@@ -491,7 +489,7 @@ TEST_F(RuntimeFacadeTest, ProcessResultsSurviveRestartAndRespectSessionOwnership
 		result.runtime = &context;
 		int rc = tool_exec(&instance->context.tools, "exec", args, &result);
 		EXPECT_EQ(rc, 0);
-		const char *value = json_string_value(json_member_ci(result.data, "session_id"));
+		const char *value = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "session_id"));
 		std::string id = value ? value : "";
 		tool_result_cleanup(&result);
 		return id;
@@ -503,29 +501,29 @@ TEST_F(RuntimeFacadeTest, ProcessResultsSurviveRestartAndRespectSessionOwnership
 			[&] { return notices.completed > 0; }));
 	}
 	std::string service = start(R"({"command":"sleep 20","service":true})");
-	struct json *jobs = nullptr;
+	cJSON *jobs = nullptr;
 	ASSERT_EQ(runtime_process_list(instance, &jobs), 0);
-	EXPECT_EQ(json_count(jobs), 2);
-	json_free(jobs);
+	EXPECT_EQ(cJSON_GetArraySize(jobs), 2);
+	cJSON_Delete(jobs);
 	runtime_close(instance);
 	instance = nullptr;
 	Open(&options);
-	struct json *data = nullptr;
+	cJSON *data = nullptr;
 	ASSERT_EQ(runtime_process_read(instance, finished.c_str(), &data), 0);
-	EXPECT_STREQ(json_string_value(json_member_ci(data, "stdout")), "persisted");
-	EXPECT_EQ(json_number_value(json_member_ci(data, "exit_code")), 7);
-	EXPECT_EQ(json_member_ci(data, "stdout_path"), nullptr);
-	json_free(data);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "stdout")), "persisted");
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data, "exit_code")), 7);
+	EXPECT_EQ(cJSON_GetObjectItem(data, "stdout_path"), nullptr);
+	cJSON_Delete(data);
 	ASSERT_EQ(runtime_process_read(instance, service.c_str(), &data), 0);
-	EXPECT_STREQ(json_string_value(json_member_ci(data, "status")), "unavailable");
-	json_free(data);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "status")), "unavailable");
+	cJSON_Delete(data);
 	EXPECT_EQ(runtime_process_stop(instance, service.c_str()), -ENOENT);
 	struct session other{};
 	int created = 0;
 	ASSERT_EQ(runtime_session_select(instance, "other-process-session", &other, &created), 0);
 	ASSERT_EQ(runtime_process_list(instance, &jobs), 0);
-	EXPECT_EQ(json_count(jobs), 0);
-	json_free(jobs);
+	EXPECT_EQ(cJSON_GetArraySize(jobs), 0);
+	cJSON_Delete(jobs);
 	EXPECT_EQ(runtime_process_read(instance, finished.c_str(), &data), -ENOENT);
 }
 

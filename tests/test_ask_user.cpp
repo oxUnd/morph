@@ -242,18 +242,18 @@ TEST_F(AskUserToolTest, QuestionOnly) {
 	ASSERT_NE(result.text.data, nullptr);
 	ASSERT_NE(result.data, nullptr);
 	ASSERT_NE(result.ui, nullptr);
-	struct json *kind = json_member_ci(result.data, "kind");
-	ASSERT_TRUE(json_is_string_value(kind));
-	EXPECT_STREQ(json_string_value(kind), "ask_user_response");
-	struct json *mode = json_member_ci(result.data, "selection_mode");
-	ASSERT_TRUE(json_is_string_value(mode));
-	EXPECT_STREQ(json_string_value(mode), "single");
-	struct json *answers = json_member_ci(result.data, "answers");
-	ASSERT_TRUE(json_is_array_value(answers));
-	ASSERT_EQ(json_count(answers), 1);
-	struct json *answer = json_at(answers, 0);
-	ASSERT_TRUE(json_is_string_value(answer));
-	EXPECT_STREQ(json_string_value(answer), "mock answer");
+	cJSON *kind = cJSON_GetObjectItem(result.data, "kind");
+	ASSERT_TRUE(cJSON_IsString(kind));
+	EXPECT_STREQ(kind->valuestring, "ask_user_response");
+	cJSON *mode = cJSON_GetObjectItem(result.data, "selection_mode");
+	ASSERT_TRUE(cJSON_IsString(mode));
+	EXPECT_STREQ(mode->valuestring, "single");
+	cJSON *answers = cJSON_GetObjectItem(result.data, "answers");
+	ASSERT_TRUE(cJSON_IsArray(answers));
+	ASSERT_EQ(cJSON_GetArraySize(answers), 1);
+	cJSON *answer = cJSON_GetArrayItem(answers, 0);
+	ASSERT_TRUE(cJSON_IsString(answer));
+	EXPECT_STREQ(answer->valuestring, "mock answer");
 	tool_result_cleanup(&result);
 }
 
@@ -268,18 +268,18 @@ TEST_F(AskUserToolTest, QuestionWithChoices) {
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_EQ(state.choices_count, 3);
 	ASSERT_NE(result.data, nullptr);
-	struct json *choices = json_member_ci(result.data, "choices");
-	ASSERT_TRUE(json_is_array_value(choices));
-	EXPECT_EQ(json_count(choices), 3);
-	struct json *first = json_at(choices, 0);
-	ASSERT_TRUE(json_is_string_value(first));
-	EXPECT_STREQ(json_string_value(first), "red");
-	struct json *answers = json_member_ci(result.data, "answers");
-	ASSERT_TRUE(json_is_array_value(answers));
-	ASSERT_EQ(json_count(answers), 1);
-	struct json *answer = json_at(answers, 0);
-	ASSERT_TRUE(json_is_string_value(answer));
-	EXPECT_STREQ(json_string_value(answer), "red");
+	cJSON *choices = cJSON_GetObjectItem(result.data, "choices");
+	ASSERT_TRUE(cJSON_IsArray(choices));
+	EXPECT_EQ(cJSON_GetArraySize(choices), 3);
+	cJSON *first = cJSON_GetArrayItem(choices, 0);
+	ASSERT_TRUE(cJSON_IsString(first));
+	EXPECT_STREQ(first->valuestring, "red");
+	cJSON *answers = cJSON_GetObjectItem(result.data, "answers");
+	ASSERT_TRUE(cJSON_IsArray(answers));
+	ASSERT_EQ(cJSON_GetArraySize(answers), 1);
+	cJSON *answer = cJSON_GetArrayItem(answers, 0);
+	ASSERT_TRUE(cJSON_IsString(answer));
+	EXPECT_STREQ(answer->valuestring, "red");
 	EXPECT_STREQ(state.selection_mode, "single");
 	EXPECT_EQ(state.min_choices, 1);
 	EXPECT_EQ(state.max_choices, 1);
@@ -302,15 +302,15 @@ TEST_F(AskUserToolTest, MultiSelectReturnsAnswersArray) {
 	EXPECT_STREQ(state.selection_mode, "multi");
 	EXPECT_EQ(state.min_choices, 2);
 	EXPECT_EQ(state.max_choices, 3);
-	struct json *mode = json_member_ci(result.data, "selection_mode");
-	ASSERT_TRUE(json_is_string_value(mode));
-	EXPECT_STREQ(json_string_value(mode), "multi");
-	struct json *answers = json_member_ci(result.data, "answers");
-	ASSERT_TRUE(json_is_array_value(answers));
-	ASSERT_EQ(json_count(answers), 2);
-	EXPECT_STREQ(json_string_value(json_at(answers, 0)), "build");
-	EXPECT_STREQ(json_string_value(json_at(answers, 1)), "install");
-	struct json *legacy_answer = json_member_ci(result.data, "answer");
+	cJSON *mode = cJSON_GetObjectItem(result.data, "selection_mode");
+	ASSERT_TRUE(cJSON_IsString(mode));
+	EXPECT_STREQ(mode->valuestring, "multi");
+	cJSON *answers = cJSON_GetObjectItem(result.data, "answers");
+	ASSERT_TRUE(cJSON_IsArray(answers));
+	ASSERT_EQ(cJSON_GetArraySize(answers), 2);
+	EXPECT_STREQ(cJSON_GetArrayItem(answers, 0)->valuestring, "build");
+	EXPECT_STREQ(cJSON_GetArrayItem(answers, 1)->valuestring, "install");
+	cJSON *legacy_answer = cJSON_GetObjectItem(result.data, "answer");
 	EXPECT_EQ(legacy_answer, nullptr);
 	tool_result_cleanup(&result);
 }
@@ -330,15 +330,15 @@ TEST_F(AskUserToolTest, MultiSelectClampsImpossibleLimits) {
 	ASSERT_NE(result.data, nullptr);
 	EXPECT_EQ(state.min_choices, 2);
 	EXPECT_EQ(state.max_choices, 2);
-	struct json *min = json_member_ci(result.data, "min_choices");
-	struct json *max = json_member_ci(result.data, "max_choices");
-	ASSERT_TRUE(json_is_number_value(min));
-	ASSERT_TRUE(json_is_number_value(max));
-	EXPECT_EQ(json_int_value(min), 2);
-	EXPECT_EQ(json_int_value(max), 2);
-	struct json *answers = json_member_ci(result.data, "answers");
-	ASSERT_TRUE(json_is_array_value(answers));
-	ASSERT_EQ(json_count(answers), 2);
+	cJSON *min = cJSON_GetObjectItem(result.data, "min_choices");
+	cJSON *max = cJSON_GetObjectItem(result.data, "max_choices");
+	ASSERT_TRUE(cJSON_IsNumber(min));
+	ASSERT_TRUE(cJSON_IsNumber(max));
+	EXPECT_EQ(min->valueint, 2);
+	EXPECT_EQ(max->valueint, 2);
+	cJSON *answers = cJSON_GetObjectItem(result.data, "answers");
+	ASSERT_TRUE(cJSON_IsArray(answers));
+	ASSERT_EQ(cJSON_GetArraySize(answers), 2);
 	tool_result_cleanup(&result);
 }
 
@@ -384,12 +384,12 @@ TEST_F(AskUserToolTest, EmptyAnswer) {
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.text.data, nullptr);
 	ASSERT_NE(result.data, nullptr);
-	struct json *no_input = json_member_ci(result.data, "no_input");
-	ASSERT_TRUE(json_is_bool_value(no_input));
-	EXPECT_TRUE(json_is_true(no_input));
-	struct json *answers = json_member_ci(result.data, "answers");
-	ASSERT_TRUE(json_is_array_value(answers));
-	EXPECT_EQ(json_count(answers), 0);
+	cJSON *no_input = cJSON_GetObjectItem(result.data, "no_input");
+	ASSERT_TRUE(cJSON_IsBool(no_input));
+	EXPECT_TRUE(cJSON_IsTrue(no_input));
+	cJSON *answers = cJSON_GetObjectItem(result.data, "answers");
+	ASSERT_TRUE(cJSON_IsArray(answers));
+	EXPECT_EQ(cJSON_GetArraySize(answers), 0);
 	tool_result_cleanup(&result);
 }
 
@@ -401,12 +401,12 @@ TEST_F(AskUserToolTest, EmptyStringAnswerIsNoInput) {
 			   "{\"question\":\"hello?\"}", &result);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.data, nullptr);
-	struct json *no_input = json_member_ci(result.data, "no_input");
-	ASSERT_TRUE(json_is_bool_value(no_input));
-	EXPECT_TRUE(json_is_true(no_input));
-	struct json *answers = json_member_ci(result.data, "answers");
-	ASSERT_TRUE(json_is_array_value(answers));
-	EXPECT_EQ(json_count(answers), 0);
+	cJSON *no_input = cJSON_GetObjectItem(result.data, "no_input");
+	ASSERT_TRUE(cJSON_IsBool(no_input));
+	EXPECT_TRUE(cJSON_IsTrue(no_input));
+	cJSON *answers = cJSON_GetObjectItem(result.data, "answers");
+	ASSERT_TRUE(cJSON_IsArray(answers));
+	EXPECT_EQ(cJSON_GetArraySize(answers), 0);
 	tool_result_cleanup(&result);
 }
 
@@ -431,14 +431,14 @@ TEST_F(AskUserToolTest, RegistryScopedCallbackData) {
 	ASSERT_NE(result2.text.data, nullptr);
 	ASSERT_NE(result1.data, nullptr);
 	ASSERT_NE(result2.data, nullptr);
-	struct json *answers1 = json_member_ci(result1.data, "answers");
-	struct json *answers2 = json_member_ci(result2.data, "answers");
-	ASSERT_TRUE(json_is_array_value(answers1));
-	ASSERT_TRUE(json_is_array_value(answers2));
-	ASSERT_EQ(json_count(answers1), 1);
-	ASSERT_EQ(json_count(answers2), 1);
-	EXPECT_STREQ(json_string_value(json_at(answers1, 0)), "first");
-	EXPECT_STREQ(json_string_value(json_at(answers2, 0)), "second");
+	cJSON *answers1 = cJSON_GetObjectItem(result1.data, "answers");
+	cJSON *answers2 = cJSON_GetObjectItem(result2.data, "answers");
+	ASSERT_TRUE(cJSON_IsArray(answers1));
+	ASSERT_TRUE(cJSON_IsArray(answers2));
+	ASSERT_EQ(cJSON_GetArraySize(answers1), 1);
+	ASSERT_EQ(cJSON_GetArraySize(answers2), 1);
+	EXPECT_STREQ(cJSON_GetArrayItem(answers1, 0)->valuestring, "first");
+	EXPECT_STREQ(cJSON_GetArrayItem(answers2, 0)->valuestring, "second");
 
 	tool_result_cleanup(&result1);
 	tool_result_cleanup(&result2);
@@ -497,11 +497,11 @@ TEST_F(AskUserToolTest, OptionalTimeoutAdoptsRecommendationAndIdentifiesSource)
 	EXPECT_EQ(state.options.optional, 1);
 	EXPECT_EQ(state.options.timeout_seconds, 60);
 	ASSERT_NE(result.data, nullptr);
-	EXPECT_STREQ(json_string_value(json_member_ci(result.data, "resolution")),
-		     "timeout_recommended");
-	struct json *answers = json_member_ci(result.data, "answers");
-	ASSERT_EQ(json_count(answers), 1);
-	EXPECT_STREQ(json_string_value(json_at(answers, 0)), "SQLite");
+	EXPECT_STREQ(cJSON_GetObjectItem(result.data, "resolution")->valuestring,
+		"timeout_recommended");
+	cJSON *answers = cJSON_GetObjectItem(result.data, "answers");
+	ASSERT_EQ(cJSON_GetArraySize(answers), 1);
+	EXPECT_STREQ(cJSON_GetArrayItem(answers, 0)->valuestring, "SQLite");
 	tool_result_cleanup(&result);
 }
 
@@ -515,10 +515,10 @@ TEST_F(AskUserToolTest, OptionalTimeoutWithoutRecommendationReturnsNoInput)
 		"response_policy":"optional","timeout_seconds":2})", &result), 0);
 	EXPECT_EQ(state.options.timeout_seconds, 2);
 	ASSERT_NE(result.data, nullptr);
-	EXPECT_TRUE(json_is_true(json_member_ci(result.data, "no_input")));
-	EXPECT_EQ(json_count(json_member_ci(result.data, "answers")), 0);
-	EXPECT_STREQ(json_string_value(json_member_ci(result.data, "resolution")),
-		     "timeout_no_input");
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(result.data, "no_input")));
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(result.data, "answers")), 0);
+	EXPECT_STREQ(cJSON_GetObjectItem(result.data, "resolution")->valuestring,
+		"timeout_no_input");
 	tool_result_cleanup(&result);
 }
 
@@ -533,10 +533,10 @@ TEST_F(AskUserToolTest, OptionalMultiTimeoutAdoptsWholeRecommendedCombination)
 		"min_choices":2,"max_choices":2,"recommended_indices":[0,1],
 		"response_policy":"optional"})", &result), 0);
 	ASSERT_NE(result.data, nullptr);
-	struct json *answers = json_member_ci(result.data, "answers");
-	ASSERT_EQ(json_count(answers), 2);
-	EXPECT_STREQ(json_string_value(json_at(answers, 0)), "build");
-	EXPECT_STREQ(json_string_value(json_at(answers, 1)), "test");
+	cJSON *answers = cJSON_GetObjectItem(result.data, "answers");
+	ASSERT_EQ(cJSON_GetArraySize(answers), 2);
+	EXPECT_STREQ(cJSON_GetArrayItem(answers, 0)->valuestring, "build");
+	EXPECT_STREQ(cJSON_GetArrayItem(answers, 1)->valuestring, "test");
 	tool_result_cleanup(&result);
 }
 
@@ -554,7 +554,7 @@ TEST_F(AskUserToolTest, CancellationAndRequiredTimeoutNeverAdoptRecommendation)
 			R"({"question":"Preference?","choices":["A","B"],
 			"recommended_indices":[1],"response_policy":"optional"})";
 		EXPECT_EQ(tool_exec(&tools, "ask_user", args, &result), rc);
-		EXPECT_EQ(json_member_ci(result.data, "answers"), nullptr);
+		EXPECT_EQ(cJSON_GetObjectItem(result.data, "answers"), nullptr);
 		if (rc == -ETIMEDOUT)
 			EXPECT_EQ(state.options.timeout_seconds, 0);
 		tool_result_cleanup(&result);
@@ -570,8 +570,9 @@ TEST_F(AskUserToolTest, ExplicitAnswerOverridesRecommendation)
 		"choices":["A","B"],"recommended_indices":[1],
 		"response_policy":"optional"})", &result), 0);
 	ASSERT_NE(result.data, nullptr);
-	EXPECT_STREQ(json_string_value(json_member_ci(result.data, "resolution")), "user");
-	EXPECT_STREQ(json_string_value(json_at(json_member_ci(result.data, "answers"), 0)), "A");
+	EXPECT_STREQ(cJSON_GetObjectItem(result.data, "resolution")->valuestring, "user");
+	EXPECT_STREQ(cJSON_GetArrayItem(cJSON_GetObjectItem(result.data, "answers"), 0)
+		->valuestring, "A");
 	tool_result_cleanup(&result);
 }
 

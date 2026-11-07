@@ -540,7 +540,7 @@ LLM 调用前:
 | CLI 输入 | readline（GNU）/ editline（BSD） | 可选 | 找不到时回退 `fgets` |
 | HTTP / SSE | libcurl（系统库） | ✓ | 工业级 |
 | TLS | libcurl 内置（OpenSSL 或 GnuTLS） | ✓ | — |
-| JSON | util/json（cJSON 后端） | ✓ | 统一路径访问、类型、所有权和序列化；后端私有 |
+| JSON | cJSON | ✓ | 单文件嵌入（vendor/） |
 | TOML | tomlc17 | ✓ | 单文件嵌入（vendor/），配置由内置 schema 校验 |
 | Markdown | cmark-gfm 0.29.0.gfm.13 | ✓ | 由 `fronts/morph-markdown` FetchContent 拉取 |
 | Markdown 渲染 | MorphMarkdown Kitty SDK | ✓ | `fronts/morph-markdown/sdk/kitty/morph-markdown/` |
@@ -1081,7 +1081,7 @@ char *arena_strdup(struct arena *a, const char *s);		/* arena 内字符串复制
 - 变长字符串拼接一律用 `morph_buf`，**不得**用固定 `char[N]` + `snprintf` 累加。
 - 数量不固定的集合用 `morph_array`，**不得**用固定容量 C 数组兜底（注意 `push` 可能触发 realloc，勿跨 push 持有元素指针）。
 - 字符串为 key 的查找用 `morph_strmap`（如工具注册表）；整数 key 直接用 `morph_array` 下标或线性查找。
-- `morph_str_t` 用于非拥有切片；JSON 模块取值与多数 API 仍传普通 `const char *`。
+- `morph_str_t` 用于非拥有切片；cJSON 取值与多数 API 仍传普通 `const char *`。
 
 ```c
 /* buf.h —— 可增长字符串构造 */
@@ -1313,12 +1313,12 @@ struct tool_desc {
 };
 
 struct tool_result {
-	struct json *envelope;
+	cJSON *envelope;
 	morph_str_t text;
 	char *owned;
-	struct json *data;
-	struct json *ui;
-	struct json *meta;
+	cJSON *data;
+	cJSON *ui;
+	cJSON *meta;
 	struct tool_artifact_list artifacts;
 };
 

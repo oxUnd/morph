@@ -1,6 +1,6 @@
 #include "sapi/cli/widgets/list.h"
 #include "util/terminal_size.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "sapi/cli/application_internal.h"
 
 #include <morph/tui/terminal.h>
@@ -252,18 +252,22 @@ void cli_list_text_field(struct cli_application *ctx, const char *label, const c
 	}
 }
 
+static int cli_list_json_count(const cJSON *item)
+{
+	return cJSON_IsArray(item) || cJSON_IsObject(item) ? cJSON_GetArraySize(item) : 0;
+}
+
 static void cli_list_json_prefix(struct cli_application *ctx, const int *ancestors_last, int depth,
 				 int is_last)
 {
 	cli_list_tree_prefix(ctx, ancestors_last, depth, is_last, 0);
 }
 
-static void cli_list_json_node(struct cli_application *ctx, const struct json *item,
-			       const char *label, int depth, int is_last, int *ancestors_last,
-			       int columns)
+static void cli_list_json_node(struct cli_application *ctx, const cJSON *item, const char *label,
+			       int depth, int is_last, int *ancestors_last, int columns)
 {
 	char safe_label[CLI_LIST_TEXT_MAX];
-	struct json *child;
+	cJSON *child;
 	int count;
 	int shown;
 	int index = 0;
@@ -274,19 +278,19 @@ static void cli_list_json_node(struct cli_application *ctx, const struct json *i
 	label = safe_label;
 	cli_list_json_prefix(ctx, ancestors_last, depth, is_last);
 	printf(ctx, ANSI_DIM "%s" ANSI_RESET, label);
-	if (!json_is_array_value(item) && !json_is_object_value(item)) {
+	if (!cJSON_IsArray(item) && !cJSON_IsObject(item)) {
 		fputs(ctx, ": ", stdout);
-		scalar = json_is_string_value(item) ? strdup(json_string_value(item))
-						    : json_stringify(item);
+		scalar = cJSON_IsString(item) ? strdup(item->valuestring)
+					      : cJSON_PrintUnformatted(item);
 		cli_list_print_clipped(ctx, scalar,
 				       columns - prefix_width - (int)utf8_display_width(label) - 2);
 		free(scalar);
 		putchar(ctx, '\n');
 		return;
 	}
-	count = json_count(item);
+	count = cli_list_json_count(item);
 	if (count == 0) {
-		printf(ctx, ": %s\n", json_is_array_value(item) ? "[]" : "{}");
+		printf(ctx, ": %s\n", cJSON_IsArray(item) ? "[]" : "{}");
 		return;
 	}
 	putchar(ctx, '\n');
@@ -294,17 +298,17 @@ static void cli_list_json_node(struct cli_application *ctx, const struct json *i
 		return;
 	ancestors_last[depth] = is_last;
 	shown = count < CLI_LIST_ITEMS_MAX ? count : CLI_LIST_ITEMS_MAX;
-	json_foreach (child, item) {
+	cJSON_ArrayForEach (child, item) {
 		char index_label[32];
 		const char *child_label;
 
 		if (index >= shown)
 			break;
-		if (json_is_array_value(item)) {
+		if (cJSON_IsArray(item)) {
 			snprintf(index_label, sizeof(index_label), "[%d]", index);
 			child_label = index_label;
 		} else {
-			child_label = json_key(child) ? json_key(child) : "item";
+			child_label = child->string ? child->string : "item";
 		}
 		cli_list_json_node(ctx, child, child_label, depth + 1,
 				   index == shown - 1 && shown == count, ancestors_last, columns);
@@ -319,7 +323,7 @@ static void cli_list_json_node(struct cli_application *ctx, const struct json *i
 void cli_list_json_field(struct cli_application *ctx, const char *label, const char *json,
 			 int is_last, int columns)
 {
-	struct json *root = json ? json_parse_prefix(json, NULL, NULL) : NULL;
+	cJSON *root = json ? cJSON_Parse(json) : NULL;
 	char safe_label[CLI_LIST_TEXT_MAX];
 	int ancestors_last[CLI_LIST_DEPTH_MAX] = {0};
 
@@ -329,16 +333,15 @@ void cli_list_json_field(struct cli_application *ctx, const char *label, const c
 	if (!root)
 		return;
 	ancestors_last[0] = is_last;
-	if (json_is_array_value(root) || json_is_object_value(root)) {
-		struct json *child;
-		int count = json_count(root);
+	if (cJSON_IsArray(root) || cJSON_IsObject(root)) {
+		cJSON *child;
+		int count = cli_list_json_count(root);
 		int index = 0;
 
-		json_foreach (child, root) {
+		cJSON_ArrayForEach (child, root) {
 			const char *child_label =
-				json_is_array_value(root)
-					? "item"
-					: (json_key(child) ? json_key(child) : "item");
+				cJSON_IsArray(root) ? "item"
+						    : (child->string ? child->string : "item");
 
 			cli_list_json_node(ctx, child, child_label, 1, index == count - 1,
 					   ancestors_last, columns);
@@ -347,5 +350,5 @@ void cli_list_json_field(struct cli_application *ctx, const char *label, const c
 	} else {
 		cli_list_json_node(ctx, root, "value", 1, 1, ancestors_last, columns);
 	}
-	json_free(root);
+	cJSON_Delete(root);
 }

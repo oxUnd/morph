@@ -4,7 +4,7 @@
 #include "models/llm.h"
 #include "util/buf.h"
 #include "util/arena.h"
-#include "util/json.h"
+#include "cJSON.h"
 
 struct llm_stream_ctx {
 	struct morph_log *logger;
@@ -41,10 +41,10 @@ void llm_usage_finalize(struct model *self, struct llm_stream_ctx *ctx, size_t r
 
 void llm_usage_report(struct model *self, struct llm_stream_ctx *ctx, size_t request_bytes);
 
-void llm_stream_parse_metadata(struct llm_stream_ctx *ctx, const struct json *root);
+void llm_stream_parse_metadata(struct llm_stream_ctx *ctx, cJSON *root);
 
-void llm_stream_parse_usage(struct llm_stream_ctx *ctx, const struct json *root);
+void llm_stream_parse_usage(struct llm_stream_ctx *ctx, cJSON *root);
 
-void llm_stream_parse_finish_reason(struct llm_stream_ctx *ctx, const struct json *choice);
+void llm_stream_parse_finish_reason(struct llm_stream_ctx *ctx, cJSON *choice);
 
 #endif

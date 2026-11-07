@@ -7,7 +7,7 @@
 #include "util/id.h"
 #include "util/log.h"
 #include "util/name.h"
-#include "util/json.h"
+#include "cJSON.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -124,27 +124,27 @@ static int restore_unlink_optional(const char *path)
 
 static int restore_journal_write(const struct morph_sync_restore_plan *plan, const char *phase)
 {
-	struct json *root;
+	cJSON *root;
 	char *json;
 	int rc = 0;
 
-	root = json_object();
+	root = cJSON_CreateObject();
 	if (!root)
 		return -ENOMEM;
-	if (!json_add_string(root, "phase", phase) ||
-	    !json_add_string(root, "token", plan->token) ||
-	    !json_add_string(root, "snapshot_id", plan->snapshot_id) ||
-	    !json_add_string(root, "path", plan->path) ||
-	    !json_add_string(root, "target", plan->target) ||
-	    !json_add_string(root, "staging", plan->staging) ||
-	    !json_add_string(root, "rollback", plan->rollback) ||
-	    !json_add_string(root, "journal", plan->journal) ||
-	    !json_add_string(root, "expected_hash", plan->expected_hash)) {
-		json_free(root);
+	if (!cJSON_AddStringToObject(root, "phase", phase) ||
+	    !cJSON_AddStringToObject(root, "token", plan->token) ||
+	    !cJSON_AddStringToObject(root, "snapshot_id", plan->snapshot_id) ||
+	    !cJSON_AddStringToObject(root, "path", plan->path) ||
+	    !cJSON_AddStringToObject(root, "target", plan->target) ||
+	    !cJSON_AddStringToObject(root, "staging", plan->staging) ||
+	    !cJSON_AddStringToObject(root, "rollback", plan->rollback) ||
+	    !cJSON_AddStringToObject(root, "journal", plan->journal) ||
+	    !cJSON_AddStringToObject(root, "expected_hash", plan->expected_hash)) {
+		cJSON_Delete(root);
 		return -ENOMEM;
 	}
-	json = json_stringify(root);
-	json_free(root);
+	json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
 	if (!json)
 		return -ENOMEM;
 	rc = file_write_atomic(plan->journal, json, strlen(json));
@@ -156,7 +156,7 @@ static int restore_plan_from_json(const char *journal, struct morph_sync_restore
 				  char phase[16])
 {
 	char *text;
-	struct json *root;
+	cJSON *root;
 	const char *names[] = {"token",	  "snapshot_id", "path",    "target",
 			       "staging", "rollback",	 "journal", "expected_hash"};
 	char *values[] = {plan->token,	 plan->snapshot_id, plan->path,	   plan->target,
@@ -164,35 +164,33 @@ static int restore_plan_from_json(const char *journal, struct morph_sync_restore
 	size_t sizes[] = {sizeof(plan->token),	 sizeof(plan->snapshot_id),  sizeof(plan->path),
 			  sizeof(plan->target),	 sizeof(plan->staging),	     sizeof(plan->rollback),
 			  sizeof(plan->journal), sizeof(plan->expected_hash)};
-	struct json *item;
+	cJSON *item;
 
 	text = file_read_all(journal, NULL);
 	if (!text)
 		return -EIO;
-	root = json_parse_prefix(text, NULL, NULL);
+	root = cJSON_Parse(text);
 	free(text);
-	if (!json_is_object_value(root)) {
-		json_free(root);
+	if (!cJSON_IsObject(root)) {
+		cJSON_Delete(root);
 		return MORPH_ERR_PARSE;
 	}
 	memset(plan, 0, sizeof(*plan));
-	item = json_member_ci(root, "phase");
-	if (!json_is_string_value(item)) {
-		json_free(root);
+	item = cJSON_GetObjectItem(root, "phase");
+	if (!cJSON_IsString(item)) {
+		cJSON_Delete(root);
 		return MORPH_ERR_PARSE;
 	}
-	strncpy(phase, json_string_value(item), 15);
+	strncpy(phase, item->valuestring, 15);
 	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
-		item = json_member_ci(root, names[i]);
-		const char *value = json_string_value(item);
-
-		if (!value || strlen(value) >= sizes[i]) {
-			json_free(root);
+		item = cJSON_GetObjectItem(root, names[i]);
+		if (!cJSON_IsString(item) || strlen(item->valuestring) >= sizes[i]) {
+			cJSON_Delete(root);
 			return MORPH_ERR_PARSE;
 		}
-		strncpy(values[i], value, sizes[i] - 1);
+		strncpy(values[i], item->valuestring, sizes[i] - 1);
 	}
-	json_free(root);
+	cJSON_Delete(root);
 	return 0;
 }
 
@@ -446,30 +444,30 @@ int morph_sync_finalize_db_replacements(struct morph_log *logger, const char *so
 
 char *morph_sync_restore_plan_to_json(const struct morph_sync_restore_plan *plan)
 {
-	struct json *root;
+	cJSON *root;
 	char *json;
 
 	if (!plan)
 		return NULL;
-	root = json_object();
+	root = cJSON_CreateObject();
 	if (!root)
 		return NULL;
-	json_add_string(root, "token", plan->token);
-	json_add_string(root, "snapshot_id", plan->snapshot_id);
-	json_add_string(root, "path", plan->path);
-	json_add_string(root, "target", plan->target);
-	json_add_string(root, "staging", plan->staging);
-	json_add_string(root, "rollback", plan->rollback);
-	json_add_string(root, "journal", plan->journal);
-	json_add_string(root, "expected_hash", plan->expected_hash);
-	json = json_stringify(root);
-	json_free(root);
+	cJSON_AddStringToObject(root, "token", plan->token);
+	cJSON_AddStringToObject(root, "snapshot_id", plan->snapshot_id);
+	cJSON_AddStringToObject(root, "path", plan->path);
+	cJSON_AddStringToObject(root, "target", plan->target);
+	cJSON_AddStringToObject(root, "staging", plan->staging);
+	cJSON_AddStringToObject(root, "rollback", plan->rollback);
+	cJSON_AddStringToObject(root, "journal", plan->journal);
+	cJSON_AddStringToObject(root, "expected_hash", plan->expected_hash);
+	json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
 	return json;
 }
 
 int morph_sync_restore_plan_from_json(const char *json, struct morph_sync_restore_plan *plan)
 {
-	struct json *root;
+	cJSON *root;
 	const char *names[] = {"token",	  "snapshot_id", "path",    "target",
 			       "staging", "rollback",	 "journal", "expected_hash"};
 	char *values[] = {plan ? plan->token : NULL,   plan ? plan->snapshot_id : NULL,
@@ -484,22 +482,20 @@ int morph_sync_restore_plan_from_json(const char *json, struct morph_sync_restor
 	if (!json || !plan)
 		return -EINVAL;
 	memset(plan, 0, sizeof(*plan));
-	root = json_parse_prefix(json, NULL, NULL);
-	if (!json_is_object_value(root)) {
-		json_free(root);
+	root = cJSON_Parse(json);
+	if (!cJSON_IsObject(root)) {
+		cJSON_Delete(root);
 		return MORPH_ERR_PARSE;
 	}
 	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
-		const struct json *item = json_member_ci(root, names[i]);
+		cJSON *item = cJSON_GetObjectItem(root, names[i]);
 
-		const char *value = json_string_value(item);
-
-		if (!value || strlen(value) >= sizes[i]) {
-			json_free(root);
+		if (!cJSON_IsString(item) || strlen(item->valuestring) >= sizes[i]) {
+			cJSON_Delete(root);
 			return MORPH_ERR_PARSE;
 		}
-		strncpy(values[i], value, sizes[i] - 1);
+		strncpy(values[i], item->valuestring, sizes[i] - 1);
 	}
-	json_free(root);
+	cJSON_Delete(root);
 	return 0;
 }

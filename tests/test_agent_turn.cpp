@@ -88,15 +88,16 @@ TEST_F(AgentTurnTest, PersistsExecutionOutcomeWithoutInventingTaskCompletion)
 				request = item;
 		}
 		ASSERT_NE(request, nullptr);
-		struct json *payload = json_parse_prefix(request->payload_json, NULL, NULL);
+		cJSON *payload = cJSON_Parse(request->payload_json);
 		ASSERT_NE(payload, nullptr);
-		struct json *record = json_member_ci(payload, "turn_outcome");
-		EXPECT_STREQ(json_string_value(json_member_ci(record, "status")), id.c_str());
-		EXPECT_TRUE(json_is_true(json_member_ci(record, "finished")));
-		EXPECT_EQ(json_int_value(json_member_ci(record, "error_code")),
-			  outcome == REACT_OUTCOME_SUCCESS ? 0 : -EIO);
-		EXPECT_EQ(json_member_ci(record, "task_completed"), nullptr);
-		json_free(payload);
+		cJSON *record = cJSON_GetObjectItem(payload, "turn_outcome");
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(record, "status")),
+			id.c_str());
+		EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(record, "finished")));
+		EXPECT_EQ(cJSON_GetObjectItem(record, "error_code")->valueint,
+			outcome == REACT_OUTCOME_SUCCESS ? 0 : -EIO);
+		EXPECT_EQ(cJSON_GetObjectItem(record, "task_completed"), nullptr);
+		cJSON_Delete(payload);
 		model_history_free_list(items);
 	}
 }
@@ -909,15 +910,15 @@ TEST_F(AgentTurnTest, ToolHistoryKeepsOriginalAndDeduplicatesModelContent)
 	int count = 0;
 	auto *items = model_history_list(&db, sess.id, 1, &count);
 	ASSERT_NE(items, nullptr);
-	struct json *model = json_parse_prefix(items->content, NULL, NULL);
+	cJSON *model = cJSON_Parse(items->content);
 	ASSERT_NE(model, nullptr);
-	EXPECT_EQ(json_member_ci(model, "stdout"), nullptr);
-	EXPECT_NE(json_member_ci(json_member_ci(model, "data"), "stdout"), nullptr);
-	struct json *payload = json_parse_prefix(items->payload_json, NULL, NULL);
+	EXPECT_EQ(cJSON_GetObjectItem(model, "stdout"), nullptr);
+	EXPECT_NE(cJSON_GetObjectItem(cJSON_GetObjectItem(model, "data"), "stdout"), nullptr);
+	cJSON *payload = cJSON_Parse(items->payload_json);
 	ASSERT_NE(payload, nullptr);
-	EXPECT_STREQ(json_string_value(json_member_ci(payload, "original_content")), input);
-	json_free(payload);
-	json_free(model);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(payload, "original_content")), input);
+	cJSON_Delete(payload);
+	cJSON_Delete(model);
 	model_history_free_list(items);
 }
 
@@ -932,13 +933,13 @@ TEST_F(AgentTurnTest, JsonToolTruncationPreservesExecutionControls)
 	ASSERT_EQ(agent_history_prepare_tool_content(react, input.c_str(), &prepared, &truncated),
 		  0);
 	EXPECT_EQ(truncated, 1);
-	struct json *json = json_parse_prefix(prepared, NULL, NULL);
+	cJSON *json = cJSON_Parse(prepared);
 	ASSERT_NE(json, nullptr);
-	struct json *data = json_member_ci(json, "data");
-	EXPECT_EQ(json_number_value(json_member_ci(data, "exit_code")), 7);
-	EXPECT_STREQ(json_string_value(json_member_ci(data, "session_id")), "proc_test");
+	cJSON *data = cJSON_GetObjectItem(json, "data");
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data, "exit_code")), 7);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "session_id")), "proc_test");
 	EXPECT_LE(tokenizer_count(react->tokenizer, prepared), 100);
-	json_free(json);
+	cJSON_Delete(json);
 	free(prepared);
 }
 
@@ -950,13 +951,13 @@ TEST_F(AgentTurnTest, GenericJsonTruncationReturnsAnExplicitPreview)
 	int truncated = 0;
 	ASSERT_EQ(agent_history_prepare_tool_content(react, input.c_str(), &prepared, &truncated),
 		  0);
-	struct json *json = json_parse_prefix(prepared, NULL, NULL);
+	cJSON *json = cJSON_Parse(prepared);
 	ASSERT_NE(json, nullptr);
 	EXPECT_EQ(truncated, 1);
-	EXPECT_TRUE(json_is_true(json_member_ci(json, "history_truncated")));
-	EXPECT_EQ(json_member_ci(json, "ok"), nullptr);
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(json, "history_truncated")));
+	EXPECT_EQ(cJSON_GetObjectItem(json, "ok"), nullptr);
 	EXPECT_LE(tokenizer_count(react->tokenizer, prepared), 100);
-	json_free(json);
+	cJSON_Delete(json);
 	free(prepared);
 }
 

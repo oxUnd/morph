@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "mcp/mcp_internal.h"
 #include "util/error.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,17 +22,17 @@ static char *mcp_build_request(int id, const char *method, const char *params)
 
 static int mcp_parse_result(const char *json, char **out)
 {
-	struct json *parsed = json ? json_parse_prefix(json, NULL, NULL) : nullptr;
-	struct json *id = json_member_ci(parsed, "id");
-	int request_id = json_is_number_value(id) ? json_int_value(id) : 1;
-	json_free(parsed);
+	cJSON *parsed = json ? cJSON_Parse(json) : nullptr;
+	cJSON *id = cJSON_GetObjectItem(parsed, "id");
+	int request_id = cJSON_IsNumber(id) ? id->valueint : 1;
+	cJSON_Delete(parsed);
 	struct mcp_wire_reply reply = {};
 	reply.json = const_cast<char *>(json);
-	struct json *object = nullptr;
+	cJSON *object = nullptr;
 	int rc = mcp_protocol_decode(nullptr, &reply, request_id, &object);
 	if (rc == 0 && out)
-		*out = json_stringify(json_member_ci(object, "result"));
-	json_free(object);
+		*out = cJSON_PrintUnformatted(cJSON_GetObjectItem(object, "result"));
+	cJSON_Delete(object);
 	return rc;
 }
 
@@ -201,24 +201,24 @@ TEST_F(McpJsonRpcTest, BuildRequestNoParams) {
 	char *req = mcp_build_request(1, "tools/list", nullptr);
 	ASSERT_NE(req, nullptr);
 
-	struct json *obj = json_parse_prefix(req, NULL, NULL);
+	cJSON *obj = cJSON_Parse(req);
 	ASSERT_NE(obj, nullptr);
-	struct json *v = json_member_ci(obj, "jsonrpc");
+	cJSON *v = cJSON_GetObjectItem(obj, "jsonrpc");
 	ASSERT_NE(v, nullptr);
-	EXPECT_STREQ(json_string_value(v), "2.0");
+	EXPECT_STREQ(v->valuestring, "2.0");
 
-	v = json_member_ci(obj, "id");
+	v = cJSON_GetObjectItem(obj, "id");
 	ASSERT_NE(v, nullptr);
-	EXPECT_EQ((int)json_number_value(v), 1);
+	EXPECT_EQ((int)v->valuedouble, 1);
 
-	v = json_member_ci(obj, "method");
+	v = cJSON_GetObjectItem(obj, "method");
 	ASSERT_NE(v, nullptr);
-	EXPECT_STREQ(json_string_value(v), "tools/list");
+	EXPECT_STREQ(v->valuestring, "tools/list");
 
-	v = json_member_ci(obj, "params");
+	v = cJSON_GetObjectItem(obj, "params");
 	EXPECT_EQ(v, nullptr);
 
-	json_free(obj);
+	cJSON_Delete(obj);
 	free(req);
 }
 
@@ -226,18 +226,18 @@ TEST_F(McpJsonRpcTest, BuildRequestWithParams) {
 	char *req = mcp_build_request(42, "tools/call", "{\"name\":\"test\",\"arguments\":{}}");
 	ASSERT_NE(req, nullptr);
 
-	struct json *obj = json_parse_prefix(req, NULL, NULL);
+	cJSON *obj = cJSON_Parse(req);
 	ASSERT_NE(obj, nullptr);
-	EXPECT_EQ((int)json_number_value(json_member_ci(obj, "id")), 42);
-	EXPECT_STREQ(json_string_value(json_member_ci(obj, "method")), "tools/call");
+	EXPECT_EQ((int)cJSON_GetObjectItem(obj, "id")->valuedouble, 42);
+	EXPECT_STREQ(cJSON_GetObjectItem(obj, "method")->valuestring, "tools/call");
 
-	struct json *params = json_member_ci(obj, "params");
+	cJSON *params = cJSON_GetObjectItem(obj, "params");
 	ASSERT_NE(params, nullptr);
-	struct json *name = json_member_ci(params, "name");
+	cJSON *name = cJSON_GetObjectItem(params, "name");
 	ASSERT_NE(name, nullptr);
-	EXPECT_STREQ(json_string_value(name), "test");
+	EXPECT_STREQ(name->valuestring, "test");
 
-	json_free(obj);
+	cJSON_Delete(obj);
 	free(req);
 }
 
@@ -245,11 +245,11 @@ TEST_F(McpJsonRpcTest, BuildRequestEmptyParams) {
 	char *req = mcp_build_request(1, "ping", "");
 	ASSERT_NE(req, nullptr);
 
-	struct json *obj = json_parse_prefix(req, NULL, NULL);
+	cJSON *obj = cJSON_Parse(req);
 	ASSERT_NE(obj, nullptr);
-	EXPECT_EQ(json_member_ci(obj, "params"), nullptr);
+	EXPECT_EQ(cJSON_GetObjectItem(obj, "params"), nullptr);
 
-	json_free(obj);
+	cJSON_Delete(obj);
 	free(req);
 }
 
@@ -257,11 +257,11 @@ TEST_F(McpJsonRpcTest, BuildRequestIdZero) {
 	char *req = mcp_build_request(0, "initialize", "{}");
 	ASSERT_NE(req, nullptr);
 
-	struct json *obj = json_parse_prefix(req, NULL, NULL);
+	cJSON *obj = cJSON_Parse(req);
 	ASSERT_NE(obj, nullptr);
-	EXPECT_EQ((int)json_number_value(json_member_ci(obj, "id")), 0);
+	EXPECT_EQ((int)cJSON_GetObjectItem(obj, "id")->valuedouble, 0);
 
-	json_free(obj);
+	cJSON_Delete(obj);
 	free(req);
 }
 
@@ -667,12 +667,12 @@ TEST_F(McpSseExtractTest, ParseFullMcpInitializeResponse) {
 	int rc = mcp_parse_result(json, &result);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result, nullptr);
-	struct json *obj = json_parse_prefix(result, NULL, NULL);
+	cJSON *obj = cJSON_Parse(result);
 	ASSERT_NE(obj, nullptr);
-	struct json *pv = json_member_ci(obj, "protocolVersion");
+	cJSON *pv = cJSON_GetObjectItem(obj, "protocolVersion");
 	ASSERT_NE(pv, nullptr);
-	EXPECT_STREQ(json_string_value(pv), "2025-06-18");
-	json_free(obj);
+	EXPECT_STREQ(pv->valuestring, "2025-06-18");
+	cJSON_Delete(obj);
 	free(result);
 	free(json);
 }
@@ -936,13 +936,13 @@ TEST_F(McpStdioFramingTest, LargeArgumentsAndEscapedNameAreSentIntact)
 	int rc = mcp_call_tool(&client, nullptr, "a\"b\\c", args.c_str(), &result);
 	server.join();
 	EXPECT_EQ(rc, 0);
-	struct json *json = json_parse_prefix(request.c_str(), NULL, NULL);
+	cJSON *json = cJSON_Parse(request.c_str());
 	ASSERT_NE(json, nullptr);
-	struct json *params = json_member_ci(json, "params");
-	EXPECT_STREQ(json_string_value(json_member_ci(params, "name")), "a\"b\\c");
-	struct json *arguments = json_member_ci(params, "arguments");
-	EXPECT_EQ(std::string(json_string_value(json_member_ci(arguments, "payload"))), payload);
-	json_free(json);
+	cJSON *params = cJSON_GetObjectItem(json, "params");
+	EXPECT_STREQ(cJSON_GetObjectItem(params, "name")->valuestring, "a\"b\\c");
+	cJSON *arguments = cJSON_GetObjectItem(params, "arguments");
+	EXPECT_EQ(std::string(cJSON_GetObjectItem(arguments, "payload")->valuestring), payload);
+	cJSON_Delete(json);
 	tool_result_cleanup(&result);
 }
 
@@ -962,8 +962,8 @@ TEST_F(McpStdioFramingTest, ResourceContentIsNotTruncated)
 	EXPECT_EQ(rc, 0);
 	ASSERT_EQ(tool_result_finalize(&result), 0);
 	ASSERT_NE(result.data, nullptr);
-	EXPECT_STREQ(json_string_value(json_member_ci(result.data, "text")),
-		     (text + "\ntail").c_str());
+	EXPECT_STREQ(cJSON_GetObjectItem(result.data, "text")->valuestring,
+		(text + "\ntail").c_str());
 	tool_result_cleanup(&result);
 	arena_destroy(arena);
 }
@@ -992,13 +992,11 @@ TEST_F(McpStdioFramingTest, LongPromptSchemaAndResourceMetadataSurviveDiscovery)
 	EXPECT_EQ(prompt_rc, 0);
 	EXPECT_EQ(count, 2);
 	if (prompts) {
-		struct json *schema = json_parse_prefix(prompts[0].arguments_schema, NULL, NULL);
-		struct json *property =
-			json_member_ci(json_member_ci(schema, "properties"), "subject");
+		cJSON *schema = cJSON_Parse(prompts[0].arguments_schema);
+		cJSON *property = cJSON_GetObjectItem(cJSON_GetObjectItem(schema, "properties"), "subject");
 		ASSERT_NE(property, nullptr);
-		EXPECT_EQ(std::string(json_string_value(json_member_ci(property, "description"))),
-			  description);
-		json_free(schema);
+		EXPECT_EQ(std::string(cJSON_GetObjectItem(property, "description")->valuestring), description);
+		cJSON_Delete(schema);
 	}
 	EXPECT_EQ(resource_rc, 0);
 	EXPECT_EQ(resource_count, 1);
@@ -1021,19 +1019,17 @@ TEST_F(McpStdioFramingTest, PreservesStructuredAndNonTextToolResults)
 	EXPECT_EQ(mcp_call_tool(&client, nullptr, "empty", "{}", &result), 0);
 	ASSERT_EQ(tool_result_finalize(&result), 0);
 	ASSERT_NE(result.data, nullptr);
-	EXPECT_EQ(json_int_value(json_member_ci(json_member_ci(result.data, "structuredContent"),
-						"count")),
-		  42);
-	EXPECT_EQ(json_count(json_member_ci(result.data, "content")), 0);
+	EXPECT_EQ(cJSON_GetObjectItem(
+		cJSON_GetObjectItem(result.data, "structuredContent"), "count")->valueint, 42);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(result.data, "content")), 0);
 	tool_result_clear(&result);
 	EXPECT_EQ(mcp_call_tool(&client, nullptr, "mixed", "{}", &result), 0);
 	ASSERT_EQ(tool_result_finalize(&result), 0);
-	EXPECT_STREQ(json_string_value(json_member_ci(result.data, "content")), "hello");
-	EXPECT_EQ(json_count(json_member_ci(result.data, "contentBlocks")), 2);
-	EXPECT_NE(json_member_ci(result.data, "_meta"), nullptr);
-	EXPECT_EQ(json_int_value(json_member_ci(json_member_ci(result.data, "structuredContent"),
-						"count")),
-		  43);
+	EXPECT_STREQ(cJSON_GetObjectItem(result.data, "content")->valuestring, "hello");
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(result.data, "contentBlocks")), 2);
+	EXPECT_NE(cJSON_GetObjectItem(result.data, "_meta"), nullptr);
+	EXPECT_EQ(cJSON_GetObjectItem(
+		cJSON_GetObjectItem(result.data, "structuredContent"), "count")->valueint, 43);
 	tool_result_cleanup(&result);
 }
 

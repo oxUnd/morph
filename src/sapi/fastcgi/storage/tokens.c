@@ -1,6 +1,6 @@
 #include "sapi/fastcgi/storage/tokens.h"
 #include "sapi/fastcgi/session_store_internal.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "util/error.h"
 
 #include <errno.h>
@@ -37,7 +37,7 @@ int login_token_create(const char *user_id, const char *username, const char *ro
 	char path[PATH_MAX];
 	int64_t now = fcgi_store_now();
 	int64_t expires = now + (int64_t)(ttl_hours > 0 ? ttl_hours : SESS_TOKEN_TTL_HOURS) * 3600;
-	struct json *obj = NULL;
+	cJSON *obj = NULL;
 	char *json = NULL;
 	FILE *fp = NULL;
 	int rc;
@@ -49,15 +49,15 @@ int login_token_create(const char *user_id, const char *username, const char *ro
 	if (rc < 0)
 		return rc;
 
-	obj = json_object();
+	obj = cJSON_CreateObject();
 	if (!obj)
 		return -ENOMEM;
-	json_add_string(obj, "user_id", user_id ? user_id : "");
-	json_add_string(obj, "username", username ? username : "");
-	json_add_string(obj, "role", role ? role : "user");
-	json_add_number(obj, "expires_at", (double)expires);
-	json = json_stringify(obj);
-	json_free(obj);
+	cJSON_AddStringToObject(obj, "user_id", user_id ? user_id : "");
+	cJSON_AddStringToObject(obj, "username", username ? username : "");
+	cJSON_AddStringToObject(obj, "role", role ? role : "user");
+	cJSON_AddNumberToObject(obj, "expires_at", (double)expires);
+	json = cJSON_PrintUnformatted(obj);
+	cJSON_Delete(obj);
 	if (!json)
 		return -ENOMEM;
 
@@ -86,7 +86,7 @@ int login_token_verify(const char *token, char out_user_id[64], char out_usernam
 	char buf[1024];
 	FILE *fp;
 	size_t n;
-	struct json *obj = NULL;
+	cJSON *obj = NULL;
 	const char *s;
 	int64_t expires;
 	int valid = 0;
@@ -107,24 +107,24 @@ int login_token_verify(const char *token, char out_user_id[64], char out_usernam
 		return 0;
 	buf[n] = '\0';
 
-	obj = json_parse_prefix(buf, NULL, NULL);
+	obj = cJSON_Parse(buf);
 	if (!obj)
 		return 0;
 
-	expires = (int64_t)json_number_value(json_member_ci(obj, "expires_at"));
+	expires = (int64_t)cJSON_GetNumberValue(cJSON_GetObjectItem(obj, "expires_at"));
 	if (expires > fcgi_store_now()) {
 		valid = 1;
-		s = json_string_value(json_member_ci(obj, "user_id"));
+		s = cJSON_GetStringValue(cJSON_GetObjectItem(obj, "user_id"));
 		if (s && out_user_id)
 			snprintf(out_user_id, 64, "%s", s);
-		s = json_string_value(json_member_ci(obj, "username"));
+		s = cJSON_GetStringValue(cJSON_GetObjectItem(obj, "username"));
 		if (s && out_username)
 			snprintf(out_username, 64, "%s", s);
-		s = json_string_value(json_member_ci(obj, "role"));
+		s = cJSON_GetStringValue(cJSON_GetObjectItem(obj, "role"));
 		if (s && out_role)
 			snprintf(out_role, 24, "%s", s);
 	}
-	json_free(obj);
+	cJSON_Delete(obj);
 
 	if (!valid) {
 		unlink(path);
@@ -157,7 +157,7 @@ int login_token_prune(void)
 		char buf[1024];
 		FILE *fp;
 		size_t n;
-		struct json *obj;
+		cJSON *obj;
 		int64_t expires;
 
 		if (entry->d_name[0] == '.')
@@ -172,11 +172,11 @@ int login_token_prune(void)
 		if (n == 0)
 			continue;
 		buf[n] = '\0';
-		obj = json_parse_prefix(buf, NULL, NULL);
+		obj = cJSON_Parse(buf);
 		if (!obj)
 			continue;
-		expires = (int64_t)json_number_value(json_member_ci(obj, "expires_at"));
-		json_free(obj);
+		expires = (int64_t)cJSON_GetNumberValue(cJSON_GetObjectItem(obj, "expires_at"));
+		cJSON_Delete(obj);
 		if (expires > 0 && expires <= fcgi_store_now())
 			(void)unlink(path);
 	}

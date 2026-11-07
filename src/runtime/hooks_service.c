@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-int runtime_hooks_snapshot(struct runtime *runtime, struct json **out)
+int runtime_hooks_snapshot(struct runtime *runtime, cJSON **out)
 {
 	int rc;
 

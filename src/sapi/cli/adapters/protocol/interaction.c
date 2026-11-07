@@ -1,7 +1,7 @@
 #include "sapi/cli/adapters/protocol/interaction.h"
 #include "sapi/cli/adapters/input/state.h"
 #include "sapi/cli/adapters/input/reader.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/application_internal.h"
 #include "util/child_io.h"
@@ -13,10 +13,10 @@
 struct cli_interaction_call {
 	struct cli_application *ctx;
 	const char *kind;
-	const struct json *request_data;
+	const cJSON *request_data;
 	cli_interaction_validate_fn validate;
 	void *validate_user_data;
-	struct json **response_data;
+	cJSON **response_data;
 };
 
 struct cli_interaction_decision_validation {
@@ -25,39 +25,34 @@ struct cli_interaction_decision_validation {
 };
 
 static int cli_interaction_emit(struct cli_application *ctx, const char *name, const char *phase,
-				const char *request_id, const char *kind,
-				const struct json *request, const char *reason)
+				const char *request_id, const char *kind, const cJSON *request,
+				const char *reason)
 {
-	struct json *data;
+	cJSON *data;
 	struct morph_event event;
 	int rc;
 
 	if (!ctx || !name || !phase || !request_id || !kind)
 		return -EINVAL;
-	data = json_object();
+	data = cJSON_CreateObject();
 	if (!data)
 		return -ENOMEM;
-	if (!json_add_string(data, "request_id", request_id) ||
-	    !json_add_string(data, "kind", kind)) {
-		json_free(data);
+	if (!cJSON_AddStringToObject(data, "request_id", request_id) ||
+	    !cJSON_AddStringToObject(data, "kind", kind)) {
+		cJSON_Delete(data);
 		return -ENOMEM;
 	}
 	if (request) {
-		struct json *copy = json_clone(request, 1);
+		cJSON *copy = cJSON_Duplicate(request, 1);
 
 		if (!copy) {
-			json_free(data);
+			cJSON_Delete(data);
 			return -ENOMEM;
 		}
-		rc = json_object_add(data, "request", copy);
-		if (rc) {
-			json_free(copy);
-			json_free(data);
-			return rc;
-		}
+		cJSON_AddItemToObject(data, "request", copy);
 	}
-	if (reason && !json_add_string(data, "reason", reason)) {
-		json_free(data);
+	if (reason && !cJSON_AddStringToObject(data, "reason", reason)) {
+		cJSON_Delete(data);
 		return -ENOMEM;
 	}
 	event = (struct morph_event){
@@ -69,7 +64,7 @@ static int cli_interaction_emit(struct cli_application *ctx, const char *name, c
 		.turn_id = NULL,
 	};
 	rc = morph_event_emit(ctx->event_cb, ctx->event_user_data, &event);
-	json_free(data);
+	cJSON_Delete(data);
 	return rc;
 }
 
@@ -118,43 +113,43 @@ static int cli_interaction_read_line(struct cli_application *ctx, morph_buf_t *l
 }
 
 static int cli_interaction_parse_response(const char *json, const char *request_id,
-					  struct json **response_data, int *cancelled)
+					  cJSON **response_data, int *cancelled)
 {
-	struct json *root;
-	struct json *type;
-	struct json *id;
-	struct json *data;
+	cJSON *root;
+	cJSON *type;
+	cJSON *id;
+	cJSON *data;
 
 	if (!json || !request_id || !response_data || !cancelled)
 		return -EINVAL;
 	*response_data = NULL;
 	*cancelled = 0;
-	root = json_parse_prefix(json, NULL, NULL);
+	root = cJSON_Parse(json);
 	if (!root)
 		return MORPH_ERR_PARSE;
-	type = json_member(root, "type");
-	id = json_member(root, "request_id");
-	if (!json_is_string_value(type) || !json_string_value(type) || !json_is_string_value(id) ||
-	    !json_string_value(id) || strcmp(json_string_value(id), request_id) != 0) {
-		json_free(root);
+	type = cJSON_GetObjectItemCaseSensitive(root, "type");
+	id = cJSON_GetObjectItemCaseSensitive(root, "request_id");
+	if (!cJSON_IsString(type) || !type->valuestring || !cJSON_IsString(id) ||
+	    !id->valuestring || strcmp(id->valuestring, request_id) != 0) {
+		cJSON_Delete(root);
 		return MORPH_ERR_PROTOCOL;
 	}
-	if (strcmp(json_string_value(type), "interaction.cancel") == 0) {
+	if (strcmp(type->valuestring, "interaction.cancel") == 0) {
 		*cancelled = 1;
-		json_free(root);
+		cJSON_Delete(root);
 		return 0;
 	}
-	if (strcmp(json_string_value(type), "interaction.response") != 0) {
-		json_free(root);
+	if (strcmp(type->valuestring, "interaction.response") != 0) {
+		cJSON_Delete(root);
 		return MORPH_ERR_PROTOCOL;
 	}
-	data = json_member(root, "data");
-	if (!json_is_object_value(data)) {
-		json_free(root);
+	data = cJSON_GetObjectItemCaseSensitive(root, "data");
+	if (!cJSON_IsObject(data)) {
+		cJSON_Delete(root);
 		return MORPH_ERR_PROTOCOL;
 	}
-	*response_data = json_clone(data, 1);
-	json_free(root);
+	*response_data = cJSON_Duplicate(data, 1);
+	cJSON_Delete(root);
 	if (!*response_data)
 		return -ENOMEM;
 	return 0;
@@ -181,27 +176,26 @@ static int cli_interaction_request_on_owner(void *opaque)
 	rc = morph_buf_init(&line, BUFSIZ);
 	if (rc != 0)
 		return rc;
-	struct json *policy = json_member(call->request_data, "response_policy");
-	struct json *timeout = json_member(call->request_data, "timeout_seconds");
-	int64_t deadline = strcmp(call->kind, "ask_user") == 0 && json_is_string_value(policy) &&
-					   strcmp(json_string_value(policy), "optional") == 0 &&
-					   json_is_number_value(timeout) &&
-					   json_int_value(timeout) > 0
-				   ? morph_io_now_ms() + (int64_t)json_int_value(timeout) * 1000
+	cJSON *policy = cJSON_GetObjectItemCaseSensitive(call->request_data, "response_policy");
+	cJSON *timeout = cJSON_GetObjectItemCaseSensitive(call->request_data, "timeout_seconds");
+	int64_t deadline = strcmp(call->kind, "ask_user") == 0 && cJSON_IsString(policy) &&
+					   strcmp(policy->valuestring, "optional") == 0 &&
+					   cJSON_IsNumber(timeout) && timeout->valueint > 0
+				   ? morph_io_now_ms() + (int64_t)timeout->valueint * 1000
 				   : 0;
 	for (;;) {
-		struct json *response = NULL;
+		cJSON *response = NULL;
 		int cancelled = 0;
 		int64_t pending_deadline = deadline;
 
 		rc = cli_interaction_read_line(call->ctx, &line, &deadline);
 		if (rc != 0) {
-			struct json *indices =
-				json_member(call->request_data, "recommended_indices");
-			const char *reason = rc == -ETIMEDOUT
-						     ? (json_count(indices) ? "timeout_recommended"
-									    : "timeout_no_input")
-						     : morph_strerror(rc);
+			cJSON *indices = cJSON_GetObjectItemCaseSensitive(call->request_data,
+									  "recommended_indices");
+			const char *reason = rc == -ETIMEDOUT ? (cJSON_GetArraySize(indices)
+									 ? "timeout_recommended"
+									 : "timeout_no_input")
+							      : morph_strerror(rc);
 			(void)cli_interaction_emit(call->ctx,
 						   rc == -ETIMEDOUT ? "interaction.resolved"
 								    : "interaction.cancelled",
@@ -211,16 +205,15 @@ static int cli_interaction_request_on_owner(void *opaque)
 			return rc;
 		}
 		/* Hosts can report editing activity before they have a complete answer. */
-		struct json *progress = json_parse_prefix(morph_buf_cstr(&line), NULL, NULL);
-		struct json *type = json_member(progress, "type");
-		struct json *id = json_member(progress, "request_id");
-		int editing = json_is_string_value(type) &&
-			      strcmp(json_string_value(type), "interaction.progress") == 0 &&
-			      json_is_string_value(id) &&
-			      strcmp(json_string_value(id), request_id) == 0;
-		if (json_is_string_value(id) && strcmp(json_string_value(id), request_id) != 0)
+		cJSON *progress = cJSON_Parse(morph_buf_cstr(&line));
+		cJSON *type = cJSON_GetObjectItemCaseSensitive(progress, "type");
+		cJSON *id = cJSON_GetObjectItemCaseSensitive(progress, "request_id");
+		int editing = cJSON_IsString(type) &&
+			      strcmp(type->valuestring, "interaction.progress") == 0 &&
+			      cJSON_IsString(id) && strcmp(id->valuestring, request_id) == 0;
+		if (cJSON_IsString(id) && strcmp(id->valuestring, request_id) != 0)
 			deadline = pending_deadline;
-		json_free(progress);
+		cJSON_Delete(progress);
 		if (editing) {
 			deadline = 0;
 			continue;
@@ -243,7 +236,7 @@ static int cli_interaction_request_on_owner(void *opaque)
 		if (call->validate) {
 			rc = call->validate(response, call->validate_user_data);
 			if (rc != 0) {
-				json_free(response);
+				cJSON_Delete(response);
 				(void)cli_interaction_emit(
 					call->ctx, "interaction.invalid_response", "failed",
 					request_id, call->kind, NULL, morph_strerror(rc));
@@ -260,20 +253,20 @@ static int cli_interaction_request_on_owner(void *opaque)
 
 int cli_interaction_is_frame(const char *json)
 {
-	struct json *root = json_parse_prefix(json, NULL, NULL);
-	struct json *type = json_member(root, "type");
-	struct json *id = json_member(root, "request_id");
-	int frame = json_is_string_value(type) && json_is_string_value(id) &&
-		    (strcmp(json_string_value(type), "interaction.response") == 0 ||
-		     strcmp(json_string_value(type), "interaction.cancel") == 0 ||
-		     strcmp(json_string_value(type), "interaction.progress") == 0);
-	json_free(root);
+	cJSON *root = cJSON_Parse(json);
+	cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+	cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "request_id");
+	int frame = cJSON_IsString(type) && cJSON_IsString(id) &&
+		    (strcmp(type->valuestring, "interaction.response") == 0 ||
+		     strcmp(type->valuestring, "interaction.cancel") == 0 ||
+		     strcmp(type->valuestring, "interaction.progress") == 0);
+	cJSON_Delete(root);
 	return frame;
 }
 
 int cli_interaction_request(struct cli_application *ctx, const char *kind,
-			    const struct json *request_data, cli_interaction_validate_fn validate,
-			    void *validate_user_data, struct json **response_data)
+			    const cJSON *request_data, cli_interaction_validate_fn validate,
+			    void *validate_user_data, cJSON **response_data)
 {
 	struct cli_interaction_call call;
 
@@ -293,58 +286,49 @@ int cli_interaction_request(struct cli_application *ctx, const char *kind,
 	return cli_event_queue_call_owner(ctx, cli_interaction_request_on_owner, &call);
 }
 
-static int cli_interaction_validate_decision(const struct json *response_data, void *user_data)
+static int cli_interaction_validate_decision(const cJSON *response_data, void *user_data)
 {
 	struct cli_interaction_decision_validation *validation = user_data;
-	struct json *decision;
+	cJSON *decision;
 
-	if (!validation || !json_is_object_value(response_data))
+	if (!validation || !cJSON_IsObject(response_data))
 		return MORPH_ERR_PROTOCOL;
-	decision = json_member(response_data, "decision");
-	if (!json_is_string_value(decision) || !json_string_value(decision))
+	decision = cJSON_GetObjectItemCaseSensitive(response_data, "decision");
+	if (!cJSON_IsString(decision) || !decision->valuestring)
 		return MORPH_ERR_PROTOCOL;
 	for (int i = 0; i < validation->allowed_count; i++) {
-		if (strcmp(json_string_value(decision), validation->allowed[i]) == 0)
+		if (strcmp(decision->valuestring, validation->allowed[i]) == 0)
 			return 0;
 	}
 	return -EINVAL;
 }
 
-int cli_interaction_decision(struct cli_application *ctx, const char *kind,
-			     struct json *request_data, const char *const *allowed,
-			     int allowed_count, char *decision, size_t decision_size)
+int cli_interaction_decision(struct cli_application *ctx, const char *kind, cJSON *request_data,
+			     const char *const *allowed, int allowed_count, char *decision,
+			     size_t decision_size)
 {
 	struct cli_interaction_decision_validation validation;
-	struct json *decisions;
-	struct json *response = NULL;
+	cJSON *decisions;
+	cJSON *response = NULL;
 	const char *value;
 	int rc;
 
 	if (!ctx || !kind || !request_data || !allowed || allowed_count <= 0 || !decision ||
 	    decision_size == 0)
 		return -EINVAL;
-	decisions = json_array();
+	decisions = cJSON_CreateArray();
 	if (!decisions)
 		return -ENOMEM;
 	for (int i = 0; i < allowed_count; i++) {
-		struct json *item = json_string(allowed[i]);
+		cJSON *item = cJSON_CreateString(allowed[i]);
 
 		if (!item) {
-			json_free(decisions);
+			cJSON_Delete(decisions);
 			return -ENOMEM;
 		}
-		rc = json_array_add(decisions, item);
-		if (rc) {
-			json_free(item);
-			json_free(decisions);
-			return rc;
-		}
+		cJSON_AddItemToArray(decisions, item);
 	}
-	rc = json_object_add(request_data, "allowed_decisions", decisions);
-	if (rc) {
-		json_free(decisions);
-		return rc;
-	}
+	cJSON_AddItemToObject(request_data, "allowed_decisions", decisions);
 	validation = (struct cli_interaction_decision_validation){
 		.allowed = allowed,
 		.allowed_count = allowed_count,
@@ -353,18 +337,18 @@ int cli_interaction_decision(struct cli_application *ctx, const char *kind,
 				     &validation, &response);
 	if (rc != 0)
 		return rc;
-	value = json_string_value(json_member(response, "decision"));
+	value = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(response, "decision"));
 	if (!value || strlen(value) >= decision_size) {
-		json_free(response);
+		cJSON_Delete(response);
 		return MORPH_ERR_PROTOCOL;
 	}
 	memcpy(decision, value, strlen(value) + 1);
-	json_free(response);
+	cJSON_Delete(response);
 	return 0;
 }
 
-int cli_interaction_confirm(struct cli_application *ctx, const char *kind,
-			    struct json *request_data, int *confirmed)
+int cli_interaction_confirm(struct cli_application *ctx, const char *kind, cJSON *request_data,
+			    int *confirmed)
 {
 	static const char *const allowed[] = {"confirm", "cancel"};
 	char decision[16] = {0};

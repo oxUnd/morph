@@ -22,9 +22,9 @@ struct async_tool_call {
 	char *tool_call_id;
 	char *provider_tool_call_id;
 	char *result;
-	struct json *data;
-	struct json *ui;
-	struct json *meta;
+	cJSON *data;
+	cJSON *ui;
+	cJSON *meta;
 	struct tool_artifact_list artifacts;
 	int rc;
 	react_output_cb output_cb;
@@ -55,7 +55,7 @@ void react_tool_worker_cancel(struct async_tool_call *call);
 /* After joining, collect transfers heap results/JSON to the caller.
  * Destroy frees any payload not collected; artifacts are inline value data. */
 void react_tool_worker_collect(struct async_tool_call *call, int *rc, char **result,
-			       struct tool_artifact_list *artifacts, struct json **data,
-			       struct json **ui, struct json **meta);
+			       struct tool_artifact_list *artifacts, cJSON **data, cJSON **ui,
+			       cJSON **meta);
 
 #endif

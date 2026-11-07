@@ -2,7 +2,7 @@
 #include "agent/tool_context.h"
 #include "util/log.h"
 #include "util/error.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "stb_image.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -27,15 +27,15 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 	struct tool_context *tctx = user_data;
 	if (!result) return -EINVAL;
 
-	struct json *root = json_parse_prefix(args_json, NULL, NULL);
+	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
-	struct json *f = json_member_ci(root, "file_path");
-	const char *file_path = json_is_string_value(f) ? json_string_value(f) : NULL;
+	cJSON *f = cJSON_GetObjectItem(root, "file_path");
+	const char *file_path = cJSON_IsString(f) ? f->valuestring : NULL;
 	if (!file_path) {
-		json_free(root);
+		cJSON_Delete(root);
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'file_path' parameter. "
 			"Usage: img_info({\\\"file_path\\\": \\\"img.png\\\"})\"}"));
@@ -48,7 +48,7 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 						     file_path, resolved_path,
 						     sizeof(resolved_path));
 		if (rc < 0) {
-			json_free(root);
+			cJSON_Delete(root);
 			if (rc == -ENOENT)
 				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"not a valid image\"}"));
@@ -64,20 +64,20 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 
 	int w = 0, h = 0, ch = 0;
 	if (!stbi_info(resolved_path, &w, &h, &ch)) {
-		json_free(root);
+		cJSON_Delete(root);
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"not a valid image\"}"));
 		return MORPH_ERR_FORMAT;
 	}
 
-	struct json *out = json_object();
-	json_add_string(out, "file_path", file_path);
-	json_add_number(out, "width", w);
-	json_add_number(out, "height", h);
-	json_add_number(out, "channels", ch);
-	json_add_string(out, "format", fmt_name(file_path));
-	char *str = json_stringify(out);
-	json_free(out);
-	json_free(root);
+	cJSON *out = cJSON_CreateObject();
+	cJSON_AddStringToObject(out, "file_path", file_path);
+	cJSON_AddNumberToObject(out, "width", w);
+	cJSON_AddNumberToObject(out, "height", h);
+	cJSON_AddNumberToObject(out, "channels", ch);
+	cJSON_AddStringToObject(out, "format", fmt_name(file_path));
+	char *str = cJSON_PrintUnformatted(out);
+	cJSON_Delete(out);
+	cJSON_Delete(root);
 	(void)tool_result_success_json_text(result, str);
 	return 0;
 }

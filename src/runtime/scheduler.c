@@ -1,6 +1,6 @@
 #include "runtime/scheduler.h"
 
-#include "util/json.h"
+#include "cJSON.h"
 #include "util/array.h"
 #include "util/buf.h"
 #include "util/error.h"
@@ -11,38 +11,38 @@
 
 char *runtime_scheduled_task_prompt(const struct scheduled_task *task)
 {
-	struct json *payload;
-	struct json *prompt;
+	cJSON *payload;
+	cJSON *prompt;
 	char *out = NULL;
 
 	if (!task || !task->payload_json)
 		return NULL;
-	payload = json_parse_prefix(task->payload_json, NULL, NULL);
+	payload = cJSON_Parse(task->payload_json);
 	if (!payload)
 		return NULL;
-	prompt = json_member_ci(payload, "prompt");
-	if (json_is_string_value(prompt) && json_string_value(prompt))
-		out = strdup(json_string_value(prompt));
-	json_free(payload);
+	prompt = cJSON_GetObjectItem(payload, "prompt");
+	if (cJSON_IsString(prompt) && prompt->valuestring)
+		out = strdup(prompt->valuestring);
+	cJSON_Delete(payload);
 	return out;
 }
 
 char *runtime_scheduled_task_turn_id(const struct scheduled_task *task)
 {
-	struct json *payload;
-	struct json *turn_id;
+	cJSON *payload;
+	cJSON *turn_id;
 	char *out = NULL;
 
 	if (!task || !task->payload_json)
 		return NULL;
-	payload = json_parse_prefix(task->payload_json, NULL, NULL);
+	payload = cJSON_Parse(task->payload_json);
 	if (!payload)
 		return NULL;
-	turn_id = json_member_ci(payload, "turn_id");
-	if (json_is_string_value(turn_id) && json_string_value(turn_id) &&
-	    json_string_value(turn_id)[0])
-		out = strdup(json_string_value(turn_id));
-	json_free(payload);
+	turn_id = cJSON_GetObjectItem(payload, "turn_id");
+	if (cJSON_IsString(turn_id) && turn_id->valuestring &&
+	    turn_id->valuestring[0])
+		out = strdup(turn_id->valuestring);
+	cJSON_Delete(payload);
 	return out;
 }
 

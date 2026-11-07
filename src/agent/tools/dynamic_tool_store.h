@@ -5,7 +5,7 @@
 
 struct dynamic_tool_definition {
 	/* Owned backing document; the text views borrow it until cleanup. */
-	struct json *document;
+	cJSON *document;
 	const char *name;
 	const char *description;
 	const char *source;

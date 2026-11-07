@@ -1,7 +1,7 @@
 #ifndef MORPH_TOOL_ANNOTATION_H
 #define MORPH_TOOL_ANNOTATION_H
 
-#include "util/json.h"
+#include "cJSON.h"
 #include "util/array.h"
 
 #ifdef __cplusplus
@@ -42,13 +42,13 @@ struct annotation_arrow {
 /* Strings borrow the input JSON, except string-encoded annotation owns its
  * parsed tree. Keep the input alive until annotation_cleanup. */
 struct annotation {
-	struct json *owned;
+	cJSON *owned;
 	morph_array_t images;
 	morph_array_t bboxes;
 	morph_array_t arrows;
 };
 
-int annotation_parse(const struct json *input, struct annotation *out);
+int annotation_parse(const cJSON *input, struct annotation *out);
 void annotation_cleanup(struct annotation *annotation);
 const struct annotation_image *annotation_image_at(const struct annotation *annotation, int index);
 int annotation_rect_normalize(const struct annotation_rect *input, int width, int height,

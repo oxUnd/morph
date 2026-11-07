@@ -38,10 +38,10 @@ static int history_coverage(struct runtime_context *ctx, morph_strmap_t *covered
 	return rc;
 }
 
-static struct json *history_entry(const struct model_history_item *item,
-				  const morph_strmap_t *covered)
+static cJSON *history_entry(const struct model_history_item *item,
+	const morph_strmap_t *covered)
 {
-	struct json *entry = json_object();
+	cJSON *entry = cJSON_CreateObject();
 	char key[32];
 	const char *status = "OUT";
 	const char *reason = "Inactive history; summary coverage is unavailable or no longer active.";
@@ -52,42 +52,42 @@ static struct json *history_entry(const struct model_history_item *item,
 		reason = "Internal memory-maintenance status; excluded from model input.";
 	} else if (item->active && agent_history_item_replayable(item)) {
 		status = item->truncated ? "IN / TRIMMED" : "IN";
-		struct json *payload = item->payload_json
-					       ? json_parse_prefix(item->payload_json, NULL, NULL)
-					       : NULL;
-		int has_original =
-			json_is_string_value(json_member_ci(payload, "original_content"));
+		cJSON *payload = item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
+		int has_original = cJSON_IsString(cJSON_GetObjectItem(payload, "original_content"));
 		reason = !item->truncated ?
 			"Included in the current replay window. New input may trigger repair or compaction." :
 			has_original ? "Model output was shortened; a redacted original is retained in metadata." :
 			"Active replay item. Output was shortened before persistence; the original is unavailable.";
-		json_free(payload);
+		cJSON_Delete(payload);
 	} else if (!item->active && morph_strmap_contains(covered, key)) {
 		status = "VIA SUMMARY";
 		reason = "Used to produce a summary represented in the active summary chain; original not sent.";
 	} else if (item->active) {
 		reason = "This record kind is not replayed to the model.";
 	}
-	if (!entry || !json_add_number(entry, "sequence_no", (double)item->sequence_no) ||
-	    !json_add_string(entry, "kind", item->kind) ||
-	    !json_add_string(entry, "role", item->role) ||
-	    !json_add_string(entry, "content", item->content ? item->content : "") ||
-	    !json_add_string(entry, "payload_json", item->payload_json ? item->payload_json : "") ||
-	    !json_add_string(entry, "tool_name", item->tool_name) ||
-	    !json_add_string(entry, "tool_call_id", item->tool_call_id ? item->tool_call_id : "") ||
-	    !json_add_string(entry, "turn_id", item->turn_id ? item->turn_id : "") ||
-	    !json_add_number(entry, "token_count", item->token_count) ||
-	    !json_add_bool(entry, "active", item->active) ||
-	    !json_add_bool(entry, "truncated", item->truncated) ||
-	    !json_add_string(entry, "status", status) ||
-	    !json_add_string(entry, "reason", reason)) {
-		json_free(entry);
+	if (!entry ||
+	    !cJSON_AddNumberToObject(entry, "sequence_no", (double)item->sequence_no) ||
+	    !cJSON_AddStringToObject(entry, "kind", item->kind) ||
+	    !cJSON_AddStringToObject(entry, "role", item->role) ||
+	    !cJSON_AddStringToObject(entry, "content", item->content ? item->content : "") ||
+	    !cJSON_AddStringToObject(entry, "payload_json",
+		item->payload_json ? item->payload_json : "") ||
+	    !cJSON_AddStringToObject(entry, "tool_name", item->tool_name) ||
+	    !cJSON_AddStringToObject(entry, "tool_call_id",
+		item->tool_call_id ? item->tool_call_id : "") ||
+	    !cJSON_AddStringToObject(entry, "turn_id", item->turn_id ? item->turn_id : "") ||
+	    !cJSON_AddNumberToObject(entry, "token_count", item->token_count) ||
+	    !cJSON_AddBoolToObject(entry, "active", item->active) ||
+	    !cJSON_AddBoolToObject(entry, "truncated", item->truncated) ||
+	    !cJSON_AddStringToObject(entry, "status", status) ||
+	    !cJSON_AddStringToObject(entry, "reason", reason)) {
+		cJSON_Delete(entry);
 		return NULL;
 	}
 	return entry;
 }
 
-static int history_legacy_entries(struct runtime_context *ctx, struct json *entries)
+static int history_legacy_entries(struct runtime_context *ctx, cJSON *entries)
 {
 	int count = 0;
 	struct message *messages = message_list(&ctx->database, ctx->current_session.id, &count);
@@ -96,7 +96,7 @@ static int history_legacy_entries(struct runtime_context *ctx, struct json *entr
 	for (const struct message *msg = messages; msg && rc == 0; msg = msg->next) {
 		struct model_history_item item = {0};
 		morph_strmap_t empty = {0};
-		struct json *entry;
+		cJSON *entry;
 
 		item.sequence_no = msg->id;
 		item.content = msg->content;
@@ -105,14 +105,13 @@ static int history_legacy_entries(struct runtime_context *ctx, struct json *entr
 			"user_message" : "assistant_message");
 		snprintf(item.role, sizeof(item.role), "%s", msg->role);
 		entry = history_entry(&item, &empty);
-		if (!entry || !json_string_update(json_member_ci(entry, "status"), "LEGACY") ||
-		    !json_string_update(json_member_ci(entry, "reason"),
-					"Display-only legacy history; migrated and validated "
-					"before the next turn.")) {
-			json_free(entry);
+		if (!entry || !cJSON_SetValuestring(cJSON_GetObjectItem(entry, "status"), "LEGACY") ||
+		    !cJSON_SetValuestring(cJSON_GetObjectItem(entry, "reason"),
+			"Display-only legacy history; migrated and validated before the next turn.")) {
+			cJSON_Delete(entry);
 			rc = -ENOMEM;
-		} else if (json_array_add(entries, entry) != 0) {
-			json_free(entry);
+		} else if (!cJSON_AddItemToArray(entries, entry)) {
+			cJSON_Delete(entry);
 			rc = -ENOMEM;
 		}
 	}
@@ -120,12 +119,12 @@ static int history_legacy_entries(struct runtime_context *ctx, struct json *entr
 	return rc;
 }
 
-int runtime_session_history_inspect(struct runtime *runtime, struct json **out)
+int runtime_session_history_inspect(struct runtime *runtime, cJSON **out)
 {
 	struct model_history_item *items = NULL;
 	morph_strmap_t covered = {0};
-	struct json *root = NULL;
-	struct json *entries = NULL;
+	cJSON *root = NULL;
+	cJSON *entries = NULL;
 	int count = 0;
 	int64_t tokens = 0;
 	int64_t summary_tokens = 0;
@@ -149,15 +148,15 @@ int runtime_session_history_inspect(struct runtime *runtime, struct json **out)
 		if (count < 0)
 			rc = MORPH_ERR_DB;
 	}
-	root = json_object();
-	entries = root ? json_add_array(root, "entries") : NULL;
+	root = cJSON_CreateObject();
+	entries = root ? cJSON_AddArrayToObject(root, "entries") : NULL;
 	if (rc == 0 && !entries)
 		rc = -ENOMEM;
 	for (const struct model_history_item *item = items; item && rc == 0; item = item->next) {
-		struct json *entry = history_entry(item, &covered);
+		cJSON *entry = history_entry(item, &covered);
 
-		if (!entry || json_array_add(entries, entry) != 0) {
-			json_free(entry);
+		if (!entry || !cJSON_AddItemToArray(entries, entry)) {
+			cJSON_Delete(entry);
 			rc = -ENOMEM;
 			break;
 		}
@@ -172,29 +171,27 @@ int runtime_session_history_inspect(struct runtime *runtime, struct json **out)
 		rc = history_legacy_entries(ctx, entries);
 	if (rc == 0)
 		rc = agent_history_diagnose(items, ctx->tokenizer, &diagnostic);
-	if (rc == 0 && (!json_add_number(root, "active_items", active) ||
-			!json_add_bool(root, "needs_repair",
-				       diagnostic.dangling_calls || diagnostic.orphan_results ||
-					       diagnostic.invalid_payloads) ||
-			!json_add_number(root, "history_tokens", (double)tokens) ||
-			!json_add_number(root, "summary_tokens", (double)summary_tokens) ||
-			!json_add_number(root, "context_limit",
-					 ctx->tokenizer ? ctx->tokenizer->context_limit : 0) ||
-			!json_add_string(root, "model", ctx->llm ? ctx->llm->model_id : "")))
+	if (rc == 0 && (!cJSON_AddNumberToObject(root, "active_items", active) ||
+	    !cJSON_AddBoolToObject(root, "needs_repair", diagnostic.dangling_calls ||
+		 diagnostic.orphan_results || diagnostic.invalid_payloads) ||
+	    !cJSON_AddNumberToObject(root, "history_tokens", (double)tokens) ||
+	    !cJSON_AddNumberToObject(root, "summary_tokens", (double)summary_tokens) ||
+	    !cJSON_AddNumberToObject(root, "context_limit",
+		ctx->tokenizer ? ctx->tokenizer->context_limit : 0) ||
+	    !cJSON_AddStringToObject(root, "model", ctx->llm ? ctx->llm->model_id : "")))
 		rc = -ENOMEM;
 	model_history_free_list(items);
 	morph_strmap_cleanup(&covered);
 	pthread_mutex_unlock(&ctx->execution_lock);
 	if (rc != 0) {
-		json_free(root);
+		cJSON_Delete(root);
 		return rc;
 	}
 	*out = root;
 	return 0;
 }
 
-int runtime_session_history_entry_input(struct runtime *runtime, int64_t sequence,
-					struct json **out)
+int runtime_session_history_entry_input(struct runtime *runtime, int64_t sequence, cJSON **out)
 {
 	struct model_history_item *items;
 	struct model_history_item *item;
@@ -239,11 +236,11 @@ int runtime_session_history_entry_input(struct runtime *runtime, int64_t sequenc
 	return rc;
 }
 
-int runtime_session_last_request(struct runtime *runtime, struct json **out)
+int runtime_session_last_request(struct runtime *runtime, cJSON **out)
 {
 	struct history_request_snapshot snapshot;
 	struct arena *arena;
-	struct json *root = NULL;
+	cJSON *root = NULL;
 	int rc;
 
 	if (!out)
@@ -262,18 +259,18 @@ int runtime_session_last_request(struct runtime *runtime, struct json **out)
 						    &snapshot)
 		   : -ENOMEM;
 	if (rc == 0) {
-		root = json_object();
-		if (!root || !json_add_string(root, "turn_id", snapshot.turn_id) ||
-		    !json_add_string(root, "provider", snapshot.provider) ||
-		    !json_add_string(root, "model", snapshot.model) ||
-		    !json_add_string(root, "input_json", snapshot.input_json) ||
-		    !json_add_number(root, "created_at", (double)snapshot.created_at))
+		root = cJSON_CreateObject();
+		if (!root || !cJSON_AddStringToObject(root, "turn_id", snapshot.turn_id) ||
+		    !cJSON_AddStringToObject(root, "provider", snapshot.provider) ||
+		    !cJSON_AddStringToObject(root, "model", snapshot.model) ||
+		    !cJSON_AddStringToObject(root, "input_json", snapshot.input_json) ||
+		    !cJSON_AddNumberToObject(root, "created_at", (double)snapshot.created_at))
 			rc = -ENOMEM;
 	}
 	arena_destroy(arena);
 	pthread_mutex_unlock(&runtime->context.execution_lock);
 	if (rc != 0) {
-		json_free(root);
+		cJSON_Delete(root);
 		return rc;
 	}
 	*out = root;

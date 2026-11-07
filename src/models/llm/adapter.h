@@ -2,7 +2,7 @@
 #define LLM_ADAPTER_H
 
 #include "models/llm.h"
-#include "util/json.h"
+#include "cJSON.h"
 
 struct llm_adapter {
 	const char *name;
@@ -10,8 +10,8 @@ struct llm_adapter {
 	int capture_reasoning;
 	int assistant_tool_content_nullable;
 	int (*supports_tool_choice)(const struct model *model);
-	int (*disable_thinking)(struct json *request);
-	int (*add_message_fields)(const struct model *model, struct json *message,
+	int (*disable_thinking)(cJSON *request);
+	int (*add_message_fields)(const struct model *model, cJSON *message,
 				  const struct chat_message *chat_message);
 };
 

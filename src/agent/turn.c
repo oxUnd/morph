@@ -6,7 +6,7 @@
 #include "util/arena.h"
 #include "util/error.h"
 #include "util/id.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -240,7 +240,7 @@ int agent_turn_begin(struct agent_turn *turn,
 
 static int turn_save_trace(struct agent_turn *turn)
 {
-	struct json *arr;
+	cJSON *arr;
 	char *json;
 	struct react_step *cur;
 	int round_no;
@@ -250,56 +250,66 @@ static int turn_save_trace(struct agent_turn *turn)
 	if (!turn->runtime.react || !turn->runtime.react->steps)
 		return 0;
 
-	arr = json_array();
+	arr = cJSON_CreateArray();
 	if (!arr)
 		return -ENOMEM;
 
 	cur = turn->runtime.react->steps;
 	while (cur) {
-		struct json *obj = json_object();
+		cJSON *obj = cJSON_CreateObject();
 		if (!obj) {
-			json_free(arr);
+			cJSON_Delete(arr);
 			return -ENOMEM;
 		}
-		if (!json_add_string(obj, "type", react_step_type_name(cur->type))) {
-			json_free(obj);
-			json_free(arr);
+		if (!cJSON_AddStringToObject(obj, "type",
+					     react_step_type_name(cur->type))) {
+			cJSON_Delete(obj);
+			cJSON_Delete(arr);
 			return -ENOMEM;
 		}
-		if (cur->content && !json_add_string(obj, "content", cur->content)) {
-			json_free(obj);
-			json_free(arr);
+		if (cur->content &&
+		    !cJSON_AddStringToObject(obj, "content", cur->content)) {
+			cJSON_Delete(obj);
+			cJSON_Delete(arr);
 			return -ENOMEM;
 		}
-		if (cur->tool_name && !json_add_string(obj, "tool_name", cur->tool_name)) {
-			json_free(obj);
-			json_free(arr);
+		if (cur->tool_name &&
+		    !cJSON_AddStringToObject(obj, "tool_name",
+					     cur->tool_name)) {
+			cJSON_Delete(obj);
+			cJSON_Delete(arr);
 			return -ENOMEM;
 		}
-		if (cur->tool_args && !json_add_string(obj, "tool_args", cur->tool_args)) {
-			json_free(obj);
-			json_free(arr);
+		if (cur->tool_args &&
+		    !cJSON_AddStringToObject(obj, "tool_args",
+					     cur->tool_args)) {
+			cJSON_Delete(obj);
+			cJSON_Delete(arr);
 			return -ENOMEM;
 		}
-		if (cur->tool_call_id && !json_add_string(obj, "tool_call_id", cur->tool_call_id)) {
-			json_free(obj);
-			json_free(arr);
+		if (cur->tool_call_id &&
+		    !cJSON_AddStringToObject(obj, "tool_call_id",
+					     cur->tool_call_id)) {
+			cJSON_Delete(obj);
+			cJSON_Delete(arr);
 			return -ENOMEM;
 		}
 		if (cur->error_code < 0)
-			json_add_number(obj, "error_code", cur->error_code);
+			cJSON_AddNumberToObject(obj, "error_code",
+						cur->error_code);
 		if (cur->artifact_count > 0) {
-			struct json *artifacts =
+			cJSON *artifacts =
 				tool_artifacts_to_json(cur->artifacts, cur->artifact_count);
 			if (artifacts)
-				json_object_add(obj, "artifacts", artifacts);
+				cJSON_AddItemToObject(obj, "artifacts",
+						      artifacts);
 		}
-		json_array_add(arr, obj);
+		cJSON_AddItemToArray(arr, obj);
 		cur = cur->next;
 	}
 
-	json = json_stringify(arr);
-	json_free(arr);
+	json = cJSON_PrintUnformatted(arr);
+	cJSON_Delete(arr);
 	if (!json)
 		return -ENOMEM;
 

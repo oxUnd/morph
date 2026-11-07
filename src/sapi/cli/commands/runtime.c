@@ -2,7 +2,7 @@
 #include "ext/ext.h"
 #include "credits.h"
 #include "config/config.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/services/recap.h"
@@ -168,21 +168,21 @@ static struct react_step *cli_runtime_json_to_react_steps(struct arena *arena, c
 {
 	if (!json)
 		return NULL;
-	struct json *arr = json_parse_prefix(json, NULL, NULL);
-	if (!json_is_array_value(arr)) {
-		json_free(arr);
+	cJSON *arr = cJSON_Parse(json);
+	if (!cJSON_IsArray(arr)) {
+		cJSON_Delete(arr);
 		return NULL;
 	}
-	int count = json_count(arr);
+	int count = cJSON_GetArraySize(arr);
 	struct react_step head = {0};
 	struct react_step *tail = &head;
 	for (int i = 0; i < count; i++) {
-		struct json *obj = json_at(arr, i);
-		if (!json_is_object_value(obj))
+		cJSON *obj = cJSON_GetArrayItem(arr, i);
+		if (!cJSON_IsObject(obj))
 			continue;
-		struct json *type_item = json_member_ci(obj, "type");
+		cJSON *type_item = cJSON_GetObjectItem(obj, "type");
 		const char *type_name =
-			json_is_string_value(type_item) ? json_string_value(type_item) : "Unknown";
+			cJSON_IsString(type_item) ? type_item->valuestring : "Unknown";
 		enum react_step_type type = REACT_STEP_THOUGHT;
 		if (strcmp(type_name, "Thought") == 0)
 			type = REACT_STEP_THOUGHT;
@@ -198,34 +198,30 @@ static struct react_step *cli_runtime_json_to_react_steps(struct arena *arena, c
 			type = REACT_STEP_REASONING;
 		else if (strcmp(type_name, "Content") == 0)
 			type = REACT_STEP_CONTENT;
-		struct json *content = json_member_ci(obj, "content");
-		struct json *tool_name = json_member_ci(obj, "tool_name");
-		struct json *tool_args = json_member_ci(obj, "tool_args");
-		struct json *tool_call_id = json_member_ci(obj, "tool_call_id");
+		cJSON *content = cJSON_GetObjectItem(obj, "content");
+		cJSON *tool_name = cJSON_GetObjectItem(obj, "tool_name");
+		cJSON *tool_args = cJSON_GetObjectItem(obj, "tool_args");
+		cJSON *tool_call_id = cJSON_GetObjectItem(obj, "tool_call_id");
 		char *args_buf = NULL;
-		if (json_is_string_value(tool_args) && json_string_value(tool_args)) {
-			const char *tn =
-				json_is_string_value(tool_name) ? json_string_value(tool_name) : "";
-			size_t ab_len = strlen(tn) + strlen(json_string_value(tool_args)) + 4;
+		if (cJSON_IsString(tool_args) && tool_args->valuestring) {
+			const char *tn = cJSON_IsString(tool_name) ? tool_name->valuestring : "";
+			size_t ab_len = strlen(tn) + strlen(tool_args->valuestring) + 4;
 			args_buf = malloc(ab_len);
 			if (args_buf)
-				snprintf(args_buf, ab_len, "%s(%s)", tn,
-					 json_string_value(tool_args));
+				snprintf(args_buf, ab_len, "%s(%s)", tn, tool_args->valuestring);
 		}
 		struct react_step *s = react_step_create(
-			arena, type,
-			json_is_string_value(content) ? json_string_value(content) : NULL,
-			json_is_string_value(tool_name) ? json_string_value(tool_name) : NULL,
+			arena, type, cJSON_IsString(content) ? content->valuestring : NULL,
+			cJSON_IsString(tool_name) ? tool_name->valuestring : NULL,
 			args_buf ? args_buf : NULL,
-			json_is_string_value(tool_call_id) ? json_string_value(tool_call_id)
-							   : NULL);
+			cJSON_IsString(tool_call_id) ? tool_call_id->valuestring : NULL);
 		if (s) {
 			tail->next = s;
 			tail = s;
 		}
 		free(args_buf);
 	}
-	json_free(arr);
+	cJSON_Delete(arr);
 	if (out_count)
 		*out_count = count;
 	return head.next;

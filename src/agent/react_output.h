@@ -36,8 +36,8 @@ struct react_output_event {
 	const char *tool_call_id;
 	int error_code;
 	const struct tool_artifact_list *artifacts;
-	const struct json *data;
-	const struct json *ui;
+	const cJSON *data;
+	const cJSON *ui;
 };
 
 typedef int (*react_output_cb)(const struct react_output_event *event, void *user_data);

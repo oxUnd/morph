@@ -6,7 +6,7 @@ extern "C" {
 #include "runtime/runtime_internal.h"
 #include "runtime/recap.h"
 #include "runtime/sync.h"
-#include "util/json.h"
+#include "cJSON.h"
 }
 
 #include <sqlite3.h>
@@ -53,7 +53,7 @@ TEST_F(RuntimeFacadeTest, DeferredSessionExportsReportNoDataWithoutCreatingASess
 {
 	struct runtime_options options{};
 	char *answer = nullptr;
-	struct json *document = nullptr;
+	cJSON *document = nullptr;
 
 	options.create_new_session = 1;
 	Open(&options);
@@ -87,14 +87,13 @@ TEST_F(RuntimeFacadeTest, ManualCompactionRunsTrustedHooksAndHonorsVeto)
 	history.token_count = 10;
 	history.active = 1;
 	ASSERT_EQ(model_history_add(&instance->context.database, &history, nullptr), 0);
-	struct json *rows = nullptr;
+	cJSON *rows = nullptr;
 	ASSERT_EQ(runtime_hooks_snapshot(instance, &rows), 0);
-	const struct json *row = json_at(rows, 0);
+	const cJSON *row = cJSON_GetArrayItem(rows, 0);
 	ASSERT_NE(row, nullptr);
 	ASSERT_EQ(runtime_hooks_manage(instance, "trust-all", "workspace",
-				       json_string_value(json_member_ci(row, "review_digest"))),
-		  0);
-	json_free(rows);
+		cJSON_GetObjectItem(row, "review_digest")->valuestring), 0);
+	cJSON_Delete(rows);
 	int summaries = 0;
 	react->compress.summarize_user_data = &summaries;
 	react->compress.summarize = [](const char *, void *user, char **out) -> int {
@@ -193,15 +192,15 @@ TEST_F(RuntimeFacadeTest, SessionImportPreservesLocalHistoryAndRemapsDisplayAndM
 	EXPECT_EQ(message_count(&instance->context.database, imported), 2);
 	char *json = nullptr;
 	ASSERT_EQ(runtime_session_transcript_json(instance, imported, &json), 0);
-	struct json *root = json_parse_prefix(json, NULL, NULL);
+	cJSON *root = cJSON_Parse(json);
 	free(json);
 	ASSERT_NE(root, nullptr);
-	struct json *messages = json_member_ci(root, "messages");
-	struct json *display = json_member_ci(root, "display");
-	EXPECT_EQ(json_count(display), 3);
-	EXPECT_EQ(json_int_value(json_member_ci(json_at(messages, 0), "id")),
-		  json_int_value(json_member_ci(json_at(display, 0), "core_message_id")));
-	json_free(root);
+	cJSON *messages = cJSON_GetObjectItem(root, "messages");
+	cJSON *display = cJSON_GetObjectItem(root, "display");
+	EXPECT_EQ(cJSON_GetArraySize(display), 3);
+	EXPECT_EQ(cJSON_GetObjectItem(cJSON_GetArrayItem(messages, 0), "id")->valueint,
+		cJSON_GetObjectItem(cJSON_GetArrayItem(display, 0), "core_message_id")->valueint);
+	cJSON_Delete(root);
 	ASSERT_EQ(runtime_session_select_existing(instance, imported, nullptr), 0);
 	ASSERT_EQ(runtime_session_reload_current(instance), 0);
 	ASSERT_NE(instance->context.react->history_items, nullptr);
@@ -359,18 +358,20 @@ TEST_F(RuntimeFacadeTest, TranscriptReadsDetachedSessionWithoutSelectingIt)
 		"[]", 0), 0);
 	char *json = nullptr;
 	ASSERT_EQ(runtime_session_transcript_json(instance, imported.id, &json), 0);
-	struct json *root = json_parse_prefix(json, NULL, NULL);
+	cJSON *root = cJSON_Parse(json);
 	free(json);
 	ASSERT_NE(root, nullptr);
-	EXPECT_STREQ(json_string_value(json_member_ci(root, "identity")), imported.display_id);
-	struct json *items = json_member_ci(root, "messages");
-	ASSERT_EQ(json_count(items), 2);
-	EXPECT_STREQ(json_string_value(json_member_ci(json_at(items, 0), "content")),
-		     "Imported question");
-	struct json *traces = json_member_ci(root, "traces");
-	ASSERT_EQ(json_count(traces), 1);
-	EXPECT_STREQ(json_string_value(json_member_ci(json_at(traces, 0), "steps_json")), steps);
-	json_free(root);
+	EXPECT_STREQ(cJSON_GetObjectItem(root, "identity")->valuestring,
+		imported.display_id);
+	cJSON *items = cJSON_GetObjectItem(root, "messages");
+	ASSERT_EQ(cJSON_GetArraySize(items), 2);
+	EXPECT_STREQ(cJSON_GetObjectItem(cJSON_GetArrayItem(items, 0),
+		"content")->valuestring, "Imported question");
+	cJSON *traces = cJSON_GetObjectItem(root, "traces");
+	ASSERT_EQ(cJSON_GetArraySize(traces), 1);
+	EXPECT_STREQ(cJSON_GetObjectItem(cJSON_GetArrayItem(traces, 0),
+		"steps_json")->valuestring, steps);
+	cJSON_Delete(root);
 	int64_t selected = 0;
 	ASSERT_EQ(runtime_session_current_id(instance, &selected), 0);
 	EXPECT_EQ(selected, current.id);
@@ -379,10 +380,10 @@ TEST_F(RuntimeFacadeTest, TranscriptReadsDetachedSessionWithoutSelectingIt)
 		&json), 0);
 	EXPECT_EQ(json, nullptr);
 	ASSERT_EQ(runtime_session_transcript_json(instance, current.id, &json), 0);
-	root = json_parse_prefix(json, NULL, NULL);
+	root = cJSON_Parse(json);
 	free(json);
-	EXPECT_EQ(json_count(json_member_ci(root, "messages")), 0);
-	json_free(root);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(root, "messages")), 0);
+	cJSON_Delete(root);
 }
 
 static int facade_task_runner(const struct scheduled_task *,

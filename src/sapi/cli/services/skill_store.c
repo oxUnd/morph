@@ -1,5 +1,5 @@
 #include "sapi/cli/services/skill_store.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "sapi/cli/services/management.h"
 #include "skill/skill_parse.h"
 #include "util/error.h"
@@ -375,36 +375,36 @@ int cli_skill_store_digest(const char *path, char digest[CLI_SKILL_STORE_DIGEST_
 	return 0;
 }
 
-struct json *cli_skill_store_metadata(const char *path)
+cJSON *cli_skill_store_metadata(const char *path)
 {
 	char file[PATH_MAX];
 	char *text;
-	struct json *metadata;
+	cJSON *metadata;
 
 	if (file_path_join(file, sizeof(file), path, CLI_SKILL_STORE_INSTALL_METADATA) != 0)
 		return NULL;
 	text = file_read_all(file, NULL);
 	if (!text)
 		return NULL;
-	metadata = json_parse_prefix(text, NULL, NULL);
+	metadata = cJSON_Parse(text);
 	free(text);
 	return metadata;
 }
 
-int cli_skill_store_unmodified(const char *path, const struct json *metadata)
+int cli_skill_store_unmodified(const char *path, const cJSON *metadata)
 {
 	char digest[CLI_SKILL_STORE_DIGEST_MAX];
-	struct json *expected = json_member(metadata, "digest");
+	cJSON *expected = cJSON_GetObjectItemCaseSensitive(metadata, "digest");
 	int rc;
 
-	if (!json_is_string_value(expected)) {
+	if (!cJSON_IsString(expected)) {
 		fprintf(stderr, "morph: unmanaged skill, refusing replacement/removal: %s\n", path);
 		return -EPERM;
 	}
 	rc = cli_skill_store_digest(path, digest);
 	if (rc != 0)
 		return rc;
-	if (strcmp(digest, json_string_value(expected)) != 0) {
+	if (strcmp(digest, expected->valuestring) != 0) {
 		fprintf(stderr,
 			"morph: skill has local changes; "
 			"preserve them before retrying: %s\n",
@@ -415,7 +415,7 @@ int cli_skill_store_unmodified(const char *path, const struct json *metadata)
 }
 
 int cli_skill_store_install(const char *root, const struct cli_skill_candidate *candidate,
-			    struct json *metadata, int replace)
+			    cJSON *metadata, int replace)
 {
 	char temporary[PATH_MAX], stage[PATH_MAX], target[PATH_MAX];
 	char backup[PATH_MAX], metadata_path[PATH_MAX];
@@ -433,7 +433,7 @@ int cli_skill_store_install(const char *root, const struct cli_skill_candidate *
 	if (!exists && errno != ENOENT)
 		return morph_error_from_errno(errno);
 	if (exists) {
-		struct json *previous;
+		cJSON *previous;
 
 		if (!replace)
 			return -EEXIST;
@@ -441,7 +441,7 @@ int cli_skill_store_install(const char *root, const struct cli_skill_candidate *
 			return -ELOOP;
 		previous = cli_skill_store_metadata(target);
 		rc = cli_skill_store_unmodified(target, previous);
-		json_free(previous);
+		cJSON_Delete(previous);
 		if (rc != 0)
 			return rc;
 	}
@@ -457,10 +457,10 @@ int cli_skill_store_install(const char *root, const struct cli_skill_candidate *
 		rc = cli_skill_store_copy(candidate->path, stage);
 	if (rc == 0)
 		rc = cli_skill_store_digest(stage, digest);
-	if (rc == 0 && !json_add_string(metadata, "digest", digest))
+	if (rc == 0 && !cJSON_AddStringToObject(metadata, "digest", digest))
 		rc = -ENOMEM;
 	if (rc == 0) {
-		json = json_stringify(metadata);
+		json = cJSON_PrintUnformatted(metadata);
 		if (!json)
 			rc = -ENOMEM;
 	}

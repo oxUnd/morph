@@ -7,7 +7,7 @@
 #include "util/strmap.h"
 #include "util/name.h"
 #include "content_hash.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include <sqlite3.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -39,9 +39,10 @@ struct stored_snapshot {
 int sync_db_backend_valid(const struct morph_sync_config *cfg)
 {
 	return cfg && (!cfg->remote_backend ||
-		       (cfg->remote_backend->stat && cfg->remote_backend->list &&
-			cfg->remote_backend->copy_from_local &&
-			cfg->remote_backend->copy_to_local && cfg->remote_backend->delete_file));
+		(cfg->remote_backend->stat && cfg->remote_backend->list &&
+		 cfg->remote_backend->copy_from_local &&
+		 cfg->remote_backend->copy_to_local &&
+		 cfg->remote_backend->delete_file));
 }
 
 static int ensure_parent(const char *path)
@@ -95,7 +96,8 @@ static int copy_plain(const char *source, const char *destination)
 	return 0;
 }
 
-static int store_path(const struct morph_sync_config *cfg, const char *rel, char out[PATH_MAX])
+static int store_path(const struct morph_sync_config *cfg, const char *rel,
+		      char out[PATH_MAX])
 {
 	return file_path_join(out, PATH_MAX, cfg->sync_dir, rel);
 }
@@ -108,7 +110,8 @@ static int store_stat(const struct morph_sync_config *cfg, const char *rel,
 
 	memset(result, 0, sizeof(*result));
 	if (cfg->remote_backend)
-		return cfg->remote_backend->stat(cfg->remote_backend->user_data, rel, result);
+		return cfg->remote_backend->stat(cfg->remote_backend->user_data,
+					 rel, result);
 	if (store_path(cfg, rel, path) != 0)
 		return -ENAMETOOLONG;
 	if (stat(path, &st) != 0)
@@ -120,7 +123,8 @@ static int store_stat(const struct morph_sync_config *cfg, const char *rel,
 	return 0;
 }
 
-static int store_put(const struct morph_sync_config *cfg, const char *source, const char *rel)
+static int store_put(const struct morph_sync_config *cfg, const char *source,
+		     const char *rel)
 {
 	char destination[PATH_MAX];
 	char temporary[PATH_MAX];
@@ -128,8 +132,8 @@ static int store_put(const struct morph_sync_config *cfg, const char *source, co
 	int rc;
 
 	if (cfg->remote_backend)
-		return cfg->remote_backend->copy_from_local(cfg->remote_backend->user_data, source,
-							    rel, 0);
+		return cfg->remote_backend->copy_from_local(
+			cfg->remote_backend->user_data, source, rel, 0);
 	rc = store_path(cfg, rel, destination);
 	if (rc != 0)
 		return rc;
@@ -139,8 +143,8 @@ static int store_put(const struct morph_sync_config *cfg, const char *source, co
 	rc = morph_random_id("tmp_", random_id, sizeof(random_id));
 	if (rc != 0)
 		return rc;
-	if (snprintf(temporary, sizeof(temporary), "%s.%s", destination, random_id) >=
-	    (int)sizeof(temporary))
+	if (snprintf(temporary, sizeof(temporary), "%s.%s", destination,
+		     random_id) >= (int)sizeof(temporary))
 		return -ENAMETOOLONG;
 	rc = copy_plain(source, temporary);
 	if (rc != 0)
@@ -153,13 +157,14 @@ static int store_put(const struct morph_sync_config *cfg, const char *source, co
 	return 0;
 }
 
-static int store_get(const struct morph_sync_config *cfg, const char *rel, const char *destination)
+static int store_get(const struct morph_sync_config *cfg, const char *rel,
+		     const char *destination)
 {
 	char source[PATH_MAX];
 
 	if (cfg->remote_backend)
-		return cfg->remote_backend->copy_to_local(cfg->remote_backend->user_data, rel,
-							  destination);
+		return cfg->remote_backend->copy_to_local(
+			cfg->remote_backend->user_data, rel, destination);
 	if (store_path(cfg, rel, source) != 0)
 		return -ENAMETOOLONG;
 	return copy_plain(source, destination);
@@ -177,7 +182,8 @@ int sync_db_quick_check(const char *path)
 		sqlite3_close(database);
 		return 0;
 	}
-	rc = sqlite3_prepare_v2(database, "PRAGMA quick_check", -1, &statement, NULL);
+	rc = sqlite3_prepare_v2(database, "PRAGMA quick_check", -1,
+				&statement, NULL);
 	if (rc == SQLITE_OK)
 		rc = sqlite3_step(statement);
 	text = rc == SQLITE_ROW ? sqlite3_column_text(statement, 0) : NULL;
@@ -209,7 +215,8 @@ int sync_db_is_sqlite(const char *path)
 		return 0;
 	rc = sqlite3_open_v2(path, &database, SQLITE_OPEN_READONLY, NULL);
 	if (rc == SQLITE_OK)
-		rc = sqlite3_prepare_v2(database, "PRAGMA schema_version", -1, &statement, NULL);
+		rc = sqlite3_prepare_v2(database, "PRAGMA schema_version", -1,
+					&statement, NULL);
 	if (rc == SQLITE_OK)
 		rc = sqlite3_step(statement);
 	sqlite3_finalize(statement);
@@ -217,7 +224,8 @@ int sync_db_is_sqlite(const char *path)
 	return rc == SQLITE_ROW;
 }
 
-static int sqlite_snapshot(const char *source, const char *destination, int *page_size)
+static int sqlite_snapshot(const char *source, const char *destination,
+			   int *page_size)
 {
 	sqlite3_backup *backup = NULL;
 	sqlite3_stmt *statement = NULL;
@@ -229,8 +237,8 @@ static int sqlite_snapshot(const char *source, const char *destination, int *pag
 	rc = sqlite3_open_v2(source, &input, SQLITE_OPEN_READONLY, NULL);
 	if (rc != SQLITE_OK)
 		goto out;
-	rc = sqlite3_open_v2(destination, &output, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
-			     NULL);
+	rc = sqlite3_open_v2(destination, &output,
+			     SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL);
 	if (rc != SQLITE_OK)
 		goto out;
 	backup = sqlite3_backup_init(output, "main", input, "main");
@@ -259,7 +267,8 @@ static int sqlite_snapshot(const char *source, const char *destination, int *pag
 	rc = sqlite3_exec(output, "PRAGMA journal_mode=DELETE", NULL, NULL, NULL);
 	if (rc != SQLITE_OK)
 		goto out;
-	rc = sqlite3_prepare_v2(output, "PRAGMA page_size", -1, &statement, NULL);
+	rc = sqlite3_prepare_v2(output, "PRAGMA page_size", -1,
+				&statement, NULL);
 	if (rc == SQLITE_OK && sqlite3_step(statement) == SQLITE_ROW)
 		*page_size = sqlite3_column_int(statement, 0);
 	else
@@ -274,14 +283,16 @@ out:
 	return rc == SQLITE_OK && *page_size > 0 ? 0 : MORPH_ERR_DB;
 }
 
-static int device_id_get(const struct morph_sync_config *cfg, char out[MORPH_SYNC_DEVICE_ID_MAX])
+static int device_id_get(const struct morph_sync_config *cfg,
+			 char out[MORPH_SYNC_DEVICE_ID_MAX])
 {
 	char directory[PATH_MAX];
 	char path[PATH_MAX];
 	char *stored;
 	int rc;
 
-	rc = file_path_join(directory, sizeof(directory), cfg->source_dir, ".morph-sync");
+	rc = file_path_join(directory, sizeof(directory), cfg->source_dir,
+			    ".morph-sync");
 	if (rc != 0)
 		return rc;
 	rc = file_ensure_dir(directory);
@@ -306,13 +317,14 @@ static int device_id_get(const struct morph_sync_config *cfg, char out[MORPH_SYN
 	return file_write_all(path, out, strlen(out));
 }
 
-static int db_cursor_path(const struct morph_sync_config *cfg, const char *database_key,
-			  char out[PATH_MAX])
+static int db_cursor_path(const struct morph_sync_config *cfg,
+			  const char *database_key, char out[PATH_MAX])
 {
 	char directory[PATH_MAX];
 	int rc;
 
-	rc = file_path_join(directory, sizeof(directory), cfg->source_dir, ".morph-sync/db-state");
+	rc = file_path_join(directory, sizeof(directory), cfg->source_dir,
+			    ".morph-sync/db-state");
 	if (rc != 0)
 		return rc;
 	rc = file_ensure_dir(directory);
@@ -321,8 +333,9 @@ static int db_cursor_path(const struct morph_sync_config *cfg, const char *datab
 	return file_path_join(out, PATH_MAX, directory, database_key);
 }
 
-static int db_cursor_matches(const struct morph_sync_config *cfg, const char *database_key,
-			     const char *device, const char *database_hash)
+static int db_cursor_matches(const struct morph_sync_config *cfg,
+			     const char *database_key, const char *device,
+			     const char *database_hash)
 {
 	char path[PATH_MAX];
 	char expected[MORPH_SYNC_DEVICE_ID_MAX + MORPH_SYNC_HASH_LEN + 2];
@@ -341,8 +354,9 @@ static int db_cursor_matches(const struct morph_sync_config *cfg, const char *da
 	return matches;
 }
 
-static int db_cursor_put(const struct morph_sync_config *cfg, const char *database_key,
-			 const char *device, const char *database_hash)
+static int db_cursor_put(const struct morph_sync_config *cfg,
+			 const char *database_key, const char *device,
+			 const char *database_hash)
 {
 	char path[PATH_MAX];
 	char value[MORPH_SYNC_DEVICE_ID_MAX + MORPH_SYNC_HASH_LEN + 2];
@@ -351,18 +365,21 @@ static int db_cursor_put(const struct morph_sync_config *cfg, const char *databa
 	rc = db_cursor_path(cfg, database_key, path);
 	if (rc != 0)
 		return rc;
-	if (snprintf(value, sizeof(value), "%s %s", device, database_hash) >= (int)sizeof(value))
+	if (snprintf(value, sizeof(value), "%s %s", device, database_hash) >=
+	    (int)sizeof(value))
 		return -ENAMETOOLONG;
 	return file_write_all(path, value, strlen(value));
 }
 
-static int staging_path(const struct morph_sync_config *cfg, const char *suffix, char out[PATH_MAX])
+static int staging_path(const struct morph_sync_config *cfg, const char *suffix,
+			char out[PATH_MAX])
 {
 	char directory[PATH_MAX];
 	char random_id[64];
 	int rc;
 
-	rc = file_path_join(directory, sizeof(directory), cfg->sync_dir, ".morph-sync/staging");
+	rc = file_path_join(directory, sizeof(directory), cfg->sync_dir,
+			    ".morph-sync/staging");
 	if (rc != 0)
 		return rc;
 	rc = file_ensure_dir(directory);
@@ -371,22 +388,22 @@ static int staging_path(const struct morph_sync_config *cfg, const char *suffix,
 	rc = morph_random_id("db_", random_id, sizeof(random_id));
 	if (rc != 0)
 		return rc;
-	if (snprintf(out, PATH_MAX, "%s/%s%s", directory, random_id, suffix ? suffix : "") >=
-	    PATH_MAX)
+	if (snprintf(out, PATH_MAX, "%s/%s%s", directory, random_id,
+		     suffix ? suffix : "") >= PATH_MAX)
 		return -ENAMETOOLONG;
 	return 0;
 }
 
-static int manifest_add_string_checked(struct json *object, const char *name, const char *value)
+static int json_add_string(cJSON *object, const char *name, const char *value)
 {
-	return json_add_string(object, name, value) ? 0 : -ENOMEM;
+	return cJSON_AddStringToObject(object, name, value) ? 0 : -ENOMEM;
 }
 
 /* Bundle display history into the core snapshot, never into the live database.
  * The core transcript remains authoritative if a UI writer was ahead/behind.
  * Readers validate message anchors before accepting this optional projection. */
-static int snapshot_include_display(const struct morph_sync_config *cfg, const char *rel,
-				    const char *snapshot)
+static int snapshot_include_display(const struct morph_sync_config *cfg,
+				    const char *rel, const char *snapshot)
 {
 	char source[PATH_MAX];
 	char staging[PATH_MAX];
@@ -413,8 +430,8 @@ static int snapshot_include_display(const struct morph_sync_config *cfg, const c
 	if (rc != 0)
 		goto out_remove_display;
 	if (sqlite3_open_v2(snapshot, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK ||
-	    sqlite3_prepare_v2(db, "ATTACH DATABASE ? AS display", -1, &attach, NULL) !=
-		    SQLITE_OK) {
+	    sqlite3_prepare_v2(db, "ATTACH DATABASE ? AS display", -1,
+			       &attach, NULL) != SQLITE_OK) {
 		rc = (MORPH_ERR_DB);
 		goto out_remove_display;
 	}
@@ -424,37 +441,34 @@ static int snapshot_include_display(const struct morph_sync_config *cfg, const c
 		goto out_remove_display;
 	}
 	if (sqlite3_exec(db,
-			 "BEGIN IMMEDIATE;"
-			 "CREATE TEMP TABLE local_display AS "
-			 "SELECT session_id,turn_id,core_message_id,seq,type,content,"
-			 "attachments_json,structured_data,agent_ui_ir,hitl_verdict,"
-			 "created_at,updated_at FROM display.ui_messages;"
-			 "CREATE TABLE IF NOT EXISTS sync_ui_messages AS SELECT * FROM "
-			 "local_display WHERE 0;",
-			 NULL, NULL, NULL) != SQLITE_OK)
+		"BEGIN IMMEDIATE;"
+		"CREATE TEMP TABLE local_display AS "
+		"SELECT session_id,turn_id,core_message_id,seq,type,content,"
+		"attachments_json,structured_data,agent_ui_ir,hitl_verdict,"
+		"created_at,updated_at FROM display.ui_messages;"
+		"CREATE TABLE IF NOT EXISTS sync_ui_messages AS SELECT * FROM local_display WHERE 0;",
+		NULL, NULL, NULL) != SQLITE_OK)
 		rc = (MORPH_ERR_DB);
-	if (rc == 0 &&
-	    sqlite3_table_column_metadata(db, "display", "ui_session_identity", "identity", NULL,
-					  NULL, NULL, NULL, NULL) == SQLITE_OK &&
-	    sqlite3_table_column_metadata(db, "main", "sessions", "display_id", NULL, NULL, NULL,
-					  NULL, NULL) == SQLITE_OK) {
+	if (rc == 0 && sqlite3_table_column_metadata(db, "display",
+		"ui_session_identity", "identity", NULL, NULL, NULL, NULL, NULL) == SQLITE_OK &&
+	    sqlite3_table_column_metadata(db, "main", "sessions", "display_id",
+		NULL, NULL, NULL, NULL, NULL) == SQLITE_OK) {
 		if (sqlite3_exec(db,
-				 "DELETE FROM local_display WHERE session_id IN ("
-				 "SELECT i.session_id FROM display.ui_session_identity i "
-				 "JOIN main.sessions s ON s.id=i.session_id "
-				 "WHERE i.identity<>s.display_id)",
-				 NULL, NULL, NULL) != SQLITE_OK)
+			"DELETE FROM local_display WHERE session_id IN ("
+			"SELECT i.session_id FROM display.ui_session_identity i "
+			"JOIN main.sessions s ON s.id=i.session_id "
+			"WHERE i.identity<>s.display_id)", NULL, NULL, NULL) != SQLITE_OK)
 			rc = (MORPH_ERR_DB);
 	}
 
 	if (rc == 0 && sqlite3_exec(db,
-				    "DELETE FROM sync_ui_messages WHERE session_id IN "
-				    "(SELECT DISTINCT session_id FROM local_display);"
-				    "INSERT INTO sync_ui_messages SELECT * FROM local_display;"
-				    "CREATE INDEX IF NOT EXISTS sync_ui_session_seq "
-				    "ON sync_ui_messages(session_id,seq); COMMIT",
-				    NULL, NULL, NULL) != SQLITE_OK)
+		"DELETE FROM sync_ui_messages WHERE session_id IN "
+		"(SELECT DISTINCT session_id FROM local_display);"
+		"INSERT INTO sync_ui_messages SELECT * FROM local_display;"
+		"CREATE INDEX IF NOT EXISTS sync_ui_session_seq "
+		"ON sync_ui_messages(session_id,seq); COMMIT", NULL, NULL, NULL) != SQLITE_OK)
 		rc = (MORPH_ERR_DB);
+
 
 out_remove_display:
 	sqlite3_finalize(attach);
@@ -468,17 +482,17 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 			      const char *path, struct morph_sync_status *status, int update_cursor)
 {
 	char snapshot_path[PATH_MAX];
-	char chunk_path[PATH_MAX] = {0};
+	char chunk_path[PATH_MAX] = { 0 };
 	char object_rel[PATH_MAX];
 	char manifest_rel[PATH_MAX];
 	char database_hash[MORPH_SYNC_HASH_LEN];
 	char database_key[MORPH_SYNC_HASH_LEN];
-	char device[MORPH_SYNC_DEVICE_ID_MAX] = {0};
+	char device[MORPH_SYNC_DEVICE_ID_MAX] = { 0 };
 	char snapshot_id[MORPH_SYNC_SNAPSHOT_ID_MAX];
 	char version_id[MORPH_SYNC_HASH_LEN];
 	struct morph_sync_backend_stat remote_stat;
-	struct json *root = NULL;
-	struct json *chunks = NULL;
+	cJSON *root = NULL;
+	cJSON *chunks = NULL;
 	unsigned char *buffer = NULL;
 	char *json = NULL;
 	FILE *snapshot = NULL;
@@ -510,7 +524,8 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 	rc = device_id_get(cfg, device);
 	if (rc != 0)
 		goto out;
-	if (update_cursor && db_cursor_matches(cfg, database_key, device, database_hash))
+	if (update_cursor && db_cursor_matches(cfg, database_key, device,
+					       database_hash))
 		goto out;
 	if (update_cursor) {
 		rc = morph_random_id("ver_", version_id, sizeof(version_id));
@@ -520,13 +535,14 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 		strncpy(version_id, database_hash, sizeof(version_id) - 1);
 		version_id[sizeof(version_id) - 1] = '\0';
 	}
-	if (snprintf(snapshot_id, sizeof(snapshot_id), "%s-%s-%s", database_key, device,
-		     version_id) >= (int)sizeof(snapshot_id)) {
+	if (snprintf(snapshot_id, sizeof(snapshot_id), "%s-%s-%s",
+		     database_key, device, version_id) >=
+	    (int)sizeof(snapshot_id)) {
 		rc = -ENAMETOOLONG;
 		goto out;
 	}
-	if (snprintf(manifest_rel, sizeof(manifest_rel), "%s/%s.json", DB_SNAPSHOT_DIR,
-		     snapshot_id) >= (int)sizeof(manifest_rel)) {
+	if (snprintf(manifest_rel, sizeof(manifest_rel), "%s/%s.json",
+		     DB_SNAPSHOT_DIR, snapshot_id) >= (int)sizeof(manifest_rel)) {
 		rc = -ENAMETOOLONG;
 		goto out;
 	}
@@ -534,37 +550,35 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 	if (rc != 0 || remote_stat.exists)
 		goto out;
 
-	root = json_object();
-	chunks = json_array();
+	root = cJSON_CreateObject();
+	chunks = cJSON_CreateArray();
 	if (!root || !chunks) {
 		rc = -ENOMEM;
 		goto out;
 	}
-	json_add_number(root, "version", 1);
-	if (manifest_add_string_checked(root, "snapshot_id", snapshot_id) != 0 ||
-	    manifest_add_string_checked(root, "path", rel) != 0 ||
-	    manifest_add_string_checked(root, "device_id", device) != 0 ||
-	    manifest_add_string_checked(root, "database_hash", database_hash) != 0) {
+	cJSON_AddNumberToObject(root, "version", 1);
+	if (json_add_string(root, "snapshot_id", snapshot_id) != 0 ||
+	    json_add_string(root, "path", rel) != 0 ||
+	    json_add_string(root, "device_id", device) != 0 ||
+	    json_add_string(root, "database_hash", database_hash) != 0) {
 		rc = -ENOMEM;
 		goto out;
 	}
-	json_add_number(root, "created_at", (double)time(NULL));
+	cJSON_AddNumberToObject(root, "created_at", (double)time(NULL));
 	{
 		struct stat st;
 		if (stat(snapshot_path, &st) != 0) {
 			rc = -errno;
 			goto out;
 		}
-		json_add_number(root, "database_size", (double)st.st_size);
+		cJSON_AddNumberToObject(root, "database_size", (double)st.st_size);
 	}
-	json_add_number(root, "page_size", page_size);
+	cJSON_AddNumberToObject(root, "page_size", page_size);
 	chunk_size = DB_CHUNK_TARGET / (size_t)page_size * (size_t)page_size;
 	if (chunk_size == 0)
 		chunk_size = (size_t)page_size;
-	json_add_number(root, "chunk_size", (double)chunk_size);
-	rc = json_object_add(root, "chunks", chunks);
-	if (rc != 0)
-		goto out;
+	cJSON_AddNumberToObject(root, "chunk_size", (double)chunk_size);
+	cJSON_AddItemToObject(root, "chunks", chunks);
 	chunks = NULL;
 	buffer = malloc(chunk_size);
 	if (!buffer) {
@@ -581,13 +595,14 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 		goto out;
 	while (1) {
 		char chunk_hash[MORPH_SYNC_HASH_LEN];
-		struct json *item;
+		cJSON *item;
 		size_t amount = fread(buffer, 1, chunk_size, snapshot);
 		if (amount == 0)
 			break;
 		sync_hash_bytes(buffer, amount, chunk_hash);
-		if (snprintf(object_rel, sizeof(object_rel), "%s/%.2s/%s", DB_OBJECT_DIR,
-			     chunk_hash, chunk_hash) >= (int)sizeof(object_rel)) {
+		if (snprintf(object_rel, sizeof(object_rel), "%s/%.2s/%s",
+			     DB_OBJECT_DIR, chunk_hash, chunk_hash) >=
+		    (int)sizeof(object_rel)) {
 			rc = -ENAMETOOLONG;
 			goto out;
 		}
@@ -606,24 +621,20 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 		} else {
 			status->db_chunks_reused++;
 		}
-		item = json_object();
-		if (!item || !json_add_string(item, "hash", chunk_hash) ||
-		    !json_add_number(item, "size", (double)amount)) {
-			json_free(item);
+		item = cJSON_CreateObject();
+		if (!item || !cJSON_AddStringToObject(item, "hash", chunk_hash) ||
+		    !cJSON_AddNumberToObject(item, "size", (double)amount)) {
+			cJSON_Delete(item);
 			rc = -ENOMEM;
 			goto out;
 		}
-		rc = json_array_add(json_member_ci(root, "chunks"), item);
-		if (rc != 0) {
-			json_free(item);
-			goto out;
-		}
+		cJSON_AddItemToArray(cJSON_GetObjectItem(root, "chunks"), item);
 	}
 	if (ferror(snapshot)) {
 		rc = -EIO;
 		goto out;
 	}
-	json = json_stringify(root);
+	json = cJSON_PrintUnformatted(root);
 	if (!json) {
 		rc = -ENOMEM;
 		goto out;
@@ -641,15 +652,16 @@ out:
 		fclose(snapshot);
 	free(buffer);
 	free(json);
-	json_free(chunks);
-	json_free(root);
+	cJSON_Delete(chunks);
+	cJSON_Delete(root);
 	(void)unlink(snapshot_path);
 	if (chunk_path[0])
 		(void)unlink(chunk_path);
 	return rc;
 }
 
-int sync_db_backup_create(const struct morph_sync_config *cfg, const char *rel, const char *path,
+int sync_db_backup_create(const struct morph_sync_config *cfg,
+			  const char *rel, const char *path,
 			  struct morph_sync_status *status)
 {
 	char directory[PATH_MAX];
@@ -674,7 +686,8 @@ int sync_db_backup_create(const struct morph_sync_config *cfg, const char *rel, 
 		strncpy(directory, ".", sizeof(directory) - 1);
 		base = path;
 	}
-	if (snprintf(prefix, sizeof(prefix), "%s.conflict.", base) >= (int)sizeof(prefix))
+	if (snprintf(prefix, sizeof(prefix), "%s.conflict.", base) >=
+	    (int)sizeof(prefix))
 		return -ENAMETOOLONG;
 	rc = file_list_files(directory, &names, &count);
 	if (rc == -ENOENT)
@@ -682,7 +695,8 @@ int sync_db_backup_create(const struct morph_sync_config *cfg, const char *rel, 
 	for (int i = 0; rc == 0 && i < count; i++) {
 		if (strncmp(names[i], prefix, strlen(prefix)) != 0)
 			continue;
-		rc = file_path_join(conflict_path, sizeof(conflict_path), directory, names[i]);
+		rc = file_path_join(conflict_path, sizeof(conflict_path),
+				    directory, names[i]);
 		if (rc == 0 && sync_db_is_sqlite(conflict_path))
 			rc = sync_db_backup_create_one(cfg, rel, conflict_path, status, 0);
 	}
@@ -695,15 +709,17 @@ static int snapshot_id_valid(const char *snapshot_id)
 	return morph_name_valid(snapshot_id, "-_");
 }
 
-static int manifest_load(const struct morph_sync_config *cfg, const char *name, struct json **out)
+static int manifest_load(const struct morph_sync_config *cfg, const char *name,
+			 cJSON **out)
 {
 	char rel[PATH_MAX];
-	char local[PATH_MAX] = {0};
+	char local[PATH_MAX] = { 0 };
 	char direct[PATH_MAX];
 	char *text;
 	int rc;
 
-	if (snprintf(rel, sizeof(rel), "%s/%s", DB_SNAPSHOT_DIR, name) >= (int)sizeof(rel))
+	if (snprintf(rel, sizeof(rel), "%s/%s", DB_SNAPSHOT_DIR, name) >=
+	    (int)sizeof(rel))
 		return -ENAMETOOLONG;
 	if (cfg->remote_backend) {
 		rc = staging_path(cfg, ".json", local);
@@ -722,39 +738,40 @@ static int manifest_load(const struct morph_sync_config *cfg, const char *name, 
 	}
 	if (!text)
 		return -ENOENT;
-	*out = json_parse_prefix(text, NULL, NULL);
+	*out = cJSON_Parse(text);
 	free(text);
 	return *out ? 0 : MORPH_ERR_PARSE;
 }
 
-static int backup_from_json(struct json *root, struct morph_sync_backup *backup)
+static int backup_from_json(cJSON *root, struct morph_sync_backup *backup)
 {
-	struct json *snapshot_id = json_member_ci(root, "snapshot_id");
-	struct json *path = json_member_ci(root, "path");
-	struct json *device = json_member_ci(root, "device_id");
-	struct json *hash = json_member_ci(root, "database_hash");
-	struct json *created = json_member_ci(root, "created_at");
-	struct json *size = json_member_ci(root, "database_size");
+	cJSON *snapshot_id = cJSON_GetObjectItem(root, "snapshot_id");
+	cJSON *path = cJSON_GetObjectItem(root, "path");
+	cJSON *device = cJSON_GetObjectItem(root, "device_id");
+	cJSON *hash = cJSON_GetObjectItem(root, "database_hash");
+	cJSON *created = cJSON_GetObjectItem(root, "created_at");
+	cJSON *size = cJSON_GetObjectItem(root, "database_size");
 
-	if (!json_is_string_value(snapshot_id) || !json_is_string_value(path) ||
-	    !json_is_string_value(device) || !json_is_string_value(hash) ||
-	    !json_is_number_value(created) || !json_is_number_value(size))
+	if (!cJSON_IsString(snapshot_id) || !cJSON_IsString(path) ||
+	    !cJSON_IsString(device) || !cJSON_IsString(hash) ||
+	    !cJSON_IsNumber(created) || !cJSON_IsNumber(size))
 		return MORPH_ERR_PARSE;
 	memset(backup, 0, sizeof(*backup));
-	strncpy(backup->snapshot_id, json_string_value(snapshot_id),
+	strncpy(backup->snapshot_id, snapshot_id->valuestring,
 		sizeof(backup->snapshot_id) - 1);
-	strncpy(backup->path, json_string_value(path), sizeof(backup->path) - 1);
-	strncpy(backup->device_id, json_string_value(device), sizeof(backup->device_id) - 1);
-	strncpy(backup->hash, json_string_value(hash), sizeof(backup->hash) - 1);
-	backup->created_at = (int64_t)json_number_value(created);
-	backup->size = (int64_t)json_number_value(size);
+	strncpy(backup->path, path->valuestring, sizeof(backup->path) - 1);
+	strncpy(backup->device_id, device->valuestring,
+		sizeof(backup->device_id) - 1);
+	strncpy(backup->hash, hash->valuestring, sizeof(backup->hash) - 1);
+	backup->created_at = (int64_t)created->valuedouble;
+	backup->size = (int64_t)size->valuedouble;
 	return 0;
 }
 
 static int snapshot_scan_name(struct snapshot_scan *scan, const char *name)
 {
 	struct morph_sync_backup *backup;
-	struct json *root = NULL;
+	cJSON *root = NULL;
 	size_t length;
 	int rc;
 
@@ -766,11 +783,11 @@ static int snapshot_scan_name(struct snapshot_scan *scan, const char *name)
 		return rc;
 	backup = morph_array_push(scan->items);
 	if (!backup) {
-		json_free(root);
+		cJSON_Delete(root);
 		return -ENOMEM;
 	}
 	rc = backup_from_json(root, backup);
-	json_free(root);
+	cJSON_Delete(root);
 	if (rc != 0) {
 		scan->items->nelts--;
 		return rc;
@@ -801,8 +818,9 @@ static int backup_compare(const void *left, const void *right)
 	return strcmp(a->snapshot_id, b->snapshot_id);
 }
 
-int morph_sync_backups(const struct morph_sync_config *cfg, const char *path,
-		       struct morph_sync_backup **out, int *count)
+int morph_sync_backups(const struct morph_sync_config *cfg,
+			const char *path, struct morph_sync_backup **out,
+			int *count)
 {
 	struct snapshot_scan scan;
 	morph_array_t items;
@@ -823,8 +841,8 @@ int morph_sync_backups(const struct morph_sync_config *cfg, const char *path,
 	scan.path_filter = path;
 	scan.items = &items;
 	if (cfg->remote_backend) {
-		rc = cfg->remote_backend->list(cfg->remote_backend->user_data, DB_SNAPSHOT_DIR,
-					       snapshot_remote_cb, &scan);
+		rc = cfg->remote_backend->list(cfg->remote_backend->user_data,
+			DB_SNAPSHOT_DIR, snapshot_remote_cb, &scan);
 		if (rc == 0)
 			rc = scan.rc;
 	} else {
@@ -842,7 +860,8 @@ int morph_sync_backups(const struct morph_sync_config *cfg, const char *path,
 		return rc;
 	}
 	if (items.nelts > 1)
-		qsort(items.elts, items.nelts, sizeof(struct morph_sync_backup), backup_compare);
+		qsort(items.elts, items.nelts, sizeof(struct morph_sync_backup),
+		      backup_compare);
 	*out = items.elts;
 	*count = (int)items.nelts;
 	return 0;
@@ -853,22 +872,23 @@ void morph_sync_backups_free(struct morph_sync_backup *items)
 	free(items);
 }
 
-static int restore_chunk(const struct morph_sync_config *cfg, struct json *item, FILE *output,
-			 const char *temporary_chunk)
+static int restore_chunk(const struct morph_sync_config *cfg, cJSON *item,
+			 FILE *output, const char *temporary_chunk)
 {
 	char object_rel[PATH_MAX];
 	char actual_hash[MORPH_SYNC_HASH_LEN];
-	struct json *hash = json_member_ci(item, "hash");
-	struct json *size = json_member_ci(item, "size");
+	cJSON *hash = cJSON_GetObjectItem(item, "hash");
+	cJSON *size = cJSON_GetObjectItem(item, "size");
 	char *data;
 	size_t data_size;
 	int rc;
 
-	if (!json_is_string_value(hash) || strlen(json_string_value(hash)) != 64 ||
-	    !json_is_number_value(size) || json_number_value(size) < 0)
+	if (!cJSON_IsString(hash) || strlen(hash->valuestring) != 64 ||
+	    !cJSON_IsNumber(size) || size->valuedouble < 0)
 		return MORPH_ERR_PARSE;
-	if (snprintf(object_rel, sizeof(object_rel), "%s/%.2s/%s", DB_OBJECT_DIR,
-		     json_string_value(hash), json_string_value(hash)) >= (int)sizeof(object_rel))
+	if (snprintf(object_rel, sizeof(object_rel), "%s/%.2s/%s",
+		     DB_OBJECT_DIR, hash->valuestring, hash->valuestring) >=
+	    (int)sizeof(object_rel))
 		return -ENAMETOOLONG;
 	rc = store_get(cfg, object_rel, temporary_chunk);
 	if (rc != 0)
@@ -878,10 +898,10 @@ static int restore_chunk(const struct morph_sync_config *cfg, struct json *item,
 	if (!data)
 		return -EIO;
 	sync_hash_bytes(data, data_size, actual_hash);
-	if (data_size != (size_t)json_number_value(size) ||
-	    strcmp(actual_hash, json_string_value(hash)) != 0) {
+	if (data_size != (size_t)size->valuedouble ||
+	    strcmp(actual_hash, hash->valuestring) != 0) {
 		log_err(cfg ? cfg->logger : NULL, "database backup chunk failed verification: %s",
-			json_string_value(hash));
+			hash->valuestring);
 		free(data);
 		return MORPH_ERR_FORMAT;
 	}
@@ -893,17 +913,17 @@ static int restore_chunk(const struct morph_sync_config *cfg, struct json *item,
 	return 0;
 }
 
-int morph_sync_restore_db(const struct morph_sync_config *cfg, const char *snapshot_id,
-			  const char *destination)
+int morph_sync_restore_db(const struct morph_sync_config *cfg,
+			  const char *snapshot_id, const char *destination)
 {
 	char manifest_name[MORPH_SYNC_SNAPSHOT_ID_MAX + 8];
-	char temporary[PATH_MAX] = {0};
-	char temporary_chunk[PATH_MAX] = {0};
+	char temporary[PATH_MAX] = { 0 };
+	char temporary_chunk[PATH_MAX] = { 0 };
 	char actual_hash[MORPH_SYNC_HASH_LEN];
-	struct json *root = NULL;
-	struct json *chunks;
-	struct json *expected_hash;
-	struct json *expected_size;
+	cJSON *root = NULL;
+	cJSON *chunks;
+	cJSON *expected_hash;
+	cJSON *expected_size;
 	struct stat st;
 	FILE *output = NULL;
 	int rc;
@@ -913,25 +933,25 @@ int morph_sync_restore_db(const struct morph_sync_config *cfg, const char *snaps
 		return -EINVAL;
 	if (file_exists(destination))
 		return -EEXIST;
-	if (snprintf(manifest_name, sizeof(manifest_name), "%s.json", snapshot_id) >=
-	    (int)sizeof(manifest_name))
+	if (snprintf(manifest_name, sizeof(manifest_name), "%s.json",
+		     snapshot_id) >= (int)sizeof(manifest_name))
 		return -ENAMETOOLONG;
 	rc = manifest_load(cfg, manifest_name, &root);
 	if (rc != 0)
 		return rc;
-	chunks = json_member_ci(root, "chunks");
-	expected_hash = json_member_ci(root, "database_hash");
-	expected_size = json_member_ci(root, "database_size");
-	if (!json_is_array_value(chunks) || !json_is_string_value(expected_hash) ||
-	    !json_is_number_value(expected_size)) {
+	chunks = cJSON_GetObjectItem(root, "chunks");
+	expected_hash = cJSON_GetObjectItem(root, "database_hash");
+	expected_size = cJSON_GetObjectItem(root, "database_size");
+	if (!cJSON_IsArray(chunks) || !cJSON_IsString(expected_hash) ||
+	    !cJSON_IsNumber(expected_size)) {
 		rc = MORPH_ERR_PARSE;
 		goto out;
 	}
 	rc = ensure_parent(destination);
 	if (rc != 0)
 		goto out;
-	if (snprintf(temporary, sizeof(temporary), "%s.restore.tmp.%u", destination,
-		     (unsigned)getpid()) >= (int)sizeof(temporary)) {
+	if (snprintf(temporary, sizeof(temporary), "%s.restore.tmp.%u",
+		     destination, (unsigned)getpid()) >= (int)sizeof(temporary)) {
 		rc = -ENAMETOOLONG;
 		goto out;
 	}
@@ -943,8 +963,8 @@ int morph_sync_restore_db(const struct morph_sync_config *cfg, const char *snaps
 		rc = -errno;
 		goto out;
 	}
-	struct json *item;
-	json_foreach (item, chunks) {
+	cJSON *item;
+	cJSON_ArrayForEach(item, chunks) {
 		rc = restore_chunk(cfg, item, output, temporary_chunk);
 		if (rc != 0)
 			goto out;
@@ -956,7 +976,7 @@ int morph_sync_restore_db(const struct morph_sync_config *cfg, const char *snaps
 	}
 	output = NULL;
 	if (stat(temporary, &st) != 0 ||
-	    (int64_t)st.st_size != (int64_t)json_number_value(expected_size)) {
+	    (int64_t)st.st_size != (int64_t)expected_size->valuedouble) {
 		log_err(cfg ? cfg->logger : NULL, "database restore size mismatch for %s",
 			snapshot_id);
 		rc = MORPH_ERR_FORMAT;
@@ -965,7 +985,7 @@ int morph_sync_restore_db(const struct morph_sync_config *cfg, const char *snaps
 	rc = sync_hash_file(temporary, actual_hash);
 	if (rc != 0)
 		goto out;
-	if (strcmp(actual_hash, json_string_value(expected_hash)) != 0 ||
+	if (strcmp(actual_hash, expected_hash->valuestring) != 0 ||
 	    !sync_db_quick_check(temporary)) {
 		log_err(cfg ? cfg->logger : NULL, "database restore integrity check failed for %s",
 			snapshot_id);
@@ -985,7 +1005,7 @@ out:
 		(void)unlink(temporary_chunk);
 	if (rc != 0 && temporary[0])
 		(void)unlink(temporary);
-	json_free(root);
+	cJSON_Delete(root);
 	return rc;
 }
 
@@ -994,7 +1014,8 @@ static int store_delete(const struct morph_sync_config *cfg, const char *rel)
 	char path[PATH_MAX];
 
 	if (cfg->remote_backend)
-		return cfg->remote_backend->delete_file(cfg->remote_backend->user_data, rel);
+		return cfg->remote_backend->delete_file(
+			cfg->remote_backend->user_data, rel);
 	if (store_path(cfg, rel, path) != 0)
 		return -ENAMETOOLONG;
 	if (unlink(path) != 0 && errno != ENOENT)
@@ -1011,7 +1032,7 @@ struct retention_scan {
 static int retention_add_name(struct retention_scan *scan, const char *name)
 {
 	struct stored_snapshot *stored;
-	struct json *root = NULL;
+	cJSON *root = NULL;
 	size_t length = strlen(name);
 	int rc;
 
@@ -1022,13 +1043,13 @@ static int retention_add_name(struct retention_scan *scan, const char *name)
 		return rc;
 	stored = morph_array_push(scan->snapshots);
 	if (!stored) {
-		json_free(root);
+		cJSON_Delete(root);
 		return -ENOMEM;
 	}
 	memset(stored, 0, sizeof(*stored));
 	strncpy(stored->name, name, sizeof(stored->name) - 1);
 	rc = backup_from_json(root, &stored->backup);
-	json_free(root);
+	cJSON_Delete(root);
 	if (rc != 0)
 		scan->snapshots->nelts--;
 	return rc;
@@ -1044,7 +1065,8 @@ static int retention_remote_cb(const char *name, int is_dir, void *user_data)
 	return scan->rc;
 }
 
-static int retention_collect(const struct morph_sync_config *cfg, morph_array_t *snapshots)
+static int retention_collect(const struct morph_sync_config *cfg,
+			     morph_array_t *snapshots)
 {
 	struct retention_scan scan;
 	char directory[PATH_MAX];
@@ -1056,8 +1078,8 @@ static int retention_collect(const struct morph_sync_config *cfg, morph_array_t 
 	scan.cfg = cfg;
 	scan.snapshots = snapshots;
 	if (cfg->remote_backend) {
-		rc = cfg->remote_backend->list(cfg->remote_backend->user_data, DB_SNAPSHOT_DIR,
-					       retention_remote_cb, &scan);
+		rc = cfg->remote_backend->list(cfg->remote_backend->user_data,
+			DB_SNAPSHOT_DIR, retention_remote_cb, &scan);
 		return rc == 0 ? scan.rc : rc;
 	}
 	rc = store_path(cfg, DB_SNAPSHOT_DIR, directory);
@@ -1072,49 +1094,55 @@ static int retention_collect(const struct morph_sync_config *cfg, morph_array_t 
 	return rc;
 }
 
-static int snapshot_is_latest(const struct stored_snapshot *items, size_t count, size_t candidate)
+static int snapshot_is_latest(const struct stored_snapshot *items, size_t count,
+			      size_t candidate)
 {
 	for (size_t i = 0; i < count; i++) {
 		if (i == candidate)
 			continue;
-		if (strcmp(items[i].backup.path, items[candidate].backup.path) == 0 &&
-		    strcmp(items[i].backup.device_id, items[candidate].backup.device_id) == 0 &&
-		    (items[i].backup.created_at > items[candidate].backup.created_at ||
-		     (items[i].backup.created_at == items[candidate].backup.created_at &&
-		      strcmp(items[i].backup.snapshot_id, items[candidate].backup.snapshot_id) >
-			      0)))
+		if (strcmp(items[i].backup.path,
+			   items[candidate].backup.path) == 0 &&
+		    strcmp(items[i].backup.device_id,
+			   items[candidate].backup.device_id) == 0 &&
+		    (items[i].backup.created_at >
+			     items[candidate].backup.created_at ||
+		     (items[i].backup.created_at ==
+			      items[candidate].backup.created_at &&
+		      strcmp(items[i].backup.snapshot_id,
+			     items[candidate].backup.snapshot_id) > 0)))
 			return 0;
 	}
 	return 1;
 }
 
-static int live_chunks_add(const struct morph_sync_config *cfg, const char *manifest_name,
-			   morph_strmap_t *live)
+static int live_chunks_add(const struct morph_sync_config *cfg,
+			   const char *manifest_name, morph_strmap_t *live)
 {
-	struct json *root = NULL;
-	struct json *chunks;
-	struct json *item;
+	cJSON *root = NULL;
+	cJSON *chunks;
+	cJSON *item;
 	int rc;
 
 	rc = manifest_load(cfg, manifest_name, &root);
 	if (rc != 0)
 		return rc;
-	chunks = json_member_ci(root, "chunks");
-	if (!json_is_array_value(chunks)) {
-		json_free(root);
+	chunks = cJSON_GetObjectItem(root, "chunks");
+	if (!cJSON_IsArray(chunks)) {
+		cJSON_Delete(root);
 		return MORPH_ERR_PARSE;
 	}
-	json_foreach (item, chunks) {
-		struct json *hash = json_member_ci(item, "hash");
-		if (!json_is_string_value(hash)) {
+	cJSON_ArrayForEach(item, chunks) {
+		cJSON *hash = cJSON_GetObjectItem(item, "hash");
+		if (!cJSON_IsString(hash)) {
 			rc = MORPH_ERR_PARSE;
 			break;
 		}
-		rc = morph_strmap_set(live, json_string_value(hash), (void *)(uintptr_t)1);
+		rc = morph_strmap_set(live, hash->valuestring,
+				      (void *)(uintptr_t)1);
 		if (rc != 0)
 			break;
 	}
-	json_free(root);
+	cJSON_Delete(root);
 	return rc;
 }
 
@@ -1134,7 +1162,8 @@ static int object_gc_one(struct object_gc *gc, const char *name)
 
 	if (morph_strmap_contains(gc->live, name))
 		return 0;
-	if (snprintf(rel, sizeof(rel), "%s/%s", gc->directory, name) >= (int)sizeof(rel))
+	if (snprintf(rel, sizeof(rel), "%s/%s", gc->directory, name) >=
+	    (int)sizeof(rel))
 		return -ENAMETOOLONG;
 	rc = store_stat(gc->cfg, rel, &st);
 	if (rc != 0)
@@ -1162,11 +1191,12 @@ static int object_prefix_cb(const char *name, int is_dir, void *user_data)
 	if (!gc || gc->rc != 0 || !is_dir)
 		return gc ? gc->rc : -EINVAL;
 	child = *gc;
-	if (snprintf(child.directory, sizeof(child.directory), "%s/%s", DB_OBJECT_DIR, name) >=
-	    (int)sizeof(child.directory))
+	if (snprintf(child.directory, sizeof(child.directory), "%s/%s",
+		     DB_OBJECT_DIR, name) >= (int)sizeof(child.directory))
 		return -ENAMETOOLONG;
-	gc->rc = gc->cfg->remote_backend->list(gc->cfg->remote_backend->user_data, child.directory,
-					       object_file_cb, &child);
+	gc->rc = gc->cfg->remote_backend->list(
+		gc->cfg->remote_backend->user_data, child.directory,
+		object_file_cb, &child);
 	if (gc->rc == 0)
 		gc->rc = child.rc;
 	return gc->rc;
@@ -1189,8 +1219,9 @@ static int object_gc_local(struct object_gc *gc)
 		char directory[PATH_MAX];
 		char **names = NULL;
 		int count = 0;
-		if (snprintf(gc->directory, sizeof(gc->directory), "%s/%s", DB_OBJECT_DIR,
-			     prefixes[i]) >= (int)sizeof(gc->directory)) {
+		if (snprintf(gc->directory, sizeof(gc->directory), "%s/%s",
+			     DB_OBJECT_DIR, prefixes[i]) >=
+		    (int)sizeof(gc->directory)) {
 			rc = -ENAMETOOLONG;
 			break;
 		}
@@ -1218,7 +1249,8 @@ int sync_db_backup_cleanup(const struct morph_sync_config *cfg)
 		return -EINVAL;
 	if (cfg->retention_days <= 0)
 		return 0;
-	cutoff = (int64_t)time(NULL) - ((int64_t)cfg->retention_days * 24 * 60 * 60);
+	cutoff = (int64_t)time(NULL) -
+		((int64_t)cfg->retention_days * 24 * 60 * 60);
 	rc = morph_array_init(&snapshots, 8, sizeof(struct stored_snapshot));
 	if (rc != 0)
 		return rc;
@@ -1233,8 +1265,8 @@ int sync_db_backup_cleanup(const struct morph_sync_config *cfg)
 		if (items[i].backup.created_at >= cutoff ||
 		    snapshot_is_latest(items, snapshots.nelts, i))
 			continue;
-		if (snprintf(rel, sizeof(rel), "%s/%s", DB_SNAPSHOT_DIR, items[i].name) >=
-		    (int)sizeof(rel)) {
+		if (snprintf(rel, sizeof(rel), "%s/%s", DB_SNAPSHOT_DIR,
+			     items[i].name) >= (int)sizeof(rel)) {
 			rc = -ENAMETOOLONG;
 			break;
 		}
@@ -1258,8 +1290,8 @@ int sync_db_backup_cleanup(const struct morph_sync_config *cfg)
 	gc.live = &live;
 	gc.cutoff = cutoff;
 	if (rc == 0 && cfg->remote_backend)
-		rc = cfg->remote_backend->list(cfg->remote_backend->user_data, DB_OBJECT_DIR,
-					       object_prefix_cb, &gc);
+		rc = cfg->remote_backend->list(cfg->remote_backend->user_data,
+			DB_OBJECT_DIR, object_prefix_cb, &gc);
 	else if (rc == 0)
 		rc = object_gc_local(&gc);
 	if (rc == 0)

@@ -220,10 +220,8 @@ TEST_F(CliTerminalTest, IndependentActivityOverridesToolAndKeepsTimerAfterResize
 	ctx.presentation_ready = 1;
 	ctx.turn_active = 1;
 	ASSERT_EQ(cli_feed_init(&ctx, output, slave), 0);
-	struct json *data =
-		json_parse_prefix("{\"tool\":\"exec\",\"tool_call_id\":\"active\",\"args\":{"
-				  "\"command\":\"sleep 30\"}}",
-				  NULL, NULL);
+	cJSON *data = cJSON_Parse("{\"tool\":\"exec\",\"tool_call_id\":\"active\",\"args\":{"
+				  "\"command\":\"sleep 30\"}}");
 	struct morph_event event{MORPH_EVENT_TOOL, "tool.call", "begin", nullptr, data, "turn"};
 	testing::internal::CaptureStdout();
 	ASSERT_EQ(cli_presentation_event(&ctx, &event), 0);
@@ -258,7 +256,7 @@ TEST_F(CliTerminalTest, IndependentActivityOverridesToolAndKeepsTimerAfterResize
 	EXPECT_EQ(std::string(bytes).find('\n'), std::string::npos);
 	cli_feed_live_clear(&ctx);
 	EXPECT_EQ(cli_feed_activity_elapsed_ms(&ctx), -1);
-	json_free(data);
+	cJSON_Delete(data);
 	cli_feed_cleanup(&ctx);
 	fclose(output);
 	close(slave);
@@ -379,10 +377,9 @@ TEST_F(CliTerminalTest, FinalOutputKeepsComposerRowWhileWorkerFinishes)
 
 TEST_F(CliTerminalTest, JobsUseDescriptionAndIndentedCommandWithoutDefaultLogs)
 {
-	struct json *data = json_parse_prefix(R"({"session_id":"proc_job12345","owner_session_id":0,
+	cJSON *data = cJSON_Parse(R"({"session_id":"proc_job12345","owner_session_id":0,
 		"description":"编译项目","command":"cmake --build build -j8","status":"running",
-		"duration_ms":42000,"stdout":"PRIVATE LOG SHOULD STAY IN DETAILS"})",
-					      NULL, NULL);
+		"duration_ms":42000,"stdout":"PRIVATE LOG SHOULD STAY IN DETAILS"})");
 	ASSERT_NE(data, nullptr);
 	morph_event event{};
 	event.name = "process.started";
@@ -396,15 +393,14 @@ TEST_F(CliTerminalTest, JobsUseDescriptionAndIndentedCommandWithoutDefaultLogs)
 	EXPECT_EQ(text.find("PRIVATE LOG"), std::string::npos);
 	EXPECT_NE(text.find("42s"), std::string::npos);
 	morph_buf_cleanup(&output);
-	json_free(data);
+	cJSON_Delete(data);
 }
 
 TEST_F(CliTerminalTest, JobsWithoutDescriptionStayOneLineAndInspectionHidesFailures)
 {
-	struct json *data = json_parse_prefix(R"({"session_id":"proc_job12345","owner_session_id":0,
+	cJSON *data = cJSON_Parse(R"({"session_id":"proc_job12345","owner_session_id":0,
 		"description":"","command":"printf bad; exit 7","status":"exited","exit_code":7,
-		"duration_ms":100})",
-					      NULL, NULL);
+		"duration_ms":100})");
 	ASSERT_NE(data, nullptr);
 	morph_event event{};
 	event.name = "process.completed";
@@ -422,7 +418,7 @@ TEST_F(CliTerminalTest, JobsWithoutDescriptionStayOneLineAndInspectionHidesFailu
 	cli_jobs_acknowledge(&ctx, "proc_job12345");
 	EXPECT_EQ(cli_jobs_visible(&ctx), 0);
 	morph_buf_cleanup(&output);
-	json_free(data);
+	cJSON_Delete(data);
 }
 
 TEST_F(CliTerminalTest, CompletedJobExpirySchedulesOneLastFrameWithoutAnActiveTurn)
@@ -440,10 +436,9 @@ TEST_F(CliTerminalTest, CompletedJobExpirySchedulesOneLastFrameWithoutAnActiveTu
 	size.ws_row = 24;
 	ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
 	ASSERT_EQ(cli_feed_init(&ctx, output, slave), 0);
-	struct json *data = json_parse_prefix(R"({"session_id":"proc_done1234","owner_session_id":0,
+	cJSON *data = cJSON_Parse(R"({"session_id":"proc_done1234","owner_session_id":0,
 		"description":"","command":"printf done","status":"exited","exit_code":0,
-		"duration_ms":100})",
-					      NULL, NULL);
+		"duration_ms":100})");
 	morph_event event{};
 	event.name = "process.completed";
 	event.data = data;
@@ -457,7 +452,7 @@ TEST_F(CliTerminalTest, CompletedJobExpirySchedulesOneLastFrameWithoutAnActiveTu
 	EXPECT_GE(cli_feed_next_frame_ms(&ctx), 0);
 	cli_feed_render_frame(&ctx, 1);
 	EXPECT_EQ(cli_feed_next_frame_ms(&ctx), -1);
-	json_free(data);
+	cJSON_Delete(data);
 	cli_feed_cleanup(&ctx);
 	fclose(output);
 	close(slave);

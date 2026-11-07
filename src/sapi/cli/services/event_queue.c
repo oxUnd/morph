@@ -1,7 +1,7 @@
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/services/event_queue_item.h"
 #include "sapi/cli/application.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "util/error.h"
 #include <morph/tui/application.h>
 
@@ -42,7 +42,7 @@ static void cli_event_queue_item_free(struct cli_event_queue_item *item)
 	free(item->phase);
 	free(item->message);
 	free(item->turn_id);
-	json_free(item->event.data);
+	cJSON_Delete(item->event.data);
 	free(item->notification_title);
 	free(item->notification_body);
 	free(item);
@@ -262,7 +262,7 @@ int cli_event_queue_post_morph_event(struct cli_application *ctx, const struct m
 	if (rc == 0)
 		rc = cli_event_queue_dup_optional(event->turn_id, &item->turn_id);
 	if (rc == 0 && event->data) {
-		item->event.data = json_clone(event->data, 1);
+		item->event.data = cJSON_Duplicate(event->data, 1);
 		if (!item->event.data)
 			rc = -ENOMEM;
 	}

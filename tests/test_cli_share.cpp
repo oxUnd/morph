@@ -45,9 +45,9 @@ protected:
 		item.active = active;
 		EXPECT_EQ(model_history_add(&db, &item, nullptr), 0);
 	}
-	struct json *Document()
+	cJSON *Document()
 	{
-		struct json *document = nullptr;
+		cJSON *document = nullptr;
 		EXPECT_EQ(runtime_session_share_current(instance, &document), 0);
 		return document;
 	}
@@ -63,16 +63,16 @@ TEST_F(ShareTest, LatestCompleteTurnIncludesSteeringAndToolsButNotReasoning)
 	Add("new", "user_message", "Additional constraint", nullptr, false);
 	Add("new", "assistant_message", "**Final answer**", "{\"reasoning_content\":\"secret\"}", false);
 	Add("unfinished", "user_message", "Not answered yet");
-	struct json *document = Document();
+	cJSON *document = Document();
 	ASSERT_NE(document, nullptr);
-	EXPECT_EQ(json_count(json_member_ci(document, "questions")), 2);
-	EXPECT_EQ(json_count(json_member_ci(document, "steps")), 1);
-	EXPECT_STREQ(json_string_value(json_member_ci(document, "answer")), "**Final answer**");
-	char *json = json_stringify(document);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(document, "questions")), 2);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(document, "steps")), 1);
+	EXPECT_STREQ(cJSON_GetObjectItem(document, "answer")->valuestring, "**Final answer**");
+	char *json = cJSON_PrintUnformatted(document);
 	EXPECT_EQ(std::string(json).find("reasoning"), std::string::npos);
 	EXPECT_EQ(std::string(json).find("secret"), std::string::npos);
 	free(json);
-	json_free(document);
+	cJSON_Delete(document);
 }
 
 TEST_F(ShareTest, SkipsInterruptedAnswerAndDoesNotCrossSessions)
@@ -82,10 +82,10 @@ TEST_F(ShareTest, SkipsInterruptedAnswerAndDoesNotCrossSessions)
 	Add("cancelled", "user_message", "Interrupted question",
 		"{\"turn_outcome\":{\"status\":\"interrupted\"}}");
 	Add("cancelled", "assistant_message", "Partial answer");
-	struct json *document = Document();
+	cJSON *document = Document();
 	ASSERT_NE(document, nullptr);
-	EXPECT_STREQ(json_string_value(json_member_ci(document, "answer")), "Complete answer");
-	json_free(document);
+	EXPECT_STREQ(cJSON_GetObjectItem(document, "answer")->valuestring, "Complete answer");
+	cJSON_Delete(document);
 	ASSERT_EQ(runtime_session_create_and_select(instance, "empty", &current), 0);
 	EXPECT_EQ(runtime_session_share_current(instance, &document), -ENODATA);
 	EXPECT_EQ(document, nullptr);
@@ -99,7 +99,7 @@ TEST_F(ShareTest, HtmlIsSelfContainedAndEscapesUntrustedContent)
 		"| A | B |\n|---|---|\n| 1 | 2 |\n\n"
 		"<script>alert(2)</script>\n\n![alt](https://example.com/leak)\n\n"
 		"[bad](javascript:alert%283%29)");
-	struct json *document = Document();
+	cJSON *document = Document();
 	morph_buf_t output{};
 	ASSERT_EQ(morph_buf_init(&output, 1024), 0);
 	ASSERT_EQ(cli_share_html(document, 1793172600, &output), 0);
@@ -117,14 +117,14 @@ TEST_F(ShareTest, HtmlIsSelfContainedAndEscapesUntrustedContent)
 	EXPECT_EQ(html.find("href=\"javascript:"), std::string::npos);
 	EXPECT_EQ(html.find("<details class=process open"), std::string::npos);
 	morph_buf_cleanup(&output);
-	json_free(document);
+	cJSON_Delete(document);
 }
 
 TEST_F(ShareTest, RepeatedExportsPublishDistinctVisibleFiles)
 {
 	Add("one", "user_message", "Question");
 	Add("one", "assistant_message", "Answer");
-	struct json *document = Document();
+	cJSON *document = Document();
 	const char *home = getenv("HOME");
 	std::string saved = home ? home : "";
 	ASSERT_EQ(setenv("HOME", directory.c_str(), 1), 0);
@@ -144,7 +144,7 @@ TEST_F(ShareTest, RepeatedExportsPublishDistinctVisibleFiles)
 	EXPECT_TRUE(std::filesystem::exists(second));
 	free(first);
 	free(second);
-	json_free(document);
+	cJSON_Delete(document);
 }
 
 TEST_F(ShareTest, LegacyTranscriptExportsLastAnsweredPair)
@@ -152,18 +152,18 @@ TEST_F(ShareTest, LegacyTranscriptExportsLastAnsweredPair)
 	ASSERT_EQ(message_add(&db, current.id, "user", "Legacy question", 1), 0);
 	ASSERT_EQ(message_add(&db, current.id, "assistant", "Legacy answer", 1), 0);
 	ASSERT_EQ(message_add(&db, current.id, "user", "Unanswered question", 1), 0);
-	struct json *document = Document();
+	cJSON *document = Document();
 	ASSERT_NE(document, nullptr);
-	EXPECT_STREQ(json_string_value(json_member_ci(document, "answer")), "Legacy answer");
-	EXPECT_EQ(json_count(json_member_ci(document, "steps")), 0);
-	json_free(document);
+	EXPECT_STREQ(cJSON_GetObjectItem(document, "answer")->valuestring, "Legacy answer");
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(document, "steps")), 0);
+	cJSON_Delete(document);
 }
 
 TEST_F(ShareTest, SaveFailureDoesNotReturnAPathOrLeaveStagingFiles)
 {
 	Add("one", "user_message", "Question");
 	Add("one", "assistant_message", "Answer");
-	struct json *document = Document();
+	cJSON *document = Document();
 	std::ofstream blocked(directory + "/Downloads");
 	blocked << "not a directory";
 	blocked.close();
@@ -176,7 +176,7 @@ TEST_F(ShareTest, SaveFailureDoesNotReturnAPathOrLeaveStagingFiles)
 	else unsetenv("HOME");
 	EXPECT_LT(rc, 0);
 	EXPECT_EQ(path, nullptr);
-	json_free(document);
+	cJSON_Delete(document);
 }
 
 TEST_F(ShareTest, MigratedLegacyMessagesRemainShareable)
@@ -184,11 +184,11 @@ TEST_F(ShareTest, MigratedLegacyMessagesRemainShareable)
 	ASSERT_EQ(message_add(&db, current.id, "user", "Migrated question", 1), 0);
 	ASSERT_EQ(message_add(&db, current.id, "assistant", "Migrated answer", 1), 0);
 	ASSERT_EQ(model_history_migrate_messages(&db, current.id), 0);
-	struct json *document = Document();
+	cJSON *document = Document();
 	ASSERT_NE(document, nullptr);
-	EXPECT_STREQ(json_string_value(json_member_ci(document, "answer")), "Migrated answer");
-	EXPECT_EQ(json_count(json_member_ci(document, "questions")), 1);
-	json_free(document);
+	EXPECT_STREQ(cJSON_GetObjectItem(document, "answer")->valuestring, "Migrated answer");
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(document, "questions")), 1);
+	cJSON_Delete(document);
 }
 
 TEST_F(ShareTest, NestedImagesUseTheMarkdownResourcePolicy)
@@ -197,7 +197,7 @@ TEST_F(ShareTest, NestedImagesUseTheMarkdownResourcePolicy)
 	Add("one", "assistant_message",
 		"before ![![inner](https://example.com/inner)](https://example.com/outer) "
 		"middle ![sibling](https://example.com/sibling) after");
-	struct json *document = Document();
+	cJSON *document = Document();
 	morph_buf_t output{};
 	ASSERT_EQ(morph_buf_init(&output, 1024), 0);
 	ASSERT_EQ(cli_share_html(document, 1793172600, &output), 0);
@@ -209,7 +209,7 @@ TEST_F(ShareTest, NestedImagesUseTheMarkdownResourcePolicy)
 	EXPECT_NE(html.find("Images omitted from this export."), std::string::npos);
 	EXPECT_EQ(html.find("https://example.com"), std::string::npos);
 	morph_buf_cleanup(&output);
-	json_free(document);
+	cJSON_Delete(document);
 }
 
 TEST_F(ShareTest, MalformedSelectedMetadataReportsParseError)
@@ -217,7 +217,7 @@ TEST_F(ShareTest, MalformedSelectedMetadataReportsParseError)
 	Add("one", "user_message", "Question");
 	Add("one", "tool_result", "Output", "invalid metadata");
 	Add("one", "assistant_message", "Answer");
-	struct json *document = nullptr;
+	cJSON *document = nullptr;
 	EXPECT_EQ(runtime_session_share_current(instance, &document), MORPH_ERR_PARSE);
 	EXPECT_EQ(document, nullptr);
 }
@@ -229,18 +229,18 @@ TEST_F(ShareTest, ACompletedTurnDoesNotReadUnrelatedToolMetadata)
 	Add("old", "assistant_message", "Old answer");
 	Add("new", "user_message", "New question");
 	Add("new", "assistant_message", "New answer");
-	struct json *document = Document();
+	cJSON *document = Document();
 	ASSERT_NE(document, nullptr);
-	EXPECT_STREQ(json_string_value(json_member_ci(document, "answer")), "New answer");
-	EXPECT_EQ(json_count(json_member_ci(document, "steps")), 0);
-	json_free(document);
+	EXPECT_STREQ(cJSON_GetObjectItem(document, "answer")->valuestring, "New answer");
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(document, "steps")), 0);
+	cJSON_Delete(document);
 }
 
 TEST_F(ShareTest, ResourceOpenFailurePreservesErrno)
 {
 	Add("one", "user_message", "Question");
 	Add("one", "assistant_message", "Answer");
-	struct json *document = Document();
+	cJSON *document = Document();
 	pid_t child = fork();
 	ASSERT_GE(child, 0);
 	if (child == 0) {
@@ -258,14 +258,14 @@ TEST_F(ShareTest, ResourceOpenFailurePreservesErrno)
 	ASSERT_EQ(waitpid(child, &status, 0), child);
 	EXPECT_TRUE(WIFEXITED(status));
 	EXPECT_EQ(WEXITSTATUS(status), 0);
-	json_free(document);
+	cJSON_Delete(document);
 }
 
 TEST_F(ShareTest, PartialWriteFailureLeavesNoPublishedOrStagingFile)
 {
 	Add("one", "user_message", "Question");
 	Add("one", "assistant_message", "Answer");
-	struct json *document = Document();
+	cJSON *document = Document();
 	pid_t child = fork();
 	ASSERT_GE(child, 0);
 	if (child == 0) {
@@ -284,7 +284,7 @@ TEST_F(ShareTest, PartialWriteFailureLeavesNoPublishedOrStagingFile)
 	EXPECT_EQ(WEXITSTATUS(status), 0);
 	ASSERT_TRUE(std::filesystem::is_directory(directory + "/Downloads"));
 	EXPECT_TRUE(std::filesystem::is_empty(directory + "/Downloads"));
-	json_free(document);
+	cJSON_Delete(document);
 }
 
 TEST_F(ShareTest, MarkdownExporterPreservesMathFootnotesAndSafeLinks)
@@ -296,7 +296,7 @@ TEST_F(ShareTest, MarkdownExporterPreservesMathFootnotesAndSafeLinks)
 		"[https](HTTPS://example.com) [email](mailto:test@example.com)\n\n"
 		"[script](javascript:alert%281%29) [file](file:///private/secret)\n\n"
 		"[relative](../secret) [encoded](java&#x73;cript:alert%281%29)");
-	struct json *document = Document();
+	cJSON *document = Document();
 	morph_buf_t output{};
 	ASSERT_EQ(morph_buf_init(&output, 1024), 0);
 	ASSERT_EQ(cli_share_html(document, 1793172600, &output), 0);
@@ -314,5 +314,5 @@ TEST_F(ShareTest, MarkdownExporterPreservesMathFootnotesAndSafeLinks)
 	EXPECT_EQ(html.find("file:///private/secret"), std::string::npos);
 	EXPECT_EQ(html.find("href=\"../secret\""), std::string::npos);
 	morph_buf_cleanup(&output);
-	json_free(document);
+	cJSON_Delete(document);
 }

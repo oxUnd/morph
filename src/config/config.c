@@ -3,7 +3,7 @@
 #include "util/file.h"
 #include "util/error.h"
 #include "tomlc17.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
@@ -36,7 +36,8 @@ static toml_datum_t *cfg_find(cfg_table_t *table, const char *key)
 	return NULL;
 }
 
-static const toml_datum_t *cfg_find_const(const cfg_table_t *table, const char *key)
+static const toml_datum_t *cfg_find_const(const cfg_table_t *table,
+					   const char *key)
 {
 	return cfg_find((cfg_table_t *)table, key);
 }
@@ -84,7 +85,8 @@ static cfg_datum_t cfg_double_in(const cfg_table_t *table, const char *key)
 
 	if (value && (value->type == TOML_FP64 || value->type == TOML_INT64)) {
 		out.ok = 1;
-		out.u.d = value->type == TOML_FP64 ? value->u.fp64 : (double)value->u.int64;
+		out.u.d = value->type == TOML_FP64 ? value->u.fp64 :
+			(double)value->u.int64;
 	}
 	return out;
 }
@@ -93,7 +95,8 @@ static cfg_datum_t cfg_string_at(const cfg_array_t *array, int index)
 {
 	cfg_datum_t out = {0};
 
-	if (!array || array->type != TOML_ARRAY || index < 0 || index >= array->u.arr.size ||
+	if (!array || array->type != TOML_ARRAY || index < 0 ||
+	    index >= array->u.arr.size ||
 	    array->u.arr.elem[index].type != TOML_STRING)
 		return out;
 	out.u.s = strdup(array->u.arr.elem[index].u.s);
@@ -117,7 +120,8 @@ static cfg_array_t *cfg_array_in(const cfg_table_t *table, const char *key)
 
 static cfg_table_t *cfg_table_at(cfg_array_t *array, int index)
 {
-	if (!array || array->type != TOML_ARRAY || index < 0 || index >= array->u.arr.size ||
+	if (!array || array->type != TOML_ARRAY || index < 0 ||
+	    index >= array->u.arr.size ||
 	    array->u.arr.elem[index].type != TOML_TABLE)
 		return NULL;
 	return &array->u.arr.elem[index];
@@ -125,7 +129,8 @@ static cfg_table_t *cfg_table_at(cfg_array_t *array, int index)
 
 static cfg_array_t *cfg_array_at(const cfg_array_t *array, int index)
 {
-	if (!array || array->type != TOML_ARRAY || index < 0 || index >= array->u.arr.size ||
+	if (!array || array->type != TOML_ARRAY || index < 0 ||
+	    index >= array->u.arr.size ||
 	    array->u.arr.elem[index].type != TOML_ARRAY)
 		return NULL;
 	return (cfg_array_t *)&array->u.arr.elem[index];
@@ -145,7 +150,8 @@ static char cfg_array_kind(const cfg_array_t *array)
 
 static const char *cfg_key_in(const cfg_table_t *table, int index)
 {
-	if (!table || table->type != TOML_TABLE || index < 0 || index >= table->u.tab.size)
+	if (!table || table->type != TOML_TABLE || index < 0 ||
+	    index >= table->u.tab.size)
 		return NULL;
 	return table->u.tab.key[index];
 }
@@ -161,7 +167,8 @@ static cfg_raw_t cfg_raw_in(const cfg_table_t *table, const char *key)
 
 static cfg_raw_t cfg_raw_at(const cfg_array_t *array, int index)
 {
-	if (!array || array->type != TOML_ARRAY || index < 0 || index >= array->u.arr.size ||
+	if (!array || array->type != TOML_ARRAY || index < 0 ||
+	    index >= array->u.arr.size ||
 	    array->u.arr.elem[index].type == TOML_TABLE ||
 	    array->u.arr.elem[index].type == TOML_ARRAY)
 		return NULL;
@@ -200,7 +207,7 @@ static int cfg_rtod(cfg_raw_t raw, double *out)
 	return 0;
 }
 
-static struct json *config_raw_json(cfg_raw_t raw, const char **kind)
+static cJSON *config_raw_json(cfg_raw_t raw, const char **kind)
 {
 	char *str = NULL;
 	int boolean;
@@ -208,37 +215,37 @@ static struct json *config_raw_json(cfg_raw_t raw, const char **kind)
 	double number;
 
 	if (cfg_rtos(raw, &str) == 0) {
-		struct json *item = json_string(str);
+		cJSON *item = cJSON_CreateString(str);
 		free(str);
 		*kind = "string";
 		return item;
 	}
 	if (cfg_rtob(raw, &boolean) == 0) {
 		*kind = "bool";
-		return json_boolean(boolean);
+		return cJSON_CreateBool(boolean);
 	}
 	if (cfg_rtoi(raw, &integer) == 0) {
 		*kind = "int";
-		return json_number((double)integer);
+		return cJSON_CreateNumber((double)integer);
 	}
 	if (cfg_rtod(raw, &number) == 0) {
 		*kind = "double";
-		return json_number(number);
+		return cJSON_CreateNumber(number);
 	}
 	*kind = "timestamp";
-	return json_string("");
+	return cJSON_CreateString("");
 }
 
-static struct json *config_array_json(const cfg_array_t *array)
+static cJSON *config_array_json(const cfg_array_t *array)
 {
-	struct json *result = json_array();
+	cJSON *result = cJSON_CreateArray();
 	int count = cfg_array_nelem(array);
 
 	if (!result)
 		return NULL;
 	for (int i = 0; i < count; i++) {
 		cfg_raw_t raw = cfg_raw_at(array, i);
-		struct json *item = NULL;
+		cJSON *item = NULL;
 		if (raw) {
 			const char *kind;
 			item = config_raw_json(raw, &kind);
@@ -246,12 +253,8 @@ static struct json *config_array_json(const cfg_array_t *array)
 			item = config_array_json(cfg_array_at(array, i));
 		}
 		if (!item)
-			item = json_null();
-		if (!item || json_array_add(result, item) != 0) {
-			json_free(item);
-			json_free(result);
-			return NULL;
-		}
+			item = cJSON_CreateNull();
+		cJSON_AddItemToArray(result, item);
 	}
 	return result;
 }
@@ -265,8 +268,9 @@ static char *config_identity_value(const cfg_table_t *table, const char *key)
 	return value;
 }
 
-static int config_table_identity(const char *path, const cfg_table_t *table, int index, char *out,
-				 size_t out_size, int *stable)
+static int config_table_identity(const char *path, const cfg_table_t *table,
+				 int index, char *out, size_t out_size,
+				 int *stable)
 {
 	char *name = NULL, *provider = NULL, *model = NULL, *kind = NULL;
 
@@ -283,8 +287,8 @@ static int config_table_identity(const char *path, const cfg_table_t *table, int
 		model = config_identity_value(table, "model");
 		kind = config_identity_value(table, "kind");
 		if (provider && model && kind)
-			snprintf(out, out_size, "provider=%s,model=%s,kind=%s", provider, model,
-				 kind);
+			snprintf(out, out_size, "provider=%s,model=%s,kind=%s",
+				 provider, model, kind);
 		free(provider);
 		free(model);
 		free(kind);
@@ -296,31 +300,25 @@ static int config_table_identity(const char *path, const cfg_table_t *table, int
 	return 0;
 }
 
-static int config_add_entry(struct json *entries, const char *path, const char *kind,
-			    struct json *value, int stable)
+static int config_add_entry(cJSON *entries, const char *path,
+			    const char *kind, cJSON *value, int stable)
 {
-	struct json *entry = json_object();
-	if (!entry || !value || !json_add_string(entry, "path", path) ||
-	    !json_add_string(entry, "kind", kind) || !json_add_bool(entry, "stable", stable)) {
-		json_free(entry);
-		json_free(value);
+	cJSON *entry = cJSON_CreateObject();
+	if (!entry || !value ||
+	    !cJSON_AddStringToObject(entry, "path", path) ||
+	    !cJSON_AddStringToObject(entry, "kind", kind) ||
+	    !cJSON_AddBoolToObject(entry, "stable", stable)) {
+		cJSON_Delete(entry);
+		cJSON_Delete(value);
 		return -ENOMEM;
 	}
-	int rc = json_object_add(entry, "value", value);
-
-	if (rc != 0) {
-		json_free(value);
-		json_free(entry);
-		return rc;
-	}
-	rc = json_array_add(entries, entry);
-	if (rc != 0)
-		json_free(entry);
-	return rc;
+	cJSON_AddItemToObject(entry, "value", value);
+	cJSON_AddItemToArray(entries, entry);
+	return 0;
 }
 
-static int config_describe_table(const cfg_table_t *table, const char *prefix, struct json *entries,
-				 int stable)
+static int config_describe_table(const cfg_table_t *table, const char *prefix,
+				 cJSON *entries, int stable)
 {
 	for (int i = 0;; i++) {
 		const char *key = cfg_key_in(table, i);
@@ -332,11 +330,12 @@ static int config_describe_table(const cfg_table_t *table, const char *prefix, s
 
 		if (!key)
 			break;
-		snprintf(path, sizeof(path), "%s%s%s", prefix, prefix[0] ? "." : "", key);
+		snprintf(path, sizeof(path), "%s%s%s", prefix,
+			 prefix[0] ? "." : "", key);
 		raw = cfg_raw_in(table, key);
 		if (raw) {
 			const char *kind;
-			struct json *value = config_raw_json(raw, &kind);
+			cJSON *value = config_raw_json(raw, &kind);
 			rc = config_add_entry(entries, path, kind, value, stable);
 			if (rc != 0)
 				return rc;
@@ -354,10 +353,10 @@ static int config_describe_table(const cfg_table_t *table, const char *prefix, s
 						continue;
 					config_table_identity(path, item, j, identity,
 							      sizeof(identity), &item_stable);
-					snprintf(item_path, sizeof(item_path), "%s[%s]", path,
-						 identity);
+					snprintf(item_path, sizeof(item_path), "%s[%s]",
+						 path, identity);
 					rc = config_describe_table(item, item_path, entries,
-								   stable && item_stable);
+							   stable && item_stable);
 					if (rc != 0)
 						return rc;
 				}
@@ -383,7 +382,7 @@ char *config_describe_text(const char *text, struct config_validation_error *err
 {
 	toml_result_t parsed;
 	cfg_table_t *table;
-	struct json *root = NULL, *entries = NULL;
+	cJSON *root = NULL, *entries = NULL;
 	char *json = NULL;
 	int line = 0, rc;
 
@@ -397,72 +396,65 @@ char *config_describe_text(const char *text, struct config_validation_error *err
 			line = 0;
 		if (error) {
 			error->line = line;
-			strncpy(error->message, parsed.errmsg[0] ? parsed.errmsg : "invalid TOML",
+			strncpy(error->message, parsed.errmsg[0] ? parsed.errmsg :
+				"invalid TOML",
 				sizeof(error->message) - 1);
 		}
 		toml_free(parsed);
 		return NULL;
 	}
 	table = &parsed.toptab;
-	root = json_object();
-	entries = json_array();
+	root = cJSON_CreateObject();
+	entries = cJSON_CreateArray();
 	if (!root || !entries) {
-		json_free(root);
-		json_free(entries);
+		cJSON_Delete(root);
+		cJSON_Delete(entries);
 		toml_free(parsed);
 		return NULL;
 	}
-	rc = json_object_add(root, "entries", entries);
-	if (rc != 0)
-		json_free(entries);
-	else
-		rc = config_describe_table(table, "", entries, 1);
+	cJSON_AddItemToObject(root, "entries", entries);
+	rc = config_describe_table(table, "", entries, 1);
 	if (rc == 0)
-		json = json_stringify(root);
-	json_free(root);
+		json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
 	toml_free(parsed);
 	return json;
 }
 
-static struct json *config_toml_json(const toml_datum_t *value)
+static cJSON *config_toml_json(const toml_datum_t *value)
 {
-	struct json *out;
+	cJSON *out;
 
 	if (!value)
 		return NULL;
 	switch (value->type) {
-	case TOML_STRING:
-		return json_string(value->u.s);
-	case TOML_INT64:
-		return json_number((double)value->u.int64);
-	case TOML_FP64:
-		return json_number(value->u.fp64);
-	case TOML_BOOLEAN:
-		return json_boolean(value->u.boolean);
+	case TOML_STRING: return cJSON_CreateString(value->u.s);
+	case TOML_INT64: return cJSON_CreateNumber((double)value->u.int64);
+	case TOML_FP64: return cJSON_CreateNumber(value->u.fp64);
+	case TOML_BOOLEAN: return cJSON_CreateBool(value->u.boolean);
 	case TOML_TABLE:
-		out = json_object();
+		out = cJSON_CreateObject();
 		for (int i = 0; out && i < value->u.tab.size; i++) {
-			struct json *child = config_toml_json(&value->u.tab.value[i]);
-			if (!child || json_object_add(out, value->u.tab.key[i], child) != 0) {
-				json_free(child);
-				json_free(out);
+			cJSON *child = config_toml_json(&value->u.tab.value[i]);
+			if (!child || !cJSON_AddItemToObject(out, value->u.tab.key[i], child)) {
+				cJSON_Delete(child);
+				cJSON_Delete(out);
 				return NULL;
 			}
 		}
 		return out;
 	case TOML_ARRAY:
-		out = json_array();
+		out = cJSON_CreateArray();
 		for (int i = 0; out && i < value->u.arr.size; i++) {
-			struct json *child = config_toml_json(&value->u.arr.elem[i]);
-			if (!child || json_array_add(out, child) != 0) {
-				json_free(child);
-				json_free(out);
+			cJSON *child = config_toml_json(&value->u.arr.elem[i]);
+			if (!child || !cJSON_AddItemToArray(out, child)) {
+				cJSON_Delete(child);
+				cJSON_Delete(out);
 				return NULL;
 			}
 		}
 		return out;
-	default:
-		return NULL;
+	default: return NULL;
 	}
 }
 
@@ -476,14 +468,20 @@ void config_set_defaults(struct morph_log *logger, struct config *cfg)
 	cfg->hooks_enabled = 1;
 
 	strncpy(cfg->prompt.mode, "append", sizeof(cfg->prompt.mode) - 1);
-	strncpy(cfg->general.default_session, "default", sizeof(cfg->general.default_session) - 1);
+	strncpy(cfg->general.default_session, "default",
+		sizeof(cfg->general.default_session) - 1);
 	cfg->general.auto_recap = 1;
-	strncpy(cfg->general.output_dir, "~/.morph/output", sizeof(cfg->general.output_dir) - 1);
-	strncpy(cfg->general.log_level, "info", sizeof(cfg->general.log_level) - 1);
-	strncpy(cfg->general.log_file, "~/.morph/log/agent.log", sizeof(cfg->general.log_file) - 1);
+	strncpy(cfg->general.output_dir, "~/.morph/output",
+		sizeof(cfg->general.output_dir) - 1);
+	strncpy(cfg->general.log_level, "info",
+		sizeof(cfg->general.log_level) - 1);
+	strncpy(cfg->general.log_file, "~/.morph/log/agent.log",
+		sizeof(cfg->general.log_file) - 1);
 
-	strncpy(cfg->models.text.provider, "openai", sizeof(cfg->models.text.provider) - 1);
-	strncpy(cfg->models.text.model, "gpt-4o", sizeof(cfg->models.text.model) - 1);
+	strncpy(cfg->models.text.provider, "openai",
+		sizeof(cfg->models.text.provider) - 1);
+	strncpy(cfg->models.text.model, "gpt-4o",
+		sizeof(cfg->models.text.model) - 1);
 	strncpy(cfg->models.text.api_base, "https://api.openai.com/v1",
 		sizeof(cfg->models.text.api_base) - 1);
 	strncpy(cfg->models.text.api_key_env, "OPENAI_API_KEY",
@@ -497,15 +495,18 @@ void config_set_defaults(struct morph_log *logger, struct config *cfg)
 	cfg->models.vision.timeout_seconds = 300;
 	cfg->models.vision.retry_count = 3;
 
-	strncpy(cfg->models.image.provider, "openai", sizeof(cfg->models.image.provider) - 1);
-	strncpy(cfg->models.image.model, "dall-e-3", sizeof(cfg->models.image.model) - 1);
+	strncpy(cfg->models.image.provider, "openai",
+		sizeof(cfg->models.image.provider) - 1);
+	strncpy(cfg->models.image.model, "dall-e-3",
+		sizeof(cfg->models.image.model) - 1);
 	strncpy(cfg->models.image.api_base, "https://api.openai.com/v1",
 		sizeof(cfg->models.image.api_base) - 1);
 	strncpy(cfg->models.image.api_key_env, "OPENAI_API_KEY",
 		sizeof(cfg->models.image.api_key_env) - 1);
 	cfg->models.image.timeout_seconds = 290;
 
-	strncpy(cfg->models.video.provider, "volcengine", sizeof(cfg->models.video.provider) - 1);
+	strncpy(cfg->models.video.provider, "volcengine",
+		sizeof(cfg->models.video.provider) - 1);
 	strncpy(cfg->models.video.model, "doubao-seedance-2-0-260128",
 		sizeof(cfg->models.video.model) - 1);
 	strncpy(cfg->models.video.api_base, "https://ark.cn-beijing.volces.com/api/v3",
@@ -516,7 +517,8 @@ void config_set_defaults(struct morph_log *logger, struct config *cfg)
 	cfg->models.video.poll_timeout_seconds = 600;
 
 	cfg->credits.daily_limit = -1;
-	strncpy(cfg->credits.currency, "USD", sizeof(cfg->credits.currency) - 1);
+	strncpy(cfg->credits.currency, "USD",
+		sizeof(cfg->credits.currency) - 1);
 	cfg->credits.cost_to_credit_coef = 1000.0;
 	cfg->credits.input_token_credit_coef = 0.0;
 	cfg->credits.output_token_credit_coef = 0.0;
@@ -546,9 +548,12 @@ void config_set_defaults(struct morph_log *logger, struct config *cfg)
 	cfg->react.hitl_auto_approve_media = 0;
 	{
 		static const char *const readonly_tools[] = {
-			"file_read",	  "file_list", "file_info",   "read_lines",
-			"img_info",	  "credits",   "memory",      "ask_user",
-			"activate_skill", "plan",      "agent_status"};
+			"file_read", "file_list", "file_info",
+			"read_lines",
+			"img_info", "credits", "memory",
+			"ask_user", "activate_skill", "plan",
+			"agent_status"
+		};
 		for (int i = 0; i < 11; i++) {
 			strncpy(cfg->react.readonly_tools[i], readonly_tools[i],
 				READONLY_TOOL_NAME_MAX - 1);
@@ -579,15 +584,19 @@ void config_set_defaults(struct morph_log *logger, struct config *cfg)
 
 	strncpy(cfg->render.prefer_image_protocol, "auto",
 		sizeof(cfg->render.prefer_image_protocol) - 1);
-	strncpy(cfg->render.mpv_args, "--really-quiet", sizeof(cfg->render.mpv_args) - 1);
+	strncpy(cfg->render.mpv_args, "--really-quiet",
+		sizeof(cfg->render.mpv_args) - 1);
 
-	strncpy(cfg->ext.dir, "~/.morph/exts", sizeof(cfg->ext.dir) - 1);
+	strncpy(cfg->ext.dir, "~/.morph/exts",
+		sizeof(cfg->ext.dir) - 1);
 	cfg->ext.default_max_memory_mb = 128;
 	cfg->ext.default_max_cpu_seconds = 30;
 
 	cfg->dynamic_tools.enabled = 1;
-	strncpy(cfg->dynamic_tools.runtime, "quickjs", sizeof(cfg->dynamic_tools.runtime) - 1);
-	strncpy(cfg->dynamic_tools.mode, "local", sizeof(cfg->dynamic_tools.mode) - 1);
+	strncpy(cfg->dynamic_tools.runtime, "quickjs",
+		sizeof(cfg->dynamic_tools.runtime) - 1);
+	strncpy(cfg->dynamic_tools.mode, "local",
+		sizeof(cfg->dynamic_tools.mode) - 1);
 	strncpy(cfg->dynamic_tools.session_dir, "~/.morph/runtime/tools",
 		sizeof(cfg->dynamic_tools.session_dir) - 1);
 	strncpy(cfg->dynamic_tools.persistent_dir, "~/.morph/tools",
@@ -600,12 +609,13 @@ void config_set_defaults(struct morph_log *logger, struct config *cfg)
 	cfg->dynamic_tools.default_timeout_seconds = 30;
 	cfg->dynamic_tools.default_max_output_bytes = 1048576;
 	{
-		static const char *const caps[] = {"fs_read", "fs_write", "network", "process",
-						   "env",     "mcp",	  "model",   "shell",
-						   "image",   "wasm"};
+		static const char *const caps[] = {
+			"fs_read", "fs_write", "network", "process",
+			"env", "mcp", "model", "shell", "image", "wasm"
+		};
 		for (int i = 0; i < 10; i++) {
-			strncpy(cfg->dynamic_tools.local.default_capabilities[i], caps[i],
-				DYNAMIC_TOOL_CAP_LEN_MAX - 1);
+			strncpy(cfg->dynamic_tools.local.default_capabilities[i],
+				caps[i], DYNAMIC_TOOL_CAP_LEN_MAX - 1);
 		}
 		cfg->dynamic_tools.local.default_capabilities_count = 10;
 		strncpy(cfg->dynamic_tools.local.allowed_read_paths[0], "*",
@@ -626,45 +636,37 @@ void config_set_defaults(struct morph_log *logger, struct config *cfg)
 	cfg->sync.interval_seconds = 300;
 	cfg->sync.retention_days = 30;
 	{
-		static const char *const includes[] = {"config.toml",	"data.db", "skills",
-						       "tools",		"exts",	   "output",
-						       "ui-history.db", "input"};
+		static const char *const includes[] = {
+			"config.toml", "data.db", "skills", "tools", "exts", "output",
+			"ui-history.db", "input"
+		};
 		for (int i = 0; i < 8; i++) {
-			strncpy(cfg->sync.include[i], includes[i], SYNC_INCLUDE_LEN_MAX - 1);
+			strncpy(cfg->sync.include[i], includes[i],
+				SYNC_INCLUDE_LEN_MAX - 1);
 		}
 		cfg->sync.include_count = 8;
 	}
 }
 
-#define CFG_STR(tab, key, buf)                                                                     \
-	do {                                                                                       \
-		cfg_datum_t _d = cfg_string_in(tab, key);                                          \
-		if (_d.ok) {                                                                       \
-			strncpy(buf, _d.u.s, sizeof(buf) - 1);                                     \
-			free(_d.u.s);                                                              \
-		}                                                                                  \
-	} while (0)
+#define CFG_STR(tab, key, buf) do { \
+	cfg_datum_t _d = cfg_string_in(tab, key); \
+	if (_d.ok) { strncpy(buf, _d.u.s, sizeof(buf) - 1); free(_d.u.s); } \
+} while (0)
 
-#define CFG_INT(tab, key, var)                                                                     \
-	do {                                                                                       \
-		cfg_datum_t _d = cfg_int_in(tab, key);                                             \
-		if (_d.ok)                                                                         \
-			var = (int)_d.u.i;                                                         \
-	} while (0)
+#define CFG_INT(tab, key, var) do { \
+	cfg_datum_t _d = cfg_int_in(tab, key); \
+	if (_d.ok) var = (int)_d.u.i; \
+} while (0)
 
-#define CFG_BOOL(tab, key, var)                                                                    \
-	do {                                                                                       \
-		cfg_datum_t _d = cfg_bool_in(tab, key);                                            \
-		if (_d.ok)                                                                         \
-			var = (int)_d.u.b;                                                         \
-	} while (0)
+#define CFG_BOOL(tab, key, var) do { \
+	cfg_datum_t _d = cfg_bool_in(tab, key); \
+	if (_d.ok) var = (int)_d.u.b; \
+} while (0)
 
-#define CFG_DBL(tab, key, var)                                                                     \
-	do {                                                                                       \
-		cfg_datum_t _d = cfg_double_in(tab, key);                                          \
-		if (_d.ok)                                                                         \
-			var = _d.u.d;                                                              \
-	} while (0)
+#define CFG_DBL(tab, key, var) do { \
+	cfg_datum_t _d = cfg_double_in(tab, key); \
+	if (_d.ok) var = _d.u.d; \
+} while (0)
 
 static cfg_table_t *table_path(cfg_table_t *root, const char *path)
 {
@@ -688,7 +690,8 @@ static cfg_table_t *table_path(cfg_table_t *root, const char *path)
 	return tbl;
 }
 
-static void load_model_entry(cfg_table_t *parent, const char *sub, struct config_model_entry *e)
+static void load_model_entry(cfg_table_t *parent, const char *sub,
+			     struct config_model_entry *e)
 {
 	cfg_table_t *t = parent ? cfg_table_in(parent, sub) : NULL;
 	if (!t)
@@ -720,7 +723,8 @@ static void load_credit_price(cfg_table_t *t, struct config_credit_price *p)
 	CFG_STR(t, "model", p->model);
 	CFG_STR(t, "kind", p->kind);
 	CFG_DBL(t, "input_per_million", p->input_per_million);
-	cfg_datum_t cached_input = cfg_double_in(t, "cached_input_per_million");
+	cfg_datum_t cached_input =
+		cfg_double_in(t, "cached_input_per_million");
 	if (cached_input.ok) {
 		p->cached_input_per_million = cached_input.u.d;
 		p->cached_input_price_configured = 1;
@@ -740,10 +744,14 @@ static void load_credits_config(cfg_table_t *root, struct config_credits *cfg)
 	CFG_INT(credits, "daily_limit", cfg->daily_limit);
 	CFG_STR(credits, "currency", cfg->currency);
 	CFG_DBL(credits, "cost_to_credit_coef", cfg->cost_to_credit_coef);
-	CFG_DBL(credits, "input_token_credit_coef", cfg->input_token_credit_coef);
-	CFG_DBL(credits, "output_token_credit_coef", cfg->output_token_credit_coef);
-	CFG_DBL(credits, "image_unit_credit_coef", cfg->image_unit_credit_coef);
-	CFG_DBL(credits, "video_second_credit_coef", cfg->video_second_credit_coef);
+	CFG_DBL(credits, "input_token_credit_coef",
+		cfg->input_token_credit_coef);
+	CFG_DBL(credits, "output_token_credit_coef",
+		cfg->output_token_credit_coef);
+	CFG_DBL(credits, "image_unit_credit_coef",
+		cfg->image_unit_credit_coef);
+	CFG_DBL(credits, "video_second_credit_coef",
+		cfg->video_second_credit_coef);
 
 	prices = cfg_array_in(credits, "prices");
 	if (prices) {
@@ -760,8 +768,9 @@ static void load_credits_config(cfg_table_t *root, struct config_credits *cfg)
 	}
 }
 
-static void load_string_array(cfg_table_t *tbl, const char *key, void *values, int *out_count,
-			      int max_count, size_t value_len)
+static void load_string_array(cfg_table_t *tbl, const char *key,
+			      void *values,
+			      int *out_count, int max_count, size_t value_len)
 {
 	cfg_array_t *arr;
 	int count;
@@ -788,15 +797,17 @@ static void load_string_array(cfg_table_t *tbl, const char *key, void *values, i
 
 static void migrate_legacy_sync_includes(struct config *cfg)
 {
-	static const char *const legacy[] = {"config.toml", "data.db", "skills",
-					     "tools",	    "exts",    "output"};
+	static const char *const legacy[] = {
+		"config.toml", "data.db", "skills", "tools", "exts", "output"
+	};
 	if (!cfg || (cfg->sync.include_count != 6 && cfg->sync.include_count != 7))
 		return;
 	for (int i = 0; i < 6; i++) {
 		if (strcmp(cfg->sync.include[i], legacy[i]) != 0)
 			return;
 	}
-	if (cfg->sync.include_count == 7 && strcmp(cfg->sync.include[6], "ui-history.db") != 0 &&
+	if (cfg->sync.include_count == 7 &&
+	    strcmp(cfg->sync.include[6], "ui-history.db") != 0 &&
 	    strcmp(cfg->sync.include[6], ".morph/ui-history.db") != 0)
 		return;
 	strncpy(cfg->sync.include[6], "ui-history.db", SYNC_INCLUDE_LEN_MAX - 1);
@@ -805,7 +816,8 @@ static void migrate_legacy_sync_includes(struct config *cfg)
 }
 
 static void load_cap_array(cfg_table_t *tbl, const char *key,
-			   char values[][DYNAMIC_TOOL_CAP_LEN_MAX], int *out_count)
+			   char values[][DYNAMIC_TOOL_CAP_LEN_MAX],
+			   int *out_count)
 {
 	cfg_array_t *arr;
 	int count;
@@ -827,23 +839,33 @@ static void load_cap_array(cfg_table_t *tbl, const char *key,
 	*out_count = count;
 }
 
-static void load_dynamic_profile(cfg_table_t *tbl, struct config_dynamic_tool_profile *profile)
+static void load_dynamic_profile(cfg_table_t *tbl,
+				 struct config_dynamic_tool_profile *profile)
 {
 	if (!tbl || !profile)
 		return;
-	load_cap_array(tbl, "default_capabilities", profile->default_capabilities,
+	load_cap_array(tbl, "default_capabilities",
+		       profile->default_capabilities,
 		       &profile->default_capabilities_count);
-	load_string_array(tbl, "allowed_read_paths", profile->allowed_read_paths,
-			  &profile->allowed_read_paths_count, DYNAMIC_TOOL_ALLOW_MAX,
+	load_string_array(tbl, "allowed_read_paths",
+			  profile->allowed_read_paths,
+			  &profile->allowed_read_paths_count,
+			  DYNAMIC_TOOL_ALLOW_MAX,
 			  DYNAMIC_TOOL_ALLOW_LEN_MAX);
-	load_string_array(tbl, "allowed_write_paths", profile->allowed_write_paths,
-			  &profile->allowed_write_paths_count, DYNAMIC_TOOL_ALLOW_MAX,
+	load_string_array(tbl, "allowed_write_paths",
+			  profile->allowed_write_paths,
+			  &profile->allowed_write_paths_count,
+			  DYNAMIC_TOOL_ALLOW_MAX,
 			  DYNAMIC_TOOL_ALLOW_LEN_MAX);
-	load_string_array(tbl, "allowed_commands", profile->allowed_commands,
-			  &profile->allowed_commands_count, DYNAMIC_TOOL_ALLOW_MAX,
+	load_string_array(tbl, "allowed_commands",
+			  profile->allowed_commands,
+			  &profile->allowed_commands_count,
+			  DYNAMIC_TOOL_ALLOW_MAX,
 			  DYNAMIC_TOOL_ALLOW_LEN_MAX);
-	load_string_array(tbl, "allowed_network", profile->allowed_network,
-			  &profile->allowed_network_count, DYNAMIC_TOOL_ALLOW_MAX,
+	load_string_array(tbl, "allowed_network",
+			  profile->allowed_network,
+			  &profile->allowed_network_count,
+			  DYNAMIC_TOOL_ALLOW_MAX,
 			  DYNAMIC_TOOL_ALLOW_LEN_MAX);
 }
 
@@ -864,7 +886,8 @@ static void config_expand_paths(struct config *cfg)
 	expand_path_field(cfg->general.output_dir, sizeof(cfg->general.output_dir));
 	expand_path_field(cfg->general.log_file, sizeof(cfg->general.log_file));
 	expand_path_field(cfg->ext.dir, sizeof(cfg->ext.dir));
-	expand_path_field(cfg->dynamic_tools.session_dir, sizeof(cfg->dynamic_tools.session_dir));
+	expand_path_field(cfg->dynamic_tools.session_dir,
+			  sizeof(cfg->dynamic_tools.session_dir));
 	expand_path_field(cfg->dynamic_tools.persistent_dir,
 			  sizeof(cfg->dynamic_tools.persistent_dir));
 	expand_path_field(cfg->skill.dir, sizeof(cfg->skill.dir));
@@ -882,7 +905,8 @@ struct config_warning_context {
 	const char *path;
 };
 
-static void config_log_warning(const struct config_validation_error *warning, void *user_data)
+static void config_log_warning(
+	const struct config_validation_error *warning, void *user_data)
 {
 	const struct config_warning_context *context = user_data;
 	const char *path = context->path;
@@ -890,8 +914,8 @@ static void config_log_warning(const struct config_validation_error *warning, vo
 
 	if (!warning)
 		return;
-	log_warn(logger, "config warning %s:%d:%d: %s%s", path ? path : "<config>", warning->line,
-		 warning->column, warning->message,
+	log_warn(logger, "config warning %s:%d:%d: %s%s", path ? path : "<config>",
+		 warning->line, warning->column, warning->message,
 		 warning->code == CONFIG_VALIDATION_UNKNOWN_KEY ? "; key ignored" : "");
 }
 
@@ -932,17 +956,17 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 		CFG_BOOL(features, "hooks", cfg->hooks_enabled);
 	cfg_table_t *hooks = table_path(tbl, "hooks");
 	if (hooks) {
-		struct json *json = config_toml_json(hooks);
-		char *text = json ? json_stringify(json) : NULL;
+		cJSON *json = config_toml_json(hooks);
+		char *text = json ? cJSON_PrintUnformatted(json) : NULL;
 		if (!text || strlen(text) >= sizeof(cfg->hooks_json)) {
 			free(text);
-			json_free(json);
+			cJSON_Delete(json);
 			toml_free(parsed);
 			return MORPH_ERR_CONFIG;
 		}
 		memcpy(cfg->hooks_json, text, strlen(text) + 1);
 		free(text);
-		json_free(json);
+		cJSON_Delete(json);
 	}
 
 	cfg_table_t *general = table_path(tbl, "general");
@@ -991,24 +1015,21 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 				cfg_datum_t val = cfg_string_at(gdr, gcount);
 				if (!val.ok)
 					break;
-				strncpy(cfg->react.guardrail_disabled_rules[gcount], val.u.s,
-					CFG_GR_NAME_MAX - 1);
+				strncpy(cfg->react.guardrail_disabled_rules[gcount],
+					val.u.s, CFG_GR_NAME_MAX - 1);
 				free(val.u.s);
 			}
 			cfg->react.guardrail_disabled_rule_count = gcount;
 		}
 		cfg_array_t *llm_arr = cfg_array_in(react, "guardrail_llm_rules");
 		if (llm_arr) {
-			for (int li = 0;
-			     li < cfg_array_nelem(llm_arr) &&
-			     cfg->react.guardrail_llm_rule_count < GUARDRAIL_LLM_RULES_MAX;
-			     li++) {
+			for (int li = 0; li < cfg_array_nelem(llm_arr) &&
+			     cfg->react.guardrail_llm_rule_count < GUARDRAIL_LLM_RULES_MAX; li++) {
 				cfg_table_t *lt = cfg_table_at(llm_arr, li);
-				if (!lt)
-					continue;
+				if (!lt) continue;
 				struct config_guardrail_llm_rule *lr =
-					&cfg->react.guardrail_llm_rules
-						 [cfg->react.guardrail_llm_rule_count];
+					&cfg->react.guardrail_llm_rules[
+						cfg->react.guardrail_llm_rule_count];
 				CFG_STR(lt, "name", lr->name);
 				CFG_STR(lt, "hook", lr->hook);
 				CFG_STR(lt, "description", lr->description);
@@ -1018,16 +1039,13 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 		}
 		cfg_array_t *ext_arr = cfg_array_in(react, "guardrail_ext_rules");
 		if (ext_arr) {
-			for (int ei = 0;
-			     ei < cfg_array_nelem(ext_arr) &&
-			     cfg->react.guardrail_ext_rule_count < GUARDRAIL_EXT_RULES_MAX;
-			     ei++) {
+			for (int ei = 0; ei < cfg_array_nelem(ext_arr) &&
+			     cfg->react.guardrail_ext_rule_count < GUARDRAIL_EXT_RULES_MAX; ei++) {
 				cfg_table_t *et = cfg_table_at(ext_arr, ei);
-				if (!et)
-					continue;
+				if (!et) continue;
 				struct config_guardrail_ext_rule *er =
-					&cfg->react.guardrail_ext_rules
-						 [cfg->react.guardrail_ext_rule_count];
+					&cfg->react.guardrail_ext_rules[
+						cfg->react.guardrail_ext_rule_count];
 				CFG_STR(et, "on_error", er->on_error);
 				CFG_STR(et, "name", er->name);
 				CFG_STR(et, "hook", er->hook);
@@ -1041,7 +1059,8 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 		if (dt) {
 			int count = 0;
 
-			memset(cfg->react.disabled_tools, 0, sizeof(cfg->react.disabled_tools));
+			memset(cfg->react.disabled_tools, 0,
+			       sizeof(cfg->react.disabled_tools));
 			for (; count < DISABLED_TOOLS_MAX; count++) {
 				cfg_datum_t val = cfg_string_at(dt, count);
 				if (!val.ok)
@@ -1066,8 +1085,7 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 			cfg->react.readonly_tools_count = count;
 		}
 		CFG_BOOL(react, "hitl_enabled", cfg->react.hitl_enabled);
-		CFG_BOOL(react, "hitl_auto_approve_readonly",
-			 cfg->react.hitl_auto_approve_readonly);
+		CFG_BOOL(react, "hitl_auto_approve_readonly", cfg->react.hitl_auto_approve_readonly);
 		CFG_BOOL(react, "hitl_auto_approve_media", cfg->react.hitl_auto_approve_media);
 		{
 			cfg_table_t *permissions = cfg_table_in(react, "permissions");
@@ -1080,7 +1098,8 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 			}
 		}
 		{
-			cfg_array_t *profiles = cfg_array_in(react, "permission_profiles");
+			cfg_array_t *profiles = cfg_array_in(
+				react, "permission_profiles");
 
 			if (profiles) {
 				int count = cfg_array_nelem(profiles);
@@ -1096,16 +1115,15 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 						continue;
 					CFG_STR(profile, "name", dst->name);
 					load_string_array(profile, "workspace_roots",
-							  dst->workspace_roots,
-							  &dst->workspace_roots_count,
-							  PERMISSION_PATH_MAX, PERMISSION_PATH_LEN);
-					load_string_array(profile, "write_paths", dst->write_paths,
-							  &dst->write_paths_count,
-							  PERMISSION_PATH_MAX, PERMISSION_PATH_LEN);
+						dst->workspace_roots,
+						&dst->workspace_roots_count,
+						PERMISSION_PATH_MAX, PERMISSION_PATH_LEN);
+					load_string_array(profile, "write_paths",
+						dst->write_paths, &dst->write_paths_count,
+						PERMISSION_PATH_MAX, PERMISSION_PATH_LEN);
 					load_string_array(profile, "delete_paths",
-							  dst->delete_paths,
-							  &dst->delete_paths_count,
-							  PERMISSION_PATH_MAX, PERMISSION_PATH_LEN);
+						dst->delete_paths, &dst->delete_paths_count,
+						PERMISSION_PATH_MAX, PERMISSION_PATH_LEN);
 					cfg->react.permission_profile_count++;
 				}
 			}
@@ -1125,12 +1143,13 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 		}
 	}
 
-	int legacy_permissions = (exec && (cfg_find_const(exec, "network") ||
-					   cfg_find_const(exec, "allow_host_execution"))) ||
-				 (react && (cfg_find_const(react, "hitl_enabled") ||
-					    cfg_find_const(react, "hitl_tools") ||
-					    cfg_find_const(react, "hitl_auto_approve_readonly") ||
-					    cfg_find_const(react, "hitl_auto_approve_media")));
+	int legacy_permissions =
+		(exec && (cfg_find_const(exec, "network") ||
+		 cfg_find_const(exec, "allow_host_execution"))) ||
+		(react && (cfg_find_const(react, "hitl_enabled") ||
+		 cfg_find_const(react, "hitl_tools") ||
+		 cfg_find_const(react, "hitl_auto_approve_readonly") ||
+		 cfg_find_const(react, "hitl_auto_approve_media")));
 	cfg_table_t *permissions = table_path(tbl, "permissions");
 	if (permissions) {
 		char access[32] = "workspace";
@@ -1140,8 +1159,8 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 		CFG_STR(permissions, "access", access);
 		CFG_STR(permissions, "approval", approval);
 		CFG_STR(permissions, "reviewer", reviewer);
-		int policy_rc =
-			permission_policy_parse(access, approval, reviewer, &cfg->permissions);
+		int policy_rc = permission_policy_parse(access, approval, reviewer,
+			&cfg->permissions);
 		if (policy_rc != 0) {
 			toml_free(parsed);
 			return MORPH_ERR_CONFIG;
@@ -1149,29 +1168,32 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 		cfg->permissions_explicit = 1;
 		if (legacy_permissions)
 			log_warn(logger, "[permissions] overrides legacy exec.network, "
-					 "exec.allow_host_execution and react.hitl_* settings.");
+				"exec.allow_host_execution and react.hitl_* settings.");
 	} else if (legacy_permissions) {
 		cfg->permissions = permission_policy_default();
 		log_warn(logger, "Legacy permissions migrate to "
-				 "workspace/on_request/user. Legacy host, network and HITL "
-				 "switches no longer grant access; set [permissions] explicitly.");
+			"workspace/on_request/user. Legacy host, network and HITL "
+			"switches no longer grant access; set [permissions] explicitly.");
 	}
 
 	cfg_table_t *context = table_path(tbl, "context");
 	if (context) {
-		CFG_DBL(context, "summarize_threshold_ratio",
-			cfg->context.summarize_threshold_ratio);
+		CFG_DBL(context, "summarize_threshold_ratio", cfg->context.summarize_threshold_ratio);
 		CFG_DBL(context, "compress_target_ratio", cfg->context.compress_target_ratio);
 		CFG_BOOL(context, "in_turn_compaction", cfg->context.in_turn_compaction);
-		CFG_INT(context, "protocol_reserve_tokens", cfg->context.protocol_reserve_tokens);
+		CFG_INT(context, "protocol_reserve_tokens",
+			cfg->context.protocol_reserve_tokens);
 		CFG_INT(context, "keep_recent_rounds", cfg->context.keep_recent_rounds);
-		CFG_INT(context, "tool_result_max_tokens", cfg->context.tool_result_max_tokens);
+		CFG_INT(context, "tool_result_max_tokens",
+			cfg->context.tool_result_max_tokens);
 		CFG_INT(context, "compaction_user_message_tokens",
 			cfg->context.compaction_user_message_tokens);
 		CFG_INT(context, "compaction_summary_max_tokens",
 			cfg->context.compaction_summary_max_tokens);
-		CFG_STR(context, "compaction_prompt_file", cfg->context.compaction_prompt_file);
-		CFG_INT(context, "compaction_warning_count", cfg->context.compaction_warning_count);
+		CFG_STR(context, "compaction_prompt_file",
+			cfg->context.compaction_prompt_file);
+		CFG_INT(context, "compaction_warning_count",
+			cfg->context.compaction_warning_count);
 	}
 
 	cfg_table_t *memory = table_path(tbl, "memory");
@@ -1212,19 +1234,24 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 			free(mode.u.s);
 		}
 		CFG_STR(dynamic, "session_dir", cfg->dynamic_tools.session_dir);
-		CFG_STR(dynamic, "persistent_dir", cfg->dynamic_tools.persistent_dir);
-		CFG_STR(dynamic, "default_lifetime", cfg->dynamic_tools.default_lifetime);
+		CFG_STR(dynamic, "persistent_dir",
+			cfg->dynamic_tools.persistent_dir);
+		CFG_STR(dynamic, "default_lifetime",
+			cfg->dynamic_tools.default_lifetime);
 		CFG_BOOL(dynamic, "create_requires_approval",
 			 cfg->dynamic_tools.create_requires_approval);
 		CFG_BOOL(dynamic, "promote_requires_approval",
 			 cfg->dynamic_tools.promote_requires_approval);
-		CFG_INT(dynamic, "max_source_bytes", cfg->dynamic_tools.max_source_bytes);
+		CFG_INT(dynamic, "max_source_bytes",
+			cfg->dynamic_tools.max_source_bytes);
 		CFG_INT(dynamic, "default_timeout_seconds",
 			cfg->dynamic_tools.default_timeout_seconds);
 		CFG_INT(dynamic, "default_max_output_bytes",
 			cfg->dynamic_tools.default_max_output_bytes);
-		load_dynamic_profile(cfg_table_in(dynamic, "local"), &cfg->dynamic_tools.local);
-		load_dynamic_profile(cfg_table_in(dynamic, "server"), &cfg->dynamic_tools.server);
+		load_dynamic_profile(cfg_table_in(dynamic, "local"),
+				     &cfg->dynamic_tools.local);
+		load_dynamic_profile(cfg_table_in(dynamic, "server"),
+				     &cfg->dynamic_tools.server);
 	}
 
 	cfg_table_t *prompt = table_path(tbl, "prompt");
@@ -1245,13 +1272,15 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 		CFG_STR(sync, "dir", cfg->sync.dir);
 		CFG_INT(sync, "interval_seconds", cfg->sync.interval_seconds);
 		CFG_INT(sync, "retention_days", cfg->sync.retention_days);
-		load_string_array(sync, "include", cfg->sync.include, &cfg->sync.include_count,
+		load_string_array(sync, "include", cfg->sync.include,
+				  &cfg->sync.include_count,
 				  SYNC_INCLUDE_MAX, SYNC_INCLUDE_LEN_MAX);
 		migrate_legacy_sync_includes(cfg);
 	}
 
 	cfg_table_t *mcp_tbl = table_path(tbl, "mcp");
-	cfg_array_t *mcp_servers = mcp_tbl ? cfg_array_in(mcp_tbl, "servers") : NULL;
+	cfg_array_t *mcp_servers = mcp_tbl
+		? cfg_array_in(mcp_tbl, "servers") : NULL;
 	if (mcp_servers) {
 		int i = 0;
 		for (; i < cfg_array_nelem(mcp_servers) && i < MCP_SERVER_MAX; i++) {
@@ -1288,8 +1317,7 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 					const char *key = cfg_key_in(env_tbl, ki);
 					if (!key)
 						break;
-					strncpy(ms->env_keys[ei], key,
-						sizeof(ms->env_keys[ei]) - 1);
+					strncpy(ms->env_keys[ei], key, sizeof(ms->env_keys[ei]) - 1);
 					CFG_STR(env_tbl, key, ms->env_vals[ei]);
 					ei++;
 				}
@@ -1312,35 +1340,26 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 static const char *sub_agent_ctx_policy_str(enum sub_agent_context_policy p)
 {
 	switch (p) {
-	case SUB_AGENT_CTX_FULL:
-		return "full";
-	case SUB_AGENT_CTX_SUMMARY:
-		return "summary";
-	case SUB_AGENT_CTX_TASK_ONLY:
-		return "task_only";
+	case SUB_AGENT_CTX_FULL:	return "full";
+	case SUB_AGENT_CTX_SUMMARY:	return "summary";
+	case SUB_AGENT_CTX_TASK_ONLY:	return "task_only";
 	}
 	return "task_only";
 }
 
 static enum sub_agent_context_policy parse_ctx_policy(const char *s)
 {
-	if (!s)
-		return SUB_AGENT_CTX_TASK_ONLY;
-	if (strcmp(s, "full") == 0)
-		return SUB_AGENT_CTX_FULL;
-	if (strcmp(s, "summary") == 0)
-		return SUB_AGENT_CTX_SUMMARY;
+	if (!s) return SUB_AGENT_CTX_TASK_ONLY;
+	if (strcmp(s, "full") == 0) return SUB_AGENT_CTX_FULL;
+	if (strcmp(s, "summary") == 0) return SUB_AGENT_CTX_SUMMARY;
 	return SUB_AGENT_CTX_TASK_ONLY;
 }
 
 static enum sub_agent_merge_strategy parse_merge_strategy(const char *s)
 {
-	if (!s)
-		return SUB_AGENT_MERGE_SYNTHESIZE;
-	if (strcmp(s, "concat") == 0)
-		return SUB_AGENT_MERGE_CONCAT;
-	if (strcmp(s, "raw") == 0)
-		return SUB_AGENT_MERGE_RAW;
+	if (!s) return SUB_AGENT_MERGE_SYNTHESIZE;
+	if (strcmp(s, "concat") == 0) return SUB_AGENT_MERGE_CONCAT;
+	if (strcmp(s, "raw") == 0) return SUB_AGENT_MERGE_RAW;
 	return SUB_AGENT_MERGE_SYNTHESIZE;
 }
 
@@ -1368,10 +1387,11 @@ int config_load_sub_agents(struct config *cfg, const char *path)
 	cfg_table_t *tbl = &parsed.toptab;
 
 	cfg_table_t *agent_tbl = table_path(tbl, "agent");
-	cfg_array_t *sa_arr = agent_tbl ? cfg_array_in(agent_tbl, "sub_agents") : NULL;
+	cfg_array_t *sa_arr = agent_tbl
+		? cfg_array_in(agent_tbl, "sub_agents") : NULL;
 	if (sa_arr) {
-		for (int i = 0;
-		     i < cfg_array_nelem(sa_arr) && cfg->sub_agents.count < SUB_AGENT_MAX; i++) {
+		for (int i = 0; i < cfg_array_nelem(sa_arr) &&
+		     cfg->sub_agents.count < SUB_AGENT_MAX; i++) {
 			cfg_table_t *st = cfg_table_at(sa_arr, i);
 			if (!st)
 				continue;
@@ -1389,12 +1409,12 @@ int config_load_sub_agents(struct config *cfg, const char *path)
 
 			cfg_array_t *at = cfg_array_in(st, "allowed_tools");
 			if (at) {
-				for (int j = 0; j < cfg_array_nelem(at) &&
-						sa->allowed_tools_count < SUB_AGENT_TOOL_MAX;
+				for (int j = 0;
+				     j < cfg_array_nelem(at) &&
+				     sa->allowed_tools_count < SUB_AGENT_TOOL_MAX;
 				     j++) {
 					cfg_datum_t v = cfg_string_at(at, j);
-					if (!v.ok)
-						break;
+					if (!v.ok) break;
 					strncpy(sa->allowed_tools[j], v.u.s,
 						SUB_AGENT_TOOL_NAME_MAX - 1);
 					sa->allowed_tools_count++;
@@ -1404,12 +1424,12 @@ int config_load_sub_agents(struct config *cfg, const char *path)
 
 			cfg_array_t *dt = cfg_array_in(st, "disabled_tools");
 			if (dt) {
-				for (int j = 0; j < cfg_array_nelem(dt) &&
-						sa->disabled_tools_count < SUB_AGENT_TOOL_MAX;
+				for (int j = 0;
+				     j < cfg_array_nelem(dt) &&
+				     sa->disabled_tools_count < SUB_AGENT_TOOL_MAX;
 				     j++) {
 					cfg_datum_t v = cfg_string_at(dt, j);
-					if (!v.ok)
-						break;
+					if (!v.ok) break;
 					strncpy(sa->disabled_tools[j], v.u.s,
 						SUB_AGENT_TOOL_NAME_MAX - 1);
 					sa->disabled_tools_count++;
@@ -1418,27 +1438,34 @@ int config_load_sub_agents(struct config *cfg, const char *path)
 			}
 
 			{
-				cfg_datum_t cp = cfg_string_in(st, "context_policy");
+				cfg_datum_t cp = cfg_string_in(st,
+					"context_policy");
 				if (cp.ok) {
-					sa->context_policy = parse_ctx_policy(cp.u.s);
+					sa->context_policy = parse_ctx_policy(
+						cp.u.s);
 					free(cp.u.s);
 				} else {
-					sa->context_policy = SUB_AGENT_CTX_TASK_ONLY;
+					sa->context_policy =
+						SUB_AGENT_CTX_TASK_ONLY;
 				}
 			}
 
 			{
-				cfg_datum_t ms = cfg_string_in(st, "merge_strategy");
+				cfg_datum_t ms = cfg_string_in(st,
+					"merge_strategy");
 				if (ms.ok) {
-					sa->merge_strategy = parse_merge_strategy(ms.u.s);
+					sa->merge_strategy = parse_merge_strategy(
+						ms.u.s);
 					free(ms.u.s);
 				} else {
-					sa->merge_strategy = SUB_AGENT_MERGE_SYNTHESIZE;
+					sa->merge_strategy =
+						SUB_AGENT_MERGE_SYNTHESIZE;
 				}
 			}
 
 			{
-				cfg_datum_t os = cfg_string_in(st, "output_schema");
+				cfg_datum_t os = cfg_string_in(st,
+					"output_schema");
 				if (os.ok) {
 					sa->output_schema = os.u.s;
 				}
@@ -1483,8 +1510,8 @@ void config_print(const struct config *cfg)
 		 "  [exec] shell=%s timeout_ms=%d yield_ms=%d max_wait_ms=%d "
 		 "inline=%d session=%d grace_ms=%d",
 		 cfg->exec.shell, cfg->exec.default_timeout_ms, cfg->exec.yield_time_ms,
-		 cfg->exec.max_wait_ms, cfg->exec.max_inline_output, cfg->exec.max_session_output,
-		 cfg->exec.kill_grace_ms);
+		 cfg->exec.max_wait_ms,
+		 cfg->exec.max_inline_output, cfg->exec.max_session_output, cfg->exec.kill_grace_ms);
 	for (int i = 0; i < cfg->react.disabled_tools_count; i++)
 		log_info(cfg ? cfg->logger : NULL, "    disabled_tool: %s",
 			 cfg->react.disabled_tools[i]);

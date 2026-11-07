@@ -102,17 +102,17 @@ static int failing_tool_fn(const char *args_json, struct tool_result *result, vo
 static int json_object_tool_fn(const char *args_json,
 			       struct tool_result *result, void *user_data)
 {
-	struct json *root;
+	cJSON *root;
 
 	(void)user_data;
-	root = args_json ? json_parse_prefix(args_json, NULL, NULL) : nullptr;
-	if (!json_is_object_value(root)) {
-		json_free(root);
+	root = args_json ? cJSON_Parse(args_json) : nullptr;
+	if (!cJSON_IsObject(root)) {
+		cJSON_Delete(root);
 		(void)tool_result_error(result, "invalid_arguments",
 			"arguments must be a valid JSON object; correct them and retry");
 		return -EINVAL;
 	}
-	json_free(root);
+	cJSON_Delete(root);
 	(void)tool_result_success_json_text(result,
 		strdup("{\"result\":\"ok\"}"));
 	return 0;
@@ -634,13 +634,13 @@ static int multi_mock_chat_with_tools(struct model *self, struct arena *arena,
 		if (!messages[i].tool_calls)
 			continue;
 		for (int j = 0; j < messages[i].tool_call_count; j++) {
-			struct json *arguments =
-				json_parse_prefix(messages[i].tool_calls[j].arguments, NULL, NULL);
+			cJSON *arguments = cJSON_Parse(
+				messages[i].tool_calls[j].arguments);
 
 			data->replay_argument_checks++;
-			if (!json_is_object_value(arguments))
+			if (!cJSON_IsObject(arguments))
 				data->invalid_replayed_arguments++;
-			json_free(arguments);
+			cJSON_Delete(arguments);
 		}
 	}
 
@@ -1465,13 +1465,13 @@ static bool event_recorder_has_name(struct morph_event_recorder *rec,
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
 		const char *json = morph_event_recorder_get(rec, i);
-		struct json *root = json_parse_prefix(json, NULL, NULL);
+		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
-		struct json *name_item = json_member_ci(root, "name");
-		bool matched = json_is_string_value(name_item) &&
-			       strcmp(json_string_value(name_item), name) == 0;
-		json_free(root);
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		bool matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, name) == 0;
+		cJSON_Delete(root);
 		if (matched)
 			return true;
 	}
@@ -1483,23 +1483,24 @@ static std::string event_recorder_data_string(
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
 		const char *json = morph_event_recorder_get(rec, i);
-		struct json *root = json_parse_prefix(json, NULL, NULL);
-		struct json *name_item;
-		struct json *data;
-		struct json *value;
+		cJSON *root = cJSON_Parse(json);
+		cJSON *name_item;
+		cJSON *data;
+		cJSON *value;
 		bool matched;
 		std::string result;
 
 		if (!root)
 			continue;
-		name_item = json_member_ci(root, "name");
-		data = json_member_ci(root, "data");
-		value = json_is_object_value(data) ? json_member_ci(data, key) : nullptr;
-		matched = json_is_string_value(name_item) &&
-			  strcmp(json_string_value(name_item), name) == 0;
-		if (matched && json_is_string_value(value))
-			result = json_string_value(value);
-		json_free(root);
+		name_item = cJSON_GetObjectItem(root, "name");
+		data = cJSON_GetObjectItem(root, "data");
+		value = cJSON_IsObject(data) ? cJSON_GetObjectItem(data, key) :
+			nullptr;
+		matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, name) == 0;
+		if (matched && cJSON_IsString(value))
+			result = value->valuestring;
+		cJSON_Delete(root);
 		if (matched)
 			return result;
 	}
@@ -1513,14 +1514,14 @@ static int event_recorder_count_name(struct morph_event_recorder *rec,
 
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
 		const char *json = morph_event_recorder_get(rec, i);
-		struct json *root = json_parse_prefix(json, NULL, NULL);
+		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
-		struct json *name_item = json_member_ci(root, "name");
-		if (json_is_string_value(name_item) &&
-		    strcmp(json_string_value(name_item), name) == 0)
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		if (cJSON_IsString(name_item) &&
+		    strcmp(name_item->valuestring, name) == 0)
 			count++;
-		json_free(root);
+		cJSON_Delete(root);
 	}
 	return count;
 }
@@ -1530,13 +1531,13 @@ static int event_recorder_index_name(struct morph_event_recorder *rec,
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
 		const char *json = morph_event_recorder_get(rec, i);
-		struct json *root = json_parse_prefix(json, NULL, NULL);
+		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
-		struct json *name_item = json_member_ci(root, "name");
-		bool matched = json_is_string_value(name_item) &&
-			       strcmp(json_string_value(name_item), name) == 0;
-		json_free(root);
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		bool matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, name) == 0;
+		cJSON_Delete(root);
 		if (matched)
 			return (int)i;
 	}
@@ -1548,17 +1549,18 @@ static bool event_recorder_observation_has_artifacts(
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
 		const char *json = morph_event_recorder_get(rec, i);
-		struct json *root = json_parse_prefix(json, NULL, NULL);
+		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
-		struct json *name_item = json_member_ci(root, "name");
-		struct json *data = json_member_ci(root, "data");
-		struct json *artifacts =
-			json_is_object_value(data) ? json_member_ci(data, "artifacts") : NULL;
-		bool matched = json_is_string_value(name_item) &&
-			       strcmp(json_string_value(name_item), "react.observation") == 0 &&
-			       json_is_array_value(artifacts) && json_count(artifacts) > 0;
-		json_free(root);
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		cJSON *data = cJSON_GetObjectItem(root, "data");
+		cJSON *artifacts = cJSON_IsObject(data) ?
+			cJSON_GetObjectItem(data, "artifacts") : NULL;
+		bool matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, "react.observation") == 0 &&
+			cJSON_IsArray(artifacts) &&
+			cJSON_GetArraySize(artifacts) > 0;
+		cJSON_Delete(root);
 		if (matched)
 			return true;
 	}
@@ -1572,13 +1574,13 @@ static int event_recorder_nth_index_name(struct morph_event_recorder *rec,
 
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
 		const char *json = morph_event_recorder_get(rec, i);
-		struct json *root = json_parse_prefix(json, NULL, NULL);
+		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
-		struct json *name_item = json_member_ci(root, "name");
-		bool matched = json_is_string_value(name_item) &&
-			       strcmp(json_string_value(name_item), name) == 0;
-		json_free(root);
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		bool matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, name) == 0;
+		cJSON_Delete(root);
 		if (!matched)
 			continue;
 		if (seen == nth)
@@ -1594,17 +1596,18 @@ static bool event_recorder_has_outcome(struct morph_event_recorder *rec,
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
 		const char *json = morph_event_recorder_get(rec, i);
-		struct json *root = json_parse_prefix(json, NULL, NULL);
+		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
-		struct json *name_item = json_member_ci(root, "name");
-		struct json *data = json_member_ci(root, "data");
-		struct json *outcome_item = data ? json_member_ci(data, "outcome") : nullptr;
-		bool matched = json_is_string_value(name_item) &&
-			       strcmp(json_string_value(name_item), name) == 0 &&
-			       json_is_string_value(outcome_item) &&
-			       strcmp(json_string_value(outcome_item), outcome) == 0;
-		json_free(root);
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		cJSON *data = cJSON_GetObjectItem(root, "data");
+		cJSON *outcome_item = data ?
+			cJSON_GetObjectItem(data, "outcome") : nullptr;
+		bool matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, name) == 0 &&
+			cJSON_IsString(outcome_item) &&
+			strcmp(outcome_item->valuestring, outcome) == 0;
+		cJSON_Delete(root);
 		if (matched)
 			return true;
 	}
@@ -1617,28 +1620,32 @@ static bool event_recorder_has_auth_required(struct morph_event_recorder *rec,
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
 		const char *json = morph_event_recorder_get(rec, i);
-		struct json *root = json_parse_prefix(json, NULL, NULL);
+		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
-		struct json *name_item = json_member_ci(root, "name");
-		struct json *type_item = json_member_ci(root, "type");
-		struct json *data = json_member_ci(root, "data");
-		struct json *kind_item = data ? json_member_ci(data, "kind") : nullptr;
-		struct json *backend_item = data ? json_member_ci(data, "backend") : nullptr;
-		struct json *tool_item = data ? json_member_ci(data, "tool") : nullptr;
-		struct json *retryable = data ? json_member_ci(data, "retryable") : nullptr;
-		bool matched = json_is_string_value(type_item) &&
-			       strcmp(json_string_value(type_item), "hitl") == 0 &&
-			       json_is_string_value(name_item) &&
-			       strcmp(json_string_value(name_item), "auth.required") == 0 &&
-			       json_is_string_value(kind_item) &&
-			       strcmp(json_string_value(kind_item), "auth_required") == 0 &&
-			       json_is_string_value(backend_item) &&
-			       strcmp(json_string_value(backend_item), backend) == 0 &&
-			       json_is_string_value(tool_item) &&
-			       strcmp(json_string_value(tool_item), tool) == 0 &&
-			       json_is_true(retryable);
-		json_free(root);
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		cJSON *type_item = cJSON_GetObjectItem(root, "type");
+		cJSON *data = cJSON_GetObjectItem(root, "data");
+		cJSON *kind_item = data ?
+			cJSON_GetObjectItem(data, "kind") : nullptr;
+		cJSON *backend_item = data ?
+			cJSON_GetObjectItem(data, "backend") : nullptr;
+		cJSON *tool_item = data ?
+			cJSON_GetObjectItem(data, "tool") : nullptr;
+		cJSON *retryable = data ?
+			cJSON_GetObjectItem(data, "retryable") : nullptr;
+		bool matched = cJSON_IsString(type_item) &&
+			strcmp(type_item->valuestring, "hitl") == 0 &&
+			cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, "auth.required") == 0 &&
+			cJSON_IsString(kind_item) &&
+			strcmp(kind_item->valuestring, "auth_required") == 0 &&
+			cJSON_IsString(backend_item) &&
+			strcmp(backend_item->valuestring, backend) == 0 &&
+			cJSON_IsString(tool_item) &&
+			strcmp(tool_item->valuestring, tool) == 0 &&
+			cJSON_IsTrue(retryable);
+		cJSON_Delete(root);
 		if (matched)
 			return true;
 	}
@@ -1650,16 +1657,16 @@ static std::string event_recorder_turn_id(struct morph_event_recorder *rec,
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
 		const char *json = morph_event_recorder_get(rec, i);
-		struct json *root = json_parse_prefix(json, NULL, NULL);
+		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
-		struct json *name_item = json_member_ci(root, "name");
-		struct json *turn_id = json_member_ci(root, "turn_id");
-		bool matched = json_is_string_value(name_item) &&
-			       strcmp(json_string_value(name_item), name) == 0 &&
-			       json_is_string_value(turn_id);
-		std::string out = matched ? json_string_value(turn_id) : "";
-		json_free(root);
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		cJSON *turn_id = cJSON_GetObjectItem(root, "turn_id");
+		bool matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, name) == 0 &&
+			cJSON_IsString(turn_id);
+		std::string out = matched ? turn_id->valuestring : "";
+		cJSON_Delete(root);
 		if (matched)
 			return out;
 	}
@@ -1673,19 +1680,18 @@ static std::string event_recorder_tool_call_id(
 
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
 		const char *json = morph_event_recorder_get(rec, i);
-		struct json *root = json_parse_prefix(json, NULL, NULL);
+		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
-		struct json *name_item = json_member_ci(root, "name");
-		struct json *data = json_member_ci(root, "data");
-		struct json *tool_call_id =
-			json_is_object_value(data) ? json_member_ci(data, "tool_call_id") : nullptr;
-		bool matched = json_is_string_value(name_item) &&
-			       strcmp(json_string_value(name_item), name) == 0;
-		std::string out = matched && seen == nth && json_is_string_value(tool_call_id)
-					  ? json_string_value(tool_call_id)
-					  : "";
-		json_free(root);
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		cJSON *data = cJSON_GetObjectItem(root, "data");
+		cJSON *tool_call_id = cJSON_IsObject(data) ?
+			cJSON_GetObjectItem(data, "tool_call_id") : nullptr;
+		bool matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, name) == 0;
+		std::string out = matched && seen == nth &&
+			cJSON_IsString(tool_call_id) ? tool_call_id->valuestring : "";
+		cJSON_Delete(root);
 		if (!matched)
 			continue;
 		if (seen == nth)
@@ -1700,26 +1706,26 @@ static std::string event_recorder_tool_input(
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
 		const char *json = morph_event_recorder_get(rec, i);
-		struct json *root = json_parse_prefix(json, NULL, NULL);
+		cJSON *root = cJSON_Parse(json);
 
 		if (!root)
 			continue;
-		struct json *name = json_member_ci(root, "name");
-		struct json *data = json_member_ci(root, "data");
-		struct json *tool_item =
-			json_is_object_value(data) ? json_member_ci(data, "tool") : nullptr;
-		struct json *args =
-			json_is_object_value(data) ? json_member_ci(data, "args") : nullptr;
-		struct json *input =
-			json_is_object_value(args) ? json_member_ci(args, "input") : nullptr;
-		bool matched = json_is_string_value(name) &&
-			       strcmp(json_string_value(name), "tool.call") == 0 &&
-			       json_is_string_value(tool_item) &&
-			       strcmp(json_string_value(tool_item), tool) == 0;
-		std::string out =
-			matched && json_is_string_value(input) ? json_string_value(input) : "";
+		cJSON *name = cJSON_GetObjectItem(root, "name");
+		cJSON *data = cJSON_GetObjectItem(root, "data");
+		cJSON *tool_item = cJSON_IsObject(data) ?
+			cJSON_GetObjectItem(data, "tool") : nullptr;
+		cJSON *args = cJSON_IsObject(data) ?
+			cJSON_GetObjectItem(data, "args") : nullptr;
+		cJSON *input = cJSON_IsObject(args) ?
+			cJSON_GetObjectItem(args, "input") : nullptr;
+		bool matched = cJSON_IsString(name) &&
+			strcmp(name->valuestring, "tool.call") == 0 &&
+			cJSON_IsString(tool_item) &&
+			strcmp(tool_item->valuestring, tool) == 0;
+		std::string out = matched && cJSON_IsString(input) ?
+			input->valuestring : "";
 
-		json_free(root);
+		cJSON_Delete(root);
 		if (matched)
 			return out;
 	}
@@ -1731,19 +1737,19 @@ static bool event_recorder_all_turn_ids_match(struct morph_event_recorder *rec,
 {
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
 		const char *json = morph_event_recorder_get(rec, i);
-		struct json *root = json_parse_prefix(json, NULL, NULL);
+		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
-		struct json *type = json_member_ci(root, "type");
-		struct json *id = json_member_ci(root, "turn_id");
-		bool checked = json_is_string_value(type) &&
-			       (strcmp(json_string_value(type), "react") == 0 ||
-				strcmp(json_string_value(type), "tool") == 0 ||
-				strcmp(json_string_value(type), "artifact") == 0 ||
-				strcmp(json_string_value(type), "hitl") == 0);
-		bool ok = !checked ||
-			  (json_is_string_value(id) && strcmp(json_string_value(id), turn_id) == 0);
-		json_free(root);
+		cJSON *type = cJSON_GetObjectItem(root, "type");
+		cJSON *id = cJSON_GetObjectItem(root, "turn_id");
+		bool checked = cJSON_IsString(type) &&
+			(strcmp(type->valuestring, "react") == 0 ||
+			 strcmp(type->valuestring, "tool") == 0 ||
+			 strcmp(type->valuestring, "artifact") == 0 ||
+			 strcmp(type->valuestring, "hitl") == 0);
+		bool ok = !checked || (cJSON_IsString(id) &&
+			strcmp(id->valuestring, turn_id) == 0);
+		cJSON_Delete(root);
 		if (!ok)
 			return false;
 	}
@@ -1759,24 +1765,24 @@ static bool event_recorder_named_text_valid_utf8(struct morph_event_recorder *re
 		const char *json = morph_event_recorder_get(rec, i);
 		if (utf8valid(json) != nullptr)
 			return false;
-		struct json *root = json_parse_prefix(json, NULL, NULL);
+		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			return false;
-		struct json *name_item = json_member_ci(root, "name");
-		struct json *data = json_member_ci(root, "data");
-		struct json *text =
-			json_is_object_value(data) ? json_member_ci(data, "text") : nullptr;
-		bool matched = json_is_string_value(name_item) &&
-			       strcmp(json_string_value(name_item), name) == 0;
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		cJSON *data = cJSON_GetObjectItem(root, "data");
+		cJSON *text = cJSON_IsObject(data) ?
+			cJSON_GetObjectItem(data, "text") : nullptr;
+		bool matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, name) == 0;
 		if (matched) {
 			seen = true;
-			if (json_is_string_value(text) &&
-			    utf8valid(json_string_value(text)) != nullptr) {
-				json_free(root);
+			if (cJSON_IsString(text) &&
+			    utf8valid(text->valuestring) != nullptr) {
+				cJSON_Delete(root);
 				return false;
 			}
 		}
-		json_free(root);
+		cJSON_Delete(root);
 	}
 	return seen;
 }
@@ -1787,17 +1793,17 @@ static std::string event_recorder_join_text(struct morph_event_recorder *rec,
 	std::string out;
 	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
 		const char *json = morph_event_recorder_get(rec, i);
-		struct json *root = json_parse_prefix(json, NULL, NULL);
+		cJSON *root = cJSON_Parse(json);
 		if (!root)
 			continue;
-		struct json *name = json_member_ci(root, "name");
-		struct json *data = json_member_ci(root, "data");
-		struct json *text =
-			json_is_object_value(data) ? json_member_ci(data, "text") : nullptr;
-		if (json_is_string_value(name) && json_is_string_value(text) &&
-		    strcmp(json_string_value(name), expected_name) == 0)
-			out += json_string_value(text);
-		json_free(root);
+		cJSON *name = cJSON_GetObjectItem(root, "name");
+		cJSON *data = cJSON_GetObjectItem(root, "data");
+		cJSON *text = cJSON_IsObject(data) ?
+			cJSON_GetObjectItem(data, "text") : nullptr;
+		if (cJSON_IsString(name) && cJSON_IsString(text) &&
+		    strcmp(name->valuestring, expected_name) == 0)
+			out += text->valuestring;
+		cJSON_Delete(root);
 	}
 	return out;
 }
@@ -1949,17 +1955,16 @@ TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
 	memory_probe.expected_hook_context = "COMPACT_HOOK_CONTEXT";
 	std::string hook_order;
 	ctx->hook_user = &hook_order;
-	ctx->hook_fn = [](void *user, const char *event, const struct json *input,
-			  struct json **out) -> int {
-		*out = json_object();
+	ctx->hook_fn = [](void *user, const char *event, const cJSON *input, cJSON **out) -> int {
+		*out = cJSON_CreateObject();
 		if (strcmp(event, "PreCompact") == 0 || strcmp(event, "PostCompact") == 0) {
 			*static_cast<std::string *>(user) += std::string(event) + ":";
-			EXPECT_STREQ(json_string_value(json_member_ci(input, "trigger")), "auto");
+			EXPECT_STREQ(cJSON_GetObjectItem(input, "trigger")->valuestring, "auto");
 		}
 		if (strcmp(event, "SessionStart") == 0) {
-			EXPECT_STREQ(json_string_value(json_member_ci(input, "source")), "compact");
+			EXPECT_STREQ(cJSON_GetObjectItem(input, "source")->valuestring, "compact");
 			*static_cast<std::string *>(user) += "SessionStart:compact";
-			json_add_string(*out, "context", "COMPACT_HOOK_CONTEXT");
+			cJSON_AddStringToObject(*out, "context", "COMPACT_HOOK_CONTEXT");
 		}
 		return 0;
 	};
@@ -2908,8 +2913,7 @@ TEST_F(MockLlmTest, InterruptHookRunsOnceAfterOwnerCancellation)
 	ctx->llm_model = llm;
 	int drains = 0, interrupts = 0;
 	ctx->hook_user = &interrupts;
-	ctx->hook_fn = [](void *user, const char *event, const struct json *,
-			  struct json **out) -> int {
+	ctx->hook_fn = [](void *user, const char *event, const cJSON *, cJSON **out) -> int {
 		*out = nullptr;
 		if (strcmp(event, "Interrupt") == 0)
 			++*static_cast<int *>(user);
@@ -2983,17 +2987,17 @@ TEST_F(MockLlmTest, ActionDrainInjectsPromptIntoCurrentLoop) {
 	for (size_t i = 0; i < rec.records.nelts; i++) {
 		auto *record = static_cast<struct morph_event_record *>(
 			morph_array_get(&rec.records, i));
-		struct json *event = json_parse_prefix(record->json, NULL, NULL);
-		const char *name = json_string_value(json_member_ci(event, "name"));
+		cJSON *event = cJSON_Parse(record->json);
+		const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(event, "name"));
 		if (name && strcmp(name, "react.user.steer") == 0) {
-			struct json *data = json_member_ci(event, "data");
-			EXPECT_STREQ(json_string_value(json_member_ci(data, "text")),
-				     "also add tests");
-			EXPECT_STREQ(json_string_value(json_member_ci(data, "display_text")),
-				     "add tests");
+			cJSON *data = cJSON_GetObjectItem(event, "data");
+			EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "text")),
+				"also add tests");
+			EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "display_text")),
+				"add tests");
 			displayed++;
 		}
-		json_free(event);
+		cJSON_Delete(event);
 	}
 	EXPECT_EQ(displayed, 1);
 	morph_event_recorder_cleanup(&rec);
@@ -3659,15 +3663,16 @@ TEST_F(MockServerTest, DeepSeekThinkingReplaysReasoningWithoutToolChoice) {
 	EXPECT_EQ(rc, 200);
 	const char *body = std::strstr(srv.last_request, "\r\n\r\n");
 	ASSERT_NE(body, nullptr);
-	struct json *request = json_parse_prefix(body + 4, NULL, NULL);
+	cJSON *request = cJSON_Parse(body + 4);
 	ASSERT_NE(request, nullptr);
-	EXPECT_EQ(json_member_ci(request, "tool_choice"), nullptr);
-	struct json *sent_messages = json_member_ci(request, "messages");
-	struct json *assistant = json_at(sent_messages, 1);
-	EXPECT_STREQ(json_string_value(json_member_ci(assistant, "content")), "");
-	EXPECT_STREQ(json_string_value(json_member_ci(assistant, "reasoning_content")),
-		     "plan next");
-	json_free(request);
+	EXPECT_EQ(cJSON_GetObjectItem(request, "tool_choice"), nullptr);
+	cJSON *sent_messages = cJSON_GetObjectItem(request, "messages");
+	cJSON *assistant = cJSON_GetArrayItem(sent_messages, 1);
+	EXPECT_STREQ(cJSON_GetStringValue(
+		cJSON_GetObjectItem(assistant, "content")), "");
+	EXPECT_STREQ(cJSON_GetStringValue(
+		cJSON_GetObjectItem(assistant, "reasoning_content")), "plan next");
+	cJSON_Delete(request);
 
 	arena_destroy(arena);
 	model_destroy(model);
@@ -3713,14 +3718,16 @@ TEST_F(MockServerTest, DeepSeekCompactedHistoryKeepsReasoningFields) {
 		&tool, 1, &response, nullptr, nullptr), 200);
 	const char *body = std::strstr(srv.last_request, "\r\n\r\n");
 	ASSERT_NE(body, nullptr);
-	struct json *request = json_parse_prefix(body + 4, NULL, NULL);
+	cJSON *request = cJSON_Parse(body + 4);
 	ASSERT_NE(request, nullptr);
-	struct json *sent = json_member_ci(request, "messages");
-	EXPECT_STREQ(json_string_value(json_member_ci(json_at(sent, 0), "role")), "user");
-	EXPECT_STREQ(json_string_value(json_member_ci(json_at(sent, 1), "reasoning_content")),
-		     "Original reasoning");
-	EXPECT_STREQ(json_string_value(json_member_ci(json_at(sent, 2), "reasoning_content")), "");
-	json_free(request);
+	cJSON *sent = cJSON_GetObjectItem(request, "messages");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		cJSON_GetArrayItem(sent, 0), "role")), "user");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		cJSON_GetArrayItem(sent, 1), "reasoning_content")), "Original reasoning");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		cJSON_GetArrayItem(sent, 2), "reasoning_content")), "");
+	cJSON_Delete(request);
 	chat_response_free(&response);
 	morph_array_cleanup(&messages);
 	arena_destroy(arena);
@@ -3777,27 +3784,29 @@ TEST_F(MockServerTest, AdapterSelectionScopesDeepSeekHistoryRules) {
 			messages, 3, nullptr, 0, &response, nullptr, nullptr), 200);
 		const char *body = std::strstr(srv.last_request, "\r\n\r\n");
 		ASSERT_NE(body, nullptr);
-		struct json *request = json_parse_prefix(body + 4, NULL, NULL);
+		cJSON *request = cJSON_Parse(body + 4);
 		ASSERT_NE(request, nullptr);
-		struct json *sent = json_member_ci(request, responses_api ? "input" : "messages");
-		struct json *summary = json_at(sent, 0);
-		EXPECT_STREQ(json_string_value(json_member_ci(summary, "role")),
-			     test.deepseek && test.thinking ? "user" : "assistant");
-		EXPECT_EQ(json_member_ci(summary, "reasoning_content"), nullptr);
-		struct json *reasoning = json_member_ci(json_at(sent, 1), "reasoning_content");
+		cJSON *sent = cJSON_GetObjectItem(request, responses_api ? "input" : "messages");
+		cJSON *summary = cJSON_GetArrayItem(sent, 0);
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(summary, "role")),
+			test.deepseek && test.thinking ? "user" : "assistant");
+		EXPECT_EQ(cJSON_GetObjectItem(summary, "reasoning_content"), nullptr);
+		cJSON *reasoning = cJSON_GetObjectItem(cJSON_GetArrayItem(sent, 1),
+			"reasoning_content");
 		if (test.deepseek)
-			EXPECT_STREQ(json_string_value(reasoning), "Original trace");
+			EXPECT_STREQ(cJSON_GetStringValue(reasoning), "Original trace");
 		else
 			EXPECT_EQ(reasoning, nullptr);
-		struct json *legacy = json_member_ci(json_at(sent, 2), "reasoning_content");
+		cJSON *legacy = cJSON_GetObjectItem(cJSON_GetArrayItem(sent, 2),
+			"reasoning_content");
 		if (test.deepseek && test.thinking)
-			EXPECT_STREQ(json_string_value(legacy), "");
+			EXPECT_STREQ(cJSON_GetStringValue(legacy), "");
 		else
 			EXPECT_EQ(legacy, nullptr);
 		/* Wire conversion must not mutate shared history when changing models. */
 		EXPECT_STREQ(messages[0].role, "assistant");
 		EXPECT_EQ(messages[2].reasoning_content, nullptr);
-		json_free(request);
+		cJSON_Delete(request);
 		chat_response_free(&response);
 		arena_destroy(arena);
 		model_destroy(model);
@@ -3993,21 +4002,22 @@ TEST_F(MockServerTest, ChatAdapterFallsBackToStringFunctionArgument) {
 		"\"additionalProperties\":false"), nullptr);
 	const char *body = std::strstr(srv.last_request, "\r\n\r\n");
 	ASSERT_NE(body, nullptr);
-	struct json *request = json_parse_prefix(body + 4, NULL, NULL);
+	cJSON *request = cJSON_Parse(body + 4);
 	ASSERT_NE(request, nullptr);
-	struct json *sent_messages = json_member_ci(request, "messages");
-	struct json *assistant = json_at(sent_messages, 1);
-	struct json *sent_calls = json_member_ci(assistant, "tool_calls");
-	struct json *sent_call = json_at(sent_calls, 0);
-	struct json *function = json_member_ci(sent_call, "function");
-	const char *arguments = json_string_value(json_member_ci(function, "arguments"));
+	cJSON *sent_messages = cJSON_GetObjectItem(request, "messages");
+	cJSON *assistant = cJSON_GetArrayItem(sent_messages, 1);
+	cJSON *sent_calls = cJSON_GetObjectItem(assistant, "tool_calls");
+	cJSON *sent_call = cJSON_GetArrayItem(sent_calls, 0);
+	cJSON *function = cJSON_GetObjectItem(sent_call, "function");
+	const char *arguments = cJSON_GetStringValue(
+		cJSON_GetObjectItem(function, "arguments"));
 	ASSERT_NE(arguments, nullptr);
-	struct json *wrapper = json_parse_prefix(arguments, NULL, NULL);
+	cJSON *wrapper = cJSON_Parse(arguments);
 	ASSERT_NE(wrapper, nullptr);
-	EXPECT_STREQ(json_string_value(json_member_ci(wrapper, "input")),
-		     "*** Begin Patch\n*** End Patch");
-	json_free(wrapper);
-	json_free(request);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(wrapper, "input")),
+		"*** Begin Patch\n*** End Patch");
+	cJSON_Delete(wrapper);
+	cJSON_Delete(request);
 
 	arena_destroy(arena);
 	model_destroy(model);
@@ -4174,16 +4184,15 @@ TEST_F(MockServerTest, CompactionDisablesThinkingWithoutChangingNormalRequests)
 	free(summary);
 	const char *body = std::strstr(srv.last_request, "\r\n\r\n");
 	ASSERT_NE(body, nullptr);
-	struct json *request = json_parse_prefix(body + 4, NULL, NULL);
+	cJSON *request = cJSON_Parse(body + 4);
 	ASSERT_NE(request, nullptr);
-	EXPECT_STREQ(json_string_value(json_member_ci(json_member_ci(request, "thinking"), "type")),
-		     "disabled");
-	EXPECT_EQ(
-		json_member_ci(json_member_ci(request, "chat_template_kwargs"), "enable_thinking"),
-		nullptr);
-	EXPECT_EQ(json_int_value(json_member_ci(request, "max_tokens")), 4000);
-	EXPECT_DOUBLE_EQ(json_number_value(json_member_ci(request, "temperature")), 0.5);
-	json_free(request);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		cJSON_GetObjectItem(request, "thinking"), "type")), "disabled");
+	EXPECT_EQ(cJSON_GetObjectItem(cJSON_GetObjectItem(request, "chat_template_kwargs"),
+		"enable_thinking"), nullptr);
+	EXPECT_EQ(cJSON_GetObjectItem(request, "max_tokens")->valueint, 4000);
+	EXPECT_DOUBLE_EQ(cJSON_GetObjectItem(request, "temperature")->valuedouble, 0.5);
+	cJSON_Delete(request);
 	EXPECT_STREQ(model->extra_body_json, extra);
 	const char *messages[] = {"normal turn"};
 	ASSERT_EQ(model->chat(model, ctx->iteration_arena, nullptr, messages, 1,
@@ -6922,15 +6931,16 @@ TEST_F(MockServerTest, VideoReferenceKeepsDataUriAndRoleOnWire)
 	unlink(path);
 	const char *body = strstr(srv.last_request, "\r\n\r\n");
 	ASSERT_NE(body, nullptr);
-	struct json *request = json_parse_prefix(body + 4, NULL, NULL);
+	cJSON *request = cJSON_Parse(body + 4);
 	ASSERT_NE(request, nullptr);
-	struct json *content = json_member_ci(request, "content");
-	ASSERT_EQ(json_count(content), 2);
-	struct json *video = json_at(content, 1);
-	EXPECT_STREQ(json_string_value(json_member_ci(video, "role")), "reference_video");
-	struct json *url = json_member_ci(json_member_ci(video, "video_url"), "url");
-	EXPECT_STREQ(json_string_value(url), "data:video/mp4;base64,YWJj");
-	json_free(request);
+	cJSON *content = cJSON_GetObjectItem(request, "content");
+	ASSERT_EQ(cJSON_GetArraySize(content), 2);
+	cJSON *video = cJSON_GetArrayItem(content, 1);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(video, "role")),
+		"reference_video");
+	cJSON *url = cJSON_GetObjectItem(cJSON_GetObjectItem(video, "video_url"), "url");
+	EXPECT_STREQ(cJSON_GetStringValue(url), "data:video/mp4;base64,YWJj");
+	cJSON_Delete(request);
 }
 
 TEST_F(PromptModeTest, ActivatedSkillRefreshesUnderReplacementWithoutMemory)
@@ -7164,14 +7174,14 @@ TEST_F(PromptModeTest, ProcessCheckpointRefreshesWithinTheSameTurn)
 	exec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	exec.exec = test_tool_fn;
 	exec.user_data = &probe;
-	exec.background_list = [](void *data, int64_t, struct json **out) -> int {
+	exec.background_list = [](void *data, int64_t, cJSON **out) -> int {
 		auto *status = static_cast<status_probe *>(data);
-		*out = json_array();
-		struct json *item = json_object();
-		json_add_string(item, "session_id", "proc-checkpoint");
-		json_add_string(item, "turn_id", status->ctx->turn_id);
-		json_add_string(item, "status", status->exited ? "exited" : "running");
-		json_array_add(*out, item);
+		*out = cJSON_CreateArray();
+		cJSON *item = cJSON_CreateObject();
+		cJSON_AddStringToObject(item, "session_id", "proc-checkpoint");
+		cJSON_AddStringToObject(item, "turn_id", status->ctx->turn_id);
+		cJSON_AddStringToObject(item, "status", status->exited ? "exited" : "running");
+		cJSON_AddItemToArray(*out, item);
 		return 0;
 	};
 	ASSERT_EQ(tool_register(&tools, &exec), 0);
@@ -7283,11 +7293,11 @@ struct TestHookState {
 	std::string rewrite;
 };
 
-static int test_lifecycle_hook(void *user, const char *event, const struct json *,
-			       struct json **output)
+static int test_lifecycle_hook(void *user, const char *event,
+			       const cJSON *, cJSON **output)
 {
 	auto *state = static_cast<TestHookState *>(user);
-	*output = json_object();
+	*output = cJSON_CreateObject();
 	bool block = false;
 	if (strcmp(event, "UserPromptSubmit") == 0)
 		block = state->reject_input;
@@ -7299,16 +7309,15 @@ static int test_lifecycle_hook(void *user, const char *event, const struct json 
 		state->tool_before++;
 		block = state->deny_tool;
 		if (!state->rewrite.empty())
-			json_object_add(*output, "updatedInput",
-					json_parse_prefix(state->rewrite.c_str(), NULL, NULL));
+			cJSON_AddItemToObject(*output, "updatedInput", cJSON_Parse(state->rewrite.c_str()));
 	}
 	if (strcmp(event, "PostToolUse") == 0) {
 		state->tool_after++;
 		block = state->block_after;
 	}
-	json_add_bool(*output, "blocked", block);
-	json_add_bool(*output, "ask", state->ask && strcmp(event, "PreToolUse") == 0);
-	json_add_string(*output, "reason", "Run the focused verification.");
+	cJSON_AddBoolToObject(*output, "blocked", block);
+	cJSON_AddBoolToObject(*output, "ask", state->ask && strcmp(event, "PreToolUse") == 0);
+	cJSON_AddStringToObject(*output, "reason", "Run the focused verification.");
 	return 0;
 }
 
@@ -7481,15 +7490,13 @@ TEST_F(MockLlmTest, PostHookReplacesOriginalResultBeforeNextModelRequest)
 			continue;
 		results++;
 		EXPECT_EQ(strstr(item->content, "ORIGINAL_PRIVATE_TOOL_RESULT"), nullptr);
-		struct json *payload = json_parse_prefix(item->payload_json, NULL, NULL);
-		struct json *meta = json_member_ci(payload, "tool_meta");
-		struct json *original = json_member_ci(meta, "hook_original_tool_response");
-		EXPECT_TRUE(json_is_string_value(original));
-		if (json_is_string_value(original))
-			EXPECT_NE(
-				strstr(json_string_value(original), "ORIGINAL_PRIVATE_TOOL_RESULT"),
-				nullptr);
-		json_free(payload);
+		cJSON *payload = cJSON_Parse(item->payload_json);
+		cJSON *meta = cJSON_GetObjectItem(payload, "tool_meta");
+		cJSON *original = cJSON_GetObjectItem(meta, "hook_original_tool_response");
+		EXPECT_TRUE(cJSON_IsString(original));
+		if (cJSON_IsString(original))
+			EXPECT_NE(strstr(original->valuestring, "ORIGINAL_PRIVATE_TOOL_RESULT"), nullptr);
+		cJSON_Delete(payload);
 	}
 	EXPECT_EQ(results, 1);
 	model_history_free_list(history);
@@ -7699,12 +7706,12 @@ static int truncation_probe_tool(const char *, struct tool_result *result, void 
 		for (int i = 0; i < 2000; i++)
 			output += "word ";
 	}
-	struct json *data = json_object();
+	cJSON *data = cJSON_CreateObject();
 	if (!data)
 		return -ENOMEM;
-	json_add_string(data, "stdout", output.c_str());
-	json_add_bool(data, "stdout_truncated", truncated && probe->output_truncated);
-	json_add_bool(data, "stderr_truncated", 0);
+	cJSON_AddStringToObject(data, "stdout", output.c_str());
+	cJSON_AddBoolToObject(data, "stdout_truncated", truncated && probe->output_truncated);
+	cJSON_AddBoolToObject(data, "stderr_truncated", 0);
 	return tool_result_success(result, data);
 }
 
@@ -7746,21 +7753,21 @@ TEST_F(MockLlmTest, FrequentToolTruncationWarnsOncePerTurnAndDistinguishesLayers
 		EXPECT_EQ(event_recorder_count_name(&recorder, "history.tool_output.warning"),
 			test.warnings);
 		for (size_t i = 0; i < morph_event_recorder_count(&recorder); i++) {
-			struct json *event = json_parse_prefix(
-				morph_event_recorder_get(&recorder, i), NULL, NULL);
-			const char *name = json_string_value(json_member_ci(event, "name"));
+			cJSON *event = cJSON_Parse(morph_event_recorder_get(&recorder, i));
+			const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(event, "name"));
 			if (name && strcmp(name, "history.tool_output.warning") == 0) {
-				struct json *data = json_member_ci(event, "data");
-				EXPECT_EQ(json_number_value(json_member_ci(
-						  data, "history_truncated_results")),
-					  test.history ? test.truncated : 0);
-				EXPECT_EQ(json_number_value(
-						  json_member_ci(data, "output_truncated_results")),
-					  test.output ? test.truncated : 0);
-				EXPECT_STREQ(json_string_value(json_member_ci(event, "turn_id")),
-					     ctx->turn_id);
+				cJSON *data = cJSON_GetObjectItem(event, "data");
+				EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data,
+					"history_truncated_results")),
+					test.history ? test.truncated : 0);
+				EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data,
+					"output_truncated_results")),
+					test.output ? test.truncated : 0);
+				EXPECT_STREQ(cJSON_GetStringValue(
+					cJSON_GetObjectItem(event, "turn_id")),
+					ctx->turn_id);
 			}
-			json_free(event);
+			cJSON_Delete(event);
 		}
 		probe.calls = 0;
 		probe.truncate_first = 0;

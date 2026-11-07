@@ -170,41 +170,42 @@ static void tool_enable_remove_disabled(struct tool_registry *reg, const char *n
 
 static int tool_schema_validate(const char *schema, int require_closed)
 {
-	struct json *root;
-	struct json *type;
-	struct json *props;
-	struct json *required;
-	struct json *item;
+	cJSON *root;
+	cJSON *type;
+	cJSON *props;
+	cJSON *required;
+	cJSON *item;
 	int rc = 0;
 
 	if (!schema || !*schema)
 		return -EINVAL;
-	root = json_parse_prefix(schema, NULL, NULL);
+	root = cJSON_Parse(schema);
 	if (!root)
 		return MORPH_ERR_PARSE;
-	if (!json_is_object_value(root)) {
+	if (!cJSON_IsObject(root)) {
 		rc = -EINVAL;
 		goto out;
 	}
-	type = json_member_ci(root, "type");
-	props = json_member_ci(root, "properties");
-	if (!json_is_string_value(type) || strcmp(json_string_value(type), "object") != 0 ||
-	    (props && !json_is_object_value(props))) {
+	type = cJSON_GetObjectItem(root, "type");
+	props = cJSON_GetObjectItem(root, "properties");
+	if (!cJSON_IsString(type) || strcmp(type->valuestring, "object") != 0 ||
+	    (props && !cJSON_IsObject(props))) {
 		rc = -EINVAL;
 		goto out;
 	}
 	if (require_closed) {
-		struct json *additional = json_member_ci(root, "additionalProperties");
-		if (!json_is_false(additional)) {
+		cJSON *additional = cJSON_GetObjectItem(root, "additionalProperties");
+		if (!cJSON_IsFalse(additional)) {
 			rc = -EINVAL;
 			goto out;
 		}
 	}
-	required = json_member_ci(root, "required");
-	if (required && json_is_array_value(required)) {
-		json_foreach (item, required) {
-			if (!json_is_string_value(item) ||
-			    (require_closed && !json_member_ci(props, json_string_value(item)))) {
+	required = cJSON_GetObjectItem(root, "required");
+	if (required && cJSON_IsArray(required)) {
+		cJSON_ArrayForEach(item, required)
+		{
+			if (!cJSON_IsString(item) ||
+			    (require_closed && !cJSON_GetObjectItem(props, item->valuestring))) {
 				rc = -EINVAL;
 				goto out;
 			}
@@ -214,7 +215,7 @@ static int tool_schema_validate(const char *schema, int require_closed)
 	}
 
 out:
-	json_free(root);
+	cJSON_Delete(root);
 	return rc;
 }
 

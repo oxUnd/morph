@@ -3,7 +3,7 @@
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/file.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,7 +35,8 @@ static int parse_dims(const char *size, long *width, long *height)
 	return 0;
 }
 
-static int openai_normalize_gpt_size(const char *size, char *out, size_t out_cap)
+static int openai_normalize_gpt_size(const char *size, char *out,
+				      size_t out_cap)
 {
 	long width;
 	long height;
@@ -60,26 +61,31 @@ static int openai_normalize_gpt_size(const char *size, char *out, size_t out_cap
 	pixels = (long long)width * (long long)height;
 	short_edge = width < height ? width : height;
 	long_edge = width > height ? width : height;
-	if (width > 3840 || height > 3840 || width % 16 != 0 || height % 16 != 0 ||
-	    pixels < 655360LL || pixels > 8294400LL || long_edge > short_edge * 3)
+	if (width > 3840 || height > 3840 ||
+	    width % 16 != 0 || height % 16 != 0 ||
+	    pixels < 655360LL || pixels > 8294400LL ||
+	    long_edge > short_edge * 3)
 		return -EINVAL;
 	snprintf(out, out_cap, "%ldx%ld", width, height);
 	return 0;
 }
 
-static int openai_normalize_dalle_size(const struct model *model, const char *size, char *out,
-				       size_t out_cap)
+static int openai_normalize_dalle_size(const struct model *model,
+					const char *size, char *out,
+					size_t out_cap)
 {
 	const char *normalized = size;
 
-	if (!size || !*size || strcmp(size, "auto") == 0 || strcmp(size, "2k") == 0 ||
-	    strcmp(size, "4k") == 0)
+	if (!size || !*size || strcmp(size, "auto") == 0 ||
+	    strcmp(size, "2k") == 0 || strcmp(size, "4k") == 0)
 		normalized = "1024x1024";
 	if (model && strcmp(model->model_id, "dall-e-2") == 0) {
-		if (strcmp(normalized, "256x256") != 0 && strcmp(normalized, "512x512") != 0 &&
+		if (strcmp(normalized, "256x256") != 0 &&
+		    strcmp(normalized, "512x512") != 0 &&
 		    strcmp(normalized, "1024x1024") != 0)
 			return -EINVAL;
-	} else if (strcmp(normalized, "1024x1024") != 0 && strcmp(normalized, "1024x1792") != 0 &&
+	} else if (strcmp(normalized, "1024x1024") != 0 &&
+		   strcmp(normalized, "1024x1792") != 0 &&
 		   strcmp(normalized, "1792x1024") != 0) {
 		return -EINVAL;
 	}
@@ -87,8 +93,8 @@ static int openai_normalize_dalle_size(const struct model *model, const char *si
 	return 0;
 }
 
-static int openai_normalize_size(const struct model *model, const char *size, char *out,
-				 size_t out_cap)
+static int openai_normalize_size(const struct model *model, const char *size,
+				 char *out, size_t out_cap)
 {
 	if (!out || out_cap == 0)
 		return -EINVAL;
@@ -97,7 +103,8 @@ static int openai_normalize_size(const struct model *model, const char *size, ch
 	return openai_normalize_dalle_size(model, size, out, out_cap);
 }
 
-static int openai_capabilities(const struct model *model, struct image_capabilities *caps)
+static int openai_capabilities(const struct model *model,
+			       struct image_capabilities *caps)
 {
 	if (!caps)
 		return -EINVAL;
@@ -111,24 +118,25 @@ static int openai_capabilities(const struct model *model, struct image_capabilit
 	return 0;
 }
 
-static int openai_post_json(struct model *model, const struct image_request *request,
+static int openai_post_json(struct model *model,
+			    const struct image_request *request,
 			    struct image_payload *payload)
 {
-	struct json *body = NULL;
+	cJSON *body = NULL;
 	char *body_text = NULL;
 	int rc = 0;
 
-	body = json_object();
+	body = cJSON_CreateObject();
 	if (!body)
 		return -ENOMEM;
-	json_add_string(body, "model", model->model_id);
-	json_add_string(body, "prompt", request->prompt);
-	json_add_number(body, "n", 1);
-	json_add_string(body, "size", request->size);
+	cJSON_AddStringToObject(body, "model", model->model_id);
+	cJSON_AddStringToObject(body, "prompt", request->prompt);
+	cJSON_AddNumberToObject(body, "n", 1);
+	cJSON_AddStringToObject(body, "size", request->size);
 	if (!openai_is_gpt_image(model))
-		json_add_string(body, "response_format", "url");
-	body_text = json_stringify(body);
-	json_free(body);
+		cJSON_AddStringToObject(body, "response_format", "url");
+	body_text = cJSON_PrintUnformatted(body);
+	cJSON_Delete(body);
 	if (!body_text)
 		return -ENOMEM;
 
@@ -142,14 +150,16 @@ static const char *image_content_type(const char *path)
 {
 	const char *ext = path ? strrchr(path, '.') : NULL;
 
-	if (ext && (strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".jpeg") == 0))
+	if (ext && (strcasecmp(ext, ".jpg") == 0 ||
+		    strcasecmp(ext, ".jpeg") == 0))
 		return "image/jpeg";
 	if (ext && strcasecmp(ext, ".webp") == 0)
 		return "image/webp";
 	return "image/png";
 }
 
-static int openai_post_edit(struct model *model, const struct image_request *request,
+static int openai_post_edit(struct model *model,
+			    const struct image_request *request,
 			    struct image_payload *payload)
 {
 	struct http_multipart_part *parts = NULL;
@@ -161,25 +171,32 @@ static int openai_post_edit(struct model *model, const struct image_request *req
 	int idx = 0;
 	int rc = 0;
 
-	part_count = 3 + request->reference_image_count + (request->mask_path ? 1 : 0);
+	part_count = 3 + request->reference_image_count +
+		(request->mask_path ? 1 : 0);
 	parts = calloc((size_t)part_count, sizeof(*parts));
 	if (!parts)
 		return -ENOMEM;
-	parts[idx++] =
-		(struct http_multipart_part){HTTP_MULTIPART_TEXT, "model", model->model_id, NULL};
-	parts[idx++] =
-		(struct http_multipart_part){HTTP_MULTIPART_TEXT, "prompt", request->prompt, NULL};
-	parts[idx++] =
-		(struct http_multipart_part){HTTP_MULTIPART_TEXT, "size", request->size, NULL};
+	parts[idx++] = (struct http_multipart_part){
+		HTTP_MULTIPART_TEXT, "model", model->model_id, NULL
+	};
+	parts[idx++] = (struct http_multipart_part){
+		HTTP_MULTIPART_TEXT, "prompt", request->prompt, NULL
+	};
+	parts[idx++] = (struct http_multipart_part){
+		HTTP_MULTIPART_TEXT, "size", request->size, NULL
+	};
 	for (int i = 0; i < request->reference_image_count; i++) {
 		parts[idx++] = (struct http_multipart_part){
-			HTTP_MULTIPART_FILE, "image[]", request->reference_images[i],
-			image_content_type(request->reference_images[i])};
+			HTTP_MULTIPART_FILE, "image[]",
+			request->reference_images[i],
+			image_content_type(request->reference_images[i])
+		};
 	}
 	if (request->mask_path) {
-		parts[idx++] = (struct http_multipart_part){HTTP_MULTIPART_FILE, "mask",
-							    request->mask_path,
-							    image_content_type(request->mask_path)};
+		parts[idx++] = (struct http_multipart_part){
+			HTTP_MULTIPART_FILE, "mask", request->mask_path,
+			image_content_type(request->mask_path)
+		};
 	}
 	rc = image_provider_build_request_meta(model, "/images/edits", &url, &auth);
 	if (rc != 0) {
@@ -198,7 +215,8 @@ static int openai_post_edit(struct model *model, const struct image_request *req
 	}
 	if (resp.status_code != 200) {
 		snprintf(model->last_error, sizeof(model->last_error),
-			 "OpenAI image edit API returned HTTP %d: %.400s", resp.status_code,
+			 "OpenAI image edit API returned HTTP %d: %.400s",
+			 resp.status_code,
 			 resp.body.data ? resp.body.data : "");
 		http_response_free(&resp);
 		return MORPH_ERR_API;
@@ -208,7 +226,8 @@ static int openai_post_edit(struct model *model, const struct image_request *req
 	return rc;
 }
 
-static int openai_execute(struct model *model, const struct image_request *request,
+static int openai_execute(struct model *model,
+			  const struct image_request *request,
 			  struct image_payload *payload)
 {
 	if (!model || !request || !request->prompt || !payload)

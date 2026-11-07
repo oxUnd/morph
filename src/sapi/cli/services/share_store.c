@@ -1,5 +1,5 @@
 #include "sapi/cli/services/share_store.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "sapi/cli/presentation/share.h"
 #include "util/file.h"
 #include <errno.h>
@@ -72,7 +72,7 @@ static int cli_share_store_share_publish(const char *directory, const char *stam
 	return rc;
 }
 
-int cli_share_store_save(const struct json *document, char **out_path)
+int cli_share_store_save(const cJSON *document, char **out_path)
 {
 	if (!out_path)
 		return -EINVAL;
