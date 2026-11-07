@@ -42,10 +42,18 @@ struct runtime {
 	int jobs_lock_ready;
 	struct exec_tool_jobs_handle jobs_owner;
 	struct exec_jobs *jobs;
+	pthread_mutex_t checkpoint_lock;
+	int checkpoint_lock_ready;
+	int checkpoint_failed;
 };
 
 int runtime_jobs_init(struct runtime *runtime);
 void runtime_jobs_cleanup(struct runtime *runtime);
+
+int runtime_checkpoints_init(struct runtime *runtime);
+void runtime_checkpoints_cleanup(struct runtime *runtime);
+int runtime_checkpoint_begin_turn(struct runtime *runtime, const struct runtime_request *request);
+void runtime_checkpoint_end_turn(struct runtime *runtime);
 
 void runtime_recap_invalidate(struct runtime *runtime);
 void runtime_recap_stop(struct runtime *runtime);

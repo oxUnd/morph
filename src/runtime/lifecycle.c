@@ -12,6 +12,7 @@
 #include "event/event.h"
 #include "util/error.h"
 #include "util/file.h"
+#include "util/id.h"
 #include "util/log.h"
 
 #include <errno.h>
@@ -488,6 +489,8 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 			     "Reading configuration...");
 	rc = runtime_context_init_lock(&runtime->context);
 	if (rc == 0)
+		rc = runtime_checkpoints_init(runtime);
+	if (rc == 0)
 		rc = runtime_load_config(runtime, &error);
 	if (rc == 0)
 		rc = runtime_set_workdir(runtime);
@@ -597,6 +600,7 @@ void runtime_close(struct runtime *runtime)
 	cleanup.jobs_owner = &runtime->jobs_owner;
 	runtime_bootstrap_cleanup(&cleanup);
 	runtime_jobs_cleanup(runtime);
+	runtime_checkpoints_cleanup(runtime);
 	if (runtime->context.execution_lock_ready)
 		pthread_mutex_unlock(&runtime->context.execution_lock);
 	runtime_context_cleanup_lock(&runtime->context);
@@ -609,12 +613,20 @@ int runtime_execute_turn(struct runtime *runtime,
 
 {
 	struct runtime_request effective;
+	char turn_id[64];
 
 	if (!runtime)
 		return -EINVAL;
 	if (!request)
 		return -EINVAL;
 	effective = *request;
+	if (!effective.turn_id || !effective.turn_id[0]) {
+		int rc = morph_random_id("turn_", turn_id, sizeof(turn_id));
+
+		if (rc != 0)
+			return rc;
+		effective.turn_id = turn_id;
+	}
 	if (effective.session_id <= 0 &&
 	    runtime->context.current_session.id <= 0) {
 		int rc = runtime_ensure_current_session(runtime);
@@ -662,6 +674,8 @@ int runtime_prepare_turn(void *user_data, const struct runtime_request *request)
 	int rc = runtime_context_prepare_turn(&runtime->context, request, user_data);
 
 	if (rc == 0)
+		rc = runtime_checkpoint_begin_turn(runtime, request);
+	if (rc == 0)
 		runtime_recap_invalidate(runtime);
 	if (rc == 0 && request->generate_session_title) {
 		int title_rc = runtime_title_start(runtime, request);
@@ -678,6 +692,7 @@ void runtime_finish_turn(void *user_data, const struct runtime_request *request,
 {
 	(void)request;
 	(void)result;
+	runtime_checkpoint_end_turn(user_data);
 	runtime_context_finish_turn(&((struct runtime *)user_data)->context);
 }
 

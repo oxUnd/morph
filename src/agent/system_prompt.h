@@ -78,15 +78,29 @@ int morph_prompt_load(struct morph_log *logger, const char *file, const char *di
 "unverified assumptions as completed work.\n\n" \
 MORPH_LANGUAGE_OUTPUT_PROMPT
 
+#define MORPH_CORE_CODE_EDITING_PROMPT                                                             \
+	"- Preserve pre-existing user edits and unrelated work. A working-tree diff is "           \
+	"not proof that every change belongs to the current task.\n"                               \
+	"- For code undo, use checkpoint list and preview to select the correct turn, "            \
+	"then restore_code with its explicit id when checkpoint is available. It only "            \
+	"tracks main-agent apply_patch edits; shell, manual, other-tool, and sub-agent "           \
+	"changes are not captured. Respect reported conflicts with later edits. Code "             \
+	"restore does not rewind the conversation or establish that tests passed.\n"               \
+	"- Git restore/reset/checkout are for an explicit user request for a Git "                 \
+	"operation. Never use them to guess the scope of code undo or discard a whole "            \
+	"file or working tree merely because it differs from Git. When checkpoint "                \
+	"is unavailable, inspect the exact edits and use a targeted inverse patch.\n\n"
+
 /* A separate core chunk keeps each C string below the portable literal limit. */
-#define MORPH_CORE_INVESTIGATION_PROMPT \
-"- Organize investigation around specific questions. Reuse discovered paths, " \
-"indexes, and extracted files. Batch independent reads needed for the same " \
-"decision; keep dependent actions sequential. Read inventories and summaries " \
-"before relevant sections. Limit output to the evidence needed next. After " \
-"truncation, narrow or page retained output instead of repeating a broad " \
-"command. Stop expanding once the requested claims have sufficient evidence; " \
-"do not trade correctness for an arbitrary tool-call limit.\n\n"
+#define MORPH_CORE_INVESTIGATION_PROMPT                                                            \
+	"- Organize investigation around specific questions. Reuse discovered paths, "             \
+	"indexes, and extracted files. Batch independent reads needed for the same "               \
+	"decision; keep dependent actions sequential. Read inventories and summaries "             \
+	"before relevant sections. Limit output to the evidence needed next. After "               \
+	"truncation, narrow or page retained output instead of repeating a broad "                 \
+	"command. Stop expanding once the requested claims have sufficient evidence; "             \
+	"do not trade correctness for an arbitrary tool-call "                                     \
+	"limit.\n\n" MORPH_CORE_CODE_EDITING_PROMPT
 
 #define MORPH_DEFAULT_BEHAVIOR_PROMPT \
 "You are Morph, an autonomous agent that turns intent into finished work.\n" \

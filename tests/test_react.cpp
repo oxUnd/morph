@@ -4644,6 +4644,9 @@ TEST_F(PromptModeTest, ReplaceRemovesDefaultsButPreservesContextAndTools)
 	EXPECT_EQ(strncmp(capt->system_prompt, MORPH_CORE_PROMPT,
 		strlen(MORPH_CORE_PROMPT)), 0);
 	EXPECT_NE(strstr(capt->system_prompt, "Literal %s %d."), nullptr);
+	EXPECT_NE(strstr(capt->system_prompt, "pre-existing user edits"), nullptr);
+	EXPECT_NE(strstr(capt->system_prompt, "checkpoint list and preview"), nullptr);
+	EXPECT_NE(strstr(capt->system_prompt, "Git restore/reset/checkout"), nullptr);
 	EXPECT_EQ(strstr(capt->system_prompt, "Working directory:"), nullptr);
 	EXPECT_NE(strstr(capt->prompt, "<cwd>"), nullptr);
 	EXPECT_EQ(strstr(capt->system_prompt, "Remember this fact."), nullptr);

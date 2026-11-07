@@ -52,6 +52,7 @@ struct runtime_context {
 	struct sub_agent_runtime *sub_agents;
 	struct runtime_engine engine;
 	struct runtime_turn_scope turn_scope;
+	struct tool_checkpoint_context checkpoint;
 	struct memory_options memory_options;
 	pthread_mutex_t execution_lock;
 	pthread_mutex_t tool_registry_lock;

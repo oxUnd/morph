@@ -104,6 +104,10 @@ terminal scrollback, including messages removed from the active model context by
 compression. Restoring history does not call the model or execute saved tools.
 See [session history](docs/cli-history.md) for display and inspection details.
 
+Use `/rewind` to restore code, conversation, or both to a saved turn checkpoint.
+See [checkpointing](docs/checkpointing.md) for captured edits, conflict handling,
+retention, and the explicit non-interactive commands.
+
 Manage MCP servers and skills directly from the shell, without starting a chat
 or configuring a model:
 

@@ -6,6 +6,7 @@
 #include "agent/tokenizer.h"
 #include "agent/tools/ask_user.h"
 #include "agent/tools/apply_patch.h"
+#include "agent/tools/checkpoint.h"
 #include "agent/tools/exec_tool.h"
 #include "agent/tools/path_policy.h"
 #include "agent/tools/config_write.h"
@@ -467,6 +468,9 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	file_info_init(profile->tools, tctx);
 	if (profile->enable_apply_patch) {
 		rc = apply_patch_init(profile->tools, tctx);
+		if (rc != 0)
+			return rc;
+		rc = checkpoint_init(profile->tools);
 		if (rc != 0)
 			return rc;
 	}

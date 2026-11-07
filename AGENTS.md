@@ -14,12 +14,13 @@
 - **Tools** `src/agent/tools/`:
   - read-only: credits, memory, memory_preference, file_read/list/info, img_info, plan, activate_skill, agent_status, ask_user
   - media: img_gen, img_qa, img_inpaint, img_compose, img_annotate, img_resize, img_convert, vid_gen
-  - workspace: apply_patch, config_edit, tasks, request_permissions
+  - workspace: apply_patch, checkpoint, config_edit, tasks, request_permissions
   - shell: `exec`, `process` — `exec` AST-parses a command into its program set and enters the shared permission layer. Bounded workspace commands run directly; missing authority is reviewed (allow/session/always/deny). It returns a session for long-running work that `process` manages. `process` supports `list`, `poll`, `wait`, `write`, `interrupt`, `kill`; waits default to 30 seconds, and `wait` collects through intermediate output until exit. Async jobs emit `process.started` / `process.completed`, remain visible in the CLI task area, and are inspected through `/jobs`. Finite jobs are collected before finalizing unless `notify_only` was explicitly requested; persistent servers use `service`. Replaces the former `bash_exec`.
   - dynamic tools: tool_create/promote/delete/history/diff/rollback
   - sub-agent: delegate, fanout
   - img_inpaint = bbox+label region i2i; img_compose = arrow+label cross-image fusion; both consume the img_annotate JSON verbatim.
 - **Plan** `src/agent/plan.c` → `plan` tool.
+- **Checkpoints** `src/runtime/checkpoint.c`, `src/persistence/checkpoint_store.c`: each primary turn saves a persistent checkpoint before its prompt enters history. `apply_patch` captures preimages after authorization and seals actual results even on partial failure. `/rewind` restores code, conversation, or both; the model's `checkpoint` tool restores code only. Preserve external changes through conflict checks, never infer undo scope from a Git diff. Shell, other tools, and sub-agents are outside file tracking. See `docs/checkpointing.md`.
 - **MCP** `src/mcp/`: stdio + Streamable HTTP; auto-registers remote tools/resources/prompts. Config `[[mcp.servers]]`.
 - **Skills** `src/skill/`: hot-loadable `SKILL.md` + YAML frontmatter, from `~/.morph/skills/` and `~/.agents/skills/`; examples in `skills/`.
 - **Exts** `src/ext/`, `src/ipc/`: sandboxed subprocesses (JSON-RPC) with TOML manifest (`entry`, `permissions`, `args_schema`); examples in `exts/`.

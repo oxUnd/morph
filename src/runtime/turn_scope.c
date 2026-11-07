@@ -88,6 +88,8 @@ static void runtime_turn_scope_bind_tool_context(struct runtime_turn_scope_conte
 	rt.restrict_memory_to_user = request->restrict_memory_to_user;
 	rt.memory_visible_fn = request->memory_visible_fn;
 	rt.memory_visible_user_data = request->memory_visible_user_data;
+	if (ctx->checkpoint)
+		rt.checkpoint = *ctx->checkpoint;
 	react_set_tool_runtime_context(ctx->react, &rt);
 	if (ctx->tools)
 		(void)dynamic_tools_set_session_id(ctx->tools, rt.credit_session_id);

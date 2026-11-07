@@ -22,6 +22,8 @@ set(TEST_SOURCES
 	test_credits.cpp
 	test_session.cpp
 	test_history_inspection.cpp
+	test_checkpoint_store.cpp
+	test_checkpoint_recovery.cpp
 	test_memory.cpp
 	test_runtime_query.cpp
 	test_runtime_mcp.cpp
@@ -32,6 +34,7 @@ set(TEST_SOURCES
 	test_runtime_internal.cpp
 	test_runtime_sync.cpp
 	test_runtime_execute.cpp
+	test_cli_rewind.cpp
 	test_runtime_output.cpp
 	test_dynamic_tools.cpp
 	test_tool.cpp

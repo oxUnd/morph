@@ -1,6 +1,7 @@
 """Permission presets, custom policy, cancellation and persistence in a real PTY."""
 import http.server
 import json
+import sqlite3
 import subprocess
 from pathlib import Path
 import sys
@@ -207,6 +208,46 @@ def main():
                              '\n'.join(terminal.screen.display))
                     permission_footer(terminal, 'perm: ask')
                     no_screen_switch(terminal.raw[start:])
+                    # Primary turns automatically seed checkpoints; no Git or test-only
+                    # checkpoint producer is needed for the real rewind command flow.
+                    terminal.send('/rewind list\r')
+                    wait_for(terminal, lambda: 'rewind checkpoints' in
+                             '\n'.join(terminal.screen.display))
+                    composer(terminal)
+                    command_heading(terminal, '/rewind list')
+                    assert not any(row.startswith('› /rewind')
+                                   for row in terminal.screen.display)
+                    with sqlite3.connect(directory / 'data.db') as checkpoint_db:
+                        checkpoint_id, checkpoint_prompt = checkpoint_db.execute(
+                            'SELECT id,prompt FROM code_checkpoints ORDER BY id DESC LIMIT 1'
+                        ).fetchone()
+                    terminal.send(f'/rewind code {checkpoint_id}\r')
+                    wait_for(terminal, lambda: 'rewound code to checkpoint' in
+                             '\n'.join(terminal.screen.display))
+                    composer(terminal)
+                    receipts = terminal.raw.count('rewound code to checkpoint')
+                    terminal.send('/rewind\r')
+                    wait_for(terminal, lambda: 'Rewind · choose a turn' in
+                             '\n'.join(terminal.screen.display))
+                    terminal.send('\r')
+                    wait_for(terminal, lambda: 'Rewind · choose what to restore' in
+                             '\n'.join(terminal.screen.display))
+                    preview = '\n'.join(terminal.screen.display)
+                    assert checkpoint_prompt in preview, preview
+                    assert 'Code and conversation' in preview, preview
+                    assert 'Code only' in preview, preview
+                    assert 'Code only (unavailable)' not in preview, preview
+                    assert 'Conversation only' in preview, preview
+                    assert not any(row.startswith('› ') for row in terminal.screen.display), preview
+                    terminal.send('\x1b')
+                    wait_for(terminal, lambda: 'Rewind ·' not in
+                             '\n'.join(terminal.screen.display))
+                    composer(terminal)
+                    command_heading(terminal, '/rewind')
+                    result_gap(terminal, '/rewind')
+                    assert terminal.raw.count('rewound code to checkpoint') == receipts
+                    assert 'rewind cancelled' not in terminal.raw
+                    assert Model.requests.empty(), 'rewind unexpectedly requested a model response'
                     print(f'PASS: inline permissions and live footer in every mode at {columns} columns')
                     binary = driver.with_name('morph')
                     structured = subprocess.run(
