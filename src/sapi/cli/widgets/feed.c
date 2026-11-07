@@ -9,7 +9,6 @@
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/pages/jobs.h"
 
-#include <sys/ioctl.h>
 
 #define CLI_FEED_TERMINAL_DEFAULT_COLUMNS 80
 #define CLI_FEED_TERMINAL_FRAME_MS 80
@@ -203,6 +202,15 @@ static int cli_feed_output_columns(const struct cli_feed *terminal)
 {
 	return morph_terminal_columns(terminal ? terminal->output_fd : -1,
 				      CLI_FEED_TERMINAL_DEFAULT_COLUMNS);
+}
+
+static int cli_feed_output_rows(const struct cli_feed *terminal)
+{
+	int columns;
+	int rows;
+
+	morph_terminal_dimensions(terminal ? terminal->output_fd : -1, &columns, &rows);
+	return rows;
 }
 
 int cli_feed_columns(const struct cli_application *ctx)
@@ -415,7 +423,6 @@ void cli_feed_queue_changed(struct cli_application *ctx)
 int cli_feed_render_tick(struct cli_application *ctx, int cursor_rows)
 {
 	struct cli_feed *terminal = ctx ? ctx->terminal : NULL;
-	struct winsize size = {0};
 	int64_t now = cli_feed_now_ms();
 	int distance;
 
@@ -433,8 +440,7 @@ int cli_feed_render_tick(struct cli_application *ctx, int cursor_rows)
 	terminal->next_frame_ms = now + cli_feed_work_interval(terminal, now);
 	distance = terminal->work_rows_below + cursor_rows + terminal->live_anchored;
 	/* A long wrapped draft can push the status row out of the viewport. */
-	if (ioctl(terminal->output_fd, TIOCGWINSZ, &size) == 0 && size.ws_row > 0 &&
-	    distance >= size.ws_row)
+	if (distance >= cli_feed_output_rows(terminal))
 		return 1;
 	int updating = cli_feed_update_active(ctx);
 
@@ -476,7 +482,6 @@ int cli_feed_markdown_preview_set(struct cli_application *ctx, const char *text,
 static int cli_feed_render_markdown_preview(struct cli_application *ctx, int reserved)
 {
 	struct cli_feed *terminal = ctx->terminal;
-	struct winsize area = {0};
 	const char *text = morph_buf_cstr(&terminal->markdown_preview);
 	const char *cursor;
 	int rows = 1;
@@ -485,8 +490,7 @@ static int cli_feed_render_markdown_preview(struct cli_application *ctx, int res
 
 	if (!terminal->markdown_preview.len)
 		return 0;
-	(void)ioctl(terminal->output_fd, TIOCGWINSZ, &area);
-	limit = (area.ws_row > 0 ? area.ws_row : 24) - reserved;
+	limit = cli_feed_output_rows(terminal) - reserved;
 	if (limit < 1)
 		return 0;
 	for (cursor = text; *cursor; cursor++)
@@ -594,9 +598,8 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 		return;
 	}
 	if (morph_buf_init(&job_text, 128) == 0) {
-		struct winsize area = {0};
 		int max_jobs = 3;
-		if (ioctl(terminal->output_fd, TIOCGWINSZ, &area) == 0 && area.ws_row < 20)
+		if (cli_feed_output_rows(terminal) < 20)
 			max_jobs = 1;
 		job_rows = cli_jobs_render(ctx, &job_text, columns, max_jobs,
 					   cli_output_color_enabled(ctx));
@@ -616,7 +619,7 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 			(void)morph_buf_printf(&tool_text, "%s  %s", status_clipped, elapsed);
 			text = morph_buf_cstr(&tool_text);
 		} else if (!terminal->live_reasoning) {
-			tool_live = cli_transcript_live_text(ctx, &tool_text,
+			tool_live = cli_transcript_live_text(ctx->transcript, &tool_text, columns,
 							     cli_output_color_enabled(ctx));
 			if (tool_live)
 				text = morph_buf_cstr(&tool_text);
@@ -653,7 +656,7 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 				CLI_FEED_RUNNING, terminal->live_independent ? ANSI_DIM : "",
 				status_clipped);
 		if (tool_live && morph_buf_init(&tool_body, 128) == 0) {
-			body_rows = cli_transcript_live_body(ctx, &tool_body,
+			body_rows = cli_transcript_live_body(ctx->transcript, &tool_body, columns,
 							     cli_output_color_enabled(ctx));
 			if (body_rows)
 				fprintf(terminal->output, "\n%s", morph_buf_cstr(&tool_body));

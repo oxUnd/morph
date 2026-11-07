@@ -176,10 +176,9 @@ struct model *model_llm_create(struct morph_log *logger, const char *provider, c
 /* Independent configured LLM; request cancellation, errors and usage are reset. */
 struct model *model_llm_clone(const struct model *source, struct morph_log *logger);
 void model_destroy(struct model *m);
-struct tool_runtime_context;
-struct model *model_bind_tool_request(const struct model *source,
-				      const struct tool_runtime_context *runtime,
-				      struct model *storage);
+/* Borrow configuration into caller-owned request storage; no ownership transfer. */
+struct model *model_bind_http_request(const struct model *source,
+				      const struct http_control *control, struct model *storage);
 void model_report_usage(const struct model *model, const struct model_usage *usage);
 
 void chat_response_free(struct chat_response *resp);

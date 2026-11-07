@@ -2,6 +2,7 @@
 
 #include "agent/memory.h"
 #include "persistence/memory_snapshot.h"
+#include "persistence/memory_job_store.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/utf8.h"
@@ -474,4 +475,34 @@ char *memory_render_session(struct db *db, int64_t session_id, int max_episodes)
 	free(effective);
 	free(archive);
 	return morph_buf_detach(&buf);
+}
+
+char *memory_background_render(struct db *db, int64_t session_id)
+{
+	struct memory_job_records records = {0};
+	struct memory_job_record *record;
+	morph_buf_t text;
+	int rc = memory_job_store_recent(db, session_id, 20, &records);
+
+	if (rc)
+		return NULL;
+	rc = morph_buf_init(&text, 512);
+	if (rc) {
+		memory_job_records_cleanup(&records);
+		return NULL;
+	}
+	morph_array_foreach (record, &records.rows, struct memory_job_record) {
+		rc = morph_buf_printf(&text, "job #%lld: %s (attempts=%d; %s)\n",
+				      (long long)record->id, record->state, record->attempts,
+				      record->error_code ? morph_strerror(record->error_code)
+							 : "ok");
+		if (rc)
+			break;
+	}
+	memory_job_records_cleanup(&records);
+	if (rc) {
+		morph_buf_cleanup(&text);
+		return NULL;
+	}
+	return morph_buf_detach(&text);
 }

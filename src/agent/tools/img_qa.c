@@ -3,8 +3,6 @@
 #include "models/llm.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
-#include "agent/tool_runtime.h"
-#include "models/llm.h"
 #include "util/arena.h"
 #include "util/buf.h"
 #include "util/error.h"
@@ -84,8 +82,9 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 
 	if (user_data)
 		local = *(struct img_qa_context *)user_data;
-	local.llm =
-		model_bind_tool_request(local.llm, result ? result->runtime : NULL, &request_model);
+	local.llm = model_bind_http_request(
+		local.llm, result && result->runtime ? &result->runtime->http : NULL,
+		&request_model);
 	struct img_qa_context *ctx = user_data ? &local : NULL;
 	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
 	struct model *llm = ctx ? ctx->llm : NULL;

@@ -14,7 +14,6 @@
 #include <ctype.h>
 #include <errno.h>
 #include <pthread.h>
-#include <sqlite3.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -553,7 +552,7 @@ int memory_accept_input(struct db *db, int64_t session_id, const char *input,
 	rc = memory_prepare_session(db, session_id);
 	if (rc != 0)
 		return rc;
-	rc = db_exec(db, "BEGIN IMMEDIATE");
+	rc = memory_store_begin_write(db);
 	if (rc != 0)
 		return rc;
 	/* Use the persisted user-event identity for both deterministic ingestion
@@ -562,22 +561,17 @@ int memory_accept_input(struct db *db, int64_t session_id, const char *input,
 	if (event_token) {
 		rc = memory_store_event_token(db, session_id, event_token, canonical_token,
 					      sizeof(canonical_token));
-		if (rc < 0) {
-			(void)db_exec(db, "ROLLBACK");
-			return rc;
-		}
+		if (rc < 0)
+			return memory_store_finish_write(db, rc);
 		if (rc > 0)
 			event_token = canonical_token;
 	}
 	rc = memory_store_migrate_preferences(db, session_id, memory_verify_legacy_preference);
 	if (rc == 0)
 		rc = memory_accept_preferences(db, session_id, input, event_token, opts);
-	if (rc == 0)
-		rc = db_exec(db, "COMMIT");
-	if (rc != 0) {
-		(void)db_exec(db, "ROLLBACK");
+	rc = memory_store_finish_write(db, rc);
+	if (rc != 0)
 		return rc;
-	}
 	rc = memory_async_resume(db, opts);
 	if (rc != 0)
 		log_err(db ? db->logger : NULL, "memory: recovering background jobs failed: %s",
@@ -1021,11 +1015,7 @@ static int memory_capture_llm_path(struct db *db, int64_t session_id, const char
 	rc = memory_apply_llm_envelope(db, session_id, user_input, root, out_entities,
 				       out_decisions, out_artifacts, out_importance);
 	cJSON_Delete(root);
-	if (rc == 0)
-		rc = db_exec(db, "COMMIT");
-	if (rc != 0)
-		(void)db_exec(db, "ROLLBACK");
-	return rc;
+	return memory_store_finish_write(db, rc);
 }
 
 int memory_consolidate_turn(struct db *db, int64_t session_id, const char *user_input,
@@ -1075,10 +1065,7 @@ int memory_consolidate_turn(struct db *db, int64_t session_id, const char *user_
 				llm_ran ? llm_entities : NULL, llm_ran ? llm_decisions : NULL,
 				llm_ran ? llm_artifacts : NULL, llm_ran ? llm_importance : 0.5,
 				opts->background_job_id);
-			if (rc == 0)
-				rc = db_exec(db, "COMMIT");
-			if (rc != 0)
-				(void)db_exec(db, "ROLLBACK");
+			rc = memory_store_finish_write(db, rc);
 		}
 		if (rc != 0 && worst == 0)
 			worst = rc;

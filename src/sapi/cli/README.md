@@ -16,7 +16,7 @@ cli/
   models/
     composer.c, .h             image labels, path expansion and editing spans
     presentation.h             output/presentation state
-    transcript.c, .h            owned tool/reasoning records
+    transcript.c, .h            tool/reasoning event projection and owned records
     setup.h                    configuration wizard data
   pages/
     chat.c, .h                 chat controller and page-local editing state
@@ -30,6 +30,7 @@ cli/
   services/
     command_job, event_queue   workers, owner calls and wakeup bridge
     turn, scheduler, recap     runtime use cases and state coordination
+    transcript                 model updates and UI presentation coordination
     session_history            restore persisted conversation to terminal history
     management, skill_store, share_store
     configuration/             provider defaults, validation, roles and storage
@@ -105,6 +106,15 @@ through the presenter interface.
 The event queue only copies/transports items, wakes the owner and completes or
 cancels owner calls. `adapters/runtime/dispatch` coordinates input suspension and
 presentation, while notification formatting belongs to `presentation`.
-Transcript records are a model; transcript widgets format those records; the
-`turn_details` page owns scrolling and a shared TUI frame. Application controls
+The transcript model projects tool events and historical results into owned records,
+retains reasoning positions, and resolves tool status without application state,
+terminal output, workspace access or a clock. The transcript service supplies the
+time and coordinates presentation. Widgets render const model/tool views; live
+rendering receives its width from the feed. Call-time patch previews are captured
+by `presentation/tool_preview`, so replay and redraw never reread today's files.
+The `turn_details` page owns scrolling and a shared TUI frame. Application controls
 its terminal session and input handoff just like other modal pages.
+
+Feed dimensions use the shared terminal-size helper, including row fallback.
+Readline retains native geometry queries where a failed query must disable cursor
+painting rather than apply fallback dimensions.

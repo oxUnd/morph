@@ -9,6 +9,11 @@ struct arena;
 extern "C" {
 #endif
 
+struct history_message_progress {
+	int64_t latest_id;
+	int completed_turns;
+};
+
 struct history_request_snapshot {
 	const char *turn_id;
 	const char *provider;
@@ -47,6 +52,19 @@ typedef int (*history_message_visitor)(const struct message *message, void *data
 typedef int (*history_display_visitor)(const struct history_display_record *record, void *data);
 typedef int (*history_trace_visitor)(const struct history_trace_record *record, void *data);
 
+int history_store_visible_progress(struct db *db, int64_t session_id,
+				   struct history_message_progress *out);
+/* Recent visible user/assistant messages, newest first, by insertion identity. */
+int history_store_visit_recent_messages(struct db *db, int64_t session_id, int limit,
+					history_message_visitor visitor, void *data);
+int history_store_update_item(struct db *db, int64_t id, int active, int token_count);
+/* Policies supply token counts; storage owns retained-row mapping and writes. */
+typedef int (*history_token_counter)(const struct model_history_item *item, void *data);
+int history_store_refresh_retention_tokens(struct db *db, int64_t session_id,
+					   history_token_counter count, void *data);
+int history_store_add_summary_sources(struct db *db, int64_t summary_id, const int64_t *ids,
+				      size_t count);
+int history_store_last_sequence(struct db *db, int64_t session_id, int64_t *sequence);
 int history_store_context_tokens(struct db *db, int64_t session_id, int64_t *tokens);
 int history_store_last_answer(struct db *db, int64_t session_id, char **answer);
 int history_store_summary_sources(struct db *db, int64_t session_id, morph_array_t *ids);

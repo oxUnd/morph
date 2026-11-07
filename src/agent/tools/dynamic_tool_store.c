@@ -15,48 +15,124 @@ static uint64_t fnv1a64(const char *data, size_t len);
 static const char *origin_name(enum tool_origin origin);
 static int next_checkpoint_id(const char *tool_dir, char *id, size_t id_size);
 
+static int read_definition_text(const char *path, char **text)
+{
+	errno = 0;
+	*text = file_read_all(path, NULL);
+	return *text ? 0 : morph_error_from_errno(errno);
+}
+
+void dynamic_tool_store_definition_cleanup(struct dynamic_tool_definition *definition)
+{
+	if (!definition)
+		return;
+	cJSON_Delete(definition->document);
+	free(definition->input_schema);
+	free(definition->output_schema);
+	memset(definition, 0, sizeof(*definition));
+}
+
+static int definition_load_source(struct dynamic_tool_definition *definition,
+				  const char *source_path)
+{
+	const cJSON *field = cJSON_GetObjectItem(definition->document, "source");
+	char *legacy = NULL;
+	int rc;
+
+	if (field) {
+		definition->source = cJSON_GetStringValue(field);
+		return definition->source ? 0 : MORPH_ERR_FORMAT;
+	}
+	rc = read_definition_text(source_path, &legacy);
+	if (rc != 0)
+		return rc;
+	field = cJSON_AddStringToObject(definition->document, "source", legacy);
+	free(legacy);
+	if (!field)
+		return -ENOMEM;
+	definition->source = cJSON_GetStringValue(field);
+	definition->legacy_source = 1;
+	return 0;
+}
+
+static char *definition_schema(const cJSON *value, const char *fallback)
+{
+	if (!value)
+		return strdup(fallback);
+	if (cJSON_IsString(value))
+		return strdup(value->valuestring);
+	return cJSON_PrintUnformatted(value);
+}
+
+int dynamic_tool_store_load_definition(const char *meta_path, const char *source_path,
+				       struct dynamic_tool_definition *definition)
+{
+	const cJSON *input;
+	const cJSON *output;
+	char *text = NULL;
+	int rc;
+
+	if (!meta_path || !source_path || !definition)
+		return -EINVAL;
+	memset(definition, 0, sizeof(*definition));
+	rc = read_definition_text(meta_path, &text);
+	if (rc != 0)
+		return rc;
+	definition->document = cJSON_ParseWithOpts(text, NULL, 1);
+	free(text);
+	if (!definition->document)
+		return MORPH_ERR_PARSE;
+	if (!cJSON_IsObject(definition->document)) {
+		dynamic_tool_store_definition_cleanup(definition);
+		return MORPH_ERR_FORMAT;
+	}
+	definition->name = cJSON_GetStringValue(cJSON_GetObjectItem(definition->document, "name"));
+	if (!definition->name) {
+		dynamic_tool_store_definition_cleanup(definition);
+		return MORPH_ERR_FORMAT;
+	}
+	definition->description =
+		cJSON_GetStringValue(cJSON_GetObjectItem(definition->document, "description"));
+	rc = definition_load_source(definition, source_path);
+	if (rc != 0) {
+		dynamic_tool_store_definition_cleanup(definition);
+		return rc;
+	}
+	input = cJSON_GetObjectItem(definition->document, "input_schema");
+	output = cJSON_GetObjectItem(definition->document, "output_schema");
+	if (cJSON_IsObject(input) && !cJSON_HasObjectItem(input, "properties"))
+		input = NULL;
+	definition->input_schema = definition_schema(input, TOOL_EMPTY_INPUT_SCHEMA);
+	definition->output_schema = definition_schema(output, TOOL_OBJECT_OUTPUT_SCHEMA);
+	if (!definition->input_schema || !definition->output_schema) {
+		dynamic_tool_store_definition_cleanup(definition);
+		return -ENOMEM;
+	}
+	return 0;
+}
+
 int dynamic_tool_store_copy_tool_snapshot(const char *source_meta, const char *source_file,
 					  const char *destination_meta,
 					  const char *destination_file)
 {
-	char *text = file_read_all(source_meta, NULL);
-	cJSON *meta = text != NULL ? cJSON_Parse(text) : NULL;
-	char *legacy = NULL;
+	struct dynamic_tool_definition definition;
 	char *serialized = NULL;
-	int rc = 0;
-	free(text);
-	if (meta == NULL) {
-		return MORPH_ERR_PARSE;
-	}
-	const cJSON *field = cJSON_GetObjectItem(meta, "source");
-	const char *source = cJSON_GetStringValue(field);
-	if (field != NULL && source == NULL) {
-		rc = MORPH_ERR_FORMAT;
-	}
-	if (rc == 0 && source == NULL) {
-		legacy = file_read_all(source_file, NULL);
-		if (legacy == NULL) {
-			rc = -ENOENT;
-		} else if (!cJSON_AddStringToObject(meta, "source", legacy)) {
-			rc = -ENOMEM;
-		}
-		source = legacy;
-	}
+	int rc = dynamic_tool_store_load_definition(source_meta, source_file, &definition);
+
+	if (rc != 0)
+		return rc;
+	serialized = cJSON_PrintUnformatted(definition.document);
+	if (!serialized)
+		rc = -ENOMEM;
 	if (rc == 0) {
-		serialized = cJSON_PrintUnformatted(meta);
-		if (serialized == NULL) {
-			rc = -ENOMEM;
-		}
-	}
-	if (rc == 0) {
-		rc = file_write_atomic(destination_file, source, strlen(source));
+		rc = file_write_atomic(destination_file, definition.source,
+				       strlen(definition.source));
 	}
 	if (rc == 0) {
 		rc = file_write_atomic(destination_meta, serialized, strlen(serialized));
 	}
 	free(serialized);
-	free(legacy);
-	cJSON_Delete(meta);
+	dynamic_tool_store_definition_cleanup(&definition);
 	return rc;
 }
 
@@ -70,42 +146,38 @@ int dynamic_tool_store_write_tool_files(struct dynamic_tool *dt, const char *sou
 	rc = file_ensure_dir(dt->dir);
 	if (rc < 0)
 		return rc;
-	/* Upgrade legacy metadata before changing its source mirror. */
-	char previous_path[PATH_MAX];
-	rc = file_path_join(previous_path, sizeof(previous_path), dt->dir, DYN_TOOL_META_FILE);
-	if (rc != 0) {
+	/* Normalize the committed definition before changing its legacy source mirror. */
+	struct stat previous;
+
+	rc = file_path_join(meta_path, sizeof(meta_path), dt->dir, DYN_TOOL_META_FILE);
+	if (rc != 0)
 		return rc;
-	}
-	if (file_exists(previous_path)) {
-		char *old_text = file_read_all(previous_path, NULL);
-		cJSON *old = old_text != NULL ? cJSON_Parse(old_text) : NULL;
-		free(old_text);
-		if (old == NULL) {
-			return MORPH_ERR_PARSE;
-		}
-		if (!cJSON_HasObjectItem(old, "source")) {
-			char *previous = file_read_all(dt->source_path, NULL);
-			if (previous == NULL || !cJSON_AddStringToObject(old, "source", previous)) {
-				free(previous);
-				cJSON_Delete(old);
-				return -ENOMEM;
-			}
-			free(previous);
-			char *upgraded = cJSON_PrintUnformatted(old);
-			rc = upgraded != NULL
-				     ? file_write_atomic(previous_path, upgraded, strlen(upgraded))
-				     : -ENOMEM;
+	if (lstat(meta_path, &previous) == 0) {
+		struct dynamic_tool_definition definition;
+
+		rc = dynamic_tool_store_load_definition(meta_path, dt->source_path, &definition);
+		if (rc != 0)
+			return rc;
+		if (definition.legacy_source) {
+			char *upgraded = cJSON_PrintUnformatted(definition.document);
+
+			rc = upgraded ? file_write_atomic(meta_path, upgraded, strlen(upgraded))
+				      : -ENOMEM;
 			free(upgraded);
 		}
-		cJSON_Delete(old);
-		if (rc != 0) {
+		dynamic_tool_store_definition_cleanup(&definition);
+		if (rc != 0)
 			return rc;
-		}
+	} else if (errno != ENOENT) {
+		return morph_error_from_errno(errno);
 	}
-	dt->source = strdup(source);
-	if (dt->source == NULL) {
+	char *owned_source = strdup(source);
+
+	if (!owned_source)
 		return -ENOMEM;
-	}
+	free(dt->source);
+	dt->source = owned_source;
+	source = owned_source;
 	rc = file_write_atomic(dt->source_path, source, strlen(source));
 	if (rc < 0)
 		return rc;

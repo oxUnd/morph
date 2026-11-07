@@ -1,4 +1,5 @@
 #include "history_internal.h"
+#include "persistence/history_store.h"
 
 #include "prompt_context.h"
 #include "react.h"
@@ -205,25 +206,6 @@ int agent_history_diagnose(const struct model_history_item *items, struct tokeni
 	return 0;
 }
 
-static int history_update_item(struct db *db, int64_t id, int active, int token_count)
-{
-	const char *sql = "UPDATE model_history_items SET active=?,token_count=? WHERE id=?";
-	sqlite3_stmt *stmt;
-	int rc;
-
-	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_int(stmt, 1, active);
-	sqlite3_bind_int(stmt, 2, token_count);
-	sqlite3_bind_int64(stmt, 3, id);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	if (rc != SQLITE_DONE)
-		return MORPH_ERR_DB;
-	return 0;
-}
-
 int agent_history_repair(struct db *db, int64_t session_id, struct tokenizer *tokenizer,
 			 struct agent_history_diagnostic *before, int *changed)
 {
@@ -317,7 +299,7 @@ int agent_history_repair(struct db *db, int64_t session_id, struct tokenizer *to
 			return tokens;
 		}
 		if (active != item->active || tokens != item->token_count) {
-			rc = history_update_item(db, item->id, active, tokens);
+			rc = history_store_update_item(db, item->id, active, tokens);
 			if (rc != 0) {
 				model_history_free_list(items);
 				(void)db_exec(db, "ROLLBACK;");
@@ -338,7 +320,7 @@ int agent_history_repair(struct db *db, int64_t session_id, struct tokenizer *to
 			continue;
 		log_warn(db ? db->logger : NULL, "deactivating orphan history tool result %lld",
 			 (long long)item->id);
-		rc = history_update_item(db, item->id, 0, item->token_count);
+		rc = history_store_update_item(db, item->id, 0, item->token_count);
 		if (rc != 0) {
 			model_history_free_list(items);
 			(void)db_exec(db, "ROLLBACK;");

@@ -5,3 +5,4 @@ output_store.c
 memory_snapshot.c
 memory_repository.c
 history_store.c
+memory_job_store.c

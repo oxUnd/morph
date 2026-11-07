@@ -1,4 +1,5 @@
 #include "history_internal.h"
+#include "persistence/history_store.h"
 
 #include "prompt_context.h"
 #include "react.h"
@@ -192,76 +193,24 @@ static int history_validate_replay(struct morph_log *logger, const struct model_
 	return rc;
 }
 
-/* Retained rows may have been counted by an older tokenizer or budget policy. */
-static int history_refresh_retention_tokens(struct react_context *ctx)
+static int history_retention_tokens(const struct model_history_item *item, void *data)
 {
-	const char *sql = "SELECT a.id,a.kind,a.content,a.payload_json "
-			  "FROM model_history_items a WHERE a.session_id=? AND (a.active=1 OR "
-			  "(a.kind='assistant_message' AND EXISTS (SELECT 1 "
-			  "FROM model_history_items u WHERE u.session_id=a.session_id "
-			  "AND u.turn_id=a.turn_id AND u.active=1 AND u.kind='user_message')))";
-	const char *update_sql = "UPDATE model_history_items SET token_count=? WHERE id=?";
-	sqlite3_stmt *select = NULL;
-	sqlite3_stmt *update = NULL;
-	int error = 0;
-	int rc = sqlite3_prepare_v2(ctx->history_db->handle, sql, -1, &select, NULL);
+	struct react_context *ctx = data;
+	const char *text = strcmp(item->kind, "assistant_tool_calls") == 0 ? item->payload_json
+									   : item->content;
 
-	if (rc == SQLITE_OK)
-		rc = sqlite3_prepare_v2(ctx->history_db->handle, update_sql, -1, &update, NULL);
-	if (rc != SQLITE_OK) {
-		sqlite3_finalize(select);
-		sqlite3_finalize(update);
-		return MORPH_ERR_DB;
-	}
-	sqlite3_bind_int64(select, 1, ctx->history_session_id);
-	while ((rc = sqlite3_step(select)) == SQLITE_ROW) {
-		struct model_history_item item = {0};
-
-		strncpy(item.kind, (const char *)sqlite3_column_text(select, 1),
-			sizeof(item.kind) - 1);
-		item.content = (char *)sqlite3_column_text(select, 2);
-		item.payload_json = (char *)sqlite3_column_text(select, 3);
-		const char *text = strcmp(item.kind, "assistant_tool_calls") == 0
-					   ? item.payload_json
-					   : item.content;
-		int tokens = history_item_tokens(&item, ctx->tokenizer, text);
-
-		if (tokens < 0) {
-			error = (tokens);
-			break;
-		}
-
-		sqlite3_bind_int(update, 1, tokens);
-		sqlite3_bind_int64(update, 2, sqlite3_column_int64(select, 0));
-		if (sqlite3_step(update) != SQLITE_DONE) {
-			error = (MORPH_ERR_DB);
-			break;
-		}
-		sqlite3_reset(update);
-		sqlite3_clear_bindings(update);
-	}
-	sqlite3_finalize(select);
-	sqlite3_finalize(update);
-	if (error)
-		return error;
-	if (rc != SQLITE_DONE)
-		return MORPH_ERR_DB;
-	return 0;
+	return history_item_tokens(item, ctx->tokenizer, text);
 }
 
 static int history_record_summary_sources(struct react_context *ctx, int64_t summary_id,
 					  const morph_array_t *preserved)
 {
-	sqlite3_stmt *stmt = NULL;
-	int rc = sqlite3_prepare_v2(
-		ctx->history_db->handle,
-		"INSERT INTO history_summary_sources(summary_item_id,source_item_id) "
-		"VALUES(?,?)",
-		-1, &stmt, NULL);
-	int error = 0;
+	morph_array_t ids = {0};
+	int64_t id;
+	int rc = morph_array_init(&ids, MORPH_ARRAY_INIT_CAP, sizeof(id));
 
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
+	if (rc)
+		return rc;
 	for (const struct model_history_item *item = ctx->history_items; item; item = item->next) {
 		if (strcmp(item->kind, "user_message") && history_retained(preserved, item))
 			continue;
@@ -270,25 +219,27 @@ static int history_record_summary_sources(struct react_context *ctx, int64_t sum
 		int has_text = text && text[0];
 
 		if (strcmp(item->kind, "user_message") == 0 && !rendered)
-			error = -ENOMEM;
+			rc = -ENOMEM;
 		free(rendered);
-		if (error)
+		if (rc)
 			break;
 		if (!has_text)
 			continue;
-		sqlite3_bind_int64(stmt, 1, summary_id);
-		sqlite3_bind_int64(stmt, 2, item->id);
-		rc = sqlite3_step(stmt);
-		if (rc != SQLITE_DONE)
+		int64_t *slot = morph_array_push(&ids);
+
+		if (!slot) {
+			rc = -ENOMEM;
 			break;
-		sqlite3_reset(stmt);
-		sqlite3_clear_bindings(stmt);
+		}
+		*slot = item->id;
 	}
-	sqlite3_finalize(stmt);
-	return error ? error : rc == SQLITE_DONE || rc == SQLITE_OK ? 0 : MORPH_ERR_DB;
+	if (!rc)
+		rc = history_store_add_summary_sources(ctx->history_db, summary_id, ids.elts,
+						       ids.nelts);
+	morph_array_cleanup(&ids);
+	return rc;
 }
 
-/* Keep the old window until the new database window can actually replay. */
 static int history_compact_checked(struct react_context *ctx, const char *summary,
 				   int summary_tokens, int input_tokens, const char *trigger_kind,
 				   int record_sources, int *active_count,
@@ -302,7 +253,8 @@ static int history_compact_checked(struct react_context *ctx, const char *summar
 
 	if (rc != 0)
 		return rc;
-	rc = history_refresh_retention_tokens(ctx);
+	rc = history_store_refresh_retention_tokens(ctx->history_db, ctx->history_session_id,
+						    history_retention_tokens, ctx);
 	if (rc == 0)
 		rc = model_history_compact_selected(
 			ctx->history_db, ctx->history_session_id, ctx->turn_id, summary,
@@ -595,7 +547,6 @@ int agent_history_compact_validated(struct react_context *ctx, int force, const 
 				    history_compaction_validator validate, void *user_data)
 {
 	morph_array_t preserved = {0};
-	sqlite3_stmt *stmt = NULL;
 	int64_t cutoff = 0;
 	int rc;
 
@@ -624,29 +575,14 @@ int agent_history_compact_validated(struct react_context *ctx, int force, const 
 	rc = db_exec(ctx->history_db, "SAVEPOINT history_selection;");
 	if (rc != 0)
 		return rc;
-	rc = history_refresh_retention_tokens(ctx);
+	rc = history_store_refresh_retention_tokens(ctx->history_db, ctx->history_session_id,
+						    history_retention_tokens, ctx);
 	if (rc == 0)
 		rc = model_history_select_retained(ctx->history_db, ctx->history_session_id, users,
 						   available - users,
 						   ctx->compress.max_history_rounds, &preserved);
-	if (rc == 0) {
-		rc = sqlite3_prepare_v2(
-			ctx->history_db->handle,
-			"SELECT COALESCE(MAX(sequence_no),0) FROM model_history_items "
-			"WHERE session_id=?",
-			-1, &stmt, NULL);
-		if (rc == SQLITE_OK) {
-			sqlite3_bind_int64(stmt, 1, ctx->history_session_id);
-			rc = sqlite3_step(stmt);
-		}
-		if (rc == SQLITE_ROW) {
-			cutoff = sqlite3_column_int64(stmt, 0);
-			rc = 0;
-		} else {
-			rc = (MORPH_ERR_DB);
-		}
-		sqlite3_finalize(stmt);
-	}
+	if (rc == 0)
+		rc = history_store_last_sequence(ctx->history_db, ctx->history_session_id, &cutoff);
 	if (rc == 0)
 		rc = db_exec(ctx->history_db, "RELEASE history_selection;");
 	if (rc != 0) {

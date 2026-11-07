@@ -61,7 +61,7 @@ static int cli_turn_details_compose(struct cli_turn_details *page, int scroll, F
 
 	page->visible = 1;
 	if (!rc)
-		rc = cli_transcript_render_details(ctx, &body);
+		rc = cli_transcript_render_details(ctx, ctx->transcript, &body);
 	page->visible = visible;
 	if (!rc)
 		rc = morph_buf_init(&frame, BUFSIZ);

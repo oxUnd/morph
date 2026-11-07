@@ -61,8 +61,9 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result, v
 
 	if (user_data)
 		local = *(struct img_inpaint_context *)user_data;
-	local.image_llm = model_bind_tool_request(local.image_llm, result ? result->runtime : NULL,
-						  &request_model);
+	local.image_llm = model_bind_http_request(
+		local.image_llm, result && result->runtime ? &result->runtime->http : NULL,
+		&request_model);
 	struct img_inpaint_context *ctx = user_data ? &local : NULL;
 	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
 

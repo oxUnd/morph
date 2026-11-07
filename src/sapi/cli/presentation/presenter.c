@@ -9,6 +9,7 @@
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/widgets/transcript.h"
+#include "sapi/cli/services/transcript.h"
 #include "sapi/cli/adapters/media/renderer.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/pages/jobs.h"

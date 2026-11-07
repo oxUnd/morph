@@ -528,6 +528,13 @@ static int db_retire_memory_receipts(struct db *db)
 	return rc;
 }
 
+int db_init_credit_schema(struct db *db)
+{
+	if (!db || !db->handle)
+		return -EINVAL;
+	return db_exec(db, credit_schema_sql);
+}
+
 int db_init_schema(struct db *db)
 {
 	if (!db || !db->handle)
@@ -578,7 +585,7 @@ int db_init_schema(struct db *db)
 	rc = db_migrate_output_columns(db);
 	if (rc != 0)
 		return rc;
-	rc = db_exec(db, credit_schema_sql);
+	rc = db_init_credit_schema(db);
 	if (rc != 0)
 		return rc;
 	return db_exec(db, schema_baseline_sql);

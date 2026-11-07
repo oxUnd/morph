@@ -129,6 +129,14 @@ runtime 已解析的 output_dir 为基准；`morph.exec()` 在 workdir 中执行
 
 `morph.fetch(url)` 返回 Response-like 对象：
 
+HTTP 状态码来自实际响应，`ok` 仅在 2xx 时为真。4xx/5xx 仍返回可读取的响应正文；
+连接失败、取消、超时或正文超过 1 MiB 时抛出异常。请求复用项目 HTTP 实现，
+接受 runner 截止时间约束，并保留 network capability 和目标 allowlist 检查。
+
+`morph.exec(command)` 成功时返回标准输出；非零退出、信号终止、超时或输出超过
+1 MiB 时抛出异常。子进程使用独立进程组，超时后终止并回收；输出中的 NUL 不会
+截断后续内容。
+
 ```js
 async function run(args) {
 	const response = await morph.fetch("https://www.baidu.com");
@@ -343,7 +351,6 @@ allowed_network = []
 - `sharp`、`canvas` 和 `WebAssembly` 当前是常用子集，不是 npm 包或浏览器
   运行时的完整兼容实现；模型提示里已明确限制不要生成未支持 API。
 - “动态工具不能绕过 disabled tools”还没有完整链路，因为跨工具调用尚未开放。
-- `morph.fetch()` 当前通过 `curl` 子进程实现，状态码目前按成功固定为 `200`，失败由 `curl -f` 转为异常。
 - runner 内部 `RUNNER_MAX_CAPTURE` 仍是固定 `1MB`，父进程的 `default_max_output_bytes` 已生效，但 host API 内部抓取上限还未配置化。
 - 缺少非法工具名、重复工具名、非法 schema、JS 语法错误、超时、输出大小限制的专项单测。
 - 缺少 mock LLM 集成测试覆盖“先 `tool_create`，再调用新工具”的完整 ReAct 流程。

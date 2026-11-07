@@ -20,6 +20,7 @@ int morph_io_pipe(int descriptors[2]);
 int morph_io_write(int fd, const char *data, size_t len, int64_t deadline, int (*cancelled)(void *),
 		   void *user);
 /* Owns the child until reaped, and consumes input_fd; output/error fds and buffers are borrowed.
+ * A negative descriptor disables that stream.
  * Buffers must be initialized. Captures at most limit bytes per stream, draining
  * the remainder. On failure terminates the child/group, then reaps it.
  * status is initialized on every call. Callbacks run synchronously without locks. */

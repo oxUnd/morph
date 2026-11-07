@@ -5,33 +5,11 @@
 #include <string.h>
 #include <time.h>
 
-static const char credit_schema_sql[] =
-	"CREATE TABLE IF NOT EXISTS credit_events ("
-	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
-	"user_id TEXT,"
-	"session_id TEXT,"
-	"kind TEXT NOT NULL,"
-	"provider TEXT,"
-	"model TEXT,"
-	"input_tokens INTEGER NOT NULL DEFAULT 0,"
-	"output_tokens INTEGER NOT NULL DEFAULT 0,"
-	"image_units INTEGER NOT NULL DEFAULT 0,"
-	"video_seconds INTEGER NOT NULL DEFAULT 0,"
-	"estimated_cost REAL NOT NULL DEFAULT 0,"
-	"currency TEXT NOT NULL DEFAULT 'USD',"
-	"credits INTEGER NOT NULL DEFAULT 0,"
-	"metadata_json TEXT,"
-	"created_at INTEGER NOT NULL);"
-	"CREATE INDEX IF NOT EXISTS idx_credit_events_user_day "
-	"ON credit_events(user_id, created_at);"
-	"CREATE INDEX IF NOT EXISTS idx_credit_events_session "
-	"ON credit_events(session_id, created_at);";
-
 int credit_store_init_schema(struct db *db)
 {
 	if (!db || !db->handle)
 		return -EINVAL;
-	return db_exec(db, credit_schema_sql);
+	return db_init_credit_schema(db);
 }
 
 int credit_store_record_event(struct db *db,

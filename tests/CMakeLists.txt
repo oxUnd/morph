@@ -73,6 +73,7 @@ set(TEST_SOURCES
 	test_cli_copy.cpp
 	test_cli_list.cpp
 	test_cli_presentation.cpp
+	test_cli_transcript_model.cpp
 	test_cli_terminal.cpp
 	test_tui.cpp
 	test_tui_application.cpp
@@ -173,6 +174,10 @@ add_test(NAME file_write_extension COMMAND morph-file-write-tests)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+	add_test(NAME js_runner_host_io_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_js_runner_host_io.py
+			$<TARGET_FILE:morph-js-runner>)
+	set_tests_properties(js_runner_host_io_integration PROPERTIES TIMEOUT 30)
 	add_test(NAME cli_application_layout_conventions
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_application_layout.py)
 	if(UNIX)

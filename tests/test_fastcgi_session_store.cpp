@@ -5,6 +5,8 @@ extern "C" {
 #include "sapi/fastcgi/storage/artifacts.h"
 #include "sapi/fastcgi/storage/sessions.h"
 #include "sapi/fastcgi/storage/events.h"
+#include "sapi/fastcgi/storage/canvas.h"
+#include "cJSON.h"
 
 #include "sapi/fastcgi/session_store.h"
 }
@@ -94,6 +96,45 @@ class FastcgiSessionStoreTest : public ::testing::Test
 			thread.join();
 	}
 };
+
+TEST_F(FastcgiSessionStoreTest, CanvasListsEmptyAndPopulatedSessions)
+{
+	char *text = nullptr;
+	char id[40];
+
+	ASSERT_EQ(canvas_list_json(store, "session", &text), 0);
+	cJSON *document = cJSON_Parse(text);
+	free(text);
+	ASSERT_NE(document, nullptr);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(document, "nodes")), 0);
+	cJSON_Delete(document);
+	ASSERT_EQ(canvas_add_node(store, "session", "{\"label\":\"first\"}", id), 0);
+	ASSERT_EQ(canvas_add_node(store, "other", "{}", id), 0);
+	ASSERT_EQ(canvas_list_json(store, "session", &text), 0);
+	document = cJSON_Parse(text);
+	free(text);
+	ASSERT_NE(document, nullptr);
+	cJSON *nodes = cJSON_GetObjectItem(document, "nodes");
+	ASSERT_EQ(cJSON_GetArraySize(nodes), 1);
+	cJSON *meta = cJSON_GetObjectItem(cJSON_GetArrayItem(nodes, 0), "meta");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(meta, "label")), "first");
+	cJSON_Delete(document);
+}
+
+TEST_F(FastcgiSessionStoreTest, CanvasReadFailureDoesNotReturnPartialOutput)
+{
+	char id[40];
+	char *text = nullptr;
+
+	ASSERT_EQ(canvas_add_node(store, "session", "{}", id), 0);
+	sqlite3_progress_handler(store->db.handle, 1, [](void *) { return 1; }, nullptr);
+	EXPECT_NE(canvas_list_json(store, "session", &text), 0);
+	EXPECT_EQ(text, nullptr);
+	sqlite3_progress_handler(store->db.handle, 0, nullptr, nullptr);
+	EXPECT_EQ(sqlite3_next_stmt(store->db.handle, nullptr), nullptr);
+	ASSERT_EQ(canvas_list_json(store, "session", &text), 0);
+	free(text);
+}
 
 TEST_F(FastcgiSessionStoreTest, ConcurrentArtifactsPreserveAllUsage)
 {

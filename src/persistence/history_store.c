@@ -194,8 +194,8 @@ int history_store_request_snapshot(struct db *db, int64_t session_id, struct are
 				    : MORPH_ERR_DB;
 }
 
-int history_store_visit_messages(struct db *db, int64_t session_id, history_message_visitor visitor,
-				 void *data)
+static int visit_messages(struct db *db, int64_t session_id, const char *sql, int limit,
+			  history_message_visitor visitor, void *data)
 {
 	sqlite3_stmt *stmt = NULL;
 	int step;
@@ -203,12 +203,11 @@ int history_store_visit_messages(struct db *db, int64_t session_id, history_mess
 
 	if (!visitor)
 		return -EINVAL;
-	rc = prepare_session_query(db,
-				   "SELECT id,role,content,turn_id,created_at FROM messages "
-				   "WHERE session_id=? ORDER BY created_at,id",
-				   session_id, &stmt);
+	rc = prepare_session_query(db, sql, session_id, &stmt);
 	if (rc != 0)
 		return rc;
+	if (limit > 0)
+		sqlite3_bind_int(stmt, 2, limit);
 	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
 		struct message message = {0};
 		const char *role = column_text(stmt, 1);
@@ -224,6 +223,28 @@ int history_store_visit_messages(struct db *db, int64_t session_id, history_mess
 			break;
 	}
 	return finish_query(stmt, step, rc);
+}
+
+int history_store_visit_messages(struct db *db, int64_t session_id, history_message_visitor visitor,
+				 void *data)
+{
+	return visit_messages(db, session_id,
+			      "SELECT id,role,content,turn_id,created_at FROM messages "
+			      "WHERE session_id=? ORDER BY created_at,id",
+			      0, visitor, data);
+}
+
+int history_store_visit_recent_messages(struct db *db, int64_t session_id, int limit,
+					history_message_visitor visitor, void *data)
+{
+	if (limit <= 0)
+		return -EINVAL;
+	return visit_messages(
+		db, session_id,
+		"SELECT id,role,content,turn_id,created_at FROM messages WHERE session_id=? "
+		"AND role IN ('user','assistant') AND length(trim(content))>0 "
+		"ORDER BY id DESC LIMIT ?",
+		limit, visitor, data);
 }
 
 int history_store_visit_display(struct db *db, int64_t session_id, history_display_visitor visitor,
@@ -406,4 +427,152 @@ int history_store_legacy_answer(struct db *db, int64_t session_id, struct arena 
 	}
 	sqlite3_finalize(stmt);
 	return rc;
+}
+
+int history_store_visible_progress(struct db *db, int64_t session_id,
+				   struct history_message_progress *out)
+{
+	sqlite3_stmt *stmt = NULL;
+	int rc;
+
+	if (!out)
+		return -EINVAL;
+	memset(out, 0, sizeof(*out));
+	rc = prepare_session_query(
+		db,
+		"SELECT COALESCE(MAX(id),0),COALESCE(SUM(role='assistant'),0) "
+		"FROM messages WHERE session_id=? AND role IN ('user','assistant') "
+		"AND length(trim(content))>0",
+		session_id, &stmt);
+	if (rc)
+		return rc;
+	rc = sqlite3_step(stmt);
+	if (rc == SQLITE_ROW) {
+		out->latest_id = sqlite3_column_int64(stmt, 0);
+		out->completed_turns = sqlite3_column_int(stmt, 1);
+	}
+	sqlite3_finalize(stmt);
+	return rc == SQLITE_ROW ? 0 : MORPH_ERR_DB;
+}
+
+int history_store_update_item(struct db *db, int64_t id, int active, int token_count)
+{
+	sqlite3_stmt *stmt = NULL;
+	int rc;
+
+	if (!db || !db->handle || id <= 0 || token_count < 0)
+		return -EINVAL;
+	rc = sqlite3_prepare_v2(db->handle,
+				"UPDATE model_history_items SET active=?,token_count=? WHERE id=?",
+				-1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		return MORPH_ERR_DB;
+	sqlite3_bind_int(stmt, 1, active);
+	sqlite3_bind_int(stmt, 2, token_count);
+	sqlite3_bind_int64(stmt, 3, id);
+	rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
+}
+
+int history_store_refresh_retention_tokens(struct db *db, int64_t session_id,
+					   history_token_counter count, void *data)
+{
+	sqlite3_stmt *select = NULL;
+	sqlite3_stmt *update = NULL;
+	int rc;
+	int error = 0;
+
+	if (!count)
+		return -EINVAL;
+	rc = prepare_session_query(
+		db,
+		"SELECT a.id,a.kind,a.content,a.payload_json FROM model_history_items a "
+		"WHERE a.session_id=? AND (a.active=1 OR (a.kind='assistant_message' "
+		"AND EXISTS (SELECT 1 FROM model_history_items u "
+		"WHERE u.session_id=a.session_id AND u.turn_id=a.turn_id "
+		"AND u.active=1 AND u.kind='user_message')))",
+		session_id, &select);
+	if (rc)
+		return rc;
+	if (sqlite3_prepare_v2(db->handle,
+			       "UPDATE model_history_items SET token_count=? WHERE id=?", -1,
+			       &update, NULL) != SQLITE_OK) {
+		sqlite3_finalize(select);
+		return MORPH_ERR_DB;
+	}
+	while ((rc = sqlite3_step(select)) == SQLITE_ROW) {
+		struct model_history_item item = {0};
+		const char *kind = column_text(select, 1);
+
+		item.id = sqlite3_column_int64(select, 0);
+		item.session_id = session_id;
+		snprintf(item.kind, sizeof(item.kind), "%s", kind ? kind : "");
+		item.content = (char *)column_text(select, 2);
+		item.payload_json = (char *)column_text(select, 3);
+		int tokens = count(&item, data);
+
+		if (tokens < 0) {
+			error = tokens;
+			break;
+		}
+		sqlite3_bind_int(update, 1, tokens);
+		sqlite3_bind_int64(update, 2, item.id);
+		if (sqlite3_step(update) != SQLITE_DONE) {
+			error = MORPH_ERR_DB;
+			break;
+		}
+		sqlite3_reset(update);
+		sqlite3_clear_bindings(update);
+	}
+	sqlite3_finalize(update);
+	return finish_query(select, rc, error);
+}
+
+int history_store_add_summary_sources(struct db *db, int64_t summary_id, const int64_t *ids,
+				      size_t count)
+{
+	sqlite3_stmt *stmt = NULL;
+	int rc;
+
+	if (!db || !db->handle || summary_id <= 0 || (count && !ids))
+		return -EINVAL;
+	rc = sqlite3_prepare_v2(
+		db->handle,
+		"INSERT INTO history_summary_sources(summary_item_id,source_item_id) VALUES(?,?)",
+		-1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		return MORPH_ERR_DB;
+	for (size_t i = 0; i < count; i++) {
+		sqlite3_bind_int64(stmt, 1, summary_id);
+		sqlite3_bind_int64(stmt, 2, ids[i]);
+		rc = sqlite3_step(stmt);
+		if (rc != SQLITE_DONE)
+			break;
+		sqlite3_reset(stmt);
+		sqlite3_clear_bindings(stmt);
+	}
+	sqlite3_finalize(stmt);
+	return rc == SQLITE_DONE || rc == SQLITE_OK ? 0 : MORPH_ERR_DB;
+}
+
+int history_store_last_sequence(struct db *db, int64_t session_id, int64_t *sequence)
+{
+	sqlite3_stmt *stmt = NULL;
+	int rc;
+
+	if (!sequence)
+		return -EINVAL;
+	*sequence = 0;
+	rc = prepare_session_query(
+		db,
+		"SELECT COALESCE(MAX(sequence_no),0) FROM model_history_items WHERE session_id=?",
+		session_id, &stmt);
+	if (rc)
+		return rc;
+	rc = sqlite3_step(stmt);
+	if (rc == SQLITE_ROW)
+		*sequence = sqlite3_column_int64(stmt, 0);
+	sqlite3_finalize(stmt);
+	return rc == SQLITE_ROW ? 0 : MORPH_ERR_DB;
 }

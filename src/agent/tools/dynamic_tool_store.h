@@ -3,6 +3,22 @@
 
 #include "dynamic_tool_internal.h"
 
+struct dynamic_tool_definition {
+	/* Owned backing document; the text views borrow it until cleanup. */
+	cJSON *document;
+	const char *name;
+	const char *description;
+	const char *source;
+	char *input_schema;
+	char *output_schema;
+	int legacy_source;
+};
+
+/* Missing files return -ENOENT, invalid JSON PARSE, invalid fields FORMAT. */
+int dynamic_tool_store_load_definition(const char *meta_path, const char *source_path,
+				       struct dynamic_tool_definition *definition);
+void dynamic_tool_store_definition_cleanup(struct dynamic_tool_definition *definition);
+
 int dynamic_tool_store_copy_tool_snapshot(const char *source_meta, const char *source_file,
 					  const char *destination_meta,
 					  const char *destination_file);

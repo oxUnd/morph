@@ -26,7 +26,9 @@ int canvas_list_json(struct session_store *s, const char *session_id, char **out
 		sqlite3_finalize(st);
 		return -ENOMEM;
 	}
-	while (sqlite3_step(st) == SQLITE_ROW) {
+	int step_rc;
+
+	while ((step_rc = sqlite3_step(st)) == SQLITE_ROW) {
 		const char *id = (const char *)sqlite3_column_text(st, 0);
 		const char *parent = (const char *)sqlite3_column_text(st, 1);
 		const char *kind = (const char *)sqlite3_column_text(st, 2);
@@ -70,7 +72,6 @@ int canvas_list_json(struct session_store *s, const char *session_id, char **out
 		cJSON_AddNumberToObject(item, "updated_at", (double)up);
 		cJSON_AddItemToArray(nodes, item);
 	}
-	int step_rc = sqlite3_step(st);
 	sqlite3_finalize(st);
 	if (step_rc != SQLITE_DONE) {
 		cJSON_Delete(root);

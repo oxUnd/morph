@@ -118,44 +118,12 @@ static int openai_capabilities(const struct model *model,
 	return 0;
 }
 
-static int openai_build_request_meta(const struct model *model,
-				     const char *path,
-				     morph_buf_t *url,
-				     morph_buf_t *auth)
-{
-	int rc;
-
-	if (!model || !path || !url || !auth)
-		return -EINVAL;
-	rc = morph_buf_init(url, strlen(model->api_base) + strlen(path) + 1);
-	if (rc != 0)
-		return rc;
-	rc = morph_buf_init(auth, strlen(model->api_key) + 24);
-	if (rc != 0)
-		goto out;
-	rc = morph_buf_printf(url, "%s%s", model->api_base, path);
-	if (rc == 0)
-		rc = morph_buf_printf(auth, "Authorization: Bearer %s",
-				      model->api_key);
-
-out:
-	if (rc != 0) {
-		morph_buf_cleanup(url);
-		morph_buf_cleanup(auth);
-	}
-	return rc;
-}
-
 static int openai_post_json(struct model *model,
 			    const struct image_request *request,
 			    struct image_payload *payload)
 {
-	struct http_response resp = {0};
-	morph_buf_t auth = {0};
-	morph_buf_t url = {0};
 	cJSON *body = NULL;
 	char *body_text = NULL;
-	const char *headers[1];
 	int rc = 0;
 
 	body = cJSON_CreateObject();
@@ -172,32 +140,9 @@ static int openai_post_json(struct model *model,
 	if (!body_text)
 		return -ENOMEM;
 
-	rc = openai_build_request_meta(model, "/images/generations",
-				       &url, &auth);
-	if (rc != 0) {
-		free(body_text);
-		return rc;
-	}
-	headers[0] = morph_buf_cstr(&auth);
-	rc = http_post_ex_timeout(&model->http, morph_buf_cstr(&url), body_text, strlen(body_text),
-				  "application/json", headers, 1, model->timeout_seconds, &resp);
+	rc = image_provider_post_json(model, "/images/generations", "OpenAI image API", body_text,
+				      payload);
 	free(body_text);
-	morph_buf_cleanup(&url);
-	morph_buf_cleanup(&auth);
-	if (rc != 0) {
-		http_response_free(&resp);
-		return rc;
-	}
-	if (resp.status_code != 200) {
-		snprintf(model->last_error, sizeof(model->last_error),
-			 "OpenAI image API returned HTTP %d: %.400s",
-			 resp.status_code,
-			 resp.body.data ? resp.body.data : "");
-		http_response_free(&resp);
-		return MORPH_ERR_API;
-	}
-	rc = image_provider_parse_response(model, resp.body.data, payload);
-	http_response_free(&resp);
 	return rc;
 }
 
@@ -253,8 +198,7 @@ static int openai_post_edit(struct model *model,
 			image_content_type(request->mask_path)
 		};
 	}
-	rc = openai_build_request_meta(model, "/images/edits", &url,
-				       &auth);
+	rc = image_provider_build_request_meta(model, "/images/edits", &url, &auth);
 	if (rc != 0) {
 		free(parts);
 		return rc;

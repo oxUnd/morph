@@ -1,5 +1,7 @@
 #include "quickjs.h"
 #include "runner_api.h"
+#include "js_process.h"
+#include "js_fetch.h"
 #include "cJSON.h"
 #include "util/file.h"
 #include "util/buf.h"
@@ -8,8 +10,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
-#define RUNNER_MAX_CAPTURE (1024 * 1024)
 
 int runner_has_cap(const char *cap)
 {
@@ -129,245 +129,6 @@ char *runner_authorize_path(JSContext *ctx, const char *path, int write)
 	return resolved;
 }
 
-static char *capture_command(const char *cmd)
-{
-	FILE *fp;
-	morph_buf_t buf;
-	char tmp[BUFSIZ];
-	int rc;
-
-	fp = popen(cmd, "r");
-	if (!fp)
-		return NULL;
-	rc = morph_buf_init(&buf, BUFSIZ);
-	if (rc != 0) {
-		pclose(fp);
-		return NULL;
-	}
-	while (fgets(tmp, sizeof(tmp), fp)) {
-		size_t n = strlen(tmp);
-		if (buf.len + n > RUNNER_MAX_CAPTURE)
-			n = RUNNER_MAX_CAPTURE - buf.len;
-		if (n > 0 && morph_buf_append(&buf, tmp, n) != 0)
-			break;
-		if (buf.len >= RUNNER_MAX_CAPTURE)
-			break;
-	}
-	(void)pclose(fp);
-	return morph_buf_detach(&buf);
-}
-
-static JSValue js_exec(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
-{
-	const char *cmd;
-	char *out;
-	JSValue value;
-
-	(void)this_val;
-	if (argc < 1)
-		return JS_ThrowTypeError(ctx, "exec(command) requires command");
-	if (!runner_has_cap("shell") && !runner_has_cap("process"))
-		return runner_throw_cap(ctx, "shell");
-	cmd = JS_ToCString(ctx, argv[0]);
-	if (!cmd)
-		return JS_EXCEPTION;
-	if (!runner_list_allows("MORPH_DYNAMIC_ALLOWED_COMMANDS", cmd)) {
-		JS_FreeCString(ctx, cmd);
-		return JS_ThrowTypeError(ctx, "command denied");
-	}
-	out = capture_command(cmd);
-	JS_FreeCString(ctx, cmd);
-	if (!out)
-		return JS_ThrowInternalError(ctx, "command failed");
-	value = JS_NewString(ctx, out);
-	free(out);
-	return value;
-}
-
-static char *shell_quote(const char *s)
-{
-	morph_buf_t buf;
-	int rc;
-
-	rc = morph_buf_init(&buf, 128);
-	if (rc != 0)
-		return NULL;
-	if (morph_buf_putc(&buf, '\'') != 0)
-		goto fail;
-	for (const char *p = s ? s : ""; *p; p++) {
-		if (*p == '\'')
-			rc = morph_buf_puts(&buf, "'\\''");
-		else
-			rc = morph_buf_putc(&buf, *p);
-		if (rc != 0)
-			goto fail;
-	}
-	if (morph_buf_putc(&buf, '\'') != 0)
-		goto fail;
-	return morph_buf_detach(&buf);
-fail:
-	morph_buf_cleanup(&buf);
-	return NULL;
-}
-
-static JSValue make_fetch_response(JSContext *ctx, const char *url, const char *body);
-
-static JSValue js_fetch(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
-{
-	const char *url;
-	char *quoted;
-	char *cmd;
-	char *out;
-	JSValue value;
-
-	(void)this_val;
-	if (argc < 1)
-		return JS_ThrowTypeError(ctx, "fetch(url) requires url");
-	if (!runner_has_cap("network"))
-		return runner_throw_cap(ctx, "network");
-	url = JS_ToCString(ctx, argv[0]);
-	if (!url)
-		return JS_EXCEPTION;
-	if (!runner_list_allows("MORPH_DYNAMIC_ALLOWED_NETWORK", url)) {
-		JS_FreeCString(ctx, url);
-		return JS_ThrowTypeError(ctx, "network target denied");
-	}
-	quoted = shell_quote(url);
-	if (!quoted)
-		return JS_ThrowOutOfMemory(ctx);
-	size_t cmd_len = strlen(quoted) + 64;
-	cmd = malloc(cmd_len);
-	if (!cmd) {
-		JS_FreeCString(ctx, url);
-		free(quoted);
-		return JS_ThrowOutOfMemory(ctx);
-	}
-	snprintf(cmd, cmd_len, "curl -LfsS --max-time 30 %s", quoted);
-	free(quoted);
-	out = capture_command(cmd);
-	free(cmd);
-	if (!out) {
-		JS_FreeCString(ctx, url);
-		return JS_ThrowInternalError(ctx, "fetch failed");
-	}
-	value = make_fetch_response(ctx, url, out);
-	JS_FreeCString(ctx, url);
-	free(out);
-	return value;
-}
-
-static JSValue js_fetch_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
-{
-	JSValue body;
-
-	(void)argc;
-	(void)argv;
-	body = JS_GetPropertyStr(ctx, this_val, "_body");
-	if (JS_IsException(body))
-		return body;
-	return body;
-}
-
-static JSValue js_fetch_to_string(JSContext *ctx, JSValueConst this_val, int argc,
-				  JSValueConst *argv)
-{
-	return js_fetch_text(ctx, this_val, argc, argv);
-}
-
-static JSValue js_fetch_index_of(JSContext *ctx, JSValueConst this_val, int argc,
-				 JSValueConst *argv)
-{
-	JSValue body_val;
-	const char *body;
-	const char *needle;
-	const char *found;
-	int pos = -1;
-
-	if (argc < 1)
-		return JS_NewInt32(ctx, -1);
-	body_val = JS_GetPropertyStr(ctx, this_val, "_body");
-	body = JS_ToCString(ctx, body_val);
-	needle = JS_ToCString(ctx, argv[0]);
-	if (body && needle) {
-		found = strstr(body, needle);
-		if (found)
-			pos = (int)(found - body);
-	}
-	if (needle)
-		JS_FreeCString(ctx, needle);
-	if (body)
-		JS_FreeCString(ctx, body);
-	JS_FreeValue(ctx, body_val);
-	return JS_NewInt32(ctx, pos);
-}
-
-static JSValue js_fetch_slice(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
-{
-	JSValue body_val;
-	const char *body;
-	size_t len;
-	int32_t start = 0;
-	int32_t end;
-	int32_t span;
-	JSValue out;
-
-	body_val = JS_GetPropertyStr(ctx, this_val, "_body");
-	body = JS_ToCStringLen(ctx, &len, body_val);
-	if (!body) {
-		JS_FreeValue(ctx, body_val);
-		return JS_EXCEPTION;
-	}
-	end = (int32_t)len;
-	if (argc > 0)
-		(void)JS_ToInt32(ctx, &start, argv[0]);
-	if (argc > 1)
-		(void)JS_ToInt32(ctx, &end, argv[1]);
-	if (start < 0)
-		start = (int32_t)len + start;
-	if (end < 0)
-		end = (int32_t)len + end;
-	if (start < 0)
-		start = 0;
-	if (end < start)
-		end = start;
-	if ((size_t)start > len)
-		start = (int32_t)len;
-	if ((size_t)end > len)
-		end = (int32_t)len;
-	span = end - start;
-	out = JS_NewStringLen(ctx, body + start, (size_t)span);
-	JS_FreeCString(ctx, body);
-	JS_FreeValue(ctx, body_val);
-	return out;
-}
-
-static JSValue make_fetch_response(JSContext *ctx, const char *url, const char *body)
-{
-	JSValue obj;
-	size_t len;
-
-	len = strlen(body ? body : "");
-	obj = JS_NewObject(ctx);
-	JS_SetPropertyStr(ctx, obj, "ok", JS_NewBool(ctx, 1));
-	JS_SetPropertyStr(ctx, obj, "status", JS_NewInt32(ctx, 200));
-	JS_SetPropertyStr(ctx, obj, "url", JS_NewString(ctx, url ? url : ""));
-	JS_SetPropertyStr(ctx, obj, "body", JS_NewStringLen(ctx, body, len));
-	JS_SetPropertyStr(ctx, obj, "content", JS_NewStringLen(ctx, body, len));
-	JS_SetPropertyStr(ctx, obj, "length", JS_NewInt64(ctx, (int64_t)len));
-	JS_SetPropertyStr(ctx, obj, "_body", JS_NewStringLen(ctx, body, len));
-	JS_SetPropertyStr(ctx, obj, "text", JS_NewCFunction(ctx, js_fetch_text, "text", 0));
-	JS_SetPropertyStr(ctx, obj, "toString",
-			  JS_NewCFunction(ctx, js_fetch_to_string, "toString", 0));
-	JS_SetPropertyStr(ctx, obj, "valueOf",
-			  JS_NewCFunction(ctx, js_fetch_to_string, "valueOf", 0));
-	JS_SetPropertyStr(ctx, obj, "slice", JS_NewCFunction(ctx, js_fetch_slice, "slice", 2));
-	JS_SetPropertyStr(ctx, obj, "substring",
-			  JS_NewCFunction(ctx, js_fetch_slice, "substring", 2));
-	JS_SetPropertyStr(ctx, obj, "indexOf",
-			  JS_NewCFunction(ctx, js_fetch_index_of, "indexOf", 1));
-	return obj;
-}
-
 static int resolve_promise(JSContext *ctx, JSValue *value)
 {
 	JSValue then;
@@ -448,8 +209,8 @@ static void install_morph_api(JSContext *ctx)
 	JS_SetPropertyStr(ctx, tool, "call", JS_NewCFunction(ctx, js_tool_call, "call", 2));
 	JS_SetPropertyStr(ctx, morph, "env", env);
 	JS_SetPropertyStr(ctx, morph, "tool", tool);
-	JS_SetPropertyStr(ctx, morph, "exec", JS_NewCFunction(ctx, js_exec, "exec", 1));
-	JS_SetPropertyStr(ctx, morph, "fetch", JS_NewCFunction(ctx, js_fetch, "fetch", 1));
+	js_process_install(ctx, morph);
+	js_fetch_install(ctx, morph);
 	JS_SetPropertyStr(ctx, global, "morph", morph);
 	install_media_api(ctx);
 	JS_FreeValue(ctx, global);

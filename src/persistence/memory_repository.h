@@ -30,6 +30,10 @@ int memory_store_upsert_fact(struct db *db, int64_t session_id, const char *key_
 			     double importance);
 int memory_store_prepare_session(struct db *db, int64_t session_id);
 int memory_store_generation(struct db *db, int64_t session_id, int64_t *generation);
+/* Begin succeeds with a short write transaction open; finish it exactly once.
+ * Generation begin also validates the fence before any derived writes. */
+int memory_store_begin_write(struct db *db);
+int memory_store_finish_write(struct db *db, int result);
 int memory_store_begin_generation(struct db *db, int64_t session_id, int64_t expected);
 int memory_store_clear(struct db *db, int64_t session_id, enum memory_clear_scope scope);
 int memory_store_migrate_preferences(struct db *db, int64_t session_id,

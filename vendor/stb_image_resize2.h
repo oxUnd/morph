@@ -2826,9 +2826,10 @@ static void stbir_overlapping_memcpy( void * dest, void const * src, size_t byte
 #endif
 #endif
 
-#ifndef STBIR_MEMCPY
-// For memcpy
+/* Coefficient packing also needs memmove with a custom STBIR_MEMCPY. */
 #include <string.h>
+
+#ifndef STBIR_MEMCPY
 #define STBIR_MEMCPY( dest, src, len ) memcpy( dest, src, len )
 #endif
 
@@ -3695,12 +3696,13 @@ static void stbir__cleanup_gathered_coefficients( stbir_edge edge, stbir__filter
 
 static int stbir__pack_coefficients( int num_contributors, stbir__contributors* contributors, float * coefficents, int coefficient_width, int widest, int row0, int row1 ) 
 {
-  #define STBIR_MOVE_1( dest, src ) { STBIR_NO_UNROLL(dest); ((stbir_uint32*)(dest))[0] = ((stbir_uint32*)(src))[0]; }
-  #define STBIR_MOVE_2( dest, src ) { STBIR_NO_UNROLL(dest); ((stbir_uint64*)(dest))[0] = ((stbir_uint64*)(src))[0]; }
+  /* Packed float coefficients may overlap and need not have integer alignment. */
+  #define STBIR_MOVE_1( dest, src ) { STBIR_NO_UNROLL(dest); memmove( dest, src, sizeof(*(dest)) ); }
+  #define STBIR_MOVE_2( dest, src ) { STBIR_NO_UNROLL(dest); memmove( dest, src, 2 * sizeof(*(dest)) ); }
   #ifdef STBIR_SIMD
   #define STBIR_MOVE_4( dest, src ) { stbir__simdf t; STBIR_NO_UNROLL(dest); stbir__simdf_load( t, src ); stbir__simdf_store( dest, t ); }
   #else
-  #define STBIR_MOVE_4( dest, src ) { STBIR_NO_UNROLL(dest); ((stbir_uint64*)(dest))[0] = ((stbir_uint64*)(src))[0]; ((stbir_uint64*)(dest))[1] = ((stbir_uint64*)(src))[1]; }
+  #define STBIR_MOVE_4( dest, src ) { STBIR_NO_UNROLL(dest); memmove( dest, src, 4 * sizeof(*(dest)) ); }
   #endif
 
   int row_end = row1 + 1;

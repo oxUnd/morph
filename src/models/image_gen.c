@@ -22,6 +22,62 @@
 
 #include "stb_image.h"
 
+int image_provider_build_request_meta(const struct model *model, const char *path, morph_buf_t *url,
+				      morph_buf_t *auth)
+{
+	int rc;
+
+	if (!model || !path || !url || !auth)
+		return -EINVAL;
+	rc = morph_buf_init(url, strlen(model->api_base) + strlen(path) + 1);
+	if (rc != 0)
+		return rc;
+	rc = morph_buf_init(auth, strlen(model->api_key) + 24);
+	if (rc == 0)
+		rc = morph_buf_printf(url, "%s%s", model->api_base, path);
+	if (rc == 0)
+		rc = morph_buf_printf(auth, "Authorization: Bearer %s", model->api_key);
+	if (rc != 0) {
+		morph_buf_cleanup(url);
+		morph_buf_cleanup(auth);
+	}
+	return rc;
+}
+
+int image_provider_post_json(struct model *model, const char *path, const char *label,
+			     const char *body, struct image_payload *payload)
+{
+	struct http_response response = {0};
+	morph_buf_t url = {0};
+	morph_buf_t auth = {0};
+	const char *headers[1];
+	int rc;
+
+	if (!label || !body || !payload)
+		return -EINVAL;
+	rc = image_provider_build_request_meta(model, path, &url, &auth);
+	if (rc != 0)
+		return rc;
+	headers[0] = morph_buf_cstr(&auth);
+	rc = http_post_ex_timeout(&model->http, morph_buf_cstr(&url), body, strlen(body),
+				  "application/json", headers, 1, model->timeout_seconds,
+				  &response);
+	morph_buf_cleanup(&auth);
+	morph_buf_cleanup(&url);
+	if (rc == 0) {
+		if (response.status_code != 200) {
+			snprintf(model->last_error, sizeof(model->last_error),
+				 "%s returned HTTP %d: %.400s", label, response.status_code,
+				 response.body.data ? response.body.data : "");
+			rc = MORPH_ERR_API;
+		} else {
+			rc = image_provider_parse_response(model, response.body.data, payload);
+		}
+	}
+	http_response_free(&response);
+	return rc;
+}
+
 const char *image_gen_ext_from_content_type(const char *headers)
 {
 	if (!headers)

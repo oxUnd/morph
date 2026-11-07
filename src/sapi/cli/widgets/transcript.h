@@ -1,22 +1,24 @@
 #ifndef MORPH_CLI_WIDGETS_TRANSCRIPT_H
 #define MORPH_CLI_WIDGETS_TRANSCRIPT_H
 
-#include "event/event.h"
 #include "util/buf.h"
 
 struct cli_application;
-struct cJSON;
-struct model_history_item;
+struct cli_transcript_model;
+struct cli_transcript_tool;
 
-int cli_transcript_event(struct cli_application *ctx, const struct morph_event *ev);
-int cli_transcript_restore_tool(struct cli_application *ctx, const struct cJSON *call,
-				const struct model_history_item *result);
-int cli_transcript_reasoning_append(struct cli_application *ctx, const char *text, size_t len,
-				    int begin);
-void cli_transcript_reset(struct cli_application *ctx);
-int cli_transcript_render_details(struct cli_application *ctx, morph_buf_t *output);
-void cli_transcript_finish(struct cli_application *ctx);
-int cli_transcript_live_body(struct cli_application *ctx, morph_buf_t *text, int styled);
-int cli_transcript_live_text(struct cli_application *ctx, morph_buf_t *text, int styled);
+int cli_transcript_live_text(const struct cli_transcript_model *model, morph_buf_t *text,
+			     int columns, int styled);
+int cli_transcript_live_body(const struct cli_transcript_model *model, morph_buf_t *text,
+			     int columns, int styled);
+int cli_transcript_render_details(struct cli_application *ctx,
+				  const struct cli_transcript_model *model, morph_buf_t *output);
+void cli_transcript_render_tool(struct cli_application *ctx, const struct cli_transcript_tool *tool,
+				int compact);
+void cli_transcript_render_tool_details(struct cli_application *ctx,
+					const struct cli_transcript_tool *tool, int args);
+void cli_transcript_render_payload(struct cli_application *ctx, const char *text);
+void cli_transcript_render_stream(struct cli_application *ctx,
+				  const struct cli_transcript_tool *tool, size_t offset);
 
 #endif

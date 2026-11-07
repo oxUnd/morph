@@ -195,7 +195,7 @@ int morph_child_exchange(pid_t pid, int input_fd, int output_fd, int error_fd, c
 {
 	int fds[] = {input_fd, output_fd, error_fd};
 	int flags[] = {-1, -1, -1};
-	int open[] = {1, 1, error_fd >= 0};
+	int open[] = {input_fd >= 0, output_fd >= 0, error_fd >= 0};
 	int rc = 0, reaped = 0;
 	size_t offset = 0;
 	int64_t deadline = morph_io_now_ms() + (timeout_ms > 0 ? timeout_ms : 300000);

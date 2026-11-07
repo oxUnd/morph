@@ -5,6 +5,7 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/widgets/transcript.h"
+#include "sapi/cli/services/transcript.h"
 #include "session.h"
 #include "util/error.h"
 #include "util/strmap.h"

@@ -4,6 +4,8 @@
 #include "quickjs.h"
 #include <time.h>
 
+#define RUNNER_MAX_CAPTURE (1024u * 1024u)
+
 struct runner_state {
 	time_t deadline;
 	JSClassID sharp_class_id;

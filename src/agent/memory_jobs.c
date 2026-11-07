@@ -1,5 +1,6 @@
 #include "agent/memory.h"
 #include "agent/memory_internal.h"
+#include "persistence/memory_job_store.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/log.h"
@@ -149,7 +150,7 @@ static struct react_step *memory_steps_dup(const struct react_step *src)
 			tail->next = node;
 		tail = node;
 		continue;
-oom:
+	oom:
 		free(node->artifacts);
 		free(node->content);
 		free(node->tool_name);
@@ -178,12 +179,11 @@ static int memory_job_record(struct db *db, struct memory_job *job)
 	cJSON *payload = cJSON_CreateObject();
 	cJSON *tools = payload ? cJSON_AddArrayToObject(payload, "tools") : NULL;
 	char *json;
-	sqlite3_stmt *stmt = NULL;
 	int rc;
 
 	if (!tools || !cJSON_AddStringToObject(payload, "input", job->user_input) ||
 	    !cJSON_AddStringToObject(payload, "answer",
-		job->assistant_output ? job->assistant_output : "") ||
+				     job->assistant_output ? job->assistant_output : "") ||
 	    !cJSON_AddBoolToObject(payload, "success", job->success) ||
 	    !cJSON_AddBoolToObject(payload, "llm", job->opts.llm_extract_enabled) ||
 	    !cJSON_AddBoolToObject(payload, "episodes", job->opts.cold_path_enabled)) {
@@ -206,62 +206,10 @@ static int memory_job_record(struct db *db, struct memory_job *job)
 	cJSON_Delete(payload);
 	if (!json)
 		return -ENOMEM;
-	rc = sqlite3_prepare_v2(db->handle,
-		"INSERT INTO memory_jobs(session_id,generation,payload) VALUES(?,?,?)",
-		-1, &stmt, NULL);
-	if (rc == SQLITE_OK) {
-		sqlite3_bind_int64(stmt, 1, job->session_id);
-		sqlite3_bind_int64(stmt, 2, job->opts.generation);
-		sqlite3_bind_text(stmt, 3, json, -1, SQLITE_TRANSIENT);
-		rc = sqlite3_step(stmt);
-	}
-	sqlite3_finalize(stmt);
+	rc = memory_job_store_add(db, job->session_id, job->opts.generation, json,
+				  &job->opts.background_job_id);
 	free(json);
-	if (rc != SQLITE_DONE)
-		return MORPH_ERR_DB;
-	job->opts.background_job_id = sqlite3_last_insert_rowid(db->handle);
-	return 0;
-}
-
-static int memory_job_claim(struct db *db, int64_t id)
-{
-	sqlite3_stmt *stmt = NULL;
-	int rc = sqlite3_prepare_v2(db->handle,
-		"UPDATE memory_jobs SET state='running',attempts=attempts+1,"
-		"worker_pid=?,updated_at=CAST(strftime('%s','now') AS INTEGER) WHERE id=? "
-		"AND state='queued'",
-		-1, &stmt, NULL);
-
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_int64(stmt, 1, (int64_t)getpid());
-	sqlite3_bind_int64(stmt, 2, id);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	if (rc != SQLITE_DONE)
-		return MORPH_ERR_DB;
-	return sqlite3_changes(db->handle) ? 1 : 0;
-}
-
-static int memory_job_complete(struct db *db, int64_t id, int error)
-{
-	sqlite3_stmt *stmt = NULL;
-	int rc = sqlite3_prepare_v2(db->handle,
-		"UPDATE memory_jobs SET state=?,error_code=?,updated_at=CAST(strftime('%s',"
-		"'now') AS INTEGER) WHERE id=? AND state='running'",
-		-1, &stmt, NULL);
-
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_text(stmt, 1, error == -ESTALE ? "cancelled" :
-		error ? "failed" : "completed", -1, SQLITE_STATIC);
-	sqlite3_bind_int(stmt, 2, error);
-	sqlite3_bind_int64(stmt, 3, id);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	if (rc != SQLITE_DONE)
-		return MORPH_ERR_DB;
-	return 0;
+	return rc;
 }
 
 static void *memory_async_worker(void *arg)
@@ -294,17 +242,15 @@ static void *memory_async_worker(void *arg)
 		struct db worker_db = {0};
 		int rc = db_open(worker ? worker->logger : NULL, &worker_db, job->db_path);
 		if (rc == 0) {
-			int claimed = memory_job_claim(&worker_db, job->opts.background_job_id);
+			int claimed = memory_job_store_claim(
+				&worker_db, job->opts.background_job_id, (int64_t)getpid());
 
 			if (claimed > 0) {
 				rc = memory_consolidate_turn(&worker_db, job->session_id,
-						job->user_input,
-						job->assistant_output,
-						job->steps,
-						job->success,
-						&job->opts);
-				(void)memory_job_complete(&worker_db,
-					job->opts.background_job_id, rc);
+							     job->user_input, job->assistant_output,
+							     job->steps, job->success, &job->opts);
+				(void)memory_job_store_complete(&worker_db,
+								job->opts.background_job_id, rc);
 			} else if (claimed < 0) {
 				rc = claimed;
 			}
@@ -333,8 +279,7 @@ static int memory_async_ensure_worker(struct memory_worker *worker)
 	pthread_mutex_lock(&worker->lock);
 	if (!worker->running) {
 		worker->stop = 0;
-		int err = pthread_create(&worker->thread, NULL,
-					 memory_async_worker, worker);
+		int err = pthread_create(&worker->thread, NULL, memory_async_worker, worker);
 		if (err != 0)
 			rc = -err;
 		else
@@ -344,12 +289,9 @@ static int memory_async_ensure_worker(struct memory_worker *worker)
 	return rc;
 }
 
-int memory_consolidate_turn_async(struct db *db, int64_t session_id,
-				  const char *user_input,
-				  const char *assistant_output,
-				  const struct react_step *steps,
-				  int success,
-				  const struct memory_options *opts)
+int memory_consolidate_turn_async(struct db *db, int64_t session_id, const char *user_input,
+				  const char *assistant_output, const struct react_step *steps,
+				  int success, const struct memory_options *opts)
 {
 	struct memory_job *job;
 	struct memory_worker *worker = opts ? opts->worker : NULL;
@@ -378,8 +320,7 @@ int memory_consolidate_turn_async(struct db *db, int64_t session_id,
 		return MORPH_ERR_DB;
 	}
 	job->opts.generation_bound = 1;
-	if (!job->db_path || !job->user_input ||
-	    (assistant_output && !job->assistant_output) ||
+	if (!job->db_path || !job->user_input || (assistant_output && !job->assistant_output) ||
 	    (steps && !job->steps)) {
 		memory_job_free(job);
 		return -ENOMEM;
@@ -447,9 +388,9 @@ int memory_async_pending(struct memory_worker *worker)
 	return pending;
 }
 
-static struct memory_job *memory_job_restore(struct db *db, sqlite3_stmt *row)
+static struct memory_job *memory_job_restore(struct db *db, const struct memory_job_record *row)
 {
-	const char *json = (const char *)sqlite3_column_text(row, 3);
+	const char *json = row->payload_json;
 	cJSON *payload = json ? cJSON_Parse(json) : NULL;
 	cJSON *input = cJSON_GetObjectItemCaseSensitive(payload, "input");
 	cJSON *answer = cJSON_GetObjectItemCaseSensitive(payload, "answer");
@@ -468,22 +409,22 @@ static struct memory_job *memory_job_restore(struct db *db, sqlite3_stmt *row)
 	job->db_path = strdup(db->path);
 	job->user_input = strdup(input->valuestring);
 	job->assistant_output = strdup(answer->valuestring);
-	job->session_id = sqlite3_column_int64(row, 1);
+	job->session_id = row->session_id;
 	job->success = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(payload, "success"));
 	job->opts.enabled = 1;
-	job->opts.cold_path_enabled = cJSON_IsTrue(
-		cJSON_GetObjectItemCaseSensitive(payload, "episodes"));
-	job->opts.llm_extract_enabled = cJSON_IsTrue(
-		cJSON_GetObjectItemCaseSensitive(payload, "llm"));
+	job->opts.cold_path_enabled =
+		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(payload, "episodes"));
+	job->opts.llm_extract_enabled =
+		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(payload, "llm"));
 	job->opts.generation_bound = 1;
-	job->opts.generation = sqlite3_column_int64(row, 2);
-	job->opts.background_job_id = sqlite3_column_int64(row, 0);
+	job->opts.generation = row->generation;
+	job->opts.background_job_id = row->id;
 	if (!job->db_path || !job->user_input || !job->assistant_output) {
 		cJSON_Delete(payload);
 		memory_job_free(job);
 		return NULL;
 	}
-	cJSON_ArrayForEach(name, cJSON_GetObjectItemCaseSensitive(payload, "tools")) {
+	cJSON_ArrayForEach (name, cJSON_GetObjectItemCaseSensitive(payload, "tools")) {
 		struct react_step *step;
 
 		if (!cJSON_IsString(name))
@@ -510,53 +451,41 @@ static struct memory_job *memory_job_restore(struct db *db, sqlite3_stmt *row)
 
 int memory_async_resume(struct db *db, const struct memory_options *opts)
 {
-	sqlite3_stmt *stmt = NULL;
+	struct memory_job_records records = {0};
+	struct memory_job_record *record;
 	struct memory_worker *worker = opts ? opts->worker : NULL;
 	int rc;
 
 	/* A private in-memory connection cannot be reopened by the worker. */
 	if (!worker || !db || !db->handle || !strcmp(db->path, ":memory:"))
 		return 0;
-	rc = sqlite3_prepare_v2(db->handle,
-		"SELECT id,session_id,generation,payload,state,worker_pid FROM memory_jobs "
-		"WHERE state IN ('queued','running') OR "
-		"(state='failed' AND attempts<3 AND updated_at<CAST(strftime('%s','now') "
-		"AS INTEGER)-30) ORDER BY id",
-		-1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-		const char *state = (const char *)sqlite3_column_text(stmt, 4);
-		int64_t id = sqlite3_column_int64(stmt, 0);
+	rc = memory_job_store_recoverable(db, &records);
+	if (rc)
+		return rc;
+	morph_array_foreach (record, &records.rows, struct memory_job_record) {
+		const char *state = record->state;
+		int64_t id = record->id;
 		struct memory_job *job;
 		int result;
 
 		if (!strcmp(state, "running")) {
-			pid_t pid = (pid_t)sqlite3_column_int64(stmt, 5);
+			pid_t pid = (pid_t)record->worker_pid;
 
 			if (pid > 0 && (kill(pid, 0) == 0 || errno != ESRCH))
 				continue;
 		}
 		if (strcmp(state, "queued")) {
-			sqlite3_stmt *reset = NULL;
-
-			result = sqlite3_prepare_v2(db->handle,
-				"UPDATE memory_jobs SET state='queued' WHERE id=? AND state=?",
-				-1, &reset, NULL);
-			if (result == SQLITE_OK) {
-				sqlite3_bind_int64(reset, 1, id);
-				sqlite3_bind_text(reset, 2, state, -1, SQLITE_TRANSIENT);
-				result = sqlite3_step(reset);
+			result = memory_job_store_requeue(db, id, state);
+			if (result < 0) {
+				memory_job_records_cleanup(&records);
+				return result;
 			}
-			sqlite3_finalize(reset);
-			if (result != SQLITE_DONE) {
-				sqlite3_finalize(stmt);
-				return MORPH_ERR_DB;
-			}
+			if (!result)
+				continue;
 		}
-		job = memory_job_restore(db, stmt);
+		job = memory_job_restore(db, record);
 		if (!job) {
-			sqlite3_finalize(stmt);
+			memory_job_records_cleanup(&records);
 			return -ENOMEM;
 		}
 		job->opts.worker = worker;
@@ -564,7 +493,7 @@ int memory_async_resume(struct db *db, const struct memory_options *opts)
 		result = memory_async_ensure_worker(worker);
 		if (result != 0) {
 			memory_job_free(job);
-			sqlite3_finalize(stmt);
+			memory_job_records_cleanup(&records);
 			return result;
 		}
 		pthread_mutex_lock(&worker->lock);
@@ -592,42 +521,6 @@ int memory_async_resume(struct db *db, const struct memory_options *opts)
 		}
 		pthread_mutex_unlock(&worker->lock);
 	}
-	sqlite3_finalize(stmt);
-	if (rc != SQLITE_DONE)
-		return MORPH_ERR_DB;
+	memory_job_records_cleanup(&records);
 	return 0;
-}
-
-char *memory_background_render(struct db *db, int64_t session_id)
-{
-	sqlite3_stmt *stmt = NULL;
-	morph_buf_t buf;
-	int rc;
-
-	if (!db || !db->handle || morph_buf_init(&buf, 512) != 0)
-		return NULL;
-	rc = sqlite3_prepare_v2(db->handle,
-		"SELECT id,state,attempts,error_code FROM memory_jobs WHERE session_id=? "
-		"ORDER BY id DESC LIMIT 20", -1, &stmt, NULL);
-	if (rc == SQLITE_OK) {
-		sqlite3_bind_int64(stmt, 1, session_id);
-		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-			int error = sqlite3_column_int(stmt, 3);
-
-			if (morph_buf_printf(&buf, "job #%lld: %s (attempts=%d; %s)\n",
-				(long long)sqlite3_column_int64(stmt, 0),
-				(const char *)sqlite3_column_text(stmt, 1),
-				sqlite3_column_int(stmt, 2),
-				error ? morph_strerror(error) : "ok") != 0) {
-				rc = SQLITE_NOMEM;
-				break;
-			}
-		}
-	}
-	sqlite3_finalize(stmt);
-	if (rc != SQLITE_DONE) {
-		morph_buf_cleanup(&buf);
-		return NULL;
-	}
-	return morph_buf_detach(&buf);
 }

@@ -1,5 +1,4 @@
 #include "llm.h"
-#include "agent/tool_runtime.h"
 #include "adapter.h"
 #include "codec.h"
 #include "chat_codec.h"
@@ -25,15 +24,14 @@
 
 #define LLM_IMAGE_QA_MAX_DIM 360
 
-struct model *model_bind_tool_request(const struct model *source,
-				      const struct tool_runtime_context *runtime,
-				      struct model *storage)
+struct model *model_bind_http_request(const struct model *source,
+				      const struct http_control *control, struct model *storage)
 {
 	if (!source || !storage)
 		return NULL;
 	*storage = *source;
-	if (runtime)
-		storage->http = runtime->http;
+	if (control)
+		storage->http = *control;
 	return storage;
 }
 
