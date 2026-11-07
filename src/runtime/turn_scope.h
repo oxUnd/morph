@@ -50,6 +50,7 @@ struct runtime_turn_scope_context {
 	struct plan_registry *active_plans;
 	void *usage_user_data;
 	struct runtime_turn_scope *scope;
+	const struct tool_checkpoint_context *checkpoint;
 };
 
 struct memory_options runtime_memory_options_from_config(const struct config *config);

@@ -5,6 +5,9 @@ extern "C" {
 #include "agent/tool.h"
 #include "agent/tool_context.h"
 #include "agent/tools/apply_patch.h"
+#include "agent/tools/checkpoint.h"
+#include "agent/tool_runtime.h"
+#include "util/cleanup.h"
 #include "util/buf.h"
 #include "util/file.h"
 }
@@ -13,7 +16,10 @@ extern "C" {
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <map>
 #include <string>
+#include <vector>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -75,6 +81,269 @@ protected:
 		return text;
 	}
 };
+
+struct PatchTrackingRecorder {
+	bool active = false;
+	int begin_count = 0;
+	int finish_count = 0;
+	int begin_error = 0;
+	int finish_error = 0;
+	int request_error = 0;
+	int request_count = 0;
+	int64_t requested_id = 0;
+	std::string requested_action;
+	std::string fail_capture;
+	std::vector<std::string> paths;
+	std::map<std::string, std::string> before;
+	std::map<std::string, std::string> after;
+};
+
+static std::string tracking_file_contents(const char *path)
+{
+	if (!std::filesystem::exists(path))
+		return "<absent>";
+	std::ifstream file(path, std::ios::binary);
+	return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+}
+
+static int tracking_begin(void *opaque, int64_t id)
+{
+	auto &recorder = *static_cast<PatchTrackingRecorder *>(opaque);
+	EXPECT_EQ(id, 42);
+	EXPECT_FALSE(recorder.active);
+	recorder.begin_count++;
+	if (recorder.begin_error)
+		return recorder.begin_error;
+	recorder.active = true;
+	return 0;
+}
+
+static int tracking_capture(void *opaque, int64_t id, const char *path)
+{
+	auto &recorder = *static_cast<PatchTrackingRecorder *>(opaque);
+	const std::string name = std::filesystem::path(path).filename();
+	EXPECT_EQ(id, 42);
+	EXPECT_TRUE(recorder.active);
+	if (name == recorder.fail_capture)
+		return -EIO;
+	recorder.paths.emplace_back(path);
+	recorder.before[name] = tracking_file_contents(path);
+	return 0;
+}
+
+static int tracking_finish(void *opaque, int64_t id)
+{
+	auto &recorder = *static_cast<PatchTrackingRecorder *>(opaque);
+	EXPECT_EQ(id, 42);
+	EXPECT_TRUE(recorder.active);
+	for (const auto &path : recorder.paths)
+		recorder.after[std::filesystem::path(path).filename()] =
+			tracking_file_contents(path.c_str());
+	recorder.finish_count++;
+	recorder.active = false;
+	return recorder.finish_error;
+}
+
+static int tracking_request(void *opaque, const char *action, int64_t id, cJSON **out)
+{
+	auto &recorder = *static_cast<PatchTrackingRecorder *>(opaque);
+	EXPECT_EQ(*out, nullptr);
+	recorder.request_count++;
+	recorder.requested_action = action;
+	recorder.requested_id = id;
+	*out = cJSON_CreateObject();
+	if (!*out)
+		return -ENOMEM;
+	cJSON_AddStringToObject(*out, "action", action);
+	cJSON_AddNumberToObject(*out, "id", static_cast<double>(id));
+	cJSON_AddBoolToObject(*out, "restored", 0);
+	cJSON *conflicts = cJSON_AddArrayToObject(*out, "conflicts");
+	if (recorder.request_error)
+		cJSON_AddItemToArray(conflicts, cJSON_CreateString("later-user-edit.txt"));
+	return recorder.request_error;
+}
+
+class PatchTrackingTest : public PatchTest
+{
+      protected:
+	PatchTrackingRecorder recorder;
+	struct tool_registry registry{};
+	struct tool_context *context = nullptr;
+	struct tool_runtime_context runtime{};
+
+	void SetUp() override
+	{
+		PatchTest::SetUp();
+		tool_registry_init(nullptr, &registry);
+		context = tool_context_create(nullptr, dir, dir);
+		ASSERT_NE(context, nullptr);
+		ASSERT_EQ(apply_patch_init(&registry, context), 0);
+		ASSERT_EQ(checkpoint_init(&registry), 0);
+		runtime.checkpoint = {42,
+				      &recorder,
+				      tracking_begin,
+				      tracking_capture,
+				      tracking_finish,
+				      tracking_request};
+	}
+
+	void TearDown() override
+	{
+		tool_registry_cleanup(&registry);
+		tool_context_destroy(context);
+		PatchTest::TearDown();
+	}
+
+	int run(const char *tool, const char *input, struct tool_result *result)
+	{
+		result->runtime = &runtime;
+		return tool_exec(&registry, tool, input, result);
+	}
+};
+
+TEST_F(PatchTrackingTest, CapturesEveryPreimageBeforeEditsIncludingMoveDestination)
+{
+	write_file("first.txt", "old first\n");
+	write_file("source.txt", "old source\n");
+	write_file("destination.txt", "user destination\n");
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	ASSERT_EQ(run("apply_patch",
+		      "*** Begin Patch\n*** Update File: first.txt\n@@\n-old first\n+new first\n"
+		      "*** Update File: source.txt\n*** Move to: destination.txt\n@@\n"
+		      "-old source\n+new source\n*** End Patch",
+		      &result),
+		  0);
+	EXPECT_EQ(recorder.before["first.txt"], "old first\n");
+	EXPECT_EQ(recorder.before["source.txt"], "old source\n");
+	EXPECT_EQ(recorder.before["destination.txt"], "user destination\n");
+	EXPECT_EQ(recorder.after["first.txt"], "new first\n");
+	EXPECT_EQ(recorder.after["source.txt"], "<absent>");
+	EXPECT_EQ(recorder.after["destination.txt"], "new source\n");
+	EXPECT_EQ(recorder.finish_count, 1);
+	EXPECT_FALSE(recorder.active);
+	const cJSON *checkpoint = cJSON_GetObjectItem(result.data, "checkpoint");
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(checkpoint, "id")), 42);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(checkpoint, "status")), "sealed");
+}
+
+TEST_F(PatchTrackingTest, BeginOrCaptureFailureNeverMutatesFiles)
+{
+	write_file("first.txt", "first\n");
+	write_file("second.txt", "second\n");
+	const char *patch = "*** Begin Patch\n*** Update File: first.txt\n@@\n-first\n+changed\n"
+			    "*** Update File: second.txt\n@@\n-second\n+changed\n*** End Patch";
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	recorder.begin_error = -EIO;
+	EXPECT_EQ(run("apply_patch", patch, &result), -EIO);
+	EXPECT_EQ(recorder.finish_count, 0);
+	EXPECT_EQ(read_file("first.txt"), "first\n");
+	recorder.begin_error = 0;
+	recorder.fail_capture = "second.txt";
+	EXPECT_EQ(run("apply_patch", patch, &result), -EIO);
+	EXPECT_EQ(recorder.finish_count, 1);
+	EXPECT_FALSE(recorder.active);
+	EXPECT_EQ(read_file("first.txt"), "first\n");
+	EXPECT_EQ(read_file("second.txt"), "second\n");
+	const cJSON *checkpoint = cJSON_GetObjectItem(result.meta, "checkpoint");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(checkpoint, "status")),
+		     "capture_failed");
+	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(checkpoint, "changes_may_have_applied")));
+	runtime.checkpoint.capture = nullptr;
+	EXPECT_EQ(run("apply_patch", patch, &result), MORPH_ERR_NOT_CONFIGURED);
+	EXPECT_EQ(recorder.begin_count, 2);
+	EXPECT_EQ(recorder.finish_count, 1);
+	EXPECT_EQ(read_file("first.txt"), "first\n");
+}
+
+TEST_F(PatchTrackingTest, ParseFailureAndPermissionDenialStillFinishWithoutCapture)
+{
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	EXPECT_LT(run("apply_patch", "invalid patch", &result), 0);
+	EXPECT_EQ(recorder.finish_count, 1);
+	EXPECT_TRUE(recorder.paths.empty());
+	struct permission_policy policy = permission_policy_default();
+	policy.access = PERMISSION_READ_ONLY;
+	policy.approval = PERMISSION_NEVER;
+	ASSERT_EQ(tool_context_set_permission_policy(context, &policy), 0);
+	EXPECT_LT(run("apply_patch", "*** Begin Patch\n*** Add File: denied.txt\n+x\n*** End Patch",
+		      &result),
+		  0);
+	EXPECT_EQ(recorder.finish_count, 2);
+	EXPECT_TRUE(recorder.paths.empty());
+	EXPECT_FALSE(std::filesystem::exists(path("denied.txt")));
+}
+
+TEST_F(PatchTrackingTest, PartialPatchFailureSealsChangesAndReportsRisk)
+{
+	write_file("first.txt", "before\n");
+	write_file("second.txt", "actual\n");
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	EXPECT_LT(run("apply_patch",
+		      "*** Begin Patch\n*** Update File: first.txt\n@@\n-before\n+after\n"
+		      "*** Update File: second.txt\n@@\n-missing\n+changed\n*** End Patch",
+		      &result),
+		  0);
+	EXPECT_EQ(recorder.after["first.txt"], "after\n");
+	EXPECT_EQ(recorder.after["second.txt"], "actual\n");
+	EXPECT_EQ(recorder.finish_count, 1);
+	const cJSON *checkpoint = cJSON_GetObjectItem(result.meta, "checkpoint");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(checkpoint, "status")), "sealed");
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(checkpoint, "changes_may_have_applied")));
+	EXPECT_NE(strstr(result.text.data, "Files may already have changed"), nullptr);
+}
+
+TEST_F(PatchTrackingTest, SealFailureAfterEditingIsNeverReportedAsSuccess)
+{
+	recorder.finish_error = -EIO;
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	EXPECT_EQ(run("apply_patch",
+		      "*** Begin Patch\n*** Add File: changed.txt\n+created\n*** End Patch",
+		      &result),
+		  -EIO);
+	EXPECT_EQ(read_file("changed.txt"), "created\n");
+	EXPECT_EQ(recorder.finish_count, 1);
+	EXPECT_FALSE(recorder.active);
+	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(result.envelope, "ok")));
+	const cJSON *checkpoint = cJSON_GetObjectItem(result.meta, "checkpoint");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(checkpoint, "status")),
+		     "seal_failed");
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(checkpoint, "changes_may_have_applied")));
+}
+
+TEST_F(PatchTrackingTest, CheckpointRequiresExplicitTargetAndRetainsConflictDetails)
+{
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	ASSERT_EQ(run("checkpoint", "{\"action\":\"list\"}", &result), 0);
+	EXPECT_EQ(recorder.requested_id, 0);
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "current_checkpoint_id")), 42);
+	for (const char *input :
+	     {"{\"action\":\"preview\"}", "{\"action\":\"restore_code\"}",
+	      "{\"action\":\"preview\",\"id\":1.5}", "{\"action\":\"restore_code\",\"id\":0}",
+	      "{\"action\":\"preview\",\"id\":1e30}", "{\"action\":\"rewind\",\"id\":42}"})
+		EXPECT_EQ(run("checkpoint", input, &result), -EINVAL);
+	EXPECT_EQ(recorder.request_count, 1);
+	ASSERT_EQ(run("checkpoint", "{\"action\":\"preview\",\"id\":42}", &result), 0);
+	EXPECT_EQ(recorder.requested_action, "preview");
+	EXPECT_EQ(recorder.requested_id, 42);
+	recorder.request_error = -EAGAIN;
+	EXPECT_EQ(run("checkpoint", "{\"action\":\"restore_code\",\"id\":42}", &result), -EAGAIN);
+	const cJSON *checkpoint = cJSON_GetObjectItem(result.meta, "checkpoint");
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(checkpoint, "conflicts")), 1);
+}
+
+TEST_F(PatchTrackingTest, SubagentEditsKeepLegacyBehaviorAndCannotRequestRestore)
+{
+	runtime.sub_agent_depth = 1;
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	ASSERT_EQ(run("apply_patch",
+		      "*** Begin Patch\n*** Add File: child.txt\n+child\n*** End Patch", &result),
+		  0);
+	EXPECT_EQ(read_file("child.txt"), "child\n");
+	EXPECT_EQ(recorder.begin_count, 0);
+	EXPECT_EQ(recorder.finish_count, 0);
+	EXPECT_EQ(run("checkpoint", "{\"action\":\"restore_code\",\"id\":42}", &result), -EPERM);
+	EXPECT_EQ(recorder.request_count, 0);
+}
 
 TEST_F(PatchTest, AddsUpdatesAndDeletesFiles)
 {

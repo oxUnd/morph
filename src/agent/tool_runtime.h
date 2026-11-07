@@ -11,13 +11,27 @@ extern "C" {
 #include "util/buf.h"
 #include "http/client.h"
 #include "agent/tools/ask_user.h"
+#include "cJSON.h"
 #include <stdint.h>
 
-typedef int (*tool_runtime_session_visible_fn)(const char *display_id,
-					       const char *user_id,
+typedef int (*tool_runtime_session_visible_fn)(const char *display_id, const char *user_id,
 					       void *user_data);
 
 struct tool_context;
+
+/* Borrowed callbacks and state remain alive through the complete tool call.
+ * begin serializes edits until finish, including failed patches. capture runs
+ * after authorization and before any mutation. finish seals postimages and
+ * releases the edit lock even on failure. request returns an independent JSON
+ * owner in an empty output, including optional diagnostics on failure. */
+struct tool_checkpoint_context {
+	int64_t id;
+	void *user_data;
+	int (*begin)(void *user_data, int64_t id);
+	int (*capture)(void *user_data, int64_t id, const char *path);
+	int (*finish)(void *user_data, int64_t id);
+	int (*request)(void *user_data, const char *action, int64_t target, cJSON **out);
+};
 
 struct tool_runtime_context {
 	struct tool_context *permission_context;
@@ -38,6 +52,7 @@ struct tool_runtime_context {
 	void *event_user_data;
 	const char *turn_id;
 	const char *tool_call_id;
+	struct tool_checkpoint_context checkpoint;
 };
 
 struct tool_runtime_stream_sink {

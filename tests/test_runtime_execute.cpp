@@ -3,6 +3,7 @@
 extern "C" {
 #include "models/llm.h"
 #include "runtime/runtime_internal.h"
+#include "runtime/checkpoint.h"
 #include "permission/context_internal.h"
 #include "agent/tools/exec_tool.h"
 #include "agent/tool_runtime.h"
@@ -14,11 +15,15 @@ extern "C" {
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 struct RuntimeScriptedModel {
@@ -33,6 +38,8 @@ struct RuntimeScriptedModel {
 	int calls = 0;
 	void *observed_usage_user_data = nullptr;
 	std::vector<std::string> observed_messages;
+	std::vector<std::pair<std::string, std::string>> actions;
+	size_t action_cursor = 0;
 };
 
 static int runtime_scripted_chat(struct model *self, const char *, const char **messages, int count,
@@ -81,6 +88,22 @@ static int runtime_scripted_chat_with_tools(struct model *self, const char *,
 	}
 	if (state->error)
 		return state->error;
+	if (state->action_cursor < state->actions.size()) {
+		const auto &action = state->actions[state->action_cursor++];
+
+		response->tool_calls = static_cast<struct tool_call *>(
+			std::calloc(1, sizeof(*response->tool_calls)));
+		if (!response->tool_calls)
+			return -ENOMEM;
+		response->tool_call_count = 1;
+		auto &call = response->tool_calls[0];
+		std::snprintf(call.id, sizeof(call.id), "checkpoint_test_%zu",
+			      state->action_cursor);
+		std::snprintf(call.name, sizeof(call.name), "%s", action.first.c_str());
+		call.input_kind = action.first == "apply_patch" ? TOOL_INPUT_TEXT : TOOL_INPUT_JSON;
+		call.arguments = strdup(action.second.c_str());
+		return call.arguments ? 200 : -ENOMEM;
+	}
 	response->content = strdup(state->response.c_str());
 	return response->content ? 200 : -ENOMEM;
 }
@@ -121,7 +144,7 @@ class RuntimeExecuteTest : public RuntimeFacadeTest {
 protected:
 	RuntimeScriptedModel scripted;
 
-	void OpenScripted()
+	void OpenScripted(bool checkpoint_tools = false)
 	{
 		ASSERT_NE(runtime_create_scripted_model(&scripted), nullptr);
 		WriteConfig("[memory]\nenabled = false\n");
@@ -129,6 +152,7 @@ protected:
 		options.config_path = config_path.c_str();
 		options.after_models_cb = runtime_install_scripted_model;
 		options.after_models_user_data = &scripted;
+		options.enable_apply_patch = checkpoint_tools;
 		Open(&options);
 	}
 
@@ -598,4 +622,191 @@ TEST_F(RuntimeExecuteTest, UsageOverrideIsBoundOnceAndRestoredForTheNextTurn)
 	EXPECT_EQ(scripted.observed_usage_user_data, instance);
 	EXPECT_EQ(sink.user_data, &original_usage);
 	scripted.model->usage_sink = nullptr;
+}
+
+static std::string runtime_checkpoint_read_file(const std::string &path)
+{
+	std::ifstream file(path);
+
+	return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+}
+
+TEST_F(RuntimeExecuteTest, CheckpointsTrackRealToolEditsAndModelUndoPreservesDirtyBaseline)
+{
+	OpenScripted(true);
+	const auto path = directory + "/owned.c";
+	std::ofstream(path) << "user change\nold\n";
+	scripted.actions = {
+		{"apply_patch",
+		 "*** Begin Patch\n*** Update File: owned.c\n@@\n user change\n-old\n+new\n"
+		 "*** End Patch\n"}};
+	struct runtime_result result{};
+	ASSERT_EQ(Execute("edit the second line", &result), 0);
+	EXPECT_EQ(runtime_checkpoint_read_file(path), "user change\nnew\n");
+	cJSON *list MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_checkpoint_list_copy(instance, &list), 0);
+	auto *rows = cJSON_GetObjectItemCaseSensitive(list, "checkpoints");
+	ASSERT_EQ(cJSON_GetArraySize(rows), 1);
+	auto *row = cJSON_GetArrayItem(rows, 0);
+	auto *id = cJSON_GetObjectItemCaseSensitive(row, "id");
+	ASSERT_TRUE(cJSON_IsNumber(id));
+	const auto target = static_cast<int64_t>(id->valuedouble);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(row, "prompt")),
+		     "edit the second line");
+	EXPECT_EQ(instance->context.checkpoint.id, 0);
+	EXPECT_EQ(instance->context.react->tool_runtime.checkpoint.id, 0);
+	scripted.actions = {
+		{"checkpoint",
+		 "{\"action\":\"restore_code\",\"id\":" + std::to_string(target) + "}"},
+		{"apply_patch",
+		 "*** Begin Patch\n*** Add File: after-undo.c\n+fresh\n*** End Patch\n"}};
+	scripted.action_cursor = 0;
+	ASSERT_EQ(Execute("undo the prior edit then add a new file", &result), 0);
+	EXPECT_EQ(runtime_checkpoint_read_file(path), "user change\nold\n");
+	EXPECT_EQ(runtime_checkpoint_read_file(directory + "/after-undo.c"), "fresh\n");
+	int count = 0;
+	struct message *messages = runtime_session_messages_current_copy(instance, &count);
+	EXPECT_GE(count, 4);
+	message_free_list(messages);
+}
+
+TEST_F(RuntimeExecuteTest, CheckpointsPersistAcrossReopenAndRequirePermissionToRestore)
+{
+	OpenScripted(true);
+	scripted.actions = {
+		{"apply_patch",
+		 "*** Begin Patch\n*** Add File: created.c\n+created\n*** End Patch\n"}};
+	struct runtime_result result{};
+	ASSERT_EQ(Execute("create one file", &result), 0);
+	cJSON *list MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_checkpoint_list_copy(instance, &list), 0);
+	auto *row = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(list, "checkpoints"), 0);
+	ASSERT_NE(row, nullptr);
+	const auto target = static_cast<int64_t>(
+		cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(row, "id")));
+	runtime_close(instance);
+	instance = nullptr;
+	struct runtime_options options{};
+	options.config_path = config_path.c_str();
+	options.enable_apply_patch = 1;
+	Open(&options);
+	cJSON *preview MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_checkpoint_preview_copy(instance, target, &preview), 0);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(preview, "files")), 1);
+	auto policy = permission_policy_default();
+	policy.access = PERMISSION_READ_ONLY;
+	ASSERT_EQ(tool_context_set_permission_policy(instance->context.tctx, &policy), 0);
+	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	EXPECT_LT(runtime_checkpoint_restore(instance, target, RUNTIME_REWIND_CODE, &report), 0);
+	EXPECT_TRUE(std::filesystem::exists(directory + "/created.c"));
+	policy.access = PERMISSION_WORKSPACE;
+	ASSERT_EQ(tool_context_set_permission_policy(instance->context.tctx, &policy), 0);
+	ASSERT_EQ(runtime_checkpoint_restore(instance, target, RUNTIME_REWIND_BOTH, &report), 0);
+	EXPECT_FALSE(std::filesystem::exists(directory + "/created.c"));
+	int count = -1;
+	struct message *messages = runtime_session_messages_current_copy(instance, &count);
+	EXPECT_EQ(count, 0);
+	message_free_list(messages);
+}
+
+TEST_F(RuntimeExecuteTest, CheckpointConflictPreservesManualChangesAndConversationCanRewindAlone)
+{
+	OpenScripted(true);
+	std::ofstream(directory + "/manual.c") << "before\n";
+	scripted.actions = {{"apply_patch", "*** Begin Patch\n*** Update File: "
+					    "manual.c\n@@\n-before\n+after\n*** End Patch\n"}};
+	struct runtime_result result{};
+	ASSERT_EQ(Execute("change the file", &result), 0);
+	cJSON *list MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_checkpoint_list_copy(instance, &list), 0);
+	auto *row = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(list, "checkpoints"), 0);
+	ASSERT_NE(row, nullptr);
+	const auto target = static_cast<int64_t>(
+		cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(row, "id")));
+	std::ofstream(directory + "/manual.c") << "manual edit\n";
+	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	EXPECT_LT(runtime_checkpoint_restore(instance, target, RUNTIME_REWIND_BOTH, &report), 0);
+	ASSERT_NE(report, nullptr);
+	EXPECT_GT(cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(report, "conflicts")), 0);
+	EXPECT_EQ(runtime_checkpoint_read_file(directory + "/manual.c"), "manual edit\n");
+	cJSON_Delete(report);
+	report = nullptr;
+	ASSERT_EQ(
+		runtime_checkpoint_restore(instance, target, RUNTIME_REWIND_CONVERSATION, &report),
+		0);
+	EXPECT_EQ(runtime_checkpoint_read_file(directory + "/manual.c"), "manual edit\n");
+	EXPECT_EQ(instance->context.react->messages, nullptr);
+	ASSERT_NE(instance->context.react->history_items, nullptr);
+	EXPECT_STREQ(instance->context.react->history_items->kind, "background_receipt");
+	EXPECT_NE(std::string(instance->context.react->history_items->content)
+			  .find("Files were retained"),
+		  std::string::npos);
+}
+
+TEST_F(RuntimeExecuteTest, FailedMultiFilePatchRetainsCheckpointForActualPartialWrites)
+{
+	OpenScripted(true);
+	std::ofstream(directory + "/first.c") << "before\n";
+	scripted.actions = {{"apply_patch",
+			     "*** Begin Patch\n*** Update File: first.c\n@@\n-before\n+after\n"
+			     "*** Update File: missing.c\n@@\n-not there\n+new\n*** End Patch\n"}};
+	struct runtime_result result{};
+	ASSERT_EQ(Execute("attempt a multi-file patch", &result), 0);
+	ASSERT_EQ(runtime_checkpoint_read_file(directory + "/first.c"), "after\n");
+	cJSON *list MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_checkpoint_list_copy(instance, &list), 0);
+	auto *row = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(list, "checkpoints"), 0);
+	ASSERT_NE(row, nullptr);
+	const auto target = static_cast<int64_t>(
+		cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(row, "id")));
+	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_checkpoint_restore(instance, target, RUNTIME_REWIND_CODE, &report), 0);
+	EXPECT_EQ(runtime_checkpoint_read_file(directory + "/first.c"), "before\n");
+	EXPECT_FALSE(std::filesystem::exists(directory + "/missing.c"));
+}
+
+TEST_F(RuntimeExecuteTest, CheckpointFacadeRejectsBusyAndOccupiedOutputs)
+{
+	OpenScripted();
+	cJSON *out MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(pthread_mutex_lock(&instance->context.execution_lock), 0);
+	EXPECT_EQ(runtime_checkpoint_list_copy(instance, &out), -EBUSY);
+	EXPECT_EQ(runtime_checkpoint_preview_copy(instance, 1, &out), -EBUSY);
+	EXPECT_EQ(runtime_checkpoint_restore(instance, 1, RUNTIME_REWIND_BOTH, &out), -EBUSY);
+	ASSERT_EQ(pthread_mutex_unlock(&instance->context.execution_lock), 0);
+	out = cJSON_CreateObject();
+	auto *owner = out;
+	EXPECT_EQ(runtime_checkpoint_list_copy(instance, &out), -EEXIST);
+	EXPECT_EQ(out, owner);
+}
+
+TEST_F(RuntimeExecuteTest, FailedCheckpointSealStopsFurtherTrackedEditsUntilNextTurn)
+{
+	OpenScripted(true);
+	cJSON *empty MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(runtime_checkpoint_list_copy(instance, &empty), 0);
+	ASSERT_EQ(sqlite3_exec(
+			  instance->context.database.handle,
+			  "CREATE TRIGGER reject_checkpoint_seal BEFORE UPDATE OF after_data "
+			  "ON code_checkpoint_files BEGIN SELECT RAISE(ABORT,'seal rejected'); END",
+			  nullptr, nullptr, nullptr),
+		  SQLITE_OK);
+	scripted.actions = {
+		{"apply_patch", "*** Begin Patch\n*** Add File: first.c\n+first\n*** End Patch\n"},
+		{"apply_patch",
+		 "*** Begin Patch\n*** Add File: second.c\n+second\n*** End Patch\n"}};
+	struct runtime_result result{};
+	ASSERT_EQ(Execute("exercise a tracking failure", &result), 0);
+	EXPECT_EQ(runtime_checkpoint_read_file(directory + "/first.c"), "first\n");
+	EXPECT_FALSE(std::filesystem::exists(directory + "/second.c"));
+	EXPECT_TRUE(instance->checkpoint_failed);
+	ASSERT_EQ(sqlite3_exec(instance->context.database.handle,
+			       "DROP TRIGGER reject_checkpoint_seal", nullptr, nullptr, nullptr),
+		  SQLITE_OK);
+	scripted.actions = {{"apply_patch",
+			     "*** Begin Patch\n*** Add File: second.c\n+second\n*** End Patch\n"}};
+	scripted.action_cursor = 0;
+	ASSERT_EQ(Execute("start a new turn", &result), 0);
+	EXPECT_EQ(runtime_checkpoint_read_file(directory + "/second.c"), "second\n");
+	EXPECT_FALSE(instance->checkpoint_failed);
 }

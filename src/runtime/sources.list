@@ -32,5 +32,6 @@ hooks_service.c
 mcp_background.c
 jobs_service.c
 approval.c
+checkpoint.c
 hooks_protocol.c
 hooks_executor.c

@@ -120,6 +120,7 @@ int runtime_context_update_tool_runtime_context(struct runtime_context *ctx, int
 					      session_id, &rt);
 	if (rc != 0)
 		return rc;
+	rt.checkpoint = ctx->checkpoint;
 	react_set_tool_runtime_context(ctx->react, &rt);
 	return 0;
 }
@@ -196,6 +197,7 @@ int runtime_context_prepare_turn(struct runtime_context *ctx, const struct runti
 	scope.active_plans = &ctx->plans;
 	scope.usage_user_data = usage_user_data;
 	scope.scope = &ctx->turn_scope;
+	scope.checkpoint = &ctx->checkpoint;
 	return runtime_turn_scope_begin(&scope, request);
 }
 
@@ -216,6 +218,7 @@ void runtime_context_finish_turn(struct runtime_context *ctx)
 	scope.active_plan_session_id = &ctx->active_plan_session_id;
 	scope.active_plans = &ctx->plans;
 	scope.scope = &ctx->turn_scope;
+	scope.checkpoint = &ctx->checkpoint;
 	runtime_turn_scope_finish(&scope);
 }
 

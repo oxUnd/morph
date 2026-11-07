@@ -4,6 +4,7 @@
 #include "agent/patch.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
+#include "agent/tool_runtime.h"
 #include "cJSON.h"
 #include "util/buf.h"
 #include "util/error.h"
@@ -12,9 +13,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+struct patch_application {
+	struct tool_context *context;
+	const struct tool_checkpoint_context *checkpoint;
+	int tracking;
+	int begun;
+	int captured;
+	int capture_error;
+	int authorization_error;
+};
+
 static int authorize_patch_path(const char *path, int deletion, void *opaque)
 {
-	struct tool_context *context = opaque;
+	struct patch_application *application = opaque;
+	struct tool_context *context = application->context;
 	struct tool_operation operation = {
 		.kind = deletion ? TOOL_OP_PATH_DELETE : TOOL_OP_PATH_WRITE,
 		.tool_name = "apply_patch",
@@ -22,39 +34,88 @@ static int authorize_patch_path(const char *path, int deletion, void *opaque)
 		.target = path,
 		.scope = tool_context_workdir_borrow(context),
 	};
-	return tool_context_check_operation(context, &operation);
-}
+	int rc = tool_context_check_operation(context, &operation);
 
-static int apply_patch_exec(const char *input, struct tool_result *result,
-			    void *user_data)
-{
-	struct tool_context *tool_context = user_data;
-	struct patch_result patch_result MORPH_CLEANUP(patch_result_cleanup) = {0};
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	cJSON *files MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	char error[512];
-	int rc;
-
-	if (!input || !result || !tool_context)
-		return -EINVAL;
-	rc = patch_apply_authorized(tool_context_workdir_borrow(tool_context), input, &patch_result,
-				    error, sizeof(error), authorize_patch_path, tool_context);
 	if (rc != 0) {
-		(void)tool_result_error_copy(result,
-					     rc == -EACCES  ? "permission_denied"
-					     : rc == -EPERM ? "approval_unavailable"
-							    : "invalid_patch",
-					     error[0] ? error : morph_strerror(rc));
+		application->authorization_error = rc;
 		return rc;
 	}
-	data = cJSON_CreateObject();
-	files = cJSON_CreateArray();
+	if (!application->tracking)
+		return rc;
+	rc = application->checkpoint->capture(application->checkpoint->user_data,
+					      application->checkpoint->id, path);
+	if (rc > 0)
+		rc = MORPH_ERR_PROTOCOL;
+	if (rc != 0)
+		application->capture_error = rc;
+	else
+		application->captured++;
+	return rc;
+}
+
+static cJSON *patch_checkpoint_status(const struct patch_application *application,
+				      const char *status, int may_have_changed)
+{
+	cJSON *owner MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *output;
+
+	if (!owner || !cJSON_AddNumberToObject(owner, "id", (double)application->checkpoint->id) ||
+	    !cJSON_AddStringToObject(owner, "status", status) ||
+	    !cJSON_AddBoolToObject(owner, "tracked",
+				   application->begun && !strcmp(status, "sealed")) ||
+	    !cJSON_AddNumberToObject(owner, "captured_paths", application->captured) ||
+	    !cJSON_AddBoolToObject(owner, "changes_may_have_applied", may_have_changed))
+		return NULL;
+	output = owner;
+	owner = NULL;
+	return output;
+}
+
+static int patch_failure(struct tool_result *result, const struct patch_application *application,
+			 int rc, const char *code, const char *message, const char *status,
+			 int may_have_changed)
+{
+	cJSON *meta MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *checkpoint MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	int result_rc;
+
+	if (application->tracking)
+		result_rc = tool_result_error_format(
+			result, code, "%s Checkpoint %lld status: %s. %s", message,
+			(long long)application->checkpoint->id, status,
+			may_have_changed ? "Files may already have changed; inspect current files "
+					   "and the checkpoint "
+					   "before retrying or restoring."
+					 : "No patch file mutations were performed.");
+	else
+		result_rc = tool_result_error_copy(result, code, message);
+	if (result_rc != 0)
+		return result_rc;
+	if (!application->tracking)
+		return rc;
+	meta = cJSON_CreateObject();
+	checkpoint = patch_checkpoint_status(application, status, may_have_changed);
+	if (!meta || !checkpoint)
+		return -ENOMEM;
+	result_rc = morph_json_object_take(meta, "checkpoint", &checkpoint);
+	if (result_rc == 0)
+		result_rc = tool_result_set_meta_take(result, &meta);
+	return result_rc != 0 ? result_rc : rc;
+}
+
+static int patch_success(struct tool_result *result, const struct patch_application *application,
+			 const struct patch_result *patch_result)
+{
+	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *files MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
+	int rc;
+
 	if (!data || !files || !cJSON_AddBoolToObject(data, "changed", 1) ||
 	    !cJSON_AddStringToObject(data, "workspace_root",
-				     tool_context_workdir_borrow(tool_context)))
+				     tool_context_workdir_borrow(application->context)))
 		return -ENOMEM;
-	for (size_t i = 0; i < patch_result.changes.nelts; i++) {
-		const struct patch_change *change = morph_array_borrow(&patch_result.changes, i);
+	for (size_t i = 0; i < patch_result->changes.nelts; i++) {
+		const struct patch_change *change = morph_array_borrow(&patch_result->changes, i);
 		cJSON *item MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
 
 		if (!item || !cJSON_AddStringToObject(item, "path", change->path) ||
@@ -67,13 +128,92 @@ static int apply_patch_exec(const char *input, struct tool_result *result,
 			return rc;
 	}
 	rc = morph_json_object_take(data, "files", &files);
-	if (rc != 0)
-		return rc;
-	return tool_result_success_take(result, &data);
+	if (rc == 0 && application->tracking) {
+		cJSON *checkpoint MORPH_CLEANUP(morph_json_cleanup) =
+			patch_checkpoint_status(application, "sealed", 1);
+
+		if (!checkpoint)
+			return -ENOMEM;
+		rc = morph_json_object_take(data, "checkpoint", &checkpoint);
+	}
+	return rc != 0 ? rc : tool_result_success_take(result, &data);
 }
 
-int apply_patch_init(struct tool_registry *registry,
-		     struct tool_context *tool_context)
+static int apply_patch_exec(const char *input, struct tool_result *result, void *user_data)
+{
+	struct patch_result patch_result MORPH_CLEANUP(patch_result_cleanup) = {0};
+	struct patch_application application = {.context = user_data};
+	const struct tool_runtime_context *runtime;
+	char error[512] = {0};
+	int finish_rc = 0;
+	int rc;
+
+	if (!input || !result || !application.context)
+		return -EINVAL;
+	runtime = result->runtime;
+	if (runtime && runtime->sub_agent_depth == 0) {
+		application.checkpoint = &runtime->checkpoint;
+		application.tracking = runtime->checkpoint.begin || runtime->checkpoint.capture ||
+				       runtime->checkpoint.finish;
+	}
+	if (application.tracking) {
+		const struct tool_checkpoint_context *checkpoint = application.checkpoint;
+
+		if (!checkpoint->begin || !checkpoint->capture || !checkpoint->finish ||
+		    checkpoint->id <= 0)
+			return patch_failure(result, &application, MORPH_ERR_NOT_CONFIGURED,
+					     "checkpoint_tracking_unavailable",
+					     "Checkpoint tracking is incomplete.", "unavailable",
+					     0);
+		rc = checkpoint->begin(checkpoint->user_data, checkpoint->id);
+		if (rc != 0)
+			return patch_failure(result, &application, rc < 0 ? rc : MORPH_ERR_PROTOCOL,
+					     "checkpoint_begin_failed",
+					     "Could not begin checkpoint tracking.", "begin_failed",
+					     0);
+		application.begun = 1;
+	}
+	rc = patch_apply_authorized(tool_context_workdir_borrow(application.context), input,
+				    &patch_result, error, sizeof(error), authorize_patch_path,
+				    &application);
+	if (application.begun) {
+		finish_rc = application.checkpoint->finish(application.checkpoint->user_data,
+							   application.checkpoint->id);
+		if (finish_rc > 0)
+			finish_rc = MORPH_ERR_PROTOCOL;
+	}
+	if (finish_rc != 0)
+		return patch_failure(result, &application, finish_rc, "checkpoint_seal_failed",
+				     "Could not seal checkpoint tracking after the patch attempt.",
+				     "seal_failed",
+				     application.captured > 0 && !application.capture_error &&
+					     !application.authorization_error);
+	if (rc != 0) {
+		const char *code = application.capture_error ? "checkpoint_capture_failed"
+				   : rc == -EACCES	     ? "permission_denied"
+				   : rc == -EPERM	     ? "approval_unavailable"
+							     : "invalid_patch";
+		const char *status = application.capture_error ? "capture_failed" : "sealed";
+
+		return patch_failure(result, &application, rc, code,
+				     application.capture_error
+					     ? "Could not capture file preimages before editing."
+				     : error[0] ? error
+						: morph_strerror(rc),
+				     status,
+				     application.captured > 0 && !application.capture_error &&
+					     !application.authorization_error);
+	}
+	rc = patch_success(result, &application, &patch_result);
+	if (rc != 0)
+		return patch_failure(
+			result, &application, rc, "patch_receipt_failed",
+			"Patch files were changed, but the tool receipt could not be created.",
+			"sealed", 1);
+	return 0;
+}
+
+int apply_patch_init(struct tool_registry *registry, struct tool_context *tool_context)
 {
 	morph_buf_t description MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	const char *workspace_root;
@@ -105,12 +245,17 @@ int apply_patch_init(struct tool_registry *registry,
 	rc = morph_buf_init(&description, 1024);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_printf(&description,
+	rc = morph_buf_printf(
+		&description,
 		"Apply a stripped-down Codex patch to text files. The workspace "
 		"root is '%s'. Every patch path is relative to this exact directory; "
 		"do not use absolute paths and do not repeat the workspace directory "
 		"in a path. Use this tool for source editing instead of passing "
-		"source content through shell commands. "
+		"source content through shell commands. Main-agent runtime checkpoints capture "
+		"these edits; to undo code, use checkpoint list and preview to select the "
+		"correct turn, then restore_code with its explicit id. Shell, manual, other-tool, "
+		"and sub-agent edits are not captured. Failed patches may have partially "
+		"changed files; inspect the checkpoint and current files before retrying. "
 		"Use the exact envelope '*** Begin Patch\\n*** Add File: "
 		"path\\n+content\\n*** End Patch'. Prefer bare '@@' for Update "
 		"File hunks. An optional anchor after '@@ ' must be one complete "
@@ -139,7 +284,8 @@ int apply_patch_init(struct tool_registry *registry,
 		"*** Add File: relative/path.c\n"
 		"+first content line\n"
 		"+/* MORPH_CONTINUE */\n"
-		"*** End Patch\n", workspace_root);
+		"*** End Patch\n",
+		workspace_root);
 	if (rc != 0) {
 		morph_buf_cleanup(&description);
 		return rc;

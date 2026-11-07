@@ -15,6 +15,7 @@ add_library(morph-cli STATIC
 	pages/permissions.c
 	pages/question.c
 	pages/resume.c
+	pages/rewind.c
 	pages/turn_details.c
 	pages/setup/controls.c
 	pages/setup/wizard.c
@@ -37,6 +38,7 @@ add_library(morph-cli STATIC
 	commands/options.c
 	commands/permissions.c
 	commands/registry.c
+	commands/rewind.c
 	commands/runtime.c
 	commands/session.c
 	commands/share.c
@@ -84,6 +86,7 @@ add_library(morph-cli STATIC
 	presentation/notifications.c
 	presentation/output.c
 	presentation/presenter.c
+	presentation/rewind.c
 	presentation/tool_preview.c
 	presentation/share.c
 
