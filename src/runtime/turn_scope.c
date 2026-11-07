@@ -257,7 +257,7 @@ int runtime_turn_scope_start_hooks(struct runtime_engine *engine,
 	/* Bind before begin: loading history may compact before storing the prompt. */
 	if (engine->hooks && engine->hooks->ready) {
 		struct hook_manager *hooks = engine->hooks;
-		cJSON *input = cJSON_CreateObject(), *output = NULL;
+		struct json *input = json_object(), *output = NULL;
 		rc = hook_manager_reload(hooks);
 		hooks->remaining_ms = 600000;
 		hooks->context_bytes = 0;
@@ -270,33 +270,34 @@ int runtime_turn_scope_start_hooks(struct runtime_engine *engine,
 		if (rc == 0 && hooks->session_id != request->session_id) {
 			const char *source = hooks->session_id ? "resume" : "startup";
 			if (hooks->session_id) {
-				cJSON_AddStringToObject(input, "reason", "other");
+				json_add_string(input, "reason", "other");
 				rc = hook_manager_dispatch(hooks, "SessionEnd", input, &output);
-				cJSON_Delete(output);
+				json_free(output);
 				output = NULL;
-				cJSON_DeleteItemFromObject(input, "reason");
+				json_object_remove_ci(input, "reason");
 			}
 			hooks->session_id = request->session_id;
-			cJSON_AddStringToObject(input, "source", source);
+			json_add_string(input, "source", source);
 			if (rc == 0)
 				rc = hook_manager_dispatch(hooks, "SessionStart", input, &output);
-			if (rc == 0 && cJSON_IsTrue(cJSON_GetObjectItem(output, "terminate")))
+			if (rc == 0 && json_is_true(json_member_ci(output, "terminate")))
 				rc = -EPERM;
 			free(hooks->session_context);
 			hooks->session_context = NULL;
-			const cJSON *extra = cJSON_GetObjectItem(output, "context");
-			if (cJSON_IsString(extra)) {
-				hooks->session_context = strdup(extra->valuestring);
+			const struct json *extra = json_member_ci(output, "context");
+			if (json_is_string_value(extra)) {
+				hooks->session_context = strdup(json_string_value(extra));
 				if (!hooks->session_context)
 					rc = -ENOMEM;
 			}
 		}
-		cJSON_Delete(input);
+		json_free(input);
 		if (rc != 0) {
 			react_reset(engine->react);
-			const cJSON *reason = cJSON_GetObjectItem(output, "reason");
-			if (cJSON_IsString(reason)) {
-				engine->react->last_error_detail = strdup(reason->valuestring);
+			const struct json *reason = json_member_ci(output, "reason");
+			if (json_is_string_value(reason)) {
+				engine->react->last_error_detail =
+					strdup(json_string_value(reason));
 				if (!engine->react->last_error_detail)
 					rc = -ENOMEM;
 			}
@@ -306,7 +307,7 @@ int runtime_turn_scope_start_hooks(struct runtime_engine *engine,
 			engine->react->state = REACT_STATE_ABORT;
 			engine->react->last_error_code = rc;
 		}
-		cJSON_Delete(output);
+		json_free(output);
 		engine->react->hook_fn = hook_manager_dispatch;
 		engine->react->hook_user = hooks;
 		engine->react->hook_stop_active = hook_manager_has(hooks, "Stop");

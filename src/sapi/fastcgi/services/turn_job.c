@@ -6,7 +6,7 @@
 #include "sapi/fastcgi/storage/events.h"
 #include "sapi/fastcgi/storage/quota.h"
 #include "sapi/fastcgi/event_sink.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "util/error.h"
 #include "util/child_io.h"
 
@@ -89,16 +89,16 @@ static void *turn_thread(void *arg)
 		run_rc = fcgi_bridge_turn_acquire(j->bridge, j->ticket, &runtime);
 		j->ticket = NULL;
 		if (run_rc != 0) {
-			cJSON *err = cJSON_CreateObject();
+			struct json *err = json_object();
 			char *json = NULL;
 
 			if (err) {
-				cJSON_AddStringToObject(err, "turn_id", j->turn_id);
-				cJSON_AddStringToObject(err, "message", morph_strerror(run_rc));
-				cJSON_AddBoolToObject(err, "retryable",
-						      run_rc == -ETIMEDOUT || run_rc == -EAGAIN);
-				json = cJSON_PrintUnformatted(err);
-				cJSON_Delete(err);
+				json_add_string(err, "turn_id", j->turn_id);
+				json_add_string(err, "message", morph_strerror(run_rc));
+				json_add_bool(err, "retryable",
+					      run_rc == -ETIMEDOUT || run_rc == -EAGAIN);
+				json = json_stringify(err);
+				json_free(err);
 			}
 			events_publish(j->store, j->session_id, "error",
 				       json ? json : "{\"message\":\"turn failed\"}");
@@ -107,16 +107,16 @@ static void *turn_thread(void *arg)
 		}
 		waited_ms = morph_io_now_ms() - j->enqueued_ms;
 		{
-			cJSON *start = cJSON_CreateObject();
+			struct json *start = json_object();
 			char *json = NULL;
 
 			if (start) {
-				cJSON_AddStringToObject(start, "phase", "begin");
-				cJSON_AddStringToObject(start, "turn_id", j->turn_id);
-				cJSON_AddNumberToObject(start, "queue_position", j->queue_position);
-				cJSON_AddNumberToObject(start, "waited_ms", (double)waited_ms);
-				json = cJSON_PrintUnformatted(start);
-				cJSON_Delete(start);
+				json_add_string(start, "phase", "begin");
+				json_add_string(start, "turn_id", j->turn_id);
+				json_add_number(start, "queue_position", j->queue_position);
+				json_add_number(start, "waited_ms", (double)waited_ms);
+				json = json_stringify(start);
+				json_free(start);
 			}
 			events_publish(j->store, j->session_id, "turn_start",
 				       json ? json : "{\"phase\":\"begin\"}");
@@ -126,14 +126,14 @@ static void *turn_thread(void *arg)
 		fcgi_bridge_runtime_release(j->bridge, runtime);
 		runtime = NULL;
 		if (run_rc != 0) {
-			cJSON *err = cJSON_CreateObject();
+			struct json *err = json_object();
 			char *json = NULL;
 
 			if (err) {
-				cJSON_AddStringToObject(err, "turn_id", j->turn_id);
-				cJSON_AddStringToObject(err, "message", morph_strerror(run_rc));
-				json = cJSON_PrintUnformatted(err);
-				cJSON_Delete(err);
+				json_add_string(err, "turn_id", j->turn_id);
+				json_add_string(err, "message", morph_strerror(run_rc));
+				json = json_stringify(err);
+				json_free(err);
 			}
 			events_publish(j->store, j->session_id, "error",
 				       json ? json : "{\"message\":\"turn failed\"}");
@@ -153,14 +153,14 @@ static void *turn_thread(void *arg)
 		}
 		ok = 1;
 	} else {
-		cJSON *err = cJSON_CreateObject();
+		struct json *err = json_object();
 		char *json = NULL;
 
 		if (err) {
-			cJSON_AddStringToObject(err, "turn_id", j->turn_id);
-			cJSON_AddStringToObject(err, "message", "session not found");
-			json = cJSON_PrintUnformatted(err);
-			cJSON_Delete(err);
+			json_add_string(err, "turn_id", j->turn_id);
+			json_add_string(err, "message", "session not found");
+			json = json_stringify(err);
+			json_free(err);
 		}
 		events_publish(j->store, j->session_id, "error",
 			       json ? json : "{\"message\":\"session not found\"}");
@@ -180,15 +180,15 @@ out:
 	}
 	fcgi_bridge_runtime_release(j->bridge, runtime);
 	{
-		cJSON *end = cJSON_CreateObject();
+		struct json *end = json_object();
 		char *json = NULL;
 
 		if (end) {
-			cJSON_AddStringToObject(end, "phase", "done");
-			cJSON_AddStringToObject(end, "turn_id", j->turn_id);
-			cJSON_AddStringToObject(end, "status", ok ? "ok" : "error");
-			json = cJSON_PrintUnformatted(end);
-			cJSON_Delete(end);
+			json_add_string(end, "phase", "done");
+			json_add_string(end, "turn_id", j->turn_id);
+			json_add_string(end, "status", ok ? "ok" : "error");
+			json = json_stringify(end);
+			json_free(end);
 		}
 		events_publish(j->store, j->session_id, "turn_end",
 			       json ? json : "{\"phase\":\"done\"}");
@@ -205,27 +205,27 @@ out:
 
 static void turn_job_publish_abort(struct fcgi_turn_job *j, const char *message)
 {
-	cJSON *err = cJSON_CreateObject();
-	cJSON *end = cJSON_CreateObject();
+	struct json *err = json_object();
+	struct json *end = json_object();
 	char *err_json = NULL;
 	char *end_json = NULL;
 
 	if (err) {
-		cJSON_AddStringToObject(err, "turn_id", j->turn_id);
-		cJSON_AddStringToObject(err, "message", message ? message : "turn failed");
-		err_json = cJSON_PrintUnformatted(err);
-		cJSON_Delete(err);
+		json_add_string(err, "turn_id", j->turn_id);
+		json_add_string(err, "message", message ? message : "turn failed");
+		err_json = json_stringify(err);
+		json_free(err);
 	}
 	events_publish(j->store, j->session_id, "error",
 		       err_json ? err_json : "{\"message\":\"turn failed\"}");
 	free(err_json);
 
 	if (end) {
-		cJSON_AddStringToObject(end, "phase", "done");
-		cJSON_AddStringToObject(end, "turn_id", j->turn_id);
-		cJSON_AddStringToObject(end, "status", "error");
-		end_json = cJSON_PrintUnformatted(end);
-		cJSON_Delete(end);
+		json_add_string(end, "phase", "done");
+		json_add_string(end, "turn_id", j->turn_id);
+		json_add_string(end, "status", "error");
+		end_json = json_stringify(end);
+		json_free(end);
 	}
 	events_publish(j->store, j->session_id, "turn_end",
 		       end_json ? end_json : "{\"phase\":\"done\"}");
@@ -274,14 +274,14 @@ int fcgi_turn_job_submit(struct fcgi_bridge *bridge, struct session_store *store
 		return rc;
 	}
 	job->enqueued_ms = morph_io_now_ms();
-	cJSON *queued = cJSON_CreateObject();
+	struct json *queued = json_object();
 	char *json = NULL;
 
 	if (queued) {
-		cJSON_AddStringToObject(queued, "turn_id", job->turn_id);
-		cJSON_AddNumberToObject(queued, "position", job->queue_position);
-		json = cJSON_PrintUnformatted(queued);
-		cJSON_Delete(queued);
+		json_add_string(queued, "turn_id", job->turn_id);
+		json_add_number(queued, "position", job->queue_position);
+		json = json_stringify(queued);
+		json_free(queued);
 	}
 	events_publish(store, session_id, "turn_queued", json ? json : "{\"position\":1}");
 	free(json);

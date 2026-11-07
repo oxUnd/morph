@@ -1,5 +1,5 @@
 #include "sapi/cli/commands/skill.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
@@ -149,20 +149,19 @@ static int cli_skill_optional_field_count(const struct skill_entry *entry)
 static void cli_skill_print_metadata(struct cli_application *ctx, const struct skill_entry *entry,
 				     int columns)
 {
-	cJSON *metadata = cJSON_CreateObject();
+	struct json *metadata = json_object();
 	char *json;
 
 	if (!metadata)
 		return;
 	for (int i = 0; i < entry->fm.metadata_count; i++)
-		cJSON_AddStringToObject(metadata, entry->fm.metadata[i].key,
-					entry->fm.metadata[i].value);
-	json = cJSON_PrintUnformatted(metadata);
+		json_add_string(metadata, entry->fm.metadata[i].key, entry->fm.metadata[i].value);
+	json = json_stringify(metadata);
 	if (json) {
 		cli_list_json_field(ctx, "Metadata", json, 1, columns);
 		free(json);
 	}
-	cJSON_Delete(metadata);
+	json_free(metadata);
 }
 
 static int cli_skill_print_info(struct cli_application *ctx, const char *name)

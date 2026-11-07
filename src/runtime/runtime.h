@@ -107,8 +107,8 @@ int runtime_execute_turn(struct runtime *runtime,
 void runtime_cancel_turn(struct runtime *runtime);
 
 /* Process views never acquire the turn lock and are available while working. */
-int runtime_process_list(struct runtime *runtime, cJSON **out);
-int runtime_process_read(struct runtime *runtime, const char *id, cJSON **out);
+int runtime_process_list(struct runtime *runtime, struct json **out);
+int runtime_process_read(struct runtime *runtime, const char *id, struct json **out);
 int runtime_process_stop(struct runtime *runtime, const char *id);
 
 int runtime_session_current(const struct runtime *runtime,
@@ -141,17 +141,17 @@ void runtime_session_messages_free(struct message *messages);
 int runtime_session_last_answer(struct runtime *runtime, char **out);
 /* Read a session without selecting it. Caller frees the JSON on success. */
 /* Latest answered turn, including persisted tool results. Caller owns JSON. */
-int runtime_session_share_current(struct runtime *runtime, cJSON **out);
+int runtime_session_share_current(struct runtime *runtime, struct json **out);
 int runtime_session_transcript_json(struct runtime *runtime, int64_t session_id,
 				    char **out);
 struct model_history_item *runtime_session_model_history_current(
 	struct runtime *runtime, int active_only, int *count);
 void runtime_session_model_history_free(struct model_history_item *items);
 /* Read-only context inspection. Caller owns JSON. Returns -EBUSY during a turn. */
-int runtime_session_history_inspect(struct runtime *runtime, cJSON **out);
+int runtime_session_history_inspect(struct runtime *runtime, struct json **out);
 int runtime_session_history_entry_input(struct runtime *runtime, int64_t sequence,
-	cJSON **out);
-int runtime_session_last_request(struct runtime *runtime, cJSON **out);
+					struct json **out);
+int runtime_session_last_request(struct runtime *runtime, struct json **out);
 int runtime_session_history_diagnose(struct runtime *runtime,
 	struct agent_history_diagnostic *diagnostic);
 int runtime_session_history_repair(struct runtime *runtime,
@@ -166,7 +166,7 @@ const char *runtime_workdir_get(const struct runtime *runtime);
 const char *runtime_config_path_get(const struct runtime *runtime);
 char *runtime_output_get_json(struct runtime *runtime, const char *path);
 /* Host management only; never register these operations as model tools. */
-int runtime_hooks_snapshot(struct runtime *runtime, cJSON **out);
+int runtime_hooks_snapshot(struct runtime *runtime, struct json **out);
 int runtime_hooks_manage(struct runtime *runtime, const char *action,
 	const char *id, const char *expected_digest);
 

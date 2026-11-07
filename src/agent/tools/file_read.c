@@ -51,38 +51,38 @@ struct read_page {
 	const char *reason;
 };
 
-static int read_integer(cJSON *root, const char *name, uint64_t min,
-			uint64_t max, uint64_t *value)
+static int read_integer(struct json *root, const char *name, uint64_t min, uint64_t max,
+			uint64_t *value)
 {
-	cJSON *item = cJSON_GetObjectItemCaseSensitive(root, name);
+	struct json *item = json_member(root, name);
 
 	if (!item)
 		return 0;
-	if (!cJSON_IsNumber(item) || !(item->valuedouble >= (double)min) ||
-	    !(item->valuedouble <= (double)max))
+	if (!json_is_number_value(item) || !(json_number_value(item) >= (double)min) ||
+	    !(json_number_value(item) <= (double)max))
 		return -EINVAL;
-	uint64_t parsed = (uint64_t)item->valuedouble;
-	if ((double)parsed != item->valuedouble)
+	uint64_t parsed = (uint64_t)json_number_value(item);
+	if ((double)parsed != json_number_value(item))
 		return -EINVAL;
 	*value = parsed;
 	return 0;
 }
 
-static int read_options_parse(cJSON *root, struct read_options *opts)
+static int read_options_parse(struct json *root, struct read_options *opts)
 {
-	cJSON *path = cJSON_GetObjectItemCaseSensitive(root, "file_path");
-	cJSON *version = cJSON_GetObjectItemCaseSensitive(root, "expected_version");
+	struct json *path = json_member(root, "file_path");
+	struct json *version = json_member(root, "expected_version");
 
-	if (!cJSON_IsObject(root) || !cJSON_IsString(path) ||
-	    !path->valuestring[0] || utf8valid(path->valuestring) ||
-	    (version && !cJSON_IsString(version)))
+	if (!json_is_object_value(root) || !json_is_string_value(path) ||
+	    !json_string_value(path)[0] || utf8valid(json_string_value(path)) ||
+	    (version && !json_is_string_value(version)))
 		return -EINVAL;
-	opts->path = path->valuestring;
-	opts->expected_version = version ? version->valuestring : NULL;
+	opts->path = json_string_value(path);
+	opts->expected_version = version ? json_string_value(version) : NULL;
 	opts->limit = 1000;
 	opts->max_bytes = FILE_READ_DEFAULT_BYTES;
-	opts->byte_mode = cJSON_HasObjectItem(root, "byte_offset");
-	if (opts->byte_mode && cJSON_HasObjectItem(root, "offset"))
+	opts->byte_mode = json_has_member_ci(root, "byte_offset");
+	if (opts->byte_mode && json_has_member_ci(root, "offset"))
 		return -EINVAL;
 	if (read_integer(root, "offset", 0, FILE_READ_MAX_INTEGER, &opts->offset) < 0 ||
 	    read_integer(root, "byte_offset", 0, FILE_READ_MAX_INTEGER,
@@ -275,7 +275,7 @@ static int reader_text(struct file_reader *reader, const struct read_options *op
 	return 0;
 }
 
-static int read_binary_result(struct file_reader *reader, cJSON *out)
+static int read_binary_result(struct file_reader *reader, struct json *out)
 {
 	unsigned char bytes[64];
 	char hex[sizeof(bytes) * 3 + 1];
@@ -289,52 +289,53 @@ static int read_binary_result(struct file_reader *reader, cJSON *out)
 		hex[i * 3 + 2] = ' ';
 	}
 	hex[n > 0 ? (size_t)n * 3 - 1 : 0] = '\0';
-	if (!cJSON_AddStringToObject(out, "preview", hex) ||
-	    !cJSON_AddStringToObject(out, "preview_format", "hex") ||
-	    !cJSON_AddStringToObject(out, "note",
-		"Binary or unsupported text encoding; content was not returned. "
-		"Convert UTF-16/32 or other encodings to UTF-8 before reading.") ||
-	    !cJSON_AddNumberToObject(out, "returned_lines", 0) ||
-	    !cJSON_AddNullToObject(out, "total_lines") ||
-	    !cJSON_AddBoolToObject(out, "truncated", 1))
+	if (!json_add_string(out, "preview", hex) ||
+	    !json_add_string(out, "preview_format", "hex") ||
+	    !json_add_string(out, "note",
+			     "Binary or unsupported text encoding; content was not returned. "
+			     "Convert UTF-16/32 or other encodings to UTF-8 before reading.") ||
+	    !json_add_number(out, "returned_lines", 0) || !json_add_null(out, "total_lines") ||
+	    !json_add_bool(out, "truncated", 1))
 		return -ENOMEM;
 	return 0;
 }
 
-static cJSON *read_optional_number(cJSON *out, const char *name, int known, uint64_t value)
+static struct json *read_optional_number(struct json *out, const char *name, int known,
+					 uint64_t value)
 {
-	return known ? cJSON_AddNumberToObject(out, name, (double)value) :
-		cJSON_AddNullToObject(out, name);
+	return known ? json_add_number(out, name, (double)value) : json_add_null(out, name);
 }
 
 static int read_text_result(struct file_reader *reader, const struct read_options *opts,
-			    struct read_page *page, cJSON *out)
+			    struct read_page *page, struct json *out)
 {
 	int more = reader->position < reader->size;
 	int partial = more && page->line_bytes != 0;
 	uint64_t total = page->line + (page->line_bytes != 0);
 	uint64_t start = opts->byte_mode ? 0 : opts->offset;
 
-	if (!cJSON_AddNumberToObject(out, "returned_lines", (double)page->returned) ||
-	    !cJSON_AddBoolToObject(out, "truncated", more) ||
-	    !cJSON_AddBoolToObject(out, "partial_line", partial) ||
-	    !cJSON_AddBoolToObject(out, "starts_mid_line", page->starts_mid_line) ||
+	if (!json_add_number(out, "returned_lines", (double)page->returned) ||
+	    !json_add_bool(out, "truncated", more) ||
+	    !json_add_bool(out, "partial_line", partial) ||
+	    !json_add_bool(out, "starts_mid_line", page->starts_mid_line) ||
 	    !read_optional_number(out, "total_lines", !more && page->known_lines, total) ||
 	    !read_optional_number(out, "line_start", page->known_lines,
-			  start < total ? start : total) ||
+				  start < total ? start : total) ||
 	    !read_optional_number(out, "line_end", page->known_lines,
-			  page->line + (page->line_bytes != 0)) ||
+				  page->line + (page->line_bytes != 0)) ||
 	    !read_optional_number(out, "next_offset", more && !partial && page->known_lines,
-			  page->line) ||
+				  page->line) ||
 	    !read_optional_number(out, "next_byte_offset", more, reader->position) ||
-	    !cJSON_AddStringToObject(out, "truncation_reason", page->reason ? page->reason : ""))
+	    !json_add_string(out, "truncation_reason", page->reason ? page->reason : ""))
 		return -ENOMEM;
-	if (more && !cJSON_AddStringToObject(out, "note",
-		"More content remains. Continue with byte_offset=next_byte_offset and "
-		"expected_version=version; omit offset. Line ranges are 0-based, end-exclusive. "
-		"A partial_line continues on the next page without dropping bytes."))
+	if (more &&
+	    !json_add_string(out, "note",
+			     "More content remains. Continue with byte_offset=next_byte_offset and "
+			     "expected_version=version; omit offset. Line ranges are 0-based, "
+			     "end-exclusive. "
+			     "A partial_line continues on the next page without dropping bytes."))
 		return -ENOMEM;
-	if (!cJSON_AddStringToObject(out, "content", morph_buf_cstr(&page->content)))
+	if (!json_add_string(out, "content", morph_buf_cstr(&page->content)))
 		return -ENOMEM;
 	return 0;
 }
@@ -347,7 +348,7 @@ static int read_open_file(struct file_reader *reader, const struct read_options 
 	morph_buf_t version = {0};
 	morph_buf_t after_version = {0};
 	struct read_page page = {0};
-	cJSON *out = NULL;
+	struct json *out = NULL;
 	int rc;
 
 	if (fstat(reader->fd, &before) < 0)
@@ -385,12 +386,12 @@ static int read_open_file(struct file_reader *reader, const struct read_options 
 		if (rc < 0)
 			goto out_cleanup;
 	}
-	out = cJSON_CreateObject();
-	if (!out || !cJSON_AddStringToObject(out, "file_path", opts->path) ||
-	    !cJSON_AddNumberToObject(out, "size", (double)reader->size) ||
-	    !cJSON_AddBoolToObject(out, "binary", page.binary) ||
-	    !cJSON_AddStringToObject(out, "encoding", page.encoding) ||
-	    !cJSON_AddStringToObject(out, "version", morph_buf_cstr(&version))) {
+	out = json_object();
+	if (!out || !json_add_string(out, "file_path", opts->path) ||
+	    !json_add_number(out, "size", (double)reader->size) ||
+	    !json_add_bool(out, "binary", page.binary) ||
+	    !json_add_string(out, "encoding", page.encoding) ||
+	    !json_add_string(out, "version", morph_buf_cstr(&version))) {
 		rc = (-ENOMEM);
 		goto out_cleanup;
 	}
@@ -415,7 +416,7 @@ static int read_open_file(struct file_reader *reader, const struct read_options 
 	rc = (tool_result_success(result, out));
 	out = NULL;
 out_cleanup:
-	cJSON_Delete(out);
+	json_free(out);
 	morph_buf_cleanup(&after_version);
 	morph_buf_cleanup(&page.content);
 	morph_buf_cleanup(&version);
@@ -431,10 +432,10 @@ static int file_read_exec(const char *args_json, struct tool_result *result, voi
 
 	if (!result)
 		return -EINVAL;
-	cJSON *root = args_json ? cJSON_Parse(args_json) : NULL;
+	struct json *root = args_json ? json_parse_prefix(args_json, NULL, NULL) : NULL;
 	rc = read_options_parse(root, &opts);
 	if (rc < 0) {
-		cJSON_Delete(root);
+		json_free(root);
 		(void)tool_result_error(result, "invalid_arguments",
 			"Provide file_path, nonnegative integer offset OR byte_offset, "
 			"positive limit/max_lines (up to 1000000), and max_bytes (4..262144).");
@@ -462,7 +463,7 @@ static int file_read_exec(const char *args_json, struct tool_result *result, voi
 		rc = read_open_file(&reader, &opts, result);
 	if (reader.fd >= 0)
 		close(reader.fd);
-	cJSON_Delete(root);
+	json_free(root);
 	if (rc < 0) {
 		const char *message = rc == -ESTALE ?
 			"File changed; restart reading to obtain a new version." :

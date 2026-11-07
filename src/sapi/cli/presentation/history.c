@@ -9,7 +9,7 @@
 #include "session.h"
 #include "util/error.h"
 #include "util/strmap.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <string.h>
 
 static void cli_history_shell_argument(morph_buf_t *command, const char *value)
@@ -33,7 +33,7 @@ static void cli_history_shell_argument(morph_buf_t *command, const char *value)
 }
 
 void cli_history_render_resume_hint(struct cli_application *ctx, const char *session_ref,
-				     const char *config_path, const char *workdir)
+				    const char *config_path, const char *workdir)
 {
 	morph_buf_t arguments;
 	int color = cli_output_color_enabled(ctx);
@@ -60,18 +60,12 @@ void cli_history_render_resume_hint(struct cli_application *ctx, const char *ses
 	}
 	(void)morph_buf_puts(&arguments, reset);
 	if (!arguments.failed)
-		cli_output_printf(ctx, "\n%sTo resume this session, run:%s\n"
-				       "  %smorph %s\n  %smorphctl %s\n",
+		cli_output_printf(ctx,
+				  "\n%sTo resume this session, run:%s\n"
+				  "  %smorph %s\n  %smorphctl %s\n",
 				  dim, reset, command_style, morph_buf_cstr(&arguments),
 				  command_style, morph_buf_cstr(&arguments));
 	morph_buf_cleanup(&arguments);
-}
-
-static const char *cli_history_string(const cJSON *object, const char *key)
-{
-	const cJSON *value = cJSON_GetObjectItemCaseSensitive(object, key);
-
-	return cJSON_IsString(value) ? value->valuestring : "";
 }
 
 static void cli_history_answer(struct cli_application *ctx, const char *text)
@@ -82,27 +76,27 @@ static void cli_history_answer(struct cli_application *ctx, const char *text)
 	cli_markdown_finish_final(ctx);
 }
 
-static int cli_history_assistant(struct cli_application *ctx,
-				 const struct model_history_item *item,
+static int cli_history_assistant(struct cli_application *ctx, const struct model_history_item *item,
 				 const morph_strmap_t *results)
 {
-	cJSON *payload = item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
-	const char *reasoning = cli_history_string(payload, "reasoning_content");
-	const cJSON *call;
+	struct json *payload =
+		item->payload_json ? json_parse_prefix(item->payload_json, NULL, NULL) : NULL;
+	const char *reasoning = json_str_or(json_member(payload, "reasoning_content"), NULL, "");
+	const struct json *call;
 	int rc = 0;
 
 	if (reasoning[0])
 		rc = cli_transcript_reasoning_append(ctx, reasoning, strlen(reasoning), 1);
 	cli_history_answer(ctx, item->content);
-	cJSON_ArrayForEach(call, cJSON_GetObjectItemCaseSensitive(payload, "calls")) {
+	json_foreach (call, json_member(payload, "calls")) {
 		if (rc)
 			break;
-		const char *id = cli_history_string(call, "tool_call_id");
+		const char *id = json_str_or(json_member(call, "tool_call_id"), NULL, "");
 		struct model_history_item *result = morph_strmap_get(results, id);
 
 		rc = cli_transcript_restore_tool(ctx, call, result);
 	}
-	cJSON_Delete(payload);
+	json_free(payload);
 	return rc;
 }
 

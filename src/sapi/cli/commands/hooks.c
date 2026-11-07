@@ -1,22 +1,15 @@
 #include "sapi/cli/commands/hooks.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/commands/registry.h"
 #include "util/sha256.h"
 #include "sapi/cli/pages/hooks.h"
 #include "sapi/cli/pages/setup/controls.h"
 
-static const char *cli_hooks_hook_field(const cJSON *row, const char *key)
-{
-	const cJSON *value = cJSON_GetObjectItemCaseSensitive(row, key);
-
-	return cJSON_IsString(value) ? value->valuestring : "";
-}
-
 static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char **argv)
 {
-	cJSON *rows = NULL;
-	const cJSON *row;
+	struct json *rows = NULL;
+	const struct json *row;
 	const char *action = argc > 1 ? argv[1] : "list";
 	int rc = runtime_hooks_snapshot(ctx->runtime, &rows);
 
@@ -30,7 +23,7 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 		rc = strcmp(action, "review-all") == 0
 			     ? cli_hooks_review_all(ctx, &rows)
 			     : cli_hooks_ui(ctx, &rows, argc == 3 ? argv[2] : NULL);
-		cJSON_Delete(rows);
+		json_free(rows);
 		return rc;
 	}
 	if (strcmp(action, "project") == 0) {
@@ -54,21 +47,22 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 		       cwd, digest, digest);
 	} else if (strcmp(action, "list") == 0 || strcmp(action, "check") == 0) {
 		printf(ctx, "Hooks (%d); configuration inspection never executes commands.\n",
-		       cJSON_GetArraySize(rows));
-		cJSON_ArrayForEach (row, rows) {
+		       json_count(rows));
+		json_foreach (row, rows) {
 			printf(ctx, "%s  %s  %s\n  source: %s\n  matcher: %s\n",
-			       cli_hooks_hook_field(row, "id"), cli_hooks_hook_field(row, "event"),
-			       cli_hooks_hook_field(row, "state"),
-			       cli_hooks_hook_field(row, "source"),
-			       cli_hooks_hook_field(row, "matcher"));
-			if (*cli_hooks_hook_field(row, "diagnostic"))
+			       json_str_or(json_member(row, "id"), NULL, ""),
+			       json_str_or(json_member(row, "event"), NULL, ""),
+			       json_str_or(json_member(row, "state"), NULL, ""),
+			       json_str_or(json_member(row, "source"), NULL, ""),
+			       json_str_or(json_member(row, "matcher"), NULL, ""));
+			if (*json_str_or(json_member(row, "diagnostic"), NULL, ""))
 				printf(ctx, "  unavailable: %s\n",
-				       cli_hooks_hook_field(row, "diagnostic"));
+				       json_str_or(json_member(row, "diagnostic"), NULL, ""));
 		}
 		printf(ctx, "Review: /hooks review <id>\nWorkspace review: /hooks project\n");
-		if (cJSON_GetArraySize(rows) > 0) {
-			const char *digest =
-				cli_hooks_hook_field(cJSON_GetArrayItem(rows, 0), "review_digest");
+		if (json_count(rows) > 0) {
+			const char *digest = json_str_or(
+				json_member(json_at(rows, 0), "review_digest"), NULL, "");
 			printf(ctx,
 			       "Trust all: /hooks trust-all workspace %s\n"
 			       "Reject all: /hooks deny-all workspace %s\n",
@@ -76,26 +70,27 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 		}
 	} else if (strcmp(action, "review") == 0 && argc == 3) {
 		rc = -ENOENT;
-		cJSON_ArrayForEach (row, rows) {
-			if (strcmp(cli_hooks_hook_field(row, "id"), argv[2]) != 0)
+		json_foreach (row, rows) {
+			if (strcmp(json_str_or(json_member(row, "id"), NULL, ""), argv[2]) != 0)
 				continue;
 			printf(ctx,
 			       "Source: %s\nCwd: %s\nState: %s\n"
 			       "Previous definition:\n%s\nCurrent definition:\n%s\n"
 			       "Trust covers this definition, not mutable script contents.\n"
 			       "Trust: /hooks trust %s %s\n",
-			       cli_hooks_hook_field(row, "source"),
-			       cli_hooks_hook_field(row, "cwd"), cli_hooks_hook_field(row, "state"),
-			       cli_hooks_hook_field(row, "previous_definition"),
-			       cli_hooks_hook_field(row, "definition"),
-			       cli_hooks_hook_field(row, "id"),
-			       cli_hooks_hook_field(row, "digest"));
-			if (*cli_hooks_hook_field(row, "diagnostic"))
+			       json_str_or(json_member(row, "source"), NULL, ""),
+			       json_str_or(json_member(row, "cwd"), NULL, ""),
+			       json_str_or(json_member(row, "state"), NULL, ""),
+			       json_str_or(json_member(row, "previous_definition"), NULL, ""),
+			       json_str_or(json_member(row, "definition"), NULL, ""),
+			       json_str_or(json_member(row, "id"), NULL, ""),
+			       json_str_or(json_member(row, "digest"), NULL, ""));
+			if (*json_str_or(json_member(row, "diagnostic"), NULL, ""))
 				printf(ctx, "Unavailable: %s\n",
-				       cli_hooks_hook_field(row, "diagnostic"));
-			const cJSON *last = cJSON_GetObjectItem(row, "last_run");
+				       json_str_or(json_member(row, "diagnostic"), NULL, ""));
+			const struct json *last = json_member_ci(row, "last_run");
 			if (last) {
-				char *text = cJSON_Print(last);
+				char *text = json_stringify_pretty(last);
 				if (text) {
 					printf(ctx, "Last execution:\n%s\n", text);
 					free(text);
@@ -112,7 +107,7 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 			    "trust|enable|disable|revoke <id> <digest>]\n");
 		rc = -EINVAL;
 	}
-	cJSON_Delete(rows);
+	json_free(rows);
 	return rc;
 }
 

@@ -108,10 +108,10 @@ int runtime_execute(struct runtime_engine *engine, const struct runtime_request 
 		rc = react_run(engine->react, request->model_input, runtime_output_forward,
 			       &output_forwarder);
 	} else if (rc == -ECANCELED && engine->hooks) {
-		cJSON *output = NULL;
+		struct json *output = NULL;
 
 		(void)hook_manager_dispatch(engine->hooks, "Interrupt", NULL, &output);
-		cJSON_Delete(output);
+		json_free(output);
 	}
 	react_drain_tools(engine->react);
 	runtime_turn_scope_close_hooks(engine);

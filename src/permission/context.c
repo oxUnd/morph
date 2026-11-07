@@ -2,7 +2,7 @@
 #include "context_internal.h"
 #include "path.h"
 #include "util/arena.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "db/permission_grant.h"
 #include "util/file.h"
 #include "util/log.h"
@@ -1555,16 +1555,16 @@ static int store_directory_access(struct tool_context *tctx,
 
 static char *directory_access_details(const struct tool_operation *operation)
 {
-	cJSON *details = cJSON_CreateObject();
+	struct json *details = json_object();
 	char *encoded = NULL;
 
-	if (details && cJSON_AddStringToObject(details, "access",
-	    tool_path_access_name(operation->path_access)) &&
-	    cJSON_AddStringToObject(details, "target", operation->target) &&
-	    cJSON_AddStringToObject(details, "scope", operation->scope) &&
-	    cJSON_AddStringToObject(details, "reason", operation->reason ? operation->reason : ""))
-		encoded = cJSON_PrintUnformatted(details);
-	cJSON_Delete(details);
+	if (details &&
+	    json_add_string(details, "access", tool_path_access_name(operation->path_access)) &&
+	    json_add_string(details, "target", operation->target) &&
+	    json_add_string(details, "scope", operation->scope) &&
+	    json_add_string(details, "reason", operation->reason ? operation->reason : ""))
+		encoded = json_stringify(details);
+	json_free(details);
 	return encoded;
 }
 

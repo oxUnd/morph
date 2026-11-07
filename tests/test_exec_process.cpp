@@ -91,8 +91,8 @@ TEST(ExecToolTest, HostExecutionRequiresUserConfigOptIn)
 	EXPECT_EQ(tool_exec(&registry, "exec",
 		"{\"command\":\"printf must-not-run\",\"host\":true}", &result), -EACCES);
 	ASSERT_NE(result.envelope, nullptr);
-	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
-		cJSON_GetObjectItem(result.envelope, "error"), "code")),
+	EXPECT_STREQ(
+		json_string_value(json_member_ci(json_member_ci(result.envelope, "error"), "code")),
 		"host_execution_disabled");
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&registry);
@@ -113,23 +113,23 @@ TEST(ExecToolTest, ExplicitHostExecutionRetainsApprovalAndReportsMode)
 	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, tctx, &config.exec), 0);
 	for (bool host : {false, true}) {
-		cJSON *args = cJSON_CreateObject();
-		cJSON_AddStringToObject(args, "command", "printf host-probe");
-		cJSON_AddStringToObject(args, "workdir", "/");
-		cJSON_AddBoolToObject(args, "host", host);
-		cJSON_AddNumberToObject(args, "yield_time_ms", 1000);
-		char *json = cJSON_PrintUnformatted(args);
+		struct json *args = json_object();
+		json_add_string(args, "command", "printf host-probe");
+		json_add_string(args, "workdir", "/");
+		json_add_bool(args, "host", host);
+		json_add_number(args, "yield_time_ms", 1000);
+		char *json = json_stringify(args);
 		struct tool_result result;
 		tool_result_init(&result);
 		ASSERT_EQ(tool_exec(&registry, "exec", json, &result), 0);
-		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stdout")),
-			"host-probe");
-		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0);
-		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "execution_mode")),
-			host ? "host" : "sandbox");
+		EXPECT_STREQ(json_string_value(json_member_ci(result.data, "stdout")),
+			     "host-probe");
+		EXPECT_EQ(json_number_value(json_member_ci(result.data, "exit_code")), 0);
+		EXPECT_STREQ(json_string_value(json_member_ci(result.data, "execution_mode")),
+			     host ? "host" : "sandbox");
 		tool_result_cleanup(&result);
 		free(json);
-		cJSON_Delete(args);
+		json_free(args);
 	}
 	EXPECT_EQ(approval.calls, 2);
 	EXPECT_NE(approval.reason.find("Host execution"), std::string::npos);
@@ -200,11 +200,10 @@ TEST(ExecToolTest, LiveHostAutomationReadsFrontmostApplication)
 		"to get name of first application process whose frontmost is true'\","
 		"\"host\":true,\"timeout_ms\":10000,\"yield_time_ms\":10000}", &result), 0);
 	ASSERT_NE(result.data, nullptr);
-	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0)
-		<< cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stderr"));
-	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "execution_mode")),
-		"host");
-	const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stdout"));
+	EXPECT_EQ(json_number_value(json_member_ci(result.data, "exit_code")), 0)
+		<< json_string_value(json_member_ci(result.data, "stderr"));
+	EXPECT_STREQ(json_string_value(json_member_ci(result.data, "execution_mode")), "host");
+	const char *text = json_string_value(json_member_ci(result.data, "stdout"));
 	ASSERT_NE(text, nullptr);
 	EXPECT_GT(strlen(text), 1u);
 	tool_result_cleanup(&result);
@@ -231,10 +230,9 @@ TEST(ExecToolTest, ReportsUnavailableApprovalWithoutClaimingItIsPending)
 		"\"yield_time_ms\":1000}",
 		&result), -EPERM);
 	ASSERT_NE(result.envelope, nullptr);
-	cJSON *error = cJSON_GetObjectItem(result.envelope, "error");
+	struct json *error = json_member_ci(result.envelope, "error");
 	ASSERT_NE(error, nullptr);
-	EXPECT_STREQ(cJSON_GetStringValue(
-		cJSON_GetObjectItem(error, "code")), "approval_unavailable");
+	EXPECT_STREQ(json_string_value(json_member_ci(error, "code")), "approval_unavailable");
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&registry);
 	tool_context_destroy(tctx);
@@ -303,12 +301,11 @@ TEST(ExecToolTest, BackgroundTimeoutIsOptIn)
 		struct tool_result result;
 		tool_result_init(&result);
 		EXPECT_EQ(tool_exec(&registry, "exec", requests[i], &result), 0);
-		std::string session = cJSON_GetStringValue(
-			cJSON_GetObjectItem(result.data, "session_id"));
+		std::string session = json_string_value(json_member_ci(result.data, "session_id"));
 		std::string poll = "{\"action\":\"poll\",\"session_id\":\"" + session + "\"}";
 		for (int attempt = 0; attempt < 100; attempt++) {
-			const char *status = cJSON_GetStringValue(
-				cJSON_GetObjectItem(result.data, "status"));
+			const char *status =
+				json_string_value(json_member_ci(result.data, "status"));
 			if (status && strcmp(status, "running") != 0)
 				break;
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -316,8 +313,7 @@ TEST(ExecToolTest, BackgroundTimeoutIsOptIn)
 			tool_result_init(&result);
 			EXPECT_EQ(tool_exec(&registry, "process", poll.c_str(), &result), 0);
 		}
-		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data,
-			"status")), expected[i]);
+		EXPECT_STREQ(json_string_value(json_member_ci(result.data, "status")), expected[i]);
 		tool_result_cleanup(&result);
 	}
 	tool_registry_cleanup(&registry);
@@ -349,10 +345,8 @@ TEST(ExecToolTest, QuotedPythonOperatorsDoNotTriggerComplexSyntaxError)
 	EXPECT_EQ(approval.calls, 1);
 	EXPECT_EQ(approval.programs, std::vector<std::string>({"python3"}));
 	ASSERT_NE(result.data, nullptr);
-	EXPECT_STREQ(cJSON_GetStringValue(
-		cJSON_GetObjectItem(result.data, "stdout")), "4 x >> y\n");
-	EXPECT_EQ(cJSON_GetNumberValue(
-		cJSON_GetObjectItem(result.data, "exit_code")), 0);
+	EXPECT_STREQ(json_string_value(json_member_ci(result.data, "stdout")), "4 x >> y\n");
+	EXPECT_EQ(json_number_value(json_member_ci(result.data, "exit_code")), 0);
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&registry);
 	tool_context_destroy(tctx);
@@ -390,8 +384,7 @@ TEST(ExecToolTest, ExecutesQuotedProgramPathWithSpaces)
 	EXPECT_EQ(approval.programs,
 		std::vector<std::string>({"quoted tool"}));
 	ASSERT_NE(result.data, nullptr);
-	EXPECT_STREQ(cJSON_GetStringValue(
-		cJSON_GetObjectItem(result.data, "stdout")), "works\n");
+	EXPECT_STREQ(json_string_value(json_member_ci(result.data, "stdout")), "works\n");
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&registry);
 	tool_context_destroy(tctx);
@@ -424,8 +417,7 @@ TEST(ExecToolTest, ApprovalIncludesNestedAstCommands)
 	EXPECT_EQ(approval.programs,
 		std::vector<std::string>({"printf", "echo"}));
 	ASSERT_NE(result.data, nullptr);
-	EXPECT_STREQ(cJSON_GetStringValue(
-		cJSON_GetObjectItem(result.data, "stdout")), "nested");
+	EXPECT_STREQ(json_string_value(json_member_ci(result.data, "stdout")), "nested");
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&registry);
 	tool_context_destroy(tctx);
@@ -452,21 +444,20 @@ TEST(ExecToolTest, DynamicScriptsExecuteInsideWorkspace)
 	};
 	const char *expected[] = {"variable", "hello world", "12", "beta", ""};
 	for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
-		cJSON *args = cJSON_CreateObject();
-		cJSON_AddStringToObject(args, "command", commands[i]);
-		cJSON_AddStringToObject(args, "workdir", work_template);
-		cJSON_AddNumberToObject(args, "yield_time_ms", 1000);
-		char *json = cJSON_PrintUnformatted(args);
+		struct json *args = json_object();
+		json_add_string(args, "command", commands[i]);
+		json_add_string(args, "workdir", work_template);
+		json_add_number(args, "yield_time_ms", 1000);
+		char *json = json_stringify(args);
 		struct tool_result result;
 		tool_result_init(&result);
 		ASSERT_EQ(tool_exec(&registry, "exec", json, &result), 0) << commands[i];
 		ASSERT_NE(result.data, nullptr);
-		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stdout")),
-			expected[i]);
-		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0);
+		EXPECT_STREQ(json_string_value(json_member_ci(result.data, "stdout")), expected[i]);
+		EXPECT_EQ(json_number_value(json_member_ci(result.data, "exit_code")), 0);
 		tool_result_cleanup(&result);
 		free(json);
-		cJSON_Delete(args);
+		json_free(args);
 	}
 	EXPECT_EQ(approval.calls, 0);
 	tool_registry_cleanup(&registry);
@@ -496,12 +487,10 @@ TEST(ExecToolTest, ReadsOutsideWorkspaceRequireScopedAuthority)
 			   "\"yield_time_ms\":1000}", path), 0);
 	ASSERT_EQ(tool_exec(&registry, "exec", args, &result), 0);
 	ASSERT_NE(result.data, nullptr);
-	const char *output = cJSON_GetStringValue(
-		cJSON_GetObjectItem(result.data, "stdout"));
+	const char *output = json_string_value(json_member_ci(result.data, "stdout"));
 	ASSERT_NE(output, nullptr);
 	EXPECT_EQ(strstr(output, "#include"), nullptr);
-	EXPECT_NE(cJSON_GetNumberValue(
-		cJSON_GetObjectItem(result.data, "exit_code")), 0);
+	EXPECT_NE(json_number_value(json_member_ci(result.data, "exit_code")), 0);
 	char *slash = strrchr(path, '/');
 	ASSERT_NE(slash, nullptr);
 	*slash = '\0';
@@ -515,10 +504,10 @@ TEST(ExecToolTest, ReadsOutsideWorkspaceRequireScopedAuthority)
 	request.session_scope = 1;
 	ASSERT_EQ(tool_context_request_directory_access(tctx, &request, nullptr, 0), 0);
 	ASSERT_EQ(tool_exec(&registry, "exec", args, &result), 0);
-	output = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stdout"));
+	output = json_string_value(json_member_ci(result.data, "stdout"));
 	ASSERT_NE(output, nullptr);
 	EXPECT_NE(strstr(output, "#include"), nullptr);
-	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0);
+	EXPECT_EQ(json_number_value(json_member_ci(result.data, "exit_code")), 0);
 
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&registry);
@@ -893,20 +882,20 @@ TEST(ExecToolTest, SandboxReceivesProfileAfterMoreThan32SessionGrants)
 	}
 	ASSERT_EQ(tool_context_add_exec_profile_path(tctx, TOOL_PATH_WRITE, profile.c_str()), 0);
 	std::string command = "printf okay > '" + profile + "/result'";
-	cJSON *args = cJSON_CreateObject();
-	cJSON_AddStringToObject(args, "command", command.c_str());
-	cJSON_AddStringToObject(args, "workdir", work.c_str());
-	cJSON_AddNumberToObject(args, "yield_time_ms", 1000);
-	char *json = cJSON_PrintUnformatted(args);
+	struct json *args = json_object();
+	json_add_string(args, "command", command.c_str());
+	json_add_string(args, "workdir", work.c_str());
+	json_add_number(args, "yield_time_ms", 1000);
+	char *json = json_stringify(args);
 	struct tool_result result;
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&registry, "exec", json, &result), 0);
 	ASSERT_NE(result.data, nullptr);
-	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0);
+	EXPECT_EQ(json_number_value(json_member_ci(result.data, "exit_code")), 0);
 	EXPECT_TRUE(file_exists((profile + "/result").c_str()));
 	tool_result_cleanup(&result);
 	free(json);
-	cJSON_Delete(args);
+	json_free(args);
 	tool_registry_cleanup(&registry);
 	tool_context_destroy(tctx);
 	std::filesystem::remove_all(temp);
@@ -931,7 +920,7 @@ TEST(ExecToolTest, SessionApprovalAllowsRepeatedExecution)
 		EXPECT_EQ(tool_exec(&registry, "exec",
 			"{\"command\":\"printf approved\",\"workdir\":\"/\"}", &result), 0);
 		ASSERT_NE(result.envelope, nullptr);
-		EXPECT_EQ(cJSON_GetObjectItem(result.envelope, "error"), nullptr);
+		EXPECT_EQ(json_member_ci(result.envelope, "error"), nullptr);
 		tool_result_cleanup(&result);
 	}
 	EXPECT_EQ(approvals, 1);
@@ -978,23 +967,25 @@ TEST(ExecToolTest, DirectoryPermissionsFollowPathsAcrossToolsAndPrograms)
 		tool_result_init(&result);
 		EXPECT_EQ(tool_exec(&registry, "request_permissions", json.c_str(), &result), 0);
 		ASSERT_NE(result.envelope, nullptr);
-		EXPECT_EQ(cJSON_GetObjectItem(result.envelope, "error"), nullptr);
+		EXPECT_EQ(json_member_ci(result.envelope, "error"), nullptr);
 		tool_result_cleanup(&result);
 	};
 	auto execute = [&](const std::string &command) {
-		cJSON *args = cJSON_CreateObject();
-		cJSON_AddStringToObject(args, "command", command.c_str());
-		cJSON_AddStringToObject(args, "workdir", work.c_str());
-		cJSON_AddNumberToObject(args, "yield_time_ms", 1000);
-		char *json = cJSON_PrintUnformatted(args);
+		struct json *args = json_object();
+		json_add_string(args, "command", command.c_str());
+		json_add_string(args, "workdir", work.c_str());
+		json_add_number(args, "yield_time_ms", 1000);
+		char *json = json_stringify(args);
 		struct tool_result result;
 		tool_result_init(&result);
 		EXPECT_EQ(tool_exec(&registry, "exec", json, &result), 0);
-		int status = result.data ?
-			(int)cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")) : -1;
+		int status =
+			result.data
+				? (int)json_number_value(json_member_ci(result.data, "exit_code"))
+				: -1;
 		tool_result_cleanup(&result);
 		free(json);
-		cJSON_Delete(args);
+		json_free(args);
 		return status;
 	};
 	request("write", "session");
@@ -1176,7 +1167,7 @@ TEST(ExecToolTest, AsyncJobsNotifyOnceKeepOwnershipAndDoNotConsumeToolOutput)
 			auto *s = static_cast<Events *>(opaque);
 			std::lock_guard<std::mutex> lock(s->mutex);
 			s->names.emplace_back(event->name);
-			const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(event->data, "stdout"));
+			const char *text = json_string_value(json_member_ci(event->data, "stdout"));
 			if (text) s->output = text;
 			s->ready.notify_all();
 			return 0;
@@ -1190,7 +1181,7 @@ TEST(ExecToolTest, AsyncJobsNotifyOnceKeepOwnershipAndDoNotConsumeToolOutput)
 	ASSERT_EQ(tool_exec(&registry, "exec",
 		R"({"command":"sleep .15; printf complete","description":"编译项目","background":true})",
 		&result), 0);
-	std::string id = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "session_id"));
+	std::string id = json_string_value(json_member_ci(result.data, "session_id"));
 	tool_result_cleanup(&result);
 	{
 		std::unique_lock<std::mutex> lock(events.mutex);
@@ -1201,19 +1192,19 @@ TEST(ExecToolTest, AsyncJobsNotifyOnceKeepOwnershipAndDoNotConsumeToolOutput)
 		EXPECT_EQ(events.names[1], "process.completed");
 		EXPECT_EQ(events.output, "complete");
 	}
-	cJSON *jobs = nullptr;
+	struct json *jobs = nullptr;
 	ASSERT_EQ(exec_tool_jobs_list(&registry, 43, &jobs), 0);
-	EXPECT_EQ(cJSON_GetArraySize(jobs), 0);
-	cJSON_Delete(jobs);
-	cJSON *detail = nullptr;
+	EXPECT_EQ(json_count(jobs), 0);
+	json_free(jobs);
+	struct json *detail = nullptr;
 	ASSERT_EQ(exec_tool_job_read(&registry, 42, id.c_str(), &detail), 0);
-	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(detail, "description")), "编译项目");
-	cJSON_Delete(detail);
+	EXPECT_STREQ(json_string_value(json_member_ci(detail, "description")), "编译项目");
+	json_free(detail);
 	tool_result_init(&result);
 	result.runtime = &context;
 	std::string args = "{\"action\":\"poll\",\"session_id\":\"" + id + "\",\"wait_ms\":0}";
 	ASSERT_EQ(tool_exec(&registry, "process", args.c_str(), &result), 0);
-	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stdout")), "complete");
+	EXPECT_STREQ(json_string_value(json_member_ci(result.data, "stdout")), "complete");
 	tool_result_cleanup(&result);
 	context.memory_session_id = 43;
 	tool_result_init(&result);
@@ -1244,23 +1235,23 @@ TEST(ExecToolTest, ExplicitNotifyOnlyAndServicesDoNotHoldFinalization)
 	}
 	tool_entry *entry = tool_lookup(&registry, "exec");
 	ASSERT_NE(entry->background_wait, nullptr);
-	cJSON *completed = nullptr;
+	struct json *completed = nullptr;
 	ASSERT_EQ(entry->background_wait(entry->user_data, 42, "notify-test", nullptr,
 		nullptr, &completed), 0);
-	ASSERT_EQ(cJSON_GetArraySize(completed), 1);
-	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
-		cJSON_GetArrayItem(completed, 0), "stdout")), "verified");
-	cJSON_Delete(completed);
-	cJSON *jobs = nullptr;
+	ASSERT_EQ(json_count(completed), 1);
+	EXPECT_STREQ(json_string_value(json_member_ci(json_at(completed, 0), "stdout")),
+		     "verified");
+	json_free(completed);
+	struct json *jobs = nullptr;
 	ASSERT_EQ(exec_tool_jobs_list(&registry, 42, &jobs), 0);
 	int running = 0;
-	cJSON *job;
-	cJSON_ArrayForEach(job, jobs) {
-		const char *state = cJSON_GetStringValue(cJSON_GetObjectItem(job, "status"));
+	struct json *job;
+	json_foreach (job, jobs) {
+		const char *state = json_string_value(json_member_ci(job, "status"));
 		if (state && std::strcmp(state, "running") == 0) running++;
 	}
 	EXPECT_EQ(running, 2);
-	cJSON_Delete(jobs);
+	json_free(jobs);
 	tool_registry_cleanup(&registry);
 }
 
@@ -1282,7 +1273,7 @@ TEST(ExecToolTest, TurnCancellationStopsOnlyOwnedJobsFromThatTurn)
 			R"({"command":"sleep 10","background":true,"notify_only":true})" :
 			R"({"command":"sleep 10","background":true})";
 		ASSERT_EQ(tool_exec(&registry, "exec", args, &result), 0);
-		ids.emplace_back(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "session_id")));
+		ids.emplace_back(json_string_value(json_member_ci(result.data, "session_id")));
 		tool_result_cleanup(&result);
 	}
 	tool_entry *entry = tool_lookup(&registry, "exec");
@@ -1292,11 +1283,11 @@ TEST(ExecToolTest, TurnCancellationStopsOnlyOwnedJobsFromThatTurn)
 		auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
 		std::string status;
 		do {
-			cJSON *detail = nullptr;
+			struct json *detail = nullptr;
 			ASSERT_EQ(exec_tool_job_read(&registry, index == 4 ? 43 : 42,
 				ids[index].c_str(), &detail), 0);
-			status = cJSON_GetStringValue(cJSON_GetObjectItem(detail, "status"));
-			cJSON_Delete(detail);
+			status = json_string_value(json_member_ci(detail, "status"));
+			json_free(detail);
 			if (index >= 3 || status == "killed") break;
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		} while (std::chrono::steady_clock::now() < deadline);
@@ -1335,7 +1326,7 @@ TEST(ExecToolTest, ProcessAcceptsModelSelectedWaitsWithinDefaultRange)
 	tool_result result{};
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&registry, "exec", R"({"command":"printf verified"})", &result), 0);
-	const char *session = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "session_id"));
+	const char *session = json_string_value(json_member_ci(result.data, "session_id"));
 	ASSERT_NE(session, nullptr);
 	std::string id = session;
 	tool_result_cleanup(&result);
@@ -1346,14 +1337,14 @@ TEST(ExecToolTest, ProcessAcceptsModelSelectedWaitsWithinDefaultRange)
 				budget + "}";
 			tool_result_init(&result);
 			ASSERT_EQ(tool_exec(&registry, "process", args.c_str(), &result), 0);
-			EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "status")),
-				"exited");
-			EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stdout")),
-				"verified");
-			EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "wait_ms")),
-				std::strtod(budget, nullptr));
-			EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data,
-				"max_wait_ms")), 600000);
+			EXPECT_STREQ(json_string_value(json_member_ci(result.data, "status")),
+				     "exited");
+			EXPECT_STREQ(json_string_value(json_member_ci(result.data, "stdout")),
+				     "verified");
+			EXPECT_EQ(json_number_value(json_member_ci(result.data, "wait_ms")),
+				  std::strtod(budget, nullptr));
+			EXPECT_EQ(json_number_value(json_member_ci(result.data, "max_wait_ms")),
+				  600000);
 			tool_result_cleanup(&result);
 		}
 	}
@@ -1365,8 +1356,7 @@ TEST(ExecToolTest, ProcessAcceptsModelSelectedWaitsWithinDefaultRange)
 			item.suffix + "}";
 		tool_result_init(&result);
 		ASSERT_EQ(tool_exec(&registry, "process", args.c_str(), &result), 0);
-		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "wait_ms")),
-			item.expected);
+		EXPECT_EQ(json_number_value(json_member_ci(result.data, "wait_ms")), item.expected);
 		tool_result_cleanup(&result);
 	}
 	tool_registry_cleanup(&registry);
@@ -1382,7 +1372,7 @@ TEST(ExecToolTest, ProcessRejectsInvalidWaitValuesBeforeWritingInput)
 	ASSERT_EQ(tool_exec(&registry, "exec",
 		R"({"command":"IFS= read -r line; printf 'read:%s' \"$line\"","background":true})",
 		&result), 0);
-	const char *session = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "session_id"));
+	const char *session = json_string_value(json_member_ci(result.data, "session_id"));
 	ASSERT_NE(session, nullptr);
 	std::string id = session;
 	tool_result_cleanup(&result);
@@ -1391,21 +1381,22 @@ TEST(ExecToolTest, ProcessRejectsInvalidWaitValuesBeforeWritingInput)
 			"\",\"input\":\"bad\\n\",\"wait_ms\":" + budget + "}";
 		tool_result_init(&result);
 		EXPECT_EQ(tool_exec(&registry, "process", args.c_str(), &result), -EINVAL);
-		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
-			cJSON_GetObjectItem(result.envelope, "error"), "code")), "invalid_request");
+		EXPECT_STREQ(json_string_value(json_member_ci(
+				     json_member_ci(result.envelope, "error"), "code")),
+			     "invalid_request");
 		tool_result_cleanup(&result);
 	}
 	tool_result_init(&result);
 	std::string write = "{\"action\":\"write\",\"session_id\":\"" + id +
 		"\",\"input\":\"good\\n\"}";
 	ASSERT_EQ(tool_exec(&registry, "process", write.c_str(), &result), 0);
-	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "wait_ms")), 0);
+	EXPECT_EQ(json_number_value(json_member_ci(result.data, "wait_ms")), 0);
 	tool_result_cleanup(&result);
 	tool_result_init(&result);
 	std::string wait = "{\"action\":\"wait\",\"session_id\":\"" + id +
 		"\",\"wait_ms\":2000,\"cursor\":\"0:0\"}";
 	ASSERT_EQ(tool_exec(&registry, "process", wait.c_str(), &result), 0);
-	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stdout")), "read:good");
+	EXPECT_STREQ(json_string_value(json_member_ci(result.data, "stdout")), "read:good");
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&registry);
 }
@@ -1439,18 +1430,18 @@ TEST(ExecToolTest, ConfiguredWaitRangeControlsSchemaRuntimeAndToolTimeout)
 		auto *entry = tool_lookup(&registry, "process");
 		ASSERT_NE(entry, nullptr);
 		EXPECT_GE(entry->timeout_seconds * 1000, maximum);
-		cJSON *schema = cJSON_Parse(entry->desc.input_schema);
+		struct json *schema = json_parse_prefix(entry->desc.input_schema, NULL, NULL);
 		ASSERT_NE(schema, nullptr);
-		cJSON *wait = cJSON_GetObjectItem(cJSON_GetObjectItem(schema, "properties"), "wait_ms");
-		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(wait, "minimum")), 0);
-		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(wait, "maximum")), maximum);
-		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(wait, "default")),
-			std::min(30000, maximum));
-		cJSON_Delete(schema);
+		struct json *wait = json_member_ci(json_member_ci(schema, "properties"), "wait_ms");
+		EXPECT_EQ(json_number_value(json_member_ci(wait, "minimum")), 0);
+		EXPECT_EQ(json_number_value(json_member_ci(wait, "maximum")), maximum);
+		EXPECT_EQ(json_number_value(json_member_ci(wait, "default")),
+			  std::min(30000, maximum));
+		json_free(schema);
 		tool_result result{};
 		tool_result_init(&result);
 		ASSERT_EQ(tool_exec(&registry, "exec", "{\"command\":\"printf configured\"}", &result), 0);
-		std::string id = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "session_id"));
+		std::string id = json_string_value(json_member_ci(result.data, "session_id"));
 		tool_result_cleanup(&result);
 		for (const auto &budget : {std::to_string(maximum), std::to_string(maximum + 1)}) {
 			std::string args = "{\"action\":\"wait\",\"session_id\":\"" + id +
@@ -1460,15 +1451,15 @@ TEST(ExecToolTest, ConfiguredWaitRangeControlsSchemaRuntimeAndToolTimeout)
 			EXPECT_EQ(tool_exec(&registry, "process", args.c_str(), &result),
 				allowed ? 0 : -EINVAL);
 			if (allowed)
-				EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data,
-					"wait_ms")), maximum);
+				EXPECT_EQ(json_number_value(json_member_ci(result.data, "wait_ms")),
+					  maximum);
 			tool_result_cleanup(&result);
 		}
 		tool_result_init(&result);
 		std::string args = "{\"action\":\"wait\",\"session_id\":\"" + id + "\"}";
 		ASSERT_EQ(tool_exec(&registry, "process", args.c_str(), &result), 0);
-		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "wait_ms")),
-			std::min(30000, maximum));
+		EXPECT_EQ(json_number_value(json_member_ci(result.data, "wait_ms")),
+			  std::min(30000, maximum));
 		tool_result_cleanup(&result);
 		tool_registry_cleanup(&registry);
 	}

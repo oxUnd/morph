@@ -427,10 +427,10 @@ TEST_F(SkillActivateToolTest, ActivateViaTool) {
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.text.data, nullptr);
 	ASSERT_NE(result.data, nullptr);
-	cJSON *text = cJSON_GetObjectItem(result.data, "text");
-	ASSERT_TRUE(cJSON_IsString(text));
+	struct json *text = json_member_ci(result.data, "text");
+	ASSERT_TRUE(json_is_string_value(text));
 	EXPECT_EQ(skill_lookup(&skills, "review")->activated, 1);
-	EXPECT_EQ(strstr(text->valuestring, "Check bugs."), nullptr);
+	EXPECT_EQ(strstr(json_string_value(text), "Check bugs."), nullptr);
 	EXPECT_STREQ(skill_lookup(&skills, "review")->body, "# Review\nCheck bugs.\n");
 	tool_result_cleanup(&result);
 

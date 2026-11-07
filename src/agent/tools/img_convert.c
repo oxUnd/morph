@@ -5,7 +5,7 @@
 #include "agent/tool_context.h"
 #include "util/log.h"
 #include "util/error.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "stb_image.h"
 #include <errno.h>
 #include <limits.h>
@@ -41,31 +41,31 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 
 	struct tool_context *tctx = user_data;
 
-	cJSON *root = cJSON_Parse(args_json);
+	struct json *root = json_parse_prefix(args_json, NULL, NULL);
 	if (!root) {
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
-	cJSON *fp = cJSON_GetObjectItem(root, "file_path");
-	cJSON *fmt = cJSON_GetObjectItem(root, "format");
-	cJSON *out = cJSON_GetObjectItem(root, "output_path");
-	cJSON *q = cJSON_GetObjectItem(root, "quality");
+	struct json *fp = json_member_ci(root, "file_path");
+	struct json *fmt = json_member_ci(root, "format");
+	struct json *out = json_member_ci(root, "output_path");
+	struct json *q = json_member_ci(root, "quality");
 
-	const char *file_path = cJSON_IsString(fp) ? fp->valuestring : NULL;
-	const char *fmt_in = cJSON_IsString(fmt) ? fmt->valuestring : NULL;
-	const char *out_path_in = cJSON_IsString(out) ? out->valuestring : NULL;
-	if (cJSON_IsNumber(q) &&
-	    (!isfinite(q->valuedouble) || q->valuedouble < 1 || q->valuedouble > 100)) {
-		cJSON_Delete(root);
+	const char *file_path = json_is_string_value(fp) ? json_string_value(fp) : NULL;
+	const char *fmt_in = json_is_string_value(fmt) ? json_string_value(fmt) : NULL;
+	const char *out_path_in = json_is_string_value(out) ? json_string_value(out) : NULL;
+	if (json_is_number_value(q) && (!isfinite(json_number_value(q)) ||
+					json_number_value(q) < 1 || json_number_value(q) > 100)) {
+		json_free(root);
 		(void)tool_result_error(result, "invalid_arguments",
 					"JPEG quality must be between 1 and 100");
 		return -EINVAL;
 	}
-	int quality = cJSON_IsNumber(q) ? (int)q->valuedouble : 90;
+	int quality = json_is_number_value(q) ? (int)json_number_value(q) : 90;
 
 	if (!file_path || !fmt_in) {
-		cJSON_Delete(root);
+		json_free(root);
 		(void)tool_result_success_json_text(
 			result, strdup("{\"error\":\"missing 'file_path' or 'format' parameter. "
 				       "Usage: img_convert({\\\"file_path\\\": \\\"img.png\\\", "
@@ -75,7 +75,7 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 
 	char nfmt[8];
 	if (normalize_format(fmt_in, nfmt, sizeof(nfmt)) < 0) {
-		cJSON_Delete(root);
+		json_free(root);
 		(void)tool_result_success_json_text(
 			result, strdup("{\"error\":\"unsupported format (use png/jpg/bmp/tga)\"}"));
 		return -EINVAL;
@@ -85,7 +85,7 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 	int input_rc = tool_image_load_input(tctx, file_path, result, &input);
 
 	if (input_rc != 0) {
-		cJSON_Delete(root);
+		json_free(root);
 		return input_rc;
 	}
 	int w = input.width, h = input.height, ch = input.channels;
@@ -105,14 +105,14 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 
 	stbi_image_free(data);
 	if (output_rc != 0) {
-		cJSON_Delete(root);
+		json_free(root);
 		return output_rc;
 	}
 
 	size_t msg_len = strlen(final_path) + strlen(nfmt) + 64;
 	char *msg = malloc(msg_len);
 	if (!msg) {
-		cJSON_Delete(root);
+		json_free(root);
 		return -ENOMEM;
 	}
 	snprintf(msg, msg_len, "image converted: %s (%s, %dx%d)", final_path, nfmt, w, h);
@@ -121,7 +121,7 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 	log_dbg(result && result->runtime ? result->runtime->http.logger : NULL, "img_convert: %s",
 		msg);
 
-	cJSON_Delete(root);
+	json_free(root);
 	return 0;
 }
 

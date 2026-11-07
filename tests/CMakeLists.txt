@@ -148,6 +148,61 @@ endif()
 
 gtest_discover_tests(morph-tests)
 
+# Exercise the public JSON API independently of application libraries.
+add_executable(morph-json-tests
+	test_json.cpp test_json_path_edges.cpp json_api_probe.c json_api_probe.cpp)
+target_include_directories(morph-json-tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(morph-json-tests PRIVATE morph-util GTest::gtest_main)
+set_target_properties(morph-json-tests PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
+gtest_discover_tests(morph-json-tests)
+
+# Fault injection is confined to private copies of the module and its allocators.
+add_library(morph-json-fault-module OBJECT
+	${CMAKE_SOURCE_DIR}/src/util/json.c
+	${CMAKE_SOURCE_DIR}/src/util/json_parse.c
+	${CMAKE_SOURCE_DIR}/src/util/json_path.c
+	${CMAKE_SOURCE_DIR}/src/util/buf.c
+	${CMAKE_SOURCE_DIR}/src/util/array.c
+	${CMAKE_SOURCE_DIR}/src/util/arena.c
+	${CMAKE_SOURCE_DIR}/src/util/str.c
+	${CMAKE_SOURCE_DIR}/vendor/cJSON.c)
+target_include_directories(morph-json-fault-module PRIVATE
+	${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/util ${CMAKE_SOURCE_DIR}/vendor)
+target_compile_definitions(morph-json-fault-module PRIVATE
+	malloc=morph_json_test_malloc calloc=morph_json_test_calloc
+	realloc=morph_json_test_realloc free=morph_json_test_free)
+if(APPLE)
+	set_source_files_properties(${CMAKE_SOURCE_DIR}/vendor/cJSON.c PROPERTIES
+		COMPILE_FLAGS "-Wno-deprecated-declarations")
+endif()
+add_executable(morph-json-oom-tests test_json.cpp
+	$<TARGET_OBJECTS:morph-json-fault-module>)
+target_compile_definitions(morph-json-oom-tests PRIVATE JSON_FAULT_TESTING)
+target_include_directories(morph-json-oom-tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(morph-json-oom-tests PRIVATE morph-util GTest::gtest_main)
+set_target_properties(morph-json-oom-tests PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
+gtest_discover_tests(morph-json-oom-tests)
+
+foreach(JSON_PROBE_LANGUAGE IN ITEMS c cpp)
+	if(JSON_PROBE_LANGUAGE STREQUAL "c")
+		set(JSON_PROBE_COMPILER ${CMAKE_C_COMPILER})
+		set(JSON_PROBE_STANDARD -std=c11)
+	else()
+		set(JSON_PROBE_COMPILER ${CMAKE_CXX_COMPILER})
+		set(JSON_PROBE_STANDARD -std=c++17)
+	endif()
+	add_test(NAME json_api_reject_${JSON_PROBE_LANGUAGE}_unknown_pointer
+		COMMAND ${JSON_PROBE_COMPILER} ${JSON_PROBE_STANDARD}
+			-Wall -Wextra -Wpedantic -Werror -fsyntax-only
+			-I${CMAKE_SOURCE_DIR}/src -I${CMAKE_SOURCE_DIR}/vendor
+			-DJSON_API_REJECT_POINTER
+			${CMAKE_CURRENT_SOURCE_DIR}/json_api_probe.${JSON_PROBE_LANGUAGE})
+	set_tests_properties(json_api_reject_${JSON_PROBE_LANGUAGE}_unknown_pointer
+		PROPERTIES WILL_FAIL TRUE)
+endforeach()
+
 # PTY integration driver uses the production CLI with a disposable database.
 add_executable(morph-cli-pty-driver cli_pty_driver.c)
 target_include_directories(morph-cli-pty-driver PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -174,6 +229,9 @@ add_test(NAME file_write_extension COMMAND morph-file-write-tests)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+	add_test(NAME json_backend_boundary
+		COMMAND ${Python3_EXECUTABLE}
+			${CMAKE_CURRENT_SOURCE_DIR}/test_json_boundary.py ${CMAKE_SOURCE_DIR})
 	add_test(NAME js_runner_host_io_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_js_runner_host_io.py
 			$<TARGET_FILE:morph-js-runner>)

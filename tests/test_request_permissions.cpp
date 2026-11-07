@@ -37,12 +37,12 @@ protected:
 		if (op->path_access) {
 			if (op->path_access & (op->path_access - 1u))
 				EXPECT_EQ(op->kind, TOOL_OP_DIRECTORY_ACCESS);
-			cJSON *details = cJSON_Parse(op->details_json);
+			struct json *details = json_parse_prefix(op->details_json, NULL, NULL);
 			EXPECT_NE(details, nullptr);
 			if (details)
-				EXPECT_STREQ(cJSON_GetObjectItem(details, "access")->valuestring,
-					tool_path_access_name(op->path_access));
-			cJSON_Delete(details);
+				EXPECT_STREQ(json_string_value(json_member_ci(details, "access")),
+					     tool_path_access_name(op->path_access));
+			json_free(details);
 		}
 		return self->verdict;
 	}
@@ -85,13 +85,13 @@ protected:
 
 	std::string paths(const std::vector<std::string> &paths)
 	{
-		cJSON *array = cJSON_CreateArray();
+		struct json *array = json_array();
 		for (const auto &path : paths)
-			cJSON_AddItemToArray(array, cJSON_CreateString(path.c_str()));
-		char *encoded = cJSON_PrintUnformatted(array);
+			json_array_add(array, json_string(path.c_str()));
+		char *encoded = json_stringify(array);
 		std::string json = encoded;
 		free(encoded);
-		cJSON_Delete(array);
+		json_free(array);
 		return json;
 	}
 
@@ -112,13 +112,13 @@ protected:
 			"},\"scope\":\"" + scope +
 			"\",\"justification\":\"Maintain project files\"}";
 		int rc = tool_exec(&registry, "request_permissions", json.c_str(), &result);
-		EXPECT_EQ(rc == 0, cJSON_IsTrue(cJSON_GetObjectItem(result.envelope, "ok")));
+		EXPECT_EQ(rc == 0, json_is_true(json_member_ci(result.envelope, "ok")));
 		ASSERT_EQ(tool_result_finalize(&result), 0);
 	}
 
 	bool success()
 	{
-		return cJSON_IsTrue(cJSON_GetObjectItem(result.envelope, "ok"));
+		return json_is_true(json_member_ci(result.envelope, "ok"));
 	}
 
 	int access(enum tool_path_op operation, const std::string &path)
@@ -139,7 +139,7 @@ TEST_F(DirectoryPermissionTest, CanonicalDirectoryIsApprovedOnceForAllRequestedO
 	EXPECT_EQ(approvals[0].lifetime, "session");
 	EXPECT_EQ(approvals[0].reason, "Maintain project files");
 	for (const char *key : {"read", "write", "delete"})
-		EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(result.data, key)), 1);
+		EXPECT_EQ(json_count(json_member_ci(result.data, key)), 1);
 	EXPECT_EQ(access(TOOL_PATH_READ, file), 0);
 	EXPECT_EQ(access(TOOL_PATH_WRITE, file), 0);
 	EXPECT_EQ(access(TOOL_PATH_DELETE, file), 0);

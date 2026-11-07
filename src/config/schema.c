@@ -4,7 +4,7 @@
 #include "util/file.h"
 #include "util/utf8.h"
 #include "tomlc17.h"
-#include "cJSON.h"
+#include "util/json.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -650,34 +650,34 @@ static int validate_model_extra_body(const toml_datum_t *model,
 				     struct config_validation_error *error)
 {
 	const toml_datum_t *value = table_get(model, "extra_body_json");
-	cJSON *extra;
-	cJSON *item;
+	struct json *extra;
+	struct json *item;
 	char path[CONFIG_MAX_KEY_LEN];
 
 	if (!value || !value->u.s[0])
 		return 0;
 	snprintf(path, sizeof(path), "model.%s.extra_body_json", name);
-	extra = cJSON_ParseWithOpts(value->u.s, NULL, 1);
+	extra = json_parse_ex(value->u.s, NULL, 1, NULL);
 	if (!extra)
 		return set_error(error, CONFIG_VALIDATION_VALUE, value, path,
 			"%s must contain valid JSON", path);
-	if (!cJSON_IsObject(extra)) {
-		cJSON_Delete(extra);
+	if (!json_is_object_value(extra)) {
+		json_free(extra);
 		return set_error(error, CONFIG_VALIDATION_TYPE, value, path,
 			"%s must contain a JSON object", path);
 	}
-	cJSON_ArrayForEach(item, extra) {
-		if (item->string && extra_body_key_is_reserved(item->string)) {
+	json_foreach (item, extra) {
+		if (json_key(item) && extra_body_key_is_reserved(json_key(item))) {
 			char key[CONFIG_MAX_KEY_LEN];
 
-			strncpy(key, item->string, sizeof(key) - 1);
+			strncpy(key, json_key(item), sizeof(key) - 1);
 			key[sizeof(key) - 1] = '\0';
-			cJSON_Delete(extra);
+			json_free(extra);
 			return set_error(error, CONFIG_VALIDATION_CONFLICT, value,
 				path, "%s contains reserved field '%s'", path, key);
 		}
 	}
-	cJSON_Delete(extra);
+	json_free(extra);
 	return 0;
 }
 
@@ -790,29 +790,29 @@ static int validate_relations(const toml_datum_t *root,
 static int model_explicit_thinking(const toml_datum_t *entry)
 {
 	const toml_datum_t *body = table_get(entry, "extra_body_json");
-	cJSON *root;
-	cJSON *thinking;
-	cJSON *type;
-	cJSON *effort;
-	cJSON *kwargs;
+	struct json *root;
+	struct json *thinking;
+	struct json *type;
+	struct json *effort;
+	struct json *kwargs;
 	int enabled;
 
 	if (!body || !body->u.s[0])
 		return 0;
-	root = cJSON_Parse(body->u.s);
-	thinking = cJSON_GetObjectItemCaseSensitive(root, "thinking");
-	type = cJSON_GetObjectItemCaseSensitive(thinking, "type");
-	effort = cJSON_GetObjectItemCaseSensitive(root, "reasoning_effort");
-	if (!cJSON_IsString(effort))
-		effort = cJSON_GetObjectItemCaseSensitive(
-			cJSON_GetObjectItemCaseSensitive(root, "reasoning"), "effort");
-	kwargs = cJSON_GetObjectItemCaseSensitive(root, "chat_template_kwargs");
-	enabled = (cJSON_IsString(effort) && strcmp(effort->valuestring, "none") != 0) ||
-		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(kwargs, "enable_thinking"));
-	if (cJSON_IsString(type))
-		enabled = strcmp(type->valuestring, "enabled") == 0 ||
-			strcmp(type->valuestring, "adaptive") == 0;
-	cJSON_Delete(root);
+	root = json_parse_prefix(body->u.s, NULL, NULL);
+	thinking = json_member(root, "thinking");
+	type = json_member(thinking, "type");
+	effort = json_member(root, "reasoning_effort");
+	if (!json_is_string_value(effort))
+		effort = json_member(json_member(root, "reasoning"), "effort");
+	kwargs = json_member(root, "chat_template_kwargs");
+	enabled =
+		(json_is_string_value(effort) && strcmp(json_string_value(effort), "none") != 0) ||
+		json_is_true(json_member(kwargs, "enable_thinking"));
+	if (json_is_string_value(type))
+		enabled = strcmp(json_string_value(type), "enabled") == 0 ||
+			  strcmp(json_string_value(type), "adaptive") == 0;
+	json_free(root);
 	return enabled;
 }
 

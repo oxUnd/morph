@@ -24,42 +24,41 @@ enum tool_artifact_kind tool_artifact_kind_from_string(const char *kind)
 	return TOOL_ARTIFACT_FILE;
 }
 
-cJSON *tool_artifact_list_to_json(const struct tool_artifact_list *artifacts)
+struct json *tool_artifact_list_to_json(const struct tool_artifact_list *artifacts)
 {
 	return tool_artifacts_to_json(artifacts ? artifacts->items : NULL,
 				      artifacts ? artifacts->count : 0);
 }
 
-cJSON *tool_artifacts_to_json(const struct tool_artifact *items, int count)
+struct json *tool_artifacts_to_json(const struct tool_artifact *items, int count)
 {
-	cJSON *arr;
+	struct json *arr;
 
-	arr = cJSON_CreateArray();
+	arr = json_array();
 	if (!arr)
 		return NULL;
 	for (int i = 0; items && i < count; i++) {
 		const struct tool_artifact *artifact = &items[i];
-		cJSON *obj = cJSON_CreateObject();
+		struct json *obj = json_object();
 		if (!obj) {
-			cJSON_Delete(arr);
+			json_free(arr);
 			return NULL;
 		}
-		cJSON_AddStringToObject(obj, "kind", tool_artifact_kind_name(artifact->kind));
-		cJSON_AddStringToObject(obj, "path", artifact->path);
+		json_add_string(obj, "kind", tool_artifact_kind_name(artifact->kind));
+		json_add_string(obj, "path", artifact->path);
 		if (artifact->mime[0])
-			cJSON_AddStringToObject(obj, "mime", artifact->mime);
+			json_add_string(obj, "mime", artifact->mime);
 		if (artifact->label[0])
-			cJSON_AddStringToObject(obj, "label", artifact->label);
+			json_add_string(obj, "label", artifact->label);
 		if (artifact->width > 0)
-			cJSON_AddNumberToObject(obj, "width", artifact->width);
+			json_add_number(obj, "width", artifact->width);
 		if (artifact->height > 0)
-			cJSON_AddNumberToObject(obj, "height", artifact->height);
+			json_add_number(obj, "height", artifact->height);
 		if (artifact->duration_seconds > 0)
-			cJSON_AddNumberToObject(obj, "duration_seconds",
-						artifact->duration_seconds);
+			json_add_number(obj, "duration_seconds", artifact->duration_seconds);
 		if (artifact->size_bytes > 0)
-			cJSON_AddNumberToObject(obj, "size_bytes", (double)artifact->size_bytes);
-		cJSON_AddItemToArray(arr, obj);
+			json_add_number(obj, "size_bytes", (double)artifact->size_bytes);
+		json_array_add(arr, obj);
 	}
 	return arr;
 }

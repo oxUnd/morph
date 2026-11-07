@@ -8,7 +8,7 @@ extern "C" {
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "cJSON.h"
+#include "util/json.h"
 
 struct db;
 
@@ -52,8 +52,8 @@ struct plan_registry {
 
 int plan_registry_bind(struct plan_registry *reg, struct db *db, int64_t session_id);
 int plan_registry_save(struct plan_registry *reg);
-cJSON *plan_registry_json(const struct plan_registry *reg);
-int plan_registry_restore(struct plan_registry *reg, const cJSON *json);
+struct json *plan_registry_json(const struct plan_registry *reg);
+int plan_registry_restore(struct plan_registry *reg, const struct json *json);
 
 void plan_registry_init(struct plan_registry *reg);
 

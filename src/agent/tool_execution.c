@@ -8,10 +8,10 @@
 #include <errno.h>
 
 /** \brief Map a structured business failure to the existing error domain. */
-static int tool_error_code(const cJSON *envelope)
+static int tool_error_code(const struct json *envelope)
 {
-	const cJSON *error = cJSON_GetObjectItemCaseSensitive(envelope, "error");
-	const char *code = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(error, "code"));
+	const struct json *error = json_member(envelope, "error");
+	const char *code = json_string_value(json_member(error, "code"));
 
 	if (code != NULL) {
 		if (strcmp(code, "invalid_arguments") == 0) {
@@ -45,7 +45,7 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 	      struct tool_result *result)
 {
 	struct tool_handle handle;
-	const cJSON *ok;
+	const struct json *ok;
 	int rc;
 	int result_rc;
 
@@ -110,19 +110,17 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 		rc = MORPH_ERR_PROTOCOL;
 	}
 	if (result->envelope != NULL) {
-		ok = cJSON_GetObjectItemCaseSensitive(result->envelope, "ok");
-		if (!cJSON_IsObject(result->envelope) || !cJSON_IsBool(ok)) {
+		ok = json_member(result->envelope, "ok");
+		if (!json_is_object_value(result->envelope) || !json_is_bool_value(ok)) {
 			if (rc == 0) {
 				rc = MORPH_ERR_PROTOCOL;
 			}
 			tool_result_clear(result);
-		} else if (rc == 0 && cJSON_IsFalse(ok)) {
+		} else if (rc == 0 && json_is_false(ok)) {
 			rc = tool_error_code(result->envelope);
-		} else if (rc < 0 && cJSON_IsTrue(ok)) {
-			const cJSON *payload =
-			    cJSON_GetObjectItemCaseSensitive(result->envelope, "data");
-			const char *diagnostic =
-			    cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(payload, "text"));
+		} else if (rc < 0 && json_is_true(ok)) {
+			const struct json *payload = json_member(result->envelope, "data");
+			const char *diagnostic = json_string_value(json_member(payload, "text"));
 			char *owned = diagnostic != NULL ? strdup(diagnostic) : NULL;
 			if (diagnostic != NULL && owned == NULL) {
 				tool_result_clear(result);

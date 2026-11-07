@@ -20,13 +20,13 @@ struct react_event_sink {
 
 int react_events_enabled(struct react_event_sink sink);
 int react_emit_event(struct react_event_sink sink, enum morph_event_type type, const char *name,
-		     const char *phase, const char *message, cJSON *data);
+		     const char *phase, const char *message, struct json *data);
 int react_emit_text_event(struct react_event_sink sink, enum morph_event_type type,
 			  const char *name, const char *phase, const char *message,
 			  const char *text);
 int react_emit_observation_event(struct react_event_sink sink, const char *text, const char *tool,
 				 int error_code, const struct tool_artifact_list *artifacts,
-				 const cJSON *result_data, const cJSON *result_ui);
+				 const struct json *result_data, const struct json *result_ui);
 int react_emit_auth_required(struct react_event_sink sink, const char *backend,
 			     const char *provider, const char *model, const char *tool,
 			     const char *reason);

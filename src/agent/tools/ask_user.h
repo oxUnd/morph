@@ -21,7 +21,7 @@ struct ask_user_options {
 	const struct morph_cancel_token *cancel_token;
 };
 
-int ask_user_options_to_json(cJSON *data, const struct ask_user_options *options);
+int ask_user_options_to_json(struct json *data, const struct ask_user_options *options);
 
 typedef int (*ask_user_callback_fn)(const char *question,
 				    const char *const *choices,

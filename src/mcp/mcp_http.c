@@ -1,5 +1,5 @@
 #include "mcp/mcp_internal.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "http/sse.h"
 #include "util/log.h"
 #include "util/buf.h"
@@ -27,13 +27,14 @@ static int mcp_sse_extract_cb(const char *event, const char *data,
 	if (!ctx || !data)
 		return 0;
 	if (ctx->expected_id >= 0) {
-		cJSON *object = cJSON_Parse(data);
-		cJSON *id = cJSON_GetObjectItemCaseSensitive(object, "id");
-		cJSON *error = cJSON_GetObjectItemCaseSensitive(object, "error");
-		int matches = (cJSON_IsNumber(id) && id->valuedouble == ctx->expected_id) ||
+		struct json *object = json_parse_prefix(data, NULL, NULL);
+		struct json *id = json_member(object, "id");
+		struct json *error = json_member(object, "error");
+		int matches =
+			(json_is_number_value(id) && json_number_value(id) == ctx->expected_id) ||
 			(!id && error);
 
-		cJSON_Delete(object);
+		json_free(object);
 		if (!matches)
 			return 0;
 	}

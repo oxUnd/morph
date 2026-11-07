@@ -48,7 +48,7 @@ static int append_process_checkpoint(struct react_context *ctx, morph_buf_t *buf
 {
 	struct tool_handle handle;
 	struct tool_handle *entry = react_builtin_acquire(ctx, "exec", &handle);
-	cJSON *jobs = NULL;
+	struct json *jobs = NULL;
 	int rc;
 
 	if (!entry || !entry->background_list) {
@@ -58,32 +58,30 @@ static int append_process_checkpoint(struct react_context *ctx, morph_buf_t *buf
 	rc = entry->background_list(entry->user_data, ctx->tool_runtime.memory_session_id, &jobs);
 	tool_handle_release(&handle);
 	if (rc != 0) {
-		cJSON_Delete(jobs);
+		json_free(jobs);
 		return rc;
 	}
-	if (cJSON_GetArraySize(jobs)) {
-		cJSON *item, *next;
+	if (json_count(jobs)) {
+		struct json *item, *next;
 		int retained = 0;
-		for (item = jobs->child; item; item = next) {
-			next = item->next;
-			const char *state =
-				cJSON_GetStringValue(cJSON_GetObjectItem(item, "status"));
-			const char *turn =
-				cJSON_GetStringValue(cJSON_GetObjectItem(item, "turn_id"));
+		for (item = json_first(jobs); item; item = next) {
+			next = json_next(item);
+			const char *state = json_string_value(json_member_ci(item, "status"));
+			const char *turn = json_string_value(json_member_ci(item, "turn_id"));
 			if (retained >= 16 || (strcmp(state ? state : "", "running") &&
 					       strcmp(turn ? turn : "", ctx->turn_id))) {
-				cJSON_Delete(cJSON_DetachItemViaPointer(jobs, item));
+				json_free(json_detach(jobs, item));
 				continue;
 			}
 			retained++;
-			cJSON_DeleteItemFromObjectCaseSensitive(item, "command");
-			cJSON_DeleteItemFromObjectCaseSensitive(item, "workdir");
-			cJSON_DeleteItemFromObjectCaseSensitive(item, "owner_session_id");
-			cJSON_DeleteItemFromObjectCaseSensitive(item, "turn_id");
+			json_object_remove(item, "command");
+			json_object_remove(item, "workdir");
+			json_object_remove(item, "owner_session_id");
+			json_object_remove(item, "turn_id");
 		}
-		char *json = cJSON_PrintUnformatted(jobs);
+		char *json = json_stringify(jobs);
 		if (!json) {
-			cJSON_Delete(jobs);
+			json_free(jobs);
 			return -ENOMEM;
 		}
 		rc = morph_buf_printf(
@@ -97,7 +95,7 @@ static int append_process_checkpoint(struct react_context *ctx, morph_buf_t *buf
 			json);
 		free(json);
 	}
-	cJSON_Delete(jobs);
+	json_free(jobs);
 	return rc;
 }
 
@@ -174,7 +172,7 @@ static int append_artifact_checkpoint(struct react_context *ctx, morph_buf_t *bu
 	if (!ctx->history_enabled || !ctx->history_db || ctx->history_session_id <= 0)
 		return 0;
 	sqlite3_stmt *stmt = NULL;
-	cJSON *items = cJSON_CreateArray();
+	struct json *items = json_array();
 	int rc = sqlite3_prepare_v2(ctx->history_db->handle,
 				    "SELECT id,kind,path,tool_name FROM outputs WHERE session_id=? "
 				    "ORDER BY id DESC LIMIT 8",
@@ -184,7 +182,7 @@ static int append_artifact_checkpoint(struct react_context *ctx, morph_buf_t *bu
 
 	if (!items || rc != SQLITE_OK) {
 		error = (items ? MORPH_ERR_DB : -ENOMEM);
-		cJSON_Delete(items);
+		json_free(items);
 		sqlite3_finalize(stmt);
 		return error;
 	}
@@ -193,17 +191,16 @@ static int append_artifact_checkpoint(struct react_context *ctx, morph_buf_t *bu
 		const char *path = (const char *)sqlite3_column_text(stmt, 2);
 		if (!path || bytes + strlen(path) > 8192)
 			continue;
-		cJSON *item = cJSON_CreateObject();
+		struct json *item = json_object();
 		const char *kind = (const char *)sqlite3_column_text(stmt, 1);
 		const char *tool = (const char *)sqlite3_column_text(stmt, 3);
 		if (!item ||
-		    !cJSON_AddNumberToObject(item, "output_id",
-					     (double)sqlite3_column_int64(stmt, 0)) ||
-		    !cJSON_AddStringToObject(item, "kind", kind ? kind : "file") ||
-		    !cJSON_AddStringToObject(item, "path", path) ||
-		    !cJSON_AddStringToObject(item, "tool", tool ? tool : "") ||
-		    !cJSON_AddItemToArray(items, item)) {
-			cJSON_Delete(item);
+		    !json_add_number(item, "output_id", (double)sqlite3_column_int64(stmt, 0)) ||
+		    !json_add_string(item, "kind", kind ? kind : "file") ||
+		    !json_add_string(item, "path", path) ||
+		    !json_add_string(item, "tool", tool ? tool : "") ||
+		    json_array_add(items, item) != 0) {
+			json_free(item);
 			error = (-ENOMEM);
 			break;
 		}
@@ -212,8 +209,8 @@ static int append_artifact_checkpoint(struct react_context *ctx, morph_buf_t *bu
 	sqlite3_finalize(stmt);
 	if (error == 0 && rc != SQLITE_DONE)
 		error = (MORPH_ERR_DB);
-	if (error == 0 && cJSON_GetArraySize(items)) {
-		char *json = cJSON_PrintUnformatted(items);
+	if (error == 0 && json_count(items)) {
+		char *json = json_stringify(items);
 		if (!json)
 			error = -ENOMEM;
 		else
@@ -228,7 +225,7 @@ static int append_artifact_checkpoint(struct react_context *ctx, morph_buf_t *bu
 				json);
 		free(json);
 	}
-	cJSON_Delete(items);
+	json_free(items);
 	return error;
 }
 
@@ -262,21 +259,22 @@ static char *build_dynamic_context(struct react_context *ctx, struct arena *aren
 	if (ctx->plans && ctx->plans->count) {
 		if (plan_tool_refresh_reports(ctx->tools) != 0)
 			return NULL;
-		cJSON *state = plan_registry_json(ctx->plans);
-		cJSON *plan;
-		cJSON_ArrayForEach (plan, state) {
-			cJSON *verification = cJSON_GetObjectItem(plan, "verification");
-			cJSON *report = cJSON_IsString(verification)
-						? cJSON_Parse(verification->valuestring)
-						: NULL;
+		struct json *state = plan_registry_json(ctx->plans);
+		struct json *plan;
+		json_foreach (plan, state) {
+			struct json *verification = json_member_ci(plan, "verification");
+			struct json *report =
+				json_is_string_value(verification)
+					? json_parse_prefix(json_string_value(verification), NULL,
+							    NULL)
+					: NULL;
 			if (report) {
-				cJSON_DeleteItemFromObjectCaseSensitive(report, "inputs");
-				cJSON_ReplaceItemInObjectCaseSensitive(plan, "verification",
-								       report);
+				json_object_remove(report, "inputs");
+				json_object_replace(plan, "verification", report);
 			}
 		}
-		char *text = state ? cJSON_PrintUnformatted(state) : NULL;
-		cJSON_Delete(state);
+		char *text = state ? json_stringify(state) : NULL;
+		json_free(state);
 		if (!text)
 			return NULL;
 		rc = morph_buf_printf(
@@ -525,28 +523,28 @@ static int react_emit_compaction_event(struct react_context *ctx, const char *na
 				       const char *phase, int iteration, int before_tokens,
 				       int after_tokens, int trigger_tokens, int error_code)
 {
-	cJSON *data;
+	struct json *data;
 	int rc;
 
 	if (!react_events_enabled(react_events(ctx)))
 		return 0;
-	data = cJSON_CreateObject();
+	data = json_object();
 	if (!data)
 		return -ENOMEM;
-	cJSON_AddNumberToObject(data, "iteration", iteration);
-	cJSON_AddNumberToObject(data, "before_tokens", before_tokens);
-	cJSON_AddNumberToObject(data, "after_tokens", after_tokens);
-	cJSON_AddNumberToObject(data, "trigger_tokens", trigger_tokens);
-	cJSON_AddNumberToObject(data, "compaction_count", ctx->in_turn_compaction_count);
+	json_add_number(data, "iteration", iteration);
+	json_add_number(data, "before_tokens", before_tokens);
+	json_add_number(data, "after_tokens", after_tokens);
+	json_add_number(data, "trigger_tokens", trigger_tokens);
+	json_add_number(data, "compaction_count", ctx->in_turn_compaction_count);
 	if (error_code < 0) {
-		cJSON_AddNumberToObject(data, "error_code", error_code);
-		cJSON_AddStringToObject(data, "error", morph_strerror(error_code));
+		json_add_number(data, "error_code", error_code);
+		json_add_string(data, "error", morph_strerror(error_code));
 	}
 	rc = react_emit_event(react_events(ctx), MORPH_EVENT_REACT, name, phase,
 			      strcmp(phase, "end") == 0 ? "active context compacted"
 							: "active context compaction",
 			      data);
-	cJSON_Delete(data);
+	json_free(data);
 	return rc;
 }
 
@@ -736,14 +734,13 @@ static int checkpoint_fields_valid(const char *text)
 {
 	static const char *const fields[] = {"objective",     "constraints",  "completed_work",
 					     "working_state", "pending_work", "verification"};
-	cJSON *root = cJSON_ParseWithOpts(text, NULL, 1);
-	int valid = cJSON_IsObject(root) && cJSON_GetArraySize(root) == 6;
+	struct json *root = json_parse_ex(text, NULL, 1, NULL);
+	int valid = json_is_object_value(root) && json_count(root) == 6;
 	for (size_t i = 0; valid && i < sizeof(fields) / sizeof(fields[0]); i++) {
-		const char *value =
-			cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(root, fields[i]));
+		const char *value = json_string_value(json_member(root, fields[i]));
 		valid = value && value[strspn(value, " \t\r\n")];
 	}
-	cJSON_Delete(root);
+	json_free(root);
 	return valid;
 }
 

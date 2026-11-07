@@ -4,7 +4,7 @@
 
 #include "runtime/session.h"
 #include "util/error.h"
-#include "cJSON.h"
+#include "util/json.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -227,29 +227,29 @@ int runtime_session_last_answer(struct runtime *runtime, char **out)
 
 static int transcript_message(const struct message *message, void *data)
 {
-	cJSON *items = data;
-	cJSON *item = cJSON_CreateObject();
+	struct json *items = data;
+	struct json *item = json_object();
 
-	if (!item || !cJSON_AddNumberToObject(item, "id", (double)message->id) ||
-	    !cJSON_AddStringToObject(item, "role", message->role) ||
-	    !cJSON_AddStringToObject(item, "content", message->content ? message->content : "") ||
-	    !cJSON_AddStringToObject(item, "turn_id", message->turn_id ? message->turn_id : "") ||
-	    !cJSON_AddNumberToObject(item, "created_at", (double)message->created_at) ||
-	    !cJSON_AddItemToArray(items, item)) {
-		cJSON_Delete(item);
+	if (!item || !json_add_number(item, "id", (double)message->id) ||
+	    !json_add_string(item, "role", message->role) ||
+	    !json_add_string(item, "content", message->content ? message->content : "") ||
+	    !json_add_string(item, "turn_id", message->turn_id ? message->turn_id : "") ||
+	    !json_add_number(item, "created_at", (double)message->created_at) ||
+	    json_array_add(items, item) != 0) {
+		json_free(item);
 		return -ENOMEM;
 	}
 	return 0;
 }
 
-static int transcript_nullable_text(cJSON *item, const char *key, const char *value)
+static int transcript_nullable_text(struct json *item, const char *key, const char *value)
 {
-	return !value || cJSON_AddStringToObject(item, key, value);
+	return !value || json_add_string(item, key, value);
 }
 
 static int transcript_display(const struct history_display_record *record, void *data)
 {
-	cJSON *item = cJSON_CreateObject();
+	struct json *item = json_object();
 	int ok = item && transcript_nullable_text(item, "type", record->type) &&
 		 transcript_nullable_text(item, "content", record->content) &&
 		 transcript_nullable_text(item, "attachments_json", record->attachments_json) &&
@@ -258,16 +258,14 @@ static int transcript_display(const struct history_display_record *record, void 
 		 transcript_nullable_text(item, "turn_id", record->turn_id);
 
 	if (ok && (record->present & HISTORY_DISPLAY_VERDICT))
-		ok = cJSON_AddNumberToObject(item, "hitl_verdict", (double)record->hitl_verdict) !=
-		     NULL;
+		ok = json_add_number(item, "hitl_verdict", (double)record->hitl_verdict) != NULL;
 	if (ok && (record->present & HISTORY_DISPLAY_MESSAGE))
-		ok = cJSON_AddNumberToObject(item, "core_message_id",
-					     (double)record->core_message_id) != NULL;
-	if (ok && (record->present & HISTORY_DISPLAY_CREATED))
-		ok = cJSON_AddNumberToObject(item, "created_at", (double)record->created_at) !=
+		ok = json_add_number(item, "core_message_id", (double)record->core_message_id) !=
 		     NULL;
-	if (!ok || !cJSON_AddItemToArray(data, item)) {
-		cJSON_Delete(item);
+	if (ok && (record->present & HISTORY_DISPLAY_CREATED))
+		ok = json_add_number(item, "created_at", (double)record->created_at) != NULL;
+	if (!ok || json_array_add(data, item) != 0) {
+		json_free(item);
 		return -ENOMEM;
 	}
 	return 0;
@@ -275,14 +273,13 @@ static int transcript_display(const struct history_display_record *record, void 
 
 static int transcript_trace(const struct history_trace_record *record, void *data)
 {
-	cJSON *item = cJSON_CreateObject();
+	struct json *item = json_object();
 
-	if (!item || !cJSON_AddNumberToObject(item, "id", (double)record->id) ||
-	    !cJSON_AddStringToObject(item, "steps_json",
-				     record->steps_json ? record->steps_json : "[]") ||
-	    !cJSON_AddNumberToObject(item, "created_at", (double)record->created_at) ||
-	    !cJSON_AddItemToArray(data, item)) {
-		cJSON_Delete(item);
+	if (!item || !json_add_number(item, "id", (double)record->id) ||
+	    !json_add_string(item, "steps_json", record->steps_json ? record->steps_json : "[]") ||
+	    !json_add_number(item, "created_at", (double)record->created_at) ||
+	    json_array_add(data, item) != 0) {
+		json_free(item);
 		return -ENOMEM;
 	}
 	return 0;
@@ -292,8 +289,8 @@ int runtime_session_transcript_json(struct runtime *runtime, int64_t session_id,
 {
 	struct session session;
 	struct db *db;
-	cJSON *root;
-	cJSON *items;
+	struct json *root;
+	struct json *items;
 	int rc;
 
 	if (!out)
@@ -305,33 +302,33 @@ int runtime_session_transcript_json(struct runtime *runtime, int64_t session_id,
 	rc = session_get_by_id(db, session_id, &session);
 	if (rc != 0)
 		return rc;
-	root = cJSON_CreateObject();
-	items = root ? cJSON_AddArrayToObject(root, "messages") : NULL;
-	if (!items || !cJSON_AddStringToObject(root, "identity", session.display_id)) {
-		cJSON_Delete(root);
+	root = json_object();
+	items = root ? json_add_array(root, "messages") : NULL;
+	if (!items || !json_add_string(root, "identity", session.display_id)) {
+		json_free(root);
 		return -ENOMEM;
 	}
 	rc = history_store_visit_messages(db, session_id, transcript_message, items);
 	if (rc == 0) {
-		items = cJSON_AddArrayToObject(root, "display");
+		items = json_add_array(root, "display");
 		rc = items ? history_store_visit_display(db, session_id, transcript_display, items)
 			   : -ENOMEM;
 		if (rc == -ENODATA) {
-			cJSON_DeleteItemFromObjectCaseSensitive(root, "display");
+			json_object_remove(root, "display");
 			rc = 0;
 		}
 	}
 	if (rc == 0) {
-		items = cJSON_AddArrayToObject(root, "traces");
+		items = json_add_array(root, "traces");
 		rc = items ? history_store_visit_traces(db, session_id, transcript_trace, items)
 			   : -ENOMEM;
 	}
 	if (rc == 0) {
-		*out = cJSON_PrintUnformatted(root);
+		*out = json_stringify(root);
 		if (!*out)
 			rc = -ENOMEM;
 	}
-	cJSON_Delete(root);
+	json_free(root);
 	return rc;
 }
 

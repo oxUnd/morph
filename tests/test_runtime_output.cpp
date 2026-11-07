@@ -78,24 +78,22 @@ TEST_F(RuntimeOutputTest, RecordsRecipeMetadataReferencesAndEmitsEvent)
 	EXPECT_EQ(events, 1);
 	char *json = runtime_output_get_json_by_path(&db, "/tmp/generated.png");
 	ASSERT_NE(json, nullptr);
-	cJSON *root = cJSON_Parse(json);
+	struct json *root = json_parse_prefix(json, NULL, NULL);
 	free(json);
 	ASSERT_NE(root, nullptr);
-	EXPECT_STREQ(cJSON_GetObjectItem(root, "prompt")->valuestring,
-		     "a lighthouse");
-	EXPECT_STREQ(cJSON_GetObjectItem(root, "request_prompt")->valuestring,
+	EXPECT_STREQ(json_string_value(json_member_ci(root, "prompt")), "a lighthouse");
+	EXPECT_STREQ(json_string_value(json_member_ci(root, "request_prompt")),
 		     "make this cinematic");
-	EXPECT_STREQ(cJSON_GetObjectItem(root, "provider")->valuestring,
-		     "test-provider");
-	EXPECT_EQ(cJSON_GetObjectItem(root, "width")->valueint, 2048);
-	cJSON *recipe = cJSON_GetObjectItem(root, "recipe");
-	ASSERT_TRUE(cJSON_IsObject(recipe));
-	cJSON *references = cJSON_GetObjectItem(recipe, "references");
-	ASSERT_TRUE(cJSON_IsArray(references));
-	ASSERT_EQ(cJSON_GetArraySize(references), 1);
-	EXPECT_STREQ(cJSON_GetObjectItem(cJSON_GetArrayItem(references, 0), "path")
-			     ->valuestring, "/tmp/reference.png");
-	cJSON_Delete(root);
+	EXPECT_STREQ(json_string_value(json_member_ci(root, "provider")), "test-provider");
+	EXPECT_EQ(json_int_value(json_member_ci(root, "width")), 2048);
+	struct json *recipe = json_member_ci(root, "recipe");
+	ASSERT_TRUE(json_is_object_value(recipe));
+	struct json *references = json_member_ci(recipe, "references");
+	ASSERT_TRUE(json_is_array_value(references));
+	ASSERT_EQ(json_count(references), 1);
+	EXPECT_STREQ(json_string_value(json_member_ci(json_at(references, 0), "path")),
+		     "/tmp/reference.png");
+	json_free(root);
 }
 
 TEST_F(RuntimeOutputTest, DuplicateArtifactPathIsIdempotent)
@@ -178,16 +176,14 @@ TEST_F(RuntimeOutputTest, RecordsVideoImageAndAudioReferences)
 	char *json = runtime_output_get_json_by_path(&db,
 						      "/tmp/mixed-result.mp4");
 	ASSERT_NE(json, nullptr);
-	cJSON *root = cJSON_Parse(json);
+	struct json *root = json_parse_prefix(json, NULL, NULL);
 	free(json);
 	ASSERT_NE(root, nullptr);
-	cJSON *references = cJSON_GetObjectItem(
-		cJSON_GetObjectItem(root, "recipe"), "references");
-	ASSERT_TRUE(cJSON_IsArray(references));
-	EXPECT_EQ(cJSON_GetArraySize(references), 3);
-	EXPECT_STREQ(cJSON_GetObjectItem(cJSON_GetArrayItem(references, 2),
-					 "kind")->valuestring, "audio");
-	cJSON_Delete(root);
+	struct json *references = json_member_ci(json_member_ci(root, "recipe"), "references");
+	ASSERT_TRUE(json_is_array_value(references));
+	EXPECT_EQ(json_count(references), 3);
+	EXPECT_STREQ(json_string_value(json_member_ci(json_at(references, 2), "kind")), "audio");
+	json_free(root);
 }
 
 TEST(RuntimeOutputMigrationTest, AddsRecipeColumnsToExistingOutputsTable)

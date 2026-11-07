@@ -2,7 +2,7 @@
 #include "agent/patch.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "util/buf.h"
 #include "util/error.h"
 
@@ -27,8 +27,8 @@ static int apply_patch_exec(const char *input, struct tool_result *result,
 	struct tool_context *tool_context = user_data;
 	struct patch_result patch_result;
 	char error[512];
-	cJSON *data;
-	cJSON *files;
+	struct json *data;
+	struct json *files;
 	int rc;
 
 	if (!input || !result || !tool_context)
@@ -42,34 +42,32 @@ static int apply_patch_exec(const char *input, struct tool_result *result,
 		patch_result_cleanup(&patch_result);
 		return rc;
 	}
-	data = cJSON_CreateObject();
-	files = cJSON_CreateArray();
+	data = json_object();
+	files = json_array();
 	if (!data || !files) {
-		cJSON_Delete(data);
-		cJSON_Delete(files);
+		json_free(data);
+		json_free(files);
 		patch_result_cleanup(&patch_result);
 		return -ENOMEM;
 	}
-	cJSON_AddBoolToObject(data, "changed", 1);
-	cJSON_AddStringToObject(data, "workspace_root",
-		tool_context_workdir(tool_context));
-	cJSON_AddItemToObject(data, "files", files);
+	json_add_bool(data, "changed", 1);
+	json_add_string(data, "workspace_root", tool_context_workdir(tool_context));
+	json_object_add(data, "files", files);
 	for (size_t i = 0; i < patch_result.changes.nelts; i++) {
 		struct patch_change *change = morph_array_get(
 			&patch_result.changes, i);
-		cJSON *item = cJSON_CreateObject();
+		struct json *item = json_object();
 
 		if (!item) {
-			cJSON_Delete(data);
+			json_free(data);
 			patch_result_cleanup(&patch_result);
 			return -ENOMEM;
 		}
-		cJSON_AddStringToObject(item, "path", change->path);
-		cJSON_AddStringToObject(item, "action",
-			patch_action_name(change->action));
-		cJSON_AddNumberToObject(item, "added", change->added);
-		cJSON_AddNumberToObject(item, "removed", change->removed);
-		cJSON_AddItemToArray(files, item);
+		json_add_string(item, "path", change->path);
+		json_add_string(item, "action", patch_action_name(change->action));
+		json_add_number(item, "added", change->added);
+		json_add_number(item, "removed", change->removed);
+		json_array_add(files, item);
 	}
 	patch_result_cleanup(&patch_result);
 	return tool_result_success(result, data);

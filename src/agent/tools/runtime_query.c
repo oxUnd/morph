@@ -3,7 +3,7 @@
 #include "agent/tool_runtime.h"
 #include "credits.h"
 #include "util/error.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,20 +11,19 @@
 
 #define MEMORY_QUERY_DEFAULT_MAX_EPISODES 4
 
-static void summary_to_json(cJSON *parent, const char *name,
-			    const struct credit_summary *s)
+static void summary_to_json(struct json *parent, const char *name, const struct credit_summary *s)
 {
-	cJSON *obj;
+	struct json *obj;
 
 	if (!parent || !name || !s)
 		return;
-	obj = cJSON_CreateObject();
+	obj = json_object();
 	if (!obj)
 		return;
-	cJSON_AddNumberToObject(obj, "credits", (double)s->credits);
-	cJSON_AddNumberToObject(obj, "estimated_cost", s->estimated_cost);
-	cJSON_AddNumberToObject(obj, "event_count", s->event_count);
-	cJSON_AddItemToObject(parent, name, obj);
+	json_add_number(obj, "credits", (double)s->credits);
+	json_add_number(obj, "estimated_cost", s->estimated_cost);
+	json_add_number(obj, "event_count", s->event_count);
+	json_object_add(parent, name, obj);
 }
 
 static int credits_exec(const char *args_json, struct tool_result *result,
@@ -34,7 +33,7 @@ static int credits_exec(const char *args_json, struct tool_result *result,
 	struct credit_summary today;
 	struct credit_summary session;
 	struct credit_summary total;
-	cJSON *root;
+	struct json *root;
 	char *json;
 	int rc;
 
@@ -55,21 +54,19 @@ static int credits_exec(const char *args_json, struct tool_result *result,
 	if (rc != 0)
 		return rc;
 
-	root = cJSON_CreateObject();
+	root = json_object();
 	if (!root)
 		return -ENOMEM;
 	summary_to_json(root, "today", &today);
 	summary_to_json(root, "session", &session);
 	summary_to_json(root, "total", &total);
-	cJSON_AddStringToObject(root, "currency", rt->config->credits.currency);
-	cJSON_AddNumberToObject(root, "daily_limit",
-				rt->config->credits.daily_limit);
-	cJSON_AddBoolToObject(root, "over_daily_limit",
-			      rt->config->credits.daily_limit >= 0 &&
-				      today.credits >
-					      rt->config->credits.daily_limit);
-	json = cJSON_PrintUnformatted(root);
-	cJSON_Delete(root);
+	json_add_string(root, "currency", rt->config->credits.currency);
+	json_add_number(root, "daily_limit", rt->config->credits.daily_limit);
+	json_add_bool(root, "over_daily_limit",
+		      rt->config->credits.daily_limit >= 0 &&
+			      today.credits > rt->config->credits.daily_limit);
+	json = json_stringify(root);
+	json_free(root);
 	if (!json)
 		return -ENOMEM;
 	return tool_result_success_json_text(result, json);
@@ -96,8 +93,8 @@ static void parse_memory_query(const char *args_json,
 			       const struct config *config,
 			       struct memory_query_options *q)
 {
-	cJSON *root;
-	cJSON *item;
+	struct json *root;
+	struct json *item;
 
 	memset(q, 0, sizeof(*q));
 	q->type = MEMORY_QUERY_ALL;
@@ -108,20 +105,19 @@ static void parse_memory_query(const char *args_json,
 			: MEMORY_QUERY_DEFAULT_MAX_EPISODES;
 	if (!args_json || !*args_json)
 		return;
-	root = cJSON_Parse(args_json);
+	root = json_parse_prefix(args_json, NULL, NULL);
 	if (!root)
 		return;
-	item = cJSON_GetObjectItemCaseSensitive(root, "type");
-	if (cJSON_IsString(item))
-		q->type = parse_memory_type(cJSON_GetStringValue(item));
-	item = cJSON_GetObjectItemCaseSensitive(root, "scope");
-	if (cJSON_IsString(item) &&
-	    strcmp(cJSON_GetStringValue(item), "all") == 0)
+	item = json_member(root, "type");
+	if (json_is_string_value(item))
+		q->type = parse_memory_type(json_string_value(item));
+	item = json_member(root, "scope");
+	if (json_is_string_value(item) && strcmp(json_string_value(item), "all") == 0)
 		q->scope_all = 1;
-	item = cJSON_GetObjectItemCaseSensitive(root, "max_episodes");
-	if (cJSON_IsNumber(item) && item->valueint > 0)
-		q->max_episodes = item->valueint;
-	cJSON_Delete(root);
+	item = json_member(root, "max_episodes");
+	if (json_is_number_value(item) && json_int_value(item) > 0)
+		q->max_episodes = json_int_value(item);
+	json_free(root);
 }
 
 static int memory_exec(const char *args_json, struct tool_result *result,
@@ -129,7 +125,7 @@ static int memory_exec(const char *args_json, struct tool_result *result,
 {
 	const struct tool_runtime_context *rt = result->runtime;
 	struct memory_query_options q;
-	cJSON *root;
+	struct json *root;
 	char *json;
 	char *text;
 
@@ -147,15 +143,15 @@ static int memory_exec(const char *args_json, struct tool_result *result,
 	if (!text)
 		return -ENOMEM;
 
-	root = cJSON_CreateObject();
+	root = json_object();
 	if (!root) {
 		free(text);
 		return -ENOMEM;
 	}
-	cJSON_AddStringToObject(root, "scope", q.scope_all ? "all" : "session");
-	cJSON_AddStringToObject(root, "text", text);
-	json = cJSON_PrintUnformatted(root);
-	cJSON_Delete(root);
+	json_add_string(root, "scope", q.scope_all ? "all" : "session");
+	json_add_string(root, "text", text);
+	json = json_stringify(root);
+	json_free(root);
 	free(text);
 	if (!json)
 		return -ENOMEM;
@@ -166,21 +162,21 @@ static int preference_exec(const char *args_json, struct tool_result *result,
 			   void *user_data)
 {
 	const struct tool_runtime_context *rt = result->runtime;
-	cJSON *args = cJSON_Parse(args_json);
-	cJSON *key = cJSON_GetObjectItemCaseSensitive(args, "key");
-	cJSON *value = cJSON_GetObjectItemCaseSensitive(args, "value");
-	cJSON *scope = cJSON_GetObjectItemCaseSensitive(args, "scope");
-	cJSON *evidence = cJSON_GetObjectItemCaseSensitive(args, "evidence");
+	struct json *args = json_parse_prefix(args_json, NULL, NULL);
+	struct json *key = json_member(args, "key");
+	struct json *value = json_member(args, "value");
+	struct json *scope = json_member(args, "scope");
+	struct json *evidence = json_member(args, "evidence");
 	sqlite3_stmt *stmt = NULL;
 	char token[64];
 	int rc;
 
 	(void)user_data;
 	if (!rt || !rt->db || !rt->config || !rt->config->memory.enabled ||
-	    !cJSON_IsString(key) || !cJSON_IsString(scope) ||
-	    !cJSON_IsString(evidence) || !evidence->valuestring[0] ||
-	    (!cJSON_IsString(value) && !cJSON_IsNull(value))) {
-		cJSON_Delete(args);
+	    !json_is_string_value(key) || !json_is_string_value(scope) ||
+	    !json_is_string_value(evidence) || !json_string_value(evidence)[0] ||
+	    (!json_is_string_value(value) && !json_is_null_value(value))) {
+		json_free(args);
 		return tool_result_error(result, "invalid_preference",
 			"Memory must be enabled; provide key, value (null to unset), scope "
 			"and user evidence.");
@@ -195,9 +191,9 @@ static int preference_exec(const char *args_json, struct tool_result *result,
 		rc = sqlite3_step(stmt);
 	}
 	if (rc != SQLITE_ROW || !sqlite3_column_text(stmt, 1) ||
-	    !strstr((const char *)sqlite3_column_text(stmt, 1), evidence->valuestring)) {
+	    !strstr((const char *)sqlite3_column_text(stmt, 1), json_string_value(evidence))) {
 		sqlite3_finalize(stmt);
-		cJSON_Delete(args);
+		json_free(args);
 		return tool_result_error(result, "invalid_evidence",
 			"Evidence must quote the latest user's explicit persistent "
 			"preference request.");
@@ -206,9 +202,9 @@ static int preference_exec(const char *args_json, struct tool_result *result,
 		const char *requested_scope = memory_preference_request_scope(
 			(const char *)sqlite3_column_text(stmt, 1));
 
-		if (!requested_scope || strcmp(requested_scope, scope->valuestring)) {
+		if (!requested_scope || strcmp(requested_scope, json_string_value(scope))) {
 			sqlite3_finalize(stmt);
-			cJSON_Delete(args);
+			json_free(args);
 			return tool_result_error(result, "not_a_persistent_request",
 				"Use the explicitly requested scope. Questions, quotations "
 				"and temporary "
@@ -219,27 +215,28 @@ static int preference_exec(const char *args_json, struct tool_result *result,
 	snprintf(token, sizeof(token), "history:%lld",
 		(long long)sqlite3_column_int64(stmt, 0));
 	sqlite3_finalize(stmt);
-	rc = preference_set(rt->db, rt->memory_session_id, scope->valuestring,
-		key->valuestring, cJSON_IsString(value) ? value->valuestring : NULL,
-		evidence->valuestring, token);
-	cJSON_Delete(args);
+	rc = preference_set(rt->db, rt->memory_session_id, json_string_value(scope),
+			    json_string_value(key),
+			    json_is_string_value(value) ? json_string_value(value) : NULL,
+			    json_string_value(evidence), token);
+	json_free(args);
 	if (rc != 0)
 		return tool_result_error(result, "preference_not_saved", morph_strerror(rc));
 	{
 		char *effective = preference_render(rt->db, rt->memory_session_id, 0);
-		cJSON *response = cJSON_CreateObject();
+		struct json *response = json_object();
 		char *json;
 
 		if (!response || !effective) {
-			cJSON_Delete(response);
+			json_free(response);
 			free(effective);
 			return -ENOMEM;
 		}
-		cJSON_AddBoolToObject(response, "saved", 1);
-		cJSON_AddStringToObject(response, "effective_preferences", effective);
+		json_add_bool(response, "saved", 1);
+		json_add_string(response, "effective_preferences", effective);
 		free(effective);
-		json = cJSON_PrintUnformatted(response);
-		cJSON_Delete(response);
+		json = json_stringify(response);
+		json_free(response);
 		if (!json)
 			return -ENOMEM;
 		return tool_result_success_json_text(result, json);

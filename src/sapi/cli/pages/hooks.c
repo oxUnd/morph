@@ -1,5 +1,5 @@
 #include "sapi/cli/pages/hooks.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <morph/tui/components.h>
 #include "sapi/cli/application.h"
 #include "sapi/cli/pages/setup/controls.h"
@@ -57,16 +57,9 @@ struct cli_hooks_hook_action {
 	const char *label;
 };
 
-static const char *cli_hooks_field(const cJSON *row, const char *key)
+static const char *cli_hooks_state_label(const struct json *row)
 {
-	const cJSON *value = cJSON_GetObjectItemCaseSensitive(row, key);
-
-	return cJSON_IsString(value) ? value->valuestring : "";
-}
-
-static const char *cli_hooks_state_label(const cJSON *row)
-{
-	const char *state = cli_hooks_field(row, "state");
+	const char *state = json_str_or(json_member(row, "state"), NULL, "");
 
 	if (strcmp(state, "trusted") == 0)
 		return "Trusted";
@@ -87,9 +80,9 @@ static const char *cli_hooks_state_label(const cJSON *row)
 	return state;
 }
 
-static const char *cli_hooks_state_style(const cJSON *row)
+static const char *cli_hooks_state_style(const struct json *row)
 {
-	const char *state = cli_hooks_field(row, "state");
+	const char *state = json_str_or(json_member(row, "state"), NULL, "");
 
 	if (strcmp(state, "trusted") == 0)
 		return CLI_HOOKS_UI_GREEN;
@@ -98,9 +91,9 @@ static const char *cli_hooks_state_style(const cJSON *row)
 	return CLI_HOOKS_UI_AMBER;
 }
 
-static const char *cli_hooks_selected_state_style(const cJSON *row)
+static const char *cli_hooks_selected_state_style(const struct json *row)
 {
-	const char *state = cli_hooks_field(row, "state");
+	const char *state = json_str_or(json_member(row, "state"), NULL, "");
 
 	if (strcmp(state, "trusted") == 0)
 		return CLI_HOOKS_UI_GREEN "\033[48;2;29;48;56m";
@@ -134,9 +127,9 @@ static void cli_hooks_selected(struct cli_hooks_hook_screen *screen, int row, co
 	cli_hooks_cell(screen, row, 2, 1, "▏", CLI_HOOKS_UI_BAR);
 }
 
-static int cli_hooks_actions(const cJSON *row, struct cli_hooks_hook_action items[4])
+static int cli_hooks_actions(const struct json *row, struct cli_hooks_hook_action items[4])
 {
-	const char *state = cli_hooks_field(row, "state");
+	const char *state = json_str_or(json_member(row, "state"), NULL, "");
 	int count = 0;
 
 	if (strcmp(state, "trusted") == 0) {
@@ -173,30 +166,30 @@ static const char *cli_hooks_event_name(int index)
 	return index >= 0 && index < CLI_HOOKS_HOOK_EVENT_COUNT ? names[index] : "";
 }
 
-static int cli_hooks_view_count(const struct cli_hooks_hook_screen *screen, const cJSON *rows)
+static int cli_hooks_view_count(const struct cli_hooks_hook_screen *screen, const struct json *rows)
 {
-	const cJSON *row;
+	const struct json *row;
 	int count = 0;
 
 	if (!screen->event_filter)
-		return cJSON_GetArraySize(rows);
-	cJSON_ArrayForEach (row, rows) {
-		if (strcmp(cli_hooks_field(row, "event"),
+		return json_count(rows);
+	json_foreach (row, rows) {
+		if (strcmp(json_str_or(json_member(row, "event"), NULL, ""),
 			   cli_hooks_event_name(screen->event_filter - 1)) == 0)
 			count++;
 	}
 	return count;
 }
 
-static const cJSON *cli_hooks_view_row(const struct cli_hooks_hook_screen *screen,
-				       const cJSON *rows, int index)
+static const struct json *cli_hooks_view_row(const struct cli_hooks_hook_screen *screen,
+					     const struct json *rows, int index)
 {
-	const cJSON *row;
+	const struct json *row;
 
 	if (!screen->event_filter)
-		return cJSON_GetArrayItem(rows, index);
-	cJSON_ArrayForEach (row, rows) {
-		if (strcmp(cli_hooks_field(row, "event"),
+		return json_at(rows, index);
+	json_foreach (row, rows) {
+		if (strcmp(json_str_or(json_member(row, "event"), NULL, ""),
 			   cli_hooks_event_name(screen->event_filter - 1)) == 0 &&
 		    index-- == 0)
 			return row;
@@ -204,7 +197,7 @@ static const cJSON *cli_hooks_view_row(const struct cli_hooks_hook_screen *scree
 	return NULL;
 }
 
-static void cli_hooks_events_frame(struct cli_hooks_hook_screen *screen, const cJSON *rows)
+static void cli_hooks_events_frame(struct cli_hooks_hook_screen *screen, const struct json *rows)
 {
 	char label[160];
 	int page = screen->height - 10;
@@ -220,18 +213,22 @@ static void cli_hooks_events_frame(struct cli_hooks_hook_screen *screen, const c
 	cli_hooks_cell(screen, 6, 3, screen->width,
 		       "EVENT                  INSTALLED  ACTIVE  REVIEW", CLI_HOOKS_UI_DIM);
 	for (int i = start; i < end; i++) {
-		const cJSON *row;
+		const struct json *row;
 		int installed = 0, active = 0, pending = 0;
 
-		cJSON_ArrayForEach (row, rows) {
-			if (strcmp(cli_hooks_field(row, "event"), cli_hooks_event_name(i)) != 0)
+		json_foreach (row, rows) {
+			if (strcmp(json_str_or(json_member(row, "event"), NULL, ""),
+				   cli_hooks_event_name(i)) != 0)
 				continue;
 			installed++;
-			active += strcmp(cli_hooks_field(row, "state"), "trusted") == 0;
-			pending += strcmp(cli_hooks_field(row, "state"), "needs_review") == 0 ||
-				   strcmp(cli_hooks_field(row, "state"),
+			active += strcmp(json_str_or(json_member(row, "state"), NULL, ""),
+					 "trusted") == 0;
+			pending += strcmp(json_str_or(json_member(row, "state"), NULL, ""),
+					  "needs_review") == 0 ||
+				   strcmp(json_str_or(json_member(row, "state"), NULL, ""),
 					  "changed / needs_review") == 0 ||
-				   strcmp(cli_hooks_field(row, "state"), "project_untrusted") == 0;
+				   strcmp(json_str_or(json_member(row, "state"), NULL, ""),
+					  "project_untrusted") == 0;
 		}
 		snprintf(label, sizeof(label), "%-22s %-10d %-7d %d", cli_hooks_event_name(i),
 			 installed, active, pending);
@@ -289,33 +286,35 @@ static int cli_hooks_detail_field(struct arena *arena, morph_array_t *lines, mor
 }
 
 static int cli_hooks_diff_property(struct arena *arena, morph_array_t *lines, morph_buf_t *buffer,
-				   const cJSON *value, const char *prefix, const char *style,
+				   const struct json *value, const char *prefix, const char *style,
 				   int width)
 {
-	char *json = cJSON_PrintUnformatted(value);
+	char *json = json_stringify(value);
 	if (!json)
 		return -ENOMEM;
 	morph_buf_reset(buffer);
-	int rc = morph_buf_printf(buffer, "%s  \"%s\": %s%s", prefix, value->string, json,
-				  value->next ? "," : "");
+	int rc = morph_buf_printf(buffer, "%s  \"%s\": %s%s", prefix, json_key(value), json,
+				  json_next(value) ? "," : "");
 	free(json);
 	return rc == 0 ? cli_hooks_add_line(arena, lines, morph_buf_cstr(buffer), style, width)
 		       : rc;
 }
 
 static int cli_hooks_definition_lines(struct arena *arena, morph_array_t *lines,
-				      morph_buf_t *buffer, const cJSON *row, int width)
+				      morph_buf_t *buffer, const struct json *row, int width)
 {
-	cJSON *current = cJSON_Parse(cli_hooks_field(row, "definition"));
-	cJSON *previous = cJSON_Parse(cli_hooks_field(row, "previous_definition"));
-	const cJSON *value;
-	if (previous && cJSON_Compare(current, previous, 1)) {
-		cJSON_Delete(previous);
+	struct json *current = json_parse_prefix(
+		json_str_or(json_member(row, "definition"), NULL, ""), NULL, NULL);
+	struct json *previous = json_parse_prefix(
+		json_str_or(json_member(row, "previous_definition"), NULL, ""), NULL, NULL);
+	const struct json *value;
+	if (previous && json_equal(current, previous, 1)) {
+		json_free(previous);
 		previous = NULL;
 	}
-	if (!cJSON_IsObject(current)) {
-		cJSON_Delete(current);
-		cJSON_Delete(previous);
+	if (!json_is_object_value(current)) {
+		json_free(current);
+		json_free(previous);
 		return MORPH_ERR_PARSE;
 	}
 	int rc = cli_hooks_add_line(arena, lines,
@@ -324,18 +323,18 @@ static int cli_hooks_definition_lines(struct arena *arena, morph_array_t *lines,
 
 	if (rc == 0)
 		rc = cli_hooks_add_line(arena, lines, "{", CLI_HOOKS_UI_DIM, width);
-	cJSON_ArrayForEach (value, previous) {
+	json_foreach (value, previous) {
 		if (rc != 0)
 			break;
-		if (!cJSON_HasObjectItem(current, value->string))
+		if (!json_has_member_ci(current, json_key(value)))
 			rc = cli_hooks_diff_property(arena, lines, buffer, value, "-",
 						     CLI_HOOKS_UI_RED, width);
 	}
-	cJSON_ArrayForEach (value, current) {
+	json_foreach (value, current) {
 		if (rc != 0)
 			break;
-		const cJSON *old = cJSON_GetObjectItemCaseSensitive(previous, value->string);
-		int changed = previous && !cJSON_Compare(old, value, 1);
+		const struct json *old = json_member(previous, json_key(value));
+		int changed = previous && !json_equal(old, value, 1);
 
 		if (changed && old)
 			rc = cli_hooks_diff_property(arena, lines, buffer, old, "-",
@@ -347,12 +346,12 @@ static int cli_hooks_definition_lines(struct arena *arena, morph_array_t *lines,
 	}
 	if (rc == 0)
 		rc = cli_hooks_add_line(arena, lines, "}", CLI_HOOKS_UI_DIM, width);
-	cJSON_Delete(current);
-	cJSON_Delete(previous);
+	json_free(current);
+	json_free(previous);
 	return rc;
 }
 
-static int cli_hooks_document(struct arena *arena, morph_array_t *lines, const cJSON *row,
+static int cli_hooks_document(struct arena *arena, morph_array_t *lines, const struct json *row,
 			      int width, int review)
 {
 	morph_buf_t buffer;
@@ -361,7 +360,8 @@ static int cli_hooks_document(struct arena *arena, morph_array_t *lines, const c
 	const char *labels[] = {"ID", "Command", "Matcher", "Source", "Working dir"};
 
 	if (rc == 0 && !review) {
-		rc = morph_buf_printf(&buffer, "%s · %s", cli_hooks_field(row, "event"),
+		rc = morph_buf_printf(&buffer, "%s · %s",
+				      json_str_or(json_member(row, "event"), NULL, ""),
 				      cli_hooks_state_label(row));
 		if (rc == 0)
 			rc = cli_hooks_add_line(arena, lines, morph_buf_cstr(&buffer),
@@ -370,19 +370,22 @@ static int cli_hooks_document(struct arena *arena, morph_array_t *lines, const c
 
 	for (size_t i = 0; rc == 0 && i < sizeof(keys) / sizeof(keys[0]); i++)
 		rc = cli_hooks_detail_field(arena, lines, &buffer, labels[i],
-					    cli_hooks_field(row, keys[i]), width);
-	if (rc == 0 && *cli_hooks_field(row, "diagnostic"))
+					    json_str_or(json_member(row, keys[i]), NULL, ""),
+					    width);
+	if (rc == 0 && *json_str_or(json_member(row, "diagnostic"), NULL, ""))
 		rc = cli_hooks_detail_field(arena, lines, &buffer, "Unavailable",
-					    cli_hooks_field(row, "diagnostic"), width);
-	if (rc == 0 && *cli_hooks_field(row, "statusMessage"))
-		rc = cli_hooks_detail_field(arena, lines, &buffer, "While running",
-					    cli_hooks_field(row, "statusMessage"), width);
+					    json_str_or(json_member(row, "diagnostic"), NULL, ""),
+					    width);
+	if (rc == 0 && *json_str_or(json_member(row, "statusMessage"), NULL, ""))
+		rc = cli_hooks_detail_field(
+			arena, lines, &buffer, "While running",
+			json_str_or(json_member(row, "statusMessage"), NULL, ""), width);
 	if (rc == 0) {
-		const cJSON *timeout = cJSON_GetObjectItemCaseSensitive(row, "timeout");
+		const struct json *timeout = json_member(row, "timeout");
 		char number[32];
 
 		snprintf(number, sizeof(number), "%ds",
-			 cJSON_IsNumber(timeout) ? timeout->valueint : 0);
+			 json_is_number_value(timeout) ? json_int_value(timeout) : 0);
 		rc = cli_hooks_detail_field(arena, lines, &buffer, "Timeout", number, width);
 	}
 	if (rc == 0 && review)
@@ -394,26 +397,28 @@ static int cli_hooks_document(struct arena *arena, morph_array_t *lines, const c
 	if (rc == 0)
 		rc = cli_hooks_add_line(arena, lines, "Last execution", CLI_HOOKS_UI_TEXT "\033[1m",
 					width);
-	const cJSON *last = cJSON_GetObjectItemCaseSensitive(row, "last_run");
+	const struct json *last = json_member(row, "last_run");
 	if (rc == 0 && last) {
 		morph_buf_reset(&buffer);
-		rc = morph_buf_puts(&buffer, cli_hooks_field(last, "name"));
-		const cJSON *exit = cJSON_GetObjectItemCaseSensitive(last, "exit_code");
-		const cJSON *duration = cJSON_GetObjectItemCaseSensitive(last, "duration_ms");
+		rc = morph_buf_puts(&buffer, json_str_or(json_member(last, "name"), NULL, ""));
+		const struct json *exit = json_member(last, "exit_code");
+		const struct json *duration = json_member(last, "duration_ms");
 
-		if (rc == 0 && cJSON_IsNumber(exit))
-			rc = morph_buf_printf(&buffer, " · exit %d", exit->valueint);
-		if (rc == 0 && cJSON_IsNumber(duration))
-			rc = morph_buf_printf(&buffer, " · %.0f ms", duration->valuedouble);
+		if (rc == 0 && json_is_number_value(exit))
+			rc = morph_buf_printf(&buffer, " · exit %d", json_int_value(exit));
+		if (rc == 0 && json_is_number_value(duration))
+			rc = morph_buf_printf(&buffer, " · %.0f ms", json_number_value(duration));
 		if (rc == 0)
 			rc = cli_hooks_add_line(arena, lines, morph_buf_cstr(&buffer),
 						CLI_HOOKS_UI_DIM, width);
-		if (rc == 0 && *cli_hooks_field(last, "error"))
-			rc = cli_hooks_detail_field(arena, lines, &buffer, "Error",
-						    cli_hooks_field(last, "error"), width);
-		if (rc == 0 && *cli_hooks_field(last, "stderr"))
-			rc = cli_hooks_detail_field(arena, lines, &buffer, "Stderr",
-						    cli_hooks_field(last, "stderr"), width);
+		if (rc == 0 && *json_str_or(json_member(last, "error"), NULL, ""))
+			rc = cli_hooks_detail_field(
+				arena, lines, &buffer, "Error",
+				json_str_or(json_member(last, "error"), NULL, ""), width);
+		if (rc == 0 && *json_str_or(json_member(last, "stderr"), NULL, ""))
+			rc = cli_hooks_detail_field(
+				arena, lines, &buffer, "Stderr",
+				json_str_or(json_member(last, "stderr"), NULL, ""), width);
 	} else if (rc == 0) {
 		rc = cli_hooks_add_line(arena, lines, "Not run", CLI_HOOKS_UI_DIM, width);
 	}
@@ -421,7 +426,8 @@ static int cli_hooks_document(struct arena *arena, morph_array_t *lines, const c
 		rc = cli_hooks_add_line(
 			arena, lines, "Trust covers this definition, not mutable script contents.",
 			CLI_HOOKS_UI_DIM, width);
-	if (rc == 0 && strcmp(cli_hooks_field(row, "state"), "project_untrusted") == 0)
+	if (rc == 0 &&
+	    strcmp(json_str_or(json_member(row, "state"), NULL, ""), "project_untrusted") == 0)
 		rc = cli_hooks_add_line(arena, lines,
 					"Review this workspace path before trusting it; then "
 					"review the hook definition.",
@@ -429,19 +435,23 @@ static int cli_hooks_document(struct arena *arena, morph_array_t *lines, const c
 	return rc;
 }
 
-static void cli_hooks_list_frame(struct cli_hooks_hook_screen *screen, const cJSON *rows)
+static void cli_hooks_list_frame(struct cli_hooks_hook_screen *screen, const struct json *rows)
 {
 	int count = cli_hooks_view_count(screen, rows);
 	int trusted = 0, disabled = 0, review = 0;
-	const cJSON *row;
+	const struct json *row;
 	char label[128];
 
-	cJSON_ArrayForEach (row, rows) {
-		trusted += strcmp(cli_hooks_field(row, "state"), "trusted") == 0;
-		disabled += strcmp(cli_hooks_field(row, "state"), "disabled") == 0;
-		review += strcmp(cli_hooks_field(row, "state"), "needs_review") == 0 ||
-			  strcmp(cli_hooks_field(row, "state"), "changed / needs_review") == 0 ||
-			  strcmp(cli_hooks_field(row, "state"), "project_untrusted") == 0;
+	json_foreach (row, rows) {
+		trusted += strcmp(json_str_or(json_member(row, "state"), NULL, ""), "trusted") == 0;
+		disabled +=
+			strcmp(json_str_or(json_member(row, "state"), NULL, ""), "disabled") == 0;
+		review += strcmp(json_str_or(json_member(row, "state"), NULL, ""),
+				 "needs_review") == 0 ||
+			  strcmp(json_str_or(json_member(row, "state"), NULL, ""),
+				 "changed / needs_review") == 0 ||
+			  strcmp(json_str_or(json_member(row, "state"), NULL, ""),
+				 "project_untrusted") == 0;
 	}
 	snprintf(label, sizeof(label), "Lifecycle hooks%s%s", screen->event_filter ? " · " : "",
 		 screen->event_filter ? cli_hooks_event_name(screen->event_filter - 1) : "");
@@ -489,13 +499,13 @@ static void cli_hooks_list_frame(struct cli_hooks_hook_screen *screen, const cJS
 
 		if (focus)
 			cli_hooks_selected(screen, y, "");
-		cli_hooks_cell(screen, y, 3, event_width, cli_hooks_field(row, "event"), style);
+		cli_hooks_cell(screen, y, 3, event_width,
+			       json_str_or(json_member(row, "event"), NULL, ""), style);
 		if (command_width > 4)
 			cli_hooks_cell(screen, y, command_column, command_width,
-				       cli_hooks_field(row, "command"), style);
+				       json_str_or(json_member(row, "command"), NULL, ""), style);
 		if (source_width) {
-			int project =
-				cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(row, "project"));
+			int project = json_is_true(json_member(row, "project"));
 
 			cli_hooks_cell(screen, y, source_column, source_width,
 				       project ? "Project" : "User", style);
@@ -515,9 +525,9 @@ static void cli_hooks_list_frame(struct cli_hooks_hook_screen *screen, const cJS
 			       CLI_HOOKS_UI_DIM);
 }
 
-static void cli_hooks_render_batch(struct cli_hooks_hook_screen *screen, const cJSON *rows)
+static void cli_hooks_render_batch(struct cli_hooks_hook_screen *screen, const struct json *rows)
 {
-	int count = cJSON_GetArraySize(rows);
+	int count = json_count(rows);
 	int visible = (screen->height - 16) / 3;
 	const char *choices[] = {"Trust all current hooks and remember",
 				 "Reject all current hooks and remember",
@@ -532,21 +542,24 @@ static void cli_hooks_render_batch(struct cli_hooks_hook_screen *screen, const c
 	cli_hooks_cell(screen, 3, 3, screen->width, "Trust lifecycle hooks?",
 		       CLI_HOOKS_UI_TEXT "\033[1m");
 	cli_hooks_cell(screen, 4, 3, screen->width,
-		       cli_hooks_field(cJSON_GetArrayItem(rows, 0), "cwd"), CLI_HOOKS_UI_DIM);
+		       json_str_or(json_member(json_at(rows, 0), "cwd"), NULL, ""),
+		       CLI_HOOKS_UI_DIM);
 	cli_hooks_cell(screen, 5, 3, screen->width,
 		       "User hooks: all workspaces. Project hooks: this workspace only.",
 		       CLI_HOOKS_UI_DIM);
 	cli_hooks_rule(screen, 6);
 	for (int i = 0; i < visible && screen->scroll + i < count; i++) {
-		const cJSON *row = cJSON_GetArrayItem(rows, screen->scroll + i);
+		const struct json *row = json_at(rows, screen->scroll + i);
 		int y = 7 + i * 3;
 
-		snprintf(label, sizeof(label), "%s · %s", cli_hooks_field(row, "event"),
+		snprintf(label, sizeof(label), "%s · %s",
+			 json_str_or(json_member(row, "event"), NULL, ""),
 			 cli_hooks_state_label(row));
 		cli_hooks_cell(screen, y, 3, screen->width, label, cli_hooks_state_style(row));
-		cli_hooks_cell(screen, y + 1, 5, screen->width - 2, cli_hooks_field(row, "source"),
-			       CLI_HOOKS_UI_DIM);
-		cli_hooks_cell(screen, y + 2, 5, screen->width - 2, cli_hooks_field(row, "command"),
+		cli_hooks_cell(screen, y + 1, 5, screen->width - 2,
+			       json_str_or(json_member(row, "source"), NULL, ""), CLI_HOOKS_UI_DIM);
+		cli_hooks_cell(screen, y + 2, 5, screen->width - 2,
+			       json_str_or(json_member(row, "command"), NULL, ""),
 			       CLI_HOOKS_UI_TEXT);
 	}
 	snprintf(label, sizeof(label), "Showing %d–%d of %d · PgUp/PgDn to scroll",
@@ -567,9 +580,9 @@ static void cli_hooks_render_batch(struct cli_hooks_hook_screen *screen, const c
 		       "↑↓ Choose  Enter Confirm  Esc Keep unchanged", CLI_HOOKS_UI_DIM);
 }
 
-static int cli_hooks_render(struct cli_hooks_hook_screen *screen, const cJSON *rows)
+static int cli_hooks_render(struct cli_hooks_hook_screen *screen, const struct json *rows)
 {
-	const cJSON *row = cli_hooks_view_row(screen, rows, screen->focus);
+	const struct json *row = cli_hooks_view_row(screen, rows, screen->focus);
 	int height = screen->height;
 	int detail_start;
 	struct cli_hooks_hook_action items[4];
@@ -630,7 +643,8 @@ static int cli_hooks_render(struct cli_hooks_hook_screen *screen, const cJSON *r
 			       CLI_HOOKS_UI_DIM);
 	} else {
 		if (screen->review) {
-			cli_hooks_cell(screen, 3, 3, screen->width, cli_hooks_field(row, "event"),
+			cli_hooks_cell(screen, 3, 3, screen->width,
+				       json_str_or(json_member(row, "event"), NULL, ""),
 				       CLI_HOOKS_UI_TEXT "\033[1m");
 			cli_hooks_cell(screen, 4, 3, screen->width, cli_hooks_state_label(row),
 				       cli_hooks_state_style(row));
@@ -718,23 +732,23 @@ static int cli_hooks_render(struct cli_hooks_hook_screen *screen, const cJSON *r
 	return rc;
 }
 
-static int cli_hooks_refresh(struct cli_application *ctx, cJSON **rows,
+static int cli_hooks_refresh(struct cli_application *ctx, struct json **rows,
 			     struct cli_hooks_hook_screen *screen)
 {
-	cJSON *fresh = NULL;
-	const cJSON *row = cli_hooks_view_row(screen, *rows, screen->focus);
+	struct json *fresh = NULL;
+	const struct json *row = cli_hooks_view_row(screen, *rows, screen->focus);
 	char id[65];
 
-	snprintf(id, sizeof(id), "%s", cli_hooks_field(row, "id"));
+	snprintf(id, sizeof(id), "%s", json_str_or(json_member(row, "id"), NULL, ""));
 	int rc = runtime_hooks_snapshot(ctx->runtime, &fresh);
 	if (rc != 0)
 		return rc;
-	cJSON_Delete(*rows);
+	json_free(*rows);
 	*rows = fresh;
 	screen->focus = 0;
 	for (int i = 0; i < cli_hooks_view_count(screen, fresh); i++) {
 		row = cli_hooks_view_row(screen, fresh, i);
-		if (strcmp(cli_hooks_field(row, "id"), id) == 0)
+		if (strcmp(json_str_or(json_member(row, "id"), NULL, ""), id) == 0)
 			break;
 		screen->focus++;
 	}
@@ -751,8 +765,8 @@ static int cli_hooks_refresh(struct cli_application *ctx, cJSON **rows,
 
 struct cli_hooks_hook_controller {
 	struct cli_application *ctx;
-	cJSON **rows;
-	cJSON *owned_rows;
+	struct json **rows;
+	struct json *owned_rows;
 	struct cli_hooks_hook_screen screen;
 };
 
@@ -787,7 +801,7 @@ static int cli_hooks_update(void *data, const struct morph_tui_event *event)
 	struct cli_hooks_hook_controller *controller = data;
 	struct cli_hooks_hook_screen *screen = &controller->screen;
 	struct cli_application *ctx = controller->ctx;
-	cJSON **rows = controller->rows;
+	struct json **rows = controller->rows;
 
 	if (event->type != MORPH_TUI_EVENT_KEY || event->pasting)
 		return MORPH_TUI_SCREEN_CONTINUE;
@@ -848,18 +862,18 @@ static int cli_hooks_update(void *data, const struct morph_tui_event *event)
 					      MORPH_TUI_WIDGET_LIST_TAB);
 		if (key == MORPH_TUI_KEY_PAGE_UP || key == MORPH_TUI_KEY_PAGE_DOWN)
 			screen->scroll = (int)morph_tui_widget_scroll_update(
-				(size_t)screen->scroll, (size_t)cJSON_GetArraySize(*rows),
+				(size_t)screen->scroll, (size_t)json_count(*rows),
 				(size_t)screen->page_size, key);
 		if (key == '\r' || key == '\n') {
 			if (screen->choice == 2) {
 				screen->batch = 0;
 				screen->scroll = 0;
 			} else {
-				const cJSON *row = cJSON_GetArrayItem(*rows, 0);
+				const struct json *row = json_at(*rows, 0);
 				int result = runtime_hooks_manage(
 					ctx->runtime,
 					screen->choice == 0 ? "trust-all" : "deny-all", "workspace",
-					cli_hooks_field(row, "review_digest"));
+					json_str_or(json_member(row, "review_digest"), NULL, ""));
 
 				if (result == 0)
 					return MORPH_TUI_SCREEN_CLOSE;
@@ -874,7 +888,7 @@ static int cli_hooks_update(void *data, const struct morph_tui_event *event)
 		}
 		return MORPH_TUI_SCREEN_REDRAW;
 	}
-	if (key == 'a' && !screen->review && cJSON_GetArraySize(*rows) > 0) {
+	if (key == 'a' && !screen->review && json_count(*rows) > 0) {
 		rc = cli_hooks_refresh(ctx, rows, screen);
 		if (rc != 0)
 			return rc;
@@ -882,7 +896,7 @@ static int cli_hooks_update(void *data, const struct morph_tui_event *event)
 		screen->choice = 2;
 		return MORPH_TUI_SCREEN_REDRAW;
 	}
-	const cJSON *row = cli_hooks_view_row(screen, *rows, screen->focus);
+	const struct json *row = cli_hooks_view_row(screen, *rows, screen->focus);
 	struct cli_hooks_hook_action items[4];
 	int count = cli_hooks_actions(row, items);
 	int total = cli_hooks_view_count(screen, *rows);
@@ -913,8 +927,11 @@ static int cli_hooks_update(void *data, const struct morph_tui_event *event)
 			int project = strcmp(action, "trust-project") == 0;
 			int result = runtime_hooks_manage(
 				ctx->runtime, action,
-				project ? "workspace" : cli_hooks_field(row, "id"),
-				cli_hooks_field(row, project ? "workspace_digest" : "digest"));
+				project ? "workspace"
+					: json_str_or(json_member(row, "id"), NULL, ""),
+				json_str_or(
+					json_member(row, project ? "workspace_digest" : "digest"),
+					NULL, ""));
 
 			snprintf(screen->message, sizeof(screen->message),
 				 result == 0 ? "Completed: %s" : "Action failed: %s",
@@ -939,11 +956,11 @@ static void cli_hooks_close(void *data, int result)
 
 	(void)result;
 	morph_buf_cleanup(&controller->screen.frame);
-	cJSON_Delete(controller->owned_rows);
+	json_free(controller->owned_rows);
 	free(controller);
 }
 
-static int cli_hooks_present(struct cli_application *ctx, cJSON **rows, const char *review_id,
+static int cli_hooks_present(struct cli_application *ctx, struct json **rows, const char *review_id,
 			     int batch)
 {
 	struct cli_hooks_hook_controller controller = {
@@ -956,11 +973,11 @@ static int cli_hooks_present(struct cli_application *ctx, cJSON **rows, const ch
 						 .draw = cli_hooks_draw};
 
 	if (review_id) {
-		const cJSON *row;
+		const struct json *row;
 		int found = 0;
 
-		cJSON_ArrayForEach (row, *rows) {
-			if (strcmp(cli_hooks_field(row, "id"), review_id) == 0) {
+		json_foreach (row, *rows) {
+			if (strcmp(json_str_or(json_member(row, "id"), NULL, ""), review_id) == 0) {
 				found = 1;
 				break;
 			}
@@ -979,7 +996,7 @@ static int cli_hooks_present(struct cli_application *ctx, cJSON **rows, const ch
 		if (!owned)
 			return -ENOMEM;
 		*owned = controller;
-		owned->owned_rows = cJSON_Duplicate(*rows, 1);
+		owned->owned_rows = json_clone(*rows, 1);
 		owned->rows = &owned->owned_rows;
 		int rc = owned->owned_rows
 				 ? cli_application_present_screen(ctx, &ops, owned, cli_hooks_close)
@@ -1003,20 +1020,20 @@ static int cli_hooks_present(struct cli_application *ctx, cJSON **rows, const ch
 	return rc;
 }
 
-int cli_hooks_ui(struct cli_application *ctx, cJSON **rows, const char *review_id)
+int cli_hooks_ui(struct cli_application *ctx, struct json **rows, const char *review_id)
 {
 	return cli_hooks_present(ctx, rows, review_id, 0);
 }
 
-int cli_hooks_review_all(struct cli_application *ctx, cJSON **rows)
+int cli_hooks_review_all(struct cli_application *ctx, struct json **rows)
 {
 	return cli_hooks_present(ctx, rows, NULL, 1);
 }
 
 int cli_hooks_startup(struct cli_application *ctx)
 {
-	cJSON *rows = NULL;
-	const cJSON *row;
+	struct json *rows = NULL;
+	const struct json *row;
 	int rc;
 
 	if (!cli_setup_controls_available(stdin, stdout))
@@ -1024,8 +1041,8 @@ int cli_hooks_startup(struct cli_application *ctx)
 	rc = runtime_hooks_snapshot(ctx->runtime, &rows);
 	if (rc != 0)
 		return rc;
-	cJSON_ArrayForEach (row, rows) {
-		const char *state = cli_hooks_field(row, "state");
+	json_foreach (row, rows) {
+		const char *state = json_str_or(json_member(row, "state"), NULL, "");
 
 		if (strcmp(state, "needs_review") == 0 ||
 		    strcmp(state, "changed / needs_review") == 0 ||
@@ -1034,6 +1051,6 @@ int cli_hooks_startup(struct cli_application *ctx)
 			break;
 		}
 	}
-	cJSON_Delete(rows);
+	json_free(rows);
 	return rc;
 }

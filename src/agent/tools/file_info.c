@@ -2,7 +2,7 @@
 #include "agent/tool_context.h"
 #include "util/log.h"
 #include "util/file.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,16 +28,16 @@ static int file_info_exec(const char *args_json, struct tool_result *result, voi
 	struct tool_context *tctx = user_data;
 	if (!result) return -EINVAL;
 
-	cJSON *root = cJSON_Parse(args_json);
+	struct json *root = json_parse_prefix(args_json, NULL, NULL);
 	if (!root) {
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
-	cJSON *fp = cJSON_GetObjectItem(root, "file_path");
-	const char *file_path = cJSON_IsString(fp) ? fp->valuestring : NULL;
+	struct json *fp = json_member_ci(root, "file_path");
+	const char *file_path = json_is_string_value(fp) ? json_string_value(fp) : NULL;
 	if (!file_path) {
-		cJSON_Delete(root);
+		json_free(root);
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'file_path' parameter. "
 			"Usage: file_info({\\\"file_path\\\": \\\"path/to/file\\\"})\"}"));
@@ -50,7 +50,7 @@ static int file_info_exec(const char *args_json, struct tool_result *result, voi
 						     file_path, resolved_path,
 						     sizeof(resolved_path));
 		if (rc < 0) {
-			cJSON_Delete(root);
+			json_free(root);
 			if (rc == -ENOENT)
 				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"path does not exist\"}"));
@@ -66,41 +66,41 @@ static int file_info_exec(const char *args_json, struct tool_result *result, voi
 
 	struct stat st;
 	if (stat(resolved_path, &st) != 0) {
-		cJSON_Delete(root);
+		json_free(root);
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"path does not exist\"}"));
 		return -ENOENT;
 	}
 
-	cJSON *out = cJSON_CreateObject();
-	cJSON_AddStringToObject(out, "file_path", file_path);
-	cJSON_AddStringToObject(out, "type", file_type_str(st.st_mode));
-	cJSON_AddBoolToObject(out, "exists", 1);
+	struct json *out = json_object();
+	json_add_string(out, "file_path", file_path);
+	json_add_string(out, "type", file_type_str(st.st_mode));
+	json_add_bool(out, "exists", 1);
 
 	if (S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) {
-		cJSON_AddNumberToObject(out, "size", (double)st.st_size);
-		cJSON_AddNumberToObject(out, "permissions", (double)(st.st_mode & 0777));
+		json_add_number(out, "size", (double)st.st_size);
+		json_add_number(out, "permissions", (double)(st.st_mode & 0777));
 
 		char perms[16];
 		snprintf(perms, sizeof(perms), "%o", (unsigned)(st.st_mode & 0777));
-		cJSON_AddStringToObject(out, "perms_octal", perms);
+		json_add_string(out, "perms_octal", perms);
 
 		const char *ext = strrchr(file_path, '.');
 		if (ext)
-			cJSON_AddStringToObject(out, "extension", ext + 1);
+			json_add_string(out, "extension", ext + 1);
 	}
 
 	if (S_ISDIR(st.st_mode)) {
-		cJSON_AddNumberToObject(out, "size", (double)st.st_size);
+		json_add_number(out, "size", (double)st.st_size);
 	}
 
 	char timebuf[64];
 	strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S",
 	         localtime(&st.st_mtime));
-	cJSON_AddStringToObject(out, "modified", timebuf);
+	json_add_string(out, "modified", timebuf);
 
-	char *str = cJSON_PrintUnformatted(out);
-	cJSON_Delete(out);
-	cJSON_Delete(root);
+	char *str = json_stringify(out);
+	json_free(out);
+	json_free(root);
 	(void)tool_result_success_json_text(result, str);
 	return 0;
 }

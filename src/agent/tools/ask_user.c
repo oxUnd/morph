@@ -1,7 +1,7 @@
 #include "ask_user.h"
 #include "agent/tool_runtime.h"
 #include "util/log.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,81 +14,81 @@ struct ask_user_context {
 	void *user_data;
 };
 
-int ask_user_options_to_json(cJSON *data, const struct ask_user_options *options)
+int ask_user_options_to_json(struct json *data, const struct ask_user_options *options)
 {
 	struct ask_user_options defaults = {0};
 	if (!options)
 		options = &defaults;
-	if (!cJSON_IsObject(data) || options->recommended_count < 0 ||
+	if (!json_is_object_value(data) || options->recommended_count < 0 ||
 	    options->recommended_count > ASK_USER_CHOICES_MAX)
 		return -EINVAL;
-	cJSON *indices = cJSON_CreateArray();
+	struct json *indices = json_array();
 	if (!indices)
 		return -ENOMEM;
 	for (int i = 0; i < options->recommended_count; i++) {
-		cJSON *index = cJSON_CreateNumber(options->recommended_indices[i]);
+		struct json *index = json_number(options->recommended_indices[i]);
 		if (!index) {
-			cJSON_Delete(indices);
+			json_free(indices);
 			return -ENOMEM;
 		}
-		cJSON_AddItemToArray(indices, index);
+		json_array_add(indices, index);
 	}
-	cJSON_AddItemToObject(data, "recommended_indices", indices);
-	if (!cJSON_AddStringToObject(data, "response_policy",
-		options->optional ? "optional" : "required") ||
-	    !cJSON_AddNumberToObject(data, "timeout_seconds", options->timeout_seconds))
+	json_object_add(data, "recommended_indices", indices);
+	if (!json_add_string(data, "response_policy",
+			     options->optional ? "optional" : "required") ||
+	    !json_add_number(data, "timeout_seconds", options->timeout_seconds))
 		return -ENOMEM;
 	return 0;
 }
 
-static int parse_ask_user_options(const cJSON *root, const char *const *choices,
-				 int choices_count,
-				 int min, int max, struct ask_user_options *options)
+static int parse_ask_user_options(const struct json *root, const char *const *choices,
+				  int choices_count, int min, int max,
+				  struct ask_user_options *options)
 {
-	cJSON *policy = cJSON_GetObjectItemCaseSensitive(root, "response_policy");
-	cJSON *timeout = cJSON_GetObjectItemCaseSensitive(root, "timeout_seconds");
-	cJSON *indices = cJSON_GetObjectItemCaseSensitive(root, "recommended_indices");
+	struct json *policy = json_member(root, "response_policy");
+	struct json *timeout = json_member(root, "timeout_seconds");
+	struct json *indices = json_member(root, "recommended_indices");
 	if (policy) {
-		if (!cJSON_IsString(policy) ||
-		    (strcmp(policy->valuestring, "optional") != 0 &&
-		     strcmp(policy->valuestring, "required") != 0))
+		if (!json_is_string_value(policy) ||
+		    (strcmp(json_string_value(policy), "optional") != 0 &&
+		     strcmp(json_string_value(policy), "required") != 0))
 			return -EINVAL;
-		options->optional = strcmp(policy->valuestring, "optional") == 0;
+		options->optional = strcmp(json_string_value(policy), "optional") == 0;
 	}
 	options->timeout_seconds = options->optional ? ASK_USER_TIMEOUT_DEFAULT : 0;
 	if (timeout) {
-		if (!cJSON_IsNumber(timeout) || timeout->valuedouble < 1 ||
-		    timeout->valuedouble > 86400 ||
-		    timeout->valuedouble != (double)timeout->valueint)
+		if (!json_is_number_value(timeout) || json_number_value(timeout) < 1 ||
+		    json_number_value(timeout) > 86400 ||
+		    json_number_value(timeout) != (double)json_int_value(timeout))
 			return -EINVAL;
 		if (options->optional)
-			options->timeout_seconds = timeout->valueint;
+			options->timeout_seconds = json_int_value(timeout);
 	}
 	if (!indices)
 		return 0;
-	cJSON *items = cJSON_GetObjectItemCaseSensitive(root, "choices");
-	if (items && (!cJSON_IsArray(items) || cJSON_GetArraySize(items) != choices_count))
+	struct json *items = json_member(root, "choices");
+	if (items && (!json_is_array_value(items) || json_count(items) != choices_count))
 		return -EINVAL;
-	if (!cJSON_IsArray(indices) || cJSON_GetArraySize(indices) > ASK_USER_CHOICES_MAX)
+	if (!json_is_array_value(indices) || json_count(indices) > ASK_USER_CHOICES_MAX)
 		return -EINVAL;
-	int count = cJSON_GetArraySize(indices);
+	int count = json_count(indices);
 	if (count && (count < min || (max > 0 && count > max)))
 		return -EINVAL;
 	for (int i = 0; i < count; i++) {
-		cJSON *index = cJSON_GetArrayItem(indices, i);
-		if (!cJSON_IsNumber(index) || index->valuedouble < 0 ||
-		    index->valuedouble >= choices_count ||
-		    index->valuedouble != (double)index->valueint)
+		struct json *index = json_at(indices, i);
+		if (!json_is_number_value(index) || json_number_value(index) < 0 ||
+		    json_number_value(index) >= choices_count ||
+		    json_number_value(index) != (double)json_int_value(index))
 			return -EINVAL;
-		if (!choices[index->valueint][0])
+		if (!choices[json_int_value(index)][0])
 			return -EINVAL;
 		for (int j = 0; j < i; j++) {
-			if (options->recommended_indices[j] == index->valueint ||
+			if (options->recommended_indices[j] == json_int_value(index) ||
 			    strcmp(choices[options->recommended_indices[j]],
-				   choices[index->valueint]) == 0)
+				   choices[json_int_value(index)]) == 0)
 				return -EINVAL;
 		}
-		options->recommended_indices[i] = index->valueint;
+		options->recommended_indices[i] = json_int_value(index);
 	}
 	options->recommended_count = count;
 	return 0;
@@ -99,81 +99,73 @@ static void ask_user_context_destroy(void *user_data)
 	free(user_data);
 }
 
-static cJSON *ask_user_data_to_json(const char *question,
-				    const char *const *choices,
-				    int choices_count,
-				    const char *selection_mode,
-				    int min_choices,
-				    int max_choices,
-				    char *const *answers,
-				    int answers_count,
-				    int no_input)
+static struct json *ask_user_data_to_json(const char *question, const char *const *choices,
+					  int choices_count, const char *selection_mode,
+					  int min_choices, int max_choices, char *const *answers,
+					  int answers_count, int no_input)
 {
-	cJSON *root = cJSON_CreateObject();
+	struct json *root = json_object();
 	if (!root)
 		return NULL;
 
-	cJSON *choices_json = cJSON_CreateArray();
-	cJSON *answers_json = NULL;
+	struct json *choices_json = json_array();
+	struct json *answers_json = NULL;
 	if (!choices_json)
 		goto fail;
-	answers_json = cJSON_CreateArray();
+	answers_json = json_array();
 	if (!answers_json)
 		goto fail;
 
-	if (!cJSON_AddStringToObject(root, "kind", "ask_user_response") ||
-	    !cJSON_AddStringToObject(root, "question",
-				     question ? question : "") ||
-	    !cJSON_AddStringToObject(root, "selection_mode",
-				     selection_mode ? selection_mode : "single") ||
-	    !cJSON_AddNumberToObject(root, "min_choices", min_choices) ||
-	    !cJSON_AddNumberToObject(root, "max_choices", max_choices) ||
-	    !cJSON_AddBoolToObject(root, "no_input", no_input))
+	if (!json_add_string(root, "kind", "ask_user_response") ||
+	    !json_add_string(root, "question", question ? question : "") ||
+	    !json_add_string(root, "selection_mode", selection_mode ? selection_mode : "single") ||
+	    !json_add_number(root, "min_choices", min_choices) ||
+	    !json_add_number(root, "max_choices", max_choices) ||
+	    !json_add_bool(root, "no_input", no_input))
 		goto fail;
 
 	for (int i = 0; i < choices_count; i++) {
-		cJSON *choice = cJSON_CreateString(choices[i] ? choices[i] : "");
+		struct json *choice = json_string(choices[i] ? choices[i] : "");
 		if (!choice)
 			goto fail;
-		cJSON_AddItemToArray(choices_json, choice);
+		json_array_add(choices_json, choice);
 	}
 
 	for (int i = 0; i < answers_count; i++) {
-		cJSON *answer = cJSON_CreateString(answers[i] ? answers[i] : "");
+		struct json *answer = json_string(answers[i] ? answers[i] : "");
 		if (!answer)
 			goto fail;
-		cJSON_AddItemToArray(answers_json, answer);
+		json_array_add(answers_json, answer);
 	}
 
-	cJSON_AddItemToObject(root, "choices", choices_json);
-	cJSON_AddItemToObject(root, "answers", answers_json);
+	json_object_add(root, "choices", choices_json);
+	json_object_add(root, "answers", answers_json);
 	return root;
 
 fail:
-	cJSON_Delete(answers_json);
-	cJSON_Delete(choices_json);
-	cJSON_Delete(root);
+	json_free(answers_json);
+	json_free(choices_json);
+	json_free(root);
 	return NULL;
 }
 
-static cJSON *ask_user_ui_to_json(cJSON *data)
+static struct json *ask_user_ui_to_json(struct json *data)
 {
-	cJSON *ui = cJSON_CreateObject();
+	struct json *ui = json_object();
 	if (!ui)
 		return NULL;
 
-	if (!cJSON_AddStringToObject(ui, "component", "ask_user") ||
-	    !cJSON_AddStringToObject(ui, "version", "1"))
+	if (!json_add_string(ui, "component", "ask_user") || !json_add_string(ui, "version", "1"))
 		goto fail;
 
-	cJSON *copy = cJSON_Duplicate(data, 1);
+	struct json *copy = json_clone(data, 1);
 	if (!copy)
 		goto fail;
-	cJSON_AddItemToObject(ui, "data", copy);
+	json_object_add(ui, "data", copy);
 	return ui;
 
 fail:
-	cJSON_Delete(ui);
+	json_free(ui);
 	return NULL;
 }
 
@@ -190,21 +182,20 @@ static int attach_ask_user_result(struct tool_result *result,
 				  const struct ask_user_options *options,
 				  const char *resolution)
 {
-	cJSON *data = ask_user_data_to_json(question, choices, choices_count,
-					    selection_mode, min_choices,
-					    max_choices, answers, answers_count,
-					    no_input);
+	struct json *data =
+		ask_user_data_to_json(question, choices, choices_count, selection_mode, min_choices,
+				      max_choices, answers, answers_count, no_input);
 	if (!data)
 		return -ENOMEM;
 	if (ask_user_options_to_json(data, options) != 0 ||
-	    !cJSON_AddStringToObject(data, "resolution", resolution)) {
-		cJSON_Delete(data);
+	    !json_add_string(data, "resolution", resolution)) {
+		json_free(data);
 		return -ENOMEM;
 	}
 
-	cJSON *ui = ask_user_ui_to_json(data);
+	struct json *ui = ask_user_ui_to_json(data);
 	if (!ui) {
-		cJSON_Delete(data);
+		json_free(data);
 		return -ENOMEM;
 	}
 
@@ -246,38 +237,36 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	int options_rc = 0;
 
 	if (args_json && *args_json) {
-		cJSON *root = cJSON_Parse(args_json);
+		struct json *root = json_parse_prefix(args_json, NULL, NULL);
 		if (root) {
-			cJSON *q = cJSON_GetObjectItem(root, "question");
-			if (cJSON_IsString(q) && q->valuestring)
-				strncpy(question, q->valuestring,
-					sizeof(question) - 1);
+			struct json *q = json_member_ci(root, "question");
+			if (json_is_string_value(q) && json_string_value(q))
+				strncpy(question, json_string_value(q), sizeof(question) - 1);
 
-			cJSON *mode = cJSON_GetObjectItem(root, "selection_mode");
-			if (cJSON_IsString(mode) && mode->valuestring &&
-			    strcmp(mode->valuestring, "multi") == 0)
+			struct json *mode = json_member_ci(root, "selection_mode");
+			if (json_is_string_value(mode) && json_string_value(mode) &&
+			    strcmp(json_string_value(mode), "multi") == 0)
 				strncpy(selection_mode, "multi",
 					sizeof(selection_mode) - 1);
 
-			cJSON *min = cJSON_GetObjectItem(root, "min_choices");
-			if (cJSON_IsNumber(min) && min->valueint > 0)
-				min_choices = min->valueint;
+			struct json *min = json_member_ci(root, "min_choices");
+			if (json_is_number_value(min) && json_int_value(min) > 0)
+				min_choices = json_int_value(min);
 
-			cJSON *max = cJSON_GetObjectItem(root, "max_choices");
-			if (cJSON_IsNumber(max) && max->valueint > 0)
-				max_choices = max->valueint;
+			struct json *max = json_member_ci(root, "max_choices");
+			if (json_is_number_value(max) && json_int_value(max) > 0)
+				max_choices = json_int_value(max);
 
-			cJSON *ch = cJSON_GetObjectItem(root, "choices");
-			if (cJSON_IsArray(ch)) {
-				int n = cJSON_GetArraySize(ch);
+			struct json *ch = json_member_ci(root, "choices");
+			if (json_is_array_value(ch)) {
+				int n = json_count(ch);
 				if (n > 64)
 					n = 64;
 				for (int i = 0; i < n; i++) {
-					cJSON *item = cJSON_GetArrayItem(ch, i);
-					if (cJSON_IsString(item)
-					    && item->valuestring) {
+					struct json *item = json_at(ch, i);
+					if (json_is_string_value(item) && json_string_value(item)) {
 						choice_copies[choices_count] =
-							strdup(item->valuestring);
+							strdup(json_string_value(item));
 						if (choice_copies[choices_count]) {
 							choices[choices_count] =
 								choice_copies[choices_count];
@@ -301,7 +290,7 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 			}
 			options_rc = parse_ask_user_options(root, choices, choices_count,
 				min_choices, max_choices, &options);
-			cJSON_Delete(root);
+			json_free(root);
 		}
 	}
 

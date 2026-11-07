@@ -42,10 +42,9 @@ int mcp_request(struct mcp_client *client, const char *method,
 int mcp_request_timeout_ms(const struct mcp_client *client);
 
 /* Schema validation/cache and mirrored HTTP headers belong to the codec. */
-int mcp_protocol_cache_tool(struct mcp_client *client, const char *name,
-	const cJSON *schema);
-int mcp_protocol_tool_headers(struct mcp_client *client, const cJSON *params,
-	struct arena *arena, morph_array_t *headers);
+int mcp_protocol_cache_tool(struct mcp_client *client, const char *name, const struct json *schema);
+int mcp_protocol_tool_headers(struct mcp_client *client, const struct json *params,
+			      struct arena *arena, morph_array_t *headers);
 int mcp_protocol_add_header(struct arena *arena, morph_array_t *headers,
 	const char *name, const char *value);
 
@@ -63,8 +62,8 @@ int mcp_http_exchange(struct mcp_client *client,
 void mcp_wire_reply_cleanup(struct mcp_wire_reply *reply);
 
 /* Decode validates JSON-RPC framing and correlation, preserving remote errors. */
-int mcp_protocol_decode(struct morph_log *logger, const struct mcp_wire_reply *reply,
-	int id, cJSON **out);
+int mcp_protocol_decode(struct morph_log *logger, const struct mcp_wire_reply *reply, int id,
+			struct json **out);
 
 #ifdef __cplusplus
 }

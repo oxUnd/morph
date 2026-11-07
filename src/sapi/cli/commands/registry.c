@@ -13,7 +13,7 @@
 #include "sapi/cli/commands/sync.h"
 #include "sapi/cli/commands/tasks.h"
 #include "sapi/cli/application_internal.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/widgets/list.h"
 
@@ -44,45 +44,55 @@ static int cli_registry_command_event_emit(struct cli_application *ctx, const ch
 					   const char *phase, const char *input, int argc,
 					   char **argv, const char *output, int command_rc)
 {
-	cJSON *data;
-	cJSON *args;
+	struct json *data;
+	struct json *args;
 	struct morph_event event;
 	int rc;
 
 	if (!ctx || !name || !phase || argc < 1 || !argv || !argv[0])
 		return -EINVAL;
-	data = cJSON_CreateObject();
-	args = cJSON_CreateArray();
+	data = json_object();
+	args = json_array();
 	if (!data || !args) {
-		cJSON_Delete(data);
-		cJSON_Delete(args);
+		json_free(data);
+		json_free(args);
 		return -ENOMEM;
 	}
-	if (!cJSON_AddStringToObject(data, "command", argv[0]) ||
-	    !cJSON_AddStringToObject(data, "input", input ? input : "")) {
-		cJSON_Delete(args);
-		cJSON_Delete(data);
+	if (!json_add_string(data, "command", argv[0]) ||
+	    !json_add_string(data, "input", input ? input : "")) {
+		json_free(args);
+		json_free(data);
 		return -ENOMEM;
 	}
 	for (int i = 1; i < argc; i++) {
-		cJSON *arg = cJSON_CreateString(argv[i]);
+		struct json *arg = json_string(argv[i]);
 
 		if (!arg) {
-			cJSON_Delete(args);
-			cJSON_Delete(data);
+			json_free(args);
+			json_free(data);
 			return -ENOMEM;
 		}
-		cJSON_AddItemToArray(args, arg);
+		rc = json_array_add(args, arg);
+		if (rc) {
+			json_free(arg);
+			json_free(args);
+			json_free(data);
+			return rc;
+		}
 	}
-	cJSON_AddItemToObject(data, "args", args);
-	if (output && !cJSON_AddStringToObject(data, "output", output)) {
-		cJSON_Delete(data);
+	rc = json_object_add(data, "args", args);
+	if (rc) {
+		json_free(args);
+		json_free(data);
+		return rc;
+	}
+	if (output && !json_add_string(data, "output", output)) {
+		json_free(data);
 		return -ENOMEM;
 	}
-	if (command_rc < 0 &&
-	    (!cJSON_AddNumberToObject(data, "error_code", command_rc) ||
-	     !cJSON_AddStringToObject(data, "error", morph_strerror(command_rc)))) {
-		cJSON_Delete(data);
+	if (command_rc < 0 && (!json_add_number(data, "error_code", command_rc) ||
+			       !json_add_string(data, "error", morph_strerror(command_rc)))) {
+		json_free(data);
 		return -ENOMEM;
 	}
 	event = (struct morph_event){
@@ -94,7 +104,7 @@ static int cli_registry_command_event_emit(struct cli_application *ctx, const ch
 		.turn_id = NULL,
 	};
 	rc = morph_event_emit(ctx->event_cb, ctx->event_user_data, &event);
-	cJSON_Delete(data);
+	json_free(data);
 	return rc;
 }
 

@@ -1,5 +1,5 @@
 #include "sapi/cli/commands/jobs.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
@@ -27,11 +27,11 @@ static int cli_jobs_command_jobs(struct cli_application *ctx, int argc, char **a
 			CMD_ERROR(ctx, "%s", morph_strerror(rc));
 		return rc;
 	}
-	cJSON *data = NULL;
+	struct json *data = NULL;
 	int rc = id ? runtime_process_read(ctx->runtime, id, &data)
 		    : runtime_process_list(ctx->runtime, &data);
 	if (!rc) {
-		char *json = cJSON_Print(data);
+		char *json = json_stringify_pretty(data);
 		if (!json)
 			rc = -ENOMEM;
 		else {
@@ -39,7 +39,7 @@ static int cli_jobs_command_jobs(struct cli_application *ctx, int argc, char **a
 			free(json);
 		}
 	}
-	cJSON_Delete(data);
+	json_free(data);
 	if (rc)
 		CMD_ERROR(ctx, "%s", morph_strerror(rc));
 	return rc;

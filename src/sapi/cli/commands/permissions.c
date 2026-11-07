@@ -1,5 +1,5 @@
 #include "sapi/cli/commands/permissions.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
@@ -112,19 +112,19 @@ static int cli_permissions_confirm_clear(struct cli_application *ctx, int all_pr
 	FILE *tty;
 
 	if (ctx && ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
-		cJSON *request = cJSON_CreateObject();
+		struct json *request = json_object();
 		int confirmed = 0;
 		int rc;
 
 		if (!request)
 			return 0;
-		if (!cJSON_AddStringToObject(request, "action", "clear_permissions") ||
-		    !cJSON_AddBoolToObject(request, "all_projects", all_projects)) {
-			cJSON_Delete(request);
+		if (!json_add_string(request, "action", "clear_permissions") ||
+		    !json_add_bool(request, "all_projects", all_projects)) {
+			json_free(request);
 			return 0;
 		}
 		rc = cli_interaction_confirm(ctx, "command_confirmation", request, &confirmed);
-		cJSON_Delete(request);
+		json_free(request);
 		return rc == 0 && confirmed;
 	}
 

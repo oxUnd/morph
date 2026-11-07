@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 #include "fcgi_io.h"
 #include "util/error.h"
-#include "cJSON.h"
+#include "util/json.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -160,14 +160,14 @@ void reply_204(request_t *r)
 
 void reply_400(request_t *r, const char *msg)
 {
-	cJSON *obj = cJSON_CreateObject();
+	struct json *obj = json_object();
 	char *json = NULL;
 
 	if (obj) {
-		cJSON_AddStringToObject(obj, "error", "bad_request");
-		cJSON_AddStringToObject(obj, "message", msg ? msg : "");
-		json = cJSON_PrintUnformatted(obj);
-		cJSON_Delete(obj);
+		json_add_string(obj, "error", "bad_request");
+		json_add_string(obj, "message", msg ? msg : "");
+		json = json_stringify(obj);
+		json_free(obj);
 	}
 	reply_json(r, 400, json ? json : "{\"error\":\"bad_request\"}");
 	free(json);
@@ -190,14 +190,14 @@ void reply_404(request_t *r)
 
 void reply_500(request_t *r, const char *msg)
 {
-	cJSON *obj = cJSON_CreateObject();
+	struct json *obj = json_object();
 	char *json = NULL;
 
 	if (obj) {
-		cJSON_AddStringToObject(obj, "error", "internal");
-		cJSON_AddStringToObject(obj, "message", msg ? msg : "");
-		json = cJSON_PrintUnformatted(obj);
-		cJSON_Delete(obj);
+		json_add_string(obj, "error", "internal");
+		json_add_string(obj, "message", msg ? msg : "");
+		json = json_stringify(obj);
+		json_free(obj);
 	}
 	reply_json(r, 500, json ? json : "{\"error\":\"internal\"}");
 	free(json);

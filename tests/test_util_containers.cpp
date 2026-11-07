@@ -474,18 +474,17 @@ TEST(UtilJson, SerializedDocumentOutlivesTreeAndResetsWithArena)
 	auto *arena = arena_create(0);
 	ASSERT_NE(arena, nullptr);
 	for (int i = 0; i < 5; i++) {
-		cJSON *root = cJSON_CreateObject();
+		struct json *root = json_object();
 		std::string payload(1024 * 1024, 'x');
 		payload += "\n\"escaped\"";
-		ASSERT_NE(cJSON_AddStringToObject(root, "payload", payload.c_str()), nullptr);
-		char *serialized = morph_json_print(arena, root);
+		ASSERT_NE(json_add_string(root, "payload", payload.c_str()), nullptr);
+		char *serialized = json_stringify_arena(arena, root);
 		ASSERT_NE(serialized, nullptr);
-		cJSON_Delete(root);
-		cJSON *parsed = cJSON_Parse(serialized);
+		json_free(root);
+		struct json *parsed = json_parse_prefix(serialized, NULL, NULL);
 		ASSERT_NE(parsed, nullptr);
-		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(parsed, "payload")),
-			payload.c_str());
-		cJSON_Delete(parsed);
+		EXPECT_STREQ(json_string_value(json_member_ci(parsed, "payload")), payload.c_str());
+		json_free(parsed);
 		arena_reset(arena);
 		EXPECT_EQ(arena->cleanup, nullptr);
 	}

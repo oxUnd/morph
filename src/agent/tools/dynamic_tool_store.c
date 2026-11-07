@@ -1,7 +1,7 @@
 #include "dynamic_tool_store.h"
 #include "util/error.h"
 #include "util/file.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
@@ -26,7 +26,7 @@ void dynamic_tool_store_definition_cleanup(struct dynamic_tool_definition *defin
 {
 	if (!definition)
 		return;
-	cJSON_Delete(definition->document);
+	json_free(definition->document);
 	free(definition->input_schema);
 	free(definition->output_schema);
 	memset(definition, 0, sizeof(*definition));
@@ -35,40 +35,40 @@ void dynamic_tool_store_definition_cleanup(struct dynamic_tool_definition *defin
 static int definition_load_source(struct dynamic_tool_definition *definition,
 				  const char *source_path)
 {
-	const cJSON *field = cJSON_GetObjectItem(definition->document, "source");
+	const struct json *field = json_member_ci(definition->document, "source");
 	char *legacy = NULL;
 	int rc;
 
 	if (field) {
-		definition->source = cJSON_GetStringValue(field);
+		definition->source = json_string_value(field);
 		return definition->source ? 0 : MORPH_ERR_FORMAT;
 	}
 	rc = read_definition_text(source_path, &legacy);
 	if (rc != 0)
 		return rc;
-	field = cJSON_AddStringToObject(definition->document, "source", legacy);
+	field = json_add_string(definition->document, "source", legacy);
 	free(legacy);
 	if (!field)
 		return -ENOMEM;
-	definition->source = cJSON_GetStringValue(field);
+	definition->source = json_string_value(field);
 	definition->legacy_source = 1;
 	return 0;
 }
 
-static char *definition_schema(const cJSON *value, const char *fallback)
+static char *definition_schema(const struct json *value, const char *fallback)
 {
 	if (!value)
 		return strdup(fallback);
-	if (cJSON_IsString(value))
-		return strdup(value->valuestring);
-	return cJSON_PrintUnformatted(value);
+	if (json_is_string_value(value))
+		return strdup(json_string_value(value));
+	return json_stringify(value);
 }
 
 int dynamic_tool_store_load_definition(const char *meta_path, const char *source_path,
 				       struct dynamic_tool_definition *definition)
 {
-	const cJSON *input;
-	const cJSON *output;
+	const struct json *input;
+	const struct json *output;
 	char *text = NULL;
 	int rc;
 
@@ -78,29 +78,29 @@ int dynamic_tool_store_load_definition(const char *meta_path, const char *source
 	rc = read_definition_text(meta_path, &text);
 	if (rc != 0)
 		return rc;
-	definition->document = cJSON_ParseWithOpts(text, NULL, 1);
+	definition->document = json_parse_ex(text, NULL, 1, NULL);
 	free(text);
 	if (!definition->document)
 		return MORPH_ERR_PARSE;
-	if (!cJSON_IsObject(definition->document)) {
+	if (!json_is_object_value(definition->document)) {
 		dynamic_tool_store_definition_cleanup(definition);
 		return MORPH_ERR_FORMAT;
 	}
-	definition->name = cJSON_GetStringValue(cJSON_GetObjectItem(definition->document, "name"));
+	definition->name = json_string_value(json_member_ci(definition->document, "name"));
 	if (!definition->name) {
 		dynamic_tool_store_definition_cleanup(definition);
 		return MORPH_ERR_FORMAT;
 	}
 	definition->description =
-		cJSON_GetStringValue(cJSON_GetObjectItem(definition->document, "description"));
+		json_string_value(json_member_ci(definition->document, "description"));
 	rc = definition_load_source(definition, source_path);
 	if (rc != 0) {
 		dynamic_tool_store_definition_cleanup(definition);
 		return rc;
 	}
-	input = cJSON_GetObjectItem(definition->document, "input_schema");
-	output = cJSON_GetObjectItem(definition->document, "output_schema");
-	if (cJSON_IsObject(input) && !cJSON_HasObjectItem(input, "properties"))
+	input = json_member_ci(definition->document, "input_schema");
+	output = json_member_ci(definition->document, "output_schema");
+	if (json_is_object_value(input) && !json_has_member_ci(input, "properties"))
 		input = NULL;
 	definition->input_schema = definition_schema(input, TOOL_EMPTY_INPUT_SCHEMA);
 	definition->output_schema = definition_schema(output, TOOL_OBJECT_OUTPUT_SCHEMA);
@@ -121,7 +121,7 @@ int dynamic_tool_store_copy_tool_snapshot(const char *source_meta, const char *s
 
 	if (rc != 0)
 		return rc;
-	serialized = cJSON_PrintUnformatted(definition.document);
+	serialized = json_stringify(definition.document);
 	if (!serialized)
 		rc = -ENOMEM;
 	if (rc == 0) {
@@ -138,7 +138,7 @@ int dynamic_tool_store_copy_tool_snapshot(const char *source_meta, const char *s
 
 int dynamic_tool_store_write_tool_files(struct dynamic_tool *dt, const char *source)
 {
-	cJSON *meta = NULL;
+	struct json *meta = NULL;
 	char *meta_json = NULL;
 	char meta_path[PATH_MAX];
 	int rc;
@@ -159,7 +159,7 @@ int dynamic_tool_store_write_tool_files(struct dynamic_tool *dt, const char *sou
 		if (rc != 0)
 			return rc;
 		if (definition.legacy_source) {
-			char *upgraded = cJSON_PrintUnformatted(definition.document);
+			char *upgraded = json_stringify(definition.document);
 
 			rc = upgraded ? file_write_atomic(meta_path, upgraded, strlen(upgraded))
 				      : -ENOMEM;
@@ -184,22 +184,22 @@ int dynamic_tool_store_write_tool_files(struct dynamic_tool *dt, const char *sou
 	rc = file_path_join(meta_path, sizeof(meta_path), dt->dir, DYN_TOOL_META_FILE);
 	if (rc < 0)
 		return rc;
-	meta = cJSON_CreateObject();
+	meta = json_object();
 	if (!meta)
 		return -ENOMEM;
-	if (!cJSON_AddStringToObject(meta, "source", source)) {
-		cJSON_Delete(meta);
+	if (!json_add_string(meta, "source", source)) {
+		json_free(meta);
 		return -ENOMEM;
 	}
-	if (!cJSON_AddStringToObject(meta, "name", dt->name) ||
-	    !cJSON_AddStringToObject(meta, "description", dt->description) ||
-	    !cJSON_AddStringToObject(meta, "input_schema", dt->input_schema) ||
-	    !cJSON_AddStringToObject(meta, "output_schema", dt->output_schema)) {
-		cJSON_Delete(meta);
+	if (!json_add_string(meta, "name", dt->name) ||
+	    !json_add_string(meta, "description", dt->description) ||
+	    !json_add_string(meta, "input_schema", dt->input_schema) ||
+	    !json_add_string(meta, "output_schema", dt->output_schema)) {
+		json_free(meta);
 		return -ENOMEM;
 	}
-	meta_json = cJSON_PrintUnformatted(meta);
-	cJSON_Delete(meta);
+	meta_json = json_stringify(meta);
+	json_free(meta);
 	if (!meta_json)
 		return -ENOMEM;
 	rc = file_write_atomic(meta_path, meta_json, strlen(meta_json));
@@ -328,25 +328,25 @@ int dynamic_tool_store_write_checkpoint_meta(const char *checkpoint_dir,
 					     const struct tool_checkpoint *cp)
 {
 	char path[PATH_MAX];
-	cJSON *root;
+	struct json *root;
 	char *json;
 	int rc;
 
 	rc = file_path_join(path, sizeof(path), checkpoint_dir, DYN_TOOL_CHECKPOINT_META_FILE);
 	if (rc < 0)
 		return rc;
-	root = cJSON_CreateObject();
+	root = json_object();
 	if (!root)
 		return -ENOMEM;
-	cJSON_AddStringToObject(root, "id", cp->id);
-	cJSON_AddStringToObject(root, "name", cp->name);
-	cJSON_AddStringToObject(root, "before_state", cp->before_state);
-	cJSON_AddStringToObject(root, "origin", cp->origin);
-	cJSON_AddStringToObject(root, "old_hash", cp->old_hash);
-	cJSON_AddStringToObject(root, "new_hash", cp->new_hash);
-	cJSON_AddNumberToObject(root, "created_at", (double)cp->created_at);
-	json = cJSON_PrintUnformatted(root);
-	cJSON_Delete(root);
+	json_add_string(root, "id", cp->id);
+	json_add_string(root, "name", cp->name);
+	json_add_string(root, "before_state", cp->before_state);
+	json_add_string(root, "origin", cp->origin);
+	json_add_string(root, "old_hash", cp->old_hash);
+	json_add_string(root, "new_hash", cp->new_hash);
+	json_add_number(root, "created_at", (double)cp->created_at);
+	json = json_stringify(root);
+	json_free(root);
 	if (!json)
 		return -ENOMEM;
 	rc = file_write_atomic(path, json, strlen(json));
@@ -358,8 +358,8 @@ int dynamic_tool_store_read_checkpoint_meta(const char *checkpoint_dir, struct t
 {
 	char path[PATH_MAX];
 	char *json;
-	cJSON *root;
-	cJSON *item;
+	struct json *root;
+	struct json *item;
 	int rc;
 
 	if (!cp)
@@ -371,32 +371,32 @@ int dynamic_tool_store_read_checkpoint_meta(const char *checkpoint_dir, struct t
 	json = file_read_all(path, NULL);
 	if (!json)
 		return -ENOENT;
-	root = cJSON_Parse(json);
+	root = json_parse_prefix(json, NULL, NULL);
 	free(json);
 	if (!root)
 		return -EINVAL;
-	item = cJSON_GetObjectItem(root, "id");
-	if (cJSON_IsString(item) && item->valuestring)
-		strncpy(cp->id, item->valuestring, sizeof(cp->id) - 1);
-	item = cJSON_GetObjectItem(root, "name");
-	if (cJSON_IsString(item) && item->valuestring)
-		strncpy(cp->name, item->valuestring, sizeof(cp->name) - 1);
-	item = cJSON_GetObjectItem(root, "before_state");
-	if (cJSON_IsString(item) && item->valuestring)
-		strncpy(cp->before_state, item->valuestring, sizeof(cp->before_state) - 1);
-	item = cJSON_GetObjectItem(root, "origin");
-	if (cJSON_IsString(item) && item->valuestring)
-		strncpy(cp->origin, item->valuestring, sizeof(cp->origin) - 1);
-	item = cJSON_GetObjectItem(root, "old_hash");
-	if (cJSON_IsString(item) && item->valuestring)
-		strncpy(cp->old_hash, item->valuestring, sizeof(cp->old_hash) - 1);
-	item = cJSON_GetObjectItem(root, "new_hash");
-	if (cJSON_IsString(item) && item->valuestring)
-		strncpy(cp->new_hash, item->valuestring, sizeof(cp->new_hash) - 1);
-	item = cJSON_GetObjectItem(root, "created_at");
-	if (cJSON_IsNumber(item))
-		cp->created_at = (long)item->valuedouble;
-	cJSON_Delete(root);
+	item = json_member_ci(root, "id");
+	if (json_is_string_value(item) && json_string_value(item))
+		strncpy(cp->id, json_string_value(item), sizeof(cp->id) - 1);
+	item = json_member_ci(root, "name");
+	if (json_is_string_value(item) && json_string_value(item))
+		strncpy(cp->name, json_string_value(item), sizeof(cp->name) - 1);
+	item = json_member_ci(root, "before_state");
+	if (json_is_string_value(item) && json_string_value(item))
+		strncpy(cp->before_state, json_string_value(item), sizeof(cp->before_state) - 1);
+	item = json_member_ci(root, "origin");
+	if (json_is_string_value(item) && json_string_value(item))
+		strncpy(cp->origin, json_string_value(item), sizeof(cp->origin) - 1);
+	item = json_member_ci(root, "old_hash");
+	if (json_is_string_value(item) && json_string_value(item))
+		strncpy(cp->old_hash, json_string_value(item), sizeof(cp->old_hash) - 1);
+	item = json_member_ci(root, "new_hash");
+	if (json_is_string_value(item) && json_string_value(item))
+		strncpy(cp->new_hash, json_string_value(item), sizeof(cp->new_hash) - 1);
+	item = json_member_ci(root, "created_at");
+	if (json_is_number_value(item))
+		cp->created_at = (long)json_number_value(item);
+	json_free(root);
 	if (!cp->id[0] || !cp->name[0] || !cp->before_state[0])
 		return -EINVAL;
 	return 0;

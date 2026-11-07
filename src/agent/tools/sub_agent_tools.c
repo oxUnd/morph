@@ -2,7 +2,7 @@
 #include "agent/tool_runtime.h"
 #include "util/log.h"
 #include "util/error.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,16 +15,16 @@ static int agent_sync_exec(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 	if (!args_json)
 		args_json = "{}";
-	cJSON *root = cJSON_Parse(args_json);
+	struct json *root = json_parse_prefix(args_json, NULL, NULL);
 	const char *task = NULL;
 	if (root) {
-		cJSON *t = cJSON_GetObjectItem(root, "task");
-		if (cJSON_IsString(t) && t->valuestring)
-			task = t->valuestring;
+		struct json *t = json_member_ci(root, "task");
+		if (json_is_string_value(t) && json_string_value(t))
+			task = json_string_value(t);
 	}
 	if (!task) {
 		if (root)
-			cJSON_Delete(root);
+			json_free(root);
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'task' parameter\"}"));
 		return -EINVAL;
@@ -32,37 +32,34 @@ static int agent_sync_exec(const char *args_json, struct tool_result *result,
 	struct sub_agent_entry *entry = sub_agent_find(bind->rt,
 						       bind->agent_name);
 	if (!entry) {
-		cJSON_Delete(root);
+		json_free(root);
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"sub-agent not found\"}"));
 		return -ENOENT;
 	}
 	char *sub_result = NULL;
 	int rc = sub_agent_invoke_sync(bind->rt, result->runtime, entry, task, &sub_result);
-	cJSON_Delete(root);
-	cJSON *out = cJSON_CreateObject();
+	json_free(root);
+	struct json *out = json_object();
 	if (rc == 0) {
-		cJSON_AddStringToObject(out, "status", "completed");
+		json_add_string(out, "status", "completed");
 		if (sub_result) {
-			cJSON *parsed = cJSON_Parse(sub_result);
+			struct json *parsed = json_parse_prefix(sub_result, NULL, NULL);
 			if (parsed) {
-				cJSON_AddItemToObject(out, "result", parsed);
+				json_object_add(out, "result", parsed);
 				free(sub_result);
 			} else {
-				cJSON_AddStringToObject(out, "result",
-							sub_result);
+				json_add_string(out, "result", sub_result);
 				free(sub_result);
 			}
 		}
 	} else {
-		cJSON_AddStringToObject(out, "status", "failed");
-		cJSON_AddStringToObject(out, "error",
-					sub_result ? sub_result
-					: morph_strerror(rc));
+		json_add_string(out, "status", "failed");
+		json_add_string(out, "error", sub_result ? sub_result : morph_strerror(rc));
 		free(sub_result);
 	}
-	(void)tool_result_success_json_text(result, cJSON_PrintUnformatted(out));
-	cJSON_Delete(out);
+	(void)tool_result_success_json_text(result, json_stringify(out));
+	json_free(out);
 	return rc;
 }
 
@@ -126,37 +123,37 @@ static int delegate_exec(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 	if (!args_json)
 		args_json = "{}";
-	cJSON *root = cJSON_Parse(args_json);
+	struct json *root = json_parse_prefix(args_json, NULL, NULL);
 	const char *agent = NULL;
 	const char *task = NULL;
 	if (root) {
-		cJSON *a = cJSON_GetObjectItem(root, "agent");
-		if (cJSON_IsString(a))
-			agent = a->valuestring;
-		cJSON *t = cJSON_GetObjectItem(root, "task");
-		if (cJSON_IsString(t))
-			task = t->valuestring;
+		struct json *a = json_member_ci(root, "agent");
+		if (json_is_string_value(a))
+			agent = json_string_value(a);
+		struct json *t = json_member_ci(root, "task");
+		if (json_is_string_value(t))
+			task = json_string_value(t);
 	}
 	if (!agent || !task) {
-		cJSON_Delete(root);
+		json_free(root);
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'agent' or 'task' parameter\"}"));
 		return -EINVAL;
 	}
 	char *task_id = NULL;
 	int rc = sub_agent_delegate(rt, result->runtime, agent, task, &task_id);
-	cJSON_Delete(root);
-	cJSON *out = cJSON_CreateObject();
+	json_free(root);
+	struct json *out = json_object();
 	if (rc == 0) {
-		cJSON_AddStringToObject(out, "task_id", task_id);
-		cJSON_AddStringToObject(out, "status", "running");
+		json_add_string(out, "task_id", task_id);
+		json_add_string(out, "status", "running");
 	} else {
-		cJSON_AddStringToObject(out, "status", "failed");
-		cJSON_AddStringToObject(out, "error", morph_strerror(rc));
+		json_add_string(out, "status", "failed");
+		json_add_string(out, "error", morph_strerror(rc));
 	}
 	free(task_id);
-	(void)tool_result_success_json_text(result, cJSON_PrintUnformatted(out));
-	cJSON_Delete(out);
+	(void)tool_result_success_json_text(result, json_stringify(out));
+	json_free(out);
 	return rc;
 }
 
@@ -183,15 +180,15 @@ static int agent_status_exec(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 	if (!args_json)
 		args_json = "{}";
-	cJSON *root = cJSON_Parse(args_json);
+	struct json *root = json_parse_prefix(args_json, NULL, NULL);
 	const char *task_id = NULL;
 	if (root) {
-		cJSON *t = cJSON_GetObjectItem(root, "task_id");
-		if (cJSON_IsString(t))
-			task_id = t->valuestring;
+		struct json *t = json_member_ci(root, "task_id");
+		if (json_is_string_value(t))
+			task_id = json_string_value(t);
 	}
 	if (!task_id) {
-		cJSON_Delete(root);
+		json_free(root);
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'task_id' parameter\"}"));
 		return -EINVAL;
@@ -199,8 +196,8 @@ static int agent_status_exec(const char *args_json, struct tool_result *result,
 	enum sub_agent_task_status status = SUB_AGENT_PENDING;
 	char *res = NULL;
 	int rc = sub_agent_check_status(rt, task_id, &status, &res);
-	cJSON_Delete(root);
-	cJSON *out = cJSON_CreateObject();
+	json_free(root);
+	struct json *out = json_object();
 	if (rc == 0) {
 		const char *st = "unknown";
 		switch (status) {
@@ -210,22 +207,22 @@ static int agent_status_exec(const char *args_json, struct tool_result *result,
 		case SUB_AGENT_FAILED:    st = "failed"; break;
 		case SUB_AGENT_CANCELLED: st = "cancelled"; break;
 		}
-		cJSON_AddStringToObject(out, "task_id", task_id);
-		cJSON_AddStringToObject(out, "status", st);
+		json_add_string(out, "task_id", task_id);
+		json_add_string(out, "status", st);
 		if (res) {
-			cJSON *parsed = cJSON_Parse(res);
+			struct json *parsed = json_parse_prefix(res, NULL, NULL);
 			if (parsed) {
-				cJSON_AddItemToObject(out, "result", parsed);
+				json_object_add(out, "result", parsed);
 			} else {
-				cJSON_AddStringToObject(out, "result", res);
+				json_add_string(out, "result", res);
 			}
 		}
 	} else {
-		cJSON_AddStringToObject(out, "error", morph_strerror(rc));
+		json_add_string(out, "error", morph_strerror(rc));
 	}
 	free(res);
-	(void)tool_result_success_json_text(result, cJSON_PrintUnformatted(out));
-	cJSON_Delete(out);
+	(void)tool_result_success_json_text(result, json_stringify(out));
+	json_free(out);
 	return rc;
 }
 
@@ -248,34 +245,34 @@ static int fanout_exec(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 	if (!args_json)
 		args_json = "{}";
-	cJSON *root = cJSON_Parse(args_json);
+	struct json *root = json_parse_prefix(args_json, NULL, NULL);
 	const char *agent = NULL;
-	cJSON *tasks_arr = NULL;
+	struct json *tasks_arr = NULL;
 	const char *merge_str = NULL;
 	if (root) {
-		cJSON *a = cJSON_GetObjectItem(root, "agent");
-		if (cJSON_IsString(a))
-			agent = a->valuestring;
-		tasks_arr = cJSON_GetObjectItem(root, "tasks");
-		cJSON *m = cJSON_GetObjectItem(root, "merge");
-		if (cJSON_IsString(m))
-			merge_str = m->valuestring;
+		struct json *a = json_member_ci(root, "agent");
+		if (json_is_string_value(a))
+			agent = json_string_value(a);
+		tasks_arr = json_member_ci(root, "tasks");
+		struct json *m = json_member_ci(root, "merge");
+		if (json_is_string_value(m))
+			merge_str = json_string_value(m);
 	}
-	if (!agent || !tasks_arr || !cJSON_IsArray(tasks_arr)) {
-		cJSON_Delete(root);
+	if (!agent || !tasks_arr || !json_is_array_value(tasks_arr)) {
+		json_free(root);
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'agent' or 'tasks' parameter\"}"));
 		return -EINVAL;
 	}
-	int n = cJSON_GetArraySize(tasks_arr);
+	int n = json_count(tasks_arr);
 	const char **tasks = calloc((size_t)n, sizeof(*tasks));
 	if (!tasks) {
-		cJSON_Delete(root);
+		json_free(root);
 		return -ENOMEM;
 	}
 	for (int i = 0; i < n; i++) {
-		cJSON *item = cJSON_GetArrayItem(tasks_arr, i);
-		tasks[i] = cJSON_IsString(item) ? item->valuestring : "";
+		struct json *item = json_at(tasks_arr, i);
+		tasks[i] = json_is_string_value(item) ? json_string_value(item) : "";
 	}
 	enum sub_agent_merge_strategy merge =
 		SUB_AGENT_MERGE_SYNTHESIZE;
@@ -288,27 +285,25 @@ static int fanout_exec(const char *args_json, struct tool_result *result,
 	char *fanout_result = NULL;
 	int rc = sub_agent_fanout(rt, result->runtime, agent, tasks, n, merge, &fanout_result);
 	free(tasks);
-	cJSON_Delete(root);
+	json_free(root);
 	if (rc == 0 && fanout_result) {
-		cJSON *parsed = cJSON_Parse(fanout_result);
+		struct json *parsed = json_parse_prefix(fanout_result, NULL, NULL);
 		if (parsed) {
-			cJSON *out = cJSON_CreateObject();
-			cJSON_AddStringToObject(out, "status", "completed");
-			cJSON_AddItemToObject(out, "result", parsed);
-			(void)tool_result_success_json_text(result, cJSON_PrintUnformatted(out));
-			cJSON_Delete(out);
+			struct json *out = json_object();
+			json_add_string(out, "status", "completed");
+			json_object_add(out, "result", parsed);
+			(void)tool_result_success_json_text(result, json_stringify(out));
+			json_free(out);
 			free(fanout_result);
 		} else {
 			(void)tool_result_success_json_text(result, fanout_result);
 		}
 	} else {
-		cJSON *out = cJSON_CreateObject();
-		cJSON_AddStringToObject(out, "status", "failed");
-		cJSON_AddStringToObject(out, "error",
-					fanout_result ? fanout_result
-					: morph_strerror(rc));
-		(void)tool_result_success_json_text(result, cJSON_PrintUnformatted(out));
-		cJSON_Delete(out);
+		struct json *out = json_object();
+		json_add_string(out, "status", "failed");
+		json_add_string(out, "error", fanout_result ? fanout_result : morph_strerror(rc));
+		(void)tool_result_success_json_text(result, json_stringify(out));
+		json_free(out);
 		free(fanout_result);
 	}
 	return rc;

@@ -1,7 +1,7 @@
 #include "file_write.h"
 
 #include "agent/tool_context.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "util/file.h"
 
 #include <errno.h>
@@ -35,33 +35,33 @@ static int run_tool(struct tool_registry *reg, const char *json,
 
 static int result_ok(struct tool_result *result)
 {
-	cJSON *root;
-	cJSON *ok;
+	struct json *root;
+	struct json *ok;
 	int value;
 
-	root = cJSON_Parse(result->text.data ? result->text.data : "");
+	root = json_parse_prefix(result->text.data ? result->text.data : "", NULL, NULL);
 	if (!root)
 		return 0;
-	ok = cJSON_GetObjectItem(root, "ok");
-	value = cJSON_IsTrue(ok) ? 1 : 0;
-	cJSON_Delete(root);
+	ok = json_member_ci(root, "ok");
+	value = json_is_true(ok) ? 1 : 0;
+	json_free(root);
 	return value;
 }
 
 static int result_code(struct tool_result *result)
 {
-	cJSON *root;
-	cJSON *code;
+	struct json *root;
+	struct json *code;
 	int value;
 
-	root = cJSON_Parse(result->text.data ? result->text.data : "");
+	root = json_parse_prefix(result->text.data ? result->text.data : "", NULL, NULL);
 	if (!root)
 		return 0;
-	cJSON *error = cJSON_GetObjectItem(root, "error");
-	cJSON *details = cJSON_GetObjectItem(error, "details");
-	code = cJSON_GetObjectItem(details, "code");
-	value = cJSON_IsNumber(code) ? (int)code->valuedouble : 0;
-	cJSON_Delete(root);
+	struct json *error = json_member_ci(root, "error");
+	struct json *details = json_member_ci(error, "details");
+	code = json_member_ci(details, "code");
+	value = json_is_number_value(code) ? (int)json_number_value(code) : 0;
+	json_free(root);
 	return value;
 }
 

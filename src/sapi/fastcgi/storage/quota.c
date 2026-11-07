@@ -1,6 +1,6 @@
 #include "sapi/fastcgi/storage/quota.h"
 #include "sapi/fastcgi/session_store_internal.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "util/error.h"
 
 #include <errno.h>
@@ -11,12 +11,13 @@
 #include <sqlite3.h>
 #include "sapi/fastcgi/security.h"
 
-static void add_limit_obj(cJSON *parent, const char *name, int used, int limit)
+static int add_limit_obj(struct json *parent, const char *name, int used, int limit)
 {
-	cJSON *obj = cJSON_CreateObject();
-	cJSON_AddNumberToObject(obj, "used", used);
-	cJSON_AddNumberToObject(obj, "limit", limit);
-	cJSON_AddItemToObject(parent, name, obj);
+	struct json *obj = json_add_object(parent, name);
+
+	if (!obj || !json_add_number(obj, "used", used) || !json_add_number(obj, "limit", limit))
+		return -ENOMEM;
+	return 0;
 }
 
 int store_user_quota_json(struct session_store *s, const char *user_id, char **out_json)
@@ -32,11 +33,11 @@ int store_user_quota_json(struct session_store *s, const char *user_id, char **o
 			  "LEFT JOIN fcgi_usage_storage st ON st.user_id=q.user_id "
 			  "WHERE q.user_id=?";
 	sqlite3_stmt *stmt = NULL;
-	cJSON *root = NULL;
-	cJSON *daily = NULL;
-	cJSON *storage = NULL;
-	cJSON *conc = NULL;
-	cJSON *credits = NULL;
+	struct json *root = NULL;
+	struct json *daily = NULL;
+	struct json *storage = NULL;
+	struct json *conc = NULL;
+	struct json *credits = NULL;
 	char *json = NULL;
 
 	if (!s || !user_id || !out_json)
@@ -49,31 +50,32 @@ int store_user_quota_json(struct session_store *s, const char *user_id, char **o
 		return -ENOENT;
 	}
 
-	root = cJSON_CreateObject();
-	daily = cJSON_CreateObject();
-	storage = cJSON_CreateObject();
-	conc = cJSON_CreateObject();
-	credits = cJSON_CreateObject();
+	root = json_object();
+	if (root && json_add_string(root, "profile", (const char *)sqlite3_column_text(stmt, 0))) {
+		daily = json_add_object(root, "daily");
+		storage = json_add_object(root, "storage");
+		conc = json_add_object(root, "concurrent_turns");
+		credits = json_add_object(root, "credits");
+	}
 	if (!root || !daily || !storage || !conc || !credits) {
-		cJSON_Delete(root);
-		cJSON_Delete(daily);
-		cJSON_Delete(storage);
-		cJSON_Delete(conc);
-		cJSON_Delete(credits);
+		json_free(root);
 		sqlite3_finalize(stmt);
 		return -ENOMEM;
 	}
-	cJSON_AddStringToObject(root, "profile", (const char *)sqlite3_column_text(stmt, 0));
-	add_limit_obj(daily, "turns", sqlite3_column_int(stmt, 6), sqlite3_column_int(stmt, 1));
-	add_limit_obj(daily, "images", sqlite3_column_int(stmt, 7), sqlite3_column_int(stmt, 2));
-	add_limit_obj(daily, "videos", sqlite3_column_int(stmt, 8), sqlite3_column_int(stmt, 3));
-	cJSON_AddItemToObject(root, "daily", daily);
-	cJSON_AddNumberToObject(storage, "used_bytes", (double)sqlite3_column_int64(stmt, 9));
-	cJSON_AddNumberToObject(storage, "limit_bytes", (double)sqlite3_column_int64(stmt, 4));
-	cJSON_AddItemToObject(root, "storage", storage);
-	cJSON_AddNumberToObject(conc, "used", 0);
-	cJSON_AddNumberToObject(conc, "limit", sqlite3_column_int(stmt, 5));
-	cJSON_AddItemToObject(root, "concurrent_turns", conc);
+	if (add_limit_obj(daily, "turns", sqlite3_column_int(stmt, 6),
+			  sqlite3_column_int(stmt, 1)) ||
+	    add_limit_obj(daily, "images", sqlite3_column_int(stmt, 7),
+			  sqlite3_column_int(stmt, 2)) ||
+	    add_limit_obj(daily, "videos", sqlite3_column_int(stmt, 8),
+			  sqlite3_column_int(stmt, 3))) {
+		json_free(root);
+		sqlite3_finalize(stmt);
+		return -ENOMEM;
+	}
+	json_add_number(storage, "used_bytes", (double)sqlite3_column_int64(stmt, 9));
+	json_add_number(storage, "limit_bytes", (double)sqlite3_column_int64(stmt, 4));
+	json_add_number(conc, "used", 0);
+	json_add_number(conc, "limit", sqlite3_column_int(stmt, 5));
 	{
 		const char *csql = "SELECT COALESCE(SUM(credits),0),"
 				   "COALESCE(SUM(estimated_cost),0),COUNT(*),"
@@ -84,24 +86,23 @@ int store_user_quota_json(struct session_store *s, const char *user_id, char **o
 		if (sqlite3_prepare_v2(s->db.handle, csql, -1, &cst, NULL) == SQLITE_OK) {
 			sqlite3_bind_text(cst, 1, user_id, -1, SQLITE_TRANSIENT);
 			if (sqlite3_step(cst) == SQLITE_ROW) {
-				cJSON_AddNumberToObject(credits, "used_today",
-							(double)sqlite3_column_int64(cst, 0));
-				cJSON_AddNumberToObject(credits, "estimated_cost_today",
-							sqlite3_column_double(cst, 1));
-				cJSON_AddNumberToObject(credits, "events_today",
-							sqlite3_column_int(cst, 2));
-				cJSON_AddStringToObject(credits, "currency",
-							(const char *)sqlite3_column_text(cst, 3));
+				json_add_number(credits, "used_today",
+						(double)sqlite3_column_int64(cst, 0));
+				json_add_number(credits, "estimated_cost_today",
+						sqlite3_column_double(cst, 1));
+				json_add_number(credits, "events_today",
+						sqlite3_column_int(cst, 2));
+				json_add_string(credits, "currency",
+						(const char *)sqlite3_column_text(cst, 3));
 			}
 			sqlite3_finalize(cst);
 		}
-		cJSON_AddNumberToObject(credits, "daily_limit", -1);
-		cJSON_AddBoolToObject(credits, "over_limit", 0);
-		cJSON_AddItemToObject(root, "credits", credits);
+		json_add_number(credits, "daily_limit", -1);
+		json_add_bool(credits, "over_limit", 0);
 	}
 
-	json = cJSON_PrintUnformatted(root);
-	cJSON_Delete(root);
+	json = json_stringify(root);
+	json_free(root);
 	sqlite3_finalize(stmt);
 	if (!json)
 		return -ENOMEM;

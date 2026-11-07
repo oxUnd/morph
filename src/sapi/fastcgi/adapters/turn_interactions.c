@@ -1,7 +1,7 @@
 #include "sapi/fastcgi/adapters/turn_interactions.h"
 #include "sapi/fastcgi/services/turn_job_internal.h"
 #include "sapi/fastcgi/storage/events.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "util/error.h"
 #include "util/child_io.h"
 
@@ -63,12 +63,12 @@ int fcgi_turn_interactions_drain(void *user_data, struct react_action *out, int 
 	if (got <= 0)
 		return got;
 	/* Replies to closed questions must never become model steering messages. */
-	cJSON *payload = cJSON_Parse(record.payload_json);
-	cJSON *request_id = cJSON_GetObjectItemCaseSensitive(payload, "request_id");
-	int question_reply = strcmp(record.type, "answer") == 0 ||
-			     strcmp(record.type, "progress") == 0 ||
-			     (strcmp(record.type, "prompt") == 0 && cJSON_IsString(request_id));
-	cJSON_Delete(payload);
+	struct json *payload = json_parse_prefix(record.payload_json, NULL, NULL);
+	struct json *request_id = json_member(payload, "request_id");
+	int question_reply =
+		strcmp(record.type, "answer") == 0 || strcmp(record.type, "progress") == 0 ||
+		(strcmp(record.type, "prompt") == 0 && json_is_string_value(request_id));
+	json_free(payload);
 	if (question_reply) {
 		turn_action_record_cleanup(&record);
 		return 0;
@@ -86,32 +86,39 @@ int fcgi_turn_interactions_drain(void *user_data, struct react_action *out, int 
 }
 
 static void publish_interaction(struct fcgi_turn_job *j, const char *type, const char *message,
-				cJSON *data)
+				struct json *data)
 {
-	cJSON *root;
+	struct json *root;
 	char *json;
 
-	if (!j || !type)
+	if (!j || !type) {
+		json_free(data);
 		return;
-	root = cJSON_CreateObject();
-	if (!root)
+	}
+	root = json_object();
+	if (!root) {
+		json_free(data);
 		return;
-	cJSON_AddStringToObject(root, "turn_id", j->turn_id);
+	}
+	json_add_string(root, "turn_id", j->turn_id);
 	if (message)
-		cJSON_AddStringToObject(root, "message", message);
-	if (data)
-		cJSON_AddItemToObject(root, "data", data);
-	json = cJSON_PrintUnformatted(root);
+		json_add_string(root, "message", message);
+	if (data && json_object_add(root, "data", data)) {
+		json_free(data);
+		json_free(root);
+		return;
+	}
+	json = json_stringify(root);
 	events_publish(j->store, j->session_id, type, json ? json : "{}");
 	free(json);
-	cJSON_Delete(root);
+	json_free(root);
 }
 
 static int action_answers(const char *payload, char ***answers, int *answers_count)
 {
-	cJSON *root;
-	cJSON *items;
-	cJSON *text;
+	struct json *root;
+	struct json *items;
+	struct json *text;
 	char **values;
 	int count;
 	int written = 0;
@@ -120,40 +127,42 @@ static int action_answers(const char *payload, char ***answers, int *answers_cou
 		return -EINVAL;
 	*answers = NULL;
 	*answers_count = 0;
-	root = cJSON_Parse(payload ? payload : "{}");
-	if (!cJSON_IsObject(root)) {
-		cJSON_Delete(root);
+	root = json_parse_prefix(payload ? payload : "{}", NULL, NULL);
+	if (!json_is_object_value(root)) {
+		json_free(root);
 		return -EINVAL;
 	}
-	items = cJSON_GetObjectItem(root, "answers");
-	text = cJSON_GetObjectItem(root, "text");
-	count = cJSON_IsArray(items) ? cJSON_GetArraySize(items) : (cJSON_IsString(text) ? 1 : 0);
+	items = json_member_ci(root, "answers");
+	text = json_member_ci(root, "text");
+	count = json_is_array_value(items) ? json_count(items)
+					   : (json_is_string_value(text) ? 1 : 0);
 	if (count > 64)
 		count = 64;
 	if (count == 0) {
-		cJSON_Delete(root);
+		json_free(root);
 		return 0;
 	}
 	values = calloc((size_t)count, sizeof(*values));
 	if (!values) {
-		cJSON_Delete(root);
+		json_free(root);
 		return -ENOMEM;
 	}
 	for (int i = 0; i < count; i++) {
-		cJSON *item = cJSON_IsArray(items) ? cJSON_GetArrayItem(items, i) : text;
-		if (!cJSON_IsString(item) || !item->valuestring || !item->valuestring[0])
+		struct json *item = json_is_array_value(items) ? json_at(items, i) : text;
+		if (!json_is_string_value(item) || !json_string_value(item) ||
+		    !json_string_value(item)[0])
 			continue;
-		values[written] = strdup(item->valuestring);
+		values[written] = strdup(json_string_value(item));
 		if (!values[written]) {
 			for (int k = 0; k < written; k++)
 				free(values[k]);
 			free(values);
-			cJSON_Delete(root);
+			json_free(root);
 			return -ENOMEM;
 		}
 		written++;
 	}
-	cJSON_Delete(root);
+	json_free(root);
 	*answers = values;
 	*answers_count = written;
 	return 0;
@@ -161,11 +170,11 @@ static int action_answers(const char *payload, char ***answers, int *answers_cou
 
 static void publish_question_end(struct fcgi_turn_job *j, const char *id, const char *resolution)
 {
-	cJSON *data = cJSON_CreateObject();
+	struct json *data = json_object();
 	if (!data)
 		return;
-	cJSON_AddStringToObject(data, "request_id", id);
-	cJSON_AddStringToObject(data, "resolution", resolution);
+	json_add_string(data, "request_id", id);
+	json_add_string(data, "resolution", resolution);
 	publish_interaction(j, "interaction.resolved", resolution, data);
 }
 
@@ -182,29 +191,37 @@ int fcgi_turn_ask_user(const char *question, const char *const *choices, int cho
 	char request_id[128];
 	j->ask_sequence++;
 	snprintf(request_id, sizeof(request_id), "%s-ask-%llu", j->turn_id, j->ask_sequence);
-	cJSON *data = cJSON_CreateObject();
-	cJSON *array = cJSON_CreateArray();
+	struct json *data = json_object();
+	struct json *array = json_array();
 	if (!data || !array) {
-		cJSON_Delete(array);
-		cJSON_Delete(data);
+		json_free(array);
+		json_free(data);
 		return -ENOMEM;
 	}
-	cJSON_AddItemToObject(data, "choices", array);
-	cJSON_AddStringToObject(data, "question", question ? question : "");
-	cJSON_AddStringToObject(data, "request_id", request_id);
-	cJSON_AddStringToObject(data, "selection_mode", selection_mode);
-	cJSON_AddNumberToObject(data, "min_choices", min_choices);
-	cJSON_AddNumberToObject(data, "max_choices", max_choices);
-	int rc = ask_user_options_to_json(data, options);
+	int rc = json_object_add(data, "choices", array);
+	if (rc) {
+		json_free(array);
+		json_free(data);
+		return rc;
+	}
+	json_add_string(data, "question", question ? question : "");
+	json_add_string(data, "request_id", request_id);
+	json_add_string(data, "selection_mode", selection_mode);
+	json_add_number(data, "min_choices", min_choices);
+	json_add_number(data, "max_choices", max_choices);
+	rc = ask_user_options_to_json(data, options);
 	for (int i = 0; !rc && i < choices_count; i++) {
-		cJSON *choice = cJSON_CreateString(choices[i]);
+		struct json *choice = json_string(choices[i]);
 		if (!choice)
 			rc = -ENOMEM;
-		else
-			cJSON_AddItemToArray(array, choice);
+		else {
+			rc = json_array_add(array, choice);
+			if (rc)
+				json_free(choice);
+		}
 	}
 	if (rc) {
-		cJSON_Delete(data);
+		json_free(data);
 		return rc;
 	}
 	publish_interaction(j, "ask_user", "user input required", data);
@@ -231,11 +248,12 @@ int fcgi_turn_ask_user(const char *question, const char *const *choices, int cho
 			}
 			continue;
 		}
-		cJSON *payload = cJSON_Parse(record.payload_json);
-		cJSON *id = cJSON_GetObjectItemCaseSensitive(payload, "request_id");
-		int matching = cJSON_IsString(id) && strcmp(id->valuestring, request_id) == 0;
-		int scoped = cJSON_IsString(id);
-		cJSON_Delete(payload);
+		struct json *payload = json_parse_prefix(record.payload_json, NULL, NULL);
+		struct json *id = json_member(payload, "request_id");
+		int matching =
+			json_is_string_value(id) && strcmp(json_string_value(id), request_id) == 0;
+		int scoped = json_is_string_value(id);
+		json_free(payload);
 		if (strcmp(record.type, "cancel") == 0 && (!scoped || matching)) {
 			turn_action_record_cleanup(&record);
 			publish_question_end(j, request_id, "cancelled");
@@ -291,11 +309,11 @@ int fcgi_turn_ask_user(const char *question, const char *const *choices, int cho
 
 static int action_is_always(const char *payload)
 {
-	cJSON *root = cJSON_Parse(payload ? payload : "{}");
-	cJSON *always = cJSON_IsObject(root) ? cJSON_GetObjectItem(root, "always") : NULL;
-	int result = cJSON_IsTrue(always);
+	struct json *root = json_parse_prefix(payload ? payload : "{}", NULL, NULL);
+	struct json *always = json_is_object_value(root) ? json_member_ci(root, "always") : NULL;
+	int result = json_is_true(always);
 
-	cJSON_Delete(root);
+	json_free(root);
 	return result;
 }
 
@@ -304,15 +322,15 @@ enum hitl_verdict fcgi_turn_interactions_hitl(const char *tool_name, const char 
 {
 	struct fcgi_turn_job *j = turn_data;
 	struct action_record record;
-	cJSON *data;
+	struct json *data;
 	int got;
 
 	if (!j)
 		return HITL_DENY;
-	data = cJSON_CreateObject();
+	data = json_object();
 	if (data) {
-		cJSON_AddStringToObject(data, "tool", tool_name ? tool_name : "");
-		cJSON_AddStringToObject(data, "args", tool_args ? tool_args : "{}");
+		json_add_string(data, "tool", tool_name ? tool_name : "");
+		json_add_string(data, "args", tool_args ? tool_args : "{}");
 		publish_interaction(j, "approval_required", "tool approval required", data);
 	}
 	memset(&record, 0, sizeof(record));
@@ -336,32 +354,40 @@ enum tool_operation_verdict fcgi_turn_operation_approval(const struct tool_opera
 {
 	struct fcgi_turn_job *j = turn_data;
 	struct action_record record;
-	cJSON *data;
+	struct json *data;
 	int got;
 
 	if (!j || !op)
 		return TOOL_OP_DENY;
-	data = cJSON_CreateObject();
+	data = json_object();
 	if (data) {
-		cJSON *programs = cJSON_CreateArray();
+		struct json *programs = json_array();
 
-		cJSON_AddStringToObject(data, "tool", op->tool_name ? op->tool_name : "");
-		cJSON_AddStringToObject(data, "action", op->action ? op->action : "");
-		cJSON_AddStringToObject(data, "target", op->target ? op->target : "");
-		cJSON_AddStringToObject(data, "scope", op->scope ? op->scope : "");
-		cJSON_AddStringToObject(data, "reason", op->reason ? op->reason : "");
+		json_add_string(data, "tool", op->tool_name ? op->tool_name : "");
+		json_add_string(data, "action", op->action ? op->action : "");
+		json_add_string(data, "target", op->target ? op->target : "");
+		json_add_string(data, "scope", op->scope ? op->scope : "");
+		json_add_string(data, "reason", op->reason ? op->reason : "");
 		if (op->path_access)
-			cJSON_AddStringToObject(data, "access",
-						tool_path_access_name(op->path_access));
+			json_add_string(data, "access", tool_path_access_name(op->path_access));
 		if (programs) {
 			for (int i = 0; i < op->programs_count; i++) {
-				cJSON *program = cJSON_CreateString(op->programs[i]);
+				struct json *program = json_string(op->programs[i]);
 
 				if (!program)
 					break;
-				cJSON_AddItemToArray(programs, program);
+				if (json_array_add(programs, program)) {
+					json_free(program);
+					json_free(programs);
+					json_free(data);
+					return TOOL_OP_DENY;
+				}
 			}
-			cJSON_AddItemToObject(data, "programs", programs);
+			if (json_object_add(data, "programs", programs)) {
+				json_free(programs);
+				json_free(data);
+				return TOOL_OP_DENY;
+			}
 		}
 		publish_interaction(j, "operation_approval_required", "operation approval required",
 				    data);

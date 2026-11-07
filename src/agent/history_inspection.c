@@ -49,30 +49,31 @@ int agent_history_repair_interrupted(struct db *db, int64_t session_id)
 		return -EINVAL;
 	items = model_history_list(db, session_id, 1, &count);
 	for (item = items; item && rc == 0; item = item->next) {
-		cJSON *root;
-		cJSON *calls;
+		struct json *root;
+		struct json *calls;
 
 		if (strcmp(item->kind, "assistant_tool_calls") != 0 || !item->payload_json)
 			continue;
-		root = cJSON_ParseWithOpts(item->payload_json, NULL, 1);
-		calls = root ? cJSON_GetObjectItem(root, "calls") : NULL;
-		if (!cJSON_IsArray(calls)) {
-			cJSON_Delete(root);
+		root = json_parse_ex(item->payload_json, NULL, 1, NULL);
+		calls = root ? json_member_ci(root, "calls") : NULL;
+		if (!json_is_array_value(calls)) {
+			json_free(root);
 			continue;
 		}
-		for (int i = 0; i < cJSON_GetArraySize(calls); i++) {
-			cJSON *call = cJSON_GetArrayItem(calls, i);
-			cJSON *local = cJSON_GetObjectItem(call, "tool_call_id");
-			cJSON *provider = cJSON_GetObjectItem(call, "provider_call_id");
-			cJSON *name = cJSON_GetObjectItem(call, "name");
+		for (int i = 0; i < json_count(calls); i++) {
+			struct json *call = json_at(calls, i);
+			struct json *local = json_member_ci(call, "tool_call_id");
+			struct json *provider = json_member_ci(call, "provider_call_id");
+			struct json *name = json_member_ci(call, "name");
 			struct model_history_insert repair = {0};
 			const char *input;
 			enum tool_input_kind input_kind;
 
-			if (!cJSON_IsString(local) || !cJSON_IsString(provider) ||
-			    !cJSON_IsString(name) ||
+			if (!json_is_string_value(local) || !json_is_string_value(provider) ||
+			    !json_is_string_value(name) ||
 			    !history_tool_call_input(call, &input_kind, &input) ||
-			    history_result_exists(items, local->valuestring, provider->valuestring))
+			    history_result_exists(items, json_string_value(local),
+						  json_string_value(provider)))
 				continue;
 			repair.session_id = session_id;
 			repair.turn_id = item->turn_id;
@@ -80,14 +81,14 @@ int agent_history_repair_interrupted(struct db *db, int64_t session_id)
 			repair.role = "tool";
 			repair.content = interrupted;
 			repair.payload_json = "{\"status\":\"interrupted\"}";
-			repair.tool_call_id = local->valuestring;
-			repair.provider_call_id = provider->valuestring;
-			repair.tool_name = name->valuestring;
+			repair.tool_call_id = json_string_value(local);
+			repair.provider_call_id = json_string_value(provider);
+			repair.tool_name = json_string_value(name);
 			{
 				char repair_key[256];
 
 				snprintf(repair_key, sizeof(repair_key), "result:%s",
-					 local->valuestring);
+					 json_string_value(local));
 				repair.idempotency_key = repair_key;
 				repair.token_count = tokenizer_estimate_tokens(interrupted);
 				repair.active = 1;
@@ -96,7 +97,7 @@ int agent_history_repair_interrupted(struct db *db, int64_t session_id)
 			if (rc != 0)
 				break;
 		}
-		cJSON_Delete(root);
+		json_free(root);
 	}
 	model_history_free_list(items);
 	return rc;
@@ -106,40 +107,41 @@ static int history_call_exists(const struct model_history_item *items, const cha
 			       const char *provider_id)
 {
 	for (const struct model_history_item *item = items; item; item = item->next) {
-		cJSON *root;
-		cJSON *calls;
+		struct json *root;
+		struct json *calls;
 		int found = 0;
 
 		if (!item->active || strcmp(item->kind, "assistant_tool_calls") != 0 ||
 		    !item->payload_json)
 			continue;
-		root = cJSON_ParseWithOpts(item->payload_json, NULL, 1);
-		calls = root ? cJSON_GetObjectItem(root, "calls") : NULL;
-		if (cJSON_IsArray(calls)) {
-			for (int i = 0; i < cJSON_GetArraySize(calls); i++) {
-				cJSON *call = cJSON_GetArrayItem(calls, i);
-				cJSON *local = cJSON_GetObjectItem(call, "tool_call_id");
-				cJSON *provider = cJSON_GetObjectItem(call, "provider_call_id");
-				cJSON *name = cJSON_GetObjectItem(call, "name");
+		root = json_parse_ex(item->payload_json, NULL, 1, NULL);
+		calls = root ? json_member_ci(root, "calls") : NULL;
+		if (json_is_array_value(calls)) {
+			for (int i = 0; i < json_count(calls); i++) {
+				struct json *call = json_at(calls, i);
+				struct json *local = json_member_ci(call, "tool_call_id");
+				struct json *provider = json_member_ci(call, "provider_call_id");
+				struct json *name = json_member_ci(call, "name");
 				const char *input;
 				enum tool_input_kind input_kind;
 
-				if (!cJSON_IsString(local) || !cJSON_IsString(provider) ||
-				    !cJSON_IsString(name) ||
+				if (!json_is_string_value(local) ||
+				    !json_is_string_value(provider) ||
+				    !json_is_string_value(name) ||
 				    !history_tool_call_input(call, &input_kind, &input))
 					continue;
-				if (local_id && local_id[0] && local->valuestring[0]) {
-					if (strcmp(local_id, local->valuestring) == 0)
+				if (local_id && local_id[0] && json_string_value(local)[0]) {
+					if (strcmp(local_id, json_string_value(local)) == 0)
 						found = 1;
 				} else if (provider_id &&
-					   strcmp(provider_id, provider->valuestring) == 0) {
+					   strcmp(provider_id, json_string_value(provider)) == 0) {
 					found = 1;
 				}
 				if (found)
 					break;
 			}
 		}
-		cJSON_Delete(root);
+		json_free(root);
 		if (found)
 			return 1;
 	}
@@ -161,36 +163,37 @@ int agent_history_diagnose(const struct model_history_item *items, struct tokeni
 			continue;
 		diagnostic->active_items++;
 		if (strcmp(item->kind, "assistant_tool_calls") == 0) {
-			cJSON *root = item->payload_json
-					      ? cJSON_ParseWithOpts(item->payload_json, NULL, 1)
-					      : NULL;
-			cJSON *calls = root ? cJSON_GetObjectItem(root, "calls") : NULL;
+			struct json *root = item->payload_json ? json_parse_ex(item->payload_json,
+									       NULL, 1, NULL)
+							       : NULL;
+			struct json *calls = root ? json_member_ci(root, "calls") : NULL;
 
 			token_text = item->payload_json;
-			if (!cJSON_IsArray(calls)) {
+			if (!json_is_array_value(calls)) {
 				diagnostic->invalid_payloads++;
 			} else {
-				for (int i = 0; i < cJSON_GetArraySize(calls); i++) {
-					cJSON *call = cJSON_GetArrayItem(calls, i);
-					cJSON *local = cJSON_GetObjectItem(call, "tool_call_id");
-					cJSON *provider =
-						cJSON_GetObjectItem(call, "provider_call_id");
-					cJSON *name = cJSON_GetObjectItem(call, "name");
+				for (int i = 0; i < json_count(calls); i++) {
+					struct json *call = json_at(calls, i);
+					struct json *local = json_member_ci(call, "tool_call_id");
+					struct json *provider =
+						json_member_ci(call, "provider_call_id");
+					struct json *name = json_member_ci(call, "name");
 					const char *input;
 					enum tool_input_kind input_kind;
 
-					if (!cJSON_IsString(local) || !cJSON_IsString(provider) ||
-					    !cJSON_IsString(name) ||
+					if (!json_is_string_value(local) ||
+					    !json_is_string_value(provider) ||
+					    !json_is_string_value(name) ||
 					    !history_tool_call_input(call, &input_kind, &input)) {
 						diagnostic->invalid_payloads++;
 						continue;
 					}
-					if (!history_result_exists(items, local->valuestring,
-								   provider->valuestring))
+					if (!history_result_exists(items, json_string_value(local),
+								   json_string_value(provider)))
 						diagnostic->dangling_calls++;
 				}
 			}
-			cJSON_Delete(root);
+			json_free(root);
 		} else if (strcmp(item->kind, "tool_result") == 0 &&
 			   !history_call_exists(items, item->tool_call_id,
 						item->provider_call_id)) {
@@ -256,34 +259,34 @@ int agent_history_repair(struct db *db, int64_t session_id, struct tokenizer *to
 		int tokens;
 
 		if (strcmp(item->kind, "assistant_tool_calls") == 0) {
-			cJSON *root = item->payload_json
-					      ? cJSON_ParseWithOpts(item->payload_json, NULL, 1)
-					      : NULL;
-			cJSON *calls = root ? cJSON_GetObjectItem(root, "calls") : NULL;
+			struct json *root = item->payload_json ? json_parse_ex(item->payload_json,
+									       NULL, 1, NULL)
+							       : NULL;
+			struct json *calls = root ? json_member_ci(root, "calls") : NULL;
 
 			token_text = item->payload_json;
-			if (!cJSON_IsArray(calls) || cJSON_GetArraySize(calls) <= 0) {
+			if (!json_is_array_value(calls) || json_count(calls) <= 0) {
 				active = 0;
 			} else {
-				for (int i = 0; i < cJSON_GetArraySize(calls); i++) {
-					cJSON *call = cJSON_GetArrayItem(calls, i);
+				for (int i = 0; i < json_count(calls); i++) {
+					struct json *call = json_at(calls, i);
 					const char *input;
 					enum tool_input_kind input_kind;
 					int input_valid =
 						history_tool_call_input(call, &input_kind, &input);
 
-					if (!cJSON_IsString(
-						    cJSON_GetObjectItem(call, "tool_call_id")) ||
-					    !cJSON_IsString(cJSON_GetObjectItem(
-						    call, "provider_call_id")) ||
-					    !cJSON_IsString(cJSON_GetObjectItem(call, "name")) ||
+					if (!json_is_string_value(
+						    json_member_ci(call, "tool_call_id")) ||
+					    !json_is_string_value(
+						    json_member_ci(call, "provider_call_id")) ||
+					    !json_is_string_value(json_member_ci(call, "name")) ||
 					    !input_valid) {
 						active = 0;
 						break;
 					}
 				}
 			}
-			cJSON_Delete(root);
+			json_free(root);
 		} else if (strcmp(item->kind, "tool_result") == 0 &&
 			   !history_call_exists(items, item->tool_call_id,
 						item->provider_call_id)) {

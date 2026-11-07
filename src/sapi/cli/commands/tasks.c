@@ -1,6 +1,6 @@
 #include "sapi/cli/commands/tasks.h"
 #include "db/scheduled_task.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/services/scheduler.h"
@@ -62,7 +62,7 @@ static int cli_tasks_command_tasks_add(struct cli_application *ctx, int argc, ch
 	struct scheduled_task_input input;
 	struct scheduled_task task;
 	struct session current;
-	cJSON *payload = NULL;
+	struct json *payload = NULL;
 	char *payload_json = NULL;
 	char *title = NULL;
 	int64_t next_run_at;
@@ -84,14 +84,14 @@ static int cli_tasks_command_tasks_add(struct cli_application *ctx, int argc, ch
 		return -EINVAL;
 	}
 
-	payload = cJSON_CreateObject();
+	payload = json_object();
 	if (!payload) {
 		free(title);
 		return -ENOMEM;
 	}
-	cJSON_AddStringToObject(payload, "prompt", title);
-	payload_json = cJSON_PrintUnformatted(payload);
-	cJSON_Delete(payload);
+	json_add_string(payload, "prompt", title);
+	payload_json = json_stringify(payload);
+	json_free(payload);
 	if (!payload_json) {
 		free(title);
 		return -ENOMEM;
@@ -124,7 +124,7 @@ static int cli_tasks_command_tasks_every(struct cli_application *ctx, int argc, 
 	struct scheduled_task_input input;
 	struct scheduled_task task;
 	struct session current;
-	cJSON *payload = NULL;
+	struct json *payload = NULL;
 	char *payload_json = NULL;
 	char *title = NULL;
 	char *end = NULL;
@@ -146,14 +146,14 @@ static int cli_tasks_command_tasks_every(struct cli_application *ctx, int argc, 
 		CMD_ERROR(ctx, "missing task prompt");
 		return -EINVAL;
 	}
-	payload = cJSON_CreateObject();
+	payload = json_object();
 	if (!payload) {
 		free(title);
 		return -ENOMEM;
 	}
-	cJSON_AddStringToObject(payload, "prompt", title);
-	payload_json = cJSON_PrintUnformatted(payload);
-	cJSON_Delete(payload);
+	json_add_string(payload, "prompt", title);
+	payload_json = json_stringify(payload);
+	json_free(payload);
 	if (!payload_json) {
 		free(title);
 		return -ENOMEM;
@@ -187,7 +187,7 @@ static int cli_tasks_command_tasks_update(struct cli_application *ctx, int argc,
 	struct scheduled_task_input input;
 	struct scheduled_task task;
 	struct session current;
-	cJSON *payload = NULL;
+	struct json *payload = NULL;
 	char *payload_json = NULL;
 	char *title = NULL;
 	char *end = NULL;
@@ -215,14 +215,14 @@ static int cli_tasks_command_tasks_update(struct cli_application *ctx, int argc,
 		CMD_ERROR(ctx, "missing task title");
 		return -EINVAL;
 	}
-	payload = cJSON_CreateObject();
+	payload = json_object();
 	if (!payload) {
 		free(title);
 		return -ENOMEM;
 	}
-	cJSON_AddStringToObject(payload, "prompt", title);
-	payload_json = cJSON_PrintUnformatted(payload);
-	cJSON_Delete(payload);
+	json_add_string(payload, "prompt", title);
+	payload_json = json_stringify(payload);
+	json_free(payload);
 	if (!payload_json) {
 		free(title);
 		return -ENOMEM;
@@ -440,17 +440,17 @@ static int cli_tasks_markdown_table_cell(morph_buf_t *buf, const char *text)
 	return 0;
 }
 
-static const char *cli_tasks_task_prompt_from_payload(cJSON **payload,
+static const char *cli_tasks_task_prompt_from_payload(struct json **payload,
 						      const struct scheduled_task *task)
 {
-	cJSON *prompt_json;
+	struct json *prompt_json;
 
 	if (!payload || !task)
 		return "";
-	*payload = task->payload_json ? cJSON_Parse(task->payload_json) : NULL;
-	prompt_json = *payload ? cJSON_GetObjectItem(*payload, "prompt") : NULL;
-	if (cJSON_IsString(prompt_json) && prompt_json->valuestring[0])
-		return prompt_json->valuestring;
+	*payload = task->payload_json ? json_parse_prefix(task->payload_json, NULL, NULL) : NULL;
+	prompt_json = *payload ? json_member_ci(*payload, "prompt") : NULL;
+	if (json_is_string_value(prompt_json) && json_string_value(prompt_json)[0])
+		return json_string_value(prompt_json);
 	return task->title[0] ? task->title : "";
 }
 
@@ -520,7 +520,7 @@ static int cli_tasks_print_active_task(struct cli_application *ctx,
 	char attempts[32];
 	char schedule[32];
 	morph_buf_t summary;
-	cJSON *payload = NULL;
+	struct json *payload = NULL;
 	const char *prompt;
 	int rc;
 
@@ -535,7 +535,7 @@ static int cli_tasks_print_active_task(struct cli_application *ctx,
 	prompt = cli_tasks_task_prompt_from_payload(&payload, task);
 	rc = morph_buf_init(&summary, 128);
 	if (rc != 0) {
-		cJSON_Delete(payload);
+		json_free(payload);
 		return rc;
 	}
 	rc = morph_buf_printf(&summary, "#%lld  %s · %s · next %s · %s", (long long)task->id,
@@ -544,7 +544,7 @@ static int cli_tasks_print_active_task(struct cli_application *ctx,
 		cli_list_item(ctx, ancestor, is_last, cli_tasks_task_status_marker(task->status),
 			      morph_buf_cstr(&summary), prompt, 46, columns);
 	morph_buf_cleanup(&summary);
-	cJSON_Delete(payload);
+	json_free(payload);
 	return rc;
 }
 
@@ -626,7 +626,7 @@ static int cli_tasks_append_task_show_markdown(morph_buf_t *buf, const struct sc
 	char updated[32];
 	char attempts[32];
 	char schedule[32];
-	cJSON *payload = NULL;
+	struct json *payload = NULL;
 	const char *prompt;
 	int rc;
 
@@ -671,7 +671,7 @@ static int cli_tasks_append_task_show_markdown(morph_buf_t *buf, const struct sc
 		rc = morph_buf_puts(buf, "\n### Prompt\n\n");
 	if (rc == 0)
 		rc = cli_tasks_append_markdown_indented_block(buf, prompt);
-	cJSON_Delete(payload);
+	json_free(payload);
 	return rc;
 }
 

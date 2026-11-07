@@ -270,13 +270,13 @@ TEST_F(PermissionModelTest, IndependentModelReviewsExactActionWithoutTools)
 	std::thread worker([&] { rc = tool_context_check_operation(context, &operation); });
 	bool requested = WaitRequest();
 	if (requested) {
-		cJSON *body = cJSON_Parse(request_body.c_str());
+		struct json *body = json_parse_prefix(request_body.c_str(), NULL, NULL);
 		EXPECT_NE(body, nullptr);
-		EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(body, "tools")), 0);
+		EXPECT_EQ(json_count(json_member_ci(body, "tools")), 0);
 		EXPECT_NE(request_body.find("exact-action-marker"), std::string::npos);
 		EXPECT_NE(request_body.find("target-marker"), std::string::npos);
 		EXPECT_NE(request_body.find("Verify the export"), std::string::npos);
-		cJSON_Delete(body);
+		json_free(body);
 	}
 	Release();
 	worker.join();
@@ -329,7 +329,7 @@ TEST_F(RuntimeFacadeTest, ReadOnlyExecCannotWriteProjectEvenWhenItIsInTmp)
 	std::string args = "{\"command\":\"printf forbidden > blocked.txt\",\"workdir\":\"" +
 		directory + "\",\"yield_time_ms\":1000}";
 	ASSERT_EQ(tool_exec(&registry, "exec", args.c_str(), &result), 0);
-	EXPECT_NE(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0);
+	EXPECT_NE(json_number_value(json_member_ci(result.data, "exit_code")), 0);
 	EXPECT_FALSE(std::filesystem::exists(directory + "/blocked.txt"));
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&registry);
@@ -450,7 +450,7 @@ TEST_F(RuntimeFacadeTest, LiveBackgroundProcessBlocksPolicyChangeUntilStopped)
 	result.runtime = &call;
 	ASSERT_EQ(tool_exec(&instance->context.tools, "exec",
 		"{\"command\":\"sleep 30\",\"service\":true,\"yield_time_ms\":1}", &result), 0);
-	const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "session_id"));
+	const char *id = json_string_value(json_member_ci(result.data, "session_id"));
 	ASSERT_NE(id, nullptr);
 	std::string process_id = id;
 	struct permission_policy policy{PERMISSION_READ_ONLY, PERMISSION_ON_REQUEST, PERMISSION_USER};
@@ -564,7 +564,7 @@ TEST_F(RuntimeFacadeTest, RetainedHostProcessInputRequiresAnotherApproval)
 		ASSERT_EQ(tool_exec(&registry, "exec",
 			host ? "{\"command\":\"cat\",\"host\":true,\"service\":true,\"yield_time_ms\":1}" :
 			"{\"command\":\"cat\",\"service\":true,\"yield_time_ms\":1}", &result), 0);
-		const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "session_id"));
+		const char *id = json_string_value(json_member_ci(result.data, "session_id"));
 		ASSERT_NE(id, nullptr);
 		std::string session = id;
 		tool_context_clear_turn_grants(context);

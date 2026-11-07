@@ -11,7 +11,7 @@
 #include "util/file.h"
 #include "event/event.h"
 #include "session.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -972,10 +972,10 @@ TEST_F(SubAgentTest, FanoutRaw) {
 				  &result);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result, nullptr);
-	cJSON *arr = cJSON_Parse(result);
+	struct json *arr = json_parse_prefix(result, NULL, NULL);
 	ASSERT_NE(arr, nullptr);
-	EXPECT_EQ(cJSON_GetArraySize(arr), 2);
-	cJSON_Delete(arr);
+	EXPECT_EQ(json_count(arr), 2);
+	json_free(arr);
 	free(result);
 	sub_agent_runtime_destroy(rt);
 }
@@ -1143,12 +1143,12 @@ TEST_F(SubAgentTest, TraceWrite) {
 	char line[4096];
 	ASSERT_NE(fgets(line, sizeof(line), f), nullptr);
 	fclose(f);
-	cJSON *obj = cJSON_Parse(line);
+	struct json *obj = json_parse_prefix(line, NULL, NULL);
 	ASSERT_NE(obj, nullptr);
-	EXPECT_NE(cJSON_GetObjectItem(obj, "trace_id"), nullptr);
-	EXPECT_NE(cJSON_GetObjectItem(obj, "agent"), nullptr);
-	EXPECT_NE(cJSON_GetObjectItem(obj, "iterations"), nullptr);
-	cJSON_Delete(obj);
+	EXPECT_NE(json_member_ci(obj, "trace_id"), nullptr);
+	EXPECT_NE(json_member_ci(obj, "agent"), nullptr);
+	EXPECT_NE(json_member_ci(obj, "iterations"), nullptr);
+	json_free(obj);
 	std::remove(rt->trace_file);
 	sub_agent_runtime_destroy(rt);
 }
@@ -1258,13 +1258,14 @@ TEST_F(SubAgentTest, ChildSessionPersistsTaskEventsAndMessages) {
 		&event_count), 0);
 	EXPECT_GT(event_count, 0);
 	for (size_t i = 0; i < morph_event_recorder_count(&recorder); i++) {
-		cJSON *event = cJSON_Parse(morph_event_recorder_get(&recorder, i));
+		struct json *event =
+			json_parse_prefix(morph_event_recorder_get(&recorder, i), NULL, NULL);
 		ASSERT_NE(event, nullptr);
-		cJSON *type = cJSON_GetObjectItem(event, "type");
-		ASSERT_TRUE(cJSON_IsString(type));
-		EXPECT_STRNE(type->valuestring, "react");
-		EXPECT_STRNE(type->valuestring, "tool");
-		cJSON_Delete(event);
+		struct json *type = json_member_ci(event, "type");
+		ASSERT_TRUE(json_is_string_value(type));
+		EXPECT_STRNE(json_string_value(type), "react");
+		EXPECT_STRNE(json_string_value(type), "tool");
+		json_free(event);
 	}
 	sub_agent_runtime_free_events(events, event_count);
 	sub_agent_runtime_free_task_list(tasks, task_count);
@@ -1305,11 +1306,12 @@ TEST_F(SubAgentTest, SelectedChildStreamsOnlyItsOwnEvents) {
 	}
 	EXPECT_EQ(status, SUB_AGENT_COMPLETED);
 	for (size_t i = 0; i < morph_event_recorder_count(&recorder); i++) {
-		cJSON *event = cJSON_Parse(morph_event_recorder_get(&recorder, i));
-		cJSON *type = cJSON_GetObjectItem(event, "type");
-		if (cJSON_IsString(type) && strcmp(type->valuestring, "react") == 0)
+		struct json *event =
+			json_parse_prefix(morph_event_recorder_get(&recorder, i), NULL, NULL);
+		struct json *type = json_member_ci(event, "type");
+		if (json_is_string_value(type) && strcmp(json_string_value(type), "react") == 0)
 			react_events++;
-		cJSON_Delete(event);
+		json_free(event);
 	}
 	EXPECT_GT(react_events, 0);
 	free(task_id);

@@ -4,7 +4,7 @@
 #include "agent/tool_context.h"
 #include "util/error.h"
 #include "util/file.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <string>
 #include <cstdio>
 #include <cstdlib>
@@ -78,11 +78,11 @@ static enum tool_operation_verdict mutating_approval_cb(
 
 static std::string json_escape(const char *s)
 {
-	cJSON *str = cJSON_CreateString(s);
-	char *printed = cJSON_PrintUnformatted(str);
+	struct json *str = json_string(s);
+	char *printed = json_stringify(str);
 	std::string out = printed ? printed : "\"\"";
 	free(printed);
-	cJSON_Delete(str);
+	json_free(str);
 	return out;
 }
 

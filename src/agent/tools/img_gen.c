@@ -7,7 +7,7 @@
 #include "util/log.h"
 #include "util/error.h"
 #include "util/image_util.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,7 +58,7 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 	if (!result)
 		return -EINVAL;
 
-	cJSON *root = cJSON_Parse(args_json);
+	struct json *root = json_parse_prefix(args_json, NULL, NULL);
 	const char *prompt = NULL;
 	const char *style = NULL;
 	const char *size = "2k";
@@ -67,52 +67,53 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 	const char *reference_error = NULL;
 	int reference_count = 0;
 	if (root) {
-		cJSON *p = cJSON_GetObjectItem(root, "prompt");
-		if (cJSON_IsString(p)) prompt = p->valuestring;
-		cJSON *s = cJSON_GetObjectItem(root, "style");
-		if (cJSON_IsString(s)) style = s->valuestring;
-		cJSON *sz = cJSON_GetObjectItem(root, "size");
-		if (cJSON_IsString(sz) && sz->valuestring[0])
-			size = sz->valuestring;
-		cJSON *ri = cJSON_GetObjectItem(root, "reference_image");
-		cJSON *ris = cJSON_GetObjectItem(root, "reference_images");
+		struct json *p = json_member_ci(root, "prompt");
+		if (json_is_string_value(p))
+			prompt = json_string_value(p);
+		struct json *s = json_member_ci(root, "style");
+		if (json_is_string_value(s))
+			style = json_string_value(s);
+		struct json *sz = json_member_ci(root, "size");
+		if (json_is_string_value(sz) && json_string_value(sz)[0])
+			size = json_string_value(sz);
+		struct json *ri = json_member_ci(root, "reference_image");
+		struct json *ris = json_member_ci(root, "reference_images");
 		if (ri && ris) {
 			reference_error = "use either 'reference_image' or "
 				"'reference_images', not both";
 		} else if (ri) {
-			if (!cJSON_IsString(ri) || !ri->valuestring[0]) {
+			if (!json_is_string_value(ri) || !json_string_value(ri)[0]) {
 				reference_error = "'reference_image' must be a "
 					"non-empty file path";
 			} else {
-				reference_paths[0] = ri->valuestring;
+				reference_paths[0] = json_string_value(ri);
 				reference_count = 1;
 			}
 		} else if (ris) {
-			if (!cJSON_IsArray(ris)) {
+			if (!json_is_array_value(ris)) {
 				reference_error = "'reference_images' must be an array";
-			} else if (cJSON_GetArraySize(ris) >
-				   IMAGE_GEN_MAX_REFERENCE_IMAGES) {
+			} else if (json_count(ris) > IMAGE_GEN_MAX_REFERENCE_IMAGES) {
 				reference_error = "'reference_images' supports at most "
 					"10 images";
 			} else {
-				reference_count = cJSON_GetArraySize(ris);
+				reference_count = json_count(ris);
 				for (int i = 0; i < reference_count; i++) {
-					cJSON *item = cJSON_GetArrayItem(ris, i);
+					struct json *item = json_at(ris, i);
 
-					if (!cJSON_IsString(item) ||
-					    !item->valuestring[0]) {
+					if (!json_is_string_value(item) ||
+					    !json_string_value(item)[0]) {
 						reference_error = "every item in "
 							"'reference_images' must be a "
 							"non-empty file path";
 						break;
 					}
-					reference_paths[i] = item->valuestring;
+					reference_paths[i] = json_string_value(item);
 				}
 			}
 		}
 	}
 	if (!prompt) {
-		cJSON_Delete(root);
+		json_free(root);
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'prompt' parameter. "
 			"Usage: img_gen({\\\"prompt\\\": \\\"a cat\\\"})\"}"));
@@ -121,13 +122,13 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 	if (reference_error) {
 		(void)tool_result_successf(result, "invalid reference images: %s",
 					   reference_error);
-		cJSON_Delete(root);
+		json_free(root);
 		return -EINVAL;
 	}
 
 	if (img_gen_validate_public_size(ctx ? ctx->image_llm : NULL,
 					 size) < 0) {
-		cJSON_Delete(root);
+		json_free(root);
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"invalid size for the configured image model; "
 			"use 2k, 4k, or WIDTHxHEIGHT with total pixels between "
@@ -146,7 +147,7 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 				sizeof(resolved_references[i]));
 
 			if (rc < 0) {
-				cJSON_Delete(root);
+				json_free(root);
 				if (rc == -ENOENT)
 					(void)tool_result_successf(
 						result,
@@ -169,7 +170,7 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 				  reference_count > 0 ? references_to_send : NULL,
 				  reference_count,
 				  output_dir, &img_res);
-	cJSON_Delete(root);
+	json_free(root);
 
 	if (rc < 0) {
 		if (ctx && ctx->image_llm &&

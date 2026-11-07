@@ -79,9 +79,9 @@ static int cli_command_with_owner_call(struct cli_application *ctx, const char *
 
 TEST_F(CliUiTest, CrossThreadEventWaitsForOwnerDrain)
 {
-	cJSON *data = cJSON_CreateObject();
+	struct json *data = json_object();
 	ASSERT_NE(data, nullptr);
-	cJSON_AddStringToObject(data, "detail", "owned copy");
+	json_add_string(data, "detail", "owned copy");
 	struct morph_event event{
 		MORPH_EVENT_ERROR, "background.error", "end", "queued error", data, "turn-ui",
 	};
@@ -92,7 +92,7 @@ TEST_F(CliUiTest, CrossThreadEventWaitsForOwnerDrain)
 	worker.join();
 	EXPECT_EQ(callback_rc, 0);
 	EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
-	cJSON_Delete(data);
+	json_free(data);
 
 	testing::internal::CaptureStdout();
 	ASSERT_EQ(cli_event_queue_drain(&ctx), 0);
@@ -175,8 +175,8 @@ TEST_F(CliUiTest, TaskLifecycleWithNotificationDoesNotRepeatResult)
 	event.type = MORPH_EVENT_TASK;
 	event.phase = "end";
 	event.message = "task lifecycle";
-	event.data = cJSON_CreateObject();
-	cJSON_AddNumberToObject(event.data, "notification_id", 42);
+	event.data = json_object();
+	json_add_number(event.data, "notification_id", 42);
 	ctx.input_status.enabled = 1;
 	for (const char *name : {"task.claimed", "task.started", "task.completed",
 				 "task.notification", "task.rescheduled", "task.failed"}) {
@@ -185,7 +185,7 @@ TEST_F(CliUiTest, TaskLifecycleWithNotificationDoesNotRepeatResult)
 		EXPECT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
 		EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
 	}
-	cJSON_DeleteItemFromObject(event.data, "notification_id");
+	json_object_remove_ci(event.data, "notification_id");
 	event.name = "task.failed";
 	testing::internal::CaptureStdout();
 	EXPECT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
@@ -196,7 +196,7 @@ TEST_F(CliUiTest, TaskLifecycleWithNotificationDoesNotRepeatResult)
 	EXPECT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
 	EXPECT_NE(testing::internal::GetCapturedStdout().find("task.notification"),
 		  std::string::npos);
-	cJSON_Delete(event.data);
+	json_free(event.data);
 }
 
 TEST_F(CliUiTest, NotificationSeverityUsesDistinctMarkers)
@@ -480,7 +480,7 @@ static std::string run_structured_interaction(struct cli_application *ctx, const
 	return output;
 }
 
-static cJSON *find_json_event(const std::string &output, const char *name)
+static struct json *find_json_event(const std::string &output, const char *name)
 {
 	size_t offset = 0;
 
@@ -488,14 +488,14 @@ static cJSON *find_json_event(const std::string &output, const char *name)
 		size_t end = output.find('\n', offset);
 		std::string line =
 			output.substr(offset, end == std::string::npos ? end : end - offset);
-		cJSON *event = cJSON_Parse(line.c_str());
+		struct json *event = json_parse_prefix(line.c_str(), NULL, NULL);
 
 		if (event) {
-			cJSON *event_name = cJSON_GetObjectItemCaseSensitive(event, "name");
-			if (cJSON_IsString(event_name) && event_name->valuestring &&
-			    std::strcmp(event_name->valuestring, name) == 0)
+			struct json *event_name = json_member(event, "name");
+			if (json_is_string_value(event_name) && json_string_value(event_name) &&
+			    std::strcmp(json_string_value(event_name), name) == 0)
 				return event;
-			cJSON_Delete(event);
+			json_free(event);
 		}
 		if (end == std::string::npos)
 			break;
@@ -509,11 +509,11 @@ TEST_F(CliUiTest, StructuredInteractionRejectsMismatchedResponseThenResolves)
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
 	ctx.event_cb = cli_runtime_events_callback;
 	ctx.event_user_data = &ctx;
-	cJSON *request = cJSON_CreateObject();
-	cJSON *response = nullptr;
+	struct json *request = json_object();
+	struct json *response = nullptr;
 	int call_rc = -1;
 	ASSERT_NE(request, nullptr);
-	cJSON_AddStringToObject(request, "prompt", "continue?");
+	json_add_string(request, "prompt", "continue?");
 	std::string input = "{\"type\":\"interaction.response\",\"request_id\":"
 			    "\"wrong\",\"data\":{\"answer\":\"yes\"}}\n"
 			    "{\"type\":\"interaction.response\",\"request_id\":"
@@ -525,11 +525,11 @@ TEST_F(CliUiTest, StructuredInteractionRejectsMismatchedResponseThenResolves)
 	});
 	EXPECT_EQ(call_rc, 0);
 	ASSERT_NE(response, nullptr);
-	EXPECT_STREQ(cJSON_GetObjectItem(response, "answer")->valuestring, "yes");
+	EXPECT_STREQ(json_string_value(json_member_ci(response, "answer")), "yes");
 	EXPECT_NE(output.find("interaction.invalid_response"), std::string::npos);
 	EXPECT_NE(output.find("interaction.resolved"), std::string::npos);
-	cJSON_Delete(response);
-	cJSON_Delete(request);
+	json_free(response);
+	json_free(request);
 }
 
 TEST_F(CliUiTest, StructuredAskUserReturnsValidatedAnswers)
@@ -551,13 +551,13 @@ TEST_F(CliUiTest, StructuredAskUserReturnsValidatedAnswers)
 	EXPECT_EQ(call_rc, 0);
 	ASSERT_EQ(answers_count, 1);
 	EXPECT_STREQ(answers[0], "blue");
-	cJSON *event = find_json_event(output, "interaction.request");
+	struct json *event = find_json_event(output, "interaction.request");
 	ASSERT_NE(event, nullptr);
-	cJSON *data = cJSON_GetObjectItem(event, "data");
-	EXPECT_STREQ(cJSON_GetObjectItem(data, "kind")->valuestring, "ask_user");
-	cJSON *payload = cJSON_GetObjectItem(data, "request");
-	EXPECT_STREQ(cJSON_GetObjectItem(payload, "question")->valuestring, "pick a color");
-	cJSON_Delete(event);
+	struct json *data = json_member_ci(event, "data");
+	EXPECT_STREQ(json_string_value(json_member_ci(data, "kind")), "ask_user");
+	struct json *payload = json_member_ci(data, "request");
+	EXPECT_STREQ(json_string_value(json_member_ci(payload, "question")), "pick a color");
+	json_free(event);
 	for (int i = 0; i < answers_count; i++)
 		free(answers[i]);
 	free(answers);
@@ -617,16 +617,16 @@ TEST_F(CliUiTest, StructuredOperationApprovalMapsSessionDecision)
 	std::string output = run_structured_interaction(
 		&ctx, input, [&] { verdict = cli_approval_operation_callback(&operation, &ctx); });
 	EXPECT_EQ(verdict, TOOL_OP_SESSION);
-	cJSON *event = find_json_event(output, "interaction.request");
+	struct json *event = find_json_event(output, "interaction.request");
 	ASSERT_NE(event, nullptr);
-	cJSON *data = cJSON_GetObjectItem(event, "data");
-	EXPECT_STREQ(cJSON_GetObjectItem(data, "kind")->valuestring, "operation_approval");
-	cJSON *payload = cJSON_GetObjectItem(data, "request");
-	EXPECT_STREQ(cJSON_GetObjectItem(payload, "operation")->valuestring, "command");
-	EXPECT_STREQ(cJSON_GetObjectItem(payload, "reason")->valuestring,
+	struct json *data = json_member_ci(event, "data");
+	EXPECT_STREQ(json_string_value(json_member_ci(data, "kind")), "operation_approval");
+	struct json *payload = json_member_ci(data, "request");
+	EXPECT_STREQ(json_string_value(json_member_ci(payload, "operation")), "command");
+	EXPECT_STREQ(json_string_value(json_member_ci(payload, "reason")),
 		     "Programs are not trusted yet.");
-	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(payload, "programs")), 2);
-	cJSON_Delete(event);
+	EXPECT_EQ(json_count(json_member_ci(payload, "programs")), 2);
+	json_free(event);
 }
 
 TEST_F(CliUiTest, StructuredToolApprovalMapsPersistentDecision)
@@ -642,14 +642,14 @@ TEST_F(CliUiTest, StructuredToolApprovalMapsPersistentDecision)
 		verdict = cli_approval_tool_callback("remote_tool", "{\"query\":\"status\"}", &ctx);
 	});
 	EXPECT_EQ(verdict, HITL_ALWAYS);
-	cJSON *event = find_json_event(output, "interaction.request");
+	struct json *event = find_json_event(output, "interaction.request");
 	ASSERT_NE(event, nullptr);
-	cJSON *data = cJSON_GetObjectItem(event, "data");
-	EXPECT_STREQ(cJSON_GetObjectItem(data, "kind")->valuestring, "tool_approval");
-	cJSON *payload = cJSON_GetObjectItem(data, "request");
-	EXPECT_STREQ(cJSON_GetObjectItem(payload, "tool_name")->valuestring, "remote_tool");
-	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(payload, "allowed_decisions")), 3);
-	cJSON_Delete(event);
+	struct json *data = json_member_ci(event, "data");
+	EXPECT_STREQ(json_string_value(json_member_ci(data, "kind")), "tool_approval");
+	struct json *payload = json_member_ci(data, "request");
+	EXPECT_STREQ(json_string_value(json_member_ci(payload, "tool_name")), "remote_tool");
+	EXPECT_EQ(json_count(json_member_ci(payload, "allowed_decisions")), 3);
+	json_free(event);
 }
 
 TEST(CliCommandPrompts, PreservesOrderPayloadLifetimeAndCompletionTail)
@@ -708,12 +708,11 @@ TEST_F(CliUiTest, QueuePreservesDisplayTextForSteeringAndNextTurn)
 	EXPECT_STREQ(snapshot[0], display_input);
 	free(snapshot[0]);
 	ASSERT_EQ(cli_command_job_drain(&job, &action, 0), 1);
-	cJSON *payload = cJSON_Parse(action.payload_json);
+	struct json *payload = json_parse_prefix(action.payload_json, NULL, NULL);
 	ASSERT_NE(payload, nullptr);
-	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(payload, "text")), model_input);
-	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(payload, "display_text")),
-		     display_input);
-	cJSON_Delete(payload);
+	EXPECT_STREQ(json_string_value(json_member_ci(payload, "text")), model_input);
+	EXPECT_STREQ(json_string_value(json_member_ci(payload, "display_text")), display_input);
+	json_free(payload);
 	char *display = nullptr;
 	char *pending = cli_command_job_take_prompt(&job, &display);
 	ASSERT_NE(pending, nullptr);
@@ -746,14 +745,14 @@ TEST_F(CliUiTest, StructuredDirectoryApprovalIncludesTheCombinedAccess)
 	std::string output = run_structured_interaction(
 		&ctx, input, [&] { verdict = cli_approval_operation_callback(&operation, &ctx); });
 	EXPECT_EQ(verdict, TOOL_OP_SESSION);
-	cJSON *event = find_json_event(output, "interaction.request");
+	struct json *event = find_json_event(output, "interaction.request");
 	ASSERT_NE(event, nullptr);
-	cJSON *payload = cJSON_GetObjectItem(cJSON_GetObjectItem(event, "data"), "request");
+	struct json *payload = json_member_ci(json_member_ci(event, "data"), "request");
 	ASSERT_NE(payload, nullptr);
-	EXPECT_STREQ(cJSON_GetObjectItem(payload, "operation")->valuestring, "directory_access");
-	EXPECT_STREQ(cJSON_GetObjectItem(payload, "access")->valuestring, "read/write/delete");
-	EXPECT_STREQ(cJSON_GetObjectItem(payload, "scope")->valuestring, "session");
-	cJSON_Delete(event);
+	EXPECT_STREQ(json_string_value(json_member_ci(payload, "operation")), "directory_access");
+	EXPECT_STREQ(json_string_value(json_member_ci(payload, "access")), "read/write/delete");
+	EXPECT_STREQ(json_string_value(json_member_ci(payload, "scope")), "session");
+	json_free(event);
 }
 
 TEST_F(CliUiTest, OptionalStructuredQuestionExpiresWithoutAReply)
@@ -780,14 +779,12 @@ TEST_F(CliUiTest, OptionalStructuredQuestionExpiresWithoutAReply)
 	EXPECT_EQ(rc, -ETIMEDOUT);
 	EXPECT_EQ(answers, nullptr);
 	EXPECT_EQ(count, 0);
-	cJSON *event = find_json_event(output, "interaction.request");
+	struct json *event = find_json_event(output, "interaction.request");
 	ASSERT_NE(event, nullptr);
-	cJSON *request = cJSON_GetObjectItem(cJSON_GetObjectItem(event, "data"), "request");
-	EXPECT_EQ(cJSON_GetObjectItem(request, "timeout_seconds")->valueint, 1);
-	EXPECT_EQ(cJSON_GetArrayItem(cJSON_GetObjectItem(request, "recommended_indices"), 0)
-			  ->valueint,
-		  1);
-	cJSON_Delete(event);
+	struct json *request = json_member_ci(json_member_ci(event, "data"), "request");
+	EXPECT_EQ(json_int_value(json_member_ci(request, "timeout_seconds")), 1);
+	EXPECT_EQ(json_int_value(json_at(json_member_ci(request, "recommended_indices"), 0)), 1);
+	json_free(event);
 	EXPECT_NE(output.find("timeout_recommended"), std::string::npos);
 	EXPECT_EQ(output.find("interaction.cancelled"), std::string::npos);
 }

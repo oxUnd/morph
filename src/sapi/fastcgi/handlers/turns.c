@@ -1,7 +1,7 @@
 #include "sapi/fastcgi/handlers/handlers.h"
 #include "sapi/fastcgi/services/turn_job.h"
 #include "sapi/fastcgi/storage/sessions.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "util/error.h"
 
 #include <stdlib.h>
@@ -12,7 +12,7 @@ void handle_post_turn(request_t *request)
 	char *body = NULL;
 	size_t body_length = 0;
 	struct fcgi_turn_receipt receipt;
-	cJSON *root;
+	struct json *root;
 	const char *input = "";
 	int rc;
 
@@ -29,16 +29,16 @@ void handle_post_turn(request_t *request)
 		reply_body_error(request, rc);
 		return;
 	}
-	root = cJSON_Parse(body ? body : "{}");
-	if (cJSON_IsObject(root)) {
-		const cJSON *prompt = cJSON_GetObjectItemCaseSensitive(root, "prompt");
+	root = json_parse_prefix(body ? body : "{}", NULL, NULL);
+	if (json_is_object_value(root)) {
+		const struct json *prompt = json_member(root, "prompt");
 
-		if (cJSON_IsString(prompt) && prompt->valuestring)
-			input = prompt->valuestring;
+		if (json_is_string_value(prompt) && json_string_value(prompt))
+			input = json_string_value(prompt);
 	}
 	rc = fcgi_turn_job_submit(request->bridge, request->store, session_id, request->user_id,
 				  input, &receipt);
-	cJSON_Delete(root);
+	json_free(root);
 	free(body);
 	if (rc && (receipt.failure == FCGI_TURN_FAILURE_DAILY_QUOTA ||
 		   receipt.failure == FCGI_TURN_FAILURE_CONCURRENCY_QUOTA)) {
@@ -61,15 +61,15 @@ void handle_post_turn(request_t *request)
 									       : "turn failed");
 		return;
 	}
-	cJSON *accepted = cJSON_CreateObject();
+	struct json *accepted = json_object();
 	char *json = NULL;
 
 	if (accepted) {
-		cJSON_AddBoolToObject(accepted, "accepted", 1);
-		cJSON_AddStringToObject(accepted, "turn_id", receipt.turn_id);
-		cJSON_AddNumberToObject(accepted, "queue_position", receipt.queue_position);
-		json = cJSON_PrintUnformatted(accepted);
-		cJSON_Delete(accepted);
+		json_add_bool(accepted, "accepted", 1);
+		json_add_string(accepted, "turn_id", receipt.turn_id);
+		json_add_number(accepted, "queue_position", receipt.queue_position);
+		json = json_stringify(accepted);
+		json_free(accepted);
 	}
 	reply_202_json(request, json ? json : "{\"accepted\":true}");
 	free(json);

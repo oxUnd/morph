@@ -31,7 +31,7 @@
 #include "sapi/cli/widgets/banner.h"
 #include "sapi/cli/pages/hooks.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
-#include "cJSON.h"
+#include "util/json.h"
 
 struct cli_application_screen {
 	struct cli_application *ctx;
@@ -586,66 +586,67 @@ void cli_application_run(struct cli_application *ctx)
 static void cli_application_emit_trace_json(struct cli_application *ctx, double elapsed)
 {
 	struct runtime_turn_status status;
-	cJSON *root;
-	cJSON *steps;
+	struct json *root;
+	struct json *steps;
 	char *json;
 
 	if (runtime_turn_status_get(ctx->runtime, &status) != 0)
 		return;
-	root = cJSON_CreateObject();
+	root = json_object();
 	if (!root) {
 		runtime_turn_status_cleanup(&status);
 		return;
 	}
 	switch (status.state) {
 	case REACT_STATE_DONE:
-		cJSON_AddStringToObject(root, "state", "done");
+		json_add_string(root, "state", "done");
 		break;
 	case REACT_STATE_ABORT:
-		cJSON_AddStringToObject(root, "state", "abort");
+		json_add_string(root, "state", "abort");
 		break;
 	case REACT_STATE_TOOL_FAIL:
-		cJSON_AddStringToObject(root, "state", "tool_fail");
+		json_add_string(root, "state", "tool_fail");
 		break;
 	default:
-		cJSON_AddStringToObject(root, "state", "unknown");
+		json_add_string(root, "state", "unknown");
 		break;
 	}
-	cJSON_AddStringToObject(root, "final_answer",
-				status.final_answer ? status.final_answer : "");
-	cJSON_AddStringToObject(root, "outcome", react_outcome_name(status.outcome));
+	json_add_string(root, "final_answer", status.final_answer ? status.final_answer : "");
+	json_add_string(root, "outcome", react_outcome_name(status.outcome));
 	if (status.last_error_code < 0) {
-		cJSON_AddNumberToObject(root, "error_code", status.last_error_code);
-		cJSON_AddStringToObject(root, "error", morph_strerror(status.last_error_code));
+		json_add_number(root, "error_code", status.last_error_code);
+		json_add_string(root, "error", morph_strerror(status.last_error_code));
 	}
 	if (status.outcome_reason && status.outcome_reason[0])
-		cJSON_AddStringToObject(root, "reason", status.outcome_reason);
-	steps = cJSON_CreateArray();
+		json_add_string(root, "reason", status.outcome_reason);
+	steps = json_array();
 	if (steps) {
 		for (int i = 0; i < status.step_count; i++) {
 			struct runtime_trace_step *cur = &status.steps[i];
-			cJSON *step = cJSON_CreateObject();
+			struct json *step = json_object();
 
 			if (!step)
 				continue;
-			cJSON_AddStringToObject(step, "type", react_step_type_name(cur->type));
+			json_add_string(step, "type", react_step_type_name(cur->type));
 			if (cur->content)
-				cJSON_AddStringToObject(step, "content", cur->content);
+				json_add_string(step, "content", cur->content);
 			if (cur->tool_name)
-				cJSON_AddStringToObject(step, "tool_name", cur->tool_name);
+				json_add_string(step, "tool_name", cur->tool_name);
 			if (cur->tool_args)
-				cJSON_AddStringToObject(step, "tool_args", cur->tool_args);
-			cJSON_AddItemToArray(steps, step);
+				json_add_string(step, "tool_args", cur->tool_args);
+			if (json_array_add(steps, step))
+				json_free(step);
 		}
-		cJSON_AddItemToObject(root, "steps", steps);
+		if (json_object_add(root, "steps", steps))
+			json_free(steps);
 	}
-	cJSON_AddNumberToObject(root, "elapsed_seconds", elapsed);
-	json = cJSON_PrintUnformatted(root);
+	json_add_number(root, "elapsed_seconds", elapsed);
+	json = json_stringify(root);
 	if (json) {
 		printf(ctx, "%s\n", json);
 		free(json);
 	}
-	cJSON_Delete(root);
+	json_free(root);
 	runtime_turn_status_cleanup(&status);
 }
 

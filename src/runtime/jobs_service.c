@@ -8,20 +8,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const char *job_string(const cJSON *data, const char *key)
-{
-	const char *text = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(data, key));
-	return text ? text : "";
-}
-
 static int runtime_process_event(const struct morph_event *event, void *user_data)
 {
 	struct runtime *runtime = user_data;
-	const cJSON *data = event->data;
-	int64_t owner = (int64_t)cJSON_GetNumberValue(
-		cJSON_GetObjectItemCaseSensitive(data, "owner_session_id"));
+	const struct json *data = event->data;
+	int64_t owner = (int64_t)json_number_value(json_member(data, "owner_session_id"));
 	if (owner > 0) {
-		char *json = cJSON_PrintUnformatted(data);
+		char *json = json_stringify(data);
 		sqlite3_stmt *stmt = NULL;
 		pthread_mutex_lock(&runtime->jobs_lock);
 		int rc = json ? sqlite3_prepare_v2(
@@ -36,7 +29,7 @@ static int runtime_process_event(const struct morph_event *event, void *user_dat
 					-1, &stmt, NULL)
 			      : SQLITE_NOMEM;
 		if (rc == SQLITE_OK) {
-			sqlite3_bind_text(stmt, 1, job_string(data, "session_id"), -1,
+			sqlite3_bind_text(stmt, 1, json_str_or(data, "session_id", ""), -1,
 					  SQLITE_TRANSIENT);
 			sqlite3_bind_int64(stmt, 2, owner);
 			sqlite3_bind_text(stmt, 3, json, -1, SQLITE_TRANSIENT);
@@ -81,27 +74,27 @@ void runtime_jobs_cleanup(struct runtime *runtime)
 	}
 }
 
-static void stored_job_unavailable(cJSON *data)
+static void stored_job_unavailable(struct json *data)
 {
-	const char *status = job_string(data, "status");
+	const char *status = json_str_or(data, "status", "");
 	if (!strcmp(status, "running") || !strcmp(status, "starting")) {
-		cJSON_DeleteItemFromObjectCaseSensitive(data, "status");
-		cJSON_AddStringToObject(data, "status", "unavailable");
+		json_object_remove(data, "status");
+		json_add_string(data, "status", "unavailable");
 	}
 	/* Spool files belong to the runtime that created the process. */
-	cJSON_DeleteItemFromObjectCaseSensitive(data, "stdout_path");
-	cJSON_DeleteItemFromObjectCaseSensitive(data, "stderr_path");
+	json_object_remove(data, "stdout_path");
+	json_object_remove(data, "stderr_path");
 }
 
-int runtime_process_list(struct runtime *runtime, cJSON **out)
+int runtime_process_list(struct runtime *runtime, struct json **out)
 {
 	if (!runtime || !out || !runtime->jobs_lock_ready)
 		return -EINVAL;
 	int64_t owner = runtime->context.current_session.id;
-	cJSON *jobs = NULL;
+	struct json *jobs = NULL;
 	int rc = runtime->jobs ? exec_jobs_list(runtime->jobs, owner, &jobs) : 0;
 	if (!runtime->jobs) {
-		jobs = cJSON_CreateArray();
+		jobs = json_array();
 		if (!jobs)
 			rc = -ENOMEM;
 	}
@@ -110,13 +103,12 @@ int runtime_process_list(struct runtime *runtime, cJSON **out)
 	morph_strmap_t live;
 	rc = morph_strmap_init(&live, MORPH_STRMAP_INIT_CAP);
 	if (rc) {
-		cJSON_Delete(jobs);
+		json_free(jobs);
 		return rc;
 	}
-	cJSON *job;
-	cJSON_ArrayForEach(job, jobs)
-	{
-		rc = morph_strmap_set(&live, job_string(job, "session_id"), job);
+	struct json *job;
+	json_foreach (job, jobs) {
+		rc = morph_strmap_set(&live, json_str_or(job, "session_id", ""), job);
 		if (rc)
 			break;
 	}
@@ -132,19 +124,19 @@ int runtime_process_list(struct runtime *runtime, cJSON **out)
 		sqlite3_bind_int64(stmt, 1, owner);
 		while ((sql_rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 			const char *json = (const char *)sqlite3_column_text(stmt, 0);
-			job = json ? cJSON_Parse(json) : NULL;
-			if (!cJSON_IsObject(job)) {
-				cJSON_Delete(job);
+			job = json ? json_parse_prefix(json, NULL, NULL) : NULL;
+			if (!json_is_object_value(job)) {
+				json_free(job);
 				rc = MORPH_ERR_PARSE;
 				break;
 			}
-			if (morph_strmap_contains(&live, job_string(job, "session_id"))) {
-				cJSON_Delete(job);
+			if (morph_strmap_contains(&live, json_str_or(job, "session_id", ""))) {
+				json_free(job);
 				continue;
 			}
 			stored_job_unavailable(job);
-			if (!cJSON_AddItemToArray(jobs, job)) {
-				cJSON_Delete(job);
+			if (json_array_add(jobs, job) != 0) {
+				json_free(job);
 				rc = -ENOMEM;
 				break;
 			}
@@ -156,7 +148,7 @@ int runtime_process_list(struct runtime *runtime, cJSON **out)
 	if (!rc && sql_rc != SQLITE_DONE)
 		rc = MORPH_ERR_DB;
 	if (rc) {
-		cJSON_Delete(jobs);
+		json_free(jobs);
 		return rc;
 	}
 	*out = jobs;
@@ -171,30 +163,29 @@ static int resolve_job(struct runtime *runtime, const char *id, char **resolved)
 		*resolved = strdup(id);
 		return *resolved ? 0 : -ENOMEM;
 	}
-	cJSON *jobs = NULL, *job;
+	struct json *jobs = NULL, *job;
 	int rc = runtime_process_list(runtime, &jobs);
 	if (rc)
 		return rc;
 	const char *match = NULL;
-	cJSON_ArrayForEach(job, jobs)
-	{
-		const char *candidate = job_string(job, "session_id");
+	json_foreach (job, jobs) {
+		const char *candidate = json_str_or(job, "session_id", "");
 		const char *short_id = !strncmp(candidate, "proc_", 5) ? candidate + 5 : candidate;
 		if (strcmp(candidate, id) && strncmp(short_id, id, strlen(id)))
 			continue;
 		if (match) {
-			cJSON_Delete(jobs);
+			json_free(jobs);
 			return -EINVAL;
 		}
 		match = candidate;
 	}
 	*resolved = match ? strdup(match) : NULL;
 	rc = match ? (*resolved ? 0 : -ENOMEM) : -ENOENT;
-	cJSON_Delete(jobs);
+	json_free(jobs);
 	return rc;
 }
 
-int runtime_process_read(struct runtime *runtime, const char *id, cJSON **out)
+int runtime_process_read(struct runtime *runtime, const char *id, struct json **out)
 {
 	char *resolved = NULL;
 	int rc = resolve_job(runtime, id, &resolved);
@@ -217,7 +208,8 @@ int runtime_process_read(struct runtime *runtime, const char *id, cJSON **out)
 			sql_rc = sqlite3_step(stmt);
 		}
 		*out = sql_rc == SQLITE_ROW
-			       ? cJSON_Parse((const char *)sqlite3_column_text(stmt, 0))
+			       ? json_parse_prefix((const char *)sqlite3_column_text(stmt, 0), NULL,
+						   NULL)
 			       : NULL;
 		sqlite3_finalize(stmt);
 		pthread_mutex_unlock(&runtime->jobs_lock);

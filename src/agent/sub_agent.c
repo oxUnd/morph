@@ -16,7 +16,7 @@
 #include "util/utf8.h"
 #include "util/error.h"
 #include "util/file.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -231,7 +231,7 @@ static int sub_agent_child_event(const struct morph_event *ev,
 	struct sub_agent_runtime *rt;
 	struct sub_agent_task *task;
 	struct morph_event scoped;
-	cJSON *data;
+	struct json *data;
 	char *json;
 	char *active;
 	int forward = 0;
@@ -241,20 +241,17 @@ static int sub_agent_child_event(const struct morph_event *ev,
 		return -EINVAL;
 	rt = sink->rt;
 	task = sink->task;
-	data = ev->data ? cJSON_Duplicate(ev->data, 1) : cJSON_CreateObject();
+	data = ev->data ? json_clone(ev->data, 1) : json_object();
 	if (!data)
 		return -ENOMEM;
-	cJSON_DeleteItemFromObjectCaseSensitive(data, "task_id");
-	cJSON_DeleteItemFromObjectCaseSensitive(data, "agent");
-	cJSON_DeleteItemFromObjectCaseSensitive(data, "session_id");
-	cJSON_DeleteItemFromObjectCaseSensitive(data, "parent_session_id");
-	cJSON_AddStringToObject(data, "task_id", task->id);
-	cJSON_AddStringToObject(data, "agent",
-		rt->entries[task->agent_index].cfg.name);
-	cJSON_AddNumberToObject(data, "session_id",
-		(double)task->child_session_id);
-	cJSON_AddNumberToObject(data, "parent_session_id",
-		(double)task->parent_session_id);
+	json_object_remove(data, "task_id");
+	json_object_remove(data, "agent");
+	json_object_remove(data, "session_id");
+	json_object_remove(data, "parent_session_id");
+	json_add_string(data, "task_id", task->id);
+	json_add_string(data, "agent", rt->entries[task->agent_index].cfg.name);
+	json_add_number(data, "session_id", (double)task->child_session_id);
+	json_add_number(data, "parent_session_id", (double)task->parent_session_id);
 	scoped = *ev;
 	scoped.data = data;
 	json = morph_event_to_json_string(&scoped);
@@ -299,7 +296,7 @@ static int sub_agent_child_event(const struct morph_event *ev,
 	pthread_mutex_unlock(&rt->mutex);
 	if (forward && rt->event_cb)
 		rc = morph_event_emit(rt->event_cb, rt->event_user_data, &scoped);
-	cJSON_Delete(data);
+	json_free(data);
 	return rc;
 }
 
@@ -479,29 +476,28 @@ static int sub_agent_emit_background_event(struct sub_agent_runtime *rt,
 					   const char *task,
 					   int error_code)
 {
-	cJSON *data;
+	struct json *data;
 	int rc;
 
 	if (!rt || !rt->event_cb)
 		return 0;
-	data = cJSON_CreateObject();
+	data = json_object();
 	if (!data)
 		return -ENOMEM;
-	cJSON_AddStringToObject(data, "task", "sub_agent");
-	cJSON_AddStringToObject(data, "agent", agent ? agent : "");
+	json_add_string(data, "task", "sub_agent");
+	json_add_string(data, "agent", agent ? agent : "");
 	if (task_id)
-		cJSON_AddStringToObject(data, "task_id", task_id);
+		json_add_string(data, "task_id", task_id);
 	if (task)
-		cJSON_AddStringToObject(data, "description", task);
+		json_add_string(data, "description", task);
 	if (error_code < 0) {
-		cJSON_AddNumberToObject(data, "error_code", error_code);
-		cJSON_AddStringToObject(data, "error",
-					morph_strerror(error_code));
+		json_add_number(data, "error_code", error_code);
+		json_add_string(data, "error", morph_strerror(error_code));
 	}
 	rc = morph_event_emit_simple(rt->event_cb, rt->event_user_data,
 				     MORPH_EVENT_BACKGROUND, name, phase,
 				     message, data);
-	cJSON_Delete(data);
+	json_free(data);
 	return rc;
 }
 
@@ -1256,20 +1252,18 @@ int sub_agent_fanout_with_ops(struct sub_agent_runtime *rt,
 		return first_err ? first_err : -EIO;
 	}
 	if (merge == SUB_AGENT_MERGE_RAW) {
-		cJSON *arr = cJSON_CreateArray();
+		struct json *arr = json_array();
 		for (int i = 0; i < n; i++) {
-			cJSON *item = cJSON_CreateObject();
-			cJSON_AddStringToObject(item, "task", tasks[i]);
+			struct json *item = json_object();
+			json_add_string(item, "task", tasks[i]);
 			if (workers[i].result)
-				cJSON_AddStringToObject(item, "result",
-							workers[i].result);
+				json_add_string(item, "result", workers[i].result);
 			else
-				cJSON_AddStringToObject(item, "result",
-							"(no result)");
-			cJSON_AddItemToArray(arr, item);
+				json_add_string(item, "result", "(no result)");
+			json_array_add(arr, item);
 		}
-		*result = cJSON_PrintUnformatted(arr);
-		cJSON_Delete(arr);
+		*result = json_stringify(arr);
+		json_free(arr);
 	} else if (merge == SUB_AGENT_MERGE_SYNTHESIZE) {
 		morph_buf_t combined_buf;
 		int buf_rc = morph_buf_init(&combined_buf, 4096);
@@ -1407,9 +1401,9 @@ int sub_agent_apply_output_schema(const char *text,
 		*result = strdup(text);
 		return 0;
 	}
-	cJSON *parsed = cJSON_Parse(response);
+	struct json *parsed = json_parse_prefix(response, NULL, NULL);
 	if (parsed) {
-		cJSON_Delete(parsed);
+		json_free(parsed);
 		*result = response;
 		return 0;
 	}
@@ -1426,38 +1420,35 @@ void sub_agent_trace_write(struct sub_agent_runtime *rt,
 	FILE *f = fopen(rt->trace_file, "a");
 	if (!f)
 		return;
-	cJSON *obj = cJSON_CreateObject();
+	struct json *obj = json_object();
 	if (!obj) {
 		fclose(f);
 		return;
 	}
-	cJSON_AddStringToObject(obj, "trace_id", ev->trace_id);
+	json_add_string(obj, "trace_id", ev->trace_id);
 	if (ev->parent_trace_id[0])
-		cJSON_AddStringToObject(obj, "parent_id",
-					ev->parent_trace_id);
-	cJSON_AddStringToObject(obj, "agent", ev->agent_name);
-	cJSON_AddNumberToObject(obj, "start_ms",
-				(double)ev->start_ms);
-	cJSON_AddNumberToObject(obj, "end_ms", (double)ev->end_ms);
-	cJSON_AddStringToObject(obj, "mode", ev->mode);
-	cJSON_AddNumberToObject(obj, "iterations", ev->iteration_count);
+		json_add_string(obj, "parent_id", ev->parent_trace_id);
+	json_add_string(obj, "agent", ev->agent_name);
+	json_add_number(obj, "start_ms", (double)ev->start_ms);
+	json_add_number(obj, "end_ms", (double)ev->end_ms);
+	json_add_string(obj, "mode", ev->mode);
+	json_add_number(obj, "iterations", ev->iteration_count);
 	if (ev->result_preview)
-		cJSON_AddStringToObject(obj, "result_preview",
-					ev->result_preview);
+		json_add_string(obj, "result_preview", ev->result_preview);
 	{
 		time_t now = time(NULL);
 		struct tm tm_local;
 		localtime_r(&now, &tm_local);
 		char ts[64];
 		strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%S", &tm_local);
-		cJSON_AddStringToObject(obj, "ts", ts);
+		json_add_string(obj, "ts", ts);
 	}
-	char *json_str = cJSON_PrintUnformatted(obj);
+	char *json_str = json_stringify(obj);
 	if (json_str) {
 		fprintf(f, "%s\n", json_str);
 		free(json_str);
 	}
-	cJSON_Delete(obj);
+	json_free(obj);
 	fclose(f);
 }
 

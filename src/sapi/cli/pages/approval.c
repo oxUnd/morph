@@ -3,7 +3,7 @@
 #include <morph/tui/terminal.h>
 #include "sapi/cli/adapters/input/state.h"
 #include "agent/tool_context.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "sapi/cli/adapters/input/reader.h"
 #include "sapi/cli/adapters/input/cancel.h"
 #include "sapi/cli/presentation/presenter.h"
@@ -174,21 +174,21 @@ static enum hitl_verdict cli_approval_json_hitl_approval(struct cli_application 
 							 const char *tool_args)
 {
 	static const char *const allowed[] = {"allow", "always", "deny"};
-	cJSON *request = cJSON_CreateObject();
+	struct json *request = json_object();
 	char decision[16];
 	int rc;
 
 	if (!request)
 		return HITL_DENY;
-	if (!cJSON_AddStringToObject(request, "tool_name", tool_name ? tool_name : "") ||
-	    !cJSON_AddStringToObject(request, "arguments_json", tool_args ? tool_args : "{}")) {
-		cJSON_Delete(request);
+	if (!json_add_string(request, "tool_name", tool_name ? tool_name : "") ||
+	    !json_add_string(request, "arguments_json", tool_args ? tool_args : "{}")) {
+		json_free(request);
 		return HITL_DENY;
 	}
 	rc = cli_interaction_decision(ctx, "tool_approval", request, allowed,
 				      (int)(sizeof(allowed) / sizeof(allowed[0])), decision,
 				      sizeof(decision));
-	cJSON_Delete(request);
+	json_free(request);
 	if (rc != 0 || strcmp(decision, "deny") == 0)
 		return HITL_DENY;
 	if (strcmp(decision, "always") == 0)
@@ -443,11 +443,12 @@ static const char *cli_approval_operation_scope_label(enum tool_operation_kind k
 	return "Scope";
 }
 
-static int cli_approval_json_add_optional_string(cJSON *object, const char *name, const char *value)
+static int cli_approval_json_add_optional_string(struct json *object, const char *name,
+						 const char *value)
 {
 	if (!value || !value[0])
 		return 0;
-	if (!cJSON_AddStringToObject(object, name, value))
+	if (!json_add_string(object, name, value))
 		return -ENOMEM;
 	return 0;
 }
@@ -459,24 +460,23 @@ cli_approval_json_operation_approval(struct cli_application *ctx, const struct t
 	static const char *const ephemeral_decisions[] = {"allow", "session", "deny"};
 	const char *const *allowed = persistent;
 	int allowed_count = (int)(sizeof(persistent) / sizeof(persistent[0]));
-	cJSON *request;
-	cJSON *programs;
+	struct json *request;
+	struct json *programs;
 	char decision[16] = {0};
 	int ephemeral;
 	int rc;
 
-	request = cJSON_CreateObject();
-	programs = cJSON_CreateArray();
+	request = json_object();
+	programs = json_array();
 	if (!request || !programs) {
-		cJSON_Delete(request);
-		cJSON_Delete(programs);
+		json_free(request);
+		json_free(programs);
 		return TOOL_OP_DENY;
 	}
 	ephemeral = op->tool_name && strcmp(op->tool_name, "exec") == 0 &&
 		    (op->kind == TOOL_OP_PATH_WRITE || op->kind == TOOL_OP_PATH_DELETE);
-	if (!cJSON_AddStringToObject(request, "operation",
-				     cli_approval_operation_approval_subject(op)) ||
-	    !cJSON_AddBoolToObject(request, "ephemeral", ephemeral) ||
+	if (!json_add_string(request, "operation", cli_approval_operation_approval_subject(op)) ||
+	    !json_add_bool(request, "ephemeral", ephemeral) ||
 	    cli_approval_json_add_optional_string(request, "access",
 						  tool_path_access_name(op->path_access)) != 0 ||
 	    cli_approval_json_add_optional_string(request, "tool_name", op->tool_name) != 0 ||
@@ -486,28 +486,37 @@ cli_approval_json_operation_approval(struct cli_application *ctx, const struct t
 	    cli_approval_json_add_optional_string(request, "scope", op->scope) != 0 ||
 	    cli_approval_json_add_optional_string(request, "reason", op->reason) != 0 ||
 	    cli_approval_json_add_optional_string(request, "details_json", op->details_json) != 0) {
-		cJSON_Delete(programs);
-		cJSON_Delete(request);
+		json_free(programs);
+		json_free(request);
 		return TOOL_OP_DENY;
 	}
 	for (int i = 0; i < op->programs_count; i++) {
-		cJSON *program = cJSON_CreateString(op->programs[i]);
+		struct json *program = json_string(op->programs[i]);
 
 		if (!program) {
-			cJSON_Delete(programs);
-			cJSON_Delete(request);
+			json_free(programs);
+			json_free(request);
 			return TOOL_OP_DENY;
 		}
-		cJSON_AddItemToArray(programs, program);
+		if (json_array_add(programs, program)) {
+			json_free(program);
+			json_free(programs);
+			json_free(request);
+			return TOOL_OP_DENY;
+		}
 	}
-	cJSON_AddItemToObject(request, "programs", programs);
+	if (json_object_add(request, "programs", programs)) {
+		json_free(programs);
+		json_free(request);
+		return TOOL_OP_DENY;
+	}
 	if (ephemeral) {
 		allowed = ephemeral_decisions;
 		allowed_count = (int)(sizeof(ephemeral_decisions) / sizeof(ephemeral_decisions[0]));
 	}
 	rc = cli_interaction_decision(ctx, "operation_approval", request, allowed, allowed_count,
 				      decision, sizeof(decision));
-	cJSON_Delete(request);
+	json_free(request);
 	if (rc != 0 || strcmp(decision, "deny") == 0)
 		return TOOL_OP_DENY;
 	if (strcmp(decision, "always") == 0)

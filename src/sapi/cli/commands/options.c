@@ -2,7 +2,7 @@
 #include "sapi/cli/presentation/output.h"
 #include "event/event.h"
 #include "util/error.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,28 +11,33 @@
 static int cli_options_emit_option_event(const char *name, const char *phase, const char *command,
 					 const char *output)
 {
-	cJSON *data;
-	cJSON *args;
+	struct json *data;
+	struct json *args;
 	struct morph_event event;
 	char *json;
 	int rc;
 
-	data = cJSON_CreateObject();
-	args = cJSON_CreateArray();
+	data = json_object();
+	args = json_array();
 	if (!data || !args) {
-		cJSON_Delete(data);
-		cJSON_Delete(args);
+		json_free(data);
+		json_free(args);
 		return -ENOMEM;
 	}
-	if (!cJSON_AddStringToObject(data, "command", command) ||
-	    !cJSON_AddStringToObject(data, "input", command)) {
-		cJSON_Delete(args);
-		cJSON_Delete(data);
+	if (!json_add_string(data, "command", command) ||
+	    !json_add_string(data, "input", command)) {
+		json_free(args);
+		json_free(data);
 		return -ENOMEM;
 	}
-	cJSON_AddItemToObject(data, "args", args);
-	if (output && !cJSON_AddStringToObject(data, "output", output)) {
-		cJSON_Delete(data);
+	rc = json_object_add(data, "args", args);
+	if (rc) {
+		json_free(args);
+		json_free(data);
+		return rc;
+	}
+	if (output && !json_add_string(data, "output", output)) {
+		json_free(data);
 		return -ENOMEM;
 	}
 	event = (struct morph_event){
@@ -44,7 +49,7 @@ static int cli_options_emit_option_event(const char *name, const char *phase, co
 		.turn_id = NULL,
 	};
 	json = morph_event_to_json_string(&event);
-	cJSON_Delete(data);
+	json_free(data);
 	if (!json)
 		return -ENOMEM;
 	rc = cli_output_write_json(json);
@@ -131,11 +136,10 @@ int cli_options_parse(int argc, char **argv, struct cli_options *options)
 				options->resume_ref = argv[optind++];
 				continue;
 			}
-			if (!options->resume &&
-			    (strcmp(argv[optind], "setup") == 0 ||
-			     strcmp(argv[optind], "mcp") == 0 ||
-			     strcmp(argv[optind], "skills") == 0 ||
-			     strcmp(argv[optind], "skill") == 0)) {
+			if (!options->resume && (strcmp(argv[optind], "setup") == 0 ||
+						 strcmp(argv[optind], "mcp") == 0 ||
+						 strcmp(argv[optind], "skills") == 0 ||
+						 strcmp(argv[optind], "skill") == 0)) {
 				options->command_index = optind;
 				return 0;
 			}
@@ -182,7 +186,7 @@ int cli_options_parse(int argc, char **argv, struct cli_options *options)
 		}
 	}
 	if (options->resume && (options->one_shot_prompt || options->session_name ||
-			       options->events_json || options->show_version)) {
+				options->events_json || options->show_version)) {
 		fprintf(stderr, "morph: resume cannot be combined with --prompt, --session, "
 				"--events or --version\n");
 		return 2;

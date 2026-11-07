@@ -29,13 +29,12 @@ void tool_result_clear(struct tool_result *result)
 		return;
 	runtime = result->runtime;
 	free(result->owned);
-	if (result->envelope) {
-		cJSON_Delete(result->envelope);
-	} else {
-		cJSON_Delete(result->data);
-		cJSON_Delete(result->ui);
-		cJSON_Delete(result->meta);
-	}
+	/* Attached fields detach during free; pending owned fields need the same
+	 * cleanup when envelope construction stops before attachment. */
+	json_free(result->data);
+	json_free(result->ui);
+	json_free(result->meta);
+	json_free(result->envelope);
 	tool_result_init(result);
 	result->runtime = runtime;
 }
@@ -60,118 +59,172 @@ static int tool_result_set_owned_text(struct tool_result *result, char *data)
 	return 0;
 }
 
-static int tool_result_take_json_field(cJSON **slot, cJSON *value)
+static int tool_result_validate_owned(const struct tool_result *result, const struct json *value)
+{
+	const struct json *fields[] = {result->envelope, result->data, result->ui, result->meta};
+	int rc = json_validate_take(NULL, value);
+
+	if (rc != 0)
+		return rc;
+	for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+		if (fields[i]) {
+			rc = json_validate_take(fields[i], value);
+			if (rc != 0)
+				return rc;
+		}
+	}
+	return 0;
+}
+
+static int tool_result_take_json_field(struct json **slot, struct json *value)
 {
 	if (!slot)
 		return -EINVAL;
 	if (!value)
 		return -ENOMEM;
-	cJSON_Delete(*slot);
+	json_free(*slot);
 	*slot = value;
 	return 0;
 }
 
-static int tool_result_add_owned(cJSON *object, const char *name, cJSON *value)
+static int tool_result_add_owned(struct json *object, const char *name, struct json *value)
 {
+	int rc;
+
 	if (!object || !name)
 		return -EINVAL;
 	if (!value)
 		return -ENOMEM;
-	if (!cJSON_AddItemToObject(object, name, value)) {
-		cJSON_Delete(value);
-		return -ENOMEM;
+	rc = json_object_add(object, name, value);
+	if (rc != 0) {
+		json_free(value);
+		return rc;
 	}
 	return 0;
 }
 
 static int tool_result_replace_envelope_field(struct tool_result *result, const char *name,
-					      cJSON **slot, cJSON *value)
+					      struct json **slot, struct json *value)
 {
-	cJSON *old;
+	struct json *old;
+	int rc;
 
 	if (!result || !name || !slot)
 		return -EINVAL;
 	if (!value)
 		return -ENOMEM;
 	if (result->envelope) {
-		old = cJSON_GetObjectItem(result->envelope, name);
-		if (*slot && *slot != old)
-			cJSON_Delete(*slot);
-		if (old)
-			cJSON_Delete(cJSON_DetachItemViaPointer(result->envelope, old));
-		*slot = NULL;
-		if (!cJSON_AddItemToObject(result->envelope, name, value)) {
-			cJSON_Delete(value);
-			return -ENOMEM;
+		old = json_member_ci(result->envelope, name);
+		if (value == old) {
+			*slot = value;
+			return 0;
 		}
+		rc = old ? json_object_replace_ci(result->envelope, name, value)
+			 : json_object_add(result->envelope, name, value);
+		if (rc != 0) {
+			json_free(value);
+			return rc;
+		}
+		if (*slot && *slot != old)
+			json_free(*slot);
 		*slot = value;
 		return 0;
 	}
-	cJSON_Delete(*slot);
+	if (*slot == value)
+		return 0;
+	json_free(*slot);
 	*slot = value;
 	return 0;
 }
 
-int tool_result_set_ui(struct tool_result *result, cJSON *ui)
+int tool_result_set_ui(struct tool_result *result, struct json *ui)
 {
+	int rc;
+
 	if (!result)
 		return -EINVAL;
+	if (ui && result->ui == ui)
+		return 0;
+	if (ui) {
+		rc = tool_result_validate_owned(result, ui);
+		if (rc != 0)
+			return rc;
+	}
 	return tool_result_replace_envelope_field(result, "ui", &result->ui, ui);
 }
 
-int tool_result_set_meta(struct tool_result *result, cJSON *meta)
+int tool_result_set_meta(struct tool_result *result, struct json *meta)
 {
+	int rc;
+
 	if (!result)
 		return -EINVAL;
+	if (meta && result->meta == meta)
+		return 0;
+	if (meta) {
+		rc = tool_result_validate_owned(result, meta);
+		if (rc != 0)
+			return rc;
+	}
 	return tool_result_replace_envelope_field(result, "meta", &result->meta, meta);
 }
 
-static int tool_result_set_data(struct tool_result *result, cJSON *data)
+static int tool_result_set_data(struct tool_result *result, struct json *data)
 {
 	if (!result)
 		return -EINVAL;
 	return tool_result_take_json_field(&result->data, data);
 }
 
-static cJSON *tool_result_detach_or_object(cJSON **slot);
+static struct json *tool_result_detach_or_object(struct json **slot);
 
-int tool_result_success(struct tool_result *result, cJSON *data)
+int tool_result_success(struct tool_result *result, struct json *data)
 {
-	cJSON *item;
+	struct json *item;
 	int rc;
 
 	if (!result)
 		return -EINVAL;
+	if (data) {
+		rc = tool_result_validate_owned(result, data);
+		if (rc != 0)
+			return rc;
+	}
 	tool_result_clear(result);
-	rc = tool_result_set_data(result, data ? data : cJSON_CreateObject());
+	rc = tool_result_set_data(result, data ? data : json_object());
 	if (rc != 0)
 		return rc;
-	result->envelope = cJSON_CreateObject();
+	result->envelope = json_object();
 	if (!result->envelope) {
 		tool_result_clear(result);
 		return -ENOMEM;
 	}
-	if (!cJSON_AddBoolToObject(result->envelope, "ok", 1))
+	if (!json_add_bool(result->envelope, "ok", 1))
 		goto oom;
 	item = tool_result_detach_or_object(&result->data);
-	if (tool_result_add_owned(result->envelope, "data", item) != 0)
-		goto oom;
+	rc = tool_result_add_owned(result->envelope, "data", item);
+	if (rc != 0)
+		goto out_clear;
 	return 0;
 
 oom:
+	rc = -ENOMEM;
+out_clear:
 	tool_result_clear(result);
-	return -ENOMEM;
+	return rc;
 }
 
 int tool_result_success_text(struct tool_result *result, const char *text)
 {
-	cJSON *data;
+	struct json *data;
 
-	data = cJSON_CreateObject();
+	if (!result)
+		return -EINVAL;
+	data = json_object();
 	if (!data)
 		return -ENOMEM;
-	if (!cJSON_AddStringToObject(data, "text", text ? text : "")) {
-		cJSON_Delete(data);
+	if (!json_add_string(data, "text", text ? text : "")) {
+		json_free(data);
 		return -ENOMEM;
 	}
 	return tool_result_success(result, data);
@@ -204,38 +257,42 @@ int tool_result_successf(struct tool_result *result, const char *fmt, ...)
 
 int tool_result_success_json_text(struct tool_result *result, char *json)
 {
-	cJSON *data;
-	cJSON *err;
+	struct json *data;
+	struct json *err;
 	const char *msg;
 	int rc;
 
+	if (!result) {
+		free(json);
+		return -EINVAL;
+	}
 	if (!json)
 		return -ENOMEM;
-	data = cJSON_Parse(json);
+	data = json_parse_prefix(json, NULL, NULL);
 	if (!data) {
 		rc = tool_result_success_text(result, json);
 		free(json);
 		return rc;
 	}
 	free(json);
-	if (cJSON_IsObject(data)) {
-		err = cJSON_GetObjectItem(data, "error");
+	if (json_is_object_value(data)) {
+		err = json_member_ci(data, "error");
 		if (err) {
-			cJSON *details;
+			struct json *details;
 
-			msg = cJSON_IsString(err) ? err->valuestring : "tool failed";
+			msg = json_is_string_value(err) ? json_string_value(err) : "tool failed";
 			tool_result_clear(result);
-			result->envelope = cJSON_CreateObject();
+			result->envelope = json_object();
 			details = data;
 			data = NULL;
-			err = cJSON_CreateObject();
+			err = json_object();
 			if (!result->envelope || !err)
 				goto oom_error;
-			if (!cJSON_AddBoolToObject(result->envelope, "ok", 0))
+			if (!json_add_bool(result->envelope, "ok", 0))
 				goto oom_error;
-			if (!cJSON_AddStringToObject(err, "code", "tool_failed"))
+			if (!json_add_string(err, "code", "tool_failed"))
 				goto oom_error;
-			if (!cJSON_AddStringToObject(err, "message", msg))
+			if (!json_add_string(err, "message", msg))
 				goto oom_error;
 			if (tool_result_add_owned(err, "details", details) != 0) {
 				details = NULL;
@@ -249,8 +306,8 @@ int tool_result_success_json_text(struct tool_result *result, char *json)
 			return 0;
 
 		oom_error:
-			cJSON_Delete(details);
-			cJSON_Delete(err);
+			json_free(details);
+			json_free(err);
 			tool_result_clear(result);
 			return -ENOMEM;
 		}
@@ -261,41 +318,43 @@ int tool_result_success_json_text(struct tool_result *result, char *json)
 
 int tool_result_error(struct tool_result *result, const char *code, const char *message)
 {
-	cJSON *details;
-	cJSON *err;
+	struct json *envelope;
+	struct json *details;
+	struct json *err;
+	int rc = -ENOMEM;
 
 	if (!result)
 		return -EINVAL;
-	tool_result_clear(result);
-	result->envelope = cJSON_CreateObject();
-	err = cJSON_CreateObject();
-	details = cJSON_CreateObject();
-	if (!result->envelope || !err)
-		goto oom;
+	envelope = json_object();
+	err = json_object();
+	details = json_object();
+	if (!envelope || !err)
+		goto out_free_error;
 	if (!details)
-		goto oom;
-	if (!cJSON_AddBoolToObject(result->envelope, "ok", 0))
-		goto oom;
-	if (!cJSON_AddStringToObject(err, "code", code ? code : "tool_failed"))
-		goto oom;
-	if (!cJSON_AddStringToObject(err, "message", message ? message : ""))
-		goto oom;
-	if (tool_result_add_owned(err, "details", details) != 0) {
-		details = NULL;
-		goto oom;
-	}
+		goto out_free_error;
+	if (!json_add_bool(envelope, "ok", 0))
+		goto out_free_error;
+	if (!json_add_string(err, "code", code ? code : "tool_failed"))
+		goto out_free_error;
+	if (!json_add_string(err, "message", message ? message : ""))
+		goto out_free_error;
+	rc = json_object_add(err, "details", details);
+	if (rc != 0)
+		goto out_free_error;
 	details = NULL;
-	if (tool_result_add_owned(result->envelope, "error", err) != 0) {
-		err = NULL;
-		goto oom;
-	}
+	rc = json_object_add(envelope, "error", err);
+	if (rc != 0)
+		goto out_free_error;
+	/* The new envelope owns copies before borrowed old-result strings expire. */
+	tool_result_clear(result);
+	result->envelope = envelope;
 	return 0;
 
-oom:
-	cJSON_Delete(details);
-	cJSON_Delete(err);
-	tool_result_clear(result);
-	return -ENOMEM;
+out_free_error:
+	json_free(details);
+	json_free(err);
+	json_free(envelope);
+	return rc;
 }
 
 int tool_result_errorf(struct tool_result *result, const char *code, const char *fmt, ...)
@@ -321,12 +380,12 @@ int tool_result_errorf(struct tool_result *result, const char *code, const char 
 	return rc;
 }
 
-static cJSON *tool_result_detach_or_object(cJSON **slot)
+static struct json *tool_result_detach_or_object(struct json **slot)
 {
-	cJSON *value;
+	struct json *value;
 
 	if (!slot || !*slot)
-		return cJSON_CreateObject();
+		return json_object();
 	value = *slot;
 	*slot = NULL;
 	return value;
@@ -334,20 +393,20 @@ static cJSON *tool_result_detach_or_object(cJSON **slot)
 
 int tool_result_finalize(struct tool_result *result)
 {
-	cJSON *artifacts;
-	cJSON *data;
-	cJSON *dup;
-	cJSON *item;
+	struct json *artifacts;
+	struct json *data;
+	struct json *dup;
+	struct json *item;
 	char *json;
 
 	if (!result)
 		return -EINVAL;
 
 	if (!result->envelope) {
-		result->envelope = cJSON_CreateObject();
+		result->envelope = json_object();
 		if (!result->envelope)
 			return -ENOMEM;
-		if (!cJSON_AddBoolToObject(result->envelope, "ok", 1))
+		if (!json_add_bool(result->envelope, "ok", 1))
 			goto oom;
 		item = tool_result_detach_or_object(&result->data);
 		if (tool_result_add_owned(result->envelope, "data", item) != 0)
@@ -356,52 +415,51 @@ int tool_result_finalize(struct tool_result *result)
 	artifacts = tool_artifact_list_to_json(&result->artifacts);
 	if (!artifacts)
 		return -ENOMEM;
-	item = cJSON_GetObjectItem(result->envelope, "artifacts");
+	item = json_member_ci(result->envelope, "artifacts");
 	if (item) {
-		cJSON_DeleteItemFromObject(result->envelope, "artifacts");
+		json_object_remove_ci(result->envelope, "artifacts");
 	}
 	if (tool_result_add_owned(result->envelope, "artifacts", artifacts) != 0)
 		goto oom;
-	if (!cJSON_GetObjectItem(result->envelope, "ui")) {
+	if (!json_member_ci(result->envelope, "ui")) {
 		if (result->ui) {
 			item = result->ui;
 			result->ui = NULL;
 			if (tool_result_add_owned(result->envelope, "ui", item) != 0)
 				goto oom;
 		} else {
-			if (!cJSON_AddNullToObject(result->envelope, "ui"))
+			if (!json_add_null(result->envelope, "ui"))
 				goto oom;
 		}
 	}
-	if (!cJSON_GetObjectItem(result->envelope, "meta")) {
+	if (!json_member_ci(result->envelope, "meta")) {
 		item = tool_result_detach_or_object(&result->meta);
 		if (tool_result_add_owned(result->envelope, "meta", item) != 0)
 			goto oom;
 	}
 
-	result->data = cJSON_GetObjectItem(result->envelope, "data");
-	result->ui = cJSON_GetObjectItem(result->envelope, "ui");
-	result->meta = cJSON_GetObjectItem(result->envelope, "meta");
+	result->data = json_member_ci(result->envelope, "data");
+	result->ui = json_member_ci(result->envelope, "ui");
+	result->meta = json_member_ci(result->envelope, "meta");
 
-	data = cJSON_GetObjectItem(result->envelope, "data");
-	if (cJSON_IsObject(data)) {
-		cJSON_ArrayForEach(item, data)
-		{
-			if (!item->string || cJSON_GetObjectItem(result->envelope, item->string))
+	data = json_member_ci(result->envelope, "data");
+	if (json_is_object_value(data)) {
+		json_foreach (item, data) {
+			if (!json_key(item) || json_member_ci(result->envelope, json_key(item)))
 				continue;
-			if (cJSON_IsArray(item) || cJSON_IsObject(item))
+			if (json_is_array_value(item) || json_is_object_value(item))
 				continue;
-			dup = cJSON_Duplicate(item, 1);
+			dup = json_clone(item, 1);
 			if (!dup)
 				goto oom;
-			if (!cJSON_AddItemToObject(result->envelope, item->string, dup)) {
-				cJSON_Delete(dup);
+			if (json_object_add(result->envelope, json_key(item), dup) != 0) {
+				json_free(dup);
 				goto oom;
 			}
 		}
 	}
 
-	json = cJSON_PrintUnformatted(result->envelope);
+	json = json_stringify(result->envelope);
 	return tool_result_set_owned_text(result, json);
 
 oom:
@@ -446,39 +504,38 @@ int tool_result_add_video(struct tool_result *result, const char *path, int dura
 	return 0;
 }
 
-int tool_result_take_artifacts(struct tool_result *result, cJSON *artifacts)
+int tool_result_take_artifacts(struct tool_result *result, struct json *artifacts)
 {
-	cJSON *item;
+	struct json *item;
 
 	if (!result)
 		return -EINVAL;
 	if (!artifacts)
 		return -ENOMEM;
 	memset(&result->artifacts, 0, sizeof(result->artifacts));
-	if (cJSON_IsArray(artifacts)) {
-		cJSON_ArrayForEach(item, artifacts)
-		{
-			cJSON *kind = cJSON_GetObjectItem(item, "kind");
-			cJSON *path = cJSON_GetObjectItem(item, "path");
-			if (!cJSON_IsString(path))
-				path = cJSON_GetObjectItem(item, "output_path");
-			if (cJSON_IsString(path) && path->valuestring) {
+	if (json_is_array_value(artifacts)) {
+		json_foreach (item, artifacts) {
+			struct json *kind = json_member_ci(item, "kind");
+			struct json *path = json_member_ci(item, "path");
+			if (!json_is_string_value(path))
+				path = json_member_ci(item, "output_path");
+			if (json_is_string_value(path) && json_string_value(path)) {
 				(void)tool_result_add_artifact(
-				    result,
-				    tool_artifact_kind_from_string(cJSON_GetStringValue(kind)),
-				    path->valuestring);
+					result,
+					tool_artifact_kind_from_string(json_string_value(kind)),
+					json_string_value(path));
 			}
 		}
-	} else if (cJSON_IsObject(artifacts)) {
-		cJSON *kind = cJSON_GetObjectItem(artifacts, "kind");
-		cJSON *path = cJSON_GetObjectItem(artifacts, "path");
-		if (!cJSON_IsString(path))
-			path = cJSON_GetObjectItem(artifacts, "output_path");
-		if (cJSON_IsString(path) && path->valuestring)
+	} else if (json_is_object_value(artifacts)) {
+		struct json *kind = json_member_ci(artifacts, "kind");
+		struct json *path = json_member_ci(artifacts, "path");
+		if (!json_is_string_value(path))
+			path = json_member_ci(artifacts, "output_path");
+		if (json_is_string_value(path) && json_string_value(path))
 			(void)tool_result_add_artifact(
-			    result, tool_artifact_kind_from_string(cJSON_GetStringValue(kind)),
-			    path->valuestring);
+				result, tool_artifact_kind_from_string(json_string_value(kind)),
+				json_string_value(path));
 	}
-	cJSON_Delete(artifacts);
+	json_free(artifacts);
 	return 0;
 }

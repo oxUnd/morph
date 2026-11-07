@@ -1,7 +1,7 @@
 #include "sapi/cli/pages/question.h"
 #include "sapi/cli/adapters/input/state.h"
 #include "agent/tools/ask_user.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "sapi/cli/adapters/input/reader.h"
 #include "sapi/cli/adapters/input/cancel.h"
 #include "sapi/cli/presentation/presenter.h"
@@ -88,32 +88,34 @@ struct cli_question_ask_user_validation {
 	int max_choices;
 };
 
-static int cli_question_validate_ask_user_response(const cJSON *response_data, void *user_data)
+static int cli_question_validate_ask_user_response(const struct json *response_data,
+						   void *user_data)
 {
 	struct cli_question_ask_user_validation *validation = user_data;
-	cJSON *answers;
+	struct json *answers;
 	int count;
 
-	if (!validation || !cJSON_IsObject(response_data))
+	if (!validation || !json_is_object_value(response_data))
 		return MORPH_ERR_PROTOCOL;
-	answers = cJSON_GetObjectItemCaseSensitive(response_data, "answers");
-	if (!cJSON_IsArray(answers))
+	answers = json_member(response_data, "answers");
+	if (!json_is_array_value(answers))
 		return MORPH_ERR_PROTOCOL;
-	count = cJSON_GetArraySize(answers);
+	count = json_count(answers);
 	if (count < validation->min_choices || count > 64 ||
 	    (validation->max_choices > 0 && count > validation->max_choices) ||
 	    ((!validation->selection_mode || strcmp(validation->selection_mode, "multi") != 0) &&
 	     count > 1))
 		return -EINVAL;
 	for (int i = 0; i < count; i++) {
-		cJSON *answer = cJSON_GetArrayItem(answers, i);
+		struct json *answer = json_at(answers, i);
 
-		if (!cJSON_IsString(answer) || !answer->valuestring || !answer->valuestring[0])
+		if (!json_is_string_value(answer) || !json_string_value(answer) ||
+		    !json_string_value(answer)[0])
 			return MORPH_ERR_PROTOCOL;
 		for (int j = 0; j < i; j++) {
-			cJSON *previous = cJSON_GetArrayItem(answers, j);
+			struct json *previous = json_at(answers, j);
 
-			if (strcmp(answer->valuestring, previous->valuestring) == 0)
+			if (strcmp(json_string_value(answer), json_string_value(previous)) == 0)
 				return -EINVAL;
 		}
 	}
@@ -127,44 +129,55 @@ static int cli_question_json_ask_user(struct cli_application *ctx, const char *q
 				      int *answers_count)
 {
 	struct cli_question_ask_user_validation validation;
-	cJSON *request;
-	cJSON *choices_json;
-	cJSON *response = NULL;
-	cJSON *items;
+	struct json *request;
+	struct json *choices_json;
+	struct json *response = NULL;
+	struct json *items;
 	const char *values[64] = {0};
 	int count;
 	int rc;
 
-	request = cJSON_CreateObject();
-	choices_json = cJSON_CreateArray();
+	request = json_object();
+	choices_json = json_array();
 	if (!request || !choices_json) {
-		cJSON_Delete(request);
-		cJSON_Delete(choices_json);
+		json_free(request);
+		json_free(choices_json);
 		return -ENOMEM;
 	}
-	if (!cJSON_AddStringToObject(request, "question", question ? question : "") ||
-	    !cJSON_AddStringToObject(request, "selection_mode",
-				     selection_mode ? selection_mode : "single") ||
-	    !cJSON_AddNumberToObject(request, "min_choices", min_choices) ||
-	    !cJSON_AddNumberToObject(request, "max_choices", max_choices)) {
-		cJSON_Delete(choices_json);
-		cJSON_Delete(request);
+	if (!json_add_string(request, "question", question ? question : "") ||
+	    !json_add_string(request, "selection_mode",
+			     selection_mode ? selection_mode : "single") ||
+	    !json_add_number(request, "min_choices", min_choices) ||
+	    !json_add_number(request, "max_choices", max_choices)) {
+		json_free(choices_json);
+		json_free(request);
 		return -ENOMEM;
 	}
 	for (int i = 0; i < choices_count; i++) {
-		cJSON *choice = cJSON_CreateString(choices[i] ? choices[i] : "");
+		struct json *choice = json_string(choices[i] ? choices[i] : "");
 
 		if (!choice) {
-			cJSON_Delete(choices_json);
-			cJSON_Delete(request);
+			json_free(choices_json);
+			json_free(request);
 			return -ENOMEM;
 		}
-		cJSON_AddItemToArray(choices_json, choice);
+		rc = json_array_add(choices_json, choice);
+		if (rc) {
+			json_free(choice);
+			json_free(choices_json);
+			json_free(request);
+			return rc;
+		}
 	}
-	cJSON_AddItemToObject(request, "choices", choices_json);
+	rc = json_object_add(request, "choices", choices_json);
+	if (rc) {
+		json_free(choices_json);
+		json_free(request);
+		return rc;
+	}
 	rc = ask_user_options_to_json(request, options);
 	if (rc) {
-		cJSON_Delete(request);
+		json_free(request);
 		return rc;
 	}
 	validation = (struct cli_question_ask_user_validation){
@@ -175,15 +188,15 @@ static int cli_question_json_ask_user(struct cli_application *ctx, const char *q
 	rc = cli_interaction_request(ctx, "ask_user", request,
 				     cli_question_validate_ask_user_response, &validation,
 				     &response);
-	cJSON_Delete(request);
+	json_free(request);
 	if (rc != 0)
 		return rc;
-	items = cJSON_GetObjectItemCaseSensitive(response, "answers");
-	count = cJSON_GetArraySize(items);
+	items = json_member(response, "answers");
+	count = json_count(items);
 	for (int i = 0; i < count; i++)
-		values[i] = cJSON_GetStringValue(cJSON_GetArrayItem(items, i));
+		values[i] = json_string_value(json_at(items, i));
 	rc = cli_question_set_ask_user_answers(answers, answers_count, values, count);
-	cJSON_Delete(response);
+	json_free(response);
 	return rc;
 }
 

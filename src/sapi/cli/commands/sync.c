@@ -1,6 +1,6 @@
 #include "sapi/cli/commands/sync.h"
 #include "agent/plan.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
@@ -219,19 +219,19 @@ static int cli_sync_confirm_db_replace(struct cli_application *ctx, const char *
 	FILE *tty;
 
 	if (ctx && ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
-		cJSON *request = cJSON_CreateObject();
+		struct json *request = json_object();
 		int confirmed = 0;
 		int rc;
 
 		if (!request)
 			return 0;
-		if (!cJSON_AddStringToObject(request, "action", "replace_database") ||
-		    !cJSON_AddStringToObject(request, "path", path ? path : "")) {
-			cJSON_Delete(request);
+		if (!json_add_string(request, "action", "replace_database") ||
+		    !json_add_string(request, "path", path ? path : "")) {
+			json_free(request);
 			return 0;
 		}
 		rc = cli_interaction_confirm(ctx, "command_confirmation", request, &confirmed);
-		cJSON_Delete(request);
+		json_free(request);
 		return rc == 0 && confirmed;
 	}
 
