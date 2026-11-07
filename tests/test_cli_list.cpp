@@ -104,9 +104,9 @@ static void resume_terminal_pick(struct cli_application *context, const char *ke
 	EXPECT_NE(output.find("SESSION"), std::string::npos);
 }
 
-static std::vector<cJSON *> cli_test_parse_ndjson(const std::string &output)
+static std::vector<struct json *> cli_test_parse_ndjson(const std::string &output)
 {
-	std::vector<cJSON *> events;
+	std::vector<struct json *> events;
 	size_t start = 0;
 
 	while (start < output.size()) {
@@ -115,7 +115,7 @@ static std::vector<cJSON *> cli_test_parse_ndjson(const std::string &output)
 			end == std::string::npos ? std::string::npos : end - start);
 
 		if (!line.empty())
-			events.push_back(cJSON_Parse(line.c_str()));
+			events.push_back(json_parse_prefix(line.c_str(), NULL, NULL));
 		if (end == std::string::npos)
 			break;
 		start = end + 1;
@@ -123,10 +123,10 @@ static std::vector<cJSON *> cli_test_parse_ndjson(const std::string &output)
 	return events;
 }
 
-static void cli_test_delete_events(std::vector<cJSON *> &events)
+static void cli_test_delete_events(std::vector<struct json *> &events)
 {
-	for (cJSON *event : events)
-		cJSON_Delete(event);
+	for (struct json *event : events)
+		json_free(event);
 	events.clear();
 }
 
@@ -469,22 +469,18 @@ TEST(CliListTest, JsonModeWrapsHelpAsCommandEvents)
 	testing::internal::CaptureStdout();
 	int rc = cli_command_dispatch(&context, "/help");
 	std::string output = testing::internal::GetCapturedStdout();
-	std::vector<cJSON *> events = cli_test_parse_ndjson(output);
+	std::vector<struct json *> events = cli_test_parse_ndjson(output);
 
 	ASSERT_EQ(rc, 0);
 	ASSERT_EQ(events.size(), 2u);
 	ASSERT_NE(events[0], nullptr);
 	ASSERT_NE(events[1], nullptr);
-	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
-		events[0], "type")), "command");
-	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
-		events[0], "name")), "command.started");
-	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
-		events[1], "name")), "command.completed");
-	cJSON *data = cJSON_GetObjectItem(events[1], "data");
-	ASSERT_TRUE(cJSON_IsObject(data));
-	const char *captured = cJSON_GetStringValue(
-		cJSON_GetObjectItem(data, "output"));
+	EXPECT_STREQ(json_string_value(json_member_ci(events[0], "type")), "command");
+	EXPECT_STREQ(json_string_value(json_member_ci(events[0], "name")), "command.started");
+	EXPECT_STREQ(json_string_value(json_member_ci(events[1], "name")), "command.completed");
+	struct json *data = json_member_ci(events[1], "data");
+	ASSERT_TRUE(json_is_object_value(data));
+	const char *captured = json_string_value(json_member_ci(data, "output"));
 	ASSERT_NE(captured, nullptr);
 	EXPECT_NE(std::string(captured).find("Commands"), std::string::npos);
 	EXPECT_EQ(output.find("\033"), std::string::npos);
@@ -504,20 +500,17 @@ TEST(CliListTest, JsonModeReportsUnknownCommandWithoutBareText)
 	testing::internal::CaptureStdout();
 	int rc = cli_command_dispatch(&context, "/does-not-exist");
 	std::string output = testing::internal::GetCapturedStdout();
-	std::vector<cJSON *> events = cli_test_parse_ndjson(output);
+	std::vector<struct json *> events = cli_test_parse_ndjson(output);
 
 	ASSERT_EQ(rc, -ENOENT);
 	ASSERT_EQ(events.size(), 2u);
 	ASSERT_NE(events[0], nullptr);
 	ASSERT_NE(events[1], nullptr);
-	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
-		events[1], "name")), "command.failed");
-	cJSON *data = cJSON_GetObjectItem(events[1], "data");
-	ASSERT_TRUE(cJSON_IsObject(data));
-	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(
-		data, "error_code")), -ENOENT);
-	const char *captured = cJSON_GetStringValue(
-		cJSON_GetObjectItem(data, "output"));
+	EXPECT_STREQ(json_string_value(json_member_ci(events[1], "name")), "command.failed");
+	struct json *data = json_member_ci(events[1], "data");
+	ASSERT_TRUE(json_is_object_value(data));
+	EXPECT_EQ(json_number_value(json_member_ci(data, "error_code")), -ENOENT);
+	const char *captured = json_string_value(json_member_ci(data, "output"));
 	ASSERT_NE(captured, nullptr);
 	EXPECT_NE(std::string(captured).find("unknown command"),
 		  std::string::npos);

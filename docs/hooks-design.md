@@ -340,7 +340,7 @@ existing runtime independently of SessionEnd.
 Introduce `morph-hooks` under `src/hooks/`, linked by `morph-runtime`.
 Agent code sees an injected callback and typed result, avoiding an agent to
 runtime dependency. The runtime owns immutable hook definitions and process
-resources. Use arena allocation, morph_buf, morph_array, and cJSON.
+resources. Use arena allocation, morph_buf, morph_array, and the shared util/json module.
 
 Initiate hook dispatch on the ReAct owner thread, before worker launch and after
 worker join. Launch matching command handlers concurrently, then aggregate their

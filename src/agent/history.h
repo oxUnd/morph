@@ -53,10 +53,11 @@ int agent_history_record_tool_result(struct react_context *ctx,
 				     const char *tool_name,
 				     const char *content,
 				     int error_code);
-int agent_history_record_tool_result_ex(struct react_context *ctx,
-	const char *tool_call_id, const char *provider_call_id,
-	const char *tool_name, const char *content, int error_code,
-	const struct tool_artifact_list *artifacts, const cJSON *tool_meta);
+int agent_history_record_tool_result_ex(struct react_context *ctx, const char *tool_call_id,
+					const char *provider_call_id, const char *tool_name,
+					const char *content, int error_code,
+					const struct tool_artifact_list *artifacts,
+					const struct json *tool_meta);
 int agent_history_prepare_tool_content(struct react_context *ctx,
 	const char *content, char **prepared, int *truncated);
 int agent_history_maybe_compact(struct react_context *ctx);

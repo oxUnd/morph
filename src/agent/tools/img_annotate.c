@@ -6,7 +6,7 @@
 #include "util/file.h"
 #include "util/buf.h"
 #include "util/error.h"
-#include "cJSON.h"
+#include "util/json.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -99,7 +99,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 	}
 
 	{
-		cJSON *root = cJSON_Parse(args_json);
+		struct json *root = json_parse_prefix(args_json, NULL, NULL);
 
 		if (!root) {
 			(void)tool_result_success_json_text(result, strdup(
@@ -111,17 +111,17 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		 * Accept either "paths" (array of strings) or
 		 * "path" (single string, backward-compatible).
 		 */
-		cJSON *arr = cJSON_GetObjectItem(root, "paths");
-		if (cJSON_IsArray(arr)) {
-			int sz = cJSON_GetArraySize(arr);
+		struct json *arr = json_member_ci(root, "paths");
+		if (json_is_array_value(arr)) {
+			int sz = json_count(arr);
 			if (sz <= 0) {
-				cJSON_Delete(root);
+				json_free(root);
 				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"'paths' array is empty\"}"));
 				return -EINVAL;
 			}
 			if (sz > MAX_IMAGES) {
-				cJSON_Delete(root);
+				json_free(root);
 				char err[128];
 				snprintf(err, sizeof(err),
 					 "{\"error\":\"too many images "
@@ -130,11 +130,10 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 				return -EINVAL;
 			}
 			for (i = 0; i < sz; i++) {
-				cJSON *item = cJSON_GetArrayItem(arr, i);
-				if (!cJSON_IsString(item) ||
-				    !item->valuestring ||
-				    !item->valuestring[0]) {
-					cJSON_Delete(root);
+				struct json *item = json_at(arr, i);
+				if (!json_is_string_value(item) || !json_string_value(item) ||
+				    !json_string_value(item)[0]) {
+					json_free(root);
 					for (int j = 0; j < npaths; j++)
 						free(paths[j]);
 					(void)tool_result_success_json_text(result, strdup(
@@ -142,13 +141,13 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 						"invalid entry\"}"));
 					return -EINVAL;
 				}
-				paths[npaths++] = strdup(item->valuestring);
+				paths[npaths++] = strdup(json_string_value(item));
 			}
 		} else {
-			cJSON *p = cJSON_GetObjectItem(root, "path");
-			if (!cJSON_IsString(p) || !p->valuestring ||
-			    !p->valuestring[0]) {
-				cJSON_Delete(root);
+			struct json *p = json_member_ci(root, "path");
+			if (!json_is_string_value(p) || !json_string_value(p) ||
+			    !json_string_value(p)[0]) {
+				json_free(root);
 				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"missing 'path' or "
 					"'paths' parameter. "
@@ -158,9 +157,9 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 					"[\\\"a.jpg\\\",\\\"b.jpg\\\"]})\"}"));
 				return -EINVAL;
 			}
-			paths[npaths++] = strdup(p->valuestring);
+			paths[npaths++] = strdup(json_string_value(p));
 		}
-		cJSON_Delete(root);
+		json_free(root);
 	}
 
 	for (i = 0; i < npaths; i++) {
@@ -386,7 +385,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		 * it in an error envelope.
 		 */
 		{
-			cJSON *root = cJSON_Parse(buf.data);
+			struct json *root = json_parse_prefix(buf.data, NULL, NULL);
 
 			if (root) {
 				/*
@@ -398,38 +397,28 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 				 * structured plan the LLM can use for
 				 * image generation.
 				 */
-				cJSON *arrows = cJSON_GetObjectItem(
-							root, "arrows");
-				if (cJSON_IsArray(arrows) &&
-				    cJSON_GetArraySize(arrows) > 0) {
+				struct json *arrows = json_member_ci(root, "arrows");
+				if (json_is_array_value(arrows) && json_count(arrows) > 0) {
 					int to_count[MAX_IMAGES] = {0};
 					int nimages = 0;
 					int main_idx = -1;
 					int max_count = 0;
 					int ai;
 
-					cJSON *imgs = cJSON_GetObjectItem(
-							root, "images");
-					if (cJSON_IsArray(imgs))
-						nimages = cJSON_GetArraySize(
-								imgs);
+					struct json *imgs = json_member_ci(root, "images");
+					if (json_is_array_value(imgs))
+						nimages = json_count(imgs);
 
-					for (ai = 0;
-					     ai < cJSON_GetArraySize(arrows);
-					     ai++) {
-						cJSON *a = cJSON_GetArrayItem(
-								arrows, ai);
-						cJSON *to = cJSON_GetObjectItem(
-								a, "to");
+					for (ai = 0; ai < json_count(arrows); ai++) {
+						struct json *a = json_at(arrows, ai);
+						struct json *to = json_member_ci(a, "to");
 						if (!to) continue;
-						cJSON *ti = cJSON_GetObjectItem(
-								to,
-								"image_index");
-						if (cJSON_IsNumber(ti) &&
-						    ti->valueint >= 0 &&
-						    ti->valueint < nimages &&
-						    ti->valueint < MAX_IMAGES)
-							to_count[ti->valueint]++;
+						struct json *ti = json_member_ci(to, "image_index");
+						if (json_is_number_value(ti) &&
+						    json_int_value(ti) >= 0 &&
+						    json_int_value(ti) < nimages &&
+						    json_int_value(ti) < MAX_IMAGES)
+							to_count[json_int_value(ti)]++;
 					}
 
 					for (ai = 0;
@@ -442,145 +431,122 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 					}
 
 					if (main_idx >= 0 && max_count > 0) {
-						cJSON *plan = cJSON_CreateObject();
-						cJSON *sources = cJSON_CreateArray();
-						cJSON *mbboxes = cJSON_CreateArray();
+						struct json *plan = json_object();
+						struct json *sources = json_array();
+						struct json *mbboxes = json_array();
 
-						cJSON_AddNumberToObject(plan,
-							"main_image_index",
-							main_idx);
+						json_add_number(plan, "main_image_index", main_idx);
 
-						cJSON *mi = cJSON_GetArrayItem(
-								imgs,
-								main_idx);
+						struct json *mi = json_at(imgs, main_idx);
 						if (mi) {
-							cJSON *mp = cJSON_GetObjectItem(
-								mi, "path");
-							if (mp &&
-							    cJSON_IsString(mp))
-								cJSON_AddStringToObject(
-									plan,
-									"main_image_path",
-									mp->valuestring);
+							struct json *mp =
+								json_member_ci(mi, "path");
+							if (mp && json_is_string_value(mp))
+								json_add_string(
+									plan, "main_image_path",
+									json_string_value(mp));
 						}
 
-						for (ai = 0;
-						     ai < cJSON_GetArraySize(arrows);
-						     ai++) {
-							cJSON *a = cJSON_GetArrayItem(
-									arrows, ai);
-							cJSON *to = cJSON_GetObjectItem(
-									a, "to");
-							cJSON *from = cJSON_GetObjectItem(
-									a, "from");
+						for (ai = 0; ai < json_count(arrows); ai++) {
+							struct json *a = json_at(arrows, ai);
+							struct json *to = json_member_ci(a, "to");
+							struct json *from =
+								json_member_ci(a, "from");
 							if (!to || !from)
 								continue;
-							cJSON *ti = cJSON_GetObjectItem(
-									to,
-									"image_index");
-							if (!cJSON_IsNumber(ti))
+							struct json *ti =
+								json_member_ci(to, "image_index");
+							if (!json_is_number_value(ti))
 								continue;
-							if (ti->valueint !=
-							    main_idx)
+							if (json_int_value(ti) != main_idx)
 								continue;
 
-							cJSON *src = cJSON_CreateObject();
-							cJSON *fi = cJSON_GetObjectItem(
-									from,
-									"image_index");
-							if (fi &&
-							    cJSON_IsNumber(fi)) {
-								cJSON_AddNumberToObject(
-									src,
-									"from_image_index",
-									fi->valueint);
-								cJSON *si = cJSON_GetArrayItem(
-										imgs,
-										fi->valueint);
+							struct json *src = json_object();
+							struct json *fi =
+								json_member_ci(from, "image_index");
+							if (fi && json_is_number_value(fi)) {
+								json_add_number(src,
+										"from_image_index",
+										json_int_value(fi));
+								struct json *si = json_at(
+									imgs, json_int_value(fi));
 								if (si) {
-									cJSON *sp = cJSON_GetObjectItem(
-										si, "path");
+									struct json *sp =
+										json_member_ci(
+											si, "path");
 									if (sp &&
-									    cJSON_IsString(sp))
-										cJSON_AddStringToObject(
+									    json_is_string_value(
+										    sp))
+										json_add_string(
 											src,
-											"from_image_path",
-											sp->valuestring);
+											"from_"
+											"image_"
+											"path",
+											json_string_value(
+												sp));
 								}
 							}
 
-							cJSON *fx = cJSON_GetObjectItem(
-									from, "x");
-							cJSON *fy = cJSON_GetObjectItem(
-									from, "y");
-							if (fx && cJSON_IsNumber(fx))
-								cJSON_AddNumberToObject(
+							struct json *fx = json_member_ci(from, "x");
+							struct json *fy = json_member_ci(from, "y");
+							if (fx && json_is_number_value(fx))
+								json_add_number(
 									src, "from_x",
-									fx->valuedouble);
-							if (fy && cJSON_IsNumber(fy))
-								cJSON_AddNumberToObject(
+									json_number_value(fx));
+							if (fy && json_is_number_value(fy))
+								json_add_number(
 									src, "from_y",
-									fy->valuedouble);
+									json_number_value(fy));
 
-							cJSON *tx = cJSON_GetObjectItem(
-									to, "x");
-							cJSON *ty = cJSON_GetObjectItem(
-									to, "y");
-							if (tx && cJSON_IsNumber(tx))
-								cJSON_AddNumberToObject(
+							struct json *tx = json_member_ci(to, "x");
+							struct json *ty = json_member_ci(to, "y");
+							if (tx && json_is_number_value(tx))
+								json_add_number(
 									src, "to_x",
-									tx->valuedouble);
-							if (ty && cJSON_IsNumber(ty))
-								cJSON_AddNumberToObject(
+									json_number_value(tx));
+							if (ty && json_is_number_value(ty))
+								json_add_number(
 									src, "to_y",
-									ty->valuedouble);
+									json_number_value(ty));
 
-							cJSON *lbl = cJSON_GetObjectItem(
-									a, "label");
-							if (lbl &&
-							    cJSON_IsString(lbl))
-								cJSON_AddStringToObject(
+							struct json *lbl =
+								json_member_ci(a, "label");
+							if (lbl && json_is_string_value(lbl))
+								json_add_string(
 									src, "label",
-									lbl->valuestring);
+									json_string_value(lbl));
 
-							cJSON_AddItemToArray(sources, src);
+							json_array_add(sources, src);
 						}
 
-						cJSON_AddItemToObject(plan,
-							"sources", sources);
+						json_object_add(plan, "sources", sources);
 
-						cJSON *bboxes = cJSON_GetObjectItem(
-									root,
-									"bboxes");
-						if (cJSON_IsArray(bboxes)) {
-							for (ai = 0;
-							     ai < cJSON_GetArraySize(bboxes);
+						struct json *bboxes =
+							json_member_ci(root, "bboxes");
+						if (json_is_array_value(bboxes)) {
+							for (ai = 0; ai < json_count(bboxes);
 							     ai++) {
-								cJSON *b = cJSON_GetArrayItem(
-										bboxes, ai);
-								cJSON *bi = cJSON_GetObjectItem(
-										b,
-										"image_index");
+								struct json *b =
+									json_at(bboxes, ai);
+								struct json *bi = json_member_ci(
+									b, "image_index");
 								if (bi &&
-								    cJSON_IsNumber(bi) &&
-								    bi->valueint == main_idx)
-									cJSON_AddItemToArray(
+								    json_is_number_value(bi) &&
+								    json_int_value(bi) == main_idx)
+									json_array_add(
 										mbboxes,
-										cJSON_Duplicate(b, 1));
+										json_clone(b, 1));
 							}
 						}
-						cJSON_AddItemToObject(plan,
-							"main_bboxes", mbboxes);
+						json_object_add(plan, "main_bboxes", mbboxes);
 
-						cJSON_AddItemToObject(root,
-							"compositing_plan",
-							plan);
+						json_object_add(root, "compositing_plan", plan);
 					}
 				}
 
 				{
-					char *out = cJSON_PrintUnformatted(root);
-					cJSON_Delete(root);
+					char *out = json_stringify(root);
+					json_free(root);
 					morph_buf_cleanup(&buf);
 					(void)tool_result_success_json_text(result, out);
 				}
@@ -596,15 +562,15 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		 * can see what happened.
 		 */
 		{
-			cJSON *out = cJSON_CreateObject();
+			struct json *out = json_object();
 			char *tmp_str;
 
-			cJSON_AddStringToObject(out, "error",
-						"editor output was not "
-						"valid JSON");
-			cJSON_AddStringToObject(out, "raw_output", buf.data);
-			tmp_str = cJSON_PrintUnformatted(out);
-			cJSON_Delete(out);
+			json_add_string(out, "error",
+					"editor output was not "
+					"valid JSON");
+			json_add_string(out, "raw_output", buf.data);
+			tmp_str = json_stringify(out);
+			json_free(out);
 			morph_buf_cleanup(&buf);
 			free(editor_path);
 			for (i = 0; i < npaths; i++)

@@ -13,7 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "cJSON.h"
+#include "util/json.h"
 
 void handle_post_action(request_t *r)
 {
@@ -37,27 +37,27 @@ void handle_post_action(request_t *r)
 		}
 	}
 
-	cJSON *root = cJSON_Parse(body ? body : "{}");
-	if (!cJSON_IsObject(root)) {
-		cJSON_Delete(root);
+	struct json *root = json_parse_prefix(body ? body : "{}", NULL, NULL);
+	if (!json_is_object_value(root)) {
+		json_free(root);
 		free(body);
 		reply_400(r, "invalid json");
 		return;
 	}
-	cJSON *type_j = cJSON_GetObjectItem(root, "type");
-	cJSON *payload_j = cJSON_GetObjectItem(root, "payload");
-	const char *type = cJSON_IsString(type_j) ? type_j->valuestring : NULL;
+	struct json *type_j = json_member_ci(root, "type");
+	struct json *payload_j = json_member_ci(root, "payload");
+	const char *type = json_is_string_value(type_j) ? json_string_value(type_j) : NULL;
 	if (!type || !*type) {
-		cJSON_Delete(root);
+		json_free(root);
 		free(body);
 		reply_400(r, "missing type");
 		return;
 	}
 
-	char *payload_txt = payload_j ? cJSON_PrintUnformatted(payload_j) : strdup("{}");
+	char *payload_txt = payload_j ? json_stringify(payload_j) : strdup("{}");
 	int rc = actions_enqueue(r->store, sid, type, payload_txt);
 	free(payload_txt);
-	cJSON_Delete(root);
+	json_free(root);
 	free(body);
 	if (rc != 0) {
 		reply_500(r, "enqueue failed");

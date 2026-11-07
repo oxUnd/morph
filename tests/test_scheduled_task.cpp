@@ -5,7 +5,7 @@
 #include "agent/tool.h"
 #include "agent/tools/scheduled_tasks.h"
 #include "event/event.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <climits>
 #include <atomic>
 #include <cstdio>
@@ -53,24 +53,24 @@ static int watch_runner(const struct scheduled_task *task,
 	return 0;
 }
 
-static cJSON *event_at(struct morph_event_recorder *rec, size_t index)
+static struct json *event_at(struct morph_event_recorder *rec, size_t index)
 {
 	const char *json = morph_event_recorder_get(rec, index);
 
 	if (!json)
 		return nullptr;
-	return cJSON_Parse(json);
+	return json_parse_prefix(json, NULL, NULL);
 }
 
 static void expect_event_name(struct morph_event_recorder *rec, size_t index,
 			      const char *name)
 {
-	cJSON *root = event_at(rec, index);
+	struct json *root = event_at(rec, index);
 
 	ASSERT_NE(root, nullptr);
-	ASSERT_TRUE(cJSON_IsString(cJSON_GetObjectItem(root, "name")));
-	EXPECT_STREQ(name, cJSON_GetObjectItem(root, "name")->valuestring);
-	cJSON_Delete(root);
+	ASSERT_TRUE(json_is_string_value(json_member_ci(root, "name")));
+	EXPECT_STREQ(name, json_string_value(json_member_ci(root, "name")));
+	json_free(root);
 }
 
 class ScheduledTaskTest : public ::testing::Test {
@@ -225,8 +225,8 @@ TEST_F(ScheduledTaskTest, CreateUpdateCancelEmitTaskEvents) {
 	struct scheduled_task_event_sink events;
 	struct scheduled_task_input input = {};
 	struct scheduled_task task = {};
-	cJSON *root;
-	cJSON *data;
+	struct json *root;
+	struct json *data;
 	int64_t id;
 
 	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
@@ -259,18 +259,15 @@ TEST_F(ScheduledTaskTest, CreateUpdateCancelEmitTaskEvents) {
 
 	root = event_at(&rec, 2);
 	ASSERT_NE(root, nullptr);
-	EXPECT_STREQ("task", cJSON_GetObjectItem(root, "type")->valuestring);
-	EXPECT_STREQ("cancelled",
-		     cJSON_GetObjectItem(root, "phase")->valuestring);
-	data = cJSON_GetObjectItem(root, "data");
-	ASSERT_TRUE(cJSON_IsObject(data));
-	EXPECT_EQ(id, (int64_t)cJSON_GetObjectItem(data, "task_id")->valuedouble);
-	EXPECT_STREQ("cancelled",
-		     cJSON_GetObjectItem(data, "status")->valuestring);
-	EXPECT_EQ(-ECANCELED, cJSON_GetObjectItem(data, "error_code")->valueint);
-	EXPECT_STREQ("cancelled",
-		     cJSON_GetObjectItem(data, "reason")->valuestring);
-	cJSON_Delete(root);
+	EXPECT_STREQ("task", json_string_value(json_member_ci(root, "type")));
+	EXPECT_STREQ("cancelled", json_string_value(json_member_ci(root, "phase")));
+	data = json_member_ci(root, "data");
+	ASSERT_TRUE(json_is_object_value(data));
+	EXPECT_EQ(id, (int64_t)json_number_value(json_member_ci(data, "task_id")));
+	EXPECT_STREQ("cancelled", json_string_value(json_member_ci(data, "status")));
+	EXPECT_EQ(-ECANCELED, json_int_value(json_member_ci(data, "error_code")));
+	EXPECT_STREQ("cancelled", json_string_value(json_member_ci(data, "reason")));
+	json_free(root);
 	morph_event_recorder_cleanup(&rec);
 }
 
@@ -669,8 +666,8 @@ TEST_F(ScheduledTaskTest, ToolCreateDelaySecondsUsesTimeAnchor) {
 	struct tool_registry reg;
 	struct tool_result result;
 	struct scheduled_task task = {};
-	cJSON *root;
-	cJSON *id_item;
+	struct json *root;
+	struct json *id_item;
 	int64_t id;
 	const char *args =
 		"{\"op\":\"create\",\"title\":\"anchored reminder\","
@@ -683,12 +680,12 @@ TEST_F(ScheduledTaskTest, ToolCreateDelaySecondsUsesTimeAnchor) {
 	ASSERT_EQ(scheduled_tasks_tool_set_time_anchor(&reg, 1000), 0);
 	ASSERT_EQ(tool_exec(&reg, "tasks", args, &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
-	root = cJSON_Parse(result.text.data);
+	root = json_parse_prefix(result.text.data, NULL, NULL);
 	ASSERT_NE(root, nullptr);
-	id_item = cJSON_GetObjectItem(root, "id");
-	ASSERT_TRUE(cJSON_IsNumber(id_item));
-	id = (int64_t)id_item->valuedouble;
-	cJSON_Delete(root);
+	id_item = json_member_ci(root, "id");
+	ASSERT_TRUE(json_is_number_value(id_item));
+	id = (int64_t)json_number_value(id_item);
+	json_free(root);
 	ASSERT_EQ(scheduled_task_get(&db, id, &task), 0);
 	EXPECT_EQ(task.next_run_at, 1030);
 	ASSERT_NE(task.payload_json, nullptr);
@@ -753,8 +750,8 @@ TEST_F(ScheduledTaskTest, RunDueEmitsTaskLifecycleEvents) {
 	struct morph_event_recorder rec;
 	struct scheduled_task_event_sink events;
 	struct scheduled_task_input input = {};
-	cJSON *root;
-	cJSON *data;
+	struct json *root;
+	struct json *data;
 	int ran = 0;
 
 	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
@@ -781,16 +778,16 @@ TEST_F(ScheduledTaskTest, RunDueEmitsTaskLifecycleEvents) {
 
 	root = event_at(&rec, 3);
 	ASSERT_NE(root, nullptr);
-	EXPECT_STREQ("task", cJSON_GetObjectItem(root, "type")->valuestring);
-	EXPECT_STREQ("ready", cJSON_GetObjectItem(root, "phase")->valuestring);
-	data = cJSON_GetObjectItem(root, "data");
-	ASSERT_TRUE(cJSON_IsObject(data));
-	EXPECT_STREQ("waiting", cJSON_GetObjectItem(data, "status")->valuestring);
-	EXPECT_STREQ("interval", cJSON_GetObjectItem(data, "reason")->valuestring);
-	EXPECT_EQ(50, (int64_t)cJSON_GetObjectItem(data, "next_run_at")->valuedouble);
-	EXPECT_EQ(1, cJSON_GetObjectItem(data, "attempts")->valueint);
-	ASSERT_TRUE(cJSON_IsNumber(cJSON_GetObjectItem(data, "notification_id")));
-	cJSON_Delete(root);
+	EXPECT_STREQ("task", json_string_value(json_member_ci(root, "type")));
+	EXPECT_STREQ("ready", json_string_value(json_member_ci(root, "phase")));
+	data = json_member_ci(root, "data");
+	ASSERT_TRUE(json_is_object_value(data));
+	EXPECT_STREQ("waiting", json_string_value(json_member_ci(data, "status")));
+	EXPECT_STREQ("interval", json_string_value(json_member_ci(data, "reason")));
+	EXPECT_EQ(50, (int64_t)json_number_value(json_member_ci(data, "next_run_at")));
+	EXPECT_EQ(1, json_int_value(json_member_ci(data, "attempts")));
+	ASSERT_TRUE(json_is_number_value(json_member_ci(data, "notification_id")));
+	json_free(root);
 	morph_event_recorder_cleanup(&rec);
 }
 
@@ -798,8 +795,8 @@ TEST_F(ScheduledTaskTest, RunDueMaxAttemptsEmitsReasonAndErrorCode) {
 	struct morph_event_recorder rec;
 	struct scheduled_task_event_sink events;
 	struct scheduled_task_input input = {};
-	cJSON *root;
-	cJSON *data;
+	struct json *root;
+	struct json *data;
 	int ran = 0;
 
 	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
@@ -826,15 +823,14 @@ TEST_F(ScheduledTaskTest, RunDueMaxAttemptsEmitsReasonAndErrorCode) {
 
 	root = event_at(&rec, 3);
 	ASSERT_NE(root, nullptr);
-	EXPECT_STREQ("failed", cJSON_GetObjectItem(root, "phase")->valuestring);
-	data = cJSON_GetObjectItem(root, "data");
-	ASSERT_TRUE(cJSON_IsObject(data));
-	EXPECT_STREQ("failed", cJSON_GetObjectItem(data, "status")->valuestring);
-	EXPECT_STREQ("max_attempts",
-		     cJSON_GetObjectItem(data, "reason")->valuestring);
-	EXPECT_EQ(-EIO, cJSON_GetObjectItem(data, "error_code")->valueint);
-	EXPECT_EQ(1, cJSON_GetObjectItem(data, "attempts")->valueint);
-	EXPECT_EQ(1, cJSON_GetObjectItem(data, "max_attempts")->valueint);
-	cJSON_Delete(root);
+	EXPECT_STREQ("failed", json_string_value(json_member_ci(root, "phase")));
+	data = json_member_ci(root, "data");
+	ASSERT_TRUE(json_is_object_value(data));
+	EXPECT_STREQ("failed", json_string_value(json_member_ci(data, "status")));
+	EXPECT_STREQ("max_attempts", json_string_value(json_member_ci(data, "reason")));
+	EXPECT_EQ(-EIO, json_int_value(json_member_ci(data, "error_code")));
+	EXPECT_EQ(1, json_int_value(json_member_ci(data, "attempts")));
+	EXPECT_EQ(1, json_int_value(json_member_ci(data, "max_attempts")));
+	json_free(root);
 	morph_event_recorder_cleanup(&rec);
 }

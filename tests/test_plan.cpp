@@ -9,39 +9,39 @@
 #include <memory>
 #include <string>
 
-static std::string selected_plan_id(cJSON *data)
+static std::string selected_plan_id(struct json *data)
 {
-	cJSON *id = cJSON_GetObjectItem(data, "selected_plan_id");
-	if (!cJSON_IsString(id) || !id->valuestring)
+	struct json *id = json_member_ci(data, "selected_plan_id");
+	if (!json_is_string_value(id) || !json_string_value(id))
 		return "";
-	return id->valuestring;
+	return json_string_value(id);
 }
 
-static cJSON *find_plan_by_id(cJSON *data, const std::string &id)
+static struct json *find_plan_by_id(struct json *data, const std::string &id)
 {
-	cJSON *plans = cJSON_GetObjectItem(data, "plans");
-	if (!cJSON_IsArray(plans))
+	struct json *plans = json_member_ci(data, "plans");
+	if (!json_is_array_value(plans))
 		return nullptr;
-	int count = cJSON_GetArraySize(plans);
+	int count = json_count(plans);
 	for (int i = 0; i < count; i++) {
-		cJSON *plan = cJSON_GetArrayItem(plans, i);
-		cJSON *plan_id = cJSON_GetObjectItem(plan, "id");
-		if (cJSON_IsString(plan_id) && id == plan_id->valuestring)
+		struct json *plan = json_at(plans, i);
+		struct json *plan_id = json_member_ci(plan, "id");
+		if (json_is_string_value(plan_id) && id == json_string_value(plan_id))
 			return plan;
 	}
 	return nullptr;
 }
 
-static const char *first_step_status(cJSON *plan)
+static const char *first_step_status(struct json *plan)
 {
-	cJSON *steps = cJSON_GetObjectItem(plan, "steps");
-	if (!cJSON_IsArray(steps))
+	struct json *steps = json_member_ci(plan, "steps");
+	if (!json_is_array_value(steps))
 		return "";
-	cJSON *step = cJSON_GetArrayItem(steps, 0);
-	cJSON *status = cJSON_GetObjectItem(step, "status");
-	if (!cJSON_IsString(status) || !status->valuestring)
+	struct json *step = json_at(steps, 0);
+	struct json *status = json_member_ci(step, "status");
+	if (!json_is_string_value(status) || !json_string_value(status))
 		return "";
-	return status->valuestring;
+	return json_string_value(status);
 }
 
 TEST(PlanTool, LongCreateOutputIsNotTruncated)
@@ -75,26 +75,24 @@ TEST(PlanTool, LongCreateOutputIsNotTruncated)
 	ASSERT_NE(result.ui, nullptr);
 
 	EXPECT_GT(strlen(result.text.data), 8192u);
-	cJSON *plans_json = cJSON_GetObjectItem(result.data, "plans");
-	ASSERT_TRUE(cJSON_IsArray(plans_json));
-	cJSON *first_plan = cJSON_GetArrayItem(plans_json, 0);
+	struct json *plans_json = json_member_ci(result.data, "plans");
+	ASSERT_TRUE(json_is_array_value(plans_json));
+	struct json *first_plan = json_at(plans_json, 0);
 	ASSERT_NE(first_plan, nullptr);
-	cJSON *plan_id = cJSON_GetObjectItem(first_plan, "id");
-	ASSERT_TRUE(cJSON_IsString(plan_id));
-	EXPECT_NE(std::string(plan_id->valuestring).find("pln_"),
-		  std::string::npos);
-	cJSON *steps_json = cJSON_GetObjectItem(first_plan, "steps");
-	ASSERT_TRUE(cJSON_IsArray(steps_json));
-	EXPECT_EQ(cJSON_GetArraySize(steps_json), PLAN_MAX_STEPS);
-	cJSON *last_step = cJSON_GetArrayItem(steps_json, PLAN_MAX_STEPS - 1);
+	struct json *plan_id = json_member_ci(first_plan, "id");
+	ASSERT_TRUE(json_is_string_value(plan_id));
+	EXPECT_NE(std::string(json_string_value(plan_id)).find("pln_"), std::string::npos);
+	struct json *steps_json = json_member_ci(first_plan, "steps");
+	ASSERT_TRUE(json_is_array_value(steps_json));
+	EXPECT_EQ(json_count(steps_json), PLAN_MAX_STEPS);
+	struct json *last_step = json_at(steps_json, PLAN_MAX_STEPS - 1);
 	ASSERT_NE(last_step, nullptr);
-	cJSON *last_desc = cJSON_GetObjectItem(last_step, "description");
-	ASSERT_TRUE(cJSON_IsString(last_desc));
-	EXPECT_NE(std::string(last_desc->valuestring).find("step-32"),
-		  std::string::npos);
-	cJSON *component = cJSON_GetObjectItem(result.ui, "component");
-	ASSERT_TRUE(cJSON_IsString(component));
-	EXPECT_STREQ(component->valuestring, "plan");
+	struct json *last_desc = json_member_ci(last_step, "description");
+	ASSERT_TRUE(json_is_string_value(last_desc));
+	EXPECT_NE(std::string(json_string_value(last_desc)).find("step-32"), std::string::npos);
+	struct json *component = json_member_ci(result.ui, "component");
+	ASSERT_TRUE(json_is_string_value(component));
+	EXPECT_STREQ(json_string_value(component), "plan");
 
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&tools);
@@ -183,8 +181,8 @@ TEST(PlanTool, PlanIdSelectsDuplicateNames)
 	std::string update = "{\"command\":\"update\",\"plan_id\":\"" +
 		second_id + "\",\"step_id\":1,\"status\":\"completed\"}";
 	ASSERT_EQ(tool_exec(&tools, "plan", update.c_str(), &result), 0);
-	cJSON *first = find_plan_by_id(result.data, first_id);
-	cJSON *second = find_plan_by_id(result.data, second_id);
+	struct json *first = find_plan_by_id(result.data, first_id);
+	struct json *second = find_plan_by_id(result.data, second_id);
 	ASSERT_NE(first, nullptr);
 	ASSERT_NE(second, nullptr);
 	EXPECT_STREQ(first_step_status(first), "in_progress");
@@ -224,9 +222,9 @@ TEST(PlanTool, LegacyNameUpdateStillWorks)
 		"{\"command\":\"update\",\"plan\":\"legacy\","
 		"\"step_id\":1,\"status\":\"completed\"}", &result), 0);
 	ASSERT_NE(result.data, nullptr);
-	cJSON *plans_json = cJSON_GetObjectItem(result.data, "plans");
-	ASSERT_TRUE(cJSON_IsArray(plans_json));
-	cJSON *plan = cJSON_GetArrayItem(plans_json, 0);
+	struct json *plans_json = json_member_ci(result.data, "plans");
+	ASSERT_TRUE(json_is_array_value(plans_json));
+	struct json *plan = json_at(plans_json, 0);
 	ASSERT_NE(plan, nullptr);
 	EXPECT_STREQ(first_step_status(plan), "completed");
 

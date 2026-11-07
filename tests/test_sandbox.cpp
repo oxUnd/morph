@@ -1231,9 +1231,9 @@ TEST(SandboxToolPathsTest, ApprovalUsesTheSameDeveloperPresets)
 				"\"],\"delete\":[\"" + dir + "\"]}}}";
 			struct tool_result result;
 			tool_result_init(&result);
-			if (tool_exec(&registry, "request_permissions", request.c_str(),
-				&result) != 0 || !result.envelope ||
-			    cJSON_GetObjectItem(result.envelope, "error"))
+			if (tool_exec(&registry, "request_permissions", request.c_str(), &result) !=
+				    0 ||
+			    !result.envelope || json_member_ci(result.envelope, "error"))
 				return 18;
 			tool_result_cleanup(&result);
 		}

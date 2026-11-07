@@ -40,71 +40,71 @@ static int history_add_text_message(morph_array_t *messages, struct arena *arena
 	return 0;
 }
 
-static int history_tool_arguments_valid(const cJSON *arguments)
+static int history_tool_arguments_valid(const struct json *arguments)
 {
-	cJSON *parsed;
+	struct json *parsed;
 	int valid;
 
-	if (!cJSON_IsString(arguments) || !arguments->valuestring)
+	if (!json_is_string_value(arguments) || !json_string_value(arguments))
 		return 0;
-	parsed = cJSON_ParseWithOpts(arguments->valuestring, NULL, 1);
-	valid = cJSON_IsObject(parsed);
-	cJSON_Delete(parsed);
+	parsed = json_parse_ex(json_string_value(arguments), NULL, 1, NULL);
+	valid = json_is_object_value(parsed);
+	json_free(parsed);
 	return valid;
 }
 
-int history_tool_call_input(const cJSON *call, enum tool_input_kind *kind, const char **input)
+int history_tool_call_input(const struct json *call, enum tool_input_kind *kind, const char **input)
 {
-	cJSON *kind_item;
-	cJSON *value;
+	struct json *kind_item;
+	struct json *value;
 
-	if (!cJSON_IsObject(call) || !kind || !input)
+	if (!json_is_object_value(call) || !kind || !input)
 		return 0;
-	kind_item = cJSON_GetObjectItem(call, "input_kind");
-	if (cJSON_IsString(kind_item) && kind_item->valuestring &&
-	    strcmp(kind_item->valuestring, "text") == 0) {
-		value = cJSON_GetObjectItem(call, "input");
-		if (!cJSON_IsString(value) || !value->valuestring)
+	kind_item = json_member_ci(call, "input_kind");
+	if (json_is_string_value(kind_item) && json_string_value(kind_item) &&
+	    strcmp(json_string_value(kind_item), "text") == 0) {
+		value = json_member_ci(call, "input");
+		if (!json_is_string_value(value) || !json_string_value(value))
 			return 0;
 		*kind = TOOL_INPUT_TEXT;
-		*input = value->valuestring;
+		*input = json_string_value(value);
 		return 1;
 	}
-	value = cJSON_GetObjectItem(call, "arguments");
+	value = json_member_ci(call, "arguments");
 	if (!history_tool_arguments_valid(value))
 		return 0;
 	*kind = TOOL_INPUT_JSON;
-	*input = value->valuestring;
+	*input = json_string_value(value);
 	return 1;
 }
 
 int agent_history_normalize_tool_arguments(const char *arguments, char **normalized)
 {
 	const char *raw = arguments ? arguments : "{}";
-	cJSON *parsed;
-	cJSON *fallback;
+	struct json *parsed;
+	struct json *fallback;
 	char *json;
 
 	if (!normalized)
 		return -EINVAL;
 	*normalized = NULL;
-	parsed = cJSON_ParseWithOpts(raw, NULL, 1);
-	if (cJSON_IsObject(parsed)) {
-		cJSON_Delete(parsed);
+	parsed = json_parse_ex(raw, NULL, 1, NULL);
+	if (json_is_object_value(parsed)) {
+		json_free(parsed);
 		*normalized = strdup(raw);
 		if (!*normalized)
 			return -ENOMEM;
 		return 0;
 	}
-	cJSON_Delete(parsed);
-	fallback = cJSON_CreateObject();
+	json_free(parsed);
+	fallback = json_object();
 	if (!fallback)
 		return -ENOMEM;
-	cJSON_AddStringToObject(fallback, "_morph_invalid_arguments", raw);
-	cJSON_AddStringToObject(fallback, "_morph_recovery",
-				"Reissue this tool call with a valid JSON object.");
-	json = cJSON_PrintUnformatted(fallback);
-	cJSON_Delete(fallback);
+	json_add_string(fallback, "_morph_invalid_arguments", raw);
+	json_add_string(fallback, "_morph_recovery",
+			"Reissue this tool call with a valid JSON object.");
+	json = json_stringify(fallback);
+	json_free(fallback);
 	if (!json)
 		return -ENOMEM;
 	*normalized = json;
@@ -113,7 +113,7 @@ int agent_history_normalize_tool_arguments(const char *arguments, char **normali
 
 int agent_history_migrate_legacy_tool_call(struct tool_call *call, struct arena *arena)
 {
-	cJSON *arguments;
+	struct json *arguments;
 	char *normalized;
 
 	if (!call || strcmp(call->name, "bash_exec") != 0)
@@ -121,16 +121,16 @@ int agent_history_migrate_legacy_tool_call(struct tool_call *call, struct arena 
 	snprintf(call->name, sizeof(call->name), "%s", "exec");
 	if (call->input_kind != TOOL_INPUT_JSON || !call->arguments)
 		return 0;
-	arguments = cJSON_Parse(call->arguments);
-	if (!cJSON_IsObject(arguments)) {
-		cJSON_Delete(arguments);
+	arguments = json_parse_prefix(call->arguments, NULL, NULL);
+	if (!json_is_object_value(arguments)) {
+		json_free(arguments);
 		return 0;
 	}
-	cJSON_DeleteItemFromObject(arguments, "timeout_seconds");
-	cJSON_DeleteItemFromObject(arguments, "cwd");
-	cJSON_DeleteItemFromObject(arguments, "write_paths");
-	normalized = cJSON_PrintUnformatted(arguments);
-	cJSON_Delete(arguments);
+	json_object_remove_ci(arguments, "timeout_seconds");
+	json_object_remove_ci(arguments, "cwd");
+	json_object_remove_ci(arguments, "write_paths");
+	normalized = json_stringify(arguments);
+	json_free(arguments);
 	if (!normalized)
 		return -ENOMEM;
 	if (arena) {
@@ -151,74 +151,75 @@ static int history_add_tool_calls(struct morph_log *logger, const struct model_h
 				  morph_array_t *messages, struct arena *arena)
 {
 	struct chat_message *message;
-	cJSON *calls;
-	cJSON *root;
+	struct json *calls;
+	struct json *root;
 	int count;
 
-	root = item->payload_json ? cJSON_ParseWithOpts(item->payload_json, NULL, 1) : NULL;
+	root = item->payload_json ? json_parse_ex(item->payload_json, NULL, 1, NULL) : NULL;
 	if (!root) {
 		log_err(logger, "history replay: invalid tool payload at item %lld, sequence %lld",
 			(long long)item->id, (long long)item->sequence_no);
 		return MORPH_ERR_PARSE;
 	}
-	calls = cJSON_GetObjectItem(root, "calls");
-	count = cJSON_IsArray(calls) ? cJSON_GetArraySize(calls) : 0;
+	calls = json_member_ci(root, "calls");
+	count = json_is_array_value(calls) ? json_count(calls) : 0;
 	if (count <= 0) {
-		cJSON_Delete(root);
+		json_free(root);
 		return MORPH_ERR_PROTOCOL;
 	}
 	message = history_push_message(messages);
 	if (!message) {
-		cJSON_Delete(root);
+		json_free(root);
 		return -ENOMEM;
 	}
 	message->role = arena_strdup(arena, "assistant");
 	message->content =
 		item->content && item->content[0] ? arena_strdup(arena, item->content) : NULL;
-	cJSON *reasoning = cJSON_GetObjectItem(root, "reasoning_content");
-	if (cJSON_IsString(reasoning) && reasoning->valuestring)
-		message->reasoning_content = arena_strdup(arena, reasoning->valuestring);
+	struct json *reasoning = json_member_ci(root, "reasoning_content");
+	if (json_is_string_value(reasoning) && json_string_value(reasoning))
+		message->reasoning_content = arena_strdup(arena, json_string_value(reasoning));
 	message->tool_calls = arena_alloc(arena, (size_t)count * sizeof(*message->tool_calls));
 	if (!message->role || !message->tool_calls ||
-	    (cJSON_IsString(reasoning) && !message->reasoning_content)) {
-		cJSON_Delete(root);
+	    (json_is_string_value(reasoning) && !message->reasoning_content)) {
+		json_free(root);
 		return -ENOMEM;
 	}
 	memset(message->tool_calls, 0, (size_t)count * sizeof(*message->tool_calls));
 	message->tool_call_count = count;
 	for (int i = 0; i < count; i++) {
-		cJSON *call = cJSON_GetArrayItem(calls, i);
-		cJSON *provider_id = cJSON_GetObjectItem(call, "provider_call_id");
-		cJSON *local_id = cJSON_GetObjectItem(call, "tool_call_id");
-		cJSON *name = cJSON_GetObjectItem(call, "name");
+		struct json *call = json_at(calls, i);
+		struct json *provider_id = json_member_ci(call, "provider_call_id");
+		struct json *local_id = json_member_ci(call, "tool_call_id");
+		struct json *name = json_member_ci(call, "name");
 		struct tool_call *tool_call = &message->tool_calls[i];
 		const char *input;
 		enum tool_input_kind input_kind;
 
-		if (!cJSON_IsString(provider_id) || !cJSON_IsString(local_id) ||
-		    !cJSON_IsString(name) || !history_tool_call_input(call, &input_kind, &input)) {
-			cJSON_Delete(root);
+		if (!json_is_string_value(provider_id) || !json_is_string_value(local_id) ||
+		    !json_is_string_value(name) ||
+		    !history_tool_call_input(call, &input_kind, &input)) {
+			json_free(root);
 			return MORPH_ERR_PROTOCOL;
 		}
 		/* Replayed IDs are provider-neutral Morph IDs. */
-		snprintf(tool_call->id, sizeof(tool_call->id), "%s", local_id->valuestring);
+		snprintf(tool_call->id, sizeof(tool_call->id), "%s", json_string_value(local_id));
 		snprintf(tool_call->tool_call_id, sizeof(tool_call->tool_call_id), "%s",
-			 local_id->valuestring);
-		snprintf(tool_call->name, sizeof(tool_call->name), "%s", name->valuestring);
+			 json_string_value(local_id));
+		snprintf(tool_call->name, sizeof(tool_call->name), "%s", json_string_value(name));
 		tool_call->input_kind = input_kind;
 		tool_call->arguments = arena_strdup(arena, input);
 		if (!tool_call->arguments) {
-			cJSON_Delete(root);
+			json_free(root);
 			return -ENOMEM;
 		}
 		int migrate_rc = agent_history_migrate_legacy_tool_call(tool_call, arena);
 
 		if (migrate_rc != 0) {
-			cJSON_Delete(root);
+			json_free(root);
 			return migrate_rc;
 		}
 	}
-	cJSON_Delete(root);
+	json_free(root);
 	return 0;
 }
 
@@ -242,45 +243,46 @@ static int history_add_assistant_message(const struct model_history_item *item,
 					 morph_array_t *messages, struct arena *arena)
 {
 	int rc = history_add_text_message(messages, arena, "assistant", item->content);
-	cJSON *payload;
-	const cJSON *reasoning;
+	struct json *payload;
+	const struct json *reasoning;
 	struct chat_message *message;
 
 	if (rc != 0 || !item->payload_json || !item->payload_json[0])
 		return rc;
-	payload = cJSON_ParseWithOpts(item->payload_json, NULL, 1);
+	payload = json_parse_ex(item->payload_json, NULL, 1, NULL);
 	if (!payload)
 		return MORPH_ERR_PARSE;
-	reasoning = cJSON_GetObjectItemCaseSensitive(payload, "reasoning_content");
+	reasoning = json_member(payload, "reasoning_content");
 	message = morph_array_get(messages, messages->nelts - 1);
-	if (cJSON_IsString(reasoning)) {
-		message->reasoning_content = arena_strdup(arena, reasoning->valuestring);
+	if (json_is_string_value(reasoning)) {
+		message->reasoning_content = arena_strdup(arena, json_string_value(reasoning));
 		if (!message->reasoning_content)
 			rc = (-ENOMEM);
 	}
-	cJSON_Delete(payload);
+	json_free(payload);
 	return rc;
 }
 
 char *history_user_content(const struct model_history_item *item)
 {
-	cJSON *payload = item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
-	const cJSON *outcome = cJSON_GetObjectItemCaseSensitive(payload, "turn_outcome");
-	const cJSON *status = cJSON_GetObjectItemCaseSensitive(outcome, "status");
-	const cJSON *finished = cJSON_GetObjectItemCaseSensitive(outcome, "finished");
+	struct json *payload =
+		item->payload_json ? json_parse_prefix(item->payload_json, NULL, NULL) : NULL;
+	const struct json *outcome = json_member(payload, "turn_outcome");
+	const struct json *status = json_member(outcome, "status");
+	const struct json *finished = json_member(outcome, "finished");
 	morph_buf_t text;
 	int rc = morph_buf_init(&text, 256);
 
 	if (rc == 0)
 		rc = morph_buf_puts(&text, item->content ? item->content : "");
-	if (rc == 0 && cJSON_IsString(status) && cJSON_IsTrue(finished))
+	if (rc == 0 && json_is_string_value(status) && json_is_true(finished))
 		rc = morph_buf_printf(
 			&text,
 			"\n\n[Historical turn execution ended: %s. This records "
 			"execution status, not completion of a broader objective. "
 			"Later results supersede earlier checkpoint TODOs for this turn.]",
-			status->valuestring);
-	cJSON_Delete(payload);
+			json_string_value(status));
+	json_free(payload);
 	if (rc != 0) {
 		morph_buf_cleanup(&text);
 		return NULL;
@@ -316,14 +318,16 @@ int agent_history_item_replayable(const struct model_history_item *item)
 		return 0;
 	if (strcmp(item->kind, "background_receipt") == 0) {
 		static const char prefix[] = "[Background receipt] memory_consolidation:";
-		cJSON *payload = item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
-		const cJSON *task = cJSON_GetObjectItemCaseSensitive(payload, "task");
+		struct json *payload = item->payload_json
+					       ? json_parse_prefix(item->payload_json, NULL, NULL)
+					       : NULL;
+		const struct json *task = json_member(payload, "task");
 		int internal =
-			(cJSON_IsString(task) &&
-			 strcmp(task->valuestring, "memory_consolidation") == 0) ||
+			(json_is_string_value(task) &&
+			 strcmp(json_string_value(task), "memory_consolidation") == 0) ||
 			(item->content && strncmp(item->content, prefix, sizeof(prefix) - 1) == 0);
 
-		cJSON_Delete(payload);
+		json_free(payload);
 		return !internal;
 	}
 	return strcmp(item->kind, "user_message") == 0 ||

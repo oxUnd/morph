@@ -89,7 +89,7 @@
 ## Libraries (all static, from CMake link targets)
 ```
 morph-toml (vendor/tomlc17)
-morph-util (arena, log, file, cJSON, base64, utf8, spin)
+morph-util (arena, log, file, json, base64, utf8, spin)
   ├─ morph-db (SQLite) → morph-session → morph-persistence → morph-credits
   ├─ morph-http (libcurl, SSE) → morph-models
   ├─ morph-event, morph-exec (→ morph-sandbox), morph-render, morph-ipc
@@ -110,6 +110,18 @@ md4c is fetched by CMake FetchContent. stb write/resize2 have warning suppressio
 
 ## UTF-8
 Always use `src/util/utf8.h` (`#include "util/utf8.h"` from outside `src/util/`, `"utf8.h"` inside); never hand-roll decode/encode/width. It wraps vendored `vendor/utf8proc/` (v2.12.0, Unicode 18.0.0), compiled into `morph-util` through the shared `src/util/sources.list` manifest. Only `src/util/utf8.c` may include or call the upstream API; public headers and callers use project-owned types and helpers. Decoding, encoding, validation, character width and general Unicode categories come from utf8proc. Legacy names `utf8codepoint`, `utf8len`, `utf8valid`, and `utf8dup` remain as compatibility adapters. Prefer bounded `utf8_decode_codepoint` / `utf8_encode_codepoint`, `utf8_clamp_bytes`, `utf8_sanitize_into` / `_inplace`, and `utf8_display_width` for new code. ANSI filtering, layout/clipping and tokenizer language-block policies remain application logic. The header is the source of truth.
+
+## JSON
+Use `src/util/json.h` (`"util/json.h"` outside util), backed privately by vendored
+cJSON. Never include the backend or access its fields outside the JSON module.
+`json_parse` is strict; use `json_parse_prefix` only for intentional prefix reads.
+Paths (`json_str`, `json_int_or`, `json_set`, `json_append`) are case sensitive;
+`json_member` and `json_member_ci` address literal keys. Preserve each protocol's
+case rules. Generic setters copy strings and nodes; explicit `_take` clears the
+owned pointer only on success. Literal object/array attachment transfers only on
+success. Free owned trees with `json_free`, serialized text with `json_text_free`
+or `free`. No global allocator or error cursor is exposed. See [docs/json.md](docs/json.md)
+for numeric limits, depth, unsupported NUL strings and failure semantics.
 
 ## Core Data Structures (`src/util/`, link `morph-util`)
 Prefer these over hand-rolled equivalents.

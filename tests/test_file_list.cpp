@@ -55,15 +55,15 @@ protected:
 		ASSERT_EQ(mkdir(Path(name).c_str(), 0700), 0);
 	}
 
-	cJSON *List(const char *options = "{}", const char *path = ".")
+	struct json *List(const char *options = "{}", const char *path = ".")
 	{
-		cJSON *args = cJSON_Parse(options);
+		struct json *args = json_parse_prefix(options, NULL, NULL);
 		EXPECT_NE(args, nullptr);
 		if (!args)
 			return nullptr;
-		cJSON_AddStringToObject(args, "dir_path", path);
-		char *json = cJSON_PrintUnformatted(args);
-		cJSON_Delete(args);
+		json_add_string(args, "dir_path", path);
+		char *json = json_stringify(args);
+		json_free(args);
 		tool_result_cleanup(&result);
 		tool_result_init(&result);
 		result.runtime = &runtime;
@@ -72,15 +72,15 @@ protected:
 		return result.data;
 	}
 
-	std::vector<std::pair<std::string, std::string>> Entries(cJSON *data)
+	std::vector<std::pair<std::string, std::string>> Entries(struct json *data)
 	{
 		std::vector<std::pair<std::string, std::string>> values;
-		cJSON *entries = cJSON_GetObjectItem(data, "entries");
-		EXPECT_TRUE(cJSON_IsArray(entries));
-		cJSON *entry;
-		cJSON_ArrayForEach(entry, entries) {
-			const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "name"));
-			const char *type = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "type"));
+		struct json *entries = json_member_ci(data, "entries");
+		EXPECT_TRUE(json_is_array_value(entries));
+		struct json *entry;
+		json_foreach (entry, entries) {
+			const char *name = json_string_value(json_member_ci(entry, "name"));
+			const char *type = json_string_value(json_member_ci(entry, "type"));
 			EXPECT_NE(name, nullptr);
 			EXPECT_NE(type, nullptr);
 			if (name && type)
@@ -92,12 +92,12 @@ protected:
 
 TEST_F(FileListTest, EmptyDirectory)
 {
-	cJSON *data = List();
+	struct json *data = List();
 	ASSERT_EQ(status, 0);
 	EXPECT_TRUE(Entries(data).empty());
-	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data, "total_entries")), 0);
-	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(data, "truncated")));
-	EXPECT_TRUE(cJSON_IsNull(cJSON_GetObjectItem(data, "next_after")));
+	EXPECT_EQ(json_number_value(json_member_ci(data, "total_entries")), 0);
+	EXPECT_FALSE(json_is_true(json_member_ci(data, "truncated")));
+	EXPECT_TRUE(json_is_null_value(json_member_ci(data, "next_after")));
 }
 
 TEST_F(FileListTest, DirectoriesFirstAndHiddenEntriesRetained)
@@ -108,13 +108,13 @@ TEST_F(FileListTest, DirectoriesFirstAndHiddenEntriesRetained)
 	Directory("a-dir");
 	File("a-file");
 	File("z-dir/nested");
-	cJSON *data = List();
+	struct json *data = List();
 	ASSERT_EQ(status, 0);
 	std::vector<std::pair<std::string, std::string>> expected = {
 		{"a-dir", "dir"}, {"z-dir", "dir"}, {".hidden", "file"},
 		{"a-file", "file"}, {"z-file", "file"}};
 	EXPECT_EQ(Entries(data), expected);
-	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data, "total_entries")), 5);
+	EXPECT_EQ(json_number_value(json_member_ci(data, "total_entries")), 5);
 }
 
 TEST_F(FileListTest, SymlinksAndSpecialFilesHaveTheirOwnTypes)
@@ -132,7 +132,7 @@ TEST_F(FileListTest, SymlinksAndSpecialFilesHaveTheirOwnTypes)
 	int rc = bind(fd, reinterpret_cast<struct sockaddr *>(&address), sizeof(address));
 	close(fd);
 	ASSERT_EQ(rc, 0);
-	cJSON *data = List();
+	struct json *data = List();
 	ASSERT_EQ(status, 0);
 	std::vector<std::pair<std::string, std::string>> expected = {
 		{"broken", "symlink"}, {"outside", "symlink"}, {"pipe", "fifo"}, {"socket", "socket"}};
@@ -158,20 +158,20 @@ TEST_F(FileListTest, CursorPagesReconstructSortedDirectory)
 	std::vector<std::pair<std::string, std::string>> actual;
 	std::string options = "{\"limit\":17,\"max_bytes\":2048}";
 	for (int page = 0; page < 120; page++) {
-		cJSON *data = List(options.c_str());
+		struct json *data = List(options.c_str());
 		ASSERT_EQ(status, 0);
 		auto entries = Entries(data);
 		ASSERT_FALSE(entries.empty());
 		actual.insert(actual.end(), entries.begin(), entries.end());
-		char *encoded = cJSON_PrintUnformatted(cJSON_GetObjectItem(data, "entries"));
+		char *encoded = json_stringify(json_member_ci(data, "entries"));
 		ASSERT_NE(encoded, nullptr);
 		EXPECT_LE(strlen(encoded), 2048u);
 		free(encoded);
-		if (!cJSON_IsTrue(cJSON_GetObjectItem(data, "truncated")))
+		if (!json_is_true(json_member_ci(data, "truncated")))
 			break;
-		cJSON *next = cJSON_GetObjectItem(data, "next_after");
-		ASSERT_TRUE(cJSON_IsObject(next));
-		char *cursor = cJSON_PrintUnformatted(next);
+		struct json *next = json_member_ci(data, "next_after");
+		ASSERT_TRUE(json_is_object_value(next));
+		char *cursor = json_stringify(next);
 		ASSERT_NE(cursor, nullptr);
 		options = "{\"limit\":17,\"max_bytes\":2048,\"after\":" + std::string(cursor) + "}";
 		free(cursor);
@@ -183,41 +183,41 @@ TEST_F(FileListTest, EscapedNamesFitTheActualJsonByteBudget)
 {
 	for (int i = 0; i < 50; i++)
 		File(std::to_string(i) + "-\n\t\"\\-" + std::string(160, '\001'));
-	cJSON *data = List("{\"max_bytes\":2048}");
+	struct json *data = List("{\"max_bytes\":2048}");
 	ASSERT_EQ(status, 0);
-	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(data, "truncated")));
-	char *encoded = cJSON_PrintUnformatted(cJSON_GetObjectItem(data, "entries"));
+	EXPECT_TRUE(json_is_true(json_member_ci(data, "truncated")));
+	char *encoded = json_stringify(json_member_ci(data, "entries"));
 	ASSERT_NE(encoded, nullptr);
 	EXPECT_LE(strlen(encoded), 2048u);
 	free(encoded);
 	EXPECT_FALSE(Entries(data).empty());
-	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "truncation_reason")), "max_bytes");
+	EXPECT_STREQ(json_string_value(json_member_ci(data, "truncation_reason")), "max_bytes");
 }
 
 TEST_F(FileListTest, LargeDirectoryDefaultPageAndFullExplicitPage)
 {
 	for (int i = 0; i < 1100; i++)
 		File("file-" + std::to_string(i));
-	cJSON *data = List();
+	struct json *data = List();
 	ASSERT_EQ(status, 0);
 	EXPECT_EQ(Entries(data).size(), 1000u);
-	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data, "total_entries")), 1100);
-	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(data, "truncated")));
-	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "truncation_reason")), "limit");
+	EXPECT_EQ(json_number_value(json_member_ci(data, "total_entries")), 1100);
+	EXPECT_TRUE(json_is_true(json_member_ci(data, "truncated")));
+	EXPECT_STREQ(json_string_value(json_member_ci(data, "truncation_reason")), "limit");
 	data = List("{\"limit\":2000,\"max_bytes\":1048576}");
 	ASSERT_EQ(status, 0);
 	EXPECT_EQ(Entries(data).size(), 1100u);
-	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(data, "truncated")));
+	EXPECT_FALSE(json_is_true(json_member_ci(data, "truncated")));
 }
 
 TEST_F(FileListTest, CursorPastLastEntryReturnsEmptyPage)
 {
 	File("first");
-	cJSON *data = List("{\"after\":{\"name\":\"zzz\",\"type\":\"file\"}}");
+	struct json *data = List("{\"after\":{\"name\":\"zzz\",\"type\":\"file\"}}");
 	ASSERT_EQ(status, 0);
 	EXPECT_TRUE(Entries(data).empty());
-	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data, "total_entries")), 1);
-	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(data, "truncated")));
+	EXPECT_EQ(json_number_value(json_member_ci(data, "total_entries")), 1);
+	EXPECT_FALSE(json_is_true(json_member_ci(data, "truncated")));
 }
 
 TEST_F(FileListTest, RejectsMalformedOptions)
@@ -231,7 +231,7 @@ TEST_F(FileListTest, RejectsMalformedOptions)
 		SCOPED_TRACE(options);
 		List(options);
 		EXPECT_EQ(status, -EINVAL);
-		EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(result.envelope, "ok")));
+		EXPECT_FALSE(json_is_true(json_member_ci(result.envelope, "ok")));
 	}
 	List("{}", "");
 	EXPECT_EQ(status, -EINVAL);
@@ -291,7 +291,7 @@ TEST_F(FileListTest, CancellationWhileScanning)
 	List();
 	EXPECT_EQ(status, -ECANCELED);
 	EXPECT_EQ(checks, 5);
-	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(result.envelope, "ok")));
+	EXPECT_FALSE(json_is_true(json_member_ci(result.envelope, "ok")));
 }
 
 TEST_F(FileListTest, ListingAnExternalSymlinkDirectoryIsDenied)
@@ -339,7 +339,7 @@ TEST_F(FileListTest, ReaddirFailureDoesNotReturnSuccessfulPartialListing)
 	List();
 	EXPECT_TRUE(state.closed);
 	EXPECT_EQ(status, -EBADF);
-	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(result.envelope, "ok")));
+	EXPECT_FALSE(json_is_true(json_member_ci(result.envelope, "ok")));
 	free(canonical);
 }
 
@@ -353,10 +353,10 @@ TEST_F(FileListTest, LongUnicodeNamesAreNotClampedToNameMaxBytes)
 		GTEST_SKIP() << "Filesystem limits filename bytes";
 	ASSERT_GE(fd, 0);
 	close(fd);
-	cJSON *data = List("{\"limit\":1}");
+	struct json *data = List("{\"limit\":1}");
 	ASSERT_EQ(status, 0);
 	auto entries = Entries(data);
 	ASSERT_EQ(entries.size(), 1u);
 	EXPECT_EQ(entries[0].first, name);
-	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(data, "truncated")));
+	EXPECT_FALSE(json_is_true(json_member_ci(data, "truncated")));
 }

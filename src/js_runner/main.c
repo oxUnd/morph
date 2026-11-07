@@ -2,7 +2,7 @@
 #include "runner_api.h"
 #include "js_process.h"
 #include "js_fetch.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "util/file.h"
 #include "util/buf.h"
 #include <errno.h>
@@ -226,44 +226,87 @@ static int interrupt_handler(JSRuntime *rt, void *opaque)
 	return time(NULL) >= state->deadline;
 }
 
-static void print_json_string(FILE *out, const char *s)
+static struct json *response_object(int id)
 {
-	fputc('"', out);
-	for (const unsigned char *p = (const unsigned char *)(s ? s : ""); *p; p++) {
-		switch (*p) {
-		case '\\':
-			fputs("\\\\", out);
-			break;
-		case '"':
-			fputs("\\\"", out);
-			break;
-		case '\n':
-			fputs("\\n", out);
-			break;
-		case '\r':
-			fputs("\\r", out);
-			break;
-		case '\t':
-			fputs("\\t", out);
-			break;
-		default:
-			if (*p < 0x20)
-				fprintf(out, "\\u%04x", *p);
-			else
-				fputc((int)*p, out);
-			break;
-		}
+	struct json *response = json_object();
+
+	if (!response)
+		return NULL;
+	if (!json_add_string(response, "jsonrpc", "2.0") || !json_add_number(response, "id", id)) {
+		json_free(response);
+		return NULL;
 	}
-	fputc('"', out);
+	return response;
 }
 
 static void print_error_response(int id, const char *message)
 {
-	fputs("{\"jsonrpc\":\"2.0\",\"id\":", stdout);
-	fprintf(stdout, "%d", id);
-	fputs(",\"error\":{\"code\":-32000,\"message\":", stdout);
-	print_json_string(stdout, message ? message : "runtime error");
-	fputs("}}\n", stdout);
+	struct json *response = response_object(id);
+	struct json *error = response ? json_add_object(response, "error") : NULL;
+	char *text = NULL;
+
+	if (error && json_add_number(error, "code", -32000) &&
+	    json_add_string(error, "message", message ? message : "runtime error"))
+		text = json_stringify(response);
+	if (text)
+		puts(text);
+	else
+		fprintf(stdout,
+			"{\"jsonrpc\":\"2.0\",\"id\":%d,"
+			"\"error\":{\"code\":-32000,\"message\":\"runtime error\"}}\n",
+			id);
+	json_text_free(text);
+	json_free(response);
+}
+
+/* Keep JavaScript's JSON string semantics, including escaped NUL, inside
+ * QuickJS. The C JSON module deliberately accepts complete UTF-8 text only. */
+static int print_result_response(JSContext *ctx, int id, const char *result)
+{
+	JSValue response = JS_UNDEFINED;
+	JSValue version = JS_UNDEFINED;
+	JSValue payload = JS_UNDEFINED;
+	JSValue encoded = JS_UNDEFINED;
+	const char *text = NULL;
+	int rc = -EINVAL;
+	int status;
+
+	payload = JS_ParseJSON(ctx, result, strlen(result), "<result>");
+	if (JS_IsException(payload))
+		goto out;
+	response = JS_NewObject(ctx);
+	if (JS_IsException(response))
+		goto out;
+	version = JS_NewString(ctx, "2.0");
+	if (JS_IsException(version))
+		goto out;
+	status = JS_SetPropertyStr(ctx, response, "jsonrpc", version);
+	version = JS_UNDEFINED;
+	if (status < 0)
+		goto out;
+	if (JS_SetPropertyStr(ctx, response, "id", JS_NewInt32(ctx, id)) < 0)
+		goto out;
+	status = JS_SetPropertyStr(ctx, response, "result", payload);
+	payload = JS_UNDEFINED;
+	if (status < 0)
+		goto out;
+	encoded = JS_JSONStringify(ctx, response, JS_UNDEFINED, JS_UNDEFINED);
+	if (JS_IsException(encoded))
+		goto out;
+	text = JS_ToCString(ctx, encoded);
+	if (!text)
+		goto out;
+	puts(text);
+	rc = 0;
+
+out:
+	if (text)
+		JS_FreeCString(ctx, text);
+	JS_FreeValue(ctx, encoded);
+	JS_FreeValue(ctx, payload);
+	JS_FreeValue(ctx, version);
+	JS_FreeValue(ctx, response);
+	return rc;
 }
 
 static void print_exception(JSContext *ctx, int id)
@@ -336,8 +379,8 @@ static int run_script(JSContext *ctx, const char *path)
 	size_t line_cap = 0;
 	int id = 1;
 	int rc = 0;
-	cJSON *root = NULL;
-	cJSON *params;
+	struct json *root = NULL;
+	struct json *params;
 	JSValue val = JS_UNDEFINED;
 	JSValue global = JS_UNDEFINED;
 	JSValue fn = JS_UNDEFINED;
@@ -364,19 +407,19 @@ static int run_script(JSContext *ctx, const char *path)
 		rc = -EINVAL;
 		goto out;
 	}
-	root = cJSON_Parse(line);
+	root = json_parse_prefix(line, NULL, NULL);
 	if (!root) {
 		print_error_response(id, "invalid JSON-RPC request");
 		rc = -EINVAL;
 		goto out;
 	}
 	{
-		cJSON *id_item = cJSON_GetObjectItem(root, "id");
-		if (cJSON_IsNumber(id_item))
-			id = id_item->valueint;
+		struct json *id_item = json_member_ci(root, "id");
+		if (json_is_number_value(id_item))
+			id = json_int_value(id_item);
 	}
-	params = cJSON_GetObjectItem(root, "params");
-	params_json = params ? cJSON_PrintUnformatted(params) : strdup("{}");
+	params = json_member_ci(root, "params");
+	params_json = params ? json_stringify(params) : strdup("{}");
 	if (!params_json) {
 		rc = -ENOMEM;
 		goto out;
@@ -421,9 +464,11 @@ static int run_script(JSContext *ctx, const char *path)
 		rc = -EINVAL;
 		goto out;
 	}
-	fprintf(stdout, "{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":%s}\n", id, json_str);
+	rc = print_result_response(ctx, id, json_str);
 	if (!JS_IsUndefined(json))
 		JS_FreeCString(ctx, json_str);
+	if (rc != 0)
+		print_exception(ctx, id);
 
 out:
 	JS_FreeValue(ctx, json);
@@ -431,7 +476,7 @@ out:
 	JS_FreeValue(ctx, args);
 	JS_FreeValue(ctx, fn);
 	JS_FreeValue(ctx, global);
-	cJSON_Delete(root);
+	json_free(root);
 	free(params_json);
 	free(line);
 	return rc;

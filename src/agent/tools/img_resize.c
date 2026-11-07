@@ -6,7 +6,7 @@
 #include "util/log.h"
 #include "util/error.h"
 #include "util/image_util.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "stb_image.h"
 
 #include "stb_image_resize2.h"
@@ -25,32 +25,34 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 
 	struct tool_context *tctx = user_data;
 
-	cJSON *root = cJSON_Parse(args_json);
+	struct json *root = json_parse_prefix(args_json, NULL, NULL);
 	if (!root) {
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
-	cJSON *fp = cJSON_GetObjectItem(root, "file_path");
-	cJSON *cw = cJSON_GetObjectItem(root, "width");
-	cJSON *chh = cJSON_GetObjectItem(root, "height");
-	cJSON *out = cJSON_GetObjectItem(root, "output_path");
+	struct json *fp = json_member_ci(root, "file_path");
+	struct json *cw = json_member_ci(root, "width");
+	struct json *chh = json_member_ci(root, "height");
+	struct json *out = json_member_ci(root, "output_path");
 
-	const char *file_path = cJSON_IsString(fp) ? fp->valuestring : NULL;
-	if ((cJSON_IsNumber(cw) && (!isfinite(cw->valuedouble) || cw->valuedouble < 0 ||
-				    cw->valuedouble > MORPH_IMAGE_MAX_DIMENSION)) ||
-	    (cJSON_IsNumber(chh) && (!isfinite(chh->valuedouble) || chh->valuedouble < 0 ||
-				     chh->valuedouble > MORPH_IMAGE_MAX_DIMENSION))) {
-		cJSON_Delete(root);
+	const char *file_path = json_is_string_value(fp) ? json_string_value(fp) : NULL;
+	if ((json_is_number_value(cw) &&
+	     (!isfinite(json_number_value(cw)) || json_number_value(cw) < 0 ||
+	      json_number_value(cw) > MORPH_IMAGE_MAX_DIMENSION)) ||
+	    (json_is_number_value(chh) &&
+	     (!isfinite(json_number_value(chh)) || json_number_value(chh) < 0 ||
+	      json_number_value(chh) > MORPH_IMAGE_MAX_DIMENSION))) {
+		json_free(root);
 		(void)tool_result_error(result, "image_too_large", "Invalid image dimensions");
 		return -EFBIG;
 	}
-	int target_w = cJSON_IsNumber(cw) ? (int)cw->valuedouble : 0;
-	int target_h = cJSON_IsNumber(chh) ? (int)chh->valuedouble : 0;
-	const char *out_path_in = cJSON_IsString(out) ? out->valuestring : NULL;
+	int target_w = json_is_number_value(cw) ? (int)json_number_value(cw) : 0;
+	int target_h = json_is_number_value(chh) ? (int)json_number_value(chh) : 0;
+	const char *out_path_in = json_is_string_value(out) ? json_string_value(out) : NULL;
 
 	if (!file_path || (target_w <= 0 && target_h <= 0)) {
-		cJSON_Delete(root);
+		json_free(root);
 		(void)tool_result_success_json_text(
 			result,
 			strdup("{\"error\":\"missing 'file_path' or 'width'/'height' parameter. "
@@ -63,7 +65,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 	int input_rc = tool_image_load_input(tctx, file_path, result, &input);
 
 	if (input_rc != 0) {
-		cJSON_Delete(root);
+		json_free(root);
 		return input_rc;
 	}
 	int src_w = input.width, src_h = input.height, src_ch = input.channels;
@@ -83,14 +85,14 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 	int size_rc = image_pixel_bytes(target_w, target_h, src_ch, &dst_bytes);
 	if (size_rc != 0) {
 		stbi_image_free(src);
-		cJSON_Delete(root);
+		json_free(root);
 		(void)tool_result_error(result, "image_too_large", "Image exceeds pixel limit");
 		return size_rc;
 	}
 	unsigned char *dst = malloc(dst_bytes);
 	if (!dst) {
 		stbi_image_free(src);
-		cJSON_Delete(root);
+		json_free(root);
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"oom\"}"));
 		return -ENOMEM;
 	}
@@ -99,7 +101,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 				       (stbir_pixel_layout)src_ch)) {
 		stbi_image_free(src);
 		free(dst);
-		cJSON_Delete(root);
+		json_free(root);
 		(void)tool_result_success_json_text(result,
 						    strdup("{\"error\":\"resize failed\"}"));
 		return MORPH_ERR_PROCESSING;
@@ -120,14 +122,14 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 
 	free(dst);
 	if (output_rc != 0) {
-		cJSON_Delete(root);
+		json_free(root);
 		return output_rc;
 	}
 
 	size_t msg_len = strlen(final_path) + 64;
 	char *msg = malloc(msg_len);
 	if (!msg) {
-		cJSON_Delete(root);
+		json_free(root);
 		return -ENOMEM;
 	}
 	snprintf(msg, msg_len, "image resized: %s (%dx%d)", final_path, target_w, target_h);
@@ -136,7 +138,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 	log_dbg(result && result->runtime ? result->runtime->http.logger : NULL, "img_resize: %s",
 		msg);
 
-	cJSON_Delete(root);
+	json_free(root);
 	return 0;
 }
 

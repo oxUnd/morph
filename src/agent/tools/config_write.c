@@ -4,7 +4,7 @@
 #include "util/file.h"
 #include "util/error.h"
 #include "config/config.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -263,7 +263,7 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 			    void *user_data)
 {
 	struct config_edit_context *ctx = user_data;
-	cJSON *root = NULL;
+	struct json *root = NULL;
 	char *target_expanded = NULL;
 	char *old_content = NULL;
 	char *new_content = NULL;
@@ -289,24 +289,25 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 					     "config_edit is not configured");
 		return MORPH_ERR_NOT_CONFIGURED;
 	}
-	root = cJSON_Parse(args_json);
+	root = json_parse_prefix(args_json, NULL, NULL);
 	if (!root) {
 		(void)tool_result_error(result, "tool_failed", "invalid JSON");
 		return -EINVAL;
 	}
-	cJSON *path_item = cJSON_GetObjectItem(root, "path");
-	cJSON *content_item = cJSON_GetObjectItem(root, "content");
-	cJSON *patch_item = cJSON_GetObjectItem(root, "patch");
-	cJSON *reason_item = cJSON_GetObjectItem(root, "reason");
-	if (cJSON_IsString(content_item) && cJSON_IsString(patch_item)) {
+	struct json *path_item = json_member_ci(root, "path");
+	struct json *content_item = json_member_ci(root, "content");
+	struct json *patch_item = json_member_ci(root, "patch");
+	struct json *reason_item = json_member_ci(root, "reason");
+	if (json_is_string_value(content_item) && json_is_string_value(patch_item)) {
 		rc = tool_result_error(result, "tool_failed",
 			"provide only one of 'patch' or 'content'");
 		rc = rc != 0 ? rc : -EINVAL;
 		goto out;
 	}
-	path = cJSON_IsString(path_item) && path_item->valuestring[0] ?
-		path_item->valuestring : ctx->config_path;
-	reason = cJSON_IsString(reason_item) ? reason_item->valuestring : "";
+	path = json_is_string_value(path_item) && json_string_value(path_item)[0]
+		       ? json_string_value(path_item)
+		       : ctx->config_path;
+	reason = json_is_string_value(reason_item) ? json_string_value(reason_item) : "";
 	if (!reason[0]) {
 		rc = tool_result_error(result, "tool_failed", "missing 'reason' parameter");
 		rc = rc != 0 ? rc : -EINVAL;
@@ -354,25 +355,25 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 			goto out;
 		}
 	}
-	if (cJSON_IsString(content_item) && content_item->valuestring) {
-		if (strlen(content_item->valuestring) > CONFIG_EDIT_MAX_SIZE) {
+	if (json_is_string_value(content_item) && json_string_value(content_item)) {
+		if (strlen(json_string_value(content_item)) > CONFIG_EDIT_MAX_SIZE) {
 			rc = tool_result_error(result, "tool_failed", "content too large");
 			rc = rc != 0 ? rc : -EFBIG;
 			goto out;
 		}
-		new_content = strdup(content_item->valuestring);
+		new_content = strdup(json_string_value(content_item));
 		if (!new_content) {
 			rc = -ENOMEM;
 			goto out;
 		}
-	} else if (cJSON_IsString(patch_item) && patch_item->valuestring) {
+	} else if (json_is_string_value(patch_item) && json_string_value(patch_item)) {
 		if (!existed) {
 			rc = tool_result_error(result, "tool_failed",
 				"patch mode requires an existing config file");
 			rc = rc != 0 ? rc : -ENOENT;
 			goto out;
 		}
-		patch = patch_item->valuestring;
+		patch = json_string_value(patch_item);
 		rc = build_content_from_patch(old_content, patch, &new_content,
 			errbuf, sizeof(errbuf));
 		if (rc != 0) {
@@ -399,16 +400,16 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		goto out;
 	}
 	if (strcmp(old_content, new_content) == 0) {
-		cJSON *data = cJSON_CreateObject();
+		struct json *data = json_object();
 
 		if (!data) {
 			rc = -ENOMEM;
 			goto out;
 		}
-		cJSON_AddStringToObject(data, "path", target_expanded);
-		cJSON_AddBoolToObject(data, "changed", 0);
-		cJSON_AddBoolToObject(data, "validated", 1);
-		cJSON_AddBoolToObject(data, "restart_required", 0);
+		json_add_string(data, "path", target_expanded);
+		json_add_bool(data, "changed", 0);
+		json_add_bool(data, "validated", 1);
+		json_add_bool(data, "restart_required", 0);
 		rc = tool_result_success(result, data);
 		goto out;
 	}
@@ -493,25 +494,25 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		goto out;
 	}
 	{
-		cJSON *out_json = cJSON_CreateObject();
+		struct json *out_json = json_object();
 		char *out_str;
 		if (!out_json) {
 			rc = -ENOMEM;
 			goto out;
 		}
-		cJSON_AddStringToObject(out_json, "path", target_expanded);
-		cJSON_AddBoolToObject(out_json, "changed", 1);
-		cJSON_AddBoolToObject(out_json, "validated", 1);
-		cJSON_AddBoolToObject(out_json, "atomic", 1);
-		cJSON_AddBoolToObject(out_json, "backup_created", existed);
+		json_add_string(out_json, "path", target_expanded);
+		json_add_bool(out_json, "changed", 1);
+		json_add_bool(out_json, "validated", 1);
+		json_add_bool(out_json, "atomic", 1);
+		json_add_bool(out_json, "backup_created", existed);
 		if (existed)
-			cJSON_AddStringToObject(out_json, "backup_path", backup_path);
-		cJSON_AddBoolToObject(out_json, "hot_reloaded", 0);
-		cJSON_AddBoolToObject(out_json, "restart_required", 1);
-		cJSON_AddStringToObject(out_json, "message",
-			"configuration edited safely; restart Morph to apply it");
-		out_str = cJSON_PrintUnformatted(out_json);
-		cJSON_Delete(out_json);
+			json_add_string(out_json, "backup_path", backup_path);
+		json_add_bool(out_json, "hot_reloaded", 0);
+		json_add_bool(out_json, "restart_required", 1);
+		json_add_string(out_json, "message",
+				"configuration edited safely; restart Morph to apply it");
+		out_str = json_stringify(out_json);
+		json_free(out_json);
 		(void)tool_result_success_json_text(result, out_str);
 	}
 
@@ -524,7 +525,7 @@ out:
 	free(old_content);
 	free(new_content);
 	free(written_content);
-	cJSON_Delete(root);
+	json_free(root);
 	return rc;
 }
 

@@ -1,7 +1,7 @@
 #include "runtime/usage.h"
 #include "models/llm.h"
 
-#include "cJSON.h"
+#include "util/json.h"
 #include "credits.h"
 
 #include <stdlib.h>
@@ -30,46 +30,45 @@ int runtime_model_usage_is_billable(const struct model_usage *usage)
 
 char *runtime_model_usage_metadata(const struct model_usage *usage)
 {
-	cJSON *obj;
+	struct json *obj;
 	char *json;
 
 	if (!usage)
 		return NULL;
-	obj = cJSON_CreateObject();
+	obj = json_object();
 	if (!obj)
 		return NULL;
 	if (usage->phase[0])
-		cJSON_AddStringToObject(obj, "phase", usage->phase);
+		json_add_string(obj, "phase", usage->phase);
 	if (usage->response_id[0])
-		cJSON_AddStringToObject(obj, "response_id", usage->response_id);
+		json_add_string(obj, "response_id", usage->response_id);
 	if (usage->model[0])
-		cJSON_AddStringToObject(obj, "actual_model", usage->model);
+		json_add_string(obj, "actual_model", usage->model);
 	if (usage->finish_reason[0])
-		cJSON_AddStringToObject(obj, "finish_reason", usage->finish_reason);
+		json_add_string(obj, "finish_reason", usage->finish_reason);
 	if (usage->system_fingerprint[0])
-		cJSON_AddStringToObject(obj, "system_fingerprint", usage->system_fingerprint);
+		json_add_string(obj, "system_fingerprint", usage->system_fingerprint);
 	if (usage->usage_source[0])
-		cJSON_AddStringToObject(obj, "usage_source", usage->usage_source);
+		json_add_string(obj, "usage_source", usage->usage_source);
 	if (usage->created > 0)
-		cJSON_AddNumberToObject(obj, "created", (double)usage->created);
+		json_add_number(obj, "created", (double)usage->created);
 	if (usage->total_tokens > 0)
-		cJSON_AddNumberToObject(obj, "total_tokens", (double)usage->total_tokens);
+		json_add_number(obj, "total_tokens", (double)usage->total_tokens);
 	if (usage->input_tokens > 0)
-		cJSON_AddNumberToObject(
-			obj, "uncached_input_tokens",
-			(double)(usage->input_tokens > usage->cached_tokens
-					 ? usage->input_tokens - usage->cached_tokens
-					 : 0));
+		json_add_number(obj, "uncached_input_tokens",
+				(double)(usage->input_tokens > usage->cached_tokens
+						 ? usage->input_tokens - usage->cached_tokens
+						 : 0));
 	if (usage->cached_tokens > 0)
-		cJSON_AddNumberToObject(obj, "cached_tokens", (double)usage->cached_tokens);
+		json_add_number(obj, "cached_tokens", (double)usage->cached_tokens);
 	if (usage->reasoning_tokens > 0)
-		cJSON_AddNumberToObject(obj, "reasoning_tokens", (double)usage->reasoning_tokens);
+		json_add_number(obj, "reasoning_tokens", (double)usage->reasoning_tokens);
 	if (usage->audio_tokens > 0)
-		cJSON_AddNumberToObject(obj, "audio_tokens", (double)usage->audio_tokens);
+		json_add_number(obj, "audio_tokens", (double)usage->audio_tokens);
 	if (usage->image_tokens > 0)
-		cJSON_AddNumberToObject(obj, "image_tokens", (double)usage->image_tokens);
-	json = cJSON_PrintUnformatted(obj);
-	cJSON_Delete(obj);
+		json_add_number(obj, "image_tokens", (double)usage->image_tokens);
+	json = json_stringify(obj);
+	json_free(obj);
 	return json;
 }
 

@@ -7,7 +7,7 @@
 #include "util/utf8.h"
 #include "event/event.h"
 
-struct cJSON;
+struct json;
 struct model_history_item;
 
 struct cli_transcript_tool {
@@ -69,7 +69,7 @@ int cli_transcript_model_reduce(struct cli_transcript_model *model, const struct
 				double now, struct cli_transcript_change *change);
 int cli_transcript_model_reasoning_append(struct cli_transcript_model *model, const char *text,
 					  size_t length, int begin);
-int cli_transcript_model_restore(struct cli_transcript_model *model, const struct cJSON *call,
+int cli_transcript_model_restore(struct cli_transcript_model *model, const struct json *call,
 				 const struct model_history_item *result, size_t *tool_index);
 int cli_transcript_model_set_preview(struct cli_transcript_model *model, size_t tool_index,
 				     const char *preview);

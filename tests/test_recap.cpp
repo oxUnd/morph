@@ -19,7 +19,7 @@ protected:
 		ASSERT_EQ(message_add(&instance->context.database, id, "assistant", "Fixed and tested", 3), 0);
 	}
 
-	cJSON *WaitEnd()
+	struct json *WaitEnd()
 	{
 		std::unique_lock<std::mutex> guard(lock);
 		bool ready = condition.wait_for(guard, std::chrono::seconds(4), [this] {
@@ -27,13 +27,13 @@ protected:
 		});
 		if (!ready)
 			return nullptr;
-		cJSON *event = cJSON_Parse(recap_events.back().c_str());
-		cJSON *data = cJSON_Duplicate(cJSON_GetObjectItem(event, "data"), 1);
-		cJSON_Delete(event);
+		struct json *event = json_parse_prefix(recap_events.back().c_str(), NULL, NULL);
+		struct json *data = json_clone(json_member_ci(event, "data"), 1);
+		json_free(event);
 		return data;
 	}
 
-	std::string Render(cJSON *data, struct cli_application *ctx)
+	std::string Render(struct json *data, struct cli_application *ctx)
 	{
 		struct morph_event event{MORPH_EVENT_BACKGROUND, "session.recap", "end",
 			"Conversation recap finished", data, nullptr};
@@ -49,19 +49,19 @@ TEST(RecapParser, RequiresBoundedStructuredOutput)
 		"{\"summary\":\" \",\"next_action\":null}",
 		"{\"summary\":\"done\",\"next_action\":1}",
 		"{\"summary\":\"done\",\"next_action\":null,\"extra\":true}"}) {
-		cJSON *result = runtime_recap_parse(text);
+		struct json *result = runtime_recap_parse(text);
 		EXPECT_EQ(result, nullptr);
-		cJSON_Delete(result);
+		json_free(result);
 	}
 	std::string text = "{\"summary\":\"" + std::string(701, 'x') +
 		"\",\"next_action\":null}";
 	EXPECT_EQ(runtime_recap_parse(text.c_str()), nullptr);
-	cJSON *result = runtime_recap_parse(
+	struct json *result = runtime_recap_parse(
 		R"({"summary":"  已发布，但尚未安装验证。  ","next_action":null})");
 	ASSERT_NE(result, nullptr);
-	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result, "summary")),
-		"已发布，但尚未安装验证。");
-	cJSON_Delete(result);
+	EXPECT_STREQ(json_string_value(json_member_ci(result, "summary")),
+		     "已发布，但尚未安装验证。");
+	json_free(result);
 }
 
 TEST(RecapScheduling, RequiresUnfocusedIdleTimeAndNewProgress)
@@ -158,14 +158,14 @@ TEST_F(RecapTest, BackgroundRequestUsesOnlyVisibleBoundedHistory)
 	EXPECT_LT(TitleClock::now() - started, std::chrono::seconds(1));
 	ASSERT_TRUE(WaitRequest());
 	EXPECT_EQ(runtime_recap_request(instance, 0, nullptr), -EALREADY);
-	cJSON *body = cJSON_Parse(request_body.c_str());
+	struct json *body = json_parse_prefix(request_body.c_str(), NULL, NULL);
 	ASSERT_NE(body, nullptr);
-	EXPECT_EQ(cJSON_GetObjectItem(body, "tools"), nullptr);
-	const cJSON *messages = cJSON_GetObjectItem(body, "messages");
+	EXPECT_EQ(json_member_ci(body, "tools"), nullptr);
+	const struct json *messages = json_member_ci(body, "messages");
 	size_t bytes = 0;
-	for (int i = 0; i < cJSON_GetArraySize(messages); i++) {
-		const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(
-			cJSON_GetArrayItem(messages, i), "content"));
+	for (int i = 0; i < json_count(messages); i++) {
+		const char *content =
+			json_string_value(json_member_ci(json_at(messages, i), "content"));
 		ASSERT_NE(content, nullptr);
 		EXPECT_EQ(utf8valid(content), nullptr);
 		bytes += strlen(content);
@@ -174,15 +174,15 @@ TEST_F(RecapTest, BackgroundRequestUsesOnlyVisibleBoundedHistory)
 		EXPECT_EQ(strstr(content, "request-0"), nullptr);
 	}
 	EXPECT_LE(bytes, RECAP_PROMPT_MAX_BYTES);
-	cJSON_Delete(body);
+	json_free(body);
 	Release();
-	cJSON *data = WaitEnd();
+	struct json *data = WaitEnd();
 	ASSERT_NE(data, nullptr);
-	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data, "error_code")), 0);
+	EXPECT_EQ(json_number_value(json_member_ci(data, "error_code")), 0);
 	EXPECT_TRUE(runtime_recap_is_current(instance, &progress));
 	EXPECT_EQ(message_count(&instance->context.database, id), before);
 	EXPECT_EQ(model_history_compaction_count(&instance->context.database, id), 0);
-	cJSON_Delete(data);
+	json_free(data);
 }
 
 TEST_F(RecapTest, RecapRendersWithoutInventingNextAndPreservesDraftState)
@@ -194,7 +194,7 @@ TEST_F(RecapTest, RecapRendersWithoutInventingNextAndPreservesDraftState)
 	ctx.recap.pending = 1;
 	ASSERT_TRUE(WaitRequest());
 	Release();
-	cJSON *data = WaitEnd();
+	struct json *data = WaitEnd();
 	ASSERT_NE(data, nullptr);
 	std::string output = Render(data, &ctx);
 	EXPECT_NE(output.find("↳ Recap:"), std::string::npos);
@@ -202,7 +202,7 @@ TEST_F(RecapTest, RecapRendersWithoutInventingNextAndPreservesDraftState)
 	EXPECT_EQ(output.find("Next:"), std::string::npos);
 	EXPECT_FALSE(ctx.recap.pending);
 	EXPECT_TRUE(ctx.recap.has_recap);
-	cJSON_Delete(data);
+	json_free(data);
 }
 
 TEST_F(RecapTest, StructuredModeSettlesTheRequestWithoutHumanText)
@@ -215,20 +215,20 @@ TEST_F(RecapTest, StructuredModeSettlesTheRequestWithoutHumanText)
 	ctx.recap.pending = 1;
 	ASSERT_TRUE(WaitRequest());
 	Release();
-	cJSON *data = WaitEnd();
+	struct json *data = WaitEnd();
 	ASSERT_NE(data, nullptr);
 	struct morph_event event{MORPH_EVENT_BACKGROUND, "session.recap", "end",
 		"Conversation recap finished", data, nullptr};
 	testing::internal::CaptureStdout();
 	EXPECT_EQ(cli_presentation_event(&ctx, &event), 0);
 	std::string output = testing::internal::GetCapturedStdout();
-	cJSON *serialized = cJSON_Parse(output.c_str());
+	struct json *serialized = json_parse_prefix(output.c_str(), NULL, NULL);
 	EXPECT_NE(serialized, nullptr);
 	EXPECT_EQ(output.find("↳ Recap:"), std::string::npos);
 	EXPECT_FALSE(ctx.recap.pending);
 	EXPECT_EQ(ctx.recap.result_code, 0);
-	cJSON_Delete(serialized);
-	cJSON_Delete(data);
+	json_free(serialized);
+	json_free(data);
 }
 
 TEST_F(RecapTest, SwitchingAwayAndBackDiscardsCompletedResult)
@@ -241,14 +241,14 @@ TEST_F(RecapTest, SwitchingAwayAndBackDiscardsCompletedResult)
 	ctx.recap.pending = 1;
 	ASSERT_TRUE(WaitRequest());
 	Release();
-	cJSON *data = WaitEnd();
+	struct json *data = WaitEnd();
 	ASSERT_NE(data, nullptr);
 	struct session other{};
 	ASSERT_EQ(runtime_session_create_and_select(instance, "Other task", &other), 0);
 	ASSERT_EQ(runtime_session_select_existing(instance, origin, nullptr), 0);
 	EXPECT_TRUE(Render(data, &ctx).empty());
 	EXPECT_FALSE(runtime_recap_is_current(instance, &ctx.recap.request));
-	cJSON_Delete(data);
+	json_free(data);
 }
 
 TEST_F(RecapTest, NewMessagesInvalidateQueuedResult)
@@ -260,12 +260,12 @@ TEST_F(RecapTest, NewMessagesInvalidateQueuedResult)
 	ctx.recap.pending = 1;
 	ASSERT_TRUE(WaitRequest());
 	Release();
-	cJSON *data = WaitEnd();
+	struct json *data = WaitEnd();
 	ASSERT_NE(data, nullptr);
 	ASSERT_EQ(message_add(&instance->context.database, ctx.recap.request.session_id,
 		"user", "Actually, change the goal", 3), 0);
 	EXPECT_TRUE(Render(data, &ctx).empty());
-	cJSON_Delete(data);
+	json_free(data);
 }
 
 TEST_F(RecapTest, AutomaticRecapCanBeDisabledButManualStillWorks)
@@ -291,10 +291,10 @@ TEST_F(RecapTest, AutomaticRecapCanBeDisabledButManualStillWorks)
 	ASSERT_EQ(cli_recap_start(&ctx, 0), 0);
 	ASSERT_TRUE(WaitRequest());
 	Release();
-	cJSON *data = WaitEnd();
+	struct json *data = WaitEnd();
 	ASSERT_NE(data, nullptr);
 	EXPECT_NE(Render(data, &ctx).find("Recap:"), std::string::npos);
-	cJSON_Delete(data);
+	json_free(data);
 }
 
 TEST_F(RecapTest, IdleUnfocusedProgressAutomaticallyRequestsOneRecap)
@@ -316,13 +316,13 @@ TEST_F(RecapTest, IdleUnfocusedProgressAutomaticallyRequestsOneRecap)
 	EXPECT_TRUE(ctx.recap.pending);
 	ASSERT_TRUE(WaitRequest());
 	Release();
-	cJSON *data = WaitEnd();
+	struct json *data = WaitEnd();
 	ASSERT_NE(data, nullptr);
-	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(data, "automatic")));
+	EXPECT_TRUE(json_is_true(json_member_ci(data, "automatic")));
 	EXPECT_NE(Render(data, &ctx).find("Recap:"), std::string::npos);
 	EXPECT_EQ(ctx.recap.last_recapped_turns, 3);
 	EXPECT_FALSE(cli_recap_due(&ctx.recap, 3 * CLI_RECAP_DELAY_MS));
-	cJSON_Delete(data);
+	json_free(data);
 }
 
 TEST_F(RecapTest, FastAutomaticFailureKeepsItsBoundedRetryDeadline)
@@ -335,7 +335,7 @@ TEST_F(RecapTest, FastAutomaticFailureKeepsItsBoundedRetryDeadline)
 	ASSERT_EQ(cli_recap_start(&ctx, 1), 0);
 	ASSERT_TRUE(WaitRequest());
 	Release();
-	cJSON *data = WaitEnd();
+	struct json *data = WaitEnd();
 	ASSERT_NE(data, nullptr);
 	EXPECT_TRUE(Render(data, &ctx).empty());
 	int64_t retry_at = ctx.recap.retry_at;
@@ -343,7 +343,7 @@ TEST_F(RecapTest, FastAutomaticFailureKeepsItsBoundedRetryDeadline)
 	cli_recap_tick(&ctx, cli_recap_now());
 	EXPECT_EQ(ctx.recap.retry_at, retry_at);
 	EXPECT_EQ(ctx.recap.retried, 1);
-	cJSON_Delete(data);
+	json_free(data);
 }
 
 TEST_F(RecapTest, FocusReturnCancelsAutomaticAndShutdownIsBounded)
@@ -375,7 +375,7 @@ TEST_F(RecapTest, ManualRecapSurvivesFocusReturnAndSwitchingRemembersProgress)
 	cli_recap_focus(&ctx, 1, cli_recap_now());
 	EXPECT_TRUE(runtime_recap_is_current(instance, &ctx.recap.request));
 	Release();
-	cJSON *data = WaitEnd();
+	struct json *data = WaitEnd();
 	ASSERT_NE(data, nullptr);
 	EXPECT_NE(Render(data, &ctx).find("Recap:"), std::string::npos);
 	struct session other{};
@@ -386,7 +386,7 @@ TEST_F(RecapTest, ManualRecapSurvivesFocusReturnAndSwitchingRemembersProgress)
 	cli_recap_tick(&ctx, cli_recap_now() + 4000);
 	EXPECT_TRUE(ctx.recap.has_recap);
 	EXPECT_EQ(ctx.recap.last_recapped_turns, 1);
-	cJSON_Delete(data);
+	json_free(data);
 }
 
 TEST_F(RecapTest, MissingHistoryAndForegroundExecutionHaveExplicitErrors)

@@ -166,9 +166,9 @@ void react_tool_worker_destroy(struct async_tool_call *call)
 	free(call->tool_call_id);
 	free(call->provider_tool_call_id);
 	free(call->result);
-	cJSON_Delete(call->data);
-	cJSON_Delete(call->ui);
-	cJSON_Delete(call->meta);
+	json_free(call->data);
+	json_free(call->ui);
+	json_free(call->meta);
 	free(call);
 }
 
@@ -259,18 +259,17 @@ int react_tool_worker_join(struct react_context *ctx, pthread_t thread,
 
 static char *react_format_tool_error(const struct tool_result *result, int rc)
 {
-	const cJSON *error;
-	const cJSON *message;
+	const struct json *error;
+	const struct json *message;
 	const char *raw;
 	const char *detail = NULL;
 	morph_buf_t text;
 
-	if (result && cJSON_IsObject(result->envelope)) {
-		error = cJSON_GetObjectItemCaseSensitive(result->envelope, "error");
-		message = cJSON_IsObject(error) ? cJSON_GetObjectItemCaseSensitive(error, "message")
-						: NULL;
-		if (cJSON_IsString(message) && message->valuestring[0])
-			detail = message->valuestring;
+	if (result && json_is_object_value(result->envelope)) {
+		error = json_member(result->envelope, "error");
+		message = json_is_object_value(error) ? json_member(error, "message") : NULL;
+		if (json_is_string_value(message) && json_string_value(message)[0])
+			detail = json_string_value(message);
 	}
 	raw = result && result->text.data ? result->text.data : "unknown error";
 	if (morph_buf_init(&text, strlen(detail ? detail : raw) + 64) != 0)
@@ -338,16 +337,16 @@ static void *react_tool_worker_run(void *arg)
 			pthread_cond_broadcast(&call->cond);
 		} else if (rc < 0) {
 			call->result = react_format_tool_error(&res, rc);
-			call->meta = res.meta ? cJSON_Duplicate(res.meta, 1) : NULL;
+			call->meta = res.meta ? json_clone(res.meta, 1) : NULL;
 			call->rc = rc;
 			call->completed = 1;
 			pthread_cond_broadcast(&call->cond);
 		} else {
 			const char *raw = res.text.data ? res.text.data : "(no output)";
 			call->result = utf8_dup_clamped(raw, 256 * 1024);
-			call->data = res.data ? cJSON_Duplicate(res.data, 1) : NULL;
-			call->ui = res.ui ? cJSON_Duplicate(res.ui, 1) : NULL;
-			call->meta = res.meta ? cJSON_Duplicate(res.meta, 1) : NULL;
+			call->data = res.data ? json_clone(res.data, 1) : NULL;
+			call->ui = res.ui ? json_clone(res.ui, 1) : NULL;
+			call->meta = res.meta ? json_clone(res.meta, 1) : NULL;
 			call->artifacts = res.artifacts;
 			call->rc = call->result == NULL ||
 						   (res.data != NULL && call->data == NULL) ||
@@ -384,8 +383,8 @@ static void *react_tool_worker_run(void *arg)
 }
 
 void react_tool_worker_collect(struct async_tool_call *call, int *rc, char **result,
-			       struct tool_artifact_list *artifacts, cJSON **data, cJSON **ui,
-			       cJSON **meta)
+			       struct tool_artifact_list *artifacts, struct json **data,
+			       struct json **ui, struct json **meta)
 {
 	pthread_mutex_lock(&call->mutex);
 	*rc = call->rc;

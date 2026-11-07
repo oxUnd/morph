@@ -5,7 +5,7 @@
 #include "util/buf.h"
 #include "util/arena.h"
 #include "util/array.h"
-#include "cJSON.h"
+#include "util/json.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -26,26 +26,27 @@ static const struct {
 	{"delete", TOOL_PATH_ACCESS_DELETE},
 };
 
-static int collect_requests(cJSON *file_system, struct arena *arena,
-	morph_array_t *requests, const char **failed_path)
+static int collect_requests(struct json *file_system, struct arena *arena, morph_array_t *requests,
+			    const char **failed_path)
 {
 	for (size_t i = 0; i < sizeof(permissions) / sizeof(permissions[0]); i++) {
-		cJSON *paths = cJSON_GetObjectItemCaseSensitive(file_system, permissions[i].name);
-		cJSON *path;
+		struct json *paths = json_member(file_system, permissions[i].name);
+		struct json *path;
 
 		if (!paths)
 			continue;
-		if (!cJSON_IsArray(paths))
+		if (!json_is_array_value(paths))
 			return -EINVAL;
-		cJSON_ArrayForEach(path, paths) {
+		json_foreach (path, paths) {
 			char canonical[PATH_MAX];
 
-			if (!cJSON_IsString(path))
+			if (!json_is_string_value(path))
 				return -EINVAL;
-			*failed_path = path->valuestring;
+			*failed_path = json_string_value(path);
 			/* Merge before validating a path created by the same write request. */
-			int rc = tool_context_resolve_directory_access(path->valuestring,
-				TOOL_PATH_ACCESS_ALL, canonical, sizeof(canonical));
+			int rc = tool_context_resolve_directory_access(
+				json_string_value(path), TOOL_PATH_ACCESS_ALL, canonical,
+				sizeof(canonical));
 
 			if (rc != 0)
 				return rc;
@@ -113,38 +114,38 @@ static int request_permissions_run(const char *args_json,
 	struct tool_result *result, void *user_data)
 {
 	struct tool_context *tctx = user_data;
-	cJSON *root = args_json ? cJSON_ParseWithOpts(args_json, NULL, 1) : NULL;
-	cJSON *data = NULL;
+	struct json *root = args_json ? json_parse_ex(args_json, NULL, 1, NULL) : NULL;
+	struct json *data = NULL;
 	struct arena *arena = NULL;
 	morph_array_t requests = {0};
 	const char *failed_path = NULL;
 	struct directory_request *entry;
 	int rc;
 
-	if (!tctx || !cJSON_IsObject(root)) {
-		cJSON_Delete(root);
+	if (!tctx || !json_is_object_value(root)) {
+		json_free(root);
 		return tool_result_error(result, "invalid_arguments",
 			"Expected a permission request.");
 	}
-	const char *command = cJSON_GetStringValue(cJSON_GetObjectItem(root, "command"));
-	const char *scope = cJSON_GetStringValue(cJSON_GetObjectItem(root, "scope"));
-	const char *reason = cJSON_GetStringValue(cJSON_GetObjectItem(root, "justification"));
-	cJSON *permission = cJSON_GetObjectItem(root, "permissions");
-	cJSON *file_system = cJSON_GetObjectItem(permission, "file_system");
+	const char *command = json_string_value(json_member_ci(root, "command"));
+	const char *scope = json_string_value(json_member_ci(root, "scope"));
+	const char *reason = json_string_value(json_member_ci(root, "justification"));
+	struct json *permission = json_member_ci(root, "permissions");
+	struct json *file_system = json_member_ci(permission, "file_system");
 
 	if (!command || !*command)
 		command = "Access the requested directories";
 	if (!scope)
 		scope = "turn";
 	if ((strcmp(scope, "turn") != 0 && strcmp(scope, "session") != 0) ||
-	    !cJSON_IsObject(file_system)) {
-		cJSON_Delete(root);
+	    !json_is_object_value(file_system)) {
+		json_free(root);
 		return tool_result_error(result, "invalid_arguments",
 			"permissions.file_system is required; scope must be turn or session.");
 	}
 	arena = arena_create(0);
 	if (!arena) {
-		cJSON_Delete(root);
+		json_free(root);
 		return -ENOMEM;
 	}
 	rc = morph_array_init(&requests, 8, sizeof(*entry));
@@ -156,16 +157,16 @@ static int request_permissions_run(const char *args_json,
 		goto out_free_request;
 	}
 	qsort(requests.elts, requests.nelts, requests.size, request_parent_first);
-	data = cJSON_CreateObject();
-	cJSON *granted[sizeof(permissions) / sizeof(permissions[0])] = {0};
+	data = json_object();
+	struct json *granted[sizeof(permissions) / sizeof(permissions[0])] = {0};
 
-	if (!data || !cJSON_AddStringToObject(data, "scope", scope) ||
-	    !cJSON_AddStringToObject(data, "principal", "*")) {
+	if (!data || !json_add_string(data, "scope", scope) ||
+	    !json_add_string(data, "principal", "*")) {
 		rc = (-ENOMEM);
 		goto out_free_request;
 	}
 	for (size_t i = 0; i < sizeof(permissions) / sizeof(permissions[0]); i++) {
-		granted[i] = cJSON_AddArrayToObject(data, permissions[i].name);
+		granted[i] = json_add_array(data, permissions[i].name);
 		if (!granted[i]) {
 			rc = (-ENOMEM);
 			goto out_free_request;
@@ -188,10 +189,10 @@ static int request_permissions_run(const char *args_json,
 		for (size_t i = 0; i < sizeof(permissions) / sizeof(permissions[0]); i++) {
 			if (!(entry->access & permissions[i].access))
 				continue;
-			cJSON *path = cJSON_CreateString(resolved);
+			struct json *path = json_string(resolved);
 
-			if (!path || !cJSON_AddItemToArray(granted[i], path)) {
-				cJSON_Delete(path);
+			if (!path || json_array_add(granted[i], path) != 0) {
+				json_free(path);
 				rc = (-ENOMEM);
 				goto out_free_request;
 			}
@@ -201,10 +202,10 @@ static int request_permissions_run(const char *args_json,
 	data = NULL;
 
 out_free_request:
-	cJSON_Delete(data);
+	json_free(data);
 	morph_array_cleanup(&requests);
 	arena_destroy(arena);
-	cJSON_Delete(root);
+	json_free(root);
 	return rc;
 }
 

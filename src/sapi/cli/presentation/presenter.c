@@ -4,7 +4,7 @@
 #include "sapi/cli/presentation/output.h"
 #include "agent/plan.h"
 #include "config/config.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/widgets/feed.h"
@@ -222,51 +222,31 @@ void cli_presentation_prepare_prompt(struct cli_application *ctx)
 
 static const char *cli_presenter_event_string(const struct morph_event *ev, const char *name)
 {
-	cJSON *item;
-
-	if (!ev || !cJSON_IsObject(ev->data))
-		return NULL;
-	item = cJSON_GetObjectItemCaseSensitive(ev->data, name);
-	return cJSON_IsString(item) ? item->valuestring : NULL;
-}
-
-static int cli_presenter_event_error_code(const struct morph_event *ev)
-{
-	cJSON *item;
-
-	if (!ev || !cJSON_IsObject(ev->data))
-		return 0;
-	item = cJSON_GetObjectItemCaseSensitive(ev->data, "error_code");
-	return cJSON_IsNumber(item) ? item->valueint : 0;
+	return ev ? json_string_value(json_member(ev->data, name)) : NULL;
 }
 
 static int cli_presenter_event_int(const struct morph_event *ev, const char *name)
 {
-	cJSON *item;
-
-	if (!ev || !cJSON_IsObject(ev->data))
-		return 0;
-	item = cJSON_GetObjectItemCaseSensitive(ev->data, name);
-	return cJSON_IsNumber(item) ? item->valueint : 0;
+	return ev ? json_int_value(json_member(ev->data, name)) : 0;
 }
 
 static char *cli_presenter_event_args_json(const struct morph_event *ev)
 {
-	cJSON *args;
+	struct json *args;
 
-	if (!ev || !cJSON_IsObject(ev->data))
+	if (!ev || !json_is_object_value(ev->data))
 		return NULL;
-	args = cJSON_GetObjectItemCaseSensitive(ev->data, "args");
+	args = json_member(ev->data, "args");
 	if (!args)
 		return NULL;
-	return cJSON_PrintUnformatted(args);
+	return json_stringify(args);
 }
 
-static cJSON *cli_presenter_event_item(const struct morph_event *ev, const char *name)
+static struct json *cli_presenter_event_item(const struct morph_event *ev, const char *name)
 {
-	if (!ev || !cJSON_IsObject(ev->data))
+	if (!ev || !json_is_object_value(ev->data))
 		return NULL;
-	return cJSON_GetObjectItemCaseSensitive(ev->data, name);
+	return json_member(ev->data, name);
 }
 
 static void cli_presenter_print_tree_prefix(struct cli_application *ctx, const int *ancestors_last,
@@ -366,33 +346,27 @@ static void cli_presenter_print_tree_string(struct cli_application *ctx, const c
 	free(display);
 }
 
-static void cli_presenter_print_tree_scalar(struct cli_application *ctx, const cJSON *item)
+static void cli_presenter_print_tree_scalar(struct cli_application *ctx, const struct json *item)
 {
 	char *value;
 
-	value = cJSON_PrintUnformatted(item);
+	value = json_stringify(item);
 	if (value) {
 		printf(ctx, "%s", value);
 		free(value);
 	}
 }
 
-static int cli_presenter_json_child_count(const cJSON *item)
-{
-	return cJSON_IsArray(item) ? cJSON_GetArraySize(item)
-				   : (cJSON_IsObject(item) ? cJSON_GetArraySize(item) : 0);
-}
-
 static void cli_presenter_print_tree_container_summary(struct cli_application *ctx,
-						       const cJSON *item)
+						       const struct json *item)
 {
-	int count = cli_presenter_json_child_count(item);
+	int count = json_count(item);
 
-	printf(ctx, "%s %d item%s", cJSON_IsArray(item) ? "[...]" : "{...}", count,
+	printf(ctx, "%s %d item%s", json_is_array_value(item) ? "[...]" : "{...}", count,
 	       count == 1 ? "" : "s");
 }
 
-static void cli_presenter_print_json_tree_node(struct cli_application *ctx, const cJSON *item,
+static void cli_presenter_print_json_tree_node(struct cli_application *ctx, const struct json *item,
 					       const char *label, int depth, int is_last,
 					       int *ancestors_last, int collapse_depth,
 					       int embedded_json_depth)
@@ -400,21 +374,21 @@ static void cli_presenter_print_json_tree_node(struct cli_application *ctx, cons
 	int count;
 	int shown;
 	int index = 0;
-	cJSON *child;
-	cJSON *embedded = NULL;
+	struct json *child;
+	struct json *embedded = NULL;
 
-	if (!cJSON_IsArray(item) && !cJSON_IsObject(item)) {
-		if (cJSON_IsString(item) && depth == embedded_json_depth)
-			embedded = cJSON_Parse(item->valuestring);
-		if (cJSON_IsArray(embedded) || cJSON_IsObject(embedded)) {
+	if (!json_is_array_value(item) && !json_is_object_value(item)) {
+		if (json_is_string_value(item) && depth == embedded_json_depth)
+			embedded = json_parse_prefix(json_string_value(item), NULL, NULL);
+		if (json_is_array_value(embedded) || json_is_object_value(embedded)) {
 			cli_presenter_print_json_tree_node(ctx, embedded, label, depth, is_last,
 							   ancestors_last, collapse_depth, -1);
-			cJSON_Delete(embedded);
+			json_free(embedded);
 			return;
 		}
-		cJSON_Delete(embedded);
-		if (cJSON_IsString(item)) {
-			cli_presenter_print_tree_string(ctx, item->valuestring, label, depth,
+		json_free(embedded);
+		if (json_is_string_value(item)) {
+			cli_presenter_print_tree_string(ctx, json_string_value(item), label, depth,
 							is_last, ancestors_last);
 			return;
 		}
@@ -434,9 +408,9 @@ static void cli_presenter_print_json_tree_node(struct cli_application *ctx, cons
 		cli_presenter_print_safe_inline(ctx, label, CLI_PRESENTER_TREE_VALUE_MAX);
 		printf(ctx, ":" ANSI_RESET);
 	}
-	count = cli_presenter_json_child_count(item);
+	count = json_count(item);
 	if (count == 0) {
-		printf(ctx, " %s\n", cJSON_IsArray(item) ? "[]" : "{}");
+		printf(ctx, " %s\n", json_is_array_value(item) ? "[]" : "{}");
 		return;
 	}
 	if (depth >= collapse_depth) {
@@ -453,18 +427,18 @@ static void cli_presenter_print_json_tree_node(struct cli_application *ctx, cons
 		return;
 	}
 	shown = count < CLI_PRESENTER_TREE_ITEMS_MAX ? count : CLI_PRESENTER_TREE_ITEMS_MAX;
-	cJSON_ArrayForEach (child, item) {
+	json_foreach (child, item) {
 		char array_label[32];
 		const char *child_label;
 		int child_last;
 
 		if (index >= shown)
 			break;
-		if (cJSON_IsArray(item)) {
+		if (json_is_array_value(item)) {
 			snprintf(array_label, sizeof(array_label), "[%d]", index);
 			child_label = array_label;
 		} else {
-			child_label = child->string ? child->string : "item";
+			child_label = json_key(child) ? json_key(child) : "item";
 		}
 		child_last = index == shown - 1 && shown == count;
 		cli_presenter_print_json_tree_node(ctx, child, child_label, depth + 1, child_last,
@@ -478,28 +452,29 @@ static void cli_presenter_print_json_tree_node(struct cli_application *ctx, cons
 	}
 }
 
-static void cli_presenter_print_json_tree_children(struct cli_application *ctx, const cJSON *item)
+static void cli_presenter_print_json_tree_children(struct cli_application *ctx,
+						   const struct json *item)
 {
 	int ancestors_last[CLI_PRESENTER_TREE_DEPTH_MAX] = {0};
 	int count;
 	int index = 0;
-	cJSON *child;
+	struct json *child;
 
-	if (!cJSON_IsArray(item) && !cJSON_IsObject(item))
+	if (!json_is_array_value(item) && !json_is_object_value(item))
 		return;
-	count = cli_presenter_json_child_count(item);
-	cJSON_ArrayForEach (child, item) {
+	count = json_count(item);
+	json_foreach (child, item) {
 		char array_label[32];
 		const char *label;
 		int is_last;
 
 		if (index >= CLI_PRESENTER_TREE_ITEMS_MAX)
 			break;
-		if (cJSON_IsArray(item)) {
+		if (json_is_array_value(item)) {
 			snprintf(array_label, sizeof(array_label), "[%d]", index);
 			label = array_label;
 		} else {
-			label = child->string ? child->string : "item";
+			label = json_key(child) ? json_key(child) : "item";
 		}
 		is_last = index == count - 1 && count <= CLI_PRESENTER_TREE_ITEMS_MAX;
 		cli_presenter_print_json_tree_node(ctx, child, label, 0, is_last, ancestors_last,
@@ -892,8 +867,8 @@ static void cli_presenter_tool_call(struct cli_application *ctx, const struct mo
 {
 	const char *tool = cli_presenter_event_string(ev, "tool");
 	const char *title = cli_presenter_event_string(ev, "toolTitle");
-	cJSON *args_item = cli_presenter_event_item(ev, "args");
-	cJSON *input_item = NULL;
+	struct json *args_item = cli_presenter_event_item(ev, "args");
+	struct json *input_item = NULL;
 	const char *patch_input = NULL;
 	char *args = NULL;
 	char *safe_tool;
@@ -913,10 +888,10 @@ static void cli_presenter_tool_call(struct cli_application *ctx, const struct mo
 		tool = safe_tool;
 	if (safe_title)
 		title = safe_title;
-	if (strcmp(tool, "apply_patch") == 0 && cJSON_IsObject(args_item)) {
-		input_item = cJSON_GetObjectItemCaseSensitive(args_item, "input");
-		if (cJSON_IsString(input_item))
-			patch_input = input_item->valuestring;
+	if (strcmp(tool, "apply_patch") == 0 && json_is_object_value(args_item)) {
+		input_item = json_member(args_item, "input");
+		if (json_is_string_value(input_item))
+			patch_input = json_string_value(input_item);
 	}
 	if (!patch_input)
 		args = cli_presenter_event_args_json(ev);
@@ -995,78 +970,76 @@ static const char *cli_presenter_plan_mark(const char *status, int active)
 
 static int cli_presenter_plan(struct cli_application *ctx, const struct morph_event *ev)
 {
-	cJSON *result;
-	cJSON *plans;
-	cJSON *plan;
+	struct json *result;
+	struct json *plans;
+	struct json *plan;
 	const char *selected;
 	const char *selected_key = "id";
 	int printed = 0;
 
-	if (!ev || !cJSON_IsObject(ev->data) || !cli_presenter_event_string(ev, "tool") ||
+	if (!ev || !json_is_object_value(ev->data) || !cli_presenter_event_string(ev, "tool") ||
 	    strcmp(cli_presenter_event_string(ev, "tool"), "plan") != 0)
 		return 0;
-	result = cJSON_GetObjectItemCaseSensitive(ev->data, "data");
-	plans = cJSON_IsObject(result) ? cJSON_GetObjectItemCaseSensitive(result, "plans") : NULL;
-	if (!cJSON_IsArray(plans))
+	result = json_member(ev->data, "data");
+	plans = json_is_object_value(result) ? json_member(result, "plans") : NULL;
+	if (!json_is_array_value(plans))
 		return 0;
-	selected =
-		cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(result, "selected_plan_id"));
+	selected = json_string_value(json_member(result, "selected_plan_id"));
 	if (!selected) {
-		selected = cJSON_GetStringValue(
-			cJSON_GetObjectItemCaseSensitive(result, "selected_plan"));
+		selected = json_string_value(json_member(result, "selected_plan"));
 		selected_key = "name";
 	}
-	cJSON_ArrayForEach (plan, plans) {
-		cJSON *steps;
-		cJSON *step;
+	json_foreach (plan, plans) {
+		struct json *steps;
+		struct json *step;
 		int completed = 0;
 		int count;
 
-		if (!cJSON_IsObject(plan))
+		if (!json_is_object_value(plan))
 			continue;
 		if (selected) {
-			const char *value = cJSON_GetStringValue(
-				cJSON_GetObjectItemCaseSensitive(plan, selected_key));
+			const char *value = json_string_value(json_member(plan, selected_key));
 
 			if (!value || strcmp(value, selected) != 0)
 				continue;
 		}
-		steps = cJSON_GetObjectItemCaseSensitive(plan, "steps");
-		if (!cJSON_IsArray(steps))
+		steps = json_member(plan, "steps");
+		if (!json_is_array_value(steps))
 			continue;
-		count = cJSON_GetArraySize(steps);
-		cJSON_ArrayForEach (step, steps) {
-			const cJSON *status = cJSON_GetObjectItemCaseSensitive(step, "status");
+		count = json_count(steps);
+		json_foreach (step, steps) {
+			const struct json *status = json_member(step, "status");
 
-			if (cJSON_IsString(status) && strcmp(status->valuestring, "completed") == 0)
+			if (json_is_string_value(status) &&
+			    strcmp(json_string_value(status), "completed") == 0)
 				completed++;
 		}
 		printf(ctx, "  " ANSI_DIM "Plan · %d/%d completed" ANSI_RESET "\n", completed,
 		       count);
 		printed = 1;
-		cJSON_ArrayForEach (step, steps) {
-			cJSON *description;
-			cJSON *status;
-			cJSON *active;
+		json_foreach (step, steps) {
+			struct json *description;
+			struct json *status;
+			struct json *active;
 			const char *mark;
 			const char *color;
 
-			if (!cJSON_IsObject(step))
+			if (!json_is_object_value(step))
 				continue;
-			description = cJSON_GetObjectItemCaseSensitive(step, "description");
-			status = cJSON_GetObjectItemCaseSensitive(step, "status");
-			active = cJSON_GetObjectItemCaseSensitive(step, "active");
-			if (!cJSON_IsString(description))
+			description = json_member(step, "description");
+			status = json_member(step, "status");
+			active = json_member(step, "active");
+			if (!json_is_string_value(description))
 				continue;
-			mark = cli_presenter_plan_mark(cJSON_IsString(status) ? status->valuestring
-									      : NULL,
-						       cJSON_IsTrue(active));
+			mark = cli_presenter_plan_mark(
+				json_is_string_value(status) ? json_string_value(status) : NULL,
+				json_is_true(active));
 			color = strcmp(mark, CLI_FEED_DONE) == 0      ? ANSI_GREEN
 				: strcmp(mark, CLI_FEED_FAILED) == 0  ? ANSI_RED
 				: strcmp(mark, CLI_FEED_RUNNING) == 0 ? ANSI_YELLOW
 								      : ANSI_DIM;
 			printf(ctx, "  %s%s" ANSI_RESET " ", color, mark);
-			cli_presenter_print_safe_inline(ctx, description->valuestring,
+			cli_presenter_print_safe_inline(ctx, json_string_value(description),
 							CLI_PRESENTER_EVENT_TEXT_MAX);
 			printf(ctx, "\n");
 		}
@@ -1079,8 +1052,8 @@ static int cli_presenter_plan(struct cli_application *ctx, const struct morph_ev
 static void cli_presenter_observation(struct cli_application *ctx, const struct morph_event *ev)
 {
 	const char *text = cli_presenter_event_string(ev, "text");
-	cJSON *structured = cli_presenter_event_item(ev, "data");
-	cJSON *parsed = NULL;
+	struct json *structured = cli_presenter_event_item(ev, "data");
+	struct json *parsed = NULL;
 
 	cli_presenter_clear_status(ctx);
 	cli_presenter_print_stream(ctx);
@@ -1090,7 +1063,7 @@ static void cli_presenter_observation(struct cli_application *ctx, const struct 
 		cli_presenter_print_plain_labeled(ctx, "observation", text);
 	} else if (cli_presenter_plan(ctx, ev)) {
 		return;
-	} else if (cli_presenter_event_error_code(ev) < 0) {
+	} else if (cli_presenter_event_int(ev, "error_code") < 0) {
 		morph_buf_t prefix = {0};
 		if (morph_buf_init(&prefix, 64) == 0) {
 			morph_tui_widget_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
@@ -1099,9 +1072,9 @@ static void cli_presenter_observation(struct cli_application *ctx, const struct 
 			morph_buf_cleanup(&prefix);
 		}
 	} else {
-		if (!cJSON_IsArray(structured) && !cJSON_IsObject(structured))
-			parsed = cJSON_Parse(text);
-		if (cJSON_IsArray(structured) || cJSON_IsObject(structured)) {
+		if (!json_is_array_value(structured) && !json_is_object_value(structured))
+			parsed = json_parse_prefix(text, NULL, NULL);
+		if (json_is_array_value(structured) || json_is_object_value(structured)) {
 			int ancestors_last[CLI_PRESENTER_TREE_DEPTH_MAX] = {0};
 
 			cli_presenter_print_json_tree_node(ctx, structured, "result", 0, 1,
@@ -1123,7 +1096,7 @@ static void cli_presenter_observation(struct cli_application *ctx, const struct 
 				morph_buf_cleanup(&prefix);
 			}
 		}
-		cJSON_Delete(parsed);
+		json_free(parsed);
 	}
 }
 
@@ -1411,14 +1384,15 @@ static void cli_presenter_mcp_tree_start(struct cli_application *ctx, const char
 
 static void cli_presenter_mcp_ready(struct cli_application *ctx, const struct morph_event *ev)
 {
-	cJSON *tools = cli_presenter_event_item(ev, "tools");
-	cJSON *resources = cli_presenter_event_item(ev, "resources");
-	cJSON *prompts = cli_presenter_event_item(ev, "prompts");
+	struct json *tools = cli_presenter_event_item(ev, "tools");
+	struct json *resources = cli_presenter_event_item(ev, "resources");
+	struct json *prompts = cli_presenter_event_item(ev, "prompts");
 
 	printf(ctx, ANSI_GREEN CLI_FEED_DONE " Ready" ANSI_RESET);
-	if (cJSON_IsNumber(tools) && cJSON_IsNumber(resources) && cJSON_IsNumber(prompts)) {
+	if (json_is_number_value(tools) && json_is_number_value(resources) &&
+	    json_is_number_value(prompts)) {
 		printf(ctx, ANSI_DIM " · %d tools, %d resources, %d prompts" ANSI_RESET,
-		       tools->valueint, resources->valueint, prompts->valueint);
+		       json_int_value(tools), json_int_value(resources), json_int_value(prompts));
 	}
 }
 
@@ -1486,18 +1460,18 @@ static void cli_presenter_auxiliary(struct cli_application *ctx, const struct mo
 		     (strcmp(ev->name, "task.started") == 0 ||
 		      strcmp(ev->name, "task.claimed") == 0 ||
 		      strcmp(ev->name, "task.rescheduled") == 0 ||
-		      cJSON_IsNumber(cli_presenter_event_item(ev, "notification_id")))))
+		      json_is_number_value(cli_presenter_event_item(ev, "notification_id")))))
 			return;
 	}
 	/* Foreground task mutations are already reported by the tool result. */
 	if (ev->type == MORPH_EVENT_TASK && ctx->turn_active && ev->name &&
-	    cli_presenter_event_error_code(ev) >= 0 &&
+	    cli_presenter_event_int(ev, "error_code") >= 0 &&
 	    (strcmp(ev->name, "task.created") == 0 || strcmp(ev->name, "task.updated") == 0 ||
 	     strcmp(ev->name, "task.cancelled") == 0))
 		return;
 	if (ev->type == MORPH_EVENT_BACKGROUND) {
 		if ((ev->name && strstr(ev->name, "failed")) ||
-		    cli_presenter_event_error_code(ev) < 0) {
+		    cli_presenter_event_int(ev, "error_code") < 0) {
 			status_paused = cli_presenter_pause_status(ctx);
 			printf(ctx, "\n" ANSI_RED CLI_FEED_FAILED " Background · ");
 			cli_presenter_print_safe_inline(
@@ -1515,7 +1489,7 @@ static void cli_presenter_auxiliary(struct cli_application *ctx, const struct mo
 		return;
 	}
 	if (ev->type == MORPH_EVENT_MCP) {
-		if (!cJSON_IsTrue(cli_presenter_event_item(ev, "background")) ||
+		if (!json_is_true(cli_presenter_event_item(ev, "background")) ||
 		    !ctx->input_status.enabled) {
 			cli_presenter_mcp(ctx, ev);
 		} else if (ev->name && strcmp(ev->name, "mcp.failed") == 0) {
@@ -1545,9 +1519,10 @@ static void cli_presenter_auxiliary(struct cli_application *ctx, const struct mo
 		return;
 	status_paused = cli_presenter_pause_status(ctx);
 	printf(ctx, "\n%s%s" ANSI_RESET " %s · ",
-	       ev->type == MORPH_EVENT_ERROR || cli_presenter_event_error_code(ev) < 0 ? ANSI_RED
-										       : ANSI_DIM,
-	       ev->type == MORPH_EVENT_ERROR || cli_presenter_event_error_code(ev) < 0
+	       ev->type == MORPH_EVENT_ERROR || cli_presenter_event_int(ev, "error_code") < 0
+		       ? ANSI_RED
+		       : ANSI_DIM,
+	       ev->type == MORPH_EVENT_ERROR || cli_presenter_event_int(ev, "error_code") < 0
 		       ? CLI_FEED_FAILED
 		       : CLI_FEED_SYSTEM,
 	       prefix);

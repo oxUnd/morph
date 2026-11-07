@@ -9,7 +9,7 @@
 #include "util/buf.h"
 #include "util/error.h"
 #include "ipc/jsonrpc.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "re.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -48,9 +48,9 @@ enum guardrail_retry_policy guardrail_tool_retry_policy(const struct react_step 
 {
 	const char *text = observation ? observation->content : NULL;
 	static const char prefix[] = "tool error: ";
-	cJSON *payload;
-	const cJSON *retry;
-	const cJSON *reason;
+	struct json *payload;
+	const struct json *retry;
+	const struct json *reason;
 	int terminal;
 	int blocked;
 
@@ -58,13 +58,13 @@ enum guardrail_retry_policy guardrail_tool_retry_policy(const struct react_step 
 		return GUARDRAIL_RETRY_UNSPECIFIED;
 	if (text && strncmp(text, prefix, sizeof(prefix) - 1) == 0)
 		text += sizeof(prefix) - 1;
-	payload = text ? cJSON_ParseWithOpts(text, NULL, 1) : NULL;
-	retry = cJSON_GetObjectItemCaseSensitive(payload, "retry");
-	terminal = cJSON_IsString(retry) && strcmp(retry->valuestring, "never") == 0;
-	reason = cJSON_GetObjectItemCaseSensitive(payload, "reason");
-	blocked = terminal && cJSON_IsString(reason) &&
-		strcmp(reason->valuestring, "screen_locked") == 0;
-	cJSON_Delete(payload);
+	payload = text ? json_parse_ex(text, NULL, 1, NULL) : NULL;
+	retry = json_member(payload, "retry");
+	terminal = json_is_string_value(retry) && strcmp(json_string_value(retry), "never") == 0;
+	reason = json_member(payload, "reason");
+	blocked = terminal && json_is_string_value(reason) &&
+		  strcmp(json_string_value(reason), "screen_locked") == 0;
+	json_free(payload);
 	if (blocked)
 		return GUARDRAIL_RETRY_BLOCKED;
 	if (terminal)
@@ -507,7 +507,7 @@ guardrail_llm_check(const struct guardrail_rule *rule,
 	}
 
 	char *result_str = morph_buf_detach(&collect);
-	cJSON *root = cJSON_Parse(result_str);
+	struct json *root = json_parse_prefix(result_str, NULL, NULL);
 	free(result_str);
 	if (!root) {
 		log_warn(cfg ? cfg->logger : NULL,
@@ -516,17 +516,18 @@ guardrail_llm_check(const struct guardrail_rule *rule,
 		return GUARDRAIL_PASS;
 	}
 
-	cJSON *pass_item = cJSON_GetObjectItem(root, "pass");
-	int passed = cJSON_IsBool(pass_item) ? cJSON_IsTrue(pass_item) : 1;
+	struct json *pass_item = json_member_ci(root, "pass");
+	int passed = json_is_bool_value(pass_item) ? json_is_true(pass_item) : 1;
 
 	if (!passed) {
-		cJSON *reason_item = cJSON_GetObjectItem(root, "reason");
-		const char *reason = cJSON_IsString(reason_item)
-			? reason_item->valuestring : rule->description;
+		struct json *reason_item = json_member_ci(root, "reason");
+		const char *reason = json_is_string_value(reason_item)
+					     ? json_string_value(reason_item)
+					     : rule->description;
 		snprintf(reason_out, reason_cap, "%s", reason);
 	}
 
-	cJSON_Delete(root);
+	json_free(root);
 	return passed ? GUARDRAIL_PASS : GUARDRAIL_FAIL;
 }
 
@@ -551,7 +552,7 @@ static enum guardrail_verdict guardrail_parse_check_result(struct morph_log *log
 							   const struct guardrail_rule *rule,
 							   char *reason_out, size_t reason_cap)
 {
-	cJSON *root = cJSON_Parse(result_json);
+	struct json *root = json_parse_prefix(result_json, NULL, NULL);
 	if (!root) {
 		log_warn(logger,
 			 "guardrail: ext rule '%s' returned invalid JSON, "
@@ -559,19 +560,20 @@ static enum guardrail_verdict guardrail_parse_check_result(struct morph_log *log
 			 rule->name);
 		return GUARDRAIL_ERROR;
 	}
-	cJSON *pass_item = cJSON_GetObjectItem(root, "pass");
-	if (!cJSON_IsBool(pass_item)) {
-		cJSON_Delete(root);
+	struct json *pass_item = json_member_ci(root, "pass");
+	if (!json_is_bool_value(pass_item)) {
+		json_free(root);
 		return GUARDRAIL_ERROR;
 	}
-	int passed = cJSON_IsTrue(pass_item);
+	int passed = json_is_true(pass_item);
 	if (!passed) {
-		cJSON *reason_item = cJSON_GetObjectItem(root, "reason");
-		const char *reason = cJSON_IsString(reason_item)
-			? reason_item->valuestring : rule->description;
+		struct json *reason_item = json_member_ci(root, "reason");
+		const char *reason = json_is_string_value(reason_item)
+					     ? json_string_value(reason_item)
+					     : rule->description;
 		snprintf(reason_out, reason_cap, "%s", reason);
 	}
-	cJSON_Delete(root);
+	json_free(root);
 	return passed ? GUARDRAIL_PASS : GUARDRAIL_FAIL;
 }
 
@@ -652,7 +654,7 @@ static enum guardrail_verdict guardrail_ext_exec_check(const struct guardrail_ru
 	pid_t pid;
 	morph_buf_t request = {0}, output = {0}, errors = {0};
 	struct jsonrpc_response response = {0};
-	cJSON *params;
+	struct json *params;
 	char *params_json;
 	char *json;
 	int rc;
@@ -662,19 +664,19 @@ static enum guardrail_verdict guardrail_ext_exec_check(const struct guardrail_ru
 	if (rule->ext_entry[0] == '\0') {
 		return GUARDRAIL_ERROR;
 	}
-	params = cJSON_CreateObject();
+	params = json_object();
 	if (params == NULL) {
 		return GUARDRAIL_ERROR;
 	}
 	const char *text = gr_check_text(rule, ctx);
-	if (!cJSON_AddStringToObject(params, "text", text ? text : "") ||
-	    !cJSON_AddStringToObject(params, "rule", rule->name) ||
-	    !cJSON_AddStringToObject(params, "description", rule->description)) {
-		cJSON_Delete(params);
+	if (!json_add_string(params, "text", text ? text : "") ||
+	    !json_add_string(params, "rule", rule->name) ||
+	    !json_add_string(params, "description", rule->description)) {
+		json_free(params);
 		return GUARDRAIL_ERROR;
 	}
-	params_json = cJSON_PrintUnformatted(params);
-	cJSON_Delete(params);
+	params_json = json_stringify(params);
+	json_free(params);
 	if (params_json == NULL) {
 		return GUARDRAIL_ERROR;
 	}

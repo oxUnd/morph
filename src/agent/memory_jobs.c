@@ -4,7 +4,7 @@
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/log.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
@@ -176,34 +176,34 @@ static void memory_job_free(struct memory_job *j)
 
 static int memory_job_record(struct db *db, struct memory_job *job)
 {
-	cJSON *payload = cJSON_CreateObject();
-	cJSON *tools = payload ? cJSON_AddArrayToObject(payload, "tools") : NULL;
+	struct json *payload = json_object();
+	struct json *tools = payload ? json_add_array(payload, "tools") : NULL;
 	char *json;
 	int rc;
 
-	if (!tools || !cJSON_AddStringToObject(payload, "input", job->user_input) ||
-	    !cJSON_AddStringToObject(payload, "answer",
-				     job->assistant_output ? job->assistant_output : "") ||
-	    !cJSON_AddBoolToObject(payload, "success", job->success) ||
-	    !cJSON_AddBoolToObject(payload, "llm", job->opts.llm_extract_enabled) ||
-	    !cJSON_AddBoolToObject(payload, "episodes", job->opts.cold_path_enabled)) {
-		cJSON_Delete(payload);
+	if (!tools || !json_add_string(payload, "input", job->user_input) ||
+	    !json_add_string(payload, "answer",
+			     job->assistant_output ? job->assistant_output : "") ||
+	    !json_add_bool(payload, "success", job->success) ||
+	    !json_add_bool(payload, "llm", job->opts.llm_extract_enabled) ||
+	    !json_add_bool(payload, "episodes", job->opts.cold_path_enabled)) {
+		json_free(payload);
 		return -ENOMEM;
 	}
 	for (struct react_step *step = job->steps; step; step = step->next) {
-		cJSON *name;
+		struct json *name;
 
 		if (step->type != REACT_STEP_ACTION || !step->tool_name)
 			continue;
-		name = cJSON_CreateString(step->tool_name);
-		if (!name || !cJSON_AddItemToArray(tools, name)) {
-			cJSON_Delete(name);
-			cJSON_Delete(payload);
+		name = json_string(step->tool_name);
+		if (!name || json_array_add(tools, name) != 0) {
+			json_free(name);
+			json_free(payload);
 			return -ENOMEM;
 		}
 	}
-	json = cJSON_PrintUnformatted(payload);
-	cJSON_Delete(payload);
+	json = json_stringify(payload);
+	json_free(payload);
 	if (!json)
 		return -ENOMEM;
 	rc = memory_job_store_add(db, job->session_id, job->opts.generation, json,
@@ -391,61 +391,59 @@ int memory_async_pending(struct memory_worker *worker)
 static struct memory_job *memory_job_restore(struct db *db, const struct memory_job_record *row)
 {
 	const char *json = row->payload_json;
-	cJSON *payload = json ? cJSON_Parse(json) : NULL;
-	cJSON *input = cJSON_GetObjectItemCaseSensitive(payload, "input");
-	cJSON *answer = cJSON_GetObjectItemCaseSensitive(payload, "answer");
-	cJSON *name;
+	struct json *payload = json ? json_parse_prefix(json, NULL, NULL) : NULL;
+	struct json *input = json_member(payload, "input");
+	struct json *answer = json_member(payload, "answer");
+	struct json *name;
 	struct memory_job *job;
 
-	if (!cJSON_IsString(input) || !cJSON_IsString(answer)) {
-		cJSON_Delete(payload);
+	if (!json_is_string_value(input) || !json_is_string_value(answer)) {
+		json_free(payload);
 		return NULL;
 	}
 	job = calloc(1, sizeof(*job));
 	if (!job) {
-		cJSON_Delete(payload);
+		json_free(payload);
 		return NULL;
 	}
 	job->db_path = strdup(db->path);
-	job->user_input = strdup(input->valuestring);
-	job->assistant_output = strdup(answer->valuestring);
+	job->user_input = strdup(json_string_value(input));
+	job->assistant_output = strdup(json_string_value(answer));
 	job->session_id = row->session_id;
-	job->success = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(payload, "success"));
+	job->success = json_is_true(json_member(payload, "success"));
 	job->opts.enabled = 1;
-	job->opts.cold_path_enabled =
-		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(payload, "episodes"));
-	job->opts.llm_extract_enabled =
-		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(payload, "llm"));
+	job->opts.cold_path_enabled = json_is_true(json_member(payload, "episodes"));
+	job->opts.llm_extract_enabled = json_is_true(json_member(payload, "llm"));
 	job->opts.generation_bound = 1;
 	job->opts.generation = row->generation;
 	job->opts.background_job_id = row->id;
 	if (!job->db_path || !job->user_input || !job->assistant_output) {
-		cJSON_Delete(payload);
+		json_free(payload);
 		memory_job_free(job);
 		return NULL;
 	}
-	cJSON_ArrayForEach (name, cJSON_GetObjectItemCaseSensitive(payload, "tools")) {
+	json_foreach (name, json_member(payload, "tools")) {
 		struct react_step *step;
 
-		if (!cJSON_IsString(name))
+		if (!json_is_string_value(name))
 			continue;
 		step = calloc(1, sizeof(*step));
 		if (!step) {
-			cJSON_Delete(payload);
+			json_free(payload);
 			memory_job_free(job);
 			return NULL;
 		}
 		step->type = REACT_STEP_ACTION;
-		step->tool_name = strdup(name->valuestring);
+		step->tool_name = strdup(json_string_value(name));
 		step->next = job->steps;
 		job->steps = step;
 		if (!step->tool_name) {
-			cJSON_Delete(payload);
+			json_free(payload);
 			memory_job_free(job);
 			return NULL;
 		}
 	}
-	cJSON_Delete(payload);
+	json_free(payload);
 	return job;
 }
 

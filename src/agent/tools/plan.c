@@ -6,7 +6,7 @@
 #include "util/log.h"
 #include "util/arena.h"
 #include "util/buf.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -195,157 +195,142 @@ static int plan_all_done(struct plan *p)
 	return 1;
 }
 
-static cJSON *plan_to_json(struct plan *p)
+static struct json *plan_to_json(struct plan *p)
 {
 	if (!p)
 		return NULL;
 
-	cJSON *obj = cJSON_CreateObject();
+	struct json *obj = json_object();
 	if (!obj)
 		return NULL;
 
-	cJSON *steps = cJSON_CreateArray();
+	struct json *steps = json_array();
 	if (!steps)
 		goto fail;
 
-	if (!cJSON_AddStringToObject(obj, "id", p->id) ||
-	    !cJSON_AddStringToObject(obj, "name", p->name) ||
-	    !cJSON_AddStringToObject(obj, "goal", p->goal) ||
-	    !cJSON_AddStringToObject(obj, "request", p->request) ||
-	    !cJSON_AddStringToObject(obj, "constraints", p->constraints) ||
-	    !cJSON_AddStringToObject(obj, "acceptance", p->acceptance) ||
-	    !cJSON_AddStringToObject(obj, "rejected", p->rejected) ||
-	    !cJSON_AddStringToObject(obj, "verification", p->verification) ||
-	    !cJSON_AddNumberToObject(obj, "step_count", p->step_count) ||
-	    !cJSON_AddNumberToObject(obj, "active_step", p->active_step) ||
-	    !cJSON_AddBoolToObject(obj, "all_done", plan_all_done(p)))
+	if (!json_add_string(obj, "id", p->id) || !json_add_string(obj, "name", p->name) ||
+	    !json_add_string(obj, "goal", p->goal) ||
+	    !json_add_string(obj, "request", p->request) ||
+	    !json_add_string(obj, "constraints", p->constraints) ||
+	    !json_add_string(obj, "acceptance", p->acceptance) ||
+	    !json_add_string(obj, "rejected", p->rejected) ||
+	    !json_add_string(obj, "verification", p->verification) ||
+	    !json_add_number(obj, "step_count", p->step_count) ||
+	    !json_add_number(obj, "active_step", p->active_step) ||
+	    !json_add_bool(obj, "all_done", plan_all_done(p)))
 		goto fail;
 
 	for (int i = 0; i < p->step_count; i++) {
 		struct plan_step *s = &p->steps[i];
-		cJSON *step = cJSON_CreateObject();
+		struct json *step = json_object();
 		if (!step)
 			goto fail;
-		if (!cJSON_AddNumberToObject(step, "id", s->id) ||
-		    !cJSON_AddStringToObject(step, "description", s->description) ||
-		    !cJSON_AddStringToObject(step, "status", s->status) ||
-		    !cJSON_AddStringToObject(step, "evidence", s->evidence) ||
-		    !cJSON_AddStringToObject(step, "blocker", s->blocker) ||
-		    !cJSON_AddStringToObject(step, "artifact", s->artifact) ||
-		    !cJSON_AddBoolToObject(step, "active",
-					   i == p->active_step && p->active_step >= 0)) {
-			cJSON_Delete(step);
+		if (!json_add_number(step, "id", s->id) ||
+		    !json_add_string(step, "description", s->description) ||
+		    !json_add_string(step, "status", s->status) ||
+		    !json_add_string(step, "evidence", s->evidence) ||
+		    !json_add_string(step, "blocker", s->blocker) ||
+		    !json_add_string(step, "artifact", s->artifact) ||
+		    !json_add_bool(step, "active", i == p->active_step && p->active_step >= 0)) {
+			json_free(step);
 			goto fail;
 		}
-		cJSON_AddItemToArray(steps, step);
+		json_array_add(steps, step);
 	}
 
-	cJSON_AddItemToObject(obj, "steps", steps);
+	json_object_add(obj, "steps", steps);
 	return obj;
 
 fail:
-	cJSON_Delete(steps);
-	cJSON_Delete(obj);
+	json_free(steps);
+	json_free(obj);
 	return NULL;
 }
 
-static cJSON *plan_registry_to_json(struct plan_registry *reg,
-				    const char *command,
-				    const char *selected_plan_id,
-				    const char *selected_plan)
+static struct json *plan_registry_to_json(struct plan_registry *reg, const char *command,
+					  const char *selected_plan_id, const char *selected_plan)
 {
-	cJSON *root = cJSON_CreateObject();
+	struct json *root = json_object();
 	if (!root)
 		return NULL;
 
-	cJSON *plans = cJSON_CreateArray();
+	struct json *plans = json_array();
 	if (!plans)
 		goto fail;
 
-	if (!cJSON_AddStringToObject(root, "kind", "plan_state") ||
-	    !cJSON_AddStringToObject(root, "command",
-				     command ? command : "") ||
-	    !cJSON_AddNumberToObject(root, "count",
-				     reg ? reg->count : 0))
+	if (!json_add_string(root, "kind", "plan_state") ||
+	    !json_add_string(root, "command", command ? command : "") ||
+	    !json_add_number(root, "count", reg ? reg->count : 0))
 		goto fail;
 
-	if (selected_plan_id &&
-	    !cJSON_AddStringToObject(root, "selected_plan_id",
-				     selected_plan_id))
+	if (selected_plan_id && !json_add_string(root, "selected_plan_id", selected_plan_id))
 		goto fail;
 
-	if (selected_plan &&
-	    !cJSON_AddStringToObject(root, "selected_plan", selected_plan))
+	if (selected_plan && !json_add_string(root, "selected_plan", selected_plan))
 		goto fail;
 
 	if (reg) {
 		for (int i = 0; i < reg->count; i++) {
-			cJSON *item = plan_to_json(&reg->plans[i]);
+			struct json *item = plan_to_json(&reg->plans[i]);
 			if (!item)
 				goto fail;
-			cJSON_AddItemToArray(plans, item);
+			json_array_add(plans, item);
 		}
 	}
 
-	cJSON_AddItemToObject(root, "plans", plans);
+	json_object_add(root, "plans", plans);
 	return root;
 
 fail:
-	cJSON_Delete(plans);
-	cJSON_Delete(root);
+	json_free(plans);
+	json_free(root);
 	return NULL;
 }
 
-static cJSON *plan_ui_to_json(cJSON *data)
+static struct json *plan_ui_to_json(struct json *data)
 {
-	cJSON *ui = cJSON_CreateObject();
-	cJSON *summary = NULL;
-	cJSON *item;
+	struct json *ui = json_object();
+	struct json *summary = NULL;
+	struct json *item;
 
 	if (!ui)
 		return NULL;
 
-	if (!cJSON_AddStringToObject(ui, "component", "plan") ||
-	    !cJSON_AddStringToObject(ui, "version", "1"))
+	if (!json_add_string(ui, "component", "plan") || !json_add_string(ui, "version", "1"))
 		goto fail;
 
-	summary = cJSON_CreateObject();
+	summary = json_object();
 	if (!summary)
 		goto fail;
 	if (data) {
-		item = cJSON_GetObjectItem(data, "kind");
-		if (cJSON_IsString(item) &&
-		    !cJSON_AddStringToObject(summary, "kind",
-					     item->valuestring))
+		item = json_member_ci(data, "kind");
+		if (json_is_string_value(item) &&
+		    !json_add_string(summary, "kind", json_string_value(item)))
 			goto fail;
-		item = cJSON_GetObjectItem(data, "command");
-		if (cJSON_IsString(item) &&
-		    !cJSON_AddStringToObject(summary, "command",
-					     item->valuestring))
+		item = json_member_ci(data, "command");
+		if (json_is_string_value(item) &&
+		    !json_add_string(summary, "command", json_string_value(item)))
 			goto fail;
-		item = cJSON_GetObjectItem(data, "count");
-		if (cJSON_IsNumber(item) &&
-		    !cJSON_AddNumberToObject(summary, "count",
-					     item->valuedouble))
+		item = json_member_ci(data, "count");
+		if (json_is_number_value(item) &&
+		    !json_add_number(summary, "count", json_number_value(item)))
 			goto fail;
-		item = cJSON_GetObjectItem(data, "selected_plan_id");
-		if (cJSON_IsString(item) &&
-		    !cJSON_AddStringToObject(summary, "selected_plan_id",
-					     item->valuestring))
+		item = json_member_ci(data, "selected_plan_id");
+		if (json_is_string_value(item) &&
+		    !json_add_string(summary, "selected_plan_id", json_string_value(item)))
 			goto fail;
-		item = cJSON_GetObjectItem(data, "selected_plan");
-		if (cJSON_IsString(item) &&
-		    !cJSON_AddStringToObject(summary, "selected_plan",
-					     item->valuestring))
+		item = json_member_ci(data, "selected_plan");
+		if (json_is_string_value(item) &&
+		    !json_add_string(summary, "selected_plan", json_string_value(item)))
 			goto fail;
 	}
-	cJSON_AddItemToObject(ui, "data", summary);
+	json_object_add(ui, "data", summary);
 	summary = NULL;
 	return ui;
 
 fail:
-	cJSON_Delete(summary);
-	cJSON_Delete(ui);
+	json_free(summary);
+	json_free(ui);
 	return NULL;
 }
 
@@ -355,14 +340,13 @@ static int attach_plan_state(struct tool_result *result,
 			     const char *selected_plan_id,
 			     const char *selected_plan)
 {
-	cJSON *data = plan_registry_to_json(reg, command, selected_plan_id,
-					    selected_plan);
+	struct json *data = plan_registry_to_json(reg, command, selected_plan_id, selected_plan);
 	if (!data)
 		return -ENOMEM;
 
-	cJSON *ui = plan_ui_to_json(data);
+	struct json *ui = plan_ui_to_json(data);
 	if (!ui) {
-		cJSON_Delete(data);
+		json_free(data);
 		return -ENOMEM;
 	}
 
@@ -533,52 +517,51 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 	if (!ctx || !ctx->plans)
 		return MORPH_ERR_NOT_CONFIGURED;
 
-	cJSON *root = cJSON_Parse(args_json);
+	struct json *root = json_parse_prefix(args_json, NULL, NULL);
 	if (!root) {
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
-	cJSON *cmd = cJSON_GetObjectItem(root, "command");
-	if (!cJSON_IsString(cmd)) {
-		cJSON_Delete(root);
+	struct json *cmd = json_member_ci(root, "command");
+	if (!json_is_string_value(cmd)) {
+		json_free(root);
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'command' parameter. "
 			"Commands: create, update, get, list\"}"));
 		return -EINVAL;
 	}
 
-	const char *command = cmd->valuestring;
+	const char *command = json_string_value(cmd);
 	int rc = 0;
 
 	if (strcmp(command, "create") == 0) {
-		cJSON *name_item = cJSON_GetObjectItem(root, "name");
-		cJSON *goal_item = cJSON_GetObjectItem(root, "goal");
-		cJSON *steps_item = cJSON_GetObjectItem(root, "steps");
+		struct json *name_item = json_member_ci(root, "name");
+		struct json *goal_item = json_member_ci(root, "goal");
+		struct json *steps_item = json_member_ci(root, "steps");
 
-		if (!cJSON_IsString(name_item) || !name_item->valuestring) {
-			cJSON_Delete(root);
+		if (!json_is_string_value(name_item) || !json_string_value(name_item)) {
+			json_free(root);
 			(void)tool_result_success_json_text(result, strdup(
 				"{\"error\":\"create requires 'name' (string)\"}"));
 			return -EINVAL;
 		}
 
-		const char *goal = cJSON_IsString(goal_item)
-				  ? goal_item->valuestring : "";
+		const char *goal =
+			json_is_string_value(goal_item) ? json_string_value(goal_item) : "";
 
 		int step_count = 0;
 		const char *step_descs[PLAN_MAX_STEPS];
 		memset(step_descs, 0, sizeof(step_descs));
 		int auto_decomposed = 0;
 
-		if (cJSON_IsArray(steps_item) && cJSON_GetArraySize(steps_item) > 0) {
-			step_count = cJSON_GetArraySize(steps_item);
+		if (json_is_array_value(steps_item) && json_count(steps_item) > 0) {
+			step_count = json_count(steps_item);
 			if (step_count > PLAN_MAX_STEPS)
 				step_count = PLAN_MAX_STEPS;
 			for (int i = 0; i < step_count; i++) {
-				cJSON *s = cJSON_GetArrayItem(steps_item, i);
-				step_descs[i] = cJSON_IsString(s)
-						? s->valuestring : "";
+				struct json *s = json_at(steps_item, i);
+				step_descs[i] = json_is_string_value(s) ? json_string_value(s) : "";
 			}
 		} else if (goal && goal[0]) {
 			/* Auto-decompose goal into steps using LLM */
@@ -588,7 +571,7 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 					    PLAN_MAX_STEPS);
 			if (rc < 0) {
 				free_step_descs(tmp_descs, PLAN_MAX_STEPS);
-				cJSON_Delete(root);
+				json_free(root);
 				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"auto-decompose failed\"}"));
 				return rc;
@@ -602,20 +585,20 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 		}
 
 		if (step_count == 0) {
-			cJSON_Delete(root);
+			json_free(root);
 			(void)tool_result_success_json_text(result, strdup(
 				"{\"error\":\"create requires 'steps' (array of strings) "
 				"or a 'goal' string to auto-decompose\"}"));
 			return -EINVAL;
 		}
 
-		struct plan *p = plan_create(ctx->plans, name_item->valuestring,
-			goal, step_descs, step_count);
+		struct plan *p = plan_create(ctx->plans, json_string_value(name_item), goal,
+					     step_descs, step_count);
 
 		if (!p) {
 			if (auto_decomposed)
 				free_step_descs(step_descs, step_count);
-			cJSON_Delete(root);
+			json_free(root);
 			(void)tool_result_success_json_text(result, strdup(
 				"{\"error\":\"failed to create plan "
 				"(max 8 plans, max 32 steps each)\"}"));
@@ -626,7 +609,7 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 		if (!formatted) {
 			if (auto_decomposed)
 				free_step_descs(step_descs, step_count);
-			cJSON_Delete(root);
+			json_free(root);
 			(void)tool_result_success_json_text(result, strdup("{\"error\":\"out of memory\"}"));
 			return -ENOMEM;
 		}
@@ -642,13 +625,13 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 		}
 		free(formatted);
 		if (rc != 0) {
-			cJSON_Delete(root);
+			json_free(root);
 			return rc;
 		}
 		rc = attach_plan_state(result, ctx->plans, command, p->id,
 				       p->name);
 		if (rc != 0) {
-			cJSON_Delete(root);
+			json_free(root);
 			return rc;
 		}
 		log_info(result && result->runtime ? result->runtime->http.logger : NULL,
@@ -656,22 +639,23 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 			 auto_decomposed ? " (auto)" : "");
 
 	} else if (strcmp(command, "update") == 0) {
-		cJSON *plan_id_item = cJSON_GetObjectItem(root, "plan_id");
-		cJSON *plan_item = cJSON_GetObjectItem(root, "plan");
-		cJSON *step_id_item = cJSON_GetObjectItem(root, "step_id");
-		cJSON *status_item = cJSON_GetObjectItem(root, "status");
+		struct json *plan_id_item = json_member_ci(root, "plan_id");
+		struct json *plan_item = json_member_ci(root, "plan");
+		struct json *step_id_item = json_member_ci(root, "step_id");
+		struct json *status_item = json_member_ci(root, "status");
 
-		const char *plan_id = cJSON_IsString(plan_id_item)
-				     ? plan_id_item->valuestring : NULL;
-		const char *plan_name = cJSON_IsString(plan_item)
-				       ? plan_item->valuestring : NULL;
-		int step_id = cJSON_IsNumber(step_id_item)
-			     ? (int)step_id_item->valuedouble : -1;
-		const char *status = cJSON_IsString(status_item)
-				    ? status_item->valuestring : NULL;
+		const char *plan_id =
+			json_is_string_value(plan_id_item) ? json_string_value(plan_id_item) : NULL;
+		const char *plan_name =
+			json_is_string_value(plan_item) ? json_string_value(plan_item) : NULL;
+		int step_id = json_is_number_value(step_id_item)
+				      ? (int)json_number_value(step_id_item)
+				      : -1;
+		const char *status =
+			json_is_string_value(status_item) ? json_string_value(status_item) : NULL;
 
 		if ((!plan_id && !plan_name) || step_id < 0 || !status) {
-			cJSON_Delete(root);
+			json_free(root);
 			(void)tool_result_success_json_text(result, strdup(
 				"{\"error\":\"update requires 'plan_id' or 'plan', "
 				"'step_id' (int), and 'status' (string). "
@@ -694,7 +678,7 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 			snprintf(err, sizeof(err),
 				"{\"error\":\"%s\"}", msg);
 			(void)tool_result_success_json_text(result, strdup(err));
-			cJSON_Delete(root);
+			json_free(root);
 			return rc;
 		}
 
@@ -708,14 +692,14 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 				 formatted ? formatted : "");
 		free(formatted);
 		if (rc != 0) {
-			cJSON_Delete(root);
+			json_free(root);
 			return rc;
 		}
 		rc = attach_plan_state(result, ctx->plans, command,
 				       p ? p->id : plan_id,
 				       p ? p->name : plan_name);
 		if (rc != 0) {
-			cJSON_Delete(root);
+			json_free(root);
 			return rc;
 		}
 		log_info(result && result->runtime ? result->runtime->http.logger : NULL,
@@ -723,22 +707,18 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 			 p ? p->id : (plan_id ? plan_id : plan_name), step_id, status);
 
 	} else if (strcmp(command, "get") == 0) {
-		cJSON *plan_id_item = cJSON_GetObjectItem(root, "plan_id");
-		cJSON *plan_item = cJSON_GetObjectItem(root, "plan");
-		const char *plan_id = cJSON_IsString(plan_id_item)
-				     ? plan_id_item->valuestring : NULL;
+		struct json *plan_id_item = json_member_ci(root, "plan_id");
+		struct json *plan_item = json_member_ci(root, "plan");
+		const char *plan_id =
+			json_is_string_value(plan_id_item) ? json_string_value(plan_id_item) : NULL;
 
-		if (plan_id || (cJSON_IsString(plan_item) &&
-		    plan_item->valuestring)) {
-			struct plan *p = plan_id ? plan_find_by_id(ctx->plans,
-								   plan_id) :
-						   plan_find(ctx->plans,
-							     plan_item->valuestring);
+		if (plan_id || (json_is_string_value(plan_item) && json_string_value(plan_item))) {
+			struct plan *p =
+				plan_id ? plan_find_by_id(ctx->plans, plan_id)
+					: plan_find(ctx->plans, json_string_value(plan_item));
 			if (!p) {
-				rc = set_resultf(result,
-					"Plan \"%s\" not found.",
-					plan_id ? plan_id :
-					plan_item->valuestring);
+				rc = set_resultf(result, "Plan \"%s\" not found.",
+						 plan_id ? plan_id : json_string_value(plan_item));
 			} else {
 				char *formatted = format_plan(p);
 				rc = set_resultf(result, "%s",
@@ -752,15 +732,14 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 			free(formatted);
 		}
 		if (rc != 0) {
-			cJSON_Delete(root);
+			json_free(root);
 			return rc;
 		}
-		rc = attach_plan_state(result, ctx->plans, command,
-				       plan_id,
-				       cJSON_IsString(plan_item)
-				       ? plan_item->valuestring : NULL);
+		rc = attach_plan_state(
+			result, ctx->plans, command, plan_id,
+			json_is_string_value(plan_item) ? json_string_value(plan_item) : NULL);
 		if (rc != 0) {
-			cJSON_Delete(root);
+			json_free(root);
 			return rc;
 		}
 
@@ -770,12 +749,12 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 				 formatted ? formatted : "(empty)");
 		free(formatted);
 		if (rc != 0) {
-			cJSON_Delete(root);
+			json_free(root);
 			return rc;
 		}
 		rc = attach_plan_state(result, ctx->plans, command, NULL, NULL);
 		if (rc != 0) {
-			cJSON_Delete(root);
+			json_free(root);
 			return rc;
 		}
 
@@ -784,11 +763,11 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 			"{\"error\":\"unknown command '%s'. "
 			"Commands: create, update, get, list\"}",
 			command);
-		cJSON_Delete(root);
+		json_free(root);
 		return rc != 0 ? rc : -EINVAL;
 	}
 
-	cJSON_Delete(root);
+	json_free(root);
 	return 0;
 }
 
@@ -845,61 +824,58 @@ static int plan_file_digest(struct plan_tool_context *ctx, const char *path,
 	return 0;
 }
 
-static int plan_capture_report(struct plan_tool_context *ctx, const cJSON *args, cJSON *selected)
+static int plan_capture_report(struct plan_tool_context *ctx, const struct json *args,
+			       struct json *selected)
 {
-	const cJSON *files = cJSON_GetObjectItemCaseSensitive(args, "files");
-	const char *report = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "report"));
-	const char *outcome =
-	    cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "outcome"));
-	cJSON *state;
-	cJSON *inputs;
+	const struct json *files = json_member(args, "files");
+	const char *report = json_string_value(json_member(args, "report"));
+	const char *outcome = json_string_value(json_member(args, "outcome"));
+	struct json *state;
+	struct json *inputs;
 	int rc = 0;
-	if (!cJSON_IsArray(files) || cJSON_GetArraySize(files) < 1 ||
-	    cJSON_GetArraySize(files) > 16 || !report || !outcome ||
-	    (strcmp(outcome, "passed") && strcmp(outcome, "failed")))
+	if (!json_is_array_value(files) || json_count(files) < 1 || json_count(files) > 16 ||
+	    !report || !outcome || (strcmp(outcome, "passed") && strcmp(outcome, "failed")))
 		return -EINVAL;
-	state = cJSON_CreateObject();
-	inputs = state ? cJSON_AddArrayToObject(state, "inputs") : NULL;
-	if (!inputs || !cJSON_AddStringToObject(state, "status", "current") ||
-	    !cJSON_AddStringToObject(state, "outcome", outcome) ||
-	    !cJSON_AddStringToObject(state, "report", report)) {
-		cJSON_Delete(state);
+	state = json_object();
+	inputs = state ? json_add_array(state, "inputs") : NULL;
+	if (!inputs || !json_add_string(state, "status", "current") ||
+	    !json_add_string(state, "outcome", outcome) ||
+	    !json_add_string(state, "report", report)) {
+		json_free(state);
 		return -ENOMEM;
 	}
 	/* Include the report itself so replacing its contents invalidates reuse. */
-	for (int i = -1; i < cJSON_GetArraySize(files); i++) {
-		const char *path =
-		    i < 0 ? report : cJSON_GetStringValue(cJSON_GetArrayItem(files, i));
+	for (int i = -1; i < json_count(files); i++) {
+		const char *path = i < 0 ? report : json_string_value(json_at(files, i));
 		char resolved[PATH_MAX];
 		char hex[65];
 		rc = plan_file_digest(ctx, path, resolved, hex);
 		if (rc != 0)
 			break;
-		cJSON *input = cJSON_CreateObject();
+		struct json *input = json_object();
 		if (!input) {
 			rc = -ENOMEM;
 			break;
 		}
-		cJSON_AddItemToArray(inputs, input);
-		if (!cJSON_AddStringToObject(input, "path", resolved) ||
-		    !cJSON_AddStringToObject(input, "sha256", hex)) {
+		json_array_add(inputs, input);
+		if (!json_add_string(input, "path", resolved) ||
+		    !json_add_string(input, "sha256", hex)) {
 			rc = -ENOMEM;
 			break;
 		}
 	}
-	char *text = rc == 0 ? cJSON_PrintUnformatted(state) : NULL;
+	char *text = rc == 0 ? json_stringify(state) : NULL;
 	if (rc == 0 && (!text || strlen(text) >= sizeof(ctx->plans->plans[0].verification)))
 		rc = text ? -E2BIG : -ENOMEM;
 	if (rc == 0) {
-		cJSON *value = cJSON_CreateString(text);
-		if (!value ||
-		    !cJSON_ReplaceItemInObjectCaseSensitive(selected, "verification", value)) {
-			cJSON_Delete(value);
+		struct json *value = json_string(text);
+		if (!value || json_object_replace(selected, "verification", value) != 0) {
+			json_free(value);
 			rc = -ENOMEM;
 		}
 	}
 	free(text);
-	cJSON_Delete(state);
+	json_free(state);
 	return rc;
 }
 
@@ -917,19 +893,17 @@ static int plan_refresh_reports(struct plan_tool_context *ctx)
 		return 0;
 	for (int i = 0; i < ctx->plans->count; i++) {
 		struct plan *p = &ctx->plans->plans[i];
-		cJSON *state = cJSON_Parse(p->verification);
-		const char *status = cJSON_GetStringValue(cJSON_GetObjectItem(state, "status"));
+		struct json *state = json_parse_prefix(p->verification, NULL, NULL);
+		const char *status = json_string_value(json_member_ci(state, "status"));
 		if (!status || strcmp(status, "current")) {
-			cJSON_Delete(state);
+			json_free(state);
 			continue;
 		}
-		cJSON *input;
+		struct json *input;
 		int stale = 0;
-		cJSON_ArrayForEach(input, cJSON_GetObjectItem(state, "inputs"))
-		{
-			const char *path = cJSON_GetStringValue(cJSON_GetObjectItem(input, "path"));
-			const char *expected =
-			    cJSON_GetStringValue(cJSON_GetObjectItem(input, "sha256"));
+		json_foreach (input, json_member_ci(state, "inputs")) {
+			const char *path = json_string_value(json_member_ci(input, "path"));
+			const char *expected = json_string_value(json_member_ci(input, "sha256"));
 			char resolved[PATH_MAX];
 			char hex[65];
 			if (!expected || plan_file_digest(ctx, path, resolved, hex) != 0 ||
@@ -939,18 +913,17 @@ static int plan_refresh_reports(struct plan_tool_context *ctx)
 			}
 		}
 		if (stale) {
-			cJSON_ReplaceItemInObjectCaseSensitive(state, "status",
-							       cJSON_CreateString("stale"));
-			char *text = cJSON_PrintUnformatted(state);
+			json_object_replace(state, "status", json_string("stale"));
+			char *text = json_stringify(state);
 			if (!text) {
-				cJSON_Delete(state);
+				json_free(state);
 				return -ENOMEM;
 			}
 			snprintf(p->verification, sizeof(p->verification), "%s", text);
 			free(text);
 			changed = 1;
 		}
-		cJSON_Delete(state);
+		json_free(state);
 	}
 	return changed ? plan_registry_save(ctx->plans) : 0;
 }
@@ -969,23 +942,23 @@ int plan_tool_refresh_reports(struct tool_registry *reg)
 static int plan_tool_exec_checked(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct plan_tool_context *ctx = user_data;
-	cJSON *args = cJSON_Parse(args_json);
-	cJSON *before;
-	cJSON *state;
-	const char *command = cJSON_GetStringValue(cJSON_GetObjectItem(args, "command"));
+	struct json *args = json_parse_prefix(args_json, NULL, NULL);
+	struct json *before;
+	struct json *state;
+	const char *command = json_string_value(json_member_ci(args, "command"));
 	int rc;
 	if (!ctx || !ctx->plans || !command) {
-		cJSON_Delete(args);
+		json_free(args);
 		return -EINVAL;
 	}
 	rc = plan_refresh_reports(ctx);
 	if (rc != 0) {
-		cJSON_Delete(args);
+		json_free(args);
 		return rc;
 	}
 	before = plan_registry_json(ctx->plans);
 	if (!before) {
-		cJSON_Delete(args);
+		json_free(args);
 		return -ENOMEM;
 	}
 	if (!strcmp(command, "checkpoint") || !strcmp(command, "verify"))
@@ -997,17 +970,14 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 		rc = -ENOMEM;
 	if (rc == 0 && (!strcmp(command, "checkpoint") || !strcmp(command, "create") ||
 			!strcmp(command, "update") || !strcmp(command, "verify"))) {
-		const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(args, "plan_id"));
-		const char *name = cJSON_GetStringValue(
-		    cJSON_GetObjectItem(args, !strcmp(command, "create") ? "name" : "plan"));
-		cJSON *selected = NULL;
-		cJSON *entry;
-		cJSON_ArrayForEach(entry, state)
-		{
-			const char *entry_id =
-			    cJSON_GetStringValue(cJSON_GetObjectItem(entry, "id"));
-			const char *entry_name =
-			    cJSON_GetStringValue(cJSON_GetObjectItem(entry, "name"));
+		const char *id = json_string_value(json_member_ci(args, "plan_id"));
+		const char *name = json_string_value(
+			json_member_ci(args, !strcmp(command, "create") ? "name" : "plan"));
+		struct json *selected = NULL;
+		struct json *entry;
+		json_foreach (entry, state) {
+			const char *entry_id = json_string_value(json_member_ci(entry, "id"));
+			const char *entry_name = json_string_value(json_member_ci(entry, "name"));
 			if ((id && entry_id && !strcmp(id, entry_id)) ||
 			    (!id && name && entry_name && !strcmp(name, entry_name))) {
 				if (!selected || !strcmp(command, "create"))
@@ -1020,34 +990,31 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 			rc = plan_capture_report(ctx, args, selected);
 		const char *fields[] = {"request", "constraints", "acceptance", "rejected"};
 		for (size_t i = 0; selected && i < sizeof(fields) / sizeof(fields[0]); i++) {
-			cJSON *value = cJSON_GetObjectItemCaseSensitive(args, fields[i]);
+			struct json *value = json_member(args, fields[i]);
 			if (!value)
 				continue;
-			cJSON *copy = cJSON_Duplicate(value, 1);
-			if (!copy ||
-			    !cJSON_ReplaceItemInObjectCaseSensitive(selected, fields[i], copy)) {
-				cJSON_Delete(copy);
+			struct json *copy = json_clone(value, 1);
+			if (!copy || json_object_replace(selected, fields[i], copy) != 0) {
+				json_free(copy);
 				rc = -ENOMEM;
 				break;
 			}
 		}
-		cJSON *step_id = cJSON_GetObjectItem(args, "step_id");
-		if (selected && cJSON_IsNumber(step_id)) {
-			cJSON *step = cJSON_GetArrayItem(cJSON_GetObjectItem(selected, "steps"),
-							 step_id->valueint - 1);
+		struct json *step_id = json_member_ci(args, "step_id");
+		if (selected && json_is_number_value(step_id)) {
+			struct json *step = json_at(json_member_ci(selected, "steps"),
+						    json_int_value(step_id) - 1);
 			const char *step_fields[] = {"evidence", "blocker", "artifact"};
 			if (!step)
 				rc = -ENOENT;
 			for (size_t i = 0; step && i < sizeof(step_fields) / sizeof(step_fields[0]);
 			     i++) {
-				cJSON *value =
-				    cJSON_GetObjectItemCaseSensitive(args, step_fields[i]);
+				struct json *value = json_member(args, step_fields[i]);
 				if (!value)
 					continue;
-				cJSON *copy = cJSON_Duplicate(value, 1);
-				if (!copy || !cJSON_ReplaceItemInObjectCaseSensitive(
-						 step, step_fields[i], copy)) {
-					cJSON_Delete(copy);
+				struct json *copy = json_clone(value, 1);
+				if (!copy || json_object_replace(step, step_fields[i], copy) != 0) {
+					json_free(copy);
 					rc = -ENOMEM;
 					break;
 				}
@@ -1056,9 +1023,9 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 		if (rc == 0)
 			rc = plan_registry_restore(ctx->plans, state);
 		if (rc == 0)
-			rc = attach_plan_state(
-			    result, ctx->plans, command,
-			    cJSON_GetStringValue(cJSON_GetObjectItem(selected, "id")), name);
+			rc = attach_plan_state(result, ctx->plans, command,
+					       json_string_value(json_member_ci(selected, "id")),
+					       name);
 		if (rc == 0)
 			rc = plan_registry_save(ctx->plans);
 	}
@@ -1066,9 +1033,9 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 		(void)plan_registry_restore(ctx->plans, before);
 		(void)tool_result_error(result, "plan_checkpoint_failed", morph_strerror(rc));
 	}
-	cJSON_Delete(state);
-	cJSON_Delete(before);
-	cJSON_Delete(args);
+	json_free(state);
+	json_free(before);
+	json_free(args);
 	return rc;
 }
 

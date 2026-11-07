@@ -11,7 +11,6 @@
 #include "util/buf.h"
 #include "util/error.h"
 #include "http/client.h"
-#include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,32 +41,32 @@ static const char *video_reference_mime(const char *path, int audio)
 }
 
 /* Takes ownership of uri on both success and failure. */
-static int video_add_reference(cJSON *content, const char *type, const char *role, char *uri,
+static int video_add_reference(struct json *content, const char *type, const char *role, char *uri,
 			       size_t *budget)
 {
-	cJSON *item = cJSON_CreateObject();
-	cJSON *url = item ? cJSON_AddObjectToObject(item, type) : NULL;
-	cJSON *value;
+	struct json *item = json_object();
+	struct json *url = item ? json_add_object(item, type) : NULL;
+	struct json *value;
 	size_t len = strlen(uri);
 
 	if (len > *budget) {
 		free(uri);
-		cJSON_Delete(item);
+		json_free(item);
 		return -EFBIG;
 	}
-	value = morph_json_take_string(uri);
+	value = json_take_string(uri);
 	if (!value) {
-		cJSON_Delete(item);
+		json_free(item);
 		return -ENOMEM;
 	}
-	if (!url || !cJSON_AddItemToObject(url, "url", value)) {
-		cJSON_Delete(value);
-		cJSON_Delete(item);
+	if (!url || json_object_add(url, "url", value) != 0) {
+		json_free(value);
+		json_free(item);
 		return -ENOMEM;
 	}
-	if (!cJSON_AddStringToObject(item, "type", type) ||
-	    !cJSON_AddStringToObject(item, "role", role) || !cJSON_AddItemToArray(content, item)) {
-		cJSON_Delete(item);
+	if (!json_add_string(item, "type", type) || !json_add_string(item, "role", role) ||
+	    json_array_add(content, item) != 0) {
+		json_free(item);
 		return -ENOMEM;
 	}
 	*budget -= len;
@@ -229,43 +228,43 @@ static int volcengine_video_poll(struct model *self, const char *query_url, cons
 			continue;
 		}
 
-		cJSON *qroot = cJSON_Parse(qresp.body.data);
+		struct json *qroot = json_parse_prefix(qresp.body.data, NULL, NULL);
 		if (!qroot) {
 			http_response_free(&qresp);
 			continue;
 		}
 
-		cJSON *status_item = cJSON_GetObjectItem(qroot, "status");
-		const char *st = cJSON_IsString(status_item) ? status_item->valuestring : "";
+		const char *st = json_string_value(json_member_ci(qroot, "status"));
+
+		if (!st)
+			st = "";
 
 		if (strcmp(st, "succeeded") == 0 || strcmp(st, "completed") == 0) {
-			cJSON *vcontent = cJSON_GetObjectItem(qroot, "content");
-			if (cJSON_IsObject(vcontent)) {
-				cJSON *vurl = cJSON_GetObjectItem(vcontent, "video_url");
-				if (cJSON_IsString(vurl) && vurl->valuestring)
-					strncpy(video_url, vurl->valuestring, video_url_size - 1);
+			const struct json *vcontent = json_member_ci(qroot, "content");
+			if (json_is_object_value(vcontent)) {
+				const char *url =
+					json_string_value(json_member_ci(vcontent, "video_url"));
+
+				if (url)
+					strncpy(video_url, url, video_url_size - 1);
 			}
-			cJSON_Delete(qroot);
+			json_free(qroot);
 			http_response_free(&qresp);
 			break;
 		}
 
 		if (strcmp(st, "failed") == 0) {
-			cJSON *err_obj = cJSON_GetObjectItem(qroot, "error");
-			const char *err_code =
-				cJSON_IsObject(err_obj)
-					? cJSON_GetStringValue(cJSON_GetObjectItem(err_obj, "code"))
-					: "";
-			const char *err_msg = cJSON_IsObject(err_obj)
-						      ? cJSON_GetStringValue(cJSON_GetObjectItem(
-								err_obj, "message"))
-						      : "";
+			const struct json *error = json_member_ci(qroot, "error");
+			const char *code = json_string_value(json_member_ci(error, "code"));
+			const char *message = json_string_value(json_member_ci(error, "message"));
+
 			snprintf(result->error_msg, sizeof(result->error_msg),
-				 "video_gen: task %s failed: %s %s", task_id, err_code, err_msg);
+				 "video_gen: task %s failed: %s %s", task_id, code ? code : "",
+				 message ? message : "");
 			log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
 			log_dbg(self ? self->http.logger : NULL,
 				"video_gen: poll response body:\n%s", qresp.body.data);
-			cJSON_Delete(qroot);
+			json_free(qroot);
 			http_response_free(&qresp);
 			return MORPH_ERR_API;
 		}
@@ -273,7 +272,7 @@ static int volcengine_video_poll(struct model *self, const char *query_url, cons
 		log_info(self ? self->http.logger : NULL, "video_gen: task %s status=%s", task_id,
 			 st);
 
-		cJSON_Delete(qroot);
+		json_free(qroot);
 		http_response_free(&qresp);
 	}
 
@@ -324,10 +323,10 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	char submit_url[512];
 	snprintf(submit_url, sizeof(submit_url), "%s/contents/generations/tasks", api_base);
 
-	cJSON *body_json = cJSON_CreateObject();
-	cJSON_AddStringToObject(body_json, "model", model_id);
+	struct json *body_json = json_object();
+	json_add_string(body_json, "model", model_id);
 
-	cJSON *content_arr = cJSON_AddArrayToObject(body_json, "content");
+	struct json *content_arr = json_add_array(body_json, "content");
 
 	morph_buf_t prompt_buf;
 	int prompt_rc = morph_buf_init_arena(&prompt_buf, arena, 256);
@@ -345,13 +344,12 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 		if (prompt_rc == 0)
 			prompt_rc = morph_buf_putc(&prompt_buf, ']');
 	}
-	cJSON *item = cJSON_CreateObject();
-	if (prompt_rc != 0 || !content_arr || !item ||
-	    !cJSON_AddStringToObject(item, "type", "text") ||
-	    !cJSON_AddStringToObject(item, "text", morph_buf_cstr(&prompt_buf)) ||
-	    !cJSON_AddItemToArray(content_arr, item)) {
-		cJSON_Delete(item);
-		cJSON_Delete(body_json);
+	struct json *item = json_object();
+	if (prompt_rc != 0 || !content_arr || !item || !json_add_string(item, "type", "text") ||
+	    !json_add_string(item, "text", morph_buf_cstr(&prompt_buf)) ||
+	    json_array_add(content_arr, item) != 0) {
+		json_free(item);
+		json_free(body_json);
 		arena_destroy(arena);
 		return prompt_rc != 0 ? prompt_rc : -ENOMEM;
 	}
@@ -371,7 +369,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 							 : "first_frame",
 						 uri, &reference_budget);
 		if (rc != 0) {
-			cJSON_Delete(body_json);
+			json_free(body_json);
 			arena_destroy(arena);
 			snprintf(result->error_msg, sizeof(result->error_msg),
 				 "video_gen: image reference: %s", morph_strerror(rc));
@@ -396,7 +394,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 					audio ? "reference_audio" : "reference_video", uri,
 					&reference_budget);
 			if (rc != 0) {
-				cJSON_Delete(body_json);
+				json_free(body_json);
 				arena_destroy(arena);
 				snprintf(result->error_msg, sizeof(result->error_msg),
 					 "video_gen: media reference: %s", morph_strerror(rc));
@@ -406,12 +404,12 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	}
 
 	if (duration > 0)
-		cJSON_AddNumberToObject(body_json, "duration", duration);
+		json_add_number(body_json, "duration", duration);
 	if (generate_audio >= 0)
-		cJSON_AddBoolToObject(body_json, "generate_audio", generate_audio != 0);
+		json_add_bool(body_json, "generate_audio", generate_audio != 0);
 
-	char *body_str = morph_json_print(arena, body_json);
-	cJSON_Delete(body_json);
+	char *body_str = json_stringify_arena(arena, body_json);
+	json_free(body_json);
 
 	if (!body_str) {
 		arena_destroy(arena);
@@ -447,23 +445,20 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	if (resp.status_code == 200 && resp.body.data) {
 		log_dbg(self ? self->http.logger : NULL, "video_gen: submit response (%d):\n%s",
 			resp.status_code, resp.body.data);
-		cJSON *root = cJSON_Parse(resp.body.data);
+		struct json *root = json_parse_prefix(resp.body.data, NULL, NULL);
 		if (root) {
-			cJSON *id_item = cJSON_GetObjectItem(root, "id");
-			if (cJSON_IsString(id_item) && id_item->valuestring)
-				strncpy(task_id, id_item->valuestring, sizeof(task_id) - 1);
-			cJSON *status_item = cJSON_GetObjectItem(root, "status");
-			if (cJSON_IsString(status_item) && status_item->valuestring)
-				strncpy(task_status, status_item->valuestring,
-					sizeof(task_status) - 1);
-			cJSON *content = cJSON_GetObjectItem(root, "content");
-			if (cJSON_IsObject(content)) {
-				cJSON *vurl = cJSON_GetObjectItem(content, "video_url");
-				if (cJSON_IsString(vurl) && vurl->valuestring)
-					strncpy(video_url, vurl->valuestring,
-						sizeof(video_url) - 1);
-			}
-			cJSON_Delete(root);
+			const char *id = json_string_value(json_member_ci(root, "id"));
+			const char *status = json_string_value(json_member_ci(root, "status"));
+			const struct json *content = json_member_ci(root, "content");
+			const char *url = json_string_value(json_member_ci(content, "video_url"));
+
+			if (id)
+				strncpy(task_id, id, sizeof(task_id) - 1);
+			if (status)
+				strncpy(task_status, status, sizeof(task_status) - 1);
+			if (url)
+				strncpy(video_url, url, sizeof(video_url) - 1);
+			json_free(root);
 		} else {
 			log_err(self ? self->http.logger : NULL,
 				"video_gen: failed to parse submit response: %s", resp.body.data);

@@ -6,7 +6,7 @@
 #include "render/video.h"
 #include "util/log.h"
 #include "util/error.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,7 +57,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 	if (!result)
 		return -EINVAL;
 
-	cJSON *root = cJSON_Parse(args_json);
+	struct json *root = json_parse_prefix(args_json, NULL, NULL);
 	const char *prompt = NULL;
 	const char *image_paths[VIDEO_GEN_MAX_REFERENCE_IMAGES];
 	int num_images = 0;
@@ -73,78 +73,80 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 	memset(audio_paths, 0, sizeof(audio_paths));
 
 	if (root) {
-		cJSON *p = cJSON_GetObjectItem(root, "prompt");
-		if (cJSON_IsString(p)) prompt = p->valuestring;
+		struct json *p = json_member_ci(root, "prompt");
+		if (json_is_string_value(p))
+			prompt = json_string_value(p);
 
-		cJSON *ri = cJSON_GetObjectItem(root, "reference_images");
-		if (cJSON_IsString(ri)) {
-			image_paths[0] = ri->valuestring;
+		struct json *ri = json_member_ci(root, "reference_images");
+		if (json_is_string_value(ri)) {
+			image_paths[0] = json_string_value(ri);
 			num_images = 1;
-		} else if (cJSON_IsArray(ri)) {
-			int n = cJSON_GetArraySize(ri);
+		} else if (json_is_array_value(ri)) {
+			int n = json_count(ri);
 			if (n > VIDEO_GEN_MAX_REFERENCE_IMAGES) {
-				cJSON_Delete(root);
+				json_free(root);
 				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"too many reference images\"}"));
 				return -EINVAL;
 			}
 			for (int i = 0; i < n; i++) {
-				cJSON *item = cJSON_GetArrayItem(ri, i);
-				if (cJSON_IsString(item)) {
-					image_paths[num_images++] = item->valuestring;
+				struct json *item = json_at(ri, i);
+				if (json_is_string_value(item)) {
+					image_paths[num_images++] = json_string_value(item);
 				}
 			}
 		}
 
-		cJSON *rv = cJSON_GetObjectItem(root, "reference_videos");
-		if (cJSON_IsString(rv)) {
-			video_paths[0] = rv->valuestring;
+		struct json *rv = json_member_ci(root, "reference_videos");
+		if (json_is_string_value(rv)) {
+			video_paths[0] = json_string_value(rv);
 			num_videos = 1;
-		} else if (cJSON_IsArray(rv)) {
-			int n = cJSON_GetArraySize(rv);
+		} else if (json_is_array_value(rv)) {
+			int n = json_count(rv);
 			if (n > VIDEO_GEN_MAX_REFERENCE_VIDEOS) {
-				cJSON_Delete(root);
+				json_free(root);
 				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"too many reference videos\"}"));
 				return -EINVAL;
 			}
 			for (int i = 0; i < n; i++) {
-				cJSON *item = cJSON_GetArrayItem(rv, i);
-				if (cJSON_IsString(item)) {
-					video_paths[num_videos++] = item->valuestring;
+				struct json *item = json_at(rv, i);
+				if (json_is_string_value(item)) {
+					video_paths[num_videos++] = json_string_value(item);
 				}
 			}
 		}
 
-		cJSON *ra = cJSON_GetObjectItem(root, "reference_audios");
-		if (cJSON_IsString(ra)) {
-			audio_paths[0] = ra->valuestring;
+		struct json *ra = json_member_ci(root, "reference_audios");
+		if (json_is_string_value(ra)) {
+			audio_paths[0] = json_string_value(ra);
 			num_audios = 1;
-		} else if (cJSON_IsArray(ra)) {
-			int n = cJSON_GetArraySize(ra);
+		} else if (json_is_array_value(ra)) {
+			int n = json_count(ra);
 			if (n > VIDEO_GEN_MAX_REFERENCE_AUDIOS) {
-				cJSON_Delete(root);
+				json_free(root);
 				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"too many reference audios\"}"));
 				return -EINVAL;
 			}
 			for (int i = 0; i < n; i++) {
-				cJSON *audio = cJSON_GetArrayItem(ra, i);
-				if (cJSON_IsString(audio))
-					audio_paths[num_audios++] = audio->valuestring;
+				struct json *audio = json_at(ra, i);
+				if (json_is_string_value(audio))
+					audio_paths[num_audios++] = json_string_value(audio);
 			}
 		}
 
-		cJSON *ga = cJSON_GetObjectItem(root, "generate_audio");
-		if (cJSON_IsBool(ga))
-			generate_audio = cJSON_IsTrue(ga) ? 1 : 0;
+		struct json *ga = json_member_ci(root, "generate_audio");
+		if (json_is_bool_value(ga))
+			generate_audio = json_is_true(ga) ? 1 : 0;
 
-		cJSON *d = cJSON_GetObjectItem(root, "duration");
-		if (cJSON_IsNumber(d)) duration = (int)d->valuedouble;
+		struct json *d = json_member_ci(root, "duration");
+		if (json_is_number_value(d))
+			duration = (int)json_number_value(d);
 	}
 
 	if (!prompt) {
-		cJSON_Delete(root);
+		json_free(root);
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'prompt' parameter. "
 			"Usage: vid_gen({\\\"prompt\\\": \\\"a flying drone\\\", "
@@ -168,7 +170,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 				tctx, TOOL_PATH_READ, image_paths[i],
 				resolved_images[i], sizeof(resolved_images[i]));
 			if (rc < 0) {
-				cJSON_Delete(root);
+				json_free(root);
 				if (rc == -ENOENT)
 					(void)tool_result_success_json_text(result, strdup(
 						"{\"error\":\"reference image not found\"}"));
@@ -189,7 +191,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 				tctx, TOOL_PATH_READ, video_paths[i],
 				resolved_videos[i], sizeof(resolved_videos[i]));
 			if (rc < 0) {
-				cJSON_Delete(root);
+				json_free(root);
 				if (rc == -ENOENT)
 					(void)tool_result_success_json_text(result, strdup(
 						"{\"error\":\"reference video not found\"}"));
@@ -205,7 +207,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 	for (int i = 0; i < num_audios; i++) {
 		audio_paths_to_send[i] = audio_paths[i];
 		if (!is_supported_audio_path(audio_paths[i])) {
-			cJSON_Delete(root);
+			json_free(root);
 			(void)tool_result_success_json_text(result, strdup(
 				"{\"error\":\"reference audio must be MP3 or WAV\"}"));
 			return -EINVAL;
@@ -215,7 +217,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 				tctx, TOOL_PATH_READ, audio_paths[i],
 				resolved_audios[i], sizeof(resolved_audios[i]));
 			if (auth_rc < 0) {
-				cJSON_Delete(root);
+				json_free(root);
 				if (auth_rc == -ENOENT)
 					(void)tool_result_success_json_text(result, strdup(
 						"{\"error\":\"reference audio not found\"}"));
@@ -238,7 +240,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 				  num_audios > 0 ? audio_paths_to_send : NULL,
 				  num_audios, generate_audio,
 				  duration, output_dir, &vid_res);
-	cJSON_Delete(root);
+	json_free(root);
 
 	if (rc < 0) {
 		if (vid_res.error_msg[0]) {

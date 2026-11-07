@@ -1,7 +1,7 @@
 #include "scheduled_tasks.h"
 #include "db/scheduled_task.h"
 #include "util/error.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,132 +21,124 @@ static void scheduled_tasks_tool_context_destroy(void *user_data)
 
 static char *json_error(const char *message)
 {
-	cJSON *obj;
+	struct json *obj;
 	char *out;
 
-	obj = cJSON_CreateObject();
+	obj = json_object();
 	if (!obj)
 		return strdup("{\"error\":\"out of memory\"}");
-	cJSON_AddStringToObject(obj, "error", message ? message : "error");
-	out = cJSON_PrintUnformatted(obj);
-	cJSON_Delete(obj);
+	json_add_string(obj, "error", message ? message : "error");
+	out = json_stringify(obj);
+	json_free(obj);
 	return out ? out : strdup("{\"error\":\"out of memory\"}");
 }
 
-static void add_task_json(cJSON *arr, const struct scheduled_task *task)
+static void add_task_json(struct json *arr, const struct scheduled_task *task)
 {
-	cJSON *obj;
-	cJSON *payload;
-	cJSON *prompt;
+	struct json *obj;
+	struct json *payload;
+	struct json *prompt;
 
 	if (!arr || !task)
 		return;
-	obj = cJSON_CreateObject();
+	obj = json_object();
 	if (!obj)
 		return;
-	cJSON_AddNumberToObject(obj, "id", (double)task->id);
-	cJSON_AddNumberToObject(obj, "source_session_id",
-				(double)task->source_session_id);
-	cJSON_AddNumberToObject(obj, "latest_session_id",
-				(double)task->latest_session_id);
-	cJSON_AddStringToObject(obj, "title", task->title);
-	cJSON_AddStringToObject(obj, "kind", task->kind);
-	cJSON_AddStringToObject(obj, "status", task->status);
-	cJSON_AddStringToObject(obj, "trigger_type", task->trigger_type);
-	cJSON_AddNumberToObject(obj, "next_run_at", (double)task->next_run_at);
-	cJSON_AddNumberToObject(obj, "interval_seconds",
-				task->interval_seconds);
-	cJSON_AddNumberToObject(obj, "timeout_at", (double)task->timeout_at);
-	cJSON_AddNumberToObject(obj, "attempts", task->attempts);
-	cJSON_AddNumberToObject(obj, "max_attempts", task->max_attempts);
-	cJSON_AddStringToObject(obj, "schedule",
-				task->interval_seconds > 0 ? "interval" : "once");
-	payload = task->payload_json ? cJSON_Parse(task->payload_json) : NULL;
-	prompt = payload ? cJSON_GetObjectItem(payload, "prompt") : NULL;
-	if (cJSON_IsString(prompt))
-		cJSON_AddStringToObject(obj, "prompt", prompt->valuestring);
-	cJSON_Delete(payload);
+	json_add_number(obj, "id", (double)task->id);
+	json_add_number(obj, "source_session_id", (double)task->source_session_id);
+	json_add_number(obj, "latest_session_id", (double)task->latest_session_id);
+	json_add_string(obj, "title", task->title);
+	json_add_string(obj, "kind", task->kind);
+	json_add_string(obj, "status", task->status);
+	json_add_string(obj, "trigger_type", task->trigger_type);
+	json_add_number(obj, "next_run_at", (double)task->next_run_at);
+	json_add_number(obj, "interval_seconds", task->interval_seconds);
+	json_add_number(obj, "timeout_at", (double)task->timeout_at);
+	json_add_number(obj, "attempts", task->attempts);
+	json_add_number(obj, "max_attempts", task->max_attempts);
+	json_add_string(obj, "schedule", task->interval_seconds > 0 ? "interval" : "once");
+	payload = task->payload_json ? json_parse_prefix(task->payload_json, NULL, NULL) : NULL;
+	prompt = payload ? json_member_ci(payload, "prompt") : NULL;
+	if (json_is_string_value(prompt))
+		json_add_string(obj, "prompt", json_string_value(prompt));
+	json_free(payload);
 	if (task->last_error[0])
-		cJSON_AddStringToObject(obj, "last_error", task->last_error);
-	cJSON_AddItemToArray(arr, obj);
+		json_add_string(obj, "last_error", task->last_error);
+	json_array_add(arr, obj);
 }
 
 static char *tasks_to_json(struct scheduled_task *tasks, int count)
 {
-	cJSON *root;
-	cJSON *arr;
+	struct json *root;
+	struct json *arr;
 	char *out;
 
-	root = cJSON_CreateObject();
+	root = json_object();
 	if (!root)
 		return NULL;
-	arr = cJSON_CreateArray();
+	arr = json_array();
 	if (!arr) {
-		cJSON_Delete(root);
+		json_free(root);
 		return NULL;
 	}
-	cJSON_AddNumberToObject(root, "count", count);
-	cJSON_AddItemToObject(root, "tasks", arr);
+	json_add_number(root, "count", count);
+	json_object_add(root, "tasks", arr);
 	for (int i = 0; i < count; i++)
 		add_task_json(arr, &tasks[i]);
-	out = cJSON_PrintUnformatted(root);
-	cJSON_Delete(root);
+	out = json_stringify(root);
+	json_free(root);
 	return out;
 }
 
-static void add_notification_json(cJSON *arr,
-				  const struct notification *notification)
+static void add_notification_json(struct json *arr, const struct notification *notification)
 {
-	cJSON *obj;
+	struct json *obj;
 
 	if (!arr || !notification)
 		return;
-	obj = cJSON_CreateObject();
+	obj = json_object();
 	if (!obj)
 		return;
-	cJSON_AddNumberToObject(obj, "id", (double)notification->id);
-	cJSON_AddNumberToObject(obj, "task_id", (double)notification->task_id);
-	cJSON_AddNumberToObject(obj, "session_id",
-				(double)notification->session_id);
-	cJSON_AddStringToObject(obj, "level", notification->level);
-	cJSON_AddStringToObject(obj, "title", notification->title);
-	cJSON_AddStringToObject(obj, "body", notification->body);
-	cJSON_AddNumberToObject(obj, "created_at",
-				(double)notification->created_at);
-	cJSON_AddStringToObject(obj, "delivery_status",
-				notification->delivery_status);
-	cJSON_AddItemToArray(arr, obj);
+	json_add_number(obj, "id", (double)notification->id);
+	json_add_number(obj, "task_id", (double)notification->task_id);
+	json_add_number(obj, "session_id", (double)notification->session_id);
+	json_add_string(obj, "level", notification->level);
+	json_add_string(obj, "title", notification->title);
+	json_add_string(obj, "body", notification->body);
+	json_add_number(obj, "created_at", (double)notification->created_at);
+	json_add_string(obj, "delivery_status", notification->delivery_status);
+	json_array_add(arr, obj);
 }
 
 static char *notifications_to_json(struct notification *notifications,
 				   int count)
 {
-	cJSON *root;
-	cJSON *arr;
+	struct json *root;
+	struct json *arr;
 	char *out;
 
-	root = cJSON_CreateObject();
+	root = json_object();
 	if (!root)
 		return NULL;
-	arr = cJSON_CreateArray();
+	arr = json_array();
 	if (!arr) {
-		cJSON_Delete(root);
+		json_free(root);
 		return NULL;
 	}
-	cJSON_AddNumberToObject(root, "count", count);
-	cJSON_AddItemToObject(root, "notifications", arr);
+	json_add_number(root, "count", count);
+	json_object_add(root, "notifications", arr);
 	for (int i = 0; i < count; i++)
 		add_notification_json(arr, &notifications[i]);
-	out = cJSON_PrintUnformatted(root);
-	cJSON_Delete(root);
+	out = json_stringify(root);
+	json_free(root);
 	return out;
 }
 
-static int bind_create_input(cJSON *root, struct scheduled_task_input *input,
+static int bind_create_input(struct json *root, struct scheduled_task_input *input,
 			     int64_t time_anchor, char **owned_payload_json)
 {
-	cJSON *item;
-	cJSON *payload = NULL;
+	struct json *item;
+	struct json *payload = NULL;
 	char *payload_json = NULL;
 	int has_next_run_at = 0;
 	int rc = 0;
@@ -156,21 +148,21 @@ static int bind_create_input(cJSON *root, struct scheduled_task_input *input,
 	memset(input, 0, sizeof(*input));
 	input->source_session_id = 0;
 	*owned_payload_json = NULL;
-	item = cJSON_GetObjectItem(root, "title");
-	if (cJSON_IsString(item))
-		input->title = item->valuestring;
-	item = cJSON_GetObjectItem(root, "kind");
-	input->kind = cJSON_IsString(item) ? item->valuestring : "agent";
-	item = cJSON_GetObjectItem(root, "trigger_type");
-	input->trigger_type = cJSON_IsString(item) ? item->valuestring : "once";
-	item = cJSON_GetObjectItem(root, "next_run_at");
-	if (cJSON_IsNumber(item)) {
-		input->next_run_at = (int64_t)item->valuedouble;
+	item = json_member_ci(root, "title");
+	if (json_is_string_value(item))
+		input->title = json_string_value(item);
+	item = json_member_ci(root, "kind");
+	input->kind = json_is_string_value(item) ? json_string_value(item) : "agent";
+	item = json_member_ci(root, "trigger_type");
+	input->trigger_type = json_is_string_value(item) ? json_string_value(item) : "once";
+	item = json_member_ci(root, "next_run_at");
+	if (json_is_number_value(item)) {
+		input->next_run_at = (int64_t)json_number_value(item);
 		has_next_run_at = 1;
 	}
-	item = cJSON_GetObjectItem(root, "delay_seconds");
-	if (cJSON_IsNumber(item)) {
-		int64_t delay = (int64_t)item->valuedouble;
+	item = json_member_ci(root, "delay_seconds");
+	if (json_is_number_value(item)) {
+		int64_t delay = (int64_t)json_number_value(item);
 		if (delay < 0)
 			return -EINVAL;
 		if (!has_next_run_at) {
@@ -180,35 +172,35 @@ static int bind_create_input(cJSON *root, struct scheduled_task_input *input,
 			has_next_run_at = 1;
 		}
 	}
-	item = cJSON_GetObjectItem(root, "interval_seconds");
-	if (cJSON_IsNumber(item))
-		input->interval_seconds = (int)item->valuedouble;
-	item = cJSON_GetObjectItem(root, "timeout_at");
-	if (cJSON_IsNumber(item))
-		input->timeout_at = (int64_t)item->valuedouble;
-	item = cJSON_GetObjectItem(root, "max_attempts");
-	if (cJSON_IsNumber(item))
-		input->max_attempts = (int)item->valuedouble;
+	item = json_member_ci(root, "interval_seconds");
+	if (json_is_number_value(item))
+		input->interval_seconds = (int)json_number_value(item);
+	item = json_member_ci(root, "timeout_at");
+	if (json_is_number_value(item))
+		input->timeout_at = (int64_t)json_number_value(item);
+	item = json_member_ci(root, "max_attempts");
+	if (json_is_number_value(item))
+		input->max_attempts = (int)json_number_value(item);
 	input->action_type = "agent_run";
-	item = cJSON_GetObjectItem(root, "prompt");
-	if (cJSON_IsString(item) && item->valuestring[0]) {
-		payload = cJSON_CreateObject();
+	item = json_member_ci(root, "prompt");
+	if (json_is_string_value(item) && json_string_value(item)[0]) {
+		payload = json_object();
 		if (!payload)
 			return -ENOMEM;
-		cJSON_AddStringToObject(payload, "prompt", item->valuestring);
-		payload_json = cJSON_PrintUnformatted(payload);
-		cJSON_Delete(payload);
+		json_add_string(payload, "prompt", json_string_value(item));
+		payload_json = json_stringify(payload);
+		json_free(payload);
 		if (!payload_json)
 			return -ENOMEM;
 		input->payload_json = payload_json;
 		*owned_payload_json = payload_json;
 	}
-	item = cJSON_GetObjectItem(root, "policy_json");
-	if (cJSON_IsString(item))
-		input->policy_json = item->valuestring;
-	item = cJSON_GetObjectItem(root, "notify_json");
-	if (cJSON_IsString(item))
-		input->notify_json = item->valuestring;
+	item = json_member_ci(root, "policy_json");
+	if (json_is_string_value(item))
+		input->policy_json = json_string_value(item);
+	item = json_member_ci(root, "notify_json");
+	if (json_is_string_value(item))
+		input->notify_json = json_string_value(item);
 
 	if (!input->title || !has_next_run_at || input->next_run_at < 0 ||
 	    !input->payload_json)
@@ -216,13 +208,12 @@ static int bind_create_input(cJSON *root, struct scheduled_task_input *input,
 	return rc;
 }
 
-static char *tasks_tool_create(struct scheduled_tasks_tool_context *ctx,
-			       cJSON *root)
+static char *tasks_tool_create(struct scheduled_tasks_tool_context *ctx, struct json *root)
 {
 	struct scheduled_task_input input;
 	struct scheduled_task task;
-	cJSON *out;
-	cJSON *arr;
+	struct json *out;
+	struct json *arr;
 	char *owned_payload_json = NULL;
 	char *json;
 	int rc;
@@ -240,40 +231,38 @@ static char *tasks_tool_create(struct scheduled_tasks_tool_context *ctx,
 	if (rc != 0)
 		return json_error(morph_strerror(rc));
 
-	out = cJSON_CreateObject();
-	arr = cJSON_CreateArray();
+	out = json_object();
+	arr = json_array();
 	if (!out || !arr) {
-		cJSON_Delete(out);
-		cJSON_Delete(arr);
+		json_free(out);
+		json_free(arr);
 		scheduled_task_cleanup(&task);
 		return json_error("out of memory");
 	}
-	cJSON_AddStringToObject(out, "status", "created");
-	cJSON_AddNumberToObject(out, "time_anchor",
-				(double)ctx->time_anchor);
-	cJSON_AddItemToObject(out, "tasks", arr);
+	json_add_string(out, "status", "created");
+	json_add_number(out, "time_anchor", (double)ctx->time_anchor);
+	json_object_add(out, "tasks", arr);
 	add_task_json(arr, &task);
-	cJSON_AddNumberToObject(out, "id", (double)task.id);
-	json = cJSON_PrintUnformatted(out);
-	cJSON_Delete(out);
+	json_add_number(out, "id", (double)task.id);
+	json = json_stringify(out);
+	json_free(out);
 	scheduled_task_cleanup(&task);
 	return json ? json : json_error("out of memory");
 }
 
-static char *tasks_tool_update(struct scheduled_tasks_tool_context *ctx,
-			       cJSON *root)
+static char *tasks_tool_update(struct scheduled_tasks_tool_context *ctx, struct json *root)
 {
 	struct scheduled_task_input input;
 	struct scheduled_task task;
-	cJSON *id_item;
-	cJSON *out;
-	cJSON *arr;
+	struct json *id_item;
+	struct json *out;
+	struct json *arr;
 	char *owned_payload_json = NULL;
 	char *json;
 	int rc;
 
-	id_item = cJSON_GetObjectItem(root, "id");
-	if (!cJSON_IsNumber(id_item))
+	id_item = json_member_ci(root, "id");
+	if (!json_is_number_value(id_item))
 		return json_error("missing task id");
 	rc = bind_create_input(root, &input, ctx->time_anchor,
 			       &owned_payload_json);
@@ -282,47 +271,45 @@ static char *tasks_tool_update(struct scheduled_tasks_tool_context *ctx,
 		return json_error("missing or invalid task update fields");
 	}
 	input.source_session_id = ctx->source_session_id;
-	rc = scheduled_task_update_with_events(ctx->db,
-					       (int64_t)id_item->valuedouble,
-					       &input, &task, &ctx->events);
+	rc = scheduled_task_update_with_events(ctx->db, (int64_t)json_number_value(id_item), &input,
+					       &task, &ctx->events);
 	free(owned_payload_json);
 	if (rc != 0)
 		return json_error(morph_strerror(rc));
-	out = cJSON_CreateObject();
-	arr = cJSON_CreateArray();
+	out = json_object();
+	arr = json_array();
 	if (!out || !arr) {
-		cJSON_Delete(out);
-		cJSON_Delete(arr);
+		json_free(out);
+		json_free(arr);
 		scheduled_task_cleanup(&task);
 		return json_error("out of memory");
 	}
-	cJSON_AddStringToObject(out, "status", "updated");
-	cJSON_AddNumberToObject(out, "time_anchor",
-				(double)ctx->time_anchor);
-	cJSON_AddItemToObject(out, "tasks", arr);
+	json_add_string(out, "status", "updated");
+	json_add_number(out, "time_anchor", (double)ctx->time_anchor);
+	json_object_add(out, "tasks", arr);
 	add_task_json(arr, &task);
-	json = cJSON_PrintUnformatted(out);
-	cJSON_Delete(out);
+	json = json_stringify(out);
+	json_free(out);
 	scheduled_task_cleanup(&task);
 	return json ? json : json_error("out of memory");
 }
 
-static char *tasks_tool_list(struct db *db, cJSON *root)
+static char *tasks_tool_list(struct db *db, struct json *root)
 {
 	struct scheduled_task *tasks = NULL;
 	int count = 0;
 	int limit = 20;
 	const char *status = NULL;
-	cJSON *item;
+	struct json *item;
 	char *out;
 	int rc;
 
-	item = cJSON_GetObjectItem(root, "limit");
-	if (cJSON_IsNumber(item))
-		limit = (int)item->valuedouble;
-	item = cJSON_GetObjectItem(root, "status");
-	if (cJSON_IsString(item) && item->valuestring[0])
-		status = item->valuestring;
+	item = json_member_ci(root, "limit");
+	if (json_is_number_value(item))
+		limit = (int)json_number_value(item);
+	item = json_member_ci(root, "status");
+	if (json_is_string_value(item) && json_string_value(item)[0])
+		status = json_string_value(item);
 	rc = scheduled_task_list(db, status, limit, &tasks, &count);
 	if (rc != 0)
 		return json_error(morph_strerror(rc));
@@ -331,42 +318,39 @@ static char *tasks_tool_list(struct db *db, cJSON *root)
 	return out ? out : json_error("out of memory");
 }
 
-static char *tasks_tool_cancel(struct scheduled_tasks_tool_context *ctx,
-			       cJSON *root)
+static char *tasks_tool_cancel(struct scheduled_tasks_tool_context *ctx, struct json *root)
 {
-	cJSON *item = cJSON_GetObjectItem(root, "id");
+	struct json *item = json_member_ci(root, "id");
 	int rc;
 
-	if (!cJSON_IsNumber(item))
+	if (!json_is_number_value(item))
 		return json_error("missing task id");
-	rc = scheduled_task_cancel_with_events(ctx->db,
-					       (int64_t)item->valuedouble,
+	rc = scheduled_task_cancel_with_events(ctx->db, (int64_t)json_number_value(item),
 					       &ctx->events);
 	if (rc != 0)
 		return json_error(morph_strerror(rc));
 	return strdup("{\"status\":\"cancelled\"}");
 }
 
-static char *tasks_tool_run_due(struct scheduled_tasks_tool_context *ctx,
-				cJSON *root)
+static char *tasks_tool_run_due(struct scheduled_tasks_tool_context *ctx, struct json *root)
 {
 	(void)ctx;
 	(void)root;
 	return json_error("run_due is scheduler-only for agent tasks");
 }
 
-static char *tasks_tool_inbox(struct db *db, cJSON *root)
+static char *tasks_tool_inbox(struct db *db, struct json *root)
 {
 	struct notification *notifications = NULL;
 	int count = 0;
 	int limit = 20;
-	cJSON *item;
+	struct json *item;
 	char *out;
 	int rc;
 
-	item = cJSON_GetObjectItem(root, "limit");
-	if (cJSON_IsNumber(item))
-		limit = (int)item->valuedouble;
+	item = json_member_ci(root, "limit");
+	if (json_is_number_value(item))
+		limit = (int)json_number_value(item);
 	rc = notification_list_unread(db, limit, &notifications, &count);
 	if (rc != 0)
 		return json_error(morph_strerror(rc));
@@ -375,14 +359,14 @@ static char *tasks_tool_inbox(struct db *db, cJSON *root)
 	return out ? out : json_error("out of memory");
 }
 
-static char *tasks_tool_mark_read(struct db *db, cJSON *root)
+static char *tasks_tool_mark_read(struct db *db, struct json *root)
 {
-	cJSON *item = cJSON_GetObjectItem(root, "id");
+	struct json *item = json_member_ci(root, "id");
 	int rc;
 
-	if (!cJSON_IsNumber(item))
+	if (!json_is_number_value(item))
 		return json_error("missing notification id");
-	rc = notification_mark_read(db, (int64_t)item->valuedouble, 0);
+	rc = notification_mark_read(db, (int64_t)json_number_value(item), 0);
 	if (rc != 0)
 		return json_error(morph_strerror(rc));
 	return strdup("{\"status\":\"read\"}");
@@ -393,20 +377,20 @@ static int scheduled_tasks_tool_run(const char *args_json,
 				    void *user_data)
 {
 	struct scheduled_tasks_tool_context *ctx = user_data;
-	cJSON *root;
-	cJSON *op_item;
+	struct json *root;
+	struct json *op_item;
 	const char *op;
 	char *out;
 
 	if (!ctx || !ctx->db || !ctx->db->handle)
 		return -EINVAL;
-	root = cJSON_Parse(args_json ? args_json : "{}");
+	root = json_parse_prefix(args_json ? args_json : "{}", NULL, NULL);
 	if (!root) {
 		(void)tool_result_success_json_text(result, json_error("invalid JSON"));
 		return 0;
 	}
-	op_item = cJSON_GetObjectItem(root, "op");
-	op = cJSON_IsString(op_item) ? op_item->valuestring : "list";
+	op_item = json_member_ci(root, "op");
+	op = json_is_string_value(op_item) ? json_string_value(op_item) : "list";
 
 	if (strcmp(op, "create") == 0)
 		out = tasks_tool_create(ctx, root);
@@ -425,7 +409,7 @@ static int scheduled_tasks_tool_run(const char *args_json,
 	else
 		out = json_error("unknown tasks op");
 
-	cJSON_Delete(root);
+	json_free(root);
 	(void)tool_result_success_json_text(result, out ? out : json_error("oom"));
 	return 0;
 }

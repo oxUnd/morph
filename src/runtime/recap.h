@@ -1,7 +1,7 @@
 #ifndef MORPH_RUNTIME_RECAP_H
 #define MORPH_RUNTIME_RECAP_H
 
-#include "cJSON.h"
+#include "util/json.h"
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -30,7 +30,7 @@ void runtime_recap_cancel(struct runtime *runtime);
 int runtime_recap_is_current(struct runtime *runtime,
 	const struct runtime_recap_progress *progress);
 /* Validate structured model output. Caller owns the returned JSON object. */
-cJSON *runtime_recap_parse(const char *response);
+struct json *runtime_recap_parse(const char *response);
 
 #ifdef __cplusplus
 }

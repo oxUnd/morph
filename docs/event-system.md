@@ -36,12 +36,12 @@ structured facts.
 ## Hard Constraints
 
 - Use shared foundational containers from `src/util/`:
-  - `morph_buf_t` for variable-length JSON/text assembly.
+  - `morph_buf_t` for variable-length text assembly.
   - `morph_array_t` for event queues, subscriber lists, and dynamic batches.
   - `morph_str_t` for string views when ownership is external.
   - `morph_strmap_t` for string-keyed subscriptions or event name lookup.
 - Do not hand-roll growable buffers, dynamic arrays, hash maps, or UTF-8 logic.
-- Use `cJSON` for structured event payloads in the first implementation.
+- Use the shared `util/json.h` module for structured event payloads.
 - Event `message` is for human fallback only. Front ends must depend on
   `type`, `name`, `phase`, and `data`.
 - Event names and payload fields are a front-end protocol. Rename or remove
@@ -75,7 +75,7 @@ struct morph_event {
 	const char *name;
 	const char *phase;
 	const char *message;
-	cJSON *data;
+	struct json *data;
 };
 
 typedef int (*morph_event_cb)(const struct morph_event *ev, void *user_data);
@@ -92,7 +92,7 @@ The event module should provide:
 
 - event type name conversion;
 - JSON serialization for NDJSON/SSE/trace output;
-- helper emit functions that build `cJSON` payloads safely;
+- helper emit functions that build `json` payloads safely;
 - optional recorder helpers for tests.
 
 ## Event Names

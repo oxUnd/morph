@@ -267,27 +267,27 @@ out:
 }
 
 /* A checkpoint is independent of model history and survives compaction. */
-cJSON *plan_registry_json(const struct plan_registry *reg)
+struct json *plan_registry_json(const struct plan_registry *reg)
 {
-	cJSON *root = cJSON_CreateArray();
+	struct json *root = json_array();
 	if (!root)
 		return NULL;
 	for (int i = 0; i < reg->count; i++) {
 		const struct plan *p = &reg->plans[i];
-		cJSON *obj = cJSON_CreateObject();
-		cJSON *steps = cJSON_CreateArray();
+		struct json *obj = json_object();
+		struct json *steps = json_array();
 		if (!obj || !steps) {
-			cJSON_Delete(obj);
-			cJSON_Delete(steps);
-			cJSON_Delete(root);
+			json_free(obj);
+			json_free(steps);
+			json_free(root);
 			return NULL;
 		}
-		cJSON_AddItemToArray(root, obj);
-		cJSON_AddItemToObject(obj, "steps", steps);
+		json_array_add(root, obj);
+		json_object_add(obj, "steps", steps);
 #define PLAN_WRITE(field)                                                                          \
 	do {                                                                                       \
-		if (!cJSON_AddStringToObject(obj, #field, p->field)) {                             \
-			cJSON_Delete(root);                                                        \
+		if (!json_add_string(obj, #field, p->field)) {                                     \
+			json_free(root);                                                           \
 			return NULL;                                                               \
 		}                                                                                  \
 	} while (0)
@@ -302,16 +302,16 @@ cJSON *plan_registry_json(const struct plan_registry *reg)
 #undef PLAN_WRITE
 		for (int j = 0; j < p->step_count; j++) {
 			const struct plan_step *step = &p->steps[j];
-			cJSON *entry = cJSON_CreateObject();
+			struct json *entry = json_object();
 			if (!entry) {
-				cJSON_Delete(root);
+				json_free(root);
 				return NULL;
 			}
-			cJSON_AddItemToArray(steps, entry);
+			json_array_add(steps, entry);
 #define STEP_WRITE(field)                                                                          \
 	do {                                                                                       \
-		if (!cJSON_AddStringToObject(entry, #field, step->field)) {                        \
-			cJSON_Delete(root);                                                        \
+		if (!json_add_string(entry, #field, step->field)) {                                \
+			json_free(root);                                                           \
 			return NULL;                                                               \
 		}                                                                                  \
 	} while (0)
@@ -326,34 +326,34 @@ cJSON *plan_registry_json(const struct plan_registry *reg)
 	return root;
 }
 
-static int plan_restore_text(const cJSON *obj, const char *key, char *dst, size_t cap)
+static int plan_restore_text(const struct json *obj, const char *key, char *dst, size_t cap)
 {
-	const cJSON *value = cJSON_GetObjectItemCaseSensitive(obj, key);
+	const struct json *value = json_member(obj, key);
 	if (!value)
 		return 0;
-	if (!cJSON_IsString(value) || strlen(value->valuestring) >= cap ||
-	    utf8valid(value->valuestring))
+	if (!json_is_string_value(value) || strlen(json_string_value(value)) >= cap ||
+	    utf8valid(json_string_value(value)))
 		return MORPH_ERR_FORMAT;
-	memcpy(dst, value->valuestring, strlen(value->valuestring) + 1);
+	memcpy(dst, json_string_value(value), strlen(json_string_value(value)) + 1);
 	return 0;
 }
 
-int plan_registry_restore(struct plan_registry *reg, const cJSON *json)
+int plan_registry_restore(struct plan_registry *reg, const struct json *json)
 {
 	struct plan_registry *copy;
 	int rc = 0;
-	if (!reg || !cJSON_IsArray(json) || cJSON_GetArraySize(json) > PLAN_MAX_PLANS)
+	if (!reg || !json_is_array_value(json) || json_count(json) > PLAN_MAX_PLANS)
 		return MORPH_ERR_FORMAT;
 	copy = calloc(1, sizeof(*copy));
 	if (!copy)
 		return -ENOMEM;
 	copy->db = reg->db;
 	copy->session_id = reg->session_id;
-	copy->count = cJSON_GetArraySize(json);
+	copy->count = json_count(json);
 	for (int i = 0; i < copy->count && rc == 0; i++) {
 		struct plan *p = &copy->plans[i];
-		const cJSON *obj = cJSON_GetArrayItem(json, i);
-		const cJSON *steps = cJSON_GetObjectItemCaseSensitive(obj, "steps");
+		const struct json *obj = json_at(json, i);
+		const struct json *steps = json_member(obj, "steps");
 #define PLAN_READ(field)                                                                           \
 	do {                                                                                       \
 		if (rc == 0)                                                                       \
@@ -368,16 +368,16 @@ int plan_registry_restore(struct plan_registry *reg, const cJSON *json)
 		PLAN_READ(rejected);
 		PLAN_READ(verification);
 #undef PLAN_READ
-		if (!p->id[0] || !p->name[0] || !cJSON_IsArray(steps) ||
-		    cJSON_GetArraySize(steps) > PLAN_MAX_STEPS) {
+		if (!p->id[0] || !p->name[0] || !json_is_array_value(steps) ||
+		    json_count(steps) > PLAN_MAX_STEPS) {
 			rc = MORPH_ERR_FORMAT;
 			break;
 		}
-		p->step_count = cJSON_GetArraySize(steps);
+		p->step_count = json_count(steps);
 		p->active_step = -1;
 		for (int j = 0; j < p->step_count && rc == 0; j++) {
 			struct plan_step *step = &p->steps[j];
-			const cJSON *entry = cJSON_GetArrayItem(steps, j);
+			const struct json *entry = json_at(steps, j);
 			step->id = j + 1;
 #define STEP_READ(field)                                                                           \
 	do {                                                                                       \
@@ -406,15 +406,15 @@ int plan_registry_restore(struct plan_registry *reg, const cJSON *json)
 
 int plan_registry_save(struct plan_registry *reg)
 {
-	cJSON *json;
+	struct json *json;
 	char *text;
 	sqlite3_stmt *stmt = NULL;
 	int rc;
 	if (!reg || !reg->db || reg->session_id <= 0)
 		return 0;
 	json = plan_registry_json(reg);
-	text = json ? cJSON_PrintUnformatted(json) : NULL;
-	cJSON_Delete(json);
+	text = json ? json_stringify(json) : NULL;
+	json_free(json);
 	if (!text)
 		return -ENOMEM;
 	rc = sqlite3_prepare_v2(
@@ -447,9 +447,10 @@ int plan_registry_bind(struct plan_registry *reg, struct db *db, int64_t session
 	sqlite3_bind_int64(stmt, 1, session_id);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {
-		cJSON *json = cJSON_Parse((const char *)sqlite3_column_text(stmt, 0));
+		struct json *json =
+			json_parse_prefix((const char *)sqlite3_column_text(stmt, 0), NULL, NULL);
 		rc = plan_registry_restore(reg, json);
-		cJSON_Delete(json);
+		json_free(json);
 	} else if (rc == SQLITE_DONE) {
 		plan_registry_init(reg);
 		rc = 0;

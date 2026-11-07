@@ -1,6 +1,6 @@
 #include "edit.h"
 #include "config/config.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "util/array.h"
 #include "util/buf.h"
 #include "util/error.h"
@@ -140,9 +140,9 @@ static int config_edit_key_text(morph_buf_t *out, const char *key)
 			bare = 0;
 	if (bare)
 		return morph_buf_puts(out, key);
-	cJSON *string = cJSON_CreateString(key);
-	char *encoded = string ? cJSON_PrintUnformatted(string) : NULL;
-	cJSON_Delete(string);
+	struct json *string = json_string(key);
+	char *encoded = string ? json_stringify(string) : NULL;
+	json_free(string);
 	if (!encoded)
 		return -ENOMEM;
 	int rc = morph_buf_puts(out, encoded);

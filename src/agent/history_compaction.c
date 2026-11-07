@@ -28,18 +28,18 @@ static const char *history_compaction_text(const struct model_history_item *item
 		return *rendered;
 	}
 	if (strcmp(item->kind, "assistant_tool_calls") == 0 && item->payload_json) {
-		cJSON *payload = cJSON_ParseWithOpts(item->payload_json, NULL, 1);
+		struct json *payload = json_parse_ex(item->payload_json, NULL, 1, NULL);
 		if (!payload)
 			return item->payload_json;
 		/* Reasoning stays on the replay path; checkpoints consume facts only. */
-		cJSON_DeleteItemFromObjectCaseSensitive(payload, "reasoning_content");
+		json_object_remove(payload, "reasoning_content");
 		if (item->content && item->content[0] &&
-		    !cJSON_AddStringToObject(payload, "content", item->content)) {
-			cJSON_Delete(payload);
+		    !json_add_string(payload, "content", item->content)) {
+			json_free(payload);
 			return NULL;
 		}
-		*rendered = cJSON_PrintUnformatted(payload);
-		cJSON_Delete(payload);
+		*rendered = json_stringify(payload);
+		json_free(payload);
 		return *rendered;
 	}
 	return item->content;
@@ -62,14 +62,15 @@ static int history_result_in_omitted_group(const struct model_history_item *item
 	for (const struct model_history_item *item = items; item; item = item->next) {
 		if (item->sequence_no > cutoff || strcmp(item->kind, "assistant_tool_calls"))
 			continue;
-		cJSON *payload = item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
-		cJSON *call;
+		struct json *payload = item->payload_json
+					       ? json_parse_prefix(item->payload_json, NULL, NULL)
+					       : NULL;
+		struct json *call;
 		int found = 0;
-		cJSON_ArrayForEach (call, cJSON_GetObjectItem(payload, "calls")) {
-			const char *local =
-				cJSON_GetStringValue(cJSON_GetObjectItem(call, "tool_call_id"));
+		json_foreach (call, json_member_ci(payload, "calls")) {
+			const char *local = json_string_value(json_member_ci(call, "tool_call_id"));
 			const char *provider =
-				cJSON_GetStringValue(cJSON_GetObjectItem(call, "provider_call_id"));
+				json_string_value(json_member_ci(call, "provider_call_id"));
 			if ((local && result->tool_call_id &&
 			     !strcmp(local, result->tool_call_id)) ||
 			    (provider && result->provider_call_id &&
@@ -78,7 +79,7 @@ static int history_result_in_omitted_group(const struct model_history_item *item
 				break;
 			}
 		}
-		cJSON_Delete(payload);
+		json_free(payload);
 		if (found)
 			return 1;
 	}
@@ -141,20 +142,23 @@ int agent_history_reload(struct react_context *ctx)
 	if (!items && count != 0)
 		return MORPH_ERR_DB;
 	for (struct model_history_item *item = items; item; item = item->next) {
-		cJSON *payload;
-		const cJSON *original;
+		struct json *payload;
+		const struct json *original;
 		char *prepared;
 		int truncated;
 		int rc;
 
 		if (strcmp(item->kind, "tool_result") != 0)
 			continue;
-		payload = item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
-		original = cJSON_GetObjectItemCaseSensitive(payload, "original_content");
-		rc = agent_history_prepare_tool_content(
-			ctx, cJSON_IsString(original) ? original->valuestring : item->content,
-			&prepared, &truncated);
-		cJSON_Delete(payload);
+		payload = item->payload_json ? json_parse_prefix(item->payload_json, NULL, NULL)
+					     : NULL;
+		original = json_member(payload, "original_content");
+		rc = agent_history_prepare_tool_content(ctx,
+							json_is_string_value(original)
+								? json_string_value(original)
+								: item->content,
+							&prepared, &truncated);
+		json_free(payload);
 		if (rc != 0) {
 			model_history_free_list(items);
 			return rc;
@@ -290,19 +294,19 @@ static char *history_finish_summary(struct react_context *ctx, const char *summa
 	morph_buf_t marked;
 	if (morph_buf_init(&marked, 256) != 0)
 		return NULL;
-	cJSON *root = cJSON_ParseWithOpts(summary, NULL, 1);
-	cJSON *state = cJSON_GetObjectItemCaseSensitive(root, "working_state");
+	struct json *root = json_parse_ex(summary, NULL, 1, NULL);
+	struct json *state = json_member(root, "working_state");
 	int rc = morph_buf_printf(
 		&marked, "%d older tool groups were omitted; their outcomes are unavailable.\n%s",
-		pruned_groups, cJSON_IsString(state) ? state->valuestring : summary);
+		pruned_groups, json_is_string_value(state) ? json_string_value(state) : summary);
 	char *text = NULL;
-	if (rc == 0 && cJSON_IsString(state)) {
-		if (cJSON_SetValuestring(state, morph_buf_cstr(&marked)))
-			text = cJSON_PrintUnformatted(root);
+	if (rc == 0 && json_is_string_value(state)) {
+		if (json_string_update(state, morph_buf_cstr(&marked)))
+			text = json_stringify(root);
 	} else if (rc == 0) {
 		text = morph_buf_detach(&marked);
 	}
-	cJSON_Delete(root);
+	json_free(root);
 	morph_buf_cleanup(&marked);
 	char *redacted = text ? history_redact_all(ctx, text) : NULL;
 	free(text);
@@ -522,21 +526,21 @@ static int history_compact_selected(struct react_context *ctx, int force,
 			model_history_compaction_count(ctx->history_db, ctx->history_session_id);
 
 		if (compactions >= ctx->compress.compaction_warning_count) {
-			cJSON *data = cJSON_CreateObject();
+			struct json *data = json_object();
 
 			log_warn(ctx ? ctx->logger : NULL,
 				 "model history has been compacted %d times; "
 				 "consider starting a new session",
 				 compactions);
 			if (data) {
-				cJSON_AddNumberToObject(data, "count", compactions);
+				json_add_number(data, "count", compactions);
 				(void)morph_event_emit_simple(
 					ctx->event_cb, ctx->event_user_data, MORPH_EVENT_BACKGROUND,
 					"history.compaction.warning", "warning",
 					"Consider starting a new session; repeated "
 					"compaction loses detail.",
 					data);
-				cJSON_Delete(data);
+				json_free(data);
 			}
 		}
 	}

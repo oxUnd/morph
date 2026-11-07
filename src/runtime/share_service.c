@@ -13,58 +13,48 @@ static const char *share_text(const char *text)
 	return text ? text : "";
 }
 
-static const char *share_string(const cJSON *object, const char *key)
+static struct json *share_document(const char *answer)
 {
-	const cJSON *value = cJSON_GetObjectItemCaseSensitive(object, key);
-
-	return cJSON_IsString(value) ? value->valuestring : "";
-}
-
-static cJSON *share_document(const char *answer)
-{
-	cJSON *document = cJSON_CreateObject();
-	if (!document || !cJSON_AddArrayToObject(document, "questions") ||
-	    !cJSON_AddArrayToObject(document, "steps") ||
-	    !cJSON_AddStringToObject(document, "answer", answer)) {
-		cJSON_Delete(document);
+	struct json *document = json_object();
+	if (!document || !json_add_array(document, "questions") ||
+	    !json_add_array(document, "steps") || !json_add_string(document, "answer", answer)) {
+		json_free(document);
 		return NULL;
 	}
 	return document;
 }
 
-static int share_question(cJSON *document, const char *text)
+static int share_question(struct json *document, const char *text)
 {
-	cJSON *question = cJSON_CreateString(text);
-	if (!question || !cJSON_AddItemToArray(
-		cJSON_GetObjectItemCaseSensitive(document, "questions"), question)) {
-		cJSON_Delete(question);
+	struct json *question = json_string(text);
+	if (!question || json_array_add(json_member(document, "questions"), question) != 0) {
+		json_free(question);
 		return -ENOMEM;
 	}
 	return 0;
 }
 
-static int share_step(cJSON *document, const struct model_history_item *row)
+static int share_step(struct json *document, const struct model_history_item *row)
 {
 	const char *metadata = share_text(row->payload_json);
-	cJSON *payload = metadata[0] ? cJSON_Parse(metadata) : NULL;
+	struct json *payload = metadata[0] ? json_parse_prefix(metadata, NULL, NULL) : NULL;
 	const char *status;
-	cJSON *step;
+	struct json *step;
 	int ok;
 
-	if (metadata[0] && !cJSON_IsObject(payload)) {
-		cJSON_Delete(payload);
+	if (metadata[0] && !json_is_object_value(payload)) {
+		json_free(payload);
 		return MORPH_ERR_PARSE;
 	}
-	status = share_string(payload, "status");
-	step = cJSON_CreateObject();
-	ok = step && cJSON_AddStringToObject(step, "name", row->tool_name) &&
-	     cJSON_AddStringToObject(step, "status", status[0] ? status : "recorded") &&
-	     cJSON_AddStringToObject(step, "content", share_text(row->content)) &&
-	     cJSON_AddBoolToObject(step, "truncated", row->truncated);
-	cJSON_Delete(payload);
-	if (!ok || !cJSON_AddItemToArray(
-		cJSON_GetObjectItemCaseSensitive(document, "steps"), step)) {
-		cJSON_Delete(step);
+	status = json_str_or(payload, "status", "");
+	step = json_object();
+	ok = step && json_add_string(step, "name", row->tool_name) &&
+	     json_add_string(step, "status", status[0] ? status : "recorded") &&
+	     json_add_string(step, "content", share_text(row->content)) &&
+	     json_add_bool(step, "truncated", row->truncated);
+	json_free(payload);
+	if (!ok || json_array_add(json_member(document, "steps"), step) != 0) {
+		json_free(step);
 		return -ENOMEM;
 	}
 	return 0;
@@ -74,22 +64,22 @@ static int share_turn_question(const struct model_history_item *item, void *data
 {
 	int *found = data;
 	const char *metadata = share_text(item->payload_json);
-	cJSON *payload;
-	const cJSON *outcome;
+	struct json *payload;
+	const struct json *outcome;
 	const char *status;
 	int failed;
 
 	if (strcmp(item->kind, "user_message") != 0)
 		return 0;
-	payload = metadata[0] ? cJSON_Parse(metadata) : NULL;
-	if (metadata[0] && !cJSON_IsObject(payload)) {
-		cJSON_Delete(payload);
+	payload = metadata[0] ? json_parse_prefix(metadata, NULL, NULL) : NULL;
+	if (metadata[0] && !json_is_object_value(payload)) {
+		json_free(payload);
 		return MORPH_ERR_PARSE;
 	}
-	outcome = cJSON_GetObjectItemCaseSensitive(payload, "turn_outcome");
-	status = share_string(outcome, "status");
+	outcome = json_member(payload, "turn_outcome");
+	status = json_str_or(outcome, "status", "");
 	failed = status[0] && strcmp(status, "success") != 0 && strcmp(status, "answered") != 0;
-	cJSON_Delete(payload);
+	json_free(payload);
 	*found = !failed;
 	return failed ? 1 : 0;
 }
@@ -104,7 +94,7 @@ static int share_turn_item(const struct model_history_item *item, void *data)
 struct share_context {
 	struct db *db;
 	int64_t session_id;
-	cJSON **out;
+	struct json **out;
 };
 
 static int share_answer(const struct model_history_item *item, void *data)
@@ -115,7 +105,7 @@ static int share_answer(const struct model_history_item *item, void *data)
 	const char *key = share_text(item->idempotency_key);
 	int migrated = !turn[0] && !strncmp(key, legacy_prefix, sizeof(legacy_prefix) - 1);
 	int complete = migrated;
-	cJSON *document;
+	struct json *document;
 	int rc = 0;
 
 	if (turn[0])
@@ -142,11 +132,11 @@ static int share_answer(const struct model_history_item *item, void *data)
 		*context->out = document;
 		return 1;
 	}
-	cJSON_Delete(document);
+	json_free(document);
 	return rc == -ENODATA ? 0 : rc;
 }
 
-static int share_history(struct db *db, int64_t session_id, cJSON **out)
+static int share_history(struct db *db, int64_t session_id, struct json **out)
 {
 	struct share_context context = {.db = db, .session_id = session_id, .out = out};
 	int rc = history_store_visit_answers(db, session_id, share_answer, &context);
@@ -154,12 +144,12 @@ static int share_history(struct db *db, int64_t session_id, cJSON **out)
 	return rc != 0 ? rc : *out ? 0 : -ENODATA;
 }
 
-static int share_legacy(struct db *db, int64_t session_id, cJSON **out)
+static int share_legacy(struct db *db, int64_t session_id, struct json **out)
 {
 	struct arena *arena = arena_create(0);
 	const char *answer;
 	const char *question;
-	cJSON *document = NULL;
+	struct json *document = NULL;
 	int rc;
 
 	if (!arena)
@@ -173,11 +163,11 @@ static int share_legacy(struct db *db, int64_t session_id, cJSON **out)
 	if (rc == 0)
 		*out = document;
 	else
-		cJSON_Delete(document);
+		json_free(document);
 	return rc;
 }
 
-int runtime_session_share_current(struct runtime *runtime, cJSON **out)
+int runtime_session_share_current(struct runtime *runtime, struct json **out)
 {
 	struct runtime_context *context;
 	int rc;

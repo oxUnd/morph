@@ -4,14 +4,12 @@
 #include "util/error.h"
 #include "util/image_util.h"
 #include "util/json.h"
-#include "cJSON.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static int volcengine_capabilities(const struct model *model,
-				   struct image_capabilities *caps)
+static int volcengine_capabilities(const struct model *model, struct image_capabilities *caps)
 {
 	(void)model;
 	if (!caps)
@@ -23,8 +21,7 @@ static int volcengine_capabilities(const struct model *model,
 	return 0;
 }
 
-static int volcengine_normalize_size(const struct model *model,
-				     const char *size, char *out,
+static int volcengine_normalize_size(const struct model *model, const char *size, char *out,
 				     size_t out_cap)
 {
 	(void)model;
@@ -43,11 +40,10 @@ static int volcengine_normalize_size(const struct model *model,
 }
 
 int image_volcengine_build_request_body(const struct model *model,
-					const struct image_request *request,
-					char **body_out)
+					const struct image_request *request, char **body_out)
 {
 	struct arena *arena = NULL;
-	cJSON *body = NULL;
+	struct json *body = NULL;
 	char *body_text = NULL;
 
 	if (!model || !request || !request->prompt || !body_out)
@@ -56,49 +52,49 @@ int image_volcengine_build_request_body(const struct model *model,
 	arena = arena_create(8192);
 	if (!arena)
 		return -ENOMEM;
-	body = cJSON_CreateObject();
+	body = json_object();
 	if (!body) {
 		arena_destroy(arena);
 		return -ENOMEM;
 	}
-	cJSON_AddStringToObject(body, "model", model->model_id);
-	cJSON_AddStringToObject(body, "prompt", request->prompt);
-	cJSON_AddNumberToObject(body, "n", 1);
-	cJSON_AddStringToObject(body, "size", request->size);
-	cJSON_AddStringToObject(body, "response_format", "url");
-	cJSON_AddBoolToObject(body, "watermark", 0);
+	json_add_string(body, "model", model->model_id);
+	json_add_string(body, "prompt", request->prompt);
+	json_add_number(body, "n", 1);
+	json_add_string(body, "size", request->size);
+	json_add_string(body, "response_format", "url");
+	json_add_bool(body, "watermark", 0);
 	if (request->reference_image_count > 0) {
-		cJSON *images = cJSON_CreateArray();
+		struct json *images = json_array();
 
 		if (!images) {
-			cJSON_Delete(body);
+			json_free(body);
 			arena_destroy(arena);
 			return -ENOMEM;
 		}
 		for (int i = 0; i < request->reference_image_count; i++) {
 			char *uri = NULL;
-			int encode_rc = image_encode_data_uri(
-				request->reference_images[i], 2048, &uri);
+			int encode_rc =
+				image_encode_data_uri(request->reference_images[i], 2048, &uri);
 
 			if (encode_rc != 0) {
-				cJSON_Delete(images);
-				cJSON_Delete(body);
+				json_free(images);
+				json_free(body);
 				arena_destroy(arena);
 				return encode_rc;
 			}
-			cJSON *item = morph_json_take_string(uri);
-			if (!item || !cJSON_AddItemToArray(images, item)) {
-				cJSON_Delete(item);
-				cJSON_Delete(images);
-				cJSON_Delete(body);
+			struct json *item = json_take_string(uri);
+			if (!item || json_array_add(images, item) != 0) {
+				json_free(item);
+				json_free(images);
+				json_free(body);
 				arena_destroy(arena);
 				return -ENOMEM;
 			}
 		}
-		cJSON_AddItemToObject(body, "image", images);
+		json_object_add(body, "image", images);
 	}
-	body_text = cJSON_PrintUnformatted(body);
-	cJSON_Delete(body);
+	body_text = json_stringify(body);
+	json_free(body);
 	arena_destroy(arena);
 	if (!body_text) {
 		return -ENOMEM;
@@ -107,8 +103,7 @@ int image_volcengine_build_request_body(const struct model *model,
 	return 0;
 }
 
-static int volcengine_execute(struct model *model,
-			      const struct image_request *request,
+static int volcengine_execute(struct model *model, const struct image_request *request,
 			      struct image_payload *payload)
 {
 	char *body_text = NULL;

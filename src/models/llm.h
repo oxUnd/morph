@@ -169,7 +169,7 @@ int model_estimate_input_tokens(const struct model *model, const char *system_pr
  * Caller owns the JSON. Used by local request inspection, not model tools. */
 int model_input_snapshot(const struct model *model, const char *system_prompt,
 			 const struct chat_message *messages, int msg_count,
-			 const struct tool_desc *tools, int tool_count, cJSON **out);
+			 const struct tool_desc *tools, int tool_count, struct json **out);
 
 struct model *model_llm_create(struct morph_log *logger, const char *provider, const char *model_id,
 			       const char *api_base, const char *api_key);

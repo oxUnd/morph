@@ -2,7 +2,7 @@
 #include "sapi/cli/services/configuration/model.h"
 #include "sapi/cli/services/configuration/role.h"
 #include "config/config.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "sapi/cli/pages/setup/controls.h"
 #include "sapi/cli/services/configuration/config.h"
 #include "sapi/cli/services/configuration/mcp.h"
@@ -186,9 +186,9 @@ static int cli_wizard_configure_model(FILE *in, FILE *out, int kind,
 
 static void cli_wizard_append_field(morph_buf_t *buf, const char *key, const char *value)
 {
-	cJSON *string = cJSON_CreateString(value);
-	char *encoded = string ? cJSON_PrintUnformatted(string) : NULL;
-	cJSON_Delete(string);
+	struct json *string = json_string(value);
+	char *encoded = string ? json_stringify(string) : NULL;
+	json_free(string);
 	if (!encoded) {
 		buf->failed = -ENOMEM;
 		return;

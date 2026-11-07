@@ -312,16 +312,17 @@ class CliPresentationTest : public ::testing::Test
 		ASSERT_EQ(morph_tui_application_step(&ctx.base, 0), 0);
 	}
 
-	void Emit(enum morph_event_type type, const char *name, const char *phase, cJSON *data)
+	void Emit(enum morph_event_type type, const char *name, const char *phase,
+		  struct json *data)
 	{
 		struct morph_event event{type, name, phase, nullptr, data, "turn_test"};
 		ASSERT_EQ(cli_presentation_event(&ctx, &event), 0);
 	}
 
-	static cJSON *TextData(const char *text)
+	static struct json *TextData(const char *text)
 	{
-		cJSON *data = cJSON_CreateObject();
-		cJSON_AddStringToObject(data, "text", text);
+		struct json *data = json_object();
+		json_add_string(data, "text", text);
 		return data;
 	}
 };
@@ -369,14 +370,15 @@ TEST_F(CliPresentationTest, RestoresInactiveHistoryAndToolsWithoutInternalRecord
 TEST_F(CliPresentationTest, RestoredPendingToolHasNoLiveTimerOrInventedFailure)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cJSON *call = cJSON_Parse(R"({"name":"exec","tool_call_id":"pending",
-		"arguments":"{\"command\":\"printf PENDING_COMMAND\"}"})");
+	struct json *call = json_parse_prefix(R"({"name":"exec","tool_call_id":"pending",
+		"arguments":"{\"command\":\"printf PENDING_COMMAND\"}"})",
+					      NULL, NULL);
 	ASSERT_NE(call, nullptr);
 	testing::internal::CaptureStdout();
 	int rc = cli_transcript_restore_tool(&ctx, call, nullptr);
 	cli_transcript_finish(&ctx);
 	std::string output = testing::internal::GetCapturedStdout();
-	cJSON_Delete(call);
+	json_free(call);
 	EXPECT_EQ(rc, 0);
 	EXPECT_NE(output.find("PENDING_COMMAND"), std::string::npos);
 	EXPECT_NE(output.find("no recorded result"), std::string::npos);
@@ -389,8 +391,9 @@ TEST_F(CliPresentationTest, RestoresOriginalToolOutputAndFailureMetadata)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	ctx.tool_details = 1;
-	cJSON *call = cJSON_Parse(R"({"name":"exec","tool_call_id":"failed",
-		"arguments":"{\"command\":\"printf ORIGINAL_COMMAND\"}"})");
+	struct json *call = json_parse_prefix(R"({"name":"exec","tool_call_id":"failed",
+		"arguments":"{\"command\":\"printf ORIGINAL_COMMAND\"}"})",
+					      NULL, NULL);
 	ASSERT_NE(call, nullptr);
 	char stored[] = "MODEL_HISTORY_TRUNCATED";
 	char metadata[] = R"({"original_content":"ORIGINAL_TOOL_OUTPUT", "error_code":-13})";
@@ -400,7 +403,7 @@ TEST_F(CliPresentationTest, RestoresOriginalToolOutputAndFailureMetadata)
 	testing::internal::CaptureStdout();
 	int rc = cli_transcript_restore_tool(&ctx, call, &result);
 	std::string output = testing::internal::GetCapturedStdout();
-	cJSON_Delete(call);
+	json_free(call);
 	EXPECT_EQ(rc, 0);
 	EXPECT_NE(output.find("ORIGINAL_TOOL_OUTPUT"), std::string::npos);
 	EXPECT_NE(output.find("ORIGINAL_COMMAND"), std::string::npos);
@@ -515,16 +518,16 @@ TEST(CliCancelMonitorTest, EscapeSequenceDoesNotCancel)
 
 TEST_F(CliPresentationTest, OncePrintsOrderedPlainProgress)
 {
-	cJSON *thought_delta = TextData("Inspecting the CLI");
-	cJSON *thought_end = TextData("Inspecting the CLI");
-	cJSON *tool = cJSON_CreateObject();
-	cJSON *args = cJSON_CreateObject();
-	cJSON *observation = TextData("run.c\noutput.c");
-	cJSON *final = TextData("Result with **raw markdown**.");
+	struct json *thought_delta = TextData("Inspecting the CLI");
+	struct json *thought_end = TextData("Inspecting the CLI");
+	struct json *tool = json_object();
+	struct json *args = json_object();
+	struct json *observation = TextData("run.c\noutput.c");
+	struct json *final = TextData("Result with **raw markdown**.");
 
-	cJSON_AddStringToObject(tool, "tool", "file_list");
-	cJSON_AddItemToObject(tool, "args", args);
-	cJSON_AddStringToObject(args, "path", "src/sapi/cli");
+	json_add_string(tool, "tool", "file_list");
+	json_object_add(tool, "args", args);
+	json_add_string(args, "path", "src/sapi/cli");
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.thought.delta", "delta", thought_delta);
@@ -542,17 +545,17 @@ TEST_F(CliPresentationTest, OncePrintsOrderedPlainProgress)
 	EXPECT_NE(output.find("observation:\nrun.c\noutput.c"), std::string::npos);
 	EXPECT_NE(output.find("final:\nResult with **raw markdown**."), std::string::npos);
 
-	cJSON_Delete(thought_delta);
-	cJSON_Delete(thought_end);
-	cJSON_Delete(tool);
-	cJSON_Delete(observation);
-	cJSON_Delete(final);
+	json_free(thought_delta);
+	json_free(thought_end);
+	json_free(tool);
+	json_free(observation);
+	json_free(final);
 }
 
 TEST_F(CliPresentationTest, OnceDiscardsProvisionalFinalThought)
 {
-	cJSON *delta = TextData("The final answer");
-	cJSON *final = TextData("The final answer");
+	struct json *delta = TextData("The final answer");
+	struct json *final = TextData("The final answer");
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.thought.delta", "delta", delta);
@@ -561,13 +564,13 @@ TEST_F(CliPresentationTest, OnceDiscardsProvisionalFinalThought)
 
 	EXPECT_EQ(output, "final:\nThe final answer\n");
 
-	cJSON_Delete(delta);
-	cJSON_Delete(final);
+	json_free(delta);
+	json_free(final);
 }
 
 TEST_F(CliPresentationTest, OncePrintsThinkingStatusAsPlainText)
 {
-	cJSON *thinking = TextData("");
+	struct json *thinking = TextData("");
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.thinking", "begin", thinking);
@@ -575,7 +578,7 @@ TEST_F(CliPresentationTest, OncePrintsThinkingStatusAsPlainText)
 
 	EXPECT_EQ(output, "status: Thinking…\n");
 	EXPECT_EQ(output.find("\033"), std::string::npos);
-	cJSON_Delete(thinking);
+	json_free(thinking);
 }
 
 TEST_F(CliPresentationTest, HookMessagesPersistAndQuietSuccessLeavesNoOutput)
@@ -621,11 +624,11 @@ TEST_F(CliPresentationTest, BackgroundWarningsAreVisibleAndSanitizedInAllModes)
 		EXPECT_NE(output.find("context.tool_result_max_tokens"), std::string::npos);
 		EXPECT_EQ(output.find("\033[2J"), std::string::npos);
 		if (mode == CLI_PRESENT_EVENTS_JSON) {
-			cJSON *event = cJSON_Parse(output.c_str());
+			struct json *event = json_parse_prefix(output.c_str(), NULL, NULL);
 			ASSERT_NE(event, nullptr);
-			EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(event, "name")),
+			EXPECT_STREQ(json_string_value(json_member_ci(event, "name")),
 				     "history.tool_output.warning");
-			cJSON_Delete(event);
+			json_free(event);
 		} else {
 			EXPECT_NE(output.find("Warning"), std::string::npos);
 		}
@@ -634,17 +637,17 @@ TEST_F(CliPresentationTest, BackgroundWarningsAreVisibleAndSanitizedInAllModes)
 
 TEST_F(CliPresentationTest, OncePrintsCompactionProgressAndResult)
 {
-	cJSON *begin = cJSON_CreateObject();
-	cJSON *completed = cJSON_CreateObject();
+	struct json *begin = json_object();
+	struct json *completed = json_object();
 
-	cJSON_AddNumberToObject(begin, "iteration", 22);
-	cJSON_AddNumberToObject(begin, "before_tokens", 91676);
-	cJSON_AddNumberToObject(begin, "after_tokens", 91676);
-	cJSON_AddNumberToObject(begin, "compaction_count", 1);
-	cJSON_AddNumberToObject(completed, "iteration", 22);
-	cJSON_AddNumberToObject(completed, "before_tokens", 91676);
-	cJSON_AddNumberToObject(completed, "after_tokens", 15672);
-	cJSON_AddNumberToObject(completed, "compaction_count", 1);
+	json_add_number(begin, "iteration", 22);
+	json_add_number(begin, "before_tokens", 91676);
+	json_add_number(begin, "after_tokens", 91676);
+	json_add_number(begin, "compaction_count", 1);
+	json_add_number(completed, "iteration", 22);
+	json_add_number(completed, "before_tokens", 91676);
+	json_add_number(completed, "after_tokens", 15672);
+	json_add_number(completed, "compaction_count", 1);
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.compaction.begin", "begin", begin);
@@ -653,19 +656,19 @@ TEST_F(CliPresentationTest, OncePrintsCompactionProgressAndResult)
 
 	EXPECT_EQ(output, "status: Compacting context…\n"
 			  "context: compacted 91676 -> 15672 tokens\n");
-	cJSON_Delete(begin);
-	cJSON_Delete(completed);
+	json_free(begin);
+	json_free(completed);
 }
 
 TEST_F(CliPresentationTest, InteractivePrintsPersistentCompactionResult)
 {
-	cJSON *completed = cJSON_CreateObject();
+	struct json *completed = json_object();
 
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cJSON_AddNumberToObject(completed, "iteration", 22);
-	cJSON_AddNumberToObject(completed, "before_tokens", 91676);
-	cJSON_AddNumberToObject(completed, "after_tokens", 15672);
-	cJSON_AddNumberToObject(completed, "compaction_count", 1);
+	json_add_number(completed, "iteration", 22);
+	json_add_number(completed, "before_tokens", 91676);
+	json_add_number(completed, "after_tokens", 15672);
+	json_add_number(completed, "compaction_count", 1);
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.compaction.completed", "end", completed);
@@ -676,15 +679,15 @@ TEST_F(CliPresentationTest, InteractivePrintsPersistentCompactionResult)
 	EXPECT_EQ(output.find("pass"), std::string::npos);
 	EXPECT_EQ(output.find("Thinking…"), std::string::npos);
 	EXPECT_EQ(cli_feed_live_active(&ctx), 0);
-	cJSON_Delete(completed);
+	json_free(completed);
 }
 
 TEST_F(CliPresentationTest, CompactionReplacesLiveStateWithOneIndependentHistoryRow)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cJSON *data = cJSON_CreateObject();
-	cJSON_AddNumberToObject(data, "before_tokens", 103869);
-	cJSON_AddNumberToObject(data, "after_tokens", 68804);
+	struct json *data = json_object();
+	json_add_number(data, "before_tokens", 103869);
+	json_add_number(data, "after_tokens", 68804);
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.compaction.begin", "begin", data);
 	EXPECT_GE(cli_feed_activity_elapsed_ms(&ctx), 0);
@@ -695,7 +698,7 @@ TEST_F(CliPresentationTest, CompactionReplacesLiveStateWithOneIndependentHistory
 	EXPECT_EQ(output.find("└"), std::string::npos);
 	EXPECT_EQ(cli_feed_activity_elapsed_ms(&ctx), -1);
 	EXPECT_EQ(cli_feed_live_active(&ctx), 0);
-	cJSON_Delete(data);
+	json_free(data);
 }
 
 TEST_F(CliPresentationTest, CompactionCompletionFitsNarrowTerminal)
@@ -704,9 +707,9 @@ TEST_F(CliPresentationTest, CompactionCompletionFitsNarrowTerminal)
 	const char *previous = getenv("COLUMNS");
 	std::string saved = previous ? previous : "";
 	setenv("COLUMNS", "24", 1);
-	cJSON *data = cJSON_CreateObject();
-	cJSON_AddNumberToObject(data, "before_tokens", 103869);
-	cJSON_AddNumberToObject(data, "after_tokens", 68804);
+	struct json *data = json_object();
+	json_add_number(data, "before_tokens", 103869);
+	json_add_number(data, "after_tokens", 68804);
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.compaction.completed", "end", data);
 	std::string output = testing::internal::GetCapturedStdout();
@@ -719,14 +722,14 @@ TEST_F(CliPresentationTest, CompactionCompletionFitsNarrowTerminal)
 	while (std::getline(lines, line))
 		EXPECT_LE(utf8_display_width_ansi(line.c_str()), 23U);
 	EXPECT_NE(output.find("◇ Context compacted"), std::string::npos);
-	cJSON_Delete(data);
+	json_free(data);
 }
 
 TEST_F(CliPresentationTest, CompactionFailureIsIndependentAndSanitizesError)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cJSON *data = cJSON_CreateObject();
-	cJSON_AddStringToObject(data, "error", "parse error\n\033[2Jhidden");
+	struct json *data = json_object();
+	json_add_string(data, "error", "parse error\n\033[2Jhidden");
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.compaction.begin", "begin", data);
 	Emit(MORPH_EVENT_REACT, "react.compaction.failed", "failed", data);
@@ -735,13 +738,13 @@ TEST_F(CliPresentationTest, CompactionFailureIsIndependentAndSanitizesError)
 	EXPECT_EQ(output.find("\033[2J"), std::string::npos);
 	EXPECT_EQ(output.find("iteration"), std::string::npos);
 	EXPECT_EQ(cli_feed_activity_elapsed_ms(&ctx), -1);
-	cJSON_Delete(data);
+	json_free(data);
 }
 
 TEST_F(CliPresentationTest, OncePrintsReasoningAsLabeledPlainText)
 {
-	cJSON *reasoning = TextData("Checking constraints");
-	cJSON *final = TextData("Done");
+	struct json *reasoning = TextData("Checking constraints");
+	struct json *final = TextData("Done");
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.reasoning.delta", "delta", reasoning);
@@ -750,15 +753,15 @@ TEST_F(CliPresentationTest, OncePrintsReasoningAsLabeledPlainText)
 
 	EXPECT_EQ(output, "reasoning: Checking constraints\nfinal:\nDone\n");
 	EXPECT_EQ(output.find("\033"), std::string::npos);
-	cJSON_Delete(reasoning);
-	cJSON_Delete(final);
+	json_free(reasoning);
+	json_free(final);
 }
 
 TEST_F(CliPresentationTest, OnceReportsArtifactWithoutRendering)
 {
-	cJSON *artifact = cJSON_CreateObject();
-	cJSON_AddStringToObject(artifact, "kind", "image");
-	cJSON_AddStringToObject(artifact, "path", "/tmp/generated.png");
+	struct json *artifact = json_object();
+	json_add_string(artifact, "kind", "image");
+	json_add_string(artifact, "path", "/tmp/generated.png");
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_ARTIFACT, "artifact.ready", "ready", artifact);
@@ -766,18 +769,18 @@ TEST_F(CliPresentationTest, OnceReportsArtifactWithoutRendering)
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_EQ(output, "artifact: image /tmp/generated.png\n");
-	cJSON_Delete(artifact);
+	json_free(artifact);
 }
 
 TEST_F(CliPresentationTest, InteractiveDefersMediaRenderingUntilFinal)
 {
-	cJSON *image = cJSON_CreateObject();
-	cJSON *video = cJSON_CreateObject();
-	cJSON *final = TextData("![generated](/tmp/generated.png)");
-	cJSON_AddStringToObject(image, "kind", "image");
-	cJSON_AddStringToObject(image, "path", "/tmp/generated.png");
-	cJSON_AddStringToObject(video, "kind", "video");
-	cJSON_AddStringToObject(video, "path", "/tmp/generated.mp4");
+	struct json *image = json_object();
+	struct json *video = json_object();
+	struct json *final = TextData("![generated](/tmp/generated.png)");
+	json_add_string(image, "kind", "image");
+	json_add_string(image, "path", "/tmp/generated.png");
+	json_add_string(video, "kind", "video");
+	json_add_string(video, "path", "/tmp/generated.mp4");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
 	testing::internal::CaptureStdout();
@@ -800,14 +803,14 @@ TEST_F(CliPresentationTest, InteractiveDefersMediaRenderingUntilFinal)
 		morph_strmap_contains(&ctx.presenter->rendered_artifacts, "/tmp/generated.png"));
 	EXPECT_FALSE(
 		morph_strmap_contains(&ctx.presenter->rendered_artifacts, "/tmp/generated.mp4"));
-	cJSON_Delete(image);
-	cJSON_Delete(video);
-	cJSON_Delete(final);
+	json_free(image);
+	json_free(video);
+	json_free(final);
 }
 
 TEST_F(CliPresentationTest, JsonModeEmitsOneNdjsonObject)
 {
-	cJSON *data = TextData("hello");
+	struct json *data = TextData("hello");
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
 	struct morph_event event{MORPH_EVENT_REACT, "react.final", "end",
 				 "final answer",    data,	   "turn_test"};
@@ -818,16 +821,16 @@ TEST_F(CliPresentationTest, JsonModeEmitsOneNdjsonObject)
 	ASSERT_FALSE(output.empty());
 	ASSERT_EQ(output.back(), '\n');
 
-	cJSON *parsed = cJSON_Parse(output.c_str());
+	struct json *parsed = json_parse_prefix(output.c_str(), NULL, NULL);
 	ASSERT_NE(parsed, nullptr);
-	EXPECT_STREQ(cJSON_GetObjectItem(parsed, "name")->valuestring, "react.final");
-	cJSON_Delete(parsed);
-	cJSON_Delete(data);
+	EXPECT_STREQ(json_string_value(json_member_ci(parsed, "name")), "react.final");
+	json_free(parsed);
+	json_free(data);
 }
 
 TEST_F(CliPresentationTest, InteractiveUsesCompactFinalWithoutLabel)
 {
-	cJSON *final = TextData("# Compact\n\n- first item\n- second item");
+	struct json *final = TextData("# Compact\n\n- first item\n- second item");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
 	testing::internal::CaptureStdout();
@@ -841,18 +844,18 @@ TEST_F(CliPresentationTest, InteractiveUsesCompactFinalWithoutLabel)
 	EXPECT_NE(output.find("\n  • first item"), std::string::npos);
 	EXPECT_NE(output.find("\n  • second item"), std::string::npos);
 	EXPECT_EQ(output.find("Compact", output.find("Compact") + 1), std::string::npos);
-	cJSON_Delete(final);
+	json_free(final);
 }
 
 TEST_F(CliPresentationTest, InteractiveSeparatesToolBlocksFromFinalAnswer)
 {
-	cJSON *call = cJSON_CreateObject();
-	cJSON *args = cJSON_CreateObject();
-	cJSON *final = TextData("");
+	struct json *call = json_object();
+	struct json *args = json_object();
+	struct json *final = TextData("");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
-	cJSON_AddStringToObject(call, "tool", "file_list");
-	cJSON_AddItemToObject(call, "args", args);
+	json_add_string(call, "tool", "file_list");
+	json_object_add(call, "args", args);
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
@@ -863,20 +866,20 @@ TEST_F(CliPresentationTest, InteractiveSeparatesToolBlocksFromFinalAnswer)
 	EXPECT_NE(output.find("\n● "), std::string::npos);
 	EXPECT_EQ(output.find("\033"), std::string::npos);
 
-	cJSON_Delete(call);
-	cJSON_Delete(final);
+	json_free(call);
+	json_free(final);
 }
 
 TEST_F(CliPresentationTest, InteractiveColorsToolAndFinalMarkersDifferently)
 {
-	cJSON *call = cJSON_CreateObject();
-	cJSON *args = cJSON_CreateObject();
-	cJSON *final = TextData("Done");
+	struct json *call = json_object();
+	struct json *args = json_object();
+	struct json *final = TextData("Done");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	cli_output_set_color_enabled(&ctx, 1);
 
-	cJSON_AddStringToObject(call, "tool", "file_list");
-	cJSON_AddItemToObject(call, "args", args);
+	json_add_string(call, "tool", "file_list");
+	json_object_add(call, "args", args);
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
@@ -886,15 +889,15 @@ TEST_F(CliPresentationTest, InteractiveColorsToolAndFinalMarkersDifferently)
 	EXPECT_NE(output.find("\033[36m◉\033[0m \033[1mfile_list\033[0m "), std::string::npos);
 	EXPECT_NE(output.find("\n\033[1m●\033[0m "), std::string::npos);
 
-	cJSON_Delete(call);
-	cJSON_Delete(final);
+	json_free(call);
+	json_free(final);
 }
 
 TEST_F(CliPresentationTest, InteractiveStreamsFinalMarkdownDeltas)
 {
-	cJSON *first = TextData("# Stream");
-	cJSON *second = TextData("ed\n\n- item");
-	cJSON *final = TextData("fallback final payload");
+	struct json *first = TextData("# Stream");
+	struct json *second = TextData("ed\n\n- item");
+	struct json *final = TextData("fallback final payload");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
 	testing::internal::CaptureStdout();
@@ -912,9 +915,9 @@ TEST_F(CliPresentationTest, InteractiveStreamsFinalMarkdownDeltas)
 	EXPECT_EQ(ctx.presenter->markdown_stream, nullptr);
 	EXPECT_EQ(ctx.presenter->final_rendered, 1);
 
-	cJSON_Delete(first);
-	cJSON_Delete(second);
-	cJSON_Delete(final);
+	json_free(first);
+	json_free(second);
+	json_free(final);
 }
 
 TEST_F(CliPresentationTest, StreamingImageCaptionAppearsOnceAndAllowsEmptyAlt)
@@ -926,7 +929,7 @@ TEST_F(CliPresentationTest, StreamingImageCaptionAppearsOnceAndAllowsEmptyAlt)
 	ASSERT_NE(stbi_write_png(source.c_str(), 12, 36, 3, pixels, 36), 0);
 	std::string markdown = "![](" + source + ")\n\n";
 	std::string caption = "(\033]8;;file://" + source + "\033\\" + source + "\033]8;;\033\\)";
-	cJSON *body = TextData(markdown.c_str());
+	struct json *body = TextData(markdown.c_str());
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.content.delta", "delta", body);
@@ -941,14 +944,14 @@ TEST_F(CliPresentationTest, StreamingImageCaptionAppearsOnceAndAllowsEmptyAlt)
 	std::string final_output = testing::internal::GetCapturedStdout();
 	EXPECT_EQ(final_output.find(caption), std::string::npos);
 	EXPECT_EQ(final_output.find("\033_Ga=T,f=100,"), std::string::npos);
-	cJSON_Delete(body);
+	json_free(body);
 }
 
 TEST_F(CliPresentationTest, StreamPrefixWaitsForVisibleMarkdown)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cJSON *partial = TextData("A buffered paragraph");
-	cJSON *final = TextData("A buffered paragraph");
+	struct json *partial = TextData("A buffered paragraph");
+	struct json *final = TextData("A buffered paragraph");
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.final.delta", "delta", partial);
 	std::string pending = testing::internal::GetCapturedStdout();
@@ -959,15 +962,15 @@ TEST_F(CliPresentationTest, StreamPrefixWaitsForVisibleMarkdown)
 	EXPECT_NE(rendered.find("● "), std::string::npos);
 	EXPECT_NE(rendered.find("A buffered paragraph"), std::string::npos);
 	EXPECT_EQ(rendered.find("●"), rendered.rfind("●"));
-	cJSON_Delete(partial);
-	cJSON_Delete(final);
+	json_free(partial);
+	json_free(final);
 }
 
 TEST_F(CliPresentationTest, InteractivePromotesProvisionalContentDeltas)
 {
-	cJSON *first = TextData("# Native");
-	cJSON *second = TextData(" stream");
-	cJSON *final = TextData("fallback final payload");
+	struct json *first = TextData("# Native");
+	struct json *second = TextData(" stream");
+	struct json *final = TextData("fallback final payload");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
 	testing::internal::CaptureStdout();
@@ -982,15 +985,15 @@ TEST_F(CliPresentationTest, InteractivePromotesProvisionalContentDeltas)
 	EXPECT_EQ(ctx.presenter->markdown_stream, nullptr);
 	EXPECT_EQ(ctx.presenter->final_rendered, 1);
 
-	cJSON_Delete(first);
-	cJSON_Delete(second);
-	cJSON_Delete(final);
+	json_free(first);
+	json_free(second);
+	json_free(final);
 }
 
 TEST_F(CliPresentationTest, PlainNativeAnswerIsFinalWithoutThoughtOrDuplicateContent)
 {
-	cJSON *body = TextData("Native answer");
-	cJSON *reasoning = TextData("Private reasoning");
+	struct json *body = TextData("Native answer");
+	struct json *reasoning = TextData("Private reasoning");
 	ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.content.delta", "delta", body);
@@ -1002,14 +1005,14 @@ TEST_F(CliPresentationTest, PlainNativeAnswerIsFinalWithoutThoughtOrDuplicateCon
 	EXPECT_EQ(output.find("thought:"), std::string::npos);
 	EXPECT_EQ(output.find("content:"), std::string::npos);
 	EXPECT_EQ(output.find("Native answer"), output.rfind("Native answer"));
-	cJSON_Delete(body);
-	cJSON_Delete(reasoning);
+	json_free(body);
+	json_free(reasoning);
 }
 
 TEST_F(CliPresentationTest, PlainNativeToolPreambleKeepsContentClassification)
 {
-	cJSON *preamble = TextData("Searching first");
-	cJSON *answer = TextData("Answer after search");
+	struct json *preamble = TextData("Searching first");
+	struct json *answer = TextData("Answer after search");
 	ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.content.delta", "delta", preamble);
@@ -1021,14 +1024,14 @@ TEST_F(CliPresentationTest, PlainNativeToolPreambleKeepsContentClassification)
 	EXPECT_NE(output.find("final:\nAnswer after search"), std::string::npos);
 	EXPECT_EQ(output.find("thought:"), std::string::npos);
 	EXPECT_EQ(output.find("Searching first"), output.rfind("Searching first"));
-	cJSON_Delete(preamble);
-	cJSON_Delete(answer);
+	json_free(preamble);
+	json_free(answer);
 }
 
 TEST_F(CliPresentationTest, InteractiveNativeContentSurvivesInterleavedReasoning)
 {
-	cJSON *body = TextData("# Visible answer\n");
-	cJSON *reasoning = TextData("Separate reasoning");
+	struct json *body = TextData("# Visible answer\n");
+	struct json *reasoning = TextData("Separate reasoning");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.content.delta", "delta", body);
@@ -1038,29 +1041,29 @@ TEST_F(CliPresentationTest, InteractiveNativeContentSurvivesInterleavedReasoning
 	EXPECT_NE(output.find("Visible answer"), std::string::npos);
 	EXPECT_EQ(output.find("Visible answer"), output.rfind("Visible answer"));
 	EXPECT_NE(output.find("Separate reasoning"), std::string::npos);
-	cJSON_Delete(body);
-	cJSON_Delete(reasoning);
+	json_free(body);
+	json_free(reasoning);
 }
 
 TEST_F(CliPresentationTest, PlainNativePreambleIsNotTruncatedToStatusLength)
 {
 	std::string long_text(4096, 'x');
 	long_text += " end of content";
-	cJSON *body = TextData(long_text.c_str());
+	struct json *body = TextData(long_text.c_str());
 	ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.content.delta", "delta", body);
 	Emit(MORPH_EVENT_REACT, "react.content.end", "end", body);
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_NE(output.find(long_text), std::string::npos);
-	cJSON_Delete(body);
+	json_free(body);
 }
 
 TEST_F(CliPresentationTest, CancelledNativeAnswerPreservesSanitizedPartialContent)
 {
-	cJSON *body = TextData("Partial\033[31m answer");
-	cJSON *outcome = cJSON_CreateObject();
-	cJSON_AddStringToObject(outcome, "outcome", "cancelled");
+	struct json *body = TextData("Partial\033[31m answer");
+	struct json *outcome = json_object();
+	json_add_string(outcome, "outcome", "cancelled");
 	ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.content.delta", "delta", body);
@@ -1068,15 +1071,15 @@ TEST_F(CliPresentationTest, CancelledNativeAnswerPreservesSanitizedPartialConten
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_NE(output.find("content: Partial answer"), std::string::npos);
 	EXPECT_EQ(output.find("\033[31m"), std::string::npos);
-	cJSON_Delete(body);
-	cJSON_Delete(outcome);
+	json_free(body);
+	json_free(outcome);
 }
 
 TEST_F(CliPresentationTest, CancelledInteractiveAnswerCommitsPartialContentOnce)
 {
-	cJSON *body = TextData("Partial interactive answer");
-	cJSON *outcome = cJSON_CreateObject();
-	cJSON_AddStringToObject(outcome, "outcome", "cancelled");
+	struct json *body = TextData("Partial interactive answer");
+	struct json *outcome = json_object();
+	json_add_string(outcome, "outcome", "cancelled");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.content.delta", "delta", body);
@@ -1086,8 +1089,8 @@ TEST_F(CliPresentationTest, CancelledInteractiveAnswerCommitsPartialContentOnce)
 	EXPECT_EQ(output.find("Partial interactive answer"),
 		  output.rfind("Partial interactive answer"));
 	EXPECT_EQ(ctx.presenter->markdown_stream, nullptr);
-	cJSON_Delete(body);
-	cJSON_Delete(outcome);
+	json_free(body);
+	json_free(outcome);
 }
 
 TEST_F(CliPresentationTest, CancelledTurnUsesNeutralStatus)
@@ -1096,11 +1099,11 @@ TEST_F(CliPresentationTest, CancelledTurnUsesNeutralStatus)
 		cli_presentation_reset(&ctx);
 		ctx.presentation_mode = mode;
 		cli_output_set_color_enabled(&ctx, 1);
-		cJSON *data = cJSON_CreateObject();
-		cJSON_AddStringToObject(data, "outcome", "cancelled");
-		cJSON_AddNumberToObject(data, "error_code", -ECANCELED);
-		cJSON_AddStringToObject(data, "error", "Operation canceled");
-		cJSON_AddStringToObject(data, "detail", "user_cancelled");
+		struct json *data = json_object();
+		json_add_string(data, "outcome", "cancelled");
+		json_add_number(data, "error_code", -ECANCELED);
+		json_add_string(data, "error", "Operation canceled");
+		json_add_string(data, "detail", "user_cancelled");
 		testing::internal::CaptureStdout();
 		Emit(MORPH_EVENT_REACT, "react.turn.end", "cancelled", data);
 		std::string output = testing::internal::GetCapturedStdout();
@@ -1111,7 +1114,7 @@ TEST_F(CliPresentationTest, CancelledTurnUsesNeutralStatus)
 		EXPECT_EQ(output.find("Operation canceled"), std::string::npos);
 		EXPECT_EQ(output.find("user_cancelled"), std::string::npos);
 		EXPECT_EQ(output.find("\033[31m"), std::string::npos);
-		cJSON_Delete(data);
+		json_free(data);
 	}
 }
 
@@ -1119,36 +1122,36 @@ TEST_F(CliPresentationTest, FailedTurnStillUsesErrorStatus)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	cli_output_set_color_enabled(&ctx, 1);
-	cJSON *data = cJSON_CreateObject();
-	cJSON_AddStringToObject(data, "outcome", "internal_error");
-	cJSON_AddNumberToObject(data, "error_code", -ECANCELED);
-	cJSON_AddStringToObject(data, "error", "Operation canceled");
+	struct json *data = json_object();
+	json_add_string(data, "outcome", "internal_error");
+	json_add_number(data, "error_code", -ECANCELED);
+	json_add_string(data, "error", "Operation canceled");
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.turn.end", "failed", data);
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_NE(output.find("\033[31m⊗ Error"), std::string::npos);
 	EXPECT_NE(output.find("Operation canceled"), std::string::npos);
-	cJSON_Delete(data);
+	json_free(data);
 }
 
 TEST_F(CliPresentationTest, NativeContentEndWithoutDeltasRendersPreamble)
 {
-	cJSON *body = TextData("Preamble without deltas");
+	struct json *body = TextData("Preamble without deltas");
 	ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.content.end", "end", body);
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_NE(output.find("content: Preamble without deltas"), std::string::npos);
 	EXPECT_EQ(output.find("thought:"), std::string::npos);
-	cJSON_Delete(body);
+	json_free(body);
 }
 
 TEST_F(CliPresentationTest, InteractiveCollapsesReasoningIntoDetails)
 {
-	cJSON *first = TextData("Inspect");
-	cJSON *second = TextData("ing the state\nA hidden detail");
-	cJSON *answer = TextData("Done");
-	cJSON *final = TextData("fallback final payload");
+	struct json *first = TextData("Inspect");
+	struct json *second = TextData("ing the state\nA hidden detail");
+	struct json *answer = TextData("Done");
+	struct json *final = TextData("fallback final payload");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	cli_output_set_color_enabled(&ctx, 1);
 
@@ -1174,10 +1177,10 @@ TEST_F(CliPresentationTest, InteractiveCollapsesReasoningIntoDetails)
 	EXPECT_EQ(ctx.presenter->final_rendered, 1);
 
 	cli_output_set_color_enabled(&ctx, 0);
-	cJSON_Delete(first);
-	cJSON_Delete(second);
-	cJSON_Delete(answer);
-	cJSON_Delete(final);
+	json_free(first);
+	json_free(second);
+	json_free(answer);
+	json_free(final);
 }
 
 TEST_F(CliPresentationTest, AnswerSharesSubmittedInputMarginWithAndWithoutStreaming)
@@ -1188,7 +1191,7 @@ TEST_F(CliPresentationTest, AnswerSharesSubmittedInputMarginWithAndWithoutStream
 		for (bool streaming : {false, true}) {
 			cli_presentation_reset(&ctx);
 			ctx.output.trailing_newlines = 0;
-			cJSON *answer = TextData("Done");
+			struct json *answer = TextData("Done");
 			testing::internal::CaptureStdout();
 			cli_presentation_user_input(&ctx, "Review");
 			if (streaming)
@@ -1202,14 +1205,14 @@ TEST_F(CliPresentationTest, AnswerSharesSubmittedInputMarginWithAndWithoutStream
 			std::string expected = color ? "› Review\n\n\n● " : "> Review\n\n● ";
 			EXPECT_NE(std::string(plain).find(expected), std::string::npos) << plain;
 			free(plain);
-			cJSON_Delete(answer);
+			json_free(answer);
 		}
 	}
 }
 
 TEST_F(CliPresentationTest, InteractiveReasoningRespectsDisabledColor)
 {
-	cJSON *reasoning = TextData("Checking constraints");
+	struct json *reasoning = TextData("Checking constraints");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
 	testing::internal::CaptureStdout();
@@ -1220,12 +1223,12 @@ TEST_F(CliPresentationTest, InteractiveReasoningRespectsDisabledColor)
 	EXPECT_NE(output.find("Checking constraints"), std::string::npos);
 	EXPECT_EQ(output.find("…"), std::string::npos);
 	EXPECT_EQ(output.find("\033"), std::string::npos);
-	cJSON_Delete(reasoning);
+	json_free(reasoning);
 }
 
 TEST_F(CliPresentationTest, OnceNeutralizesObservationControlSequences)
 {
-	cJSON *observation = TextData("before\033[2J\033]52;c;secret\aafter\rhidden");
+	struct json *observation = TextData("before\033[2J\033]52;c;secret\aafter\rhidden");
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.observation", "end", observation);
@@ -1234,14 +1237,14 @@ TEST_F(CliPresentationTest, OnceNeutralizesObservationControlSequences)
 	EXPECT_NE(output.find("beforeafter\\rhidden"), std::string::npos);
 	EXPECT_EQ(output.find("secret"), std::string::npos);
 	EXPECT_EQ(output.find('\033'), std::string::npos);
-	cJSON_Delete(observation);
+	json_free(observation);
 }
 
 TEST_F(CliPresentationTest, InteractiveStripsSplitFinalEscapeSequence)
 {
-	cJSON *first = TextData("before\033[");
-	cJSON *second = TextData("2Jafter");
-	cJSON *final = TextData("fallback");
+	struct json *first = TextData("before\033[");
+	struct json *second = TextData("2Jafter");
+	struct json *final = TextData("fallback");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	cli_output_set_color_enabled(&ctx, 1);
 
@@ -1255,16 +1258,16 @@ TEST_F(CliPresentationTest, InteractiveStripsSplitFinalEscapeSequence)
 	EXPECT_EQ(output.find("2Jafter"), std::string::npos);
 	EXPECT_EQ(output.find("fallback"), std::string::npos);
 	cli_output_set_color_enabled(&ctx, 0);
-	cJSON_Delete(first);
-	cJSON_Delete(second);
-	cJSON_Delete(final);
+	json_free(first);
+	json_free(second);
+	json_free(final);
 }
 
 TEST_F(CliPresentationTest, InteractiveStripsSplitReasoningOscSequence)
 {
-	cJSON *first = TextData("before\033]52;c;sec");
-	cJSON *second = TextData("ret\aafter");
-	cJSON *final = TextData("done");
+	struct json *first = TextData("before\033]52;c;sec");
+	struct json *second = TextData("ret\aafter");
+	struct json *final = TextData("done");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	cli_output_set_color_enabled(&ctx, 1);
 
@@ -1282,9 +1285,9 @@ TEST_F(CliPresentationTest, InteractiveStripsSplitReasoningOscSequence)
 	EXPECT_EQ(output.find("secret"), std::string::npos);
 	EXPECT_EQ(output.find("52;c"), std::string::npos);
 	cli_output_set_color_enabled(&ctx, 0);
-	cJSON_Delete(first);
-	cJSON_Delete(second);
-	cJSON_Delete(final);
+	json_free(first);
+	json_free(second);
+	json_free(final);
 }
 
 TEST(CliOutputSafetyTest, PrintfBlocksDangerousSequencesButKeepsTrustedSgr)
@@ -1306,15 +1309,15 @@ TEST(CliOutputSafetyTest, PrintfBlocksDangerousSequencesButKeepsTrustedSgr)
 
 TEST_F(CliPresentationTest, InteractiveToolThoughtDoesNotHideLaterFinal)
 {
-	cJSON *thought = TextData("Calling a tool");
-	cJSON *call = cJSON_CreateObject();
-	cJSON *args = cJSON_CreateObject();
-	cJSON *final = TextData("Authoritative final");
+	struct json *thought = TextData("Calling a tool");
+	struct json *call = json_object();
+	struct json *args = json_object();
+	struct json *final = TextData("Authoritative final");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
-	cJSON_AddStringToObject(call, "tool", "file_list");
-	cJSON_AddStringToObject(args, "path", ".");
-	cJSON_AddItemToObject(call, "args", args);
+	json_add_string(call, "tool", "file_list");
+	json_add_string(args, "path", ".");
+	json_object_add(call, "args", args);
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.thought.delta", "delta", thought);
@@ -1326,14 +1329,14 @@ TEST_F(CliPresentationTest, InteractiveToolThoughtDoesNotHideLaterFinal)
 	EXPECT_NE(output.find("Authoritative final"), std::string::npos);
 	EXPECT_EQ(ctx.presenter->final_rendered, 1);
 
-	cJSON_Delete(thought);
-	cJSON_Delete(call);
-	cJSON_Delete(final);
+	json_free(thought);
+	json_free(call);
+	json_free(final);
 }
 
 TEST_F(CliPresentationTest, InteractiveDoesNotDuplicateWorkingStatus)
 {
-	cJSON *thinking = TextData("");
+	struct json *thinking = TextData("");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
 	testing::internal::CaptureStdout();
@@ -1341,7 +1344,7 @@ TEST_F(CliPresentationTest, InteractiveDoesNotDuplicateWorkingStatus)
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_EQ(output.find("Thinking…"), std::string::npos);
-	cJSON_Delete(thinking);
+	json_free(thinking);
 }
 
 TEST_F(CliPresentationTest, TurnBeginsWithoutRedundantStartingStatus)
@@ -1359,7 +1362,7 @@ TEST_F(CliPresentationTest, TurnBeginsWithoutRedundantStartingStatus)
 
 TEST_F(CliPresentationTest, SteeringDoesNotRestoreThinkingStatus)
 {
-	cJSON *steer = TextData("updated requirement");
+	struct json *steer = TextData("updated requirement");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
 	testing::internal::CaptureStdout();
@@ -1370,13 +1373,13 @@ TEST_F(CliPresentationTest, SteeringDoesNotRestoreThinkingStatus)
 	EXPECT_EQ(output.find("Requirement applied"), std::string::npos);
 	EXPECT_EQ(output.find("Thinking…"), std::string::npos);
 	EXPECT_EQ(cli_feed_live_active(&ctx), 0);
-	cJSON_Delete(steer);
+	json_free(steer);
 }
 
 TEST_F(CliPresentationTest, SteeringCommitsOriginalInputInsteadOfAttachmentPayload)
 {
-	cJSON *steer = TextData("Inspect [Image #1] [Image: /tmp/attachment.png]");
-	cJSON_AddStringToObject(steer, "display_text", "Inspect [Image #1]");
+	struct json *steer = TextData("Inspect [Image #1] [Image: /tmp/attachment.png]");
+	json_add_string(steer, "display_text", "Inspect [Image #1]");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
 	testing::internal::CaptureStdout();
@@ -1386,7 +1389,7 @@ TEST_F(CliPresentationTest, SteeringCommitsOriginalInputInsteadOfAttachmentPaylo
 	EXPECT_EQ(output.find("Inspect [Image #1]"), output.rfind("Inspect [Image #1]"));
 	EXPECT_EQ(output.find("/tmp/attachment.png"), std::string::npos);
 	EXPECT_EQ(output.find("Requirement applied"), std::string::npos);
-	cJSON_Delete(steer);
+	json_free(steer);
 }
 
 TEST_F(CliPresentationTest, PreparingPromptClearsLiveStatus)
@@ -1405,8 +1408,8 @@ TEST_F(CliPresentationTest, PreparingPromptClearsLiveStatus)
 
 TEST_F(CliPresentationTest, InteractiveCoalescesBackgroundLifecycle)
 {
-	cJSON *started = TextData("");
-	cJSON *ready = TextData("");
+	struct json *started = TextData("");
+	struct json *ready = TextData("");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	ctx.turn_active = 0;
 	struct morph_event begin{MORPH_EVENT_BACKGROUND,
@@ -1433,14 +1436,14 @@ TEST_F(CliPresentationTest, InteractiveCoalescesBackgroundLifecycle)
 		  std::string::npos);
 	EXPECT_EQ(output.find("Background"), std::string::npos);
 
-	cJSON_Delete(started);
-	cJSON_Delete(ready);
+	json_free(started);
+	json_free(ready);
 }
 
 TEST_F(CliPresentationTest, BackgroundLifecyclePreservesForegroundStatus)
 {
-	cJSON *started = TextData("");
-	cJSON *ready = TextData("");
+	struct json *started = TextData("");
+	struct json *ready = TextData("");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	struct morph_event begin{MORPH_EVENT_BACKGROUND,
 				 "background.started",
@@ -1465,8 +1468,8 @@ TEST_F(CliPresentationTest, BackgroundLifecyclePreservesForegroundStatus)
 	EXPECT_EQ(output.find("memory consolidation queued"), std::string::npos);
 	EXPECT_EQ(cli_feed_live_active(&ctx), 1);
 
-	cJSON_Delete(started);
-	cJSON_Delete(ready);
+	json_free(started);
+	json_free(ready);
 }
 
 TEST_F(CliPresentationTest, SessionTitleEventsOnlyUpdateFooterAndPreserveActivity)
@@ -1493,17 +1496,17 @@ TEST_F(CliPresentationTest, SessionTitleEventsOnlyUpdateFooterAndPreserveActivit
 
 TEST_F(CliPresentationTest, InteractiveRendersMcpFailureAsOneTree)
 {
-	cJSON *connecting = cJSON_CreateObject();
-	cJSON *failed = cJSON_CreateObject();
+	struct json *connecting = json_object();
+	struct json *failed = json_object();
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
-	cJSON_AddStringToObject(connecting, "server", "meego");
-	cJSON_AddStringToObject(connecting, "transport", "http");
-	cJSON_AddStringToObject(failed, "server", "meego");
-	cJSON_AddStringToObject(failed, "transport", "http");
-	cJSON_AddNumberToObject(failed, "error_code", MORPH_ERR_NOT_CONFIGURED);
-	cJSON_AddStringToObject(failed, "error",
-				"Missing MCP token: environment variable 'MEEGO_TOKEN' is not set");
+	json_add_string(connecting, "server", "meego");
+	json_add_string(connecting, "transport", "http");
+	json_add_string(failed, "server", "meego");
+	json_add_string(failed, "transport", "http");
+	json_add_number(failed, "error_code", MORPH_ERR_NOT_CONFIGURED);
+	json_add_string(failed, "error",
+			"Missing MCP token: environment variable 'MEEGO_TOKEN' is not set");
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_MCP, "mcp.connecting", "begin", connecting);
@@ -1519,25 +1522,25 @@ TEST_F(CliPresentationTest, InteractiveRendersMcpFailureAsOneTree)
 		  std::string::npos);
 	EXPECT_EQ(ctx.presenter->mcp_tree_active, 0);
 
-	cJSON_Delete(connecting);
-	cJSON_Delete(failed);
+	json_free(connecting);
+	json_free(failed);
 }
 
 TEST_F(CliPresentationTest, InteractiveRendersMcpSuccessAsOneTree)
 {
-	cJSON *connecting = cJSON_CreateObject();
-	cJSON *connected = cJSON_CreateObject();
-	cJSON *discovering = cJSON_CreateObject();
-	cJSON *ready = cJSON_CreateObject();
+	struct json *connecting = json_object();
+	struct json *connected = json_object();
+	struct json *discovering = json_object();
+	struct json *ready = json_object();
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
-	cJSON_AddStringToObject(connecting, "server", "meego");
-	cJSON_AddStringToObject(connected, "server", "meego");
-	cJSON_AddStringToObject(discovering, "server", "meego");
-	cJSON_AddStringToObject(ready, "server", "meego");
-	cJSON_AddNumberToObject(ready, "tools", 12);
-	cJSON_AddNumberToObject(ready, "resources", 3);
-	cJSON_AddNumberToObject(ready, "prompts", 2);
+	json_add_string(connecting, "server", "meego");
+	json_add_string(connected, "server", "meego");
+	json_add_string(discovering, "server", "meego");
+	json_add_string(ready, "server", "meego");
+	json_add_number(ready, "tools", 12);
+	json_add_number(ready, "resources", 3);
+	json_add_number(ready, "prompts", 2);
 
 	testing::internal::CaptureStdout();
 	cli_feed_live_set(&ctx, "Thinking…");
@@ -1557,31 +1560,31 @@ TEST_F(CliPresentationTest, InteractiveRendersMcpSuccessAsOneTree)
 	EXPECT_EQ(ctx.presenter->mcp_tree_active, 0);
 	EXPECT_EQ(cli_feed_live_active(&ctx), 1);
 
-	cJSON_Delete(connecting);
-	cJSON_Delete(connected);
-	cJSON_Delete(discovering);
-	cJSON_Delete(ready);
+	json_free(connecting);
+	json_free(connected);
+	json_free(discovering);
+	json_free(ready);
 }
 
 TEST_F(CliPresentationTest, InteractiveExpandsCompleteToolTranscript)
 {
-	cJSON *call = cJSON_CreateObject();
-	cJSON *args = cJSON_CreateObject();
-	cJSON *options = cJSON_CreateObject();
-	cJSON *result = cJSON_CreateObject();
-	cJSON *result_args = cJSON_CreateObject();
-	cJSON *observation = TextData("{\"ok\":true,\"count\":15}");
+	struct json *call = json_object();
+	struct json *args = json_object();
+	struct json *options = json_object();
+	struct json *result = json_object();
+	struct json *result_args = json_object();
+	struct json *observation = TextData("{\"ok\":true,\"count\":15}");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	ctx.tool_details = 1;
 
-	cJSON_AddStringToObject(call, "tool", "web_search");
-	cJSON_AddStringToObject(args, "query", "today's news");
-	cJSON_AddNumberToObject(options, "limit", 15);
-	cJSON_AddBoolToObject(options, "safe", 1);
-	cJSON_AddItemToObject(args, "options", options);
-	cJSON_AddItemToObject(call, "args", args);
-	cJSON_AddStringToObject(result, "tool", "web_search");
-	cJSON_AddItemToObject(result, "args", result_args);
+	json_add_string(call, "tool", "web_search");
+	json_add_string(args, "query", "today's news");
+	json_add_number(options, "limit", 15);
+	json_add_bool(options, "safe", 1);
+	json_object_add(args, "options", options);
+	json_object_add(call, "args", args);
+	json_add_string(result, "tool", "web_search");
+	json_object_add(result, "args", result_args);
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
@@ -1599,15 +1602,15 @@ TEST_F(CliPresentationTest, InteractiveExpandsCompleteToolTranscript)
 	EXPECT_EQ(output.find("{\"query\""), std::string::npos);
 	EXPECT_EQ(output.find("{\"ok\""), std::string::npos);
 
-	cJSON_Delete(call);
-	cJSON_Delete(result);
-	cJSON_Delete(observation);
+	json_free(call);
+	json_free(result);
+	json_free(observation);
 }
 
 TEST_F(CliPresentationTest, InteractiveRendersApplyPatchAsDiff)
 {
-	cJSON *call = cJSON_CreateObject();
-	cJSON *args = cJSON_CreateObject();
+	struct json *call = json_object();
+	struct json *args = json_object();
 	const char *patch = "*** Begin Patch\n"
 			    "*** Update File: src/example.c\n"
 			    "@@\n"
@@ -1623,10 +1626,10 @@ TEST_F(CliPresentationTest, InteractiveRendersApplyPatchAsDiff)
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	ctx.tool_details = 1;
 
-	cJSON_AddStringToObject(call, "tool", "apply_patch");
-	cJSON_AddStringToObject(call, "toolTitle", "Apply patch");
-	cJSON_AddStringToObject(args, "input", patch);
-	cJSON_AddItemToObject(call, "args", args);
+	json_add_string(call, "tool", "apply_patch");
+	json_add_string(call, "toolTitle", "Apply patch");
+	json_add_string(args, "input", patch);
+	json_object_add(call, "args", args);
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
@@ -1643,14 +1646,14 @@ TEST_F(CliPresentationTest, InteractiveRendersApplyPatchAsDiff)
 	EXPECT_EQ(output.find("input:"), std::string::npos);
 	EXPECT_EQ(output.find("patch display truncated"), std::string::npos);
 
-	cJSON_Delete(call);
+	json_free(call);
 }
 
 TEST_F(CliPresentationTest, InteractiveCompactFeedShowsApplyPatchDiff)
 {
-	cJSON *call = cJSON_CreateObject();
-	cJSON *args = cJSON_CreateObject();
-	cJSON *result = cJSON_CreateObject();
+	struct json *call = json_object();
+	struct json *args = json_object();
+	struct json *result = json_object();
 	const char *patch = "*** Begin Patch\n"
 			    "*** Update File: src/example.c\n"
 			    "@@\n"
@@ -1665,12 +1668,12 @@ TEST_F(CliPresentationTest, InteractiveCompactFeedShowsApplyPatchDiff)
 		  0);
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
-	cJSON_AddStringToObject(call, "tool", "apply_patch");
-	cJSON_AddStringToObject(call, "tool_call_id", "patch-1");
-	cJSON_AddStringToObject(args, "input", patch);
-	cJSON_AddItemToObject(call, "args", args);
-	cJSON_AddStringToObject(result, "tool", "apply_patch");
-	cJSON_AddStringToObject(result, "tool_call_id", "patch-1");
+	json_add_string(call, "tool", "apply_patch");
+	json_add_string(call, "tool_call_id", "patch-1");
+	json_add_string(args, "input", patch);
+	json_object_add(call, "args", args);
+	json_add_string(result, "tool", "apply_patch");
+	json_add_string(result, "tool_call_id", "patch-1");
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
@@ -1690,21 +1693,21 @@ TEST_F(CliPresentationTest, InteractiveCompactFeedShowsApplyPatchDiff)
 	EXPECT_NE(details.find("│     2 -old value"), std::string::npos);
 	EXPECT_NE(details.find("│     2 +new value"), std::string::npos);
 
-	cJSON_Delete(call);
-	cJSON_Delete(result);
+	json_free(call);
+	json_free(result);
 }
 
 TEST_F(CliPresentationTest, InteractiveExpandsEmbeddedJsonOneLevel)
 {
-	cJSON *observation = TextData("structured result");
-	cJSON *result = cJSON_CreateObject();
+	struct json *observation = TextData("structured result");
+	struct json *result = json_object();
 	const char *embedded = "{\"ok\":true,\"identity\":\"user\","
 			       "\"data\":{\"chats\":[1,2,3]},"
 			       "\"messages\":[{\"id\":\"one\"},{\"id\":\"two\"}]}";
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
-	cJSON_AddStringToObject(result, "payload", embedded);
-	cJSON_AddItemToObject(observation, "data", result);
+	json_add_string(result, "payload", embedded);
+	json_object_add(observation, "data", result);
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.observation", "end", observation);
@@ -1717,13 +1720,13 @@ TEST_F(CliPresentationTest, InteractiveExpandsEmbeddedJsonOneLevel)
 	EXPECT_EQ(output.find("\"chats\""), std::string::npos);
 	EXPECT_EQ(output.find("[0]"), std::string::npos);
 
-	cJSON_Delete(observation);
+	json_free(observation);
 }
 
 TEST_F(CliPresentationTest, InteractiveWrapsLongTranscriptStrings)
 {
-	cJSON *call = cJSON_CreateObject();
-	cJSON *args = cJSON_CreateObject();
+	struct json *call = json_object();
+	struct json *args = json_object();
 	const char *old_columns = getenv("COLUMNS");
 	std::string saved_columns = old_columns ? old_columns : "";
 	int had_columns = old_columns != nullptr;
@@ -1731,12 +1734,12 @@ TEST_F(CliPresentationTest, InteractiveWrapsLongTranscriptStrings)
 	ctx.tool_details = 1;
 
 	ASSERT_EQ(setenv("COLUMNS", "52", 1), 0);
-	cJSON_AddStringToObject(call, "tool", "exec");
-	cJSON_AddStringToObject(args, "command",
-				"NOTICE=1 lark-cli im +chat-messages-list "
-				"--chat-id oc_1a6eff8d491c1dd23b76789f01d625b "
-				"--page-size 100");
-	cJSON_AddItemToObject(call, "args", args);
+	json_add_string(call, "tool", "exec");
+	json_add_string(args, "command",
+			"NOTICE=1 lark-cli im +chat-messages-list "
+			"--chat-id oc_1a6eff8d491c1dd23b76789f01d625b "
+			"--page-size 100");
+	json_object_add(call, "args", args);
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
@@ -1752,24 +1755,31 @@ TEST_F(CliPresentationTest, InteractiveWrapsLongTranscriptStrings)
 		ASSERT_EQ(setenv("COLUMNS", saved_columns.c_str(), 1), 0);
 	else
 		ASSERT_EQ(unsetenv("COLUMNS"), 0);
-	cJSON_Delete(call);
+	json_free(call);
 }
 
 TEST_F(CliPresentationTest, ToolDetailsTogglePreservesOrderAndCompletedAnswer)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cJSON *first = cJSON_Parse(
+	struct json *first = json_parse_prefix(
 		"{\"tool\":\"file_read\",\"tool_call_id\":\"first\","
-		"\"args\":{\"file_path\":\"first.txt\",\"private_arg\":\"hidden argument\"}}");
-	cJSON *second = cJSON_Parse("{\"tool\":\"file_read\",\"tool_call_id\":\"second\","
-				    "\"args\":{\"file_path\":\"second.txt\"}}");
-	cJSON *first_result = cJSON_Parse("{\"tool\":\"file_read\",\"tool_call_id\":\"first\","
-					  "\"result\":\"FIRST OUTPUT\"}");
-	cJSON *second_result = cJSON_Parse("{\"tool\":\"file_read\",\"tool_call_id\":\"second\","
-					   "\"result\":\"SECOND OUTPUT\"}");
-	cJSON *thought = TextData("Checking files");
-	cJSON *reasoning = TextData("Compare the two files");
-	cJSON *final = TextData("Files checked");
+		"\"args\":{\"file_path\":\"first.txt\",\"private_arg\":\"hidden argument\"}}",
+		NULL, NULL);
+	struct json *second =
+		json_parse_prefix("{\"tool\":\"file_read\",\"tool_call_id\":\"second\","
+				  "\"args\":{\"file_path\":\"second.txt\"}}",
+				  NULL, NULL);
+	struct json *first_result =
+		json_parse_prefix("{\"tool\":\"file_read\",\"tool_call_id\":\"first\","
+				  "\"result\":\"FIRST OUTPUT\"}",
+				  NULL, NULL);
+	struct json *second_result =
+		json_parse_prefix("{\"tool\":\"file_read\",\"tool_call_id\":\"second\","
+				  "\"result\":\"SECOND OUTPUT\"}",
+				  NULL, NULL);
+	struct json *thought = TextData("Checking files");
+	struct json *reasoning = TextData("Compare the two files");
+	struct json *final = TextData("Files checked");
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.thought.end", "end", thought);
@@ -1814,26 +1824,27 @@ TEST_F(CliPresentationTest, ToolDetailsTogglePreservesOrderAndCompletedAnswer)
 	EXPECT_NE(collapsed.find("\033[?1049l"), std::string::npos);
 	EXPECT_EQ(cli_turn_details_is_open(&ctx), 0);
 	EXPECT_EQ(ctx.presenter->final_rendered, 1);
-	cJSON_Delete(first);
-	cJSON_Delete(second);
-	cJSON_Delete(first_result);
-	cJSON_Delete(second_result);
-	cJSON_Delete(thought);
-	cJSON_Delete(reasoning);
-	cJSON_Delete(final);
+	json_free(first);
+	json_free(second);
+	json_free(first_result);
+	json_free(second_result);
+	json_free(thought);
+	json_free(reasoning);
+	json_free(final);
 }
 
 TEST_F(CliPresentationTest, CompactShellFailureShowsReasonWithoutFullOutput)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cJSON *call = cJSON_Parse("{\"tool\":\"exec\",\"tool_call_id\":\"shell\","
-				  "\"args\":{\"command\":\"cmake --build build\"}}");
-	cJSON *result = cJSON_CreateObject();
-	cJSON_AddStringToObject(result, "tool_call_id", "shell");
-	cJSON_AddStringToObject(result, "tool", "exec");
-	cJSON_AddStringToObject(result, "result",
-				"{\"data\":{\"exit_code\":2,\"stdout\":\"VERBOSE OUTPUT\","
-				"\"stderr\":\"undefined reference to react_init\"}}");
+	struct json *call = json_parse_prefix("{\"tool\":\"exec\",\"tool_call_id\":\"shell\","
+					      "\"args\":{\"command\":\"cmake --build build\"}}",
+					      NULL, NULL);
+	struct json *result = json_object();
+	json_add_string(result, "tool_call_id", "shell");
+	json_add_string(result, "tool", "exec");
+	json_add_string(result, "result",
+			"{\"data\":{\"exit_code\":2,\"stdout\":\"VERBOSE OUTPUT\","
+			"\"stderr\":\"undefined reference to react_init\"}}");
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 	Emit(MORPH_EVENT_TOOL, "tool.result", "end", result);
@@ -1844,20 +1855,22 @@ TEST_F(CliPresentationTest, CompactShellFailureShowsReasonWithoutFullOutput)
 	EXPECT_NE(output.find("undefined reference to react_init"), std::string::npos);
 	EXPECT_EQ(output.find("failed"), std::string::npos);
 	EXPECT_EQ(output.find("VERBOSE OUTPUT"), std::string::npos);
-	cJSON_Delete(call);
-	cJSON_Delete(result);
+	json_free(call);
+	json_free(result);
 }
 
 TEST_F(CliPresentationTest, CompactFeedUsesActualToolNameAndCommandOnOneLine)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	cli_output_set_color_enabled(&ctx, 1);
-	cJSON *call = cJSON_Parse("{\"tool\":\"exec\",\"tool_call_id\":\"probe\",\"args\":{"
+	struct json *call =
+		json_parse_prefix("{\"tool\":\"exec\",\"tool_call_id\":\"probe\",\"args\":{"
 				  "\"description\":\"Resolve endpoint DNS\","
-				  "\"command\":\"dig +short mcp.exa.ai\"}}");
-	cJSON *result = cJSON_CreateObject();
-	cJSON_AddStringToObject(result, "tool_call_id", "probe");
-	cJSON_AddStringToObject(
+				  "\"command\":\"dig +short mcp.exa.ai\"}}",
+				  NULL, NULL);
+	struct json *result = json_object();
+	json_add_string(result, "tool_call_id", "probe");
+	json_add_string(
 		result, "result",
 		"{\"ok\":true,\"data\":{\"exit_code\":0,\"duration_ms\":300,"
 		"\"stdout\":\"104.18.6.160\\nSECOND_LINE\\nTHIRD_LINE\\nFOURTH_DETAIL_LINE\"}}");
@@ -1884,23 +1897,24 @@ TEST_F(CliPresentationTest, CompactFeedUsesActualToolNameAndCommandOnOneLine)
 	ToggleDetails();
 	EXPECT_NE(testing::internal::GetCapturedStdout().find("FOURTH_DETAIL_LINE"),
 		  std::string::npos);
-	cJSON_Delete(call);
-	cJSON_Delete(result);
+	json_free(call);
+	json_free(result);
 }
 
 TEST_F(CliPresentationTest, AppendFeedTimeoutIsAmberAndRetainsFailureState)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	cli_output_set_color_enabled(&ctx, 1);
-	cJSON *call = cJSON_Parse("{\"tool\":\"exec\",\"tool_call_id\":\"timeout\",\"args\":{"
+	struct json *call =
+		json_parse_prefix("{\"tool\":\"exec\",\"tool_call_id\":\"timeout\",\"args\":{"
 				  "\"description\":\"Probe HTTPS connection\",\"command\":\"curl "
-				  "-I https://exa.ai\"}}");
-	cJSON *result = cJSON_CreateObject();
-	cJSON_AddStringToObject(result, "tool_call_id", "timeout");
-	cJSON_AddStringToObject(
-		result, "result",
-		"{\"ok\":true,\"data\":{\"status\":\"timed_out\",\"duration_ms\":10000,"
-		"\"stderr\":\"TCP connection timed out\"}}");
+				  "-I https://exa.ai\"}}",
+				  NULL, NULL);
+	struct json *result = json_object();
+	json_add_string(result, "tool_call_id", "timeout");
+	json_add_string(result, "result",
+			"{\"ok\":true,\"data\":{\"status\":\"timed_out\",\"duration_ms\":10000,"
+			"\"stderr\":\"TCP connection timed out\"}}");
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 	(void)testing::internal::GetCapturedStdout();
@@ -1912,20 +1926,22 @@ TEST_F(CliPresentationTest, AppendFeedTimeoutIsAmberAndRetainsFailureState)
 	EXPECT_NE(output.find("\033[33m  └ TCP connection timed out"), std::string::npos);
 	EXPECT_EQ(output.find("\033[32m●"), std::string::npos);
 	EXPECT_EQ(output.find("\033[31m"), std::string::npos);
-	cJSON_Delete(call);
-	cJSON_Delete(result);
+	json_free(call);
+	json_free(result);
 }
 
 TEST_F(CliPresentationTest, CompactMcpPreviewShowsBoundedTextAndKeepsOriginalToolName)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cJSON *call = cJSON_Parse("{\"tool\":\"mcp_demo__search\",\"tool_call_id\":\"search\","
-				  "\"args\":{\"query\":\"pattern\"}}");
-	cJSON *result = cJSON_CreateObject();
-	cJSON_AddStringToObject(result, "tool_call_id", "search");
-	cJSON_AddStringToObject(result, "result",
-				"{\"content\":[{\"type\":\"text\",\"text\":\"first\\nsecond\"},"
-				"{\"type\":\"text\",\"text\":\"third\\nfourth\\nfifth\\n\"}]}");
+	struct json *call =
+		json_parse_prefix("{\"tool\":\"mcp_demo__search\",\"tool_call_id\":\"search\","
+				  "\"args\":{\"query\":\"pattern\"}}",
+				  NULL, NULL);
+	struct json *result = json_object();
+	json_add_string(result, "tool_call_id", "search");
+	json_add_string(result, "result",
+			"{\"content\":[{\"type\":\"text\",\"text\":\"first\\nsecond\"},"
+			"{\"type\":\"text\",\"text\":\"third\\nfourth\\nfifth\\n\"}]}");
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 	(void)testing::internal::GetCapturedStdout();
@@ -1938,35 +1954,44 @@ TEST_F(CliPresentationTest, CompactMcpPreviewShowsBoundedTextAndKeepsOriginalToo
 	EXPECT_EQ(output.find("fourth"), std::string::npos);
 	EXPECT_EQ(output.find("Ran "), std::string::npos);
 	EXPECT_NE(output.find("●"), std::string::npos);
-	cJSON_Delete(call);
-	cJSON_Delete(result);
+	json_free(call);
+	json_free(result);
 }
 
 TEST_F(CliPresentationTest, CompactProcessPollShowsCommandOnlyWhenFinished)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cJSON *exec_call = cJSON_Parse("{\"tool\":\"exec\",\"tool_call_id\":\"exec-1\","
-				       "\"args\":{\"command\":\"cmake --build build\"}}");
-	cJSON *exec_result =
-		cJSON_Parse("{\"tool\":\"exec\",\"tool_call_id\":\"exec-1\","
-			    "\"result\":\"{\\\"ok\\\":true,\\\"data\\\":{"
-			    "\\\"session_id\\\":\\\"proc-1\\\","
-			    "\\\"status\\\":\\\"running\\\",\\\"duration_ms\\\":1000}}\"}");
-	cJSON *poll_call = cJSON_Parse("{\"tool\":\"process\",\"tool_call_id\":\"poll-1\","
-				       "\"args\":{\"session_id\":\"proc-1\",\"action\":\"poll\"}}");
-	cJSON *poll_running =
-		cJSON_Parse("{\"tool\":\"process\",\"tool_call_id\":\"poll-1\","
-			    "\"result\":\"{\\\"ok\\\":true,\\\"data\\\":{"
-			    "\\\"session_id\\\":\\\"proc-1\\\","
-			    "\\\"status\\\":\\\"running\\\",\\\"duration_ms\\\":1800}}\"}");
-	cJSON *final_call =
-		cJSON_Parse("{\"tool\":\"process\",\"tool_call_id\":\"poll-2\","
-			    "\"args\":{\"session_id\":\"proc-1\",\"action\":\"poll\"}}");
-	cJSON *final_result = cJSON_Parse("{\"tool\":\"process\",\"tool_call_id\":\"poll-2\","
-					  "\"result\":\"{\\\"ok\\\":true,\\\"data\\\":{"
-					  "\\\"session_id\\\":\\\"proc-1\\\","
-					  "\\\"status\\\":\\\"exited\\\",\\\"exit_code\\\":0,"
-					  "\\\"duration_ms\\\":2500}}\"}");
+	struct json *exec_call =
+		json_parse_prefix("{\"tool\":\"exec\",\"tool_call_id\":\"exec-1\","
+				  "\"args\":{\"command\":\"cmake --build build\"}}",
+				  NULL, NULL);
+	struct json *exec_result =
+		json_parse_prefix("{\"tool\":\"exec\",\"tool_call_id\":\"exec-1\","
+				  "\"result\":\"{\\\"ok\\\":true,\\\"data\\\":{"
+				  "\\\"session_id\\\":\\\"proc-1\\\","
+				  "\\\"status\\\":\\\"running\\\",\\\"duration_ms\\\":1000}}\"}",
+				  NULL, NULL);
+	struct json *poll_call =
+		json_parse_prefix("{\"tool\":\"process\",\"tool_call_id\":\"poll-1\","
+				  "\"args\":{\"session_id\":\"proc-1\",\"action\":\"poll\"}}",
+				  NULL, NULL);
+	struct json *poll_running =
+		json_parse_prefix("{\"tool\":\"process\",\"tool_call_id\":\"poll-1\","
+				  "\"result\":\"{\\\"ok\\\":true,\\\"data\\\":{"
+				  "\\\"session_id\\\":\\\"proc-1\\\","
+				  "\\\"status\\\":\\\"running\\\",\\\"duration_ms\\\":1800}}\"}",
+				  NULL, NULL);
+	struct json *final_call =
+		json_parse_prefix("{\"tool\":\"process\",\"tool_call_id\":\"poll-2\","
+				  "\"args\":{\"session_id\":\"proc-1\",\"action\":\"poll\"}}",
+				  NULL, NULL);
+	struct json *final_result =
+		json_parse_prefix("{\"tool\":\"process\",\"tool_call_id\":\"poll-2\","
+				  "\"result\":\"{\\\"ok\\\":true,\\\"data\\\":{"
+				  "\\\"session_id\\\":\\\"proc-1\\\","
+				  "\\\"status\\\":\\\"exited\\\",\\\"exit_code\\\":0,"
+				  "\\\"duration_ms\\\":2500}}\"}",
+				  NULL, NULL);
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", exec_call);
@@ -1986,20 +2011,21 @@ TEST_F(CliPresentationTest, CompactProcessPollShowsCommandOnlyWhenFinished)
 	EXPECT_NE(output.find("2.5s"), std::string::npos);
 	EXPECT_NE(output.find("◉ Exec cmake --build build  RUNNING · 1.0s"), std::string::npos);
 
-	cJSON_Delete(exec_call);
-	cJSON_Delete(exec_result);
-	cJSON_Delete(poll_call);
-	cJSON_Delete(poll_running);
-	cJSON_Delete(final_call);
-	cJSON_Delete(final_result);
+	json_free(exec_call);
+	json_free(exec_result);
+	json_free(poll_call);
+	json_free(poll_running);
+	json_free(final_call);
+	json_free(final_result);
 }
 
 TEST_F(CliPresentationTest, ShellColorsSurviveFullScreenCapture)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	cli_output_set_color_enabled(&ctx, 1);
-	cJSON *call = cJSON_Parse(
-		"{\"tool\":\"exec\",\"args\":{\"command\":\"rg 'hello' src/ | head\"}}");
+	struct json *call = json_parse_prefix(
+		"{\"tool\":\"exec\",\"args\":{\"command\":\"rg 'hello' src/ | head\"}}", NULL,
+		NULL);
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 	std::string compact = testing::internal::GetCapturedStdout();
@@ -2014,7 +2040,7 @@ TEST_F(CliPresentationTest, ShellColorsSurviveFullScreenCapture)
 	testing::internal::CaptureStdout();
 	ToggleDetails();
 	(void)testing::internal::GetCapturedStdout();
-	cJSON_Delete(call);
+	json_free(call);
 }
 
 TEST_F(CliPresentationTest, CompactKeepsLongToolNameAndShortensRepositoryPath)
@@ -2022,17 +2048,17 @@ TEST_F(CliPresentationTest, CompactKeepsLongToolNameAndShortensRepositoryPath)
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	char cwd[PATH_MAX];
 	ASSERT_NE(getcwd(cwd, sizeof(cwd)), nullptr);
-	cJSON *call = cJSON_CreateObject();
-	cJSON *args = cJSON_AddObjectToObject(call, "args");
-	cJSON_AddStringToObject(call, "tool", "remote_file_inspection");
+	struct json *call = json_object();
+	struct json *args = json_add_object(call, "args");
+	json_add_string(call, "tool", "remote_file_inspection");
 	std::string path = std::string(cwd) + "/README.md";
-	cJSON_AddStringToObject(args, "path", path.c_str());
+	json_add_string(args, "path", path.c_str());
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_NE(output.find("remote_file_inspection README.md"), std::string::npos);
 	EXPECT_EQ(output.find(cwd), std::string::npos);
-	cJSON_Delete(call);
+	json_free(call);
 }
 
 TEST_F(CliPresentationTest, ToolRowsUseTerminalWidthWithRightGutter)
@@ -2041,11 +2067,11 @@ TEST_F(CliPresentationTest, ToolRowsUseTerminalWidthWithRightGutter)
 	std::string saved = previous ? previous : "";
 	bool had_columns = previous != nullptr;
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cJSON *call = cJSON_CreateObject();
-	cJSON *args = cJSON_AddObjectToObject(call, "args");
-	cJSON_AddStringToObject(call, "tool", "exec");
+	struct json *call = json_object();
+	struct json *args = json_add_object(call, "args");
+	json_add_string(call, "tool", "exec");
 	std::string command = "echo " + std::string(240, 'x');
-	cJSON_AddStringToObject(args, "command", command.c_str());
+	json_add_string(args, "command", command.c_str());
 	for (int columns : {52, 120, 180}) {
 		std::string width = std::to_string(columns);
 		EXPECT_EQ(setenv("COLUMNS", width.c_str(), 1), 0);
@@ -2064,16 +2090,16 @@ TEST_F(CliPresentationTest, ToolRowsUseTerminalWidthWithRightGutter)
 		EXPECT_EQ(setenv("COLUMNS", saved.c_str(), 1), 0);
 	else
 		EXPECT_EQ(unsetenv("COLUMNS"), 0);
-	cJSON_Delete(call);
+	json_free(call);
 }
 
 TEST_F(CliPresentationTest, OversizedRemoteToolNameDoesNotWrapFeedHeader)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cJSON *call = cJSON_CreateObject();
+	struct json *call = json_object();
 	std::string name(512, 'x');
-	cJSON_AddStringToObject(call, "tool", name.c_str());
-	cJSON_AddObjectToObject(call, "args");
+	json_add_string(call, "tool", name.c_str());
+	json_add_object(call, "args");
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 	std::string output = testing::internal::GetCapturedStdout();
@@ -2082,17 +2108,19 @@ TEST_F(CliPresentationTest, OversizedRemoteToolNameDoesNotWrapFeedHeader)
 	std::string row = output.substr(start, output.find('\n', start) - start);
 	EXPECT_LE(utf8_display_width(row.c_str()), static_cast<size_t>(cli_list_columns() - 2));
 	EXPECT_NE(row.find("…"), std::string::npos);
-	cJSON_Delete(call);
+	json_free(call);
 }
 
 TEST_F(CliPresentationTest, LiveToolPreviewFollowsTailAndRetainsFullStream)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cJSON *call = cJSON_Parse("{\"tool\":\"exec\",\"tool_call_id\":\"live\","
-				  "\"args\":{\"command\":\"make\"}}");
-	cJSON *delta = cJSON_Parse(
+	struct json *call = json_parse_prefix("{\"tool\":\"exec\",\"tool_call_id\":\"live\","
+					      "\"args\":{\"command\":\"make\"}}",
+					      NULL, NULL);
+	struct json *delta = json_parse_prefix(
 		"{\"tool_call_id\":\"live\","
-		"\"text\":\"FIRST_DETAIL_LINE\\nsecond\\nthird\\n中文\\tprogress\\n\"}");
+		"\"text\":\"FIRST_DETAIL_LINE\\nsecond\\nthird\\n中文\\tprogress\\n\"}",
+		NULL, NULL);
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 	Emit(MORPH_EVENT_TOOL, "tool.stream.delta", "update", delta);
@@ -2107,8 +2135,8 @@ TEST_F(CliPresentationTest, LiveToolPreviewFollowsTailAndRetainsFullStream)
 	ToggleDetails();
 	std::string details = testing::internal::GetCapturedStdout();
 	EXPECT_NE(details.find("FIRST_DETAIL_LINE"), std::string::npos);
-	cJSON_Delete(delta);
-	cJSON_Delete(call);
+	json_free(delta);
+	json_free(call);
 }
 
 TEST_F(CliPresentationTest, NarrowTimeoutRowsFitActualWidth)
@@ -2117,11 +2145,13 @@ TEST_F(CliPresentationTest, NarrowTimeoutRowsFitActualWidth)
 	std::string saved = previous ? previous : "";
 	bool had_columns = previous != nullptr;
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cJSON *call = cJSON_Parse("{\"tool\":\"exec\",\"args\":{\"command\":\"sleep 30\"}}");
-	cJSON *result =
-		cJSON_Parse("{\"tool\":\"exec\",\"result\":"
-			    "\"{\\\"data\\\":{\\\"status\\\":\\\"timed_out\\\","
-			    "\\\"duration_ms\\\":10000,\\\"stderr\\\":\\\"中文 timeout\\\"}}\"}");
+	struct json *call = json_parse_prefix(
+		"{\"tool\":\"exec\",\"args\":{\"command\":\"sleep 30\"}}", NULL, NULL);
+	struct json *result = json_parse_prefix(
+		"{\"tool\":\"exec\",\"result\":"
+		"\"{\\\"data\\\":{\\\"status\\\":\\\"timed_out\\\","
+		"\\\"duration_ms\\\":10000,\\\"stderr\\\":\\\"中文 timeout\\\"}}\"}",
+		NULL, NULL);
 	for (int columns : {8, 12, 20, 24, 40}) {
 		EXPECT_EQ(setenv("COLUMNS", std::to_string(columns).c_str(), 1), 0);
 		testing::internal::CaptureStdout();
@@ -2145,8 +2175,8 @@ TEST_F(CliPresentationTest, NarrowTimeoutRowsFitActualWidth)
 		setenv("COLUMNS", saved.c_str(), 1);
 	else
 		unsetenv("COLUMNS");
-	cJSON_Delete(result);
-	cJSON_Delete(call);
+	json_free(result);
+	json_free(call);
 }
 
 TEST_F(CliPresentationTest, TranscriptGrowsPastInitialEventAndToolCapacity)
@@ -2154,41 +2184,42 @@ TEST_F(CliPresentationTest, TranscriptGrowsPastInitialEventAndToolCapacity)
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	testing::internal::CaptureStdout();
 	for (int i = 0; i < 40; i++) {
-		cJSON *delta = TextData("Progress. ");
+		struct json *delta = TextData("Progress. ");
 		Emit(MORPH_EVENT_REACT, "react.thought.delta", "delta", delta);
-		cJSON_Delete(delta);
-		cJSON *call = cJSON_CreateObject();
+		json_free(delta);
+		struct json *call = json_object();
 		std::string id = "call-" + std::to_string(i);
-		cJSON_AddStringToObject(call, "tool", "example");
-		cJSON_AddStringToObject(call, "tool_call_id", id.c_str());
+		json_add_string(call, "tool", "example");
+		json_add_string(call, "tool_call_id", id.c_str());
 		Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
-		cJSON_AddStringToObject(call, "result", "done");
+		json_add_string(call, "result", "done");
 		Emit(MORPH_EVENT_TOOL, "tool.result", "end", call);
-		cJSON_Delete(call);
+		json_free(call);
 	}
-	cJSON *final = TextData("All calls completed");
+	struct json *final = TextData("All calls completed");
 	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
 	cli_presentation_finish(&ctx);
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_EQ(output.find("succeeded"), std::string::npos);
 	EXPECT_NE(output.find("All calls completed"), std::string::npos);
-	cJSON_Delete(final);
+	json_free(final);
 }
 
 TEST_F(CliPresentationTest, ExpandedStreamSanitizesSplitControlsAndUtf8)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	ctx.tool_details = 1;
-	cJSON *call = cJSON_Parse("{\"tool\":\"example\",\"tool_call_id\":\"stream\",\"args\":{}}");
-	cJSON *stream = cJSON_CreateObject();
-	cJSON_AddStringToObject(stream, "tool_call_id", "stream");
-	cJSON_AddStringToObject(stream, "text", "safe\033]52;c;SECRET");
+	struct json *call = json_parse_prefix(
+		"{\"tool\":\"example\",\"tool_call_id\":\"stream\",\"args\":{}}", NULL, NULL);
+	struct json *stream = json_object();
+	json_add_string(stream, "tool_call_id", "stream");
+	json_add_string(stream, "text", "safe\033]52;c;SECRET");
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 	Emit(MORPH_EVENT_TOOL, "tool.stream.delta", "delta", stream);
-	cJSON_ReplaceItemInObject(stream, "text", cJSON_CreateString("\a\xe4\xb8"));
+	json_object_replace_ci(stream, "text", json_string_bytes_n("\a\xe4\xb8", 3));
 	Emit(MORPH_EVENT_TOOL, "tool.stream.delta", "delta", stream);
-	cJSON_ReplaceItemInObject(stream, "text", cJSON_CreateString("\xad\nend"));
+	json_object_replace_ci(stream, "text", json_string_bytes_n("\xad\nend", 5));
 	Emit(MORPH_EVENT_TOOL, "tool.stream.delta", "delta", stream);
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_EQ(output.find("SECRET"), std::string::npos);
@@ -2201,38 +2232,41 @@ TEST_F(CliPresentationTest, ExpandedStreamSanitizesSplitControlsAndUtf8)
 	std::string replay = testing::internal::GetCapturedStdout();
 	EXPECT_EQ(replay.find("SECRET"), std::string::npos);
 	EXPECT_NE(replay.find("safe中"), std::string::npos);
-	cJSON_Delete(call);
-	cJSON_Delete(stream);
+	json_free(call);
+	json_free(stream);
 }
 
 TEST_F(CliPresentationTest, InteractiveRendersStructuredPlan)
 {
-	cJSON *event_data = TextData("{\"plans\":[]}");
-	cJSON *result = cJSON_CreateObject();
-	cJSON *plans = cJSON_CreateArray();
-	cJSON *plan = cJSON_CreateObject();
-	cJSON *steps = cJSON_CreateArray();
-	cJSON *done = cJSON_CreateObject();
-	cJSON *active = cJSON_CreateObject();
+	struct json *event_data = TextData("{\"plans\":[]}");
+	struct json *result = json_object();
+	struct json *plans = json_array();
+	struct json *plan = json_object();
+	struct json *steps = json_array();
+	struct json *done = json_object();
+	struct json *active = json_object();
 
-	cJSON_AddStringToObject(event_data, "tool", "plan");
-	cJSON_AddStringToObject(done, "description", "Inspect CLI");
-	cJSON_AddStringToObject(done, "status", "completed");
-	cJSON_AddItemToArray(steps, done);
-	cJSON_AddStringToObject(active, "description", "Implement presenter");
-	cJSON_AddStringToObject(active, "status", "in_progress");
-	cJSON_AddBoolToObject(active, "active", 1);
-	cJSON_AddItemToArray(steps, active);
-	cJSON_AddItemToArray(
-		steps, cJSON_Parse("{\"description\":\"Review changes\",\"status\":\"pending\"}"));
-	cJSON_AddItemToArray(
-		steps, cJSON_Parse("{\"description\":\"Failed check\",\"status\":\"failed\"}"));
-	cJSON_AddItemToArray(
-		steps, cJSON_Parse("{\"description\":\"Skipped check\",\"status\":\"skipped\"}"));
-	cJSON_AddItemToObject(plan, "steps", steps);
-	cJSON_AddItemToArray(plans, plan);
-	cJSON_AddItemToObject(result, "plans", plans);
-	cJSON_AddItemToObject(event_data, "data", result);
+	json_add_string(event_data, "tool", "plan");
+	json_add_string(done, "description", "Inspect CLI");
+	json_add_string(done, "status", "completed");
+	json_array_add(steps, done);
+	json_add_string(active, "description", "Implement presenter");
+	json_add_string(active, "status", "in_progress");
+	json_add_bool(active, "active", 1);
+	json_array_add(steps, active);
+	json_array_add(steps, json_parse_prefix(
+				      "{\"description\":\"Review changes\",\"status\":\"pending\"}",
+				      NULL, NULL));
+	json_array_add(steps,
+		       json_parse_prefix("{\"description\":\"Failed check\",\"status\":\"failed\"}",
+					 NULL, NULL));
+	json_array_add(steps, json_parse_prefix(
+				      "{\"description\":\"Skipped check\",\"status\":\"skipped\"}",
+				      NULL, NULL));
+	json_object_add(plan, "steps", steps);
+	json_array_add(plans, plan);
+	json_object_add(result, "plans", plans);
+	json_object_add(event_data, "data", result);
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
 	testing::internal::CaptureStdout();
@@ -2246,12 +2280,12 @@ TEST_F(CliPresentationTest, InteractiveRendersStructuredPlan)
 	EXPECT_NE(output.find("⊗ Failed check"), std::string::npos);
 	EXPECT_NE(output.find("– Skipped check"), std::string::npos);
 	EXPECT_EQ(output.find("{\"plans\""), std::string::npos);
-	cJSON_Delete(event_data);
+	json_free(event_data);
 }
 
 TEST_F(CliPresentationTest, InteractivePlanOperationsRenderOnlySelectedId)
 {
-	cJSON *event_data = cJSON_Parse(R"({"tool":"plan","text":"plan state","data":{
+	struct json *event_data = json_parse_prefix(R"({"tool":"plan","text":"plan state","data":{
 		"selected_plan_id":"current","selected_plan":"same","plans":[
 		{"id":"previous","name":"same","steps":[
 			{"description":"Previous completed work","status":"completed"}]},
@@ -2259,15 +2293,16 @@ TEST_F(CliPresentationTest, InteractivePlanOperationsRenderOnlySelectedId)
 			{"description":"Current work","status":"in_progress","active":true}]},
 		{"id":"other","name":"other","steps":[
 			{"description":"Other pending work","status":"pending"}]}
-	]}})");
+	]}})",
+						    NULL, NULL);
 	ASSERT_NE(event_data, nullptr);
-	cJSON *data = cJSON_GetObjectItemCaseSensitive(event_data, "data");
+	struct json *data = json_member(event_data, "data");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
 	for (const char *command : {"create", "update", "checkpoint", "verify", "get"}) {
 		SCOPED_TRACE(command);
-		cJSON_DeleteItemFromObjectCaseSensitive(data, "command");
-		cJSON_AddStringToObject(data, "command", command);
+		json_object_remove(data, "command");
+		json_add_string(data, "command", command);
 		testing::internal::CaptureStdout();
 		Emit(MORPH_EVENT_REACT, "react.observation", "end", event_data);
 		std::string output = testing::internal::GetCapturedStdout();
@@ -2276,17 +2311,17 @@ TEST_F(CliPresentationTest, InteractivePlanOperationsRenderOnlySelectedId)
 	}
 
 	/* A selected completed plan must still be visible when queried directly. */
-	cJSON_ReplaceItemInObject(data, "selected_plan_id", cJSON_CreateString("previous"));
+	json_object_replace_ci(data, "selected_plan_id", json_string("previous"));
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.observation", "end", event_data);
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_EQ(output, "  Plan · 1/1 completed\n  ● Previous completed work\n");
-	cJSON_Delete(event_data);
+	json_free(event_data);
 }
 
 TEST_F(CliPresentationTest, InteractivePlanGetByNameRendersFirstMatch)
 {
-	cJSON *event_data = cJSON_Parse(R"({"tool":"plan","text":"plan state","data":{
+	struct json *event_data = json_parse_prefix(R"({"tool":"plan","text":"plan state","data":{
 		"command":"get","selected_plan":"same","plans":[
 		{"id":"other","name":"other","steps":[
 			{"description":"Other work","status":"completed"}]},
@@ -2294,7 +2329,8 @@ TEST_F(CliPresentationTest, InteractivePlanGetByNameRendersFirstMatch)
 			{"description":"Selected work","status":"completed"}]},
 		{"id":"second","name":"same","steps":[
 			{"description":"Duplicate name work","status":"pending"}]}
-	]}})");
+	]}})",
+						    NULL, NULL);
 	ASSERT_NE(event_data, nullptr);
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
@@ -2303,26 +2339,27 @@ TEST_F(CliPresentationTest, InteractivePlanGetByNameRendersFirstMatch)
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_EQ(output, "  Plan · 1/1 completed\n  ● Selected work\n");
-	cJSON_Delete(event_data);
+	json_free(event_data);
 }
 
 TEST_F(CliPresentationTest, InteractivePlanQueriesWithoutSelectionRenderAllPlans)
 {
-	cJSON *event_data = cJSON_Parse(R"({"tool":"plan","text":"plan state","data":{
+	struct json *event_data = json_parse_prefix(R"({"tool":"plan","text":"plan state","data":{
 		"plans":[
 		{"id":"previous","name":"first","steps":[
 			{"description":"Previous work","status":"completed"}]},
 		{"id":"current","name":"second","steps":[
 			{"description":"Current work","status":"pending"}]}
-	]}})");
+	]}})",
+						    NULL, NULL);
 	ASSERT_NE(event_data, nullptr);
-	cJSON *data = cJSON_GetObjectItemCaseSensitive(event_data, "data");
+	struct json *data = json_member(event_data, "data");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
 	for (const char *command : {"list", "get"}) {
 		SCOPED_TRACE(command);
-		cJSON_DeleteItemFromObjectCaseSensitive(data, "command");
-		cJSON_AddStringToObject(data, "command", command);
+		json_object_remove(data, "command");
+		json_add_string(data, "command", command);
 		testing::internal::CaptureStdout();
 		Emit(MORPH_EVENT_REACT, "react.observation", "end", event_data);
 		std::string output = testing::internal::GetCapturedStdout();
@@ -2330,7 +2367,7 @@ TEST_F(CliPresentationTest, InteractivePlanQueriesWithoutSelectionRenderAllPlans
 		EXPECT_EQ(output, "  Plan · 1/1 completed\n  ● Previous work\n"
 				  "  Plan · 0/1 completed\n  ◯ Current work\n");
 	}
-	cJSON_Delete(event_data);
+	json_free(event_data);
 }
 
 TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
@@ -2624,16 +2661,17 @@ TEST_F(CliPresentationTest, SlashOutputGapIsDeferredAndNormalizesHeadingNewlines
 TEST_F(CliPresentationTest, FileReadDetailsPrioritizeContentAndContinuation)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cJSON *call = cJSON_Parse("{\"tool\":\"file_read\",\"tool_call_id\":\"read\","
-				  "\"args\":{\"file_path\":\"sample.txt\"}}");
-	cJSON *response = cJSON_CreateObject();
-	cJSON_AddStringToObject(response, "tool", "file_read");
-	cJSON_AddStringToObject(response, "tool_call_id", "read");
-	cJSON_AddStringToObject(response, "result",
-				"{\"ok\":true,\"data\":{\"file_path\":\"sample.txt\","
-				"\"version\":\"INTERNAL_VERSION_MARKER\",\"encoding\":\"utf-8\","
-				"\"returned_lines\":2,\"truncated\":true,\"next_byte_offset\":123,"
-				"\"content\":\"FIRST_FILE_LINE\\nLAST_FILE_LINE\\n\"}}");
+	struct json *call = json_parse_prefix("{\"tool\":\"file_read\",\"tool_call_id\":\"read\","
+					      "\"args\":{\"file_path\":\"sample.txt\"}}",
+					      NULL, NULL);
+	struct json *response = json_object();
+	json_add_string(response, "tool", "file_read");
+	json_add_string(response, "tool_call_id", "read");
+	json_add_string(response, "result",
+			"{\"ok\":true,\"data\":{\"file_path\":\"sample.txt\","
+			"\"version\":\"INTERNAL_VERSION_MARKER\",\"encoding\":\"utf-8\","
+			"\"returned_lines\":2,\"truncated\":true,\"next_byte_offset\":123,"
+			"\"content\":\"FIRST_FILE_LINE\\nLAST_FILE_LINE\\n\"}}");
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
@@ -2647,6 +2685,6 @@ TEST_F(CliPresentationTest, FileReadDetailsPrioritizeContentAndContinuation)
 	EXPECT_NE(expanded.find("2 returned lines"), std::string::npos);
 	EXPECT_NE(expanded.find("More content at byte offset 123"), std::string::npos);
 	EXPECT_EQ(expanded.find("INTERNAL_VERSION_MARKER"), std::string::npos);
-	cJSON_Delete(call);
-	cJSON_Delete(response);
+	json_free(call);
+	json_free(response);
 }

@@ -431,14 +431,14 @@ TEST_F(RuntimeMcpBackgroundTest, RegistersPromptArgumentsAsObjectSchema)
 	ASSERT_TRUE(wait([&] { return state("prompt", RUNTIME_MCP_READY); }));
 	struct tool_desc desc = {};
 	ASSERT_EQ(runtime_tool_find(instance, "mcp_prompt_prompt__review", &desc), 0);
-	cJSON *schema = cJSON_Parse(desc.input_schema);
+	struct json *schema = json_parse_prefix(desc.input_schema, NULL, NULL);
 	ASSERT_NE(schema, nullptr);
-	cJSON *properties = cJSON_GetObjectItem(schema, "properties");
-	cJSON *subject = cJSON_GetObjectItem(properties, "subject");
-	EXPECT_TRUE(cJSON_IsObject(subject));
-	cJSON *required = cJSON_GetObjectItem(schema, "required");
-	EXPECT_EQ(cJSON_GetArraySize(required), 1);
-	cJSON_Delete(schema);
+	struct json *properties = json_member_ci(schema, "properties");
+	struct json *subject = json_member_ci(properties, "subject");
+	EXPECT_TRUE(json_is_object_value(subject));
+	struct json *required = json_member_ci(schema, "required");
+	EXPECT_EQ(json_count(required), 1);
+	json_free(schema);
 }
 
 TEST_F(RuntimeMcpBackgroundTest, ToolSnapshotsRemainReadableDuringATurn)
@@ -552,9 +552,9 @@ TEST_F(RuntimeMcpBackgroundTest, LiveServerPublishesToolsAndBecomesReady)
 	const char *command = getenv("MORPH_TEST_MCP_COMMAND");
 	if (!command || !command[0])
 		GTEST_SKIP() << "Set MORPH_TEST_MCP_COMMAND to a stdio MCP server executable";
-	cJSON *value = cJSON_CreateString(command);
-	char *encoded = cJSON_PrintUnformatted(value);
-	cJSON_Delete(value);
+	struct json *value = json_string(command);
+	char *encoded = json_stringify(value);
+	json_free(value);
 	ASSERT_NE(encoded, nullptr);
 	{
 		std::ofstream config(config_path);

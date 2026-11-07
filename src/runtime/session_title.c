@@ -43,43 +43,43 @@ struct runtime_title_job {
 
 static void title_event(struct runtime_title_job *job, const char *phase)
 {
-	cJSON *data;
+	struct json *data;
 
 	if (!job->event_cb)
 		return;
-	data = cJSON_CreateObject();
+	data = json_object();
 	if (!data)
 		return;
-	cJSON_AddNumberToObject(data, "session_id", (double)job->session.id);
-	cJSON_AddStringToObject(data, "identity", job->session.display_id);
-	cJSON_AddBoolToObject(data, "background", 1);
+	json_add_number(data, "session_id", (double)job->session.id);
+	json_add_string(data, "identity", job->session.display_id);
+	json_add_bool(data, "background", 1);
 	(void)morph_event_emit_simple(
 		job->event_cb, job->event_user_data, MORPH_EVENT_BACKGROUND, "session.title", phase,
 		strcmp(phase, "begin") == 0 ? "Naming session..." : "Session naming finished",
 		data);
-	cJSON_Delete(data);
+	json_free(data);
 }
 
 char *runtime_title_parse(const char *response)
 {
-	cJSON *root = response ? cJSON_ParseWithOpts(response, NULL, 1) : NULL;
-	const cJSON *field = cJSON_GetObjectItemCaseSensitive(root, "title");
+	struct json *root = response ? json_parse_ex(response, NULL, 1, NULL) : NULL;
+	const struct json *field = json_member(root, "title");
 	morph_buf_t title;
 	const char *cursor;
 	int pending_space = 0;
 	size_t characters = 0;
 	char *out = NULL;
 
-	if (!cJSON_IsObject(root) || !cJSON_IsString(field) || cJSON_GetArraySize(root) != 1 ||
-	    utf8valid(field->valuestring)) {
-		cJSON_Delete(root);
+	if (!json_is_object_value(root) || !json_is_string_value(field) || json_count(root) != 1 ||
+	    utf8valid(json_string_value(field))) {
+		json_free(root);
 		return NULL;
 	}
 	if (morph_buf_init(&title, SESSION_TITLE_MAX_CHARS * 4 + 1) != 0) {
-		cJSON_Delete(root);
+		json_free(root);
 		return NULL;
 	}
-	cursor = field->valuestring;
+	cursor = json_string_value(field);
 	while (*cursor && characters < SESSION_TITLE_MAX_CHARS) {
 		utf8_int32_t cp;
 		const char *next = utf8codepoint(cursor, &cp);
@@ -89,7 +89,7 @@ char *runtime_title_parse(const char *response)
 			pending_space = title.len > 0;
 		} else if (cp < 32 || cp == 127) {
 			morph_buf_cleanup(&title);
-			cJSON_Delete(root);
+			json_free(root);
 			return NULL;
 		} else {
 			if (pending_space) {
@@ -113,7 +113,7 @@ char *runtime_title_parse(const char *response)
 			out = strdup(start);
 	}
 	morph_buf_cleanup(&title);
-	cJSON_Delete(root);
+	json_free(root);
 	return out;
 }
 

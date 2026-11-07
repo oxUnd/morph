@@ -1,7 +1,7 @@
 #ifndef MORPH_TOOL_ARTIFACT_H
 #define MORPH_TOOL_ARTIFACT_H
 
-#include "cJSON.h"
+#include "util/json.h"
 #include <limits.h>
 
 #ifdef __cplusplus
@@ -36,8 +36,8 @@ struct tool_artifact_list {
 
 const char *tool_artifact_kind_name(enum tool_artifact_kind kind);
 enum tool_artifact_kind tool_artifact_kind_from_string(const char *kind);
-cJSON *tool_artifacts_to_json(const struct tool_artifact *items, int count);
-cJSON *tool_artifact_list_to_json(const struct tool_artifact_list *artifacts);
+struct json *tool_artifacts_to_json(const struct tool_artifact *items, int count);
+struct json *tool_artifact_list_to_json(const struct tool_artifact_list *artifacts);
 
 #ifdef __cplusplus
 }

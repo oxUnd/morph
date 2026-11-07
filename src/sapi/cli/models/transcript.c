@@ -1,7 +1,7 @@
 #include "sapi/cli/models/transcript.h"
 #include "util/error.h"
 #include "session_history.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <string.h>
 
 #include <stdlib.h>
@@ -50,13 +50,6 @@ void cli_transcript_model_destroy(struct cli_transcript_model *model)
 	free(model);
 }
 
-static const char *cli_transcript_json_string(const cJSON *data, const char *key)
-{
-	const cJSON *item = cJSON_GetObjectItemCaseSensitive(data, key);
-
-	return cJSON_IsString(item) ? item->valuestring : "";
-}
-
 static const char *cli_transcript_save_text(struct cli_transcript_model *tr, const char *text)
 {
 	char *copy = arena_strdup(tr->arena, text ? text : "");
@@ -67,10 +60,10 @@ static const char *cli_transcript_save_text(struct cli_transcript_model *tr, con
 }
 
 static struct cli_transcript_tool *cli_transcript_find_tool(struct cli_transcript_model *tr,
-							    const cJSON *data)
+							    const struct json *data)
 {
-	const char *id = cli_transcript_json_string(data, "tool_call_id");
-	const char *name = cli_transcript_json_string(data, "tool");
+	const char *id = json_str_or(json_member(data, "tool_call_id"), NULL, "");
+	const char *name = json_str_or(json_member(data, "tool"), NULL, "");
 
 	for (size_t i = tr->tools.nelts; i > 0; i--) {
 		struct cli_transcript_tool *tool = morph_array_get(&tr->tools, i - 1);
@@ -86,22 +79,22 @@ static const char *cli_transcript_find_process_command(struct cli_transcript_mod
 {
 	for (size_t i = tr->tools.nelts; i > 0; i--) {
 		struct cli_transcript_tool *candidate = morph_array_get(&tr->tools, i - 1);
-		cJSON *json;
-		const cJSON *data;
+		struct json *json;
+		const struct json *data;
 		const char *candidate_id;
 
 		if (strcmp(candidate->name, "exec") != 0 || !candidate->result[0])
 			continue;
-		json = cJSON_Parse(candidate->result);
-		data = cJSON_GetObjectItemCaseSensitive(json, "data");
-		if (!cJSON_IsObject(data))
+		json = json_parse_prefix(candidate->result, NULL, NULL);
+		data = json_member(json, "data");
+		if (!json_is_object_value(data))
 			data = json;
-		candidate_id = cli_transcript_json_string(data, "session_id");
+		candidate_id = json_str_or(json_member(data, "session_id"), NULL, "");
 		if (strcmp(candidate_id, session_id) == 0) {
-			cJSON_Delete(json);
+			json_free(json);
 			return candidate->subject;
 		}
-		cJSON_Delete(json);
+		json_free(json);
 	}
 	return "";
 }
@@ -131,9 +124,10 @@ int cli_transcript_model_reasoning_append(struct cli_transcript_model *tr, const
 	return morph_buf_append(&reasoning->text, text, len);
 }
 
-static int cli_transcript_add_tool(struct cli_transcript_model *tr, const cJSON *data, double now)
+static int cli_transcript_add_tool(struct cli_transcript_model *tr, const struct json *data,
+				   double now)
 {
-	const cJSON *args = cJSON_GetObjectItemCaseSensitive(data, "args");
+	const struct json *args = json_member(data, "args");
 	struct cli_transcript_tool *tool = morph_array_push(&tr->tools);
 	char *json;
 	const char *subject = "";
@@ -143,13 +137,14 @@ static int cli_transcript_add_tool(struct cli_transcript_model *tr, const cJSON 
 	if (!tool)
 		return -ENOMEM;
 	memset(tool, 0, sizeof(*tool));
-	tool->id = cli_transcript_save_text(tr, cli_transcript_json_string(data, "tool_call_id"));
-	tool->name = cli_transcript_save_text(tr, cli_transcript_json_string(data, "tool"));
-	json = args ? cJSON_PrintUnformatted(args) : NULL;
+	tool->id = cli_transcript_save_text(
+		tr, json_str_or(json_member(data, "tool_call_id"), NULL, ""));
+	tool->name = cli_transcript_save_text(tr, json_str_or(json_member(data, "tool"), NULL, ""));
+	json = args ? json_stringify(args) : NULL;
 	tool->args = cli_transcript_save_text(tr, json ? json : "{}");
 	free(json);
 	for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
-		subject = cli_transcript_json_string(args, keys[i]);
+		subject = json_str_or(json_member(args, keys[i]), NULL, "");
 		if (subject[0])
 			break;
 	}
@@ -159,14 +154,14 @@ static int cli_transcript_add_tool(struct cli_transcript_model *tr, const cJSON 
 	tool->summary = "";
 	tool->patch_preview = "";
 	if (strcmp(tool->name, "activate_skill") == 0) {
-		tool->subject =
-			cli_transcript_save_text(tr, cli_transcript_json_string(args, "name"));
+		tool->subject = cli_transcript_save_text(
+			tr, json_str_or(json_member(args, "name"), NULL, ""));
 	}
 	tool->shell = strcmp(tool->name, "exec") == 0 || strcmp(tool->name, "process") == 0;
 	if (strcmp(tool->name, "process") == 0) {
 		tool->process_poll =
-			strcmp(cli_transcript_json_string(args, "action"), "poll") == 0;
-		const char *session_id = cli_transcript_json_string(args, "session_id");
+			strcmp(json_str_or(json_member(args, "action"), NULL, ""), "poll") == 0;
+		const char *session_id = json_str_or(json_member(args, "session_id"), NULL, "");
 		const char *command = cli_transcript_find_process_command(tr, session_id);
 		morph_buf_t fallback;
 
@@ -179,7 +174,7 @@ static int cli_transcript_add_tool(struct cli_transcript_model *tr, const cJSON 
 		}
 	}
 	if (strcmp(tool->name, "apply_patch") == 0) {
-		const char *input = cli_transcript_json_string(args, "input");
+		const char *input = json_str_or(json_member(args, "input"), NULL, "");
 		const char *path = strstr(input, " File: ");
 		morph_buf_t patch;
 		size_t added = 0;
@@ -216,71 +211,73 @@ static int cli_transcript_add_tool(struct cli_transcript_model *tr, const cJSON 
 static void cli_transcript_summarize_result(struct cli_transcript_model *tr,
 					    struct cli_transcript_tool *tool)
 {
-	cJSON *json = cJSON_Parse(tool->result);
-	const cJSON *data = cJSON_GetObjectItemCaseSensitive(json, "data");
-	const cJSON *error = cJSON_GetObjectItemCaseSensitive(json, "error");
-	const cJSON *value;
+	struct json *json = json_parse_prefix(tool->result, NULL, NULL);
+	const struct json *data = json_member(json, "data");
+	const struct json *error = json_member(json, "error");
+	const struct json *value;
 	morph_buf_t summary;
 
 	if (!json)
 		return;
-	if (!cJSON_IsObject(data))
+	if (!json_is_object_value(data))
 		data = json;
-	if (cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(json, "ok")) || cJSON_IsObject(error) ||
-	    cJSON_IsString(error))
+	if (json_is_false(json_member(json, "ok")) || json_is_object_value(error) ||
+	    json_is_string_value(error))
 		tool->state = -1;
-	if (cJSON_IsObject(error)) {
-		const char *message = cli_transcript_json_string(error, "message");
+	if (json_is_object_value(error)) {
+		const char *message = json_str_or(json_member(error, "message"), NULL, "");
 
 		if (message[0])
 			tool->error = cli_transcript_save_text(tr, message);
-	} else if (cJSON_IsString(error)) {
-		tool->error = cli_transcript_save_text(tr, error->valuestring);
+	} else if (json_is_string_value(error)) {
+		tool->error = cli_transcript_save_text(tr, json_string_value(error));
 	}
 	if (morph_buf_init(&summary, 64) != 0) {
-		cJSON_Delete(json);
+		json_free(json);
 		return;
 	}
-	value = cJSON_GetObjectItemCaseSensitive(data, "duration_ms");
-	if (tool->shell && cJSON_IsNumber(value) && value->valuedouble >= 0)
-		tool->started = tool->ended - value->valuedouble / 1000.0;
-	tool->process_running = tool->process_poll &&
-				strcmp(cli_transcript_json_string(data, "status"), "running") == 0;
-	tool->timed_out = strcmp(cli_transcript_json_string(data, "status"), "timed_out") == 0 ||
-			  cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "timed_out"));
+	value = json_member(data, "duration_ms");
+	if (tool->shell && json_is_number_value(value) && json_number_value(value) >= 0)
+		tool->started = tool->ended - json_number_value(value) / 1000.0;
+	tool->process_running =
+		tool->process_poll &&
+		strcmp(json_str_or(json_member(data, "status"), NULL, ""), "running") == 0;
+	tool->timed_out =
+		strcmp(json_str_or(json_member(data, "status"), NULL, ""), "timed_out") == 0 ||
+		json_is_true(json_member(data, "timed_out"));
 	if (tool->timed_out)
 		tool->state = -1;
-	value = cJSON_GetObjectItemCaseSensitive(data, "exit_code");
-	if (cJSON_IsNumber(value)) {
-		(void)morph_buf_printf(&summary, "exit %d", value->valueint);
-		if (value->valueint != 0) {
+	value = json_member(data, "exit_code");
+	if (json_is_number_value(value)) {
+		(void)morph_buf_printf(&summary, "exit %d", json_int_value(value));
+		if (json_int_value(value) != 0) {
 			tool->state = -1;
 			tool->error = cli_transcript_save_text(
-				tr, cli_transcript_json_string(data, "stderr"));
+				tr, json_str_or(json_member(data, "stderr"), NULL, ""));
 			if (!tool->error[0])
 				tool->error =
 					cli_transcript_save_text(tr, morph_buf_cstr(&summary));
 		}
-	} else if (cJSON_IsString(value = cJSON_GetObjectItemCaseSensitive(data, "status"))) {
-		(void)morph_buf_puts(&summary, value->valuestring);
-	} else if (cJSON_IsNumber(
-			   value = cJSON_GetObjectItemCaseSensitive(data, "returned_lines"))) {
-		(void)morph_buf_printf(&summary, "%d lines", value->valueint);
-	} else if (cJSON_IsArray(value = cJSON_GetObjectItemCaseSensitive(data, "entries"))) {
-		(void)morph_buf_printf(&summary, "%d entries", cJSON_GetArraySize(value));
+	} else if (json_is_string_value(value = json_member(data, "status"))) {
+		(void)morph_buf_puts(&summary, json_string_value(value));
+	} else if (json_is_number_value(value = json_member(data, "returned_lines"))) {
+		(void)morph_buf_printf(&summary, "%d lines", json_int_value(value));
+	} else if (json_is_array_value(value = json_member(data, "entries"))) {
+		(void)morph_buf_printf(&summary, "%d entries", json_count(value));
 	}
 	if (tool->state > 0 && strcmp(tool->name, "activate_skill") == 0)
 		(void)morph_buf_puts(&summary, "loaded");
 	if (strcmp(tool->name, "tasks") == 0) {
-		const cJSON *id = cJSON_GetObjectItemCaseSensitive(data, "id");
-		const cJSON *tasks = cJSON_GetObjectItemCaseSensitive(data, "tasks");
-		const cJSON *task = cJSON_GetArrayItem(tasks, 0);
-		const char *title = cli_transcript_json_string(task, "title");
+		const struct json *id = json_member(data, "id");
+		const struct json *tasks = json_member(data, "tasks");
+		const struct json *task = json_at(tasks, 0);
+		const char *title = json_str_or(json_member(task, "title"), NULL, "");
 		morph_buf_t subject;
 
-		if (cJSON_IsNumber(id) && id->valuedouble > 0 &&
+		if (json_is_number_value(id) && json_number_value(id) > 0 &&
 		    morph_buf_init(&subject, 64) == 0) {
-			(void)morph_buf_printf(&subject, "#%lld%s%s", (long long)id->valuedouble,
+			(void)morph_buf_printf(&subject, "#%lld%s%s",
+					       (long long)json_number_value(id),
 					       title[0] ? " " : "", title);
 			tool->subject = cli_transcript_save_text(tr, morph_buf_cstr(&subject));
 			morph_buf_cleanup(&subject);
@@ -289,18 +286,18 @@ static void cli_transcript_summarize_result(struct cli_transcript_model *tr,
 	if (summary.len)
 		tool->summary = cli_transcript_save_text(tr, morph_buf_cstr(&summary));
 	morph_buf_cleanup(&summary);
-	cJSON_Delete(json);
+	json_free(json);
 }
 
-int cli_transcript_model_restore(struct cli_transcript_model *tr, const cJSON *call,
+int cli_transcript_model_restore(struct cli_transcript_model *tr, const struct json *call,
 				 const struct model_history_item *result, size_t *tool_index)
 {
-	const char *name = cli_transcript_json_string(call, "name");
-	const char *id = cli_transcript_json_string(call, "tool_call_id");
-	const char *input = cli_transcript_json_string(call, "input");
-	const char *arguments = cli_transcript_json_string(call, "arguments");
-	cJSON *data;
-	cJSON *args;
+	const char *name = json_str_or(json_member(call, "name"), NULL, "");
+	const char *id = json_str_or(json_member(call, "tool_call_id"), NULL, "");
+	const char *input = json_str_or(json_member(call, "input"), NULL, "");
+	const char *arguments = json_str_or(json_member(call, "arguments"), NULL, "");
+	struct json *data;
+	struct json *args;
 	int rc;
 
 	if (!tr || !tool_index)
@@ -308,29 +305,29 @@ int cli_transcript_model_restore(struct cli_transcript_model *tr, const cJSON *c
 	*tool_index = SIZE_MAX;
 	if (!name[0])
 		return 0;
-	data = cJSON_CreateObject();
-	args = cJSON_Parse(arguments);
+	data = json_object();
+	args = json_parse_prefix(arguments, NULL, NULL);
 	if (!args) {
-		args = cJSON_CreateObject();
-		if (args && !cJSON_AddStringToObject(args, "input", input)) {
-			cJSON_Delete(args);
+		args = json_object();
+		if (args && !json_add_string(args, "input", input)) {
+			json_free(args);
 			args = NULL;
 		}
 	}
-	if (!data || !args || !cJSON_AddStringToObject(data, "tool", name) ||
-	    !cJSON_AddStringToObject(data, "tool_call_id", id)) {
-		cJSON_Delete(data);
-		cJSON_Delete(args);
+	if (!data || !args || !json_add_string(data, "tool", name) ||
+	    !json_add_string(data, "tool_call_id", id)) {
+		json_free(data);
+		json_free(args);
 		return -ENOMEM;
 	}
-	if (!cJSON_AddItemToObject(data, "args", args)) {
-		cJSON_Delete(data);
-		cJSON_Delete(args);
+	if (json_object_add(data, "args", args) != 0) {
+		json_free(data);
+		json_free(args);
 		return -ENOMEM;
 	}
 	/* No patch previews against today's files, and no synthetic live timing. */
 	rc = cli_transcript_add_tool(tr, data, 0);
-	cJSON_Delete(data);
+	json_free(data);
 	if (rc)
 		return rc;
 	struct cli_transcript_tool *tool = morph_array_get(&tr->tools, tr->tools.nelts - 1);
@@ -339,23 +336,25 @@ int cli_transcript_model_restore(struct cli_transcript_model *tr, const cJSON *c
 	tool->started = 0;
 	tool->ended = 0;
 	if (result) {
-		cJSON *metadata = result->payload_json ? cJSON_Parse(result->payload_json) : NULL;
-		const cJSON *original =
-			cJSON_GetObjectItemCaseSensitive(metadata, "original_content");
-		const cJSON *code = cJSON_GetObjectItemCaseSensitive(metadata, "error_code");
+		struct json *metadata =
+			result->payload_json ? json_parse_prefix(result->payload_json, NULL, NULL)
+					     : NULL;
+		const struct json *original = json_member(metadata, "original_content");
+		const struct json *code = json_member(metadata, "error_code");
 
 		tool->state = 1;
-		tool->result = cli_transcript_save_text(
-			tr, cJSON_IsString(original) ? original->valuestring : result->content);
+		tool->result = cli_transcript_save_text(tr, json_is_string_value(original)
+								    ? json_string_value(original)
+								    : result->content);
 		cli_transcript_summarize_result(tr, tool);
-		if (cJSON_IsNumber(code) && code->valueint < 0) {
+		if (json_is_number_value(code) && json_int_value(code) < 0) {
 			tool->state = -1;
-			tool->timed_out = tool->timed_out || code->valueint == -ETIMEDOUT;
+			tool->timed_out = tool->timed_out || json_int_value(code) == -ETIMEDOUT;
 			if (!tool->error[0])
 				tool->error = cli_transcript_save_text(
-					tr, morph_strerror(code->valueint));
+					tr, morph_strerror(json_int_value(code)));
 		}
-		cJSON_Delete(metadata);
+		json_free(metadata);
 	}
 	*tool_index = tr->tools.nelts - 1;
 	return tr->allocation_failed ? -ENOMEM : 0;
@@ -373,13 +372,13 @@ int cli_transcript_model_reduce(struct cli_transcript_model *tr, const struct mo
 	*change = (struct cli_transcript_change){0};
 	name = event->name ? event->name : "";
 	if (strcmp(name, "react.observation") == 0 &&
-	    strcmp(cli_transcript_json_string(event->data, "tool"), "plan") != 0 &&
+	    strcmp(json_str_or(json_member(event->data, "tool"), NULL, ""), "plan") != 0 &&
 	    (tool = cli_transcript_find_tool(tr, event->data))) {
 		change->kind = CLI_TRANSCRIPT_OBSERVATION;
 		change->tool_index = (size_t)(tool - (struct cli_transcript_tool *)tr->tools.elts);
 		if (!tool->result[0]) {
 			tool->result = cli_transcript_save_text(
-				tr, cli_transcript_json_string(event->data, "text"));
+				tr, json_str_or(json_member(event->data, "text"), NULL, ""));
 			change->observation_added = 1;
 		}
 		return tr->allocation_failed ? -ENOMEM : 0;
@@ -404,7 +403,7 @@ int cli_transcript_model_reduce(struct cli_transcript_model *tr, const struct mo
 		return 0;
 	}
 	if (strcmp(name, "tool.stream.delta") == 0) {
-		const char *text = cli_transcript_json_string(event->data, "text");
+		const char *text = json_str_or(json_member(event->data, "text"), NULL, "");
 
 		change->kind = CLI_TRANSCRIPT_TOOL_STREAMED;
 		change->stream_offset = tool->stream.len;
@@ -417,10 +416,10 @@ int cli_transcript_model_reduce(struct cli_transcript_model *tr, const struct mo
 	change->kind = CLI_TRANSCRIPT_TOOL_FINISHED;
 	tool->state = strcmp(name, "tool.result") == 0 ? 1 : -1;
 	tool->ended = now;
-	tool->result =
-		cli_transcript_save_text(tr, cli_transcript_json_string(event->data, "result"));
-	tool->error =
-		cli_transcript_save_text(tr, cli_transcript_json_string(event->data, "error"));
+	tool->result = cli_transcript_save_text(
+		tr, json_str_or(json_member(event->data, "result"), NULL, ""));
+	tool->error = cli_transcript_save_text(
+		tr, json_str_or(json_member(event->data, "error"), NULL, ""));
 	rc = utf8_terminal_sanitize_feed(&tool->sanitizer, &tool->stream, NULL, 0, 1);
 	if (rc != 0)
 		return rc;

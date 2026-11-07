@@ -2,7 +2,7 @@
 #include "sapi/cli/pages/turn_details.h"
 #include "sapi/cli/presentation/output.h"
 #include "config/config.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/application_internal.h"
@@ -216,36 +216,33 @@ static void cli_recap_print_text(struct cli_application *ctx, const char *label,
 
 void cli_recap_event(struct cli_application *ctx, const struct morph_event *event)
 {
-	const cJSON *data = event->data;
+	const struct json *data = event->data;
 	const char *keys[] = {"session_id", "history_id", "revision", "completed_turns"};
-	const cJSON *error = cJSON_GetObjectItem(data, "error_code");
+	const struct json *error = json_member_ci(data, "error_code");
 
 	if (!event->phase || strcmp(event->phase, "end") != 0)
 		return;
 	for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
-		const cJSON *field = cJSON_GetObjectItem(data, keys[i]);
+		const struct json *field = json_member_ci(data, keys[i]);
 
-		if (!cJSON_IsNumber(field) || !isfinite(field->valuedouble) ||
-		    field->valuedouble < 0 || field->valuedouble >= (double)INT64_MAX ||
-		    (i == 3 && field->valuedouble > INT_MAX))
+		if (!json_is_number_value(field) || !isfinite(json_number_value(field)) ||
+		    json_number_value(field) < 0 || json_number_value(field) >= (double)INT64_MAX ||
+		    (i == 3 && json_number_value(field) > INT_MAX))
 			return;
 	}
-	if (!cJSON_IsNumber(error) || !isfinite(error->valuedouble) ||
-	    error->valuedouble < INT_MIN || error->valuedouble > INT_MAX)
+	if (!json_is_number_value(error) || !isfinite(json_number_value(error)) ||
+	    json_number_value(error) < INT_MIN || json_number_value(error) > INT_MAX)
 		return;
 	struct runtime_recap_progress progress = {
-		.session_id =
-			(int64_t)cJSON_GetNumberValue(cJSON_GetObjectItem(data, "session_id")),
-		.history_id =
-			(int64_t)cJSON_GetNumberValue(cJSON_GetObjectItem(data, "history_id")),
-		.revision = (uint64_t)cJSON_GetNumberValue(cJSON_GetObjectItem(data, "revision")),
-		.completed_turns =
-			(int)cJSON_GetNumberValue(cJSON_GetObjectItem(data, "completed_turns")),
+		.session_id = (int64_t)json_number_value(json_member_ci(data, "session_id")),
+		.history_id = (int64_t)json_number_value(json_member_ci(data, "history_id")),
+		.revision = (uint64_t)json_number_value(json_member_ci(data, "revision")),
+		.completed_turns = (int)json_number_value(json_member_ci(data, "completed_turns")),
 	};
-	int automatic = cJSON_IsTrue(cJSON_GetObjectItem(data, "automatic"));
-	int rc = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(data, "error_code"));
-	const char *summary = cJSON_GetStringValue(cJSON_GetObjectItem(data, "summary"));
-	const char *next = cJSON_GetStringValue(cJSON_GetObjectItem(data, "next_action"));
+	int automatic = json_is_true(json_member_ci(data, "automatic"));
+	int rc = (int)json_number_value(json_member_ci(data, "error_code"));
+	const char *summary = json_string_value(json_member_ci(data, "summary"));
+	const char *next = json_string_value(json_member_ci(data, "next_action"));
 
 	if (progress.session_id != ctx->recap.request.session_id ||
 	    progress.revision != ctx->recap.request.revision ||

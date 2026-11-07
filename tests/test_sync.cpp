@@ -3,7 +3,7 @@
 #include "util/file.h"
 #include "util/error.h"
 #include "blake3.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <sqlite3.h>
 #include <cstdio>
 #include <cstdlib>
@@ -773,16 +773,15 @@ TEST_F(SyncTest, RecoversCrashAfterCurrentDatabaseWasMovedAside) {
 	ASSERT_EQ(std::rename(plan.target, plan.rollback), 0);
 	char *text = file_read_all(plan.journal, nullptr);
 	ASSERT_NE(text, nullptr);
-	cJSON *json = cJSON_Parse(text);
+	struct json *json = json_parse_prefix(text, NULL, NULL);
 	free(text);
 	ASSERT_NE(json, nullptr);
-	ASSERT_TRUE(cJSON_ReplaceItemInObject(json, "phase",
-		cJSON_CreateString("applying")));
-	char *updated = cJSON_PrintUnformatted(json);
+	ASSERT_TRUE((json_object_replace_ci(json, "phase", json_string("applying")) == 0));
+	char *updated = json_stringify(json);
 	ASSERT_NE(updated, nullptr);
 	ASSERT_EQ(file_write_all(plan.journal, updated, strlen(updated)), 0);
 	free(updated);
-	cJSON_Delete(json);
+	json_free(json);
 
 	ASSERT_EQ(morph_sync_recover_db_replacements(NULL, local), 0);
 	EXPECT_EQ(SqliteCount(database), 2);
@@ -845,16 +844,15 @@ TEST_F(SyncTest, RejectsTamperedRestorePlanAndSnapshotPathTraversal) {
 		 backups[0].snapshot_id);
 	char *text = file_read_all(manifest, nullptr);
 	ASSERT_NE(text, nullptr);
-	cJSON *json = cJSON_Parse(text);
+	struct json *json = json_parse_prefix(text, NULL, NULL);
 	free(text);
 	ASSERT_NE(json, nullptr);
-	ASSERT_TRUE(cJSON_ReplaceItemInObject(json, "path",
-		cJSON_CreateString("../outside.db")));
-	char *updated = cJSON_PrintUnformatted(json);
+	ASSERT_TRUE((json_object_replace_ci(json, "path", json_string("../outside.db")) == 0));
+	char *updated = json_stringify(json);
 	ASSERT_NE(updated, nullptr);
 	ASSERT_EQ(file_write_all(manifest, updated, strlen(updated)), 0);
 	free(updated);
-	cJSON_Delete(json);
+	json_free(json);
 	EXPECT_EQ(morph_sync_prepare_db_replace(&cfg, backups[0].snapshot_id,
 		&plan), MORPH_ERR_FORMAT);
 	morph_sync_backups_free(backups);
@@ -877,15 +875,15 @@ TEST_F(SyncTest, IgnoresUntrustedRecoveryJournalWithoutTouchingTarget) {
 		&plan), 0);
 	original = file_read_all(plan.journal, nullptr);
 	ASSERT_NE(original, nullptr);
-	cJSON *json = cJSON_Parse(original);
+	struct json *json = json_parse_prefix(original, NULL, NULL);
 	ASSERT_NE(json, nullptr);
-	ASSERT_TRUE(cJSON_ReplaceItemInObject(json, "target",
-		cJSON_CreateString("/tmp/untrusted.db")));
-	char *tampered = cJSON_PrintUnformatted(json);
+	ASSERT_TRUE(
+		(json_object_replace_ci(json, "target", json_string("/tmp/untrusted.db")) == 0));
+	char *tampered = json_stringify(json);
 	ASSERT_NE(tampered, nullptr);
 	ASSERT_EQ(file_write_all(plan.journal, tampered, strlen(tampered)), 0);
 	free(tampered);
-	cJSON_Delete(json);
+	json_free(json);
 	ASSERT_EQ(morph_sync_recover_db_replacements(NULL, local), 0);
 	EXPECT_EQ(SqliteCount(database), 1);
 	EXPECT_TRUE(file_exists(plan.journal));
@@ -1038,15 +1036,15 @@ TEST_F(SyncTest, RetentionKeepsLatestSnapshotAndCollectsOldChunks) {
 		 backups[1].snapshot_id);
 	char *text = file_read_all(manifest, nullptr);
 	ASSERT_NE(text, nullptr);
-	cJSON *json = cJSON_Parse(text);
+	struct json *json = json_parse_prefix(text, NULL, NULL);
 	free(text);
 	ASSERT_NE(json, nullptr);
-	cJSON_SetNumberValue(cJSON_GetObjectItem(json, "created_at"), 1);
-	char *updated = cJSON_PrintUnformatted(json);
+	json_number_update(json_member_ci(json, "created_at"), 1);
+	char *updated = json_stringify(json);
 	ASSERT_NE(updated, nullptr);
 	ASSERT_EQ(file_write_all(manifest, updated, strlen(updated)), 0);
 	free(updated);
-	cJSON_Delete(json);
+	json_free(json);
 	morph_sync_backups_free(backups);
 	backups = nullptr;
 

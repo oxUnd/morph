@@ -10,7 +10,7 @@
 
 int runtime_approval_parse(const char *text, struct permission_review *out)
 {
-	cJSON *json;
+	struct json *json;
 	const char *verdict;
 	const char *reason;
 	const char *end = NULL;
@@ -19,10 +19,10 @@ int runtime_approval_parse(const char *text, struct permission_review *out)
 	if (!text || !out)
 		return -EINVAL;
 	memset(out, 0, sizeof(*out));
-	json = cJSON_ParseWithOpts(text, &end, 1);
-	verdict = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(json, "verdict"));
-	reason = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(json, "reason"));
-	if (cJSON_IsObject(json) && cJSON_GetArraySize(json) == 2 && verdict && reason && *reason &&
+	json = json_parse_ex(text, &end, 1, NULL);
+	verdict = json_string_value(json_member(json, "verdict"));
+	reason = json_string_value(json_member(json, "reason"));
+	if (json_is_object_value(json) && json_count(json) == 2 && verdict && reason && *reason &&
 	    strlen(reason) < sizeof(out->reason)) {
 		if (!strcmp(verdict, "allow")) {
 			out->verdict = TOOL_OP_ALLOW;
@@ -37,7 +37,7 @@ int runtime_approval_parse(const char *text, struct permission_review *out)
 		if (rc == 0)
 			snprintf(out->reason, sizeof(out->reason), "%s", reason);
 	}
-	cJSON_Delete(json);
+	json_free(json);
 	return rc;
 }
 
@@ -55,19 +55,19 @@ static void approval_event(struct runtime *runtime, const struct tool_operation 
 			   const char *source, const char *phase,
 			   const struct permission_review *review)
 {
-	cJSON *data = cJSON_CreateObject();
+	struct json *data = json_object();
 	struct morph_event event = {0};
 
 	if (!data)
 		return;
-	cJSON_AddStringToObject(data, "tool", op->tool_name ? op->tool_name : "");
-	cJSON_AddStringToObject(data, "source", source);
+	json_add_string(data, "tool", op->tool_name ? op->tool_name : "");
+	json_add_string(data, "source", source);
 	if (review) {
-		cJSON_AddStringToObject(data, "reason", review->reason);
-		cJSON_AddStringToObject(data, "verdict",
-					review->defer			  ? "defer"
-					: review->verdict == TOOL_OP_DENY ? "deny"
-									  : "allow");
+		json_add_string(data, "reason", review->reason);
+		json_add_string(data, "verdict",
+				review->defer			  ? "defer"
+				: review->verdict == TOOL_OP_DENY ? "deny"
+								  : "allow");
 	}
 	event.type = MORPH_EVENT_HITL;
 	event.name = "permission.review";
@@ -76,7 +76,7 @@ static void approval_event(struct runtime *runtime, const struct tool_operation 
 	event.data = data;
 	(void)morph_event_emit(runtime->context.react->event_cb,
 			       runtime->context.react->event_user_data, &event);
-	cJSON_Delete(data);
+	json_free(data);
 }
 
 static int review_user(const struct tool_operation *operation, struct permission_review *out,
@@ -123,7 +123,7 @@ static int review_model(const struct tool_operation *operation, struct permissio
 	struct arena *arena;
 	struct chat_response response = {0};
 	struct chat_message message = {.role = "user"};
-	cJSON *input;
+	struct json *input;
 	char *payload;
 	const char *key;
 	char objective[sizeof(ctx->approval_objective)];
@@ -167,23 +167,20 @@ static int review_model(const struct tool_operation *operation, struct permissio
 	pthread_mutex_lock(&ctx->approval_objective_lock);
 	memcpy(objective, ctx->approval_objective, sizeof(objective));
 	pthread_mutex_unlock(&ctx->approval_objective_lock);
-	input = cJSON_CreateObject();
+	input = json_object();
 	int complete =
-		input && cJSON_AddStringToObject(input, "user_objective", objective) &&
-		cJSON_AddStringToObject(input, "tool",
-					operation->tool_name ? operation->tool_name : "") &&
-		cJSON_AddStringToObject(input, "action",
-					operation->action ? operation->action : "") &&
-		cJSON_AddStringToObject(input, "target",
-					operation->target ? operation->target : "") &&
-		cJSON_AddStringToObject(input, "scope", operation->scope ? operation->scope : "") &&
-		cJSON_AddStringToObject(input, "details",
-					operation->details_json ? operation->details_json : "") &&
-		cJSON_AddBoolToObject(input, "host", operation->host) &&
-		cJSON_AddBoolToObject(input, "network", operation->network);
+		input && json_add_string(input, "user_objective", objective) &&
+		json_add_string(input, "tool", operation->tool_name ? operation->tool_name : "") &&
+		json_add_string(input, "action", operation->action ? operation->action : "") &&
+		json_add_string(input, "target", operation->target ? operation->target : "") &&
+		json_add_string(input, "scope", operation->scope ? operation->scope : "") &&
+		json_add_string(input, "details",
+				operation->details_json ? operation->details_json : "") &&
+		json_add_bool(input, "host", operation->host) &&
+		json_add_bool(input, "network", operation->network);
 
-	payload = complete ? cJSON_PrintUnformatted(input) : NULL;
-	cJSON_Delete(input);
+	payload = complete ? json_stringify(input) : NULL;
+	json_free(input);
 	arena = arena_create(0);
 	message.content = payload;
 	rc = payload && arena ? model->chat_with_tools(model, arena, instructions, &message, 1,

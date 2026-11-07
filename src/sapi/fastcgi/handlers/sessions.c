@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "cJSON.h"
+#include "util/json.h"
 
 /* POST /api/sessions
  * { "name": "...", "model": "..." }
@@ -26,21 +26,21 @@ void handle_create_session(request_t *r)
 		}
 	}
 
-	cJSON *root = cJSON_Parse(body ? body : "{}");
+	struct json *root = json_parse_prefix(body ? body : "{}", NULL, NULL);
 	const char *name = "untitled";
 	const char *model = "default";
-	if (cJSON_IsObject(root)) {
-		cJSON *n = cJSON_GetObjectItem(root, "name");
-		cJSON *m = cJSON_GetObjectItem(root, "model");
-		if (cJSON_IsString(n) && n->valuestring)
-			name = n->valuestring;
-		if (cJSON_IsString(m) && m->valuestring)
-			model = m->valuestring;
+	if (json_is_object_value(root)) {
+		struct json *n = json_member_ci(root, "name");
+		struct json *m = json_member_ci(root, "model");
+		if (json_is_string_value(n) && json_string_value(n))
+			name = json_string_value(n);
+		if (json_is_string_value(m) && json_string_value(m))
+			model = json_string_value(m);
 	}
 
 	char sid[64] = {0};
 	int rc = store_create_session(r->store, r->user_id, name, model, sid);
-	cJSON_Delete(root);
+	json_free(root);
 	free(body);
 
 	if (rc != 0) {
@@ -95,7 +95,7 @@ void handle_update_session(request_t *r)
 	const char *sid = path_param(r, "id");
 	char *body = NULL;
 	size_t blen = 0;
-	cJSON *root;
+	struct json *root;
 	const char *name = NULL;
 	const char *model = NULL;
 	int rc;
@@ -109,32 +109,32 @@ void handle_update_session(request_t *r)
 		reply_body_error(r, rc);
 		return;
 	}
-	root = cJSON_Parse(body ? body : "{}");
+	root = json_parse_prefix(body ? body : "{}", NULL, NULL);
 	free(body);
-	if (!cJSON_IsObject(root)) {
-		cJSON_Delete(root);
+	if (!json_is_object_value(root)) {
+		json_free(root);
 		reply_400(r, "invalid JSON body");
 		return;
 	}
 	{
-		cJSON *n = cJSON_GetObjectItem(root, "name");
-		cJSON *m = cJSON_GetObjectItem(root, "model");
+		struct json *n = json_member_ci(root, "name");
+		struct json *m = json_member_ci(root, "model");
 
-		if (n && !cJSON_IsString(n)) {
-			cJSON_Delete(root);
+		if (n && !json_is_string_value(n)) {
+			json_free(root);
 			reply_400(r, "name must be a string");
 			return;
 		}
-		if (m && !cJSON_IsString(m)) {
-			cJSON_Delete(root);
+		if (m && !json_is_string_value(m)) {
+			json_free(root);
 			reply_400(r, "model must be a string");
 			return;
 		}
-		name = cJSON_GetStringValue(n);
-		model = cJSON_GetStringValue(m);
+		name = json_string_value(n);
+		model = json_string_value(m);
 	}
 	rc = store_update_session(r->store, sid, r->user_id, name, model);
-	cJSON_Delete(root);
+	json_free(root);
 	if (rc == -ENOENT) {
 		reply_404(r);
 		return;

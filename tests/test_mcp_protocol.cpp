@@ -53,9 +53,9 @@ protected:
 
 	int cache(const char *schema)
 	{
-		cJSON *root = cJSON_Parse(schema);
+		struct json *root = json_parse_prefix(schema, NULL, NULL);
 		int rc = mcp_protocol_cache_tool(&client, "tool", root);
-		cJSON_Delete(root);
+		json_free(root);
 		return rc;
 	}
 
@@ -76,18 +76,19 @@ TEST_F(McpCodecTest, ModernEnvelopePreservesCallerMetadataAndAdvertisesOnlyImple
 {
 	ASSERT_EQ(encode("ping", "{\"_meta\":{\"progressToken\":23,"
 		"\"io.modelcontextprotocol/clientCapabilities\":{\"sampling\":{}}}}"), 0);
-	cJSON *root = cJSON_Parse(wire.json);
-	cJSON *params = cJSON_GetObjectItem(root, "params");
-	cJSON *meta = cJSON_GetObjectItem(params, "_meta");
+	struct json *root = json_parse_prefix(wire.json, NULL, NULL);
+	struct json *params = json_member_ci(root, "params");
+	struct json *meta = json_member_ci(params, "_meta");
 	ASSERT_NE(meta, nullptr);
-	EXPECT_EQ(cJSON_GetObjectItem(meta, "progressToken")->valueint, 23);
-	EXPECT_STREQ(cJSON_GetObjectItem(meta,
-		"io.modelcontextprotocol/protocolVersion")->valuestring, MCP_PROTOCOL_VERSION);
-	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(meta,
-		"io.modelcontextprotocol/clientCapabilities")), 0);
+	EXPECT_EQ(json_int_value(json_member_ci(meta, "progressToken")), 23);
+	EXPECT_STREQ(
+		json_string_value(json_member_ci(meta, "io.modelcontextprotocol/protocolVersion")),
+		MCP_PROTOCOL_VERSION);
+	EXPECT_EQ(json_count(json_member_ci(meta, "io.modelcontextprotocol/clientCapabilities")),
+		  0);
 	EXPECT_EQ(header("Mcp-Method"), "ping");
 	EXPECT_EQ(header("MCP-Protocol-Version"), MCP_PROTOCOL_VERSION);
-	cJSON_Delete(root);
+	json_free(root);
 }
 
 TEST_F(McpCodecTest, LegacyEnvelopeDoesNotAcquireModernFields)
@@ -95,12 +96,12 @@ TEST_F(McpCodecTest, LegacyEnvelopeDoesNotAcquireModernFields)
 	client.protocol = mcp_protocol_find("2025-06-18");
 	client.session_id = strdup("session");
 	ASSERT_EQ(encode("ping", nullptr), 0);
-	cJSON *root = cJSON_Parse(wire.json);
-	EXPECT_EQ(cJSON_GetObjectItem(root, "params"), nullptr);
+	struct json *root = json_parse_prefix(wire.json, NULL, NULL);
+	EXPECT_EQ(json_member_ci(root, "params"), nullptr);
 	EXPECT_EQ(header("Mcp-Method"), "");
 	EXPECT_EQ(header("Mcp-Session-Id"), "session");
 	EXPECT_EQ(header("MCP-Protocol-Version"), "2025-06-18");
-	cJSON_Delete(root);
+	json_free(root);
 	EXPECT_EQ(mcp_protocol_find("2099-01-01"), nullptr);
 }
 
@@ -128,9 +129,9 @@ TEST_F(McpCodecTest, HeaderEncodingPreservesUnicodeWhitespaceControlsAndSentinel
 {
 	const char *values[] = {"", "Hello, 世界", " padded ", "line1\nline2", "=?base64?literal?="};
 	for (const char *value : values) {
-		cJSON *params = cJSON_CreateObject();
-		cJSON_AddStringToObject(params, "uri", value);
-		char *json = cJSON_PrintUnformatted(params);
+		struct json *params = json_object();
+		json_add_string(params, "uri", value);
+		char *json = json_stringify(params);
 		ASSERT_EQ(encode("resources/read", json), 0);
 		char *encoded = base64_encode(reinterpret_cast<const unsigned char *>(value),
 			strlen(value));
@@ -138,7 +139,7 @@ TEST_F(McpCodecTest, HeaderEncodingPreservesUnicodeWhitespaceControlsAndSentinel
 		EXPECT_EQ(header("Mcp-Name"), "=?base64?" + std::string(encoded) + "?=");
 		free(encoded);
 		free(json);
-		cJSON_Delete(params);
+		json_free(params);
 	}
 }
 
@@ -265,10 +266,10 @@ TEST_F(McpStdioProtocolTest, ModernDiscoveryAndRequestsUseMetadataWithoutHandsha
 	std::istringstream lines(log);
 	std::string line;
 	while (std::getline(lines, line)) {
-		cJSON *request = cJSON_Parse(line.c_str());
-		cJSON *meta = cJSON_GetObjectItem(cJSON_GetObjectItem(request, "params"), "_meta");
+		struct json *request = json_parse_prefix(line.c_str(), NULL, NULL);
+		struct json *meta = json_member_ci(json_member_ci(request, "params"), "_meta");
 		EXPECT_NE(meta, nullptr);
-		cJSON_Delete(request);
+		json_free(request);
 	}
 }
 
@@ -442,24 +443,24 @@ public:
 	}
 };
 
-static std::string rpc_result(cJSON *request, const std::string &result)
+static std::string rpc_result(struct json *request, const std::string &result)
 {
-	cJSON *id = cJSON_GetObjectItem(request, "id");
-	std::string body = "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id->valueint) +
-		",\"result\":" + result + "}";
-	cJSON *object = cJSON_Parse(body.c_str());
-	char *encoded = cJSON_PrintUnformatted(object);
+	struct json *id = json_member_ci(request, "id");
+	std::string body = "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(json_int_value(id)) +
+			   ",\"result\":" + result + "}";
+	struct json *object = json_parse_prefix(body.c_str(), NULL, NULL);
+	char *encoded = json_stringify(object);
 	std::string compact = encoded ? encoded : body;
 	free(encoded);
-	cJSON_Delete(object);
+	json_free(object);
 	return compact;
 }
 
-static std::string rpc_error(cJSON *request, int code)
+static std::string rpc_error(struct json *request, int code)
 {
-	cJSON *id = cJSON_GetObjectItem(request, "id");
-	return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id->valueint) +
-		",\"error\":{\"code\":" + std::to_string(code) + ",\"message\":\"Rejected\"}}";
+	struct json *id = json_member_ci(request, "id");
+	return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(json_int_value(id)) +
+	       ",\"error\":{\"code\":" + std::to_string(code) + ",\"message\":\"Rejected\"}}";
 }
 
 class McpHttpProtocolTest : public ::testing::Test {
@@ -493,8 +494,8 @@ TEST_F(McpHttpProtocolTest, ModernCallsMirrorSchemaHeadersAndCorrelateSseRespons
 {
 	McpProtocolHttpServer server([](const McpHttpRequest &wire) {
 		McpHttpReply reply;
-		cJSON *request = cJSON_Parse(wire.body.c_str());
-		std::string method = cJSON_GetObjectItem(request, "method")->valuestring;
+		struct json *request = json_parse_prefix(wire.body.c_str(), NULL, NULL);
+		std::string method = json_string_value(json_member_ci(request, "method"));
 		if (method == "server/discover") {
 			reply.body = rpc_result(request, R"({"supportedVersions":["2026-07-28"],
 				"capabilities":{"tools":{}},"resultType":"complete"})");
@@ -515,7 +516,7 @@ TEST_F(McpHttpProtocolTest, ModernCallsMirrorSchemaHeadersAndCorrelateSseRespons
 			reply.status = 400;
 			reply.body = rpc_error(request, -32601);
 		}
-		cJSON_Delete(request);
+		json_free(request);
 		return reply;
 	});
 	ASSERT_NE(server.port, 0U);
@@ -525,8 +526,8 @@ TEST_F(McpHttpProtocolTest, ModernCallsMirrorSchemaHeadersAndCorrelateSseRespons
 	tool_result_init(&result);
 	ASSERT_EQ(mcp_call_tool(&client, nullptr, "tool", "{\"tenant\":\"a\\nb\"}", &result), 0);
 	ASSERT_EQ(tool_result_finalize(&result), 0);
-	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(
-		cJSON_GetObjectItem(result.data, "structuredContent"), "ok")));
+	EXPECT_TRUE(json_is_true(
+		json_member_ci(json_member_ci(result.data, "structuredContent"), "ok")));
 	tool_result_cleanup(&result);
 	auto requests = server.captured();
 	ASSERT_EQ(requests.size(), 3U);
@@ -548,8 +549,8 @@ TEST_F(McpHttpProtocolTest, LegacyFallbackKeepsSessionAndServerSelectedVersion)
 	const std::string session(5000, 's');
 	McpProtocolHttpServer server([&](const McpHttpRequest &wire) {
 		McpHttpReply reply;
-		cJSON *request = cJSON_Parse(wire.body.c_str());
-		std::string method = cJSON_GetObjectItem(request, "method")->valuestring;
+		struct json *request = json_parse_prefix(wire.body.c_str(), NULL, NULL);
+		std::string method = json_string_value(json_member_ci(request, "method"));
 		if (method == "server/discover") {
 			reply.status = 400;
 			reply.body = rpc_error(request, -32600);
@@ -562,7 +563,7 @@ TEST_F(McpHttpProtocolTest, LegacyFallbackKeepsSessionAndServerSelectedVersion)
 		} else {
 			reply.body = rpc_result(request, "{}");
 		}
-		cJSON_Delete(request);
+		json_free(request);
 		return reply;
 	});
 	ASSERT_NE(server.port, 0U);
@@ -605,10 +606,10 @@ TEST_F(McpHttpProtocolTest, RecognizedModernErrorsAndMalformedSuccessNeverDowngr
 	for (int code : {-32020, -32021, -32022, 0}) {
 		McpProtocolHttpServer server([code](const McpHttpRequest &wire) {
 			McpHttpReply reply;
-			cJSON *request = cJSON_Parse(wire.body.c_str());
+			struct json *request = json_parse_prefix(wire.body.c_str(), NULL, NULL);
 			reply.status = code ? 400 : 200;
 			reply.body = code ? rpc_error(request, code) : rpc_result(request, "{}");
-			cJSON_Delete(request);
+			json_free(request);
 			return reply;
 		});
 		ASSERT_NE(server.port, 0U);
@@ -619,25 +620,26 @@ TEST_F(McpHttpProtocolTest, RecognizedModernErrorsAndMalformedSuccessNeverDowngr
 
 TEST_F(McpCodecTest, HeaderListGrowsBeyondSmallFixedArrays)
 {
-	cJSON *schema = cJSON_Parse("{\"type\":\"object\",\"properties\":{}}");
-	cJSON *properties = cJSON_GetObjectItem(schema, "properties");
-	cJSON *params = cJSON_Parse("{\"name\":\"tool\",\"arguments\":{}}");
-	cJSON *arguments = cJSON_GetObjectItem(params, "arguments");
+	struct json *schema =
+		json_parse_prefix("{\"type\":\"object\",\"properties\":{}}", NULL, NULL);
+	struct json *properties = json_member_ci(schema, "properties");
+	struct json *params = json_parse_prefix("{\"name\":\"tool\",\"arguments\":{}}", NULL, NULL);
+	struct json *arguments = json_member_ci(params, "arguments");
 	for (int i = 0; i < 32; i++) {
 		std::string name = "p" + std::to_string(i);
-		cJSON *property = cJSON_AddObjectToObject(properties, name.c_str());
-		cJSON_AddStringToObject(property, "type", "string");
-		cJSON_AddStringToObject(property, "x-mcp-header", name.c_str());
-		cJSON_AddStringToObject(arguments, name.c_str(), "value");
+		struct json *property = json_add_object(properties, name.c_str());
+		json_add_string(property, "type", "string");
+		json_add_string(property, "x-mcp-header", name.c_str());
+		json_add_string(arguments, name.c_str(), "value");
 	}
 	ASSERT_EQ(mcp_protocol_cache_tool(&client, "tool", schema), 0);
-	char *json = cJSON_PrintUnformatted(params);
+	char *json = json_stringify(params);
 	ASSERT_EQ(encode("tools/call", json), 0);
 	EXPECT_EQ(wire.headers.nelts, 35U);
 	EXPECT_EQ(header("Mcp-Param-p31"), "value");
 	free(json);
-	cJSON_Delete(schema);
-	cJSON_Delete(params);
+	json_free(schema);
+	json_free(params);
 }
 
 TEST_F(McpCodecTest, DecoderRejectsInvalidFramingAndPreservesCorrelatedErrors)
@@ -652,7 +654,7 @@ TEST_F(McpCodecTest, DecoderRejectsInvalidFramingAndPreservesCorrelatedErrors)
 	for (const char *json : invalid) {
 		struct mcp_wire_reply reply = {};
 		reply.json = const_cast<char *>(json);
-		cJSON *object = nullptr;
+		struct json *object = nullptr;
 		EXPECT_EQ(mcp_protocol_decode(nullptr, &reply, 7, &object), MORPH_ERR_PROTOCOL);
 		EXPECT_EQ(object, nullptr);
 	}
@@ -660,12 +662,11 @@ TEST_F(McpCodecTest, DecoderRejectsInvalidFramingAndPreservesCorrelatedErrors)
 	reply.json = const_cast<char *>(
 		R"({"jsonrpc":"2.0","id":7,"error":{"code":-32022,"message":"Unsupported"}})");
 	reply.http_status = 400;
-	cJSON *object = nullptr;
+	struct json *object = nullptr;
 	EXPECT_EQ(mcp_protocol_decode(nullptr, &reply, 7, &object), MORPH_ERR_PROTOCOL);
 	ASSERT_NE(object, nullptr);
-	EXPECT_EQ(cJSON_GetObjectItem(cJSON_GetObjectItem(object, "error"), "code")->valueint,
-		-32022);
-	cJSON_Delete(object);
+	EXPECT_EQ(json_int_value(json_member_ci(json_member_ci(object, "error"), "code")), -32022);
+	json_free(object);
 }
 
 TEST_F(McpStdioProtocolTest, PinnedLegacySkipsProbeAndRejectsDifferentServerVersion)
@@ -714,8 +715,8 @@ TEST_F(McpHttpProtocolTest, LegacyJsonRpcErrorOnHttpSuccessAllowsHandshakeFallba
 {
 	McpProtocolHttpServer server([](const McpHttpRequest &wire) {
 		McpHttpReply reply;
-		cJSON *request = cJSON_Parse(wire.body.c_str());
-		std::string method = cJSON_GetObjectItem(request, "method")->valuestring;
+		struct json *request = json_parse_prefix(wire.body.c_str(), NULL, NULL);
+		std::string method = json_string_value(json_member_ci(request, "method"));
 		if (method == "server/discover")
 			reply.body = rpc_error(request, -32601);
 		else if (method == "initialize")
@@ -723,7 +724,7 @@ TEST_F(McpHttpProtocolTest, LegacyJsonRpcErrorOnHttpSuccessAllowsHandshakeFallba
 				R"({"protocolVersion":"2025-11-25","capabilities":{}})");
 		else
 			reply.status = 202;
-		cJSON_Delete(request);
+		json_free(request);
 		return reply;
 	});
 	ASSERT_NE(server.port, 0U);

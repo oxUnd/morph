@@ -1,6 +1,6 @@
 #include "sapi/fastcgi/storage/users.h"
 #include "sapi/fastcgi/session_store_internal.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "util/error.h"
 
 #include <errno.h>

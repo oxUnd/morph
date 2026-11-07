@@ -7,7 +7,7 @@
 #include "sapi/cli/widgets/shell_style.h"
 #include "util/terminal_size.h"
 #include "util/utf8.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <morph/tui/widgets/tree.h>
 #include <errno.h>
 #include <limits.h>
@@ -19,13 +19,6 @@
 static int cli_transcript_columns(void)
 {
 	return morph_terminal_columns(STDOUT_FILENO, 100);
-}
-
-static const char *cli_transcript_json_string(const cJSON *data, const char *key)
-{
-	const cJSON *item = cJSON_GetObjectItemCaseSensitive(data, key);
-
-	return cJSON_IsString(item) ? item->valuestring : "";
 }
 
 /* Reasoning stays separate from tools, with its original position in the turn. */
@@ -252,37 +245,38 @@ static void cli_transcript_print_feed_line(struct cli_application *ctx, const ch
 
 /* Prefer human-readable payloads. The complete original stays in turn details. */
 static void cli_transcript_tool_preview_text(const struct cli_transcript_tool *tool,
-					     const cJSON *data, morph_buf_t *text)
+					     const struct json *data, morph_buf_t *text)
 {
 	const char *value = tool->error;
-	const cJSON *content;
+	const struct json *content;
 
-	if (!value[0] && cJSON_IsString(data))
-		value = data->valuestring;
+	if (!value[0] && json_is_string_value(data))
+		value = json_string_value(data);
 
 	if (!value[0] && tool->shell) {
-		value = cli_transcript_json_string(data, tool->state < 0 ? "stderr" : "stdout");
+		value = json_str_or(json_member(data, tool->state < 0 ? "stderr" : "stdout"), NULL,
+				    "");
 		if (!value[0])
-			value = cli_transcript_json_string(data, "stderr");
+			value = json_str_or(json_member(data, "stderr"), NULL, "");
 	} else if (!value[0] && strcmp(tool->name, "apply_patch") == 0) {
 		value = tool->patch_preview;
 	} else if (!value[0]) {
-		value = cli_transcript_json_string(data, "content");
+		value = json_str_or(json_member(data, "content"), NULL, "");
 		if (!value[0])
-			value = cli_transcript_json_string(data, "text");
+			value = json_str_or(json_member(data, "text"), NULL, "");
 		if (!value[0])
-			value = cli_transcript_json_string(data, "preview");
+			value = json_str_or(json_member(data, "preview"), NULL, "");
 	}
 	if (value[0]) {
 		(void)morph_buf_puts(text, value);
 		return;
 	}
-	content = cJSON_GetObjectItemCaseSensitive(data, "content");
-	if (cJSON_IsArray(content)) {
-		const cJSON *block;
+	content = json_member(data, "content");
+	if (json_is_array_value(content)) {
+		const struct json *block;
 
-		cJSON_ArrayForEach (block, content) {
-			value = cli_transcript_json_string(block, "text");
+		json_foreach (block, content) {
+			value = json_str_or(json_member(block, "text"), NULL, "");
 			if (!value[0])
 				continue;
 			if (text->len)
@@ -305,8 +299,8 @@ static void cli_transcript_tool_preview_text(const struct cli_transcript_tool *t
 static void cli_transcript_print_tool_preview(struct cli_application *ctx,
 					      const struct cli_transcript_tool *tool)
 {
-	cJSON *json = cJSON_Parse(tool->result);
-	const cJSON *data = cJSON_GetObjectItemCaseSensitive(json, "data");
+	struct json *json = json_parse_prefix(tool->result, NULL, NULL);
+	const struct json *data = json_member(json, "data");
 	morph_buf_t text;
 	char *safe;
 	char *line;
@@ -314,17 +308,17 @@ static void cli_transcript_print_tool_preview(struct cli_application *ctx,
 	size_t shown = 0;
 	const char *color = tool->timed_out ? ANSI_YELLOW : tool->state < 0 ? ANSI_RED : ANSI_DIM;
 
-	if (!cJSON_IsObject(data))
+	if (!json_is_object_value(data))
 		data = json;
 	if (morph_buf_init(&text, 128) != 0) {
-		cJSON_Delete(json);
+		json_free(json);
 		return;
 	}
 	cli_transcript_tool_preview_text(tool, data, &text);
 	safe = utf8_terminal_sanitize_dup(morph_buf_cstr(&text), text.len,
 					  UTF8_TERMINAL_TEXT_MULTILINE, NULL);
 	morph_buf_cleanup(&text);
-	cJSON_Delete(json);
+	json_free(json);
 	if (!safe)
 		return;
 	size_t len = strlen(safe);
@@ -421,20 +415,21 @@ static void cli_transcript_print_lines(struct cli_application *ctx, const char *
 	free(safe);
 }
 
-static void cli_transcript_print_value(struct cli_application *ctx, const cJSON *value, int depth)
+static void cli_transcript_print_value(struct cli_application *ctx, const struct json *value,
+				       int depth)
 {
-	cJSON *child;
+	struct json *child;
 	char *json;
 
-	if (cJSON_IsString(value)) {
-		cli_transcript_print_lines(ctx, value->valuestring);
+	if (json_is_string_value(value)) {
+		cli_transcript_print_lines(ctx, json_string_value(value));
 		return;
 	}
-	if (depth < 32 && (cJSON_IsObject(value) || cJSON_IsArray(value))) {
-		cJSON_ArrayForEach (child, value) {
-			if (child->string) {
+	if (depth < 32 && (json_is_object_value(value) || json_is_array_value(value))) {
+		json_foreach (child, value) {
+			if (json_key(child)) {
 				cli_output_printf(ctx, "    " ANSI_DIM);
-				cli_transcript_print_inline(ctx, child->string,
+				cli_transcript_print_inline(ctx, json_key(child),
 							    cli_transcript_columns() - 10);
 				cli_output_printf(ctx, ":" ANSI_RESET "\n");
 			}
@@ -442,7 +437,7 @@ static void cli_transcript_print_value(struct cli_application *ctx, const cJSON 
 		}
 		return;
 	}
-	json = cJSON_Print(value);
+	json = json_stringify_pretty(value);
 	if (json) {
 		cli_transcript_print_lines(ctx, json);
 		free(json);
@@ -451,11 +446,11 @@ static void cli_transcript_print_value(struct cli_application *ctx, const cJSON 
 
 void cli_transcript_render_payload(struct cli_application *ctx, const char *text)
 {
-	cJSON *json = cJSON_Parse(text);
+	struct json *json = json_parse_prefix(text, NULL, NULL);
 
 	if (json) {
 		cli_transcript_print_value(ctx, json, 0);
-		cJSON_Delete(json);
+		json_free(json);
 	} else {
 		cli_transcript_print_lines(ctx, text);
 	}
@@ -466,29 +461,31 @@ void cli_transcript_render_tool_details(struct cli_application *ctx,
 {
 	if (args) {
 		if (strcmp(tool->name, "apply_patch") == 0) {
-			cJSON *json = cJSON_Parse(tool->args);
+			struct json *json = json_parse_prefix(tool->args, NULL, NULL);
 
 			if (tool->patch_preview[0])
 				cli_presentation_patch_diff(ctx, NULL, tool->patch_preview);
 			else
 				cli_presentation_patch_diff(
-					ctx, NULL, cli_transcript_json_string(json, "input"));
-			cJSON_Delete(json);
+					ctx, NULL,
+					json_str_or(json_member(json, "input"), NULL, ""));
+			json_free(json);
 		} else if (strcmp(tool->name, "exec") == 0) {
-			cJSON *json = cJSON_Parse(tool->args);
+			struct json *json = json_parse_prefix(tool->args, NULL, NULL);
 			morph_buf_t command;
 
 			if (morph_buf_init(&command, 128) == 0) {
-				(void)cli_shell_style(&command,
-						      cli_transcript_json_string(json, "command"),
-						      cli_transcript_columns() - 6);
+				(void)cli_shell_style(
+					&command,
+					json_str_or(json_member(json, "command"), NULL, ""),
+					cli_transcript_columns() - 6);
 				cli_output_printf(ctx, "    $ %s\n", morph_buf_cstr(&command));
 				morph_buf_cleanup(&command);
 			}
-			cJSON_DeleteItemFromObjectCaseSensitive(json, "command");
-			if (json && json->child)
+			json_object_remove(json, "command");
+			if (json && json_first(json))
 				cli_transcript_print_value(ctx, json, 0);
-			cJSON_Delete(json);
+			json_free(json);
 		} else {
 			cli_transcript_render_payload(ctx, tool->args);
 		}
@@ -497,54 +494,51 @@ void cli_transcript_render_tool_details(struct cli_application *ctx,
 		cli_transcript_print_lines(ctx, morph_buf_cstr(&tool->stream));
 	}
 	if (tool->result[0]) {
-		cJSON *json = cJSON_Parse(tool->result);
-		const cJSON *data = cJSON_GetObjectItemCaseSensitive(json, "data");
+		struct json *json = json_parse_prefix(tool->result, NULL, NULL);
+		const struct json *data = json_member(json, "data");
 
-		if (!cJSON_IsObject(data))
+		if (!json_is_object_value(data))
 			data = json;
 		if (strcmp(tool->name, "exec") == 0 &&
-		    cJSON_IsString(cJSON_GetObjectItemCaseSensitive(data, "stdout"))) {
-			const cJSON *exit_code =
-				cJSON_GetObjectItemCaseSensitive(data, "exit_code");
+		    json_is_string_value(json_member(data, "stdout"))) {
+			const struct json *exit_code = json_member(data, "exit_code");
 
 			cli_output_printf(ctx, "\n");
-			cli_transcript_print_lines(ctx, cli_transcript_json_string(data, "stdout"));
-			cli_transcript_print_lines(ctx, cli_transcript_json_string(data, "stderr"));
-			if (cJSON_IsNumber(exit_code))
+			cli_transcript_print_lines(
+				ctx, json_str_or(json_member(data, "stdout"), NULL, ""));
+			cli_transcript_print_lines(
+				ctx, json_str_or(json_member(data, "stderr"), NULL, ""));
+			if (json_is_number_value(exit_code))
 				cli_output_printf(ctx, ANSI_DIM "    exit %d\n" ANSI_RESET,
-						  exit_code->valueint);
-			if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "timed_out")))
+						  json_int_value(exit_code));
+			if (json_is_true(json_member(data, "timed_out")))
 				cli_transcript_print_lines(ctx, "Command timed out");
-			if (cJSON_IsTrue(
-				    cJSON_GetObjectItemCaseSensitive(data, "stdout_truncated")) ||
-			    cJSON_IsTrue(
-				    cJSON_GetObjectItemCaseSensitive(data, "stderr_truncated")))
+			if (json_is_true(json_member(data, "stdout_truncated")) ||
+			    json_is_true(json_member(data, "stderr_truncated")))
 				cli_transcript_print_lines(ctx, "Output truncated by the tool");
 		} else if (strcmp(tool->name, "file_read") == 0 &&
-			   cJSON_IsString(cJSON_GetObjectItemCaseSensitive(data, "content"))) {
-			const cJSON *count =
-				cJSON_GetObjectItemCaseSensitive(data, "returned_lines");
-			const cJSON *next =
-				cJSON_GetObjectItemCaseSensitive(data, "next_byte_offset");
+			   json_is_string_value(json_member(data, "content"))) {
+			const struct json *count = json_member(data, "returned_lines");
+			const struct json *next = json_member(data, "next_byte_offset");
 
 			cli_output_printf(ctx, "\n");
-			if (cJSON_IsNumber(count))
+			if (json_is_number_value(count))
 				cli_output_printf(ctx,
 						  ANSI_DIM "    %.0f returned lines\n" ANSI_RESET,
-						  count->valuedouble);
-			if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "truncated")) &&
-			    cJSON_IsNumber(next))
+						  json_number_value(count));
+			if (json_is_true(json_member(data, "truncated")) &&
+			    json_is_number_value(next))
 				cli_output_printf(
 					ctx,
 					ANSI_DIM
 					"    More content at byte offset %.0f\n" ANSI_RESET,
-					next->valuedouble);
-			cli_transcript_print_lines(ctx,
-						   cli_transcript_json_string(data, "content"));
+					json_number_value(next));
+			cli_transcript_print_lines(
+				ctx, json_str_or(json_member(data, "content"), NULL, ""));
 		} else {
 			cli_transcript_render_payload(ctx, tool->result);
 		}
-		cJSON_Delete(json);
+		json_free(json);
 	}
 	if (tool->error[0])
 		cli_transcript_print_lines(ctx, tool->error);

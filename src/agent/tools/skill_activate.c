@@ -1,7 +1,7 @@
 #include "agent/tool_runtime.h"
 #include "skill_activate.h"
 #include "util/log.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,13 +22,12 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 	char name[SKILL_NAME_MAX] = {0};
 
 	if (args_json && *args_json) {
-		cJSON *root = cJSON_Parse(args_json);
+		struct json *root = json_parse_prefix(args_json, NULL, NULL);
 		if (root) {
-			cJSON *name_item = cJSON_GetObjectItem(root, "name");
-			if (cJSON_IsString(name_item) && name_item->valuestring)
-				strncpy(name, name_item->valuestring,
-					sizeof(name) - 1);
-			cJSON_Delete(root);
+			struct json *name_item = json_member_ci(root, "name");
+			if (json_is_string_value(name_item) && json_string_value(name_item))
+				strncpy(name, json_string_value(name_item), sizeof(name) - 1);
+			json_free(root);
 		}
 	}
 

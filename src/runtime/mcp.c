@@ -47,7 +47,7 @@ void runtime_mcp_emit(morph_event_cb cb, void *user_data,
 			     int tools, int resources, int prompts,
 			     int error_code)
 {
-	cJSON *data;
+	struct json *data;
 	morph_buf_t message_buf;
 	const char *effective_message = message;
 	const char *error_text;
@@ -90,32 +90,29 @@ void runtime_mcp_emit(morph_event_cb cb, void *user_data,
 		if (message_buf.len > 0)
 			effective_message = morph_buf_cstr(&message_buf);
 	}
-	data = cJSON_CreateObject();
+	data = json_object();
 	if (!data) {
 		morph_buf_cleanup(&message_buf);
 		return;
 	}
-	cJSON_AddStringToObject(data, "server", server->name);
-	cJSON_AddStringToObject(data, "transport",
-				runtime_mcp_transport_name(server->transport));
-	cJSON_AddBoolToObject(data, "auto_connect",
-			      server->auto_connect ? 1 : 0);
+	json_add_string(data, "server", server->name);
+	json_add_string(data, "transport", runtime_mcp_transport_name(server->transport));
+	json_add_bool(data, "auto_connect", server->auto_connect ? 1 : 0);
 	if (server->connect_timeout > 0)
-		cJSON_AddNumberToObject(data, "timeout_seconds",
-					server->connect_timeout);
+		json_add_number(data, "timeout_seconds", server->connect_timeout);
 	if (tools >= 0)
-		cJSON_AddNumberToObject(data, "tools", tools);
+		json_add_number(data, "tools", tools);
 	if (resources >= 0)
-		cJSON_AddNumberToObject(data, "resources", resources);
+		json_add_number(data, "resources", resources);
 	if (prompts >= 0)
-		cJSON_AddNumberToObject(data, "prompts", prompts);
+		json_add_number(data, "prompts", prompts);
 	if (error_code < 0) {
-		cJSON_AddNumberToObject(data, "error_code", error_code);
-		cJSON_AddStringToObject(data, "error", error_text);
+		json_add_number(data, "error_code", error_code);
+		json_add_string(data, "error", error_text);
 	}
 	(void)morph_event_emit_simple(cb, user_data, MORPH_EVENT_MCP,
 				     name, phase, effective_message, data);
-	cJSON_Delete(data);
+	json_free(data);
 	morph_buf_cleanup(&message_buf);
 }
 

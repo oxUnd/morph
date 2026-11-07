@@ -1,6 +1,6 @@
 #include "sapi/cli/services/command_job.h"
 #include "sapi/cli/services/turn.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/application_internal.h"
 
@@ -167,7 +167,7 @@ int cli_command_job_wait(struct cli_command_job *job)
 
 int cli_command_job_prompt(struct cli_command_job *job, const char *text, const char *display_text)
 {
-	cJSON *payload;
+	struct json *payload;
 	char *json;
 	struct cli_command_job_prompt prompt;
 	struct cli_command_job_prompt *slot;
@@ -176,19 +176,19 @@ int cli_command_job_prompt(struct cli_command_job *job, const char *text, const 
 	if (!job || !text || !text[0])
 		return -EINVAL;
 	distinct_display = display_text && strcmp(display_text, text) != 0;
-	payload = cJSON_CreateObject();
+	payload = json_object();
 	if (!payload)
 		return -ENOMEM;
-	if (!cJSON_AddStringToObject(payload, "text", text)) {
-		cJSON_Delete(payload);
+	if (!json_add_string(payload, "text", text)) {
+		json_free(payload);
 		return -ENOMEM;
 	}
-	if (distinct_display && !cJSON_AddStringToObject(payload, "display_text", display_text)) {
-		cJSON_Delete(payload);
+	if (distinct_display && !json_add_string(payload, "display_text", display_text)) {
+		json_free(payload);
 		return -ENOMEM;
 	}
-	json = cJSON_PrintUnformatted(payload);
-	cJSON_Delete(payload);
+	json = json_stringify(payload);
+	json_free(payload);
 	if (!json)
 		return -ENOMEM;
 	prompt.text = strdup(text);

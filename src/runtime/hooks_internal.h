@@ -47,12 +47,11 @@ struct hook_run {
 };
 
 const char *hook_entry_state(struct hook_manager *manager, struct hook_entry *entry);
-const char *hook_json_string(const cJSON *obj, const char *key);
 int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const char *event,
-		       morph_buf_t *context, morph_buf_t *reason, cJSON **updated, int *blocked,
-		       int *ask, int *terminate);
+		       morph_buf_t *context, morph_buf_t *reason, struct json **updated,
+		       int *blocked, int *ask, int *terminate);
 int hook_event_ignores_matcher(const char *event);
-int hook_json_unique_fields(const cJSON *value, int depth);
+int hook_json_unique_fields(const struct json *value, int depth);
 int hook_refresh_trust(struct hook_manager *manager, struct hook_entry *entry);
 
 #endif

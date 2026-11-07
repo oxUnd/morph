@@ -1,5 +1,5 @@
 #include "jsonrpc.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "util/error.h"
 #include <stdlib.h>
 #include <string.h>
@@ -10,25 +10,34 @@ char *jsonrpc_build_request(const struct jsonrpc_request *req)
 	if (!req || !req->method)
 		return NULL;
 
-	cJSON *root = cJSON_CreateObject();
+	struct json *root = json_object();
 	if (!root)
 		return NULL;
 
-	cJSON_AddStringToObject(root, "jsonrpc", "2.0");
-	cJSON_AddNumberToObject(root, "id", req->id);
-	cJSON_AddStringToObject(root, "method", req->method);
+	if (!json_add_string(root, "jsonrpc", "2.0") || !json_add_number(root, "id", req->id) ||
+	    !json_add_string(root, "method", req->method)) {
+		json_free(root);
+		return NULL;
+	}
 
 	if (req->params_json && *req->params_json) {
-		cJSON *params = cJSON_Parse(req->params_json);
+		struct json *params = json_parse_prefix(req->params_json, NULL, NULL);
 		if (params) {
-			cJSON_AddItemToObject(root, "params", params);
+			if (json_object_add(root, "params", params) != 0) {
+				json_free(params);
+				json_free(root);
+				return NULL;
+			}
 		} else {
-			cJSON_AddStringToObject(root, "params", req->params_json);
+			if (!json_add_string(root, "params", req->params_json)) {
+				json_free(root);
+				return NULL;
+			}
 		}
 	}
 
-	char *str = cJSON_PrintUnformatted(root);
-	cJSON_Delete(root);
+	char *str = json_stringify(root);
+	json_free(root);
 	return str;
 }
 
@@ -42,37 +51,37 @@ int jsonrpc_parse_response(const char *resp_str, struct jsonrpc_response *out)
 		return -EINVAL;
 	}
 
-	cJSON *root = cJSON_Parse(resp_str);
+	struct json *root = json_parse_prefix(resp_str, NULL, NULL);
 	if (!root)
 		return -EPROTO;
 
-	cJSON *id_item = cJSON_GetObjectItem(root, "id");
-	if (cJSON_IsNumber(id_item))
-		out->id = id_item->valueint;
+	const struct json *id_item = json_member_ci(root, "id");
+	if (json_is_number_value(id_item))
+		out->id = json_int_value(id_item);
 
-	cJSON *error_item = cJSON_GetObjectItem(root, "error");
-	if (cJSON_IsObject(error_item)) {
+	const struct json *error_item = json_member_ci(root, "error");
+	if (json_is_object_value(error_item)) {
 		out->has_error = 1;
-		cJSON *code = cJSON_GetObjectItem(error_item, "code");
-		if (cJSON_IsNumber(code))
-			out->error_code = code->valueint;
-		cJSON *msg = cJSON_GetObjectItem(error_item, "message");
-		if (cJSON_IsString(msg) && msg->valuestring) {
-			out->error_message = strdup(msg->valuestring);
+		const struct json *code = json_member_ci(error_item, "code");
+		if (json_is_number_value(code))
+			out->error_code = json_int_value(code);
+		const char *message = json_string_value(json_member_ci(error_item, "message"));
+		if (message) {
+			out->error_message = strdup(message);
 			if (out->error_message == NULL) {
-				cJSON_Delete(root);
+				json_free(root);
 				return -ENOMEM;
 			}
 		}
-		cJSON_Delete(root);
+		json_free(root);
 		return 0;
 	}
 
-	cJSON *result_item = cJSON_GetObjectItem(root, "result");
+	const struct json *result_item = json_member_ci(root, "result");
 	if (result_item) {
-		char *result_str = cJSON_PrintUnformatted(result_item);
+		char *result_str = json_stringify(result_item);
 		if (result_str == NULL) {
-			cJSON_Delete(root);
+			json_free(root);
 			return -ENOMEM;
 		}
 		out->result_json = result_str;
@@ -81,12 +90,12 @@ int jsonrpc_parse_response(const char *resp_str, struct jsonrpc_response *out)
 		out->error_code = -32603;
 		out->error_message = strdup("response missing result");
 		if (out->error_message == NULL) {
-			cJSON_Delete(root);
+			json_free(root);
 			return -ENOMEM;
 		}
 	}
 
-	cJSON_Delete(root);
+	json_free(root);
 	return 0;
 }
 

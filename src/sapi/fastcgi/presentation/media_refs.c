@@ -4,7 +4,7 @@
 #include "sapi/fastcgi/session_store.h"
 #include "sapi/fastcgi/storage/events.h"
 #include "sapi/fastcgi/storage/artifacts.h"
-#include "cJSON.h"
+#include "util/json.h"
 #include "util/error.h"
 #include "util/child_io.h"
 
@@ -78,21 +78,21 @@ static int relative_under_root(const char *root, const char *path, char rel[512]
 
 static void artifact_publish_ready(struct fcgi_turn_job *j, const struct fcgi_turn_artifact *a)
 {
-	cJSON *obj;
+	struct json *obj;
 	char *json;
 
-	obj = cJSON_CreateObject();
+	obj = json_object();
 	if (!obj)
 		return;
-	cJSON_AddStringToObject(obj, "id", a->id);
-	cJSON_AddStringToObject(obj, "kind", a->kind);
-	cJSON_AddStringToObject(obj, "mime", a->mime);
-	cJSON_AddStringToObject(obj, "filename", a->filename);
-	cJSON_AddNumberToObject(obj, "size_bytes", (double)a->size_bytes);
-	cJSON_AddStringToObject(obj, "url", a->url);
-	cJSON_AddStringToObject(obj, "turn_id", j->turn_id);
-	json = cJSON_PrintUnformatted(obj);
-	cJSON_Delete(obj);
+	json_add_string(obj, "id", a->id);
+	json_add_string(obj, "kind", a->kind);
+	json_add_string(obj, "mime", a->mime);
+	json_add_string(obj, "filename", a->filename);
+	json_add_number(obj, "size_bytes", (double)a->size_bytes);
+	json_add_string(obj, "url", a->url);
+	json_add_string(obj, "turn_id", j->turn_id);
+	json = json_stringify(obj);
+	json_free(obj);
 	if (!json)
 		return;
 	events_publish(j->store, j->session_id, "artifact_ready", json);
