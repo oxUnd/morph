@@ -1,4 +1,5 @@
 #include "sapi/cli/presentation/markdown.h"
+#include "util/cleanup.h"
 #include "sapi/cli/pages/turn_details.h"
 #include "sapi/cli/presentation/presenter_state.h"
 #include "morph_markdown_kitty.h"
@@ -132,8 +133,8 @@ static int cli_markdown_render(struct cli_application *ctx, const char *md, unsi
 {
 	struct cli_markdown_output output = {0};
 	struct morph_md_kitty *renderer;
-	char *safe;
-	char *normalized;
+	char *safe MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *normalized MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	const char *content;
 	int rc;
 
@@ -147,7 +148,7 @@ static int cli_markdown_render(struct cli_application *ctx, const char *md, unsi
 	renderer = cli_markdown_create(ctx, indent, initial_column, 1, cb, user, &output, 0);
 	if (!renderer) {
 		log_warn(ctx ? ctx->logger : NULL, "failed to initialize Kitty Markdown renderer");
-		goto out;
+		return output.trailing_newlines;
 	}
 	rc = morph_md_kitty_append(renderer, content, strlen(content), 1);
 	if (rc == 0)
@@ -156,9 +157,6 @@ static int cli_markdown_render(struct cli_application *ctx, const char *md, unsi
 		log_warn(ctx ? ctx->logger : NULL, "Kitty Markdown rendering failed");
 	morph_md_kitty_destroy(renderer);
 	fflush(stdout);
-out:
-	free(normalized);
-	free(safe);
 	return output.trailing_newlines;
 }
 

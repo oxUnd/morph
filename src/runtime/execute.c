@@ -37,32 +37,15 @@ static int runtime_output_forward(const struct react_output_event *event, void *
 	return 0;
 }
 
-int runtime_execute(struct runtime_engine *engine, const struct runtime_request *request,
-		    struct runtime_result *result)
+static int runtime_execute_locked(struct runtime_engine *engine,
+	const struct runtime_request *request, struct runtime_result *result,
+	struct runtime_turn_scope *scope)
 {
 	struct agent_session_runtime session_runtime;
 	struct agent_turn turn;
-	struct runtime_turn_scope local_scope = {0};
-	struct runtime_turn_scope *scope;
+	struct runtime_output_forwarder output_forwarder;
 	int rc;
 	int finish_rc;
-	struct runtime_output_forwarder output_forwarder;
-
-	if (!engine || !engine->db || !engine->react || !request || request->session_id <= 0 ||
-	    !request->model_input || !result)
-		return -EINVAL;
-	memset(result, 0, sizeof(*result));
-	result->outcome = RUNTIME_OUTCOME_FAILED;
-	rc = runtime_lock_turn(engine, request, result);
-	if (rc != 0)
-		return rc;
-	react_drain_tools(engine->react);
-	scope = engine->turn_scope ? engine->turn_scope : &local_scope;
-	if (engine->prepare_turn) {
-		rc = engine->prepare_turn(engine->user_data, request);
-		if (rc != 0)
-			goto out;
-	}
 
 	runtime_turn_scope_bind_request(scope, engine, request);
 	memset(&session_runtime, 0, sizeof(session_runtime));
@@ -128,7 +111,32 @@ int runtime_execute(struct runtime_engine *engine, const struct runtime_request 
 		result->outcome = RUNTIME_OUTCOME_COMPLETED;
 	result->execution_rc = rc;
 
-out:
+	return rc;
+}
+
+int runtime_execute(struct runtime_engine *engine, const struct runtime_request *request,
+		    struct runtime_result *result)
+{
+	struct runtime_turn_scope local_scope = {0};
+	struct runtime_turn_scope *scope;
+	int rc;
+
+	if (!engine || !engine->db || !engine->react || !request || request->session_id <= 0 ||
+	    !request->model_input || !result)
+		return -EINVAL;
+	memset(result, 0, sizeof(*result));
+	result->outcome = RUNTIME_OUTCOME_FAILED;
+	rc = runtime_lock_turn(engine, request, result);
+	if (rc != 0)
+		return rc;
+	react_drain_tools(engine->react);
+	scope = engine->turn_scope ? engine->turn_scope : &local_scope;
+	if (engine->prepare_turn)
+		rc = engine->prepare_turn(engine->user_data, request);
+
+	if (rc == 0)
+		rc = runtime_execute_locked(engine, request, result, scope);
+
 	if (result->execution_rc == 0 && result->outcome != RUNTIME_OUTCOME_COMPLETED)
 		result->execution_rc = rc;
 	runtime_turn_scope_restore_request(scope);

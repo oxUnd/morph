@@ -2,6 +2,7 @@
 
 #include "util/cleanup.h"
 #include "util/error.h"
+#include "util/json.h"
 #include "util/log.h"
 #include <string.h>
 #include <stdlib.h>
@@ -171,7 +172,7 @@ static void tool_enable_remove_disabled(struct tool_registry *reg, const char *n
 
 static int tool_schema_validate(const char *schema, int require_closed)
 {
-	cJSON *root;
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	cJSON *type;
 	cJSON *props;
 	cJSON *required;
@@ -185,20 +186,20 @@ static int tool_schema_validate(const char *schema, int require_closed)
 		return MORPH_ERR_PARSE;
 	if (!cJSON_IsObject(root)) {
 		rc = -EINVAL;
-		goto out;
+		return rc;
 	}
 	type = cJSON_GetObjectItem(root, "type");
 	props = cJSON_GetObjectItem(root, "properties");
 	if (!cJSON_IsString(type) || strcmp(type->valuestring, "object") != 0 ||
 	    (props && !cJSON_IsObject(props))) {
 		rc = -EINVAL;
-		goto out;
+		return rc;
 	}
 	if (require_closed) {
 		cJSON *additional = cJSON_GetObjectItem(root, "additionalProperties");
 		if (!cJSON_IsFalse(additional)) {
 			rc = -EINVAL;
-			goto out;
+			return rc;
 		}
 	}
 	required = cJSON_GetObjectItem(root, "required");
@@ -208,15 +209,13 @@ static int tool_schema_validate(const char *schema, int require_closed)
 			if (!cJSON_IsString(item) ||
 			    (require_closed && !cJSON_GetObjectItem(props, item->valuestring))) {
 				rc = -EINVAL;
-				goto out;
+				return rc;
 			}
 		}
 	} else if (required) {
 		rc = -EINVAL;
 	}
 
-out:
-	cJSON_Delete(root);
 	return rc;
 }
 

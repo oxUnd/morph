@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/ext.h"
+#include "util/cleanup.h"
 #include "ext/ext.h"
 #include "ext/install.h"
 #include "config/config.h"
@@ -73,11 +74,12 @@ static int cli_ext_tool_compare(const void *left, const void *right)
 static int cli_ext_collect_tools(struct cli_application *ctx, morph_array_t *items,
 				 int *enabled_count)
 {
+	morph_array_t collected MORPH_CLEANUP(morph_array_cleanup) = {0};
 	int count = runtime_tool_count(ctx->runtime);
 	int rc;
 
 	*enabled_count = 0;
-	rc = morph_array_init(items, (size_t)(count > 0 ? count : 1),
+	rc = morph_array_init(&collected, (size_t)(count > 0 ? count : 1),
 			      sizeof(struct cli_ext_tool_item));
 	if (rc != 0)
 		return rc;
@@ -87,29 +89,26 @@ static int cli_ext_collect_tools(struct cli_application *ctx, morph_array_t *ite
 
 		rc = runtime_tool_info_borrow(ctx->runtime, i, &desc);
 		if (rc != 0)
-			goto out;
-		item = morph_array_push_borrow(items);
+			return rc;
+		item = morph_array_push_borrow(&collected);
 		if (!item) {
 			rc = -ENOMEM;
-			goto out;
+			return rc;
 		}
 		memset(item, 0, sizeof(*item));
 		item->index = i;
 		strncpy(item->name, desc.name, sizeof(item->name) - 1);
 		rc = runtime_tool_enabled(ctx->runtime, i, &item->enabled);
 		if (rc != 0)
-			goto out;
+			return rc;
 		rc = runtime_tool_origin(ctx->runtime, i, &item->origin);
 		if (rc != 0)
-			goto out;
+			return rc;
 		if (item->enabled)
 			(*enabled_count)++;
 	}
-	qsort(items->elts, items->nelts, items->size, cli_ext_tool_compare);
-	return 0;
-out:
-	morph_array_cleanup(items);
-	return rc;
+	qsort(collected.elts, collected.nelts, collected.size, cli_ext_tool_compare);
+	return morph_array_take(items, &collected);
 }
 
 static const char *cli_ext_tool_marker(const struct cli_ext_tool_item *item)
@@ -161,13 +160,12 @@ static int cli_ext_print_tools(struct cli_application *ctx)
 	static const char *const group_names[] = {"Built-in", "Extensions", "MCP", "Dynamic",
 						  "Other"};
 	struct cli_ext_tool_group groups[5];
-	morph_array_t items;
+	morph_array_t items MORPH_CLEANUP(morph_array_cleanup) = {0};
 	int group_count = 0;
 	int enabled_count;
 	int columns = cli_list_columns();
 	int rc;
 
-	memset(&items, 0, sizeof(items));
 	rc = cli_ext_collect_tools(ctx, &items, &enabled_count);
 	if (rc != 0)
 		return rc;
@@ -175,7 +173,7 @@ static int cli_ext_print_tools(struct cli_application *ctx)
 		   enabled_count);
 	if (items.nelts == 0) {
 		printf(ctx, "  " ANSI_DIM "(none)" ANSI_RESET "\n");
-		goto out;
+		return 0;
 	}
 	for (int rank = 0; rank < 5; rank++) {
 		int count = 0;
@@ -198,8 +196,6 @@ static int cli_ext_print_tools(struct cli_application *ctx)
 		cli_ext_print_group(ctx, &items, &groups[i], i == group_count - 1, columns);
 	}
 	printf(ctx, "\n  " ANSI_DIM "● enabled   × disabled" ANSI_RESET "\n");
-out:
-	morph_array_cleanup(&items);
 	return 0;
 }
 

@@ -2,6 +2,7 @@
 #include "sync/sync.h"
 #include "util/file.h"
 #include "util/error.h"
+#include "util/cleanup.h"
 #include "blake3.h"
 #include "cJSON.h"
 #include <sqlite3.h>
@@ -14,6 +15,10 @@
 #include <string>
 #include <unistd.h>
 #include <utime.h>
+
+extern "C" {
+#include "sync/db_backup.h"
+}
 
 class SyncTest : public ::testing::Test {
 protected:
@@ -362,6 +367,39 @@ TEST_F(SyncTest, FailedSnapshotPublishIsNotReportedAsSuccess) {
 	EXPECT_EQ(morph_sync_once(&cfg, &status), -EIO);
 	EXPECT_EQ(status.db_snapshots, 0);
 	EXPECT_EQ(status.error_code, -EIO);
+}
+
+TEST_F(SyncTest, BackupPathOverflowPreservesExistingTruncatedPrefix) {
+	const std::string staging_suffix = "/.morph-sync/staging";
+	const size_t directory_size = static_cast<size_t>(PATH_MAX) - 3;
+	const size_t root_size = directory_size - staging_suffix.size();
+	char *canonical_remote MORPH_CLEANUP(morph_charp_cleanup) =
+		file_resolve_path_copy(remote);
+	ASSERT_NE(canonical_remote, nullptr);
+	std::string deep_root = canonical_remote;
+	while (deep_root.size() + 65 < root_size)
+		deep_root += "/" + std::string(64, 'x');
+	const size_t remaining = root_size - deep_root.size();
+	if (remaining > 1)
+		deep_root += "/" + std::string(remaining - 1, 'x');
+	else if (remaining == 1)
+		deep_root += "x";
+	const std::string staging = deep_root + staging_suffix;
+	ASSERT_EQ(staging.size(), directory_size);
+	ASSERT_EQ(file_ensure_dir(staging.c_str()), 0);
+	/* A truncated random filename retains only its first prefix character. */
+	const std::string existing = staging + "/d";
+	ASSERT_EQ(file_write_all(existing.c_str(), "keep", 4), 0);
+	ASSERT_LT(deep_root.size(), sizeof(cfg.sync_dir));
+	memcpy(cfg.sync_dir, deep_root.c_str(), deep_root.size() + 1);
+	struct morph_sync_status status{};
+	EXPECT_EQ(sync_db_backup_create_one(&cfg, "data.db", "unused.db", &status, 1),
+		  -ENAMETOOLONG);
+	char *text MORPH_CLEANUP(morph_charp_cleanup) =
+		file_read_all_copy(existing.c_str(), nullptr);
+	ASSERT_NE(text, nullptr);
+	EXPECT_STREQ(text, "keep");
+	EXPECT_EQ(status.db_snapshots, 0);
 }
 
 TEST_F(SyncTest, CopiesRemoteFileToLocal) {

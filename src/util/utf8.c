@@ -308,16 +308,17 @@ size_t utf8_display_width_ansi(const char *s)
 			/* OSC: ESC ']' ... terminated by BEL (0x07) or
 			 * ST (ESC '\\'). */
 			p += 2;
-			while (*p && *p != 0x07) {
+			while (*p) {
+				if (*p == 0x07) {
+					p++;
+					break;
+				}
 				if (*p == 0x1B && p[1] == '\\') {
 					p += 2;
-					goto osc_done;
+					break;
 				}
 				p++;
 			}
-			if (*p == 0x07)
-				p++;
-osc_done:
 			continue;
 		}
 		if (*p == 0x1B && p[1]) {
@@ -579,17 +580,18 @@ size_t utf8_strip_ansi(char *dst, const char *src, size_t src_len)
 		}
 		if (c == 0x1B && i + 1 < src_len && src[i + 1] == ']') {
 			i += 2;
-			while (i < src_len && src[i] != '\a') {
+			while (i < src_len) {
+				if (src[i] == '\a') {
+					i++;
+					break;
+				}
 				if (src[i] == '\033' && i + 1 < src_len &&
 				    src[i + 1] == '\\') {
 					i += 2;
-					goto osc_done;
+					break;
 				}
 				i++;
 			}
-			if (i < src_len && src[i] == '\a')
-				i++;
-osc_done:
 			continue;
 		}
 		if (c == 0x1B && i + 1 < src_len && src[i + 1] == '_') {

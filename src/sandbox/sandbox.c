@@ -1,5 +1,6 @@
 #include "sandbox.h"
 #include "util/array.h"
+#include "util/cleanup.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/file.h"
@@ -1291,20 +1292,6 @@ static int fb_append(morph_array_t *fb, struct sock_filter insn)
  * EPERM so callers degrade gracefully instead of being killed.
  */
 
-#define SECCOMP_DENY(fbp, nr) \
-	do { \
-		rc = fb_deny_syscall((fbp), (nr)); \
-		if (rc < 0) \
-			goto fail; \
-	} while (0)
-
-#define SECCOMP_DENY_IP_SOCKET(fbp, nr) \
-	do { \
-		rc = fb_deny_ip_socket((fbp), (nr)); \
-		if (rc < 0) \
-			goto fail; \
-	} while (0)
-
 static int fb_stmt(morph_array_t *fb, unsigned int code, unsigned int k)
 {
 	return fb_append(fb, (struct sock_filter)BPF_STMT(code, k));
@@ -1364,7 +1351,7 @@ static int fb_deny_ip_socket(morph_array_t *fb, int nr)
 
 int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions)
 {
-	morph_array_t fb;
+	morph_array_t fb MORPH_CLEANUP(morph_array_cleanup) = {0};
 	int rc;
 
 	rc = morph_array_init(&fb, 128, sizeof(struct sock_filter));
@@ -1374,17 +1361,17 @@ int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions)
 	rc = fb_stmt(&fb, BPF_LD | BPF_W | BPF_ABS,
 		(unsigned int)offsetof(struct seccomp_data, arch));
 	if (rc < 0)
-		goto fail;
+		return rc;
 	rc = fb_jump(&fb, BPF_JMP | BPF_JEQ | BPF_K, SECCOMP_ARCH_NR, 1, 0);
 	if (rc < 0)
-		goto fail;
+		return rc;
 	rc = fb_ret(&fb, SECCOMP_RET_KILL_PROCESS);
 	if (rc < 0)
-		goto fail;
+		return rc;
 	rc = fb_stmt(&fb, BPF_LD | BPF_W | BPF_ABS,
 		(unsigned int)offsetof(struct seccomp_data, nr));
 	if (rc < 0)
-		goto fail;
+		return rc;
 
 	/*
 	 * Process introspection: ptrace and friends can read or rewrite
@@ -1393,16 +1380,24 @@ int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions)
 	 * only widens /proc visibility.
 	 */
 #ifdef SYS_ptrace
-	SECCOMP_DENY(&fb, SYS_ptrace);
+	rc = fb_deny_syscall(&fb, SYS_ptrace);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_process_vm_readv
-	SECCOMP_DENY(&fb, SYS_process_vm_readv);
+	rc = fb_deny_syscall(&fb, SYS_process_vm_readv);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_process_vm_writev
-	SECCOMP_DENY(&fb, SYS_process_vm_writev);
+	rc = fb_deny_syscall(&fb, SYS_process_vm_writev);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_pidfd_getfd
-	SECCOMP_DENY(&fb, SYS_pidfd_getfd);
+	rc = fb_deny_syscall(&fb, SYS_pidfd_getfd);
+	if (rc < 0)
+		return rc;
 #endif
 
 	/*
@@ -1410,79 +1405,129 @@ int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions)
 	 * EPERM matches what an unprivileged caller would observe.
 	 */
 #ifdef SYS_mount
-	SECCOMP_DENY(&fb, SYS_mount);
+	rc = fb_deny_syscall(&fb, SYS_mount);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_umount2
-	SECCOMP_DENY(&fb, SYS_umount2);
+	rc = fb_deny_syscall(&fb, SYS_umount2);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_pivot_root
-	SECCOMP_DENY(&fb, SYS_pivot_root);
+	rc = fb_deny_syscall(&fb, SYS_pivot_root);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_chroot
-	SECCOMP_DENY(&fb, SYS_chroot);
+	rc = fb_deny_syscall(&fb, SYS_chroot);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_kexec_load
-	SECCOMP_DENY(&fb, SYS_kexec_load);
+	rc = fb_deny_syscall(&fb, SYS_kexec_load);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_kexec_file_load
-	SECCOMP_DENY(&fb, SYS_kexec_file_load);
+	rc = fb_deny_syscall(&fb, SYS_kexec_file_load);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_reboot
-	SECCOMP_DENY(&fb, SYS_reboot);
+	rc = fb_deny_syscall(&fb, SYS_reboot);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_swapon
-	SECCOMP_DENY(&fb, SYS_swapon);
+	rc = fb_deny_syscall(&fb, SYS_swapon);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_swapoff
-	SECCOMP_DENY(&fb, SYS_swapoff);
+	rc = fb_deny_syscall(&fb, SYS_swapoff);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_init_module
-	SECCOMP_DENY(&fb, SYS_init_module);
+	rc = fb_deny_syscall(&fb, SYS_init_module);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_finit_module
-	SECCOMP_DENY(&fb, SYS_finit_module);
+	rc = fb_deny_syscall(&fb, SYS_finit_module);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_delete_module
-	SECCOMP_DENY(&fb, SYS_delete_module);
+	rc = fb_deny_syscall(&fb, SYS_delete_module);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_bpf
-	SECCOMP_DENY(&fb, SYS_bpf);
+	rc = fb_deny_syscall(&fb, SYS_bpf);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_userfaultfd
-	SECCOMP_DENY(&fb, SYS_userfaultfd);
+	rc = fb_deny_syscall(&fb, SYS_userfaultfd);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_perf_event_open
-	SECCOMP_DENY(&fb, SYS_perf_event_open);
+	rc = fb_deny_syscall(&fb, SYS_perf_event_open);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_keyctl
-	SECCOMP_DENY(&fb, SYS_keyctl);
+	rc = fb_deny_syscall(&fb, SYS_keyctl);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_add_key
-	SECCOMP_DENY(&fb, SYS_add_key);
+	rc = fb_deny_syscall(&fb, SYS_add_key);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_request_key
-	SECCOMP_DENY(&fb, SYS_request_key);
+	rc = fb_deny_syscall(&fb, SYS_request_key);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_acct
-	SECCOMP_DENY(&fb, SYS_acct);
+	rc = fb_deny_syscall(&fb, SYS_acct);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_quotactl
-	SECCOMP_DENY(&fb, SYS_quotactl);
+	rc = fb_deny_syscall(&fb, SYS_quotactl);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_open_by_handle_at
-	SECCOMP_DENY(&fb, SYS_open_by_handle_at);
+	rc = fb_deny_syscall(&fb, SYS_open_by_handle_at);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_name_to_handle_at
-	SECCOMP_DENY(&fb, SYS_name_to_handle_at);
+	rc = fb_deny_syscall(&fb, SYS_name_to_handle_at);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_io_uring_setup
-	SECCOMP_DENY(&fb, SYS_io_uring_setup);
+	rc = fb_deny_syscall(&fb, SYS_io_uring_setup);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_io_uring_enter
-	SECCOMP_DENY(&fb, SYS_io_uring_enter);
+	rc = fb_deny_syscall(&fb, SYS_io_uring_enter);
+	if (rc < 0)
+		return rc;
 #endif
 #ifdef SYS_io_uring_register
-	SECCOMP_DENY(&fb, SYS_io_uring_register);
+	rc = fb_deny_syscall(&fb, SYS_io_uring_register);
+	if (rc < 0)
+		return rc;
 #endif
 
 	/*
@@ -1491,10 +1536,14 @@ int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions)
 	 */
 	if (!(permissions & EXT_PERM_EXEC)) {
 #ifdef SYS_execve
-		SECCOMP_DENY(&fb, SYS_execve);
+		rc = fb_deny_syscall(&fb, SYS_execve);
+		if (rc < 0)
+			return rc;
 #endif
 #ifdef SYS_execveat
-		SECCOMP_DENY(&fb, SYS_execveat);
+		rc = fb_deny_syscall(&fb, SYS_execveat);
+		if (rc < 0)
+			return rc;
 #endif
 	}
 
@@ -1505,58 +1554,90 @@ int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions)
 	 */
 	if (!(permissions & EXT_PERM_NETWORK)) {
 #ifdef SYS_socket
-		SECCOMP_DENY_IP_SOCKET(&fb, SYS_socket);
+		rc = fb_deny_ip_socket(&fb, SYS_socket);
+		if (rc < 0)
+			return rc;
 #endif
 #ifdef SYS_socketpair
-		SECCOMP_DENY_IP_SOCKET(&fb, SYS_socketpair);
+		rc = fb_deny_ip_socket(&fb, SYS_socketpair);
+		if (rc < 0)
+			return rc;
 #endif
 #ifdef SYS_connect
-		SECCOMP_DENY(&fb, SYS_connect);
+		rc = fb_deny_syscall(&fb, SYS_connect);
+		if (rc < 0)
+			return rc;
 #endif
 #ifdef SYS_bind
-		SECCOMP_DENY(&fb, SYS_bind);
+		rc = fb_deny_syscall(&fb, SYS_bind);
+		if (rc < 0)
+			return rc;
 #endif
 #ifdef SYS_listen
-		SECCOMP_DENY(&fb, SYS_listen);
+		rc = fb_deny_syscall(&fb, SYS_listen);
+		if (rc < 0)
+			return rc;
 #endif
 #ifdef SYS_accept
-		SECCOMP_DENY(&fb, SYS_accept);
+		rc = fb_deny_syscall(&fb, SYS_accept);
+		if (rc < 0)
+			return rc;
 #endif
 #ifdef SYS_accept4
-		SECCOMP_DENY(&fb, SYS_accept4);
+		rc = fb_deny_syscall(&fb, SYS_accept4);
+		if (rc < 0)
+			return rc;
 #endif
 #ifdef SYS_sendto
-		SECCOMP_DENY(&fb, SYS_sendto);
+		rc = fb_deny_syscall(&fb, SYS_sendto);
+		if (rc < 0)
+			return rc;
 #endif
 #ifdef SYS_sendmsg
-		SECCOMP_DENY(&fb, SYS_sendmsg);
+		rc = fb_deny_syscall(&fb, SYS_sendmsg);
+		if (rc < 0)
+			return rc;
 #endif
 #ifdef SYS_sendmmsg
-		SECCOMP_DENY(&fb, SYS_sendmmsg);
+		rc = fb_deny_syscall(&fb, SYS_sendmmsg);
+		if (rc < 0)
+			return rc;
 #endif
 #ifdef SYS_recvmmsg
-		SECCOMP_DENY(&fb, SYS_recvmmsg);
+		rc = fb_deny_syscall(&fb, SYS_recvmmsg);
+		if (rc < 0)
+			return rc;
 #endif
 #ifdef SYS_getsockopt
-		SECCOMP_DENY(&fb, SYS_getsockopt);
+		rc = fb_deny_syscall(&fb, SYS_getsockopt);
+		if (rc < 0)
+			return rc;
 #endif
 #ifdef SYS_setsockopt
-		SECCOMP_DENY(&fb, SYS_setsockopt);
+		rc = fb_deny_syscall(&fb, SYS_setsockopt);
+		if (rc < 0)
+			return rc;
 #endif
 #ifdef SYS_getpeername
-		SECCOMP_DENY(&fb, SYS_getpeername);
+		rc = fb_deny_syscall(&fb, SYS_getpeername);
+		if (rc < 0)
+			return rc;
 #endif
 #ifdef SYS_getsockname
-		SECCOMP_DENY(&fb, SYS_getsockname);
+		rc = fb_deny_syscall(&fb, SYS_getsockname);
+		if (rc < 0)
+			return rc;
 #endif
 #ifdef SYS_shutdown
-		SECCOMP_DENY(&fb, SYS_shutdown);
+		rc = fb_deny_syscall(&fb, SYS_shutdown);
+		if (rc < 0)
+			return rc;
 #endif
 	}
 
 	rc = fb_ret(&fb, SECCOMP_RET_ALLOW);
 	if (rc < 0)
-		goto fail;
+		return rc;
 
 	/*
 	 * PR_SET_NO_NEW_PRIVS may already be set by sandbox_apply_fs
@@ -1565,7 +1646,7 @@ int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions)
 	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
 		rc = -errno;
 		log_err(logger, "sandbox: PR_SET_NO_NEW_PRIVS failed: %s", strerror(errno));
-		goto fail;
+		return rc;
 	}
 
 	struct sock_fprog prog;
@@ -1575,23 +1656,16 @@ int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions)
 	if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) < 0) {
 		rc = -errno;
 		log_err(logger, "sandbox: SECCOMP_MODE_FILTER failed: %s", strerror(errno));
-		goto fail;
+		return rc;
 	}
 
 	log_info(logger,
 		 "sandbox: seccomp denylist installed (%zu instructions, "
 		 "perms=0x%x)",
 		 fb.nelts, permissions);
-	morph_array_cleanup(&fb);
 	return 0;
-
-fail:
-	morph_array_cleanup(&fb);
-	return rc;
 }
 
-#undef SECCOMP_DENY
-#undef SECCOMP_DENY_IP_SOCKET
 
 #endif /* __linux__ */
 

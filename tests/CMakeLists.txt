@@ -189,6 +189,8 @@ add_test(NAME file_write_extension COMMAND morph-file-write-tests)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+	add_test(NAME source_control_flow_conventions
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_source_control_flow.py)
 	add_test(NAME js_runner_host_io_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_js_runner_host_io.py
 			$<TARGET_FILE:morph-js-runner>)

@@ -120,12 +120,59 @@ enum permission_requirement permission_check(const struct permission_policy *pol
 	return policy->approval == PERMISSION_NEVER ? PERMISSION_DENY : PERMISSION_REVIEW;
 }
 
+static int permission_review_operation(struct permission_context *context,
+	const struct tool_operation *operation, enum permission_requirement requirement,
+	enum tool_operation_verdict *verdict, struct permission_review *review)
+{
+	int automatic;
+	int rc = 0;
+
+	automatic = requirement != PERMISSION_REQUIRE_USER &&
+		context->policy.reviewer == PERMISSION_MODEL && context->consecutive_denials < 3;
+	if (automatic && context->model_review) {
+		rc = context->model_review(operation, review, context->model_data);
+		if (rc == -ECANCELED)
+			return rc;
+	} else {
+		review->defer = 1;
+	}
+	if (rc != 0 || review->defer || !automatic) {
+		memset(review, 0, sizeof(*review));
+		if (!context->user_review) {
+			snprintf(review->reason, sizeof(review->reason),
+				"Human approval is unavailable.");
+			rc = -EPERM;
+			return rc;
+		}
+		rc = context->user_review(operation, review, context->user_data);
+		automatic = 0;
+	}
+	if (rc != 0)
+		return rc;
+	if (review->defer || review->verdict < TOOL_OP_DENY || review->verdict > TOOL_OP_ALWAYS) {
+		rc = -EPROTO;
+		return rc;
+	}
+	if (automatic && review->verdict > TOOL_OP_ALLOW) {
+		rc = -EPROTO;
+		return rc;
+	}
+	if (review->verdict == TOOL_OP_DENY) {
+		if (automatic)
+			context->consecutive_denials++;
+		rc = -EACCES;
+	} else {
+		context->consecutive_denials = 0;
+		*verdict = review->verdict;
+	}
+	return rc;
+}
+
 int permission_authorize(struct permission_context *context,
 	const struct tool_operation *operation, enum permission_requirement requirement,
 	enum tool_operation_verdict *verdict)
 {
 	struct permission_review review = {.verdict = TOOL_OP_DENY};
-	int automatic;
 	int rc = 0;
 
 	if (!context || !operation || !verdict ||
@@ -149,45 +196,7 @@ int permission_authorize(struct permission_context *context,
 	    context->policy.approval == PERMISSION_NEVER)
 		return -EACCES;
 	pthread_mutex_lock(&context->review_lock);
-	automatic = requirement != PERMISSION_REQUIRE_USER &&
-		context->policy.reviewer == PERMISSION_MODEL && context->consecutive_denials < 3;
-	if (automatic && context->model_review) {
-		rc = context->model_review(operation, &review, context->model_data);
-		if (rc == -ECANCELED)
-			goto out_unlock;
-	} else {
-		review.defer = 1;
-	}
-	if (rc != 0 || review.defer || !automatic) {
-		memset(&review, 0, sizeof(review));
-		if (!context->user_review) {
-			snprintf(review.reason, sizeof(review.reason),
-				"Human approval is unavailable.");
-			rc = -EPERM;
-			goto out_unlock;
-		}
-		rc = context->user_review(operation, &review, context->user_data);
-		automatic = 0;
-	}
-	if (rc != 0)
-		goto out_unlock;
-	if (review.defer || review.verdict < TOOL_OP_DENY || review.verdict > TOOL_OP_ALWAYS) {
-		rc = -EPROTO;
-		goto out_unlock;
-	}
-	if (automatic && review.verdict > TOOL_OP_ALLOW) {
-		rc = -EPROTO;
-		goto out_unlock;
-	}
-	if (review.verdict == TOOL_OP_DENY) {
-		if (automatic)
-			context->consecutive_denials++;
-		rc = -EACCES;
-	} else {
-		context->consecutive_denials = 0;
-		*verdict = review.verdict;
-	}
-out_unlock:
+	rc = permission_review_operation(context, operation, requirement, verdict, &review);
 	review.reason[sizeof(review.reason) - 1] = '\0';
 	if (operation->review_out)
 		*operation->review_out = review;

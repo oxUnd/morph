@@ -23,6 +23,17 @@ static inline void morph_json_cleanup(cJSON **owner)
 	*owner = NULL;
 }
 
+static inline cJSON *morph_json_steal(cJSON **owner)
+{
+	cJSON *value;
+
+	if (!owner)
+		return NULL;
+	value = *owner;
+	*owner = NULL;
+	return value;
+}
+
 static inline void morph_json_text_cleanup(char **owner)
 {
 	if (!owner)

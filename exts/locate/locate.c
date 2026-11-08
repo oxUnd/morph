@@ -320,6 +320,128 @@ static int get_location(double *lat, double *lon,
 
 #include <systemd/sd-bus.h>
 
+static int read_location(sd_bus *bus, sd_bus_error *error, sd_bus_message **reply,
+	double *lat, double *lon, double *acc, double *alt, char *ts, size_t ts_sz)
+{
+	int rc;
+
+	/* ---- GeoClue2: GetClient ---- */
+	rc = sd_bus_call_method(bus,
+		"org.freedesktop.GeoClue2",
+		"/org/freedesktop/GeoClue2/Manager",
+		"org.freedesktop.GeoClue2.Manager",
+		"GetClient",
+		error, reply, "");
+	if (rc < 0) return rc;
+
+	const char *client_path = NULL;
+	rc = sd_bus_message_read(*reply, "o", &client_path);
+	sd_bus_message_unref(*reply);
+	*reply = NULL;
+	if (rc < 0 || !client_path) return rc;
+
+	/* ---- Set DesktopId ---- */
+	rc = sd_bus_set_property(bus,
+		"org.freedesktop.GeoClue2",
+		client_path,
+		"org.freedesktop.GeoClue2.Client",
+		"DesktopId",
+		error, "s", "morph");
+	if (rc < 0) return rc;
+
+	/* ---- Start ---- */
+	rc = sd_bus_call_method(bus,
+		"org.freedesktop.GeoClue2",
+		client_path,
+		"org.freedesktop.GeoClue2.Client",
+		"Start",
+		error, NULL, "");
+	if (rc < 0) return rc;
+
+	/* ---- Wait a moment for GeoClue2 to acquire a fix ---- */
+	usleep(500000); /* 500 ms */
+
+	/* ---- Get Location object path ---- */
+	rc = sd_bus_get_property(bus,
+		"org.freedesktop.GeoClue2",
+		client_path,
+		"org.freedesktop.GeoClue2.Client",
+		"Location",
+		error, reply, "o");
+	if (rc < 0) return rc;
+
+	const char *loc_path = NULL;
+	rc = sd_bus_message_read(*reply, "o", &loc_path);
+	sd_bus_message_unref(*reply);
+	*reply = NULL;
+	if (rc < 0 || !loc_path || strcmp(loc_path, "/") == 0) {
+		rc = -ENODATA;
+		return rc;
+	}
+
+	/* ---- Read Latitude ---- */
+	rc = sd_bus_get_property(bus,
+		"org.freedesktop.GeoClue2",
+		loc_path,
+		"org.freedesktop.GeoClue2.Location",
+		"Latitude",
+		error, reply, "d");
+	if (rc < 0) return rc;
+	sd_bus_message_read(*reply, "d", lat);
+	sd_bus_message_unref(*reply);
+	*reply = NULL;
+
+	/* ---- Read Longitude ---- */
+	rc = sd_bus_get_property(bus,
+		"org.freedesktop.GeoClue2",
+		loc_path,
+		"org.freedesktop.GeoClue2.Location",
+		"Longitude",
+		error, reply, "d");
+	if (rc < 0) return rc;
+	sd_bus_message_read(*reply, "d", lon);
+	sd_bus_message_unref(*reply);
+	*reply = NULL;
+
+	/* ---- Read Accuracy (optional) ---- */
+	*acc = 0;
+	rc = sd_bus_get_property(bus,
+		"org.freedesktop.GeoClue2",
+		loc_path,
+		"org.freedesktop.GeoClue2.Location",
+		"Accuracy",
+		error, reply, "d");
+	if (rc == 0) {
+		sd_bus_message_read(*reply, "d", acc);
+		sd_bus_message_unref(*reply);
+		*reply = NULL;
+	}
+
+	/* ---- Read Altitude (optional) ---- */
+	*alt = 0;
+	sd_bus_error_free(error);
+	rc = sd_bus_get_property(bus,
+		"org.freedesktop.GeoClue2",
+		loc_path,
+		"org.freedesktop.GeoClue2.Location",
+		"Altitude",
+		error, reply, "d");
+	if (rc == 0) {
+		sd_bus_message_read(*reply, "d", alt);
+		sd_bus_message_unref(*reply);
+		*reply = NULL;
+	}
+
+	/* ---- Timestamp ---- */
+	time_t now = time(NULL);
+	struct tm utc;
+	gmtime_r(&now, &utc);
+	strftime(ts, ts_sz, "%Y-%m-%dT%H:%M:%SZ", &utc);
+
+	rc = 0;
+	return rc;
+}
+
 static int get_location(double *lat, double *lon,
 			double *acc, double *alt,
 			char *ts, size_t ts_sz)
@@ -332,122 +454,7 @@ static int get_location(double *lat, double *lon,
 	rc = sd_bus_open_system(&bus);
 	if (rc < 0) return rc;
 
-	/* ---- GeoClue2: GetClient ---- */
-	rc = sd_bus_call_method(bus,
-		"org.freedesktop.GeoClue2",
-		"/org/freedesktop/GeoClue2/Manager",
-		"org.freedesktop.GeoClue2.Manager",
-		"GetClient",
-		&error, &reply, "");
-	if (rc < 0) goto out;
-
-	const char *client_path = NULL;
-	rc = sd_bus_message_read(reply, "o", &client_path);
-	sd_bus_message_unref(reply);
-	reply = NULL;
-	if (rc < 0 || !client_path) goto out;
-
-	/* ---- Set DesktopId ---- */
-	rc = sd_bus_set_property(bus,
-		"org.freedesktop.GeoClue2",
-		client_path,
-		"org.freedesktop.GeoClue2.Client",
-		"DesktopId",
-		&error, "s", "morph");
-	if (rc < 0) goto out;
-
-	/* ---- Start ---- */
-	rc = sd_bus_call_method(bus,
-		"org.freedesktop.GeoClue2",
-		client_path,
-		"org.freedesktop.GeoClue2.Client",
-		"Start",
-		&error, NULL, "");
-	if (rc < 0) goto out;
-
-	/* ---- Wait a moment for GeoClue2 to acquire a fix ---- */
-	usleep(500000); /* 500 ms */
-
-	/* ---- Get Location object path ---- */
-	rc = sd_bus_get_property(bus,
-		"org.freedesktop.GeoClue2",
-		client_path,
-		"org.freedesktop.GeoClue2.Client",
-		"Location",
-		&error, &reply, "o");
-	if (rc < 0) goto out;
-
-	const char *loc_path = NULL;
-	rc = sd_bus_message_read(reply, "o", &loc_path);
-	sd_bus_message_unref(reply);
-	reply = NULL;
-	if (rc < 0 || !loc_path || strcmp(loc_path, "/") == 0) {
-		rc = -ENODATA;
-		goto out;
-	}
-
-	/* ---- Read Latitude ---- */
-	rc = sd_bus_get_property(bus,
-		"org.freedesktop.GeoClue2",
-		loc_path,
-		"org.freedesktop.GeoClue2.Location",
-		"Latitude",
-		&error, &reply, "d");
-	if (rc < 0) goto out;
-	sd_bus_message_read(reply, "d", lat);
-	sd_bus_message_unref(reply);
-	reply = NULL;
-
-	/* ---- Read Longitude ---- */
-	rc = sd_bus_get_property(bus,
-		"org.freedesktop.GeoClue2",
-		loc_path,
-		"org.freedesktop.GeoClue2.Location",
-		"Longitude",
-		&error, &reply, "d");
-	if (rc < 0) goto out;
-	sd_bus_message_read(reply, "d", lon);
-	sd_bus_message_unref(reply);
-	reply = NULL;
-
-	/* ---- Read Accuracy (optional) ---- */
-	*acc = 0;
-	rc = sd_bus_get_property(bus,
-		"org.freedesktop.GeoClue2",
-		loc_path,
-		"org.freedesktop.GeoClue2.Location",
-		"Accuracy",
-		&error, &reply, "d");
-	if (rc == 0) {
-		sd_bus_message_read(reply, "d", acc);
-		sd_bus_message_unref(reply);
-		reply = NULL;
-	}
-
-	/* ---- Read Altitude (optional) ---- */
-	*alt = 0;
-	sd_bus_error_free(&error);
-	rc = sd_bus_get_property(bus,
-		"org.freedesktop.GeoClue2",
-		loc_path,
-		"org.freedesktop.GeoClue2.Location",
-		"Altitude",
-		&error, &reply, "d");
-	if (rc == 0) {
-		sd_bus_message_read(reply, "d", alt);
-		sd_bus_message_unref(reply);
-		reply = NULL;
-	}
-
-	/* ---- Timestamp ---- */
-	time_t now = time(NULL);
-	struct tm utc;
-	gmtime_r(&now, &utc);
-	strftime(ts, ts_sz, "%Y-%m-%dT%H:%M:%SZ", &utc);
-
-	rc = 0;
-
-out:
+	rc = read_location(bus, &error, &reply, lat, lon, acc, alt, ts, ts_sz);
 	sd_bus_error_free(&error);
 	if (reply) sd_bus_message_unref(reply);
 	if (bus) sd_bus_unref(bus);

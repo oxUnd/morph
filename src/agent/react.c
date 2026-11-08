@@ -1856,12 +1856,11 @@ static void react_count_tool_truncation(struct react_context *ctx, const char *c
 	cJSON_Delete(root);
 }
 
-static int react_join_tool_calls(struct react_context *ctx, struct chat_response *response,
+static int react_join_tool_calls_execute(struct react_context *ctx, struct chat_response *response,
 				 struct react_tool_slot *slots, morph_array_t *messages,
 				 react_output_cb cb, void *user_data)
 {
 	int num_tools = response->tool_call_count;
-	int stop = 1;
 
 	for (int i = 0; i < num_tools; i++) {
 		struct async_tool_call *call;
@@ -1885,12 +1884,12 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 							     tc->name, denied, -EPERM) != 0) {
 				react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
 						 ctx->history_error, "history_persistence_error");
-				goto out_cleanup_tool_calls;
+				return 1;
 			}
 			if (react_append_tool_message(messages, denied, tc->id) < 0) {
 				react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
 						 "internal_error");
-				goto out_cleanup_tool_calls;
+				return 1;
 			}
 			continue;
 		}
@@ -1927,7 +1926,7 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 						 ctx->history_error ? ctx->history_error
 								    : MORPH_ERR_DB,
 						 "history_persistence_error");
-				goto out_cleanup_tool_calls;
+				return 1;
 			}
 			slots[i].call = NULL;
 			slots[i].thread_started = 0;
@@ -1942,7 +1941,7 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 						 "tool_worker_join_failed");
 				slots[i].call = NULL;
 				slots[i].thread_started = 0;
-				goto out_cleanup_tool_calls;
+				return 1;
 			}
 			const char *cancelled = "tool error: execution cancelled by user";
 
@@ -1991,7 +1990,7 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 			cJSON_Delete(data);
 			cJSON_Delete(ui);
 			cJSON_Delete(meta);
-			goto out_cleanup_tool_calls;
+			return 1;
 		}
 
 		react_tool_call_finish(ctx, call, obs_text, rc);
@@ -2008,7 +2007,7 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 			cJSON_Delete(meta);
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
 					 "internal_error");
-			goto out_cleanup_tool_calls;
+			return 1;
 		}
 		obs_text = guarded_obs;
 		if (ctx->hook_fn) {
@@ -2040,7 +2039,7 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 					cJSON_Delete(meta);
 					react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
 							 "hook_feedback_error");
-					goto out_cleanup_tool_calls;
+					return 1;
 				}
 				obs_text = hook_feedback;
 			}
@@ -2057,7 +2056,7 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 			cJSON_Delete(meta);
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, persist_rc,
 					 "history_persistence_error");
-			goto out_cleanup_tool_calls;
+			return 1;
 		}
 		char *prepared_obs = NULL;
 		int history_truncated = 0;
@@ -2071,7 +2070,7 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 			cJSON_Delete(meta);
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, prepare_rc,
 					 "history_persistence_error");
-			goto out_cleanup_tool_calls;
+			return 1;
 		}
 		react_count_tool_truncation(ctx, obs_text, history_truncated);
 		if (react_record_tool_observation(ctx, call, prepared_obs, rc, &artifacts, data, ui,
@@ -2085,7 +2084,7 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 			free(prepared_obs);
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, history_rc,
 					 "history_persistence_error");
-			goto out_cleanup_tool_calls;
+			return 1;
 		}
 		free(prepared_obs);
 		free(result);
@@ -2095,11 +2094,17 @@ static int react_join_tool_calls(struct react_context *ctx, struct chat_response
 	}
 
 	if (react_drain_actions(ctx, messages, -1, NULL))
-		goto out_cleanup_tool_calls;
-	stop = ctx->state == REACT_STATE_DONE || ctx->state == REACT_STATE_ABORT;
+		return 1;
+	return ctx->state == REACT_STATE_DONE || ctx->state == REACT_STATE_ABORT;
+}
 
-out_cleanup_tool_calls:
-	react_cleanup_tool_calls(ctx, slots, num_tools);
+static int react_join_tool_calls(struct react_context *ctx, struct chat_response *response,
+				 struct react_tool_slot *slots, morph_array_t *messages,
+				 react_output_cb cb, void *user_data)
+{
+	int stop = react_join_tool_calls_execute(ctx, response, slots, messages, cb, user_data);
+
+	react_cleanup_tool_calls(ctx, slots, response->tool_call_count);
 	return stop;
 }
 

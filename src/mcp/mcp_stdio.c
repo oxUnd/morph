@@ -3,6 +3,7 @@
 #include "util/child_io.h"
 #include "cJSON.h"
 #include "util/error.h"
+#include "util/cleanup.h"
 #include "util/log.h"
 #include <errno.h>
 #include <stdio.h>
@@ -151,6 +152,19 @@ static void mcp_environment_cleanup(morph_array_t *environment)
 	morph_array_cleanup(environment);
 }
 
+struct mcp_stdio_pipe {
+	int fd[2];
+};
+
+static void mcp_stdio_pipe_cleanup(struct mcp_stdio_pipe *pipe_owner)
+{
+	for (size_t i = 0; i < sizeof(pipe_owner->fd) / sizeof(pipe_owner->fd[0]); i++) {
+		if (pipe_owner->fd[i] >= 0)
+			close(pipe_owner->fd[i]);
+		pipe_owner->fd[i] = -1;
+	}
+}
+
 static int mcp_stdio_spawn(struct mcp_client *client)
 {
 	if (!client || !client->config.command[0] ||
@@ -159,17 +173,17 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 	    client->config.env_count < 0 || client->config.env_count > MCP_ENV_MAX)
 		return -EINVAL;
 
-	int to_child[2], from_child[2];
-	int pipe_rc = morph_io_pipe(to_child);
+	struct mcp_stdio_pipe to_child MORPH_CLEANUP(mcp_stdio_pipe_cleanup) =
+		{.fd = {-1, -1}};
+	struct mcp_stdio_pipe from_child MORPH_CLEANUP(mcp_stdio_pipe_cleanup) =
+		{.fd = {-1, -1}};
+	int pipe_rc = morph_io_pipe(to_child.fd);
 
 	if (pipe_rc != 0)
 		return pipe_rc;
-	pipe_rc = morph_io_pipe(from_child);
-	if (pipe_rc != 0) {
-		close(to_child[0]);
-		close(to_child[1]);
+	pipe_rc = morph_io_pipe(from_child.fd);
+	if (pipe_rc != 0)
 		return pipe_rc;
-	}
 
 	morph_array_t environment MORPH_CLEANUP(mcp_environment_cleanup) = {0};
 	posix_spawn_file_actions_t actions;
@@ -185,7 +199,7 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 			      environment_count + (size_t)client->config.env_count + 1,
 			      sizeof(*argv));
 	if (rc != 0)
-		goto out_close_pipes;
+		return rc;
 	for (char **item = environ; *item; item++) {
 		int overridden = 0;
 
@@ -201,12 +215,12 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 
 			if (!slot) {
 				rc = (-ENOMEM);
-				goto out_close_pipes;
+				return rc;
 			}
 			*slot = strdup(*item);
 			if (!*slot) {
 				rc = -ENOMEM;
-				goto out_close_pipes;
+				return rc;
 			}
 		}
 	}
@@ -216,22 +230,22 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 
 		rc = morph_buf_init(&value, 64);
 		if (rc != 0)
-			goto out_close_pipes;
+			return rc;
 		rc = morph_buf_printf(&value, "%s=%s", client->config.env_keys[i],
 			client->config.env_vals[i]);
 		if (rc != 0)
-			goto out_close_pipes;
+			return rc;
 		slot = morph_array_push_borrow(&environment);
 		if (!slot) {
 			rc = (-ENOMEM);
-			goto out_close_pipes;
+			return rc;
 		}
 		*slot = morph_buf_detach(&value);
 	}
 	char **last = morph_array_push_borrow(&environment);
 	if (!last) {
 		rc = (-ENOMEM);
-		goto out_close_pipes;
+		return rc;
 	}
 	*last = NULL;
 	argv[0] = client->config.command;
@@ -241,11 +255,11 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 	rc = posix_spawn_file_actions_init(&actions);
 	if (rc != 0) {
 		rc = (-rc);
-		goto out_close_pipes;
+		return rc;
 	}
-	rc = posix_spawn_file_actions_adddup2(&actions, to_child[0], STDIN_FILENO);
+	rc = posix_spawn_file_actions_adddup2(&actions, to_child.fd[0], STDIN_FILENO);
 	if (rc == 0)
-		rc = posix_spawn_file_actions_adddup2(&actions, from_child[1], STDOUT_FILENO);
+		rc = posix_spawn_file_actions_adddup2(&actions, from_child.fd[1], STDOUT_FILENO);
 	if (rc == 0)
 		rc = posix_spawn_file_actions_addopen(&actions, STDERR_FILENO,
 			"/dev/null", O_WRONLY, 0);
@@ -272,25 +286,18 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 	posix_spawn_file_actions_destroy(&actions);
 	if (rc != 0) {
 		rc = (-rc);
-		goto out_close_pipes;
+		return rc;
 	}
-	close(to_child[0]);
-	close(from_child[1]);
 
 	client->server_pid = pid;
-	client->stdin_fd = to_child[1];
-	client->stdout_fd = from_child[0];
+	client->stdin_fd = to_child.fd[1];
+	client->stdout_fd = from_child.fd[0];
+	to_child.fd[1] = -1;
+	from_child.fd[0] = -1;
 
 	log_info(client ? client->config.logger : NULL, "mcp stdio: started '%s' (pid=%d)",
 		 client->config.name, pid);
 	return 0;
-
-out_close_pipes:
-	close(to_child[0]);
-	close(to_child[1]);
-	close(from_child[0]);
-	close(from_child[1]);
-	return rc;
 }
 
 int mcp_stdio_connect(struct mcp_client *client)

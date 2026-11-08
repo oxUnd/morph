@@ -2,6 +2,7 @@
 #include "runtime/runtime_internal.h"
 
 #include "util/error.h"
+#include "util/cleanup.h"
 #include "util/file.h"
 #include <sqlite3.h>
 
@@ -163,12 +164,32 @@ static int runtime_sync_manifest_path(struct runtime *runtime, char *path,
 		? file_path_join(path, size, metadata, "manifest.db") : rc;
 }
 
+static void runtime_sync_stmt_cleanup(sqlite3_stmt **statement)
+{
+	sqlite3_finalize(*statement);
+	*statement = NULL;
+}
+
+static void runtime_sync_database_cleanup(sqlite3 **database)
+{
+	if (*database)
+		sqlite3_close(*database);
+	*database = NULL;
+}
+
+static void runtime_sync_conflict_owner_cleanup(struct runtime_sync_conflict **items)
+{
+	free(*items);
+	*items = NULL;
+}
+
 int runtime_sync_conflicts(struct runtime *runtime,
 			   struct runtime_sync_conflict **out, int *count)
 {
-	struct runtime_sync_conflict *items = NULL;
-	sqlite3_stmt *statement = NULL;
-	sqlite3 *database = NULL;
+	struct runtime_sync_conflict *items
+		MORPH_CLEANUP(runtime_sync_conflict_owner_cleanup) = NULL;
+	sqlite3 *database MORPH_CLEANUP(runtime_sync_database_cleanup) = NULL;
+	sqlite3_stmt *statement MORPH_CLEANUP(runtime_sync_stmt_cleanup) = NULL;
 	char path[PATH_MAX];
 	int capacity = 0;
 	int used = 0;
@@ -183,7 +204,6 @@ int runtime_sync_conflicts(struct runtime *runtime,
 	if (rc != 0)
 		return rc;
 	if (sqlite3_open_v2(path, &database, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
-		sqlite3_close(database);
 		return -ENOENT;
 	}
 	rc = sqlite3_prepare_v2(database,
@@ -196,7 +216,6 @@ int runtime_sync_conflicts(struct runtime *runtime,
 			-1, &statement, NULL);
 	}
 	if (rc != SQLITE_OK) {
-		sqlite3_close(database);
 		return MORPH_ERR_DB;
 	}
 	while ((step = sqlite3_step(statement)) == SQLITE_ROW) {
@@ -204,14 +223,14 @@ int runtime_sync_conflicts(struct runtime *runtime,
 			if (capacity > INT_MAX / 2 ||
 			    (size_t)(capacity ? capacity * 2 : 8) > SIZE_MAX / sizeof(*items)) {
 				rc = -EOVERFLOW;
-				goto out;
+				return rc;
 			}
 			int next = capacity ? capacity * 2 : 8;
 			void *resized = realloc(items,
 				(size_t)next * sizeof(*items));
 			if (!resized) {
 				rc = -ENOMEM;
-				goto out;
+				return rc;
 			}
 			items = resized;
 			capacity = next;
@@ -226,14 +245,11 @@ int runtime_sync_conflicts(struct runtime *runtime,
 		used++;
 	}
 	rc = step == SQLITE_DONE ? 0 : MORPH_ERR_DB;
-out:
-	sqlite3_finalize(statement);
-	sqlite3_close(database);
 	if (rc != 0) {
-		free(items);
 		return rc;
 	}
 	*out = items;
+	items = NULL;
 	*count = used;
 	return 0;
 }

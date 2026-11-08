@@ -2,6 +2,8 @@
 #include "agent/tool_context.h"
 #include "agent/tool_runtime.h"
 #include "util/array.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "util/error.h"
 #include "util/utf8.h"
 #include <dirent.h>
@@ -246,83 +248,115 @@ static cJSON *list_entry_json(const struct list_entry *entry)
 static int list_result(const struct list_options *opts, morph_array_t *items,
 		       size_t total, size_t eligible, struct tool_result *result)
 {
-	cJSON *out = cJSON_CreateObject();
-	cJSON *entries = cJSON_CreateArray();
+	cJSON *out MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *entries = out ? cJSON_AddArrayToObject(out, "entries") : NULL;
 	size_t returned = 0;
 	size_t bytes = 2;
-	int rc = 0;
 
-	if (!out || !entries) {
-		cJSON_Delete(entries);
-		cJSON_Delete(out);
+	if (!entries)
 		return -ENOMEM;
-	}
-	if (!cJSON_AddItemToObject(out, "entries", entries)) {
-		cJSON_Delete(entries);
-		cJSON_Delete(out);
-		return -ENOMEM;
-	}
 	qsort(items->elts, items->nelts, items->size, entry_compare);
 	for (size_t i = 0; i < items->nelts; i++) {
 		if ((i % 64) == 0) {
 			const struct http_control *control = result->runtime ?
 				&result->runtime->http : NULL;
-			rc = (http_wait_cancelable(control, 0));
+			int rc = http_wait_cancelable(control, 0);
+
 			if (rc < 0)
-				goto out_free_json;
+				return rc;
 		}
 		const struct list_entry *entry = morph_array_borrow(items, i);
-		cJSON *item = list_entry_json(entry);
-		char *json = item ? cJSON_PrintUnformatted(item) : NULL;
-		if (!json) {
-			cJSON_Delete(item);
-			rc = (-ENOMEM);
-			goto out_free_json;
-		}
+		cJSON *item MORPH_CLEANUP(morph_json_cleanup) = list_entry_json(entry);
+		char *json MORPH_CLEANUP(morph_json_text_cleanup) =
+			item ? cJSON_PrintUnformatted(item) : NULL;
+
+		if (!json)
+			return -ENOMEM;
 		size_t length = strlen(json) + (returned != 0);
-		free(json);
 		if (bytes + length > opts->max_bytes) {
-			cJSON_Delete(item);
-			if (returned == 0) {
-				rc = (-EFBIG);
-				goto out_free_json;
-			}
+			if (returned == 0)
+				return -EFBIG;
 			break;
 		}
-		if (!cJSON_AddItemToArray(entries, item)) {
-			cJSON_Delete(item);
-			rc = (-ENOMEM);
-			goto out_free_json;
-		}
+		if (morph_json_array_take(entries, &item) != 0)
+			return -ENOMEM;
 		bytes += length;
 		returned++;
 	}
 	int more = returned < eligible;
-	cJSON *next = more && returned ? list_entry_json(morph_array_borrow(items, returned - 1))
-				       : cJSON_CreateNull();
-	if (!next || !cJSON_AddItemToObject(out, "next_after", next)) {
-		cJSON_Delete(next);
-		rc = (-ENOMEM);
-		goto out_free_json;
-	}
+	cJSON *next MORPH_CLEANUP(morph_json_cleanup) = more && returned ?
+		list_entry_json(morph_array_borrow(items, returned - 1)) : cJSON_CreateNull();
+
+	if (!next || morph_json_object_take(out, "next_after", &next) != 0)
+		return -ENOMEM;
 	if (!cJSON_AddStringToObject(out, "dir_path", opts->path) ||
 	    !cJSON_AddNumberToObject(out, "total_entries", (double)total) ||
 	    !cJSON_AddNumberToObject(out, "returned_entries", (double)returned) ||
 	    !cJSON_AddBoolToObject(out, "truncated", more) ||
 	    !cJSON_AddStringToObject(out, "truncation_reason",
-		more ? (returned < items->nelts ? "max_bytes" : "limit") : "")) {
-		rc = (-ENOMEM);
-		goto out_free_json;
-	}
+		more ? (returned < items->nelts ? "max_bytes" : "limit") : ""))
+		return -ENOMEM;
 	if (more && !cJSON_AddStringToObject(out, "note",
 		"Continue with after=next_after and the same dir_path. "
-		"Directory contents may change between pages.")) {
-		rc = (-ENOMEM);
-		goto out_free_json;
+		"Directory contents may change between pages."))
+		return -ENOMEM;
+	return tool_result_success_take(result, &out);
+}
+
+static void list_entries_cleanup(morph_array_t *items)
+{
+	struct list_entry *item;
+
+	morph_array_foreach(item, items, struct list_entry)
+		free(item->name);
+	morph_array_cleanup(items);
+}
+
+static void list_directory_cleanup(DIR **directory)
+{
+	if (*directory)
+		(void)closedir(*directory);
+	*directory = NULL;
+}
+
+static int list_execute(struct tool_context *tctx, const struct list_options *opts,
+			struct tool_result *result)
+{
+	morph_array_t items MORPH_CLEANUP(list_entries_cleanup) = {0};
+	DIR *directory MORPH_CLEANUP(list_directory_cleanup) = NULL;
+	char resolved[PATH_MAX];
+	size_t total = 0;
+	size_t eligible = 0;
+	const struct http_control *control = result->runtime ? &result->runtime->http : NULL;
+	int rc = http_wait_cancelable(control, 0);
+
+	if (rc < 0)
+		return rc;
+	if (tctx) {
+		rc = tool_context_authorize_path(tctx, TOOL_PATH_LIST, opts->path,
+					 resolved, sizeof(resolved));
+		if (rc < 0)
+			return rc;
+	} else if (strlen(opts->path) >= sizeof(resolved)) {
+		return -ENAMETOOLONG;
+	} else {
+		memcpy(resolved, opts->path, strlen(opts->path) + 1);
 	}
-	rc = tool_result_success_take(result, &out);
-out_free_json:
-	cJSON_Delete(out);
+	directory = opendir(resolved);
+	if (!directory)
+		return -errno;
+	struct list_entry sample;
+	rc = morph_array_init(&items, opts->limit, sizeof(sample));
+	if (rc < 0)
+		return rc;
+	rc = list_scan(directory, opts, control, &items, &total, &eligible);
+	if (rc == 0)
+		rc = http_wait_cancelable(control, 0);
+	if (closedir(directory) < 0 && rc == 0)
+		rc = -errno;
+	directory = NULL;
+	if (rc == 0)
+		rc = list_result(opts, &items, total, eligible, result);
 	return rc;
 }
 
@@ -330,64 +364,20 @@ static int file_list_exec(const char *args_json, struct tool_result *result, voi
 {
 	struct tool_context *tctx = user_data;
 	struct list_options opts = {0};
-	morph_array_t items = {0};
-	char resolved[PATH_MAX];
-	size_t total = 0;
-	size_t eligible = 0;
-	DIR *directory = NULL;
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
 
 	if (!result)
 		return -EINVAL;
-	cJSON *root = args_json ? cJSON_Parse(args_json) : NULL;
+	root = args_json ? cJSON_Parse(args_json) : NULL;
 	int rc = list_options_parse(root, &opts);
 	if (rc < 0) {
-		cJSON_Delete(root);
 		(void)tool_result_error_copy(
 			result, "invalid_arguments",
 			"Provide dir_path, limit (1..10000), max_bytes (2048..1048576), "
 			"and optional after={name,type} from next_after.");
 		return rc;
 	}
-	const struct http_control *control = result->runtime ? &result->runtime->http : NULL;
-	rc = (http_wait_cancelable(control, 0));
-	if (rc < 0)
-		goto out_cleanup;
-	if (tctx) {
-		rc = (tool_context_authorize_path(tctx, TOOL_PATH_LIST,
-							     opts.path, resolved, sizeof(resolved)));
-		if (rc < 0)
-			goto out_cleanup;
-	} else if (strlen(opts.path) >= sizeof(resolved)) {
-		rc = (-ENAMETOOLONG);
-		goto out_cleanup;
-	} else {
-		memcpy(resolved, opts.path, strlen(opts.path) + 1);
-	}
-	directory = opendir(resolved);
-	if (!directory) {
-		rc = (-errno);
-		goto out_cleanup;
-	}
-	struct list_entry sample;
-	rc = (morph_array_init(&items, opts.limit, sizeof(sample)));
-	if (rc < 0)
-		goto out_cleanup;
-	rc = (list_scan(directory, &opts, control, &items, &total, &eligible));
-	if (rc == 0)
-		rc = (http_wait_cancelable(control, 0));
-	if (closedir(directory) < 0 && rc == 0)
-		rc = (-errno);
-	directory = NULL;
-	if (rc == 0)
-		rc = (list_result(&opts, &items, total, eligible, result));
-out_cleanup:
-	if (directory)
-		closedir(directory);
-	struct list_entry *item;
-	morph_array_foreach(item, &items, struct list_entry)
-		free(item->name);
-	morph_array_cleanup(&items);
-	cJSON_Delete(root);
+	rc = list_execute(tctx, &opts, result);
 	if (rc < 0) {
 		const char *message = rc == -EPERM ?
 			"list path outside workspace: permission denied" :

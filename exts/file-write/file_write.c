@@ -582,6 +582,13 @@ static int add_success(cJSON *out, const char *op, const char *path,
 	return 0;
 }
 
+static void decoded_content_cleanup(struct decoded_content *decoded)
+{
+	free(decoded->data);
+	decoded->data = NULL;
+	decoded->len = 0;
+}
+
 static int op_write_like(struct file_write_context *ctx, cJSON *root,
 			 struct tool_result *result, const char *op,
 			 int create_parent_dirs)
@@ -590,15 +597,14 @@ static int op_write_like(struct file_write_context *ctx, cJSON *root,
 	const char *content;
 	const char *encoding;
 	char resolved[PATH_MAX];
-	struct decoded_content decoded;
+	struct decoded_content decoded MORPH_CLEANUP(decoded_content_cleanup) = {0};
 	int rc;
 	int existed;
-	cJSON *out;
+	cJSON *out MORPH_CLEANUP(morph_json_cleanup) = NULL;
 
 	path = json_string(root, "path");
 	content = json_string(root, "content");
 	encoding = json_string(root, "encoding");
-	memset(&decoded, 0, sizeof(decoded));
 	rc = authorize_path(ctx ? ctx->tctx : NULL, TOOL_PATH_WRITE, path,
 			    resolved, sizeof(resolved));
 	if (rc < 0)
@@ -609,11 +615,11 @@ static int op_write_like(struct file_write_context *ctx, cJSON *root,
 	if (create_parent_dirs) {
 		rc = ensure_parent_dir(resolved);
 		if (rc < 0)
-			goto out_error;
+			return json_error_result(result, rc, "file write failed");
 	}
 	rc = stat_regular_or_missing(resolved, &existed);
 	if (rc < 0)
-		goto out_error;
+		return json_error_result(result, rc, "file write failed");
 
 	if (strcmp(op, "write") == 0)
 		rc = create_file_exclusive(resolved, decoded.data, decoded.len);
@@ -622,11 +628,10 @@ static int op_write_like(struct file_write_context *ctx, cJSON *root,
 	else
 		rc = append_file(resolved, decoded.data, decoded.len);
 	if (rc < 0)
-		goto out_error;
+		return json_error_result(result, rc, "file write failed");
 
 	out = cJSON_CreateObject();
 	if (!out) {
-		free(decoded.data);
 		return -ENOMEM;
 	}
 	add_success(out, op, path, resolved, NULL, NULL);
@@ -635,13 +640,8 @@ static int op_write_like(struct file_write_context *ctx, cJSON *root,
 	cJSON_AddBoolToObject(out, "overwritten",
 			      strcmp(op, "overwrite") == 0 && existed);
 	rc = json_result(result, out);
-	cJSON_Delete(out);
-	free(decoded.data);
 	return rc;
 
-out_error:
-	free(decoded.data);
-	return json_error_result(result, rc, "file write failed");
 }
 
 static int op_mkdir(struct file_write_context *ctx, cJSON *root,

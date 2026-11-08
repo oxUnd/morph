@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/permissions.h"
+#include "util/cleanup.h"
 #include "cJSON.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
@@ -152,11 +153,18 @@ static int cli_permissions_confirm_clear(struct cli_application *ctx, int all_pr
 	return answer[0] == 'y' || answer[0] == 'Y';
 }
 
+static void cli_permissions_grants_cleanup(struct runtime_permission_grant **owner)
+{
+	runtime_permission_list_free(*owner);
+	*owner = NULL;
+}
+
 static int cli_permissions_revoke_subject_matches(struct cli_application *ctx, const char *name,
 						  int *deleted)
 {
-	struct runtime_permission_grant *grants = NULL;
-	morph_array_t subjects;
+	struct runtime_permission_grant *grants
+		MORPH_CLEANUP(cli_permissions_grants_cleanup) = NULL;
+	morph_array_t subjects MORPH_CLEANUP(morph_array_cleanup) = {0};
 	int count = 0;
 	int rc;
 
@@ -166,7 +174,6 @@ static int cli_permissions_revoke_subject_matches(struct cli_application *ctx, c
 		return rc;
 	rc = morph_array_init(&subjects, 4, sizeof(char *));
 	if (rc != 0) {
-		runtime_permission_list_free(grants);
 		return rc;
 	}
 	for (int i = 0; i < count; i++) {
@@ -189,7 +196,7 @@ static int cli_permissions_revoke_subject_matches(struct cli_application *ctx, c
 		stored = morph_array_push_borrow(&subjects);
 		if (!stored) {
 			rc = -ENOMEM;
-			goto out;
+			return rc;
 		}
 		*stored = grants[i].subject;
 	}
@@ -202,14 +209,11 @@ static int cli_permissions_revoke_subject_matches(struct cli_application *ctx, c
 			rc = runtime_permission_revoke_subject(ctx->runtime, *subject,
 							       &subject_deleted);
 			if (rc != 0)
-				goto out;
+				return rc;
 			*deleted += subject_deleted;
 		}
 	}
 
-out:
-	morph_array_cleanup(&subjects);
-	runtime_permission_list_free(grants);
 	return rc;
 }
 

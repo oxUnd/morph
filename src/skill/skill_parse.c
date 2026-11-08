@@ -1,5 +1,6 @@
 #include "skill_parse.h"
 #include "util/log.h"
+#include "util/cleanup.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/file.h"
@@ -118,25 +119,25 @@ static void parse_metadata_line(const char *content,
 static void parse_yaml_block(const char *yaml, size_t yaml_len,
 			     struct skill_frontmatter *fm)
 {
-	char *copy = malloc(yaml_len + 1);
+	char *copy MORPH_CLEANUP(morph_charp_cleanup) = malloc(yaml_len + 1);
 	if (!copy)
 		return;
 	memcpy(copy, yaml, yaml_len);
 	copy[yaml_len] = '\0';
 
-	char *line = copy;
-	char *current_key = NULL;
-	morph_buf_t bv;
+	char *next_line = NULL;
+	char *current_key MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	morph_buf_t bv MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	if (morph_buf_init(&bv, 256) != 0) {
-		free(copy);
 		return;
 	}
 	int in_metadata = 0;
 	int in_block_scalar = 0;
 	int block_indent = 0;
 
-	while (*line) {
+	for (char *line = copy; line && *line; line = next_line) {
 		char *nl = strchr(line, '\n');
+		next_line = nl ? nl + 1 : NULL;
 		if (nl)
 			*nl = '\0';
 
@@ -150,8 +151,7 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 					if (strcmp(current_key, "metadata") != 0)
 						parse_yaml_scalar(current_key, bv.data, fm);
 				}
-				free(current_key);
-				current_key = NULL;
+				morph_charp_cleanup(&current_key);
 				morph_buf_reset(&bv);
 				in_block_scalar = 0;
 				in_metadata = 0;
@@ -160,42 +160,39 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 				while (*content == ' ' || *content == '\t')
 					content++;
 				if (*content == '\0') {
-					if (morph_buf_putc(&bv, '\n') != 0)
-						goto next_line;
-					goto next_line;
+					(void)morph_buf_putc(&bv, '\n');
+					continue;
 				}
 				if (in_metadata) {
 					parse_metadata_line(content, fm);
-					goto next_line;
+					continue;
 				}
-				if (bv.len > 0)
-					if (morph_buf_putc(&bv, '\n') != 0)
-						goto next_line;
-				if (morph_buf_puts(&bv, content) != 0)
-					goto next_line;
-				goto next_line;
+				if (bv.len > 0 && morph_buf_putc(&bv, '\n') != 0)
+					continue;
+				(void)morph_buf_puts(&bv, content);
+				continue;
 			}
 		}
 
 		if (is_blank_line(line))
-			goto next_line;
+			continue;
 
 		int indent = get_indent(line);
 		const char *content = line + indent;
 
 		if (in_metadata && indent > 0) {
 			parse_metadata_line(content, fm);
-			goto next_line;
+			continue;
 		}
 
 		const char *colon = strchr(content, ':');
 		if (!colon)
-			goto next_line;
+			continue;
 
 		size_t klen = (size_t)(colon - content);
-		char *key = malloc(klen + 1);
+		char *key MORPH_CLEANUP(morph_charp_cleanup) = malloc(klen + 1);
 		if (!key)
-			goto next_line;
+			continue;
 		memcpy(key, content, klen);
 		key[klen] = '\0';
 		while (klen > 0 && isspace((unsigned char)key[klen - 1]))
@@ -207,30 +204,18 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 
 		if (strcmp(key, "metadata") == 0 && *vstart == '\0') {
 			in_metadata = 1;
-			free(key);
-			goto next_line;
+			continue;
 		}
 
-		if (*vstart == '\0') {
+		if (*vstart == '\0' || *vstart == '|' || *vstart == '>') {
 			if (current_key)
-				free(current_key);
-			current_key = key;
+				morph_charp_cleanup(&current_key);
+			current_key = morph_charp_steal(&key);
 			in_block_scalar = 1;
 			block_indent = indent;
 			morph_buf_reset(&bv);
-			in_metadata = (strcmp(key, "metadata") == 0);
-			goto next_line;
-		}
-
-		if (*vstart == '|' || *vstart == '>') {
-			if (current_key)
-				free(current_key);
-			current_key = key;
-			in_block_scalar = 1;
-			block_indent = indent;
-			morph_buf_reset(&bv);
-			in_metadata = (strcmp(key, "metadata") == 0);
-			goto next_line;
+			in_metadata = (strcmp(current_key, "metadata") == 0);
+			continue;
 		}
 
 		if (vstart[0] == '"') {
@@ -238,36 +223,26 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 			size_t vlen = strlen(vstart);
 			if (vlen > 0 && vstart[vlen - 1] == '"')
 				vlen--;
-			char *val = malloc(vlen + 1);
+			char *val MORPH_CLEANUP(morph_charp_cleanup) = malloc(vlen + 1);
 			if (val) {
 				memcpy(val, vstart, vlen);
 				val[vlen] = '\0';
 				parse_yaml_scalar(key, val, fm);
-				free(val);
 			}
 		} else if (vstart[0] == '\'') {
 			vstart++;
 			size_t vlen = strlen(vstart);
 			if (vlen > 0 && vstart[vlen - 1] == '\'')
 				vlen--;
-			char *val = malloc(vlen + 1);
+			char *val MORPH_CLEANUP(morph_charp_cleanup) = malloc(vlen + 1);
 			if (val) {
 				memcpy(val, vstart, vlen);
 				val[vlen] = '\0';
 				parse_yaml_scalar(key, val, fm);
-				free(val);
 			}
 		} else {
 			parse_yaml_scalar(key, vstart, fm);
 		}
-
-		free(key);
-
-next_line:
-		if (nl)
-			line = nl + 1;
-		else
-			break;
 	}
 
 	if (in_block_scalar && current_key && bv.len > 0) {
@@ -276,14 +251,7 @@ next_line:
 		bv.data[bv.len] = '\0';
 		if (strcmp(current_key, "metadata") != 0)
 			parse_yaml_scalar(current_key, bv.data, fm);
-		free(current_key);
-		morph_buf_cleanup(&bv);
-	} else {
-		free(current_key);
-		morph_buf_cleanup(&bv);
 	}
-
-	free(copy);
 }
 
 int skill_parse(struct morph_log *logger, const char *data, size_t len,

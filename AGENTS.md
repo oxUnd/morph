@@ -136,15 +136,18 @@ Prefer these over hand-rolled equivalents.
 - Use POSIX `-errno` for system errors; return `-errno` (not a fixed code) from failing `pipe`/`fork`/`select`/`opendir` calls.
 - Use `MORPH_ERR_*` for domain errors: NOT_CONFIGURED (-257), NOT_INITIALIZED (-258), API (-259), NETWORK (-260), PARSE (-261), PROTOCOL (-262), DB (-263), FORMAT (-264), PROCESSING (-265), SANDBOX (-266), LOAD (-267), LLM (-268).
 - Use explicit `return code;`. Optional `MORPH_TRACE_ERROR(logger, code)` is an expression that calls a typed tracing function with the source location; write `return MORPH_TRACE_ERROR(logger, code);` when tracing is useful. It never hides control flow and evaluates both arguments once in all builds. Diagnostics use `LOG_DEBUG` file logs, never terminal output.
-- Assign `rc = code;` before a cleanup jump. Use `rc = MORPH_TRACE_ERROR(logger, code);` for optional tracing. Capture syscall errors immediately with `rc = morph_error_from_errno(errno);` before cleanup. Logging contexts are explicit, never global or thread-local.
+- Preserve error codes explicitly before cleanup. Use `rc = MORPH_TRACE_ERROR(logger, code);` for optional tracing. Capture syscall errors immediately with `rc = morph_error_from_errno(errno);` before cleanup. Logging contexts are explicit, never global or thread-local.
 - `morph_strerror(err)` for all user/LLM-facing messages; never raw `%d`.
 
 ## `goto`
-- Default: no `goto`. Use direct returns for validation and error paths without cleanup.
-- Use `goto` only when several exit paths share non-trivial cleanup. Prefer helper functions or local cleanup first.
-- Labels describe the action (`out_free_buffer`), never numbered. Use distinct cleanup levels in reverse acquisition order.
-- A centralized-cleanup function must preserve its error code with an explicit assignment before cleanup; never fall through to success.
-- Reference: [Linux kernel coding style §7](https://www.kernel.org/doc/html/latest/process/coding-style.html#centralized-exiting-of-functions).
+- Do not use `goto` in project-owned C/C++/Objective-C source, including macros,
+  platform-specific branches, tests, examples and extensions. Vendor code is excluded.
+- Use direct returns with initialized typed scope cleanup for local resources.
+  Keep error codes explicit and transfer ownership only on success.
+- Split complex operations into helpers. Their owner explicitly commits or rolls
+  back transactions, restores state and stops workers after the operation returns.
+  Do not replace jumps with single-iteration loop wrappers or control-flow macros.
+- Run `source_control_flow_conventions` to check this rule.
 
 ## C Coding Conventions (REQUIREMENTS.md §6.11)
 - No `//` comments — `/* */` only.

@@ -2,6 +2,7 @@
 
 #include "preferences.h"
 #include "util/error.h"
+#include "util/cleanup.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -35,7 +36,7 @@ int memory_store_write_fact(struct db *db, int64_t session_id, const char *key_n
 				 "ORDER BY updated_at DESC LIMIT 1";
 	int rc;
 	int64_t old_id = 0;
-	char *old_value = NULL;
+	char *old_value MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	int64_t now = (int64_t)time(NULL);
 
 	if (!db || !db->handle || !key_name || !value_text || !*value_text)
@@ -75,7 +76,6 @@ int memory_store_write_fact(struct db *db, int64_t session_id, const char *key_n
 			"WHERE id=?";
 		rc = sqlite3_prepare_v2(db->handle, update_sql, -1, &stmt, NULL);
 		if (rc != SQLITE_OK) {
-			free(old_value);
 			return -EIO;
 		}
 		sqlite3_bind_text(stmt, 1, source_text ? source_text : "", -1, SQLITE_TRANSIENT);
@@ -85,7 +85,6 @@ int memory_store_write_fact(struct db *db, int64_t session_id, const char *key_n
 		sqlite3_bind_int64(stmt, 5, old_id);
 		rc = sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
-		free(old_value);
 		return rc == SQLITE_DONE ? 0 : -EIO;
 	}
 
@@ -95,14 +94,14 @@ int memory_store_write_fact(struct db *db, int64_t session_id, const char *key_n
 					 "WHERE id=?";
 		rc = sqlite3_prepare_v2(db->handle, expire_sql, -1, &stmt, NULL);
 		if (rc != SQLITE_OK)
-			goto out_free_old_value;
+			return -EIO;
 		sqlite3_bind_int64(stmt, 1, now);
 		sqlite3_bind_int64(stmt, 2, now);
 		sqlite3_bind_int64(stmt, 3, old_id);
 		rc = sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
 		if (rc != SQLITE_DONE)
-			goto out_free_old_value;
+			return -EIO;
 	}
 
 	{
@@ -115,7 +114,7 @@ int memory_store_write_fact(struct db *db, int64_t session_id, const char *key_n
 		int64_t new_id;
 		rc = sqlite3_prepare_v2(db->handle, insert_sql, -1, &stmt, NULL);
 		if (rc != SQLITE_OK)
-			goto out_free_old_value;
+			return -EIO;
 		sqlite3_bind_int64(stmt, 1, session_id);
 		sqlite3_bind_text(stmt, 2, key_name, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(stmt, 3, value_text, -1, SQLITE_TRANSIENT);
@@ -128,28 +127,23 @@ int memory_store_write_fact(struct db *db, int64_t session_id, const char *key_n
 		rc = sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
 		if (rc != SQLITE_DONE)
-			goto out_free_old_value;
+			return -EIO;
 		new_id = sqlite3_last_insert_rowid(db->handle);
 		if (old_id > 0) {
 			const char *link_sql = "UPDATE memory_facts SET superseded_by=? WHERE id=?";
 			rc = sqlite3_prepare_v2(db->handle, link_sql, -1, &stmt, NULL);
 			if (rc != SQLITE_OK)
-				goto out_free_old_value;
+				return -EIO;
 			sqlite3_bind_int64(stmt, 1, new_id);
 			sqlite3_bind_int64(stmt, 2, old_id);
 			rc = sqlite3_step(stmt);
 			sqlite3_finalize(stmt);
 			if (rc != SQLITE_DONE)
-				goto out_free_old_value;
+				return -EIO;
 		}
 	}
 
-	free(old_value);
 	return 0;
-
-out_free_old_value:
-	free(old_value);
-	return -EIO;
 }
 
 int memory_store_upsert_fact(struct db *db, int64_t session_id, const char *key_name,

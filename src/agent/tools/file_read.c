@@ -4,6 +4,7 @@
 #include "agent/tool_runtime.h"
 #include "util/buf.h"
 #include "util/error.h"
+#include "util/json.h"
 #include "util/utf8.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -51,6 +52,13 @@ struct read_page {
 	const char *encoding;
 	const char *reason;
 };
+
+static void read_page_cleanup(struct read_page *page)
+{
+	if (!page)
+		return;
+	morph_buf_cleanup(&page->content);
+}
 
 static int read_integer(cJSON *root, const char *name, uint64_t min,
 			uint64_t max, uint64_t *value)
@@ -346,9 +354,9 @@ static int read_open_file(struct file_reader *reader, const struct read_options 
 	struct stat before;
 	struct stat after;
 	morph_buf_t version MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	struct read_page page MORPH_CLEANUP(read_page_cleanup) = {0};
 	morph_buf_t after_version MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	struct read_page page = {0};
-	cJSON *out = NULL;
+	cJSON *out MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	int rc;
 
 	if (fstat(reader->fd, &before) < 0)
@@ -360,67 +368,53 @@ static int read_open_file(struct file_reader *reader, const struct read_options 
 	reader->size = (uint64_t)before.st_size;
 	if (opts->byte_offset > reader->size)
 		return -EINVAL;
-	rc = (morph_buf_init(&version, 128));
+	rc = morph_buf_init(&version, 128);
 	if (rc < 0)
 		return rc;
-	rc = (read_version(&before, &version));
+	rc = read_version(&before, &version);
 	if (rc < 0)
-		goto out_cleanup;
+		return rc;
 	if (opts->expected_version &&
-	    strcmp(opts->expected_version, morph_buf_cstr_borrow(&version))) {
-		rc = (-ESTALE);
-		goto out_cleanup;
-	}
-	rc = (morph_buf_init(&page.content, (size_t)opts->max_bytes + 1));
+	    strcmp(opts->expected_version, morph_buf_cstr_borrow(&version)))
+		return -ESTALE;
+	rc = morph_buf_init(&page.content, (size_t)opts->max_bytes + 1);
 	if (rc < 0)
-		goto out_cleanup;
-	rc = (reader_start(reader, opts, &page));
+		return rc;
+	rc = reader_start(reader, opts, &page);
 	if (rc < 0)
-		goto out_cleanup;
+		return rc;
 	if (!page.binary && !opts->byte_mode) {
-		rc = (reader_skip_lines(reader, opts->offset, &page));
+		rc = reader_skip_lines(reader, opts->offset, &page);
 		if (rc < 0)
-			goto out_cleanup;
+			return rc;
 	}
 	if (!page.binary) {
-		rc = (reader_text(reader, opts, &page));
+		rc = reader_text(reader, opts, &page);
 		if (rc < 0)
-			goto out_cleanup;
+			return rc;
 	}
 	out = cJSON_CreateObject();
 	if (!out || !cJSON_AddStringToObject(out, "file_path", opts->path) ||
 	    !cJSON_AddNumberToObject(out, "size", (double)reader->size) ||
 	    !cJSON_AddBoolToObject(out, "binary", page.binary) ||
 	    !cJSON_AddStringToObject(out, "encoding", page.encoding) ||
-	    !cJSON_AddStringToObject(out, "version", morph_buf_cstr_borrow(&version))) {
-		rc = (-ENOMEM);
-		goto out_cleanup;
-	}
-	rc = (page.binary ? read_binary_result(reader, out) :
-		      read_text_result(reader, opts, &page, out));
+	    !cJSON_AddStringToObject(out, "version", morph_buf_cstr_borrow(&version)))
+		return -ENOMEM;
+	rc = page.binary ? read_binary_result(reader, out) :
+		read_text_result(reader, opts, &page, out);
 	if (rc < 0)
-		goto out_cleanup;
-	if (fstat(reader->fd, &after) < 0) {
-		rc = (-errno);
-		goto out_cleanup;
-	}
-	rc = (morph_buf_init(&after_version, 128));
+		return rc;
+	if (fstat(reader->fd, &after) < 0)
+		return -errno;
+	rc = morph_buf_init(&after_version, 128);
 	if (rc < 0)
-		goto out_cleanup;
-	rc = (read_version(&after, &after_version));
+		return rc;
+	rc = read_version(&after, &after_version);
 	if (rc < 0)
-		goto out_cleanup;
-	if (strcmp(morph_buf_cstr_borrow(&version), morph_buf_cstr_borrow(&after_version))) {
-		rc = (-ESTALE);
-		goto out_cleanup;
-	}
-	rc = tool_result_success_take(result, &out);
-out_cleanup:
-	cJSON_Delete(out);
-	morph_buf_cleanup(&after_version);
-	morph_buf_cleanup(&page.content);
-	morph_buf_cleanup(&version);
-	return rc;
+		return rc;
+	if (strcmp(morph_buf_cstr_borrow(&version), morph_buf_cstr_borrow(&after_version)))
+		return -ESTALE;
+	return tool_result_success_take(result, &out);
 }
 
 static int file_read_exec(const char *args_json, struct tool_result *result, void *user_data)

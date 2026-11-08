@@ -393,11 +393,11 @@ static int append_normalized_line(morph_buf_t *out, const char *line,
 		if (append_normalized_chars(&normalized, line, len,
 					    table_sep) < 0) {
 			rc = -1;
-			goto out;
+			return rc;
 		}
 	} else if (morph_buf_append(&normalized, line, len) < 0) {
 		rc = -1;
-		goto out;
+		return rc;
 	}
 
 	line = morph_buf_cstr_borrow(&normalized);
@@ -408,7 +408,7 @@ static int append_normalized_line(morph_buf_t *out, const char *line,
 		if (rc == 0)
 			rc = morph_buf_putc(out, '\n');
 		*previous_blank = len == 0;
-		goto out;
+		return rc;
 	}
 	if (!was_in_fence && !line_is_table_sep(line, len)) {
 		size_t table_len;
@@ -427,19 +427,19 @@ static int append_normalized_line(morph_buf_t *out, const char *line,
 						   fence_len) < 0) {
 				rc = -1;
 			}
-			goto out;
+			return rc;
 		}
 	}
 	if (!was_in_fence && line_is_horizontal_rule(line, len)) {
 		if (out->len > 0 && !*previous_blank) {
 			if (morph_buf_putc(out, '\n') < 0) {
 				rc = -1;
-				goto out;
+				return rc;
 			}
 		}
 		*previous_blank = 1;
 		*prev_kind = MD_LINE_BLANK;
-		goto out;
+		return rc;
 	}
 	kind = classify_line(line, len, is_fence);
 
@@ -457,30 +457,28 @@ static int append_normalized_line(morph_buf_t *out, const char *line,
 		if (out->len > 0 && !*previous_blank) {
 			if (morph_buf_putc(out, '\n') < 0) {
 				rc = -1;
-				goto out;
+				return rc;
 			}
 		}
 		*previous_blank = 1;
 		*prev_kind = MD_LINE_BLANK;
-		goto out;
+		return rc;
 	}
 	if (!was_in_fence && needs_blank_before(kind, *prev_kind,
 						*previous_blank,
 						out->len > 0)) {
 		if (morph_buf_putc(out, '\n') < 0) {
 			rc = -1;
-			goto out;
+			return rc;
 		}
 	}
 	if (morph_buf_append(out, line, len) < 0 ||
 	    morph_buf_putc(out, '\n') < 0) {
 		rc = -1;
-		goto out;
+		return rc;
 	}
 	*previous_blank = 0;
 	*prev_kind = kind;
-out:
-	morph_buf_cleanup(&normalized);
 	return rc;
 }
 

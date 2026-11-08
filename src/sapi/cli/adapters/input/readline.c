@@ -1104,14 +1104,13 @@ void cli_readline_run(struct cli_application *ctx, struct cli_command_job *job,
 	if (ctx->input->callback_error) {
 		CMD_ERROR(ctx, "failed to create input callbacks: %s",
 			  morph_strerror(ctx->input->callback_error));
-		goto out_release_readline;
+	} else {
+		rl_getc_function = reader;
+		rl_redisplay_function = display;
+		rl_attempted_completion_function = completion;
+		(void)line_ready;
+		run_session(ctx, job);
 	}
-	rl_getc_function = reader;
-	rl_redisplay_function = display;
-	rl_attempted_completion_function = completion;
-	(void)line_ready;
-	run_session(ctx, job);
-out_release_readline:
 	memset(&ctx->input_status, 0, sizeof(ctx->input_status));
 	cli_composer_model_cleanup(&ctx->composer);
 	free(ctx->input->completion_sessions);

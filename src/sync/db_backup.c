@@ -1,6 +1,8 @@
 #include "sync/db_backup.h"
 #include "util/array.h"
 #include "util/error.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "util/file.h"
 #include "util/id.h"
 #include "util/log.h"
@@ -35,6 +37,53 @@ struct stored_snapshot {
 	struct morph_sync_backup backup;
 	int removed;
 };
+
+struct backup_staging {
+	char snapshot[PATH_MAX];
+	char chunk[PATH_MAX];
+	int keep_snapshot;
+};
+
+static void backup_database_cleanup(sqlite3 **database)
+{
+	if (*database)
+		sqlite3_close(*database);
+	*database = NULL;
+}
+
+static void backup_stmt_cleanup(sqlite3_stmt **stmt)
+{
+	sqlite3_finalize(*stmt);
+	*stmt = NULL;
+}
+
+static void backup_transfer_cleanup(sqlite3_backup **backup)
+{
+	if (*backup)
+		(void)sqlite3_backup_finish(*backup);
+	*backup = NULL;
+}
+
+static void backup_file_cleanup(FILE **file)
+{
+	if (*file)
+		(void)fclose(*file);
+	*file = NULL;
+}
+
+static void backup_bytes_cleanup(unsigned char **bytes)
+{
+	free(*bytes);
+	*bytes = NULL;
+}
+
+static void backup_staging_cleanup(struct backup_staging *staging)
+{
+	if (!staging->keep_snapshot && staging->snapshot[0])
+		(void)unlink(staging->snapshot);
+	if (staging->chunk[0])
+		(void)unlink(staging->chunk);
+}
 
 int sync_db_backend_valid(const struct morph_sync_config *cfg)
 {
@@ -227,25 +276,23 @@ int sync_db_is_sqlite(const char *path)
 static int sqlite_snapshot(const char *source, const char *destination,
 			   int *page_size)
 {
-	sqlite3_backup *backup = NULL;
-	sqlite3_stmt *statement = NULL;
-	sqlite3 *input = NULL;
-	sqlite3 *output = NULL;
+	sqlite3 *output MORPH_CLEANUP(backup_database_cleanup) = NULL;
+	sqlite3 *input MORPH_CLEANUP(backup_database_cleanup) = NULL;
+	sqlite3_stmt *statement MORPH_CLEANUP(backup_stmt_cleanup) = NULL;
+	sqlite3_backup *backup MORPH_CLEANUP(backup_transfer_cleanup) = NULL;
 	int busy_retries = 0;
 	int rc;
 
 	rc = sqlite3_open_v2(source, &input, SQLITE_OPEN_READONLY, NULL);
 	if (rc != SQLITE_OK)
-		goto out;
+		return MORPH_ERR_DB;
 	rc = sqlite3_open_v2(destination, &output,
 			     SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL);
 	if (rc != SQLITE_OK)
-		goto out;
+		return MORPH_ERR_DB;
 	backup = sqlite3_backup_init(output, "main", input, "main");
-	if (!backup) {
-		rc = sqlite3_errcode(output);
-		goto out;
-	}
+	if (!backup)
+		return MORPH_ERR_DB;
 	do {
 		rc = sqlite3_backup_step(backup, 256);
 		if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) {
@@ -260,13 +307,12 @@ static int sqlite_snapshot(const char *source, const char *destination,
 	} while (rc == SQLITE_OK || rc == SQLITE_BUSY || rc == SQLITE_LOCKED);
 	if (sqlite3_backup_finish(backup) != SQLITE_OK || rc != SQLITE_DONE) {
 		backup = NULL;
-		rc = SQLITE_ERROR;
-		goto out;
+		return MORPH_ERR_DB;
 	}
 	backup = NULL;
 	rc = sqlite3_exec(output, "PRAGMA journal_mode=DELETE", NULL, NULL, NULL);
 	if (rc != SQLITE_OK)
-		goto out;
+		return MORPH_ERR_DB;
 	rc = sqlite3_prepare_v2(output, "PRAGMA page_size", -1,
 				&statement, NULL);
 	if (rc == SQLITE_OK && sqlite3_step(statement) == SQLITE_ROW)
@@ -274,12 +320,6 @@ static int sqlite_snapshot(const char *source, const char *destination,
 	else
 		rc = SQLITE_ERROR;
 
-out:
-	if (backup)
-		(void)sqlite3_backup_finish(backup);
-	sqlite3_finalize(statement);
-	sqlite3_close(input);
-	sqlite3_close(output);
 	return rc == SQLITE_OK && *page_size > 0 ? 0 : MORPH_ERR_DB;
 }
 
@@ -378,6 +418,7 @@ static int staging_path(const struct morph_sync_config *cfg, const char *suffix,
 	char random_id[64];
 	int rc;
 
+	out[0] = '\0';
 	rc = file_path_join(directory, sizeof(directory), cfg->sync_dir,
 			    ".morph-sync/staging");
 	if (rc != 0)
@@ -388,9 +429,12 @@ static int staging_path(const struct morph_sync_config *cfg, const char *suffix,
 	rc = morph_random_id("db_", random_id, sizeof(random_id));
 	if (rc != 0)
 		return rc;
-	if (snprintf(out, PATH_MAX, "%s/%s%s", directory, random_id,
-		     suffix ? suffix : "") >= PATH_MAX)
+	int length = snprintf(out, PATH_MAX, "%s/%s%s", directory, random_id,
+			      suffix ? suffix : "");
+	if (length < 0 || length >= PATH_MAX) {
+		out[0] = '\0';
 		return -ENAMETOOLONG;
+	}
 	return 0;
 }
 
@@ -406,10 +450,10 @@ static int snapshot_include_display(const struct morph_sync_config *cfg,
 				    const char *rel, const char *snapshot)
 {
 	char source[PATH_MAX];
-	char staging[PATH_MAX];
+	struct backup_staging staging MORPH_CLEANUP(backup_staging_cleanup) = {0};
 	struct stat st;
-	sqlite3 *db = NULL;
-	sqlite3_stmt *attach = NULL;
+	sqlite3 *db MORPH_CLEANUP(backup_database_cleanup) = NULL;
+	sqlite3_stmt *attach MORPH_CLEANUP(backup_stmt_cleanup) = NULL;
 	int page_size = 0;
 	int rc;
 
@@ -423,22 +467,20 @@ static int snapshot_include_display(const struct morph_sync_config *cfg,
 			return 0;
 		return morph_error_from_errno(errno);
 	}
-	rc = staging_path(cfg, ".display.db", staging);
+	rc = staging_path(cfg, ".display.db", staging.snapshot);
 	if (rc != 0)
 		return rc;
-	rc = sqlite_snapshot(source, staging, &page_size);
+	rc = sqlite_snapshot(source, staging.snapshot, &page_size);
 	if (rc != 0)
-		goto out_remove_display;
+		return rc;
 	if (sqlite3_open_v2(snapshot, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK ||
 	    sqlite3_prepare_v2(db, "ATTACH DATABASE ? AS display", -1,
 			       &attach, NULL) != SQLITE_OK) {
-		rc = (MORPH_ERR_DB);
-		goto out_remove_display;
+		return MORPH_ERR_DB;
 	}
-	sqlite3_bind_text(attach, 1, staging, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(attach, 1, staging.snapshot, -1, SQLITE_TRANSIENT);
 	if (sqlite3_step(attach) != SQLITE_DONE) {
-		rc = (MORPH_ERR_DB);
-		goto out_remove_display;
+		return MORPH_ERR_DB;
 	}
 	if (sqlite3_exec(db,
 		"BEGIN IMMEDIATE;"
@@ -468,21 +510,13 @@ static int snapshot_include_display(const struct morph_sync_config *cfg,
 		"CREATE INDEX IF NOT EXISTS sync_ui_session_seq "
 		"ON sync_ui_messages(session_id,seq); COMMIT", NULL, NULL, NULL) != SQLITE_OK)
 		rc = (MORPH_ERR_DB);
-
-
-out_remove_display:
-	sqlite3_finalize(attach);
-	if (db)
-		sqlite3_close(db);
-	(void)unlink(staging);
 	return rc;
 }
 
 int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *rel,
 			      const char *path, struct morph_sync_status *status, int update_cursor)
 {
-	char snapshot_path[PATH_MAX];
-	char chunk_path[PATH_MAX] = { 0 };
+	struct backup_staging staging MORPH_CLEANUP(backup_staging_cleanup) = {0};
 	char object_rel[PATH_MAX];
 	char manifest_rel[PATH_MAX];
 	char database_hash[MORPH_SYNC_HASH_LEN];
@@ -491,46 +525,45 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 	char snapshot_id[MORPH_SYNC_SNAPSHOT_ID_MAX];
 	char version_id[MORPH_SYNC_HASH_LEN];
 	struct morph_sync_backend_stat remote_stat;
-	cJSON *root = NULL;
-	cJSON *chunks = NULL;
-	unsigned char *buffer = NULL;
-	char *json = NULL;
-	FILE *snapshot = NULL;
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *chunks MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	unsigned char *buffer MORPH_CLEANUP(backup_bytes_cleanup) = NULL;
+	char *json MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
+	FILE *snapshot MORPH_CLEANUP(backup_file_cleanup) = NULL;
 	int page_size = 0;
 	size_t chunk_size;
 	int rc;
 
 	if (!sync_db_backend_valid(cfg) || !rel || !path || !status)
 		return -EINVAL;
-	rc = staging_path(cfg, ".db", snapshot_path);
+	rc = staging_path(cfg, ".db", staging.snapshot);
 	if (rc != 0)
 		return rc;
-	rc = sqlite_snapshot(path, snapshot_path, &page_size);
+	rc = sqlite_snapshot(path, staging.snapshot, &page_size);
 	if (rc != 0)
-		goto out;
+		return rc;
 	if (update_cursor) {
-		rc = snapshot_include_display(cfg, rel, snapshot_path);
+		rc = snapshot_include_display(cfg, rel, staging.snapshot);
 		if (rc != 0)
-			goto out;
+			return rc;
 	}
-	if (!sync_db_quick_check(snapshot_path)) {
-		rc = MORPH_ERR_FORMAT;
-		goto out;
+	if (!sync_db_quick_check(staging.snapshot)) {
+		return MORPH_ERR_FORMAT;
 	}
-	rc = sync_hash_file(snapshot_path, database_hash);
+	rc = sync_hash_file(staging.snapshot, database_hash);
 	if (rc != 0)
-		goto out;
+		return rc;
 	sync_hash_bytes(rel, strlen(rel), database_key);
 	rc = device_id_get(cfg, device);
 	if (rc != 0)
-		goto out;
+		return rc;
 	if (update_cursor && db_cursor_matches(cfg, database_key, device,
 					       database_hash))
-		goto out;
+		return rc;
 	if (update_cursor) {
 		rc = morph_random_id("ver_", version_id, sizeof(version_id));
 		if (rc != 0)
-			goto out;
+			return rc;
 	} else {
 		strncpy(version_id, database_hash, sizeof(version_id) - 1);
 		version_id[sizeof(version_id) - 1] = '\0';
@@ -538,38 +571,33 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 	if (snprintf(snapshot_id, sizeof(snapshot_id), "%s-%s-%s",
 		     database_key, device, version_id) >=
 	    (int)sizeof(snapshot_id)) {
-		rc = -ENAMETOOLONG;
-		goto out;
+		return -ENAMETOOLONG;
 	}
 	if (snprintf(manifest_rel, sizeof(manifest_rel), "%s/%s.json",
 		     DB_SNAPSHOT_DIR, snapshot_id) >= (int)sizeof(manifest_rel)) {
-		rc = -ENAMETOOLONG;
-		goto out;
+		return -ENAMETOOLONG;
 	}
 	rc = store_stat(cfg, manifest_rel, &remote_stat);
 	if (rc != 0 || remote_stat.exists)
-		goto out;
+		return rc;
 
 	root = cJSON_CreateObject();
 	chunks = cJSON_CreateArray();
 	if (!root || !chunks) {
-		rc = -ENOMEM;
-		goto out;
+		return -ENOMEM;
 	}
 	cJSON_AddNumberToObject(root, "version", 1);
 	if (json_add_string(root, "snapshot_id", snapshot_id) != 0 ||
 	    json_add_string(root, "path", rel) != 0 ||
 	    json_add_string(root, "device_id", device) != 0 ||
 	    json_add_string(root, "database_hash", database_hash) != 0) {
-		rc = -ENOMEM;
-		goto out;
+		return -ENOMEM;
 	}
 	cJSON_AddNumberToObject(root, "created_at", (double)time(NULL));
 	{
 		struct stat st;
-		if (stat(snapshot_path, &st) != 0) {
-			rc = -errno;
-			goto out;
+		if (stat(staging.snapshot, &st) != 0) {
+			return -errno;
 		}
 		cJSON_AddNumberToObject(root, "database_size", (double)st.st_size);
 	}
@@ -578,21 +606,20 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 	if (chunk_size == 0)
 		chunk_size = (size_t)page_size;
 	cJSON_AddNumberToObject(root, "chunk_size", (double)chunk_size);
-	cJSON_AddItemToObject(root, "chunks", chunks);
-	chunks = NULL;
+	rc = morph_json_object_take(root, "chunks", &chunks);
+	if (rc != 0)
+		return rc;
 	buffer = malloc(chunk_size);
 	if (!buffer) {
-		rc = -ENOMEM;
-		goto out;
+		return -ENOMEM;
 	}
-	snapshot = fopen(snapshot_path, "rb");
+	snapshot = fopen(staging.snapshot, "rb");
 	if (!snapshot) {
-		rc = -errno;
-		goto out;
+		return -errno;
 	}
-	rc = staging_path(cfg, ".chunk", chunk_path);
+	rc = staging_path(cfg, ".chunk", staging.chunk);
 	if (rc != 0)
-		goto out;
+		return rc;
 	while (1) {
 		char chunk_hash[MORPH_SYNC_HASH_LEN];
 		cJSON *item;
@@ -603,19 +630,18 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 		if (snprintf(object_rel, sizeof(object_rel), "%s/%.2s/%s",
 			     DB_OBJECT_DIR, chunk_hash, chunk_hash) >=
 		    (int)sizeof(object_rel)) {
-			rc = -ENAMETOOLONG;
-			goto out;
+			return -ENAMETOOLONG;
 		}
 		rc = store_stat(cfg, object_rel, &remote_stat);
 		if (rc != 0)
-			goto out;
+			return rc;
 		if (!remote_stat.exists) {
-			rc = file_write_all(chunk_path, (const char *)buffer, amount);
+			rc = file_write_all(staging.chunk, (const char *)buffer, amount);
 			if (rc != 0)
-				goto out;
-			rc = store_put(cfg, chunk_path, object_rel);
+				return rc;
+			rc = store_put(cfg, staging.chunk, object_rel);
 			if (rc != 0)
-				goto out;
+				return rc;
 			status->db_chunks_uploaded++;
 			status->db_bytes_uploaded += (int64_t)amount;
 		} else {
@@ -625,38 +651,25 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 		if (!item || !cJSON_AddStringToObject(item, "hash", chunk_hash) ||
 		    !cJSON_AddNumberToObject(item, "size", (double)amount)) {
 			cJSON_Delete(item);
-			rc = -ENOMEM;
-			goto out;
+			return -ENOMEM;
 		}
 		cJSON_AddItemToArray(cJSON_GetObjectItem(root, "chunks"), item);
 	}
 	if (ferror(snapshot)) {
-		rc = -EIO;
-		goto out;
+		return -EIO;
 	}
 	json = cJSON_PrintUnformatted(root);
 	if (!json) {
-		rc = -ENOMEM;
-		goto out;
+		return -ENOMEM;
 	}
-	rc = file_write_all(chunk_path, json, strlen(json));
+	rc = file_write_all(staging.chunk, json, strlen(json));
 	if (rc == 0)
-		rc = store_put(cfg, chunk_path, manifest_rel);
+		rc = store_put(cfg, staging.chunk, manifest_rel);
 	if (rc == 0 && update_cursor)
 		rc = db_cursor_put(cfg, database_key, device, database_hash);
 	if (rc == 0)
 		status->db_snapshots++;
 
-out:
-	if (snapshot)
-		fclose(snapshot);
-	free(buffer);
-	free(json);
-	cJSON_Delete(chunks);
-	cJSON_Delete(root);
-	(void)unlink(snapshot_path);
-	if (chunk_path[0])
-		(void)unlink(chunk_path);
 	return rc;
 }
 
@@ -917,15 +930,14 @@ int morph_sync_restore_db(const struct morph_sync_config *cfg,
 			  const char *snapshot_id, const char *destination)
 {
 	char manifest_name[MORPH_SYNC_SNAPSHOT_ID_MAX + 8];
-	char temporary[PATH_MAX] = { 0 };
-	char temporary_chunk[PATH_MAX] = { 0 };
+	struct backup_staging staging MORPH_CLEANUP(backup_staging_cleanup) = {0};
 	char actual_hash[MORPH_SYNC_HASH_LEN];
-	cJSON *root = NULL;
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	cJSON *chunks;
 	cJSON *expected_hash;
 	cJSON *expected_size;
 	struct stat st;
-	FILE *output = NULL;
+	FILE *output MORPH_CLEANUP(backup_file_cleanup) = NULL;
 	int rc;
 
 	if (!sync_db_backend_valid(cfg) || !snapshot_id_valid(snapshot_id) || !destination ||
@@ -944,69 +956,55 @@ int morph_sync_restore_db(const struct morph_sync_config *cfg,
 	expected_size = cJSON_GetObjectItem(root, "database_size");
 	if (!cJSON_IsArray(chunks) || !cJSON_IsString(expected_hash) ||
 	    !cJSON_IsNumber(expected_size)) {
-		rc = MORPH_ERR_PARSE;
-		goto out;
+		return MORPH_ERR_PARSE;
 	}
 	rc = ensure_parent(destination);
 	if (rc != 0)
-		goto out;
-	if (snprintf(temporary, sizeof(temporary), "%s.restore.tmp.%u",
-		     destination, (unsigned)getpid()) >= (int)sizeof(temporary)) {
-		rc = -ENAMETOOLONG;
-		goto out;
+		return rc;
+	int path_length = snprintf(staging.snapshot, sizeof(staging.snapshot),
+				   "%s.restore.tmp.%u", destination, (unsigned)getpid());
+	if (path_length < 0 || path_length >= (int)sizeof(staging.snapshot)) {
+		staging.snapshot[0] = '\0';
+		return -ENAMETOOLONG;
 	}
-	rc = staging_path(cfg, ".chunk", temporary_chunk);
+	rc = staging_path(cfg, ".chunk", staging.chunk);
 	if (rc != 0)
-		goto out;
-	output = fopen(temporary, "wb");
+		return rc;
+	output = fopen(staging.snapshot, "wb");
 	if (!output) {
-		rc = -errno;
-		goto out;
+		return -errno;
 	}
 	cJSON *item;
 	cJSON_ArrayForEach(item, chunks) {
-		rc = restore_chunk(cfg, item, output, temporary_chunk);
+		rc = restore_chunk(cfg, item, output, staging.chunk);
 		if (rc != 0)
-			goto out;
+			return rc;
 	}
-	if (fflush(output) != 0 || fclose(output) != 0) {
-		output = NULL;
-		rc = -EIO;
-		goto out;
-	}
+	int flush_rc = fflush(output);
+	int close_rc = fclose(output);
 	output = NULL;
-	if (stat(temporary, &st) != 0 ||
+	if (flush_rc != 0 || close_rc != 0)
+		return -EIO;
+	if (stat(staging.snapshot, &st) != 0 ||
 	    (int64_t)st.st_size != (int64_t)expected_size->valuedouble) {
 		log_err(cfg ? cfg->logger : NULL, "database restore size mismatch for %s",
 			snapshot_id);
-		rc = MORPH_ERR_FORMAT;
-		goto out;
+		return MORPH_ERR_FORMAT;
 	}
-	rc = sync_hash_file(temporary, actual_hash);
+	rc = sync_hash_file(staging.snapshot, actual_hash);
 	if (rc != 0)
-		goto out;
+		return rc;
 	if (strcmp(actual_hash, expected_hash->valuestring) != 0 ||
-	    !sync_db_quick_check(temporary)) {
+	    !sync_db_quick_check(staging.snapshot)) {
 		log_err(cfg ? cfg->logger : NULL, "database restore integrity check failed for %s",
 			snapshot_id);
-		rc = MORPH_ERR_FORMAT;
-		goto out;
+		return MORPH_ERR_FORMAT;
 	}
-	if (rename(temporary, destination) != 0) {
-		rc = -errno;
-		goto out;
+	if (rename(staging.snapshot, destination) != 0) {
+		return -errno;
 	}
-	rc = 0;
-
-out:
-	if (output)
-		fclose(output);
-	if (temporary_chunk[0])
-		(void)unlink(temporary_chunk);
-	if (rc != 0 && temporary[0])
-		(void)unlink(temporary);
-	cJSON_Delete(root);
-	return rc;
+	staging.keep_snapshot = 1;
+	return 0;
 }
 
 static int store_delete(const struct morph_sync_config *cfg, const char *rel)

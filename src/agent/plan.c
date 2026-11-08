@@ -209,6 +209,11 @@ int plan_format(struct plan_registry *reg, char *buf, size_t buf_size)
 {
 	if (!reg || !buf || buf_size == 0)
 		return -EINVAL;
+	if (reg->count == 0) {
+		snprintf(buf, buf_size,
+			"No plans yet. Use plan create to start one.");
+		return 0;
+	}
 
 	size_t pos = 0;
 	int rc = 0;
@@ -229,19 +234,19 @@ int plan_format(struct plan_registry *reg, char *buf, size_t buf_size)
 		if ((rc = append_str(buf, buf_size, &pos,
 			"%sPlan \"%s\" [%s]", pos > 0 ? "\n" : "",
 			p->name, p->id)) < 0)
-			goto out;
+			return rc;
 		if (p->goal[0]) {
 			if ((rc = append_str(buf, buf_size, &pos,
 				"\n  Goal: %s", p->goal)) < 0)
-				goto out;
+				return rc;
 		}
 		if ((rc = append_str(buf, buf_size, &pos,
 			"\n  %d step(s)", p->step_count)) < 0)
-			goto out;
+			return rc;
 		if (all_done) {
 			if ((rc = append_str(buf, buf_size, &pos,
 				" [all completed]")) < 0)
-				goto out;
+				return rc;
 		}
 
 		for (int j = 0; j < p->step_count; j++) {
@@ -253,15 +258,10 @@ int plan_format(struct plan_registry *reg, char *buf, size_t buf_size)
 			if ((rc = append_str(buf, buf_size, &pos,
 				"\n  [%s] %d. %s%s",
 				icon, s->id, s->description, marker)) < 0)
-				goto out;
+				return rc;
 		}
 	}
 
-out:
-	if (pos == 0 && reg->count == 0 && rc == 0) {
-		snprintf(buf, buf_size,
-			"No plans yet. Use plan create to start one.");
-	}
 	return rc;
 }
 

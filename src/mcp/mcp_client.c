@@ -748,12 +748,11 @@ int mcp_read_resource(struct mcp_client *client, const char *uri, struct tool_re
 
 static int mcp_prompt_arguments_schema(cJSON *arguments, const char **destination)
 {
-	cJSON *schema = cJSON_CreateObject();
+	cJSON *schema MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
 	cJSON *properties;
 	cJSON *required;
 	cJSON *argument;
 	char *encoded = NULL;
-	int rc = 0;
 
 	if (!schema)
 		return -ENOMEM;
@@ -762,7 +761,7 @@ static int mcp_prompt_arguments_schema(cJSON *arguments, const char **destinatio
 	if (!properties || !required ||
 	    !cJSON_AddStringToObject(schema, "type", "object") ||
 	    !cJSON_AddBoolToObject(schema, "additionalProperties", 0))
-		goto out_free_schema_oom;
+		return -ENOMEM;
 	cJSON_ArrayForEach(argument, arguments) {
 		cJSON *name = cJSON_GetObjectItem(argument, "name");
 		cJSON *description = cJSON_GetObjectItem(argument, "description");
@@ -773,31 +772,26 @@ static int mcp_prompt_arguments_schema(cJSON *arguments, const char **destinatio
 			continue;
 		property = cJSON_AddObjectToObject(properties, name->valuestring);
 		if (!property || !cJSON_AddStringToObject(property, "type", "string"))
-			goto out_free_schema_oom;
+			return -ENOMEM;
 		if (cJSON_IsString(description) &&
 		    !cJSON_AddStringToObject(property, "description", description->valuestring))
-			goto out_free_schema_oom;
+			return -ENOMEM;
 		if (cJSON_IsTrue(mandatory)) {
 			cJSON *item = cJSON_CreateString(name->valuestring);
 
 			if (!item)
-				goto out_free_schema_oom;
+				return -ENOMEM;
 			if (!cJSON_AddItemToArray(required, item)) {
 				cJSON_Delete(item);
-				goto out_free_schema_oom;
+				return -ENOMEM;
 			}
 		}
 	}
 	encoded = cJSON_PrintUnformatted(schema);
 	if (!encoded)
-		goto out_free_schema_oom;
+		return -ENOMEM;
 	*destination = encoded;
-	cJSON_Delete(schema);
-	return rc;
-
-out_free_schema_oom:
-	cJSON_Delete(schema);
-	return -ENOMEM;
+	return 0;
 }
 
 int mcp_list_prompts_copy(struct mcp_client *client, struct mcp_prompt_desc **out_prompts,

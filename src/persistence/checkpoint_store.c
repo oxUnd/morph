@@ -1118,6 +1118,19 @@ static int checkpoint_write_bytes(int fd, const struct checkpoint_state *state)
 	return 0;
 }
 
+static int checkpoint_replace_recover(int parent, const char *leaf,
+				      const char *backup, const char *staging,
+				      int moved, int *changed, int *staging_owned, int rc)
+{
+	if (moved && linkat(parent, backup, parent, leaf, 0) == 0) {
+		if (unlinkat(parent, backup, 0) == 0)
+			*changed = 0;
+	}
+	if (*staging_owned && unlinkat(parent, staging, 0) == 0)
+		*staging_owned = 0;
+	return rc;
+}
+
 /* Backups remain until the database commits. Publishing with linkat refuses
  * to replace a path created by a concurrent external writer. */
 static int checkpoint_replace(const char *root, const char *path,
@@ -1153,20 +1166,23 @@ static int checkpoint_replace(const char *root, const char *path,
 		rc = checkpoint_write_bytes(temporary, desired);
 		checkpoint_fd_cleanup(&temporary);
 		if (rc != 0)
-			goto out_remove_staging;
+			return checkpoint_replace_recover(parent, leaf, backup, staging,
+						 0, changed, staging_owned, rc);
 	}
 	if (expected->exists) {
 		temporary = openat(parent, backup,
 				   O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
 		if (temporary < 0) {
 			rc = -errno;
-			goto out_remove_staging;
+			return checkpoint_replace_recover(parent, leaf, backup, staging,
+						 0, changed, staging_owned, rc);
 		}
 		checkpoint_fd_cleanup(&temporary);
 		if (renameat(parent, leaf, parent, backup) != 0) {
 			rc = -errno;
 			(void)unlinkat(parent, backup, 0);
-			goto out_remove_staging;
+			return checkpoint_replace_recover(parent, leaf, backup, staging,
+						 0, changed, staging_owned, rc);
 		}
 		moved = 1;
 		*changed = 1;
@@ -1175,11 +1191,13 @@ static int checkpoint_replace(const char *root, const char *path,
 		if (rc == 0 && !checkpoint_state_equal(&current, expected))
 			rc = -EAGAIN;
 		if (rc != 0)
-			goto out_restore_backup;
+			return checkpoint_replace_recover(parent, leaf, backup, staging,
+						 moved, changed, staging_owned, rc);
 	}
 	if (desired->exists && linkat(parent, staging, parent, leaf, 0) != 0) {
 		rc = -errno;
-		goto out_restore_backup;
+		return checkpoint_replace_recover(parent, leaf, backup, staging,
+						 moved, changed, staging_owned, rc);
 	}
 	*changed = 1;
 	if (*staging_owned) {
@@ -1188,16 +1206,6 @@ static int checkpoint_replace(const char *root, const char *path,
 		*staging_owned = 0;
 	}
 	return 0;
-
-out_restore_backup:
-	if (moved && linkat(parent, backup, parent, leaf, 0) == 0) {
-		if (unlinkat(parent, backup, 0) == 0)
-			*changed = 0;
-	}
-out_remove_staging:
-	if (*staging_owned && unlinkat(parent, staging, 0) == 0)
-		*staging_owned = 0;
-	return rc;
 }
 
 static int checkpoint_backup_remove(const char *root, const char *path, const char *backup)

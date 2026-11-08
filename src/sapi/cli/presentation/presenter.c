@@ -577,28 +577,23 @@ static void cli_presenter_print_stream(struct cli_application *ctx)
 	(void)utf8_terminal_sanitize_feed(&ctx->presenter->event_stream_sanitizer,
 					  &ctx->presenter->event_stream, NULL, 0, 1);
 	content = morph_buf_cstr_borrow(&ctx->presenter->event_stream);
-	if (!content || !content[0])
-		goto reset;
-	if (reasoning_streamed) {
+	if (content && content[0] && reasoning_streamed) {
 		cli_presenter_reasoning_flush(ctx, 1);
-		goto reset;
+	} else if (content && content[0] && !already_streamed) {
+		label = ctx->presenter->event_stream_kind == CLI_PRESENTER_STREAM_REASONING
+				? "reasoning"
+				: (ctx->presenter->event_stream_kind == CLI_PRESENTER_STREAM_CONTENT
+					   ? "content"
+					   : "thought");
+		if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
+			cli_presenter_print_plain_labeled(ctx, label, content);
+		} else {
+			printf(ctx, "%s" ANSI_BOLD "●" ANSI_RESET " ",
+			       ctx->output.trailing_newlines < 2 ? "\n" : "");
+			cli_markdown_render_ansi_with_media_indented(
+				ctx, content, 2, cli_renderer_media, ctx);
+		}
 	}
-	if (already_streamed)
-		goto reset;
-	label = ctx->presenter->event_stream_kind == CLI_PRESENTER_STREAM_REASONING
-			? "reasoning"
-			: (ctx->presenter->event_stream_kind == CLI_PRESENTER_STREAM_CONTENT
-				   ? "content"
-				   : "thought");
-	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		cli_presenter_print_plain_labeled(ctx, label, content);
-	} else {
-		printf(ctx, "%s" ANSI_BOLD "●" ANSI_RESET " ",
-		       ctx->output.trailing_newlines < 2 ? "\n" : "");
-		cli_markdown_render_ansi_with_media_indented(ctx, content, 2, cli_renderer_media,
-							     ctx);
-	}
-reset:
 	if (ctx->presenter->event_stream_kind == CLI_PRESENTER_STREAM_CONTENT)
 		ctx->presenter->native_content_visible = 1;
 	morph_buf_reset(&ctx->presenter->event_stream);
