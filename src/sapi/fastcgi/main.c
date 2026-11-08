@@ -299,14 +299,69 @@ static void *maintenance_main(void *arg)
 	return NULL;
 }
 
+static int server_run_workers(struct fcgi_server *server, const char *database,
+	const char *trust_header, int stream_threads, int stream_queue, int workers,
+	const char *listen_spec, pthread_t **thread_storage)
+{
+	pthread_t *threads = NULL;
+	pthread_attr_t attributes;
+	int attributes_ready = 0;
+	int started = 0;
+	int result = 0;
+
+	server->store = session_store_open(NULL, database);
+	if (!server->store) {
+		result = 3;
+		return result;
+	}
+	if (fcgi_bridge_init(&server->bridge, database) != 0) {
+		result = 5;
+		return result;
+	}
+	server->auth = auth_create(trust_header);
+	server->streams = fcgi_stream_pool_create(stream_threads, stream_queue, NULL);
+	threads = calloc((size_t)workers, sizeof(*threads));
+	*thread_storage = threads;
+	if (!threads || !server->auth || !server->streams) {
+		result = 6;
+		return result;
+	}
+	if (pthread_attr_init(&attributes) == 0) {
+		attributes_ready = 1;
+		(void)pthread_attr_setstacksize(&attributes, FCGI_WORKER_STACK_SIZE);
+	}
+	if (pthread_create(&server->maintenance_thread, NULL, maintenance_main, server) == 0)
+		server->maintenance_started = 1;
+	fprintf(stderr, "morph-fastcgi: listening on %s, %d workers, db=%s\n", listen_spec, workers,
+		database);
+	for (; started < workers && !morph_signal_flag_get(&server->shutdown); started++) {
+		int error = pthread_create(&threads[started], attributes_ready ? &attributes : NULL,
+					   worker_main, server);
+
+		if (error) {
+			fprintf(stderr, "morph-fastcgi: worker creation failed: %s\n",
+				morph_strerror(-error));
+			result = 6;
+			server_stop(server);
+			break;
+		}
+	}
+	if (attributes_ready)
+		pthread_attr_destroy(&attributes);
+	for (int i = 0; i < started; i++)
+		pthread_join(threads[i], NULL);
+	if (server->maintenance_started) {
+		pthread_join(server->maintenance_thread, NULL);
+		server->maintenance_started = 0;
+	}
+	return result;
+}
+
 int main(int argc, char **argv)
 {
 	struct fcgi_server state = {.listen_fd = -1};
 	struct fcgi_server *server = &state;
 	pthread_t *threads = NULL;
-	pthread_attr_t attributes;
-	int attributes_ready = 0;
-	int started = 0;
 	int result = 0;
 	const char *listen_spec = getenv_or("MORPH_FCGI_LISTEN", "unix:/run/morph-fastcgi.sock");
 	const char *database = getenv_or("MORPH_FCGI_DB", "/var/lib/morph/morph.db");
@@ -345,52 +400,8 @@ int main(int argc, char **argv)
 		close(server->listen_fd);
 		return 1;
 	}
-	server->store = session_store_open(NULL, database);
-	if (!server->store) {
-		result = 3;
-		goto out_stop_server;
-	}
-	if (fcgi_bridge_init(&server->bridge, database) != 0) {
-		result = 5;
-		goto out_stop_server;
-	}
-	server->auth = auth_create(trust_header);
-	server->streams = fcgi_stream_pool_create(stream_threads, stream_queue, NULL);
-	threads = calloc((size_t)workers, sizeof(*threads));
-	if (!threads || !server->auth || !server->streams) {
-		result = 6;
-		goto out_stop_server;
-	}
-	if (pthread_attr_init(&attributes) == 0) {
-		attributes_ready = 1;
-		(void)pthread_attr_setstacksize(&attributes, FCGI_WORKER_STACK_SIZE);
-	}
-	if (pthread_create(&server->maintenance_thread, NULL, maintenance_main, server) == 0)
-		server->maintenance_started = 1;
-	fprintf(stderr, "morph-fastcgi: listening on %s, %d workers, db=%s\n", listen_spec, workers,
-		database);
-	for (; started < workers && !morph_signal_flag_get(&server->shutdown); started++) {
-		int error = pthread_create(&threads[started], attributes_ready ? &attributes : NULL,
-					   worker_main, server);
-
-		if (error) {
-			fprintf(stderr, "morph-fastcgi: worker creation failed: %s\n",
-				morph_strerror(-error));
-			result = 6;
-			server_stop(server);
-			break;
-		}
-	}
-	if (attributes_ready)
-		pthread_attr_destroy(&attributes);
-	for (int i = 0; i < started; i++)
-		pthread_join(threads[i], NULL);
-	if (server->maintenance_started) {
-		pthread_join(server->maintenance_thread, NULL);
-		server->maintenance_started = 0;
-	}
-
-out_stop_server:
+	result = server_run_workers(server, database, trust_header, stream_threads,
+				    stream_queue, workers, listen_spec, &threads);
 	if (!morph_signal_flag_get(&server->listen_closed))
 		server_stop(server);
 	morph_signal_listener_stop(&server->signals);

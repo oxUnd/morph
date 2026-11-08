@@ -1,4 +1,5 @@
 #include "js_canvas.h"
+#include "util/cleanup.h"
 #include "js_values.h"
 #include "js_image.h"
 #include "util/buf.h"
@@ -36,6 +37,7 @@ enum canvas_text_baseline {
 	CANVAS_TEXT_BASELINE_BOTTOM,
 };
 
+static void canvas_owner_cleanup(struct canvas **owner);
 static void canvas_finalizer(JSRuntime *rt, JSValue val);
 static void image_data_finalizer(JSRuntime *rt, JSValue val);
 static cairo_status_t png_buf_write(void *closure, const unsigned char *data, unsigned int length);
@@ -85,14 +87,7 @@ static void canvas_finalizer(JSRuntime *rt, JSValue val)
 	struct canvas *canvas = JS_GetOpaque(val, JS_GetClassID(val));
 
 	(void)rt;
-	if (!canvas)
-		return;
-	if (canvas->cr)
-		cairo_destroy(canvas->cr);
-	if (canvas->surface)
-		cairo_surface_destroy(canvas->surface);
-	free(canvas->data);
-	free(canvas);
+	canvas_owner_cleanup(&canvas);
 }
 
 static void image_data_finalizer(JSRuntime *rt, JSValue val)
@@ -176,9 +171,24 @@ int js_canvas_write_surface(cairo_surface_t *surface, const char *path)
 	return ok ? 0 : -EIO;
 }
 
+static void canvas_owner_cleanup(struct canvas **owner)
+{
+	struct canvas *canvas = *owner;
+
+	if (!canvas)
+		return;
+	if (canvas->cr)
+		cairo_destroy(canvas->cr);
+	if (canvas->surface)
+		cairo_surface_destroy(canvas->surface);
+	free(canvas->data);
+	free(canvas);
+	*owner = NULL;
+}
+
 static JSValue new_canvas_object(JSContext *ctx, int width, int height)
 {
-	struct canvas *canvas;
+	struct canvas *canvas MORPH_CLEANUP(canvas_owner_cleanup) = NULL;
 	JSValue obj;
 
 	if (width <= 0 || height <= 0 || width > 32768 || height > 32768)
@@ -190,21 +200,22 @@ static JSValue new_canvas_object(JSContext *ctx, int width, int height)
 	canvas->height = height;
 	canvas->stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, width);
 	if (canvas->stride <= 0)
-		goto fail;
+		return JS_ThrowOutOfMemory(ctx);
 	canvas->data = calloc((size_t)canvas->stride, (size_t)height);
 	if (!canvas->data)
-		goto fail;
+		return JS_ThrowOutOfMemory(ctx);
 	canvas->surface = cairo_image_surface_create_for_data(canvas->data, CAIRO_FORMAT_ARGB32,
 							      width, height, canvas->stride);
 	if (cairo_surface_status(canvas->surface) != CAIRO_STATUS_SUCCESS)
-		goto fail;
+		return JS_ThrowOutOfMemory(ctx);
 	canvas->cr = cairo_create(canvas->surface);
 	if (cairo_status(canvas->cr) != CAIRO_STATUS_SUCCESS)
-		goto fail;
+		return JS_ThrowOutOfMemory(ctx);
 	obj = JS_NewObjectClass(ctx, js_values_state_borrow(ctx)->canvas_class_id);
 	if (JS_IsException(obj))
-		goto fail_value;
+		return obj;
 	JS_SetOpaque(obj, canvas);
+	canvas = NULL;
 	JS_SetPropertyStr(ctx, obj, "width", JS_NewInt32(ctx, width));
 	JS_SetPropertyStr(ctx, obj, "height", JS_NewInt32(ctx, height));
 	JS_SetPropertyStr(ctx, obj, "font", JS_NewString(ctx, CANVAS_DEFAULT_FONT));
@@ -212,17 +223,6 @@ static JSValue new_canvas_object(JSContext *ctx, int width, int height)
 	JS_SetPropertyStr(ctx, obj, "textBaseline",
 			  JS_NewString(ctx, CANVAS_DEFAULT_TEXT_BASELINE));
 	return obj;
-fail_value:
-	canvas_finalizer(JS_GetRuntime(ctx), obj);
-	return obj;
-fail:
-	if (canvas->cr)
-		cairo_destroy(canvas->cr);
-	if (canvas->surface)
-		cairo_surface_destroy(canvas->surface);
-	free(canvas->data);
-	free(canvas);
-	return JS_ThrowOutOfMemory(ctx);
 }
 
 static JSValue js_create_canvas(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)

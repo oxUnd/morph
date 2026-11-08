@@ -1,6 +1,8 @@
 #include "agent_ui.h"
 
 #include "util/buf.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "util/strmap.h"
 #include "util/name.h"
 #include "util/utf8.h"
@@ -342,19 +344,16 @@ static int parse_attrs(struct agent_ui_parser *p, size_t end, cJSON *attrs)
 		skip_spaces(p);
 		if (consume_utf8_quote(p, &p->pos, &quote)) {
 			val_start = p->pos;
-			while (p->pos < end) {
-				size_t width = 0;
+			size_t width = 0;
 
-				if (at_matching_utf8_quote(p, p->pos, quote,
-							   &width)) {
-					val_end = p->pos;
-					p->pos += width;
-					goto add_attr;
-				}
+			while (p->pos < end &&
+			       !at_matching_utf8_quote(p, p->pos, quote, &width))
 				p->pos++;
-			}
 			val_end = p->pos;
-			add_warning(p, "unterminated quoted attribute");
+			if (p->pos < end)
+				p->pos += width;
+			else
+				add_warning(p, "unterminated quoted attribute");
 		} else {
 			val_start = p->pos;
 			while (p->pos < end && !is_attr_end(p->input[p->pos]))
@@ -363,10 +362,9 @@ static int parse_attrs(struct agent_ui_parser *p, size_t end, cJSON *attrs)
 			add_warning(p, "unquoted attribute value accepted");
 		}
 
-add_attr:
 		{
-			morph_buf_t key;
-			morph_buf_t value;
+			morph_buf_t key MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			morph_buf_t value MORPH_CLEANUP(morph_buf_cleanup) = {0};
 			int rc;
 			size_t value_len = val_end - val_start;
 
@@ -377,19 +375,14 @@ add_attr:
 				return rc;
 			rc = morph_buf_init(&value, value_len + 1);
 			if (rc < 0) {
-				morph_buf_cleanup(&key);
 				return rc;
 			}
 			if (morph_buf_append(&key, p->input + key_start, key_len) < 0 ||
 			    append_decoded(&value, p->input + val_start, value_len) < 0 ||
 			    !cJSON_AddStringToObject(attrs, morph_buf_cstr_borrow(&key),
 						     morph_buf_cstr_borrow(&value))) {
-				morph_buf_cleanup(&value);
-				morph_buf_cleanup(&key);
 				return -ENOMEM;
 			}
-			morph_buf_cleanup(&value);
-			morph_buf_cleanup(&key);
 		}
 	}
 	return 0;
@@ -444,12 +437,11 @@ static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes,
 	int prefix_len;
 	int missing_colon = 0;
 	int self_closing;
-	morph_buf_t name_buf;
-	cJSON *node = NULL;
-	cJSON *attrs = NULL;
-	cJSON *children = NULL;
-	morph_buf_t body;
-	int body_ready = 0;
+	morph_buf_t name_buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	cJSON *node MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *attrs MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *children MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	morph_buf_t body MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc = 0;
 
 	prefix_len = opening_tag_prefix_len(p, &missing_colon);
@@ -471,7 +463,6 @@ static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes,
 	if (rc < 0)
 		return rc;
 	if (morph_buf_append(&name_buf, p->input + name_start, name_len) < 0) {
-		morph_buf_cleanup(&name_buf);
 		return -ENOMEM;
 	}
 	if (!supported_tag(morph_buf_cstr_borrow(&name_buf))) {
@@ -479,7 +470,6 @@ static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes,
 			add_warning(p, "m:ask_user ignored; use ask_user tool");
 		else
 			add_warning(p, "unsupported m tag left as text");
-		morph_buf_cleanup(&name_buf);
 		p->pos = start;
 		tag_end = find_tag_end(p, p->pos);
 		if (tag_end >= p->len)
@@ -495,7 +485,6 @@ static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes,
 	tag_end = find_tag_end(p, p->pos);
 	if (tag_end >= p->len) {
 		add_warning(p, "unterminated m tag left as text");
-		morph_buf_cleanup(&name_buf);
 		p->pos = p->len;
 		return append_text_node(nodes, p->input + start,
 					p->len - start, plain);
@@ -510,58 +499,45 @@ static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes,
 	children = cJSON_CreateArray();
 	if (!node || !attrs || !children) {
 		rc = -ENOMEM;
-		goto out;
+		return rc;
 	}
 	if (!cJSON_AddStringToObject(node, "type", "component") ||
 	    !cJSON_AddStringToObject(node, "component", morph_buf_cstr_borrow(&name_buf))) {
 		rc = -ENOMEM;
-		goto out;
+		return rc;
 	}
 	rc = parse_attrs(p, self_closing ? tag_end - 1 : tag_end, attrs);
 	if (rc < 0)
-		goto out;
+		return rc;
 	p->pos = tag_end + 1;
 	p->recognized++;
 	rc = morph_buf_init(&body, 128);
 	if (rc < 0)
-		goto out;
-	body_ready = 1;
+		return rc;
 	if (!self_closing) {
 		rc = parse_nodes(p, morph_buf_cstr_borrow(&name_buf), depth + 1, children, &body);
 		if (rc < 0)
-			goto out;
+			return rc;
 	}
 	if (plain && morph_buf_append(plain, morph_buf_cstr_borrow(&body), body.len) < 0) {
 		rc = -ENOMEM;
-		goto out;
+		return rc;
 	}
-	if (!cJSON_AddItemToObject(node, "attrs", attrs)) {
+	if (morph_json_object_take(node, "attrs", &attrs) != 0) {
 		rc = -ENOMEM;
-		goto out;
+		return rc;
 	}
-	attrs = NULL;
 	if (!cJSON_AddStringToObject(node, "text", morph_buf_cstr_borrow(&body))) {
 		rc = -ENOMEM;
-		goto out;
+		return rc;
 	}
 	if (cJSON_GetArraySize(children) > 0) {
-		if (!cJSON_AddItemToObject(node, "children", children)) {
+		if (morph_json_object_take(node, "children", &children) != 0) {
 			rc = -ENOMEM;
-			goto out;
+			return rc;
 		}
-		children = NULL;
 	}
-	cJSON_AddItemToArray(nodes, node);
-	node = NULL;
-
-out:
-	if (body_ready)
-		morph_buf_cleanup(&body);
-	cJSON_Delete(children);
-	cJSON_Delete(attrs);
-	cJSON_Delete(node);
-	morph_buf_cleanup(&name_buf);
-	return rc;
+	return morph_json_array_take(nodes, &node);
 }
 
 static int parse_nodes(struct agent_ui_parser *p, const char *stop_name,
@@ -634,44 +610,39 @@ static int parse_nodes(struct agent_ui_parser *p, const char *stop_name,
 	return 0;
 }
 
+static void agent_ui_parser_cleanup(struct agent_ui_parser *parser)
+{
+	morph_json_cleanup(&parser->warnings);
+}
+
 char *agent_ui_parse_tags_json(const char *input)
 {
-	struct agent_ui_parser parser;
-	cJSON *root = NULL;
-	cJSON *nodes = NULL;
-	char *json = NULL;
+	struct agent_ui_parser parser MORPH_CLEANUP(agent_ui_parser_cleanup) = {0};
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *nodes MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	int rc;
 
 	if (!input)
 		input = "";
-	memset(&parser, 0, sizeof(parser));
 	parser.input = input;
 	parser.len = strlen(input);
 	root = cJSON_CreateObject();
 	nodes = cJSON_CreateArray();
 	parser.warnings = cJSON_CreateArray();
 	if (!root || !nodes || !parser.warnings)
-		goto out;
+		return NULL;
 	if (!cJSON_AddStringToObject(root, "kind", "agent_ui") ||
 	    !cJSON_AddNumberToObject(root, "version", 1))
-		goto out;
+		return NULL;
 	rc = parse_nodes(&parser, NULL, 0, nodes, NULL);
 	if (rc < 0)
-		goto out;
+		return NULL;
 	if (!cJSON_AddNumberToObject(root, "recognized_tags",
 				     parser.recognized))
-		goto out;
-	if (!cJSON_AddItemToObject(root, "nodes", nodes))
-		goto out;
-	nodes = NULL;
-	if (!cJSON_AddItemToObject(root, "warnings", parser.warnings))
-		goto out;
-	parser.warnings = NULL;
-	json = cJSON_PrintUnformatted(root);
-
-out:
-	cJSON_Delete(parser.warnings);
-	cJSON_Delete(nodes);
-	cJSON_Delete(root);
-	return json;
+		return NULL;
+	if (morph_json_object_take(root, "nodes", &nodes) != 0)
+		return NULL;
+	if (morph_json_object_take(root, "warnings", &parser.warnings) != 0)
+		return NULL;
+	return cJSON_PrintUnformatted(root);
 }

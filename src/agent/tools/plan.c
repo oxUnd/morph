@@ -57,21 +57,21 @@ static char *format_plan(struct plan *p)
 
 	rc = morph_buf_printf(&buf, "Plan \"%s\" [%s]", p->name, p->id);
 	if (rc != 0)
-		goto fail;
+		return NULL;
 
 	if (p->goal[0]) {
 		rc = morph_buf_printf(&buf, "\n  Goal: %s", p->goal);
 		if (rc != 0)
-			goto fail;
+			return NULL;
 	}
 
 	rc = morph_buf_printf(&buf, "\n  %d step(s)", p->step_count);
 	if (rc != 0)
-		goto fail;
+		return NULL;
 	if (all_done) {
 		rc = morph_buf_puts(&buf, " [completed]");
 		if (rc != 0)
-			goto fail;
+			return NULL;
 	}
 
 	for (int i = 0; i < p->step_count; i++) {
@@ -94,14 +94,10 @@ static char *format_plan(struct plan *p)
 				      icon, p->steps[i].id,
 				      p->steps[i].description, marker);
 		if (rc != 0)
-			goto fail;
+			return NULL;
 	}
 
 	return morph_buf_detach(&buf);
-
-fail:
-	morph_buf_cleanup(&buf);
-	return NULL;
 }
 
 static const char *plan_status_icon(const char *status)
@@ -146,19 +142,19 @@ static char *format_plans(struct plan_registry *reg)
 				      i > 0 ? "\n" : "", p->name,
 				      p->id);
 		if (rc != 0)
-			goto fail;
+			return NULL;
 		if (p->goal[0]) {
 			rc = morph_buf_printf(&buf, "\n  Goal: %s", p->goal);
 			if (rc != 0)
-				goto fail;
+				return NULL;
 		}
 		rc = morph_buf_printf(&buf, "\n  %d step(s)", p->step_count);
 		if (rc != 0)
-			goto fail;
+			return NULL;
 		if (all_done) {
 			rc = morph_buf_puts(&buf, " [all completed]");
 			if (rc != 0)
-				goto fail;
+				return NULL;
 		}
 
 		for (int j = 0; j < p->step_count; j++) {
@@ -172,15 +168,11 @@ static char *format_plans(struct plan_registry *reg)
 					      icon, s->id,
 					      s->description, marker);
 			if (rc != 0)
-				goto fail;
+				return NULL;
 		}
 	}
 
 	return morph_buf_detach(&buf);
-
-fail:
-	morph_buf_cleanup(&buf);
-	return NULL;
 }
 
 static int plan_all_done(struct plan *p)
@@ -201,13 +193,13 @@ static cJSON *plan_to_json(struct plan *p)
 	if (!p)
 		return NULL;
 
-	cJSON *obj = cJSON_CreateObject();
+	cJSON *obj MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
 	if (!obj)
 		return NULL;
 
-	cJSON *steps = cJSON_CreateArray();
+	cJSON *steps MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
 	if (!steps)
-		goto fail;
+		return NULL;
 
 	if (!cJSON_AddStringToObject(obj, "id", p->id) ||
 	    !cJSON_AddStringToObject(obj, "name", p->name) ||
@@ -220,13 +212,13 @@ static cJSON *plan_to_json(struct plan *p)
 	    !cJSON_AddNumberToObject(obj, "step_count", p->step_count) ||
 	    !cJSON_AddNumberToObject(obj, "active_step", p->active_step) ||
 	    !cJSON_AddBoolToObject(obj, "all_done", plan_all_done(p)))
-		goto fail;
+		return NULL;
 
 	for (int i = 0; i < p->step_count; i++) {
 		struct plan_step *s = &p->steps[i];
-		cJSON *step = cJSON_CreateObject();
+		cJSON *step MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
 		if (!step)
-			goto fail;
+			return NULL;
 		if (!cJSON_AddNumberToObject(step, "id", s->id) ||
 		    !cJSON_AddStringToObject(step, "description", s->description) ||
 		    !cJSON_AddStringToObject(step, "status", s->status) ||
@@ -235,19 +227,15 @@ static cJSON *plan_to_json(struct plan *p)
 		    !cJSON_AddStringToObject(step, "artifact", s->artifact) ||
 		    !cJSON_AddBoolToObject(step, "active",
 					   i == p->active_step && p->active_step >= 0)) {
-			cJSON_Delete(step);
-			goto fail;
+			return NULL;
 		}
-		cJSON_AddItemToArray(steps, step);
+		if (morph_json_array_take(steps, &step) != 0)
+			return NULL;
 	}
 
-	cJSON_AddItemToObject(obj, "steps", steps);
-	return obj;
-
-fail:
-	cJSON_Delete(steps);
-	cJSON_Delete(obj);
-	return NULL;
+	if (morph_json_object_take(obj, "steps", &steps) != 0)
+		return NULL;
+	return morph_json_steal(&obj);
 }
 
 static cJSON *plan_registry_to_json(struct plan_registry *reg,
@@ -255,52 +243,50 @@ static cJSON *plan_registry_to_json(struct plan_registry *reg,
 				    const char *selected_plan_id,
 				    const char *selected_plan)
 {
-	cJSON *root = cJSON_CreateObject();
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
 	if (!root)
 		return NULL;
 
-	cJSON *plans = cJSON_CreateArray();
+	cJSON *plans MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
 	if (!plans)
-		goto fail;
+		return NULL;
 
 	if (!cJSON_AddStringToObject(root, "kind", "plan_state") ||
 	    !cJSON_AddStringToObject(root, "command",
 				     command ? command : "") ||
 	    !cJSON_AddNumberToObject(root, "count",
 				     reg ? reg->count : 0))
-		goto fail;
+		return NULL;
 
 	if (selected_plan_id &&
 	    !cJSON_AddStringToObject(root, "selected_plan_id",
 				     selected_plan_id))
-		goto fail;
+		return NULL;
 
 	if (selected_plan &&
 	    !cJSON_AddStringToObject(root, "selected_plan", selected_plan))
-		goto fail;
+		return NULL;
 
 	if (reg) {
 		for (int i = 0; i < reg->count; i++) {
-			cJSON *item = plan_to_json(&reg->plans[i]);
+			cJSON *item MORPH_CLEANUP(morph_json_cleanup) =
+				plan_to_json(&reg->plans[i]);
 			if (!item)
-				goto fail;
-			cJSON_AddItemToArray(plans, item);
+				return NULL;
+			if (morph_json_array_take(plans, &item) != 0)
+				return NULL;
 		}
 	}
 
-	cJSON_AddItemToObject(root, "plans", plans);
-	return root;
-
-fail:
-	cJSON_Delete(plans);
-	cJSON_Delete(root);
-	return NULL;
+	if (morph_json_object_take(root, "plans", &plans) != 0)
+		return NULL;
+	return morph_json_steal(&root);
 }
 
 static cJSON *plan_ui_to_json(cJSON *data)
 {
-	cJSON *ui = cJSON_CreateObject();
-	cJSON *summary = NULL;
+	cJSON *ui MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *summary MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	cJSON *item;
 
 	if (!ui)
@@ -308,46 +294,41 @@ static cJSON *plan_ui_to_json(cJSON *data)
 
 	if (!cJSON_AddStringToObject(ui, "component", "plan") ||
 	    !cJSON_AddStringToObject(ui, "version", "1"))
-		goto fail;
+		return NULL;
 
 	summary = cJSON_CreateObject();
 	if (!summary)
-		goto fail;
+		return NULL;
 	if (data) {
 		item = cJSON_GetObjectItem(data, "kind");
 		if (cJSON_IsString(item) &&
 		    !cJSON_AddStringToObject(summary, "kind",
 					     item->valuestring))
-			goto fail;
+			return NULL;
 		item = cJSON_GetObjectItem(data, "command");
 		if (cJSON_IsString(item) &&
 		    !cJSON_AddStringToObject(summary, "command",
 					     item->valuestring))
-			goto fail;
+			return NULL;
 		item = cJSON_GetObjectItem(data, "count");
 		if (cJSON_IsNumber(item) &&
 		    !cJSON_AddNumberToObject(summary, "count",
 					     item->valuedouble))
-			goto fail;
+			return NULL;
 		item = cJSON_GetObjectItem(data, "selected_plan_id");
 		if (cJSON_IsString(item) &&
 		    !cJSON_AddStringToObject(summary, "selected_plan_id",
 					     item->valuestring))
-			goto fail;
+			return NULL;
 		item = cJSON_GetObjectItem(data, "selected_plan");
 		if (cJSON_IsString(item) &&
 		    !cJSON_AddStringToObject(summary, "selected_plan",
 					     item->valuestring))
-			goto fail;
+			return NULL;
 	}
-	cJSON_AddItemToObject(ui, "data", summary);
-	summary = NULL;
-	return ui;
-
-fail:
-	cJSON_Delete(summary);
-	cJSON_Delete(ui);
-	return NULL;
+	if (morph_json_object_take(ui, "data", &summary) != 0)
+		return NULL;
+	return morph_json_steal(&ui);
 }
 
 static int attach_plan_state(struct tool_result *result, struct plan_registry *reg,

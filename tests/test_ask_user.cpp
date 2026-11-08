@@ -1,8 +1,35 @@
 #include <gtest/gtest.h>
 #include "agent/tools/ask_user.h"
 #include "agent/tool.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include <stdlib.h>
 #include <string.h>
+
+static void *ask_user_fail_choices_key(size_t size)
+{
+	if (size == sizeof("choices")) {
+		cJSON_InitHooks(nullptr);
+		return nullptr;
+	}
+	return malloc(size);
+}
+
+static void *ask_user_fail_recommended_key(size_t size)
+{
+	if (size == sizeof("recommended_indices")) {
+		cJSON_InitHooks(nullptr);
+		return nullptr;
+	}
+	return malloc(size);
+}
+
+struct AskUserJsonHooksReset {
+	~AskUserJsonHooksReset()
+	{
+		cJSON_InitHooks(nullptr);
+	}
+};
 
 struct AskUserState {
 	int choices_count{};
@@ -12,6 +39,7 @@ struct AskUserState {
 	ask_user_options options{};
 	int callback_rc{};
 	int calls{};
+	bool fail_choices_key{};
 };
 
 static int set_mock_answers(char ***answers,
@@ -57,6 +85,10 @@ static int mock_ask_user_cb(const char *question,
 	(void)question;
 	auto &state = *static_cast<AskUserState *>(user_data);
 	state.calls++;
+	if (state.fail_choices_key) {
+		cJSON_Hooks hooks = {ask_user_fail_choices_key, free};
+		cJSON_InitHooks(&hooks);
+	}
 	if (options)
 		state.options = *options;
 	if (state.callback_rc)
@@ -604,4 +636,32 @@ TEST_F(AskUserToolTest, InvalidFallbackParametersNeverOpenPrompt)
 		tool_result_cleanup(&result);
 	}
 	EXPECT_EQ(state.calls, 0);
+}
+
+TEST_F(AskUserToolTest, ResponseCollectionInsertionFailureReturnsAllocationError)
+{
+	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	AskUserJsonHooksReset restore_hooks;
+
+	tool_result_init(&result);
+	state.fail_choices_key = true;
+	EXPECT_EQ(tool_exec(&tools, "ask_user",
+		"{\"question\":\"q\",\"choices\":[\"A\",\"B\"]}", &result), -ENOMEM);
+	EXPECT_EQ(state.calls, 1);
+}
+
+TEST_F(AskUserToolTest, RecommendationInsertionFailureReturnsAllocationError)
+{
+	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	ASSERT_NE(data, nullptr);
+	struct ask_user_options options = {};
+	options.recommended_count = 1;
+	options.recommended_indices[0] = 0;
+	AskUserJsonHooksReset restore_hooks;
+	cJSON_Hooks hooks = {ask_user_fail_recommended_key, free};
+
+	cJSON_InitHooks(&hooks);
+	EXPECT_EQ(ask_user_options_to_json(data, &options), -ENOMEM);
+	EXPECT_EQ(cJSON_GetObjectItem(data, "recommended_indices"), nullptr);
 }

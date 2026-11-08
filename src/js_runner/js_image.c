@@ -1256,43 +1256,43 @@ static JSValue js_image_frame_fn(JSContext *ctx, JSValueConst this_val, int argc
 	surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, frame_w, frame_h);
 	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
 		rc = -EIO;
-		goto out_fail;
-	}
-	cr = cairo_create(surface);
-	if (style && strcmp(style, "neon") == 0)
-		cairo_set_source_rgb(cr, 0.02, 0.02, 0.04);
-	else if (style && strcmp(style, "kraft") == 0)
-		cairo_set_source_rgb(cr, 0.82, 0.70, 0.52);
-	else if (style && strcmp(style, "dark") == 0)
-		cairo_set_source_rgb(cr, 0.08, 0.08, 0.09);
-	else
-		cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
-	cairo_paint(cr);
-	cairo_set_source_surface(cr, src, pad, pad);
-	cairo_paint(cr);
-	if (style && strcmp(style, "neon") == 0) {
-		cairo_set_line_width(cr, 8.0);
-		cairo_set_source_rgb(cr, 0.0, 0.95, 1.0);
-		cairo_rectangle(cr, pad / 2.0, pad / 2.0, frame_w - pad, frame_h - pad);
-		cairo_stroke(cr);
-		cairo_set_line_width(cr, 3.0);
-		cairo_set_source_rgb(cr, 1.0, 0.1, 0.75);
-		cairo_rectangle(cr, pad * 0.7, pad * 0.7, frame_w - pad * 1.4, frame_h - pad * 1.4);
-		cairo_stroke(cr);
-	}
-	if (caption && *caption) {
-		cairo_select_font_face(cr, "Helvetica", CAIRO_FONT_SLANT_NORMAL,
-				       CAIRO_FONT_WEIGHT_NORMAL);
-		cairo_set_font_size(cr, (double)pad * 0.45);
-		if (style && strcmp(style, "dark") == 0)
-			cairo_set_source_rgb(cr, 0.9, 0.9, 0.9);
+	} else {
+		cr = cairo_create(surface);
+		if (style && strcmp(style, "neon") == 0)
+			cairo_set_source_rgb(cr, 0.02, 0.02, 0.04);
+		else if (style && strcmp(style, "kraft") == 0)
+			cairo_set_source_rgb(cr, 0.82, 0.70, 0.52);
+		else if (style && strcmp(style, "dark") == 0)
+			cairo_set_source_rgb(cr, 0.08, 0.08, 0.09);
 		else
-			cairo_set_source_rgb(cr, 0.12, 0.12, 0.12);
-		cairo_move_to(cr, pad, height + pad * 1.65);
-		cairo_show_text(cr, caption);
+			cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+		cairo_paint(cr);
+		cairo_set_source_surface(cr, src, pad, pad);
+		cairo_paint(cr);
+		if (style && strcmp(style, "neon") == 0) {
+			cairo_set_line_width(cr, 8.0);
+			cairo_set_source_rgb(cr, 0.0, 0.95, 1.0);
+			cairo_rectangle(cr, pad / 2.0, pad / 2.0, frame_w - pad, frame_h - pad);
+			cairo_stroke(cr);
+			cairo_set_line_width(cr, 3.0);
+			cairo_set_source_rgb(cr, 1.0, 0.1, 0.75);
+			cairo_rectangle(cr, pad * 0.7, pad * 0.7,
+					frame_w - pad * 1.4, frame_h - pad * 1.4);
+			cairo_stroke(cr);
+		}
+		if (caption && *caption) {
+			cairo_select_font_face(cr, "Helvetica", CAIRO_FONT_SLANT_NORMAL,
+					       CAIRO_FONT_WEIGHT_NORMAL);
+			cairo_set_font_size(cr, (double)pad * 0.45);
+			if (style && strcmp(style, "dark") == 0)
+				cairo_set_source_rgb(cr, 0.9, 0.9, 0.9);
+			else
+				cairo_set_source_rgb(cr, 0.12, 0.12, 0.12);
+			cairo_move_to(cr, pad, height + pad * 1.65);
+			cairo_show_text(cr, caption);
+		}
+		rc = js_canvas_write_surface(surface, resolved_output);
 	}
-	rc = js_canvas_write_surface(surface, resolved_output);
-out_fail:
 	if (cr)
 		cairo_destroy(cr);
 	if (surface)

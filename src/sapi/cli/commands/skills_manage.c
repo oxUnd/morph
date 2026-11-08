@@ -1,4 +1,6 @@
 #include "sapi/cli/commands/skills_manage.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "config/config.h"
 #include "cJSON.h"
 #include "sapi/cli/services/management.h"
@@ -608,8 +610,8 @@ static int cli_skills_manage_skills_update_one(struct morph_log *logger, const c
 {
 	char target[PATH_MAX];
 	struct cli_skills_manage_skills_source source = {0};
-	morph_array_t candidates = {0};
-	cJSON *metadata = NULL;
+	morph_array_t candidates MORPH_CLEANUP(morph_array_cleanup) = {0};
+	cJSON *metadata MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	int rc = file_path_join(target, sizeof(target), root, name);
 
 	if (rc != 0)
@@ -617,7 +619,7 @@ static int cli_skills_manage_skills_update_one(struct morph_log *logger, const c
 	metadata = cli_skill_store_metadata_copy(target);
 	rc = cli_skill_store_unmodified(target, metadata);
 	if (rc != 0)
-		goto out;
+		return rc;
 	const char *origin = cli_skills_manage_metadata_string(metadata, "source");
 	const char *kind = cli_skills_manage_metadata_string(metadata, "kind");
 	const char *path = cli_skills_manage_metadata_string(metadata, "path");
@@ -625,7 +627,7 @@ static int cli_skills_manage_skills_update_one(struct morph_log *logger, const c
 
 	if (!origin || !kind || !path || !ref) {
 		rc = (MORPH_ERR_FORMAT);
-		goto out;
+		return rc;
 	}
 	rc = morph_array_init(&candidates, 1, sizeof(struct cli_skill_candidate));
 	if (rc == 0)
@@ -656,15 +658,12 @@ static int cli_skills_manage_skills_update_one(struct morph_log *logger, const c
 				printf("Updated '%s' in %s.\n", name, root);
 		}
 	}
-out:
 	if (source.temporary[0]) {
 		int cleanup_rc = cli_skill_store_remove(source.temporary);
 
 		if (rc == 0)
 			rc = cleanup_rc;
 	}
-	morph_array_cleanup(&candidates);
-	cJSON_Delete(metadata);
 	return rc;
 }
 
@@ -726,14 +725,21 @@ static int cli_skills_manage_skills_modify(struct morph_log *logger,
 	return result ? result : rc;
 }
 
+static void cli_skills_manage_fd_cleanup(int *owner)
+{
+	if (*owner >= 0)
+		close(*owner);
+	*owner = -1;
+}
+
 int cli_skills_manage_run(struct morph_log *logger, int argc, char **argv, const char *config_path)
 {
 	struct cli_skills_manage_skills_options options;
-	char *user_dir = NULL;
-	char *root = NULL;
-	char *lock = NULL;
+	char *user_dir MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *root MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *lock MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	char resolved[PATH_MAX];
-	int fd = -1;
+	int fd MORPH_CLEANUP(cli_skills_manage_fd_cleanup) = -1;
 	int rc = cli_skills_manage_skills_parse(argc, argv, config_path, &options);
 
 	if (rc != 0) {
@@ -751,50 +757,44 @@ int cli_skills_manage_run(struct morph_log *logger, int argc, char **argv, const
 	}
 	rc = cli_skills_manage_skills_user_dir(options.config, &user_dir);
 	if (rc != 0)
-		goto out;
+		return rc == 0 ? 0 : cli_management_error(rc, "skills command failed");
 	if (strcmp(options.action, "list") == 0) {
 		rc = cli_skills_manage_skills_list(&options, user_dir);
-		goto out;
+		return rc == 0 ? 0 : cli_management_error(rc, "skills command failed");
 	}
 	root = options.global ? strdup(user_dir) : strdup(".agents/skills");
 	if (!root) {
 		rc = (-ENOMEM);
-		goto out;
+		return rc == 0 ? 0 : cli_management_error(rc, "skills command failed");
 	}
 	if (!options.list) {
 		rc = file_ensure_dir(root);
 		if (rc != 0)
-			goto out;
+			return rc == 0 ? 0 : cli_management_error(rc, "skills command failed");
 		if (!realpath(root, resolved)) {
 			rc = (-errno);
-			goto out;
+			return rc == 0 ? 0 : cli_management_error(rc, "skills command failed");
 		}
 		free(root);
 		root = strdup(resolved);
 		if (!root) {
 			rc = (-ENOMEM);
-			goto out;
+			return rc == 0 ? 0 : cli_management_error(rc, "skills command failed");
 		}
 		lock = file_path_join_alloc(root, ".morph-skills.lock");
 		if (!lock) {
 			rc = (-ENOMEM);
-			goto out;
+			return rc == 0 ? 0 : cli_management_error(rc, "skills command failed");
 		}
 		fd = cli_management_lock(lock);
 		if (fd < 0) {
 			rc = (fd);
-			goto out;
+			return rc == 0 ? 0 : cli_management_error(rc, "skills command failed");
 		}
 	}
 	if (strcmp(options.action, "add") == 0)
 		rc = cli_skills_manage_skills_add(logger, &options, root);
 	else
 		rc = cli_skills_manage_skills_modify(logger, &options, root);
-out:
-	if (fd >= 0)
-		close(fd);
-	free(lock);
-	free(root);
-	free(user_dir);
 	return rc == 0 ? 0 : cli_management_error(rc, "skills command failed");
 }

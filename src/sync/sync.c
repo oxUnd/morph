@@ -2,6 +2,7 @@
 #include "sync/db_backup.h"
 #include "util/array.h"
 #include "util/error.h"
+#include "util/cleanup.h"
 #include "util/file.h"
 #include "util/log.h"
 #include "content_hash.h"
@@ -50,6 +51,19 @@ struct manifest_entry {
 	char local_hash[MORPH_SYNC_HASH_LEN];
 	char remote_hash[MORPH_SYNC_HASH_LEN];
 };
+
+static void sync_database_cleanup(sqlite3 **database)
+{
+	if (*database)
+		sqlite3_close(*database);
+	*database = NULL;
+}
+
+static void sync_stmt_cleanup(sqlite3_stmt **stmt)
+{
+	sqlite3_finalize(*stmt);
+	*stmt = NULL;
+}
 
 static int ensure_parent_dir(const char *path)
 {
@@ -757,33 +771,24 @@ static int manifest_delete_trash(sqlite3 *db, int64_t id)
 
 static int copy_sqlite_backup(const char *src, const char *dst)
 {
-	sqlite3 *from = NULL;
-	sqlite3 *to = NULL;
+	sqlite3 *from MORPH_CLEANUP(sync_database_cleanup) = NULL;
+	sqlite3 *to MORPH_CLEANUP(sync_database_cleanup) = NULL;
 	sqlite3_backup *backup;
 	int rc;
 
 	rc = sqlite3_open_v2(src, &from, SQLITE_OPEN_READONLY, NULL);
 	if (rc != SQLITE_OK)
-		goto fail;
+		return -EINVAL;
 	rc = sqlite3_open_v2(dst, &to, SQLITE_OPEN_READWRITE |
 			     SQLITE_OPEN_CREATE, NULL);
 	if (rc != SQLITE_OK)
-		goto fail;
+		return -EINVAL;
 	backup = sqlite3_backup_init(to, "main", from, "main");
 	if (!backup)
-		goto fail;
+		return -EINVAL;
 	(void)sqlite3_backup_step(backup, -1);
 	rc = sqlite3_backup_finish(backup);
-	sqlite3_close(from);
-	sqlite3_close(to);
 	return rc == SQLITE_OK ? 0 : MORPH_ERR_DB;
-
-fail:
-	if (from)
-		sqlite3_close(from);
-	if (to)
-		sqlite3_close(to);
-	return -EINVAL;
 }
 
 static int copy_file_plain(const char *src, const char *dst)
@@ -1361,66 +1366,69 @@ static int cleanup_trash(sqlite3 *db, const struct morph_sync_config *cfg)
 	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
 }
 
-static int sync_once_locked(const struct morph_sync_config *cfg,
+static int sync_once_collect(const struct morph_sync_config *cfg,
 		    struct morph_sync_status *status)
 {
-	struct morph_sync_status local_status;
-	morph_array_t pairs;
-	sqlite3 *manifest = NULL;
+	sqlite3 *manifest MORPH_CLEANUP(sync_database_cleanup) = NULL;
+	morph_array_t pairs MORPH_CLEANUP(morph_array_cleanup) = {0};
 	char data_root[PATH_MAX];
 	int rc;
+
+	rc = prepare_dirs(cfg);
+	if (rc != 0)
+		return rc;
+	rc = manifest_open(&manifest, cfg->sync_dir);
+	if (rc != 0)
+		return rc;
+	rc = morph_array_init(&pairs, 64, sizeof(struct sync_pair));
+	if (rc != 0)
+		return rc;
+	rc = sync_path_join(data_root, sizeof(data_root), cfg->sync_dir,
+			    SYNC_DATA_DIR);
+	if (rc != 0)
+		return rc;
+	rc = scan_side(&pairs, cfg->source_dir, cfg, 0);
+	if (rc != 0)
+		return rc;
+	rc = scan_side(&pairs, data_root, cfg, 1);
+	if (rc != 0)
+		return rc;
+	for (size_t i = 0; i < pairs.nelts; i++) {
+		struct sync_pair *pair =
+			&((struct sync_pair *)pairs.elts)[i];
+		rc = sync_pair(manifest, cfg, pair, status);
+		if (rc != 0)
+			return rc;
+	}
+	rc = cleanup_trash(manifest, cfg);
+	if (rc != 0)
+		return rc;
+	rc = sync_db_backup_cleanup(cfg);
+	if (rc != 0)
+		return rc;
+	status->last_run_at = (int64_t)time(NULL);
+	status->conflicts = count_unresolved_conflicts(manifest);
+	status->recycled = count_table(manifest, "trash");
+
+	return rc;
+}
+
+static int sync_once_locked(const struct morph_sync_config *cfg,
+			    struct morph_sync_status *status)
+{
+	struct morph_sync_status local_status;
 
 	if (!cfg || !cfg->source_dir[0] || !cfg->sync_dir[0])
 		return -EINVAL;
 	if (!status)
 		status = &local_status;
 	memset(status, 0, sizeof(*status));
-	rc = prepare_dirs(cfg);
-	if (rc != 0)
-		goto out_no_array;
-	rc = manifest_open(&manifest, cfg->sync_dir);
-	if (rc != 0)
-		goto out_no_array;
-	rc = morph_array_init(&pairs, 64, sizeof(struct sync_pair));
-	if (rc != 0)
-		goto out_no_array;
-	rc = sync_path_join(data_root, sizeof(data_root), cfg->sync_dir,
-			    SYNC_DATA_DIR);
-	if (rc != 0)
-		goto out;
-	rc = scan_side(&pairs, cfg->source_dir, cfg, 0);
-	if (rc != 0)
-		goto out;
-	rc = scan_side(&pairs, data_root, cfg, 1);
-	if (rc != 0)
-		goto out;
-	for (size_t i = 0; i < pairs.nelts; i++) {
-		struct sync_pair *pair =
-			&((struct sync_pair *)pairs.elts)[i];
-		rc = sync_pair(manifest, cfg, pair, status);
-		if (rc != 0)
-			goto out;
-	}
-	rc = cleanup_trash(manifest, cfg);
-	if (rc != 0)
-		goto out;
-	rc = sync_db_backup_cleanup(cfg);
-	if (rc != 0)
-		goto out;
-	status->last_run_at = (int64_t)time(NULL);
-	status->conflicts = count_unresolved_conflicts(manifest);
-	status->recycled = count_table(manifest, "trash");
+	int rc = sync_once_collect(cfg, status);
 
-out:
-	morph_array_cleanup(&pairs);
-out_no_array:
-	if (manifest)
-		sqlite3_close(manifest);
 	status->error_code = rc;
-	if (rc != 0) {
+	if (rc != 0)
 		strncpy(status->last_error, morph_strerror(rc),
 			sizeof(status->last_error) - 1);
-	}
 	return rc;
 }
 
@@ -1560,8 +1568,8 @@ int morph_sync_worker_status(struct morph_sync_worker *worker,
 int morph_sync_restore_trash(const struct morph_sync_config *cfg,
 			     int64_t trash_id)
 {
-	sqlite3 *manifest = NULL;
-	sqlite3_stmt *stmt = NULL;
+	sqlite3 *manifest MORPH_CLEANUP(sync_database_cleanup) = NULL;
+	sqlite3_stmt *stmt MORPH_CLEANUP(sync_stmt_cleanup) = NULL;
 	struct sync_pair pair;
 	char data_root[PATH_MAX];
 	const char *rel;
@@ -1579,14 +1587,11 @@ int morph_sync_restore_trash(const struct morph_sync_config *cfg,
 		"SELECT path,trash_path FROM trash WHERE id=?",
 		-1, &stmt, NULL);
 	if (rc != SQLITE_OK) {
-		sqlite3_close(manifest);
 		return MORPH_ERR_DB;
 	}
 	sqlite3_bind_int64(stmt, 1, trash_id);
 	rc = sqlite3_step(stmt);
 	if (rc != SQLITE_ROW) {
-		sqlite3_finalize(stmt);
-		sqlite3_close(manifest);
 		return -ENOENT;
 	}
 	rel = (const char *)sqlite3_column_text(stmt, 0);
@@ -1595,40 +1600,37 @@ int morph_sync_restore_trash(const struct morph_sync_config *cfg,
 	rel_buf[sizeof(rel_buf) - 1] = '\0';
 	strncpy(trash_buf, trash_path ? trash_path : "", sizeof(trash_buf) - 1);
 	trash_buf[sizeof(trash_buf) - 1] = '\0';
-	sqlite3_finalize(stmt);
+	sync_stmt_cleanup(&stmt);
 	if (!rel_buf[0] || !trash_buf[0]) {
-		sqlite3_close(manifest);
 		return -EINVAL;
 	}
 	memset(&pair, 0, sizeof(pair));
 	strncpy(pair.path, rel_buf, sizeof(pair.path) - 1);
 	rc = local_path(cfg, rel_buf, pair.local.full, sizeof(pair.local.full));
 	if (rc != 0)
-		goto out;
+		return rc;
 	rc = sync_path_join(data_root, sizeof(data_root), cfg->sync_dir,
 			    SYNC_DATA_DIR);
 	if (rc != 0)
-		goto out;
+		return rc;
 	rc = sync_path_join(pair.remote.full, sizeof(pair.remote.full),
 			    data_root, rel_buf);
 	if (rc != 0)
-		goto out;
+		return rc;
 	rc = copy_atomic(cfg, trash_buf, pair.local.full, rel_buf, 0);
 	if (rc != 0)
-		goto out;
+		return rc;
 	rc = refresh_file(&pair.local);
 	if (rc != 0)
-		goto out;
+		return rc;
 	(void)refresh_file(&pair.remote);
 	rc = manifest_put(manifest, &pair, 0);
 	if (rc != 0)
-		goto out;
+		return rc;
 	rc = manifest_clear_tombstone(manifest, rel_buf);
 	if (rc != 0)
-		goto out;
+		return rc;
 	rc = manifest_delete_trash(manifest, trash_id);
 
-out:
-	sqlite3_close(manifest);
 	return rc;
 }

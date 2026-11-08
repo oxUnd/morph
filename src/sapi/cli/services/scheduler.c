@@ -1,4 +1,5 @@
 #include "sapi/cli/services/scheduler.h"
+#include "util/cleanup.h"
 #include "db/scheduled_task.h"
 #include "agent/turn.h"
 #include "sapi/cli/services/event_queue.h"
@@ -12,8 +13,8 @@ int cli_scheduler_run_task(const struct scheduled_task *task,
 	struct runtime_result turn;
 	struct session session;
 	char session_name[256];
-	char *task_prompt;
-	morph_buf_t prompt;
+	char *task_prompt MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	morph_buf_t prompt MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc;
 
 	if (!ctx || !task || !result)
@@ -22,7 +23,6 @@ int cli_scheduler_run_task(const struct scheduled_task *task,
 	if (!task_prompt)
 		return -EINVAL;
 	if (morph_buf_init(&prompt, 1024) != 0) {
-		free(task_prompt);
 		return -ENOMEM;
 	}
 	(void)morph_buf_printf(&prompt,
@@ -30,12 +30,12 @@ int cli_scheduler_run_task(const struct scheduled_task *task,
 			       "Task prompt:\n%s\n\nReturn the result as a concise notification. "
 			       "Do not ask follow-up questions.",
 			       task->title, task_prompt);
-	free(task_prompt);
+	morph_charp_cleanup(&task_prompt);
 	snprintf(session_name, sizeof(session_name), "Task #%lld: %.220s", (long long)task->id,
 		 task->title);
 	rc = runtime_session_create_detached(ctx->runtime, session_name, &session);
 	if (rc != 0)
-		goto out_cleanup_prompt;
+		return rc;
 	memset(&request, 0, sizeof(request));
 	request.session_id = session.id;
 	request.model_input = morph_buf_cstr_borrow(&prompt);
@@ -50,8 +50,6 @@ int cli_scheduler_run_task(const struct scheduled_task *task,
 									     : morph_strerror(rc));
 	if ((rc == 0 && !result->body) || (rc != 0 && !result->error))
 		rc = -ENOMEM;
-out_cleanup_prompt:
-	morph_buf_cleanup(&prompt);
 	return rc;
 }
 

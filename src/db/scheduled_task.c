@@ -12,6 +12,43 @@
 #include <string.h>
 #include <time.h>
 
+struct task_batch {
+	struct scheduled_task *items;
+	int count;
+};
+
+static void task_stmt_cleanup(sqlite3_stmt **stmt)
+{
+	if (!stmt)
+		return;
+	sqlite3_finalize(*stmt);
+	*stmt = NULL;
+}
+
+static void task_array_cleanup(morph_array_t *array)
+{
+	struct scheduled_task *task;
+
+	morph_array_foreach(task, array, struct scheduled_task)
+		scheduled_task_cleanup(task);
+	morph_array_cleanup(array);
+}
+
+static void notification_array_cleanup(morph_array_t *array)
+{
+	struct notification *notification;
+
+	morph_array_foreach(notification, array, struct notification)
+		notification_cleanup(notification);
+	morph_array_cleanup(array);
+}
+
+static void task_batch_cleanup(struct task_batch *batch)
+{
+	scheduled_task_free_list(batch->items, batch->count);
+	memset(batch, 0, sizeof(*batch));
+}
+
 /**
  * \brief Execute and consume an update while retaining its connection change count.
  * \param[in] db: Borrowed serialized SQLite connection.
@@ -283,9 +320,8 @@ static int task_list_query(struct db *db, const char *sql, const char *status,
 			   int64_t now, int limit, struct scheduled_task **out,
 			   int *count)
 {
-	sqlite3_stmt *stmt = NULL;
-	morph_array_t arr;
-	int arr_ready = 0;
+	morph_array_t arr MORPH_CLEANUP(task_array_cleanup) = {0};
+	sqlite3_stmt *stmt MORPH_CLEANUP(task_stmt_cleanup) = NULL;
 	int bind_idx = 1;
 	int rc;
 
@@ -300,12 +336,10 @@ static int task_list_query(struct db *db, const char *sql, const char *status,
 	rc = morph_array_init(&arr, 8, sizeof(struct scheduled_task));
 	if (rc < 0)
 		return rc;
-	arr_ready = 1;
 
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK) {
-		rc = MORPH_ERR_DB;
-		goto out_fail;
+		return MORPH_ERR_DB;
 	}
 	if (status)
 		sqlite3_bind_text(stmt, bind_idx++, status, -1, SQLITE_TRANSIENT);
@@ -315,37 +349,27 @@ static int task_list_query(struct db *db, const char *sql, const char *status,
 
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 		if (arr.nelts >= INT_MAX) {
-			rc = -EOVERFLOW;
-			goto out_fail;
+			return -EOVERFLOW;
 		}
 		struct scheduled_task *task = morph_array_push_borrow(&arr);
 		if (!task) {
-			rc = -ENOMEM;
-			goto out_fail;
+			return -ENOMEM;
 		}
 		rc = task_from_stmt(stmt, task);
 		if (rc != 0)
-			goto out_fail;
+			return rc;
 	}
 	if (rc != SQLITE_DONE) {
-		rc = MORPH_ERR_DB;
-		goto out_fail;
+		return MORPH_ERR_DB;
 	}
-	sqlite3_finalize(stmt);
+	task_stmt_cleanup(&stmt);
 	if (arr.nelts > INT_MAX) {
-		scheduled_task_free_list(arr.elts, (int)arr.nelts);
 		return -EOVERFLOW;
 	}
 	*out = arr.elts;
 	*count = (int)arr.nelts;
+	memset(&arr, 0, sizeof(arr));
 	return 0;
-
-out_fail:
-	if (stmt)
-		sqlite3_finalize(stmt);
-	if (arr_ready)
-		scheduled_task_free_list(arr.elts, (int)arr.nelts);
-	return rc;
 }
 
 int scheduled_task_create_with_events(
@@ -1277,10 +1301,8 @@ int scheduled_task_run_due_collect_with_runner_events(
 	struct scheduled_task_event_sink observations = {.cb = task_observe,
 							 .user_data = &observer};
 	events = &observations;
-	struct scheduled_task *tasks = NULL;
-	morph_array_t arr;
-	int arr_ready = 0;
-	int task_count = 0;
+	morph_array_t arr MORPH_CLEANUP(notification_array_cleanup) = {0};
+	struct task_batch tasks MORPH_CLEANUP(task_batch_cleanup) = {0};
 	int rc;
 
 	if (!db || !db->handle || now < 0 || !notifications || !count)
@@ -1291,86 +1313,74 @@ int scheduled_task_run_due_collect_with_runner_events(
 	rc = morph_array_init(&arr, 4, sizeof(struct notification));
 	if (rc < 0)
 		return rc;
-	arr_ready = 1;
 
-	rc = scheduled_task_list_due(db, now, limit, &tasks, &task_count);
+	rc = scheduled_task_list_due(db, now, limit, &tasks.items, &tasks.count);
 	if (rc != 0)
-		goto out_fail;
+		return rc;
 
-	for (int i = 0; i < task_count; i++) {
+	for (int i = 0; i < tasks.count; i++) {
 		struct notification *notification;
 		int claimed;
 
-		if (tasks[i].attempts >= INT_MAX || now > INT64_MAX - INT_MAX) {
-			rc = -EOVERFLOW;
-			goto out_fail;
+		if (tasks.items[i].attempts >= INT_MAX || now > INT64_MAX - INT_MAX) {
+			return -EOVERFLOW;
 		}
-		claimed = task_claim_due(db, &tasks[i]);
+		claimed = task_claim_due(db, &tasks.items[i]);
 		if (claimed < 0) {
-			rc = claimed;
-			goto out_fail;
+			return claimed;
 		}
 		if (claimed == 0)
 			continue;
 
 		rc = task_emit_event(events, "task.claimed", "begin",
-				     "task claimed", &tasks[i], "running",
-				     tasks[i].next_run_at, tasks[i].attempts,
+				     "task claimed", &tasks.items[i], "running",
+				     tasks.items[i].next_run_at, tasks.items[i].attempts,
 				     0, NULL, NULL);
 		if (rc != 0)
-			goto out_fail;
+			return rc;
 		rc = task_emit_event(events, "task.started", "begin",
-				     "task started", &tasks[i], "running",
-				     tasks[i].next_run_at, tasks[i].attempts,
+				     "task started", &tasks.items[i], "running",
+				     tasks.items[i].next_run_at, tasks.items[i].attempts,
 				     0, NULL, NULL);
 		if (rc != 0)
-			goto out_fail;
+			return rc;
 
 		if (arr.nelts >= INT_MAX) {
-			rc = -EOVERFLOW;
-			goto out_fail;
+			return -EOVERFLOW;
 		}
 		notification = morph_array_push_borrow(&arr);
 		if (!notification) {
-			rc = -ENOMEM;
-			goto out_fail;
+			return -ENOMEM;
 		}
 		memset(notification, 0, sizeof(*notification));
-		if (strcmp(tasks[i].kind, "agent") == 0)
-			rc = run_due_agent(db, &tasks[i], now, runner,
+		if (strcmp(tasks.items[i].kind, "agent") == 0)
+			rc = run_due_agent(db, &tasks.items[i], now, runner,
 					   runner_user_data, notification,
 					   events);
-		else if (strcmp(tasks[i].kind, "reminder") == 0)
-			rc = run_due_reminder(db, &tasks[i], now,
+		else if (strcmp(tasks.items[i].kind, "reminder") == 0)
+			rc = run_due_reminder(db, &tasks.items[i], now,
 					      notification, events);
-		else if (strcmp(tasks[i].kind, "action") == 0)
-			rc = run_due_action(db, &tasks[i], now, runner,
+		else if (strcmp(tasks.items[i].kind, "action") == 0)
+			rc = run_due_action(db, &tasks.items[i], now, runner,
 					    runner_user_data, notification,
 					    events);
-		else if (strcmp(tasks[i].kind, "watch") == 0)
-			rc = run_due_watch(db, &tasks[i], now, runner,
+		else if (strcmp(tasks.items[i].kind, "watch") == 0)
+			rc = run_due_watch(db, &tasks.items[i], now, runner,
 					   runner_user_data, notification,
 					   events);
 		else
-			rc = run_due_unsupported(db, &tasks[i],
+			rc = run_due_unsupported(db, &tasks.items[i],
 						 notification, events);
 		if (rc != 0)
-			goto out_fail;
+			return rc;
 	}
-	scheduled_task_free_list(tasks, task_count);
 	if (arr.nelts > INT_MAX) {
-		notification_free_list(arr.elts, (int)arr.nelts);
 		return -EOVERFLOW;
 	}
 	*notifications = arr.elts;
 	*count = (int)arr.nelts;
+	memset(&arr, 0, sizeof(arr));
 	return 0;
-
-out_fail:
-	scheduled_task_free_list(tasks, task_count);
-	if (arr_ready)
-		notification_free_list(arr.elts, (int)arr.nelts);
-	return rc;
 }
 
 int scheduled_task_run_due_collect_with_runner(
@@ -1513,9 +1523,8 @@ int notification_create(struct db *db, int64_t task_id, const char *level,
 int notification_list_unread(struct db *db, int limit,
 			     struct notification **out, int *count)
 {
-	sqlite3_stmt *stmt = NULL;
-	morph_array_t arr;
-	int arr_ready = 0;
+	morph_array_t arr MORPH_CLEANUP(notification_array_cleanup) = {0};
+	sqlite3_stmt *stmt MORPH_CLEANUP(task_stmt_cleanup) = NULL;
 	int rc;
 	const char *sql =
 		"SELECT id,task_id,session_id,level,title,body,created_at,read_at,"
@@ -1533,47 +1542,35 @@ int notification_list_unread(struct db *db, int limit,
 	rc = morph_array_init(&arr, 8, sizeof(struct notification));
 	if (rc < 0)
 		return rc;
-	arr_ready = 1;
 
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK) {
-		rc = MORPH_ERR_DB;
-		goto out_fail;
+		return MORPH_ERR_DB;
 	}
 	sqlite3_bind_int(stmt, 1, limit);
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 		if (arr.nelts >= INT_MAX) {
-			rc = -EOVERFLOW;
-			goto out_fail;
+			return -EOVERFLOW;
 		}
 		struct notification *notification = morph_array_push_borrow(&arr);
 		if (!notification) {
-			rc = -ENOMEM;
-			goto out_fail;
+			return -ENOMEM;
 		}
 		rc = notification_from_stmt(stmt, notification);
 		if (rc != 0)
-			goto out_fail;
+			return rc;
 	}
 	if (rc != SQLITE_DONE) {
-		rc = MORPH_ERR_DB;
-		goto out_fail;
+		return MORPH_ERR_DB;
 	}
-	sqlite3_finalize(stmt);
+	task_stmt_cleanup(&stmt);
 	if (arr.nelts > INT_MAX) {
-		notification_free_list(arr.elts, (int)arr.nelts);
 		return -EOVERFLOW;
 	}
 	*out = arr.elts;
 	*count = (int)arr.nelts;
+	memset(&arr, 0, sizeof(arr));
 	return 0;
-
-out_fail:
-	if (stmt)
-		sqlite3_finalize(stmt);
-	if (arr_ready)
-		notification_free_list(arr.elts, (int)arr.nelts);
-	return rc;
 }
 
 int notification_mark_read(struct db *db, int64_t id, int64_t read_at)

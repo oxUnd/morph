@@ -1,4 +1,6 @@
 #include "quickjs.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "runner_api.h"
 #include "js_process.h"
 #include "js_fetch.h"
@@ -327,24 +329,50 @@ static int check_script(JSContext *ctx, const char *path)
 	return rc;
 }
 
+struct runner_script_values {
+	JSContext *ctx;
+	JSValue json;
+	JSValue ret;
+	JSValue args;
+	JSValue fn;
+	JSValue global;
+};
+
+static void runner_script_values_cleanup(struct runner_script_values *values)
+{
+	JS_FreeValue(values->ctx, values->json);
+	JS_FreeValue(values->ctx, values->ret);
+	JS_FreeValue(values->ctx, values->args);
+	JS_FreeValue(values->ctx, values->fn);
+	JS_FreeValue(values->ctx, values->global);
+	values->json = JS_UNDEFINED;
+	values->ret = JS_UNDEFINED;
+	values->args = JS_UNDEFINED;
+	values->fn = JS_UNDEFINED;
+	values->global = JS_UNDEFINED;
+}
+
 static int run_script(JSContext *ctx, const char *path)
 {
 	char *source = NULL;
-	char *line = NULL;
-	char *params_json = NULL;
+	char *line MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *params_json MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
 	size_t source_len;
 	size_t line_cap = 0;
 	int id = 1;
 	int rc = 0;
-	cJSON *root = NULL;
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	cJSON *params;
 	JSValue val = JS_UNDEFINED;
-	JSValue global = JS_UNDEFINED;
-	JSValue fn = JS_UNDEFINED;
-	JSValue args = JS_UNDEFINED;
-	JSValue ret = JS_UNDEFINED;
-	JSValue json = JS_UNDEFINED;
 	const char *json_str;
+	struct runner_script_values values MORPH_CLEANUP(runner_script_values_cleanup) = {
+		.ctx = ctx,
+		.json = JS_UNDEFINED,
+		.ret = JS_UNDEFINED,
+		.args = JS_UNDEFINED,
+		.fn = JS_UNDEFINED,
+		.global = JS_UNDEFINED,
+	};
 
 	source = file_read_all_copy(path, &source_len);
 	if (!source)
@@ -362,13 +390,13 @@ static int run_script(JSContext *ctx, const char *path)
 	if (getline(&line, &line_cap, stdin) < 0) {
 		print_error_response(id, "missing JSON-RPC request");
 		rc = -EINVAL;
-		goto out;
+		return rc;
 	}
 	root = cJSON_Parse(line);
 	if (!root) {
 		print_error_response(id, "invalid JSON-RPC request");
 		rc = -EINVAL;
-		goto out;
+		return rc;
 	}
 	{
 		cJSON *id_item = cJSON_GetObjectItem(root, "id");
@@ -376,64 +404,56 @@ static int run_script(JSContext *ctx, const char *path)
 			id = id_item->valueint;
 	}
 	params = cJSON_GetObjectItem(root, "params");
-	params_json = params ? cJSON_PrintUnformatted(params) : strdup("{}");
-	if (!params_json) {
+	params_json = params ? cJSON_PrintUnformatted(params) : NULL;
+	if (params && !params_json) {
 		rc = -ENOMEM;
-		goto out;
+		return rc;
 	}
-	args = JS_ParseJSON(ctx, params_json, strlen(params_json), "<params>");
-	if (JS_IsException(args)) {
+	const char *params_text = params_json ? params_json : "{}";
+	values.args = JS_ParseJSON(ctx, params_text, strlen(params_text), "<params>");
+	if (JS_IsException(values.args)) {
 		print_exception(ctx, id);
 		rc = -EINVAL;
-		goto out;
+		return rc;
 	}
 
-	global = JS_GetGlobalObject(ctx);
-	fn = JS_GetPropertyStr(ctx, global, "run");
-	if (!JS_IsFunction(ctx, fn)) {
+	values.global = JS_GetGlobalObject(ctx);
+	values.fn = JS_GetPropertyStr(ctx, values.global, "run");
+	if (!JS_IsFunction(ctx, values.fn)) {
 		print_error_response(id, "script must define global run(args)");
 		rc = -EINVAL;
-		goto out;
+		return rc;
 	}
-	ret = JS_Call(ctx, fn, JS_UNDEFINED, 1, &args);
-	if (JS_IsException(ret)) {
+	values.ret = JS_Call(ctx, values.fn, JS_UNDEFINED, 1, &values.args);
+	if (JS_IsException(values.ret)) {
 		print_exception(ctx, id);
 		rc = -EINVAL;
-		goto out;
+		return rc;
 	}
-	if (resolve_promise(ctx, &ret) < 0) {
+	if (resolve_promise(ctx, &values.ret) < 0) {
 		print_exception(ctx, id);
 		rc = -EINVAL;
-		goto out;
+		return rc;
 	}
-	json = JS_JSONStringify(ctx, ret, JS_UNDEFINED, JS_UNDEFINED);
-	if (JS_IsException(json)) {
+	values.json = JS_JSONStringify(ctx, values.ret, JS_UNDEFINED, JS_UNDEFINED);
+	if (JS_IsException(values.json)) {
 		print_exception(ctx, id);
 		rc = -EINVAL;
-		goto out;
+		return rc;
 	}
-	if (JS_IsUndefined(json))
+	if (JS_IsUndefined(values.json))
 		json_str = "null";
 	else
-		json_str = JS_ToCString(ctx, json);
+		json_str = JS_ToCString(ctx, values.json);
 	if (!json_str) {
 		print_exception(ctx, id);
 		rc = -EINVAL;
-		goto out;
+		return rc;
 	}
 	fprintf(stdout, "{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":%s}\n", id, json_str);
-	if (!JS_IsUndefined(json))
+	if (!JS_IsUndefined(values.json))
 		JS_FreeCString(ctx, json_str);
 
-out:
-	JS_FreeValue(ctx, json);
-	JS_FreeValue(ctx, ret);
-	JS_FreeValue(ctx, args);
-	JS_FreeValue(ctx, fn);
-	JS_FreeValue(ctx, global);
-	cJSON_Delete(root);
-	free(params_json);
-	free(line);
 	return rc;
 }
 

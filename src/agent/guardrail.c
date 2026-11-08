@@ -641,6 +641,15 @@ static int guardrail_cancelled(void *opaque)
 	return ctx != NULL && morph_cancel_token_is_cancelled(ctx->cancel_token);
 }
 
+/** \brief Preserve the execution error for the caller. */
+static enum guardrail_verdict guardrail_ext_failure(const struct guardrail_eval_ctx *ctx,
+						    int rc)
+{
+	if (ctx && ctx->check_error)
+		*ctx->check_error = rc;
+	return GUARDRAIL_ERROR;
+}
+
 /** \brief Run an external checker with bounded I/O and a single deadline. */
 static enum guardrail_verdict guardrail_ext_exec_check(const struct guardrail_rule *rule,
 						       const struct guardrail_eval_ctx *ctx,
@@ -649,7 +658,9 @@ static enum guardrail_verdict guardrail_ext_exec_check(const struct guardrail_ru
 	int input_pipe[2], output_pipe[2];
 	int status = 0;
 	pid_t pid;
-	morph_buf_t request = {0}, output = {0}, errors = {0};
+	morph_buf_t request MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	morph_buf_t errors MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	struct jsonrpc_response response = {0};
 	cJSON *params;
 	char *params_json;
@@ -698,17 +709,17 @@ static enum guardrail_verdict guardrail_ext_exec_check(const struct guardrail_ru
 		rc = morph_buf_init(&errors, BUFSIZ);
 	}
 	if (rc != 0) {
-		goto out_free_buffers;
+		return guardrail_ext_failure(ctx, rc);
 	}
 	rc = morph_io_pipe(input_pipe);
 	if (rc != 0) {
-		goto out_free_buffers;
+		return guardrail_ext_failure(ctx, rc);
 	}
 	rc = morph_io_pipe(output_pipe);
 	if (rc != 0) {
 		close(input_pipe[0]);
 		close(input_pipe[1]);
-		goto out_free_buffers;
+		return guardrail_ext_failure(ctx, rc);
 	}
 	rc = posix_spawn_file_actions_init(&actions);
 	if (rc == 0) {
@@ -761,7 +772,7 @@ static enum guardrail_verdict guardrail_ext_exec_check(const struct guardrail_ru
 		close(input_pipe[1]);
 		close(output_pipe[0]);
 		rc = -rc;
-		goto out_free_buffers;
+		return guardrail_ext_failure(ctx, rc);
 	}
 	rc = morph_child_exchange(pid, input_pipe[1], output_pipe[0], -1,
 				  morph_buf_cstr_borrow(&request), request.len, 30000, 1024 * 1024,
@@ -781,20 +792,10 @@ static enum guardrail_verdict guardrail_ext_exec_check(const struct guardrail_ru
 			guardrail_parse_check_result(ctx ? ctx->logger : NULL, response.result_json,
 						     rule, reason_out, reason_cap);
 		jsonrpc_response_free(&response);
-		morph_buf_cleanup(&request);
-		morph_buf_cleanup(&output);
-		morph_buf_cleanup(&errors);
 		return verdict;
 	}
 	jsonrpc_response_free(&response);
-out_free_buffers:
-	if (ctx != NULL && ctx->check_error != NULL) {
-		*ctx->check_error = rc;
-	}
-	morph_buf_cleanup(&request);
-	morph_buf_cleanup(&output);
-	morph_buf_cleanup(&errors);
-	return GUARDRAIL_ERROR;
+	return guardrail_ext_failure(ctx, rc);
 }
 
 static enum guardrail_verdict

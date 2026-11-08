@@ -476,124 +476,102 @@ static int validate_ext_name(const char *name)
 	return morph_name_valid(name, "-_.");
 }
 
-int ext_install_source(struct morph_log *logger, const char *source,
-		       const struct ext_install_options *opts, struct ext_install_result *result)
+static int ext_install_package(struct morph_log *logger,
+	const struct ext_source *src, const char *directory,
+	const struct ext_install_options *opts, struct ext_install_result *result)
 {
-	struct ext_source src;
-	char tmpl[PATH_MAX];
 	char repo_dir[PATH_MAX];
 	char package_dir[PATH_MAX];
 	char manifest_path[PATH_MAX];
 	char entry_path[PATH_MAX];
 	char target_dir[PATH_MAX];
 	char target_tmp[PATH_MAX];
-	char resolved_ref[64];
+	char resolved_ref[64] = {0};
 	struct ext_manifest m MORPH_CLEANUP(ext_manifest_cleanup) = {0};
 	int rc = 0;
-	int cleanup_tmp = 0;
 	const char *install_dir = opts && opts->install_dir ?
 		opts->install_dir : "~/.morph/exts";
 
-	if (!source)
-		return -EINVAL;
-	if (result)
-		memset(result, 0, sizeof(*result));
-	memset(&m, 0, sizeof(m));
-	memset(resolved_ref, 0, sizeof(resolved_ref));
-
-	rc = ext_source_parse(source, &src);
+	rc = file_path_join(repo_dir, sizeof(repo_dir), directory, "repo");
 	if (rc < 0)
 		return rc;
-
-	const char *tmp_base = getenv("TMPDIR");
-	if (!tmp_base || !tmp_base[0])
-		tmp_base = "/tmp";
-	rc = file_path_join(tmpl, sizeof(tmpl), tmp_base, "morph-ext-XXXXXX");
-	if (rc < 0)
-		return rc;
-	if (!mkdtemp(tmpl))
-		return morph_error_from_errno(errno);
-	cleanup_tmp = 1;
-
-	rc = file_path_join(repo_dir, sizeof(repo_dir), tmpl, "repo");
-	if (rc < 0)
-		goto out;
-	rc = git_fetch_source(&src, repo_dir, opts ? opts->github_base_url : NULL,
+	rc = git_fetch_source(src, repo_dir, opts ? opts->github_base_url : NULL,
 			      resolved_ref, sizeof(resolved_ref));
 	if (rc < 0)
-		goto out;
+		return rc;
 
-	if (src.subdir[0])
+	if (src->subdir[0])
 		rc = file_path_join(package_dir, sizeof(package_dir),
-				    repo_dir, src.subdir);
+				    repo_dir, src->subdir);
 	else
 		rc = copy_part(package_dir, sizeof(package_dir),
 			       repo_dir, strlen(repo_dir));
 	if (rc < 0)
-		goto out;
+		return rc;
 
 	rc = find_manifest_path(package_dir, manifest_path,
 				sizeof(manifest_path));
 	if (rc < 0)
-		goto out;
+		return rc;
 	rc = manifest_parse_file(logger, manifest_path, &m);
 	if (rc < 0)
-		goto out;
+		return rc;
 	if (!m.name[0] || !m.entry[0] || !validate_ext_name(m.name) ||
 	    !valid_subdir(m.entry)) {
 		rc = -EINVAL;
-		goto out;
+		return rc;
 	}
 
 	if (m.build_command[0]) {
 		if (!prompt_confirm(opts, &m)) {
 			rc = -ECANCELED;
-			goto out;
+			return rc;
 		}
 		rc = run_build_command(package_dir, m.build_command);
 		if (rc < 0)
-			goto out;
+			return rc;
 	}
 
 	rc = file_path_join(entry_path, sizeof(entry_path),
 			    package_dir, m.entry);
 	if (rc < 0)
-		goto out;
+		return rc;
 	if (!file_exists(entry_path)) {
 		rc = -ENOENT;
-		goto out;
+		return rc;
 	}
 
-	char *expanded_install = file_expand_path_copy(install_dir);
+	char *expanded_install MORPH_CLEANUP(morph_charp_cleanup) =
+		file_expand_path_copy(install_dir);
 	if (!expanded_install) {
 		rc = -ENOMEM;
-		goto out;
+		return rc;
 	}
 	rc = file_ensure_dir(expanded_install);
 	if (rc == 0)
 		rc = file_path_join(target_dir, sizeof(target_dir),
 				    expanded_install, m.name);
-	free(expanded_install);
+	morph_charp_cleanup(&expanded_install);
 	if (rc < 0)
-		goto out;
+		return rc;
 	if (file_exists(target_dir)) {
 		rc = -EEXIST;
-		goto out;
+		return rc;
 	}
 	int n = snprintf(target_tmp, sizeof(target_tmp), "%s.tmp.%ld",
 			 target_dir, (long)getpid());
 	if (n < 0 || (size_t)n >= sizeof(target_tmp)) {
 		rc = -ENAMETOOLONG;
-		goto out;
+		return rc;
 	}
 	(void)remove_tree(target_tmp);
 	rc = copy_tree(package_dir, target_tmp);
 	if (rc < 0)
-		goto out;
+		return rc;
 	if (rename(target_tmp, target_dir) != 0) {
 		rc = -errno;
 		(void)remove_tree(target_tmp);
-		goto out;
+		return rc;
 	}
 
 	if (result) {
@@ -603,10 +581,33 @@ int ext_install_source(struct morph_log *logger, const char *source,
 			sizeof(result->resolved_ref) - 1);
 	}
 
-out:
-	if (cleanup_tmp)
-		(void)remove_tree(tmpl);
-	ext_manifest_cleanup(&m);
+	return rc;
+}
+
+int ext_install_source(struct morph_log *logger, const char *source,
+		       const struct ext_install_options *opts, struct ext_install_result *result)
+{
+	struct ext_source src;
+	char temporary[PATH_MAX];
+	const char *tmp_base = getenv("TMPDIR");
+	int rc;
+
+	if (!source)
+		return -EINVAL;
+	if (result)
+		memset(result, 0, sizeof(*result));
+	rc = ext_source_parse(source, &src);
+	if (rc < 0)
+		return rc;
+	if (!tmp_base || !tmp_base[0])
+		tmp_base = "/tmp";
+	rc = file_path_join(temporary, sizeof(temporary), tmp_base, "morph-ext-XXXXXX");
+	if (rc < 0)
+		return rc;
+	if (!mkdtemp(temporary))
+		return morph_error_from_errno(errno);
+	rc = ext_install_package(logger, &src, temporary, opts, result);
+	(void)remove_tree(temporary);
 	if (rc < 0)
 		log_err(logger, "ext install failed for %s: %s", source, morph_strerror(rc));
 	return rc;

@@ -141,6 +141,12 @@ static int import_revision(sqlite3 *db, int64_t session_id, char hash[65])
 	return 0;
 }
 
+static void import_stmt_cleanup(sqlite3_stmt **statement)
+{
+	sqlite3_finalize(*statement);
+	*statement = NULL;
+}
+
 static int import_session(sqlite3 *db, sqlite3_stmt *source, const char *origin,
 			  struct runtime_session_import_result *result)
 {
@@ -151,7 +157,7 @@ static int import_session(sqlite3 *db, sqlite3_stmt *source, const char *origin,
 	char revision[65];
 	morph_buf_t identity MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	sqlite3_stmt *stmt = NULL;
+	sqlite3_stmt *stmt MORPH_CLEANUP(import_stmt_cleanup) = NULL;
 	struct db target = { .handle = db };
 	struct session session;
 	int rc = import_revision(db, old_id, revision);
@@ -167,7 +173,7 @@ static int import_session(sqlite3 *db, sqlite3_stmt *source, const char *origin,
 			"SELECT origin FROM incoming.sync_session_origins WHERE session_id=?",
 			-1, &stmt, NULL) != SQLITE_OK) {
 			rc = (MORPH_ERR_DB);
-			goto out_free_session;
+			return rc;
 		}
 		sqlite3_bind_int64(stmt, 1, old_id);
 		if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -175,49 +181,47 @@ static int import_session(sqlite3 *db, sqlite3_stmt *source, const char *origin,
 			morph_buf_init(&identity, 128);
 			morph_buf_puts(&identity, (const char *)sqlite3_column_text(stmt, 0));
 		}
-		sqlite3_finalize(stmt);
-		stmt = NULL;
+		import_stmt_cleanup(&stmt);
 	}
 	if (identity.failed) {
 		rc = (identity.failed);
-		goto out_free_session;
+		return rc;
 	}
 	if (sqlite3_prepare_v2(db,
 		"SELECT session_id FROM sync_import_receipts WHERE origin=? AND revision=?",
 		-1, &stmt, NULL) != SQLITE_OK) {
 		rc = (MORPH_ERR_DB);
-		goto out_free_session;
+		return rc;
 	}
 	sqlite3_bind_text(stmt, 1, morph_buf_cstr_borrow(&identity), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, revision, -1, SQLITE_TRANSIENT);
 	int step = sqlite3_step(stmt);
 	int64_t previous_id = step == SQLITE_ROW ? sqlite3_column_int64(stmt, 0) : 0;
-	sqlite3_finalize(stmt);
-	stmt = NULL;
+	import_stmt_cleanup(&stmt);
 	if (step == SQLITE_ROW) {
 		if (sqlite3_prepare_v2(db,
 			"INSERT INTO import_session_map(old_id,new_id,is_new) "
 			"SELECT ?,id,0 FROM sessions WHERE id=?", -1, &stmt, NULL) != SQLITE_OK) {
 			rc = (MORPH_ERR_DB);
-			goto out_free_session;
+			return rc;
 		}
 		sqlite3_bind_int64(stmt, 1, old_id);
 		sqlite3_bind_int64(stmt, 2, previous_id);
 		if (sqlite3_step(stmt) != SQLITE_DONE) {
 			rc = (MORPH_ERR_DB);
-			goto out_free_session;
+			return rc;
 		}
 		result->unchanged++;
-		goto out_free_session;
+		return rc;
 	}
 	if (step != SQLITE_DONE) {
 		rc = (MORPH_ERR_DB);
-		goto out_free_session;
+		return rc;
 	}
 	char *base = utf8_dup_clamped(name ? name : "Imported conversation", 180);
 	if (!base) {
 		rc = (-ENOMEM);
-		goto out_free_session;
+		return rc;
 	}
 	morph_buf_puts(&title, base);
 	for (int suffix = 1;
@@ -229,38 +233,36 @@ static int import_session(sqlite3 *db, sqlite3_stmt *source, const char *origin,
 	free(base);
 	if (title.failed) {
 		rc = (title.failed);
-		goto out_free_session;
+		return rc;
 	}
 	rc = session_create(&target, morph_buf_cstr_borrow(&title), model, &session);
 	if (rc != 0)
-		goto out_free_session;
+		return rc;
 	if (sqlite3_prepare_v2(db,
 		"INSERT INTO import_session_map(old_id,new_id) VALUES(?,?)",
 		-1, &stmt, NULL) != SQLITE_OK) {
 		rc = (MORPH_ERR_DB);
-		goto out_free_session;
+		return rc;
 	}
 	sqlite3_bind_int64(stmt, 1, old_id);
 	sqlite3_bind_int64(stmt, 2, session.id);
 	if (sqlite3_step(stmt) != SQLITE_DONE)
 		rc = (MORPH_ERR_DB);
-	sqlite3_finalize(stmt);
-	stmt = NULL;
+	import_stmt_cleanup(&stmt);
 	if (rc != 0)
-		goto out_free_session;
+		return rc;
 	if (sqlite3_prepare_v2(db,
 		"INSERT INTO sync_import_receipts(origin,revision,session_id) VALUES(?,?,?)",
 		-1, &stmt, NULL) != SQLITE_OK) {
 		rc = (MORPH_ERR_DB);
-		goto out_free_session;
+		return rc;
 	}
 	sqlite3_bind_text(stmt, 1, morph_buf_cstr_borrow(&identity), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, revision, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 3, session.id);
 	if (sqlite3_step(stmt) != SQLITE_DONE)
 		rc = (MORPH_ERR_DB);
-	sqlite3_finalize(stmt);
-	stmt = NULL;
+	import_stmt_cleanup(&stmt);
 	if (rc == 0 && sqlite3_prepare_v2(db,
 		"INSERT INTO sync_session_origins(session_id,origin) VALUES(?,?)",
 		-1, &stmt, NULL) == SQLITE_OK) {
@@ -274,10 +276,6 @@ static int import_session(sqlite3 *db, sqlite3_stmt *source, const char *origin,
 	if (rc == 0)
 		result->imported++;
 
-out_free_session:
-	sqlite3_finalize(stmt);
-	morph_buf_cleanup(&identity);
-	morph_buf_cleanup(&title);
 	return rc;
 }
 
@@ -305,7 +303,7 @@ static int import_table(sqlite3 *db, const char *table, int64_t message_offset,
 	morph_buf_t sql MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	morph_buf_t columns MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	morph_buf_t values MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	sqlite3_stmt *stmt = NULL;
+	sqlite3_stmt *stmt MORPH_CLEANUP(import_stmt_cleanup) = NULL;
 	int64_t offset = import_offset(db, table);
 	int rc = 0;
 	int count = 0;
@@ -322,7 +320,7 @@ static int import_table(sqlite3 *db, const char *table, int64_t message_offset,
 	if (sql.failed ||
 	    sqlite3_prepare_v2(db, morph_buf_cstr_borrow(&sql), -1, &stmt, NULL) != SQLITE_OK) {
 		rc = (MORPH_ERR_DB);
-		goto out_free_columns;
+		return rc;
 	}
 	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
 		const char *name = (const char *)sqlite3_column_text(stmt, 1);
@@ -348,7 +346,7 @@ static int import_table(sqlite3 *db, const char *table, int64_t message_offset,
 	}
 	if (step != SQLITE_DONE || count == 0 || columns.failed || values.failed) {
 		rc = (MORPH_ERR_DB);
-		goto out_free_columns;
+		return rc;
 	}
 	morph_buf_cleanup(&sql);
 	morph_buf_init(&sql, 128);
@@ -359,71 +357,57 @@ static int import_table(sqlite3 *db, const char *table, int64_t message_offset,
 			 table);
 	rc = sql.failed ? sql.failed : import_exec(db, morph_buf_cstr_borrow(&sql));
 
-out_free_columns:
-	sqlite3_finalize(stmt);
-	morph_buf_cleanup(&sql);
-	morph_buf_cleanup(&columns);
-	morph_buf_cleanup(&values);
 	return rc;
 }
 
-int runtime_session_import_file(struct runtime *runtime, const char *path,
-	const char *origin, struct runtime_session_import_result *result)
+static int import_file_execute(struct runtime *runtime, const char *path,
+	const char *origin, struct runtime_session_import_result *result,
+	sqlite3 **database, int *transaction)
 {
-	sqlite3 *db = NULL;
-	sqlite3_stmt *stmt = NULL;
+	sqlite3_stmt *stmt MORPH_CLEANUP(import_stmt_cleanup) = NULL;
 	int rc;
 	int step;
-	int transaction = 0;
 
-	if (!runtime || !path || !origin || !result)
-		return -EINVAL;
-	memset(result, 0, sizeof(*result));
-	if (!file_exists(path))
-		return -ENOENT;
-	rc = pthread_mutex_trylock(&runtime->context.execution_lock);
-	if (rc != 0)
-		return -rc;
 	if (sqlite3_open_v2(sqlite3_db_filename(runtime->context.database.handle, "main"),
-		&db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, NULL) != SQLITE_OK) {
+		database, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, NULL) != SQLITE_OK) {
 		rc = (MORPH_ERR_DB);
-		goto out_close_import;
+		return rc;
 	}
+	sqlite3 *db = *database;
 	sqlite3_busy_timeout(db, 5000);
 	(void)sqlite3_db_config(db, SQLITE_DBCONFIG_TRUSTED_SCHEMA, 0, NULL);
 	if (sqlite3_prepare_v2(db, "ATTACH DATABASE ? AS incoming", -1, &stmt, NULL) != SQLITE_OK) {
 		rc = (MORPH_ERR_DB);
-		goto out_close_import;
+		return rc;
 	}
 	sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
 	step = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	stmt = NULL;
+	import_stmt_cleanup(&stmt);
 	if (step != SQLITE_DONE || !import_has_column(db, "incoming", "sessions", "display_id") ||
 	    !import_has_column(db, "incoming", "messages", "session_id")) {
 		rc = (MORPH_ERR_FORMAT);
-		goto out_close_import;
+		return rc;
 	}
 	rc = import_check(db, "PRAGMA incoming.foreign_key_check");
 	if (rc != 0)
-		goto out_close_import;
+		return rc;
 	rc = import_check(db,
 		"SELECT 1 FROM incoming.messages m LEFT JOIN incoming.sessions s "
 		"ON s.id=m.session_id WHERE s.id IS NULL LIMIT 1");
 	if (rc != 0)
-		goto out_close_import;
+		return rc;
 	if (import_has_column(db, "incoming", "schema_migrations", "version")) {
 		rc = import_check(db,
 			"SELECT 1 WHERE (SELECT COALESCE(MAX(version),0) FROM "
 			"incoming.schema_migrations) "
 			"> (SELECT COALESCE(MAX(version),0) FROM main.schema_migrations)");
 		if (rc != 0)
-			goto out_close_import;
+			return rc;
 	}
 	rc = import_exec(db, "PRAGMA foreign_keys=ON; BEGIN IMMEDIATE;");
 	if (rc != 0)
-		goto out_close_import;
-	transaction = 1;
+		return rc;
+	*transaction = 1;
 	rc = import_exec(db,
 		"CREATE TABLE IF NOT EXISTS sync_import_receipts("
 		"origin TEXT NOT NULL,revision TEXT NOT NULL,session_id INTEGER,"
@@ -437,20 +421,19 @@ int runtime_session_import_file(struct runtime *runtime, const char *path,
 		"structured_data TEXT,agent_ui_ir TEXT,hitl_verdict INTEGER,created_at "
 		"INTEGER,updated_at INTEGER);");
 	if (rc != 0)
-		goto out_close_import;
+		return rc;
 	if (sqlite3_prepare_v2(db,
 		"SELECT id,display_id,name,model FROM incoming.sessions ORDER BY id",
 		-1, &stmt, NULL) != SQLITE_OK) {
 		rc = (MORPH_ERR_DB);
-		goto out_close_import;
+		return rc;
 	}
 	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
 		rc = import_session(db, stmt, origin, result);
 		if (rc != 0)
 			break;
 	}
-	sqlite3_finalize(stmt);
-	stmt = NULL;
+	import_stmt_cleanup(&stmt);
 	if (rc == 0 && step != SQLITE_DONE)
 		rc = (MORPH_ERR_DB);
 	int64_t message_offset = import_offset(db, "messages");
@@ -507,10 +490,28 @@ int runtime_session_import_file(struct runtime *runtime, const char *path,
 	if (rc == 0)
 		rc = import_exec(db, "COMMIT");
 	if (rc == 0)
-		transaction = 0;
+		*transaction = 0;
 
-out_close_import:
-	sqlite3_finalize(stmt);
+	return rc;
+}
+
+int runtime_session_import_file(struct runtime *runtime, const char *path,
+	const char *origin, struct runtime_session_import_result *result)
+{
+	sqlite3 *db = NULL;
+	int rc;
+	int transaction = 0;
+
+	if (!runtime || !path || !origin || !result)
+		return -EINVAL;
+	memset(result, 0, sizeof(*result));
+	if (!file_exists(path))
+		return -ENOENT;
+	rc = pthread_mutex_trylock(&runtime->context.execution_lock);
+	if (rc != 0)
+		return -rc;
+	rc = import_file_execute(runtime, path, origin, result, &db, &transaction);
+
 	if (transaction)
 		(void)import_exec(db, "ROLLBACK");
 	if (db)

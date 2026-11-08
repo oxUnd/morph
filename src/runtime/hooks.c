@@ -670,22 +670,18 @@ cJSON *hook_manager_list(struct hook_manager *manager)
 	return result;
 }
 
-static int hook_manager_batch(struct hook_manager *manager, int trust, const char *expected_digest)
+static void hook_batch_stmt_cleanup(sqlite3_stmt **statement)
 {
-	char digest[65];
-	struct hook_entry *entry;
-	sqlite3_stmt *stmt = NULL;
-	int rc = hook_manager_reload(manager);
+	sqlite3_finalize(*statement);
+	*statement = NULL;
+}
 
-	if (rc == 0)
-		rc = hook_review_digest(manager, digest);
-	if (rc != 0)
-		return rc;
-	if (strcmp(digest, expected_digest) != 0)
-		return -ESTALE;
-	rc = db_exec(manager->db, "SAVEPOINT hook_batch;");
-	if (rc != 0)
-		return rc;
+static int hook_manager_batch_write(struct hook_manager *manager, int trust)
+{
+	struct hook_entry *entry;
+	sqlite3_stmt *stmt MORPH_CLEANUP(hook_batch_stmt_cleanup) = NULL;
+	int rc;
+
 	if (trust) {
 		rc = sqlite3_prepare_v2(manager->db->handle,
 					"INSERT OR IGNORE INTO hook_workspaces(path) VALUES(?)", -1,
@@ -694,11 +690,10 @@ static int hook_manager_batch(struct hook_manager *manager, int trust, const cha
 			sqlite3_bind_text(stmt, 1, manager->workdir, -1, SQLITE_TRANSIENT);
 			rc = sqlite3_step(stmt);
 		}
-		sqlite3_finalize(stmt);
-		stmt = NULL;
+		hook_batch_stmt_cleanup(&stmt);
 		if (rc != SQLITE_DONE) {
 			rc = (MORPH_ERR_DB);
-			goto out_rollback_batch;
+			return rc;
 		}
 	}
 	rc = sqlite3_prepare_v2(
@@ -711,7 +706,7 @@ static int hook_manager_batch(struct hook_manager *manager, int trust, const cha
 		-1, &stmt, NULL);
 	if (rc != SQLITE_OK) {
 		rc = (MORPH_ERR_DB);
-		goto out_rollback_batch;
+		return rc;
 	}
 	morph_array_foreach (entry, &manager->entries, struct hook_entry) {
 		if (!entry->supported)
@@ -726,17 +721,32 @@ static int hook_manager_batch(struct hook_manager *manager, int trust, const cha
 		rc = sqlite3_step(stmt);
 		if (rc != SQLITE_DONE) {
 			rc = (MORPH_ERR_DB);
-			goto out_rollback_batch;
+			return rc;
 		}
 	}
-	sqlite3_finalize(stmt);
-	stmt = NULL;
-	rc = db_exec(manager->db, "RELEASE hook_batch;");
+	hook_batch_stmt_cleanup(&stmt);
+	return 0;
+}
+
+static int hook_manager_batch(struct hook_manager *manager, int trust, const char *expected_digest)
+{
+	char digest[65];
+	int rc = hook_manager_reload(manager);
+
 	if (rc == 0)
-		return 0;
-out_rollback_batch:
-	sqlite3_finalize(stmt);
-	(void)db_exec(manager->db, "ROLLBACK TO hook_batch; RELEASE hook_batch;");
+		rc = hook_review_digest(manager, digest);
+	if (rc != 0)
+		return rc;
+	if (strcmp(digest, expected_digest) != 0)
+		return -ESTALE;
+	rc = db_exec(manager->db, "SAVEPOINT hook_batch;");
+	if (rc != 0)
+		return rc;
+	rc = hook_manager_batch_write(manager, trust);
+	if (rc == 0)
+		rc = db_exec(manager->db, "RELEASE hook_batch;");
+	if (rc != 0)
+		(void)db_exec(manager->db, "ROLLBACK TO hook_batch; RELEASE hook_batch;");
 	return rc;
 }
 

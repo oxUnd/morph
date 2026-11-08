@@ -134,16 +134,14 @@ static int runtime_append_react_artifact_markdown(morph_buf_t *body,
 						  struct react_context *react,
 						  const char *answer)
 {
-	morph_array_t paths;
+	morph_array_t paths MORPH_CLEANUP(morph_array_cleanup) = {0};
 	struct react_step *step;
-	int paths_ready = 0;
 	int appended = 0;
 	int rc;
 
 	rc = morph_array_init(&paths, 4, sizeof(const char *));
 	if (rc != 0)
 		return rc;
-	paths_ready = 1;
 
 	for (step = react ? react->steps : NULL; step; step = step->next) {
 		for (int i = 0; i < step->artifact_count; i++) {
@@ -162,33 +160,30 @@ static int runtime_append_react_artifact_markdown(morph_buf_t *body,
 			slot = morph_array_push_borrow(&paths);
 			if (!slot) {
 				rc = -ENOMEM;
-				goto out;
+				return rc;
 			}
 			*slot = artifact->path;
 			if (!appended) {
 				if (body->len > 0) {
 					rc = morph_buf_puts(body, "\n\n");
 					if (rc != 0)
-						goto out;
+						return rc;
 				}
 				appended = 1;
 			} else {
 				rc = morph_buf_putc(body, '\n');
 				if (rc != 0)
-					goto out;
+					return rc;
 			}
 			label = artifact->label[0] ?
 				artifact->label : "Generated image";
 			rc = morph_buf_printf(body, "![%s](file://%s)",
 					      label, artifact->path);
 			if (rc != 0)
-				goto out;
+				return rc;
 		}
 	}
 
-out:
-	if (paths_ready)
-		morph_array_cleanup(&paths);
 	return rc;
 }
 
@@ -196,26 +191,17 @@ char *runtime_react_notification_body_copy(struct react_context *react)
 {
 	morph_buf_t body MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	const char *answer;
-	char *out = NULL;
-	int body_ready = 0;
 	int rc;
 
 	answer = react && react->final_answer ? react->final_answer : "";
 	rc = morph_buf_init(&body, 1024);
 	if (rc != 0)
 		return NULL;
-	body_ready = 1;
 	rc = morph_buf_puts(&body, answer);
 	if (rc != 0)
-		goto out;
+		return NULL;
 	rc = runtime_append_react_artifact_markdown(&body, react, answer);
 	if (rc != 0)
-		goto out;
-	out = morph_buf_detach(&body);
-	body_ready = 0;
-
-out:
-	if (body_ready)
-		morph_buf_cleanup(&body);
-	return out;
+		return NULL;
+	return morph_buf_detach(&body);
 }

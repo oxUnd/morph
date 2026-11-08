@@ -154,6 +154,15 @@ closing it restores the composer. Runtime messages continue to update state,
 while sanitized scrollback output is buffered until the panel leaves. Command
 completion and session-selection receipts run after leaving alternate screen.
 
+The input adapter retains the dimensions of its last paint. Terminals reflow
+the right-aligned hint and footer before delivering a resize event, so their
+previous row counts cannot be reused to erase the editor. Resize handling
+recovers the reflowed editor origin and clears only its transient tail before
+updating Readline's dimensions and restoring the draft. Input readiness also
+checks dimensions, since a key can arrive before the resize signal. Independent
+footer updates preserve the hint, and short terminals omit the optional task
+row when it would scroll the editable input out of view.
+
 The CLI embeds an Application subclass. Its `prepare_termination` hook cancels
 queued and future synchronous owner calls, cancels and joins the command worker,
 then detaches the owner queue under its mutex. The Application remains alive
@@ -492,6 +501,11 @@ The existing setup, sessions, hooks, startup hook review, and history PTY suites
 the production consumers, including resize without keyboard input, defaults,
 confirmation, paste, search, scrolling, cancellation, stale hook snapshots,
 and restoring the chat composer after closing a modal screen.
+
+`test_cli_reflow_pty.py` optionally uses an installed Kitty's headless terminal
+parser to test real history reflow, including narrow resizes, pending recap,
+multiline drafts and immediate typing. It skips when that parser is unavailable;
+the regular PTY suites also cover automatic recap and small-height footers.
 
 ## Tree component
 

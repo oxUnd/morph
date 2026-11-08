@@ -1,6 +1,7 @@
 #include "session_history.h"
 #include "session.h"
 #include "util/error.h"
+#include "util/cleanup.h"
 #include "util/log.h"
 
 #include <errno.h>
@@ -9,6 +10,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+static void history_stmt_cleanup(sqlite3_stmt **stmt)
+{
+	sqlite3_finalize(*stmt);
+	*stmt = NULL;
+}
 
 int model_history_add(struct db *db, const struct model_history_insert *item, int64_t *out_id)
 {
@@ -499,21 +506,14 @@ static int history_preserve_rounds(struct db *db, int64_t session_id, morph_arra
 	return 0;
 }
 
-int model_history_select_retained(struct db *db, int64_t session_id, int user_message_tokens,
+static int history_select_retained_apply(struct db *db, int64_t session_id, int user_message_tokens,
 				  int recent_history_tokens, int keep_recent_rounds,
 				  morph_array_t *preserved)
 {
-	sqlite3_stmt *stmt = NULL;
+	sqlite3_stmt *stmt MORPH_CLEANUP(history_stmt_cleanup) = NULL;
 	int recent_used_tokens = 0;
-	int failure = MORPH_ERR_DB;
 	int rc;
 
-	if (!db || !db->handle || session_id <= 0 || !preserved || user_message_tokens < 0 ||
-	    recent_history_tokens < 0 || keep_recent_rounds < 0)
-		return -EINVAL;
-	rc = morph_array_init(preserved, 8, sizeof(int64_t));
-	if (rc != 0)
-		return rc;
 	/* User retention is a cap, not a reservation that wastes unused capacity.
 	 * Select pairs first, then spend the remaining combined budget once. */
 	rc = history_preserve_user_pairs(db, session_id, preserved, &user_message_tokens);
@@ -525,8 +525,7 @@ int model_history_select_retained(struct db *db, int64_t session_id, int user_me
 					     &recent_history_tokens);
 	}
 	if (rc != 0) {
-		failure = (rc);
-		goto out_cleanup;
+		return rc;
 	}
 	if (recent_history_tokens > 0) {
 		const char *recent_sql = "SELECT id,kind,token_count FROM model_history_items "
@@ -538,7 +537,7 @@ int model_history_select_retained(struct db *db, int64_t session_id, int user_me
 
 		rc = sqlite3_prepare_v2(db->handle, recent_sql, -1, &stmt, NULL);
 		if (rc != SQLITE_OK)
-			goto out_cleanup;
+			return MORPH_ERR_DB;
 		sqlite3_bind_int64(stmt, 1, session_id);
 		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 			const char *kind = (const char *)sqlite3_column_text(stmt, 1);
@@ -574,25 +573,37 @@ int model_history_select_retained(struct db *db, int64_t session_id, int user_me
 		}
 		if (need_tool_call)
 			preserved->nelts = group_start;
-		sqlite3_finalize(stmt);
-		stmt = NULL;
+		history_stmt_cleanup(&stmt);
 		if (rc != SQLITE_DONE)
-			goto out_cleanup;
+			return MORPH_ERR_DB;
 	}
 	return 0;
-
-out_cleanup:
-	sqlite3_finalize(stmt);
-	morph_array_cleanup(preserved);
-	return failure;
 }
 
-static int history_compact_window(struct db *db, int64_t session_id, const char *turn_id,
+int model_history_select_retained(struct db *db, int64_t session_id, int user_message_tokens,
+				  int recent_history_tokens, int keep_recent_rounds,
+				  morph_array_t *preserved)
+{
+	if (!db || !db->handle || session_id <= 0 || !preserved || user_message_tokens < 0 ||
+	    recent_history_tokens < 0 || keep_recent_rounds < 0)
+		return -EINVAL;
+	int rc = morph_array_init(preserved, 8, sizeof(int64_t));
+
+	if (rc != 0)
+		return rc;
+	rc = history_select_retained_apply(db, session_id, user_message_tokens,
+					   recent_history_tokens, keep_recent_rounds, preserved);
+	if (rc != 0)
+		morph_array_cleanup(preserved);
+	return rc;
+}
+
+static int history_compact_apply(struct db *db, int64_t session_id, const char *turn_id,
 				  const char *summary, int summary_tokens, int user_message_tokens,
 				  int recent_history_tokens, int input_tokens,
 				  int keep_recent_rounds, const char *trigger_kind,
 				  int64_t *summary_item_id, const morph_array_t *selected,
-				  int64_t expected_cutoff)
+				  int64_t expected_cutoff, morph_array_t *preserved)
 {
 	const char *inactive_sql = "UPDATE model_history_items SET active=0 "
 				   "WHERE session_id=? AND active=1";
@@ -601,43 +612,27 @@ static int history_compact_window(struct db *db, int64_t session_id, const char 
 		"INSERT INTO history_compactions(session_id,turn_id,"
 		"cutoff_sequence_no,summary_item_id,input_tokens,output_tokens,"
 		"trigger_kind,created_at) VALUES(?,?,?,?,?,?,?,strftime('%s','now'))";
-	morph_array_t preserved;
 	struct model_history_insert insert = {0};
 	char compact_key[256];
-	sqlite3_stmt *stmt = NULL;
+	sqlite3_stmt *stmt MORPH_CLEANUP(history_stmt_cleanup) = NULL;
 	int64_t new_id = 0;
 	int64_t cutoff_sequence_no = 0;
-	int failure = MORPH_ERR_DB;
 	int rc;
 
-	if (!db || !db->handle || session_id <= 0 || !summary || !summary[0] ||
-	    summary_tokens < 0 || user_message_tokens < 0 || recent_history_tokens < 0 ||
-	    keep_recent_rounds < 0 || !trigger_kind || !trigger_kind[0])
-		return -EINVAL;
-	rc = morph_array_init(&preserved, 8, sizeof(int64_t));
-	if (rc != 0)
-		return rc;
-	rc = db_exec(db, "SAVEPOINT model_history_compact;");
-	if (rc != 0) {
-		morph_array_cleanup(&preserved);
-		return rc;
-	}
 	if (selected) {
-		int64_t *ids = morph_array_push_n_borrow(&preserved, selected->nelts);
+		int64_t *ids = morph_array_push_n_borrow(preserved, selected->nelts);
 		if (selected->nelts && !ids) {
-			failure = (-ENOMEM);
-			goto out_rollback;
+			return -ENOMEM;
 		}
 		if (selected->nelts)
 			memcpy(ids, selected->elts, selected->nelts * sizeof(*ids));
 	} else {
-		morph_array_cleanup(&preserved);
+		morph_array_cleanup(preserved);
 		rc = model_history_select_retained(db, session_id, user_message_tokens,
 						   recent_history_tokens, keep_recent_rounds,
-						   &preserved);
+						   preserved);
 		if (rc != 0) {
-			failure = (rc);
-			goto out_rollback;
+			return rc;
 		}
 	}
 	rc = sqlite3_prepare_v2(db->handle,
@@ -645,41 +640,37 @@ static int history_compact_window(struct db *db, int64_t session_id, const char 
 				"WHERE session_id=?",
 				-1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		goto out_rollback;
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	if (sqlite3_step(stmt) == SQLITE_ROW)
 		cutoff_sequence_no = sqlite3_column_int64(stmt, 0);
 	else
 		rc = SQLITE_ERROR;
-	sqlite3_finalize(stmt);
-	stmt = NULL;
+	history_stmt_cleanup(&stmt);
 	if (rc != SQLITE_OK)
-		goto out_rollback;
+		return MORPH_ERR_DB;
 	if (selected && cutoff_sequence_no != expected_cutoff) {
-		failure = (-EAGAIN);
-		goto out_rollback;
+		return -EAGAIN;
 	}
 	rc = sqlite3_prepare_v2(db->handle, inactive_sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		goto out_rollback;
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	stmt = NULL;
+	history_stmt_cleanup(&stmt);
 	if (rc != SQLITE_DONE)
-		goto out_rollback;
-	for (size_t i = 0; i < preserved.nelts; i++) {
-		int64_t *id = morph_array_borrow(&preserved, i);
+		return MORPH_ERR_DB;
+	for (size_t i = 0; i < preserved->nelts; i++) {
+		int64_t *id = morph_array_borrow(preserved, i);
 
 		rc = sqlite3_prepare_v2(db->handle, restore_sql, -1, &stmt, NULL);
 		if (rc != SQLITE_OK)
-			goto out_rollback;
+			return MORPH_ERR_DB;
 		sqlite3_bind_int64(stmt, 1, *id);
 		rc = sqlite3_step(stmt);
-		sqlite3_finalize(stmt);
-		stmt = NULL;
+		history_stmt_cleanup(&stmt);
 		if (rc != SQLITE_DONE)
-			goto out_rollback;
+			return MORPH_ERR_DB;
 	}
 	insert.session_id = session_id;
 	insert.turn_id = turn_id;
@@ -693,10 +684,10 @@ static int history_compact_window(struct db *db, int64_t session_id, const char 
 	insert.active = 1;
 	rc = model_history_add(db, &insert, &new_id);
 	if (rc != 0)
-		goto out_rollback;
+		return MORPH_ERR_DB;
 	rc = sqlite3_prepare_v2(db->handle, checkpoint_sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		goto out_rollback;
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	if (turn_id)
 		sqlite3_bind_text(stmt, 2, turn_id, -1, SQLITE_TRANSIENT);
@@ -708,23 +699,49 @@ static int history_compact_window(struct db *db, int64_t session_id, const char 
 	sqlite3_bind_int(stmt, 6, summary_tokens);
 	sqlite3_bind_text(stmt, 7, trigger_kind, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	stmt = NULL;
+	history_stmt_cleanup(&stmt);
 	if (rc != SQLITE_DONE)
-		goto out_rollback;
-	rc = db_exec(db, "RELEASE model_history_compact;");
-	if (rc != 0)
-		goto out_rollback;
-	morph_array_cleanup(&preserved);
+		return MORPH_ERR_DB;
 	if (summary_item_id)
 		*summary_item_id = new_id;
 	return 0;
+}
 
-out_rollback:
-	sqlite3_finalize(stmt);
-	(void)db_exec(db, "ROLLBACK TO model_history_compact; RELEASE model_history_compact;");
-	morph_array_cleanup(&preserved);
-	return failure;
+static int history_compact_window(struct db *db, int64_t session_id, const char *turn_id,
+				  const char *summary, int summary_tokens, int user_message_tokens,
+				  int recent_history_tokens, int input_tokens,
+				  int keep_recent_rounds, const char *trigger_kind,
+				  int64_t *summary_item_id, const morph_array_t *selected,
+				  int64_t expected_cutoff)
+{
+	morph_array_t preserved MORPH_CLEANUP(morph_array_cleanup) = {0};
+	int64_t new_id = 0;
+
+	if (!db || !db->handle || session_id <= 0 || !summary || !summary[0] ||
+	    summary_tokens < 0 || user_message_tokens < 0 || recent_history_tokens < 0 ||
+	    keep_recent_rounds < 0 || !trigger_kind || !trigger_kind[0])
+		return -EINVAL;
+	int rc = morph_array_init(&preserved, 8, sizeof(int64_t));
+
+	if (rc != 0)
+		return rc;
+	rc = db_exec(db, "SAVEPOINT model_history_compact;");
+	if (rc != 0)
+		return rc;
+	rc = history_compact_apply(db, session_id, turn_id, summary, summary_tokens,
+				   user_message_tokens, recent_history_tokens, input_tokens,
+				   keep_recent_rounds, trigger_kind, &new_id, selected,
+				   expected_cutoff, &preserved);
+	if (rc == 0 && db_exec(db, "RELEASE model_history_compact;") != 0)
+		rc = MORPH_ERR_DB;
+	if (rc != 0) {
+		(void)db_exec(db,
+			"ROLLBACK TO model_history_compact; RELEASE model_history_compact;");
+		return rc;
+	}
+	if (summary_item_id)
+		*summary_item_id = new_id;
+	return 0;
 }
 
 int model_history_compact(struct db *db, int64_t session_id, const char *turn_id,

@@ -43,20 +43,14 @@ static void *turn_heartbeat_thread(void *arg)
 	return NULL;
 }
 
-static void *turn_thread(void *arg)
+static int turn_job_execute(struct fcgi_turn_job *j, struct runtime **runtime)
 {
-	struct fcgi_turn_job *j = (struct fcgi_turn_job *)arg;
 	struct session sess = {0};
-	struct runtime *runtime = NULL;
 	struct runtime_request request;
 	struct runtime_result result;
 	int run_rc;
-	int ok = 0;
 	int64_t waited_ms = 0;
 
-	atomic_init(&j->heartbeat_stop, 0);
-	if (pthread_create(&j->heartbeat_thread, NULL, turn_heartbeat_thread, j) == 0)
-		j->heartbeat_started = 1;
 	memset(&result, 0, sizeof(result));
 	if (session_get_by_display_id(&j->store->db, j->session_id, &sess) == 0) {
 		memset(&request, 0, sizeof(request));
@@ -86,7 +80,7 @@ static void *turn_thread(void *arg)
 		request.override_action_drain = 1;
 		request.turn_flags = AGENT_TURN_DEFAULT_FLAGS;
 
-		run_rc = fcgi_bridge_turn_acquire(j->bridge, j->ticket, &runtime);
+		run_rc = fcgi_bridge_turn_acquire(j->bridge, j->ticket, runtime);
 		fcgi_turn_ticket_cleanup(&j->ticket);
 		if (run_rc != 0) {
 			cJSON *err = cJSON_CreateObject();
@@ -103,7 +97,7 @@ static void *turn_thread(void *arg)
 			events_publish(j->store, j->session_id, "error",
 				       json ? json : "{\"message\":\"turn failed\"}");
 			free(json);
-			goto out;
+			return 0;
 		}
 		waited_ms = morph_io_now_ms() - j->enqueued_ms;
 		{
@@ -122,9 +116,9 @@ static void *turn_thread(void *arg)
 				       json ? json : "{\"phase\":\"begin\"}");
 			free(json);
 		}
-		run_rc = runtime_execute_turn(runtime, &request, &result);
-		fcgi_bridge_runtime_release(j->bridge, runtime);
-		runtime = NULL;
+		run_rc = runtime_execute_turn(*runtime, &request, &result);
+		fcgi_bridge_runtime_release(j->bridge, *runtime);
+		*runtime = NULL;
 		if (run_rc != 0) {
 			cJSON *err = cJSON_CreateObject();
 			char *json = NULL;
@@ -138,7 +132,7 @@ static void *turn_thread(void *arg)
 			events_publish(j->store, j->session_id, "error",
 				       json ? json : "{\"message\":\"turn failed\"}");
 			free(json);
-			goto out;
+			return 0;
 		}
 		if (!j->final_sent) {
 			char *fallback = fcgi_media_refs_summary_copy(j);
@@ -151,7 +145,7 @@ static void *turn_thread(void *arg)
 			}
 			free(fallback);
 		}
-		ok = 1;
+		return 1;
 	} else {
 		cJSON *err = cJSON_CreateObject();
 		char *json = NULL;
@@ -165,10 +159,21 @@ static void *turn_thread(void *arg)
 		events_publish(j->store, j->session_id, "error",
 			       json ? json : "{\"message\":\"session not found\"}");
 		free(json);
-		goto out;
+		return 0;
 	}
+	return 0;
+}
 
-out:
+static void *turn_thread(void *arg)
+{
+	struct fcgi_turn_job *j = arg;
+	struct runtime *runtime = NULL;
+	int ok;
+
+	atomic_init(&j->heartbeat_stop, 0);
+	if (pthread_create(&j->heartbeat_thread, NULL, turn_heartbeat_thread, j) == 0)
+		j->heartbeat_started = 1;
+	ok = turn_job_execute(j, &runtime);
 	if (j->heartbeat_started) {
 		atomic_store(&j->heartbeat_stop, 1);
 		pthread_join(j->heartbeat_thread, NULL);

@@ -1,9 +1,25 @@
 #include "permission_grant.h"
 #include "util/error.h"
+#include "util/cleanup.h"
 #include "util/log.h"
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+
+static void grant_stmt_cleanup(sqlite3_stmt **stmt)
+{
+	if (!stmt)
+		return;
+	sqlite3_finalize(*stmt);
+	*stmt = NULL;
+}
+
+static int grant_statement_error(struct db *db, const char *action)
+{
+	log_warn(db->logger, "permission grant %s failed: %s", action,
+		 sqlite3_errmsg(db->handle));
+	return MORPH_ERR_DB;
+}
 
 int permission_grant_save(struct db *db,
 			  const struct permission_grant *grant)
@@ -12,16 +28,14 @@ int permission_grant_save(struct db *db,
 		"INSERT OR IGNORE INTO permission_grants("
 		"subject,resource_kind,resource,project_root,created_at)"
 		"VALUES(?,?,?,?,strftime('%s','now'))";
-	sqlite3_stmt *stmt = NULL;
-	int rc = 0;
+	sqlite3_stmt *stmt MORPH_CLEANUP(grant_stmt_cleanup) = NULL;
 
 	if (!db || !db->handle || !grant || !grant->subject[0] ||
 	    !grant->resource_kind[0] || !grant->resource[0] ||
 	    !grant->project_root[0])
 		return -EINVAL;
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK) {
-		rc = MORPH_ERR_DB;
-		goto out;
+		return grant_statement_error(db, "save");
 	}
 	if (sqlite3_bind_text(stmt, 1, grant->subject, -1,
 			      SQLITE_TRANSIENT) != SQLITE_OK ||
@@ -31,18 +45,11 @@ int permission_grant_save(struct db *db,
 			      SQLITE_TRANSIENT) != SQLITE_OK ||
 	    sqlite3_bind_text(stmt, 4, grant->project_root, -1,
 			      SQLITE_TRANSIENT) != SQLITE_OK) {
-		rc = MORPH_ERR_DB;
-		goto out;
+		return grant_statement_error(db, "save");
 	}
 	if (sqlite3_step(stmt) != SQLITE_DONE)
-		rc = MORPH_ERR_DB;
-
-out:
-	if (rc != 0)
-		log_warn(db ? db->logger : NULL, "permission grant save failed: %s",
-			 sqlite3_errmsg(db->handle));
-	sqlite3_finalize(stmt);
-	return rc;
+		return grant_statement_error(db, "save");
+	return 0;
 }
 
 int permission_grant_each(struct db *db, const char *project_root,
@@ -52,7 +59,7 @@ int permission_grant_each(struct db *db, const char *project_root,
 		"SELECT id,subject,resource_kind,resource,project_root,created_at "
 		"FROM permission_grants WHERE project_root=? ORDER BY id";
 	struct permission_grant grant;
-	sqlite3_stmt *stmt = NULL;
+	sqlite3_stmt *stmt MORPH_CLEANUP(grant_stmt_cleanup) = NULL;
 	int step;
 	int rc = 0;
 
@@ -62,8 +69,7 @@ int permission_grant_each(struct db *db, const char *project_root,
 		return MORPH_ERR_DB;
 	if (sqlite3_bind_text(stmt, 1, project_root, -1,
 			      SQLITE_TRANSIENT) != SQLITE_OK) {
-		rc = MORPH_ERR_DB;
-		goto out;
+		return MORPH_ERR_DB;
 	}
 	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
 		const char *subject =
@@ -88,13 +94,11 @@ int permission_grant_each(struct db *db, const char *project_root,
 		grant.created_at = sqlite3_column_int64(stmt, 5);
 		rc = fn(&grant, user_data);
 		if (rc != 0)
-			goto out;
+			return rc;
 	}
 	if (step != SQLITE_DONE)
 		rc = MORPH_ERR_DB;
 
-out:
-	sqlite3_finalize(stmt);
 	return rc;
 }
 
@@ -102,9 +106,8 @@ static int delete_grants(struct db *db, const char *sql,
 			 const char *project_root, const char *subject,
 			 int64_t id, int *deleted)
 {
-	sqlite3_stmt *stmt = NULL;
+	sqlite3_stmt *stmt MORPH_CLEANUP(grant_stmt_cleanup) = NULL;
 	int bind_index = 1;
-	int rc = 0;
 
 	if (!db || !db->handle || !sql || !deleted)
 		return -EINVAL;
@@ -114,31 +117,21 @@ static int delete_grants(struct db *db, const char *sql,
 	if (project_root &&
 	    sqlite3_bind_text(stmt, bind_index++, project_root, -1,
 			      SQLITE_TRANSIENT) != SQLITE_OK) {
-		rc = MORPH_ERR_DB;
-		goto out;
+		return grant_statement_error(db, "delete");
 	}
 	if (subject &&
 	    sqlite3_bind_text(stmt, bind_index++, subject, -1,
 			      SQLITE_TRANSIENT) != SQLITE_OK) {
-		rc = MORPH_ERR_DB;
-		goto out;
+		return grant_statement_error(db, "delete");
 	}
 	if (id > 0 && sqlite3_bind_int64(stmt, bind_index, id) != SQLITE_OK) {
-		rc = MORPH_ERR_DB;
-		goto out;
+		return grant_statement_error(db, "delete");
 	}
 	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		rc = MORPH_ERR_DB;
-		goto out;
+		return grant_statement_error(db, "delete");
 	}
 	*deleted = sqlite3_changes(db->handle);
-
-out:
-	if (rc != 0)
-		log_warn(db ? db->logger : NULL, "permission grant delete failed: %s",
-			 sqlite3_errmsg(db->handle));
-	sqlite3_finalize(stmt);
-	return rc;
+	return 0;
 }
 
 int permission_grant_delete_id(struct db *db, const char *project_root,

@@ -146,6 +146,67 @@ static const char *find_key(const char *json, const char *key)
 	return NULL;
 }
 
+static int json_parse_string_contents(const char *p, struct buf *buf)
+{
+	while (*p && *p != '"') {
+		if ((unsigned char)*p < 0x20) {
+			return -EINVAL;
+		}
+		if (*p == '\\') {
+			p++;
+			switch (*p) {
+			case '"':
+			case '\\':
+			case '/':
+				if (buf_append_c(buf, *p) != 0)
+					return -ENOMEM;
+				break;
+			case 'b':
+				if (buf_append_c(buf, '\b') != 0)
+					return -ENOMEM;
+				break;
+			case 'f':
+				if (buf_append_c(buf, '\f') != 0)
+					return -ENOMEM;
+				break;
+			case 'n':
+				if (buf_append_c(buf, '\n') != 0)
+					return -ENOMEM;
+				break;
+			case 'r':
+				if (buf_append_c(buf, '\r') != 0)
+					return -ENOMEM;
+				break;
+			case 't':
+				if (buf_append_c(buf, '\t') != 0)
+					return -ENOMEM;
+				break;
+			case 'u':
+				if (!isxdigit((unsigned char)p[1]) ||
+				    !isxdigit((unsigned char)p[2]) ||
+				    !isxdigit((unsigned char)p[3]) ||
+				    !isxdigit((unsigned char)p[4])) {
+					return -EINVAL;
+				}
+				if (buf_append_c(buf, '?') != 0)
+					return -ENOMEM;
+				p += 4;
+				break;
+			default:
+				return -EINVAL;
+			}
+			p++;
+		} else {
+			if (buf_append_c(buf, *p++) != 0)
+				return -ENOMEM;
+		}
+	}
+	if (*p != '"') {
+		return -EINVAL;
+	}
+	return 1;
+}
+
 static int json_get_string(const char *json, const char *key, char **out)
 {
 	const char *p;
@@ -156,76 +217,17 @@ static int json_get_string(const char *json, const char *key, char **out)
 	if (!p)
 		return 0;
 	if (*p != '"')
-		return -1;
+		return -EINVAL;
 	p++;
 	if (buf_init(&buf, 128) != 0)
-		return -1;
-	while (*p && *p != '"') {
-		if ((unsigned char)*p < 0x20) {
-			buf_free(&buf);
-			return -1;
-		}
-		if (*p == '\\') {
-			p++;
-			switch (*p) {
-			case '"':
-			case '\\':
-			case '/':
-				if (buf_append_c(&buf, *p) != 0)
-					goto oom;
-				break;
-			case 'b':
-				if (buf_append_c(&buf, '\b') != 0)
-					goto oom;
-				break;
-			case 'f':
-				if (buf_append_c(&buf, '\f') != 0)
-					goto oom;
-				break;
-			case 'n':
-				if (buf_append_c(&buf, '\n') != 0)
-					goto oom;
-				break;
-			case 'r':
-				if (buf_append_c(&buf, '\r') != 0)
-					goto oom;
-				break;
-			case 't':
-				if (buf_append_c(&buf, '\t') != 0)
-					goto oom;
-				break;
-			case 'u':
-				if (!isxdigit((unsigned char)p[1]) ||
-				    !isxdigit((unsigned char)p[2]) ||
-				    !isxdigit((unsigned char)p[3]) ||
-				    !isxdigit((unsigned char)p[4])) {
-					buf_free(&buf);
-					return -1;
-				}
-				if (buf_append_c(&buf, '?') != 0)
-					goto oom;
-				p += 4;
-				break;
-			default:
-				buf_free(&buf);
-				return -1;
-			}
-			p++;
-		} else {
-			if (buf_append_c(&buf, *p++) != 0)
-				goto oom;
-		}
-	}
-	if (*p != '"') {
+		return -ENOMEM;
+	int rc = json_parse_string_contents(p, &buf);
+	if (rc < 0) {
 		buf_free(&buf);
-		return -1;
+		return rc;
 	}
 	*out = buf.data;
-	return 1;
-
-oom:
-	buf_free(&buf);
-	return -1;
+	return rc;
 }
 
 static int json_get_int(const char *json, const char *key, long long *out)
@@ -593,51 +595,59 @@ static int read_lines(FILE *f, const struct read_args *args,
 	return 0;
 }
 
+static int append_result(struct buf *out, const char *path,
+	const struct read_args *args, long long end_line, long long next_line,
+	int eof, int truncated, const char *content)
+{
+	char num[128];
+
+	if (buf_append_str(out, "{\"path\":") != 0 ||
+	    append_json_string(out, path) != 0 ||
+	    buf_append_str(out, ",\"start_line\":") != 0)
+		return -ENOMEM;
+	snprintf(num, sizeof(num), "%lld", args->start_line);
+	if (buf_append_str(out, num) != 0 ||
+	    buf_append_str(out, ",\"line_count\":") != 0)
+		return -ENOMEM;
+	snprintf(num, sizeof(num), "%lld", args->line_count);
+	if (buf_append_str(out, num) != 0 ||
+	    buf_append_str(out, ",\"end_line\":") != 0)
+		return -ENOMEM;
+	snprintf(num, sizeof(num), "%lld", end_line);
+	if (buf_append_str(out, num) != 0 ||
+	    buf_append_str(out, ",\"next_line\":") != 0)
+		return -ENOMEM;
+	if (next_line > 0) {
+		snprintf(num, sizeof(num), "%lld", next_line);
+		if (buf_append_str(out, num) != 0)
+			return -ENOMEM;
+	} else if (buf_append_str(out, "null") != 0) {
+		return -ENOMEM;
+	}
+	if (buf_append_str(out, ",\"eof\":") != 0 ||
+	    buf_append_str(out, eof ? "true" : "false") != 0 ||
+	    buf_append_str(out, ",\"truncated\":") != 0 ||
+	    buf_append_str(out, truncated ? "true" : "false") != 0 ||
+	    buf_append_str(out, ",\"content\":") != 0 ||
+	    append_json_string(out, content) != 0 ||
+	    buf_append_c(out, '}') != 0)
+		return -ENOMEM;
+	return 0;
+}
+
 static char *make_result(const char *path, const struct read_args *args,
 			 long long end_line, long long next_line,
 			 int eof, int truncated, const char *content)
 {
 	struct buf out;
-	char num[128];
 
 	if (buf_init(&out, 1024) != 0)
 		return make_error("out of memory");
-	if (buf_append_str(&out, "{\"path\":") != 0 ||
-	    append_json_string(&out, path) != 0 ||
-	    buf_append_str(&out, ",\"start_line\":") != 0)
-		goto oom;
-	snprintf(num, sizeof(num), "%lld", args->start_line);
-	if (buf_append_str(&out, num) != 0 ||
-	    buf_append_str(&out, ",\"line_count\":") != 0)
-		goto oom;
-	snprintf(num, sizeof(num), "%lld", args->line_count);
-	if (buf_append_str(&out, num) != 0 ||
-	    buf_append_str(&out, ",\"end_line\":") != 0)
-		goto oom;
-	snprintf(num, sizeof(num), "%lld", end_line);
-	if (buf_append_str(&out, num) != 0 ||
-	    buf_append_str(&out, ",\"next_line\":") != 0)
-		goto oom;
-	if (next_line > 0) {
-		snprintf(num, sizeof(num), "%lld", next_line);
-		if (buf_append_str(&out, num) != 0)
-			goto oom;
-	} else if (buf_append_str(&out, "null") != 0) {
-		goto oom;
+	if (append_result(&out, path, args, end_line, next_line, eof, truncated, content) != 0) {
+		buf_free(&out);
+		return make_error("out of memory");
 	}
-	if (buf_append_str(&out, ",\"eof\":") != 0 ||
-	    buf_append_str(&out, eof ? "true" : "false") != 0 ||
-	    buf_append_str(&out, ",\"truncated\":") != 0 ||
-	    buf_append_str(&out, truncated ? "true" : "false") != 0 ||
-	    buf_append_str(&out, ",\"content\":") != 0 ||
-	    append_json_string(&out, content) != 0 ||
-	    buf_append_c(&out, '}') != 0)
-		goto oom;
 	return out.data;
-
-oom:
-	buf_free(&out);
-	return make_error("out of memory");
 }
 
 int ext_run(const char *args_json, char **result_json)

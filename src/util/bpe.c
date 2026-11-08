@@ -377,44 +377,28 @@ static int split_cl100k(const char *text, size_t text_len,
 			}
 		}
 
-		if (cc == UC_APOSTROPHE || is_letter(cc)) {
-			if (cc != UC_APOSTROPHE && !is_letter(cc)) {
-				/* skip */
-			} else {
-				enum uc_class first_cc = cc;
-				if (first_cc != UC_APOSTROPHE) {
-					/* not a standalone letter start */
-				}
-				/*
-				 * Alt 2: [^\r\n\p{L}\p{N}]?+\p{L}++
-				 * We're at a letter or apostrophe.
-				 * But apostrophe only counts as prefix
-				 * for alt2 if followed by a letter.
-				 */
-				if (cc == UC_APOSTROPHE) {
-					uint32_t next_cp;
-					size_t apos_bytes2 = iter_cp_bytes(&it);
-					struct piece_iter it2 = it;
-					it2.pos += apos_bytes2;
-					next_cp = iter_peek(&it2);
-					if (next_cp != (uint32_t)-1 &&
-					    is_letter(classify_cp(next_cp))) {
-						iter_next(&it);
-					} else {
-						goto try_digits;
-					}
-				}
-				while (it.pos < it.len) {
-					uint32_t p = iter_peek(&it);
-					if (p == (uint32_t)-1) break;
-					if (!is_letter(classify_cp(p))) break;
-					iter_next(&it);
-				}
-				pieces[npieces].offset = start;
-				pieces[npieces].len = it.pos - start;
-				npieces++;
-				continue;
+		int letter_prefix = is_letter(cc);
+		if (cc == UC_APOSTROPHE) {
+			struct piece_iter next = it;
+			next.pos += iter_cp_bytes(&it);
+			uint32_t next_cp = iter_peek(&next);
+
+			letter_prefix = next_cp != (uint32_t)-1 &&
+				is_letter(classify_cp(next_cp));
+		}
+		if (letter_prefix) {
+			if (cc == UC_APOSTROPHE)
+				iter_next(&it);
+			while (it.pos < it.len) {
+				uint32_t next_cp = iter_peek(&it);
+				if (next_cp == (uint32_t)-1 || !is_letter(classify_cp(next_cp)))
+					break;
+				iter_next(&it);
 			}
+			pieces[npieces].offset = start;
+			pieces[npieces].len = it.pos - start;
+			npieces++;
+			continue;
 		}
 
 		/*
@@ -443,7 +427,6 @@ static int split_cl100k(const char *text, size_t text_len,
 			}
 		}
 
-try_digits:
 		if (cc == UC_NUMBER) {
 			int count = 0;
 			while (it.pos < it.len && count < 3) {

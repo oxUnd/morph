@@ -147,26 +147,292 @@ static uint64_t hook_now_ms(void)
 	return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
 
-int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, cJSON **output)
+struct hook_dispatch {
+	struct process_manager *processes;
+	morph_array_t runs;
+	morph_buf_t context;
+	morph_buf_t reason;
+	cJSON *payload;
+	cJSON *updated;
+	char *wire;
+};
+
+static void hook_dispatch_cleanup(struct hook_dispatch *dispatch)
 {
-	struct hook_manager *manager = opaque;
-	struct process_manager *processes = NULL;
+	process_manager_destroy(dispatch->processes);
+	dispatch->processes = NULL;
+	for (size_t i = 0; i < dispatch->runs.nelts; i++) {
+		struct hook_run *item = morph_array_borrow(&dispatch->runs, i);
+		morph_buf_cleanup(&item->out);
+		morph_buf_cleanup(&item->err);
+	}
+	morph_array_cleanup(&dispatch->runs);
+	morph_buf_cleanup(&dispatch->context);
+	morph_buf_cleanup(&dispatch->reason);
+	morph_json_cleanup(&dispatch->payload);
+	morph_json_cleanup(&dispatch->updated);
+	morph_json_text_cleanup(&dispatch->wire);
+}
+
+static int hook_dispatch_execute(struct hook_manager *manager, const char *event,
+	const cJSON *input, struct hook_dispatch *dispatch, uint64_t started,
+	cJSON **output)
+{
 	struct process_manager_config pcfg = {
 		.max_session_output = HOOK_OUTPUT_MAX,
 		.max_inline_output = HOOK_OUTPUT_MAX,
 		.kill_grace_ms = 100,
 		.shell = "/bin/sh",
 	};
-	morph_array_t runs = {0};
-	morph_buf_t context = {0}, reason = {0};
 	struct hook_entry *entry;
-	cJSON *payload = NULL, *updated = NULL;
 	cJSON *result MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	char *wire = NULL;
 	int rc = 0, blocked = 0, ask = 0, terminate = 0;
+	int progress_shown = 0;
+
+	char sid[32];
+	snprintf(sid, sizeof(sid), "%lld", (long long)manager->session_id);
+	if (!cJSON_AddStringToObject(dispatch->payload, "session_id", sid) ||
+	    !cJSON_AddNullToObject(dispatch->payload, "transcript_path") ||
+	    !cJSON_AddStringToObject(dispatch->payload, "cwd", manager->workdir) ||
+	    !cJSON_AddStringToObject(dispatch->payload, "hook_event_name", event) ||
+	    !cJSON_AddStringToObject(dispatch->payload, "model",
+				     manager->model ? manager->model : "") ||
+	    !cJSON_AddStringToObject(dispatch->payload, "turn_id",
+				     manager->turn_id ? manager->turn_id : "")) {
+		rc = -ENOMEM;
+		return rc;
+	}
+	struct permission_policy policy;
+	const char *preset = "default";
+
+	if (manager->permissions &&
+	    tool_context_get_permission_policy(manager->permissions, &policy) == 0)
+		preset = runtime_permission_preset_name(&policy);
+	if (!cJSON_AddStringToObject(dispatch->payload, "permission_mode", preset)) {
+		rc = -ENOMEM;
+		return rc;
+	}
+	dispatch->wire = cJSON_PrintUnformatted(dispatch->payload);
+	if (!dispatch->wire || strlen(dispatch->wire) > HOOK_INPUT_MAX) {
+		rc = (dispatch->wire ? -E2BIG : -ENOMEM);
+		return rc;
+	}
+	rc = morph_array_init(&dispatch->runs, 8, sizeof(struct hook_run));
+	if (rc == 0)
+		rc = morph_buf_init(&dispatch->context, 256);
+	if (rc == 0 && strcmp(event, "UserPromptSubmit") == 0 && manager->session_context)
+		rc = morph_buf_puts(&dispatch->context, manager->session_context);
+	if (rc == 0)
+		rc = morph_buf_init(&dispatch->reason, 256);
+	if (rc == 0)
+		rc = process_manager_create(&pcfg, &dispatch->processes);
+	if (rc != 0)
+		return rc;
+	morph_array_foreach (entry, &manager->entries, struct hook_entry) {
+		struct hook_run *run;
+		FILE *stdin_file;
+		struct process_spawn_options options = {.logger = manager->logger};
+
+		if (!hook_matches(entry, event, input))
+			continue;
+		if (hook_refresh_trust(manager, entry) != 0 || !entry->supported ||
+		    strcmp(hook_entry_state(manager, entry), "trusted") != 0) {
+			continue;
+		}
+		if (manager->remaining_ms == 0 && strcmp(event, "Interrupt") != 0) {
+			hook_emit(manager, entry, "hook.failed", -ETIMEDOUT, 0, NULL);
+			continue;
+		}
+		run = morph_array_push_borrow(&dispatch->runs);
+		if (!run) {
+			rc = (-ENOMEM);
+			return rc;
+		}
+		memset(run, 0, sizeof(*run));
+		run->entry = entry;
+		run->rc = morph_buf_init(&run->out, 256);
+		if (run->rc == 0)
+			run->rc = morph_buf_init(&run->err, 256);
+		stdin_file = tmpfile();
+		if (!stdin_file) {
+			run->rc = -errno;
+		} else if (run->rc == 0) {
+			if (fwrite(dispatch->wire, 1, strlen(dispatch->wire), stdin_file) !=
+				    strlen(dispatch->wire) ||
+			    fflush(stdin_file) != 0 || fseek(stdin_file, 0, SEEK_SET) != 0)
+				run->rc = -EIO;
+			if (run->rc == 0) {
+				options.command = entry->command;
+				options.workdir = manager->workdir;
+				options.timeout_ms = (uint64_t)entry->timeout * 1000u;
+				if (strcmp(event, "Interrupt") != 0 &&
+				    options.timeout_ms > manager->remaining_ms)
+					options.timeout_ms = manager->remaining_ms;
+				if (strcmp(event, "SessionEnd") == 0 && options.timeout_ms > 1000)
+					options.timeout_ms = 1000;
+				options.background = 1;
+				options.hook_mode = 1;
+				options.use_stdin_fd = 1;
+				options.stdin_fd = fileno(stdin_file);
+				hook_emit(manager, entry, "hook.started", 0, 0, NULL);
+				struct sandbox_config sandbox MORPH_CLEANUP(
+					sandbox_config_cleanup) = {0};
+
+				if (manager->permissions) {
+					run->rc = sandbox_permission_prepare(
+						manager->permissions, "hook", NULL, &sandbox);
+					options.host_execution =
+						permission_effective_access(&policy).host;
+					options.sandbox = options.host_execution ? NULL : &sandbox;
+				}
+				if (run->rc == 0)
+					run->rc = process_spawn(dispatch->processes, &options,
+							run->session, NULL);
+			}
+		}
+		if (stdin_file)
+			fclose(stdin_file);
+		if (run->rc != 0)
+			run->done = 1;
+	}
+	for (;;) {
+		int pending = 0;
+		struct hook_run *run;
+		int cancelled = strcmp(event, "Interrupt") != 0 &&
+				(morph_signal_flag_get(manager->cancelled) ||
+				 morph_cancel_token_is_cancelled(manager->cancel_token));
+
+		morph_array_foreach (run, &dispatch->runs, struct hook_run) {
+			if (run->done)
+				continue;
+			if (cancelled) {
+				(void)process_session_kill(dispatch->processes, run->session);
+				run->rc = -ECANCELED;
+				run->done = 1;
+				continue;
+			}
+			run->rc = collect_run(dispatch->processes, run);
+			if (run->rc < 0) {
+				(void)process_session_kill(dispatch->processes, run->session);
+				run->done = 1;
+			}
+			pending += !run->done;
+		}
+		if (cancelled) {
+			rc = (-ECANCELED);
+			break;
+		}
+		if (!pending)
+			break;
+		if (!progress_shown && hook_now_ms() - started >= 300) {
+			const char *message = "Running hooks";
+
+			if (dispatch->runs.nelts == 1) {
+				struct hook_run *only = morph_array_borrow(&dispatch->runs, 0);
+				message = *only->entry->status_message ? only->entry->status_message
+								       : "Running hook";
+			}
+			(void)morph_event_emit_simple(manager->event_cb, manager->event_user,
+						      MORPH_EVENT_BACKGROUND, "hook.progress",
+						      "progress", message, NULL);
+			progress_shown = 1;
+		}
+		struct timespec delay = {.tv_nsec = 10000000};
+		nanosleep(&delay, NULL);
+	}
+	struct hook_run *run;
+	morph_array_foreach (run, &dispatch->runs, struct hook_run) {
+		int decision = 0;
+		size_t context_before = dispatch->context.len, reason_before = dispatch->reason.len;
+		cJSON *updated_before = dispatch->updated;
+		int ask_before = ask, terminate_before = terminate;
+		int decode_rc = hook_decode_output(
+			manager, run, event, &dispatch->context, &dispatch->reason,
+			&dispatch->updated, &decision, &ask, &terminate);
+		if (dispatch->context.len + manager->context_bytes > 32768u ||
+		    dispatch->reason.len > 32768u)
+			decode_rc = -E2BIG;
+		if (decode_rc < 0) {
+			(void)morph_buf_truncate(&dispatch->context, context_before);
+			(void)morph_buf_truncate(&dispatch->reason, reason_before);
+			if (dispatch->updated != updated_before)
+				cJSON_Delete(dispatch->updated);
+			dispatch->updated = updated_before;
+			ask = ask_before;
+			terminate = terminate_before;
+			decision = 0;
+		}
+		blocked |= decision;
+		if (decode_rc == 0) {
+			cJSON *parsed = cJSON_Parse(morph_buf_cstr_borrow(&run->out));
+			const char *message = hook_json_string_borrow(parsed, "systemMessage");
+			if (*message)
+				(void)morph_event_emit_simple(manager->event_cb,
+							      manager->event_user,
+							      MORPH_EVENT_BACKGROUND,
+							      "hook.message", "end", message, NULL);
+			cJSON_Delete(parsed);
+		}
+		hook_emit(manager, run->entry,
+			  decode_rc < 0 ? "hook.failed"
+			  : decision	? "hook.blocked"
+					: "hook.completed",
+			  decode_rc, decision, run);
+		cJSON *last = cJSON_GetArrayItem(manager->recent,
+						 cJSON_GetArraySize(manager->recent) - 1);
+		char *diagnostic = utf8_dup_clamped(morph_buf_cstr_borrow(&run->err), 16384);
+		if (diagnostic) {
+			cJSON_AddStringToObject(last, "stderr", diagnostic);
+			free(diagnostic);
+		}
+	}
+	if (rc != 0)
+		return rc;
+	manager->context_bytes += dispatch->context.len;
+	result = cJSON_CreateObject();
+	if (!result) {
+		rc = (-ENOMEM);
+		return rc;
+	}
+	if (!cJSON_AddStringToObject(result, "context",
+				   morph_buf_cstr_borrow(&dispatch->context)) ||
+	    !cJSON_AddStringToObject(result, "reason", morph_buf_cstr_borrow(&dispatch->reason)) ||
+	    !cJSON_AddBoolToObject(result, "blocked", blocked) ||
+	    !cJSON_AddBoolToObject(result, "ask", ask) ||
+	    !cJSON_AddBoolToObject(result, "terminate", terminate)) {
+		rc = -ENOMEM;
+		return rc;
+	}
+	if (strcmp(event, "SessionStart") == 0 &&
+	    strcmp(hook_json_string_borrow(input, "source"), "compact") == 0) {
+		char *saved = strdup(morph_buf_cstr_borrow(&dispatch->context));
+
+		if (!saved) {
+			rc = -ENOMEM;
+			return rc;
+		}
+		free(manager->session_context);
+		manager->session_context = saved;
+	}
+	if (dispatch->updated) {
+		rc = morph_json_object_take(result, "updatedInput", &dispatch->updated);
+		if (rc != 0)
+			return rc;
+	}
+
+	*output = morph_json_steal(&result);
+	return 0;
+}
+
+int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, cJSON **output)
+{
+	struct hook_manager *manager = opaque;
+	struct hook_dispatch dispatch MORPH_CLEANUP(hook_dispatch_cleanup) = {0};
+	struct hook_entry *entry;
+	cJSON *result MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	int rc;
 	uint64_t started = hook_now_ms();
 	uint64_t elapsed;
-	int progress_shown = 0;
 
 	if (!manager || !output || !event)
 		return -EINVAL;
@@ -199,254 +465,15 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 	    (morph_signal_flag_get(manager->cancelled) ||
 	     morph_cancel_token_is_cancelled(manager->cancel_token)))
 		return -ECANCELED;
-	payload = input ? cJSON_Duplicate(input, 1) : cJSON_CreateObject();
-	if (!payload)
+	dispatch.payload = input ? cJSON_Duplicate(input, 1) : cJSON_CreateObject();
+	if (!dispatch.payload)
 		return -ENOMEM;
-	char sid[32];
-	snprintf(sid, sizeof(sid), "%lld", (long long)manager->session_id);
-	if (!cJSON_AddStringToObject(payload, "session_id", sid) ||
-	    !cJSON_AddNullToObject(payload, "transcript_path") ||
-	    !cJSON_AddStringToObject(payload, "cwd", manager->workdir) ||
-	    !cJSON_AddStringToObject(payload, "hook_event_name", event) ||
-	    !cJSON_AddStringToObject(payload, "model", manager->model ? manager->model : "") ||
-	    !cJSON_AddStringToObject(payload, "turn_id",
-				     manager->turn_id ? manager->turn_id : "")) {
-		rc = -ENOMEM;
-		goto out_cleanup;
-	}
-	struct permission_policy policy;
-	const char *preset = "default";
-
-	if (manager->permissions &&
-	    tool_context_get_permission_policy(manager->permissions, &policy) == 0)
-		preset = runtime_permission_preset_name(&policy);
-	if (!cJSON_AddStringToObject(payload, "permission_mode", preset)) {
-		rc = -ENOMEM;
-		goto out_cleanup;
-	}
-	wire = cJSON_PrintUnformatted(payload);
-	if (!wire || strlen(wire) > HOOK_INPUT_MAX) {
-		rc = (wire ? -E2BIG : -ENOMEM);
-		goto out_cleanup;
-	}
-	rc = morph_array_init(&runs, 8, sizeof(struct hook_run));
-	if (rc == 0)
-		rc = morph_buf_init(&context, 256);
-	if (rc == 0 && strcmp(event, "UserPromptSubmit") == 0 && manager->session_context)
-		rc = morph_buf_puts(&context, manager->session_context);
-	if (rc == 0)
-		rc = morph_buf_init(&reason, 256);
-	if (rc == 0)
-		rc = process_manager_create(&pcfg, &processes);
-	if (rc != 0)
-		goto out_cleanup;
-	morph_array_foreach (entry, &manager->entries, struct hook_entry) {
-		struct hook_run *run;
-		FILE *stdin_file;
-		struct process_spawn_options options = {.logger = manager->logger};
-
-		if (!hook_matches(entry, event, input))
-			continue;
-		if (hook_refresh_trust(manager, entry) != 0 || !entry->supported ||
-		    strcmp(hook_entry_state(manager, entry), "trusted") != 0) {
-			continue;
-		}
-		if (manager->remaining_ms == 0 && strcmp(event, "Interrupt") != 0) {
-			hook_emit(manager, entry, "hook.failed", -ETIMEDOUT, 0, NULL);
-			continue;
-		}
-		run = morph_array_push_borrow(&runs);
-		if (!run) {
-			rc = (-ENOMEM);
-			goto out_cleanup;
-		}
-		memset(run, 0, sizeof(*run));
-		run->entry = entry;
-		run->rc = morph_buf_init(&run->out, 256);
-		if (run->rc == 0)
-			run->rc = morph_buf_init(&run->err, 256);
-		stdin_file = tmpfile();
-		if (!stdin_file) {
-			run->rc = -errno;
-		} else if (run->rc == 0) {
-			if (fwrite(wire, 1, strlen(wire), stdin_file) != strlen(wire) ||
-			    fflush(stdin_file) != 0 || fseek(stdin_file, 0, SEEK_SET) != 0)
-				run->rc = -EIO;
-			if (run->rc == 0) {
-				options.command = entry->command;
-				options.workdir = manager->workdir;
-				options.timeout_ms = (uint64_t)entry->timeout * 1000u;
-				if (strcmp(event, "Interrupt") != 0 &&
-				    options.timeout_ms > manager->remaining_ms)
-					options.timeout_ms = manager->remaining_ms;
-				if (strcmp(event, "SessionEnd") == 0 && options.timeout_ms > 1000)
-					options.timeout_ms = 1000;
-				options.background = 1;
-				options.hook_mode = 1;
-				options.use_stdin_fd = 1;
-				options.stdin_fd = fileno(stdin_file);
-				hook_emit(manager, entry, "hook.started", 0, 0, NULL);
-				struct sandbox_config sandbox MORPH_CLEANUP(
-					sandbox_config_cleanup) = {0};
-
-				if (manager->permissions) {
-					run->rc = sandbox_permission_prepare(
-						manager->permissions, "hook", NULL, &sandbox);
-					options.host_execution =
-						permission_effective_access(&policy).host;
-					options.sandbox = options.host_execution ? NULL : &sandbox;
-				}
-				if (run->rc == 0)
-					run->rc = process_spawn(processes, &options, run->session,
-								NULL);
-			}
-		}
-		if (stdin_file)
-			fclose(stdin_file);
-		if (run->rc != 0)
-			run->done = 1;
-	}
-	for (;;) {
-		int pending = 0;
-		struct hook_run *run;
-		int cancelled = strcmp(event, "Interrupt") != 0 &&
-				(morph_signal_flag_get(manager->cancelled) ||
-				 morph_cancel_token_is_cancelled(manager->cancel_token));
-
-		morph_array_foreach (run, &runs, struct hook_run) {
-			if (run->done)
-				continue;
-			if (cancelled) {
-				(void)process_session_kill(processes, run->session);
-				run->rc = -ECANCELED;
-				run->done = 1;
-				continue;
-			}
-			run->rc = collect_run(processes, run);
-			if (run->rc < 0) {
-				(void)process_session_kill(processes, run->session);
-				run->done = 1;
-			}
-			pending += !run->done;
-		}
-		if (cancelled) {
-			rc = (-ECANCELED);
-			break;
-		}
-		if (!pending)
-			break;
-		if (!progress_shown && hook_now_ms() - started >= 300) {
-			const char *message = "Running hooks";
-
-			if (runs.nelts == 1) {
-				struct hook_run *only = morph_array_borrow(&runs, 0);
-				message = *only->entry->status_message ? only->entry->status_message
-								       : "Running hook";
-			}
-			(void)morph_event_emit_simple(manager->event_cb, manager->event_user,
-						      MORPH_EVENT_BACKGROUND, "hook.progress",
-						      "progress", message, NULL);
-			progress_shown = 1;
-		}
-		struct timespec delay = {.tv_nsec = 10000000};
-		nanosleep(&delay, NULL);
-	}
-	struct hook_run *run;
-	morph_array_foreach (run, &runs, struct hook_run) {
-		int decision = 0;
-		size_t context_before = context.len, reason_before = reason.len;
-		cJSON *updated_before = updated;
-		int ask_before = ask, terminate_before = terminate;
-		int decode_rc = hook_decode_output(manager, run, event, &context, &reason, &updated,
-						   &decision, &ask, &terminate);
-		if (context.len + manager->context_bytes > 32768u || reason.len > 32768u)
-			decode_rc = -E2BIG;
-		if (decode_rc < 0) {
-			(void)morph_buf_truncate(&context, context_before);
-			(void)morph_buf_truncate(&reason, reason_before);
-			if (updated != updated_before)
-				cJSON_Delete(updated);
-			updated = updated_before;
-			ask = ask_before;
-			terminate = terminate_before;
-			decision = 0;
-		}
-		blocked |= decision;
-		if (decode_rc == 0) {
-			cJSON *parsed = cJSON_Parse(morph_buf_cstr_borrow(&run->out));
-			const char *message = hook_json_string_borrow(parsed, "systemMessage");
-			if (*message)
-				(void)morph_event_emit_simple(manager->event_cb,
-							      manager->event_user,
-							      MORPH_EVENT_BACKGROUND,
-							      "hook.message", "end", message, NULL);
-			cJSON_Delete(parsed);
-		}
-		hook_emit(manager, run->entry,
-			  decode_rc < 0 ? "hook.failed"
-			  : decision	? "hook.blocked"
-					: "hook.completed",
-			  decode_rc, decision, run);
-		cJSON *last = cJSON_GetArrayItem(manager->recent,
-						 cJSON_GetArraySize(manager->recent) - 1);
-		char *diagnostic = utf8_dup_clamped(morph_buf_cstr_borrow(&run->err), 16384);
-		if (diagnostic) {
-			cJSON_AddStringToObject(last, "stderr", diagnostic);
-			free(diagnostic);
-		}
-	}
-	if (rc != 0)
-		goto out_cleanup;
-	manager->context_bytes += context.len;
-	result = cJSON_CreateObject();
-	if (!result) {
-		rc = (-ENOMEM);
-		goto out_cleanup;
-	}
-	if (!cJSON_AddStringToObject(result, "context", morph_buf_cstr_borrow(&context)) ||
-	    !cJSON_AddStringToObject(result, "reason", morph_buf_cstr_borrow(&reason)) ||
-	    !cJSON_AddBoolToObject(result, "blocked", blocked) ||
-	    !cJSON_AddBoolToObject(result, "ask", ask) ||
-	    !cJSON_AddBoolToObject(result, "terminate", terminate)) {
-		rc = -ENOMEM;
-		goto out_cleanup;
-	}
-	if (strcmp(event, "SessionStart") == 0 &&
-	    strcmp(hook_json_string_borrow(input, "source"), "compact") == 0) {
-		char *saved = strdup(morph_buf_cstr_borrow(&context));
-
-		if (!saved) {
-			rc = -ENOMEM;
-			goto out_cleanup;
-		}
-		free(manager->session_context);
-		manager->session_context = saved;
-	}
-	if (updated) {
-		rc = morph_json_object_take(result, "updatedInput", &updated);
-		if (rc != 0)
-			goto out_cleanup;
-	}
-
-out_cleanup:
+	rc = hook_dispatch_execute(manager, event, input, &dispatch, started, &result);
 	elapsed = hook_now_ms() - started;
 	manager->remaining_ms =
 		elapsed < manager->remaining_ms ? manager->remaining_ms - elapsed : 0;
-	process_manager_destroy(processes);
-	for (size_t i = 0; i < runs.nelts; i++) {
-		struct hook_run *item = morph_array_borrow(&runs, i);
-		morph_buf_cleanup(&item->out);
-		morph_buf_cleanup(&item->err);
-	}
-	morph_array_cleanup(&runs);
-	morph_buf_cleanup(&context);
-	morph_buf_cleanup(&reason);
-	cJSON_Delete(payload);
-	cJSON_Delete(updated);
-	free(wire);
-	if (rc == 0) {
-		*output = result;
-		result = NULL;
-	}
+	hook_dispatch_cleanup(&dispatch);
+	if (rc == 0)
+		*output = morph_json_steal(&result);
 	return rc;
 }

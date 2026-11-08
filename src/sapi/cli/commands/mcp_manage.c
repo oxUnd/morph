@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/mcp_manage.h"
+#include "util/cleanup.h"
 #include "mcp/mcp.h"
 #include "config/config.h"
 #include "cJSON.h"
@@ -433,15 +434,21 @@ static int cli_mcp_manage_mcp_read_command(struct morph_log *logger,
 	return -ENOENT;
 }
 
+static void cli_mcp_manage_toml_cleanup(toml_result_t *parsed)
+{
+	toml_free(*parsed);
+	memset(parsed, 0, sizeof(*parsed));
+}
+
 static int cli_mcp_manage_mcp_apply(struct morph_log *logger,
 				    const struct cli_mcp_manage_mcp_options *options, int argc,
 				    char **argv, const char *path)
 {
-	char *text = file_read_all_copy(path, NULL);
-	toml_result_t parsed = {0};
+	char *text MORPH_CLEANUP(morph_charp_cleanup) = file_read_all_copy(path, NULL);
+	toml_result_t parsed MORPH_CLEANUP(cli_mcp_manage_toml_cleanup) = {0};
 	toml_datum_t servers = {0};
 	const toml_datum_t *selected = NULL;
-	morph_buf_t output = {0};
+	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	struct config_validation_error error = {0};
 	int add = strcmp(options->action, "add") == 0;
 	int remove = strcmp(options->action, "remove") == 0;
@@ -453,18 +460,18 @@ static int cli_mcp_manage_mcp_apply(struct morph_log *logger,
 		return -EIO;
 	if (strlen(text) > 1024 * 1024) {
 		rc = (-EFBIG);
-		goto out;
+		return rc;
 	}
 	parsed = toml_parse(text, (int)strlen(text));
 	if (!parsed.ok) {
 		fprintf(stderr, "morph: invalid config: %s\n", parsed.errmsg);
 		rc = (MORPH_ERR_PARSE);
-		goto out;
+		return rc;
 	}
 	servers = toml_get(toml_get(parsed.toptab, "mcp"), "servers");
 	if (!add && !remove) {
 		rc = cli_mcp_manage_mcp_read_command(logger, options, path, &servers);
-		goto out;
+		return rc;
 	}
 	if (servers.type == TOML_ARRAY) {
 		if (servers.flag & TOML_FLAG_INLINED) {
@@ -472,7 +479,7 @@ static int cli_mcp_manage_mcp_apply(struct morph_log *logger,
 			      "[[mcp.servers]] before editing\n",
 			      stderr);
 			rc = (-ENOTSUP);
-			goto out;
+			return rc;
 		}
 		for (int i = 0; i < servers.u.arr.size; i++) {
 			toml_datum_t name = toml_get(servers.u.arr.elem[i], "name");
@@ -480,7 +487,7 @@ static int cli_mcp_manage_mcp_apply(struct morph_log *logger,
 			if (name.type == TOML_STRING && strcmp(name.u.s, options->name) == 0) {
 				if (selected) {
 					rc = (-EEXIST);
-					goto out;
+					return rc;
 				}
 				selected = &servers.u.arr.elem[i];
 			}
@@ -490,15 +497,15 @@ static int cli_mcp_manage_mcp_apply(struct morph_log *logger,
 	    (add && !selected && servers.type == TOML_ARRAY &&
 	     servers.u.arr.size >= MCP_SERVER_MAX)) {
 		rc = (-EEXIST);
-		goto out;
+		return rc;
 	}
 	if (remove && !selected) {
 		rc = (-ENOENT);
-		goto out;
+		return rc;
 	}
 	rc = morph_buf_init(&output, 0);
 	if (rc != 0)
-		goto out;
+		return rc;
 	if (selected)
 		rc = cli_mcp_manage_mcp_without_server(&parsed, selected, text, &output);
 	else
@@ -514,10 +521,6 @@ static int cli_mcp_manage_mcp_apply(struct morph_log *logger,
 	if (rc == 0)
 		printf("%s MCP server '%s' in %s (user scope).\n", remove ? "Removed" : "Saved",
 		       options->name, path);
-out:
-	morph_buf_cleanup(&output);
-	toml_free(parsed);
-	free(text);
 	return rc;
 }
 

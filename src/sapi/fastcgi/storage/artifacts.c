@@ -1,4 +1,5 @@
 #include "sapi/fastcgi/storage/artifacts.h"
+#include "util/cleanup.h"
 #include "sapi/fastcgi/session_store_internal.h"
 #include "cJSON.h"
 #include "util/error.h"
@@ -94,33 +95,32 @@ static int artifact_quota_allows(struct session_store *s, const char *user_id, c
 	return rc;
 }
 
-int store_artifact_register(struct session_store *s, const char *user_id, const char *session_id,
-			    const char *kind, const char *mime, const char *filename,
-			    const char *relative_path, int64_t size_bytes, char out_artifact_id[64])
+static void artifact_statement_cleanup(sqlite3_stmt **owner)
+{
+	sqlite3_finalize(*owner);
+	*owner = NULL;
+}
+
+static int store_artifact_register_write(struct session_store *s, const char *user_id,
+	const char *session_id, const char *kind, const char *mime, const char *filename,
+	const char *relative_path, int64_t size_bytes, char *id, size_t id_size)
 {
 	const char *sql = "INSERT INTO fcgi_artifacts"
 			  "(id,user_id,session_id,kind,mime,filename,relative_path,"
 			  "size_bytes,status,created_at)"
 			  " VALUES(?,?,?,?,?,?,?,?, 'ready', ?)";
-	sqlite3_stmt *st = NULL;
-	char id[64];
+	sqlite3_stmt *st MORPH_CLEANUP(artifact_statement_cleanup) = NULL;
 	int rc;
 
-	if (!s || !user_id || !session_id || !kind || !mime || !filename || !relative_path)
-		return -EINVAL;
-	/* Keep the quota check and both usage records in one transaction. */
-	rc = store_transaction_begin(s);
-	if (rc != 0)
-		return rc;
 	rc = artifact_quota_allows(s, user_id, kind, size_bytes);
 	if (rc != 0)
-		goto out_rollback;
-	rc = fcgi_random_id("art_", id, sizeof(id));
+		return rc;
+	rc = fcgi_random_id("art_", id, id_size);
 	if (rc < 0)
-		goto out_rollback;
+		return rc;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) {
 		rc = -EIO;
-		goto out_rollback;
+		return rc;
 	}
 	sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
@@ -132,10 +132,10 @@ int store_artifact_register(struct session_store *s, const char *user_id, const 
 	sqlite3_bind_int64(st, 8, size_bytes);
 	sqlite3_bind_int64(st, 9, fcgi_store_now());
 	rc = sqlite3_step(st);
-	sqlite3_finalize(st);
+	artifact_statement_cleanup(&st);
 	if (rc != SQLITE_DONE) {
 		rc = -EIO;
-		goto out_rollback;
+		return rc;
 	}
 
 	sql = "INSERT INTO fcgi_usage_storage(user_id,used_bytes)"
@@ -144,15 +144,15 @@ int store_artifact_register(struct session_store *s, const char *user_id, const 
 	      "used_bytes=used_bytes+excluded.used_bytes";
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) {
 		rc = -EIO;
-		goto out_rollback;
+		return rc;
 	}
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(st, 2, size_bytes);
 	rc = sqlite3_step(st);
-	sqlite3_finalize(st);
+	artifact_statement_cleanup(&st);
 	if (rc != SQLITE_DONE) {
 		rc = -EIO;
-		goto out_rollback;
+		return rc;
 	}
 	if (strcmp(kind, "image") == 0 || strcmp(kind, "video") == 0) {
 		const char *col = strcmp(kind, "image") == 0 ? "images" : "videos";
@@ -164,25 +164,40 @@ int store_artifact_register(struct session_store *s, const char *user_id, const 
 			 col, col, col);
 		if (sqlite3_prepare_v2(s->db.handle, usage_sql, -1, &st, NULL) != SQLITE_OK) {
 			rc = -EIO;
-			goto out_rollback;
+			return rc;
 		}
 		sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 		rc = sqlite3_step(st);
-		sqlite3_finalize(st);
+		artifact_statement_cleanup(&st);
 		if (rc != SQLITE_DONE) {
 			rc = -EIO;
-			goto out_rollback;
+			return rc;
 		}
 	}
-	rc = store_transaction_end(s, 0);
+	return 0;
+}
+
+int store_artifact_register(struct session_store *s, const char *user_id, const char *session_id,
+			    const char *kind, const char *mime, const char *filename,
+			    const char *relative_path, int64_t size_bytes, char out_artifact_id[64])
+{
+	char id[64];
+	int rc;
+
+	if (!s || !user_id || !session_id || !kind || !mime || !filename || !relative_path)
+		return -EINVAL;
+	/* Keep the quota check and both usage records in one transaction. */
+	rc = store_transaction_begin(s);
+	if (rc != 0)
+		return rc;
+	rc = store_artifact_register_write(s, user_id, session_id, kind, mime, filename,
+					   relative_path, size_bytes, id, sizeof(id));
+	rc = store_transaction_end(s, rc);
 	if (rc != 0)
 		return rc;
 	if (out_artifact_id)
 		snprintf(out_artifact_id, 64, "%s", id);
 	return 0;
-
-out_rollback:
-	return store_transaction_end(s, rc);
 }
 
 int store_artifact_get(struct session_store *s, const char *artifact_id, const char *user_id,

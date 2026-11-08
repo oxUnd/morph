@@ -361,6 +361,12 @@ int image_gen_format_size(char *buf, size_t buf_size, int width, int height)
 	return 0;
 }
 
+static void image_stbi_cleanup(unsigned char **image)
+{
+	stbi_image_free(*image);
+	*image = NULL;
+}
+
 int image_resize_file_exact(const char *path, int width, int height)
 {
 	int src_w = 0;
@@ -368,8 +374,8 @@ int image_resize_file_exact(const char *path, int width, int height)
 	int src_ch = 0;
 	int rc = 0;
 	char tmp_path[PATH_MAX];
-	unsigned char *src = NULL;
-	unsigned char *dst = NULL;
+	unsigned char *src MORPH_CLEANUP(image_stbi_cleanup) = NULL;
+	unsigned char *dst MORPH_CLEANUP(morph_ucharp_cleanup) = NULL;
 	const char *ext;
 	int wrc;
 	int n;
@@ -390,38 +396,32 @@ int image_resize_file_exact(const char *path, int width, int height)
 	dst = malloc((size_t)width * (size_t)height * (size_t)src_ch);
 	if (!dst) {
 		rc = -ENOMEM;
-		goto out;
+		return rc;
 	}
 
 	if (!stbir_resize_uint8_linear(src, src_w, src_h, 0,
 				       dst, width, height, 0,
 				       (stbir_pixel_layout)src_ch)) {
 		rc = MORPH_ERR_PROCESSING;
-		goto out;
+		return rc;
 	}
 
 	n = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
 	if (n < 0 || (size_t)n >= sizeof(tmp_path)) {
 		rc = -ENAMETOOLONG;
-		goto out;
+		return rc;
 	}
 	ext = image_out_ext(path);
 	wrc = image_write_by_ext(tmp_path, ext, width, height, src_ch, dst);
 	if (!wrc) {
 		rc = -EIO;
-		goto out;
+		return rc;
 	}
 	if (rename(tmp_path, path) < 0) {
 		rc = -errno;
 		(void)unlink(tmp_path);
-		goto out;
+		return rc;
 	}
 
-out:
-	if (src)
-		stbi_image_free(src);
-	free(dst);
-	if (rc < 0)
-		return rc;
 	return 0;
 }

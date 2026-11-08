@@ -365,8 +365,8 @@ static int image_materialize(const struct http_control *control,
 			     const struct image_payload *payload, const char *output_dir,
 			     struct image_result *result)
 {
-	unsigned char *decoded = NULL;
-	char *out_dir = NULL;
+	unsigned char *decoded MORPH_CLEANUP(morph_ucharp_cleanup) = NULL;
+	char *out_dir MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	char out_path[PATH_MAX];
 	const char *ext;
 	size_t decoded_len = 0;
@@ -380,17 +380,17 @@ static int image_materialize(const struct http_control *control,
 		return -ENOMEM;
 	rc = file_ensure_dir(out_dir);
 	if (rc != 0)
-		goto out;
+		return rc;
 	if (payload->kind == IMAGE_PAYLOAD_URL) {
 		snprintf(result->url, sizeof(result->url), "%s", payload->data);
 		rc = download_url(control, payload->data, out_dir, out_path, sizeof(out_path));
 		if (rc != 0)
-			goto out;
+			return rc;
 	} else {
 		decoded = base64_decode_copy(payload->data, &decoded_len);
 		if (!decoded || decoded_len == 0) {
 			rc = MORPH_ERR_PARSE;
-			goto out;
+			return rc;
 		}
 		if (strcmp(payload->output_format, "jpeg") == 0 ||
 		    strcmp(payload->output_format, "jpg") == 0) {
@@ -405,7 +405,7 @@ static int image_materialize(const struct http_control *control,
 		rc = media_output_write(out_dir, "img", ext, decoded, decoded_len, out_path,
 					sizeof(out_path));
 		if (rc != 0)
-			goto out;
+			return rc;
 	}
 	snprintf(result->path, sizeof(result->path), "%s", out_path);
 	{
@@ -415,12 +415,7 @@ static int image_materialize(const struct http_control *control,
 		if (image)
 			stbi_image_free(image);
 	}
-	rc = 0;
-
-out:
-	free(decoded);
-	free(out_dir);
-	return rc;
+	return 0;
 }
 
 int image_gen_create(struct model *self, const char *prompt, const char *style, const char *size,

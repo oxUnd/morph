@@ -1,4 +1,5 @@
 #include "js_wasm.h"
+#include "util/cleanup.h"
 #include "js_values.h"
 #include "util/buf.h"
 #include "util/file.h"
@@ -31,6 +32,7 @@ struct wasm_instance {
 };
 
 static int require_wasm(JSContext *ctx);
+static void wasm_instance_owner_cleanup(struct wasm_instance **owner);
 static void wasm_module_finalizer(JSRuntime *rt, JSValue val);
 static void wasm_instance_finalizer(JSRuntime *rt, JSValue val);
 static int read_u32_leb(const uint8_t *buf, size_t len, size_t *pos, uint32_t *out);
@@ -75,14 +77,7 @@ static void wasm_instance_finalizer(JSRuntime *rt, JSValue val)
 	struct wasm_instance *inst = JS_GetOpaque(val, JS_GetClassID(val));
 
 	(void)rt;
-	if (!inst)
-		return;
-	if (inst->runtime)
-		m3_FreeRuntime(inst->runtime);
-	if (inst->env)
-		m3_FreeEnvironment(inst->env);
-	free(inst->bytes);
-	free(inst);
+	wasm_instance_owner_cleanup(&inst);
 }
 
 static int read_u32_leb(const uint8_t *buf, size_t len, size_t *pos, uint32_t *out)
@@ -265,10 +260,32 @@ static JSValue wasm_export_call(JSContext *ctx, JSValueConst this_val, int argc,
 	return JS_NewInt64(ctx, (int64_t)ret64);
 }
 
+static void wasm_instance_owner_cleanup(struct wasm_instance **owner)
+{
+	struct wasm_instance *inst = *owner;
+
+	if (!inst)
+		return;
+	if (inst->runtime)
+		m3_FreeRuntime(inst->runtime);
+	if (inst->env)
+		m3_FreeEnvironment(inst->env);
+	free(inst->bytes);
+	free(inst);
+	*owner = NULL;
+}
+
+static void wasm_module_owner_cleanup(IM3Module *owner)
+{
+	if (*owner)
+		m3_FreeModule(*owner);
+	*owner = NULL;
+}
+
 static JSValue build_wasm_instance(JSContext *ctx, struct wasm_module *module)
 {
-	struct wasm_instance *inst;
-	IM3Module m3_module = NULL;
+	struct wasm_instance *inst MORPH_CLEANUP(wasm_instance_owner_cleanup) = NULL;
+	IM3Module m3_module MORPH_CLEANUP(wasm_module_owner_cleanup) = NULL;
 	M3Result res;
 	JSValue obj;
 	JSValue exports;
@@ -278,27 +295,27 @@ static JSValue build_wasm_instance(JSContext *ctx, struct wasm_module *module)
 		return JS_ThrowOutOfMemory(ctx);
 	inst->bytes = malloc(module->len);
 	if (!inst->bytes)
-		goto oom;
+		return JS_ThrowOutOfMemory(ctx);
 	memcpy(inst->bytes, module->bytes, module->len);
 	inst->len = module->len;
 	memcpy(inst->exports, module->exports, sizeof(inst->exports));
 	inst->export_count = module->export_count;
 	inst->env = m3_NewEnvironment();
 	if (!inst->env)
-		goto oom;
+		return JS_ThrowOutOfMemory(ctx);
 	inst->runtime = m3_NewRuntime(inst->env, WASM_STACK_SIZE, NULL);
 	if (!inst->runtime)
-		goto oom;
+		return JS_ThrowOutOfMemory(ctx);
 	res = m3_ParseModule(inst->env, &m3_module, inst->bytes, (uint32_t)inst->len);
 	if (res)
-		goto wasm_fail;
+		return JS_ThrowTypeError(ctx, "failed to instantiate wasm: %s", res);
 	res = m3_LoadModule(inst->runtime, m3_module);
 	m3_module = NULL;
 	if (res)
-		goto wasm_fail;
+		return JS_ThrowTypeError(ctx, "failed to instantiate wasm: %s", res);
 	obj = JS_NewObjectClass(ctx, js_values_state_borrow(ctx)->wasm_instance_class_id);
 	if (JS_IsException(obj))
-		goto oom;
+		return JS_ThrowOutOfMemory(ctx);
 	JS_SetOpaque(obj, inst);
 	exports = JS_NewObject(ctx);
 	for (int i = 0; i < inst->export_count; i++) {
@@ -313,29 +330,8 @@ static JSValue build_wasm_instance(JSContext *ctx, struct wasm_module *module)
 		JS_SetPropertyStr(ctx, exports, inst->exports[i], fn);
 	}
 	JS_SetPropertyStr(ctx, obj, "exports", exports);
+	inst = NULL;
 	return obj;
-wasm_fail:
-	if (m3_module)
-		m3_FreeModule(m3_module);
-	if (inst->runtime)
-		m3_FreeRuntime(inst->runtime);
-	if (inst->env)
-		m3_FreeEnvironment(inst->env);
-	free(inst->bytes);
-	free(inst);
-	return JS_ThrowTypeError(ctx, "failed to instantiate wasm: %s", res);
-oom:
-	if (m3_module)
-		m3_FreeModule(m3_module);
-	if (inst) {
-		if (inst->runtime)
-			m3_FreeRuntime(inst->runtime);
-		if (inst->env)
-			m3_FreeEnvironment(inst->env);
-		free(inst->bytes);
-		free(inst);
-	}
-	return JS_ThrowOutOfMemory(ctx);
 }
 
 static JSValue js_wasm_instance_ctor(JSContext *ctx, JSValueConst new_target, int argc,

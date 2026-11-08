@@ -4,8 +4,39 @@
 /* Exercise the real CLI with an isolated database and a local model server. */
 #include "sapi/cli/application.h"
 #include "http/client.h"
+#ifdef MORPH_PTY_RECAP_CLOCK
+#include "sapi/cli/adapters/input/callbacks.h"
+#include "sapi/cli/services/recap.h"
+#include <readline/readline.h>
+#endif
 #include "sapi/cli/application_internal.h"
 #include <locale.h>
+#ifdef MORPH_PTY_RECAP_CLOCK
+
+#define MORPH_PTY_RECAP_KEY "\033[99;9~"
+
+/* Age scheduling state on the UI owner. The host's next timer event starts
+ * the real recap, after this Readline callback and its redisplay have ended. */
+static int advance_recap(struct cli_application *ctx, int count, int key)
+{
+	(void)count;
+	(void)key;
+	if (ctx->turn_active)
+		return 0;
+	int64_t now = cli_recap_now();
+	ctx->recap.next_poll = 0;
+	cli_recap_tick(ctx, now);
+	if (!ctx->recap.unfocused_since || ctx->recap.pending)
+		return 0;
+	ctx->recap.last_finished = now - CLI_RECAP_DELAY_MS - 1;
+	ctx->recap.unfocused_since = now - CLI_RECAP_DELAY_MS - 1;
+	ctx->recap.next_poll = 0;
+	struct morph_tui_application *app = cli_application_tui_borrow(ctx);
+	if (app)
+		morph_tui_application_schedule(app, 0);
+	return 0;
+}
+#endif
 
 /* Replay the real presenter without a model, for deterministic visual review. */
 static int replay_feed(const char *path)
@@ -72,7 +103,25 @@ int main(int argc, char **argv)
 	http_init(NULL);
 	rc = cli_application_init(&ctx, NULL, argv[1], argv[3], argv[2], NULL, CLI_PRESENT_INTERACTIVE);
 	if (rc == 0) {
-		cli_application_run(&ctx);
+		const char *advance = getenv("MORPH_PTY_ADVANCE_RECAP");
+		int fast_recap = advance && strcmp(advance, "1") == 0;
+#ifdef MORPH_PTY_RECAP_CLOCK
+		if (fast_recap) {
+			rl_initialize();
+			int (*callback)(int, int) = cli_callback_key(&ctx, advance_recap);
+			if (!callback || rl_bind_keyseq(MORPH_PTY_RECAP_KEY, callback) != 0)
+				rc = -EIO;
+		}
+#else
+		if (fast_recap)
+			rc = -ENOTSUP;
+#endif
+		if (rc == 0)
+			cli_application_run(&ctx);
+#ifdef MORPH_PTY_RECAP_CLOCK
+		if (fast_recap)
+			(void)rl_bind_keyseq(MORPH_PTY_RECAP_KEY, NULL);
+#endif
 		cli_application_shutdown(&ctx);
 	}
 	http_cleanup();

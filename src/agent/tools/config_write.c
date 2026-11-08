@@ -261,15 +261,24 @@ static int content_unchanged(const char *path, int existed,
 	return unchanged;
 }
 
+static void config_edit_lock_cleanup(int *fd)
+{
+	if (*fd < 0)
+		return;
+	(void)flock(*fd, LOCK_UN);
+	(void)close(*fd);
+	*fd = -1;
+}
+
 static int config_edit_exec(const char *args_json, struct tool_result *result,
 			    void *user_data)
 {
 	struct config_edit_context *ctx = user_data;
-	cJSON *root = NULL;
-	char *target_expanded = NULL;
-	char *old_content = NULL;
-	char *new_content = NULL;
-	char *written_content = NULL;
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	char *target_expanded MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *old_content MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *new_content MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *written_content MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	const char *path;
 	const char *reason;
 	const char *patch = NULL;
@@ -279,7 +288,7 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 	struct stat target_stat;
 	mode_t mode = 0600;
 	int existed = 0;
-	int lock_fd = -1;
+	int lock_fd MORPH_CLEANUP(config_edit_lock_cleanup) = -1;
 	int rc = 0;
 
 	errbuf[0] = '\0';
@@ -304,7 +313,7 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		rc = tool_result_error_copy(result, "tool_failed",
 					    "provide only one of 'patch' or 'content'");
 		rc = rc != 0 ? rc : -EINVAL;
-		goto out;
+		return rc;
 	}
 	path = cJSON_IsString(path_item) && path_item->valuestring[0] ?
 		path_item->valuestring : ctx->config_path;
@@ -312,19 +321,19 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 	if (!reason[0]) {
 		rc = tool_result_error_copy(result, "tool_failed", "missing 'reason' parameter");
 		rc = rc != 0 ? rc : -EINVAL;
-		goto out;
+		return rc;
 	}
 	if (!path_equal_config(path, ctx->config_path)) {
 		rc = tool_result_error_copy(
 			result, "tool_failed",
 			"config_edit can only edit the active Morph config file");
 		rc = rc != 0 ? rc : -EACCES;
-		goto out;
+		return rc;
 	}
 	target_expanded = file_expand_path_copy(ctx->config_path);
 	if (!target_expanded) {
 		rc = -ENOMEM;
-		goto out;
+		return rc;
 	}
 	if (lstat(target_expanded, &target_stat) == 0) {
 		if (S_ISLNK(target_stat.st_mode) ||
@@ -333,48 +342,48 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 				result, "tool_failed",
 				"active config must be a regular file, not a symlink");
 			rc = rc != 0 ? rc : -ELOOP;
-			goto out;
+			return rc;
 		}
 		if (target_stat.st_size > (off_t)CONFIG_EDIT_MAX_SIZE) {
 			rc = tool_result_error_copy(result, "tool_failed",
 						    "active config is too large to edit safely");
 			rc = rc != 0 ? rc : -EFBIG;
-			goto out;
+			return rc;
 		}
 		existed = 1;
 		mode = target_stat.st_mode & 0777;
 		old_content = file_read_all_copy(target_expanded, NULL);
 		if (!old_content) {
 			rc = -errno;
-			goto out;
+			return rc;
 		}
 	} else if (errno != ENOENT) {
 		rc = -errno;
-		goto out;
+		return rc;
 	} else {
 		old_content = strdup("");
 		if (!old_content) {
 			rc = -ENOMEM;
-			goto out;
+			return rc;
 		}
 	}
 	if (cJSON_IsString(content_item) && content_item->valuestring) {
 		if (strlen(content_item->valuestring) > CONFIG_EDIT_MAX_SIZE) {
 			rc = tool_result_error_copy(result, "tool_failed", "content too large");
 			rc = rc != 0 ? rc : -EFBIG;
-			goto out;
+			return rc;
 		}
 		new_content = strdup(content_item->valuestring);
 		if (!new_content) {
 			rc = -ENOMEM;
-			goto out;
+			return rc;
 		}
 	} else if (cJSON_IsString(patch_item) && patch_item->valuestring) {
 		if (!existed) {
 			rc = tool_result_error_copy(result, "tool_failed",
 						    "patch mode requires an existing config file");
 			rc = rc != 0 ? rc : -ENOENT;
-			goto out;
+			return rc;
 		}
 		patch = patch_item->valuestring;
 		rc = build_content_from_patch(old_content, patch, &new_content,
@@ -383,44 +392,44 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 			(void)tool_result_error_format(result, "tool_failed",
 						       "invalid config patch: %s",
 						       errbuf[0] ? errbuf : morph_strerror(rc));
-			goto out;
+			return rc;
 		}
 	} else {
 		rc = tool_result_error_copy(result, "tool_failed",
 					    "provide 'patch' or complete 'content'");
 		rc = rc != 0 ? rc : -EINVAL;
-		goto out;
+		return rc;
 	}
 	if (strlen(new_content) > CONFIG_EDIT_MAX_SIZE) {
 		rc = tool_result_error_copy(result, "tool_failed", "content too large");
 		rc = rc != 0 ? rc : -EFBIG;
-		goto out;
+		return rc;
 	}
 	rc = validate_config_content(new_content, errbuf, sizeof(errbuf));
 	if (rc < 0) {
 		(void)tool_result_error_format(result, "tool_failed", "invalid configuration: %s",
 					       errbuf);
-		goto out;
+		return rc;
 	}
 	if (strcmp(old_content, new_content) == 0) {
 		cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
 
 		if (!data) {
 			rc = -ENOMEM;
-			goto out;
+			return rc;
 		}
 		cJSON_AddStringToObject(data, "path", target_expanded);
 		cJSON_AddBoolToObject(data, "changed", 0);
 		cJSON_AddBoolToObject(data, "validated", 1);
 		cJSON_AddBoolToObject(data, "restart_required", 0);
 		rc = tool_result_success_take(result, &data);
-		goto out;
+		return rc;
 	}
 	if (!ctx->tctx) {
 		rc = tool_result_error_copy(result, "tool_failed",
 					    "config_edit requires an approval context");
 		rc = rc != 0 ? rc : -EACCES;
-		goto out;
+		return rc;
 	}
 	{
 		struct tool_operation op = {
@@ -436,42 +445,42 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		if (rc < 0) {
 			(void)tool_result_error_copy(result, "tool_failed",
 						     "config edit denied or not approved");
-			goto out;
+			return rc;
 		}
 	}
 	rc = ensure_parent_dir(target_expanded);
 	if (rc < 0)
-		goto out;
+		return rc;
 	if (snprintf(lock_path, sizeof(lock_path), "%s.lock",
 		     target_expanded) >= (int)sizeof(lock_path) ||
 	    snprintf(backup_path, sizeof(backup_path), "%s.bak",
 		     target_expanded) >= (int)sizeof(backup_path)) {
 		rc = -ENAMETOOLONG;
-		goto out;
+		return rc;
 	}
 	lock_fd = open(lock_path, O_CREAT | O_RDWR, 0600);
 	if (lock_fd < 0) {
 		rc = -errno;
-		goto out;
+		return rc;
 	}
 	if (flock(lock_fd, LOCK_EX) != 0) {
 		rc = -errno;
-		goto out;
+		return rc;
 	}
 	if (!content_unchanged(target_expanded, existed, old_content)) {
 		rc = tool_result_error_copy(result, "tool_failed",
 					    "config changed during approval; inspect it and retry");
 		rc = rc != 0 ? rc : -EAGAIN;
-		goto out;
+		return rc;
 	}
 	if (existed) {
 		rc = atomic_write_config(backup_path, old_content, mode);
 		if (rc != 0)
-			goto out;
+			return rc;
 	}
 	rc = atomic_write_config(target_expanded, new_content, mode);
 	if (rc != 0)
-		goto out;
+		return rc;
 	written_content = file_read_all_copy(target_expanded, NULL);
 	if (!written_content ||
 	    validate_config_content(written_content, errbuf,
@@ -496,14 +505,14 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 				"written config failed verification and was rolled back");
 			rc = failure;
 		}
-		goto out;
+		return rc;
 	}
 	{
 		cJSON *out_json = cJSON_CreateObject();
 		char *out_str MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
 		if (!out_json) {
 			rc = -ENOMEM;
-			goto out;
+			return rc;
 		}
 		cJSON_AddStringToObject(out_json, "path", target_expanded);
 		cJSON_AddBoolToObject(out_json, "changed", 1);
@@ -521,16 +530,6 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		(void)tool_result_success_json_text_copy(result, out_str);
 	}
 
-out:
-	if (lock_fd >= 0) {
-		(void)flock(lock_fd, LOCK_UN);
-		(void)close(lock_fd);
-	}
-	free(target_expanded);
-	free(old_content);
-	free(new_content);
-	free(written_content);
-	cJSON_Delete(root);
 	return rc;
 }
 

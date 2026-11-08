@@ -2472,64 +2472,116 @@ TEST(CliUserInputTest, ShortMessageHasOuterMarginsWithoutInternalPaddingRows)
 	cli_output_set_color_enabled(_cli_output_context_ptr, 1);
 }
 
-TEST(CliWelcomeTest, FitsCompactLayoutAndWrapsHintsAtNarrowWidths)
+TEST(CliWelcomeTest, FitsBoundedLayoutAndWrapsHintsAtNarrowWidths)
 {
-	struct cli_application _cli_output_context = {0};
-	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
+	struct cli_application context = {};
 	const char *columns = getenv("COLUMNS");
 	std::string saved = columns ? columns : "";
 	bool had_columns = columns != nullptr;
-	cli_output_set_color_enabled(_cli_output_context_ptr, 0);
-	for (int width : {40, 80, 120}) {
+	std::string wide_output;
+
+	cli_output_set_color_enabled(&context, 0);
+	for (int width : {1, 12, 20, 40, 60, 80, 120}) {
+		SCOPED_TRACE(width);
 		ASSERT_EQ(setenv("COLUMNS", std::to_string(width).c_str(), 1), 0);
 		testing::internal::CaptureStdout();
-		cli_banner_print(_cli_output_context_ptr, "deepseek-flash", "~/Work/macos/cat");
+		cli_banner_print(&context, "deepseek-flash", "~/Work/macos/cat");
 		std::string output = testing::internal::GetCapturedStdout();
-		EXPECT_NE(output.find("  morph  v"), std::string::npos);
-		EXPECT_EQ(output.find("session:"), std::string::npos);
-		EXPECT_EQ(output.find("╭"), std::string::npos);
-		EXPECT_EQ(output.find("─"), std::string::npos);
+
 		EXPECT_EQ(output.find("\033"), std::string::npos);
-		EXPECT_NE(output.find("/switch sessions"), std::string::npos);
-		EXPECT_NE(output.find("Ctrl+Cmd+V image"), std::string::npos);
+		EXPECT_EQ(utf8valid(output.c_str()), nullptr);
 		std::istringstream lines(output);
 		std::string line;
-		while (std::getline(lines, line))
-			EXPECT_LE(utf8_display_width(line.c_str()), static_cast<size_t>(width));
-		if (width >= 80) {
-			EXPECT_NE(output.find("deepseek-flash · ~/Work/macos/cat"),
-				  std::string::npos);
-			EXPECT_EQ(std::count(output.begin(), output.end(), '\n'), 7);
+		while (std::getline(lines, line)) {
+			EXPECT_LE(utf8_display_width(line.c_str()),
+				  static_cast<size_t>(std::min(width, 80)));
+		}
+		if (width >= 40) {
+			EXPECT_NE(output.find("morph"), std::string::npos);
+			EXPECT_NE(output.find("Workspace"), std::string::npos);
+			EXPECT_NE(output.find("~/Work/macos/cat"), std::string::npos);
+			EXPECT_NE(output.find("Model"), std::string::npos);
+			EXPECT_NE(output.find("deepseek-flash"), std::string::npos);
+			EXPECT_NE(output.find("/help"), std::string::npos);
+			EXPECT_NE(output.find("Commands"), std::string::npos);
+			EXPECT_NE(output.find("/switch"), std::string::npos);
+			EXPECT_NE(output.find("Sessions"), std::string::npos);
+			EXPECT_NE(output.find("./image.png"), std::string::npos);
+			EXPECT_NE(output.find("Attach image"), std::string::npos);
+			EXPECT_NE(output.find("Enter Send"), std::string::npos);
+			EXPECT_NE(output.find("Ctrl+J New line"), std::string::npos);
+			EXPECT_NE(output.find("Esc Cancel"), std::string::npos);
+			EXPECT_NE(output.find("Ctrl+Cmd+V Paste image"), std::string::npos);
+		}
+		if (width == 80)
+			wide_output = output;
+		if (width == 120)
+			EXPECT_EQ(output, wide_output);
+	}
+	if (had_columns)
+		setenv("COLUMNS", saved.c_str(), 1);
+	else
+		unsetenv("COLUMNS");
+}
+
+TEST(CliWelcomeTest, SanitizesMetadataAndKeepsLongPathTail)
+{
+	struct cli_application context = {};
+	const char *columns = getenv("COLUMNS");
+	std::string saved = columns ? columns : "";
+	bool had_columns = columns != nullptr;
+
+	cli_output_set_color_enabled(&context, 0);
+	for (int width : {1, 12, 20, 40, 60, 80, 120}) {
+		SCOPED_TRACE(width);
+		ASSERT_EQ(setenv("COLUMNS", std::to_string(width).c_str(), 1), 0);
+		testing::internal::CaptureStdout();
+		cli_banner_print(&context, "model\033[2J\r\n",
+				 "/very/long/中文/workspace/path/ending\033]0;spoof\a");
+		std::string output = testing::internal::GetCapturedStdout();
+
+		EXPECT_EQ(output.find("\033"), std::string::npos);
+		EXPECT_EQ(output.find('\r'), std::string::npos);
+		EXPECT_EQ(output.find('\a'), std::string::npos);
+		EXPECT_EQ(utf8valid(output.c_str()), nullptr);
+		std::istringstream lines(output);
+		std::string line;
+		while (std::getline(lines, line)) {
+			EXPECT_LE(utf8_display_width(line.c_str()),
+				  static_cast<size_t>(std::min(width, 80)));
+		}
+		if (width >= 40) {
+			EXPECT_NE(output.find("Workspace"), std::string::npos);
+			EXPECT_NE(output.find("Model"), std::string::npos);
+			EXPECT_NE(output.find("/ending"), std::string::npos);
 		}
 	}
 	if (had_columns)
 		setenv("COLUMNS", saved.c_str(), 1);
 	else
 		unsetenv("COLUMNS");
-	cli_output_set_color_enabled(_cli_output_context_ptr, 1);
 }
 
-TEST(CliWelcomeTest, SanitizesMetadataAndKeepsLongPathTail)
+TEST(CliWelcomeTest, UsesSharedPurpleAccentWithoutCyan)
 {
-	struct cli_application _cli_output_context = {0};
-	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
+	struct cli_application context = {};
 	const char *columns = getenv("COLUMNS");
 	std::string saved = columns ? columns : "";
 	bool had_columns = columns != nullptr;
-	ASSERT_EQ(setenv("COLUMNS", "40", 1), 0);
-	cli_output_set_color_enabled(_cli_output_context_ptr, 0);
+
+	ASSERT_EQ(setenv("COLUMNS", "80", 1), 0);
+	cli_output_set_color_enabled(&context, 1);
 	testing::internal::CaptureStdout();
-	cli_banner_print(_cli_output_context_ptr, "model\033[2J",
-			 "/very/long/中文/workspace/path/ending");
+	cli_banner_print(&context, "deepseek-flash", "~/Work/macos/cat");
 	std::string output = testing::internal::GetCapturedStdout();
-	EXPECT_EQ(output.find("\033"), std::string::npos);
-	EXPECT_NE(output.find("/ending"), std::string::npos);
-	EXPECT_EQ(utf8valid(output.c_str()), nullptr);
+
+	EXPECT_NE(output.find("\033[38;5;141m"), std::string::npos);
+	EXPECT_EQ(output.find("\033[38;5;51m"), std::string::npos);
+	EXPECT_EQ(output.find("\033[36m"), std::string::npos);
 	if (had_columns)
 		setenv("COLUMNS", saved.c_str(), 1);
 	else
 		unsetenv("COLUMNS");
-	cli_output_set_color_enabled(_cli_output_context_ptr, 1);
 }
 
 TEST(CliApprovalCardTest, DirectoryBatchDisplaysAllRequestedAccessAndLifetime)

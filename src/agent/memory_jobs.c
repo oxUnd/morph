@@ -103,65 +103,81 @@ static void memory_steps_free(struct react_step *s)
 	}
 }
 
+static void memory_steps_cleanup(struct react_step **owner)
+{
+	if (!owner)
+		return;
+	memory_steps_free(*owner);
+	*owner = NULL;
+}
+
+static struct react_step *memory_steps_steal(struct react_step **owner)
+{
+	struct react_step *value = *owner;
+
+	*owner = NULL;
+	return value;
+}
+
+static struct react_step *memory_step_clone(const struct react_step *source)
+{
+	struct react_step *node MORPH_CLEANUP(memory_steps_cleanup) =
+		calloc(1, sizeof(*node));
+
+	if (!node)
+		return NULL;
+	node->type = source->type;
+	node->error_code = source->error_code;
+	if (source->artifact_count > 0) {
+		size_t bytes = (size_t)source->artifact_count * sizeof(*source->artifacts);
+
+		node->artifacts = malloc(bytes);
+		if (!node->artifacts)
+			return NULL;
+		memcpy(node->artifacts, source->artifacts, bytes);
+		node->artifact_count = source->artifact_count;
+	}
+	if (source->content) {
+		node->content = strdup(source->content);
+		if (!node->content)
+			return NULL;
+	}
+	if (source->tool_name) {
+		node->tool_name = strdup(source->tool_name);
+		if (!node->tool_name)
+			return NULL;
+	}
+	if (source->tool_args) {
+		node->tool_args = strdup(source->tool_args);
+		if (!node->tool_args)
+			return NULL;
+	}
+	if (source->tool_call_id) {
+		node->tool_call_id = strdup(source->tool_call_id);
+		if (!node->tool_call_id)
+			return NULL;
+	}
+	return memory_steps_steal(&node);
+}
+
 static struct react_step *memory_steps_dup(const struct react_step *src)
 {
-	struct react_step *head = NULL;
+	struct react_step *head MORPH_CLEANUP(memory_steps_cleanup) = NULL;
 	struct react_step *tail = NULL;
 
 	for (const struct react_step *cur = src; cur; cur = cur->next) {
-		struct react_step *node = calloc(1, sizeof(*node));
-		if (!node) {
-			memory_steps_free(head);
-			return NULL;
-		}
-		node->type = cur->type;
-		node->error_code = cur->error_code;
-		if (cur->artifact_count > 0) {
-			size_t bytes = (size_t)cur->artifact_count * sizeof(*cur->artifacts);
+		struct react_step *node MORPH_CLEANUP(memory_steps_cleanup) =
+			memory_step_clone(cur);
 
-			node->artifacts = malloc(bytes);
-			if (!node->artifacts)
-				goto oom;
-			memcpy(node->artifacts, cur->artifacts, bytes);
-			node->artifact_count = cur->artifact_count;
-		}
-		if (cur->content) {
-			node->content = strdup(cur->content);
-			if (!node->content)
-				goto oom;
-		}
-		if (cur->tool_name) {
-			node->tool_name = strdup(cur->tool_name);
-			if (!node->tool_name)
-				goto oom;
-		}
-		if (cur->tool_args) {
-			node->tool_args = strdup(cur->tool_args);
-			if (!node->tool_args)
-				goto oom;
-		}
-		if (cur->tool_call_id) {
-			node->tool_call_id = strdup(cur->tool_call_id);
-			if (!node->tool_call_id)
-				goto oom;
-		}
+		if (!node)
+			return NULL;
 		if (!head)
 			head = node;
 		else
 			tail->next = node;
-		tail = node;
-		continue;
-	oom:
-		free(node->artifacts);
-		free(node->content);
-		free(node->tool_name);
-		free(node->tool_args);
-		free(node->tool_call_id);
-		free(node);
-		memory_steps_free(head);
-		return NULL;
+		tail = memory_steps_steal(&node);
 	}
-	return head;
+	return memory_steps_steal(&head);
 }
 
 static void memory_job_free(struct memory_job *j)

@@ -18,6 +18,14 @@ static inline void morph_charp_cleanup(char **owner)
 	*owner = NULL;
 }
 
+static inline void morph_ucharp_cleanup(unsigned char **owner)
+{
+	if (!owner)
+		return;
+	free(*owner);
+	*owner = NULL;
+}
+
 /* Release a local owner without freeing the object. This cannot fail. */
 static inline char *morph_charp_steal(char **owner)
 {

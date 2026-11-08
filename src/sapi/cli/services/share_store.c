@@ -1,4 +1,5 @@
 #include "sapi/cli/services/share_store.h"
+#include "util/cleanup.h"
 #include "cJSON.h"
 #include "sapi/cli/presentation/share.h"
 #include "util/file.h"
@@ -78,38 +79,35 @@ int cli_share_store_save(const cJSON *document, char **out_path)
 		return -EINVAL;
 	if (*out_path)
 		return -EEXIST;
-	morph_buf_t html = {0};
+	morph_buf_t html MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc = morph_buf_init(&html, 4096);
 	if (rc)
 		return rc;
-	char *directory = NULL;
+	char *directory MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	time_t now = time(NULL);
 	rc = cli_share_html(document, now, &html);
 	if (rc)
-		goto out_free_document;
+		return rc;
 	const char *home = getenv("HOME");
 	if (!home || !home[0]) {
 		rc = (-ENOENT);
-		goto out_free_document;
+		return rc;
 	}
 	directory = file_path_join_alloc(home, "Downloads");
 	if (!directory) {
 		rc = (-ENOMEM);
-		goto out_free_document;
+		return rc;
 	}
 	rc = file_ensure_dir(directory);
 	if (rc)
-		goto out_free_document;
+		return rc;
 	struct tm local;
 	char stamp[32];
 	if (!localtime_r(&now, &local) ||
 	    !strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local)) {
 		rc = (-EINVAL);
-		goto out_free_document;
+		return rc;
 	}
 	rc = cli_share_store_share_publish(directory, stamp, &html, out_path);
-out_free_document:
-	free(directory);
-	morph_buf_cleanup(&html);
 	return rc;
 }

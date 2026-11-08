@@ -1,6 +1,7 @@
 #include "client.h"
 #include "util/log.h"
 #include "util/error.h"
+#include "util/cleanup.h"
 #include <errno.h>
 #include <curl/curl.h>
 #include <limits.h>
@@ -11,6 +12,37 @@
 
 #define HTTP_SSE_DEFAULT_TIMEOUT_SECONDS 300L
 #define HTTP_CONNECT_TIMEOUT_SECONDS 10L
+
+struct http_transfer {
+	CURL *curl;
+	CURL *session;
+	struct curl_slist *headers;
+	curl_mime *mime;
+	int initialized;
+};
+
+static void http_transfer_cleanup(struct http_transfer *transfer)
+{
+	if (transfer->session) {
+		curl_easy_setopt(transfer->session, CURLOPT_HTTPHEADER, NULL);
+		curl_easy_setopt(transfer->session, CURLOPT_POSTFIELDS, NULL);
+		curl_easy_setopt(transfer->session, CURLOPT_ERRORBUFFER, NULL);
+		curl_easy_setopt(transfer->session, CURLOPT_DEBUGDATA, NULL);
+		curl_easy_setopt(transfer->session, CURLOPT_XFERINFODATA, NULL);
+		transfer->session = NULL;
+	}
+	curl_slist_free_all(transfer->headers);
+	transfer->headers = NULL;
+	if (transfer->mime)
+		curl_mime_free(transfer->mime);
+	transfer->mime = NULL;
+	if (transfer->curl)
+		curl_easy_cleanup(transfer->curl);
+	transfer->curl = NULL;
+	if (transfer->initialized)
+		http_cleanup();
+	transfer->initialized = 0;
+}
 
 static int curl_debug_cb(CURL *handle, curl_infotype type, char *data, size_t size, void *userp)
 {
@@ -322,63 +354,58 @@ static int do_request(const struct http_control *control, const char *url, const
 {
 	struct response_writer writer = {.response = resp, .limit = body_limit};
 	CURLcode curl_rc;
-	struct curl_slist *headers = NULL;
+	struct http_transfer transfer MORPH_CLEANUP(http_transfer_cleanup) = {0};
 	char errbuf[CURL_ERROR_SIZE];
 	long status = 0;
 	int is_post;
 	int rc;
-	CURL *curl;
 
 	rc = http_init(control ? control->logger : NULL);
 	if (rc != 0)
 		return rc;
+	transfer.initialized = 1;
 
-	curl = curl_easy_init();
-	if (!curl) {
-		http_cleanup();
+	transfer.curl = curl_easy_init();
+	if (!transfer.curl) {
 		return MORPH_TRACE_ERROR(control ? control->logger : NULL, -ENOMEM);
 	}
 
-	rc = append_content_type_header(&headers, content_type);
+	rc = append_content_type_header(&transfer.headers, content_type);
 	if (rc != 0)
-		goto out;
-	rc = append_extra_headers(&headers, extra_headers, extra_header_count);
+		return rc;
+	rc = append_extra_headers(&transfer.headers, extra_headers, extra_header_count);
 	if (rc != 0)
-		goto out;
-	if (headers)
-		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, bounded_write_cb);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writer);
-	curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
-	curl_easy_setopt(curl, CURLOPT_HEADERDATA, resp);
-	http_configure_transfer(curl, control, url, timeout, 0, errbuf);
+		return rc;
+	if (transfer.headers)
+		curl_easy_setopt(transfer.curl, CURLOPT_HTTPHEADER, transfer.headers);
+	curl_easy_setopt(transfer.curl, CURLOPT_WRITEFUNCTION, bounded_write_cb);
+	curl_easy_setopt(transfer.curl, CURLOPT_WRITEDATA, &writer);
+	curl_easy_setopt(transfer.curl, CURLOPT_HEADERFUNCTION, header_cb);
+	curl_easy_setopt(transfer.curl, CURLOPT_HEADERDATA, resp);
+	http_configure_transfer(transfer.curl, control, url, timeout, 0, errbuf);
 
 	is_post = method && strcmp(method, "POST") == 0;
 	if (is_post) {
-		curl_easy_setopt(curl, CURLOPT_POST, 1L);
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body ? body : "");
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_len);
+		curl_easy_setopt(transfer.curl, CURLOPT_POST, 1L);
+		curl_easy_setopt(transfer.curl, CURLOPT_POSTFIELDS, body ? body : "");
+		curl_easy_setopt(transfer.curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_len);
 	} else if (method && strcmp(method, "GET") != 0) {
-		curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
+		curl_easy_setopt(transfer.curl, CURLOPT_CUSTOMREQUEST, method);
 		if (body) {
-			curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-			curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_len);
+			curl_easy_setopt(transfer.curl, CURLOPT_POSTFIELDS, body);
+			curl_easy_setopt(transfer.curl, CURLOPT_POSTFIELDSIZE_LARGE,
+					 (curl_off_t)body_len);
 		}
 	}
 
-	curl_rc = http_perform_cancelable(curl, NULL, control);
+	curl_rc = http_perform_cancelable(transfer.curl, NULL, control);
 	rc = writer.error ? writer.error : http_transfer_result(control, curl_rc, errbuf);
 	if (rc != 0)
-		goto out;
+		return rc;
 
-	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+	curl_easy_getinfo(transfer.curl, CURLINFO_RESPONSE_CODE, &status);
 	resp->status_code = (int)status;
 
-out:
-	if (headers)
-		curl_slist_free_all(headers);
-	curl_easy_cleanup(curl);
-	http_cleanup();
 	return rc;
 }
 
@@ -472,9 +499,7 @@ int http_post_multipart_ex(const struct http_control *control, const char *url,
 			   const char **extra_headers, int extra_header_count, long timeout_seconds,
 			   struct http_response *resp)
 {
-	struct curl_slist *headers = NULL;
-	curl_mime *mime = NULL;
-	CURL *curl = NULL;
+	struct http_transfer transfer MORPH_CLEANUP(http_transfer_cleanup) = {0};
 	CURLcode curl_rc;
 	char errbuf[CURL_ERROR_SIZE];
 	long status = 0;
@@ -488,75 +513,67 @@ int http_post_multipart_ex(const struct http_control *control, const char *url,
 	rc = http_init(control ? control->logger : NULL);
 	if (rc != 0)
 		return rc;
-	curl = curl_easy_init();
-	if (!curl) {
-		http_cleanup();
+	transfer.initialized = 1;
+	transfer.curl = curl_easy_init();
+	if (!transfer.curl) {
 		return MORPH_TRACE_ERROR(control ? control->logger : NULL, -ENOMEM);
 	}
-	mime = curl_mime_init(curl);
-	if (!mime) {
+	transfer.mime = curl_mime_init(transfer.curl);
+	if (!transfer.mime) {
 		rc = -ENOMEM;
-		goto out;
+		return rc;
 	}
 	for (int i = 0; i < part_count; i++) {
 		curl_mimepart *part;
 
 		if (!parts[i].name || !parts[i].value) {
 			rc = -EINVAL;
-			goto out;
+			return rc;
 		}
-		part = curl_mime_addpart(mime);
+		part = curl_mime_addpart(transfer.mime);
 		if (!part) {
 			rc = -ENOMEM;
-			goto out;
+			return rc;
 		}
 		if (curl_mime_name(part, parts[i].name) != CURLE_OK) {
 			rc = -ENOMEM;
-			goto out;
+			return rc;
 		}
 		if (parts[i].kind == HTTP_MULTIPART_FILE) {
 			if (curl_mime_filedata(part, parts[i].value) != CURLE_OK) {
 				rc = -EINVAL;
-				goto out;
+				return rc;
 			}
 		} else if (curl_mime_data(part, parts[i].value, CURL_ZERO_TERMINATED) != CURLE_OK) {
 			rc = -ENOMEM;
-			goto out;
+			return rc;
 		}
 		if (parts[i].content_type &&
 		    curl_mime_type(part, parts[i].content_type) != CURLE_OK) {
 			rc = -EINVAL;
-			goto out;
+			return rc;
 		}
 	}
-	rc = append_extra_headers(&headers, extra_headers, extra_header_count);
+	rc = append_extra_headers(&transfer.headers, extra_headers, extra_header_count);
 	if (rc != 0)
-		goto out;
-	curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
-	if (headers)
-		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, resp);
-	curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
-	curl_easy_setopt(curl, CURLOPT_HEADERDATA, resp);
-	http_configure_transfer(curl, control, url, timeout_seconds, 0, errbuf);
+		return rc;
+	curl_easy_setopt(transfer.curl, CURLOPT_MIMEPOST, transfer.mime);
+	if (transfer.headers)
+		curl_easy_setopt(transfer.curl, CURLOPT_HTTPHEADER, transfer.headers);
+	curl_easy_setopt(transfer.curl, CURLOPT_WRITEFUNCTION, write_cb);
+	curl_easy_setopt(transfer.curl, CURLOPT_WRITEDATA, resp);
+	curl_easy_setopt(transfer.curl, CURLOPT_HEADERFUNCTION, header_cb);
+	curl_easy_setopt(transfer.curl, CURLOPT_HEADERDATA, resp);
+	http_configure_transfer(transfer.curl, control, url, timeout_seconds, 0, errbuf);
 
-	curl_rc = http_perform_cancelable(curl, NULL, control);
+	curl_rc = http_perform_cancelable(transfer.curl, NULL, control);
 	rc = http_transfer_result(control, curl_rc, errbuf);
 	if (rc != 0)
-		goto out;
+		return rc;
 
-	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+	curl_easy_getinfo(transfer.curl, CURLINFO_RESPONSE_CODE, &status);
 	resp->status_code = (int)status;
 
-out:
-	if (headers)
-		curl_slist_free_all(headers);
-	if (mime)
-		curl_mime_free(mime);
-	if (curl)
-		curl_easy_cleanup(curl);
-	http_cleanup();
 	return rc;
 }
 
@@ -626,38 +643,37 @@ static int do_sse_request(const struct http_control *control, const char *url, c
 	if (!metadata)
 		metadata = &local_metadata;
 	metadata->retry_after_seconds = 0;
-	struct curl_slist *headers = NULL;
+	struct http_transfer transfer MORPH_CLEANUP(http_transfer_cleanup) = {0};
 	char ct[256];
 	struct sse_write_data swd;
 	CURLcode curl_rc;
 	char errbuf[CURL_ERROR_SIZE];
 	long status = 0;
 	int rc;
-	CURL *curl;
 
 	if (!url || !cb)
 		return -EINVAL;
 	rc = http_init(control ? control->logger : NULL);
 	if (rc != 0)
 		return rc;
+	transfer.initialized = 1;
 
-	curl = curl_easy_init();
-	if (!curl) {
-		http_cleanup();
+	transfer.curl = curl_easy_init();
+	if (!transfer.curl) {
 		return MORPH_TRACE_ERROR(control ? control->logger : NULL, -ENOMEM);
 	}
 
 	snprintf(ct, sizeof(ct), "Content-Type: %s",
 		 content_type ? content_type : "application/json");
-	rc = append_header(&headers, ct);
+	rc = append_header(&transfer.headers, ct);
 	if (rc != 0)
-		goto out;
-	rc = append_header(&headers, "Accept: text/event-stream");
+		return rc;
+	rc = append_header(&transfer.headers, "Accept: text/event-stream");
 	if (rc != 0)
-		goto out;
-	rc = append_extra_headers(&headers, extra_headers, extra_header_count);
+		return rc;
+	rc = append_extra_headers(&transfer.headers, extra_headers, extra_header_count);
 	if (rc != 0)
-		goto out;
+		return rc;
 
 	swd.control = control;
 	swd.cb = cb;
@@ -665,37 +681,32 @@ static int do_sse_request(const struct http_control *control, const char *url, c
 	swd.callback_rc = 0;
 
 	metadata->retry_after_seconds = 0;
-	curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, sse_header_retry_after);
-	curl_easy_setopt(curl, CURLOPT_HEADERDATA, metadata);
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &swd);
-	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-	http_configure_transfer(curl, control, url, 0, idle_timeout, errbuf);
+	curl_easy_setopt(transfer.curl, CURLOPT_HEADERFUNCTION, sse_header_retry_after);
+	curl_easy_setopt(transfer.curl, CURLOPT_HEADERDATA, metadata);
+	curl_easy_setopt(transfer.curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
+	curl_easy_setopt(transfer.curl, CURLOPT_WRITEDATA, &swd);
+	curl_easy_setopt(transfer.curl, CURLOPT_HTTPHEADER, transfer.headers);
+	http_configure_transfer(transfer.curl, control, url, 0, idle_timeout, errbuf);
 
-	curl_easy_setopt(curl, CURLOPT_POST, 1L);
-	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body ? body : "");
-	curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_len);
+	curl_easy_setopt(transfer.curl, CURLOPT_POST, 1L);
+	curl_easy_setopt(transfer.curl, CURLOPT_POSTFIELDS, body ? body : "");
+	curl_easy_setopt(transfer.curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_len);
 
 	log_dbg(control ? control->logger : NULL,
 		"http sse: request timeout disabled, idle_timeout=%lds", idle_timeout);
-	curl_rc = http_perform_cancelable(curl, NULL, control);
+	curl_rc = http_perform_cancelable(transfer.curl, NULL, control);
 
 	if (swd.callback_rc != 0) {
 		rc = swd.callback_rc;
-		goto out;
+		return rc;
 	}
 	rc = http_transfer_result(control, curl_rc, errbuf);
 	if (rc != 0)
-		goto out;
+		return rc;
 
-	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+	curl_easy_getinfo(transfer.curl, CURLINFO_RESPONSE_CODE, &status);
 	rc = (int)status;
 
-out:
-	if (headers)
-		curl_slist_free_all(headers);
-	curl_easy_cleanup(curl);
-	http_cleanup();
 	return rc;
 }
 
@@ -834,7 +845,7 @@ int http_session_post(const struct http_control *control, struct http_session *s
 		      const char *body, size_t body_len, const char *content_type,
 		      const char **extra_headers, int extra_header_count, long timeout_seconds)
 {
-	struct curl_slist *headers = NULL;
+	struct http_transfer transfer MORPH_CLEANUP(http_transfer_cleanup) = {0};
 	struct http_control request_control = control ? *control : (struct http_control){0};
 	CURLcode curl_rc;
 	char errbuf[CURL_ERROR_SIZE];
@@ -847,16 +858,17 @@ int http_session_post(const struct http_control *control, struct http_session *s
 	if (!request_control.logger)
 		request_control.logger = s->logger;
 	control = &request_control;
+	transfer.session = s->curl;
 	http_session_reset(s);
 
-	rc = append_content_type_header(&headers, content_type);
+	rc = append_content_type_header(&transfer.headers, content_type);
 	if (rc != 0)
-		goto out;
-	rc = append_extra_headers(&headers, extra_headers, extra_header_count);
+		return rc;
+	rc = append_extra_headers(&transfer.headers, extra_headers, extra_header_count);
 	if (rc != 0)
-		goto out;
-	if (headers)
-		curl_easy_setopt(s->curl, CURLOPT_HTTPHEADER, headers);
+		return rc;
+	if (transfer.headers)
+		curl_easy_setopt(s->curl, CURLOPT_HTTPHEADER, transfer.headers);
 
 	curl_easy_setopt(s->curl, CURLOPT_POST, 1L);
 	curl_easy_setopt(s->curl, CURLOPT_POSTFIELDS, body ? body : "");
@@ -871,20 +883,12 @@ int http_session_post(const struct http_control *control, struct http_session *s
 	curl_rc = http_perform_cancelable(s->curl, s->multi, control);
 	rc = http_transfer_result(control, curl_rc, errbuf);
 	if (rc != 0)
-		goto out;
+		return rc;
 
 	curl_easy_getinfo(s->curl, CURLINFO_RESPONSE_CODE, &status);
 	s->status_code = status;
 	rc = 0;
 
-out:
-	curl_easy_setopt(s->curl, CURLOPT_HTTPHEADER, NULL);
-	curl_easy_setopt(s->curl, CURLOPT_POSTFIELDS, NULL);
-	curl_easy_setopt(s->curl, CURLOPT_ERRORBUFFER, NULL);
-	curl_easy_setopt(s->curl, CURLOPT_DEBUGDATA, NULL);
-	curl_easy_setopt(s->curl, CURLOPT_XFERINFODATA, NULL);
-	if (headers)
-		curl_slist_free_all(headers);
 	return rc;
 }
 

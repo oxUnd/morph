@@ -41,17 +41,13 @@ static char *cli_tasks_task_join_title(int argc, char **argv, int start)
 		if (title.len > 0) {
 			rc = morph_buf_putc(&title, ' ');
 			if (rc != 0)
-				goto fail;
+				return NULL;
 		}
 		rc = morph_buf_puts(&title, argv[i]);
 		if (rc != 0)
-			goto fail;
+			return NULL;
 	}
 	return morph_buf_detach(&title);
-
-fail:
-	morph_buf_cleanup(&title);
-	return NULL;
 }
 
 static int cli_tasks_print_task_list_tree(struct cli_application *ctx,
@@ -282,7 +278,6 @@ static int cli_tasks_command_tasks_show(struct cli_application *ctx, int argc, c
 	morph_buf_t md MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	char *end = NULL;
 	long long id;
-	int md_ready = 0;
 	int rc;
 
 	if (argc < 3) {
@@ -303,8 +298,7 @@ static int cli_tasks_command_tasks_show(struct cli_application *ctx, int argc, c
 	CMD_HEADER(ctx, "task");
 	rc = morph_buf_init(&md, 2048);
 	if (rc != 0)
-		goto out;
-	md_ready = 1;
+		return rc;
 	rc = cli_tasks_append_task_show_markdown(&md, &task);
 	if (rc == 0) {
 		if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
@@ -312,10 +306,6 @@ static int cli_tasks_command_tasks_show(struct cli_application *ctx, int argc, c
 		else
 			cli_markdown_render_ansi(ctx, morph_buf_cstr_borrow(&md));
 	}
-out:
-	if (md_ready)
-		morph_buf_cleanup(&md);
-	scheduled_task_cleanup(&task);
 	return rc;
 }
 
@@ -710,30 +700,19 @@ static int cli_tasks_append_notification_table_row(morph_buf_t *buf, const struc
 	return rc;
 }
 
-static int cli_tasks_command_inbox_list(struct cli_application *ctx, int argc, char **argv)
+static int cli_tasks_render_inbox(struct cli_application *ctx,
+	const struct notification *notifications, int count)
 {
-	struct notification *notifications = NULL;
-	morph_buf_t md;
-	int md_ready = 0;
-	int count = 0;
-	int limit = 20;
-	int rc;
+	morph_buf_t md MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int rc = 0;
 
-	if (argc > 2)
-		limit = atoi(argv[2]);
-	rc = runtime_notification_list(ctx->runtime, limit, &notifications, &count);
-	if (rc != 0) {
-		CMD_ERROR(ctx, "failed to list inbox: %s", morph_strerror(rc));
-		return rc;
-	}
 	CMD_HEADER(ctx, "inbox");
 	if (count == 0) {
 		printf(ctx, "No unread notifications.\n");
 	} else {
 		rc = morph_buf_init(&md, 1024);
 		if (rc != 0)
-			goto out;
-		md_ready = 1;
+			return rc;
 		rc = morph_buf_puts(&md,
 				    "| ID | Task | Level | Created | Delivery | Title | Body |\n"
 				    "|---:|---:|---|---|---|---|---|\n");
@@ -746,9 +725,24 @@ static int cli_tasks_command_inbox_list(struct cli_application *ctx, int argc, c
 				cli_markdown_render_ansi(ctx, morph_buf_cstr_borrow(&md));
 		}
 	}
-out:
-	if (md_ready)
-		morph_buf_cleanup(&md);
+	return rc;
+}
+
+static int cli_tasks_command_inbox_list(struct cli_application *ctx, int argc, char **argv)
+{
+	struct notification *notifications = NULL;
+	int count = 0;
+	int limit = 20;
+	int rc;
+
+	if (argc > 2)
+		limit = atoi(argv[2]);
+	rc = runtime_notification_list(ctx->runtime, limit, &notifications, &count);
+	if (rc != 0) {
+		CMD_ERROR(ctx, "failed to list inbox: %s", morph_strerror(rc));
+		return rc;
+	}
+	rc = cli_tasks_render_inbox(ctx, notifications, count);
 	notification_free_list(notifications, count);
 	return rc;
 }

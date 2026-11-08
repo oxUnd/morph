@@ -24,18 +24,20 @@ int ask_user_options_to_json(cJSON *data, const struct ask_user_options *options
 	if (!cJSON_IsObject(data) || options->recommended_count < 0 ||
 	    options->recommended_count > ASK_USER_CHOICES_MAX)
 		return -EINVAL;
-	cJSON *indices = cJSON_CreateArray();
+	cJSON *indices MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
 	if (!indices)
 		return -ENOMEM;
 	for (int i = 0; i < options->recommended_count; i++) {
-		cJSON *index = cJSON_CreateNumber(options->recommended_indices[i]);
+		cJSON *index MORPH_CLEANUP(morph_json_cleanup) =
+			cJSON_CreateNumber(options->recommended_indices[i]);
 		if (!index) {
-			cJSON_Delete(indices);
 			return -ENOMEM;
 		}
-		cJSON_AddItemToArray(indices, index);
+		if (morph_json_array_take(indices, &index) != 0)
+			return -ENOMEM;
 	}
-	cJSON_AddItemToObject(data, "recommended_indices", indices);
+	if (morph_json_object_take(data, "recommended_indices", &indices) != 0)
+		return -ENOMEM;
 	if (!cJSON_AddStringToObject(data, "response_policy",
 		options->optional ? "optional" : "required") ||
 	    !cJSON_AddNumberToObject(data, "timeout_seconds", options->timeout_seconds))
@@ -111,17 +113,17 @@ static cJSON *ask_user_data_to_json(const char *question,
 				    int answers_count,
 				    int no_input)
 {
-	cJSON *root = cJSON_CreateObject();
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
 	if (!root)
 		return NULL;
 
-	cJSON *choices_json = cJSON_CreateArray();
-	cJSON *answers_json = NULL;
+	cJSON *choices_json MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
+	cJSON *answers_json MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	if (!choices_json)
-		goto fail;
+		return NULL;
 	answers_json = cJSON_CreateArray();
 	if (!answers_json)
-		goto fail;
+		return NULL;
 
 	if (!cJSON_AddStringToObject(root, "kind", "ask_user_response") ||
 	    !cJSON_AddStringToObject(root, "question",
@@ -131,52 +133,48 @@ static cJSON *ask_user_data_to_json(const char *question,
 	    !cJSON_AddNumberToObject(root, "min_choices", min_choices) ||
 	    !cJSON_AddNumberToObject(root, "max_choices", max_choices) ||
 	    !cJSON_AddBoolToObject(root, "no_input", no_input))
-		goto fail;
+		return NULL;
 
 	for (int i = 0; i < choices_count; i++) {
-		cJSON *choice = cJSON_CreateString(choices[i] ? choices[i] : "");
+		cJSON *choice MORPH_CLEANUP(morph_json_cleanup) =
+			cJSON_CreateString(choices[i] ? choices[i] : "");
 		if (!choice)
-			goto fail;
-		cJSON_AddItemToArray(choices_json, choice);
+			return NULL;
+		if (morph_json_array_take(choices_json, &choice) != 0)
+			return NULL;
 	}
 
 	for (int i = 0; i < answers_count; i++) {
-		cJSON *answer = cJSON_CreateString(answers[i] ? answers[i] : "");
+		cJSON *answer MORPH_CLEANUP(morph_json_cleanup) =
+			cJSON_CreateString(answers[i] ? answers[i] : "");
 		if (!answer)
-			goto fail;
-		cJSON_AddItemToArray(answers_json, answer);
+			return NULL;
+		if (morph_json_array_take(answers_json, &answer) != 0)
+			return NULL;
 	}
 
-	cJSON_AddItemToObject(root, "choices", choices_json);
-	cJSON_AddItemToObject(root, "answers", answers_json);
-	return root;
-
-fail:
-	cJSON_Delete(answers_json);
-	cJSON_Delete(choices_json);
-	cJSON_Delete(root);
-	return NULL;
+	if (morph_json_object_take(root, "choices", &choices_json) != 0 ||
+	    morph_json_object_take(root, "answers", &answers_json) != 0)
+		return NULL;
+	return morph_json_steal(&root);
 }
 
 static cJSON *ask_user_ui_to_json(cJSON *data)
 {
-	cJSON *ui = cJSON_CreateObject();
+	cJSON *ui MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
 	if (!ui)
 		return NULL;
 
 	if (!cJSON_AddStringToObject(ui, "component", "ask_user") ||
 	    !cJSON_AddStringToObject(ui, "version", "1"))
-		goto fail;
+		return NULL;
 
-	cJSON *copy = cJSON_Duplicate(data, 1);
+	cJSON *copy MORPH_CLEANUP(morph_json_cleanup) = cJSON_Duplicate(data, 1);
 	if (!copy)
-		goto fail;
-	cJSON_AddItemToObject(ui, "data", copy);
-	return ui;
-
-fail:
-	cJSON_Delete(ui);
-	return NULL;
+		return NULL;
+	if (morph_json_object_take(ui, "data", &copy) != 0)
+		return NULL;
+	return morph_json_steal(&ui);
 }
 
 static int attach_ask_user_result(struct tool_result *result,
