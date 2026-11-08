@@ -15,7 +15,6 @@ class ReactStreamTest : public ::testing::Test
       protected:
 	struct react_stream stream{};
 	volatile sig_atomic_t cancelled = 0;
-	int suppressed = 0;
 	int emit_error = 0;
 	int calls = 0;
 	int reentrant_result = 0;
@@ -41,7 +40,6 @@ class ReactStreamTest : public ::testing::Test
 		options.emit = capture;
 		options.user_data = this;
 		options.cancelled = &cancelled;
-		options.suppressed = &suppressed;
 		ASSERT_EQ(react_stream_init(&stream, &options), 0);
 	}
 
@@ -133,23 +131,34 @@ TEST_F(ReactStreamTest, LongIndentationAndCarriageReturnsKeepMarkerBoundaries)
 	EXPECT_EQ(text(REACT_STEP_FINAL), "complete");
 }
 
-TEST_F(ReactStreamTest, CancellationAndSuppressionPreventCallbacks)
+TEST_F(ReactStreamTest, CancellationPreventsReasoningAndContentCallbacks)
 {
 	morph_signal_flag_set(&cancelled, 1);
 	EXPECT_EQ(react_stream_cb("cancelled", &stream), -EINTR);
+	EXPECT_EQ(react_typed_stream_cb(LLM_STREAM_REASONING, "cancelled", &stream), -EINTR);
 	EXPECT_EQ(react_stream_finish(&stream), -EINTR);
 	EXPECT_EQ(stream.text.len, 0u);
 	EXPECT_EQ(calls, 0);
-	morph_signal_flag_set(&cancelled, 0);
-	suppressed = 1;
+}
+
+TEST_F(ReactStreamTest, ReasoningAndContentStreamImmediatelyAndFinishDoesNotReplay)
+{
 	ASSERT_EQ(react_typed_stream_cb(LLM_STREAM_REASONING, "reasoning", &stream), 0);
-	ASSERT_EQ(react_typed_stream_cb(LLM_STREAM_CONTENT, "buffered", &stream), 0);
-	EXPECT_EQ(react_stream_finish(&stream), 0);
-	EXPECT_EQ(calls, 0);
-	suppressed = 0;
+	ASSERT_EQ(react_typed_stream_cb(LLM_STREAM_CONTENT, "answer", &stream), 0);
+	EXPECT_EQ(text(REACT_STEP_REASONING), "reasoning");
+	EXPECT_EQ(text(REACT_STEP_CONTENT), "answer");
+	ASSERT_EQ(react_stream_finish(&stream), 0);
 	ASSERT_EQ(react_stream_finish(&stream), 0);
 	EXPECT_EQ(text(REACT_STEP_REASONING), "reasoning");
-	EXPECT_EQ(text(REACT_STEP_CONTENT), "buffered");
+	EXPECT_EQ(text(REACT_STEP_CONTENT), "answer");
+	EXPECT_EQ(calls, 2);
+}
+
+TEST_F(ReactStreamTest, IncompleteReasoningUtf8Fails)
+{
+	ASSERT_EQ(react_typed_stream_cb(LLM_STREAM_REASONING, "live\xe4\xb8", &stream), 0);
+	EXPECT_EQ(text(REACT_STEP_REASONING), "live");
+	EXPECT_EQ(react_stream_finish(&stream), MORPH_ERR_PROTOCOL);
 }
 
 TEST_F(ReactStreamTest, SinkFailureIsStickyAndNeverReplaysAcceptedBytes)

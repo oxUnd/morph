@@ -12,7 +12,7 @@ the usage guide describes current support.
 
 Morph should support command hooks at stable agent lifecycle boundaries.
 Hooks can supply context, reject a pending tool call, inspect completed work,
-or request another pass before a successful answer is committed.
+or request another pass after a completed assistant response.
 The runtime owns configuration, execution, cancellation, and trust. CLI,
 FastCGI, and mobile hosts consume the same runtime interface.
 
@@ -30,7 +30,7 @@ Initial use cases:
 - Load workspace notes before processing a user prompt.
 - Reject a tool call that violates a project rule.
 - Run a targeted formatter after an apply_patch call.
-- Check verification state before allowing a successful final answer.
+- Check verification state after an assistant response and request further work.
 - Record an accepted completion check and orderly session shutdown.
 
 MVP excludes prompt/LLM hooks, asynchronous detached commands, permission
@@ -49,22 +49,23 @@ Existing guardrails remain independently supported.
   and stderr capture, stdin writes, sandbox binding, timeouts, and interrupts.
   Its shell-command API needs an explicit bounded stdin-and-EOF exchange
   extension for the proposed hook protocol.
-- Guardrail output checks currently have their own retry policy. Hook vetoes
-  must not inherit a path that eventually accepts rejected output.
+- Guardrail output checks have their own retry policy. Stop continuation
+  does not change that policy or gate assistant streaming.
 
 ## Compatibility contract
 
 Use Codex event names, nested matcher groups, command handlers, JSON field
 names, and exit-code conventions. The compatibility reference is the official
-hooks documentation retrieved on 2026-10-20. Pin fixtures to that baseline;
-future upstream changes require an explicit compatibility update.
+hooks documentation retrieved on 2026-10-20, updated by the Codex 0.167.0
+source audit on 2026-11-08. See the pinned source links in [Hooks usage](hooks.md).
+Future upstream changes require an explicit compatibility update.
 
 | Public event | Morph integration | First release |
 | --- | --- | --- |
 | `UserPromptSubmit` | Bound input before first model request | Yes |
 | `PreToolUse` | Validated tool before permission checks and dispatch | Yes |
 | `PostToolUse` | Completed tool before next model request | Yes |
-| `Stop` | Candidate answer before successful final commit | Yes |
+| `Stop` | Completed assistant response before the turn ends | Yes |
 | `SessionStart` | Session startup/resume | Yes |
 | `SessionEnd` | Orderly session close | Yes |
 | `PermissionRequest` | Permission decision boundary | Later |
@@ -276,9 +277,9 @@ bind request/session
   -> UserPromptSubmit -> existing input checks -> model
   -> validate tool -> PreToolUse -> existing permissions/HITL -> dispatch
   -> collect result -> existing tool-output checks -> PostToolUse -> model
-  -> existing final checks -> Stop
-       revise -> append attributed feedback -> model
-       continue -> commit final
+  -> existing final checks -> persist completed assistant response -> Stop
+       block -> append attributed hook prompt -> model
+       continue/stop -> end normally
   -> persist turn -> release request bindings
 ```
 
@@ -287,19 +288,16 @@ call ID; the model can choose another action. It cannot grant permission or
 change persistent grants. Denied calls in a batch do not cancel independent
 allowed calls. Existing program-level exec approval remains authoritative.
 
-Revision runs inside the same turn and existing iteration/time budget. At most
-two additional hook revision rounds are allowed by default. Every new candidate
-is checked again. If vetoes persist at the limit, finish with a blocked outcome
-and reason; never silently accept the candidate. Guardrail and hook counters
-are separate, with the overall turn deadline bounding both.
-
-Streaming needs an explicit contract: when any before-finish hook is active,
-buffer potential final text until accepted. Preserve normal streaming when no
-such hooks exist. Tool preambles can be released when the response resolves
-to tool calls. Rejected candidates never emit `react.final`, persist as a
-successful assistant answer, or appear as accepted output. Audit forced-final
-paths, including repeated tool failures, so only genuine error terminal paths
-skip before-finish checks.
+The 2026-11-08 source audit supersedes the original Stop veto design. Codex
+0.167.0 streams assistant output normally and appends a hook-generated user
+prompt when Stop requests continuation. Preserve completed answers and prompts
+in history, including across resume. Continuations share the same turn and its
+iteration/time budgets, without a separate two-revision cap. `stop_hook_active`
+indicates that a previous Stop continued the turn; it is not an output gate.
+`continue: false` ends normally and overrides other continuation requests.
+The terminal root `react.final` event remains a single completion signal;
+intermediate responses remain visible through streamed text and
+`react.hook.continue`. Existing guardrails retain their separate behavior.
 
 Injected additional context is attributed with hook ID/event, appended at the
 correct message boundary, and retained in the turn trace for replay. It preserves
@@ -380,7 +378,7 @@ command details are returned only through explicit authorized inspection.
    frontend-neutral management before enabling any command execution.
 3. Implement bounded concurrent runner, stdin EOF, cancellation, wire decoders,
    and integration for input/tool/session boundaries.
-4. Add Stop continuation, final buffering, rewritten-argument permissions,
+4. Add normal streaming, durable Stop continuation, rewritten-argument permissions,
    snapshots, examples, and compatibility fixtures.
 5. Add remaining events and handler types behind explicit support reporting.
 
@@ -390,15 +388,13 @@ trust mutations; unsupported features; exit 0/2/other codes; malformed outputs;
 context fields; rewritten input/conflicts; process cleanup and pipe bounds;
 concurrent start and deterministic aggregation; normal permission enforcement;
 paired tool denial; post-tool replacement audit; Stop continuation/exhaustion;
-no rejected final output; persistence failures; scheduled and frontend behavior.
+retention of completed answers; persistence failures; scheduled and frontend behavior.
 
-Stop continuation remains inside the same Morph turn with a finite revision
-budget. This is a deliberate runtime difference from implementations that open
-a new user turn for continuation, and must be visible in compatibility notes.
+Stop continuation remains inside the same Morph turn, as in Codex 0.167.0.
+The normal turn iteration and execution budgets apply, with no separate revision cap.
 No claim of complete compatibility ships until the supported-event matrix and
 fixture suite establish it. Imported examples with unsupported capabilities
 must explain what cannot run instead of silently weakening the hook.
 
 Run standard build/ctest, relevant sanitizer checks, and FastCGI build coverage
-when implementation begins. This design-only revision requires documentation
-review and whitespace validation.
+for implementation changes, together with documentation and whitespace validation.

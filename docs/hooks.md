@@ -128,7 +128,7 @@ not exposed as an agent tool. Treat database access as host authority.
 | `UserPromptSubmit` | Before the prompt reaches the model |
 | `PreToolUse` | Before permissions/HITL and tool dispatch |
 | `PostToolUse` | After a completed tool result, before the next model request |
-| `Stop` | Before accepting a successful final answer |
+| `Stop` | After a completed assistant response, before ending the turn |
 | `SessionStart` | First execution in a selected session; source is startup or resume |
 | `SessionEnd` | Leaving a previously executed session or orderly runtime shutdown |
 | `PreCompact` | Before manual or automatic durable-history compaction |
@@ -145,7 +145,8 @@ workdir, without an ancestor-directory walk.
 
 Handlers matching one event start concurrently. A denial does not prevent
 another matching handler from starting. Results aggregate in stable source order.
-Conflicting argument rewrites block the call. Pre-tool denial yields a paired
+When multiple handlers rewrite an input, the last completed valid rewrite wins.
+Any supported denial takes precedence over rewrites. Pre-tool denial yields a paired
 tool response, so the model can choose another action. Hook allow does not grant
 filesystem/network access or bypass ordinary tool/program permissions.
 
@@ -171,9 +172,12 @@ A PreToolUse denial:
 }
 ```
 
-`permissionDecision: "ask"` requests normal HITL; without an approval handler,
-the call is denied. `allow` with `updatedInput` rewrites arguments, followed
-by normal permission checks. Text tool rewrites use a string `command` field.
+`permissionDecision: "ask"`, legacy `decision: "approve"`, and `allow` without
+`updatedInput` are unsupported, as in Codex 0.167.0. They report a failed hook
+without changing the operation. `allow` with `updatedInput` rewrites arguments,
+followed by normal permission checks. Text tool rewrites use a string `command`
+field. A denial requires a non-empty reason. Explicit default values
+`continue: true` and `suppressOutput: false` are accepted for tool hooks.
 
 A Stop continuation request:
 
@@ -181,11 +185,18 @@ A Stop continuation request:
 {"decision":"block","reason":"Run the focused tests before finishing."}
 ```
 
-Morph permits two additional completion rounds within the same turn. A repeated
-veto ends the turn blocked. When a trusted Stop hook is active, candidate answer
-text is buffered until accepted. `continue: false` on Stop ends the attempt
-without opening another model round. Runtime errors and max-iteration exits
-are not successful completions and do not run Stop.
+Stop does not buffer reasoning or assistant text. The response streams normally.
+`decision: "block"` adds its non-empty reason as a hook-generated user prompt
+and continues within the same turn. Completed assistant responses and hook prompts
+remain in durable history and are replayed after resume. Continuation prompts
+use a distinct `<hook_prompt hook_run_id="...">` wrapper for the model; raw feedback
+remains available to the UI and is excluded from user-input memory extraction.
+Subsequent Stop inputs have `stop_hook_active: true`. There is no separate
+two-revision limit; the normal turn iteration, cancellation, and execution budgets
+still apply. An empty block
+reason, including an empty exit-2 stderr, fails the hook without requesting a
+continuation. `continue: false` takes precedence over all continuation requests
+and ends normally. Runtime errors and max-iteration exits do not run Stop.
 
 SessionStart, PreCompact, and PostCompact honor `continue: false` and `stopReason`.
 A PreCompact stop prevents compaction; a PostCompact stop leaves the completed
@@ -207,12 +218,16 @@ Additional model context uses `hookSpecificOutput.additionalContext` with the
 matching `hookEventName`. SessionStart and UserPromptSubmit also accept plain
 text context. `additionalContextLimit` is an approximate token threshold,
 default 2500; oversized context is saved under the configured output directory
-and replaced by a preview/path. Zero disables this per-handler threshold while
-shared resource limits remain active. Stop expects JSON, not plain text.
+and replaced by a preview/path. If saving fails, the preview is still delivered.
+Zero passes the full additional context, subject to transport limits. Stop expects
+JSON, not plain text.
 
-Plain text from tool and compaction hooks is ignored. Unsupported output fields
-and incorrectly typed common fields fail the handler without applying a partial
-decision. Morph retains `PreToolUse.permissionDecision: "ask"` as an extension.
+Plain text from tool and compaction hooks is ignored. Malformed JSON-looking text
+is a failed hook, including for SessionStart and UserPromptSubmit; it never becomes
+model context. Unsupported output fields and incorrectly typed common fields fail
+the handler without applying a partial decision. `suppressOutput` has no effect
+on model streaming. SessionEnd ignores stdout; Interrupt accepts only an optional
+`systemMessage`.
 
 Other nonzero exits, malformed protocol, timeout, or output overflow produce
 visible `hook.failed` diagnostics and continue in compatibility mode. An
@@ -231,10 +246,8 @@ Supported handler fields are `type`, `command`, `timeout`, `statusMessage`, and
 `additionalContextLimit`. Timeout is seconds, defaults to 600, and accepts
 1–600. SessionEnd defaults to 1 and accepts 1–3; orderly shutdown enforces a
 one-second cleanup budget. Shared execution time is bounded to 600 seconds per
-turn. Input and each stdout/stderr stream are capped at 1 MiB. Each dispatch
-keeps at most 32 KiB of inline context; larger context is saved to a private
-file and replaced with a `Full hook context` reference. Per-handler token
-previews use the same recovery path. Context preview limits do not discard
+turn. Input and each stdout/stderr stream are capped at 1 MiB. Per-handler token
+previews retain a `Full hook context` reference when saving succeeds. Preview limits do not discard
 a successfully decoded policy decision or input rewrite. Transport output
 overflow is an explicit error, never a truncated policy decision. Cancellation
 terminates hook process groups; background
@@ -247,17 +260,32 @@ they do not inherit the tool exec sandbox.
 
 This release does not support PermissionRequest, sub-agent
 hooks, async handlers, MCP handlers, managed hooks, Windows overrides, or
-Codex's entire common-output field matrix. Such configured handlers are shown
+all Codex lifecycle events. Such configured handlers are shown
 as unsupported/invalid and cannot be trusted as active hooks. Regex syntax,
-resource limits, session transition timing,
-and same-turn Stop continuation are explicit compatibility differences.
+resource limits, context-preview formatting, and session transition timing remain
+explicit compatibility differences.
 Review management is provided in the CLI and the public runtime facade;
 there is no new FastCGI administration endpoint or mobile review UI in this
 release. All frontends share the execution path and lifecycle events.
 
-The compatibility audit used the [official hook documentation](https://learn.chatgpt.com/docs/hooks)
-and [Codex source at 5e769a1](https://github.com/openai/codex/tree/5e769a1cdae3fd93efd5e7b9df71e39efb2223ab/codex-rs)
-on 2026-10-30, including the hook runtime, hook history cells, and hook browser.
+The 2026-11-08 compatibility audit targets Codex 0.167.0, matching the installed
+Codex version, at commit
+[`086ccc8`](https://github.com/openai/codex/tree/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a).
+It compares the [event parsers and schemas](https://github.com/openai/codex/tree/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/hooks/src),
+the [turn loop](https://github.com/openai/codex/blob/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/core/src/session/turn.rs),
+and upstream hook tests with the
+[official hook documentation](https://learn.chatgpt.com/docs/hooks).
+
+| Audited behavior | Morph contract |
+| --- | --- |
+| Stop streaming and continuation | Normal text streaming; durable same-turn continuation prompts |
+| Stop `continue: false` | Normal completion; overrides other handlers' continuation requests |
+| Missing block feedback | Failed handler with no control effect |
+| Tool decisions and common fields | Supported decisions only; explicit default values accepted |
+| Concurrent rewrites | Last completed valid rewrite wins; denials take precedence |
+| Context spilling | Per-handler token threshold; storage failure retains a preview; zero keeps full context |
+| Invalid JSON-looking stdout | Failed handler, never injected as plain context |
+| SessionEnd and Interrupt | Advisory shutdown stdout ignored; Interrupt accepts `systemMessage` only |
 
 ## Example
 

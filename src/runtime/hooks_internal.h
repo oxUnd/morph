@@ -11,7 +11,6 @@
 #define HOOK_LIMIT 128
 #define HOOK_OUTPUT_MAX (1024u * 1024u)
 #define HOOK_INPUT_MAX (1024u * 1024u)
-#define HOOK_CONTEXT_INLINE_MAX 32768u
 
 struct hook_entry {
 	char id[65];
@@ -41,11 +40,14 @@ struct hook_run {
 	char session[PROCESS_SESSION_ID_MAX];
 	morph_buf_t out;
 	morph_buf_t err;
+	char *system_message;
 	int done;
 	int rc;
 	int exit_code;
 	int context_error;
+	int context_valid;
 	uint64_t duration_ms;
+	size_t completion_order;
 };
 
 const char *hook_entry_state(struct hook_manager *manager, struct hook_entry *entry);
@@ -53,7 +55,6 @@ const char *hook_json_string_borrow(const cJSON *obj, const char *key);
 int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const char *event,
 		       morph_buf_t *context, morph_buf_t *reason, cJSON **updated, int *blocked,
 		       int *ask, int *terminate);
-int hook_context_bound(struct hook_manager *manager, morph_buf_t *context);
 int hook_event_ignores_matcher(const char *event);
 int hook_json_unique_fields(const cJSON *value, int depth);
 int hook_refresh_trust(struct hook_manager *manager, struct hook_entry *entry);

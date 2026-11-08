@@ -7,6 +7,8 @@
 #include "util/file.h"
 #include "util/sha256.h"
 #include "util/error.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -552,7 +554,7 @@ TEST_F(HooksTest, ConcurrentHandlersAllStartEvenWhenOneBlocks)
 	TrustAll();
 	cJSON *out = Dispatch("Stop");
 	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(out, "blocked")));
-	EXPECT_EQ(field(out, "reason"), "first\nsecond\n");
+	EXPECT_EQ(field(out, "reason"), "first\n\nsecond");
 	cJSON_Delete(out);
 }
 
@@ -622,6 +624,138 @@ TEST_F(HooksTest, PlainStopOutputIsAnErrorNotModelContext)
 	cJSON *out = Dispatch("Stop");
 	EXPECT_EQ(field(out, "context"), "");
 	cJSON_Delete(out);
+}
+
+/* Ported from Codex 0.167.0 hooks event parser tests. */
+TEST_F(HooksTest, CodexCommandOutputDecisionMatrix)
+{
+	struct response_case {
+		const char *event;
+		const char *json;
+		bool blocked;
+		bool terminate;
+		bool failed;
+	} cases[] = {
+		{"Stop", R"({"decision":"block","reason":"  retry  "})", true, false, false},
+		{"Stop", R"({"decision":"block","reason":"　"})", false, false, true},
+		{"Stop", R"({"decision":"block"})", false, false, true},
+		{"Stop", R"({"continue":false,"decision":"block"})", false, true, false},
+		{"Stop", R"({"suppressOutput":true})", false, false, false},
+		{"Stop", R"({"decision":"approve"})", false, false, true},
+		{"Stop", "{broken", false, false, true},
+		{"UserPromptSubmit", "{broken", false, false, true},
+		{"SessionStart", "{broken", false, false, true},
+		{"PreToolUse", "{broken", false, false, true},
+		{"PreToolUse", R"({"continue":true,"suppressOutput":false})", false, false, false},
+		{"PreToolUse", R"({"decision":"block","reason":"deny"})", true, false, false},
+		{"PreToolUse", R"({"decision":"block","reason":" "})", false, false, true},
+		{"PreToolUse", R"({"decision":"approve"})", false, false, true},
+		{"PreToolUse", R"({"hookSpecificOutput":{"hookEventName":"PreToolUse",
+		  "permissionDecision":"ask"}})", false, false, true},
+		{"PreToolUse", R"({"hookSpecificOutput":{"hookEventName":"PreToolUse",
+		  "permissionDecision":"allow"}})", false, false, true},
+		{"PreToolUse", R"({"hookSpecificOutput":{"hookEventName":"PreToolUse",
+		  "permissionDecision":"deny"}})", false, false, true},
+		{"PostToolUse", R"({"reason":"orphan reason"})", false, false, true},
+		{"PostToolUse", R"({"decision":"block","reason":" "})", false, false, true},
+		{"PostToolUse", R"({"continue":false})", true, false, false},
+		{"PostToolUse", R"({"suppressOutput":false})", false, false, false},
+		{"PostToolUse", R"({"suppressOutput":true})", false, false, true},
+		{"PreCompact", R"({"continue":false})", false, true, false},
+		{"PostCompact", R"({"continue":false})", false, true, false},
+		{"Interrupt", R"({"systemMessage":"saved"})", false, false, false},
+		{"Interrupt", R"({"continue":false})", false, false, true},
+		{"SessionEnd", "not JSON", false, false, false},
+		{"SessionEnd", R"({"continue":false})", false, false, false},
+	};
+
+	for (const auto &item : cases) {
+		SCOPED_TRACE(std::string(item.event) + ": " + item.json);
+		std::ofstream(directory + "/response.json") << item.json;
+		Define(item.event, "cat response.json");
+		if (!hooks.ready)
+			Init();
+		else
+			ASSERT_EQ(hook_manager_reload(&hooks), 0);
+		TrustAll();
+		cJSON *output MORPH_CLEANUP(morph_json_cleanup) = Dispatch(item.event);
+		ASSERT_NE(output, nullptr);
+		EXPECT_EQ(cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked")), item.blocked);
+		EXPECT_EQ(cJSON_IsTrue(cJSON_GetObjectItem(output, "terminate")), item.terminate);
+		cJSON *rows MORPH_CLEANUP(morph_json_cleanup) = hook_manager_list(&hooks);
+		const cJSON *last = cJSON_GetObjectItem(cJSON_GetArrayItem(rows, 0), "last_run");
+		EXPECT_EQ(field(last, "name") == "hook.failed", item.failed);
+	}
+}
+
+TEST_F(HooksTest, EmptyExitTwoReasonFailsOpenForDecisionEvents)
+{
+	for (const char *event : {"Stop", "UserPromptSubmit", "PreToolUse", "PostToolUse"}) {
+		Define(event, "printf '  ' >&2; exit 2");
+		if (!hooks.ready)
+			Init();
+		else
+			ASSERT_EQ(hook_manager_reload(&hooks), 0);
+		TrustAll();
+		cJSON *output MORPH_CLEANUP(morph_json_cleanup) = Dispatch(event);
+		EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked"))) << event;
+	}
+}
+
+TEST_F(HooksTest, ValidWarningSurvivesSemanticFailureAndUnicodePadding)
+{
+	Write("　{\"systemMessage\":\"Check this warning\",\"decision\":\"block\"}　",
+		"response.json");
+	Define("Stop", "cat response.json");
+	Init();
+	TrustAll();
+	std::vector<std::string> warnings;
+
+	hooks.event_user = &warnings;
+	hooks.event_cb = [](const struct morph_event *event, void *user) -> int {
+		if (strcmp(event->name, "hook.message") == 0)
+			static_cast<std::vector<std::string> *>(user)->emplace_back(event->message);
+		return 0;
+	};
+	cJSON *output MORPH_CLEANUP(morph_json_cleanup) = Dispatch("Stop");
+
+	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked")));
+	ASSERT_EQ(warnings.size(), 1u);
+	EXPECT_EQ(warnings[0], "Check this warning");
+	hooks.event_cb = nullptr;
+	hooks.event_user = nullptr;
+}
+
+TEST_F(HooksTest, StopTerminationOverridesAnotherHandlersContinuation)
+{
+	Write(R"({"hooks":{"Stop":[{"hooks":[
+	{"type":"command","command":"printf '{\"decision\":\"block\",\"reason\":\"retry\"}'"},
+	{"type":"command","command":"printf '{\"continue\":false}'"}
+	]}]}})");
+	Init();
+	TrustAll();
+	cJSON *output MORPH_CLEANUP(morph_json_cleanup) = Dispatch("Stop");
+	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked")));
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(output, "terminate")));
+}
+
+TEST_F(HooksTest, LastCompletedRewriteWinsWithoutBlocking)
+{
+	std::ofstream(directory + "/first.json") <<
+		R"({"hookSpecificOutput":{"hookEventName":"PreToolUse",
+		"permissionDecision":"allow","updatedInput":{"command":"first"}}})";
+	std::ofstream(directory + "/last.json") <<
+		R"({"hookSpecificOutput":{"hookEventName":"PreToolUse",
+		"permissionDecision":"allow","updatedInput":{"command":"last"}}})";
+	Write(R"({"hooks":{"PreToolUse":[{"hooks":[
+	{"type":"command","command":"sleep .15; cat last.json"},
+	{"type":"command","command":"cat first.json"}
+	]}]}})");
+	Init();
+	TrustAll();
+	cJSON *output MORPH_CLEANUP(morph_json_cleanup) = Dispatch("PreToolUse");
+	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked")));
+	EXPECT_EQ(field(cJSON_GetObjectItem(output, "updatedInput"), "command"), "last");
 }
 
 TEST(Sha256, KnownDigest)
@@ -698,7 +832,7 @@ TEST_F(HooksTest, LargeContextUsesTokenThresholdAndSpillsFullText)
 	cJSON_Delete(out);
 }
 
-TEST_F(HooksTest, AskAndStopTerminationHaveDistinctDecisions)
+TEST_F(HooksTest, UnsupportedAskFailsOpenAndStopTerminationIsDistinct)
 {
 	Define("PreToolUse", "echo "
 			     "'{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\","
@@ -706,7 +840,7 @@ TEST_F(HooksTest, AskAndStopTerminationHaveDistinctDecisions)
 	Init();
 	TrustAll();
 	cJSON *out = Dispatch("PreToolUse");
-	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(out, "ask")));
+	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(out, "ask")));
 	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(out, "blocked")));
 	cJSON_Delete(out);
 	Define("Stop", "echo '{\"continue\":false,\"stopReason\":\"Stop now\"}'");
@@ -744,12 +878,13 @@ TEST_F(HooksTest, LargeSupplementSpillsWithoutDiscardingPermissionDecision)
 	cJSON_Delete(output);
 }
 
-TEST_F(HooksTest, DispatchByteBudgetSpillsCompleteContextAndKeepsTheDecision)
+TEST_F(HooksTest, ZeroContextLimitKeepsCompleteContextAndDecision)
 {
 	const std::string context = std::string(40000, 'x') + " byte_budget_tail";
 	std::ofstream(directory + "/response.json") <<
 		"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\","
-		"\"permissionDecision\":\"deny\",\"additionalContext\":\"" << context << "\"}}";
+		"\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"keep deny\","
+		"\"additionalContext\":\"" << context << "\"}}";
 	Write(R"({"hooks":{"PreToolUse":[{"hooks":[{"type":"command",
 		"command":"cat response.json","additionalContextLimit":0}]}]}})");
 	Init();
@@ -757,25 +892,18 @@ TEST_F(HooksTest, DispatchByteBudgetSpillsCompleteContextAndKeepsTheDecision)
 	cJSON *output = Dispatch("PreToolUse");
 	ASSERT_NE(output, nullptr);
 	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked")));
-	EXPECT_LT(field(output, "context").size(), 32768u);
-	EXPECT_NE(field(output, "context").find("Full hook context:"), std::string::npos);
-	bool found = false;
-	for (const auto &entry : std::filesystem::directory_iterator(directory + "/.morph/output"))
-	{
-		std::ifstream input(entry.path());
-		const std::string text((std::istreambuf_iterator<char>(input)), {});
-		found |= text.find(context) != std::string::npos;
-	}
-	EXPECT_TRUE(found);
+	EXPECT_NE(field(output, "context").find(context), std::string::npos);
+	EXPECT_EQ(field(output, "context").find("Full hook context:"), std::string::npos);
 	cJSON_Delete(output);
 }
 
-TEST_F(HooksTest, ContextStorageFailureCannotTurnAnAskDecisionIntoPermission)
+TEST_F(HooksTest, ContextStorageFailureKeepsValidDecisionAndPreview)
 {
 	const std::string context(40000, 'x');
 	std::ofstream(directory + "/response.json") <<
 		"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\","
-		"\"permissionDecision\":\"ask\",\"additionalContext\":\"" << context << "\"}}";
+		"\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"keep deny\","
+		"\"additionalContext\":\"" << context << "\"}}";
 	Define("PreToolUse", "cat response.json");
 	std::ofstream(directory + "/not_a_directory") << "occupied";
 	std::snprintf(cfg->general.output_dir, sizeof(cfg->general.output_dir),
@@ -785,9 +913,9 @@ TEST_F(HooksTest, ContextStorageFailureCannotTurnAnAskDecisionIntoPermission)
 	cJSON *output = Dispatch("PreToolUse");
 	ASSERT_NE(output, nullptr);
 	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked")));
-	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(output, "ask")));
-	EXPECT_NE(field(output, "reason").find("Hook context could not be preserved"),
-		std::string::npos);
+	EXPECT_EQ(field(output, "reason"), "keep deny");
+	EXPECT_NE(field(output, "context").find("Full hook context could not be saved"),
+		  std::string::npos);
 	cJSON_Delete(output);
 }
 

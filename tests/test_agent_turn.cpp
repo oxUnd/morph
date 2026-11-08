@@ -400,6 +400,47 @@ TEST_F(AgentTurnTest, DisabledMemoryDoesNotQueueOrEmitBackgroundStatus)
 	}
 }
 
+TEST_F(AgentTurnTest, MemoryRetainsUserCorrectionsAndExcludesHookPrompts)
+{
+	struct memory_options options = {};
+	struct agent_session_runtime runtime = {};
+	struct agent_turn_input input = {};
+	struct agent_turn turn = {};
+	struct agent_turn_result result = {};
+
+	options.enabled = 1;
+	options.save_tasks_enabled = 1;
+	runtime.db = &db;
+	runtime.session_id = sess.id;
+	runtime.react = react;
+	runtime.memory_options = &options;
+	runtime.flags = AGENT_TURN_LOAD_HISTORY | AGENT_TURN_SAVE_MESSAGES |
+		AGENT_TURN_SAVE_MEMORY;
+	input.model_input = "USER_REQUEST_SENTINEL";
+	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+	ASSERT_EQ(agent_history_record_user_steer(react, "USER_CORRECTION_SENTINEL", 1), 0);
+	for (int i = 1; i <= 5; i++) {
+		std::string run_id = "hook-run-" + std::to_string(i);
+
+		ASSERT_EQ(agent_history_record_hook_prompt(react, "HOOK_ONLY_SENTINEL",
+			run_id.c_str(), i), 0);
+	}
+	react->hook_continuation_count = 5;
+	react->state = REACT_STATE_DONE;
+	react->outcome = REACT_OUTCOME_SUCCESS;
+	react->final_answer = strdup("Completed the check.");
+	ASSERT_NE(react->final_answer, nullptr);
+	ASSERT_EQ(agent_turn_finish(&turn, &result), 0);
+	EXPECT_TRUE(result.memory_ran_inline);
+	char *memory MORPH_CLEANUP(morph_charp_cleanup) =
+		memory_session_text_create(&db, sess.id, 0);
+
+	ASSERT_NE(memory, nullptr);
+	EXPECT_NE(strstr(memory, "USER_REQUEST_SENTINEL"), nullptr);
+	EXPECT_NE(strstr(memory, "USER_CORRECTION_SENTINEL"), nullptr);
+	EXPECT_EQ(strstr(memory, "HOOK_ONLY_SENTINEL"), nullptr);
+}
+
 TEST_F(AgentTurnTest, FailedTurnKeepsUserWithoutPoisoningNextTurn)
 {
 	struct agent_session_runtime runtime = {};

@@ -17,7 +17,6 @@ struct react_stream_options {
 	react_stream_emit_fn emit;
 	void *user_data;
 	const volatile sig_atomic_t *cancelled;
-	const int *suppressed;
 };
 
 /* One model request owns this stream and its reusable text buffer. */

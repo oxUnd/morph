@@ -656,7 +656,7 @@ void react_reset(struct react_context *ctx)
 	ctx->tool_result_output_truncated_count = 0;
 	ctx->guardrail_retry_count = 0;
 	ctx->empty_round_count = 0;
-	ctx->hook_revision_count = 0;
+	ctx->hook_continuation_count = 0;
 	free(ctx->runtime_context);
 	ctx->runtime_context = NULL;
 	free(ctx->project_context);
@@ -1031,12 +1031,6 @@ static int react_track_tool_failure(struct react_context *ctx, const char *tool_
 	char fail_msg[256];
 	snprintf(fail_msg, sizeof(fail_msg),
 		 "Tool '%s' repeatedly failed. Please try a different approach.", fail_name);
-	if (ctx->hook_stop_active) {
-		react_set_error_detail_copy(ctx, fail_msg);
-		react_set_result(ctx, REACT_OUTCOME_TOOL_ERROR, MORPH_ERR_PROCESSING,
-				 "tool_retries_exhausted");
-		return 1;
-	}
 	struct react_step *final_step =
 		react_step_create(REACT_STEP_FINAL, fail_msg, NULL, NULL, NULL);
 	add_step(ctx, final_step);
@@ -1261,16 +1255,18 @@ static void react_complete_max_iterations(struct react_context *ctx)
 			 "max_iterations");
 }
 
-static void react_append_final_message(struct react_context *ctx)
+static int react_append_final_message(struct react_context *ctx)
 {
 	const char *answer;
 	struct message_list *asst MORPH_CLEANUP(msg_list_clear) = NULL;
 
 	if (ctx->state != REACT_STATE_DONE || !ctx->steps)
-		return;
+		return 0;
 	answer = ctx->final_answer ? ctx->final_answer : "(no answer)";
 	asst = msg_list_create("assistant", answer, tokenizer_count(ctx->tokenizer, answer));
-	(void)msg_list_append_take(&ctx->messages, &asst);
+	if (!asst)
+		return -ENOMEM;
+	return msg_list_append_take(&ctx->messages, &asst);
 }
 
 static int react_chat_once(struct react_context *ctx, struct model *llm, const char *system_prompt,
@@ -1284,7 +1280,6 @@ static int react_chat_once(struct react_context *ctx, struct model *llm, const c
 		.emit = react_stream_emit,
 		.user_data = &output,
 		.cancelled = &ctx->cancelled,
-		.suppressed = &ctx->hook_stop_active,
 	};
 	int status;
 
@@ -2429,6 +2424,107 @@ static int react_hook_invoke(struct react_context *ctx, const char *event, cJSON
 	return rc;
 }
 
+static int react_continue_from_hook(struct react_context *ctx, morph_array_t *messages,
+				    const char *reason)
+{
+	struct message_list *feedback MORPH_CLEANUP(msg_list_clear) = NULL;
+	char *prompt MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char hook_run_id[192];
+	struct chat_message *slots;
+	int rc;
+
+	if (ctx->hook_continuation_count == INT_MAX)
+		return -EOVERFLOW;
+	snprintf(hook_run_id, sizeof(hook_run_id), "turn:%s:stop:%d", ctx->turn_id,
+		 ctx->hook_continuation_count + 1);
+	prompt = agent_history_hook_prompt_create(reason, hook_run_id);
+	if (!prompt)
+		return -ENOMEM;
+	slots = morph_array_push_n_borrow(messages, 2);
+	if (!slots)
+		return -ENOMEM;
+	memset(slots, 0, 2 * sizeof(*slots));
+	slots[0].role = strdup("assistant");
+	slots[0].content = strdup(ctx->final_answer);
+	slots[0].reasoning_content = ctx->final_reasoning_content
+		? strdup(ctx->final_reasoning_content) : NULL;
+	slots[1].role = strdup("user");
+	slots[1].content = strdup(prompt);
+	if (!slots[0].role || !slots[0].content || !slots[1].role || !slots[1].content ||
+	    (ctx->final_reasoning_content && !slots[0].reasoning_content))
+		return -ENOMEM;
+	feedback = msg_list_create("user", prompt, tokenizer_count(ctx->tokenizer, prompt));
+	if (!feedback)
+		return -ENOMEM;
+	rc = react_append_final_message(ctx);
+	if (rc != 0)
+		return rc;
+	rc = msg_list_append_take(&ctx->messages, &feedback);
+	if (rc != 0)
+		return rc;
+	ctx->hook_continuation_count++;
+	rc = agent_history_record_hook_prompt(ctx, reason, hook_run_id,
+		ctx->hook_continuation_count);
+	if (rc != 0)
+		return rc;
+	free(ctx->final_answer);
+	ctx->final_answer = NULL;
+	free(ctx->final_reasoning_content);
+	ctx->final_reasoning_content = NULL;
+	ctx->outcome = REACT_OUTCOME_NONE;
+	ctx->last_error_code = 0;
+	ctx->outcome_reason[0] = '\0';
+	react_set_state(ctx, REACT_STATE_THINKING);
+	return react_emit_text_event(react_events_borrow(ctx), MORPH_EVENT_REACT,
+				     "react.hook.continue", "continue", "Stop hook continuation",
+				     reason);
+}
+
+static int react_handle_stop_hooks(struct react_context *ctx, morph_array_t *messages)
+{
+	cJSON *input MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *output MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	const char *reason;
+	int rc;
+
+	if (!ctx->hook_fn || ctx->outcome != REACT_OUTCOME_SUCCESS)
+		return 1;
+	rc = agent_history_record_assistant(ctx, ctx->final_answer);
+	if (rc != 0) {
+		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, rc,
+				 "history_persistence_error");
+		return 1;
+	}
+	input = cJSON_CreateObject();
+	if (!input ||
+	    !cJSON_AddStringToObject(input, "last_assistant_message", ctx->final_answer) ||
+	    !cJSON_AddBoolToObject(input, "stop_hook_active", ctx->hook_continuation_count > 0)) {
+		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM, "hook_failed");
+		return 1;
+	}
+	rc = ctx->hook_fn(ctx->hook_user, "Stop", input, &output);
+	if (rc != 0) {
+		react_set_result(ctx, rc == -ECANCELED ? REACT_OUTCOME_CANCELLED
+						     : REACT_OUTCOME_INTERNAL_ERROR,
+				 rc, "hook_failed");
+		return 1;
+	}
+	if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(output, "terminate")) ||
+	    !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(output, "blocked")))
+		return 1;
+	reason = react_hook_text(output, "reason");
+	if (!reason[0]) {
+		log_warn(ctx->logger, "Stop hook requested continuation without a prompt");
+		return 1;
+	}
+	rc = react_continue_from_hook(ctx, messages, reason);
+	if (rc != 0) {
+		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, rc, "hook_continuation_failed");
+		return 1;
+	}
+	return 0;
+}
+
 static int react_handle_final_response(struct react_context *ctx, const char *proposed,
 				       morph_array_t *messages, react_output_cb cb, void *user_data)
 {
@@ -2463,57 +2559,27 @@ static int react_handle_final_response(struct react_context *ctx, const char *pr
 		return 0;
 	if (gr == 2)
 		return 1;
-	if (ctx->hook_fn) {
-		cJSON *input = cJSON_CreateObject(), *output = NULL;
-		cJSON_AddStringToObject(input, "last_assistant_message", final_text);
-		cJSON_AddBoolToObject(input, "stop_hook_active", ctx->hook_revision_count > 0);
-		int hook_rc = react_hook_invoke(ctx, "Stop", input, &output);
-		int blocked = cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked"));
-		if (hook_rc < 0 || cJSON_IsTrue(cJSON_GetObjectItem(output, "terminate")) ||
-		    (blocked && ctx->hook_revision_count >= 2)) {
-			react_set_error_detail_copy(ctx, blocked ? react_hook_text(output, "reason")
-								 : morph_strerror(hook_rc));
-			react_set_result(ctx,
-					 hook_rc == -ECANCELED ? REACT_OUTCOME_CANCELLED
-							       : REACT_OUTCOME_GUARDRAIL_DENIED,
-					 hook_rc < 0 ? hook_rc : -EPERM, "hook_completion_blocked");
-			cJSON_Delete(output);
-			return 1;
-		}
-		if (blocked) {
-			struct chat_message *feedback = morph_array_push_borrow(messages);
-			if (!feedback) {
-				cJSON_Delete(output);
-				react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
-						 "hook_failed");
-				return 1;
-			}
-			memset(feedback, 0, sizeof(*feedback));
-			feedback->role = strdup("user");
-			feedback->content = strdup(react_hook_text(output, "reason"));
-			if (!feedback->role || !feedback->content) {
-				cJSON_Delete(output);
-				react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
-						 "hook_failed");
-				return 1;
-			}
-			add_step(ctx, react_step_create(REACT_STEP_REFLECTION, feedback->content,
-							NULL, NULL, NULL));
-			ctx->hook_revision_count++;
-			cJSON_Delete(output);
-			return 0;
-		}
-		cJSON_Delete(output);
-	}
 	final_step = react_step_create(REACT_STEP_FINAL, final_text, NULL, NULL, NULL);
+	if (!final_step) {
+		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM, "internal_error");
+		return 1;
+	}
 	add_step(ctx, final_step);
 	free(ctx->final_answer);
 	ctx->final_answer = strdup(final_text);
+	if (!ctx->final_answer) {
+		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM, "internal_error");
+		return 1;
+	}
 	if (ctx->terminal_tool_error < 0)
 		react_set_result(ctx, REACT_OUTCOME_TOOL_ERROR, ctx->terminal_tool_error,
 				 "non_retryable_tool_error");
 	else
 		react_set_result(ctx, REACT_OUTCOME_SUCCESS, 0, NULL);
+	if (!react_handle_stop_hooks(ctx, messages))
+		return 0;
+	if (ctx->outcome != REACT_OUTCOME_SUCCESS && ctx->terminal_tool_error >= 0)
+		return 1;
 	react_output_emit(cb, user_data,
 			  &(struct react_output_event){
 				  .type = REACT_STEP_FINAL,
@@ -2988,7 +3054,9 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 	}
 
 	react_complete_max_iterations(ctx);
-	react_append_final_message(ctx);
+	int append_rc = react_append_final_message(ctx);
+	if (append_rc != 0)
+		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, append_rc, "internal_error");
 
 	return react_finish_run(ctx);
 }

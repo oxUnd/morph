@@ -311,7 +311,6 @@ int runtime_turn_scope_start_hooks(struct runtime_engine *engine,
 		cJSON_Delete(output);
 		engine->react->hook_fn = hook_manager_dispatch;
 		engine->react->hook_user = hooks;
-		engine->react->hook_stop_active = hook_manager_has(hooks, "Stop");
 	}
 
 	return rc;
@@ -321,7 +320,6 @@ void runtime_turn_scope_close_hooks(struct runtime_engine *engine)
 {
 	engine->react->hook_fn = NULL;
 	engine->react->hook_user = NULL;
-	engine->react->hook_stop_active = 0;
 	if (engine->hooks) {
 		engine->hooks->event_cb = NULL;
 		engine->hooks->event_user = NULL;

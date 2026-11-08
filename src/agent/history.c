@@ -7,6 +7,7 @@
 #include "util/cleanup.h"
 #include "util/buf.h"
 #include "util/error.h"
+#include "util/json.h"
 #include "util/log.h"
 #include "util/utf8.h"
 #include <errno.h>
@@ -93,6 +94,18 @@ static int history_store(struct react_context *ctx, const struct model_history_i
 	if (strcmp(insert->kind, "assistant_message") == 0 ||
 	    strcmp(insert->kind, "assistant_tool_calls") == 0)
 		tokens += tokenizer_count(ctx->tokenizer, payload);
+	if (strcmp(insert->kind, "user_message") == 0 && payload) {
+		struct model_history_item item = {.content = content, .payload_json = payload};
+		char *rendered MORPH_CLEANUP(morph_charp_cleanup) =
+			history_user_content_create(&item);
+
+		if (!rendered) {
+			free(content);
+			free(payload);
+			return -ENOMEM;
+		}
+		tokens = tokenizer_count(ctx->tokenizer, rendered);
+	}
 	safe.token_count = tokens > INT_MAX ? INT_MAX : (int)tokens;
 	rc = model_history_add(ctx->history_db, &safe, NULL);
 	free(content);
@@ -147,6 +160,73 @@ int agent_history_record_user_steer(struct react_context *ctx, const char *conte
 	return history_store(ctx, &item);
 }
 
+static int history_xml_append(morph_buf_t *text, const char *value)
+{
+	for (const char *at = value; *at; at++) {
+		const char *escaped = *at == '&' ? "&amp;" : *at == '<' ? "&lt;"
+			: *at == '>' ? "&gt;" : *at == '"' ? "&quot;" : *at == '\'' ? "&apos;"
+			: NULL;
+		int rc = escaped ? morph_buf_puts(text, escaped) : morph_buf_putc(text, *at);
+
+		if (rc != 0)
+			return rc;
+	}
+	return 0;
+}
+
+char *agent_history_hook_prompt_create(const char *content, const char *hook_run_id)
+{
+	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
+
+	if (!content || !hook_run_id || !*hook_run_id)
+		return NULL;
+	int rc = morph_buf_init(&text, 256);
+
+	if (rc == 0)
+		rc = morph_buf_puts(&text, "<hook_prompt hook_run_id=\"");
+	if (rc == 0)
+		rc = history_xml_append(&text, hook_run_id);
+	if (rc == 0)
+		rc = morph_buf_puts(&text, "\">");
+	if (rc == 0)
+		rc = history_xml_append(&text, content);
+	if (rc == 0)
+		rc = morph_buf_puts(&text, "</hook_prompt>");
+	return rc == 0 ? morph_buf_detach(&text) : NULL;
+}
+
+int agent_history_record_hook_prompt(struct react_context *ctx, const char *content,
+	const char *hook_run_id, int sequence)
+{
+	char key[192];
+	cJSON *payload MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	char *json MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	struct model_history_insert item = {
+		.session_id = ctx ? ctx->history_session_id : 0,
+		.turn_id = ctx ? ctx->turn_id : NULL,
+		.kind = "user_message",
+		.role = "user",
+		.content = content,
+		.active = 1,
+	};
+
+	if (!content || !hook_run_id || !*hook_run_id || sequence <= 0)
+		return -EINVAL;
+	payload = cJSON_CreateObject();
+	if (!payload || !cJSON_AddStringToObject(payload, "source", "hook") ||
+	    !cJSON_AddStringToObject(payload, "hook_event_name", "Stop") ||
+	    !cJSON_AddStringToObject(payload, "hook_run_id", hook_run_id))
+		return -ENOMEM;
+	json = cJSON_PrintUnformatted(payload);
+	if (!json)
+		return -ENOMEM;
+	item.payload_json = json;
+	snprintf(key, sizeof(key), "turn:%s:user:hook:%d",
+		 ctx && ctx->turn_id[0] ? ctx->turn_id : "unknown", sequence);
+	item.idempotency_key = key;
+	return history_store(ctx, &item);
+}
+
 int agent_history_record_assistant(struct react_context *ctx, const char *content)
 {
 	char key[160];
@@ -166,6 +246,9 @@ int agent_history_record_assistant(struct react_context *ctx, const char *conten
 		return 0;
 	snprintf(key, sizeof(key), "turn:%s:assistant",
 		 ctx && ctx->turn_id[0] ? ctx->turn_id : "unknown");
+	if (ctx && ctx->hook_continuation_count > 0)
+		snprintf(key, sizeof(key), "turn:%s:assistant:hook:%d", ctx->turn_id,
+			 ctx->hook_continuation_count);
 	item.idempotency_key = key;
 	if (ctx && ctx->final_reasoning_content) {
 		cJSON *payload = cJSON_CreateObject();

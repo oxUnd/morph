@@ -421,6 +421,7 @@ static int turn_memory_input_create(struct agent_turn *turn, char **out)
 		    turn->runtime.db->handle,
 		    "SELECT content FROM (SELECT content,sequence_no FROM model_history_items "
 		    "WHERE session_id=? AND turn_id=? AND role='user' AND kind='user_message' "
+		    "AND COALESCE(json_extract(payload_json,'$.source'),'') != 'hook' "
 		    "AND active=1 ORDER BY sequence_no DESC LIMIT 4) ORDER BY sequence_no",
 		    -1, &stmt, NULL) != SQLITE_OK)
 		return MORPH_ERR_DB;
@@ -558,7 +559,7 @@ static int turn_should_keep_complete_history(const struct agent_turn *turn)
 		return 0;
 	react = turn->runtime.react;
 	/* A failed checkpoint must not discard work already performed this turn. */
-	if (react->in_turn_compaction_count > 0)
+	if (react->in_turn_compaction_count > 0 || react->hook_continuation_count > 0)
 		return 1;
 	if (!turn_has_error_code(turn, MORPH_ERR_NOT_CONFIGURED))
 		return 0;

@@ -15,6 +15,7 @@ void cli_presentation_finish(struct cli_application *ctx);
 void cli_presentation_cleanup(struct cli_application *ctx);
 void cli_presentation_prepare_prompt(struct cli_application *ctx);
 void cli_presentation_flush_stream(struct cli_application *ctx);
+void cli_presentation_hook_prompt(struct cli_application *ctx, const char *text);
 void cli_presentation_patch_diff(struct cli_application *ctx, const char *workdir,
 				 const char *input);
 int cli_presentation_event(struct cli_application *ctx, const struct morph_event *ev);

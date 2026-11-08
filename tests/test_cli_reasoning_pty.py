@@ -73,15 +73,27 @@ def main():
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        for width, inspect_details in ((120, False), (80, False), (60, False),
-                                       (40, False), (80, True), (40, True)):
+        for width, inspect_details, stop_hook in (
+                (80, True, True), (120, False, False), (80, False, False),
+                (60, False, False), (40, False, False), (80, True, False),
+                (40, True, False)):
             with tempfile.TemporaryDirectory(prefix='morph-reasoning-pty-') as temp:
+                if stop_hook:
+                    hooks = {'hooks': {'Stop': [{'hooks': [{
+                        'type': 'command', 'command': "printf '{}'", 'timeout': 3}]}]}}
+                    (Path(temp) / 'hooks.json').write_text(json.dumps(hooks))
                 terminal = Terminal(Path(sys.argv[1]).resolve(), Path(temp),
-                                    server.server_port, hooks_enabled=False)
+                                    server.server_port, hooks_enabled=stop_hook)
                 terminal.screen = AlternateScreen(80, 24)
                 terminal.stream = pyte.Stream(terminal.screen)
                 release = None
                 try:
+                    if stop_hook:
+                        deadline = time.monotonic() + 8
+                        while 'Trust lifecycle hooks?' not in terminal.raw:
+                            assert time.monotonic() < deadline, terminal.raw[-3000:]
+                            terminal.pump(.05)
+                        terminal.send('\x1b[A\x1b[A\r')
                     terminal.wait_for_composer()
                     terminal.child.setwinsize(30, width)
                     terminal.screen.resize(lines=30, columns=width)

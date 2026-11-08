@@ -145,6 +145,7 @@ react.final
 react.final.delta
 react.final.retry
 react.user.steer
+react.hook.continue
 react.compaction.begin
 react.compaction.completed
 react.compaction.failed
@@ -179,6 +180,12 @@ as `Content` trace steps; the low-level output callback uses
 `REACT_STEP_CONTENT`. CLI labels preambles `content` in plain output, while
 Android stores `CONTENT` and `REASONING` separately and renders assistant
 content as streaming Markdown. Legacy thought events remain supported.
+
+Stop hooks never suppress text deltas. `react.hook.continue` commits the completed
+response and presents the hook-generated continuation prompt before the next model
+request. Its `data.text` is the prompt, also stored as a user history item with
+`source: "hook"` and `hook_event_name: "Stop"`. The root `turn_id` stays unchanged;
+`react.final` and `react.turn.end` still identify the eventual terminal completion.
 
 `react.user.steer` is emitted when a queued prompt is accepted into the current
 loop. Its `text` is the full model input; optional `display_text` preserves the

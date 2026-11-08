@@ -114,7 +114,7 @@ static int stream_drain_reasoning(struct react_stream *stream)
 	size_t safe;
 	int rc;
 
-	if (buffer->len == 0 || (stream->options.suppressed && *stream->options.suppressed))
+	if (buffer->len == 0)
 		return 0;
 	safe = utf8_clamp_bytes(buffer->data, buffer->len);
 	rc = stream_emit(stream, REACT_STEP_REASONING, buffer, 0, safe);
@@ -182,8 +182,6 @@ static int stream_drain(struct react_stream *stream, int finish)
 							  : REACT_STEP_THOUGHT;
 	int rc;
 
-	if (stream->options.suppressed && *stream->options.suppressed)
-		return 0;
 	if (available == 0)
 		return 0;
 	if (!stream->typed_content && !stream->in_final) {
@@ -221,8 +219,7 @@ int react_stream_finish(struct react_stream *stream)
 	stream->error = stream_drain_reasoning(stream);
 	if (stream->error == 0)
 		stream->error = stream_drain(stream, 1);
-	if (stream->error == 0 && stream->reasoning.len > 0 &&
-	    !(stream->options.suppressed && *stream->options.suppressed))
+	if (stream->error == 0 && stream->reasoning.len > 0)
 		stream->error = MORPH_ERR_PROTOCOL;
 	return stream->error;
 }

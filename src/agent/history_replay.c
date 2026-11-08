@@ -267,6 +267,16 @@ static int history_add_assistant_message(const struct model_history_item *item,
 char *history_user_content_create(const struct model_history_item *item)
 {
 	cJSON *payload = item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
+	const cJSON *source = cJSON_GetObjectItemCaseSensitive(payload, "source");
+	const cJSON *run_id = cJSON_GetObjectItemCaseSensitive(payload, "hook_run_id");
+
+	if (cJSON_IsString(source) && strcmp(source->valuestring, "hook") == 0 &&
+	    cJSON_IsString(run_id) && run_id->valuestring[0]) {
+		char *text = agent_history_hook_prompt_create(item->content, run_id->valuestring);
+
+		cJSON_Delete(payload);
+		return text;
+	}
 	const cJSON *outcome = cJSON_GetObjectItemCaseSensitive(payload, "turn_outcome");
 	const cJSON *status = cJSON_GetObjectItemCaseSensitive(outcome, "status");
 	const cJSON *finished = cJSON_GetObjectItemCaseSensitive(outcome, "finished");

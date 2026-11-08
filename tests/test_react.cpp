@@ -48,6 +48,12 @@ static void append_message_owned(struct message_list **head, struct message_list
 		EXPECT_EQ(msg_list_append_take(head, &owned), 0);
 }
 
+static void history_items_cleanup(struct model_history_item **items)
+{
+	model_history_free_list(*items);
+	*items = nullptr;
+}
+
 struct sse_test_info {
 	int count;
 	std::string last_data;
@@ -482,6 +488,7 @@ struct direct_stream_data {
 	int chunk_count;
 	const char *content;
 	const char *final_content;
+	const char *reasoning;
 	int tool_on_first_call;
 	int call_count;
 };
@@ -506,6 +513,15 @@ static int direct_stream_chat_with_tools(struct model *self,
 		(struct direct_stream_data *)self->handle;
 	memset(response, 0, sizeof(*response));
 	data->call_count++;
+	if (data->reasoning) {
+		int rc = stream_cb(LLM_STREAM_REASONING, data->reasoning, stream_ud);
+
+		if (rc != 0)
+			return rc;
+		response->reasoning_content = strdup(data->reasoning);
+		if (!response->reasoning_content)
+			return -ENOMEM;
+	}
 	if (data->tool_on_first_call && data->call_count > 1) {
 		int rc = stream_cb(LLM_STREAM_CONTENT, data->final_content,
 				   stream_ud);
@@ -7262,7 +7278,7 @@ static int test_lifecycle_hook(void *user, const char *event,
 	return 0;
 }
 
-TEST_F(MockLlmTest, StopHookRevisesBeforePublishingFinal)
+TEST_F(MockLlmTest, StopHookKeepsCompletedAnswerBeforeContinuation)
 {
 	const char *responses[] = {"Final: rejected candidate", "Final: accepted candidate"};
 	llm = create_multi_mock_llm(responses, 2);
@@ -7272,7 +7288,6 @@ TEST_F(MockLlmTest, StopHookRevisesBeforePublishingFinal)
 	TestHookState state;
 	ctx->hook_fn = test_lifecycle_hook;
 	ctx->hook_user = &state;
-	ctx->hook_stop_active = 1;
 	std::string published;
 	auto cb = [](const struct react_output_event *event, void *ud) -> int {
 		if (event->text)
@@ -7284,10 +7299,85 @@ TEST_F(MockLlmTest, StopHookRevisesBeforePublishingFinal)
 	EXPECT_STREQ(ctx->final_answer, "accepted candidate");
 	EXPECT_EQ(published.find("rejected candidate"), std::string::npos);
 	EXPECT_NE(published.find("accepted candidate"), std::string::npos);
+	ASSERT_NE(ctx->messages, nullptr);
+	ASSERT_NE(ctx->messages->next, nullptr);
+	EXPECT_STREQ(ctx->messages->next->role, "assistant");
+	EXPECT_STREQ(ctx->messages->next->content, "rejected candidate");
 	react_context_destroy(ctx);
 }
 
-TEST_F(MockLlmTest, StopHookPersistentVetoCannotSilentlyPass)
+TEST_F(MockLlmTest, StopHookKeepsReasoningAndAllNativeAnswersStreaming)
+{
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool",
+				       "{}", test_tool_fn, nullptr, nullptr), 0);
+	const char *chunks[] = {"I will ", "inspect first."};
+
+	llm = create_direct_stream_tool_llm(chunks, 2, "I will inspect first.",
+					    "Rejected candidate.");
+	ASSERT_NE(llm, nullptr);
+	auto *data = static_cast<direct_stream_data *>(llm->handle);
+
+	data->reasoning = "Checking the current state.";
+	struct morph_event_recorder rec MORPH_CLEANUP(morph_event_recorder_cleanup) = {};
+	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
+	struct react_context *ctx MORPH_CLEANUP(react_context_clear) =
+		react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ASSERT_EQ(react_set_event_callback(ctx, morph_event_recorder_cb, &rec), 0);
+	struct stop_probe {
+		struct direct_stream_data *model;
+		struct morph_event_recorder *events;
+		int stops;
+	} probe = {data, &rec, 0};
+
+	ctx->hook_user = &probe;
+	ctx->hook_fn = [](void *user, const char *event, const cJSON *, cJSON **output) -> int {
+		auto *state = static_cast<stop_probe *>(user);
+
+		*output = cJSON_CreateObject();
+		if (!*output)
+			return -ENOMEM;
+		if (strcmp(event, "Stop") != 0)
+			return 0;
+		state->stops++;
+		EXPECT_EQ(event_recorder_join_text(state->events, "react.content.delta"),
+			  state->stops == 1 ? "I will inspect first.Rejected candidate."
+					    : "I will inspect first.Rejected candidate."
+					      "Accepted final answer.");
+		EXPECT_EQ(event_recorder_count_name(state->events, "react.reasoning.delta"),
+			  state->stops + 1);
+		EXPECT_FALSE(event_recorder_has_name(state->events, "react.final"));
+		state->model->final_content = "Accepted final answer.";
+		if (!cJSON_AddBoolToObject(*output, "blocked", state->stops == 1) ||
+		    !cJSON_AddStringToObject(*output, "reason", "Revise the final answer."))
+			return -ENOMEM;
+		return 0;
+	};
+	std::string published;
+	auto capture = [](const struct react_output_event *event, void *user) -> int {
+		if (event->text)
+			*static_cast<std::string *>(user) += event->text;
+		return 0;
+	};
+
+	ASSERT_EQ(react_run(ctx, "inspect and answer", capture, &published), 0);
+	EXPECT_EQ(probe.stops, 2);
+	EXPECT_EQ(data->call_count, 3);
+	EXPECT_EQ(event_recorder_join_text(&rec, "react.reasoning.delta"),
+		  std::string(data->reasoning) + data->reasoning + data->reasoning);
+	EXPECT_EQ(event_recorder_join_text(&rec, "react.content.end"), "I will inspect first.");
+	EXPECT_LT(event_recorder_index_name(&rec, "react.content.delta"),
+		  event_recorder_index_name(&rec, "tool.call"));
+	EXPECT_EQ(event_recorder_count_name(&rec, "react.final"), 1);
+	EXPECT_EQ(event_recorder_join_text(&rec, "react.final"), "Accepted final answer.");
+	EXPECT_NE(published.find(data->reasoning), std::string::npos);
+	EXPECT_NE(published.find("I will inspect first."), std::string::npos);
+	EXPECT_NE(published.find("Accepted final answer."), std::string::npos);
+	EXPECT_NE(published.find("Rejected candidate."), std::string::npos);
+}
+
+TEST_F(MockLlmTest, StopHookContinuationsUseTheTurnIterationBudget)
 {
 	setup_llm_with_response("Final: rejected candidate");
 	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
@@ -7297,12 +7387,109 @@ TEST_F(MockLlmTest, StopHookPersistentVetoCannotSilentlyPass)
 	state.always_block = true;
 	ctx->hook_fn = test_lifecycle_hook;
 	ctx->hook_user = &state;
-	ctx->hook_stop_active = 1;
-	EXPECT_EQ(react_run(ctx, "finish", nullptr, nullptr), -EPERM);
-	EXPECT_EQ(state.stops, 3);
-	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_GUARDRAIL_DENIED);
-	EXPECT_EQ(ctx->final_answer, nullptr);
+	ctx->max_iterations = 4;
+	EXPECT_EQ(react_run(ctx, "finish", nullptr, nullptr), MORPH_ERR_REACT_MAX_ITERATIONS);
+	EXPECT_EQ(state.stops, 4);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_MAX_ITERATIONS);
+	EXPECT_EQ(ctx->hook_continuation_count, 4);
 	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, StopHookPersistsCompletedAnswersAndPromptsAcrossMultipleContinuations)
+{
+	const char *responses[] = {"Final: first", "Final: second", "Final: third", "Final: done"};
+
+	llm = create_multi_mock_llm(responses, 4);
+	struct db database MORPH_CLEANUP(db_close) = {};
+	struct session session = {};
+	ASSERT_EQ(db_open(nullptr, &database, ":memory:"), 0);
+	ASSERT_EQ(db_init_schema(&database), 0);
+	ASSERT_EQ(session_create(&database, "hook-history", "mock-model", &session), 0);
+	struct react_context *ctx MORPH_CLEANUP(react_context_clear) =
+		react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->history_enabled = 1;
+	ctx->history_db = &database;
+	ctx->history_session_id = session.id;
+	int stops = 0;
+
+	ctx->hook_user = &stops;
+	ctx->hook_fn = [](void *user, const char *event, const cJSON *input,
+			  cJSON **output) -> int {
+		auto *count = static_cast<int *>(user);
+
+		*output = cJSON_CreateObject();
+		if (!*output)
+			return -ENOMEM;
+		if (strcmp(event, "Stop") != 0)
+			return 0;
+		EXPECT_EQ(cJSON_IsTrue(cJSON_GetObjectItem(input, "stop_hook_active")), *count > 0);
+		(*count)++;
+		if (!cJSON_AddBoolToObject(*output, "blocked", *count < 4) ||
+		    !cJSON_AddStringToObject(*output, "reason", "Continue <checking> & verify."))
+			return -ENOMEM;
+		return 0;
+	};
+	ASSERT_EQ(react_run(ctx, "check the work", nullptr, nullptr), 0);
+	EXPECT_EQ(stops, 4);
+	EXPECT_EQ(ctx->hook_continuation_count, 3);
+	ASSERT_EQ(agent_history_record_assistant(ctx, ctx->final_answer), 0);
+	int count = 0;
+	struct model_history_item *items MORPH_CLEANUP(history_items_cleanup) =
+		model_history_list(&database, session.id, 1, &count);
+	ASSERT_EQ(count, 8);
+	int prompts = 0, answers = 0;
+
+	for (auto *item = items; item; item = item->next) {
+		EXPECT_STREQ(item->turn_id, ctx->turn_id);
+		if (strcmp(item->kind, "assistant_message") == 0)
+			answers++;
+		if (item->payload_json && strstr(item->payload_json, "hook_event_name")) {
+			prompts++;
+			EXPECT_STREQ(item->role, "user");
+			EXPECT_STREQ(item->content, "Continue <checking> & verify.");
+			EXPECT_NE(strstr(item->payload_json, "hook_run_id"), nullptr);
+		}
+	}
+	EXPECT_EQ(prompts, 3);
+	EXPECT_EQ(answers, 4);
+	morph_array_t replay MORPH_CLEANUP(agent_chat_messages_cleanup) = {};
+	ASSERT_EQ(agent_history_messages_copy(nullptr, items, &replay), 0);
+	EXPECT_EQ(replay.nelts, 8u);
+	for (size_t i : {2u, 4u, 6u}) {
+		auto *message = static_cast<chat_message *>(morph_array_borrow(&replay, i));
+
+		EXPECT_NE(strstr(message->content, "<hook_prompt hook_run_id=\"turn:"), nullptr);
+		EXPECT_NE(strstr(message->content,
+			"Continue &lt;checking&gt; &amp; verify.</hook_prompt>"), nullptr);
+	}
+	struct agent_history_diagnostic diagnostic = {};
+	ASSERT_EQ(agent_history_diagnose(items, tok, &diagnostic), 0);
+	EXPECT_EQ(diagnostic.token_mismatches, 0);
+}
+
+TEST_F(MockLlmTest, StopHookContinueFalseFinishesNormally)
+{
+	setup_llm_with_response("Final: completed answer");
+	struct react_context *ctx MORPH_CLEANUP(react_context_clear) =
+		react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->hook_fn = [](void *, const char *event, const cJSON *, cJSON **output) -> int {
+		*output = cJSON_CreateObject();
+		if (!*output)
+			return -ENOMEM;
+		if (strcmp(event, "Stop") == 0 &&
+		    (!cJSON_AddBoolToObject(*output, "terminate", 1) ||
+		     !cJSON_AddBoolToObject(*output, "blocked", 1)))
+			return -ENOMEM;
+		return 0;
+	};
+	EXPECT_EQ(react_run(ctx, "finish", nullptr, nullptr), 0);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_SUCCESS);
+	EXPECT_STREQ(ctx->final_answer, "completed answer");
+	EXPECT_EQ(llm_data->call_count, 1);
 }
 
 TEST_F(MockLlmTest, UserPromptHookRejectsBeforeModel)

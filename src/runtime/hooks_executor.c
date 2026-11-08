@@ -165,6 +165,7 @@ static void hook_dispatch_cleanup(struct hook_dispatch *dispatch)
 		struct hook_run *item = morph_array_borrow(&dispatch->runs, i);
 		morph_buf_cleanup(&item->out);
 		morph_buf_cleanup(&item->err);
+		free(item->system_message);
 	}
 	morph_array_cleanup(&dispatch->runs);
 	morph_buf_cleanup(&dispatch->context);
@@ -188,6 +189,7 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 	cJSON *result MORPH_CLEANUP(morph_json_cleanup) = NULL;
 	int rc = 0, blocked = 0, ask = 0, terminate = 0;
 	int progress_shown = 0;
+	size_t completed_runs = 0, updated_order = 0;
 
 	char sid[32];
 	snprintf(sid, sizeof(sid), "%lld", (long long)manager->session_id);
@@ -316,6 +318,8 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 				(void)process_session_kill(dispatch->processes, run->session);
 				run->done = 1;
 			}
+			if (run->done)
+				run->completion_order = ++completed_runs;
 			pending += !run->done;
 		}
 		if (cancelled) {
@@ -344,23 +348,16 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 	morph_array_foreach (run, &dispatch->runs, struct hook_run) {
 		int decision = 0;
 		size_t context_before = dispatch->context.len, reason_before = dispatch->reason.len;
-		cJSON *updated_before = dispatch->updated;
+		cJSON *run_updated MORPH_CLEANUP(morph_json_cleanup) = NULL;
 		int ask_before = ask, terminate_before = terminate;
 		int decode_rc = hook_decode_output(
 			manager, run, event, &dispatch->context, &dispatch->reason,
-			&dispatch->updated, &decision, &ask, &terminate);
-		if (decode_rc == 0) {
-			decode_rc = hook_context_bound(manager, &dispatch->context);
-			if (decode_rc != 0)
-				run->context_error = decode_rc;
-		}
+			&run_updated, &decision, &ask, &terminate);
 		if (decode_rc < 0) {
-			(void)morph_buf_truncate(&dispatch->context, context_before);
+			if (!run->context_valid)
+				(void)morph_buf_truncate(&dispatch->context, context_before);
 			if (!run->context_error)
 				(void)morph_buf_truncate(&dispatch->reason, reason_before);
-			if (dispatch->updated != updated_before)
-				cJSON_Delete(dispatch->updated);
-			dispatch->updated = updated_before;
 			if (run->context_error) {
 				decision = 1;
 				(void)morph_buf_printf(&dispatch->reason,
@@ -373,17 +370,16 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 				decision = 0;
 			}
 		}
-		blocked |= decision;
-		if (decode_rc == 0) {
-			cJSON *parsed = cJSON_Parse(morph_buf_cstr_borrow(&run->out));
-			const char *message = hook_json_string_borrow(parsed, "systemMessage");
-			if (*message)
-				(void)morph_event_emit_simple(manager->event_cb,
-							      manager->event_user,
-							      MORPH_EVENT_BACKGROUND,
-							      "hook.message", "end", message, NULL);
-			cJSON_Delete(parsed);
+		if (decode_rc == 0 && run_updated && run->completion_order >= updated_order) {
+			cJSON_Delete(dispatch->updated);
+			dispatch->updated = morph_json_steal(&run_updated);
+			updated_order = run->completion_order;
 		}
+		blocked |= decision;
+		if (run->system_message)
+			(void)morph_event_emit_simple(manager->event_cb, manager->event_user,
+				MORPH_EVENT_BACKGROUND, "hook.message", "end",
+				run->system_message, NULL);
 		hook_emit(manager, run->entry,
 			  decode_rc < 0 ? "hook.failed"
 			  : decision	? "hook.blocked"
@@ -405,6 +401,10 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 		rc = (-ENOMEM);
 		return rc;
 	}
+	if (strcmp(event, "Stop") == 0 && terminate)
+		blocked = 0;
+	if (blocked)
+		morph_json_cleanup(&dispatch->updated);
 	if (!cJSON_AddStringToObject(result, "context",
 				   morph_buf_cstr_borrow(&dispatch->context)) ||
 	    !cJSON_AddStringToObject(result, "reason", morph_buf_cstr_borrow(&dispatch->reason)) ||

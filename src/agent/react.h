@@ -104,8 +104,7 @@ struct react_context {
 	struct morph_log *logger;
 	agent_hook_fn hook_fn;
 	void *hook_user;
-	int hook_stop_active;
-	int hook_revision_count;
+	int hook_continuation_count;
 	char *hook_context;
 	unsigned int hook_context_generation;
 	struct react_step *steps;

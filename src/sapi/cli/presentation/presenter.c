@@ -647,6 +647,21 @@ void cli_presentation_flush_stream(struct cli_application *ctx)
 	cli_markdown_stream_reset(ctx, 1);
 }
 
+void cli_presentation_hook_prompt(struct cli_application *ctx, const char *text)
+{
+	cli_presenter_clear_status(ctx);
+	cli_presentation_flush_stream(ctx);
+	ctx->presenter->final_rendered = 0;
+	ctx->presenter->native_content_started = 0;
+	ctx->presenter->native_content_visible = 0;
+	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
+		cli_presenter_print_plain_labeled(ctx, "hook continuation", text);
+	else {
+		printf(ctx, "\n" ANSI_DIM "  Stop hook requested continuation\n" ANSI_RESET);
+		cli_presenter_print_indented(ctx, "  ", text);
+	}
+}
+
 static int cli_presenter_append_stream(struct cli_application *ctx, int kind, const char *text,
 				       int is_delta, int is_complete, const char **appended_text)
 {
@@ -1732,6 +1747,10 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 		if (strcmp(ev->name, "react.turn.begin") == 0) {
 			if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE)
 				cli_feed_render_frame(ctx, 1);
+			return 0;
+		}
+		if (strcmp(ev->name, "react.hook.continue") == 0) {
+			cli_presentation_hook_prompt(ctx, text);
 			return 0;
 		}
 		if (strcmp(ev->name, "react.user.steer") == 0) {

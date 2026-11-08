@@ -9,6 +9,8 @@
 #include "session.h"
 #include "util/error.h"
 #include "util/strmap.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "cJSON.h"
 #include <string.h>
 
@@ -129,7 +131,13 @@ int cli_history_render_session(struct cli_application *ctx, struct model_history
 			if (!turn || !turn[0] || !item->turn_id || strcmp(turn, item->turn_id))
 				cli_transcript_reset(ctx);
 			turn = item->turn_id;
-			cli_presentation_user_input(ctx, item->content);
+			cJSON *payload MORPH_CLEANUP(morph_json_cleanup) =
+				item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
+
+			if (strcmp(cli_history_string(payload, "source"), "hook") == 0)
+				cli_presentation_hook_prompt(ctx, item->content);
+			else
+				cli_presentation_user_input(ctx, item->content);
 		} else if (strcmp(item->kind, "assistant_message") == 0 ||
 			   strcmp(item->kind, "assistant_tool_calls") == 0) {
 			rc = cli_history_assistant(ctx, item, &results);
