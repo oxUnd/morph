@@ -1,5 +1,7 @@
 #include "runtime/services.h"
 
+#include "agent/memory.h"
+
 #include "runtime/runtime_internal.h"
 #include "agent/compress.h"
 #include "agent/history.h"
@@ -686,24 +688,60 @@ int runtime_preference_set(struct runtime *runtime, const char *scope,
 		"explicit /memory command", NULL);
 }
 
-char *runtime_memory_render_current_copy(struct runtime *runtime, int max_episodes)
+char *runtime_memory_render_current_copy(struct runtime *runtime, int max_past_tasks)
 {
 	if (!runtime)
 		return NULL;
 	return memory_session_text_create(&runtime->context.database,
-					  runtime->context.current_session.id, max_episodes);
+					  runtime->context.current_session.id, max_past_tasks);
 }
 
-int runtime_memory_clear_current(struct runtime *runtime,
-				 enum memory_clear_scope scope)
+int runtime_memory_report_copy(struct runtime *runtime, const char *query, cJSON **out)
+{
+	int rc = runtime_preferences_bind(runtime);
+
+	if (rc != 0)
+		return rc;
+	rc = memory_report_create(&runtime->context.database, runtime->context.current_session.id,
+				  &runtime->context.memory_options, query, out);
+	if (rc != 0)
+		return rc;
+	const struct react_context *react = runtime->context.react;
+	const char *reply_memory = NULL;
+
+	if (react && react->memory_reply_session_id == runtime->context.current_session.id)
+		reply_memory = react->memory_reply_text;
+
+	if (!cJSON_AddStringToObject(*out, "reply_memory", reply_memory ? reply_memory : "")) {
+		cJSON_Delete(*out);
+		*out = NULL;
+		return -ENOMEM;
+	}
+	return 0;
+}
+
+int runtime_memory_retry_current(struct runtime *runtime)
+{
+	if (!runtime)
+		return -EINVAL;
+	if (!runtime->context.memory_options.enabled)
+		return MORPH_ERR_NOT_CONFIGURED;
+	int rc = runtime_preferences_bind(runtime);
+
+	if (rc != 0)
+		return rc;
+	return memory_retry_updates(&runtime->context.database, runtime->context.current_session.id,
+				    &runtime->context.memory_options);
+}
+
+int runtime_memory_clear_current(struct runtime *runtime, enum memory_clear_scope scope)
 {
 	int rc;
 	if (!runtime)
 		return -EINVAL;
-	rc = memory_clear(&runtime->context.database,
-			  runtime->context.current_session.id, scope);
+	rc = memory_clear(&runtime->context.database, runtime->context.current_session.id, scope);
 	if (rc == 0 && runtime->context.react)
-		react_set_memory_context_copy(runtime->context.react, NULL);
+		react_set_memory_reply_text_copy(runtime->context.react, NULL);
 	return rc;
 }
 

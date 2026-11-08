@@ -5,10 +5,14 @@
 #include "util/buf.h"
 
 int memory_prepare_session(struct db *db, int64_t session_id);
-int memory_generation(struct db *db, int64_t session_id, int64_t *generation);
+int memory_read_version(struct db *db, int64_t session_id, int64_t *memory_version);
 
 int memory_appendf(morph_buf_t *b, size_t max_len, const char *fmt, ...);
 
-int memory_contains_ci(const char *haystack, const char *needle);
+struct memory_options;
+int memory_refresh_summaries_async(struct db *db, int64_t session_id,
+				   const struct memory_options *options);
+int memory_organize_summary(struct db *db, int64_t session_id,
+			    const struct memory_options *options);
 
 #endif

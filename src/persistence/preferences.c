@@ -33,10 +33,12 @@ int preference_bind(struct db *db, int64_t session_id,
 
 	if (!db || !db->handle || session_id <= 0 || !owner || !*owner)
 		return -EINVAL;
-	rc = sqlite3_prepare_v2(db->handle,
+	rc = sqlite3_prepare_v2(
+		db->handle,
 		"INSERT INTO memory_scopes(session_id,owner,project) VALUES(?,?,?) "
 		"ON CONFLICT(session_id) DO UPDATE SET project=excluded.project "
-		"WHERE memory_scopes.owner=excluded.owner",
+		"WHERE memory_scopes.owner=excluded.owner AND "
+		"(memory_scopes.project='' OR memory_scopes.project=excluded.project)",
 		-1, &stmt, NULL);
 	if (rc != SQLITE_OK)
 		return MORPH_ERR_DB;
@@ -258,29 +260,6 @@ int preference_clear_session(struct db *db, int64_t session_id)
 	if (rc != SQLITE_OK)
 		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	if (rc != SQLITE_DONE)
-		return MORPH_ERR_DB;
-	return 0;
-}
-
-int preference_candidate(struct db *db, int64_t session_id,
-			 const char *kind, const char *key, const char *value,
-			 const char *source)
-{
-	sqlite3_stmt *stmt = NULL;
-	int rc = sqlite3_prepare_v2(db->handle,
-		"INSERT INTO memory_candidates(session_id,kind,key,value,source) "
-		"VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING", -1, &stmt, NULL);
-
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_int64(stmt, 1, session_id);
-	sqlite3_bind_text(stmt, 2, kind, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 3, key, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 4, value, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 5, source ? source : "", -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)

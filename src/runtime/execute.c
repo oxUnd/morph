@@ -44,6 +44,7 @@ static int runtime_execute_locked(struct runtime_engine *engine,
 	struct agent_session_runtime session_runtime;
 	struct agent_turn turn;
 	struct runtime_output_forwarder output_forwarder;
+	struct memory_options memory = {0};
 	int rc;
 	int finish_rc;
 
@@ -54,6 +55,15 @@ static int runtime_execute_locked(struct runtime_engine *engine,
 	session_runtime.react = engine->react;
 	session_runtime.memory_options =
 		request->memory_options ? request->memory_options : engine->memory_options;
+	if (session_runtime.memory_options) {
+		memory = *session_runtime.memory_options;
+		if (request->restrict_memory_to_user) {
+			memory.visible_fn = request->memory_visible_fn;
+			memory.visible_user_id = request->user_id;
+			memory.visible_user_data = request->memory_visible_user_data;
+		}
+		session_runtime.memory_options = &memory;
+	}
 	session_runtime.render_assistant = request->render_assistant;
 	session_runtime.render_user_data = request->render_user_data;
 	session_runtime.background_cb = engine->background_cb;

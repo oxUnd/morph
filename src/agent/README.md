@@ -44,16 +44,20 @@ and `history_inspection.c` owns diagnosis and repair. Their shared helpers stay
 in `history_internal.h`. Model-generated checkpoints are produced outside the
 commit transaction; replay and active-request validation still precede commit.
 
-`memory.c` owns input interpretation, advisory extraction and turn consolidation.
-`memory_context.c` selects relevant context, `memory_render.c` formats the session
+`memory.c` prepares local memory, learns facts and tips, and saves task results.
+`memory_summary.c` organizes source-bound summaries after extraction.
+`memory_reply.c` loads compact summaries and a directory without model requests, `memory_render.c` formats the session
 tree, and `memory_query.c` formats filtered and multi-session queries. Persistence
-owns fact versions, generation fences, episode writes and copied record snapshots
+owns fact revisions, memory-version checks, task writes and copied record snapshots
 through `memory_repository.h` and `memory_snapshot.h`; it does not format the
 memory query UI. Snapshot strings remain owned until `memory_snapshot_cleanup()`.
 
 `memory_jobs.c` owns worker/queue lifecycle and recovery decisions. The concrete
 `persistence/memory_job_store` owns job SQL, conditional state changes and copied
-record snapshots; background status formatting stays in `memory_render.c`.
+record snapshots and resumable extraction/organization stages; background status
+formatting stays in `memory_render.c`. `memory_update` and `memory_preference`
+interpret explicit user requests through the active model, then verify current-user
+evidence at the tool boundary. No hardcoded language classifier is used.
 Memory write transactions begin and finish through `memory_repository` APIs.
 Generation checks guard derived writes after model requests complete, so model
 latency never extends a memory write transaction.

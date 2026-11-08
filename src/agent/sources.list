@@ -28,6 +28,8 @@ history_content.c
 history_replay.c
 history_compaction.c
 history_inspection.c
-memory_context.c
+memory_reply.c
 memory_render.c
 memory_query.c
+memory_report.c
+memory_summary.c

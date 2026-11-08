@@ -575,13 +575,13 @@ void config_set_defaults(struct morph_log *logger, struct config *cfg)
 	cfg->context.compaction_warning_count = 3;
 
 	cfg->memory.enabled = 1;
-	cfg->memory.hot_path_enabled = 1;
-	cfg->memory.cold_path_enabled = 1;
-	cfg->memory.llm_extract_enabled = 1;
+	cfg->memory.capture_input_enabled = 1;
+	cfg->memory.save_tasks_enabled = 1;
+	cfg->memory.learn_from_chats_enabled = 1;
 	cfg->memory.max_facts = 6;
-	cfg->memory.max_episodes = 4;
-	cfg->memory.max_procedures = 4;
-	cfg->memory.max_context_chars = 3000;
+	cfg->memory.max_past_tasks = 4;
+	cfg->memory.max_tips = 4;
+	cfg->memory.max_reply_chars = 3000;
 
 	strncpy(cfg->render.prefer_image_protocol, "auto",
 		sizeof(cfg->render.prefer_image_protocol) - 1);
@@ -1201,13 +1201,20 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 	cfg_table_t *memory = table_path(tbl, "memory");
 	if (memory) {
 		CFG_BOOL(memory, "enabled", cfg->memory.enabled);
-		CFG_BOOL(memory, "hot_path_enabled", cfg->memory.hot_path_enabled);
-		CFG_BOOL(memory, "cold_path_enabled", cfg->memory.cold_path_enabled);
-		CFG_BOOL(memory, "llm_extract_enabled", cfg->memory.llm_extract_enabled);
+		CFG_BOOL(memory, "hot_path_enabled", cfg->memory.capture_input_enabled);
+		CFG_BOOL(memory, "cold_path_enabled", cfg->memory.save_tasks_enabled);
+		CFG_BOOL(memory, "llm_extract_enabled", cfg->memory.learn_from_chats_enabled);
+		/* Old config keys remain readable; explicit plain names take precedence. */
+		CFG_BOOL(memory, "capture_input_enabled", cfg->memory.capture_input_enabled);
+		CFG_BOOL(memory, "save_tasks_enabled", cfg->memory.save_tasks_enabled);
+		CFG_BOOL(memory, "learn_from_chats_enabled", cfg->memory.learn_from_chats_enabled);
 		CFG_INT(memory, "max_facts", cfg->memory.max_facts);
-		CFG_INT(memory, "max_episodes", cfg->memory.max_episodes);
-		CFG_INT(memory, "max_procedures", cfg->memory.max_procedures);
-		CFG_INT(memory, "max_context_chars", cfg->memory.max_context_chars);
+		CFG_INT(memory, "max_episodes", cfg->memory.max_past_tasks);
+		CFG_INT(memory, "max_procedures", cfg->memory.max_tips);
+		CFG_INT(memory, "max_context_chars", cfg->memory.max_reply_chars);
+		CFG_INT(memory, "max_past_tasks", cfg->memory.max_past_tasks);
+		CFG_INT(memory, "max_tips", cfg->memory.max_tips);
+		CFG_INT(memory, "max_reply_chars", cfg->memory.max_reply_chars);
 	}
 
 	cfg_table_t *render = table_path(tbl, "render");
@@ -1527,11 +1534,13 @@ void config_print(const struct config *cfg)
 		 cfg->context.keep_recent_rounds, cfg->context.in_turn_compaction,
 		 cfg->context.protocol_reserve_tokens);
 	log_info(cfg ? cfg->logger : NULL,
-		 "  [memory] enabled=%d hot=%d cold=%d llm=%d facts=%d episodes=%d procedures=%d "
+		 "  [memory] enabled=%d capture_input=%d save_tasks=%d learn_from_chats=%d "
+		 "facts=%d past_tasks=%d tips=%d "
 		 "chars=%d",
-		 cfg->memory.enabled, cfg->memory.hot_path_enabled, cfg->memory.cold_path_enabled,
-		 cfg->memory.llm_extract_enabled, cfg->memory.max_facts, cfg->memory.max_episodes,
-		 cfg->memory.max_procedures, cfg->memory.max_context_chars);
+		 cfg->memory.enabled, cfg->memory.capture_input_enabled,
+		 cfg->memory.save_tasks_enabled, cfg->memory.learn_from_chats_enabled,
+		 cfg->memory.max_facts, cfg->memory.max_past_tasks, cfg->memory.max_tips,
+		 cfg->memory.max_reply_chars);
 	for (int i = 0; i < cfg->sub_agents.count; i++) {
 		const struct config_sub_agent *sa = &cfg->sub_agents.entries[i];
 		log_info(cfg ? cfg->logger : NULL,

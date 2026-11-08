@@ -30,3 +30,5 @@ dynamic_tool_service.c
 exec_tool.c
 exec_jobs.c
 path_policy.c
+user_evidence.c
+memory_update.c

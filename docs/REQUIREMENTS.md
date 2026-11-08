@@ -19,7 +19,7 @@
 | Context Window | 一次模型请求允许容纳的输入和输出 token 预算 |
 | MCP | 远程工具、资源及提示词的发现和调用协议 |
 | Sub-agent | 使用独立提示、工具限制和执行上下文的子代理 |
-| Memory | 保存事实、经历、程序性知识及显式偏好的长期记忆 |
+| Memory | 显式偏好、记忆笔记、工作记录和有来源的长期摘要 |
 | Task | 持久化的一次性或周期性任务，执行结果进入通知 inbox |
 | Checkpoint | primary turn 的会话快照和 `apply_patch` 文件修改快照 |
 
@@ -150,7 +150,7 @@ exec 扩展进入配置的进程沙箱和资源限制；共享库扩展不具有
 - 上下文默认按 3000 Unicode 码点预算选择完整条目；数量或字符预算造成省略时显式标记，可通过 `memory` 分页恢复。存在显式偏好时保留至少 512 码点的上下文预算。
 - 完整记忆仍保存在数据库，事实不会仅因超过 200 字节而被自动丢弃。
 - `memory` 支持类型、作用域及 `offset_chars` / `max_chars` 分页；每页最多 4000 码点，并按最终完整 JSON envelope 的 token 预算缩小。
-- `memory_preference` 管理显式偏好；CLI `/memory` 支持 show/set/unset/history/explain/jobs 及清除记忆。多用户前端继续应用用户范围约束。
+- `memory_preference` 管理显式偏好，`memory_update` 处理明确的记住、纠正、删除请求；CLI `/memory` 支持 show/set/unset/history/explain/jobs/retry 及清除记忆。多用户前端继续应用用户范围约束。
 
 ### 4.10 MCP
 
@@ -438,9 +438,9 @@ kill_grace_ms = 500
 [memory]
 enabled = true
 max_facts = 6
-max_episodes = 4
-max_procedures = 4
-max_context_chars = 3000
+max_past_tasks = 4
+max_tips = 4
+max_reply_chars = 3000
 
 [dynamic_tools]
 enabled = true
@@ -520,7 +520,7 @@ default_max_output_bytes = 1048576
 
 | 类别 | 已注册工具或配置生成工具 |
 | --- | --- |
-| 查询与偏好 | `credits`、`memory`、`memory_preference` |
+| 查询与偏好 | `credits`、`memory`、`memory_preference`、`memory_update` |
 | 文件与修改 | `file_read`、`file_list`、`file_info`、`apply_patch`、`checkpoint` |
 | 图像 | `img_gen`、`img_qa`、`img_info`、`img_annotate`、`img_inpaint`、`img_compose`、`img_resize`、`img_convert` |
 | 视频 | `vid_gen` |

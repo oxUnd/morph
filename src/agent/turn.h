@@ -11,22 +11,18 @@ extern "C" {
 #include <stdint.h>
 
 #define AGENT_TURN_LOAD_HISTORY		(1u << 0)
-#define AGENT_TURN_BUILD_MEMORY_CONTEXT	(1u << 1)
+#define AGENT_TURN_PREPARE_MEMORY_REPLY (1u << 1)
 #define AGENT_TURN_SAVE_TRACE		(1u << 2)
 #define AGENT_TURN_SAVE_MESSAGES	(1u << 3)
 #define AGENT_TURN_UPDATE_TOKENS	(1u << 4)
-#define AGENT_TURN_CONSOLIDATE_MEMORY	(1u << 5)
+#define AGENT_TURN_SAVE_MEMORY (1u << 5)
 #define AGENT_TURN_ASYNC_MEMORY		(1u << 6)
 #define AGENT_TURN_SAVE_EMPTY_USER	(1u << 7)
 #define AGENT_TURN_SAVE_EMPTY_ASSISTANT	(1u << 8)
 
-#define AGENT_TURN_DEFAULT_FLAGS \
-	(AGENT_TURN_LOAD_HISTORY | \
-	 AGENT_TURN_BUILD_MEMORY_CONTEXT | \
-	 AGENT_TURN_SAVE_TRACE | \
-	 AGENT_TURN_SAVE_MESSAGES | \
-	 AGENT_TURN_UPDATE_TOKENS | \
-	 AGENT_TURN_CONSOLIDATE_MEMORY | \
+#define AGENT_TURN_DEFAULT_FLAGS                                                                   \
+	(AGENT_TURN_LOAD_HISTORY | AGENT_TURN_PREPARE_MEMORY_REPLY | AGENT_TURN_SAVE_TRACE |       \
+	 AGENT_TURN_SAVE_MESSAGES | AGENT_TURN_UPDATE_TOKENS | AGENT_TURN_SAVE_MEMORY |            \
 	 AGENT_TURN_ASYNC_MEMORY)
 
 typedef char *(*agent_turn_render_fn)(const char *text, void *user_data);
@@ -66,7 +62,7 @@ struct agent_turn {
 
 struct agent_turn_result {
 	int history_loaded;
-	int memory_context_built;
+	int memory_reply_prepared;
 	int trace_saved;
 	int trace_rc;
 	int user_saved;

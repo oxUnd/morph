@@ -555,19 +555,18 @@ static int cli_runtime_command_config(struct cli_application *ctx, int argc, cha
 	       (*runtime_config_borrow(ctx->runtime)).context.keep_recent_rounds);
 	printf(ctx, ANSI_BOLD "[memory]" ANSI_RESET "\n");
 	printf(ctx, "  enabled = %d\n", (*runtime_config_borrow(ctx->runtime)).memory.enabled);
-	printf(ctx, "  hot_path_enabled = %d\n",
-	       (*runtime_config_borrow(ctx->runtime)).memory.hot_path_enabled);
-	printf(ctx, "  cold_path_enabled = %d\n",
-	       (*runtime_config_borrow(ctx->runtime)).memory.cold_path_enabled);
-	printf(ctx, "  llm_extract_enabled = %d\n",
-	       (*runtime_config_borrow(ctx->runtime)).memory.llm_extract_enabled);
+	printf(ctx, "  capture_input_enabled = %d\n",
+	       (*runtime_config_borrow(ctx->runtime)).memory.capture_input_enabled);
+	printf(ctx, "  save_tasks_enabled = %d\n",
+	       (*runtime_config_borrow(ctx->runtime)).memory.save_tasks_enabled);
+	printf(ctx, "  learn_from_chats_enabled = %d\n",
+	       (*runtime_config_borrow(ctx->runtime)).memory.learn_from_chats_enabled);
 	printf(ctx, "  max_facts = %d\n", (*runtime_config_borrow(ctx->runtime)).memory.max_facts);
-	printf(ctx, "  max_episodes = %d\n",
-	       (*runtime_config_borrow(ctx->runtime)).memory.max_episodes);
-	printf(ctx, "  max_procedures = %d\n",
-	       (*runtime_config_borrow(ctx->runtime)).memory.max_procedures);
-	printf(ctx, "  max_context_chars = %d\n",
-	       (*runtime_config_borrow(ctx->runtime)).memory.max_context_chars);
+	printf(ctx, "  max_past_tasks = %d\n",
+	       (*runtime_config_borrow(ctx->runtime)).memory.max_past_tasks);
+	printf(ctx, "  max_tips = %d\n", (*runtime_config_borrow(ctx->runtime)).memory.max_tips);
+	printf(ctx, "  max_reply_chars = %d\n",
+	       (*runtime_config_borrow(ctx->runtime)).memory.max_reply_chars);
 	printf(ctx, ANSI_BOLD "[render]" ANSI_RESET "\n");
 	printf(ctx, "  prefer_image_protocol = %s\n",
 	       (*runtime_config_borrow(ctx->runtime)).render.prefer_image_protocol);

@@ -60,10 +60,12 @@ static int read_records(struct db *db, const char *sql, int64_t session_id, int 
 		memset(&row, 0, sizeof(row));
 		row.id = sqlite3_column_int64(stmt, 0);
 		row.session_id = sqlite3_column_int64(stmt, 1);
-		row.generation = sqlite3_column_int64(stmt, 2);
+		row.memory_version = sqlite3_column_int64(stmt, 2);
 		row.worker_pid = sqlite3_column_int64(stmt, 5);
 		row.attempts = sqlite3_column_int(stmt, 6);
 		row.error_code = sqlite3_column_int(stmt, 7);
+		snprintf(row.stage, sizeof(row.stage), "%s",
+			 (const char *)sqlite3_column_text(stmt, 8));
 		snprintf(row.state, sizeof(row.state), "%s", state ? state : "");
 		row.payload_json = payload ? strdup(payload) : NULL;
 		if (payload && !row.payload_json) {
@@ -92,7 +94,8 @@ int memory_job_store_recoverable(struct db *db, struct memory_job_records *out)
 {
 	return read_records(
 		db,
-		"SELECT id,session_id,generation,payload,state,worker_pid,attempts,error_code "
+		"SELECT "
+		"id,session_id,generation,payload,state,worker_pid,attempts,error_code,stage "
 		"FROM memory_jobs WHERE state IN ('queued','running') OR "
 		"(state='failed' AND attempts<3 AND updated_at<CAST(strftime('%s','now') "
 		"AS INTEGER)-30) ORDER BY id",
@@ -106,12 +109,12 @@ int memory_job_store_recent(struct db *db, int64_t session_id, int limit,
 		return -EINVAL;
 	return read_records(
 		db,
-		"SELECT id,session_id,generation,NULL,state,worker_pid,attempts,error_code "
+		"SELECT id,session_id,generation,NULL,state,worker_pid,attempts,error_code,stage "
 		"FROM memory_jobs WHERE session_id=? ORDER BY id DESC LIMIT ?",
 		session_id, limit, out);
 }
 
-int memory_job_store_add(struct db *db, int64_t session_id, int64_t generation,
+int memory_job_store_add(struct db *db, int64_t session_id, int64_t memory_version,
 			 const char *payload_json, int64_t *id)
 {
 	sqlite3_stmt *stmt = NULL;
@@ -127,11 +130,14 @@ int memory_job_store_add(struct db *db, int64_t session_id, int64_t generation,
 	/* Keep the insert and its connection-local identity indivisible. */
 	sqlite3_mutex_enter(mutex);
 	rc = sqlite3_prepare_v2(
-		db->handle, "INSERT INTO memory_jobs(session_id,generation,payload) VALUES(?,?,?)",
+		db->handle,
+		"INSERT INTO memory_jobs(session_id,generation,payload,content_revision) "
+		"VALUES(?1,?2,?3,COALESCE((SELECT content_revision FROM memory_scopes "
+		"WHERE session_id=?1),0))",
 		-1, &stmt, NULL);
 	if (rc == SQLITE_OK) {
 		sqlite3_bind_int64(stmt, 1, session_id);
-		sqlite3_bind_int64(stmt, 2, generation);
+		sqlite3_bind_int64(stmt, 2, memory_version);
 		sqlite3_bind_text(stmt, 3, payload_json, -1, SQLITE_TRANSIENT);
 		rc = sqlite3_step(stmt);
 	}
@@ -195,9 +201,35 @@ int memory_job_store_complete(struct db *db, int64_t id, int error)
 	const char *state = error == -ESTALE ? "cancelled" : error ? "failed" : "completed";
 	int rc = change_job(
 		db, id,
-		"UPDATE memory_jobs SET state=?1,error_code=?3,"
+		"UPDATE memory_jobs SET state=?1,error_code=?3,content_revision=COALESCE("
+		"(SELECT content_revision FROM memory_scopes WHERE "
+		"session_id=memory_jobs.session_id),0),"
 		"updated_at=CAST(strftime('%s','now') AS INTEGER) WHERE id=?2 AND state='running'",
 		state, error);
 
 	return rc < 0 ? rc : 0;
+}
+
+int memory_job_store_stage(struct db *db, int64_t id, const char *stage)
+{
+	if (!stage || (strcmp(stage, "extract") && strcmp(stage, "organize")))
+		return -EINVAL;
+	int rc = change_job(db, id,
+			    "UPDATE memory_jobs SET stage=?1,content_revision=COALESCE((SELECT "
+			    "content_revision "
+			    "FROM memory_scopes WHERE session_id=memory_jobs.session_id),0),"
+			    "updated_at=CAST(strftime('%s','now') AS INTEGER) "
+			    "WHERE id=?2 AND state IN ('queued','running')",
+			    stage, 0);
+
+	return rc < 0 ? rc : 0;
+}
+
+int memory_job_store_retry_session(struct db *db, int64_t session_id)
+{
+	return change_job(
+		db, session_id,
+		"UPDATE memory_jobs SET state='queued',attempts=0,error_code=0,worker_pid=?1 "
+		"WHERE session_id=?2 AND state='failed'",
+		NULL, 0);
 }

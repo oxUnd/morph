@@ -1,4 +1,6 @@
 #include "runtime_query.h"
+#include "user_evidence.h"
+#include "memory_update.h"
 #include "util/json.h"
 #include "util/cleanup.h"
 #include "agent/memory.h"
@@ -14,7 +16,7 @@
 #include <string.h>
 #include <limits.h>
 
-#define MEMORY_QUERY_DEFAULT_MAX_EPISODES 4
+#define MEMORY_QUERY_DEFAULT_MAX_TASKS 4
 
 static void summary_to_json(cJSON *parent, const char *name,
 			    const struct credit_summary *s)
@@ -84,14 +86,25 @@ static enum memory_query_type parse_memory_type(const char *s)
 {
 	if (!s || !*s || strcmp(s, "all") == 0)
 		return MEMORY_QUERY_ALL;
-	if (strcmp(s, "profile") == 0)
-		return MEMORY_QUERY_PROFILE;
+	if (strcmp(s, "user_summary") == 0 || strcmp(s, "profile") == 0)
+		return MEMORY_QUERY_USER_SUMMARY;
 	if (strcmp(s, "facts") == 0)
 		return MEMORY_QUERY_FACTS;
-	if (strcmp(s, "procedures") == 0 || strcmp(s, "rules") == 0)
-		return MEMORY_QUERY_PROCEDURES;
-	if (strcmp(s, "episodes") == 0)
-		return MEMORY_QUERY_EPISODES;
+	if (strcmp(s, "unapplied_settings") == 0)
+		return MEMORY_QUERY_UNAPPLIED_SETTINGS;
+	if (strcmp(s, "summary") == 0)
+		return MEMORY_QUERY_SUMMARY;
+	if (strcmp(s, "notes") == 0)
+		return MEMORY_QUERY_NOTES;
+	if (strcmp(s, "learned_facts") == 0)
+		return MEMORY_QUERY_LEARNED_FACTS;
+	if (strcmp(s, "tips") == 0)
+		return MEMORY_QUERY_TIPS;
+	if (strcmp(s, "procedures") == 0 || strcmp(s, "rules") == 0 ||
+	    strcmp(s, "unapplied_rules") == 0)
+		return MEMORY_QUERY_UNAPPLIED_RULES;
+	if (strcmp(s, "past_tasks") == 0 || strcmp(s, "episodes") == 0)
+		return MEMORY_QUERY_TASKS;
 	if (strcmp(s, "changes") == 0)
 		return MEMORY_QUERY_CHANGES;
 	if (strcmp(s, "preferences") == 0)
@@ -109,10 +122,9 @@ static void parse_memory_query(const char *args_json,
 	memset(q, 0, sizeof(*q));
 	q->type = MEMORY_QUERY_ALL;
 	q->scope_all = 0;
-	q->max_episodes =
-		config && config->memory.max_episodes > 0
-			? config->memory.max_episodes
-			: MEMORY_QUERY_DEFAULT_MAX_EPISODES;
+	q->max_past_tasks = config && config->memory.max_past_tasks > 0
+				    ? config->memory.max_past_tasks
+				    : MEMORY_QUERY_DEFAULT_MAX_TASKS;
 	if (!args_json || !*args_json)
 		return;
 	root = cJSON_Parse(args_json);
@@ -125,19 +137,26 @@ static void parse_memory_query(const char *args_json,
 	if (cJSON_IsString(item) &&
 	    strcmp(cJSON_GetStringValue(item), "all") == 0)
 		q->scope_all = 1;
+	if (cJSON_IsString(item) && !strcmp(cJSON_GetStringValue(item), "project"))
+		q->scope_project = 1;
 	item = cJSON_GetObjectItemCaseSensitive(root, "max_episodes");
 	if (cJSON_IsNumber(item) && item->valueint > 0)
-		q->max_episodes = item->valueint;
+		q->max_past_tasks = item->valueint;
+	item = cJSON_GetObjectItemCaseSensitive(root, "max_past_tasks");
+	if (cJSON_IsNumber(item) && item->valueint > 0)
+		q->max_past_tasks = item->valueint;
 	cJSON_Delete(root);
 }
 
 static int memory_page_result_set(struct tool_result *result, const char *page, int scope_all,
-				  size_t offset, size_t returned, size_t total)
+				  int scope_project, size_t offset, size_t returned, size_t total)
 {
 	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
 	int rc;
 
-	if (!data || !cJSON_AddStringToObject(data, "scope", scope_all ? "all" : "session") ||
+	const char *scope = scope_all ? "all" : scope_project ? "project" : "session";
+
+	if (!data || !cJSON_AddStringToObject(data, "scope", scope) ||
 	    !cJSON_AddStringToObject(data, "text", page) ||
 	    !cJSON_AddNumberToObject(data, "offset_chars", (double)offset) ||
 	    !cJSON_AddNumberToObject(data, "returned_chars", (double)returned) ||
@@ -170,6 +189,11 @@ static int memory_exec(const char *args_json, struct tool_result *result,
 	if (!rt || !rt->db)
 		return tool_result_error_copy(result, "tool_failed",
 		"Runtime context is unavailable.");
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	int lock_rc = db_lock_acquire(rt->db, &lock);
+
+	if (lock_rc != 0)
+		return lock_rc;
 	if (offset) {
 		if (!cJSON_IsNumber(offset) || offset->valuedouble < 0 ||
 		    offset->valuedouble > INT_MAX || offset->valuedouble !=
@@ -187,6 +211,35 @@ static int memory_exec(const char *args_json, struct tool_result *result,
 		max_chars = (size_t)maximum->valueint;
 	}
 	parse_memory_query(args_json, rt->config, &q);
+	const cJSON *query = cJSON_GetObjectItemCaseSensitive(args, "query");
+	if (query && (!cJSON_IsString(query) || strlen(query->valuestring) > 2048 ||
+		      utf8valid(query->valuestring)))
+		return tool_result_error_copy(result, "invalid_query",
+					      "query must be valid UTF-8 and at most 2048 bytes.");
+	q.query = cJSON_GetStringValue(query);
+	const cJSON *record_id = cJSON_GetObjectItemCaseSensitive(args, "record_id");
+	const cJSON *max_results = cJSON_GetObjectItemCaseSensitive(args, "max_results");
+
+	if (record_id) {
+		if (!cJSON_IsNumber(record_id) || record_id->valuedouble < 1 ||
+		    record_id->valuedouble > 9007199254740991.0 ||
+		    (double)(int64_t)record_id->valuedouble != record_id->valuedouble ||
+		    q.type == MEMORY_QUERY_ALL || q.type == MEMORY_QUERY_PREFERENCES ||
+		    q.type == MEMORY_QUERY_CHANGES || q.type == MEMORY_QUERY_USER_SUMMARY)
+			return tool_result_error_copy(
+				result, "invalid_record",
+				"Provide a record type and positive record_id.");
+		q.record_id = (int64_t)record_id->valuedouble;
+	}
+	if (max_results) {
+		if (!cJSON_IsNumber(max_results) || max_results->valuedouble < 1 ||
+		    max_results->valuedouble > 200 ||
+		    max_results->valuedouble != (double)max_results->valueint)
+			return tool_result_error_copy(
+				result, "invalid_limit",
+				"max_results must be an integer from 1 to 200.");
+		q.max_results = max_results->valueint;
+	}
 	if (rt->restrict_memory_to_user) {
 		q.user_id = rt->user_id;
 		q.visible_fn = rt->memory_visible_fn;
@@ -216,8 +269,8 @@ static int memory_exec(const char *args_json, struct tool_result *result,
 		char *cut = (char *)utf8_advance_codepoints_borrow(page, returned);
 		char saved = *cut;
 		*cut = '\0';
-		int rc = memory_page_result_set(result, page, q.scope_all, offset_chars, returned,
-						total_chars);
+		int rc = memory_page_result_set(result, page, q.scope_all, q.scope_project,
+						offset_chars, returned, total_chars);
 		*cut = saved;
 		if (rc != 0)
 			return rc;
@@ -245,14 +298,13 @@ static int preference_exec(const char *args_json, struct tool_result *result,
 	cJSON *value = cJSON_GetObjectItemCaseSensitive(args, "value");
 	cJSON *scope = cJSON_GetObjectItemCaseSensitive(args, "scope");
 	cJSON *evidence = cJSON_GetObjectItemCaseSensitive(args, "evidence");
-	sqlite3_stmt *stmt = NULL;
-	char token[64];
+	char *token MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	int rc;
 
 	(void)user_data;
 	if (!rt || !rt->db || !rt->config || !rt->config->memory.enabled ||
-	    !cJSON_IsString(key) || !cJSON_IsString(scope) ||
-	    !cJSON_IsString(evidence) || !evidence->valuestring[0] ||
+	    !rt->config->memory.capture_input_enabled || !cJSON_IsString(key) ||
+	    !cJSON_IsString(scope) || !cJSON_IsString(evidence) || !evidence->valuestring[0] ||
 	    (!cJSON_IsString(value) && !cJSON_IsNull(value))) {
 		cJSON_Delete(args);
 		return tool_result_error_copy(
@@ -260,42 +312,23 @@ static int preference_exec(const char *args_json, struct tool_result *result,
 			"Memory must be enabled; provide key, value (null to unset), scope "
 			"and user evidence.");
 	}
-	/* Bind the proposal to the latest actual user message. An old tool call,
-	 * assistant claim, tool output or background summary is not authority. */
-	rc = sqlite3_prepare_v2(rt->db->handle,
-		"SELECT id,content FROM model_history_items WHERE session_id=? "
-		"AND role='user' ORDER BY sequence_no DESC LIMIT 1", -1, &stmt, NULL);
-	if (rc == SQLITE_OK) {
-		sqlite3_bind_int64(stmt, 1, rt->memory_session_id);
-		rc = sqlite3_step(stmt);
-	}
-	if (rc != SQLITE_ROW || !sqlite3_column_text(stmt, 1) ||
-	    !strstr((const char *)sqlite3_column_text(stmt, 1), evidence->valuestring)) {
-		sqlite3_finalize(stmt);
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	rc = db_lock_acquire(rt->db, &lock);
+	if (rc != 0) {
 		cJSON_Delete(args);
-		return tool_result_error_copy(
-			result, "invalid_evidence",
-			"Evidence must quote the latest user's explicit persistent "
-			"preference request.");
+		return rc;
 	}
-	{
-		const char *requested_scope = memory_preference_request_scope(
-			(const char *)sqlite3_column_text(stmt, 1));
-
-		if (!requested_scope || strcmp(requested_scope, scope->valuestring)) {
-			sqlite3_finalize(stmt);
-			cJSON_Delete(args);
-			return tool_result_error_copy(
-				result, "not_a_persistent_request",
-				"Use the explicitly requested scope. Questions, quotations "
-				"and temporary "
-				"requests must not be stored; use /memory set for an exact "
-				"setting.");
-		}
+	if (morph_cancel_token_is_cancelled(rt->http.cancel_token)) {
+		cJSON_Delete(args);
+		return -ECANCELED;
 	}
-	snprintf(token, sizeof(token), "history:%lld",
-		(long long)sqlite3_column_int64(stmt, 0));
-	sqlite3_finalize(stmt);
+	rc = tool_user_evidence_token_copy(rt, evidence->valuestring, &token);
+	if (rc != 0) {
+		cJSON_Delete(args);
+		return tool_result_error_copy(result, "invalid_evidence",
+					      "Evidence must quote the latest user's explicit "
+					      "persistent preference request.");
+	}
 	rc = preference_set(rt->db, rt->memory_session_id, scope->valuestring,
 		key->valuestring, cJSON_IsString(value) ? value->valuestring : NULL,
 		evidence->valuestring, token);
@@ -353,6 +386,16 @@ int runtime_query_tools_init(struct tool_registry *reg)
 			.origin = TOOL_ORIGIN_BUILTIN,
 			.name = "memory",
 			.description =
+				"Search saved facts and tips from past work before repeating "
+				"work or choosing an approach. Supply query and scope=project "
+				"to search this user's sessions in the same project. "
+				"Choose useful words or phrases in any language; whitespace "
+				"separates "
+				"alternatives. Read a directory reference with its exact type and "
+				"record_id, "
+				"omitting query. Use type=summary for organized summaries, notes "
+				"for explicit "
+				"user notes, or learned_facts for inferred facts. "
 				"Inspect, list, verify, or summarize stored long-term memory "
 				"when the user asks about memory or injected context reports "
 				"omitted "
@@ -364,14 +407,22 @@ int runtime_query_tools_init(struct tool_registry *reg)
 				"offset_chars. "
 				"Use scope=all only when the "
 				"user explicitly asks for all, complete, or cross-session memory; "
-				"otherwise use scope=session.",
+				"Use scope=session for current-session inspection.",
 			.input_schema =
 				"{\"type\":\"object\",\"properties\":{"
 				"\"type\":{\"type\":\"string\",\"enum\":[\"all\",\"profile\","
 				"\"facts\",\"preferences\","
-				"\"procedures\",\"episodes\",\"changes\"]},"
-				"\"scope\":{\"type\":\"string\",\"enum\":[\"all\",\"session\"]},"
+				"\"procedures\",\"episodes\",\"changes\","
+				"\"user_summary\",\"tips\",\"past_tasks\",\"summary\",\"notes\","
+				"\"learned_facts\",\"unapplied_rules\",\"unapplied_settings\"]},"
+				"\"scope\":{\"type\":\"string\",\"enum\":[\"all\",\"session\","
+				"\"project\"]},"
+				"\"query\":{\"type\":\"string\",\"maxLength\":2048},"
+				"\"record_id\":{\"type\":\"integer\",\"minimum\":1},"
+				"\"max_results\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":"
+				"200},"
 				"\"max_episodes\":{\"type\":\"integer\",\"minimum\":1},"
+				"\"max_past_tasks\":{\"type\":\"integer\",\"minimum\":1},"
 				"\"offset_chars\":{\"type\":\"integer\",\"minimum\":0,"
 				"\"maximum\":2147483647},"
 				"\"max_chars\":{\"type\":\"integer\",\"minimum\":1,"
@@ -423,5 +474,8 @@ int runtime_query_tools_init(struct tool_registry *reg)
 		});
 	if (rc != 0)
 		return rc;
-	return 0;
+	e = tool_borrow(reg, "memory_preference");
+	if (e)
+		e->flags |= TOOL_FLAG_INTERNAL_APPROVAL;
+	return memory_update_tool_init(reg);
 }

@@ -4,6 +4,8 @@ preferences.c
 output_store.c
 memory_snapshot.c
 memory_repository.c
+memory_search.c
 history_store.c
 memory_job_store.c
 checkpoint_store.c
+memory_summary_store.c

@@ -20,7 +20,7 @@ cli/
     setup.h                    configuration wizard data
   pages/
     chat.c, .h                 chat controller and page-local editing state
-    history, hooks, jobs, resume
+    history, hooks, jobs, memory, resume
     permissions                inline policy selector in the input area
     turn_details               modal transcript viewport on the same Application
     approval, question         modal interaction pages

@@ -22,7 +22,7 @@ static int snapshot_facts(struct db *db, int64_t session_id,
 			  struct memory_snapshot *snapshot)
 {
 	const char *sql =
-		options->context_facts
+		options->for_reply
 			? "SELECT key_name,value_text,category,importance FROM memory_facts "
 			  "WHERE session_id=? AND is_current=1 AND category!='preference' "
 			  "AND key_name NOT IN "
@@ -91,8 +91,8 @@ static int snapshot_rules(struct db *db, int64_t session_id, struct memory_snaps
 	return error ? error : rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
 }
 
-static int snapshot_episodes(struct db *db, int64_t session_id, int limit,
-			     struct memory_snapshot *snapshot)
+static int snapshot_tasks(struct db *db, int64_t session_id, int limit,
+			  struct memory_snapshot *snapshot)
 {
 	sqlite3_stmt *stmt = NULL;
 	int error = 0;
@@ -107,7 +107,7 @@ static int snapshot_episodes(struct db *db, int64_t session_id, int limit,
 	sqlite3_bind_int64(stmt, 1, session_id);
 	sqlite3_bind_int(stmt, 2, limit);
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-		struct memory_episode_record *record = morph_array_push_borrow(&snapshot->episodes);
+		struct memory_task_record *record = morph_array_push_borrow(&snapshot->tasks);
 
 		if (!record) {
 			error = -ENOMEM;
@@ -134,7 +134,7 @@ static int snapshot_episodes(struct db *db, int64_t session_id, int limit,
 	sqlite3_bind_int64(stmt, 1, session_id);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW)
-		snapshot->episode_total = sqlite3_column_int(stmt, 0);
+		snapshot->task_count = sqlite3_column_int(stmt, 0);
 	sqlite3_finalize(stmt);
 	return rc == SQLITE_ROW ? 0 : MORPH_ERR_DB;
 }
@@ -175,7 +175,8 @@ static int snapshot_changes(struct db *db, int64_t session_id, int limit,
 	return error ? error : rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
 }
 
-static int snapshot_profile(struct db *db, int64_t session_id, struct memory_snapshot *snapshot)
+static int snapshot_user_summary(struct db *db, int64_t session_id,
+				 struct memory_snapshot *snapshot)
 {
 	sqlite3_stmt *stmt = NULL;
 	int error = 0;
@@ -188,7 +189,7 @@ static int snapshot_profile(struct db *db, int64_t session_id, struct memory_sna
 	sqlite3_bind_int64(stmt, 1, session_id);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW)
-		snapshot->profile = snapshot_text(stmt, 0, &error);
+		snapshot->user_summary = snapshot_text(stmt, 0, &error);
 	sqlite3_finalize(stmt);
 	return error ? error : rc == SQLITE_ROW || rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
 }
@@ -207,8 +208,8 @@ void memory_snapshot_cleanup(struct memory_snapshot *snapshot)
 		struct memory_rule_record *record = morph_array_borrow(&snapshot->rules, i);
 		free(record->text);
 	}
-	for (size_t i = 0; i < snapshot->episodes.nelts; i++) {
-		struct memory_episode_record *record = morph_array_borrow(&snapshot->episodes, i);
+	for (size_t i = 0; i < snapshot->tasks.nelts; i++) {
+		struct memory_task_record *record = morph_array_borrow(&snapshot->tasks, i);
 		free(record->summary);
 		free(record->decisions);
 		free(record->artifacts);
@@ -220,10 +221,10 @@ void memory_snapshot_cleanup(struct memory_snapshot *snapshot)
 		free(record->old_value);
 		free(record->new_value);
 	}
-	free(snapshot->profile);
+	free(snapshot->user_summary);
 	morph_array_cleanup(&snapshot->facts);
 	morph_array_cleanup(&snapshot->rules);
-	morph_array_cleanup(&snapshot->episodes);
+	morph_array_cleanup(&snapshot->tasks);
 	morph_array_cleanup(&snapshot->changes);
 	memset(snapshot, 0, sizeof(*snapshot));
 }
@@ -241,32 +242,32 @@ int memory_snapshot_read(struct db *db, int64_t session_id,
 	struct memory_snapshot value MORPH_CLEANUP(memory_snapshot_cleanup) = {0};
 	struct memory_fact_record fact;
 	struct memory_rule_record rule;
-	struct memory_episode_record episode;
+	struct memory_task_record task;
 	struct memory_change_record change;
 	int rc;
 
 	if (!db || !db->handle || !options || !out)
 		return -EINVAL;
-	if (out->profile || out->facts.elts || out->rules.elts || out->episodes.elts ||
+	if (out->user_summary || out->facts.elts || out->rules.elts || out->tasks.elts ||
 	    out->changes.elts)
 		return -EEXIST;
 	rc = morph_array_init(&value.facts, 8, sizeof(fact));
 	if (rc == 0)
 		rc = morph_array_init(&value.rules, 8, sizeof(rule));
 	if (rc == 0)
-		rc = morph_array_init(&value.episodes, 8, sizeof(episode));
+		rc = morph_array_init(&value.tasks, 8, sizeof(task));
 	if (rc == 0)
 		rc = morph_array_init(&value.changes, 8, sizeof(change));
 	if (rc == 0 && options->facts_limit)
 		rc = snapshot_facts(db, session_id, options, &value);
 	if (rc == 0 && options->include_rules)
 		rc = snapshot_rules(db, session_id, &value);
-	if (rc == 0 && options->episodes_limit)
-		rc = snapshot_episodes(db, session_id, options->episodes_limit, &value);
+	if (rc == 0 && options->tasks_limit)
+		rc = snapshot_tasks(db, session_id, options->tasks_limit, &value);
 	if (rc == 0 && options->changes_limit)
 		rc = snapshot_changes(db, session_id, options->changes_limit, &value);
-	if (rc == 0 && options->include_profile)
-		rc = snapshot_profile(db, session_id, &value);
+	if (rc == 0 && options->include_user_summary)
+		rc = snapshot_user_summary(db, session_id, &value);
 	if (rc == 0)
 		memory_snapshot_move(out, &value);
 	return rc;

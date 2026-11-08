@@ -201,10 +201,8 @@ TEST_F(AgentTurnTest, BeginLoadsHistoryAndFinishPersistsTurn)
 	runtime.db = &db;
 	runtime.session_id = sess.id;
 	runtime.react = react;
-	runtime.flags = AGENT_TURN_DEFAULT_FLAGS &
-		~AGENT_TURN_CONSOLIDATE_MEMORY &
-		~AGENT_TURN_ASYNC_MEMORY &
-		~AGENT_TURN_BUILD_MEMORY_CONTEXT;
+	runtime.flags = AGENT_TURN_DEFAULT_FLAGS & ~AGENT_TURN_SAVE_MEMORY &
+			~AGENT_TURN_ASYNC_MEMORY & ~AGENT_TURN_PREPARE_MEMORY_REPLY;
 
 	struct agent_turn_input input;
 	memset(&input, 0, sizeof(input));
@@ -285,11 +283,9 @@ TEST_F(AgentTurnTest, AssistantFailureKeepsPreModelUserCheckpoint)
 	runtime.db = &db;
 	runtime.session_id = sess.id;
 	runtime.react = react;
-	runtime.flags = AGENT_TURN_DEFAULT_FLAGS &
-		~AGENT_TURN_SAVE_TRACE &
-		~AGENT_TURN_CONSOLIDATE_MEMORY &
-		~AGENT_TURN_ASYNC_MEMORY &
-		~AGENT_TURN_BUILD_MEMORY_CONTEXT;
+	runtime.flags = AGENT_TURN_DEFAULT_FLAGS & ~AGENT_TURN_SAVE_TRACE &
+			~AGENT_TURN_SAVE_MEMORY & ~AGENT_TURN_ASYNC_MEMORY &
+			~AGENT_TURN_PREPARE_MEMORY_REPLY;
 
 	struct agent_turn_input input;
 	memset(&input, 0, sizeof(input));
@@ -329,9 +325,8 @@ TEST_F(AgentTurnTest, FinishDoesNotConsolidateMemoryForAbortedTurn)
 	runtime.db = &db;
 	runtime.session_id = sess.id;
 	runtime.react = react;
-	runtime.flags = AGENT_TURN_DEFAULT_FLAGS &
-		~AGENT_TURN_ASYNC_MEMORY &
-		~AGENT_TURN_BUILD_MEMORY_CONTEXT;
+	runtime.flags = AGENT_TURN_DEFAULT_FLAGS & ~AGENT_TURN_ASYNC_MEMORY &
+			~AGENT_TURN_PREPARE_MEMORY_REPLY;
 
 	struct agent_turn_input input;
 	memset(&input, 0, sizeof(input));
@@ -416,11 +411,9 @@ TEST_F(AgentTurnTest, FailedTurnKeepsUserWithoutPoisoningNextTurn)
 	runtime.db = &db;
 	runtime.session_id = sess.id;
 	runtime.react = react;
-	runtime.flags = AGENT_TURN_DEFAULT_FLAGS &
-		~AGENT_TURN_SAVE_TRACE &
-		~AGENT_TURN_CONSOLIDATE_MEMORY &
-		~AGENT_TURN_ASYNC_MEMORY &
-		~AGENT_TURN_BUILD_MEMORY_CONTEXT;
+	runtime.flags = AGENT_TURN_DEFAULT_FLAGS & ~AGENT_TURN_SAVE_TRACE &
+			~AGENT_TURN_SAVE_MEMORY & ~AGENT_TURN_ASYNC_MEMORY &
+			~AGENT_TURN_PREPARE_MEMORY_REPLY;
 	failed_input.model_input = "run malformed tool";
 	failed_input.turn_id = "turn_failed";
 	ASSERT_EQ(agent_turn_begin(&failed_turn, &runtime, &failed_input), 0);
@@ -551,11 +544,9 @@ TEST_F(AgentTurnTest, MissingConfigurationKeepsCompleteToolHistory)
 	runtime.db = &db;
 	runtime.session_id = sess.id;
 	runtime.react = react;
-	runtime.flags = AGENT_TURN_DEFAULT_FLAGS &
-		~AGENT_TURN_SAVE_TRACE &
-		~AGENT_TURN_CONSOLIDATE_MEMORY &
-		~AGENT_TURN_ASYNC_MEMORY &
-		~AGENT_TURN_BUILD_MEMORY_CONTEXT;
+	runtime.flags = AGENT_TURN_DEFAULT_FLAGS & ~AGENT_TURN_SAVE_TRACE &
+			~AGENT_TURN_SAVE_MEMORY & ~AGENT_TURN_ASYNC_MEMORY &
+			~AGENT_TURN_PREPARE_MEMORY_REPLY;
 	input.model_input = "generate an image";
 	input.turn_id = "turn_missing_key";
 	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
@@ -616,11 +607,9 @@ TEST_F(AgentTurnTest, BeginCompactsBeforePersistingCurrentUser)
 	runtime.db = &db;
 	runtime.session_id = sess.id;
 	runtime.react = react;
-	runtime.flags = AGENT_TURN_DEFAULT_FLAGS &
-		~AGENT_TURN_SAVE_TRACE &
-		~AGENT_TURN_CONSOLIDATE_MEMORY &
-		~AGENT_TURN_ASYNC_MEMORY &
-		~AGENT_TURN_BUILD_MEMORY_CONTEXT;
+	runtime.flags = AGENT_TURN_DEFAULT_FLAGS & ~AGENT_TURN_SAVE_TRACE &
+			~AGENT_TURN_SAVE_MEMORY & ~AGENT_TURN_ASYNC_MEMORY &
+			~AGENT_TURN_PREPARE_MEMORY_REPLY;
 	struct agent_turn_input input = {};
 	input.model_input = "current exact request";
 	input.turn_id = "turn_current";
@@ -733,11 +722,11 @@ TEST_F(AgentTurnTest, InTurnCompactionPreservesHistoryWhenSummaryFails)
 	model_history_free_list(items);
 }
 
-TEST_F(AgentTurnTest, PreferenceIsSavedBeforeModelAndSurvivesCancellation)
+TEST_F(AgentTurnTest, InputPreparationLeavesPreferenceInterpretationToTheModel)
 {
 	struct memory_options options = {};
 	options.enabled = 1;
-	options.hot_path_enabled = 1;
+	options.capture_input_enabled = 1;
 	struct agent_session_runtime runtime = {};
 	runtime.db = &db;
 	runtime.session_id = sess.id;
@@ -748,14 +737,14 @@ TEST_F(AgentTurnTest, PreferenceIsSavedBeforeModelAndSurvivesCancellation)
 	input.turn_id = "preference-turn";
 	struct agent_turn turn;
 	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
-	ASSERT_NE(react->memory_context, nullptr);
-	EXPECT_NE(strstr(react->memory_context, "response.language: Chinese"), nullptr);
+	ASSERT_NE(react->memory_reply_text, nullptr);
+	EXPECT_NE(strstr(react->memory_reply_text, "memory_preference"), nullptr);
 	react->state = REACT_STATE_ABORT;
 	react->outcome = REACT_OUTCOME_CANCELLED;
 	ASSERT_EQ(agent_turn_finish(&turn, nullptr), 0);
 	char *effective = preference_render_copy(&db, sess.id, 0);
 	ASSERT_NE(effective, nullptr);
-	EXPECT_NE(strstr(effective, "Chinese"), nullptr);
+	EXPECT_STREQ(effective, "");
 	free(effective);
 }
 

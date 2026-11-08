@@ -2,6 +2,7 @@
 #include "util/cleanup.h"
 
 #include "persistence/memory_snapshot.h"
+#include "persistence/memory_search.h"
 #include "session.h"
 #include "util/buf.h"
 #include "util/error.h"
@@ -24,35 +25,40 @@ static int memory_query_append_type(struct db *db, int64_t session_id,
 	struct memory_snapshot snapshot MORPH_CLEANUP(memory_snapshot_cleanup) = {0};
 	struct memory_fact_record *fact;
 	struct memory_rule_record *rule;
-	struct memory_episode_record *episode;
+	struct memory_task_record *task;
 	struct memory_change_record *change;
 	int rc;
 
 	switch (options->type) {
-	case MEMORY_QUERY_PROFILE:
-		read.include_profile = 1;
+	case MEMORY_QUERY_USER_SUMMARY:
+		read.include_user_summary = 1;
 		break;
 	case MEMORY_QUERY_FACTS:
 		read.facts_limit = -1;
 		break;
-	case MEMORY_QUERY_PROCEDURES:
+	case MEMORY_QUERY_UNAPPLIED_RULES:
 		read.include_rules = 1;
 		break;
-	case MEMORY_QUERY_EPISODES:
-		read.episodes_limit = options->max_episodes > 0 ? options->max_episodes : -1;
+	case MEMORY_QUERY_TASKS:
+		read.tasks_limit = options->max_past_tasks > 0 ? options->max_past_tasks : -1;
 		break;
 	case MEMORY_QUERY_CHANGES:
 		read.changes_limit = -1;
 		break;
 	case MEMORY_QUERY_ALL:
 	case MEMORY_QUERY_PREFERENCES:
+	case MEMORY_QUERY_TIPS:
+	case MEMORY_QUERY_NOTES:
+	case MEMORY_QUERY_SUMMARY:
+	case MEMORY_QUERY_UNAPPLIED_SETTINGS:
+	case MEMORY_QUERY_LEARNED_FACTS:
 		return 0;
 	}
 	rc = memory_snapshot_read(db, session_id, &read, &snapshot);
 	if (rc != 0)
 		return rc;
-	if (snapshot.profile && snapshot.profile[0])
-		rc = morph_buf_printf(buf, "profile\n%s\n", snapshot.profile);
+	if (snapshot.user_summary && snapshot.user_summary[0])
+		rc = morph_buf_printf(buf, "profile\n%s\n", snapshot.user_summary);
 	if (snapshot.facts.nelts && rc == 0)
 		rc = morph_buf_puts(buf, "facts\n");
 	morph_array_foreach (fact, &snapshot.facts, struct memory_fact_record) {
@@ -66,7 +72,7 @@ static int memory_query_append_type(struct db *db, int64_t session_id,
 				      fact->importance, fact->key, fact->value);
 	}
 	if (snapshot.rules.nelts && rc == 0)
-		rc = morph_buf_puts(buf, "procedures\n");
+		rc = morph_buf_puts(buf, "Unapplied rules\n");
 	morph_array_foreach (rule, &snapshot.rules, struct memory_rule_record) {
 		if (rc != 0)
 			break;
@@ -74,17 +80,17 @@ static int memory_query_append_type(struct db *db, int64_t session_id,
 			rc = morph_buf_printf(buf, "- %s (evidence=%d)\n", rule->text,
 					      rule->evidence);
 	}
-	if (snapshot.episodes.nelts && rc == 0)
-		rc = morph_buf_puts(buf, "episodes\n");
-	morph_array_foreach (episode, &snapshot.episodes, struct memory_episode_record) {
+	if (snapshot.tasks.nelts && rc == 0)
+		rc = morph_buf_puts(buf, "Past tasks\n");
+	morph_array_foreach (task, &snapshot.tasks, struct memory_task_record) {
 		if (rc != 0)
 			break;
-		if (!episode->summary)
+		if (!task->summary)
 			continue;
-		rc = morph_buf_printf(buf, "- [imp=%.2f t=%lld] %s\n", episode->importance,
-				      (long long)episode->created_at, episode->summary);
-		if (rc == 0 && episode->tools && episode->tools[0])
-			rc = morph_buf_printf(buf, "  tools: %s\n", episode->tools);
+		rc = morph_buf_printf(buf, "- [imp=%.2f t=%lld] %s\n", task->importance,
+				      (long long)task->created_at, task->summary);
+		if (rc == 0 && task->tools && task->tools[0])
+			rc = morph_buf_printf(buf, "  tools: %s\n", task->tools);
 	}
 	if (snapshot.changes.nelts && rc == 0)
 		rc = morph_buf_puts(buf, "changes\n");
@@ -139,9 +145,8 @@ static int memory_query_append_one_session(struct db *db, const struct session *
 		return rc;
 
 	before = buf->len;
-	if (opts->type == MEMORY_QUERY_PREFERENCES || opts->type == MEMORY_QUERY_PROFILE ||
-	    opts->type == MEMORY_QUERY_FACTS ||
-	    opts->type == MEMORY_QUERY_CHANGES) {
+	if (opts->type == MEMORY_QUERY_PREFERENCES || opts->type == MEMORY_QUERY_USER_SUMMARY ||
+	    opts->type == MEMORY_QUERY_FACTS || opts->type == MEMORY_QUERY_CHANGES) {
 		char *preferences =
 			preference_render_copy(db, s->id, opts->type == MEMORY_QUERY_CHANGES);
 
@@ -154,7 +159,7 @@ static int memory_query_append_one_session(struct db *db, const struct session *
 			return rc;
 	}
 	if (opts->type == MEMORY_QUERY_ALL) {
-		rendered = memory_session_text_create(db, s->id, opts->max_episodes);
+		rendered = memory_session_text_create(db, s->id, opts->max_past_tasks);
 		if (!rendered)
 			return -ENOMEM;
 		rc = morph_buf_puts(buf, rendered);
@@ -218,6 +223,57 @@ static int memory_query_append_current_session(struct db *db, int64_t current_se
 	return 0;
 }
 
+static int memory_query_search(struct db *db, int64_t session_id,
+			       const struct memory_query_options *opts, morph_buf_t *buf)
+{
+	struct memory_search_result matches MORPH_CLEANUP(memory_search_result_cleanup) = {0};
+	const char *kind = opts->type == MEMORY_QUERY_FACTS		   ? "facts"
+			   : opts->type == MEMORY_QUERY_TASKS		   ? "past_tasks"
+			   : opts->type == MEMORY_QUERY_TIPS		   ? "tips"
+			   : opts->type == MEMORY_QUERY_NOTES		   ? "notes"
+			   : opts->type == MEMORY_QUERY_SUMMARY		   ? "summary"
+			   : opts->type == MEMORY_QUERY_LEARNED_FACTS	   ? "learned_facts"
+			   : opts->type == MEMORY_QUERY_UNAPPLIED_SETTINGS ? "unapplied_settings"
+			   : opts->type == MEMORY_QUERY_UNAPPLIED_RULES	   ? "unapplied_rules"
+									   : NULL;
+	struct memory_search_options options = {
+		.query = opts->query,
+		.record_id = opts->record_id,
+		.kind = kind,
+		.project = opts->scope_project,
+		.all = opts->scope_all,
+		.visible_fn = opts->visible_fn,
+		.user_id = opts->user_id,
+		.visible_data = opts->visible_user_data,
+		.limit = opts->record_id		    ? 0
+			 : opts->max_results > 0	    ? opts->max_results
+			 : opts->type == MEMORY_QUERY_TASKS ? opts->max_past_tasks
+							    : 0,
+	};
+	struct memory_record *record;
+	int rc = memory_search_records(db, session_id, &options, &matches);
+
+	if (rc != 0)
+		return rc;
+	rc = morph_buf_puts(buf, "Memory search (learned facts are inferred; "
+				 "explicit preferences remain authoritative)\n");
+	morph_array_foreach (record, &matches.records, struct memory_record) {
+		if (rc != 0)
+			return rc;
+		rc = morph_buf_printf(
+			buf,
+			"[%s#%lld session=%s time=%lld score=%d version=%lld] %s: %s\n"
+			"Source: %s\nDetails: %s\n\n",
+			record->kind, (long long)record->id, record->session,
+			(long long)record->updated_at, record->score,
+			(long long)record->memory_version, record->key, record->value,
+			record->source, record->details);
+	}
+	if (rc == 0 && !matches.records.nelts)
+		rc = morph_buf_puts(buf, "No matching memories.\n");
+	return rc;
+}
+
 char *memory_query_text_create(struct db *db, int64_t current_session_id,
 			       const struct memory_query_options *opts)
 {
@@ -232,7 +288,14 @@ char *memory_query_text_create(struct db *db, int64_t current_session_id,
 		local_opts = *opts;
 	if (morph_buf_init(&buf, MEMORY_STORE_APPEND_INIT_CAP) != 0)
 		return NULL;
-	if (local_opts.scope_all)
+	if ((local_opts.query || local_opts.scope_project || local_opts.record_id ||
+	     local_opts.max_results || local_opts.type == MEMORY_QUERY_TIPS ||
+	     local_opts.type == MEMORY_QUERY_NOTES || local_opts.type == MEMORY_QUERY_SUMMARY ||
+	     local_opts.type == MEMORY_QUERY_LEARNED_FACTS ||
+	     local_opts.type == MEMORY_QUERY_UNAPPLIED_SETTINGS) &&
+	    local_opts.type != MEMORY_QUERY_PREFERENCES)
+		rc = memory_query_search(db, current_session_id, &local_opts, &buf);
+	else if (local_opts.scope_all)
 		rc = memory_query_append_all_sessions(db, &local_opts, &buf);
 	else
 		rc = memory_query_append_current_session(db, current_session_id, &local_opts, &buf);

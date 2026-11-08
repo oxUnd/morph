@@ -6,6 +6,23 @@
 #include <stdlib.h>
 #include <string.h>
 
+char *utf8_casefold_copy(const char *text)
+{
+	utf8proc_uint8_t *mapped = NULL;
+
+	if (!text)
+		return NULL;
+	utf8proc_ssize_t length = utf8proc_map((const utf8proc_uint8_t *)text, 0, &mapped,
+					       UTF8PROC_NULLTERM | UTF8PROC_STABLE |
+						       UTF8PROC_CASEFOLD | UTF8PROC_COMPOSE);
+
+	if (length < 0) {
+		free(mapped);
+		return NULL;
+	}
+	return (char *)mapped;
+}
+
 /* Bound every iterator call, including non-terminated source chunks. */
 static utf8proc_ssize_t utf8_iterate_bytes(const char *s, size_t len,
 					utf8proc_int32_t *cp)

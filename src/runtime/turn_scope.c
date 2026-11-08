@@ -20,13 +20,13 @@ struct memory_options runtime_memory_options_from_config(const struct config *co
 	if (!config)
 		return opts;
 	opts.enabled = config->memory.enabled;
-	opts.hot_path_enabled = config->memory.hot_path_enabled;
-	opts.cold_path_enabled = config->memory.cold_path_enabled;
-	opts.llm_extract_enabled = config->memory.llm_extract_enabled;
+	opts.capture_input_enabled = config->memory.capture_input_enabled;
+	opts.save_tasks_enabled = config->memory.save_tasks_enabled;
+	opts.learn_from_chats_enabled = config->memory.learn_from_chats_enabled;
 	opts.max_facts = config->memory.max_facts;
-	opts.max_episodes = config->memory.max_episodes;
-	opts.max_procedures = config->memory.max_procedures;
-	opts.max_context_chars = config->memory.max_context_chars;
+	opts.max_past_tasks = config->memory.max_past_tasks;
+	opts.max_tips = config->memory.max_tips;
+	opts.max_reply_chars = config->memory.max_reply_chars;
 	return opts;
 }
 

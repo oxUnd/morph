@@ -80,7 +80,8 @@ def terminal_environment(directory, extra=None):
 
 class Terminal:
     def __init__(self, driver, directory, port, extra_env=None, memory_enabled=False,
-                 hooks_enabled=True, production=False, extra_config='', extra_arguments=()):
+                 hooks_enabled=True, production=False, extra_config='', extra_arguments=(),
+                 memory_save_tasks=False):
         config = directory / 'config.toml'
         config.write_text(f'''[general]
 output_dir = "{directory}/output"
@@ -88,8 +89,8 @@ output_dir = "{directory}/output"
 hooks = {str(hooks_enabled).lower()}
 [memory]
 enabled = {str(memory_enabled).lower()}
-llm_extract_enabled = false
-cold_path_enabled = false
+learn_from_chats_enabled = false
+save_tasks_enabled = {str(memory_save_tasks).lower()}
 [model.text]
 provider = "openai"
 model = "pty-test"

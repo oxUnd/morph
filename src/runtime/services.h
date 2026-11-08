@@ -95,7 +95,9 @@ char *runtime_preferences_render_copy(struct runtime *runtime, int history);
 int runtime_preference_set(struct runtime *runtime, const char *scope,
 			   const char *key, const char *value);
 
-char *runtime_memory_render_current_copy(struct runtime *runtime, int max_episodes);
+char *runtime_memory_render_current_copy(struct runtime *runtime, int max_past_tasks);
+int runtime_memory_report_copy(struct runtime *runtime, const char *query, cJSON **out);
+int runtime_memory_retry_current(struct runtime *runtime);
 int runtime_memory_clear_current(struct runtime *runtime,
 				 enum memory_clear_scope scope);
 

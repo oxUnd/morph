@@ -26,32 +26,48 @@ int memory_store_clear_all(struct db *db, int64_t session_id)
 	rc = memory_store_clear_facts(db, session_id);
 	if (rc != 0)
 		return rc;
-	rc = memory_store_clear_episodes(db, session_id);
+	rc = memory_store_clear_tasks(db, session_id);
 	if (rc != 0)
 		return rc;
-	return memory_store_clear_procedures(db, session_id);
+	return memory_store_clear_tips(db, session_id);
 }
 
 int memory_store_clear_facts(struct db *db, int64_t session_id)
 {
-	int rc;
+	int rc = memory_store_exec_delete(db, "DELETE FROM memory_notes WHERE session_id=?",
+					  session_id);
 
+	if (rc != 0)
+		return rc;
 	rc = memory_store_exec_delete(db, "DELETE FROM memory_profiles WHERE session_id=?",
 				      session_id);
 	if (rc != 0)
 		return rc;
-	return memory_store_exec_delete(db, "DELETE FROM memory_facts WHERE session_id=?",
-					session_id);
+	rc = memory_store_exec_delete(db, "DELETE FROM memory_facts WHERE session_id=?",
+				      session_id);
+	if (rc != 0)
+		return rc;
+	return memory_store_exec_delete(
+		db,
+		"DELETE FROM memory_candidates WHERE session_id=? "
+		"AND kind NOT IN ('tip','lesson','rule','preference','legacy')",
+		session_id);
 }
 
-int memory_store_clear_episodes(struct db *db, int64_t session_id)
+int memory_store_clear_tasks(struct db *db, int64_t session_id)
 {
 	return memory_store_exec_delete(db, "DELETE FROM memory_episodes WHERE session_id=?",
 					session_id);
 }
 
-int memory_store_clear_procedures(struct db *db, int64_t session_id)
+int memory_store_clear_tips(struct db *db, int64_t session_id)
 {
-	return memory_store_exec_delete(db, "DELETE FROM memory_procedures WHERE session_id=?",
+	int rc = memory_store_exec_delete(db, "DELETE FROM memory_procedures WHERE session_id=?",
+					  session_id);
+	if (rc != 0)
+		return rc;
+	return memory_store_exec_delete(db,
+					"DELETE FROM memory_candidates WHERE session_id=? AND kind "
+					"IN ('tip','lesson','rule')",
 					session_id);
 }

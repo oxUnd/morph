@@ -11,6 +11,8 @@
 #include "util/utf8.h"
 #include "agent/tokenizer.h"
 #include "persistence/memory_repository.h"
+#include "persistence/memory_summary_store.h"
+#include "persistence/memory_search.h"
 #include <cstdio>
 #include <cstring>
 #include <unistd.h>
@@ -104,9 +106,9 @@ TEST_F(RuntimeQueryTest, PreferenceQueryRecoversWholeValuesOmittedByContextBudge
 				 "Explicit request", "input"), 0);
 	struct memory_options opts = {};
 	opts.enabled = 1;
-	opts.max_context_chars = 512;
+	opts.max_reply_chars = 512;
 	char *context MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
-	ASSERT_EQ(memory_context_create(&db, session.id, "hello", &opts, &context), 0);
+	ASSERT_EQ(memory_reply_text_create(&db, session.id, "hello", &opts, &context), 0);
 	ASSERT_NE(context, nullptr);
 	EXPECT_EQ(strstr(context, "custom.rule"), nullptr);
 	EXPECT_NE(strstr(context, "omitted records"), nullptr);
@@ -121,7 +123,7 @@ TEST_F(RuntimeQueryTest, PreferenceQueryRecoversWholeValuesOmittedByContextBudge
 	EXPECT_NE(strstr(text->valuestring, value.c_str()), nullptr);
 }
 
-TEST_F(RuntimeQueryTest, LongUnicodeEpisodeCanBeRecoveredInBoundedUtf8Pages)
+TEST_F(RuntimeQueryTest, LongUnicodePastTaskCanBeRecoveredInBoundedUtf8Pages)
 {
 	struct session session;
 	ASSERT_EQ(session_create(&db, "episode-recovery", "mock", &session), 0);
@@ -141,12 +143,13 @@ TEST_F(RuntimeQueryTest, LongUnicodeEpisodeCanBeRecoveredInBoundedUtf8Pages)
 	step.tool_name = const_cast<char *>(tool_name.c_str());
 	struct memory_options options = {};
 	options.enabled = 1;
-	options.cold_path_enabled = 1;
-	options.max_context_chars = 400;
-	ASSERT_EQ(memory_consolidate_turn(&db, session.id, request.c_str(), answer.c_str(),
-					 &step, 1, &options), 0);
+	options.save_tasks_enabled = 1;
+	options.max_reply_chars = 400;
+	ASSERT_EQ(memory_save_turn(&db, session.id, request.c_str(), answer.c_str(), &step, 1,
+				   &options),
+		  0);
 	char *context MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
-	ASSERT_EQ(memory_context_create(&db, session.id, "previous", &options, &context), 0);
+	ASSERT_EQ(memory_reply_text_create(&db, session.id, "previous", &options, &context), 0);
 	ASSERT_NE(context, nullptr);
 	EXPECT_EQ(strstr(context, "REQUEST_TAIL_MARKER"), nullptr);
 	EXPECT_NE(strstr(context, "omitted records"), nullptr);
@@ -264,19 +267,22 @@ TEST_F(RuntimeQueryTest, MemoryQueriesSessionAndType)
 	SetRuntime(s);
 	memset(&opts, 0, sizeof(opts));
 	opts.enabled = 1;
-	opts.hot_path_enabled = 1;
-	opts.cold_path_enabled = 1;
+	opts.capture_input_enabled = 1;
+	opts.save_tasks_enabled = 1;
 	action.type = REACT_STEP_ACTION;
 	action.tool_name = const_cast<char *>("file_read");
 
 	ASSERT_EQ(memory_accept_input(&db, s.id, "My name is Alice.", "input", &opts), 0);
-	ASSERT_EQ(memory_consolidate_turn(
-			  &db, s.id,
-			  "Please always reply in Chinese and be concise.",
-			  "好的，我之后会用中文简洁回答。",
-			  &action, 1, &opts),
+	ASSERT_EQ(memory_save_turn(&db, s.id, "Please always reply in Chinese and be concise.",
+				   "好的，我之后会用中文简洁回答。", &action, 1, &opts),
 		  0);
 
+	ASSERT_EQ(preference_set(&db, s.id, "personal", "response.language", "Chinese", "explicit",
+				 "pref"),
+		  0);
+	ASSERT_EQ(memory_store_upsert_fact(&db, s.id, "goal", "Check project", "explicit",
+					   "project", .5),
+		  0);
 	tool_result_init(&result);
 	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "memory",
@@ -309,16 +315,13 @@ TEST_F(RuntimeQueryTest, MemoryAllScopeIncludesMultipleSessions)
 	SetRuntime(first);
 	memset(&opts, 0, sizeof(opts));
 	opts.enabled = 1;
-	opts.hot_path_enabled = 1;
-	opts.cold_path_enabled = 1;
+	opts.capture_input_enabled = 1;
+	opts.save_tasks_enabled = 1;
 
-	ASSERT_EQ(memory_consolidate_turn(&db, first.id,
-					  "Call me Ada.",
-					  "Okay, Ada.", nullptr, 1, &opts),
+	ASSERT_EQ(memory_save_turn(&db, first.id, "Call me Ada.", "Okay, Ada.", nullptr, 1, &opts),
 		  0);
-	ASSERT_EQ(memory_consolidate_turn(&db, second.id,
-					  "Call me Grace.",
-					  "Okay, Grace.", nullptr, 1, &opts),
+	ASSERT_EQ(memory_save_turn(&db, second.id, "Call me Grace.", "Okay, Grace.", nullptr, 1,
+				   &opts),
 		  0);
 
 	tool_result_init(&result);
@@ -353,7 +356,7 @@ TEST_F(RuntimeQueryTest, MemoryAllScopeIncludesMultipleSessions)
 	tool_result_cleanup(&result);
 }
 
-TEST_F(RuntimeQueryTest, MemoryUsesConfiguredEpisodeLimitByDefault)
+TEST_F(RuntimeQueryTest, MemoryUsesConfiguredPastTaskLimitByDefault)
 {
 	struct session s;
 	struct tool_result result;
@@ -366,7 +369,7 @@ TEST_F(RuntimeQueryTest, MemoryUsesConfiguredEpisodeLimitByDefault)
 		  0);
 	ASSERT_EQ(session_ensure_display_id(&db, &s), 0);
 	SetRuntime(s);
-	cfg.memory.max_episodes = 2;
+	cfg.memory.max_past_tasks = 2;
 
 	ASSERT_EQ(sqlite3_prepare_v2(db.handle, sql, -1, &stmt, nullptr),
 		  SQLITE_OK);
@@ -463,38 +466,21 @@ TEST_F(RuntimeQueryTest, ExplicitPreferenceToolReplacesGenericPreferenceAndRejec
 	free(effective);
 }
 
-TEST_F(RuntimeQueryTest, PreferenceToolCannotPromoteComplaintOrTemporaryRequest)
+TEST_F(RuntimeQueryTest, InputPreparationDoesNotPromoteComplaintOrTemporaryRequest)
 {
 	struct session session;
 	ASSERT_EQ(session_create(&db, "no-inference", "mock", &session), 0);
 	ASSERT_EQ(preference_bind(&db, session.id, "local", "/project"), 0);
-	cfg.memory.enabled = 1;
-	SetRuntime(session);
-	for (const char *text : {"Why do you always use English?", "这次用英文回答"}) {
-		struct model_history_insert input = {};
-		input.session_id = session.id;
-		input.kind = "user_message";
-		input.role = "user";
-		input.active = 1;
-		input.content = text;
-		ASSERT_EQ(model_history_add(&db, &input, nullptr), 0);
-		cJSON *args = cJSON_CreateObject();
-		cJSON_AddStringToObject(args, "key", "language");
-		cJSON_AddStringToObject(args, "value", "English");
-		cJSON_AddStringToObject(args, "scope", "personal");
-		cJSON_AddStringToObject(args, "evidence", text);
-		char *json = cJSON_PrintUnformatted(args);
-		struct tool_result result;
-		tool_result_init(&result);
-		result.runtime = &rt;
-		EXPECT_LT(tool_exec(&tools, "memory_preference", json, &result), 0);
-		tool_result_cleanup(&result);
-		free(json);
-		cJSON_Delete(args);
-		char *effective = preference_render_copy(&db, session.id, 0);
+	struct memory_options options = {};
+	options.enabled = 1;
+	options.capture_input_enabled = 1;
+	for (const char *text : {"Why do you always use English?", "这次用英文回答",
+				 "¿Por qué siempre respondes en inglés?"}) {
+		ASSERT_EQ(memory_accept_input(&db, session.id, text, text, &options), 0);
+		char *effective MORPH_CLEANUP(morph_charp_cleanup) =
+			preference_render_copy(&db, session.id, 0);
 		ASSERT_NE(effective, nullptr);
 		EXPECT_STREQ(effective, "");
-		free(effective);
 	}
 }
 
@@ -515,8 +501,11 @@ TEST_F(RuntimeQueryTest, ExtractionOfSameInputCannotContradictCommittedLanguage)
 	ASSERT_EQ(model_history_add(&db, &input, nullptr), 0);
 	struct memory_options options = {};
 	options.enabled = 1;
-	options.hot_path_enabled = 1;
+	options.capture_input_enabled = 1;
 	ASSERT_EQ(memory_accept_input(&db, session.id, input.content, input.turn_id, &options), 0);
+	ASSERT_EQ(preference_set(&db, session.id, "personal", "response.language", "Chinese",
+				 input.content, "history:1"),
+		  0);
 	struct tool_result result;
 	tool_result_init(&result);
 	result.runtime = &rt;
@@ -532,4 +521,250 @@ TEST_F(RuntimeQueryTest, ExtractionOfSameInputCannotContradictCommittedLanguage)
 	EXPECT_NE(strstr(effective, "Chinese"), nullptr);
 	EXPECT_EQ(strstr(effective, "English"), nullptr);
 	free(effective);
+}
+
+TEST_F(RuntimeQueryTest, ProjectSearchRecallsDerivedKnowledgeWithSourcesAndReportsScope)
+{
+	struct session previous, current;
+	ASSERT_EQ(session_create(&db, "search-previous", "mock", &previous), 0);
+	ASSERT_EQ(session_create(&db, "search-current", "mock", &current), 0);
+	ASSERT_EQ(session_ensure_display_id(&db, &previous), 0);
+	ASSERT_EQ(session_ensure_display_id(&db, &current), 0);
+	ASSERT_EQ(preference_bind(&db, previous.id, "local", "/project"), 0);
+	ASSERT_EQ(preference_bind(&db, current.id, "local", "/project"), 0);
+	ASSERT_EQ(memory_store_add_note(&db, previous.id, "project", "composer_layout",
+					"Composer uses explicit insets", "Verified layout source"),
+		  0);
+	SetRuntime(current);
+	struct tool_result result;
+	tool_result_init(&result);
+	result.runtime = &rt;
+	ASSERT_EQ(tool_exec(&tools, "memory",
+			    "{\"type\":\"all\",\"scope\":\"project\","
+			    "\"query\":\"composer\"}",
+			    &result),
+		  0);
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(result.text.data);
+	ASSERT_NE(root, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(root, "scope")), "project");
+	const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));
+	ASSERT_NE(text, nullptr);
+	EXPECT_NE(strstr(text, "Composer uses explicit insets"), nullptr);
+	EXPECT_NE(strstr(text, "Verified layout source"), nullptr);
+	EXPECT_NE(strstr(text, previous.display_id), nullptr);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(RuntimeQueryTest, PlainTaskAndTipTypesWorkAlongsideOlderTypeNames)
+{
+	struct session session;
+	ASSERT_EQ(session_create(&db, "plain-memory-types", "mock", &session), 0);
+	ASSERT_EQ(session_ensure_display_id(&db, &session), 0);
+	ASSERT_EQ(preference_bind(&db, session.id, "local", "/project"), 0);
+	ASSERT_EQ(memory_store_add_note(&db, session.id, "tip", "composer_checks",
+					"Run composer tests", "Observed passing tests"),
+		  0);
+	SetRuntime(session);
+	struct tool_result result;
+	tool_result_init(&result);
+	result.runtime = &rt;
+	ASSERT_EQ(tool_exec(&tools, "memory", "{\"type\":\"tips\",\"scope\":\"session\"}", &result),
+		  0);
+	EXPECT_NE(strstr(result.text.data, "Run composer tests"), nullptr);
+	tool_result_cleanup(&result);
+	struct memory_options options = {};
+	options.enabled = 1;
+	options.save_tasks_enabled = 1;
+	ASSERT_EQ(memory_save_turn(&db, session.id, "Verify composer", "Checked", nullptr, 1,
+				   &options),
+		  0);
+	for (const char *type : {"past_tasks", "episodes"}) {
+		std::string args = std::string("{\"type\":\"") + type +
+				   "\",\"scope\":\"session\",\"max_past_tasks\":1}";
+		tool_result_init(&result);
+		result.runtime = &rt;
+		ASSERT_EQ(tool_exec(&tools, "memory", args.c_str(), &result), 0);
+		EXPECT_NE(strstr(result.text.data, "Verify composer"), nullptr);
+		tool_result_cleanup(&result);
+	}
+}
+
+static int memory_test_user(struct db *database, int64_t session_id, const char *text)
+{
+	struct model_history_insert input = {};
+	input.session_id = session_id;
+	input.kind = "user_message";
+	input.role = "user";
+	input.active = 1;
+	input.content = text;
+	return model_history_add(database, &input, nullptr);
+}
+
+TEST_F(RuntimeQueryTest, ModelCanSaveReadCorrectAndForgetProjectNotesWithVersionChecks)
+{
+	struct session origin, current;
+	ASSERT_EQ(session_create(&db, "note-origin", "mock", &origin), 0);
+	ASSERT_EQ(session_create(&db, "note-current", "mock", &current), 0);
+	ASSERT_EQ(preference_bind(&db, origin.id, "alice", "/project"), 0);
+	ASSERT_EQ(preference_bind(&db, current.id, "alice", "/project"), 0);
+	ASSERT_EQ(memory_note_save(&db, origin.id, "Staging", "Old account",
+				   "Original user request", "old", "project"),
+		  0);
+	cfg.memory.enabled = 1;
+	SetRuntime(current);
+	ASSERT_EQ(memory_test_user(&db, current.id, "Please correct the saved staging account."),
+		  0);
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&result);
+	result.runtime = &rt;
+	ASSERT_EQ(tool_exec(&tools, "memory",
+			    "{\"type\":\"notes\",\"scope\":\"project\",\"record_id\":1}", &result),
+		  0);
+	const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "text"));
+	ASSERT_NE(text, nullptr);
+	EXPECT_NE(strstr(text, "Old account"), nullptr);
+	EXPECT_NE(strstr(text, "version=0"), nullptr);
+	const char *replace =
+		"{\"action\":\"replace\",\"type\":\"notes\",\"scope\":\"project\","
+		"\"record_id\":1,\"expected_version\":0,\"expected_text\":\"Old account\","
+		"\"text\":\"New account\",\"evidence\":\"Please correct the saved staging "
+		"account.\"}";
+	ASSERT_EQ(tool_exec(&tools, "memory_update", replace, &result), 0);
+	EXPECT_LT(tool_exec(&tools, "memory_update", replace, &result), 0);
+	ASSERT_EQ(memory_test_user(&db, current.id, "Please forget the saved staging account."), 0);
+	ASSERT_EQ(
+		tool_exec(
+			&tools, "memory_update",
+			"{\"action\":\"delete\",\"type\":\"notes\",\"scope\":\"project\","
+			"\"record_id\":1,\"expected_version\":1,\"expected_text\":\"New account\","
+			"\"evidence\":\"Please forget the saved staging account.\"}",
+			&result),
+		0);
+	struct memory_search_result matches MORPH_CLEANUP(memory_search_result_cleanup) = {};
+	struct memory_search_options search = {};
+	search.kind = "notes";
+	search.project = 1;
+	ASSERT_EQ(memory_search_records(&db, current.id, &search, &matches), 0);
+	EXPECT_EQ(matches.records.nelts, 0u);
+}
+
+TEST_F(RuntimeQueryTest, ModelNoteSaveIsIdempotentAndRejectsOldOrInventedEvidence)
+{
+	struct session session;
+	ASSERT_EQ(session_create(&db, "note-save", "mock", &session), 0);
+	ASSERT_EQ(preference_bind(&db, session.id, "alice", "/project"), 0);
+	cfg.memory.enabled = 1;
+	SetRuntime(session);
+	ASSERT_EQ(memory_test_user(&db, session.id,
+				   "今後のために、ステージング環境が必要だと覚えてください。"),
+		  0);
+	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON_AddStringToObject(args, "action", "save");
+	cJSON_AddStringToObject(args, "title", "ステージング環境");
+	cJSON_AddStringToObject(args, "text", "Staging is required for integration tests");
+	cJSON_AddStringToObject(args, "evidence",
+				"今後のために、ステージング環境が必要だと覚えてください。");
+	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(args);
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&result);
+	result.runtime = &rt;
+	ASSERT_EQ(tool_exec(&tools, "memory_update", json, &result), 0);
+	ASSERT_EQ(tool_exec(&tools, "memory_update", json, &result), 0);
+	cJSON_SetValuestring(cJSON_GetObjectItem(args, "text"),
+			     "Conflicting interpretation of the same event");
+	char *conflict MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(args);
+	EXPECT_LT(tool_exec(&tools, "memory_update", conflict, &result), 0);
+	struct memory_search_result matches MORPH_CLEANUP(memory_search_result_cleanup) = {};
+	struct memory_search_options search = {};
+	search.kind = "notes";
+	ASSERT_EQ(memory_search_records(&db, session.id, &search, &matches), 0);
+	EXPECT_EQ(matches.records.nelts, 1u);
+	ASSERT_EQ(memory_test_user(&db, session.id, "Continue with the next task."), 0);
+	EXPECT_LT(tool_exec(&tools, "memory_update", json, &result), 0);
+}
+
+TEST_F(RuntimeQueryTest, ModelPreferencesSupportLanguagesBeyondEnglishAndChinese)
+{
+	struct session session;
+	ASSERT_EQ(session_create(&db, "multilingual-preference", "mock", &session), 0);
+	ASSERT_EQ(preference_bind(&db, session.id, "alice", "/project"), 0);
+	cfg.memory.enabled = 1;
+	SetRuntime(session);
+	const std::pair<const char *, const char *> cases[] = {
+		{"今後は日本語で回答してください。", "Japanese"},
+		{"A partir de ahora, responde siempre en español.", "Spanish"},
+		{"من الآن فصاعدًا أجب باللغة العربية دائمًا.", "Arabic"},
+	};
+	for (const auto &entry : cases) {
+		ASSERT_EQ(memory_test_user(&db, session.id, entry.first), 0);
+		cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		cJSON_AddStringToObject(args, "key", "response.language");
+		cJSON_AddStringToObject(args, "value", entry.second);
+		cJSON_AddStringToObject(args, "scope", "personal");
+		cJSON_AddStringToObject(args, "evidence", entry.first);
+		char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(args);
+		struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+		tool_result_init(&result);
+		result.runtime = &rt;
+		ASSERT_EQ(tool_exec(&tools, "memory_preference", json, &result), 0);
+		char *effective MORPH_CLEANUP(morph_charp_cleanup) =
+			preference_render_copy(&db, session.id, 0);
+		EXPECT_NE(strstr(effective, entry.second), nullptr);
+	}
+}
+
+TEST_F(RuntimeQueryTest, MemoryEditsCannotAccessAnotherProjectOrUser)
+{
+	struct session current, other;
+	ASSERT_EQ(session_create(&db, "edit-current", "mock", &current), 0);
+	ASSERT_EQ(session_create(&db, "edit-other", "mock", &other), 0);
+	ASSERT_EQ(preference_bind(&db, current.id, "alice", "/project"), 0);
+	ASSERT_EQ(preference_bind(&db, other.id, "bob", "/project"), 0);
+	ASSERT_EQ(memory_note_save(&db, other.id, "Private", "Other user's memory", "source",
+				   "note", "project"),
+		  0);
+	cfg.memory.enabled = 1;
+	SetRuntime(current);
+	ASSERT_EQ(memory_test_user(&db, current.id, "Forget that old saved note."), 0);
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&result);
+	result.runtime = &rt;
+	EXPECT_LT(tool_exec(&tools, "memory_update",
+			    "{\"action\":\"delete\",\"type\":\"notes\",\"record_id\":1,\"expected_"
+			    "version\":0,"
+			    "\"expected_text\":\"Other user's memory\",\"evidence\":\"Forget that "
+			    "old saved note.\"}",
+			    &result),
+		  0);
+}
+
+TEST_F(RuntimeQueryTest, SavedNotesRedactCredentialsInContentAndSource)
+{
+	struct session session;
+	ASSERT_EQ(session_create(&db, "redact-note", "mock", &session), 0);
+	ASSERT_EQ(preference_bind(&db, session.id, "alice", "/project"), 0);
+	cfg.memory.enabled = 1;
+	SetRuntime(session);
+	ASSERT_EQ(memory_test_user(&db, session.id,
+				   "Remember staging uses sk-test-do-not-store this key."),
+		  0);
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&result);
+	result.runtime = &rt;
+	ASSERT_EQ(
+		tool_exec(&tools, "memory_update",
+			  "{\"action\":\"save\",\"title\":\"Staging\","
+			  "\"text\":\"Staging uses sk-test-do-not-store this key.\","
+			  "\"evidence\":\"Remember staging uses sk-test-do-not-store this key.\"}",
+			  &result),
+		0);
+	struct memory_search_result matches MORPH_CLEANUP(memory_search_result_cleanup) = {};
+	struct memory_search_options search = {};
+	search.kind = "notes";
+	ASSERT_EQ(memory_search_records(&db, session.id, &search, &matches), 0);
+	ASSERT_EQ(matches.records.nelts, 1u);
+	auto *record = static_cast<struct memory_record *>(morph_array_borrow(&matches.records, 0));
+	EXPECT_EQ(strstr(record->value, "do-not-store"), nullptr);
+	EXPECT_EQ(strstr(record->source, "do-not-store"), nullptr);
+	EXPECT_NE(strstr(record->value, "[REDACTED]"), nullptr);
 }

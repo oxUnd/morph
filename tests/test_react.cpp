@@ -4627,7 +4627,7 @@ TEST_F(PromptModeTest, ReplaceRemovesDefaultsButPreservesContextAndTools)
 	ctx->system_prompt_replace = 1;
 	ctx->system_prompt = strdup("Answer as a specialist. Literal %s %d.");
 	ctx->workdir = strdup("/tmp");
-	ASSERT_EQ(react_set_memory_context_copy(ctx, "Remember this fact."), 0);
+	ASSERT_EQ(react_set_memory_reply_text_copy(ctx, "Remember this fact."), 0);
 	ASSERT_EQ(apply_patch_init(&tools, tctx), 0);
 	ASSERT_EQ(exec_tool_init(&tools, tctx, nullptr), 0);
 	ASSERT_EQ(request_permissions_init(&tools, tctx), 0);
@@ -4728,7 +4728,7 @@ TEST_F(PromptModeTest, DynamicContextPreservesTheFullSkillPrefix)
 		free(ctx->system_prompt);
 		ctx->system_prompt = strdup("Stable custom prompt");
 		ctx->max_iterations = 3;
-		ASSERT_EQ(react_set_memory_context_copy(ctx, "MEMORY_FIRST"), 0);
+		ASSERT_EQ(react_set_memory_reply_text_copy(ctx, "MEMORY_FIRST"), 0);
 		ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
 		std::string first = capt->system_prompt;
 		auto boundary = first.find("Runtime limits:");
@@ -4742,7 +4742,7 @@ TEST_F(PromptModeTest, DynamicContextPreservesTheFullSkillPrefix)
 		EXPECT_EQ(first.find("<skill name="), std::string::npos);
 		EXPECT_NE(dynamic.find("MEMORY_FIRST"), std::string::npos);
 		ctx->max_iterations = 17;
-		ASSERT_EQ(react_set_memory_context_copy(ctx, "MEMORY_SECOND"), 0);
+		ASSERT_EQ(react_set_memory_reply_text_copy(ctx, "MEMORY_SECOND"), 0);
 		ASSERT_EQ(react_run(ctx, "next", nullptr, nullptr), 0);
 		std::string second = capt->system_prompt;
 		EXPECT_EQ(first.substr(0, boundary),
@@ -5049,7 +5049,7 @@ TEST_F(MockLlmTest, MemoryContextAppearsInPrompt) {
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
-	ASSERT_EQ(react_set_memory_context_copy(
+	ASSERT_EQ(react_set_memory_reply_text_copy(
 			  ctx,
 			  "Persistent memory for this session.\n- Preferred language: Chinese\n"),
 		  0);

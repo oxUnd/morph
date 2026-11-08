@@ -293,8 +293,8 @@ static char *build_dynamic_context(struct react_context *ctx)
 		if (rc != 0)
 			return NULL;
 	}
-	if (ctx->memory_context && ctx->memory_context[0]) {
-		rc = morph_buf_printf(&buf, "\n%s\n", ctx->memory_context);
+	if (ctx->memory_reply_text && ctx->memory_reply_text[0]) {
+		rc = morph_buf_printf(&buf, "\n%s\n", ctx->memory_reply_text);
 		if (rc != 0)
 			return NULL;
 	}

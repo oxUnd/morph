@@ -163,7 +163,9 @@ struct react_context {
 	struct plan_registry *plans;
 	char *system_prompt;
 	int system_prompt_replace;
-	char *memory_context;
+	char *memory_reply_text;
+	/* The source session remains known after history is unbound. */
+	int64_t memory_reply_session_id;
 	const struct memory_options *memory_options;
 	struct skill_registry *skills;
 	char *workdir;
@@ -211,7 +213,7 @@ int react_run(struct react_context *ctx, const char *user_input,
  * Owner-thread only; may block for a non-cooperative in-process tool. */
 void react_drain_tools(struct react_context *ctx);
 void react_cancel(struct react_context *ctx);
-int react_set_memory_context_copy(struct react_context *ctx, const char *memory_context);
+int react_set_memory_reply_text_copy(struct react_context *ctx, const char *memory_reply_text);
 
 int hitl_needs_approval(struct react_context *ctx, const char *tool_name);
 void hitl_add_auto_approved(struct hitl_config *h, const char *tool_name);

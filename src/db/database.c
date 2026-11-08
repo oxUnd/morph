@@ -1,6 +1,9 @@
 #include "database.h"
 #include "util/log.h"
 #include "util/error.h"
+#include "util/buf.h"
+#include "util/cleanup.h"
+#include "util/utf8.h"
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -138,6 +141,8 @@ static const char preference_schema_sql[] =
 	"session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,"
 	"owner TEXT NOT NULL,project TEXT NOT NULL DEFAULT '',"
 	"migrated INTEGER NOT NULL DEFAULT 0,generation INTEGER NOT NULL DEFAULT 0);"
+	"CREATE INDEX IF NOT EXISTS idx_memory_scopes_owner_project "
+	"ON memory_scopes(owner,project,session_id);"
 	"CREATE TABLE IF NOT EXISTS memory_preferences ("
 	"id INTEGER PRIMARY KEY AUTOINCREMENT,owner TEXT NOT NULL,"
 	"scope TEXT NOT NULL CHECK(scope IN ('personal','project','session')),"
@@ -152,8 +157,11 @@ static const char preference_schema_sql[] =
 	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
 	"session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,"
 	"kind TEXT NOT NULL,key TEXT NOT NULL,value TEXT NOT NULL,"
-	"source TEXT NOT NULL,created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),"
+	"source TEXT NOT NULL,created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS "
+	"INTEGER)),"
 	"UNIQUE(session_id,kind,key,value,source));"
+	"CREATE INDEX IF NOT EXISTS idx_memory_candidates_lookup "
+	"ON memory_candidates(session_id,kind,key,created_at DESC,id DESC);"
 	"CREATE TABLE IF NOT EXISTS memory_jobs ("
 	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
 	"session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,"
@@ -323,6 +331,31 @@ static const char credit_schema_sql[] =
 	"CREATE INDEX IF NOT EXISTS idx_credit_events_session "
 	"ON credit_events(session_id, created_at);";
 
+static void db_text_contains(sqlite3_context *context, int count, sqlite3_value **values)
+{
+	(void)count;
+	const char *text = (const char *)sqlite3_value_text(values[0]);
+	const char *query = (const char *)sqlite3_value_text(values[1]);
+	char *folded_text MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *folded_query MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+
+	if (!text || !query) {
+		sqlite3_result_int(context, 0);
+		return;
+	}
+	if (utf8valid(text) || utf8valid(query)) {
+		sqlite3_result_error(context, "Invalid UTF-8 text", -1);
+		return;
+	}
+	folded_text = utf8_casefold_copy(text);
+	folded_query = utf8_casefold_copy(query);
+	if (!folded_text || !folded_query) {
+		sqlite3_result_error_nomem(context);
+		return;
+	}
+	sqlite3_result_int(context, strstr(folded_text, folded_query) != NULL);
+}
+
 int db_open(struct morph_log *logger, struct db *db, const char *path)
 {
 	if (!db || !path)
@@ -339,12 +372,43 @@ int db_open(struct morph_log *logger, struct db *db, const char *path)
 		db->handle = NULL;
 		return MORPH_TRACE_ERROR(logger, MORPH_ERR_DB);
 	}
+	rc = sqlite3_create_function_v2(db->handle, "morph_text_contains", 2,
+					SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, db_text_contains,
+					NULL, NULL, NULL);
+	if (rc != SQLITE_OK) {
+		sqlite3_close(db->handle);
+		db->handle = NULL;
+		return MORPH_ERR_DB;
+	}
 	sqlite3_exec(db->handle, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
 	sqlite3_exec(db->handle, "PRAGMA foreign_keys=ON;", NULL, NULL, NULL);
 	/* Multiple frontends and background workers may write this WAL database. */
 	sqlite3_busy_timeout(db->handle, 5000);
 	log_info(logger, "database opened: %s", path);
 	return 0;
+}
+
+int db_lock_acquire(struct db *db, struct db_lock *lock)
+{
+	if (!db || !db->handle || !lock)
+		return -EINVAL;
+	if (lock->mutex)
+		return -EEXIST;
+	sqlite3_mutex *mutex = sqlite3_db_mutex(db->handle);
+
+	if (!mutex)
+		return -ENOTSUP;
+	sqlite3_mutex_enter(mutex);
+	lock->mutex = mutex;
+	return 0;
+}
+
+void db_lock_cleanup(struct db_lock *lock)
+{
+	if (lock && lock->mutex) {
+		sqlite3_mutex_leave(lock->mutex);
+		lock->mutex = NULL;
+	}
 }
 
 void db_close(struct db *db)
@@ -426,6 +490,11 @@ static void db_add_column_if_missing(struct db *db, const char *table,
 
 static int db_migrate_memory_columns(struct db *db)
 {
+	db_add_column_if_missing(db, "memory_scopes", "content_revision",
+				 "INTEGER NOT NULL DEFAULT 0");
+	db_add_column_if_missing(db, "memory_jobs", "content_revision",
+				 "INTEGER NOT NULL DEFAULT -1");
+	db_add_column_if_missing(db, "memory_jobs", "stage", "TEXT NOT NULL DEFAULT 'extract'");
 	db_add_column_if_missing(db, "memory_preferences", "origin",
 		"TEXT NOT NULL DEFAULT 'explicit'");
 	db_add_column_if_missing(db, "memory_preferences", "source_order",
@@ -434,7 +503,10 @@ static int db_migrate_memory_columns(struct db *db)
 		"INTEGER NOT NULL DEFAULT 0");
 	if (!db_table_has_column(db, "memory_preferences", "origin") ||
 	    !db_table_has_column(db, "memory_preferences", "source_order") ||
-	    !db_table_has_column(db, "memory_scopes", "generation"))
+	    !db_table_has_column(db, "memory_scopes", "generation") ||
+	    !db_table_has_column(db, "memory_scopes", "content_revision") ||
+	    !db_table_has_column(db, "memory_jobs", "stage") ||
+	    !db_table_has_column(db, "memory_jobs", "content_revision"))
 		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
 	db_add_column_if_missing(db, "memory_episodes", "job_id", "INTEGER");
 	if (!db_table_has_column(db, "memory_episodes", "job_id"))
@@ -535,6 +607,55 @@ int db_init_credit_schema(struct db *db)
 	return db_exec(db, credit_schema_sql);
 }
 
+/* Revisions cover both direct edits and background writes. A generated summary
+ * is readable only while every source in its session snapshot is unchanged. */
+static int db_init_memory_notes(struct db *db)
+{
+	static const char *const tables[] = {
+		"memory_facts",	     "memory_candidates", "memory_episodes",
+		"memory_procedures", "memory_notes",
+	};
+	static const char *const events[] = {"INSERT", "UPDATE", "DELETE"};
+	int rc = db_exec(
+		db, "CREATE TABLE IF NOT EXISTS memory_notes ("
+		    "id INTEGER PRIMARY KEY AUTOINCREMENT,session_id INTEGER NOT NULL "
+		    "REFERENCES sessions(id) ON DELETE CASCADE,title TEXT NOT NULL,"
+		    "text TEXT NOT NULL,source TEXT NOT NULL,event_token TEXT NOT NULL,"
+		    "scope TEXT NOT NULL DEFAULT 'project' CHECK(scope IN ('project','session')),"
+		    "created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),"
+		    "updated_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),"
+		    "UNIQUE(session_id,event_token,title));"
+		    "CREATE TABLE IF NOT EXISTS memory_summaries ("
+		    "session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,"
+		    "memory_version INTEGER NOT NULL,content_revision INTEGER NOT NULL,"
+		    "title TEXT NOT NULL,text TEXT NOT NULL,sources TEXT NOT NULL,"
+		    "updated_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)));"
+		    "CREATE INDEX IF NOT EXISTS idx_memory_notes_session ON "
+		    "memory_notes(session_id,id);");
+
+	for (size_t table = 0; rc == 0 && table < sizeof(tables) / sizeof(tables[0]); table++) {
+		for (size_t event = 0; rc == 0 && event < sizeof(events) / sizeof(events[0]);
+		     event++) {
+			morph_buf_t sql MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			const char *row = event == 2 ? "OLD" : "NEW";
+
+			rc = morph_buf_init(&sql, 512);
+			if (rc == 0)
+				rc = morph_buf_printf(&sql,
+						      "CREATE TRIGGER IF NOT EXISTS "
+						      "%s_revision_%zu AFTER %s ON %s "
+						      "BEGIN UPDATE memory_scopes SET "
+						      "content_revision=content_revision+1 "
+						      "WHERE session_id=%s.session_id; END;",
+						      tables[table], event, events[event],
+						      tables[table], row);
+			if (rc == 0)
+				rc = db_exec(db, morph_buf_cstr_borrow(&sql));
+		}
+	}
+	return rc;
+}
+
 int db_init_schema(struct db *db)
 {
 	if (!db || !db->handle)
@@ -577,6 +698,9 @@ int db_init_schema(struct db *db)
 	if (rc != 0)
 		return rc;
 	rc = db_migrate_memory_columns(db);
+	if (rc != 0)
+		return rc;
+	rc = db_init_memory_notes(db);
 	if (rc != 0)
 		return rc;
 	rc = db_migrate_message_columns(db);

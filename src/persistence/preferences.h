@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-/* Bind once: a session cannot be reassigned to another user's memory. */
+/* Bind once: an established session cannot move to another owner or project. */
 int preference_bind(struct db *db, int64_t session_id,
 		    const char *owner, const char *project);
 const char *preference_key_borrow(const char *key);
@@ -22,9 +22,6 @@ typedef int (*preference_visit_fn)(const char *key, const char *value, const cha
 int preference_visit_effective(struct db *db, int64_t session_id,
 			       preference_visit_fn visit, void *data);
 int preference_clear_session(struct db *db, int64_t session_id);
-int preference_candidate(struct db *db, int64_t session_id,
-			 const char *kind, const char *key, const char *value,
-			 const char *source);
 
 #ifdef __cplusplus
 }

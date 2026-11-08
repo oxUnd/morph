@@ -757,3 +757,31 @@ TEST(ConfigValidationTest, ProcessMaximumWaitRequiresPositiveInteger)
 	EXPECT_EQ(config_validate_text("[exec]\nmax_wait_ms = 600000\n", &error), 0);
 	EXPECT_EQ(config_validate_text("[exec]\nmax_wait_ms = 1200000\n", &error), 0);
 }
+
+TEST_F(ConfigTest, PlainMemoryKeysOverrideCompatibleOlderKeys)
+{
+	const char *older = "[memory]\nhot_path_enabled=false\ncold_path_enabled=false\n"
+			    "llm_extract_enabled=false\nmax_episodes=2\nmax_procedures=3\n"
+			    "max_context_chars=700\n";
+	ASSERT_EQ(file_write_all(config_path, older, strlen(older)), 0);
+	struct config cfg;
+	ASSERT_EQ(config_load(NULL, &cfg, config_path), 0);
+	EXPECT_EQ(cfg.memory.capture_input_enabled, 0);
+	EXPECT_EQ(cfg.memory.save_tasks_enabled, 0);
+	EXPECT_EQ(cfg.memory.learn_from_chats_enabled, 0);
+	EXPECT_EQ(cfg.memory.max_past_tasks, 2);
+	EXPECT_EQ(cfg.memory.max_tips, 3);
+	EXPECT_EQ(cfg.memory.max_reply_chars, 700);
+	std::string updated = std::string(older) +
+			      "capture_input_enabled=true\nsave_tasks_enabled=true\n"
+			      "learn_from_chats_enabled=true\nmax_past_tasks=5\nmax_tips=6\n"
+			      "max_reply_chars=900\n";
+	ASSERT_EQ(file_write_all(config_path, updated.c_str(), updated.size()), 0);
+	ASSERT_EQ(config_load(NULL, &cfg, config_path), 0);
+	EXPECT_EQ(cfg.memory.capture_input_enabled, 1);
+	EXPECT_EQ(cfg.memory.save_tasks_enabled, 1);
+	EXPECT_EQ(cfg.memory.learn_from_chats_enabled, 1);
+	EXPECT_EQ(cfg.memory.max_past_tasks, 5);
+	EXPECT_EQ(cfg.memory.max_tips, 6);
+	EXPECT_EQ(cfg.memory.max_reply_chars, 900);
+}

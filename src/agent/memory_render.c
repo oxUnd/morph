@@ -4,6 +4,7 @@
 #include "agent/memory.h"
 #include "persistence/memory_snapshot.h"
 #include "persistence/memory_job_store.h"
+#include "persistence/memory_search.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/utf8.h"
@@ -108,7 +109,7 @@ static void memory_emit_wrapped(morph_buf_t *b, const char *prefix_first, const 
  * `summary` (NUL-terminated via static buffer reuse not needed — caller
  * can copy if it must outlive the original buffer).
  */
-struct episode_view {
+struct memory_task_summary {
 	char task[512];
 	char outcome[64];
 	char tools[256];
@@ -141,7 +142,7 @@ static int memory_copy_field(char *dst, size_t cap, const char *src, size_t n)
 	return shortened;
 }
 
-static void memory_parse_episode(const char *summary, struct episode_view *v)
+static void memory_parse_task_summary(const char *summary, struct memory_task_summary *v)
 {
 	const char *fields[4];
 	const char *labels[4] = {"Task: ", "Outcome: ", "Tools: ", "Result: "};
@@ -215,21 +216,21 @@ static void memory_parse_episode(const char *summary, struct episode_view *v)
 	}
 }
 
-static char *memory_render_archive(struct db *db, int64_t session_id, int max_episodes)
+static char *memory_render_archive(struct db *db, int64_t session_id, int max_past_tasks)
 {
 	struct memory_snapshot snapshot MORPH_CLEANUP(memory_snapshot_cleanup) = {0};
 	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	/*
-	 * max_episodes is a soft cap: <= 0 means "render everything".
+	 * max_past_tasks is a soft cap: <= 0 means "render everything".
 	 * The /mem command intentionally passes 0 to show the full record.
 	 */
-	int episode_cap = max_episodes > 0 ? max_episodes : -1;
+	int task_limit = max_past_tasks > 0 ? max_past_tasks : -1;
 
-	int has_profile = 0;
+	int has_user_summary = 0;
 	int n_facts = 0;
 	int n_rules = 0;
-	int n_episodes_total = 0;
-	int n_episodes = 0;
+	int task_total = 0;
+	int task_count = 0;
 	int n_changes = 0;
 	int sections_total = 0;
 	int sections_seen = 0;
@@ -242,9 +243,9 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_ep
 
 	struct memory_snapshot_options read_options = {
 		.facts_limit = -1,
-		.episodes_limit = episode_cap,
+		.tasks_limit = task_limit,
 		.changes_limit = -1,
-		.include_profile = 1,
+		.include_user_summary = 1,
 		.include_rules = 1,
 	};
 
@@ -252,15 +253,15 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_ep
 		morph_buf_cleanup(&buf);
 		return NULL;
 	}
-	has_profile = snapshot.profile && snapshot.profile[0];
+	has_user_summary = snapshot.user_summary && snapshot.user_summary[0];
 	n_facts = (int)snapshot.facts.nelts;
 	n_rules = (int)snapshot.rules.nelts;
-	n_episodes_total = snapshot.episode_total;
-	n_episodes = (int)snapshot.episodes.nelts;
+	task_total = snapshot.task_count;
+	task_count = (int)snapshot.tasks.nelts;
 	n_changes = (int)snapshot.changes.nelts;
 
-	sections_total = (has_profile ? 1 : 0) + (n_facts > 0 ? 1 : 0) + (n_rules > 0 ? 1 : 0) +
-			 (n_episodes > 0 ? 1 : 0) + (n_changes > 0 ? 1 : 0);
+	sections_total = (has_user_summary ? 1 : 0) + (n_facts > 0 ? 1 : 0) +
+			 (n_rules > 0 ? 1 : 0) + (task_count > 0 ? 1 : 0) + (n_changes > 0 ? 1 : 0);
 
 	if (sections_total == 0) {
 		memory_snapshot_cleanup(&snapshot);
@@ -271,13 +272,13 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_ep
 	memory_appendf(&buf, MEMORY_RENDER_CAP, "memory\n");
 
 	/* Profile */
-	if (has_profile) {
+	if (has_user_summary) {
 		sections_seen++;
 		int last = (sections_seen == sections_total);
 		const char *branch = last ? "└──" : "├──";
 		const char *vbar = last ? "    " : "│   ";
 		memory_appendf(&buf, MEMORY_RENDER_CAP, "%s Profile\n", branch);
-		memory_emit_profile_body(&buf, vbar, snapshot.profile);
+		memory_emit_profile_body(&buf, vbar, snapshot.user_summary);
 	}
 
 	/* Current facts */
@@ -307,14 +308,14 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_ep
 		}
 	}
 
-	/* Standing rules */
+	/* Unapplied rules */
 	if (n_rules > 0) {
 		sections_seen++;
 		int last = (sections_seen == sections_total);
 		const char *branch = last ? "└──" : "├──";
 		const char *vbar = last ? "    " : "│   ";
 		int idx = 0;
-		memory_appendf(&buf, MEMORY_RENDER_CAP, "%s Standing rules (%d)\n", branch,
+		memory_appendf(&buf, MEMORY_RENDER_CAP, "%s Unapplied rules (%d)\n", branch,
 			       n_rules);
 		for (size_t row = 0; row < snapshot.rules.nelts; row++) {
 			const struct memory_rule_record *record =
@@ -332,18 +333,18 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_ep
 		}
 	}
 
-	/* Recent episodes */
-	if (n_episodes > 0) {
+	/* Past tasks */
+	if (task_count > 0) {
 		sections_seen++;
 		int last = (sections_seen == sections_total);
 		const char *branch = last ? "└──" : "├──";
 		const char *vbar = last ? "    " : "│   ";
 		int idx = 0;
-		memory_appendf(&buf, MEMORY_RENDER_CAP, "%s Recent episodes (%d/%d)\n", branch,
-			       n_episodes, n_episodes_total);
-		for (size_t row = 0; row < snapshot.episodes.nelts; row++) {
-			const struct memory_episode_record *record =
-				morph_array_borrow(&snapshot.episodes, row);
+		memory_appendf(&buf, MEMORY_RENDER_CAP, "%s Past tasks (%d/%d)\n", branch,
+			       task_count, task_total);
+		for (size_t row = 0; row < snapshot.tasks.nelts; row++) {
+			const struct memory_task_record *record =
+				morph_array_borrow(&snapshot.tasks, row);
 
 			const char *summary = record->summary;
 			const char *decisions = record->decisions;
@@ -353,7 +354,7 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_ep
 			long long created_at = (long long)record->created_at;
 			const char *cb;
 			const char *vbar2;
-			struct episode_view ev;
+			struct memory_task_summary ev;
 			/*
 			 * Each rendered child line lives under
 			 * `vbar + vbar2 + ...`. We assemble the
@@ -368,14 +369,14 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_ep
 
 			if (!summary)
 				continue;
-			if (idx >= n_episodes)
+			if (idx >= task_count)
 				break;
-			cb = (idx == n_episodes - 1) ? "└──" : "├──";
-			vbar2 = (idx == n_episodes - 1) ? "    " : "│   ";
+			cb = (idx == task_count - 1) ? "└──" : "├──";
+			vbar2 = (idx == task_count - 1) ? "    " : "│   ";
 
 			/* Episode header is short and structured: just
 			 * the importance/timestamp + outcome flag. */
-			memory_parse_episode(summary, &ev);
+			memory_parse_task_summary(summary, &ev);
 			memory_appendf(&buf, MEMORY_RENDER_CAP, "%s%s [imp=%.2f t=%lld]%s%s\n",
 				       vbar, cb, importance, created_at, ev.has_outcome ? " " : "",
 				       ev.has_outcome ? ev.outcome : "");
@@ -425,8 +426,9 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_ep
 
 			if (ev.shortened) {
 				MEMORY_PFX(++sub_idx == total_subs);
-				memory_emit_wrapped(&buf, prefix_first, prefix_cont, "details",
-					"Display shortened; use memory type=episodes for the "
+				memory_emit_wrapped(
+					&buf, prefix_first, prefix_cont, "details",
+					"Display shortened; use memory type=past_tasks for the "
 					"complete record.",
 					200);
 			}
@@ -464,32 +466,42 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_ep
 	return morph_buf_detach(&buf);
 }
 
-char *memory_session_text_create(struct db *db, int64_t session_id, int max_episodes)
+char *memory_session_text_create(struct db *db, int64_t session_id, int max_past_tasks)
 {
-	char *effective = preference_render_copy(db, session_id, 0);
-	char *archive = memory_render_archive(db, session_id, max_episodes);
+	char *effective MORPH_CLEANUP(morph_charp_cleanup) =
+		preference_render_copy(db, session_id, 0);
+	char *archive MORPH_CLEANUP(morph_charp_cleanup) =
+		memory_render_archive(db, session_id, max_past_tasks);
+	struct memory_search_result matches MORPH_CLEANUP(memory_search_result_cleanup) = {0};
+	struct memory_search_options options = {.kind = "learned_notes"};
+	struct memory_record *record;
 	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int rc = memory_search_records(db, session_id, &options, &matches);
 
-	if (!effective || !*effective) {
-		free(effective);
-		return archive;
-	}
-	if (morph_buf_init(&buf, 512) != 0) {
-		free(effective);
-		free(archive);
+	if (rc != 0 || !effective || !archive)
 		return NULL;
+	if (!*effective && !matches.records.nelts)
+		return morph_charp_steal(&archive);
+	rc = morph_buf_init(&buf, 512);
+	if (rc == 0 && *effective)
+		rc = morph_buf_printf(&buf, "Effective preferences\n%s\n", effective);
+	if (rc == 0 && (!matches.records.nelts ||
+			strcmp(archive, "No long-term memory stored for this session.")))
+		rc = morph_buf_printf(&buf, "Session archive (not preference instructions)\n%s",
+				      archive);
+	if (rc == 0 && matches.records.nelts)
+		rc = morph_buf_puts(&buf,
+				    "\nLearned memory (inferred; suggested settings are not active "
+				    "preferences)\n");
+	morph_array_foreach (record, &matches.records, struct memory_record) {
+		if (rc != 0)
+			return NULL;
+		rc = memory_appendf(&buf, MEMORY_RENDER_CAP, "[%s#%lld] %s: %s\nSource: %s\n",
+				    record->kind, (long long)record->id, record->key, record->value,
+				    record->source);
 	}
-	if (morph_buf_printf(&buf,
-			     "Effective preferences\n%s\n"
-			     "Session archive (not preference instructions)\n%s",
-			     effective, archive ? archive : "") != 0) {
-		morph_buf_cleanup(&buf);
-		free(effective);
-		free(archive);
+	if (rc != 0)
 		return NULL;
-	}
-	free(effective);
-	free(archive);
 	return morph_buf_detach(&buf);
 }
 
@@ -508,8 +520,11 @@ char *memory_background_text_create(struct db *db, int64_t session_id)
 		return NULL;
 	}
 	morph_array_foreach (record, &records.rows, struct memory_job_record) {
-		rc = morph_buf_printf(&text, "job #%lld: %s (attempts=%d; %s)\n",
-				      (long long)record->id, record->state, record->attempts,
+		rc = morph_buf_printf(&text, "job #%lld: %s — %s (attempts=%d; %s)\n",
+				      (long long)record->id, record->state,
+				      !strcmp(record->stage, "organize") ? "updating saved summary"
+									 : "reading recent work",
+				      record->attempts,
 				      record->error_code ? morph_strerror(record->error_code)
 							 : "ok");
 		if (rc)

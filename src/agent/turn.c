@@ -6,6 +6,8 @@
 #include "util/cleanup.h"
 #include "util/error.h"
 #include "util/id.h"
+#include "util/buf.h"
+#include "util/utf8.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -119,20 +121,22 @@ int agent_session_load_history(const struct agent_session_runtime *runtime)
 	return 0;
 }
 
-static int turn_build_memory_context(struct agent_turn *turn)
+static int turn_prepare_memory_reply(struct agent_turn *turn)
 {
-	char *memory_ctx MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *reply_memory MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	int rc;
 
-	if (!(turn_flags(&turn->runtime) & AGENT_TURN_BUILD_MEMORY_CONTEXT))
+	if (!(turn_flags(&turn->runtime) & AGENT_TURN_PREPARE_MEMORY_REPLY))
 		return 0;
 
-	rc = memory_context_create(turn->runtime.db, turn->runtime.session_id,
-				   turn_model_input(turn), turn->runtime.memory_options,
-				   &memory_ctx);
+	rc = memory_reply_text_create(turn->runtime.db, turn->runtime.session_id,
+				      turn_model_input(turn), turn->runtime.memory_options,
+				      &reply_memory);
 	if (rc != 0)
 		return rc;
-	rc = react_set_memory_context_copy(turn->runtime.react, memory_ctx);
+	rc = react_set_memory_reply_text_copy(turn->runtime.react, reply_memory);
+	if (rc == 0 && reply_memory)
+		turn->runtime.react->memory_reply_session_id = turn->runtime.session_id;
 	return rc;
 }
 
@@ -221,7 +225,7 @@ int agent_turn_begin(struct agent_turn *turn, const struct agent_session_runtime
 	rc = memory_accept_input(runtime->db, runtime->session_id, turn_stored_user_input(turn),
 				 react_turn_id_borrow(runtime->react), runtime->memory_options);
 	if (rc == 0)
-		rc = turn_build_memory_context(turn);
+		rc = turn_prepare_memory_reply(turn);
 	if (rc != 0) {
 		turn_unbind_history(turn->runtime.react);
 		return rc;
@@ -402,69 +406,105 @@ static int turn_persist_assistant(struct agent_turn *turn,
 	return 0;
 }
 
-static int turn_consolidate_memory(struct agent_turn *turn,
-				   struct agent_turn_result *result,
-				   const char *assistant_output)
+static void turn_memory_statement_cleanup(sqlite3_stmt **statement)
+{
+	sqlite3_finalize(*statement);
+}
+
+static int turn_memory_input_create(struct agent_turn *turn, char **out)
+{
+	sqlite3_stmt *stmt MORPH_CLEANUP(turn_memory_statement_cleanup) = NULL;
+	morph_buf_t input MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int step;
+
+	if (sqlite3_prepare_v2(
+		    turn->runtime.db->handle,
+		    "SELECT content FROM (SELECT content,sequence_no FROM model_history_items "
+		    "WHERE session_id=? AND turn_id=? AND role='user' AND kind='user_message' "
+		    "AND active=1 ORDER BY sequence_no DESC LIMIT 4) ORDER BY sequence_no",
+		    -1, &stmt, NULL) != SQLITE_OK)
+		return MORPH_ERR_DB;
+	sqlite3_bind_int64(stmt, 1, turn->runtime.session_id);
+	sqlite3_bind_text(stmt, 2, turn_id_value(turn), -1, SQLITE_TRANSIENT);
+	int rc = morph_buf_init(&input, 2048);
+
+	if (rc != 0)
+		return rc;
+	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
+		const char *text = (const char *)sqlite3_column_text(stmt, 0);
+
+		if (!text)
+			continue;
+		size_t length = utf8_clamp_bytes(text, 1800);
+
+		rc = morph_buf_printf(
+			&input, "User input or correction:\n%.*s%s\n", (int)length, text,
+			text[length] ? " [excerpt; full input remains in history]" : "");
+		if (rc != 0)
+			return rc;
+	}
+	if (step != SQLITE_DONE)
+		return MORPH_ERR_DB;
+	if (!input.len)
+		rc = morph_buf_puts(&input, turn_stored_user_input(turn));
+	if (rc == 0)
+		*out = morph_buf_detach(&input);
+	return rc;
+}
+
+static int turn_save_memory(struct agent_turn *turn, struct agent_turn_result *result,
+			    const char *assistant_output)
 {
 	int rc;
 	int success;
 	struct memory_options background = {0};
+	char *memory_input MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 
 	if (turn->runtime.memory_options)
 		background = *turn->runtime.memory_options;
-	background.hot_path_enabled = 0;
+	background.capture_input_enabled = 0;
 
-	if (!background.enabled ||
-	    !(turn_flags(&turn->runtime) & AGENT_TURN_CONSOLIDATE_MEMORY))
+	if (!background.enabled || !(turn_flags(&turn->runtime) & AGENT_TURN_SAVE_MEMORY))
 		return 0;
 	success = turn->runtime.react &&
 		turn->runtime.react->state == REACT_STATE_DONE &&
 		(turn->runtime.react->outcome == REACT_OUTCOME_SUCCESS ||
 		 turn->runtime.react->outcome == REACT_OUTCOME_NONE);
-	if (!success)
+	if (!success || (!background.save_tasks_enabled && !background.learn_from_chats_enabled))
 		return 0;
+	rc = turn_memory_input_create(turn, &memory_input);
+	if (rc != 0)
+		return rc;
 
 	if (turn_flags(&turn->runtime) & AGENT_TURN_ASYNC_MEMORY) {
-		turn_emit_background(&turn->runtime, "background.started",
-				     "begin",
-				     "memory consolidation scheduling", 0);
-		rc = memory_consolidate_turn_async(
-			turn->runtime.db, turn->runtime.session_id,
-			turn_model_input(turn), assistant_output,
-			turn->runtime.react->steps,
-			turn->runtime.react->state == REACT_STATE_DONE,
+		turn_emit_background(&turn->runtime, "background.started", "begin",
+				     "memory update scheduling", 0);
+		rc = memory_save_turn_async(
+			turn->runtime.db, turn->runtime.session_id, memory_input, assistant_output,
+			turn->runtime.react->steps, turn->runtime.react->state == REACT_STATE_DONE,
 			&background);
 		if (rc == 0) {
 			result->memory_queued = 1;
-			turn_emit_background(&turn->runtime, "background.ready",
-					     "ready",
-					     "memory consolidation queued", 0);
+			turn_emit_background(&turn->runtime, "background.ready", "ready",
+					     "memory update queued", 0);
 			return 0;
 		}
 
-		turn_emit_background(&turn->runtime, "background.progress",
-				     "progress",
-				     "memory consolidation running inline", rc);
+		turn_emit_background(&turn->runtime, "background.progress", "progress",
+				     "memory update running inline", rc);
 	}
 
-	rc = memory_consolidate_turn(
-		turn->runtime.db, turn->runtime.session_id,
-		turn_model_input(turn), assistant_output,
-		turn->runtime.react->steps,
-		turn->runtime.react->state == REACT_STATE_DONE,
-		&background);
+	rc = memory_save_turn(turn->runtime.db, turn->runtime.session_id, memory_input,
+			      assistant_output, turn->runtime.react->steps,
+			      turn->runtime.react->state == REACT_STATE_DONE, &background);
 	result->memory_ran_inline = 1;
 	result->memory_rc = rc;
 
 	if (turn_flags(&turn->runtime) & AGENT_TURN_ASYNC_MEMORY) {
-		turn_emit_background(&turn->runtime,
-				     rc == 0 ? "background.completed" :
-					       "background.failed",
-				     rc == 0 ? "end" : "failed",
-				     rc == 0 ?
-					     "memory consolidation completed" :
-					     "memory consolidation failed",
-				     rc);
+		turn_emit_background(
+			&turn->runtime, rc == 0 ? "background.completed" : "background.failed",
+			rc == 0 ? "end" : "failed",
+			rc == 0 ? "memory update completed" : "memory update failed", rc);
 	}
 	return rc;
 }
@@ -549,8 +589,7 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 	flags = turn_flags(&turn->runtime);
 	local_result.history_loaded =
 		(flags & AGENT_TURN_LOAD_HISTORY) ? 1 : 0;
-	local_result.memory_context_built =
-		(flags & AGENT_TURN_BUILD_MEMORY_CONTEXT) ? 1 : 0;
+	local_result.memory_reply_prepared = (flags & AGENT_TURN_PREPARE_MEMORY_REPLY) ? 1 : 0;
 
 	if (flags & AGENT_TURN_SAVE_TRACE) {
 		step_rc = turn_save_trace(turn);
@@ -615,7 +654,7 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 
 	memory_answer = assistant_for_memory ?
 		assistant_for_memory : turn->runtime.react->final_answer;
-	step_rc = turn_consolidate_memory(turn, &local_result, memory_answer);
+	step_rc = turn_save_memory(turn, &local_result, memory_answer);
 	if (step_rc != 0 && local_result.memory_rc == 0)
 		local_result.memory_rc = step_rc;
 

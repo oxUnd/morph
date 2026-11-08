@@ -20,7 +20,7 @@ struct memory_rule_record {
 	int evidence;
 };
 
-struct memory_episode_record {
+struct memory_task_record {
 	char *summary;
 	char *decisions;
 	char *artifacts;
@@ -40,21 +40,21 @@ struct memory_change_record {
 struct memory_snapshot_options {
 	/* Zero omits a section, negative includes all rows. */
 	int facts_limit;
-	int episodes_limit;
+	int tasks_limit;
 	int changes_limit;
-	int include_profile;
+	int include_user_summary;
 	int include_rules;
-	int context_facts;
+	int for_reply;
 	int facts_by_recency;
 };
 
 struct memory_snapshot {
-	char *profile;
+	char *user_summary;
 	morph_array_t facts;
 	morph_array_t rules;
-	morph_array_t episodes;
+	morph_array_t tasks;
 	morph_array_t changes;
-	int episode_total;
+	int task_count;
 };
 
 /* Outputs must be zero-initialized and empty. Occupied owners return -EEXIST. */

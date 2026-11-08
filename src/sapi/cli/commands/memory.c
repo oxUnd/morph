@@ -1,8 +1,11 @@
 #include "sapi/cli/commands/memory.h"
 #include "agent/memory.h"
+#include "runtime/services.h"
 #include "sapi/cli/application_internal.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
+#include "sapi/cli/pages/memory.h"
 
 static const char *cli_memory_scope_display(enum memory_clear_scope scope)
 {
@@ -11,10 +14,10 @@ static const char *cli_memory_scope_display(enum memory_clear_scope scope)
 		return "all";
 	case MEMORY_CLEAR_FACTS:
 		return "facts";
-	case MEMORY_CLEAR_EPISODES:
-		return "episodes";
-	case MEMORY_CLEAR_PROCEDURES:
-		return "procedures";
+	case MEMORY_CLEAR_TASKS:
+		return "past tasks";
+	case MEMORY_CLEAR_TIPS:
+		return "tips";
 	default:
 		return "unknown";
 	}
@@ -32,12 +35,13 @@ static int cli_memory_parse_scope(const char *name, enum memory_clear_scope *sco
 		*scope = MEMORY_CLEAR_FACTS;
 		return 0;
 	}
-	if (strcmp(name, "episodes") == 0) {
-		*scope = MEMORY_CLEAR_EPISODES;
+	if (strcmp(name, "past_tasks") == 0 || strcmp(name, "episodes") == 0) {
+		*scope = MEMORY_CLEAR_TASKS;
 		return 0;
 	}
-	if (strcmp(name, "procedures") == 0 || strcmp(name, "rules") == 0) {
-		*scope = MEMORY_CLEAR_PROCEDURES;
+	if (strcmp(name, "tips") == 0 || strcmp(name, "procedures") == 0 ||
+	    strcmp(name, "rules") == 0) {
+		*scope = MEMORY_CLEAR_TIPS;
 		return 0;
 	}
 	return -EINVAL;
@@ -46,6 +50,25 @@ static int cli_memory_parse_scope(const char *name, enum memory_clear_scope *sco
 static int cli_memory_command_memory(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *sub = cli_cmd_arg_borrow(argc, argv, 1);
+
+	if ((!sub || !strcmp(sub, "view")) && ctx->presentation_mode == CLI_PRESENT_INTERACTIVE &&
+	    cli_application_tui_borrow(ctx) && isatty(STDIN_FILENO)) {
+		int rc = cli_memory_page_show(ctx);
+
+		if (rc != 0)
+			CMD_ERROR(ctx, "Failed to open memory panel: %s", morph_strerror(rc));
+		return rc;
+	}
+
+	if (sub && !strcmp(sub, "retry")) {
+		int rc = runtime_memory_retry_current(ctx->runtime);
+
+		if (rc != 0)
+			CMD_ERROR(ctx, "Failed to retry memory updates: %s", morph_strerror(rc));
+		else
+			CMD_OK(ctx, "Memory update retry requested.");
+		return rc;
+	}
 
 	if (sub && !strcmp(sub, "jobs")) {
 		char *jobs = runtime_memory_background_render_copy(ctx->runtime);
@@ -115,8 +138,8 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 
 	if (!sub || strcmp(sub, "show") == 0 || strcmp(sub, "view") == 0) {
 		/*
-		 * Pass 0 to render every stored episode/change so /mem
-		 * gives the user the full picture; max_episodes is only
+		 * Pass 0 to render every stored task/change so /mem
+		 * gives the user the full picture; max_past_tasks is only
 		 * a hint for the React-loop context window.
 		 */
 		char *rendered = runtime_memory_render_current_copy(ctx->runtime, 0);
@@ -133,7 +156,7 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 		enum memory_clear_scope scope = MEMORY_CLEAR_ALL;
 		const char *target = cli_cmd_arg_borrow(argc, argv, 2);
 		if (cli_memory_parse_scope(target, &scope) != 0) {
-			CMD_ERROR(ctx, "usage: /memory clear [all|facts|episodes|procedures]");
+			CMD_ERROR(ctx, "usage: /memory clear [all|facts|past_tasks|tips]");
 			return -EINVAL;
 		}
 		if (runtime_memory_clear_current(ctx->runtime, scope) != 0) {
@@ -152,10 +175,10 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 }
 
 static const struct cli_command cli_memory_entries[] = {
-	{"/memory", cli_memory_command_memory, "Show or clear long-term memory",
-	 "/memory [show|history|explain|set|unset|clear|jobs]"},
+	{"/memory", cli_memory_command_memory, "Browse memory, sources and background work",
+	 "/memory [view|show|history|explain|set|unset|clear|jobs]"},
 	{"/mem", cli_memory_command_memory, "Alias for /memory",
-	 "/mem [show|clear] [all|facts|episodes|procedures]"},
+	 "/mem [show|clear] [all|facts|past_tasks|tips]"},
 };
 
 struct cli_command_group cli_memory_commands(void)

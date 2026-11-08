@@ -137,9 +137,9 @@ int cli_about_print(struct cli_application *ctx, const char *config_path)
 			  cfg.react.max_iterations, cfg.react.tool_timeout_seconds);
 	cli_output_printf(ctx,
 			  "  " CLI_ABOUT_ICON_MEMORY " " ANSI_BOLD ANSI_GREEN "Memory" ANSI_RESET
-			  "     " ANSI_YELLOW "%s" ANSI_RESET " (%d facts, %d episodes)\n",
+			  "     " ANSI_YELLOW "%s" ANSI_RESET " (%d facts, %d past tasks)\n",
 			  cfg.memory.enabled ? "on" : "off", cfg.memory.max_facts,
-			  cfg.memory.max_episodes);
+			  cfg.memory.max_past_tasks);
 	cli_output_printf(ctx,
 			  "  " CLI_ABOUT_ICON_CONTEXT " " ANSI_BOLD ANSI_GREEN "Context" ANSI_RESET
 			  "    %.2f / %.2f compress\n",

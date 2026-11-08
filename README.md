@@ -137,6 +137,14 @@ newline. Ctrl+O opens the turn's full-screen tool transcript. Pasted and typed
 image paths become `[IMAGE#1]` chips (Backspace removes one); `/render <path>`
 previews, `/image <path>` attaches.
 
+`/memory` opens the memory inspector: your preferences, saved facts, reusable
+tips, past work, unapplied settings, memory updates and a reply memory preview.
+Use Up/Down to select a section and Enter to open it. `/` searches; Esc returns
+to the section list, then to chat.
+The text model uses compact summaries and a memory directory, reading details
+on demand; learning and summary updates run in two background stages.
+`/memory retry` retries failed updates. `/memory show` retains the text view. See [memory and search](docs/memory.md).
+
 `/copy` copies the current session's latest assistant answer as Markdown, including
 code blocks and original whitespace. It also works after resuming a session.
 macOS uses `pbcopy`; Linux uses `wl-copy`, `xclip` or `xsel`. Remote terminals can

@@ -48,6 +48,8 @@ int utf8_decode_codepoint(const char *s, size_t avail, unsigned *cp,
 			  size_t *cp_len);
 
 char *utf8_dup_clamped(const char *src, size_t max_bytes);
+/* Owned canonical, case-folded text for language-independent comparisons. */
+char *utf8_casefold_copy(const char *text);
 
 size_t utf8_sanitize_into(char *dst, const char *src, size_t src_len);
 

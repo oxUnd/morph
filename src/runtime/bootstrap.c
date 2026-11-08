@@ -316,6 +316,9 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 	models->text = runtime_create_model(profile->logger, &config->models.text, 0);
 	/* Background extraction must not mutate the foreground model or bill its turn. */
 	models->memory_text = runtime_create_model(profile->logger, &config->models.text, 0);
+	/* Durable jobs own retry/backoff; a failed background request returns promptly. */
+	if (models->memory_text)
+		models->memory_text->retry_count = 0;
 	models->react->logger = profile->logger;
 	models->react->llm_model = models->text;
 	models->vision = runtime_create_model(profile->logger, &config->models.vision, 0);

@@ -150,8 +150,12 @@ int memory_store_upsert_fact(struct db *db, int64_t session_id, const char *key_
 			     const char *value_text, const char *source_text, const char *category,
 			     double importance)
 {
-	int rc = memory_store_begin_write(db);
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	int rc = db_lock_acquire(db, &lock);
 
+	if (rc != 0)
+		return rc;
+	rc = memory_store_begin_write(db);
 	if (rc != 0)
 		return rc;
 	rc = memory_store_write_fact(db, session_id, key_name, value_text, source_text, category,
@@ -177,7 +181,7 @@ int memory_store_prepare_session(struct db *db, int64_t session_id)
 	return preference_bind(db, session_id, "local", "");
 }
 
-int memory_store_generation(struct db *db, int64_t session_id, int64_t *generation)
+int memory_store_read_version(struct db *db, int64_t session_id, int64_t *memory_version)
 {
 	sqlite3_stmt *stmt = NULL;
 	int rc = sqlite3_prepare_v2(db->handle,
@@ -189,21 +193,21 @@ int memory_store_generation(struct db *db, int64_t session_id, int64_t *generati
 	sqlite3_bind_int64(stmt, 1, session_id);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW)
-		*generation = sqlite3_column_int64(stmt, 0);
+		*memory_version = sqlite3_column_int64(stmt, 0);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_ROW)
 		return rc == SQLITE_DONE ? -ENOENT : MORPH_ERR_DB;
 	return 0;
 }
 
-int memory_store_begin_generation(struct db *db, int64_t session_id, int64_t expected)
+int memory_store_begin_versioned_write(struct db *db, int64_t session_id, int64_t expected)
 {
 	int64_t current = 0;
 	int rc = memory_store_begin_write(db);
 
 	if (rc != 0)
 		return rc;
-	rc = memory_store_generation(db, session_id, &current);
+	rc = memory_store_read_version(db, session_id, &current);
 	if (rc == 0 && current != expected)
 		rc = -ESTALE;
 	if (rc != 0)
@@ -214,10 +218,14 @@ int memory_store_begin_generation(struct db *db, int64_t session_id, int64_t exp
 int memory_store_clear(struct db *db, int64_t session_id, enum memory_clear_scope scope)
 {
 	sqlite3_stmt *stmt = NULL;
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
 	int rc;
 
-	if (!db || !db->handle || scope < MEMORY_CLEAR_ALL || scope > MEMORY_CLEAR_PROCEDURES)
+	if (!db || !db->handle || scope < MEMORY_CLEAR_ALL || scope > MEMORY_CLEAR_TIPS)
 		return -EINVAL;
+	rc = db_lock_acquire(db, &lock);
+	if (rc != 0)
+		return rc;
 	rc = memory_store_prepare_session(db, session_id);
 	if (rc != 0)
 		return rc;
@@ -244,17 +252,28 @@ int memory_store_clear(struct db *db, int64_t session_id, enum memory_clear_scop
 		case MEMORY_CLEAR_FACTS:
 			rc = memory_store_clear_facts(db, session_id);
 			break;
-		case MEMORY_CLEAR_EPISODES:
-			rc = memory_store_clear_episodes(db, session_id);
+		case MEMORY_CLEAR_TASKS:
+			rc = memory_store_clear_tasks(db, session_id);
 			break;
-		case MEMORY_CLEAR_PROCEDURES:
-			rc = memory_store_clear_procedures(db, session_id);
+		case MEMORY_CLEAR_TIPS:
+			rc = memory_store_clear_tips(db, session_id);
 			break;
 		}
 	}
 	if (rc == 0 && scope == MEMORY_CLEAR_ALL) {
 		rc = sqlite3_prepare_v2(db->handle,
 					"DELETE FROM memory_candidates WHERE session_id=?", -1,
+					&stmt, NULL);
+		if (rc == SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1, session_id);
+			rc = sqlite3_step(stmt);
+		}
+		sqlite3_finalize(stmt);
+		rc = rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
+	}
+	if (rc == 0) {
+		rc = sqlite3_prepare_v2(db->handle,
+					"DELETE FROM memory_summaries WHERE session_id=?", -1,
 					&stmt, NULL);
 		if (rc == SQLITE_OK) {
 			sqlite3_bind_int64(stmt, 1, session_id);
@@ -283,7 +302,7 @@ int memory_store_clear(struct db *db, int64_t session_id, enum memory_clear_scop
 
 /* Additive, idempotent migration. Old rows remain available for audit.
  * Only a preference proven by its original user directive becomes effective;
- * unverified model output remains a candidate. Legacy scope stays local to
+ * unverified model output remains a saved note. Legacy scope stays local to
  * its session and never outranks a newly explicit preference. */
 int memory_store_migrate_preferences(struct db *db, int64_t session_id,
 				     int (*verify)(const char *key, const char *value,
@@ -309,7 +328,7 @@ int memory_store_migrate_preferences(struct db *db, int64_t session_id,
 		int verified = verify && verify(key, value, source);
 		int result;
 
-		result = preference_candidate(db, session_id, "legacy", key, value, source);
+		result = memory_store_add_note(db, session_id, "legacy", key, value, source);
 		if (result == 0 && verified) {
 			sqlite3_stmt *insert = NULL;
 
@@ -387,7 +406,7 @@ int memory_store_event_token(struct db *db, int64_t session_id, const char *even
 	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
 }
 
-int memory_store_save_profile(struct db *db, int64_t session_id, const char *text)
+int memory_store_save_user_summary(struct db *db, int64_t session_id, const char *text)
 {
 	sqlite3_stmt *stmt = NULL;
 	int rc = sqlite3_prepare_v2(
@@ -407,8 +426,7 @@ int memory_store_save_profile(struct db *db, int64_t session_id, const char *tex
 	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
 }
 
-int memory_store_insert_episode(struct db *db, int64_t session_id,
-				const struct memory_episode_input *input)
+int memory_store_add_task(struct db *db, int64_t session_id, const struct memory_task_input *input)
 {
 	sqlite3_stmt *stmt = NULL;
 	int rc;
@@ -442,4 +460,32 @@ int memory_store_insert_episode(struct db *db, int64_t session_id,
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
+}
+
+static void memory_note_statement_cleanup(sqlite3_stmt **statement)
+{
+	sqlite3_finalize(*statement);
+}
+
+int memory_store_add_note(struct db *db, int64_t session_id, const char *kind, const char *key,
+			  const char *value, const char *source)
+{
+	sqlite3_stmt *stmt MORPH_CLEANUP(memory_note_statement_cleanup) = NULL;
+	int rc = sqlite3_prepare_v2(
+		db->handle,
+		"INSERT INTO memory_candidates(session_id,kind,key,value,source) "
+		"VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING",
+		-1, &stmt, NULL);
+
+	if (rc != SQLITE_OK)
+		return MORPH_ERR_DB;
+	sqlite3_bind_int64(stmt, 1, session_id);
+	sqlite3_bind_text(stmt, 2, kind, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 3, key, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 4, value, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 5, source ? source : "", -1, SQLITE_TRANSIENT);
+	rc = sqlite3_step(stmt);
+	if (rc != SQLITE_DONE)
+		return MORPH_ERR_DB;
+	return 0;
 }

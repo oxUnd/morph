@@ -217,7 +217,7 @@ static int checkpoint_restore_locked(struct runtime *runtime, int64_t session_id
 		return 0;
 	runtime_recap_invalidate(runtime);
 	react_reset(runtime->context.react);
-	(void)react_set_memory_context_copy(runtime->context.react, NULL);
+	(void)react_set_memory_reply_text_copy(runtime->context.react, NULL);
 	runtime_context_forget_plan_session(&runtime->context, session_id);
 	runtime_context_select_plan_session(&runtime->context, session_id);
 	session_runtime.db = &runtime->context.database;

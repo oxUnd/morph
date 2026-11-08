@@ -1,6 +1,10 @@
 #include "agent/memory.h"
 #include "util/cleanup.h"
 #include "agent/memory_internal.h"
+#include "agent/history_internal.h"
+#include "models/llm.h"
+#include "util/utf8.h"
+#include "util/json.h"
 #include "persistence/memory_job_store.h"
 #include "util/buf.h"
 #include "util/error.h"
@@ -14,17 +18,17 @@
 #include <unistd.h>
 
 /* ----------------------------------------------------------------------
- * Async consolidate worker.
+ * Background memory saving worker.
  *
  * Background:
- *   memory_capture_llm_path() makes a blocking HTTP SSE call that can
+ *   memory_save_turn() makes a blocking HTTP SSE call that can
  *   take 1-3 seconds. When invoked from the CLI on the main thread it
  *   stalls the readline prompt right after the assistant finishes.
  *
  * Design:
  *   A single long-lived worker thread owns its own SQLite connection
  *   (opened against the same db->path) and drains a FIFO queue of jobs
- *   posted by memory_consolidate_turn_async(). The caller deep-copies
+ *   posted by memory_save_turn_async(). The caller deep-copies
  *   user_input / assistant_output / react_step list into the job, so
  *   the foreground may free or reuse those buffers immediately.
  *
@@ -201,9 +205,11 @@ static int memory_job_record(struct db *db, struct memory_job *job)
 	if (!tools || !cJSON_AddStringToObject(payload, "input", job->user_input) ||
 	    !cJSON_AddStringToObject(payload, "answer",
 				     job->assistant_output ? job->assistant_output : "") ||
+	    !cJSON_AddBoolToObject(payload, "organize_only", job->opts.organize_only) ||
 	    !cJSON_AddBoolToObject(payload, "success", job->success) ||
-	    !cJSON_AddBoolToObject(payload, "llm", job->opts.llm_extract_enabled) ||
-	    !cJSON_AddBoolToObject(payload, "episodes", job->opts.cold_path_enabled)) {
+	    !cJSON_AddBoolToObject(payload, "learn_from_chats",
+				   job->opts.learn_from_chats_enabled) ||
+	    !cJSON_AddBoolToObject(payload, "save_tasks", job->opts.save_tasks_enabled)) {
 		cJSON_Delete(payload);
 		return -ENOMEM;
 	}
@@ -219,13 +225,54 @@ static int memory_job_record(struct db *db, struct memory_job *job)
 			return -ENOMEM;
 		}
 	}
+	cJSON *saved_steps = cJSON_AddArrayToObject(payload, "steps");
+	if (!saved_steps) {
+		cJSON_Delete(payload);
+		return -ENOMEM;
+	}
+	size_t count = 0;
+	size_t index = 0;
+
+	for (const struct react_step *step = job->steps; step; step = step->next)
+		if (step->type == REACT_STEP_ACTION || step->type == REACT_STEP_OBSERVATION)
+			count++;
+	for (const struct react_step *step = job->steps; step; step = step->next) {
+		if (step->type != REACT_STEP_ACTION && step->type != REACT_STEP_OBSERVATION)
+			continue;
+		if (++index + 12 < count)
+			continue;
+		cJSON *entry MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		char *content MORPH_CLEANUP(morph_charp_cleanup) =
+			utf8_dup_clamped(step->content ? step->content : "", 1024);
+		char *arguments MORPH_CLEANUP(morph_charp_cleanup) =
+			utf8_dup_clamped(step->tool_args ? step->tool_args : "", 1024);
+
+		if (!entry || !content || !arguments ||
+		    !cJSON_AddNumberToObject(entry, "type", step->type) ||
+		    !cJSON_AddNumberToObject(entry, "error", step->error_code) ||
+		    !cJSON_AddStringToObject(entry, "tool",
+					     step->tool_name ? step->tool_name : "") ||
+		    !cJSON_AddStringToObject(entry, "content", content) ||
+		    !cJSON_AddStringToObject(entry, "arguments", arguments) ||
+		    morph_json_array_take(saved_steps, &entry) != 0) {
+			cJSON_Delete(payload);
+			return -ENOMEM;
+		}
+	}
 	json = cJSON_PrintUnformatted(payload);
 	cJSON_Delete(payload);
 	if (!json)
 		return -ENOMEM;
-	rc = memory_job_store_add(db, job->session_id, job->opts.generation, json,
+	char *safe MORPH_CLEANUP(morph_charp_cleanup) = history_redacted_json_create(NULL, json);
+	if (!safe) {
+		free(json);
+		return -ENOMEM;
+	}
+	rc = memory_job_store_add(db, job->session_id, job->opts.memory_version, safe,
 				  &job->opts.background_job_id);
 	free(json);
+	if (rc == 0 && job->opts.organize_only)
+		rc = memory_job_store_stage(db, job->opts.background_job_id, "organize");
 	return rc;
 }
 
@@ -263,9 +310,9 @@ static void *memory_async_worker(void *arg)
 				&worker_db, job->opts.background_job_id, (int64_t)getpid());
 
 			if (claimed > 0) {
-				rc = memory_consolidate_turn(&worker_db, job->session_id,
-							     job->user_input, job->assistant_output,
-							     job->steps, job->success, &job->opts);
+				rc = memory_save_turn(&worker_db, job->session_id, job->user_input,
+						      job->assistant_output, job->steps,
+						      job->success, &job->opts);
 				(void)memory_job_store_complete(&worker_db,
 								job->opts.background_job_id, rc);
 			} else if (claimed < 0) {
@@ -278,7 +325,7 @@ static void *memory_async_worker(void *arg)
 			db_close(&worker_db);
 		} else {
 			log_dbg(worker ? worker->logger : NULL,
-				"memory: async worker failed to open db: %d", rc);
+				"memory: async worker failed to open db: %s", morph_strerror(rc));
 		}
 		memory_job_free(job);
 
@@ -306,9 +353,9 @@ static int memory_async_ensure_worker(struct memory_worker *worker)
 	return rc;
 }
 
-int memory_consolidate_turn_async(struct db *db, int64_t session_id, const char *user_input,
-				  const char *assistant_output, const struct react_step *steps,
-				  int success, const struct memory_options *opts)
+int memory_save_turn_async(struct db *db, int64_t session_id, const char *user_input,
+			   const char *assistant_output, const struct react_step *steps,
+			   int success, const struct memory_options *opts)
 {
 	struct memory_job *job;
 	struct memory_worker *worker = opts ? opts->worker : NULL;
@@ -330,13 +377,13 @@ int memory_consolidate_turn_async(struct db *db, int64_t session_id, const char 
 	job->session_id = session_id;
 	job->success = success;
 	job->opts = *opts;
-	job->opts.hot_path_enabled = 0;
+	job->opts.capture_input_enabled = 0;
 	if (memory_prepare_session(db, session_id) != 0 ||
-	    memory_generation(db, session_id, &job->opts.generation) != 0) {
+	    memory_read_version(db, session_id, &job->opts.memory_version) != 0) {
 		memory_job_free(job);
 		return MORPH_ERR_DB;
 	}
-	job->opts.generation_bound = 1;
+	job->opts.check_version = 1;
 	if (!job->db_path || !job->user_input || (assistant_output && !job->assistant_output) ||
 	    (steps && !job->steps)) {
 		memory_job_free(job);
@@ -429,37 +476,78 @@ static struct memory_job *memory_job_restore(struct db *db, const struct memory_
 	job->session_id = row->session_id;
 	job->success = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(payload, "success"));
 	job->opts.enabled = 1;
-	job->opts.cold_path_enabled =
-		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(payload, "episodes"));
-	job->opts.llm_extract_enabled =
-		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(payload, "llm"));
-	job->opts.generation_bound = 1;
-	job->opts.generation = row->generation;
+	job->opts.organize_only =
+		!strcmp(row->stage, "organize") ||
+		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(payload, "organize_only"));
+	const cJSON *save_tasks = cJSON_GetObjectItemCaseSensitive(payload, "save_tasks");
+	const cJSON *learn_from_chats =
+		cJSON_GetObjectItemCaseSensitive(payload, "learn_from_chats");
+
+	/* Old queued jobs use the original payload keys. */
+	if (!save_tasks)
+		save_tasks = cJSON_GetObjectItemCaseSensitive(payload, "episodes");
+	if (!learn_from_chats)
+		learn_from_chats = cJSON_GetObjectItemCaseSensitive(payload, "llm");
+	job->opts.save_tasks_enabled = cJSON_IsTrue(save_tasks);
+	job->opts.learn_from_chats_enabled = cJSON_IsTrue(learn_from_chats);
+	job->opts.check_version = 1;
+	job->opts.memory_version = row->memory_version;
 	job->opts.background_job_id = row->id;
 	if (!job->db_path || !job->user_input || !job->assistant_output) {
 		cJSON_Delete(payload);
 		memory_job_free(job);
 		return NULL;
 	}
-	cJSON_ArrayForEach (name, cJSON_GetObjectItemCaseSensitive(payload, "tools")) {
-		struct react_step *step;
+	const cJSON *saved_steps = cJSON_GetObjectItemCaseSensitive(payload, "steps");
+	struct react_step **tail = &job->steps;
 
-		if (!cJSON_IsString(name))
-			continue;
-		step = calloc(1, sizeof(*step));
-		if (!step) {
-			cJSON_Delete(payload);
-			memory_job_free(job);
-			return NULL;
+	if (cJSON_IsArray(saved_steps)) {
+		cJSON_ArrayForEach (name, saved_steps) {
+			const cJSON *type = cJSON_GetObjectItemCaseSensitive(name, "type");
+			const char *content = cJSON_GetStringValue(
+				cJSON_GetObjectItemCaseSensitive(name, "content"));
+			const char *tool = cJSON_GetStringValue(
+				cJSON_GetObjectItemCaseSensitive(name, "tool"));
+			const char *arguments = cJSON_GetStringValue(
+				cJSON_GetObjectItemCaseSensitive(name, "arguments"));
+
+			if (!cJSON_IsNumber(type) ||
+			    (type->valueint != REACT_STEP_ACTION &&
+			     type->valueint != REACT_STEP_OBSERVATION) ||
+			    !content || !tool || !arguments)
+				continue;
+			struct react_step source = {0};
+
+			source.type = (enum react_step_type)type->valueint;
+			source.content = (char *)content;
+			source.tool_name = (char *)tool;
+			source.tool_args = (char *)arguments;
+			const cJSON *error = cJSON_GetObjectItemCaseSensitive(name, "error");
+
+			source.error_code = cJSON_IsNumber(error) ? error->valueint : 0;
+			*tail = memory_step_clone(&source);
+			if (!*tail) {
+				cJSON_Delete(payload);
+				memory_job_free(job);
+				return NULL;
+			}
+			tail = &(*tail)->next;
 		}
-		step->type = REACT_STEP_ACTION;
-		step->tool_name = strdup(name->valuestring);
-		step->next = job->steps;
-		job->steps = step;
-		if (!step->tool_name) {
-			cJSON_Delete(payload);
-			memory_job_free(job);
-			return NULL;
+	} else {
+		cJSON_ArrayForEach (name, cJSON_GetObjectItemCaseSensitive(payload, "tools")) {
+			if (!cJSON_IsString(name))
+				continue;
+			struct react_step source = {0};
+
+			source.type = REACT_STEP_ACTION;
+			source.tool_name = name->valuestring;
+			*tail = memory_step_clone(&source);
+			if (!*tail) {
+				cJSON_Delete(payload);
+				memory_job_free(job);
+				return NULL;
+			}
+			tail = &(*tail)->next;
 		}
 	}
 	cJSON_Delete(payload);
@@ -540,4 +628,90 @@ int memory_async_resume(struct db *db, const struct memory_options *opts)
 	}
 	memory_job_records_cleanup(&records);
 	return 0;
+}
+
+static void memory_refresh_statement_cleanup(sqlite3_stmt **statement)
+{
+	sqlite3_finalize(*statement);
+}
+
+int memory_refresh_summaries_async(struct db *db, int64_t session_id,
+				   const struct memory_options *options)
+{
+	sqlite3_stmt *stmt MORPH_CLEANUP(memory_refresh_statement_cleanup) = NULL;
+	morph_array_t sessions MORPH_CLEANUP(morph_array_cleanup) = {0};
+	int step;
+
+	if (!options->enabled || !options->learn_from_chats_enabled || !options->worker ||
+	    !options->llm || !options->llm->chat || !model_api_key_borrow(options->llm)[0] ||
+	    !strcmp(db->path, ":memory:"))
+		return 0;
+	/* Catch up only changed, visible project sessions. Valid summaries and
+	 * in-flight jobs do not consume the four-session catch-up budget. */
+	if (sqlite3_prepare_v2(
+		    db->handle,
+		    "SELECT s.session_id,COALESCE(session.display_id,'') FROM memory_scopes s "
+		    "JOIN memory_scopes current ON current.session_id=?1 "
+		    "JOIN sessions session ON session.id=s.session_id WHERE "
+		    "(s.session_id=?1 OR (s.owner=current.owner AND current.project!='' "
+		    "AND s.project=current.project)) AND NOT EXISTS "
+		    "(SELECT 1 FROM memory_summaries m WHERE m.session_id=s.session_id AND "
+		    "m.memory_version=s.generation AND m.content_revision=s.content_revision) "
+		    "AND NOT EXISTS (SELECT 1 FROM memory_jobs j WHERE j.session_id=s.session_id "
+		    "AND j.generation=s.generation AND (j.state IN ('queued','running') OR "
+		    "(j.state='failed' AND j.content_revision=s.content_revision))) "
+		    "AND (EXISTS (SELECT 1 FROM memory_facts WHERE session_id=s.session_id) OR "
+		    "EXISTS (SELECT 1 FROM memory_candidates WHERE session_id=s.session_id) OR "
+		    "EXISTS (SELECT 1 FROM memory_episodes WHERE session_id=s.session_id) OR "
+		    "EXISTS (SELECT 1 FROM memory_notes WHERE session_id=s.session_id)) "
+		    "ORDER BY session.updated_at DESC,s.session_id DESC",
+		    -1, &stmt, NULL) != SQLITE_OK)
+		return MORPH_ERR_DB;
+	sqlite3_bind_int64(stmt, 1, session_id);
+	int rc = morph_array_init(&sessions, 4, sizeof(session_id));
+
+	if (rc != 0)
+		return rc;
+	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
+		const char *display = (const char *)sqlite3_column_text(stmt, 1);
+
+		if (options->visible_fn && !options->visible_fn(display, options->visible_user_id,
+								options->visible_user_data))
+			continue;
+		int64_t *saved = morph_array_push_borrow(&sessions);
+
+		if (!saved)
+			return -ENOMEM;
+		*saved = sqlite3_column_int64(stmt, 0);
+		if (sessions.nelts >= 4)
+			break;
+	}
+	if (step != SQLITE_ROW && step != SQLITE_DONE)
+		return MORPH_ERR_DB;
+	sqlite3_finalize(stmt);
+	stmt = NULL;
+	for (size_t i = 0; i < sessions.nelts; i++) {
+		int64_t target = *(int64_t *)morph_array_borrow(&sessions, i);
+		struct memory_options refresh = *options;
+
+		refresh.organize_only = 1;
+		rc = memory_save_turn_async(db, target, "", "", NULL, 1, &refresh);
+		if (rc != 0)
+			return rc;
+	}
+	return 0;
+}
+
+int memory_retry_updates(struct db *db, int64_t session_id, const struct memory_options *opts)
+{
+	if (!db || !db->handle || !opts || !opts->enabled || session_id <= 0)
+		return -EINVAL;
+	int rc = memory_job_store_retry_session(db, session_id);
+
+	if (rc < 0)
+		return rc;
+	rc = memory_async_resume(db, opts);
+	if (rc == 0)
+		rc = memory_refresh_summaries_async(db, session_id, opts);
+	return rc;
 }

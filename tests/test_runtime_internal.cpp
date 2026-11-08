@@ -196,23 +196,23 @@ TEST(RuntimeInternalTest, MemoryOptionsMirrorConfiguration)
 {
 	struct config config{};
 	config.memory.enabled = 1;
-	config.memory.hot_path_enabled = 1;
-	config.memory.cold_path_enabled = 0;
-	config.memory.llm_extract_enabled = 1;
+	config.memory.capture_input_enabled = 1;
+	config.memory.save_tasks_enabled = 0;
+	config.memory.learn_from_chats_enabled = 1;
 	config.memory.max_facts = 12;
-	config.memory.max_episodes = 7;
-	config.memory.max_procedures = 4;
-	config.memory.max_context_chars = 4096;
+	config.memory.max_past_tasks = 7;
+	config.memory.max_tips = 4;
+	config.memory.max_reply_chars = 4096;
 
 	struct memory_options options = runtime_memory_options_from_config(&config);
 	EXPECT_EQ(options.enabled, 1);
-	EXPECT_EQ(options.hot_path_enabled, 1);
-	EXPECT_EQ(options.cold_path_enabled, 0);
-	EXPECT_EQ(options.llm_extract_enabled, 1);
+	EXPECT_EQ(options.capture_input_enabled, 1);
+	EXPECT_EQ(options.save_tasks_enabled, 0);
+	EXPECT_EQ(options.learn_from_chats_enabled, 1);
 	EXPECT_EQ(options.max_facts, 12);
-	EXPECT_EQ(options.max_episodes, 7);
-	EXPECT_EQ(options.max_procedures, 4);
-	EXPECT_EQ(options.max_context_chars, 4096);
+	EXPECT_EQ(options.max_past_tasks, 7);
+	EXPECT_EQ(options.max_tips, 4);
+	EXPECT_EQ(options.max_reply_chars, 4096);
 }
 
 TEST(RuntimeInternalTest, CreditSessionKeyPrefersBoundScopeThenDisplayId)

@@ -182,13 +182,13 @@ struct config_context {
 
 struct config_memory {
 	int enabled;
-	int hot_path_enabled;
-	int cold_path_enabled;
-	int llm_extract_enabled;
+	int capture_input_enabled;
+	int save_tasks_enabled;
+	int learn_from_chats_enabled;
 	int max_facts;
-	int max_episodes;
-	int max_procedures;
-	int max_context_chars;
+	int max_past_tasks;
+	int max_tips;
+	int max_reply_chars;
 };
 
 struct config_render {

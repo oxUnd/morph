@@ -605,7 +605,7 @@ void react_context_destroy(struct react_context *ctx)
 	free(ctx->final_answer);
 	free(ctx->last_error_detail);
 	free(ctx->system_prompt);
-	free(ctx->memory_context);
+	free(ctx->memory_reply_text);
 	free(ctx->workdir);
 	free(ctx->history_compaction_prompt);
 	msg_list_destroy(ctx->messages);
@@ -681,19 +681,20 @@ void react_cancel(struct react_context *ctx)
 	}
 }
 
-int react_set_memory_context_copy(struct react_context *ctx, const char *memory_context)
+int react_set_memory_reply_text_copy(struct react_context *ctx, const char *memory_reply_text)
 {
 	char *dup = NULL;
 
 	if (!ctx)
 		return -EINVAL;
-	if (memory_context) {
-		dup = strdup(memory_context);
+	if (memory_reply_text) {
+		dup = strdup(memory_reply_text);
 		if (!dup)
 			return -ENOMEM;
 	}
-	free(ctx->memory_context);
-	ctx->memory_context = dup;
+	free(ctx->memory_reply_text);
+	ctx->memory_reply_text = dup;
+	ctx->memory_reply_session_id = 0;
 	return 0;
 }
 
@@ -2749,11 +2750,14 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 
 		if (ctx->memory_options && ctx->history_db) {
 			char *memory = NULL;
-			int rc = memory_context_create(ctx->history_db, ctx->history_session_id,
-						       user_input, ctx->memory_options, &memory);
+			int rc = memory_reply_text_create(ctx->history_db, ctx->history_session_id,
+							  user_input, ctx->memory_options, &memory);
 
-			if (rc == 0)
-				rc = react_set_memory_context_copy(ctx, memory);
+			if (rc == 0) {
+				rc = react_set_memory_reply_text_copy(ctx, memory);
+				if (rc == 0 && memory)
+					ctx->memory_reply_session_id = ctx->history_session_id;
+			}
 
 			free(memory);
 			if (rc != 0) {
