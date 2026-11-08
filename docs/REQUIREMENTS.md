@@ -1,2733 +1,749 @@
-# 多题材 Agent 需求文档
+# morph 需求文档
 
-> **文档版本**: v0.6
-> **状态**: Updated — 同步代码实际行为（v0.3.11），补齐事件系统 / 定时任务 / 动态 JS 工具 / img_qa / config_edit / QuickJS+Wasm3 运行时 / exec+process 受管 shell 与命令审批 / 权限 profile / runtime 门面 / seccomp denylist+Landlock
+> **文档版本**：v0.7
+> **完成状态**：**已完成（与当前实现对齐）**
+> **实现基线**：v0.4.2，提交 `1d7d8ac`，更新日期 2026-11-08。
+> **范围**：本文仅记录仓库中已经实现的功能、接口职责和资源边界。完成状态指本次文档同步完成；具体接口以对应头文件和配置 schema 为准。
 
 ## 0. 术语与缩写
 
 | 术语 | 定义 |
-|------|------|
-| Agent | 本产品运行实体，封装 ReAct 循环、工具与会话 |
-| ReAct | Reasoning + Acting，LLM 输出 Thought/Action，运行时回填 Observation 的循环 |
-| Tool | Agent 可调用的能力单元，包含**内置工具**、动态工具、MCP 工具与 Ext |
-| Ext | 用户/社区编写的可热插拔扩展，以 `.so` 或可执行文件形态存在，运行在沙箱中 |
-| Dynamic Tool | Agent 在运行时创建或更新的 QuickJS JavaScript 工具，可为会话级或持久级 |
-| Session | 一段连续对话的上下文集合，持久化在 SQLite |
-| Context Window | 单次 LLM 调用送入的 token 总量 |
-| MVP | Minimum Viable Product，M1 里程碑交付物 |
-| MCP | Model Context Protocol，标准化的远程工具/资源/提示词发现协议 |
-| Sub-agent | 可配置的子代理，拥有独立系统提示、模型和工具限制 |
-| Memory | 长期记忆系统，跨会话保留事实、经历和程序性知识 |
-| Task | 稍后或周期性执行的 Agent 任务，结果写入通知 inbox |
-
----
+| --- | --- |
+| Agent | 封装 ReAct 循环、模型、工具和会话的运行实体 |
+| ReAct | 模型推理、结构化工具调用、工具结果回填和最终回答的执行循环 |
+| Runtime | 统一拥有模型、工具、权限、会话和 worker 生命周期的进程级运行时 |
+| Tool | 内置工具、动态工具、MCP 工具和 Ext 的统一执行入口 |
+| Ext | 通过 manifest 描述的原生共享库或可执行扩展 |
+| Dynamic Tool | 使用内嵌 QuickJS 执行的会话级或持久 JavaScript 工具 |
+| Session | 持久化到 SQLite 的会话、显示消息及模型历史 |
+| Context Window | 一次模型请求允许容纳的输入和输出 token 预算 |
+| MCP | 远程工具、资源及提示词的发现和调用协议 |
+| Sub-agent | 使用独立提示、工具限制和执行上下文的子代理 |
+| Memory | 保存事实、经历、程序性知识及显式偏好的长期记忆 |
+| Task | 持久化的一次性或周期性任务，执行结果进入通知 inbox |
+| Checkpoint | primary turn 的会话快照和 `apply_patch` 文件修改快照 |
 
 ## 1. 产品概述
 
-### 1.1 定位
-面向内容创作者的 **CLI 多题材 AI Agent**，纯 C 实现，以终端对话驱动文字/图片/视频的理解与生成，帮助创作者完成从选题到成品的全流程。
+morph 是以终端为主要入口的 AI Agent，核心使用 C11 实现，通过模型 API 完成文字对话、图片理解、图片生成和视频生成，并使用文件、进程、技能及子代理工具处理任务。
 
-### 1.2 暂定名
-**morph**
+CLI 支持交互、单次执行和管道使用；可选 FastCGI 前端提供 HTTP API 与 SSE。各前端共同使用 runtime，不分别维护模型、数据库或 ReAct 生命周期。
 
-### 1.3 差异化价值
-1. **一站式跨模态**：文字、图片、视频统一入口，ReAct 自动编排
-2. **终端原生**：零 GUI 依赖，可嵌入 shell 管道与 CI 流水线
-3. **纯 C + 零运行时**：编译即用，内存占用低，启动 < 50ms
-4. **可扩展**：Ext 沙箱机制允许任意语言编写扩展，主进程不被污染
-5. **本地优先**：会话与产物全部本地持久化，离线可回看
-6. **MCP 集成**：通过 Model Context Protocol 接入远程工具生态
-7. **子代理编排**：可配置专用子代理处理特定领域任务
-8. **长期记忆**：跨会话记忆事实、经历和行为模式
-9. **运行时扩展**：Agent 可通过 QuickJS 动态创建、回滚、提升和删除工具
-10. **后台任务**：一次性或周期性任务到期后重新进入 ReAct loop 执行
+会话、模型历史、记忆、任务、权限授权和生成产物元数据保存在本地。模型调用按所选 API 传输请求内容，凭据通过配置指定的环境变量等已支持入口解析。
 
-### 1.4 非目标（Non-Goals）
-- 不提供原生 GUI（可选 FastCGI 前端用于 Web API 集成，见 §4.13）
-- 不在端侧运行大模型推理（始终通过 API 调用）
-- 不替代专业剪辑工具（只做生成，不做后期工程）
-- MVP 不支持 Windows 原生（WSL 可用）
+## 2. 使用场景
 
----
+| 场景 | 已实现的能力组合 |
+| --- | --- |
+| 内容创作 | 文字生成、改写、场景角色提示、图片和视频生成 |
+| 图像处理 | 图片问答、参考图生成、局部编辑、跨图融合、标注、缩放及格式转换 |
+| 项目任务 | 文件读取、目录分页、补丁编辑、受权限控制的命令执行与进程会话 |
+| 多步骤任务 | Plan、ReAct、同步或异步子代理、并行扇出及结果合并 |
+| 远程工具集成 | MCP stdio / Streamable HTTP、工具/资源/提示词发现 |
+| 定时执行 | 一次性和周期任务、后台 Agent 执行、通知 inbox |
+| Web 集成 | 可选 FastCGI API、认证、SSE、审批和问答 action |
 
-## 2. 目标用户与场景
+## 3. 实现验收口径
 
-| 角色 | 核心诉求 | 典型场景 |
-|------|---------|---------|
-| 短视频创作者 | 快速产出脚本+素材 | 写脚本 → 生成配图 → mpv 预览 |
-| 图文自媒体 | 批量图文 | 选题 → 文案 → 配图 → 导出 |
-| 设计师 | 视觉原型探索 | 描述 → 参考图 → 迭代 |
-| 小说/编剧 | 故事线+分镜 | 大纲 → 角色卡 → 分镜图 |
-| 开发者 | 自动化内容流水线 | CLI 管道 → 批量生成 |
-| Ext 开发者 | 扩展 Agent 能力 | manifest + 编译 → 注册 |
-| Web 集成者 | 通过 HTTP API 接入 | FastCGI + nginx 部署 |
+| 项目 | 当前验收方式 |
+| --- | --- |
+| 功能行为 | GoogleTest、Mock LLM、本地 HTTP/SSE fixture 和 CLI/FastCGI 集成测试 |
+| 交互行为 | PTY 测试验证选择、长文本、粘贴、取消、命令呈现及 composer 恢复 |
+| 内存与边界 | `ENABLE_ASAN=ON` 同时启用 AddressSanitizer 和 UndefinedBehaviorSanitizer |
+| 接口与所有权 | typed cleanup、借用/复制/转移约定，以及对应回归测试 |
+| 源码约束 | `source_control_flow_conventions`、`cli_application_layout_conventions`；可选全局状态审计 |
+| 平台相关能力 | 沙箱、终端、剪贴板及 MCP live 测试按实际环境运行，缺少条件时明确跳过 |
 
----
+## 4. 已实现功能
 
-## 3. 成功度量（KPI）
+### 4.1 范围
 
-> 每个 P0 功能必须可被以下指标度量；未达标视为该里程碑未交付。
+下列各节描述当前代码行为。资源预算、供应商限制和展示裁剪分别说明，不将有限预览等同于完整模型输入或持久化数据。
 
-| 维度 | 指标 | 目标 |
-|------|------|------|
-| 性能 | 文字首 token 延迟（P95） | < 1.0s |
-| 性能 | 图片生成端到端（P95） | < 30s |
-| 性能 | 冷启动到 prompt 就绪 | < 200ms |
-| 资源 | 静态可执行文件大小（动态链接） | < 8MB |
-| 资源 | 空闲常驻内存 | < 15MB |
-| 资源 | 单次对话峰值内存 | < 80MB |
-| 质量 | 单元测试覆盖率（核心模块） | ≥ 70% |
-| 质量 | Valgrind 内存泄漏 | 0 definitely lost |
-| 安全 | Ext 沙箱逃逸用例（见 §10） | 100% 阻断 |
-| 兼容 | macOS 14+ / Ubuntu 22.04+ / Arch Linux 冒烟测试 | 100% |
+### 4.2 对话与会话
 
----
+- 多轮文字对话、流式 reasoning/content 输出、取消和失败反馈。
+- 创建、恢复、切换、重命名、删除会话，以及导出和分享会话内容。
+- 显示消息与持久模型历史分别保存；支持检查有效上下文、原始记录、最近请求、诊断及修复。
+- `/model` 查看或修改当前已配置文本后端的模型 ID。
+- `/recap` 手动回顾；启用 `general.auto_recap` 后支持离开一段时间再返回的自动回顾。
+- 用户输入支持 UTF-8；界面错误、状态和模型指令使用项目当前的英文文案。
 
-## 4. 功能需求
+### 4.3 上下文预算与压缩
 
-### 4.1 优先级定义
+- 使用 CL100K/O200K BPE 和 Unicode-aware 估算；按所选 adapter 的实际请求序列化内容估计输入。
+- 输入上限取配置窗口与模型窗口的有效较小值，扣除**完整输出预算**和协议预留；发送前再次校验。
+- `summarize_threshold_ratio` 默认 0.8，`compress_target_ratio` 默认 0.5；压缩目标不得超过实际可用输入预算。
+- 保留近期历史、压缩早期内容，并保持工具调用及结果的配对关系。
+- 持久模型历史支持重复压缩、既有摘要再次参与压缩和摘要来源链记录。
+- 工具结果按 token 预算生成有效 JSON 和明确省略标记；原始结果不会先被固定字节前缀截断。
+- `/context` 查看用量，`/compress` 手动触发压缩，`/history` 检查上下文成员及摘要来源。
 
-- **P0**：MVP（M1）必须交付
-- **P1**：V0.2~V0.4 交付
-- **P2**：V1.0 前交付
-- **P3**：愿景项，后续评估
+完整边界见 [模型能力与资源限制](model-capability-limits.md) 和 [上下文与进程恢复](context-and-process-recovery.md)。
 
-### 4.2 对话系统
+### 4.4 文字与提示模板
 
-| 功能 | 描述 | 优先级 |
-|------|------|--------|
-| 多轮对话 | 上下文记忆，支持追问与修改 | P0 |
-| 会话管理 | 创建 / 切换 / 重命名 / 删除 | P0 |
-| 历史回溯 | 列表 + 按 ID 加载 | P0 |
-| 长上下文 | 至少 128K tokens（取决于所选模型） | P1 |
-| 多语言 | 中文为主，兼容英文 | P2 |
-| 多模型并行 | 同时与多个模型对比 | P3 |
+- 文字生成、改写、摘要和 Markdown/纯文本等由所配置文本模型完成。
+- 支持系统提示文件、目录和模板渲染。
+- 已有 general、developer、photographer、photo_editor、writer、designer、video_creator、researcher 场景角色模板。
+- Skill 目录先进入可用能力清单；激活后加载完整指令。
 
-### 4.3 上下文压缩
+实现位于 [提示模板](../src/prompt/template.c) 和 [场景角色模板](../prompts/scenarios/)。
 
-| 功能 | 描述 | 优先级 |
-|------|------|--------|
-| Token 计数 | 调用前精确估算，支持 BPE（CL100K/O200K）+ Unicode-Aware 估算 | P0 |
-| 滑动窗口 | 保留最近 N 轮 + 系统提示 | P0 |
-| 自动摘要 | 超阈值时，对早期历史摘要 | P0 |
-| `/context` 命令 | 查看 token 用量与压缩状态 | P0 |
-| `/compress` 命令 | 手动触发 | P0 |
-| 系统提示压缩 | 按需裁剪工具描述长度 | P1 |
-| 关键信息提取 | 文件路径、生成结果、用户偏好强制保留 | P1 |
-| ReAct 轨迹压缩 | 已完成循环只保留 Final | P1 |
-| 多媒体引用压缩 | 上下文只保留路径+摘要 | P1 |
-| 递归摘要 | 摘要再摘要 | P2 |
+### 4.5 图片生成、理解与处理
 
-### 4.4 文字生成
+| 能力 | 当前行为 |
+| --- | --- |
+| 图片生成 | `img_gen` 使用独立图像模型；尺寸和参考图能力由配置的 adapter 校验 |
+| 参考图 | 单次输入最多 10 张参考图；具体格式和尺寸按 adapter 处理 |
+| 图片理解 | `img_qa` 使用独立 `[model.vision]`；支持 `prompt`、`max_tokens`、`max_dim`、`detail`、`timeout_seconds` |
+| 理解精度 | 默认高细节、最大边 2048；`detail=original` 在共享图像安全边界内保留原尺寸 |
+| 理解输出 | 默认继承视觉模型输出 token 预算 |
+| 局部编辑 | `img_inpaint` 使用 bbox+label 标注生成区域编辑请求 |
+| 跨图融合 | `img_compose` 使用 arrow+label 标注及本地预合成生成融合请求 |
+| 本地处理 | `img_info`、`img_annotate`、`img_resize`、`img_convert` |
+| 展示 | 终端图像协议与文件路径回退；具体可用方式取决于终端 |
 
-| 功能 | 描述 | 优先级 |
-|------|------|--------|
-| 文案创作 | 主题/关键词 → 文章/脚本/标题 | P0 |
-| 文本改写 | 润色、缩扩写、风格转换 | P0 |
-| 流式输出 | SSE 逐 token | P0 |
-| 多格式 | Markdown / 纯文本 / 大纲 | P1 |
-| 模板系统 | 内置脚本/推文/小红书等模板 | P1 |
+`img_inpaint` 和 `img_compose` 使用 `img_annotate` 生成的标注 JSON。理解模型、图像生成模型和文本模型分别配置。
 
-### 4.5 图片生成与理解
+### 4.6 视频生成与播放
 
-| 功能 | 描述 | 优先级 |
-|------|------|--------|
-| 文生图 | 文字 → 图片 | P0 |
-| 图片理解 | 上传 → 描述/分析/问答 | P0 |
-| 终端预览 | sixel / kitty / iterm2 | P0 |
-| 图片缩放 | stb_image_resize2 | P0 |
-| 图片格式转换 | stb_image + stb_image_write | P0 |
-| 图片信息查询 | stb_image（尺寸/格式等） | P0 |
-| 图片标注 | 在图片上添加文字/图形标注 | P0 |
-| 图片编辑 | 局部修改、风格迁移 | P1 |
-| 一致性生成 | 同一角色多场景 | P1 |
-| 批量生成 | 一次多变体 | P2 |
-
-### 4.6 视频生成与理解
-
-| 功能 | 描述 | 优先级 |
-|------|------|--------|
-| 文生视频 | 文字 → 短视频 | P0 |
-| 图生视频 | 图片 → 短视频 | P0 |
-| 异步轮询 | 长任务后台等待 | P0 |
-| 视频理解 | 上传 → 摘要/问答（抽帧或 API） | P0 |
-| mpv 播放 | fork+exec | P0 |
-| 时长 3~30s | — | P1 |
-| 视频编辑 | 拼接 / 字幕 / 转场 | P2 |
-| 风格化 | 动漫 / 写实 / 胶片 | P2 |
+- `vid_gen` 使用独立视频模型，支持文字及参考图片输入。
+- 支持按模型能力校验的 `reference_videos`、`reference_audios` 和 `generate_audio`；Seedance 1.5 及以上支持生成音频，2.0 及以上支持多参考图片、参考视频和音频。
+- 使用 Volcengine 视频 adapter 提交任务、轮询状态、下载结果并记录产物。
+- 视频路径可交给终端渲染入口或 `mpv` 播放；失败时保留路径反馈。
+- `duration` 转发供应商，支持范围取决于所选模型和 API；参考素材与音频组合由 adapter 能力校验。
 
 ### 4.7 ReAct 推理协同
 
-Agent 基于 ReAct 模式自主规划跨模态任务，用户无需手动指定模态路由：
+ReAct 使用结构化 Function Calling，执行 Thought → Action → Observation → Guardrail → Final。文本生成由 LLM 直接完成；文件、媒体、进程和远程能力通过工具调用执行。
 
-| 场景 | ReAct 轨迹示例 |
-|------|----------------|
-| 文图联动 | Thought: 直接生成文案 → Thought: 配图 → Action: img_gen → Final: 文案+配图 |
-| 图视联动 | Thought: 图片变视频 → Action: vid_gen(image) → Final: 视频文件 |
-| 全链路 | Thought: 选题并生成文案 → Thought: 配图 → Action: img_gen → Thought: 动态化 → Action: vid_gen → Final: 完整作品 |
-| 子代理委派 | Thought: 需要专业翻译 → Action: agent_delegate(translate-agent, task) → Obs: 翻译结果 → Final |
+模型返回多个工具调用时，运行时可以并行执行并统一回收结果。达到迭代上限、取消、检查失败和模型错误保留明确 outcome，不将异常结束当成正常完成。
 
-### 4.7.1 统一事件系统
+### 4.7.1 统一事件与 Hooks
 
-Morph 需要一套 CLI、FastCGI、GUI、Android 和测试共同消费的结构化事件系统。
-ReAct、工具调用、MCP 启动/连接、HITL、Artifact、后台任务和错误都必须通过同一
-事件语义表达；CLI 的人类可读输出只是 renderer，不能作为 GUI/Android 的协议。
+- startup、ReAct、工具、MCP、审批、产物和后台任务使用统一 dotted event 名称及结构化 payload。
+- CLI 和 FastCGI 分别渲染同一运行时事件语义。
+- Hooks 支持配置加载、信任、启停、匹配、超时、取消、权限决定及上下文补充。
+- 大段 Hook 上下文保存到私有文件并附恢复路径；保存失败会阻断处理，不能丢失 deny/ask 决定后继续执行。
 
-详细设计与迁移清单见 `docs/event-system.md`。实现时必须复用 `src/util/` 下的
-`morph_buf_t`、`morph_array_t`、`morph_str_t`、`morph_strmap_t` 等基础数据结构，
-不得重新实现动态数组、字符串缓冲、hash map 或 UTF-8 处理逻辑。
+参见 [事件系统](event-system.md) 与 [Hooks](hooks.md)。
 
-### 4.8 Ext 沙箱系统
+### 4.8 Ext 扩展
 
-| 功能 | 描述 | 优先级 |
-|------|------|--------|
-| 自动发现 | 扫描目录，解析 manifest.toml | P0 |
-| 注册到 Tool Registry | Ext 即 Tool | P0 |
-| 沙箱执行（seccomp + rlimit） | Linux | P0 |
-| Guardrail Ext | Ext 可作为 Guardrail 规则插件（.so） | P0 |
-| 沙箱执行（SBPL） | macOS | P2（已通过 `sandbox_enter_darwin` + `sandbox_init` 实现） |
-| Ext 启停 | enable / disable | P1 |
-| Ext 安装/卸载 | install / remove（本地路径） | P1 |
-| 远程仓库拉取 | git clone | P2 |
-| Namespace 隔离（PID/NET） | 强隔离 | P2 |
+| 类型或操作 | 当前行为 |
+| --- | --- |
+| 自动发现 | 扫描配置目录，解析 `manifest.toml`，注册工具或 Guardrail 规则 |
+| exec 扩展 | 子进程执行，通过 stdin/stdout JSON-RPC 交换请求与最终结果 |
+| 原生共享库 | `dlopen`/`dlsym` 后在宿主进程直接调用，适用于可信扩展 |
+| GitHub 安装 | `/ext install` 支持 GitHub 来源、引用及子目录选择 |
+| 工具管理 | `/ext list`、`/ext info` 查看已注册工具及元数据 |
 
-> **MVP 范围裁剪（历史）**：M1 的 Ext 子系统只交付**最小闭环**——发现 + 注册 + 基础 seccomp 沙箱。`enable/disable/remove`、远程拉取、macOS 沙箱原计划推迟到 V0.4；其中 macOS SBPL 沙箱现已实现。
+exec 扩展进入配置的进程沙箱和资源限制；共享库扩展不具有子进程 OS 隔离。扩展 manifest 的有界字段超长、非法 UTF-8 和资源整数溢出会明确报错。
 
-### 4.9 长期记忆系统
+### 4.9 长期记忆与偏好
 
-| 功能 | 描述 | 优先级 |
-|------|------|--------|
-| 事实记忆（Facts） | 提取用户偏好、项目信息等结构化事实 | P0 |
-| 经历记忆（Episodes） | 记录任务执行过程、工具使用、结果 | P0 |
-| 程序性记忆（Procedures） | 学习重复性行为模式为规则 | P0 |
-| LLM 驱动提取 | 使用 LLM 进行结构化记忆提取 | P0 |
-| 启发式回退 | LLM 不可用时使用锚点启发式提取 | P0 |
-| 异步整合 | 后台线程异步整合记忆，不阻塞主流程 | P0 |
-| 记忆上下文注入 | 构建记忆上下文注入 ReAct 推理 | P0 |
-| `/memory` 命令 | 查看/清除记忆 | P0 |
-| 跨会话持久化 | SQLite 持久化，会话级作用域 | P0 |
+- SQLite 保存 facts、episodes、procedures、变更和显式 preferences。
+- 显式偏好在接受输入时独立持久化，不依赖最终模型回答是否成功。
+- 偏好支持 personal / project / session 作用域，有效值按 session > project > personal 覆盖。
+- 每个 runtime 拥有独立异步 worker；任务输入深拷贝，并通过会话 generation 防止旧任务覆盖新状态。
+- 上下文默认按 3000 Unicode 码点预算选择完整条目；数量或字符预算造成省略时显式标记，可通过 `memory` 分页恢复。存在显式偏好时保留至少 512 码点的上下文预算。
+- 完整记忆仍保存在数据库，事实不会仅因超过 200 字节而被自动丢弃。
+- `memory` 支持类型、作用域及 `offset_chars` / `max_chars` 分页；每页最多 4000 码点，并按最终完整 JSON envelope 的 token 预算缩小。
+- `memory_preference` 管理显式偏好；CLI `/memory` 支持 show/set/unset/history/explain/jobs 及清除记忆。多用户前端继续应用用户范围约束。
 
-### 4.10 MCP（Model Context Protocol）
+### 4.10 MCP
 
-| 功能 | 描述 | 优先级 |
-|------|------|--------|
-| stdio 传输 | fork+exec 子进程，stdin/stdout JSON-RPC | P0 |
-| Streamable HTTP 传输 | libcurl HTTP 连接 | P0 |
-| 工具发现与注册 | tools/list → 自动注册为 morph 工具 | P0 |
-| 资源发现与读取 | resources/list + resources/read | P0 |
-| 提示词发现与获取 | prompts/list + prompts/get | P0 |
-| 多服务器管理 | 最多 32 个 MCP 服务器 | P0 |
-| 自动连接 | 启动时自动连接 + 超时控制 | P0 |
-| `/mcp` 命令 | list/tools/resources/prompts/connect/disconnect | P0 |
-| 延迟连接 | 按需连接（lazy connect） | P0 |
+- stdio 与 Streamable HTTP 传输，JSON-RPC 请求/响应、超时、取消及连接清理。
+- 发现并注册 tools、resources、prompts；支持启动后台发现和执行时按需连接。
+- `/mcp` 管理服务器、连接及发现内容。
+- 当前协议常量为 `2026-07-28`，兼容回退版本为 `2025-11-25`；具体握手策略由客户端实现决定。
+- 工具描述和 schema 使用动态所有权；stdio 接收帧/缓冲上限 16 MiB，超限报错并断开连接。
 
-### 4.11 子代理系统
+接口见 [mcp.h](../src/mcp/mcp.h)，后台发布见 [runtime MCP](../src/runtime/mcp_background.c)。
 
-| 功能 | 描述 | 优先级 |
-|------|------|--------|
-| 可配置子代理 | 独立系统提示、模型、工具限制 | P0 |
-| 同步调用 | agent_sync：阻塞等待结果 | P0 |
-| 异步委派 | agent_delegate：后台执行 + agent_status 查询 | P0 |
-| 并行扇出 | agent_fanout：多任务并行 + 合并策略 | P0 |
-| 上下文策略 | full / summary / task_only | P0 |
-| 合并策略 | synthesize / concat / raw | P0 |
-| 输出 Schema | 约束子代理输出格式 | P0 |
-| 递归深度限制 | 最大嵌套深度 2 层 | P0 |
-| 追踪日志 | 子代理执行轨迹记录 | P0 |
+### 4.11 子代理
 
-### 4.12 可插拔 Guardrail 引擎
+- 配置独立系统提示、模型 ID、工具限制、上下文策略和输出 schema。
+- `delegate(agent, task)` 异步委派，`agent_status(task_id)` 查询，`fanout(agent, tasks, merge)` 并行扇出。
+- 配置的子代理可注册同步工具 `agent_<name>(task)`。
+- 上下文策略支持 full / summary / task_only；合并策略支持 synthesize / concat / raw。
+- 最多 8 个同时活跃的任务；完成或失败释放执行槽，稳定任务记录和结果继续保留。
+- `fanout` 每批最多 8 项；超限或可用槽不足时在启动前明确拒绝。嵌套深度最多 2。
+- 后代使用共享权限 authority，保留独立任务记录、事件和会话关联。
 
-| 功能 | 描述 | 优先级 |
-|------|------|--------|
-| C 函数规则 | 内置 C 函数实现验证逻辑 | P0 |
-| LLM 评估规则 | 使用 LLM 进行主观质量评估 | P0 |
-| Ext 插件规则 | .so 动态库作为验证插件 | P0 |
-| 三个 Hook 点 | input / tool_output / output | P0 |
-| 配置驱动 | 通过 config.toml 注册/启停规则 | P0 |
-| 内置规则 | 自动注册的默认验证规则 | P0 |
-| 失败重试 | Guardrail 失败回灌原因，LLM 重试 | P0 |
+### 4.12 Guardrail
 
-### 4.13 FastCGI Web 前端
+- 支持 C 函数、LLM 评估以及 exec / 共享库插件规则。
+- 检查点为 input、tool_output、output；配置控制规则、重试和检查器错误策略。
+- 检查未通过与检查器自身失败分别记录；`on_error` 决定继续或阻断。
+- LLM 检查提示动态构造，完整保留检查内容和响应要求。
+- Guardrail 负责结果检查；工具访问与审批由统一权限层处理。
 
-| 功能 | 描述 | 优先级 |
-|------|------|--------|
-| RESTful API | 会话 CRUD + 对话 turns + canvas | P0 |
-| SSE 流式输出 | 实时推送 thought/tool_call/final 等事件 | P0 |
-| SQLite WAL 共享 | CLI 与 FastCGI 共享同一数据库 | P0 |
-| Bearer 认证 | API Key 认证 | P0 |
-| X-Remote-User 认证 | 反向代理信任头认证 | P0 |
-| 可选构建 | `BUILD_FASTCGI=ON` CMake 选项 | P0 |
-| Action 机制 | Web → Agent 命令注入（approve/reject/cancel） | P0 |
+### 4.13 FastCGI
 
-> **定位**：FastCGI 前端是可选的 HTTP API 层，用于将 morph agent 集成到 Web 系统。不提供原生 GUI，Web UI 由外部前端实现。
+- `BUILD_FASTCGI=ON` 构建可选 HTTP API 前端。
+- 提供会话、turn、canvas 和 action 接口，使用 SSE 推送运行时事件。
+- 支持 Bearer 凭据及配置的受信任反向代理身份入口。
+- approve/reject/cancel 和问答 action 进入共享运行时交互契约。
+- 请求体超过 4 MiB 返回 HTTP 413；问答选项超限明确报错。
 
-### 4.14 动态 JS 工具
+### 4.14 动态 JavaScript 工具
 
-| 功能 | 描述 | 优先级 |
-|------|------|--------|
-| QuickJS Runner | `morph-js-runner` 子进程执行 `run(args)` / `async run(args)` | P0 |
-| 工具创建 | `tool_create` 创建或更新会话级动态工具 | P0 |
-| 持久工具 | `tool_promote` 将会话工具提升到 `~/.morph/tools/` | P0 |
-| 历史与回滚 | `tool_history` / `tool_diff` / `tool_rollback` 管理 checkpoint | P0 |
-| 删除工具 | `tool_delete` 删除会话或持久动态工具 | P0 |
-| Host API | 提供 fs / image / canvas / fetch / env / exec / WASM 等受配置约束的能力 | P0 |
-| 配置 Profile | local 默认开放，server 默认收紧，可按能力、路径、命令和网络配置 | P0 |
+- `morph-js-runner` 内嵌 QuickJS，执行 `run(args)` 或 `async run(args)`。
+- `tool_create`、`tool_promote`、`tool_delete` 管理会话/持久工具；`tool_history`、`tool_diff`、`tool_rollback` 管理版本。
+- 工具描述、input/output schema 完整保存，源代码默认最多 256 KiB，可配置。
+- Host API 提供受能力、路径、命令和网络配置约束的 fs、image、canvas、fetch、env、exec、WASM 等能力。
+- Host fetch、exec 子调用及 runner stdout 使用配置的捕获预算，默认 1 MiB；超限明确报错，不解析部分结果为成功。
+- runner 顶层 stderr 作为有界诊断预览，超限附省略标记并记录诊断。
+- fetch 支持校验后的请求头，包括服务器支持时的 Range；拒绝头注入及非法 NUL 输入。
+- local/server 配置分别控制默认 capabilities 与允许范围。
 
-> 详细运行时语义见 `docs/quickjs-tools.md`。动态工具不是 Node.js 环境，不提供
-> `require()`、`Buffer`、`process`、npm 包或 Node 内置模块。
+接口及运行语义见 [QuickJS 工具](quickjs-tools.md)。
 
 ### 4.15 定时任务与通知
 
-| 功能 | 描述 | 优先级 |
-|------|------|--------|
-| 一次性任务 | `/tasks add <unix_time|+seconds> <prompt>` | P0 |
-| 周期任务 | `/tasks every <seconds> <prompt>` | P0 |
-| 任务管理 | list / show / update / cancel / run | P0 |
-| Inbox | `/inbox list` / `/inbox read` 查看任务结果通知 | P0 |
-| SQLite 持久化 | `scheduled_tasks` 与 `notifications` 表 | P0 |
-| ReAct 执行 | 到期任务以后台输入重新进入 `react_run()`，由 Agent 决定工具调用 | P0 |
+- `/tasks add <unix_time|+seconds> <prompt>` 创建一次性任务。
+- `/tasks every <seconds> <prompt>` 创建周期任务；支持 list/show/update/cancel/run。
+- 任务和通知持久化，执行具有 claim、重试、取消和结果提交检查。
+- 到期 Agent 任务通过 runtime 进入 ReAct；结果写入通知 inbox。
+- CLI 动态保存完整任务 prompt 和命令参数；展示标题的缩短不改变执行内容。
 
-> 当前不做独立 daemon、桌面通知、邮件/IM/webhook 投递或自然语言日期解析器。
+参见 [定时任务](scheduled-tasks.md)。
 
----
+### 4.16 模型能力与资源限制治理
 
-## 5. CLI 交互设计
+| 项目 | 已实现行为 |
+| --- | --- |
+| 调用身份 | 工具名称、调用 ID、本地关联 ID、provider item ID 使用动态字符串，执行、克隆、重放及后续请求保留完整值 |
+| 凭据 | 环境变量长凭据使用完整 owned 存储，模型 clone 独立持有，Authorization 动态构造 |
+| 响应终态 | Chat/DeepSeek 和 Responses 校验流终态；提前 EOF、失败及非长度原因 incomplete 返回错误 |
+| 输出耗尽 | 保留可用的部分文本并报告长度限制，不执行未完成工具调用 |
+| 审批输入 | 独立模型 reviewer 接收完整目标并继承配置预算；完整请求无法容纳时按失败路径 defer |
+| 工具结果 | 历史预算处理保持 JSON 有效并标明省略，保留工具自身的分页或文件恢复入口 |
+| 进程输出 | 有界内存窗口与独立脱敏 spool；元数据说明已捕获范围和无法恢复的缺口 |
+| 长输入 | CLI 参数动态保存；问答和自定义答案使用明确预算，终端编辑跨容量扩容保留 UTF-8 与 NUL 边界 |
+| 长片段计数 | BPE 使用索引最小堆保持 rank / 最左优先语义，避免长连续文本的反复全量扫描 |
+| 词表读取 | 动态读取和有界解码，支持最多 65535 字节的 token，超出表示范围拒绝加载 |
+| 文件修改 | checkpoint 在写入前验证 postimage 及总预算；seal 和 restore 再核验真实数据 |
 
-### 5.1 启动与对话示例
+资源上限及超限行为汇总见 §10 和 [模型能力与资源限制](model-capability-limits.md)。
 
-```text
-$ morph
+## 5. CLI 交互
 
-morph v0.3.11  |  /help 查看命令
+### 5.1 启动与执行
 
-[abc1] $ 帮我写一个赛博朋克短视频脚本，并配图和视频
-⠋ Thinking → 赛博朋克短视频脚本...
-OK Script drafted by the language model (3s)
-⠋ Thinking → 根据第二幕生成配图...
--> img_gen → prompt="赛博朋克街道夜景，霓虹灯", style="realistic"
-OK Image generated (8s)
-⠋ Thinking → 将配图扩展为 5s 视频...
--> vid_gen → image="img_20260512_01.png", duration=5
-OK Video generated (25s)
-[Guardrail] No tools called but output expected. Try using available tools.
-
-(最终结果经 Markdown→ANSI 渲染输出，图片在终端内联预览，视频用 mpv 播放)
-
-[abc1] $ /context
-context: 4321 / 128000 tokens (3.4%) | messages: 5
-[abc1] $ /trace
---- ReAct trace (赛博朋克短视频)
-  1. [Thought] 用户需要脚本+配图+视频。先由语言模型写脚本。
-  2. [Thought] 根据第二幕生成配图。
-  3. [Action] img_gen(prompt="赛博朋克街道夜景") (tool: img_gen)
-  4. [Observation] image generated: ~/.morph/output/img_20260512_01.png
-  5. [Thought] 将配图扩展为 5s 视频。
-  8. [Action] vid_gen(image="img_20260512_01.png") (tool: vid_gen)
-  9. [Observation] video generated: ~/.morph/output/vid_20260512_01.mp4
-  10. [Guardrail] No tools called but output expected
-  11. [Final] 完成，图片已在终端预览，视频用 mpv 播放。
-state: DONE, steps: 11
-[abc1] $ /save
---- saving session to 赛博朋克短视频_1715817600.md
-saved 5 messages
+```sh
+cmake -S . -B build
+cmake --build build
+./build/bin/morph --help
+./build/bin/morph
 ```
 
-> **说明**：ReAct 过程中不再逐行打印 Thought/Action/Observation，而是通过 Spinner 动画在单行内指示当前状态（见 §6.11）。仅在 `/trace` 命令中展示完整步骤列表。Guardrail 验证失败时会直接打印 `[Guardrail]` 标签行。当 HITL 启用时，工具执行前会提示用户确认（`[y/n/a]`）。
+交互模式使用 TUI composer、footer 和历史输出区域；用户提交内容使用 `›` 提示。CLI 根 Application 统一拥有交互、plain 和单次执行模式。
 
-### 5.2 输入方式
+### 5.2 输入与问答
 
-| 类型 | 方式 | 示例 |
-|------|------|------|
-| 文字 | 直接输入 | `写一段日落文案` |
-| 图片 | 文件路径（自动识别后缀） | `分析 ./photo.jpg` |
-| 视频 | 文件路径 | `总结 ./clip.mp4` |
-| 混合 | 文本 + 路径 | `把 ./img.png 变成视频，写实` |
-| 命令 | `/` 前缀 | `/help` `/new` … |
+- 直接输入文字，或结合本地图片路径提交任务；`/image <path>` 提供图片入口。
+- `/` 命令作为本地动作处理，不转成模型 steering 文本。
+- `ask_user` 支持单选、多选、自定义答案、推荐项以及 required/optional 响应策略。
+- 最多 64 个选项，答案文本合计最多 1 MiB；超限明确报错，包括 optional 超时推荐项回退。
+- required 问题不自动作答；optional 支持无输入超时处理，编辑活动会暂停自动回退。
+- 选择和超时问答使用共享选择组件；无 Readline 的交互自由文本也使用共享编辑器，Readline 模式的自由文本沿用 Readline。选择组件的长粘贴合并重绘。
+- plain 模式在后台执行 turn，由 UI owner 持续处理事件和问答调用。
 
-### 5.3 输出渲染
+### 5.3 输出与本地命令呈现
 
-| 输出 | 渲染 | 备注 |
-|------|------|------|
-| ReAct 过程 | Spinner 动画（单行，4 样式可选：dots/arrow/pulse/braille） | 状态前缀：`>>` 思考 / `->` 执行 / `OK` 完成 / `ERR` 错误 |
-| Thought 流式预览 | Spinner submessage 滚动显示最近 token | 超长自动滚动，最多 80 列可见 |
-| 耗时 | 阶段完成后显示 `(Ns)` 或 `(Nm Ns)` | 紧跟状态前缀 |
-| Guardrail | 直接打印 `[Guardrail]` 标签行 | 粗体青色 |
-| 文字（Final） | MorphMarkdown Kitty SDK + 媒体回调 | 颜色 / 粗体 / 代码块 / 数学公式；Markdown 中的 `![image](path)` / `![video](path)` 自动触发渲染 |
-| 图片 | 终端协议优先级：**kitty > iterm2 > sixel > 文件路径回退** | 自动探测 |
-| 视频 | fork+exec mpv | 失败回退到打印路径 |
-| 链接 | OSC 8 超链接 | 不支持时降级为纯 URL |
+- reasoning、回答和工具事件使用各自的输出块；Working、耗时和取消提示由 UI owner 渲染。
+- 工具预览的显示裁剪与模型结果、持久化内容分别处理；完整详情由详情视图查看。
+- Markdown 流式预览与已提交内容共享稳定边界，媒体由渲染回调处理。
+- 已提交本地命令保留为普通背景上的独立紫色行，结果与成功回执不使用用户消息背景。
+- `/hooks`、`/resume`、`/history` 面板取消后保留命令行并恢复一个 composer，不打印关闭回执。
+- 未识别命令明确报错并清空编辑输入；已知但暂不能执行的命令保留重试输入。
+- 命令与首个结果之间、已完成结果组之后各有约定的空行；Readline 回忆历史独立保存。
 
-### 5.4 完整命令表
+参见 [CLI 工具输出](cli-tool-feed.md)、[CLI 应用布局](tui-application-layout.md) 和 [TUI 盒模型](tui-box-model.md)。
 
-> 每个命令需在 `--help` 与 README 中保持文案一致（测试用例覆盖）
-> 主命令与短别名共享同一 handler，帮助中合并显示。
+### 5.4 已实现命令
 
-| 命令 | 别名 | 功能 | 示例 |
-|------|------|------|------|
-| `/quit` | `/q` | 退出 | `/q` |
-| `/help [cmd]` | `/h` | 帮助 | `/h ext` |
-| `/new [name]` | `/n` | 新建会话 | `/n 项目A` |
-| `/switch <name\|id\|display_id>` | `/s` | 切换会话（支持 `^N` 索引） | `/s abc1` |
-| `/resume [name\|id]` | — | 分页选择或直接恢复会话 | `/resume abc1` |
-| `/rename <new>` | `/rn` | 重命名当前会话 | `/rn 项目B` |
-| `/delete <name\|id>` | `/del` | 删除会话 | `/del 3` |
-| `/history [n\|--all]` | `/hi` | 当前会话最近 n 条 | `/hi --all` |
-| `/model [name]` | `/m` | 查看/切换当前模型 | `/m gpt-4o` |
-| `/trace [--from-db]` | `/t` | 当前轮次 ReAct 轨迹 | `/t --from-db` |
-| `/context` | `/ctx` | token 用量与上下文信息 | — |
-| `/credits` | — | 查看积分用量与预估成本 | — |
-| `/compress` | `/cp` | 手动触发压缩 | — |
-| `/save [format]` | — | 导出会话（md/json/txt） | `/save md` |
-| `/export <fmt>` | — | `/save` 别名 | — |
-| `/config` | `/cfg` | 查看当前配置 | — |
-| `/image <path>` | `/img` | 注入图片 | `/img ./photo.jpg` |
-| `/video <path>` | `/vid` | 注入视频 | `/vid ./clip.mp4` |
-| `/ext list` | `/x list` | 已注册工具列表 | — |
-| `/ext info <name>` | — | 工具详情 | `/ext info demo-translate` |
-| `/ext install <source>` | — | GitHub Ext 安装 | `/ext install github:owner/repo[@ref][//subdir]` |
-| `/ext enable <name>` | — | 启用（stub） | — |
-| `/ext disable <name>` | — | 禁用（stub） | — |
-| `/ext remove <name>` | — | 卸载（stub） | — |
-| `/skill list` | `/sk list` | 已发现 Skill 列表 | — |
-| `/skill info <name>` | — | Skill 详情 | `/skill info code-review` |
-| `/skill activate <name>` | — | 激活 Skill | `/skill activate code-review` |
-| `/skill deactivate <name>` | — | 停用 Skill | `/skill deactivate code-review` |
-| `/render <path>` | `/r` | 渲染文件（图片/视频/Markdown） | `/r output.png` |
-| `/mcp list` | — | 已配置 MCP 服务器列表 | — |
-| `/mcp tools <server>` | — | 服务器提供的工具 | — |
-| `/mcp resources <server>` | — | 服务器提供的资源 | — |
-| `/mcp prompts <server>` | — | 服务器提供的提示词 | — |
-| `/mcp connect <server>` | — | 连接 MCP 服务器 | — |
-| `/mcp disconnect <server>` | — | 断开 MCP 服务器 | — |
-| `/memory show` | `/mem show` | 查看当前会话记忆 | — |
-| `/memory clear [scope]` | `/mem clear` | 清除记忆（all/facts/episodes/procedures） | `/mem clear facts` |
-| `/tasks list [status]` | — | 查看定时任务 | `/tasks list pending` |
-| `/tasks add <time> <prompt>` | — | 创建一次性任务 | `/tasks add +300 五分钟后提醒我休息` |
-| `/tasks every <seconds> <prompt>` | — | 创建周期任务 | `/tasks every 3600 总结当前项目状态` |
-| `/tasks update <id> <time> <prompt>` | — | 更新任务 | `/tasks update 1 +600 检查构建` |
-| `/tasks cancel <id>` | — | 取消任务 | `/tasks cancel 1` |
-| `/tasks run [limit]` | — | 手动触发 due task 处理 | `/tasks run 3` |
-| `/inbox list [limit]` | — | 查看通知列表 | `/inbox list 10` |
-| `/inbox read <id>` | — | 读取通知 | `/inbox read 1` |
-| `/clear` | `/cl` | 清屏 | — |
+命令参数及别名以 `/help` 和 [commands](../src/sapi/cli/commands/) 注册表为准。
 
-> **提示符格式**：`[display_id] $ `，其中 `display_id` 为 4 字符短标识，在创建会话时自动生成，便于快速引用。
-> **stub 标注**：`/ext enable/disable/remove` 当前为 stub 实现，打印 "not yet implemented"。
-
----
+| 类别 | 命令 | 功能 |
+| --- | --- | --- |
+| 基础 | `/help`、`/quit`、`/clear` | 帮助、退出、清屏 |
+| 模型与上下文 | `/model`、`/context`、`/compress`、`/recap` | 模型 ID、预算、压缩和会话回顾 |
+| 结果与配置 | `/trace`、`/credits`、`/config`、`/copy` | 轨迹、积分、配置、复制最后回答 |
+| 会话 | `/new`、`/resume`、`/switch`、`/rename`、`/delete` | 会话生命周期 |
+| 历史 | `/history` | 有效上下文、显示消息、模型历史、最近请求、条目、诊断、修复和导出 |
+| 导出与分享 | `/save`、`/share` | 导出会话、生成分享内容 |
+| 回退 | `/rewind` | 恢复代码、对话或两者 |
+| 媒体 | `/image`、`/render` | 图片输入和文件渲染 |
+| 工具与扩展 | `/ext list`、`/ext info`、`/ext install` | 工具列表、详情及 GitHub 扩展安装 |
+| 技能交互 | `/skill` | 列表、详情、激活和停用 |
+| 技能安装管理 | `morph skills add/list/remove/update` | 顶层 CLI 命令，管理本地或 Git 来源的技能 |
+| MCP | `/mcp` | 服务器与发现内容管理 |
+| 权限 | `/permissions` | access/approval/reviewer 及持久 grant 管理 |
+| Hooks | `/hooks` | Hook 信任、状态及管理 |
+| 记忆 | `/memory` | 查看、设置/取消偏好、历史、解释、后台任务及清除记忆 |
+| 任务与通知 | `/tasks`、`/inbox` | 定时任务和通知管理 |
+| 进程 | `/jobs` | 检查及管理受管进程任务 |
+| 同步 | `/sync` | 当前实现的同步配置及会话同步操作 |
 
 ## 6. 技术架构
 
-### 6.1 整体分层
+### 6.1 分层与生命周期
 
-```
-┌─────────────────────────────────────────────┐
-│  CLI 交互层（readline + ANSI + 终端图像）    │
-│  FastCGI 前端（可选，RESTful + SSE）         │
-└────────────────┬────────────────────────────┘
-                 │
-┌────────────────▼────────────────────────────┐
-│  ReAct Agent 核心                           │
-│  ┌──────────────────────────────────────┐   │
-│  │ LLM 推理（Thought/Action/Obs/Final）│   │
-│  ├──────────────────────────────────────┤   │
-│  │ Tool Registry（内置 + Ext + MCP）   │   │
-│  ├──────────────────────────────────────┤   │
-│  │ Sub-agent 子代理编排                 │   │
-│  ├──────────────────────────────────────┤   │
-│  │ Guardrail 可插拔规则引擎            │   │
-│  ├──────────────────────────────────────┤   │
-│  │ Context Manager（token/压缩/摘要）  │   │
-│  ├──────────────────────────────────────┤   │
-│  │ Memory（事实/经历/程序性记忆）       │   │
-│  ├──────────────────────────────────────┤   │
-│  │ Plan（多步计划管理）                 │   │
-│  ├──────────────────────────────────────┤   │
-│  │ Tasks（定时任务 + 通知 inbox）        │   │
-│  ├──────────────────────────────────────┤   │
-│  │ Dynamic Tools（QuickJS + Host API）  │   │
-│  ├──────────────────────────────────────┤   │
-│  │ Ext Sandbox（seccomp/rlimit/ns）  │   │
-│  └──────────────────────────────────────┘   │
-└────────────────┬────────────────────────────┘
-                 │
-┌────────────────▼────────────────────────────┐
-│  统一事件系统                                │
-│  startup / react / tool / mcp / hitl / artifact / background / error │
-└────────────────┬────────────────────────────┘
-                 │
-┌────────────────▼────────────────────────────┐
-│  模型接入层                                 │
-│  LLM API   |  图像 API  |  视频 API         │
-└────────────────┬────────────────────────────┘
-                 │
-┌────────────────▼────────────────────────────┐
-│  存储 / 文件 / 日志                          │
-│  SQLite | ~/.morph/output | log file        │
-└─────────────────────────────────────────────┘
+```text
+CLI Application / FastCGI
+          |
+          v
+runtime_open / runtime_execute_turn / runtime_close
+          |
+          +-- ReAct / history / compression / memory / plan / sub-agents
+          +-- tool registry / permissions / approvals / hooks
+          +-- models / MCP / Ext / QuickJS / managed processes
+          +-- sessions / persistence / tasks / sync / credits / events
 ```
 
-### 6.2 ReAct 实现规范
+前端持有 opaque `struct runtime *`，通过公开 DTO、快照和服务接口交互。runtime 创建完整依赖图，在失败或关闭时先停止 worker、回收借用，再按依赖逆序释放资源。
 
-#### 6.2.1 单步状态机
+每个 turn 使用统一 request、result 和临时绑定作用域；标题、回顾和模型审批使用隔离模型请求，避免共享可变请求状态。接口与源文件归属见 [Runtime 架构](runtime-architecture.md)。
 
-```
-INIT → THINKING → ACTING → OBSERVING → THINKING → ... → GUARDRAIL → FINAL → DONE
-                    ↘ HITL_DENY → OBSERVING(denied) → THINKING
-                    ↘ TOOL_FAIL → THINKING（重试，带错误上下文）
-                    ↘ MAX_ITER  → ABORT（返回部分结果）
-                    ↘ GUARDRAIL_FAIL → THINKING（Guardrail 验证失败，回灌原因重试）
-```
+### 6.2 ReAct 执行
 
-#### 6.2.2 终止条件（必须全部实现）
+#### 6.2.1 状态与终止
 
-1. LLM 返回无工具调用的文本响应 → 进入 Guardrail 验证
-2. 步数达到 `max_iterations`（示例配置默认 2048，可配置） → 返回最后一次 Observation 并标记 `aborted`
-3. 工具耗时超过 `tool_timeout_seconds` 或工具自己的覆盖值 → 取消该工具调用，生成失败 Observation 回灌
-4. 用户按 `Ctrl-C` → 优雅取消，保存已完成步骤到会话
-5. 当 `guardrail_enabled` 时，LLM 输出最终回答后进入 `GUARDRAIL` 状态，由可插拔规则引擎验证结果质量；若 Guardrail 验证失败则回到 `THINKING` 重试（示例配置 `guardrail_max_retries = 2`）
+模型请求、工具执行、Observation、Guardrail 和 Final 有明确阶段。取消、模型错误、检查失败、达到迭代上限和正常完成分别记录。
 
-#### 6.2.3 工具失败处理
+工具的默认墙钟预算为 `react.tool_timeout_seconds`，工具配置或参数可覆盖。超时/取消后仍需要回收 worker；释放工具运行时、模型或数据库之前完成必要的 drain。
 
-- 工具返回非零 → 构造形如 `Observation: tool error: <msg>` 的观察项回灌给 LLM
-- 同一工具连续失败 ≥ 3 次 → 强制 `Final` 并报错给用户
+#### 6.2.2 工具与错误
 
-#### 6.2.4 Prompt 模板（完整）
+工具通过结构化结果回填成功、业务错误及 artifacts；进程内 worker 与子进程分别遵循其取消和回收契约。有限异步进程任务在最终回答前收集，`notify_only` 和 `service` 按明确声明处理。
 
-系统提示定义在 `src/agent/system_prompt.h`，以 `MORPH_SYSTEM_PROMPT` 宏实现，包含两个格式化占位符（`%s` 当前时间、`%d` 最大迭代次数）。
+#### 6.2.3 提示准备
 
-提示核心定位为通用 AI Agent，包含 6 条通用原则（Intent Understanding、Planning、Tool Selection、Result Verification、Error Recovery、Collaboration）以及通用工作流、技能提示和规则。
+稳定系统提示包含 core/default 或自定义行为及完整技能目录。运行环境和项目指令作为前置请求消息；已激活技能、计划/进程/产物状态、记忆和 Hook 上下文在请求末端动态生成，不反复持久化。旧式纯文本请求路径合并等价文本。
 
-创作能力通过 `skills/creation/SKILL.md` 技能提供，包含 12 条创意原则、创作工具使用指导、创作工作流、质量检查清单和错误恢复策略。LLM 在识别到用户有创作/视觉生产需求时，自动调用 `activate_skill("creation")` 加载完整创作指令。
+项目指令受 `context.project_doc_max_bytes` 控制；不能完整纳入的文件保留路径及 `file_read` 恢复要求。
 
-运行时 `build_system_prompt()` 依次拼接：
-1. `MORPH_SYSTEM_PROMPT` 基础模板（通用 Agent）
-2. `system_prompt` 自定义扩展（来自配置 `system_prompt_file` + `system_prompt_dir`）
-3. 记忆上下文（`memory_context`，来自 Memory 子系统）
-4. 已发现 Skill 目录
-5. 已激活 Skill 的完整指令内容（含创作技能）
+#### 6.2.4 流式结果
 
-```
-You are Morph, an autonomous AI agent.
-...
-Maximum %d tool-calling iterations.
-```
+文本和 reasoning 通过结构化事件流输出。工具名称、ID、arguments 及 Responses item identity 在增量事件与完成事件之间正确关联；完成事件可补全最终参数。缺失终态或不完整调用不转为成功工具执行。
 
-> **注意**：morph 已从文本解析（`Thought: ... Action: ... Final: ...`）迁移到 OpenAI Function Calling。LLM 的结构化工具调用通过 `tool_calls` 字段传递，无需文本格式约束。
+### 6.3 历史与压缩
 
-### 6.3 上下文压缩流程（层级 fallback）
+显示消息、canonical 模型历史、请求快照、压缩记录和来源关系分别持久化。有效重放窗口保持完整工具调用组，并在发送前校验真实组装后的请求预算。
 
-```
-LLM 调用前:
-  1. tokenize(messages) → total_tokens
-  2. if total_tokens < threshold → 直接发送，结束
-  3. compress_detect_react_cycles(messages)  ← 标记循环模式消息
-  4. compress_react_trace(messages)          ← 移除已标记的压缩消息
-  5. compress_summarize(早期对话 → 单条 summary)
-  6. if 仍超阈值: compress_sliding_window(keep=N rounds)
-  7. key_info_create(messages) → preserve list
-  8. inject(preserve list + 压缩后 messages) → LLM
-```
+压缩先计算固定请求开销及可用历史预算，再生成和提交候选摘要；提交时检查历史是否仍有效。重复压缩可包含既有摘要，并继续记录来源关系。原始记录和可见上下文不混为同一存储视图。
 
-> 关键修订：步骤之间是「层级 fallback」而非并列。`compress_detect_react_cycles` 先标记循环，`compress_react_trace` 再移除已标记消息。`compress_summarize` 使用注入的 `summarize_fn` 回调（react.c 中使用 LLM 实现），而非直接依赖 `struct model *`。`compress_recursive` 和 `compress_system_prompt` 尚未实现（P1/P2）。
+相关实现见 [history.h](../src/agent/history.h)、[history_compaction.c](../src/agent/history_compaction.c) 和 [react_request.c](../src/agent/react_request.c)。
 
-### 6.4 技术选型
+### 6.4 构建与技术选型
 
-| 组件 | 选型 | 必需 | 备注 |
-|------|------|------|------|
-| 构建系统 | CMake ≥ 3.20 | ✓ | 跨平台 + FetchContent |
-| 编译器 | GCC ≥ 10 / Clang ≥ 14，C11 | ✓ | — |
-| CLI 输入 | readline（GNU）/ editline（BSD） | 可选 | 找不到时回退 `fgets` |
-| HTTP / SSE | libcurl（系统库） | ✓ | 工业级 |
-| TLS | libcurl 内置（OpenSSL 或 GnuTLS） | ✓ | — |
-| JSON | cJSON | ✓ | 单文件嵌入（vendor/） |
-| TOML | tomlc17 | ✓ | 单文件嵌入（vendor/），配置由内置 schema 校验 |
-| Markdown | cmark-gfm 0.29.0.gfm.13 | ✓ | 由 `fronts/morph-markdown` FetchContent 拉取 |
-| Markdown 渲染 | MorphMarkdown Kitty SDK | ✓ | `fronts/morph-markdown/sdk/kitty/morph-markdown/` |
-| LaTeX 渲染 | vendor/mathjax-c + Kitty graphics protocol | ✓ | 依赖 freetype2 / harfbuzz |
-| 图片解码/编码/缩放 | stb_image / stb_image_write / stb_image_resize2 | ✓ | 单头文件（vendor/） |
-| 动态工具图片处理 | libvips + cairo + pangocairo | ✓ | QuickJS Host API 的 image/canvas 能力 |
-| 终端图像 | 自实现 kitty/iterm2/sixel 协议 | ✓ | 缺失时回退路径 |
-| Token 计数 | BPE（CL100K/O200K）+ Unicode-Aware 估算 | ✓ | `src/util/bpe.c` + `src/agent/tokenizer.c` |
-| UTF-8 | utf8proc 2.12.0 + 项目适配 | ✓ | vendored 静态库 + `src/util/utf8.c` |
-| 异步 / 子进程 | fork+exec + waitpid | ✓ | 无需额外事件循环库 |
-| 多线程 | pthreads | ✓ | — |
-| 持久化 | sqlite3（系统库） | ✓ | 单文件 DB |
-| 沙箱（Linux） | libseccomp + setrlimit + landlock（可选） | ✓ | 主平台 |
-| 沙箱（macOS） | SBPL + `sandbox_init` | ✓ | `sandbox_enter_darwin` 已实现并通过端到端阻断测试 |
-| 动态 JS 工具 | QuickJS 2026-06-04 | ✓ | CMake FetchContent，构建 `morph-js-runner` |
-| WASM Host API | wasm3 v0.5.0 | ✓ | CMake FetchContent，供动态 JS 工具使用 |
-| 视频播放 | fork+exec `mpv`（系统二进制） | ✓ | 用户指定 |
-| 抽帧（可选） | ffmpeg（系统二进制） | 可选 | 视频理解本地 fallback |
-| 日志 | 自实现（stderr + rotating file） | ✓ | 见 §9 |
-| MCP 协议 | 自实现 JSON-RPC（stdio + HTTP） | ✓ | 协议版本 2025-06-18 |
-| FastCGI | libfcgi（可选构建） | 可选 | `BUILD_FASTCGI=ON` |
+| 部分 | 当前实现 |
+| --- | --- |
+| 语言与构建 | C11 / C++17 测试，CMake ≥ 3.20，要求 GCC/Clang cleanup attribute |
+| 网络与存储 | libcurl、SQLite3、pthreads |
+| TUI | 自有 Application/View/Canvas/widgets，libuv；Readline 可选 |
+| JSON / TOML / Unicode | vendored cJSON、tomlc17、utf8proc，经项目适配接口调用 |
+| Markdown | `fronts/morph-markdown` 及 Kitty SDK；cmark-gfm 由该构建集成 |
+| 图像 | stb_image / write / resize2；动态工具图像与画布使用 libvips、cairo、pangocairo |
+| 数学排版 | MorphMarkdown 构建中的 MathJax-C 及字体/排版依赖 |
+| JS / WASM | 内嵌 QuickJS、wasm3 |
+| Shell 解析 | tree-sitter / tree-sitter-bash |
+| Tokenizer / 哈希 | BPE 词表、Unicode-aware 估算、BLAKE3 等项目构建依赖 |
+| 沙箱 | Linux seccomp denylist / Landlock / rlimits；macOS Seatbelt |
+| 视频播放 | 外部 `mpv` 可执行文件 |
+| FastCGI | 可选 libfcgi 前端 |
+| 测试 | GoogleTest、Python/PTY 集成及 ASan/UBSan 构建开关 |
 
-### 6.5 模型/API 接入策略
+具体依赖、版本和条件以 [根 CMakeLists.txt](../CMakeLists.txt) 及各模块构建文件为准。
 
-| 能力 | 推荐 API | 备注 |
-|------|----------|------|
-| 文字对话 | OpenAI GPT-4o / Claude 3.5 / DeepSeek / Volcengine | 多模型可切 |
-| 文生图 | DALL-E 3 / Volcengine Seedream / Stable Diffusion API | — |
-| 图片理解 | GPT-4o Vision / Claude Vision | — |
-| 文生视频 | Volcengine / 可灵 / 即梦 / Runway | 国内优先 |
-| 图生视频 | Volcengine / 可灵 / 即梦 / Pika | 国内优先 |
-| 视频理解 | GPT-4o / Gemini + 本地 ffmpeg 抽帧 | 双路 |
+### 6.5 模型与 adapter
 
-### 6.6 数据持久化（SQLite Schema）
+| 角色 | 已实现 adapter |
+| --- | --- |
+| 结构化文本/工具请求 | `openai-chat-compatible`、`openai-responses`、`deepseek` |
+| 图像生成 | `openai-images`、`volcengine-images` |
+| 视频生成 | `volcengine-videos` |
 
-```sql
-CREATE TABLE schema_migrations (
-	version     INTEGER PRIMARY KEY,
-	name        TEXT NOT NULL,
-	applied_at  INTEGER NOT NULL
-);
+角色分别读取 `[model.text]`、`[model.vision]`、`[model.image]`、`[model.video]`；可选 `[model.approval]` 指定独立 reviewer。provider、API 地址、模型 ID、adapter、凭据、额外请求字段和输出预算按各角色配置。
 
-CREATE TABLE sessions (
-	id          INTEGER PRIMARY KEY AUTOINCREMENT,
-	name        TEXT UNIQUE NOT NULL,
-	display_id  TEXT UNIQUE,
-	model       TEXT,
-	created_at  INTEGER NOT NULL,
-	updated_at  INTEGER NOT NULL,
-	token_used  INTEGER DEFAULT 0
-);
+adapter 决定请求序列化、响应解析和能力校验；供应商返回的 usage 与本地输入估计分别保存。图像理解需要视觉模型配置，图像生成配置不会替代视觉模型。
 
-CREATE TABLE messages (
-	id          INTEGER PRIMARY KEY AUTOINCREMENT,
-	session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-	role        TEXT NOT NULL,
-	content     TEXT NOT NULL,
-	turn_id     TEXT,
-	token_count INTEGER NOT NULL,
-	compressed  INTEGER DEFAULT 0,
-	created_at  INTEGER NOT NULL
-);
+`img_qa` 和普通 chat 辅助调用当前使用 Chat Completions 兼容接口；模型审批调用结构化文本请求路径。
 
-CREATE TABLE message_attachments (
-	id          INTEGER PRIMARY KEY AUTOINCREMENT,
-	message_id  INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-	kind        TEXT NOT NULL,
-	path        TEXT NOT NULL,
-	sha256      TEXT
-);
+### 6.6 数据持久化
 
-CREATE TABLE react_traces (
-	id          INTEGER PRIMARY KEY AUTOINCREMENT,
-	session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-	round_no    INTEGER NOT NULL,
-	steps_json  TEXT NOT NULL,
-	aborted     INTEGER DEFAULT 0,
-	created_at  INTEGER NOT NULL
-);
+| 数据 | 实现中的主要存储 |
+| --- | --- |
+| 会话与显示消息 | `sessions`、`messages`、`message_attachments`、`react_traces` |
+| 模型历史与压缩 | `model_history_items`、`history_compactions`、`history_summary_sources`、`model_request_snapshots`、`history_compaction_attempts` |
+| 记忆与偏好 | profiles/facts/episodes/procedures、scopes/preferences/candidates/jobs |
+| 子代理 | `sub_agent_tasks`、`sub_agent_events` |
+| 计划与权限 | `session_plans`、`permission_grants` |
+| 定时任务与通知 | `scheduled_tasks`、`notifications` |
+| 产物与计费 | `outputs`、`credit_events` |
+| 文件与对话回退 | `code_checkpoints`、`code_checkpoint_files` 及 checkpoint 管理的会话快照 |
 
-CREATE TABLE exts (
-	id           INTEGER PRIMARY KEY AUTOINCREMENT,
-	name         TEXT UNIQUE NOT NULL,
-	version      TEXT,
-	path         TEXT NOT NULL,
-	type         TEXT NOT NULL,
-	permissions  INTEGER,
-	enabled      INTEGER DEFAULT 1,
-	installed_at INTEGER NOT NULL
-);
+数据库开启 WAL，schema/migration 由 [database.c](../src/db/database.c) 和对应持久层维护。产物记录包含实际请求、provider、工具/调用/turn 标识、recipe、媒体尺寸及字节信息。checkpoint 的捕获、seal、冲突检查和恢复由 [checkpoint_store.c](../src/persistence/checkpoint_store.c) 实现。
 
-CREATE TABLE outputs (
-	id         INTEGER PRIMARY KEY AUTOINCREMENT,
-	session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
-	kind       TEXT NOT NULL,
-	path       TEXT NOT NULL,
-	prompt     TEXT,
-	model      TEXT,
-	created_at INTEGER NOT NULL
-);
+### 6.7 配置
 
-CREATE TABLE memory_profiles (
-	session_id  INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
-	profile_text TEXT NOT NULL DEFAULT '',
-	updated_at  INTEGER NOT NULL
-);
-
-CREATE TABLE memory_facts (
-	id          INTEGER PRIMARY KEY AUTOINCREMENT,
-	session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-	key_name    TEXT NOT NULL,
-	value_text  TEXT NOT NULL,
-	source_text TEXT,
-	confidence  REAL DEFAULT 1.0,
-	category    TEXT DEFAULT 'general',
-	importance  REAL DEFAULT 0.5,
-	is_current  INTEGER NOT NULL DEFAULT 1,
-	valid_from  INTEGER NOT NULL,
-	valid_to    INTEGER,
-	superseded_by INTEGER,
-	created_at  INTEGER NOT NULL,
-	updated_at  INTEGER NOT NULL
-);
-
-CREATE TABLE memory_episodes (
-	id           INTEGER PRIMARY KEY AUTOINCREMENT,
-	session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-	task_type    TEXT,
-	summary_text TEXT NOT NULL,
-	outcome_text TEXT,
-	success      INTEGER NOT NULL DEFAULT 1,
-	entities     TEXT,
-	key_decisions TEXT,
-	artifacts    TEXT,
-	tools_used   TEXT,
-	importance   REAL DEFAULT 0.5,
-	created_at   INTEGER NOT NULL
-);
-
-CREATE TABLE memory_procedures (
-	id           INTEGER PRIMARY KEY AUTOINCREMENT,
-	session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-	rule_text    TEXT NOT NULL,
-	trigger_text TEXT,
-	evidence_count INTEGER NOT NULL DEFAULT 1,
-	updated_at   INTEGER NOT NULL,
-	UNIQUE(session_id, rule_text)
-);
-
-CREATE TABLE scheduled_tasks (
-	id                INTEGER PRIMARY KEY AUTOINCREMENT,
-	source_session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
-	latest_session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
-	title             TEXT NOT NULL,
-	kind              TEXT NOT NULL,
-	status            TEXT NOT NULL,
-	trigger_type      TEXT NOT NULL,
-	next_run_at       INTEGER NOT NULL,
-	interval_seconds  INTEGER NOT NULL DEFAULT 0,
-	timeout_at        INTEGER NOT NULL DEFAULT 0,
-	attempts          INTEGER NOT NULL DEFAULT 0,
-	max_attempts      INTEGER NOT NULL DEFAULT 0,
-	action_type       TEXT NOT NULL,
-	payload_json      TEXT,
-	policy_json       TEXT,
-	notify_json       TEXT,
-	last_error        TEXT,
-	created_at        INTEGER NOT NULL,
-	updated_at        INTEGER NOT NULL
-);
-
-CREATE TABLE notifications (
-	id              INTEGER PRIMARY KEY AUTOINCREMENT,
-	task_id         INTEGER REFERENCES scheduled_tasks(id) ON DELETE SET NULL,
-	session_id      INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
-	level           TEXT NOT NULL,
-	title           TEXT NOT NULL,
-	body            TEXT NOT NULL,
-	created_at      INTEGER NOT NULL,
-	read_at         INTEGER NOT NULL DEFAULT 0,
-	delivery_status TEXT NOT NULL
-);
-
-CREATE TABLE credit_events (
-	id             INTEGER PRIMARY KEY AUTOINCREMENT,
-	user_id        TEXT,
-	session_id     TEXT,
-	kind           TEXT NOT NULL,
-	provider       TEXT,
-	model          TEXT,
-	input_tokens   INTEGER NOT NULL DEFAULT 0,
-	output_tokens  INTEGER NOT NULL DEFAULT 0,
-	image_units    INTEGER NOT NULL DEFAULT 0,
-	video_seconds  INTEGER NOT NULL DEFAULT 0,
-	estimated_cost REAL NOT NULL DEFAULT 0,
-	currency       TEXT NOT NULL DEFAULT 'USD',
-	credits        INTEGER NOT NULL DEFAULT 0,
-	metadata_json  TEXT,
-	created_at     INTEGER NOT NULL
-);
-
-CREATE INDEX idx_messages_session  ON messages(session_id, created_at);
-CREATE INDEX idx_messages_session_order ON messages(session_id, created_at, id);
-CREATE INDEX idx_traces_session    ON react_traces(session_id, round_no);
-CREATE INDEX idx_outputs_session   ON outputs(session_id, created_at);
-CREATE INDEX idx_memory_facts_session_key ON memory_facts(session_id, key_name, is_current, updated_at);
-CREATE INDEX idx_memory_episodes_session  ON memory_episodes(session_id, created_at);
-CREATE INDEX idx_memory_procedures_session ON memory_procedures(session_id, updated_at);
-CREATE INDEX idx_scheduled_tasks_due ON scheduled_tasks(status, next_run_at);
-CREATE INDEX idx_notifications_unread ON notifications(read_at, created_at);
-CREATE INDEX idx_credit_events_user_day ON credit_events(user_id, created_at);
-CREATE INDEX idx_credit_events_session ON credit_events(session_id, created_at);
-```
-
-### 6.7 配置文件 Schema
-
-`~/.morph/config.toml`（权限 0600）：
+默认读取 `~/.morph/config.toml`，可用 `-c` / `--config` 指定文件。以下是已支持字段的节选，不替代 [完整示例](../config.toml.example) 或 [配置 schema](../src/config/schema.c)。
 
 ```toml
-[general]
-default_session = "default"
-output_dir = "~/.morph/output"
-log_level = "info"
-log_file = "~/.morph/log/agent.log"
-
 [model.text]
 provider = "openai"
+adapter = "openai-chat-compatible"
 model = "gpt-4o"
 api_base = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 context_limit = 128000
-max_tokens = 4096
-timeout_seconds = 300
+max_tokens = 16384
+timeout_seconds = 600
+retry_count = 3
 
-[model.image]
-provider = "volcengine"
-adapter = "volcengine-images" # 可选；省略时根据 provider 推断
-model = "doubao-seedream-5-0-260128"
-api_base = "https://ark.cn-beijing.volces.com/api/v3"
-api_key_env = "VOLCENGINE_API_KEY"
+[model.vision]
+provider = "openai"
+model = "gpt-4o"
+api_base = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+max_tokens = 16384
 
-[model.video]
-provider = "volcengine"
-model = ""
-api_base = "https://ark.cn-beijing.volces.com/api/v3"
-api_key_env = "VOLCENGINE_API_KEY"
-poll_interval_seconds = 5
-poll_timeout_seconds = 600
-
-[credits]
-daily_limit = -1
-currency = "CNY"
-cost_to_credit_coef = 1000.0
-input_token_credit_coef = 0.0
-output_token_credit_coef = 0.0
-image_unit_credit_coef = 0.0
-video_second_credit_coef = 0.0
-
-[react]
-max_iterations = 2048
-tool_timeout_seconds = 300
-tool_max_retries = 3
-guardrail_enabled = false
-guardrail_max_retries = 2
-guardrail_max_empty_rounds = 2
-disabled_tools = []
-
-# Guardrail 规则配置
-guardrail_disabled_rules = []
-guardrail_llm_model = ""
-
-# Guardrail LLM 评估规则
-# [[react.guardrail_llm_rules]]
-# name = "quality-check"
-# hook = "output"
-# description = "Check output quality"
-# action_text = "Improve the output quality"
-
-# Guardrail Ext 插件规则
-# [[react.guardrail_ext_rules]]
-# name = "pii-check"
-# hook = "output"
-# ext_type = "so"
-# ext_entry = "pii_check.so"
-# action_text = "Remove PII from output"
-
-# exec 配置（shell 工具与进程会话）
-[exec]
-shell = "/bin/bash"
-default_timeout_ms = 120000
-yield_time_ms = 10000
-max_inline_output = 32768
-max_session_output = 1048576
-kill_grace_ms = 500
-network = false
-
-# 文件系统信任根由 permission profile 提供
-[react.permissions]
-active_profile = "developer"
-request_tool_enabled = true
-
-[[react.permission_profiles]]
-name = "developer"
-workspace_roots = []
-write_paths = []
-delete_paths = []
-
-# Human-in-the-Loop (HITL)
-hitl_enabled = true
-# hitl_tools = ["img_gen", "vid_gen"]
-hitl_auto_approve_readonly = true
+[permissions]
+access = "workspace"
+approval = "on_request"
+reviewer = "user"
 
 [context]
 summarize_threshold_ratio = 0.8
 compress_target_ratio = 0.5
 keep_recent_rounds = 6
+in_turn_compaction = true
+protocol_reserve_tokens = 4096
+tool_result_max_tokens = 8000
+project_doc_max_bytes = 32768
+
+[exec]
+shell = "/bin/bash"
+default_timeout_ms = 120000
+yield_time_ms = 10000
+max_wait_ms = 600000
+max_inline_output = 32768
+max_session_output = 1048576
+kill_grace_ms = 500
 
 [memory]
 enabled = true
-hot_path_enabled = true
-cold_path_enabled = true
-llm_extract_enabled = true
 max_facts = 6
 max_episodes = 4
 max_procedures = 4
 max_context_chars = 3000
 
-[render]
-prefer_image_protocol = "auto"
-mpv_args = "--really-quiet"
-
-[ext]
-dir = "~/.morph/exts"
-default_max_memory_mb = 128
-default_max_cpu_seconds = 30
-
 [dynamic_tools]
 enabled = true
 runtime = "quickjs"
-mode = "local"              # local | server
-session_dir = "~/.morph/runtime/tools"
-persistent_dir = "~/.morph/tools"
-default_lifetime = "session"
-create_requires_approval = false
-promote_requires_approval = true
+mode = "local"
 max_source_bytes = 262144
-default_timeout_seconds = 30
 default_max_output_bytes = 1048576
-
-[dynamic_tools.local]
-default_capabilities = ["fs_read", "fs_write", "network", "process", "env", "mcp", "model", "shell", "image", "wasm"]
-allowed_read_paths = ["*"]
-allowed_write_paths = ["*"]
-allowed_commands = ["*"]
-allowed_network = ["*"]
-
-[dynamic_tools.server]
-default_capabilities = []
-allowed_read_paths = []
-allowed_write_paths = []
-allowed_commands = []
-allowed_network = []
-
-[prompt]
-system_prompt_file = ""
-system_prompt_dir = ""
-
-[skill]
-dir = ""
-
-# MCP 服务器配置
-# [[mcp.servers]]
-# name = "my-server"
-# transport = "stdio"
-# command = "npx"
-# args = ["-y", "@my/mcp-server"]
-# env = { "API_KEY" = "my-key" }
-# auto_connect = true
-# connect_timeout = 10
-
-# [[mcp.servers]]
-# name = "remote-server"
-# transport = "http"
-# url = "https://mcp.example.com"
-# auth_token_env = "MCP_AUTH_TOKEN"
-# auto_connect = true
-# connect_timeout = 15
-
-# 子代理配置
-# [[agent.sub_agents]]
-# name = "translate-agent"
-# description = "Specialized translation sub-agent"
-# system_prompt_file = "~/.morph/prompts/translate.md"
-# model = "gpt-4o"
-# max_iterations = 5
-# allowed_tools = ["file_read", "exec"]
-# disabled_tools = []
-# context_policy = "task_only"
-# merge_strategy = "raw"
-# output_schema = ""
 ```
 
-> **默认值说明**：
-> - `tool_timeout_seconds` 默认 300（工具调用默认墙钟时间；工具参数或专用配置可覆盖）
-> - `guardrail_enabled` 示例配置默认 false；开启后才执行输出质量 guardrail
-> - `guardrail_max_retries` 默认 2
-> - `timeout_seconds`（text model）默认 300
-> - video provider 默认 volcengine
+- `max_tokens` 是一次响应的完整生成预算，thinking 和可见回答共同使用；省略时 fallback 为 4096，不代表示例模型的最大能力。
+- `[model.text]` 还支持 `extra_body_json` 等字段；请求托管字段不能被额外 JSON 覆盖。
+- 权限策略由 `[permissions]` 统一控制；`react.permission_profiles` 为启动时路径授权补充来源。
+- `process` 默认等待 30000ms，模型可在配置的 `max_wait_ms` 范围内指定等待时间。
+- 执行日志、模型凭据和本地数据的存储行为以配置及对应 owner 为准，敏感值在模型历史和进程输出恢复路径中脱敏。
 
-**API Key 解析优先级**：CLI flag > 环境变量（`api_key_env`）> 配置中 `api_key`（明文，**不推荐**，CLI 启动时警告）。系统 keyring（macOS Keychain / Linux libsecret）计划为 P1。
+### 6.8 源码归属
 
-### 6.8 项目结构
+| 路径 | 职责 |
+| --- | --- |
+| `src/sapi/cli/main.c` | CLI 入口 |
+| `src/sapi/cli/` | application、pages、widgets、models、services、commands、presentation、adapters |
+| `src/sapi/fastcgi/` | 可选 FastCGI 前端 |
+| `src/runtime/` | 生命周期、请求、会话、权限、Hooks、任务、同步及运行时服务 |
+| `src/agent/` | ReAct、工具系统、历史、压缩、Tokenizer、记忆、Plan、子代理 |
+| `src/models/` | 文本、视觉、图像和视频 adapter |
+| `src/permission/` | 策略、操作、grant 及 reviewer 路由 |
+| `src/exec/` | 受管进程会话和输出恢复 |
+| `src/persistence/`、`src/db/` | typed 存储、schema、事务及迁移 |
+| `src/session.c` 等 session 模块 | 会话和模型历史持久化接口 |
+| `src/tui/` | core、terminal、render、widgets 和样例 |
+| `src/skill/`、`src/prompt/` | Skill 发现/激活和提示模板 |
+| `src/mcp/`、`src/ext/`、`src/ipc/` | 远程能力及扩展调用 |
+| `src/js_runner/`、`src/sandbox/` | QuickJS Host API 与平台沙箱 |
+| `src/event/`、`src/credits.c`、`src/credits.h`、`src/sync/`、`src/util/` | 事件、计费、同步和基础组件 |
+| `prompts/`、`skills/`、`exts/` | 已提供的提示、技能及扩展示例 |
+| `tests/` | 单元和集成测试 |
 
-```
-morph/
-├── CMakeLists.txt              # 顶层构建，FetchContent: md4c / googletest / QuickJS / wasm3
-├── README.md
-├── docs/
-│   ├── REQUIREMENTS.md
-│   ├── event-system.md
-│   ├── quickjs-tools.md
-│   └── scheduled-tasks.md
-├── AGENTS.md
-├── config.toml.example
-├── exts/                       # 示例 Ext：demo-upper / demo-translate / file-write / guardrail 等
-├── skills/                     # 示例 Skill：morph-creation / morph-usage 等
-├── misc/
-│   └── demo.png
-├── src/
-│   ├── CMakeLists.txt
-│   ├── main.c
-│   ├── config/
-│   │   ├── config.c / config.h
-│   │   └── schema.c
-│   ├── session.c
-│   ├── session.h
-│   ├── cli/                    # CLI core/init/run/output/events + commands/*
-│   ├── event/                  # 统一事件系统
-│   ├── render/
-│   │   ├── markdown.c / highlight.c / image.c / video.c
-│   ├── agent/
-│   │   ├── react.c / context.c / compress.c / tokenizer.c
-│   │   ├── tool.c / tool_context.c / tool_runtime.c
-│   │   ├── guardrail.c / plan.c / memory.c / sub_agent.c / turn.c
-│   │   ├── system_prompt.h
-│   │   └── tools/
-│   │       ├── img_gen.c / img_qa.c / img_inpaint.c / img_compose.c
-│   │       ├── img_info.c / img_resize.c / img_convert.c / img_annotate.c
-│   │       ├── vid_gen.c / file_read.c / file_list.c / file_info.c
-│   │       ├── config_write.c / apply_patch.c / exec_tool.c
-│   │       ├── request_permissions.c / skill_activate.c / plan.c
-│   │       ├── scheduled_tasks.c / ask_user.c / sub_agent_tools.c
-│   │       ├── runtime_query.c / dynamic_tools.c
-│   ├── runtime/                # 进程级所有者：生命周期、会话、turn、任务
-│   ├── exec/                   # 受管进程会话（exec / process 背后）
-│   ├── event/                  # 统一事件 sink
-│   ├── js_runner/              # 内嵌 QuickJS（动态工具）
-│   ├── sync/                   # 会话同步
-│   ├── sapi/                   # 前端：CLI 与 FastCGI
-│   ├── skill/                  # Skill 发现、解析、激活
-│   ├── sandbox/                # seccomp/rlimit sandbox + loader
-│   ├── ext/                    # Ext manifest、加载、安装
-│   ├── ipc/                    # JSON-RPC
-│   ├── mcp/                    # MCP stdio + Streamable HTTP
-│   ├── models/                 # llm / image_gen / video_gen
-│   ├── http/                   # libcurl client + SSE
-│   ├── db/                     # SQLite schema + scheduled_task
-│   ├── persistence/            # memory_store / credit_store
-│   ├── credits/                # credit accounting
-│   ├── sapi/                   # 面向宿主的服务 API
-│   │   ├── cli/                # CLI 前端及 main 入口
-│   │   └── fastcgi/            # 可选 HTTP API 前端
-│   ├── agent_ui/               # Agent UI tags / markdown
-│   ├── js_runner/              # QuickJS 动态工具 runner
-│   └── util/
-│       ├── cleanup / buf / array / str / strmap / queue / utf8 / error
-│       └── file / log / spin / base64 / image_util / bpe / id / cancel
-├── vendor/
-│   ├── cJSON.c/h, toml.c/h, stb_image*.h, utf8proc/, re.c/h
-│   ├── mathjax-c/
-│   └── tiktoken/
-│       ├── cl100k_base.tiktoken
-│       └── o200k_base.tiktoken
-└── tests/
-    ├── test_*.cpp             # GoogleTest 单元/集成测试
-    ├── systest.sh
-    └── test_ext_demo.c        # 示例源文件，不进入 CMake test build
-```
+公共入口、构建目标和 source manifest 以当前头文件、`CMakeLists.txt`、`sources.list` 为准。
 
-### 6.9 关键接口设计
+### 6.9 关键接口契约
 
-#### 6.9.0 Memory ownership and scope cleanup
+#### 6.9.0 所有权与作用域清理
 
-Use ordinary heap allocations with one explicit owner per object. GCC/Clang
-scope cleanup is required, through `MORPH_CLEANUP(fn)` in `util/cleanup.h`.
-Local pointer owners initialize to `NULL`; value owners initialize to `{0}`.
-Each typed cleanup releases its owned fields and supports empty/partial state.
-Business interfaces carry typed results rather than allocation contexts.
+普通堆对象使用单一明确 owner，局部拥有者初始化为 `NULL` 或 `{0}`，使用 `MORPH_CLEANUP(fn)` 和 typed cleanup。允许部分初始化，销毁前先回收依赖它的异步任务。
 
-Fallible `*_take(..., T **source)` transfers and clears the source only on
-success. Failure preserves the source. Typed `*_steal(T **source)` performs an
-infallible local transfer. Owning structures use explicit clone or typed move;
-ordinary assignment must not duplicate ownership. Cross-thread queues commit
-acceptance and source clearing before publishing. Borrowed pointers have an
-explicit lifetime and cannot escape into asynchronous work without copying or
-transferring the owner. See [State ownership](state-ownership.md).
+`*_borrow` 返回有生命周期限制的视图，`*_copy` / `*_clone` 创建独立副本，fallible `*_take` 仅成功时清空来源，typed `*_steal` 执行无分配转移。禁止浅拷贝拥有指针的结构。参见 [状态所有权](state-ownership.md)。
 
-Use `morph_buf`, `morph_array` and `morph_strmap` for growth. Container owners
-clean up owned elements before releasing storage. Preserve third-party allocator
-pairs, including `cJSON_free` for serialized cJSON text. Memory safety and peak
-memory are verified through regression tests and sanitizers, not assumed from
-allocation strategy.
+#### 6.9.0a 基础容器
 
-#### 6.9.0a 基础数据结构（`src/util/`）
+| 容器 | API 与约束 |
+| --- | --- |
+| [morph_buf](../src/util/buf.h) | 动态拼接字节/字符串；插入调用方使用 `reserve` 时须显式计入数据和结尾 NUL 所需空间 |
+| [morph_array](../src/util/array.h) | `push_borrow` / `push_n_borrow` / `borrow` / `reserve`；增长后不得继续使用旧槽位指针 |
+| [morph_strmap](../src/util/strmap.h) | `set_borrow` / `borrow` / `contains` / `remove`，保存字符串索引 |
+| [morph_str](../src/util/str.h) | 非拥有字符串切片及明确的复制接口 |
+| [morph_queue](../src/util/queue.h) | 侵入式队列，按 owner 生命周期保存稳定节点 |
 
-所有共享的基础容器统一收敛在 `src/util/`（随 `morph-util` 链接），**业务代码必须复用，禁止重复造轮子**（自行实现可变缓冲、动态数组、哈希表等）。
+业务代码复用这些容器和 [UTF-8 适配](../src/util/utf8.h)，不重复实现字符串增长、哈希表或 Unicode 解码。
 
-| 结构 | 头文件 | 用途 | 关键 API |
-|------|--------|------|----------|
-| `morph_buf_t` | `buf.h` | 可增长字节/字符串构造器 | `morph_buf_init`、`append`/`puts`/`putc`/`printf`/`vprintf`、`morph_buf_cstr_borrow`/`morph_buf_str_borrow`/`morph_buf_detach`、`morph_buf_cleanup` |
-| `morph_array_t` | `array.h` | 泛型动态数组（init 指定元素大小） | `morph_array_init`、`push`/`push_n`/`pop`/`get`/`reserve`/`clear`、`morph_array_foreach`、`morph_array_cleanup` |
-| `morph_strmap_t` | `strmap.h` | 开放寻址 string→`void *` 哈希表 | `morph_strmap_init`/`cleanup`/`clear`、`set`/`get`/`contains`/`remove`/`len` |
-| `morph_str_t` | `str.h` | `{len, const char *}` 字符串视图（非拥有） | `morph_strdup`/`strndup`、`morph_strcmp`/`strcasecmp`/`strncmp`、`morph_str_cstr_copy`、`morph_str_chr_borrow`/`rchr`/`trim`、`MORPH_STRLIT` |
-| `morph_queue_t` | `queue.h` | 侵入式双向链表（`typedef struct morph_queue`，宏 + header-only） | `morph_queue_init`、`insert_head`/`insert_tail`、`remove`、`foreach`/`foreach_safe`、`morph_queue_data`、`sort`/`split`/`middle` |
+#### 6.9.1 ReAct
 
-**使用约定**：
-- 变长字符串拼接一律用 `morph_buf`，**不得**用固定 `char[N]` + `snprintf` 累加。
-- 数量不固定的集合用 `morph_array`，**不得**用固定容量 C 数组兜底（注意 `push` 可能触发 realloc，勿跨 push 持有元素指针）。
-- 字符串为 key 的查找用 `morph_strmap`（如工具注册表）；整数 key 直接用 `morph_array` 下标或线性查找。
-- `morph_str_t` 用于非拥有切片；cJSON 取值与多数 API 仍传普通 `const char *`。
-
-```c
-/* buf.h —— 可增长字符串构造 */
-typedef struct {
-	char         *data;
-	size_t        len;
-	size_t        cap;
-	int           failed;
-} morph_buf_t;
-
-/* array.h —— 泛型动态数组 */
-typedef struct {
-	void   *elts;
-	size_t  nelts;
-	size_t  cap;
-	size_t  size;		/* 元素字节大小 */
-} morph_array_t;
-
-/* strmap.h —— string -> void* 哈希表 */
-typedef struct {
-	struct morph_strmap_entry *entries;
-	size_t count;
-	size_t cap;
-	size_t deleted;
-} morph_strmap_t;
-
-/* str.h —— 字符串视图 */
-typedef struct {
-	size_t      len;
-	const char *data;
-} morph_str_t;
-```
-
-#### 6.9.1 ReAct 循环
-
-```c
-/* ReAct 步骤类型 */
-enum react_step_type {
-	REACT_STEP_THOUGHT,
-	REACT_STEP_ACTION,
-	REACT_STEP_OBSERVATION,
-	REACT_STEP_REFLECTION,
-	REACT_STEP_FINAL,
-};
-
-/* ReAct 状态机 */
-enum react_state {
-	REACT_STATE_INIT,
-	REACT_STATE_THINKING,
-	REACT_STATE_ACTING,
-	REACT_STATE_OBSERVING,
-	REACT_STATE_GUARDRAIL,
-	REACT_STATE_FINAL,
-	REACT_STATE_DONE,
-	REACT_STATE_ABORT,		/* 超过 max_iterations */
-	REACT_STATE_TOOL_FAIL,		/* 工具失败，回灌错误 */
-};
-
-/* 单个 ReAct 步骤 */
-struct react_step {
-	enum react_step_type type;
-	char *content;
-	char *tool_name;
-	char *tool_args;
-	char *tool_call_id;		/* Function Calling 的 tool_call ID */
-	struct react_step *next;
-};
-
-/* Human-in-the-Loop (HITL) 审批机制 */
-#define HITL_TOOLS_MAX 32
-#define HITL_TOOL_NAME_MAX 64
-#define HITL_AUTO_APPROVED_MAX 32
-
-enum hitl_verdict {
-	HITL_APPROVE,
-	HITL_DENY,
-	HITL_ALWAYS,		/* 本次审批后，该工具自动批准 */
-};
-
-typedef enum hitl_verdict (*hitl_approval_cb)(const char *tool_name,
-					      const char *tool_args,
-					      void *user_data);
-
-struct hitl_config {
-	int enabled;
-	char tools[HITL_TOOLS_MAX][HITL_TOOL_NAME_MAX];  /* 需审批的工具列表 */
-	int tools_count;
-	int auto_approve_readonly;		/* 自动批准只读工具 */
-	hitl_approval_cb approval_cb;
-	void *approval_user_data;
-	char auto_approved[HITL_AUTO_APPROVED_MAX][HITL_TOOL_NAME_MAX];
-	int auto_approved_count;
-};
-
-/* FastCGI Action 机制 */
-struct react_action {
-	const char *type;          /* "approve" | "reject" | "cancel" | "prompt" */
-	const char *payload_json;
-};
-
-typedef int (*react_action_drain_fn)(void *user, struct react_action *out,
-				     int timeout_sec);
-
-/* ReAct 循环上下文 */
-	struct react_context {
-		struct react_step *steps;
-		int step_count;
-		int max_iterations;
-		int tool_timeout_seconds;
-		int tool_max_retries;
-	struct guardrail_config guardrail;
-	int guardrail_retry_count;
-	struct hitl_config hitl;
-	ask_user_callback_fn ask_user_fn;
-	void *ask_user_data;
-	struct tool_registry *tools;
-	struct message_list *messages;
-	struct tokenizer *tokenizer;
-	struct compress_config compress;
-	void *llm_model;		/* struct model *（不透明指针） */
-	char *final_answer;
-	enum react_state state;
-	char *tool_fail_name;
-	char *tool_fail_args;
-	int tool_fail_count;
-	int empty_round_count;
-	volatile sig_atomic_t cancelled;
-	char *system_prompt;
-	char *memory_context;		/* 记忆上下文注入 */
-	struct skill_registry *skills;
-	char *workdir;
-	react_action_drain_fn action_drain_fn;
-	void *action_drain_user_data;
-	int sub_agent_depth;		/* 子代理嵌套深度 */
-	struct {
-		char name[64];
-		char description[256];
-	} *sub_agent_info;
-	int sub_agent_info_count;
-};
-
-/* ReAct 输出回调（用于 CLI Spinner 驱动） */
-typedef int (*react_output_cb)(enum react_step_type type,
-			       const char *content, void *user_data);
-
-/* ReAct 循环上下文创建与销毁 */
-struct react_context *react_context_create(struct tool_registry *tools,
-					   struct tokenizer *tok,
-					   struct compress_config *cfg,
-					   struct guardrail_config *gcfg);
-void react_context_destroy(struct react_context *ctx);
-void react_reset(struct react_context *ctx);
-
-/* FastCGI 会话工厂 */
-struct session_store;
-struct react_context *
-react_context_create_for_session(struct session_store *store,
-				 const char *session_id,
-				 const char *user_id);
-
-/* ReAct 循环执行 */
-int react_run(struct react_context *ctx, const char *user_input,
-	      react_output_cb cb, void *user_data);
-
-/* 取消当前 ReAct 循环（Ctrl-C 触发） */
-void react_cancel(struct react_context *ctx);
-void react_cancel_active(void);
-extern volatile sig_atomic_t react_sigint_flag;
-
-/* 记忆上下文 */
-int react_set_memory_context_copy(struct react_context *ctx, const char *memory_context);
-
-/* 活跃 ReAct 实例管理（子代理支持） */
-int react_active_count(void);
-void react_active_push(struct react_context *ctx);
-void react_active_pop(struct react_context *ctx);
-
-/* Action 机制（FastCGI 集成） */
-int react_set_action_drain(struct react_context *ctx,
-			   react_action_drain_fn fn, void *user);
-
-/* HITL 辅助函数 */
-int hitl_needs_approval(struct react_context *ctx, const char *tool_name);
-void hitl_add_auto_approved(struct hitl_config *h, const char *tool_name);
-
-/* 步骤创建与辅助 */
-struct react_step *react_step_create(enum react_step_type type,
-				     const char *content,
-				     const char *tool_name,
-				     const char *tool_args,
-				     const char *tool_call_id);
-void react_step_destroy(struct react_step *step);
-const char *react_step_type_name(enum react_step_type type);
-const char *react_state_name(enum react_state state);
-```
+[react.h](../src/agent/react.h) 定义执行上下文及生命周期；[react_output.h](../src/agent/react_output.h) 定义结构化输出。事件字段在回调期间借用。前端通过 runtime 执行 turn，不直接接管 ReAct 依赖。
 
 #### 6.9.2 工具系统
 
-```c
-#define TOOL_NAME_MAX 512
-#define TOOL_DESC_MAX 8192
-#define TOOL_SCHEMA_MAX 8192
-#define TOOL_MAX_ENTRIES 64
-#define TOOL_DISABLED_MAX 32
+接口分为 [tool_registry.h](../src/agent/tool_registry.h)、[tool_execution.h](../src/agent/tool_execution.h)、[tool_result.h](../src/agent/tool_result.h)。注册表动态增长，注册时复制描述和 schema；JSON 与文本输入由 `input_kind` 区分。
 
-#define TOOL_FLAG_READONLY 0x01
-#define TOOL_FLAG_INTERNAL_APPROVAL 0x02
-#define TOOL_FLAG_DYNAMIC 0x04
+`tool_register_borrow` 借用 user data，`tool_register_take` 仅成功时转移拥有权。异步执行通过 retained handle 保持执行能力，不跨注册表结构变更持有裸 entry。结果具有结构化 envelope、artifacts、错误和显式清理契约。
 
-enum tool_origin {
-	TOOL_ORIGIN_BUILTIN,
-	TOOL_ORIGIN_DYNAMIC_SESSION,
-	TOOL_ORIGIN_DYNAMIC_PERSISTENT,
-	TOOL_ORIGIN_MCP,
-	TOOL_ORIGIN_EXT,
-};
+#### 6.9.3 模型
 
-struct tool_desc {
-	char name[TOOL_NAME_MAX];
-	char description[TOOL_DESC_MAX];
-	char input_schema[TOOL_SCHEMA_MAX];
-	char output_schema[TOOL_SCHEMA_MAX];
-};
+[llm.h](../src/models/llm.h) 提供 chat、工具调用、reasoning/content 流、图像问答、clone、请求视图和输入估计接口。响应及 clone 结果拥有动态字段，输入视图只在请求期间借用；分别使用相应 cleanup 释放。
 
-struct tool_result {
-	cJSON *envelope;
-	morph_str_t text;
-	char *owned;
-	cJSON *data;
-	cJSON *ui;
-	cJSON *meta;
-	struct tool_artifact_list artifacts;
-};
+`model_llm_clone` 创建独立并发客户端，`model_request_view_init` 借用源资源，不作为独立模型销毁。图像和视频生成使用各自 adapter 接口。
 
-typedef int (*tool_exec_fn)(const char *args_json,
-			    struct tool_result *result,
-			    void *user_data);
-typedef void (*tool_user_data_destroy_fn)(void *user_data);
+#### 6.9.4 工具清单
 
-struct tool_spec {
-	enum tool_origin origin;
-	const char *name;
-	const char *description;
-	const char *input_schema;
-	const char *output_schema;
-	tool_exec_fn exec;
-	void *user_data;
-	tool_user_data_destroy_fn user_data_destroy;
-	unsigned int flags;
-	int timeout_seconds;
-};
+| 类别 | 已注册工具或配置生成工具 |
+| --- | --- |
+| 查询与偏好 | `credits`、`memory`、`memory_preference` |
+| 文件与修改 | `file_read`、`file_list`、`file_info`、`apply_patch`、`checkpoint` |
+| 图像 | `img_gen`、`img_qa`、`img_info`、`img_annotate`、`img_inpaint`、`img_compose`、`img_resize`、`img_convert` |
+| 视频 | `vid_gen` |
+| 进程与授权 | `exec`、`process`、`request_permissions` |
+| 规划与交互 | `plan`、`ask_user`、`activate_skill`、`config_edit`、`tasks` |
+| 动态工具管理 | `tool_create`、`tool_promote`、`tool_delete`、`tool_history`、`tool_diff`、`tool_rollback` |
+| 子代理 | `delegate`、`fanout`、`agent_status`、配置生成的 `agent_<name>` |
 
-struct tool_entry {
-	struct tool_desc desc;
-	tool_exec_fn exec;
-	void *user_data;
-	tool_user_data_destroy_fn user_data_destroy;
-	enum tool_origin origin;
-	unsigned int flags;
-	int timeout_seconds;
-};
+工具是否对某个会话可见由配置、前端支持及注册状态决定。参数和输入格式以 [tools 源码](../src/agent/tools/) 中的 schema 为准。
 
-struct tool_registry {
-	struct tool_entry entries[TOOL_MAX_ENTRIES];
-	int count;
-	char disabled[TOOL_DISABLED_MAX][TOOL_NAME_MAX];
-	int disabled_count;
-	morph_strmap_t by_name;
-	morph_strmap_t disabled_by_name;
-};
+`file_read` 使用 `file_path`，支持行/字节游标、版本校验和长行连续读取；`file_list` 使用 `dir_path` 和 `after`，返回 `next_after`。进程的 `poll` / `wait` 返回游标、文件路径和捕获范围元数据。
 
-void tool_registry_init(struct tool_registry *reg);
-void tool_registry_cleanup(struct tool_registry *reg);
-const char *tool_origin_name(enum tool_origin origin);
-int tool_register_borrow(struct tool_registry *reg, const struct tool_spec *spec);
-int tool_unregister(struct tool_registry *reg, const char *name);
-struct tool_entry *tool_borrow(struct tool_registry *reg, const char *name);
-int tool_exec(struct tool_registry *reg, const char *name,
-	      const char *args_json, struct tool_result *result);
-int tool_set_timeout(struct tool_registry *reg, const char *name,
-		     int timeout_seconds);
-int tool_timeout_seconds(struct tool_registry *reg, const char *name);
-void tool_entry_cleanup_user_data(struct tool_registry *reg);
-int tool_disable(struct tool_registry *reg, const char *name);
-int tool_is_disabled(struct tool_registry *reg, const char *name);
-int tool_is_readonly(struct tool_registry *reg, const char *name);
-int tool_has_flag(struct tool_registry *reg, const char *name,
-		  unsigned int flag);
-```
+#### 6.9.5 压缩与恢复
 
-#### 6.9.3 模型接口
+[context.h](../src/agent/context.h)、[compress.h](../src/agent/compress.h) 定义底层消息和压缩操作；主执行路径通过持久模型历史管理重放和来源链。历史默认工具结果预算为 8000 tokens，包含结构化控制字段和省略元数据。
 
-```c
+较大输出通过工具自身分页、进程 spool 或 artifact 路径恢复；压缩后的历史不作为完整输出副本。
 
-typedef int (*sse_callback)(const char *token, void *user_data);
+#### 6.9.6 Ext 生命周期
 
-enum llm_stream_kind {
-	LLM_STREAM_CONTENT,
-	LLM_STREAM_REASONING,
-};
+[ext.h](../src/ext/ext.h) 和 [manifest.h](../src/ext/manifest.h) 定义加载、执行、取消和销毁接口。原生共享库直接调用；exec 类型使用受控子进程。共享库不能据其 manifest 推断已有 OS 进程隔离。
 
-typedef int (*llm_stream_callback)(enum llm_stream_kind kind,
-				   const char *token, void *user_data);
+#### 6.9.7 Ext IPC
 
-struct tool_desc;
+exec 扩展接收以换行结束的 JSON-RPC `run` 请求，返回最终 `result` 或 `error`，stderr 用于诊断。stdout 捕获上限 1 MiB，超限明确返回错误；大结果保存为文件后返回路径。通信失败或取消时终止并回收子进程。
 
-struct tool_call {
-	char id[128];
-	char tool_call_id[128];
-	char name[64];
-	char *arguments;
-};
+接口见 [jsonrpc.h](../src/ipc/jsonrpc.h)。原生共享库不经过此 IPC。
 
-struct model_usage {
-	char provider[32];
-	char model[128];
-	char kind[32];
-	char response_id[128];
-	char finish_reason[64];
-	int64_t input_tokens;
-	int64_t output_tokens;
-	int64_t total_tokens;
-	int64_t cached_tokens;
-	int64_t reasoning_tokens;
-	int64_t image_tokens;
-	int64_t image_units;
-	int64_t video_seconds;
-};
+#### 6.9.8 沙箱与权限
 
-struct chat_message {
-	char *role;
-	char *content;
-	char *tool_call_id;
-	struct tool_call *tool_calls;
-	int tool_call_count;
-};
+- Linux 使用默认 ALLOW 的 seccomp denylist 阻断逃逸相关 syscall，并结合 Landlock 路径访问和 rlimits。
+- macOS 使用 Seatbelt / `sandbox_init` 的 SBPL 规则。
+- 共享权限层按 access、approval、reviewer 判断操作，维护 turn/session/persistent grants。
+- 写入授权与删除授权分别判断；已有批准范围由具体工具复用，后代共享 authority。
+- 模型 reviewer 使用完整目标及独立请求；无法完成检查时按策略 defer，不以目标前缀替代完整审查。
 
-struct chat_response {
-	char *content;
-	struct tool_call *tool_calls;
-	int tool_call_count;
-	struct model_usage usage;
-};
+参见 [权限设计](permissions-design.md)、[验收记录](permissions-acceptance.md) 和 [sandbox.h](../src/sandbox/sandbox.h)。
 
-struct model_chat_options {
-	int max_tokens;
-	long timeout_seconds;
-};
+#### 6.9.9 Function Calling
 
-struct model_image_chat_options {
-	int max_tokens;
-	long timeout_seconds;
-	int max_dim;
-};
+Chat compatible、Responses 和 DeepSeek 使用各自 codec 编解码工具调用。文本 patch 由支持的输入格式传递；调用身份、provider item identity 和结果关联分别保存。多个工具的 worker 在释放共享依赖前 join 或 drain。
 
-struct model {
-	char name[64];
-	char provider[32];
-	char api_base[256];
-	char api_key[256];
-	char model_id[128];
-	char last_error[512];
-	int context_limit;
-	int max_tokens;		/* 单次响应最大生成 token 数 */
-	long timeout_seconds;
-	void *handle;
-	int (*chat)(struct model *self, const char *system_prompt,
-		    const char **messages, int n,
-		    const struct model_chat_options *opts,
-		    sse_callback cb, void *user_data);
-	int (*chat_with_tools)(struct model *self, const char *system_prompt,
-			       struct chat_message *messages, int msg_count,
-			       struct tool_desc *tools, int tool_count,
-			       struct chat_response *response,
-			       sse_callback thought_cb, void *thought_ud);
-	int (*chat_with_tools_stream)(struct model *self, const char *system_prompt,
-				      struct chat_message *messages, int msg_count,
-				      struct tool_desc *tools, int tool_count,
-				      struct chat_response *response,
-				      llm_stream_callback stream_cb,
-				      void *stream_ud);
-	int (*chat_with_image)(struct model *self, const char *system_prompt,
-			       const char *prompt,
-			       const char *image_path,
-			       const struct model_image_chat_options *opts,
-			       sse_callback cb, void *user_data);
-	int (*generate)(struct model *self, const char *prompt,
-			const char *out_path);
-	void (*destroy)(struct model *self);
-};
+#### 6.9.10 Guardrail 接口
 
-struct model *model_llm_create(const char *provider, const char *model_id,
-			       const char *api_base, const char *api_key);
-void model_destroy(struct model *m);
+[guardrail.h](../src/agent/guardrail.h) 定义 hook、规则、pass/fail/error 结果及错误策略。配置、LLM 和 Ext 规则共用检查结果语义，检查器失败与检查不通过分别处理。
 
-void chat_response_free(struct chat_response *resp);
-void chat_message_cleanup(struct chat_message *msg);
-void tool_call_cleanup(struct tool_call *tc);
-```
+#### 6.9.11 记忆接口
 
-#### 6.9.4 内置工具列表
-
-| 工具名 | 功能 | 参数 | 对应模型 | 类型 | 只读 |
-|--------|------|------|---------|------|------|
-| credits | 查询积分用量、限制和总积分 | — | SQLite | 内置 | 是 |
-| memory | 按 scope/type 查询长期记忆 | scope, type, max_episodes | SQLite | 内置 | 是 |
-| img_gen | 图片生成 | prompt, style, size, reference_images（最多 10 张） | GPT Image / Volcengine Seedream | 内置 | 否 |
-| img_qa | 图片问答/理解 | file_path, question, max_tokens, max_dim | 多模态 LLM（`[model.text]`） | 内置 | 是 |
-| img_inpaint | 区域生成(bbox+label) | annotation, prompt | 图像模型 i2i (确定性百分比指令) | 内置 | 否 |
-| img_compose | 跨图融合(arrow+label) | annotation, prompt | 本地预合成 + 图像模型 i2i | 内置 | 否 |
-| img_resize | 图片缩放 | file_path, width, height | stb_image_resize2 | 内置 | 否 |
-| img_convert | 图片格式转换 | file_path, format | stb_image + stb_image_write | 内置 | 否 |
-| img_info | 图片信息 | file_path | stb_image | 内置 | 是 |
-| img_annotate | 图片标注 | file_path, annotations | 本地 | 内置 | 否 |
-| vid_gen | 视频生成 | prompt, image_path?, duration, style | Volcengine / 可灵 / 即梦 | 内置 | 否 |
-| file_read | 读取文本文件 | path, offset, limit | 本地 | 内置 | 是 |
-| file_list | 列出目录内容 | path | 本地 | 内置 | 是 |
-| file_info | 文件元数据 | path | 本地 | 内置 | 是 |
-| config_edit | 经审批、补丁、备份、原子写入和 TOML 校验后编辑当前配置 | patch/content, reason | 本地 | 内置 | 否 |
-| exec | 执行 shell 命令（AST 解析 + 逐 program 审批 + 进程会话） | command, workdir, timeout_ms, yield_time_ms, pty, background | 本地沙箱 | 内置 | 否 |
-| process | 轮询/写入/中断/终止 exec 会话 | session_id, action, input | 本地 | 内置 | 否 |
-| request_permissions | 为后续 exec 命令申请最小文件系统权限 | command, permissions, scope, justification | 本地 | 内置 | 否 |
-| plan | 创建/管理多步计划 | command, name, goal, steps | LLM | 内置 | 是 |
-| ask_user | 向用户提问并等待回答 | question, choices | 本地 | 内置 | 是 |
-| activate_skill | 激活 Skill 注入上下文 | name | 本地 | 内置 | 是 |
-| tasks | 创建/管理定时 Agent 任务与 inbox | op, title, kind, trigger_type, delay_seconds, interval_seconds, prompt | SQLite + ReAct | 内置 | 否 |
-| tool_create | 创建或更新 QuickJS 动态工具 | name, description, args_schema, source_js | QuickJS | 动态工具管理 | 否 |
-| tool_promote | 提升会话动态工具为持久工具 | name | 本地 | 动态工具管理 | 否 |
-| tool_delete | 删除动态工具 | name | 本地 | 动态工具管理 | 否 |
-| tool_history | 查询动态工具 checkpoint | name, limit | 本地 | 动态工具管理 | 是 |
-| tool_diff | 查看 checkpoint 与当前版本差异 | name, checkpoint_id | 本地 | 动态工具管理 | 是 |
-| tool_rollback | 回滚动态工具 checkpoint | name, checkpoint_id | 本地 | 动态工具管理 | 否 |
-| agent_delegate | 异步委派子代理任务 | agent_name, task | 本地 | 子代理 | 否 |
-| agent_status | 查询子任务状态 | task_id | 本地 | 子代理 | 是 |
-| agent_sync | 同步调用子代理 | agent_name, task | 本地 | 子代理 | 否 |
-| agent_fanout | 并行扇出子代理任务 | agent_name, tasks, merge | 本地 | 子代理 | 否 |
-| translate | 文本翻译 | text, target_lang | LLM | Ext | — |
-| upper | 文本转大写 | text | 本地 | Ext | — |
-| ... | 社区/自定义 Ext + MCP 远程工具 | 按 manifest/API 定义 | 按定义 | Ext/MCP | — |
-
-#### 6.9.5 上下文压缩
-
-上下文相关结构体定义在 `context.h`，压缩函数在 `compress.h`。
-
-```c
-typedef int (*summarize_fn)(const char *text, void *user_data, char **out);
-
-struct compress_config {
-	int max_context_tokens;
-	int max_history_rounds;
-	double summarize_threshold_ratio;	/* 默认 0.8 */
-	double compress_target_ratio;		/* 默认 0.5 */
-	summarize_fn summarize;			/* 摘要回调（由 react.c 内部提供） */
-	void *summarize_user_data;
-};
-
-struct message_list {
-	char *role;
-	char *content;
-	char **file_paths;
-	int file_count;
-	int token_count;
-	int compressed;
-	struct message_list *next;
-};
-
-struct key_info {
-	char *key;
-	char *value;
-	struct key_info *next;
-};
-
-struct bpe_encoder;
-
-struct tokenizer {
-	char model_name[64];
-	int context_limit;
-	int (*count)(const char *text);
-	struct bpe_encoder *encoder;	/* BPE 编码器（可选） */
-};
-
-struct compress_result {
-	int original_tokens;
-	int compressed_tokens;
-	int messages_removed;
-	int messages_summarized;
-	char *summary;
-	struct key_info *preserved;
-};
-
-/* 消息链表辅助 */
-struct message_list *msg_list_create(const char *role,
-				      const char *content, int token_count);
-int msg_list_append_take(struct message_list **head, struct message_list **msg);
-void msg_list_destroy(struct message_list *head);
-int msg_list_count(struct message_list *head);
-
-/* 上下文管理 */
-int context_token_count(struct message_list *head, struct tokenizer *tok);
-int context_needs_compress(struct message_list *head, struct tokenizer *tok,
-			   struct compress_config *cfg);
-
-/* 压缩策略 */
-int compress_sliding_window(struct message_list **head, int keep_rounds,
-			    struct compress_result *result);
-int compress_react_trace(struct message_list **head,
-			 struct compress_result *result);
-int compress_detect_react_cycles(struct message_list *head);
-struct key_info *key_info_create(struct message_list *head);
-void key_info_free(struct key_info *head);
-int compress_summarize(struct message_list **head, int keep_rounds,
-		       summarize_fn fn, void *fn_user,
-		       struct compress_result *result);
-```
-
-#### 6.9.6 Ext 系统
-
-| 类型 | 格式 | 执行方式 | 隔离级别 |
-|------|------|---------|---------|
-| 原生 Ext | `ext.so` | dlopen 加载，隔离线程执行 | seccomp-bpf 限制系统调用 |
-| 外部 Ext | `ext`（可执行） | fork+execvp，子进程执行 | namespace+seccomp+rlimit 全隔离 |
-| Guardrail Ext | `ext.so` | dlopen 加载，Guardrail 规则回调 | 同原生 Ext |
-
-```c
-enum ext_purpose {
-	EXT_PURPOSE_TOOL      = 0,
-	EXT_PURPOSE_GUARDRAIL = 1,
-};
-
-struct ext_manifest {
-	char name[64];
-	char version[32];
-	char description[256];
-	char author[64];
-	char type[16];			/* "so" 或 "exec" */
-	enum ext_purpose purpose;
-	char entry[128];		/* exec 可执行文件名; so 符号名 */
-	char **fronts;
-	int fronts_count;
-	char **categories;
-	int categories_count;
-	char build_command[512];
-	char hook[32];			/* Guardrail hook 点 */
-	char action_text[512];		/* Guardrail 失败时的修正指导 */
-	unsigned int permissions;
-	char **allowed_paths;
-	int allowed_paths_count;
-	char **allowed_env;
-	int allowed_env_count;
-	int max_memory_mb;
-	int max_cpu_seconds;
-	int max_open_files;
-	char *input_schema;
-	char *output_schema;
-};
-
-struct ext {
-	struct ext_manifest manifest;
-	char path[PATH_MAX];
-	void *dl_handle;		/* dlopen 句柄（.so 类型） */
-	int (*run)(const char *args_json, char **result_json);
-	char exec_path[PATH_MAX];	/* exec 类型子进程路径 */
-	struct tool_desc tool_desc;	/* 注册到 Tool Registry */
-	int enabled;
-};
-
-int ext_load(struct ext *ex, const char *dir_path);
-int ext_unload(struct ext *ex);
-int ext_run(struct ext *ex, const char *args_json, char **result_json);
-void ext_user_data_destroy(void *user_data);
-void ext_manifest_cleanup(struct ext_manifest *m);
-int ext_manifest_supports_front(const struct ext_manifest *m,
-				const char *front);
-```
-
-#### 6.9.7 Ext ↔ 主进程 IPC
-
-**协议**：基于行的 JSON-RPC 2.0，主进程通过 `stdin/stdout` 与子进程双向通信（`.so` 类型在隔离线程内通过环形 buffer）。
-
-**主进程 → Ext**（单次调用）：
-```json
-{"jsonrpc":"2.0","id":1,"method":"run","params":{"prompt":"hi","target_lang":"en"}}
-```
-
-**Ext → 主进程**（可选回调，用于流式输出与权限请求）：
-```json
-{"jsonrpc":"2.0","method":"log","params":{"level":"info","msg":"calling api..."}}
-{"jsonrpc":"2.0","method":"stream","params":{"chunk":"He"}}
-{"jsonrpc":"2.0","method":"request_permission","params":{"perm":"network"}}
-```
-
-**Ext → 主进程（最终结果）**：
-```json
-{"jsonrpc":"2.0","id":1,"result":{"text":"Hello"}}
-{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"upstream timeout"}}
-```
-
-```c
-struct jsonrpc_request {
-	int id;
-	const char *method;
-	const char *params_json;
-};
-
-struct jsonrpc_response {
-	int id;
-	char *result_json;
-	int has_error;
-	int error_code;
-	char *error_message;
-};
-
-char *jsonrpc_request_create(const struct jsonrpc_request *req);
-int jsonrpc_response_copy(const char *resp_str, struct jsonrpc_response *out);
-void jsonrpc_response_free(struct jsonrpc_response *resp);
-```
-
-#### 6.9.8 沙箱机制
-
-| 平台 | 机制 | 默认拒绝 | 按权限放开 |
-|------|------|---------|-----------|
-| Linux | seccomp-bpf + rlimit + landlock | 所有 syscall | 见权限位域 |
-| Linux 强隔离（P2） | + unshare（NEWPID/NEWNET/NEWNS） | 网络/PID | 仅 PERM_NETWORK |
-| macOS | Seatbelt SBPL + `sandbox_init` | 网络/文件/设备/IPC | 路径与显式能力白名单（已实现） |
-
-**最小 syscall 白名单**（默认）：
-`read, write, mmap, munmap, mprotect, brk, exit, exit_group, futex, rt_sigaction, rt_sigprocmask, clock_gettime, getpid, gettid, close, fstat, lseek, poll, ppoll, nanosleep`
-
-```c
-#define EXT_PERM_NETWORK	(1 << 0)
-#define EXT_PERM_FILESYS	(1 << 1)
-#define EXT_PERM_EXEC		(1 << 2)
-#define EXT_PERM_ENV		(1 << 3)
-#define EXT_PERM_PTY		(1 << 4)
-#define EXT_PERM_PROCESS_INFO	(1 << 5)
-#define EXT_PERM_IPC		(1 << 6)
-#define EXT_PERM_TEMP		(1 << 7)
-
-struct sandbox_config {
-	unsigned int permissions;
-	char **allowed_paths;
-	int allowed_paths_count;
-	char **allowed_env;
-	int allowed_env_count;
-	int max_memory_mb;
-	int max_cpu_seconds;
-	int max_file_size_mb;
-	int max_processes;
-	int max_open_files;
-	int allow_pty;
-	int allow_process_info;
-	int allow_ipc;
-	int allow_temp;
-};
-
-int sandbox_enter(struct sandbox_config *cfg);
-int sandbox_apply_seccomp(unsigned int permissions);
-int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb,
-			  int max_cpu_seconds, int max_file_size_mb,
-			  int max_processes, int max_open_files);
-int sandbox_apply_fs(const char **allowed_paths, int count,
-		     unsigned int permissions);
-int sandbox_apply_env(const char **allowed_env, int count,
-		      unsigned int permissions);
-```
-
-#### 6.9.9 ReAct Function Calling
-
-ReAct 循环使用 LLM 原生 Function Calling（而非文本解析 `Action: tool_name(args)` 格式）。LLM 返回 `tool_calls` 数组，每个元素包含 `function.name`、`function.arguments`（JSON）和 `id`。运行时将 `id` 回填到 `tool_call_id`，用于后续 `tool_role` 消息关联。
-
-**优势**：
-- 无需正则解析 LLM 自由文本，避免格式错误
-- 原生支持多工具并行调用（LLM 可一次返回多个 `tool_calls`）
-- 参数自动 JSON 结构化，减少解析歧义
-
-**并行执行**：当 LLM 返回多个 `tool_calls` 时，每个工具调用在独立 pthread 中执行，通过 `async_tool_call` 结构跟踪完成状态，完成后逐一回灌 Observation。
-
-**Human-in-the-Loop (HITL)**：当 `hitl_enabled` 时，工具执行前检查 `hitl_needs_approval()`。若需审批，调用 `approval_cb` 获取用户决定（`APPROVE`/`DENY`/`ALWAYS`）。`ALWAYS` 将该工具加入 `auto_approved` 列表，后续不再提示。只读工具（`TOOL_FLAG_READONLY`）在 `auto_approve_readonly` 时自动批准。
-
-#### 6.9.10 可插拔 Guardrail 引擎
-
-Guardrail 采用可插拔规则引擎架构，支持三种规则类型和三个 hook 点。
-
-**规则类型**：
-
-| 类型 | 实现方式 | 适用场景 |
-|------|---------|---------|
-| `GUARDRAIL_RULE_C` | 内置 C 函数 | 客观条件验证（空回答、工具全失败等） |
-| `GUARDRAIL_RULE_LLM` | LLM 评估 | 主观质量评估（输出是否满足用户意图） |
-| `GUARDRAIL_RULE_EXT` | .so 动态库插件 | 自定义验证逻辑（PII 检测等） |
-
-**Hook 点**：
-
-| Hook | 触发时机 |
-|------|---------|
-| `GUARDRAIL_HOOK_INPUT` | 用户输入进入 ReAct 前 |
-| `GUARDRAIL_HOOK_TOOL_OUTPUT` | 工具执行结果回灌前 |
-| `GUARDRAIL_HOOK_OUTPUT` | LLM 最终输出返回用户前 |
-
-```c
-enum guardrail_verdict {
-	GUARDRAIL_PASS = 0,
-	GUARDRAIL_FAIL = 1,
-};
-
-enum guardrail_hook {
-	GUARDRAIL_HOOK_INPUT,
-	GUARDRAIL_HOOK_TOOL_OUTPUT,
-	GUARDRAIL_HOOK_OUTPUT,
-};
-
-#define GUARDRAIL_RULES_MAX          16
-#define GUARDRAIL_REASON_MAX         512
-#define GUARDRAIL_ACTION_MAX         512
-#define GUARDRAIL_NAME_MAX           64
-#define GUARDRAIL_DESC_MAX           1024
-#define GUARDRAIL_EXT_ENTRY_MAX      PATH_MAX
-
-struct guardrail_eval_ctx {
-	const char *user_input;
-	const char *tool_name;
-	const char *tool_args;
-	const char *tool_result;
-	const char *proposed_answer;
-	const void *steps;
-	int empty_round_count;
-};
-
-typedef enum guardrail_verdict (*guardrail_rule_fn)(
-	const struct guardrail_eval_ctx *ctx,
-	char *reason_out,
-	size_t reason_cap);
-
-enum guardrail_rule_type {
-	GUARDRAIL_RULE_C,
-	GUARDRAIL_RULE_LLM,
-	GUARDRAIL_RULE_EXT,
-};
-
-enum guardrail_ext_type {
-	GUARDRAIL_EXT_EXEC = 0,
-	GUARDRAIL_EXT_SO   = 1,
-};
-
-typedef int (*guardrail_ext_check_fn)(const char *text,
-				      const char *rule_name,
-				      const char *description,
-				      char **result_json);
-
-struct guardrail_rule {
-	char name[GUARDRAIL_NAME_MAX];
-	enum guardrail_hook hook;
-	enum guardrail_rule_type type;
-	enum guardrail_ext_type ext_type;
-	int enabled;
-	guardrail_rule_fn check;
-	void *dl_handle;
-	guardrail_ext_check_fn ext_check;
-	char description[GUARDRAIL_DESC_MAX];
-	char ext_entry[GUARDRAIL_EXT_ENTRY_MAX];
-	char action_text[GUARDRAIL_ACTION_MAX];
-};
-
-struct guardrail_result {
-	enum guardrail_verdict verdict;
-	char reason[GUARDRAIL_REASON_MAX];
-	const struct guardrail_rule *triggered_rule;
-};
-
-struct model;
-
-struct guardrail_config {
-	int enabled;
-	int max_retries;
-	int max_empty_rounds;
-	struct guardrail_rule rules[GUARDRAIL_RULES_MAX];
-	int rule_count;
-	struct model *llm;		/* LLM 评估规则使用的模型 */
-};
-
-/* 规则管理 */
-int guardrail_rule_register(struct guardrail_config *cfg,
-			     const char *name,
-			     enum guardrail_hook hook,
-			     enum guardrail_rule_type type,
-			     guardrail_rule_fn check,
-			     const char *description,
-			     const char *ext_entry,
-			     const char *action_text);
-int guardrail_ext_so_load(struct guardrail_rule *rule);
-void guardrail_ext_so_unload(struct guardrail_rule *rule);
-int guardrail_rule_disable(struct guardrail_config *cfg, const char *name);
-int guardrail_rule_enable(struct guardrail_config *cfg, const char *name);
-struct guardrail_rule *guardrail_rule_borrow(struct guardrail_config *cfg,
-					      const char *name);
-
-/* 内置规则注册 */
-void guardrail_register_builtin_rules(struct guardrail_config *cfg);
-
-/* Hook 执行 */
-struct guardrail_result guardrail_run_hook(const struct guardrail_config *cfg,
-					   enum guardrail_hook hook,
-					   const struct guardrail_eval_ctx *eval);
-
-/* LLM 绑定 */
-void guardrail_set_llm(struct guardrail_config *cfg, struct model *llm);
-```
-
-**内置规则**（`guardrail_register_builtin_rules` 自动注册）：
-
-| 规则名 | Hook | 类型 | 验证条件 |
-|--------|------|------|---------|
-| all-tools-failed | output | C | 所有工具调用均返回错误 |
-| creative-no-media | output | C | 创意工具被调用但无输出文件 |
-| empty-answer | output | C | 回答为空或 `"(no response)"` |
-| consecutive-empty | output | C | 连续空回答达到上限 |
-
-**验证流程**：
-1. LLM 返回无工具调用的文本 → 进入 `GUARDRAIL_HOOK_OUTPUT` hook
-2. 遍历所有已启用的 output 规则，逐一执行 `check`
-3. 任一规则返回 `GUARDRAIL_FAIL` → 构造 `action_text` 作为修正指导回灌
-4. 所有规则通过 → 进入 Final
-
-#### 6.9.11 长期记忆接口
-
-```c
-struct memory_options {
-	int enabled;
-	int hot_path_enabled;
-	int cold_path_enabled;
-	int llm_extract_enabled;
-	int max_facts;
-	int max_episodes;
-	int max_procedures;
-	int max_context_chars;
-};
-
-enum memory_clear_scope {
-	MEMORY_CLEAR_ALL = 0,
-	MEMORY_CLEAR_FACTS,
-	MEMORY_CLEAR_EPISODES,
-	MEMORY_CLEAR_PROCEDURES,
-};
-
-/* LLM 模型绑定（NULL 则回退到启发式提取） */
-void memory_set_llm(struct model *llm);
-
-/* 构建记忆上下文（注入 ReAct 系统提示） */
-char *memory_build_context(struct db *db, int64_t session_id,
-			   const char *query,
-			   const struct memory_options *opts);
-
-/* 渲染会话记忆摘要 */
-char *memory_session_text_create(struct db *db, int64_t session_id,
-			    int max_episodes);
-
-/* 同步整合（当前轮次 → 记忆） */
-int memory_consolidate_turn(struct db *db, int64_t session_id,
-			    const char *user_input,
-			    const char *assistant_output,
-			    const struct react_step *steps,
-			    int success,
-			    const struct memory_options *opts);
-
-/* 异步整合（后台线程，不阻塞主流程） */
-int memory_consolidate_turn_async(struct db *db, int64_t session_id,
-				  const char *user_input,
-				  const char *assistant_output,
-				  const struct react_step *steps,
-				  int success,
-				  const struct memory_options *opts);
-
-/* 异步队列排空 + 线程回收 */
-void memory_async_shutdown(void);
-
-/* 清除记忆 */
-int memory_clear(struct db *db, int64_t session_id,
-		 enum memory_clear_scope scope);
-```
+[memory.h](../src/agent/memory.h) 定义偏好接收、上下文构建、同步/异步整合和 worker 生命周期。[memory_repository.h](../src/persistence/memory_repository.h) 与 [preferences.h](../src/persistence/preferences.h) 提供 typed 存储；显示摘要不能替代完整记录。
 
 #### 6.9.12 MCP 接口
 
-```c
-#define MCP_PROTOCOL_VERSION   "2025-06-18"
-#define MCP_NAME_MAX           128
-#define MCP_DESC_MAX           1024
-#define MCP_SCHEMA_MAX         4096
-#define MCP_URI_MAX            PATH_MAX
-#define MCP_CMD_MAX            64
-#define MCP_CMD_ARG_MAX        256
-#define MCP_ENV_MAX            16
-#define MCP_ENV_VAL_MAX        PATH_MAX
-#define MCP_MAX_SERVERS        32
-#define MCP_JSON_BUF_MAX       65536
-#define MCP_READ_BUF_MAX       131072
-
-enum mcp_transport_type {
-	MCP_TRANSPORT_STDIO,
-	MCP_TRANSPORT_STREAMABLE_HTTP,
-};
-
-struct mcp_tool_desc {
-	char name[MCP_NAME_MAX];
-	char title[MCP_NAME_MAX];
-	char description[MCP_DESC_MAX];
-	char input_schema[MCP_SCHEMA_MAX];
-};
-
-struct mcp_resource_desc {
-	char uri[MCP_URI_MAX];
-	char name[MCP_NAME_MAX];
-	char description[MCP_DESC_MAX];
-	char mime_type[64];
-};
-
-struct mcp_prompt_desc {
-	char name[MCP_NAME_MAX];
-	char description[MCP_DESC_MAX];
-	char arguments_schema[MCP_SCHEMA_MAX];
-};
-
-struct mcp_server_config {
-	char name[MCP_NAME_MAX];
-	enum mcp_transport_type transport;
-	/* stdio */
-	char command[256];
-	char cmd_args[MCP_CMD_MAX][MCP_CMD_ARG_MAX];
-	int cmd_args_count;
-	char env_keys[MCP_ENV_MAX][64];
-	char env_vals[MCP_ENV_MAX][MCP_ENV_VAL_MAX];
-	int env_count;
-	/* http */
-	char http_url[PATH_MAX];
-	char http_auth_token_env[64];
-	/* startup */
-	int auto_connect;
-	int connect_timeout;
-};
-
-struct mcp_client {
-	struct mcp_server_config config;
-	int connected;
-	int connecting;
-	char negotiated_version[32];
-	char server_name[MCP_NAME_MAX];
-	char server_version[64];
-	int supports_tools;
-	int supports_resources;
-	int supports_prompts;
-	int tools_list_changed;
-	/* stdio transport */
-	pid_t server_pid;
-	int stdin_fd;
-	int stdout_fd;
-	/* http transport */
-	void *curl_handle;
-	char session_id[128];
-	int next_req_id;
-	pthread_mutex_t lock;
-};
-
-struct mcp_registry {
-	struct mcp_client *servers[MCP_MAX_SERVERS];
-	int count;
-};
-
-/* 注册表管理 */
-void mcp_registry_init(struct mcp_registry *reg);
-int mcp_registry_add(struct mcp_registry *reg, const struct mcp_server_config *cfg);
-struct mcp_client *mcp_registry_borrow(struct mcp_registry *reg, const char *name);
-int mcp_registry_count(struct mcp_registry *reg);
-void mcp_registry_cleanup(struct mcp_registry *reg);
-
-/* 生命周期 */
-int mcp_connect_stdio(struct mcp_client *client);
-int mcp_connect_http(struct mcp_client *client);
-int mcp_initialize(struct mcp_client *client);
-void mcp_disconnect(struct mcp_client *client);
-int mcp_ensure_connected(struct mcp_client *client);
-
-/* 工具 */
-int mcp_list_tools_copy(struct mcp_client *client, struct mcp_tool_desc **out_tools, int *out_count);
-int mcp_call_tool(struct mcp_client *client, const char *name,
-		  const char *args_json, char **out_result_json);
-
-/* 资源 */
-int mcp_list_resources_copy(struct mcp_client *client, struct mcp_resource_desc **out_res, int *out_count);
-int mcp_read_resource(struct mcp_client *client, const char *uri, char **out_content);
-
-/* 提示词 */
-int mcp_list_prompts_copy(struct mcp_client *client, struct mcp_prompt_desc **out_prompts, int *out_count);
-int mcp_get_prompt(struct mcp_client *client, const char *name,
-		   const char *args_json, char **out_result);
-
-/* 工具 */
-int mcp_ping(struct mcp_client *client);
-
-/* morph 工具注册表集成 */
-int mcp_register_server_tools(struct mcp_client *client,
-			      struct tool_registry *reg);
-int mcp_register_server_resources(struct mcp_client *client,
-				  struct tool_registry *reg);
-int mcp_register_server_prompts(struct mcp_client *client,
-				struct tool_registry *reg);
-```
+[mcp.h](../src/mcp/mcp.h) 定义客户端、描述符及请求接口；工具、资源和提示词描述符使用独立动态所有权。runtime 负责连接、后台发现、原子发布和清理，前端通过 MCP 服务 DTO 访问。
 
 #### 6.9.13 子代理接口
 
-```c
-#define SUB_AGENT_TASK_MAX 8
-#define SUB_AGENT_TASK_ID_MAX 32
-#define SUB_AGENT_MAX_DEPTH 2
+[sub_agent.h](../src/agent/sub_agent.h) 提供同步、委派、fanout、状态及事件接口。任务历史采用稳定 owner，活跃容量与历史数量分离；失败和完成都归还执行槽。
 
-enum sub_agent_task_status {
-	SUB_AGENT_PENDING,
-	SUB_AGENT_RUNNING,
-	SUB_AGENT_COMPLETED,
-	SUB_AGENT_FAILED,
-	SUB_AGENT_CANCELLED
-};
+#### 6.9.14 Tool Context
 
-struct sub_agent_entry {
-	struct config_sub_agent cfg;
-	char *system_prompt;
-	struct model *llm;
-};
+工具运行时携带当前权限、HTTP/取消、数据库、会话和宿主服务上下文。权限 context 保持 opaque，通过 [permission/context.h](../src/permission/context.h) 使用；具体工具描述操作，opaque 工具使用注册表权限 gate。
 
-struct sub_agent_task {
-	char id[SUB_AGENT_TASK_ID_MAX];
-	int agent_index;
-	char *task_description;
-	enum sub_agent_task_status status;
-	char *result;
-	int error_code;
-	struct react_context *child_ctx;
-	pthread_t thread;
-	int joined;
-	pthread_mutex_t mutex;
-};
+#### 6.9.15 Plan
 
-struct sub_agent_trace_event {
-	char trace_id[36];
-	char parent_trace_id[36];
-	char agent_name[SUB_AGENT_NAME_MAX];
-	int64_t start_ms;
-	int64_t end_ms;
-	char mode[16];
-	int iteration_count;
-	int token_usage;
-	char *result_preview;
-};
+[plan.h](../src/agent/plan.h) 提供多步骤计划及状态操作，`plan` 工具向模型开放；会话计划独立持久化。
 
-struct sub_agent_runtime {
-	struct sub_agent_entry entries[SUB_AGENT_MAX];
-	int entry_count;
-	struct sub_agent_task tasks[SUB_AGENT_TASK_MAX];
-	int task_count;
-	int next_task_id;
-	struct tool_registry *parent_tools;
-	struct model *default_llm;
-	struct tokenizer *tokenizer;
-	struct compress_config *compress;
-	int depth;
-	char trace_file[PATH_MAX];
-};
+#### 6.9.16 Tokenizer
 
-struct sub_agent_runtime *
-sub_agent_runtime_create(struct tool_registry *parent_tools,
-			 struct model *default_llm,
-			 struct tokenizer *tokenizer,
-			 struct compress_config *compress);
-void sub_agent_runtime_destroy(struct sub_agent_runtime *rt);
-int sub_agent_runtime_load_config(struct sub_agent_runtime *rt,
-				  struct config_sub_agents *cfg);
-struct sub_agent_entry *
-sub_agent_borrow(struct sub_agent_runtime *rt, const char *name);
-struct tool_registry *
-sub_agent_tool_registry_create(struct sub_agent_runtime *rt,
-			      struct sub_agent_entry *entry);
-struct react_context *
-sub_agent_create_context(struct sub_agent_runtime *rt,
-			 struct sub_agent_entry *entry,
-			 const char *task);
-int sub_agent_invoke_sync(struct sub_agent_runtime *rt,
-			  struct sub_agent_entry *entry,
-			  const char *task, char **result);
-int sub_agent_delegate(struct sub_agent_runtime *rt,
-		       const char *agent_name, const char *task,
-		       char **task_id_out);
-int sub_agent_fanout(struct sub_agent_runtime *rt,
-		     const char *agent_name,
-		     const char **tasks, int task_count,
-		     enum sub_agent_merge_strategy merge,
-		     char **result);
-int sub_agent_check_status(struct sub_agent_runtime *rt,
-			   const char *task_id,
-			   enum sub_agent_task_status *status_out,
-			   char **result_out);
-int sub_agent_apply_output_schema(const char *text,
-				  const char *schema,
-				  struct model *llm,
-				  char **result);
-void sub_agent_trace_write(struct sub_agent_runtime *rt,
-			   struct sub_agent_trace_event *ev);
-```
+[tokenizer.h](../src/agent/tokenizer.h) 和 [bpe.h](../src/util/bpe.h) 定义计数接口。分批只控制临时工作量，不截断剩余输入；长连续片段使用等价合并堆。分词失败或分配失败保留相应保守计数路径。
 
-#### 6.9.14 Tool Context 接口
+### 6.10 Skill
 
-Tool Context 管理工具执行时的路径权限和命令审批。
+- 按项目 `.agents/skills`、配置或默认用户目录发现 Skill，同名采用先发现者。
+- 使用默认 `~/.morph/skills` 时，还发现 `~/.agents/skills`。
+- `SKILL.md` frontmatter 使用 `name`、`description`、`license`、`compatibility`、`allowed-tools`、`metadata` 等已解析字段。
+- 名称最多 64、描述最多 1024 个 Unicode 码点；metadata 最多 16 项，frontmatter 预算 1 MiB。超长和非法 UTF-8 返回错误。
+- 注册表动态增长并保持 entry 地址稳定；正文在激活时懒加载，每次请求临时注入。
+- 顶层 `morph skills add/list/remove/update` 支持 Skill 安装及管理；`/skill` 提供会话内查看、激活和停用，模型通过 `activate_skill` 加载完整指令。
 
-```c
-#define TOOL_CONTEXT_OUTPUT_DIR_MAX PATH_MAX
-#define TOOL_CONTEXT_ALLOW_MAX 32
-#define TOOL_CONTEXT_ALLOW_PATH_MAX PATH_MAX
-#define TOOL_CONTEXT_COMMAND_MAX 1024
+接口见 [skill.h](../src/skill/skill.h)、[skill_parse.c](../src/skill/skill_parse.c) 及 [CLI 管理](cli-management.md)。
 
-enum write_verdict {
-	WRITE_DENY = 0,
-	WRITE_ALLOW = 1,
-	WRITE_ALWAYS = 2,
-};
+### 6.11 TUI 与进度呈现
 
-enum tool_path_op {
-	TOOL_PATH_READ = 0,
-	TOOL_PATH_LIST = 1,
-	TOOL_PATH_WRITE = 2,
-	TOOL_PATH_DELETE = 3,
-};
+TUI 公开 Application、View、Canvas 和 widget 对象。自定义类型将公共 base 放在首字段，通过可选 method table 扩展；可变 UI 操作归 owner 线程，worker 通过消息提交状态。
 
-enum tool_operation_kind {
-	TOOL_OP_COMMAND = 0,
-	TOOL_OP_PATH_READ = 1,
-	TOOL_OP_PATH_LIST = 2,
-	TOOL_OP_PATH_WRITE = 3,
-	TOOL_OP_NETWORK = 4,
-	TOOL_OP_EXTERNAL_SEND = 5,
-	TOOL_OP_PATH_DELETE = 6,
-};
+View 使用四边 margin/padding：measure 返回含 margin 的外尺寸，arrange 接收 outer slot；size limits 含 padding、不含 margin，兄弟 margin 相加。
 
-enum tool_operation_verdict {
-	TOOL_OP_DENY = 0,
-	TOOL_OP_ALLOW = 1,
-	TOOL_OP_SESSION = 2,
-	TOOL_OP_ALWAYS = 3,
-};
+CLI Application 复用该框架管理模式和页面，feed 显示 Working、耗时、推理、回答、工具与后台任务。`util/spin` 是独立可复用工具，不作为 CLI 的全部线程和输出契约。
 
-struct tool_operation {
-	enum tool_operation_kind kind;
-	const char *tool_name;
-	const char *principal;
-	const char *action;
-	const char *target;
-	const char *scope;
-	const char *details_json;
-	const struct tool_directory_capability *directories;
-	int directories_count;
-	const char *reason;
-	const char *const *programs;
-	int programs_count;
-};
-
-typedef enum tool_operation_verdict (*tool_operation_approval_fn)(
-	const struct tool_operation *op, void *user_data);
-
-struct tool_directory_capability {
-	char path[PATH_MAX];
-	int create;
-};
-
-struct tool_context {
-	char workdir[TOOL_CONTEXT_OUTPUT_DIR_MAX];
-	char output_dir[TOOL_CONTEXT_OUTPUT_DIR_MAX];
-	tool_operation_approval_fn operation_approval_fn;
-	void *operation_approval_user_data;
-	char read_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int read_allowed_dirs_count;
-	char write_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int write_allowed_dirs_count;
-	char allowed_commands[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ACTION_MAX];
-	int allowed_commands_count;
-	char exec_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int exec_allowed_dirs_count;
-	morph_array_t scoped_grants;
-	morph_array_t persistent_grants;
-	struct db *grant_db;
-	char grant_project_root[TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int default_timeout_seconds;
-	char exec_profile_write_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int exec_profile_write_dirs_count;
-	char exec_profile_delete_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int exec_profile_delete_dirs_count;
-};
-
-struct tool_context *tool_context_create(const char *workdir,
-					 const char *output_dir);
-void tool_context_destroy(struct tool_context *tctx);
-const char *tool_context_workdir_borrow(const struct tool_context *tctx);
-const char *tool_context_output_dir_borrow(const struct tool_context *tctx);
-void tool_context_set_default_timeout(struct tool_context *tctx, int seconds);
-int tool_context_default_timeout(const struct tool_context *tctx);
-int tool_context_authorize_path(struct tool_context *tctx,
-				enum tool_path_op op, const char *path,
-				char *resolved, size_t resolved_size);
-int tool_context_check_operation(struct tool_context *tctx,
-				 const struct tool_operation *op);
-int tool_context_check_operation_verdict(
-	struct tool_context *tctx, const struct tool_operation *op,
-	enum tool_operation_verdict *verdict);
-void tool_context_set_operation_approval(struct tool_context *tctx,
-					 tool_operation_approval_fn fn,
-					 void *user_data);
-```
-
-#### 6.9.15 Plan 子系统接口
-
-```c
-#define PLAN_NAME_MAX 64
-#define PLAN_GOAL_MAX 512
-#define PLAN_STEP_DESC_MAX 256
-#define PLAN_MAX_STEPS 32
-#define PLAN_MAX_PLANS 8
-#define PLAN_STATUS_MAX 16
-
-struct plan_step {
-	int id;
-	char description[PLAN_STEP_DESC_MAX];
-	char status[PLAN_STATUS_MAX]; /* pending, in_progress, completed, failed, skipped */
-};
-
-struct plan {
-	char name[PLAN_NAME_MAX];
-	char goal[PLAN_GOAL_MAX];
-	struct plan_step steps[PLAN_MAX_STEPS];
-	int step_count;
-	int active_step; /* index of current active step, -1 if none */
-};
-
-struct plan_registry {
-	struct plan plans[PLAN_MAX_PLANS];
-	int count;
-};
-
-void plan_registry_init(struct plan_registry *reg);
-struct plan *plan_add_borrow(struct plan_registry *reg, const char *name,
-			 const char *goal, const char **step_descs,
-			 int step_count);
-struct plan *plan_borrow(struct plan_registry *reg, const char *name);
-int plan_update_step(struct plan_registry *reg, const char *plan_name,
-		     int step_id, const char *status);
-int plan_format(struct plan_registry *reg, char *buf, size_t buf_size);
-```
-
-#### 6.9.16 BPE Tokenizer 接口
-
-```c
-enum bpe_encoding {
-	BPE_CL100K_BASE,	/* GPT-4 / GPT-3.5 */
-	BPE_O200K_BASE,		/* GPT-4o */
-};
-
-struct bpe_encoder;
-
-struct bpe_encoder *bpe_encoder_create(enum bpe_encoding encoding,
-				       const char *vocab_dir);
-void bpe_encoder_destroy(struct bpe_encoder *enc);
-int bpe_count_tokens(struct bpe_encoder *enc, const char *text);
-int bpe_count_tokens_n(struct bpe_encoder *enc, const char *text, size_t len);
-```
-
-> **词表文件**：`vendor/tiktoken/cl100k_base.tiktoken` 和 `vendor/tiktoken/o200k_base.tiktoken`，构建时复制到 build 目录。
-
----
-
-### 6.10 Skill 系统
-
-Skill 是热加载的指令包（`SKILL.md` 文件），可向 Agent 注入专业领域行为。与 Ext 不同，Skill 不引入新工具，而是通过系统提示扩展 Agent 的推理能力。
-
-#### 6.10.1 Skill 发现
-
-搜索路径（按顺序）：
-1. `[skill] dir` 配置项（默认 `~/.morph/skills/`）
-2. `~/.agents/skills/`（兼容标准路径）
-
-每个子目录视为一个 Skill，需包含 `SKILL.md` 文件。
-
-#### 6.10.2 Skill 解析（frontmatter）
-
-`SKILL.md` 使用 YAML frontmatter 格式：
-
-```markdown
----
-name: code-review
-description: Code review and analysis
-license: MIT
-compatibility: morph>=0.1
-allowed_tools: file_read,exec,memory
-metadata:
-  author: morph-team
-  version: "1.0"
----
-
-(Skill instructions in Markdown — injected into system prompt when activated)
-```
-
-#### 6.10.3 Skill 激活
-
-- **自动激活**：Skill 可设置 `auto_activate: true`，启动时自动注入
-- **手动激活**：通过 `/skill activate <name>` 命令或 `skill_activate` 工具（由 ReAct 调用）
-- **激活效果**：Skill 的 Markdown 内容以 `<skill name="xxx">` 标签包裹注入系统提示
-
-#### 6.10.4 Skill 数据结构
-
-```c
-#define SKILL_NAME_MAX 65
-#define SKILL_DESC_MAX 1025
-#define SKILL_MAX_ENTRIES 64
-#define SKILL_PATH_MAX PATH_MAX
-#define SKILL_METADATA_MAX 16
-#define SKILL_METADATA_KEY_MAX 64
-#define SKILL_METADATA_VAL_MAX 256
-
-struct skill_metadata_entry {
-	char key[SKILL_METADATA_KEY_MAX];
-	char value[SKILL_METADATA_VAL_MAX];
-};
-
-struct skill_frontmatter {
-	char name[SKILL_NAME_MAX];
-	char description[SKILL_DESC_MAX];
-	char license[256];
-	char compatibility[512];
-	char allowed_tools[1024];
-	struct skill_metadata_entry metadata[SKILL_METADATA_MAX];
-	int metadata_count;
-};
-
-struct skill_entry {
-	struct skill_frontmatter fm;
-	char skill_dir[SKILL_PATH_MAX];
-	char skill_md_path[SKILL_PATH_MAX];
-	char *body;			/* SKILL.md 内容（frontmatter 之后） */
-	int body_loaded;
-	int enabled;
-	int activated;
-};
-
-struct skill_registry {
-	struct skill_entry entries[SKILL_MAX_ENTRIES];
-	int count;
-};
-
-void skill_registry_init(struct skill_registry *reg);
-void skill_registry_cleanup(struct skill_registry *reg);
-int skill_discover(struct skill_registry *reg, const char *dir_path);
-struct skill_entry *skill_borrow(struct skill_registry *reg, const char *name);
-int skill_activate(struct skill_entry *skill);
-void skill_deactivate(struct skill_entry *skill);
-void skill_deactivate_all(struct skill_registry *reg);
-char *skill_build_activated_instructions(struct skill_registry *reg);
-int skill_build_catalog(struct skill_registry *reg, char *buf, size_t buf_size);
-```
-
----
-
-### 6.11 Spinner 动画系统
-
-ReAct 过程中不逐行打印 Thought/Action/Observation，而是通过 Spinner 动画在终端单行内指示当前状态。
-
-#### 6.11.1 Spinner 状态
-
-| 状态 | 前缀 | 含义 |
-|------|------|------|
-| `SPIN_STATE_IDLE` | （空） | 空闲 |
-| `SPIN_STATE_THINKING` | `>>` | LLM 推理中 |
-| `SPIN_STATE_LOADING` | `~~` | 加载数据 |
-| `SPIN_STATE_EXECUTING` | `->` | 执行工具 |
-| `SPIN_STATE_DOWNLOADING` | `vv` | 下载数据 |
-| `SPIN_STATE_UPLOADING` | `^^` | 上传数据 |
-| `SPIN_STATE_COMPLETE` | `OK` | 完成 |
-| `SPIN_STATE_ERROR` | `ERR` | 错误 |
-
-#### 6.11.2 Spinner 样式
-
-| 样式 | 帧序列 |
-|------|--------|
-| `SPIN_STYLE_DOTS`（默认） | ⠋⠙⠹⠸⠼⠴⠦⠧ |
-| `SPIN_STYLE_ARROW` | ←↖↑↗→↘↓↙ |
-| `SPIN_STYLE_PULSE` | ◐◓◑◒ |
-| `SPIN_STYLE_BRAILLE` | ⠛⠟⠿⠻⠽⠾⠿⠾ |
-
-#### 6.11.3 Spinner 渲染
-
-```
-⠋ Thinking → 流式预览文本... 3s
-OK Done (3s)
-ERR Tool execution failed (1s)
-```
-
-- **帧间隔**：120ms
-- **submessage**：附加在主消息后，通过 `→` 分隔；超长时自动水平滚动（2 字符/帧），最多 80 列可见
-- **耗时**：运行阶段在右侧显示实时计时（`Ns` / `Nm Ns` / `Nh Nm`）；完成后在状态前缀后显示总耗时
-- **流式 Thought 预览**：LLM 流式输出 token 时，取最后一行非空内容（最多 60 字符）作为 submessage 实时更新
-
-#### 6.11.4 Spinner 线程模型
-
-Spinner 在独立 pthread 中运行，主线程通过 mutex 保护状态更新：
-
-```c
-struct spin_context {
-	enum spin_style style;
-	enum spin_state state;
-	char message[256];
-	char submessage[512];		/* 附加信息（流式预览等） */
-	FILE *output;
-	int interval_ms;		/* 默认 120 */
-	volatile int running;
-	volatile int active;
-	int frame;
-	time_t start_time;
-	time_t last_update;
-	size_t last_render_width;	/* 上次渲染宽度（用于清除） */
-	pthread_t thread;
-	pthread_mutex_t mutex;
-	volatile sig_atomic_t *cancel_flag;  /* 指向 react_sigint_flag */
-};
-
-void spin_init(struct spin_context *ctx, FILE *output);
-void spin_start(struct spin_context *ctx, enum spin_state state, const char *message);
-void spin_update(struct spin_context *ctx, const char *message);
-void spin_set_sub(struct spin_context *ctx, const char *submessage);
-void spin_stop(struct spin_context *ctx, enum spin_state final_state, const char *message);
-void spin_pause(struct spin_context *ctx);
-void spin_resume(struct spin_context *ctx);
-void spin_render(struct spin_context *ctx);
-void spin_clear(struct spin_context *ctx);
-void spin_destroy(struct spin_context *ctx);
-void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag);
-```
-
-#### 6.11.5 CLI 输出回调映射
-
-`output_callback` 将 ReAct 步骤类型映射到 Spinner 行为：
-
-| 步骤类型 | Spinner 行为 |
-|---------|-------------|
-| `REACT_STEP_THOUGHT` | `spin_start(THINKING)` 或 `spin_set_sub(流式预览)` |
-| `REACT_STEP_ACTION` | `spin_update(EXECUTING, tool_name)` + `spin_set_sub(tool_args)` |
-| `REACT_STEP_OBSERVATION` | `spin_stop(COMPLETE/ERROR, 结果摘要)` |
-| `REACT_STEP_REFLECTION` | 直接打印 `[Guardrail]` 行（验证失败原因） |
-| `REACT_STEP_FINAL` | `cli_markdown_render_ansi_with_media()`（MorphMarkdown Kitty SDK） |
+参见 [TUI 架构](tui-architecture.md)、[应用布局](tui-application-layout.md) 和 [盒模型](tui-box-model.md)。
 
 ### 6.12 C 编码规范
 
-- Tab 缩进（8 字符宽）；软上限 80，硬上限 100
-- 函数名 `snake_case`，类型 `struct foo`；宏全大写
-- 错误码使用负 `errno`（`-EINVAL` / `-ENOMEM`）或 `MORPH_ERR_*`（`src/util/error.h`）；错误返回使用显式 `return code;`，清理路径使用显式错误码赋值；需要诊断时使用 `MORPH_TRACE_ERROR(logger, code)` 表达式
-- `goto out;` 必须传播错误码：`int rc = 0; ... if ((rc = call()) < 0) goto out; ... out: return rc;`，禁止无条件 `return 0`
-- 系统调用失败返回 `-errno`，禁止硬编码 `-EIO`
-- 用户/LLM 面向消息使用 `morph_strerror(rc)`，禁止裸 `%d`
-- C 风格注释，禁止 `//`
-- `sizeof(var)` 而非 `sizeof(type)`
-- 多语句宏 `do { } while (0)` 包裹
-- Memory: explicit heap ownership and required typed scope cleanup (see §6.9.0); take APIs preserve the source on failure.
-- 静态检查：`-Wall -Wextra -Wpedantic -Wshadow -Wconversion`，CI 必须 0 warning
-
----
+- Tab 缩进 8 列，软上限 80、硬上限 100；函数 snake_case，类型 `struct foo`，宏全大写。
+- 项目自有 C/C++/Objective-C 源码禁止 `goto`；使用已初始化 owner、typed scope cleanup 和显式返回。
+- 注释使用 `/* */`；错误、日志、UI 和模型指令字符串使用英文，非英文可作为输入或测试数据。
+- `sizeof(var)`；系统路径使用 `PATH_MAX`，逻辑名称使用项目常量。
+- 可变字符串、数组和索引使用共享容器；不得在增长后继续持有失效借用。
+- fallible take 失败保留来源；每个 owner 有独立 cleanup/destroy；不引入全局变量。
+- 多语句宏使用 `do { } while (0)`，错误使用负 errno 或 `MORPH_ERR_*`。
+- 使用 `-Wall -Wextra -Wpedantic -Wshadow -Wconversion`；源码约束由相关 convention 检查执行。
 
 ## 7. 错误处理
 
-### 7.1 错误码体系
+`morph_err_t` 为 `int`，零成功、负值错误。系统错误在失败位置捕获 errno，使用 `morph_error_from_errno` 保留原始失败；错误信息通过 `morph_strerror` 提供。
 
-```c
-typedef int morph_err_t;
+| 错误域 | 已定义常量 |
+| --- | --- |
+| 配置与状态 | `MORPH_ERR_NOT_CONFIGURED`、`MORPH_ERR_NOT_INITIALIZED`、`MORPH_ERR_CONFIG` |
+| API 与传输 | `MORPH_ERR_API`、`MORPH_ERR_NETWORK`、`MORPH_ERR_PROTOCOL`、`MORPH_ERR_LLM` |
+| 数据与处理 | `MORPH_ERR_PARSE`、`MORPH_ERR_DB`、`MORPH_ERR_FORMAT`、`MORPH_ERR_PROCESSING`、`MORPH_ERR_LOAD` |
+| 执行边界 | `MORPH_ERR_SANDBOX`、`MORPH_ERR_REACT_MAX_ITERATIONS`、`MORPH_ERR_CONTEXT_LIMIT` |
 
-enum morph_error {
-	MORPH_ERR_NOT_CONFIGURED  = -257,
-	MORPH_ERR_NOT_INITIALIZED = -258,
-	MORPH_ERR_API             = -259,
-	MORPH_ERR_NETWORK         = -260,
-	MORPH_ERR_PARSE           = -261,
-	MORPH_ERR_PROTOCOL        = -262,
-	MORPH_ERR_DB              = -263,
-	MORPH_ERR_FORMAT          = -264,
-	MORPH_ERR_PROCESSING      = -265,
-	MORPH_ERR_SANDBOX         = -266,
-	MORPH_ERR_LOAD            = -267,
-	MORPH_ERR_LLM             = -268,
-};
-```
-
-### 7.2 错误返回与诊断
-
-- 使用原生 `return code;` 和 `rc = code;`，不以宏隐藏控制流或赋值
-- `MORPH_TRACE_ERROR(logger, code)` 仅补充源码位置，调用普通函数并原样返回错误码；Debug/Release 的参数类型与求值次数相同，日志由显式 logger 的级别控制
-- `morph_error_from_errno(errno)` 在失败位置捕获 errno 并转换为负错误码，errno 为零时回退到 `-EIO`
-- `morph_strerror(err)`：返回所有错误码（POSIX + 自定义）的人类可读字符串
-
----
+`MORPH_TRACE_ERROR(logger, code)` 只附源码位置并返回原错误，不隐藏 return 或赋值。logger 显式传递，诊断不直接写终端。定义见 [error.h](../src/util/error.h)。
 
 ## 8. 日志与可观测性
 
-| 项 | 设计 |
-|------|------|
-| 日志级别 | debug / info / warn / error，运行时可调 |
-| 输出目的地 | stderr（交互期 warn+）+ 文件（全量，5MB rotate × 3） |
-| ReAct 轨迹 | 写入 `react_traces` 表 + `--trace-file` 可导出 JSON |
-| Token 用量 | 每次 LLM 调用记录 `prompt_tokens / completion_tokens / cost_estimate` |
-| 工具调用埋点 | 工具名、耗时、成功/失败、参数摘要（脱敏） |
-| 子代理追踪 | 子代理执行轨迹写入 trace 文件 |
-| 错误上报 | 默认仅本地；可配置 `[telemetry]` 开关（opt-in） |
-| 调试模式 | `MORPH_DEBUG=1` 打印每次 HTTP request/response |
+| 项目 | 当前行为 |
+| --- | --- |
+| 日志 | debug/info/warn/error，写配置的日志文件；5 MiB 轮转、保留 3 份备份 |
+| ReAct | 会话保存执行轨迹，`/trace` 和历史接口读取 |
+| 请求与上下文 | 保存模型请求快照、压缩尝试、摘要来源和诊断信息 |
+| 用量与计费 | 记录供应商实际提供的 input/output/cached/reasoning 等 usage、phase 及 credit events |
+| 工具与进程 | 结构化开始/完成/错误、产物、进程状态和恢复元数据 |
+| 子代理与任务 | 保存任务状态、事件、会话关联及通知 |
+| HTTP 调试 | `MORPH_DEBUG=1` 启用请求/响应调试记录 |
 
----
+## 9. 测试与验证
 
-## 9. 测试策略
+### 9.1 构建与运行
 
-| 层级 | 工具 | 覆盖目标 |
-|------|------|---------|
-| 单元 | GoogleTest（CMake FetchContent） | 核心模块 ≥ 70% |
-| 集成 | Mock LLM（本地 HTTP server，返回固定 SSE 流） | ReAct 全流程 |
-| 系统 | Shell 脚本（`systest.sh`） | 端到端 CLI 流程 |
-| 模糊 | libFuzzer / AFL++ | manifest.toml 解析、JSON 解析（尚未实现） |
-| 内存 | Valgrind + ASan + UBSan | 0 lost，0 UB |
-| 沙箱逃逸 | 专项用例集（见下） | 100% 阻断 |
-| 跨平台 | GitHub Actions：ubuntu-22.04，macos-14 | 冒烟全过 |
+```sh
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
 
-**测试文件清单**：
+- 测试默认启用，GoogleTest 用于 C 库和 Mock LLM 回归。
+- Python/PTY 集成覆盖 CLI 呈现、命令、问答、粘贴、权限及 FastCGI API。
+- `-DENABLE_ASAN=ON` 同时开启 ASan/UBSan。
+- `-DENABLE_READLINE=OFF` 支持独立验证 plain 输入与问答路径。
+- `-DENABLE_GLOBAL_STATE_AUDIT=ON` 开启额外全局状态检查。
+- 平台沙箱、剪贴板、live MCP 等测试按环境条件执行，跳过不计为通过该能力的现场验收。
 
-| 文件 | 测试模块 |
-|------|---------|
-| `test_cleanup.cpp` | Scope cleanup and ownership transfer |
-| `test_log.cpp` | 日志系统 |
-| `test_spin.cpp` | Spinner 动画 |
-| `test_sse.cpp` | SSE 解析器 |
-| `test_database.cpp` | SQLite 数据库 |
-| `test_tool.cpp` | 工具注册表 |
-| `test_context.cpp` | 上下文管理 |
-| `test_config.cpp` | 配置解析 |
-| `test_config_write.cpp` | config_edit 配置编辑工具 |
-| `test_credits.cpp` | 积分计费 |
-| `test_error.cpp` | 错误码与错误文本 |
-| `test_event.cpp` | 统一事件系统 |
-| `test_agent_turn.cpp` | Agent turn 封装 |
-| `test_agent_ui.cpp` | Agent UI 标签与 Markdown |
-| `test_dynamic_tools.cpp` | QuickJS 动态工具 |
-| `test_ext.cpp` | Ext 解析、加载与安装 |
-| `test_fastcgi_security.cpp` | FastCGI 安全检查 |
-| `test_file.cpp` | 文件工具 |
-| `test_tokenizer.cpp` | Token 计数 |
-| `test_session.cpp` | 会话管理 |
-| `test_http.cpp` | HTTP 客户端 |
-| `test_runtime_query.cpp` | credits/memory 查询工具 |
-| `test_image.cpp` | 图片处理 |
-| `test_compress.cpp` | 上下文压缩 |
-| `test_react.cpp` | ReAct 循环 |
-| `test_markdown.cpp` | Markdown 渲染 |
-| `test_skill.cpp` | Skill 系统 |
-| `test_exec_process.cpp` | exec 与 process 工具 |
-| `test_bash_parse.cpp` | Shell 命令 AST 解析 |
-| `test_runtime.cpp` | runtime 生命周期 |
-| `test_runtime_execute.cpp` | runtime 请求执行 |
-| `test_runtime_internal.cpp` | runtime 内部依赖图 |
-| `test_runtime_output.cpp` | runtime 输出回调 |
-| `test_runtime_services.cpp` | runtime 快照与操作 |
-| `test_runtime_sync.cpp` | runtime 同步 worker |
-| `test_fastcgi_runtime.cpp` | FastCGI runtime 桥接 |
-| `test_render.cpp` | 渲染系统 |
-| `test_memory.cpp` | 长期记忆 |
-| `test_mcp.cpp` | MCP 客户端 |
-| `test_ask_user.cpp` | 用户交互工具 |
-| `test_sandbox.cpp` | 沙箱机制 |
-| `test_tool_context.cpp` | 工具执行上下文 |
-| `test_sub_agent.cpp` | 子代理系统 |
-| `test_plan.cpp` | Plan 子系统 |
-| `test_scheduled_task.cpp` | 定时任务与通知 |
-| `test_util_containers.cpp` | `morph_buf` / `morph_array` / `morph_strmap` 等基础容器 |
-| `systest.sh` | 端到端系统测试 |
-| `test_ext_demo.c` | Ext demo（未纳入 CMake 构建） |
+### 9.2 本实现基线的验证记录
 
-**沙箱逃逸用例**（必须 100% 阻断）：
-1. Ext 调用 `execve("/bin/sh", ...)` 而未声明 `exec` 权限
-2. Ext 打开 `/etc/shadow` 而未声明对应 `filesystem` 路径
-3. Ext `socket(AF_INET, ...)` 而未声明 `network`
-4. Ext `fork()` 炸弹超过 rlimit
-5. Ext 内存分配超过 `max_memory_mb` → 被 OOM 杀掉，主进程不崩
-6. Ext 死循环超过 `max_cpu_seconds` → 被 SIGKILL
+以下记录对应提交 `1d7d8ac`，不是对所有平台、供应商或任意运行负载的保证。
 
----
+| 验证 | 结果 |
+| --- | --- |
+| GoogleTest / CTest 单元用例 | 2263 项：2258 通过，5 项因环境条件跳过 |
+| 集成与规范检查 | 54 项通过，含 CLI、FastCGI、JS Host API 和源码约束 |
+| ASan/UBSan 核心边界组 | 619 项：618 通过，1 项按条件跳过 |
+| ASan/UBSan 终端及边界补充组 | 181 项通过 |
+| 普通完整问答 PTY | 通过，含 600 汉字自由输入、1600 汉字自定义答案、尾部完整性和取消 |
+| ASan/UBSan 无 Readline 问答 PTY | 通过，覆盖长答案、粘贴及 optional 超时 |
 
-## 10. 非功能性需求
+核心回归包括 [模型与流式响应](../tests/test_react.cpp)、[模型所有权](../tests/test_model_ownership.cpp)、[Token 预算](../tests/test_model_tokens.cpp)、[BPE](../tests/test_tokenizer.cpp)、[TUI](../tests/test_tui.cpp)、[问答](../tests/test_ask_user.cpp)、[进程恢复](../tests/test_exec_process.cpp)、[checkpoint](../tests/test_checkpoint_store.cpp)、[记忆分页](../tests/test_runtime_query.cpp) 和 [长输入 PTY](../tests/test_cli_select_pty.py)。
 
-| 维度 | 要求 |
-|------|------|
-| 响应时间 | 首 token < 1s（P95）；图片 < 30s；视频异步 |
-| 编译体积 | 动态链接 < 8MB |
-| 内存 | 空闲 < 15MB；对话峰值 < 80MB |
-| 安装 | `cmake -B build && cmake --build build && cmake --install build` |
-| 跨平台 | macOS 14+ / Ubuntu 22.04+ / Arch Linux 优先；Windows（MinGW）P3 |
-| 离线 | 无网时可浏览历史与已生成产物 |
-| 安全 | API Key 文件 0600；不上传用户数据；Ext 沙箱最小权限 |
-| 扩展 | 新增模型仅需实现 `struct model` 接口 |
-| 编译器 | GCC ≥ 10 / Clang ≥ 14，C11 |
-| 国际化 | 内置中英双语 prompt 与帮助文案；可通过 `LANG` 切换 |
-| 无障碍 | `--no-color` 禁用 ANSI，便于屏幕阅读器 |
+## 10. 资源边界
 
----
+| 范围 | 默认或固定上限 | 超限行为 |
+| --- | --- | --- |
+| 项目指令 | `context.project_doc_max_bytes`，默认 32 KiB | 不纳入不完整文件，提示路径和 `file_read` 恢复方式 |
+| 提示模板 | 单文件 256 KiB，合并 source / 渲染结果各 1 MiB | 明确错误 |
+| 工具历史结果 | `context.tool_result_max_tokens`，默认 8000 | 保持 JSON 有效并标记省略，使用工具恢复入口 |
+| 内联进程输出 | `exec.max_inline_output`，默认 32 KiB | 返回游标、spool 路径和范围元数据 |
+| 进程内存窗口 | `exec.max_session_output`，默认每会话每输出流 1 MiB | stdout/stderr 分别保留窗口，独立 spool 保存已捕获前缀 |
+| 进程 spool | 每个 manager 共 64 MiB 配额 | 明确报告截断、捕获错误和无法恢复的字节范围 |
+| MCP stdio 接收帧/缓冲 | 16 MiB | 报错并断连 |
+| FastCGI 请求体 | 4 MiB | HTTP 413 |
+| Hook 传输 | 输入及各输出流 1 MiB | 明确错误 |
+| Hook 内联上下文 | 32 KiB / dispatch，另有每 handler token 策略 | 私有完整文件及可见恢复路径 |
+| 用户问答 | 最多 64 选项，答案文本总计 1 MiB | 明确错误，不返回静默缩短答案 |
+| 记忆分页 | 最多 4000 Unicode 码点，且满足工具 token 预算 | 完整 UTF-8 页与继续偏移 |
+| Skill | 名称 64 / 描述 1024 码点，metadata 16 项，frontmatter 1 MiB | 校验错误 |
+| 动态工具源代码 | 配置预算，默认 256 KiB | 明确错误 |
+| 动态工具 stdout / Host 捕获 | 配置预算，默认 1 MiB | 超限报错；runner 顶层 stderr 另作有界诊断预览 |
+| 子代理 | 同时活跃 8 项，fanout 单批 8 项，嵌套深度 2 | 启动前拒绝超限批次 |
+| patch 输入 | 64 KiB / call | 明确错误，按完整 patch 拆分 |
+| checkpoint 文件 | 16 MiB / file | 捕获或写前校验失败 |
+| checkpoint 数据 | before/after 总计 128 MiB | 写前或 seal 校验失败 |
+| checkpoint restore plan | 含当前补偿副本共 256 MiB | 明确错误 |
+| 图像解码 | 编码文件 64 MiB，33,554,432 像素，最大边 32768 | 解码前明确拒绝 |
+| BPE 词表 token | 最多 65535 字节 | 拒绝加载超出表示范围的词表 |
 
-## 11. 里程碑
+工具调用身份、动态描述/schema 和用户任务正文不使用旧固定数组前缀替代完整内容。展示省略、上下文预算、传输限制及持久化预算分别执行各自契约。
 
-| 里程碑 | 周次 | 交付物 | 状态 |
-|--------|------|--------|------|
-| **M1 / MVP** | W1–W4 | 项目骨架 + CLI + 文字对话（流式）+ 会话持久化 + Token 计数 + 滑动窗口 + 1 个 demo Ext（无沙箱） | **已完成** |
-| **M2 / V0.2** | W5–W7 | 文生图 + 图片理解 + 终端预览（kitty/sixel/iterm2） | **已完成** |
-| **M3 / V0.3** | W8–W10 | 文/图生视频 + mpv 播放 + 视频理解 + 异步轮询 + BPE Tokenizer + 长期记忆 + 子代理 + 可插拔 Guardrail + MCP + Plan + FastCGI | **已完成**（v0.3.7） |
-| M4 / V0.4 | W11–W13 | 统一事件系统 + 定时任务 + QuickJS 动态工具 + Ext install/enable/disable + macOS SBPL 沙箱 | **进行中**（截至 v0.3.11：事件、定时任务、QuickJS、Ext install、macOS SBPL 沙箱已完成；Ext enable/disable/remove 待完成） |
-| M5 / V0.5 | W14–W15 | 跨模态联动模板 + 摘要压缩完善 + 关键信息提取 + 递归摘要 | **进行中**（摘要压缩、关键信息提取、跨图片 inpaint/compose 已实现；联动模板验收与递归摘要待完成） |
-| M6 / V1.0 | W16–W18 | 多模型切换 + Ext 市场（git）+ Homebrew formula + 模糊测试 | **进行中**（模型 ID 切换与 Ext GitHub 安装已实现；跨 provider 切换、Homebrew formula、模糊测试待完成） |
+## 11. 当前实现完成状态
 
-> **已提前实现项**：BPE Tokenizer（原计划 M5/P2）、长期记忆系统（原计划 M5）、子代理系统（原计划 M6）、可插拔 Guardrail 引擎（原计划 M4）、MCP 客户端（新增需求）、Plan 子系统（新增需求）、FastCGI 前端、统一事件系统、定时任务、QuickJS 动态工具、macOS SBPL 沙箱、摘要压缩、关键信息提取、跨图片 inpaint/compose、模型 ID 切换与 Ext GitHub 安装、exec+process 受管 shell 与命令 AST 审批、权限 profile 与持久 grant、runtime 门面、seccomp denylist+Landlock、turn 级环境上下文注入。
+| 已完成范围 | 实现依据 |
+| --- | --- |
+| Runtime、ReAct 和结构化模型请求 | `src/runtime/`、`src/agent/react*`、`src/models/llm/` |
+| 模型预算、流终态、完整调用身份和长凭据 | `src/models/llm.h`、`src/models/llm/`、`src/agent/react_request.c` |
+| 模型历史、重复压缩、来源链与请求诊断 | `src/agent/history*`、`src/persistence/history_store.c` |
+| 文字、视觉、图片和视频生成 adapter | `src/models/`、`src/agent/tools/` |
+| 权限、审批、Hooks、沙箱与进程会话 | `src/permission/`、`src/runtime/approval.c`、`src/runtime/hooks*`、`src/sandbox/`、`src/exec/` |
+| 记忆、显式偏好、Plan、子代理及任务 | `src/agent/`、`src/persistence/`、`src/runtime/task*` |
+| MCP、Ext、QuickJS、WASM 及 Skill | `src/mcp/`、`src/ext/`、`src/js_runner/`、`src/skill/` |
+| patch 跟踪和代码/对话回退 | `src/agent/patch.c`、`src/runtime/checkpoint.c`、`src/persistence/checkpoint_store.c` |
+| CLI/TUI、FastCGI 和统一事件 | `src/sapi/`、`src/tui/`、`src/event/` |
+| 长输入安全与边界回归 | `src/tui/widgets/editor.c`、`src/util/bpe.c`、`tests/` |
 
----
+## 12. 已实现行为的边界
 
-## 12. 风险与缓解
+- API 失败使用已配置的重试次数和超时；模型可用能力仍由所选 adapter 与供应商决定。
+- 本地 token 计数是预算估计，发送前预留输出与协议空间，不将估计当作供应商 usage。
+- 超过 spool 配额或捕获失败的内容可能无法恢复，结果元数据明确区分捕获前缀、内存窗口和缺口。
+- checkpoint 文件跟踪限于经过其授权和捕获路径的 `apply_patch`；shell、其他工具和子代理不自动纳入文件回退。
+- 回退检查外部修改冲突，不根据 Git diff 推断撤销范围。
+- 原生共享库在宿主进程执行，其安全边界不同于受沙箱控制的 exec 扩展。
+- OS 沙箱、终端协议及系统剪贴板依赖当前运行平台和环境，按实际支持的路径执行。
 
-| 风险 | 影响 | 缓解 | 截止 |
-|------|------|------|------|
-| 第三方 API 不稳定 | 服务中断 | 多供应商 + 自动降级 | M2 |
-| 视频生成成本高 | 运营成本 | 用量提示 + 本地缓存复用 | M3 |
-| 内容合规风险 | 平台风险 | 输出过滤 + 用户自担提示 | M3 |
-| 终端兼容性 | 图片显示异常 | 三协议探测 + 路径回退 | M2 |
-| C 开发效率 | 进度滞后 | 单文件库优先 + 接口抽象 + CI 强约束 | M1 |
-| 内存管理 | 泄漏/崩溃 | Typed ownership + cleanup + Valgrind/ASan in CI | M1 |
-| Ext 安全 | 恶意 Ext | 沙箱 + 最小权限 + 审计 | M4 |
-| 沙箱逃逸 | 系统安全 | 专项测试集 + 安全评审 | M4 |
-| 摘要丢关键信息 | 上下文劣化 | 关键信息强制保留 + 用户阈值可调 | M5 |
-| Token 计数误差 | 截断/浪费 | BPE + 保守估算 + 分批 | M1（BPE 已在 M3 实现） |
-| 静态体积超 8MB | 不达 KPI | 动态链接 + LTO + strip + 删除未使用代码 | M1 |
-| Ext IPC 性能 | 流式卡顿 | 行缓冲 + 共享内存（P2） | M4 |
-| MCP 服务器不稳定 | 远程工具不可用 | 延迟连接 + 超时控制 + 优雅降级 | M3 |
-| 记忆系统准确性 | 错误记忆注入 | LLM 提取 + 置信度 + 用户可清除 | M3 |
-| 子代理递归 | 资源耗尽 | 最大深度 2 层限制 | M3 |
+## 13. 维护依据
 
----
+本文以实现为依据；接口变更同步修改对应规格、测试和专项文档。详细契约集中在：
 
-## 13. 开放问题
-
-| # | 问题 | 状态 | 决策建议 |
-|---|------|------|---------|
-| 1 | 产品命名 | **Decided**：morph | — |
-| 2 | 优先接入哪些 API | **Decided**（M1）：OpenAI + Volcengine | — |
-| 3 | 是否支持本地模型（Ollama） | Open | P2 评估 |
-| 4 | SQLite 是否硬依赖 | **Decided**：是 | 简化数据层 |
-| 5 | 终端图片是否 fallback feh/sxiv | **Decided**：否，只回退路径 | 减少依赖 |
-| 6 | 视频理解是否本地抽帧 | Open | M3 评测精度 vs 成本 |
-| 7 | 是否发布 Homebrew/AUR | M6 决策 | — |
-| 8 | Ext 是否需 NetNS 隔离 | **Decided**：P2 | 默认 seccomp 即可 |
-| 9 | `.so` Ext 是否需符号可见性限制 | **Decided**：是 | 仅导出 `ext_run` |
-| 10 | MCP 协议版本跟进策略 | **Decided**：跟踪最新稳定版（当前 2025-06-18） | — |
-| 11 | FastCGI 是否需要 WebSocket 支持 | Open | SSE 已满足流式需求 |
-| 12 | 记忆系统是否需要跨用户共享 | **Decided**：否，会话级作用域 | 隐私优先 |
+- [Runtime 架构](runtime-architecture.md)
+- [权限设计](permissions-design.md)与[权限验收](permissions-acceptance.md)
+- [模型能力与资源限制](model-capability-limits.md)
+- [上下文与进程恢复](context-and-process-recovery.md)
+- [checkpoint](checkpointing.md)
+- [事件系统](event-system.md)与[Hooks](hooks.md)
+- [QuickJS 工具](quickjs-tools.md)与[定时任务](scheduled-tasks.md)
+- [TUI 架构](tui-architecture.md)、[应用布局](tui-application-layout.md)和[盒模型](tui-box-model.md)
+- [内存与状态所有权](state-ownership.md)
