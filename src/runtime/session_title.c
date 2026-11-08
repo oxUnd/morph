@@ -217,7 +217,7 @@ int runtime_title_start(struct runtime *runtime, const struct runtime_request *r
 	int slot = -1;
 	int rc;
 
-	if (!input || !input[0] || !source || !source->api_key[0] ||
+	if (!input || !input[0] || !source || !model_api_key_borrow(source)[0] ||
 	    strcmp(ctx->database.path, ":memory:") == 0)
 		return 0;
 	for (int i = 0; i < RUNTIME_TITLE_JOB_MAX; i++) {

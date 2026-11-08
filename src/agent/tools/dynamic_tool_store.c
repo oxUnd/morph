@@ -192,7 +192,7 @@ int dynamic_tool_store_write_tool_files(struct dynamic_tool *dt, const char *sou
 		return -ENOMEM;
 	}
 	if (!cJSON_AddStringToObject(meta, "name", dt->name) ||
-	    !cJSON_AddStringToObject(meta, "description", dt->description) ||
+	    !cJSON_AddStringToObject(meta, "description", dt->description ? dt->description : "") ||
 	    !cJSON_AddStringToObject(meta, "input_schema", dt->input_schema) ||
 	    !cJSON_AddStringToObject(meta, "output_schema", dt->output_schema)) {
 		cJSON_Delete(meta);

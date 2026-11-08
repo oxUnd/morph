@@ -128,8 +128,10 @@ static int action_answers(const char *payload, char ***answers, int *answers_cou
 	items = cJSON_GetObjectItem(root, "answers");
 	text = cJSON_GetObjectItem(root, "text");
 	count = cJSON_IsArray(items) ? cJSON_GetArraySize(items) : (cJSON_IsString(text) ? 1 : 0);
-	if (count > 64)
-		count = 64;
+	if (count > 64) {
+		cJSON_Delete(root);
+		return -E2BIG;
+	}
 	if (count == 0) {
 		cJSON_Delete(root);
 		return 0;

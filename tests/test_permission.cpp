@@ -11,6 +11,7 @@ extern "C" {
 #include "config/edit.h"
 #include "sandbox/permission.h"
 #include "util/cleanup.h"
+#include "util/json.h"
 #include "ext/ext.h"
 }
 
@@ -260,8 +261,7 @@ TEST_F(PermissionModelTest, IndependentModelReviewsExactActionWithoutTools)
 	ASSERT_EQ(runtime_approval_init(instance), 0);
 	auto *context = instance->context.tctx;
 	context->permissions.policy.reviewer = PERMISSION_MODEL;
-	std::snprintf(instance->context.approval_objective,
-		sizeof(instance->context.approval_objective), "Verify the export");
+	instance->context.approval_objective = strdup("Verify the export");
 	struct tool_operation operation{};
 	operation.kind = TOOL_OP_TOOL_CALL;
 	operation.tool_name = "export";
@@ -313,6 +313,45 @@ TEST_F(PermissionModelTest, InvalidModelResponseFallsBackToHumanExactlyOnce)
 	EXPECT_EQ(tool_context_check_operation(context, &operation), 0);
 	EXPECT_EQ(calls, 2);
 	instance->context.llm = source;
+}
+
+TEST_F(PermissionModelTest, LongObjectiveAndConfiguredOutputBudgetReachReviewerIntact)
+{
+	answer = R"({"verdict":"allow","reason":"Complete objective reviewed"})";
+	Start();
+	ASSERT_EQ(runtime_approval_init(instance), 0);
+	auto &ctx = instance->context;
+	const std::string objective = std::string(12000, 'x') + " explicit_scope_at_the_end";
+	struct runtime_request request{};
+	request.session_id = ctx.current_session.id;
+	request.stored_user_input = objective.c_str();
+	request.model_input = "short model representation";
+	ASSERT_EQ(runtime_context_prepare_turn(&ctx, &request, nullptr), 0);
+	EXPECT_STREQ(ctx.approval_objective, objective.c_str());
+	runtime_context_finish_turn(&ctx);
+	ctx.llm->max_tokens = 16384;
+	std::snprintf(ctx.llm->extra_body_json, sizeof(ctx.llm->extra_body_json),
+		"{\"thinking\":{\"type\":\"enabled\"}}");
+	ctx.tctx->permissions.policy.reviewer = PERMISSION_MODEL;
+	struct tool_operation operation{};
+	operation.kind = TOOL_OP_TOOL_CALL;
+	operation.tool_name = "review_long_objective";
+	operation.action = "verify final scope";
+	int rc = -1;
+	std::thread worker([&] { rc = tool_context_check_operation(ctx.tctx, &operation); });
+	const bool requested = WaitRequest();
+	if (requested) {
+		cJSON *body MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(request_body.c_str());
+		EXPECT_NE(body, nullptr);
+		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(body, "max_tokens")), 16384);
+		EXPECT_NE(request_body.find(objective), std::string::npos);
+		EXPECT_NE(request_body.find("enabled"), std::string::npos);
+	}
+	Release();
+	worker.join();
+	ASSERT_TRUE(requested);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(ctx.llm->max_tokens, 16384);
 }
 
 TEST_F(RuntimeFacadeTest, ReadOnlyExecCannotWriteProjectEvenWhenItIsInTmp)

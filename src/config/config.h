@@ -167,6 +167,7 @@ struct config_exec {
 };
 
 struct config_context {
+	int project_doc_max_bytes;
 	double summarize_threshold_ratio;
 	double compress_target_ratio;
 	int in_turn_compaction;

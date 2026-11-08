@@ -30,6 +30,7 @@ struct key_info {
 typedef int (*summarize_fn)(const char *text, void *user_data, char **out);
 
 struct compress_config {
+	int project_doc_max_bytes;
 	int max_context_tokens;
 	int max_history_rounds;
 	int in_turn_compaction;

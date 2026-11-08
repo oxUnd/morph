@@ -21,6 +21,9 @@ struct llm_stream_ctx {
 	int tool_call_count;
 	int tool_call_cap;
 	int emitted;
+	int terminal_received;
+	int terminal_error;
+	char *terminal_detail;
 	struct model_usage usage;
 };
 
@@ -35,6 +38,8 @@ void llm_stream_init_typed(struct llm_stream_ctx *ctx, llm_stream_callback cb, v
 void llm_stream_append(struct llm_stream_ctx *ctx, const char *text);
 
 int llm_stream_emit(struct llm_stream_ctx *ctx, enum llm_stream_kind kind, const char *text);
+
+int llm_stream_string_copy(char **owner, const char *text);
 
 /* Borrowed slot: another ensure may grow the array and invalidate this pointer.
  * Call arguments remain owned by ctx until call ownership is moved out. */

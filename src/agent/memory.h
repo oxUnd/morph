@@ -26,6 +26,7 @@ struct memory_options {
 	int max_facts;
 	int max_episodes;
 	int max_procedures;
+	/* Unicode codepoint budget; complete records only, with recovery notices. */
 	int max_context_chars;
 	/* Background extraction is fenced by the original session generation. */
 	int generation_bound;

@@ -12,6 +12,8 @@ extern "C" {
 #include "sapi/cli/models/composer.h"
 #include "util/file.h"
 #include "event/event.h"
+#include "util/utf8.h"
+#include "util/json.h"
 
 }
 
@@ -24,6 +26,7 @@ extern "C" {
 #include <regex>
 #include <string>
 #include <vector>
+#include <memory>
 
 #include <fcntl.h>
 #include <poll.h>
@@ -702,6 +705,79 @@ TEST(CliListTest, TasksCommandUsesActiveAndCompactHistoryTrees)
 	scheduled_task_cleanup(&history);
 
 	runtime_close(runtime);
+	std::error_code error;
+	(void)std::filesystem::remove_all(directory, error);
+}
+
+TEST(CliListTest, CommandArgumentOverflowIsExplicitForFixedConsumers)
+{
+	char input[] = "one two three";
+	char *arguments[3] = {};
+	EXPECT_EQ(cli_argv_split(input, arguments, 3), -E2BIG);
+	EXPECT_EQ(arguments[2], nullptr);
+}
+
+TEST(CliListTest, ScheduledTaskCommandsPreserveLongPromptsAndAllArguments)
+{
+	char pattern[] = "/tmp/morph-cli-long-task-XXXXXX";
+	char *directory = mkdtemp(pattern);
+	ASSERT_NE(directory, nullptr);
+	std::string database = std::string(directory) + "/data.db";
+	struct runtime_options options = {};
+	options.db_path = database.c_str();
+	options.workdir = directory;
+	options.front_name = "test";
+	struct runtime *runtime = nullptr;
+	ASSERT_EQ(runtime_open(&options, &runtime), 0);
+	std::unique_ptr<struct runtime, decltype(&runtime_close)> runtime_owner(runtime,
+	runtime_close);
+	struct cli_application context = {};
+	context.runtime = runtime;
+	std::string prompt;
+	for (int i = 0; i < 300; i++)
+		prompt += "word-" + std::to_string(i) + " detailed requirement 中文 ";
+	prompt += "PROMPT_END_MARKER";
+	ASSERT_GT(prompt.size(), 8192u);
+	for (const char *action : {"add +3600", "every 3600"}) {
+		std::string command = std::string("/tasks ") + action + " " + prompt;
+		testing::internal::CaptureStdout();
+		int rc = cli_command_dispatch(&context, command.c_str());
+		(void)testing::internal::GetCapturedStdout();
+		ASSERT_EQ(rc, 0);
+	}
+	struct scheduled_task *tasks = nullptr;
+	int count = 0;
+	ASSERT_EQ(runtime_task_list(runtime, nullptr, 10, &tasks, &count), 0);
+	auto free_tasks = [count](struct scheduled_task *items) {
+		scheduled_task_free_list(items, count);
+	};
+	std::unique_ptr<struct scheduled_task, decltype(free_tasks)> tasks_owner(tasks, free_tasks);
+	ASSERT_EQ(count, 2);
+	int64_t task_id = tasks[0].id;
+	for (int i = 0; i < count; i++) {
+		cJSON *payload MORPH_CLEANUP(morph_json_cleanup) =
+		cJSON_Parse(tasks[i].payload_json);
+		ASSERT_NE(payload, nullptr);
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(payload,
+		"prompt")),
+			     prompt.c_str());
+		EXPECT_LT(strlen(tasks[i].title), static_cast<size_t>(SCHEDULED_TASK_TEXT_MAX));
+		EXPECT_EQ(utf8valid(tasks[i].title), nullptr);
+	}
+	tasks_owner.reset();
+	std::string updated = prompt + " UPDATED_END_MARKER";
+	std::string command = "/tasks update " + std::to_string(task_id) + " +7200 " + updated;
+	testing::internal::CaptureStdout();
+	int rc = cli_command_dispatch(&context, command.c_str());
+	(void)testing::internal::GetCapturedStdout();
+	ASSERT_EQ(rc, 0);
+	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	ASSERT_EQ(runtime_task_copy(runtime, task_id, &task), 0);
+	cJSON *payload MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(task.payload_json);
+	ASSERT_NE(payload, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(payload, "prompt")),
+		     updated.c_str());
+	runtime_owner.reset();
 	std::error_code error;
 	(void)std::filesystem::remove_all(directory, error);
 }

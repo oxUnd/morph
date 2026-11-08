@@ -1,4 +1,5 @@
 #include "runtime/context_owner.h"
+#include "util/cleanup.h"
 #include "util/log.h"
 #include "util/utf8.h"
 #include <stdio.h>
@@ -44,6 +45,7 @@ void runtime_context_cleanup_lock(struct runtime_context *ctx)
 {
 	if (!ctx || !ctx->execution_lock_ready)
 		return;
+	morph_charp_cleanup(&ctx->approval_objective);
 	pthread_mutex_destroy(&ctx->approval_objective_lock);
 	pthread_mutex_destroy(&ctx->tool_registry_lock);
 	pthread_mutex_destroy(&ctx->execution_lock);
@@ -174,13 +176,13 @@ int runtime_context_prepare_turn(struct runtime_context *ctx, const struct runti
 		return -EINVAL;
 	const char *objective =
 		request->stored_user_input ? request->stored_user_input : request->model_input;
+	char *objective_copy MORPH_CLEANUP(morph_charp_cleanup) = strdup(objective ? objective :
+	"");
+	if (!objective_copy)
+		return -ENOMEM;
 	pthread_mutex_lock(&ctx->approval_objective_lock);
-	ctx->approval_objective[0] = '\0';
-	if (objective) {
-		size_t bytes = utf8_clamp_bytes(objective, sizeof(ctx->approval_objective) - 1);
-		memcpy(ctx->approval_objective, objective, bytes);
-		ctx->approval_objective[bytes] = '\0';
-	}
+	free(ctx->approval_objective);
+	ctx->approval_objective = morph_charp_steal(&objective_copy);
 	pthread_mutex_unlock(&ctx->approval_objective_lock);
 	tool_context_reset_denials(ctx->tctx);
 	if (ctx->sub_agents)

@@ -323,7 +323,7 @@ static int recap_start_locked(struct runtime *runtime, int automatic)
 		recap_job_free(job);
 		runtime->recap_job = NULL;
 	}
-	if (!source || !source->api_key[0])
+	if (!source || !model_api_key_borrow(source)[0])
 		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL,
 					 MORPH_ERR_NOT_CONFIGURED);
 	if (ctx->current_session.id <= 0)

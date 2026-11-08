@@ -4,6 +4,8 @@
 #include "agent/tools/skill_activate.h"
 #include "agent/tool.h"
 #include "util/file.h"
+#include "util/cleanup.h"
+#include "util/utf8.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +13,7 @@
 #include <limits.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <vector>
 
 class SkillParseTest : public ::testing::Test {
 protected:
@@ -194,8 +197,8 @@ TEST_F(SkillRegistryTest, DiscoverOne) {
 	int rc = skill_discover(&reg, tmpdir);
 	EXPECT_EQ(rc, 1);
 	EXPECT_EQ(reg.count, 1);
-	EXPECT_STREQ(reg.entries[0].fm.name, "my-skill");
-	EXPECT_STREQ(reg.entries[0].fm.description, "A test skill.");
+	EXPECT_STREQ(skill_entry_borrow_at(&reg, 0)->fm.name, "my-skill");
+	EXPECT_STREQ(skill_entry_borrow_at(&reg, 0)->fm.description, "A test skill.");
 	remove_skill("my-skill");
 }
 
@@ -207,6 +210,55 @@ TEST_F(SkillRegistryTest, DiscoverMultiple) {
 	EXPECT_EQ(reg.count, 2);
 	remove_skill("skill-a");
 	remove_skill("skill-b");
+}
+
+TEST_F(SkillRegistryTest, GrowthBeyondSixtyFourKeepsBorrowedEntriesStable)
+{
+	create_skill("first", "first", "Original skill.", "Original instructions");
+	ASSERT_EQ(skill_discover(&reg, tmpdir), 1);
+	auto *first = skill_borrow(&reg, "first");
+	ASSERT_NE(first, nullptr);
+	ASSERT_EQ(skill_activate(first), 0);
+	const char *body = first->body;
+	for (int i = 0; i < 150; i++) {
+		std::string name = "growth-" + std::to_string(i);
+		create_skill(name.c_str(), name.c_str(), "Another skill.", "Body");
+	}
+	ASSERT_EQ(skill_discover(&reg, tmpdir), 150);
+	EXPECT_EQ(reg.count, 151);
+	EXPECT_EQ(skill_borrow(&reg, "first"), first);
+	EXPECT_EQ(first->body, body);
+	EXPECT_STREQ(first->body, "Original instructions\n");
+	EXPECT_NE(skill_borrow(&reg, "growth-149"), nullptr);
+	const struct skill_entry **sorted MORPH_CLEANUP(skill_entry_list_cleanup) = nullptr;
+	ASSERT_EQ(skill_sorted_entries_create(&reg, &sorted), 0);
+	EXPECT_EQ(sorted[0], first);
+	for (int i = 0; i < 150; i++) {
+		std::string name = "growth-" + std::to_string(i);
+		remove_skill(name.c_str());
+	}
+	remove_skill("first");
+}
+
+TEST_F(SkillRegistryTest, RegistryCopiesOwnedBodyAndRejectsDuplicateWithoutMutation)
+{
+	struct skill_entry source = {};
+	strcpy(source.fm.name, "copy");
+	strcpy(source.fm.description, "Copied entry.");
+	char *body MORPH_CLEANUP(morph_charp_cleanup) = strdup("Original body");
+	ASSERT_NE(body, nullptr);
+	source.body = body;
+	source.enabled = 1;
+	source.body_loaded = 1;
+	ASSERT_EQ(skill_registry_add_copy(&reg, &source), 0);
+	morph_charp_cleanup(&body);
+	source.body = nullptr;
+	auto *copy = skill_borrow(&reg, "copy");
+	ASSERT_NE(copy, nullptr);
+	EXPECT_STREQ(copy->body, "Original body");
+	EXPECT_EQ(skill_registry_add_copy(&reg, &source), -EEXIST);
+	EXPECT_EQ(reg.count, 1);
+	EXPECT_EQ(skill_borrow(&reg, "copy"), copy);
 }
 
 TEST_F(SkillRegistryTest, BuiltinMorphUsageSkillExists) {
@@ -319,14 +371,14 @@ TEST_F(SkillRegistryTest, SortedOutputPreservesRegistryLookupPointers)
 	auto *alpha = skill_borrow(&reg, "alpha");
 	ASSERT_EQ(skill_activate(zeta), 0);
 	ASSERT_EQ(skill_activate(alpha), 0);
-	const struct skill_entry *entries[SKILL_MAX_ENTRIES];
+	const struct skill_entry *entries[2];
 	EXPECT_EQ(skill_sorted_entries_borrow(&reg, entries, 1), -ENOSPC);
-	ASSERT_EQ(skill_sorted_entries_borrow(&reg, entries, SKILL_MAX_ENTRIES), 2);
+	ASSERT_EQ(skill_sorted_entries_borrow(&reg, entries, 2), 2);
 	EXPECT_EQ(entries[0], alpha);
 	EXPECT_EQ(entries[1], zeta);
 	EXPECT_EQ(skill_borrow(&reg, "zeta"), zeta);
 	EXPECT_EQ(skill_borrow(&reg, "alpha"), alpha);
-	EXPECT_EQ(&reg.entries[0], zeta);
+	EXPECT_EQ(skill_entry_borrow_at(&reg, 0), zeta);
 	char catalog[4096];
 	ASSERT_EQ(skill_build_catalog(&reg, catalog, sizeof(catalog)), 2);
 	EXPECT_LT(strstr(catalog, "- alpha:"), strstr(catalog, "- zeta:"));
@@ -589,6 +641,84 @@ TEST_F(SkillParseFrontmatterTest, LargeBodySkipped) {
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(fm.name, "big-body");
 	EXPECT_STREQ(fm.description, "Has big body.");
+}
+
+TEST_F(SkillParseFrontmatterTest, UnicodeDescriptionUsesCharacterLimit)
+{
+	std::string description;
+	for (int i = 0; i < SKILL_DESC_MAX_CHARS; i++)
+		description += "界";
+	std::string content = "---\nname: unicode\ndescription: " + description + "\n---\nBody\n";
+	write_file(content.c_str());
+	ASSERT_EQ(skill_parse_frontmatter(NULL, tmppath, &fm), 0);
+	EXPECT_STREQ(fm.description, description.c_str());
+	EXPECT_EQ(utf8valid(fm.description), nullptr);
+	description += "界";
+	content = "---\nname: unicode\ndescription: " + description + "\n---\nBody\n";
+	write_file(content.c_str());
+	EXPECT_EQ(skill_parse_frontmatter(NULL, tmppath, &fm), -E2BIG);
+}
+
+TEST_F(SkillParseFrontmatterTest, LongSingleMetadataLineIsNotSplitByReader)
+{
+	std::string metadata;
+	for (int i = 0; i < 1023; i++)
+		metadata += "😀";
+	std::string content = "---\nname: long-line\ndescription: Full metadata\nallowed-tools: " +
+		metadata + "\n---\nBody\n";
+	write_file(content.c_str());
+	ASSERT_EQ(skill_parse_frontmatter(NULL, tmppath, &fm), 0);
+	EXPECT_STREQ(fm.allowed_tools, metadata.c_str());
+}
+
+TEST_F(SkillParseTest, OversizedFieldsAndMetadataCountsReturnExplicitErrors)
+{
+	std::string name(SKILL_NAME_MAX_CHARS + 1, 'n');
+	std::string content = "---\nname: " + name + "\ndescription: Test\n---\nBody\n";
+	EXPECT_EQ(skill_parse(NULL, content.c_str(), content.size(), &fm, &body), -E2BIG);
+	EXPECT_EQ(body, nullptr);
+	content = "---\nname: metadata\ndescription: Test\nmetadata:\n";
+	for (int i = 0; i < SKILL_METADATA_MAX + 1; i++)
+		content += "  key" + std::to_string(i) + ": value\n";
+	content += "---\nBody\n";
+	EXPECT_EQ(skill_parse(NULL, content.c_str(), content.size(), &fm, &body), -E2BIG);
+	EXPECT_EQ(body, nullptr);
+}
+
+TEST_F(SkillParseTest, InvalidUtf8MetadataIsRejected)
+{
+	std::string content = "---\nname: invalid\ndescription: broken";
+	content.push_back(static_cast<char>(0xe4));
+	content += "\n---\nBody\n";
+	EXPECT_EQ(skill_parse(NULL, content.c_str(), content.size(), &fm, &body), MORPH_ERR_FORMAT);
+	EXPECT_EQ(body, nullptr);
+}
+
+TEST_F(SkillParseTest, BoundedInputDoesNotRequireTerminatingNul)
+{
+	std::string text = "---\nname: bounded\ndescription: Complete metadata\n---\nFull body";
+	std::vector<char> bytes(text.begin(), text.end());
+	ASSERT_EQ(skill_parse(NULL, bytes.data(), bytes.size(), &fm, &body), 0);
+	EXPECT_STREQ(fm.name, "bounded");
+	EXPECT_STREQ(body, "Full body");
+}
+
+TEST_F(SkillParseTest, ClosingDelimiterAndTrailingNewlinesMayEndAtBufferBoundary)
+{
+	for (const char *ending : {"---", "---\n", "---\r\n\n"}) {
+		std::string text = "---\nname: bounded\ndescription: No body\n";
+		text += ending;
+		std::vector<char> bytes(text.begin(), text.end());
+		EXPECT_EQ(skill_parse(NULL, bytes.data(), bytes.size(), &fm, &body), 0);
+		EXPECT_EQ(body, nullptr);
+	}
+}
+
+TEST_F(SkillParseTest, UnterminatedFrontmatterNewlinesStayWithinTheSuppliedLength)
+{
+	const char bytes[] = {'-', '-', '-', '\n', '\r', '\n'};
+	EXPECT_EQ(skill_parse(NULL, bytes, sizeof(bytes), &fm, &body), MORPH_ERR_PARSE);
+	EXPECT_EQ(body, nullptr);
 }
 
 TEST_F(SkillParseFrontmatterTest, NoClosingDelimiter) {

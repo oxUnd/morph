@@ -1,5 +1,8 @@
-#include "agent/tool_runtime.h"
 #include "skill_activate.h"
+#include "agent/tool_runtime.h"
+#include "util/cleanup.h"
+#include "util/json.h"
+#include "util/utf8.h"
 #include "util/log.h"
 #include "cJSON.h"
 #include <stdio.h>
@@ -11,83 +14,57 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 			       void *user_data)
 {
 	struct skill_registry *skills = user_data;
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	const cJSON *name_item;
+	const char *name;
+	struct skill_entry *skill;
+	int rc;
 
 	if (!result)
 		return -EINVAL;
 	if (!skills) {
-		(void)tool_result_success_json_text_copy(
-			result, "{\"error\":\"skill system not initialized\"}");
+		(void)tool_result_error_copy(result, "not_initialized",
+		"Skill system is unavailable.");
 		return MORPH_ERR_NOT_INITIALIZED;
 	}
-
-	char name[SKILL_NAME_MAX] = {0};
-
-	if (args_json && *args_json) {
-		cJSON *root = cJSON_Parse(args_json);
-		if (root) {
-			cJSON *name_item = cJSON_GetObjectItem(root, "name");
-			if (cJSON_IsString(name_item) && name_item->valuestring)
-				strncpy(name, name_item->valuestring,
-					sizeof(name) - 1);
-			cJSON_Delete(root);
-		}
-	}
-
-	if (name[0] == '\0') {
-		(void)tool_result_success_json_text_copy(
-			result, "{\"error\":\"missing or empty 'name' parameter. "
-				"Usage: activate_skill({\\\"name\\\": \\\"skill-name\\\"})\"}");
+	root = args_json ? cJSON_Parse(args_json) : NULL;
+	name_item = cJSON_GetObjectItemCaseSensitive(root, "name");
+	name = cJSON_GetStringValue(name_item);
+	if (!name || !*name || utf8valid(name) || utf8len(name) > SKILL_NAME_MAX_CHARS) {
+		(void)tool_result_error_format(result, "invalid_name",
+			"Provide a valid UTF-8 skill name of at most %d characters.",
+			SKILL_NAME_MAX_CHARS);
 		return -EINVAL;
 	}
-
-	struct skill_entry *skill = skill_borrow(skills, name);
+	skill = skill_borrow(skills, name);
 	if (!skill) {
-		char err[256];
-		snprintf(err, sizeof(err),
-			 "{\"error\":\"skill '%s' not found\"}", name);
-		(void)tool_result_success_json_text_copy(result, err);
+		(void)tool_result_error_format(result, "skill_not_found",
+		"Skill '%s' was not found.",
+					       name);
 		return -ENOENT;
 	}
-
 	if (!skill->enabled) {
-		char err[256];
-		snprintf(err, sizeof(err),
-			 "{\"error\":\"skill '%s' is disabled\"}", name);
-		(void)tool_result_success_json_text_copy(result, err);
+		(void)tool_result_error_format(result, "skill_disabled", "Skill '%s' is disabled.",
+					       name);
 		return -EACCES;
 	}
-
-	if (skill->activated && skill->body_loaded) {
-		char msg[256];
-		snprintf(msg, sizeof(msg),
-			 "Skill '%s' is already active. Its instructions are in context.",
-			 name);
-		(void)tool_result_success_json_text_copy(result, msg);
-		return 0;
-	}
-
-	int rc = skill_activate(skill);
+	if (skill->activated && skill->body_loaded)
+		return tool_result_success_format(result,
+			"Skill '%s' is already active. Its instructions are in context.", name);
+	rc = skill_activate(skill);
 	if (rc < 0) {
-		char err[256];
-		snprintf(err, sizeof(err),
-			 "{\"error\":\"failed to activate skill '%s' (code %d)\"}",
-			 name, rc);
-		(void)tool_result_success_json_text_copy(result, err);
+		(void)tool_result_error_format(result, "activation_failed",
+			"Failed to activate skill '%s': %s", name, morph_strerror(rc));
 		return rc;
 	}
-
-	if (!skill->body || !skill->body[0]) {
-		(void)tool_result_success_json_text_copy(
-			result, "Skill activated but contains no instructions.");
-		return 0;
-	}
-
-	const char *message = "Skill activated. Its full instructions are supplied in the "
-			      "active skill context on the next model request.";
-	(void)tool_result_success_json_text_copy(result, message);
-	log_info(result && result->runtime ? result->runtime->http.logger : NULL,
+	if (!skill->body || !skill->body[0])
+		return tool_result_success_text_copy(result,
+			"Skill activated but contains no instructions.");
+	log_info(result->runtime ? result->runtime->http.logger : NULL,
 		 "skill_activate: '%s' activated", name);
-	return 0;
+	return tool_result_success_text_copy(result,
+		"Skill activated. Its full instructions are supplied in the active skill context "
+		"on the next model request.");
 }
 
 int skill_activate_init(struct tool_registry *reg, struct skill_registry *skills)

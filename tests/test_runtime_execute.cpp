@@ -97,12 +97,12 @@ static int runtime_scripted_chat_with_tools(struct model *self, const char *,
 			return -ENOMEM;
 		response->tool_call_count = 1;
 		auto &call = response->tool_calls[0];
-		std::snprintf(call.id, sizeof(call.id), "checkpoint_test_%zu",
-			      state->action_cursor);
-		std::snprintf(call.name, sizeof(call.name), "%s", action.first.c_str());
+		call.id = strdup(("checkpoint_test_" +
+		std::to_string(state->action_cursor)).c_str());
+		call.name = strdup(action.first.c_str());
 		call.input_kind = action.first == "apply_patch" ? TOOL_INPUT_TEXT : TOOL_INPUT_JSON;
 		call.arguments = strdup(action.second.c_str());
-		return call.arguments ? 200 : -ENOMEM;
+		return call.id && call.name && call.arguments ? 200 : -ENOMEM;
 	}
 	response->content = strdup(state->response.c_str());
 	return response->content ? 200 : -ENOMEM;

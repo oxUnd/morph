@@ -14,6 +14,7 @@ struct sandbox_config;
 
 #define PROCESS_SESSION_ID_MAX 64
 #define PROCESS_COMMAND_MAX 8192
+#define PROCESS_SPOOL_MAX_BYTES (64u * 1024u * 1024u)
 
 enum process_state {
 	PROCESS_STARTING = 0,
@@ -60,6 +61,8 @@ struct process_spawn_options {
 };
 
 struct process_cursor {
+	/* Absolute byte offsets in the redacted stream, also used by its spool.
+	 * next_cursor advances past inline omissions; read the spool for those. */
 	size_t stdout_offset;
 	size_t stderr_offset;
 };
@@ -78,6 +81,18 @@ struct process_snapshot {
 	size_t stderr_omitted_bytes;
 	int stdout_truncated;
 	int stderr_truncated;
+	size_t stdout_total_bytes;
+	size_t stderr_total_bytes;
+	size_t stdout_path_bytes;
+	size_t stderr_path_bytes;
+	size_t stdout_retained_from;
+	size_t stderr_retained_from;
+	size_t stdout_unrecoverable_bytes;
+	size_t stderr_unrecoverable_bytes;
+	int stdout_path_truncated;
+	int stderr_path_truncated;
+	int stdout_capture_error;
+	int stderr_capture_error;
 };
 
 /* out must be NULL; failure preserves it. Destroy joins all workers. */

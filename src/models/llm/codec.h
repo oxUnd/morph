@@ -20,6 +20,7 @@ struct llm_codec {
 	cJSON *(*tools)(const struct tool_desc *tools, int count);
 	void (*configure)(const struct model *model, cJSON *request, int tool_count);
 	sse_event_cb event;
+	int requires_terminal_event;
 };
 
 /* Immutable process-lifetime codec; callbacks borrow inputs and return owned JSON. */

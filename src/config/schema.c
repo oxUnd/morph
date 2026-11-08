@@ -173,6 +173,7 @@ static const struct schema_entry schema[] = {
 	STRINGS("react.permission_profiles[].delete_paths", PERMISSION_PATH_MAX,
 		PERMISSION_PATH_LEN - 1),
 	TABLE("context"),
+	INT("context.project_doc_max_bytes", 1, INT_MAX),
 	NUMBER("context.summarize_threshold_ratio", 0.000001, 1.0),
 	NUMBER("context.compress_target_ratio", 0.000001, 1.0),
 	BOOL("context.in_turn_compaction"),

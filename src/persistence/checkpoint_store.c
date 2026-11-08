@@ -19,8 +19,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#define CHECKPOINT_FILE_MAX_BYTES (16U * 1024U * 1024U)
-#define CHECKPOINT_PLAN_MAX_BYTES (128U * 1024U * 1024U)
 #define CHECKPOINT_PLAN_MAX_FILES 4096U
 
 struct checkpoint_lock {
@@ -503,6 +501,28 @@ static int checkpoint_read(const char *root, const char *path, size_t limit,
 	return rc == -ENOENT ? 0 : rc != 0 ? rc : checkpoint_read_at(parent, leaf, limit, out);
 }
 
+static int checkpoint_current_size(const char *root, const char *path, size_t *size)
+{
+	int parent MORPH_CLEANUP(checkpoint_fd_cleanup) = -1;
+	char *leaf MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	struct stat info;
+	int rc = checkpoint_walk(root, path, &parent, &leaf);
+
+	*size = 0;
+	if (rc == -ENOENT)
+		return 0;
+	if (rc != 0)
+		return rc;
+	if (fstatat(parent, leaf, &info, AT_SYMLINK_NOFOLLOW) != 0)
+		return errno == ENOENT ? 0 : -errno;
+	if (!S_ISREG(info.st_mode) || info.st_nlink != 1)
+		return -ELOOP;
+	if (info.st_size < 0 || (uint64_t)info.st_size > CHECKPOINT_FILE_MAX_BYTES)
+		return -EFBIG;
+	*size = (size_t)info.st_size;
+	return 0;
+}
+
 static int checkpoint_snapshot(struct db *db, int64_t id, int64_t session_id)
 {
 	struct checkpoint_table tables[9];
@@ -682,7 +702,7 @@ int checkpoint_store_capture(struct db *db, int64_t id, const char *path)
 				rc = MORPH_ERR_DB;
 			} else if (sqlite3_column_int64(stmt, 0) < 0 ||
 				   (uint64_t)sqlite3_column_int64(stmt, 0) + 2 * current.size >
-					   CHECKPOINT_PLAN_MAX_BYTES ||
+					   CHECKPOINT_DATA_MAX_BYTES ||
 				   sqlite3_column_int64(stmt, 1) >= CHECKPOINT_PLAN_MAX_FILES) {
 				rc = -EFBIG;
 			}
@@ -732,6 +752,104 @@ int checkpoint_store_capture(struct db *db, int64_t id, const char *path)
 	}
 	checkpoint_stmt_cleanup(&stmt);
 	return checkpoint_transaction_finish(db, rc);
+}
+
+int checkpoint_store_validate_write(struct db *db, int64_t id, const char *path,
+				    size_t bytes, const char *removed_path)
+{
+	struct checkpoint_lock lock MORPH_CLEANUP(checkpoint_lock_cleanup) = {0};
+	struct checkpoint_info info MORPH_CLEANUP(checkpoint_info_cleanup) = {0};
+	char *relative MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *removed MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	sqlite3_stmt *rows MORPH_CLEANUP(checkpoint_stmt_cleanup) = NULL;
+	size_t total = 0;
+	int found = 0;
+	int found_removed = !removed_path;
+	int rc;
+
+	if (id <= 0 || !path)
+		return -EINVAL;
+	if (bytes > CHECKPOINT_FILE_MAX_BYTES)
+		return -EFBIG;
+	rc = checkpoint_enter(db, &lock);
+	if (rc == 0)
+		rc = checkpoint_info_read(db, 0, id, &info);
+	if (rc != 0)
+		return rc;
+	if (!info.code_active)
+		return -ESTALE;
+	rc = checkpoint_relative(info.root, path, &relative);
+	if (rc == 0 && removed_path)
+		rc = checkpoint_relative(info.root, removed_path, &removed);
+	if (rc != 0)
+		return rc;
+	if (removed && !strcmp(relative, removed))
+		found_removed = 1;
+	rc = checkpoint_prepare(db,
+		"SELECT path,COALESCE(length(before_data),0),COALESCE(length(after_data),0),"
+		"pending_token IS NOT NULL,pending_token=(SELECT token FROM "
+		"checkpoint_connection_token) FROM code_checkpoint_files WHERE checkpoint_id=?",
+		&rows);
+	if (rc != 0)
+		return rc;
+	sqlite3_bind_int64(rows, 1, id);
+	int step;
+	while ((step = sqlite3_step(rows)) == SQLITE_ROW) {
+		const char *row_path = (const char *)sqlite3_column_text(rows, 0);
+		int64_t before = sqlite3_column_int64(rows, 1);
+		int64_t recorded_after = sqlite3_column_int64(rows, 2);
+		size_t after;
+
+		if (!row_path || before < 0 || recorded_after < 0)
+			return MORPH_ERR_DB;
+		if (!strcmp(row_path, relative)) {
+			if (!sqlite3_column_int(rows, 4))
+				return -ESTALE;
+			found = 1;
+			after = bytes;
+		} else if (removed && !strcmp(row_path, removed)) {
+			if (!sqlite3_column_int(rows, 4))
+				return -ESTALE;
+			found_removed = 1;
+			after = 0;
+		} else if (sqlite3_column_int(rows, 3)) {
+			rc = checkpoint_current_size(info.root, row_path, &after);
+			if (rc != 0)
+				return rc;
+		} else {
+			after = (size_t)recorded_after;
+		}
+		if ((uint64_t)before > CHECKPOINT_DATA_MAX_BYTES - total)
+			return -EFBIG;
+		total += (size_t)before;
+		if (after > CHECKPOINT_DATA_MAX_BYTES - total)
+			return -EFBIG;
+		total += after;
+	}
+	if (step != SQLITE_DONE)
+		return MORPH_ERR_DB;
+	return found && found_removed ? 0 : -ESTALE;
+}
+
+static int checkpoint_validate_data_budget(struct db *db, int64_t id)
+{
+	sqlite3_stmt *row MORPH_CLEANUP(checkpoint_stmt_cleanup) = NULL;
+	int rc = checkpoint_prepare(db,
+		"SELECT COALESCE(sum(COALESCE(length(before_data),0)+"
+		"COALESCE(length(after_data),0)),0),count(*) FROM code_checkpoint_files "
+		"WHERE checkpoint_id=?", &row);
+
+	if (rc != 0)
+		return rc;
+	sqlite3_bind_int64(row, 1, id);
+	if (sqlite3_step(row) != SQLITE_ROW)
+		return MORPH_ERR_DB;
+	int64_t total = sqlite3_column_int64(row, 0);
+	int64_t count = sqlite3_column_int64(row, 1);
+	if (total < 0 || (uint64_t)total > CHECKPOINT_DATA_MAX_BYTES ||
+	    count < 0 || (uint64_t)count > CHECKPOINT_PLAN_MAX_FILES)
+		return -EFBIG;
+	return 0;
 }
 
 int checkpoint_store_seal(struct db *db, int64_t id)
@@ -800,6 +918,8 @@ int checkpoint_store_seal(struct db *db, int64_t id)
 		}
 		checkpoint_stmt_cleanup(&rows);
 	}
+	if (rc == 0)
+		rc = checkpoint_validate_data_budget(db, id);
 	rc = checkpoint_transaction_finish(db, rc);
 	/* Failed seals must not leave their token eligible for a later attempt. */
 	int rotate_rc = db_exec(
@@ -968,8 +1088,8 @@ static const char *checkpoint_conflict_reason(int error)
 	if (error == -ELOOP || error == -ENOTDIR)
 		return "A symlink, hardlink, or non-regular path prevents safe restoration.";
 	if (error == -EFBIG)
-		return "The file or restore plan exceeds the checkpoint size limit (16 MiB/file, "
-		       "128 MiB/plan).";
+		return "Checkpoint size limits exceeded (16 MiB/file, 128 MiB captured data, "
+		       "256 MiB restore plan including compensation copies).";
 	return morph_strerror(error);
 }
 

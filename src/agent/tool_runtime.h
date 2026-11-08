@@ -31,6 +31,10 @@ struct tool_checkpoint_context {
 	int (*capture)(void *user_data, int64_t id, const char *path);
 	int (*finish)(void *user_data, int64_t id);
 	int (*request)(void *user_data, const char *action, int64_t target, cJSON **out);
+	/* Optional tracked postimage limit; zero leaves size policy to callbacks. */
+	size_t max_file_bytes;
+	int (*validate_write)(void *user_data, int64_t id, const char *path,
+			      size_t bytes, const char *removed_path);
 };
 
 struct tool_runtime_context {

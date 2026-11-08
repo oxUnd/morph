@@ -59,8 +59,15 @@ Checkpoints are retained per session, up to 100 checkpoints and 30 days.
 Expired checkpoints cannot be selected. This feature is a convenience for
 tracked local edits, not a substitute for version control or backups.
 
-Individual captured files are limited to 16 MiB; a restore is limited to a
-128 MiB budget. Symlinks, hardlinks, and non-regular files are rejected rather
+Individual captured files are limited to 16 MiB. Tracked patches also check
+each resulting file against this limit and the checkpoint's aggregate 128 MiB
+before/after data budget before writing it. Moves account for both the new
+destination and the removed source. Earlier files
+in a multi-file patch can already have changed when a later hunk fails; those
+changes are still sealed. Seal checks actual aggregate sizes again, and failures
+mark the code checkpoint unavailable. A restore plan has a 256 MiB memory budget:
+up to 128 MiB of captured before/after data plus up to 128 MiB of current files
+needed to compensate a failed restore. Symlinks, hardlinks, and non-regular files are rejected rather
 than followed or replaced. When a code branch is no longer restorable, the
 picker marks code modes unavailable; conversation-only rewind remains available
 when that conversation checkpoint is valid.

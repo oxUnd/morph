@@ -117,15 +117,17 @@ struct episode_view {
 	int has_outcome;
 	int has_tools;
 	int has_result;
+	int shortened;
 };
 
-static void memory_copy_field(char *dst, size_t cap, const char *src, size_t n)
+static int memory_copy_field(char *dst, size_t cap, const char *src, size_t n)
 {
 	size_t take = n;
-	if (cap == 0)
-		return;
-	if (take >= cap)
-		take = cap - 1;
+	if (cap < sizeof("…"))
+		return 1;
+	int shortened = take >= cap;
+	if (shortened)
+		take = cap - sizeof("…");
 	/* Trim trailing whitespace before the boundary. */
 	while (take > 0 && (src[take - 1] == ' ' || src[take - 1] == '\t' || src[take - 1] == '\n'))
 		take--;
@@ -133,7 +135,10 @@ static void memory_copy_field(char *dst, size_t cap, const char *src, size_t n)
 	take = utf8_clamp_bytes(src, take);
 	memcpy(dst, src, take);
 	dst[take] = '\0';
+	if (shortened)
+		memcpy(dst + take, "…", sizeof("…"));
 	utf8_sanitize_inplace(dst);
+	return shortened;
 }
 
 static void memory_parse_episode(const char *summary, struct episode_view *v)
@@ -184,26 +189,28 @@ static void memory_parse_episode(const char *summary, struct episode_view *v)
 		}
 		switch (i) {
 		case 0:
-			memory_copy_field(v->task, sizeof(v->task), body, end);
+			v->shortened |= memory_copy_field(v->task, sizeof(v->task), body, end);
 			v->has_task = v->task[0] != '\0';
 			break;
 		case 1:
-			memory_copy_field(v->outcome, sizeof(v->outcome), body, end);
+			v->shortened |= memory_copy_field(v->outcome, sizeof(v->outcome), body,
+			end);
 			v->has_outcome = v->outcome[0] != '\0';
 			break;
 		case 2:
-			memory_copy_field(v->tools, sizeof(v->tools), body, end);
+			v->shortened |= memory_copy_field(v->tools, sizeof(v->tools), body, end);
 			v->has_tools = v->tools[0] != '\0';
 			break;
 		case 3:
-			memory_copy_field(v->result, sizeof(v->result), body, end);
+			v->shortened |= memory_copy_field(v->result, sizeof(v->result), body, end);
 			v->has_result = v->result[0] != '\0';
 			break;
 		}
 	}
 	/* Fallback: no labels at all → treat the whole thing as task. */
 	if (!v->has_task && !v->has_outcome && !v->has_tools && !v->has_result) {
-		memory_copy_field(v->task, sizeof(v->task), summary, strlen(summary));
+		v->shortened |= memory_copy_field(v->task, sizeof(v->task), summary,
+		strlen(summary));
 		v->has_task = v->task[0] != '\0';
 	}
 }
@@ -376,7 +383,7 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_ep
 			total_subs = (ev.has_task ? 1 : 0) + (ev.has_tools ? 1 : 0) +
 				     ((tools_col && *tools_col && !ev.has_tools) ? 1 : 0) +
 				     (ev.has_result ? 1 : 0) + ((decisions && *decisions) ? 1 : 0) +
-				     ((artifacts && *artifacts) ? 1 : 0);
+				     ((artifacts && *artifacts) ? 1 : 0) + (ev.shortened ? 1 : 0);
 			sub_idx = 0;
 
 #define MEMORY_PFX(is_last)                                                                        \
@@ -414,6 +421,14 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_ep
 				MEMORY_PFX(++sub_idx == total_subs);
 				memory_emit_wrapped(&buf, prefix_first, prefix_cont, "result",
 						    ev.result, 200);
+			}
+
+			if (ev.shortened) {
+				MEMORY_PFX(++sub_idx == total_subs);
+				memory_emit_wrapped(&buf, prefix_first, prefix_cont, "details",
+					"Display shortened; use memory type=episodes for the "
+					"complete record.",
+					200);
 			}
 
 #undef MEMORY_PFX

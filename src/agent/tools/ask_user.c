@@ -10,6 +10,7 @@
 #include <string.h>
 #include "util/error.h"
 #include "util/cancel.h"
+#include "util/utf8.h"
 
 struct ask_user_context {
 	ask_user_callback_fn cb;
@@ -235,92 +236,84 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 		return MORPH_ERR_NOT_CONFIGURED;
 	}
 
-	char question[1024] = {0};
-	char selection_mode[16] = "single";
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) =
+		args_json ? cJSON_Parse(args_json) : NULL;
+	const cJSON *q = cJSON_GetObjectItemCaseSensitive(root, "question");
+	const char *question = cJSON_GetStringValue(q);
+	const char *selection_mode = "single";
+	const char *choices[ASK_USER_CHOICES_MAX] = {NULL};
+	int choices_count = 0;
 	int min_choices = 0;
 	int max_choices = 0;
-	const char *choices[64] = {NULL};
-	int choices_count = 0;
-	char *choice_copies[64] = {NULL};
 	struct ask_user_options options = {0};
-	int options_rc = 0;
+	const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "selection_mode");
+	const cJSON *items = cJSON_GetObjectItemCaseSensitive(root, "choices");
+	const cJSON *minimum = cJSON_GetObjectItemCaseSensitive(root, "min_choices");
+	const cJSON *maximum = cJSON_GetObjectItemCaseSensitive(root, "max_choices");
 
-	if (args_json && *args_json) {
-		cJSON *root = cJSON_Parse(args_json);
-		if (root) {
-			cJSON *q = cJSON_GetObjectItem(root, "question");
-			if (cJSON_IsString(q) && q->valuestring)
-				strncpy(question, q->valuestring,
-					sizeof(question) - 1);
-
-			cJSON *mode = cJSON_GetObjectItem(root, "selection_mode");
-			if (cJSON_IsString(mode) && mode->valuestring &&
-			    strcmp(mode->valuestring, "multi") == 0)
-				strncpy(selection_mode, "multi",
-					sizeof(selection_mode) - 1);
-
-			cJSON *min = cJSON_GetObjectItem(root, "min_choices");
-			if (cJSON_IsNumber(min) && min->valueint > 0)
-				min_choices = min->valueint;
-
-			cJSON *max = cJSON_GetObjectItem(root, "max_choices");
-			if (cJSON_IsNumber(max) && max->valueint > 0)
-				max_choices = max->valueint;
-
-			cJSON *ch = cJSON_GetObjectItem(root, "choices");
-			if (cJSON_IsArray(ch)) {
-				int n = cJSON_GetArraySize(ch);
-				if (n > 64)
-					n = 64;
-				for (int i = 0; i < n; i++) {
-					cJSON *item = cJSON_GetArrayItem(ch, i);
-					if (cJSON_IsString(item)
-					    && item->valuestring) {
-						choice_copies[choices_count] =
-							strdup(item->valuestring);
-						if (choice_copies[choices_count]) {
-							choices[choices_count] =
-								choice_copies[choices_count];
-							choices_count++;
-						}
-					}
-				}
-			}
-			if (strcmp(selection_mode, "multi") == 0) {
-				if (min_choices <= 0)
-					min_choices = choices_count > 0 ? 1 : 0;
-				if (min_choices > choices_count)
-					min_choices = choices_count;
-				if (max_choices > choices_count)
-					max_choices = choices_count;
-				if (max_choices > 0 && max_choices < min_choices)
-					max_choices = min_choices;
-			} else {
-				min_choices = choices_count > 0 ? 1 : 0;
-				max_choices = choices_count > 0 ? 1 : 0;
-			}
-			options_rc = parse_ask_user_options(root, choices, choices_count,
-				min_choices, max_choices, &options);
-			cJSON_Delete(root);
+	if (!cJSON_IsObject(root) || !question || !*question || utf8valid(question)) {
+		(void)tool_result_error_copy(result, "invalid_question",
+			"Provide a nonempty UTF-8 question.");
+		return -EINVAL;
+	}
+	if (mode) {
+		selection_mode = cJSON_GetStringValue(mode);
+		if (!selection_mode || (strcmp(selection_mode, "single") &&
+					strcmp(selection_mode, "multi"))) {
+			(void)tool_result_error_copy(result, "invalid_selection_mode",
+				"selection_mode must be single or multi.");
+			return -EINVAL;
 		}
 	}
-
+	if (items) {
+		if (!cJSON_IsArray(items) || cJSON_GetArraySize(items) > ASK_USER_CHOICES_MAX) {
+			(void)tool_result_error_format(result, "invalid_choices",
+				"choices must contain at most %d complete strings.",
+				ASK_USER_CHOICES_MAX);
+			return -E2BIG;
+		}
+		choices_count = cJSON_GetArraySize(items);
+		for (int i = 0; i < choices_count; i++) {
+			choices[i] = cJSON_GetStringValue(cJSON_GetArrayItem(items, i));
+			if (!choices[i] || !*choices[i] || utf8valid(choices[i])) {
+				(void)tool_result_error_copy(result, "invalid_choice",
+					"Each choice must be a nonempty UTF-8 string.");
+				return -EINVAL;
+			}
+		}
+	}
+	if (minimum && (!cJSON_IsNumber(minimum) || minimum->valuedouble < 0 ||
+		minimum->valuedouble > choices_count ||
+		minimum->valuedouble != (double)minimum->valueint)) {
+		(void)tool_result_error_copy(result, "invalid_min_choices",
+			"min_choices must be an integer within the choices count.");
+		return -EINVAL;
+	}
+	if (maximum && (!cJSON_IsNumber(maximum) || maximum->valuedouble < 0 ||
+		maximum->valuedouble > choices_count ||
+		maximum->valuedouble != (double)maximum->valueint)) {
+		(void)tool_result_error_copy(result, "invalid_max_choices",
+			"max_choices must be an integer within the choices count.");
+		return -EINVAL;
+	}
+	if (!strcmp(selection_mode, "multi")) {
+		min_choices = minimum ? minimum->valueint : (choices_count ? 1 : 0);
+		max_choices = maximum ? maximum->valueint : 0;
+		if (max_choices && max_choices < min_choices) {
+			(void)tool_result_error_copy(result, "invalid_choice_bounds",
+				"max_choices must not be smaller than min_choices.");
+			return -EINVAL;
+		}
+	} else {
+		min_choices = choices_count ? 1 : 0;
+		max_choices = min_choices;
+	}
+	int options_rc = parse_ask_user_options(root, choices, choices_count,
+		min_choices, max_choices, &options);
 	if (options_rc != 0) {
-		for (int i = 0; i < choices_count; i++)
-			free(choice_copies[i]);
-		(void)tool_result_error_copy(
-			result, "invalid_arguments",
+		(void)tool_result_error_copy(result, "invalid_arguments",
 			"Invalid ask_user policy, timeout, or recommended indices.");
 		return options_rc;
-	}
-
-	if (question[0] == '\0') {
-		for (int i = 0; i < choices_count; i++)
-			free(choice_copies[i]);
-		(void)tool_result_success_json_text_copy(
-			result, "{\"error\":\"missing or empty 'question' parameter. "
-				"Usage: ask_user({\\\"question\\\": \\\"...\\\"})\"}");
-		return -EINVAL;
 	}
 
 	char **answers = NULL;
@@ -328,6 +321,7 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	options.cancel_token = result->runtime ? result->runtime->http.cancel_token : NULL;
 	int rc = callback(question, choices, choices_count, selection_mode, min_choices,
 			  max_choices, &options, &answers, &answers_count, callback_data);
+
 	if (morph_cancel_token_is_cancelled(options.cancel_token))
 		rc = -ECANCELED;
 	const char *resolution = "user";
@@ -357,14 +351,28 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 		}
 	}
 
+	if (rc >= 0) {
+		size_t total = 0;
+		if (answers_count < 0 || answers_count > ASK_USER_CHOICES_MAX ||
+		    (answers_count && !answers))
+			rc = MORPH_ERR_PROTOCOL;
+		for (int i = 0; rc >= 0 && i < answers_count; i++) {
+			const char *answer = answers[i] ? answers[i] : "";
+			size_t length = strlen(answer);
+			if (utf8valid(answer))
+				rc = MORPH_ERR_FORMAT;
+			else if (length > ASK_USER_ANSWER_MAX_BYTES - total)
+				rc = -E2BIG;
+			else
+				total += length;
+		}
+	}
 	if (rc < 0) {
 		if (answers) {
 			for (int i = 0; i < answers_count; i++)
 				free(answers[i]);
 			free(answers);
 		}
-		for (int i = 0; i < choices_count; i++)
-			free(choice_copies[i]);
 		(void)tool_result_error_format(result, "ask_user_failed",
 					       "Failed to get user response: %s",
 					       morph_strerror(rc));
@@ -392,8 +400,6 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 					     choices_count, selection_mode,
 					     min_choices, max_choices,
 					     NULL, 0, 1, &options, resolution);
-		for (int i = 0; i < choices_count; i++)
-			free(choice_copies[i]);
 		return result_rc;
 	}
 
@@ -405,8 +411,6 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	for (int i = 0; i < answers_count; i++)
 		free(answers[i]);
 	free(answers);
-	for (int i = 0; i < choices_count; i++)
-		free(choice_copies[i]);
 	return result_rc;
 }
 
@@ -451,7 +455,7 @@ static int ask_user_register(struct tool_registry *reg, ask_user_callback_fn cb,
 			"{\"type\":\"object\",\"properties\":{"
 			"\"question\":{\"type\":\"string\","
 			"\"description\":\"The question to ask the user\"},"
-			"\"choices\":{\"type\":\"array\","
+			"\"choices\":{\"type\":\"array\",\"maxItems\":64,"
 			"\"items\":{\"type\":\"string\"},"
 			"\"description\":\"Optional list of choices for the user "
 			"to pick from\"},"
@@ -459,10 +463,10 @@ static int ask_user_register(struct tool_registry *reg, ask_user_callback_fn cb,
 			"\"enum\":[\"single\",\"multi\"],"
 			"\"description\":\"Whether the user should pick one choice "
 			"or multiple choices. Defaults to single.\"},"
-			"\"min_choices\":{\"type\":\"integer\","
+			"\"min_choices\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":64,"
 			"\"description\":\"Minimum number of choices required for "
 			"multi-select.\"},"
-			"\"max_choices\":{\"type\":\"integer\","
+			"\"max_choices\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":64,"
 			"\"description\":\"Maximum number of choices allowed for "
 			"multi-select.\"},"
 			"\"recommended_indices\":{\"type\":\"array\",\"uniqueItems\":true,"

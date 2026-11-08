@@ -121,9 +121,13 @@ int agent_history_migrate_legacy_tool_call(struct tool_call *call)
 	char *normalized MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
 	char *owned MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 
-	if (!call || strcmp(call->name, "bash_exec") != 0)
+	if (!call || !call->name || strcmp(call->name, "bash_exec") != 0)
 		return 0;
-	snprintf(call->name, sizeof(call->name), "%s", "exec");
+	char *name MORPH_CLEANUP(morph_charp_cleanup) = strdup("exec");
+	if (!name)
+		return -ENOMEM;
+	free(call->name);
+	call->name = morph_charp_steal(&name);
 	if (call->input_kind != TOOL_INPUT_JSON || !call->arguments)
 		return 0;
 	arguments = cJSON_Parse(call->arguments);
@@ -200,13 +204,13 @@ static int history_add_tool_calls(struct morph_log *logger, const struct model_h
 			return MORPH_ERR_PROTOCOL;
 		}
 		/* Replayed IDs are provider-neutral Morph IDs. */
-		snprintf(tool_call->id, sizeof(tool_call->id), "%s", local_id->valuestring);
-		snprintf(tool_call->tool_call_id, sizeof(tool_call->tool_call_id), "%s",
-			 local_id->valuestring);
-		snprintf(tool_call->name, sizeof(tool_call->name), "%s", name->valuestring);
+		tool_call->id = strdup(local_id->valuestring);
+		tool_call->tool_call_id = strdup(local_id->valuestring);
+		tool_call->name = strdup(name->valuestring);
 		tool_call->input_kind = input_kind;
 		tool_call->arguments = strdup(input);
-		if (!tool_call->arguments) {
+		if (!tool_call->id || !tool_call->tool_call_id || !tool_call->name ||
+		    !tool_call->arguments) {
 			cJSON_Delete(root);
 			return -ENOMEM;
 		}

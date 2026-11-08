@@ -563,6 +563,7 @@ void config_set_defaults(struct morph_log *logger, struct config *cfg)
 
 	cfg->react.request_permissions_enabled = 1;
 
+	cfg->context.project_doc_max_bytes = 32768;
 	cfg->context.summarize_threshold_ratio = 0.8;
 	cfg->context.compress_target_ratio = 0.5;
 	cfg->context.in_turn_compaction = 1;
@@ -1186,6 +1187,7 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 		CFG_INT(context, "keep_recent_rounds", cfg->context.keep_recent_rounds);
 		CFG_INT(context, "tool_result_max_tokens",
 			cfg->context.tool_result_max_tokens);
+		CFG_INT(context, "project_doc_max_bytes", cfg->context.project_doc_max_bytes);
 		CFG_INT(context, "compaction_user_message_tokens",
 			cfg->context.compaction_user_message_tokens);
 		CFG_INT(context, "compaction_summary_max_tokens",

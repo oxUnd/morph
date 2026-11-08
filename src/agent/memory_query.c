@@ -45,6 +45,7 @@ static int memory_query_append_type(struct db *db, int64_t session_id,
 		read.changes_limit = -1;
 		break;
 	case MEMORY_QUERY_ALL:
+	case MEMORY_QUERY_PREFERENCES:
 		return 0;
 	}
 	rc = memory_snapshot_read(db, session_id, &read, &snapshot);
@@ -138,7 +139,8 @@ static int memory_query_append_one_session(struct db *db, const struct session *
 		return rc;
 
 	before = buf->len;
-	if (opts->type == MEMORY_QUERY_PROFILE || opts->type == MEMORY_QUERY_FACTS ||
+	if (opts->type == MEMORY_QUERY_PREFERENCES || opts->type == MEMORY_QUERY_PROFILE ||
+	    opts->type == MEMORY_QUERY_FACTS ||
 	    opts->type == MEMORY_QUERY_CHANGES) {
 		char *preferences =
 			preference_render_copy(db, s->id, opts->type == MEMORY_QUERY_CHANGES);

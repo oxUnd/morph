@@ -292,7 +292,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	memset(result, 0, sizeof(*result));
 
 	const char *api_base = self ? self->api_base : "";
-	const char *api_key = (self && self->api_key[0]) ? self->api_key : "";
+	const char *api_key = model_api_key_borrow(self);
 	const char *model_id = self ? self->model_id : "";
 	int poll_interval =
 		self && self->poll_interval_seconds > 0 ? self->poll_interval_seconds : 5;
@@ -416,9 +416,11 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 		 strlen(body_str));
 	log_dbg(self ? self->http.logger : NULL, "video_gen: request body:\n%s", body_str);
 
-	char auth_header[512];
-	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", api_key);
-	const char *hdrs[] = {auth_header};
+	morph_buf_t auth_header MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int auth_rc = model_authorization_header_create(self, &auth_header);
+	if (auth_rc != 0)
+		return auth_rc;
+	const char *hdrs[] = {morph_buf_cstr_borrow(&auth_header)};
 
 	struct http_response resp = {0};
 	int rc = http_post_ex(&self->http, submit_url, body_str, strlen(body_str),

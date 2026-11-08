@@ -98,3 +98,22 @@ TEST_F(ProjectContextTest, OccupiedOutputPreservesExistingSnapshot)
 	EXPECT_STREQ(snapshot, "retained guidance");
 	free(snapshot);
 }
+
+TEST_F(ProjectContextTest, ConfiguredBudgetLoadsLargerFilesWithoutPartialInstructions)
+{
+	const std::string content = std::string(40000, 'x') + "TAIL_REQUIREMENT";
+	write(base / "repo" / "child" / "AGENTS.md", content);
+	std::string cwd = (base / "repo" / "child").string();
+	struct environment_context environment{};
+	environment.cwd = cwd.c_str();
+	char *snapshot MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(project_context_create_with_budget(nullptr, &environment, nullptr, 65536,
+		&snapshot), 0);
+	ASSERT_NE(snapshot, nullptr);
+	EXPECT_NE(std::string(snapshot).find(content), std::string::npos);
+	morph_charp_cleanup(&snapshot);
+	ASSERT_EQ(project_context_create_with_budget(nullptr, &environment, nullptr, 32768,
+		&snapshot), 0);
+	EXPECT_NE(std::string(snapshot).find("file_read"), std::string::npos);
+	EXPECT_EQ(std::string(snapshot).find("TAIL_REQUIREMENT"), std::string::npos);
+}

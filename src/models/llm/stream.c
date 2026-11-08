@@ -28,6 +28,7 @@ void llm_stream_cleanup(struct llm_stream_ctx *ctx)
 		return;
 	morph_buf_cleanup(&ctx->accumulated);
 	morph_buf_cleanup(&ctx->reasoning);
+	free(ctx->terminal_detail);
 	for (int i = 0; i < ctx->tool_call_count; i++)
 		tool_call_cleanup(&ctx->tool_calls[i]);
 	free(ctx->tool_calls);
@@ -67,6 +68,20 @@ int llm_stream_emit(struct llm_stream_ctx *ctx, enum llm_stream_kind kind, const
 		return ctx->stream_cb(kind, text, ctx->user_data);
 	if (kind == LLM_STREAM_CONTENT && ctx->user_cb)
 		return ctx->user_cb(text, ctx->user_data);
+	return 0;
+}
+
+int llm_stream_string_copy(char **owner, const char *text)
+{
+	char *copy MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+
+	if (!owner || !text)
+		return -EINVAL;
+	copy = strdup(text);
+	if (!copy)
+		return -ENOMEM;
+	free(*owner);
+	*owner = morph_charp_steal(&copy);
 	return 0;
 }
 
@@ -237,7 +252,9 @@ void llm_stream_parse_finish_reason(struct llm_stream_ctx *ctx, cJSON *choice)
 	if (!ctx || !choice)
 		return;
 	finish = cJSON_GetObjectItem(choice, "finish_reason");
-	if (cJSON_IsString(finish) && finish->valuestring)
+	if (cJSON_IsString(finish) && finish->valuestring && finish->valuestring[0]) {
 		llm_usage_copy(ctx->usage.finish_reason, sizeof(ctx->usage.finish_reason),
 			       finish->valuestring);
+		ctx->terminal_received = 1;
+	}
 }

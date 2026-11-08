@@ -445,7 +445,7 @@ static int auto_decompose(const struct tool_runtime_context *runtime, struct mod
 {
 	if (!goal || !step_descs || max_steps <= 0)
 		return -EINVAL;
-	if (!llm || !llm->chat || !llm->api_key[0])
+	if (!llm || !llm->chat || !model_api_key_borrow(llm)[0])
 		return MORPH_ERR_NOT_CONFIGURED;
 
 	char prompt[2048];

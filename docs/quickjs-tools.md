@@ -114,7 +114,7 @@ morph.canvas.toFile({ canvas, output })
 morph.canvas.toBuffer({ canvas })
 morph.env.get(name)
 morph.exec(command)
-morph.fetch(url)
+morph.fetch(url, {headers: {Range: "bytes=0-65535"}})
 WebAssembly.instantiate(bytes, imports)
 ```
 
@@ -130,11 +130,16 @@ runtime 已解析的 output_dir 为基准；`morph.exec()` 在 workdir 中执行
 `morph.fetch(url)` 返回 Response-like 对象：
 
 HTTP 状态码来自实际响应，`ok` 仅在 2xx 时为真。4xx/5xx 仍返回可读取的响应正文；
-连接失败、取消、超时或正文超过 1 MiB 时抛出异常。请求复用项目 HTTP 实现，
+`morph.fetch(url, options)` 的 `options.headers` 可传递请求头，例如 `Range`，
+以分段读取大资源；服务端必须支持相应的 Range 语义。请求头名称和值会校验，
+禁止换行、NUL 等控制字符。连接失败、取消、超时或正文超过配置的捕获预算时抛出异常。
+捕获预算与 `dynamic_tools.default_max_output_bytes` 一致，默认 1 MiB。
+请求复用项目 HTTP 实现，
 接受 runner 截止时间约束，并保留 network capability 和目标 allowlist 检查。
 
 `morph.exec(command)` 成功时返回标准输出；非零退出、信号终止、超时或输出超过
-1 MiB 时抛出异常。子进程使用独立进程组，超时后终止并回收；输出中的 NUL 不会
+同一配置预算时抛出异常，标准输出和标准错误均检查该预算。
+子进程使用独立进程组，超时后终止并回收；输出中的 NUL 不会
 截断后续内容。
 
 ```js
@@ -351,8 +356,8 @@ allowed_network = []
 - `sharp`、`canvas` 和 `WebAssembly` 当前是常用子集，不是 npm 包或浏览器
   运行时的完整兼容实现；模型提示里已明确限制不要生成未支持 API。
 - “动态工具不能绕过 disabled tools”还没有完整链路，因为跨工具调用尚未开放。
-- runner 内部 `RUNNER_MAX_CAPTURE` 仍是固定 `1MB`，父进程的 `default_max_output_bytes` 已生效，但 host API 内部抓取上限还未配置化。
-- 缺少非法工具名、重复工具名、非法 schema、JS 语法错误、超时、输出大小限制的专项单测。
+- runner 通过 `MORPH_RUNNER_MAX_CAPTURE_BYTES` 接收父进程捕获预算；独立启动时默认
+  1 MiB，显式配置必须为 `1..INT_MAX` 的整数。超限会明确报错，不能把部分 JSON 当成成功结果。
 - 缺少 mock LLM 集成测试覆盖“先 `tool_create`，再调用新工具”的完整 ReAct 流程。
 - active tools 目前每轮都会重新收集，后续可以给 `tool_registry` 加 version，只有工具集合变化时才重建。
 - 后续需要做工具裁剪，避免动态工具数量过多时增加模型请求 token。

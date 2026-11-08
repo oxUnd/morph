@@ -837,17 +837,30 @@ static int react_prepare_tool_call_ids(struct chat_response *response)
 		return -EINVAL;
 	for (int i = 0; i < response->tool_call_count; i++) {
 		struct tool_call *tc = &response->tool_calls[i];
+		char generated[128];
 		int rc;
 
-		if (!tc->id[0]) {
-			rc = morph_random_id("pc_", tc->id, sizeof(tc->id));
+		if (!tc->name || !tc->name[0])
+			return MORPH_ERR_PROTOCOL;
+		if (!tc->id || !tc->id[0]) {
+			rc = morph_random_id("pc_", generated, sizeof(generated));
 			if (rc < 0)
 				return rc;
+			char *id MORPH_CLEANUP(morph_charp_cleanup) = strdup(generated);
+			if (!id)
+				return -ENOMEM;
+			free(tc->id);
+			tc->id = morph_charp_steal(&id);
 		}
-		if (!tc->tool_call_id[0]) {
-			rc = morph_random_id("tc_", tc->tool_call_id, sizeof(tc->tool_call_id));
+		if (!tc->tool_call_id || !tc->tool_call_id[0]) {
+			rc = morph_random_id("tc_", generated, sizeof(generated));
 			if (rc < 0)
 				return rc;
+			char *id MORPH_CLEANUP(morph_charp_cleanup) = strdup(generated);
+			if (!id)
+				return -ENOMEM;
+			free(tc->tool_call_id);
+			tc->tool_call_id = morph_charp_steal(&id);
 		}
 	}
 	return 0;
@@ -1288,9 +1301,13 @@ static int react_chat_once(struct react_context *ctx, struct model *llm, const c
 	msg_count = (int)request.messages.nelts;
 
 	int estimate = 0;
-	if (model_estimate_input_tokens(llm, system_prompt, messages, msg_count, active_tools,
-					active_tool_count, react_count_input_text, ctx->tokenizer,
-					&estimate) == 0) {
+	status = model_estimate_input_tokens(llm, system_prompt, messages, msg_count, active_tools,
+					   active_tool_count, react_count_input_text,
+					   ctx->tokenizer,
+					   &estimate);
+	if (status != 0)
+		return status;
+	{
 		cJSON *metrics = cJSON_CreateObject();
 		if (metrics) {
 			cJSON_AddNumberToObject(metrics, "active_input_tokens_estimate", estimate);
@@ -1301,6 +1318,20 @@ static int react_chat_once(struct react_context *ctx, struct model *llm, const c
 					       "react.context.usage", "info",
 					       "model request context", metrics);
 			cJSON_Delete(metrics);
+		}
+		int budget = react_request_input_budget(ctx, llm);
+		if (estimate > budget || budget == 0) {
+			morph_buf_t detail MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			int rc = morph_buf_init(&detail, 128);
+			if (rc == 0)
+				rc = morph_buf_printf(&detail,
+					"Model input needs about %d tokens, but %d remain after "
+					"reserving the complete output budget and protocol margin.",
+					estimate, budget);
+			if (rc != 0)
+				return rc;
+			ctx->llm_error_detail = morph_buf_detach(&detail);
+			return MORPH_ERR_CONTEXT_LIMIT;
 		}
 	}
 
@@ -1501,16 +1532,12 @@ static int react_append_assistant_tool_call_message(morph_array_t *messages,
 		return -ENOMEM;
 	asst_msg->tool_call_count = response->tool_call_count;
 	for (int j = 0; j < response->tool_call_count; j++) {
-		char *arguments = NULL;
+		char *arguments MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 		int rc;
 
-		strncpy(asst_msg->tool_calls[j].id, response->tool_calls[j].id,
-			sizeof(asst_msg->tool_calls[j].id) - 1);
-		asst_msg->tool_calls[j].id[sizeof(asst_msg->tool_calls[j].id) - 1] = '\0';
-		strncpy(asst_msg->tool_calls[j].name, response->tool_calls[j].name,
-			sizeof(asst_msg->tool_calls[j].name) - 1);
-		asst_msg->tool_calls[j].name[sizeof(asst_msg->tool_calls[j].name) - 1] = '\0';
-		asst_msg->tool_calls[j].input_kind = response->tool_calls[j].input_kind;
+		rc = tool_call_clone(&response->tool_calls[j], &asst_msg->tool_calls[j]);
+		if (rc != 0)
+			return rc;
 		if (response->tool_calls[j].input_kind == TOOL_INPUT_TEXT) {
 			arguments = strdup(response->tool_calls[j].arguments
 						   ? response->tool_calls[j].arguments
@@ -1523,8 +1550,8 @@ static int react_append_assistant_tool_call_message(morph_array_t *messages,
 			if (rc != 0)
 				return rc;
 		}
-		asst_msg->tool_calls[j].arguments = arguments;
-		arguments = NULL;
+		free(asst_msg->tool_calls[j].arguments);
+		asst_msg->tool_calls[j].arguments = morph_charp_steal(&arguments);
 		if (!asst_msg->tool_calls[j].arguments)
 			return -ENOMEM;
 	}
@@ -2623,7 +2650,7 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 		return react_finish_run(ctx);
 	struct model *llm = (struct model *)ctx->llm_model;
 
-	if (!llm || !llm->api_key[0]) {
+	if (!model_api_key_borrow(llm)[0]) {
 		int history_rc = agent_history_record_user(ctx, user_input);
 
 		if (history_rc != 0) {
@@ -2679,9 +2706,13 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 			context_rc = -ENOMEM;
 		global_dir = expanded_global;
 	}
-	if (context_rc == 0)
-		context_rc = project_context_create(ctx ? ctx->logger : NULL, &project_environment,
-						    global_dir, &ctx->project_context);
+	if (context_rc == 0) {
+		size_t guidance_budget = ctx->compress.project_doc_max_bytes > 0
+			? (size_t)ctx->compress.project_doc_max_bytes : PROJECT_CONTEXT_MAX_BYTES;
+		context_rc = project_context_create_with_budget(
+			ctx->logger, &project_environment, global_dir, guidance_budget,
+			&ctx->project_context);
+	}
 	free(expanded_global);
 	if (context_rc != 0) {
 		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, context_rc,

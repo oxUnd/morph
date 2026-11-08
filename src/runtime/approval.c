@@ -2,8 +2,10 @@
 #include "util/cleanup.h"
 
 #include "runtime/runtime_internal.h"
+#include "agent/tokenizer.h"
 #include "util/buf.h"
 #include "util/error.h"
+#include "util/json.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -112,6 +114,19 @@ static int review_user(const struct tool_operation *operation, struct permission
 	return 0;
 }
 
+static void approval_model_cleanup(struct model **model)
+{
+	if (!model)
+		return;
+	model_destroy(*model);
+	*model = NULL;
+}
+
+static int approval_count_tokens(const char *text, void *opaque)
+{
+	return tokenizer_count(opaque, text);
+}
+
 static int review_model(const struct tool_operation *operation, struct permission_review *out,
 			void *opaque)
 {
@@ -119,14 +134,14 @@ static int review_model(const struct tool_operation *operation, struct permissio
 	struct runtime_context *ctx = &runtime->context;
 	const struct config_model_entry *configured = &ctx->config.models.approval;
 	const struct model *source = ctx->llm;
-	struct model *model;
+	struct model *model MORPH_CLEANUP(approval_model_cleanup) = NULL;
 	struct model_usage_sink usage_sink = {.callback = approval_usage};
 	struct chat_response response MORPH_CLEANUP(chat_response_free) = {0};
 	struct chat_message message = {.role = "user"};
-	cJSON *input;
-	char *payload;
+	cJSON *input MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	char *payload MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
 	const char *key;
-	char objective[sizeof(ctx->approval_objective)];
+	char *objective MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	int rc;
 	static const char instructions[] =
 		"Review one proposed agent action against the user's stated objective. "
@@ -153,20 +168,26 @@ static int review_model(const struct tool_operation *operation, struct permissio
 			memcpy(model->adapter, configured->adapter, sizeof(model->adapter));
 			memcpy(model->extra_body_json, configured->extra_body_json,
 			       sizeof(model->extra_body_json));
+			if (configured->context_limit > 0)
+				model->context_limit = configured->context_limit;
+			if (configured->max_tokens > 0)
+				model->max_tokens = configured->max_tokens;
+			if (configured->timeout_seconds > 0)
+				model->timeout_seconds = configured->timeout_seconds;
+			model->retry_count = configured->retry_count;
 		}
 	}
 	if (!model)
 		return -ENOMEM;
-	model->timeout_seconds = 30;
-	model->max_tokens = 512;
-	model->retry_count = 0;
 	usage_sink.user_data = source ? source->usage_sink : NULL;
 	model->usage_sink = &usage_sink;
 	approval_event(runtime, operation, "model", "begin", NULL);
 	model->http.cancel_token = &ctx->react->cancel_token;
 	pthread_mutex_lock(&ctx->approval_objective_lock);
-	memcpy(objective, ctx->approval_objective, sizeof(objective));
+	objective = strdup(ctx->approval_objective ? ctx->approval_objective : "");
 	pthread_mutex_unlock(&ctx->approval_objective_lock);
+	if (!objective)
+		return -ENOMEM;
 	input = cJSON_CreateObject();
 	int complete =
 		input && cJSON_AddStringToObject(input, "user_objective", objective) &&
@@ -183,19 +204,26 @@ static int review_model(const struct tool_operation *operation, struct permissio
 		cJSON_AddBoolToObject(input, "network", operation->network);
 
 	payload = complete ? cJSON_PrintUnformatted(input) : NULL;
-	cJSON_Delete(input);
 	message.content = payload;
-	rc = payload ? model->chat_with_tools(model, instructions, &message, 1, NULL, 0, &response,
-					      NULL, NULL)
+	int input_tokens = 0;
+	rc = payload ? model_estimate_input_tokens(model, instructions, &message, 1, NULL, 0,
+						  approval_count_tokens, ctx->tokenizer,
+						  &input_tokens)
 		     : -ENOMEM;
+	if (rc == 0 && model->context_limit > 0 &&
+	    (int64_t)input_tokens + model->max_tokens > model->context_limit)
+		rc = -E2BIG;
+	if (rc == 0)
+		rc = model->chat_with_tools(model, instructions, &message, 1, NULL, 0, &response,
+					   NULL, NULL);
+	if (rc >= 0 && !strcmp(response.usage.finish_reason, "length"))
+		rc = MORPH_ERR_LLM;
 	if (rc >= 0)
 		rc = response.tool_call_count ? -EPROTO
 					      : runtime_approval_parse(response.content, out);
 	if (rc != 0)
 		out->defer = 1;
 	approval_event(runtime, operation, "model", rc == 0 ? "end" : "failed", out);
-	cJSON_free(payload);
-	model_destroy(model);
 	return rc;
 }
 

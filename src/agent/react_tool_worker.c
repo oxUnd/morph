@@ -345,7 +345,7 @@ static void *react_tool_worker_run(void *arg)
 			pthread_cond_broadcast(&call->cond);
 		} else {
 			const char *raw = res.text.data ? res.text.data : "(no output)";
-			call->result = utf8_dup_clamped(raw, 256 * 1024);
+				call->result = strdup(raw);
 			call->data = res.data ? cJSON_Duplicate(res.data, 1) : NULL;
 			call->ui = res.ui ? cJSON_Duplicate(res.ui, 1) : NULL;
 			call->meta = res.meta ? cJSON_Duplicate(res.meta, 1) : NULL;

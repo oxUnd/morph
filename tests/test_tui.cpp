@@ -3,6 +3,7 @@
 #include <morph/tui/components.h>
 #include <morph/tui/widgets/tree.h>
 #include "util/utf8.h"
+#include "util/cleanup.h"
 
 #include <cerrno>
 #include <cstdio>
@@ -548,6 +549,41 @@ TEST_F(TuiTest, EditorBoundsPasteAndSecretRendering)
 	morph_buf_cleanup(&visible);
 }
 
+TEST_F(TuiTest, EditorGrowsAcrossCapacityBoundariesAndInsertsInsideUtf8)
+{
+	struct morph_tui_widget_editor_state editor
+		MORPH_CLEANUP(morph_tui_widget_editor_state_cleanup) = {};
+	ASSERT_EQ(morph_tui_widget_editor_state_init(&editor, "", 65537, 0), 0);
+	std::string original;
+	for (size_t i = 0; i < 4000; i++)
+		original += "界";
+	original += "TAIL";
+	for (unsigned char byte : original) {
+		ASSERT_EQ(morph_tui_widget_editor_state_update(&editor, byte),
+			  MORPH_TUI_WIDGET_CHANGED);
+		ASSERT_LT(editor.text.len, editor.text.cap);
+		ASSERT_EQ(editor.text.data[editor.text.len], '\0');
+	}
+	EXPECT_TRUE(morph_tui_widget_editor_state_valid(&editor));
+	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&editor.text)), original);
+	ASSERT_EQ(morph_tui_widget_editor_state_update(&editor, MORPH_TUI_KEY_HOME),
+		  MORPH_TUI_WIDGET_CHANGED);
+	ASSERT_EQ(morph_tui_widget_editor_state_update(&editor, MORPH_TUI_KEY_RIGHT),
+		  MORPH_TUI_WIDGET_CHANGED);
+	std::string inserted;
+	for (size_t i = 0; i < 4000; i++)
+		inserted += "文";
+	for (unsigned char byte : inserted) {
+		ASSERT_EQ(morph_tui_widget_editor_state_update(&editor, byte),
+			  MORPH_TUI_WIDGET_CHANGED);
+		ASSERT_LT(editor.text.len, editor.text.cap);
+		ASSERT_EQ(editor.text.data[editor.text.len], '\0');
+	}
+	EXPECT_TRUE(morph_tui_widget_editor_state_valid(&editor));
+	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&editor.text)),
+		  original.substr(0, 3) + inserted + original.substr(3));
+}
+
 TEST_F(TuiTest, CardAndDocumentComponentsRespectDisplayWidth)
 {
 	morph_buf_t row{};
@@ -635,6 +671,33 @@ TEST_F(TuiTest, SelectPromptCustomAnswerUsesSharedEditorWithoutCli)
 	EXPECT_STREQ(custom, "Gold");
 	EXPECT_TRUE(morph_tui_widget_select_selected(&selection, 1));
 	free(custom);
+	morph_tui_widget_select_cleanup(&selection);
+}
+
+TEST_F(TuiTest, SelectPromptCustomAnswerLimitRejectsOverflowUntilEdited)
+{
+	TuiPseudoTerminal pty;
+	ASSERT_NE(pty.terminal, nullptr);
+	struct termios input_mode{};
+	ASSERT_EQ(tcgetattr(fileno(pty.terminal), &input_mode), 0);
+	/* Queue the editing keys without canonical erase processing. */
+	input_mode.c_lflag &= static_cast<tcflag_t>(~(ICANON | ECHO));
+	ASSERT_EQ(tcsetattr(fileno(pty.terminal), TCSANOW, &input_mode), 0);
+	struct morph_tui_widget_select selection{};
+	ASSERT_EQ(morph_tui_widget_select_init(&selection, 2, 0, 1, 1), 0);
+	const char *items[] = {"Blue"};
+	struct morph_tui_widget_select_options options{};
+	options.items = items;
+	options.allow_custom = 1;
+	options.custom_max_bytes = 4;
+	const char keys[] = "j\n12345\n\177Z\n";
+	ASSERT_EQ(write(pty.master, keys, sizeof(keys) - 1),
+		  static_cast<ssize_t>(sizeof(keys) - 1));
+	char *custom MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	EXPECT_EQ(morph_tui_widget_select_run(&selection, &options, pty.terminal, output, &custom),
+	0);
+	EXPECT_STREQ(custom, "123Z");
+	EXPECT_NE(take().find("shorten it if needed"), std::string::npos);
 	morph_tui_widget_select_cleanup(&selection);
 }
 

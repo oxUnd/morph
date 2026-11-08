@@ -7,13 +7,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 /* Read only bounded regular files. Never wait for a workspace FIFO. */
-static int read_guidance(const char *path, char **text)
+static int read_guidance(const char *path, size_t budget, char **text)
 {
 	struct stat info;
 	int flags = O_RDONLY;
@@ -37,17 +38,17 @@ static int read_guidance(const char *path, char **text)
 		close(fd);
 		return rc;
 	}
-	if (!S_ISREG(info.st_mode) || info.st_size > PROJECT_CONTEXT_MAX_BYTES) {
+	if (!S_ISREG(info.st_mode) || info.st_size < 0 || (uint64_t)info.st_size > budget) {
 		close(fd);
 		return -EFBIG;
 	}
-	data = calloc(1, PROJECT_CONTEXT_MAX_BYTES + 1);
+	data = calloc(1, budget + 1);
 	if (!data) {
 		close(fd);
 		return -ENOMEM;
 	}
-	while (len < PROJECT_CONTEXT_MAX_BYTES + 1) {
-		ssize_t n = read(fd, data + len, PROJECT_CONTEXT_MAX_BYTES + 1 - len);
+	while (len < budget + 1) {
+		ssize_t n = read(fd, data + len, budget + 1 - len);
 		if (n < 0 && errno == EINTR)
 			continue;
 		if (n < 0) {
@@ -60,7 +61,7 @@ static int read_guidance(const char *path, char **text)
 		len += (size_t)n;
 	}
 	close(fd);
-	if (len > PROJECT_CONTEXT_MAX_BYTES)
+	if (len > budget)
 		return -EFBIG;
 	if (memchr(data, '\0', len) || utf8nvalid(data, len))
 		return -EILSEQ;
@@ -73,7 +74,7 @@ static int read_guidance(const char *path, char **text)
 }
 
 static int append_directory(struct morph_log *logger, morph_buf_t *buf, const char *directory,
-			    int global, size_t *used)
+			    int global, size_t budget, size_t *used)
 {
 	static const char *const names[] = { "AGENTS.override.md", "AGENTS.md" };
 
@@ -84,22 +85,25 @@ static int append_directory(struct morph_log *logger, morph_buf_t *buf, const ch
 
 		if (rc != 0)
 			return rc;
-		rc = read_guidance(path, &body);
+		rc = read_guidance(path, budget, &body);
 		if (rc == -ENOMEM)
 			return rc;
 		if (rc != 0) {
 			log_warn(logger, "project guidance skipped '%s': %s", path,
 				 morph_strerror(rc));
 			return morph_buf_printf(buf,
-				"Project guidance unavailable: %s (%s).\n",
+				"Project guidance unavailable: %s (%s).\n"
+				"Read this file with file_read before working in its scope.\n",
 				path, morph_strerror(rc));
 		}
 		if (!body)
 			continue;
 		size_t len = strlen(body);
-		if (len > PROJECT_CONTEXT_MAX_BYTES - *used)
+		if (len > budget - *used)
 			return morph_buf_printf(buf,
-				"Project guidance omitted due to budget: %s\n", path);
+				"Project guidance omitted due to budget: %s\n"
+				"Read this file with file_read before working in its scope.\n",
+				path);
 		*used += len;
 		return morph_buf_printf(buf,
 			"\nGuidance source: %s\nScope: %s\n%s\n",
@@ -108,14 +112,15 @@ static int append_directory(struct morph_log *logger, morph_buf_t *buf, const ch
 	return 0;
 }
 
-int project_context_create(struct morph_log *logger, const struct environment_context *environment,
-			   const char *global_dir, char **out)
+int project_context_create_with_budget(struct morph_log *logger,
+				      const struct environment_context *environment,
+				      const char *global_dir, size_t budget, char **out)
 {
 	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	size_t used = 0;
 	int rc;
 
-	if (!environment || !out)
+	if (!environment || !out || !budget || budget >= MORPH_BUF_MAX_CAP)
 		return -EINVAL;
 	if (*out)
 		return -EALREADY;
@@ -123,7 +128,7 @@ int project_context_create(struct morph_log *logger, const struct environment_co
 	if (rc != 0)
 		return rc;
 	if (global_dir && *global_dir)
-		rc = append_directory(logger, &buf, global_dir, 1, &used);
+		rc = append_directory(logger, &buf, global_dir, 1, budget, &used);
 	if (rc != 0)
 		return rc;
 	if (environment->cwd) {
@@ -140,7 +145,7 @@ int project_context_create(struct morph_log *logger, const struct environment_co
 			char saved = directory[end];
 
 			directory[end] = '\0';
-			rc = append_directory(logger, &buf, directory, 0, &used);
+			rc = append_directory(logger, &buf, directory, 0, budget, &used);
 			directory[end] = saved;
 			if (rc != 0)
 				return rc;
@@ -169,4 +174,11 @@ int project_context_create(struct morph_log *logger, const struct environment_co
 		*out = morph_buf_detach(&context);
 	}
 	return 0;
+}
+
+int project_context_create(struct morph_log *logger, const struct environment_context *environment,
+			   const char *global_dir, char **out)
+{
+	return project_context_create_with_budget(logger, environment, global_dir,
+					 PROJECT_CONTEXT_MAX_BYTES, out);
 }

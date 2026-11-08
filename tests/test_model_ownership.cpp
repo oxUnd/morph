@@ -13,6 +13,7 @@ extern "C" {
 #include <climits>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 TEST(TestModelOwnership, MessageCloneOutlivesBorrowedSource)
 {
@@ -24,9 +25,9 @@ TEST(TestModelOwnership, MessageCloneOutlivesBorrowedSource)
 		char arguments[] = "{\"value\":1}";
 		char call_id[] = "call_1";
 		struct tool_call call{};
-		std::strcpy(call.id, call_id);
-		std::strcpy(call.tool_call_id, "provider_item");
-		std::strcpy(call.name, "example");
+		call.id = const_cast<char *>(call_id);
+		call.tool_call_id = const_cast<char *>("provider_item");
+		call.name = const_cast<char *>("example");
 		call.arguments = arguments;
 		call.input_kind = TOOL_INPUT_TEXT;
 		struct chat_message source{};
@@ -53,6 +54,73 @@ TEST(TestModelOwnership, MessageCloneOutlivesBorrowedSource)
 	EXPECT_STREQ(copy.tool_calls[0].tool_call_id, "provider_item");
 	EXPECT_EQ(copy.tool_calls[0].input_kind, TOOL_INPUT_TEXT);
 	EXPECT_EQ(copy.is_context_summary, 1);
+}
+
+TEST(TestModelOwnership, ChatStreamAndClonePreserveLongToolIdentities)
+{
+	for (size_t size : {size_t{64}, size_t{128}, size_t{4096}}) {
+		SCOPED_TRACE(size);
+		std::string name(size, 'n');
+		std::string id(size + 128, 'i');
+		std::string event = "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,"
+			"\"id\":\"" + id + "\",\"function\":{\"name\":\"" + name +
+			"\",\"arguments\":\"{}\"}}]}}]}";
+		struct tool_call copy MORPH_CLEANUP(tool_call_cleanup) = {};
+		{
+			struct llm_stream_ctx stream MORPH_CLEANUP(llm_stream_cleanup) = {};
+			llm_stream_init(&stream, nullptr, nullptr);
+			ASSERT_EQ(llm_chat_decode_event("message", event.c_str(), &stream), 0);
+			ASSERT_EQ(stream.tool_call_count, 1);
+			EXPECT_STREQ(stream.tool_calls[0].id, id.c_str());
+			EXPECT_STREQ(stream.tool_calls[0].name, name.c_str());
+			ASSERT_EQ(tool_call_clone(&stream.tool_calls[0], &copy), 0);
+		}
+		EXPECT_STREQ(copy.id, id.c_str());
+		EXPECT_STREQ(copy.name, name.c_str());
+		EXPECT_STREQ(copy.arguments, "{}");
+	}
+}
+
+TEST(TestModelOwnership, ResponsesKeepItemAndCallIdsAcrossInterleavedDeltas)
+{
+	struct model model{};
+	strcpy(model.adapter, "openai-responses");
+	const struct llm_codec *codec = llm_codec_borrow(&model);
+	struct llm_stream_ctx stream MORPH_CLEANUP(llm_stream_cleanup) = {};
+	llm_stream_init(&stream, nullptr, nullptr);
+	std::string prefix(1024, 'i');
+	std::string name(512, 'n');
+	for (int i = 0; i < 2; i++) {
+		std::string suffix = std::to_string(i);
+		std::string event = "{\"type\":\"response.output_item.added\",\"item\":{"
+			"\"type\":\"function_call\",\"id\":\"" + prefix + suffix +
+			"\",\"call_id\":\"call_" + prefix + suffix + "\",\"name\":\"" + name +
+			"\",\"arguments\":\"\"}}";
+		ASSERT_EQ(codec->event("message", event.c_str(), &stream), 0);
+	}
+	for (int i : {1, 0}) {
+		std::string suffix = std::to_string(i);
+		std::string delta = "{\"type\":\"response.function_call_arguments.delta\","
+			"\"item_id\":\"" + prefix + suffix + "\",\"delta\":\"{}\"}";
+		ASSERT_EQ(codec->event("message", delta.c_str(), &stream), 0);
+		std::string done = "{\"type\":\"response.output_item.done\",\"item\":{"
+			"\"type\":\"function_call\",\"id\":\"" + prefix + suffix +
+			"\",\"call_id\":\"call_" + prefix + suffix + "\",\"name\":\"" + name +
+			"\",\"arguments\":\"{}\"}}";
+		ASSERT_EQ(codec->event("message", done.c_str(), &stream), 0);
+	}
+	ASSERT_EQ(stream.tool_call_count, 2);
+	for (int i = 0; i < 2; i++) {
+		std::string item = prefix + std::to_string(i);
+		EXPECT_STREQ(stream.tool_calls[i].provider_item_id, item.c_str());
+		EXPECT_EQ(std::string(stream.tool_calls[i].id), "call_" + item);
+		EXPECT_STREQ(stream.tool_calls[i].name, name.c_str());
+		EXPECT_STREQ(stream.tool_calls[i].arguments, "{}");
+	}
+	EXPECT_EQ(codec->event("message", "{\"type\":\"response.function_call_arguments.delta\","
+		"\"item_id\":\"unknown\",\"delta\":\"wrong\"}", &stream), MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(codec->event("message", "{\"type\":\"response.function_call_arguments.delta\","
+		"\"delta\":\"ambiguous\"}", &stream), MORPH_ERR_PROTOCOL);
 }
 
 TEST(TestModelOwnership, InvalidMessageCloneLeavesDestinationEmpty)
@@ -103,7 +171,7 @@ TEST(TestModelOwnership, StreamTransfersCallsWithoutRetainingAnOwner)
 		llm_stream_init(&stream, nullptr, nullptr);
 		struct tool_call *call = llm_stream_tool_call_ensure_borrow(&stream, 0);
 		ASSERT_NE(call, nullptr);
-		std::strcpy(call->id, "call_1");
+		call->id = strdup("call_1");
 		call->arguments = strdup("{\"ok\":true}");
 		ASSERT_NE(call->arguments, nullptr);
 		transferred = stream.tool_calls;
@@ -220,4 +288,40 @@ TEST(TestModelOwnership, ChatBodyCreationRejectsAnOccupiedOwner)
 	EXPECT_EQ(body, original);
 	EXPECT_EQ(length, 37U);
 	EXPECT_STREQ(body, "\"original\"");
+}
+
+
+TEST(TestModelOwnership, ResponsesCompletedInputsReplaceIncompleteDeltaPrefixes)
+{
+	for (bool custom : {false, true}) {
+		SCOPED_TRACE(custom);
+		struct model model{};
+		strcpy(model.adapter, "openai-responses");
+		const struct llm_codec *codec = llm_codec_borrow(&model);
+		struct llm_stream_ctx stream MORPH_CLEANUP(llm_stream_cleanup) = {};
+		llm_stream_init(&stream, nullptr, nullptr);
+		std::string kind = custom ? "custom_tool_call" : "function_call";
+		std::string field = custom ? "input" : "arguments";
+		std::string delta_type = custom ? "response.custom_tool_call_input.delta" :
+			"response.function_call_arguments.delta";
+		std::string done_type = custom ? "response.custom_tool_call_input.done" :
+			"response.function_call_arguments.done";
+		std::string added = "{\"type\":\"response.output_item.added\","
+			"\"item\":{\"id\":\"item\","
+			"\"call_id\":\"call\",\"name\":\"probe\",\"type\":\"" + kind + "\"}}";
+		ASSERT_EQ(codec->event("message", added.c_str(), &stream), 0);
+		std::string delta = "{\"type\":\"" + delta_type +
+			"\",\"item_id\":\"item\",\"delta\":\"prefix\"}";
+		ASSERT_EQ(codec->event("message", delta.c_str(), &stream), 0);
+		std::string done = "{\"type\":\"" + done_type +
+			"\",\"item_id\":\"item\",\"" + field + "\":\"complete input\"}";
+		ASSERT_EQ(codec->event("message", done.c_str(), &stream), 0);
+		ASSERT_EQ(stream.tool_call_count, 1);
+		EXPECT_STREQ(stream.tool_calls[0].arguments, "complete input");
+		done = "{\"type\":\"response.output_item.done\",\"item\":{\"id\":\"item\","
+			"\"call_id\":\"call\",\"name\":\"probe\",\"type\":\"" + kind +
+			"\",\"" + field + "\":\"authoritative item input\"}}";
+		ASSERT_EQ(codec->event("message", done.c_str(), &stream), 0);
+		EXPECT_STREQ(stream.tool_calls[0].arguments, "authoritative item input");
+	}
 }

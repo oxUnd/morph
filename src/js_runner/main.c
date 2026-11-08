@@ -8,10 +8,38 @@
 #include "util/file.h"
 #include "util/buf.h"
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+size_t runner_capture_limit(JSContext *ctx)
+{
+	const struct runner_state *state = JS_GetRuntimeOpaque(JS_GetRuntime(ctx));
+
+	return state && state->max_capture_bytes ? state->max_capture_bytes
+						: RUNNER_DEFAULT_MAX_CAPTURE;
+}
+
+static int runner_capture_configure(struct runner_state *state)
+{
+	const char *configured = getenv("MORPH_RUNNER_MAX_CAPTURE_BYTES");
+	char *end;
+	unsigned long long parsed;
+
+	state->max_capture_bytes = RUNNER_DEFAULT_MAX_CAPTURE;
+	if (!configured)
+		return 0;
+	if (!*configured || *configured < '0' || *configured > '9')
+		return -EINVAL;
+	errno = 0;
+	parsed = strtoull(configured, &end, 10);
+	if (errno || *end || !parsed || parsed > INT_MAX)
+		return -EINVAL;
+	state->max_capture_bytes = (size_t)parsed;
+	return 0;
+}
 
 int runner_has_cap(const char *cap)
 {
@@ -336,6 +364,7 @@ struct runner_script_values {
 	JSValue args;
 	JSValue fn;
 	JSValue global;
+	JSValue request;
 };
 
 static void runner_script_values_cleanup(struct runner_script_values *values)
@@ -345,24 +374,24 @@ static void runner_script_values_cleanup(struct runner_script_values *values)
 	JS_FreeValue(values->ctx, values->args);
 	JS_FreeValue(values->ctx, values->fn);
 	JS_FreeValue(values->ctx, values->global);
+	JS_FreeValue(values->ctx, values->request);
 	values->json = JS_UNDEFINED;
 	values->ret = JS_UNDEFINED;
 	values->args = JS_UNDEFINED;
 	values->fn = JS_UNDEFINED;
 	values->global = JS_UNDEFINED;
+	values->request = JS_UNDEFINED;
 }
 
 static int run_script(JSContext *ctx, const char *path)
 {
 	char *source = NULL;
 	char *line MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	char *params_json MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
 	size_t source_len;
 	size_t line_cap = 0;
 	int id = 1;
 	int rc = 0;
 	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	cJSON *params;
 	JSValue val = JS_UNDEFINED;
 	const char *json_str;
 	struct runner_script_values values MORPH_CLEANUP(runner_script_values_cleanup) = {
@@ -372,6 +401,7 @@ static int run_script(JSContext *ctx, const char *path)
 		.args = JS_UNDEFINED,
 		.fn = JS_UNDEFINED,
 		.global = JS_UNDEFINED,
+		.request = JS_UNDEFINED,
 	};
 
 	source = file_read_all_copy(path, &source_len);
@@ -403,14 +433,15 @@ static int run_script(JSContext *ctx, const char *path)
 		if (cJSON_IsNumber(id_item))
 			id = id_item->valueint;
 	}
-	params = cJSON_GetObjectItem(root, "params");
-	params_json = params ? cJSON_PrintUnformatted(params) : NULL;
-	if (params && !params_json) {
-		rc = -ENOMEM;
-		return rc;
+	/* Preserve JSON strings verbatim, including embedded NUL characters. */
+	values.request = JS_ParseJSON(ctx, line, strlen(line), "<request>");
+	if (JS_IsException(values.request)) {
+		print_exception(ctx, id);
+		return -EINVAL;
 	}
-	const char *params_text = params_json ? params_json : "{}";
-	values.args = JS_ParseJSON(ctx, params_text, strlen(params_text), "<params>");
+	values.args = JS_GetPropertyStr(ctx, values.request, "params");
+	if (JS_IsUndefined(values.args))
+		values.args = JS_NewObject(ctx);
 	if (JS_IsException(values.args)) {
 		print_exception(ctx, id);
 		rc = -EINVAL;
@@ -484,11 +515,16 @@ int main(int argc, char **argv)
 	timeout = 30;
 	if (getenv("MORPH_DYNAMIC_TIMEOUT"))
 		timeout = atoi(getenv("MORPH_DYNAMIC_TIMEOUT"));
+	memset(&state, 0, sizeof(state));
+	if (runner_capture_configure(&state) != 0) {
+		print_error_response(1, "MORPH_RUNNER_MAX_CAPTURE_BYTES must be an integer "
+					"between 1 and INT_MAX.");
+		return 1;
+	}
 	if (js_media_init() < 0) {
 		fprintf(stderr, "failed to initialize media bindings\n");
 		return 1;
 	}
-	memset(&state, 0, sizeof(state));
 	if (timeout > 0)
 		state.deadline = time(NULL) + timeout;
 	rt = JS_NewRuntime();

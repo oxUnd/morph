@@ -328,6 +328,18 @@ def test_skills(work):
     unmanaged = install_root / "unmanaged"
     make_skill(unmanaged, "unmanaged")
     work.morph("skills", "remove", "unmanaged", ok=False)
+
+    many = work.root / "many-skills"
+    names = [f"bulk-{index:03}" for index in range(70)]
+    for name in names:
+        make_skill(many / name, name)
+    work.morph("skills", "add", many, "--all", "-y")
+    listing = work.morph("skills", "list").stdout
+    require(all(name + "\t" in listing for name in names),
+            "More than 64 installed skills were not discoverable")
+    work.morph("skills", "remove", *names)
+    require(all(not (install_root / name).exists() for name in names),
+            "More than 64 selected skill names were not removed")
     work.morph("skills", "update")  # No-argument update skips unmanaged skills.
     work.morph("skills", "remove", "../escape", ok=False)
 

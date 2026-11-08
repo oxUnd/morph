@@ -264,6 +264,7 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 	if (!models->tokenizer)
 		return -ENOMEM;
 	memset(&compress_cfg, 0, sizeof(compress_cfg));
+	compress_cfg.project_doc_max_bytes = config->context.project_doc_max_bytes;
 	compress_cfg.max_context_tokens = config->models.text.context_limit;
 	compress_cfg.max_history_rounds = config->context.keep_recent_rounds;
 	compress_cfg.in_turn_compaction = config->context.in_turn_compaction;

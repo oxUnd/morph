@@ -12,6 +12,7 @@
 #include <morph/tui/widgets/select.h>
 #include <morph/tui/terminal.h>
 #include "util/child_io.h"
+#include "util/cleanup.h"
 
 static int cli_question_set_ask_user_answers(char ***answers, int *answers_count,
 					     const char *const *values, int values_count)
@@ -242,7 +243,12 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 	else
 		snprintf(hint, sizeof(hint), "  Waiting for your answer · Esc cancel");
 
-	if ((choices_count > 0 || timeout) && isatty(STDOUT_FILENO)) {
+	int use_selector = choices_count > 0 || timeout;
+#ifndef HAVE_READLINE
+	/* Canonical terminal input can discard long lines before fgets sees them. */
+	use_selector = 1;
+#endif
+	if (use_selector && isatty(STDOUT_FILENO)) {
 		FILE *tty = NULL;
 		FILE *input = stdin;
 
@@ -281,6 +287,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 				.interrupted = &ctx->interrupted,
 				.color = cli_output_color_enabled(ctx),
 				.allow_custom = 1,
+				.custom_max_bytes = ASK_USER_ANSWER_MAX_BYTES,
 				.timeout_seconds = timeout,
 				.hint = hint,
 				.cancel_token = options ? options->cancel_token : NULL,
@@ -438,22 +445,45 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 	}
 #else
 	fflush(stdout);
-	char buf[1024] = {0};
+	morph_buf_t line MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	char chunk[BUFSIZ];
+	int line_rc = morph_buf_init(&line, BUFSIZ);
+	if (line_rc != 0)
+		return line_rc;
 	FILE *tty = fopen("/dev/tty", "r");
 	if (!tty) {
 		printf(ctx, "\n");
 		return -ENOTTY;
 	}
 	int64_t deadline = timeout ? morph_io_now_ms() + (int64_t)timeout * 1000 : 0;
-	if (!cli_input_fgets_until(ctx, buf, sizeof(buf), tty, &deadline)) {
-		int read_error = errno;
-		fclose(tty);
-		printf(ctx, "\n");
-		return read_error ? morph_error_from_errno(read_error) : -EIO;
+	for (;;) {
+		if (!cli_input_fgets_until(ctx, chunk, sizeof(chunk), tty, &deadline)) {
+			int read_error = errno;
+			fclose(tty);
+			printf(ctx, "\n");
+			return read_error ? morph_error_from_errno(read_error) : -EIO;
+		}
+		size_t length = strlen(chunk);
+		int complete = length && chunk[length - 1] == '\n';
+		if (complete)
+			chunk[--length] = '\0';
+		if (length > ASK_USER_ANSWER_MAX_BYTES - line.len) {
+			fclose(tty);
+			return -E2BIG;
+		}
+		line_rc = morph_buf_append(&line, chunk, length);
+		if (line_rc != 0) {
+			fclose(tty);
+			return line_rc;
+		}
+		if (complete)
+			break;
 	}
 	fclose(tty);
+	char *buf = line.data;
 
-	buf[strcspn(buf, "\n")] = '\0';
+	if (line.len && buf[line.len - 1] == '\r')
+		buf[--line.len] = '\0';
 	if (!buf[0] && options && options->recommended_count)
 		return cli_question_recommended_answers(choices, options, answers, answers_count);
 

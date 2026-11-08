@@ -398,6 +398,78 @@ TEST_F(CheckpointStoreTest, FailedSealDoesNotAdoptManualChangesDuringALaterAttem
 	EXPECT_EQ(Read("file"), "manual after failed seal");
 }
 
+TEST_F(CheckpointStoreTest, LargeCapturedDataRestoresWithBoundedCompensationCopies)
+{
+	const size_t file_bytes = 15u * 1024u * 1024u;
+	std::string contents(file_bytes, 'a');
+	for (int i = 0; i < 3; i++)
+		Write("large-" + std::to_string(i), contents);
+	int64_t id = Create("restore ninety MiB of captured before and after data");
+	for (int i = 0; i < 3; i++)
+		ASSERT_EQ(checkpoint_store_capture(&database, id,
+			("large-" + std::to_string(i)).c_str()), 0);
+	contents[0] = 'b';
+	for (int i = 0; i < 3; i++)
+		Write("large-" + std::to_string(i), contents);
+	ASSERT_EQ(checkpoint_store_seal(&database, id), 0);
+	EXPECT_EQ(Scalar("SELECT sum(length(before_data)+length(after_data)) FROM "
+		"code_checkpoint_files WHERE checkpoint_id=" + std::to_string(id)),
+		static_cast<int64_t>(file_bytes * 6));
+	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(checkpoint_store_restore(&database, session.id, id, CHECKPOINT_RESTORE_CODE,
+		&report), 0);
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(report, "code_restored")));
+	for (int i = 0; i < 3; i++) {
+		std::string path = workspace + "/large-" + std::to_string(i);
+		std::ifstream file(path, std::ios::binary);
+		char first = 0;
+
+		file.get(first);
+		EXPECT_EQ(first, 'a');
+		EXPECT_EQ(std::filesystem::file_size(path), file_bytes);
+	}
+}
+
+TEST_F(CheckpointStoreTest, ValidatesProspectiveAggregateAndRejectsAnOversizedSeal)
+{
+	const size_t file_bytes = 10u * 1024u * 1024u;
+	std::string contents(file_bytes, 'a');
+	for (int i = 0; i < 6; i++)
+		Write("large-" + std::to_string(i), contents);
+	int64_t id = Create("validate aggregate growth before writing");
+	for (int i = 0; i < 6; i++)
+		ASSERT_EQ(checkpoint_store_capture(&database, id,
+			("large-" + std::to_string(i)).c_str()), 0);
+	ASSERT_EQ(checkpoint_store_capture(&database, id, "moved"), 0);
+	ASSERT_EQ(checkpoint_store_validate_write(&database, id, "large-0",
+		CHECKPOINT_FILE_MAX_BYTES, nullptr), 0);
+	contents.resize(CHECKPOINT_FILE_MAX_BYTES, 'a');
+	Write("large-0", contents);
+	EXPECT_EQ(checkpoint_store_validate_write(&database, id, "large-1",
+		13u * 1024u * 1024u, nullptr), -EFBIG);
+	EXPECT_EQ(std::filesystem::file_size(workspace + "/large-1"), file_bytes);
+	EXPECT_EQ(checkpoint_store_validate_write(&database, id, "moved", file_bytes,
+		"large-1"), 0);
+	EXPECT_EQ(checkpoint_store_validate_write(&database, id, "uncaptured", 1, nullptr),
+		-ESTALE);
+	contents.resize(13u * 1024u * 1024u);
+	Write("large-1", contents);
+	contents.resize(file_bytes);
+	contents[0] = 'b';
+	for (int i = 2; i < 6; i++)
+		Write("large-" + std::to_string(i), contents);
+	EXPECT_GT(60u * 1024u * 1024u +
+		std::filesystem::file_size(workspace + "/large-0") +
+		std::filesystem::file_size(workspace + "/large-1") + file_bytes * 4,
+		CHECKPOINT_DATA_MAX_BYTES);
+	EXPECT_EQ(checkpoint_store_seal(&database, id), -EFBIG);
+	EXPECT_EQ(Scalar("SELECT code_active FROM code_checkpoints WHERE id=" +
+		std::to_string(id)), 0);
+	EXPECT_EQ(Scalar("SELECT count(*) FROM code_checkpoint_files WHERE checkpoint_id=" +
+		std::to_string(id) + " AND sealed=1"), 0);
+	EXPECT_EQ(checkpoint_store_validate_write(&database, id, "large-0", 1, nullptr), -ESTALE);
+}
+
 TEST_F(CheckpointStoreTest, RetentionExpirySessionIsolationAndDeletionCleanSnapshotRows)
 {
 	ASSERT_EQ(message_add(&database, session.id, "user", "kept message", 1), 0);

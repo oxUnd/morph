@@ -5,6 +5,7 @@
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/id.h"
+#include "util/utf8.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -36,21 +37,24 @@ extern char **environ;
 
 struct process_secret {
 	const char *name;
-	const char *value;
+	char *value;
 };
 
 struct process_stream {
 	morph_buf_t data;
+	morph_buf_t pending;
 	char path[PATH_MAX];
+	int spool_fd;
+	int spool_stopped;
+	int capture_error;
 	size_t file_size;
+	size_t total;
 	size_t base;
 	size_t cursor;
-	size_t omitted;
 };
 
 struct process_session {
 	char id[PROCESS_SESSION_ID_MAX];
-	char command[PROCESS_COMMAND_MAX];
 	pid_t pid;
 	pid_t pgid;
 	int stdout_fd;
@@ -94,6 +98,15 @@ struct process_manager {
 	size_t session_count;
 	size_t session_capacity;
 };
+
+static void process_secrets_cleanup(struct process_manager *manager)
+{
+	for (size_t i = 0; i < manager->secret_count; i++) {
+		free(manager->secrets[i].value);
+		manager->secrets[i].value = NULL;
+	}
+	manager->secret_count = 0;
+}
 
 static uint64_t process_now_ms(void)
 {
@@ -141,49 +154,191 @@ static void stream_cleanup(struct process_stream *stream)
 {
 	if (!stream)
 		return;
-	if (stream->path[0])
+	if (stream->path[0]) {
 		(void)unlink(stream->path);
+		close_fd(&stream->spool_fd);
+	}
 	morph_buf_cleanup(&stream->data);
+	morph_buf_cleanup(&stream->pending);
 	memset(stream, 0, sizeof(*stream));
+	stream->spool_fd = -1;
 }
 
 static int stream_init(struct process_stream *stream)
 {
 	memset(stream, 0, sizeof(*stream));
+	stream->spool_fd = -1;
 	return morph_buf_init(&stream->data, 4096);
 }
 
-static int stream_append(struct process_manager *manager,
-			 struct process_stream *stream,
-			 const char *data, size_t length)
+static size_t stream_prefix_boundary(const char *data, size_t length, size_t limit)
 {
-	size_t drop;
+	size_t keep = length < limit ? length : limit;
 
-	if (!data || length == 0)
-		return 0;
-	if (length >= manager->max_session_output) {
-		drop = length - manager->max_session_output;
-		data += drop;
-		length -= drop;
-		stream->omitted += drop;
-		stream->base += drop;
-	}
-	if (stream->data.len + length > manager->max_session_output) {
-		drop = stream->data.len + length - manager->max_session_output;
-		if (drop > stream->data.len)
-			drop = stream->data.len;
-		if (drop > 0) {
-			memmove(stream->data.data, stream->data.data + drop,
-				stream->data.len - drop);
-			stream->data.len -= drop;
-			stream->data.data[stream->data.len] = '\0';
-			stream->base += drop;
-			stream->omitted += drop;
-			if (stream->cursor < stream->base)
-				stream->cursor = stream->base;
+	while (keep > 0 && keep < length &&
+	       utf8_is_continuation_byte((unsigned char)data[keep]))
+		keep--;
+	return keep;
+}
+
+static size_t stream_suffix_boundary(const char *data, size_t length, size_t start)
+{
+	while (start < length && utf8_is_continuation_byte((unsigned char)data[start]))
+		start++;
+	return start;
+}
+
+/* Spools keep a stable prefix from offset zero, independent of the memory window. */
+static void stream_spool_append(struct process_manager *manager, struct process_stream *stream,
+				const char *data, size_t length)
+{
+	if (!length || stream->spool_stopped)
+		return;
+	if (stream->spool_fd < 0) {
+		snprintf(stream->path, sizeof(stream->path), "/tmp/morph-process-XXXXXX");
+		stream->spool_fd = mkstemp(stream->path);
+		if (stream->spool_fd < 0) {
+			stream->capture_error = morph_error_from_errno(errno);
+			stream->path[0] = '\0';
+			stream->spool_stopped = 1;
+			return;
+		}
+		if (fcntl(stream->spool_fd, F_SETFD, FD_CLOEXEC) < 0) {
+			stream->capture_error = morph_error_from_errno(errno);
+			stream->spool_stopped = 1;
+			close_fd(&stream->spool_fd);
+			return;
 		}
 	}
-	return morph_buf_append(&stream->data, data, length);
+	size_t remaining = PROCESS_SPOOL_MAX_BYTES - manager->spool_bytes;
+	size_t keep = stream_prefix_boundary(data, length, remaining);
+	size_t offset = 0;
+	while (offset < keep) {
+		ssize_t written = write(stream->spool_fd, data + offset, keep - offset);
+
+		if (written < 0 && errno == EINTR)
+			continue;
+		if (written <= 0) {
+			stream->capture_error = written < 0 ? morph_error_from_errno(errno) : -EIO;
+			stream->spool_stopped = 1;
+			break;
+		}
+		offset += (size_t)written;
+	}
+	manager->spool_bytes += offset;
+	stream->file_size += offset;
+	if (offset < length)
+		stream->spool_stopped = 1;
+	if (stream->spool_stopped)
+		close_fd(&stream->spool_fd);
+}
+
+static int stream_store(struct process_manager *manager, struct process_stream *stream,
+			const char *data, size_t length)
+{
+	size_t drop = 0;
+	int rc;
+
+	if (!length)
+		return 0;
+	if (length > SIZE_MAX - stream->total)
+		return -EOVERFLOW;
+	stream_spool_append(manager, stream, data, length);
+	stream->total += length;
+	if (length >= manager->max_session_output) {
+		drop = stream_suffix_boundary(data, length, length - manager->max_session_output);
+		data += drop;
+		length -= drop;
+		morph_buf_reset(&stream->data);
+	} else if (stream->data.len > manager->max_session_output - length) {
+		drop = stream_suffix_boundary(stream->data.data, stream->data.len,
+			stream->data.len - (manager->max_session_output - length));
+		memmove(stream->data.data, stream->data.data + drop, stream->data.len - drop);
+		stream->data.len -= drop;
+		stream->data.data[stream->data.len] = '\0';
+	}
+	rc = morph_buf_append(&stream->data, data, length);
+	if (rc != 0)
+		morph_buf_reset(&stream->data);
+	stream->base = stream->total - stream->data.len;
+	return rc;
+}
+
+/* Keep a possible secret prefix private until a later read resolves it. */
+static int stream_append(struct process_manager *manager, struct process_stream *stream,
+			 const char *data, size_t length, int finish)
+{
+	morph_buf_t redacted MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	size_t position = 0;
+	size_t literal = 0;
+	int rc;
+
+	if (!length && !stream->pending.len) {
+		if (finish)
+			close_fd(&stream->spool_fd);
+		return 0;
+	}
+	if (stream->capture_error == -ENOMEM)
+		return -ENOMEM;
+	if (!stream->pending.data) {
+		rc = morph_buf_init(&stream->pending, BUFSIZ);
+		if (rc != 0)
+			return rc;
+	}
+	rc = morph_buf_append(&stream->pending, data, length);
+	if (rc != 0)
+		return rc;
+	rc = morph_buf_init(&redacted, stream->pending.len + 1);
+	if (rc != 0)
+		return rc;
+	while (position < stream->pending.len) {
+		const struct process_secret *match = NULL;
+		size_t matched = 0;
+		size_t available = stream->pending.len - position;
+		int partial = 0;
+
+		for (size_t i = 0; i < manager->secret_count; i++) {
+			const struct process_secret *secret = &manager->secrets[i];
+			size_t secret_len = strlen(secret->value);
+			size_t compare = available < secret_len ? available : secret_len;
+
+			if (memcmp(stream->pending.data + position, secret->value, compare) != 0)
+				continue;
+			if (available < secret_len)
+				partial = !finish;
+			else if (secret_len > matched) {
+				match = secret;
+				matched = secret_len;
+			}
+		}
+		if (partial)
+			break;
+		if (!match) {
+			position++;
+			continue;
+		}
+		rc = morph_buf_append(&redacted, stream->pending.data + literal,
+			position - literal);
+		if (rc == 0)
+			rc = morph_buf_printf(&redacted, "[REDACTED:%s]", match->name);
+		if (rc != 0)
+			return rc;
+		position += matched;
+		literal = position;
+	}
+	rc = morph_buf_append(&redacted, stream->pending.data + literal, position - literal);
+	if (rc != 0)
+		return rc;
+	rc = stream_store(manager, stream, morph_buf_cstr_borrow(&redacted), redacted.len);
+	if (rc != 0)
+		return rc;
+	memmove(stream->pending.data, stream->pending.data + position,
+		stream->pending.len - position);
+	stream->pending.len -= position;
+	stream->pending.data[stream->pending.len] = '\0';
+	if (finish)
+		close_fd(&stream->spool_fd);
+	return 0;
 }
 
 static char *redact_text(const struct process_manager *manager,
@@ -240,8 +395,7 @@ static struct process_session *find_session(struct process_manager *manager,
 	return NULL;
 }
 
-static int append_snapshot_stream(const struct process_manager *manager,
-				  struct process_stream *stream, char **out,
+static int append_snapshot_stream(struct process_stream *stream, char **out,
 				  size_t *omitted, int *truncated, size_t limit)
 {
 	size_t start;
@@ -249,8 +403,8 @@ static int append_snapshot_stream(const struct process_manager *manager,
 	morph_buf_t value MORPH_CLEANUP(morph_buf_cleanup) = {0};
 
 	*out = NULL;
-	*omitted = stream->omitted;
-	*truncated = stream->omitted > 0;
+	*omitted = stream->cursor < stream->base ? stream->base - stream->cursor : 0;
+	*truncated = *omitted > 0;
 	if (stream->cursor < stream->base)
 		start = 0;
 	else
@@ -259,7 +413,7 @@ static int append_snapshot_stream(const struct process_manager *manager,
 		start = stream->data.len;
 	length = stream->data.len - start;
 	if (length <= limit) {
-		*out = redact_text(manager, stream->data.data + start, length);
+		*out = strndup(stream->data.data + start, length);
 		return *out ? 0 : -ENOMEM;
 	}
 	*truncated = 1;
@@ -267,71 +421,27 @@ static int append_snapshot_stream(const struct process_manager *manager,
 	if (morph_buf_init(&value, limit + 64) != 0)
 		return -ENOMEM;
 	{
-		size_t head = limit / 4;
-		size_t tail = limit - head;
+		size_t head = stream_prefix_boundary(stream->data.data + start,
+			length, limit / 4);
+		size_t tail_start = stream_suffix_boundary(stream->data.data,
+			stream->data.len, stream->data.len - (limit - limit / 4));
+			size_t tail = stream->data.len - tail_start;
 
 		(void)morph_buf_append(&value, stream->data.data + start, head);
 		(void)morph_buf_puts(&value,
 			"\n...[output truncated]...\n");
 		(void)morph_buf_append(&value,
-			stream->data.data + stream->data.len - tail, tail);
+				stream->data.data + tail_start, tail);
+		*omitted += limit - head - tail;
 	}
 	{
-		char *raw = morph_buf_detach(&value);
-
-		*out = raw ? redact_text(manager, raw, strlen(raw)) : NULL;
-		free(raw);
+		*out = morph_buf_detach(&value);
 	}
 	morph_buf_cleanup(&value);
 	return *out ? 0 : -ENOMEM;
 }
 
-/* Materialize the redacted retained window, bounded by memory and disk quotas. */
-static void stream_spool(struct process_manager *manager, struct process_stream *stream,
-			 char path[PATH_MAX])
-{
-	char *text;
-	int fd;
-	size_t length;
-	if (!stream->data.len)
-		return;
-	text = redact_text(manager, stream->data.data, stream->data.len);
-	if (!text)
-		return;
-	length = strlen(text);
-	if (length > manager->max_session_output ||
-	    manager->spool_bytes - stream->file_size + length > 64u * 1024u * 1024u) {
-		free(text);
-		return;
-	}
-	if (!stream->path[0]) {
-		snprintf(stream->path, sizeof(stream->path), "/tmp/morph-process-XXXXXX");
-		fd = mkstemp(stream->path);
-		if (fd < 0)
-			stream->path[0] = '\0';
-	} else
-		fd = open(stream->path, O_WRONLY | O_TRUNC | O_NOFOLLOW);
-	if (fd >= 0) {
-		size_t offset = 0;
-		while (offset < length) {
-			ssize_t n = write(fd, text + offset, length - offset);
-			if (n < 0 && errno == EINTR)
-				continue;
-			if (n <= 0)
-				break;
-			offset += (size_t)n;
-		}
-		close(fd);
-		manager->spool_bytes = manager->spool_bytes - stream->file_size + offset;
-		stream->file_size = offset;
-		if (offset == length)
-			snprintf(path, PATH_MAX, "%s", stream->path);
-	}
-	free(text);
-}
-
-static int snapshot_budget_locked(struct process_manager *manager,
-				   struct process_session *session,
+static int snapshot_budget_locked(struct process_session *session,
 				   struct process_snapshot *snapshot, size_t limit)
 {
 	struct process_snapshot candidate MORPH_CLEANUP(process_snapshot_cleanup) = {0};
@@ -343,11 +453,11 @@ static int snapshot_budget_locked(struct process_manager *manager,
 	candidate.signal_number = session->signal_number;
 	candidate.duration_ms =
 		(session->ended_ms ? session->ended_ms : process_now_ms()) - session->started_ms;
-	if (append_snapshot_stream(manager, &session->stdout_stream, &candidate.stdout_text,
+	if (append_snapshot_stream(&session->stdout_stream, &candidate.stdout_text,
 				   &candidate.stdout_omitted_bytes, &candidate.stdout_truncated,
 				   limit) != 0)
 		return -ENOMEM;
-	if (append_snapshot_stream(manager, &session->stderr_stream, &candidate.stderr_text,
+	if (append_snapshot_stream(&session->stderr_stream, &candidate.stderr_text,
 				   &candidate.stderr_omitted_bytes, &candidate.stderr_truncated,
 				   limit) != 0) {
 		return -ENOMEM;
@@ -358,8 +468,26 @@ static int snapshot_budget_locked(struct process_manager *manager,
 		session->stderr_stream.data.len;
 	candidate.next_cursor.stdout_offset = session->stdout_stream.cursor;
 	candidate.next_cursor.stderr_offset = session->stderr_stream.cursor;
-	stream_spool(manager, &session->stdout_stream, candidate.stdout_path);
-	stream_spool(manager, &session->stderr_stream, candidate.stderr_path);
+	const struct process_stream *output = &session->stdout_stream;
+	const struct process_stream *error = &session->stderr_stream;
+	snprintf(candidate.stdout_path, sizeof(candidate.stdout_path), "%s", output->path);
+	snprintf(candidate.stderr_path, sizeof(candidate.stderr_path), "%s", error->path);
+	candidate.stdout_total_bytes = output->total;
+	candidate.stderr_total_bytes = error->total;
+	candidate.stdout_path_bytes = output->file_size;
+	candidate.stderr_path_bytes = error->file_size;
+	candidate.stdout_retained_from = output->base;
+	candidate.stderr_retained_from = error->base;
+	candidate.stdout_unrecoverable_bytes = output->base > output->file_size ?
+		output->base - output->file_size : 0;
+	candidate.stderr_unrecoverable_bytes = error->base > error->file_size ?
+		error->base - error->file_size : 0;
+	candidate.stdout_path_truncated = output->spool_stopped || output->capture_error ||
+		output->file_size < output->total;
+	candidate.stderr_path_truncated = error->spool_stopped || error->capture_error ||
+		error->file_size < error->total;
+	candidate.stdout_capture_error = output->capture_error;
+	candidate.stderr_capture_error = error->capture_error;
 	*snapshot = candidate;
 	memset(&candidate, 0, sizeof(candidate));
 	return 0;
@@ -368,7 +496,15 @@ static int snapshot_budget_locked(struct process_manager *manager,
 static int snapshot_locked(struct process_manager *manager,
 	struct process_session *session, struct process_snapshot *snapshot)
 {
-	return snapshot_budget_locked(manager, session, snapshot, manager->max_inline_output);
+	return snapshot_budget_locked(session, snapshot, manager->max_inline_output);
+}
+
+static void stream_finish(struct process_manager *manager, struct process_stream *stream)
+{
+	int rc = stream_append(manager, stream, NULL, 0, 1);
+
+	if (rc != 0)
+		stream->capture_error = rc;
 }
 
 static void drain_fd(struct process_manager *manager, int *fd,
@@ -383,10 +519,14 @@ static void drain_fd(struct process_manager *manager, int *fd,
 		ssize_t count = read(*fd, buffer, sizeof(buffer));
 
 		if (count > 0) {
-			(void)stream_append(manager, stream, buffer, (size_t)count);
+			int rc = stream_append(manager, stream, buffer, (size_t)count, 0);
+
+			if (rc != 0)
+				stream->capture_error = rc;
 			continue;
 		}
 		if (count == 0) {
+			stream_finish(manager, stream);
 			close_fd(fd);
 			*open = 0;
 			return;
@@ -396,10 +536,13 @@ static void drain_fd(struct process_manager *manager, int *fd,
 		if (errno == EAGAIN || errno == EWOULDBLOCK)
 			return;
 		if (errno == EIO && pty) {
+			stream_finish(manager, stream);
 			close_fd(fd);
 			*open = 0;
 			return;
 		}
+		stream->capture_error = morph_error_from_errno(errno);
+		stream_finish(manager, stream);
 		close_fd(fd);
 		*open = 0;
 		return;
@@ -463,6 +606,8 @@ static void monitor_session(struct process_manager *manager,
 				 &session->stderr_open, 0);
 		if (session->hook_mode)
 			(void)kill(-session->pgid, SIGKILL);
+		stream_finish(manager, &session->stdout_stream);
+		stream_finish(manager, &session->stderr_stream);
 		finish_session(session, status);
 		close_session_fds(session);
 		pthread_cond_broadcast(&manager->condition);
@@ -716,19 +861,29 @@ int process_manager_create(const struct process_manager_config *config,
 
 			if (value && strlen(value) >= 4 &&
 				manager->secret_count < PROCESS_SECRET_MAX) {
+				char *copy MORPH_CLEANUP(morph_charp_cleanup) = strdup(value);
+
+				if (!copy) {
+					process_secrets_cleanup(manager);
+					free(manager);
+					return -ENOMEM;
+				}
 				manager->secrets[manager->secret_count++] =
-					(struct process_secret){secret_names[i], value};
+					(struct process_secret){secret_names[i],
+						morph_charp_steal(&copy)};
 			}
 		}
 	}
 	rc = pthread_mutex_init(&manager->mutex, NULL);
 	if (rc != 0) {
+		process_secrets_cleanup(manager);
 		free(manager);
 		return -rc;
 	}
 	rc = pthread_cond_init(&manager->condition, NULL);
 	if (rc != 0) {
 		pthread_mutex_destroy(&manager->mutex);
+		process_secrets_cleanup(manager);
 		free(manager);
 		return -rc;
 	}
@@ -739,6 +894,7 @@ int process_manager_create(const struct process_manager_config *config,
 	if (rc != 0) {
 		pthread_cond_destroy(&manager->condition);
 		pthread_mutex_destroy(&manager->mutex);
+		process_secrets_cleanup(manager);
 		free(manager);
 		return -rc;
 	}
@@ -778,6 +934,7 @@ void process_manager_destroy(struct process_manager *manager)
 		stream_cleanup(&session->stderr_stream);
 	}
 	free(manager->sessions);
+	process_secrets_cleanup(manager);
 	pthread_cond_destroy(&manager->condition);
 	pthread_mutex_destroy(&manager->mutex);
 	free(manager);
@@ -823,8 +980,6 @@ int process_spawn(struct process_manager *manager,
 	session->state = PROCESS_STARTING;
 	session->timeout_ms = options->timeout_ms;
 	session->started_ms = process_now_ms();
-	snprintf(session->command, sizeof(session->command), "%s",
-		 options->command);
 	rc = morph_random_id("proc_", session->id, sizeof(session->id));
 	if (rc == 0)
 		rc = stream_init(&session->stdout_stream);
@@ -999,9 +1154,9 @@ int process_session_inspect(struct process_manager *manager, const char *session
 	if (session) {
 		size_t saved_out = session->stdout_stream.cursor;
 		size_t saved_err = session->stderr_stream.cursor;
-		session->stdout_stream.cursor = session->stdout_stream.base;
-		session->stderr_stream.cursor = session->stderr_stream.base;
-		rc = snapshot_budget_locked(manager, session, snapshot,
+			session->stdout_stream.cursor = 0;
+			session->stderr_stream.cursor = 0;
+		rc = snapshot_budget_locked(session, snapshot,
 			full_output ? manager->max_session_output : manager->max_inline_output);
 		session->stdout_stream.cursor = saved_out;
 		session->stderr_stream.cursor = saved_err;

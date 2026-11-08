@@ -440,11 +440,16 @@ static void cli_application_run_structured(struct cli_application *ctx)
 static void cli_application_run_plain(struct cli_application *ctx)
 {
 	morph_buf_t input;
+	struct cli_command_job job;
 	char line[BUFSIZ];
 	int prompt = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
 
-	if (morph_buf_init(&input, BUFSIZ) != 0)
+	if (cli_command_job_init(&job) != 0)
 		return;
+	if (morph_buf_init(&input, BUFSIZ) != 0) {
+		cli_command_job_cleanup(&job);
+		return;
+	}
 	while (ctx->running) {
 		if (morph_signal_flag_get(&ctx->terminate_requested))
 			break;
@@ -503,13 +508,16 @@ static void cli_application_run_plain(struct cli_application *ctx)
 			int turn_rc;
 
 			cli_turn_begin(ctx);
-			turn_rc = cli_turn_execute(ctx, morph_buf_cstr_borrow(&input));
+			turn_rc = cli_command_job_start(&job, ctx, morph_buf_cstr_borrow(&input));
+			if (turn_rc == 0)
+				turn_rc = cli_command_job_wait(&job);
 			(void)cli_event_queue_drain(ctx);
 			cli_turn_finish(ctx, turn_rc);
 		}
 		(void)cli_event_queue_drain(ctx);
 	}
 	morph_buf_cleanup(&input);
+	cli_command_job_cleanup(&job);
 }
 
 void cli_application_run(struct cli_application *ctx)

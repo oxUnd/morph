@@ -7,6 +7,8 @@
 #include "sapi/cli/services/scheduler.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/widgets/list.h"
+#include "util/utf8.h"
+#include "util/json.h"
 
 static int cli_tasks_parse_task_time_arg(const char *arg, int64_t *out)
 {
@@ -50,6 +52,56 @@ static char *cli_tasks_task_join_title(int argc, char **argv, int start)
 	return morph_buf_detach(&title);
 }
 
+struct cli_tasks_prompt {
+	char *text;
+	char *title;
+	char *json;
+};
+
+static void cli_tasks_prompt_cleanup(struct cli_tasks_prompt *prompt)
+{
+	free(prompt->text);
+	free(prompt->title);
+	cJSON_free(prompt->json);
+	*prompt = (struct cli_tasks_prompt){0};
+}
+
+static int cli_tasks_prompt_create(int argc, char **argv, int start, struct cli_tasks_prompt *out)
+{
+	struct cli_tasks_prompt value MORPH_CLEANUP(cli_tasks_prompt_cleanup) = {0};
+	morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	cJSON *payload MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	int rc;
+
+	value.text = cli_tasks_task_join_title(argc, argv, start);
+	if (!value.text)
+		return -ENOMEM;
+	if (!value.text[0] || utf8valid(value.text))
+		return -EINVAL;
+	rc = morph_buf_init(&title, SCHEDULED_TASK_TEXT_MAX);
+	if (rc != 0)
+		return rc;
+	size_t bytes = strlen(value.text);
+	int shortened = bytes >= SCHEDULED_TASK_TEXT_MAX;
+	if (shortened)
+		bytes = utf8_clamp_bytes(value.text, SCHEDULED_TASK_TEXT_MAX - sizeof("…"));
+	rc = morph_buf_append(&title, value.text, bytes);
+	if (rc == 0 && shortened)
+		rc = morph_buf_puts(&title, "…");
+	if (rc != 0)
+		return rc;
+	value.title = morph_buf_detach(&title);
+	payload = cJSON_CreateObject();
+	if (!payload || !cJSON_AddStringToObject(payload, "prompt", value.text))
+		return -ENOMEM;
+	value.json = cJSON_PrintUnformatted(payload);
+	if (!value.json)
+		return -ENOMEM;
+	*out = value;
+	value = (struct cli_tasks_prompt){0};
+	return 0;
+}
+
 static int cli_tasks_print_task_list_tree(struct cli_application *ctx,
 					  const struct scheduled_task *tasks, int count);
 static int cli_tasks_append_task_show_markdown(morph_buf_t *buf, const struct scheduled_task *task);
@@ -59,9 +111,7 @@ static int cli_tasks_command_tasks_add(struct cli_application *ctx, int argc, ch
 	struct scheduled_task_input input;
 	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {0};
 	struct session current;
-	cJSON *payload = NULL;
-	char *payload_json = NULL;
-	char *title = NULL;
+	struct cli_tasks_prompt prompt MORPH_CLEANUP(cli_tasks_prompt_cleanup) = {0};
 	int64_t next_run_at;
 	int rc;
 
@@ -74,39 +124,23 @@ static int cli_tasks_command_tasks_add(struct cli_application *ctx, int argc, ch
 		CMD_ERROR(ctx, "invalid time: %s", argv[2]);
 		return rc;
 	}
-	title = cli_tasks_task_join_title(argc, argv, 3);
-	if (!title || !title[0]) {
-		free(title);
-		CMD_ERROR(ctx, "missing task title");
-		return -EINVAL;
-	}
-
-	payload = cJSON_CreateObject();
-	if (!payload) {
-		free(title);
-		return -ENOMEM;
-	}
-	cJSON_AddStringToObject(payload, "prompt", title);
-	payload_json = cJSON_PrintUnformatted(payload);
-	cJSON_Delete(payload);
-	if (!payload_json) {
-		free(title);
-		return -ENOMEM;
+	rc = cli_tasks_prompt_create(argc, argv, 3, &prompt);
+	if (rc != 0) {
+		CMD_ERROR(ctx, "Invalid task prompt: %s", morph_strerror(rc));
+		return rc;
 	}
 
 	memset(&input, 0, sizeof(input));
 	(void)runtime_session_current(ctx->runtime, &current);
 	input.source_session_id = current.id;
-	input.title = title;
+	input.title = prompt.title;
 	input.kind = "agent";
 	input.trigger_type = "once";
 	input.next_run_at = next_run_at;
 	input.action_type = "agent_run";
-	input.payload_json = payload_json;
+	input.payload_json = prompt.json;
 	input.notify_json = "{\"targets\":[\"inbox\"]}";
 	rc = runtime_task_create(ctx->runtime, &input, &task);
-	free(payload_json);
-	free(title);
 	if (rc != 0) {
 		CMD_ERROR(ctx, "failed to create task: %s", morph_strerror(rc));
 		return rc;
@@ -121,9 +155,7 @@ static int cli_tasks_command_tasks_every(struct cli_application *ctx, int argc, 
 	struct scheduled_task_input input;
 	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {0};
 	struct session current;
-	cJSON *payload = NULL;
-	char *payload_json = NULL;
-	char *title = NULL;
+	struct cli_tasks_prompt prompt MORPH_CLEANUP(cli_tasks_prompt_cleanup) = {0};
 	char *end = NULL;
 	long interval;
 	int rc;
@@ -137,39 +169,24 @@ static int cli_tasks_command_tasks_every(struct cli_application *ctx, int argc, 
 		CMD_ERROR(ctx, "invalid interval seconds: %s", argv[2]);
 		return -EINVAL;
 	}
-	title = cli_tasks_task_join_title(argc, argv, 3);
-	if (!title || !title[0]) {
-		free(title);
-		CMD_ERROR(ctx, "missing task prompt");
-		return -EINVAL;
-	}
-	payload = cJSON_CreateObject();
-	if (!payload) {
-		free(title);
-		return -ENOMEM;
-	}
-	cJSON_AddStringToObject(payload, "prompt", title);
-	payload_json = cJSON_PrintUnformatted(payload);
-	cJSON_Delete(payload);
-	if (!payload_json) {
-		free(title);
-		return -ENOMEM;
+	rc = cli_tasks_prompt_create(argc, argv, 3, &prompt);
+	if (rc != 0) {
+		CMD_ERROR(ctx, "Invalid task prompt: %s", morph_strerror(rc));
+		return rc;
 	}
 
 	memset(&input, 0, sizeof(input));
 	(void)runtime_session_current(ctx->runtime, &current);
 	input.source_session_id = current.id;
-	input.title = title;
+	input.title = prompt.title;
 	input.kind = "agent";
 	input.trigger_type = "interval";
 	input.next_run_at = (int64_t)time(NULL) + interval;
 	input.interval_seconds = (int)interval;
 	input.action_type = "agent_run";
-	input.payload_json = payload_json;
+	input.payload_json = prompt.json;
 	input.notify_json = "{\"targets\":[\"inbox\"]}";
 	rc = runtime_task_create(ctx->runtime, &input, &task);
-	free(payload_json);
-	free(title);
 	if (rc != 0) {
 		CMD_ERROR(ctx, "failed to create task: %s", morph_strerror(rc));
 		return rc;
@@ -184,9 +201,7 @@ static int cli_tasks_command_tasks_update(struct cli_application *ctx, int argc,
 	struct scheduled_task_input input;
 	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {0};
 	struct session current;
-	cJSON *payload = NULL;
-	char *payload_json = NULL;
-	char *title = NULL;
+	struct cli_tasks_prompt prompt MORPH_CLEANUP(cli_tasks_prompt_cleanup) = {0};
 	char *end = NULL;
 	long long id;
 	int64_t next_run_at;
@@ -206,37 +221,23 @@ static int cli_tasks_command_tasks_update(struct cli_application *ctx, int argc,
 		CMD_ERROR(ctx, "invalid time: %s", argv[3]);
 		return rc;
 	}
-	title = cli_tasks_task_join_title(argc, argv, 4);
-	if (!title || !title[0]) {
-		free(title);
-		CMD_ERROR(ctx, "missing task title");
-		return -EINVAL;
+	rc = cli_tasks_prompt_create(argc, argv, 4, &prompt);
+	if (rc != 0) {
+		CMD_ERROR(ctx, "Invalid task prompt: %s", morph_strerror(rc));
+		return rc;
 	}
-	payload = cJSON_CreateObject();
-	if (!payload) {
-		free(title);
-		return -ENOMEM;
-	}
-	cJSON_AddStringToObject(payload, "prompt", title);
-	payload_json = cJSON_PrintUnformatted(payload);
-	cJSON_Delete(payload);
-	if (!payload_json) {
-		free(title);
-		return -ENOMEM;
-	}
+
 	memset(&input, 0, sizeof(input));
 	(void)runtime_session_current(ctx->runtime, &current);
 	input.source_session_id = current.id;
-	input.title = title;
+	input.title = prompt.title;
 	input.kind = "agent";
 	input.trigger_type = "once";
 	input.next_run_at = next_run_at;
 	input.action_type = "agent_run";
-	input.payload_json = payload_json;
+	input.payload_json = prompt.json;
 	input.notify_json = "{\"targets\":[\"inbox\"]}";
 	rc = runtime_task_update(ctx->runtime, (int64_t)id, &input, &task);
-	free(payload_json);
-	free(title);
 	if (rc != 0) {
 		CMD_ERROR(ctx, "failed to update task: %s", morph_strerror(rc));
 		return rc;

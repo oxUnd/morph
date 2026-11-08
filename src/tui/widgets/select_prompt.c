@@ -33,6 +33,7 @@ struct widget_select_prompt_view {
 	char *answer;
 	const char *hint;
 	int timeout_paused;
+	size_t answer_limit;
 };
 
 static void widget_select_prompt_clear(struct widget_select_prompt_view *view, morph_buf_t *frame,
@@ -226,7 +227,7 @@ static int widget_select_prompt_update(struct widget_select_prompt_view *view, i
 				   (!view->answer || !state->multi)))) {
 		morph_tui_widget_editor_state_cleanup(&view->editor);
 		int rc = morph_tui_widget_editor_state_init(
-			&view->editor, view->answer ? view->answer : "", BUFSIZ, 0);
+			&view->editor, view->answer ? view->answer : "", view->answer_limit, 0);
 		if (rc)
 			return rc;
 		view->editing = 1;
@@ -255,8 +256,12 @@ int morph_tui_widget_select_run(struct morph_tui_widget_select *state,
 		.state = state,
 		.choices = options->items,
 		.hint = options->hint,
+		.answer_limit = options->custom_max_bytes ? options->custom_max_bytes + 1
+							: 1024u * 1024u + 1,
 	};
-	int rc = morph_tui_widget_editor_state_init(&view.editor, "", BUFSIZ, 0);
+	if (!view.answer_limit)
+		return -EOVERFLOW;
+	int rc = morph_tui_widget_editor_state_init(&view.editor, "", view.answer_limit, 0);
 
 	if (rc)
 		return rc;
@@ -276,7 +281,9 @@ int morph_tui_widget_select_run(struct morph_tui_widget_select *state,
 			rc = -ECANCELED;
 			break;
 		}
-		if (screen.dirty) {
+		/* Drain a bracketed paste before repainting. Repainting each byte can
+		 * fill terminal output while its sender is still writing the input. */
+		if (screen.dirty && !screen.pasting) {
 			rc = widget_select_prompt_draw(&view, &screen);
 			if (rc)
 				break;

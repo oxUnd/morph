@@ -577,8 +577,8 @@ TEST_F(ImgGenToolTest, RegisterTool) {
 	struct tool_entry *e = tool_borrow(&reg, "img_gen");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->desc.name, "img_gen");
-	EXPECT_EQ(strstr(e->desc.description, "auto"), nullptr);
-	EXPECT_EQ(strstr(e->desc.input_schema, "auto"), nullptr);
+	EXPECT_NE(strstr(e->desc.description, "auto"), nullptr);
+	EXPECT_NE(strstr(e->desc.input_schema, "auto"), nullptr);
 	EXPECT_NE(strstr(e->desc.input_schema, "\"default\":\"2k\""),
 		  nullptr);
 	EXPECT_NE(strstr(e->desc.input_schema, "\"reference_images\""),
@@ -630,7 +630,7 @@ TEST_F(ImgGenToolTest, ExecRejectsAutoSize) {
 	tool_result_cleanup(&result);
 }
 
-TEST_F(ImgGenToolTest, ExecRejectsCustomSizeBelowPublic2kRange) {
+TEST_F(ImgGenToolTest, ExecAcceptsCustomSizeFromConfiguredModelProfile) {
 	struct model image_model = {};
 	snprintf(image_model.provider, sizeof(image_model.provider), "openai");
 	snprintf(image_model.model_id, sizeof(image_model.model_id),
@@ -641,11 +641,27 @@ TEST_F(ImgGenToolTest, ExecRejectsCustomSizeBelowPublic2kRange) {
 	int rc = tool_exec(&reg, "img_gen",
 		"{\"prompt\":\"a cat\",\"size\":\"1024x1024\"}",
 		&result);
-	EXPECT_NE(rc, 0);
+	EXPECT_EQ(rc, MORPH_ERR_NOT_CONFIGURED);
 	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "2560x1440"), nullptr);
-	EXPECT_NE(strstr(result.text.data, "4096x4096"), nullptr);
+	EXPECT_EQ(strstr(result.text.data, "invalid size"), nullptr);
 	tool_result_cleanup(&result);
+}
+
+TEST_F(ImgGenToolTest, ExecAcceptsDallePortraitLandscapeAndAutomaticSizes)
+{
+	struct model image_model = {};
+	snprintf(image_model.provider, sizeof(image_model.provider), "openai");
+	snprintf(image_model.model_id, sizeof(image_model.model_id), "dall-e-3");
+	ASSERT_EQ(img_gen_init(&reg, &image_model, nullptr), 0);
+	for (const char *size : {"1024x1024", "1024x1792", "1792x1024", "auto"}) {
+		SCOPED_TRACE(size);
+		std::string args = std::string("{\"prompt\":\"a cat\",\"size\":\"") + size + "\"}";
+		struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+		EXPECT_EQ(tool_exec(&reg, "img_gen", args.c_str(), &result),
+		MORPH_ERR_NOT_CONFIGURED);
+		ASSERT_NE(result.text.data, nullptr);
+		EXPECT_EQ(strstr(result.text.data, "invalid size"), nullptr);
+	}
 }
 
 TEST_F(ImgGenToolTest, ExecRejectsSingularAndPluralReferencesTogether) {
@@ -860,9 +876,9 @@ TEST_F(ImgGenToolTest, QaCallsMultimodalLlm) {
 	}
 	EXPECT_STREQ(qa.prompt, "OCR this");
 	EXPECT_STREQ(qa.path, path);
-	EXPECT_EQ(qa.max_tokens, 1024);
+	EXPECT_EQ(qa.max_tokens, 4096);
 	EXPECT_EQ(qa.timeout_seconds, 120);
-	EXPECT_EQ(qa.max_dim, 360);
+	EXPECT_EQ(qa.max_dim, 2048);
 	EXPECT_GE(morph_event_recorder_count(&rec), 3u);
 	bool saw_stream = false;
 	for (size_t i = 0; i < morph_event_recorder_count(&rec); i++) {
@@ -923,6 +939,36 @@ TEST_F(ImgGenToolTest, QaReturnsProviderFailureDetail) {
 	EXPECT_TRUE(strstr(result.text.data, "[model.vision]") != NULL);
 	tool_result_cleanup(&result);
 	std::remove(path);
+}
+
+TEST_F(ImgGenToolTest, QaUsesConfiguredOutputBudgetAndSupportsOriginalDetail)
+{
+	struct model fake = {};
+	fake.api_key[0] = 'x';
+	fake.max_tokens = 16384;
+	fake.chat_with_image = fake_chat_with_image;
+	fake.handle = &qa;
+	ASSERT_EQ(img_qa_init(&reg, &fake, nullptr), 0);
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	ASSERT_EQ(tool_exec(&reg, "img_qa",
+		"{\"file_path\":\"/tmp/original.png\",\"detail\":\"original\"}", &result), 0);
+	EXPECT_EQ(qa.max_tokens, 16384);
+	EXPECT_EQ(qa.max_dim, MORPH_IMAGE_MAX_DIMENSION);
+	tool_result_cleanup(&result);
+	ASSERT_EQ(tool_exec(&reg, "img_qa",
+		"{\"file_path\":\"/tmp/original.png\",\"max_dim\":6000,\"max_tokens\":8192}",
+		&result), 0);
+	EXPECT_EQ(qa.max_tokens, 8192);
+	EXPECT_EQ(qa.max_dim, 6000);
+	for (const char *invalid : {
+		"{\"file_path\":\"a.png\",\"max_tokens\":16385}",
+		"{\"file_path\":\"a.png\",\"max_tokens\":1.5}",
+		"{\"file_path\":\"a.png\",\"max_dim\":32769}",
+		"{\"file_path\":\"a.png\",\"detail\":\"low\"}"}) {
+		SCOPED_TRACE(invalid);
+		tool_result_cleanup(&result);
+		EXPECT_EQ(tool_exec(&reg, "img_qa", invalid, &result), -EINVAL);
+	}
 }
 
 TEST_F(ImgGenToolTest, ResizeRegister) {

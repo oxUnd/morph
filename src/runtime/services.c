@@ -605,7 +605,7 @@ int runtime_skill_info_borrow(const struct runtime *runtime, int index, struct s
 	if (!runtime || !runtime->context.skills || !out || index < 0 ||
 	    index >= runtime->context.skills->count)
 		return -EINVAL;
-	*out = runtime->context.skills->entries[index];
+	*out = *skill_entry_borrow_at(runtime->context.skills, (size_t)index);
 	return 0;
 }
 

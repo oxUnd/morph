@@ -1,5 +1,6 @@
 #include "exec_jobs.h"
 #include "util/array.h"
+#include "util/error.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -272,6 +273,28 @@ static int read_job(struct exec_jobs *jobs, int64_t owner, const char *id, int f
 				     snapshot.stderr_text ? snapshot.stderr_text : "") ||
 	    !cJSON_AddStringToObject(data, "stdout_path", snapshot.stdout_path) ||
 	    !cJSON_AddStringToObject(data, "stderr_path", snapshot.stderr_path) ||
+	    !cJSON_AddNumberToObject(data, "stdout_total_bytes",
+		(double)snapshot.stdout_total_bytes) ||
+	    !cJSON_AddNumberToObject(data, "stderr_total_bytes",
+		(double)snapshot.stderr_total_bytes) ||
+	    !cJSON_AddNumberToObject(data, "stdout_path_bytes",
+		(double)snapshot.stdout_path_bytes) ||
+	    !cJSON_AddNumberToObject(data, "stderr_path_bytes",
+		(double)snapshot.stderr_path_bytes) ||
+	    !cJSON_AddNumberToObject(data, "stdout_retained_from",
+		(double)snapshot.stdout_retained_from) ||
+	    !cJSON_AddNumberToObject(data, "stderr_retained_from",
+		(double)snapshot.stderr_retained_from) ||
+	    !cJSON_AddNumberToObject(data, "stdout_unrecoverable_bytes",
+		(double)snapshot.stdout_unrecoverable_bytes) ||
+	    !cJSON_AddNumberToObject(data, "stderr_unrecoverable_bytes",
+		(double)snapshot.stderr_unrecoverable_bytes) ||
+	    !cJSON_AddBoolToObject(data, "stdout_path_truncated", snapshot.stdout_path_truncated) ||
+	    !cJSON_AddBoolToObject(data, "stderr_path_truncated", snapshot.stderr_path_truncated) ||
+	    (snapshot.stdout_capture_error && !cJSON_AddStringToObject(data, "stdout_capture_error",
+		morph_strerror(snapshot.stdout_capture_error))) ||
+	    (snapshot.stderr_capture_error && !cJSON_AddStringToObject(data, "stderr_capture_error",
+		morph_strerror(snapshot.stderr_capture_error))) ||
 	    !cJSON_AddBoolToObject(data, "stdout_truncated", snapshot.stdout_truncated) ||
 	    !cJSON_AddBoolToObject(data, "stderr_truncated", snapshot.stderr_truncated)) {
 		process_snapshot_cleanup(&snapshot);

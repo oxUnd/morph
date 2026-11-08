@@ -53,6 +53,17 @@ static int authorize_patch_path(const char *path, int deletion, void *opaque)
 	return rc;
 }
 
+static int validate_patch_postimage(const char *path, size_t bytes, const char *removed_path,
+				    void *opaque)
+{
+	struct patch_application *application = opaque;
+	const struct tool_checkpoint_context *checkpoint = application->checkpoint;
+	int rc = checkpoint->validate_write(checkpoint->user_data, checkpoint->id, path,
+		bytes, removed_path);
+
+	return rc > 0 ? MORPH_ERR_PROTOCOL : rc;
+}
+
 static cJSON *patch_checkpoint_status(const struct patch_application *application,
 				      const char *status, int may_have_changed)
 {
@@ -173,9 +184,15 @@ static int apply_patch_exec(const char *input, struct tool_result *result, void 
 					     0);
 		application.begun = 1;
 	}
-	rc = patch_apply_authorized(tool_context_workdir_borrow(application.context), input,
-				    &patch_result, error, sizeof(error), authorize_patch_path,
-				    &application);
+	struct patch_write_policy policy = {
+		.max_file_bytes = application.tracking ? application.checkpoint->max_file_bytes : 0,
+		.validate = application.tracking && application.checkpoint->validate_write
+			? validate_patch_postimage : NULL,
+		.user_data = &application,
+	};
+	rc = patch_apply_authorized_with_policy(
+		tool_context_workdir_borrow(application.context), input, &patch_result,
+		error, sizeof(error), authorize_patch_path, &application, &policy);
 	if (application.begun) {
 		finish_rc = application.checkpoint->finish(application.checkpoint->user_data,
 							   application.checkpoint->id);
@@ -262,10 +279,9 @@ int apply_patch_init(struct tool_registry *registry, struct tool_context *tool_c
 		"source line copied verbatim, never a descriptive label. Numeric "
 		"unified-diff ranges are not part of the Codex patch grammar. Hunk lines "
 		"must start with space, +, or -. Move, Update, and Delete File are "
-		"supported. Keep each call below "
-		"4 KiB and at most 80 changed lines. Split large files across "
-		"multiple calls by replacing a unique continuation marker in each "
-		"successive Update File patch. Remove the marker in the final call. "
+			"supported. Each complete patch may contain up to 64 KiB. "
+			"Group related edits in one call when they fit. Split larger edits "
+			"into complete patches at natural file or hunk boundaries. "
 		"Every call must be a complete Codex patch. The final *** End Patch "
 		"line must never have a leading +, space, or -. "
 		"Do not emit unified-diff headers such as --- or +++. "

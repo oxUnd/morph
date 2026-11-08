@@ -202,6 +202,9 @@ void dynamic_tool_runner_destroy(void *opaque)
 	struct dynamic_tool *tool = opaque;
 	if (tool != NULL) {
 		free(tool->source);
+		free(tool->description);
+		free(tool->input_schema);
+		free(tool->output_schema);
 		free(tool);
 	}
 }
@@ -225,6 +228,7 @@ static int set_child_env(struct dynamic_tool *dt)
 	char *command_str;
 	char *network_str;
 	char timeout_buf[32];
+	char capture_buf[32];
 	int rc;
 
 	if (!dt || !dt->tctx)
@@ -254,6 +258,9 @@ static int set_child_env(struct dynamic_tool *dt)
 	}
 	snprintf(timeout_buf, sizeof(timeout_buf), "%d",
 		 dt->cfg->default_timeout_seconds > 0 ? dt->cfg->default_timeout_seconds : 30);
+	snprintf(capture_buf, sizeof(capture_buf), "%d",
+		 dt->cfg->default_max_output_bytes > 0
+			? dt->cfg->default_max_output_bytes : DYN_TOOL_OUTPUT_LIMIT);
 	rc = 0;
 	if (setenv("MORPH_DYNAMIC_CAPS", cap_str, 1) != 0 ||
 	    setenv("MORPH_DYNAMIC_ALLOWED_READ", read_str, 1) != 0 ||
@@ -261,6 +268,7 @@ static int set_child_env(struct dynamic_tool *dt)
 	    setenv("MORPH_DYNAMIC_ALLOWED_COMMANDS", command_str, 1) != 0 ||
 	    setenv("MORPH_DYNAMIC_ALLOWED_NETWORK", network_str, 1) != 0 ||
 	    setenv("MORPH_DYNAMIC_TIMEOUT", timeout_buf, 1) != 0 ||
+	    setenv("MORPH_RUNNER_MAX_CAPTURE_BYTES", capture_buf, 1) != 0 ||
 	    setenv("MORPH_DYNAMIC_WORKDIR", workdir, 1) != 0 ||
 	    setenv("MORPH_DYNAMIC_OUTPUT_DIR", output_dir, 1) != 0)
 		rc = -errno;
@@ -288,6 +296,8 @@ int dynamic_tool_runner_execute(const char *args_json, struct tool_result *resul
 
 	if (!dt || !result)
 		return -EINVAL;
+	size_t output_limit = dt->cfg->default_max_output_bytes > 0
+		? (size_t)dt->cfg->default_max_output_bytes : DYN_TOOL_OUTPUT_LIMIT;
 	char snapshot[] = "/tmp/morph-tool-XXXXXX";
 	int snapshot_fd = mkstemp(snapshot);
 	if (snapshot_fd < 0) {
@@ -449,9 +459,7 @@ int dynamic_tool_runner_execute(const char *args_json, struct tool_result *resul
 		rc = morph_child_exchange(
 			pid, stdin_pipe[1], stdout_pipe[0], stderr_pipe[0],
 			morph_buf_cstr_borrow(&request), request.len, milliseconds,
-			dt->cfg->default_max_output_bytes > 0
-				? (size_t)dt->cfg->default_max_output_bytes
-				: DYN_TOOL_OUTPUT_LIMIT,
+			output_limit,
 			dynamic_tool_runner_cancelled, result, &out, &err, &status);
 	} else {
 		close(stdin_pipe[1]);
@@ -470,6 +478,13 @@ int dynamic_tool_runner_execute(const char *args_json, struct tool_result *resul
 		morph_buf_cleanup(&out);
 		morph_buf_cleanup(&err);
 		return rc;
+	}
+	if (out.len > output_limit) {
+		(void)tool_result_error_format(result, "output_limit_exceeded",
+			"Dynamic tool output exceeds the configured %zu-byte capture limit. "
+			"Return a smaller result or save large data to a file and return its path.",
+			output_limit);
+		return -EFBIG;
 	}
 	if (WIFSIGNALED(status)) {
 		morph_buf_cleanup(&out);

@@ -29,19 +29,11 @@ static void img_gen_context_destroy(void *user_data)
 static int img_gen_validate_public_size(const struct model *image_llm,
 					const char *size)
 {
-	int rc;
-
-	if (!size || !*size || strcmp(size, "auto") == 0)
+	if (!size || !*size)
 		return -EINVAL;
-	if (strcmp(size, "2k") != 0 && strcmp(size, "4k") != 0 &&
-	    image_gen_validate_size(size) < 0)
-		return -EINVAL;
-	rc = image_llm
+	return image_llm
 		? image_gen_validate_size_for_model(image_llm, size)
 		: image_gen_validate_size(size);
-	if (rc < 0)
-		return rc;
-	return 0;
 }
 
 static int img_gen_exec(const char *args_json, struct tool_result *result, void *user_data)
@@ -132,8 +124,7 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"invalid size for the configured image model; "
-				"use 2k, 4k, or WIDTHxHEIGHT with total pixels between "
-				"2560x1440 and 4096x4096, subject to model limits\"}");
+				"use a size supported by that model and adapter\"}");
 		return -EINVAL;
 	}
 
@@ -209,9 +200,8 @@ int img_gen_init(struct tool_registry *reg, struct model *image_llm,
 			       "10 reference images are supported. The configured adapter "
 			       "handles provider-specific generation, editing, output, and "
 			       "size rules. Provide prompt, optional style, and optional "
-			       "size as 2k, 4k, or WIDTHxHEIGHT. Custom dimensions must "
-			       "have total pixels in the inclusive range from 2560x1440 "
-			       "through 4096x4096 and satisfy model-specific limits. Size "
+			       "size as 2k, 4k, WIDTHxHEIGHT, or auto when supported by "
+			       "the configured model. The adapter validates dimensions. Size "
 			       "defaults to 2k.",
 		.input_schema = "{\"type\":\"object\",\"properties\":{"
 				"\"prompt\":{\"type\":\"string\",\"description\":"
@@ -220,9 +210,8 @@ int img_gen_init(struct tool_registry *reg, struct model *image_llm,
 				"\"Image style (e.g. realistic, anime, oil_painting)\"},"
 				"\"size\":{\"type\":\"string\",\"description\":"
 				"\"Image size supported by the configured model: 2k, 4k, "
-				"or WIDTHxHEIGHT. Custom dimensions must have total pixels "
-				"between 2560x1440 (2K lower bound) and 4096x4096 (4K "
-				"upper bound), inclusive, and satisfy model-specific limits. "
+				"WIDTHxHEIGHT, or auto when supported. Dimensions are validated "
+				"by the configured adapter. "
 				"Defaults to 2k\",\"default\":\"2k\"},"
 				"\"reference_image\":{\"type\":\"string\","
 				"\"description\":\"Legacy single reference image path. "

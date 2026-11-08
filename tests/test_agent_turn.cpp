@@ -424,9 +424,9 @@ TEST_F(AgentTurnTest, FailedTurnKeepsUserWithoutPoisoningNextTurn)
 	failed_input.model_input = "run malformed tool";
 	failed_input.turn_id = "turn_failed";
 	ASSERT_EQ(agent_turn_begin(&failed_turn, &runtime, &failed_input), 0);
-	std::strcpy(call.id, "provider_failed");
-	std::strcpy(call.tool_call_id, "local_failed");
-	std::strcpy(call.name, "exec");
+	call.id = const_cast<char *>("provider_failed");
+	call.tool_call_id = const_cast<char *>("local_failed");
+	call.name = const_cast<char *>("exec");
 	call.arguments = const_cast<char *>("{not-json");
 	ASSERT_EQ(agent_history_record_tool_calls(react, nullptr, nullptr,
 		&call, 1), 0);
@@ -496,9 +496,9 @@ TEST_F(AgentTurnTest, FailedCompactionKeepsExecutedWorkAndCheckpointOnResume)
 	struct agent_turn turn;
 	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
 	struct tool_call call = {};
-	std::strcpy(call.id, "provider-write");
-	std::strcpy(call.tool_call_id, "local-write");
-	std::strcpy(call.name, "exec");
+	call.id = const_cast<char *>("provider-write");
+	call.tool_call_id = const_cast<char *>("local-write");
+	call.name = const_cast<char *>("exec");
 	call.arguments = const_cast<char *>("{\"command\":\"render video\"}");
 	ASSERT_EQ(agent_history_record_tool_calls(react, nullptr, nullptr, &call, 1), 0);
 	ASSERT_EQ(agent_history_record_tool_result(react, "local-write", "provider-write",
@@ -559,9 +559,9 @@ TEST_F(AgentTurnTest, MissingConfigurationKeepsCompleteToolHistory)
 	input.model_input = "generate an image";
 	input.turn_id = "turn_missing_key";
 	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
-	std::strcpy(call.id, "provider_missing_key");
-	std::strcpy(call.tool_call_id, "local_missing_key");
-	std::strcpy(call.name, "img_gen");
+	call.id = const_cast<char *>("provider_missing_key");
+	call.tool_call_id = const_cast<char *>("local_missing_key");
+	call.name = const_cast<char *>("img_gen");
 	call.arguments = const_cast<char *>("{\"prompt\":\"sunrise\"}");
 	ASSERT_EQ(agent_history_record_tool_calls(react, nullptr, nullptr,
 		&call, 1), 0);
@@ -968,9 +968,9 @@ TEST_F(AgentTurnTest, RepeatedCompactionSummarizesOldFactsAndKeepsRecentExchange
 	auto add_group = [&](const char *id, const char *command, const char *result,
 		const char *reasoning) {
 		struct tool_call call = {};
-		std::strcpy(call.id, id);
-		std::strcpy(call.tool_call_id, id);
-		std::strcpy(call.name, "exec");
+		call.id = const_cast<char *>(id);
+		call.tool_call_id = const_cast<char *>(id);
+		call.name = const_cast<char *>("exec");
 		call.arguments = const_cast<char *>(command);
 		EXPECT_EQ(agent_history_record_tool_calls(react, "Visible action", reasoning,
 			&call, 1), 0);

@@ -5,6 +5,7 @@
 #include "util/error.h"
 #include "util/file.h"
 #include "util/utf8.h"
+#include "util/cleanup.h"
 
 #include <errno.h>
 #include <regex.h>
@@ -15,12 +16,57 @@
 #include <time.h>
 #include <unistd.h>
 
+static int hook_context_file_create(struct hook_manager *manager, const char *text,
+				    char path[PATH_MAX])
+{
+	char *directory MORPH_CLEANUP(morph_charp_cleanup) =
+		file_expand_path_copy(manager->config->general.output_dir);
+	if (!directory)
+		return -ENOMEM;
+	int rc = file_ensure_dir(directory);
+	if (rc == 0)
+		rc = file_path_join(path, PATH_MAX, directory, "hook-context-XXXXXX");
+	if (rc != 0)
+		return rc;
+	int fd = mkstemp(path);
+	if (fd < 0)
+		return morph_error_from_errno(errno);
+	if (close(fd) != 0) {
+		rc = morph_error_from_errno(errno);
+		(void)unlink(path);
+		return rc;
+	}
+	rc = file_write_atomic(path, text, strlen(text));
+	if (rc != 0)
+		(void)unlink(path);
+	return rc;
+}
+
+int hook_context_bound(struct hook_manager *manager, morph_buf_t *context)
+{
+	char path[PATH_MAX];
+	morph_buf_t bounded MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int rc;
+
+	if (!manager || !context)
+		return -EINVAL;
+	if (context->len <= HOOK_CONTEXT_INLINE_MAX)
+		return 0;
+	rc = hook_context_file_create(manager, morph_buf_cstr_borrow(context), path);
+	if (rc == 0)
+		rc = morph_buf_printf(&bounded,
+			"[Hook context preview omitted to fit the inline budget.]\n"
+			"Full hook context: %s\n", path);
+	if (rc == 0)
+		morph_buf_move(context, &bounded);
+	return rc;
+}
+
 static int append_context(struct hook_manager *manager, morph_buf_t *context,
 			  struct hook_entry *entry, const char *text)
 {
 	char path[PATH_MAX];
-	char *directory = NULL;
-	char *preview = NULL;
+	char *preview MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	const char *shown = text;
 	int rc = 0;
 
@@ -29,33 +75,9 @@ static int append_context(struct hook_manager *manager, morph_buf_t *context,
 	if (utf8valid(text))
 		return MORPH_ERR_PROTOCOL;
 	if (entry->context_limit > 0 && tokenizer_estimate_tokens(text) > entry->context_limit) {
-		directory = file_expand_path_copy(manager->config->general.output_dir);
-		if (!directory)
-			return -ENOMEM;
-		rc = file_ensure_dir(directory);
-		if (rc == 0)
-			rc = file_path_join(path, sizeof(path), directory, "hook-context-XXXXXX");
-		free(directory);
+		rc = hook_context_file_create(manager, text, path);
 		if (rc != 0)
 			return rc;
-		int fd = mkstemp(path);
-		if (fd < 0)
-			return morph_error_from_errno(errno);
-		FILE *file = fdopen(fd, "w");
-		if (!file) {
-			int saved = -errno;
-			close(fd);
-			unlink(path);
-			return saved;
-		}
-		if (fwrite(text, 1, strlen(text), file) != strlen(text))
-			rc = -EIO;
-		if (fclose(file) != 0)
-			rc = -EIO;
-		if (rc != 0) {
-			unlink(path);
-			return rc;
-		}
 		/* The shared estimator uses tokens; clamp only at UTF-8 boundaries. */
 		size_t bytes = strlen(text);
 		preview = utf8_dup_clamped(text, bytes);
@@ -67,14 +89,9 @@ static int append_context(struct hook_manager *manager, morph_buf_t *context,
 		}
 		shown = preview;
 	}
-	if (context->len + strlen(shown) > 32768u) {
-		free(preview);
-		return -E2BIG;
-	}
 	rc = morph_buf_printf(context, "[Hook %s / %s]\n%s\n", entry->id, entry->event, shown);
 	if (rc == 0 && preview)
 		rc = morph_buf_printf(context, "Full hook context: %s\n", path);
-	free(preview);
 	return rc;
 }
 
@@ -89,6 +106,7 @@ int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const
 	const cJSON *replacement;
 	int deny = 0;
 	int rc = 0;
+	run->context_error = 0;
 
 	if (run->rc < 0)
 		return run->rc;
@@ -191,12 +209,18 @@ int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const
 			feedback = hook_json_string_borrow(root, "stopReason");
 	}
 	if (rc == 0 && strcmp(event, "PreCompact") != 0 && strcmp(event, "PostCompact") != 0)
+	{
 		rc = append_context(manager, context, run->entry,
 				    hook_json_string_borrow(specific, "additionalContext"));
-	if (rc == 0 && deny) {
+		if (rc != 0)
+			run->context_error = rc;
+	}
+	if ((rc == 0 || run->context_error) && deny) {
 		*blocked = 1;
-		rc = morph_buf_printf(reason, "%s\n",
+		int reason_rc = morph_buf_printf(reason, "%s\n",
 				      *feedback ? feedback : "Hook blocked this operation.");
+		if (rc == 0)
+			rc = reason_rc;
 	}
 	cJSON_Delete(root);
 	return rc;

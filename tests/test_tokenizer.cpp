@@ -5,9 +5,15 @@
 #include "util/file.h"
 #include "util/base64.h"
 #include "util/utf8.h"
+#include "util/cleanup.h"
+#include <chrono>
+#include <climits>
 #include <filesystem>
+#include <map>
 #include <memory>
+#include <numeric>
 #include <set>
+#include <vector>
 #include <string.h>
 #include <unistd.h>
 
@@ -264,6 +270,173 @@ TEST(BpeCountTest, MalformedSuffixDoesNotDisappearFromBudget)
 	text += std::string(100, static_cast<char>(0xff));
 	EXPECT_GE(bpe_count_tokens(encoder, text.c_str()), before + 100);
 	bpe_encoder_destroy(encoder);
+}
+
+static int reference_bpe_piece_count(const std::string &piece,
+				     const std::map<std::string, int> &vocabulary)
+{
+	std::vector<size_t> boundaries(piece.size() + 1);
+	std::iota(boundaries.begin(), boundaries.end(), 0u);
+	while (boundaries.size() > 2) {
+		int best = INT_MAX;
+		size_t selected = 0;
+		for (size_t i = 0; i + 2 < boundaries.size(); i++) {
+			auto found = vocabulary.find(piece.substr(boundaries[i],
+				boundaries[i + 2] - boundaries[i]));
+			if (found != vocabulary.end() && found->second < best) {
+				best = found->second;
+				selected = i;
+			}
+		}
+		if (best == INT_MAX)
+			break;
+		boundaries.erase(boundaries.begin() + static_cast<std::ptrdiff_t>(selected + 1));
+	}
+	return static_cast<int>(boundaries.size() - 1);
+}
+
+TEST(BpeCountTest, IndexedMergeHeapMatchesTheLeftmostRankReference)
+{
+	char temp[] = "/tmp/morph-bpe-merges-XXXXXX";
+	ASSERT_NE(mkdtemp(temp), nullptr);
+	struct VocabularyDirectory {
+		std::string path;
+		~VocabularyDirectory()
+		{
+			std::error_code ignored;
+			std::filesystem::remove_all(path, ignored);
+		}
+	} directory = {temp};
+	const std::map<std::string, int> vocabulary = {
+		{"aa", 2}, {"ab", 2}, {"ba", 2}, {"bb", 2},
+		{"aaa", 1}, {"aab", 3}, {"aba", 1}, {"abb", 3},
+		{"baa", 3}, {"bab", 1}, {"bba", 3}, {"bbb", 1},
+		{"aaaa", 4}, {"abab", 0}, {"baba", 0}, {"bbbb", 4},
+		{"aaab", 7}, {"bbba", 7}, {"ababa", INT_MAX},
+	};
+	std::string serialized;
+	for (const auto &entry : vocabulary) {
+		char *encoded MORPH_CLEANUP(morph_charp_cleanup) = base64_encode_copy(
+			reinterpret_cast<const unsigned char *>(entry.first.data()),
+			entry.first.size());
+		ASSERT_NE(encoded, nullptr);
+		serialized += std::string(encoded) + " " + std::to_string(entry.second) + "\n";
+	}
+	for (auto encoding : {BPE_CL100K_BASE, BPE_O200K_BASE}) {
+		std::string path = directory.path + (encoding == BPE_CL100K_BASE ?
+			"/cl100k_base.tiktoken" : "/o200k_base.tiktoken");
+		ASSERT_EQ(file_write_all(path.c_str(), serialized.data(), serialized.size()), 0);
+		std::unique_ptr<struct bpe_encoder, decltype(&bpe_encoder_destroy)> encoder(
+			bpe_encoder_create(nullptr, encoding, directory.path.c_str()),
+			bpe_encoder_destroy);
+		ASSERT_NE(encoder, nullptr);
+		for (size_t length : {511u, 512u, 513u, 769u}) {
+			for (int pattern = 0; pattern < 4; pattern++) {
+				std::string text(length, 'a');
+				uint32_t state = 17;
+				for (size_t i = 0; i < text.size(); i++) {
+					state = state * 1664525u + 1013904223u;
+					if (pattern == 1 || (pattern == 2 && i % 2) ||
+					    (pattern == 3 && (state >> 31)))
+						text[i] = 'b';
+				}
+				EXPECT_EQ(bpe_count_tokens(encoder.get(), text.c_str()),
+					reference_bpe_piece_count(text, vocabulary))
+					<< "length=" << length << " pattern=" << pattern;
+			}
+		}
+	}
+}
+
+TEST(BpeCountTest, LargeContinuousPiecesRemainExactAndFinishPromptly)
+{
+	const size_t bytes = 300u * 1024u;
+	std::string text(bytes, 'x');
+	for (auto encoding : {BPE_CL100K_BASE, BPE_O200K_BASE}) {
+		std::unique_ptr<struct bpe_encoder, decltype(&bpe_encoder_destroy)> encoder(
+			bpe_encoder_create(nullptr, encoding, nullptr), bpe_encoder_destroy);
+		if (!encoder)
+			GTEST_SKIP() << "BPE vocabulary unavailable";
+		auto start = std::chrono::steady_clock::now();
+		int tokens = bpe_count_tokens_n(encoder.get(), text.data(), text.size());
+		auto elapsed = std::chrono::steady_clock::now() - start;
+		/* Both shipped vocabularies merge eight consecutive x bytes into one token. */
+		EXPECT_EQ(tokens, static_cast<int>(bytes / 8));
+		EXPECT_LT(elapsed, std::chrono::seconds(10));
+	}
+}
+
+TEST(BpeCountTest, VocabularyLoadsLongTokensUpToItsRepresentableBoundary)
+{
+	char temp[] = "/tmp/morph-bpe-long-vocab-XXXXXX";
+	ASSERT_NE(mkdtemp(temp), nullptr);
+	struct VocabularyDirectory {
+		std::string path;
+		~VocabularyDirectory()
+		{
+			std::error_code ignored;
+			std::filesystem::remove_all(path, ignored);
+		}
+	} directory = {temp};
+	std::map<std::string, int> vocabulary;
+	for (size_t length = 2; length <= 257; length++)
+		vocabulary.emplace(std::string(length, 'x'), static_cast<int>(length));
+	/* Powers merge first, then each successive binary suffix joins the prefix. */
+	for (size_t length = 2; length <= 32768; length *= 2)
+		vocabulary.emplace(std::string(length, 'y'), static_cast<int>(length));
+	size_t prefix = 32768;
+	for (size_t suffix = 16384; suffix; suffix /= 2) {
+		prefix += suffix;
+		vocabulary.emplace(std::string(prefix, 'y'), 100000 + static_cast<int>(prefix));
+	}
+	ASSERT_EQ(prefix, 65535u);
+	std::string serialized;
+	for (const auto &entry : vocabulary) {
+		char *encoded MORPH_CLEANUP(morph_charp_cleanup) = base64_encode_copy(
+			reinterpret_cast<const unsigned char *>(entry.first.data()),
+			entry.first.size());
+		ASSERT_NE(encoded, nullptr);
+		serialized += std::string(encoded) + " " + std::to_string(entry.second) + "\n";
+	}
+	for (auto encoding : {BPE_CL100K_BASE, BPE_O200K_BASE}) {
+		std::string path = directory.path + (encoding == BPE_CL100K_BASE ?
+			"/cl100k_base.tiktoken" : "/o200k_base.tiktoken");
+		ASSERT_EQ(file_write_all(path.c_str(), serialized.data(), serialized.size()), 0);
+		std::unique_ptr<struct bpe_encoder, decltype(&bpe_encoder_destroy)> encoder(
+			bpe_encoder_create(nullptr, encoding, directory.path.c_str()),
+			bpe_encoder_destroy);
+		ASSERT_NE(encoder, nullptr);
+		EXPECT_EQ(bpe_count_tokens(encoder.get(), std::string(257, 'x').c_str()), 1);
+		EXPECT_EQ(bpe_count_tokens(encoder.get(), std::string(65535, 'y').c_str()), 1);
+	}
+}
+
+TEST(BpeCountTest, VocabularyRejectsTokensBeyondItsRepresentableBoundary)
+{
+	char temp[] = "/tmp/morph-bpe-oversized-vocab-XXXXXX";
+	ASSERT_NE(mkdtemp(temp), nullptr);
+	struct VocabularyDirectory {
+		std::string path;
+		~VocabularyDirectory()
+		{
+			std::error_code ignored;
+			std::filesystem::remove_all(path, ignored);
+		}
+	} directory = {temp};
+	std::string token(65536, 'x');
+	char *encoded MORPH_CLEANUP(morph_charp_cleanup) = base64_encode_copy(
+		reinterpret_cast<const unsigned char *>(token.data()), token.size());
+	ASSERT_NE(encoded, nullptr);
+	std::string serialized = std::string(encoded) + " 0\n";
+	for (auto encoding : {BPE_CL100K_BASE, BPE_O200K_BASE}) {
+		std::string path = directory.path + (encoding == BPE_CL100K_BASE ?
+			"/cl100k_base.tiktoken" : "/o200k_base.tiktoken");
+		ASSERT_EQ(file_write_all(path.c_str(), serialized.data(), serialized.size()), 0);
+		std::unique_ptr<struct bpe_encoder, decltype(&bpe_encoder_destroy)> encoder(
+			bpe_encoder_create(nullptr, encoding, directory.path.c_str()),
+			bpe_encoder_destroy);
+		EXPECT_EQ(encoder, nullptr);
+	}
 }
 
 TEST_F(TokenizerTest, DefaultAndBaseReasoningModelsUseTheResolvedVocabulary)

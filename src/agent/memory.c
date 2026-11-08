@@ -9,6 +9,7 @@
 #include "util/log.h"
 #include "util/error.h"
 #include "util/utf8.h"
+#include "util/strmap.h"
 #include "cJSON.h"
 
 #include <ctype.h>
@@ -24,16 +25,15 @@
 #define MEMORY_APPEND_INIT_CAP 1024
 #define MEMORY_RENDER_CAP (1024 * 1024)
 #define MEMORY_VALUE_MIN_BYTES 2
-#define MEMORY_VALUE_MAX_BYTES 200
 
-static int memory_stop_len(const char *p)
+static int memory_stop_len(const char *p, size_t available)
 {
 	unsigned cp;
 	size_t len;
 
 	if (!p || !*p)
 		return 0;
-	if (!utf8_decode_codepoint(p, strlen(p), &cp, &len))
+	if (!utf8_decode_codepoint(p, available, &cp, &len))
 		return 0;
 	if (utf8_is_cjk_sentence_punct(cp))
 		return (int)len;
@@ -70,7 +70,7 @@ static int memory_value_is_plausible(const char *value)
 	if (!value)
 		return 0;
 	len = strlen(value);
-	if (len < MEMORY_VALUE_MIN_BYTES || len > MEMORY_VALUE_MAX_BYTES)
+	if (len < MEMORY_VALUE_MIN_BYTES || utf8valid(value))
 		return 0;
 	for (size_t i = 0; i < len; i++) {
 		if (!isspace((unsigned char)value[i])) {
@@ -103,27 +103,6 @@ static void memory_trim_inplace(char *s)
 	if (start > 0)
 		memmove(s, s + start, len - start);
 	s[len - start] = '\0';
-}
-
-static char *memory_snippet(const char *text, size_t max_len)
-{
-	size_t safe;
-	char *out;
-
-	if (!text)
-		return strdup("");
-	/*
-	 * Clamp to a UTF-8 boundary so we never split a multi-byte
-	 * codepoint mid-stream — otherwise CJK input gets chopped to
-	 * something like "蓬松\xE2" which renders as "蓬松�".
-	 */
-	safe = utf8_clamp_bytes(text, max_len);
-	out = strndup(text, safe);
-	if (!out)
-		return NULL;
-	utf8_sanitize_inplace(out);
-	memory_trim_inplace(out);
-	return out;
 }
 
 static char *memory_lower_copy(const char *s)
@@ -164,80 +143,50 @@ int memory_contains_ci(const char *haystack, const char *needle)
 	return found;
 }
 
-static size_t memory_scan_value(const char *start, size_t out_sz)
+static int memory_extract_value(const char *start, char **out)
 {
 	size_t len = 0;
 
-	while (start[len] && len + 1 < out_sz) {
-		if (memory_is_ascii_stop(start[len]))
-			break;
-		if (memory_stop_len(start + len) > 0)
-			break;
-		len++;
-	}
-	return len;
-}
-
-static int memory_extract_after_ci(const char *text, const char *needle, char *out, size_t out_sz)
-{
-	char *lower_text;
-	char *lower_needle;
-	char *match;
-	size_t offset;
-	const char *start;
-	size_t len;
-
-	if (!text || !needle || !out || out_sz == 0)
-		return 0;
-	lower_text = memory_lower_copy(text);
-	lower_needle = memory_lower_copy(needle);
-	if (!lower_text || !lower_needle) {
-		free(lower_text);
-		free(lower_needle);
-		return 0;
-	}
-	match = strstr(lower_text, lower_needle);
-	if (!match) {
-		free(lower_text);
-		free(lower_needle);
-		return 0;
-	}
-	offset = (size_t)(match - lower_text);
-	start = text + offset + strlen(needle);
 	while (*start && isspace((unsigned char)*start))
 		start++;
-	len = memory_scan_value(start, out_sz);
-	memcpy(out, start, len);
-	out[len] = '\0';
-	memory_trim_inplace(out);
-	free(lower_text);
-	free(lower_needle);
-	return out[0] != '\0';
+	size_t available = strlen(start);
+	while (start[len] && !memory_is_ascii_stop(start[len]) &&
+	       memory_stop_len(start + len, available - len) == 0)
+		len++;
+	if (!len)
+		return 0;
+	*out = strndup(start, len);
+	if (!*out)
+		return -ENOMEM;
+	memory_trim_inplace(*out);
+	return 0;
 }
 
-static int memory_extract_after_raw(const char *text, const char *needle, char *out, size_t out_sz)
+static int memory_extract_after_ci(const char *text, const char *needle, char **out)
 {
-	const char *match;
-	const char *start;
-	size_t len;
+	char *lower_text MORPH_CLEANUP(morph_charp_cleanup) = memory_lower_copy(text);
+	char *lower_needle MORPH_CLEANUP(morph_charp_cleanup) = memory_lower_copy(needle);
+	char *match;
 
-	if (!text || !needle || !out || out_sz == 0)
-		return 0;
-	match = strstr(text, needle);
+	if (!lower_text || !lower_needle)
+		return -ENOMEM;
+	match = strstr(lower_text, lower_needle);
 	if (!match)
 		return 0;
-	start = match + strlen(needle);
-	while (*start && isspace((unsigned char)*start))
-		start++;
-	len = memory_scan_value(start, out_sz);
-	memcpy(out, start, len);
-	out[len] = '\0';
-	memory_trim_inplace(out);
-	return out[0] != '\0';
+	return memory_extract_value(text + (size_t)(match - lower_text) + strlen(needle), out);
+}
+
+static int memory_extract_after_raw(const char *text, const char *needle, char **out)
+{
+	const char *match = strstr(text, needle);
+
+	return match ? memory_extract_value(match + strlen(needle), out) : 0;
 }
 
 int memory_appendf(morph_buf_t *b, size_t max_len, const char *fmt, ...)
 {
+	static const char notice[] = "[Memory output omitted; query a specific memory type.]\n";
+	morph_buf_t entry MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	va_list args;
 	int rc;
 
@@ -247,18 +196,23 @@ int memory_appendf(morph_buf_t *b, size_t max_len, const char *fmt, ...)
 		max_len = MEMORY_APPEND_INIT_CAP;
 	if (b->len >= max_len)
 		return 0;
+	if (b->len >= strlen(notice) &&
+	    !strcmp(morph_buf_cstr_borrow(b) + b->len - strlen(notice), notice))
+		return 0;
+	rc = morph_buf_init(&entry, 256);
+	if (rc != 0)
+		return rc;
 
 	va_start(args, fmt);
-	rc = morph_buf_vprintf(b, fmt, args);
+	rc = morph_buf_vprintf(&entry, fmt, args);
 	va_end(args);
 	if (rc < 0)
 		return rc;
 
-	if (b->len > max_len) {
-		b->len = max_len;
-		b->data[max_len] = '\0';
-	}
-	return 0;
+	if (entry.len > max_len - b->len ||
+	    strlen(notice) > max_len - b->len - entry.len)
+		return strlen(notice) <= max_len - b->len ? morph_buf_puts(b, notice) : -E2BIG;
+	return morph_buf_puts(b, morph_buf_cstr_borrow(&entry));
 }
 
 static int memory_refresh_profile(struct db *db, int64_t session_id)
@@ -310,24 +264,26 @@ static int memory_refresh_profile(struct db *db, int64_t session_id)
 /* Try a list of anchor phrases; succeed only when the captured value passes
  * the plausibility filter. Stricter anchors come first to win over the
  * looser ones (e.g. "i live in" before any future "i live ..." anchor). */
-static int memory_try_anchors(const char *user_input, char *value, size_t value_sz,
+static int memory_try_anchors(const char *user_input, char **value,
 			      const char *const *ci_needles, const char *const *raw_needles)
 {
-	if (ci_needles) {
-		for (int i = 0; ci_needles[i]; i++) {
-			if (memory_extract_after_ci(user_input, ci_needles[i], value, value_sz) &&
-			    memory_value_is_plausible(value))
+	const char *const *groups[] = {ci_needles, raw_needles};
+
+	for (size_t group = 0; group < sizeof(groups) / sizeof(groups[0]); group++) {
+		const char *const *needles = groups[group];
+		for (int i = 0; needles && needles[i]; i++) {
+			char *candidate MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+			int rc = group == 0
+				 ? memory_extract_after_ci(user_input, needles[i], &candidate)
+				 : memory_extract_after_raw(user_input, needles[i], &candidate);
+			if (rc != 0)
+				return rc;
+			if (candidate && memory_value_is_plausible(candidate)) {
+				*value = morph_charp_steal(&candidate);
 				return 1;
+			}
 		}
 	}
-	if (raw_needles) {
-		for (int i = 0; raw_needles[i]; i++) {
-			if (memory_extract_after_raw(user_input, raw_needles[i], value, value_sz) &&
-			    memory_value_is_plausible(value))
-				return 1;
-		}
-	}
-	value[0] = '\0';
 	return 0;
 }
 
@@ -506,9 +462,11 @@ static int memory_accept_preferences(struct db *db, int64_t session_id, const ch
 	    !strncmp(input, "叫我", strlen("叫我"))) {
 		static const char *const ci[] = {"please call me ", "call me ", NULL};
 		static const char *const raw[] = {"叫我", NULL};
-		char value[256];
-
-		if (memory_try_anchors(input, value, sizeof(value), ci, raw)) {
+		char *value MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+		rc = memory_try_anchors(input, &value, ci, raw);
+		if (rc < 0)
+			return rc;
+		if (rc > 0) {
 			rc = preference_set(db, session_id, scope ? scope : "personal",
 					    "user.preferred_name", value, input, event_token);
 			if (rc != 0)
@@ -619,7 +577,6 @@ static int memory_capture_hot_path(struct db *db, int64_t session_id, const char
 		NULL,
 	};
 
-	char value[256];
 	int dirty = 0;
 	int worst = 0;
 	int rc = 0;
@@ -627,16 +584,20 @@ static int memory_capture_hot_path(struct db *db, int64_t session_id, const char
 	if (!db || !db->handle || !user_input)
 		return -EINVAL;
 
-#define TRY_FACT(key, ci, raw, cat, importance)                                                    \
-	do {                                                                                       \
-		if (memory_try_anchors(user_input, value, sizeof(value), ci, raw)) {               \
+#define TRY_FACT(key, ci, raw, cat, importance)                                                \
+	do {                                                                                   \
+		char *value MORPH_CLEANUP(morph_charp_cleanup) = NULL;                            \
+		int found = memory_try_anchors(user_input, &value, ci, raw);                      \
+		if (found < 0 && worst == 0)                                                     \
+			worst = found;                                                          \
+		if (found > 0) {                                                                \
 			rc = memory_store_upsert_fact(db, session_id, key, value, user_input, cat, \
-						      importance);                                 \
-			if (rc != 0 && worst == 0)                                                 \
-				worst = rc;                                                        \
-			else if (rc == 0)                                                          \
-				dirty = 1;                                                         \
-		}                                                                                  \
+					      importance);                                      \
+			if (rc != 0 && worst == 0)                                               \
+				worst = rc;                                                      \
+			else if (rc == 0)                                                        \
+				dirty = 1;                                                       \
+		}                                                                                \
 	} while (0)
 
 	/* user_name comes after location-style anchors so "I am in Tokyo"
@@ -654,30 +615,31 @@ static int memory_capture_hot_path(struct db *db, int64_t session_id, const char
 	return worst;
 }
 
-static void memory_collect_tools(const struct react_step *steps, char *buf, size_t buf_sz)
+static int memory_collect_tools_create(const struct react_step *steps, char **out)
 {
-	int first = 1;
+	morph_buf_t tools MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	morph_strmap_t seen MORPH_CLEANUP(morph_strmap_cleanup) = {0};
+	int rc = morph_buf_init(&tools, 256);
 
-	if (!buf || buf_sz == 0)
-		return;
-	buf[0] = '\0';
-	for (const struct react_step *cur = steps; cur; cur = cur->next) {
-		size_t used;
-		size_t left;
-		int exists = 0;
-		if (cur->type != REACT_STEP_ACTION || !cur->tool_name || !cur->tool_name[0])
+	if (rc == 0)
+		rc = morph_strmap_init(&seen, MORPH_STRMAP_INIT_CAP);
+	if (rc != 0)
+		return rc;
+	for (const struct react_step *step = steps; step; step = step->next) {
+		if (step->type != REACT_STEP_ACTION || !step->tool_name || !step->tool_name[0] ||
+		    morph_strmap_contains(&seen, step->tool_name))
 			continue;
-		if (strstr(buf, cur->tool_name) != NULL)
-			exists = 1;
-		if (exists)
-			continue;
-		used = strlen(buf);
-		left = buf_sz - used;
-		if (left <= 1)
-			break;
-		snprintf(buf + used, left, "%s%s", first ? "" : ", ", cur->tool_name);
-		first = 0;
+		if (tools.len)
+			rc = morph_buf_puts(&tools, ", ");
+		if (rc == 0)
+			rc = morph_buf_puts(&tools, step->tool_name);
+		if (rc == 0)
+			rc = morph_strmap_set_borrow(&seen, step->tool_name, NULL);
+		if (rc != 0)
+			return rc;
 	}
+	*out = morph_buf_detach(&tools);
+	return 0;
 }
 
 static const char *memory_infer_task_type(const char *user_input, const char *tool_names)
@@ -707,10 +669,8 @@ static int memory_insert_episode(struct db *db, int64_t session_id, const char *
 				 int success, const char *entities, const char *key_decisions,
 				 const char *artifacts, double importance, int64_t job_id)
 {
-	char tools[256];
-	char *user_snip = NULL;
-	char *assistant_snip = NULL;
-	char summary[1024];
+	char *tools MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	morph_buf_t summary MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	const char *task_type;
 	const char *outcome;
 	int rc;
@@ -719,30 +679,27 @@ static int memory_insert_episode(struct db *db, int64_t session_id, const char *
 		return -EINVAL;
 	if (importance < 0.0 || importance > 1.0)
 		importance = 0.5;
-
-	memory_collect_tools(steps, tools, sizeof(tools));
-	user_snip = memory_snippet(user_input, 220);
-	assistant_snip = memory_snippet(assistant_output ? assistant_output : "", 220);
-	if (!user_snip || !assistant_snip) {
-		free(user_snip);
-		free(assistant_snip);
-		return -ENOMEM;
-	}
+	rc = memory_collect_tools_create(steps, &tools);
+	if (rc == 0)
+		rc = morph_buf_init(&summary, 1024);
+	if (rc != 0)
+		return rc;
 	task_type = memory_infer_task_type(user_input, tools);
 	outcome = success ? "completed" : "aborted";
-	if (tools[0]) {
-		snprintf(summary, sizeof(summary),
-			 "Task: %s | Outcome: %s | Tools: %s | Result: %s", user_snip, outcome,
-			 tools, assistant_snip[0] ? assistant_snip : "(no final answer)");
-	} else {
-		snprintf(summary, sizeof(summary), "Task: %s | Outcome: %s | Result: %s", user_snip,
-			 outcome, assistant_snip[0] ? assistant_snip : "(no final answer)");
-	}
+	rc = morph_buf_printf(&summary, "Task: %s | Outcome: %s", user_input, outcome);
+	if (rc == 0 && tools[0])
+		rc = morph_buf_printf(&summary, " | Tools: %s", tools);
+	if (rc == 0)
+		rc = morph_buf_printf(&summary, " | Result: %s",
+			assistant_output && *assistant_output ? assistant_output :
+			"(no final answer)");
+	if (rc != 0)
+		return rc;
 
 	struct memory_episode_input input = {
 		.task_type = task_type,
-		.summary = summary,
-		.outcome = assistant_snip,
+		.summary = morph_buf_cstr_borrow(&summary),
+		.outcome = assistant_output ? assistant_output : "",
 		.success = success,
 		.entities = entities,
 		.decisions = key_decisions,
@@ -754,8 +711,6 @@ static int memory_insert_episode(struct db *db, int64_t session_id, const char *
 
 	rc = memory_store_insert_episode(db, session_id, &input);
 
-	free(user_snip);
-	free(assistant_snip);
 	return rc;
 }
 
@@ -884,8 +839,11 @@ static int memory_apply_llm_envelope(struct db *db, int64_t session_id, const ch
 				continue;
 			if (!*key || !*value)
 				continue;
-			if (strlen(value) > MEMORY_VALUE_MAX_BYTES)
+			if (utf8valid(key) || utf8valid(value)) {
+				if (worst == 0)
+					worst = MORPH_ERR_FORMAT;
 				continue;
+			}
 			rc = preference_candidate(db, session_id, category, key, value, user_input);
 			(void)importance;
 			if (rc != 0 && worst == 0)
@@ -937,38 +895,26 @@ static char *memory_llm_extract_json(struct model *llm, const char *user_input,
 				     const char *assistant_output, const char *tool_names,
 				     int success)
 {
-	char *prompt;
-	size_t prompt_cap;
 	const char *messages[1];
+	morph_buf_t prompt MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc;
 
-	if (!llm || !llm->chat || !llm->api_key[0] || !user_input)
+	if (!llm || !llm->chat || !model_api_key_borrow(llm)[0] || !user_input)
 		return NULL;
-
-	prompt_cap = strlen(user_input) + (assistant_output ? strlen(assistant_output) : 0) +
-		     (tool_names ? strlen(tool_names) : 0) + 1024;
-	prompt = (char *)malloc(prompt_cap);
-	if (!prompt)
+	rc = morph_buf_init(&prompt, 1024);
+	if (rc == 0)
+		rc = morph_buf_printf(&prompt,
+			"Turn outcome: %s\nTools used: %s\nUser said:\n%s\n\nAssistant said:\n%s\n",
+			success ? "completed" : "aborted",
+			tool_names && *tool_names ? tool_names : "(none)", user_input,
+			assistant_output && *assistant_output ? assistant_output : "(no answer)");
+	if (rc == 0)
+		rc = morph_buf_init(&buf, 4096);
+	if (rc != 0)
 		return NULL;
-	snprintf(prompt, prompt_cap,
-		 "Turn outcome: %s\n"
-		 "Tools used: %s\n"
-		 "User said:\n%s\n\n"
-		 "Assistant said:\n%s\n",
-		 success ? "completed" : "aborted",
-		 (tool_names && *tool_names) ? tool_names : "(none)", user_input,
-		 (assistant_output && *assistant_output) ? assistant_output : "(no answer)");
-
-	rc = morph_buf_init(&buf, 4096);
-	if (rc != 0) {
-		free(prompt);
-		return NULL;
-	}
-
-	messages[0] = prompt;
+	messages[0] = morph_buf_cstr_borrow(&prompt);
 	rc = llm->chat(llm, MEMORY_LLM_SYSTEM, messages, 1, NULL, morph_buf_append_cb, &buf);
-	free(prompt);
 
 	if (rc != 0 || buf.len == 0) {
 		log_dbg(llm ? llm->http.logger : NULL,
@@ -985,12 +931,13 @@ static int memory_capture_llm_path(struct db *db, int64_t session_id, const char
 				   char **out_artifacts, double *out_importance, int64_t generation,
 				   struct model *llm)
 {
-	char tools[256];
+	char *tools MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	char *raw;
 	cJSON *root;
-	int rc;
+	int rc = memory_collect_tools_create(steps, &tools);
 
-	memory_collect_tools(steps, tools, sizeof(tools));
+	if (rc != 0)
+		return rc;
 	raw = memory_llm_extract_json(llm, user_input, assistant_output, tools, success);
 	if (!raw)
 		return -ENODATA;

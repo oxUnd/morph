@@ -55,18 +55,30 @@ Processes from earlier turns or other sessions retain their own lifecycle.
 The initial `exec` yield checks cancellation, and stop requests escalate from
 SIGTERM to SIGKILL after `[exec].kill_grace_ms`, even if the child ignores SIGTERM.
 
-Explicit cursors identify absolute stdout/stderr byte positions and do not consume
+Explicit cursors identify absolute byte positions in redacted stdout/stderr and do not consume
 shared output. Repeating a cursor replays the still-retained range, including any
 newly appended output. Without a cursor, the original consuming incremental poll
 behavior remains. Positions beyond current output fail; positions older than the
 retained window receive available output with omission metadata.
 
 Results include `next_cursor`, `wait_ms`, and `empty_poll` (a still-running poll
-with no new text). Nonempty snapshots may include `stdout_path`/`stderr_path` for
-redacted retained output, useful when inline output is shorter. These are rolling
-windows, not unlimited transcripts: each is capped by `max_session_output`, all
-files share a 64 MiB manager quota, and files are removed at runtime shutdown.
-If disk materialization fails, inline output still works and no path is advertised.
+with no new text). Inline output retains a bounded memory window and may show a
+head/tail preview with an omission marker. `next_cursor` advances past that
+preview's entire source range; it does not retrieve omitted inline bytes.
+
+`stdout_path`/`stderr_path` incrementally capture redacted output from offset zero,
+independently of `max_session_output`. Cursor positions and file offsets refer to
+the same redacted bytes. All files share a 64 MiB manager quota and are removed at
+runtime shutdown. `*_path_bytes` gives the prefix length actually on disk;
+`*_path_truncated` identifies quota or capture failures, and `*_capture_error`
+describes an I/O or memory failure. A running process may append more output.
+
+`*_retained_from` gives the memory window's first absolute byte offset. When
+`*_unrecoverable_bytes` is nonzero, the range from `*_path_bytes` to
+`*_retained_from` is unavailable in both the spool and memory. Recover that
+evidence by rerunning a narrower query. Secret prefixes are withheld across read
+and polling boundaries until they can be safely redacted before either storage
+path receives them.
 
 ## Model failures and compaction
 

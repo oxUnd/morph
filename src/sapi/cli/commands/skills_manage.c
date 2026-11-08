@@ -24,7 +24,8 @@ struct cli_skills_manage_skills_options {
 	const char *path;
 	const char *ref;
 	const char *config;
-	const char *names[SKILL_MAX_ENTRIES];
+	morph_array_t name_storage;
+	const char **names;
 	int name_count;
 	int global;
 	int list;
@@ -89,7 +90,10 @@ static int cli_skills_manage_skills_parse(int argc, char **argv, const char *con
 {
 	int option;
 
-	memset(options, 0, sizeof(*options));
+	int rc = morph_array_init(&options->name_storage, MORPH_ARRAY_INIT_CAP,
+				   sizeof(*options->names));
+	if (rc != 0)
+		return rc;
 	options->action = argc ? argv[0] : "--help";
 	options->config = config;
 	if (strcmp(options->action, "--help") == 0 || strcmp(options->action, "-h") == 0) {
@@ -116,10 +120,15 @@ static int cli_skills_manage_skills_parse(int argc, char **argv, const char *con
 			options->ref = optarg;
 			break;
 		case CLI_SKILLS_MANAGE_SKILLS_OPTION_SKILL:
-			if (options->name_count == SKILL_MAX_ENTRIES)
-				return -E2BIG;
-			options->names[options->name_count++] = optarg;
+		{
+			const char **slot = morph_array_push_borrow(&options->name_storage);
+			if (!slot)
+				return -ENOMEM;
+			*slot = optarg;
+			options->names = options->name_storage.elts;
+			options->name_count++;
 			break;
+		}
 		case CLI_SKILLS_MANAGE_SKILLS_OPTION_LIST:
 			options->list = 1;
 			break;
@@ -139,9 +148,12 @@ static int cli_skills_manage_skills_parse(int argc, char **argv, const char *con
 	if (strcmp(options->action, "add") == 0 && optind < argc)
 		options->source = argv[optind++];
 	while (optind < argc) {
-		if (options->name_count == SKILL_MAX_ENTRIES)
-			return -E2BIG;
-		options->names[options->name_count++] = argv[optind++];
+		const char **slot = morph_array_push_borrow(&options->name_storage);
+		if (!slot)
+			return -ENOMEM;
+		*slot = argv[optind++];
+		options->names = options->name_storage.elts;
+		options->name_count++;
 	}
 	if (strcmp(options->action, "add") == 0) {
 		if (!options->source || (options->all && options->name_count) ||
@@ -401,7 +413,7 @@ static void cli_skills_manage_skills_candidates_print(const morph_array_t *candi
 
 static int cli_skills_manage_skills_select(const struct cli_skills_manage_skills_options *options,
 					   const morph_array_t *candidates,
-					   int selected[SKILL_MAX_ENTRIES])
+					   int *selected)
 {
 	if (options->all) {
 		for (size_t i = 0; i < candidates->nelts; i++)
@@ -440,12 +452,13 @@ static int cli_skills_manage_skills_select(const struct cli_skills_manage_skills
 	}
 	fputs("Select skill numbers (comma/space separated), or 'all': ", stderr);
 	fflush(stderr);
-	char input[BUFSIZ];
+	char *input MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	size_t capacity = 0;
 	char *save = NULL;
 	char *token;
 	int count = 0;
 
-	if (!fgets(input, sizeof(input), stdin))
+	if (getline(&input, &capacity, stdin) < 0)
 		return -ECANCELED;
 	for (token = strtok_r(input, ", \t\r\n", &save); token;
 	     token = strtok_r(NULL, ", \t\r\n", &save)) {
@@ -499,7 +512,8 @@ static int cli_skills_manage_skills_add(struct morph_log *logger,
 {
 	struct cli_skills_manage_skills_source source = {0};
 	morph_array_t candidates = {0};
-	int selected[SKILL_MAX_ENTRIES] = {0};
+	morph_array_t selection MORPH_CLEANUP(morph_array_cleanup) = {0};
+	int *selected = NULL;
 	int rc = morph_array_init(&candidates, 16, sizeof(struct cli_skill_candidate));
 
 	if (rc != 0)
@@ -510,6 +524,14 @@ static int cli_skills_manage_skills_add(struct morph_log *logger,
 							  &candidates);
 	if (rc == 0 && options->list)
 		cli_skills_manage_skills_candidates_print(&candidates);
+	if (rc == 0 && !options->list) {
+		rc = morph_array_init(&selection, candidates.nelts, sizeof(*selected));
+		if (rc == 0 && candidates.nelts) {
+			selected = morph_array_push_n_borrow(&selection, candidates.nelts);
+			if (!selected)
+				rc = -ENOMEM;
+		}
+	}
 	if (rc == 0 && !options->list)
 		rc = cli_skills_manage_skills_select(options, &candidates, selected);
 	/* Check every destination before installing any selected skill. */
@@ -579,7 +601,8 @@ static int cli_skills_manage_skills_list(const struct cli_skills_manage_skills_o
 	}
 	if (rc >= 0) {
 		for (int i = 0; i < registry->count; i++) {
-			const struct skill_entry *entry = &registry->entries[i];
+			const struct skill_entry *entry = skill_entry_borrow_at(registry,
+			(size_t)i);
 			cJSON *metadata = cli_skill_store_metadata_copy(entry->skill_dir);
 			cJSON *source = cJSON_GetObjectItemCaseSensitive(metadata, "source");
 			cJSON *commit = cJSON_GetObjectItemCaseSensitive(metadata, "commit");
@@ -732,9 +755,15 @@ static void cli_skills_manage_fd_cleanup(int *owner)
 	*owner = -1;
 }
 
+static void cli_skills_manage_options_cleanup(struct cli_skills_manage_skills_options *options)
+{
+	morph_array_cleanup(&options->name_storage);
+}
+
 int cli_skills_manage_run(struct morph_log *logger, int argc, char **argv, const char *config_path)
 {
-	struct cli_skills_manage_skills_options options;
+	struct cli_skills_manage_skills_options options
+	MORPH_CLEANUP(cli_skills_manage_options_cleanup) = {0};
 	char *user_dir MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	char *root MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	char *lock MORPH_CLEANUP(morph_charp_cleanup) = NULL;

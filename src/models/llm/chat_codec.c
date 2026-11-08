@@ -100,6 +100,7 @@ int llm_chat_decode_event(const char *event, const char *data, void *ud)
 		return 0;
 
 	if (strcmp(data, "[DONE]") == 0) {
+		ctx->terminal_received = 1;
 		log_dbg(ctx ? ctx->logger : NULL, "llm_chat_decode_event: [DONE]");
 		return 0;
 	}
@@ -176,15 +177,23 @@ int llm_chat_decode_event(const char *event, const char *data, void *ud)
 
 			cJSON *id_item = cJSON_GetObjectItem(tc_item, "id");
 			if (cJSON_IsString(id_item) && id_item->valuestring) {
-				strncpy(tc->id, id_item->valuestring, sizeof(tc->id) - 1);
+				int rc = llm_stream_string_copy(&tc->id, id_item->valuestring);
+				if (rc != 0) {
+					cJSON_Delete(root);
+					return rc;
+				}
 			}
 
 			cJSON *func_obj = cJSON_GetObjectItem(tc_item, "function");
 			if (func_obj) {
 				cJSON *name_item = cJSON_GetObjectItem(func_obj, "name");
 				if (cJSON_IsString(name_item) && name_item->valuestring) {
-					strncpy(tc->name, name_item->valuestring,
-						sizeof(tc->name) - 1);
+					int rc = llm_stream_string_copy(
+						&tc->name, name_item->valuestring);
+					if (rc != 0) {
+						cJSON_Delete(root);
+						return rc;
+					}
 				}
 				cJSON *args_item = cJSON_GetObjectItem(func_obj, "arguments");
 				if (cJSON_IsString(args_item) && args_item->valuestring) {
@@ -378,6 +387,7 @@ const struct llm_codec *llm_chat_codec_borrow(void)
 		.tools = build_tools_cjson,
 		.configure = chat_configure,
 		.event = llm_chat_decode_event,
+		.requires_terminal_event = 1,
 	};
 
 	return &codec;

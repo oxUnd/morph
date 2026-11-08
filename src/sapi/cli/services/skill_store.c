@@ -100,8 +100,6 @@ static int cli_skill_store_scan_directory(struct morph_log *logger, const char *
 				skill_md);
 			return -EINVAL;
 		}
-		if (candidates->nelts >= SKILL_MAX_ENTRIES)
-			return -E2BIG;
 		rc = cli_management_copy_arg(candidate.path, sizeof(candidate.path), path);
 		if (rc != 0)
 			return rc;

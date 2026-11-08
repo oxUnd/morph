@@ -9,6 +9,7 @@ extern "C" {
 
 #define ASK_USER_CHOICES_MAX 64
 #define ASK_USER_TIMEOUT_DEFAULT 60
+#define ASK_USER_ANSWER_MAX_BYTES (1024u * 1024u)
 
 /* Borrowed for the duration of the callback. Required questions have no deadline.
  * Return -ETIMEDOUT only for an untouched optional prompt; cancellation must

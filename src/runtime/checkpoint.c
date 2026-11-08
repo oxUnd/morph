@@ -38,6 +38,15 @@ static int checkpoint_edit_capture(void *user_data, int64_t id, const char *path
 	return checkpoint_store_capture(&runtime->context.database, id, path);
 }
 
+static int checkpoint_edit_validate_write(void *user_data, int64_t id, const char *path,
+					  size_t bytes, const char *removed_path)
+{
+	struct runtime *runtime = user_data;
+
+	return checkpoint_store_validate_write(&runtime->context.database, id, path, bytes,
+		removed_path);
+}
+
 static int checkpoint_edit_finish(void *user_data, int64_t id)
 {
 	struct runtime *runtime = user_data;
@@ -258,6 +267,8 @@ int runtime_checkpoints_init(struct runtime *runtime)
 		.capture = checkpoint_edit_capture,
 		.finish = checkpoint_edit_finish,
 		.request = checkpoint_request,
+		.max_file_bytes = CHECKPOINT_FILE_MAX_BYTES,
+		.validate_write = checkpoint_edit_validate_write,
 	};
 	return 0;
 }

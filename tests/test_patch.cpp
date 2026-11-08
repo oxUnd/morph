@@ -91,6 +91,11 @@ struct PatchTrackingRecorder {
 	int request_error = 0;
 	int request_count = 0;
 	int64_t requested_id = 0;
+	int validation_error = 0;
+	int validation_count = 0;
+	size_t validated_bytes = 0;
+	std::string validated_target;
+	std::string validated_removed;
 	std::string requested_action;
 	std::string fail_capture;
 	std::vector<std::string> paths;
@@ -144,6 +149,21 @@ static int tracking_finish(void *opaque, int64_t id)
 	return recorder.finish_error;
 }
 
+static int tracking_validate_write(void *opaque, int64_t id, const char *path, size_t bytes,
+				   const char *removed_path)
+{
+	auto &recorder = *static_cast<PatchTrackingRecorder *>(opaque);
+
+	EXPECT_EQ(id, 42);
+	EXPECT_TRUE(recorder.active);
+	recorder.validation_count++;
+	recorder.validated_target = std::filesystem::path(path).filename();
+	recorder.validated_bytes = bytes;
+	recorder.validated_removed = removed_path ?
+		std::filesystem::path(removed_path).filename().string() : "";
+	return recorder.validation_error;
+}
+
 static int tracking_request(void *opaque, const char *action, int64_t id, cJSON **out)
 {
 	auto &recorder = *static_cast<PatchTrackingRecorder *>(opaque);
@@ -184,7 +204,9 @@ class PatchTrackingTest : public PatchTest
 				      tracking_begin,
 				      tracking_capture,
 				      tracking_finish,
-				      tracking_request};
+				      tracking_request,
+				      0,
+				      nullptr};
 	}
 
 	void TearDown() override
@@ -308,6 +330,61 @@ TEST_F(PatchTrackingTest, SealFailureAfterEditingIsNeverReportedAsSuccess)
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(checkpoint, "status")),
 		     "seal_failed");
 	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(checkpoint, "changes_may_have_applied")));
+}
+
+TEST_F(PatchTrackingTest, RejectsOversizedPostimageBeforeWritingAndStillSeals)
+{
+	runtime.checkpoint.max_file_bytes = 8;
+	write_file("file.txt", "ok\n");
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	EXPECT_EQ(run("apply_patch",
+		"*** Begin Patch\n*** Update File: file.txt\n@@\n-ok\n+too much content\n"
+		"*** End Patch", &result), -EFBIG);
+	EXPECT_EQ(read_file("file.txt"), "ok\n");
+	EXPECT_EQ(recorder.finish_count, 1);
+	EXPECT_NE(std::string(result.text.data).find("8-byte checkpoint limit"), std::string::npos);
+	tool_result_cleanup(&result);
+	EXPECT_EQ(run("apply_patch",
+		"*** Begin Patch\n*** Add File: new.txt\n+too much content\n*** End Patch",
+		&result),
+		-EFBIG);
+	EXPECT_FALSE(std::filesystem::exists(path("new.txt")));
+	EXPECT_EQ(recorder.finish_count, 2);
+}
+
+TEST_F(PatchTrackingTest, AggregateValidationRejectsAWriteAndStillSealsTheAttempt)
+{
+	runtime.checkpoint.validate_write = tracking_validate_write;
+	recorder.validation_error = -EFBIG;
+	write_file("file.txt", "before\n");
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	EXPECT_EQ(run("apply_patch",
+		"*** Begin Patch\n*** Update File: file.txt\n@@\n-before\n+after\n*** End Patch",
+		&result), -EFBIG);
+	EXPECT_EQ(read_file("file.txt"), "before\n");
+	EXPECT_EQ(recorder.validation_count, 1);
+	EXPECT_EQ(recorder.validated_bytes, 6u);
+	EXPECT_EQ(recorder.validated_target, "file.txt");
+	EXPECT_EQ(recorder.validated_removed, "");
+	EXPECT_EQ(recorder.finish_count, 1);
+	EXPECT_NE(std::string(result.text.data).find("postimage budget rejected"),
+		std::string::npos);
+}
+
+TEST_F(PatchTrackingTest, MoveValidationCombinesTheDestinationWriteAndSourceRemoval)
+{
+	runtime.checkpoint.validate_write = tracking_validate_write;
+	write_file("old.txt", "old\n");
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	ASSERT_EQ(run("apply_patch",
+		"*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n@@\n-old\n+new\n"
+		"*** End Patch", &result), 0);
+	EXPECT_EQ(recorder.validation_count, 1);
+	EXPECT_EQ(recorder.validated_target, "new.txt");
+	EXPECT_EQ(recorder.validated_removed, "old.txt");
+	EXPECT_EQ(recorder.validated_bytes, 4u);
+	EXPECT_FALSE(std::filesystem::exists(path("old.txt")));
+	EXPECT_EQ(read_file("new.txt"), "new\n");
 }
 
 TEST_F(PatchTrackingTest, CheckpointRequiresExplicitTargetAndRetainsConflictDetails)
@@ -620,8 +697,8 @@ TEST_F(PatchTest, ToolAcceptsRawTextAndPublishesGrammar)
 	ASSERT_NE(entry, nullptr);
 	EXPECT_EQ(entry->desc.input_kind, TOOL_INPUT_TEXT);
 	EXPECT_NE(entry->flags & TOOL_FLAG_INTERNAL_APPROVAL, 0);
-	EXPECT_NE(strstr(entry->desc.description, "below 4 KiB"), nullptr);
-	EXPECT_NE(strstr(entry->desc.description, "continuation marker"),
+	EXPECT_NE(strstr(entry->desc.description, "up to 64 KiB"), nullptr);
+	EXPECT_NE(strstr(entry->desc.description, "natural file or hunk boundaries"),
 		nullptr);
 	EXPECT_NE(strstr(entry->desc.description, "Codex patch"), nullptr);
 	EXPECT_NE(strstr(entry->desc.description, dir), nullptr);

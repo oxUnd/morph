@@ -22,7 +22,31 @@
 #include <string.h>
 #include <stdio.h>
 
-#define LLM_IMAGE_QA_MAX_DIM 360
+#define LLM_IMAGE_QA_MAX_DIM 2048
+
+const char *model_api_key_borrow(const struct model *model)
+{
+	return model ? (model->api_key_owned ? model->api_key_owned : model->api_key) : "";
+}
+
+int model_authorization_header_create(const struct model *model, morph_buf_t *header)
+{
+	morph_buf_t candidate MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	const char *key = model_api_key_borrow(model);
+	int rc;
+
+	if (!model || !header)
+		return -EINVAL;
+	if (header->data)
+		return -EEXIST;
+	if (strpbrk(key, "\r\n"))
+		return -EINVAL;
+	rc = morph_buf_printf(&candidate, "Authorization: Bearer %s", key);
+	if (rc != 0)
+		return rc;
+	morph_buf_move(header, &candidate);
+	return 0;
+}
 
 struct model *model_request_view_init(const struct model *source,
 				      const struct http_control *control, struct model *storage)
@@ -181,7 +205,8 @@ static int llm_post_sse_with_retry(struct model *self, const char *operation,
 				   const char *usage_phase, const char *url, const char *body,
 				   size_t body_len, const char **headers, long timeout,
 				   sse_callback cb, llm_stream_callback stream_cb,
-				   sse_event_cb event_cb, void *user_data,
+				   sse_event_cb event_cb, int requires_terminal_event,
+				   void *user_data,
 				   struct llm_stream_ctx *result, char **error_detail)
 {
 	int retries = self->retry_count;
@@ -219,14 +244,36 @@ static int llm_post_sse_with_retry(struct model *self, const char *operation,
 		int status = http_post_sse_ex_timeout_metadata(
 			&self->http, url, body, body_len, "application/json", headers, 1, timeout,
 			llm_http_cb, &hctx, &metadata);
+		int http_status = status;
 		sse_parser_free(&parser);
 
 		char *detail MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 		if (status >= 400 && hctx.error_buf.len > 0)
 			detail = llm_extract_error(hctx.error_buf.data);
+		if (status >= 0 && status < 400 && requires_terminal_event) {
+			if (!ctx.terminal_received) {
+				ctx.terminal_error = MORPH_ERR_PROTOCOL;
+				int rc = llm_stream_string_copy(
+					&ctx.terminal_detail,
+					"Model stream closed before a terminal response event.");
+				if (rc != 0)
+					ctx.terminal_error = rc;
+			}
+			if (ctx.terminal_error) {
+				status = ctx.terminal_error;
+				free(detail);
+				detail = morph_charp_steal(&ctx.terminal_detail);
+			}
+		}
 
 		llm_record_error(self, status, hctx.error_buf.data, llm_stream_started(&ctx),
 				 metadata.retry_after_seconds);
+		if (requires_terminal_event && ctx.terminal_error) {
+			self->error_info.kind = ctx.terminal_error == MORPH_ERR_API
+				? MODEL_ERROR_API : MODEL_ERROR_INCOMPLETE;
+			self->error_info.http_status = http_status > 0 ? http_status : 0;
+			self->error_info.retryable = 0;
+		}
 		if (self->error_info.kind == MODEL_ERROR_CONTEXT) {
 			if (error_detail)
 				*error_detail = morph_charp_steal(&detail);
@@ -267,7 +314,7 @@ static int llm_chat(struct model *self, const char *system_prompt, const char **
 	int max_tokens;
 	long timeout;
 
-	if (!self || !self->api_key[0]) {
+	if (!model_api_key_borrow(self)[0]) {
 		log_err(self ? self->http.logger : NULL, "llm_chat: no API key configured");
 		if (self) {
 			model_clear_last_error(self);
@@ -299,16 +346,19 @@ static int llm_chat(struct model *self, const char *system_prompt, const char **
 	char url[512];
 	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
 
-	char auth_header[512];
-	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", self->api_key);
-	const char *extra_headers[] = {auth_header};
+	morph_buf_t auth_header MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	rc = model_authorization_header_create(self, &auth_header);
+	if (rc != 0)
+		return rc;
+	const char *extra_headers[] = {morph_buf_cstr_borrow(&auth_header)};
 
 	log_dbg(self ? self->http.logger : NULL,
 		"llm_chat: sending SSE request to %s, timeout=%lds", url, timeout);
 	struct llm_stream_ctx ctx MORPH_CLEANUP(llm_stream_cleanup) = {0};
 	char *detail MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	int status = llm_post_sse_with_retry(self, "llm_chat", opts ? opts->usage_phase : NULL, url,
-					     body, body_len, extra_headers, timeout, cb, NULL, NULL,
+						     body, body_len, extra_headers, timeout, cb,
+						     NULL, NULL, 1,
 					     user_data, &ctx, &detail);
 	log_dbg(self ? self->http.logger : NULL, "llm_chat: SSE request done, status=%d", status);
 
@@ -356,7 +406,7 @@ static int llm_chat_with_image(struct model *self, const char *system_prompt, co
 	long timeout;
 
 	model_clear_last_error(self);
-	if (!self || !self->api_key[0]) {
+	if (!model_api_key_borrow(self)[0]) {
 		log_err(self ? self->http.logger : NULL,
 			"llm_chat_with_image: no API key configured");
 		if (self) {
@@ -461,9 +511,11 @@ static int llm_chat_with_image(struct model *self, const char *system_prompt, co
 	char url[512];
 	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
 
-	char auth_header[512];
-	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", self->api_key);
-	const char *extra_headers[] = {auth_header};
+	morph_buf_t auth_header MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int auth_rc = model_authorization_header_create(self, &auth_header);
+	if (auth_rc != 0)
+		return auth_rc;
+	const char *extra_headers[] = {morph_buf_cstr_borrow(&auth_header)};
 
 	log_dbg(self ? self->http.logger : NULL,
 		"llm_chat_with_image: sending SSE request to %s, timeout=%lds, max_tokens=%d, "
@@ -472,7 +524,7 @@ static int llm_chat_with_image(struct model *self, const char *system_prompt, co
 	struct llm_stream_ctx ctx MORPH_CLEANUP(llm_stream_cleanup) = {0};
 	char *detail MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	int status = llm_post_sse_with_retry(self, "llm_chat_with_image", NULL, url, body, body_len,
-					     extra_headers, timeout, cb, NULL, NULL, user_data,
+					     extra_headers, timeout, cb, NULL, NULL, 1, user_data,
 					     &ctx, &detail);
 	log_dbg(self ? self->http.logger : NULL, "llm_chat_with_image: SSE request done, status=%d",
 		status);
@@ -608,8 +660,7 @@ static int llm_chat_with_tools_impl(struct model *self, const char *system_promp
 	cJSON *root = NULL;
 	char *body MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
 	char url[512];
-	char authorization[512];
-	const char *headers[] = {authorization};
+	morph_buf_t authorization MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	char *detail MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	long timeout;
 	int rc;
@@ -621,7 +672,7 @@ static int llm_chat_with_tools_impl(struct model *self, const char *system_promp
 	    response->tool_call_count)
 		return -EEXIST;
 	model_clear_last_error(self);
-	if (!self->api_key[0]) {
+	if (!model_api_key_borrow(self)[0]) {
 		self->error_info.kind = MODEL_ERROR_CONFIG;
 		model_set_last_error(self, "no API key configured");
 		return MORPH_ERR_NOT_CONFIGURED;
@@ -645,21 +696,14 @@ static int llm_chat_with_tools_impl(struct model *self, const char *system_promp
 		return -ENOMEM;
 	body[utf8_sanitize_into(body, body, strlen(body))] = '\0';
 	snprintf(url, sizeof(url), "%s%s", self->api_base, codec->endpoint);
-	snprintf(authorization, sizeof(authorization), "Authorization: Bearer %s", self->api_key);
+	rc = model_authorization_header_create(self, &authorization);
+	if (rc != 0)
+		return rc;
+	const char *headers[] = {morph_buf_cstr_borrow(&authorization)};
 	timeout = self->timeout_seconds > 0 ? self->timeout_seconds : 300L;
 	status = llm_post_sse_with_retry(self, "llm_chat_with_tools", NULL, url, body, strlen(body),
 					 headers, timeout, thought_cb, stream_cb, codec->event,
-					 stream_ud, &ctx, &detail);
-	if (status < 0) {
-		model_set_last_error(self, "HTTP/SSE request failed: %s", morph_strerror(status));
-		return status;
-	}
-	if (status >= 400) {
-		model_set_last_error(self, "HTTP %d: %s", status,
-				     detail ? detail : "model request failed");
-		response->content = morph_charp_steal(&detail);
-		return MORPH_ERR_API;
-	}
+					 codec->requires_terminal_event, stream_ud, &ctx, &detail);
 	llm_usage_finalize(self, &ctx, strlen(body));
 	if (ctx.accumulated.len > 0)
 		response->content = morph_buf_detach(&ctx.accumulated);
@@ -667,7 +711,19 @@ static int llm_chat_with_tools_impl(struct model *self, const char *system_promp
 		response->reasoning_content = morph_buf_detach(&ctx.reasoning);
 	llm_stream_tool_calls_move(&ctx, response);
 	response->usage = ctx.usage;
-	model_report_usage(self, &response->usage);
+	if ((status >= 0 && status < 400) || !strcmp(response->usage.usage_source, "provider"))
+		model_report_usage(self, &response->usage);
+	if (status < 0) {
+		model_set_last_error(self, "%s", detail ? detail : morph_strerror(status));
+		return status;
+	}
+	if (status >= 400) {
+		model_set_last_error(self, "HTTP %d: %s", status,
+				     detail ? detail : "model request failed");
+		if (!response->content)
+			response->content = morph_charp_steal(&detail);
+		return MORPH_ERR_API;
+	}
 	return status;
 }
 
@@ -709,9 +765,11 @@ static int llm_generate(struct model *self, const char *prompt, const char *out_
 	struct http_response resp = {0};
 	char url[512];
 	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
-	char auth_header[512];
-	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", self->api_key);
-	const char *extra_headers[] = {auth_header};
+	morph_buf_t auth_header MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	rc = model_authorization_header_create(self, &auth_header);
+	if (rc != 0)
+		return rc;
+	const char *extra_headers[] = {morph_buf_cstr_borrow(&auth_header)};
 	rc = http_post_ex(&self->http, url, body, body_len, "application/json", extra_headers, 1,
 			  &resp);
 
@@ -737,14 +795,32 @@ static int llm_generate(struct model *self, const char *prompt, const char *out_
 
 static void llm_destroy(struct model *self)
 {
-	if (self)
+	if (self) {
+		free(self->api_key_owned);
 		free(self);
+	}
+}
+
+static void llm_owner_cleanup(struct model **owner)
+{
+	if (!owner)
+		return;
+	llm_destroy(*owner);
+	*owner = NULL;
+}
+
+static struct model *llm_owner_steal(struct model **owner)
+{
+	struct model *model = *owner;
+
+	*owner = NULL;
+	return model;
 }
 
 struct model *model_llm_create(struct morph_log *logger, const char *provider, const char *model_id,
 			       const char *api_base, const char *api_key)
 {
-	struct model *m = calloc(1, sizeof(*m));
+	struct model *m MORPH_CLEANUP(llm_owner_cleanup) = calloc(1, sizeof(*m));
 	if (!m)
 		return NULL;
 	m->http.logger = logger;
@@ -755,8 +831,13 @@ struct model *model_llm_create(struct morph_log *logger, const char *provider, c
 		strncpy(m->api_base, api_base, sizeof(m->api_base) - 1);
 	else
 		strncpy(m->api_base, "https://api.openai.com/v1", sizeof(m->api_base) - 1);
-	if (api_key)
-		strncpy(m->api_key, api_key, sizeof(m->api_key) - 1);
+	if (api_key && strlen(api_key) >= sizeof(m->api_key)) {
+		m->api_key_owned = strdup(api_key);
+		if (!m->api_key_owned)
+			return NULL;
+	} else if (api_key) {
+		memcpy(m->api_key, api_key, strlen(api_key) + 1);
+	}
 	m->context_limit = 128000;
 	m->max_tokens = 4096;
 	m->timeout_seconds = 0;
@@ -767,7 +848,7 @@ struct model *model_llm_create(struct morph_log *logger, const char *provider, c
 	m->chat_with_image = llm_chat_with_image;
 	m->generate = llm_generate;
 	m->destroy = llm_destroy;
-	return m;
+	return llm_owner_steal(&m);
 }
 
 struct model *model_llm_clone(const struct model *source, struct morph_log *logger)
@@ -777,7 +858,7 @@ struct model *model_llm_clone(const struct model *source, struct morph_log *logg
 	if (!source)
 		return NULL;
 	copy = model_llm_create(logger, source->provider, source->model_id, source->api_base,
-				source->api_key);
+				model_api_key_borrow(source));
 	if (!copy)
 		return NULL;
 	memcpy(copy->name, source->name, sizeof(copy->name));
@@ -807,7 +888,7 @@ void chat_response_free(struct chat_response *resp)
 	free(resp->reasoning_content);
 	resp->reasoning_content = NULL;
 	for (int i = 0; i < resp->tool_call_count; i++)
-		free(resp->tool_calls[i].arguments);
+		tool_call_cleanup(&resp->tool_calls[i]);
 	free(resp->tool_calls);
 	resp->tool_calls = NULL;
 	resp->tool_call_count = 0;
@@ -822,7 +903,7 @@ void chat_message_cleanup(struct chat_message *msg)
 	free(msg->tool_call_id);
 	free(msg->reasoning_content);
 	for (int i = 0; i < msg->tool_call_count; i++)
-		free(msg->tool_calls[i].arguments);
+		tool_call_cleanup(&msg->tool_calls[i]);
 	free(msg->tool_calls);
 	memset(msg, 0, sizeof(*msg));
 }
@@ -831,24 +912,36 @@ void tool_call_cleanup(struct tool_call *tc)
 {
 	if (!tc)
 		return;
+	free(tc->id);
+	free(tc->tool_call_id);
+	free(tc->name);
+	free(tc->provider_item_id);
 	free(tc->arguments);
-	tc->arguments = NULL;
+	memset(tc, 0, sizeof(*tc));
 }
 
 int tool_call_clone(const struct tool_call *source, struct tool_call *out)
 {
 	if (!source || !out || source == out)
 		return -EINVAL;
-	if (out->arguments)
+	if (out->id || out->tool_call_id || out->name || out->provider_item_id || out->arguments)
 		return -EEXIST;
-	struct tool_call copy = *source;
-	copy.arguments = NULL;
-	if (source->arguments) {
-		copy.arguments = strdup(source->arguments);
-		if (!copy.arguments)
-			return -ENOMEM;
+	struct tool_call copy MORPH_CLEANUP(tool_call_cleanup) = {0};
+	const char *values[] = {source->id, source->tool_call_id, source->name,
+				 source->provider_item_id, source->arguments};
+	char **slots[] = {&copy.id, &copy.tool_call_id, &copy.name,
+			  &copy.provider_item_id, &copy.arguments};
+
+	for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+		if (values[i]) {
+			*slots[i] = strdup(values[i]);
+			if (!*slots[i])
+				return -ENOMEM;
+		}
 	}
+	copy.input_kind = source->input_kind;
 	*out = copy;
+	memset(&copy, 0, sizeof(copy));
 	return 0;
 }
 

@@ -4,6 +4,10 @@
 #include "db/database.h"
 #include "cJSON.h"
 
+#define CHECKPOINT_FILE_MAX_BYTES (16U * 1024U * 1024U)
+#define CHECKPOINT_DATA_MAX_BYTES (128U * 1024U * 1024U)
+#define CHECKPOINT_PLAN_MAX_BYTES (2U * CHECKPOINT_DATA_MAX_BYTES)
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,10 +26,16 @@ int checkpoint_store_create(struct db *db, int64_t session_id, const char *workd
 /* Capture precedes mutation. The first capture preserves the preimage; seal
  * records afterimages after every editing attempt, including partial failure.
  * Paths must remain inside the checkpoint workdir; links are rejected. Regular
- * files are limited to 16 MiB; captured data and restore plans to 128 MiB.
+ * files are limited to 16 MiB; captured before/after data to 128 MiB. Restore
+ * plans allow another 128 MiB for current-state compensation copies.
  * Capture/seal pairs use one db connection; interrupted or failed attempts
  * cannot be silently sealed by a later unrelated editing attempt. */
 int checkpoint_store_capture(struct db *db, int64_t id, const char *path);
+/* Call between capture and seal, before writing. removed_path is the source of
+ * a move, or NULL. The caller serializes validation and mutation with other
+ * editing attempts; runtime checkpoint begin/finish owns that lock. */
+int checkpoint_store_validate_write(struct db *db, int64_t id, const char *path,
+				    size_t bytes, const char *removed_path);
 int checkpoint_store_seal(struct db *db, int64_t id);
 
 /* JSON output slots start NULL; occupied slots return -EEXIST unchanged.

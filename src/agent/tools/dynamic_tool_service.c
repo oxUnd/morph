@@ -41,7 +41,7 @@ static int reload_persistent_if_present(struct dynamic_tools_context *ctx, const
 
 static int valid_tool_name(const char *name)
 {
-	if (!name || !*name)
+	if (!name || !*name || strlen(name) >= TOOL_NAME_MAX)
 		return 0;
 	for (const char *p = name; *p; p++) {
 		if (!morph_name_char_valid(*p, "_") || (*p >= 'A' && *p <= 'Z'))
@@ -157,8 +157,8 @@ static int validate_tool_create_args(cJSON *root, cJSON *name_item, cJSON *sourc
 	} else if (!valid_tool_name(name_item->valuestring)) {
 		rc = morph_buf_printf(err,
 				      "- name: invalid value \"%s\"; use only lowercase "
-				      "letters, digits, and underscore\n",
-				      name_item->valuestring);
+				      "letters, digits, and underscore, with at most %d bytes\n",
+				      name_item->valuestring, TOOL_NAME_MAX - 1);
 	}
 	name = cJSON_IsString(name_item) ? name_item->valuestring : "";
 	(void)name;
@@ -259,22 +259,13 @@ static int load_tool_from_dir(struct tool_registry *reg, struct tool_context *tc
 		dynamic_tool_store_definition_cleanup(&definition);
 		return -ENOMEM;
 	}
-	if (strlen(definition.name) >= sizeof(dt->name) ||
-	    (definition.description && strlen(definition.description) >= sizeof(dt->description)) ||
-	    strlen(definition.input_schema) >= sizeof(dt->input_schema) ||
-	    strlen(definition.output_schema) >= sizeof(dt->output_schema)) {
-		dynamic_tool_store_definition_cleanup(&definition);
-		dynamic_tool_runner_destroy(dt);
-		return -ENAMETOOLONG;
-	}
 	memcpy(dt->name, definition.name, strlen(definition.name) + 1);
-	if (definition.description)
-		memcpy(dt->description, definition.description, strlen(definition.description) + 1);
-	memcpy(dt->input_schema, definition.input_schema, strlen(definition.input_schema) + 1);
-	memcpy(dt->output_schema, definition.output_schema, strlen(definition.output_schema) + 1);
+	dt->description = strdup(definition.description ? definition.description : "");
+	dt->input_schema = strdup(definition.input_schema);
+	dt->output_schema = strdup(definition.output_schema);
 	dt->source = strdup(definition.source);
 	dynamic_tool_store_definition_cleanup(&definition);
-	if (!dt->source) {
+	if (!dt->source || !dt->description || !dt->input_schema || !dt->output_schema) {
 		dynamic_tool_runner_destroy(dt);
 		return -ENOMEM;
 	}
@@ -494,15 +485,21 @@ static int service_create(const char *args_json, struct tool_result *result, voi
 		cJSON_Delete(root);
 		return tool_create_fail(result, stage, -ENOMEM, "failed to allocate dynamic tool");
 	}
-	strncpy(dt->name, name_item->valuestring, sizeof(dt->name) - 1);
+	memcpy(dt->name, name_item->valuestring, strlen(name_item->valuestring) + 1);
 	if (cJSON_IsString(desc_item) && desc_item->valuestring)
-		strncpy(dt->description, desc_item->valuestring, sizeof(dt->description) - 1);
-	else
-		snprintf(dt->description, sizeof(dt->description), "Dynamic JS tool %s", dt->name);
-	strncpy(dt->input_schema, schema, sizeof(dt->input_schema) - 1);
-	free(schema);
-	strncpy(dt->output_schema, output_schema, sizeof(dt->output_schema) - 1);
-	free(output_schema);
+		dt->description = strdup(desc_item->valuestring);
+	else {
+		morph_buf_t description MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		if (morph_buf_printf(&description, "Dynamic JS tool %s", dt->name) == 0)
+			dt->description = morph_buf_detach(&description);
+	}
+	dt->input_schema = schema;
+	dt->output_schema = output_schema;
+	if (!dt->description) {
+		dynamic_tool_runner_destroy(dt);
+		cJSON_Delete(root);
+		return tool_create_fail(result, stage, -ENOMEM, "failed to copy tool description");
+	}
 	dt->cfg = ctx->cfg;
 	dt->tctx = ctx->tctx;
 	dt->origin = TOOL_ORIGIN_DYNAMIC_SESSION;

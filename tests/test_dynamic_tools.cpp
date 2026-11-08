@@ -7,6 +7,7 @@ extern "C" {
 #include "cJSON.h"
 #include "util/file.h"
 #include "util/cleanup.h"
+#include "util/json.h"
 }
 #include <cstdio>
 #include <cstdlib>
@@ -182,6 +183,64 @@ TEST_F(DynamicToolsTest, ToolCreateUsesUpdatedSessionDirectory)
 	std::string old = root + "/session/default/session_scoped/tool.js";
 	EXPECT_TRUE(file_exists(expected.c_str()));
 	EXPECT_FALSE(file_exists(old.c_str()));
+}
+
+TEST_F(DynamicToolsTest, LargeSchemasAndDescriptionsSurviveCreationAndReload)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	const std::string description = std::string(24000, 'd') + "description_tail";
+	const std::string schema_text = std::string(100000, 's') + "schema_tail";
+	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	ASSERT_NE(args, nullptr);
+	ASSERT_NE(cJSON_AddStringToObject(args, "name", "large_contract"), nullptr);
+	ASSERT_NE(cJSON_AddStringToObject(args, "description", description.c_str()), nullptr);
+	ASSERT_NE(cJSON_AddStringToObject(args, "source_js",
+		"function run(args) { return { value: 1 }; }"), nullptr);
+	for (const char *key : {"input_schema", "output_schema"}) {
+		auto *schema = cJSON_AddObjectToObject(args, key);
+		ASSERT_NE(schema, nullptr);
+		ASSERT_NE(cJSON_AddStringToObject(schema, "type", "object"), nullptr);
+		ASSERT_NE(cJSON_AddObjectToObject(schema, "properties"), nullptr);
+		ASSERT_NE(cJSON_AddStringToObject(schema, "description", schema_text.c_str()),
+		nullptr);
+	}
+	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(args);
+	ASSERT_NE(json, nullptr);
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	ASSERT_EQ(tool_exec(&reg, "tool_create", json, &result), 0);
+	for (int iteration = 0; iteration < 2; iteration++) {
+		auto *entry = tool_borrow(&reg, "large_contract");
+		ASSERT_NE(entry, nullptr);
+		EXPECT_STREQ(entry->desc.description, description.c_str());
+		for (const char *schema : {entry->desc.input_schema, entry->desc.output_schema}) {
+			cJSON *parsed MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(schema);
+			ASSERT_NE(parsed, nullptr);
+			EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(parsed,
+			"description")),
+				schema_text.c_str());
+		}
+		if (iteration == 0) {
+			tool_registry_cleanup(&reg);
+			tool_registry_init(nullptr, &reg);
+			ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+		}
+	}
+}
+
+TEST_F(DynamicToolsTest, OutputOverflowReportsItsBudgetBeforeParsingPartialJson)
+{
+	cfg.dynamic_tools.default_max_output_bytes = 256;
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	const std::string args = create_args("large_output",
+		"function run() { return { text: 'x'.repeat(4096) }; }");
+	ASSERT_EQ(tool_exec(&reg, "tool_create", args.c_str(), &result), 0);
+	tool_result_cleanup(&result);
+	EXPECT_EQ(tool_exec(&reg, "large_output", "{}", &result), -EFBIG);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("256-byte capture limit"), std::string::npos);
+	EXPECT_EQ(std::string(result.text.data).find("invalid dynamic tool response"),
+		std::string::npos);
 }
 
 TEST_F(DynamicToolsTest, InitLoadsExistingSessionTools)
@@ -1670,8 +1729,10 @@ TEST_F(DynamicToolsTest, LegacyDefinitionsNormalizeBeforeCopyAndUpdate)
 	dynamic_tool_store_definition_cleanup(&definition);
 	struct dynamic_tool tool{};
 	snprintf(tool.name, sizeof(tool.name), "%s", "legacy");
-	snprintf(tool.input_schema, sizeof(tool.input_schema), "%s", TOOL_EMPTY_INPUT_SCHEMA);
-	snprintf(tool.output_schema, sizeof(tool.output_schema), "%s", TOOL_OBJECT_OUTPUT_SCHEMA);
+	char input_schema[] = TOOL_EMPTY_INPUT_SCHEMA;
+	char output_schema[] = TOOL_OBJECT_OUTPUT_SCHEMA;
+	tool.input_schema = input_schema;
+	tool.output_schema = output_schema;
 	snprintf(tool.dir, sizeof(tool.dir), "%s", dir.c_str());
 	snprintf(tool.source_path, sizeof(tool.source_path), "%s", source.c_str());
 	ASSERT_EQ(dynamic_tool_store_write_tool_files(&tool, updated), 0);

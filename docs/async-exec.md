@@ -91,11 +91,17 @@ outside the process-manager lock and are joined during shutdown. Final durations
 are measured at process exit and do not increase on later reads.
 
 The runtime retains state and a bounded, redacted completion snapshot in the
-`process_jobs` table. Current-runtime details can read the whole retained output
-window (`exec.max_session_output`, default 1 MiB per stream); model responses and
-saved completion snapshots use `exec.max_inline_output` (default 32 KiB).
-Truncation is identified explicitly. This is bounded retention, not unlimited
-log archival. Output spool files remain temporary and are removed at shutdown.
+`process_jobs` table. Current-runtime details can read the memory output window
+(`exec.max_session_output`, default 1 MiB per stream); model responses and saved
+completion snapshots use `exec.max_inline_output` (default 32 KiB).
+
+Independent spool files capture redacted output from offset zero under a shared
+64 MiB quota. Read relevant file ranges to recover omitted inline bytes.
+`*_path_bytes` and `*_path_truncated` report how much was captured. The gap from
+`*_path_bytes` to `*_retained_from`, when `*_unrecoverable_bytes` is nonzero, is
+unavailable in both storage paths and requires a narrower rerun. `next_cursor`
+advances past inline omissions and cannot recover them. Spool files are temporary
+and removed at shutdown; they are not unlimited log archival.
 
 After restarting Morph, completed results remain inspectable. Records that were
 still running in a different runtime show `unavailable`; Morph does not infer

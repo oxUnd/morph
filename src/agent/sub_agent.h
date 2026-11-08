@@ -12,6 +12,7 @@ extern "C" {
 #include "agent/context.h"
 #include "db/database.h"
 #include "util/array.h"
+#include "util/queue.h"
 #include <pthread.h>
 
 #define SUB_AGENT_TASK_MAX 8
@@ -41,6 +42,7 @@ struct sub_agent_context {
 struct tool_runtime_context;
 
 struct sub_agent_task {
+	morph_queue_t link;
 	int depth;
 	char id[SUB_AGENT_TASK_ID_MAX];
 	int64_t parent_session_id;
@@ -59,8 +61,11 @@ struct sub_agent_task {
 	/* Borrowed from the running context; task mutex protects publication. */
 	struct react_context *child_ctx;
 	pthread_t thread;
+	int thread_started;
 	int joined;
+	int slot_held;
 	pthread_mutex_t mutex;
+	int mutex_initialized;
 };
 
 struct sub_agent_trace_event {
@@ -79,8 +84,10 @@ struct sub_agent_runtime {
 	struct morph_log *logger;
 	struct sub_agent_entry entries[SUB_AGENT_MAX];
 	int entry_count;
-	struct sub_agent_task tasks[SUB_AGENT_TASK_MAX];
+	/* Stable task owners outlive their active execution slots. */
+	morph_queue_t tasks;
 	int task_count;
+	int active_task_count;
 	int next_task_id;
 	char active_task_id[SUB_AGENT_TASK_ID_MAX];
 	struct tool_registry *parent_tools;
@@ -121,6 +128,8 @@ sub_agent_runtime_create(struct tool_registry *parent_tools,
 			 struct tokenizer *tokenizer,
 			 struct compress_config *compress);
 
+/* Stop submitters and synchronous calls before destruction. Delegate workers
+ * are cancelled and joined before their retained task records are released. */
 void sub_agent_runtime_destroy(struct sub_agent_runtime *rt);
 void sub_agent_runtime_cancel(struct sub_agent_runtime *rt);
 

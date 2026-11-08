@@ -4,6 +4,7 @@
 #include "util/id.h"
 #include "util/utf8.h"
 #include "util/name.h"
+#include "util/cleanup.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -150,9 +151,9 @@ int preference_set(struct db *db, int64_t session_id, const char *scope,
 	return 0;
 }
 
-char *preference_render_copy(struct db *db, int64_t session_id, int history)
+static const char *preference_query_borrow(int history)
 {
-	const char *sql = history ?
+	return history ?
 		"SELECT p.key,p.value,p.scope,p.id,p.source FROM memory_preferences p "
 		"JOIN memory_scopes s ON s.owner=p.owner WHERE s.session_id=? "
 		"AND (p.scope='personal' OR (p.scope='project' AND p.target=s.project) "
@@ -170,6 +171,42 @@ char *preference_render_copy(struct db *db, int64_t session_id, int history)
 		"AS rank FROM versions WHERE v=1 AND value IS NOT NULL) "
 		"SELECT key,value,scope,id,source FROM resolved WHERE rank=1 ORDER BY CASE key "
 		"WHEN 'response.language' THEN 0 WHEN 'response.detail' THEN 1 ELSE 2 END,key";
+}
+
+static void preference_statement_cleanup(sqlite3_stmt **owner)
+{
+	if (*owner)
+		sqlite3_finalize(*owner);
+	*owner = NULL;
+}
+
+int preference_visit_effective(struct db *db, int64_t session_id,
+			       preference_visit_fn visit, void *data)
+{
+	sqlite3_stmt *stmt MORPH_CLEANUP(preference_statement_cleanup) = NULL;
+	int rc;
+
+	if (!db || !db->handle || !visit)
+		return -EINVAL;
+	rc = sqlite3_prepare_v2(db->handle, preference_query_borrow(0), -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		return MORPH_ERR_DB;
+	sqlite3_bind_int64(stmt, 1, session_id);
+	int error = 0;
+	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+		error = visit((const char *)sqlite3_column_text(stmt, 0),
+			      (const char *)sqlite3_column_text(stmt, 1),
+			      (const char *)sqlite3_column_text(stmt, 2),
+			      sqlite3_column_int64(stmt, 3), data);
+		if (error != 0)
+			break;
+	}
+	return error ? error : rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
+}
+
+char *preference_render_copy(struct db *db, int64_t session_id, int history)
+{
+	const char *sql = preference_query_borrow(history);
 	sqlite3_stmt *stmt = NULL;
 	morph_buf_t buf;
 	int rc;

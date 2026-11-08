@@ -10,6 +10,64 @@ from test_cli_pty import Model, Terminal
 from test_cli_jobs_pty import until
 
 
+def run_plain(terminal, releases):
+    until(terminal, lambda text: any(row.startswith('> ') for row in text.splitlines()))
+    case = 0
+
+    def ask(question, choices=None, **options):
+        terminal.send(question + '\r')
+        _, release = terminal.request()
+        releases.append(release)
+        args = {'question': question, **options}
+        if choices is not None:
+            args['choices'] = choices
+        release.delta = {'tool_calls': [{'index': 0, 'id': f'plain-{case}',
+            'type': 'function', 'function': {'name': 'ask_user',
+            'arguments': json.dumps(args)}}]}
+        release.set()
+        until(terminal, lambda text: '? ' + question in text)
+
+    def answer(expected, resolution='user'):
+        nonlocal case
+        body, release = terminal.request()
+        releases.append(release)
+        results = [json.loads(message['content']) for message in body['messages']
+                   if message['role'] == 'tool' and
+                   'ask_user_response' in message['content']]
+        result = results[-1].get('data', results[-1])
+        assert result['answers'] == expected, result
+        assert result['resolution'] == resolution, result
+        marker = f'PLAIN_CASE_COMPLETE_{case}'
+        case += 1
+        release.delta = {'content': marker}
+        release.set()
+        until(terminal, lambda text: marker in text and
+              any(row.startswith('> ') for row in text.splitlines()))
+
+    ask('Plain select color', ['Blue', 'Red'])
+    terminal.send('\x1b[B\r')
+    answer(['Red'])
+
+    ask('Plain long free text')
+    until(terminal, lambda text: 'Your answer' in text)
+    free_text = '界' * 600 + 'FREE_TEXT_END'
+    terminal.send('\x1b[200~' + free_text + '\x1b[201~\r')
+    answer([free_text])
+
+    ask('Plain long custom answer', ['Short answer'])
+    terminal.send('\x1b[F\r')
+    detailed = '界' * 1600 + 'CUSTOM_ANSWER_END'
+    before_paste = len(terminal.raw.encode('utf-8'))
+    terminal.send('\x1b[200~' + detailed + '\x1b[201~\r')
+    answer([detailed])
+    paste_output = len(terminal.raw.encode('utf-8')) - before_paste
+    assert paste_output < 65536, f'paste caused excessive redraw output: {paste_output}'
+
+    ask('Plain optional timeout', response_policy='optional', timeout_seconds=1)
+    answer([], 'timeout_no_input')
+    print('PASS: plain CLI select, long free text, bounded paste redraw, and optional timeout')
+
+
 def main():
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
@@ -20,6 +78,9 @@ def main():
         with tempfile.TemporaryDirectory(prefix='morph-select-pty-') as temp:
             terminal = Terminal(Path(sys.argv[1]).resolve(), Path(temp),
                                 server.server_port, hooks_enabled=False)
+            if '--plain' in sys.argv[2:]:
+                run_plain(terminal, releases)
+                return
             terminal.wait_for_composer()
 
             def ask(question, choices=None, **options):
@@ -144,6 +205,20 @@ def main():
             ask('A free text question')
             terminal.send('My own idea 中文\r')
             answer(['My own idea 中文'])
+
+            ask('A long free text answer')
+            free_text = '界' * 600 + 'FREE_TEXT_END'
+            terminal.send(free_text + '\r')
+            answer([free_text])
+
+            ask('Describe a detailed custom answer', ['Short answer'])
+            terminal.send('\x1b[F\r')
+            detailed = '界' * 1600 + 'CUSTOM_ANSWER_END'
+            before_paste = len(terminal.raw.encode('utf-8'))
+            terminal.send('\x1b[200~' + detailed + '\x1b[201~\r')
+            answer([detailed])
+            paste_output = len(terminal.raw.encode('utf-8')) - before_paste
+            assert paste_output < 65536, f'paste caused excessive redraw output: {paste_output}'
 
             ask('Cancel the selector', ['Yes', 'No'])
             terminal.send('\x03')

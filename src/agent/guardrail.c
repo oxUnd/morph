@@ -483,20 +483,25 @@ guardrail_llm_check(const struct guardrail_rule *rule,
 	}
 	if (!check_text || !*check_text) return GUARDRAIL_PASS;
 
-	char prompt[2048];
-	snprintf(prompt, sizeof(prompt),
+	morph_buf_t prompt MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int prompt_rc = morph_buf_printf(&prompt,
 		"Check if the following text passes this rule: \"%s\"\n\n"
 		"Text: \"%s\"\n\n"
 		"Respond with ONLY a JSON object: "
 		"{\"pass\": true/false, \"reason\": \"brief explanation\"}\n"
 		"Do not include any other text.",
 		rule->description, check_text);
+	if (prompt_rc != 0) {
+		log_warn(cfg->logger, "guardrail: could not build LLM prompt: %s",
+			 morph_strerror(prompt_rc));
+		return GUARDRAIL_PASS;
+	}
 
 	morph_buf_t collect MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	if (morph_buf_init(&collect, 4096) != 0)
 		return GUARDRAIL_PASS;
 
-	const char *msgs[1] = { prompt };
+	const char *msgs[1] = { morph_buf_cstr_borrow(&prompt) };
 	int status = cfg->llm->chat(cfg->llm, NULL, msgs, 1, NULL, llm_collect_cb, &collect);
 	if (status < 0 || collect.len == 0) {
 		log_warn(cfg ? cfg->logger : NULL,

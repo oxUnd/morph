@@ -231,9 +231,13 @@ Supported handler fields are `type`, `command`, `timeout`, `statusMessage`, and
 `additionalContextLimit`. Timeout is seconds, defaults to 600, and accepts
 1–600. SessionEnd defaults to 1 and accepts 1–3; orderly shutdown enforces a
 one-second cleanup budget. Shared execution time is bounded to 600 seconds per
-turn. Input is capped at 1 MiB, stdout/stderr at 64 KiB each, and injected
-context at 32 KiB per turn. Output overflow is an error, never a truncated
-policy decision. Cancellation terminates hook process groups; background
+turn. Input and each stdout/stderr stream are capped at 1 MiB. Each dispatch
+keeps at most 32 KiB of inline context; larger context is saved to a private
+file and replaced with a `Full hook context` reference. Per-handler token
+previews use the same recovery path. Context preview limits do not discard
+a successfully decoded policy decision or input rewrite. Transport output
+overflow is an explicit error, never a truncated policy decision. Cancellation
+terminates hook process groups; background
 descendants are also cleaned up on completion.
 
 The child environment retains basic shell/locale/home/temp variables. Model

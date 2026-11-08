@@ -16,9 +16,9 @@
 struct dynamic_tool {
 	char *source;
 	char name[TOOL_NAME_MAX];
-	char description[TOOL_DESC_MAX];
-	char input_schema[TOOL_SCHEMA_MAX];
-	char output_schema[TOOL_SCHEMA_MAX];
+	char *description;
+	char *input_schema;
+	char *output_schema;
 	char source_path[PATH_MAX];
 	char dir[PATH_MAX];
 	const struct config_dynamic_tools *cfg;

@@ -5,10 +5,13 @@
 #include "agent/tokenizer.h"
 #include "agent/sub_agent.h"
 #include "agent/sub_agent_internal.h"
+#include "agent/tools/sub_agent_tools.h"
 #include "agent/context.h"
 #include "models/llm.h"
 #include "config/config.h"
 #include "util/file.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "event/event.h"
 #include "session.h"
 #include "cJSON.h"
@@ -17,6 +20,11 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 /* ---- mock LLM helpers (following test_react.cpp pattern) ---- */
 
@@ -42,11 +50,33 @@ static int mock_collect_cb(const char *token, void *user_data)
 	return 0;
 }
 
+struct sub_agent_test_gate {
+	std::mutex mutex;
+	std::condition_variable condition;
+	int entered = 0;
+	bool released = false;
+
+	void release()
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		released = true;
+		condition.notify_all();
+	}
+
+	bool wait_for(int count)
+	{
+		std::unique_lock<std::mutex> lock(mutex);
+		return condition.wait_for(lock, std::chrono::seconds(5),
+			[&] { return entered >= count; });
+	}
+};
+
 struct mock_llm_data {
 	const char *response;
 	int call_count;
 	int fail_after;
 	int should_fail;
+	sub_agent_test_gate *gate;
 };
 
 static char *strcasestr_local(const char *haystack, const char *needle)
@@ -69,9 +99,15 @@ static int mock_llm_chat(struct model *self, const char *system_prompt, const ch
 	(void)n;
 	(void)opts;
 	struct mock_llm_data *data = (struct mock_llm_data *)self->handle;
-	data->call_count++;
+	int call_count = __atomic_add_fetch(&data->call_count, 1, __ATOMIC_RELAXED);
+	if (data->gate) {
+		std::unique_lock<std::mutex> lock(data->gate->mutex);
+		data->gate->entered++;
+		data->gate->condition.notify_all();
+		data->gate->condition.wait(lock, [&] { return data->gate->released; });
+	}
 	if (data->should_fail) return -EIO;
-	if (data->fail_after > 0 && data->call_count > data->fail_after)
+	if (data->fail_after > 0 && call_count > data->fail_after)
 		return -EIO;
 	if (cb && data->response) cb(data->response, user_data);
 	return 200;
@@ -131,8 +167,8 @@ static int mock_chat_with_tools(struct model *self, const char *system_prompt,
 		}
 		response->tool_calls = (struct tool_call *)calloc(1, sizeof(*response->tool_calls));
 		response->tool_call_count = 1;
-		snprintf(response->tool_calls[0].id, sizeof(response->tool_calls[0].id), "call_mock_%d", 0);
-		strncpy(response->tool_calls[0].name, tool_name, sizeof(response->tool_calls[0].name) - 1);
+		response->tool_calls[0].id = strdup("call_mock_0");
+		response->tool_calls[0].name = strdup(tool_name);
 		response->tool_calls[0].arguments = args;
 	} else {
 		const char *content = cd.buf;
@@ -1198,6 +1234,224 @@ static void configure_worker(struct sub_agent_runtime *rt,
 	ASSERT_EQ(sub_agent_runtime_load_config(rt, &sa_cfg), 0);
 }
 
+struct sub_agent_test_owner {
+	struct sub_agent_runtime *runtime = nullptr;
+	mock_llm_data *model_data = nullptr;
+	sub_agent_test_gate *gate = nullptr;
+	std::vector<char *> ids;
+
+	~sub_agent_test_owner()
+	{
+		if (gate)
+			gate->release();
+		sub_agent_runtime_destroy(runtime);
+		if (model_data)
+			model_data->gate = nullptr;
+		for (char *id : ids)
+			free(id);
+	}
+};
+
+struct sub_agent_test_snapshot {
+	struct sub_agent_task_info *rows = nullptr;
+	int count = 0;
+
+	~sub_agent_test_snapshot()
+	{
+		sub_agent_runtime_free_task_list(rows, count);
+	}
+};
+
+static bool wait_for_sub_agent(struct sub_agent_runtime *runtime, const char *id)
+{
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (std::chrono::steady_clock::now() < deadline) {
+		enum sub_agent_task_status status = SUB_AGENT_PENDING;
+
+		if (sub_agent_check_status(runtime, id, &status, nullptr) != 0)
+			return false;
+		if (status == SUB_AGENT_COMPLETED)
+			return true;
+		if (status == SUB_AGENT_FAILED || status == SUB_AGENT_CANCELLED)
+			return false;
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	return false;
+}
+
+TEST_F(SubAgentTest, CompletedTasksReleaseCapacityAndKeepHistory)
+{
+	sub_agent_test_owner owner;
+	owner.runtime = sub_agent_runtime_create(&tools, llm, tok, &cfg);
+	ASSERT_NE(owner.runtime, nullptr);
+	configure_worker(owner.runtime, "worker");
+	const int total = SUB_AGENT_TASK_MAX * 2 + 3;
+	for (int i = 0; i < total; i++) {
+		char *result MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+		std::string description = "Sequential task " + std::to_string(i);
+
+		ASSERT_EQ(sub_agent_invoke_sync(owner.runtime, nullptr, &owner.runtime->entries[0],
+			description.c_str(), &result), 0);
+		EXPECT_STREQ(result, "sub-agent result");
+		EXPECT_EQ(owner.runtime->active_task_count, 0);
+	}
+	sub_agent_test_snapshot snapshot;
+	ASSERT_EQ(sub_agent_runtime_task_list_copy(owner.runtime, 0, &snapshot.rows,
+		&snapshot.count), 0);
+	ASSERT_EQ(snapshot.count, total);
+	EXPECT_STREQ(snapshot.rows[0].id, "sa_0");
+	EXPECT_STREQ(snapshot.rows[0].description, "Sequential task 0");
+	EXPECT_EQ(snapshot.rows[0].status, SUB_AGENT_COMPLETED);
+	EXPECT_STREQ(snapshot.rows[total - 1].result, "sub-agent result");
+	char *first_result MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	enum sub_agent_task_status status = SUB_AGENT_PENDING;
+	ASSERT_EQ(sub_agent_check_status(owner.runtime, "sa_0", &status, &first_result), 0);
+	EXPECT_EQ(status, SUB_AGENT_COMPLETED);
+	EXPECT_STREQ(first_result, "sub-agent result");
+}
+
+TEST_F(SubAgentTest, CompletedDelegatesDoNotExhaustExecutionSlots)
+{
+	sub_agent_test_owner owner;
+	owner.runtime = sub_agent_runtime_create(&tools, llm, tok, &cfg);
+	ASSERT_NE(owner.runtime, nullptr);
+	configure_worker(owner.runtime, "worker");
+	for (int i = 0; i < SUB_AGENT_TASK_MAX * 2 + 1; i++) {
+		char *id MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+
+		ASSERT_EQ(sub_agent_delegate(owner.runtime, nullptr, "worker", "Repeated delegate",
+			&id), 0);
+		ASSERT_TRUE(wait_for_sub_agent(owner.runtime, id));
+		EXPECT_EQ(owner.runtime->active_task_count, 0);
+	}
+	EXPECT_EQ(owner.runtime->task_count, SUB_AGENT_TASK_MAX * 2 + 1);
+	char *retained MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(sub_agent_check_status(owner.runtime, "sa_0", nullptr, &retained), 0);
+	EXPECT_STREQ(retained, "sub-agent result");
+}
+
+TEST_F(SubAgentTest, FailedTasksReleaseExecutionSlots)
+{
+	sub_agent_test_owner owner;
+	owner.runtime = sub_agent_runtime_create(&tools, llm, tok, &cfg);
+	ASSERT_NE(owner.runtime, nullptr);
+	configure_worker(owner.runtime, "worker");
+	owner.runtime->entries[0].llm = nullptr;
+	for (int i = 0; i < SUB_AGENT_TASK_MAX + 2; i++) {
+		char *result MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+
+		EXPECT_LT(sub_agent_invoke_sync(owner.runtime, nullptr, &owner.runtime->entries[0],
+			"Task without a model", &result), 0);
+		EXPECT_EQ(result, nullptr);
+		EXPECT_EQ(owner.runtime->active_task_count, 0);
+	}
+	sub_agent_test_snapshot snapshot;
+	ASSERT_EQ(sub_agent_runtime_task_list_copy(owner.runtime, 0, &snapshot.rows,
+		&snapshot.count), 0);
+	ASSERT_EQ(snapshot.count, SUB_AGENT_TASK_MAX + 2);
+	for (int i = 0; i < snapshot.count; i++)
+		EXPECT_EQ(snapshot.rows[i].status, SUB_AGENT_FAILED);
+	owner.runtime->entries[0].llm = llm;
+	char *result MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	EXPECT_EQ(sub_agent_invoke_sync(owner.runtime, nullptr, &owner.runtime->entries[0],
+		"Recovered task", &result), 0);
+}
+
+TEST_F(SubAgentTest, ActiveCapacityIsSharedAndReusableWithoutMovingTaskOwners)
+{
+	sub_agent_test_gate gate;
+	sub_agent_test_owner owner;
+	owner.runtime = sub_agent_runtime_create(&tools, llm, tok, &cfg);
+	ASSERT_NE(owner.runtime, nullptr);
+	configure_worker(owner.runtime, "worker");
+	owner.model_data = static_cast<mock_llm_data *>(llm->handle);
+	owner.model_data->gate = &gate;
+	owner.gate = &gate;
+	for (int i = 0; i < SUB_AGENT_TASK_MAX; i++) {
+		char *id = nullptr;
+
+		ASSERT_EQ(sub_agent_delegate(owner.runtime, nullptr, "worker", "Blocked task", &id),
+		0);
+		owner.ids.push_back(id);
+	}
+	ASSERT_TRUE(gate.wait_for(SUB_AGENT_TASK_MAX));
+	char *rejected MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	EXPECT_EQ(sub_agent_delegate(owner.runtime, nullptr, "worker", "Excess task", &rejected),
+		-EAGAIN);
+	EXPECT_EQ(rejected, nullptr);
+	const char *fanout_tasks[] = {"No remaining execution slot"};
+	EXPECT_EQ(sub_agent_fanout(owner.runtime, nullptr, "worker", fanout_tasks, 1,
+		SUB_AGENT_MERGE_RAW, &rejected), -EAGAIN);
+	EXPECT_EQ(rejected, nullptr);
+	EXPECT_EQ(owner.runtime->task_count, SUB_AGENT_TASK_MAX);
+	gate.release();
+	for (const char *id : owner.ids)
+		ASSERT_TRUE(wait_for_sub_agent(owner.runtime, id));
+	EXPECT_EQ(owner.runtime->active_task_count, 0);
+	char *result MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(sub_agent_invoke_sync(owner.runtime, nullptr, &owner.runtime->entries[0],
+		"Replacement task", &result), 0);
+	EXPECT_EQ(owner.runtime->task_count, SUB_AGENT_TASK_MAX + 1);
+	EXPECT_EQ(owner.runtime->active_task_count, 0);
+	char *first_result MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(sub_agent_check_status(owner.runtime, owner.ids[0], nullptr, &first_result), 0);
+	EXPECT_STREQ(first_result, "sub-agent result");
+}
+
+TEST_F(SubAgentTest, FanoutRejectsOversizedBatchesBeforeStartingAnyTask)
+{
+	sub_agent_test_owner owner;
+	owner.runtime = sub_agent_runtime_create(&tools, llm, tok, &cfg);
+	ASSERT_NE(owner.runtime, nullptr);
+	configure_worker(owner.runtime, "worker");
+	const char *descriptions[SUB_AGENT_TASK_MAX + 1];
+	for (auto &description : descriptions)
+		description = "Batch task";
+	char *result MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	EXPECT_EQ(sub_agent_fanout(owner.runtime, nullptr, "worker", descriptions,
+		SUB_AGENT_TASK_MAX + 1, SUB_AGENT_MERGE_RAW, &result), -E2BIG);
+	EXPECT_EQ(result, nullptr);
+	EXPECT_EQ(owner.runtime->task_count, 0);
+	EXPECT_EQ(owner.runtime->active_task_count, 0);
+	ASSERT_EQ(sub_agent_fanout_init(&tools, owner.runtime), 0);
+	tool_result output MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&output);
+	std::string args = "{\"agent\":\"worker\",\"tasks\":[";
+	for (int i = 0; i <= SUB_AGENT_TASK_MAX; i++) {
+		if (i)
+			args += ',';
+		args += "\"Batch task\"";
+	}
+	args += "]}";
+	EXPECT_EQ(tool_exec(&tools, "fanout", args.c_str(), &output), -E2BIG);
+	ASSERT_NE(output.text.data, nullptr);
+	EXPECT_NE(std::string(output.text.data).find("No tasks started"), std::string::npos);
+	EXPECT_EQ(owner.runtime->task_count, 0);
+	tool_registry_cleanup(&tools);
+}
+
+TEST_F(SubAgentTest, RepeatedFullFanoutBatchesReleaseAllSlots)
+{
+	sub_agent_test_owner owner;
+	owner.runtime = sub_agent_runtime_create(&tools, llm, tok, &cfg);
+	ASSERT_NE(owner.runtime, nullptr);
+	configure_worker(owner.runtime, "worker");
+	const char *descriptions[SUB_AGENT_TASK_MAX];
+	for (auto &description : descriptions)
+		description = "Batch task";
+	for (int batch = 0; batch < 3; batch++) {
+		char *result MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+
+		ASSERT_EQ(sub_agent_fanout(owner.runtime, nullptr, "worker", descriptions,
+			SUB_AGENT_TASK_MAX, SUB_AGENT_MERGE_RAW, &result), 0);
+		cJSON *rows MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(result);
+		ASSERT_NE(rows, nullptr);
+		EXPECT_EQ(cJSON_GetArraySize(rows), SUB_AGENT_TASK_MAX);
+		EXPECT_EQ(owner.runtime->active_task_count, 0);
+	}
+	EXPECT_EQ(owner.runtime->task_count, SUB_AGENT_TASK_MAX * 3);
+}
+
 TEST_F(SubAgentTest, ChildSessionPersistsTaskEventsAndMessages) {
 	char db_path[256];
 	struct db db = {};
@@ -1424,6 +1678,11 @@ TEST_F(SubAgentTest, FanoutSubmissionAndJoinFailuresReclaimStartedWorkers)
 			  0);
 		EXPECT_EQ(result, nullptr);
 		EXPECT_EQ(injection.joined, injection.submitted);
+		EXPECT_EQ(rt->active_task_count, 0);
+		EXPECT_EQ(sub_agent_invoke_sync(rt, nullptr, &rt->entries[0],
+		"After worker failure",
+			&result), 0);
+		free(result);
 		sub_agent_runtime_destroy(rt);
 	}
 }

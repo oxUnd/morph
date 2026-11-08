@@ -349,18 +349,29 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 		int decode_rc = hook_decode_output(
 			manager, run, event, &dispatch->context, &dispatch->reason,
 			&dispatch->updated, &decision, &ask, &terminate);
-		if (dispatch->context.len + manager->context_bytes > 32768u ||
-		    dispatch->reason.len > 32768u)
-			decode_rc = -E2BIG;
+		if (decode_rc == 0) {
+			decode_rc = hook_context_bound(manager, &dispatch->context);
+			if (decode_rc != 0)
+				run->context_error = decode_rc;
+		}
 		if (decode_rc < 0) {
 			(void)morph_buf_truncate(&dispatch->context, context_before);
-			(void)morph_buf_truncate(&dispatch->reason, reason_before);
+			if (!run->context_error)
+				(void)morph_buf_truncate(&dispatch->reason, reason_before);
 			if (dispatch->updated != updated_before)
 				cJSON_Delete(dispatch->updated);
 			dispatch->updated = updated_before;
-			ask = ask_before;
-			terminate = terminate_before;
-			decision = 0;
+			if (run->context_error) {
+				decision = 1;
+				(void)morph_buf_printf(&dispatch->reason,
+					"Hook context could not be preserved: %s. Processing is "
+					"blocked.\n",
+					morph_strerror(run->context_error));
+			} else {
+				ask = ask_before;
+				terminate = terminate_before;
+				decision = 0;
+			}
 		}
 		blocked |= decision;
 		if (decode_rc == 0) {

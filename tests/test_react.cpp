@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "agent/react.h"
 #include "agent/react_internal.h"
+#include "agent/react_request.h"
 #include "agent/history.h"
 #include "agent/plan.h"
 #include "agent/system_prompt.h"
@@ -409,10 +410,8 @@ static int mock_chat_with_tools(struct model *self, const char *system_prompt,
 		}
 		response->tool_calls = (struct tool_call *)calloc(1, sizeof(*response->tool_calls));
 		response->tool_call_count = 1;
-		snprintf(response->tool_calls[0].id, sizeof(response->tool_calls[0].id),
-			 "call_mock_%d", 0);
-		strncpy(response->tool_calls[0].name, tool_name,
-			sizeof(response->tool_calls[0].name) - 1);
+		response->tool_calls[0].id = strdup(("call_mock_" + std::to_string(0)).c_str());
+		response->tool_calls[0].name = strdup(tool_name);
 		response->tool_calls[0].arguments = args;
 	} else {
 		const char *content = cd.buf;
@@ -525,10 +524,8 @@ static int direct_stream_chat_with_tools(struct model *self,
 		response->tool_calls =
 			(struct tool_call *)calloc(1, sizeof(*response->tool_calls));
 		response->tool_call_count = 1;
-		strncpy(response->tool_calls[0].name, "test_tool",
-			sizeof(response->tool_calls[0].name) - 1);
-		snprintf(response->tool_calls[0].id,
-			 sizeof(response->tool_calls[0].id), "typed_call_1");
+		response->tool_calls[0].name = strdup("test_tool");
+		response->tool_calls[0].id = strdup("typed_call_1");
 		response->tool_calls[0].arguments = strdup("{}");
 	}
 	return 200;
@@ -699,10 +696,8 @@ static int multi_mock_chat_with_tools(struct model *self, const char *system_pro
 		}
 		response->tool_calls = (struct tool_call *)calloc(1, sizeof(*response->tool_calls));
 		response->tool_call_count = 1;
-		snprintf(response->tool_calls[0].id, sizeof(response->tool_calls[0].id),
-			 "call_mock_%d", idx);
-		strncpy(response->tool_calls[0].name, tool_name,
-			sizeof(response->tool_calls[0].name) - 1);
+		response->tool_calls[0].id = strdup(("call_mock_" + std::to_string(idx)).c_str());
+		response->tool_calls[0].name = strdup(tool_name);
 		response->tool_calls[0].arguments = args;
 	} else {
 		const char *content = cd.buf;
@@ -800,22 +795,16 @@ static int slot_mock_chat_with_tools(struct model *self, const char *system_prom
 		if (!response->tool_calls)
 			return -ENOMEM;
 		if (!d->empty_provider_ids) {
-			snprintf(response->tool_calls[0].id,
-				 sizeof(response->tool_calls[0].id), "%s",
-				 d->duplicate_provider_ids ?
+			response->tool_calls[0].id = strdup(d->duplicate_provider_ids ?
 				 "slot_call_dup" : "slot_call_0");
 		}
-		strncpy(response->tool_calls[0].name, "slot_a",
-			sizeof(response->tool_calls[0].name) - 1);
+		response->tool_calls[0].name = strdup("slot_a");
 		response->tool_calls[0].arguments = strdup("{\"n\":1}");
 		if (!d->empty_provider_ids) {
-			snprintf(response->tool_calls[1].id,
-				 sizeof(response->tool_calls[1].id), "%s",
-				 d->duplicate_provider_ids ?
+			response->tool_calls[1].id = strdup(d->duplicate_provider_ids ?
 				 "slot_call_dup" : "slot_call_1");
 		}
-		strncpy(response->tool_calls[1].name, "slot_b",
-			sizeof(response->tool_calls[1].name) - 1);
+		response->tool_calls[1].name = strdup("slot_b");
 		response->tool_calls[1].arguments = strdup("{\"n\":2}");
 		return 200;
 	}
@@ -983,7 +972,7 @@ static int iteration_memory_chat(struct model *self, const char *, struct chat_m
 	if (!response->tool_calls)
 		return -ENOMEM;
 	response->tool_call_count = 1;
-	strcpy(response->tool_calls[0].name, "test_tool");
+	response->tool_calls[0].name = strdup("test_tool");
 	response->tool_calls[0].arguments = strdup("{}");
 	return 0;
 }
@@ -3179,6 +3168,46 @@ struct mock_server {
 	char last_request[8192];
 };
 
+static bool mock_http_send(int fd, const char *data, size_t size)
+{
+	while (size) {
+		int flags = 0;
+#ifdef MSG_NOSIGNAL
+		flags = MSG_NOSIGNAL;
+#endif
+		ssize_t written = send(fd, data, size, flags);
+		if (written < 0 && errno == EINTR)
+			continue;
+		if (written <= 0)
+			return false;
+		data += written;
+		size -= static_cast<size_t>(written);
+	}
+	return true;
+}
+
+static bool mock_http_read_request(int fd, std::string *request)
+{
+	for (;;) {
+		char chunk[BUFSIZ];
+		ssize_t received = recv(fd, chunk, sizeof(chunk), 0);
+		if (received < 0 && errno == EINTR)
+			continue;
+		if (received <= 0)
+			return false;
+		request->append(chunk, static_cast<size_t>(received));
+		size_t end = request->find("\r\n\r\n");
+		if (end == std::string::npos)
+			continue;
+		size_t header = request->find("Content-Length:");
+		size_t body_size = header == std::string::npos ? 0 :
+			static_cast<size_t>(std::strtoull(
+				request->c_str() + header + 15, nullptr, 10));
+		if (request->size() - end - 4 >= body_size)
+			return true;
+	}
+}
+
 static void *mock_http_server_thread(void *arg)
 {
 	struct mock_server *srv = (struct mock_server *)arg;
@@ -3186,87 +3215,49 @@ static void *mock_http_server_thread(void *arg)
 		struct sockaddr_in client_addr;
 		socklen_t client_len = sizeof(client_addr);
 		int client_fd = accept(srv->server_fd,
-				       (struct sockaddr *)&client_addr,
-				       &client_len);
+				       (struct sockaddr *)&client_addr, &client_len);
 		if (client_fd < 0)
 			continue;
-		char buf[8192];
-		ssize_t n = recv(client_fd, buf, sizeof(buf) - 1, 0);
-		if (n <= 0) {
+#ifdef SO_NOSIGPIPE
+		int no_sigpipe = 1;
+		setsockopt(client_fd, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe));
+#endif
+		std::string request;
+		if (!mock_http_read_request(client_fd, &request)) {
 			close(client_fd);
 			continue;
 		}
-		buf[n] = '\0';
 		srv->request_count++;
-		snprintf(srv->last_request, sizeof(srv->last_request), "%s", buf);
-		sscanf(buf, "%15s", srv->request_method);
-		int is_sse = (strstr(buf, "Accept: text/event-stream") != NULL ||
-			      strstr(buf, "text/event-stream") != NULL);
-		int transient = srv->request_count <= srv->transient_failures;
-		if (transient) {
-			const char *data = srv->transient_error_body
-				? srv->transient_error_body : "{}";
-			if (srv->transient_sse_body) {
-				char header[512];
-				int hlen = snprintf(header, sizeof(header),
-					"HTTP/1.1 %d Error\r\n"
-					"Content-Type: text/event-stream\r\n"
-					"Connection: close\r\n\r\n",
-					srv->transient_error_status);
-				send(client_fd, header, hlen, 0);
-				char event_buf[2048];
-				int elen = snprintf(event_buf, sizeof(event_buf),
-					"data: %s\n\n", data);
-				send(client_fd, event_buf, elen, 0);
+		snprintf(srv->last_request, sizeof(srv->last_request), "%s", request.c_str());
+		sscanf(request.c_str(), "%15s", srv->request_method);
+		bool is_sse = request.find("text/event-stream") != std::string::npos;
+		bool transient = srv->request_count <= srv->transient_failures;
+		const char *data = transient ? srv->transient_error_body : srv->response_body;
+		int status = transient ? srv->transient_error_status : srv->response_status;
+		bool streaming = transient ? srv->transient_sse_body != 0 :
+			data && is_sse && (status == 0 || status == 200);
+		if (!status)
+			status = data ? 200 : 404;
+		if (!data)
+			data = transient ? "{}" : "";
+		std::string header = "HTTP/1.1 " + std::to_string(status) +
+			" OK\r\nContent-Type: " +
+			(streaming ? "text/event-stream" : "application/json") +
+			"\r\nConnection: close\r\n";
+		if (!streaming)
+			header += "Content-Length: " + std::to_string(strlen(data)) + "\r\n";
+		if (!transient && srv->extra_response_headers)
+			header += srv->extra_response_headers;
+		header += "\r\n";
+		if (mock_http_send(client_fd, header.data(), header.size())) {
+			if (streaming) {
+				std::string events = std::string("data: ") + data + "\n\n";
+				if (!transient)
+					events += "data: [DONE]\n\n";
+				mock_http_send(client_fd, events.data(), events.size());
 			} else {
-				int body_len = strlen(data);
-				char header[512];
-				int hlen = snprintf(header, sizeof(header),
-					"HTTP/1.1 %d Error\r\n"
-					"Content-Type: application/json\r\n"
-					"Content-Length: %d\r\n"
-					"Connection: close\r\n\r\n",
-					srv->transient_error_status, body_len);
-				send(client_fd, header, hlen, 0);
-				send(client_fd, data, body_len, 0);
+				mock_http_send(client_fd, data, strlen(data));
 			}
-		} else if (srv->response_body && is_sse &&
-			   (srv->response_status == 0 || srv->response_status == 200)) {
-			const char *data = srv->response_body;
-			char header[512];
-			int hlen = snprintf(header, sizeof(header),
-				"HTTP/1.1 200 OK\r\n"
-				"Content-Type: text/event-stream\r\n"
-				"Cache-Control: no-cache\r\n"
-				"Connection: close\r\n"
-				"\r\n");
-			send(client_fd, header, hlen, 0);
-			char event_buf[2048];
-			int elen = snprintf(event_buf, sizeof(event_buf),
-				"data: %s\n\n", data);
-			send(client_fd, event_buf, elen, 0);
-			const char *done = "data: [DONE]\n\n";
-			send(client_fd, done, strlen(done), 0);
-		} else if (srv->response_body) {
-			int body_len = strlen(srv->response_body);
-			char header[512];
-			int hlen = snprintf(
-			    header, sizeof(header),
-			    "HTTP/1.1 %d OK\r\n"
-			    "Content-Type: application/json\r\n"
-			    "Content-Length: %d\r\n"
-			    "Connection: close\r\n%s"
-			    "\r\n",
-			    srv->response_status > 0 ? srv->response_status : 200, body_len,
-			    srv->extra_response_headers ? srv->extra_response_headers : "");
-			send(client_fd, header, hlen, 0);
-			send(client_fd, srv->response_body, body_len, 0);
-		} else {
-			const char *resp_404 = "HTTP/1.1 404 Not Found\r\n"
-					       "Content-Length: 0\r\n"
-					       "Connection: close\r\n"
-					       "\r\n";
-			send(client_fd, resp_404, strlen(resp_404), 0);
 		}
 		close(client_fd);
 	}
@@ -3594,8 +3585,8 @@ TEST_F(MockServerTest, DeepSeekThinkingReplaysReasoningWithoutToolChoice) {
 	ASSERT_NE(model, nullptr);
 
 	struct tool_call prior_call{};
-	std::strcpy(prior_call.id, "call_1");
-	std::strcpy(prior_call.name, "lookup");
+	prior_call.id = const_cast<char *>("call_1");
+	prior_call.name = const_cast<char *>("lookup");
 	prior_call.arguments = const_cast<char *>("{}");
 	struct chat_message messages[3]{};
 	messages[0].role = const_cast<char *>("user");
@@ -3711,7 +3702,8 @@ TEST_F(MockServerTest, AdapterSelectionScopesDeepSeekHistoryRules) {
 	for (const auto &test : cases) {
 		bool responses_api = std::strcmp(test.adapter, "openai-responses") == 0;
 		srv.response_body = responses_api ?
-			"{\"type\":\"response.output_text.delta\",\"delta\":\"done\"}" :
+			"{\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\n"
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r_done\"}}" :
 			"{\"choices\":[{\"delta\":{\"content\":\"done\"}}]}";
 		SCOPED_TRACE(std::string(test.provider) + "/" + test.adapter +
 			(test.thinking ? "/thinking" : "/non-thinking"));
@@ -3848,7 +3840,8 @@ TEST_F(MockServerTest, ResponsesAdapterStreamsNativeCustomToolInput) {
 		"data: {\"type\":\"response.output_item.done\",\"item\":{"
 		"\"type\":\"custom_tool_call\",\"id\":\"item_patch\","
 		"\"call_id\":\"call_patch\",\"name\":\"apply_patch\","
-		"\"input\":\"*** Begin Patch\\n*** End Patch\"}}";
+		"\"input\":\"*** Begin Patch\\n*** End Patch\"}}\n\n"
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r_done\"}}";
 	srv.response_status = 200;
 	START_MOCK_OR_SKIP(&srv);
 
@@ -3917,8 +3910,8 @@ TEST_F(MockServerTest, ChatAdapterFallsBackToStringFunctionArgument) {
 	ASSERT_NE(model, nullptr);
 
 	struct tool_call prior_call{};
-	std::strcpy(prior_call.id, "call_patch");
-	std::strcpy(prior_call.name, "apply_patch");
+	prior_call.id = const_cast<char *>("call_patch");
+	prior_call.name = const_cast<char *>("apply_patch");
 	prior_call.arguments = const_cast<char *>(
 		"*** Begin Patch\n*** End Patch");
 	prior_call.input_kind = TOOL_INPUT_TEXT;
@@ -4500,8 +4493,8 @@ static int capt_prompt_chat_with_tools(struct model *self, const char *system_pr
 		response->tool_calls = static_cast<tool_call *>(calloc(1,
 			sizeof(*response->tool_calls)));
 		response->tool_call_count = 1;
-		strcpy(response->tool_calls[0].id, "first-tool-test");
-		strcpy(response->tool_calls[0].name, d->first_tool_name);
+		response->tool_calls[0].id = strdup("first-tool-test");
+		response->tool_calls[0].name = strdup(d->first_tool_name);
 		response->tool_calls[0].arguments = strdup("{}");
 		return 200;
 	}
@@ -4509,8 +4502,8 @@ static int capt_prompt_chat_with_tools(struct model *self, const char *system_pr
 		response->tool_calls = static_cast<tool_call *>(calloc(1,
 			sizeof(*response->tool_calls)));
 		response->tool_call_count = 1;
-		strcpy(response->tool_calls[0].id, "activate-test");
-		strcpy(response->tool_calls[0].name, "activate_skill");
+		response->tool_calls[0].id = strdup("activate-test");
+		response->tool_calls[0].name = strdup("activate_skill");
 		response->tool_calls[0].arguments = strdup("{\"name\":\"test-skill\"}");
 		return 200;
 	}
@@ -4717,15 +4710,16 @@ TEST_F(PromptModeTest, DynamicContextPreservesTheFullSkillPrefix)
 {
 	auto *skills = new skill_registry{};
 	skill_registry_init(NULL, skills);
-	skills->count = 2;
 	for (int i = 0; i < 2; i++) {
-		auto *entry = &skills->entries[i];
+		struct skill_entry value{};
+		auto *entry = &value;
 		strcpy(entry->fm.name, i == 0 ? "zeta" : "alpha");
 		strcpy(entry->fm.description, "Stable description");
 		entry->enabled = 1;
 		entry->activated = 1;
 		entry->body_loaded = 1;
-		entry->body = strdup("Stable instructions");
+		entry->body = const_cast<char *>("Stable instructions");
+		ASSERT_EQ(skill_registry_add_copy(skills, entry), 0);
 	}
 	ctx->skills = skills;
 	ASSERT_EQ(skill_activate_init(&tools, skills), 0);
@@ -4844,10 +4838,9 @@ TEST_F(MockLlmTest, PatchInstructionsComeFromToolRegistration) {
 	EXPECT_EQ(strstr(cd->system_prompt, "Source editing:"), nullptr);
 	ASSERT_NE(cd->tool_descs, nullptr);
 	EXPECT_NE(strstr(cd->tool_descs, "complete Codex patch"), nullptr);
-	EXPECT_NE(strstr(cd->tool_descs, "below 4 KiB"), nullptr);
-	EXPECT_NE(strstr(cd->tool_descs, "at most 80 changed lines"),
-		nullptr);
-	EXPECT_NE(strstr(cd->tool_descs, "continuation marker"), nullptr);
+	EXPECT_NE(strstr(cd->tool_descs, "up to 64 KiB"), nullptr);
+	EXPECT_NE(strstr(cd->tool_descs, "natural file or hunk boundaries"), nullptr);
+	EXPECT_EQ(strstr(cd->tool_descs, "continuation marker"), nullptr);
 	EXPECT_NE(strstr(cd->tool_descs, "Do not emit unified-diff"), nullptr);
 	EXPECT_NE(strstr(cd->tool_descs,
 		"must never have a leading +, space, or -"), nullptr);
@@ -5163,7 +5156,7 @@ static int test_compress_probe_cb(const char *text, void *user_data,
 }
 
 TEST_F(MockLlmTest, CompressTriggerInReact) {
-	cfg.max_context_tokens = 6;
+	cfg.max_context_tokens = 128000;
 	cfg.summarize_threshold_ratio = 0.5;
 
 	setup_llm_with_response("Final: after compress");
@@ -5177,6 +5170,9 @@ TEST_F(MockLlmTest, CompressTriggerInReact) {
 	react_run(ctx, "first", nullptr, nullptr);
 	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
 
+	/* Simulate a dense cached history while keeping the wire request within budget. */
+	ASSERT_NE(ctx->messages, nullptr);
+	ctx->messages->token_count = 70000;
 	react_run(ctx, "second", nullptr, nullptr);
 	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
 
@@ -5184,7 +5180,7 @@ TEST_F(MockLlmTest, CompressTriggerInReact) {
 }
 
 TEST_F(MockLlmTest, CompressBeforePreparingLlmMessages) {
-	cfg.max_context_tokens = 12;
+	cfg.max_context_tokens = 128000;
 	cfg.summarize_threshold_ratio = 0.5;
 	cfg.max_history_rounds = 1;
 
@@ -5213,6 +5209,8 @@ TEST_F(MockLlmTest, CompressBeforePreparingLlmMessages) {
 		"first turn has enough repeated words to exceed the tiny test context",
 		nullptr, nullptr), 0);
 	ASSERT_EQ(probe.calls, 0);
+	ASSERT_NE(ctx->messages, nullptr);
+	ctx->messages->token_count = 70000;
 
 	ASSERT_EQ(react_run(ctx, "second turn should trigger compression",
 			    nullptr, nullptr), 0);
@@ -5229,15 +5227,16 @@ TEST_F(MockLlmTest, CompressBeforePreparingLlmMessages) {
 }
 
 TEST_F(MockLlmTest, CompressPreservesAfterFlow) {
-	cfg.max_context_tokens = 6;
+	cfg.max_context_tokens = 128000;
 	cfg.summarize_threshold_ratio = 0.5;
 
 	setup_llm_with_response("Final: ok");
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
-	ctx->compress.summarize = test_compress_cb;
-	ctx->compress.summarize_user_data = nullptr;
+	struct compress_probe probe{};
+	ctx->compress.summarize = test_compress_probe_cb;
+	ctx->compress.summarize_user_data = &probe;
 	ctx->compress.max_history_rounds = 1;
 
 	for (int i = 0; i < 4; i++) {
@@ -5246,7 +5245,12 @@ TEST_F(MockLlmTest, CompressPreservesAfterFlow) {
 		react_run(ctx, input, nullptr, nullptr);
 		EXPECT_EQ(ctx->state, REACT_STATE_DONE);
 		EXPECT_NE(ctx->final_answer, nullptr);
+		for (auto *message = ctx->messages; message; message = message->next) {
+			if (!strcmp(message->role, "user"))
+				message->token_count = 70000;
+		}
 	}
+	EXPECT_GT(probe.calls, 0);
 	react_context_destroy(ctx);
 }
 
@@ -6876,13 +6880,13 @@ TEST_F(PromptModeTest, ActivatedSkillRefreshesUnderReplacementWithoutMemory)
 	ctx->system_prompt = strdup("Custom behavior");
 	auto *skills = new skill_registry{};
 	skill_registry_init(NULL, skills);
-	skills->count = 1;
-	auto *entry = &skills->entries[0];
+	struct skill_entry value{};
+	auto *entry = &value;
 	strcpy(entry->fm.name, "test-skill");
 	entry->enabled = 1;
 	entry->body_loaded = 1;
-	entry->body = strdup("UNIQUE_SKILL_BODY_MARKER");
-	ASSERT_EQ(morph_strmap_set_borrow(&skills->by_name, entry->fm.name, entry), 0);
+	entry->body = const_cast<char *>("UNIQUE_SKILL_BODY_MARKER");
+	ASSERT_EQ(skill_registry_add_copy(skills, entry), 0);
 	ctx->skills = skills;
 	ASSERT_EQ(skill_activate_init(&tools, skills), 0);
 	capt->activate_on_first_call = 1;
@@ -7132,17 +7136,19 @@ TEST_F(PromptModeTest, SkillCatalogIncludesAllEnabledDescriptions)
 {
 	auto *skills = new skill_registry{};
 	skill_registry_init(NULL, skills);
-	skills->count = SKILL_MAX_ENTRIES;
-	for (int i = 0; i < skills->count; i++) {
-		auto *entry = &skills->entries[i];
+	for (int i = 0; i < 160; i++) {
+		struct skill_entry value{};
+		auto *entry = &value;
 		snprintf(entry->fm.name, sizeof(entry->fm.name), "skill-%d", i);
-		memset(entry->fm.description, 'x', sizeof(entry->fm.description) - 1);
+		memset(entry->fm.description, '1', sizeof(entry->fm.description) - 1);
 		strcpy(entry->fm.description + 900, "DESCRIPTION_TAIL_MARKER");
 		entry->enabled = 1;
+		ASSERT_EQ(skill_registry_add_copy(skills, entry), 0);
 	}
-	skills->entries[0].enabled = 0;
-	skills->entries[0].activated = 1;
-	skills->entries[0].body = strdup("DISABLED_BODY_MARKER");
+	auto *disabled = skill_entry_borrow_at(skills, 0);
+	disabled->enabled = 0;
+	disabled->activated = 1;
+	disabled->body = strdup("DISABLED_BODY_MARKER");
 	ctx->skills = skills;
 	ASSERT_EQ(skill_activate_init(&tools, skills), 0);
 	for (int replace : {0, 1}) {
@@ -7151,12 +7157,21 @@ TEST_F(PromptModeTest, SkillCatalogIncludesAllEnabledDescriptions)
 		ctx->system_prompt = strdup("Custom behavior");
 		for (int limit : {0, 32000, 128000}) {
 			llm->context_limit = limit;
-			ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+			int requests_before = capt->calls;
+			int rc = react_run(ctx, "hello", nullptr, nullptr);
+			if (limit == 32000) {
+				EXPECT_EQ(rc, MORPH_ERR_CONTEXT_LIMIT);
+				EXPECT_EQ(capt->calls, requests_before);
+				ASSERT_NE(ctx->last_error_detail, nullptr);
+				EXPECT_NE(strstr(ctx->last_error_detail, "output budget"), nullptr);
+				continue;
+			}
+			ASSERT_EQ(rc, 0);
 			ASSERT_NE(capt->system_prompt, nullptr);
 			std::string system = capt->system_prompt;
 			EXPECT_NE(system.find("Available skills:"), std::string::npos);
 			for (int i = 1; i < skills->count; i++) {
-				auto *entry = &skills->entries[i];
+				auto *entry = skill_entry_borrow_at(skills, static_cast<size_t>(i));
 				std::string expected = std::string("- ") + entry->fm.name +
 					": " + entry->fm.description + "\n";
 				EXPECT_NE(system.find(expected), std::string::npos);
@@ -7766,4 +7781,401 @@ TEST_F(MockServerTest, OutputTokenLimitPreservesPartialTextAndNeverExecutesIncom
 	}
 	tool_registry_cleanup(&tools);
 	mock_server_stop(&srv);
+}
+
+
+TEST_F(MockLlmTest, LongToolIdentitiesReachExecutionAndTheNextRequest)
+{
+	struct identity_probe {
+		std::string name;
+		std::string id;
+		int requests = 0;
+		int executions = 0;
+	} probe{std::string(512, 'n'), std::string(1024, 'i')};
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, probe.name.c_str(),
+		"Identity probe", "{}", [](const char *, struct tool_result *result, void *user) {
+			auto *state = static_cast<identity_probe *>(user);
+			state->executions++;
+			return tool_result_success_text_copy(result, "completed");
+		}, &probe, nullptr), 0);
+	struct model model{};
+	strcpy(model.api_key, "mock");
+	model.handle = &probe;
+	model.max_tokens = 128;
+	model.chat_with_tools = [](struct model *self, const char *, struct chat_message *messages,
+		int count, struct tool_desc *, int, struct chat_response *response,
+		sse_callback, void *) -> int {
+		auto *state = static_cast<identity_probe *>(self->handle);
+		if (state->requests++ == 0) {
+			response->tool_calls = static_cast<tool_call *>(
+				calloc(1, sizeof(*response->tool_calls)));
+			if (!response->tool_calls)
+				return -ENOMEM;
+			response->tool_call_count = 1;
+			auto *call = &response->tool_calls[0];
+			call->name = strdup(state->name.c_str());
+			call->id = strdup(state->id.c_str());
+			call->arguments = strdup("{}");
+			return call->name && call->id && call->arguments ? 200 : -ENOMEM;
+		}
+		bool found = false;
+		for (int i = 0; i < count; i++) {
+			if (!messages[i].tool_call_count)
+				continue;
+			found = true;
+			EXPECT_STREQ(messages[i].tool_calls[0].name, state->name.c_str());
+			EXPECT_STREQ(messages[i].tool_calls[0].id, state->id.c_str());
+		}
+		EXPECT_TRUE(found);
+		response->content = strdup("finished");
+		return response->content ? 200 : -ENOMEM;
+	};
+	std::unique_ptr<react_context, decltype(&react_context_destroy)> context(
+		react_context_create(&tools, tok, &cfg, nullptr), react_context_destroy);
+	ASSERT_NE(context, nullptr);
+	context->llm_model = &model;
+	context->workdir = strdup("/tmp");
+	EXPECT_EQ(react_run(context.get(), "execute the tool", nullptr, nullptr), 0);
+	EXPECT_EQ(probe.executions, 1);
+	EXPECT_EQ(probe.requests, 2);
+}
+
+TEST_F(MockLlmTest, LargeToolEnvelopeRetainsItsPayloadAndTrailingCursor)
+{
+	struct payload_probe {
+		std::string text;
+		int requests = 0;
+	} probe{std::string(300 * 1024, 'x')};
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "large_envelope", "Large data",
+		"{}", [](const char *, struct tool_result *result, void *user) -> int {
+			auto *state = static_cast<payload_probe *>(user);
+			cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+			if (!data || !cJSON_AddStringToObject(data, "body", state->text.c_str()) ||
+			    !cJSON_AddStringToObject(data, "next_cursor", "TAIL_CURSOR_MARKER"))
+				return -ENOMEM;
+			return tool_result_success_take(result, &data);
+		}, &probe, nullptr), 0);
+	struct model model{};
+	strcpy(model.api_key, "mock");
+	model.handle = &probe;
+	model.max_tokens = 128;
+	model.chat_with_tools = [](struct model *self, const char *, struct chat_message *messages,
+		int count, struct tool_desc *, int, struct chat_response *response,
+		sse_callback, void *) -> int {
+		auto *state = static_cast<payload_probe *>(self->handle);
+		if (state->requests++ == 0) {
+			response->tool_calls = static_cast<tool_call *>(
+				calloc(1, sizeof(*response->tool_calls)));
+			if (!response->tool_calls)
+				return -ENOMEM;
+			response->tool_call_count = 1;
+			response->tool_calls[0].name = strdup("large_envelope");
+			response->tool_calls[0].arguments = strdup("{}");
+			return response->tool_calls[0].name && response->tool_calls[0].arguments
+				? 200 : -ENOMEM;
+		}
+		bool found = false;
+		for (int i = 0; i < count; i++) {
+			if (!messages[i].tool_call_id)
+				continue;
+			found = true;
+			cJSON *json MORPH_CLEANUP(morph_json_cleanup) =
+				cJSON_Parse(messages[i].content);
+			EXPECT_NE(json, nullptr);
+			cJSON *data = cJSON_GetObjectItem(json, "data");
+			EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "body")),
+				state->text.c_str());
+			EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "next_cursor")),
+				"TAIL_CURSOR_MARKER");
+			EXPECT_EQ(cJSON_GetObjectItem(json, "history_truncated"), nullptr);
+		}
+		EXPECT_TRUE(found);
+		response->content = strdup("finished");
+		return response->content ? 200 : -ENOMEM;
+	};
+	cfg.max_context_tokens = 512000;
+	cfg.tool_result_max_tokens = 200000;
+	std::unique_ptr<react_context, decltype(&react_context_destroy)> context(
+		react_context_create(&tools, tok, &cfg, nullptr), react_context_destroy);
+	ASSERT_NE(context, nullptr);
+	context->llm_model = &model;
+	context->workdir = strdup("/tmp");
+	EXPECT_EQ(react_run(context.get(), "inspect all data", nullptr, nullptr), 0);
+	EXPECT_EQ(probe.requests, 2);
+	EXPECT_EQ(context->tool_result_truncated_count, 0);
+}
+
+TEST_F(MockLlmTest, OverbookedOutputBudgetIsRejectedBeforeTheModelCall)
+{
+	int requests = 0;
+	struct model model{};
+	strcpy(model.api_key, "mock");
+	model.handle = &requests;
+	model.max_tokens = 100000;
+	model.context_limit = 128000;
+	model.chat_with_tools = [](struct model *self, const char *, struct chat_message *,
+		int, struct tool_desc *, int, struct chat_response *, sse_callback, void *) -> int {
+		++*static_cast<int *>(self->handle);
+		return -EIO;
+	};
+	cfg.protocol_reserve_tokens = 4096;
+	std::unique_ptr<react_context, decltype(&react_context_destroy)> context(
+		react_context_create(&tools, tok, &cfg, nullptr), react_context_destroy);
+	ASSERT_NE(context, nullptr);
+	context->llm_model = &model;
+	context->workdir = strdup("/tmp");
+	std::string input;
+	for (int i = 0; i < 50000; i++)
+		input += "word ";
+	EXPECT_EQ(react_run(context.get(), input.c_str(), nullptr, nullptr),
+		  MORPH_ERR_CONTEXT_LIMIT);
+	EXPECT_EQ(requests, 0);
+	ASSERT_NE(context->last_error_detail, nullptr);
+	EXPECT_NE(strstr(context->last_error_detail, "complete output budget"), nullptr);
+}
+
+TEST_F(MockServerTest, ResponsesRequireTerminalStatusAndPreserveIncompleteText)
+{
+	srv.response_body = "{}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+	struct terminal_case {
+		const char *event;
+		int status;
+		const char *finish;
+		const char *detail;
+	};
+	const terminal_case cases[] = {
+		{"{\"type\":\"response.completed\",\"response\":{\"id\":\"r1\"}}", 200,
+		 "completed", nullptr},
+		{"{\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{"
+		 "\"reason\":\"max_output_tokens\"},\"usage\":{\"output_tokens\":512}}}",
+		 200, "length", nullptr},
+		{"{\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{"
+		 "\"reason\":\"content_filter\"}}}", MORPH_ERR_PROTOCOL, "incomplete",
+		 "content_filter"},
+		{"{\"type\":\"response.failed\",\"response\":{\"error\":{"
+		 "\"message\":\"provider failed\"}}}", MORPH_ERR_API, "failed", "provider failed"},
+		{"{\"type\":\"error\",\"error\":{\"message\":\"stream failed\"}}",
+		 MORPH_ERR_API, "failed", "stream failed"},
+		{"{\"type\":\"error\",\"message\":\"top-level provider failure\"}",
+		 MORPH_ERR_API, "failed", "top-level provider failure"},
+		{"{\"type\":\"response.completed\",\"response\":{\"status\":\"incomplete\"}}",
+		 MORPH_ERR_PROTOCOL, "failed", "inconsistent response status"},
+		{"", MORPH_ERR_PROTOCOL, "", "terminal response event"},
+	};
+	for (const auto &test : cases) {
+		SCOPED_TRACE(test.event);
+		std::string body = "{\"type\":\"response.output_text.delta\","
+			"\"delta\":\"Partial reply\"}";
+		if (test.event[0])
+			body += std::string("\n\ndata: ") + test.event;
+		srv.response_body = body.c_str();
+		char base[256];
+		snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+		auto *model = model_llm_create(nullptr, "test", "mock-model", base, "test-key");
+		ASSERT_NE(model, nullptr);
+		strcpy(model->adapter, "openai-responses");
+		model->retry_count = 0;
+		struct chat_message message{};
+		message.role = const_cast<char *>("user");
+		message.content = const_cast<char *>("continue");
+		struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
+		EXPECT_EQ(model->chat_with_tools_stream(model, nullptr, &message, 1, nullptr, 0,
+			&response, nullptr, nullptr), test.status);
+		EXPECT_STREQ(response.content, "Partial reply");
+		EXPECT_STREQ(response.usage.finish_reason, test.finish);
+		if (test.detail)
+			EXPECT_NE(strstr(model->last_error, test.detail), nullptr);
+		model_destroy(model);
+	}
+}
+
+TEST_F(MockServerTest, ResponsesOutputLimitNeverExecutesAnIncompleteTool)
+{
+	srv.response_body = "{\"type\":\"response.output_item.added\",\"item\":{"
+		"\"type\":\"function_call\",\"id\":\"item1\",\"call_id\":\"call1\","
+		"\"name\":\"probe\",\"arguments\":\"{\"}}\n\n"
+		"data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{"
+		"\"reason\":\"max_output_tokens\"}}}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+	char base[256];
+	snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+	auto *model = model_llm_create(nullptr, "test", "mock-model", base, "test-key");
+	ASSERT_NE(model, nullptr);
+	strcpy(model->adapter, "openai-responses");
+	struct tool_registry tools{};
+	tool_registry_init(nullptr, &tools);
+	int executions = 0;
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "probe",
+		"Count executions", "{}",
+		call_count_tool_fn, &executions, nullptr), 0);
+	auto *context = react_context_create(&tools, nullptr, nullptr, nullptr);
+	ASSERT_NE(context, nullptr);
+	context->llm_model = model;
+	context->workdir = strdup("/tmp");
+	EXPECT_EQ(react_run(context, "run a complete tool", nullptr, nullptr), MORPH_ERR_LLM);
+	EXPECT_STREQ(context->outcome_reason, "output_token_limit");
+	EXPECT_EQ(executions, 0);
+	react_context_destroy(context);
+	tool_registry_cleanup(&tools);
+	model_destroy(model);
+}
+
+TEST(GuardrailTest, LlmChecksReceiveLongTextAndCompleteResponseInstructions)
+{
+	int requests = 0;
+	struct model model{};
+	strcpy(model.api_key, "mock");
+	model.handle = &requests;
+	model.chat = [](struct model *self, const char *, const char **messages, int count,
+		const struct model_chat_options *, sse_callback callback, void *user) -> int {
+		++*static_cast<int *>(self->handle);
+		EXPECT_EQ(count, 1);
+		EXPECT_NE(strstr(messages[0], "TAIL_GUARDRAIL_MARKER"), nullptr);
+		EXPECT_NE(strstr(messages[0], "{\"pass\": true/false, \"reason\":"), nullptr);
+		EXPECT_NE(strstr(messages[0], "Do not include any other text."), nullptr);
+		return callback("{\"pass\":false,\"reason\":\"tail was checked\"}", user);
+	};
+	struct guardrail_config config{};
+	config.enabled = 1;
+	config.llm = &model;
+	ASSERT_EQ(guardrail_rule_register(&config, "long_input", GUARDRAIL_HOOK_INPUT,
+		GUARDRAIL_RULE_LLM, nullptr, "Check the complete input", nullptr, nullptr), 0);
+	std::string text = std::string(20000, 'x') + "TAIL_GUARDRAIL_MARKER";
+	struct guardrail_eval_ctx eval{};
+	eval.user_input = text.c_str();
+	auto result = guardrail_run_hook(&config, GUARDRAIL_HOOK_INPUT, &eval);
+	EXPECT_EQ(requests, 1);
+	EXPECT_EQ(result.verdict, GUARDRAIL_FAIL);
+	EXPECT_STREQ(result.reason, "tail was checked");
+}
+
+
+TEST_F(MockLlmTest, CompactionTargetFitsAConfiguredOutputAboveHalfTheWindow)
+{
+	char directory[] = "/tmp/morph-output-budget-XXXXXX";
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	std::string path = std::string(directory) + "/history.db";
+	struct db database{};
+	ASSERT_EQ(db_open(nullptr, &database, path.c_str()), 0);
+	ASSERT_EQ(db_init_schema(&database), 0);
+	struct session session{};
+	ASSERT_EQ(session_create(&database, "output-budget", "mock", &session), 0);
+	{
+		cfg.max_context_tokens = 128000;
+		cfg.in_turn_compaction = 1;
+		cfg.protocol_reserve_tokens = 4096;
+		cfg.compaction_summary_max_tokens = 1000;
+		cfg.compaction_user_message_tokens = 20000;
+		std::unique_ptr<react_context, decltype(&react_context_destroy)> context(
+			react_context_create(&tools, tok, &cfg, nullptr), react_context_destroy);
+		ASSERT_NE(context, nullptr);
+		context->history_enabled = 1;
+		context->history_db = &database;
+		context->history_session_id = session.id;
+		context->compress.summarize = [](const char *, void *, char **out) -> int {
+			*out = strdup("The old exchange completed; preserve the objective.");
+			return *out ? 0 : -ENOMEM;
+		};
+		ASSERT_EQ(react_set_turn_id(context.get(), "prior-turn"), 0);
+		std::string request = "EXACT_OBJECTIVE ";
+		std::string answer;
+		for (int i = 0; i < 10000; i++)
+			request += "word ";
+		for (int i = 0; i < 30000; i++)
+			answer += "word ";
+		ASSERT_EQ(agent_history_record_user(context.get(), request.c_str()), 0);
+		ASSERT_EQ(agent_history_record_assistant(context.get(), answer.c_str()), 0);
+		context->state = REACT_STATE_DONE;
+		context->outcome = REACT_OUTCOME_SUCCESS;
+		ASSERT_EQ(agent_history_record_turn_outcome(context.get()), 0);
+		ASSERT_EQ(agent_history_reload(context.get()), 0);
+		morph_array_t messages MORPH_CLEANUP(agent_chat_messages_cleanup) = {};
+		struct chat_message sample{};
+		ASSERT_EQ(morph_array_init(&messages, 4, sizeof(sample)), 0);
+		ASSERT_EQ(agent_history_messages_copy(nullptr, context->history_items,
+			&messages), 0);
+		struct model model{};
+		model.context_limit = 128000;
+		model.max_tokens = 100000;
+		EXPECT_EQ(react_maybe_compact_active_window(context.get(), &model, "system",
+			&messages,
+			nullptr, 0, 1), 1);
+		int tokens = 0;
+		ASSERT_EQ(model_estimate_input_tokens(&model, "system",
+			static_cast<chat_message *>(messages.elts),
+			static_cast<int>(messages.nelts),
+			nullptr, 0, react_count_input_text, tok, &tokens), 0);
+		EXPECT_LT(tokens, react_request_input_budget(context.get(), &model));
+		EXPECT_EQ(context->in_turn_compaction_count, 1);
+		context->compress.max_context_tokens = 0;
+		context->force_compaction = 1;
+		EXPECT_EQ(react_maybe_compact_active_window(context.get(), &model, "system",
+			&messages, nullptr, 0, 2), 0);
+		EXPECT_EQ(context->in_turn_compaction_count, 1);
+	}
+	db_close(&database);
+	std::remove(path.c_str());
+	rmdir(directory);
+}
+
+
+TEST_F(MockServerTest, ChatRequiresDoneOrFinishReasonBeforeAcceptingAClosedStream)
+{
+	srv.transient_failures = 3;
+	srv.transient_sse_body = 1;
+	srv.transient_error_status = 200;
+	srv.response_body = "{}";
+	START_MOCK_OR_SKIP(&srv);
+	const char *bodies[] = {
+		"{\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}",
+		"{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call1\","
+		"\"function\":{\"name\":\"probe\",\"arguments\":\"{}\"}}]}}]}",
+		"{\"choices\":[{\"delta\":{\"content\":\"complete\"},\"finish_reason\":\"stop\"}]}",
+	};
+	for (int i = 0; i < 3; i++) {
+		SCOPED_TRACE(i);
+		srv.transient_error_body = bodies[i];
+		char base[256];
+		snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+		auto *model = model_llm_create(nullptr, "deepseek", "mock-model", base, "test-key");
+		ASSERT_NE(model, nullptr);
+		model->retry_count = 0;
+		struct chat_message message{};
+		message.role = const_cast<char *>("user");
+		message.content = const_cast<char *>("complete the request");
+		struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
+		EXPECT_EQ(model->chat_with_tools_stream(model, nullptr, &message, 1, nullptr, 0,
+			&response, nullptr, nullptr), i == 2 ? 200 : MORPH_ERR_PROTOCOL);
+		if (i < 2) {
+			EXPECT_EQ(model->error_info.kind, MODEL_ERROR_INCOMPLETE);
+			EXPECT_NE(strstr(model->last_error, "terminal response event"), nullptr);
+		}
+		if (i == 0)
+			EXPECT_STREQ(response.content, "partial");
+		model_destroy(model);
+	}
+}
+
+
+TEST_F(MockServerTest, ChatSendsTheFullLongCredential)
+{
+	srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+	char base[256];
+	snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+	std::string key = "mock-" + std::string(2048, 'k');
+	auto *model = model_llm_create(nullptr, "test", "mock", base, key.c_str());
+	ASSERT_NE(model, nullptr);
+	const char *messages[] = {"hello"};
+	morph_buf_t answer MORPH_CLEANUP(morph_buf_cleanup) = {};
+	EXPECT_EQ(model->chat(model, nullptr, messages, 1, nullptr,
+		morph_buf_append_cb, &answer), 200);
+	std::string header = "Authorization: Bearer " + key + "\r\n";
+	EXPECT_NE(strstr(srv.last_request, header.c_str()), nullptr);
+	EXPECT_STREQ(morph_buf_cstr_borrow(&answer), "ok");
+	model_destroy(model);
 }

@@ -157,7 +157,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 		return -EINVAL;
 	}
 
-	if (!ctx || !ctx->image_llm || !ctx->image_llm->api_key[0]) {
+	if (!ctx || !ctx->image_llm || !model_api_key_borrow(ctx->image_llm)[0]) {
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"no image model configured\"}");

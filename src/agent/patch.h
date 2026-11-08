@@ -27,10 +27,26 @@ struct patch_result {
 };
 
 typedef int (*patch_authorize_fn)(const char *path, int deletion, void *user_data);
+typedef int (*patch_validate_write_fn)(const char *path, size_t bytes,
+				      const char *removed_path, void *user_data);
+
+struct patch_write_policy {
+	size_t max_file_bytes;
+	patch_validate_write_fn validate;
+	void *user_data;
+};
 /* Result owners must be zero-initialized; failures leave them empty. */
 int patch_apply_authorized(const char *workdir, const char *input,
 	struct patch_result *result, char *error, size_t error_size,
 	patch_authorize_fn authorize, void *user_data);
+/* Reject an oversized postimage before writing that file. Earlier hunks can
+ * already have applied, as with any other patch failure. Zero is unlimited. */
+int patch_apply_authorized_with_limit(const char *workdir, const char *input,
+	struct patch_result *result, char *error, size_t error_size,
+	patch_authorize_fn authorize, void *user_data, size_t max_file_bytes);
+int patch_apply_authorized_with_policy(const char *workdir, const char *input,
+	struct patch_result *result, char *error, size_t error_size,
+	patch_authorize_fn authorize, void *user_data, const struct patch_write_policy *policy);
 int patch_apply(const char *workdir, const char *input,
 		struct patch_result *result, char *error, size_t error_size);
 /*

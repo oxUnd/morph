@@ -17,6 +17,7 @@
 #include <memory>
 #include <chrono>
 #include "models/llm.h"
+#include "util/utf8.h"
 
 class MemoryTest : public ::testing::Test
 {
@@ -653,6 +654,117 @@ TEST_F(MemoryTest, EssentialLanguageSurvivesSmallGeneralMemoryBudget)
 	EXPECT_NE(strstr(context, "response.language: Chinese"), nullptr);
 	EXPECT_LE(strlen(context), 512u);
 	morph_charp_cleanup(&context);
+}
+
+TEST_F(MemoryTest, ContextBudgetCountsUnicodeCharactersAndPreservesCompleteFacts)
+{
+	struct session session;
+	ASSERT_EQ(session_create(&db, "unicode-budget", "mock", &session), 0);
+	ASSERT_EQ(memory_accept_input(&db, session.id, "hello", "input", &opts), 0);
+	std::string value;
+	for (int i = 0; i < 150; i++)
+		value += "界";
+	ASSERT_EQ(memory_store_upsert_fact(&db, session.id, "complete", value.c_str(), "source",
+					  "context", 0.8), 0);
+	opts.max_context_chars = 400;
+	char *context MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(memory_context_create(&db, session.id, "hello", &opts, &context), 0);
+	ASSERT_NE(context, nullptr);
+	EXPECT_NE(strstr(context, value.c_str()), nullptr);
+	EXPECT_GT(strlen(context), 400u);
+	EXPECT_LE(utf8len(context), 400u);
+	EXPECT_EQ(utf8valid(context), nullptr);
+}
+
+TEST_F(MemoryTest, LargeOptionalPreferenceCannotDisplaceEssentialLanguage)
+{
+	struct session session;
+	ASSERT_EQ(session_create(&db, "essential-first", "mock", &session), 0);
+	ASSERT_EQ(memory_accept_input(&db, session.id, "Always reply in Chinese.", "input", &opts),
+	0);
+	std::string value(900, 'x');
+	ASSERT_EQ(preference_set(&db, session.id, "personal", "custom.large", value.c_str(),
+				 "Explicit request", "second"), 0);
+	opts.max_context_chars = 32;
+	char *context MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(memory_context_create(&db, session.id, "hello", &opts, &context), 0);
+	ASSERT_NE(context, nullptr);
+	EXPECT_NE(strstr(context, "response.language: Chinese"), nullptr);
+	EXPECT_EQ(strstr(context, "custom.large"), nullptr);
+	EXPECT_NE(strstr(context, "omitted records"), nullptr);
+	EXPECT_LE(utf8len(context), 512u);
+}
+
+TEST_F(MemoryTest, ContextOmitsWholeOversizedRecordAndProvidesRecoverableNotice)
+{
+	struct session session;
+	ASSERT_EQ(session_create(&db, "complete-budget", "mock", &session), 0);
+	ASSERT_EQ(memory_accept_input(&db, session.id, "hello", "input", &opts), 0);
+	std::string value = "LONG_VALUE_START_" + std::string(600, 'x') + "_LONG_VALUE_END";
+	ASSERT_EQ(memory_store_upsert_fact(&db, session.id, "large", value.c_str(), "source",
+					  "context", 0.8), 0);
+	ASSERT_EQ(memory_store_upsert_fact(&db, session.id, "small", "Complete small value",
+	"source",
+					  "context", 0.8), 0);
+	opts.max_context_chars = 400;
+	char *context MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(memory_context_create(&db, session.id, "hello", &opts, &context), 0);
+	ASSERT_NE(context, nullptr);
+	EXPECT_EQ(strstr(context, "LONG_VALUE_START_"), nullptr);
+	EXPECT_NE(strstr(context, "Complete small value"), nullptr);
+	EXPECT_NE(strstr(context, "omitted records"), nullptr);
+	EXPECT_NE(strstr(context, "scope=session"), nullptr);
+	EXPECT_LE(utf8len(context), 400u);
+	struct memory_query_options query = {};
+	query.type = MEMORY_QUERY_FACTS;
+	char *recovered MORPH_CLEANUP(morph_charp_cleanup) =
+		memory_query_text_create(&db, session.id, &query);
+	ASSERT_NE(recovered, nullptr);
+	EXPECT_NE(strstr(recovered, value.c_str()), nullptr);
+}
+
+TEST_F(MemoryTest, FactCountLimitReportsOmissionsWithoutDeletingStoredValues)
+{
+	struct session session;
+	ASSERT_EQ(session_create(&db, "count-budget", "mock", &session), 0);
+	ASSERT_EQ(memory_accept_input(&db, session.id, "hello", "input", &opts), 0);
+	for (int i = 0; i < 3; i++) {
+		std::string key = "fact-" + std::to_string(i);
+		ASSERT_EQ(memory_store_upsert_fact(&db, session.id, key.c_str(), "Complete value",
+						  "source", "context", 0.8), 0);
+	}
+	opts.max_facts = 1;
+	char *context MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(memory_context_create(&db, session.id, "hello", &opts, &context), 0);
+	ASSERT_NE(context, nullptr);
+	EXPECT_NE(strstr(context, "omitted records"), nullptr);
+	struct memory_snapshot snapshot MORPH_CLEANUP(memory_snapshot_cleanup) = {};
+	struct memory_snapshot_options read = {};
+	read.facts_limit = -1;
+	ASSERT_EQ(memory_snapshot_read(&db, session.id, &read, &snapshot), 0);
+	EXPECT_EQ(snapshot.facts.nelts, 3u);
+}
+
+TEST_F(MemoryTest, AutomaticFactsPreserveLongUnicodeValuesPastFormerByteLimit)
+{
+	struct session session;
+	ASSERT_EQ(session_create(&db, "long-auto-fact", "mock", &session), 0);
+	std::string goal;
+	for (int i = 0; i < 180; i++)
+		goal += "界";
+	goal += "END_MARKER";
+	std::string input = "My goal is " + goal + ".";
+	ASSERT_EQ(memory_accept_input(&db, session.id, input.c_str(), "input", &opts), 0);
+	struct memory_snapshot snapshot MORPH_CLEANUP(memory_snapshot_cleanup) = {};
+	struct memory_snapshot_options read = {};
+	read.facts_limit = -1;
+	ASSERT_EQ(memory_snapshot_read(&db, session.id, &read, &snapshot), 0);
+	ASSERT_EQ(snapshot.facts.nelts, 1u);
+	auto *fact = static_cast<struct memory_fact_record *>(morph_array_borrow(&snapshot.facts,
+	0));
+	EXPECT_STREQ(fact->key, "goal");
+	EXPECT_STREQ(fact->value, goal.c_str());
+	EXPECT_EQ(utf8valid(fact->value), nullptr);
 }
 
 TEST_F(MemoryTest, IndependentWorkersDrainOnlyTheirOwnJobs)

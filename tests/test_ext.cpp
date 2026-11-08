@@ -398,3 +398,54 @@ TEST(ExtRuntimeTest, SharedLibraryBackendRejectsAnExistingEntrypoint)
 	EXPECT_EQ(extension.run, ext_test_native_run);
 	EXPECT_EQ(extension.dl_handle, nullptr);
 }
+
+
+TEST(ExtManifestTest, OversizedFixedStringsAreRejectedWithoutMutatingTheOutput)
+{
+	const std::pair<const char *, size_t> fields[] = {
+		{"name", 64}, {"version", 32}, {"description", 256}, {"author", 64},
+		{"type", 16}, {"entry", 128}, {"hook", 32}, {"action_text", 512},
+		{"build.command", 512},
+	};
+	for (const auto &field : fields) {
+		SCOPED_TRACE(field.first);
+		std::string input = std::string(field.first) + " = \"" +
+			std::string(field.second, 'x') + "\"\n";
+		struct ext_manifest manifest MORPH_CLEANUP(ext_manifest_cleanup) = {};
+		strcpy(manifest.name, "unchanged");
+		EXPECT_EQ(manifest_parse(nullptr, input.c_str(), &manifest), -E2BIG);
+		EXPECT_STREQ(manifest.name, "unchanged");
+		EXPECT_EQ(manifest.input_schema, nullptr);
+	}
+}
+
+TEST(ExtManifestTest, Utf8BoundaryIsPreservedAndMalformedOrNulStringsAreRejected)
+{
+	std::string name;
+	for (int i = 0; i < 21; i++)
+		name += "中";
+	struct ext_manifest manifest MORPH_CLEANUP(ext_manifest_cleanup) = {};
+	std::string input = "name = \"" + name + "\"\n";
+	ASSERT_EQ(manifest_parse(nullptr, input.c_str(), &manifest), 0);
+	EXPECT_STREQ(manifest.name, name.c_str());
+	ext_manifest_cleanup(&manifest);
+	input = "name = \"" + name + "中\"\n";
+	EXPECT_EQ(manifest_parse(nullptr, input.c_str(), &manifest), -E2BIG);
+	input = "description = \"" + std::string(1, static_cast<char>(0xff)) + "\"\n";
+	EXPECT_NE(manifest_parse(nullptr, input.c_str(), &manifest), 0);
+	EXPECT_NE(manifest_parse(nullptr, "entry = \"safe\\u0000hidden\"\n", &manifest), 0);
+	EXPECT_EQ(manifest.input_schema, nullptr);
+}
+
+TEST(ExtManifestTest, ResourceIntegersCannotWrapIntoDifferentLimits)
+{
+	for (const char *field : {"max_memory_mb", "max_cpu_seconds", "max_open_files",
+				  "permissions"}) {
+		SCOPED_TRACE(field);
+		struct ext_manifest manifest MORPH_CLEANUP(ext_manifest_cleanup) = {};
+		std::string input = std::string(field) + " = 4294967296\n";
+		EXPECT_EQ(manifest_parse(nullptr, input.c_str(), &manifest), -ERANGE);
+		input = std::string(field) + " = -1\n";
+		EXPECT_EQ(manifest_parse(nullptr, input.c_str(), &manifest), -ERANGE);
+	}
+}

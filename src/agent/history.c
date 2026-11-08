@@ -309,7 +309,7 @@ int agent_history_record_tool_calls(struct react_context *ctx, const char *conte
 				    int call_count)
 {
 	struct model_history_insert item = {0};
-	char key[256];
+	morph_buf_t key MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	cJSON *array;
 	cJSON *root;
 	char *json;
@@ -365,8 +365,12 @@ int agent_history_record_tool_calls(struct react_context *ctx, const char *conte
 	item.role = "assistant";
 	item.content = content;
 	item.payload_json = json;
-	snprintf(key, sizeof(key), "calls:%s", calls[0].tool_call_id);
-	item.idempotency_key = key;
+	rc = morph_buf_printf(&key, "calls:%s", calls[0].tool_call_id ? calls[0].tool_call_id : "");
+	if (rc != 0) {
+		free(json);
+		return rc;
+	}
+	item.idempotency_key = morph_buf_cstr_borrow(&key);
 	item.token_count = tokenizer_count(ctx->tokenizer, json);
 	item.active = 1;
 	rc = history_store(ctx, &item);
@@ -383,7 +387,7 @@ int agent_history_record_tool_result_ex(struct react_context *ctx, const char *t
 					const cJSON *tool_meta)
 {
 	struct model_history_insert item = {0};
-	char key[256];
+	morph_buf_t key MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	cJSON *metadata;
 	char *payload = NULL;
 	char *stored = NULL;
@@ -403,8 +407,12 @@ int agent_history_record_tool_result_ex(struct react_context *ctx, const char *t
 	item.tool_call_id = tool_call_id;
 	item.provider_call_id = provider_call_id;
 	item.tool_name = tool_name;
-	snprintf(key, sizeof(key), "result:%s", tool_call_id ? tool_call_id : "unknown");
-	item.idempotency_key = key;
+	rc = morph_buf_printf(&key, "result:%s", tool_call_id ? tool_call_id : "unknown");
+	if (rc != 0) {
+		free(stored);
+		return rc;
+	}
+	item.idempotency_key = morph_buf_cstr_borrow(&key);
 	metadata = cJSON_CreateObject();
 	if (!metadata) {
 		free(stored);

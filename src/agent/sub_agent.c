@@ -48,13 +48,69 @@ struct sub_agent_event_sink {
 static struct sub_agent_task *sub_agent_task_find_locked(
 	struct sub_agent_runtime *rt, const char *task_id)
 {
+	morph_queue_t *link;
+
 	if (!rt || !task_id)
 		return NULL;
-	for (int i = 0; i < rt->task_count; i++) {
-		if (strcmp(rt->tasks[i].id, task_id) == 0)
-			return &rt->tasks[i];
+	morph_queue_foreach(link, &rt->tasks) {
+		struct sub_agent_task *task = morph_queue_data(link, struct sub_agent_task, link);
+
+		if (strcmp(task->id, task_id) == 0)
+			return task;
 	}
 	return NULL;
+}
+
+struct sub_agent_capacity {
+	struct sub_agent_runtime *rt;
+	int count;
+};
+
+static void sub_agent_capacity_cleanup(struct sub_agent_capacity *capacity)
+{
+	if (capacity->rt && capacity->count) {
+		pthread_mutex_lock(&capacity->rt->mutex);
+		capacity->rt->active_task_count -= capacity->count;
+		pthread_mutex_unlock(&capacity->rt->mutex);
+	}
+	memset(capacity, 0, sizeof(*capacity));
+}
+
+static int sub_agent_capacity_reserve(struct sub_agent_runtime *rt, int count,
+				      struct sub_agent_capacity *capacity)
+{
+	if (!rt || !capacity || count <= 0 || count > SUB_AGENT_TASK_MAX)
+		return -EINVAL;
+	if (capacity->rt)
+		return -EALREADY;
+	pthread_mutex_lock(&rt->mutex);
+	if (count > SUB_AGENT_TASK_MAX - rt->active_task_count) {
+		pthread_mutex_unlock(&rt->mutex);
+		return -EAGAIN;
+	}
+	rt->active_task_count += count;
+	capacity->rt = rt;
+	capacity->count = count;
+	pthread_mutex_unlock(&rt->mutex);
+	return 0;
+}
+
+static void sub_agent_task_cleanup(struct sub_agent_task **owner)
+{
+	struct sub_agent_task *task = *owner;
+	char **event;
+
+	if (!task)
+		return;
+	morph_array_foreach(event, &task->events, char *)
+		free(*event);
+	morph_array_cleanup(&task->events);
+	if (task->mutex_initialized)
+		pthread_mutex_destroy(&task->mutex);
+	free(task->task_description);
+	free(task->result);
+	free(task);
+	*owner = NULL;
 }
 
 static int sub_agent_storage_exec_task(struct sub_agent_runtime *rt,
@@ -151,13 +207,33 @@ static void sub_agent_storage_update_task(struct sub_agent_runtime *rt,
 	free(result);
 }
 
+static void sub_agent_task_complete(struct sub_agent_runtime *rt,
+				    struct sub_agent_task *task, int rc)
+{
+	pthread_mutex_lock(&task->mutex);
+	task->error_code = rc < 0 ? rc : 0;
+	task->status = rc == 0 ? SUB_AGENT_COMPLETED :
+		(rc == -ECANCELED ? SUB_AGENT_CANCELLED : SUB_AGENT_FAILED);
+	if (!task->ended_at_ms)
+		task->ended_at_ms = now_ms();
+	pthread_mutex_unlock(&task->mutex);
+	sub_agent_storage_update_task(rt, task);
+	pthread_mutex_lock(&rt->mutex);
+	if (task->slot_held) {
+		task->slot_held = 0;
+		rt->active_task_count--;
+	}
+	pthread_mutex_unlock(&rt->mutex);
+}
+
 static struct sub_agent_task *sub_agent_task_create(struct sub_agent_runtime *rt,
 						    struct sub_agent_entry *entry,
 						    const char *description, const char *mode,
-						    int joined, int depth, int *error)
+						    int joined, int depth,
+						    struct sub_agent_capacity *capacity, int *error)
 {
-	struct sub_agent_task *task;
-	char *task_description;
+	struct sub_agent_task *task MORPH_CLEANUP(sub_agent_task_cleanup) = NULL;
+	struct sub_agent_task *out;
 	int rc;
 
 	if (error)
@@ -167,62 +243,72 @@ static struct sub_agent_task *sub_agent_task_create(struct sub_agent_runtime *rt
 			*error = -EINVAL;
 		return NULL;
 	}
-	task_description = strdup(description);
-	if (!task_description) {
+	task = calloc(1, sizeof(*task));
+	if (!task) {
 		if (error)
 			*error = -ENOMEM;
 		return NULL;
 	}
-	pthread_mutex_lock(&rt->mutex);
-	if (rt->task_count >= SUB_AGENT_TASK_MAX) {
-		pthread_mutex_unlock(&rt->mutex);
-		free(task_description);
+	task->task_description = strdup(description);
+	if (!task->task_description) {
 		if (error)
-			*error = -ENOSPC;
+			*error = -ENOMEM;
 		return NULL;
 	}
-	task = &rt->tasks[rt->task_count++];
-	memset(task, 0, sizeof(*task));
+	rc = pthread_mutex_init(&task->mutex, NULL);
+	if (rc != 0) {
+		if (error)
+			*error = -rc;
+		return NULL;
+	}
+	task->mutex_initialized = 1;
+	rc = morph_array_init(&task->events, MORPH_ARRAY_INIT_CAP, sizeof(task->task_description));
+	if (rc != 0) {
+		if (error)
+			*error = rc;
+		return NULL;
+	}
+	task->events_initialized = 1;
+	pthread_mutex_lock(&rt->mutex);
+	if ((capacity && (capacity->rt != rt || capacity->count <= 0)) ||
+	    (!capacity && rt->active_task_count >= SUB_AGENT_TASK_MAX)) {
+		pthread_mutex_unlock(&rt->mutex);
+		if (error)
+			*error = -EAGAIN;
+		return NULL;
+	}
+	if (rt->task_count == INT_MAX || rt->next_task_id == INT_MAX) {
+		pthread_mutex_unlock(&rt->mutex);
+		if (error)
+			*error = -EOVERFLOW;
+		return NULL;
+	}
 	generate_task_id(rt->next_task_id++, task->id, sizeof(task->id));
 	task->depth = depth;
 	task->agent_index = (int)(entry - rt->entries);
 	task->parent_session_id = rt->parent_session_id;
 	strncpy(task->mode, mode, sizeof(task->mode) - 1);
-	task->task_description = task_description;
 	task->status = SUB_AGENT_PENDING;
 	task->joined = joined;
 	task->started_at_ms = now_ms();
-	pthread_mutex_init(&task->mutex, NULL);
-	rc = morph_array_init(&task->events, MORPH_ARRAY_INIT_CAP,
-			      sizeof(char *));
-	if (rc == 0) {
-		task->events_initialized = 1;
-	} else {
-		pthread_mutex_destroy(&task->mutex);
-		free(task->task_description);
-		memset(task, 0, sizeof(*task));
-		rt->task_count--;
-	}
-	if (rc != 0) {
-		pthread_mutex_unlock(&rt->mutex);
-		if (error)
-			*error = rc;
-		return NULL;
-	}
 	rc = sub_agent_storage_exec_task(rt, task, entry->cfg.name);
 	if (rc != 0) {
-		morph_array_cleanup(&task->events);
-		pthread_mutex_destroy(&task->mutex);
-		free(task->task_description);
-		memset(task, 0, sizeof(*task));
-		rt->task_count--;
 		pthread_mutex_unlock(&rt->mutex);
 		if (error)
 			*error = rc;
 		return NULL;
 	}
+	if (capacity)
+		capacity->count--;
+	else
+		rt->active_task_count++;
+	task->slot_held = 1;
+	morph_queue_insert_tail(&rt->tasks, &task->link);
+	rt->task_count++;
+	out = task;
+	task = NULL;
 	pthread_mutex_unlock(&rt->mutex);
-	return task;
+	return out;
 }
 
 static int sub_agent_child_event(const struct morph_event *ev,
@@ -313,6 +399,7 @@ sub_agent_runtime_create(struct tool_registry *parent_tools,
 	struct sub_agent_runtime *rt = calloc(1, sizeof(*rt));
 	if (!rt)
 		return NULL;
+	morph_queue_init(&rt->tasks);
 	rt->logger = parent_tools ? parent_tools->logger : NULL;
 	rt->parent_tools = parent_tools;
 	rt->default_llm = default_llm;
@@ -338,45 +425,46 @@ sub_agent_runtime_create(struct tool_registry *parent_tools,
 
 void sub_agent_runtime_cancel(struct sub_agent_runtime *rt)
 {
+	morph_queue_t *link;
+
 	if (!rt)
 		return;
 	pthread_mutex_lock(&rt->mutex);
-	for (int i = 0; i < rt->task_count; i++) {
-		pthread_mutex_lock(&rt->tasks[i].mutex);
-		if (rt->tasks[i].child_ctx)
-			react_cancel(rt->tasks[i].child_ctx);
-		pthread_mutex_unlock(&rt->tasks[i].mutex);
+	morph_queue_foreach(link, &rt->tasks) {
+		struct sub_agent_task *task = morph_queue_data(link, struct sub_agent_task, link);
+
+		pthread_mutex_lock(&task->mutex);
+		if (task->child_ctx)
+			react_cancel(task->child_ctx);
+		pthread_mutex_unlock(&task->mutex);
 	}
 	pthread_mutex_unlock(&rt->mutex);
 }
 
 void sub_agent_runtime_destroy(struct sub_agent_runtime *rt)
 {
+	morph_queue_t *link;
+	morph_queue_t *next;
+
 	if (!rt)
 		return;
+	sub_agent_runtime_cancel(rt);
+	morph_queue_foreach(link, &rt->tasks) {
+		struct sub_agent_task *task = morph_queue_data(link, struct sub_agent_task, link);
+
+		if (task->thread_started && !task->joined) {
+			pthread_join(task->thread, NULL);
+			task->joined = 1;
+		}
+	}
+	morph_queue_foreach_safe(link, next, &rt->tasks) {
+		struct sub_agent_task *task MORPH_CLEANUP(sub_agent_task_cleanup) =
+			morph_queue_data(link, struct sub_agent_task, link);
+
+		morph_queue_remove(link);
+	}
 	for (int i = 0; i < rt->entry_count; i++)
 		free(rt->entries[i].system_prompt);
-	for (int i = 0; i < rt->task_count; i++) {
-		if (!rt->tasks[i].joined &&
-		    strcmp(rt->tasks[i].mode, "delegate") == 0) {
-			pthread_mutex_lock(&rt->tasks[i].mutex);
-			if (rt->tasks[i].child_ctx)
-				react_cancel(rt->tasks[i].child_ctx);
-			pthread_mutex_unlock(&rt->tasks[i].mutex);
-			pthread_join(rt->tasks[i].thread, NULL);
-			rt->tasks[i].joined = 1;
-		}
-		if (rt->tasks[i].events_initialized) {
-			char **event;
-
-			morph_array_foreach(event, &rt->tasks[i].events, char *)
-				free(*event);
-			morph_array_cleanup(&rt->tasks[i].events);
-		}
-		pthread_mutex_destroy(&rt->tasks[i].mutex);
-		free(rt->tasks[i].task_description);
-		free(rt->tasks[i].result);
-	}
 	if (rt->mutexes_initialized) {
 		pthread_mutex_destroy(&rt->storage_mutex);
 		pthread_mutex_destroy(&rt->mutex);
@@ -730,19 +818,17 @@ static int sub_agent_run_task(struct sub_agent_runtime *rt,
 
 	pthread_mutex_lock(&task->mutex);
 	task->result = morph_charp_steal(&final_result);
-	task->error_code = rc < 0 ? rc : 0;
-	task->status = rc == 0 ? SUB_AGENT_COMPLETED :
-		(rc == -ECANCELED ? SUB_AGENT_CANCELLED : SUB_AGENT_FAILED);
 	task->ended_at_ms = end;
 	if (result && rc == 0)
 		*result = morph_charp_steal(&result_copy);
 	pthread_mutex_unlock(&task->mutex);
-	sub_agent_storage_update_task(rt, task);
 	return rc;
 }
 
-int sub_agent_invoke_sync(struct sub_agent_runtime *rt, const struct tool_runtime_context *runtime,
-			  struct sub_agent_entry *entry, const char *task, char **result)
+static int sub_agent_invoke_reserved(struct sub_agent_runtime *rt,
+				      const struct tool_runtime_context *runtime,
+				      struct sub_agent_entry *entry, const char *task,
+				      struct sub_agent_capacity *capacity, char **result)
 {
 	struct sub_agent_task *task_record;
 	int create_rc;
@@ -756,7 +842,8 @@ int sub_agent_invoke_sync(struct sub_agent_runtime *rt, const struct tool_runtim
 		return -ELOOP;
 	task_record =
 		sub_agent_task_create(rt, entry, task, "tool", 1,
-				      runtime ? runtime->sub_agent_depth : rt->depth, &create_rc);
+				      runtime ? runtime->sub_agent_depth : rt->depth,
+				      capacity, &create_rc);
 	if (!task_record)
 		return create_rc;
 	sub_agent_emit_background_event(rt, "background.started", "begin",
@@ -764,6 +851,7 @@ int sub_agent_invoke_sync(struct sub_agent_runtime *rt, const struct tool_runtim
 					entry->cfg.name, task_record->id,
 					task, 0);
 	rc = sub_agent_run_task(rt, entry, task_record, result);
+	sub_agent_task_complete(rt, task_record, rc);
 	sub_agent_emit_background_event(rt,
 					rc == 0 ? "background.completed" :
 					"background.failed",
@@ -772,6 +860,12 @@ int sub_agent_invoke_sync(struct sub_agent_runtime *rt, const struct tool_runtim
 					"sub-agent failed",
 					entry->cfg.name, task_record->id, task, rc);
 	return rc;
+}
+
+int sub_agent_invoke_sync(struct sub_agent_runtime *rt, const struct tool_runtime_context *runtime,
+			  struct sub_agent_entry *entry, const char *task, char **result)
+{
+	return sub_agent_invoke_reserved(rt, runtime, entry, task, NULL, result);
 }
 
 struct delegate_thread_arg {
@@ -800,6 +894,7 @@ static void *delegate_thread_fn(void *arg)
 					task->task_description, 0);
 
 	rc = sub_agent_run_task(rt, da->entry, task, NULL);
+	sub_agent_task_complete(rt, task, rc);
 	sub_agent_emit_background_event(rt,
 					task->status == SUB_AGENT_COMPLETED ?
 					"background.completed" :
@@ -843,7 +938,8 @@ int sub_agent_delegate(struct sub_agent_runtime *rt, const struct tool_runtime_c
 			return -ENOMEM;
 	}
 	record = sub_agent_task_create(rt, entry, task, "delegate", 0,
-				       runtime ? runtime->sub_agent_depth : rt->depth, &create_rc);
+					       runtime ? runtime->sub_agent_depth : rt->depth,
+					       NULL, &create_rc);
 	if (!record)
 		return create_rc;
 	if (task_id)
@@ -857,17 +953,17 @@ int sub_agent_delegate(struct sub_agent_runtime *rt, const struct tool_runtime_c
 	rc = pthread_create(&record->thread, NULL, delegate_thread_fn, argument);
 	if (rc != 0) {
 		pthread_mutex_lock(&record->mutex);
-		record->status = SUB_AGENT_FAILED;
 		record->joined = 1;
-		record->error_code = -rc;
-		record->ended_at_ms = now_ms();
 		pthread_mutex_unlock(&record->mutex);
-		sub_agent_storage_update_task(rt, record);
+		sub_agent_task_complete(rt, record, -rc);
 		sub_agent_emit_background_event(rt, "background.failed", "failed",
 						"sub-agent delegate failed", entry->cfg.name,
 						record->id, task, -rc);
 		return -rc;
 	}
+	pthread_mutex_lock(&record->mutex);
+	record->thread_started = 1;
+	pthread_mutex_unlock(&record->mutex);
 	argument = NULL;
 	if (task_id_out)
 		*task_id_out = morph_charp_steal(&task_id);
@@ -902,7 +998,7 @@ int sub_agent_check_status(struct sub_agent_runtime *rt, const char *task_id,
 	}
 	join_needed = (status == SUB_AGENT_COMPLETED || status == SUB_AGENT_FAILED ||
 		       status == SUB_AGENT_CANCELLED) &&
-		      !found->joined;
+		      found->thread_started && !found->joined;
 	if (join_needed)
 		found->joined = 1;
 	pthread_mutex_unlock(&found->mutex);
@@ -957,11 +1053,13 @@ static int sub_agent_task_info_from_runtime(struct sub_agent_runtime *rt,
 					    int64_t parent_session_id,
 					    morph_array_t *items)
 {
+	morph_queue_t *link;
+
 	if (!rt || !items)
 		return -EINVAL;
 	pthread_mutex_lock(&rt->mutex);
-	for (int i = 0; i < rt->task_count; i++) {
-		struct sub_agent_task *task = &rt->tasks[i];
+	morph_queue_foreach(link, &rt->tasks) {
+		struct sub_agent_task *task = morph_queue_data(link, struct sub_agent_task, link);
 		struct sub_agent_task_info *info;
 
 		if (parent_session_id > 0 &&
@@ -1173,6 +1271,7 @@ struct fanout_worker_arg {
 	struct tool_runtime_context runtime;
 	struct sub_agent_runtime *rt;
 	struct sub_agent_entry *entry;
+	struct sub_agent_capacity *capacity;
 	const char *task;
 	char *result;
 	int rc;
@@ -1223,7 +1322,8 @@ static int fanout_raw_result_create(const struct fanout_worker_arg *workers, con
 static void *fanout_worker_fn(void *arg)
 {
 	struct fanout_worker_arg *fw = arg;
-	fw->rc = sub_agent_invoke_sync(fw->rt, &fw->runtime, fw->entry, fw->task, &fw->result);
+	fw->rc = sub_agent_invoke_reserved(fw->rt, &fw->runtime, fw->entry, fw->task,
+					  fw->capacity, &fw->result);
 	__atomic_store_n(&fw->finished, 1, __ATOMIC_RELEASE);
 	return NULL;
 }
@@ -1247,6 +1347,7 @@ int sub_agent_fanout_with_ops(struct sub_agent_runtime *rt,
 			      const struct sub_agent_thread_ops *ops)
 {
 	struct fanout_workers owner MORPH_CLEANUP(fanout_workers_cleanup) = {0};
+	struct sub_agent_capacity capacity MORPH_CLEANUP(sub_agent_capacity_cleanup) = {0};
 	char *merged MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	int started = 0;
 	int thread_rc = 0;
@@ -1255,20 +1356,24 @@ int sub_agent_fanout_with_ops(struct sub_agent_runtime *rt,
 		return -EINVAL;
 	if (*result)
 		return -EALREADY;
+	if (task_count > SUB_AGENT_TASK_MAX)
+		return -E2BIG;
 	if ((runtime ? runtime->sub_agent_depth : rt->depth) >= SUB_AGENT_MAX_DEPTH)
 		return -ELOOP;
 	struct sub_agent_entry *entry = sub_agent_borrow(rt, agent_name);
 	if (!entry)
 		return -ENOENT;
-	sub_agent_emit_background_event(rt, "background.started", "begin",
-					"sub-agent fanout started",
-					entry->cfg.name, NULL, agent_name, 0);
-	int n = task_count > SUB_AGENT_TASK_MAX
-		? SUB_AGENT_TASK_MAX : task_count;
+	int n = task_count;
 	for (int i = 0; i < n; i++) {
 		if (!tasks[i])
 			return -EINVAL;
 	}
+	int capacity_rc = sub_agent_capacity_reserve(rt, n, &capacity);
+	if (capacity_rc != 0)
+		return capacity_rc;
+	sub_agent_emit_background_event(rt, "background.started", "begin",
+					"sub-agent fanout started",
+					entry->cfg.name, NULL, agent_name, 0);
 	owner.count = n;
 	owner.items = calloc((size_t)n, sizeof(*owner.items));
 	owner.threads = calloc((size_t)n, sizeof(*owner.threads));
@@ -1289,6 +1394,7 @@ int sub_agent_fanout_with_ops(struct sub_agent_runtime *rt,
 			workers[i].runtime.sub_agent_depth = rt->depth;
 		workers[i].rt = rt;
 		workers[i].entry = entry;
+		workers[i].capacity = &capacity;
 		workers[i].task = tasks[i];
 		workers[i].result = NULL;
 		workers[i].rc = 0;
@@ -1360,7 +1466,7 @@ int sub_agent_fanout_with_ops(struct sub_agent_runtime *rt,
 			}
 		}
 		struct model *llm = entry->llm;
-		if (llm && llm->chat && llm->api_key[0]) {
+		if (llm && llm->chat && model_api_key_borrow(llm)[0]) {
 			{
 				const char *sys =
 					"You are a synthesis engine. "
@@ -1427,7 +1533,7 @@ int sub_agent_apply_output_schema(const char *text, const char *schema, struct m
 		return -EINVAL;
 	if (*result)
 		return -EALREADY;
-	if (!llm || !llm->chat || !llm->api_key[0]) {
+	if (!llm || !llm->chat || !model_api_key_borrow(llm)[0]) {
 		*result = strdup(text);
 		return *result ? 0 : -ENOMEM;
 	}

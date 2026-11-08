@@ -1,6 +1,8 @@
 #ifndef MORPH_PROJECT_CONTEXT_H
 #define MORPH_PROJECT_CONTEXT_H
 
+#include <stddef.h>
+
 struct morph_log;
 #include "environment_context.h"
 
@@ -13,6 +15,9 @@ extern "C" {
 /* Optional global directory, then Git root through cwd; caller-owned output. */
 int project_context_create(struct morph_log *logger, const struct environment_context *environment,
 			   const char *global_dir, char **out);
+int project_context_create_with_budget(struct morph_log *logger,
+				      const struct environment_context *environment,
+				      const char *global_dir, size_t budget, char **out);
 
 #ifdef __cplusplus
 }

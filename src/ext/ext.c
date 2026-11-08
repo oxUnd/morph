@@ -396,6 +396,11 @@ int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 		close(stdout_pipe[0]);
 		close(stderr_pipe[0]);
 		morph_buf_cleanup(&request);
+		if (rc == 0 && output.len > 1024u * 1024u) {
+			*result_json = strdup("{\"error\":\"Extension output exceeds the 1 MiB "
+				"capture limit; save large data to a file and return its path\"}");
+			return *result_json ? -EFBIG : -ENOMEM;
+		}
 		char *raw_response = morph_buf_detach(&output);
 		char *child_stderr = morph_buf_detach(&errors);
 

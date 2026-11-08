@@ -7,6 +7,7 @@
 #include "util/json.h"
 #include "util/buf.h"
 #include "util/error.h"
+#include "util/image_util.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -38,7 +39,7 @@ static int img_qa_int_arg(cJSON *root, const char *name, int fallback,
 		return -EINVAL;
 	}
 	value = item->valueint;
-	if (value < min || value > max) {
+	if (item->valuedouble != (double)value || value < min || value > max) {
 		(void)tool_result_error_format(result, "tool_failed",
 					       "'%s' must be between %d and %d", name, min, max);
 		return -EINVAL;
@@ -94,7 +95,7 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 
 	if (!result)
 		return -EINVAL;
-	if (!llm || !llm->api_key[0]) {
+	if (!llm || !model_api_key_borrow(llm)[0]) {
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"no multimodal LLM configured\"}");
 		return MORPH_ERR_NOT_CONFIGURED;
@@ -116,7 +117,8 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 	file_path = cJSON_IsString(fp) ? fp->valuestring : NULL;
 	prompt = cJSON_IsString(pr) && pr->valuestring && pr->valuestring[0]
 		? pr->valuestring : "Analyze this image.";
-	opts.max_tokens = img_qa_int_arg(root, "max_tokens", 1024, 1, 4096,
+	int output_budget = llm->max_tokens > 0 ? llm->max_tokens : 4096;
+	opts.max_tokens = img_qa_int_arg(root, "max_tokens", output_budget, 1, output_budget,
 					 result);
 	if (opts.max_tokens < 0) {
 		rc = opts.max_tokens;
@@ -128,7 +130,18 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 		rc = (int)opts.timeout_seconds;
 		return rc;
 	}
-	opts.max_dim = img_qa_int_arg(root, "max_dim", 360, 128, 1024,
+	const cJSON *detail = cJSON_GetObjectItemCaseSensitive(root, "detail");
+	if (detail && (!cJSON_IsString(detail) ||
+		       (strcmp(detail->valuestring, "high") != 0 &&
+			strcmp(detail->valuestring, "original") != 0))) {
+		(void)tool_result_error_copy(result, "invalid_detail",
+			"'detail' must be 'high' or 'original'");
+		return -EINVAL;
+	}
+	int image_budget = detail && strcmp(detail->valuestring, "original") == 0
+		? MORPH_IMAGE_MAX_DIMENSION : 2048;
+	opts.max_dim = img_qa_int_arg(root, "max_dim", image_budget, 128,
+				      MORPH_IMAGE_MAX_DIMENSION,
 				      result);
 	if (opts.max_dim < 0) {
 		rc = opts.max_dim;
@@ -158,8 +171,12 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 			return rc;
 		}
 	} else {
-		strncpy(resolved_path, file_path, sizeof(resolved_path) - 1);
-		resolved_path[sizeof(resolved_path) - 1] = '\0';
+		if (strlen(file_path) >= sizeof(resolved_path)) {
+			(void)tool_result_error_copy(result, "path_too_long",
+				"Image path exceeds the filesystem path limit");
+			return -ENAMETOOLONG;
+		}
+		memcpy(resolved_path, file_path, strlen(file_path) + 1);
 	}
 
 	rc = morph_buf_init(&buf, 8192);
@@ -218,9 +235,12 @@ int img_qa_init(struct tool_registry *reg, struct model *llm,
 			       "Before upload, the "
 			       "image is prepared within max_dim while preserving its format "
 			       "and aspect "
-			       "ratio. Provide file_path and prompt. Optional max_tokens "
-			       "(default 1024), timeout_seconds (default 120), and max_dim "
-			       "(default 360).",
+			       "ratio. High detail uses a maximum side of 2048 pixels; use "
+			       "detail=original for OCR, small text, or fine visual detail. "
+			       "Original detail preserves dimensions within shared image "
+			       "safety limits. max_dim can override this policy. max_tokens "
+			       "defaults to the configured vision model output budget. "
+			       "timeout_seconds defaults to 120.",
 		.input_schema =
 			"{\"type\":\"object\",\"properties\":{"
 			"\"file_path\":{\"type\":\"string\","
@@ -228,12 +248,16 @@ int img_qa_init(struct tool_registry *reg, struct model *llm,
 			"\"prompt\":{\"type\":\"string\","
 			"\"description\":\"Question or instruction for image analysis, "
 			"such as OCR or scene description\"},"
-			"\"max_tokens\":{\"type\":\"integer\","
-			"\"description\":\"Maximum output tokens (default 1024)\"},"
+			"\"max_tokens\":{\"type\":\"integer\",\"minimum\":1,"
+			"\"description\":\"Output token budget, at most the configured vision "
+			"model budget; defaults to that budget\"},"
 			"\"timeout_seconds\":{\"type\":\"integer\","
 			"\"description\":\"Hard request timeout in seconds (default 120)\"},"
-			"\"max_dim\":{\"type\":\"integer\","
-			"\"description\":\"Maximum image side sent to model (default 360)\"}},"
+			"\"detail\":{\"type\":\"string\",\"enum\":[\"high\",\"original\"],"
+			"\"default\":\"high\"},"
+			"\"max_dim\":{\"type\":\"integer\",\"minimum\":128,\"maximum\":32768,"
+			"\"description\":\"Maximum image side; defaults to 2048 for high detail "
+			"and the original dimensions for original detail\"}},"
 			"\"required\":[\"file_path\"]}",
 		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
 		.exec = img_qa_exec,

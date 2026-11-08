@@ -34,11 +34,9 @@ int image_provider_build_request_meta(const struct model *model, const char *pat
 	morph_buf_t auth_owner MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc = morph_buf_init(&url_owner, strlen(model->api_base) + strlen(path) + 1);
 	if (rc == 0)
-		rc = morph_buf_init(&auth_owner, strlen(model->api_key) + 24);
-	if (rc == 0)
 		rc = morph_buf_printf(&url_owner, "%s%s", model->api_base, path);
 	if (rc == 0)
-		rc = morph_buf_printf(&auth_owner, "Authorization: Bearer %s", model->api_key);
+		rc = model_authorization_header_create(model, &auth_owner);
 	if (rc != 0)
 		return rc;
 	morph_buf_move(url, &url_owner);
@@ -439,7 +437,7 @@ int image_gen_create(struct model *self, const char *prompt, const char *style, 
 	}
 	memset(result, 0, sizeof(*result));
 	memset(&payload, 0, sizeof(payload));
-	if (!self || !self->api_key[0])
+	if (!model_api_key_borrow(self)[0])
 		return MORPH_ERR_NOT_CONFIGURED;
 	ops = image_provider_resolve(self);
 	if (!ops) {

@@ -9,6 +9,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+static const char *sub_agent_failure_message(int rc)
+{
+	if (rc == -EAGAIN)
+		return "Sub-agent execution capacity is full. Wait for active tasks and retry.";
+	return morph_strerror(rc);
+}
+
 static int agent_sync_exec(const char *args_json, struct tool_result *result,
 			   void *user_data)
 {
@@ -59,7 +66,7 @@ static int agent_sync_exec(const char *args_json, struct tool_result *result,
 		cJSON_AddStringToObject(out, "status", "failed");
 		cJSON_AddStringToObject(out, "error",
 					sub_result ? sub_result
-					: morph_strerror(rc));
+					: sub_agent_failure_message(rc));
 		free(sub_result);
 	}
 	char *encoded MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(out);
@@ -153,7 +160,7 @@ static int delegate_exec(const char *args_json, struct tool_result *result,
 		cJSON_AddStringToObject(out, "status", "running");
 	} else {
 		cJSON_AddStringToObject(out, "status", "failed");
-		cJSON_AddStringToObject(out, "error", morph_strerror(rc));
+		cJSON_AddStringToObject(out, "error", sub_agent_failure_message(rc));
 	}
 	free(task_id);
 	char *encoded MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(out);
@@ -291,6 +298,14 @@ static int fanout_exec(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 	}
 	int n = cJSON_GetArraySize(tasks_arr);
+	if (n > SUB_AGENT_TASK_MAX) {
+		cJSON_Delete(root);
+		(void)tool_result_error_format(result, "invalid_arguments",
+			"fanout accepts at most %d tasks per call; split the batch. No tasks "
+			"started.",
+			SUB_AGENT_TASK_MAX);
+		return -E2BIG;
+	}
 	const char **tasks = calloc((size_t)n, sizeof(*tasks));
 	if (!tasks) {
 		cJSON_Delete(root);
@@ -330,7 +345,7 @@ static int fanout_exec(const char *args_json, struct tool_result *result,
 		cJSON_AddStringToObject(out, "status", "failed");
 		cJSON_AddStringToObject(out, "error",
 					fanout_result ? fanout_result
-					: morph_strerror(rc));
+						: sub_agent_failure_message(rc));
 		char *encoded MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(out);
 		(void)tool_result_success_json_text_copy(result, encoded);
 		cJSON_Delete(out);
@@ -346,14 +361,20 @@ int sub_agent_fanout_init(struct tool_registry *reg,
 	return tool_register_borrow(
 		reg, &(struct tool_spec){.origin = TOOL_ORIGIN_BUILTIN,
 					 .name = "fanout",
-					 .description = "Run multiple tasks in parallel using a "
-							"sub-agent and merge results",
+					 .description = "Run up to 8 tasks in parallel using a "
+							"sub-agent and merge results. Split larger "
+							"batches. "
+							"Active tasks share 8 execution slots; "
+							"completed "
+							"tasks remain queryable without holding a "
+							"slot.",
 					 .input_schema =
 						 "{\"type\":\"object\",\"properties\""
 						 ":{\"agent\":{\"type\":\"string\","
 						 "\"description\":\"Name of the sub-agent\"},"
 						 "\"tasks\":{\"type\":\"array\",\"items\""
 						 ":{\"type\":\"string\"},"
+						 "\"minItems\":1,\"maxItems\":8,"
 						 "\"description\":\"Array of task descriptions\"},"
 						 "\"merge\":{\"type\":\"string\","
 						 "\"enum\":[\"synthesize\",\"concat\",\"raw\"],"

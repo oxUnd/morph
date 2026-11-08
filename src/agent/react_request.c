@@ -149,12 +149,11 @@ char *react_system_prompt_create(struct react_context *ctx)
 		rc = morph_buf_puts(&buf, "\nAvailable skills:\n");
 		if (rc != 0)
 			return NULL;
-		const struct skill_entry *entries[SKILL_MAX_ENTRIES];
-		int count = skill_sorted_entries_borrow(ctx->skills, entries, SKILL_MAX_ENTRIES);
-
-		if (count < 0)
+		const struct skill_entry **entries MORPH_CLEANUP(skill_entry_list_cleanup) = NULL;
+		rc = skill_sorted_entries_create(ctx->skills, &entries);
+		if (rc != 0)
 			return NULL;
-		for (int i = 0; i < count; i++) {
+		for (int i = 0; i < ctx->skills->count; i++) {
 			const struct skill_entry *entry = entries[i];
 
 			if (!entry->enabled)
@@ -525,24 +524,28 @@ static int react_estimate_active_tokens(struct react_context *ctx, const struct 
 	return rc != 0 ? rc : tokens;
 }
 
-static int react_compaction_trigger_tokens(struct react_context *ctx, const struct model *llm)
+int react_request_input_budget(const struct react_context *ctx, const struct model *llm)
 {
 	int limit = ctx->compress.max_context_tokens;
 	int protocol = ctx->compress.protocol_reserve_tokens;
 	int output = llm && llm->max_tokens > 0 ? llm->max_tokens : 4096;
-	int ratio_limit;
-	int hard_limit;
 
+	if (llm && llm->context_limit > 0 && (limit <= 0 || llm->context_limit < limit))
+		limit = llm->context_limit;
 	if (limit <= 0)
 		return INT_MAX;
 	if (protocol < 0)
 		protocol = 0;
-	if (output > limit / 2)
-		output = limit / 2;
-	ratio_limit = (int)((double)limit * ctx->compress.summarize_threshold_ratio);
-	hard_limit = limit - output - protocol;
-	if (hard_limit < 1)
-		hard_limit = 1;
+	int64_t available = (int64_t)limit - output - protocol;
+	return available > 0 ? (int)available : 0;
+}
+
+static int react_compaction_trigger_tokens(struct react_context *ctx, const struct model *llm)
+{
+	int hard_limit = react_request_input_budget(ctx, llm);
+	int ratio_limit = (int)((double)ctx->compress.max_context_tokens *
+				ctx->compress.summarize_threshold_ratio);
+
 	if (ratio_limit < 1 || ratio_limit > hard_limit)
 		return hard_limit;
 	return ratio_limit;
@@ -627,7 +630,8 @@ int react_maybe_compact_active_window(struct react_context *ctx, struct model *l
 	int compacted = 0;
 	int rc;
 
-	if (!ctx->compress.in_turn_compaction || !ctx->history_enabled || !ctx->history_db)
+	if (!ctx->compress.in_turn_compaction || ctx->compress.max_context_tokens <= 0 ||
+	    !ctx->history_enabled || !ctx->history_db)
 		return 0;
 	before_tokens =
 		react_estimate_active_tokens(ctx, llm, system_prompt, messages, tools, tool_count);
@@ -659,6 +663,8 @@ int react_maybe_compact_active_window(struct react_context *ctx, struct model *l
 							    tool_count);
 		int target = (int)((double)ctx->compress.max_context_tokens *
 				   ctx->compress.compress_target_ratio);
+		if (target >= trigger_tokens)
+			target = trigger_tokens > 0 ? trigger_tokens - 1 : 0;
 
 		if (overhead < 0) {
 			rc = (overhead);
@@ -790,7 +796,7 @@ int react_checkpoint_create(const char *text, void *user_data, char **out)
 	if (*out)
 		return -EALREADY;
 	llm = ctx->llm_model;
-	if (!llm || !llm->chat || !llm->api_key[0]) {
+	if (!llm || !llm->chat || !model_api_key_borrow(llm)[0]) {
 		return MORPH_ERR_NOT_CONFIGURED;
 	}
 	const char *sys =

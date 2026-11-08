@@ -17,6 +17,13 @@
 #include "cJSON.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/widgets/list.h"
+#include "util/array.h"
+#include "util/cleanup.h"
+
+#include <ctype.h>
+#include <limits.h>
+#include <stdlib.h>
+#include <string.h>
 
 /* Built-in command groups are immutable; lookup requires no registration. */
 static struct cli_command_group (*const command_groups[])(void) = {
@@ -130,35 +137,73 @@ const struct cli_command *cli_command_find_input_borrow(const char *input)
 	return NULL;
 }
 
+static char *cli_registry_argv_next(char **cursor)
+{
+	char *position = *cursor;
+	char *argument;
+
+	while (*position && isspace((unsigned char)*position))
+		position++;
+	if (!*position) {
+		*cursor = position;
+		return NULL;
+	}
+	if (*position == '"' || *position == '\'') {
+		char quote = *position++;
+		argument = position;
+		while (*position && *position != quote)
+			position++;
+	} else {
+		argument = position;
+		while (*position && !isspace((unsigned char)*position))
+			position++;
+	}
+	if (*position)
+		*position++ = '\0';
+	*cursor = position;
+	return argument;
+}
+
 int cli_argv_split(const char *input, char **argv, int max_args)
 {
-	char *p = (char *)input;
-	int argc = 0;
+	char *cursor = (char *)input;
+	char *argument;
+	int count = 0;
 
 	if (!input || !argv || max_args < 1)
-		return 0;
-	while (*p && argc < max_args - 1) {
-		while (*p && isspace((unsigned char)*p))
-			p++;
-		if (!*p)
-			break;
-		if (*p == '"' || *p == '\'') {
-			char quote = *p++;
-			argv[argc++] = p;
-			while (*p && *p != quote)
-				p++;
-			if (*p)
-				*p++ = '\0';
-		} else {
-			argv[argc++] = p;
-			while (*p && !isspace((unsigned char)*p))
-				p++;
-			if (*p)
-				*p++ = '\0';
+		return -EINVAL;
+	while ((argument = cli_registry_argv_next(&cursor))) {
+		if (count >= max_args - 1) {
+			argv[count] = NULL;
+			return -E2BIG;
 		}
+		argv[count++] = argument;
 	}
-	argv[argc] = NULL;
-	return argc;
+	argv[count] = NULL;
+	return count;
+}
+
+static int cli_registry_arguments_create(char *input, morph_array_t *arguments)
+{
+	char *cursor = input;
+	char *argument;
+	int rc = morph_array_init(arguments, MORPH_ARRAY_INIT_CAP, sizeof(argument));
+
+	if (rc != 0)
+		return rc;
+	while ((argument = cli_registry_argv_next(&cursor))) {
+		if (arguments->nelts >= INT_MAX)
+			return -E2BIG;
+		char **slot = morph_array_push_borrow(arguments);
+		if (!slot)
+			return -ENOMEM;
+		*slot = argument;
+	}
+	char **last = morph_array_push_borrow(arguments);
+	if (!last)
+		return -ENOMEM;
+	*last = NULL;
+	return 0;
 }
 
 const char *cli_cmd_arg_borrow(int argc, char **argv, int idx)
@@ -168,8 +213,9 @@ const char *cli_cmd_arg_borrow(int argc, char **argv, int idx)
 
 int cli_command_dispatch(struct cli_application *ctx, const char *input)
 {
-	char buf[8192];
-	char *argv[32];
+	char *buf MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	morph_array_t arguments MORPH_CLEANUP(morph_array_cleanup) = {0};
+	char **argv;
 	morph_buf_t output;
 	int argc;
 	int capture_active = 0;
@@ -179,8 +225,14 @@ int cli_command_dispatch(struct cli_application *ctx, const char *input)
 
 	if (!input)
 		return -EINVAL;
-	snprintf(buf, sizeof(buf), "%s", input);
-	argc = cli_argv_split(buf, argv, 32);
+	buf = strdup(input);
+	if (!buf)
+		return -ENOMEM;
+	rc = cli_registry_arguments_create(buf, &arguments);
+	if (rc != 0)
+		return rc;
+	argv = arguments.elts;
+	argc = (int)(arguments.nelts - 1);
 	if (argc < 1)
 		return -EINVAL;
 	if (ctx && ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {

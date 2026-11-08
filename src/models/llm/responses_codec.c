@@ -60,8 +60,9 @@ static enum tool_input_kind responses_call_kind(const struct chat_message *messa
 		for (int j = 0; j < messages[i].tool_call_count; j++) {
 			struct tool_call *call = &messages[i].tool_calls[j];
 
-			if (strcmp(call->id, call_id) == 0 ||
-			    strcmp(call->tool_call_id, call_id) == 0)
+				if ((call->id && strcmp(call->id, call_id) == 0) ||
+				    (call->tool_call_id &&
+				     strcmp(call->tool_call_id, call_id) == 0))
 				return call->input_kind;
 		}
 	}
@@ -132,12 +133,14 @@ static struct tool_call *responses_find_tool_call(struct llm_stream_ctx *ctx, co
 {
 	if (item_id && *item_id) {
 		for (int i = 0; i < ctx->tool_call_count; i++)
-			if (strcmp(ctx->tool_calls[i].id, item_id) == 0)
+			if (ctx->tool_calls[i].provider_item_id &&
+			    strcmp(ctx->tool_calls[i].provider_item_id, item_id) == 0)
 				return &ctx->tool_calls[i];
-	}
-	if (ctx->tool_call_count <= 0)
 		return NULL;
-	return &ctx->tool_calls[ctx->tool_call_count - 1];
+	}
+	if (ctx->tool_call_count != 1)
+		return NULL;
+	return &ctx->tool_calls[0];
 }
 
 static int responses_append_call_input(struct llm_stream_ctx *ctx, struct tool_call *call,
@@ -148,8 +151,10 @@ static int responses_append_call_input(struct llm_stream_ctx *ctx, struct tool_c
 	size_t add_len;
 	char *next;
 
-	if (!call || !delta)
+	if (!delta)
 		return 0;
+	if (!call)
+		return MORPH_ERR_PROTOCOL;
 	old_len = call->arguments ? strlen(call->arguments) : 0;
 	add_len = strlen(delta);
 	if (add_len > SIZE_MAX - old_len - 1)
@@ -184,23 +189,69 @@ static int responses_parse_output_item(struct llm_stream_ctx *ctx, cJSON *item, 
 		return 0;
 	}
 	call = responses_find_tool_call(ctx, cJSON_GetStringValue(id));
-	if (!call || (cJSON_IsString(id) && call->id[0] && strcmp(call->id, id->valuestring) != 0))
+	if (!call)
 		call = llm_stream_tool_call_ensure_borrow(ctx, ctx->tool_call_count);
 	if (!call)
 		return -ENOMEM;
 	call->input_kind = kind;
-	if (cJSON_IsString(id) && id->valuestring)
-		strncpy(call->id, id->valuestring, sizeof(call->id) - 1);
-	if (complete && cJSON_IsString(call_id) && call_id->valuestring)
-		strncpy(call->id, call_id->valuestring, sizeof(call->id) - 1);
-	if (cJSON_IsString(name) && name->valuestring)
-		strncpy(call->name, name->valuestring, sizeof(call->name) - 1);
-	if (complete && !call->arguments && cJSON_IsString(input) && input->valuestring) {
-		call->arguments = strdup(input->valuestring);
-		if (!call->arguments)
-			return -ENOMEM;
+	int rc = 0;
+	if (cJSON_IsString(id) && id->valuestring) {
+		rc = llm_stream_string_copy(&call->provider_item_id, id->valuestring);
+		if (rc == 0 && !call->id)
+			rc = llm_stream_string_copy(&call->id, id->valuestring);
 	}
+	if (rc == 0 && cJSON_IsString(call_id) && call_id->valuestring)
+		rc = llm_stream_string_copy(&call->id, call_id->valuestring);
+	if (rc == 0 && cJSON_IsString(name) && name->valuestring)
+		rc = llm_stream_string_copy(&call->name, name->valuestring);
+	if (rc != 0)
+		return rc;
+	if (complete && cJSON_IsString(input) && input->valuestring)
+		return llm_stream_string_copy(&call->arguments, input->valuestring);
 	return 0;
+}
+
+static int responses_terminal(struct llm_stream_ctx *ctx, cJSON *root, const char *event_type)
+{
+	cJSON *response = cJSON_GetObjectItem(root, "response");
+	const char *reason = cJSON_GetStringValue(cJSON_GetObjectItem(
+		cJSON_GetObjectItem(response, "incomplete_details"), "reason"));
+	const cJSON *error = cJSON_GetObjectItem(response, "error");
+	const char *status = cJSON_GetStringValue(cJSON_GetObjectItem(response, "status"));
+	const char *detail;
+	int inconsistent = status &&
+		((!strcmp(event_type, "response.completed") && strcmp(status, "completed")) ||
+		 (!strcmp(event_type, "response.incomplete") && strcmp(status, "incomplete")));
+
+	ctx->terminal_received = 1;
+	llm_stream_parse_metadata(ctx, response);
+	llm_stream_parse_usage(ctx, response);
+	if (!inconsistent && !strcmp(event_type, "response.completed") &&
+	    cJSON_IsObject(response)) {
+		llm_usage_copy(ctx->usage.finish_reason, sizeof(ctx->usage.finish_reason),
+			       "completed");
+		return 0;
+	}
+	if (!inconsistent && !strcmp(event_type, "response.incomplete") && reason &&
+	    !strcmp(reason, "max_output_tokens")) {
+		llm_usage_copy(ctx->usage.finish_reason, sizeof(ctx->usage.finish_reason),
+			       "length");
+		return 0;
+	}
+	if (!error)
+		error = cJSON_GetObjectItem(root, "error");
+	detail = cJSON_GetStringValue(cJSON_GetObjectItem(error, "message"));
+	if (!detail)
+		detail = cJSON_GetStringValue(cJSON_GetObjectItem(root, "message"));
+	if (inconsistent)
+		detail = "Model terminal event has inconsistent response status.";
+	if (!detail)
+		detail = reason ? reason : "Model stream ended without a complete response.";
+	ctx->terminal_error = !strcmp(event_type, "response.failed") || !strcmp(event_type, "error")
+				? MORPH_ERR_API : MORPH_ERR_PROTOCOL;
+	llm_usage_copy(ctx->usage.finish_reason, sizeof(ctx->usage.finish_reason),
+		      !strcmp(event_type, "response.incomplete") ? "incomplete" : "failed");
+	return llm_stream_string_copy(&ctx->terminal_detail, detail);
 }
 
 static int llm_responses_sse_event_cb(const char *event, const char *data, void *user_data)
@@ -213,6 +264,8 @@ static int llm_responses_sse_event_cb(const char *event, const char *data, void 
 
 	(void)event;
 	if (!data || !*data || strcmp(data, "[DONE]") == 0)
+		return 0;
+	if (ctx->terminal_received)
 		return 0;
 	root = cJSON_Parse(data);
 	if (!root)
@@ -247,13 +300,20 @@ static int llm_responses_sse_event_cb(const char *event, const char *data, void 
 		struct tool_call *call = responses_find_tool_call(ctx, item_id);
 
 		rc = responses_append_call_input(ctx, call, delta);
-	} else if (strcmp(event_type, "response.completed") == 0) {
-		cJSON *response = cJSON_GetObjectItem(root, "response");
+	} else if (!strcmp(event_type, "response.function_call_arguments.done") ||
+		   !strcmp(event_type, "response.custom_tool_call_input.done")) {
+		const char *item_id = cJSON_GetStringValue(cJSON_GetObjectItem(root, "item_id"));
+		const char *input = cJSON_GetStringValue(cJSON_GetObjectItem(root,
+			!strcmp(event_type, "response.function_call_arguments.done")
+				? "arguments" : "input"));
+		struct tool_call *call = responses_find_tool_call(ctx, item_id);
 
-		llm_stream_parse_metadata(ctx, response);
-		llm_stream_parse_usage(ctx, response);
-		llm_usage_copy(ctx->usage.finish_reason, sizeof(ctx->usage.finish_reason),
-			       "completed");
+		rc = call && input ? llm_stream_string_copy(&call->arguments, input)
+				   : MORPH_ERR_PROTOCOL;
+	} else if (!strcmp(event_type, "response.completed") ||
+		   !strcmp(event_type, "response.incomplete") ||
+		   !strcmp(event_type, "response.failed") || !strcmp(event_type, "error")) {
+		rc = responses_terminal(ctx, root, event_type);
 	}
 	cJSON_Delete(root);
 	return rc;
@@ -286,6 +346,7 @@ const struct llm_codec *llm_responses_codec_borrow(void)
 		.tools = build_responses_tools_cjson,
 		.configure = responses_configure,
 		.event = llm_responses_sse_event_cb,
+		.requires_terminal_event = 1,
 	};
 
 	return &codec;

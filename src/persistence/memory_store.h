@@ -22,6 +22,7 @@ enum memory_query_type {
 	MEMORY_QUERY_PROCEDURES,
 	MEMORY_QUERY_EPISODES,
 	MEMORY_QUERY_CHANGES,
+	MEMORY_QUERY_PREFERENCES,
 };
 
 typedef int (*memory_session_visible_fn)(const char *display_id, const char *user_id,

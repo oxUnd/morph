@@ -717,6 +717,80 @@ TEST_F(HooksTest, AskAndStopTerminationHaveDistinctDecisions)
 	cJSON_Delete(out);
 }
 
+TEST_F(HooksTest, LargeSupplementSpillsWithoutDiscardingPermissionDecision)
+{
+	const std::string context = std::string(70000, 'x') + " final_requirement";
+	std::ofstream(directory + "/response.json") <<
+		"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\","
+		"\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"keep deny\","
+		"\"additionalContext\":\"" << context << "\"}}";
+	Define("PreToolUse", "cat response.json");
+	Init();
+	TrustAll();
+	cJSON *output = Dispatch("PreToolUse");
+	ASSERT_NE(output, nullptr);
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked")));
+	EXPECT_NE(field(output, "reason").find("keep deny"), std::string::npos);
+	EXPECT_NE(field(output, "context").find("Full hook context:"), std::string::npos);
+	int full_files = 0;
+	for (const auto &entry : std::filesystem::directory_iterator(directory + "/.morph/output"))
+	{
+		std::ifstream input(entry.path());
+		const std::string text((std::istreambuf_iterator<char>(input)), {});
+		if (text == context)
+			full_files++;
+	}
+	EXPECT_EQ(full_files, 1);
+	cJSON_Delete(output);
+}
+
+TEST_F(HooksTest, DispatchByteBudgetSpillsCompleteContextAndKeepsTheDecision)
+{
+	const std::string context = std::string(40000, 'x') + " byte_budget_tail";
+	std::ofstream(directory + "/response.json") <<
+		"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\","
+		"\"permissionDecision\":\"deny\",\"additionalContext\":\"" << context << "\"}}";
+	Write(R"({"hooks":{"PreToolUse":[{"hooks":[{"type":"command",
+		"command":"cat response.json","additionalContextLimit":0}]}]}})");
+	Init();
+	TrustAll();
+	cJSON *output = Dispatch("PreToolUse");
+	ASSERT_NE(output, nullptr);
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked")));
+	EXPECT_LT(field(output, "context").size(), 32768u);
+	EXPECT_NE(field(output, "context").find("Full hook context:"), std::string::npos);
+	bool found = false;
+	for (const auto &entry : std::filesystem::directory_iterator(directory + "/.morph/output"))
+	{
+		std::ifstream input(entry.path());
+		const std::string text((std::istreambuf_iterator<char>(input)), {});
+		found |= text.find(context) != std::string::npos;
+	}
+	EXPECT_TRUE(found);
+	cJSON_Delete(output);
+}
+
+TEST_F(HooksTest, ContextStorageFailureCannotTurnAnAskDecisionIntoPermission)
+{
+	const std::string context(40000, 'x');
+	std::ofstream(directory + "/response.json") <<
+		"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\","
+		"\"permissionDecision\":\"ask\",\"additionalContext\":\"" << context << "\"}}";
+	Define("PreToolUse", "cat response.json");
+	std::ofstream(directory + "/not_a_directory") << "occupied";
+	std::snprintf(cfg->general.output_dir, sizeof(cfg->general.output_dir),
+		"%s/not_a_directory", directory.c_str());
+	Init();
+	TrustAll();
+	cJSON *output = Dispatch("PreToolUse");
+	ASSERT_NE(output, nullptr);
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked")));
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(output, "ask")));
+	EXPECT_NE(field(output, "reason").find("Hook context could not be preserved"),
+		std::string::npos);
+	cJSON_Delete(output);
+}
+
 TEST_F(HooksTest, MalformedDecisionCannotApplyPartialRewrite)
 {
 	Define("PreToolUse", "echo '{\"continue\":false,\"hookSpecificOutput\":{"

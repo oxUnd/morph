@@ -10,6 +10,7 @@ extern "C" {
 #endif
 
 int react_count_input_text(const char *text, void *user_data);
+int react_request_input_budget(const struct react_context *ctx, const struct model *llm);
 
 /* Request owners keep copied model input alive through the complete call. */
 struct react_request_messages {

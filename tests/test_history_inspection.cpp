@@ -382,9 +382,9 @@ TEST_F(HistoryInspectionTest, OverflowPrunesOnlyCandidateToolGroupsAndKeepsRequi
 	react->history_session_id = session.id;
 	ASSERT_EQ(react_set_turn_id(react, "overflow-test"), 0);
 	struct tool_call call{};
-	strcpy(call.id, "provider-old");
-	strcpy(call.tool_call_id, "old");
-	strcpy(call.name, "exec");
+	call.id = const_cast<char *>("provider-old");
+	call.tool_call_id = const_cast<char *>("old");
+	call.name = const_cast<char *>("exec");
 	call.arguments = const_cast<char *>("{}");
 	ASSERT_EQ(agent_history_record_tool_calls(react, "gather", nullptr, &call, 1), 0);
 	std::string bulky = "OLD_BULKY_TOOL_RESULT " + std::string(4000, 'x');

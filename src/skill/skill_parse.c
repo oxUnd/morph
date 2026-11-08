@@ -4,11 +4,21 @@
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/file.h"
+#include "util/utf8.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+
+#define SKILL_FRONTMATTER_MAX_BYTES (1024u * 1024u)
+
+static void skill_file_cleanup(FILE **owner)
+{
+	if (*owner)
+		fclose(*owner);
+	*owner = NULL;
+}
 
 static const char *find_closing_delim(const char *data, size_t len)
 {
@@ -17,11 +27,11 @@ static const char *find_closing_delim(const char *data, size_t len)
 	if (data[0] != '-' || data[1] != '-' || data[2] != '-')
 		return NULL;
 	const char *p = data + 3;
-	while (*p == '\r' || *p == '\n')
-		p++;
 	const char *end = data + len;
+	while (p < end && (*p == '\r' || *p == '\n'))
+		p++;
 	while (p < end) {
-		if (p[0] == '-' && p[1] == '-' && p[2] == '-') {
+		if ((size_t)(end - p) >= 3 && p[0] == '-' && p[1] == '-' && p[2] == '-') {
 			if (p + 3 >= end || p[3] == '\r' || p[3] == '\n' || p[3] == '\0')
 				return p;
 		}
@@ -53,7 +63,17 @@ static int get_indent(const char *line)
 	return indent;
 }
 
-static void strip_quotes(const char *src, char *dst, size_t dst_size)
+static int copy_scalar(const char *src, char *dst, size_t dst_size)
+{
+	if (utf8valid(src))
+		return MORPH_ERR_FORMAT;
+	if (strlen(src) >= dst_size || utf8len(src) > (dst_size - 1) / 4)
+		return -E2BIG;
+	memcpy(dst, src, strlen(src) + 1);
+	return 0;
+}
+
+static int strip_quotes(const char *src, char *dst, size_t dst_size)
 {
 	size_t slen = strlen(src);
 	if (slen >= 2 && ((src[0] == '"' && src[slen - 1] == '"') ||
@@ -61,50 +81,53 @@ static void strip_quotes(const char *src, char *dst, size_t dst_size)
 		src++;
 		slen -= 2;
 	}
-	if (slen >= dst_size)
-		slen = dst_size - 1;
-	memcpy(dst, src, slen);
-	dst[slen] = '\0';
+	char *value MORPH_CLEANUP(morph_charp_cleanup) = strndup(src, slen);
+	return value ? copy_scalar(value, dst, dst_size) : -ENOMEM;
 }
 
-static void parse_yaml_scalar(const char *key, const char *value,
+static int parse_yaml_scalar(const char *key, const char *value,
 			      struct skill_frontmatter *fm)
 {
 	if (strcmp(key, "name") == 0) {
-		strncpy(fm->name, value, sizeof(fm->name) - 1);
+		return copy_scalar(value, fm->name, sizeof(fm->name));
 	} else if (strcmp(key, "description") == 0) {
-		strncpy(fm->description, value, sizeof(fm->description) - 1);
+		return copy_scalar(value, fm->description, sizeof(fm->description));
 	} else if (strcmp(key, "license") == 0) {
-		strncpy(fm->license, value, sizeof(fm->license) - 1);
+		return copy_scalar(value, fm->license, sizeof(fm->license));
 	} else if (strcmp(key, "compatibility") == 0) {
-		strncpy(fm->compatibility, value, sizeof(fm->compatibility) - 1);
+		return copy_scalar(value, fm->compatibility, sizeof(fm->compatibility));
 	} else if (strcmp(key, "allowed-tools") == 0) {
-		strncpy(fm->allowed_tools, value, sizeof(fm->allowed_tools) - 1);
+		return copy_scalar(value, fm->allowed_tools, sizeof(fm->allowed_tools));
 	}
+	return 0;
 }
 
-static void add_metadata(struct skill_frontmatter *fm,
+static int add_metadata(struct skill_frontmatter *fm,
 			 const char *key, const char *value)
 {
 	if (fm->metadata_count >= SKILL_METADATA_MAX)
-		return;
-	strncpy(fm->metadata[fm->metadata_count].key,
-		key, SKILL_METADATA_KEY_MAX - 1);
-	strip_quotes(value, fm->metadata[fm->metadata_count].value,
-		     SKILL_METADATA_VAL_MAX);
+		return -E2BIG;
+	int rc = copy_scalar(key, fm->metadata[fm->metadata_count].key,
+			     sizeof(fm->metadata[fm->metadata_count].key));
+	if (rc == 0)
+		rc = strip_quotes(value, fm->metadata[fm->metadata_count].value,
+				  sizeof(fm->metadata[fm->metadata_count].value));
+	if (rc != 0)
+		return rc;
 	fm->metadata_count++;
+	return 0;
 }
 
-static void parse_metadata_line(const char *content,
+static int parse_metadata_line(const char *content,
 				struct skill_frontmatter *fm)
 {
 	char mkey[SKILL_METADATA_KEY_MAX] = {0};
 	const char *colon = strchr(content, ':');
 	if (!colon || colon == content)
-		return;
+		return MORPH_ERR_PARSE;
 	size_t klen = (size_t)(colon - content);
 	if (klen >= sizeof(mkey))
-		klen = sizeof(mkey) - 1;
+		return -E2BIG;
 	memcpy(mkey, content, klen);
 	mkey[klen] = '\0';
 	while (klen > 0 && isspace((unsigned char)mkey[klen - 1]))
@@ -113,15 +136,16 @@ static void parse_metadata_line(const char *content,
 	while (*vstart == ' ' || *vstart == '\t')
 		vstart++;
 	if (*vstart != '\0')
-		add_metadata(fm, mkey, vstart);
+		return add_metadata(fm, mkey, vstart);
+	return 0;
 }
 
-static void parse_yaml_block(const char *yaml, size_t yaml_len,
+static int parse_yaml_block(const char *yaml, size_t yaml_len,
 			     struct skill_frontmatter *fm)
 {
 	char *copy MORPH_CLEANUP(morph_charp_cleanup) = malloc(yaml_len + 1);
 	if (!copy)
-		return;
+		return -ENOMEM;
 	memcpy(copy, yaml, yaml_len);
 	copy[yaml_len] = '\0';
 
@@ -129,11 +153,12 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 	char *current_key MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	morph_buf_t bv MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	if (morph_buf_init(&bv, 256) != 0) {
-		return;
+		return -ENOMEM;
 	}
 	int in_metadata = 0;
 	int in_block_scalar = 0;
 	int block_indent = 0;
+	int rc = 0;
 
 	for (char *line = copy; line && *line; line = next_line) {
 		char *nl = strchr(line, '\n');
@@ -148,8 +173,11 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 					while (bv.len > 0 && (bv.data[bv.len - 1] == '\n' || bv.data[bv.len - 1] == '\r'))
 						bv.len--;
 					bv.data[bv.len] = '\0';
-					if (strcmp(current_key, "metadata") != 0)
-						parse_yaml_scalar(current_key, bv.data, fm);
+					if (strcmp(current_key, "metadata") != 0) {
+						rc = parse_yaml_scalar(current_key, bv.data, fm);
+						if (rc != 0)
+							return rc;
+					}
 				}
 				morph_charp_cleanup(&current_key);
 				morph_buf_reset(&bv);
@@ -160,16 +188,20 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 				while (*content == ' ' || *content == '\t')
 					content++;
 				if (*content == '\0') {
-					(void)morph_buf_putc(&bv, '\n');
+					if (morph_buf_putc(&bv, '\n') != 0)
+						return -ENOMEM;
 					continue;
 				}
 				if (in_metadata) {
-					parse_metadata_line(content, fm);
+					rc = parse_metadata_line(content, fm);
+					if (rc != 0)
+						return rc;
 					continue;
 				}
 				if (bv.len > 0 && morph_buf_putc(&bv, '\n') != 0)
-					continue;
-				(void)morph_buf_puts(&bv, content);
+					return -ENOMEM;
+				if (morph_buf_puts(&bv, content) != 0)
+					return -ENOMEM;
 				continue;
 			}
 		}
@@ -181,7 +213,9 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 		const char *content = line + indent;
 
 		if (in_metadata && indent > 0) {
-			parse_metadata_line(content, fm);
+			rc = parse_metadata_line(content, fm);
+			if (rc != 0)
+				return rc;
 			continue;
 		}
 
@@ -192,7 +226,7 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 		size_t klen = (size_t)(colon - content);
 		char *key MORPH_CLEANUP(morph_charp_cleanup) = malloc(klen + 1);
 		if (!key)
-			continue;
+			return -ENOMEM;
 		memcpy(key, content, klen);
 		key[klen] = '\0';
 		while (klen > 0 && isspace((unsigned char)key[klen - 1]))
@@ -218,31 +252,16 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 			continue;
 		}
 
-		if (vstart[0] == '"') {
-			vstart++;
-			size_t vlen = strlen(vstart);
-			if (vlen > 0 && vstart[vlen - 1] == '"')
-				vlen--;
-			char *val MORPH_CLEANUP(morph_charp_cleanup) = malloc(vlen + 1);
-			if (val) {
-				memcpy(val, vstart, vlen);
-				val[vlen] = '\0';
-				parse_yaml_scalar(key, val, fm);
-			}
-		} else if (vstart[0] == '\'') {
-			vstart++;
-			size_t vlen = strlen(vstart);
-			if (vlen > 0 && vstart[vlen - 1] == '\'')
-				vlen--;
-			char *val MORPH_CLEANUP(morph_charp_cleanup) = malloc(vlen + 1);
-			if (val) {
-				memcpy(val, vstart, vlen);
-				val[vlen] = '\0';
-				parse_yaml_scalar(key, val, fm);
-			}
-		} else {
-			parse_yaml_scalar(key, vstart, fm);
+		char *value = (char *)vstart;
+		size_t length = strlen(value);
+		if (length > 1 && (value[0] == '"' || value[0] == '\'') &&
+		    value[length - 1] == value[0]) {
+			value[length - 1] = '\0';
+			value++;
 		}
+		rc = parse_yaml_scalar(key, value, fm);
+		if (rc != 0)
+			return rc;
 	}
 
 	if (in_block_scalar && current_key && bv.len > 0) {
@@ -250,8 +269,9 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 			bv.len--;
 		bv.data[bv.len] = '\0';
 		if (strcmp(current_key, "metadata") != 0)
-			parse_yaml_scalar(current_key, bv.data, fm);
+			return parse_yaml_scalar(current_key, bv.data, fm);
 	}
+	return 0;
 }
 
 int skill_parse(struct morph_log *logger, const char *data, size_t len,
@@ -262,6 +282,7 @@ int skill_parse(struct morph_log *logger, const char *data, size_t len,
 	if (body_out && *body_out)
 		return -EEXIST;
 	memset(fm, 0, sizeof(*fm));
+	const char *end = data + len;
 
 	const char *closing = find_closing_delim(data, len);
 	if (!closing) {
@@ -270,18 +291,24 @@ int skill_parse(struct morph_log *logger, const char *data, size_t len,
 	}
 
 	const char *yaml_start = data + 3;
-	while (*yaml_start == '\r' || *yaml_start == '\n')
+	while (yaml_start < closing && (*yaml_start == '\r' || *yaml_start == '\n'))
 		yaml_start++;
 
 	size_t yaml_len = (size_t)(closing - yaml_start);
-	parse_yaml_block(yaml_start, yaml_len, fm);
+	if (yaml_len > SKILL_FRONTMATTER_MAX_BYTES)
+		return -E2BIG;
+	int rc = parse_yaml_block(yaml_start, yaml_len, fm);
+	if (rc != 0) {
+		log_warn(logger, "skill_parse: invalid metadata: %s", morph_strerror(rc));
+		return rc;
+	}
 
 	const char *body_start = closing + 3;
-	while (*body_start == '\r' || *body_start == '\n')
+	while (body_start < end && (*body_start == '\r' || *body_start == '\n'))
 		body_start++;
 
-	if (body_out && *body_start) {
-		*body_out = strdup(body_start);
+	if (body_out && body_start < end) {
+		*body_out = strndup(body_start, (size_t)(end - body_start));
 		if (!*body_out)
 			return -ENOMEM;
 	}
@@ -310,68 +337,46 @@ int skill_parse_file(struct morph_log *logger, const char *path, struct skill_fr
 int skill_parse_frontmatter(struct morph_log *logger, const char *path,
 			    struct skill_frontmatter *fm)
 {
+	FILE *file MORPH_CLEANUP(skill_file_cleanup) = NULL;
+	char *line MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	morph_buf_t yaml MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	size_t capacity = 0;
+	ssize_t length;
+	int rc;
+
 	if (!path || !fm)
 		return -EINVAL;
 	memset(fm, 0, sizeof(*fm));
-
-	FILE *f = fopen(path, "rb");
-	if (!f) {
-		log_err(logger, "skill_parse_frontmatter: failed to open %s", path);
-		return -ENOENT;
-	}
-
-	char line[4096];
-
-	if (!fgets(line, sizeof(line), f)) {
-		fclose(f);
-		log_warn(logger, "skill_parse_frontmatter: empty file %s", path);
+	file = fopen(path, "rb");
+	if (!file)
+		return -errno;
+	length = getline(&line, &capacity, file);
+	if (length < 0)
+		return ferror(file) ? -EIO : MORPH_ERR_PARSE;
+	while (length > 0 && (line[length - 1] == '\r' || line[length - 1] == '\n'))
+		line[--length] = '\0';
+	if (length != 3 || memcmp(line, "---", 3) != 0)
 		return MORPH_ERR_PARSE;
-	}
-
-	size_t llen = strlen(line);
-	while (llen > 0 && (line[llen - 1] == '\r' || line[llen - 1] == '\n'))
-		line[--llen] = '\0';
-	if (llen < 3 || memcmp(line, "---", 3) != 0) {
-		fclose(f);
-		log_warn(logger, "skill_parse_frontmatter: no opening --- in %s", path);
-		return MORPH_ERR_PARSE;
-	}
-
-	morph_buf_t yaml_buf;
-	int yaml_rc = morph_buf_init(&yaml_buf, 4096);
-	if (yaml_rc != 0) {
-		fclose(f);
-		return yaml_rc;
-	}
-
-	int found_closing = 0;
-	while (fgets(line, sizeof(line), f)) {
-		llen = strlen(line);
-		while (llen > 0 && (line[llen - 1] == '\r' || line[llen - 1] == '\n'))
-			line[--llen] = '\0';
-
-		if (llen == 3 && memcmp(line, "---", 3) == 0) {
-			found_closing = 1;
-			break;
+	rc = morph_buf_init(&yaml, 4096);
+	if (rc != 0)
+		return rc;
+	while ((length = getline(&line, &capacity, file)) >= 0) {
+		while (length > 0 && (line[length - 1] == '\r' || line[length - 1] == '\n'))
+			line[--length] = '\0';
+		if (length == 3 && memcmp(line, "---", 3) == 0) {
+			rc = parse_yaml_block(morph_buf_cstr_borrow(&yaml), yaml.len, fm);
+			if (rc != 0)
+				log_warn(logger, "skill_parse: invalid metadata in %s: %s", path,
+					 morph_strerror(rc));
+			return rc;
 		}
-
-		if (morph_buf_append(&yaml_buf, line, (size_t)llen) != 0 ||
-		    morph_buf_putc(&yaml_buf, '\n') != 0) {
-			morph_buf_cleanup(&yaml_buf);
-			fclose(f);
-			return -ENOMEM;
-		}
+		if ((size_t)length >= SKILL_FRONTMATTER_MAX_BYTES - yaml.len)
+			return -E2BIG;
+		rc = morph_buf_append(&yaml, line, (size_t)length);
+		if (rc == 0)
+			rc = morph_buf_putc(&yaml, '\n');
+		if (rc != 0)
+			return rc;
 	}
-
-	fclose(f);
-
-	if (!found_closing) {
-		morph_buf_cleanup(&yaml_buf);
-		log_warn(logger, "skill_parse_frontmatter: no closing --- in %s", path);
-		return MORPH_ERR_PARSE;
-	}
-
-	parse_yaml_block(yaml_buf.data, yaml_buf.len, fm);
-	morph_buf_cleanup(&yaml_buf);
-	return 0;
+	return ferror(file) ? -EIO : MORPH_ERR_PARSE;
 }

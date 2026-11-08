@@ -8,14 +8,16 @@ extern "C" {
 #include <limits.h>
 #include <stddef.h>
 #include "util/strmap.h"
+#include "util/array.h"
 
-#define SKILL_NAME_MAX 65
-#define SKILL_DESC_MAX 1025
-#define SKILL_MAX_ENTRIES 64
+#define SKILL_NAME_MAX_CHARS 64
+#define SKILL_DESC_MAX_CHARS 1024
+#define SKILL_NAME_MAX (SKILL_NAME_MAX_CHARS * 4 + 1)
+#define SKILL_DESC_MAX (SKILL_DESC_MAX_CHARS * 4 + 1)
 #define SKILL_PATH_MAX PATH_MAX
 #define SKILL_METADATA_MAX 16
-#define SKILL_METADATA_KEY_MAX 64
-#define SKILL_METADATA_VAL_MAX 256
+#define SKILL_METADATA_KEY_MAX (63 * 4 + 1)
+#define SKILL_METADATA_VAL_MAX (255 * 4 + 1)
 
 struct morph_log;
 
@@ -27,9 +29,9 @@ struct skill_metadata_entry {
 struct skill_frontmatter {
 	char name[SKILL_NAME_MAX];
 	char description[SKILL_DESC_MAX];
-	char license[256];
-	char compatibility[512];
-	char allowed_tools[1024];
+	char license[255 * 4 + 1];
+	char compatibility[511 * 4 + 1];
+	char allowed_tools[1023 * 4 + 1];
 	struct skill_metadata_entry metadata[SKILL_METADATA_MAX];
 	int metadata_count;
 };
@@ -47,7 +49,7 @@ struct skill_entry {
 
 struct skill_registry {
 	struct morph_log *logger;
-	struct skill_entry entries[SKILL_MAX_ENTRIES];
+	morph_array_t entries;
 	int count;
 	morph_strmap_t by_name;
 };
@@ -60,9 +62,16 @@ int skill_discover_configured(struct skill_registry *reg, const char *workdir,
 			     const char *user_dir);
 /* Registry-owned slot, valid until registry cleanup; activation mutates it. */
 struct skill_entry *skill_borrow(struct skill_registry *reg, const char *name);
+/* Entries retain their addresses across subsequent registry additions. */
+struct skill_entry *skill_entry_borrow_at(const struct skill_registry *reg, size_t index);
+/* Copies an entry, including its owned body. Failure leaves the registry unchanged. */
+int skill_registry_add_copy(struct skill_registry *reg, const struct skill_entry *source);
 /* Sort a pointer view without moving registry entries or invalidating lookups. */
 int skill_sorted_entries_borrow(const struct skill_registry *reg,
 				const struct skill_entry **entries, size_t capacity);
+int skill_sorted_entries_create(const struct skill_registry *reg,
+				const struct skill_entry ***out);
+void skill_entry_list_cleanup(const struct skill_entry ***entries);
 int skill_activate(struct skill_entry *skill);
 void skill_deactivate(struct skill_entry *skill);
 void skill_deactivate_all(struct skill_registry *reg);

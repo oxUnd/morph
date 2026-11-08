@@ -344,6 +344,8 @@ write_paths = []
 delete_paths = []
 
 [context]
+# Combined project guidance bodies. Omitted files remain available through file_read.
+project_doc_max_bytes = 32768
 # Compact between tool iterations instead of waiting for the next user turn.
 in_turn_compaction = true
 # Reserve for provider framing, bookkeeping, and token-estimation error.

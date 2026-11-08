@@ -24,9 +24,11 @@ enum llm_stream_kind {
 typedef int (*llm_stream_callback)(enum llm_stream_kind kind, const char *token, void *user_data);
 
 struct tool_call {
-	char id[128];
-	char tool_call_id[128];
-	char name[64];
+	/* Owned by responses/clones; borrowed views must not be cleaned up. */
+	char *id;
+	char *tool_call_id;
+	char *name;
+	char *provider_item_id;
 	char *arguments;
 	enum tool_input_kind input_kind;
 };
@@ -126,6 +128,8 @@ struct model {
 	char adapter[64];
 	char api_base[256];
 	char api_key[256];
+	/* Full credentials that exceed inline storage. Request views borrow this owner. */
+	char *api_key_owned;
 	char model_id[128];
 	char extra_body_json[MORPH_MODEL_EXTRA_BODY_MAX];
 	char last_error[512];
@@ -180,6 +184,9 @@ void model_destroy(struct model *m);
 struct model *model_request_view_init(const struct model *source,
 				      const struct http_control *control, struct model *storage);
 void model_report_usage(const struct model *model, const struct model_usage *usage);
+const char *model_api_key_borrow(const struct model *model);
+/* Empty output required; creates an independently owned complete HTTP header. */
+int model_authorization_header_create(const struct model *model, morph_buf_t *header);
 
 /* Each clone owns its fields; destination must be zero-initialized. */
 int tool_call_clone(const struct tool_call *source, struct tool_call *out);

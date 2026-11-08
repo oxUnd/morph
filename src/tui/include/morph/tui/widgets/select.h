@@ -41,6 +41,8 @@ struct morph_tui_widget_select_options {
 	const volatile sig_atomic_t *interrupted;
 	int color;
 	int allow_custom;
+	/* Maximum custom answer bytes, excluding NUL; zero defaults to 1 MiB. */
+	size_t custom_max_bytes;
 	/* Zero disables automatic expiry. Any answer key disables it permanently. */
 	int timeout_seconds;
 	const char *hint;

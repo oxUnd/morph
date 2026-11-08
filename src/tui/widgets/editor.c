@@ -110,7 +110,7 @@ int morph_tui_widget_editor_state_update(struct morph_tui_widget_editor_state *e
 		editor->overflow = 1;
 		return MORPH_TUI_WIDGET_CHANGED;
 	}
-	int rc = morph_buf_reserve(text, 1);
+	int rc = morph_buf_reserve(text, 2);
 
 	if (rc != 0)
 		return rc;

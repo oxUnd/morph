@@ -9,6 +9,7 @@
 #include <limits.h>
 #include <spawn.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -82,6 +83,7 @@ static int capture_command(JSContext *ctx, const char *command, morph_buf_t *out
 	int output_fd = -1;
 	int error_fd = -1;
 	int timeout_ms = 0;
+	size_t capture_limit = runner_capture_limit(ctx);
 	pid_t pid;
 	int rc;
 
@@ -100,10 +102,10 @@ static int capture_command(JSContext *ctx, const char *command, morph_buf_t *out
 	if (rc != 0)
 		return rc;
 	rc = morph_child_exchange(pid, -1, output_fd, error_fd, NULL, 0, timeout_ms,
-				  RUNNER_MAX_CAPTURE + 1, NULL, NULL, output, error, status);
+				  capture_limit + 1, NULL, NULL, output, error, status);
 	close(output_fd);
 	close(error_fd);
-	if (rc == 0 && output->len > RUNNER_MAX_CAPTURE)
+	if (rc == 0 && (output->len > capture_limit || error->len > capture_limit))
 		rc = -EFBIG;
 	return rc;
 }
@@ -113,6 +115,7 @@ static JSValue js_exec(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
 	morph_buf_t output = {0};
 	morph_buf_t error = {0};
 	const char *command;
+	size_t command_len;
 	JSValue value;
 	int status = 0;
 	int rc;
@@ -122,16 +125,23 @@ static JSValue js_exec(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
 		return JS_ThrowTypeError(ctx, "exec(command) requires command");
 	if (!runner_has_cap("shell") && !runner_has_cap("process"))
 		return runner_throw_cap(ctx, "shell");
-	command = JS_ToCString(ctx, argv[0]);
+	command = JS_ToCStringLen(ctx, &command_len, argv[0]);
 	if (!command)
 		return JS_EXCEPTION;
+	if (memchr(command, '\0', command_len)) {
+		JS_FreeCString(ctx, command);
+		return JS_ThrowTypeError(ctx, "exec command must not contain NUL bytes");
+	}
 	if (!runner_list_allows("MORPH_DYNAMIC_ALLOWED_COMMANDS", command)) {
 		JS_FreeCString(ctx, command);
 		return JS_ThrowTypeError(ctx, "command denied");
 	}
 	rc = capture_command(ctx, command, &output, &error, &status);
 	JS_FreeCString(ctx, command);
-	if (rc != 0)
+	if (rc == -EFBIG)
+		value = JS_ThrowRangeError(ctx, "command failed: output exceeded the configured "
+					 "capture limit of %zu bytes", runner_capture_limit(ctx));
+	else if (rc != 0)
 		value = JS_ThrowInternalError(ctx, "command failed: %s", morph_strerror(rc));
 	else if (WIFSIGNALED(status))
 		value = JS_ThrowInternalError(ctx, "command terminated by signal %d",

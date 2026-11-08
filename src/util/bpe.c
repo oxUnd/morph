@@ -1,5 +1,7 @@
 #include "bpe.h"
 #include "buf.h"
+#include "array.h"
+#include "cleanup.h"
 #include "data.h"
 #include "error.h"
 #include "file.h"
@@ -11,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 
 /* ------------------------------------------------------------------ */
 /*  Hash table: FNV-1a open addressing for byte-sequence → rank       */
@@ -118,23 +121,26 @@ static const int8_t b64_table[256] = {
 };
 
 static int b64_decode(const char *src, size_t src_len,
-		      unsigned char *dst, size_t *out_len)
+		      unsigned char *dst, size_t dst_capacity, size_t *out_len)
 {
 	size_t si = 0, di = 0;
 	while (si < src_len) {
 		int8_t a = (si < src_len) ? b64_table[(unsigned char)src[si++]] : -1;
 		int8_t b = (si < src_len) ? b64_table[(unsigned char)src[si++]] : -1;
-		if (a < 0 || b < 0) return -1;
+		if (a < 0 || b < 0) return -EINVAL;
+		if (di == dst_capacity) return -EFBIG;
 		dst[di++] = (unsigned char)((a << 2) | (b >> 4));
 		if (si < src_len && src[si] == '=')
 			break;
 		int8_t c = (si < src_len) ? b64_table[(unsigned char)src[si++]] : -1;
-		if (c < 0) return -1;
+		if (c < 0) return -EINVAL;
+		if (di == dst_capacity) return -EFBIG;
 		dst[di++] = (unsigned char)(((b & 0x0F) << 4) | (c >> 2));
 		if (si < src_len && src[si] == '=')
 			break;
 		int8_t d = (si < src_len) ? b64_table[(unsigned char)src[si++]] : -1;
-		if (d < 0) return -1;
+		if (d < 0) return -EINVAL;
+		if (di == dst_capacity) return -EFBIG;
 		dst[di++] = (unsigned char)(((c & 0x03) << 6) | d);
 	}
 	*out_len = di;
@@ -145,19 +151,35 @@ static int b64_decode(const char *src, size_t src_len,
 /*  Vocabulary loader                                                  */
 /* ------------------------------------------------------------------ */
 
+static void bpe_file_cleanup(FILE **owner)
+{
+	if (*owner)
+		fclose(*owner);
+	*owner = NULL;
+}
+
 static int load_vocab(struct morph_log *logger, struct bpe_encoder *enc, const char *path)
 {
-	FILE *fp = fopen(path, "r");
+	FILE *fp MORPH_CLEANUP(bpe_file_cleanup) = fopen(path, "r");
 	if (!fp) {
 		int err = errno;
 		log_err(logger, "bpe: cannot open vocab: %s: %s", path, strerror(err));
 		return -err;
 	}
 
-	char line[1024];
+	char *line MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	morph_buf_t decoded MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	size_t line_capacity = 0;
 	int count = 0;
-	while (fgets(line, sizeof(line), fp)) {
-		size_t line_len = strlen(line);
+	for (;;) {
+		errno = 0;
+		ssize_t read_count = getline(&line, &line_capacity, fp);
+		if (read_count < 0) {
+			if (feof(fp))
+				break;
+			return errno ? morph_error_from_errno(errno) : -EIO;
+		}
+		size_t line_len = (size_t)read_count;
 		while (line_len > 0 &&
 		       (line[line_len - 1] == '\n' || line[line_len - 1] == '\r'))
 			line[--line_len] = '\0';
@@ -175,31 +197,41 @@ static int load_vocab(struct morph_log *logger, struct bpe_encoder *enc, const c
 		if (b64_len == 0)
 			continue;
 
-		unsigned char decoded[256];
+		/* Hash-table key lengths are represented by uint16_t. */
+		if (b64_len > 4u * (((size_t)UINT16_MAX + 2u) / 3u)) {
+			log_err(logger, "bpe: vocabulary token exceeds %u bytes: %s",
+				(unsigned)UINT16_MAX, path);
+			return -EFBIG;
+		}
+		size_t decoded_capacity = ((b64_len + 3u) / 4u) * 3u;
+		int rc = morph_buf_reserve(&decoded, decoded_capacity);
+		if (rc < 0)
+			return rc;
 		size_t decoded_len = 0;
-		if (b64_decode(b64, b64_len, decoded, &decoded_len) < 0)
+		rc = b64_decode(b64, b64_len, (unsigned char *)decoded.data,
+			decoded_capacity, &decoded_len);
+		if (rc == -EFBIG)
+			return rc;
+		if (rc < 0)
 			continue;
+		if (decoded_len > UINT16_MAX)
+			return -EFBIG;
 
 		long rank_val = strtol(rank_str, NULL, 10);
 		if (rank_val < 0)
 			continue;
 
-		if (enc->key_pool.len > UINT32_MAX - decoded_len) {
-			fclose(fp);
+		if (enc->key_pool.len > UINT32_MAX - decoded_len)
 			return -EOVERFLOW;
-		}
-		if (morph_buf_append(&enc->key_pool, (const char *)decoded,
-				     decoded_len) < 0) {
-			fclose(fp);
-			return -ENOMEM;
-		}
+		rc = morph_buf_append(&enc->key_pool, decoded.data, decoded_len);
+		if (rc < 0)
+			return rc;
 
 		ht_insert(enc, (uint32_t)(enc->key_pool.len - decoded_len),
 			  (uint16_t)decoded_len, (int32_t)rank_val);
 		count++;
 	}
 
-	fclose(fp);
 	log_info(logger, "bpe: loaded %d tokens from %s", count, path);
 	return 0;
 }
@@ -883,23 +915,14 @@ static int split_o200k(const char *text, size_t text_len,
 
 #define MAX_PIECE_BYTES 512
 
-static int bpe_merge_count(const struct bpe_encoder *enc,
+static int bpe_merge_count_small(const struct bpe_encoder *enc,
 			   const unsigned char *piece, size_t piece_len)
 {
 	if (piece_len == 0) return 0;
 	if (piece_len == 1) return 1;
 
-	size_t stack_buf[MAX_PIECE_BYTES + 1];
-	size_t *parts = stack_buf;
+	size_t parts[MAX_PIECE_BYTES + 1];
 	size_t nparts = piece_len;
-
-	if (piece_len >= INT_MAX || piece_len > SIZE_MAX / sizeof(*parts) - 1)
-		return INT_MAX;
-
-	if (piece_len > MAX_PIECE_BYTES) {
-		parts = malloc(sizeof(*parts) * (piece_len + 1));
-		if (!parts) return (int)piece_len;
-	}
 
 	for (size_t i = 0; i <= piece_len; i++)
 		parts[i] = i;
@@ -926,9 +949,188 @@ static int bpe_merge_count(const struct bpe_encoder *enc,
 		nparts--;
 	}
 
-	if (parts != stack_buf)
-		free(parts);
 	return (int)nparts;
+}
+
+struct bpe_merge_node {
+	size_t previous;
+	size_t next;
+	size_t heap_position;
+	int32_t rank;
+};
+
+struct bpe_merge_heap {
+	morph_array_t nodes;
+	morph_array_t order;
+};
+
+static void bpe_merge_heap_cleanup(struct bpe_merge_heap *heap)
+{
+	morph_array_cleanup(&heap->nodes);
+	morph_array_cleanup(&heap->order);
+}
+
+static int bpe_heap_precedes(const struct bpe_merge_heap *heap, size_t left, size_t right)
+{
+	const struct bpe_merge_node *nodes = heap->nodes.elts;
+
+	return nodes[left].rank < nodes[right].rank ||
+		(nodes[left].rank == nodes[right].rank && left < right);
+}
+
+static void bpe_heap_swap(struct bpe_merge_heap *heap, size_t left, size_t right)
+{
+	struct bpe_merge_node *nodes = heap->nodes.elts;
+	size_t *order = heap->order.elts;
+	size_t saved = order[left];
+
+	order[left] = order[right];
+	order[right] = saved;
+	nodes[order[left]].heap_position = left;
+	nodes[order[right]].heap_position = right;
+}
+
+static size_t bpe_heap_up(struct bpe_merge_heap *heap, size_t position)
+{
+	const size_t *order = heap->order.elts;
+
+	while (position > 0) {
+		size_t parent = (position - 1) / 2;
+
+		if (!bpe_heap_precedes(heap, order[position], order[parent]))
+			break;
+		bpe_heap_swap(heap, position, parent);
+		position = parent;
+	}
+	return position;
+}
+
+static void bpe_heap_down(struct bpe_merge_heap *heap, size_t position)
+{
+	const size_t *order = heap->order.elts;
+
+	while (position < heap->order.nelts / 2) {
+		size_t child = position * 2 + 1;
+
+		if (child + 1 < heap->order.nelts &&
+		    bpe_heap_precedes(heap, order[child + 1], order[child]))
+			child++;
+		if (!bpe_heap_precedes(heap, order[child], order[position]))
+			break;
+		bpe_heap_swap(heap, position, child);
+		position = child;
+	}
+}
+
+static void bpe_heap_remove(struct bpe_merge_heap *heap, size_t index)
+{
+	struct bpe_merge_node *nodes = heap->nodes.elts;
+	size_t position = nodes[index].heap_position;
+
+	if (position == SIZE_MAX)
+		return;
+	size_t last = heap->order.nelts - 1;
+	if (position != last)
+		bpe_heap_swap(heap, position, last);
+	morph_array_pop(&heap->order);
+	nodes[index].heap_position = SIZE_MAX;
+	if (position < heap->order.nelts)
+		bpe_heap_down(heap, bpe_heap_up(heap, position));
+}
+
+static int bpe_heap_refresh(struct bpe_merge_heap *heap, const struct bpe_encoder *enc,
+			    const unsigned char *piece, size_t piece_len, size_t index)
+{
+	struct bpe_merge_node *nodes = heap->nodes.elts;
+	size_t right = nodes[index].next;
+	int32_t rank = RANK_EMPTY;
+
+	if (right < piece_len) {
+		size_t length = nodes[right].next - index;
+
+		if (length <= UINT16_MAX)
+			rank = ht_lookup(enc, piece + index, (uint16_t)length);
+	}
+	/* The scan implementation treats INT32_MAX as the no-merge sentinel. */
+	if (rank < 0 || rank == INT32_MAX) {
+		bpe_heap_remove(heap, index);
+		nodes[index].rank = RANK_EMPTY;
+		return 0;
+	}
+	nodes[index].rank = rank;
+	if (nodes[index].heap_position == SIZE_MAX) {
+		size_t *slot = morph_array_push_borrow(&heap->order);
+
+		if (!slot)
+			return -ENOMEM;
+		*slot = index;
+		nodes[index].heap_position = heap->order.nelts - 1;
+	}
+	size_t position = bpe_heap_up(heap, nodes[index].heap_position);
+	bpe_heap_down(heap, position);
+	return 0;
+}
+
+static int bpe_merge_count_large(const struct bpe_encoder *enc,
+				 const unsigned char *piece, size_t piece_len)
+{
+	struct bpe_merge_heap heap MORPH_CLEANUP(bpe_merge_heap_cleanup) = {0};
+	struct bpe_merge_node *nodes;
+	size_t *order;
+	size_t remaining = piece_len;
+	int rc;
+
+	if (piece_len >= INT_MAX || piece_len > SIZE_MAX / sizeof(*nodes) ||
+	    piece_len > SIZE_MAX / sizeof(*order))
+		return INT_MAX;
+	rc = morph_array_init(&heap.nodes, piece_len, sizeof(*nodes));
+	if (rc == 0)
+		rc = morph_array_init(&heap.order, piece_len, sizeof(*order));
+	if (rc != 0)
+		return (int)piece_len;
+	nodes = morph_array_push_n_borrow(&heap.nodes, piece_len);
+	if (!nodes)
+		return (int)piece_len;
+	for (size_t i = 0; i < piece_len; i++) {
+		nodes[i].previous = i ? i - 1 : SIZE_MAX;
+		nodes[i].next = i + 1;
+		nodes[i].heap_position = SIZE_MAX;
+		nodes[i].rank = RANK_EMPTY;
+	}
+	for (size_t i = 0; i + 1 < piece_len; i++) {
+		rc = bpe_heap_refresh(&heap, enc, piece, piece_len, i);
+		if (rc != 0)
+			return (int)piece_len;
+	}
+	/* Byte offsets preserve the original leftmost tie break. Only the two
+	 * neighboring candidates change after a merge; there is no full rescan. */
+	while (heap.order.nelts) {
+		order = heap.order.elts;
+		size_t left = order[0];
+		size_t right = nodes[left].next;
+		size_t next = nodes[right].next;
+		size_t previous = nodes[left].previous;
+
+		bpe_heap_remove(&heap, right);
+		nodes[left].next = next;
+		if (next < piece_len)
+			nodes[next].previous = left;
+		nodes[right].next = SIZE_MAX;
+		remaining--;
+		rc = bpe_heap_refresh(&heap, enc, piece, piece_len, left);
+		if (rc == 0 && previous != SIZE_MAX)
+			rc = bpe_heap_refresh(&heap, enc, piece, piece_len, previous);
+		if (rc != 0)
+			return (int)piece_len;
+	}
+	return (int)remaining;
+}
+
+static int bpe_merge_count(const struct bpe_encoder *enc,
+			   const unsigned char *piece, size_t piece_len)
+{
+	return piece_len <= MAX_PIECE_BYTES ? bpe_merge_count_small(enc, piece, piece_len)
+					 : bpe_merge_count_large(enc, piece, piece_len);
 }
 
 /* Inputs are ordinary message/schema text. Strings that spell a reserved token

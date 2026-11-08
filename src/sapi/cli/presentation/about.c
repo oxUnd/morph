@@ -158,7 +158,8 @@ int cli_about_print(struct cli_application *ctx, const char *config_path)
 		for (int i = 0; i < skills.count && i < 5; i++) {
 			if (i > 0)
 				cli_output_printf(ctx, ", ");
-			cli_output_printf(ctx, "%s", skills.entries[i].fm.name);
+			cli_output_printf(ctx, "%s", skill_entry_borrow_at(&skills,
+			(size_t)i)->fm.name);
 		}
 		if (skills.count > 5)
 			cli_output_printf(ctx, ", …");

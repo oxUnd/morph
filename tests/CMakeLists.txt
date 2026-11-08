@@ -220,6 +220,13 @@ if(ENABLE_GLOBAL_STATE_AUDIT)
 			${CMAKE_CURRENT_SOURCE_DIR}/test_global_state_audit.py)
 endif()
 if(Python3_Interpreter_FOUND AND UNIX)
+	if(NOT ENABLE_READLINE OR NOT MORPH_READLINE_LIBRARY)
+		add_test(NAME cli_select_plain_pty_integration
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_select_pty.py
+				$<TARGET_FILE:morph-cli-pty-driver> --plain)
+		set_tests_properties(cli_select_plain_pty_integration PROPERTIES
+			SKIP_RETURN_CODE 77 TIMEOUT 90)
+	endif()
 	if(TARGET morph-tui-minimal AND TARGET morph-tui-controls)
 		add_test(NAME tui_samples_pty_integration
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_tui_samples_pty.py

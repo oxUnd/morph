@@ -6,6 +6,11 @@
 #include "credits.h"
 #include "session.h"
 #include "cJSON.h"
+#include "util/cleanup.h"
+#include "util/json.h"
+#include "util/utf8.h"
+#include "agent/tokenizer.h"
+#include "persistence/memory_repository.h"
 #include <cstdio>
 #include <cstring>
 #include <unistd.h>
@@ -73,7 +78,7 @@ TEST_F(RuntimeQueryTest, RegistersReadOnlyTools)
 	EXPECT_TRUE((credits->flags & TOOL_FLAG_READONLY) != 0);
 	EXPECT_TRUE((memory_tool->flags & TOOL_FLAG_READONLY) != 0);
 	EXPECT_NE(std::strstr(memory_tool->desc.description,
-			      "only when the user explicitly asks"),
+			      "injected context reports omitted"),
 		  nullptr);
 
 	cJSON *schema = cJSON_Parse(memory_tool->desc.input_schema);
@@ -84,6 +89,127 @@ TEST_F(RuntimeQueryTest, RegistersReadOnlyTools)
 	EXPECT_STREQ(cJSON_GetArrayItem(required, 0)->valuestring, "type");
 	EXPECT_STREQ(cJSON_GetArrayItem(required, 1)->valuestring, "scope");
 	cJSON_Delete(schema);
+}
+
+TEST_F(RuntimeQueryTest, PreferenceQueryRecoversWholeValuesOmittedByContextBudget)
+{
+	struct session session;
+	ASSERT_EQ(session_create(&db, "preference-recovery", "mock", &session), 0);
+	ASSERT_EQ(session_ensure_display_id(&db, &session), 0);
+	SetRuntime(session);
+	ASSERT_EQ(preference_bind(&db, session.id, "local", ""), 0);
+	std::string value(900, 'x');
+	value += "FULL_PREFERENCE_END";
+	ASSERT_EQ(preference_set(&db, session.id, "personal", "custom.rule", value.c_str(),
+				 "Explicit request", "input"), 0);
+	struct memory_options opts = {};
+	opts.enabled = 1;
+	opts.max_context_chars = 512;
+	char *context MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(memory_context_create(&db, session.id, "hello", &opts, &context), 0);
+	ASSERT_NE(context, nullptr);
+	EXPECT_EQ(strstr(context, "custom.rule"), nullptr);
+	EXPECT_NE(strstr(context, "omitted records"), nullptr);
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&result);
+	result.runtime = &rt;
+	ASSERT_EQ(tool_exec(&tools, "memory",
+		"{\"scope\":\"session\",\"type\":\"preferences\"}", &result), 0);
+	ASSERT_NE(result.data, nullptr);
+	cJSON *text = cJSON_GetObjectItemCaseSensitive(result.data, "text");
+	ASSERT_TRUE(cJSON_IsString(text));
+	EXPECT_NE(strstr(text->valuestring, value.c_str()), nullptr);
+}
+
+TEST_F(RuntimeQueryTest, LongUnicodeEpisodeCanBeRecoveredInBoundedUtf8Pages)
+{
+	struct session session;
+	ASSERT_EQ(session_create(&db, "episode-recovery", "mock", &session), 0);
+	ASSERT_EQ(session_ensure_display_id(&db, &session), 0);
+	SetRuntime(session);
+	std::string request;
+	std::string answer;
+	for (int i = 0; i < 6000; i++)
+		request += "界";
+	for (int i = 0; i < 3000; i++)
+		answer += "雪";
+	request += "REQUEST_TAIL_MARKER";
+	answer += "ANSWER_TAIL_MARKER";
+	std::string tool_name = "mcp__" + std::string(400, 't') + "_TOOL_TAIL_MARKER";
+	struct react_step step = {};
+	step.type = REACT_STEP_ACTION;
+	step.tool_name = const_cast<char *>(tool_name.c_str());
+	struct memory_options options = {};
+	options.enabled = 1;
+	options.cold_path_enabled = 1;
+	options.max_context_chars = 400;
+	ASSERT_EQ(memory_consolidate_turn(&db, session.id, request.c_str(), answer.c_str(),
+					 &step, 1, &options), 0);
+	char *context MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	ASSERT_EQ(memory_context_create(&db, session.id, "previous", &options, &context), 0);
+	ASSERT_NE(context, nullptr);
+	EXPECT_EQ(strstr(context, "REQUEST_TAIL_MARKER"), nullptr);
+	EXPECT_NE(strstr(context, "omitted records"), nullptr);
+	std::string recovered;
+	size_t offset = 0;
+	int pages = 0;
+	for (;;) {
+		std::string args = "{\"type\":\"episodes\",\"scope\":\"session\","
+			"\"max_episodes\":1,\"max_chars\":2000,\"offset_chars\":" +
+			std::to_string(offset) + "}";
+		struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+		tool_result_init(&result);
+		result.runtime = &rt;
+		ASSERT_EQ(tool_exec(&tools, "memory", args.c_str(), &result), 0);
+		ASSERT_NE(result.data, nullptr);
+		const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "text"));
+		ASSERT_NE(text, nullptr);
+		EXPECT_EQ(utf8valid(text), nullptr);
+		EXPECT_LE(utf8len(text), 2000u);
+		EXPECT_LE(tokenizer_estimate_tokens(result.text.data),
+		cfg.context.tool_result_max_tokens);
+		recovered += text;
+		pages++;
+		if (!cJSON_IsTrue(cJSON_GetObjectItem(result.data, "has_more")))
+			break;
+		size_t next = static_cast<size_t>(
+			cJSON_GetObjectItem(result.data, "next_offset_chars")->valuedouble);
+		ASSERT_GT(next, offset);
+		offset = next;
+		ASSERT_LT(pages, 20);
+	}
+	EXPECT_GT(pages, 1);
+	EXPECT_NE(recovered.find(request), std::string::npos);
+	EXPECT_NE(recovered.find(answer), std::string::npos);
+	EXPECT_NE(recovered.find(tool_name), std::string::npos);
+}
+
+TEST_F(RuntimeQueryTest, MemoryPageBudgetIncludesEscapingAndCompatibilityFields)
+{
+	struct session session;
+	ASSERT_EQ(session_create(&db, "escaped-page", "mock", &session), 0);
+	SetRuntime(session);
+	struct memory_options options = {};
+	options.enabled = 1;
+	ASSERT_EQ(memory_accept_input(&db, session.id, "hello", "input", &options), 0);
+	std::string value;
+	for (int i = 0; i < 500; i++)
+		value += "\"\\\n界";
+	ASSERT_EQ(memory_store_upsert_fact(&db, session.id, "escaped", value.c_str(), "source",
+					  "context", 0.8), 0);
+	cfg.context.tool_result_max_tokens = 512;
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&result);
+	result.runtime = &rt;
+	ASSERT_EQ(tool_exec(&tools, "memory", "{\"scope\":\"session\",\"type\":\"facts\"}",
+			    &result), 0);
+	ASSERT_NE(result.data, nullptr);
+	EXPECT_LE(tokenizer_estimate_tokens(result.text.data), cfg.context.tool_result_max_tokens);
+	EXPECT_GT(cJSON_GetObjectItem(result.data, "returned_chars")->valueint, 0);
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(result.data, "has_more")));
+	const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "text"));
+	ASSERT_NE(text, nullptr);
+	EXPECT_EQ(utf8valid(text), nullptr);
 }
 
 TEST_F(RuntimeQueryTest, CreditsReportsTodaySessionAndTotal)

@@ -284,6 +284,35 @@ static void snapshot_add_json(cJSON *object,
 		(double)snapshot->stdout_omitted_bytes);
 	cJSON_AddNumberToObject(object, "stderr_omitted_bytes",
 		(double)snapshot->stderr_omitted_bytes);
+	cJSON_AddNumberToObject(object, "stdout_total_bytes", (double)snapshot->stdout_total_bytes);
+	cJSON_AddNumberToObject(object, "stderr_total_bytes", (double)snapshot->stderr_total_bytes);
+	cJSON_AddNumberToObject(object, "stdout_path_bytes", (double)snapshot->stdout_path_bytes);
+	cJSON_AddNumberToObject(object, "stderr_path_bytes", (double)snapshot->stderr_path_bytes);
+	cJSON_AddNumberToObject(object, "stdout_retained_from",
+		(double)snapshot->stdout_retained_from);
+	cJSON_AddNumberToObject(object, "stderr_retained_from",
+		(double)snapshot->stderr_retained_from);
+	cJSON_AddNumberToObject(object, "stdout_unrecoverable_bytes",
+		(double)snapshot->stdout_unrecoverable_bytes);
+	cJSON_AddNumberToObject(object, "stderr_unrecoverable_bytes",
+		(double)snapshot->stderr_unrecoverable_bytes);
+	cJSON_AddBoolToObject(object, "stdout_path_truncated", snapshot->stdout_path_truncated);
+	cJSON_AddBoolToObject(object, "stderr_path_truncated", snapshot->stderr_path_truncated);
+	if (snapshot->stdout_capture_error)
+		cJSON_AddStringToObject(object, "stdout_capture_error",
+			morph_strerror(snapshot->stdout_capture_error));
+	if (snapshot->stderr_capture_error)
+		cJSON_AddStringToObject(object, "stderr_capture_error",
+			morph_strerror(snapshot->stderr_capture_error));
+	if (snapshot->stdout_truncated || snapshot->stderr_truncated ||
+	    snapshot->stdout_path_truncated || snapshot->stderr_path_truncated)
+		cJSON_AddStringToObject(object, "output_note",
+			"Inline output may omit bytes. Read stdout_path/stderr_path for redacted "
+			"prefix [0, *_path_bytes); cursor and file offsets use the same bytes. "
+			"next_cursor reads only later output. If *_path_truncated is true, the "
+			"file stopped at its byte count because of quota or capture failure. "
+			"The range [*_path_bytes, *_retained_from) is unavailable when "
+			"*_unrecoverable_bytes is nonzero; rerun a narrower query to recover it.");
 	cJSON_AddNumberToObject(object, "duration_ms",
 		(double)snapshot->duration_ms);
 	if (snapshot->state == PROCESS_EXITED)
@@ -830,10 +859,12 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 		"unavailable, use rg --files when rg is available. Fall back to grep/find "
 		"when these tools are unavailable. When availability is unknown, check once "
 		"in the execution shell and reuse the result instead of probing repeatedly. "
-		"After truncation, narrow "
-		"the query or read relevant ranges from stdout_path/stderr_path. Process cursors "
-		"read additional retained output, but next_cursor does not recover material "
-		"already omitted by history_truncated. "
+		"After truncation, read relevant ranges from stdout_path/stderr_path; these "
+		"redacted files start at byte zero and share a 64 MiB quota. Check "
+		"*_path_bytes and *_path_truncated before assuming a file is complete. "
+		"Cursors use redacted stream byte offsets; next_cursor reads later output, "
+		"not omitted inline bytes. *_unrecoverable_bytes marks missing data between "
+		"the file prefix and memory window; narrow the query to recover it. "
 		"Do not repeat the same oversized command.\"},"
 		"\"description\":{\"type\":\"string\",\"description\":"
 		"\"Short action summary in the user response language, e.g. Check HTTP timeout settings.\"},"
@@ -879,8 +910,12 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 			"If status is running, "
 			"wait again on the same session_id. Pass next_cursor as cursor for "
 			"incremental output. Never use shell sleep just to wait for a process. "
-			"Explicit cursors are replayable. Output files are redacted retained "
-			"windows removed at runtime shutdown. "
+			"Explicit cursors replay still-retained ranges. Output files are redacted "
+			"prefixes starting at byte zero, sharing a 64 MiB quota and removed at "
+			"runtime shutdown. Check *_path_bytes and *_path_truncated. "
+			"next_cursor skips inline omissions; read file ranges to recover those. "
+			"If *_unrecoverable_bytes is nonzero, the range from *_path_bytes to "
+			"*_retained_from is lost; rerun a narrower query. "
 			"Cancelling a wait leaves the process running.",
 			(unsigned long long)runtime->max_wait_ms,
 			(unsigned long long)default_wait_ms);

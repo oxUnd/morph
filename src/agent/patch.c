@@ -1378,9 +1378,27 @@ static int patch_result_add(struct patch_result *result,
 	return 0;
 }
 
+static int patch_validate_write(const struct patch_write_policy *policy,
+				const char *path, size_t bytes, const char *removed_path,
+				char *error, size_t error_size)
+{
+	if (!policy)
+		return 0;
+	if (policy->max_file_bytes && bytes > policy->max_file_bytes)
+		return patch_error(error, error_size, -EFBIG,
+			"patched file exceeds the %zu-byte checkpoint limit: %s",
+			policy->max_file_bytes, path);
+	int rc = policy->validate ?
+		policy->validate(path, bytes, removed_path, policy->user_data) : 0;
+	if (rc != 0)
+		return patch_error(error, error_size, rc,
+			"checkpoint postimage budget rejected %s: %s", path, morph_strerror(rc));
+	return 0;
+}
+
 static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 			    struct patch_result *result, char *error,
-			    size_t error_size)
+			    size_t error_size, const struct patch_write_policy *policy)
 {
 	char source_path[PATH_MAX];
 	char destination_path[PATH_MAX];
@@ -1398,6 +1416,10 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 			"target is not a regular file: %s", hunk->path);
 	if (hunk->action == PATCH_ACTION_ADD) {
 		mode_t mode = source_exists ? source_stat.st_mode & 0777 : 0644;
+		rc = patch_validate_write(policy, source_path, strlen(hunk->add_content), NULL,
+			error, error_size);
+		if (rc != 0)
+			return rc;
 
 		rc = patch_parent_ensure(source_path);
 		if (rc == 0)
@@ -1408,12 +1430,15 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 		if (!source_exists)
 			return patch_error(error, error_size, -ENOENT,
 				"failed to delete file %s", source_path);
+		rc = patch_validate_write(policy, source_path, 0, NULL, error, error_size);
+		if (rc != 0)
+			return rc;
 		rc = unlink(source_path) == 0 ? 0 : -errno;
 		if (rc == 0)
 			rc = patch_result_add(result, hunk, hunk->path);
 	} else {
-		char *original;
-		char *updated = NULL;
+		char *original MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+		char *updated MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 
 		if (!source_exists)
 			return patch_error(error, error_size, -ENOENT,
@@ -1424,7 +1449,7 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 				"failed to read file to update %s", source_path);
 		rc = patch_build_updated_content(original, hunk, &updated, error,
 			error_size);
-		free(original);
+		morph_charp_cleanup(&original);
 		if (rc != 0)
 			return rc;
 		if (hunk->move_path) {
@@ -1441,6 +1466,12 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 					mode = destination_stat.st_mode & 0777;
 			}
 			if (rc == 0)
+				rc = patch_validate_write(policy, destination_path, strlen(updated),
+					strcmp(source_path, destination_path) ? source_path : NULL,
+					error, error_size);
+			if (rc != 0)
+				return rc;
+			if (rc == 0)
 				rc = patch_parent_ensure(destination_path);
 			if (rc == 0)
 				rc = patch_atomic_write(destination_path, updated, mode);
@@ -1449,12 +1480,14 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 			if (rc == 0)
 				rc = patch_result_add(result, hunk, hunk->move_path);
 		} else {
-			rc = patch_atomic_write(source_path, updated,
-				source_stat.st_mode & 0777);
+			rc = patch_validate_write(policy, source_path, strlen(updated), NULL,
+				error, error_size);
+			if (rc != 0)
+				return rc;
+			rc = patch_atomic_write(source_path, updated, source_stat.st_mode & 0777);
 			if (rc == 0)
 				rc = patch_result_add(result, hunk, hunk->path);
 		}
-		free(updated);
 	}
 	if (rc != 0)
 		return patch_error(error, error_size, rc,
@@ -1513,9 +1546,10 @@ static int patch_authorize_hunks(const char *root, const morph_array_t *hunks,
 	return rc;
 }
 
-int patch_apply_authorized(const char *workdir, const char *input,
+int patch_apply_authorized_with_policy(const char *workdir, const char *input,
 		struct patch_result *result, char *error, size_t error_size,
-		patch_authorize_fn authorize, void *user_data)
+		patch_authorize_fn authorize, void *user_data,
+		const struct patch_write_policy *policy)
 {
 	struct patch_result candidate MORPH_CLEANUP(patch_result_cleanup) = {0};
 	morph_array_t hunks;
@@ -1555,7 +1589,7 @@ int patch_apply_authorized(const char *workdir, const char *input,
 		struct patch_hunk *hunk;
 
 		morph_array_foreach(hunk, &hunks, struct patch_hunk) {
-			rc = patch_apply_hunk(root, hunk, &candidate, error, error_size);
+			rc = patch_apply_hunk(root, hunk, &candidate, error, error_size, policy);
 			if (rc != 0)
 				break;
 		}
@@ -1568,6 +1602,24 @@ int patch_apply_authorized(const char *workdir, const char *input,
 		memset(&candidate, 0, sizeof(candidate));
 	}
 	return rc;
+}
+
+int patch_apply_authorized_with_limit(const char *workdir, const char *input,
+		struct patch_result *result, char *error, size_t error_size,
+		patch_authorize_fn authorize, void *user_data, size_t max_file_bytes)
+{
+	struct patch_write_policy policy = {.max_file_bytes = max_file_bytes};
+
+	return patch_apply_authorized_with_policy(workdir, input, result, error, error_size,
+		authorize, user_data, &policy);
+}
+
+int patch_apply_authorized(const char *workdir, const char *input,
+		struct patch_result *result, char *error, size_t error_size,
+		patch_authorize_fn authorize, void *user_data)
+{
+	return patch_apply_authorized_with_limit(workdir, input, result, error, error_size,
+						authorize, user_data, 0);
 }
 
 int patch_apply(const char *workdir, const char *input,

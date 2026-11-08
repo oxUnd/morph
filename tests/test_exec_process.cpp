@@ -8,6 +8,7 @@
 #include "agent/tool_runtime.h"
 #include "agent/tool_context.h"
 #include "util/file.h"
+#include "util/utf8.h"
 
 #include <gtest/gtest.h>
 
@@ -1543,4 +1544,166 @@ TEST(ExecToolTest, JobsConstructorsAndSnapshotsRejectOccupiedOwners)
 	EXPECT_EQ(snapshot, snapshot_owner);
 	cJSON_Delete(snapshot);
 	exec_jobs_destroy(jobs);
+}
+
+TEST_F(ProcessTest, SpoolPreservesOutputBeforeTheMemoryWindow)
+{
+	process_spawn_options options{};
+	options.command = "printf 'BEGIN\n'; dd if=/dev/zero bs=1024 count=256 2>/dev/null | "
+		"tr '\\000' x; printf '\nEND\n'";
+	options.background = 1;
+	char id[PROCESS_SESSION_ID_MAX];
+	ASSERT_EQ(process_spawn(manager, &options, id, nullptr), 0);
+	process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	process_cursor cursor{};
+	ASSERT_EQ(process_session_wait(manager, id, &cursor, 10000, nullptr, nullptr,
+		&snapshot), 0);
+	ASSERT_EQ(snapshot.state, PROCESS_EXITED);
+	ASSERT_NE(snapshot.stdout_path[0], '\0');
+	std::string expected = "BEGIN\n" + std::string(256 * 1024, 'x') + "\nEND\n";
+	EXPECT_TRUE(snapshot.stdout_truncated);
+	EXPECT_GT(snapshot.stdout_retained_from, 0u);
+	EXPECT_EQ(snapshot.stdout_total_bytes, expected.size());
+	EXPECT_EQ(snapshot.stdout_path_bytes, expected.size());
+	EXPECT_EQ(snapshot.stdout_unrecoverable_bytes, 0u);
+	EXPECT_FALSE(snapshot.stdout_path_truncated);
+	EXPECT_EQ(snapshot.stdout_capture_error, 0);
+	char *stored MORPH_CLEANUP(morph_charp_cleanup) =
+		file_read_all_copy(snapshot.stdout_path, nullptr);
+	ASSERT_NE(stored, nullptr);
+	EXPECT_EQ(std::string(stored), expected);
+	EXPECT_EQ(snapshot.next_cursor.stdout_offset, expected.size());
+	process_snapshot later MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	ASSERT_EQ(process_session_poll(manager, id, &snapshot.next_cursor, 0, nullptr, nullptr,
+		&later), 0);
+	EXPECT_STREQ(later.stdout_text, "");
+	EXPECT_FALSE(later.stdout_truncated);
+	EXPECT_EQ(later.stdout_omitted_bytes, 0u);
+	std::string path = snapshot.stdout_path;
+	process_manager_destroy(manager);
+	manager = nullptr;
+	EXPECT_FALSE(std::filesystem::exists(path));
+}
+
+TEST_F(ProcessTest, SpoolQuotaReportsTheExactUnrecoverableRange)
+{
+	process_spawn_options options{};
+	options.command = "dd if=/dev/zero bs=1024 count=65664 2>/dev/null | tr '\\000' q";
+	options.background = 1;
+	char id[PROCESS_SESSION_ID_MAX];
+	ASSERT_EQ(process_spawn(manager, &options, id, nullptr), 0);
+	process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	process_cursor cursor{};
+	ASSERT_EQ(process_session_wait(manager, id, &cursor, 60000, nullptr, nullptr,
+		&snapshot), 0);
+	ASSERT_EQ(snapshot.state, PROCESS_EXITED);
+	const size_t total = PROCESS_SPOOL_MAX_BYTES + 128u * 1024u;
+	EXPECT_EQ(snapshot.stdout_total_bytes, total);
+	EXPECT_EQ(snapshot.stdout_path_bytes, PROCESS_SPOOL_MAX_BYTES);
+	EXPECT_EQ(snapshot.stdout_retained_from, total - 64u * 1024u);
+	EXPECT_EQ(snapshot.stdout_unrecoverable_bytes, 64u * 1024u);
+	EXPECT_TRUE(snapshot.stdout_path_truncated);
+	EXPECT_EQ(snapshot.stdout_capture_error, 0);
+	ASSERT_NE(snapshot.stdout_path[0], '\0');
+	EXPECT_EQ(std::filesystem::file_size(snapshot.stdout_path), PROCESS_SPOOL_MAX_BYTES);
+	options.command = "printf after-quota";
+	ASSERT_EQ(process_spawn(manager, &options, id, nullptr), 0);
+	process_snapshot next MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	ASSERT_EQ(process_session_wait(manager, id, &cursor, 3000, nullptr, nullptr, &next), 0);
+	EXPECT_STREQ(next.stdout_text, "after-quota");
+	EXPECT_EQ(next.stdout_path_bytes, 0u);
+	EXPECT_TRUE(next.stdout_path_truncated);
+	EXPECT_EQ(next.stdout_unrecoverable_bytes, 0u);
+}
+
+class ProcessSecretEnvironment {
+public:
+	explicit ProcessSecretEnvironment(const char *value)
+	{
+		const char *old = getenv("OPENAI_API_KEY");
+		present = old != nullptr;
+		if (old)
+			previous = old;
+		setenv("OPENAI_API_KEY", value, 1);
+	}
+
+	~ProcessSecretEnvironment()
+	{
+		if (present)
+			setenv("OPENAI_API_KEY", previous.c_str(), 1);
+		else
+			unsetenv("OPENAI_API_KEY");
+	}
+
+private:
+	bool present = false;
+	std::string previous;
+};
+
+TEST_F(ProcessTest, SecretsAreRedactedBeforeChunkPollAndSpoolBoundaries)
+{
+	ProcessSecretEnvironment environment("morph-secret-boundary-abcdefghijk");
+	process_manager_destroy(manager);
+	manager = nullptr;
+	process_manager_config config{};
+	config.max_session_output = 64 * 1024;
+	config.max_inline_output = 4096;
+	config.shell = "/bin/bash";
+	ASSERT_EQ(process_manager_create(&config, &manager), 0);
+	setenv("OPENAI_API_KEY", "changed-environment-after-manager-creation", 1);
+	process_spawn_options options{};
+	options.command = "printf 'prefixmorph-secret-bound'; read -r resume; "
+		"printf 'ary-abcdefghijksuffix'";
+	options.background = 1;
+	char id[PROCESS_SESSION_ID_MAX];
+	ASSERT_EQ(process_spawn(manager, &options, id, nullptr), 0);
+	process_snapshot first MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	process_cursor start{};
+	ASSERT_EQ(process_session_poll(manager, id, &start, 2000, nullptr, nullptr, &first), 0);
+	ASSERT_EQ(first.state, PROCESS_RUNNING);
+	EXPECT_STREQ(first.stdout_text, "prefix");
+	EXPECT_EQ(first.next_cursor.stdout_offset, 6u);
+	char *prefix MORPH_CLEANUP(morph_charp_cleanup) =
+		file_read_all_copy(first.stdout_path, nullptr);
+	ASSERT_NE(prefix, nullptr);
+	EXPECT_STREQ(prefix, "prefix");
+	ASSERT_EQ(process_session_write(manager, id, "continue\n", 9), 0);
+	process_snapshot last MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	ASSERT_EQ(process_session_wait(manager, id, &first.next_cursor, 3000, nullptr, nullptr,
+		&last), 0);
+	EXPECT_STREQ(last.stdout_text, "[REDACTED:OPENAI_API_KEY]suffix");
+	EXPECT_STREQ(last.stdout_path, first.stdout_path);
+	char *stored MORPH_CLEANUP(morph_charp_cleanup) =
+		file_read_all_copy(last.stdout_path, nullptr);
+	ASSERT_NE(stored, nullptr);
+	EXPECT_STREQ(stored, "prefix[REDACTED:OPENAI_API_KEY]suffix");
+	EXPECT_EQ(last.next_cursor.stdout_offset, std::strlen(stored));
+	EXPECT_EQ(last.stdout_path_bytes, std::strlen(stored));
+	EXPECT_EQ(last.stdout_unrecoverable_bytes, 0u);
+}
+
+TEST_F(ProcessTest, UnicodePreviewBoundariesPreserveTheCompleteSpool)
+{
+	process_spawn_options options{};
+	options.command = "i=0; while [ \"$i\" -lt 24000 ]; do printf '\\344\\270\\255'; "
+		"i=$((i+1)); done";
+	options.background = 1;
+	char id[PROCESS_SESSION_ID_MAX];
+	ASSERT_EQ(process_spawn(manager, &options, id, nullptr), 0);
+	process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	process_cursor start{};
+	ASSERT_EQ(process_session_wait(manager, id, &start, 10000, nullptr, nullptr, &snapshot), 0);
+	ASSERT_EQ(snapshot.state, PROCESS_EXITED);
+	ASSERT_NE(snapshot.stdout_text, nullptr);
+	EXPECT_EQ(utf8valid(snapshot.stdout_text), nullptr);
+	EXPECT_TRUE(snapshot.stdout_truncated);
+	EXPECT_FALSE(snapshot.stdout_path_truncated);
+	char *stored MORPH_CLEANUP(morph_charp_cleanup) =
+		file_read_all_copy(snapshot.stdout_path, nullptr);
+	ASSERT_NE(stored, nullptr);
+	EXPECT_EQ(utf8valid(stored), nullptr);
+	EXPECT_EQ(std::strlen(stored), 72000u);
+	EXPECT_EQ(utf8len(stored), 24000u);
+	EXPECT_EQ(snapshot.stdout_path_bytes, 72000u);
+	EXPECT_EQ(snapshot.stdout_retained_from % 3, 0u);
 }

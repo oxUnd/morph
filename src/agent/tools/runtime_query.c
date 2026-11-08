@@ -2,6 +2,8 @@
 #include "util/json.h"
 #include "util/cleanup.h"
 #include "agent/memory.h"
+#include "agent/tokenizer.h"
+#include "util/utf8.h"
 #include "agent/tool_runtime.h"
 #include "credits.h"
 #include "util/error.h"
@@ -10,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #define MEMORY_QUERY_DEFAULT_MAX_EPISODES 4
 
@@ -91,6 +94,8 @@ static enum memory_query_type parse_memory_type(const char *s)
 		return MEMORY_QUERY_EPISODES;
 	if (strcmp(s, "changes") == 0)
 		return MEMORY_QUERY_CHANGES;
+	if (strcmp(s, "preferences") == 0)
+		return MEMORY_QUERY_PREFERENCES;
 	return MEMORY_QUERY_ALL;
 }
 
@@ -126,19 +131,61 @@ static void parse_memory_query(const char *args_json,
 	cJSON_Delete(root);
 }
 
+static int memory_page_result_set(struct tool_result *result, const char *page, int scope_all,
+				  size_t offset, size_t returned, size_t total)
+{
+	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	int rc;
+
+	if (!data || !cJSON_AddStringToObject(data, "scope", scope_all ? "all" : "session") ||
+	    !cJSON_AddStringToObject(data, "text", page) ||
+	    !cJSON_AddNumberToObject(data, "offset_chars", (double)offset) ||
+	    !cJSON_AddNumberToObject(data, "returned_chars", (double)returned) ||
+	    !cJSON_AddNumberToObject(data, "total_chars", (double)total) ||
+	    !cJSON_AddNumberToObject(data, "next_offset_chars", (double)(offset + returned)) ||
+	    !cJSON_AddBoolToObject(data, "has_more", offset + returned < total))
+		return -ENOMEM;
+	rc = tool_result_success_copy(result, data);
+	if (rc == 0)
+		rc = tool_result_finalize(result);
+	return rc;
+}
+
 static int memory_exec(const char *args_json, struct tool_result *result,
 		       void *user_data)
 {
 	const struct tool_runtime_context *rt = result->runtime;
 	struct memory_query_options q;
-	cJSON *root;
-	char *json MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
-	char *text;
+	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = args_json ? cJSON_Parse(args_json) : NULL;
+	char *text MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *page MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	const cJSON *offset = cJSON_GetObjectItemCaseSensitive(args, "offset_chars");
+	const cJSON *maximum = cJSON_GetObjectItemCaseSensitive(args, "max_chars");
+	size_t offset_chars = 0;
+	size_t max_chars = 4000;
+	int budget = rt && rt->config && rt->config->context.tool_result_max_tokens > 0
+		   ? rt->config->context.tool_result_max_tokens : 8000;
 
 	(void)user_data;
 	if (!rt || !rt->db)
 		return tool_result_error_copy(result, "tool_failed",
-					      "runtime context is unavailable");
+		"Runtime context is unavailable.");
+	if (offset) {
+		if (!cJSON_IsNumber(offset) || offset->valuedouble < 0 ||
+		    offset->valuedouble > INT_MAX || offset->valuedouble !=
+		    (double)offset->valueint)
+			return tool_result_error_copy(result, "invalid_offset",
+				"offset_chars must be an integer between 0 and INT_MAX.");
+		offset_chars = (size_t)offset->valueint;
+	}
+	if (maximum) {
+		if (!cJSON_IsNumber(maximum) || maximum->valuedouble < 1 ||
+		    maximum->valuedouble > 4000 || maximum->valuedouble !=
+		    (double)maximum->valueint)
+			return tool_result_error_copy(result, "invalid_page_size",
+				"max_chars must be an integer between 1 and 4000.");
+		max_chars = (size_t)maximum->valueint;
+	}
 	parse_memory_query(args_json, rt->config, &q);
 	if (rt->restrict_memory_to_user) {
 		q.user_id = rt->user_id;
@@ -148,20 +195,45 @@ static int memory_exec(const char *args_json, struct tool_result *result,
 	text = memory_query_text_create(rt->db, rt->memory_session_id, &q);
 	if (!text)
 		return -ENOMEM;
-
-	root = cJSON_CreateObject();
-	if (!root) {
-		free(text);
+	size_t total_chars = utf8len(text);
+	if (offset_chars > total_chars)
+		return tool_result_error_copy(result, "invalid_offset",
+			"offset_chars exceeds the current memory text length.");
+	const char *start = utf8_advance_codepoints_borrow(text, offset_chars);
+	const char *end = utf8_advance_codepoints_borrow(start, max_chars);
+	page = strndup(start, (size_t)(end - start));
+	if (!page)
 		return -ENOMEM;
+	/* Count the finalized result, including duplicated compatibility fields and
+	 * JSON escaping. Select the largest complete UTF-8 prefix that fits. */
+	size_t lower = 0;
+	size_t upper = utf8len(page);
+	size_t returned = upper;
+	for (;;) {
+		if (!returned && offset_chars < total_chars)
+			return tool_result_error_copy(result, "memory_budget_too_small",
+				"The configured tool result budget cannot fit a memory page.");
+		char *cut = (char *)utf8_advance_codepoints_borrow(page, returned);
+		char saved = *cut;
+		*cut = '\0';
+		int rc = memory_page_result_set(result, page, q.scope_all, offset_chars, returned,
+						total_chars);
+		*cut = saved;
+		if (rc != 0)
+			return rc;
+		if (tokenizer_estimate_tokens(result->text.data) <= budget) {
+			lower = returned;
+			if (lower == upper)
+				return 0;
+		} else {
+			if (!returned)
+				return tool_result_error_copy(result, "memory_budget_too_small",
+					"The configured tool result budget cannot fit pagination "
+					"metadata.");
+			upper = returned - 1;
+		}
+		returned = lower + (upper - lower + 1) / 2;
 	}
-	cJSON_AddStringToObject(root, "scope", q.scope_all ? "all" : "session");
-	cJSON_AddStringToObject(root, "text", text);
-	json = cJSON_PrintUnformatted(root);
-	cJSON_Delete(root);
-	free(text);
-	if (!json)
-		return -ENOMEM;
-	return tool_result_success_json_text_copy(result, json);
 }
 
 static int preference_exec(const char *args_json, struct tool_result *result,
@@ -281,19 +353,29 @@ int runtime_query_tools_init(struct tool_registry *reg)
 			.origin = TOOL_ORIGIN_BUILTIN,
 			.name = "memory",
 			.description =
-				"Inspect, list, verify, or summarize stored long-term memory only "
-				"when the user explicitly asks about their memory. Do not call "
-				"this tool to recover context for ordinary tasks: relevant memory "
-				"is already injected by the agent. Use scope=all only when the "
+				"Inspect, list, verify, or summarize stored long-term memory "
+				"when the user asks about memory or injected context reports "
+				"omitted "
+				"records needed for the current task. Use type=preferences for "
+				"full "
+				"effective explicit settings. Results are complete UTF-8 pages; "
+				"when has_more "
+				"is true, repeat the same query with next_offset_chars as "
+				"offset_chars. "
+				"Use scope=all only when the "
 				"user explicitly asks for all, complete, or cross-session memory; "
 				"otherwise use scope=session.",
 			.input_schema =
 				"{\"type\":\"object\",\"properties\":{"
 				"\"type\":{\"type\":\"string\",\"enum\":[\"all\",\"profile\","
-				"\"facts\","
+				"\"facts\",\"preferences\","
 				"\"procedures\",\"episodes\",\"changes\"]},"
 				"\"scope\":{\"type\":\"string\",\"enum\":[\"all\",\"session\"]},"
-				"\"max_episodes\":{\"type\":\"integer\",\"minimum\":1}"
+				"\"max_episodes\":{\"type\":\"integer\",\"minimum\":1},"
+				"\"offset_chars\":{\"type\":\"integer\",\"minimum\":0,"
+				"\"maximum\":2147483647},"
+				"\"max_chars\":{\"type\":\"integer\",\"minimum\":1,"
+				"\"maximum\":4000}"
 				"},\"required\":[\"type\",\"scope\"],"
 				"\"additionalProperties\":false}",
 			.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,

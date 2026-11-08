@@ -25,6 +25,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "/large": (200, b"x" * (1024 * 1024 + 1)),
             "/unicode": (200, "A🙂中B".encode("utf-8")),
         }.get(self.path, (200, b"hello\x00tail"))
+        if self.path == "/range":
+            resource = b"0123456789" * 1000
+            requested = self.headers.get("Range", "")
+            if requested == "bytes=5-10":
+                status, body = 206, resource[5:11]
+            else:
+                status, body = 200, resource
         self.send_response(status)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -75,6 +82,13 @@ class RunnerHostIoTest(unittest.TestCase):
         self.assertEqual(response["id"], 7)
         return result, response
 
+    def test_runner_preserves_embedded_nul_in_input_parameters(self):
+        result, response = self.run_script(
+            "function run(args) { return args.text; }", {"text": "prefix\x00suffix"}
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(response["result"], "prefix\x00suffix")
+
     def test_exec_preserves_stdout_including_nul(self):
         result, response = self.run_script(
             "function run() { return morph.exec(" + json.dumps("printf 'hello\\000tail'") + "); }"
@@ -109,6 +123,56 @@ class RunnerHostIoTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("command failed", response["error"]["message"])
         self.assertLess(time.monotonic() - started, 2.5)
+
+    def test_capture_budget_can_exceed_the_old_one_megabyte_limit(self):
+        for source, params in [
+            ("function run() { return morph.exec('head -c 1048577 /dev/zero').length; }", {}),
+            ("function run(args) { return morph.fetch(args.url).length; }", {"url": self.base + "/large"}),
+        ]:
+            with self.subTest(source=source):
+                result, response = self.run_script(
+                    source, params, MORPH_RUNNER_MAX_CAPTURE_BYTES="2097152"
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(response["result"], 1048577)
+
+    def test_capture_budget_checks_stdout_and_stderr_at_the_boundary(self):
+        result, response = self.run_script(
+            "function run() { return morph.exec('head -c 16 /dev/zero').length; }",
+            MORPH_RUNNER_MAX_CAPTURE_BYTES="16",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(response["result"], 16)
+        for command in ["head -c 17 /dev/zero", "head -c 17 /dev/zero >&2"]:
+            with self.subTest(command=command):
+                result, response = self.run_script(
+                    "function run() { return morph.exec(" + json.dumps(command) + "); }",
+                    MORPH_RUNNER_MAX_CAPTURE_BYTES="16",
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("capture limit of 16 bytes", response["error"]["message"])
+
+    def test_fetch_can_read_a_bounded_range_of_a_larger_resource(self):
+        result, response = self.run_script(
+            "function run(args) { const r = morph.fetch(args.url, {headers: {Range: 'bytes=5-10'}});"
+            "return {status: r.status, text: r.text()}; }",
+            {"url": self.base + "/range"}, MORPH_RUNNER_MAX_CAPTURE_BYTES="64",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(response["result"], {"status": 206, "text": "567890"})
+
+    def test_fetch_rejects_header_injection_and_nul_urls(self):
+        for source, params in [
+            ("function run(args) { return morph.fetch(args.url, {headers: args.headers}); }",
+             {"url": self.base, "headers": {"Range": "bytes=0-1\r\nX-Injected: yes"}}),
+            ("function run(args) { return morph.fetch(args.url + String.fromCharCode(0)); }",
+             {"url": self.base}),
+            ("function run() { return morph.exec('printf safe' + String.fromCharCode(0)); }", {}),
+        ]:
+            with self.subTest(source=source):
+                result, response = self.run_script(source, params)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("error", response)
 
     def test_fetch_keeps_status_and_body_on_http_errors(self):
         for path, status, body in [("/missing", 404, "missing"), ("/error", 503, "unavailable")]:

@@ -1014,7 +1014,7 @@ TEST_F(SessionTest, HistoryBuilderMigratesLegacyBashExecCalls) {
 TEST_F(SessionTest, MigratesLiveLegacyBashExecCall) {
 	struct tool_call call = {};
 
-	std::strcpy(call.name, "bash_exec");
+	call.name = strdup("bash_exec");
 	call.input_kind = TOOL_INPUT_JSON;
 	call.arguments = strdup(
 		"{\"command\":\"make\",\"timeout_seconds\":60}");
@@ -1022,7 +1022,7 @@ TEST_F(SessionTest, MigratesLiveLegacyBashExecCall) {
 	ASSERT_EQ(agent_history_migrate_legacy_tool_call(&call), 0);
 	EXPECT_STREQ(call.name, "exec");
 	EXPECT_STREQ(call.arguments, "{\"command\":\"make\"}");
-	free(call.arguments);
+	tool_call_cleanup(&call);
 }
 
 TEST_F(SessionTest, HistoryDiagnoseAndRepairNormalizesInvalidItems) {
@@ -1146,9 +1146,11 @@ TEST_F(SessionTest, ToolCallRedactionPreservesJsonAndSourceTemplates) {
 		char *json = cJSON_PrintUnformatted(args);
 		cJSON_Delete(args);
 		ASSERT_NE(json, nullptr);
-		std::snprintf(call.id, sizeof(call.id), "provider_%d", i);
-		std::snprintf(call.tool_call_id, sizeof(call.tool_call_id), "local_%d", i);
-		std::strcpy(call.name, i == 0 ? "exec" : "apply_patch");
+		std::string provider = "provider_" + std::to_string(i);
+		std::string local = "local_" + std::to_string(i);
+		call.id = provider.data();
+		call.tool_call_id = local.data();
+		call.name = const_cast<char *>(i == 0 ? "exec" : "apply_patch");
 		call.input_kind = i == 0 ? TOOL_INPUT_JSON : TOOL_INPUT_TEXT;
 		call.arguments = i == 0 ? json : const_cast<char *>(source);
 		ASSERT_EQ(agent_history_record_tool_calls(&react, nullptr, nullptr,
@@ -1517,9 +1519,9 @@ TEST_F(SessionTest, ToolCallHistoryCountsAssistantTextAsWellAsArguments)
 	ctx.history_session_id = session.id;
 	std::string text(4000, '!');
 	struct tool_call call = {};
-	std::strcpy(call.id, "provider_1");
-	std::strcpy(call.tool_call_id, "local_1");
-	std::strcpy(call.name, "exec");
+	call.id = const_cast<char *>("provider_1");
+	call.tool_call_id = const_cast<char *>("local_1");
+	call.name = const_cast<char *>("exec");
 	call.arguments = const_cast<char *>("{}");
 	ASSERT_EQ(agent_history_record_tool_calls(&ctx, text.c_str(), nullptr,
 		&call, 1), 0);
@@ -1553,4 +1555,52 @@ TEST_F(SessionTest, ToolResultRepairsInvalidUtf8AndPreservesUsefulEnds)
 	EXPECT_NE(strstr(prepared, "HEAD"), nullptr);
 	EXPECT_NE(strstr(prepared, "TAIL"), nullptr);
 	free(prepared);
+}
+
+
+TEST_F(SessionTest, HistoryReplayPreservesLongToolNamesAndLocalIds)
+{
+	struct session session{};
+	ASSERT_EQ(session_create(&db, "long-identities", "mock", &session), 0);
+	struct react_context context{};
+	context.history_enabled = 1;
+	context.history_db = &db;
+	context.history_session_id = session.id;
+	std::string name(512, 'n');
+	std::string provider(1024, 'p');
+	std::string local(1024, 'l');
+	for (int i = 0; i < 2; i++) {
+		std::string provider_id = provider + std::to_string(i);
+		std::string local_id = local + std::to_string(i);
+		struct tool_call call{};
+		call.id = provider_id.data();
+		call.tool_call_id = local_id.data();
+		call.name = name.data();
+		call.arguments = const_cast<char *>("{}");
+		ASSERT_EQ(agent_history_record_tool_calls(&context, nullptr, nullptr, &call, 1), 0);
+		ASSERT_EQ(agent_history_record_tool_result(&context, local_id.c_str(),
+			provider_id.c_str(), name.c_str(), "completed", 0), 0);
+	}
+	int count = 0;
+	auto *items = model_history_list(&db, session.id, 1, &count);
+	ASSERT_NE(items, nullptr);
+	morph_array_t messages{};
+	struct chat_message sample{};
+	ASSERT_EQ(morph_array_init(&messages, 2, sizeof(sample)), 0);
+	ASSERT_EQ(agent_history_messages_copy(nullptr, items, &messages), 0);
+	ASSERT_EQ(messages.nelts, 4u);
+	for (size_t i = 0; i < 2; i++) {
+		std::string expected = local + std::to_string(i);
+		auto *assistant = static_cast<struct chat_message *>(
+			morph_array_borrow(&messages, i * 2));
+		ASSERT_EQ(assistant->tool_call_count, 1);
+		EXPECT_STREQ(assistant->tool_calls[0].name, name.c_str());
+		EXPECT_STREQ(assistant->tool_calls[0].id, expected.c_str());
+		EXPECT_STREQ(assistant->tool_calls[0].tool_call_id, expected.c_str());
+		auto *result = static_cast<struct chat_message *>(
+			morph_array_borrow(&messages, i * 2 + 1));
+		EXPECT_STREQ(result->tool_call_id, expected.c_str());
+	}
+	agent_chat_messages_cleanup(&messages);
+	model_history_free_list(items);
 }

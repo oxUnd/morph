@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 #include "models/llm.h"
+#include "models/image_provider.h"
+#include "util/cleanup.h"
 #include "agent/tokenizer.h"
+#include "agent/react_request.h"
 #include "util/error.h"
 #include <climits>
 #include <cstring>
@@ -109,8 +112,8 @@ TEST(ModelTokenBudgetTest, FreeformToolsUseAdapterSpecificInputDefinition)
 TEST(ModelTokenBudgetTest, IncludesToolArgumentsAndResults)
 {
 	struct tool_call call = {};
-	std::strcpy(call.id, "provider_1");
-	std::strcpy(call.name, "probe");
+	call.id = const_cast<char *>("provider_1");
+	call.name = const_cast<char *>("probe");
 	call.arguments = const_cast<char *>("{}");
 	struct chat_message messages[2] = {};
 	messages[0].role = const_cast<char *>("assistant");
@@ -142,6 +145,33 @@ TEST(ModelTokenBudgetTest, SaturatesLargeEstimatesAndRejectsInvalidArrays)
 	EXPECT_EQ(tokens, INT_MAX);
 	EXPECT_EQ(model_estimate_input_tokens(&model, "", nullptr, 1,
 		nullptr, 0, count_input_text, nullptr, &tokens), -EINVAL);
+}
+
+TEST(ModelTokenBudgetTest, ReservesFullOutputAndProtocolWithoutHalfWindowClamp)
+{
+	struct react_context context{};
+	struct model model{};
+	context.compress.max_context_tokens = 128000;
+	context.compress.protocol_reserve_tokens = 4096;
+	model.context_limit = 128000;
+	model.max_tokens = 100000;
+	EXPECT_EQ(react_request_input_budget(&context, &model), 23904);
+	model.max_tokens = 16384;
+	EXPECT_EQ(react_request_input_budget(&context, &model), 107520);
+	model.context_limit = 32000;
+	EXPECT_EQ(react_request_input_budget(&context, &model), 11520);
+	model.max_tokens = 32000;
+	EXPECT_EQ(react_request_input_budget(&context, &model), 0);
+	context.compress.max_context_tokens = INT_MAX;
+	context.compress.protocol_reserve_tokens = INT_MAX;
+	model.context_limit = INT_MAX;
+	model.max_tokens = INT_MAX;
+	EXPECT_EQ(react_request_input_budget(&context, &model), 0);
+	context.compress.max_context_tokens = 0;
+	context.compress.protocol_reserve_tokens = 4096;
+	model.context_limit = 128000;
+	model.max_tokens = 100000;
+	EXPECT_EQ(react_request_input_budget(&context, &model), 23904);
 }
 
 TEST(ModelCloneTest, CopiesConfigurationAndResetsRequestState)
@@ -187,4 +217,39 @@ TEST(ModelCloneTest, CopiesConfigurationAndResetsRequestState)
 	EXPECT_STREQ(copy->adapter, "openai-responses");
 	model_destroy(copy);
 	EXPECT_EQ(model_llm_clone(nullptr, nullptr), nullptr);
+}
+
+
+TEST(ModelCredentialTest, LongCredentialClonesOwnIndependentCompleteValues)
+{
+	std::string key = "mock-" + std::string(4096, 'k');
+	auto *source = model_llm_create(nullptr, "test", "mock", nullptr, key.c_str());
+	ASSERT_NE(source, nullptr);
+	EXPECT_EQ(source->api_key[0], '\0');
+	EXPECT_STREQ(model_api_key_borrow(source), key.c_str());
+	auto *copy = model_llm_clone(source, nullptr);
+	ASSERT_NE(copy, nullptr);
+	EXPECT_NE(source->api_key_owned, copy->api_key_owned);
+	model_destroy(source);
+	EXPECT_STREQ(model_api_key_borrow(copy), key.c_str());
+	morph_buf_t header MORPH_CLEANUP(morph_buf_cleanup) = {};
+	ASSERT_EQ(model_authorization_header_create(copy, &header), 0);
+	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&header)), "Authorization: Bearer " + key);
+	model_destroy(copy);
+}
+
+TEST(ModelCredentialTest, ImageRequestMetadataPreservesTheCompleteCredential)
+{
+	std::string key = "mock-" + std::string(2048, 'k');
+	auto *model = model_llm_create(nullptr, "openai", "image", "https://example.test/v1",
+		key.c_str());
+	ASSERT_NE(model, nullptr);
+	morph_buf_t url MORPH_CLEANUP(morph_buf_cleanup) = {};
+	morph_buf_t authorization MORPH_CLEANUP(morph_buf_cleanup) = {};
+	ASSERT_EQ(image_provider_build_request_meta(model, "/images/generations", &url,
+		&authorization), 0);
+	EXPECT_STREQ(morph_buf_cstr_borrow(&url), "https://example.test/v1/images/generations");
+	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&authorization)),
+		  "Authorization: Bearer " + key);
+	model_destroy(model);
 }

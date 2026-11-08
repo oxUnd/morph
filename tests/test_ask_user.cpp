@@ -5,6 +5,7 @@
 #include "util/json.h"
 #include <stdlib.h>
 #include <string.h>
+#include <string>
 
 static void *ask_user_fail_choices_key(size_t size)
 {
@@ -32,6 +33,8 @@ struct AskUserJsonHooksReset {
 };
 
 struct AskUserState {
+	std::string question;
+	std::string answer_override;
 	int choices_count{};
 	char selection_mode[16]{};
 	int min_choices{};
@@ -85,6 +88,7 @@ static int mock_ask_user_cb(const char *question,
 	(void)question;
 	auto &state = *static_cast<AskUserState *>(user_data);
 	state.calls++;
+	state.question = question ? question : "";
 	if (state.fail_choices_key) {
 		cJSON_Hooks hooks = {ask_user_fail_choices_key, free};
 		cJSON_InitHooks(&hooks);
@@ -98,6 +102,10 @@ static int mock_ask_user_cb(const char *question,
 		sizeof(state.selection_mode) - 1);
 	state.min_choices = min_choices;
 	state.max_choices = max_choices;
+	if (!state.answer_override.empty()) {
+		const char *values[] = {state.answer_override.c_str()};
+		return set_mock_answers(answers, answers_count, values, 1);
+	}
 	if (choices && choices_count > 0) {
 		int count = strcmp(state.selection_mode, "multi") == 0
 				    ? (min_choices > 0 ? min_choices : 1)
@@ -347,7 +355,7 @@ TEST_F(AskUserToolTest, MultiSelectReturnsAnswersArray) {
 	tool_result_cleanup(&result);
 }
 
-TEST_F(AskUserToolTest, MultiSelectClampsImpossibleLimits) {
+TEST_F(AskUserToolTest, MultiSelectRejectsImpossibleLimitsWithoutOpeningPrompt) {
 	ask_user_init(&tools, mock_ask_user_multi_cb, &state);
 	struct tool_result result;
 	tool_result_init(&result);
@@ -358,20 +366,60 @@ TEST_F(AskUserToolTest, MultiSelectClampsImpossibleLimits) {
 			   "\"max_choices\":7,"
 			   "\"choices\":[\"build\",\"install\"]}",
 			   &result);
-	EXPECT_EQ(rc, 0);
-	ASSERT_NE(result.data, nullptr);
-	EXPECT_EQ(state.min_choices, 2);
-	EXPECT_EQ(state.max_choices, 2);
-	cJSON *min = cJSON_GetObjectItem(result.data, "min_choices");
-	cJSON *max = cJSON_GetObjectItem(result.data, "max_choices");
-	ASSERT_TRUE(cJSON_IsNumber(min));
-	ASSERT_TRUE(cJSON_IsNumber(max));
-	EXPECT_EQ(min->valueint, 2);
-	EXPECT_EQ(max->valueint, 2);
-	cJSON *answers = cJSON_GetObjectItem(result.data, "answers");
-	ASSERT_TRUE(cJSON_IsArray(answers));
-	ASSERT_EQ(cJSON_GetArraySize(answers), 2);
+	EXPECT_EQ(rc, -EINVAL);
+	EXPECT_EQ(state.calls, 0);
 	tool_result_cleanup(&result);
+}
+
+TEST_F(AskUserToolTest, LongUnicodeQuestionReachesCallbackAndResultIntact)
+{
+	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
+	std::string question;
+	for (int i = 0; i < 1200; i++)
+		question += "界";
+	question += "QUESTION_END";
+	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	ASSERT_NE(args, nullptr);
+	ASSERT_NE(cJSON_AddStringToObject(args, "question", question.c_str()), nullptr);
+	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(args);
+	ASSERT_NE(json, nullptr);
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&tools, "ask_user", json, &result), 0);
+	EXPECT_EQ(state.question, question);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(result.data,
+	"question")),
+		     question.c_str());
+}
+
+TEST_F(AskUserToolTest, ChoiceCountOverflowReturnsErrorInsteadOfDroppingChoices)
+{
+	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
+	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	ASSERT_NE(args, nullptr);
+	ASSERT_NE(cJSON_AddStringToObject(args, "question", "Choose"), nullptr);
+	cJSON *choices = cJSON_AddArrayToObject(args, "choices");
+	ASSERT_NE(choices, nullptr);
+	for (int i = 0; i < ASK_USER_CHOICES_MAX + 1; i++)
+		ASSERT_TRUE(cJSON_AddItemToArray(choices, cJSON_CreateString("Complete choice")));
+	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(args);
+	ASSERT_NE(json, nullptr);
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&tools, "ask_user", json, &result), -E2BIG);
+	EXPECT_EQ(state.calls, 0);
+}
+
+TEST_F(AskUserToolTest, AnswerBudgetRejectsOverflowWithoutReturningAPrefix)
+{
+	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
+	state.answer_override = std::string(ASK_USER_ANSWER_MAX_BYTES + 1, 'x');
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&tools, "ask_user", "{\"question\":\"Explain\"}", &result), -E2BIG);
+	ASSERT_NE(result.envelope, nullptr);
+	EXPECT_NE(strstr(result.text.data, "error"), nullptr);
+	EXPECT_EQ(strstr(result.text.data, "ask_user_response"), nullptr);
 }
 
 TEST_F(AskUserToolTest, MissingQuestion) {
@@ -535,6 +583,30 @@ TEST_F(AskUserToolTest, OptionalTimeoutAdoptsRecommendationAndIdentifiesSource)
 	ASSERT_EQ(cJSON_GetArraySize(answers), 1);
 	EXPECT_STREQ(cJSON_GetArrayItem(answers, 0)->valuestring, "SQLite");
 	tool_result_cleanup(&result);
+}
+
+TEST_F(AskUserToolTest, OptionalTimeoutRecommendationMustFitTheAnswerBudget)
+{
+	state.callback_rc = -ETIMEDOUT;
+	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
+	std::string choice(ASK_USER_ANSWER_MAX_BYTES + 1, 'x');
+	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	ASSERT_NE(args, nullptr);
+	ASSERT_NE(cJSON_AddStringToObject(args, "question", "Preference?"), nullptr);
+	ASSERT_NE(cJSON_AddStringToObject(args, "response_policy", "optional"), nullptr);
+	cJSON *choices = cJSON_AddArrayToObject(args, "choices");
+	cJSON *recommended = cJSON_AddArrayToObject(args, "recommended_indices");
+	ASSERT_NE(choices, nullptr);
+	ASSERT_NE(recommended, nullptr);
+	ASSERT_TRUE(cJSON_AddItemToArray(choices, cJSON_CreateString(choice.c_str())));
+	ASSERT_TRUE(cJSON_AddItemToArray(recommended, cJSON_CreateNumber(0)));
+	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(args);
+	ASSERT_NE(json, nullptr);
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&tools, "ask_user", json, &result), -E2BIG);
+	EXPECT_NE(strstr(result.text.data, "ask_user_failed"), nullptr);
+	EXPECT_EQ(strstr(result.text.data, "ask_user_response"), nullptr);
 }
 
 TEST_F(AskUserToolTest, OptionalTimeoutWithoutRecommendationReturnsNoInput)
