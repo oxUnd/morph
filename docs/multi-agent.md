@@ -73,18 +73,25 @@ during a turn and lists all assignments, status and shared token usage;
 owner thread without replacing the user's draft. The compact area shows up to
 three active agents; `/agents` exposes the complete list.
 
-`/subagents` opens the agent overview, including the primary thread. Select an
+`/subagents` replaces the composer with an inline agent overview, including the
+primary thread, while retaining the main feed above it. The same reusable
+composer panel presents `/model` and `/permissions`; it does not enter an
+alternate screen or clear the main conversation. Select an
 agent with Up/Down and Enter, or open `/subagents /root/reader` directly. In a
 child thread, Tab/Shift-Tab or Left/Right switches threads, Up/Down and Page
 Up/Down scroll, Home/End jumps, `f` opens a directed follow-up composer and `k`
-interrupts that agent. Escape returns to the overview, then to the primary
+interrupts that agent. `d` or Ctrl+O toggles tool details within the panel.
+Escape closes details, returns to the overview, then to the primary
 composer; selecting the primary and pressing Enter also returns. The primary
 draft survives navigation. Follow-ups to running agents steer them at safe
 points; idle agents start another turn. Multiline bracketed paste waits for an
 explicit Enter before sending.
 
 Each child has an independent transcript reducer for user messages, reasoning,
-answers and tools. Snapshot and live events share an atomic sequence frontier,
+answers and tools, with the same feed message styles, Markdown/code rendering
+and compact tool rows as the main conversation. The viewport stays bounded to
+the input area and scrolls without committing preview rows to history.
+Snapshot and live events share an atomic sequence frontier,
 so opening a running thread neither duplicates nor skips streamed text. Child
 events remain separate from the primary transcript. The overview uses small
 activity snapshots instead of copying complete tasks/results on animation ticks.

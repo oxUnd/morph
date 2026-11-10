@@ -86,6 +86,7 @@ set(TEST_SOURCES
 	test_cli_list.cpp
 	test_cli_presentation.cpp
 	test_cli_subagents.cpp
+	test_cli_composer_panel.cpp
 	test_cli_model.cpp
 	test_cli_transcript_model.cpp
 	test_cli_terminal.cpp

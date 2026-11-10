@@ -23,6 +23,7 @@ extern "C" {
 #include "sapi/cli/widgets/list.h"
 #include "sapi/cli/widgets/shell_style.h"
 #include "util/utf8.h"
+#include "util/cleanup.h"
 #include "util/file.h"
 #include "agent/react.h"
 #include "agent/tool_context.h"
@@ -39,6 +40,7 @@ struct cli_cancel_monitor *cli_cancel_monitor_start(struct cli_application *ctx,
 #include <algorithm>
 #include <sstream>
 #include <cstring>
+#include <cstdlib>
 #include <filesystem>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -871,6 +873,66 @@ TEST_F(CliPresentationTest, InteractiveSeparatesToolBlocksFromFinalAnswer)
 	cJSON_Delete(final);
 }
 
+struct CliTestTextStyle {
+	int foreground = -1;
+	bool bold = false;
+};
+
+static CliTestTextStyle cli_test_style_at(const std::string &output, const char *text,
+					 size_t start = 0)
+{
+	CliTestTextStyle style;
+	size_t position = output.find(text, start);
+	EXPECT_NE(position, std::string::npos);
+	if (position == std::string::npos)
+		return style;
+	for (size_t offset = 0; offset < position; offset++) {
+		if (output[offset] != '\033' || offset + 1 >= output.size() || output[offset + 1] != '[')
+			continue;
+		size_t end = offset + 2;
+		while (end < position && (static_cast<unsigned char>(output[end]) < 0x40u ||
+			static_cast<unsigned char>(output[end]) > 0x7eu))
+			end++;
+		if (end >= position || output[end] != 'm')
+			continue;
+		std::istringstream parameters(output.substr(offset + 2, end - offset - 2));
+		std::vector<int> codes;
+		std::string parameter;
+		while (std::getline(parameters, parameter, ';'))
+			codes.push_back(std::atoi(parameter.c_str()));
+		if (codes.empty())
+			codes.push_back(0);
+		for (size_t index = 0; index < codes.size(); index++) {
+			int code = codes[index];
+			if (code == 0)
+				style = CliTestTextStyle{};
+			else if (code == 1)
+				style.bold = true;
+			else if (code == 22)
+				style.bold = false;
+			else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97))
+				style.foreground = code;
+			else if (code == 39)
+				style.foreground = -1;
+			else if ((code == 38 || code == 48) && index + 1 < codes.size()) {
+				int mode = codes[++index];
+				index += mode == 5 ? 1u : mode == 2 ? 3u : 0u;
+				if (code == 38)
+					style.foreground = -2;
+			}
+		}
+		offset = end;
+	}
+	return style;
+}
+
+static std::string cli_test_plain_text(const std::string &output)
+{
+	char *plain MORPH_CLEANUP(morph_charp_cleanup) =
+		utf8_strip_ansi_dup(output.c_str(), output.size(), nullptr);
+	return plain ? plain : "";
+}
+
 TEST_F(CliPresentationTest, InteractiveColorsToolAndFinalMarkersDifferently)
 {
 	cJSON *call = cJSON_CreateObject();
@@ -887,8 +949,10 @@ TEST_F(CliPresentationTest, InteractiveColorsToolAndFinalMarkersDifferently)
 	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("\033[36m◉\033[0m \033[1mfile_list\033[0m "), std::string::npos);
-	EXPECT_NE(output.find("\n\033[1m●\033[0m "), std::string::npos);
+	EXPECT_EQ(cli_test_style_at(output, "◉").foreground, 36);
+	EXPECT_TRUE(cli_test_style_at(output, "file_list").bold);
+	EXPECT_EQ(cli_test_style_at(output, "●").foreground, -1);
+	EXPECT_TRUE(cli_test_style_at(output, "●").bold);
 
 	cJSON_Delete(call);
 	cJSON_Delete(final);
@@ -1203,8 +1267,16 @@ TEST_F(CliPresentationTest, AnswerSharesSubmittedInputMarginWithAndWithoutStream
 				utf8_terminal_sanitize_dup(output.c_str(), output.size(),
 							   UTF8_TERMINAL_TEXT_MULTILINE, nullptr);
 			ASSERT_NE(plain, nullptr);
+			std::istringstream rows(plain);
+			std::string normalized;
+			std::string row;
+			while (std::getline(rows, row)) {
+				size_t visible_end = row.find_last_not_of(" \t");
+				row.resize(visible_end == std::string::npos ? 0 : visible_end + 1);
+				normalized += row + '\n';
+			}
 			std::string expected = color ? "› Review\n\n\n● " : "> Review\n\n● ";
-			EXPECT_NE(std::string(plain).find(expected), std::string::npos) << plain;
+			EXPECT_NE(normalized.find(expected), std::string::npos) << normalized;
 			free(plain);
 			cJSON_Delete(answer);
 		}
@@ -1872,12 +1944,14 @@ TEST_F(CliPresentationTest, CompactFeedUsesActualToolNameAndCommandOnOneLine)
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.result", "end", result);
 	std::string output = testing::internal::GetCapturedStdout();
-	EXPECT_NE(output.find("\n\033[32m●\033[0m \033[1mExec\033[0m "), std::string::npos);
+	EXPECT_EQ(cli_test_style_at(output, "●").foreground, 32);
+	EXPECT_TRUE(cli_test_style_at(output, "Exec").bold);
+	EXPECT_NE(cli_test_plain_text(output).find("\n● Exec dig +short mcp.exa.ai"), std::string::npos);
 	EXPECT_EQ(output.find("Resolve endpoint DNS"), std::string::npos);
 	EXPECT_NE(output.find("●"), std::string::npos);
 	EXPECT_EQ(output.find("    $ "), std::string::npos);
 	EXPECT_NE(output.find("0.3s"), std::string::npos);
-	EXPECT_NE(output.find("\033[36mdig\033[0m +short mcp.exa.ai"), std::string::npos);
+	EXPECT_EQ(cli_test_style_at(output, "dig").foreground, 36);
 	EXPECT_NE(output.find("  └ 104.18.6.160"), std::string::npos);
 	EXPECT_EQ(output.find("FOURTH_DETAIL_LINE"), std::string::npos);
 	EXPECT_NE(output.find("    SECOND_LINE"), std::string::npos);
@@ -1911,9 +1985,10 @@ TEST_F(CliPresentationTest, AppendFeedTimeoutIsAmberAndRetainsFailureState)
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.result", "end", result);
 	std::string output = testing::internal::GetCapturedStdout();
-	EXPECT_NE(output.find("\033[33m●\033[0m \033[1mExec\033[0m"), std::string::npos);
+	EXPECT_EQ(cli_test_style_at(output, "●").foreground, 33);
+	EXPECT_TRUE(cli_test_style_at(output, "Exec").bold);
 	EXPECT_NE(output.find("TIMEOUT · 10.0s"), std::string::npos);
-	EXPECT_NE(output.find("\033[33m  └ TCP connection timed out"), std::string::npos);
+	EXPECT_EQ(cli_test_style_at(output, "TCP connection timed out").foreground, 33);
 	EXPECT_EQ(output.find("\033[32m●"), std::string::npos);
 	EXPECT_EQ(output.find("\033[31m"), std::string::npos);
 	cJSON_Delete(call);
@@ -2007,14 +2082,16 @@ TEST_F(CliPresentationTest, ShellColorsSurviveFullScreenCapture)
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 	std::string compact = testing::internal::GetCapturedStdout();
-	EXPECT_NE(compact.find("Exec\033[0m \033[36mrg\033[0m"), std::string::npos);
+	EXPECT_TRUE(cli_test_style_at(compact, "Exec").bold);
+	EXPECT_EQ(cli_test_style_at(compact, "rg").foreground, 36);
 	EXPECT_EQ(compact.find("    $ "), std::string::npos);
-	EXPECT_NE(compact.find("\033[32m'hello'\033[0m"), std::string::npos);
+	EXPECT_EQ(cli_test_style_at(compact, "'hello'").foreground, 32);
 	testing::internal::CaptureStdout();
 	ToggleDetails();
 	std::string full = testing::internal::GetCapturedStdout();
-	EXPECT_NE(full.find("    $ \033[36mrg\033[0m"), std::string::npos);
-	EXPECT_NE(full.find("\033[33m|\033[0m"), std::string::npos);
+	EXPECT_NE(cli_test_plain_text(full).find("    $ rg"), std::string::npos);
+	EXPECT_EQ(cli_test_style_at(full, "rg", full.find("    $ ")).foreground, 36);
+	EXPECT_EQ(cli_test_style_at(full, "|").foreground, 33);
 	testing::internal::CaptureStdout();
 	ToggleDetails();
 	(void)testing::internal::GetCapturedStdout();

@@ -28,6 +28,7 @@ add_library(morph-cli STATIC
 	widgets/subagents.c
 	widgets/agents.c
 	widgets/banner.c
+	widgets/composer_panel.c
 	widgets/feed.c
 	widgets/list.c
 	widgets/shell_style.c
@@ -92,6 +93,7 @@ add_library(morph-cli STATIC
 	presentation/diagnostics.c
 	presentation/history.c
 	presentation/markdown.c
+	presentation/messages.c
 	presentation/notifications.c
 	presentation/output.c
 	presentation/presenter.c

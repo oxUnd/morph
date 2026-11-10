@@ -11,6 +11,7 @@ import time
 import tomllib
 
 from test_cli_pty import Model, Terminal, terminal_environment
+from cli_inline_test_support import inline_panel, no_screen_switch
 from test_cli_slash_pty import wait_for, command_heading
 from test_cli_resume_pty import AlternateScreen
 from test_cli_reflow_pty import NativeScreen, NativeUnavailable
@@ -49,6 +50,9 @@ def panel(terminal, ultra=False):
     selected = next(i for i, line in enumerate(rows) if line.startswith('> '))
     assert ('Ultra (current)' if ultra else 'Normal (current)') in rows[selected], '\n'.join(rows)
     assert terminal.screen.buffer[selected][0].bg == 'blue'
+    marker = getattr(terminal, 'model_history_marker', None)
+    if marker:
+        inline_panel(terminal, 'Select Model Mode', marker, maximum=10)
 
 
 def native_reflow(driver, server):
@@ -131,10 +135,24 @@ def main():
                     terminal.screen = AlternateScreen(columns, 32)
                     terminal.stream = pyte.Stream(terminal.screen)
                     terminal.pump(.2)
+                    marker = f'MODEL_HISTORY_SENTINEL_{columns}'
+                    terminal.send('Keep model picker history visible\r')
+                    _, seed = terminal.request()
+                    seed.delta = {'content': marker + ' history/' * 8}
+                    seed.set()
+                    wait_for(terminal, lambda: marker in '\n'.join(terminal.screen.display)
+                             and 'Working ·' not in '\n'.join(terminal.screen.display))
+                    terminal.model_history_marker = marker
                     initial = (directory / 'config.toml').read_text()
                     start = len(terminal.raw)
                     terminal.send('/model\r')
                     panel(terminal)
+                    for width in (60, 120, 80, columns):
+                        terminal.child.setwinsize(32, width)
+                        terminal.screen.resize(lines=32, columns=width)
+                        terminal.pump(.2)
+                        panel(terminal)
+                        no_screen_switch(terminal.raw[start:])
                     terminal.send('\x1b')
                     settled(terminal)
                     assert (directory / 'config.toml').read_text() == initial
@@ -171,6 +189,7 @@ def main():
                     release.set()
                     wait_for(terminal, lambda: f'ULTRA_VERIFIED_{columns}' in '\n'.join(terminal.screen.display)
                              and 'Working ·' not in '\n'.join(terminal.screen.display))
+                    terminal.model_history_marker = f'ULTRA_VERIFIED_{columns}'
                     terminal.send('/model\r')
                     panel(terminal, True)
                     terminal.send('\x1b[A\r')

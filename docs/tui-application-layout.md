@@ -59,6 +59,15 @@ Do not use generic `core.c`, `init.c` or `run.c` modules as mixed ownership buck
   dispatch pages or services; they never start a second event loop. The app owns
   the loop, page presentation and terminal restoration.
 
+Local interactions that replace only the CLI composer use
+`widgets/composer_panel`. The component presents a key-input controller on the
+existing stack, bounds its rows to retain conversation context, and owns relative
+redraw and terminal cleanup. Pages supply content and semantic event callbacks;
+they do not implement cursor movement or alternate-screen sessions. The model,
+permissions and subagent pages are examples. Shared feed message formatting
+lives in `presentation/messages`, so thread previews can retain message and
+Markdown styles without borrowing the primary presenter's mutable stream state.
+
 Prepare termination while the stopped framework is still initialized: stop new
 owner-thread calls, cancel/join workers and detach wakeup producers. Then destroy
 controllers and the framework, flush deferred output and release the app's

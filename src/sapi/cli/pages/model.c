@@ -3,14 +3,12 @@
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/adapters/input/readline.h"
+#include "sapi/cli/widgets/composer_panel.h"
 #include "util/cleanup.h"
 #include <morph/tui/components.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* Keep physical lines stable across common terminal widths while open. */
-#define CLI_MODEL_CONTENT_WIDTH 58u
 
 struct cli_model_picker {
 	struct cli_application *application;
@@ -18,21 +16,9 @@ struct cli_model_picker {
 	char model[128];
 	struct morph_tui_widget_menu_state menu;
 	int selection;
-	int painted_rows;
 };
 
-static void cli_model_line(struct cli_model_picker *picker, morph_buf_t *frame, const char *text,
-			   const char *style, size_t width)
-{
-	const char *end = utf8_advance_display_width_borrow(text, width);
-	int color = cli_output_color_enabled(picker->application);
-
-	(void)morph_buf_puts(frame, color ? style : "");
-	(void)morph_buf_append(frame, text, (size_t)(end - text));
-	(void)morph_buf_puts(frame, "\033[K\033[0m\r\n");
-}
-
-static int cli_model_draw(void *opaque, const struct morph_tui_screen *screen)
+static int cli_model_draw(void *opaque, struct cli_composer_panel_frame *frame)
 {
 	struct cli_model_picker *picker = opaque;
 	const char *labels[] = {"Normal", "Ultra"};
@@ -40,114 +26,67 @@ static int cli_model_draw(void *opaque, const struct morph_tui_screen *screen)
 		"Delegate only when explicitly requested.",
 		"Proactively collaborate with parallel agents.",
 	};
-	morph_buf_t frame MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	morph_buf_t label MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int selected_index = picker->menu.list.index < 2 ? (int)picker->menu.list.index : 0;
-	int budget = screen->area.height > 1 ? screen->area.height - 1 : 1;
+	int budget = frame->rows;
 	int header = budget >= 7 ? 3 : 1;
 	int footer = budget >= 10 ? 3 : budget >= 4 ? 1 : 0;
 	int page = budget - header - footer;
-	int rows = 0;
-	size_t width = screen->area.width > 1 ? (size_t)screen->area.width - 1 : 0;
-	int rc = morph_buf_init(&frame, BUFSIZ);
-
-	if (width > CLI_MODEL_CONTENT_WIDTH)
-		width = CLI_MODEL_CONTENT_WIDTH;
 	if (page < 1)
 		page = 1;
 	if (page > 2)
 		page = 2;
 	morph_tui_widget_list_state_layout(&picker->menu.list, 2, (size_t)page);
-	if (!rc)
-		rc = morph_buf_init(&label, 128);
-	if (rc) {
+	int rc = morph_buf_init(&label, 128);
+	if (rc != 0)
 		return rc;
-	}
-	(void)morph_buf_puts(&frame, "\033[?2026h\033[0m\r");
-	if (picker->painted_rows)
-		(void)morph_buf_printf(&frame, "\033[%dA\033[J", picker->painted_rows);
+	if (header == 3)
+		(void)cli_composer_panel_line(frame, "", ANSI_RESET);
+	(void)cli_composer_panel_line(frame, "  Select Model Mode", CLI_INPUT_BACKGROUND ANSI_BOLD);
 	if (header == 3) {
-		cli_model_line(picker, &frame, "", ANSI_RESET, width);
-		rows++;
-	}
-	cli_model_line(picker, &frame, "  Select Model Mode", CLI_INPUT_BACKGROUND ANSI_BOLD,
-		       width);
-	rows++;
-	if (header == 3) {
-		morph_buf_reset(&label);
 		(void)morph_buf_printf(&label, "  %s", picker->model);
-		cli_model_line(picker, &frame, morph_buf_cstr_borrow(&label),
-			       CLI_INPUT_BACKGROUND ANSI_DIM, width);
-		rows++;
+		(void)cli_composer_panel_line(frame, morph_buf_cstr_borrow(&label),
+					      CLI_INPUT_BACKGROUND ANSI_DIM);
 	}
 	for (size_t i = picker->menu.list.first;
 	     i < 2 && i - picker->menu.list.first < picker->menu.list.page; i++) {
 		int selected = picker->menu.list.index == i;
-
 		morph_buf_reset(&label);
 		(void)morph_buf_printf(&label, "%s %zu. %s%s", selected ? ">" : " ", i + 1,
 				       labels[i], picker->current == (int)i ? " (current)" : "");
-		cli_model_line(picker, &frame, morph_buf_cstr_borrow(&label),
-			       selected ? "\033[44;97m" : CLI_INPUT_BACKGROUND, width);
-		rows++;
+		(void)cli_composer_panel_line(frame, morph_buf_cstr_borrow(&label),
+					      selected ? "\033[44;97m" : CLI_INPUT_BACKGROUND);
 	}
 	if (footer == 3) {
-		cli_model_line(picker, &frame, "", CLI_INPUT_BACKGROUND, width);
-		cli_model_line(picker, &frame, descriptions[selected_index],
-			       CLI_INPUT_BACKGROUND ANSI_DIM, width);
-		rows += 2;
+		(void)cli_composer_panel_line(frame, "", CLI_INPUT_BACKGROUND);
+		(void)cli_composer_panel_line(frame, descriptions[selected_index],
+					      CLI_INPUT_BACKGROUND ANSI_DIM);
 	}
-	if (footer) {
-		cli_model_line(picker, &frame, "  Up/Down Select  Enter Apply  Esc Cancel",
-			       CLI_INPUT_BACKGROUND ANSI_DIM, width);
-		rows++;
-	}
-	if (label.failed)
-		frame.failed = label.failed;
-	(void)morph_buf_puts(&frame, "\033[?2026l");
-	rc = morph_tui_draw_write(stdout, &frame);
-	if (!rc)
-		picker->painted_rows = rows;
-	return rc;
+	if (footer)
+		(void)cli_composer_panel_line(frame, "  Up/Down Select  Enter Apply  Esc Cancel",
+					      CLI_INPUT_BACKGROUND ANSI_DIM);
+	return label.failed;
 }
 
-static int cli_model_event(void *opaque, struct morph_tui_application *app,
-			   const struct morph_tui_event *event)
+static int cli_model_event(void *opaque, const struct morph_tui_event *event)
 {
 	struct cli_model_picker *picker = opaque;
-	int result;
-
 	if (event->type != MORPH_TUI_EVENT_KEY || event->pasting)
-		return 0;
-	result = morph_tui_widget_menu_state_update(&picker->menu, event->key);
+		return MORPH_TUI_SCREEN_CONTINUE;
+	int result = morph_tui_widget_menu_state_update(&picker->menu, event->key);
 	if (result == MORPH_TUI_WIDGET_SUBMIT)
 		picker->selection = (int)picker->menu.list.index;
 	if (result == MORPH_TUI_WIDGET_SUBMIT || result == MORPH_TUI_WIDGET_BACK ||
 	    result == MORPH_TUI_WIDGET_CANCEL)
-		return morph_tui_application_dismiss_controller(app, 0);
-	if (result == MORPH_TUI_WIDGET_CHANGED)
-		morph_tui_application_invalidate(app, MORPH_TUI_INVALIDATE_DISPLAY);
-	return 1;
-}
-
-static void cli_model_disappear(void *opaque, struct morph_tui_application *app)
-{
-	struct cli_model_picker *picker = opaque;
-
-	(void)app;
-	if (picker->painted_rows) {
-		fprintf(stdout, "\033[?2026h\033[0m\r\033[%dA\033[J\033[?2026l",
-			picker->painted_rows);
-		fflush(stdout);
-		picker->painted_rows = 0;
-	}
+		return MORPH_TUI_SCREEN_CLOSE;
+	return result == MORPH_TUI_WIDGET_CHANGED ? MORPH_TUI_SCREEN_REDRAW
+						  : MORPH_TUI_SCREEN_CONTINUE;
 }
 
 static void cli_model_complete(void *opaque, int result)
 {
 	struct cli_model_picker *picker = opaque;
 	struct cli_application *ctx = picker->application;
-
 	if (result == 0 && picker->selection >= 0 && picker->selection < 2) {
 		int rc = runtime_model_set_ultra(ctx->runtime, picker->selection);
 		if (rc == 0) {
@@ -160,37 +99,25 @@ static void cli_model_complete(void *opaque, int result)
 	free(picker);
 }
 
-static void cli_model_close(void *opaque, int result)
-{
-	struct cli_model_picker *picker = opaque;
-
-	cli_application_panel_complete(picker->application, picker, cli_model_complete, result);
-}
-
 int cli_model_show(struct cli_application *ctx)
 {
 	struct cli_model_picker *picker = calloc(1, sizeof(*picker));
-	static const struct morph_tui_controller_ops ops = {
+	static const struct cli_composer_panel_ops cli_model_ops = {
 		.draw = cli_model_draw,
-		.event = cli_model_event,
-		.disappear = cli_model_disappear,
-		.close = cli_model_close,
+		.update = cli_model_event,
+		.complete = cli_model_complete,
 	};
-	struct morph_tui_controller controller = {
-		.ops = &ops,
-		.data = picker,
-		.input_mode = MORPH_TUI_INPUT_KEYS,
-		.terminal_flags = MORPH_TUI_TERMINAL_SESSION_PASTE,
+	const struct cli_composer_panel_options options = {
+		.max_rows = 10,
+		.max_columns = 58,
 		.tick_ms = 100,
 	};
-	int rc;
-
 	if (!picker)
 		return -ENOMEM;
 	picker->application = ctx;
 	picker->selection = -1;
 	picker->menu.list.flags = MORPH_TUI_WIDGET_LIST_WRAP | MORPH_TUI_WIDGET_LIST_DIGITS;
-	rc = runtime_model_get_ultra(ctx->runtime, &picker->current);
+	int rc = runtime_model_get_ultra(ctx->runtime, &picker->current);
 	if (rc == 0) {
 		struct session session = {0};
 		(void)runtime_session_current(ctx->runtime, &session);
@@ -202,8 +129,7 @@ int cli_model_show(struct cli_application *ctx)
 			(void)utf8_copy_ellipsized_display_width(
 				picker->model, sizeof(picker->model), safe, 48, 0);
 			picker->menu.list.index = (size_t)picker->current;
-			rc = morph_tui_application_present_controller_take(
-				cli_application_tui_borrow(ctx), &controller);
+			rc = cli_composer_panel_show(ctx, &options, &cli_model_ops, picker);
 		}
 	}
 	if (rc != 0)

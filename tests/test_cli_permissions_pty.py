@@ -14,6 +14,7 @@ except ModuleNotFoundError:
     sys.exit(77)
 
 from test_cli_pty import Model, Terminal, terminal_environment
+from cli_inline_test_support import inline_panel
 from test_cli_slash_pty import wait_for, editor_input, command_heading
 from test_cli_resume_pty import AlternateScreen
 import pyte
@@ -68,6 +69,7 @@ def panel(terminal, marker):
     selected = [i for i, row in enumerate(rows) if row.startswith('> ')]
     assert len(selected) == 1, text
     assert terminal.screen.buffer[selected[0]][0].bg == 'blue', text
+    inline_panel(terminal, 'Update Model Permissions', marker, maximum=10)
     return selected[0]
 
 

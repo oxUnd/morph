@@ -181,8 +181,17 @@ def check_feed_replay(driver):
             assert text.count('  └ ') == 5, text
             assert text.count('Running…') == 1, text
             assert 'TIMEOUT' in text and '10.0s' in text, text
-            assert '\x1b[33m●\x1b[0m \x1b[1mExec' in raw, raw
-            assert '\x1b[36m◉\x1b[0m \x1b[1mExec' in raw, raw
+            reference = pyte.Screen(10, 2)
+            pyte.Stream(reference).feed('\x1b[33m●\x1b[0m \x1b[1mExec\r\n'
+                                        '\x1b[0;36m◉\x1b[0m \x1b[1mExec')
+            timeout_row = next(index for index, row in enumerate(screen.display)
+                               if row.startswith('● Exec ') and 'TIMEOUT ·' in row)
+            running_row = next(index for index, row in enumerate(screen.display)
+                               if row.startswith('◉ Exec '))
+            for actual_row, expected_row in ((timeout_row, 0), (running_row, 1)):
+                assert screen.buffer[actual_row][0].fg == reference.buffer[expected_row][0].fg, text
+                assert not screen.buffer[actual_row][0].bold, text
+                assert all(screen.buffer[actual_row][column].bold for column in range(2, 6)), text
             assert '\x1b[2J' not in raw, raw
             assert all(len(row.rstrip()) <= width - 2 for row in screen.display), text
             if width == 100:

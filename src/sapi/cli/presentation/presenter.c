@@ -8,6 +8,7 @@
 #include "config/config.h"
 #include "cJSON.h"
 #include "sapi/cli/presentation/markdown.h"
+#include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/widgets/transcript.h"
@@ -88,93 +89,21 @@ void cli_presentation_command_end(struct cli_application *ctx)
 	putchar(ctx, '\n');
 }
 
-/* Submitted user messages remain ordinary scrollback, separate from tools. */
-static void cli_presenter_user_padding(struct cli_application *ctx)
-{
-	printf(ctx, ANSI_RESET CLI_INPUT_BACKGROUND);
-	(void)fwrite("\033[K", 1, 3, stdout);
-	printf(ctx, ANSI_RESET "\n");
-}
-
-static void cli_presenter_user_row(struct cli_application *ctx, const char *text, size_t length,
-				   int first)
-{
-	int color = cli_output_color_enabled(ctx);
-
-	/* Erase with the active background, without padding scrollback with spaces. */
-	if (color) {
-		printf(ctx, ANSI_RESET CLI_INPUT_BACKGROUND);
-		/* Trusted layout control bypasses the text output sanitizer. */
-		(void)fwrite("\033[K", 1, 3, stdout);
-	}
-	if (first) {
-		if (color)
-			printf(ctx, "%s%s" ANSI_RESET CLI_INPUT_BACKGROUND,
-			       ctx->composer.ultra ? CLI_INPUT_ULTRA_COLOR : CLI_INPUT_MARKER_COLOR,
-			       ctx->composer.ultra ? "›› " : "› ");
-		else
-			printf(ctx, "%s", ctx->composer.ultra ? "›› " : "> ");
-	} else {
-		printf(ctx, "%*s", cli_composer_model_prompt_width(&ctx->composer), "");
-	}
-	printf(ctx, "%.*s", (int)length, text);
-	if (color)
-		printf(ctx, ANSI_RESET);
-	putchar(ctx, '\n');
-}
-
+/* Submitted users share the same stateless layout as child transcripts. */
 void cli_presentation_user_input(struct cli_application *ctx, const char *text)
 {
-	const struct morph_tui_view_options box = {
-		.margin = {.top = 1, .bottom = 1},
-		.padding = {.top = 1, .bottom = 1},
-	};
-	char *safe;
-	char *line;
-	int width = cli_list_columns() - 1;
-	int first = 1;
-
 	if (!ctx || !text || !*text)
 		return;
-	safe = utf8_terminal_sanitize_dup(text, strlen(text), UTF8_TERMINAL_TEXT_MULTILINE, NULL);
-	if (!safe)
-		return;
-	/* Tabs affect terminal cursor position; normalize only the display copy. */
-	for (char *p = safe; *p; p++) {
-		if (*p == '\t')
-			*p = ' ';
-	}
-	if (width < 8)
-		width = 8;
-	/* Share a preceding block's separator, keeping outer margins unpainted. */
-	for (int row = ctx->output.trailing_newlines >= 2 ? 1 : 0; row < box.margin.top; row++)
-		putchar(ctx, '\n');
-	if (cli_output_color_enabled(ctx))
-		for (int row = 0; row < box.padding.top; row++)
-			cli_presenter_user_padding(ctx);
-	line = safe;
-	while (line) {
-		char *newline = strchr(line, '\n');
-		const char *cursor = line;
-
-		if (newline)
-			*newline = '\0';
-		do {
-			const char *end =
-				utf8_advance_display_width_borrow(cursor, (size_t)(width - cli_composer_model_prompt_width(&ctx->composer)));
-
-			cli_presenter_user_row(ctx, cursor, (size_t)(end - cursor), first);
-			first = 0;
-			cursor = end;
-		} while (*cursor);
-		line = newline ? newline + 1 : NULL;
-	}
-	if (cli_output_color_enabled(ctx))
-		for (int row = 0; row < box.padding.bottom; row++)
-			cli_presenter_user_padding(ctx);
-	for (int row = 0; row < box.margin.bottom; row++)
-		putchar(ctx, '\n');
-	free(safe);
+	morph_buf_t document MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	struct cli_message_style style = {
+		.columns = cli_list_columns(),
+		.styled = cli_output_color_enabled(ctx),
+		.ultra = ctx->composer.ultra,
+		.trailing_newlines = ctx->output.trailing_newlines,
+	};
+	if (morph_buf_init(&document, 256) == 0 &&
+	    cli_messages_append(&document, CLI_MESSAGE_USER, text, &style) == 0)
+		printf(ctx, "%s", morph_buf_cstr_borrow(&document));
 }
 
 static void cli_presenter_clear_status(struct cli_application *ctx)
@@ -746,9 +675,16 @@ static void cli_presenter_reasoning_flush(struct cli_application *ctx, int finis
 	if (finish) {
 		cli_presenter_clear_status(ctx);
 		/* Commit one quiet narration line between tool blocks. */
-		printf(ctx, "%s" ANSI_DIM "\033[3m%s" ANSI_RESET "\n",
-		       ctx->output.trailing_newlines < 2 ? "\n" : "",
-		       morph_buf_cstr_borrow(&preview));
+		morph_buf_t document MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		struct cli_message_style style = {
+			.columns = columns, .styled = cli_output_color_enabled(ctx),
+			.trailing_newlines = ctx->output.trailing_newlines,
+			.reasoning_expanded = 1,
+		};
+		if (morph_buf_init(&document, 128) == 0 &&
+		    cli_messages_append(&document, CLI_MESSAGE_REASONING,
+			morph_buf_cstr_borrow(&preview), &style) == 0)
+			printf(ctx, "%s", morph_buf_cstr_borrow(&document));
 	} else if (isatty(STDOUT_FILENO)) {
 		cli_feed_reasoning_set(ctx, morph_buf_cstr_borrow(&preview));
 	}

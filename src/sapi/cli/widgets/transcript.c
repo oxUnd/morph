@@ -1,6 +1,7 @@
 #include "sapi/cli/widgets/transcript.h"
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/presentation/agent_tools.h"
+#include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/presenter.h"
@@ -8,6 +9,8 @@
 #include "sapi/cli/widgets/shell_style.h"
 #include "util/terminal_size.h"
 #include "util/utf8.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 #include "cJSON.h"
 #include <morph/tui/widgets/tree.h>
 #include <errno.h>
@@ -239,16 +242,16 @@ static void cli_transcript_print_inline(struct cli_application *ctx, const char 
 }
 
 /* Compact feed lines share one width budget and never interpret shell text. */
-static void cli_transcript_print_feed_line(struct cli_application *ctx, const char *prefix,
-					   const char *text, const char *color)
+static void cli_transcript_append_feed_line(morph_buf_t *out, const char *prefix,
+					    const char *text, const char *color, int columns,
+					    int styled)
 {
-	if (cli_transcript_columns() < 8)
+	if (columns < 8)
 		return;
-	cli_output_printf(ctx, "%s%s", color, prefix);
-	cli_transcript_print_inline(ctx, text,
-				    cli_transcript_columns() - (int)CLI_CONTENT_RIGHT_PADDING -
-					    (int)utf8_display_width(prefix));
-	cli_output_printf(ctx, ANSI_RESET "\n");
+	(void)morph_buf_printf(out, "%s%s", styled ? color : "", prefix);
+	cli_transcript_append_clipped_text(out, text, columns - (int)CLI_CONTENT_RIGHT_PADDING -
+		(int)utf8_display_width(prefix));
+	(void)morph_buf_printf(out, "%s\n", styled ? ANSI_RESET : "");
 }
 
 #define CLI_TRANSCRIPT_TOOL_PREVIEW_LINES 3
@@ -305,8 +308,9 @@ static void cli_transcript_tool_preview_text(const struct cli_transcript_tool *t
 	}
 }
 
-static void cli_transcript_print_tool_preview(struct cli_application *ctx,
-					      const struct cli_transcript_tool *tool)
+static void cli_transcript_append_tool_preview(morph_buf_t *out,
+					       const struct cli_transcript_tool *tool,
+					       int columns, int styled)
 {
 	cJSON *json = cJSON_Parse(tool->result);
 	const cJSON *data = cJSON_GetObjectItemCaseSensitive(json, "data");
@@ -349,7 +353,8 @@ static void cli_transcript_print_tool_preview(struct cli_application *ctx,
 		if (morph_buf_init(&prefix, 16) != 0)
 			break;
 		morph_tui_widget_tree_prefix(&prefix, NULL, 0, 1, shown != 0, 2);
-		cli_transcript_print_feed_line(ctx, morph_buf_cstr_borrow(&prefix), line, color);
+		cli_transcript_append_feed_line(out, morph_buf_cstr_borrow(&prefix), line, color,
+			columns, styled);
 		morph_buf_cleanup(&prefix);
 		shown++;
 		if (!newline)
@@ -362,12 +367,106 @@ static void cli_transcript_print_tool_preview(struct cli_application *ctx,
 		if (morph_buf_init(&hint, 64) == 0) {
 			(void)morph_buf_printf(&hint, "+ %zu %s (ctrl+o to expand)", total - shown,
 					       total - shown == 1 ? "line" : "lines");
-			cli_transcript_print_feed_line(ctx, "    ", morph_buf_cstr_borrow(&hint),
-						       ANSI_DIM);
+			cli_transcript_append_feed_line(out, "    ", morph_buf_cstr_borrow(&hint),
+						ANSI_DIM, columns, styled);
 			morph_buf_cleanup(&hint);
 		}
 	}
 	free(safe);
+}
+
+static int cli_transcript_append_lines(morph_buf_t *out, const char *text, int columns,
+				       int styled)
+{
+	char *safe MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
+		text, strlen(text), UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+	if (!safe)
+		return -ENOMEM;
+	size_t width = columns > 6 ? (size_t)(columns - 6) : 1u;
+	const char *cursor = safe;
+	int rc = 0;
+	while (*cursor && rc == 0) {
+		const char *newline = strchr(cursor, '\n');
+		const char *end = utf8_advance_display_width_borrow(cursor, width);
+		if (newline && newline < end)
+			end = newline;
+		if (end == cursor && *cursor != '\n')
+			end += utf8_next_codepoint_len(cursor, strnlen(cursor, 4));
+		const char *color = *cursor == '+' ? ANSI_GREEN : *cursor == '-' ? ANSI_RED : ANSI_DIM;
+		rc = morph_buf_printf(out, "    %s%.*s%s\n", styled ? color : "",
+			(int)(end - cursor), cursor, styled ? ANSI_RESET : "");
+		cursor = *end == '\n' ? end + 1 : end;
+	}
+	return rc;
+}
+
+static int cli_transcript_append_value(morph_buf_t *out, const cJSON *value, int depth,
+				       int columns, int styled)
+{
+	if (cJSON_IsString(value))
+		return cli_transcript_append_lines(out, value->valuestring, columns, styled);
+	if (depth < 32 && (cJSON_IsObject(value) || cJSON_IsArray(value))) {
+		const cJSON *child;
+		cJSON_ArrayForEach (child, value) {
+			int rc = child->string ? cli_transcript_append_lines(out, child->string,
+				columns, styled) : 0;
+			if (rc == 0)
+				rc = cli_transcript_append_value(out, child, depth + 1, columns, styled);
+			if (rc != 0)
+				return rc;
+		}
+		return 0;
+	}
+	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_Print(value);
+	return json ? cli_transcript_append_lines(out, json, columns, styled) : -ENOMEM;
+}
+
+static int cli_transcript_append_payload(morph_buf_t *out, const char *text, int columns,
+					 int styled)
+{
+	cJSON *value MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(text);
+	return value ? cli_transcript_append_value(out, value, 0, columns, styled) :
+		cli_transcript_append_lines(out, text, columns, styled);
+}
+
+int cli_transcript_tool_append(morph_buf_t *out, const struct cli_transcript_tool *tool,
+			       int columns, int styled, int details)
+{
+	if (!out || !tool)
+		return -EINVAL;
+	if (!details && cli_agent_tools_analytics_only(tool->name))
+		return 0;
+	morph_buf_t document MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int rc = morph_buf_init(&document, 256);
+	if (rc != 0)
+		return rc;
+	cli_transcript_tool_row(tool, &document, columns, styled);
+	rc = morph_buf_putc(&document, '\n');
+	if (rc == 0 && !details && tool->state)
+		cli_transcript_append_tool_preview(&document, tool, columns, styled);
+	if (rc == 0 && details) {
+		if (*tool->args) {
+			rc = morph_buf_puts(&document, "    Arguments\n");
+			if (rc == 0)
+				rc = cli_transcript_append_payload(&document, tool->args, columns, styled);
+		}
+		if (rc == 0 && tool->stream.len)
+			rc = cli_transcript_append_lines(&document,
+				morph_buf_cstr_borrow(&tool->stream), columns, styled);
+		if (rc == 0 && *tool->result) {
+			rc = morph_buf_puts(&document, "    Result\n");
+			if (rc == 0)
+				rc = cli_transcript_append_payload(&document, tool->result, columns, styled);
+		}
+		if (rc == 0 && *tool->error)
+			rc = cli_transcript_append_lines(&document, tool->error, columns, styled);
+	}
+	if (rc == 0)
+		rc = document.failed;
+	if (rc == 0)
+		rc = cli_messages_append_rendered(out, morph_buf_cstr_borrow(&document), document.len,
+			columns > 1 ? columns - 1 : 1, styled);
+	return rc;
 }
 
 void cli_transcript_render_tool(struct cli_application *ctx, const struct cli_transcript_tool *tool,
@@ -379,12 +478,15 @@ void cli_transcript_render_tool(struct cli_application *ctx, const struct cli_tr
 
 	if (morph_buf_init(&line, 128) != 0)
 		return;
-	cli_transcript_tool_row(tool, &line, cli_transcript_columns(), 1);
+	if (compact)
+		(void)cli_transcript_tool_append(&line, tool, cli_transcript_columns(), 1, 0);
+	else {
+		cli_transcript_tool_row(tool, &line, cli_transcript_columns(), 1);
+		(void)morph_buf_putc(&line, '\n');
+	}
 	int gap = ctx->output.trailing_newlines < 2 ||
 		  (ctx->output.capture && !ctx->output.capture_history);
-	cli_output_printf(ctx, "%s%s\n", gap ? "\n" : "", morph_buf_cstr_borrow(&line));
-	if (compact && tool->state)
-		cli_transcript_print_tool_preview(ctx, tool);
+	cli_output_printf(ctx, "%s%s", gap ? "\n" : "", morph_buf_cstr_borrow(&line));
 	morph_buf_cleanup(&line);
 }
 

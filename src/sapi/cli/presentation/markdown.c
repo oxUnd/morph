@@ -17,6 +17,73 @@
 #define CLI_MARKDOWN_IMAGE_MAX_COLUMNS 48u
 #define CLI_MARKDOWN_IMAGE_MAX_ROWS 12u
 
+static char *cli_markdown_normalized_copy(const char *text)
+{
+	char *safe MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
+		text, strlen(text), UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+	if (!safe)
+		return NULL;
+	char *normalized = agent_ui_normalize_markdown(safe);
+	return normalized ? normalized : morph_charp_steal(&safe);
+}
+
+static void cli_markdown_options(struct morph_md_kitty_options *options, unsigned int indent,
+				  unsigned int initial_column)
+{
+	memset(options, 0, sizeof(*options));
+	options->features = MORPH_MD_FEATURE_GFM;
+	options->content_padding_left_columns = indent;
+	options->content_padding_right_columns = CLI_CONTENT_RIGHT_PADDING;
+	options->initial_cursor_column = initial_column;
+}
+
+static int cli_markdown_document_write(const char *bytes, size_t length, void *opaque)
+{
+	return morph_buf_append(opaque, bytes, length);
+}
+
+static int cli_markdown_document_image(const char *url, char **path, void *opaque)
+{
+	(void)url;
+	(void)opaque;
+	*path = NULL;
+	return -ENOENT;
+}
+
+static void cli_markdown_renderer_cleanup(struct morph_md_kitty **owner)
+{
+	if (owner && *owner) {
+		morph_md_kitty_destroy(*owner);
+		*owner = NULL;
+	}
+}
+
+int cli_markdown_render_document(morph_buf_t *out, const char *text, int columns,
+				 unsigned int indent)
+{
+	if (!out || !text)
+		return -EINVAL;
+	char *normalized MORPH_CLEANUP(morph_charp_cleanup) = cli_markdown_normalized_copy(text);
+	if (!normalized)
+		return -ENOMEM;
+	struct morph_md_kitty_options options;
+	cli_markdown_options(&options, indent, indent);
+	options.write = cli_markdown_document_write;
+	options.user_data = out;
+	options.load_image = cli_markdown_document_image;
+	options.terminal_fd = -1;
+	options.terminal_columns = columns > 0 ? (unsigned int)columns : 1u;
+	options.terminal_rows = 24u;
+	struct morph_md_kitty *renderer MORPH_CLEANUP(cli_markdown_renderer_cleanup) =
+		morph_md_kitty_create(&options);
+	if (!renderer)
+		return -ENOMEM;
+	int rc = morph_md_kitty_append(renderer, normalized, strlen(normalized), 1);
+	if (rc == 0)
+		rc = morph_md_kitty_render(renderer);
+	return rc;
+}
+
 static int cli_markdown_write(const char *bytes, size_t len, void *user)
 {
 	struct cli_markdown_output *output = user;
@@ -100,13 +167,12 @@ static struct morph_md_kitty *cli_markdown_create(struct cli_application *ctx, u
 	const char *font_path;
 
 	output->ctx = ctx;
-	memset(&options, 0, sizeof(options));
+	cli_markdown_options(&options, indent, initial_column);
 	font_path = morph_data_find(output->font_path, sizeof(output->font_path),
 				    "fonts/STIXTwoMath-Regular.ttf") == 0
 			    ? output->font_path
 			    : NULL;
 	options.font_path = font_path;
-	options.features = MORPH_MD_FEATURE_GFM;
 	if (enable_math && cli_output_color_enabled(ctx) &&
 	    cli_markdown_terminal_supports_kitty() && font_path)
 		options.features |= MORPH_MD_FEATURE_MATH;
@@ -122,9 +188,6 @@ static struct morph_md_kitty *cli_markdown_create(struct cli_application *ctx, u
 	options.image_max_height_rows = CLI_MARKDOWN_IMAGE_MAX_ROWS;
 	options.image_caption = 1;
 	options.terminal_fd = STDOUT_FILENO;
-	options.content_padding_left_columns = indent;
-	options.content_padding_right_columns = CLI_CONTENT_RIGHT_PADDING;
-	options.initial_cursor_column = initial_column;
 	return morph_md_kitty_create(&options);
 }
 
@@ -133,18 +196,16 @@ static int cli_markdown_render(struct cli_application *ctx, const char *md, unsi
 {
 	struct cli_markdown_output output = {0};
 	struct morph_md_kitty *renderer;
-	char *safe MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	char *normalized MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	const char *content;
 	int rc;
 
 	if (!md)
 		return 0;
-	safe = utf8_terminal_sanitize_dup(md, strlen(md), UTF8_TERMINAL_TEXT_MULTILINE, NULL);
-	if (!safe)
+	normalized = cli_markdown_normalized_copy(md);
+	if (!normalized)
 		return 0;
-	normalized = agent_ui_normalize_markdown(safe);
-	content = normalized ? normalized : safe;
+	content = normalized;
 	renderer = cli_markdown_create(ctx, indent, initial_column, 1, cb, user, &output, 0);
 	if (!renderer) {
 		log_warn(ctx ? ctx->logger : NULL, "failed to initialize Kitty Markdown renderer");

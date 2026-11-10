@@ -129,12 +129,25 @@ the draft, and stops after 990 ms. Prompt geometry uses its actual display width
 for editing, image labels, wrapped text and terminal resize. Initial state,
 repeated selection and no-color output do not animate.
 
-`/subagents [id|shortname]` opens the independent agent overview and thread
-viewer. `pages/subagents` owns navigation and follow-up input, `models/subagents`
-reduces ordered child events, `widgets/subagents` formats that transcript, and
-`services/agents` enters the runtime facade. Snapshot/live sequence frontiers
-prevent duplicate replay; child events never enter the primary reducer. The
-overview uses lightweight activity snapshots. Enter opens a child, Tab and
-Left/Right switch threads, `f` sends a follow-up and `k` interrupts; Escape
+`widgets/composer_panel` is the reusable presentation for replacing the editable
+composer with local interactions. Its controller owns input handoff, bounded
+height, relative redraw, resize cleanup and dismissal on the root Application's
+existing stack. It preserves the normal screen and history above the panel;
+pages append rows and handle semantic events without terminal cursor control.
+Options set row/column limits and tick frequency. A successful presentation owns
+the callback lifetime through `complete`; failure leaves business data with the
+caller. Trusted renderer rows retain SGR styles while cursor and OSC controls
+are rejected. `/model`, `/permissions` and `/subagents` use this same component.
+
+`/subagents [id|shortname]` opens an inline agent overview and thread viewport
+within the composer area. `pages/subagents` owns navigation and follow-up input,
+`models/subagents` reduces ordered child events, `widgets/subagents` composes
+shared feed messages and tool rows, and `services/agents` enters the runtime
+facade. Snapshot/live sequence frontiers prevent duplicate replay; child events
+never enter the primary reducer. Shared message presentation retains user boxes,
+reasoning, Markdown and code styles rather than displaying role-labelled dumps.
+The overview uses lightweight activity snapshots. Enter opens a child, Tab and
+Left/Right switch threads, `f` sends a follow-up, `k` interrupts, and `d` or
+Ctrl+O toggles tool details inside the same panel. Escape closes details, then
 returns through the overview to the preserved primary draft. `/agents` remains
 the textual inspection command for scripts and quick queries.
