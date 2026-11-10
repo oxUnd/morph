@@ -16,7 +16,6 @@ framework.
 enabled = true
 max_threads = 6
 max_depth = 2
-max_total_tokens = 500000
 multi_agent_mode = "auto"
 ```
 
@@ -58,7 +57,7 @@ structured output.
 Ultra turns append the agent summary to the `Working` row, including before
 delegation: `Agents: 0 running`
 means the model has not spawned an agent. Once work starts, rows show
-short agent labels and current activity such as `Thinking` or `Running exec`,
+canonical agent paths and current activity such as `Thinking` or `Running exec`,
 with one row per active agent and a bounded `+N more` row when necessary.
 Full task prompts appear in `/agents` and expanded turn details. Targeted
 `/agents /root/name` output preserves complete multiline tasks and results,
@@ -155,6 +154,10 @@ injection. Task decomposition and delegation decisions remain model policy.
 
 The primary agent is `/root`. Task names contain lowercase letters, digits, underscores and hyphens. `parser` spawned by `/root` becomes `/root/parser`. Relative targets
 resolve under the sender; canonical paths support communication between branches.
+Children of `/root/b` named `aa` and `bb` become `/root/b/aa` and `/root/b/bb`.
+Names are unique within each parent: `/root/a/aa` and `/root/b/aa` are distinct
+agents. Activity rows, completion receipts, tool rows and the thread viewer retain
+the full path, including `/root`, so the parent is visible.
 Only agents in the same root conversation can communicate. Descendants may spawn
 within the configured depth and thread limits. `max_threads` includes the root and active child executions. Completed identities
 remain addressable without consuming execution capacity. Spawning and resuming an
@@ -251,34 +254,61 @@ Existing checkpoint semantics remain: primary-agent `apply_patch` edits are
 tracked; shell and descendant edits are outside that tracking. Restoration and
 permission changes reject active agents.
 
-## Shared session-tree budget
+## Optional token budget
 
-`agents.max_total_tokens` keeps its existing numeric limit and `0` disables it.
-The allocation now belongs to the root session and all descendant executions,
-including follow-ups and future primary turns. Usage survives restart and session
-import; import merges the larger recorded usage rather than resetting it.
-Creating a new session creates a separate allocation. Accounting is independent
-from billing: units are `(input - cached_input) * budget_input_weight + output *
-budget_output_weight`. Both weights default to 1; unknown cached usage is treated
-as non-cached, and provider omissions use the existing usage estimate.
+Token limiting is off by default. It requires explicit opt-in through the
+[Codex rollout-budget configuration](https://learn.chatgpt.com/docs/config-file/config-reference):
 
-The default warning threshold is 70 percent. At 80 percent (20 percent primary
-reserve), new delegation pauses and child requests cannot consume the remaining
-primary allocation. Existing agents receive attributed `BUDGET_REMINDER` mail,
-which follows the ordinary persisted delivery/history acknowledgment path. The
-primary can use its reserved allocation for integration and final verification.
-Child allocation refusal is local: it does not mark the global budget exhausted
-or cancel the primary. Only the configured global hard limit stops the full tree.
-`budget_enforcement = "warn"` keeps accounting and reminders without stopping.
+```toml
+[features.rollout_budget]
+enabled = true
+limit_tokens = 500000
+reminder_at_remaining_tokens = [150000, 50000]
+prefill_token_weight = 1.0
+sampling_token_weight = 1.0
+```
+
+Enabling requires a positive `limit_tokens` and an explicitly supplied reminder
+array; `[]` disables threshold reminders. Up to 32 remaining-unit thresholds are
+accepted, each positive and below the limit. Order is immaterial; duplicate
+thresholds produce only one reminder. Weights are finite, non-negative numbers,
+including fractional values and zero, and default to 1.0.
+
+The old `agents.max_total_tokens`, `budget_input_weight`, `budget_output_weight`,
+`budget_warning_percent`, `budget_primary_reserve_percent` and
+`budget_enforcement` keys are accepted for old configuration files but ignored
+with a migration log warning. They never implicitly enable a limit. Existing
+sessions whose usage exceeded an old limit can continue with the feature off.
+
+Root and descendants draw from a common allocation. There is no fixed primary
+reserve or automatic 70/80-percent dispatch policy. Crossing a configured
+remaining-budget threshold sends attributed `BUDGET_REMINDER` mail to the root
+and active children without stopping delegation. Actual usage reaching the
+explicit limit stops the tree. Disabling the feature leaves accounting active
+without reminders or token-based stopping.
+
+Morph retains its root-session ledger: the allocation covers the root and all
+descendants, follow-ups and future primary turns. Usage survives restart and
+session import; importing retains the larger raw counters. A new session has an
+independent ledger. This persistence scope is Morph's policy; the public Codex
+configuration reference does not establish identical runtime scope.
+
+Units are `(input - cached_input) * prefill_token_weight + output *
+sampling_token_weight`. Missing cached usage is treated as non-cached input;
+missing provider usage falls back to an estimate. Raw counters persist, and the
+current weights apply to their cumulative total, rounded up once to whole units.
+Changing weights therefore revalues recorded usage. Accounting is independent
+from billing.
 
 Concurrent ReAct requests reserve conservative weighted input plus maximum output
-before dispatch. Requests temporarily blocked by in-flight reservations wait with
-cancellation checks; typed scope cleanup releases reservations on every return.
-Reservations are transient and are not restored after a process restart. Actual
-provider usage can still differ from an estimate, and legacy auxiliary model calls
-are accounted but do not reserve ahead, so an exact financial cap still belongs
-to provider-side spending controls. Budget diagnostics show actual usage, limit,
-primary reserve and estimated next-request cost, replacing stale tool errors.
+before dispatch. If maximum output does not fit, the request lowers its own
+output maximum without changing model configuration. A request whose input plus
+one output token cannot fit is refused locally, without exhausting or cancelling
+the tree. Smaller requests can still run. Temporary in-flight reservations cause
+waiting with cancellation checks, then release on every return. Reservations do
+not survive restart. Provider usage can differ from estimates, and auxiliary
+model calls are accounted without advance reservations, so this is not an exact
+provider spending cap.
 
 ## Persistence and events
 
@@ -403,6 +433,6 @@ and actual patch/shell denial under Full permission.
 live tool activity, independent transcript switching, follow-up, interruption,
 large UTF-8 results and draft preservation at 120, 80 and 60 columns. Runtime
 tests cover child skill/guardrail isolation, cold restoration, actor binding,
-drain admission, weighted budgets/reservations and actual scoped CMake/CTest
+drain admission, opt-in weighted budgets/reservations and actual scoped CMake/CTest
 verification. `multi_agent_task_evaluation` registers the deterministic task runs
 with CTest when Python 3.11 or newer is available.

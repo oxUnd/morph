@@ -12,6 +12,7 @@ struct model_history_item;
 struct cli_transcript_tool {
 	char *id;
 	char *name;
+	char *agent_id;
 	char *args;
 	char *subject;
 	char *result;

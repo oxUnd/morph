@@ -12,6 +12,8 @@ extern "C" {
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/history.h"
+#include "sapi/cli/presentation/agent_tools.h"
+#include "sapi/cli/models/transcript.h"
 #include "sapi/cli/widgets/banner.h"
 #include "sapi/cli/pages/approval.h"
 #include "sapi/cli/widgets/transcript.h"
@@ -24,6 +26,7 @@ extern "C" {
 #include "sapi/cli/widgets/shell_style.h"
 #include "util/utf8.h"
 #include "util/cleanup.h"
+#include "util/json.h"
 #include "util/file.h"
 #include "agent/react.h"
 #include "agent/tool_context.h"
@@ -2799,7 +2802,7 @@ TEST_F(CliPresentationTest, CollaborationUsesSemanticTitlesAndNoGenericRunningBo
 	ASSERT_EQ(morph_buf_init(&line, 128), 0);
 	ASSERT_EQ(morph_buf_init(&body, 128), 0);
 	EXPECT_EQ(cli_transcript_live_text(ctx.transcript, &line, 60, 0), 1);
-	EXPECT_STREQ(morph_buf_cstr_borrow(&line), "• Spawning parser");
+	EXPECT_STREQ(morph_buf_cstr_borrow(&line), "• Spawning /root/parser");
 	EXPECT_EQ(cli_transcript_live_body(ctx.transcript, &body, 60, 0), 0);
 	EXPECT_EQ(body.len, 0u);
 	cJSON *result = cJSON_Parse(R"({"tool":"spawn_agent","tool_call_id":"spawn",
@@ -2808,6 +2811,7 @@ TEST_F(CliPresentationTest, CollaborationUsesSemanticTitlesAndNoGenericRunningBo
 	Emit(MORPH_EVENT_TOOL, "tool.result", "end", result);
 	std::string completed = testing::internal::GetCapturedStdout();
 	EXPECT_NE(completed.find("Spawned"), std::string::npos);
+	EXPECT_NE(completed.find("/root/parser"), std::string::npos);
 	EXPECT_NE(completed.find("Inspect the parser independently."), std::string::npos);
 	EXPECT_EQ(completed.find("agent_id"), std::string::npos);
 	EXPECT_EQ(completed.find("Running…"), std::string::npos);
@@ -2848,7 +2852,7 @@ TEST(CliAgentsPresentationTest, CompactActivityBoundsRowsAndOmitsTaskPrompts)
 		ASSERT_EQ(morph_buf_init(&out, 128), 0);
 		EXPECT_EQ(cli_agents_rows(&out, agents, 4, columns, 3, 0), 4);
 		std::string rendered = morph_buf_cstr_borrow(&out);
-		EXPECT_EQ(rendered.find("/root/"), std::string::npos);
+		EXPECT_NE(rendered.find("/root/worker_0"), std::string::npos);
 		EXPECT_EQ(rendered.find(instruction), std::string::npos);
 		EXPECT_NE(rendered.find("└ +1 more · /agents"), std::string::npos);
 		std::istringstream lines(rendered);
@@ -2856,6 +2860,47 @@ TEST(CliAgentsPresentationTest, CompactActivityBoundsRowsAndOmitsTaskPrompts)
 		while (std::getline(lines, line))
 			EXPECT_LT(utf8_display_width(line.c_str()), static_cast<size_t>(columns));
 		morph_buf_cleanup(&out);
+	}
+}
+
+TEST_F(CliPresentationTest, NestedAgentToolRowsKeepTheParentPath)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	for (const char *operation : {"spawn_agent", "send_message", "followup_task",
+				      "interrupt_agent"}) {
+		SCOPED_TRACE(operation);
+		cJSON *call MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		cJSON_AddStringToObject(call, "tool", operation);
+		cJSON_AddStringToObject(call, "tool_call_id", operation);
+		cJSON_AddStringToObject(call, "agent_id", "/root/b");
+		cJSON *args = cJSON_AddObjectToObject(call, "args");
+		cJSON_AddStringToObject(args, "task_name", "aa");
+		cJSON_AddStringToObject(args, "target", "aa");
+		testing::internal::CaptureStdout();
+		Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
+		(void)testing::internal::GetCapturedStdout();
+		const auto *tool = cli_transcript_model_active_borrow(ctx.transcript);
+		ASSERT_NE(tool, nullptr);
+		morph_buf_t row MORPH_CLEANUP(morph_buf_cleanup) = {};
+		ASSERT_EQ(morph_buf_init(&row, 128), 0);
+		EXPECT_EQ(cli_agent_tools_row(tool, &row, 80, 0), 1);
+		EXPECT_NE(strstr(morph_buf_cstr_borrow(&row), "/root/b/aa"), nullptr);
+	}
+}
+
+TEST(CliAgentsPresentationTest, NestedActivityDistinguishesSameNamesAcrossBranches)
+{
+	struct agent_info agents[2]{};
+	std::strcpy(agents[0].id, "/root/a/aa");
+	std::strcpy(agents[1].id, "/root/b/aa");
+	for (auto &agent : agents)
+		agent.status = AGENT_RUNNING;
+	for (int columns : {120, 80, 60}) {
+		morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {};
+		ASSERT_EQ(morph_buf_init(&out, 128), 0);
+		EXPECT_EQ(cli_agents_rows(&out, agents, 2, columns, 3, 0), 2);
+		EXPECT_NE(strstr(morph_buf_cstr_borrow(&out), "/root/a/aa"), nullptr);
+		EXPECT_NE(strstr(morph_buf_cstr_borrow(&out), "/root/b/aa"), nullptr);
 	}
 }
 

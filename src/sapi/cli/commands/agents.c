@@ -58,11 +58,12 @@ static int cli_agents_command_agents(struct cli_application *ctx, int argc, char
 	if (runtime_agent_budget(ctx->runtime, &budget) == 0 && budget.limit > 0)
 		printf(ctx, "  Shared session budget: %lld / %lld weighted units%s\n", (long long)budget.used,
 		       (long long)budget.limit, budget.exhausted ? " (exhausted)" : "");
-	if (budget.dispatch_paused)
-		printf(ctx, "  Finishing phase: new delegation paused; primary reserve %lld units.\n",
-		       (long long)budget.primary_reserve);
+	if (budget.limit == 0)
+		printf(ctx, "  Shared session usage: %lld weighted units (limit disabled).\n",
+		       (long long)budget.used);
 	if (budget.request_tokens > 0)
-		printf(ctx, "  Next request: up to %lld tokens (input + maximum output).\n",
+		printf(ctx, "  Last refused request: up to %lld weighted units "
+		       "(input + configured maximum output).\n",
 		       (long long)budget.request_tokens);
 	if (!snapshot.count && !id)
 		printf(ctx, "  No agents have been spawned in this session.\n");

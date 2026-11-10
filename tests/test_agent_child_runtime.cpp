@@ -73,7 +73,7 @@ class AgentChildRuntimeTest : public testing::Test
 		config_set_defaults(nullptr, config.get());
 		std::snprintf(config->skill.dir, sizeof(config->skill.dir), "%s/.agents/skills",
 			      directory);
-		config->agents.max_total_tokens = 0;
+		config->agents.rollout_budget.enabled = 0;
 		std::strcpy(config->agents.multi_agent_mode, "proactive");
 		runtime.db = &database;
 		runtime.config = config.get();

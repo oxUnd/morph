@@ -160,13 +160,14 @@ def _eval_budget_state(db, root_id, errors, messages):
             'output_tokens': row['output_tokens'] if row else None,
             'reminder_level': row['reminder_level'] if row else None,
             'limit': None, 'input_weight': None, 'output_weight': None,
-            'warning_percent': None, 'primary_reserve_percent': None,
-            'primary_reserve_units': None, 'policy_source': 'not_persisted',
+            'reminder_at_remaining_tokens': None, 'policy_source': 'not_persisted',
             'classification': 'global_hard_stop_observed' if errors[-272] else
+                              'request_budget_refusal_observed' if errors[-274] else
                               'child_allocation_refusal_observed' if errors[-273] else
                               'accounted_policy_unknown' if row else 'unknown',
             'global_hard_stop_observed': bool(errors[-272]),
             'child_allocation_refusals': errors[-273],
+            'request_budget_refusals': errors[-274],
             'reminder_messages': len(reminders),
             'consumed_reminder_messages': sum(bool(message['consumed']) for message in reminders)}
 
@@ -234,7 +235,7 @@ def read_session(database, root_id=None):
             times.append(row['created_at'])
             payload = _eval_json_object(row['payload_json'])
             outcome = _eval_json_object(payload.get('turn_outcome'))
-            if outcome.get('error_code') in (-272, -273):
+            if outcome.get('error_code') in (-272, -273, -274):
                 budget_errors[outcome['error_code']] += 1
             if row['kind'] in ('assistant_tool_calls', 'assistant_message') and session_id in child_sessions:
                 if row['kind'] == 'assistant_tool_calls' or (
@@ -258,7 +259,7 @@ def read_session(database, root_id=None):
                 error_code = metadata.get('error_code')
                 if isinstance(error_code, int) and error_code < 0:
                     errors[row['tool_name'] or 'unknown'] += 1
-                    if error_code in (-272, -273):
+                    if error_code in (-272, -273, -274):
                         budget_errors[error_code] += 1
                 elif metadata.get('status') != 'completed':
                     unknown_receipts += 1
@@ -456,6 +457,13 @@ def model_delta(body, state):
         return {'tool_calls': [tool_call('apply_patch', patch('src/report.c', old_source('report'), REPORT), 'integrate_report')]}
     if 'exec' not in previous:
         return {'tool_calls': [tool_call('exec', {'command': VERIFY_COMMAND, 'yield_time_ms': 1000}, 'verify_task')]}
+    receipt = next((message for message in reversed(messages) if message.get('role') == 'tool'), {})
+    result = _eval_json_object(receipt.get('content'))
+    data = result.get('data', result)
+    if isinstance(data, dict) and data.get('status') == 'running' and data.get('session_id'):
+        return {'tool_calls': [tool_call('process', {
+            'action': 'wait', 'session_id': data['session_id'], 'wait_ms': 10000,
+        }, 'collect_verify_' + str(len(messages)))]}
     return {'content': 'Integrated math and text implementations. ACCEPTANCE_OK: 12 assertions.'}
 
 
@@ -540,9 +548,14 @@ def make_config(path, model, mode, directory, token_budget):
              'disabled_tools=["config_edit","tool_create","tool_promote","tool_delete",'
              '"tasks","request_permissions","memory","memory_preference"]',
              '[agents]', 'enabled=true', 'max_threads=3', 'max_depth=2',
-             f'max_total_tokens={token_budget}',
              'multi_agent_mode=' + toml_value('proactive' if mode == 'ultra' else 'explicit'),
-             '[model.text]']
+             '[features.rollout_budget]', f'enabled={toml_value(token_budget > 0)}',
+             'reminder_at_remaining_tokens=' + toml_value(
+                 sorted({value for value in (token_budget * 3 // 10, token_budget // 10)
+                         if 0 < value < token_budget}, reverse=True))]
+    if token_budget:
+        lines.append(f'limit_tokens={token_budget}')
+    lines.append('[model.text]')
     lines.extend(key + '=' + toml_value(effective_model[key])
                  for key in allowed if key in effective_model)
     path.write_text('\n'.join(lines) + '\n')
@@ -642,13 +655,13 @@ def run_trial(driver, runner, model, mode, dependency, output_dir, scripted, tim
         task_correctness_basis='trusted_external_verifier')
     budget = metrics.setdefault('budget', {})
     budget.update(limit=token_budget, input_weight=1, output_weight=1,
-                  primary_reserve_percent=20, warning_percent=70, enforcement='hard')
-    budget.update(policy_source='trial_config', primary_reserve_units=token_budget // 5)
+                  reminder_at_remaining_tokens=[token_budget * 3 // 10, token_budget // 10],
+                  enforcement='hard' if token_budget else 'disabled',
+                  policy_source='trial_config')
     used = budget.get('used_weighted_units') or 0
     budget['classification'] = ('unknown' if not budget.get('available') else
                                 'disabled' if not token_budget else
                                 'global_limit_reached' if used >= token_budget else
-                                'primary_reserve_reached' if used >= token_budget * .8 else
                                 'warning' if used >= token_budget * .7 else 'within_allocation')
     result = {'task': 'dependency_contract' if dependency else 'independent_modules',
               'mode': mode, 'backend': 'scripted' if scripted else 'live',

@@ -81,7 +81,7 @@ int cli_agents_event(struct cli_application *ctx, const struct morph_event *even
 		const char *status = cJSON_GetStringValue(
 			cJSON_GetObjectItemCaseSensitive(event->data, "status"));
 		char safe[BUFSIZ];
-		const char *label = id && !strncmp(id, "/root/", 6) ? id + 6 : id ? id : "agent";
+		const char *label = id ? id : "agent";
 		cli_list_compact_text(safe, sizeof(safe), label);
 		const char *action = status && !strcmp(status, "completed")	? "Finished"
 				     : status && !strcmp(status, "interrupted") ? "Interrupted"

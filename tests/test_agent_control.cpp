@@ -17,6 +17,7 @@ extern "C" {
 #include "permission/context.h"
 #include "session.h"
 #include "util/json.h"
+#include "util/signals.h"
 }
 
 #include <arpa/inet.h>
@@ -67,6 +68,8 @@ class AgentControlTest : public testing::Test
 		config.enabled = 1;
 		config.max_threads = 6;
 		config.max_depth = 2;
+		config.rollout_budget.prefill_token_weight = 1.0;
+		config.rollout_budget.sampling_token_weight = 1.0;
 		strcpy(config.multi_agent_mode, "proactive");
 		reopen();
 		runtime.db = &database;
@@ -402,6 +405,52 @@ TEST_F(AgentControlTest, DepthLimitAndSiblingCommunicationUseCanonicalPaths)
 	EXPECT_NE(receive().find("nested finding"), std::string::npos);
 }
 
+TEST_F(AgentControlTest, HierarchicalNamesStayDistinctAcrossParentsAndColdRestore)
+{
+	for (const char *name : {"a", "b"}) {
+		std::string json = std::string("{\"task_name\":\"") + name +
+			"\",\"message\":\"parent task\",\"fork_turns\":\"none\"}";
+		ASSERT_EQ(call("spawn_agent", json.c_str()), 0);
+		agent_control_join(control);
+	}
+	for (const char *parent : {"/root/a", "/root/b"}) {
+		runtime.agent_id = parent;
+		runtime.agent_depth = 1;
+		ASSERT_EQ(call("spawn_agent",
+			       R"({"task_name":"aa","message":"nested task","fork_turns":"none"})"),
+			  0);
+		agent_control_join(control);
+	}
+	ASSERT_EQ(call("spawn_agent",
+		       R"({"task_name":"bb","message":"nested task","fork_turns":"none"})"),
+		  0);
+	agent_control_join(control);
+	ASSERT_EQ(call("send_message", R"({"target":"aa","message":"relative to b"})"), 0);
+	EXPECT_NE(receive("/root/b/aa").find("relative to b"), std::string::npos);
+	EXPECT_EQ(receive("/root/a/aa").find("relative to b"), std::string::npos);
+	ASSERT_EQ(call("send_message",
+		       R"({"target":"/root/a/aa","message":"across branches"})"), 0);
+	EXPECT_NE(receive("/root/a/aa").find("across branches"), std::string::npos);
+	EXPECT_EQ(call("spawn_agent", R"({"task_name":"aa","message":"duplicate"})"), -EEXIST);
+	runtime.agent_id = "/root";
+	runtime.agent_depth = 0;
+	reopen();
+	cJSON *out MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(call("list_agents", R"({"path_prefix":"/root/b"})", &out), 0);
+	const cJSON *agents = cJSON_GetObjectItem(out, "agents");
+	ASSERT_EQ(cJSON_GetArraySize(agents), 3);
+	for (int i = 0; i < 3; i++) {
+		const char *id = cJSON_GetStringValue(
+			cJSON_GetObjectItem(cJSON_GetArrayItem(agents, i), "agent_id"));
+		ASSERT_NE(id, nullptr);
+		EXPECT_EQ(std::string(id).find("/root/b"), 0u);
+	}
+	struct agent_info *detail = nullptr;
+	ASSERT_EQ(agent_control_read_copy(control, "/root/b/bb", &detail), 0);
+	EXPECT_STREQ(detail->agent_name, "/root/b/bb");
+	agent_control_free_list(detail, 1);
+}
+
 TEST_F(AgentControlTest, ModelOverridesAreScopedToIsolatedAgents)
 {
 	ASSERT_EQ(
@@ -594,7 +643,8 @@ TEST_F(AgentControlTest, WaitReturnsForUserSteeringWithoutTimingOut)
 
 TEST_F(AgentControlTest, SharedBudgetAggregatesRootAndDescendantsAndPersistsAcrossTurns)
 {
-	config.max_total_tokens = 100000;
+	config.rollout_budget.enabled = 1;
+	config.rollout_budget.limit_tokens = 100000;
 	reopen();
 	agent_control_begin_turn(control, nullptr);
 	ASSERT_EQ(call("spawn_agent",
@@ -624,7 +674,8 @@ TEST_F(AgentControlTest, SharedBudgetAggregatesRootAndDescendantsAndPersistsAcro
 
 TEST_F(AgentControlTest, BudgetPreflightRejectsUnaffordableRequestsBeforeHttp)
 {
-	config.max_total_tokens = 1;
+	config.rollout_budget.enabled = 1;
+	config.rollout_budget.limit_tokens = 1;
 	reopen();
 	agent_control_begin_turn(control, nullptr);
 	ASSERT_EQ(call("spawn_agent",
@@ -637,7 +688,7 @@ TEST_F(AgentControlTest, BudgetPreflightRejectsUnaffordableRequestsBeforeHttp)
 	ASSERT_EQ(agent_control_list_copy(control, session.id, &agents, &count), 0);
 	ASSERT_EQ(count, 1);
 	EXPECT_EQ(agents[0].status, AGENT_FAILED);
-	EXPECT_EQ(agents[0].error_code, MORPH_ERR_AGENT_BUDGET);
+	EXPECT_EQ(agents[0].error_code, MORPH_ERR_REQUEST_BUDGET);
 	agent_control_free_list(agents, count);
 	agent_control_end_turn(control);
 }
@@ -770,7 +821,8 @@ TEST_F(AgentControlTest, ChildPatchAndShellCannotBypassOwnershipEvenWithFullPerm
 
 TEST_F(AgentControlTest, BudgetFailureReplacesStaleToolErrorWithUsageAndRequestCost)
 {
-	config.max_total_tokens = 1;
+	config.rollout_budget.enabled = 1;
+	config.rollout_budget.limit_tokens = 1;
 	reopen();
 	struct react_context *react = react_context_create(&tools, tokenizer, nullptr, nullptr);
 	ASSERT_NE(react, nullptr);
@@ -791,16 +843,18 @@ TEST_F(AgentControlTest, BudgetFailureReplacesStaleToolErrorWithUsageAndRequestC
 		react);
 	agent_control_begin_turn(control, react);
 	EXPECT_EQ(react_run(react, "Investigate the project", nullptr, nullptr),
-		  MORPH_ERR_TOKEN_BUDGET);
+		  MORPH_ERR_REQUEST_BUDGET);
 	ASSERT_NE(react->last_error_detail, nullptr);
 	EXPECT_NE(strstr(react->last_error_detail, "0 / 1 weighted units used"), nullptr);
 	EXPECT_NE(strstr(react->last_error_detail, "next request needs"), nullptr);
-	EXPECT_NE(strstr(react->last_error_detail, "agents.max_total_tokens"), nullptr);
+	EXPECT_NE(strstr(react->last_error_detail, "features.rollout_budget.limit_tokens"), nullptr);
 	EXPECT_EQ(strstr(react->last_error_detail, "Invalid argument"), nullptr);
 	EXPECT_TRUE(server.snapshot().empty());
 	struct agent_budget budget{};
 	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
 	EXPECT_GT(budget.request_tokens, budget.limit);
+	EXPECT_FALSE(budget.exhausted);
+	EXPECT_FALSE(morph_signal_flag_get(&react->cancelled));
 	agent_control_end_turn(control);
 	react_context_destroy(react);
 }

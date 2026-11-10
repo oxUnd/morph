@@ -76,11 +76,8 @@ struct agent_budget {
 	int64_t input_tokens;
 	int64_t cached_tokens;
 	int64_t output_tokens;
-	int64_t primary_reserve;
 	int64_t reserved;
-	int64_t child_reserved;
 	int reminder_level;
-	int dispatch_paused;
 	int exhausted;
 	int persistence_error;
 };
@@ -92,6 +89,11 @@ int agent_control_budget_check_for(struct agent_control *control, const char *id
 int agent_control_budget_reserve(struct agent_control *control, const char *id,
 				 int64_t input_estimate, int64_t output_maximum,
 				 int64_t *reservation);
+/* Fit a positive output maximum to the remaining allocation. Both outputs are
+ * changed only on success; refusal does not exhaust or cancel the tree. */
+int agent_control_budget_reserve_request(struct agent_control *control, const char *id,
+					 int64_t input_estimate, int *output_maximum,
+					 int64_t *reservation);
 void agent_control_budget_release(struct agent_control *control, int64_t reservation);
 void agent_control_budget_release_for(struct agent_control *control, const char *id,
 				      int64_t reservation);

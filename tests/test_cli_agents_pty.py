@@ -53,9 +53,9 @@ def run(driver, port, columns):
                                 for message in body.get('messages', []) if message['role'] == 'system'))
             primary = next(release for _, release in pair if release is not child)
             wait_for(terminal, lambda: 'Agents: 1 running' in '\n'.join(terminal.screen.display))
-            wait_for(terminal, lambda: any('└ worker' in line for line in terminal.screen.display))
-            active_row = next(line for line in terminal.screen.display if '└ worker' in line)
-            assert '/root/' not in active_row and 'CHILD_ACTIVITY_TASK' not in active_row
+            wait_for(terminal, lambda: any('└ /root/worker' in line for line in terminal.screen.display))
+            active_row = next(line for line in terminal.screen.display if '└ /root/worker' in line)
+            assert 'CHILD_ACTIVITY_TASK' not in active_row
             working = next(line for line in terminal.screen.display if 'Working' in line)
             assert 'Agents: 1 running' in working, '\n'.join(terminal.screen.display)
             assert not any(line.lstrip().startswith('Agents:') for line in terminal.screen.display)
@@ -84,7 +84,7 @@ def run(driver, port, columns):
                     release.set()
                 except queue.Empty:
                     pass
-                if 'Finished worker' in re.sub(r'\x1b\[[0-9;]*m', '', terminal.raw) and 'ROOT_INTEGRATED_RESULT' in terminal.raw:
+                if 'Finished /root/worker' in re.sub(r'\x1b\[[0-9;]*m', '', terminal.raw) and 'ROOT_INTEGRATED_RESULT' in terminal.raw:
                     break
             else:
                 raise AssertionError(terminal.raw[-8000:])

@@ -25,6 +25,7 @@
 #include <string.h>
 #include <time.h>
 #include <stdint.h>
+#include <math.h>
 #include <sys/stat.h>
 
 #define AGENT_PATH_MAX 256
@@ -250,43 +251,52 @@ static int64_t budget_add(int64_t left, int64_t right)
 	return right > INT64_MAX - left ? INT64_MAX : left + right;
 }
 
-static int64_t budget_weight(int64_t tokens, int weight)
+static int64_t budget_round(long double units)
 {
-	int factor = weight > 0 ? weight : 1;
-	return tokens > INT64_MAX / factor ? INT64_MAX : tokens * factor;
+	long double rounded = ceil((double)units);
+	return rounded >= (long double)INT64_MAX ? INT64_MAX : (int64_t)rounded;
+}
+
+static int64_t budget_weight(int64_t tokens, double weight)
+{
+	long double units = (long double)tokens * weight;
+	return budget_round(units);
+}
+
+static void budget_reweight_locked(struct agent_control *control)
+{
+	const struct config_rollout_budget *config = &control->config.rollout_budget;
+	/* Round the cumulative total once so fractional weights do not accumulate
+	 * a rounding charge on every response. Raw counters survive restart. */
+	long double units = (long double)(control->budget.input_tokens -
+		control->budget.cached_tokens) * config->prefill_token_weight +
+		(long double)control->budget.output_tokens * config->sampling_token_weight;
+	control->budget.used = budget_round(units);
 }
 
 static int budget_enforced(const struct agent_control *control)
 {
-	return strcmp(control->config.budget_enforcement, "warn") != 0;
+	return control->config.rollout_budget.enabled;
 }
 
 static void budget_policy_locked(struct agent_control *control)
 {
-	control->budget.limit = control->config.max_total_tokens;
-	control->budget.primary_reserve =
-		control->budget.limit * control->config.budget_primary_reserve_percent / 100;
-	control->budget.dispatch_paused =
-		budget_enforced(control) && control->budget.limit > 0 &&
-		control->budget.used >= control->budget.limit - control->budget.primary_reserve;
-	int previous_exhausted = control->budget.exhausted;
+	control->budget.limit = budget_enforced(control) ?
+		control->config.rollout_budget.limit_tokens : 0;
 	control->budget.exhausted = budget_enforced(control) && control->budget.limit > 0 &&
-		(control->budget.used >= control->budget.limit ||
-		 (control->budget_active && previous_exhausted));
+		control->budget.used >= control->budget.limit;
 }
 
 static int budget_level_locked(const struct agent_control *control)
 {
 	if (control->budget.limit <= 0)
 		return 0;
-	int warning = control->config.budget_warning_percent > 0 ?
-		control->config.budget_warning_percent : 70;
-	if (control->budget.used >= control->budget.limit)
-		return 3;
-	if (control->budget.primary_reserve > 0 &&
-	    control->budget.used >= control->budget.limit - control->budget.primary_reserve)
-		return 2;
-	return control->budget.used >= control->budget.limit * warning / 100 ? 1 : 0;
+	const struct config_rollout_budget *config = &control->config.rollout_budget;
+	int64_t remaining = control->budget.limit - control->budget.used;
+	int level = 0;
+	for (int i = 0; i < config->reminder_count; i++)
+		level += remaining <= config->reminder_at_remaining_tokens[i];
+	return level + (control->budget.used >= control->budget.limit);
 }
 
 static int budget_load_locked(struct agent_control *control)
@@ -315,9 +325,10 @@ static int budget_load_locked(struct agent_control *control)
 	}
 	if (loaded.used < 0 || loaded.input_tokens < 0 || loaded.cached_tokens < 0 ||
 	    loaded.output_tokens < 0 || loaded.cached_tokens > loaded.input_tokens ||
-	    loaded.reminder_level < 0 || loaded.reminder_level > 3)
+	    loaded.reminder_level < 0 || loaded.reminder_level > ROLLOUT_BUDGET_REMINDER_MAX + 1)
 		return MORPH_ERR_FORMAT;
 	control->budget = loaded;
+	budget_reweight_locked(control);
 	budget_policy_locked(control);
 	int current_level = budget_level_locked(control);
 	if (control->budget.reminder_level > current_level)
@@ -362,29 +373,26 @@ static int budget_commit_locked(struct agent_control *control)
 	if (next < previous)
 		next = previous;
 	morph_buf_t reminder MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	if (next > previous) {
+	if (next > previous)
 		rc = morph_buf_init(&reminder, 256);
+	for (int level = previous + 1; rc == 0 && level <= next; level++) {
+		morph_buf_reset(&reminder);
 		if (rc == 0)
 			rc = morph_buf_printf(
 				&reminder,
 				"Shared session-tree budget: %lld / %lld weighted units used. "
-				"Non-cached input weight=%d; output weight=%d. %s",
+				"Remaining: %lld units. Prefill weight=%.6g; sampling weight=%.6g. %s",
 				(long long)control->budget.used, (long long)control->budget.limit,
-				control->config.budget_input_weight > 0
-					? control->config.budget_input_weight
-					: 1,
-				control->config.budget_output_weight > 0
-					? control->config.budget_output_weight
-					: 1,
-				next == 1 ? "Reduce redundant context and prepare concise evidence "
-					    "for integration."
-				: next == 2 ? "Stop new delegation; child agents should hand back "
-					      "findings. Remaining allocation is reserved for "
-					      "primary integration and final verification."
-				: budget_enforced(control)
-					? "The configured hard limit has been reached."
-					: "The configured limit has been reached; warn-only "
-					  "enforcement remains active.");
+				(long long)(control->budget.limit - control->budget.used),
+				control->config.rollout_budget.prefill_token_weight,
+				control->config.rollout_budget.sampling_token_weight,
+				level > control->config.rollout_budget.reminder_count ?
+					"The configured hard limit has been reached." :
+					"A configured remaining-budget threshold was crossed. "
+					"Avoid redundant context and prepare concise findings.");
+		if (rc == 0 && level <= control->config.rollout_budget.reminder_count)
+			rc = morph_buf_printf(&reminder, " Threshold: %d remaining units.",
+				control->config.rollout_budget.reminder_at_remaining_tokens[level - 1]);
 		if (rc == 0)
 			rc = send_mail(control, control->session_id, "/runtime", "/root",
 				       "BUDGET_REMINDER", morph_buf_cstr_borrow(&reminder));
@@ -422,15 +430,12 @@ static void budget_usage(const struct model_usage *usage, void *opaque)
 	if (cached > input)
 		cached = input;
 	int64_t output = usage->output_tokens > 0 ? usage->output_tokens : 0;
-	int64_t units =
-		budget_add(budget_weight(input - cached, control->config.budget_input_weight),
-			   budget_weight(output, control->config.budget_output_weight));
 	pthread_mutex_lock(&control->mutex);
 	if (control->session_id > 0) {
 		control->budget.input_tokens = budget_add(control->budget.input_tokens, input);
 		control->budget.cached_tokens = budget_add(control->budget.cached_tokens, cached);
 		control->budget.output_tokens = budget_add(control->budget.output_tokens, output);
-		control->budget.used = budget_add(control->budget.used, units);
+		budget_reweight_locked(control);
 		budget_policy_locked(control);
 		control->budget.persistence_error = budget_commit_locked(control);
 		if (control->budget.exhausted ||
@@ -511,20 +516,16 @@ int agent_control_budget_check_for(struct agent_control *control, const char *id
 	int rc = control->budget.persistence_error;
 	if (rc == 0 && budget_enforced(control) && control->session_id > 0 &&
 	    control->budget.limit > 0) {
-		int child = id && *id && strcmp(id, "/root");
-		int64_t ceiling =
-			control->budget.limit - (child ? control->budget.primary_reserve : 0);
-		if (child && estimate > ceiling - control->budget.used) {
-			rc = MORPH_ERR_AGENT_BUDGET;
-		} else if (!child && estimate > ceiling - control->budget.used) {
+		if (!control->budget.exhausted && estimate >
+		    control->budget.limit - control->budget.used) {
 			control->budget.request_tokens = estimate;
-			control->budget.exhausted = 1;
-			budget_cancel_locked(control);
+			rc = MORPH_ERR_REQUEST_BUDGET;
 		}
 	}
 	if (rc == 0 && control->budget.exhausted)
 		rc = MORPH_ERR_TOKEN_BUDGET;
 	pthread_mutex_unlock(&control->mutex);
+	(void)id;
 	return rc;
 }
 
@@ -533,9 +534,9 @@ int agent_control_budget_check(struct agent_control *control, int64_t estimate)
 	return agent_control_budget_check_for(control, "/root", estimate);
 }
 
-int agent_control_budget_reserve(struct agent_control *control, const char *id,
-				 int64_t input_estimate, int64_t output_maximum,
-				 int64_t *reservation)
+static int budget_reserve(struct agent_control *control, const char *id,
+			  int64_t input_estimate, int64_t output_maximum, int *fitted_output,
+			  int64_t *reservation)
 {
 	if (!reservation || *reservation || input_estimate < 0 || output_maximum < 0)
 		return -EINVAL;
@@ -544,9 +545,10 @@ int agent_control_budget_reserve(struct agent_control *control, const char *id,
 	const char *actor = id && *id ? id : "/root";
 	pthread_mutex_lock(&control->mutex);
 	int child = strcmp(actor, "/root") != 0;
-	int64_t estimate =
-		budget_add(budget_weight(input_estimate, control->config.budget_input_weight),
-			   budget_weight(output_maximum, control->config.budget_output_weight));
+	int64_t input = budget_weight(input_estimate,
+		control->config.rollout_budget.prefill_token_weight);
+	double output_weight = control->config.rollout_budget.sampling_token_weight;
+	int64_t requested = budget_add(input, budget_weight(output_maximum, output_weight));
 	int rc = 0;
 	while (budget_enforced(control) && control->session_id > 0 && control->budget.limit > 0) {
 		struct controlled_agent *agent =
@@ -561,27 +563,25 @@ int agent_control_budget_reserve(struct agent_control *control, const char *id,
 							       : MORPH_ERR_TOKEN_BUDGET;
 			break;
 		}
-		int64_t ceiling =
-			control->budget.limit - (child ? control->budget.primary_reserve : 0);
-		if (estimate > ceiling - control->budget.used) {
-			if (child) {
-				rc = MORPH_ERR_AGENT_BUDGET;
-			} else {
-				control->budget.request_tokens = estimate;
-				control->budget.exhausted = 1;
-				budget_cancel_locked(control);
-				rc = MORPH_ERR_TOKEN_BUDGET;
-			}
+		int64_t remaining = control->budget.limit - control->budget.used;
+		int64_t output = output_maximum;
+		/* Size against settled usage first. In-flight reservations are temporary
+		 * and must not shrink a waiting request's output allocation. */
+		if (fitted_output && output_weight > 0 && input <= remaining &&
+		    budget_weight(output, output_weight) > remaining - input)
+			output = (int64_t)floor((double)(remaining - input) / output_weight);
+		int64_t estimate = budget_add(input, budget_weight(output, output_weight));
+		if (estimate > remaining || (fitted_output && output == 0)) {
+			control->budget.request_tokens = requested;
+			rc = MORPH_ERR_REQUEST_BUDGET;
 			break;
 		}
-		if (estimate <= control->budget.limit - control->budget.used -
-					control->budget.reserved &&
-		    (!child ||
-		     estimate <= ceiling - control->budget.used - control->budget.child_reserved)) {
+		if (estimate <= remaining - control->budget.reserved) {
 			control->budget.reserved += estimate;
-			if (child)
-				control->budget.child_reserved += estimate;
 			*reservation = estimate;
+			if (fitted_output)
+				*fitted_output = (int)output;
+			control->budget.request_tokens = 0;
 			break;
 		}
 		struct timespec when;
@@ -602,6 +602,23 @@ int agent_control_budget_reserve(struct agent_control *control, const char *id,
 	return rc;
 }
 
+int agent_control_budget_reserve(struct agent_control *control, const char *id,
+				 int64_t input_estimate, int64_t output_maximum,
+				 int64_t *reservation)
+{
+	return budget_reserve(control, id, input_estimate, output_maximum, NULL, reservation);
+}
+
+int agent_control_budget_reserve_request(struct agent_control *control, const char *id,
+					 int64_t input_estimate, int *output_maximum,
+					 int64_t *reservation)
+{
+	if (!output_maximum || *output_maximum <= 0)
+		return -EINVAL;
+	return budget_reserve(control, id, input_estimate, *output_maximum, output_maximum,
+			      reservation);
+}
+
 void agent_control_budget_release_for(struct agent_control *control, const char *id,
 				      int64_t reservation)
 {
@@ -610,13 +627,9 @@ void agent_control_budget_release_for(struct agent_control *control, const char 
 	pthread_mutex_lock(&control->mutex);
 	control->budget.reserved =
 		reservation < control->budget.reserved ? control->budget.reserved - reservation : 0;
-	if (id && *id && strcmp(id, "/root"))
-		control->budget.child_reserved =
-			reservation < control->budget.child_reserved
-				? control->budget.child_reserved - reservation
-				: 0;
 	pthread_cond_broadcast(&control->changed);
 	pthread_mutex_unlock(&control->mutex);
+	(void)id;
 }
 
 void agent_control_budget_release(struct agent_control *control, int64_t reservation)
@@ -630,7 +643,42 @@ static int budget_dispatch_locked(struct agent_control *control)
 		return control->budget.persistence_error;
 	if (control->budget.exhausted)
 		return MORPH_ERR_TOKEN_BUDGET;
-	return control->budget.dispatch_paused ? MORPH_ERR_AGENT_BUDGET : 0;
+	return 0;
+}
+
+static int budget_config_valid(const struct config_rollout_budget *config)
+{
+	if ((config->enabled && config->limit_tokens <= 0) ||
+	    !isfinite(config->prefill_token_weight) || config->prefill_token_weight < 0 ||
+	    !isfinite(config->sampling_token_weight) || config->sampling_token_weight < 0 ||
+	    config->reminder_count < 0 || config->reminder_count > ROLLOUT_BUDGET_REMINDER_MAX)
+		return 0;
+	for (int i = 0; i < config->reminder_count; i++) {
+		int threshold = config->reminder_at_remaining_tokens[i];
+		if (threshold <= 0 || (config->limit_tokens > 0 && threshold >= config->limit_tokens))
+			return 0;
+	}
+	return 1;
+}
+
+static void budget_config_normalize(struct config_rollout_budget *config)
+{
+	int *values = config->reminder_at_remaining_tokens;
+	for (int i = 0; i < config->reminder_count; i++) {
+		for (int j = i + 1; j < config->reminder_count; j++) {
+			if (values[j] > values[i]) {
+				int swap = values[i];
+				values[i] = values[j];
+				values[j] = swap;
+			}
+		}
+	}
+	int count = 0;
+	for (int i = 0; i < config->reminder_count; i++) {
+		if (!count || values[i] != values[count - 1])
+			values[count++] = values[i];
+	}
+	config->reminder_count = count;
 }
 
 struct agent_control *agent_control_create(struct tool_registry *tools, struct model *model,
@@ -639,7 +687,8 @@ struct agent_control *agent_control_create(struct tool_registry *tools, struct m
 					   const struct config_agents *config, struct db *db)
 {
 	if (!tools || !model || !config || !db || !db->handle || config->max_threads < 1 ||
-	    config->max_threads > 64 || config->max_depth < 1)
+	    config->max_threads > 64 || config->max_depth < 1 ||
+	    !budget_config_valid(&config->rollout_budget))
 		return NULL;
 	struct agent_control *control = calloc(1, sizeof(*control));
 	if (!control)
@@ -648,6 +697,7 @@ struct agent_control *agent_control_create(struct tool_registry *tools, struct m
 	control->model = model;
 	control->tokenizer = tokenizer;
 	control->config = *config;
+	budget_config_normalize(&control->config.rollout_budget);
 	control->db = db;
 	if (compress)
 		control->compress = *compress;
@@ -665,7 +715,7 @@ struct agent_control *agent_control_create(struct tool_registry *tools, struct m
 	}
 	control->budget_sink =
 		(struct model_usage_sink){.callback = budget_usage, .user_data = control};
-	control->budget.limit = config->max_total_tokens;
+	budget_policy_locked(control);
 	model->budget_sink = &control->budget_sink;
 	return control;
 }
@@ -2172,20 +2222,15 @@ int agent_control_prompt(struct agent_control *control, const char *id, morph_bu
 		if (control->budget.limit > 0)
 			rc = morph_buf_printf(out,
 				"<token_budget>Shared session tree: %lld / %lld weighted units used. "
-				"Primary integration reserve: %lld. Enforcement: %s. "
-				"%s Treat BUDGET_REMINDER mail as a snapshot; these current values "
+				"Root and descendants draw from the same remaining allocation. "
+				"Treat BUDGET_REMINDER mail as a snapshot; these current values "
 				"take precedence. Avoid redundant context and hand back evidence "
-				"before your child allocation runs out.</token_budget>\n",
-				(long long)control->budget.used, (long long)control->budget.limit,
-				(long long)control->budget.primary_reserve,
-				budget_enforced(control) ? "hard" : "warn only",
-				control->budget.dispatch_paused ? "New delegation is paused." :
-				budget_enforced(control) ? "New delegation pauses at the reserve boundary." :
-				"Warnings do not stop execution.");
+				"before the shared allocation runs out.</token_budget>\n",
+				(long long)control->budget.used, (long long)control->budget.limit);
 		else
 			rc = morph_buf_puts(out,
 				"<token_budget>The shared allocation limit is disabled "
-				"(max_total_tokens=0). Previous budget reminders are historical; "
+				"(features.rollout_budget.enabled=false). Previous budget reminders are historical; "
 				"continue the current task normally.</token_budget>\n");
 	}
 	pthread_mutex_unlock(&control->mutex);

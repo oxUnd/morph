@@ -13,6 +13,7 @@ static void cli_transcript_tool_cleanup(struct cli_transcript_tool *tool)
 {
 	free(tool->id);
 	free(tool->name);
+	free(tool->agent_id);
 	free(tool->args);
 	free(tool->subject);
 	free(tool->result);
@@ -169,6 +170,7 @@ static int cli_transcript_add_tool(struct cli_transcript_model *tr, const cJSON 
 
 	cli_transcript_set_text(tr, &tool->id, cli_transcript_json_string(data, "tool_call_id"));
 	cli_transcript_set_text(tr, &tool->name, cli_transcript_json_string(data, "tool"));
+	cli_transcript_set_text(tr, &tool->agent_id, cli_transcript_json_string(data, "agent_id"));
 	json = args ? cJSON_PrintUnformatted(args) : NULL;
 	cli_transcript_set_text(tr, &tool->args, json ? json : "{}");
 	for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {

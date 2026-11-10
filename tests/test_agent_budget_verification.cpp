@@ -13,9 +13,12 @@ extern "C" {
 #include "session.h"
 #include "util/cleanup.h"
 #include "util/error.h"
+#include "util/json.h"
+#include "util/signals.h"
 }
 
 #include <chrono>
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <filesystem>
@@ -100,8 +103,8 @@ class AgentBudgetVerificationTest : public testing::Test
 
 TEST_F(AgentBudgetVerificationTest, WeightedUsageExcludesCacheAndPersistsAcrossTurnsAndColdRestore)
 {
-	config.agents.budget_input_weight = 2;
-	config.agents.budget_output_weight = 4;
+	config.agents.rollout_budget.prefill_token_weight = 2;
+	config.agents.rollout_budget.sampling_token_weight = 4;
 	Reopen();
 	agent_control_begin_turn(control, nullptr);
 	Usage(100, 80, 10);
@@ -125,21 +128,151 @@ TEST_F(AgentBudgetVerificationTest, WeightedUsageExcludesCacheAndPersistsAcrossT
 	EXPECT_EQ(budget.used, 0);
 }
 
-TEST_F(AgentBudgetVerificationTest, ChildAllocationStopsDispatchWithoutCancellingPrimaryReserve)
+TEST_F(AgentBudgetVerificationTest, DefaultBudgetDoesNotLimitOldHighUsageSessions)
 {
-	config.agents.max_total_tokens = 1000;
+	EXPECT_FALSE(config.agents.rollout_budget.enabled);
+	agent_control_begin_turn(control, nullptr);
+	Usage(800000, 0, 0);
+	agent_control_end_turn(control);
+	Reopen();
+	agent_control_begin_turn(control, nullptr);
+	struct agent_budget budget{};
+	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
+	EXPECT_EQ(budget.used, 800000);
+	EXPECT_EQ(budget.limit, 0);
+	EXPECT_FALSE(budget.exhausted);
+	int output = 65536;
+	int64_t reservation = 0;
+	EXPECT_EQ(agent_control_budget_reserve_request(control, "/root/worker", 100000,
+		&output, &reservation), 0);
+	EXPECT_EQ(output, 65536);
+	EXPECT_EQ(reservation, 0);
+	EXPECT_EQ(agent_control_budget_check(control, 1000000), 0);
+	ASSERT_EQ(Call("spawn_agent", R"({"task_name":"resume","message":"Continue normally"})"), 0);
+	agent_control_join(control);
+	EXPECT_EQ(server.snapshot().size(), 1u);
+	agent_control_end_turn(control);
+}
+
+TEST_F(AgentBudgetVerificationTest, CustomRemindersAreOrderedDeduplicatedAndPersisted)
+{
+	config.agents.rollout_budget.enabled = 1;
+	config.agents.rollout_budget.limit_tokens = 1000;
+	config.agents.rollout_budget.reminder_count = 4;
+	int thresholds[] = {100, 600, 300, 600};
+	std::copy(std::begin(thresholds), std::end(thresholds),
+		config.agents.rollout_budget.reminder_at_remaining_tokens);
+	Reopen();
+	agent_control_begin_turn(control, nullptr);
+	Usage(950, 0, 0);
+	struct agent_budget budget{};
+	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
+	EXPECT_EQ(budget.reminder_level, 3);
+	EXPECT_FALSE(budget.exhausted);
+	EXPECT_EQ(agent_control_budget_check_for(control, "/root/child", 50), 0);
+	char *mail MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	int64_t cursor = 0;
+	ASSERT_EQ(agent_control_receive(control, "/root", session.id, &mail, &cursor), 0);
+	ASSERT_NE(mail, nullptr);
+	const char *first = strstr(mail, "Threshold: 600");
+	const char *second = strstr(mail, "Threshold: 300");
+	const char *third = strstr(mail, "Threshold: 100");
+	ASSERT_NE(first, nullptr);
+	ASSERT_NE(second, nullptr);
+	ASSERT_NE(third, nullptr);
+	EXPECT_LT(first, second);
+	EXPECT_LT(second, third);
+	EXPECT_EQ(strstr(first + 1, "Threshold: 600"), nullptr);
+	ASSERT_EQ(agent_control_ack(control, "/root", session.id, cursor, &database), 0);
+	morph_charp_cleanup(&mail);
+	agent_control_end_turn(control);
+	Reopen();
+	agent_control_begin_turn(control, nullptr);
+	Usage(1, 0, 0);
+	ASSERT_EQ(agent_control_receive(control, "/root", session.id, &mail, &cursor), 0);
+	EXPECT_EQ(mail, nullptr);
+	agent_control_end_turn(control);
+}
+
+TEST_F(AgentBudgetVerificationTest, FractionalWeightsRoundTheCumulativeTotalAcrossRestart)
+{
+	config.agents.rollout_budget.prefill_token_weight = 0.25;
+	config.agents.rollout_budget.sampling_token_weight = 0.5;
+	Reopen();
+	agent_control_begin_turn(control, nullptr);
+	for (int i = 0; i < 4; i++)
+		Usage(1, 0, 0);
+	Usage(0, 0, 2);
+	agent_control_end_turn(control);
+	Reopen();
+	struct agent_budget budget{};
+	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
+	EXPECT_EQ(budget.used, 2);
+}
+
+TEST_F(AgentBudgetVerificationTest, DecimalWeightsDoNotAccumulateRoundingCharges)
+{
+	config.agents.rollout_budget.prefill_token_weight = 0.1;
+	Reopen();
+	agent_control_begin_turn(control, nullptr);
+	for (int i = 0; i < 10; i++)
+		Usage(1, 0, 0);
+	struct agent_budget budget{};
+	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
+	EXPECT_EQ(budget.used, 1);
+	agent_control_end_turn(control);
+	Reopen();
+	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
+	EXPECT_EQ(budget.used, 1);
+}
+
+TEST_F(AgentBudgetVerificationTest, ZeroWeightsDoNotChargeOrReserveThatTokenClass)
+{
+	config.agents.rollout_budget.enabled = 1;
+	config.agents.rollout_budget.limit_tokens = 1000;
+	config.agents.rollout_budget.prefill_token_weight = 0.0;
+	Reopen();
+	agent_control_begin_turn(control, nullptr);
+	Usage(1000000, 0, 10);
+	struct agent_budget budget{};
+	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
+	EXPECT_EQ(budget.used, 10);
+	int output = 1000;
+	int64_t reservation = 0;
+	ASSERT_EQ(agent_control_budget_reserve_request(control, "/root", 1000000,
+		&output, &reservation), 0);
+	EXPECT_EQ(output, 990);
+	EXPECT_EQ(reservation, 990);
+	agent_control_budget_release(control, reservation);
+	agent_control_end_turn(control);
+	config.agents.rollout_budget.sampling_token_weight = 0.0;
+	Reopen();
+	agent_control_begin_turn(control, nullptr);
+	output = 1000000;
+	reservation = 0;
+	ASSERT_EQ(agent_control_budget_reserve_request(control, "/root", 1000000,
+		&output, &reservation), 0);
+	EXPECT_EQ(output, 1000000);
+	EXPECT_EQ(reservation, 0);
+	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
+	EXPECT_EQ(budget.used, 0);
+	agent_control_end_turn(control);
+}
+
+TEST_F(AgentBudgetVerificationTest, RootAndChildrenUseTheSameRemainingAllocation)
+{
+	config.agents.rollout_budget.enabled = 1;
+	config.agents.rollout_budget.limit_tokens = 1000;
 	Reopen();
 	agent_control_begin_turn(control, nullptr);
 	Usage(800, 0, 0);
 	struct agent_budget budget{};
 	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
-	EXPECT_TRUE(budget.dispatch_paused);
 	EXPECT_FALSE(budget.exhausted);
-	EXPECT_EQ(budget.primary_reserve, 200);
 	EXPECT_EQ(Call("spawn_agent", R"({"task_name":"extra","message":"more work"})"),
-		  MORPH_ERR_AGENT_BUDGET);
-	EXPECT_EQ(agent_control_budget_check_for(control, "/root/worker", 1),
-		  MORPH_ERR_AGENT_BUDGET);
+		  0);
+	agent_control_join(control);
+	EXPECT_EQ(agent_control_budget_check_for(control, "/root/worker", 200), 0);
 	EXPECT_EQ(agent_control_budget_check_for(control, "/root", 200), 0);
 	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
 	EXPECT_FALSE(budget.exhausted);
@@ -148,9 +281,10 @@ TEST_F(AgentBudgetVerificationTest, ChildAllocationStopsDispatchWithoutCancellin
 	agent_control_end_turn(control);
 }
 
-TEST_F(AgentBudgetVerificationTest, InflightReservationsWaitAndReleaseWithoutStealingPrimaryPool)
+TEST_F(AgentBudgetVerificationTest, InflightReservationsSerializeRootAndChildren)
 {
-	config.agents.max_total_tokens = 1000;
+	config.agents.rollout_budget.enabled = 1;
+	config.agents.rollout_budget.limit_tokens = 1000;
 	Reopen();
 	agent_control_begin_turn(control, nullptr);
 	int64_t primary = 0;
@@ -170,13 +304,175 @@ TEST_F(AgentBudgetVerificationTest, InflightReservationsWaitAndReleaseWithoutSte
 	struct agent_budget budget{};
 	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
 	EXPECT_EQ(budget.reserved, 0);
-	EXPECT_EQ(budget.child_reserved, 0);
 	agent_control_end_turn(control);
+}
+
+TEST_F(AgentBudgetVerificationTest, RemainingBudgetFitsOutputInsteadOfExhaustingTheTree)
+{
+	config.agents.rollout_budget.enabled = 1;
+	config.agents.rollout_budget.limit_tokens = 500000;
+	Reopen();
+	agent_control_begin_turn(control, nullptr);
+	Usage(396301, 0, 0);
+	int output = 16384;
+	int64_t reservation = 0;
+	ASSERT_EQ(agent_control_budget_reserve_request(control, "/root", 100557, &output,
+						       &reservation), 0);
+	EXPECT_EQ(output, 3142);
+	EXPECT_EQ(reservation, 103699);
+	struct agent_budget budget{};
+	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
+	EXPECT_EQ(budget.used, 396301);
+	EXPECT_FALSE(budget.exhausted);
+	agent_control_budget_release(control, reservation);
+	Usage(103699, 0, 0);
+	EXPECT_EQ(agent_control_budget_check(control, 0), MORPH_ERR_TOKEN_BUDGET);
+	agent_control_end_turn(control);
+}
+
+TEST_F(AgentBudgetVerificationTest, OversizedRequestDoesNotCancelOrPoisonSmallerRequests)
+{
+	config.agents.rollout_budget.enabled = 1;
+	config.agents.rollout_budget.limit_tokens = 1000;
+	Reopen();
+	struct react_context *react = react_context_create(&tools, tokenizer, nullptr, nullptr);
+	ASSERT_NE(react, nullptr);
+	agent_control_begin_turn(control, react);
+	Usage(800, 0, 0);
+	int output = 64;
+	int64_t reservation = 0;
+	EXPECT_EQ(agent_control_budget_reserve_request(control, "/root", 200, &output,
+						       &reservation), MORPH_ERR_REQUEST_BUDGET);
+	EXPECT_EQ(output, 64);
+	EXPECT_EQ(reservation, 0);
+	EXPECT_EQ(agent_control_budget_check(control, 201), MORPH_ERR_REQUEST_BUDGET);
+	EXPECT_EQ(agent_control_budget_check(control, 0), 0);
+	EXPECT_FALSE(morph_signal_flag_get(&react->cancelled));
+	ASSERT_EQ(agent_control_budget_reserve_request(control, "/root", 100, &output,
+						       &reservation), 0);
+	EXPECT_EQ(output, 64);
+	agent_control_budget_release(control, reservation);
+	struct agent_budget budget{};
+	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
+	EXPECT_FALSE(budget.exhausted);
+	EXPECT_EQ(budget.request_tokens, 0);
+	agent_control_end_turn(control);
+	react_context_destroy(react);
+}
+
+TEST_F(AgentBudgetVerificationTest, FittedOutputHonorsWeightsEquallyForRootAndChildren)
+{
+	config.agents.rollout_budget.enabled = 1;
+	config.agents.rollout_budget.limit_tokens = 1000;
+	config.agents.rollout_budget.prefill_token_weight = 2;
+	config.agents.rollout_budget.sampling_token_weight = 4;
+	Reopen();
+	agent_control_begin_turn(control, nullptr);
+	Usage(300, 0, 0);
+	int output = 100;
+	int64_t reservation = 0;
+	ASSERT_EQ(agent_control_budget_reserve_request(control, "/root/worker", 50, &output,
+						       &reservation), 0);
+	EXPECT_EQ(output, 75);
+	EXPECT_EQ(reservation, 400);
+	agent_control_budget_release_for(control, "/root/worker", reservation);
+	Usage(99, 0, 0);
+	output = 100;
+	reservation = 0;
+	ASSERT_EQ(agent_control_budget_reserve_request(control, "/root/worker", 0, &output,
+						       &reservation), 0);
+	EXPECT_EQ(output, 50);
+	agent_control_budget_release_for(control, "/root/worker", reservation);
+	reservation = 0;
+	output = 100;
+	ASSERT_EQ(agent_control_budget_reserve_request(control, "/root", 0, &output,
+						       &reservation), 0);
+	EXPECT_EQ(output, 50);
+	agent_control_budget_release(control, reservation);
+	agent_control_end_turn(control);
+}
+
+TEST_F(AgentBudgetVerificationTest, FittedRequestWaitsForReservationsAndRechecksSettledUsage)
+{
+	config.agents.rollout_budget.enabled = 1;
+	config.agents.rollout_budget.limit_tokens = 1000;
+	Reopen();
+	agent_control_begin_turn(control, nullptr);
+	int64_t held = 0;
+	ASSERT_EQ(agent_control_budget_reserve(control, "/root", 800, 0, &held), 0);
+	auto next = std::async(std::launch::async, [&] {
+		int output = 1000;
+		int64_t reservation = 0;
+		int rc = agent_control_budget_reserve_request(control, "/root", 100, &output,
+							       &reservation);
+		EXPECT_EQ(reservation, 900);
+		agent_control_budget_release(control, reservation);
+		return std::make_pair(rc, output);
+	});
+	EXPECT_EQ(next.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
+	Usage(100, 0, 0);
+	agent_control_budget_release(control, held);
+	auto result = next.get();
+	EXPECT_EQ(result.first, 0);
+	EXPECT_EQ(result.second, 800);
+	agent_control_end_turn(control);
+}
+
+TEST_F(AgentBudgetVerificationTest, DisabledLimitPreservesConfiguredOutput)
+{
+	for (int limit : {0, 100}) {
+		config.agents.rollout_budget.limit_tokens = limit;
+		config.agents.rollout_budget.enabled = 0;
+		Reopen();
+		agent_control_begin_turn(control, nullptr);
+		int output = 1000;
+		int64_t reservation = 0;
+		ASSERT_EQ(agent_control_budget_reserve_request(control, "/root", 500, &output,
+							       &reservation), 0);
+		EXPECT_EQ(output, 1000);
+		EXPECT_EQ(reservation, 0);
+		agent_control_end_turn(control);
+	}
+}
+
+TEST_F(AgentBudgetVerificationTest, FittedOutputIsSentToProviderWithoutChangingModelConfiguration)
+{
+	config.agents.rollout_budget.enabled = 1;
+	config.agents.rollout_budget.limit_tokens = 500000;
+	model->max_tokens = 120000;
+	model->context_limit = 256000;
+	Reopen();
+	struct react_context *react = react_context_create(&tools, tokenizer, nullptr, nullptr);
+	ASSERT_NE(react, nullptr);
+	react->compress.max_context_tokens = 256000;
+	react->compress.max_history_rounds = 10;
+	react->llm_model = model;
+	react->agents = control;
+	react->max_iterations = 3;
+	react_set_tool_runtime_context(react, &runtime);
+	agent_control_begin_turn(control, react);
+	Usage(396301, 0, 0);
+	EXPECT_EQ(react_run(react, "Integrate the findings", nullptr, nullptr), 0);
+	auto requests = server.snapshot();
+	ASSERT_FALSE(requests.empty());
+	cJSON *body MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(requests.front().c_str());
+	int output = static_cast<int>(cJSON_GetNumberValue(cJSON_GetObjectItem(body, "max_tokens")));
+	EXPECT_GT(output, 0);
+	EXPECT_LT(output, 103699);
+	EXPECT_EQ(model->max_tokens, 120000);
+	struct agent_budget budget{};
+	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
+	EXPECT_EQ(budget.used, 396318);
+	EXPECT_EQ(budget.reserved, 0);
+	EXPECT_FALSE(budget.exhausted);
+	agent_control_end_turn(control);
+	react_context_destroy(react);
 }
 
 TEST_F(AgentBudgetVerificationTest, ReservationWaitObservesCancellation)
 {
-	config.agents.max_total_tokens = 1000;
+	config.agents.rollout_budget.enabled = 1;
+	config.agents.rollout_budget.limit_tokens = 1000;
 	Reopen();
 	struct react_context *react = react_context_create(&tools, tokenizer, nullptr, nullptr);
 	ASSERT_NE(react, nullptr);
@@ -197,7 +493,8 @@ TEST_F(AgentBudgetVerificationTest, ReservationWaitObservesCancellation)
 
 TEST_F(AgentBudgetVerificationTest, RebindingActiveSessionPreservesInflightReservations)
 {
-	config.agents.max_total_tokens = 1000;
+	config.agents.rollout_budget.enabled = 1;
+	config.agents.rollout_budget.limit_tokens = 1000;
 	Reopen();
 	agent_control_begin_turn(control, nullptr);
 	int64_t reservation = 0;
@@ -216,10 +513,11 @@ TEST_F(AgentBudgetVerificationTest, RebindingActiveSessionPreservesInflightReser
 	EXPECT_EQ(budget.reserved, 0);
 }
 
-TEST_F(AgentBudgetVerificationTest, WarnOnlyLimitAccountsAndRemindsWithoutStopping)
+TEST_F(AgentBudgetVerificationTest, DisabledLimitAccountsWithoutRemindingOrStopping)
 {
-	config.agents.max_total_tokens = 100;
-	std::strcpy(config.agents.budget_enforcement, "warn");
+	config.agents.rollout_budget.enabled = 1;
+	config.agents.rollout_budget.limit_tokens = 100;
+	config.agents.rollout_budget.enabled = 0;
 	Reopen();
 	agent_control_begin_turn(control, nullptr);
 	Usage(500, 0, 0);
@@ -228,20 +526,20 @@ TEST_F(AgentBudgetVerificationTest, WarnOnlyLimitAccountsAndRemindsWithoutStoppi
 	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
 	EXPECT_EQ(budget.used, 500);
 	EXPECT_FALSE(budget.exhausted);
-	EXPECT_FALSE(budget.dispatch_paused);
-	EXPECT_EQ(budget.reminder_level, 3);
+	EXPECT_EQ(budget.reminder_level, 0);
 	agent_control_end_turn(control);
 }
 
-TEST_F(AgentBudgetVerificationTest, ReservedPrimaryAllocationKeepsLateFollowupQueued)
+TEST_F(AgentBudgetVerificationTest, ExhaustedAllocationKeepsLateFollowupQueued)
 {
-	config.agents.max_total_tokens = 100000;
+	config.agents.rollout_budget.enabled = 1;
+	config.agents.rollout_budget.limit_tokens = 100000;
 	Reopen();
 	struct Observer {
 		std::function<int()> queue;
 		std::atomic<bool> followed{false};
 	} observer{[this] {
-		Usage(80000, 0, 0);
+		Usage(100000, 0, 0);
 		return Call("followup_task",
 			    R"({"target":"reader","message":"budget-queued-followup"})");
 	}};
@@ -271,14 +569,14 @@ TEST_F(AgentBudgetVerificationTest, ReservedPrimaryAllocationKeepsLateFollowupQu
 	EXPECT_EQ(server.snapshot().size(), 1u);
 	struct agent_budget budget{};
 	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
-	EXPECT_TRUE(budget.dispatch_paused);
-	EXPECT_FALSE(budget.exhausted);
+	EXPECT_TRUE(budget.exhausted);
 	char *mail MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
 	int64_t cursor = 0;
 	ASSERT_EQ(agent_control_receive(control, "/root/reader", session.id, &mail, &cursor), 0);
 	ASSERT_NE(mail, nullptr);
 	EXPECT_NE(std::strstr(mail, "budget-queued-followup"), nullptr);
-	config.agents.max_total_tokens = 200000;
+	config.agents.rollout_budget.enabled = 1;
+	config.agents.rollout_budget.limit_tokens = 200000;
 	Reopen();
 	ASSERT_EQ(Call("followup_task",
 		       R"({"target":"reader","message":"resume after budget update"})"),
@@ -290,7 +588,10 @@ TEST_F(AgentBudgetVerificationTest, ReservedPrimaryAllocationKeepsLateFollowupQu
 
 TEST_F(AgentBudgetVerificationTest, ReminderIsAckedOnlyAfterEnteringModelHistory)
 {
-	config.agents.max_total_tokens = 100000;
+	config.agents.rollout_budget.enabled = 1;
+	config.agents.rollout_budget.limit_tokens = 100000;
+	config.agents.rollout_budget.reminder_count = 1;
+	config.agents.rollout_budget.reminder_at_remaining_tokens[0] = 30000;
 	Reopen();
 	struct react_context *react = react_context_create(&tools, tokenizer, nullptr, nullptr);
 	ASSERT_NE(react, nullptr);

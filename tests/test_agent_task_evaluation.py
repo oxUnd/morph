@@ -40,7 +40,10 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(config['model']['text']['max_tokens'], 65536)
             self.assertEqual(config['model']['text']['extra_body_json'], profile['extra_body_json'])
             self.assertEqual(effective['context_limit'], 1048576)
-            self.assertEqual(config['agents']['max_total_tokens'], 500000)
+            budget = config['features']['rollout_budget']
+            self.assertTrue(budget['enabled'])
+            self.assertEqual(budget['limit_tokens'], 500000)
+            self.assertEqual(budget['reminder_at_remaining_tokens'], [150000, 50000])
 
     def test_trusted_verifier_rejects_ndebug_false_success(self):
         with tempfile.TemporaryDirectory() as temp:

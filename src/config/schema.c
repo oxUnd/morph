@@ -7,6 +7,7 @@
 #include "cJSON.h"
 
 #include <errno.h>
+#include <float.h>
 #include <limits.h>
 #include <math.h>
 #include <stdarg.h>
@@ -43,6 +44,7 @@ struct schema_entry {
 	{ (p), TOML_FP64, TOML_UNKNOWN, SCHEMA_NUMBER | SCHEMA_RANGE, \
 	  0, 0, (lo), (hi), NULL }
 #define STRINGS(p, count, len) { (p), TOML_ARRAY, TOML_STRING, 0, (len), (count), 0, 0, NULL }
+#define INTEGERS(p, count) { (p), TOML_ARRAY, TOML_INT64, 0, 0, (count), 0, 0, NULL }
 #define TABLES(p, count) { (p), TOML_ARRAY, TOML_TABLE, 0, 0, (count), 0, 0, NULL }
 #define DYNAMIC(p, count, len) \
 	{ (p), TOML_TABLE, TOML_UNKNOWN, SCHEMA_DYNAMIC_STRINGS, \
@@ -77,6 +79,12 @@ struct schema_entry {
 static const struct schema_entry schema[] = {
 	TABLE("features"),
 	BOOL("features.hooks"),
+	TABLE("features.rollout_budget"),
+	BOOL("features.rollout_budget.enabled"),
+	INT("features.rollout_budget.limit_tokens", 1, INT_MAX),
+	INTEGERS("features.rollout_budget.reminder_at_remaining_tokens", ROLLOUT_BUDGET_REMINDER_MAX),
+	NUMBER("features.rollout_budget.prefill_token_weight", 0, DBL_MAX),
+	NUMBER("features.rollout_budget.sampling_token_weight", 0, DBL_MAX),
 	TABLE("hooks"),
 	HOOK_EVENT("SessionStart"),
 	HOOK_EVENT("SessionEnd"),
@@ -689,6 +697,34 @@ static int validate_model_extra_body(const toml_datum_t *model,
 	return 0;
 }
 
+static int validate_rollout_budget(const toml_datum_t *root,
+				   struct config_validation_error *error)
+{
+	const toml_datum_t *budget = table_get(table_get(root, "features"), "rollout_budget");
+	const toml_datum_t *enabled = table_get(budget, "enabled");
+	const toml_datum_t *limit = table_get(budget, "limit_tokens");
+	const toml_datum_t *reminders = table_get(budget, "reminder_at_remaining_tokens");
+	if (enabled && enabled->u.boolean && !limit)
+		return set_error(error, CONFIG_VALIDATION_REQUIRED, budget,
+			"features.rollout_budget.limit_tokens",
+			"limit_tokens is required when rollout budget is enabled");
+	if (enabled && enabled->u.boolean && !reminders)
+		return set_error(error, CONFIG_VALIDATION_REQUIRED, budget,
+			"features.rollout_budget.reminder_at_remaining_tokens",
+			"reminder_at_remaining_tokens is required when rollout budget is enabled");
+	if (reminders) {
+		for (int i = 0; i < reminders->u.arr.size; i++) {
+			const toml_datum_t *value = &reminders->u.arr.elem[i];
+			if (value->u.int64 <= 0 || value->u.int64 > INT_MAX ||
+			    (limit && value->u.int64 >= limit->u.int64))
+				return set_error(error, CONFIG_VALIDATION_RANGE, value,
+					"features.rollout_budget.reminder_at_remaining_tokens",
+					"reminders must be positive integers below limit_tokens");
+		}
+	}
+	return 0;
+}
+
 static int validate_relations(const toml_datum_t *root,
 			      struct config_validation_error *error)
 {
@@ -714,6 +750,9 @@ static int validate_relations(const toml_datum_t *root,
 	int64_t inline_limit = 32768;
 	int64_t session_limit = 1048576;
 	int rc;
+	rc = validate_rollout_budget(root, error);
+	if (rc != 0)
+		return rc;
 
 	const toml_datum_t *legacy_agents = table_get(table_get(root, "agent"), "sub_agents");
 	if (legacy_agents)

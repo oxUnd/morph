@@ -29,11 +29,6 @@ static const char *cli_agent_tools_string(const cJSON *object, const char *key)
 	return value ? value : "";
 }
 
-static const char *cli_agent_tools_label(const char *id)
-{
-	return !strncmp(id, "/root/", 6) ? id + 6 : id;
-}
-
 static void cli_agent_tools_clip(morph_buf_t *out, const char *text, int columns)
 {
 	char *safe MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
@@ -52,6 +47,12 @@ int cli_agent_tools_row(const struct cli_transcript_tool *tool, morph_buf_t *out
 	if (!cli_agent_tools_matches(tool->name))
 		return 0;
 	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(tool->args);
+	cJSON *result MORPH_CLEANUP(morph_json_cleanup) =
+		tool->result ? cJSON_Parse(tool->result) : NULL;
+	const cJSON *data = cJSON_GetObjectItemCaseSensitive(result, "data");
+	if (!cJSON_IsObject(data))
+		data = result;
+	morph_buf_t path MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int running = cli_transcript_tool_is_running(tool);
 	int failed = tool->state < 0;
 	const char *verb = "";
@@ -59,28 +60,35 @@ int cli_agent_tools_row(const struct cli_transcript_tool *tool, morph_buf_t *out
 	if (!strcmp(tool->name, "spawn_agent")) {
 		verb = failed ? "Failed to spawn" : running ? "Spawning" : "Spawned";
 		name = cli_agent_tools_string(args, "task_name");
+		const char *id = cli_agent_tools_string(data, "agent_id");
+		if (*id)
+			name = id;
 	} else if (!strcmp(tool->name, "followup_task")) {
 		verb = failed	 ? "Task assignment failed for"
 		       : running ? "Assigning task to"
 				 : "Assigned task to";
-		name = cli_agent_tools_label(cli_agent_tools_string(args, "target"));
+		name = cli_agent_tools_string(args, "target");
 	} else if (!strcmp(tool->name, "send_message")) {
 		verb = failed	 ? "Message failed for"
 		       : running ? "Sending message to"
 				 : "Sent message to";
-		name = cli_agent_tools_label(cli_agent_tools_string(args, "target"));
+		name = cli_agent_tools_string(args, "target");
 	} else if (!strcmp(tool->name, "wait_agent")) {
 		verb = failed	 ? "Agent wait failed"
 		       : running ? "Waiting for agents"
 				 : "Finished waiting";
 	} else if (!strcmp(tool->name, "interrupt_agent")) {
 		verb = failed ? "Failed to interrupt" : running ? "Interrupting" : "Interrupted";
-		name = cli_agent_tools_label(cli_agent_tools_string(args, "target"));
+		name = cli_agent_tools_string(args, "target");
 	} else {
 		verb = failed	 ? "Agent lookup failed"
 		       : running ? "Checking agents"
 				 : "Listed agents";
 	}
+	if (*name && *name != '/' && morph_buf_init(&path, 64) == 0 &&
+	    morph_buf_printf(&path, "%s/%s",
+		tool->agent_id && *tool->agent_id ? tool->agent_id : "/root", name) == 0)
+		name = morph_buf_cstr_borrow(&path);
 	if (styled)
 		(void)morph_buf_puts(out, failed ? ANSI_RED : ANSI_DIM);
 	(void)morph_buf_puts(out, "• ");

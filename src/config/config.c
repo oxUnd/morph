@@ -466,12 +466,8 @@ void config_set_defaults(struct morph_log *logger, struct config *cfg)
 	cfg->agents.enabled = 1;
 	cfg->agents.max_threads = 6;
 	cfg->agents.max_depth = 2;
-	cfg->agents.max_total_tokens = 500000;
-	cfg->agents.budget_input_weight = 1;
-	cfg->agents.budget_output_weight = 1;
-	cfg->agents.budget_warning_percent = 70;
-	cfg->agents.budget_primary_reserve_percent = 20;
-	strcpy(cfg->agents.budget_enforcement, "hard");
+	cfg->agents.rollout_budget.prefill_token_weight = 1.0;
+	cfg->agents.rollout_budget.sampling_token_weight = 1.0;
 	strcpy(cfg->agents.child_shell, "scoped");
 	strcpy(cfg->agents.multi_agent_mode, "auto");
 	cfg->logger = logger;
@@ -1353,14 +1349,28 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 		CFG_BOOL(agents, "enabled", cfg->agents.enabled);
 		CFG_INT(agents, "max_threads", cfg->agents.max_threads);
 		CFG_INT(agents, "max_depth", cfg->agents.max_depth);
-		CFG_INT(agents, "max_total_tokens", cfg->agents.max_total_tokens);
-		CFG_INT(agents, "budget_input_weight", cfg->agents.budget_input_weight);
-		CFG_INT(agents, "budget_output_weight", cfg->agents.budget_output_weight);
-		CFG_INT(agents, "budget_warning_percent", cfg->agents.budget_warning_percent);
-		CFG_INT(agents, "budget_primary_reserve_percent", cfg->agents.budget_primary_reserve_percent);
-		CFG_STR(agents, "budget_enforcement", cfg->agents.budget_enforcement);
+		if (cfg_find(agents, "max_total_tokens") ||
+		    cfg_find(agents, "budget_input_weight") ||
+		    cfg_find(agents, "budget_output_weight") ||
+		    cfg_find(agents, "budget_warning_percent") ||
+		    cfg_find(agents, "budget_primary_reserve_percent") ||
+		    cfg_find(agents, "budget_enforcement"))
+			log_warn(logger, "Legacy [agents] budget settings are ignored; "
+				 "configure [features.rollout_budget] to enable a limit");
 		CFG_STR(agents, "child_shell", cfg->agents.child_shell);
 		CFG_STR(agents, "multi_agent_mode", cfg->agents.multi_agent_mode);
+	}
+	cfg_table_t *rollout = table_path(tbl, "features.rollout_budget");
+	if (rollout) {
+		struct config_rollout_budget *budget = &cfg->agents.rollout_budget;
+		CFG_BOOL(rollout, "enabled", budget->enabled);
+		CFG_INT(rollout, "limit_tokens", budget->limit_tokens);
+		CFG_DBL(rollout, "prefill_token_weight", budget->prefill_token_weight);
+		CFG_DBL(rollout, "sampling_token_weight", budget->sampling_token_weight);
+		cfg_array_t *reminders = cfg_array_in(rollout, "reminder_at_remaining_tokens");
+		budget->reminder_count = cfg_array_nelem(reminders);
+		for (int i = 0; i < budget->reminder_count; i++)
+			budget->reminder_at_remaining_tokens[i] = (int)reminders->u.arr.elem[i].u.int64;
 	}
 	toml_free(parsed);
 

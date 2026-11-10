@@ -239,8 +239,8 @@ static int cli_subagents_draw(void *data, struct cli_composer_panel_frame *frame
 		const char *style = "";
 		if (row == 0) {
 			(void)morph_buf_printf(
-				&line, "  Subagents%s%s", page->viewing ? " / " : "",
-				page->viewing ? cli_subagents_label(cli_subagents_selected(page))
+				&line, "  Subagents%s%s", page->viewing ? " · " : "",
+				page->viewing ? cli_subagents_selected(page)
 					      : "");
 			style = CLI_INPUT_BACKGROUND ANSI_BOLD CLI_COMMAND_COLOR;
 		} else if (header > 1 && row == 1 && page->viewing && page->detail) {
@@ -275,7 +275,7 @@ static int cli_subagents_draw(void *data, struct cli_composer_panel_frame *frame
 					const struct agent_info *agent = &page->items[index - 1];
 					(void)morph_buf_printf(&line, "%s %s  · %s  · %s",
 							       page->selection.index == index ? ">" : " ",
-							       cli_subagents_label(agent->id),
+							       agent->id,
 							       cli_agents_status(agent->status),
 							       cli_subagents_activity(agent));
 				}

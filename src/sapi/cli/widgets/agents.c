@@ -106,7 +106,7 @@ int cli_agents_rows(morph_buf_t *out, const struct agent_info *agents, int count
 		const struct agent_info *agent = &agents[i];
 		if (agent->status != AGENT_RUNNING && agent->status != AGENT_PENDING)
 			continue;
-		const char *name = !strncmp(agent->id, "/root/", 6) ? agent->id + 6 : agent->id;
+		const char *name = agent->id;
 		const char *status =
 			agent->activity ? agent->activity : cli_agents_status(agent->status);
 		morph_buf_reset(&activity);

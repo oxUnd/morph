@@ -370,14 +370,10 @@ static int react_finish_run(struct react_context *ctx)
 			int detail_rc = morph_buf_printf(&detail,
 				"Shared session-tree budget: %lld / %lld weighted units used.",
 				(long long)budget.used, (long long)budget.limit);
-			if (detail_rc == 0 && budget.request_tokens > 0)
-				detail_rc = morph_buf_printf(&detail,
-					" The next request needs up to %lld weighted units, including "
-					"input and maximum output.", (long long)budget.request_tokens);
 			if (detail_rc == 0)
 				detail_rc = morph_buf_puts(&detail,
-					" Increase agents.max_total_tokens, set it to 0 to disable "
-					"the limit, or start a new session.");
+					" Increase features.rollout_budget.limit_tokens, set "
+					"features.rollout_budget.enabled=false, or start a new session.");
 			if (detail_rc == 0)
 				react_set_error_detail_copy(ctx, morph_buf_cstr_borrow(&detail));
 		}
@@ -1392,19 +1388,32 @@ static int react_chat_once(struct react_context *ctx, struct model *llm, const c
 	struct react_budget_reservation reservation MORPH_CLEANUP(react_budget_reservation_cleanup) = {
 		.control = ctx->agents, .id = ctx->agent_id,
 	};
-	status = agent_control_budget_reserve(ctx->agents, ctx->agent_id, estimate,
-		llm->max_tokens > 0 ? llm->max_tokens : 0, &reservation.units);
+	struct model request_model = *llm;
+	llm = &request_model;
+	llm->max_tokens = llm->max_tokens > 0 ? llm->max_tokens : 4096;
+	status = agent_control_budget_reserve_request(ctx->agents, ctx->agent_id, estimate,
+						     &llm->max_tokens, &reservation.units);
 	if (status != 0) {
 		struct agent_budget budget = {0};
 		morph_buf_t detail MORPH_CLEANUP(morph_buf_cleanup) = {0};
 		if (agent_control_budget_copy(ctx->agents, &budget) == 0 &&
 		    morph_buf_init(&detail, 256) == 0 &&
 		    morph_buf_printf(&detail,
-			"Shared session-tree budget: %lld / %lld weighted units used; "
-			"%lld units are reserved for primary integration. %s",
+			"Shared session-tree budget: %lld / %lld weighted units used. %s.",
 			(long long)budget.used, (long long)budget.limit,
-			(long long)budget.primary_reserve, morph_strerror(status)) == 0)
-			ctx->llm_error_detail = morph_buf_detach(&detail);
+			morph_strerror(status)) == 0) {
+			int rc = 0;
+			if (status == MORPH_ERR_REQUEST_BUDGET || status == MORPH_ERR_AGENT_BUDGET)
+				rc = morph_buf_printf(&detail,
+					" The next request needs about %d input tokens plus output; "
+					"even a reduced output maximum cannot fit the remaining "
+					"allocation. Reduce context, increase "
+					"features.rollout_budget.limit_tokens, set "
+					"features.rollout_budget.enabled=false, or start a new session.",
+					estimate);
+			if (rc == 0)
+				ctx->llm_error_detail = morph_buf_detach(&detail);
+		}
 		return status;
 	}
 
@@ -1422,9 +1431,6 @@ static int react_chat_once(struct react_context *ctx, struct model *llm, const c
 	if (status != 0)
 		return status;
 
-	struct model request_model = *llm;
-
-	llm = &request_model;
 	llm->http.cancel_token = &ctx->cancel_token;
 	llm->http.cancel_flag = &ctx->cancelled;
 	llm->http.interrupt_check = ctx->prompt_pending_fn;

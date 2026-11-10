@@ -78,6 +78,73 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_STREQ(cfg.sync.include[1], "data.db");
 	EXPECT_STREQ(cfg.sync.include[6], "ui-history.db");
 	EXPECT_STREQ(cfg.prompt.mode, "append");
+	EXPECT_FALSE(cfg.agents.rollout_budget.enabled);
+	EXPECT_EQ(cfg.agents.rollout_budget.limit_tokens, 0);
+	EXPECT_EQ(cfg.agents.rollout_budget.reminder_count, 0);
+	EXPECT_DOUBLE_EQ(cfg.agents.rollout_budget.prefill_token_weight, 1.0);
+	EXPECT_DOUBLE_EQ(cfg.agents.rollout_budget.sampling_token_weight, 1.0);
+}
+
+TEST_F(ConfigTest, RolloutBudgetRequiresExplicitOptInAndAcceptsFractionalAndZeroWeights)
+{
+	const char *text = "[features.rollout_budget]\nenabled=true\nlimit_tokens=1000\n"
+		"reminder_at_remaining_tokens=[500,100]\nprefill_token_weight=0.25\n"
+		"sampling_token_weight=0\n";
+	ASSERT_EQ(file_write_all(config_path, text, strlen(text)), 0);
+	struct config cfg;
+	ASSERT_EQ(config_load(nullptr, &cfg, config_path), 0);
+	EXPECT_TRUE(cfg.agents.rollout_budget.enabled);
+	EXPECT_EQ(cfg.agents.rollout_budget.limit_tokens, 1000);
+	EXPECT_EQ(cfg.agents.rollout_budget.reminder_count, 2);
+	EXPECT_EQ(cfg.agents.rollout_budget.reminder_at_remaining_tokens[0], 500);
+	EXPECT_EQ(cfg.agents.rollout_budget.reminder_at_remaining_tokens[1], 100);
+	EXPECT_DOUBLE_EQ(cfg.agents.rollout_budget.prefill_token_weight, 0.25);
+	EXPECT_DOUBLE_EQ(cfg.agents.rollout_budget.sampling_token_weight, 0.0);
+}
+
+TEST_F(ConfigTest, LegacyAgentBudgetKeysDoNotEnableLimits)
+{
+	const char *text = "[agents]\nmax_total_tokens=500000\nbudget_input_weight=2\n"
+		"budget_output_weight=4\nbudget_warning_percent=70\n"
+		"budget_primary_reserve_percent=20\nbudget_enforcement=\"hard\"\n";
+	ASSERT_EQ(file_write_all(config_path, text, strlen(text)), 0);
+	struct config cfg;
+	ASSERT_EQ(config_load(nullptr, &cfg, config_path), 0);
+	EXPECT_FALSE(cfg.agents.rollout_budget.enabled);
+	EXPECT_EQ(cfg.agents.rollout_budget.limit_tokens, 0);
+	EXPECT_DOUBLE_EQ(cfg.agents.rollout_budget.prefill_token_weight, 1.0);
+	EXPECT_DOUBLE_EQ(cfg.agents.rollout_budget.sampling_token_weight, 1.0);
+}
+
+TEST_F(ConfigTest, RolloutBudgetValidatesRequiredFieldsAndThresholds)
+{
+	for (const char *fields : {
+		"enabled=true\n",
+		"enabled=true\nlimit_tokens=100\n",
+		"enabled=true\nreminder_at_remaining_tokens=[]\n",
+		"enabled=true\nlimit_tokens=0\nreminder_at_remaining_tokens=[]\n",
+		"limit_tokens=100\nreminder_at_remaining_tokens=[0]\n",
+		"limit_tokens=100\nreminder_at_remaining_tokens=[-1]\n",
+		"limit_tokens=100\nreminder_at_remaining_tokens=[100]\n",
+		"limit_tokens=100\nreminder_at_remaining_tokens=[50.0]\n",
+		"prefill_token_weight=-1\n",
+		"sampling_token_weight=nan\n",
+		"prefill_token_weight=inf\n"}) {
+		SCOPED_TRACE(fields);
+		std::string text = std::string("[features.rollout_budget]\n") + fields;
+		struct config_validation_error error{};
+		EXPECT_EQ(config_validate_text(text.c_str(), &error), MORPH_ERR_CONFIG);
+	}
+	for (const char *fields : {
+		"enabled=false\n",
+		"limit_tokens=100\nreminder_at_remaining_tokens=[50]\n",
+		"enabled=true\nlimit_tokens=100\nreminder_at_remaining_tokens=[]\n"}) {
+		std::string text = std::string("[features.rollout_budget]\n") + fields;
+		ASSERT_EQ(file_write_all(config_path, text.c_str(), text.size()), 0);
+		struct config cfg;
+		ASSERT_EQ(config_load(nullptr, &cfg, config_path), 0);
+		EXPECT_EQ(cfg.agents.rollout_budget.enabled, strstr(fields, "enabled=true") != nullptr);
+	}
 }
 
 TEST_F(ConfigTest, MultiAgentConfiguration)

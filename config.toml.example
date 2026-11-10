@@ -523,20 +523,23 @@ dir = ""
 enabled = true
 max_threads = 6
 max_depth = 2
-# Persistent root-session tree budget in weighted units. 0 disables the limit.
-# Cached input is excluded; missing cache usage is treated as non-cached input.
-max_total_tokens = 500000
-budget_input_weight = 1
-budget_output_weight = 1
-budget_warning_percent = 70
-budget_primary_reserve_percent = 20
-# hard: stop at the limit; warn: retain accounting/reminders without stopping.
-budget_enforcement = "hard"
 # scoped: assigned write_paths + private scratch; readonly: private scratch only.
 child_shell = "scoped"
 # "auto": reasoning_effort="ultra" enables proactive delegation, as in Codex.
 # "explicit" and "proactive" override this automatic selection.
 multi_agent_mode = "auto"
+
+# Optional token budget, using Codex rollout-budget configuration semantics.
+# No token limit is active unless enabled=true is explicitly configured.
+# When enabled, supply a positive limit_tokens and a reminder array (possibly []).
+# Each reminder is a positive remaining-unit threshold below limit_tokens.
+# All agents share the allocation; no portion is reserved exclusively for root.
+[features.rollout_budget]
+enabled = false
+# limit_tokens = 500000
+# reminder_at_remaining_tokens = [150000, 50000]
+# prefill_token_weight = 1.0
+# sampling_token_weight = 1.0
 
 # Lifecycle hooks use the Codex-compatible command-hook structure.
 # Definitions require review and trust through /hooks before execution.

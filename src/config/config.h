@@ -290,16 +290,22 @@ struct config_dynamic_tools {
 	struct config_dynamic_tool_profile server;
 };
 
+#define ROLLOUT_BUDGET_REMINDER_MAX 32
+
+struct config_rollout_budget {
+	int enabled;
+	int limit_tokens;
+	int reminder_at_remaining_tokens[ROLLOUT_BUDGET_REMINDER_MAX];
+	int reminder_count;
+	double prefill_token_weight;
+	double sampling_token_weight;
+};
+
 struct config_agents {
 	int enabled;
 	int max_threads;
 	int max_depth;
-	int max_total_tokens;
-	int budget_input_weight;
-	int budget_output_weight;
-	int budget_warning_percent;
-	int budget_primary_reserve_percent;
-	char budget_enforcement[16];
+	struct config_rollout_budget rollout_budget;
 	char child_shell[16];
 	char multi_agent_mode[32];
 };

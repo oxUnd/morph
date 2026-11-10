@@ -143,7 +143,7 @@ def run(driver, port, columns):
             for width in (60, 120, 80, columns):
                 resize(terminal, marker, width)
             press(terminal, '\x1b[B\r')
-            wait_for(terminal, lambda: 'Subagents / worker' in visible(terminal))
+            wait_for(terminal, lambda: 'Subagents · /root/worker' in visible(terminal))
             find_content(terminal, marker, 'CHILD_ASSIGNMENT')
 
             child.stream({'reasoning_content': 'CHILD_REASONING_SENTINEL'})
@@ -187,7 +187,7 @@ def run(driver, port, columns):
             find_content(terminal, marker, 'CHILD_TOOL_DETAIL_END')
             no_screen_switch(terminal.raw[start:])
             press(terminal, '\x1b')
-            wait_for(terminal, lambda: 'Subagents / worker' in visible(terminal))
+            wait_for(terminal, lambda: 'Subagents · /root/worker' in visible(terminal))
             press(terminal, '\x0f')
             wait_for(terminal, lambda: 'Tool details' in '\n'.join(panel(terminal, marker)))
             find_content(terminal, marker, 'CHILD_TOOL_DETAIL_END')
@@ -243,7 +243,7 @@ def run(driver, port, columns):
                               command=terminal.subagents_command)
             terminal.subagents_command = '/subagents worker'
             press(terminal, '\x15/subagents worker\r')
-            wait_for(terminal, lambda: 'Subagents / worker' in visible(terminal))
+            wait_for(terminal, lambda: 'Subagents · /root/worker' in visible(terminal))
             find_content(terminal, marker, 'CHILD_ASSIGNMENT')
             press(terminal, '\t\r')
             wait_for(terminal, lambda: 'Subagents' not in visible(terminal))

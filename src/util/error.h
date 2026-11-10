@@ -30,6 +30,7 @@ enum morph_error {
 	MORPH_ERR_CONTEXT_LIMIT = MORPH_ERR_BASE - 15,
 	MORPH_ERR_TOKEN_BUDGET = MORPH_ERR_BASE - 16,
 	MORPH_ERR_AGENT_BUDGET = MORPH_ERR_BASE - 17,
+	MORPH_ERR_REQUEST_BUDGET = MORPH_ERR_BASE - 18,
 };
 
 const char *morph_strerror(morph_err_t err);
