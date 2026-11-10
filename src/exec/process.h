@@ -43,12 +43,16 @@ struct process_spawn_options {
 	struct morph_log *logger;
 	const char *command;
 	const char *workdir;
+	/* Optional private scratch, borrowed until spawn returns. */
+	const char *temp_dir;
 	uint64_t timeout_ms;
 	uint64_t yield_time_ms;
 	int pty;
 	int background;
 	/* Explicit host execution still closes inherited file descriptors. */
 	int host_execution;
+	/* Terminate same-group descendants before publishing shell completion. */
+	int kill_descendants_on_exit;
 	/* Optional regular-file stdin; ignored unless use_stdin_fd is set. */
 	int hook_mode;
 	int use_stdin_fd;

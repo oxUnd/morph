@@ -123,6 +123,8 @@ struct model {
 	struct http_control http;
 	/* Borrowed for the model lifetime; shared only within its owning runtime. */
 	struct model_usage_sink *usage_sink;
+	/* Independent runtime budget observer; never replaces billing. */
+	struct model_usage_sink *budget_sink;
 	char name[64];
 	char provider[32];
 	char adapter[64];
@@ -177,6 +179,7 @@ struct model *model_llm_create(struct morph_log *logger, const char *provider, c
 			       const char *api_base, const char *api_key);
 /* Independent configured LLM; request cancellation, errors and usage are reset. */
 struct model *model_llm_clone(const struct model *source, struct morph_log *logger);
+int model_llm_set_reasoning_effort(struct model *model, const char *effort);
 void model_destroy(struct model *m);
 /* Initialize a request view in caller storage. Resources and callback state are
  * borrowed from source/control and must survive the request. The returned

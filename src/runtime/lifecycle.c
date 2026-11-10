@@ -288,6 +288,7 @@ static int runtime_start_components(struct runtime *runtime)
 
 	memset(&models, 0, sizeof(models));
 	memset(&profile, 0, sizeof(profile));
+	profile.owner = runtime;
 	runtime_emit_startup(runtime, "startup.models", "begin",
 			     "Preparing models...");
 	profile.logger = runtime->options.logger;
@@ -319,6 +320,7 @@ static int runtime_start_components(struct runtime *runtime)
 	ctx->skills = runtime->options.allocate_skill_registry
 		? NULL : &ctx->skill_storage;
 	memset(&profile, 0, sizeof(profile));
+	profile.owner = runtime;
 	profile.logger = runtime->options.logger;
 	profile.config = &ctx->config;
 	profile.db = &ctx->database;
@@ -362,8 +364,9 @@ static int runtime_start_components(struct runtime *runtime)
 			return rc;
 	}
 
-	if (runtime->options.enable_sub_agents) {
+	if (runtime->options.enable_multi_agent) {
 		memset(&profile, 0, sizeof(profile));
+		profile.owner = runtime;
 		profile.logger = runtime->options.logger;
 		profile.config = &ctx->config;
 		profile.db = &ctx->database;
@@ -371,8 +374,8 @@ static int runtime_start_components(struct runtime *runtime)
 		profile.models = &models;
 		profile.event_cb = runtime->options.event_cb;
 		profile.event_user_data = runtime->options.event_user_data;
-		profile.enable_sub_agents = 1;
-		rc = runtime_bootstrap_sub_agents(&profile, &ctx->sub_agents);
+		profile.enable_multi_agent = 1;
+		rc = runtime_bootstrap_agents(&profile, &ctx->agents);
 		if (rc != 0)
 			return rc;
 	}
@@ -393,6 +396,7 @@ static int runtime_start_components(struct runtime *runtime)
 	ctx->engine.memory_options = &ctx->memory_options;
 	ctx->engine.prepare_turn = runtime_prepare_turn;
 	ctx->engine.finish_turn = runtime_finish_turn;
+	ctx->engine.drain_turn = runtime_drain_turn;
 	ctx->engine.user_data = runtime;
 	ctx->engine.background_cb = runtime_emit_background;
 	ctx->engine.background_user_data = runtime;
@@ -574,11 +578,19 @@ void runtime_close(struct runtime *runtime)
 
 	if (!runtime)
 		return;
+	if (runtime->context.execution_lock_ready) {
+		pthread_mutex_lock(&runtime->context.agent_interaction_lock);
+		runtime->context.agent_phase = RUNTIME_AGENTS_CLOSING;
+		agent_control_set_interactions_blocked(runtime->context.agents, 1);
+		agent_control_cancel(runtime->context.agents);
+		pthread_mutex_unlock(&runtime->context.agent_interaction_lock);
+	}
 	runtime_mcp_background_stop(runtime);
 	runtime_task_worker_stop(&runtime->task_worker);
 	runtime_sync_stop_instance(runtime);
 	if (runtime->context.execution_lock_ready)
 		pthread_mutex_lock(&runtime->context.execution_lock);
+	agent_control_join(runtime->context.agents);
 	runtime_title_stop(runtime);
 	runtime_recap_stop(runtime);
 	if (runtime->context.hooks.ready && runtime->context.hooks.session_id) {
@@ -645,7 +657,7 @@ void runtime_cancel_turn(struct runtime *runtime)
 {
 	if (runtime) {
 		runtime_cancel(&runtime->context.engine);
-		sub_agent_runtime_cancel(runtime->context.sub_agents);
+		agent_control_cancel(runtime->context.agents);
 	}
 }
 
@@ -671,7 +683,29 @@ void runtime_record_usage(const struct model_usage *usage, void *user_data)
 int runtime_prepare_turn(void *user_data, const struct runtime_request *request)
 {
 	struct runtime *runtime = user_data;
-	int rc = runtime_context_prepare_turn(&runtime->context, request, user_data);
+	struct runtime_context *context = &runtime->context;
+	pthread_mutex_lock(&context->agent_interaction_lock);
+	if (context->agent_phase == RUNTIME_AGENTS_CLOSING) {
+		pthread_mutex_unlock(&context->agent_interaction_lock);
+		return -ECANCELED;
+	}
+	context->agent_phase = RUNTIME_AGENTS_RUNNING;
+	agent_control_set_interactions_blocked(context->agents, 1);
+	int rc = runtime_context_prepare_turn(context, request, user_data);
+	if (rc == 0) {
+		if (request->session_id == context->current_session.id) {
+			context->agent_actor_session_id = request->session_id;
+			context->agent_restrict_memory_to_user = request->restrict_memory_to_user;
+			snprintf(context->agent_user_id, sizeof(context->agent_user_id), "%s",
+				 request->user_id && *request->user_id ? request->user_id
+								       : "local");
+			runtime_context_credit_session_key(
+				context, context->agent_credit_session_id,
+				sizeof(context->agent_credit_session_id));
+		}
+		agent_control_set_interactions_blocked(context->agents, 0);
+	}
+	pthread_mutex_unlock(&context->agent_interaction_lock);
 
 	if (rc == 0)
 		rc = runtime_checkpoint_begin_turn(runtime, request);
@@ -687,13 +721,103 @@ int runtime_prepare_turn(void *user_data, const struct runtime_request *request)
 	return rc;
 }
 
+void runtime_drain_turn(void *user_data)
+{
+	struct runtime_context *context = &((struct runtime *)user_data)->context;
+	pthread_mutex_lock(&context->agent_interaction_lock);
+	if (context->agent_phase != RUNTIME_AGENTS_CLOSING)
+		context->agent_phase = RUNTIME_AGENTS_FINISHING;
+	pthread_mutex_unlock(&context->agent_interaction_lock);
+}
+
+int runtime_agent_actor_begin(struct runtime *runtime, struct runtime_agent_actor *actor)
+{
+	if (!runtime || !actor || !runtime->context.execution_lock_ready)
+		return -EINVAL;
+	struct runtime_context *context = &runtime->context;
+	pthread_mutex_lock(&context->agent_interaction_lock);
+	if (context->agent_phase == RUNTIME_AGENTS_CLOSING) {
+		pthread_mutex_unlock(&context->agent_interaction_lock);
+		return -ECANCELED;
+	}
+	int active = context->agent_phase == RUNTIME_AGENTS_RUNNING ||
+		     context->agent_phase == RUNTIME_AGENTS_FINISHING;
+	int64_t session_id =
+		active ? context->turn_scope.memory_session_id : context->current_session.id;
+	if (session_id <= 0) {
+		pthread_mutex_unlock(&context->agent_interaction_lock);
+		return -ESTALE;
+	}
+	if (context->agents) {
+		int rc = agent_control_set_parent_session(context->agents, session_id);
+		if (rc != 0) {
+			pthread_mutex_unlock(&context->agent_interaction_lock);
+			return rc;
+		}
+	}
+	int cached = session_id == context->agent_actor_session_id && session_id > 0;
+	const char *user = active   ? context->turn_scope.user_id
+			   : cached ? context->agent_user_id
+				    : "local";
+	snprintf(actor->user_id, sizeof(actor->user_id), "%s", user && *user ? user : "local");
+	const char *credit = active   ? context->turn_scope.credit_session_id
+			     : cached ? context->agent_credit_session_id
+			     : context->current_session.display_id[0]
+				     ? context->current_session.display_id
+				     : context->current_session.name;
+	snprintf(actor->credit_session_id, sizeof(actor->credit_session_id), "%s",
+		 credit && *credit ? credit : "local");
+	actor->context = (struct tool_runtime_context){
+		.agents = context->agents,
+		.permission_context = context->tctx,
+		.agent_id = "/root",
+		.workdir = context->workdir,
+		.db = &context->database,
+		.config = &context->config,
+		.memory_session_id = session_id,
+		.user_id = actor->user_id,
+		.credit_session_id = actor->credit_session_id,
+		.restrict_memory_to_user =
+			active	 ? context->react->tool_runtime.restrict_memory_to_user
+			: cached ? context->agent_restrict_memory_to_user
+				 : 0,
+	};
+	actor->context.http.logger = context->logger;
+	return 0;
+}
+
+void runtime_agent_actor_end(struct runtime *runtime)
+{
+	if (runtime)
+		pthread_mutex_unlock(&runtime->context.agent_interaction_lock);
+}
+
+int runtime_agent_session_begin(struct runtime *runtime)
+{
+	if (!runtime)
+		return -EINVAL;
+	struct runtime_context *context = &runtime->context;
+	pthread_mutex_lock(&context->agent_interaction_lock);
+	int rc = context->agent_phase == RUNTIME_AGENTS_CLOSING ? -ECANCELED
+		 : agent_control_active(context->agents, 0)	? -EBUSY
+								: 0;
+	if (rc != 0)
+		pthread_mutex_unlock(&context->agent_interaction_lock);
+	return rc;
+}
+
 void runtime_finish_turn(void *user_data, const struct runtime_request *request,
 			 const struct runtime_result *result)
 {
 	(void)request;
 	(void)result;
 	runtime_checkpoint_end_turn(user_data);
-	runtime_context_finish_turn(&((struct runtime *)user_data)->context);
+	struct runtime_context *context = &((struct runtime *)user_data)->context;
+	pthread_mutex_lock(&context->agent_interaction_lock);
+	runtime_context_finish_turn(context);
+	if (context->agent_phase != RUNTIME_AGENTS_CLOSING)
+		context->agent_phase = RUNTIME_AGENTS_IDLE;
+	pthread_mutex_unlock(&context->agent_interaction_lock);
 }
 
 const struct config *runtime_config_borrow(const struct runtime *runtime)

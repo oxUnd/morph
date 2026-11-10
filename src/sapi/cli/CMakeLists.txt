@@ -3,6 +3,7 @@ add_library(morph-cli STATIC
 	application.c
 
 	# Application models
+	models/subagents.c
 	models/composer.c
 	models/transcript.c
 
@@ -13,6 +14,8 @@ add_library(morph-cli STATIC
 	pages/hooks.c
 	pages/jobs.c
 	pages/memory.c
+	pages/subagents.c
+	pages/model.c
 	pages/permissions.c
 	pages/question.c
 	pages/resume.c
@@ -22,6 +25,8 @@ add_library(morph-cli STATIC
 	pages/setup/wizard.c
 
 	# Application widgets
+	widgets/subagents.c
+	widgets/agents.c
 	widgets/banner.c
 	widgets/feed.c
 	widgets/list.c
@@ -29,6 +34,7 @@ add_library(morph-cli STATIC
 	widgets/transcript.c
 
 	# Commands
+	commands/agents.c
 	commands/ext.c
 	commands/hooks.c
 	commands/jobs.c
@@ -49,6 +55,7 @@ add_library(morph-cli STATIC
 	commands/tasks.c
 
 	# Application services
+	services/agents.c
 	services/command_job.c
 	services/configuration/config.c
 	services/configuration/mcp.c
@@ -80,6 +87,7 @@ add_library(morph-cli STATIC
 	adapters/runtime/observer.c
 
 	# Application presentation
+	presentation/agent_tools.c
 	presentation/about.c
 	presentation/diagnostics.c
 	presentation/history.c

@@ -5,11 +5,14 @@
 #include "config/config.h"
 #include "cJSON.h"
 #include "sapi/cli/application_internal.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/services/session_history.h"
 #include "sapi/cli/adapters/clipboard/clipboard.h"
 #include "sapi/cli/commands/registry.h"
+#include "sapi/cli/pages/model.h"
+#include "sapi/cli/adapters/input/readline.h"
 
 static int cli_runtime_command_quit(struct cli_application *ctx, int argc, char **argv)
 {
@@ -84,15 +87,39 @@ static int cli_runtime_command_copy(struct cli_application *ctx, int argc, char 
 static int cli_runtime_command_model(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *name = cli_cmd_arg_borrow(argc, argv, 1);
-	struct session current;
-	if (name) {
-		int rc = runtime_session_set_model(ctx->runtime, name);
-		if (rc != 0)
+	if (argc > 2) {
+		CMD_ERROR(ctx, "usage: /model [normal|ultra|status|name]");
+		return -EINVAL;
+	}
+	if (!name && ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON &&
+	    cli_application_tui_borrow(ctx))
+		return cli_model_show(ctx);
+	if (name && (!strcmp(name, "normal") || !strcmp(name, "ultra"))) {
+		int rc = runtime_model_set_ultra(ctx->runtime, !strcmp(name, "ultra"));
+		if (rc != 0) {
+			CMD_ERROR(ctx, "model mode change failed: %s", morph_strerror(rc));
 			return rc;
+		}
+		cli_readline_sync_mode(ctx, 1);
+		CMD_OK(ctx, "model mode: %s", name);
+	} else if (name && strcmp(name, "status")) {
+		int rc = runtime_session_set_model(ctx->runtime, name);
+		if (rc != 0) {
+			CMD_ERROR(ctx, "model change failed: %s", morph_strerror(rc));
+			return rc;
+		}
 		CMD_OK(ctx, "model switched to: %s", name);
 	} else {
+		struct session current = {0};
+		int ultra = 0;
 		(void)runtime_session_current(ctx->runtime, &current);
-		printf(ctx, "current model: %s\n", current.model);
+		int rc = runtime_model_get_ultra(ctx->runtime, &ultra);
+		if (rc != 0)
+			return rc;
+		printf(ctx, "current model: %s", current.model);
+		if (name)
+			printf(ctx, " · mode: %s", ultra ? "ultra" : "normal");
+		putchar(ctx, '\n');
 	}
 	return 0;
 }
@@ -638,8 +665,8 @@ static const struct cli_command cli_runtime_entries[] = {
 	{"/help", cli_runtime_command_help, "Show help for commands", "/help [command]"},
 	{"/h", cli_runtime_command_help, "Alias for /help", "/h [command]"},
 	{"/copy", cli_runtime_command_copy, "Copy the last assistant answer to clipboard", "/copy"},
-	{"/model", cli_runtime_command_model, "View or switch the LLM model", "/model [name]"},
-	{"/m", cli_runtime_command_model, "Alias for /model", "/m [name]"},
+	{"/model", cli_runtime_command_model, "Select Normal or Ultra, or switch model", "/model [normal|ultra|status|name]"},
+	{"/m", cli_runtime_command_model, "Alias for /model", "/m [normal|ultra|status|name]"},
 	{"/trace", cli_runtime_command_trace, "Show ReAct trace for current turn",
 	 "/trace [--from-db]"},
 	{"/t", cli_runtime_command_trace, "Alias for /trace", "/t [--from-db]"},

@@ -67,22 +67,22 @@ int runtime_permission_get_policy(struct runtime *runtime, struct permission_pol
 
 static int permission_children_active(struct runtime *runtime)
 {
-	struct sub_agent_task_info *tasks = NULL;
+	struct agent_info *tasks = NULL;
 	int count = 0;
 	int active = exec_jobs_active(runtime->jobs);
 
-	if (runtime->context.sub_agents) {
-		int rc = sub_agent_runtime_task_list_copy(runtime->context.sub_agents, 0, &tasks,
+	if (runtime->context.agents) {
+		int rc = agent_control_list_copy(runtime->context.agents, 0, &tasks,
 							  &count);
 
 		if (rc != 0)
 			return rc;
 		for (int i = 0; i < count; i++) {
-			if (tasks[i].status == SUB_AGENT_PENDING ||
-			    tasks[i].status == SUB_AGENT_RUNNING)
+			if (tasks[i].status == AGENT_PENDING ||
+			    tasks[i].status == AGENT_RUNNING)
 				active = 1;
 		}
-		sub_agent_runtime_free_task_list(tasks, count);
+		agent_control_free_list(tasks, count);
 	}
 	return active;
 }

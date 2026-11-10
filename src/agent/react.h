@@ -114,6 +114,8 @@ struct react_context {
 	int tool_timeout_seconds;
 	int tool_max_retries;
 	struct guardrail_config guardrail;
+	/* Optional owned checker model; guardrail.llm borrows this or llm_model. */
+	struct model *guardrail_model;
 	int guardrail_retry_count;
 	struct hitl_config hitl;
 	ask_user_callback_fn ask_user_fn;
@@ -177,12 +179,9 @@ struct react_context {
 	void *action_drain_user_data;
 	morph_event_cb event_cb;
 	void *event_user_data;
-	int sub_agent_depth;
-	struct {
-		char name[64];
-		char description[256];
-	} *sub_agent_info;
-	int sub_agent_info_count;
+	int agent_depth;
+	struct agent_control *agents;
+	char agent_id[256];
 	char turn_id[64];
 	int turn_id_user_set;
 	struct tool_runtime_context tool_runtime;

@@ -162,15 +162,15 @@ exec 扩展进入配置的进程沙箱和资源限制；共享库扩展不具有
 
 接口见 [mcp.h](../src/mcp/mcp.h)，后台发布见 [runtime MCP](../src/runtime/mcp_background.c)。
 
-### 4.11 子代理
+### 4.11 多 agent 协作
 
-- 配置独立系统提示、模型 ID、工具限制、上下文策略和输出 schema。
-- `delegate(agent, task)` 异步委派，`agent_status(task_id)` 查询，`fanout(agent, tasks, merge)` 并行扇出。
-- 配置的子代理可注册同步工具 `agent_<name>(task)`。
-- 上下文策略支持 full / summary / task_only；合并策略支持 synthesize / concat / raw。
-- 最多 8 个同时活跃的任务；完成或失败释放执行槽，稳定任务记录和结果继续保留。
-- `fanout` 每批最多 8 项；超限或可用槽不足时在启动前明确拒绝。嵌套深度最多 2。
-- 后代使用共享权限 authority，保留独立任务记录、事件和会话关联。
+- 采用 Codex MultiAgentV2 工具：`spawn_agent`、`send_message`、`followup_task`、`interrupt_agent`、`list_agents`、`wait_agent`。
+- agent 身份、独立历史和邮箱跨执行回合保留；空闲 agent 可以继续接受任务。
+- `fork_turns=all/none` 控制历史继承；仅 none 支持模型和推理强度覆盖。
+- `[agents]` 控制线程数、深度和委派模式；auto 模式随 ultra 推理强度启用主动委派。
+- 后代共享用户权限边界，拥有独立模型客户端、工具执行上下文、历史和取消状态。
+- 完成结果持久化后进入父 agent 上下文；主 agent 收齐活动 agent 的结果后整合答复。
+- 详细运行、恢复和迁移契约见 [多 agent 协作](multi-agent.md)。
 
 ### 4.12 Guardrail
 
@@ -381,7 +381,7 @@ adapter 决定请求序列化、响应解析和能力校验；供应商返回的
 | 会话与显示消息 | `sessions`、`messages`、`message_attachments`、`react_traces` |
 | 模型历史与压缩 | `model_history_items`、`history_compactions`、`history_summary_sources`、`model_request_snapshots`、`history_compaction_attempts` |
 | 记忆与偏好 | profiles/facts/episodes/procedures、scopes/preferences/candidates/jobs |
-| 子代理 | `sub_agent_tasks`、`sub_agent_events` |
+| 子代理 | `agent_threads`、`agent_mailbox`、`agent_events`（旧表仅保留历史兼容） |
 | 计划与权限 | `session_plans`、`permission_grants` |
 | 定时任务与通知 | `scheduled_tasks`、`notifications` |
 | 产物与计费 | `outputs`、`credit_events` |
@@ -527,7 +527,7 @@ default_max_output_bytes = 1048576
 | 进程与授权 | `exec`、`process`、`request_permissions` |
 | 规划与交互 | `plan`、`ask_user`、`activate_skill`、`config_edit`、`tasks` |
 | 动态工具管理 | `tool_create`、`tool_promote`、`tool_delete`、`tool_history`、`tool_diff`、`tool_rollback` |
-| 子代理 | `delegate`、`fanout`、`agent_status`、配置生成的 `agent_<name>` |
+| 子代理 | `spawn_agent`、`send_message`、`followup_task`、`interrupt_agent`、`list_agents`、`wait_agent` |
 
 工具是否对某个会话可见由配置、前端支持及注册状态决定。参数和输入格式以 [tools 源码](../src/agent/tools/) 中的 schema 为准。
 
@@ -577,7 +577,7 @@ Chat compatible、Responses 和 DeepSeek 使用各自 codec 编解码工具调�
 
 #### 6.9.13 子代理接口
 
-[sub_agent.h](../src/agent/sub_agent.h) 提供同步、委派、fanout、状态及事件接口。任务历史采用稳定 owner，活跃容量与历史数量分离；失败和完成都归还执行槽。
+[agent_control.h](../src/agent/agent_control.h) 提供 Codex 风格的 agent 创建、消息、追加任务、打断、等待和快照接口。runtime 持有控制器；agent 历史及邮箱持久化，空闲时不占执行线程。
 
 #### 6.9.14 Tool Context
 
@@ -699,7 +699,7 @@ ctest --test-dir build --output-on-failure
 | Skill | 名称 64 / 描述 1024 码点，metadata 16 项，frontmatter 1 MiB | 校验错误 |
 | 动态工具源代码 | 配置预算，默认 256 KiB | 明确错误 |
 | 动态工具 stdout / Host 捕获 | 配置预算，默认 1 MiB | 超限报错；runner 顶层 stderr 另作有界诊断预览 |
-| 子代理 | 同时活跃 8 项，fanout 单批 8 项，嵌套深度 2 | 启动前拒绝超限批次 |
+| 子代理 | 默认 6 个 agent（含主 agent），嵌套深度 2 | 启动前拒绝超限批次 |
 | patch 输入 | 64 KiB / call | 明确错误，按完整 patch 拆分 |
 | checkpoint 文件 | 16 MiB / file | 捕获或写前校验失败 |
 | checkpoint 数据 | before/after 总计 128 MiB | 写前或 seal 校验失败 |

@@ -29,6 +29,8 @@ set(TEST_SOURCES
 	test_runtime_mcp.cpp
 	test_runtime.cpp
 	test_runtime_services.cpp
+	test_runtime_agents.cpp
+	test_runtime_skill_checkpoint.cpp
 	test_session_title.cpp
 	test_recap.cpp
 	test_runtime_internal.cpp
@@ -71,7 +73,11 @@ set(TEST_SOURCES
 	test_sandbox.cpp
 	test_tool_context.cpp
 	test_request_permissions.cpp
-	test_sub_agent.cpp
+	test_agent_control.cpp
+	test_agent_event_batching.cpp
+	test_agent_budget_verification.cpp
+	test_agent_plan_control.cpp
+	test_agent_child_runtime.cpp
 	test_ext.cpp
 	test_event.cpp
 	test_agent_ui.cpp
@@ -79,6 +85,8 @@ set(TEST_SOURCES
 	test_cli_copy.cpp
 	test_cli_list.cpp
 	test_cli_presentation.cpp
+	test_cli_subagents.cpp
+	test_cli_model.cpp
 	test_cli_transcript_model.cpp
 	test_cli_terminal.cpp
 	test_tui.cpp
@@ -103,6 +111,11 @@ set(TEST_SOURCES
 )
 
 add_executable(morph-tests ${TEST_SOURCES})
+add_executable(morph-agent-eval-runner agent_eval_runner.c)
+target_include_directories(morph-agent-eval-runner PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(morph-agent-eval-runner PRIVATE morph-exec)
+set_target_properties(morph-agent-eval-runner PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
 add_library(morph-error-release-probe OBJECT error_macro_probe.c)
 target_include_directories(morph-error-release-probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_compile_options(morph-error-release-probe PRIVATE -UDEBUG -DNDEBUG)
@@ -189,6 +202,19 @@ add_test(NAME file_write_extension COMMAND morph-file-write-tests)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+	if(UNIX AND Python3_VERSION VERSION_GREATER_EQUAL "3.11")
+		add_test(NAME multi_agent_task_evaluation
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/eval_multi_agents.py
+				--driver $<TARGET_FILE:morph> --output
+				${CMAKE_CURRENT_BINARY_DIR}/multi-agent-evaluation.json)
+		set_tests_properties(multi_agent_task_evaluation PROPERTIES TIMEOUT 90)
+		add_test(NAME multi_agent_evaluation_regressions
+			COMMAND ${Python3_EXECUTABLE}
+				${CMAKE_CURRENT_SOURCE_DIR}/test_agent_task_evaluation.py
+				--driver $<TARGET_FILE:morph>
+				--runner $<TARGET_FILE:morph-agent-eval-runner>)
+		set_tests_properties(multi_agent_evaluation_regressions PROPERTIES TIMEOUT 90)
+	endif()
 	add_test(NAME source_control_flow_conventions
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_source_control_flow.py)
 	add_test(NAME js_runner_host_io_integration
@@ -199,6 +225,21 @@ if(Python3_Interpreter_FOUND)
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_application_layout.py)
 	if(UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIBRARY)
 		# Inline composer geometry requires the Readline input mode.
+		add_test(NAME cli_agents_pty_integration
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_agents_pty.py
+				$<TARGET_FILE:morph-cli-pty-driver>)
+		set_tests_properties(cli_agents_pty_integration PROPERTIES
+			SKIP_RETURN_CODE 77 TIMEOUT 90)
+		add_test(NAME cli_subagents_pty_integration
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_subagents_pty.py
+				$<TARGET_FILE:morph-cli-pty-driver>)
+		set_tests_properties(cli_subagents_pty_integration PROPERTIES
+			SKIP_RETURN_CODE 77 TIMEOUT 90)
+		add_test(NAME cli_model_pty_integration
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_model_pty.py
+				$<TARGET_FILE:morph-cli-pty-driver>)
+		set_tests_properties(cli_model_pty_integration PROPERTIES
+			SKIP_RETURN_CODE 77 TIMEOUT 90)
 		add_test(NAME cli_permissions_pty_integration
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_permissions_pty.py
 				$<TARGET_FILE:morph-cli-pty-driver>)

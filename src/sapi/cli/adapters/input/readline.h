@@ -3,6 +3,7 @@
 
 struct cli_application;
 
+void cli_readline_sync_mode(struct cli_application *ctx, int animate);
 const char *cli_readline_input_prompt_borrow(struct cli_application *ctx);
 #ifdef HAVE_READLINE
 struct cli_command_job;

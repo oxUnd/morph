@@ -29,7 +29,8 @@ static const char *const history_tables[] = {"messages",
 					     "message_attachments",
 					     "sub_agent_tasks",
 					     "sub_agent_events",
-					     "session_plans"};
+					     "session_plans", "session_skill_activations",
+					     "agent_threads", "agent_mailbox", "agent_events"};
 
 #define IMPORT_TABLE_COUNT (sizeof(history_tables) / sizeof(history_tables[0]))
 
@@ -74,12 +75,17 @@ static int import_revision(sqlite3 *db, int64_t session_id, char hash[65])
 		int attachments = strcmp(table, "message_attachments") == 0;
 		int tasks = strcmp(table, "sub_agent_tasks") == 0;
 		int events = strcmp(table, "sub_agent_events") == 0;
+		int agents = !strcmp(table, "agent_threads") || !strcmp(table, "agent_mailbox") ||
+			!strcmp(table, "agent_events");
 		if (!import_has_column(db, "incoming", table,
-			attachments ? "message_id" : tasks ? "parent_session_id" :
+			agents ? "root_session_id" : attachments ? "message_id" : tasks ? "parent_session_id" :
 			events ? "task_id" : "session_id"))
 			continue;
 		morph_buf_init(&sql, 128);
-		if (tasks)
+		if (agents)
+			morph_buf_printf(&sql, "SELECT * FROM incoming.%s WHERE root_session_id=? "
+				"ORDER BY %s", table, !strcmp(table, "agent_threads") ? "agent_id" : "id");
+		else if (tasks)
 			morph_buf_puts(&sql, "SELECT * FROM incoming.sub_agent_tasks "
 				"WHERE parent_session_id=? ORDER BY task_id");
 		else if (events)
@@ -92,7 +98,8 @@ static int import_revision(sqlite3 *db, int64_t session_id, char hash[65])
 				"WHERE m.session_id=? ORDER BY a.id");
 		else morph_buf_printf(&sql,
 			"SELECT * FROM incoming.%s WHERE session_id=? ORDER BY %s",
-			table, strcmp(table, "sync_ui_messages") == 0 ? "seq" :
+			table, !strcmp(table, "session_skill_activations") ? "skill_name" :
+			strcmp(table, "sync_ui_messages") == 0 ? "seq" :
 			(import_has_column(db, "incoming", table, "id") ? "id" : "session_id"));
 		if (sql.failed) {
 			int error = sql.failed;
@@ -309,6 +316,9 @@ static int import_table(sqlite3 *db, const char *table, int64_t message_offset,
 	int count = 0;
 	int step;
 
+	if (!strcmp(table, "agent_threads") || !strcmp(table, "agent_mailbox") ||
+	    !strcmp(table, "agent_events"))
+		return 0;
 	if (!import_has_column(db, "incoming", table, "session_id"))
 		return 0;
 	if (offset < 0)
@@ -485,6 +495,37 @@ static int import_file_execute(struct runtime *runtime, const char *path,
 			"SELECT m.new_id,e.event_json,e.created_at FROM "
 			"incoming.sub_agent_events e "
 			"JOIN import_task_map m ON e.task_id=m.old_id;");
+	if (rc == 0 && import_has_column(db, "incoming", "agent_threads", "root_session_id"))
+		rc = import_exec(db,
+			"INSERT INTO agent_threads(root_session_id,agent_id,parent_agent_id,session_id,"
+			"model,effort,depth,description,status,result,error_code,iterations,started_at,ended_at) "
+			"SELECT p.new_id,a.agent_id,a.parent_agent_id,c.new_id,a.model,a.effort,a.depth,"
+			"a.description,CASE WHEN a.status IN (0,1) THEN 4 ELSE a.status END,a.result,"
+			"a.error_code,a.iterations,a.started_at,a.ended_at FROM incoming.agent_threads a "
+			"JOIN import_session_map p ON p.old_id=a.root_session_id "
+			"JOIN import_session_map c ON c.old_id=a.session_id WHERE p.is_new=1;");
+	if (rc == 0 && import_has_column(db, "incoming", "agent_mailbox", "root_session_id"))
+		rc = import_exec(db,
+			"INSERT INTO agent_mailbox(root_session_id,sender,recipient,kind,body,consumed) "
+			"SELECT p.new_id,a.sender,a.recipient,a.kind,a.body,a.consumed "
+			"FROM incoming.agent_mailbox a JOIN import_session_map p "
+			"ON p.old_id=a.root_session_id WHERE p.is_new=1;");
+	if (rc == 0 && import_has_column(db, "incoming", "agent_events", "root_session_id"))
+		rc = import_exec(db,
+			"INSERT INTO agent_events(root_session_id,agent_id,event_json) "
+			"SELECT p.new_id,a.agent_id,a.event_json FROM incoming.agent_events a "
+			"JOIN import_session_map p ON p.old_id=a.root_session_id WHERE p.is_new=1;");
+	if (rc == 0 && import_has_column(db, "incoming", "agent_budget_state", "root_session_id"))
+		rc = import_exec(db,
+			"INSERT INTO agent_budget_state(root_session_id,used,input_tokens,cached_tokens,"
+			"output_tokens,reminder_level) SELECT p.new_id,a.used,a.input_tokens,"
+			"a.cached_tokens,a.output_tokens,a.reminder_level FROM incoming.agent_budget_state a "
+			"JOIN import_session_map p ON p.old_id=a.root_session_id WHERE 1 "
+			"ON CONFLICT(root_session_id) DO UPDATE SET used=MAX(used,excluded.used),"
+			"input_tokens=MAX(input_tokens,excluded.input_tokens),"
+			"cached_tokens=MAX(cached_tokens,excluded.cached_tokens),"
+			"output_tokens=MAX(output_tokens,excluded.output_tokens),"
+			"reminder_level=MAX(reminder_level,excluded.reminder_level);");
 	if (rc == 0)
 		rc = import_check(db, "PRAGMA main.foreign_key_check");
 	if (rc == 0)

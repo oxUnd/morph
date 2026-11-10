@@ -1,4 +1,6 @@
 #include "sapi/cli/presentation/presenter.h"
+#include "sapi/cli/pages/subagents.h"
+#include "sapi/cli/models/composer.h"
 #include "sapi/cli/pages/turn_details.h"
 #include "sapi/cli/presentation/presenter_state.h"
 #include "sapi/cli/presentation/output.h"
@@ -13,6 +15,7 @@
 #include "sapi/cli/adapters/media/renderer.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/pages/jobs.h"
+#include "sapi/cli/services/agents.h"
 #include "sapi/cli/widgets/list.h"
 #include "agent/patch.h"
 #include <morph/tui/view.h>
@@ -106,11 +109,13 @@ static void cli_presenter_user_row(struct cli_application *ctx, const char *text
 	}
 	if (first) {
 		if (color)
-			printf(ctx, CLI_INPUT_MARKER_COLOR "› " ANSI_RESET CLI_INPUT_BACKGROUND);
+			printf(ctx, "%s%s" ANSI_RESET CLI_INPUT_BACKGROUND,
+			       ctx->composer.ultra ? CLI_INPUT_ULTRA_COLOR : CLI_INPUT_MARKER_COLOR,
+			       ctx->composer.ultra ? "›› " : "› ");
 		else
-			printf(ctx, "> ");
+			printf(ctx, "%s", ctx->composer.ultra ? "›› " : "> ");
 	} else {
-		printf(ctx, "  ");
+		printf(ctx, "%*s", cli_composer_model_prompt_width(&ctx->composer), "");
 	}
 	printf(ctx, "%.*s", (int)length, text);
 	if (color)
@@ -156,7 +161,7 @@ void cli_presentation_user_input(struct cli_application *ctx, const char *text)
 			*newline = '\0';
 		do {
 			const char *end =
-				utf8_advance_display_width_borrow(cursor, (size_t)(width - 2));
+				utf8_advance_display_width_borrow(cursor, (size_t)(width - cli_composer_model_prompt_width(&ctx->composer)));
 
 			cli_presenter_user_row(ctx, cursor, (size_t)(end - cursor), first);
 			first = 0;
@@ -1014,10 +1019,16 @@ static int cli_presenter_plan(struct cli_application *ctx, const struct morph_ev
 	const char *selected_key = "id";
 	int printed = 0;
 
-	if (!ev || !cJSON_IsObject(ev->data) || !cli_presenter_event_string(ev, "tool") ||
-	    strcmp(cli_presenter_event_string(ev, "tool"), "plan") != 0)
+	if (!ev || !cJSON_IsObject(ev->data))
 		return 0;
-	result = cJSON_GetObjectItemCaseSensitive(ev->data, "data");
+	if (ev->name && !strcmp(ev->name, "plan.updated")) {
+		result = ev->data;
+	} else {
+		const char *tool = cli_presenter_event_string(ev, "tool");
+		if (!tool || strcmp(tool, "plan"))
+			return 0;
+		result = cJSON_GetObjectItemCaseSensitive(ev->data, "data");
+	}
 	plans = cJSON_IsObject(result) ? cJSON_GetObjectItemCaseSensitive(result, "plans") : NULL;
 	if (!cJSON_IsArray(plans))
 		return 0;
@@ -1583,6 +1594,8 @@ int cli_presentation_init(struct cli_application *ctx)
 		return -ENOMEM;
 	rc = morph_buf_init(&ctx->presenter->event_stream, BUFSIZ);
 	if (!rc)
+		rc = morph_buf_init(&ctx->presenter->agent_receipts, 256);
+	if (!rc)
 		rc = morph_buf_init(&ctx->presenter->markdown_stream_text, BUFSIZ);
 	if (!rc)
 		rc = morph_buf_init(&ctx->presenter->native_content, BUFSIZ);
@@ -1614,6 +1627,7 @@ void cli_presentation_reset(struct cli_application *ctx)
 	morph_strmap_clear(&ctx->presenter->rendered_artifacts);
 	morph_strmap_clear(&ctx->presenter->announced_artifacts);
 	cli_markdown_stream_reset(ctx, 1);
+	cli_agents_flush_receipts(ctx);
 	ctx->presenter->event_stream_kind = CLI_PRESENTER_STREAM_NONE;
 	ctx->presenter->event_stream_has_delta = 0;
 	ctx->presenter->event_stream_complete = 0;
@@ -1629,6 +1643,11 @@ void cli_presentation_finish(struct cli_application *ctx)
 {
 	cli_presenter_clear_status(ctx);
 	cli_transcript_finish(ctx);
+	if (ctx && ctx->presenter && ctx->presenter->agent_receipts.len) {
+		cli_presenter_print_stream(ctx);
+		cli_markdown_stream_reset(ctx, 1);
+		cli_agents_flush_receipts(ctx);
+	}
 }
 
 void cli_presentation_cleanup(struct cli_application *ctx)
@@ -1637,6 +1656,7 @@ void cli_presentation_cleanup(struct cli_application *ctx)
 		return;
 	if (cli_turn_details_is_open(ctx))
 		cli_turn_details_toggle(ctx);
+	cli_subagents_cleanup(ctx);
 	cli_jobs_cleanup(ctx);
 	cli_turn_details_cleanup(ctx);
 	cli_transcript_reset(ctx);
@@ -1645,6 +1665,7 @@ void cli_presentation_cleanup(struct cli_application *ctx)
 	morph_buf_cleanup(&ctx->presenter->native_content);
 	morph_buf_cleanup(&ctx->presenter->markdown_stream_text);
 	morph_buf_cleanup(&ctx->presenter->event_stream);
+	morph_buf_cleanup(&ctx->presenter->agent_receipts);
 	morph_strmap_cleanup(&ctx->presenter->rendered_artifacts);
 	morph_strmap_cleanup(&ctx->presenter->announced_artifacts);
 	free(ctx->presenter);
@@ -1672,6 +1693,16 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 	}
 	if (!ctx->presentation_ready)
 		return 0;
+	int subagent_rc = cli_subagents_event(ctx, ev);
+	if (subagent_rc)
+		return subagent_rc < 0 ? subagent_rc : 0;
+	if (ev->name && !strcmp(ev->name, "plan.updated")) {
+		int paused = cli_presenter_pause_status(ctx);
+		cli_presenter_print_stream(ctx);
+		(void)cli_presenter_plan(ctx, ev);
+		cli_presenter_resume_status(ctx, paused);
+		return 0;
+	}
 	if (ev->type == MORPH_EVENT_BACKGROUND && ev->name && strncmp(ev->name, "hook.", 5) == 0) {
 		if (strcmp(ev->name, "hook.progress") == 0) {
 			cli_presenter_status(ctx, ev->message ? ev->message : "Running hooks");
@@ -1710,6 +1741,9 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 		cli_presenter_resume_status(ctx, paused);
 		return 0;
 	}
+	int agents_rc = cli_agents_event(ctx, ev);
+	if (agents_rc)
+		return agents_rc < 0 ? agents_rc : 0;
 	int jobs_rc = cli_jobs_event(ctx, ev);
 	if (jobs_rc)
 		return jobs_rc < 0 ? jobs_rc : 0;
@@ -1805,6 +1839,7 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 			}
 			ctx->presenter->native_content_started = 0;
 			ctx->presenter->native_content_visible = 0;
+			cli_agents_flush_receipts(ctx);
 			return 0;
 		}
 		if (strcmp(ev->name, "react.thought.delta") == 0) {
@@ -1818,9 +1853,16 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 			}
 			return rc;
 		}
-		if (strcmp(ev->name, "react.thought.end") == 0)
-			return cli_presenter_append_stream(ctx, CLI_PRESENTER_STREAM_THOUGHT, text,
-							   0, 1, NULL);
+		if (strcmp(ev->name, "react.thought.end") == 0) {
+			int rc = cli_presenter_append_stream(ctx, CLI_PRESENTER_STREAM_THOUGHT, text,
+				0, 1, NULL);
+			if (rc == 0 && ctx->presenter->agent_receipts.len) {
+				cli_presenter_print_stream(ctx);
+				cli_markdown_stream_reset(ctx, 1);
+				cli_agents_flush_receipts(ctx);
+			}
+			return rc;
+		}
 		if (strcmp(ev->name, "react.reasoning.delta") == 0) {
 			int rc = cli_presenter_append_stream(ctx, CLI_PRESENTER_STREAM_REASONING,
 							     text, 1, 0, NULL);
@@ -1847,10 +1889,12 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 		}
 		if (strcmp(ev->name, "react.final") == 0) {
 			cli_presenter_final(ctx, ev);
+			cli_agents_flush_receipts(ctx);
 			return 0;
 		}
 		if (strcmp(ev->name, "react.turn.end") == 0) {
 			cli_presenter_turn_end(ctx, ev);
+			cli_agents_flush_receipts(ctx);
 			return 0;
 		}
 		return 0;

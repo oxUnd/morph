@@ -1,0 +1,124 @@
+"""Real collaboration activity, running /agents and composer redraws in a PTY."""
+import http.server
+import json
+from pathlib import Path
+import queue
+import re
+import sys
+import tempfile
+import threading
+import time
+
+from test_cli_pty import Model, Terminal
+
+
+def wait_for(terminal, predicate, timeout=8):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        terminal.pump(.05)
+        if predicate():
+            return
+    raise AssertionError(terminal.raw[-8000:])
+
+
+def tool_delta(name, arguments, call_id):
+    return {'tool_calls': [{'index': 0, 'id': call_id, 'type': 'function',
+                           'function': {'name': name, 'arguments': json.dumps(arguments)}}]}
+
+
+def run(driver, port, columns):
+    releases = []
+    with tempfile.TemporaryDirectory(prefix='morph-agents-pty-') as temp:
+        terminal = Terminal(driver, Path(temp), port, hooks_enabled=False,
+                            extra_config='[agents]\nmulti_agent_mode="proactive"\n')
+        try:
+            terminal.wait_for_composer()
+            terminal.child.setwinsize(24, columns)
+            terminal.screen.resize(24, columns)
+            terminal.send('exercise collaboration\r')
+            _, root = terminal.request()
+            releases.append(root)
+            wait_for(terminal, lambda: any('Working' in line and 'Agents: 0 running' in line
+                                         for line in terminal.screen.display))
+            working = next(line for line in terminal.screen.display if 'Working' in line)
+            assert 'Agents: 0 running' in working, '\n'.join(terminal.screen.display)
+            assert not any(line.lstrip().startswith('Agents:') for line in terminal.screen.display)
+            root.delta = tool_delta('spawn_agent', {'task_name': 'worker',
+                'message': 'CHILD_ACTIVITY_TASK: inspect independently', 'fork_turns': 'none'}, 'spawn_work')
+            root.set()
+            pair = [terminal.request(), terminal.request()]
+            releases.extend(release for _, release in pair)
+            child = next(release for body, release in pair
+                         if any('/root/worker' in message.get('content', '')
+                                for message in body.get('messages', []) if message['role'] == 'system'))
+            primary = next(release for _, release in pair if release is not child)
+            wait_for(terminal, lambda: 'Agents: 1 running' in '\n'.join(terminal.screen.display))
+            wait_for(terminal, lambda: any('└ worker' in line for line in terminal.screen.display))
+            active_row = next(line for line in terminal.screen.display if '└ worker' in line)
+            assert '/root/' not in active_row and 'CHILD_ACTIVITY_TASK' not in active_row
+            working = next(line for line in terminal.screen.display if 'Working' in line)
+            assert 'Agents: 1 running' in working, '\n'.join(terminal.screen.display)
+            assert not any(line.lstrip().startswith('Agents:') for line in terminal.screen.display)
+            primary.delta = tool_delta('wait_agent', {'timeout_ms': 10000}, 'wait_work')
+            primary.set()
+            wait_for(terminal, lambda: 'Waiting for agents' in '\n'.join(terminal.screen.display))
+            assert 'Running…' not in '\n'.join(terminal.screen.display)
+            child.delta = tool_delta('exec', {'command': 'sleep 2'}, 'child_inspect')
+            child.set()
+            wait_for(terminal, lambda: 'Running exec' in re.sub(r'\x1b\[[0-9;]*m', '', terminal.raw))
+            terminal.send('/agents\r')
+            wait_for(terminal, lambda: 'Agents (1)' in terminal.raw and 'CHILD_ACTIVITY_TASK' in terminal.raw)
+            assert not any(line.startswith('›› /agents') for line in terminal.screen.display)
+            terminal.send('PRESERVED_AGENT_DRAFT')
+            _, child_done = terminal.request()
+            releases.append(child_done)
+            child_done.delta = {'content': 'CHILD_VERIFIED_RESULT'}
+            child_done.set()
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                terminal.pump(.05)
+                try:
+                    _, release = Model.requests.get_nowait()
+                    releases.append(release)
+                    release.delta = {'content': 'ROOT_INTEGRATED_RESULT'}
+                    release.set()
+                except queue.Empty:
+                    pass
+                if 'Finished worker' in re.sub(r'\x1b\[[0-9;]*m', '', terminal.raw) and 'ROOT_INTEGRATED_RESULT' in terminal.raw:
+                    break
+            else:
+                raise AssertionError(terminal.raw[-8000:])
+            terminal.pump(.5)
+            visible = '\n'.join(terminal.screen.display)
+            assert visible.count('PRESERVED_AGENT_DRAFT') == 1, visible
+            terminal.child.send('\x15')
+            terminal.send('/agents /root/worker\r')
+            wait_for(terminal, lambda: 'CHILD_VERIFIED_RESULT' in terminal.raw)
+            assert sum(line.startswith('›› ') for line in terminal.screen.display) == 1
+            print(f'checked agent activity, inspection and draft at {columns} columns', flush=True)
+        except Exception:
+            print('\n'.join(terminal.screen.display), flush=True)
+            raise
+        finally:
+            for release in releases:
+                release.set()
+            terminal.child.close(force=True)
+            while not Model.requests.empty():
+                _, release = Model.requests.get_nowait()
+                release.set()
+
+
+def main():
+    driver = Path(sys.argv[1]).resolve()
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        for columns in (120, 80, 60):
+            run(driver, server.server_port, columns)
+    finally:
+        server.shutdown()
+
+
+if __name__ == '__main__':
+    main()

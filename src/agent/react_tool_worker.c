@@ -73,6 +73,18 @@ static int tool_callback_ask(const char *question, const char *const *choices, i
 	return rc;
 }
 
+static int tool_callback_input_pending(void *opaque)
+{
+	struct async_tool_call *call = opaque;
+	int pending = 0;
+	if (tool_callback_enter(call)) {
+		pending = call->react->prompt_pending_fn
+			? call->react->prompt_pending_fn(call->react->action_drain_user_data) : 0;
+		tool_callback_leave(call);
+	}
+	return pending;
+}
+
 /** \brief Close callbacks and transfer a joinable worker to its existing owner. */
 void react_tool_worker_retire(struct react_context *ctx, struct async_tool_call *call,
 			      pthread_t thread)
@@ -134,7 +146,10 @@ struct async_tool_call *react_tool_worker_create(struct tool_registry *tools,
 	call->runtime.ask_user_fn = react->ask_user_fn;
 	call->runtime.ask_user_user_data = react->ask_user_data;
 	call->runtime.turn_id = react->turn_id;
-	call->runtime.sub_agent_depth = react->sub_agent_depth;
+	call->runtime.agents = react->agents;
+	call->runtime.agent_depth = react->agent_depth;
+	call->runtime.agent_id = react->agent_id[0] ? react->agent_id : "/root";
+	call->runtime.workdir = react->workdir;
 	call->tool_name = strdup(tool_name ? tool_name : "");
 	call->tool_args = strdup(tool_args ? tool_args : "{}");
 	call->tool_call_id = strdup(tool_call_id ? tool_call_id : "");
@@ -322,6 +337,8 @@ static void *react_tool_worker_run(void *arg)
 		runtime.http.cancel_token = &call->cancel_token;
 		runtime.http.interrupt_check = NULL;
 		runtime.http.interrupt_user_data = NULL;
+		runtime.input_pending_fn = tool_callback_input_pending;
+		runtime.input_pending_user_data = call;
 		runtime.event_cb = tool_callback_event;
 		runtime.event_user_data = call;
 		runtime.ask_user_fn = tool_callback_ask;

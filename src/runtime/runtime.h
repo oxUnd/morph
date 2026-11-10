@@ -19,8 +19,9 @@ extern "C" {
 #include "runtime/sync.h"
 #include "runtime/recap.h"
 #include "runtime/services.h"
+#include "runtime/model.h"
 #include "agent/tools/img_annotate.h"
-#include "agent/sub_agent.h"
+#include "agent/agent_control.h"
 #include "session.h"
 #include <stdint.h>
 
@@ -76,7 +77,7 @@ struct runtime_options {
 	int enable_config_write;
 	int enable_img_annotate;
 	int enable_shell_exts;
-	int enable_sub_agents;
+	int enable_multi_agent;
 	int allocate_skill_registry;
 	int auto_connect_mcp;
 	int create_new_session;
@@ -192,15 +193,23 @@ int runtime_permission_revoke_subject(struct runtime *runtime,
 int runtime_permission_clear(struct runtime *runtime, int all_projects,
 				     int *deleted);
 
-int runtime_sub_agent_list(struct runtime *runtime,
+int runtime_agent_budget(struct runtime *runtime, struct agent_budget *out);
+int runtime_agent_list(struct runtime *runtime,
 			   int64_t parent_session_id,
-			   struct sub_agent_task_info **out, int *count);
-void runtime_sub_agent_list_free(struct sub_agent_task_info *tasks,
+			   struct agent_info **out, int *count);
+int runtime_agent_read(struct runtime *runtime, const char *id, struct agent_info **out);
+int runtime_agent_activity(struct runtime *runtime, int64_t parent_session_id,
+	struct agent_info **out, int *count);
+int runtime_agent_subscribe(struct runtime *runtime, const char *id,
+	char ***events, int *count, int64_t *sequence);
+int runtime_agent_followup(struct runtime *runtime, const char *id, const char *message);
+int runtime_agent_interrupt(struct runtime *runtime, const char *id);
+void runtime_agent_list_free(struct agent_info *tasks,
 				 int count);
-int runtime_sub_agent_select(struct runtime *runtime, const char *task_id);
-int runtime_sub_agent_events(struct runtime *runtime, const char *task_id,
+int runtime_agent_select(struct runtime *runtime, const char *task_id);
+int runtime_agent_events(struct runtime *runtime, const char *task_id,
 			     char ***events, int *count);
-void runtime_sub_agent_events_free(char **events, int count);
+void runtime_agent_events_free(char **events, int count);
 
 
 #ifdef __cplusplus

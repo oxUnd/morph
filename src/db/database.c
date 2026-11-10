@@ -24,6 +24,10 @@ static const char schema_sql[] =
 	"updated_at INTEGER NOT NULL,"
 	"token_used INTEGER DEFAULT 0);"
 
+	"CREATE TABLE IF NOT EXISTS session_skill_activations ("
+	"session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,"
+	"skill_name TEXT NOT NULL,PRIMARY KEY(session_id,skill_name));"
+
 	"CREATE TABLE IF NOT EXISTS messages ("
 	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
 	"session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,"
@@ -194,6 +198,33 @@ static const char sub_agent_schema_sql[] =
 	"ON sub_agent_tasks(parent_session_id,started_at);"
 	"CREATE INDEX IF NOT EXISTS idx_sub_agent_events_task "
 	"ON sub_agent_events(task_id,id);";
+
+static const char agent_schema_sql[] =
+	"CREATE TABLE IF NOT EXISTS agent_threads ("
+	"root_session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,"
+	"agent_id TEXT NOT NULL,parent_agent_id TEXT NOT NULL,"
+	"session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,"
+	"model TEXT NOT NULL,effort TEXT NOT NULL,depth INTEGER NOT NULL,"
+	"description TEXT NOT NULL,status INTEGER NOT NULL,result TEXT,"
+	"error_code INTEGER NOT NULL DEFAULT 0,iterations INTEGER NOT NULL DEFAULT 0,"
+	"started_at INTEGER NOT NULL,ended_at INTEGER NOT NULL DEFAULT 0,"
+	"PRIMARY KEY(root_session_id,agent_id));"
+	"CREATE TABLE IF NOT EXISTS agent_mailbox ("
+	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
+	"root_session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,"
+	"sender TEXT NOT NULL,recipient TEXT NOT NULL,kind TEXT NOT NULL,"
+	"body TEXT NOT NULL,consumed INTEGER NOT NULL DEFAULT 0);"
+	"CREATE INDEX IF NOT EXISTS idx_agent_mailbox_recipient ON "
+	"agent_mailbox(root_session_id,recipient,consumed,id);"
+	"CREATE TABLE IF NOT EXISTS agent_events ("
+	"id INTEGER PRIMARY KEY AUTOINCREMENT,root_session_id INTEGER NOT NULL "
+	"REFERENCES sessions(id) ON DELETE CASCADE,agent_id TEXT NOT NULL,"
+	"event_json TEXT NOT NULL);"
+	"CREATE TABLE IF NOT EXISTS agent_budget_state ("
+	"root_session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,"
+	"used INTEGER NOT NULL DEFAULT 0,input_tokens INTEGER NOT NULL DEFAULT 0,"
+	"cached_tokens INTEGER NOT NULL DEFAULT 0,output_tokens INTEGER NOT NULL DEFAULT 0,"
+	"reminder_level INTEGER NOT NULL DEFAULT 0);";
 
 static const char history_schema_sql[] =
 	"CREATE TABLE IF NOT EXISTS model_history_items ("
@@ -664,6 +695,9 @@ int db_init_schema(struct db *db)
 	if (rc != 0)
 		return rc;
 	rc = db_exec(db, preference_schema_sql);
+	if (rc != 0)
+		return rc;
+	rc = db_exec(db, agent_schema_sql);
 	if (rc != 0)
 		return rc;
 	rc = db_exec(db, sub_agent_schema_sql);

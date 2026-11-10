@@ -80,32 +80,17 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_STREQ(cfg.prompt.mode, "append");
 }
 
-TEST_F(ConfigTest, PromptModesAndIndependentSubAgentSources)
+TEST_F(ConfigTest, MultiAgentConfiguration)
 {
-	const char *toml = R"(
-[prompt]
-mode = "replace"
-system_prompt_file = "/tmp/main.txt"
-system_prompt_dir = "/tmp/main.d"
-[[agent.sub_agents]]
-name = "custom"
-system_prompt_mode = "replace"
-system_prompt_file = "/tmp/child.txt"
-system_prompt_dir = "/tmp/child.d"
-[[agent.sub_agents]]
-name = "legacy"
-system_prompt_file = "/tmp/legacy.txt"
-)";
+	const char *toml = "[agents]\nenabled=true\nmax_threads=4\nmax_depth=3\n"
+		"multi_agent_mode=\"proactive\"\n";
 	ASSERT_EQ(file_write_all(config_path, toml, strlen(toml)), 0);
 	struct config cfg;
 	ASSERT_EQ(config_load(NULL, &cfg, config_path), 0);
-	EXPECT_STREQ(cfg.prompt.mode, "replace");
-	EXPECT_STREQ(cfg.prompt.system_prompt_file, "/tmp/main.txt");
-	EXPECT_STREQ(cfg.prompt.system_prompt_dir, "/tmp/main.d");
-	ASSERT_EQ(cfg.sub_agents.count, 2);
-	EXPECT_STREQ(cfg.sub_agents.entries[0].system_prompt_mode, "replace");
-	EXPECT_STREQ(cfg.sub_agents.entries[0].system_prompt_dir, "/tmp/child.d");
-	EXPECT_STREQ(cfg.sub_agents.entries[1].system_prompt_mode, "append");
+	EXPECT_EQ(cfg.agents.enabled, 1);
+	EXPECT_EQ(cfg.agents.max_threads, 4);
+	EXPECT_EQ(cfg.agents.max_depth, 3);
+	EXPECT_STREQ(cfg.agents.multi_agent_mode, "proactive");
 }
 
 TEST_F(ConfigTest, PromptRejectsUnknownModes)

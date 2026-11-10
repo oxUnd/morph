@@ -15,6 +15,9 @@ int plan_tool_refresh_reports(struct tool_registry *reg);
 
 int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 		   struct model *llm);
+/* Rebind a private, idle child registry while retaining its access settings. */
+int plan_tool_rebind(struct tool_registry *reg, struct plan_registry *plans,
+		     struct model *llm);
 
 #ifdef __cplusplus
 }

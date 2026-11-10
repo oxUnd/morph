@@ -7,6 +7,8 @@
 #include "util/cleanup.h"
 #include "util/json.h"
 #include "util/buf.h"
+#include "util/str.h"
+#include "util/utf8.h"
 #include "cJSON.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +24,7 @@
 #include <pthread.h>
 
 struct plan_tool_context {
+	unsigned int refs;
 	pthread_mutex_t mutex;
 	struct plan_registry *plans;
 	struct tool_context *tctx;
@@ -31,8 +34,10 @@ struct plan_tool_context {
 static void plan_tool_context_destroy(void *user_data)
 {
 	struct plan_tool_context *ctx = user_data;
-	if (ctx) pthread_mutex_destroy(&ctx->mutex);
-	free(ctx);
+	if (ctx && __atomic_sub_fetch(&ctx->refs, 1, __ATOMIC_ACQ_REL) == 0) {
+		pthread_mutex_destroy(&ctx->mutex);
+		free(ctx);
+	}
 }
 
 static char *format_plan(struct plan *p)
@@ -1046,6 +1051,184 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result, voi
 	return rc;
 }
 
+#define UPDATE_PLAN_NAME "Task plan"
+
+static void update_plan_candidate_cleanup(struct plan **candidate)
+{
+	if (candidate) {
+		free(*candidate);
+		*candidate = NULL;
+	}
+}
+
+static int update_plan_parse(const cJSON *args, struct plan *candidate)
+{
+	const cJSON *steps = cJSON_GetObjectItemCaseSensitive(args, "plan");
+	const cJSON *explanation = cJSON_GetObjectItemCaseSensitive(args, "explanation");
+	if (!cJSON_IsObject(args) || !cJSON_IsArray(steps) ||
+	    cJSON_GetArraySize(steps) > PLAN_MAX_STEPS ||
+	    (explanation && (!cJSON_IsString(explanation) || utf8valid(explanation->valuestring))))
+		return -EINVAL;
+	int fields = 0;
+	const cJSON *field;
+	cJSON_ArrayForEach (field, args) {
+		int bit = !strcmp(field->string, "plan")	  ? 1
+			  : !strcmp(field->string, "explanation") ? 2
+								  : 0;
+		if (!bit || (fields & bit))
+			return -EINVAL;
+		fields |= bit;
+	}
+	candidate->active_step = -1;
+	candidate->step_count = cJSON_GetArraySize(steps);
+	for (int i = 0; i < candidate->step_count; i++) {
+		const cJSON *item = cJSON_GetArrayItem(steps, i);
+		const char *text =
+			cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "step"));
+		const char *status =
+			cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "status"));
+		if (!cJSON_IsObject(item) || !text || !status || utf8valid(text) ||
+		    strlen(text) >= sizeof(candidate->steps[i].description) ||
+		    !morph_str_trim_borrow((morph_str_t){strlen(text), text}).len ||
+		    (strcmp(status, "pending") && strcmp(status, "in_progress") &&
+		     strcmp(status, "completed")))
+			return -EINVAL;
+		fields = 0;
+		cJSON_ArrayForEach (field, item) {
+			int bit = !strcmp(field->string, "step")     ? 1
+				  : !strcmp(field->string, "status") ? 2
+								     : 0;
+			if (!bit || (fields & bit))
+				return -EINVAL;
+			fields |= bit;
+		}
+		if (!strcmp(status, "in_progress")) {
+			if (candidate->active_step >= 0)
+				return -EINVAL;
+			candidate->active_step = i;
+		}
+		candidate->steps[i].id = i + 1;
+		memcpy(candidate->steps[i].description, text, strlen(text) + 1);
+		memcpy(candidate->steps[i].status, status, strlen(status) + 1);
+	}
+	return 0;
+}
+
+static int update_plan_apply(struct plan_tool_context *ctx, const cJSON *args,
+			     const struct plan *candidate, struct tool_result *result,
+			     cJSON **event_data)
+{
+	struct plan *target = plan_borrow(ctx->plans, UPDATE_PLAN_NAME);
+	if (!target) {
+		const char *placeholder[] = {"Task plan"};
+		if (ctx->plans->count >= PLAN_MAX_PLANS)
+			return -ENOSPC;
+		target = plan_add_borrow(ctx->plans, UPDATE_PLAN_NAME, "", placeholder, 1);
+		if (!target)
+			return -ENOMEM;
+	}
+	memcpy(target->steps, candidate->steps, sizeof(target->steps));
+	target->step_count = candidate->step_count;
+	target->active_step = candidate->active_step;
+	*event_data = plan_registry_to_json(ctx->plans, "update_plan", target->id, target->name);
+	if (!*event_data)
+		return -ENOMEM;
+	const cJSON *explanation = cJSON_GetObjectItemCaseSensitive(args, "explanation");
+	if (explanation &&
+	    !cJSON_AddStringToObject(*event_data, "explanation", explanation->valuestring))
+		return -ENOMEM;
+	cJSON *steps MORPH_CLEANUP(morph_json_cleanup) =
+		cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(args, "plan"), 1);
+	if (!steps)
+		return -ENOMEM;
+	int rc = morph_json_object_take(*event_data, "plan", &steps);
+	if (rc == 0)
+		rc = tool_result_success_text_copy(result, "Plan updated");
+	if (rc == 0)
+		rc = tool_result_finalize(result);
+	if (rc == 0)
+		rc = plan_registry_save(ctx->plans);
+	return rc;
+}
+
+static int update_plan_exec(const char *arguments, struct tool_result *result, void *opaque)
+{
+	struct plan_tool_context *ctx = opaque;
+	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(arguments);
+	cJSON *before MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *event_data MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	struct plan *candidate MORPH_CLEANUP(update_plan_candidate_cleanup) =
+		calloc(1, sizeof(*candidate));
+	if (!ctx || !result || !ctx->plans)
+		return -EINVAL;
+	if (!candidate)
+		return -ENOMEM;
+	int rc = update_plan_parse(args, candidate);
+	if (rc != 0) {
+		(void)tool_result_error_copy(
+			result, "invalid_arguments",
+			"Provide plan as a complete list of nonempty steps with pending, "
+			"in_progress or completed status, at most one in_progress step, and "
+			"optional string explanation. Unknown fields and oversized lists "
+			"or step text are not supported.");
+		return rc;
+	}
+	pthread_mutex_lock(&ctx->mutex);
+	before = plan_registry_json_create(ctx->plans);
+	rc = before ? update_plan_apply(ctx, args, candidate, result, &event_data) : -ENOMEM;
+	if (rc != 0 && before) {
+		int restore_rc = plan_registry_restore(ctx->plans, before);
+		if (restore_rc != 0)
+			rc = restore_rc;
+	}
+	pthread_mutex_unlock(&ctx->mutex);
+	if (rc != 0) {
+		(void)tool_result_error_copy(result, "plan_update_failed", morph_strerror(rc));
+		return rc;
+	}
+	const struct tool_runtime_context *runtime = result->runtime;
+	if (runtime && runtime->event_cb) {
+		struct morph_event event = {
+			.type = MORPH_EVENT_BACKGROUND,
+			.name = "plan.updated",
+			.phase = "end",
+			.message = "Plan updated",
+			.data = event_data,
+			.turn_id = runtime->turn_id,
+		};
+		(void)morph_event_emit(runtime->event_cb, runtime->event_user_data, &event);
+	}
+	return 0;
+}
+
+static int update_plan_register(struct tool_registry *reg, struct plan_tool_context *ctx)
+{
+	__atomic_add_fetch(&ctx->refs, 1, __ATOMIC_RELAXED);
+	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.name = "update_plan",
+		.description = "Update the task checklist with a complete list of steps and "
+			       "their pending, in_progress or completed status. At most one step "
+			       "may "
+			       "be in_progress. Include an optional explanation when the plan "
+			       "changes.",
+		.input_schema =
+			"{\"type\":\"object\",\"properties\":{"
+			"\"explanation\":{\"type\":\"string\"},\"plan\":{\"type\":\"array\","
+			"\"maxItems\":32,\"items\":{\"type\":\"object\",\"properties\":{"
+			"\"step\":{\"type\":\"string\"},\"status\":{\"type\":\"string\","
+			"\"enum\":[\"pending\",\"in_progress\",\"completed\"]}},"
+			"\"required\":[\"step\",\"status\"],\"additionalProperties\":false}}}"
+			","
+			"\"required\":[\"plan\"],\"additionalProperties\":false}",
+		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+		.flags = TOOL_FLAG_READONLY,
+		.exec = update_plan_exec,
+		.user_data = ctx,
+		.user_data_destroy = plan_tool_context_destroy,
+	};
+	return tool_register_take(reg, &spec);
+}
 int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 		   struct model *llm)
 {
@@ -1057,6 +1240,7 @@ int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 		return -ENOMEM;
 	int mutex_rc = pthread_mutex_init(&ctx->mutex, NULL);
 	if (mutex_rc != 0) { free(ctx); return -mutex_rc; }
+	ctx->refs = 1;
 	ctx->tctx = NULL;
 	ctx->plans = plans;
 	ctx->llm = llm;
@@ -1119,5 +1303,39 @@ int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 		.user_data = ctx,
 		.user_data_destroy = plan_tool_context_destroy};
 	int rc = tool_register_take(reg, &spec);
+	return rc == 0 ? update_plan_register(reg, ctx) : rc;
+}
+
+int plan_tool_rebind(struct tool_registry *reg, struct plan_registry *plans,
+		     struct model *llm)
+{
+	struct tool_entry *entry = reg ? tool_borrow(reg, "plan") : NULL;
+	if (!entry || !plans)
+		return -EINVAL;
+	unsigned int flags = entry->flags;
+	int timeout = entry->timeout_seconds;
+	int disabled = tool_is_disabled(reg, "plan");
+	struct tool_entry *update = tool_borrow(reg, "update_plan");
+	unsigned int update_flags = update ? update->flags : TOOL_FLAG_READONLY;
+	int update_timeout = update ? update->timeout_seconds : 0;
+	int update_disabled = update ? tool_is_disabled(reg, "update_plan") : disabled;
+	int rc = update ? tool_unregister(reg, "update_plan") : 0;
+	if (rc == 0)
+		rc = tool_unregister(reg, "plan");
+	if (rc == 0)
+		rc = plan_tool_init(reg, plans, llm);
+	if (rc != 0)
+		return rc;
+	entry = tool_borrow(reg, "plan");
+	entry->flags = flags;
+	entry->timeout_seconds = timeout;
+	update = tool_borrow(reg, "update_plan");
+	update->flags = update_flags;
+	update->timeout_seconds = update_timeout;
+	plan_tool_set_context(reg, reg->permission_context);
+	if (disabled)
+		rc = tool_disable(reg, "plan");
+	if (rc == 0 && update_disabled)
+		rc = tool_disable(reg, "update_plan");
 	return rc;
 }

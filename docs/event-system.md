@@ -530,12 +530,13 @@ FastCGI:
 - `src/sapi/fastcgi/agent_bridge.c` and `src/sapi/fastcgi/event_sink.c`: bridge
   the runtime event callback into those handlers
 
-Sub-agents/background work:
+Multi-agent/background work:
 
-- `src/agent/sub_agent.c`: task started/completed/failed events
-- `src/agent/sub_agent.c`: child ReAct contexts inherit event callbacks
-- `src/agent/tools/sub_agent_tools.c`: delegate/status/fanout are surfaced
-  through tool events and sub-agent background events
+- `src/agent/agent_control.c`: `agent.started` / `agent.completed` activity events.
+- Child events carry `agent_id` and `parent_session_id`, are persisted, and are
+  forwarded only for the selected agent.
+- `src/agent/tools/multi_agents.c`: Codex-compatible collaboration tool calls.
+
 
 Memory/compression:
 
@@ -614,3 +615,8 @@ or `model`; phases are `begin`, `end` and `failed`. Completed reviews include a
 Automatic reviews use a separate model client with usage phase `approval`.
 Human fallback retains the existing operation/HITL callback contracts, so CLI,
 JSON and FastCGI continue to present their existing approval interactions.
+
+Multi-agent activity uses `agent.started`, `agent.updated`, and `agent.completed`.
+Payloads include `agent_id`, `parent_session_id`, `description`, `status`,
+`activity`, and `error_code`. CLI activity rows consume these on the UI thread;
+full child tool streams remain scoped to the selected agent.

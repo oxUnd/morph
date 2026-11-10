@@ -1,4 +1,5 @@
 #include "runtime/execute.h"
+#include "agent/agent_control.h"
 #include "util/signals.h"
 #include "runtime/runtime_internal.h"
 #include "runtime/output.h"
@@ -96,6 +97,7 @@ static int runtime_execute_locked(struct runtime_engine *engine,
 		}
 	}
 	if (rc == 0) {
+		agent_control_begin_turn(engine->react->agents, engine->react);
 		output_forwarder.request = request;
 		output_forwarder.engine = engine;
 		rc = react_run(engine->react, request->model_input, runtime_output_forward,
@@ -107,6 +109,13 @@ static int runtime_execute_locked(struct runtime_engine *engine,
 		cJSON_Delete(output);
 	}
 	react_drain_tools(engine->react);
+	agent_control_set_interactions_blocked(engine->react->agents, 1);
+	if (engine->drain_turn)
+		engine->drain_turn(engine->user_data);
+	if (engine->react->outcome != REACT_OUTCOME_SUCCESS)
+		agent_control_cancel(engine->react->agents);
+	agent_control_join(engine->react->agents);
+	agent_control_end_turn(engine->react->agents);
 	runtime_turn_scope_close_hooks(engine);
 	if (turn.begun) {
 		finish_rc = agent_turn_finish(&turn, &result->turn);
@@ -152,6 +161,7 @@ int runtime_execute(struct runtime_engine *engine, const struct runtime_request 
 	runtime_turn_scope_restore_request(scope);
 	if (engine->finish_turn)
 		engine->finish_turn(engine->user_data, request, result);
+	agent_control_set_interactions_blocked(engine->react->agents, 0);
 	runtime_unlock_turn(engine);
 	return rc;
 }

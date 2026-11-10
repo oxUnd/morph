@@ -313,7 +313,9 @@ Common interactive commands:
 	/delete <name|id>	Delete a session.
 	/history [n|--all]	Show, diagnose, repair, or export history.
 	/share			Save the latest answered turn as offline HTML in ~/Downloads.
-	/model [name]	Show or change the text model for the session.
+	/model [name|normal|ultra|status]	Choose the model or collaboration mode.
+	/agents [id]	Inspect agent assignments, status and results.
+	/subagents [id]	Switch agent transcripts, follow up or interrupt.
 	/config		Print loaded configuration.
 	/trace [--from-db]	Show the latest ReAct trace.
 	/context	Show token context usage.
@@ -370,7 +372,8 @@ Built-in read-only tools include:
 	memory		Memory inspection.
 	activate_skill	Load a skill's instructions into context.
 	plan		Create and manage a multi-step plan.
-	agent_status	Check an asynchronous sub-agent.
+	update_plan	Update a persistent checklist without an extra model request.
+	list_agents	Inspect collaborating agents and their status.
 
 Creative and processing tools include:
 
@@ -390,9 +393,22 @@ Workspace, task, and configuration tools include:
 	memory_preference	Persist an explicit user preference.
 	tasks		Create and manage scheduled tasks and the inbox.
 	tool_create	Create or update a dynamic JavaScript tool.
-	delegate	Start a sub-agent asynchronously.
-	fanout		Run several sub-agent tasks in parallel.
 	ask_user		Ask the user a question and wait for an answer.
+
+Collaboration tools include:
+
+	spawn_agent	Start a collaborating agent with independent context.
+	send_message	Send a message without starting an idle agent.
+	followup_task	Continue an idle agent or steer a running agent.
+	interrupt_agent	Interrupt work while preserving its identity and history.
+	wait_agent	Wait for messages, completion, cancellation or timeout.
+
+Ultra enables proactive delegation; the model decides which tasks can usefully
+run in parallel. /subagents opens the thread overview: Enter views an agent,
+Tab or Left/Right switches, f sends a follow-up, k interrupts, and Esc returns.
+Children compile and test in MORPH_AGENT_SCRATCH with scoped workspace writes.
+The session tree shares a persistent weighted budget with warnings and a primary
+reserve. See docs/multi-agent.md for configuration and evaluation commands.
 
 Shell and process tools include:
 

@@ -15,6 +15,7 @@ extern "C" {
 #include "sapi/cli/widgets/banner.h"
 #include "sapi/cli/pages/approval.h"
 #include "sapi/cli/widgets/transcript.h"
+#include "sapi/cli/widgets/agents.h"
 #include "sapi/cli/services/transcript.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/application.h"
@@ -35,6 +36,7 @@ struct cli_cancel_monitor *cli_cancel_monitor_start(struct cli_application *ctx,
 }
 
 #include <string>
+#include <algorithm>
 #include <sstream>
 #include <cstring>
 #include <filesystem>
@@ -2703,4 +2705,272 @@ TEST_F(CliPresentationTest, FileReadDetailsPrioritizeContentAndContinuation)
 	EXPECT_EQ(expanded.find("INTERNAL_VERSION_MARKER"), std::string::npos);
 	cJSON_Delete(call);
 	cJSON_Delete(response);
+}
+
+TEST_F(CliPresentationTest, CollaborationUsesSemanticTitlesAndNoGenericRunningBody)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cJSON *call = cJSON_Parse(R"({"tool":"spawn_agent","tool_call_id":"spawn",
+		"args":{"task_name":"parser","message":"Inspect the parser independently."}})");
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
+	std::string pending = testing::internal::GetCapturedStdout();
+	EXPECT_NE(pending.find("Spawning"), std::string::npos);
+	EXPECT_EQ(pending.find("spawn_agent"), std::string::npos);
+	morph_buf_t line{};
+	morph_buf_t body{};
+	ASSERT_EQ(morph_buf_init(&line, 128), 0);
+	ASSERT_EQ(morph_buf_init(&body, 128), 0);
+	EXPECT_EQ(cli_transcript_live_text(ctx.transcript, &line, 60, 0), 1);
+	EXPECT_STREQ(morph_buf_cstr_borrow(&line), "• Spawning parser");
+	EXPECT_EQ(cli_transcript_live_body(ctx.transcript, &body, 60, 0), 0);
+	EXPECT_EQ(body.len, 0u);
+	cJSON *result = cJSON_Parse(R"({"tool":"spawn_agent","tool_call_id":"spawn",
+		"result":"{\"agent_id\":\"/root/parser\"}"})");
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_TOOL, "tool.result", "end", result);
+	std::string completed = testing::internal::GetCapturedStdout();
+	EXPECT_NE(completed.find("Spawned"), std::string::npos);
+	EXPECT_NE(completed.find("Inspect the parser independently."), std::string::npos);
+	EXPECT_EQ(completed.find("agent_id"), std::string::npos);
+	EXPECT_EQ(completed.find("Running…"), std::string::npos);
+	morph_buf_cleanup(&line);
+	morph_buf_cleanup(&body);
+	cJSON_Delete(result);
+	cJSON_Delete(call);
+}
+
+TEST_F(CliPresentationTest, AgentWaitHasAConciseTitleAndPreservesFailureReason)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cJSON *call = cJSON_Parse(R"({"tool":"wait_agent","tool_call_id":"wait","args":{}})");
+	cJSON *failure = cJSON_Parse(R"({"tool":"wait_agent","tool_call_id":"wait",
+		"error":"Permission denied","error_code":-13})");
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
+	Emit(MORPH_EVENT_TOOL, "tool.failed", "end", failure);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("Waiting for agents"), std::string::npos);
+	EXPECT_NE(output.find("Permission denied"), std::string::npos);
+	EXPECT_EQ(output.find("wait_agent"), std::string::npos);
+	cJSON_Delete(call);
+	cJSON_Delete(failure);
+}
+
+TEST(CliAgentsPresentationTest, CompactActivityBoundsRowsAndOmitsTaskPrompts)
+{
+	struct agent_info agents[4]{};
+	std::string instruction(2000, 'x');
+	for (int i = 0; i < 4; i++) {
+		std::snprintf(agents[i].id, sizeof(agents[i].id), "/root/worker_%d", i);
+		agents[i].status = AGENT_RUNNING;
+		agents[i].description = instruction.data();
+	}
+	for (int columns : {120, 80, 60}) {
+		morph_buf_t out{};
+		ASSERT_EQ(morph_buf_init(&out, 128), 0);
+		EXPECT_EQ(cli_agents_rows(&out, agents, 4, columns, 3, 0), 4);
+		std::string rendered = morph_buf_cstr_borrow(&out);
+		EXPECT_EQ(rendered.find("/root/"), std::string::npos);
+		EXPECT_EQ(rendered.find(instruction), std::string::npos);
+		EXPECT_NE(rendered.find("└ +1 more · /agents"), std::string::npos);
+		std::istringstream lines(rendered);
+		std::string line;
+		while (std::getline(lines, line))
+			EXPECT_LT(utf8_display_width(line.c_str()), static_cast<size_t>(columns));
+		morph_buf_cleanup(&out);
+	}
+}
+
+TEST_F(CliPresentationTest, MultiAgentV2AnalyticsCallsStayInDetailsWithoutDefaultNoise)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	for (const char *name : {"send_message", "followup_task", "interrupt_agent", "list_agents"}) {
+		SCOPED_TRACE(name);
+		cJSON *call = cJSON_CreateObject();
+		cJSON_AddStringToObject(call, "tool", name);
+		cJSON_AddStringToObject(call, "tool_call_id", name);
+		cJSON *args = cJSON_AddObjectToObject(call, "args");
+		cJSON_AddStringToObject(args, "target", "/root/reader");
+		cJSON_AddStringToObject(args, "message", "Preserved steering evidence");
+		testing::internal::CaptureStdout();
+		Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
+		std::string pending = testing::internal::GetCapturedStdout();
+		EXPECT_TRUE(pending.empty());
+		morph_buf_t live{};
+		ASSERT_EQ(morph_buf_init(&live, 128), 0);
+		EXPECT_EQ(cli_transcript_live_text(ctx.transcript, &live, 80, 0), 0);
+		EXPECT_EQ(cli_transcript_live_body(ctx.transcript, &live, 80, 0), 0);
+		EXPECT_EQ(live.len, 0u);
+		morph_buf_cleanup(&live);
+		cJSON *result = cJSON_CreateObject();
+		cJSON_AddStringToObject(result, "tool", name);
+		cJSON_AddStringToObject(result, "tool_call_id", name);
+		cJSON_AddStringToObject(result, "result",
+			R"({"ok":true,"data":{"text":"Preserved operation result"}})");
+		testing::internal::CaptureStdout();
+		Emit(MORPH_EVENT_TOOL, "tool.result", "end", result);
+		std::string completed = testing::internal::GetCapturedStdout();
+		EXPECT_TRUE(completed.empty());
+		cJSON_Delete(result);
+		cJSON_Delete(call);
+	}
+	morph_buf_t details{};
+	ASSERT_EQ(morph_buf_init(&details, 1024), 0);
+	EXPECT_EQ(cli_transcript_render_details(&ctx, ctx.transcript, &details), 0);
+	EXPECT_NE(strstr(morph_buf_cstr_borrow(&details), "Preserved steering evidence"), nullptr);
+	EXPECT_NE(strstr(morph_buf_cstr_borrow(&details), "Preserved operation result"), nullptr);
+	EXPECT_NE(strstr(morph_buf_cstr_borrow(&details), "/root/reader"), nullptr);
+	morph_buf_cleanup(&details);
+}
+
+TEST(CliAgentsPresentationTest, AgentDetailsPreserveLargeMultilineResultsAndStripControls)
+{
+	std::string result(10000, 'x');
+	result += "\n\n```c\nint answer = 42;\n```\n\033[2JTAIL_AFTER_LONG_RESULT";
+	for (int columns : {120, 80, 60}) {
+		morph_buf_t details{};
+		ASSERT_EQ(morph_buf_init(&details, 128), 0);
+		ASSERT_EQ(cli_agents_detail(&details, "Result", result.c_str(), columns, 0), 0);
+		std::string rendered = morph_buf_cstr_borrow(&details);
+		EXPECT_EQ(static_cast<size_t>(std::count(rendered.begin(), rendered.end(), 'x')), 10000u);
+		EXPECT_NE(rendered.find("\n    \n    ```c\n    int answer = 42;\n"), std::string::npos);
+		EXPECT_NE(rendered.find("TAIL_AFTER_LONG_RESULT"), std::string::npos);
+		EXPECT_EQ(rendered.find('\033'), std::string::npos);
+		EXPECT_EQ(utf8valid(rendered.c_str()), nullptr);
+		std::istringstream lines(rendered);
+		std::string line;
+		while (std::getline(lines, line))
+			EXPECT_LT(utf8_display_width(line.c_str()), static_cast<size_t>(columns));
+		morph_buf_cleanup(&details);
+	}
+}
+
+TEST_F(CliPresentationTest, AgentCompletionWaitsUntilParentMarkdownAnswerIsComplete)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cJSON *first = TextData("PARENT_START **unfinished");
+	cJSON *second = TextData(" emphasis** PARENT_END");
+	cJSON *answer = TextData("PARENT_START **unfinished emphasis** PARENT_END");
+	cJSON *completed = cJSON_Parse(R"({"parent_session_id":0,
+		"agent_id":"/root/reader","status":"completed"})");
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.final.delta", "delta", first);
+	Emit(MORPH_EVENT_BACKGROUND, "agent.completed", "end", completed);
+	std::string pending = testing::internal::GetCapturedStdout();
+	EXPECT_EQ(pending.find("Finished"), std::string::npos);
+	EXPECT_GT(ctx.presenter->agent_receipts.len, 0u);
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.final.delta", "delta", second);
+	Emit(MORPH_EVENT_REACT, "react.final", "end", answer);
+	cli_presentation_finish(&ctx);
+	cli_presentation_finish(&ctx);
+	std::string output = testing::internal::GetCapturedStdout();
+	ASSERT_NE(output.find("PARENT_END"), std::string::npos);
+	ASSERT_NE(output.find("Finished"), std::string::npos);
+	EXPECT_LT(output.find("PARENT_END"), output.find("Finished"));
+	EXPECT_EQ(output.find("Finished"), output.rfind("Finished"));
+	EXPECT_EQ(ctx.presenter->agent_receipts.len, 0u);
+	cJSON_Delete(first);
+	cJSON_Delete(second);
+	cJSON_Delete(answer);
+	cJSON_Delete(completed);
+}
+
+TEST_F(CliPresentationTest, AgentReceiptsFlushAfterFailedOrCancelledParentWithoutDuplicates)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	for (const char *phase : {"failed", "cancelled"}) {
+		SCOPED_TRACE(phase);
+		cli_presentation_reset(&ctx);
+		cJSON *body = TextData("PARENT_PARTIAL_BEFORE_ABORT");
+		cJSON *completed = cJSON_Parse(R"({"parent_session_id":0,
+			"agent_id":"/root/reader","status":"failed"})");
+		cJSON *outcome = cJSON_CreateObject();
+		cJSON_AddStringToObject(outcome, "outcome", phase);
+		cJSON_AddStringToObject(outcome, "error", "Parent stopped");
+		testing::internal::CaptureStdout();
+		Emit(MORPH_EVENT_REACT, "react.final.delta", "delta", body);
+		Emit(MORPH_EVENT_BACKGROUND, "agent.completed", "end", completed);
+		std::string pending = testing::internal::GetCapturedStdout();
+		EXPECT_EQ(pending.find("Failed"), std::string::npos);
+		testing::internal::CaptureStdout();
+		Emit(MORPH_EVENT_REACT, "react.turn.end", phase, outcome);
+		cli_presentation_finish(&ctx);
+		cli_presentation_finish(&ctx);
+		std::string output = testing::internal::GetCapturedStdout();
+		ASSERT_NE(output.find("PARENT_PARTIAL_BEFORE_ABORT"), std::string::npos);
+		ASSERT_NE(output.find("Failed"), std::string::npos);
+		EXPECT_LT(output.find("PARENT_PARTIAL_BEFORE_ABORT"), output.find("Failed"));
+		EXPECT_EQ(output.find("Failed"), output.rfind("Failed"));
+		EXPECT_EQ(ctx.presenter->agent_receipts.len, 0u);
+		cJSON_Delete(body);
+		cJSON_Delete(completed);
+		cJSON_Delete(outcome);
+	}
+}
+
+TEST_F(CliPresentationTest, PresentationFinishCommitsParentBeforeDeferredAgentReceipt)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cJSON *body = TextData("PARENT_FALLBACK_BOUNDARY");
+	cJSON *completed = cJSON_Parse(R"({"parent_session_id":0,
+		"agent_id":"/root/reader","status":"interrupted"})");
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.final.delta", "delta", body);
+	Emit(MORPH_EVENT_BACKGROUND, "agent.completed", "end", completed);
+	std::string pending = testing::internal::GetCapturedStdout();
+	EXPECT_EQ(pending.find("Interrupted"), std::string::npos);
+	testing::internal::CaptureStdout();
+	cli_presentation_finish(&ctx);
+	cli_presentation_finish(&ctx);
+	std::string output = testing::internal::GetCapturedStdout();
+	ASSERT_NE(output.find("PARENT_FALLBACK_BOUNDARY"), std::string::npos);
+	ASSERT_NE(output.find("Interrupted"), std::string::npos);
+	EXPECT_LT(output.find("PARENT_FALLBACK_BOUNDARY"), output.find("Interrupted"));
+	EXPECT_EQ(output.find("Interrupted"), output.rfind("Interrupted"));
+	EXPECT_EQ(ctx.presenter->agent_receipts.len, 0u);
+	cJSON_Delete(body);
+	cJSON_Delete(completed);
+}
+
+TEST_F(CliPresentationTest, AgentReceiptFlushesAtAuthoritativeCommentaryMessageBoundary)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cJSON *body = TextData("PARENT_COMMENTARY_BEFORE_CHILD_RECEIPT");
+	cJSON *completed = cJSON_Parse(R"({"parent_session_id":0,
+		"agent_id":"/root/reader","status":"completed"})");
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.content.delta", "delta", body);
+	Emit(MORPH_EVENT_BACKGROUND, "agent.completed", "end", completed);
+	std::string pending = testing::internal::GetCapturedStdout();
+	EXPECT_EQ(pending.find("Finished"), std::string::npos);
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.content.end", "end", body);
+	std::string output = testing::internal::GetCapturedStdout();
+	ASSERT_NE(output.find("PARENT_COMMENTARY_BEFORE_CHILD_RECEIPT"), std::string::npos);
+	ASSERT_NE(output.find("Finished"), std::string::npos);
+	EXPECT_LT(output.find("PARENT_COMMENTARY_BEFORE_CHILD_RECEIPT"), output.find("Finished"));
+	EXPECT_EQ(ctx.presenter->agent_receipts.len, 0u);
+	cJSON_Delete(body);
+	cJSON_Delete(completed);
+}
+
+TEST_F(CliPresentationTest, PlanUpdatedEventUsesExistingChecklistPresentation)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cJSON *data = cJSON_Parse(R"({"kind":"plan_state","selected_plan_id":"task",
+		"plan":[{"step":"Inspect parser","status":"completed"},
+		{"step":"Verify parser","status":"in_progress"}],
+		"plans":[{"id":"task","name":"Task plan","steps":[
+		{"description":"Inspect parser","status":"completed","active":false},
+		{"description":"Verify parser","status":"in_progress","active":true}]}]})");
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_BACKGROUND, "plan.updated", "end", data);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("Plan · 1/2 completed"), std::string::npos);
+	EXPECT_NE(output.find("Inspect parser"), std::string::npos);
+	EXPECT_NE(output.find("Verify parser"), std::string::npos);
+	EXPECT_EQ(output.find("plan_state"), std::string::npos);
+	cJSON_Delete(data);
 }

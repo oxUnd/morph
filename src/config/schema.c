@@ -269,22 +269,18 @@ static const struct schema_entry schema[] = {
 	     "auto|2026-07-28|2025-11-25|2025-06-18|2025-03-26|2024-11-05"),
 	BOOL("mcp.servers[].auto_connect"),
 	INT("mcp.servers[].connect_timeout", 0, INT_MAX),
-	TABLE("agent"),
-	TABLES("agent.sub_agents", SUB_AGENT_MAX),
-	STRING("agent.sub_agents[].name", SUB_AGENT_NAME_MAX - 1),
-	STRING("agent.sub_agents[].description", 255),
-	ENUM("agent.sub_agents[].system_prompt_mode", 15, "append|replace"),
-	STRING("agent.sub_agents[].system_prompt_file", PATH_MAX - 1),
-	STRING("agent.sub_agents[].system_prompt_dir", PATH_MAX - 1),
-	STRING("agent.sub_agents[].model", 63),
-	INT("agent.sub_agents[].max_iterations", 1, INT_MAX),
-	STRINGS("agent.sub_agents[].allowed_tools", SUB_AGENT_TOOL_MAX,
-		SUB_AGENT_TOOL_NAME_MAX - 1),
-	STRINGS("agent.sub_agents[].disabled_tools", SUB_AGENT_TOOL_MAX,
-		SUB_AGENT_TOOL_NAME_MAX - 1),
-	ENUM("agent.sub_agents[].context_policy", 31, "full|summary|task_only"),
-	ENUM("agent.sub_agents[].merge_strategy", 31, "synthesize|concat|raw"),
-	STRING("agent.sub_agents[].output_schema", CONFIG_MAX_VAL_LEN)};
+	TABLE("agents"),
+	BOOL("agents.enabled"),
+	INT("agents.max_threads", 1, 64),
+	INT("agents.max_depth", 1, 16),
+	INT("agents.max_total_tokens", 0, INT_MAX),
+	INT("agents.budget_input_weight", 1, 100),
+	INT("agents.budget_output_weight", 1, 100),
+	INT("agents.budget_warning_percent", 1, 99),
+	INT("agents.budget_primary_reserve_percent", 0, 90),
+	ENUM("agents.budget_enforcement", 15, "hard|warn"),
+	ENUM("agents.child_shell", 15, "scoped|readonly"),
+	ENUM("agents.multi_agent_mode", 31, "auto|explicit|proactive")};
 
 static const struct schema_entry *schema_find(const char *path)
 {
@@ -719,6 +715,10 @@ static int validate_relations(const toml_datum_t *root,
 	int64_t session_limit = 1048576;
 	int rc;
 
+	const toml_datum_t *legacy_agents = table_get(table_get(root, "agent"), "sub_agents");
+	if (legacy_agents)
+		return set_error(error, CONFIG_VALIDATION_VALUE, legacy_agents, "agent.sub_agents",
+			"agent.sub_agents was removed; configure [agents] and use spawn_agent instead");
 	if (shell && !shell->u.s[0])
 		return set_error(error, CONFIG_VALIDATION_VALUE, shell,
 			"exec.shell", "exec.shell must not be empty");
@@ -772,10 +772,6 @@ static int validate_relations(const toml_datum_t *root,
 		"react.permission_profiles[].name", error);
 	if (rc == 0)
 		rc = validate_permission_profiles(react, error);
-	if (rc != 0)
-		return rc;
-	rc = validate_named_array(root, "agent", "sub_agents",
-		"agent.sub_agents[].name", error);
 	if (rc != 0)
 		return rc;
 	if (servers) {

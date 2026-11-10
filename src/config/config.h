@@ -8,7 +8,6 @@ extern "C" {
 #include <limits.h>
 #include "permission/permission.h"
 
-#define SUB_AGENT_TOOL_NAME_MAX 64
 
 #define CONFIG_HOOKS_JSON_MAX 65536
 #define EXEC_MAX_WAIT_MS_DEFAULT 600000
@@ -291,42 +290,18 @@ struct config_dynamic_tools {
 	struct config_dynamic_tool_profile server;
 };
 
-#define SUB_AGENT_MAX 16
-#define SUB_AGENT_NAME_MAX 64
-#define SUB_AGENT_TOOL_MAX 32
-
-enum sub_agent_context_policy {
-	SUB_AGENT_CTX_FULL,
-	SUB_AGENT_CTX_SUMMARY,
-	SUB_AGENT_CTX_TASK_ONLY
-};
-
-enum sub_agent_merge_strategy {
-	SUB_AGENT_MERGE_SYNTHESIZE,
-	SUB_AGENT_MERGE_CONCAT,
-	SUB_AGENT_MERGE_RAW
-};
-
-struct config_sub_agent {
-	char name[SUB_AGENT_NAME_MAX];
-	char description[256];
-	char system_prompt_mode[16];
-	char system_prompt_file[PATH_MAX];
-	char system_prompt_dir[PATH_MAX];
-	char model[64];
-	int max_iterations;
-	char allowed_tools[SUB_AGENT_TOOL_MAX][SUB_AGENT_TOOL_NAME_MAX];
-	int allowed_tools_count;
-	char disabled_tools[SUB_AGENT_TOOL_MAX][SUB_AGENT_TOOL_NAME_MAX];
-	int disabled_tools_count;
-	enum sub_agent_context_policy context_policy;
-	enum sub_agent_merge_strategy merge_strategy;
-	char *output_schema;
-};
-
-struct config_sub_agents {
-	struct config_sub_agent entries[SUB_AGENT_MAX];
-	int count;
+struct config_agents {
+	int enabled;
+	int max_threads;
+	int max_depth;
+	int max_total_tokens;
+	int budget_input_weight;
+	int budget_output_weight;
+	int budget_warning_percent;
+	int budget_primary_reserve_percent;
+	char budget_enforcement[16];
+	char child_shell[16];
+	char multi_agent_mode[32];
 };
 
 struct config {
@@ -349,7 +324,7 @@ struct config {
 	struct config_sync sync;
 	struct config_mcp mcp;
 	struct config_dynamic_tools dynamic_tools;
-	struct config_sub_agents sub_agents;
+	struct config_agents agents;
 };
 
 enum config_validation_code {
@@ -383,7 +358,7 @@ typedef void (*config_validation_warning_fn)(
 	const struct config_validation_error *warning, void *user_data);
 
 int config_load(struct morph_log *logger, struct config *cfg, const char *path);
-int config_load_sub_agents(struct config *cfg, const char *path);
+
 /* Validate without applying configuration. Returns 0 or a negative error. */
 int config_validate_text(const char *text, struct config_validation_error *error);
 int config_validate_file(const char *path, struct config_validation_error *error);

@@ -502,7 +502,10 @@ guardrail_llm_check(const struct guardrail_rule *rule,
 		return GUARDRAIL_PASS;
 
 	const char *msgs[1] = { morph_buf_cstr_borrow(&prompt) };
-	int status = cfg->llm->chat(cfg->llm, NULL, msgs, 1, NULL, llm_collect_cb, &collect);
+	/* A request view borrows the model's credential/handle owners for this call. */
+	struct model request = *cfg->llm;
+	request.http.cancel_token = ctx->cancel_token;
+	int status = request.chat(&request, NULL, msgs, 1, NULL, llm_collect_cb, &collect);
 	if (status < 0 || collect.len == 0) {
 		log_warn(cfg ? cfg->logger : NULL,
 			 "guardrail: LLM call failed for rule '%s', defaulting PASS", rule->name);

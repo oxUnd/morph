@@ -1,5 +1,6 @@
 #include "sapi/cli/adapters/input/readline.h"
 #include "util/cleanup.h"
+#include "util/child_io.h"
 #include "sapi/cli/pages/turn_details.h"
 #include "sapi/cli/adapters/input/state.h"
 #include "sapi/cli/services/turn.h"
@@ -33,12 +34,11 @@
 static void cli_readline_position(struct cli_application *ctx, int offset, int columns, int *row,
 				  int *column)
 {
-	(void)ctx;
 	const char *cursor = rl_line_buffer;
 	const char *end = cursor + offset;
 
 	*row = 0;
-	*column = 2;
+	*column = cli_composer_model_prompt_width(&ctx->composer);
 	while (cursor < end) {
 		utf8_int32_t cp;
 		int width;
@@ -614,6 +614,50 @@ void cli_readline_drain_ui(struct cli_application *ctx)
 	cli_feed_update_end(ctx);
 }
 
+/* Animate only empty composer padding. Readline retains the draft and cursor. */
+static void cli_readline_mode_animation(struct cli_application *ctx)
+{
+	struct winsize size = {0};
+	if (!ctx->composer.mode_transition || ctx->input_status.suspended ||
+	    !RL_ISSTATE(RL_STATE_CALLBACK) || !isatty(STDOUT_FILENO) ||
+	    ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) != 0)
+		return;
+	if (size.ws_col < 4 || size.ws_row < 4) {
+		ctx->composer.mode_transition = 0;
+		return;
+	}
+	int frame = cli_composer_model_animation_frame(&ctx->composer, morph_io_now_ms());
+	if (frame < 0)
+		return;
+	int row, column, last_row, last_column;
+	cli_readline_position(ctx, rl_point, size.ws_col, &row, &column);
+	cli_readline_position(ctx, rl_end, size.ws_col, &last_row, &last_column);
+	if (last_row + 3 >= size.ws_row || !ctx->input_status.padding_rows)
+		return;
+	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	if (morph_buf_init(&output, (size_t)size.ws_col * 48u + 128u) != 0)
+		return;
+	(void)morph_buf_puts(&output, "\033[?2026h");
+	for (int edge = 0; edge < 2; edge++) {
+		(void)morph_buf_printf(&output, "\0337\r\033[%d%c", edge ? last_row - row + 1 : row + 1,
+			edge ? 'B' : 'A');
+		int center = frame * (int)size.ws_col / 30;
+		for (int cell = 0; cell < (int)size.ws_col - 1; cell++) {
+			int distance = abs(cell - center);
+			int color = 234;
+			if (frame < 30 && distance < 8)
+				color = distance < 2 ? 141 : distance < 4 ? 98 : distance < 6 ? 54 : 17;
+			(void)morph_buf_printf(&output, "\033[48;5;%dm ", color);
+		}
+		(void)morph_buf_puts(&output, CLI_INPUT_BACKGROUND "\033[K\033[0m\0338");
+	}
+	(void)morph_buf_puts(&output, "\033[?2026l");
+	if (!output.failed) {
+		(void)fwrite(output.data, 1, output.len, stdout);
+		fflush(stdout);
+	}
+}
+
 void cli_readline_render_frame(struct cli_application *ctx, int resized)
 {
 	int point;
@@ -635,6 +679,7 @@ void cli_readline_render_frame(struct cli_application *ctx, int resized)
 	}
 	if (!resized && cli_feed_next_frame_ms(ctx) < 0) {
 		cli_readline_footer(ctx);
+		cli_readline_mode_animation(ctx);
 		return;
 	}
 	if (!resized && rl_line_buffer) {
@@ -647,6 +692,7 @@ void cli_readline_render_frame(struct cli_application *ctx, int resized)
 			if (clock_gettime(CLOCK_MONOTONIC, &now) == 0 &&
 			    now.tv_sec != ctx->input_status.updated)
 				cli_readline_footer(ctx);
+			cli_readline_mode_animation(ctx);
 			return;
 		}
 	}
@@ -667,6 +713,7 @@ void cli_readline_render_frame(struct cli_application *ctx, int resized)
 	cli_feed_render_frame(ctx, resized);
 	cli_readline_resume_take(ctx, &draft, point);
 	cli_feed_update_end(ctx);
+	cli_readline_mode_animation(ctx);
 }
 
 static int cli_readline_convert_images(struct cli_application *ctx)
@@ -930,6 +977,7 @@ void cli_readline_editor_open_take(struct cli_application *ctx, char **owner, in
 
 	if (!ctx)
 		return;
+	cli_readline_sync_mode(ctx, 0);
 	cli_feed_composer_resume(ctx);
 	rl_callback_handler_install(draft ? "" : cli_readline_input_prompt_borrow(ctx),
 				    cli_callback_line(ctx, cli_readline_line_ready));
@@ -1054,10 +1102,24 @@ static char **cli_readline_cmd_completion(struct cli_application *ctx, const cha
 
 #endif
 
+void cli_readline_sync_mode(struct cli_application *ctx, int animate)
+{
+	int ultra = 0;
+	if (!ctx || runtime_model_get_ultra(ctx->runtime, &ultra) != 0)
+		return;
+	cli_composer_model_set_ultra(&ctx->composer, ultra, animate && cli_output_color_enabled(ctx));
+	if (ctx->input)
+		ctx->input_status.updated = 0;
+}
+
 const char *cli_readline_input_prompt_borrow(struct cli_application *ctx)
 {
+	int ultra = ctx && ctx->composer.ultra;
 	if (!cli_output_color_enabled(ctx))
-		return "> ";
+		return ultra ? "›› " : "> ";
+	if (ultra)
+		return CLI_RL_IGNORE_START CLI_INPUT_ULTRA_COLOR CLI_RL_IGNORE_END
+			"›› " CLI_RL_IGNORE_START ANSI_RESET CLI_INPUT_BACKGROUND CLI_RL_IGNORE_END;
 	return CLI_RL_IGNORE_START CLI_INPUT_MARKER_COLOR CLI_RL_IGNORE_END
 		"› " CLI_RL_IGNORE_START ANSI_RESET CLI_INPUT_BACKGROUND CLI_RL_IGNORE_END;
 }

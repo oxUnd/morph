@@ -1,4 +1,5 @@
 #include "react.h"
+#include "agent/agent_control.h"
 #include "react_internal.h"
 #include "react_request.h"
 #include "react_tool_worker.h"
@@ -345,8 +346,44 @@ static void react_warn_tool_truncation(struct react_context *ctx)
 	morph_buf_cleanup(&message);
 }
 
+struct react_budget_reservation {
+	struct agent_control *control;
+	const char *id;
+	int64_t units;
+};
+
+static void react_budget_reservation_cleanup(struct react_budget_reservation *reservation)
+{
+	agent_control_budget_release_for(reservation->control, reservation->id, reservation->units);
+}
+
 static int react_finish_run(struct react_context *ctx)
 {
+	if (ctx && agent_control_budget_check(ctx->agents, 0) == MORPH_ERR_TOKEN_BUDGET) {
+		struct agent_budget budget = {0};
+		morph_buf_t detail MORPH_CLEANUP(morph_buf_cleanup) = {0};
+
+		/* Budget termination supersedes unrelated earlier tool diagnostics. */
+		react_set_error_detail_copy(ctx, NULL);
+		if (agent_control_budget_copy(ctx->agents, &budget) == 0 &&
+		    morph_buf_init(&detail, 256) == 0) {
+			int detail_rc = morph_buf_printf(&detail,
+				"Shared session-tree budget: %lld / %lld weighted units used.",
+				(long long)budget.used, (long long)budget.limit);
+			if (detail_rc == 0 && budget.request_tokens > 0)
+				detail_rc = morph_buf_printf(&detail,
+					" The next request needs up to %lld weighted units, including "
+					"input and maximum output.", (long long)budget.request_tokens);
+			if (detail_rc == 0)
+				detail_rc = morph_buf_puts(&detail,
+					" Increase agents.max_total_tokens, set it to 0 to disable "
+					"the limit, or start a new session.");
+			if (detail_rc == 0)
+				react_set_error_detail_copy(ctx, morph_buf_cstr_borrow(&detail));
+		}
+		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, MORPH_ERR_TOKEN_BUDGET,
+			"token_budget_exhausted");
+	}
 	react_warn_tool_truncation(ctx);
 	if (ctx && ctx->hook_fn && ctx->outcome == REACT_OUTCOME_CANCELLED) {
 		cJSON *input = cJSON_CreateObject(), *output = NULL;
@@ -579,9 +616,27 @@ struct react_context *react_context_create(struct tool_registry *tools, struct t
 	ctx->history_tool_result_tokens = ctx->compress.tool_result_max_tokens;
 	ctx->compress.summarize = react_checkpoint_create;
 	ctx->compress.summarize_user_data = ctx;
-	if (gcfg)
+	if (gcfg) {
+		if (gcfg->rule_count < 0 || gcfg->rule_count > GUARDRAIL_RULES_MAX) {
+			free(ctx);
+			return NULL;
+		}
 		ctx->guardrail = *gcfg;
-	else {
+		/* Retain independent dynamic-library references rather than handle owners. */
+		for (int i = 0; i < ctx->guardrail.rule_count; i++) {
+			if (gcfg->rules[i].dl_handle) {
+				ctx->guardrail.rules[i].dl_handle = NULL;
+				ctx->guardrail.rules[i].ext_check = NULL;
+			}
+		}
+		for (int i = 0; i < ctx->guardrail.rule_count; i++) {
+			if (gcfg->rules[i].dl_handle &&
+			    guardrail_ext_so_load(ctx->logger, &ctx->guardrail.rules[i]) != 0) {
+				react_context_destroy(ctx);
+				return NULL;
+			}
+		}
+	} else {
 		ctx->guardrail.enabled = 0;
 		ctx->guardrail.max_retries = 2;
 		ctx->guardrail.max_empty_rounds = 3;
@@ -602,6 +657,9 @@ void react_context_destroy(struct react_context *ctx)
 	if (!ctx)
 		return;
 	react_reset(ctx);
+	for (int i = 0; i < ctx->guardrail.rule_count; i++)
+		guardrail_ext_so_unload(&ctx->guardrail.rules[i]);
+	model_destroy(ctx->guardrail_model);
 	free(ctx->final_answer);
 	free(ctx->last_error_detail);
 	free(ctx->system_prompt);
@@ -1331,6 +1389,25 @@ static int react_chat_once(struct react_context *ctx, struct model *llm, const c
 		}
 	}
 
+	struct react_budget_reservation reservation MORPH_CLEANUP(react_budget_reservation_cleanup) = {
+		.control = ctx->agents, .id = ctx->agent_id,
+	};
+	status = agent_control_budget_reserve(ctx->agents, ctx->agent_id, estimate,
+		llm->max_tokens > 0 ? llm->max_tokens : 0, &reservation.units);
+	if (status != 0) {
+		struct agent_budget budget = {0};
+		morph_buf_t detail MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		if (agent_control_budget_copy(ctx->agents, &budget) == 0 &&
+		    morph_buf_init(&detail, 256) == 0 &&
+		    morph_buf_printf(&detail,
+			"Shared session-tree budget: %lld / %lld weighted units used; "
+			"%lld units are reserved for primary integration. %s",
+			(long long)budget.used, (long long)budget.limit,
+			(long long)budget.primary_reserve, morph_strerror(status)) == 0)
+			ctx->llm_error_detail = morph_buf_detach(&detail);
+		return status;
+	}
+
 	/* One replaceable, redacted snapshot per session. Inspection failure must
 	 * not prevent an otherwise valid model request. */
 	status = llm->chat_with_tools_stream || llm->chat_with_tools
@@ -1391,6 +1468,19 @@ static int react_chat_once(struct react_context *ctx, struct model *llm, const c
 			if (!response->content)
 				status = -ENOMEM;
 		}
+	}
+	if (ctx->agents && llm->budget_sink && response->usage.input_tokens == 0 &&
+	    response->usage.output_tokens == 0 && (status >= 0 || llm->error_info.output_started)) {
+		int64_t estimated_output = tokenizer_count(ctx->tokenizer,
+			response->content ? response->content : "");
+		estimated_output += tokenizer_count(ctx->tokenizer,
+			response->reasoning_content ? response->reasoning_content : "");
+		for (int i = 0; i < response->tool_call_count; i++)
+			estimated_output += tokenizer_count(ctx->tokenizer, response->tool_calls[i].arguments ?
+				response->tool_calls[i].arguments : "");
+		struct model_usage fallback = {.input_tokens = estimate,
+			.output_tokens = estimated_output};
+		llm->budget_sink->callback(&fallback, llm->budget_sink->user_data);
 	}
 	ctx->llm_output_started = llm->error_info.output_started;
 	if (status < 0 && llm->last_error[0]) {
@@ -2599,6 +2689,72 @@ static int react_process_wait_cancelled(void *opaque)
 	       (ctx->prompt_pending_fn && ctx->prompt_pending_fn(ctx->action_drain_user_data));
 }
 
+static int react_collect_agent_messages(struct react_context *ctx, morph_array_t *messages)
+{
+	if (!ctx->agents)
+		return 0;
+	char *mail MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	int64_t cursor = 0;
+	int rc = agent_control_receive(ctx->agents, ctx->agent_id,
+		ctx->agent_depth ? 0 : ctx->tool_runtime.memory_session_id, &mail, &cursor);
+	if (rc != 0 || !mail)
+		return rc;
+	struct chat_message *message = react_chat_message_push_borrow(messages);
+	if (!message)
+		return -ENOMEM;
+	message->role = strdup("user");
+	message->content = strdup(mail);
+	if (!message->role || !message->content)
+		return -ENOMEM;
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	rc = db_lock_acquire(ctx->history_db ? ctx->history_db : ctx->tool_runtime.db, &lock);
+	if (rc != 0)
+		return rc;
+	struct db *db = ctx->history_db ? ctx->history_db : ctx->tool_runtime.db;
+	rc = db_exec(db, "SAVEPOINT agent_delivery");
+	if (rc != 0)
+		return rc;
+	rc = agent_history_record_user_steer(ctx, mail, ++ctx->steer_count);
+	if (rc == 0)
+		rc = agent_control_ack(ctx->agents, ctx->agent_id,
+			ctx->agent_depth ? 0 : ctx->tool_runtime.memory_session_id, cursor, db);
+	if (rc == 0)
+		rc = db_exec(db, "RELEASE agent_delivery");
+	if (rc != 0) {
+		(void)db_exec(db, "ROLLBACK TO agent_delivery");
+		(void)db_exec(db, "RELEASE agent_delivery");
+	}
+	return rc == 0 ? 1 : rc;
+}
+
+static int react_wait_for_agents(struct react_context *ctx, morph_array_t *messages)
+{
+	if (!ctx->agents)
+		return 0;
+	int rc = react_collect_agent_messages(ctx, messages);
+	if (rc != 0)
+		return rc;
+	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	if (!args || !cJSON_AddNumberToObject(args, "timeout_ms", 100))
+		return -ENOMEM;
+	while (agent_control_descendants_active(ctx->agents, ctx->agent_id)) {
+		if (morph_signal_flag_get(&ctx->cancelled))
+			return -ECANCELED;
+		if (ctx->prompt_pending_fn && ctx->prompt_pending_fn(ctx->action_drain_user_data))
+			return 1;
+		cJSON *result MORPH_CLEANUP(morph_json_cleanup) = NULL;
+		struct tool_runtime_context runtime = ctx->tool_runtime;
+		runtime.http.cancel_token = &ctx->cancel_token;
+		rc = agent_control_call(ctx->agents, "wait_agent", args, &runtime, &result);
+		if (rc != 0)
+			return rc;
+		rc = react_collect_agent_messages(ctx, messages);
+		if (rc != 0)
+			return rc;
+	}
+	return react_collect_agent_messages(ctx, messages);
+}
+
 static int react_collect_background_results(struct react_context *ctx, morph_array_t *messages)
 {
 	struct tool_handle handle = {0};
@@ -2811,8 +2967,16 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 	for (int iteration = 0; iteration < ctx->max_iterations; iteration++) {
 		char *system_prompt MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 		/* Persistent messages and steps own copies of response data. */
+		if (agent_control_interrupted(ctx->agents, ctx->agent_id))
+			react_cancel(ctx);
 		if (react_drain_actions(ctx, &messages, iteration, NULL))
 			break;
+		int mail_rc = react_collect_agent_messages(ctx, &messages);
+		if (mail_rc < 0) {
+			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, mail_rc, "agent_mailbox_error");
+			break;
+		}
+
 
 		if (ctx->memory_options && ctx->history_db) {
 			char *memory = NULL;
@@ -3019,6 +3183,14 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 				break;
 			}
 		} else {
+			int agent_rc = react_wait_for_agents(ctx, &messages);
+			if (agent_rc > 0)
+				continue;
+			if (agent_rc < 0) {
+				react_set_result(ctx, agent_rc == -ECANCELED ? REACT_OUTCOME_CANCELLED
+					: REACT_OUTCOME_INTERNAL_ERROR, agent_rc, "agent_wait_failed");
+				break;
+			}
 			int jobs_rc = react_collect_background_results(ctx, &messages);
 			if (jobs_rc != 0) {
 

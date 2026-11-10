@@ -77,7 +77,8 @@ def main():
     try:
         with tempfile.TemporaryDirectory(prefix='morph-select-pty-') as temp:
             terminal = Terminal(Path(sys.argv[1]).resolve(), Path(temp),
-                                server.server_port, hooks_enabled=False)
+                                server.server_port, hooks_enabled=False,
+                                extra_config='[agents]\nmax_total_tokens=0\n')
             if '--plain' in sys.argv[2:]:
                 run_plain(terminal, releases)
                 return

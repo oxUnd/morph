@@ -23,7 +23,7 @@ enum guardrail_hook {
 	GUARDRAIL_HOOK_OUTPUT,
 };
 
-#define GUARDRAIL_RULES_MAX          16
+#define GUARDRAIL_RULES_MAX          32
 #define GUARDRAIL_REASON_MAX         512
 #define GUARDRAIL_ACTION_MAX         512
 #define GUARDRAIL_NAME_MAX           64

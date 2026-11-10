@@ -37,6 +37,8 @@ static void cli_chat_page_schedule(struct cli_chat_page *state, struct morph_tui
 
 	if (timeout < 0 || timeout > 1000)
 		timeout = 1000;
+	if (ctx->composer.mode_transition && !cli_turn_details_is_open(ctx) && timeout > 33)
+		timeout = 33;
 	if (morph_tui_application_depth(app) > 1)
 		timeout = 1000;
 	else if (!cli_turn_details_is_open(ctx) && cli_command_job_done(state->job))
@@ -246,7 +248,9 @@ static int cli_chat_page_input(void *data, struct morph_tui_application *app,
 				command_rc = cli_recap_start(ctx, 0);
 				handled = 1;
 			} else if (!handled && state->job->active &&
-				   (!strcmp(input, "/jobs") || !strncmp(input, "/jobs ", 6))) {
+				   (!strcmp(input, "/jobs") || !strncmp(input, "/jobs ", 6) ||
+				    !strcmp(input, "/agents") || !strncmp(input, "/agents ", 8) ||
+				    !strcmp(input, "/subagents") || !strncmp(input, "/subagents ", 11))) {
 				command_rc = cli_command_dispatch(ctx, input);
 				handled = 1;
 			} else if (!handled && state->job->active && input[0] == '/') {

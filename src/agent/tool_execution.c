@@ -1,6 +1,7 @@
 #include "tool_execution.h"
 
 #include "permission/context.h"
+#include "agent/agent_control.h"
 #include "tool_runtime.h"
 #include "util/error.h"
 #include <string.h>
@@ -69,6 +70,17 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 	if (rc != 0) {
 		tool_handle_release(&handle);
 		return rc;
+	}
+	if (result->runtime && result->runtime->agents &&
+	    agent_control_shell_readonly(result->runtime->agents, result->runtime->agent_id) &&
+	    !(handle.flags & TOOL_FLAG_READONLY) && strcmp(name, "exec") &&
+	    strcmp(name, "process") && strcmp(name, "apply_patch")) {
+		tool_handle_release(&handle);
+		(void)tool_result_error_copy(result, "permission_denied",
+			"Concurrent agent writes must use apply_patch in assigned write_paths. "
+			"Ask the primary agent to perform other mutations after writers finish.");
+		(void)tool_result_finalize(result);
+		return -EACCES;
 	}
 	if (handle.permission_context &&
 	    (!(handle.flags & (TOOL_FLAG_READONLY | TOOL_FLAG_INTERNAL_APPROVAL)) ||

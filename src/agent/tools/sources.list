@@ -20,7 +20,7 @@ request_permissions.c
 plan.c
 ask_user.c
 img_annotate.c
-sub_agent_tools.c
+multi_agents.c
 scheduled_tasks.c
 runtime_query.c
 dynamic_tools.c

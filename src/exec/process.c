@@ -62,6 +62,7 @@ struct process_session {
 	int stdin_fd;
 	int pty;
 	int hook_mode;
+	int kill_descendants_on_exit;
 	int stdout_open;
 	int stderr_open;
 	int stdin_open;
@@ -604,7 +605,7 @@ static void monitor_session(struct process_manager *manager,
 		if (!session->pty)
 			drain_fd(manager, &session->stderr_fd, &session->stderr_stream,
 				 &session->stderr_open, 0);
-		if (session->hook_mode)
+		if (session->hook_mode || session->kill_descendants_on_exit)
 			(void)kill(-session->pgid, SIGKILL);
 		stream_finish(manager, &session->stdout_stream);
 		stream_finish(manager, &session->stderr_stream);
@@ -689,11 +690,14 @@ static int session_reserve(struct process_manager *manager)
 
 static int prepare_child_execution(const struct process_spawn_options *options)
 {
-	if (options->sandbox)
-		return sandbox_enter(options->sandbox);
-	if (!options->host_execution)
-		return 0;
-	return sandbox_close_inherited_fds();
+	if (options->temp_dir && setenv("TMPDIR", options->temp_dir, 1) != 0)
+		return morph_error_from_errno(errno);
+	int rc = options->sandbox ? sandbox_enter(options->sandbox) :
+		options->host_execution ? sandbox_close_inherited_fds() : 0;
+	if (rc == 0 && options->temp_dir &&
+	    setenv("MORPH_AGENT_SCRATCH", options->temp_dir, 1) != 0)
+		rc = morph_error_from_errno(errno);
+	return rc;
 }
 
 static int spawn_pipe_process(struct process_manager *manager,
@@ -999,6 +1003,7 @@ int process_spawn(struct process_manager *manager,
 		return rc;
 	}
 	session->hook_mode = options->hook_mode;
+	session->kill_descendants_on_exit = options->kill_descendants_on_exit;
 	session->pty = options->pty;
 	session->stdout_open = 1;
 	session->stderr_open = !options->pty;

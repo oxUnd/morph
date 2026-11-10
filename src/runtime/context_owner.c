@@ -1,11 +1,13 @@
 #include "runtime/context_owner.h"
 #include "util/cleanup.h"
+#include "util/error.h"
 #include "util/log.h"
 #include "util/utf8.h"
 #include <stdio.h>
 
 #include "runtime/bootstrap.h"
 #include "runtime/turn_scope.h"
+#include "agent/tools/skill_activate.h"
 
 #include <errno.h>
 #include <string.h>
@@ -37,6 +39,13 @@ int runtime_context_init_lock(struct runtime_context *ctx)
 		pthread_mutex_destroy(&ctx->execution_lock);
 		return -rc;
 	}
+	rc = pthread_mutex_init(&ctx->agent_interaction_lock, NULL);
+	if (rc != 0) {
+		pthread_mutex_destroy(&ctx->approval_objective_lock);
+		pthread_mutex_destroy(&ctx->tool_registry_lock);
+		pthread_mutex_destroy(&ctx->execution_lock);
+		return -rc;
+	}
 	ctx->execution_lock_ready = 1;
 	return 0;
 }
@@ -46,6 +55,7 @@ void runtime_context_cleanup_lock(struct runtime_context *ctx)
 	if (!ctx || !ctx->execution_lock_ready)
 		return;
 	morph_charp_cleanup(&ctx->approval_objective);
+	pthread_mutex_destroy(&ctx->agent_interaction_lock);
 	pthread_mutex_destroy(&ctx->approval_objective_lock);
 	pthread_mutex_destroy(&ctx->tool_registry_lock);
 	pthread_mutex_destroy(&ctx->execution_lock);
@@ -118,10 +128,21 @@ int runtime_context_update_tool_runtime_context(struct runtime_context *ctx, int
 
 	if (!ctx || !ctx->react)
 		return -EINVAL;
+	if (ctx->agents && session_id > 0) {
+		rc = agent_control_set_parent_session(ctx->agents, session_id);
+		if (rc != 0)
+			return rc;
+	}
 	rc = runtime_tool_context_for_session(&ctx->database, &ctx->config, &ctx->current_session,
 					      session_id, &rt);
 	if (rc != 0)
 		return rc;
+	if (ctx->skills && ctx->active_skill_session_id != session_id) {
+		rc = skill_restore_session(ctx->skills, &ctx->database, session_id);
+		if (rc != 0)
+			return rc;
+		ctx->active_skill_session_id = session_id;
+	}
 	rt.checkpoint = ctx->checkpoint;
 	react_set_tool_runtime_context(ctx->react, &rt);
 	return 0;
@@ -185,8 +206,17 @@ int runtime_context_prepare_turn(struct runtime_context *ctx, const struct runti
 	ctx->approval_objective = morph_charp_steal(&objective_copy);
 	pthread_mutex_unlock(&ctx->approval_objective_lock);
 	tool_context_reset_denials(ctx->tctx);
-	if (ctx->sub_agents)
-		(void)sub_agent_runtime_set_parent_session(ctx->sub_agents, request->session_id);
+	if (ctx->agents) {
+		int agent_rc = agent_control_set_parent_session(ctx->agents, request->session_id);
+		if (agent_rc != 0)
+			return agent_rc;
+	}
+	if (ctx->skills && ctx->active_skill_session_id != request->session_id) {
+		int skill_rc = skill_restore_session(ctx->skills, &ctx->database, request->session_id);
+		if (skill_rc != 0)
+			return skill_rc;
+		ctx->active_skill_session_id = request->session_id;
+	}
 	memset(&scope, 0, sizeof(scope));
 	scope.db = &ctx->database;
 	scope.config = &ctx->config;
@@ -222,6 +252,12 @@ void runtime_context_finish_turn(struct runtime_context *ctx)
 	scope.scope = &ctx->turn_scope;
 	scope.checkpoint = &ctx->checkpoint;
 	runtime_turn_scope_finish(&scope);
+	if (ctx->current_session.id > 0) {
+		int rc = runtime_context_update_tool_runtime_context(ctx, ctx->current_session.id);
+		if (rc != 0)
+			log_warn(ctx->logger, "cannot restore selected session context: %s",
+				 morph_strerror(rc));
+	}
 }
 
 struct runtime_shutdown_resources runtime_context_shutdown_resources(struct runtime_context *ctx,
@@ -238,7 +274,7 @@ struct runtime_shutdown_resources runtime_context_shutdown_resources(struct runt
 	cleanup.tool_context = &ctx->tctx;
 	cleanup.skills = &ctx->skills;
 	cleanup.mcp = &ctx->mcp;
-	cleanup.sub_agents = &ctx->sub_agents;
+	cleanup.agents = &ctx->agents;
 	cleanup.react = &ctx->react;
 	cleanup.tokenizer = &ctx->tokenizer;
 	cleanup.text = &ctx->llm;

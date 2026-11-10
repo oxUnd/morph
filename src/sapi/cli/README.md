@@ -21,7 +21,7 @@ cli/
   pages/
     chat.c, .h                 chat controller and page-local editing state
     history, hooks, jobs, memory, resume
-    permissions                inline policy selector in the input area
+    model, permissions         inline mode/policy selectors in the input area
     turn_details               modal transcript viewport on the same Application
     approval, question         modal interaction pages
     setup/                     wizard and its terminal controls
@@ -118,3 +118,23 @@ its terminal session and input handoff just like other modal pages.
 Feed dimensions use the shared terminal-size helper, including row fallback.
 Readline retains native geometry queries where a failed query must disable cursor
 painting rather than apply fallback dimensions.
+
+`/model` (or `/m`) replaces the editable composer with the inline Normal/Ultra
+selector, using the same controller presentation as `/permissions`. Escape and
+Ctrl-C restore the composer without a receipt. Confirming a change persists the
+runtime collaboration mode; `/model normal`, `/model ultra`, `/model status` and
+`/model <name>` also work in noninteractive modes. Ultra keeps a purple `››`
+prompt. Its one-shot 33 ms wave paints only the composer's empty padding, never
+the draft, and stops after 990 ms. Prompt geometry uses its actual display width
+for editing, image labels, wrapped text and terminal resize. Initial state,
+repeated selection and no-color output do not animate.
+
+`/subagents [id|shortname]` opens the independent agent overview and thread
+viewer. `pages/subagents` owns navigation and follow-up input, `models/subagents`
+reduces ordered child events, `widgets/subagents` formats that transcript, and
+`services/agents` enters the runtime facade. Snapshot/live sequence frontiers
+prevent duplicate replay; child events never enter the primary reducer. The
+overview uses lightweight activity snapshots. Enter opens a child, Tab and
+Left/Right switch threads, `f` sends a follow-up and `k` interrupts; Escape
+returns through the overview to the preserved primary draft. `/agents` remains
+the textual inspection command for scripts and quick queries.

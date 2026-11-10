@@ -2,7 +2,7 @@
 #define MORPH_RUNTIME_BOOTSTRAP_H
 
 #include "agent/react.h"
-#include "agent/sub_agent.h"
+#include "agent/agent_control.h"
 #include "agent/tool_context.h"
 #include "agent/tools/img_annotate.h"
 #include "agent/tools/scheduled_tasks.h"
@@ -28,6 +28,7 @@ struct runtime_models {
 };
 
 struct runtime_bootstrap_profile {
+	struct runtime *owner;
 	struct morph_log *logger;
 	struct config *config;
 	struct db *db;
@@ -58,7 +59,7 @@ struct runtime_bootstrap_profile {
 	int enable_config_write;
 	int enable_img_annotate;
 	int enable_shell_exts;
-	int enable_sub_agents;
+	int enable_multi_agent;
 	int allocate_skill_registry;
 	int process_replica;
 };
@@ -71,7 +72,7 @@ struct runtime_shutdown_resources {
 	struct tool_context **tool_context;
 	struct skill_registry **skills;
 	struct mcp_registry *mcp;
-	struct sub_agent_runtime **sub_agents;
+	struct agent_control **agents;
 	struct react_context **react;
 	struct tokenizer **tokenizer;
 	struct model **text;
@@ -86,8 +87,11 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile);
 int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile);
 int runtime_bootstrap_dynamic_tools(struct runtime_bootstrap_profile *profile,
 				    const char *session_id);
-int runtime_bootstrap_sub_agents(struct runtime_bootstrap_profile *profile,
-				 struct sub_agent_runtime **out);
+int runtime_bootstrap_child(struct tool_registry *tools, struct plan_registry *plans,
+	struct react_context *react, struct model *model, const struct tool_runtime_context *runtime,
+	struct agent_child_state *owner, void *user_data);
+int runtime_bootstrap_agents(struct runtime_bootstrap_profile *profile,
+				 struct agent_control **out);
 void runtime_bootstrap_cleanup_models(struct runtime_models *models);
 void runtime_bootstrap_cleanup(struct runtime_shutdown_resources *resources);
 

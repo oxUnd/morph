@@ -230,3 +230,35 @@ int cli_composer_model_image_span(struct cli_composer_model *composer, const cha
 	}
 	return 0;
 }
+
+void cli_composer_model_set_ultra(struct cli_composer_model *composer, int ultra, int animate)
+{
+	ultra = !!ultra;
+	if (composer->mode_ready && composer->ultra == ultra)
+		return;
+	composer->mode_transition = composer->mode_ready && animate && ultra;
+	composer->mode_ready = 1;
+	composer->ultra = ultra;
+	composer->mode_started_ms = -1;
+}
+
+int cli_composer_model_prompt_width(const struct cli_composer_model *composer)
+{
+	return composer && composer->ultra ? 3 : 2;
+}
+
+int cli_composer_model_animation_frame(struct cli_composer_model *composer, int64_t now_ms)
+{
+	if (!composer->mode_transition)
+		return -1;
+	if (composer->mode_started_ms < 0)
+		composer->mode_started_ms = now_ms;
+	int64_t elapsed = now_ms - composer->mode_started_ms;
+	if (elapsed < 0)
+		elapsed = 0;
+	if (elapsed >= 990) {
+		composer->mode_transition = 0;
+		return 30;
+	}
+	return (int)(elapsed / 33);
+}

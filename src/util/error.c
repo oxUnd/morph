@@ -58,6 +58,8 @@ const char *morph_errname(morph_err_t err)
 	case MORPH_ERR_LOAD:            return "MORPH_ERR_LOAD";
 	case MORPH_ERR_CONTEXT_LIMIT:
 		return "MORPH_ERR_CONTEXT_LIMIT";
+	case MORPH_ERR_TOKEN_BUDGET: return "MORPH_ERR_TOKEN_BUDGET";
+	case MORPH_ERR_AGENT_BUDGET: return "MORPH_ERR_AGENT_BUDGET";
 	case MORPH_ERR_LLM:             return "MORPH_ERR_LLM";
 	case MORPH_ERR_REACT_MAX_ITERATIONS:
 		return "MORPH_ERR_REACT_MAX_ITERATIONS";
@@ -83,6 +85,8 @@ const char *morph_strerror(morph_err_t err)
 	case MORPH_ERR_LOAD:            return "load error";
 	case MORPH_ERR_CONTEXT_LIMIT:
 		return "model context window exceeded";
+	case MORPH_ERR_TOKEN_BUDGET: return "shared agent token budget exhausted";
+	case MORPH_ERR_AGENT_BUDGET: return "agent allocation exhausted; remaining budget is reserved for primary integration";
 	case MORPH_ERR_LLM:             return "LLM error";
 	case MORPH_ERR_REACT_MAX_ITERATIONS:
 		return "maximum ReAct iterations reached";

@@ -9,6 +9,8 @@ extern "C" {
 #include "agent/tool_context.h"
 #include "config/config.h"
 
+int dynamic_tools_rebind(struct tool_registry *reg, struct tool_context *context,
+			 const struct config_dynamic_tools *config, const char *session);
 int dynamic_tools_init(struct tool_registry *reg, struct tool_context *tctx,
 		       const struct config_dynamic_tools *cfg, const char *session_id);
 int dynamic_tools_set_session_id(struct tool_registry *reg, const char *session_id);

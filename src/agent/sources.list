@@ -21,7 +21,7 @@ plan.c
 memory.c
 memory_jobs.c
 guardrail.c
-sub_agent.c
+agent_control.c
 react_tool_worker.c
 react_request.c
 history_content.c

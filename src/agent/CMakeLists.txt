@@ -9,6 +9,6 @@ target_include_directories(morph-agent PUBLIC
 )
 target_link_libraries(morph-agent PUBLIC
 	morph-util morph-permission morph-prompt morph-db morph-session morph-persistence
-	morph-models morph-http morph-event Threads::Threads)
+	morph-models morph-http morph-event morph-ipc Threads::Threads)
 
 add_subdirectory(tools)

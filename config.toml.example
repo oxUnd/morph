@@ -303,7 +303,7 @@ readonly_tools = [
   "file_read", "file_list", "file_info", "read_lines",
   "img_info", "credits", "memory",
   "ask_user", "activate_skill", "plan",
-  "agent_status"
+  "update_plan"
 ]
 
 # Approval is owned by [permissions]. Legacy hitl_* fields are accepted at
@@ -516,40 +516,27 @@ dir = ""
 # connect_timeout = 30
 
 # ──────────────────────────────────────────────
-# Sub-Agents
+# Multi-agent collaboration (Codex MultiAgentV2 tool names and semantics)
 # ──────────────────────────────────────────────
-# Sub-agents are specialized agent instances that can be delegated tasks
-# by the main agent. Each sub-agent has its own system prompt, tool set,
-# and iteration limit.
-#
-# Tools created for each sub-agent:
-#   agent_<name>  — invoke synchronously (blocks until done)
-#   delegate      — start asynchronously, returns task_id
-#   fanout        — run multiple tasks in parallel
-#   agent_status  — check status of async task
-#
-# Example: Research sub-agent
-# [[agent.sub_agents]]
-# name = "researcher"
-# description = "Deep research and information gathering agent"
-# system_prompt_mode = "replace"     # append (default) | replace; independent of main agent
-# system_prompt_file = "~/.morph/prompts/researcher.md"
-# system_prompt_dir = ""             # same loading rules as [prompt]
-# max_iterations = 5
-# allowed_tools = ["credits", "memory", "file_read"]
-# context_policy = "task_only"        # full | summary | task_only
-# merge_strategy = "synthesize"       # synthesize | concat | raw (for fanout)
-# output_schema = '{"type":"object","properties":{"findings":{"type":"string"},"sources":{"type":"array","items":{"type":"string"}}},"required":["findings"]}'
-#
-# Example: Code review sub-agent
-# [[agent.sub_agents]]
-# name = "reviewer"
-# description = "Code review specialist that checks for bugs and style issues"
-# system_prompt_file = "~/.morph/prompts/reviewer.md"
-# max_iterations = 3
-# allowed_tools = ["file_read", "file_list", "file_info", "credits"]
-# disabled_tools = ["exec", "process"]
-# context_policy = "task_only"
+# spawn_agent, send_message, followup_task, interrupt_agent, list_agents, wait_agent
+[agents]
+enabled = true
+max_threads = 6
+max_depth = 2
+# Persistent root-session tree budget in weighted units. 0 disables the limit.
+# Cached input is excluded; missing cache usage is treated as non-cached input.
+max_total_tokens = 500000
+budget_input_weight = 1
+budget_output_weight = 1
+budget_warning_percent = 70
+budget_primary_reserve_percent = 20
+# hard: stop at the limit; warn: retain accounting/reminders without stopping.
+budget_enforcement = "hard"
+# scoped: assigned write_paths + private scratch; readonly: private scratch only.
+child_shell = "scoped"
+# "auto": reasoning_effort="ultra" enables proactive delegation, as in Codex.
+# "explicit" and "proactive" override this automatic selection.
+multi_agent_mode = "auto"
 
 # Lifecycle hooks use the Codex-compatible command-hook structure.
 # Definitions require review and trust through /hooks before execution.

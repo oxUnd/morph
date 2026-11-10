@@ -4,6 +4,7 @@
 #include "agent/turn.h"
 #include "agent/tokenizer.h"
 #include "agent/tools/exec_jobs.h"
+#include "agent/tools/skill_activate.h"
 #include "persistence/checkpoint_store.h"
 #include "session_history.h"
 #include "util/buf.h"
@@ -60,21 +61,21 @@ static int checkpoint_edit_finish(void *user_data, int64_t id)
 
 static int checkpoint_children_active(struct runtime *runtime)
 {
-	struct sub_agent_task_info *tasks = NULL;
+	struct agent_info *tasks = NULL;
 	int count = 0;
 	int rc;
 	int active = runtime->jobs ? exec_jobs_active(runtime->jobs) : 0;
 
-	if (!runtime->context.sub_agents)
+	if (!runtime->context.agents)
 		return active ? -EBUSY : 0;
-	rc = sub_agent_runtime_task_list_copy(runtime->context.sub_agents, 0, &tasks, &count);
+	rc = agent_control_list_copy(runtime->context.agents, 0, &tasks, &count);
 	if (rc != 0)
 		return rc;
 	for (int i = 0; i < count; i++) {
-		if (tasks[i].status == SUB_AGENT_PENDING || tasks[i].status == SUB_AGENT_RUNNING)
+		if (tasks[i].status == AGENT_PENDING || tasks[i].status == AGENT_RUNNING)
 			active = 1;
 	}
-	sub_agent_runtime_free_task_list(tasks, count);
+	agent_control_free_list(tasks, count);
 	return active ? -EBUSY : 0;
 }
 
@@ -220,6 +221,18 @@ static int checkpoint_restore_locked(struct runtime *runtime, int64_t session_id
 	(void)react_set_memory_reply_text_copy(runtime->context.react, NULL);
 	runtime_context_forget_plan_session(&runtime->context, session_id);
 	runtime_context_select_plan_session(&runtime->context, session_id);
+	runtime->context.active_skill_session_id = 0;
+	if (runtime->context.skills) {
+		rc = skill_restore_session(runtime->context.skills, &runtime->context.database,
+					   session_id);
+		if (rc != 0) {
+			if (*out)
+				(void)cJSON_AddStringToObject(*out, "skill_reload_error",
+							      morph_strerror(rc));
+			return rc;
+		}
+		runtime->context.active_skill_session_id = session_id;
+	}
 	session_runtime.db = &runtime->context.database;
 	session_runtime.session_id = session_id;
 	session_runtime.react = runtime->context.react;

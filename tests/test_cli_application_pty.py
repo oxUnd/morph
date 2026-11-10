@@ -63,7 +63,7 @@ def main():
             assert text.count('APPLICATION_DEFERRED_ANSWER') == 1, text
             assert 'morph / jobs' not in text, text
             assert not terminal.duplicate_prompts, terminal.duplicate_prompts
-            terminal.send('\x15/model\r')
+            terminal.send('\x15/model status\r')
             until(terminal, lambda text: 'current model: pty-test' in text)
             terminal.send('/history\r')
             until(terminal, lambda text: 'saved entries' in text)

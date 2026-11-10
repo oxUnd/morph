@@ -1,5 +1,6 @@
 #include "apply_patch.h"
 #include "util/json.h"
+#include "agent/agent_control.h"
 #include "util/cleanup.h"
 #include "agent/patch.h"
 #include "agent/tool.h"
@@ -14,6 +15,7 @@
 #include <string.h>
 
 struct patch_application {
+	const struct tool_runtime_context *runtime;
 	struct tool_context *context;
 	const struct tool_checkpoint_context *checkpoint;
 	int tracking;
@@ -21,23 +23,49 @@ struct patch_application {
 	int captured;
 	int capture_error;
 	int authorization_error;
+	morph_buf_t authorization_detail;
 };
+
+static void patch_application_cleanup(struct patch_application *application)
+{
+	morph_buf_cleanup(&application->authorization_detail);
+}
 
 static int authorize_patch_path(const char *path, int deletion, void *opaque)
 {
 	struct patch_application *application = opaque;
 	struct tool_context *context = application->context;
+	struct permission_review review = {0};
 	struct tool_operation operation = {
+		.review_out = &review,
 		.kind = deletion ? TOOL_OP_PATH_DELETE : TOOL_OP_PATH_WRITE,
 		.tool_name = "apply_patch",
 		.principal = "tool:*",
 		.target = path,
 		.scope = tool_context_workdir_borrow(context),
 	};
-	int rc = tool_context_check_operation(context, &operation);
+	int rc = application->runtime ? agent_control_write_check(
+		application->runtime->agents, application->runtime->agent_id, path) : 0;
+	int ownership_error = rc;
+	if (rc == 0)
+		rc = tool_context_check_operation(context, &operation);
 
 	if (rc != 0) {
 		application->authorization_error = rc;
+		if (morph_buf_init(&application->authorization_detail, 256) == 0) {
+			const char *id = application->runtime ? application->runtime->agent_id : NULL;
+			(void)morph_buf_printf(&application->authorization_detail,
+				"%s %s '%s' for agent '%s': %s. %s",
+				ownership_error ? "Write ownership denied" : "Permission policy denied",
+				deletion ? "deletion of" : "write to", path,
+				id && *id ? id : "/root", morph_strerror(rc),
+				ownership_error == -EBUSY ?
+				"Another active agent owns this path; wait or use a disjoint path." :
+				ownership_error ?
+				"The path must be inside this agent's assigned write_paths." :
+				review.reason[0] ? review.reason :
+				"Permission was not granted. Do not bypass this decision through shell.");
+		}
 		return rc;
 	}
 	if (!application->tracking)
@@ -150,10 +178,21 @@ static int patch_success(struct tool_result *result, const struct patch_applicat
 	return rc != 0 ? rc : tool_result_success_take(result, &data);
 }
 
+struct patch_agent_guard {
+	struct agent_control *control;
+};
+
+static void patch_agent_guard_cleanup(struct patch_agent_guard *guard)
+{
+	agent_control_patch_end(guard->control);
+}
+
 static int apply_patch_exec(const char *input, struct tool_result *result, void *user_data)
 {
 	struct patch_result patch_result MORPH_CLEANUP(patch_result_cleanup) = {0};
-	struct patch_application application = {.context = user_data};
+	struct patch_application application MORPH_CLEANUP(patch_application_cleanup) = {
+		.context = user_data,
+	};
 	const struct tool_runtime_context *runtime;
 	char error[512] = {0};
 	int finish_rc = 0;
@@ -162,7 +201,12 @@ static int apply_patch_exec(const char *input, struct tool_result *result, void 
 	if (!input || !result || !application.context)
 		return -EINVAL;
 	runtime = result->runtime;
-	if (runtime && runtime->sub_agent_depth == 0) {
+	application.runtime = runtime;
+	struct patch_agent_guard guard MORPH_CLEANUP(patch_agent_guard_cleanup) = {
+		.control = runtime ? runtime->agents : NULL,
+	};
+	agent_control_patch_begin(guard.control);
+	if (runtime && runtime->agent_depth == 0) {
 		application.checkpoint = &runtime->checkpoint;
 		application.tracking = runtime->checkpoint.begin || runtime->checkpoint.capture ||
 				       runtime->checkpoint.finish;
@@ -215,8 +259,9 @@ static int apply_patch_exec(const char *input, struct tool_result *result, void 
 		return patch_failure(result, &application, rc, code,
 				     application.capture_error
 					     ? "Could not capture file preimages before editing."
-				     : error[0] ? error
-						: morph_strerror(rc),
+				     : application.authorization_detail.len ?
+					     morph_buf_cstr_borrow(&application.authorization_detail)
+				     : error[0] ? error : morph_strerror(rc),
 				     status,
 				     application.captured > 0 && !application.capture_error &&
 					     !application.authorization_error);

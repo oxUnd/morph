@@ -26,6 +26,16 @@ struct runtime_mcp_job {
 struct runtime_title_job;
 struct runtime_recap_job;
 
+struct runtime_agent_actor {
+	struct tool_runtime_context context;
+	char user_id[64];
+	char credit_session_id[64];
+};
+
+int runtime_agent_actor_begin(struct runtime *runtime, struct runtime_agent_actor *actor);
+void runtime_agent_actor_end(struct runtime *runtime);
+int runtime_agent_session_begin(struct runtime *runtime);
+
 struct runtime {
 	struct runtime_context context;
 	struct runtime_options options;
@@ -76,6 +86,7 @@ void runtime_unlock_turn(struct runtime_engine *engine);
 
 int runtime_prepare_turn(void *user_data,
 			 const struct runtime_request *request);
+void runtime_drain_turn(void *user_data);
 void runtime_finish_turn(void *user_data,
 			  const struct runtime_request *request,
 			  const struct runtime_result *result);

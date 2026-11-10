@@ -46,7 +46,8 @@ def composer(terminal, expected=''):
 def result_gap(terminal, result, draft=''):
     rows = terminal.screen.display
     prompt_row = composer(terminal, draft)
-    output_row = max(index for index, row in enumerate(rows) if result in row)
+    output_row = max(index for index, row in enumerate(rows)
+                     if (row.strip() == result if result.startswith('/') else result in row))
     if not rows[output_row].startswith('/'):
         heading = max(index for index, row in enumerate(rows[:output_row])
                       if row.startswith('/'))
@@ -92,7 +93,8 @@ def main():
             for command, title in [('/hooks', 'Lifecycle hooks'),
                                    ('/resume', 'Resume a session'),
                                    ('/history', 'history'), ('/hi', 'history'),
-                                   ('/jobs', 'morph / jobs')]:
+                                   ('/jobs', 'morph / jobs'), ('/model', 'Select Model Mode'),
+                                   ('/m', 'Select Model Mode')]:
                 terminal.send(command + '\r')
                 wait_for(terminal, lambda: title in '\n'.join(terminal.screen.display))
                 terminal.send('\x1b')
@@ -100,16 +102,16 @@ def main():
                 command_heading(terminal, command)
                 result_gap(terminal, command)
                 print(f'PASS: {command} cancellation preserves its plain command heading')
-            terminal.send('/model\r')
+            terminal.send('/model status\r')
             display = '\n'.join(terminal.screen.display)
             assert 'current model: pty-test' in display, display
             composer(terminal)
-            heading_row = command_heading(terminal, '/model')
+            heading_row = command_heading(terminal, '/model status')
             output_row = next(index for index, row in enumerate(terminal.screen.display)
                               if 'current model: pty-test' in row)
             assert output_row == heading_row + 2, '\n'.join(terminal.screen.display)
             assert terminal.screen.buffer[output_row][0].bg != '1c1c1c'
-            result_gap(terminal, 'current model: pty-test')
+            result_gap(terminal, 'mode: normal')
             terminal.send('/rename slash-renamed\r')
             assert 'session renamed to: slash-renamed' in '\n'.join(terminal.screen.display)
             composer(terminal)
@@ -138,10 +140,10 @@ def main():
             terminal.child.setwinsize(32, 100)
             terminal.screen.resize(lines=32, columns=100)
             terminal.pump(.2)
-            terminal.send('/model\r')
+            terminal.send('/model status\r')
             composer(terminal)
             terminal.send('\x1b[A')
-            composer(terminal, '/model')
+            composer(terminal, '/model status')
             terminal.send('\x15')
             for command in ('/help /share', '/credits', '/permissions status',
                             '/tasks', '/memory show'):

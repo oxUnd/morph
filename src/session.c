@@ -188,7 +188,9 @@ int session_list(struct db *db, struct session **out, int *count, int limit, con
 		morph_buf_puts(&sql,
 			       "SELECT id,display_id,name,model,created_at,updated_at,token_used"
 			       " FROM sessions WHERE NOT EXISTS (SELECT 1 FROM sub_agent_tasks "
-			       "WHERE sub_agent_tasks.child_session_id=sessions.id)");
+			       "WHERE sub_agent_tasks.child_session_id=sessions.id) "
+			       "AND NOT EXISTS (SELECT 1 FROM agent_threads "
+			       "WHERE agent_threads.session_id=sessions.id)");
 	if (rc == 0 && filter && filter[0])
 		morph_buf_puts(&sql, " AND name LIKE ?");
 	if (rc == 0)
@@ -286,12 +288,14 @@ int session_delete(struct db *db, int64_t id)
 	const char *sql =
 		"DELETE FROM sessions WHERE id=? OR id IN ("
 		"SELECT child_session_id FROM sub_agent_tasks "
-		"WHERE parent_session_id=?)";
+		"WHERE parent_session_id=?) OR id IN ("
+		"SELECT session_id FROM agent_threads WHERE root_session_id=?)";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
 		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, id);
+	sqlite3_bind_int64(stmt, 3, id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)

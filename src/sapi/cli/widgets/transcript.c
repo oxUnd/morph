@@ -1,5 +1,6 @@
 #include "sapi/cli/widgets/transcript.h"
 #include "sapi/cli/models/transcript.h"
+#include "sapi/cli/presentation/agent_tools.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/presenter.h"
@@ -73,6 +74,8 @@ static const char *cli_transcript_tool_state_marker(const struct cli_transcript_
 static void cli_transcript_tool_row(const struct cli_transcript_tool *tool, morph_buf_t *row,
 				    int available_columns, int styled)
 {
+	if (cli_agent_tools_row(tool, row, available_columns, styled))
+		return;
 	morph_buf_t action;
 	morph_buf_t subject;
 	morph_buf_t meta;
@@ -165,7 +168,7 @@ int cli_transcript_live_text(const struct cli_transcript_model *model, morph_buf
 {
 	const struct cli_transcript_tool *tool = cli_transcript_model_active_borrow(model);
 
-	if (!tool)
+	if (!tool || cli_agent_tools_analytics_only(tool->name))
 		return 0;
 	cli_transcript_tool_row(tool, text, columns, styled);
 	return 1;
@@ -181,7 +184,7 @@ int cli_transcript_live_body(const struct cli_transcript_model *model, morph_buf
 	int rows = 0;
 	int width = columns - (int)CLI_CONTENT_RIGHT_PADDING - 4;
 
-	if (!tool)
+	if (!tool || cli_agent_tools_matches(tool->name))
 		return 0;
 	end = morph_buf_cstr_borrow(&tool->stream) + tool->stream.len;
 	while (end > tool->stream.data && end[-1] == '\n')
@@ -320,7 +323,8 @@ static void cli_transcript_print_tool_preview(struct cli_application *ctx,
 		cJSON_Delete(json);
 		return;
 	}
-	cli_transcript_tool_preview_text(tool, data, &text);
+	if (!cli_agent_tools_preview(tool, &text))
+		cli_transcript_tool_preview_text(tool, data, &text);
 	safe = utf8_terminal_sanitize_dup(morph_buf_cstr_borrow(&text), text.len,
 					  UTF8_TERMINAL_TEXT_MULTILINE, NULL);
 	morph_buf_cleanup(&text);
@@ -369,6 +373,8 @@ static void cli_transcript_print_tool_preview(struct cli_application *ctx,
 void cli_transcript_render_tool(struct cli_application *ctx, const struct cli_transcript_tool *tool,
 				int compact)
 {
+	if (compact && cli_agent_tools_analytics_only(tool->name))
+		return;
 	morph_buf_t line;
 
 	if (morph_buf_init(&line, 128) != 0)

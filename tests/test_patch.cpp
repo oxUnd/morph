@@ -410,7 +410,7 @@ TEST_F(PatchTrackingTest, CheckpointRequiresExplicitTargetAndRetainsConflictDeta
 
 TEST_F(PatchTrackingTest, SubagentEditsKeepLegacyBehaviorAndCannotRequestRestore)
 {
-	runtime.sub_agent_depth = 1;
+	runtime.agent_depth = 1;
 	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
 	ASSERT_EQ(run("apply_patch",
 		      "*** Begin Patch\n*** Add File: child.txt\n+child\n*** End Patch", &result),

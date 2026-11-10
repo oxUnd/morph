@@ -25,13 +25,14 @@
 #include "agent/tools/runtime_query.h"
 #include "agent/tools/request_permissions.h"
 #include "agent/tools/skill_activate.h"
-#include "agent/tools/sub_agent_tools.h"
+#include "agent/tools/multi_agents.h"
 #include "agent/tools/vid_gen.h"
 #include "agent/memory.h"
 #include "mcp/mcp.h"
 #include "models/image_gen.h"
 #include "models/video_gen.h"
 #include "runtime/usage.h"
+#include "runtime/runtime_internal.h"
 #include "util/data.h"
 #include "util/error.h"
 #include "util/file.h"
@@ -183,48 +184,65 @@ static void runtime_apply_tool_flags(struct tool_registry *tools, const struct c
 	}
 }
 
-static void runtime_apply_guardrails(struct react_context *react, const struct config *config,
-				     struct model *llm)
+static enum guardrail_hook runtime_guardrail_hook(const char *name)
 {
-	react->guardrail.logger = react->logger;
+	return !strcmp(name, "input")	      ? GUARDRAIL_HOOK_INPUT
+	       : !strcmp(name, "tool_output") ? GUARDRAIL_HOOK_TOOL_OUTPUT
+					      : GUARDRAIL_HOOK_OUTPUT;
+}
+
+static int runtime_apply_guardrails(struct react_context *react, const struct config *config,
+				    struct model *llm)
+{
 	if (!react || !config)
-		return;
-	guardrail_register_builtin_rules(&react->guardrail);
+		return -EINVAL;
+	react->guardrail.logger = react->logger;
+	react->guardrail.enabled = config->react.guardrail_enabled;
+	react->guardrail.max_retries = config->react.guardrail_max_retries;
+	react->guardrail.max_empty_rounds = config->react.guardrail_max_empty_rounds;
+	if (react->guardrail.rule_count == 0)
+		guardrail_register_builtin_rules(&react->guardrail);
 	for (int i = 0; i < config->react.guardrail_llm_rule_count; i++) {
 		const struct config_guardrail_llm_rule *cr = &config->react.guardrail_llm_rules[i];
-		enum guardrail_hook hook = strcmp(cr->hook, "input") == 0 ? GUARDRAIL_HOOK_INPUT
-									  : GUARDRAIL_HOOK_OUTPUT;
-		guardrail_rule_register(&react->guardrail, cr->name, hook, GUARDRAIL_RULE_LLM, NULL,
-					cr->description, NULL, cr->action_text);
+		int rc = guardrail_rule_register(
+			&react->guardrail, cr->name, runtime_guardrail_hook(cr->hook),
+			GUARDRAIL_RULE_LLM, NULL, cr->description, NULL, cr->action_text);
+		if (rc != 0)
+			return rc;
 	}
 	for (int i = 0; i < config->react.guardrail_ext_rule_count; i++) {
 		const struct config_guardrail_ext_rule *cr = &config->react.guardrail_ext_rules[i];
-		enum guardrail_hook hook = strcmp(cr->hook, "input") == 0 ? GUARDRAIL_HOOK_INPUT
-									  : GUARDRAIL_HOOK_OUTPUT;
-		guardrail_rule_register(&react->guardrail, cr->name, hook, GUARDRAIL_RULE_EXT, NULL,
-					cr->ext_type[0] == '\0' || strcmp(cr->ext_type, "exec") == 0
-						? NULL
-						: cr->ext_type,
-					cr->ext_entry, cr->action_text);
+		int rc = guardrail_rule_register(
+			&react->guardrail, cr->name, runtime_guardrail_hook(cr->hook),
+			GUARDRAIL_RULE_EXT, NULL, cr->name, cr->ext_entry, cr->action_text);
+		if (rc != 0)
+			return rc;
 		struct guardrail_rule *configured =
 			guardrail_rule_borrow(&react->guardrail, cr->name);
-		if (configured != NULL) {
-			configured->block_on_error = !strcmp(cr->on_error, "block");
-		}
-		if (strcmp(cr->ext_type, "so") == 0) {
-			struct guardrail_rule *r =
-				guardrail_rule_borrow(&react->guardrail, cr->name);
-			if (r) {
-				r->ext_type = GUARDRAIL_EXT_SO;
-				guardrail_ext_so_load(react ? react->logger : NULL, r);
-			}
+		configured->block_on_error = !strcmp(cr->on_error, "block");
+		if (!strcmp(cr->ext_type, "so")) {
+			configured->ext_type = GUARDRAIL_EXT_SO;
+			rc = guardrail_ext_so_load(react->logger, configured);
+			if (rc != 0)
+				return rc;
 		}
 	}
+	if (llm && config->react.guardrail_llm_model[0]) {
+		react->guardrail_model = model_llm_clone(llm, react->logger);
+		if (!react->guardrail_model)
+			return -ENOMEM;
+		snprintf(react->guardrail_model->model_id, sizeof(react->guardrail_model->model_id),
+			 "%s", config->react.guardrail_llm_model);
+		react->guardrail_model->usage_sink = llm->usage_sink;
+		react->guardrail_model->budget_sink = llm->budget_sink;
+	}
 	if (llm)
-		guardrail_set_llm(&react->guardrail, llm);
+		guardrail_set_llm(&react->guardrail,
+				  react->guardrail_model ? react->guardrail_model : llm);
 	for (int i = 0; i < config->react.guardrail_disabled_rule_count; i++)
-		guardrail_rule_disable(&react->guardrail,
-				       config->react.guardrail_disabled_rules[i]);
+		(void)guardrail_rule_disable(&react->guardrail,
+					     config->react.guardrail_disabled_rules[i]);
+	return 0;
 }
 
 int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
@@ -332,8 +350,7 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 			all[i]->http.logger = profile->logger;
 		}
 	}
-	runtime_apply_guardrails(models->react, config, models->text);
-	return 0;
+	return runtime_apply_guardrails(models->react, config, models->text);
 }
 
 static int runtime_discover_skills(struct runtime_bootstrap_profile *profile)
@@ -563,51 +580,225 @@ int runtime_bootstrap_dynamic_tools(struct runtime_bootstrap_profile *profile,
 				  &profile->config->dynamic_tools, session_id);
 }
 
-int runtime_bootstrap_sub_agents(struct runtime_bootstrap_profile *profile,
-				 struct sub_agent_runtime **out)
-{
-	struct sub_agent_runtime *rt;
-	int rc;
+struct runtime_child_state {
+	struct skill_registry skills;
+	struct model_usage_sink usage_sink;
+	struct db *usage_db;
+	const struct config *usage_config;
+	runtime_usage_observer_fn usage_observer;
+	void *usage_observer_user_data;
+	char *user_id;
+	char *credit_session_id;
+	struct model *vision;
+	struct model *image;
+	struct model *video;
+	int discovered;
+};
 
-	if (!profile || !profile->config || !profile->models || !out)
-		return -EINVAL;
-	if (*out)
-		return -EEXIST;
-	if (!profile->enable_sub_agents || profile->config->sub_agents.count == 0)
-		return 0;
-	rt = sub_agent_runtime_create(profile->tools, profile->models->text,
-				      profile->models->tokenizer,
-				      &profile->models->react->compress);
-	if (!rt)
+static void runtime_child_state_destroy(void *opaque)
+{
+	struct runtime_child_state *state = opaque;
+	if (!state)
+		return;
+	skill_registry_cleanup(&state->skills);
+	free(state->user_id);
+	free(state->credit_session_id);
+	model_destroy(state->vision);
+	model_destroy(state->image);
+	model_destroy(state->video);
+	free(state);
+}
+
+static void runtime_child_usage(const struct model_usage *usage, void *opaque)
+{
+	struct runtime_child_state *state = opaque;
+	if (!runtime_model_usage_is_billable(usage))
+		return;
+	(void)runtime_record_model_usage_for_user(state->usage_db, state->usage_config,
+						  state->user_id, state->credit_session_id, usage);
+	if (state->usage_observer)
+		state->usage_observer(usage, state->usage_observer_user_data);
+}
+
+static int runtime_child_usage_bind(struct runtime_child_state *state, struct model *model,
+				    const struct tool_runtime_context *context,
+				    struct runtime *owner)
+{
+	char *user MORPH_CLEANUP(morph_charp_cleanup) =
+		strdup(context->user_id && *context->user_id ? context->user_id : "local");
+	char *session MORPH_CLEANUP(morph_charp_cleanup) =
+		strdup(context->credit_session_id && *context->credit_session_id
+			       ? context->credit_session_id
+			       : "local");
+	if (!user || !session)
 		return -ENOMEM;
-	sub_agent_runtime_set_event_callback(rt, profile->event_cb, profile->event_user_data);
-	(void)sub_agent_runtime_set_storage(rt, profile->db);
-	rc = sub_agent_runtime_load_config(rt, &profile->config->sub_agents);
-	if (rc < 0) {
-		sub_agent_runtime_destroy(rt);
+	free(state->user_id);
+	free(state->credit_session_id);
+	state->user_id = morph_charp_steal(&user);
+	state->credit_session_id = morph_charp_steal(&session);
+	state->usage_db = owner ? &owner->context.database : context->db;
+	state->usage_config = context->config;
+	state->usage_observer = owner ? owner->options.usage_observer : NULL;
+	state->usage_observer_user_data = owner ? owner->options.usage_observer_user_data : NULL;
+	state->usage_sink = (struct model_usage_sink){
+		.callback = runtime_child_usage,
+		.user_data = state,
+	};
+	model->usage_sink = &state->usage_sink;
+	return 0;
+}
+
+typedef int (*runtime_model_tool_init_fn)(struct tool_registry *tools, struct model *model,
+					  struct tool_context *context);
+
+static int runtime_child_model_tool(struct tool_registry *tools, const char *name,
+				    runtime_model_tool_init_fn initialize, struct model *model)
+{
+	struct tool_entry *entry = tool_borrow(tools, name);
+	if (!entry)
+		return 0;
+	unsigned int flags = entry->flags;
+	int timeout = entry->timeout_seconds;
+	int disabled = tool_is_disabled(tools, name);
+	int rc = tool_unregister(tools, name);
+	if (rc == 0)
+		rc = initialize(tools, model, tools->permission_context);
+	if (rc != 0)
 		return rc;
-	}
-	sub_agent_tools_register_all(profile->tools, rt);
-	profile->models->react->sub_agent_depth = 0;
-	if (rt->entry_count > 0) {
-		profile->models->react->sub_agent_info = calloc(
-			(size_t)rt->entry_count, sizeof(*profile->models->react->sub_agent_info));
-		if (profile->models->react->sub_agent_info) {
-			for (int i = 0; i < rt->entry_count; i++) {
-				strncpy(profile->models->react->sub_agent_info[i].name,
-					rt->entries[i].cfg.name,
-					sizeof(profile->models->react->sub_agent_info[i].name) - 1);
-				strncpy(profile->models->react->sub_agent_info[i].description,
-					rt->entries[i].cfg.description,
-					sizeof(profile->models->react->sub_agent_info[i]
-						       .description) -
-						1);
-			}
-			profile->models->react->sub_agent_info_count = rt->entry_count;
+	entry = tool_borrow(tools, name);
+	entry->flags = flags;
+	entry->timeout_seconds = timeout;
+	return disabled ? tool_disable(tools, name) : 0;
+}
+
+static int runtime_child_tools(struct runtime_child_state *state, struct tool_registry *tools,
+			       struct model *model, const struct tool_runtime_context *runtime)
+{
+	model_destroy(state->vision);
+	model_destroy(state->image);
+	model_destroy(state->video);
+	state->vision =
+		runtime_create_model(model->http.logger, &runtime->config->models.vision, 1);
+	state->image = runtime_create_model(model->http.logger, &runtime->config->models.image, 1);
+	state->video = runtime_create_model(model->http.logger, &runtime->config->models.video, 1);
+	if ((runtime->config->models.vision.model[0] && !state->vision) ||
+	    (runtime->config->models.image.model[0] && !state->image) ||
+	    (runtime->config->models.video.model[0] && !state->video))
+		return -ENOMEM;
+	struct model *clients[] = {state->vision, state->image, state->video};
+	for (size_t i = 0; i < sizeof(clients) / sizeof(clients[0]); i++) {
+		if (clients[i]) {
+			clients[i]->usage_sink = model->usage_sink;
+			clients[i]->budget_sink = model->budget_sink;
 		}
 	}
-	*out = rt;
-	return 0;
+	int rc = runtime_child_model_tool(tools, "img_qa", img_qa_init, state->vision);
+	if (rc == 0)
+		rc = runtime_child_model_tool(tools, "img_gen", img_gen_init, state->image);
+	if (rc == 0)
+		rc = runtime_child_model_tool(tools, "img_inpaint", img_inpaint_init, state->image);
+	if (rc == 0)
+		rc = runtime_child_model_tool(tools, "img_compose", img_compose_init, state->image);
+	if (rc == 0)
+		rc = runtime_child_model_tool(tools, "vid_gen", vid_gen_init, state->video);
+	if (rc == 0 && tool_borrow(tools, "tasks"))
+		rc = scheduled_tasks_tool_rebind(tools, runtime->db, runtime->memory_session_id);
+	if (rc == 0 && tool_borrow(tools, "tool_create")) {
+		char session[32];
+		snprintf(session, sizeof(session), "%lld", (long long)runtime->memory_session_id);
+		rc = dynamic_tools_rebind(tools, tools->permission_context,
+					  &runtime->config->dynamic_tools, session);
+	}
+	/* Child questions are routed to their parent; they must not borrow a frontend. */
+	if (rc == 0 && tool_borrow(tools, "ask_user")) {
+		unsigned int flags = tool_borrow(tools, "ask_user")->flags;
+		int timeout = tool_borrow(tools, "ask_user")->timeout_seconds;
+		int disabled = tool_is_disabled(tools, "ask_user");
+		rc = tool_unregister(tools, "ask_user");
+		if (rc == 0)
+			rc = ask_user_init_deferred(tools);
+		if (rc == 0) {
+			tool_borrow(tools, "ask_user")->flags = flags;
+			tool_borrow(tools, "ask_user")->timeout_seconds = timeout;
+		}
+		if (rc == 0 && disabled)
+			rc = tool_disable(tools, "ask_user");
+	}
+	if (rc == 0 && tool_borrow(tools, "img_annotate"))
+		rc = tool_disable(tools, "img_annotate");
+	return rc;
+}
+
+int runtime_bootstrap_child(struct tool_registry *tools, struct plan_registry *plans,
+			    struct react_context *react, struct model *model,
+			    const struct tool_runtime_context *runtime,
+			    struct agent_child_state *owner, void *user_data)
+{
+	if (!tools || !react || !model || !runtime || !owner || !runtime->config)
+		return -EINVAL;
+	if (!owner->data) {
+		struct runtime_child_state *state = calloc(1, sizeof(*state));
+		if (!state)
+			return -ENOMEM;
+		skill_registry_init(react->logger, &state->skills);
+		owner->data = state;
+		owner->destroy = runtime_child_state_destroy;
+	}
+	if (owner->destroy != runtime_child_state_destroy)
+		return -EINVAL;
+	struct runtime_child_state *state = owner->data;
+	int usage_rc = runtime_child_usage_bind(state, model, runtime, user_data);
+	if (usage_rc != 0)
+		return usage_rc;
+	if (!state->discovered) {
+		int rc = skill_discover_configured(&state->skills,
+						   runtime->workdir ? runtime->workdir : ".",
+						   runtime->config->skill.dir);
+		if (rc < 0)
+			return rc;
+		char *builtin MORPH_CLEANUP(morph_charp_cleanup) = morph_data_find_alloc("skills");
+		if (builtin) {
+			rc = skill_discover(&state->skills, builtin);
+			if (rc < 0)
+				return rc;
+		}
+		rc = skill_restore_session(&state->skills, runtime->db, runtime->memory_session_id);
+		if (rc != 0)
+			return rc;
+		state->discovered = 1;
+	}
+	int rc = plans ? plan_tool_rebind(tools, plans, model) : 0;
+	if (rc == 0 && (state->skills.count || tool_borrow(tools, "activate_skill")))
+		rc = skill_activate_rebind(tools, &state->skills);
+	if (rc != 0)
+		return rc;
+	if (rc == 0)
+		rc = runtime_child_tools(state, tools, model, runtime);
+	if (rc != 0)
+		return rc;
+	react->skills = &state->skills;
+	react->tool_timeout_seconds = runtime->config->react.tool_timeout_seconds;
+	react->tool_max_retries = runtime->config->react.tool_max_retries;
+	return runtime_apply_guardrails(react, runtime->config, model);
+}
+
+int runtime_bootstrap_agents(struct runtime_bootstrap_profile *profile, struct agent_control **out)
+{
+	if (!profile || !profile->config || !profile->models || !out || *out)
+		return -EINVAL;
+	if (!profile->enable_multi_agent || !profile->config->agents.enabled)
+		return 0;
+	*out = agent_control_create(profile->tools, profile->models->text,
+				    profile->models->tokenizer, &profile->models->react->compress,
+				    &profile->config->agents, profile->db);
+	if (!*out)
+		return -ENOMEM;
+	agent_control_set_event_callback(*out, profile->event_cb, profile->event_user_data);
+	profile->models->react->agents = *out;
+	int rc = agent_control_set_child_initializer(*out, runtime_bootstrap_child, profile->owner);
+	if (rc != 0)
+		return rc;
+	return multi_agents_register(profile->tools, *out);
 }
 
 void runtime_bootstrap_cleanup_models(struct runtime_models *models)
@@ -643,15 +834,12 @@ void runtime_bootstrap_cleanup(struct runtime_shutdown_resources *r)
 	}
 
 	if (r->react && *r->react) {
-		free((*r->react)->sub_agent_info);
-		(*r->react)->sub_agent_info = NULL;
-		(*r->react)->sub_agent_info_count = 0;
 		react_context_destroy(*r->react);
 		*r->react = NULL;
 	}
-	if (r->sub_agents && *r->sub_agents) {
-		sub_agent_runtime_destroy(*r->sub_agents);
-		*r->sub_agents = NULL;
+	if (r->agents && *r->agents) {
+		agent_control_destroy(*r->agents);
+		*r->agents = NULL;
 	}
 	if (r->tokenizer && *r->tokenizer) {
 		tokenizer_destroy(*r->tokenizer);

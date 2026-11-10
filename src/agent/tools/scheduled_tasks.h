@@ -9,6 +9,7 @@ extern "C" {
 #include "db/database.h"
 #include "db/scheduled_task.h"
 
+int scheduled_tasks_tool_rebind(struct tool_registry *reg, struct db *db, int64_t source_session);
 int scheduled_tasks_tool_init(struct tool_registry *reg, struct db *db);
 int scheduled_tasks_tool_init_events(
 	struct tool_registry *reg, struct db *db,

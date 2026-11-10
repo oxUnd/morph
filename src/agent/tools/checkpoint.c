@@ -71,7 +71,7 @@ static int checkpoint_exec(const char *input, struct tool_result *result, void *
 			result, -EINVAL, "checkpoint_id_required",
 			"List checkpoints and preview an explicit id before restoring code.", NULL);
 	runtime = result->runtime;
-	if (runtime && runtime->sub_agent_depth > 0)
+	if (runtime && runtime->agent_depth > 0)
 		return checkpoint_error(
 			result, -EPERM, "checkpoint_subagent_unsupported",
 			"Code checkpoints are supported only in the main agent, not sub-agents.",

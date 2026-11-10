@@ -62,6 +62,8 @@ struct model *model_request_view_init(const struct model *source,
 void model_report_usage(const struct model *model, const struct model_usage *usage)
 {
 	const struct model_usage_sink *sink = model ? model->usage_sink : NULL;
+	if (model && model->budget_sink && model->budget_sink->callback && usage)
+		model->budget_sink->callback(usage, model->budget_sink->user_data);
 
 	if (sink && sink->callback && usage) {
 		struct model_usage tagged = *usage;
@@ -871,6 +873,37 @@ struct model *model_llm_clone(const struct model *source, struct morph_log *logg
 	copy->poll_interval_seconds = source->poll_interval_seconds;
 	copy->poll_timeout_seconds = source->poll_timeout_seconds;
 	return copy;
+}
+
+int model_llm_set_reasoning_effort(struct model *model, const char *effort)
+{
+	if (!model || !effort || !*effort)
+		return -EINVAL;
+	cJSON *extra MORPH_CLEANUP(morph_json_cleanup) = model->extra_body_json[0]
+		? cJSON_Parse(model->extra_body_json) : cJSON_CreateObject();
+	if (!cJSON_IsObject(extra))
+		return MORPH_ERR_CONFIG;
+	cJSON_DeleteItemFromObjectCaseSensitive(extra, "reasoning_effort");
+	const struct llm_adapter *adapter = llm_adapter_borrow(model);
+	if (adapter->responses_api) {
+		cJSON *reasoning = cJSON_GetObjectItemCaseSensitive(extra, "reasoning");
+		if (!reasoning)
+			reasoning = cJSON_AddObjectToObject(extra, "reasoning");
+		if (!cJSON_IsObject(reasoning))
+			return MORPH_ERR_CONFIG;
+		cJSON_DeleteItemFromObjectCaseSensitive(reasoning, "effort");
+		if (!cJSON_AddStringToObject(reasoning, "effort", effort))
+			return -ENOMEM;
+	} else if (!cJSON_AddStringToObject(extra, "reasoning_effort", effort)) {
+		return -ENOMEM;
+	}
+	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(extra);
+	if (!json)
+		return -ENOMEM;
+	if (strlen(json) >= sizeof(model->extra_body_json))
+		return -E2BIG;
+	strcpy(model->extra_body_json, json);
+	return 0;
 }
 
 void model_destroy(struct model *m)

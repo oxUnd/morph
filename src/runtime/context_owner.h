@@ -3,7 +3,7 @@
 
 #include "agent/plan.h"
 #include "agent/react.h"
-#include "agent/sub_agent.h"
+#include "agent/agent_control.h"
 #include "agent/tool_context.h"
 #include "config/config.h"
 #include "db/database.h"
@@ -25,6 +25,13 @@
 
 struct morph_log;
 
+enum runtime_agent_phase {
+	RUNTIME_AGENTS_IDLE,
+	RUNTIME_AGENTS_RUNNING,
+	RUNTIME_AGENTS_FINISHING,
+	RUNTIME_AGENTS_CLOSING,
+};
+
 struct runtime_context {
 	char *approval_objective;
 	pthread_mutex_t approval_objective_lock;
@@ -38,6 +45,7 @@ struct runtime_context {
 	struct plan_registry plans;
 	struct runtime_plan_session plan_sessions[RUNTIME_PLAN_SESSION_CACHE_MAX];
 	int64_t active_plan_session_id;
+	int64_t active_skill_session_id;
 	struct skill_registry skill_storage;
 	struct skill_registry *skills;
 	struct react_context *react;
@@ -49,12 +57,18 @@ struct runtime_context {
 	struct model *vid_llm;
 	struct mcp_registry mcp;
 	struct tool_context *tctx;
-	struct sub_agent_runtime *sub_agents;
+	struct agent_control *agents;
 	struct runtime_engine engine;
 	struct runtime_turn_scope turn_scope;
 	struct tool_checkpoint_context checkpoint;
 	struct memory_options memory_options;
 	pthread_mutex_t execution_lock;
+	pthread_mutex_t agent_interaction_lock;
+	enum runtime_agent_phase agent_phase;
+	int64_t agent_actor_session_id;
+	int agent_restrict_memory_to_user;
+	char agent_user_id[64];
+	char agent_credit_session_id[64];
 	pthread_mutex_t tool_registry_lock;
 	int execution_lock_ready;
 	char config_path[PATH_MAX];

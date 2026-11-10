@@ -8,6 +8,7 @@
 #include "sapi/cli/widgets/transcript.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/pages/jobs.h"
+#include "sapi/cli/services/agents.h"
 
 
 #define CLI_FEED_TERMINAL_DEFAULT_COLUMNS 80
@@ -32,6 +33,7 @@ struct cli_feed {
 	int output_fd;
 	morph_buf_t live_text;
 	morph_buf_t markdown_preview;
+	morph_buf_t agent_summary;
 	int markdown_preview_prefix;
 	int live_active;
 	int live_independent;
@@ -153,9 +155,13 @@ static void cli_feed_work_row(struct cli_feed *terminal, int columns)
 	if (seconds >= 60)
 		(void)morph_buf_printf(&text, "%lldm ", (long long)(seconds / 60));
 	(void)morph_buf_printf(&text, "%llds", (long long)(seconds % 60));
-	if (terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING)
-		(void)morph_buf_puts(&text, " · esc to interrupt");
-	else if (localtime_r(&terminal->work_finished_at, &finished)) {
+	if (terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING) {
+		(void)morph_buf_puts(&text, terminal->agent_summary.len && columns < 76
+				      ? " · esc" : " · esc to interrupt");
+		if (terminal->agent_summary.len)
+			(void)morph_buf_printf(&text, " · %s",
+					       morph_buf_cstr_borrow(&terminal->agent_summary));
+	} else if (localtime_r(&terminal->work_finished_at, &finished)) {
 		(void)strftime(clock, sizeof(clock), "%H:%M", &finished);
 		(void)morph_buf_printf(&text, " · %s", clock);
 	}
@@ -287,6 +293,13 @@ int cli_feed_init(struct cli_application *ctx, FILE *output, int output_fd)
 		free(terminal);
 		return rc;
 	}
+	rc = morph_buf_init(&terminal->agent_summary, 128);
+	if (rc != 0) {
+		morph_buf_cleanup(&terminal->markdown_preview);
+		morph_buf_cleanup(&terminal->live_text);
+		free(terminal);
+		return rc;
+	}
 	terminal->output = output ? output : stdout;
 	terminal->output_fd = output_fd;
 	terminal->is_terminal = output_fd >= 0 && isatty(output_fd);
@@ -307,6 +320,7 @@ void cli_feed_cleanup(struct cli_application *ctx)
 	cli_feed_update_end(ctx);
 	morph_buf_cleanup(&terminal->live_text);
 	morph_buf_cleanup(&terminal->markdown_preview);
+	morph_buf_cleanup(&terminal->agent_summary);
 	free(terminal);
 	ctx->terminal = NULL;
 }
@@ -567,7 +581,7 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 				    terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING &&
 				    !status_visible && !queue_shown;
 	if (!status_visible && !terminal->markdown_preview.len && queue_shown == 0 &&
-	    !terminal->work_state && !cli_jobs_visible(ctx)) {
+	    !terminal->work_state && !cli_jobs_visible(ctx) && !cli_agents_visible(ctx)) {
 		if (terminal->live_visible) {
 			cli_feed_clear_frame(terminal);
 			fflush(terminal->output);
@@ -597,12 +611,16 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 		terminal->next_frame_ms = now + CLI_FEED_TERMINAL_WORK_FRAME_MS;
 		return;
 	}
+	morph_buf_reset(&terminal->agent_summary);
 	if (morph_buf_init(&job_text, 128) == 0) {
 		int max_jobs = 3;
 		if (cli_feed_output_rows(terminal) < 20)
 			max_jobs = 1;
 		job_rows = cli_jobs_render(ctx, &job_text, columns, max_jobs,
 					   cli_output_color_enabled(ctx));
+		if (cli_agents_visible(ctx))
+			job_rows += cli_agents_render(ctx, &job_text, &terminal->agent_summary,
+						     columns, max_jobs, cli_output_color_enabled(ctx));
 	}
 	text = morph_buf_cstr_borrow(&terminal->live_text);
 	if (status_visible && morph_buf_init(&tool_text, 128) == 0) {
@@ -732,7 +750,7 @@ int cli_feed_next_frame_ms(const struct cli_application *ctx)
 	terminal = ctx->terminal;
 	if (!terminal->transient || (!terminal->live_active && !terminal->markdown_preview.len &&
 				     terminal->work_state != CLI_FEED_TERMINAL_WORK_RUNNING &&
-				     !cli_jobs_visible(ctx) && !terminal->job_rows))
+				     !cli_jobs_visible(ctx) && !cli_agents_visible(ctx) && !terminal->job_rows))
 		return -1;
 	if (!terminal->live_visible)
 		return 0;

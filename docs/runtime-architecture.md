@@ -335,3 +335,17 @@ state and clearing transient grants. Global defaults apply to future runtimes;
 other running processes retain their existing policy. See
 [the implementation specification](permissions-design.md) and
 [acceptance evidence](permissions-acceptance.md).
+
+## Multi-agent collaboration
+
+Runtime owns `agent_control`, which implements the Codex collaboration tools.
+Agents retain independent histories, mailboxes, skill activation and configured
+guardrails; executions own cloned models, mutable tool bindings, ReAct contexts
+and database connections. Child billing owns its actor identity and uses the
+runtime's persistent usage observer. The root request remains bound until
+workers are joined; drain admission prevents idle restarts from racing callback
+restoration. Viewer follow-ups enter the runtime facade with a short actor lock,
+without reentering the serialized primary-turn entry point. Selected thread
+events have an atomic replay frontier and independent CLI transcript model.
+See [multi-agent collaboration](multi-agent.md) for tool semantics,
+Ultra mode selection, persistence, cancellation and migration.

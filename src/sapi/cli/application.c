@@ -269,7 +269,7 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 	options.enable_config_write = 1;
 	options.enable_img_annotate = 1;
 	options.enable_shell_exts = 1;
-	options.enable_sub_agents = 1;
+	options.enable_multi_agent = 1;
 	options.allocate_skill_registry = 1;
 	options.auto_connect_mcp = 1;
 	options.background_connect_mcp = ctx->presentation_mode == CLI_PRESENT_INTERACTIVE;

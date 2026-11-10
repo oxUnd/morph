@@ -1,6 +1,7 @@
 #include "runtime/services.h"
 
 #include "agent/memory.h"
+#include "agent/tools/skill_activate.h"
 
 #include "runtime/runtime_internal.h"
 #include "agent/compress.h"
@@ -182,36 +183,97 @@ int runtime_session_count_all(struct runtime *runtime)
 	return runtime ? session_count(&runtime->context.database) : 0;
 }
 
-int runtime_sub_agent_list(struct runtime *runtime,
+int runtime_agent_budget(struct runtime *runtime, struct agent_budget *out)
+{
+	if (!runtime || !runtime->context.agents)
+		return -ENOENT;
+	return agent_control_budget_copy(runtime->context.agents, out);
+}
+
+int runtime_agent_list(struct runtime *runtime,
 			   int64_t parent_session_id,
-			   struct sub_agent_task_info **out, int *count)
+			   struct agent_info **out, int *count)
 {
 	if (!out || !count)
 		return -EINVAL;
 	if (*out)
 		return -EEXIST;
 	*count = 0;
-	if (!runtime || !runtime->context.sub_agents)
+	if (!runtime || !runtime->context.agents)
 		return -ENOENT;
-	return sub_agent_runtime_task_list_copy(runtime->context.sub_agents, parent_session_id, out,
+	return agent_control_list_copy(runtime->context.agents, parent_session_id, out,
 						count);
 }
 
-void runtime_sub_agent_list_free(struct sub_agent_task_info *tasks,
-				 int count)
+int runtime_agent_read(struct runtime *runtime, const char *id, struct agent_info **out)
 {
-	sub_agent_runtime_free_task_list(tasks, count);
+	if (!runtime || !runtime->context.agents)
+		return -ENOENT;
+	return agent_control_read_copy(runtime->context.agents, id, out);
 }
 
-int runtime_sub_agent_select(struct runtime *runtime, const char *task_id)
+int runtime_agent_activity(struct runtime *runtime, int64_t parent_session_id,
+	struct agent_info **out, int *count)
 {
-	if (!runtime || !runtime->context.sub_agents)
+	if (!runtime || !runtime->context.agents)
 		return -ENOENT;
-	return sub_agent_runtime_select_task(runtime->context.sub_agents,
+	return agent_control_activity_copy(runtime->context.agents, parent_session_id, out, count);
+}
+
+int runtime_agent_subscribe(struct runtime *runtime, const char *id,
+	char ***events, int *count, int64_t *sequence)
+{
+	if (!runtime || !runtime->context.agents)
+		return -ENOENT;
+	return agent_control_subscribe(runtime->context.agents, id, events, count, sequence);
+}
+
+static int runtime_agent_interaction(struct runtime *runtime, const char *operation,
+	const char *id, const char *message)
+{
+	if (!runtime || !runtime->context.agents || !id || !*id)
+		return -EINVAL;
+	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *out MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	if (!args || !cJSON_AddStringToObject(args, "target", id) ||
+	    (message && !cJSON_AddStringToObject(args, "message", message)))
+		return -ENOMEM;
+	struct runtime_agent_actor actor = {0};
+	int rc = runtime_agent_actor_begin(runtime, &actor);
+	if (rc != 0)
+		return rc;
+	rc = agent_control_call(runtime->context.agents, operation, args, &actor.context, &out);
+	runtime_agent_actor_end(runtime);
+	return rc;
+}
+
+int runtime_agent_followup(struct runtime *runtime, const char *id, const char *message)
+{
+	if (!message || !*message)
+		return -EINVAL;
+	return runtime_agent_interaction(runtime, "followup_task", id, message);
+}
+
+int runtime_agent_interrupt(struct runtime *runtime, const char *id)
+{
+	return runtime_agent_interaction(runtime, "interrupt_agent", id, NULL);
+}
+
+void runtime_agent_list_free(struct agent_info *tasks,
+				 int count)
+{
+	agent_control_free_list(tasks, count);
+}
+
+int runtime_agent_select(struct runtime *runtime, const char *task_id)
+{
+	if (!runtime || !runtime->context.agents)
+		return -ENOENT;
+	return agent_control_select(runtime->context.agents,
 					     task_id);
 }
 
-int runtime_sub_agent_events(struct runtime *runtime, const char *task_id,
+int runtime_agent_events(struct runtime *runtime, const char *task_id,
 			     char ***events, int *count)
 {
 	if (!events || !count)
@@ -219,15 +281,15 @@ int runtime_sub_agent_events(struct runtime *runtime, const char *task_id,
 	if (*events)
 		return -EEXIST;
 	*count = 0;
-	if (!runtime || !runtime->context.sub_agents)
+	if (!runtime || !runtime->context.agents)
 		return -ENOENT;
-	return sub_agent_runtime_task_events_copy(runtime->context.sub_agents, task_id, events,
+	return agent_control_events_copy(runtime->context.agents, task_id, events,
 						  count);
 }
 
-void runtime_sub_agent_events_free(char **events, int count)
+void runtime_agent_events_free(char **events, int count)
 {
-	sub_agent_runtime_free_events(events, count);
+	agent_control_free_events(events, count);
 }
 
 int runtime_session_find_ref(struct runtime *runtime, const char *ref,
@@ -259,7 +321,14 @@ int runtime_session_select_existing(struct runtime *runtime, int64_t id,
 	if (!ctx || id <= 0)
 		return -EINVAL;
 	pthread_mutex_lock(&ctx->execution_lock);
+	rc = runtime_agent_session_begin(runtime);
+	if (rc != 0) {
+		pthread_mutex_unlock(&ctx->execution_lock);
+		return rc;
+	}
 	rc = session_get_by_id(&ctx->database, id, &session);
+	if (rc == 0 && ctx->agents)
+		rc = agent_control_set_parent_session(ctx->agents, session.id);
 	if (rc == 0) {
 		runtime_recap_invalidate(runtime);
 		ctx->current_session = session;
@@ -269,6 +338,7 @@ int runtime_session_select_existing(struct runtime *runtime, int64_t id,
 		if (out)
 			*out = session;
 	}
+	runtime_agent_actor_end(runtime);
 	pthread_mutex_unlock(&ctx->execution_lock);
 	return rc;
 }
@@ -624,22 +694,39 @@ int runtime_skill_find_borrow(const struct runtime *runtime, const char *name,
 	return 0;
 }
 
+static void runtime_skill_unlock(struct runtime_context **context)
+{
+	if (context && *context) {
+		pthread_mutex_unlock(&(*context)->execution_lock);
+		*context = NULL;
+	}
+}
+
 int runtime_skill_set_active(struct runtime *runtime, const char *name,
 			     int active, int *changed)
 {
-	struct skill_entry *entry;
-	int before;
-	int rc = 0;
+	if (changed)
+		*changed = 0;
 	if (!runtime || !runtime->context.skills || !name)
 		return -EINVAL;
-	entry = skill_borrow(runtime->context.skills, name);
+	struct skill_entry *known = skill_borrow(runtime->context.skills, name);
+	if (!known)
+		return -ENOENT;
+	if (active && !known->enabled)
+		return -EACCES;
+	int rc = runtime_ensure_current_session(runtime);
+	if (rc != 0)
+		return rc;
+	rc = pthread_mutex_trylock(&runtime->context.execution_lock);
+	if (rc != 0)
+		return -rc;
+	struct runtime_context *context MORPH_CLEANUP(runtime_skill_unlock) = &runtime->context;
+	struct skill_entry *entry = skill_borrow(context->skills, name);
 	if (!entry)
 		return -ENOENT;
-	before = entry->activated;
-	if (active)
-		rc = skill_activate(entry);
-	else
-		skill_deactivate(entry);
+	int before = entry->activated;
+	rc = skill_activate_session(context->skills, &context->database,
+		context->current_session.id, name, active);
 	if (changed)
 		*changed = before != entry->activated;
 	return rc;

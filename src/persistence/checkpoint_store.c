@@ -156,6 +156,7 @@ static int checkpoint_tables(struct checkpoint_table *tables, size_t capacity)
 		{"model_request_snapshots", "session_id=?2"},
 		{"react_traces", "session_id=?2"},
 		{"session_plans", "session_id=?2"},
+		{"session_skill_activations", "session_id=?2"},
 		{"model_history_items", "session_id=?2"},
 		{"messages", "session_id=?2"},
 	};
@@ -188,7 +189,7 @@ static int checkpoint_schema(struct db *db)
 		"INSERT INTO checkpoint_connection_token SELECT lower(hex(randomblob(16))) "
 		"WHERE NOT EXISTS(SELECT 1 FROM checkpoint_connection_token);";
 	int rc = db_exec(db, sql);
-	struct checkpoint_table tables[9];
+	struct checkpoint_table tables[10];
 	int count = checkpoint_tables(tables, sizeof(tables) / sizeof(tables[0]));
 	for (int i = 0; rc == 0 && i < count; i++) {
 		int present = checkpoint_table_exists(db, tables[i].name);
@@ -525,7 +526,7 @@ static int checkpoint_current_size(const char *root, const char *path, size_t *s
 
 static int checkpoint_snapshot(struct db *db, int64_t id, int64_t session_id)
 {
-	struct checkpoint_table tables[9];
+	struct checkpoint_table tables[10];
 	int count = checkpoint_tables(tables, sizeof(tables) / sizeof(tables[0]));
 	for (int i = 0; i < count; i++) {
 		int present = checkpoint_table_exists(db, tables[i].name);
@@ -570,7 +571,7 @@ static int checkpoint_retention(struct db *db, int64_t session_id)
 	if (rc == 0)
 		rc = db_exec(db, "DELETE FROM code_checkpoint_files WHERE checkpoint_id NOT "
 				 "IN(SELECT id FROM code_checkpoints)");
-	struct checkpoint_table tables[9];
+	struct checkpoint_table tables[10];
 	int count = checkpoint_tables(tables, sizeof(tables) / sizeof(tables[0]));
 	for (int i = 0; rc == 0 && i < count; i++) {
 		int present = checkpoint_table_exists(db, tables[i].name);
@@ -1375,7 +1376,7 @@ static int checkpoint_columns(struct db *db, const char *table, morph_buf_t *out
 
 static int checkpoint_conversation_restore(struct db *db, const struct checkpoint_info *info)
 {
-	struct checkpoint_table tables[9];
+	struct checkpoint_table tables[10];
 	int count = checkpoint_tables(tables, sizeof(tables) / sizeof(tables[0]));
 	for (int i = 0; i < count; i++) {
 		int present = checkpoint_table_exists(db, tables[i].name);

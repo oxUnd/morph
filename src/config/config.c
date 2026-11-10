@@ -463,6 +463,17 @@ void config_set_defaults(struct morph_log *logger, struct config *cfg)
 	if (!cfg)
 		return;
 	memset(cfg, 0, sizeof(*cfg));
+	cfg->agents.enabled = 1;
+	cfg->agents.max_threads = 6;
+	cfg->agents.max_depth = 2;
+	cfg->agents.max_total_tokens = 500000;
+	cfg->agents.budget_input_weight = 1;
+	cfg->agents.budget_output_weight = 1;
+	cfg->agents.budget_warning_percent = 70;
+	cfg->agents.budget_primary_reserve_percent = 20;
+	strcpy(cfg->agents.budget_enforcement, "hard");
+	strcpy(cfg->agents.child_shell, "scoped");
+	strcpy(cfg->agents.multi_agent_mode, "auto");
 	cfg->logger = logger;
 	cfg->permissions = permission_policy_default();
 	cfg->hooks_enabled = 1;
@@ -552,7 +563,7 @@ void config_set_defaults(struct morph_log *logger, struct config *cfg)
 			"read_lines",
 			"img_info", "credits", "memory",
 			"ask_user", "activate_skill", "plan",
-			"agent_status"
+			"update_plan"
 		};
 		for (int i = 0; i < 11; i++) {
 			strncpy(cfg->react.readonly_tools[i], readonly_tools[i],
@@ -1337,154 +1348,26 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 		}
 	}
 
+	cfg_table_t *agents = table_path(tbl, "agents");
+	if (agents) {
+		CFG_BOOL(agents, "enabled", cfg->agents.enabled);
+		CFG_INT(agents, "max_threads", cfg->agents.max_threads);
+		CFG_INT(agents, "max_depth", cfg->agents.max_depth);
+		CFG_INT(agents, "max_total_tokens", cfg->agents.max_total_tokens);
+		CFG_INT(agents, "budget_input_weight", cfg->agents.budget_input_weight);
+		CFG_INT(agents, "budget_output_weight", cfg->agents.budget_output_weight);
+		CFG_INT(agents, "budget_warning_percent", cfg->agents.budget_warning_percent);
+		CFG_INT(agents, "budget_primary_reserve_percent", cfg->agents.budget_primary_reserve_percent);
+		CFG_STR(agents, "budget_enforcement", cfg->agents.budget_enforcement);
+		CFG_STR(agents, "child_shell", cfg->agents.child_shell);
+		CFG_STR(agents, "multi_agent_mode", cfg->agents.multi_agent_mode);
+	}
 	toml_free(parsed);
 
 	config_expand_paths(cfg);
 
 	log_info(logger, "config loaded from: %s", path);
 
-	return config_load_sub_agents(cfg, path);
-}
-
-static const char *sub_agent_ctx_policy_str(enum sub_agent_context_policy p)
-{
-	switch (p) {
-	case SUB_AGENT_CTX_FULL:	return "full";
-	case SUB_AGENT_CTX_SUMMARY:	return "summary";
-	case SUB_AGENT_CTX_TASK_ONLY:	return "task_only";
-	}
-	return "task_only";
-}
-
-static enum sub_agent_context_policy parse_ctx_policy(const char *s)
-{
-	if (!s) return SUB_AGENT_CTX_TASK_ONLY;
-	if (strcmp(s, "full") == 0) return SUB_AGENT_CTX_FULL;
-	if (strcmp(s, "summary") == 0) return SUB_AGENT_CTX_SUMMARY;
-	return SUB_AGENT_CTX_TASK_ONLY;
-}
-
-static enum sub_agent_merge_strategy parse_merge_strategy(const char *s)
-{
-	if (!s) return SUB_AGENT_MERGE_SYNTHESIZE;
-	if (strcmp(s, "concat") == 0) return SUB_AGENT_MERGE_CONCAT;
-	if (strcmp(s, "raw") == 0) return SUB_AGENT_MERGE_RAW;
-	return SUB_AGENT_MERGE_SYNTHESIZE;
-}
-
-int config_load_sub_agents(struct config *cfg, const char *path)
-{
-	if (!cfg || !path)
-		return -EINVAL;
-
-	FILE *f = fopen(path, "r");
-	if (!f)
-		return 0;
-	struct config_validation_error validation = {0};
-	int validation_rc = config_validate_file(path, &validation);
-	if (validation_rc != 0) {
-		fclose(f);
-		return validation_rc;
-	}
-
-	toml_result_t parsed = toml_parse_file(f);
-	fclose(f);
-	if (!parsed.ok) {
-		toml_free(parsed);
-		return MORPH_ERR_PARSE;
-	}
-	cfg_table_t *tbl = &parsed.toptab;
-
-	cfg_table_t *agent_tbl = table_path(tbl, "agent");
-	cfg_array_t *sa_arr = agent_tbl
-		? cfg_array_in(agent_tbl, "sub_agents") : NULL;
-	if (sa_arr) {
-		for (int i = 0; i < cfg_array_nelem(sa_arr) &&
-		     cfg->sub_agents.count < SUB_AGENT_MAX; i++) {
-			cfg_table_t *st = cfg_table_at(sa_arr, i);
-			if (!st)
-				continue;
-			struct config_sub_agent *sa =
-				&cfg->sub_agents.entries[cfg->sub_agents.count];
-			CFG_STR(st, "name", sa->name);
-			CFG_STR(st, "description", sa->description);
-			strncpy(sa->system_prompt_mode, "append",
-				sizeof(sa->system_prompt_mode) - 1);
-			CFG_STR(st, "system_prompt_mode", sa->system_prompt_mode);
-			CFG_STR(st, "system_prompt_file", sa->system_prompt_file);
-			CFG_STR(st, "system_prompt_dir", sa->system_prompt_dir);
-			CFG_STR(st, "model", sa->model);
-			CFG_INT(st, "max_iterations", sa->max_iterations);
-
-			cfg_array_t *at = cfg_array_in(st, "allowed_tools");
-			if (at) {
-				for (int j = 0;
-				     j < cfg_array_nelem(at) &&
-				     sa->allowed_tools_count < SUB_AGENT_TOOL_MAX;
-				     j++) {
-					cfg_datum_t v = cfg_string_at(at, j);
-					if (!v.ok) break;
-					strncpy(sa->allowed_tools[j], v.u.s,
-						SUB_AGENT_TOOL_NAME_MAX - 1);
-					sa->allowed_tools_count++;
-					free(v.u.s);
-				}
-			}
-
-			cfg_array_t *dt = cfg_array_in(st, "disabled_tools");
-			if (dt) {
-				for (int j = 0;
-				     j < cfg_array_nelem(dt) &&
-				     sa->disabled_tools_count < SUB_AGENT_TOOL_MAX;
-				     j++) {
-					cfg_datum_t v = cfg_string_at(dt, j);
-					if (!v.ok) break;
-					strncpy(sa->disabled_tools[j], v.u.s,
-						SUB_AGENT_TOOL_NAME_MAX - 1);
-					sa->disabled_tools_count++;
-					free(v.u.s);
-				}
-			}
-
-			{
-				cfg_datum_t cp = cfg_string_in(st,
-					"context_policy");
-				if (cp.ok) {
-					sa->context_policy = parse_ctx_policy(
-						cp.u.s);
-					free(cp.u.s);
-				} else {
-					sa->context_policy =
-						SUB_AGENT_CTX_TASK_ONLY;
-				}
-			}
-
-			{
-				cfg_datum_t ms = cfg_string_in(st,
-					"merge_strategy");
-				if (ms.ok) {
-					sa->merge_strategy = parse_merge_strategy(
-						ms.u.s);
-					free(ms.u.s);
-				} else {
-					sa->merge_strategy =
-						SUB_AGENT_MERGE_SYNTHESIZE;
-				}
-			}
-
-			{
-				cfg_datum_t os = cfg_string_in(st,
-					"output_schema");
-				if (os.ok) {
-					sa->output_schema = os.u.s;
-				}
-			}
-
-			cfg->sub_agents.count++;
-		}
-	}
-
-	toml_free(parsed);
 	return 0;
 }
 
@@ -1541,12 +1424,5 @@ void config_print(const struct config *cfg)
 		 cfg->memory.save_tasks_enabled, cfg->memory.learn_from_chats_enabled,
 		 cfg->memory.max_facts, cfg->memory.max_past_tasks, cfg->memory.max_tips,
 		 cfg->memory.max_reply_chars);
-	for (int i = 0; i < cfg->sub_agents.count; i++) {
-		const struct config_sub_agent *sa = &cfg->sub_agents.entries[i];
-		log_info(cfg ? cfg->logger : NULL,
-			 "  [agent.sub_agents.%d] name=%s desc=%.60s max_iterations=%d "
-			 "ctx_policy=%s tools=%d",
-			 i, sa->name, sa->description, sa->max_iterations,
-			 sub_agent_ctx_policy_str(sa->context_policy), sa->allowed_tools_count);
-	}
+
 }

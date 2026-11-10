@@ -23,6 +23,7 @@ struct cli_transcript_model;
 struct cli_turn_details;
 struct cli_jobs;
 struct cli_chat_page;
+struct cli_subagents_page;
 
 struct cli_application {
 	struct morph_tui_application base;
@@ -49,6 +50,7 @@ struct cli_application {
 	struct cli_transcript_model *transcript;
 	struct cli_turn_details *details;
 	struct cli_jobs *jobs;
+	struct cli_subagents_page *subagents;
 	struct cli_input_status input_status;
 	int tool_details;
 	enum cli_presentation_mode presentation_mode;

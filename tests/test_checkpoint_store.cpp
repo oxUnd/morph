@@ -338,6 +338,27 @@ TEST_F(CheckpointStoreTest,
 	EXPECT_EQ(Scalar("SELECT token_used FROM sessions WHERE id=" + sid), 99);
 }
 
+TEST_F(CheckpointStoreTest, LegacyCheckpointWithoutSkillSnapshotsRestoresNoActivations)
+{
+	ASSERT_EQ(db_exec(&database, "DROP TABLE session_skill_activations"), 0);
+	const int64_t id = Create("legacy checkpoint without skill persistence");
+	EXPECT_EQ(Scalar("SELECT count(*) FROM sqlite_master WHERE "
+			 "name='checkpoint_rows_session_skill_activations'"),
+		  0);
+	db_close(&database);
+	ASSERT_EQ(db_open(nullptr, &database, database_path.c_str()), 0);
+	ASSERT_EQ(db_init_schema(&database), 0);
+	const std::string sql = "INSERT INTO session_skill_activations VALUES(" +
+				std::to_string(session.id) + ",'future-skill')";
+	ASSERT_EQ(db_exec(&database, sql.c_str()), 0);
+	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(checkpoint_store_restore(&database, session.id, id,
+					   CHECKPOINT_RESTORE_CONVERSATION, &report),
+		  0);
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(report, "conversation_restored")));
+	EXPECT_EQ(Scalar("SELECT count(*) FROM session_skill_activations"), 0);
+}
+
 TEST_F(CheckpointStoreTest, DatabaseFailureCompensatesCodeAndRollsBackConversation)
 {
 	Write("file", "before");

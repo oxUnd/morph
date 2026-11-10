@@ -77,10 +77,10 @@ fetch supports validated headers, including Range for servers that support it.
 
 ## Tasks, skills, memory, and interaction
 
-Subagents retain stable task records independently of the eight active-task
-slots. Completion and failure release running capacity. A fanout larger than
-eight is rejected before starting; the schema exposes that bound. Depth
-remains limited to two. These are execution bounds, not lifetime task quotas.
+Multi-agent collaboration uses `agents.max_threads` (default six, including the
+root and active child executions) and `agents.max_depth` (default two). Reuse idle
+agents with `followup_task`. Independent model clients and persisted mailboxes
+follow the [multi-agent contract](multi-agent.md); the old fanout API is removed.
 
 The skill registry grows dynamically and keeps borrowed entry addresses
 stable. Skill metadata uses Unicode-aware validation and explicit errors for

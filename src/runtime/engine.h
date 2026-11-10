@@ -17,6 +17,7 @@ struct runtime_turn_state {
 typedef int (*runtime_prepare_turn_fn)(void *user_data, const struct runtime_request *request);
 typedef void (*runtime_finish_turn_fn)(void *user_data, const struct runtime_request *request,
 				       const struct runtime_result *result);
+typedef void (*runtime_drain_turn_fn)(void *user_data);
 
 struct hook_manager;
 struct runtime_turn_scope;
@@ -36,6 +37,7 @@ struct runtime_engine {
 	struct runtime_turn_scope *turn_scope;
 	runtime_prepare_turn_fn prepare_turn;
 	runtime_finish_turn_fn finish_turn;
+	runtime_drain_turn_fn drain_turn;
 	void *user_data;
 };
 

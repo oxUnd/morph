@@ -281,3 +281,47 @@ int dynamic_tools_init(struct tool_registry *reg, struct tool_context *tctx,
 		return rc;
 	return dynamic_tool_service_load_session(reg, tctx, cfg, ctx->session_id);
 }
+
+int dynamic_tools_rebind(struct tool_registry *reg, struct tool_context *context,
+			 const struct config_dynamic_tools *config, const char *session)
+{
+	if (!reg || !config)
+		return -EINVAL;
+	struct settings {
+		const char *name;
+		unsigned int flags;
+		int timeout;
+		int disabled;
+	};
+	struct settings entries[] = {
+		{.name = "tool_create"}, {.name = "tool_promote"}, {.name = "tool_delete"},
+		{.name = "tool_history"}, {.name = "tool_diff"}, {.name = "tool_rollback"},
+	};
+	for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
+		struct tool_entry *entry = tool_borrow(reg, entries[i].name);
+		if (entry) {
+			entries[i].flags = entry->flags;
+			entries[i].timeout = entry->timeout_seconds;
+			entries[i].disabled = tool_is_disabled(reg, entries[i].name);
+			int rc = tool_unregister(reg, entries[i].name);
+			if (rc != 0)
+				return rc;
+		}
+	}
+	int rc = dynamic_tools_init(reg, context, config, session);
+	if (rc != 0)
+		return rc;
+	for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
+		struct tool_entry *entry = tool_borrow(reg, entries[i].name);
+		if (!entry)
+			continue;
+		entry->flags = entries[i].flags;
+		entry->timeout_seconds = entries[i].timeout;
+		if (entries[i].disabled) {
+			rc = tool_disable(reg, entries[i].name);
+			if (rc != 0)
+				return rc;
+		}
+	}
+	return 0;
+}

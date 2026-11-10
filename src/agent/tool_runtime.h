@@ -18,6 +18,7 @@ typedef int (*tool_runtime_session_visible_fn)(const char *display_id, const cha
 					       void *user_data);
 
 struct tool_context;
+struct agent_control;
 
 /* Borrowed callbacks and state remain alive through the complete tool call.
  * begin serializes edits until finish, including failed patches. capture runs
@@ -38,12 +39,17 @@ struct tool_checkpoint_context {
 };
 
 struct tool_runtime_context {
+	struct agent_control *agents;
 	struct tool_context *permission_context;
 	int permission_require_user;
 	struct http_control http;
 	ask_user_callback_fn ask_user_fn;
 	void *ask_user_user_data;
-	int sub_agent_depth;
+	int agent_depth;
+	const char *agent_id;
+	const char *workdir;
+	int (*input_pending_fn)(void *user_data);
+	void *input_pending_user_data;
 	struct db *db;
 	const struct config *config;
 	const char *user_id;

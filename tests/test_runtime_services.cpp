@@ -951,3 +951,81 @@ TEST_F(RuntimeFacadeTest, ProcessAndTaskFailuresKeepOutputsEmptyAndPreserveError
 	EXPECT_EQ(runtime_process_read(instance, "proc_broken", &document), MORPH_ERR_PARSE);
 	EXPECT_EQ(document, nullptr);
 }
+
+TEST_F(RuntimeFacadeTest, SessionImportPreservesCollaborationWithoutStartingAgents)
+{
+	Open();
+	std::string source = directory + "/agents.db";
+	create_session_import_fixture(source, "parent");
+	struct db incoming{};
+	struct session child{};
+	ASSERT_EQ(db_open(nullptr, &incoming, source.c_str()), 0);
+	ASSERT_EQ(session_create(&incoming, "agent-child", "model", &child), 0);
+	ASSERT_EQ(db_exec(&incoming,
+		"INSERT INTO agent_threads(root_session_id,agent_id,parent_agent_id,session_id,"
+		"model,effort,depth,description,status,started_at) "
+		"VALUES(1,'/root/reader','/root',2,'model','',1,'read files',1,1);"
+		"INSERT INTO agent_mailbox(root_session_id,sender,recipient,kind,body,consumed) "
+		"VALUES(1,'/root/reader','/root','FINAL_ANSWER','finding',0);"
+		"INSERT INTO agent_events(root_session_id,agent_id,event_json) "
+		"VALUES(1,'/root/reader','{}');"), 0);
+	db_close(&incoming);
+	struct runtime_session_import_result result{};
+	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "agent-device", &result), 0);
+	EXPECT_EQ(result.imported, 2);
+	sqlite3_stmt *stmt = nullptr;
+	ASSERT_EQ(sqlite3_prepare_v2(instance->context.database.handle,
+		"SELECT p.name,c.name,a.status,m.body FROM agent_threads a "
+		"JOIN sessions p ON p.id=a.root_session_id JOIN sessions c ON c.id=a.session_id "
+		"JOIN agent_mailbox m ON m.root_session_id=a.root_session_id",
+		-1, &stmt, nullptr), SQLITE_OK);
+	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+	EXPECT_STREQ(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0)), "parent");
+	EXPECT_STREQ(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1)), "agent-child");
+	EXPECT_EQ(sqlite3_column_int(stmt, 2), AGENT_CANCELLED);
+	EXPECT_STREQ(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 3)), "finding");
+	sqlite3_finalize(stmt);
+	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "agent-device", &result), 0);
+	EXPECT_EQ(result.imported, 0);
+}
+
+TEST_F(RuntimeFacadeTest, SessionImportAndDeletionPreserveBudgetUpperBound)
+{
+	Open();
+	std::string source = directory + "/budget-import.db";
+	create_session_import_fixture(source, "budget-parent");
+	struct db incoming{};
+	ASSERT_EQ(db_open(nullptr, &incoming, source.c_str()), 0);
+	ASSERT_EQ(db_exec(&incoming,
+		"INSERT INTO agent_budget_state(root_session_id,used,input_tokens,cached_tokens,"
+		"output_tokens,reminder_level) VALUES(1,123,200,100,23,1);"), 0);
+	db_close(&incoming);
+	struct runtime_session_import_result result{};
+	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "budget-device", &result), 0);
+	sqlite3_stmt *query = nullptr;
+	ASSERT_EQ(sqlite3_prepare_v2(instance->context.database.handle,
+		"SELECT b.root_session_id,b.used FROM agent_budget_state b JOIN sessions s "
+		"ON s.id=b.root_session_id WHERE s.name='budget-parent'", -1, &query, nullptr), SQLITE_OK);
+	ASSERT_EQ(sqlite3_step(query), SQLITE_ROW);
+	int64_t imported = sqlite3_column_int64(query, 0);
+	EXPECT_EQ(sqlite3_column_int64(query, 1), 123);
+	sqlite3_finalize(query);
+	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "budget-device", &result), 0);
+	ASSERT_EQ(db_open(nullptr, &incoming, source.c_str()), 0);
+	ASSERT_EQ(db_exec(&incoming, "UPDATE agent_budget_state SET used=500 WHERE root_session_id=1;"), 0);
+	db_close(&incoming);
+	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "budget-device", &result), 0);
+	ASSERT_EQ(sqlite3_prepare_v2(instance->context.database.handle,
+		"SELECT used FROM agent_budget_state WHERE root_session_id=?", -1, &query, nullptr), SQLITE_OK);
+	sqlite3_bind_int64(query, 1, imported);
+	ASSERT_EQ(sqlite3_step(query), SQLITE_ROW);
+	EXPECT_EQ(sqlite3_column_int64(query, 0), 500);
+	sqlite3_finalize(query);
+	ASSERT_EQ(runtime_session_delete_and_update(instance, imported), 0);
+	ASSERT_EQ(sqlite3_prepare_v2(instance->context.database.handle,
+		"SELECT count(*) FROM agent_budget_state WHERE root_session_id=?", -1, &query, nullptr), SQLITE_OK);
+	sqlite3_bind_int64(query, 1, imported);
+	ASSERT_EQ(sqlite3_step(query), SQLITE_ROW);
+	EXPECT_EQ(sqlite3_column_int(query, 0), 0);
+	sqlite3_finalize(query);
+}

@@ -1,4 +1,5 @@
 #include "react_request.h"
+#include "agent/agent_control.h"
 
 #include "react_internal.h"
 #include "react_events.h"
@@ -129,6 +130,18 @@ char *react_system_prompt_create(struct react_context *ctx)
 
 	if (ctx->system_prompt) {
 		rc = morph_buf_printf(&buf, "%s\n", ctx->system_prompt);
+		if (rc != 0)
+			return NULL;
+	}
+
+	if (agent_control_prompt(ctx->agents, ctx->agent_id, &buf) != 0)
+		return NULL;
+	if (react_has_active_tool(ctx, "update_plan")) {
+		rc = morph_buf_puts(&buf,
+			"Use update_plan for a concise checklist during complex work. Keep it "
+			"current as dependencies and results change, with at most one "
+			"in_progress step. Skip it for simple tasks. Plan updates record "
+			"reported progress; verify results before marking work completed.\n");
 		if (rc != 0)
 			return NULL;
 	}

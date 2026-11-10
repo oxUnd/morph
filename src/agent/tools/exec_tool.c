@@ -1,4 +1,5 @@
 #include "exec_tool.h"
+#include "agent/agent_control.h"
 #include "exec_jobs.h"
 #include "agent/tool_runtime.h"
 #include "http/client.h"
@@ -19,6 +20,8 @@
 #include "cJSON.h"
 
 #include <errno.h>
+#include <dirent.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
@@ -43,6 +46,56 @@ struct exec_runtime {
 	char scratch[PATH_MAX];
 };
 
+#define EXEC_SCRATCH_MAX_DEPTH 64
+
+static void exec_scratch_directory_cleanup(DIR **directory)
+{
+	if (directory && *directory)
+		closedir(*directory);
+}
+
+/* Only traverse owned scratch through directory descriptors. Symlinks are
+ * unlinked as leaves; external paths are never followed during cleanup. */
+static void exec_scratch_remove_contents(int descriptor, int depth)
+{
+	DIR *directory MORPH_CLEANUP(exec_scratch_directory_cleanup) = fdopendir(descriptor);
+	if (!directory) {
+		close(descriptor);
+		return;
+	}
+	struct dirent *entry;
+	while ((entry = readdir(directory))) {
+		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+			continue;
+		struct stat info = {0};
+		if (fstatat(dirfd(directory), entry->d_name, &info, AT_SYMLINK_NOFOLLOW) != 0)
+			continue;
+		if (S_ISDIR(info.st_mode)) {
+			if (depth >= EXEC_SCRATCH_MAX_DEPTH)
+				continue;
+			int child = openat(dirfd(directory), entry->d_name,
+				O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+			if (child >= 0) {
+				exec_scratch_remove_contents(child, depth + 1);
+				(void)unlinkat(dirfd(directory), entry->d_name, AT_REMOVEDIR);
+			}
+		} else {
+			(void)unlinkat(dirfd(directory), entry->d_name, 0);
+		}
+	}
+}
+
+static void exec_scratch_remove(const char *path)
+{
+	if (!path || !*path)
+		return;
+	int descriptor = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+	if (descriptor < 0)
+		return;
+	exec_scratch_remove_contents(descriptor, 0);
+	(void)rmdir(path);
+}
+
 static void exec_runtime_destroy(void *opaque)
 {
 	struct exec_runtime *runtime = opaque;
@@ -60,8 +113,7 @@ static void exec_runtime_destroy(void *opaque)
 	process_manager_destroy(runtime->manager);
 	exec_jobs_destroy(runtime->jobs);
 	pthread_mutex_destroy(&runtime->mutex);
-	if (runtime->scratch[0])
-		(void)rmdir(runtime->scratch);
+	exec_scratch_remove(runtime->scratch);
 	free(runtime);
 }
 
@@ -69,8 +121,7 @@ static void exec_runtime_discard(struct exec_runtime *runtime)
 {
 	if (!runtime)
 		return;
-	if (runtime->scratch[0])
-		(void)rmdir(runtime->scratch);
+	exec_scratch_remove(runtime->scratch);
 	free(runtime);
 }
 
@@ -461,6 +512,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	const char *workdir;
 	struct process_spawn_options options;
 	struct sandbox_config sandbox MORPH_CLEANUP(sandbox_config_cleanup) = {0};
+	struct agent_shell_scope agent_scope MORPH_CLEANUP(agent_shell_scope_cleanup) = {0};
 	char resolved_workdir[PATH_MAX];
 	char git_dir[PATH_MAX] = {0};
 	char principal[TOOL_CONTEXT_CLI_NAME_MAX] = "shell";
@@ -475,6 +527,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	int host;
 	int network;
 	int readonly;
+	int scoped_readonly;
 	int rc;
 	struct permission_policy policy = permission_policy_default();
 
@@ -497,9 +550,21 @@ static int exec_run(const char *args_json, struct tool_result *result,
 		(void)tool_result_error_copy(result, "invalid_request", "command is required");
 		return -EINVAL;
 	}
+	const struct tool_runtime_context *actor = result->runtime;
+	int scoped_child = actor && actor->agents && actor->agent_id && *actor->agent_id &&
+		strcmp(actor->agent_id, "/root");
+	if (scoped_child &&
+	    (json_bool(root, "service", 0) || json_bool(root, "notify_only", 0))) {
+		(void)tool_result_error_copy(result, "persistent_child_job_disabled",
+			"Child jobs must finish before their write_paths are released. "
+			"Ask the primary agent to start persistent services or notify-only jobs.");
+		return -EACCES;
+	}
 	if (runtime->tool_context)
 		(void)tool_context_get_permission_policy(runtime->tool_context, &policy);
-	readonly = runtime->tool_context && policy.access == PERMISSION_READ_ONLY;
+	scoped_readonly = result->runtime && agent_control_shell_readonly(
+		result->runtime->agents, result->runtime->agent_id);
+	readonly = scoped_readonly || (runtime->tool_context && policy.access == PERMISSION_READ_ONLY);
 	if (json_bool(root, "host", 0) && !runtime->tool_context) {
 
 		(void)tool_result_error_copy(
@@ -509,6 +574,8 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	}
 	host = json_bool(root, "host", 0) ||
 	       (runtime->tool_context && policy.access == PERMISSION_FULL);
+	if (scoped_readonly)
+		host = 0;
 	network = json_bool(root, "network", 0);
 	if (!workdir && runtime->tool_context)
 		workdir = tool_context_workdir_borrow(runtime->tool_context);
@@ -525,6 +592,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	options.workdir = workdir;
 	options.background = json_bool(root, "background", json_bool(root, "service", 0));
 	options.host_execution = host;
+	options.kill_descendants_on_exit = scoped_child;
 	options.timeout_ms = json_u64(root, "timeout_ms",
 		options.background ? 0 : runtime->default_timeout_ms);
 	options.yield_time_ms = json_u64(root, "yield_time_ms",
@@ -582,6 +650,20 @@ static int exec_run(const char *args_json, struct tool_result *result,
 						&sandbox);
 	else if (rc == 0)
 		rc = sandbox_prepare_tool_paths(&sandbox);
+	if (rc == 0 && scoped_readonly) {
+		rc = agent_control_shell_scope_copy(result->runtime->agents,
+			result->runtime->agent_id, runtime->scratch, &agent_scope);
+		if (rc == 0) {
+			struct sandbox_config ceiling = {
+				.read_all = 1, .network_access = 1,
+				.write_paths = agent_scope.write_paths,
+				.write_paths_count = agent_scope.write_path_count,
+				.delete_paths = agent_scope.write_paths,
+				.delete_paths_count = agent_scope.write_path_count,
+			};
+			rc = sandbox_permission_intersect(&sandbox, &ceiling);
+		}
+	}
 	sandbox.network_access = network || host;
 	sandbox.allow_pty = options.pty;
 	if (rc != 0) {
@@ -592,6 +674,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	sandbox.logger = tool_context_logger_borrow(runtime->tool_context);
 	options.logger = sandbox.logger;
 	options.sandbox = host ? NULL : &sandbox;
+	options.temp_dir = agent_scope.scratch;
 	options.cancelled = process_wait_cancelled;
 	options.cancel_data = (void *)result->runtime;
 	memset(&snapshot, 0, sizeof(snapshot));

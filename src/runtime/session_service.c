@@ -46,8 +46,15 @@ int runtime_session_select(struct runtime *runtime, const char *name,
 	if (!ctx || !name || !name[0])
 		return -EINVAL;
 	pthread_mutex_lock(&ctx->execution_lock);
+	rc = runtime_agent_session_begin(runtime);
+	if (rc != 0) {
+		pthread_mutex_unlock(&ctx->execution_lock);
+		return rc;
+	}
 	rc = runtime_session_switch(&ctx->engine, name,
 			ctx->config.models.text.model, &session, created);
+	if (rc == 0 && ctx->agents)
+		rc = agent_control_set_parent_session(ctx->agents, session.id);
 	if (rc == 0) {
 		runtime_recap_invalidate(runtime);
 		ctx->current_session = session;
@@ -64,6 +71,7 @@ int runtime_session_select(struct runtime *runtime, const char *name,
 		if (out)
 			*out = session;
 	}
+	runtime_agent_actor_end(runtime);
 	pthread_mutex_unlock(&ctx->execution_lock);
 	return rc;
 }
@@ -78,8 +86,15 @@ int runtime_session_create_and_select(struct runtime *runtime, const char *name,
 	if (!ctx || !name || !name[0])
 		return -EINVAL;
 	pthread_mutex_lock(&ctx->execution_lock);
+	rc = runtime_agent_session_begin(runtime);
+	if (rc != 0) {
+		pthread_mutex_unlock(&ctx->execution_lock);
+		return rc;
+	}
 	rc = runtime_session_create(&ctx->engine, name,
 			ctx->config.models.text.model, &session);
+	if (rc == 0 && ctx->agents)
+		rc = agent_control_set_parent_session(ctx->agents, session.id);
 	if (rc == 0) {
 		runtime_recap_invalidate(runtime);
 		ctx->current_session = session;
@@ -89,6 +104,7 @@ int runtime_session_create_and_select(struct runtime *runtime, const char *name,
 		if (out)
 			*out = session;
 	}
+	runtime_agent_actor_end(runtime);
 	pthread_mutex_unlock(&ctx->execution_lock);
 	return rc;
 }
@@ -117,6 +133,11 @@ int runtime_session_delete_and_update(struct runtime *runtime, int64_t id)
 	if (!ctx || id <= 0)
 		return -EINVAL;
 	pthread_mutex_lock(&ctx->execution_lock);
+	rc = runtime_agent_session_begin(runtime);
+	if (rc != 0) {
+		pthread_mutex_unlock(&ctx->execution_lock);
+		return rc;
+	}
 	runtime_title_cancel(runtime, id);
 	rc = runtime_session_delete(&ctx->engine, id);
 	if (rc == 0) {
@@ -124,9 +145,13 @@ int runtime_session_delete_and_update(struct runtime *runtime, int64_t id)
 		runtime_context_forget_plan_session(ctx, id);
 		if (ctx->current_session.id == id) {
 			runtime_session_clear_history(ctx->react);
+			if (ctx->skills)
+				skill_deactivate_all(ctx->skills);
+			ctx->active_skill_session_id = 0;
 			memset(&ctx->current_session, 0, sizeof(ctx->current_session));
 		}
 	}
+	runtime_agent_actor_end(runtime);
 	pthread_mutex_unlock(&ctx->execution_lock);
 	return rc;
 }

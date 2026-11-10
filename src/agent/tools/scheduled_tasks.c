@@ -524,3 +524,27 @@ int scheduled_tasks_tool_set_source_session(struct tool_registry *reg,
 	ctx->source_session_id = session_id > 0 ? session_id : 0;
 	return 0;
 }
+
+int scheduled_tasks_tool_rebind(struct tool_registry *reg, struct db *db, int64_t source_session)
+{
+	struct tool_entry *entry = reg ? tool_borrow(reg, "tasks") : NULL;
+	if (!entry || !entry->user_data || !db)
+		return -EINVAL;
+	const struct scheduled_tasks_tool_context *previous = entry->user_data;
+	struct scheduled_task_event_sink events = previous->events;
+	unsigned int flags = entry->flags;
+	int timeout = entry->timeout_seconds;
+	int disabled = tool_is_disabled(reg, "tasks");
+	int rc = tool_unregister(reg, "tasks");
+	if (rc == 0)
+		rc = scheduled_tasks_tool_init_events(reg, db, &events);
+	if (rc != 0)
+		return rc;
+	entry = tool_borrow(reg, "tasks");
+	entry->flags = flags;
+	entry->timeout_seconds = timeout;
+	rc = scheduled_tasks_tool_set_source_session(reg, source_session);
+	if (rc == 0 && disabled)
+		rc = tool_disable(reg, "tasks");
+	return rc;
+}

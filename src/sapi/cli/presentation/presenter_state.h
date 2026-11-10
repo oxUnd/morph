@@ -25,6 +25,7 @@ struct cli_presenter_state {
 	int mcp_tree_active;
 	char mcp_tree_server[MCP_NAME_MAX];
 	morph_buf_t event_stream;
+	morph_buf_t agent_receipts;
 	morph_buf_t native_content;
 	morph_buf_t markdown_stream_text;
 	struct utf8_terminal_sanitizer event_stream_sanitizer;
