@@ -339,17 +339,24 @@ def main():
             for state in queued:
                 assert '› 改成中新🙂' not in state, 'Queued input was committed early:\n' + state
             started = time.monotonic()
+            terminal.pump(0.4)
+            assert Model.requests.empty(), 'queued input interrupted before Esc'
+            terminal.send('draft preserved by Esc')
+            terminal.send('\x1b')
             second, release2 = terminal.request()
             releases.append(release2)
             assert time.monotonic() - started < 2.5, 'steering waited for model completion'
             consumed = terminal.snapshot('steering queue consumed')
             assert '\\x0d' not in terminal.raw, terminal.raw[-3000:]
             assert 'Messages queued' not in consumed, consumed
+            assert 'draft preserved by Esc' in consumed, consumed
+            terminal.send('\x15')
             assert sum('› 改成中新🙂' in row for row in consumed.splitlines()) == 1, consumed
             assert not release.is_set(), 'first request must still be gated'
             user_text = [m['content'] for m in second['messages'] if m['role'] == 'user']
             assert user_text[-1] == '改成中新🙂', user_text
             terminal.send('second adjustment\r')
+            terminal.send('\x1b')
             third, release_next = terminal.request()
             releases.append(release_next)
             user_text = [m['content'] for m in third['messages'] if m['role'] == 'user']
@@ -358,14 +365,14 @@ def main():
             release2.set()
             release2 = release_next
             terminal.send('burst one\rburst two\rburst three\r')
-            for _ in range(3):
-                burst, burst_release = terminal.request()
-                releases.append(burst_release)
-                users = [m['content'] for m in burst['messages'] if m['role'] == 'user']
-                if users[-3:] == ['burst one', 'burst two', 'burst three']:
-                    break
-            else:
-                raise AssertionError(f'rapid submissions lost: {users}')
+            terminal.pump(0.3)
+            assert Model.requests.empty(), 'burst instructions interrupted before Esc'
+            terminal.send('\x1b')
+            burst, burst_release = terminal.request()
+            releases.append(burst_release)
+            users = [m['content'] for m in burst['messages'] if m['role'] == 'user']
+            assert users[-3:] == ['burst one', 'burst two', 'burst three'], users
+            assert Model.requests.empty(), 'one Esc must drain the whole burst'
             release2.set()
             release2 = burst_release
             terminal.send('unsent draft 中文')

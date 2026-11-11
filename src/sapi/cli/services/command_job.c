@@ -272,6 +272,8 @@ int cli_command_job_drain(void *opaque, struct react_action *out, int timeout)
 		job->prompts.nelts--;
 		memmove(items, items + 1, job->prompts.nelts * sizeof(*items));
 	}
+	if (job->prompts.nelts == 0)
+		job->expedite_prompts = 0;
 	pthread_mutex_unlock(&job->mutex);
 	out->type = "prompt";
 	out->payload_json = job->delivered_prompt;
@@ -301,8 +303,23 @@ char *cli_command_job_take_prompt(struct cli_command_job *job, char **display_te
 		job->prompts.nelts--;
 		memmove(items, items + 1, job->prompts.nelts * sizeof(*items));
 	}
+	if (job->prompts.nelts == 0)
+		job->expedite_prompts = 0;
 	pthread_mutex_unlock(&job->mutex);
 	return text;
+}
+
+int cli_command_job_expedite_prompts(struct cli_command_job *job)
+{
+	int pending;
+
+	if (!job)
+		return 0;
+	pthread_mutex_lock(&job->mutex);
+	pending = job->prompts.nelts > 0;
+	job->expedite_prompts = pending;
+	pthread_mutex_unlock(&job->mutex);
+	return pending;
 }
 
 int cli_command_job_prompt_pending(void *opaque)
@@ -311,7 +328,7 @@ int cli_command_job_prompt_pending(void *opaque)
 	int pending;
 
 	pthread_mutex_lock(&job->mutex);
-	pending = job->prompts.nelts > 0;
+	pending = job->expedite_prompts && job->prompts.nelts > 0;
 	pthread_mutex_unlock(&job->mutex);
 	return pending;
 }

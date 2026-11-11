@@ -707,7 +707,7 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 			"  " ANSI_DIM CLI_FEED_PENDING ANSI_RESET " \033[38;5;252m%s" ANSI_RESET,
 			heading);
 		if ((size_t)terminal->columns >= utf8_display_width(heading) + 25)
-			fprintf(terminal->output, ANSI_DIM " (esc to interrupt)" ANSI_RESET);
+			fprintf(terminal->output, ANSI_DIM " (Esc to apply now)" ANSI_RESET);
 	}
 	for (size_t i = 0; i < queue_shown; i++) {
 		cli_feed_sanitize_line(queue_items[i]);

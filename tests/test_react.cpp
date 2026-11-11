@@ -5428,6 +5428,58 @@ static int slow_signal_tool_fn(const char *args_json, struct tool_result *result
 	return 0;
 }
 
+TEST_F(MockLlmTest, UrgentSteeringInterruptsToolWaitAndContinuesTurn)
+{
+	const char *responses[] = {
+		"Thought: run slow tool.\nAction: slow_signal({})\n",
+		"Final: followed updated instructions",
+	};
+	struct steering_state {
+		struct slow_signal_tool_state tool{};
+		int delivered = 0;
+	} state;
+	llm = create_multi_mock_llm(responses, 2);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->action_drain_user_data = &state;
+	ctx->prompt_pending_fn = [](void *opaque) -> int {
+		auto *s = static_cast<steering_state *>(opaque);
+		return s->tool.entered.load() && s->delivered < 2;
+	};
+	ctx->action_drain_fn = [](void *opaque, struct react_action *out, int) -> int {
+		auto *s = static_cast<steering_state *>(opaque);
+		if (!s->tool.entered.load() || s->delivered == 2)
+			return 0;
+		out->type = "prompt";
+		out->payload_json = s->delivered++ == 0
+			? "{\"text\":\"First queued instruction\"}"
+			: "{\"text\":\"Second queued instruction\"}";
+		return 1;
+	};
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "slow_signal", "Slow tool",
+				       "{}", slow_signal_tool_fn, &state.tool, nullptr), 0);
+	auto start = std::chrono::steady_clock::now();
+	EXPECT_EQ(react_run(ctx, "start work", nullptr, nullptr), 0);
+	auto elapsed = std::chrono::steady_clock::now() - start;
+	EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 1000);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_SUCCESS);
+	EXPECT_EQ(state.delivered, 2);
+	EXPECT_EQ(ctx->steer_count, 2);
+	std::vector<std::string> queued;
+	for (auto *message = ctx->messages; message; message = message->next) {
+		if (message->role && strcmp(message->role, "user") == 0 && message->content)
+			queued.emplace_back(message->content);
+	}
+	ASSERT_GE(queued.size(), 2u);
+	EXPECT_EQ(queued[queued.size() - 2], "First queued instruction");
+	EXPECT_EQ(queued.back(), "Second queued instruction");
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_NE(strstr(ctx->final_answer, "followed updated instructions"), nullptr);
+	EXPECT_FALSE(state.tool.finished.load());
+	react_context_destroy(ctx);
+}
+
 TEST_F(MockLlmTest, CancelDuringToolExecution) {
 	const char *responses[] = {
 		"Thought: run self-cancel tool.\nAction: self_cancel({})\n",

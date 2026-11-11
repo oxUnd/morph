@@ -21,6 +21,7 @@ struct cli_command_job {
 	int result;
 	morph_array_t prompts;
 	char *delivered_prompt;
+	int expedite_prompts;
 };
 
 int cli_command_job_init(struct cli_command_job *job);
@@ -31,7 +32,9 @@ int cli_command_job_start_fn(struct cli_command_job *job, struct cli_application
 			     const char *input, cli_command_job_fn fn, void *user_data);
 int cli_command_job_done(struct cli_command_job *job);
 int cli_command_job_finish(struct cli_command_job *job);
+/* Only expedited prompts interrupt in-flight work. */
 int cli_command_job_prompt_pending(void *opaque);
+int cli_command_job_expedite_prompts(struct cli_command_job *job);
 int cli_command_job_prompt(struct cli_command_job *job, const char *text, const char *display_text);
 /* Each empty items slot receives an independent malloc-owned string. On failure
  * every created slot is NULL and total is zero; occupied slots return -EEXIST. */

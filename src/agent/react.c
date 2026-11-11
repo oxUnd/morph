@@ -2027,6 +2027,23 @@ static int react_join_tool_calls_execute(struct react_context *ctx, struct chat_
 			slots[i].call = NULL;
 		}
 		slots[i].thread_started = 0;
+		if (rc == -EINTR) {
+			struct tool_call *tc = &response->tool_calls[i];
+			const char *interrupted =
+				"tool error: interrupted to apply queued user instructions; "
+				"side effects may have occurred; inspect before retrying";
+
+			if (agent_history_record_tool_result(ctx, tc->tool_call_id, tc->id,
+							     tc->name, interrupted, -EINTR) != 0 ||
+			    react_append_tool_message(messages, interrupted, tc->id) < 0) {
+				react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
+						 ctx->history_error ? ctx->history_error : -ENOMEM,
+						 "steering_tool_result_error");
+				return 1;
+			}
+			(void)react_tool_call_cancelled(ctx, tc);
+			continue;
+		}
 		if (rc == -ETIMEDOUT) {
 			char timeout_msg[256];
 			struct tool_call *tc = &response->tool_calls[i];

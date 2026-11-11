@@ -57,6 +57,13 @@ execution, then shuts the same application down. `cli_application_tui_borrow` re
 its initialized base or NULL for a mode without a terminal host. It never
 allocates another framework application.
 
+During an active turn, submitted instructions queue for the next loop boundary.
+Press Esc while messages are queued to interrupt the current model/tool wait and
+apply them in FIFO order within the same turn. The unsent composer draft is
+preserved. With no queued messages, Esc cancels the turn; Ctrl+C always cancels.
+Interrupted tools retain an explicit result indicating that side effects may
+have occurred, so the agent can inspect state before retrying.
+
 For interactive chat, Application initializes the worker, creates the chat page,
 initializes its embedded TUI base and presents the chat controller. Readline is
 an external-input adapter; modal pages use key input on the same controller

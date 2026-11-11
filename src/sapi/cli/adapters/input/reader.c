@@ -7,6 +7,7 @@
 #endif
 #include "sapi/cli/adapters/input/cancel.h"
 #include "sapi/cli/adapters/input/callbacks.h"
+#include "sapi/cli/services/command_job.h"
 #include "sapi/cli/application_internal.h"
 #include "util/child_io.h"
 #include "util/cancel.h"
@@ -127,7 +128,8 @@ int cli_poll_getc(struct cli_application *ctx, FILE *stream)
 						rl_done = 1;
 						return EOF;
 					}
-					runtime_cancel_turn(ctx->runtime);
+					if (!cli_command_job_expedite_prompts(ctx->input_job))
+						runtime_cancel_turn(ctx->runtime);
 				}
 				return 0;
 			}

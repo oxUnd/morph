@@ -663,6 +663,8 @@ TEST(CliCommandPrompts, PreservesOrderPayloadLifetimeAndCompletionTail)
 	ASSERT_EQ(cli_command_job_init(&job), 0);
 	ASSERT_EQ(cli_command_job_prompt(&job, "改成中文🙂", nullptr), 0);
 	ASSERT_EQ(cli_command_job_prompt(&job, "second\nline", nullptr), 0);
+	EXPECT_EQ(cli_command_job_prompt_pending(&job), 0);
+	ASSERT_EQ(cli_command_job_expedite_prompts(&job), 1);
 	EXPECT_EQ(cli_command_job_prompt_pending(&job), 1);
 	char *snapshot[2] = {nullptr, nullptr};
 	size_t total = 0;
@@ -693,6 +695,27 @@ TEST(CliCommandPrompts, PreservesOrderPayloadLifetimeAndCompletionTail)
 	}
 	EXPECT_EQ(cli_command_job_prompt_pending(&job), 0);
 	EXPECT_EQ(cli_command_job_take_prompt(&job, nullptr), nullptr);
+	EXPECT_EQ(cli_command_job_expedite_prompts(&job), 0);
+	ASSERT_EQ(cli_command_job_prompt(&job, "new queue", nullptr), 0);
+	EXPECT_EQ(cli_command_job_prompt_pending(&job), 0);
+	cli_command_job_cleanup(&job);
+}
+
+TEST(CliCommandPrompts, DrainingExpeditedQueueResetsInterruption)
+{
+	struct cli_command_job job{};
+	struct react_action action{};
+	ASSERT_EQ(cli_command_job_init(&job), 0);
+	EXPECT_EQ(cli_command_job_expedite_prompts(&job), 0);
+	ASSERT_EQ(cli_command_job_prompt(&job, "first", nullptr), 0);
+	ASSERT_EQ(cli_command_job_prompt(&job, "second", nullptr), 0);
+	ASSERT_EQ(cli_command_job_expedite_prompts(&job), 1);
+	ASSERT_EQ(cli_command_job_drain(&job, &action, 0), 1);
+	EXPECT_EQ(cli_command_job_prompt_pending(&job), 1);
+	ASSERT_EQ(cli_command_job_drain(&job, &action, 0), 1);
+	EXPECT_EQ(cli_command_job_prompt_pending(&job), 0);
+	ASSERT_EQ(cli_command_job_prompt(&job, "next", nullptr), 0);
+	EXPECT_EQ(cli_command_job_prompt_pending(&job), 0);
 	cli_command_job_cleanup(&job);
 }
 

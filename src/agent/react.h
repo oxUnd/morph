@@ -173,7 +173,8 @@ struct react_context {
 	/* Owned snapshots, never persisted or compacted as history. */
 	char *runtime_context;
 	char *project_context;
-	/* Non-consuming prompt check; interrupts only the current model call. */
+	/* Non-consuming urgent prompt check; interrupts model/tool waits without
+	 * cancelling the turn. Ordinary queued prompts drain at loop boundaries. */
 	int (*prompt_pending_fn)(void *user_data);
 	react_action_drain_fn action_drain_fn;
 	void *action_drain_user_data;

@@ -228,11 +228,17 @@ int react_tool_worker_join(struct react_context *ctx, pthread_t thread,
 {
 	struct timespec ts;
 	int64_t deadline;
+	int interrupted = 0;
 
 	deadline = timeout_seconds > 0 ? call->started_ms + (int64_t)timeout_seconds * 1000 : 0;
 
 	pthread_mutex_lock(&call->mutex);
 	while (!call->completed && !(morph_signal_flag_get(cancelled))) {
+		if (ctx->prompt_pending_fn &&
+		    ctx->prompt_pending_fn(ctx->action_drain_user_data)) {
+			interrupted = 1;
+			break;
+		}
 		if (deadline > 0 && morph_io_now_ms() >= deadline)
 			break;
 #ifdef __linux__
@@ -253,7 +259,7 @@ int react_tool_worker_join(struct react_context *ctx, pthread_t thread,
 		pthread_cond_timedwait(&call->cond, &call->mutex, &ts);
 #endif
 	}
-	if (call->completed || !morph_signal_flag_get(cancelled)) {
+	if (call->completed || (!morph_signal_flag_get(cancelled) && !interrupted)) {
 		if (!call->completed && deadline > 0 && morph_io_now_ms() >= deadline) {
 			pthread_mutex_unlock(&call->mutex);
 			react_tool_worker_retire(ctx, call, thread);
@@ -270,7 +276,7 @@ int react_tool_worker_join(struct react_context *ctx, pthread_t thread,
 
 	pthread_mutex_unlock(&call->mutex);
 	react_tool_worker_retire(ctx, call, thread);
-	return -ECANCELED;
+	return morph_signal_flag_get(cancelled) ? -ECANCELED : -EINTR;
 }
 
 static char *react_format_tool_error(const struct tool_result *result, int rc)
