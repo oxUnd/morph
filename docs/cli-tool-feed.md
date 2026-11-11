@@ -18,14 +18,16 @@ belong to their content and are not status markers.
 
 The compact preview contains at most three physical output lines. The first uses
 `  └ ` and continuation lines align beneath its text. Additional lines are counted
-and shown as `+ N lines (ctrl+o to expand)`. Text payloads from files and MCP content
-blocks use the same limit. Long lines are clipped to the terminal width. Ctrl+O
+and shown as `+ N lines (Ctrl+T to expand)`. Text payloads from files and MCP content
+blocks use the same limit. Long lines are clipped to the terminal width. Ctrl+T
 retains complete arguments, output, errors, reasoning and patch diffs in the
 existing details view. Plain and JSON event output keep their existing contracts.
 
 While a tool streams, the live block follows its last three output lines instead
 of showing only `Running…`. Tabs and terminal controls use the same safe text
-path as completed previews. The full stream remains available in Ctrl+O details.
+path as completed previews. The full stream remains available in Ctrl+T details. The details viewport
+follows live output at the bottom; scrolling up pauses following, and scrolling
+back to the bottom or pressing End resumes it.
 
 Elapsed-time updates run once per second, with a steady running marker and muted
 `Working` label. Incoming data requests a coalesced update after 80 ms. Idle
@@ -115,3 +117,6 @@ and an active command. It performs no commands or network requests. The PTY
 transcript test checks its visible rows at 100, 60, 40, 20 and 12 columns, as well as normal
 CLI streaming, details, scrolling and draft restoration. Terminal font, palette
 and line height remain controlled by the user's terminal.
+
+During an active turn, the Working status row ends with a purple
+`Ctrl+T transcript` shortcut hint. The editable composer contains no details hint.

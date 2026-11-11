@@ -7,8 +7,11 @@
 #include "agent/tool.h"
 #include "agent/tool_runtime.h"
 #include "agent/tool_context.h"
+#include "permission/context.h"
+#include "sandbox/sandbox.h"
 #include "util/file.h"
 #include "util/utf8.h"
+#include "util/json.h"
 
 #include <gtest/gtest.h>
 
@@ -25,6 +28,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <vector>
+#include <memory>
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -70,6 +74,26 @@ protected:
 	}
 
 	struct process_manager *manager = nullptr;
+};
+
+class ProcessScratchDirectory {
+public:
+	ProcessScratchDirectory()
+	{
+		char name[] = "/tmp/morph_process_scratch_XXXXXX";
+		if (mkdtemp(name)) {
+			char *resolved MORPH_CLEANUP(morph_charp_cleanup) = realpath(name, nullptr);
+			if (resolved) {
+				path = resolved;
+			}
+		}
+	}
+	~ProcessScratchDirectory()
+	{
+		if (!path.empty())
+			std::filesystem::remove_all(path);
+	}
+	std::string path;
 };
 
 TEST(ExecToolTest, RegistersExecAndProcessTools)
@@ -639,6 +663,161 @@ TEST_F(ProcessTest, KillEscalatesWhenTheProcessIgnoresTerm)
 	EXPECT_EQ(snapshot.signal_number, SIGKILL);
 	process_snapshot_cleanup(&snapshot);
 }
+
+TEST_F(ProcessTest, RepeatedStopAfterExitPreservesTheCollectedResult)
+{
+	process_spawn_options options{};
+	options.command = "printf verified-exit; exit 7";
+	options.yield_time_ms = 2000;
+	char id[PROCESS_SESSION_ID_MAX];
+	process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	ASSERT_EQ(process_spawn(manager, &options, id, &snapshot), 0);
+	ASSERT_EQ(snapshot.state, PROCESS_EXITED);
+	ASSERT_EQ(snapshot.exit_code, 7);
+	for (int attempt = 0; attempt < 3; attempt++) {
+		EXPECT_EQ(process_session_interrupt(manager, id), 0);
+		EXPECT_EQ(process_session_kill(manager, id), 0);
+	}
+	process_snapshot final MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	process_cursor start{};
+	ASSERT_EQ(process_session_poll(manager, id, &start, 0, nullptr, nullptr, &final), 0);
+	EXPECT_EQ(final.state, PROCESS_EXITED);
+	EXPECT_EQ(final.exit_code, 7);
+	EXPECT_STREQ(final.stdout_text, "verified-exit");
+	EXPECT_EQ(final.duration_ms, snapshot.duration_ms);
+	EXPECT_EQ(process_session_write(manager, id, "x", 1), -EPIPE);
+	EXPECT_EQ(process_session_kill(manager, "missing-session"), -ENOENT);
+}
+
+TEST_F(ProcessTest, PrivateScratchEnvironmentRetainsWritesWithoutGlobalTemporaryAccess)
+{
+	ProcessScratchDirectory directory;
+	ASSERT_FALSE(directory.path.empty());
+	std::string scratch = directory.path + "/private";
+	ASSERT_TRUE(std::filesystem::create_directory(scratch));
+	std::string outside = "/tmp/morph-blocked-" +
+		std::filesystem::path(directory.path).filename().string();
+	std::string command =
+		"test \"$TMPDIR\" = \"$MORPH_AGENT_SCRATCH\" || exit 20; "
+		"printf permitted > \"$TMPDIR/allowed\" || exit 21; "
+		"if (printf denied > ../workspace-write) 2>/dev/null; then exit 22; fi; "
+		"if (printf denied > '" + outside + "') 2>/dev/null; then exit 23; fi; "
+		"printf scratch-only";
+	char *write_paths[] = {scratch.data()};
+	struct sandbox_config sandbox = {};
+	sandbox.path_policy_enabled = 1;
+	sandbox.read_all = 1;
+	sandbox.process_exec = 1;
+	sandbox.allow_process_info = 1;
+	sandbox.write_paths = write_paths;
+	sandbox.write_paths_count = 1;
+	sandbox.delete_paths = write_paths;
+	sandbox.delete_paths_count = 1;
+	process_spawn_options options{};
+	options.command = command.c_str();
+	options.workdir = scratch.c_str();
+	options.temp_dir = scratch.c_str();
+	options.sandbox = &sandbox;
+	options.yield_time_ms = 3000;
+	char id[PROCESS_SESSION_ID_MAX];
+	process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	ASSERT_EQ(process_spawn(manager, &options, id, &snapshot), 0);
+	ASSERT_EQ(snapshot.state, PROCESS_EXITED);
+	EXPECT_EQ(snapshot.exit_code, 0) << snapshot.stderr_text;
+	EXPECT_STREQ(snapshot.stdout_text, "scratch-only");
+	EXPECT_TRUE(std::filesystem::exists(scratch + "/allowed"));
+	EXPECT_FALSE(std::filesystem::exists(directory.path + "/workspace-write"));
+	EXPECT_FALSE(std::filesystem::exists(outside));
+}
+
+TEST_F(ProcessTest, TempdirHonoringShellUsesPrivateScratchForLargeHereDocuments)
+{
+	const char *shell = "/bin/bash";
+#ifdef __APPLE__
+	shell = access("/opt/homebrew/bin/bash", X_OK) == 0 ? "/opt/homebrew/bin/bash"
+		: access("/usr/local/bin/bash", X_OK) == 0 ? "/usr/local/bin/bash" : nullptr;
+	if (!shell)
+		GTEST_SKIP() << "macOS system shells ignore TMPDIR for here-document files";
+#endif
+	process_manager_destroy(manager);
+	manager = nullptr;
+	process_manager_config config{};
+	config.shell = shell;
+	ASSERT_EQ(process_manager_create(&config, &manager), 0);
+	ProcessScratchDirectory directory;
+	ASSERT_FALSE(directory.path.empty());
+	std::string body(32768, 'x');
+	std::string command = "cat <<'MORPH_PRIVATE_EOF' > \"$TMPDIR/document\"\n" + body +
+		"\nMORPH_PRIVATE_EOF\n";
+	char *paths[] = {directory.path.data()};
+	struct sandbox_config sandbox = {};
+	sandbox.path_policy_enabled = 1;
+	sandbox.read_all = 1;
+	sandbox.process_exec = 1;
+	sandbox.allow_process_info = 1;
+	sandbox.write_paths = paths;
+	sandbox.write_paths_count = 1;
+	sandbox.delete_paths = paths;
+	sandbox.delete_paths_count = 1;
+	process_spawn_options options{};
+	options.command = command.c_str();
+	options.workdir = directory.path.c_str();
+	options.temp_dir = directory.path.c_str();
+	options.sandbox = &sandbox;
+	options.yield_time_ms = 3000;
+	char id[PROCESS_SESSION_ID_MAX];
+	process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	ASSERT_EQ(process_spawn(manager, &options, id, &snapshot), 0);
+	ASSERT_EQ(snapshot.state, PROCESS_EXITED);
+	EXPECT_EQ(snapshot.exit_code, 0) << snapshot.stderr_text;
+	ASSERT_TRUE(std::filesystem::exists(directory.path + "/document"));
+	EXPECT_EQ(std::filesystem::file_size(directory.path + "/document"), body.size() + 1);
+}
+
+#ifdef __APPLE__
+TEST(ExecToolTest, LegacyShellHereDocumentFailureExplainsThePrivateScratchAlternative)
+{
+	ProcessScratchDirectory directory;
+	ASSERT_FALSE(directory.path.empty());
+	struct config config;
+	config_set_defaults(nullptr, &config);
+	strcpy(config.exec.shell, "/bin/bash");
+	struct tool_context *context = tool_context_create(nullptr,
+		directory.path.c_str(), directory.path.c_str());
+	ASSERT_NE(context, nullptr);
+	std::unique_ptr<struct tool_context, decltype(&tool_context_destroy)>
+		context_guard(context, tool_context_destroy);
+	struct permission_policy policy{PERMISSION_READ_ONLY, PERMISSION_NEVER, PERMISSION_USER};
+	ASSERT_EQ(tool_context_set_permission_policy(context, &policy), 0);
+	struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
+	tool_registry_init(nullptr, &registry);
+	ASSERT_EQ(exec_tool_init(&registry, context, &config.exec), 0);
+	std::string command = "cat <<'MORPH_EOF'\n" + std::string(32768, 'x') + "\nMORPH_EOF\n";
+	cJSON *arguments MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	ASSERT_NE(arguments, nullptr);
+	cJSON_AddStringToObject(arguments, "command", command.c_str());
+	cJSON_AddNumberToObject(arguments, "yield_time_ms", 3000);
+	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(arguments);
+	ASSERT_NE(json, nullptr);
+	struct tool_runtime_context runtime{};
+	runtime.agent_id = "/root/probe";
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&result);
+	result.runtime = &runtime;
+	ASSERT_EQ(tool_exec(&registry, "exec", json, &result), 0) << result.text.data;
+	EXPECT_NE(cJSON_GetNumberValue(
+		cJSON_GetObjectItemCaseSensitive(result.data, "exit_code")), 0);
+	const char *error = cJSON_GetStringValue(
+		cJSON_GetObjectItemCaseSensitive(result.data, "stderr"));
+	ASSERT_NE(error, nullptr);
+	EXPECT_NE(strstr(error, "temp file for here document"), nullptr);
+	const char *action = cJSON_GetStringValue(
+		cJSON_GetObjectItemCaseSensitive(result.data, "next_action"));
+	ASSERT_NE(action, nullptr);
+	EXPECT_NE(strstr(action, "$MORPH_AGENT_SCRATCH"), nullptr);
+	EXPECT_NE(strstr(action, "printf"), nullptr);
+}
+#endif
 
 TEST_F(ProcessTest, CancellationStopsTheInitialYieldPromptly)
 {

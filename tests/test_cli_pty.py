@@ -139,7 +139,7 @@ retry_count = 0
         text = '\n'.join(self.screen.display)
         self.snapshots.append((label, text))
         print('checked:', label, flush=True)
-        assert sum(row.split('ctrl+o details')[0].strip() == '›'
+        assert sum(row.split('Ctrl+T transcript')[0].strip() == '›'
                    for row in text.splitlines()) <= 1, text
         return text
 
@@ -149,9 +149,9 @@ retry_count = 0
 
     def wait_for_composer(self, timeout=8):
         # Early input can be translated by the startup TTY before Readline
-        # installs its raw mode; the footer hint is rendered after that point.
+        # installs its raw mode; the permission footer is rendered after that point.
         deadline = time.monotonic() + timeout
-        while 'ctrl+o details' not in self.raw:
+        while 'perm: ' not in self.raw:
             assert time.monotonic() < deadline, self.raw[-4000:]
             self.pump(.05)
 
@@ -183,7 +183,7 @@ def main():
             assert piped.returncode == 0, piped.stderr
             assert '/help' in piped.stdout, piped.stdout
             assert '\x1b' not in piped.stdout, repr(piped.stdout)
-            assert 'ctrl+o details' not in piped.stdout, piped.stdout
+            assert 'Ctrl+T transcript' not in piped.stdout, piped.stdout
             assert 'Enter send/adjust' not in piped.stdout, piped.stdout
             with subprocess.Popen(
                     [str(driver), str(Path(temp) / 'config.toml'), temp,
@@ -211,7 +211,7 @@ def main():
             assert rows[prompt_row].startswith('› '), idle
             assert 'ctx 0 / 128k · 0 cr' in rows[prompt_row + 2], idle
             assert 'morph · pty-test' in rows[prompt_row + 2], idle
-            assert terminal.screen.buffer[prompt_row][0].bg == '1c1c1c', idle
+            assert terminal.screen.buffer[prompt_row][0].bg == '3a3a3a', idle
             assert Path(temp).name in rows[prompt_row + 2], idle
             terminal.send('idle 中文 draft')
             terminal.pump(.3)
@@ -271,7 +271,7 @@ def main():
             terminal.send('\x15')
             terminal.send('\r\r\r')
             empty = terminal.snapshot('repeated empty Enter')
-            assert sum(row.split('ctrl+o details')[0].strip() == '›'
+            assert sum(row.split('Ctrl+T transcript')[0].strip() == '›'
                        for row in empty.splitlines()) == 1, empty
             terminal.send('  \r\r\x15')
             terminal.snapshot('whitespace Enter')
@@ -298,12 +298,12 @@ def main():
                      terminal.screen.buffer[user_row][column].bg,
                      terminal.screen.buffer[user_row][column].bold)
                     for column in range(14)] == draft_style, starting
-            assert terminal.screen.buffer[user_row][2].bg == '1c1c1c', starting
-            assert all(terminal.screen.buffer[user_row][column].bg == '1c1c1c'
+            assert terminal.screen.buffer[user_row][2].bg == '3a3a3a', starting
+            assert all(terminal.screen.buffer[user_row][column].bg == '3a3a3a'
                        for column in range(terminal.screen.columns)), starting
             for padding_row in (user_row - 1, user_row + 1):
                 assert not starting_rows[padding_row].strip(), starting
-                assert all(terminal.screen.buffer[padding_row][column].bg == '1c1c1c'
+                assert all(terminal.screen.buffer[padding_row][column].bg == '3a3a3a'
                            for column in range(terminal.screen.columns)), starting
             assert starting_rows[user_row + 1].strip() != '│', starting
             working_row = next(i for i, row in enumerate(starting_rows)
@@ -397,8 +397,8 @@ def main():
             assert completed_rows[worked_row].startswith('  Worked for '), completed
             assert worked_row > 0 and not completed_rows[worked_row - 1].strip(), completed
             assert not completed_rows[worked_row + 1].strip(), completed
-            assert terminal.screen.buffer[worked_row + 1][0].bg != '1c1c1c', completed
-            assert terminal.screen.buffer[worked_row + 2][0].bg == '1c1c1c', completed
+            assert terminal.screen.buffer[worked_row + 1][0].bg != '3a3a3a', completed
+            assert terminal.screen.buffer[worked_row + 2][0].bg == '3a3a3a', completed
             assert completed_rows[worked_row + 3].startswith('› '), completed
             assert 'Working ·' not in completed, completed
             assert completed.count('ctx ') == 1, completed

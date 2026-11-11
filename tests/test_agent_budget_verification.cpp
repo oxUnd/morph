@@ -686,7 +686,7 @@ TEST_F(AgentBudgetVerificationTest,
 	agent_control_join(control);
 	auto *permissions = tool_context_create(nullptr, directory, directory);
 	ASSERT_NE(permissions, nullptr);
-	struct permission_policy policy{PERMISSION_FULL, PERMISSION_NEVER, PERMISSION_USER};
+	struct permission_policy policy{PERMISSION_WORKSPACE, PERMISSION_NEVER, PERMISSION_USER};
 	ASSERT_EQ(tool_context_set_permission_policy(permissions, &policy), 0);
 	ASSERT_EQ(exec_tool_init(&tools, permissions, nullptr), 0);
 	struct tool_runtime_context child = runtime;
@@ -701,6 +701,33 @@ TEST_F(AgentBudgetVerificationTest,
 	EXPECT_EQ(
 		tool_exec(&tools, "exec", R"({"command":"sleep 60","notify_only":true})", &result),
 		-EACCES);
+	const char *metadata_probe =
+		"mkdir -p \"$MORPH_AGENT_SCRATCH/metadata/source\" "
+		"\"$MORPH_AGENT_SCRATCH/metadata/copy\" && "
+		"printf probe > \"$MORPH_AGENT_SCRATCH/metadata/source/probe\" && "
+		"python3 -c 'import os; p=os.path.join(os.environ[\"MORPH_AGENT_SCRATCH\"],"
+		"\"metadata/source/probe\"); os.utime(p,(123,456))' && "
+		"touch \"$MORPH_AGENT_SCRATCH/metadata/touched\" && "
+		"tar -C \"$MORPH_AGENT_SCRATCH/metadata/source\" "
+		"-cf \"$MORPH_AGENT_SCRATCH/metadata/probe.tar\" probe && "
+		"tar -C \"$MORPH_AGENT_SCRATCH/metadata/copy\" "
+		"-xf \"$MORPH_AGENT_SCRATCH/metadata/probe.tar\" && "
+		"python3 -c 'import os; p=os.path.join(os.environ[\"MORPH_AGENT_SCRATCH\"],"
+		"\"metadata/copy/probe\"); assert int(os.stat(p).st_mtime)==456; "
+		"print(\"TIMESTAMP_ROUNDTRIP_OK\")'";
+	cJSON *metadata_args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	ASSERT_NE(metadata_args, nullptr);
+	cJSON_AddStringToObject(metadata_args, "command", metadata_probe);
+	cJSON_AddNumberToObject(metadata_args, "yield_time_ms", 10000);
+	cJSON_AddNumberToObject(metadata_args, "timeout_ms", 15000);
+	char *metadata_json MORPH_CLEANUP(morph_json_text_cleanup) =
+		cJSON_PrintUnformatted(metadata_args);
+	ASSERT_NE(metadata_json, nullptr);
+	ASSERT_EQ(tool_exec(&tools, "exec", metadata_json, &result), 0);
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0)
+		<< cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stderr"));
+	EXPECT_NE(strstr(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stdout")),
+			"TIMESTAMP_ROUNDTRIP_OK"), nullptr);
 	ASSERT_EQ(tool_exec(&tools, "exec", R"({"command":
 		"cmake -S . -B \"$MORPH_AGENT_SCRATCH/build\" >/dev/null && cmake --build \"$MORPH_AGENT_SCRATCH/build\" >/dev/null && ctest --test-dir \"$MORPH_AGENT_SCRATCH/build\" --output-on-failure && printf '\nSCRATCH=%s\n' \"$MORPH_AGENT_SCRATCH\"",
 		"yield_time_ms":10000,"timeout_ms":20000})",
@@ -720,18 +747,29 @@ TEST_F(AgentBudgetVerificationTest,
 		scratch = marker + 8;
 		scratch = scratch.substr(0, scratch.find('\n'));
 	}
-	EXPECT_FALSE(scratch.empty());
+	ASSERT_FALSE(scratch.empty());
 	tool_result_cleanup(&result);
 	tool_result_init(&result);
 	result.runtime = &child;
 	ASSERT_EQ(
 		tool_exec(
 			&tools, "exec",
-			R"({"command":"(sleep 0.5; printf escaped > main.c) >/dev/null 2>&1 & printf launched","yield_time_ms":1000})",
+			R"({"command":"(attempt=0; while [ ! -f )"
+			R"(\"$MORPH_AGENT_SCRATCH/descendant-release\" ] && [ \"$attempt\" -lt 500 ]; )"
+			R"(do sleep 0.01; attempt=$((attempt + 1)); done; )"
+			R"(if [ -f \"$MORPH_AGENT_SCRATCH/descendant-release\" ]; )"
+			R"(then printf escaped > main.c; fi) >/dev/null 2>&1 & printf launched",)"
+			R"("yield_time_ms":1000})",
 			&result),
 		0);
 	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stdout")), "launched");
+	/* Only a descendant surviving reported completion can observe this release. */
+	{
+		std::ofstream release(scratch + "/descendant-release");
+		ASSERT_TRUE(release.good());
+		release << "release\n";
+	}
 	std::this_thread::sleep_for(std::chrono::milliseconds(800));
 	std::ifstream protected_source(std::string(directory) + "/main.c");
 	std::string content;
@@ -743,7 +781,7 @@ TEST_F(AgentBudgetVerificationTest,
 	EXPECT_EQ(
 		tool_exec(
 			&tools, "exec",
-			R"({"command":"printf denied > sibling.txt","yield_time_ms":1000,"host":true})",
+			R"({"command":"printf denied > sibling.txt","yield_time_ms":1000})",
 			&result),
 		0);
 	EXPECT_NE(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0);
@@ -821,7 +859,7 @@ TEST_F(AgentBudgetVerificationTest, AncestorShellCannotRetainBroadLeaseWhileNest
 	EXPECT_EQ(nested_scope.write_path_count, 2);
 	auto *permissions = tool_context_create(nullptr, directory, directory);
 	ASSERT_NE(permissions, nullptr);
-	struct permission_policy policy{PERMISSION_FULL, PERMISSION_NEVER, PERMISSION_USER};
+	struct permission_policy policy{PERMISSION_WORKSPACE, PERMISSION_NEVER, PERMISSION_USER};
 	ASSERT_EQ(tool_context_set_permission_policy(permissions, &policy), 0);
 	ASSERT_EQ(exec_tool_init(&tools, permissions, nullptr), 0);
 	struct tool_runtime_context child = runtime;

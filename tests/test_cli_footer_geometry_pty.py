@@ -24,7 +24,7 @@ def check(terminal, height, tasks, draft, label):
     rows = all_rows(terminal)
     prompts = [index for index, row in enumerate(rows)
                if row.startswith(('› ', '> '))]
-    hints = [index for index, row in enumerate(rows) if 'ctrl+o details' in row]
+    hints = [index for index, row in enumerate(rows) if 'Ctrl+T transcript' in row]
     footers = [index for index, row in enumerate(rows) if 'perm: ' in row]
     task_rows = [index for index, row in enumerate(rows) if 'Tasks ' in row]
     diagnostic = (f'{label}: cursor={terminal.screen.cursor.y},'
@@ -35,7 +35,7 @@ def check(terminal, height, tasks, draft, label):
     last_row = (2 + len(draft)) // terminal.screen.columns
     assert prompt >= 0, diagnostic
     assert terminal.screen.cursor.y == prompt + last_row, diagnostic
-    assert len(hints) == (0 if draft else 1), diagnostic
+    assert len(hints) == 0, diagnostic
     assert len(footers) == int(last_row + 2 < height), diagnostic
     assert len(task_rows) == int(tasks and last_row + 3 < height), diagnostic
     print(f'checked: {label}', flush=True)

@@ -180,15 +180,15 @@ def one_composer(terminal, screen, label, draft=None, turns=3):
     rows = screen.capture(label)
     retained_history(screen, label, turns)
     prompts = [i for i, row in enumerate(rows)
-               if row.split('ctrl+o details')[0].strip() in ('>', '›')]
-    hints = [i for i, row in enumerate(rows) if 'ctrl+o details' in row]
+               if row.split('Ctrl+T transcript')[0].strip() in ('>', '›')]
+    hints = [i for i, row in enumerate(rows) if 'Ctrl+T transcript' in row]
     footers = [i for i, row in enumerate(rows) if 'perm: ' in row]
     diagnostic = (f'{label}\nprompts={prompts} hints={hints} footers={footers}\n' +
                   '\n'.join(f'{i:04}: {row}' for i, row in enumerate(rows)))
     assert len(footers) == 1, diagnostic
     if draft is None:
         assert len(prompts) == 1, diagnostic
-        assert len(hints) == (1 if screen.columns > 24 else 0), diagnostic
+        assert len(hints) == 0, diagnostic
         assert screen.cursor.y == prompts[0] - len(screen.state['history']), diagnostic
     else:
         text = ''.join(''.join(rows).split())

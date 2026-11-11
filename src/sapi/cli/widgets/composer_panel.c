@@ -165,8 +165,6 @@ static int cli_composer_panel_draw(void *opaque, const struct morph_tui_screen *
 	int height = screen->area.height;
 	int budget = height >= 5 ? height - 4 : 1;
 	frame.columns = screen->area.width > 1 ? screen->area.width - 1 : 0;
-	if (panel->options.max_columns && frame.columns > panel->options.max_columns)
-		frame.columns = panel->options.max_columns;
 	frame.rows = budget < panel->options.max_rows ? budget : panel->options.max_rows;
 	frame.color = cli_output_color_enabled(panel->application);
 	int rc = morph_buf_init(&frame.content, BUFSIZ);
@@ -258,7 +256,7 @@ int cli_composer_panel_show(struct cli_application *application,
 			    const struct cli_composer_panel_options *options,
 			    const struct cli_composer_panel_ops *ops, void *data)
 {
-	if (!application || !options || options->max_rows < 1 || options->max_columns < 0 ||
+	if (!application || !options || options->max_rows < 1 ||
 	    options->tick_ms < 0 || !ops || !ops->draw || !ops->update || !ops->complete)
 		return -EINVAL;
 	struct cli_composer_panel *panel = calloc(1, sizeof(*panel));

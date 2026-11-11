@@ -169,19 +169,6 @@ static void cli_readline_footer_tokens(morph_buf_t *text, int tokens)
 		(void)morph_buf_printf(text, "%d", tokens);
 }
 
-static void cli_readline_draw_hint(struct cli_application *ctx, const struct winsize *size)
-{
-	if (ctx->input_status.suspended || !RL_ISSTATE(RL_STATE_CALLBACK) || rl_end != 0 ||
-	    size->ws_col <= 24)
-		return;
-	ctx->input->details_hint_column = size->ws_col - 17;
-	fprintf(stdout,
-		"\0337\033[%dG" ANSI_DIM CLI_INPUT_BACKGROUND "ctrl+o details" ANSI_RESET "\0338",
-		ctx->input->details_hint_column);
-	ctx->input->details_hint_visible = 1;
-	fflush(stdout);
-}
-
 static void cli_readline_footer(struct cli_application *ctx)
 {
 	struct winsize size = {0};
@@ -330,9 +317,6 @@ static void cli_readline_footer(struct cli_application *ctx)
 	free(ctx->input->footer_text);
 	ctx->input->footer_text = footer_text;
 	cli_readline_clear_footer(ctx);
-	int restore_hint = ctx->input->details_hint_visible;
-
-	ctx->input->details_hint_visible = 0;
 	/* Reserve a padded input row and footer even at screen bottom. */
 	if (last_row > row)
 		fprintf(stdout, "\033[%dB", last_row - row);
@@ -344,19 +328,9 @@ static void cli_readline_footer(struct cli_application *ctx)
 		last_row - row + footer_rows + 1, column + 1);
 	ctx->input_status.distance = last_row - row + footer_rows + 1;
 	ctx->input_status.footer_rows = footer_rows;
-	if (restore_hint)
-		cli_readline_draw_hint(ctx, &size);
 	morph_buf_cleanup(&usage);
 	morph_buf_cleanup(&text);
 	fflush(stdout);
-}
-
-static void cli_readline_clear_hint(struct cli_application *ctx)
-{
-	if (!ctx->input->details_hint_visible)
-		return;
-	fprintf(stdout, "\0337\033[%dG\033[K\0338", ctx->input->details_hint_column);
-	ctx->input->details_hint_visible = 0;
 }
 
 void cli_readline_redisplay(struct cli_application *ctx)
@@ -366,7 +340,6 @@ void cli_readline_redisplay(struct cli_application *ctx)
 	if (ctx && cli_turn_details_is_visible(ctx))
 		return;
 	cli_readline_clear_footer(ctx);
-	cli_readline_clear_hint(ctx);
 	if (cli_output_color_enabled(ctx))
 		fputs(ctx, CLI_INPUT_BACKGROUND, stdout);
 	rl_redisplay();
@@ -379,7 +352,6 @@ void cli_readline_redisplay(struct cli_application *ctx)
 		ctx->input->display_columns = size.ws_col;
 		ctx->input->display_rows = size.ws_row;
 	}
-	cli_readline_draw_hint(ctx, &size);
 }
 
 void cli_readline_line_ready(struct cli_application *ctx, char *input)
@@ -404,20 +376,13 @@ void cli_readline_line_ready(struct cli_application *ctx, char *input)
 }
 
 /* A terminal reflows stored cells before notifying the application. The old
- * right hint and footer can therefore occupy more rows than their last paint. */
+ * footer can therefore occupy more rows than their last paint. */
 static int cli_readline_reflow_tail(struct cli_application *ctx, int columns, int row, int last_row,
 				    int *out)
 {
 	char *footer MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	int tail = last_row - row;
 
-	if (ctx->input->details_hint_visible && rl_end == 0) {
-		int width = ctx->input->details_hint_column - 1 + (int)strlen("ctrl+o details");
-		int hint_rows = width > 0 ? (width - 1) / columns : 0;
-
-		if (hint_rows > tail)
-			tail = hint_rows;
-	}
 	if (ctx->input_status.distance && ctx->input_status.footer_rows) {
 		if (!ctx->input->footer_text)
 			return -ENOMEM;
@@ -491,7 +456,6 @@ static char *cli_readline_suspend_resized_copy(struct cli_application *ctx, int 
 	ctx->input_status.footer_rows = 0;
 	ctx->input_status.suspended = 1;
 	ctx->input_status.composer_rows = last_row + 1;
-	ctx->input->details_hint_visible = 0;
 	ctx->input->display_columns = size->ws_col;
 	ctx->input->display_rows = size->ws_row;
 	rl_set_screen_size(size->ws_row, size->ws_col);
@@ -526,7 +490,6 @@ char *cli_readline_suspend_copy(struct cli_application *ctx, int *point)
 	rl_replace_line("", 0);
 	rl_point = 0;
 	cli_readline_redisplay(ctx);
-	cli_readline_clear_hint(ctx);
 	cli_feed_composer_suspend(ctx);
 	return draft;
 }
@@ -644,10 +607,13 @@ static void cli_readline_mode_animation(struct cli_application *ctx)
 		int center = frame * (int)size.ws_col / 30;
 		for (int cell = 0; cell < (int)size.ws_col - 1; cell++) {
 			int distance = abs(cell - center);
-			int color = 234;
+			int color = 0;
 			if (frame < 30 && distance < 8)
 				color = distance < 2 ? 141 : distance < 4 ? 98 : distance < 6 ? 54 : 17;
-			(void)morph_buf_printf(&output, "\033[48;5;%dm ", color);
+			if (color)
+				(void)morph_buf_printf(&output, "\033[48;5;%dm ", color);
+			else
+				(void)morph_buf_puts(&output, CLI_INPUT_BACKGROUND " ");
 		}
 		(void)morph_buf_puts(&output, CLI_INPUT_BACKGROUND "\033[K\033[0m\0338");
 	}
@@ -942,7 +908,7 @@ void cli_readline_configure(struct cli_application *ctx)
 	(void)rl_bind_key('\r', cli_callback_key(ctx, cli_readline_accept));
 	(void)rl_bind_key('\n', cli_callback_key(ctx, cli_readline_insert_newline));
 	(void)rl_bind_key(0x16, cli_callback_key(ctx, cli_readline_paste_image));
-	(void)rl_bind_key(0x0f, cli_callback_key(ctx, cli_readline_toggle_details));
+	(void)rl_bind_key(0x14, cli_callback_key(ctx, cli_readline_toggle_details));
 	(void)rl_bind_key(0x7f, cli_callback_key(ctx, cli_readline_backspace));
 	(void)rl_bind_key(0x08, cli_callback_key(ctx, cli_readline_backspace));
 	(void)rl_bind_key(0x04, cli_callback_key(ctx, cli_readline_delete));
@@ -963,7 +929,7 @@ void cli_readline_configure(struct cli_application *ctx)
 	(void)rl_bind_keyseq("\\e\\C-M", cli_callback_key(ctx, cli_readline_insert_newline));
 	(void)rl_bind_keyseq("\033[13;2u", cli_callback_key(ctx, cli_readline_insert_newline));
 	(void)rl_bind_keyseq("\033[27;2;13~", cli_callback_key(ctx, cli_readline_insert_newline));
-	/* Ctrl+Command+V on macOS (kitty keyboard protocol):
+	/* Ctrl+Cmd+V on macOS (kitty keyboard protocol):
 	 * modifier = 1 + (ctrl=4 | super=8) = 13, keycode for V base key = 118,
 	 * with 86 as an upper-case fallback some terminals emit. */
 	(void)rl_bind_keyseq("\033[118;13u", cli_callback_key(ctx, cli_readline_paste_image));
@@ -1116,10 +1082,10 @@ const char *cli_readline_input_prompt_borrow(struct cli_application *ctx)
 {
 	int ultra = ctx && ctx->composer.ultra;
 	if (!cli_output_color_enabled(ctx))
-		return ultra ? "›› " : "> ";
+		return ultra ? "» " : "> ";
 	if (ultra)
 		return CLI_RL_IGNORE_START CLI_INPUT_ULTRA_COLOR CLI_RL_IGNORE_END
-			"›› " CLI_RL_IGNORE_START ANSI_RESET CLI_INPUT_BACKGROUND CLI_RL_IGNORE_END;
+			"» " CLI_RL_IGNORE_START ANSI_RESET CLI_INPUT_BACKGROUND CLI_RL_IGNORE_END;
 	return CLI_RL_IGNORE_START CLI_INPUT_MARKER_COLOR CLI_RL_IGNORE_END
 		"› " CLI_RL_IGNORE_START ANSI_RESET CLI_INPUT_BACKGROUND CLI_RL_IGNORE_END;
 }

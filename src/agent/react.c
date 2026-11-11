@@ -52,6 +52,7 @@ struct react_event_sink react_events_borrow(const struct react_context *ctx)
 }
 
 static void react_cancel_background(struct react_context *ctx);
+static int react_preserve_partial_answer(struct react_context *ctx);
 
 static int hitl_builtin_media(struct tool_registry *tools, const char *name)
 {
@@ -277,6 +278,8 @@ static int react_finish(struct react_context *ctx)
 
 	if (rc == 0)
 		rc = -ECANCELED;
+	if (ctx->agent_depth > 0 || ctx->agent_finishing)
+		(void)react_preserve_partial_answer(ctx);
 
 	if (ctx->outcome == REACT_OUTCOME_CANCELLED) {
 		react_cancel_background(ctx);
@@ -487,8 +490,8 @@ static int react_tool_call_finish(struct react_context *ctx, const struct async_
 static int react_tool_call_timeout(struct react_context *ctx, const struct tool_call *tc)
 {
 	int timeout;
-	cJSON *root;
-	cJSON *arg_timeout;
+	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	const cJSON *arg_timeout;
 
 	/* Question callbacks own their idle deadline, including user activity. */
 	if (strcmp(tc->name, "ask_user") == 0)
@@ -497,16 +500,27 @@ static int react_tool_call_timeout(struct react_context *ctx, const struct tool_
 	if (timeout <= 0)
 		timeout = ctx->tool_timeout_seconds;
 	if (!tc->arguments)
-		return timeout;
+		return !strcmp(tc->name, "wait_agent") ? 31 : timeout;
 
 	root = cJSON_Parse(tc->arguments);
 	if (!root)
 		return timeout;
+	/* The collaboration wait owns a millisecond deadline. Allow its normal
+	 * timeout result to be collected before the outer worker timeout fires. */
+	if (!strcmp(tc->name, "wait_agent")) {
+		arg_timeout = cJSON_GetObjectItemCaseSensitive(root, "timeout_ms");
+		if (!arg_timeout)
+			return 31;
+		if (cJSON_IsNumber(arg_timeout) && arg_timeout->valuedouble >= 1 &&
+		    arg_timeout->valuedouble <= 3600000 &&
+		    arg_timeout->valuedouble == (double)arg_timeout->valueint)
+			return (arg_timeout->valueint + 999) / 1000 + 1;
+		return timeout;
+	}
 	arg_timeout = cJSON_GetObjectItem(root, "timeout_seconds");
 	if (cJSON_IsNumber(arg_timeout) && arg_timeout->valuedouble > 0 &&
 	    arg_timeout->valuedouble <= INT_MAX)
 		timeout = (int)arg_timeout->valuedouble;
-	cJSON_Delete(root);
 	return timeout;
 }
 
@@ -723,6 +737,11 @@ void react_reset(struct react_context *ctx)
 	ctx->context_recovery_count = 0;
 	ctx->ineffective_compactions = 0;
 	ctx->incomplete_final_retry_count = 0;
+	ctx->agent_finalize_started_ms = 0;
+	ctx->agent_finalize_finish_requested_ms = 0;
+	ctx->agent_finalize_interrupted = 0;
+	ctx->agent_finishing = 0;
+	ctx->agent_summary_attempts = 0;
 	morph_signal_flag_set(&ctx->cancelled, 0);
 	morph_cancel_token_reset(&ctx->cancel_token);
 }
@@ -2754,9 +2773,16 @@ static int react_wait_for_agents(struct react_context *ctx, morph_array_t *messa
 {
 	if (!ctx->agents)
 		return 0;
-	int rc = react_collect_agent_messages(ctx, messages);
-	if (rc != 0)
-		return rc;
+	if (!agent_control_descendants_active(ctx->agents, ctx->agent_id))
+		return react_collect_agent_messages(ctx, messages);
+	int rc = 0;
+	int collected = 0;
+	if (!ctx->agent_finalize_started_ms)
+		ctx->agent_finalize_started_ms = morph_io_now_ms();
+	const struct config_agents *config =
+		ctx->tool_runtime.config ? &ctx->tool_runtime.config->agents : NULL;
+	int wait_seconds = config ? config->finalize_wait_seconds : 60;
+	int grace_seconds = config ? config->finalize_grace_seconds : 30;
 	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
 	if (!args || !cJSON_AddNumberToObject(args, "timeout_ms", 100))
 		return -ENOMEM;
@@ -2765,17 +2791,149 @@ static int react_wait_for_agents(struct react_context *ctx, morph_array_t *messa
 			return -ECANCELED;
 		if (ctx->prompt_pending_fn && ctx->prompt_pending_fn(ctx->action_drain_user_data))
 			return 1;
+		int64_t now = morph_io_now_ms();
+		if (!ctx->agent_finalize_finish_requested_ms &&
+		    (ctx->agent_finishing ||
+		     (wait_seconds > 0 &&
+		      now - ctx->agent_finalize_started_ms >= (int64_t)wait_seconds * 1000))) {
+			rc = agent_control_request_finish(ctx->agents, ctx->agent_id);
+			if (rc != 0)
+				return rc;
+			ctx->agent_finalize_finish_requested_ms = now;
+			ctx->agent_finishing = 1;
+			react_cancel_background(ctx);
+			(void)react_emit_text_event(
+				react_events_borrow(ctx), MORPH_EVENT_BACKGROUND,
+				"agent.finish_requested", "progress", "Collecting agent reports",
+				"The finalization wait ended. Active descendants must return their "
+				"current verified findings and any unfinished work.");
+		}
+		if (ctx->agent_finalize_finish_requested_ms && !ctx->agent_finalize_interrupted &&
+		    now - ctx->agent_finalize_finish_requested_ms >=
+			    (int64_t)grace_seconds * 1000) {
+			rc = agent_control_interrupt_descendants(ctx->agents, ctx->agent_id);
+			if (rc != 0)
+				return rc;
+			ctx->agent_finalize_interrupted = 1;
+			(void)react_emit_text_event(
+				react_events_borrow(ctx), MORPH_EVENT_BACKGROUND,
+				"agent.finish_timeout", "progress", "Stopping unfinished agents",
+				"The report grace period ended. Remaining descendants were "
+				"interrupted; collect their actual outcomes before reporting "
+				"results.");
+		}
+		/* Mail delivery must not postpone the closing deadline by repeatedly
+		 * returning to another model proposal before checking elapsed time. */
+		rc = react_collect_agent_messages(ctx, messages);
+		if (rc < 0)
+			return rc;
+		if (rc > 0) {
+			collected = 1;
+			if (!ctx->agent_finishing)
+				return 1;
+		}
+		if (!agent_control_descendants_active(ctx->agents, ctx->agent_id))
+			break;
 		cJSON *result MORPH_CLEANUP(morph_json_cleanup) = NULL;
 		struct tool_runtime_context runtime = ctx->tool_runtime;
 		runtime.http.cancel_token = &ctx->cancel_token;
+		int64_t waited_at = morph_io_now_ms();
 		rc = agent_control_call(ctx->agents, "wait_agent", args, &runtime, &result);
 		if (rc != 0)
 			return rc;
 		rc = react_collect_agent_messages(ctx, messages);
-		if (rc != 0)
+		if (rc < 0)
 			return rc;
+		if (rc > 0) {
+			collected = 1;
+			if (!ctx->agent_finishing)
+				return 1;
+		}
+		/* A child's soft deadline can end wait_agent immediately. Retain the
+		 * owner-thread cancellation probe without spinning while workers drain. */
+		int64_t elapsed = morph_io_now_ms() - waited_at;
+		if (elapsed < 100) {
+			struct timespec pause = {.tv_nsec = (long)(100 - elapsed) * 1000000L};
+			if (nanosleep(&pause, NULL) != 0 && errno != EINTR)
+				return morph_error_from_errno(errno);
+		}
 	}
-	return react_collect_agent_messages(ctx, messages);
+	rc = react_collect_agent_messages(ctx, messages);
+	return rc != 0 ? rc : collected;
+}
+
+static int react_preserve_partial_answer(struct react_context *ctx)
+{
+	if (ctx->final_answer && !strncmp(ctx->final_answer, "Partial report:", 15))
+		return 0;
+	const struct react_step *latest_update = NULL;
+	const struct react_step *latest_observation = NULL;
+	for (const struct react_step *step = ctx->steps; step; step = step->next) {
+		if (step->type == REACT_STEP_CONTENT && step->content && *step->content)
+			latest_update = step;
+		else if (step->type == REACT_STEP_OBSERVATION && step->content &&
+			 step->error_code >= 0 && *step->content)
+			latest_observation = step;
+	}
+	morph_buf_t partial MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int rc = morph_buf_init(&partial, 512);
+	if (rc == 0)
+		rc = morph_buf_puts(
+			&partial,
+			"Partial report: the investigation ended before a complete final report. "
+			"Treat the retained records below as evidence to review, not a claim "
+			"that the assigned task was completed.\n");
+	if (rc == 0 && ctx->final_answer) {
+		size_t length = utf8_clamp_bytes(ctx->final_answer, 8192);
+		rc = morph_buf_printf(&partial, "Retained outcome detail:\n%.*s\n", (int)length,
+				      ctx->final_answer);
+	}
+	const struct react_step *evidence[] = {latest_update, latest_observation};
+	const char *labels[] = {"Latest assistant update:\n",
+				"Latest completed tool observation:\n"};
+	for (size_t i = 0; rc == 0 && i < sizeof(evidence) / sizeof(evidence[0]); i++) {
+		if (!evidence[i])
+			continue;
+		size_t length = strlen(evidence[i]->content);
+		size_t retained =
+			length > 8192 ? utf8_clamp_bytes(evidence[i]->content, 8192) : length;
+		rc = morph_buf_puts(&partial, labels[i]);
+		if (rc == 0)
+			rc = morph_buf_append(&partial, evidence[i]->content, retained);
+		if (rc == 0)
+			rc = morph_buf_puts(&partial,
+					    retained < length ? "\n[Retained excerpt]\n" : "\n");
+	}
+	if (rc == 0) {
+		free(ctx->final_answer);
+		ctx->final_answer = morph_buf_detach(&partial);
+	}
+	return rc;
+}
+
+static int react_apply_agent_finish_prompt(struct react_context *ctx, char **prompt)
+{
+	if (!ctx->agent_finishing)
+		return 0;
+	morph_buf_t final_prompt MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int rc = morph_buf_init(&final_prompt, 512);
+	if (rc == 0)
+		rc = morph_buf_printf(
+			&final_prompt,
+			"%s\n<agent_finish_request>The investigation phase has ended because "
+			"the parent requested closure, the task's time allocation expired, "
+			"or the bounded finalization wait ended. "
+			"No further tools or investigations are available. Return a concise "
+			"final report now: verified findings with existing evidence, checks "
+			"completed, and explicit limitations or unfinished work. Report no "
+			"findings when appropriate. Do not invent checks, infer success from "
+			"interruption, or start another review.</agent_finish_request>\n",
+			*prompt);
+	if (rc == 0) {
+		free(*prompt);
+		*prompt = morph_buf_detach(&final_prompt);
+	}
+	return rc;
 }
 
 static int react_collect_background_results(struct react_context *ctx, morph_array_t *messages)
@@ -2992,14 +3150,45 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 		/* Persistent messages and steps own copies of response data. */
 		if (agent_control_interrupted(ctx->agents, ctx->agent_id))
 			react_cancel(ctx);
-		if (react_drain_actions(ctx, &messages, iteration, NULL))
+		int submitted_prompts = 0;
+		if (react_drain_actions(ctx, &messages, iteration, &submitted_prompts))
 			break;
+		if (submitted_prompts > 0)
+			agent_control_resume_work(ctx->agents, ctx->agent_id);
+		if (submitted_prompts > 0 && ctx->agent_depth == 0) {
+			/* User steering may add work, but does not resurrect closed
+			 * descendants or reset their existing finalization deadlines. */
+			ctx->agent_finishing = 0;
+			ctx->agent_summary_attempts = 0;
+		}
 		int mail_rc = react_collect_agent_messages(ctx, &messages);
 		if (mail_rc < 0) {
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, mail_rc, "agent_mailbox_error");
 			break;
 		}
-
+		if (ctx->agent_depth > 0 && !ctx->agent_finishing &&
+		    agent_control_finish_requested(ctx->agents, ctx->agent_id)) {
+			ctx->agent_finishing = 1;
+			react_cancel_background(ctx);
+		}
+		if (ctx->agent_finishing) {
+			int finish_rc = react_wait_for_agents(ctx, &messages);
+			if (finish_rc > 0)
+				continue;
+			if (finish_rc < 0) {
+				react_set_result(ctx,
+						 finish_rc == -ECANCELED
+							 ? REACT_OUTCOME_CANCELLED
+							 : REACT_OUTCOME_INTERNAL_ERROR,
+						 finish_rc, "agent_wait_failed");
+				break;
+			}
+			if (ctx->agent_summary_attempts >= 2) {
+				react_set_result(ctx, REACT_OUTCOME_LLM_ERROR, MORPH_ERR_LLM,
+						 "agent_summary_failed");
+				break;
+			}
+		}
 
 		if (ctx->memory_options && ctx->history_db) {
 			char *memory = NULL;
@@ -3068,6 +3257,10 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 			free(system_prompt);
 			system_prompt = morph_buf_detach(&terminal_prompt);
 		}
+		if (ctx->agent_finishing) {
+			active_tools = NULL;
+			active_tool_count = 0;
+		}
 		has_tools = active_tool_count > 0;
 		unsigned int hook_context_before = ctx->hook_context_generation;
 		status = react_maybe_compact_active_window(ctx, llm, system_prompt, &messages,
@@ -3089,6 +3282,17 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 				break;
 			}
 		}
+		if (ctx->agent_finishing) {
+			active_tools = NULL;
+			active_tool_count = 0;
+			has_tools = 0;
+			if (react_apply_agent_finish_prompt(ctx, &system_prompt) != 0) {
+				react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
+						 "prompt_context_error");
+				break;
+			}
+			ctx->agent_summary_attempts++;
+		}
 
 		status = react_chat_once(ctx, llm, system_prompt,
 					 (struct chat_message *)messages.elts, (int)messages.nelts,
@@ -3109,7 +3313,10 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 				break;
 			}
 			if (prompt_count > 0) {
-
+				if (ctx->agent_depth == 0) {
+					ctx->agent_finishing = 0;
+					ctx->agent_summary_attempts = 0;
+				}
 				continue;
 			}
 		}
@@ -3130,6 +3337,22 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 
 			break;
 		}
+		if (ctx->agent_depth > 0 && !ctx->agent_finishing &&
+		    agent_control_finish_requested(ctx->agents, ctx->agent_id)) {
+			ctx->agent_finishing = 1;
+			react_cancel_background(ctx);
+			if (response.tool_call_count > 0) {
+				if (response.content && *response.content) {
+					struct react_step *update = react_step_create(
+						REACT_STEP_CONTENT, response.content, NULL, NULL,
+						NULL);
+					add_step(ctx, update);
+				}
+				continue;
+			}
+		}
+		if (ctx->agent_finishing && response.tool_call_count > 0)
+			continue;
 
 		if (response.tool_call_count > 0 && response.content && *response.content) {
 			struct react_step *thought = react_step_create(

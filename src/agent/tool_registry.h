@@ -22,6 +22,7 @@ extern "C" {
 #define TOOL_FLAG_INTERNAL_APPROVAL 0x02
 #define TOOL_FLAG_DYNAMIC 0x04
 #define TOOL_FLAG_MEDIA 0x08
+#define TOOL_FLAG_READONLY_CONFIGURED 0x10
 #define TOOL_EMPTY_INPUT_SCHEMA                                                                    \
 	"{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}"
 #define TOOL_OBJECT_OUTPUT_SCHEMA "{\"type\":\"object\",\"properties\":{}}"

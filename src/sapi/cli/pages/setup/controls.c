@@ -456,7 +456,7 @@ static int cli_controls_select_menu(struct cli_controls_setup_ui *ui, const char
 						 : "↑↓ Move · 1–8 Jump · Enter Select · Esc Back")
 				: ui->columns < 60
 					? "↑↓ Move  Enter OK  Esc Back"
-					: "↑↓ Choose · Enter Select · Esc Back · Ctrl-C Exit");
+					: "↑↓ Choose · Enter Select · Esc Back · Ctrl+C Exit");
 		rc = cli_controls_frame_show(ui, &frame);
 		if (rc < 0)
 			return rc;
@@ -520,7 +520,7 @@ static int cli_controls_edit(struct cli_controls_setup_ui *ui, const char *title
 			ui, &frame, "\033[2m",
 			ui->columns < 60
 				? "Enter OK  Esc Back  ^U Clear"
-				: "Enter Continue · Esc Back · Ctrl-U Clear · Ctrl-C Exit");
+				: "Enter Continue · Esc Back · Ctrl+U Clear · Ctrl+C Exit");
 		ui->cursor_up = ui->frame_lines - input_row;
 		morph_buf_printf(&frame, "\033[%dA\r\033[%zuC\033[?25h", ui->cursor_up, column + 2);
 		rc = cli_controls_frame_show(ui, &frame);

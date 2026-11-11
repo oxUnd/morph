@@ -205,7 +205,7 @@ static const char agent_schema_sql[] =
 	"agent_id TEXT NOT NULL,parent_agent_id TEXT NOT NULL,"
 	"session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,"
 	"model TEXT NOT NULL,effort TEXT NOT NULL,depth INTEGER NOT NULL,"
-	"description TEXT NOT NULL,status INTEGER NOT NULL,result TEXT,"
+	"description TEXT NOT NULL,assignment_json TEXT,status INTEGER NOT NULL,result TEXT,"
 	"error_code INTEGER NOT NULL DEFAULT 0,iterations INTEGER NOT NULL DEFAULT 0,"
 	"started_at INTEGER NOT NULL,ended_at INTEGER NOT NULL DEFAULT 0,"
 	"PRIMARY KEY(root_session_id,agent_id));"
@@ -700,6 +700,9 @@ int db_init_schema(struct db *db)
 	rc = db_exec(db, agent_schema_sql);
 	if (rc != 0)
 		return rc;
+	db_add_column_if_missing(db, "agent_threads", "assignment_json", "TEXT");
+	if (!db_table_has_column(db, "agent_threads", "assignment_json"))
+		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
 	rc = db_exec(db, sub_agent_schema_sql);
 	if (rc != 0)
 		return rc;

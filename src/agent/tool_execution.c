@@ -58,6 +58,19 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 		return -EINVAL;
 	}
 	rc = tool_registry_acquire(reg, name, &handle);
+	if (rc == -ENOENT) {
+		const char *replacement =
+			!strcmp(name, "read") && tool_borrow(reg, "file_read")
+				? " Use file_read to read files."
+				: " Check the available tool definitions before retrying.";
+		result_rc = tool_result_error_format(
+			result, "tool_not_found",
+			"Tool '%s' is not registered in this agent's tool registry.%s", name,
+			replacement);
+		if (result_rc == 0)
+			result_rc = tool_result_finalize(result);
+		return result_rc != 0 ? result_rc : rc;
+	}
 	if (rc != 0)
 		return rc;
 	if (handle.disabled) {
@@ -71,14 +84,29 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 		tool_handle_release(&handle);
 		return rc;
 	}
+	if (result->runtime &&
+	    !agent_control_tool_allowed(result->runtime->agents, result->runtime->agent_id, name)) {
+		tool_handle_release(&handle);
+		result_rc = tool_result_error_copy(result, "agent_coordination_pending",
+			"No independent parent task was reserved. Collect child findings or blockers "
+			"with wait_agent/send_message before investigation. Interrupt the owner "
+			"before taking over its remaining work.");
+		if (result_rc == 0)
+			result_rc = tool_result_finalize(result);
+		return result_rc != 0 ? result_rc : -EAGAIN;
+	}
 	if (result->runtime && result->runtime->agents &&
 	    agent_control_shell_readonly(result->runtime->agents, result->runtime->agent_id) &&
 	    !(handle.flags & TOOL_FLAG_READONLY) && strcmp(name, "exec") &&
 	    strcmp(name, "process") && strcmp(name, "apply_patch")) {
 		tool_handle_release(&handle);
-		(void)tool_result_error_copy(result, "permission_denied",
-			"Concurrent agent writes must use apply_patch in assigned write_paths. "
-			"Ask the primary agent to perform other mutations after writers finish.");
+		(void)tool_result_error_format(
+			result, "permission_denied",
+			"Tool '%s' has not been declared read-only and is unavailable in this "
+			"agent's workspace scope. Ask the primary agent to perform the operation "
+			"or use a tool with explicit read-only metadata. Workspace writes must "
+			"use apply_patch within assigned write_paths.",
+			name);
 		(void)tool_result_finalize(result);
 		return -EACCES;
 	}
@@ -87,13 +115,14 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 	     (result->runtime && result->runtime->permission_require_user))) {
 		struct permission_review review = {0};
 		struct tool_operation operation = {
-		    .review_out = &review,
-		    .kind = TOOL_OP_TOOL_CALL,
-		    .tool_name = name,
-		    .principal = name,
-		    .action = args_json,
-		    .details_json = args_json,
-		    .require_user = result->runtime ? result->runtime->permission_require_user : 0,
+			.review_out = &review,
+			.kind = TOOL_OP_TOOL_CALL,
+			.tool_name = name,
+			.principal = name,
+			.action = args_json,
+			.details_json = args_json,
+			.require_user =
+				result->runtime ? result->runtime->permission_require_user : 0,
 		};
 		rc = tool_context_check_operation(handle.permission_context, &operation);
 		if (rc == -EACCES || rc == -EPERM)
@@ -132,9 +161,9 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 			rc = tool_error_code(result->envelope);
 		} else if (rc < 0 && cJSON_IsTrue(ok)) {
 			const cJSON *payload =
-			    cJSON_GetObjectItemCaseSensitive(result->envelope, "data");
-			const char *diagnostic =
-			    cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(payload, "text"));
+				cJSON_GetObjectItemCaseSensitive(result->envelope, "data");
+			const char *diagnostic = cJSON_GetStringValue(
+				cJSON_GetObjectItemCaseSensitive(payload, "text"));
 			char *owned = diagnostic != NULL ? strdup(diagnostic) : NULL;
 			if (diagnostic != NULL && owned == NULL) {
 				tool_result_clear(result);

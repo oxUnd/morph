@@ -4,12 +4,16 @@ import json
 from pathlib import Path
 import queue
 import re
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 
-from test_cli_pty import Model, Terminal
+from test_cli_pty import Model, Terminal, terminal_environment
+from test_cli_transcript_pty import AlternateScreen
+from cli_inline_test_support import inline_panel, stable_rows
+import pyte
 
 
 def wait_for(terminal, predicate, timeout=8):
@@ -31,10 +35,18 @@ def run(driver, port, columns):
     with tempfile.TemporaryDirectory(prefix='morph-agents-pty-') as temp:
         terminal = Terminal(driver, Path(temp), port, hooks_enabled=False,
                             extra_config='[agents]\nmulti_agent_mode="proactive"\n')
+        terminal.screen = AlternateScreen(80, 24)
+        terminal.stream = pyte.Stream(terminal.screen)
         try:
             terminal.wait_for_composer()
             terminal.child.setwinsize(24, columns)
             terminal.screen.resize(24, columns)
+            terminal.send('/agents\r')
+            wait_for(terminal, lambda: 'Agents (0)' in '\n'.join(terminal.screen.display))
+            assert hasattr(terminal.screen, '_main_screen')
+            assert 'Main conversation' in '\n'.join(stable_rows(terminal))
+            terminal.send('\x1b')
+            wait_for(terminal, lambda: not hasattr(terminal.screen, '_main_screen'))
             terminal.send('exercise collaboration\r')
             _, root = terminal.request()
             releases.append(root)
@@ -49,7 +61,7 @@ def run(driver, port, columns):
             pair = [terminal.request(), terminal.request()]
             releases.extend(release for _, release in pair)
             child = next(release for body, release in pair
-                         if any('/root/worker' in message.get('content', '')
+                         if any('You are `/root/worker`' in message.get('content', '')
                                 for message in body.get('messages', []) if message['role'] == 'system'))
             primary = next(release for _, release in pair if release is not child)
             wait_for(terminal, lambda: 'Agents: 1 running' in '\n'.join(terminal.screen.display))
@@ -67,8 +79,37 @@ def run(driver, port, columns):
             child.set()
             wait_for(terminal, lambda: 'Running exec' in re.sub(r'\x1b\[[0-9;]*m', '', terminal.raw))
             terminal.send('/agents\r')
-            wait_for(terminal, lambda: 'Agents (1)' in terminal.raw and 'CHILD_ACTIVITY_TASK' in terminal.raw)
-            assert not any(line.startswith('›› /agents') for line in terminal.screen.display)
+            wait_for(terminal, lambda: 'Agents (1)' in terminal.screen.display[0])
+            assert hasattr(terminal.screen, '_main_screen')
+            assert 'Esc' in terminal.screen.display[-1]
+            assert 'exercise collaboration' not in '\n'.join(terminal.screen.display)
+            terminal.send('\x1b[B')
+            wait_for(terminal, lambda: 'CHILD_ACTIVITY_TASK' in '\n'.join(terminal.screen.display))
+            for width in (60, 120, 80, columns):
+                terminal.child.setwinsize(24, width)
+                terminal.screen.resize(lines=24, columns=width)
+                terminal.pump(.2)
+                rows = stable_rows(terminal)
+                assert 'Agents (1)' in rows[0], '\n'.join(rows)
+                selected = next(i for i, row in enumerate(rows) if row.startswith('> '))
+                assert '/root/worker' in rows[selected]
+                assert terminal.screen.buffer[selected][width - 2].bg == 'blue'
+                assert 'Esc' in rows[-1]
+            for height in (8, 4, 40, 24):
+                terminal.child.setwinsize(height, columns)
+                terminal.screen.resize(lines=height, columns=columns)
+                terminal.pump(.2)
+                rows = stable_rows(terminal)
+                assert 'Agents (1)' in rows[0], '\n'.join(rows)
+                assert any(row.startswith('> /root/worker') for row in rows), '\n'.join(rows)
+                assert 'Esc' in rows[-1], '\n'.join(rows)
+            assert not any(line.startswith('» /agents') for line in terminal.screen.display)
+            switches = terminal.raw.count('\x1b[?1049h')
+            terminal.send('\r')
+            wait_for(terminal, lambda: 'Agents · /root/worker' in terminal.screen.display[0])
+            assert terminal.raw.count('\x1b[?1049h') == switches, 'nested alternate screen'
+            terminal.send('\x1b')
+            wait_for(terminal, lambda: not hasattr(terminal.screen, '_main_screen'))
             terminal.send('PRESERVED_AGENT_DRAFT')
             _, child_done = terminal.request()
             releases.append(child_done)
@@ -92,9 +133,32 @@ def run(driver, port, columns):
             visible = '\n'.join(terminal.screen.display)
             assert visible.count('PRESERVED_AGENT_DRAFT') == 1, visible
             terminal.child.send('\x15')
+            terminal.send('/subagents\r')
+            wait_for(terminal, lambda: 'Main conversation' in '\n'.join(terminal.screen.display))
+            assert not hasattr(terminal.screen, '_main_screen'), 'subagents became full-screen'
+            inline_panel(terminal, 'Subagents', 'ROOT_INTEGRATED_RESULT',
+                         maximum=12, command='/subagents')
+            terminal.send('\x1b')
+            wait_for(terminal, lambda: not any('Subagents' in row
+                     for row in terminal.screen.display))
             terminal.send('/agents /root/worker\r')
-            wait_for(terminal, lambda: 'CHILD_VERIFIED_RESULT' in terminal.raw)
-            assert sum(line.startswith('›› ') for line in terminal.screen.display) == 1
+            wait_for(terminal, lambda: 'Agents · /root/worker' in terminal.screen.display[0])
+            assert 'CHILD_VERIFIED_RESULT' in '\n'.join(stable_rows(terminal))
+            assert hasattr(terminal.screen, '_main_screen')
+            terminal.send('\x1b')
+            wait_for(terminal, lambda: not hasattr(terminal.screen, '_main_screen'))
+            assert sum(line.startswith('» ') for line in terminal.screen.display) == 1
+            if columns == 120:
+                plain = subprocess.run(
+                    [str(driver.with_name('morph')), '-c', str(Path(temp) / 'config.toml'),
+                     '-w', temp, '--events', 'json'], input='/agents\n/quit\n',
+                    env=terminal_environment(Path(temp)), text=True, capture_output=True,
+                    timeout=20)
+                assert plain.returncode == 0, plain.stderr
+                events = [json.loads(line) for line in plain.stdout.splitlines()]
+                assert any('Agents (' in event.get('data', {}).get('output', '')
+                           for event in events), plain.stdout
+                assert '\x1b' not in plain.stdout
             print(f'checked agent activity, inspection and draft at {columns} columns', flush=True)
         except Exception:
             print('\n'.join(terminal.screen.display), flush=True)

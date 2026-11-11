@@ -82,7 +82,7 @@ auto_connect = true
             wait_for(lambda text: 'MCP servers (2)' in text and
                      'good' in text and 'ready' in text and 'failed' in text and
                      any(row.startswith('› ') and
-                         all(screen.buffer[i][column].bg == '1c1c1c'
+                         all(screen.buffer[i][column].bg == '3a3a3a'
                              for column in range(screen.columns))
                          for i, row in enumerate(screen.display)))
             display = '\n'.join(screen.display)
@@ -90,7 +90,7 @@ auto_connect = true
             assert any(row.rstrip() == '/mcp' for row in screen.display), display
             prompts = [i for i, row in enumerate(screen.display) if row.startswith('› ')]
             assert len(prompts) == 1, display
-            assert all(screen.buffer[prompts[0]][column].bg == '1c1c1c'
+            assert all(screen.buffer[prompts[0]][column].bg == '3a3a3a'
                        for column in range(screen.columns)), display
             child.send('/quit\r')
             child.expect(pexpect.EOF)

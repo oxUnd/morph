@@ -1761,7 +1761,7 @@ TEST_F(CliPresentationTest, InteractiveCompactFeedShowsApplyPatchDiff)
 
 	EXPECT_NE(output.find("apply_patch src/example.c"), std::string::npos);
 	EXPECT_NE(output.find("@@ -1,3 +1,3 @@"), std::string::npos);
-	EXPECT_NE(output.find("ctrl+o to expand"), std::string::npos);
+	EXPECT_NE(output.find("Ctrl+T to expand"), std::string::npos);
 	EXPECT_EQ(output.find("+new value"), std::string::npos);
 	testing::internal::CaptureStdout();
 	ToggleDetails();
@@ -1959,7 +1959,7 @@ TEST_F(CliPresentationTest, CompactFeedUsesActualToolNameAndCommandOnOneLine)
 	EXPECT_EQ(output.find("FOURTH_DETAIL_LINE"), std::string::npos);
 	EXPECT_NE(output.find("    SECOND_LINE"), std::string::npos);
 	EXPECT_NE(output.find("    THIRD_LINE"), std::string::npos);
-	EXPECT_NE(output.find("+ 1 line (ctrl+o to expand)"), std::string::npos);
+	EXPECT_NE(output.find("+ 1 line (Ctrl+T to expand)"), std::string::npos);
 
 	testing::internal::CaptureStdout();
 	ToggleDetails();
@@ -2016,7 +2016,7 @@ TEST_F(CliPresentationTest, CompactMcpPreviewShowsBoundedTextAndKeepsOriginalToo
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_NE(output.find("mcp_demo__search pattern"), std::string::npos);
 	EXPECT_NE(output.find("  └ first\n    second\n    third\n"), std::string::npos);
-	EXPECT_NE(output.find("+ 2 lines (ctrl+o to expand)"), std::string::npos);
+	EXPECT_NE(output.find("+ 2 lines (Ctrl+T to expand)"), std::string::npos);
 	EXPECT_EQ(output.find("fourth"), std::string::npos);
 	EXPECT_EQ(output.find("Ran "), std::string::npos);
 	EXPECT_NE(output.find("●"), std::string::npos);

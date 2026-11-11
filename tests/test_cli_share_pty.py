@@ -25,7 +25,7 @@ def check_composer(terminal):
     assert len(prompts) == 1, '\n'.join(rows)
     assert '› /share' not in '\n'.join(rows), '\n'.join(rows)
     backgrounds = [i for i in range(terminal.screen.lines)
-                   if terminal.screen.buffer[i][0].bg == '1c1c1c']
+                   if terminal.screen.buffer[i][0].bg == '3a3a3a']
     assert backgrounds == [prompts[0] - 1, prompts[0], prompts[0] + 1], backgrounds
 
 

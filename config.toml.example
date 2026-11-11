@@ -523,7 +523,15 @@ dir = ""
 enabled = true
 max_threads = 6
 max_depth = 2
-# scoped: assigned write_paths + private scratch; readonly: private scratch only.
+# Child turns return current findings after this soft deadline; 0 disables it.
+# Nested work shares its ancestor's remaining time instead of resetting it.
+task_timeout_seconds = 600
+# On finalization, request child summaries, then allow a bounded grace period
+# before interrupting unfinished descendants. 0 wait disables the waiting cap.
+finalize_wait_seconds = 60
+finalize_grace_seconds = 30
+# Sandboxed child commands: scoped = write_paths + scratch; readonly = scratch.
+# Host/network follow the shared permission policy; Full Access defaults to host.
 child_shell = "scoped"
 # "auto": reasoning_effort="ultra" enables proactive delegation, as in Codex.
 # "explicit" and "proactive" override this automatic selection.

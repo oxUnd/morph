@@ -34,7 +34,8 @@ class PacedMarkdownModel(Model):
                 text = chunks.get(timeout=15)
                 if text is None:
                     break
-                event = {'choices': [{'index': 0, 'delta': {'content': text}}]}
+                event = {'choices': [{'index': 0, 'delta': (text if isinstance(text, dict)
+                                                         else {'content': text})}]}
                 self.wfile.write(('data: ' + json.dumps(event) + '\n\n').encode())
                 self.wfile.flush()
             self.wfile.write(b'data: {"choices":[{"index":0,"delta":{},'
@@ -144,6 +145,54 @@ class AlternateScreen(pyte.Screen):
                 self.__dict__.update(saved)
             modes = tuple(mode for mode in modes if mode != 1049)
         super().reset_mode(*modes, **kwargs)
+
+
+def check_details_follow(driver):
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), PacedMarkdownModel)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        for width in (120, 80, 60):
+            with tempfile.TemporaryDirectory(prefix='morph-details-follow-') as temp:
+                terminal = Terminal(driver, Path(temp), server.server_port, hooks_enabled=False)
+                terminal.child.setwinsize(24, width)
+                terminal.screen = AlternateScreen(width, 24)
+                terminal.stream = pyte.Stream(terminal.screen)
+                chunks = None
+                try:
+                    terminal.wait_for_composer()
+                    terminal.send('stream reasoning for scroll checks\r')
+                    _, chunks = terminal.request()
+                    chunks.put({'reasoning_content': ''.join(
+                        f'DETAIL_ROW_{i:03d}\n' for i in range(60))})
+                    terminal.send('kept draft\x14')
+                    bottom = terminal.snapshot(f'{width}: details initially follow')
+                    assert 'DETAIL_ROW_059' in bottom, bottom
+                    terminal.send('\x1b[5~')
+                    paused = terminal.snapshot(f'{width}: details pause above bottom')
+                    chunks.put({'reasoning_content': 'DETAIL_PAUSED_OUTPUT\n'})
+                    unchanged = terminal.snapshot(f'{width}: new reasoning preserves viewport')
+                    assert unchanged == paused, unchanged
+                    terminal.send('\x1b[6~' * 20)
+                    resumed = terminal.snapshot(f'{width}: page down reaches bottom')
+                    assert 'DETAIL_PAUSED_OUTPUT' in resumed, resumed
+                    chunks.put({'reasoning_content': 'DETAIL_FOLLOW_RESUMED\n'})
+                    followed = terminal.snapshot(f'{width}: details resume automatic following')
+                    assert 'DETAIL_FOLLOW_RESUMED' in followed, followed
+                    terminal.child.setwinsize(20, width)
+                    terminal.screen.resize(20, width)
+                    terminal.pump(.2)
+                    chunks.put({'reasoning_content': 'DETAIL_FOLLOW_AFTER_RESIZE\n'})
+                    resized = terminal.snapshot(f'{width}: resize keeps bottom following')
+                    assert 'DETAIL_FOLLOW_AFTER_RESIZE' in resized, resized
+                    terminal.send('\x1b')
+                    assert 'kept draft' in terminal.snapshot(f'{width}: draft restored')
+                finally:
+                    if chunks is not None:
+                        chunks.put(None)
+                    terminal.child.close(force=True)
+    finally:
+        server.shutdown()
 
 
 def check_feed_replay(driver):
@@ -291,7 +340,7 @@ def check_final_spacing(driver, port):
                     assert last - first == 2, text
                 prompt = max(i for i, row in enumerate(rows) if row.startswith('› '))
                 assert prompt == footer + 3, text
-                assert terminal.screen.buffer[footer + 1][0].bg != '1c1c1c', text
+                assert terminal.screen.buffer[footer + 1][0].bg != '3a3a3a', text
                 terminal.send('/share\r')
                 text = terminal.snapshot(f'share after final case {index}')
                 rows = text.splitlines()
@@ -305,7 +354,7 @@ def check_final_spacing(driver, port):
                 last_receipt = max(i for i in range(receipt, prompt)
                                    if rows[i].strip())
                 assert prompt == last_receipt + 3, text
-                assert terminal.screen.buffer[last_receipt + 1][0].bg != '1c1c1c', text
+                assert terminal.screen.buffer[last_receipt + 1][0].bg != '3a3a3a', text
                 assert not terminal.duplicate_prompts, terminal.duplicate_prompts
             finally:
                 if release:
@@ -316,6 +365,7 @@ def check_final_spacing(driver, port):
 def main():
     driver = Path(sys.argv[1]).resolve()
     check_mutable_markdown_preview(driver)
+    check_details_follow(driver)
     check_feed_replay(driver)
     check_tool_spacing(driver)
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
@@ -361,11 +411,18 @@ def main():
             assert 'FIRST_PRIVATE_RESULT' in compact, compact
             assert 'SECOND_PRIVATE_RESULT' not in compact, compact
             lines = compact.splitlines()
+            working = next(row for row in lines if 'Working' in row)
+            assert working.rstrip().endswith('Ctrl+T transcript'), compact
+            assert '\x1b[38;5;141m · Ctrl+T transcript\x1b[0m' in terminal.raw
+            assert all('Ctrl+T' not in row for row in lines
+                       if row.startswith(('› ', '> '))), compact
+            terminal.send('\x0f')
+            assert 'Turn details' not in terminal.snapshot('old shortcut is unbound')
             first_tool = next(i for i, row in enumerate(lines) if '● file_read' in row)
             previous = max(i for i in range(first_tool) if lines[i].strip())
             assert first_tool - previous == 2, compact
             terminal.send('草稿🙂 tail\x1b[D')
-            terminal.send('\x0f')
+            terminal.send('\x14')
             expanded = terminal.snapshot('expanded while model running')
             assert 'SECOND_PRIVATE_RESULT 中文🙂' in expanded, expanded
             assert 'Turn details' in expanded, expanded
@@ -394,7 +451,7 @@ def main():
             assert '草稿🙂 tail' in collapsed, collapsed
             terminal.send('X')
             assert '草稿🙂 taiXl' in terminal.snapshot('draft cursor preserved'), terminal.raw
-            terminal.send('\x0f')
+            terminal.send('\x14')
             switches = terminal.raw.count('\x1b[?1049')
             clears = terminal.raw.count('\x1b[2J')
             final_release.delta = {'content': 'DETAILS_PREAMBLE', 'tool_calls': [
@@ -413,7 +470,7 @@ def main():
             unchanged = terminal.raw
             terminal.pump(0.6)
             assert terminal.raw == unchanged, 'unchanged details should not repaint'
-            terminal.send('\x0f')
+            terminal.send('\x14')
             completed = terminal.snapshot('finished process remains visible')
             assert completed.count('UPDATED ANSWER') == 1, completed
             assert 'file_read' in completed, completed
@@ -424,14 +481,14 @@ def main():
             tool = next(i for i in range(preamble + 1, len(lines))
                         if '● file_read' in lines[i])
             assert tool - preamble == 2, completed
-            terminal.send('\x0f')
+            terminal.send('\x14')
             assert 'FIRST_PRIVATE_RESULT' in terminal.snapshot('expand after completion')
-            terminal.send('\x0f')
+            terminal.send('\x14')
             assert 'SECOND_PRIVATE_RESULT' not in terminal.snapshot('collapse after completion')
             terminal.child.setwinsize(24, 36)
             terminal.screen.resize(24, 36)
             terminal.pump(0.2)
-            terminal.send('\x0f\x0f')
+            terminal.send('\x14\x14')
             narrow = terminal.snapshot('narrow transcript toggles')
             assert '草稿🙂 taiXl' in narrow, narrow
             assert 'UPDATED ANSWER' in narrow, narrow
@@ -442,7 +499,7 @@ def main():
             terminal.send('\x15ask a question\r')
             _, ask_release = terminal.request()
             releases.append(ask_release)
-            terminal.send('question draft\x0f')
+            terminal.send('question draft\x14')
             ask_release.delta = {'tool_calls': [{'index': 0, 'id': 'ask-viewer',
                 'type': 'function', 'function': {'name': 'ask_user',
                 'arguments': json.dumps({'question': 'Choose a color',

@@ -114,7 +114,7 @@ TEST_F(CliComposerPanelTest, BufferFailuresPropagateWithoutAddingRows)
 TEST(CliComposerPanelLifecycleTest, FailedPresentationPreservesCallerOwnedData)
 {
 	int completions = 0;
-	struct cli_composer_panel_options options{10, 58, 100};
+	struct cli_composer_panel_options options{10, 100};
 	struct cli_composer_panel_ops ops{};
 	ops.draw = [](void *, struct cli_composer_panel_frame *) { return 0; };
 	ops.update = [](void *, const struct morph_tui_event *) { return 0; };

@@ -26,7 +26,7 @@ and response path without depending on a live provider.
 | P10 | 30-second timeout, zero retries, model error/defer to human, cancellation propagation, three-denial circuit | Router timeout/defer/error/cancel tests, invalid mock-model response falling back exactly once, and `ThreeModelDenialsRequireHumanAndCannotCreatePersistentAuthority`. Automatic decisions cannot grant session/Always authority. |
 | P11 | Validated `[permissions]`; conservative legacy translation with diagnostics; named profiles retained | Config/schema tests, `LegacyPermissionFlagsMigrateWithoutKeepingAnotherAuthority`, and `BootstrapLegacyMediaSwitchCannotAutoApproveMutations`. Explicit three-axis configuration wins over old host/network/HITL switches. Runtime ReAct skips its standalone legacy HITL preflight when shared authority is present. |
 | P12 | Facade get/set; execution/child checks; locked TOML merge and atomic save before applying policy | Persistence preserves comments/unrelated settings and survives reload. Busy/save-failure tests preserve active policy. Switching clears transient path, command and tool-call grants; read-only uses separate persistent write/delete/tool-call grant kinds. |
-| P13 | CLI picker/preset/custom commands; facade presets; existing grant-management commands and frontend adapters | `cli_permissions_pty_integration`: inline input-area selection keeps prior conversation visible and emits no alternate-screen, clear-screen or cursor-home sequences. Selection, resize, paste protection, Escape/Ctrl-C cancellation, recall, Custom, saved settings, status, one restored composer and structured JSON command results are covered at 120/80/60 columns. Existing slash recall/spacing, JSON interaction and FastCGI tests remain included. |
+| P13 | CLI picker/preset/custom commands; facade presets; existing grant-management commands and frontend adapters | `cli_permissions_pty_integration`: inline input-area selection keeps prior conversation visible and emits no alternate-screen, clear-screen or cursor-home sequences. Selection, resize, paste protection, Escape/Ctrl+C cancellation, recall, Custom, saved settings, status, one restored composer and structured JSON command results are covered at 120/80/60 columns. Existing slash recall/spacing, JSON interaction and FastCGI tests remain included. |
 | P14 | Desktop source manifest, CLI layout checks, global-state audit, release and ASan/UBSan builds | Final suite totals and commands are recorded below. Builds include FastCGI and TUI samples, with no compiler warnings. |
 
 ## Reproduction
@@ -127,7 +127,7 @@ Verification on the same host:
 - ASan/UBSan: the same 95 checks passed (58.22 seconds), without sanitizer reports.
 - Final Release picker/layout checks: both passed (27.88 seconds).
 - PTY checks cover 120/80/60 columns, live width changes, visible prior chat,
-  current/Custom display, paste protection, Escape/Ctrl-C cancellation, plain
+  current/Custom display, paste protection, Escape/Ctrl+C cancellation, plain
   command spacing, recall, persistence, structured output and composer cleanup.
   Raw output is checked for absence of screen switches, whole-screen clearing
   and cursor-home sequences.

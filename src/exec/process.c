@@ -694,9 +694,11 @@ static int prepare_child_execution(const struct process_spawn_options *options)
 		return morph_error_from_errno(errno);
 	int rc = options->sandbox ? sandbox_enter(options->sandbox) :
 		options->host_execution ? sandbox_close_inherited_fds() : 0;
-	if (rc == 0 && options->temp_dir &&
-	    setenv("MORPH_AGENT_SCRATCH", options->temp_dir, 1) != 0)
-		rc = morph_error_from_errno(errno);
+	if (rc == 0 && options->temp_dir) {
+		if (setenv("TMPDIR", options->temp_dir, 1) != 0 ||
+		    setenv("MORPH_AGENT_SCRATCH", options->temp_dir, 1) != 0)
+			rc = morph_error_from_errno(errno);
+	}
 	return rc;
 }
 
@@ -1226,9 +1228,9 @@ static int signal_session(struct process_manager *manager,
 	if (!session)
 		rc = -ENOENT;
 	else if (session->state >= PROCESS_EXITED)
-		rc = -EPIPE;
+		rc = 0;
 	else if (kill(-session->pgid, signal_number) != 0)
-		rc = -errno;
+		rc = errno == ESRCH ? 0 : morph_error_from_errno(errno);
 	else if (kill_request && !session->kill_requested) {
 		session->kill_requested = 1;
 		session->kill_deadline_ms = process_now_ms() +

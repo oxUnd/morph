@@ -39,6 +39,8 @@ struct mcp_tool_desc {
 	const char *title;
 	const char *description;
 	const char *input_schema;
+	/* Only an explicit boolean readOnlyHint grants read-only classification. */
+	int read_only;
 };
 
 /* MCP resource descriptor returned by resources/list */

@@ -17,11 +17,11 @@ The main build also provides `morph-tui-controls` when `BUILD_TUI_SAMPLES=ON`.
 Run in a terminal; no model configuration or API key is required.
 
 - The text field initially has focus. Typing `q` inserts text.
-- Tab and Shift-Tab move focus between the text field and list.
+- Tab and Shift+Tab move focus between the text field and list.
 - List navigation uses Up/Down or j/k. Enter activates a row; Enter in the
   field submits its text. Both open a modal page containing a copied label.
 - Escape closes the modal and restores the original control's focus and state.
-- Escape or Ctrl-C closes the root page. `q` closes it when the list has focus.
+- Escape or Ctrl+C closes the root page. `q` closes it when the list has focus.
 - Pasted text cannot execute page shortcuts, navigate the list, or submit.
 
 See [the framework guide](../../../../docs/tui-architecture.md) for the

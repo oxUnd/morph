@@ -133,8 +133,20 @@ int agent_control_ack(struct agent_control *control, const char *id, int64_t roo
 		      int64_t cursor, struct db *db);
 int agent_control_interrupted(struct agent_control *control, const char *id);
 int agent_control_descendants_active(struct agent_control *control, const char *id);
+/* Close a subtree to new work and ask its active descendants for final evidence. */
+int agent_control_request_finish(struct agent_control *control, const char *id);
+/* Includes the child's inherited monotonic task deadline. */
+int agent_control_finish_requested(struct agent_control *control, const char *id);
+/* Cancel descendants without interrupting the caller or peer branches. */
+int agent_control_interrupt_descendants(struct agent_control *control, const char *id);
 int agent_control_active(struct agent_control *control, int64_t session_id);
 int agent_control_prompt(struct agent_control *control, const char *id, morph_buf_t *out);
+/* Current assignment state belongs after history and is rebuilt for every request. */
+int agent_control_checkpoint(struct agent_control *control, const char *id, morph_buf_t *out);
+/* Explicit coordination-only assignments suspend investigation until evidence arrives. */
+int agent_control_tool_allowed(struct agent_control *control, const char *id, const char *tool);
+/* New user steering can supply parent work beyond the previous assignment. */
+void agent_control_resume_work(struct agent_control *control, const char *id);
 
 #ifdef __cplusplus
 }

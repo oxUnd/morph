@@ -28,7 +28,7 @@ def editor_input(terminal, expected=''):
     prompts = [index for index, row in enumerate(rows) if row.startswith('› ')]
     assert prompts, '\n'.join(rows)
     row = prompts[-1]
-    input_text = rows[row][2:].split('ctrl+o details', 1)[0].rstrip()
+    input_text = rows[row][2:].split('Ctrl+T transcript', 1)[0].rstrip()
     assert input_text == expected, '\n'.join(rows)
     return row
 
@@ -38,7 +38,7 @@ def composer(terminal, expected=''):
     row = editor_input(terminal, expected)
     assert sum(line.startswith('› ') for line in rows) == 1, '\n'.join(rows)
     backgrounds = [index for index in range(terminal.screen.lines)
-                   if terminal.screen.buffer[index][0].bg == '1c1c1c']
+                   if terminal.screen.buffer[index][0].bg == '3a3a3a']
     assert backgrounds == [row - 1, row, row + 1], (backgrounds, '\n'.join(rows))
     return row
 
@@ -56,7 +56,7 @@ def result_gap(terminal, result, draft=''):
     assert prompt_row - output_row == 3, '\n'.join(rows)
     gap = output_row + 1
     assert not rows[gap].strip(), '\n'.join(rows)
-    assert all(terminal.screen.buffer[gap][column].bg != '1c1c1c'
+    assert all(terminal.screen.buffer[gap][column].bg != '3a3a3a'
                for column in range(terminal.screen.columns)), '\n'.join(rows)
 
 
@@ -66,7 +66,7 @@ def command_heading(terminal, command):
     assert matches, '\n'.join(rows)
     row = matches[-1]
     assert terminal.screen.buffer[row][0].fg == 'af87ff', rows[row]
-    assert all(terminal.screen.buffer[row][column].bg != '1c1c1c'
+    assert all(terminal.screen.buffer[row][column].bg != '3a3a3a'
                for column in range(terminal.screen.columns)), '\n'.join(rows)
     return row
 
@@ -110,7 +110,7 @@ def main():
             output_row = next(index for index, row in enumerate(terminal.screen.display)
                               if 'current model: pty-test' in row)
             assert output_row == heading_row + 2, '\n'.join(terminal.screen.display)
-            assert terminal.screen.buffer[output_row][0].bg != '1c1c1c'
+            assert terminal.screen.buffer[output_row][0].bg != '3a3a3a'
             result_gap(terminal, 'mode: normal')
             terminal.send('/rename slash-renamed\r')
             assert 'session renamed to: slash-renamed' in '\n'.join(terminal.screen.display)

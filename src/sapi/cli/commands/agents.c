@@ -39,6 +39,12 @@ static int cli_agents_command_agents(struct cli_application *ctx, int argc, char
 		CMD_ERROR(ctx, "usage: /agents [/root/name]");
 		return -EINVAL;
 	}
+	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
+		int rc = cli_subagents_show_fullscreen(ctx, cli_cmd_arg_borrow(argc, argv, 1));
+		if (rc != 0)
+			CMD_ERROR(ctx, "cannot open agents: %s", morph_strerror(rc));
+		return rc;
+	}
 	struct cli_agents_snapshot snapshot MORPH_CLEANUP(cli_agents_snapshot_cleanup) = {0};
 	int64_t session = 0;
 	(void)runtime_session_current_id(ctx->runtime, &session);
@@ -120,7 +126,7 @@ struct cli_command_group cli_agent_commands(void)
 	static const struct cli_command commands[] = {
 		{"/subagents", cli_agents_command_subagents, "Switch agent threads, follow up or interrupt",
 		 "/subagents [/root/name]"},
-		{"/agents", cli_agents_command_agents, "Inspect agent tasks, activity and results",
+		{"/agents", cli_agents_command_agents, "Open the full-screen agent browser",
 		 "/agents [/root/name]"},
 	};
 	return (struct cli_command_group){commands, (int)(sizeof(commands) / sizeof(commands[0])),

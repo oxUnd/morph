@@ -277,7 +277,7 @@ separator. Streaming and committed output share the same position; local slash
 commands retain their separate plain-line presentation.
 
 The window tracks the active controller; each controller retains its focus.
-Tab and Shift-Tab traverse focusable views in tree order, skipping hidden
+Tab and Shift+Tab traverse focusable views in tree order, skipping hidden
 ancestors. An unhandled input proceeds from the focused view through its parents
 to the controller, the window handler, and the Application delegate before
 default page commands. Custom parent views can
@@ -300,7 +300,7 @@ because its borrowed contents may have changed; layout is required only when
 the count changes. `tick_ms` is an optional controller
 business timer, disabled by default.
 
-Escape and Ctrl-C/Ctrl-D close a page after its responders decline the event.
+Escape and Ctrl+C/Ctrl+D close a page after its responders decline the event.
 An optional printable `quit_key` follows the same path, so a focused text field
 can accept `q` as text. Modal controllers use deferred presentation; the parent
 retains its view tree and focus while hidden and resumes them on dismissal.
@@ -520,7 +520,7 @@ Traversal follows sibling insertion order, including children added after later
 roots. It uses an iterative traversal rather than recursive C calls. Nodes start
 expanded. Up/Down, Home/End and Page Up/Down use list navigation; Right expands a
 parent or enters its first child; Left collapses a parent or selects its parent.
-Enter submits, Escape/Ctrl-C cancel, and bracketed paste cannot navigate or submit. Selection and
+Enter submits, Escape/Ctrl+C cancel, and bracketed paste cannot navigate or submit. Selection and
 scroll position live in the component, and resize clamps them to the new page.
 `morph_tui_widget_tree_draw` fills an allocated rectangle, highlights the selected row with
 caller-supplied styles, and erases unused rows. It appends commands without I/O.
@@ -543,7 +543,7 @@ retain their existing dispatch paths.
 `src/tui/samples/minimal/main.c` builds a label/list/label view tree and handles
 one activation action. Its application runner manages terminal and signal
 lifecycle, layout, focus, redraw, rendering buffers, and cleanup.
-`src/tui/samples/controls/main.c` adds a text field, Tab/Shift-Tab traversal,
+`src/tui/samples/controls/main.c` adds a text field, Tab/Shift+Tab traversal,
 UTF-8 input, paste isolation, modal presentation, and restoration of the same
 focused control. Both use public framework APIs without CLI or runtime services.
 

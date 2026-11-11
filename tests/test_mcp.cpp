@@ -1,11 +1,17 @@
 #include <gtest/gtest.h>
 #include "mcp/mcp_internal.h"
+#include "agent/agent_control.h"
+#include "agent/tool_runtime.h"
+#include "models/llm.h"
+#include "db/database.h"
 #include "util/error.h"
 #include "util/cleanup.h"
+#include "util/child_io.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <memory>
 
 /* Small ownership wrappers around the production codec for existing fixtures. */
 static char *mcp_build_request(int id, const char *method, const char *params)
@@ -712,13 +718,8 @@ protected:
 
 	void send(const std::string &message)
 	{
-		size_t sent = 0;
-		while (sent < message.size()) {
-			ssize_t count = write(response_write, message.data() + sent, message.size() - sent);
-			if (count <= 0)
-				return;
-			sent += static_cast<size_t>(count);
-		}
+		EXPECT_EQ(morph_io_write(response_write, message.data(), message.size(),
+			morph_io_now_ms() + 10000, nullptr, nullptr), 0);
 	}
 };
 
@@ -836,6 +837,124 @@ TEST_F(McpStdioFramingTest, DiscoveryFollowsPagesAndExceedsOldToolCount)
 	EXPECT_EQ(registry.count, 200);
 	EXPECT_NE(tool_borrow(&registry, "mcp_many__tool_199"), nullptr);
 	tool_registry_cleanup(&registry);
+}
+
+TEST_F(McpStdioFramingTest, ReadOnlyAnnotationsSurvivePagesAndChildRegistryCopies)
+{
+	client.connected = 1;
+	client.supports_tools = 1;
+	strcpy(client.config.name, "classified");
+	send("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"search\","
+		"\"annotations\":{\"readOnlyHint\":true},\"inputSchema\":{\"type\":\"object\"}}],"
+		"\"nextCursor\":\"next\"}}\n"
+		"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"write\","
+		"\"annotations\":{\"readOnlyHint\":false},\"inputSchema\":{\"type\":\"object\"}},"
+		"{\"name\":\"unknown\",\"inputSchema\":{\"type\":\"object\"}},"
+		"{\"name\":\"malformed\",\"annotations\":{\"readOnlyHint\":\"true\"},"
+		"\"inputSchema\":{\"type\":\"object\"}}]}}\n"
+		"{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\","
+		"\"text\":\"classified search result\"}]}}\n");
+	struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry child MORPH_CLEANUP(tool_registry_cleanup) = {};
+	tool_registry_init(nullptr, &registry);
+	tool_registry_init(nullptr, &child);
+	ASSERT_EQ(mcp_register_server_tools(&client, &registry), 4);
+	EXPECT_TRUE(tool_is_readonly(&registry, "mcp_classified__search"));
+	ASSERT_EQ(tool_registry_copy(&child, &registry), 0);
+	EXPECT_TRUE(tool_is_readonly(&child, "mcp_classified__search"));
+	for (const char *name : {"mcp_classified__write", "mcp_classified__unknown",
+				 "mcp_classified__malformed"})
+		EXPECT_FALSE(tool_is_readonly(&child, name));
+	struct db database MORPH_CLEANUP(db_close) = {};
+	ASSERT_EQ(db_open(nullptr, &database, ":memory:"), 0);
+	struct model model = {};
+	struct config_agents config = {};
+	config.max_threads = 2;
+	config.max_depth = 1;
+	config.rollout_budget.prefill_token_weight = 1.0;
+	config.rollout_budget.sampling_token_weight = 1.0;
+	struct agent_control *control =
+		agent_control_create(&child, &model, nullptr, nullptr, &config, &database);
+	ASSERT_NE(control, nullptr);
+	std::unique_ptr<struct agent_control, decltype(&agent_control_destroy)>
+		control_guard(control, agent_control_destroy);
+	struct tool_runtime_context runtime = {};
+	runtime.agents = control;
+	runtime.agent_id = "/root/reader";
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&result);
+	result.runtime = &runtime;
+	for (const char *name : {"mcp_classified__write", "mcp_classified__unknown",
+				 "mcp_classified__malformed"}) {
+		EXPECT_EQ(tool_exec(&child, name, "{}", &result), -EACCES);
+		const cJSON *error = cJSON_GetObjectItemCaseSensitive(result.envelope, "error");
+		const char *message = cJSON_GetStringValue(
+			cJSON_GetObjectItemCaseSensitive(error, "message"));
+		ASSERT_NE(message, nullptr);
+		EXPECT_NE(strstr(message, "has not been declared read-only"), nullptr);
+		EXPECT_EQ(strstr(message, "Concurrent agent writes"), nullptr);
+	}
+	ASSERT_EQ(tool_exec(&child, "mcp_classified__search", "{}", &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "classified search result"), nullptr);
+}
+
+TEST_F(McpStdioFramingTest, RediscoveryUpdatesReadOnlyMetadataAndPreservesTimeout)
+{
+	client.connected = 1;
+	client.supports_tools = 1;
+	strcpy(client.config.name, "refresh");
+	send("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"query\","
+		"\"inputSchema\":{\"type\":\"object\"}}]}}\n"
+		"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"query\","
+		"\"annotations\":{\"readOnlyHint\":true},"
+		"\"inputSchema\":{\"type\":\"object\"}}]}}\n"
+		"{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[{\"name\":\"query\","
+		"\"annotations\":{\"readOnlyHint\":false},"
+		"\"inputSchema\":{\"type\":\"object\"}}]}}\n");
+	struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
+	tool_registry_init(nullptr, &registry);
+	ASSERT_EQ(mcp_register_server_tools(&client, &registry), 1);
+	EXPECT_FALSE(tool_is_readonly(&registry, "mcp_refresh__query"));
+	ASSERT_EQ(tool_set_timeout(&registry, "mcp_refresh__query", 42), 0);
+	ASSERT_EQ(mcp_register_server_tools(&client, &registry), 1);
+	EXPECT_TRUE(tool_is_readonly(&registry, "mcp_refresh__query"));
+	EXPECT_EQ(tool_timeout_seconds(&registry, "mcp_refresh__query"), 42);
+	ASSERT_EQ(mcp_register_server_tools(&client, &registry), 1);
+	EXPECT_FALSE(tool_is_readonly(&registry, "mcp_refresh__query"));
+	EXPECT_EQ(tool_timeout_seconds(&registry, "mcp_refresh__query"), 42);
+}
+
+TEST_F(McpStdioFramingTest, ConfiguredReadOnlySurvivesRemoteHintRevocationAndCopies)
+{
+	client.connected = 1;
+	client.supports_tools = 1;
+	strcpy(client.config.name, "configured");
+	send("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"query\","
+		"\"annotations\":{\"readOnlyHint\":true},"
+		"\"inputSchema\":{\"type\":\"object\"}}]}}\n"
+		"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"query\","
+		"\"annotations\":{\"readOnlyHint\":false},"
+		"\"inputSchema\":{\"type\":\"object\"}}]}}\n"
+		"{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[{\"name\":\"query\","
+		"\"inputSchema\":{\"type\":\"object\"}}]}}\n");
+	struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry child MORPH_CLEANUP(tool_registry_cleanup) = {};
+	tool_registry_init(nullptr, &registry);
+	tool_registry_init(nullptr, &child);
+	ASSERT_EQ(mcp_register_server_tools(&client, &registry), 1);
+	struct tool_entry *entry = tool_borrow(&registry, "mcp_configured__query");
+	ASSERT_NE(entry, nullptr);
+	entry->flags |= TOOL_FLAG_READONLY_CONFIGURED;
+	for (int attempt = 0; attempt < 2; attempt++) {
+		ASSERT_EQ(mcp_register_server_tools(&client, &registry), 1);
+		EXPECT_TRUE(tool_is_readonly(&registry, "mcp_configured__query"));
+		EXPECT_TRUE(tool_has_flag(&registry, "mcp_configured__query",
+			TOOL_FLAG_READONLY_CONFIGURED));
+	}
+	ASSERT_EQ(tool_registry_copy(&child, &registry), 0);
+	EXPECT_TRUE(tool_is_readonly(&child, "mcp_configured__query"));
+	EXPECT_TRUE(tool_has_flag(&child, "mcp_configured__query", TOOL_FLAG_READONLY_CONFIGURED));
 }
 
 TEST_F(McpStdioFramingTest, RejectsCyclicPaginationWithoutPartialResults)

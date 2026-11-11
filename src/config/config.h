@@ -305,6 +305,9 @@ struct config_agents {
 	int enabled;
 	int max_threads;
 	int max_depth;
+	int task_timeout_seconds;
+	int finalize_wait_seconds;
+	int finalize_grace_seconds;
 	struct config_rollout_budget rollout_budget;
 	char child_shell[16];
 	char multi_agent_mode[32];

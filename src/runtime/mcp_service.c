@@ -1,4 +1,5 @@
 #include "runtime/services.h"
+#include "runtime/bootstrap.h"
 #include "runtime/mcp.h"
 #include "runtime/runtime_internal.h"
 #include "util/cleanup.h"
@@ -338,6 +339,7 @@ int runtime_mcp_discover(struct runtime *runtime, const char *name,
 		tools ? tools : &t,
 		resources ? resources : &r,
 		prompts ? prompts : &p);
+	runtime_bootstrap_tool_flags(&runtime->context.tools, &runtime->context.config);
 	pthread_mutex_unlock(&runtime->context.tools.mutation_mutex);
 	pthread_mutex_unlock(&runtime->context.execution_lock);
 	runtime_mcp_update_state(runtime, client,

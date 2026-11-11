@@ -391,6 +391,14 @@ static int result_snapshot(struct tool_result *result,
 	if (execution_mode)
 		cJSON_AddStringToObject(data, "execution_mode", execution_mode);
 	snapshot_add_json(data, snapshot);
+	if (result->runtime && result->runtime->agent_id &&
+	    strcmp(result->runtime->agent_id, "/root") && snapshot->stderr_text &&
+	    strstr(snapshot->stderr_text, "temp file for here document"))
+		cJSON_AddStringToObject(data, "next_action",
+			"This shell creates here-document temporary files outside the private "
+			"scratch directory even when TMPDIR is set. Write the file with printf "
+			"or python under $MORPH_AGENT_SCRATCH, or use a configured shell that "
+			"honors TMPDIR. Keep workspace and global /tmp writes restricted.");
 	{
 		char cursor[96];
 		snprintf(cursor, sizeof(cursor), "%zu:%zu", snapshot->next_cursor.stdout_offset,
@@ -574,8 +582,6 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	}
 	host = json_bool(root, "host", 0) ||
 	       (runtime->tool_context && policy.access == PERMISSION_FULL);
-	if (scoped_readonly)
-		host = 0;
 	network = json_bool(root, "network", 0);
 	if (!workdir && runtime->tool_context)
 		workdir = tool_context_workdir_borrow(runtime->tool_context);
@@ -664,7 +670,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 			rc = sandbox_permission_intersect(&sandbox, &ceiling);
 		}
 	}
-	sandbox.network_access = network || host;
+	sandbox.network_access |= network || host;
 	sandbox.allow_pty = options.pty;
 	if (rc != 0) {
 
@@ -832,7 +838,7 @@ static int process_run(const char *args_json, struct tool_result *result,
 			rc == -EPIPE ? "process_not_running" :
 			rc == -EAGAIN ? "io_error" : "invalid_request";
 
-		(void)tool_result_error_copy(result, code, strerror(-rc));
+		(void)tool_result_error_copy(result, code, morph_strerror(rc));
 		return rc;
 	}
 	if (!strcmp(action, "wait"))
@@ -924,6 +930,9 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 		  "Commands are sandboxed by default. Explicit host=true runs without the child "
 		  "OS sandbox, with the user's file and network access. Use only when the task "
 		  "requires host automation, such as macOS System Events AppleScript. "
+		  "Child agents use the same host and network permission policy as the parent. "
+		  "Use network=true for commands needing sockets when network access is not "
+		  "already available. Full Access uses host execution by default. "
 		  "macOS privacy consent still applies. Do not silently retry in host mode. "
 		  "For error.code=sandbox_denied, request the smallest additional capability "
 		  "and retry the exact command. Background sessions have no default timeout; "
@@ -954,7 +963,8 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 		"\"workdir\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\","
 		"\"minimum\":0},\"yield_time_ms\":{\"type\":\"integer\",\"minimum\":0},"
 		"\"network\":{\"type\":\"boolean\"},\"pty\":{\"type\":\"boolean\"},\"host\":{\"type\":\"boolean\","
-		"\"description\":\"Explicit host execution; requires exec.allow_host_execution. Default false.\"},"
+		"\"description\":\"Host execution under the shared permission policy. "
+		"Full Access enables it by default, including for child agents.\"},"
 		"\"notify_only\":{\"type\":\"boolean\",\"description\":\"Do not wait before ending the turn. Use only when the user explicitly asks to start a task and be notified later. Default false.\"},"
 		"\"service\":{\"type\":\"boolean\",\"description\":\"Persistent server or watcher; do not wait for exit before replying. Default false.\"},"
 		"\"background\":{\"type\":\"boolean\"},\"cmd\":{\"type\":\"string\"}},"

@@ -71,7 +71,7 @@ def main():
                         assert 'Yes once' in text and 'Allow for this session' in text, text
                         assert 'Always allow for this project' in text, text
                         assert 'Other · Type' not in text and '[y]es' not in text, text
-                        assert not any(terminal.screen.buffer[row][0].bg == '1c1c1c'
+                        assert not any(terminal.screen.buffer[row][0].bg == '3a3a3a'
                                        for row in range(first, terminal.screen.lines)), text
                         assert draft not in text, text
                         # Pasted keys and newlines must never grant approval.
@@ -91,7 +91,7 @@ def main():
                         last = max(i for i, row in enumerate(terminal.screen.display)
                                    if row.startswith('╰'))
                         backgrounds = [row for row in range(last + 1, terminal.screen.lines)
-                                       if terminal.screen.buffer[row][0].bg == '1c1c1c']
+                                       if terminal.screen.buffer[row][0].bg == '3a3a3a']
                         assert backgrounds == [prompt - 1, prompt, prompt + 1], text
                         assert (directory / filename).exists() == approved, results
                         if approved:

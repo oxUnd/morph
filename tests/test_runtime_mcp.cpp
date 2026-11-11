@@ -307,6 +307,39 @@ TEST_F(RuntimeMcpBackgroundTest, SynchronousStartupRemainsAvailable)
 	EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_sync__echo", &desc), 0);
 }
 
+TEST_F(RuntimeMcpBackgroundTest, ExplicitReadOnlyClassificationAppliesToLateDiscovery)
+{
+	{
+		std::ofstream config(config_path);
+		config << "[react]\nreadonly_tools=[\"mcp_late__echo\"]\n";
+	}
+	server("late");
+	ASSERT_EQ(open(), 0);
+	ASSERT_TRUE(wait([&] { return std::filesystem::exists(directory + "/late.started"); }));
+	release("late");
+	ASSERT_TRUE(wait([&] { return state("late", RUNTIME_MCP_READY); }));
+	EXPECT_TRUE(tool_has_flag(&instance->context.tools, "mcp_late__echo", TOOL_FLAG_READONLY));
+	EXPECT_TRUE(tool_has_flag(&instance->context.tools, "mcp_late__echo",
+				  TOOL_FLAG_READONLY_CONFIGURED));
+}
+
+TEST_F(RuntimeMcpBackgroundTest, ExplicitReadOnlyClassificationSurvivesSyncRediscovery)
+{
+	{
+		std::ofstream config(config_path);
+		config << "[react]\nreadonly_tools=[\"mcp_sync__echo\"]\n";
+	}
+	server("sync");
+	release("sync");
+	ASSERT_EQ(open(false), 0);
+	EXPECT_TRUE(tool_has_flag(&instance->context.tools, "mcp_sync__echo",
+				  TOOL_FLAG_READONLY_CONFIGURED));
+	ASSERT_EQ(runtime_mcp_discover(instance, "sync", nullptr, nullptr, nullptr), 0);
+	EXPECT_TRUE(tool_has_flag(&instance->context.tools, "mcp_sync__echo", TOOL_FLAG_READONLY));
+	EXPECT_TRUE(tool_has_flag(&instance->context.tools, "mcp_sync__echo",
+				  TOOL_FLAG_READONLY_CONFIGURED));
+}
+
 TEST_F(RuntimeMcpBackgroundTest, PublicationCollisionRollsBackNewTools)
 {
 	server("capacity", 0, true, "two");

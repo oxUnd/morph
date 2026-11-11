@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -430,14 +431,15 @@ TEST_F(ToolContextTest, AuthorizeReadParentTraversalDenied) {
 }
 
 TEST_F(ToolContextTest, AuthorizeReadSymlinkEscapeDenied) {
-	const char *work = "/tmp/morph_tctx_work";
-	const char *secret = "/tmp/morph_tctx_secret.txt";
-	const char *link_path = "/tmp/morph_tctx_work/link.txt";
-	file_ensure_dir(work);
-	file_write_all(secret, "secret", 6);
-	std::remove(link_path);
-	ASSERT_EQ(symlink(secret, link_path), 0);
-	struct tool_context *tctx = tool_context_create(NULL, work, "/tmp/morph_tctx_out");
+	std::string base = "/tmp/morph_tctx_symlink_" + std::to_string(getpid());
+	std::string work = base + "/work";
+	std::string secret = base + "/secret.txt";
+	std::string link_path = work + "/link.txt";
+	ASSERT_EQ(file_ensure_dir(work.c_str()), 0);
+	ASSERT_EQ(file_write_all(secret.c_str(), "secret", 6), 0);
+	std::remove(link_path.c_str());
+	ASSERT_EQ(symlink(secret.c_str(), link_path.c_str()), 0);
+	struct tool_context *tctx = tool_context_create(NULL, work.c_str(), work.c_str());
 	ASSERT_NE(tctx, nullptr);
 	char resolved[PATH_MAX];
 	int rc = tool_context_authorize_path(tctx, TOOL_PATH_READ,
@@ -445,9 +447,10 @@ TEST_F(ToolContextTest, AuthorizeReadSymlinkEscapeDenied) {
 					     sizeof(resolved));
 	EXPECT_EQ(rc, -EPERM);
 	tool_context_destroy(tctx);
-	std::remove(link_path);
-	std::remove(secret);
-	rmdir(work);
+	std::remove(link_path.c_str());
+	std::remove(secret.c_str());
+	rmdir(work.c_str());
+	rmdir(base.c_str());
 }
 
 TEST_F(ToolContextTest, AuthorizeReadApprovalAllow) {

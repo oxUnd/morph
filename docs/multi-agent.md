@@ -42,14 +42,14 @@ models with other reasoning settings. Frontends opt into the capability with
 ## CLI mode selection
 
 `/model` or `/m` opens an inline Normal/Ultra list in the composer area. Arrow
-keys or digits select; Enter applies; Escape or Ctrl-C cancels. `/model normal`
+keys or digits select; Enter applies; Escape or Ctrl+C cancels. `/model normal`
 and `/model ultra` apply directly, `/model status` reports the selection, and
 `/model <name>` continues to switch the text model.
 
 The selection persists `agents.multi_agent_mode` as `explicit` or `proactive`.
 It does not replace provider reasoning parameters: existing model settings keep
 working with either collaboration mode. Saving must succeed before the runtime
-and prompt change. Active turns reject mode changes. Ultra uses a purple `››`
+and prompt change. Active turns reject mode changes. Ultra uses a purple `»`
 prompt and a short wave in the input padding. The animation runs on the UI event
 loop, preserves drafts and cursor positions, and remains out of scrollback and
 structured output.
@@ -72,24 +72,39 @@ during a turn and lists all assignments, status and shared token usage;
 owner thread without replacing the user's draft. The compact area shows up to
 three active agents; `/agents` exposes the complete list.
 
-`/subagents` replaces the composer with an inline agent overview, including the
-primary thread, while retaining the main feed above it. The same reusable
-composer panel presents `/model` and `/permissions`; it does not enter an
-alternate screen or clear the main conversation. Select an
-agent with Up/Down and Enter, or open `/subagents /root/reader` directly. In a
-child thread, Tab/Shift-Tab or Left/Right switches threads, Up/Down and Page
+`/agents` opens a full-screen browser with live status, a scrolling agent roster
+and a selected-task preview. Enter opens the selected child's independent feed
+without nesting alternate screens; Escape returns to the primary conversation.
+`/agents /root/reader` opens that feed directly. Text/JSON command execution keeps
+the existing snapshot output.
+
+`/subagents` replaces the composer with a compact agent picker, including the
+primary thread, while retaining the main feed above it. The picker uses the
+same reusable composer panel as `/model` and `/permissions`, sizes itself to
+the visible entries and leaves the main conversation in place. Select an
+agent with Up/Down and Enter, or open `/subagents /root/reader` directly.
+Selecting a child switches the entire visible feed to an alternate terminal
+screen containing that child's conversation. In a
+child thread, Tab/Shift+Tab or Left/Right switches threads, Up/Down and Page
 Up/Down scroll, Home/End jumps, `f` opens a directed follow-up composer and `k`
-interrupts that agent. `d` or Ctrl+O toggles tool details within the panel.
-Escape closes details, returns to the overview, then to the primary
-composer; selecting the primary and pressing Enter also returns. The primary
-draft survives navigation. Follow-ups to running agents steer them at safe
+interrupts that agent. `d` or Ctrl+T toggles tool details.
+Escape returns directly to the primary feed, including from tool details;
+while editing a follow-up, Escape first leaves the editor. Switching to the
+primary thread also returns. The primary draft survives navigation, and each
+child retains its own scroll position, details setting and unsent follow-up.
+New output follows automatically while the viewport is at the bottom. Scrolling
+up pauses following; scrolling back to the bottom or pressing End resumes it.
+Follow-ups to running agents steer them at safe
 points; idle agents start another turn. Multiline bracketed paste waits for an
 explicit Enter before sending.
 
 Each child has an independent transcript reducer for user messages, reasoning,
 answers and tools, with the same feed message styles, Markdown/code rendering
-and compact tool rows as the main conversation. The viewport stays bounded to
-the input area and scrolls without committing preview rows to history.
+and compact tool rows as the main conversation. The child viewport uses the
+full terminal width and height, with its own scrolling and feed state.
+Primary events keep updating the primary transcript in the background; their
+rendered output is deferred until the primary screen is restored. Child
+preview rows never enter primary terminal scrollback.
 Snapshot and live events share an atomic sequence frontier,
 so opening a running thread neither duplicates nor skips streamed text. Child
 events remain separate from the primary transcript. The overview uses small
@@ -103,12 +118,58 @@ Proactive mode provides a decision policy at every model request:
    with the primary agent; dispatch independent work whose inputs are ready.
 2. Give each assignment an objective, sufficient context, owned files,
    acceptance checks and the evidence the primary needs back. Prefer
-   `fork_turns=none` for a self-contained investigation.
-3. Continue useful primary work while children run. Wait when their results
-   block the next useful step, rather than immediately after every spawn.
+   `fork_turns=none` for a self-contained investigation. Assign disjoint discovery
+   scopes; the primary does not repeat a full scan already assigned to a child.
+3. Continue independent primary work while children run. Verify returned claims
+   with focused checks. A second complete review needs a concrete unresolved
+   question and a bounded assignment, including when a child delegates again.
+   Finding limits are ceilings, not quotas: return fewer findings or no findings
+   when the assigned checks are complete.
 4. Review returned evidence, integrate the edits, resolve conflicts and run
    final verification. A child's completion is not proof of correctness.
 5. Reuse idle identities and keep enough shared budget for integration.
+   Send confirmed findings and blockers to the parent as they become available.
+   After a wait times out, assess progress and request current conclusions
+   before extending the investigation. Do not repeatedly wait without making
+   a decision about the remaining work.
+
+Use `assignment` on `spawn_agent` and idle `followup_task` calls to record a compact
+contract alongside the full `message`:
+
+```json
+{
+  "scope": "INI parsing and serialization",
+  "parent_task": "",
+  "expected_evidence": "Confirmed file:line findings and minimal reproductions",
+  "stop_condition": "Report once the named checks pass or a blocker is confirmed"
+}
+```
+
+Each value is at most 512 UTF-8 bytes. `parent_task` names independent, unassigned
+work reserved for the caller; an empty value explicitly reserves coordination
+only. The other fields must be nonempty. A running agent's contract cannot be
+replaced: interrupt it first, then assign its remaining question through an idle
+follow-up. An idle follow-up without a contract clears the previous contract.
+Contracts are persisted, restored and included in session imports; legacy callers without
+`assignment` remain supported.
+
+Every request receives a bounded `delegation_checkpoint` after conversation
+history, containing the caller's contract and up to eight active direct children
+with their owners, scopes and stopping conditions. Additional children remain
+available through `list_agents`. The spawn receipt also states the parent's next
+action. Neither the checkpoint nor a status listing includes full child reports.
+
+When all active direct children explicitly reserve no independent parent work,
+the parent receives only coordination, planning, user-question and existing-job
+control tools until it collects a child finding/blocker or the children settle.
+The execution boundary also rejects stale investigation calls with
+`agent_coordination_pending`; hiding schemas alone is not the enforcement. A child
+message must be collected, not merely queued, to release this restriction. New
+user steering or collected follow-up input can supply additional work and releases
+the coordination-only restriction. Children keep their own investigation tools. Once evidence arrives,
+the parent can run focused verification; arbitrary read-only scope overlap is not
+inferred or locked. Legacy or independently reserved parent work remains
+unrestricted, with current ownership visible in the checkpoint.
 
 Task decomposition and dependency judgments are model decisions, not a new DAG
 scheduler or a fixed minimum number of agents. Runtime enforces thread/depth
@@ -117,6 +178,25 @@ does not infer semantic dependencies from prose or claim to verify arbitrary
 acceptance criteria. A small sequential task can correctly use zero children.
 Model/provider instruction-following still determines delegation quality;
 synthetic HTTP tests establish execution behavior, not a live model's judgment.
+
+Child turns have a default soft deadline of 600 seconds, configured through
+`agents.task_timeout_seconds`. Nested tasks inherit the ancestor's remaining
+time. At a safe model boundary, a finish request closes discovery tools and asks
+for the current verified findings, completed checks and remaining limitations.
+This time bound is independent of token-budget enforcement; disabling the token
+limit does not authorize unlimited investigation.
+
+Finalization normally collects active descendant results for up to
+`agents.finalize_wait_seconds` (60 seconds). If work is still running, the
+controller requests current summaries and allows `agents.finalize_grace_seconds`
+(30 seconds) before interrupting unfinished descendant work. Closing a branch
+also closes admission for new work beneath it, and interruption covers the
+entire descendant subtree. Results are collected before releasing worker-owned
+resources. A zero task timeout or finalization wait disables that respective
+limit; a zero grace period interrupts immediately after requesting summaries.
+Cancellation and user steering remain responsive while waiting. In-process
+tools must cooperate with cancellation; their borrowed resources remain alive
+until they have safely drained.
 
 ## Task planning
 
@@ -148,9 +228,31 @@ injection. Task decomposition and delegation decisions remain model policy.
 | `spawn_agent` | Start an independent agent with `task_name` and `message`; return its canonical path. |
 | `send_message` | Queue a message without waking an idle agent. |
 | `followup_task` | Start a new turn for an idle agent; deliver instructions at safe points for a running agent. |
-| `interrupt_agent` | Interrupt the current execution, retaining identity and history. |
-| `list_agents` | Inspect agents and status, optionally within a path prefix. |
-| `wait_agent` | Wait for mailbox activity, cancellation, user input or a bounded timeout. |
+| `interrupt_agent` | Interrupt the target and its active descendants, retaining identity and history. |
+| `list_agents` | Page through compact status for the caller's subtree, or an explicit path prefix. |
+| `read_agent` | Read one agent's full report through UTF-8-safe byte pages. |
+| `wait_agent` | Wait for mailbox activity, cancellation, user input or a bounded timeout; return scoped progress and an explicit wake reason. |
+
+`list_agents` never embeds completed reports. Its bounded pages contain agent
+identity, status, elapsed time, activity, active-child count and result
+availability. Follow `next_offset` while `has_more` is true; `total` and `active`
+describe the entire selected scope. The default page contains up to eight rows
+and approximately 2 KB of status data. Child calls default to their own subtree,
+so another branch's completed report cannot hide their children.
+
+`read_agent` is a Morph extension to the collaboration tool set. Supply `target`
+and optionally a byte `offset` and `max_bytes` (4–4096, default 2048). Follow its
+`next_offset` until `has_more` is false. If history preparation must shorten a
+report page, it retains a contiguous UTF-8 prefix and advances the cursor only
+past those visible bytes. Status identifies failed or interrupted work; retained
+partial reports are evidence to review, not a claim of successful completion.
+
+Normal `wait_agent` expiration returns success with `reason="timeout"` and
+`timed_out=true`. Other reasons distinguish mailbox updates, pending user input,
+finish requests and a root with no active agents. Timeout arguments use
+milliseconds consistently with the outer tool worker, including waits longer
+than the generic tool timeout. Cancellation remains an explicit cancellation
+outcome, rather than a timeout or argument failure.
 
 The primary agent is `/root`. Task names contain lowercase letters, digits, underscores and hyphens. `parser` spawned by `/root` becomes `/root/parser`. Relative targets
 resolve under the sender; canonical paths support communication between branches.
@@ -208,11 +310,21 @@ are refused while child work is active. Shutdown closes admission before joining
 Child questions do not invoke borrowed frontend question callbacks; agents can
 send questions to `/root` for user interaction.
 
+MCP discovery preserves an explicit boolean `annotations.readOnlyHint` through
+registry copies and rediscovery. Missing or malformed hints do not classify a
+tool as read-only. A trusted explicit `react.readonly_tools` entry takes
+precedence and is applied to initial, background and repeated discovery;
+revoking a server-provided hint removes only that hint's classification.
+Unknown operations remain subject to the shared permissions and child write
+scope. Permission diagnostics identify missing read-only classification rather
+than misreporting every denied operation as a concurrent file write.
+
 The workspace is shared, matching the collaboration tools' contract. Morph adds
 an optional `write_paths` array to `spawn_agent` and to idle `followup_task`
 assignments. This is a Morph ownership restriction, not a claim that the Codex
-reference tool schema contains that field. Omission creates a read-only child;
-a follow-up without the field retains an existing in-memory assignment.
+reference tool schema contains that field. Omission leaves patches and sandboxed
+workspace access read-only; host execution follows the shared permission policy.
+A follow-up without the field retains an existing in-memory assignment.
 
 Claims cover canonical workspace paths, including new directories resolved from
 the nearest existing ancestor. Unresolved traversal is rejected. Paths outside the workspace and
@@ -227,12 +339,20 @@ that subpath, and the ancestor retains access to its other paths. Siblings canno
 reassign one another's write authority. Ending the child execution releases its
 subpath back to the ancestor.
 
-Child shell commands always remain inside an OS sandbox, including under a
-parent Full permission preset. `agents.child_shell = "scoped"` grants only the
-current `write_paths` plus a per-agent scratch directory, intersected with the
-parent's permission ceiling. `readonly` restricts them to scratch only. `TMPDIR`
+Child shell commands use the same host and network permission policy as the
+parent. Full Access uses host execution by default; explicit `host=true` and
+`network=true` requests enter the shared permission boundary without a separate
+child-only prohibition. Host commands are not confined by `write_paths`.
+For sandboxed execution, `agents.child_shell = "scoped"` grants only the current
+`write_paths` plus a per-agent scratch directory, intersected with the parent's
+permission ceiling. `readonly` restricts sandboxed writes to scratch only. `TMPDIR`
 and `MORPH_AGENT_SCRATCH` identify the private directory; build with, for example,
-`cmake -S . -B "$MORPH_AGENT_SCRATCH/build"`, then run its tests. A broad parent
+`cmake -S . -B "$MORPH_AGENT_SCRATCH/build"`, then run its tests. Literal `/tmp`
+paths do not refer to that private directory. The legacy macOS `/bin/bash` 3.2
+here-document implementation can use global temporary storage despite `TMPDIR`;
+create probe files with `printf` or Python in private scratch instead. A failed
+here-document reports this next action without widening filesystem access or
+silently substituting the configured shell. A broad parent
 lease is withheld from shell while a descendant owns any of its subpaths, because
 positive OS path grants cannot safely express that exclusion. Scoped child jobs
 cannot use `service` or `notify_only`; finite background jobs must be collected
@@ -428,7 +548,7 @@ CLI layout/control-flow checks. HTTP-backed tests cover spawning, safe history
 forking, follow-up, interruption, namespaces, model overrides, mailbox recovery,
 permissions, events and root result integration. Additional tests cover shared-budget aggregation and
 preflight rejection, ownership overlap and traversal, scope release/restoration,
-and actual patch/shell denial under Full permission.
+and patch ownership checks plus host/network permission inheritance for children.
 `cli_agents_pty_integration` and `cli_subagents_pty_integration` exercise spawn,
 live tool activity, independent transcript switching, follow-up, interruption,
 large UTF-8 results and draft preservation at 120, 80 and 60 columns. Runtime

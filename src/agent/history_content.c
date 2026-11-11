@@ -268,7 +268,21 @@ static char *history_truncate_result(struct tokenizer *tokenizer, const char *co
 	return morph_buf_detach(&buf);
 }
 
-/* Only payload fields are expendable; execution control fields stay intact. */
+static int history_agent_status_array(const cJSON *array)
+{
+	if (!cJSON_IsArray(array) || !cJSON_GetArraySize(array))
+		return 0;
+	const cJSON *entry;
+	cJSON_ArrayForEach (entry, array) {
+		if (!cJSON_IsObject(entry) ||
+		    !cJSON_IsString(cJSON_GetObjectItemCaseSensitive(entry, "agent_id")) ||
+		    !cJSON_IsString(cJSON_GetObjectItemCaseSensitive(entry, "status")))
+			return 0;
+	}
+	return 1;
+}
+
+/* Only payload fields are expendable; execution and agent control fields stay intact. */
 static cJSON *history_largest_payload(cJSON *node, size_t *size)
 {
 	cJSON *best = NULL;
@@ -279,12 +293,23 @@ static cJSON *history_largest_payload(cJSON *node, size_t *size)
 		if (key &&
 		    (!strcmp(key, "ok") || !strcmp(key, "error") || !strcmp(key, "exit_code") ||
 		     !strcmp(key, "status") || !strcmp(key, "session_id") ||
+		     !strcmp(key, "agent_id") || !strcmp(key, "parent_agent_id") ||
+		     !strcmp(key, "cursor") || !strcmp(key, "next_cursor") ||
 		     !strcmp(key, "artifacts") || !strcmp(key, "ui")))
 			continue;
 		if (cJSON_IsString(child) && strlen(child->valuestring) > *size) {
 			*size = strlen(child->valuestring);
 			best = child;
 		} else if (cJSON_IsArray(child) && cJSON_GetArraySize(child) > 0) {
+			if (history_agent_status_array(child)) {
+				cJSON *entry;
+				cJSON_ArrayForEach (entry, child) {
+					cJSON *nested = history_largest_payload(entry, size);
+					if (nested)
+						best = nested;
+				}
+				continue;
+			}
 			char *json = history_json_text_copy(child);
 			if (json && strlen(json) > *size) {
 				*size = strlen(json);
@@ -298,6 +323,39 @@ static cJSON *history_largest_payload(cJSON *node, size_t *size)
 		}
 	}
 	return best;
+}
+
+/* A report page remains a contiguous prefix so its cursor never skips evidence. */
+static int history_shorten_agent_page(cJSON *data, cJSON *payload)
+{
+	cJSON *agent = cJSON_GetObjectItemCaseSensitive(data, "agent");
+	cJSON *offset = cJSON_GetObjectItemCaseSensitive(data, "offset");
+	cJSON *total = cJSON_GetObjectItemCaseSensitive(data, "total_bytes");
+	if (!data || payload != cJSON_GetObjectItemCaseSensitive(data, "result") ||
+	    !cJSON_IsString(cJSON_GetObjectItemCaseSensitive(agent, "agent_id")) ||
+	    !cJSON_IsNumber(offset) || offset->valuedouble < 0 ||
+	    offset->valuedouble > INT_MAX || offset->valuedouble != (double)offset->valueint ||
+	    !cJSON_IsNumber(total) || total->valuedouble < offset->valuedouble)
+		return 0;
+	size_t length = strlen(payload->valuestring);
+	size_t retained = utf8_clamp_bytes(payload->valuestring, length / 2);
+	if (!retained)
+		return -E2BIG;
+	char *prefix MORPH_CLEANUP(morph_charp_cleanup) =
+		strndup(payload->valuestring, retained);
+	if (!prefix || !cJSON_SetValuestring(payload, prefix))
+		return -ENOMEM;
+	cJSON *next MORPH_CLEANUP(morph_json_cleanup) =
+		cJSON_CreateNumber(offset->valuedouble + (double)retained);
+	cJSON *more MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateBool(1);
+	if (!next || !more)
+		return -ENOMEM;
+	cJSON_DeleteItemFromObjectCaseSensitive(data, "next_offset");
+	cJSON_DeleteItemFromObjectCaseSensitive(data, "has_more");
+	if (morph_json_object_take(data, "next_offset", &next) != 0 ||
+	    morph_json_object_take(data, "has_more", &more) != 0)
+		return -ENOMEM;
+	return 1;
 }
 
 static char *history_prepare_json(struct tokenizer *tokenizer, cJSON *root, int budget,
@@ -387,6 +445,13 @@ static char *history_prepare_json(struct tokenizer *tokenizer, cJSON *root, int 
 		largest = history_largest_payload(root, &size);
 		if (!largest || size < 16)
 			return NULL;
+		int page_rc = history_shorten_agent_page(data, largest);
+		if (page_rc < 0)
+			return NULL;
+		if (page_rc > 0) {
+			*truncated = 1;
+			continue;
+		}
 		if (cJSON_IsArray(largest)) {
 			cJSON_DeleteItemFromArray(largest, cJSON_GetArraySize(largest) - 1);
 			*truncated = 1;

@@ -87,7 +87,7 @@ TEST(CliModelTest, ComposerModeAnimationStartsOnFirstVisibleFrameAndEnds)
 	EXPECT_EQ(cli_composer_model_prompt_width(&composer), 2);
 	EXPECT_EQ(cli_composer_model_animation_frame(&composer, 100), -1);
 	cli_composer_model_set_ultra(&composer, 1, 1);
-	EXPECT_EQ(cli_composer_model_prompt_width(&composer), 3);
+	EXPECT_EQ(cli_composer_model_prompt_width(&composer), 2);
 	EXPECT_EQ(cli_composer_model_animation_frame(&composer, 1000), 0);
 	EXPECT_EQ(cli_composer_model_animation_frame(&composer, 1330), 10);
 	cli_composer_model_set_ultra(&composer, 1, 1);
@@ -103,7 +103,7 @@ TEST(CliModelTest, InitialUltraAndNoColorSelectionDoNotAnimate)
 {
 	struct cli_composer_model composer{};
 	cli_composer_model_set_ultra(&composer, 1, 1);
-	EXPECT_EQ(cli_composer_model_prompt_width(&composer), 3);
+	EXPECT_EQ(cli_composer_model_prompt_width(&composer), 2);
 	EXPECT_EQ(cli_composer_model_animation_frame(&composer, 1000), -1);
 	cli_composer_model_set_ultra(&composer, 0, 0);
 	cli_composer_model_set_ultra(&composer, 1, 0);

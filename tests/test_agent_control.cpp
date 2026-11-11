@@ -27,6 +27,7 @@ extern "C" {
 #include <unistd.h>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <functional>
 #include <future>
 #include <memory>
@@ -137,7 +138,7 @@ TEST_F(AgentControlTest, ReplacesLegacyToolsAndUsesCodexSchemas)
 	EXPECT_EQ(tool_borrow(&tools, "fanout"), nullptr);
 	EXPECT_EQ(tool_borrow(&tools, "agent_status"), nullptr);
 	for (const char *name : {"spawn_agent", "send_message", "followup_task", "interrupt_agent",
-				 "list_agents", "wait_agent"})
+				 "list_agents", "read_agent", "wait_agent"})
 		EXPECT_NE(tool_borrow(&tools, name), nullptr);
 	EXPECT_EQ(call("spawn_agent", R"({"task_name":"../bad","message":"task"})"), -EINVAL);
 	EXPECT_EQ(
@@ -161,6 +162,173 @@ TEST_F(AgentControlTest, SpawnsIndependentClientsAndDeliversAttributedResult)
 	EXPECT_TRUE(receive().empty());
 	ASSERT_EQ(server.snapshot().size(), 1u);
 	EXPECT_TRUE(model->last_error[0] == '\0');
+}
+
+TEST_F(AgentControlTest, CoordinationOnlyParentCannotInvestigateUntilChildEvidenceIsCollected)
+{
+	std::promise<void> release;
+	auto pending = release.get_future().share();
+	server.respond = [pending](const std::string &) {
+		pending.wait_for(std::chrono::seconds(5));
+		return std::string(R"({"content":"verified finding"})");
+	};
+	int executed = 0;
+	struct tool_spec spec{};
+	spec.name = "investigate";
+	spec.description = "Read a source file";
+	spec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
+	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	spec.flags = TOOL_FLAG_READONLY;
+	spec.user_data = &executed;
+	spec.exec = [](const char *, struct tool_result *result, void *opaque) {
+		++*static_cast<int *>(opaque);
+		return tool_result_success_text_copy(result, "read");
+	};
+	ASSERT_EQ(tool_register_borrow(&tools, &spec), 0);
+	cJSON *reply MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(call("spawn_agent", R"({"task_name":"reader","message":"Review containers only",
+		"fork_turns":"none","assignment":{"scope":"containers","parent_task":"",
+		"expected_evidence":"file:line and repro","stop_condition":"report confirmed findings"}})",
+		&reply), 0);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(reply, "parent_next_action")),
+		     "wait_for_findings_or_blockers");
+	ASSERT_TRUE(server.await_requests(1));
+	EXPECT_FALSE(agent_control_tool_allowed(control, "/root", "investigate"));
+	EXPECT_TRUE(agent_control_tool_allowed(control, "/root/reader", "investigate"));
+	EXPECT_TRUE(agent_control_tool_allowed(control, "/root", "wait_agent"));
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	runtime.agents = control;
+	result.runtime = &runtime;
+	EXPECT_EQ(tool_exec(&tools, "investigate", "{}", &result), -EAGAIN);
+	EXPECT_EQ(executed, 0);
+	ASSERT_NE(result.envelope, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		cJSON_GetObjectItem(result.envelope, "error"), "code")), "agent_coordination_pending");
+	struct react_context parent{};
+	parent.agents = control;
+	parent.tools = &tools;
+	strcpy(parent.agent_id, "/root");
+	morph_array_t descriptors MORPH_CLEANUP(react_tool_descriptors_cleanup) = {};
+	struct tool_desc *visible = nullptr;
+	int count = 0;
+	ASSERT_EQ(react_prepare_active_tools(&parent, &descriptors, &visible, &count), 0);
+	for (int i = 0; i < count; i++)
+		EXPECT_STRNE(visible[i].name, "investigate");
+	struct chat_message historical{};
+	historical.role = const_cast<char *>("user");
+	historical.content = const_cast<char *>("HISTORY_BEFORE_ASSIGNMENT_STATE");
+	struct react_request_messages request MORPH_CLEANUP(react_request_messages_cleanup) = {};
+	ASSERT_EQ(react_request_messages_create(&parent, model, "base", &historical, 1, &request), 0);
+	ASSERT_EQ(request.messages.nelts, 2u);
+	auto *checkpoint = static_cast<struct chat_message *>(
+		morph_array_borrow(&request.messages, 1));
+	EXPECT_STREQ(checkpoint->role, "system");
+	EXPECT_NE(strstr(checkpoint->content, "containers"), nullptr);
+	EXPECT_NE(strstr(checkpoint->content, "wait_for_findings_or_blockers"), nullptr);
+	runtime.agent_id = "/root/reader";
+	ASSERT_EQ(call("send_message",
+		R"({"target":"/root","message":"Confirmed file.c:12 finding"})"), 0);
+	EXPECT_FALSE(agent_control_tool_allowed(control, "/root", "investigate"));
+	runtime.agent_id = "/root";
+	EXPECT_NE(receive().find("file.c:12"), std::string::npos);
+	EXPECT_TRUE(agent_control_tool_allowed(control, "/root", "investigate"));
+	result.runtime = &runtime;
+	EXPECT_EQ(tool_exec(&tools, "investigate", "{}", &result), 0);
+	EXPECT_EQ(executed, 1);
+	ASSERT_EQ(react_prepare_active_tools(&parent, &descriptors, &visible, &count), 0);
+	bool restored = false;
+	for (int i = 0; i < count; i++)
+		restored |= !strcmp(visible[i].name, "investigate");
+	EXPECT_TRUE(restored);
+	runtime.agent_id = "/root/reader";
+	runtime.agent_depth = 1;
+	ASSERT_EQ(call("spawn_agent", R"({"task_name":"nested","message":"one remaining check",
+		"fork_turns":"none","assignment":{"scope":"one branch","parent_task":"",
+		"expected_evidence":"repro","stop_condition":"report"}})"), 0);
+	EXPECT_FALSE(agent_control_tool_allowed(control, "/root/reader", "investigate"));
+	runtime.agent_id = "/root";
+	runtime.agent_depth = 0;
+	ASSERT_EQ(call("followup_task",
+		R"({"target":"reader","message":"Resolve a new independent blocker"})"), 0);
+	EXPECT_FALSE(agent_control_tool_allowed(control, "/root/reader", "investigate"));
+	EXPECT_NE(receive("/root/reader").find("independent blocker"), std::string::npos);
+	EXPECT_TRUE(agent_control_tool_allowed(control, "/root/reader", "investigate"));
+	agent_control_begin_turn(control, nullptr);
+	EXPECT_FALSE(agent_control_tool_allowed(control, "/root", "investigate"));
+	agent_control_resume_work(control, "/root");
+	EXPECT_TRUE(agent_control_tool_allowed(control, "/root", "investigate"));
+	agent_control_begin_turn(control, nullptr);
+	EXPECT_FALSE(agent_control_tool_allowed(control, "/root", "investigate"));
+	ASSERT_EQ(call("interrupt_agent", R"({"target":"reader"})"), 0);
+	EXPECT_TRUE(agent_control_tool_allowed(control, "/root", "investigate"));
+	release.set_value();
+	agent_control_join(control);
+	agent_control_end_turn(control);
+}
+
+TEST_F(AgentControlTest, IndependentParentWorkAndLegacyAssignmentsKeepToolsAvailable)
+{
+	std::promise<void> release;
+	auto pending = release.get_future().share();
+	server.respond = [pending](const std::string &) {
+		pending.wait_for(std::chrono::seconds(5));
+		return std::string(R"({"content":"done"})");
+	};
+	ASSERT_EQ(call("spawn_agent", R"({"task_name":"reader","message":"review text",
+		"fork_turns":"none","assignment":{"scope":"text","parent_task":"review containers",
+		"expected_evidence":"repro","stop_condition":"report"}})"), 0);
+	EXPECT_TRUE(agent_control_tool_allowed(control, "/root", "exec"));
+	ASSERT_EQ(call("spawn_agent",
+		R"({"task_name":"legacy","message":"other scope","fork_turns":"none"})"), 0);
+	EXPECT_TRUE(agent_control_tool_allowed(control, "/root", "exec"));
+	EXPECT_EQ(call("followup_task", R"({"target":"reader","message":"steer",
+		"assignment":{"scope":"new","parent_task":"","expected_evidence":"repro",
+		"stop_condition":"report"}})"), -EBUSY);
+	release.set_value();
+	agent_control_join(control);
+}
+
+TEST_F(AgentControlTest, AssignmentSurvivesRestoreAndIsReplacedOrClearedByFollowup)
+{
+	ASSERT_EQ(call("spawn_agent", R"({"task_name":"reader","message":"review",
+		"fork_turns":"none","assignment":{"scope":"text","parent_task":"",
+		"expected_evidence":"repro","stop_condition":"report"}})"), 0);
+	agent_control_join(control);
+	reopen();
+	morph_buf_t state MORPH_CLEANUP(morph_buf_cleanup) = {};
+	ASSERT_EQ(morph_buf_init(&state, 256), 0);
+	ASSERT_EQ(agent_control_checkpoint(control, "/root/reader", &state), 0);
+	EXPECT_NE(strstr(morph_buf_cstr_borrow(&state), "\"scope\":\"text\""), nullptr);
+	ASSERT_EQ(call("followup_task", R"({"target":"reader","message":"new gap",
+		"assignment":{"scope":"containers","parent_task":"review build",
+		"expected_evidence":"test","stop_condition":"one finding"}})"), 0);
+	agent_control_join(control);
+	reopen();
+	morph_buf_reset(&state);
+	ASSERT_EQ(agent_control_checkpoint(control, "/root/reader", &state), 0);
+	EXPECT_NE(strstr(morph_buf_cstr_borrow(&state), "containers"), nullptr);
+	EXPECT_EQ(strstr(morph_buf_cstr_borrow(&state), "\"scope\":\"text\""), nullptr);
+	ASSERT_EQ(call("followup_task", R"({"target":"reader","message":"legacy gap"})"), 0);
+	agent_control_join(control);
+	reopen();
+	morph_buf_reset(&state);
+	ASSERT_EQ(agent_control_checkpoint(control, "/root/reader", &state), 0);
+	EXPECT_EQ(state.len, 0u);
+}
+
+TEST_F(AgentControlTest, InvalidAssignmentDoesNotStartAWorker)
+{
+	for (const char *assignment : {"null", "[]", "{}",
+		R"({"scope":"x","parent_task":true,"expected_evidence":"x","stop_condition":"x"})",
+		R"({"scope":"","parent_task":"","expected_evidence":"x","stop_condition":"x"})",
+		R"({"scope":"x","parent_task":"","expected_evidence":"x","stop_condition":"x","extra":"x"})"}) {
+		std::string args =
+			std::string(R"({"task_name":"invalid","message":"review","assignment":)") +
+			assignment + "}";
+		EXPECT_EQ(call("spawn_agent", args.c_str()), -EINVAL);
+	}
+	EXPECT_TRUE(server.snapshot().empty());
+	EXPECT_EQ(agent_control_active(control, session.id), 0);
 }
 
 TEST_F(AgentControlTest, MessagesDoNotWakeIdleAgentsAndFollowupRetainsHistory)
@@ -250,14 +418,260 @@ TEST_F(AgentControlTest, ExplicitAndProactiveInstructionsAreIndependentOfReasoni
 	morph_buf_cleanup(&prompt);
 }
 
-TEST_F(AgentControlTest, WaitTimesOutAndCancellationIsObserved)
+TEST_F(AgentControlTest, WaitReturnsForCompletedScopeAndCancellationIsObserved)
 {
-	ASSERT_EQ(call("wait_agent", R"({"timeout_ms":1})"), 0);
+	cJSON *result MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(call("wait_agent", R"({"timeout_ms":30000})", &result), 0);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result, "reason")),
+		     "no_active_agents");
+	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(result, "timed_out")));
 	morph_cancel_token token{};
 	morph_cancel_token_cancel(&token);
 	runtime.http.cancel_token = &token;
 	EXPECT_EQ(call("wait_agent", R"({"timeout_ms":30000})"), -ECANCELED);
 	EXPECT_EQ(call("wait_agent", R"({"timeout_ms":1.5})"), -EINVAL);
+}
+
+TEST_F(AgentControlTest, CompactStatusPreservesRunningAgentsAfterLargeCompletedReports)
+{
+	const std::string report = "verified " + std::string(20000, 'x') + " TAIL_中文";
+	server.respond = [&](const std::string &body) -> std::string {
+		if (body.find("hold this agent") != std::string::npos)
+			return R"({"tool_calls":[{"index":0,"id":"call_hold","type":"function","function":{"name":"wait_agent","arguments":"{\"timeout_ms\":30000}"}}]})";
+		return "{\"content\":\"" + report + "\"}";
+	};
+	for (int i = 0; i < 4; i++) {
+		const std::string args =
+			"{\"task_name\":\"done_" + std::to_string(i) +
+			"\",\"message\":\"completed long task\",\"fork_turns\":\"none\"}";
+		ASSERT_EQ(call("spawn_agent", args.c_str()), 0);
+		agent_control_join(control);
+	}
+	ASSERT_EQ(
+		call("spawn_agent",
+		     R"({"task_name":"running","message":"hold this agent","fork_turns":"none"})"),
+		0);
+	ASSERT_TRUE(server.await_requests(5));
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&result);
+	result.runtime = &runtime;
+	ASSERT_EQ(tool_exec(&tools, "list_agents", "{}", &result), 0);
+	std::unique_ptr<react_context, decltype(&react_context_destroy)> react(
+		react_context_create(&tools, tokenizer, nullptr, nullptr), react_context_destroy);
+	ASSERT_NE(react, nullptr);
+	react->history_tool_result_tokens = 2048;
+	char *prepared MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	int truncated = 0;
+	ASSERT_EQ(agent_history_tool_content_copy(react.get(), result.text.data, &prepared,
+						  &truncated),
+		  0);
+	cJSON *observation MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(prepared);
+	ASSERT_NE(observation, nullptr);
+	const cJSON *data = cJSON_GetObjectItem(observation, "data");
+	const cJSON *agents = cJSON_GetObjectItem(data, "agents");
+	ASSERT_EQ(cJSON_GetArraySize(agents), 5);
+	EXPECT_EQ(truncated, 0);
+	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(data, "has_more")));
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data, "active")), 1);
+	for (int i = 0; i < 5; i++)
+		EXPECT_EQ(cJSON_GetObjectItem(cJSON_GetArrayItem(agents, i), "result"), nullptr);
+	const cJSON *running = cJSON_GetArrayItem(agents, 4);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(running, "agent_id")),
+		     "/root/running");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(running, "status")), "running");
+	ASSERT_EQ(call("interrupt_agent", R"({"target":"running"})"), 0);
+	agent_control_join(control);
+	std::string reconstructed;
+	int offset = 0;
+	for (int page = 0; page < 20; page++) {
+		std::string args = "{\"target\":\"done_0\",\"max_bytes\":4096,\"offset\":" +
+				   std::to_string(offset) + "}";
+		cJSON *part MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+		ASSERT_EQ(call("read_agent", args.c_str(), &part), 0);
+		reconstructed += cJSON_GetStringValue(cJSON_GetObjectItem(part, "result"));
+		if (cJSON_IsFalse(cJSON_GetObjectItem(part, "has_more")))
+			break;
+		int next = static_cast<int>(
+			cJSON_GetNumberValue(cJSON_GetObjectItem(part, "next_offset")));
+		ASSERT_GT(next, offset);
+		offset = next;
+	}
+	EXPECT_EQ(reconstructed, report);
+	EXPECT_EQ(call("read_agent", R"({"target":"done_0","offset":-1})"), -EINVAL);
+	EXPECT_EQ(call("read_agent", R"({"target":"done_0","max_bytes":1})"), -EINVAL);
+}
+
+TEST_F(AgentControlTest, StatusPagingAndChildDefaultsKeepEveryIdentityReachable)
+{
+	for (int i = 0; i < 12; i++) {
+		std::string args = "{\"task_name\":\"agent_" + std::to_string(i) +
+				   "\",\"message\":\"small task\",\"fork_turns\":\"none\"}";
+		ASSERT_EQ(call("spawn_agent", args.c_str()), 0);
+		agent_control_join(control);
+	}
+	std::vector<std::string> ids;
+	int offset = 0;
+	for (int page = 0; page < 12; page++) {
+		const std::string args = "{\"limit\":3,\"offset\":" + std::to_string(offset) + "}";
+		cJSON *result MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+		ASSERT_EQ(call("list_agents", args.c_str(), &result), 0);
+		const cJSON *agents = cJSON_GetObjectItem(result, "agents");
+		EXPECT_LE(cJSON_GetArraySize(agents), 3);
+		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result, "total")), 12);
+		const cJSON *agent;
+		cJSON_ArrayForEach (agent, agents)
+			ids.emplace_back(
+				cJSON_GetStringValue(cJSON_GetObjectItem(agent, "agent_id")));
+		if (cJSON_IsFalse(cJSON_GetObjectItem(result, "has_more")))
+			break;
+		int next = static_cast<int>(
+			cJSON_GetNumberValue(cJSON_GetObjectItem(result, "next_offset")));
+		ASSERT_GT(next, offset);
+		offset = next;
+	}
+	ASSERT_EQ(ids.size(), 12u);
+	for (int i = 0; i < 12; i++)
+		EXPECT_EQ(ids[static_cast<size_t>(i)], "/root/agent_" + std::to_string(i));
+	runtime.agent_id = "/root/agent_0";
+	runtime.agent_depth = 1;
+	ASSERT_EQ(call("spawn_agent",
+		       R"({"task_name":"child","message":"nested","fork_turns":"none"})"),
+		  0);
+	agent_control_join(control);
+	cJSON *result MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(call("list_agents", "{}", &result), 0);
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result, "total")), 2);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(result, "agents")), 2);
+}
+
+TEST_F(AgentControlTest, FinishRequestClosesOnlyItsSubtreeAndInterruptCascades)
+{
+	server.respond = [](const std::string &body) -> std::string {
+		if (body.find("call_wait") != std::string::npos)
+			return R"({"content":"current verified report"})";
+		return R"({"tool_calls":[{"index":0,"id":"call_wait","type":"function","function":{"name":"wait_agent","arguments":"{\"timeout_ms\":30000}"}}]})";
+	};
+	ASSERT_EQ(call("spawn_agent",
+		       R"({"task_name":"a","message":"branch a","fork_turns":"none"})"),
+		  0);
+	ASSERT_EQ(call("spawn_agent",
+		       R"({"task_name":"b","message":"branch b","fork_turns":"none"})"),
+		  0);
+	const bool both_started = server.await_requests(2);
+	ASSERT_TRUE(both_started) << "Observed " << server.snapshot().size()
+				  << " model requests. Pending reports: " << receive("/root", false);
+	runtime.agent_id = "/root/a";
+	runtime.agent_depth = 1;
+	ASSERT_EQ(call("spawn_agent",
+		       R"({"task_name":"child","message":"a child","fork_turns":"none"})"),
+		  0);
+	ASSERT_TRUE(server.await_requests(3));
+	ASSERT_EQ(agent_control_request_finish(control, "/root/a"), 0);
+	EXPECT_EQ(agent_control_finish_requested(control, "/root/a/child"), 1);
+	EXPECT_EQ(agent_control_finish_requested(control, "/root/b"), 0);
+	EXPECT_EQ(call("spawn_agent", R"({"task_name":"late","message":"repeat audit"})"),
+		  -ESHUTDOWN);
+	runtime.agent_id = "/root/b";
+	ASSERT_EQ(
+		call("spawn_agent",
+		     R"({"task_name":"child","message":"independent b child","fork_turns":"none"})"),
+		0);
+	ASSERT_TRUE(server.await_requests(4));
+	runtime.agent_id = "/root";
+	runtime.agent_depth = 0;
+	ASSERT_EQ(call("interrupt_agent", R"({"target":"a"})"), 0);
+	EXPECT_EQ(agent_control_finish_requested(control, "/root/b"), 0);
+	ASSERT_EQ(agent_control_interrupt_descendants(control, "/root/b"), 0);
+	EXPECT_EQ(agent_control_finish_requested(control, "/root/a"), 0);
+	ASSERT_EQ(call("interrupt_agent", R"({"target":"b"})"), 0);
+	agent_control_join(control);
+	EXPECT_EQ(agent_control_descendants_active(control, "/root"), 0);
+	ASSERT_EQ(agent_control_request_finish(control, "/root"), 0);
+	EXPECT_EQ(call("spawn_agent", R"({"task_name":"closed","message":"new work"})"),
+		  -ESHUTDOWN);
+	agent_control_begin_turn(control, nullptr);
+	EXPECT_EQ(
+		call("spawn_agent",
+		     R"({"task_name":"fresh","message":"new authorized turn","fork_turns":"none"})"),
+		0);
+	EXPECT_EQ(call("interrupt_agent", R"({"target":"fresh"})"), 0);
+	agent_control_join(control);
+	agent_control_end_turn(control);
+}
+
+TEST_F(AgentControlTest, InterruptionPreservesVisiblePartialEvidenceWithoutReasoning)
+{
+	server.respond = [](const std::string &body) -> std::string {
+		if (body.find("call_wait_initial") != std::string::npos)
+			return R"({"tool_calls":[{"index":0,"id":"call_wait_hold","type":"function","function":{"name":"wait_agent","arguments":"{\"timeout_ms\":30000}"}}]})";
+		return R"({"content":"Confirmed visible repro evidence","reasoning_content":"PRIVATE_REASONING_MUST_NOT_LEAK","tool_calls":[{"index":0,"id":"call_wait_initial","type":"function","function":{"name":"wait_agent","arguments":"{\"timeout_ms\":1}"}}]})";
+	};
+	ASSERT_EQ(
+		call("spawn_agent",
+		     R"({"task_name":"partial","message":"inspect one gap","fork_turns":"none"})"),
+		0);
+	ASSERT_TRUE(server.await_requests(2));
+	ASSERT_EQ(call("interrupt_agent", R"({"target":"partial"})"), 0);
+	agent_control_join(control);
+	struct agent_info *agents = nullptr;
+	int count = 0;
+	ASSERT_EQ(agent_control_list_copy(control, session.id, &agents, &count), 0);
+	ASSERT_EQ(count, 1);
+	EXPECT_EQ(agents[0].status, AGENT_CANCELLED);
+	EXPECT_EQ(agents[0].error_code, -ECANCELED);
+	ASSERT_NE(agents[0].result, nullptr);
+	EXPECT_NE(strstr(agents[0].result, "Agent did not complete"), nullptr);
+	EXPECT_NE(strstr(agents[0].result, "Confirmed visible repro evidence"), nullptr);
+	EXPECT_EQ(strstr(agents[0].result, "PRIVATE_REASONING_MUST_NOT_LEAK"), nullptr);
+	agent_control_free_list(agents, count);
+}
+
+TEST_F(AgentControlTest, TaskDeadlineIsInheritedAndEndsLongWaitWithSummaryReason)
+{
+	config.task_timeout_seconds = 1;
+	reopen();
+	server.respond = [](const std::string &body) -> std::string {
+		if (body.find("call_wait") != std::string::npos)
+			return R"({"content":"bounded verified result"})";
+		return R"({"tool_calls":[{"index":0,"id":"call_wait","type":"function","function":{"name":"wait_agent","arguments":"{\"timeout_ms\":30000}"}}]})";
+	};
+	ASSERT_EQ(call("spawn_agent",
+		       R"({"task_name":"parent","message":"bounded task","fork_turns":"none"})"),
+		  0);
+	ASSERT_TRUE(server.await_requests(1));
+	runtime.agent_id = "/root/parent";
+	runtime.agent_depth = 1;
+	ASSERT_EQ(
+		call("spawn_agent",
+		     R"({"task_name":"child","message":"specific remaining gap","fork_turns":"none"})"),
+		0);
+	morph_buf_t parent_prompt MORPH_CLEANUP(morph_buf_cleanup) = {};
+	morph_buf_t child_prompt MORPH_CLEANUP(morph_buf_cleanup) = {};
+	ASSERT_EQ(morph_buf_init(&parent_prompt, 256), 0);
+	ASSERT_EQ(morph_buf_init(&child_prompt, 256), 0);
+	ASSERT_EQ(agent_control_prompt(control, "/root/parent", &parent_prompt), 0);
+	ASSERT_EQ(agent_control_prompt(control, "/root/parent/child", &child_prompt), 0);
+	const char *parent_deadline =
+		strstr(morph_buf_cstr_borrow(&parent_prompt), "<task_deadline>");
+	const char *child_deadline =
+		strstr(morph_buf_cstr_borrow(&child_prompt), "<task_deadline>");
+	ASSERT_NE(parent_deadline, nullptr);
+	ASSERT_NE(child_deadline, nullptr);
+	EXPECT_LE(strtoll(child_deadline + strlen("<task_deadline>"), nullptr, 10),
+		  strtoll(parent_deadline + strlen("<task_deadline>"), nullptr, 10));
+	runtime.agent_id = "/root/parent/child";
+	runtime.agent_depth = 2;
+	cJSON *result MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	ASSERT_EQ(call("wait_agent", R"({"timeout_ms":30000})", &result), 0);
+	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(result, "timed_out")));
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result, "reason")),
+		     "finish_requested");
+	EXPECT_EQ(agent_control_finish_requested(control, "/root/parent"), 1);
+	EXPECT_EQ(agent_control_finish_requested(control, "/root/parent/child"), 1);
+	runtime.agent_id = "/root";
+	runtime.agent_depth = 0;
+	EXPECT_EQ(call("interrupt_agent", R"({"target":"parent"})"), 0);
+	agent_control_join(control);
 }
 
 TEST_F(AgentControlTest, UltraEffortSelectsProactiveModeAsInCodex)
@@ -409,7 +823,7 @@ TEST_F(AgentControlTest, HierarchicalNamesStayDistinctAcrossParentsAndColdRestor
 {
 	for (const char *name : {"a", "b"}) {
 		std::string json = std::string("{\"task_name\":\"") + name +
-			"\",\"message\":\"parent task\",\"fork_turns\":\"none\"}";
+				   "\",\"message\":\"parent task\",\"fork_turns\":\"none\"}";
 		ASSERT_EQ(call("spawn_agent", json.c_str()), 0);
 		agent_control_join(control);
 	}
@@ -428,8 +842,8 @@ TEST_F(AgentControlTest, HierarchicalNamesStayDistinctAcrossParentsAndColdRestor
 	ASSERT_EQ(call("send_message", R"({"target":"aa","message":"relative to b"})"), 0);
 	EXPECT_NE(receive("/root/b/aa").find("relative to b"), std::string::npos);
 	EXPECT_EQ(receive("/root/a/aa").find("relative to b"), std::string::npos);
-	ASSERT_EQ(call("send_message",
-		       R"({"target":"/root/a/aa","message":"across branches"})"), 0);
+	ASSERT_EQ(call("send_message", R"({"target":"/root/a/aa","message":"across branches"})"),
+		  0);
 	EXPECT_NE(receive("/root/a/aa").find("across branches"), std::string::npos);
 	EXPECT_EQ(call("spawn_agent", R"({"task_name":"aa","message":"duplicate"})"), -EEXIST);
 	runtime.agent_id = "/root";
@@ -754,7 +1168,7 @@ TEST_F(AgentControlTest, ActivePatchPreventsNewWritableAssignments)
 	EXPECT_EQ(agent_control_write_check(control, "/root/reader", "/tmp/not-owned"), -EACCES);
 }
 
-TEST_F(AgentControlTest, ChildPatchAndShellCannotBypassOwnershipEvenWithFullPermission)
+TEST_F(AgentControlTest, ChildPatchKeepsOwnershipWhileFullAccessShellUsesHost)
 {
 	char directory[] = "/tmp/morph-agent-write-XXXXXX";
 	ASSERT_NE(mkdtemp(directory), nullptr);
@@ -790,14 +1204,58 @@ TEST_F(AgentControlTest, ChildPatchAndShellCannotBypassOwnershipEvenWithFullPerm
 	tool_result_init(&result);
 	result.runtime = &child;
 	EXPECT_EQ(tool_exec(&tools, "exec",
-			    R"({"command":"printf bad > forbidden.txt","yield_time_ms":1000})",
+			    R"({"command":"printf bad > forbidden.txt",
+			    "yield_time_ms":10000,"timeout_ms":15000})",
 			    &result),
 		  0);
-	EXPECT_NE(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0);
+	char *host_outcome MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(result.data);
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0)
+		<< (host_outcome ? host_outcome : "No process result");
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "execution_mode")),
-		     "sandbox");
-	EXPECT_FALSE(std::filesystem::exists(std::string(directory) + "/forbidden.txt"));
+		     "host");
+	EXPECT_TRUE(std::filesystem::exists(std::string(directory) + "/forbidden.txt"));
 	tool_result_cleanup(&result);
+	policy.access = PERMISSION_WORKSPACE;
+	policy.approval = PERMISSION_ON_REQUEST;
+	ASSERT_EQ(tool_context_set_permission_policy(permissions, &policy), 0);
+	int approved[2] = {0, 0};
+	tool_context_set_operation_approval(permissions,
+		[](const struct tool_operation *operation, void *opaque) {
+			auto *seen = static_cast<int *>(opaque);
+			seen[0] += operation->host;
+			seen[1] += operation->network;
+			return TOOL_OP_ALLOW;
+		}, approved);
+	const char *socket_probe =
+		"python3 -c 'import socket; s=socket.socket(); "
+		"s.bind((\"127.0.0.1\",0)); s.listen(1); "
+		"c=socket.create_connection(s.getsockname()); a,_=s.accept(); "
+		"c.sendall(b\"ok\"); print(a.recv(2).decode())'";
+	for (bool host : {true, false}) {
+		cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		ASSERT_NE(args, nullptr);
+		cJSON_AddStringToObject(args, "command", host ? "printf child-host" : socket_probe);
+		cJSON_AddBoolToObject(args, "host", host);
+		cJSON_AddBoolToObject(args, "network", !host);
+		cJSON_AddNumberToObject(args, "yield_time_ms", 10000);
+		cJSON_AddNumberToObject(args, "timeout_ms", 15000);
+		char *arguments MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(args);
+		ASSERT_NE(arguments, nullptr);
+		struct tool_result probe MORPH_CLEANUP(tool_result_cleanup) = {};
+		probe.runtime = &child;
+		ASSERT_EQ(tool_exec(&tools, "exec", arguments, &probe), 0);
+		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(probe.data, "exit_code")), 0)
+			<< cJSON_GetStringValue(cJSON_GetObjectItem(probe.data, "stderr"));
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(probe.data, "execution_mode")),
+			host ? "host" : "sandbox");
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(probe.data, "stdout")),
+			host ? "child-host" : "ok\n");
+	}
+	EXPECT_GE(approved[0], 1);
+	EXPECT_GE(approved[1], 1);
+	policy.access = PERMISSION_FULL;
+	policy.approval = PERMISSION_NEVER;
+	ASSERT_EQ(tool_context_set_permission_policy(permissions, &policy), 0);
 	/* A new assignment can explicitly give a previously read-only agent a file. */
 	ASSERT_EQ(
 		call("followup_task",
@@ -847,7 +1305,8 @@ TEST_F(AgentControlTest, BudgetFailureReplacesStaleToolErrorWithUsageAndRequestC
 	ASSERT_NE(react->last_error_detail, nullptr);
 	EXPECT_NE(strstr(react->last_error_detail, "0 / 1 weighted units used"), nullptr);
 	EXPECT_NE(strstr(react->last_error_detail, "next request needs"), nullptr);
-	EXPECT_NE(strstr(react->last_error_detail, "features.rollout_budget.limit_tokens"), nullptr);
+	EXPECT_NE(strstr(react->last_error_detail, "features.rollout_budget.limit_tokens"),
+		  nullptr);
 	EXPECT_EQ(strstr(react->last_error_detail, "Invalid argument"), nullptr);
 	EXPECT_TRUE(server.snapshot().empty());
 	struct agent_budget budget{};

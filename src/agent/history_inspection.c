@@ -217,7 +217,10 @@ int agent_history_repair(struct db *db, int64_t session_id, struct tokenizer *to
 
 	if (!db || session_id <= 0)
 		return -EINVAL;
-	rc = db_exec(db, "BEGIN IMMEDIATE;");
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	rc = db_lock_acquire(db, &lock);
+	if (rc == 0)
+		rc = db_exec(db, "BEGIN IMMEDIATE;");
 	if (rc != 0)
 		return rc;
 	items = model_history_list(db, session_id, 1, &count);

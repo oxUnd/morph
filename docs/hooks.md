@@ -83,7 +83,7 @@ content; the list and review adapt when the terminal is resized.
 Choose a review action with Up/Down and confirm with Enter. The initial selection
 keeps the hook unchanged. Depending on its state, a hook can be trusted, revoked,
 disabled, or enabled. Project hooks require a separate workspace trust decision
-before definition trust. Esc returns to the list; Esc again closes it. Ctrl-C or
+before definition trust. Esc returns to the list; Esc again closes it. Ctrl+C or
 q closes the full-screen view. `/hooks review <id>` also opens Review directly.
 
 Noninteractive and JSON output retain the command-based workflow:

@@ -31,6 +31,10 @@
 - **Dynamic JS tools**: embedded QuickJS in `src/js_runner/`. See `docs/quickjs-tools.md`.
 
 ## CLI Slash Command Presentation
+- Shortcut labels use title-case modifiers (`Ctrl`, `Shift`, `Alt`, `Cmd`,
+  `Meta`), `+` separators, and uppercase letter keys: `Ctrl+J`,
+  `Ctrl+Cmd+V`, `Shift+Tab`. Named keys keep their normal display form,
+  such as `Enter`, `Esc`, and `Tab`. Apply this to UI hints and docs.
 - CLI application module ownership and naming follow
   [src/sapi/cli/README.md](src/sapi/cli/README.md) and
   [the shared application layout](docs/tui-application-layout.md). The complete

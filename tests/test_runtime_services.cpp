@@ -965,6 +965,9 @@ TEST_F(RuntimeFacadeTest, SessionImportPreservesCollaborationWithoutStartingAgen
 		"INSERT INTO agent_threads(root_session_id,agent_id,parent_agent_id,session_id,"
 		"model,effort,depth,description,status,started_at) "
 		"VALUES(1,'/root/reader','/root',2,'model','',1,'read files',1,1);"
+		"UPDATE agent_threads SET assignment_json='"
+		"{\"scope\":\"text\",\"parent_task\":\"\",\"expected_evidence\":\"repro\","
+		"\"stop_condition\":\"report\"}';"
 		"INSERT INTO agent_mailbox(root_session_id,sender,recipient,kind,body,consumed) "
 		"VALUES(1,'/root/reader','/root','FINAL_ANSWER','finding',0);"
 		"INSERT INTO agent_events(root_session_id,agent_id,event_json) "
@@ -975,7 +978,7 @@ TEST_F(RuntimeFacadeTest, SessionImportPreservesCollaborationWithoutStartingAgen
 	EXPECT_EQ(result.imported, 2);
 	sqlite3_stmt *stmt = nullptr;
 	ASSERT_EQ(sqlite3_prepare_v2(instance->context.database.handle,
-		"SELECT p.name,c.name,a.status,m.body FROM agent_threads a "
+		"SELECT p.name,c.name,a.status,m.body,a.assignment_json FROM agent_threads a "
 		"JOIN sessions p ON p.id=a.root_session_id JOIN sessions c ON c.id=a.session_id "
 		"JOIN agent_mailbox m ON m.root_session_id=a.root_session_id",
 		-1, &stmt, nullptr), SQLITE_OK);
@@ -984,6 +987,8 @@ TEST_F(RuntimeFacadeTest, SessionImportPreservesCollaborationWithoutStartingAgen
 	EXPECT_STREQ(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1)), "agent-child");
 	EXPECT_EQ(sqlite3_column_int(stmt, 2), AGENT_CANCELLED);
 	EXPECT_STREQ(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 3)), "finding");
+	EXPECT_NE(strstr(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 4)),
+			"\"scope\":\"text\""), nullptr);
 	sqlite3_finalize(stmt);
 	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "agent-device", &result), 0);
 	EXPECT_EQ(result.imported, 0);

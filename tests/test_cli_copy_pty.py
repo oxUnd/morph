@@ -21,7 +21,7 @@ def frame(terminal, label):
     screen = terminal.snapshot(label)
     rows = terminal.screen.display
     composers = [index for index, row in enumerate(rows)
-                 if row.split('ctrl+o details')[0].strip() == '›']
+                 if row.split('Ctrl+T transcript')[0].strip() == '›']
     assert len(composers) == 1, screen
     composer = composers[0]
     heading = max(index for index, row in enumerate(rows) if row.rstrip() == '/copy')
@@ -29,7 +29,7 @@ def frame(terminal, label):
     assert not rows[heading + 1].strip(), screen
     assert not rows[composer - 2].strip(), screen
     for row in range(heading, composer - 1):
-        assert all(terminal.screen.buffer[row][column].bg != '1c1c1c'
+        assert all(terminal.screen.buffer[row][column].bg != '3a3a3a'
                    for column in range(terminal.screen.columns)), screen
     assert '› /copy' not in screen, screen
     return screen

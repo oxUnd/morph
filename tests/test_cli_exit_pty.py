@@ -47,7 +47,7 @@ def commands(terminal, directory, identity, screen, color=True):
     heading = next(index for index, row in enumerate(terminal.screen.display)
                    if 'To resume this session, run:' in row)
     for row in range(heading, terminal.screen.lines):
-        assert all(terminal.screen.buffer[row][column].bg != '1c1c1c'
+        assert all(terminal.screen.buffer[row][column].bg != '3a3a3a'
                    for column in range(terminal.screen.columns)), screen
     assert not any(row.strip() == '›' for row in terminal.screen.display), screen
     assert '› /quit' not in screen and '› /q' not in screen, screen

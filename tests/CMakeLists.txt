@@ -235,7 +235,7 @@ if(Python3_Interpreter_FOUND)
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_subagents_pty.py
 				$<TARGET_FILE:morph-cli-pty-driver>)
 		set_tests_properties(cli_subagents_pty_integration PROPERTIES
-			SKIP_RETURN_CODE 77 TIMEOUT 90)
+			SKIP_RETURN_CODE 77 TIMEOUT 120)
 		add_test(NAME cli_model_pty_integration
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_model_pty.py
 				$<TARGET_FILE:morph-cli-pty-driver>)

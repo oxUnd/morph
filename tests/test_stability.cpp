@@ -69,7 +69,10 @@ TEST(Stability, ToolBusinessFailureAndConflictsAreNormalized)
 	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(out.envelope, "ok")));
 	EXPECT_EQ(tool_exec(&reg, "malformed", "{}", &out), MORPH_ERR_PROTOCOL);
 	EXPECT_EQ(tool_exec(&reg, "missing", "{}", &out), -ENOENT);
-	EXPECT_EQ(out.envelope, nullptr);
+	ASSERT_NE(out.envelope, nullptr);
+	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(out.envelope, "ok")));
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(
+		cJSON_GetObjectItemCaseSensitive(out.envelope, "error"), "code")), "tool_not_found");
 	EXPECT_EQ(tool_disable(&reg, "reject"), 0);
 	EXPECT_EQ(tool_exec(&reg, "reject", "{}", &out), -EPERM);
 	EXPECT_EQ(out.envelope, nullptr);

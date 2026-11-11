@@ -156,6 +156,12 @@ struct react_context {
 	int steer_count;
 	int in_turn_compaction_count;
 	int incomplete_final_retry_count;
+	/* Finalization deadlines span repeated model proposals within this turn. */
+	int64_t agent_finalize_started_ms;
+	int64_t agent_finalize_finish_requested_ms;
+	int agent_finalize_interrupted;
+	int agent_finishing;
+	int agent_summary_attempts;
 	volatile sig_atomic_t cancelled;
 	struct morph_cancel_token cancel_token;
 	int force_compaction;

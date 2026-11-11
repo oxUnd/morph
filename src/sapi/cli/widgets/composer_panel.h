@@ -8,7 +8,6 @@ struct cli_application;
 
 struct cli_composer_panel_options {
 	int max_rows;
-	int max_columns;
 	int tick_ms;
 };
 

@@ -508,6 +508,9 @@ int mcp_list_tools_copy(struct mcp_client *client, struct mcp_tool_desc **out_to
 		entries[i].title = mcp_string(item, "title");
 		entries[i].description = mcp_string(item, "description");
 		entries[i].input_schema = mcp_schema(schema);
+		const cJSON *annotations = cJSON_GetObjectItemCaseSensitive(item, "annotations");
+		entries[i].read_only = cJSON_IsTrue(
+			cJSON_GetObjectItemCaseSensitive(annotations, "readOnlyHint"));
 		if (rc != 0 || !entries[i].name ||
 		    !entries[i].title ||
 		    !entries[i].description ||
@@ -962,19 +965,29 @@ int mcp_register_server_tools(struct mcp_client *client,
 			.exec = mcp_tool_exec,
 			.user_data = binding,
 			.user_data_destroy = (tool_user_data_destroy_fn)free,
+			.flags = tools[i].read_only ? TOOL_FLAG_READONLY : 0,
 		};
+		int replace = 0;
 		struct tool_entry *existing = tool_borrow(reg, spec.name);
 		if (existing && existing->exec == spec.exec && existing->user_data) {
 			struct mcp_tool_binding *previous = existing->user_data;
 
 			if (previous->client == client &&
 			    strcmp(previous->mcp_tool_name, binding->mcp_tool_name) == 0) {
-				registered++;
-				continue;
+				spec.flags |= existing->flags & ~(unsigned int)TOOL_FLAG_READONLY;
+				if (spec.flags & TOOL_FLAG_READONLY_CONFIGURED)
+					spec.flags |= TOOL_FLAG_READONLY;
+				if (existing->flags == spec.flags) {
+					registered++;
+					continue;
+				}
+				spec.timeout_seconds = existing->timeout_seconds;
+				replace = 1;
 			}
 		}
 
-		rc = tool_register_take(reg, &spec);
+		rc = replace ? tool_register_replace_take(reg, &spec, 0)
+			     : tool_register_take(reg, &spec);
 		if (rc < 0) {
 			log_warn(client ? client->config.logger : NULL,
 				 "mcp: failed to register tool '%s': %s", tool_name,

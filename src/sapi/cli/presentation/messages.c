@@ -204,8 +204,8 @@ static int cli_messages_spaces(morph_buf_t *out, size_t count)
 static int cli_messages_user_row(morph_buf_t *out, const char *text, size_t length, int first,
 				 size_t width, const struct cli_message_style *style)
 {
-	const char *marker = style->ultra ? "›› " : style->styled ? "› " : "> ";
-	size_t prefix = style->ultra ? 3u : 2u;
+	const char *marker = style->ultra ? "» " : style->styled ? "› " : "> ";
+	size_t prefix = 2u;
 	int rc = style->styled ? morph_buf_puts(out, ANSI_RESET CLI_INPUT_BACKGROUND) : 0;
 	if (rc == 0 && first && style->styled)
 		rc = morph_buf_puts(out,
@@ -232,7 +232,7 @@ static int cli_messages_user(morph_buf_t *out, char *safe, const struct cli_mess
 {
 	size_t width = style->columns > 0 ? (size_t)style->columns : 1u;
 	size_t content_width = width > 1 ? width - 1 : 1u;
-	size_t prefix = style->ultra ? 3u : 2u;
+	size_t prefix = 2u;
 	size_t body_width = content_width > prefix ? content_width - prefix : 1u;
 	int rc = style->trailing_newlines < 2 ? morph_buf_putc(out, '\n') : 0;
 	if (rc == 0 && style->styled) {

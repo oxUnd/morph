@@ -121,7 +121,7 @@ static int widget_select_prompt_draw(struct widget_select_prompt_view *view,
 		}
 		if (!rc) {
 			widget_select_prompt_line(view, &frame,
-						  "  Enter save · Esc back · Ctrl-U clear",
+						  "  Enter save · Esc back · Ctrl+U clear",
 						  WIDGET_SELECT_PROMPT_DIM);
 			view->cursor_up = 2;
 			(void)morph_buf_printf(&frame, "\033[2A\r\033[%zuC\033[?25h", column + 2);

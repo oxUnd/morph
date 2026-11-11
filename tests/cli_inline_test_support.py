@@ -32,6 +32,11 @@ def inline_panel(terminal, title, history_marker, maximum=12, command=None):
         assert commands and commands[-1] < start, diagnostic
     end = max((index for index, row in enumerate(rows) if row.strip()), default=start)
     assert end - start + 1 <= maximum, diagnostic
+    # Composer panels paint through the usable terminal width, including empty cells.
+    for index in range(start, end + 1):
+        first = terminal.screen.buffer[index][0]
+        if first.bg != 'default':
+            assert terminal.screen.buffer[index][terminal.screen.columns - 2].bg == first.bg, diagnostic
     return rows[start:end + 1]
 
 
@@ -41,7 +46,7 @@ def restored_composer(terminal, history_marker, expected='', command=None):
     footers = [index for index, row in enumerate(rows) if row.lstrip().startswith('morph ·')]
     assert len(footers) == 1, diagnostic
     row = footers[0] - 2
-    assert row >= 1 and rows[row].startswith(('› ', '›› ')), diagnostic
+    assert row >= 1 and rows[row].startswith(('› ', '» ')), diagnostic
     boundary = max((index for index in range(row - 1)
                     if rows[index].startswith('/') or 'Worked for ' in rows[index]
                     or 'Working ·' in rows[index] or 'Stopped after' in rows[index]
@@ -50,13 +55,13 @@ def restored_composer(terminal, history_marker, expected='', command=None):
         commands = [index for index in range(row) if rows[index].rstrip() == command]
         assert commands, diagnostic
     editable = [index for index in range(boundary + 1, len(rows))
-                if rows[index].startswith(('› ', '›› '))]
+                if rows[index].startswith(('› ', '» '))]
     assert len(editable) == 1, diagnostic
     assert editable[0] == row, diagnostic
     assert expected in rows[row], diagnostic
     assert history_marker in diagnostic, diagnostic
     backgrounds = [index for index in range(boundary + 1, len(rows))
-                   if terminal.screen.buffer[index][0].bg == '1c1c1c']
+                   if terminal.screen.buffer[index][0].bg == '3a3a3a']
     assert backgrounds == [row - 1, row, row + 1], (backgrounds, diagnostic)
     assert not any(terminal.screen.buffer[y][x].bg == 'blue'
                    for y in range(boundary + 1, len(rows))

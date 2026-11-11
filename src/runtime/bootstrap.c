@@ -173,15 +173,17 @@ static int runtime_apply_system_prompt(struct react_context *react, const struct
 	return 0;
 }
 
-static void runtime_apply_tool_flags(struct tool_registry *tools, const struct config *config)
+void runtime_bootstrap_tool_flags(struct tool_registry *tools, const struct config *config)
 {
 	if (!tools || !config)
 		return;
+	tool_registry_lock(tools);
 	for (int i = 0; i < config->react.readonly_tools_count; i++) {
 		struct tool_entry *entry = tool_borrow(tools, config->react.readonly_tools[i]);
 		if (entry)
-			entry->flags |= TOOL_FLAG_READONLY;
+			entry->flags |= TOOL_FLAG_READONLY | TOOL_FLAG_READONLY_CONFIGURED;
 	}
+	tool_registry_unlock(tools);
 }
 
 static enum guardrail_hook runtime_guardrail_hook(const char *name)
@@ -566,7 +568,7 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	}
 	for (int i = 0; i < config->react.disabled_tools_count; i++)
 		tool_disable(profile->tools, config->react.disabled_tools[i]);
-	runtime_apply_tool_flags(profile->tools, config);
+	runtime_bootstrap_tool_flags(profile->tools, config);
 	return 0;
 }
 

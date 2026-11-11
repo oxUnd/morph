@@ -19,7 +19,7 @@ static void sample_customization_page_help_build(struct morph_tui_view_controlle
 		"   Inspector composes another layout and edits the same model.\n\n"
 		"3. Custom Interaction: the name field has a bound submit action.\n"
 		"   Unhandled ? reaches the Application and opens this help page.\n"
-		"   Ctrl-L posts an application message to request a redraw.\n\n"
+		"   Ctrl+L posts an application message to request a redraw.\n\n"
 		"Text fields consume printable text first. Typing r, q, or ? there\n"
 		"edits text rather than invoking page or application shortcuts.\n"
 		"Pasting cannot activate controls or page/application commands.\n\n"

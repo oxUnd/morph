@@ -115,6 +115,26 @@ TEST_F(DatabaseTest, SubAgentSessionTablesExist) {
 	}
 }
 
+TEST_F(DatabaseTest, CollaborationAssignmentMigrationPreservesLegacyRows) {
+	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(db_exec(&db,
+		"INSERT INTO sessions(id,name,created_at,updated_at) VALUES(1,'root',1,1),(2,'child',1,1);"
+		"INSERT INTO agent_threads(root_session_id,agent_id,parent_agent_id,session_id,"
+		"model,effort,depth,description,status,started_at) "
+		"VALUES(1,'/root/reader','/root',2,'test','',1,'legacy scope',2,1);"
+		"ALTER TABLE agent_threads DROP COLUMN assignment_json;"), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	sqlite3_stmt *stmt = nullptr;
+	ASSERT_EQ(sqlite3_prepare_v2(db.handle,
+		"SELECT description,assignment_json FROM agent_threads", -1, &stmt, nullptr), SQLITE_OK);
+	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+	EXPECT_STREQ(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0)), "legacy scope");
+	EXPECT_EQ(sqlite3_column_type(stmt, 1), SQLITE_NULL);
+	sqlite3_finalize(stmt);
+}
+
 TEST_F(DatabaseTest, SchemaMigrationBaselineRecorded) {
 	int rc = db_open(NULL, &db, db_path);
 	EXPECT_EQ(rc, 0);

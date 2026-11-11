@@ -200,12 +200,18 @@ int agent_turn_begin(struct agent_turn *turn, const struct agent_session_runtime
 	}
 
 	if (flags & AGENT_TURN_SAVE_MESSAGES) {
+		struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
 		const char *stored = turn->input.stored_user_input ?
 			turn->input.stored_user_input : turn->input.model_input;
 		int tokens = tokenizer_count(turn->runtime.react->tokenizer,
 			stored);
 
-		rc = db_exec(turn->runtime.db, "BEGIN IMMEDIATE;");
+		int began = 0;
+		rc = db_lock_acquire(turn->runtime.db, &lock);
+		if (rc == 0) {
+			rc = db_exec(turn->runtime.db, "BEGIN IMMEDIATE;");
+			began = rc == 0;
+		}
 		if (rc == 0)
 			rc = message_add_with_turn_id(turn->runtime.db,
 				turn->runtime.session_id, "user", stored, tokens,
@@ -216,7 +222,8 @@ int agent_turn_begin(struct agent_turn *turn, const struct agent_session_runtime
 		if (rc == 0)
 			rc = db_exec(turn->runtime.db, "COMMIT;");
 		if (rc != 0) {
-			(void)db_exec(turn->runtime.db, "ROLLBACK;");
+			if (began)
+				(void)db_exec(turn->runtime.db, "ROLLBACK;");
 			turn_unbind_history(turn->runtime.react);
 			return rc;
 		}
@@ -357,52 +364,35 @@ static int turn_persist_user(struct agent_turn *turn,
 				     result->user_tokens);
 }
 
-static int turn_persist_assistant(struct agent_turn *turn,
-				  struct agent_turn_result *result,
-				  char **assistant_for_memory)
+static int turn_assistant_text_create(struct agent_turn *turn, char **out)
 {
-	const char *answer;
-	char *rendered = NULL;
-	int rc;
+	const char *answer = turn->runtime.react->final_answer;
+	if (!answer || (!(turn_flags(&turn->runtime) & AGENT_TURN_SAVE_EMPTY_ASSISTANT) && !*answer))
+		return 0;
+	char *rendered MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	if (turn->runtime.render_assistant)
+		rendered = turn->runtime.render_assistant(answer, turn->runtime.render_user_data);
+	if (!rendered)
+		rendered = strdup(answer);
+	if (!rendered)
+		return -ENOMEM;
+	*out = morph_charp_steal(&rendered);
+	return 0;
+}
 
-	*assistant_for_memory = NULL;
-	answer = turn->runtime.react->final_answer;
+static int turn_persist_assistant(struct agent_turn *turn, struct agent_turn_result *result,
+				  const char *answer)
+{
 	if (!answer)
 		return 0;
-	if (!(turn_flags(&turn->runtime) & AGENT_TURN_SAVE_EMPTY_ASSISTANT) &&
-	    answer[0] == '\0')
-		return 0;
-
-	if (turn->runtime.render_assistant) {
-		rendered = turn->runtime.render_assistant(
-			answer, turn->runtime.render_user_data);
-		if (rendered)
-			answer = rendered;
-	}
-
-	result->assistant_tokens =
-		tokenizer_count(turn->runtime.react->tokenizer, answer);
-	rc = turn_persist_message(turn, "assistant", answer,
-				  result->assistant_tokens);
-	if (rc < 0) {
-		free(rendered);
+	result->assistant_tokens = tokenizer_count(turn->runtime.react->tokenizer, answer);
+	int rc = turn_persist_message(turn, "assistant", answer, result->assistant_tokens);
+	if (rc < 0)
 		return rc;
-	}
 	result->assistant_saved = 1;
-
-	if (turn_flags(&turn->runtime) & AGENT_TURN_UPDATE_TOKENS) {
-		rc = session_update_tokens(turn->runtime.db,
-					   turn->runtime.session_id,
-					   result->assistant_tokens);
-		if (rc < 0) {
-			free(rendered);
-			return rc;
-		}
-	}
-
-	*assistant_for_memory = rendered ? rendered : strdup(answer);
-	if (!*assistant_for_memory)
-		return -ENOMEM;
+	if (turn_flags(&turn->runtime) & AGENT_TURN_UPDATE_TOKENS)
+		return session_update_tokens(turn->runtime.db, turn->runtime.session_id,
+					     result->assistant_tokens);
 	return 0;
 }
 
@@ -572,7 +562,7 @@ static int turn_should_keep_complete_history(const struct agent_turn *turn)
 int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 {
 	struct agent_turn_result local_result;
-	char *assistant_for_memory = NULL;
+	char *assistant_for_memory MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 	const char *memory_answer;
 	unsigned flags;
 	int rc = 0;
@@ -615,14 +605,21 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 	}
 
 	if (flags & AGENT_TURN_SAVE_MESSAGES) {
-		step_rc = db_exec(turn->runtime.db, "BEGIN IMMEDIATE;");
+		struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+		int began = 0;
+		step_rc = turn_assistant_text_create(turn, &assistant_for_memory);
+		if (step_rc == 0)
+			step_rc = db_lock_acquire(turn->runtime.db, &lock);
+		if (step_rc == 0) {
+			step_rc = db_exec(turn->runtime.db, "BEGIN IMMEDIATE;");
+			began = step_rc == 0;
+		}
 		if (step_rc == 0) {
 			step_rc = turn_persist_user(turn, &local_result);
 			local_result.user_rc = step_rc;
 		}
 		if (step_rc == 0) {
-			step_rc = turn_persist_assistant(
-				turn, &local_result, &assistant_for_memory);
+			step_rc = turn_persist_assistant(turn, &local_result, assistant_for_memory);
 			local_result.assistant_rc = step_rc;
 		}
 		if (step_rc == 0 && (turn_model_history_succeeded(turn) ||
@@ -637,13 +634,13 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 		if (step_rc == 0)
 			step_rc = db_exec(turn->runtime.db, "COMMIT;");
 		if (step_rc != 0) {
-			(void)db_exec(turn->runtime.db, "ROLLBACK;");
+			if (began)
+				(void)db_exec(turn->runtime.db, "ROLLBACK;");
 			local_result.user_saved = 0;
 			local_result.assistant_saved = 0;
 			local_result.user_tokens = 0;
 			local_result.assistant_tokens = 0;
-			free(assistant_for_memory);
-			assistant_for_memory = NULL;
+			morph_charp_cleanup(&assistant_for_memory);
 			if (local_result.user_rc == 0)
 				local_result.user_rc = step_rc;
 			if (local_result.assistant_rc == 0)
@@ -659,7 +656,6 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 	if (step_rc != 0 && local_result.memory_rc == 0)
 		local_result.memory_rc = step_rc;
 
-	free(assistant_for_memory);
 	turn_unbind_history(turn->runtime.react);
 	turn->finished = 1;
 	if (result)

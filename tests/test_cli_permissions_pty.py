@@ -27,7 +27,7 @@ def composer(terminal, expected=''):
                     if line.startswith('/') or 'Worked for ' in line), default=-1)
     assert sum(line.startswith('› ') for line in rows[boundary + 1:]) == 1, '\n'.join(rows)
     backgrounds = [i for i in range(boundary + 1, terminal.screen.lines)
-                   if terminal.screen.buffer[i][0].bg == '1c1c1c']
+                   if terminal.screen.buffer[i][0].bg == '3a3a3a']
     assert backgrounds == [row - 1, row, row + 1], (backgrounds, '\n'.join(rows))
     return row
 
@@ -95,7 +95,7 @@ def main():
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        for columns in (120, 80, 60):
+        for columns in (200, 120, 80, 60):
             with tempfile.TemporaryDirectory(prefix='morph-permissions-pty-') as temp:
                 directory = Path(temp)
                 terminal = Terminal(driver, directory, server.server_port, hooks_enabled=False)

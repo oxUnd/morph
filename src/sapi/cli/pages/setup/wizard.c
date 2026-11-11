@@ -277,7 +277,7 @@ static int cli_wizard_collect_plain(struct cli_setup_state *state, const char *p
 {
 	fprintf(output,
 		"Welcome to morph setup: %s.\n"
-		"Choose a role, then accept the defaults or customize. Ctrl-D cancels.\n",
+		"Choose a role, then accept the defaults or customize. Ctrl+D cancels.\n",
 		path);
 	int choose_role = 1;
 	state->replace_prompt = !state->existing_prompt;

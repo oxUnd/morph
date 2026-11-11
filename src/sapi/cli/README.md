@@ -128,9 +128,9 @@ painting rather than apply fallback dimensions.
 
 `/model` (or `/m`) replaces the editable composer with the inline Normal/Ultra
 selector, using the same controller presentation as `/permissions`. Escape and
-Ctrl-C restore the composer without a receipt. Confirming a change persists the
+Ctrl+C restore the composer without a receipt. Confirming a change persists the
 runtime collaboration mode; `/model normal`, `/model ultra`, `/model status` and
-`/model <name>` also work in noninteractive modes. Ultra keeps a purple `››`
+`/model <name>` also work in noninteractive modes. Ultra keeps a purple `»`
 prompt. Its one-shot 33 ms wave paints only the composer's empty padding, never
 the draft, and stops after 990 ms. Prompt geometry uses its actual display width
 for editing, image labels, wrapped text and terminal resize. Initial state,
@@ -141,20 +141,31 @@ composer with local interactions. Its controller owns input handoff, bounded
 height, relative redraw, resize cleanup and dismissal on the root Application's
 existing stack. It preserves the normal screen and history above the panel;
 pages append rows and handle semantic events without terminal cursor control.
-Options set row/column limits and tick frequency. A successful presentation owns
-the callback lifetime through `complete`; failure leaves business data with the
-caller. Trusted renderer rows retain SGR styles while cursor and OSC controls
-are rejected. `/model`, `/permissions` and `/subagents` use this same component.
+Panels always span the usable terminal width, reserving the last physical column
+to avoid automatic wrapping. Options set the row limit and tick frequency.
+A successful presentation owns the callback lifetime through `complete`; failure
+leaves business data with the caller. Trusted renderer rows retain SGR styles
+while cursor and OSC controls are rejected. `/model`, `/permissions` and
+`/subagents` use this same component.
 
-`/subagents [id|shortname]` opens an inline agent overview and thread viewport
-within the composer area. `pages/subagents` owns navigation and follow-up input,
+`/agents [id|shortname]` opens the full-screen agent browser, with a live status
+summary, a scrolling roster and the selected task preview. Enter opens the
+selected child's feed within the same terminal screen; Escape returns directly
+to the primary conversation. Noninteractive `/agents` retains text snapshots.
+`/subagents [id|shortname]` opens a compact agent picker within the composer area.
+Selecting a child replaces the visible feed with that child's full-width
+conversation in an alternate terminal screen; Escape returns directly to the
+primary feed. `pages/subagents` owns navigation and follow-up input,
 `models/subagents` reduces ordered child events, `widgets/subagents` composes
 shared feed messages and tool rows, and `services/agents` enters the runtime
 facade. Snapshot/live sequence frontiers prevent duplicate replay; child events
 never enter the primary reducer. Shared message presentation retains user boxes,
 reasoning, Markdown and code styles rather than displaying role-labelled dumps.
-The overview uses lightweight activity snapshots. Enter opens a child, Tab and
-Left/Right switch threads, `f` sends a follow-up, `k` interrupts, and `d` or
-Ctrl+O toggles tool details inside the same panel. Escape closes details, then
-returns through the overview to the preserved primary draft. `/agents` remains
+The picker uses lightweight activity snapshots and draws only the rows it needs.
+Enter opens a child, Tab and Left/Right select agents in the picker or switch
+threads in the child feed, `f` edits a follow-up, `k` interrupts, and `d` or
+Ctrl+T toggles tool details. Each child retains its own transcript, viewport,
+details setting and unsent draft across navigation. Primary output continues
+reducing in the background and is committed to primary scrollback on return;
+the primary draft is preserved. `/agents` remains
 the textual inspection command for scripts and quick queries.

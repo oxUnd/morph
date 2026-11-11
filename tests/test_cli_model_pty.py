@@ -19,13 +19,13 @@ import pyte
 
 
 def composer(terminal, ultra=False):
-    marker = '›› ' if ultra else '› '
+    marker = '» ' if ultra else '› '
     rows = terminal.screen.display
     candidates = [i for i, line in enumerate(rows) if line.startswith(marker)]
     assert candidates, '\n'.join(rows)
     row = candidates[-1]
     command = max((i for i, line in enumerate(rows) if line.startswith('/')), default=-1)
-    assert sum(line.startswith(('› ', '›› ')) for line in rows[command + 1:]) == 1, '\n'.join(rows)
+    assert sum(line.startswith(('› ', '» ')) for line in rows[command + 1:]) == 1, '\n'.join(rows)
     assert terminal.screen.buffer[row][0].fg == ('af87ff' if ultra else '8a8a8a'), '\n'.join(rows)
     return row
 
@@ -35,7 +35,7 @@ def settled(terminal, ultra=False):
     row = composer(terminal, ultra)
     boundary = max((i for i, line in enumerate(terminal.screen.display) if line.startswith('/')), default=-1)
     backgrounds = [i for i in range(boundary + 1, terminal.screen.lines)
-                   if terminal.screen.buffer[i][0].bg == '1c1c1c']
+                   if terminal.screen.buffer[i][0].bg == '3a3a3a']
     assert backgrounds == [row - 1, row, row + 1], (backgrounds, '\n'.join(terminal.screen.display))
     return row
 
@@ -46,7 +46,7 @@ def panel(terminal, ultra=False):
     title = next(i for i, line in enumerate(rows) if 'Select Model Mode' in line)
     heading = max(i for i, line in enumerate(rows[:title]) if line.startswith('/'))
     assert title == heading + 2, '\n'.join(rows)
-    assert not any(line.startswith(('› ', '›› ')) for line in rows[heading + 1:]), '\n'.join(rows)
+    assert not any(line.startswith(('› ', '» ')) for line in rows[heading + 1:]), '\n'.join(rows)
     selected = next(i for i, line in enumerate(rows) if line.startswith('> '))
     assert ('Ultra (current)' if ultra else 'Normal (current)') in rows[selected], '\n'.join(rows)
     assert terminal.screen.buffer[selected][0].bg == 'blue'
@@ -85,7 +85,7 @@ def native_reflow(driver, server):
                 text = ''.join(''.join(rows).split())
                 assert text.count('NATIVE_ULTRA_DRAFT') == 1, diagnostic
                 assert text.count(''.join(draft.split())) == 1, diagnostic
-                assert sum(row.startswith('›› ') for row in rows) == 1, diagnostic
+                assert sum(row.startswith('» ') for row in rows) == 1, diagnostic
             terminal.send('\x01edited \x05!\r')
             body, release = terminal.request()
             user = [m['content'] for m in body['messages'] if m['role'] == 'user']
@@ -105,11 +105,11 @@ def no_color_startup(driver, server):
                             extra_config='[agents]\nmulti_agent_mode="proactive"\n')
         try:
             terminal.wait_for_composer()
-            wait_for(terminal, lambda: any(row.startswith('›› ') for row in terminal.screen.display))
+            wait_for(terminal, lambda: any(row.startswith('» ') for row in terminal.screen.display))
             terminal.send('/model normal\r')
             wait_for(terminal, lambda: any(row.startswith('> ') for row in terminal.screen.display))
             terminal.send('/model ultra\r')
-            wait_for(terminal, lambda: any(row.startswith('›› ') for row in terminal.screen.display))
+            wait_for(terminal, lambda: any(row.startswith('» ') for row in terminal.screen.display))
             terminal.pump(1.1)
             assert '\x1b[48;5;98m' not in terminal.raw
             assert '\x1b[1;38;5;141m' not in terminal.raw
@@ -124,7 +124,7 @@ def main():
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        for columns in (120, 80, 60):
+        for columns in (200, 120, 80, 60):
             with tempfile.TemporaryDirectory(prefix='morph-model-pty-') as temp:
                 directory = Path(temp)
                 terminal = Terminal(driver, directory, server.server_port, hooks_enabled=False,

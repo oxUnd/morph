@@ -365,7 +365,7 @@ static void cli_transcript_append_tool_preview(morph_buf_t *out,
 		morph_buf_t hint;
 
 		if (morph_buf_init(&hint, 64) == 0) {
-			(void)morph_buf_printf(&hint, "+ %zu %s (ctrl+o to expand)", total - shown,
+			(void)morph_buf_printf(&hint, "+ %zu %s (Ctrl+T to expand)", total - shown,
 					       total - shown == 1 ? "line" : "lines");
 			cli_transcript_append_feed_line(out, "    ", morph_buf_cstr_borrow(&hint),
 						ANSI_DIM, columns, styled);

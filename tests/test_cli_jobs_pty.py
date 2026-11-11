@@ -42,7 +42,7 @@ def main():
             terminal.child.setwinsize(30, 100)
             terminal.screen = AlternateScreen(100, 30)
             terminal.stream = pyte.Stream(terminal.screen)
-            until(terminal, lambda text: 'ctrl+o details' in text)
+            until(terminal, lambda text: 'perm: ' in text)
             terminal.pump(.2)
             terminal.send('Build and inspect background work\r')
             _, release = terminal.request()

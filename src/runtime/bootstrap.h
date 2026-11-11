@@ -85,6 +85,7 @@ struct runtime_shutdown_resources {
 
 int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile);
 int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile);
+void runtime_bootstrap_tool_flags(struct tool_registry *tools, const struct config *config);
 int runtime_bootstrap_dynamic_tools(struct runtime_bootstrap_profile *profile,
 				    const char *session_id);
 int runtime_bootstrap_child(struct tool_registry *tools, struct plan_registry *plans,

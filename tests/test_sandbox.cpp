@@ -751,6 +751,82 @@ TEST(SandboxEnterTest, PathPolicySeparatesWriteAndDelete)
 	rmdir(delete_dir);
 }
 
+#if defined(__APPLE__)
+TEST(SandboxEnterTest, ModernTimestampsPreserveWriteAndNestedDeleteScopes)
+{
+	char directory[] = "/tmp/morph-sb-times-XXXXXX";
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	char resolved[PATH_MAX];
+	ASSERT_NE(realpath(directory, resolved), nullptr);
+	std::string root(resolved);
+	std::filesystem::create_directories(root + "/write/removable");
+	std::string writable = root + "/write";
+	std::string removable = writable + "/removable";
+	std::string file = writable + "/probe";
+	std::string nested = removable + "/probe";
+	std::string outside = root + "/outside";
+	for (const auto &path : {file, nested, outside}) {
+		int fd = open(path.c_str(), O_CREAT | O_WRONLY, 0600);
+		ASSERT_GE(fd, 0);
+		close(fd);
+	}
+	EXPECT_EQ(run_in_child([&]() {
+		char *writes[] = {writable.data()};
+		char *deletes[] = {removable.data()};
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
+		cfg.write_paths = writes;
+		cfg.write_paths_count = 1;
+		cfg.delete_paths = deletes;
+		cfg.delete_paths_count = 1;
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		struct timespec times[2] = {{1, 1234}, {2, 5678}};
+		if (utimensat(AT_FDCWD, file.c_str(), times, 0) != 0)
+			return 11;
+		int fd = open(file.c_str(), O_RDWR);
+		if (fd < 0)
+			return 12;
+		int rc = futimens(fd, times);
+		struct stat info = {};
+		if (rc == 0)
+			rc = fstat(fd, &info);
+		close(fd);
+		if (rc != 0 || info.st_mtime != 2)
+			return 13;
+		if (utimensat(AT_FDCWD, outside.c_str(), times, 0) == 0)
+			return 14;
+		if (unlink(file.c_str()) == 0)
+			return 15;
+		return unlink(nested.c_str()) == 0 ? 0 : 16;
+	}), 0);
+	std::filesystem::remove_all(root);
+}
+
+TEST(SandboxEnterTest, TemporaryDirectorySupportsModernTimestamps)
+{
+	char directory[] = "/tmp/morph-sb-temp-times-XXXXXX";
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	std::string path = std::string(directory) + "/probe";
+	EXPECT_EQ(run_in_child([&]() {
+		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
+		cfg.allow_temp = 1;
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		int fd = open(path.c_str(), O_CREAT | O_RDWR, 0600);
+		if (fd < 0)
+			return 11;
+		int rc = futimens(fd, nullptr);
+		close(fd);
+		return rc == 0 && utimensat(AT_FDCWD, path.c_str(), nullptr, 0) == 0 ? 0 : 12;
+	}), 0);
+	std::filesystem::remove_all(directory);
+}
+#endif
+
 #if defined(__linux__) || defined(__APPLE__)
 TEST(SandboxEnterTest, PathPolicyAllowsDevNullWrite)
 {

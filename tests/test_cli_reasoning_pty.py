@@ -20,14 +20,14 @@ def input_margins(terminal, text):
     question = next(i for i, row in enumerate(rows)
                     if row.startswith('› Check reasoning rendering'))
     top = bottom = question
-    while top > 0 and terminal.screen.buffer[top - 1][0].bg == '1c1c1c':
+    while top > 0 and terminal.screen.buffer[top - 1][0].bg == '3a3a3a':
         top -= 1
-    while bottom + 1 < len(rows) and terminal.screen.buffer[bottom + 1][0].bg == '1c1c1c':
+    while bottom + 1 < len(rows) and terminal.screen.buffer[bottom + 1][0].bg == '3a3a3a':
         bottom += 1
     for margin in (top - 1, bottom + 1):
         assert 0 <= margin < len(rows), '\n'.join(rows)
         assert not rows[margin].strip(), '\n'.join(rows)
-        assert all(terminal.screen.buffer[margin][column].bg != '1c1c1c'
+        assert all(terminal.screen.buffer[margin][column].bg != '3a3a3a'
                    for column in range(terminal.screen.columns)), '\n'.join(rows)
     following = next(i for i, row in enumerate(rows) if text in row)
     assert following == bottom + 2, '\n'.join(rows)
@@ -137,7 +137,7 @@ def main():
                     assert preview_distance == early_distance, streaming
                     input_margins(terminal, 'Inspecting')
                     if inspect_details:
-                        terminal.send('\x0f')
+                        terminal.send('\x14')
                         details = terminal.snapshot(f'{width} columns: live reasoning details')
                         assert 'Inspectingthecurrentstatecarefully.' in ''.join(details.split()), details
                     release.finish.set()
@@ -147,7 +147,7 @@ def main():
                         compact = ''.join(details.split())
                         assert '检查推理输出是否完整，中文换行也要保持正确。' in compact, details
                         assert 'Turn details' in details, details
-                        terminal.send('\x0f')
+                        terminal.send('\x14')
                     text = terminal.snapshot(f'{width} columns: reasoning, answer, and draft')
                     compact = ''.join(text.split())
                     assert 'Inspecting' in compact and '…' in compact, text

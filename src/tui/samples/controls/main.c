@@ -30,7 +30,7 @@ static void sample_controls_build(struct morph_tui_view_controller *controller,
 	morph_tui_widget_label_add_borrow(builder, root, "morph-tui controls", NULL);
 	morph_tui_widget_label_add_borrow(
 		builder, root,
-		"Tab/Shift-Tab: focus; Enter: open; Esc: quit; q is text in the field", NULL);
+		"Tab/Shift+Tab: focus; Enter: open; Esc: quit; q is text in the field", NULL);
 	morph_tui_widget_text_field_add_borrow(builder, root, "", 1024, 1, NULL);
 	morph_tui_widget_list_add_borrow(builder, root, items, 3, 2, &fill);
 	page->status = morph_tui_widget_label_add_borrow(builder, root, "Ready", NULL);

@@ -15,7 +15,9 @@
 #include <limits.h>
 #include <unistd.h>
 #include <string>
+#include <memory>
 #include "util/utf8.h"
+#include "util/json.h"
 
 class AgentTurnTest : public ::testing::Test {
 protected:
@@ -53,6 +55,35 @@ static int agent_turn_summary(const char *, void *, char **out)
 {
 	*out = strdup("old work checkpoint");
 	return *out ? 0 : -ENOMEM;
+}
+
+TEST_F(AgentTurnTest, FailedTurnBeginCannotRollbackACallersTransaction)
+{
+	ASSERT_EQ(db_exec(&db, "BEGIN IMMEDIATE;"), 0);
+	ASSERT_EQ(message_add(&db, sess.id, "user", "caller-owned write", 3), 0);
+	struct agent_session_runtime runtime{};
+	runtime.db = &db;
+	runtime.session_id = sess.id;
+	runtime.react = react;
+	runtime.flags = AGENT_TURN_SAVE_MESSAGES;
+	struct agent_turn_input input{};
+	input.model_input = "new independent turn";
+	struct agent_turn turn{};
+	EXPECT_EQ(agent_turn_begin(&turn, &runtime, &input), MORPH_ERR_DB);
+	EXPECT_FALSE(turn.begun);
+	EXPECT_EQ(sqlite3_get_autocommit(db.handle), 0);
+	ASSERT_EQ(db_exec(&db, "COMMIT;"), 0);
+	EXPECT_EQ(message_count(&db, sess.id), 1);
+}
+
+TEST_F(AgentTurnTest, FailedHistoryRepairCannotRollbackACallersTransaction)
+{
+	ASSERT_EQ(db_exec(&db, "BEGIN IMMEDIATE;"), 0);
+	ASSERT_EQ(message_add(&db, sess.id, "user", "caller-owned write", 3), 0);
+	EXPECT_EQ(agent_history_repair(&db, sess.id, tok, nullptr, nullptr), MORPH_ERR_DB);
+	EXPECT_EQ(sqlite3_get_autocommit(db.handle), 0);
+	ASSERT_EQ(db_exec(&db, "COMMIT;"), 0);
+	EXPECT_EQ(message_count(&db, sess.id), 1);
 }
 
 TEST_F(AgentTurnTest, PersistsExecutionOutcomeWithoutInventingTaskCompletion)
@@ -967,6 +998,89 @@ TEST_F(AgentTurnTest, JsonToolTruncationPreservesExecutionControls)
 	free(prepared);
 }
 
+TEST_F(AgentTurnTest, LargeAgentReportsCannotRemoveRunningAgentsFromModelObservation)
+{
+	react->history_tool_result_tokens = 512;
+	std::string report;
+	for (int i = 0; i < 1500; i++)
+		report += "verified finding with supporting evidence ";
+	std::string input =
+		"{\"ok\":true,\"data\":{\"next_cursor\":\"opaque-page-token\",\"agents\":["
+		"{\"agent_id\":\"/root/text\",\"status\":\"completed\",\"result\":\"" + report +
+		"\"},{\"agent_id\":\"/root/containers\",\"status\":\"running\"},"
+		"{\"agent_id\":\"/root/platform\",\"status\":\"completed\",\"result\":\"" + report +
+		"\"},{\"agent_id\":\"/root/containers/map\",\"status\":\"running\"},"
+		"{\"agent_id\":\"/root/containers/buf\",\"status\":\"running\"}]}}";
+	char *prepared MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	int truncated = 0;
+	ASSERT_EQ(agent_history_tool_content_copy(react, input.c_str(), &prepared, &truncated), 0);
+	EXPECT_EQ(truncated, 1);
+	EXPECT_LE(tokenizer_count(react->tokenizer, prepared), 512);
+	cJSON *json MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(prepared);
+	ASSERT_NE(json, nullptr);
+	cJSON *data = cJSON_GetObjectItemCaseSensitive(json, "data");
+	cJSON *agents = cJSON_GetObjectItemCaseSensitive(data, "agents");
+	ASSERT_EQ(cJSON_GetArraySize(agents), 5);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(data, "next_cursor")),
+		     "opaque-page-token");
+	const char *ids[] = {"/root/text", "/root/containers", "/root/platform",
+			     "/root/containers/map", "/root/containers/buf"};
+	for (int i = 0; i < 5; i++) {
+		cJSON *entry = cJSON_GetArrayItem(agents, i);
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(entry, "agent_id")),
+			     ids[i]);
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(entry, "status")),
+			     i == 0 || i == 2 ? "completed" : "running");
+	}
+}
+
+TEST_F(AgentTurnTest, ImpossibleAgentStatusBudgetFailsExplicitlyInsteadOfHidingAgents)
+{
+	react->history_tool_result_tokens = 8;
+	const char *input = "{\"ok\":true,\"data\":{\"agents\":["
+		"{\"agent_id\":\"/root/still-running\",\"status\":\"running\"}]}}";
+	char *prepared MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	EXPECT_EQ(agent_history_tool_content_copy(react, input, &prepared, nullptr), -E2BIG);
+	EXPECT_EQ(prepared, nullptr);
+}
+
+TEST_F(AgentTurnTest, AgentReportPageTruncationAdvancesOnlyPastTheVisibleUtf8Prefix)
+{
+	react->history_tool_result_tokens = 256;
+	std::string report;
+	for (int i = 0; i < 1000; i++)
+		report += "verified 中文 evidence; ";
+	for (bool originally_more : {false, true}) {
+		cJSON *source MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		cJSON_AddBoolToObject(source, "ok", 1);
+		cJSON *data = cJSON_AddObjectToObject(source, "data");
+		cJSON *agent = cJSON_AddObjectToObject(data, "agent");
+		cJSON_AddStringToObject(agent, "agent_id", "/root/reader");
+		cJSON_AddStringToObject(agent, "status", "completed");
+		cJSON_AddStringToObject(data, "result", report.c_str());
+		cJSON_AddNumberToObject(data, "offset", 12);
+		cJSON_AddNumberToObject(data, "total_bytes", static_cast<double>(12 + report.size() +
+			(originally_more ? 100 : 0)));
+		cJSON_AddBoolToObject(data, "has_more", originally_more);
+		if (originally_more)
+			cJSON_AddNumberToObject(data, "next_offset", static_cast<double>(12 + report.size()));
+		char *input MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(source);
+		char *prepared MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+		ASSERT_EQ(agent_history_tool_content_copy(react, input, &prepared, nullptr), 0);
+		EXPECT_LE(tokenizer_count(react->tokenizer, prepared), 256);
+		cJSON *json MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(prepared);
+		cJSON *page = cJSON_GetObjectItemCaseSensitive(json, "data");
+		const char *visible = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(page, "result"));
+		ASSERT_NE(visible, nullptr);
+		EXPECT_GT(strlen(visible), 0u);
+		EXPECT_EQ(report.compare(0, strlen(visible), visible), 0);
+		EXPECT_EQ(utf8valid(visible), nullptr);
+		EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(page, "has_more")));
+		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(page, "next_offset")),
+			  static_cast<double>(12 + strlen(visible)));
+	}
+}
+
 TEST_F(AgentTurnTest, GenericJsonTruncationReturnsAnExplicitPreview)
 {
 	react->history_tool_result_tokens = 100;
@@ -1113,4 +1227,53 @@ TEST_F(AgentTurnTest, OversizedCheckpointIsRewrittenWithoutLosingVerification)
 	EXPECT_EQ(attempts, 2);
 	ASSERT_NE(react->history_items, nullptr);
 	EXPECT_NE(std::strstr(react->history_items->content, "Verification: build passed."), nullptr);
+}
+
+TEST_F(AgentTurnTest, AssistantRenderingPrecedesTransactionAndNullRenderKeepsOriginalAnswer)
+{
+	for (bool fallback : {false, true}) {
+		react_reset(react);
+		struct render_state {
+			struct db *database;
+			bool fallback;
+			int calls;
+		} state{&db, fallback, 0};
+		struct agent_session_runtime runtime{};
+		runtime.db = &db;
+		runtime.session_id = sess.id;
+		runtime.react = react;
+		runtime.flags = AGENT_TURN_LOAD_HISTORY | AGENT_TURN_SAVE_MESSAGES;
+		runtime.render_user_data = &state;
+		runtime.render_assistant = [](const char *, void *data) -> char * {
+			auto *render = static_cast<render_state *>(data);
+			render->calls++;
+			EXPECT_TRUE(sqlite3_get_autocommit(render->database->handle));
+			EXPECT_EQ(db_exec(render->database,
+				"SAVEPOINT render_probe; RELEASE render_probe;"), 0);
+			return render->fallback ? nullptr : strdup("rendered answer");
+		};
+		struct agent_turn_input input{};
+		input.model_input = "Preserve renderer and persistence boundaries";
+		input.turn_id = fallback ? "render_fallback" : "render_ready";
+		struct agent_turn turn{};
+		ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+		react->outcome = REACT_OUTCOME_SUCCESS;
+		react->state = REACT_STATE_DONE;
+		react->final_answer = strdup("original answer");
+		ASSERT_NE(react->final_answer, nullptr);
+		struct agent_turn_result result{};
+		ASSERT_EQ(agent_turn_finish(&turn, &result), 0);
+		EXPECT_EQ(state.calls, 1);
+		EXPECT_TRUE(result.user_saved);
+		EXPECT_TRUE(result.assistant_saved);
+		int count = 0;
+		std::unique_ptr<message, decltype(&message_free_list)> messages(
+			message_list(&db, sess.id, &count), message_free_list);
+		ASSERT_NE(messages, nullptr);
+		const struct message *last = messages.get();
+		while (last->next)
+			last = last->next;
+		EXPECT_STREQ(last->role, "assistant");
+		EXPECT_STREQ(last->content, fallback ? "original answer" : "rendered answer");
+	}
 }

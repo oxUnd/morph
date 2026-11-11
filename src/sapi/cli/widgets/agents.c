@@ -86,7 +86,7 @@ int cli_agents_summary(morph_buf_t *out, const struct agent_info *agents, int co
 	if (rc == 0 && interrupted)
 		rc = morph_buf_printf(out, " · %d interrupted", interrupted);
 	if (rc == 0 && columns >= 100 && !failed && !interrupted)
-		rc = morph_buf_puts(out, " · /subagents");
+		rc = morph_buf_puts(out, " · /agents");
 	return rc;
 }
 

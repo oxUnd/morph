@@ -22,17 +22,17 @@ The main build also provides `build/bin/morph-tui-customization` with
    step between 1 and 5. It draws its own clipped progress display and emits
    semantic actions. Enter activates it and opens the Inspector.
 2. **Custom page.** The Inspector reuses the same Counter in a horizontal
-   layout. Change its value, Tab into the name field, press Ctrl-U to clear it,
+   layout. Change its value, Tab into the name field, press Ctrl+U to clear it,
    type a name, and press Enter to save. Escape returns with shared model changes
    applied and the original control focused. Unsaved Dashboard drafts survive
    help/modal visits unless the shared name was explicitly changed elsewhere.
 3. **Custom interaction.** On the Dashboard, `r` resets the counter through a
    page event handler. `?` opens Help through the Application's fallback handler.
-   Ctrl-L requests a redraw and posts a message back to the page. The name field
+   Ctrl+L requests a redraw and posts a message back to the page. The name field
    has a directly bound action: Enter saves its text without a controller-wide
    dispatch branch. When a text field has focus, `r`, `q`, and `?` insert text.
 
-Tab/Shift-Tab move focus. The Dashboard list offers the same page transitions
+Tab/Shift+Tab move focus. The Dashboard list offers the same page transitions
 and reset action through list activation. Help scrolls with Up/Down. Escape
 closes the active page; `q` also closes the Dashboard and Help when a text field
 has not consumed it. Paste never executes controls, submit, or shortcuts.

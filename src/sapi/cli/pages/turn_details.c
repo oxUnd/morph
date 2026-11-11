@@ -93,6 +93,7 @@ static int cli_turn_details_compose(struct cli_turn_details *page, int scroll, F
 
 	if (page->follow || page->offset > maximum)
 		page->offset = maximum;
+	page->follow = page->offset == maximum;
 	morph_buf_printf(&frame, "%s  Turn details%s  · %zu calls\n\n%s",
 			 cli_output_color_enabled(ctx) ? ANSI_BOLD : "",
 			 cli_output_color_enabled(ctx) ? ANSI_RESET ANSI_DIM : "",
@@ -111,7 +112,7 @@ static int cli_turn_details_compose(struct cli_turn_details *page, int scroll, F
 		line += length + (line[length] == '\n');
 	}
 	morph_buf_putc(&frame, '\n');
-	const char *hint = "  ctrl+o / esc back · PgUp/PgDn scroll · End follow";
+	const char *hint = "  Ctrl+T / esc back · PgUp/PgDn scroll · End follow";
 	const char *end = utf8_advance_display_width_borrow(
 		hint, page->columns > 1 ? (size_t)page->columns - 1 : 0);
 
@@ -149,7 +150,7 @@ static int cli_turn_details_event(void *data, struct morph_tui_application *app,
 
 	if (event->type == MORPH_TUI_EVENT_KEY && !event->pasting) {
 		switch (event->key) {
-		case 15:
+		case 20:
 		case 27:
 		case 3:
 			return morph_tui_application_dismiss_controller(app, 0);

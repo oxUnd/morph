@@ -318,6 +318,8 @@ static char *build_dynamic_context(struct react_context *ctx)
 			return NULL;
 	}
 
+	if (agent_control_checkpoint(ctx->agents, ctx->agent_id, &buf) != 0)
+		return NULL;
 	return morph_buf_detach(&buf);
 }
 
@@ -378,7 +380,7 @@ static int collect_active_tools(struct react_context *ctx, struct tool_desc *out
 		}
 		tool_desc_move(&out[j], &value);
 	}
-	return 0;
+	return idx;
 }
 
 static int react_prepare_active_tools_locked(struct react_context *ctx, morph_array_t *storage,
@@ -409,7 +411,11 @@ static int react_prepare_active_tools_locked(struct react_context *ctx, morph_ar
 		return -ENOMEM;
 	memset(*active_tools, 0, (size_t)*active_tool_count * sizeof(**active_tools));
 	/* Refresh copied descriptors under the registry lock. */
-	return collect_active_tools(ctx, *active_tools, *active_tool_count);
+	int count = collect_active_tools(ctx, *active_tools, *active_tool_count);
+	if (count < 0)
+		return count;
+	*active_tool_count = count;
+	return 0;
 }
 
 int react_prepare_active_tools(struct react_context *ctx, morph_array_t *storage,
@@ -425,6 +431,19 @@ int react_prepare_active_tools(struct react_context *ctx, morph_array_t *storage
 	tool_registry_lock(ctx->tools);
 	rc = react_prepare_active_tools_locked(ctx, &candidate, &view, &candidate_count);
 	tool_registry_unlock(ctx->tools);
+	if (rc == 0) {
+		int visible = 0;
+		for (int i = 0; i < candidate_count; i++) {
+			if (!agent_control_tool_allowed(ctx->agents, ctx->agent_id, view[i].name)) {
+				tool_desc_cleanup(&view[i]);
+				continue;
+			}
+			if (visible != i)
+				tool_desc_move(&view[visible], &view[i]);
+			visible++;
+		}
+		candidate_count = visible;
+	}
 	if (rc != 0)
 		return rc;
 	react_tool_descriptors_cleanup(storage);

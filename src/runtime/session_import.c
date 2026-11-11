@@ -504,6 +504,14 @@ static int import_file_execute(struct runtime *runtime, const char *path,
 			"a.error_code,a.iterations,a.started_at,a.ended_at FROM incoming.agent_threads a "
 			"JOIN import_session_map p ON p.old_id=a.root_session_id "
 			"JOIN import_session_map c ON c.old_id=a.session_id WHERE p.is_new=1;");
+	if (rc == 0 && import_has_column(db, "incoming", "agent_threads", "assignment_json"))
+		rc = import_exec(db,
+			"UPDATE agent_threads AS target SET assignment_json=("
+			"SELECT a.assignment_json FROM incoming.agent_threads a "
+			"JOIN import_session_map p ON p.old_id=a.root_session_id "
+			"WHERE p.is_new=1 AND p.new_id=target.root_session_id "
+			"AND a.agent_id=target.agent_id) "
+			"WHERE root_session_id IN (SELECT new_id FROM import_session_map WHERE is_new=1);");
 	if (rc == 0 && import_has_column(db, "incoming", "agent_mailbox", "root_session_id"))
 		rc = import_exec(db,
 			"INSERT INTO agent_mailbox(root_session_id,sender,recipient,kind,body,consumed) "

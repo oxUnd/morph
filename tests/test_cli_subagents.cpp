@@ -334,8 +334,8 @@ TEST(CliSubagentsTest, UserBlocksMatchThePrimaryFeedWithoutCaptureOrCursorContro
 	ASSERT_EQ(morph_buf_init(&document, 256), 0);
 	ASSERT_EQ(cli_subagents_transcript(&ctx, thread.get(), &document, 80, 0), 0);
 	EXPECT_EQ(primary, morph_buf_cstr_borrow(&document));
-	EXPECT_NE(primary.find("\033[48;5;234m"), std::string::npos);
-	EXPECT_NE(primary.find("›› "), std::string::npos);
+	EXPECT_NE(primary.find("\033[48;5;237m"), std::string::npos);
+	EXPECT_NE(primary.find("» "), std::string::npos);
 	EXPECT_EQ(primary.find("\033[31m"), std::string::npos);
 	EXPECT_EQ(primary.find("\033[K"), std::string::npos);
 	EXPECT_EQ(primary.find("\033[2J"), std::string::npos);

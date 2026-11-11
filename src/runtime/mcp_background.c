@@ -1,4 +1,5 @@
 #include "runtime/runtime_internal.h"
+#include "runtime/bootstrap.h"
 #include "runtime/mcp.h"
 #include "util/error.h"
 #include "util/log.h"
@@ -126,6 +127,8 @@ static int job_publish(struct runtime_mcp_job *job, struct tool_registry *pendin
 		for (int i = 0; i < added; i++)
 			(void)tool_unregister(&ctx->tools, pending->entries[i].desc.name);
 	}
+	if (rc == 0)
+		runtime_bootstrap_tool_flags(&ctx->tools, &ctx->config);
 	tool_registry_unlock(&ctx->tools);
 	pthread_mutex_unlock(&ctx->tool_registry_lock);
 	pthread_mutex_unlock(&ctx->tools.mutation_mutex);

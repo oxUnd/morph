@@ -165,11 +165,14 @@ static void cli_feed_work_row(struct cli_feed *terminal, int columns)
 		(void)strftime(clock, sizeof(clock), "%H:%M", &finished);
 		(void)morph_buf_printf(&text, " · %s", clock);
 	}
-	int prefix = terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING ? 12 : 2;
+	int running = terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING;
+	int prefix = running ? 12 : 2;
+	const char *hint = columns < 76 ? " · Ctrl+T" : " · Ctrl+T transcript";
+	int hint_width = running && columns >= 45 ? (int)utf8_display_width(hint) : 0;
 
 	(void)utf8_copy_ellipsized_display_width(
 		clipped, sizeof(clipped), morph_buf_cstr_borrow(&text),
-		(size_t)(columns > prefix ? columns - prefix : 1), 0);
+		(size_t)(columns > prefix + hint_width ? columns - prefix - hint_width : 1), 0);
 	if (terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING) {
 		cli_feed_work_label(terminal, elapsed);
 		fprintf(terminal->output, ANSI_DIM " · ");
@@ -177,6 +180,8 @@ static void cli_feed_work_row(struct cli_feed *terminal, int columns)
 		fprintf(terminal->output, "  ");
 	}
 	fprintf(terminal->output, ANSI_DIM "%s" ANSI_RESET, clipped);
+	if (hint_width)
+		fprintf(terminal->output, CLI_COMMAND_COLOR "%s" ANSI_RESET, hint);
 	morph_buf_cleanup(&text);
 }
 

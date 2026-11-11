@@ -36,7 +36,7 @@ Interactive session selection through `/resume`, `/resume <name|id>`, `/switch` 
 `-s <name>` restores saved conversation text to native terminal scrollback. This
 includes inactive messages from before context compression, assistant preambles
 and saved tool summaries. Internal summaries and background receipts are omitted.
-Ctrl+O inspects the latest restored turn's tool details and saved reasoning. Tools
+Ctrl+T inspects the latest restored turn's tool details and saved reasoning. Tools
 with no saved result are marked accordingly; saved shell durations are displayed
 when available. History restoration never generates a new turn or executes tools.
 Saved original tool output is preferred over the shortened copy used by the model.
@@ -125,7 +125,7 @@ mode's command-output envelope.
 /history --export path          Existing model-history JSON export
 ```
 
-The inspector handles narrow terminals, resizes, bracketed paste, Ctrl-C and EOF;
+The inspector handles narrow terminals, resizes, bracketed paste, Ctrl+C and EOF;
 it restores terminal modes and the main screen on return. Signal handlers restore
 the screen before forwarding termination signals to their previous handlers.
 Only changed viewport rows are painted, and idle inspection emits no bytes.
@@ -133,4 +133,4 @@ Only changed viewport rows are painted, and idle inspection emits no bytes.
 Validation includes runtime and adapter tests plus `test_cli_history_pty.py`,
 which exercises 300 saved entries, summary ancestry, actual request capture,
 Unicode search, filters, stored/request details, narrow/too-small resize, paste,
-Ctrl-C and restoration of scrollback and the Readline composer.
+Ctrl+C and restoration of scrollback and the Readline composer.

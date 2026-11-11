@@ -897,14 +897,13 @@ extern void sandbox_free_error(char *errorbuf);
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
-static int sandbox_sbpl_path_rule(morph_buf_t *profile, const char *operations,
-				  const char *path)
+static int sandbox_sbpl_subpath(morph_buf_t *profile, const char *path)
 {
 	int rc;
 
-	if (!profile || !operations || !path)
+	if (!profile || !path)
 		return -EINVAL;
-	rc = morph_buf_printf(profile, "(allow %s (subpath \"", operations);
+	rc = morph_buf_puts(profile, "(subpath \"");
 	if (rc != 0)
 		return rc;
 	for (const unsigned char *p = (const unsigned char *)path; *p; p++) {
@@ -917,7 +916,18 @@ static int sandbox_sbpl_path_rule(morph_buf_t *profile, const char *operations,
 		if (rc != 0)
 			return rc;
 	}
-	return morph_buf_puts(profile, "\"))\n");
+	return morph_buf_puts(profile, "\")");
+}
+
+static int sandbox_sbpl_path_rule(morph_buf_t *profile, const char *operations,
+				  const char *path)
+{
+	if (!profile || !operations || !path)
+		return -EINVAL;
+	int rc = morph_buf_printf(profile, "(allow %s ", operations);
+	if (rc == 0)
+		rc = sandbox_sbpl_subpath(profile, path);
+	return rc == 0 ? morph_buf_puts(profile, ")\n") : rc;
 }
 
 static int sandbox_sbpl_darwin_user_dir(morph_buf_t *profile, int name)
@@ -937,10 +947,7 @@ static int sandbox_sbpl_darwin_user_dir(morph_buf_t *profile, int name)
 	rc = sandbox_sbpl_path_rule(profile, "file-read*", resolved);
 	if (rc != 0)
 		return rc;
-	return sandbox_sbpl_path_rule(profile,
-		"file-write-data file-write-create file-write-mode "
-		"file-write-flags file-write-owner file-write-times "
-		"file-write-xattr file-write-unlink", resolved);
+	return sandbox_sbpl_path_rule(profile, "file-write*", resolved);
 }
 
 static int sandbox_sbpl_base(morph_buf_t *profile)
@@ -1037,10 +1044,7 @@ static int sandbox_sbpl_temp(morph_buf_t *profile)
 	int rc;
 
 	if (sandbox_resolve_custom_temp(resolved)) {
-		rc = sandbox_sbpl_path_rule(profile,
-			"file-read* file-write-data file-write-create "
-			"file-write-mode file-write-flags file-write-owner "
-			"file-write-times file-write-xattr file-write-unlink", resolved);
+		rc = sandbox_sbpl_path_rule(profile, "file-read* file-write*", resolved);
 		if (rc != 0)
 			return rc;
 	}
@@ -1048,19 +1052,50 @@ static int sandbox_sbpl_temp(morph_buf_t *profile)
 	if (rc != 0)
 		return rc;
 
-	rc = sandbox_sbpl_path_rule(profile,
-		"file-read* file-write-data file-write-create "
-		"file-write-mode file-write-flags file-write-owner "
-		"file-write-times file-write-xattr file-write-unlink",
-		"/private/var/tmp");
+	rc = sandbox_sbpl_path_rule(profile, "file-read* file-write*", "/private/var/tmp");
 	if (rc != 0)
 		return rc;
 
-	return sandbox_sbpl_path_rule(profile,
-		"file-read* file-write-data file-write-create "
-		"file-write-mode file-write-flags file-write-owner "
-		"file-write-times file-write-xattr file-write-unlink",
-		"/private/tmp");
+	return sandbox_sbpl_path_rule(profile, "file-read* file-write*", "/private/tmp");
+}
+
+static int sandbox_sbpl_write_rule(morph_buf_t *profile, const struct sandbox_config *cfg,
+				    const char *path)
+{
+	/* Modern utimensat/futimens need the aggregate write operation. Keep
+	 * unlink separate by excluding every authorized delete scope from its deny. */
+	int delete_scopes = cfg->allow_temp;
+	for (int i = 0; i < cfg->delete_paths_count; i++)
+		delete_scopes += cfg->delete_paths && cfg->delete_paths[i];
+	int rc = sandbox_sbpl_path_rule(profile, "file-write*", path);
+	if (rc == 0)
+		rc = morph_buf_puts(profile, delete_scopes
+			? "(deny file-write-unlink (require-all " : "(deny file-write-unlink ");
+	if (rc == 0)
+		rc = sandbox_sbpl_subpath(profile, path);
+	if (rc != 0 || !delete_scopes)
+		return rc == 0 ? morph_buf_puts(profile, ")\n") : rc;
+	if (rc == 0)
+		rc = morph_buf_puts(profile, " (require-not (require-any ");
+	for (int i = 0; rc == 0 && i < cfg->delete_paths_count; i++) {
+		if (cfg->delete_paths && cfg->delete_paths[i])
+			rc = sandbox_sbpl_subpath(profile, cfg->delete_paths[i]);
+	}
+	if (rc == 0 && cfg->allow_temp) {
+		char resolved[PATH_MAX];
+		char temp[PATH_MAX];
+		if (sandbox_resolve_custom_temp(resolved))
+			rc = sandbox_sbpl_subpath(profile, resolved);
+		size_t length = confstr(_CS_DARWIN_USER_TEMP_DIR, temp, sizeof(temp));
+		if (rc == 0 && length > sizeof(temp))
+			rc = -ENAMETOOLONG;
+		if (rc == 0 && length && realpath(temp, resolved))
+			rc = sandbox_sbpl_subpath(profile, resolved);
+		if (rc == 0)
+			rc = morph_buf_puts(profile, "(subpath \"/private/tmp\")"
+					     "(subpath \"/private/var/tmp\")");
+	}
+	return rc == 0 ? morph_buf_puts(profile, "))))\n") : rc;
 }
 
 static int sandbox_sbpl_filesystem(morph_buf_t *profile,
@@ -1111,12 +1146,7 @@ static int sandbox_sbpl_filesystem(morph_buf_t *profile,
 		for (int i = 0; i < cfg->write_paths_count; i++) {
 			if (!cfg->write_paths || !cfg->write_paths[i])
 				continue;
-			rc = sandbox_sbpl_path_rule(profile,
-				"file-write-data file-write-create "
-				"file-write-mode file-write-flags "
-				"file-write-owner file-write-times "
-				"file-write-xattr",
-				cfg->write_paths[i]);
+			rc = sandbox_sbpl_write_rule(profile, cfg, cfg->write_paths[i]);
 			if (rc != 0)
 				return rc;
 		}

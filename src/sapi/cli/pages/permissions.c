@@ -126,7 +126,6 @@ int cli_permissions_show(struct cli_application *ctx)
 	};
 	const struct cli_composer_panel_options options = {
 		.max_rows = 10,
-		.max_columns = 58,
 		.tick_ms = 100,
 	};
 	if (!picker)

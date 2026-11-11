@@ -35,7 +35,7 @@ submitted answer. Permission grants remain in the dedicated approval flow.
 
 The CLI marks recommendations and preselects them. Enter confirms the current
 selection. In the plain prompt fallback, an empty submitted line confirms the
-recommended combination if one exists. Esc/Ctrl-C cancels the turn.
+recommended combination if one exists. Esc/Ctrl+C cancels the turn.
 
 ## Results
 

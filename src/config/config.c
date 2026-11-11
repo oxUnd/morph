@@ -466,6 +466,9 @@ void config_set_defaults(struct morph_log *logger, struct config *cfg)
 	cfg->agents.enabled = 1;
 	cfg->agents.max_threads = 6;
 	cfg->agents.max_depth = 2;
+	cfg->agents.task_timeout_seconds = 600;
+	cfg->agents.finalize_wait_seconds = 60;
+	cfg->agents.finalize_grace_seconds = 30;
 	cfg->agents.rollout_budget.prefill_token_weight = 1.0;
 	cfg->agents.rollout_budget.sampling_token_weight = 1.0;
 	strcpy(cfg->agents.child_shell, "scoped");
@@ -1349,6 +1352,9 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 		CFG_BOOL(agents, "enabled", cfg->agents.enabled);
 		CFG_INT(agents, "max_threads", cfg->agents.max_threads);
 		CFG_INT(agents, "max_depth", cfg->agents.max_depth);
+		CFG_INT(agents, "task_timeout_seconds", cfg->agents.task_timeout_seconds);
+		CFG_INT(agents, "finalize_wait_seconds", cfg->agents.finalize_wait_seconds);
+		CFG_INT(agents, "finalize_grace_seconds", cfg->agents.finalize_grace_seconds);
 		if (cfg_find(agents, "max_total_tokens") ||
 		    cfg_find(agents, "budget_input_weight") ||
 		    cfg_find(agents, "budget_output_weight") ||
@@ -1408,6 +1414,10 @@ void config_print(const struct config *cfg)
 		 permission_access_name(cfg->permissions.access),
 		 permission_approval_name(cfg->permissions.approval),
 		 permission_reviewer_name(cfg->permissions.reviewer));
+	log_info(cfg->logger,
+		 "  [agents] threads=%d depth=%d task_timeout=%d finalize_wait=%d finalize_grace=%d",
+		 cfg->agents.max_threads, cfg->agents.max_depth, cfg->agents.task_timeout_seconds,
+		 cfg->agents.finalize_wait_seconds, cfg->agents.finalize_grace_seconds);
 	log_info(cfg ? cfg->logger : NULL,
 		 "  [exec] shell=%s timeout_ms=%d yield_ms=%d max_wait_ms=%d "
 		 "inline=%d session=%d grace_ms=%d",

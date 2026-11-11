@@ -26,7 +26,7 @@ cmake --build build --target morph-tui-minimal
 ```
 
 Run in a terminal. Use Up/Down or j/k to move, Enter to select, and q, Escape,
-or Ctrl-C to exit. Pasted navigation cannot activate controls. Resize updates
+or Ctrl+C to exit. Pasted navigation cannot activate controls. Resize updates
 the layout; exiting restores terminal modes.
 
 Public names describe objects: `morph_tui_application_*`, `morph_tui_view_*`,

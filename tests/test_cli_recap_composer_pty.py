@@ -58,13 +58,13 @@ def one_composer(terminal, label):
     restored_composer_snapshot(terminal, label)
     rows = all_rows(terminal)
     prompts = [i for i, row in enumerate(rows)
-               if row.split('ctrl+o details')[0].strip() in ('>', '›')]
-    hints = [i for i, row in enumerate(rows) if 'ctrl+o details' in row]
+               if row.split('Ctrl+T transcript')[0].strip() in ('>', '›')]
+    hints = [i for i, row in enumerate(rows) if 'Ctrl+T transcript' in row]
     footers = [i for i, row in enumerate(rows) if 'perm: ' in row]
     diagnostic = (f'{label}\nprompts={prompts} hints={hints} footers={footers}\n' +
                   '\n'.join(f'{i:03}: {row}' for i, row in enumerate(rows)))
     assert len(prompts) == 1, diagnostic
-    assert len(hints) == 1, diagnostic
+    assert len(hints) == 0, diagnostic
     assert len(footers) == 1, diagnostic
     visible = prompts[0] - len(terminal.screen.history.top)
     assert visible >= 0, diagnostic

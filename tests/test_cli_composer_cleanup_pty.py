@@ -42,7 +42,7 @@ class ComposerModel(http.server.BaseHTTPRequestHandler):
 def empty_prompts(terminal):
     rows = [''.join(cell.data for _, cell in sorted(row.items()))
             for row in terminal.screen.history.top] + terminal.screen.display
-    return [row for row in rows if row.split('ctrl+o details')[0].strip() in ('>', '›')]
+    return [row for row in rows if row.split('Ctrl+T transcript')[0].strip() in ('>', '›')]
 
 
 def restored_composer_snapshot(terminal, label):
@@ -52,7 +52,7 @@ def restored_composer_snapshot(terminal, label):
     deadline = time.monotonic() + 8
     while True:
         text = terminal.snapshot(label)
-        if any(row.split('ctrl+o details')[0].strip() in ('>', '›')
+        if any(row.split('Ctrl+T transcript')[0].strip() in ('>', '›')
                for row in terminal.screen.display):
             return text
         assert time.monotonic() < deadline, terminal.screen.display
@@ -93,7 +93,7 @@ def main():
                             thought = output.index('The user says')
                             committed = output.rfind('hello world', 0, thought)
                             assert committed >= 0, repr(output)
-                            assert 'ctrl+o details' not in output[:committed], repr(output)
+                            assert 'Ctrl+T transcript' not in output[:committed], repr(output)
                             assert len(empty_prompts(terminal)) == 1, terminal.screen.display
                             rows = terminal.screen.display
                             question = max(i for i, row in enumerate(rows)
@@ -102,7 +102,7 @@ def main():
                             bottom = question + (1 if color else 0)
                             assert reasoning == bottom + 2, '\n'.join(rows)
                             assert not rows[bottom + 1].strip(), '\n'.join(rows)
-                            assert all(terminal.screen.buffer[bottom + 1][column].bg != '1c1c1c'
+                            assert all(terminal.screen.buffer[bottom + 1][column].bg != '3a3a3a'
                                        for column in range(terminal.screen.columns)), '\n'.join(rows)
                             if turn == 0:
                                 # Complete metadata after the turn is already idle.
@@ -143,7 +143,7 @@ def main():
                         start = len(terminal.raw)
                         terminal.send('\r')
                         terminal.child.expect(pexpect.EOF, timeout=8)
-                        assert 'ctrl+o details' not in terminal.raw[start:], repr(
+                        assert 'Ctrl+T transcript' not in terminal.raw[start:], repr(
                             terminal.raw[start:])
                         assert not empty_prompts(terminal), terminal.screen.display
                         print(f'checked: {width} columns, color={color}, no orphan composer')

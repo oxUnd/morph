@@ -105,7 +105,7 @@ def main():
                     terminal.pump(1)
                     screen = terminal.snapshot(f'{columns}: startup resume list')
                     assert 'Resume a session' in screen and 'HistoryNative' in screen, screen
-                    assert 'ctrl+o details' not in terminal.raw, terminal.raw
+                    assert 'Ctrl+T transcript' not in terminal.raw, terminal.raw
                     terminal.send('\r')
                     check_restored(terminal, f'{columns}: selected session restores scrollback')
                     assert not (directory / 'resumed-tool-must-not-run').exists()

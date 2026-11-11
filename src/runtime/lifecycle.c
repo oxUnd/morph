@@ -386,6 +386,7 @@ static int runtime_start_components(struct runtime *runtime)
 		runtime ? runtime->options.logger : NULL, &ctx->mcp, &ctx->config.mcp, &ctx->tools,
 		runtime->options.auto_connect_mcp && !runtime->options.background_connect_mcp,
 		runtime->options.event_cb, runtime->options.event_user_data);
+	runtime_bootstrap_tool_flags(&ctx->tools, &ctx->config);
 	runtime_emit_startup(runtime, "startup.mcp", "end",
 			     "Services configured");
 	runtime_context_configure_engine(ctx);

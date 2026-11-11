@@ -69,7 +69,7 @@ def main():
             terminal.screen = AlternateScreen(100, 32)
             terminal.stream = pyte.Stream(terminal.screen)
             deadline = time.monotonic() + 8
-            while 'ctrl+o details' not in terminal.raw:
+            while 'perm: ' not in terminal.raw:
                 assert time.monotonic() < deadline, terminal.raw[-3000:]
                 terminal.pump(.05)
             terminal.send('/new history-view\r')

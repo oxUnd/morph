@@ -244,7 +244,8 @@ void cli_composer_model_set_ultra(struct cli_composer_model *composer, int ultra
 
 int cli_composer_model_prompt_width(const struct cli_composer_model *composer)
 {
-	return composer && composer->ultra ? 3 : 2;
+	(void)composer;
+	return 2;
 }
 
 int cli_composer_model_animation_frame(struct cli_composer_model *composer, int64_t now_ms)

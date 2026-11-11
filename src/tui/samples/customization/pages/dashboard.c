@@ -55,7 +55,7 @@ static void sample_customization_page_dashboard_build(struct morph_tui_view_cont
 					 &fill);
 	page->status = morph_tui_widget_label_add_borrow(builder, root, "Dashboard active", NULL);
 	morph_tui_widget_label_add_borrow(
-		builder, root, "Tab: focus | r: reset | ?: help | Ctrl-L: redraw | Esc/q: quit",
+		builder, root, "Tab: focus | r: reset | ?: help | Ctrl+L: redraw | Esc/q: quit",
 		NULL);
 	page->name_revision = app->name_revision;
 	morph_tui_builder_fail(builder,

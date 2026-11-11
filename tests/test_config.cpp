@@ -38,6 +38,9 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_EQ(cfg.models.text.retry_count, 3);
 	EXPECT_EQ(cfg.models.vision.retry_count, 3);
 	EXPECT_EQ(cfg.react.max_iterations, 2048);
+	EXPECT_EQ(cfg.agents.task_timeout_seconds, 600);
+	EXPECT_EQ(cfg.agents.finalize_wait_seconds, 60);
+	EXPECT_EQ(cfg.agents.finalize_grace_seconds, 30);
 	EXPECT_EQ(cfg.react.tool_timeout_seconds, 300);
 	EXPECT_EQ(cfg.react.tool_max_retries, 3);
 	EXPECT_EQ(cfg.react.guardrail_max_retries, 2);
@@ -150,6 +153,7 @@ TEST_F(ConfigTest, RolloutBudgetValidatesRequiredFieldsAndThresholds)
 TEST_F(ConfigTest, MultiAgentConfiguration)
 {
 	const char *toml = "[agents]\nenabled=true\nmax_threads=4\nmax_depth=3\n"
+		"task_timeout_seconds=120\nfinalize_wait_seconds=10\nfinalize_grace_seconds=0\n"
 		"multi_agent_mode=\"proactive\"\n";
 	ASSERT_EQ(file_write_all(config_path, toml, strlen(toml)), 0);
 	struct config cfg;
@@ -157,7 +161,30 @@ TEST_F(ConfigTest, MultiAgentConfiguration)
 	EXPECT_EQ(cfg.agents.enabled, 1);
 	EXPECT_EQ(cfg.agents.max_threads, 4);
 	EXPECT_EQ(cfg.agents.max_depth, 3);
+	EXPECT_EQ(cfg.agents.task_timeout_seconds, 120);
+	EXPECT_EQ(cfg.agents.finalize_wait_seconds, 10);
+	EXPECT_EQ(cfg.agents.finalize_grace_seconds, 0);
 	EXPECT_STREQ(cfg.agents.multi_agent_mode, "proactive");
+}
+
+TEST_F(ConfigTest, AgentConvergenceLimitsRejectInvalidValues)
+{
+	for (const char *field : {"task_timeout_seconds=-1", "task_timeout_seconds=86401",
+				  "finalize_wait_seconds=-1", "finalize_wait_seconds=3601",
+				  "finalize_grace_seconds=-1", "finalize_grace_seconds=3601"}) {
+		std::string text = std::string("[agents]\n") + field + "\n";
+		ASSERT_EQ(file_write_all(config_path, text.c_str(), text.size()), 0);
+		struct config cfg;
+		EXPECT_NE(config_load(nullptr, &cfg, config_path), 0) << field;
+	}
+	const char *disabled = "[agents]\ntask_timeout_seconds=0\nfinalize_wait_seconds=0\n"
+		"finalize_grace_seconds=0\n";
+	ASSERT_EQ(file_write_all(config_path, disabled, strlen(disabled)), 0);
+	struct config cfg;
+	ASSERT_EQ(config_load(nullptr, &cfg, config_path), 0);
+	EXPECT_EQ(cfg.agents.task_timeout_seconds, 0);
+	EXPECT_EQ(cfg.agents.finalize_wait_seconds, 0);
+	EXPECT_EQ(cfg.agents.finalize_grace_seconds, 0);
 }
 
 TEST_F(ConfigTest, PromptRejectsUnknownModes)

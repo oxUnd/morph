@@ -166,6 +166,25 @@ TEST_F(ToolTest, ExecNotFound) {
 	tool_result_cleanup(&result);
 }
 
+TEST_F(ToolTest, UnknownReadReportsTheAvailableFileToolWithoutRunningIt)
+{
+	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "Read a file",
+		nullptr, mock_tool_exec, nullptr, nullptr), 0);
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&reg, "read", "{}", &result), -ENOENT);
+	const cJSON *error = cJSON_GetObjectItemCaseSensitive(result.envelope, "error");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(error, "code")),
+		"tool_not_found");
+	const char *message = cJSON_GetStringValue(
+		cJSON_GetObjectItemCaseSensitive(error, "message"));
+	ASSERT_NE(message, nullptr);
+	EXPECT_NE(strstr(message, "'read' is not registered"), nullptr);
+	EXPECT_NE(strstr(message, "Use file_read"), nullptr);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "tool_not_found"), nullptr);
+}
+
 TEST_F(ToolTest, ExecError) {
 	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "error_tool", "Error tool", nullptr, error_tool_exec, nullptr, nullptr);
 	struct tool_result result;

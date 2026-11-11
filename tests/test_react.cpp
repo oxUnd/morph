@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 #include "agent/react.h"
+#include "agent/agent_control.h"
+#include "agent/tools/multi_agents.h"
+#include "agent_http_test_support.hpp"
 #include "agent/react_internal.h"
 #include "agent/react_request.h"
 #include "agent/history.h"
@@ -3101,6 +3104,379 @@ TEST_F(MockLlmTest, GlobalToolTimeoutLetsLoopContinue) {
 	EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(
 			  elapsed).count(), 2000);
 	react_context_destroy(ctx);
+}
+
+static int bounded_agent_wait_tool(const char *arguments, struct tool_result *result, void *opaque)
+{
+	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(arguments);
+	const cJSON *timeout = cJSON_GetObjectItemCaseSensitive(args, "timeout_ms");
+	if (timeout &&
+	    (!cJSON_IsNumber(timeout) || timeout->valuedouble < 1 ||
+	     timeout->valuedouble > 3600000 || timeout->valuedouble != (double)timeout->valueint))
+		return -EINVAL;
+	std::this_thread::sleep_for(std::chrono::milliseconds(*static_cast<int *>(opaque)));
+	return tool_result_success_json_text_copy(result, R"({"timed_out":true})");
+}
+
+static void react_test_model_cleanup(struct model **model)
+{
+	model_destroy(*model);
+	*model = nullptr;
+}
+
+static void react_test_agent_info_cleanup(struct agent_info **info)
+{
+	agent_control_free_list(*info, *info ? 1 : 0);
+	*info = nullptr;
+}
+
+TEST_F(MockLlmTest, AgentWaitDeadlineOutlivesTheGenericToolTimeout)
+{
+	int duration = 1100;
+	ASSERT_EQ(tool_register_borrow(
+			  TOOL_ORIGIN_BUILTIN, &tools, "wait_agent", "Bounded wait",
+			  R"({"type":"object","properties":{"timeout_ms":{"type":"integer"}}})",
+			  bounded_agent_wait_tool, &duration, nullptr),
+		  0);
+	for (const char *wait :
+	     {"Action: wait_agent({\"timeout_ms\":2000})", "Action: wait_agent({})"}) {
+		const char *responses[] = {wait, "Final: normal wait timeout collected"};
+		llm = create_multi_mock_llm(responses, 2);
+		ASSERT_NE(llm, nullptr);
+		struct react_context *ctx MORPH_CLEANUP(react_context_clear) =
+			react_context_create(&tools, tok, &cfg, nullptr);
+		ASSERT_NE(ctx, nullptr);
+		ctx->llm_model = llm;
+		ctx->tool_timeout_seconds = 1;
+		ASSERT_EQ(react_run(ctx, "collect the bounded wait", nullptr, nullptr), 0);
+		int observations = 0;
+		for (const struct react_step *step = ctx->steps; step; step = step->next) {
+			if (step->type == REACT_STEP_OBSERVATION) {
+				EXPECT_EQ(step->error_code, 0);
+				EXPECT_NE(strstr(step->content, "timed_out"), nullptr);
+				observations++;
+			}
+		}
+		EXPECT_EQ(observations, 1);
+		react_context_clear(&ctx);
+		model_destroy(llm);
+		llm = nullptr;
+	}
+}
+
+TEST_F(MockLlmTest, InvalidAgentWaitArgumentsRetainTheirActualError)
+{
+	int duration = 0;
+	ASSERT_EQ(tool_register_borrow(
+			  TOOL_ORIGIN_BUILTIN, &tools, "wait_agent", "Bounded wait",
+			  R"({"type":"object","properties":{"timeout_ms":{"type":"number"}}})",
+			  bounded_agent_wait_tool, &duration, nullptr),
+		  0);
+	const char *responses[] = {"Action: wait_agent({\"timeout_ms\":1.5})",
+				   "Final: invalid wait arguments were rejected"};
+	llm = create_multi_mock_llm(responses, 2);
+	struct react_context *ctx MORPH_CLEANUP(react_context_clear) =
+		react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ASSERT_EQ(react_run(ctx, "reject invalid wait", nullptr, nullptr), 0);
+	bool rejected = false;
+	for (const struct react_step *step = ctx->steps; step; step = step->next) {
+		if (step->type == REACT_STEP_OBSERVATION && step->error_code == -EINVAL)
+			rejected = true;
+	}
+	EXPECT_TRUE(rejected);
+}
+
+class ReactAgentConvergenceTest : public ReactTest
+{
+      protected:
+	AgentHttpServer server;
+	struct db database{};
+	struct session session{};
+	struct config configuration{};
+	struct model *child_model = nullptr;
+	struct agent_control *control = nullptr;
+	struct tool_runtime_context runtime{};
+	std::atomic<bool> entered{false};
+	bool honor_finish = true;
+	bool interim_reports = false;
+
+	void SetUp() override
+	{
+		ReactTest::SetUp();
+		server.start();
+		ASSERT_EQ(db_open(nullptr, &database, ":memory:"), 0);
+		ASSERT_EQ(db_init_schema(&database), 0);
+		ASSERT_EQ(session_create(&database, "convergence", "test-model", &session), 0);
+		config_set_defaults(nullptr, &configuration);
+		configuration.react.max_iterations = 12;
+		configuration.agents.task_timeout_seconds = 0;
+		configuration.agents.finalize_wait_seconds = 1;
+		configuration.agents.finalize_grace_seconds = 1;
+		std::string url = "http://127.0.0.1:" + std::to_string(server.port) + "/v1";
+		child_model =
+			model_llm_create(nullptr, "openai", "test-model", url.c_str(), "test");
+		ASSERT_NE(child_model, nullptr);
+		child_model->retry_count = 0;
+		ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "ongoing_review",
+					       "Review until asked to hand back evidence", "{}",
+					       review_tool, this, nullptr),
+			  0);
+		tool_borrow(&tools, "ongoing_review")->flags |= TOOL_FLAG_READONLY;
+		server.respond = [](const std::string &body) -> std::string {
+			if (body.find("<agent_finish_request>") != std::string::npos)
+				return R"({"content":"Verified initial check; additional review unfinished."})";
+			return R"({"content":"Initial map check completed.","tool_calls":[{"index":0,"id":"call_work","type":"function","function":{"name":"ongoing_review","arguments":"{}"}}]})";
+		};
+		runtime.db = &database;
+		runtime.config = &configuration;
+		runtime.memory_session_id = session.id;
+		runtime.agent_id = "/root";
+	}
+
+	void TearDown() override
+	{
+		agent_control_destroy(control);
+		model_destroy(child_model);
+		db_close(&database);
+		ReactTest::TearDown();
+	}
+
+	void spawn()
+	{
+		control = agent_control_create(&tools, child_model, tok, &cfg,
+					       &configuration.agents, &database);
+		ASSERT_NE(control, nullptr);
+		ASSERT_EQ(agent_control_set_parent_session(control, session.id), 0);
+		ASSERT_EQ(multi_agents_register(&tools, control), 0);
+		runtime.agents = control;
+		cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
+			R"({"task_name":"reader","message":"Inspect only the assigned map path.","fork_turns":"none"})");
+		cJSON *result MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+		ASSERT_EQ(agent_control_call(control, "spawn_agent", args, &runtime, &result), 0);
+	}
+
+	static int review_tool(const char *, struct tool_result *result, void *opaque)
+	{
+		auto *fixture = static_cast<ReactAgentConvergenceTest *>(opaque);
+		fixture->entered.store(true);
+		for (int tick = 0; tick < 5000; tick++) {
+			if (morph_cancel_token_is_cancelled(result->runtime->http.cancel_token))
+				return -ECANCELED;
+			if (fixture->honor_finish &&
+			    agent_control_finish_requested(fixture->control,
+							   result->runtime->agent_id))
+				return tool_result_success_text_copy(result,
+								     "Verified initial map check.");
+			if (fixture->interim_reports && tick && tick % 100 == 0) {
+				cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
+					R"({"target":"/root","message":"Initial check recorded; optional review still running."})");
+				cJSON *reply MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+				int rc = agent_control_call(fixture->control, "send_message", args,
+							    result->runtime, &reply);
+				if (rc != 0)
+					return rc;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		return -ETIMEDOUT;
+	}
+
+	struct react_context *create_root(struct model *root_model)
+	{
+		struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+		if (!ctx)
+			return nullptr;
+		ctx->llm_model = root_model;
+		ctx->agents = control;
+		ctx->max_iterations = 12;
+		react_set_tool_runtime_context(ctx, &runtime);
+		return ctx;
+	}
+};
+
+TEST_F(ReactAgentConvergenceTest, FinalizationCollectsPromptPartialReports)
+{
+	spawn();
+	ASSERT_NE(control, nullptr);
+	const char *responses[] = {"Final: candidate before child report",
+				   "Final: integrated partial report"};
+	struct model *root_model MORPH_CLEANUP(react_test_model_cleanup) =
+		create_multi_mock_llm(responses, 2);
+	struct react_context *ctx MORPH_CLEANUP(react_context_clear) = create_root(root_model);
+	ASSERT_NE(ctx, nullptr);
+	auto before = std::chrono::steady_clock::now();
+	EXPECT_EQ(react_run(ctx, "finish with checked evidence", nullptr, nullptr), 0);
+	auto elapsed = std::chrono::steady_clock::now() - before;
+	EXPECT_TRUE(entered.load());
+	EXPECT_EQ(agent_control_descendants_active(control, "/root"), 0);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_STREQ(ctx->final_answer, "integrated partial report");
+	EXPECT_TRUE(ctx->agent_finalize_finish_requested_ms > 0);
+	EXPECT_FALSE(ctx->agent_finalize_interrupted);
+	EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 3000);
+	bool summary_without_tools = false;
+	for (const std::string &request : server.snapshot()) {
+		if (request.find("<agent_finish_request>") != std::string::npos) {
+			cJSON *body MORPH_CLEANUP(morph_json_cleanup) =
+				cJSON_Parse(request.c_str());
+			summary_without_tools = !cJSON_GetObjectItemCaseSensitive(body, "tools");
+		}
+	}
+	EXPECT_TRUE(summary_without_tools);
+}
+
+TEST_F(ReactAgentConvergenceTest, FinalizationInterruptsUnfinishedChildrenAfterGrace)
+{
+	honor_finish = false;
+	spawn();
+	ASSERT_NE(control, nullptr);
+	const char *responses[] = {"Final: candidate",
+				   "Final: report includes the interrupted branch"};
+	struct model *root_model MORPH_CLEANUP(react_test_model_cleanup) =
+		create_multi_mock_llm(responses, 2);
+	struct react_context *ctx MORPH_CLEANUP(react_context_clear) = create_root(root_model);
+	ASSERT_NE(ctx, nullptr);
+	auto before = std::chrono::steady_clock::now();
+	EXPECT_EQ(react_run(ctx, "stop the optional review and report", nullptr, nullptr), 0);
+	auto elapsed = std::chrono::steady_clock::now() - before;
+	EXPECT_TRUE(ctx->agent_finalize_interrupted);
+	EXPECT_EQ(agent_control_descendants_active(control, "/root"), 0);
+	EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 3500);
+	struct agent_info *detail MORPH_CLEANUP(react_test_agent_info_cleanup) = nullptr;
+	ASSERT_EQ(agent_control_read_copy(control, "/root/reader", &detail), 0);
+	ASSERT_NE(detail, nullptr);
+	EXPECT_EQ(detail->status, AGENT_CANCELLED);
+	ASSERT_NE(detail->result, nullptr);
+	EXPECT_NE(strstr(detail->result, "Partial report"), nullptr);
+	EXPECT_NE(strstr(detail->result, "Initial map check completed"), nullptr);
+}
+
+TEST_F(ReactAgentConvergenceTest, ChildSoftDeadlineEndsInvestigationWithoutParentFinalization)
+{
+	configuration.agents.task_timeout_seconds = 1;
+	spawn();
+	ASSERT_NE(control, nullptr);
+	agent_control_join(control);
+	EXPECT_TRUE(entered.load());
+	struct agent_info *detail MORPH_CLEANUP(react_test_agent_info_cleanup) = nullptr;
+	ASSERT_EQ(agent_control_read_copy(control, "/root/reader", &detail), 0);
+	ASSERT_NE(detail, nullptr);
+	EXPECT_EQ(detail->status, AGENT_COMPLETED);
+	ASSERT_NE(detail->result, nullptr);
+	EXPECT_NE(strstr(detail->result, "additional review unfinished"), nullptr);
+	EXPECT_EQ(server.snapshot().size(), 2u);
+}
+
+TEST_F(ReactAgentConvergenceTest, ClosureCannotExecuteAProviderRequestedLateInvestigation)
+{
+	int late_checks = 0;
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "late_recheck", "Late check",
+				       "{}", call_count_tool_fn, &late_checks, nullptr),
+		  0);
+	spawn();
+	ASSERT_NE(control, nullptr);
+	struct probe {
+		struct react_context *ctx = nullptr;
+		int calls = 0;
+		int64_t original_started = 0;
+		int64_t original_finish_request = 0;
+	} state;
+	struct model root_model{};
+	strcpy(root_model.api_key, "mock");
+	root_model.handle = &state;
+	root_model.chat_with_tools = [](struct model *self, const char *prompt,
+					struct chat_message *, int, struct tool_desc *, int count,
+					struct chat_response *response, sse_callback,
+					void *) -> int {
+		auto *current = static_cast<probe *>(self->handle);
+		current->calls++;
+		if (current->calls == 1) {
+			response->content = strdup("candidate before the report");
+			return 0;
+		}
+		EXPECT_EQ(count, 0);
+		EXPECT_NE(strstr(prompt, "<agent_finish_request>"), nullptr);
+		if (current->calls == 2) {
+			current->original_started = current->ctx->agent_finalize_started_ms;
+			current->original_finish_request =
+				current->ctx->agent_finalize_finish_requested_ms;
+			response->tool_calls = static_cast<struct tool_call *>(
+				calloc(1, sizeof(*response->tool_calls)));
+			if (!response->tool_calls)
+				return -ENOMEM;
+			response->tool_call_count = 1;
+			response->tool_calls[0].name = strdup("late_recheck");
+			response->tool_calls[0].arguments = strdup("{}");
+			return response->tool_calls[0].name && response->tool_calls[0].arguments
+				       ? 0
+				       : -ENOMEM;
+		}
+		EXPECT_EQ(current->ctx->agent_finalize_started_ms, current->original_started);
+		EXPECT_EQ(current->ctx->agent_finalize_finish_requested_ms,
+			  current->original_finish_request);
+		response->content = strdup("integrated available evidence; review closed");
+		return 0;
+	};
+	struct react_context *ctx MORPH_CLEANUP(react_context_clear) = create_root(&root_model);
+	ASSERT_NE(ctx, nullptr);
+	state.ctx = ctx;
+	EXPECT_EQ(react_run(ctx, "report current evidence", nullptr, nullptr), 0);
+	EXPECT_EQ(late_checks, 0);
+	EXPECT_EQ(state.calls, 3);
+	EXPECT_EQ(ctx->agent_summary_attempts, 2);
+	EXPECT_GT(state.original_started, 0);
+	EXPECT_GT(state.original_finish_request, 0);
+	EXPECT_STREQ(ctx->final_answer, "integrated available evidence; review closed");
+}
+
+TEST_F(ReactAgentConvergenceTest, RepeatedFinalProposalsAndInterimMailDoNotResetTheDeadline)
+{
+	honor_finish = false;
+	interim_reports = true;
+	spawn();
+	ASSERT_NE(control, nullptr);
+	struct probe {
+		struct react_context *ctx = nullptr;
+		int calls = 0;
+		int64_t started = 0;
+		bool retained_partial = false;
+	} state;
+	struct model root_model{};
+	strcpy(root_model.api_key, "mock");
+	root_model.handle = &state;
+	root_model.chat_with_tools = [](struct model *self, const char *,
+					struct chat_message *messages, int count,
+					struct tool_desc *, int, struct chat_response *response,
+					sse_callback, void *) -> int {
+		auto *current = static_cast<probe *>(self->handle);
+		current->calls++;
+		if (current->ctx->agent_finalize_started_ms) {
+			if (!current->started)
+				current->started = current->ctx->agent_finalize_started_ms;
+			EXPECT_EQ(current->ctx->agent_finalize_started_ms, current->started);
+		}
+		for (int i = 0; i < count; i++) {
+			if (messages[i].content && strstr(messages[i].content, "Partial report:") &&
+			    strstr(messages[i].content, "Initial map check completed"))
+				current->retained_partial = true;
+		}
+		response->content = strdup("Report completed checks and the unfinished review.");
+		return response->content ? 0 : -ENOMEM;
+	};
+	struct react_context *ctx MORPH_CLEANUP(react_context_clear) = create_root(&root_model);
+	ASSERT_NE(ctx, nullptr);
+	state.ctx = ctx;
+	auto before = std::chrono::steady_clock::now();
+	EXPECT_EQ(react_run(ctx, "finish using available evidence", nullptr, nullptr), 0);
+	auto elapsed = std::chrono::steady_clock::now() - before;
+	EXPECT_GE(state.calls, 3);
+	EXPECT_GT(state.started, 0);
+	EXPECT_TRUE(state.retained_partial);
+	EXPECT_TRUE(ctx->agent_finalize_interrupted);
+	EXPECT_EQ(agent_control_descendants_active(control, "/root"), 0);
+	EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 3500);
 }
 
 /* ============================================= */
