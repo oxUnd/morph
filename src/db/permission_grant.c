@@ -106,12 +106,16 @@ static int delete_grants(struct db *db, const char *sql,
 			 const char *project_root, const char *subject,
 			 int64_t id, int *deleted)
 {
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
 	sqlite3_stmt *stmt MORPH_CLEANUP(grant_stmt_cleanup) = NULL;
 	int bind_index = 1;
 
 	if (!db || !db->handle || !sql || !deleted)
 		return -EINVAL;
 	*deleted = 0;
+	int rc = db_lock_acquire(db, &lock);
+	if (rc != 0)
+		return rc;
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
 		return MORPH_ERR_DB;
 	if (project_root &&

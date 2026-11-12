@@ -2129,8 +2129,7 @@ static int react_join_tool_calls_execute(struct react_context *ctx, struct chat_
 		call = slots[i].call;
 		react_tool_worker_collect(call, &rc, &result, &artifacts, &data, &ui, &meta);
 		obs_text = result ? result : "";
-		if (rc < 0)
-			react_set_error_detail_copy(ctx, obs_text);
+		react_set_error_detail_copy(ctx, rc < 0 ? obs_text : NULL);
 		{
 			cJSON *history_content =
 				meta ? cJSON_GetObjectItem(meta, "history_content") : NULL;
@@ -2218,6 +2217,8 @@ static int react_join_tool_calls_execute(struct react_context *ctx, struct chat_
 			obs_text, rc, &artifacts, meta);
 
 		if (persist_rc != 0) {
+			react_set_error_detail_copy(ctx,
+				"Could not persist the tool result in conversation history.");
 			free(result);
 			cJSON_Delete(data);
 			cJSON_Delete(ui);
@@ -3435,6 +3436,8 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 				response.tool_calls, response.tool_call_count);
 			if (id_rc != 0) {
 
+				react_set_error_detail_copy(ctx,
+					"Could not persist tool calls in conversation history.");
 				react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, id_rc,
 						 "history_persistence_error");
 				break;

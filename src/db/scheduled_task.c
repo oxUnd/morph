@@ -376,6 +376,7 @@ int scheduled_task_create_with_events(
 	struct db *db, const struct scheduled_task_input *input,
 	struct scheduled_task *out, const struct scheduled_task_event_sink *events)
 {
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
 	sqlite3_stmt *stmt = NULL;
 	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {0};
 	int task_ready = 0;
@@ -398,6 +399,9 @@ int scheduled_task_create_with_events(
 		return rc;
 
 	now = (int64_t)time(NULL);
+	rc = db_lock_acquire(db, &lock);
+	if (rc != 0)
+		return rc;
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
 		return MORPH_ERR_DB;
@@ -450,6 +454,7 @@ int scheduled_task_create_with_events(
 	if (rc != 0)
 		return rc;
 	task_ready = 1;
+	db_lock_cleanup(&lock);
 	rc = task_emit_event(events, "task.created", "end", "task created",
 			     &task, task.status, task.next_run_at,
 			     task.attempts, 0, NULL, NULL);
@@ -1470,6 +1475,7 @@ int notification_create_for_session(struct db *db, int64_t task_id,
 				    const char *delivery_status,
 				    struct notification *out)
 {
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
 	sqlite3_stmt *stmt = NULL;
 	int64_t now;
 	int rc;
@@ -1482,6 +1488,9 @@ int notification_create_for_session(struct db *db, int64_t task_id,
 		return -EINVAL;
 	if (out && out->body)
 		return -EEXIST;
+	rc = db_lock_acquire(db, &lock);
+	if (rc != 0)
+		return rc;
 	now = (int64_t)time(NULL);
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)

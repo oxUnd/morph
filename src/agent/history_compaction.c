@@ -244,10 +244,13 @@ static int history_compact_checked(struct react_context *ctx, const char *summar
 				   history_compaction_validator validate, void *user_data,
 				   const morph_array_t *preserved, int64_t cutoff)
 {
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
 	struct model_history_item *candidate = NULL;
 	int64_t summary_id = 0;
 	int count = 0;
-	int rc = db_exec(ctx->history_db, "SAVEPOINT history_replay;");
+	int rc = db_lock_acquire(ctx->history_db, &lock);
+	if (rc == 0)
+		rc = db_exec(ctx->history_db, "SAVEPOINT history_replay;");
 
 	if (rc != 0)
 		return rc;
@@ -544,6 +547,7 @@ static int history_compact_selected(struct react_context *ctx, int force,
 int agent_history_compact_validated(struct react_context *ctx, int force, const char *trigger_kind,
 				    history_compaction_validator validate, void *user_data)
 {
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
 	morph_array_t preserved = {0};
 	int64_t cutoff = 0;
 	int rc;
@@ -570,7 +574,9 @@ int agent_history_compact_validated(struct react_context *ctx, int force, const 
 	users = users < available ? users : available;
 	if (users < 0)
 		users = 0;
-	rc = db_exec(ctx->history_db, "SAVEPOINT history_selection;");
+	rc = db_lock_acquire(ctx->history_db, &lock);
+	if (rc == 0)
+		rc = db_exec(ctx->history_db, "SAVEPOINT history_selection;");
 	if (rc != 0)
 		return rc;
 	rc = history_store_refresh_retention_tokens(ctx->history_db, ctx->history_session_id,
@@ -587,6 +593,7 @@ int agent_history_compact_validated(struct react_context *ctx, int force, const 
 		(void)db_exec(ctx->history_db,
 			      "ROLLBACK TO history_selection; RELEASE history_selection;");
 	} else {
+		db_lock_cleanup(&lock);
 		rc = history_compact_selected(ctx, force, trigger_kind, validate, user_data,
 					      &preserved, cutoff);
 	}

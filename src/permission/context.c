@@ -1483,6 +1483,7 @@ static int store_directory_access(struct tool_context *tctx,
 	const struct tool_directory_access_request *request, const char *canonical,
 	unsigned int access, enum tool_operation_verdict verdict)
 {
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
 	int persistent = verdict == TOOL_OP_ALWAYS;
 	morph_array_t *storage = persistent ? &tctx->persistent_grants : &tctx->scoped_grants;
 	size_t before = storage->nelts;
@@ -1495,7 +1496,9 @@ static int store_directory_access(struct tool_context *tctx,
 	if (rc != 0)
 		return rc;
 	if (transaction) {
-		rc = db_exec(tctx->grant_db, "SAVEPOINT directory_access;");
+		rc = db_lock_acquire(tctx->grant_db, &lock);
+		if (rc == 0)
+			rc = db_exec(tctx->grant_db, "SAVEPOINT directory_access;");
 		if (rc != 0)
 			return rc;
 	}

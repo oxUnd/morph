@@ -16,6 +16,9 @@
 #include <unistd.h>
 #include <string>
 #include <memory>
+#include <future>
+#include <chrono>
+#include <utility>
 #include "util/utf8.h"
 #include "util/json.h"
 
@@ -1195,6 +1198,51 @@ TEST_F(AgentTurnTest, CompactionRejectsHistoryGrowthAfterSnapshotWithoutLosingNe
 	EXPECT_EQ(model_history_count(&db, sess.id, 1), 2);
 	EXPECT_EQ(model_history_compaction_count(&db, sess.id), 0);
 	EXPECT_TRUE(sqlite3_get_autocommit(db.handle));
+}
+
+TEST_F(AgentTurnTest, FailedCompactionDoesNotRollbackAnotherThreadsSession)
+{
+	react->history_enabled = 1;
+	react->history_db = &db;
+	react->history_session_id = sess.id;
+	react->compress.max_context_tokens = 1000;
+	react->compress.compress_target_ratio = .5;
+	react->compress.summarize = agent_turn_summary;
+	ASSERT_EQ(react_set_turn_id(react, "concurrent-compaction"), 0);
+	ASSERT_EQ(agent_history_record_user(react, "original objective"), 0);
+	ASSERT_EQ(agent_history_reload(react), 0);
+	struct validation_state {
+		struct db *database;
+		std::future<int> writer;
+		std::future_status status = std::future_status::deferred;
+		int64_t created_id = 0;
+	} state{&db, {}, std::future_status::deferred, 0};
+	auto validate = [](const struct model_history_item *, void *opaque) -> int {
+		auto *probe = static_cast<validation_state *>(opaque);
+		std::promise<void> started;
+		auto ready = started.get_future();
+		probe->writer = std::async(std::launch::async,
+			[probe, signal = std::move(started)]() mutable {
+				struct session created{};
+				signal.set_value();
+				int rc = session_create(probe->database, "outside-compaction", "test",
+					&created);
+				probe->created_id = created.id;
+				return rc;
+			});
+		ready.wait();
+		probe->status = probe->writer.wait_for(std::chrono::milliseconds(50));
+		return -EINVAL;
+	};
+	int rc = agent_history_compact_validated(react, 1, "manual", validate, &state);
+	ASSERT_TRUE(state.writer.valid());
+	EXPECT_EQ(state.writer.get(), 0);
+	EXPECT_EQ(rc, -EINVAL);
+	EXPECT_EQ(state.status, std::future_status::timeout);
+	struct session loaded{};
+	ASSERT_EQ(session_get_by_id(&db, state.created_id, &loaded), 0);
+	EXPECT_STREQ(loaded.name, "outside-compaction");
+	EXPECT_EQ(model_history_compaction_count(&db, sess.id), 0);
 }
 
 TEST_F(AgentTurnTest, OversizedCheckpointIsRewrittenWithoutLosingVerification)

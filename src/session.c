@@ -1,6 +1,7 @@
 #include "session.h"
 #include "util/array.h"
 #include "util/buf.h"
+#include "util/cleanup.h"
 #include "util/id.h"
 #include "util/log.h"
 #include "util/error.h"
@@ -41,6 +42,10 @@ int session_create(struct db *db, const char *name, const char *model,
 		model_buf[sizeof(model_buf) - 1] = '\0';
 	}
 
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	int lock_rc = db_lock_acquire(db, &lock);
+	if (lock_rc != 0)
+		return lock_rc;
 	sqlite3_stmt *stmt;
 	const char *sql = "INSERT INTO sessions(display_id,name,model,created_at,updated_at,token_used)"
 			  " VALUES(?,?,?,?,?,0)";
@@ -74,9 +79,11 @@ int session_create(struct db *db, const char *name, const char *model,
 			sqlite3_errmsg(db->handle));
 		return MORPH_ERR_DB;
 	}
+	int64_t created_id = sqlite3_last_insert_rowid(db->handle);
+	db_lock_cleanup(&lock);
 	if (out) {
 		memset(out, 0, sizeof(*out));
-		out->id = sqlite3_last_insert_rowid(db->handle);
+		out->id = created_id;
 		memcpy(out->display_id, display_id, sizeof(out->display_id));
 		memcpy(out->name, name_buf, sizeof(out->name));
 		memcpy(out->model, model_buf, sizeof(out->model));
@@ -85,7 +92,7 @@ int session_create(struct db *db, const char *name, const char *model,
 	}
 	log_info(db ? db->logger : NULL, "session created: %s (id=%lld, display=%s)",
 		 out ? out->name : name,
-		 out ? (long long)out->id : (long long)sqlite3_last_insert_rowid(db->handle),
+		 (long long)created_id,
 		 display_id);
 	return 0;
 }
@@ -262,6 +269,10 @@ int session_rename(struct db *db, int64_t id, const char *new_name)
 {
 	if (!db || !db->handle || !new_name)
 		return -EINVAL;
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	int lock_rc = db_lock_acquire(db, &lock);
+	if (lock_rc != 0)
+		return lock_rc;
 	sqlite3_stmt *stmt;
 	const char *sql = "UPDATE sessions SET name=?, updated_at=? WHERE id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);

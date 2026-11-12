@@ -21,6 +21,8 @@
 #include <mutex>
 #include <memory>
 #include <chrono>
+#include <future>
+#include <utility>
 #include "models/llm.h"
 #include "util/utf8.h"
 
@@ -931,6 +933,32 @@ TEST_F(MemoryTest, MemoryVersionWriteRollbackKeepsFactsAndTheVersionConsistent)
 	EXPECT_EQ(sqlite3_get_autocommit(db.handle), 0);
 	EXPECT_EQ(memory_store_finish_write(&db, -ECANCELED), -ECANCELED);
 	EXPECT_NE(sqlite3_get_autocommit(db.handle), 0);
+}
+
+TEST_F(MemoryTest, WriteTransactionsExcludeUnrelatedSharedConnectionWriters)
+{
+	for (int outcome : {0, -ECANCELED}) {
+		ASSERT_EQ(memory_store_begin_write(&db), 0);
+		std::promise<void> started;
+		auto ready = started.get_future();
+		std::string name = outcome == 0 ? "after-memory-commit" : "after-memory-rollback";
+		auto writer = std::async(std::launch::async, [&] {
+			struct session created{};
+			started.set_value();
+			int rc = session_create(&db, name.c_str(), "test", &created);
+			return std::make_pair(rc, created);
+		});
+		ready.wait();
+		auto status = writer.wait_for(std::chrono::milliseconds(50));
+		int finish_rc = memory_store_finish_write(&db, outcome);
+		auto result = writer.get();
+		EXPECT_EQ(status, std::future_status::timeout);
+		EXPECT_EQ(finish_rc, outcome);
+		ASSERT_EQ(result.first, 0);
+		struct session loaded{};
+		ASSERT_EQ(session_get_by_id(&db, result.second.id, &loaded), 0);
+		EXPECT_EQ(name, loaded.name);
+	}
 }
 
 TEST_F(MemoryTest, SnapshotReadRejectsAnOccupiedOwnerWithoutChangingItsRows)

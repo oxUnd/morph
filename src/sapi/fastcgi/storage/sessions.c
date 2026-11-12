@@ -2,6 +2,7 @@
 #include "sapi/fastcgi/session_store_internal.h"
 #include "cJSON.h"
 #include "util/error.h"
+#include "util/cleanup.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -123,6 +124,7 @@ int store_list_sessions_json(struct session_store *s, const char *user_id, char 
 int store_update_session(struct session_store *s, const char *session_id, const char *user_id,
 			 const char *name, const char *model)
 {
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
 	const char *sql = "UPDATE sessions SET name=COALESCE(?,name), "
 			  "model=COALESCE(?,model), updated_at=? "
 			  "WHERE display_id=? AND EXISTS ("
@@ -133,6 +135,9 @@ int store_update_session(struct session_store *s, const char *session_id, const 
 
 	if (!name && !model)
 		return -EINVAL;
+	rc = db_lock_acquire(&s->db, &lock);
+	if (rc != 0)
+		return rc;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
 		return -EIO;
 	if (name)

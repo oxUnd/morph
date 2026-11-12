@@ -32,7 +32,8 @@ int memory_store_upsert_fact(struct db *db, int64_t session_id, const char *key_
 			     double importance);
 int memory_store_prepare_session(struct db *db, int64_t session_id);
 int memory_store_read_version(struct db *db, int64_t session_id, int64_t *memory_version);
-/* Begin succeeds with a short write transaction open; finish it exactly once.
+/* Begin holds the connection mutex with a short write transaction open; finish
+ * it exactly once on the same thread. Do not perform external I/O between them.
  * Versioned writes require the saved memory version to remain current. */
 int memory_store_begin_write(struct db *db);
 int memory_store_finish_write(struct db *db, int result);

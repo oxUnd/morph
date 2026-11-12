@@ -2700,6 +2700,7 @@ TEST_F(MockLlmTest, TextToolFallbackFailureIsObservedAndRetried) {
 	}
 	EXPECT_TRUE(saw_invalid_patch);
 	EXPECT_TRUE(saw_success);
+	EXPECT_EQ(ctx->last_error_detail, nullptr);
 	EXPECT_EQ(event_recorder_data_string(&rec, "tool.failed", "error"),
 		"input must be a patch; correct it and retry");
 
@@ -8236,6 +8237,8 @@ TEST_F(MockLlmTest, HistoryFailureRetiresEveryOutstandingWorker)
 				       late_callback_tool, &state, nullptr),
 		  0);
 	EXPECT_EQ(react_run(ctx, "run both tools", nullptr, nullptr), MORPH_ERR_DB);
+	EXPECT_STREQ(ctx->last_error_detail,
+		"Could not persist the tool result in conversation history.");
 	EXPECT_NE(ctx->retired_tool_calls, nullptr);
 	EXPECT_EQ(state.finished.load(), 0);
 	state.release.store(1);

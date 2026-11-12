@@ -6,11 +6,14 @@
 #include "session.h"
 #include "persistence/history_store.h"
 #include "util/array.h"
+#include "util/cleanup.h"
 #include "util/utf8.h"
 #include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <atomic>
+#include <thread>
 
 class SessionTest : public ::testing::Test {
 protected:
@@ -48,6 +51,59 @@ TEST_F(SessionTest, CreateSession) {
 	// hex format
 	for (int i = 0; s.display_id[i]; i++)
 		EXPECT_TRUE(isxdigit(s.display_id[i]));
+}
+
+TEST_F(SessionTest, ConcurrentLegacyMigrationDoesNotDuplicateMessages)
+{
+	struct session s{};
+	ASSERT_EQ(session_create(&db, "concurrent_migration", "test", &s), 0);
+	ASSERT_EQ(message_add(&db, s.id, "user", "objective", 1), 0);
+	ASSERT_EQ(message_add(&db, s.id, "assistant", "answer", 1), 0);
+	std::atomic<bool> start{false};
+	std::atomic<int> failures{0};
+	std::thread workers[4];
+	for (auto &worker : workers) {
+		worker = std::thread([&] {
+			while (!start.load())
+				std::this_thread::yield();
+			if (model_history_migrate_messages(&db, s.id) != 0)
+				failures.fetch_add(1);
+		});
+	}
+	start.store(true);
+	for (auto &worker : workers)
+		worker.join();
+	EXPECT_EQ(failures.load(), 0);
+	EXPECT_EQ(model_history_count(&db, s.id, 0), 2);
+}
+
+TEST_F(SessionTest, ConcurrentCreatesReturnTheirOwnSessionIdentity)
+{
+	std::atomic<bool> start{false};
+	std::atomic<int> failures{0};
+	std::thread workers[4];
+	for (int worker = 0; worker < 4; worker++) {
+		workers[worker] = std::thread([&, worker] {
+			while (!start.load())
+				std::this_thread::yield();
+			for (int i = 0; i < 80; i++) {
+				std::string name = "concurrent_" + std::to_string(worker) + "_" +
+					std::to_string(i);
+				struct session created{};
+				struct session loaded{};
+				if (session_create(&db, name.c_str(), "test", &created) != 0 ||
+				    session_get_by_id(&db, created.id, &loaded) != 0 ||
+				    name != loaded.name ||
+				    std::strcmp(created.display_id, loaded.display_id) != 0)
+					failures.fetch_add(1);
+			}
+		});
+	}
+	start.store(true);
+	for (auto &worker : workers)
+		worker.join();
+	EXPECT_EQ(failures.load(), 0);
+	EXPECT_EQ(session_count(&db), 320);
 }
 
 TEST_F(SessionTest, CreateDuplicate) {
@@ -950,6 +1006,56 @@ TEST_F(SessionTest, TranscriptAndModelHistoryWritesAreIdempotent) {
 	ASSERT_EQ(model_history_add(&db, &item, &second_id), 0);
 	EXPECT_EQ(first_id, second_id);
 	EXPECT_EQ(model_history_count(&db, s.id, 0), 1);
+}
+
+TEST_F(SessionTest, HistoryWritesKeepConnectionResultsAcrossConcurrentUpdates) {
+	struct session s;
+	ASSERT_EQ(session_create(&db, "history_concurrent", "test", &s), 0);
+	ASSERT_EQ(db_exec(&db,
+		"CREATE TABLE history_connection_noise(id INTEGER PRIMARY KEY)"), 0);
+	std::atomic<bool> stop{false};
+	std::atomic<int> update_error{SQLITE_OK};
+	std::thread worker([&] {
+		while (!stop.load()) {
+			struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {};
+			int lock_rc = db_lock_acquire(&db, &lock);
+			if (lock_rc != 0) {
+				update_error.store(lock_rc);
+				break;
+			}
+			int rc = sqlite3_exec(db.handle,
+				"INSERT INTO history_connection_noise DEFAULT VALUES;"
+				"UPDATE sessions SET name=name WHERE id=-1", nullptr, nullptr,
+				nullptr);
+			if (rc != SQLITE_OK)
+				update_error.store(rc);
+		}
+	});
+	int write_error = 0;
+	int wrong_id = 0;
+	for (int i = 0; i < 500 && write_error == 0 && wrong_id == 0; i++) {
+		std::string key = "concurrent:" + std::to_string(i);
+		struct model_history_insert item = {};
+		item.session_id = s.id;
+		item.kind = "tool_result";
+		item.role = "tool";
+		item.content = "result";
+		item.idempotency_key = key.c_str();
+		item.active = 1;
+		int64_t first_id = 0;
+		int64_t second_id = 0;
+		write_error = model_history_add(&db, &item, &first_id);
+		if (write_error == 0)
+			write_error = model_history_add(&db, &item, &second_id);
+		if (first_id <= 0 || first_id != second_id)
+			wrong_id++;
+	}
+	stop.store(true);
+	worker.join();
+	EXPECT_EQ(update_error.load(), SQLITE_OK);
+	EXPECT_EQ(write_error, 0);
+	EXPECT_EQ(wrong_id, 0);
+	EXPECT_EQ(model_history_count(&db, s.id, 0), 500);
 }
 
 TEST_F(SessionTest, HistoryBuilderUsesProviderNeutralCallIds) {

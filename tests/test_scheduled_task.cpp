@@ -9,6 +9,8 @@
 #include "cJSON.h"
 #include <climits>
 #include <atomic>
+#include <thread>
+#include <string>
 #include <cstdio>
 #include <cstring>
 #include <pthread.h>
@@ -176,6 +178,44 @@ TEST_F(ScheduledTaskTest, ConcurrentNotificationInboxAccess) {
 	notification_free_list(notifications, count);
 	notifications = nullptr;
 	EXPECT_EQ(failed.load(), 0);
+}
+
+TEST_F(ScheduledTaskTest, ConcurrentCreatesReturnTheirOwnTasksAndNotifications)
+{
+	std::atomic<bool> start{false};
+	std::atomic<int> failures{0};
+	std::thread workers[4];
+	for (int worker = 0; worker < 4; worker++) {
+		workers[worker] = std::thread([&, worker] {
+			while (!start.load())
+				std::this_thread::yield();
+			for (int i = 0; i < 50; i++) {
+				std::string title = "concurrent_" + std::to_string(worker) + "_" +
+					std::to_string(i);
+				struct scheduled_task_input input{};
+				input.title = title.c_str();
+				input.kind = "reminder";
+				input.trigger_type = "once";
+				input.action_type = "notify";
+				input.payload_json = "{}";
+				struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+				if (scheduled_task_create(&db, &input, &task) != 0 ||
+				    title != task.title) {
+					failures.fetch_add(1);
+					continue;
+				}
+				struct notification notice MORPH_CLEANUP(notification_cleanup) = {};
+				if (notification_create(&db, task.id, "info", title.c_str(),
+					"body", "inbox", &notice) != 0 ||
+				    title != notice.title || task.id != notice.task_id)
+					failures.fetch_add(1);
+			}
+		});
+	}
+	start.store(true);
+	for (auto &worker : workers)
+		worker.join();
+	EXPECT_EQ(failures.load(), 0);
 }
 
 TEST_F(ScheduledTaskTest, CreateAndGetTask) {

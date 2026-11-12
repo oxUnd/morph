@@ -2,6 +2,7 @@
 #include "sapi/fastcgi/session_store_internal.h"
 #include "cJSON.h"
 #include "util/error.h"
+#include "util/cleanup.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -115,6 +116,10 @@ int canvas_add_node(struct session_store *s, const char *session_id, const char 
 int canvas_patch_node(struct session_store *s, const char *session_id, const char *node_id,
 		      const char *patch_json)
 {
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	int lock_rc = db_lock_acquire(&s->db, &lock);
+	if (lock_rc != 0)
+		return lock_rc;
 	const char *sql = "UPDATE fcgi_canvas_nodes SET meta=?, updated_at=? "
 			  "WHERE id=? AND session_id=?";
 	sqlite3_stmt *st = NULL;

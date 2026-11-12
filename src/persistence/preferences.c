@@ -28,11 +28,15 @@ const char *preference_key_borrow(const char *key)
 int preference_bind(struct db *db, int64_t session_id,
 		    const char *owner, const char *project)
 {
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
 	sqlite3_stmt *stmt = NULL;
 	int rc;
 
 	if (!db || !db->handle || session_id <= 0 || !owner || !*owner)
 		return -EINVAL;
+	rc = db_lock_acquire(db, &lock);
+	if (rc != 0)
+		return rc;
 	rc = sqlite3_prepare_v2(
 		db->handle,
 		"INSERT INTO memory_scopes(session_id,owner,project) VALUES(?,?,?) "
@@ -63,6 +67,7 @@ int preference_set(struct db *db, int64_t session_id, const char *scope,
 		   const char *key, const char *value, const char *source,
 		   const char *event_token)
 {
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
 	sqlite3_stmt *stmt = NULL;
 	char token[64];
 	int rc;
@@ -85,6 +90,9 @@ int preference_set(struct db *db, int64_t session_id, const char *scope,
 			return rc;
 		event_token = token;
 	}
+	rc = db_lock_acquire(db, &lock);
+	if (rc != 0)
+		return rc;
 	rc = sqlite3_prepare_v2(db->handle,
 		"SELECT 1 FROM memory_scopes WHERE session_id=? "
 		"AND (?!='project' OR project!='')", -1, &stmt, NULL);

@@ -14,7 +14,14 @@ int memory_store_begin_write(struct db *db)
 {
 	if (!db || !db->handle)
 		return -EINVAL;
-	return db_exec(db, "BEGIN IMMEDIATE");
+	sqlite3_mutex *mutex = sqlite3_db_mutex(db->handle);
+	if (!mutex)
+		return -ENOTSUP;
+	sqlite3_mutex_enter(mutex);
+	int rc = db_exec(db, "BEGIN IMMEDIATE");
+	if (rc != 0)
+		sqlite3_mutex_leave(mutex);
+	return rc;
 }
 
 int memory_store_finish_write(struct db *db, int result)
@@ -23,6 +30,7 @@ int memory_store_finish_write(struct db *db, int result)
 		result = db_exec(db, "COMMIT");
 	if (result != 0)
 		(void)db_exec(db, "ROLLBACK");
+	sqlite3_mutex_leave(sqlite3_db_mutex(db->handle));
 	return result;
 }
 

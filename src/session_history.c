@@ -26,14 +26,21 @@ int model_history_add(struct db *db, const struct model_history_insert *item, in
 			  "active,created_at) "
 			  "SELECT ?,COALESCE(MAX(sequence_no),0)+1,?,?,?,?,?,?,?,?,?,?,?,?,? "
 			  "FROM model_history_items WHERE session_id=?";
-	sqlite3_stmt *stmt;
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	sqlite3_stmt *stmt MORPH_CLEANUP(history_stmt_cleanup) = NULL;
 	int rc;
 
 	if (!db || !db->handle || !item || item->session_id <= 0 || !item->kind || !item->kind[0])
 		return -EINVAL;
+	rc = db_lock_acquire(db, &lock);
+	if (rc != 0)
+		return rc;
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
-	if (rc != SQLITE_OK)
+	if (rc != SQLITE_OK) {
+		log_err(db->logger, "history insert prepare failed (%d): %s", rc,
+			sqlite3_errmsg(db->handle));
 		return MORPH_ERR_DB;
+	}
 	sqlite3_bind_int64(stmt, 1, item->session_id);
 	if (item->turn_id)
 		sqlite3_bind_text(stmt, 2, item->turn_id, -1, SQLITE_TRANSIENT);
@@ -74,9 +81,12 @@ int model_history_add(struct db *db, const struct model_history_insert *item, in
 	sqlite3_bind_int64(stmt, 14, (int64_t)time(NULL));
 	sqlite3_bind_int64(stmt, 15, item->session_id);
 	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	if (rc != SQLITE_DONE)
+	if (rc != SQLITE_DONE) {
+		log_err(db->logger, "history insert failed (%d): %s", rc,
+			sqlite3_errmsg(db->handle));
 		return MORPH_ERR_DB;
+	}
+	history_stmt_cleanup(&stmt);
 	if (sqlite3_changes(db->handle) == 0 && !item->idempotency_key)
 		return MORPH_ERR_DB;
 	if (sqlite3_changes(db->handle) > 0) {
@@ -97,7 +107,7 @@ int model_history_add(struct db *db, const struct model_history_insert *item, in
 		} else {
 			rc = SQLITE_NOTFOUND;
 		}
-		sqlite3_finalize(stmt);
+		history_stmt_cleanup(&stmt);
 		if (rc != SQLITE_OK)
 			return MORPH_ERR_DB;
 	}
@@ -342,7 +352,9 @@ int model_history_migrate_messages(struct db *db, int64_t session_id)
 			  "turn_id,CASE WHEN role='user' THEN 'user_message' "
 			  "ELSE 'assistant_message' END,role,content,"
 			  "'legacy:message:'||id,token_count,0,1,created_at "
-			  "FROM messages WHERE session_id=? ORDER BY created_at,id";
+			  "FROM messages WHERE session_id=?1 AND NOT EXISTS("
+			  "SELECT 1 FROM model_history_items WHERE session_id=?1) "
+			  "ORDER BY created_at,id";
 	sqlite3_stmt *stmt;
 	int count;
 	int rc;
@@ -714,6 +726,7 @@ static int history_compact_window(struct db *db, int64_t session_id, const char 
 				  int64_t *summary_item_id, const morph_array_t *selected,
 				  int64_t expected_cutoff)
 {
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
 	morph_array_t preserved MORPH_CLEANUP(morph_array_cleanup) = {0};
 	int64_t new_id = 0;
 
@@ -725,7 +738,9 @@ static int history_compact_window(struct db *db, int64_t session_id, const char 
 
 	if (rc != 0)
 		return rc;
-	rc = db_exec(db, "SAVEPOINT model_history_compact;");
+	rc = db_lock_acquire(db, &lock);
+	if (rc == 0)
+		rc = db_exec(db, "SAVEPOINT model_history_compact;");
 	if (rc != 0)
 		return rc;
 	rc = history_compact_apply(db, session_id, turn_id, summary, summary_tokens,

@@ -730,6 +730,7 @@ static int hook_manager_batch_write(struct hook_manager *manager, int trust)
 
 static int hook_manager_batch(struct hook_manager *manager, int trust, const char *expected_digest)
 {
+	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
 	char digest[65];
 	int rc = hook_manager_reload(manager);
 
@@ -739,7 +740,9 @@ static int hook_manager_batch(struct hook_manager *manager, int trust, const cha
 		return rc;
 	if (strcmp(digest, expected_digest) != 0)
 		return -ESTALE;
-	rc = db_exec(manager->db, "SAVEPOINT hook_batch;");
+	rc = db_lock_acquire(manager->db, &lock);
+	if (rc == 0)
+		rc = db_exec(manager->db, "SAVEPOINT hook_batch;");
 	if (rc != 0)
 		return rc;
 	rc = hook_manager_batch_write(manager, trust);
