@@ -702,6 +702,16 @@ static int prepare_child_execution(const struct process_spawn_options *options)
 	return rc;
 }
 
+struct process_start_pipe {
+	int fd[2];
+};
+
+static void process_start_pipe_cleanup(struct process_start_pipe *owner)
+{
+	close_fd(&owner->fd[0]);
+	close_fd(&owner->fd[1]);
+}
+
 static int spawn_pipe_process(struct process_manager *manager,
 				      const struct process_spawn_options *options,
 				      struct process_session *session)
@@ -709,8 +719,12 @@ static int spawn_pipe_process(struct process_manager *manager,
 	int stdout_pipe[2] = {-1, -1};
 	int stderr_pipe[2] = {-1, -1};
 	int stdin_pipe[2] = {-1, -1};
+	struct process_start_pipe ready MORPH_CLEANUP(process_start_pipe_cleanup) =
+		{.fd = {-1, -1}};
 	pid_t pid;
 
+	if (pipe(ready.fd) != 0)
+		return morph_error_from_errno(errno);
 	if (pipe(stdout_pipe) != 0)
 		return morph_error_from_errno(errno);
 	if (pipe(stderr_pipe) != 0) {
@@ -739,7 +753,20 @@ static int spawn_pipe_process(struct process_manager *manager,
 		morph_signals_reset_child();
 		const char *shell = process_manager_shell_borrow(manager);
 
-		(void)setpgid(0, 0);
+		/* Interactive descendants must never acquire the CLI's terminal.
+		 * A process group alone still shares its controlling terminal. */
+		close(ready.fd[0]);
+		if (sandbox_start_isolated_session() != 0)
+			_exit(126);
+		char started = 1;
+		ssize_t written;
+
+		do {
+			written = write(ready.fd[1], &started, sizeof(started));
+		} while (written < 0 && errno == EINTR);
+		if (written != sizeof(started))
+			_exit(126);
+		close(ready.fd[1]);
 		if (options->workdir && chdir(options->workdir) != 0)
 			_exit(126);
 		close(stdout_pipe[0]);
@@ -767,10 +794,29 @@ static int spawn_pipe_process(struct process_manager *manager,
 		      options->command, (char *)NULL);
 		_exit(127);
 	}
-	(void)setpgid(pid, pid);
 	close(stdout_pipe[1]);
 	close(stderr_pipe[1]);
 	close(stdin_pipe[0]);
+	close_fd(&ready.fd[1]);
+	char started = 0;
+	ssize_t received;
+
+	/* Publish the session only after its process group exists, so an
+	 * immediate interrupt/kill cannot race the child's setsid(). */
+	do {
+		received = read(ready.fd[0], &started, sizeof(started));
+	} while (received < 0 && errno == EINTR);
+	if (received != sizeof(started) || started != 1) {
+		int rc = received < 0 ? morph_error_from_errno(errno) : -EIO;
+
+		(void)kill(pid, SIGKILL);
+		while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
+		}
+		close(stdout_pipe[0]);
+		close(stderr_pipe[0]);
+		close(stdin_pipe[1]);
+		return rc;
+	}
 	session->pid = pid;
 	session->pgid = pid;
 	session->stdout_fd = stdout_pipe[0];

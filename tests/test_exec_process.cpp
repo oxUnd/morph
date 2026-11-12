@@ -31,6 +31,12 @@
 #include <memory>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/wait.h>
+#ifdef __APPLE__
+#include <util.h>
+#else
+#include <pty.h>
+#endif
 
 namespace {
 
@@ -95,6 +101,66 @@ public:
 	}
 	std::string path;
 };
+
+static int run_interactive_descendant_probe(int pty)
+{
+	struct process_manager *manager = nullptr;
+	struct process_manager_config config = {};
+	config.shell = "/bin/bash";
+	if (process_manager_create(&config, &manager) != 0)
+		return 1;
+	pid_t foreground = tcgetpgrp(STDIN_FILENO);
+	struct process_spawn_options options = {};
+	options.command = "zsh -fic 'printf terminal-probe' 2>&1 | tail -3";
+	options.pty = pty;
+	options.host_execution = 1;
+	options.timeout_ms = 3000;
+	options.yield_time_ms = 5000;
+	struct process_snapshot snapshot = {};
+	char id[PROCESS_SESSION_ID_MAX] = {};
+	int rc = process_spawn(manager, &options, id, &snapshot);
+	bool completed = rc == 0 && snapshot.state == PROCESS_EXITED &&
+		snapshot.exit_code == 0 && snapshot.stdout_text &&
+		strstr(snapshot.stdout_text, "terminal-probe");
+	bool preserved = foreground == getpgrp() &&
+		tcgetpgrp(STDIN_FILENO) == foreground;
+	process_snapshot_cleanup(&snapshot);
+	process_manager_destroy(manager);
+	return !completed ? 2 : !preserved ? 3 : 0;
+}
+
+TEST(ProcessTerminalTest, InteractiveDescendantsPreserveTheOwnersForegroundGroup)
+{
+	if (access("/bin/zsh", X_OK) != 0)
+		GTEST_SKIP() << "zsh is unavailable";
+	for (int pty : {0, 1}) {
+		int master = -1;
+		pid_t child = forkpty(&master, nullptr, nullptr, nullptr);
+
+		ASSERT_GE(child, 0);
+		if (child == 0)
+			_exit(run_interactive_descendant_probe(pty));
+		int status = 0;
+		pid_t result = 0;
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+
+		while (std::chrono::steady_clock::now() < deadline) {
+			result = waitpid(child, &status, WNOHANG | WUNTRACED);
+			if (result != 0)
+				break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		if (result != child || !WIFEXITED(status)) {
+			(void)kill(child, SIGKILL);
+			while (waitpid(child, nullptr, 0) < 0 && errno == EINTR) {
+			}
+		}
+		close(master);
+		ASSERT_EQ(result, child) << "pty=" << pty;
+		ASSERT_TRUE(WIFEXITED(status)) << "pty=" << pty;
+		EXPECT_EQ(WEXITSTATUS(status), 0) << "pty=" << pty;
+	}
+}
 
 TEST(ExecToolTest, RegistersExecAndBackgroundTools)
 {
@@ -669,6 +735,22 @@ TEST_F(ProcessTest, TimeoutKillsProcessGroup)
 	ASSERT_EQ(process_spawn(manager, &options, session_id, &snapshot), 0);
 	EXPECT_EQ(snapshot.state, PROCESS_TIMED_OUT);
 	process_snapshot_cleanup(&snapshot);
+}
+
+TEST_F(ProcessTest, ImmediateKillAfterSpawnReachesTheIsolatedGroup)
+{
+	for (int attempt = 0; attempt < 10; attempt++) {
+		struct process_spawn_options options = {};
+		options.command = "sleep 10";
+		options.background = 1;
+		char id[PROCESS_SESSION_ID_MAX] = {};
+		ASSERT_EQ(process_spawn(manager, &options, id, nullptr), 0);
+		ASSERT_EQ(process_session_kill(manager, id), 0);
+		struct process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {};
+		ASSERT_EQ(process_session_wait(manager, id, nullptr, 2000,
+			nullptr, nullptr, &snapshot), 0);
+		EXPECT_EQ(snapshot.state, PROCESS_KILLED);
+	}
 }
 
 TEST_F(ProcessTest, KillEscalatesWhenTheProcessIgnoresTerm)
