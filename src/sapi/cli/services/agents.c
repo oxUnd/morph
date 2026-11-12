@@ -3,17 +3,44 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/widgets/agents.h"
 #include "sapi/cli/widgets/feed.h"
-#include "sapi/cli/widgets/list.h"
+#include "sapi/cli/widgets/feed_block.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/presenter_state.h"
-#include "sapi/cli/presentation/style.h"
 #include <string.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include "util/cleanup.h"
 
 struct cli_agents_snapshot {
 	struct agent_info *items;
 	int count;
 };
+
+struct cli_agents_receipt {
+	char *id;
+	enum agent_status status;
+};
+
+int cli_agents_receipts_init(struct cli_application *ctx)
+{
+	struct cli_agents_receipt receipt = {0};
+	return morph_array_init(&ctx->presenter->agent_receipts, 4, sizeof(receipt));
+}
+
+static void cli_agents_receipts_clear(struct cli_application *ctx)
+{
+	struct cli_agents_receipt *receipt;
+	morph_array_foreach (receipt, &ctx->presenter->agent_receipts, struct cli_agents_receipt)
+		free(receipt->id);
+	morph_array_clear(&ctx->presenter->agent_receipts);
+}
+
+void cli_agents_receipts_cleanup(struct cli_application *ctx)
+{
+	cli_agents_receipts_clear(ctx);
+	morph_array_cleanup(&ctx->presenter->agent_receipts);
+}
 
 static void cli_agents_snapshot_cleanup(struct cli_agents_snapshot *snapshot)
 {
@@ -55,12 +82,20 @@ int cli_agents_render(struct cli_application *ctx, morph_buf_t *out, morph_buf_t
 
 void cli_agents_flush_receipts(struct cli_application *ctx)
 {
-	if (!ctx || !ctx->presenter || !ctx->presenter->agent_receipts.len)
+	if (!ctx || !ctx->presenter || !ctx->presenter->agent_receipts.nelts)
 		return;
 	cli_feed_history_begin(ctx);
-	cli_output_printf(ctx, "%s%s", ctx->output.trailing_newlines < 2 ? "\n" : "",
-			  morph_buf_cstr_borrow(&ctx->presenter->agent_receipts));
-	morph_buf_reset(&ctx->presenter->agent_receipts);
+	struct cli_agents_receipt *receipt;
+	int joined = 0;
+	morph_array_foreach (receipt, &ctx->presenter->agent_receipts, struct cli_agents_receipt) {
+		struct cli_feed_block block = {
+			.kind = CLI_FEED_BLOCK_AGENT_RECEIPT, .join_previous = joined,
+			.content.agent = {.id = receipt->id, .status = receipt->status},
+		};
+		(void)cli_feed_block_write(ctx, &block);
+		joined = 1;
+	}
+	cli_agents_receipts_clear(ctx);
 	cli_feed_history_end(ctx);
 }
 
@@ -80,35 +115,41 @@ int cli_agents_event(struct cli_application *ctx, const struct morph_event *even
 			cJSON_GetObjectItemCaseSensitive(event->data, "agent_id"));
 		const char *status = cJSON_GetStringValue(
 			cJSON_GetObjectItemCaseSensitive(event->data, "status"));
-		char safe[BUFSIZ];
-		const char *label = id ? id : "agent";
-		cli_list_compact_text(safe, sizeof(safe), label);
 		int completed = status && !strcmp(status, "completed");
 		int cancelled = status && (!strcmp(status, "interrupted") ||
 					   !strcmp(status, "cancelled"));
-		const char *action = completed ? "Finished" : cancelled ? "Interrupted" : "Failed";
-		const char *marker = completed ? CLI_FEED_DONE
-			: cancelled ? CLI_FEED_CANCELLED : CLI_FEED_FAILED;
-		const char *color = completed ? ANSI_GREEN
-			: cancelled ? ANSI_DIM : CLI_FEED_FAILED_STYLE;
+		enum agent_status outcome = completed ? AGENT_COMPLETED
+			: cancelled ? AGENT_CANCELLED : AGENT_FAILED;
 		if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE && ctx->turn_active &&
 		    ctx->presenter && !ctx->presenter->final_rendered &&
 		    (ctx->presenter->markdown_stream || ctx->presenter->native_content_started ||
 		     (ctx->presenter->event_stream_has_delta &&
 		      !ctx->presenter->event_stream_complete))) {
 			/* Keep parent answer streams contiguous. Snapshots still update live. */
-			int rc = morph_buf_printf(&ctx->presenter->agent_receipts,
-						  "%s%s " ANSI_RESET "%s " CLI_COMMAND_COLOR
-							   "%s" ANSI_RESET "\n",
-						  color, marker, action, safe);
-			if (rc != 0)
-				return rc;
+			char *owned MORPH_CLEANUP(morph_charp_cleanup) = strdup(id ? id : "agent");
+			if (!owned)
+				return -ENOMEM;
+			struct cli_agents_receipt *receipt =
+				morph_array_push_borrow(&ctx->presenter->agent_receipts);
+			if (!receipt)
+				return -ENOMEM;
+			receipt->id = morph_charp_steal(&owned);
+			receipt->status = outcome;
 		} else {
+			struct cli_feed_block block = {
+				.kind = CLI_FEED_BLOCK_AGENT_RECEIPT,
+				.content.agent = {.id = id, .status = outcome},
+			};
 			cli_feed_history_begin(ctx);
-			cli_output_printf(ctx,
-					  "%s%s " ANSI_RESET "%s " CLI_COMMAND_COLOR
-						   "%s" ANSI_RESET "\n",
-					  color, marker, action, safe);
+			if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
+				(void)cli_feed_block_write(ctx, &block);
+			} else {
+				morph_buf_t line MORPH_CLEANUP(morph_buf_cleanup) = {0};
+				if (morph_buf_init(&line, 128) == 0 &&
+				    cli_agents_receipt_append(&line, id, outcome, BUFSIZ,
+					cli_output_color_enabled(ctx)) == 0)
+					cli_output_printf(ctx, "%s", morph_buf_cstr_borrow(&line));
+			}
 			cli_feed_history_end(ctx);
 		}
 	}

@@ -1,12 +1,15 @@
 #include "sapi/cli/pages/subagents.h"
 
 #include "sapi/cli/application.h"
+#include "config/config.h"
+#include "runtime/runtime.h"
 #include "sapi/cli/models/subagents.h"
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/widgets/agents.h"
+#include "sapi/cli/widgets/agents_browser.h"
 #include "sapi/cli/widgets/composer_panel.h"
 #include "sapi/cli/widgets/transcript.h"
 #include "sapi/cli/widgets/subagents.h"
@@ -40,10 +43,10 @@ struct cli_subagents_feed {
 };
 
 struct cli_subagents_page {
+	struct cli_agents_browser_state browser;
 	struct cli_application *ctx;
 	struct morph_tui_widget_list_state selection;
 	struct agent_info *items;
-	struct agent_info *preview;
 	int count;
 	morph_array_t feeds;
 	struct cli_subagents_feed *feed;
@@ -95,8 +98,6 @@ static struct cli_subagents_feed *cli_subagents_feed_steal(struct cli_subagents_
 
 static void cli_subagents_feeds_clear(struct cli_subagents_page *page)
 {
-	runtime_agent_list_free(page->preview, page->preview ? 1 : 0);
-	page->preview = NULL;
 	struct cli_subagents_feed **feed;
 	morph_array_foreach (feed, &page->feeds, struct cli_subagents_feed *)
 		cli_subagents_feed_destroy(*feed);
@@ -125,13 +126,30 @@ static const char *cli_subagents_selected(const struct cli_subagents_page *page)
 	return page->items[page->selection.index - 1].id;
 }
 
+static struct cli_agents_browser_data cli_subagents_browser_data(struct cli_subagents_page *page)
+{
+	const struct config *config = runtime_config_borrow(page->ctx->runtime);
+	struct cli_agents_browser_data data = {
+		.agents = page->items,
+		.count = page->count,
+		.detail = NULL,
+		.project = runtime_workdir_borrow(page->ctx->runtime),
+		.model = config ? config->models.text.model : "",
+		.root_running = page->ctx->turn_active,
+		.now_ms = morph_io_now_ms(),
+	};
+	return data;
+}
+
 static int cli_subagents_refresh(struct cli_subagents_page *page)
 {
 	struct agent_info *items = NULL;
 	int count = 0;
 	int64_t session = 0;
 	(void)runtime_session_current_id(page->ctx->runtime, &session);
-	int rc = runtime_agent_activity(page->ctx->runtime, session, &items, &count);
+	int rc = page->fullscreen && !page->viewing
+			 ? runtime_agent_list(page->ctx->runtime, session, &items, &count)
+			 : runtime_agent_activity(page->ctx->runtime, session, &items, &count);
 	if (rc != 0)
 		return rc;
 	char *selected MORPH_CLEANUP(morph_charp_cleanup) = strdup(cli_subagents_selected(page));
@@ -153,6 +171,12 @@ static int cli_subagents_refresh(struct cli_subagents_page *page)
 			page->selection.index = (size_t)i + 1;
 			break;
 		}
+	}
+	if (page->fullscreen && !page->viewing) {
+		struct cli_agents_browser_data data = cli_subagents_browser_data(page);
+		cli_agents_browser_select(&page->browser, &data, page->selection.index);
+		size_t selected_index = cli_agents_browser_selected(&page->browser, &data);
+		page->selection.index = selected_index == SIZE_MAX ? 0 : selected_index;
 	}
 	struct cli_subagents_feed *feed = page->feed;
 	if (feed && feed->detail) {
@@ -350,80 +374,23 @@ static void cli_subagents_frame_cleanup(struct cli_composer_panel_frame *frame)
 	morph_buf_cleanup(&frame->content);
 }
 
-static int cli_subagents_preview_read(struct cli_subagents_page *page)
-{
-	if (!page->selection.index || page->selection.index > (size_t)page->count)
-		return 0;
-	const struct agent_info *selected = &page->items[page->selection.index - 1];
-	if (page->preview && !strcmp(page->preview->id, selected->id) &&
-	    page->preview->started_at_ms == selected->started_at_ms &&
-	    page->preview->status == selected->status)
-		return 0;
-	struct agent_info *detail MORPH_CLEANUP(cli_subagents_detail_cleanup) = NULL;
-	int rc = runtime_agent_read(page->ctx->runtime, selected->id, &detail);
-	if (rc != 0)
-		return rc;
-	runtime_agent_list_free(page->preview, page->preview ? 1 : 0);
-	page->preview = cli_subagents_detail_steal(&detail);
-	return 0;
-}
-
 static int cli_subagents_fullscreen_draw(struct cli_subagents_page *page,
-				 const struct morph_tui_screen *screen)
+					 const struct morph_tui_screen *screen)
 {
-	int rc = cli_subagents_preview_read(page);
-	if (rc != 0)
-		return rc;
-	struct cli_composer_panel_frame frame MORPH_CLEANUP(cli_subagents_frame_cleanup) = {
-		.columns = screen->area.width > 1 ? screen->area.width - 1 : 0,
-		.rows = screen->area.height,
-		.color = cli_output_color_enabled(page->ctx),
-	};
-	morph_buf_t line MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	rc = morph_buf_init(&frame.content, BUFSIZ);
+	struct cli_agents_browser_data data = cli_subagents_browser_data(page);
+	size_t selected = cli_agents_browser_selected(&page->browser, &data);
+	page->selection.index = selected == SIZE_MAX ? 0 : selected;
+	morph_buf_t document MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int rc = morph_buf_init(&document, BUFSIZ);
 	if (rc == 0)
-		rc = morph_buf_init(&line, 256);
-	if (rc != 0)
-		return rc;
-	int header = frame.rows >= 6 ? 3 : 1;
-	int footer = frame.rows >= 3 ? 1 : 0;
-	int preview = frame.rows >= 10 ? 3 : 0;
-	int height = frame.rows - header - footer - preview;
-	morph_tui_widget_list_state_layout(&page->selection, (size_t)page->count + 1,
-					   (size_t)(height > 0 ? height : 1));
-	for (int row = 0; rc == 0 && row < frame.rows; row++) {
-		morph_buf_reset(&line);
-		const char *style = "";
-		if (!row) {
-			rc = morph_buf_printf(&line, "  Agents (%d)", page->count);
-			style = ANSI_BOLD CLI_COMMAND_COLOR;
-		} else if (header > 1 && row == 1) {
-			rc = cli_agents_summary(&line, page->items, page->count, frame.columns);
-			style = ANSI_DIM;
-		} else if (row >= header && row < header + height) {
-			size_t index = page->selection.first + (size_t)(row - header);
-			if (index <= (size_t)page->count) {
-				rc = cli_subagents_picker_row(page, index, &line);
-				if (page->selection.index == index)
-					style = "\033[44;97m";
-			}
-		} else if (preview && row == frame.rows - footer - 2) {
-			const char *task = page->selection.index &&
-				page->selection.index <= (size_t)page->count && page->preview
-				? page->preview->description
-				: "Return to the main conversation.";
-			rc = morph_buf_printf(&line, "  Task: %s", task ? task : "");
-			style = ANSI_DIM;
-		} else if (footer && row == frame.rows - 1) {
-			rc = morph_buf_puts(&line, "  Up/Down select · Enter view · Esc main conversation");
-			style = ANSI_DIM;
-		}
-		if (rc == 0)
-			rc = cli_composer_panel_line(&frame, morph_buf_cstr_borrow(&line), style);
-	}
+		rc = cli_agents_browser_append(&document, &page->browser, &data,
+					       screen->area.width > 1 ? screen->area.width - 1 : 1,
+					       screen->area.height,
+					       cli_output_color_enabled(page->ctx));
 	if (rc == 0)
 		rc = morph_tui_frame_present(&page->picker_frame, screen->session.output,
-			screen->area.width, screen->area.height, morph_buf_cstr_borrow(&frame.content));
+					     screen->area.width, screen->area.height,
+					     morph_buf_cstr_borrow(&document));
 	return rc;
 }
 
@@ -469,7 +436,8 @@ static int cli_subagents_draw(void *data, const struct morph_tui_screen *screen)
 	feed->scroll = morph_tui_widget_scroll_update(feed->scroll, feed->lines.lines.nelts,
 						      (size_t)height, 0);
 	size_t bottom = feed->lines.lines.nelts > (size_t)height
-				? feed->lines.lines.nelts - (size_t)height : 0;
+				? feed->lines.lines.nelts - (size_t)height
+				: 0;
 	feed->follow = feed->scroll == bottom;
 	/* Line helpers sanitize/clamp renderer output; the child owns the whole frame. */
 	for (int row = 0; row < feed->rows && rc == 0; row++) {
@@ -477,7 +445,8 @@ static int cli_subagents_draw(void *data, const struct morph_tui_screen *screen)
 		const char *style = "";
 		if (row == 0) {
 			rc = morph_buf_printf(&line, "  %s · %s",
-				page->fullscreen ? "Agents" : "Subagents", feed->thread->id);
+					      page->fullscreen ? "Agents" : "Subagents",
+					      feed->thread->id);
 			style = ANSI_BOLD CLI_COMMAND_COLOR;
 		} else if (header > 1 && row == 1) {
 			const struct agent_info *current =
@@ -539,6 +508,19 @@ static int cli_subagents_picker_update(void *data, const struct morph_tui_event 
 	if (event->type != MORPH_TUI_EVENT_KEY || event->pasting)
 		return MORPH_TUI_SCREEN_CONTINUE;
 	int key = event->key;
+	if (page->fullscreen) {
+		struct cli_agents_browser_data snapshot = cli_subagents_browser_data(page);
+		int action = cli_agents_browser_update(&page->browser, &snapshot, key);
+		size_t selected = cli_agents_browser_selected(&page->browser, &snapshot);
+		page->selection.index = selected == SIZE_MAX ? 0 : selected;
+		if (action == MORPH_TUI_WIDGET_CANCEL)
+			return MORPH_TUI_SCREEN_CLOSE;
+		if (action == MORPH_TUI_WIDGET_SUBMIT) {
+			int rc = cli_subagents_select(page);
+			return rc != 0 ? rc : MORPH_TUI_SCREEN_CLOSE;
+		}
+		return MORPH_TUI_SCREEN_REDRAW;
+	}
 	if (key == 27 || key == 3 || key == 4 || key == 'q')
 		return MORPH_TUI_SCREEN_CLOSE;
 	if (key == '\r' || key == '\n') {
@@ -561,8 +543,8 @@ static int cli_subagents_update(void *data, const struct morph_tui_event *event)
 	struct cli_subagents_page *page = data;
 	if (!page->viewing) {
 		int result = cli_subagents_picker_update(data, event);
-		return result == MORPH_TUI_SCREEN_CLOSE && page->viewing
-			? MORPH_TUI_SCREEN_REDRAW : result;
+		return result == MORPH_TUI_SCREEN_CLOSE && page->viewing ? MORPH_TUI_SCREEN_REDRAW
+									 : result;
 	}
 	struct cli_subagents_feed *feed = page->feed;
 	if (event->type == MORPH_TUI_EVENT_TICK || event->type == MORPH_TUI_EVENT_WAKE) {
@@ -757,11 +739,12 @@ static int cli_subagents_show_mode(struct cli_application *ctx, const char *id, 
 	struct cli_subagents_page *page = ctx->subagents;
 	if (page->open)
 		return -EBUSY;
+	page->viewing = 0;
+	page->fullscreen = fullscreen;
+	memset(&page->browser, 0, sizeof(page->browser));
 	int rc = cli_subagents_refresh(page);
 	if (rc != 0)
 		return rc;
-	page->viewing = 0;
-	page->fullscreen = fullscreen;
 	morph_tui_frame_invalidate(&page->picker_frame);
 	page->selection.index = 0;
 	if (id && strcmp(id, "/root")) {

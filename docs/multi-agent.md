@@ -72,11 +72,23 @@ during a turn and lists all assignments, status and shared token usage;
 owner thread without replacing the user's draft. The compact area shows up to
 three active agents; `/agents` exposes the complete list.
 
-`/agents` opens a full-screen browser with live status, a scrolling agent roster
-and a selected-task preview. Enter opens the selected child's independent feed
+`/agents` opens a command-center layout: status filters and counts above a
+scrolling task roster, with selected-task details alongside it. The roster shows
+status and elapsed time when space permits. Narrow terminals stack the roster
+above details, leaving more detail space when the task list is short. The scope
+is the current session and its agents; this is not a cross-project session list.
+Tab/Shift+Tab cycles status filters; Up/Down selects tasks. Right focuses the
+details for scrolling with Up/Down or PageUp/PageDown; Left returns to the task
+list. `?` shows keyboard help. Empty filters cannot open a conversation.
+Enter opens the selected child's independent feed
 without nesting alternate screens; Escape returns to the primary conversation.
 `/agents /root/reader` opens that feed directly. Text/JSON command execution keeps
 the existing snapshot output.
+
+`widgets/agents_browser` owns this layout and interaction state and takes borrowed
+snapshots. The page fetches runtime data, preserves selection across refreshes,
+and routes open/close actions. A component-only visual fixture is available with
+`build/bin/morph-cli-pty-driver --agents-browser-fixture`; it runs no agents.
 
 `/subagents` replaces the composer with a compact agent picker, including the
 primary thread, while retaining the main feed above it. The picker uses the

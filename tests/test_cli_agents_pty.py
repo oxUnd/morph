@@ -12,6 +12,7 @@ import time
 
 from test_cli_pty import Model, Terminal, terminal_environment
 from test_cli_transcript_pty import AlternateScreen
+from test_cli_jobs_pty import StableComposerStream
 from cli_inline_test_support import inline_panel, stable_rows
 import pyte
 
@@ -87,8 +88,22 @@ def run(driver, port, columns):
             assert hasattr(terminal.screen, '_main_screen')
             assert 'Esc' in terminal.screen.display[-1]
             assert 'exercise collaboration' not in '\n'.join(terminal.screen.display)
+            terminal.send('\t\t\t')
+            wait_for(terminal, lambda: 'No matching agents.' in '\n'.join(terminal.screen.display))
+            terminal.send('\r')
+            terminal.pump(.2)
+            assert hasattr(terminal.screen, '_main_screen'), 'empty filter opened a conversation'
+            terminal.send('\x1b[Z\x1b[Z\x1b[Z')
+            wait_for(terminal, lambda: 'Main conversation' in '\n'.join(terminal.screen.display))
             terminal.send('\x1b[B')
             wait_for(terminal, lambda: 'CHILD_ACTIVITY_TASK' in '\n'.join(terminal.screen.display))
+            terminal.send('\x1b[C\x1b[6~')
+            wait_for(terminal, lambda: 'scroll details' in terminal.screen.display[-1])
+            assert any(row.startswith('> ') and '/root/worker' in row
+                       for row in terminal.screen.display)
+            terminal.send('\x1b[D?')
+            wait_for(terminal, lambda: 'Shift+Tab' in terminal.screen.display[-1])
+            terminal.send('?')
             for width in (60, 120, 80, columns):
                 terminal.child.setwinsize(24, width)
                 terminal.screen.resize(lines=24, columns=width)
@@ -97,7 +112,11 @@ def run(driver, port, columns):
                 assert 'Agents (1)' in rows[0], '\n'.join(rows)
                 selected = next(i for i, row in enumerate(rows) if row.startswith('> '))
                 assert '/root/worker' in rows[selected]
-                assert terminal.screen.buffer[selected][width - 2].bg == 'blue'
+                selected_end = (width - 1) * 3 // 5 - 1 if width >= 101 else width - 2
+                assert terminal.screen.buffer[selected][selected_end].bg == 'blue'
+                if width >= 101:
+                    assert 'Task details' in '\n'.join(rows), '\n'.join(rows)
+                    assert terminal.screen.buffer[selected][width - 2].bg != 'blue'
                 assert 'Esc' in rows[-1]
             for height in (8, 4, 40, 24):
                 terminal.child.setwinsize(height, columns)
@@ -105,7 +124,7 @@ def run(driver, port, columns):
                 terminal.pump(.2)
                 rows = stable_rows(terminal)
                 assert 'Agents (1)' in rows[0], '\n'.join(rows)
-                assert any(row.startswith('> /root/worker') for row in rows), '\n'.join(rows)
+                assert any(row.startswith('> ') and '/root/worker' in row for row in rows), '\n'.join(rows)
                 assert 'Esc' in rows[-1], '\n'.join(rows)
             assert not any(line.startswith('» /agents') for line in terminal.screen.display)
             switches = terminal.raw.count('\x1b[?1049h')
@@ -114,7 +133,9 @@ def run(driver, port, columns):
             assert terminal.raw.count('\x1b[?1049h') == switches, 'nested alternate screen'
             terminal.send('\x1b')
             wait_for(terminal, lambda: not hasattr(terminal.screen, '_main_screen'))
-            terminal.send('PRESERVED_AGENT_DRAFT')
+            terminal.stream = StableComposerStream(terminal)
+            terminal.send('keep my draft')
+            terminal.pump(.2)
             _, child_done = terminal.request()
             releases.append(child_done)
             child_done.delta = {'content': 'CHILD_VERIFIED_RESULT'}
@@ -135,7 +156,7 @@ def run(driver, port, columns):
                 raise AssertionError(terminal.raw[-8000:])
             terminal.pump(.5)
             visible = '\n'.join(stable_rows(terminal))
-            assert visible.count('PRESERVED_AGENT_DRAFT') == 1, visible
+            assert visible.count('keep my draft') == 1, visible
             terminal.child.send('\x15')
             terminal.send('/subagents\r')
             wait_for(terminal, lambda: 'Main conversation' in '\n'.join(terminal.screen.display))

@@ -303,6 +303,68 @@ def check_tool_spacing(driver):
                 child.close(force=True)
 
 
+def check_agent_spacing(driver):
+    events = []
+
+    def narration(text, key):
+        events.extend([
+            {'name': 'react.reasoning.delta', 'data': {'text': text}},
+            {'name': 'tool.call', 'data': {
+                'tool': 'list_agents', 'tool_call_id': key, 'args': {}}},
+            {'name': 'tool.result', 'data': {
+                'tool': 'list_agents', 'tool_call_id': key, 'result': '{}'}},
+        ])
+
+    def completed(name):
+        events.append({'name': 'agent.completed', 'data': {
+            'parent_session_id': 0, 'agent_id': '/root/' + name,
+            'status': 'completed'}})
+
+    narration('BEFORE_AGENT_RECEIPT', 'before')
+    completed('first-worker')
+    narration('AFTER_AGENT_RECEIPT', 'after')
+    events.extend([
+        {'name': 'tool.call', 'data': {
+            'tool': 'wait_agent', 'tool_call_id': 'wait', 'args': {'timeout_ms': 1}}},
+        {'name': 'tool.result', 'data': {
+            'tool': 'wait_agent', 'tool_call_id': 'wait', 'result': '{}'}},
+        {'name': 'react.content.delta', 'data': {'text': 'PARENT_COMMENTARY'}},
+    ])
+    completed('deferred-worker')
+    completed('batched-worker')
+    events.append({'name': 'react.content.end', 'data': {'text': 'PARENT_COMMENTARY'}})
+    narration('AFTER_DEFERRED_RECEIPT', 'end')
+    with tempfile.TemporaryDirectory(prefix='morph-agent-spacing-') as temp:
+        fixture = Path(temp) / 'events.jsonl'
+        fixture.write_text(''.join(json.dumps(event) + '\n' for event in events))
+        for width in (120, 80, 60):
+            child = pexpect.spawn(str(driver), ['--replay-events', str(fixture)],
+                                  encoding='utf-8', dimensions=(48, width))
+            try:
+                child.expect('AFTER_DEFERRED_RECEIPT')
+                raw = child.before + child.after
+                child.expect(pexpect.TIMEOUT, timeout=.2)
+                raw += child.before
+                screen = pyte.Screen(width, 48)
+                pyte.Stream(screen).feed(raw)
+                rows = screen.display
+                text = '\n'.join(rows)
+                previous = None
+                for label in ('BEFORE_AGENT_RECEIPT', 'Finished /root/first-worker',
+                              'AFTER_AGENT_RECEIPT', 'Finished waiting',
+                              'PARENT_COMMENTARY', 'Finished /root/deferred-worker',
+                              'Finished /root/batched-worker', 'AFTER_DEFERRED_RECEIPT'):
+                    row = next(i for i, line in enumerate(rows) if label in line)
+                    if previous is not None:
+                        expected = 1 if 'batched-worker' in label else 2
+                        assert row - previous == expected, text
+                    assert not rows[row].startswith(' '), text
+                    previous = row
+                print(f'checked: {width} columns: reasoning/agent/wait component spacing')
+            finally:
+                child.close(force=True)
+
+
 def check_final_spacing(driver, port):
     replies = [
         'FINAL_SENTINEL plain answer.',
@@ -371,6 +433,7 @@ def main():
     check_details_follow(driver)
     check_feed_replay(driver)
     check_tool_spacing(driver)
+    check_agent_spacing(driver)
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()

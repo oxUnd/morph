@@ -12,6 +12,7 @@
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/widgets/feed_block.h"
 #include "sapi/cli/widgets/transcript.h"
 #include "sapi/cli/services/transcript.h"
 #include "sapi/cli/adapters/media/renderer.h"
@@ -676,16 +677,11 @@ static void cli_presenter_reasoning_flush(struct cli_application *ctx, int finis
 	if (finish) {
 		cli_presenter_clear_status(ctx);
 		/* Commit one quiet narration line between tool blocks. */
-		morph_buf_t document MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		struct cli_message_style style = {
-			.columns = columns, .styled = cli_output_color_enabled(ctx),
-			.trailing_newlines = ctx->output.trailing_newlines,
-			.reasoning_expanded = 1,
+		struct cli_feed_block block = {
+			.kind = CLI_FEED_BLOCK_REASONING,
+			.content.reasoning = morph_buf_cstr_borrow(&preview),
 		};
-		if (morph_buf_init(&document, 128) == 0 &&
-		    cli_messages_append(&document, CLI_MESSAGE_REASONING,
-			morph_buf_cstr_borrow(&preview), &style) == 0)
-			printf(ctx, "%s", morph_buf_cstr_borrow(&document));
+		(void)cli_feed_block_write(ctx, &block);
 	} else if (isatty(STDOUT_FILENO)) {
 		cli_feed_reasoning_set(ctx, morph_buf_cstr_borrow(&preview));
 	}
@@ -1541,7 +1537,7 @@ int cli_presentation_init(struct cli_application *ctx)
 		return -ENOMEM;
 	rc = morph_buf_init(&ctx->presenter->event_stream, BUFSIZ);
 	if (!rc)
-		rc = morph_buf_init(&ctx->presenter->agent_receipts, 256);
+		rc = cli_agents_receipts_init(ctx);
 	if (!rc)
 		rc = morph_buf_init(&ctx->presenter->markdown_stream_text, BUFSIZ);
 	if (!rc)
@@ -1590,7 +1586,7 @@ void cli_presentation_finish(struct cli_application *ctx)
 {
 	cli_presenter_clear_status(ctx);
 	cli_transcript_finish(ctx);
-	if (ctx && ctx->presenter && ctx->presenter->agent_receipts.len) {
+	if (ctx && ctx->presenter && ctx->presenter->agent_receipts.nelts) {
 		cli_presenter_print_stream(ctx);
 		cli_markdown_stream_reset(ctx, 1);
 		cli_agents_flush_receipts(ctx);
@@ -1612,7 +1608,7 @@ void cli_presentation_cleanup(struct cli_application *ctx)
 	morph_buf_cleanup(&ctx->presenter->native_content);
 	morph_buf_cleanup(&ctx->presenter->markdown_stream_text);
 	morph_buf_cleanup(&ctx->presenter->event_stream);
-	morph_buf_cleanup(&ctx->presenter->agent_receipts);
+	cli_agents_receipts_cleanup(ctx);
 	morph_strmap_cleanup(&ctx->presenter->rendered_artifacts);
 	morph_strmap_cleanup(&ctx->presenter->announced_artifacts);
 	free(ctx->presenter);
@@ -1811,7 +1807,7 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 		if (strcmp(ev->name, "react.thought.end") == 0) {
 			int rc = cli_presenter_append_stream(ctx, CLI_PRESENTER_STREAM_THOUGHT, text,
 				0, 1, NULL);
-			if (rc == 0 && ctx->presenter->agent_receipts.len) {
+			if (rc == 0 && ctx->presenter->agent_receipts.nelts) {
 				cli_presenter_print_stream(ctx);
 				cli_markdown_stream_reset(ctx, 1);
 				cli_agents_flush_receipts(ctx);

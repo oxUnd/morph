@@ -39,6 +39,34 @@ static void cli_agents_append(morph_buf_t *out, const char *text, int columns, c
 		(void)morph_buf_puts(out, ANSI_RESET);
 }
 
+int cli_agents_receipt_append(morph_buf_t *out, const char *id, enum agent_status status,
+			     int columns, int styled)
+{
+	if (!out)
+		return -EINVAL;
+	int completed = status == AGENT_COMPLETED;
+	int cancelled = status == AGENT_CANCELLED;
+	const char *action = completed ? "Finished" : cancelled ? "Interrupted" : "Failed";
+	const char *marker = completed ? CLI_FEED_DONE
+		: cancelled ? CLI_FEED_CANCELLED : CLI_FEED_FAILED;
+	const char *color = completed ? ANSI_GREEN
+		: cancelled ? ANSI_DIM : CLI_FEED_FAILED_STYLE;
+	int width = columns - (int)CLI_CONTENT_RIGHT_PADDING - 2;
+	int rc = morph_buf_printf(out, "%s%s%s ", styled ? color : "", marker,
+		styled ? ANSI_RESET : "");
+	if (rc == 0)
+		cli_agents_append(out, action, width, "");
+	if (rc == 0 && width > (int)strlen(action) + 1) {
+		rc = morph_buf_putc(out, ' ');
+		if (rc == 0)
+			cli_agents_append(out, id ? id : "agent", width - (int)strlen(action) - 1,
+				styled ? CLI_COMMAND_COLOR : "");
+	}
+	if (rc == 0)
+		rc = morph_buf_putc(out, '\n');
+	return rc != 0 ? rc : out->failed;
+}
+
 int cli_agents_detail(morph_buf_t *out, const char *label, const char *value, int columns,
 		      int styled)
 {

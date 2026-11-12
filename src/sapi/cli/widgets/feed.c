@@ -1,4 +1,5 @@
 #include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/widgets/feed_block.h"
 #include "sapi/cli/presentation/style.h"
 #include "util/terminal_size.h"
 #include "util/cleanup.h"
@@ -697,7 +698,7 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 	preview_reserved += job_rows + (int)queue_shown;
 	preview_rows = cli_feed_render_markdown_preview(ctx, preview_reserved, 0);
 	status_gap = status_visible && (tool_live || terminal->live_reasoning) &&
-		     ctx->output.trailing_newlines < 2;
+		     cli_feed_block_leading_rows(ctx->output.trailing_newlines);
 	if (status_visible && tool_live && morph_buf_init(&tool_body, 128) == 0)
 		body_rows = cli_transcript_live_body(ctx->transcript, &tool_body, columns,
 						     cli_output_color_enabled(ctx));

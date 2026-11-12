@@ -27,9 +27,11 @@ add_library(morph-cli STATIC
 	# Application widgets
 	widgets/subagents.c
 	widgets/agents.c
+	widgets/agents_browser.c
 	widgets/banner.c
 	widgets/composer_panel.c
 	widgets/feed.c
+	widgets/feed_block.c
 	widgets/list.c
 	widgets/shell_style.c
 	widgets/transcript.c

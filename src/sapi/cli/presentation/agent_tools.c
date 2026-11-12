@@ -118,10 +118,8 @@ int cli_agent_tools_preview(const struct cli_transcript_tool *tool, morph_buf_t 
 		return 0;
 	if (tool->state < 0)
 		return 0;
-	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(tool->args);
-	const char *message = cli_agent_tools_string(args, "message");
-	/* Full task prompts and raw results remain available in turn details. */
-	if (*message)
-		cli_agent_tools_clip(out, message, 160);
+	/* Delegation prompts belong to the agent panel and explicit details,
+	 * including restored calls. Successful lifecycle rows need no body. */
+	(void)out;
 	return 1;
 }

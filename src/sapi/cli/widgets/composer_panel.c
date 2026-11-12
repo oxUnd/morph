@@ -2,7 +2,6 @@
 
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
-#include "util/array.h"
 #include "util/cleanup.h"
 #include "util/error.h"
 #include "util/utf8.h"
@@ -10,8 +9,8 @@
 #include <morph/tui/controller.h>
 #include <morph/tui/draw.h>
 #include <errno.h>
-#include <limits.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 struct cli_composer_panel {
@@ -19,7 +18,8 @@ struct cli_composer_panel {
 	struct cli_composer_panel_options options;
 	struct cli_composer_panel_ops ops;
 	void *data;
-	morph_array_t widths;
+	int anchored;
+	int leading_gap;
 };
 
 static void cli_composer_panel_frame_cleanup(struct cli_composer_panel_frame *frame)
@@ -134,34 +134,13 @@ int cli_composer_panel_styled_line(struct cli_composer_panel_frame *frame, const
 	return rc;
 }
 
-static int cli_composer_panel_old_rows(const struct cli_composer_panel *panel, int height)
-{
-	/* A resize may truncate instead of reflowing. Never infer extra owned rows. */
-	size_t rows = panel->widths.nelts;
-	if (height > 0 && rows >= (size_t)height)
-		rows = (size_t)height - 1;
-	return rows <= INT_MAX ? (int)rows : INT_MAX;
-}
-
-static int cli_composer_panel_erase(morph_buf_t *output, int rows)
-{
-	int rc = morph_buf_puts(output, "\033[0m\r");
-	if (rows && rc == 0)
-		rc = morph_buf_printf(output, "\033[%dA", rows);
-	for (int i = 0; rc == 0 && i <= rows; i++) {
-		rc = morph_buf_puts(output, "\033[2K");
-		if (i < rows && rc == 0)
-			rc = morph_buf_puts(output, "\033[B\r");
-	}
-	return rows && rc == 0 ? morph_buf_printf(output, "\033[%dA\r", rows) : rc;
-}
-
+/* The cursor always rests at the composer's upper edge. Reserve below it
+ * before painting; newline allocation may scroll history to make room. */
 static int cli_composer_panel_draw(void *opaque, const struct morph_tui_screen *screen)
 {
 	struct cli_composer_panel *panel = opaque;
 	struct cli_composer_panel_frame frame MORPH_CLEANUP(cli_composer_panel_frame_cleanup) = {0};
 	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_array_t widths MORPH_CLEANUP(morph_array_cleanup) = {0};
 	int height = screen->area.height;
 	int budget = height >= 5 ? height - 4 : 1;
 	frame.columns = screen->area.width > 1 ? screen->area.width - 1 : 0;
@@ -170,42 +149,41 @@ static int cli_composer_panel_draw(void *opaque, const struct morph_tui_screen *
 	int rc = morph_buf_init(&frame.content, BUFSIZ);
 	if (rc == 0)
 		rc = morph_buf_init(&output, BUFSIZ);
-	size_t width_sample = 0;
-	if (rc == 0)
-		rc = morph_array_init(&widths, (size_t)frame.rows, sizeof(width_sample));
 	if (rc == 0)
 		rc = panel->ops.draw(panel->data, &frame);
 	if (rc == 0 && frame.content.failed)
 		rc = frame.content.failed;
+	int leading_gap = !panel->anchored && panel->application->output.command_result_pending;
 	if (rc == 0)
-		rc = morph_buf_puts(&output, "\033[?2026h");
+		rc = morph_buf_puts(&output, "\033[?2026h\033[0m\r");
+	if (rc == 0 && leading_gap)
+		rc = morph_buf_puts(&output, "\n");
 	if (rc == 0)
-		rc = cli_composer_panel_erase(&output, cli_composer_panel_old_rows(panel, height));
+		rc = morph_buf_puts(&output, "\033[J");
+	int below = frame.line_count > 0 ? frame.line_count - 1 : 0;
+	for (int row = 0; rc == 0 && row < below; row++)
+		rc = morph_buf_puts(&output, "\r\n");
+	if (rc == 0 && below)
+		rc = morph_buf_printf(&output, "\033[%dA\r", below);
 	const char *line = morph_buf_cstr_borrow(&frame.content);
-	for (int i = 0; rc == 0 && i < frame.line_count; i++) {
+	for (int row = 0; rc == 0 && row < frame.line_count; row++) {
 		size_t length = strcspn(line, "\n");
-		morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		rc = morph_buf_init(&text, length + 1);
+		rc = morph_buf_append(&output, line, length);
 		if (rc == 0)
-			rc = morph_buf_append(&text, line, length);
-		size_t *width = rc == 0 ? morph_array_push_borrow(&widths) : NULL;
-		if (rc == 0 && !width)
-			rc = -ENOMEM;
-		if (rc == 0) {
-			*width = utf8_display_width_ansi(morph_buf_cstr_borrow(&text));
-			rc = morph_buf_append(&output, line, length);
-		}
-		if (rc == 0)
-			rc = morph_buf_puts(&output, "\033[0m\033[K\r\n");
+			rc = morph_buf_puts(&output, "\033[0m\033[K");
+		if (rc == 0 && row < below)
+			rc = morph_buf_puts(&output, "\033[B\r");
 		line += length + (line[length] == '\n');
 	}
+	if (rc == 0 && below)
+		rc = morph_buf_printf(&output, "\033[%dA", below);
 	if (rc == 0)
-		rc = morph_buf_puts(&output, "\033[?2026l");
+		rc = morph_buf_puts(&output, "\r\033[?2026l");
 	if (rc == 0)
 		rc = morph_tui_draw_write(stdout, &output);
 	if (rc == 0) {
-		morph_array_cleanup(&panel->widths);
-		rc = morph_array_take(&panel->widths, &widths);
+		panel->anchored = 1;
+		panel->leading_gap |= leading_gap;
 	}
 	return rc;
 }
@@ -226,21 +204,21 @@ static void cli_composer_panel_disappear(void *opaque, struct morph_tui_applicat
 {
 	struct cli_composer_panel *panel = opaque;
 	(void)application;
-	if (!panel->widths.nelts)
+	if (!panel->anchored)
 		return;
-	int columns, height;
-	morph_tui_terminal_dimensions(fileno(stdout), &columns, &height);
 	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc = morph_buf_init(&output, 128);
 	if (rc == 0)
-		rc = morph_buf_puts(&output, "\033[?2026h");
-	if (rc == 0)
-		rc = cli_composer_panel_erase(&output, cli_composer_panel_old_rows(panel, height));
+		rc = morph_buf_puts(&output, "\033[?2026h\033[0m\r\033[J");
+	/* The command/result separator is transient until a real result exists. */
+	if (rc == 0 && panel->leading_gap)
+		rc = morph_buf_puts(&output, "\033[1A\r\033[2K");
 	if (rc == 0)
 		rc = morph_buf_puts(&output, "\033[?2026l");
 	if (rc == 0)
 		(void)morph_tui_draw_write(stdout, &output);
-	morph_array_clear(&panel->widths);
+	panel->anchored = 0;
+	panel->leading_gap = 0;
 }
 
 static void cli_composer_panel_close(void *opaque, int result)
@@ -248,7 +226,6 @@ static void cli_composer_panel_close(void *opaque, int result)
 	struct cli_composer_panel *panel = opaque;
 	cli_application_panel_complete(panel->application, panel->data, panel->ops.complete,
 				       result);
-	morph_array_cleanup(&panel->widths);
 	free(panel);
 }
 
@@ -256,8 +233,8 @@ int cli_composer_panel_show(struct cli_application *application,
 			    const struct cli_composer_panel_options *options,
 			    const struct cli_composer_panel_ops *ops, void *data)
 {
-	if (!application || !options || options->max_rows < 1 ||
-	    options->tick_ms < 0 || !ops || !ops->draw || !ops->update || !ops->complete)
+	if (!application || !options || options->max_rows < 1 || options->tick_ms < 0 || !ops ||
+	    !ops->draw || !ops->update || !ops->complete)
 		return -EINVAL;
 	struct cli_composer_panel *panel = calloc(1, sizeof(*panel));
 	if (!panel)

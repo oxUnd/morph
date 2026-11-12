@@ -1,5 +1,6 @@
 """Restore persisted scrollback through slash commands and the production startup picker."""
 import json
+import re
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -48,7 +49,14 @@ def seed(database):
                        'created_at) VALUES(?,?,?,?,?,?)', (session, role, content, turn, 4, 100))
         calls = {'calls': [{'name': 'exec', 'tool_call_id': 'history-call',
                            'arguments': json.dumps({'command':
-                               'touch resumed-tool-must-not-run'})}],
+                               'touch resumed-tool-must-not-run'})},
+                          {'name': 'spawn_agent', 'tool_call_id': 'history-spawn',
+                           'arguments': json.dumps({'task_name': 'history-worker',
+                               'message': 'HISTORY_DELEGATION_PROMPT',
+                               'assignment': {'scope': 'HISTORY_ASSIGNMENT_SCOPE'}})},
+                          {'name': 'followup_task', 'tool_call_id': 'history-followup',
+                           'arguments': json.dumps({'target': '/root/history-worker',
+                               'message': 'HISTORY_FOLLOWUP_PROMPT'})}],
                  'reasoning_content': 'RECORDED_REASONING'}
         result = {'ok': True, 'data': {'stdout': 'HISTORY_TOOL_OUTPUT',
                                       'exit_code': 0, 'duration_ms': 2500}}
@@ -56,6 +64,9 @@ def seed(database):
             ('user_message', 'user', 'HISTORY_FIRST_QUESTION', None, None, 0),
             ('assistant_tool_calls', 'assistant', 'HISTORY_CHECKING', calls, None, 0),
             ('tool_result', 'tool', json.dumps(result), None, 'history-call', 0),
+            ('tool_result', 'tool', json.dumps({'data': {'agent_id': '/root/history-worker'}}),
+             None, 'history-spawn', 0),
+            ('tool_result', 'tool', '{}', None, 'history-followup', 0),
             ('assistant_message', 'assistant', '**HISTORY_FIRST_ANSWER**', None, None, 0),
             ('compaction_summary', 'system', 'INTERNAL_COMPACTION', None, None, 1),
             ('user_message', 'user', 'HISTORY_LAST_QUESTION', None, None, 1),
@@ -64,9 +75,11 @@ def seed(database):
             db.execute('INSERT INTO model_history_items(session_id,sequence_no,turn_id,kind,'
                        'role,content,payload_json,tool_call_id,tool_name,active,created_at) '
                        'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-                       (native, sequence, 'old-turn' if sequence < 5 else 'recent-turn',
+                       (native, sequence, 'old-turn' if not active else 'recent-turn',
                         kind, role, content, json.dumps(payload) if payload else None,
-                        tool_id, 'exec' if tool_id else None, active, sequence))
+                        tool_id, {'history-call': 'exec', 'history-spawn': 'spawn_agent',
+                                  'history-followup': 'followup_task'}.get(tool_id),
+                        active, sequence))
     return native, legacy
 
 
@@ -78,6 +91,11 @@ def check_restored(terminal, label):
         assert terminal.raw.count(marker) == 1, (marker, terminal.raw[-7000:])
     assert 'HISTORY_LAST_ANSWER' in screen, screen
     assert 'INTERNAL_COMPACTION' not in terminal.raw, terminal.raw[-7000:]
+    plain = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', terminal.raw)
+    assert 'Spawned /root/history-worker' in plain, plain[-7000:]
+    for private in ('HISTORY_DELEGATION_PROMPT', 'HISTORY_ASSIGNMENT_SCOPE',
+                    'HISTORY_FOLLOWUP_PROMPT'):
+        assert private not in terminal.raw, terminal.raw[-7000:]
     assert '2.5s' in terminal.raw and 'Worked for' not in terminal.raw, terminal.raw[-7000:]
     assert not terminal.duplicate_prompts, terminal.duplicate_prompts
     assert Model.requests.empty(), 'resume unexpectedly called the model'

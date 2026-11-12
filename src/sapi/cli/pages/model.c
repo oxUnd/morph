@@ -29,7 +29,7 @@ static int cli_model_draw(void *opaque, struct cli_composer_panel_frame *frame)
 	morph_buf_t label MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int selected_index = picker->menu.list.index < 2 ? (int)picker->menu.list.index : 0;
 	int budget = frame->rows;
-	int header = budget >= 7 ? 3 : 1;
+	int header = budget >= 7 ? 2 : 1;
 	int footer = budget >= 10 ? 3 : budget >= 4 ? 1 : 0;
 	int page = budget - header - footer;
 	if (page < 1)
@@ -40,10 +40,8 @@ static int cli_model_draw(void *opaque, struct cli_composer_panel_frame *frame)
 	int rc = morph_buf_init(&label, 128);
 	if (rc != 0)
 		return rc;
-	if (header == 3)
-		(void)cli_composer_panel_line(frame, "", ANSI_RESET);
 	(void)cli_composer_panel_line(frame, "  Select Model Mode", CLI_INPUT_BACKGROUND ANSI_BOLD);
-	if (header == 3) {
+	if (header == 2) {
 		(void)morph_buf_printf(&label, "  %s", picker->model);
 		(void)cli_composer_panel_line(frame, morph_buf_cstr_borrow(&label),
 					      CLI_INPUT_BACKGROUND ANSI_DIM);

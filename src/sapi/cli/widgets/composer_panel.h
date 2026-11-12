@@ -27,7 +27,9 @@ struct cli_composer_panel_ops {
 	void (*complete)(void *data, int result);
 };
 
-/* Success retains data until complete; failure leaves it with the caller. */
+/* Replaces the composer from its upper edge downward. The component owns the
+ * transient command separator and space reservation; callers draw content only.
+ * Success retains data until complete; failure leaves it with the caller. */
 int cli_composer_panel_show(struct cli_application *application,
 			    const struct cli_composer_panel_options *options,
 			    const struct cli_composer_panel_ops *ops, void *data);

@@ -9,9 +9,11 @@ extern "C" {
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/widgets/subagents.h"
+#include "sapi/cli/widgets/agents_browser.h"
 #include "sapi/cli/widgets/transcript.h"
 #include "util/cleanup.h"
 #include "util/json.h"
+#include "util/utf8.h"
 }
 
 #include <cstring>
@@ -23,6 +25,101 @@ extern "C" {
 
 using SubagentThread =
 	std::unique_ptr<cli_subagents_thread, decltype(&cli_subagents_thread_destroy)>;
+
+TEST(CliAgentsBrowserTest, FiltersMapVisibleSelectionBackToTheSnapshot)
+{
+	agent_info agents[5]{};
+	agents[0].status = AGENT_RUNNING;
+	agents[1].status = AGENT_PENDING;
+	agents[2].status = AGENT_COMPLETED;
+	agents[3].status = AGENT_FAILED;
+	agents[4].status = AGENT_CANCELLED;
+	cli_agents_browser_data data{};
+	data.agents = agents;
+	data.count = 5;
+	cli_agents_browser_state state{};
+	EXPECT_EQ(cli_agents_browser_selected(&state, &data), 0u);
+	for (size_t expected : {1u, 2u, 3u, 4u, 5u, 0u}) {
+		EXPECT_EQ(cli_agents_browser_update(&state, &data, '\t'), MORPH_TUI_WIDGET_CHANGED);
+		EXPECT_EQ(cli_agents_browser_selected(&state, &data), expected);
+	}
+	cli_agents_browser_update(&state, &data, MORPH_TUI_KEY_BACK_TAB);
+	EXPECT_EQ(cli_agents_browser_selected(&state, &data), 5u);
+	state.filter = CLI_AGENTS_BROWSER_RUNNING;
+	agents[0].status = AGENT_COMPLETED;
+	EXPECT_EQ(cli_agents_browser_selected(&state, &data), SIZE_MAX);
+	EXPECT_EQ(cli_agents_browser_update(&state, &data, '\r'), MORPH_TUI_WIDGET_UNHANDLED);
+	EXPECT_EQ(cli_agents_browser_update(&state, &data, 27), MORPH_TUI_WIDGET_CANCEL);
+}
+
+TEST(CliAgentsBrowserTest, ComponentBoundsAndSanitizesBothResponsiveLayouts)
+{
+	agent_info agent{};
+	strcpy(agent.id, "/root/reader");
+	agent.status = AGENT_RUNNING;
+	std::string prompt = "TASK_SENTINEL\033[2J\n" + std::string(200, 'x');
+	agent.description = prompt.data();
+	cli_agents_browser_data data{};
+	data.agents = &agent;
+	data.count = 1;
+	data.project = "/tmp/project";
+	data.model = "test-model";
+	for (int columns : {160, 120, 80, 60, 20, 12}) {
+		for (int rows : {32, 24, 8, 4}) {
+			for (int styled : {0, 1}) {
+				cli_agents_browser_state state{};
+				state.selection.index = 1;
+				morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {};
+				ASSERT_EQ(morph_buf_init(&output, 128), 0);
+				ASSERT_EQ(cli_agents_browser_append(&output, &state, &data,
+					columns, rows, styled), 0);
+				char *plain MORPH_CLEANUP(morph_charp_cleanup) =
+					utf8_terminal_sanitize_dup(output.data, output.len,
+						UTF8_TERMINAL_TEXT_MULTILINE, nullptr);
+				ASSERT_NE(plain, nullptr);
+				std::istringstream lines(plain);
+				std::string line;
+				int count = 0;
+				while (std::getline(lines, line)) {
+					EXPECT_LE(utf8_display_width(line.c_str()),
+						static_cast<size_t>(columns));
+					count++;
+				}
+				EXPECT_EQ(count, rows);
+				EXPECT_EQ(std::string(output.data).find("\033[2J"), std::string::npos);
+				if (!styled)
+					EXPECT_EQ(std::string(output.data).find('\033'), std::string::npos);
+				if (columns >= 100 && rows >= 24)
+					EXPECT_NE(std::string(plain).find("Task details"), std::string::npos);
+			}
+		}
+	}
+}
+
+TEST(CliAgentsBrowserTest, DetailScrollingKeepsItsHeadingAndTaskSelection)
+{
+	agent_info agent{};
+	strcpy(agent.id, "/root/reader");
+	agent.status = AGENT_RUNNING;
+	std::string prompt;
+	for (int i = 0; i < 40; i++)
+		prompt += "A long assignment line\n";
+	agent.description = prompt.data();
+	cli_agents_browser_data data{};
+	data.agents = &agent;
+	data.count = 1;
+	cli_agents_browser_state state{};
+	state.selection.index = 1;
+	cli_agents_browser_update(&state, &data, MORPH_TUI_KEY_RIGHT);
+	cli_agents_browser_update(&state, &data, MORPH_TUI_KEY_PAGE_DOWN);
+	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {};
+	ASSERT_EQ(morph_buf_init(&output, 128), 0);
+	ASSERT_EQ(cli_agents_browser_append(&output, &state, &data, 120, 12, 0), 0);
+	EXPECT_GT(state.detail_scroll, 0u);
+	EXPECT_EQ(cli_agents_browser_selected(&state, &data), 1u);
+	EXPECT_NE(std::string(output.data).find("Task details"), std::string::npos);
+	EXPECT_NE(std::string(output.data).find("scroll details"), std::string::npos);
+}
 
 static SubagentThread make_thread(const char *id)
 {

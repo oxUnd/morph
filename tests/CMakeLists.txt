@@ -241,6 +241,12 @@ if(Python3_Interpreter_FOUND)
 				$<TARGET_FILE:morph-cli-pty-driver>)
 		set_tests_properties(cli_model_pty_integration PROPERTIES
 			SKIP_RETURN_CODE 77 TIMEOUT 90)
+		add_test(NAME cli_composer_panel_anchor_pty_integration
+			COMMAND ${Python3_EXECUTABLE}
+				${CMAKE_CURRENT_SOURCE_DIR}/test_cli_composer_panel_anchor_pty.py
+				$<TARGET_FILE:morph-cli-pty-driver>)
+		set_tests_properties(cli_composer_panel_anchor_pty_integration PROPERTIES
+			SKIP_RETURN_CODE 77 TIMEOUT 60)
 		add_test(NAME cli_permissions_pty_integration
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_permissions_pty.py
 				$<TARGET_FILE:morph-cli-pty-driver>)

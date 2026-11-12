@@ -36,7 +36,7 @@ static int cli_permissions_draw(void *opaque, struct cli_composer_panel_frame *f
 	morph_buf_t label MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int selected_index = picker->menu.list.index < 4 ? (int)picker->menu.list.index : 0;
 	int budget = frame->rows;
-	int header = budget >= 7 ? 3 : 1;
+	int header = budget >= 7 ? 2 : 1;
 	int footer = budget >= 10 ? 3 : budget >= 4 ? 1 : 0;
 	int custom = !strcmp(current, "custom") && budget >= 8;
 	int page = budget - header - footer - custom;
@@ -48,11 +48,9 @@ static int cli_permissions_draw(void *opaque, struct cli_composer_panel_frame *f
 	int rc = morph_buf_init(&label, 128);
 	if (rc != 0)
 		return rc;
-	if (header == 3)
-		(void)cli_composer_panel_line(frame, "", ANSI_RESET);
 	(void)cli_composer_panel_line(frame, "  Update Model Permissions",
 				      CLI_INPUT_BACKGROUND ANSI_BOLD);
-	if (header == 3)
+	if (header == 2)
 		(void)cli_composer_panel_line(frame, "", CLI_INPUT_BACKGROUND);
 	if (custom) {
 		(void)morph_buf_printf(&label, "  Custom: %s / %s / %s",

@@ -50,6 +50,19 @@ Each header owns its module's declarations; commands include their own handler
 factory headers rather than declaring everything in the registry. Models do not
 import application state. Configuration services do not import wizard pages.
 
+Feed changes compose semantic components rather than building terminal rows in
+event handlers. `widgets/feed_block` owns the shared outer spacing for reasoning,
+compact tools and agent receipts; domain widgets own their content, clipping and
+status styling. Live previews reuse its boundary calculation. Deferred agent
+receipts retain data and render at the current width when committed. Keep new
+feed elements on this component path; do not add local ANSI/newline patches to
+services or event routing. Existing legacy output paths can migrate separately.
+
+The full-screen agents browser follows the same boundary: `widgets/agents_browser`
+owns responsive split/stacked layout, filters, selection and detail scrolling.
+It consumes borrowed snapshots and performs no runtime calls. The subagents page
+owns snapshot refresh, selection identity and navigation to agent conversations.
+
 ## Execution and teardown
 
 `main` initializes `cli_application`, invokes interactive, single-turn or JSON

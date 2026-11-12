@@ -1,4 +1,5 @@
 #include "sapi/cli/widgets/transcript.h"
+#include "sapi/cli/widgets/feed_block.h"
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/presentation/agent_tools.h"
 #include "sapi/cli/presentation/messages.h"
@@ -479,16 +480,19 @@ void cli_transcript_render_tool(struct cli_application *ctx, const struct cli_tr
 {
 	if (compact && cli_agent_tools_analytics_only(tool->name))
 		return;
+	if (compact) {
+		struct cli_feed_block block = {
+			.kind = CLI_FEED_BLOCK_TOOL, .content.tool = tool,
+		};
+		(void)cli_feed_block_write(ctx, &block);
+		return;
+	}
 	morph_buf_t line;
 
 	if (morph_buf_init(&line, 128) != 0)
 		return;
-	if (compact)
-		(void)cli_transcript_tool_append(&line, tool, cli_transcript_columns(), 1, 0);
-	else {
-		cli_transcript_tool_row(tool, &line, cli_transcript_columns(), 1);
-		(void)morph_buf_putc(&line, '\n');
-	}
+	cli_transcript_tool_row(tool, &line, cli_transcript_columns(), 1);
+	(void)morph_buf_putc(&line, '\n');
 	int gap = ctx->output.trailing_newlines < 2 ||
 		  (ctx->output.capture && !ctx->output.capture_history);
 	cli_output_printf(ctx, "%s%s", gap ? "\n" : "", morph_buf_cstr_borrow(&line));

@@ -2851,7 +2851,12 @@ TEST_F(CliPresentationTest, CollaborationUsesSemanticTitlesAndNoGenericRunningBo
 	std::string completed = testing::internal::GetCapturedStdout();
 	EXPECT_NE(completed.find("Spawned"), std::string::npos);
 	EXPECT_NE(completed.find("/root/parser"), std::string::npos);
-	EXPECT_NE(completed.find("Inspect the parser independently."), std::string::npos);
+	EXPECT_EQ(completed.find("Inspect the parser independently."), std::string::npos);
+	morph_buf_t details MORPH_CLEANUP(morph_buf_cleanup) = {};
+	ASSERT_EQ(morph_buf_init(&details, 128), 0);
+	ASSERT_EQ(cli_transcript_render_details(&ctx, ctx.transcript, &details), 0);
+	EXPECT_NE(std::string(details.data).find("Inspect the parser independently."),
+		  std::string::npos);
 	EXPECT_EQ(completed.find("agent_id"), std::string::npos);
 	EXPECT_EQ(completed.find("Running…"), std::string::npos);
 	morph_buf_cleanup(&line);
@@ -3007,6 +3012,30 @@ TEST(CliAgentsPresentationTest, AgentDetailsPreserveLargeMultilineResultsAndStri
 	}
 }
 
+TEST(CliAgentsPresentationTest, ReceiptComponentClipsAndSanitizesAllOutcomes)
+{
+	std::string id = "/root/\033[2J" + std::string(180, 'x') + "\r\nunsafe";
+	for (int columns : {120, 80, 60, 20, 12}) {
+		for (auto status : {AGENT_COMPLETED, AGENT_FAILED, AGENT_CANCELLED}) {
+			for (int styled : {0, 1}) {
+				morph_buf_t row MORPH_CLEANUP(morph_buf_cleanup) = {};
+				ASSERT_EQ(morph_buf_init(&row, 128), 0);
+				ASSERT_EQ(cli_agents_receipt_append(&row, id.c_str(), status,
+					columns, styled), 0);
+				char *plain MORPH_CLEANUP(morph_charp_cleanup) =
+					utf8_terminal_sanitize_dup(row.data, row.len,
+						UTF8_TERMINAL_TEXT_MULTILINE, nullptr);
+				ASSERT_NE(plain, nullptr);
+				EXPECT_EQ(std::count(plain, plain + strlen(plain), '\n'), 1);
+				EXPECT_LE(utf8_display_width(plain), static_cast<size_t>(columns - 2));
+				EXPECT_EQ(std::string(row.data).find("\033[2J"), std::string::npos);
+				if (!styled)
+					EXPECT_EQ(std::string(row.data).find('\033'), std::string::npos);
+			}
+		}
+	}
+}
+
 TEST_F(CliPresentationTest, AgentCompletionWaitsUntilParentMarkdownAnswerIsComplete)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
@@ -3020,7 +3049,7 @@ TEST_F(CliPresentationTest, AgentCompletionWaitsUntilParentMarkdownAnswerIsCompl
 	Emit(MORPH_EVENT_BACKGROUND, "agent.completed", "end", completed);
 	std::string pending = testing::internal::GetCapturedStdout();
 	EXPECT_EQ(pending.find("Finished"), std::string::npos);
-	EXPECT_GT(ctx.presenter->agent_receipts.len, 0u);
+	EXPECT_GT(ctx.presenter->agent_receipts.nelts, 0u);
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.final.delta", "delta", second);
 	Emit(MORPH_EVENT_REACT, "react.final", "end", answer);
@@ -3031,7 +3060,7 @@ TEST_F(CliPresentationTest, AgentCompletionWaitsUntilParentMarkdownAnswerIsCompl
 	ASSERT_NE(output.find("Finished"), std::string::npos);
 	EXPECT_LT(output.find("PARENT_END"), output.find("Finished"));
 	EXPECT_EQ(output.find("Finished"), output.rfind("Finished"));
-	EXPECT_EQ(ctx.presenter->agent_receipts.len, 0u);
+	EXPECT_EQ(ctx.presenter->agent_receipts.nelts, 0u);
 	cJSON_Delete(first);
 	cJSON_Delete(second);
 	cJSON_Delete(answer);
@@ -3064,7 +3093,7 @@ TEST_F(CliPresentationTest, AgentReceiptsFlushAfterFailedOrCancelledParentWithou
 		ASSERT_NE(output.find("Failed"), std::string::npos);
 		EXPECT_LT(output.find("PARENT_PARTIAL_BEFORE_ABORT"), output.find("Failed"));
 		EXPECT_EQ(output.find("Failed"), output.rfind("Failed"));
-		EXPECT_EQ(ctx.presenter->agent_receipts.len, 0u);
+		EXPECT_EQ(ctx.presenter->agent_receipts.nelts, 0u);
 		cJSON_Delete(body);
 		cJSON_Delete(completed);
 		cJSON_Delete(outcome);
@@ -3090,7 +3119,7 @@ TEST_F(CliPresentationTest, PresentationFinishCommitsParentBeforeDeferredAgentRe
 	ASSERT_NE(output.find("Interrupted"), std::string::npos);
 	EXPECT_LT(output.find("PARENT_FALLBACK_BOUNDARY"), output.find("Interrupted"));
 	EXPECT_EQ(output.find("Interrupted"), output.rfind("Interrupted"));
-	EXPECT_EQ(ctx.presenter->agent_receipts.len, 0u);
+	EXPECT_EQ(ctx.presenter->agent_receipts.nelts, 0u);
 	cJSON_Delete(body);
 	cJSON_Delete(completed);
 }
@@ -3112,7 +3141,7 @@ TEST_F(CliPresentationTest, AgentReceiptFlushesAtAuthoritativeCommentaryMessageB
 	ASSERT_NE(output.find("PARENT_COMMENTARY_BEFORE_CHILD_RECEIPT"), std::string::npos);
 	ASSERT_NE(output.find("Finished"), std::string::npos);
 	EXPECT_LT(output.find("PARENT_COMMENTARY_BEFORE_CHILD_RECEIPT"), output.find("Finished"));
-	EXPECT_EQ(ctx.presenter->agent_receipts.len, 0u);
+	EXPECT_EQ(ctx.presenter->agent_receipts.nelts, 0u);
 	cJSON_Delete(body);
 	cJSON_Delete(completed);
 }

@@ -1,6 +1,9 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/widgets/agents_browser.h"
+#include "util/cleanup.h"
+#include "util/terminal_size.h"
 /* Exercise the real CLI with an isolated database and a local model server. */
 #include "sapi/cli/application.h"
 #include "http/client.h"
@@ -67,8 +70,8 @@ static int replay_feed(const char *path)
 			break;
 		}
 		event.name = name->valuestring;
-		event.type = strncmp(event.name, "tool.", 5) == 0 ?
-			MORPH_EVENT_TOOL : MORPH_EVENT_REACT;
+		event.type =
+			strncmp(event.name, "tool.", 5) == 0 ? MORPH_EVENT_TOOL : MORPH_EVENT_REACT;
 		event.data = cJSON_GetObjectItemCaseSensitive(json, "data");
 		rc = cli_presentation_event(&ctx, &event);
 		cJSON_Delete(json);
@@ -85,12 +88,60 @@ static int replay_feed(const char *path)
 	return rc;
 }
 
+static int preview_agents_browser(void)
+{
+	struct agent_info agents[3] = {0};
+	strcpy(agents[0].id, "/root/reader");
+	agents[0].status = AGENT_RUNNING;
+	agents[0].description = "Inspect the CLI components and preserve terminal ownership.";
+	agents[0].activity = "Reading presentation and widget sources";
+	agents[0].started_at_ms = 1000;
+	strcpy(agents[1].id, "/root/execution");
+	agents[1].status = AGENT_COMPLETED;
+	agents[1].description = "Review the process execution boundary.";
+	agents[1].result = "Verified session isolation and cancellation.";
+	agents[1].started_at_ms = 1000;
+	agents[1].ended_at_ms = 18000;
+	strcpy(agents[2].id, "/root/reviewer");
+	agents[2].status = AGENT_PENDING;
+	agents[2].description = "Check the final UI and regressions.";
+	struct cli_agents_browser_data data = {
+		.agents = agents,
+		.count = 3,
+		.detail = &agents[0],
+		.project = "~/Work/AI/morph",
+		.model = "configured text model",
+		.root_running = 1,
+		.now_ms = 43000,
+	};
+	struct cli_agents_browser_state state = {0};
+	state.selection.index = 1;
+	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int columns = 100;
+	int rows = 24;
+	morph_terminal_dimensions(STDOUT_FILENO, &columns, &rows);
+	int rc = morph_buf_init(&output, BUFSIZ);
+	if (rc == 0)
+		rc = cli_agents_browser_append(&output, &state, &data, columns - 1, rows, 1);
+	if (rc == 0) {
+		cli_output_printf(NULL, "%s", morph_buf_cstr_borrow(&output));
+		fflush(stdout);
+		if (isatty(STDIN_FILENO))
+			(void)getchar();
+	}
+	return rc;
+}
+
 int main(int argc, char **argv)
 {
 	struct cli_application _cli_output_context = {0};
 	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
 	struct cli_application ctx;
 	int rc;
+	if (argc == 2 && strcmp(argv[1], "--agents-browser-fixture") == 0) {
+		(void)setlocale(LC_ALL, "");
+		return preview_agents_browser() == 0 ? 0 : 1;
+	}
 
 	if (argc == 3 && strcmp(argv[1], "--replay-events") == 0) {
 		(void)setlocale(LC_ALL, "");
@@ -101,7 +152,8 @@ int main(int argc, char **argv)
 		return 2;
 	(void)setlocale(LC_ALL, "");
 	http_init(NULL);
-	rc = cli_application_init(&ctx, NULL, argv[1], argv[3], argv[2], NULL, CLI_PRESENT_INTERACTIVE);
+	rc = cli_application_init(&ctx, NULL, argv[1], argv[3], argv[2], NULL,
+				  CLI_PRESENT_INTERACTIVE);
 	if (rc == 0) {
 		const char *advance = getenv("MORPH_PTY_ADVANCE_RECAP");
 		int fast_recap = advance && strcmp(advance, "1") == 0;

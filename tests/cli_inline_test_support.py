@@ -30,6 +30,11 @@ def inline_panel(terminal, title, history_marker, maximum=12, command=None):
     if command:
         commands = [index for index, row in enumerate(rows) if row.rstrip() == command]
         assert commands and commands[-1] < start, diagnostic
+        assert start == commands[-1] + 2, diagnostic
+    # The shared component parks at its upper edge, never below its last option.
+    # Growth reserves rows beneath this anchor and may scroll history for space.
+    assert terminal.screen.cursor.y == start, diagnostic
+    assert terminal.screen.cursor.x == 0, diagnostic
     end = max((index for index, row in enumerate(rows) if row.strip()), default=start)
     assert end - start + 1 <= maximum, diagnostic
     # Composer panels paint through the usable terminal width, including empty cells.

@@ -94,6 +94,20 @@ tools reuse an existing Markdown paragraph gap; code and table frames receive
 the missing separator. Transient frame row counts follow the same spacing so
 redraws preserve the composer position. Interior Markdown blank lines stay intact.
 
+Reasoning, compact tool steps (including agent waits), and subagent completion
+receipts compose through `widgets/feed_block`. Their components render content;
+the block layout owns the shared blank row at each boundary. Immediate receipts
+use the same layout as deferred receipts. A deferred batch stays together with
+one outer gap, and its structured records are rendered at the current terminal
+width. Event handlers do not construct styled terminal rows or patch spacing.
+Live reasoning/tool previews reuse the block boundary calculation so committing
+them preserves the same gap. Other legacy feed paths can migrate independently.
+
+Successful subagent calls show lifecycle rows without delegation prompt previews,
+both live and when restoring history. Task descriptions and assignment details
+remain in the agent panel and explicit transcript details; failures retain their
+diagnostics. Restoring a session never replays the delegation itself.
+
 ## Final spacing ownership
 
 The Markdown SDK ends a normal paragraph with two newlines and a framed code
@@ -118,6 +132,15 @@ command follows either kind of completed block consistently. Composer
 padding belongs to the editable input and is cleared on submission; it must never
 serve as the history separator. Finalizing work reserves the same gap before
 commit so the composer stays on its row when background cleanup finishes.
+
+Composer replacement options anchor at the editor's upper edge and expand
+downward. The shared `composer_panel` component reserves space below that anchor;
+when necessary, terminal scrolling moves history upward to make room. Drawing
+and resizing return the cursor to the top anchor, rather than deriving the next
+origin from the bottom of the last option. Pages render content without adding
+their own leading separator. Closing clears the region below the anchor and
+reclaims its temporary command gap before restoring the editor or printing a
+result.
 
 ## Visual review
 
