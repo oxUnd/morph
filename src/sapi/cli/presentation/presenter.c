@@ -1,4 +1,5 @@
 #include "sapi/cli/presentation/presenter.h"
+#include "sapi/cli/presentation/style.h"
 #include "sapi/cli/pages/subagents.h"
 #include "sapi/cli/models/composer.h"
 #include "sapi/cli/pages/turn_details.h"
@@ -522,7 +523,7 @@ static void cli_presenter_print_stream(struct cli_application *ctx)
 		if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 			cli_presenter_print_plain_labeled(ctx, label, content);
 		} else {
-			printf(ctx, "%s" ANSI_BOLD "●" ANSI_RESET " ",
+			printf(ctx, "%s" ANSI_BOLD CLI_FEED_MESSAGE ANSI_RESET " ",
 			       ctx->output.trailing_newlines < 2 ? "\n" : "");
 			cli_markdown_render_ansi_with_media_indented(
 				ctx, content, 2, cli_renderer_media, ctx);
@@ -886,7 +887,8 @@ static void cli_presenter_tool_call(struct cli_application *ctx, const struct mo
 		if (patch_input)
 			cli_presentation_patch_diff(ctx, cli_presenter_workdir(ctx), patch_input);
 	} else {
-		printf(ctx, "\n" ANSI_YELLOW "◦" ANSI_RESET " " ANSI_BOLD "%s" ANSI_RESET "\n",
+		printf(ctx, "\n" ANSI_CYAN CLI_FEED_RUNNING ANSI_RESET
+		       " " ANSI_BOLD "%s" ANSI_RESET "\n",
 		       title);
 		if (patch_input)
 			cli_presentation_patch_diff(ctx, cli_presenter_workdir(ctx), patch_input);
@@ -917,7 +919,7 @@ static void cli_presenter_tool_end(struct cli_application *ctx, const struct mor
 		return;
 	}
 	if (failed) {
-		printf(ctx, "  " ANSI_RED CLI_FEED_FAILED " ");
+		printf(ctx, CLI_FEED_FAILED_STYLE CLI_FEED_FAILED " ");
 		cli_presenter_print_safe_inline(ctx, title, CLI_PRESENTER_EVENT_TEXT_MAX);
 		printf(ctx, " failed" ANSI_RESET);
 		if (error && error[0]) {
@@ -927,7 +929,7 @@ static void cli_presenter_tool_end(struct cli_application *ctx, const struct mor
 		}
 		printf(ctx, "\n");
 	} else {
-		printf(ctx, "  " ANSI_GREEN CLI_FEED_DONE " ");
+		printf(ctx, ANSI_GREEN CLI_FEED_DONE " ");
 		cli_presenter_print_safe_inline(ctx, title, CLI_PRESENTER_EVENT_TEXT_MAX);
 		printf(ctx, " completed" ANSI_RESET "\n");
 	}
@@ -942,7 +944,7 @@ static const char *cli_presenter_plan_mark(const char *status, int active)
 	if (status && strcmp(status, "failed") == 0)
 		return CLI_FEED_FAILED;
 	if (status && strcmp(status, "skipped") == 0)
-		return "–";
+		return CLI_FEED_CANCELLED;
 	return CLI_FEED_PENDING;
 }
 
@@ -1000,7 +1002,7 @@ static int cli_presenter_plan(struct cli_application *ctx, const struct morph_ev
 			if (cJSON_IsString(status) && strcmp(status->valuestring, "completed") == 0)
 				completed++;
 		}
-		printf(ctx, "  " ANSI_DIM "Plan · %d/%d completed" ANSI_RESET "\n", completed,
+		printf(ctx, ANSI_DIM "Plan · %d/%d completed" ANSI_RESET "\n", completed,
 		       count);
 		printed = 1;
 		cJSON_ArrayForEach (step, steps) {
@@ -1021,10 +1023,16 @@ static int cli_presenter_plan(struct cli_application *ctx, const struct morph_ev
 									      : NULL,
 						       cJSON_IsTrue(active));
 			color = strcmp(mark, CLI_FEED_DONE) == 0      ? ANSI_GREEN
-				: strcmp(mark, CLI_FEED_FAILED) == 0  ? ANSI_RED
-				: strcmp(mark, CLI_FEED_RUNNING) == 0 ? ANSI_YELLOW
+				: strcmp(mark, CLI_FEED_FAILED) == 0  ? CLI_FEED_FAILED_STYLE
+				: strcmp(mark, CLI_FEED_RUNNING) == 0 ? ANSI_CYAN
 								      : ANSI_DIM;
-			printf(ctx, "  %s%s" ANSI_RESET " ", color, mark);
+			const cJSON *next = step->next;
+
+			while (next && (!cJSON_IsObject(next) ||
+				       !cJSON_IsString(cJSON_GetObjectItemCaseSensitive(
+					       next, "description"))))
+				next = next->next;
+			printf(ctx, "%s%s%s" ANSI_RESET " ", next ? "├ " : "└ ", color, mark);
 			cli_presenter_print_safe_inline(ctx, description->valuestring,
 							CLI_PRESENTER_EVENT_TEXT_MAX);
 			printf(ctx, "\n");
@@ -1097,7 +1105,7 @@ static void cli_presenter_reflection(struct cli_application *ctx, const struct m
 		cli_presenter_print_plain_labeled(ctx, "guardrail", text);
 	else if (text && text[0])
 		cli_presenter_print_indented(
-			ctx, ANSI_YELLOW CLI_FEED_SYSTEM " Guardrail · " ANSI_RESET, text);
+			ctx, ANSI_YELLOW CLI_FEED_WARNING " Guardrail · " ANSI_RESET, text);
 }
 
 static void cli_presenter_token_label(int tokens, char *label, size_t size)
@@ -1147,7 +1155,7 @@ static void cli_presenter_compaction(struct cli_application *ctx, const struct m
 	if (elapsed < 0)
 		printf(ctx, "\n");
 	if (failed) {
-		printf(ctx, ANSI_DIM ANSI_RED "◇ Context compression failed · ");
+		printf(ctx, CLI_FEED_FAILED_STYLE CLI_FEED_FAILED " Context compression failed · ");
 		cli_presenter_print_safe_inline(ctx, error ? error : "unknown error",
 						CLI_PRESENTER_EVENT_TEXT_MAX);
 	} else {
@@ -1160,14 +1168,16 @@ static void cli_presenter_compaction(struct cli_application *ctx, const struct m
 		cli_presenter_token_label(before, before_label, sizeof(before_label));
 		cli_presenter_token_label(after, after_label, sizeof(after_label));
 		if (elapsed >= 0)
-			snprintf(line, sizeof(line), "◇ Context compacted  %s → %s · %llds",
+			snprintf(line, sizeof(line), CLI_FEED_DONE
+				 " Context compacted  %s → %s · %llds",
 				 before_label, after_label, (long long)(elapsed / 1000));
 		else
-			snprintf(line, sizeof(line), "◇ Context compacted  %s → %s", before_label,
+			snprintf(line, sizeof(line), CLI_FEED_DONE
+				 " Context compacted  %s → %s", before_label,
 				 after_label);
 		(void)utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), line,
 							 (size_t)(columns > 0 ? columns : 1), 0);
-		printf(ctx, ANSI_DIM "%s", clipped);
+		printf(ctx, ANSI_GREEN "%s", clipped);
 	}
 	if (failed && elapsed >= 0)
 		printf(ctx, " · %llds", (long long)(elapsed / 1000));
@@ -1210,7 +1220,7 @@ static void cli_presenter_final(struct cli_application *ctx, const struct morph_
 		}
 	} else {
 		if (!had_stream)
-			printf(ctx, "%s" ANSI_BOLD "●" ANSI_RESET " ",
+			printf(ctx, "%s" ANSI_BOLD CLI_FEED_MESSAGE ANSI_RESET " ",
 			       ctx->output.trailing_newlines < 2 ? "\n" : "");
 		if (!had_stream && text && text[0]) {
 			cli_markdown_render_final(ctx, text);
@@ -1244,7 +1254,7 @@ static void cli_presenter_turn_end(struct cli_application *ctx, const struct mor
 		if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
 			printf(ctx, "cancelled\n");
 		else
-			printf(ctx, "\n" ANSI_DIM CLI_FEED_SYSTEM " Cancelled" ANSI_RESET "\n");
+			printf(ctx, "\n" ANSI_DIM CLI_FEED_CANCELLED " Cancelled" ANSI_RESET "\n");
 		ctx->presenter->final_rendered = 1;
 		return;
 	}
@@ -1260,7 +1270,7 @@ static void cli_presenter_turn_end(struct cli_application *ctx, const struct mor
 		}
 		printf(ctx, "\n");
 	} else {
-		printf(ctx, "\n" ANSI_BOLD ANSI_RED CLI_FEED_FAILED " Error" ANSI_RESET " ");
+		printf(ctx, "\n" CLI_FEED_FAILED_STYLE CLI_FEED_FAILED " Error" ANSI_RESET " ");
 		cli_presenter_print_safe_inline(ctx,
 						error ? error : (outcome ? outcome : "turn failed"),
 						CLI_PRESENTER_EVENT_TEXT_MAX);
@@ -1308,7 +1318,7 @@ static void cli_presenter_auth(struct cli_application *ctx, const struct morph_e
 		}
 		printf(ctx, "\n");
 	} else {
-		printf(ctx, "\n" ANSI_BOLD ANSI_YELLOW CLI_FEED_QUESTION
+		printf(ctx, "\n" CLI_FEED_QUESTION_STYLE CLI_FEED_QUESTION
 			    " Authentication required" ANSI_RESET " for ");
 		cli_presenter_print_safe_inline(ctx, backend, CLI_PRESENTER_EVENT_TEXT_MAX);
 		if (tool && tool[0]) {
@@ -1404,7 +1414,7 @@ static void cli_presenter_mcp(struct cli_application *ctx, const struct morph_ev
 					  strcmp(ev->name, "mcp.disconnected") == 0));
 	cli_list_tree_prefix(ctx, NULL, 0, is_last, 0);
 	if (failed) {
-		printf(ctx, ANSI_RED CLI_FEED_FAILED " Failed" ANSI_RESET);
+		printf(ctx, CLI_FEED_FAILED_STYLE CLI_FEED_FAILED " Failed" ANSI_RESET);
 		if (error && error[0]) {
 			printf(ctx, ANSI_DIM " · ");
 			cli_presenter_print_safe_inline(ctx, error, CLI_PRESENTER_EVENT_TEXT_MAX);
@@ -1459,7 +1469,7 @@ static void cli_presenter_auxiliary(struct cli_application *ctx, const struct mo
 		if ((ev->name && strstr(ev->name, "failed")) ||
 		    cli_presenter_event_error_code(ev) < 0) {
 			status_paused = cli_presenter_pause_status(ctx);
-			printf(ctx, "\n" ANSI_RED CLI_FEED_FAILED " Background · ");
+			printf(ctx, "\n" CLI_FEED_FAILED_STYLE CLI_FEED_FAILED " Background · ");
 			cli_presenter_print_safe_inline(
 				ctx, ev->message ? ev->message : (ev->name ? ev->name : "failed"),
 				CLI_PRESENTER_EVENT_TEXT_MAX);
@@ -1483,7 +1493,7 @@ static void cli_presenter_auxiliary(struct cli_application *ctx, const struct mo
 			const char *error = cli_presenter_event_string(ev, "error");
 
 			status_paused = cli_presenter_pause_status(ctx);
-			printf(ctx, "\n" ANSI_RED CLI_FEED_FAILED ANSI_RESET " MCP ");
+			printf(ctx, "\n" CLI_FEED_FAILED_STYLE CLI_FEED_FAILED ANSI_RESET " MCP ");
 			cli_presenter_print_safe_inline(ctx, server ? server : "server",
 							CLI_PRESENTER_EVENT_TEXT_MAX);
 			printf(ctx, ANSI_DIM " · failed" ANSI_RESET "\n");
@@ -1505,7 +1515,8 @@ static void cli_presenter_auxiliary(struct cli_application *ctx, const struct mo
 		return;
 	status_paused = cli_presenter_pause_status(ctx);
 	printf(ctx, "\n%s%s" ANSI_RESET " %s · ",
-	       ev->type == MORPH_EVENT_ERROR || cli_presenter_event_error_code(ev) < 0 ? ANSI_RED
+	       ev->type == MORPH_EVENT_ERROR || cli_presenter_event_error_code(ev) < 0
+		       ? CLI_FEED_FAILED_STYLE
 										       : ANSI_DIM,
 	       ev->type == MORPH_EVENT_ERROR || cli_presenter_event_error_code(ev) < 0
 		       ? CLI_FEED_FAILED
@@ -1670,7 +1681,7 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 	if (ev->type == MORPH_EVENT_BACKGROUND && ev->phase && strcmp(ev->phase, "warning") == 0) {
 		int paused = cli_presenter_pause_status(ctx);
 
-		printf(ctx, "\n" ANSI_YELLOW CLI_FEED_SYSTEM " Warning · ");
+		printf(ctx, "\n" ANSI_YELLOW CLI_FEED_WARNING " Warning · ");
 		cli_presenter_print_safe_inline(ctx, ev->message ? ev->message : ev->name,
 						CLI_PRESENTER_EVENT_TEXT_MAX);
 		printf(ctx, ANSI_RESET "\n");
@@ -1710,6 +1721,14 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 
 	if (ev->type == MORPH_EVENT_REACT && ev->name) {
 		text = cli_presenter_event_string(ev, "text");
+		if (strcmp(ev->name, "react.agents.wait.begin") == 0) {
+			cli_presenter_status(ctx, "Waiting for agents");
+			return 0;
+		}
+		if (strcmp(ev->name, "react.agents.wait.end") == 0) {
+			cli_presenter_clear_status(ctx);
+			return 0;
+		}
 		if (strncmp(ev->name, "react.compaction.", sizeof("react.compaction.") - 1) == 0) {
 			cli_presenter_compaction(ctx, ev);
 			return 0;

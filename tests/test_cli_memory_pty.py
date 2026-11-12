@@ -133,6 +133,8 @@ def main():
             releases.append(release)
             assert 'response.language: Chinese [personal' in system_prompt(first)
             terminal.send('以后都用英文回答，默认简洁\r')
+            # Enter queues steering; Esc applies it to the active turn.
+            terminal.child.send('\x1b')
             second, release = terminal.request()
             releases.append(release)
             assert '以后都用英文回答，默认简洁' in json.dumps(second, ensure_ascii=False), second

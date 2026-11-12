@@ -173,7 +173,7 @@ TEST_F(CliTerminalTest, TtyViewportRendersAndConsumesPromptQueue)
 	EXPECT_LT(first, second);
 	EXPECT_LT(status, queued.find("Messages queued"));
 	EXPECT_LT(queued.find("Messages queued"), first);
-	EXPECT_NE(queued.find("↳ first adjustment"), std::string::npos);
+	EXPECT_NE(queued.find("├ first adjustment"), std::string::npos);
 	EXPECT_NE(queued.find("+1 more queued"), std::string::npos);
 	EXPECT_LT(second, queued.find("third adjustment"));
 	EXPECT_EQ(queued.find("fourth adjustment"), std::string::npos);
@@ -375,7 +375,7 @@ TEST_F(CliTerminalTest, FinalOutputKeepsComposerRowWhileWorkerFinishes)
 	close(master);
 }
 
-TEST_F(CliTerminalTest, JobsUseDescriptionAndIndentedCommandWithoutDefaultLogs)
+TEST_F(CliTerminalTest, JobsShowCompactSummaryAndOnlyExpandTheWaitedCommand)
 {
 	cJSON *data = cJSON_Parse(R"({"session_id":"proc_job12345","owner_session_id":0,
 		"description":"编译项目","command":"cmake --build build -j8","status":"running",
@@ -387,16 +387,40 @@ TEST_F(CliTerminalTest, JobsUseDescriptionAndIndentedCommandWithoutDefaultLogs)
 	ASSERT_EQ(cli_jobs_event(&ctx, &event), 1);
 	morph_buf_t output{};
 	ASSERT_EQ(morph_buf_init(&output, 128), 0);
-	EXPECT_EQ(cli_jobs_render(&ctx, &output, 80, 3, 0), 2);
+	EXPECT_EQ(cli_jobs_render(&ctx, &output, 80, 0), 1);
 	std::string text = morph_buf_cstr_borrow(&output);
-	EXPECT_NE(text.find("编译项目\n    └─ cmake --build build -j8"), std::string::npos);
+	EXPECT_EQ(text.find("◉ 1 background job running · /jobs"), 0u);
+	EXPECT_EQ(text.find("cmake --build"), std::string::npos);
 	EXPECT_EQ(text.find("PRIVATE LOG"), std::string::npos);
-	EXPECT_NE(text.find("42s"), std::string::npos);
+	event.name = "background.wait.begin";
+	ASSERT_EQ(cli_jobs_event(&ctx, &event), 1);
+	EXPECT_EQ(cli_jobs_waiting(&ctx), 1);
+	for (int columns : {120, 80, 60, 40}) {
+		morph_buf_reset(&output);
+		EXPECT_EQ(cli_jobs_render(&ctx, &output, columns, 0), 2);
+		text = morph_buf_cstr_borrow(&output);
+		EXPECT_EQ(text.find("◉ Waiting for"), 0u) << text;
+		EXPECT_NE(text.find("/jobs"), std::string::npos) << text;
+		EXPECT_NE(text.find("Esc"), std::string::npos) << text;
+		EXPECT_NE(text.find("42s"), std::string::npos) << text;
+		EXPECT_NE(text.find("\n  └ cmake --build"), std::string::npos) << text;
+		EXPECT_EQ(text.find("PRIVATE LOG"), std::string::npos);
+		for (size_t offset = 0; offset < text.size();) {
+			size_t end = text.find('\n', offset);
+			auto line = text.substr(offset, end - offset);
+			EXPECT_LT(utf8_display_width(line.c_str()), static_cast<size_t>(columns));
+			if (end == std::string::npos) break;
+			offset = end + 1;
+		}
+	}
+	event.name = "background.wait.end";
+	ASSERT_EQ(cli_jobs_event(&ctx, &event), 1);
+	EXPECT_EQ(cli_jobs_waiting(&ctx), 0);
 	morph_buf_cleanup(&output);
 	cJSON_Delete(data);
 }
 
-TEST_F(CliTerminalTest, JobsWithoutDescriptionStayOneLineAndInspectionHidesFailures)
+TEST_F(CliTerminalTest, CompletedJobsLeaveOneHistoryReceiptAndNoLiveRows)
 {
 	cJSON *data = cJSON_Parse(R"({"session_id":"proc_job12345","owner_session_id":0,
 		"description":"","command":"printf bad; exit 7","status":"exited","exit_code":7,
@@ -411,17 +435,15 @@ TEST_F(CliTerminalTest, JobsWithoutDescriptionStayOneLineAndInspectionHidesFailu
 	EXPECT_NE(receipt.find("exited 7"), std::string::npos);
 	morph_buf_t output{};
 	ASSERT_EQ(morph_buf_init(&output, 128), 0);
-	EXPECT_EQ(cli_jobs_render(&ctx, &output, 40, 3, 0), 1);
+	EXPECT_EQ(cli_jobs_render(&ctx, &output, 40, 0), 0);
 	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&output)).find("└"), std::string::npos);
-	EXPECT_NE(std::string(morph_buf_cstr_borrow(&output)).find("exit 7"), std::string::npos);
-	EXPECT_EQ(cli_jobs_visible(&ctx), 1);
-	cli_jobs_acknowledge(&ctx, "proc_job12345");
+	EXPECT_TRUE(std::string(morph_buf_cstr_borrow(&output)).empty());
 	EXPECT_EQ(cli_jobs_visible(&ctx), 0);
 	morph_buf_cleanup(&output);
 	cJSON_Delete(data);
 }
 
-TEST_F(CliTerminalTest, CompletedJobExpirySchedulesOneLastFrameWithoutAnActiveTurn)
+TEST_F(CliTerminalTest, CompletedJobClearsLiveRowsWithoutAnActiveTurn)
 {
 	int master = posix_openpt(O_RDWR | O_NOCTTY);
 	ASSERT_GE(master, 0);
@@ -440,16 +462,19 @@ TEST_F(CliTerminalTest, CompletedJobExpirySchedulesOneLastFrameWithoutAnActiveTu
 		"description":"","command":"printf done","status":"exited","exit_code":0,
 		"duration_ms":100})");
 	morph_event event{};
-	event.name = "process.completed";
+	cJSON_ReplaceItemInObject(data, "status", cJSON_CreateString("running"));
+	event.name = "process.started";
 	event.data = data;
+	EXPECT_EQ(cli_jobs_event(&ctx, &event), 1);
+	cli_feed_render_frame(&ctx, 1);
+	EXPECT_EQ(cli_jobs_visible(&ctx), 1);
+	EXPECT_GE(cli_feed_next_frame_ms(&ctx), 0);
+	cJSON_ReplaceItemInObject(data, "status", cJSON_CreateString("exited"));
+	event.name = "process.completed";
 	testing::internal::CaptureStdout();
 	EXPECT_EQ(cli_jobs_event(&ctx, &event), 1);
 	(void)testing::internal::GetCapturedStdout();
-	cli_feed_render_frame(&ctx, 1);
-	EXPECT_GE(cli_feed_next_frame_ms(&ctx), 0);
-	std::this_thread::sleep_for(std::chrono::milliseconds(5100));
 	EXPECT_EQ(cli_jobs_visible(&ctx), 0);
-	EXPECT_GE(cli_feed_next_frame_ms(&ctx), 0);
 	cli_feed_render_frame(&ctx, 1);
 	EXPECT_EQ(cli_feed_next_frame_ms(&ctx), -1);
 	cJSON_Delete(data);

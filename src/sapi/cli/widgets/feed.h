@@ -25,6 +25,7 @@ int cli_feed_render_tick(struct cli_application *ctx, int cursor_rows);
 int cli_feed_next_frame_ms(const struct cli_application *ctx);
 void cli_feed_composer_suspend(struct cli_application *ctx);
 void cli_feed_composer_resume(struct cli_application *ctx);
+void cli_feed_history_advance(struct cli_application *ctx, const char *text, size_t length);
 void cli_feed_history_begin(struct cli_application *ctx);
 void cli_feed_history_end(struct cli_application *ctx);
 void cli_feed_resize(struct cli_application *ctx);

@@ -142,6 +142,28 @@ def main():
         if relative != 'application.c' and re.search(
                 r'\bmorph_tui_application_(?:init|run|deinit)\s*\(', code):
             errors.append(f'{source}: Application host lifecycle belongs in application.c')
+    # Application status shapes have one shared owner. Content bullets and
+    # framework radio controls are deliberately outside this application audit.
+    status_glyphs = set('●◉◯○•◦⊗⦻ⓧ✖✘✗✓✔❌❓⨂⍰⯑⚠◇')
+    for source in sorted(CLI.rglob('*')):
+        if source.suffix not in ('.c', '.h'):
+            continue
+        raw = re.sub(r'/\*[\s\S]*?\*/', '', source.read_text())
+        for literal in re.findall(r'"(?:\\.|[^"\\])*"', raw):
+            if status_glyphs.intersection(literal):
+                errors.append(f'{source}: hardcoded status glyph; use presentation/style.h')
+    style = (CLI / 'presentation/style.h').read_text()
+    canonical = (ROOT / 'src/util/terminal_status.h').read_text()
+    for state, glyph in {'PENDING': '◯', 'RUNNING': '◉', 'DONE': '●',
+                         'FAILED': '✖', 'QUESTION': '?', 'CANCELLED': '–',
+                         'WARNING': '⚠', 'SYSTEM': '◇'}.items():
+        if f'#define MORPH_TERMINAL_STATUS_{state} "{glyph}"' not in canonical:
+            errors.append(f'terminal_status.h: canonical {state} marker changed')
+        if f'#define CLI_FEED_{state} MORPH_TERMINAL_STATUS_{state}' not in style:
+            errors.append(f'presentation/style.h: {state} must reuse the shared definition')
+    for state, color in {'FAILED': 'RED', 'QUESTION': 'YELLOW'}.items():
+        if f'#define CLI_FEED_{state}_STYLE ANSI_BOLD ANSI_{color}' not in style:
+            errors.append(f'presentation/style.h: {state} must use bold {color.lower()}')
     for source in (ROOT / 'src/tui').rglob('*'):
         if source.suffix not in ('.c', '.h'):
             continue

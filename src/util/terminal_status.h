@@ -1,0 +1,14 @@
+#ifndef MORPH_TERMINAL_STATUS_H
+#define MORPH_TERMINAL_STATUS_H
+
+/* Shared terminal status glyphs. Keep CLI aliases in presentation/style.h. */
+#define MORPH_TERMINAL_STATUS_PENDING "◯"
+#define MORPH_TERMINAL_STATUS_RUNNING "◉"
+#define MORPH_TERMINAL_STATUS_DONE "●"
+#define MORPH_TERMINAL_STATUS_FAILED "✖"
+#define MORPH_TERMINAL_STATUS_QUESTION "?"
+#define MORPH_TERMINAL_STATUS_CANCELLED "–"
+#define MORPH_TERMINAL_STATUS_WARNING "⚠"
+#define MORPH_TERMINAL_STATUS_SYSTEM "◇"
+
+#endif

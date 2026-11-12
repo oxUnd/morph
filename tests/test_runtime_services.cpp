@@ -835,7 +835,7 @@ TEST_F(RuntimeFacadeTest, ProcessServiceRetainsItsBindingAfterToolsAreUnregister
 	ASSERT_NE(instance->jobs, nullptr);
 	EXPECT_EQ(instance->jobs, instance->jobs_owner.jobs);
 	ASSERT_EQ(tool_unregister(&instance->context.tools, "exec"), 0);
-	ASSERT_EQ(tool_unregister(&instance->context.tools, "process"), 0);
+	ASSERT_EQ(tool_unregister(&instance->context.tools, "background"), 0);
 	cJSON *jobs MORPH_CLEANUP(morph_json_cleanup) = nullptr;
 
 	ASSERT_EQ(runtime_process_list(instance, &jobs), 0);
@@ -1033,4 +1033,22 @@ TEST_F(RuntimeFacadeTest, SessionImportAndDeletionPreserveBudgetUpperBound)
 	ASSERT_EQ(sqlite3_step(query), SQLITE_ROW);
 	EXPECT_EQ(sqlite3_column_int(query, 0), 0);
 	sqlite3_finalize(query);
+}
+
+TEST_F(RuntimeFacadeTest, DeprecatedProcessDisableStillRejectsBackgroundExecution)
+{
+	std::string config = "[react]\ndisabled_tools=[\"process\"";
+	for (int i = 1; i < DISABLED_TOOLS_MAX; i++)
+		config += ",\"unused_" + std::to_string(i) + "\"";
+	config += "]\n";
+	WriteConfig(config);
+	struct runtime_options options{};
+	options.config_path = config_path.c_str();
+	options.enable_exec = 1;
+	Open(&options);
+	EXPECT_TRUE(tool_is_disabled(&instance->context.tools, "background"));
+	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&instance->context.tools, "background", R"({"action":"list"})",
+			    &result), -EPERM);
 }

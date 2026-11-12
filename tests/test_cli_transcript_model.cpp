@@ -2,6 +2,7 @@
 
 extern "C" {
 #include "sapi/cli/models/transcript.h"
+#include "sapi/cli/widgets/transcript.h"
 #include "session_history.h"
 #include "cJSON.h"
 #include "util/error.h"
@@ -143,7 +144,7 @@ TEST_F(CliTranscriptModelTest, ProcessPollingLinksTheOriginalCommandAndTracksRun
 			2),
 		  0);
 	ASSERT_EQ(Apply(MORPH_EVENT_TOOL, "tool.call",
-			"{\"tool\":\"process\",\"tool_call_id\":\"poll\","
+			"{\"tool\":\"background\",\"tool_call_id\":\"poll\","
 			"\"args\":{\"action\":\"poll\",\"session_id\":\"job-42\"}}",
 			3),
 		  0);
@@ -250,4 +251,22 @@ TEST_F(CliTranscriptModelTest, FinishOnlyInterruptsUnresolvedLiveCallsAndIsIdemp
 	cli_transcript_model_finish(model, 99);
 	EXPECT_DOUBLE_EQ(Tool(0)->ended, 15);
 	EXPECT_DOUBLE_EQ(Tool(1)->ended, 12);
+}
+
+TEST_F(CliTranscriptModelTest, LegacyProcessNameIsExplicitlyDeprecatedInDisplay)
+{
+	ASSERT_EQ(Apply(MORPH_EVENT_TOOL, "tool.call",
+		R"({"tool":"process","tool_call_id":"legacy","args":{"action":"wait",
+		"session_id":"proc_old"}})", 1), 0);
+	EXPECT_TRUE(Tool(0)->shell);
+	EXPECT_STREQ(Tool(0)->name, "process");
+	morph_buf_t row{};
+	ASSERT_EQ(morph_buf_init(&row, 128), 0);
+	for (int columns : {120, 80, 60, 40}) {
+		morph_buf_reset(&row);
+		EXPECT_EQ(cli_transcript_live_text(model, &row, columns, 0), 1);
+		EXPECT_NE(std::string(morph_buf_cstr_borrow(&row)).find("process [deprecated]"),
+			  std::string::npos);
+	}
+	morph_buf_cleanup(&row);
 }

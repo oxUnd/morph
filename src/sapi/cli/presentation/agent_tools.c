@@ -54,7 +54,7 @@ int cli_agent_tools_row(const struct cli_transcript_tool *tool, morph_buf_t *out
 		data = result;
 	morph_buf_t path MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int running = cli_transcript_tool_is_running(tool);
-	int failed = tool->state < 0;
+	int failed = !tool->interrupted && (tool->state < 0 || tool->timed_out);
 	const char *verb = "";
 	const char *name = "";
 	if (!strcmp(tool->name, "spawn_agent")) {
@@ -89,9 +89,14 @@ int cli_agent_tools_row(const struct cli_transcript_tool *tool, morph_buf_t *out
 	    morph_buf_printf(&path, "%s/%s",
 		tool->agent_id && *tool->agent_id ? tool->agent_id : "/root", name) == 0)
 		name = morph_buf_cstr_borrow(&path);
+	const char *marker = cli_transcript_tool_is_pending(tool) ? CLI_FEED_PENDING
+		: tool->interrupted ? CLI_FEED_CANCELLED
+		: failed ? CLI_FEED_FAILED : running ? CLI_FEED_RUNNING : CLI_FEED_DONE;
+	const char *color = tool->interrupted || cli_transcript_tool_is_pending(tool) ? ANSI_DIM
+		: failed ? CLI_FEED_FAILED_STYLE : running ? ANSI_CYAN : ANSI_GREEN;
 	if (styled)
-		(void)morph_buf_puts(out, failed ? ANSI_RED : ANSI_DIM);
-	(void)morph_buf_puts(out, "• ");
+		(void)morph_buf_puts(out, color);
+	(void)morph_buf_printf(out, "%s ", marker);
 	if (styled)
 		(void)morph_buf_puts(out, ANSI_RESET ANSI_BOLD);
 	int available = columns - (int)CLI_CONTENT_RIGHT_PADDING - 2;

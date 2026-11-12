@@ -2664,7 +2664,7 @@ int agent_control_tool_allowed(struct agent_control *control, const char *id, co
 		return 1;
 	const char *coordination[] = {"spawn_agent", "send_message", "followup_task",
 		"interrupt_agent", "list_agents", "read_agent", "wait_agent", "plan",
-		"update_plan", "tasks", "ask_user", "process"};
+		"update_plan", "tasks", "ask_user", "background"};
 	for (size_t i = 0; i < sizeof(coordination) / sizeof(coordination[0]); i++) {
 		if (!strcmp(coordination[i], tool))
 			return 1;

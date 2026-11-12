@@ -1,4 +1,5 @@
 #include "sapi/cli/presentation/markdown.h"
+#include "sapi/cli/presentation/style.h"
 #include "util/cleanup.h"
 #include "sapi/cli/pages/turn_details.h"
 #include "sapi/cli/presentation/presenter_state.h"
@@ -109,7 +110,7 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 	/* The renderer buffers incomplete blocks. Emit the prefix only when it
 	 * actually writes, so Readline cannot erase a dangling marker meanwhile. */
 	if (output && output->prefix_pending) {
-		printf(output->ctx, "%s" ANSI_BOLD "●" ANSI_RESET " ",
+		printf(output->ctx, "%s" ANSI_BOLD CLI_FEED_MESSAGE ANSI_RESET " ",
 		       output->ctx->output.trailing_newlines < 2 ? "\n" : "");
 		output->prefix_pending = 0;
 	}
@@ -118,8 +119,10 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 	captured = cli_output_capture_write(output->ctx, bytes, len);
 	if (captured)
 		return captured < 0 ? captured : 0;
-	if (output->ctx && !cli_turn_details_is_visible(output->ctx))
+	if (output->ctx && !cli_turn_details_is_visible(output->ctx)) {
 		cli_output_track_tail(&output->ctx->output.trailing_newlines, bytes, len);
+		cli_feed_history_advance(output->ctx, bytes, len);
+	}
 	if (cli_output_color_enabled(output->ctx))
 		return fwrite(bytes, 1u, len, stdout) == len ? 0 : -EIO;
 	for (i = 0u; i < len;) {

@@ -1,5 +1,8 @@
 # Morph 权限与沙箱配置
 
+> 历史归档：本文中的 `process` 工具名已过期（deprecated），现已改为
+> `background`。当前权限设计请参阅 [permissions-design.md](../permissions-design.md)。
+
 本文记录 Morph 当前的权限模型、命令审批、权限 profile、HITL 关系和常见配置。
 配置文件默认为 `~/.morph/config.toml`，修改后需要重启 Morph。
 

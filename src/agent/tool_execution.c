@@ -60,7 +60,10 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 	rc = tool_registry_acquire(reg, name, &handle);
 	if (rc == -ENOENT) {
 		const char *replacement =
-			!strcmp(name, "read") && tool_borrow(reg, "file_read")
+			!strcmp(name, "process") && tool_borrow(reg, "background")
+				? " The process tool is deprecated. Use background to manage "
+				  "jobs started by exec."
+			: !strcmp(name, "read") && tool_borrow(reg, "file_read")
 				? " Use file_read to read files."
 				: " Check the available tool definitions before retrying.";
 		result_rc = tool_result_error_format(
@@ -98,7 +101,7 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 	if (result->runtime && result->runtime->agents &&
 	    agent_control_shell_readonly(result->runtime->agents, result->runtime->agent_id) &&
 	    !(handle.flags & TOOL_FLAG_READONLY) && strcmp(name, "exec") &&
-	    strcmp(name, "process") && strcmp(name, "apply_patch")) {
+	    strcmp(name, "background") && strcmp(name, "apply_patch")) {
 		tool_handle_release(&handle);
 		(void)tool_result_error_format(
 			result, "permission_denied",

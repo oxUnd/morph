@@ -6,7 +6,7 @@ description: Build, modify, debug, and test native iPhone and iPad applications 
 # iOS App Development
 
 Deliver working native iOS application changes. Swift is allowed; use UIKit for
-the application UI. Use available file, patch, exec, and process tools, and
+the application UI. Use available file, patch, exec, and background tools, and
 inspect tool schemas before use. Do not assume Xcode, simulators, or connected
 devices are available.
 

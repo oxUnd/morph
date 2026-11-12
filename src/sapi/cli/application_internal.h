@@ -23,10 +23,11 @@ struct cli_application;
 #include <poll.h>
 
 #define CMD_HEADER(ctx, fmt, ...)                                                                  \
-	printf(ctx, "\n" ANSI_BOLD ANSI_CYAN "● " fmt ANSI_RESET "\n", ##__VA_ARGS__)
+	printf(ctx, "\n" ANSI_BOLD ANSI_CYAN CLI_FEED_MESSAGE " " fmt ANSI_RESET "\n",             \
+	       ##__VA_ARGS__)
 #define CMD_ERROR(ctx, fmt, ...)                                                                   \
 	printf(ctx,                                                                                \
-	       ANSI_BOLD ANSI_RED CLI_FEED_FAILED " Error  " ANSI_RESET fmt "\n", ##__VA_ARGS__)
+	       CLI_FEED_FAILED_STYLE CLI_FEED_FAILED " Error  " ANSI_RESET fmt "\n", ##__VA_ARGS__)
 #define CMD_OK(ctx, fmt, ...)                                                                      \
 	printf(ctx, ANSI_BOLD ANSI_GREEN CLI_FEED_DONE " " ANSI_RESET fmt "\n", ##__VA_ARGS__)
 

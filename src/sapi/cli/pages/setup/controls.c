@@ -1,6 +1,7 @@
 #include "sapi/cli/pages/setup/controls.h"
 #include "sapi/cli/services/configuration/model.h"
 #include "sapi/cli/presentation/output.h"
+#include "sapi/cli/presentation/style.h"
 #include "sapi/cli/services/configuration/role.h"
 #include "config/config.h"
 #include <morph/tui/components.h>
@@ -173,7 +174,7 @@ static void cli_controls_line(struct cli_controls_setup_ui *ui, morph_buf_t *fra
 	size_t width = ui->columns > 4 ? (size_t)ui->columns - 4 : 1;
 	utf8_copy_sanitized_display_width(clipped, sizeof(clipped), text, width);
 	morph_buf_printf(frame, "  %s%s%s\r\n", ui->color ? style : "", clipped,
-			 ui->color ? "\033[0m" : "");
+			 ui->color ? ANSI_RESET : "");
 	ui->frame_lines++;
 }
 
@@ -241,18 +242,19 @@ static int cli_controls_record_answer(struct cli_controls_setup_ui *ui, const ch
 	char safe[BUFSIZ];
 	utf8_copy_sanitized_clamped(safe, sizeof(safe), answer, sizeof(safe) - 1);
 	struct morph_tui_widget_text_layout view = {0};
-	size_t width = ui->columns > 15 ? (size_t)ui->columns - 15 : 1;
+	size_t width = ui->columns > 13 ? (size_t)ui->columns - 13 : 1;
 	rc = morph_tui_widget_text_layout_wrap_borrow(&view, safe, width);
 	if (rc == 0)
-		rc = morph_buf_printf(&frame, "  %s✓ %-6s%s · ", ui->color ? "\033[32m" : "",
+		rc = morph_buf_printf(&frame, "%s" CLI_FEED_DONE " %-6s%s · ",
+				      ui->color ? ANSI_GREEN : "",
 				      ui->step < 0 ? "Role" : names[ui->step],
-				      ui->color ? "\033[0m" : "");
+				      ui->color ? ANSI_RESET : "");
 	if (rc == 0 && !view.lines.nelts)
 		rc = morph_buf_puts(&frame, "\r\n");
 	for (size_t i = 0; rc == 0 && i < view.lines.nelts; i++) {
 		const struct morph_tui_widget_text_line *row = morph_array_borrow(&view.lines, i);
 		if (i)
-			rc = morph_buf_puts(&frame, "             ");
+			rc = morph_buf_puts(&frame, "           ");
 		if (rc == 0)
 			rc = morph_buf_append(&frame, safe + row->offset, row->length);
 		if (rc == 0)

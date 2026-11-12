@@ -453,7 +453,7 @@ default_max_output_bytes = 1048576
 - `max_tokens` 是一次响应的完整生成预算，thinking 和可见回答共同使用；省略时 fallback 为 4096，不代表示例模型的最大能力。
 - `[model.text]` 还支持 `extra_body_json` 等字段；请求托管字段不能被额外 JSON 覆盖。
 - 权限策略由 `[permissions]` 统一控制；`react.permission_profiles` 为启动时路径授权补充来源。
-- `process` 默认等待 30000ms，模型可在配置的 `max_wait_ms` 范围内指定等待时间。
+- `background` 默认等待 30000ms，模型可在配置的 `max_wait_ms` 范围内指定等待时间。
 - 执行日志、模型凭据和本地数据的存储行为以配置及对应 owner 为准，敏感值在模型历史和进程输出恢复路径中脱敏。
 
 ### 6.8 源码归属
@@ -524,7 +524,7 @@ default_max_output_bytes = 1048576
 | 文件与修改 | `file_read`、`file_list`、`file_info`、`apply_patch`、`checkpoint` |
 | 图像 | `img_gen`、`img_qa`、`img_info`、`img_annotate`、`img_inpaint`、`img_compose`、`img_resize`、`img_convert` |
 | 视频 | `vid_gen` |
-| 进程与授权 | `exec`、`process`、`request_permissions` |
+| 进程与授权 | `exec`、`background`、`request_permissions` |
 | 规划与交互 | `plan`、`ask_user`、`activate_skill`、`config_edit`、`tasks` |
 | 动态工具管理 | `tool_create`、`tool_promote`、`tool_delete`、`tool_history`、`tool_diff`、`tool_rollback` |
 | 子代理 | `spawn_agent`、`send_message`、`followup_task`、`interrupt_agent`、`list_agents`、`wait_agent` |

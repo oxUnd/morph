@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/skill.h"
+#include "sapi/cli/presentation/style.h"
 #include "util/cleanup.h"
 #include "cJSON.h"
 #include "sapi/cli/application_internal.h"

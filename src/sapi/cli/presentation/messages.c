@@ -315,7 +315,8 @@ int cli_messages_append(morph_buf_t *out, enum cli_message_kind kind, const char
 			}
 		}
 		if (rc == 0 && kind == CLI_MESSAGE_ASSISTANT) {
-			rc = morph_buf_printf(&document, "%s●%s ", style->styled ? ANSI_BOLD : "",
+			rc = morph_buf_printf(&document, "%s" CLI_FEED_MESSAGE "%s ",
+					      style->styled ? ANSI_BOLD : "",
 					      style->styled ? ANSI_RESET : "");
 			if (rc == 0)
 				rc = cli_markdown_render_document(&document, safe, style->columns,

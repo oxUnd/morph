@@ -1,4 +1,5 @@
 #include "sapi/cli/widgets/list.h"
+#include "sapi/cli/presentation/style.h"
 #include "util/terminal_size.h"
 #include "cJSON.h"
 #include "sapi/cli/application_internal.h"

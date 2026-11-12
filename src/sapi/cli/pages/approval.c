@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/approval.h"
+#include "sapi/cli/presentation/style.h"
 #include "util/terminal_size.h"
 #include <morph/tui/terminal.h>
 #include "sapi/cli/adapters/input/state.h"
@@ -157,7 +158,7 @@ static int cli_approval_prompt_approval(struct cli_application *ctx, const char 
 		printf(ctx, "%s)\n",
 		       scoped && v == 2 ? ", session" : (v == (scoped ? 3 : 2) ? ", always" : ""));
 	} else {
-		printf(ctx, ANSI_RED CLI_FEED_SYSTEM " Denied" ANSI_RESET " (");
+		printf(ctx, ANSI_DIM CLI_FEED_CANCELLED " Denied" ANSI_RESET " (");
 		(void)cli_output_print_untrusted(ctx, subject ? subject : "",
 						 UTF8_TERMINAL_TEXT_SINGLE_LINE);
 		printf(ctx, ")\n");

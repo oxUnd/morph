@@ -43,7 +43,7 @@ dependencies and external environment changes cannot be detected.
 
 ## Process polling
 
-`process` retains `poll`, `write`, `interrupt`, and `kill`. Poll accepts optional
+`background` retains `poll`, `write`, `interrupt`, and `kill`. Poll accepts optional
 `wait_ms` (integer from 0 to `[exec].max_wait_ms`, default maximum 600000) and
 `cursor` (the previous result's `next_cursor`). The model chooses the wait within
 that range; omitting the value defaults to 30000 ms, or a smaller configured maximum.

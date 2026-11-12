@@ -190,7 +190,7 @@ int main(int argc, char *argv[])
 			}
 			if (restored) {
 				cli_output_printf(startup_ctx, ANSI_BOLD ANSI_GREEN
-						  "● " ANSI_RESET
+						  CLI_FEED_DONE " " ANSI_RESET
 						  "database restored; Morph restarted\n");
 			}
 			ctx.trace_json = options.trace_json;

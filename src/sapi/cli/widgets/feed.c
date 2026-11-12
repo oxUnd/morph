@@ -1,5 +1,8 @@
 #include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/presentation/style.h"
 #include "util/terminal_size.h"
+#include "util/cleanup.h"
+#include "util/utf8.h"
 #include <morph/tui/terminal.h>
 #include "sapi/cli/pages/turn_details.h"
 #include "sapi/cli/presentation/presenter.h"
@@ -42,7 +45,11 @@ struct cli_feed {
 	int live_visible;
 	int live_anchored;
 	int live_rows;
+	int composer_reserved_rows;
+	int history_column;
 	int job_rows;
+	int background_rows;
+	int background_rows_below;
 	int is_terminal;
 	int transient;
 	int update_active;
@@ -107,7 +114,8 @@ static void cli_feed_work_label(struct cli_feed *terminal, int64_t elapsed)
 	int64_t phase = elapsed > 600 ? (elapsed - 600) % 4000 : 0;
 	double position = (double)(phase < 1000 ? phase : 1000) / 1000.0 * 13.0 - 3.0;
 
-	fprintf(terminal->output, ANSI_RESET "  ");
+	fprintf(terminal->output, ANSI_RESET "%s" CLI_FEED_RUNNING ANSI_RESET " ",
+		cli_style_running_color(cli_feed_now_ms()));
 	for (size_t i = 0; i < sizeof(label) - 1; i++) {
 		double distance = ((double)i + 0.5 - position) / 3.0;
 
@@ -129,9 +137,11 @@ static int cli_feed_work_interval(const struct cli_feed *terminal, int64_t now)
 			: phase < 1000 ? CLI_FEED_TERMINAL_ANIMATION_MS
 				       : 4000 - phase;
 	int64_t second = 1000 - elapsed % 1000;
+	int64_t pulse = cli_style_running_interval_ms(now);
 
-	/* Between sweeps, wake only for the clock or the next sweep. */
-	return (int)(delay < second ? delay : second);
+	/* Between sweeps, wake for the clock or the marker's next brightness phase. */
+	int64_t interval = delay < second ? delay : second;
+	return (int)(interval < pulse ? interval : pulse);
 }
 
 static void cli_feed_work_row(struct cli_feed *terminal, int columns)
@@ -204,6 +214,8 @@ void cli_feed_turn_end(struct cli_application *ctx, int result)
 		cli_feed_work_row(terminal, cli_feed_columns(ctx));
 		/* The completed turn owns the gap before the next history block. */
 		fprintf(terminal->output, "\n\n");
+		cli_feed_history_advance(ctx, "\n\n\n",
+			result < 0 || !cli_presentation_final_visible(ctx) ? 3u : 2u);
 		fflush(terminal->output);
 		terminal->work_state = CLI_FEED_TERMINAL_WORK_NONE;
 	}
@@ -444,10 +456,13 @@ int cli_feed_render_tick(struct cli_application *ctx, int cursor_rows)
 	struct cli_feed *terminal = ctx ? ctx->terminal : NULL;
 	int64_t now = cli_feed_now_ms();
 	int distance;
+	int work_animated = terminal &&
+		terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING && !cli_jobs_waiting(ctx);
+	int jobs_animated = terminal && terminal->background_rows && cli_jobs_visible(ctx);
 
 	if (!terminal || terminal->hidden || !terminal->transient || !terminal->live_visible ||
-	    cli_turn_details_is_visible(ctx) ||
-	    terminal->work_state != CLI_FEED_TERMINAL_WORK_RUNNING || terminal->columns < 20 ||
+	    cli_turn_details_is_visible(ctx) || (!work_animated && !jobs_animated) ||
+	    terminal->columns < 20 ||
 	    cli_feed_output_columns(terminal) != terminal->columns)
 		return 0;
 	if ((terminal->content_dirty || terminal->live_independent || cli_jobs_visible(ctx) ||
@@ -456,18 +471,32 @@ int cli_feed_render_tick(struct cli_application *ctx, int cursor_rows)
 		return 0;
 	if (now < terminal->next_frame_ms)
 		return 1;
-	terminal->next_frame_ms = now + cli_feed_work_interval(terminal, now);
-	distance = terminal->work_rows_below + cursor_rows + terminal->live_anchored;
-	/* A long wrapped draft can push the status row out of the viewport. */
-	if (distance >= cli_feed_output_rows(terminal))
-		return 1;
+	terminal->next_frame_ms = now + (work_animated ? cli_feed_work_interval(terminal, now)
+						    : cli_style_running_interval_ms(now));
 	int updating = cli_feed_update_active(ctx);
 
 	cli_feed_update_begin(ctx);
-	fprintf(terminal->output, "\0337\r");
-	if (distance > 0)
-		fprintf(terminal->output, "\033[%dA", distance);
-	cli_feed_work_row(terminal, terminal->columns);
+	fprintf(terminal->output, "\0337");
+	if (work_animated) {
+		distance = terminal->work_rows_below + cursor_rows + terminal->live_anchored;
+		/* A long wrapped draft can push the status row out of the viewport. */
+		if (distance < cli_feed_output_rows(terminal)) {
+			fprintf(terminal->output, "\r");
+			if (distance > 0)
+				fprintf(terminal->output, "\033[%dA", distance);
+			cli_feed_work_row(terminal, terminal->columns);
+		}
+	}
+	if (jobs_animated) {
+		distance = terminal->background_rows_below + cursor_rows + terminal->live_anchored;
+		if (distance < cli_feed_output_rows(terminal)) {
+			fprintf(terminal->output, "\0338\0337\r");
+			if (distance > 0)
+				fprintf(terminal->output, "\033[%dA", distance);
+			fprintf(terminal->output, ANSI_RESET "%s" CLI_FEED_RUNNING ANSI_RESET,
+				cli_style_running_color(now));
+		}
+	}
 	fprintf(terminal->output, "\0338");
 	if (!updating)
 		cli_feed_update_end(ctx);
@@ -498,7 +527,7 @@ int cli_feed_markdown_preview_set(struct cli_application *ctx, const char *text,
 	return 0;
 }
 
-static int cli_feed_render_markdown_preview(struct cli_application *ctx, int reserved)
+static int cli_feed_render_markdown_preview(struct cli_application *ctx, int reserved, int draw)
 {
 	struct cli_feed *terminal = ctx->terminal;
 	const char *text = morph_buf_cstr_borrow(&terminal->markdown_preview);
@@ -522,13 +551,15 @@ static int cli_feed_render_markdown_preview(struct cli_application *ctx, int res
 		rows--;
 	}
 	gap = terminal->markdown_preview_prefix && ctx->output.trailing_newlines < 2;
+	if (!draw)
+		return rows + gap;
 	if (gap)
 		fputc('\n', terminal->output);
 	if (terminal->markdown_preview_prefix) {
 		if (text != morph_buf_cstr_borrow(&terminal->markdown_preview) && text[0] == ' ' &&
 		    text[1] == ' ')
 			text += 2;
-		fprintf(terminal->output, ANSI_BOLD "●" ANSI_RESET " ");
+		fprintf(terminal->output, ANSI_BOLD CLI_FEED_MESSAGE ANSI_RESET " ");
 	}
 	fprintf(terminal->output, "%s" ANSI_RESET, text);
 	return rows + gap;
@@ -554,6 +585,8 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 	int status_gap = 0;
 	int body_rows = 0;
 	int status_visible;
+	int waiting;
+	enum cli_feed_work_state work_visible;
 	int preview_rows = 0;
 	int preview_reserved;
 
@@ -562,7 +595,9 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 	terminal = ctx->terminal;
 	if (!terminal->transient)
 		return;
-	status_visible = terminal->live_active;
+	waiting = cli_jobs_waiting(ctx);
+	status_visible = terminal->live_active && !waiting;
+	work_visible = waiting ? CLI_FEED_TERMINAL_WORK_NONE : terminal->work_state;
 	now = cli_feed_now_ms();
 	columns = cli_feed_output_columns(terminal);
 	if (columns != terminal->columns) {
@@ -584,7 +619,7 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 	 * work row even if persistence keeps the worker alive for another tick. */
 	terminal->work_finalizing = cli_presentation_final_visible(ctx) &&
 				    terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING &&
-				    !status_visible && !queue_shown;
+				    !status_visible && !queue_shown && !waiting;
 	if (!status_visible && !terminal->markdown_preview.len && queue_shown == 0 &&
 	    !terminal->work_state && !cli_jobs_visible(ctx) && !cli_agents_visible(ctx)) {
 		if (terminal->live_visible) {
@@ -595,6 +630,7 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 			terminal->live_rows = 0;
 		}
 		terminal->job_rows = 0;
+		terminal->background_rows = 0;
 		return;
 	}
 	/* Below the layout minimum, keep one bounded row and keep accepting input. */
@@ -617,12 +653,14 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 		return;
 	}
 	morph_buf_reset(&terminal->agent_summary);
+	terminal->background_rows = 0;
 	if (morph_buf_init(&job_text, 128) == 0) {
 		int max_jobs = 3;
 		if (cli_feed_output_rows(terminal) < 20)
 			max_jobs = 1;
-		job_rows = cli_jobs_render(ctx, &job_text, columns, max_jobs,
+		job_rows = cli_jobs_render(ctx, &job_text, columns,
 					   cli_output_color_enabled(ctx));
+		terminal->background_rows = job_rows;
 		if (cli_agents_visible(ctx))
 			job_rows += cli_agents_render(ctx, &job_text, &terminal->agent_summary,
 						     columns, max_jobs, cli_output_color_enabled(ctx));
@@ -653,21 +691,37 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 		budget = 1;
 	(void)utf8_copy_sanitized_display_width(status_clipped, sizeof(status_clipped),
 						text ? text : "", (size_t)budget);
+	preview_reserved = ctx->input_status.composer_rows + 6;
+	if (preview_reserved < CLI_FEED_PREVIEW_RESERVED_ROWS)
+		preview_reserved = CLI_FEED_PREVIEW_RESERVED_ROWS;
+	preview_reserved += job_rows + (int)queue_shown;
+	preview_rows = cli_feed_render_markdown_preview(ctx, preview_reserved, 0);
+	status_gap = status_visible && (tool_live || terminal->live_reasoning) &&
+		     ctx->output.trailing_newlines < 2;
+	if (status_visible && tool_live && morph_buf_init(&tool_body, 128) == 0)
+		body_rows = cli_transcript_live_body(ctx->transcript, &tool_body, columns,
+						     cli_output_color_enabled(ctx));
+	int frame_rows = preview_rows + job_rows + status_visible + status_gap + body_rows +
+		(work_visible ? (terminal->work_finalizing ? 1 : 2) : 0) +
+		(int)queue_shown + (queue_shown > 0) + (queue_total > queue_shown) +
+		(queue_shown > 0 && (status_visible || work_visible));
+	int leading = terminal->composer_reserved_rows - frame_rows - 2;
+
+	if (leading < 0)
+		leading = 0;
 	if (terminal->live_visible)
 		cli_feed_clear_frame(terminal);
 	else
 		cli_feed_clear_current(terminal);
-	preview_reserved = ctx->input_status.composer_rows + 6;
-	if (preview_reserved < CLI_FEED_PREVIEW_RESERVED_ROWS)
-		preview_reserved = CLI_FEED_PREVIEW_RESERVED_ROWS;
-	preview_rows = cli_feed_render_markdown_preview(ctx, preview_reserved + job_rows +
-								     (int)queue_shown);
-	if (preview_rows && (status_visible || job_rows || terminal->work_state || queue_shown))
+	/* Keep vacated transient rows above the feed, never between it and the editor.
+	 * They remain owned by this frame and are reclaimed before history output. */
+	for (int row = 0; row < leading; row++)
+		fprintf(terminal->output, ANSI_RESET "\033[2K\n");
+	(void)cli_feed_render_markdown_preview(ctx, preview_reserved, 1);
+	if (preview_rows && (status_visible || job_rows || work_visible || queue_shown))
 		fputc('\n', terminal->output);
 	if (status_visible) {
 		/* Match the committed reasoning line from its first streaming frame. */
-		status_gap = (tool_live || terminal->live_reasoning) &&
-			     ctx->output.trailing_newlines < 2;
 		if (status_gap)
 			fputc('\n', terminal->output);
 		if (tool_live)
@@ -678,24 +732,19 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 			fprintf(terminal->output, ANSI_CYAN "%s" ANSI_RESET " %s%s" ANSI_RESET,
 				CLI_FEED_RUNNING, terminal->live_independent ? ANSI_DIM : "",
 				status_clipped);
-		if (tool_live && morph_buf_init(&tool_body, 128) == 0) {
-			body_rows = cli_transcript_live_body(ctx->transcript, &tool_body, columns,
-							     cli_output_color_enabled(ctx));
-			if (body_rows)
-				fprintf(terminal->output, "\n%s",
-					morph_buf_cstr_borrow(&tool_body));
-		}
-		if (queue_shown || terminal->work_state)
+		if (body_rows)
+			fprintf(terminal->output, "\n%s", morph_buf_cstr_borrow(&tool_body));
+		if (queue_shown || work_visible)
 			fputc('\n', terminal->output);
 	}
 	if (job_rows) {
-		if (status_visible && !queue_shown && !terminal->work_state)
+		if (status_visible && !queue_shown && !work_visible)
 			fputc('\n', terminal->output);
 		fprintf(terminal->output, "%s", morph_buf_cstr_borrow(&job_text));
-		if (terminal->work_state || queue_shown)
+		if (work_visible || queue_shown)
 			fputc('\n', terminal->output);
 	}
-	if (terminal->work_state) {
+	if (work_visible) {
 		if (!terminal->work_finalizing)
 			fputc('\n', terminal->output);
 		cli_feed_work_row(terminal, terminal->columns);
@@ -706,10 +755,10 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 		const char *heading = terminal->columns >= 44 ? "Messages queued for the next step"
 							      : "Messages queued";
 
-		if (status_visible || terminal->work_state)
+		if (status_visible || work_visible)
 			fputc('\n', terminal->output);
 		fprintf(terminal->output,
-			"  " ANSI_DIM CLI_FEED_PENDING ANSI_RESET " \033[38;5;252m%s" ANSI_RESET,
+			ANSI_DIM CLI_FEED_PENDING ANSI_RESET " \033[38;5;252m%s" ANSI_RESET,
 			heading);
 		if ((size_t)terminal->columns >= utf8_display_width(heading) + 25)
 			fprintf(terminal->output, ANSI_DIM " (Esc to apply now)" ANSI_RESET);
@@ -718,12 +767,13 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 		cli_feed_sanitize_line(queue_items[i]);
 		(void)utf8_copy_ellipsized_display_width(queue_clipped, sizeof(queue_clipped),
 							 queue_items[i],
-							 (size_t)(terminal->columns - 6), 0);
-		fprintf(terminal->output, "\n    " ANSI_DIM "↳ %s" ANSI_RESET, queue_clipped);
+							 (size_t)(terminal->columns - 4), 0);
+		fprintf(terminal->output, "\n  " ANSI_DIM "%s%s" ANSI_RESET,
+			i + 1 < queue_total ? "├ " : "└ ", queue_clipped);
 		free(queue_items[i]);
 	}
 	if (queue_total > queue_shown)
-		fprintf(terminal->output, "\n    " ANSI_DIM "+%zu more queued" ANSI_RESET,
+		fprintf(terminal->output, "\n  " ANSI_DIM "└ +%zu more queued" ANSI_RESET,
 			queue_total - queue_shown);
 	morph_buf_cleanup(&tool_text);
 	morph_buf_cleanup(&tool_body);
@@ -732,16 +782,18 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 	terminal->live_visible = 1;
 	terminal->live_anchored = 0;
 	terminal->job_rows = job_rows;
-	terminal->live_rows = preview_rows + job_rows + status_visible + status_gap + body_rows +
-			      (terminal->work_state ? (terminal->work_finalizing ? 1 : 2) : 0) +
-			      (int)queue_shown + (queue_shown > 0) + (queue_total > queue_shown) +
-			      (queue_shown > 0 && (status_visible || terminal->work_state));
+	terminal->live_rows = leading + frame_rows;
 	terminal->work_rows_below =
 		queue_shown ? 2 + (int)queue_shown + (queue_total > queue_shown) : 0;
+	terminal->background_rows_below = job_rows - 1 +
+		(work_visible ? (terminal->work_finalizing ? 1 : 2) + terminal->work_rows_below :
+		 queue_shown ? 1 + (int)queue_shown + (queue_total > queue_shown) : 0);
 	terminal->content_dirty = 0;
 	terminal->next_content_ms = now + CLI_FEED_TERMINAL_WORK_FRAME_MS;
-	terminal->next_frame_ms = now + (terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING
+	terminal->next_frame_ms = now + (work_visible == CLI_FEED_TERMINAL_WORK_RUNNING
 						 ? cli_feed_work_interval(terminal, now)
+						 : terminal->background_rows
+						 ? cli_style_running_interval_ms(now)
 						 : CLI_FEED_TERMINAL_WORK_FRAME_MS);
 }
 
@@ -774,6 +826,9 @@ void cli_feed_composer_suspend(struct cli_application *ctx)
 	terminal = ctx->terminal;
 	if (!terminal->is_terminal)
 		return;
+	int reserved = ctx->input_status.padding_rows +
+		(terminal->live_visible ? terminal->live_rows - 1 + terminal->live_anchored : 0);
+
 	cli_feed_clear_current(terminal);
 	while (ctx->input_status.padding_rows > 0) {
 		fprintf(terminal->output, "\033[1A\r\033[2K");
@@ -783,6 +838,8 @@ void cli_feed_composer_suspend(struct cli_application *ctx)
 	terminal->live_visible = 0;
 	terminal->live_anchored = 0;
 	terminal->live_rows = 0;
+	terminal->composer_reserved_rows = reserved;
+	terminal->history_column = 0;
 	fflush(terminal->output);
 }
 
@@ -805,11 +862,60 @@ void cli_feed_composer_resume(struct cli_application *ctx)
 	if (ctx->input_status.enabled && !ctx->input_status.padding_rows) {
 		/* Reserve the same gap for live and committed status rows. */
 		int padding = terminal->live_visible ? 2 : 1;
+		int reserved = terminal->composer_reserved_rows;
 
-		if (padding == 2)
+		terminal->composer_reserved_rows = 0;
+		while (!terminal->live_visible && padding < reserved) {
+			fprintf(terminal->output, ANSI_RESET "\033[2K\n");
+			padding++;
+		}
+		if (terminal->live_visible)
 			fprintf(terminal->output, ANSI_RESET "\033[2K\n");
 		fprintf(terminal->output, CLI_INPUT_BACKGROUND "\033[2K\n" ANSI_RESET);
 		ctx->input_status.padding_rows = padding;
+	}
+}
+
+/* Committed output consumes the rows freed when the composer was suspended. */
+void cli_feed_history_advance(struct cli_application *ctx, const char *text, size_t length)
+{
+	struct cli_feed *terminal = ctx ? ctx->terminal : NULL;
+
+	if (!terminal || terminal->composer_reserved_rows <= 0)
+		return;
+	char *safe MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
+		text, length, UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+	if (!safe)
+		return;
+	const char *cursor = safe;
+	const char *end = safe + strlen(safe);
+
+	while (cursor < end && terminal->composer_reserved_rows > 0) {
+		unsigned cp;
+		size_t bytes;
+
+		if (!utf8_decode_codepoint(cursor, (size_t)(end - cursor), &cp, &bytes))
+			return;
+		cursor += bytes;
+		if (cp == '\n') {
+			terminal->composer_reserved_rows--;
+			terminal->history_column = 0;
+			continue;
+		}
+		if (cp == '\r') {
+			terminal->history_column = 0;
+			continue;
+		}
+		int width = cp == '\t' ? 8 - terminal->history_column % 8
+				       : utf8_codepoint_width(cp);
+
+		if (width <= 0)
+			continue;
+		if (terminal->history_column + width > terminal->columns) {
+			terminal->composer_reserved_rows--;
+			terminal->history_column = 0;
+		}
+		terminal->history_column += width;
 	}
 }
 
@@ -841,6 +947,7 @@ void cli_feed_resize(struct cli_application *ctx)
 	if (!ctx || !ctx->terminal)
 		return;
 	ctx->terminal->columns = cli_feed_output_columns(ctx->terminal);
+	ctx->terminal->composer_reserved_rows = 0;
 	ctx->terminal->next_frame_ms = 0;
 }
 

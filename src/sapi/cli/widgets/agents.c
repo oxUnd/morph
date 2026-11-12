@@ -118,6 +118,11 @@ int cli_agents_rows(morph_buf_t *out, const struct agent_info *agents, int count
 			(void)morph_buf_putc(out, '\n');
 		cli_agents_append(out, shown + 1 == active ? "  └ " : "  ├ ", 4,
 				  styled ? ANSI_DIM : "");
+		cli_agents_append(out, agent->status == AGENT_RUNNING ? CLI_FEED_RUNNING
+							    : CLI_FEED_PENDING, 1,
+				  styled ? (agent->status == AGENT_RUNNING ? ANSI_CYAN : ANSI_DIM)
+					 : "");
+		(void)morph_buf_puts(out, " ");
 		int name_width = columns / 2;
 		if (name_width > 28)
 			name_width = 28;
@@ -126,7 +131,7 @@ int cli_agents_rows(morph_buf_t *out, const struct agent_info *agents, int count
 			name_width = actual;
 		cli_agents_append(out, name, name_width, styled ? CLI_COMMAND_COLOR : "");
 		(void)morph_buf_puts(out, "  ");
-		cli_agents_append(out, morph_buf_cstr_borrow(&activity), columns - name_width - 7,
+		cli_agents_append(out, morph_buf_cstr_borrow(&activity), columns - name_width - 9,
 				  styled ? ANSI_DIM : "");
 		shown++;
 	}

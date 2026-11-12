@@ -4,17 +4,23 @@ Interactive tool output uses append-only blocks. The first row contains the
 tool name (`Exec` for `exec`), its command or target, and inline elapsed time.
 Tool names are never replaced by action verbs. Shell commands use the shared terminal-safe
 syntax highlighter. Status remains visible in a leading marker: green `●` for success, cyan `◉`
-for running, amber `●` plus `TIMEOUT` for timeouts, and red `⊗` plus `FAILED`
-for failures. Shapes and explicit labels also distinguish states without color.
+for running, and bold red `✖` plus `TIMEOUT` or `FAILED` for failures. Shapes and explicit labels also distinguish states without color.
 There is no separate summary/command row. Background process results retain a
 running marker and label until the process finishes.
 
 Command receipts, plans, approvals and MCP status share the large state markers:
 `●` for completed or active, `◉` for running, `◯` for pending or available,
-and `⊗` for failed. Selection lists retain filled versus hollow circles;
-disabled, cancelled and system states retain their distinct symbols. Queue
+and bold red `✖` for failed. User questions and approvals use bold yellow `?`;
+warnings use yellow `⚠`, cancelled/skipped work uses dim `–`, and neutral system
+information uses `◇`. Missing historical results and disabled features use dim
+`◯`. Selection lists retain filled versus hollow circles. Queue
 headings use the pending marker. Password masks and Markdown list bullets
 belong to their content and are not status markers.
+
+Glyph values are defined once in `src/util/terminal_status.h`; CLI renderers use
+the aliases and styles from `src/sapi/cli/presentation/style.h`. Subagent receipts,
+background jobs, diagnostics and setup follow the same convention. The application
+layout check rejects raw status glyphs in CLI sources.
 
 The compact preview contains at most three physical output lines. The first uses
 `  └ ` and continuation lines align beneath its text. Additional lines are counted
@@ -29,11 +35,21 @@ path as completed previews. The full stream remains available in Ctrl+T details.
 follows live output at the bottom; scrolling up pauses following, and scrolling
 back to the bottom or pressing End resumes it.
 
-Elapsed-time updates run once per second, with a steady running marker and muted
-`Working` label. Incoming data requests a coalesced update after 80 ms. Idle
+Elapsed-time updates run once per second. The `Working` label and background-job
+summary start with a fixed-width `◉` marker that alternates normal and dim cyan
+every 500 ms. Both use the same monotonic-clock phase, including background jobs
+that outlive the turn. Animation ticks update the markers in place and preserve
+the composer, queued drafts and tool output. Completed history and no-color/plain
+output do not blink. The muted `Working` label retains its existing shimmer. Incoming data requests a coalesced update after 80 ms. Idle
 polling refreshes changed footer data without erasing the composer; an unchanged
 footer emits no bytes. The footer uses bold and dim text rather than separate
 colors for the model and directory.
+
+A contracting preview, tool completion or batch of background events retains the
+composer’s vertical position. Vacated rows stay on the normal background above
+the live feed and are reclaimed before committed output; the draft and footer
+must not move upward as live content shrinks. PTY tests inspect every published
+frame, including transitions that occur between final snapshots.
 
 Live layout uses the actual terminal width. Below 20 columns, a clipped
 `Widen terminal` row replaces the live block until the window grows. Compact
@@ -120,3 +136,7 @@ and line height remain controlled by the user's terminal.
 
 During an active turn, the Working status row ends with a purple
 `Ctrl+T transcript` shortcut hint. The editable composer contains no details hint.
+
+Top-level status markers share the leftmost column, including Working and
+background summaries. Children use explicit `├` / `└` branches, with `│`
+continuations for nested siblings; indentation alone does not indicate hierarchy.

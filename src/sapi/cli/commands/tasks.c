@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/tasks.h"
+#include "sapi/cli/presentation/style.h"
 #include "util/cleanup.h"
 #include "db/scheduled_task.h"
 #include "cJSON.h"
@@ -483,16 +484,16 @@ static int cli_tasks_task_status_is_terminal(const char *status)
 static const char *cli_tasks_task_status_marker(const char *status)
 {
 	if (!status)
-		return CLI_FEED_PENDING;
+		return ANSI_DIM CLI_FEED_PENDING ANSI_RESET;
 	if (strcmp(status, "completed") == 0)
-		return "✓";
+		return ANSI_GREEN CLI_FEED_DONE ANSI_RESET;
 	if (strcmp(status, "failed") == 0)
-		return "✗";
+		return CLI_FEED_FAILED_STYLE CLI_FEED_FAILED ANSI_RESET;
 	if (strcmp(status, "cancelled") == 0)
-		return "–";
+		return ANSI_DIM CLI_FEED_CANCELLED ANSI_RESET;
 	if (strcmp(status, "running") == 0)
-		return CLI_FEED_RUNNING;
-	return CLI_FEED_PENDING;
+		return ANSI_CYAN CLI_FEED_RUNNING ANSI_RESET;
+	return ANSI_DIM CLI_FEED_PENDING ANSI_RESET;
 }
 
 static void cli_tasks_task_list_schedule(const struct scheduled_task *task, char *schedule,

@@ -137,6 +137,63 @@ TEST_F(ConfigEditTest, WritesApprovedValidToml)
 	EXPECT_NE(out.find("\"hot_reloaded\":false"), std::string::npos);
 }
 
+TEST_F(ConfigEditTest, FullAccessWritesWithoutApproval)
+{
+	struct approval_state state = { TOOL_OP_DENY, 0, "" };
+	tool_context_set_operation_approval(tctx, approval_cb, &state);
+	ASSERT_EQ(config_edit_init(&reg, tctx, config_path), 0);
+	const char *toml = "[general]\ndefault_session = \"full\"\n";
+	std::string args = std::string("{\"reason\":\"set default session\",")
+		+ "\"path\":" + json_escape(config_path)
+		+ ",\"content\":" + json_escape(toml) + "}";
+
+	for (auto approval : {PERMISSION_NEVER, PERMISSION_ON_REQUEST}) {
+		struct permission_policy policy = {
+			PERMISSION_FULL, approval, PERMISSION_USER
+		};
+		ASSERT_EQ(tool_context_set_permission_policy(tctx, &policy), 0);
+		std::remove(config_path);
+		int rc = 0;
+		std::string out = exec_config_edit(&reg, args, &rc);
+
+		ASSERT_EQ(rc, 0) << out;
+		EXPECT_EQ(state.calls, 0);
+		char *edited = file_read_all_copy(config_path, nullptr);
+		ASSERT_NE(edited, nullptr);
+		EXPECT_STREQ(edited, toml);
+		std::free(edited);
+	}
+}
+
+TEST_F(ConfigEditTest, RestrictedAccessNeverDeniesWithoutWriting)
+{
+	struct approval_state state = { TOOL_OP_ALLOW, 0, "" };
+	tool_context_set_operation_approval(tctx, approval_cb, &state);
+	ASSERT_EQ(config_edit_init(&reg, tctx, config_path), 0);
+	const char *original = "[general]\ndefault_session = \"before\"\n";
+	ASSERT_EQ(file_write_all(config_path, original, std::strlen(original)), 0);
+	const char *desired = "[general]\ndefault_session = \"after\"\n";
+	std::string args = std::string("{\"reason\":\"change session\",\"content\":")
+		+ json_escape(desired) + "}";
+
+	for (auto access_mode : {PERMISSION_WORKSPACE, PERMISSION_READ_ONLY}) {
+		struct permission_policy policy = {
+			access_mode, PERMISSION_NEVER, PERMISSION_USER
+		};
+		ASSERT_EQ(tool_context_set_permission_policy(tctx, &policy), 0);
+		int rc = 0;
+		std::string out = exec_config_edit(&reg, args, &rc);
+
+		EXPECT_EQ(rc, -EACCES) << out;
+		EXPECT_EQ(state.calls, 0);
+		char *current = file_read_all_copy(config_path, nullptr);
+		ASSERT_NE(current, nullptr);
+		EXPECT_STREQ(current, original);
+		std::free(current);
+		EXPECT_EQ(::access((std::string(config_path) + ".bak").c_str(), F_OK), -1);
+	}
+}
+
 TEST_F(ConfigEditTest, DeniesOtherPath)
 {
 	struct approval_state state = { TOOL_OP_ALLOW, 0, "" };

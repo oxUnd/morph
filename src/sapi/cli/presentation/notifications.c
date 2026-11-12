@@ -1,4 +1,5 @@
 #include "sapi/cli/presentation/notifications.h"
+#include "sapi/cli/presentation/style.h"
 #include "sapi/cli/services/event_queue_item.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/markdown.h"
@@ -7,11 +8,11 @@
 
 void cli_notifications_render(struct cli_application *ctx, const struct cli_event_queue_item *item)
 {
-	const char *color = item->notification_failed	 ? ANSI_RED
+	const char *color = item->notification_failed	 ? CLI_FEED_FAILED_STYLE
 			    : item->notification_warning ? ANSI_YELLOW
 							 : ANSI_GREEN;
 	const char *mark = item->notification_failed	? CLI_FEED_FAILED
-			   : item->notification_warning ? CLI_FEED_SYSTEM
+			   : item->notification_warning ? CLI_FEED_WARNING
 							: CLI_FEED_DONE;
 	const char *status = item->notification_failed	  ? "failed"
 			     : item->notification_warning ? "attention"

@@ -83,9 +83,14 @@ int cli_agents_event(struct cli_application *ctx, const struct morph_event *even
 		char safe[BUFSIZ];
 		const char *label = id ? id : "agent";
 		cli_list_compact_text(safe, sizeof(safe), label);
-		const char *action = status && !strcmp(status, "completed")	? "Finished"
-				     : status && !strcmp(status, "interrupted") ? "Interrupted"
-										: "Failed";
+		int completed = status && !strcmp(status, "completed");
+		int cancelled = status && (!strcmp(status, "interrupted") ||
+					   !strcmp(status, "cancelled"));
+		const char *action = completed ? "Finished" : cancelled ? "Interrupted" : "Failed";
+		const char *marker = completed ? CLI_FEED_DONE
+			: cancelled ? CLI_FEED_CANCELLED : CLI_FEED_FAILED;
+		const char *color = completed ? ANSI_GREEN
+			: cancelled ? ANSI_DIM : CLI_FEED_FAILED_STYLE;
 		if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE && ctx->turn_active &&
 		    ctx->presenter && !ctx->presenter->final_rendered &&
 		    (ctx->presenter->markdown_stream || ctx->presenter->native_content_started ||
@@ -93,17 +98,17 @@ int cli_agents_event(struct cli_application *ctx, const struct morph_event *even
 		      !ctx->presenter->event_stream_complete))) {
 			/* Keep parent answer streams contiguous. Snapshots still update live. */
 			int rc = morph_buf_printf(&ctx->presenter->agent_receipts,
-						  ANSI_DIM "• " ANSI_RESET "%s " CLI_COMMAND_COLOR
+						  "%s%s " ANSI_RESET "%s " CLI_COMMAND_COLOR
 							   "%s" ANSI_RESET "\n",
-						  action, safe);
+						  color, marker, action, safe);
 			if (rc != 0)
 				return rc;
 		} else {
 			cli_feed_history_begin(ctx);
 			cli_output_printf(ctx,
-					  ANSI_DIM "• " ANSI_RESET "%s " CLI_COMMAND_COLOR
+					  "%s%s " ANSI_RESET "%s " CLI_COMMAND_COLOR
 						   "%s" ANSI_RESET "\n",
-					  action, safe);
+					  color, marker, action, safe);
 			cli_feed_history_end(ctx);
 		}
 	}

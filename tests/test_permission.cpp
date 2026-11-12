@@ -609,10 +609,10 @@ TEST_F(RuntimeFacadeTest, RetainedHostProcessInputRequiresAnotherApproval)
 		user.verdict = TOOL_OP_DENY;
 		std::string input = "{\"action\":\"write\",\"session_id\":\"" + session +
 			"\",\"input\":\"blocked\"}";
-		EXPECT_EQ(tool_exec(&registry, "process", input.c_str(), &result), -EACCES);
+		EXPECT_EQ(tool_exec(&registry, "background", input.c_str(), &result), -EACCES);
 		EXPECT_EQ(user.calls, host ? 2 : 1);
 		std::string stop = "{\"action\":\"kill\",\"session_id\":\"" + session + "\"}";
-		EXPECT_EQ(tool_exec(&registry, "process", stop.c_str(), &result), 0);
+		EXPECT_EQ(tool_exec(&registry, "background", stop.c_str(), &result), 0);
 		tool_result_cleanup(&result);
 		tool_registry_cleanup(&registry);
 		tool_context_destroy(context);

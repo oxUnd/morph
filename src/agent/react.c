@@ -742,6 +742,7 @@ void react_reset(struct react_context *ctx)
 	ctx->agent_finalize_interrupted = 0;
 	ctx->agent_finishing = 0;
 	ctx->agent_summary_attempts = 0;
+	morph_signal_flag_set(&ctx->preserve_background_on_cancel, 0);
 	morph_signal_flag_set(&ctx->cancelled, 0);
 	morph_cancel_token_reset(&ctx->cancel_token);
 }
@@ -749,9 +750,19 @@ void react_reset(struct react_context *ctx)
 void react_cancel(struct react_context *ctx)
 {
 	if (ctx) {
+		morph_signal_flag_set(&ctx->preserve_background_on_cancel, 0);
 		morph_signal_flag_set(&ctx->cancelled, 1);
 		morph_cancel_token_cancel(&ctx->cancel_token);
 	}
+}
+
+void react_interrupt_background_wait(struct react_context *ctx)
+{
+	if (!ctx)
+		return;
+	morph_signal_flag_set(&ctx->preserve_background_on_cancel, 1);
+	morph_signal_flag_set(&ctx->cancelled, 1);
+	morph_cancel_token_cancel(&ctx->cancel_token);
 }
 
 int react_set_memory_reply_text_copy(struct react_context *ctx, const char *memory_reply_text)
@@ -845,6 +856,8 @@ struct tool_handle *react_builtin_acquire(struct react_context *ctx, const char 
 
 static void react_cancel_background(struct react_context *ctx)
 {
+	if (morph_signal_flag_get(&ctx->preserve_background_on_cancel))
+		return;
 	struct tool_handle handle = {0};
 	struct tool_handle *entry = react_builtin_acquire(ctx, "exec", &handle);
 
@@ -2769,12 +2782,8 @@ static int react_collect_agent_messages(struct react_context *ctx, morph_array_t
 	return rc == 0 ? 1 : rc;
 }
 
-static int react_wait_for_agents(struct react_context *ctx, morph_array_t *messages)
+static int react_wait_for_active_agents(struct react_context *ctx, morph_array_t *messages)
 {
-	if (!ctx->agents)
-		return 0;
-	if (!agent_control_descendants_active(ctx->agents, ctx->agent_id))
-		return react_collect_agent_messages(ctx, messages);
 	int rc = 0;
 	int collected = 0;
 	if (!ctx->agent_finalize_started_ms)
@@ -2860,6 +2869,20 @@ static int react_wait_for_agents(struct react_context *ctx, morph_array_t *messa
 	}
 	rc = react_collect_agent_messages(ctx, messages);
 	return rc != 0 ? rc : collected;
+}
+
+static int react_wait_for_agents(struct react_context *ctx, morph_array_t *messages)
+{
+	if (!ctx->agents)
+		return 0;
+	if (!agent_control_descendants_active(ctx->agents, ctx->agent_id))
+		return react_collect_agent_messages(ctx, messages);
+	(void)react_emit_text_event(react_events_borrow(ctx), MORPH_EVENT_REACT,
+				    "react.agents.wait.begin", "begin", "Waiting for agents", NULL);
+	int rc = react_wait_for_active_agents(ctx, messages);
+	(void)react_emit_text_event(react_events_borrow(ctx), MORPH_EVENT_REACT,
+				    "react.agents.wait.end", "end", "Agent wait ended", NULL);
+	return rc;
 }
 
 static int react_preserve_partial_answer(struct react_context *ctx)

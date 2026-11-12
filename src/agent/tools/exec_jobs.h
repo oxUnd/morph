@@ -28,6 +28,7 @@ void exec_jobs_cancel_turn(struct exec_jobs *jobs, int64_t owner, const char *tu
 int exec_jobs_authority(struct exec_jobs *jobs, const char *id, int *host, int *network);
 int exec_jobs_authorize(struct exec_jobs *jobs, const char *id, int64_t owner);
 void exec_jobs_observed(struct exec_jobs *jobs, const char *id);
+void exec_jobs_wait_event(struct exec_jobs *jobs, const char *id, int begin);
 int exec_jobs_wait(struct exec_jobs *jobs, int64_t owner, const char *turn_id,
 		   int (*cancelled)(void *), void *cancel_data, cJSON **out);
 

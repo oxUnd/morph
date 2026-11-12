@@ -65,8 +65,8 @@ def run(driver, port, columns):
                                 for message in body.get('messages', []) if message['role'] == 'system'))
             primary = next(release for _, release in pair if release is not child)
             wait_for(terminal, lambda: 'Agents: 1 running' in '\n'.join(terminal.screen.display))
-            wait_for(terminal, lambda: any('└ /root/worker' in line for line in terminal.screen.display))
-            active_row = next(line for line in terminal.screen.display if '└ /root/worker' in line)
+            wait_for(terminal, lambda: any('└ ◉ /root/worker' in line for line in terminal.screen.display))
+            active_row = next(line for line in terminal.screen.display if '└ ◉ /root/worker' in line)
             assert 'CHILD_ACTIVITY_TASK' not in active_row
             working = next(line for line in terminal.screen.display if 'Working' in line)
             assert 'Agents: 1 running' in working, '\n'.join(terminal.screen.display)
@@ -78,6 +78,10 @@ def run(driver, port, columns):
             child.delta = tool_delta('exec', {'command': 'sleep 2'}, 'child_inspect')
             child.set()
             wait_for(terminal, lambda: 'Running exec' in re.sub(r'\x1b\[[0-9;]*m', '', terminal.raw))
+            for _ in range(4):
+                terminal.pump(.3)
+                visible = '\n'.join(stable_rows(terminal))
+                assert visible.count('Waiting for agents') == 1, visible
             terminal.send('/agents\r')
             wait_for(terminal, lambda: 'Agents (1)' in terminal.screen.display[0])
             assert hasattr(terminal.screen, '_main_screen')
@@ -130,7 +134,7 @@ def run(driver, port, columns):
             else:
                 raise AssertionError(terminal.raw[-8000:])
             terminal.pump(.5)
-            visible = '\n'.join(terminal.screen.display)
+            visible = '\n'.join(stable_rows(terminal))
             assert visible.count('PRESERVED_AGENT_DRAFT') == 1, visible
             terminal.child.send('\x15')
             terminal.send('/subagents\r')
@@ -172,12 +176,59 @@ def run(driver, port, columns):
                 release.set()
 
 
+def run_automatic_wait(driver, port):
+    releases = []
+    with tempfile.TemporaryDirectory(prefix='morph-agent-wait-pty-') as temp:
+        terminal = Terminal(driver, Path(temp), port, hooks_enabled=False,
+                            extra_config='[agents]\nmulti_agent_mode="proactive"\n')
+        try:
+            terminal.wait_for_composer()
+            terminal.send('collect worker results\r')
+            _, root = terminal.request()
+            releases.append(root)
+            root.delta = tool_delta('spawn_agent', {'task_name': 'worker',
+                'message': 'Inspect independently', 'fork_turns': 'none'}, 'spawn_wait')
+            root.set()
+            pair = [terminal.request(), terminal.request()]
+            releases.extend(release for _, release in pair)
+            child = next(release for body, release in pair
+                         if any('You are `/root/worker`' in message.get('content', '')
+                                for message in body.get('messages', [])
+                                if message['role'] == 'system'))
+            primary = next(release for _, release in pair if release is not child)
+            primary.delta = {'content': 'PARENT_PROPOSAL_PENDING_WORKER'}
+            primary.set()
+            wait_for(terminal, lambda: 'PARENT_PROPOSAL_PENDING_WORKER' in terminal.raw)
+            for _ in range(4):
+                terminal.pump(.3)
+                visible = '\n'.join(stable_rows(terminal))
+                assert visible.count('Waiting for agents') == 1, visible
+                assert 'Agents: 1 running' in visible, visible
+            child.delta = {'content': 'WORKER_REPORT_COMPLETE'}
+            child.set()
+            _, final = terminal.request()
+            releases.append(final)
+            final.delta = {'content': 'PARENT_REPORT_COMPLETE'}
+            final.set()
+            wait_for(terminal, lambda: 'PARENT_REPORT_COMPLETE' in terminal.raw)
+            terminal.pump(.3)
+            assert 'Waiting for agents' not in '\n'.join(terminal.screen.display)
+        finally:
+            for release in releases:
+                release.set()
+            terminal.child.close(force=True)
+            while not Model.requests.empty():
+                _, release = Model.requests.get_nowait()
+                release.set()
+
+
 def main():
     driver = Path(sys.argv[1]).resolve()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
+        run_automatic_wait(driver, server.server_port)
         for columns in (120, 80, 60):
             run(driver, server.server_port, columns)
     finally:

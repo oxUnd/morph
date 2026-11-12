@@ -286,7 +286,7 @@ def main():
             terminal.send('\r')
             starting = terminal.snapshot('immediate turn status')
             assert 'Starting' not in starting and 'Thinking' not in starting, starting
-            assert 'Working ·' in starting and 'esc to interrupt' in starting, starting
+            assert '◉ Working ·' in starting and 'esc to interrupt' in starting, starting
             starting_rows = starting.splitlines()
             user_row = next(i for i, row in enumerate(starting_rows)
                             if row.startswith('› initial task'))
@@ -308,6 +308,7 @@ def main():
             assert starting_rows[user_row + 1].strip() != '│', starting
             working_row = next(i for i, row in enumerate(starting_rows)
                                if 'Working ·' in row)
+            assert starting_rows[working_row].startswith('◉ Working ·'), starting
             assert working_row > 0 and not starting_rows[working_row - 1].strip(), starting
             first, release = terminal.request()
             releases.append(release)
@@ -324,6 +325,8 @@ def main():
             terminal.pump(1.1)
             ticks = terminal.raw[tick_start:]
             assert '\x1b[38;2;' in ticks, 'waiting status must keep animating'
+            assert '\x1b[2m\x1b[36m◉' in ticks, 'running dot must enter its dim phase'
+            assert '\x1b[0m\x1b[36m◉' in ticks, 'running dot must enter its bright phase'
             assert '\x1b[2K' not in ticks, 'animation erased the composer or feed'
             assert 'Live output' not in ticks and 'ctx ' not in ticks, repr(ticks)
             terminal.send('改成中文🙂')
@@ -334,7 +337,7 @@ def main():
             terminal.send('\x05\r')
             assert 'Messages queued' in terminal.raw, terminal.raw[-3000:]
             assert 'Requirement queued' not in terminal.raw
-            queued = [state for state in terminal.queued_states if '↳ 改成中新🙂' in state]
+            queued = [state for state in terminal.queued_states if '└ 改成中新🙂' in state]
             assert queued, 'No rendered queue state was observed'
             for state in queued:
                 assert '› 改成中新🙂' not in state, 'Queued input was committed early:\n' + state
@@ -384,7 +387,9 @@ def main():
             terminal.pump(0.5)
             assert 'unsent draft 中文' in terminal.snapshot('narrow resize')
             terminal.send('\x15' + 'long 中文 ' * 10)
-            terminal.snapshot('wrapped draft')
+            wrapped = terminal.snapshot('wrapped draft')
+            wrapped_composer_row = next(i for i, row in enumerate(wrapped.splitlines())
+                                        if row.startswith('› long '))
             release2.set()
             terminal.pump(1)
             completed = terminal.snapshot('wrapped draft after completion')
@@ -398,8 +403,14 @@ def main():
             assert worked_row > 0 and not completed_rows[worked_row - 1].strip(), completed
             assert not completed_rows[worked_row + 1].strip(), completed
             assert terminal.screen.buffer[worked_row + 1][0].bg != '3a3a3a', completed
-            assert terminal.screen.buffer[worked_row + 2][0].bg == '3a3a3a', completed
-            assert completed_rows[worked_row + 3].startswith('› '), completed
+            composer_row = next(i for i, row in enumerate(completed_rows)
+                                if row.startswith('› long '))
+            assert composer_row == wrapped_composer_row, completed
+            assert composer_row > worked_row + 2, completed
+            assert terminal.screen.buffer[composer_row - 1][0].bg == '3a3a3a', completed
+            for row in range(worked_row + 1, composer_row - 1):
+                assert not completed_rows[row].strip(), completed
+                assert terminal.screen.buffer[row][0].bg != '3a3a3a', completed
             assert 'Working ·' not in completed, completed
             assert completed.count('ctx ') == 1, completed
             assert ' cr' in completed, completed
@@ -412,7 +423,10 @@ def main():
             assert 'Worked for ' not in terminal.raw[idle_start:], terminal.raw[idle_start:]
             idle_rows = idle.splitlines()
             worked_row = next(i for i, row in enumerate(idle_rows) if 'Worked for ' in row)
-            assert idle_rows[worked_row + 3].startswith('› '), idle
+            idle_composer_row = next(i for i, row in enumerate(idle_rows)
+                                     if row.startswith('› long '))
+            assert idle_composer_row > worked_row + 2, idle
+            assert terminal.screen.buffer[idle_composer_row - 1][0].bg == '3a3a3a', idle
             terminal.send('\x15\r')
             terminal.send('ask a question\r')
             ask_request, ask_release = terminal.request()

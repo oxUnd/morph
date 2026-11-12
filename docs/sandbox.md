@@ -16,7 +16,7 @@ execution directly. See [the policy contract](permissions-design.md).
 Host execution has the current user's filesystem and network access. Approval
 identifies this scope explicitly. It never happens as an automatic fallback
 from a failed sandbox call. Host children still close inherited descriptors and
-retain process groups, output limits, timeouts and `process` session control.
+retain process groups, output limits, timeouts and `background` session control.
 The result reports `execution_mode: "host"` or `"sandbox"`. Model-supplied stdin writes
 to any existing session pass the shared review gate again, unless the effective
 policy or an explicit session grant already allows the call. This also covers

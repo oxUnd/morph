@@ -108,6 +108,8 @@ int runtime_execute_turn(struct runtime *runtime,
 			 const struct runtime_request *request,
 			 struct runtime_result *result);
 void runtime_cancel_turn(struct runtime *runtime);
+/* End the current wait/turn while retaining its background commands. */
+void runtime_interrupt_background_wait(struct runtime *runtime);
 
 /* Process views never acquire the turn lock and are available while working. */
 int runtime_process_list(struct runtime *runtime, cJSON **out);

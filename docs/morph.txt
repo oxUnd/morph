@@ -353,8 +353,9 @@ any are active. Waiting tasks count as pending; the counts refresh while idle.
 Active tasks use a separate footer row so model and context information remain
 visible. Background results include their task ID, delivery time, and inbox ID.
 
-Feed marks: ● assistant output, ◯ completed action, ◉ running action,
-⊗ failure, ◇ system update or warning, and ? input required. Reasoning is folded
+Feed marks: ● assistant output or completed action, ◯ pending/unknown action,
+◉ running action, ✖ failure/timeout, ⚠ warning, – cancelled/skipped action,
+◇ neutral system update, and bold yellow ? input required. Reasoning is folded
 into a single preview row, with an ellipsis when more text is hidden. Ctrl+T
 opens the current turn's full reasoning and tool details, including live updates;
 Ctrl+T or Esc returns to the conversation. During a turn, the purple shortcut
@@ -415,10 +416,10 @@ reserve. See docs/multi-agent.md for configuration and evaluation commands.
 Shell and process tools include:
 
 	exec		Run a shell command with workdir, timeout, and sessions.
-	process		List, poll, wait, write, interrupt, or kill exec sessions.
+	background	List, poll, wait, write, interrupt, or kill background jobs.
 	request_permissions  Ask for the smallest additional filesystem access.
 
-The exec tool runs shell commands; the process tool manages the resulting
+The exec tool runs shell commands; the background tool manages the resulting
 process sessions.  Both are registered always and share one configuration
 table:
 
@@ -455,7 +456,7 @@ SSL_CERT_DIR, and CURL_CA_BUNDLE are inherited automatically; other
 non-essential variables are still filtered.
 
 Commands that outlive yield_time_ms return a session_id.  Continue them with
-the process tool, whose action is one of list, poll, wait, write, interrupt,
+the background tool, whose action is one of list, poll, wait, write, interrupt,
 or kill. For poll and wait, the model chooses an integer wait_ms in the inclusive
 range 0 to exec.max_wait_ms. The maximum defaults to 600000 ms (10 minutes);
 omitting wait_ms uses 30000 ms (30 seconds), or the configured maximum if lower.

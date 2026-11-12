@@ -94,6 +94,8 @@ def main():
             terminal.send('\x16')
             assert '[IMAGE#5]' in terminal.snapshot('image paste while model runs')
             terminal.send('\x7fNo image now\r')
+            # Apply the queued text after removing the image chip.
+            terminal.child.send('\x1b')
             request2, release2 = terminal.request()
             releases.append(release2)
             users = [m['content'] for m in request2['messages'] if m['role'] == 'user']

@@ -7,26 +7,37 @@ not mean the command has finished.
 
 ## Task area and inspection
 
-The interactive CLI keeps background commands above the work/status row. Each
-command has its own identity; polling never creates another task:
+The interactive CLI summarizes running background commands in one live row:
 
 ```text
-◉ Build project
-  └─ cmake --build build -j8                         42s
+◉ 2 background jobs running · /jobs to view
 ```
 
-The optional parent is the model-supplied `exec.description`, in the current
-response language. The child is the actual command. Without a description, the
-command uses one line. Commands are clipped to the available display width and
-control sequences are sanitized. At most three jobs appear, or one in short
-terminals, followed by an overflow count. Logs stay out of the task area.
+While collecting a command's result, it expands only the command being waited on:
 
-Successful jobs remain for five seconds and then disappear. Failed, timed-out,
-signaled, and killed jobs remain for ten seconds. Inspecting a terminal result
-hides it immediately. Each completion also produces one history receipt, and
-results remain available through `/jobs` after leaving the task area. These
-timeouts apply while the model works on other steps and after a turn has ended;
-running jobs remain visible until they finish.
+```text
+◉ Waiting for background job (3m 10s · Esc to interrupt wait) · 2 running · /jobs to view
+  └ cmake --build build -j8
+```
+
+The running marker pulses between normal and dim cyan every 500 ms, in sync
+with the marker before `Working`. It keeps pulsing while the agent waits and
+after a turn ends if background jobs remain, without changing line width or
+repainting the composer.
+
+The elapsed time is the command's running duration. Narrow terminals shorten the
+hints while retaining `Esc` and `/jobs`. Commands are clipped to display width and
+terminal controls are sanitized. Logs and the model-supplied `exec.description`
+remain in `/jobs`; polling never creates another job. Completion removes the live
+row immediately and leaves one history receipt, including the description and
+exit status. Results remain available through `/jobs`.
+
+In the interactive composer, `Esc` during an explicit `background` wait or the
+runtime's final result collection ends the current wait/turn while retaining its
+background commands. The draft remains editable. `Ctrl+C` still cancels the turn
+and stops its commands. With queued prompts, `Esc` retains its existing behavior
+of applying those prompts. Stop an individual job through `/jobs stop <id>` or the
+job panel's `k` action.
 
 `/jobs` opens the current conversation's live job list. Up/Down selects a command,
 Enter opens its command, working directory, state, exit code, and output. Output
@@ -42,7 +53,17 @@ queries return JSON; JSON command mode retains the command event envelope.
 
 ## Waiting and completion
 
-The `process` tool supports:
+The `background` tool replaces the former `process` tool. `process` is no longer
+registered; historical transcript rows retain the original name and display
+`process [deprecated]` so the old name cannot be mistaken for a current API.
+A stale invocation fails with an explicit deprecation message pointing to
+`background`. Update tool-name configuration to `background`; an existing
+`disabled_tools = ["process"]` still disables `background` and logs a deprecation
+notice, preserving the explicit restriction during migration.
+Session IDs, result fields, storage and `process.started` / `process.completed`
+events retain their existing contracts.
+
+The `background` tool supports:
 
 | Action | Behavior |
 | --- | --- |
@@ -67,7 +88,7 @@ do not advance this cursor. Cancelling a wait leaves the process running;
 stopping a process is a separate action.
 
 For example, `[exec] max_wait_ms = 1200000` permits the model to choose waits up
-to 20 minutes. The process tool's own timeout reserves time beyond that configured
+to 20 minutes. The background tool's own timeout reserves time beyond that configured
 maximum so it does not prematurely end a valid long wait. Waits remain cancellable.
 
 Before accepting a final answer, the agent collects unobserved finite commands

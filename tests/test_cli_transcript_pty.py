@@ -223,23 +223,23 @@ def check_feed_replay(driver):
                 assert '\x1b[2J' not in raw, raw
                 print(f'checked: {width} columns: bounded tool states')
                 continue
-            assert sum(row.startswith(('● Exec ', '◉ Exec ')) for row in screen.display) == 6, text
+            assert sum(row.startswith(('● Exec ', '◉ Exec ', '✖ Exec ')) for row in screen.display) == 6, text
             assert '    $ ' not in text, text
-            assert text.count('● Exec ') == 5, text
+            assert text.count('● Exec ') == 4 and text.count('✖ Exec ') == 1, text
             assert text.count('◉ Exec ') == 1, text
             assert text.count('  └ ') == 5, text
             assert text.count('Running…') == 1, text
             assert 'TIMEOUT' in text and '10.0s' in text, text
             reference = pyte.Screen(10, 2)
-            pyte.Stream(reference).feed('\x1b[33m●\x1b[0m \x1b[1mExec\r\n'
+            pyte.Stream(reference).feed('\x1b[1;31m✖\x1b[0m \x1b[1mExec\r\n'
                                         '\x1b[0;36m◉\x1b[0m \x1b[1mExec')
             timeout_row = next(index for index, row in enumerate(screen.display)
-                               if row.startswith('● Exec ') and 'TIMEOUT ·' in row)
+                               if row.startswith('✖ Exec ') and 'TIMEOUT ·' in row)
             running_row = next(index for index, row in enumerate(screen.display)
                                if row.startswith('◉ Exec '))
             for actual_row, expected_row in ((timeout_row, 0), (running_row, 1)):
                 assert screen.buffer[actual_row][0].fg == reference.buffer[expected_row][0].fg, text
-                assert not screen.buffer[actual_row][0].bold, text
+                assert screen.buffer[actual_row][0].bold == reference.buffer[expected_row][0].bold, text
                 assert all(screen.buffer[actual_row][column].bold for column in range(2, 6)), text
             assert '\x1b[2J' not in raw, raw
             assert all(len(row.rstrip()) <= width - 2 for row in screen.display), text
@@ -339,8 +339,11 @@ def check_final_spacing(driver, port):
                     last = next(i for i, row in enumerate(rows) if 'FINAL_SENTINEL code' in row)
                     assert last - first == 2, text
                 prompt = max(i for i, row in enumerate(rows) if row.startswith('› '))
-                assert prompt == footer + 3, text
-                assert terminal.screen.buffer[footer + 1][0].bg != '3a3a3a', text
+                assert prompt >= footer + 3, text
+                assert terminal.screen.buffer[prompt - 1][0].bg == '3a3a3a', text
+                for row in range(footer + 1, prompt - 1):
+                    assert not rows[row].strip(), text
+                    assert terminal.screen.buffer[row][0].bg != '3a3a3a', text
                 terminal.send('/share\r')
                 text = terminal.snapshot(f'share after final case {index}')
                 rows = text.splitlines()

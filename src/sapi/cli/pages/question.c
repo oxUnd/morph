@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/question.h"
+#include "sapi/cli/presentation/style.h"
 #include "sapi/cli/adapters/input/state.h"
 #include "agent/tools/ask_user.h"
 #include "cJSON.h"
@@ -232,7 +233,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 
 	cli_cancel_monitor_clear(ctx);
 	cli_presentation_prepare_prompt(ctx);
-	printf(ctx, ANSI_BOLD ANSI_CYAN "? ");
+	printf(ctx, CLI_FEED_QUESTION_STYLE CLI_FEED_QUESTION " ");
 	(void)cli_output_print_untrusted(ctx, question, UTF8_TERMINAL_TEXT_SINGLE_LINE);
 	printf(ctx, ANSI_RESET "\n");
 	int timeout = options && options->optional ? options->timeout_seconds : 0;
@@ -330,7 +331,8 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 								       values, count);
 				if (!rc) {
 					for (int i = 0; i < count; i++) {
-						printf(ctx, "  " ANSI_GREEN "✓ " ANSI_RESET);
+						printf(ctx, "  %s" ANSI_GREEN CLI_FEED_DONE
+						       " " ANSI_RESET, i + 1 < count ? "├ " : "└ ");
 						(void)cli_output_print_untrusted(
 							ctx, values[i],
 							UTF8_TERMINAL_TEXT_SINGLE_LINE);

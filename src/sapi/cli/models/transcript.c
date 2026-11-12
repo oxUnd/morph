@@ -178,6 +178,9 @@ static int cli_transcript_add_tool(struct cli_transcript_model *tr, const cJSON 
 		if (subject[0])
 			break;
 	}
+	/* Older transcripts may contain the removed exec parameter alias. */
+	if (!subject[0] && strcmp(tool->name, "exec") == 0)
+		subject = cli_transcript_json_string(args, "cmd");
 	cli_transcript_set_text(tr, &tool->subject, subject);
 	cli_transcript_set_text(tr, &tool->result, "");
 	cli_transcript_set_text(tr, &tool->error, "");
@@ -189,8 +192,11 @@ static int cli_transcript_add_tool(struct cli_transcript_model *tr, const cJSON 
 		cli_transcript_set_text(tr, &tool->subject,
 					cli_transcript_json_string(args, "name"));
 	}
-	tool->shell = strcmp(tool->name, "exec") == 0 || strcmp(tool->name, "process") == 0;
-	if (strcmp(tool->name, "process") == 0) {
+	/* Deprecated process name is display-only compatibility, never a tool alias. */
+	int background = strcmp(tool->name, "background") == 0 ||
+			 strcmp(tool->name, "process") == 0;
+	tool->shell = strcmp(tool->name, "exec") == 0 || background;
+	if (background) {
 		tool->process_poll =
 			strcmp(cli_transcript_json_string(args, "action"), "poll") == 0;
 		const char *session_id = cli_transcript_json_string(args, "session_id");
@@ -275,6 +281,14 @@ static void cli_transcript_summarize_result(struct cli_transcript_model *tr,
 			  cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "timed_out"));
 	if (tool->timed_out)
 		tool->state = -1;
+	const char *status = cli_transcript_json_string(data, "status");
+	if (!strcmp(status, "killed") || !strcmp(status, "cancelled") ||
+	    !strcmp(status, "interrupted")) {
+		tool->interrupted = 1;
+		tool->state = -1;
+	} else if (!strcmp(status, "signaled") || !strcmp(status, "failed")) {
+		tool->state = -1;
+	}
 	value = cJSON_GetObjectItemCaseSensitive(data, "exit_code");
 	if (cJSON_IsNumber(value)) {
 		(void)morph_buf_printf(&summary, "exit %d", value->valueint);
@@ -370,6 +384,8 @@ int cli_transcript_model_restore(struct cli_transcript_model *tr, const cJSON *c
 		if (cJSON_IsNumber(code) && code->valueint < 0) {
 			tool->state = -1;
 			tool->timed_out = tool->timed_out || code->valueint == -ETIMEDOUT;
+			tool->interrupted = tool->interrupted || code->valueint == -ECANCELED ||
+					    code->valueint == -EINTR;
 			if (!tool->error[0])
 				cli_transcript_set_text(tr, &tool->error,
 							morph_strerror(code->valueint));
@@ -434,6 +450,7 @@ int cli_transcript_model_reduce(struct cli_transcript_model *tr, const struct mo
 		return 0;
 	change->kind = CLI_TRANSCRIPT_TOOL_FINISHED;
 	tool->state = strcmp(name, "tool.result") == 0 ? 1 : -1;
+	tool->interrupted = strcmp(name, "tool.cancelled") == 0;
 	tool->ended = now;
 	cli_transcript_set_text(tr, &tool->result,
 				cli_transcript_json_string(event->data, "result"));
@@ -494,5 +511,13 @@ cli_transcript_model_active_borrow(const struct cli_transcript_model *tr)
 int cli_transcript_tool_is_running(const struct cli_transcript_tool *tool)
 {
 	return !tool->historical && tool->state >= 0 &&
-	       (!tool->state || strcmp(tool->summary, "running") == 0);
+	       (!tool->state || strcmp(tool->summary, "running") == 0 ||
+		strcmp(tool->summary, "starting") == 0);
+}
+
+int cli_transcript_tool_is_pending(const struct cli_transcript_tool *tool)
+{
+	return (tool->historical && !tool->state) ||
+	       (tool->state >= 0 && !tool->interrupted &&
+		(!strcmp(tool->summary, "pending") || !strcmp(tool->summary, "queued")));
 }

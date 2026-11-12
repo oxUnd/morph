@@ -1,6 +1,8 @@
 #include "exec_jobs.h"
 #include "util/array.h"
 #include "util/error.h"
+#include "util/cleanup.h"
+#include "util/json.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -71,8 +73,18 @@ static void emit_job(struct exec_jobs *jobs, const char *name, cJSON *data)
 	user_data = jobs->event_user_data;
 	pthread_mutex_unlock(&jobs->lock);
 	(void)morph_event_emit_simple(cb, user_data, MORPH_EVENT_BACKGROUND, name,
-				      !strcmp(name, "process.started") ? "begin" : "end", NULL,
+				      !strcmp(name, "process.started") ||
+				      !strcmp(name, "background.wait.begin") ? "begin" : "end", NULL,
 				      data);
+}
+
+void exec_jobs_wait_event(struct exec_jobs *jobs, const char *id, int begin)
+{
+	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+
+	if (!data || !cJSON_AddStringToObject(data, "session_id", id))
+		return;
+	emit_job(jobs, begin ? "background.wait.begin" : "background.wait.end", data);
 }
 
 int exec_jobs_create(struct exec_jobs **out)
@@ -358,8 +370,10 @@ int exec_jobs_wait(struct exec_jobs *jobs, int64_t owner, const char *turn_id,
 			break;
 		struct process_snapshot snapshot = {0};
 		const struct process_cursor cursor = {0};
+		exec_jobs_wait_event(jobs, id, 1);
 		rc = process_session_wait(jobs->manager, id, &cursor, 30000, cancelled, cancel_data,
 					  &snapshot);
+		exec_jobs_wait_event(jobs, id, 0);
 		int ended = rc == 0 && snapshot.state >= PROCESS_EXITED;
 		process_snapshot_cleanup(&snapshot);
 		if (rc)

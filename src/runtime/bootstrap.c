@@ -566,8 +566,18 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 		if (rc < 0)
 			return rc;
 	}
-	for (int i = 0; i < config->react.disabled_tools_count; i++)
-		tool_disable(profile->tools, config->react.disabled_tools[i]);
+	for (int i = 0; i < config->react.disabled_tools_count; i++) {
+		const char *name = config->react.disabled_tools[i];
+		/* Preserve explicit denials written with the deprecated tool name. */
+		if (!strcmp(name, "process")) {
+			name = "background";
+			log_warn(profile->logger,
+				 "Disabled tool 'process' is deprecated; use 'background' instead");
+		}
+		rc = tool_disable(profile->tools, name);
+		if (rc)
+			return rc;
+	}
 	runtime_bootstrap_tool_flags(profile->tools, config);
 	return 0;
 }

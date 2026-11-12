@@ -163,6 +163,7 @@ struct react_context {
 	int agent_finishing;
 	int agent_summary_attempts;
 	volatile sig_atomic_t cancelled;
+	volatile sig_atomic_t preserve_background_on_cancel;
 	struct morph_cancel_token cancel_token;
 	int force_compaction;
 	int context_recovery_count;
@@ -218,6 +219,7 @@ int react_run(struct react_context *ctx, const char *user_input,
  * Owner-thread only; may block for a non-cooperative in-process tool. */
 void react_drain_tools(struct react_context *ctx);
 void react_cancel(struct react_context *ctx);
+void react_interrupt_background_wait(struct react_context *ctx);
 int react_set_memory_reply_text_copy(struct react_context *ctx, const char *memory_reply_text);
 
 int hitl_needs_approval(struct react_context *ctx, const char *tool_name);

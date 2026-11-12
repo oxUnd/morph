@@ -15,7 +15,7 @@
   - read-only: credits, memory, memory_preference, file_read/list/info, img_info, plan, activate_skill, ask_user
   - media: img_gen, img_qa, img_inpaint, img_compose, img_annotate, img_resize, img_convert, vid_gen
   - workspace: apply_patch, checkpoint, config_edit, tasks, request_permissions
-  - shell: `exec`, `process` — `exec` AST-parses a command into its program set and enters the shared permission layer. Bounded workspace commands run directly; missing authority is reviewed (allow/session/always/deny). It returns a session for long-running work that `process` manages. `process` supports `list`, `poll`, `wait`, `write`, `interrupt`, `kill`; waits default to 30 seconds, and `wait` collects through intermediate output until exit. Async jobs emit `process.started` / `process.completed`, remain visible in the CLI task area, and are inspected through `/jobs`. Finite jobs are collected before finalizing unless `notify_only` was explicitly requested; persistent servers use `service`. Replaces the former `bash_exec`.
+  - shell: `exec`, `background` — `exec` AST-parses a command into its program set and enters the shared permission layer. Bounded workspace commands run directly; missing authority is reviewed (allow/session/always/deny). It returns a session for long-running work that `background` manages. `background` supports `list`, `poll`, `wait`, `write`, `interrupt`, `kill`; waits default to 30 seconds, and `wait` collects through intermediate output until exit. Async jobs emit `process.started` / `process.completed`, remain visible in the CLI task area, and are inspected through `/jobs`. Finite jobs are collected before finalizing unless `notify_only` was explicitly requested; persistent servers use `service`. Replaces the former `bash_exec`.
   - dynamic tools: tool_create/promote/delete/history/diff/rollback
   - multi-agent: spawn_agent, send_message, followup_task, interrupt_agent, list_agents, wait_agent. Runtime owns `agent_control`; Ultra enables proactive delegation. Child skills/guardrails and billing are independently bound; weighted budgets persist for the session tree. CLI `/subagents` switches independent transcripts, follow-up and interruption; `/agents` prints snapshots. Scoped child builds use `MORPH_AGENT_SCRATCH`. See `docs/multi-agent.md`.
   - img_inpaint = bbox+label region i2i; img_compose = arrow+label cross-image fusion; both consume the img_annotate JSON verbatim.
@@ -29,6 +29,57 @@
 - **Events** `src/event/`: unified dotted names across startup/MCP/ReAct/tools/HITL/tasks. Renderers in `src/sapi/cli/adapters/runtime/events.c` and `src/sapi/fastcgi/event_sink.c`. See `docs/event-system.md`.
 - **Scheduled tasks** `src/runtime/task_*.c`. See `docs/scheduled-tasks.md`.
 - **Dynamic JS tools**: embedded QuickJS in `src/js_runner/`. See `docs/quickjs-tools.md`.
+
+## Permission Semantics Checks
+- When adding or changing tool authorization, check the combined semantics of
+  access, approval, reviewer, operation flags and cached grants. Verify Ask,
+  Auto, Full and Read Only, including unavailable approval adapters.
+- Full is `full/never/user`: operations already authorized by full access must
+  not accidentally require approval and then fail because approval is `never`.
+  Audit unconditional `require_user` / `require_review` flags and legacy local
+  approval gates. `config_edit` previously hit exactly this conflict.
+- Preserve explicit forbidden operations and intentional mandatory-human
+  requirements; document and test such exceptions. Do not fix a tool's flag
+  mismatch by globally bypassing shared policy checks in Full mode.
+- Add regressions for successful Full execution without an approval callback,
+  restricted-mode approval/denial, and denial leaving files unchanged. Verify
+  policy rejection separately from operating-system filesystem errors.
+
+## CLI Status Symbols
+
+- Terminal status glyph values are defined only in `src/util/terminal_status.h`;
+  CLI aliases and styles live in `src/sapi/cli/presentation/style.h`. All CLI
+  commands, pages, tool feeds, background jobs, subagents, plans, notifications,
+  diagnostics, setup flows and shared terminal spinners reuse those definitions.
+  Do not hardcode alternative status glyphs or small
+  `•` / `◦` step bullets in application sources.
+- Use `◯` (dim gray) for queued/pending, `◉` (cyan) for running,
+  `●` (green) for successful completion, `✖` (bold red) for errors/failures,
+  and `?` (bold yellow) for questions/approval awaiting user input. Running
+  activity may animate without changing marker width or layout. The `Working`
+  row and background-job summary start with `◉`, alternating normal/dim cyan
+  every 500 ms on the same monotonic-clock phase. Blink only transient live
+  indicators; keep completed history static and no-color/plain output steady.
+  Update dots in place without erasing the composer or replaying tool output.
+- Align every top-level status marker in the same leftmost column, including
+  `Working`, background summaries, tools, plans and completion receipts. Represent
+  parent/child relationships with explicit `├` / `└` branches and `│` continuation
+  lines where needed; indentation alone must never imply a relationship.
+- Use `–` (dim gray) for cancelled/interrupted/skipped work and `⚠` (yellow)
+  for warnings. `◇` is reserved for neutral system information, not outcomes.
+  A plain message/section bullet may use `●` without claiming success.
+- Timeouts are failures (`✖`, with `TIMEOUT` text), never successful completion.
+  Historical calls without a recorded result are pending/unknown (`◯`), never
+  successful. Disabled features are inactive (`◯`), not failures.
+- Shape and explicit status text must remain meaningful without color. Preserve
+  `--no-color`, plain/JSON event contracts, terminal sanitization and display-width
+  clipping. UI radio/checkbox controls, Markdown bullets, password masks and
+  user/model content are separate from application status markers.
+- Error and question marker styles include bold in the shared definitions.
+  Do not substitute mathematical circled crosses, combining-circle questions,
+  emoji, checkmarks or differently sized circle variants for the status set.
+- Run `cli_application_layout_conventions` (including the status-literal audit)
+  and relevant presentation/PTY regressions after changing status presentation.
 
 ## CLI Slash Command Presentation
 - Shortcut labels use title-case modifiers (`Ctrl`, `Shift`, `Alt`, `Cmd`,
@@ -71,6 +122,13 @@
 - Queries print their command/result heading and results in the normal output
   area. State changes print a concise success receipt. Neither uses user-message
   padding or the composer's background. Failures retain an explicit error.
+- Preserve the composer's vertical position while streaming output or refreshing
+  live tools/background jobs. A shrinking preview, wait transition or batch of
+  completion events must not pull a bottom-positioned composer upward. Reclaim
+  transient rows before history writes and let committed output consume the
+  reservation; keep any remaining space on the normal background above the live
+  feed. Check every published PTY frame with an unsent draft, including wrapped
+  input and 120/80/60-column layouts.
 - Completed turns (including their duration row) and completed command groups
   each own one trailing blank row on the normal background. Submitted command
   lines add no leading blank row. Editable composer padding is transient and

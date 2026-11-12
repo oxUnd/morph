@@ -200,7 +200,7 @@ yield_time_ms = 10000
 # process poll/wait accepts wait_ms from 0 to this maximum. The model chooses
 # each wait; omitting wait_ms uses 30000 (or this maximum if it is smaller).
 max_wait_ms = 600000
-# The process tool defaults to a 30-second wait. action="wait" waits for exit;
+# The background tool defaults to a 30-second wait. action="wait" waits for exit;
 # action="poll" returns on new output. Explicit wait_ms=0 reads immediately.
 # Per-response and per-session output retention limits, in bytes.
 max_inline_output = 32768

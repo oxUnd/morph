@@ -12,7 +12,7 @@ A terminal-native multimodal AI agent written in pure C. Orchestrates text, imag
 - **ReAct engine**: automatic Thought → Action → Observation orchestration
 - **Skills**: hot-loadable instruction packs (SKILL.md)
 - **Extensions**: hot-pluggable, sandboxed, any language
-- **Managed shell**: `exec` parses each command, asks approval scoped to the programs it would run, and hands long-running work to `process` sessions
+- **Managed shell**: `exec` parses each command, asks approval scoped to the programs it would run, and hands long-running work to the `background` tool
 - **Dynamic tools**: create session JavaScript tools on the fly with `tool_create`
 - **Scheduled tasks**: recurring or one-shot agent runs deliver to a persistent inbox
 - **Local-first**: sessions and artifacts persisted to SQLite, replayable offline
@@ -200,7 +200,7 @@ src/
   agent/        ReAct loop, context compression, tool dispatch
   agent/tools/  Built-in tools (credits, memory, img_gen, vid_gen, ...)
   runtime/      Process-level owner: lifecycle, sessions, turns, tasks, MCP
-  exec/         Managed process sessions behind the exec and process tools
+  exec/         Managed process sessions behind the exec and background tools
   event/        Unified event sink shared by all frontends
   js_runner/    Embedded QuickJS runtime for dynamic tools
   persistence/  Persistent stores for memory and credit queries

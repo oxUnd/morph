@@ -276,7 +276,7 @@ def read_session(database, root_id=None):
                               'implementation': any(_eval_task_path(path, 'src/' + name + '.c')
                                                     for path in files for name in ('math', 'text'))}
                     (primary_patch_records if session_id == root_id else child_patch_records).append(record)
-                if row['tool_name'] in ('exec', 'process') and successful:
+                if row['tool_name'] in ('exec', 'background') and successful:
                     process_id = data.get('session_id')
                     arguments = _eval_json_object(call.get('arguments'))
                     command = data.get('command') or arguments.get('command') or arguments.get('cmd')
@@ -461,7 +461,7 @@ def model_delta(body, state):
     result = _eval_json_object(receipt.get('content'))
     data = result.get('data', result)
     if isinstance(data, dict) and data.get('status') == 'running' and data.get('session_id'):
-        return {'tool_calls': [tool_call('process', {
+        return {'tool_calls': [tool_call('background', {
             'action': 'wait', 'session_id': data['session_id'], 'wait_ms': 10000,
         }, 'collect_verify_' + str(len(messages)))]}
     return {'content': 'Integrated math and text implementations. ACCEPTANCE_OK: 12 assertions.'}

@@ -213,7 +213,7 @@ TEST_F(CliUiTest, NotificationSeverityUsesDistinctMarkers)
 		ASSERT_EQ(cli_event_queue_drain(&ctx), 0);
 		std::string output = testing::internal::GetCapturedStdout();
 		EXPECT_EQ(output.find("completed"), std::string::npos);
-		EXPECT_NE(output.find(std::strcmp(level, "error") == 0 ? "⊗" : "◇"),
+		EXPECT_NE(output.find(std::strcmp(level, "error") == 0 ? "✖" : "⚠"),
 			  std::string::npos);
 	}
 }

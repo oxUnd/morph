@@ -35,7 +35,7 @@ void cli_diagnostics_config(struct cli_application *ctx, int is_warning, const c
 	const char *bold = cli_output_color_enabled(ctx) ? ANSI_BOLD : "";
 	const char *dim = cli_output_color_enabled(ctx) ? ANSI_DIM : "";
 	const char *reset = cli_output_color_enabled(ctx) ? ANSI_RESET : "";
-	const char *icon = is_warning ? "⚠" : "✗";
+	const char *icon = is_warning ? CLI_FEED_WARNING : CLI_FEED_FAILED;
 	const char *title = is_warning ? "Configuration warning" : "Invalid configuration";
 
 	fprintf(stderr, "%s%s%s  %s%s\n", color, bold, icon, title, reset);

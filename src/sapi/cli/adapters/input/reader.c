@@ -9,6 +9,7 @@
 #include "sapi/cli/adapters/input/callbacks.h"
 #include "sapi/cli/services/command_job.h"
 #include "sapi/cli/application_internal.h"
+#include "sapi/cli/pages/jobs.h"
 #include "util/child_io.h"
 #include "util/cancel.h"
 #include <fcntl.h>
@@ -128,8 +129,12 @@ int cli_poll_getc(struct cli_application *ctx, FILE *stream)
 						rl_done = 1;
 						return EOF;
 					}
-					if (!cli_command_job_expedite_prompts(ctx->input_job))
-						runtime_cancel_turn(ctx->runtime);
+					if (!cli_command_job_expedite_prompts(ctx->input_job)) {
+						if (cli_jobs_waiting(ctx))
+							runtime_interrupt_background_wait(ctx->runtime);
+						else
+							runtime_cancel_turn(ctx->runtime);
+					}
 				}
 				return 0;
 			}

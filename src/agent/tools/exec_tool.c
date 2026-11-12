@@ -548,8 +548,6 @@ static int exec_run(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 	}
 	command = json_string(root, "command");
-	if (!command)
-		command = json_string(root, "cmd");
 	workdir = json_string(root, "workdir");
 	if (!workdir)
 		workdir = json_string(root, "cwd");
@@ -723,7 +721,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	return rc;
 }
 
-static int process_run(const char *args_json, struct tool_result *result,
+static int background_run(const char *args_json, struct tool_result *result,
 			   void *user_data)
 {
 	struct exec_runtime *runtime = user_data;
@@ -739,7 +737,7 @@ static int process_run(const char *args_json, struct tool_result *result,
 	root = args_json ? cJSON_Parse(args_json) : NULL;
 	if (!root) {
 		(void)tool_result_error_copy(result, "invalid_request",
-					     "process arguments must be a JSON object");
+					     "background arguments must be a JSON object");
 		return -EINVAL;
 	}
 	session_id = json_string(root, "session_id");
@@ -804,7 +802,7 @@ static int process_run(const char *args_json, struct tool_result *result,
 		rc = exec_jobs_authority(runtime->jobs, session_id, &host, &network);
 		if (rc == 0) {
 			struct tool_operation operation = {
-				.kind = TOOL_OP_TOOL_CALL, .tool_name = "process",
+				.kind = TOOL_OP_TOOL_CALL, .tool_name = "background",
 				.principal = session_id, .action = input, .target = session_id,
 				.scope = "Input to an existing process",
 				.reason = "The process retains its original access, "
@@ -841,6 +839,8 @@ static int process_run(const char *args_json, struct tool_result *result,
 		(void)tool_result_error_copy(result, code, morph_strerror(rc));
 		return rc;
 	}
+	if (!strcmp(action, "wait") && wait_ms)
+		exec_jobs_wait_event(runtime->jobs, session_id, 1);
 	if (!strcmp(action, "wait"))
 		rc = process_session_wait(runtime->manager, session_id,
 			cursor_text ? &cursor : NULL, wait_ms, process_wait_cancelled,
@@ -849,6 +849,8 @@ static int process_run(const char *args_json, struct tool_result *result,
 		rc = process_session_poll(runtime->manager, session_id,
 			cursor_text ? &cursor : NULL, !strcmp(action, "poll") ? wait_ms : 0,
 			process_wait_cancelled, (void *)result->runtime, &snapshot);
+	if (!strcmp(action, "wait") && wait_ms)
+		exec_jobs_wait_event(runtime->jobs, session_id, 0);
 	if (rc == 0) {
 		rc = result_snapshot(result, session_id, NULL, NULL, &snapshot, NULL);
 		if (!rc && snapshot.state >= PROCESS_EXITED)
@@ -909,7 +911,7 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 {
 	struct exec_runtime *runtime;
 	struct tool_spec exec_spec MORPH_CLEANUP(tool_spec_cleanup) = {0};
-	struct tool_spec process_spec MORPH_CLEANUP(tool_spec_cleanup) = {0};
+	struct tool_spec background_spec MORPH_CLEANUP(tool_spec_cleanup) = {0};
 	int rc;
 
 	if (!reg)
@@ -926,7 +928,7 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	exec_spec.title = "Execute command";
 	exec_spec.description =
 	    runtime->tool_context
-		? "Run a shell command with command approval, timeout, and process sessions. "
+		? "Run a shell command with command approval, timeout, and background jobs. "
 		  "Commands are sandboxed by default. Explicit host=true runs without the child "
 		  "OS sandbox, with the user's file and network access. Use only when the task "
 		  "requires host automation, such as macOS System Events AppleScript. "
@@ -936,12 +938,14 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 		  "macOS privacy consent still applies. Do not silently retry in host mode. "
 		  "For error.code=sandbox_denied, request the smallest additional capability "
 		  "and retry the exact command. Background sessions have no default timeout; "
-		  "set timeout_ms to limit them."
-		: "Run a shell command with workdir, policy, timeout, yield, and process sessions. "
+		  "set timeout_ms to limit them. Use background to wait, inspect, or stop "
+		  "a running job."
+		: "Run a shell command with workdir, policy, timeout, yield, and background jobs. "
 		  "Host execution is disabled. Background sessions have no default timeout; "
 		  "set timeout_ms to limit them. For error.code=sandbox_denied, request the "
 		  "smallest "
-		  "additional capability and retry the exact command.";
+		  "additional capability and retry the exact command. Use background to manage "
+		  "running jobs.";
 	exec_spec.input_schema =
 		"{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\","
 		"\"description\":\"Reuse discovered paths, indexes, and extracted files. "
@@ -967,7 +971,7 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 		"Full Access enables it by default, including for child agents.\"},"
 		"\"notify_only\":{\"type\":\"boolean\",\"description\":\"Do not wait before ending the turn. Use only when the user explicitly asks to start a task and be notified later. Default false.\"},"
 		"\"service\":{\"type\":\"boolean\",\"description\":\"Persistent server or watcher; do not wait for exit before replying. Default false.\"},"
-		"\"background\":{\"type\":\"boolean\"},\"cmd\":{\"type\":\"string\"}},"
+		"\"background\":{\"type\":\"boolean\"}},"
 		"\"required\":[\"command\"],\"additionalProperties\":false}";
 	exec_spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	exec_spec.exec = exec_run;
@@ -977,15 +981,15 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	exec_spec.background_cancel = exec_background_cancel;
 	exec_spec.user_data = runtime;
 	exec_spec.user_data_destroy = exec_runtime_destroy;
-	process_spec.user_data = runtime;
-	process_spec.user_data_destroy = exec_runtime_destroy;
+	background_spec.user_data = runtime;
+	background_spec.user_data_destroy = exec_runtime_destroy;
 	exec_spec.flags = TOOL_FLAG_INTERNAL_APPROVAL;
 	rc = tool_register_take(reg, &exec_spec);
 	if (rc != 0)
 		return rc;
-	process_spec.origin = TOOL_ORIGIN_BUILTIN;
-	process_spec.name = "process";
-	process_spec.title = "Manage process";
+	background_spec.origin = TOOL_ORIGIN_BUILTIN;
+	background_spec.name = "background";
+	background_spec.title = "Manage background jobs";
 	morph_buf_t description MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	morph_buf_t schema MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	rc = morph_buf_init(&description, 1024);
@@ -994,7 +998,8 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	uint64_t default_wait_ms = runtime->max_wait_ms < 30000 ? runtime->max_wait_ms : 30000;
 	if (rc == 0)
 		rc = morph_buf_printf(&description,
-			"List this session processes, wait for exit, poll output, write to, "
+			"Manage background jobs started by exec in this session: list, wait for exit, "
+			"poll output, write to, "
 			"interrupt, "
 			"or kill. Use action=wait for builds/tests: it waits for exit despite "
 			"intermediate output. Use poll for interactive output. Choose wait_ms "
@@ -1025,16 +1030,16 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 			"\"additionalProperties\":false}",
 			(unsigned long long)runtime->max_wait_ms,
 			(unsigned long long)default_wait_ms);
-	process_spec.description = morph_buf_cstr_borrow(&description);
-	process_spec.input_schema = morph_buf_cstr_borrow(&schema);
-	process_spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
-	process_spec.exec = process_run;
-	process_spec.user_data = runtime;
-	process_spec.user_data_destroy = exec_runtime_destroy;
-	process_spec.flags = TOOL_FLAG_INTERNAL_APPROVAL;
-	process_spec.timeout_seconds = (int)((runtime->max_wait_ms + 999) / 1000) + 30;
+	background_spec.description = morph_buf_cstr_borrow(&description);
+	background_spec.input_schema = morph_buf_cstr_borrow(&schema);
+	background_spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	background_spec.exec = background_run;
+	background_spec.user_data = runtime;
+	background_spec.user_data_destroy = exec_runtime_destroy;
+	background_spec.flags = TOOL_FLAG_INTERNAL_APPROVAL;
+	background_spec.timeout_seconds = (int)((runtime->max_wait_ms + 999) / 1000) + 30;
 	if (rc == 0)
-		rc = tool_register_take(reg, &process_spec);
+		rc = tool_register_take(reg, &background_spec);
 	morph_buf_cleanup(&description);
 	morph_buf_cleanup(&schema);
 	if (rc != 0)

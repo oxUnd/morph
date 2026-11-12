@@ -152,7 +152,7 @@ the selected adapter rather than copying a different provider's thinking syntax.
 
 ## Process Wait Budgets
 
-Configure the maximum duration of an individual `process` collection call:
+Configure the maximum duration of an individual `background` collection call:
 
 ```toml
 [exec]
@@ -178,7 +178,7 @@ This collection budget is separate from the command's execution timeout
 the collection maximum does not extend a command's execution timeout. Changes
 require a normal Morph restart with the active config.
 
-If a `process` call fails immediately with a `wait_ms` range error, inspect its
+If a `background` call fails immediately with a `wait_ms` range error, inspect its
 arguments and the installed version's advertised range. Older versions used a
 fixed 60000 ms maximum. This validation error does not establish that the child
 command failed; inspect its session status, exit code, and output.

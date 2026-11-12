@@ -60,7 +60,9 @@ allocates another framework application.
 During an active turn, submitted instructions queue for the next loop boundary.
 Press Esc while messages are queued to interrupt the current model/tool wait and
 apply them in FIFO order within the same turn. The unsent composer draft is
-preserved. With no queued messages, Esc cancels the turn; Ctrl+C always cancels.
+preserved. With no queued messages, Esc cancels the turn. During a background-job wait it
+ends the wait/turn while retaining background commands; Ctrl+C always cancels
+the turn and stops its commands.
 Interrupted tools retain an explicit result indicating that side effects may
 have occurred, so the agent can inspect state before retrying.
 
@@ -169,3 +171,16 @@ details setting and unsent draft across navigation. Primary output continues
 reducing in the background and is committed to primary scrollback on return;
 the primary draft is preserved. `/agents` remains
 the textual inspection command for scripts and quick queries.
+
+## Status presentation
+
+Terminal glyphs come from `util/terminal_status.h`, with CLI aliases and styles in
+`presentation/style.h`: pending `◯` (dim), running `◉` (cyan), completed `●`
+(green), failed `✖` (bold red), and awaiting user input `?` (bold yellow).
+Cancellation/skipping uses `–` (dim); warnings use `⚠` (yellow). Neutral system
+information uses `◇`. Message bullets may use `●` without indicating success.
+Tool calls, subagents, background jobs, plans, task notifications, setup receipts
+and configuration diagnostics follow the same mapping. Timeouts are errors;
+missing historical results stay unknown/pending. JSON and plain event payloads
+retain their existing contracts. The application layout convention test rejects
+hardcoded status glyphs outside their shared definitions.

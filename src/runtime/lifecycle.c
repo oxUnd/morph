@@ -662,6 +662,17 @@ void runtime_cancel_turn(struct runtime *runtime)
 	}
 }
 
+void runtime_interrupt_background_wait(struct runtime *runtime)
+{
+	if (!runtime)
+		return;
+	struct react_context *react =
+		runtime_engine_active_react_borrow(&runtime->context.engine);
+
+	if (react)
+		react_interrupt_background_wait(react);
+}
+
 void runtime_record_usage(const struct model_usage *usage, void *user_data)
 {
 	struct runtime *runtime = user_data;

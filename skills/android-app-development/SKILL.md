@@ -6,7 +6,7 @@ description: Build, modify, debug, and test Android applications. Activate for A
 # Android App Development
 
 Deliver working Android application changes in the user's project. Use the
-available file, patch, exec, and process tools; inspect tool schemas before use.
+available file, patch, exec, and background tools; inspect tool schemas before use.
 Do not assume Android Studio, an SDK, an emulator, or device access is available.
 
 ## Task routing and delivery loop

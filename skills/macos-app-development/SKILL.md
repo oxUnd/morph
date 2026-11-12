@@ -6,7 +6,7 @@ description: Build, modify, debug, and test native macOS applications using AppK
 # macOS App Development
 
 Deliver working native macOS application changes. Swift is allowed; use AppKit
-for the application UI. Use available file, patch, exec, and process tools, and
+for the application UI. Use available file, patch, exec, and background tools, and
 inspect tool schemas before use. Do not assume Xcode or GUI access is available.
 
 ## Task routing and delivery loop

@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/ext.h"
+#include "sapi/cli/presentation/style.h"
 #include "util/cleanup.h"
 #include "ext/ext.h"
 #include "ext/install.h"
@@ -113,7 +114,8 @@ static int cli_ext_collect_tools(struct cli_application *ctx, morph_array_t *ite
 
 static const char *cli_ext_tool_marker(const struct cli_ext_tool_item *item)
 {
-	return item->enabled ? ANSI_GREEN "●" ANSI_RESET : ANSI_RED "×" ANSI_RESET;
+	return item->enabled ? ANSI_GREEN CLI_FEED_DONE ANSI_RESET
+			     : ANSI_DIM CLI_FEED_PENDING ANSI_RESET;
 }
 
 static int cli_ext_group_name_width(const morph_array_t *items, int rank)
@@ -195,7 +197,8 @@ static int cli_ext_print_tools(struct cli_application *ctx)
 			putchar(ctx, '\n');
 		cli_ext_print_group(ctx, &items, &groups[i], i == group_count - 1, columns);
 	}
-	printf(ctx, "\n  " ANSI_DIM "● enabled   × disabled" ANSI_RESET "\n");
+	printf(ctx, "\n  " ANSI_DIM CLI_FEED_DONE " enabled   "
+	       CLI_FEED_PENDING " disabled" ANSI_RESET "\n");
 	return 0;
 }
 
@@ -238,7 +241,8 @@ static int cli_ext_print_info(struct cli_application *ctx, const char *name)
 	if (runtime_tool_enabled(ctx->runtime, index, &enabled) != 0)
 		return -EIO;
 	CMD_HEADER(ctx, "Tool %s", desc.name);
-	cli_list_value_field(ctx, "Status", enabled ? "● enabled" : "× disabled", 0, 12, columns);
+	cli_list_value_field(ctx, "Status", enabled ? CLI_FEED_DONE " enabled"
+						 : CLI_FEED_PENDING " disabled", 0, 12, columns);
 	cli_list_value_field(ctx, "Source", cli_ext_origin_display(origin), 0, 12, columns);
 	cli_list_value_field(ctx, "Access",
 			     (flags & TOOL_FLAG_READONLY) ? "read-only" : "read-write", 0, 12,

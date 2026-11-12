@@ -432,10 +432,15 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		return rc;
 	}
 	{
+		struct permission_policy policy;
+
+		rc = tool_context_get_permission_policy(ctx->tctx, &policy);
+		if (rc != 0)
+			return rc;
 		struct tool_operation op = {
 			.kind = TOOL_OP_PATH_WRITE,
 			.tool_name = "config_edit",
-			.require_user = 1,
+			.require_user = policy.access != PERMISSION_FULL,
 			.action = reason,
 			.target = target_expanded,
 			.scope = "active Morph config file",
@@ -540,7 +545,8 @@ int config_edit_init(struct tool_registry *reg, struct tool_context *tctx,
 	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.name = "config_edit",
-		.description = "Safely edit the active Morph config after user approval. "
+		.description = "Safely edit the active Morph config. Requires user approval "
+			       "unless access is full. "
 			       "Prefer patch mode to preserve comments and formatting. The "
 			       "patch must use the Codex patch envelope and update only "
 			       "config.toml. The result is schema-validated, backed up, and "

@@ -1,5 +1,6 @@
 #include "signals.h"
 #include "spin.h"
+#include "terminal_status.h"
 #include "utf8.h"
 #include <string.h>
 #include <unistd.h>
@@ -28,15 +29,17 @@ static const char *const spin_frames_braille[] = {
 static const char *state_prefix(enum spin_state state)
 {
 	switch (state) {
-	case SPIN_STATE_IDLE:       return "";
-	case SPIN_STATE_THINKING:   return "\033[1;36m>>\033[0m";
-	case SPIN_STATE_LOADING:    return "\033[1;33m~~\033[0m";
-	case SPIN_STATE_EXECUTING:  return "\033[1;33m->\033[0m";
-	case SPIN_STATE_DOWNLOADING: return "\033[1;34mvv\033[0m";
-	case SPIN_STATE_UPLOADING:  return "\033[1;34m^^\033[0m";
-	case SPIN_STATE_COMPLETE:   return "\033[1;32mOK\033[0m";
-	case SPIN_STATE_ABORT:      return "\033[1;33m!!\033[0m";
-	case SPIN_STATE_ERROR:      return "\033[1;31mERR\033[0m";
+	case SPIN_STATE_IDLE:
+		return "\033[2m" MORPH_TERMINAL_STATUS_PENDING "\033[0m";
+	case SPIN_STATE_THINKING:
+	case SPIN_STATE_LOADING:
+	case SPIN_STATE_EXECUTING:
+	case SPIN_STATE_DOWNLOADING:
+	case SPIN_STATE_UPLOADING:
+		return "\033[1;36m" MORPH_TERMINAL_STATUS_RUNNING "\033[0m";
+	case SPIN_STATE_COMPLETE:   return "\033[32m" MORPH_TERMINAL_STATUS_DONE "\033[0m";
+	case SPIN_STATE_ABORT:      return "\033[2m" MORPH_TERMINAL_STATUS_CANCELLED "\033[0m";
+	case SPIN_STATE_ERROR:      return "\033[1;31m" MORPH_TERMINAL_STATUS_FAILED "\033[0m";
 	default:                    return "";
 	}
 }
@@ -95,7 +98,7 @@ static void spin_render_shimmer(struct spin_context *ctx, size_t budget)
 	message_width = utf8_copy_display_width(message, sizeof(message),
 						ctx->message,
 						message_budget);
-	fprintf(ctx->output, "\r\033[K\033[1;36m●\033[0m ");
+	fprintf(ctx->output, "\r\033[K\033[1;36m" MORPH_TERMINAL_STATUS_RUNNING "\033[0m ");
 	p = message;
 	while (*p) {
 		size_t bytes = utf8_next_codepoint_len(p, strnlen(p, 4));
@@ -167,14 +170,14 @@ void spin_render(struct spin_context *ctx)
 	size_t budget = term_w > 1 ? term_w - 1 : 79;
 	size_t vis_width = 0;
 
-	if (ctx->style == SPIN_STYLE_SHIMMER) {
+	int is_final = (ctx->state == SPIN_STATE_COMPLETE ||
+			ctx->state == SPIN_STATE_ABORT ||
+			ctx->state == SPIN_STATE_ERROR);
+	if (ctx->style == SPIN_STYLE_SHIMMER && !is_final) {
 		spin_render_shimmer(ctx, budget);
 		return;
 	}
 
-	int is_final = (ctx->state == SPIN_STATE_COMPLETE ||
-			ctx->state == SPIN_STATE_ABORT ||
-			ctx->state == SPIN_STATE_ERROR);
 
 	fprintf(ctx->output, "\r\033[K");
 

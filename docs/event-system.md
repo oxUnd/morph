@@ -149,6 +149,8 @@ react.hook.continue
 react.compaction.begin
 react.compaction.completed
 react.compaction.failed
+react.agents.wait.begin
+react.agents.wait.end
 react.output.truncated
 history.tool_output.warning
 react.turn.end
@@ -157,6 +159,12 @@ react.timed_out
 react.max_iterations
 react.failed
 ```
+
+`react.agents.wait.begin` and `react.agents.wait.end` bracket the runtime's
+automatic wait for active descendants before finalizing a response. They are
+ReAct events, separate from explicit `wait_agent` tool calls. The end event is
+also emitted when waiting exits for mail, user input, cancellation or an error,
+so frontends can remove the waiting status on every exit path.
 
 `react.output.truncated` is a background event with phase `warning` when a model
 returns `finish_reason=length`. It carries `max_tokens`, `output_tokens`, and
@@ -620,3 +628,10 @@ Multi-agent activity uses `agent.started`, `agent.updated`, and `agent.completed
 Payloads include `agent_id`, `parent_session_id`, `description`, `status`,
 `activity`, and `error_code`. CLI activity rows consume these on the UI thread;
 full child tool streams remain scoped to the selected agent.
+
+`background.wait.begin` and `background.wait.end` are additional `background`
+events that bracket a blocking `background(action="wait")` or runtime collection
+of finite commands. Their data contains only `session_id`; no command output or
+stdin is repeated. End is emitted on success, cancellation and wait timeout.
+They drive the CLI's transient waiting row; they do not rename the existing
+`process.started` / `process.completed` lifecycle events.

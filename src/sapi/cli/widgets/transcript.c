@@ -57,21 +57,20 @@ static void cli_transcript_append_clipped_text(morph_buf_t *buf, const char *tex
 
 static const char *cli_transcript_tool_state_color(const struct cli_transcript_tool *tool)
 {
-	if (tool->historical && !tool->state)
+	if (cli_transcript_tool_is_pending(tool) || tool->interrupted)
 		return ANSI_DIM;
-	return tool->timed_out			      ? ANSI_YELLOW
-	       : tool->state < 0		      ? ANSI_RED
-	       : cli_transcript_tool_is_running(tool) ? ANSI_CYAN
-						      : ANSI_GREEN;
+	return tool->timed_out || tool->state < 0 ? CLI_FEED_FAILED_STYLE
+	       : cli_transcript_tool_is_running(tool) ? ANSI_CYAN : ANSI_GREEN;
 }
 
 static const char *cli_transcript_tool_state_marker(const struct cli_transcript_tool *tool)
 {
-	if (tool->historical && !tool->state)
-		return "-";
-	return tool->state < 0 && !tool->timed_out    ? CLI_FEED_FAILED
-	       : cli_transcript_tool_is_running(tool) ? CLI_FEED_RUNNING
-						      : CLI_FEED_DONE;
+	if (cli_transcript_tool_is_pending(tool))
+		return CLI_FEED_PENDING;
+	if (tool->interrupted)
+		return CLI_FEED_CANCELLED;
+	return tool->timed_out || tool->state < 0 ? CLI_FEED_FAILED
+	       : cli_transcript_tool_is_running(tool) ? CLI_FEED_RUNNING : CLI_FEED_DONE;
 }
 
 static void cli_transcript_tool_row(const struct cli_transcript_tool *tool, morph_buf_t *row,
@@ -83,7 +82,8 @@ static void cli_transcript_tool_row(const struct cli_transcript_tool *tool, morp
 	morph_buf_t subject;
 	morph_buf_t meta;
 	int columns = available_columns - (int)CLI_CONTENT_RIGHT_PADDING;
-	const char *label = strcmp(tool->name, "exec") == 0 ? "Exec" : tool->name;
+	const char *label = !strcmp(tool->name, "process") ? "process [deprecated]"
+			    : !strcmp(tool->name, "exec") ? "Exec" : tool->name;
 	int name_width = (int)utf8_display_width(label);
 	const char *target = tool->subject;
 	const char *color = cli_transcript_tool_state_color(tool);
@@ -94,7 +94,8 @@ static void cli_transcript_tool_row(const struct cli_transcript_tool *tool, morp
 		if (morph_buf_init(&action, 64) != 0)
 			return;
 		(void)morph_buf_printf(&action, "%s %s%s", cli_transcript_tool_state_marker(tool),
-				       tool->timed_out	 ? "TIMEOUT "
+				       tool->interrupted ? "CANCELLED "
+				       : tool->timed_out ? "TIMEOUT "
 				       : tool->state < 0 ? "FAILED "
 							 : "",
 				       label);
@@ -128,6 +129,8 @@ static void cli_transcript_tool_row(const struct cli_transcript_tool *tool, morp
 	}
 	if (tool->historical && !tool->state)
 		(void)morph_buf_puts(&meta, "no recorded result");
+	else if (tool->interrupted)
+		(void)morph_buf_puts(&meta, "CANCELLED");
 	else if (tool->timed_out)
 		(void)morph_buf_puts(&meta, "TIMEOUT");
 	else if (tool->state < 0)
@@ -300,6 +303,7 @@ static void cli_transcript_tool_preview_text(const struct cli_transcript_tool *t
 		(void)morph_buf_puts(text, morph_buf_cstr_borrow(&tool->stream));
 	if (!text->len) {
 		value = !data && tool->result[0] ? tool->result
+			: tool->interrupted	 ? "Tool interrupted"
 			: tool->timed_out	 ? "Command timed out"
 			: tool->state < 0	 ? "Tool failed"
 			: tool->summary[0] && strcmp(tool->summary, "exit 0") != 0 ? tool->summary
@@ -319,7 +323,8 @@ static void cli_transcript_append_tool_preview(morph_buf_t *out,
 	char *line;
 	size_t total = 0;
 	size_t shown = 0;
-	const char *color = tool->timed_out ? ANSI_YELLOW : tool->state < 0 ? ANSI_RED : ANSI_DIM;
+	const char *color = !tool->interrupted && (tool->timed_out || tool->state < 0)
+		? CLI_FEED_FAILED_STYLE : ANSI_DIM;
 
 	if (!cJSON_IsObject(data))
 		data = json;
@@ -681,7 +686,7 @@ int cli_transcript_render_details(struct cli_application *ctx,
 			if (reasoning->after_tools > i)
 				break;
 			cli_output_printf(ctx,
-					  ANSI_DIM "  " CLI_FEED_SYSTEM " Reasoning\n" ANSI_RESET);
+					  ANSI_DIM CLI_FEED_SYSTEM " Reasoning\n" ANSI_RESET);
 			cli_transcript_print_lines(ctx, morph_buf_cstr_borrow(&reasoning->text));
 			cli_output_printf(ctx, "\n");
 			reasoning_index++;

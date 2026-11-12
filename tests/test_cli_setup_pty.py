@@ -208,7 +208,7 @@ def tests(driver, directory, production):
             t.send('\r', 'Review your setup')
             config = t.save()
             assert 'model = ""' not in config
-            assert len(re.findall(r'✓ Role\s+· Video creator', t.history_text())) == 1
+            assert len(re.findall(r'● Role\s+· Video creator', t.history_text())) == 1
 
         t = start('role-current', ready=True)
         t.send('6\r', 'Change your role')
@@ -222,7 +222,7 @@ def tests(driver, directory, production):
         t.send('\r', 'Review your setup')
         config = t.save()
         assert 'role = "general"' in config
-        assert len(re.findall(r'✓ Role\s+· General assistant', t.history_text())) == 1
+        assert len(re.findall(r'● Role\s+· General assistant', t.history_text())) == 1
 
         # Available credentials make first-run setup exactly role -> overview -> save.
         t = start('defaults', ready=True)
@@ -235,8 +235,8 @@ def tests(driver, directory, production):
         assert not t.path.exists()
         config = t.save()
         assert config.count('model = ""') == 3
-        assert len(re.findall(r'✓ Role\s+· General assistant', t.history_text())) == 1
-        assert '✓ Vision · Skip' not in t.history_text()
+        assert len(re.findall(r'● Role\s+· General assistant', t.history_text())) == 1
+        assert '● Vision · Skip' not in t.history_text()
 
         # No credentials: saving a draft is one explicit overview action.
         t = start('later')
@@ -523,16 +523,17 @@ def tests(driver, directory, production):
             t.send('\r', 'Review your setup')
             t.save()
             lines = t.history_text().splitlines()
-            receipts = [line for line in lines if re.search(r'✓ (Role|Text|Review)\s+·', line)]
+            receipts = [line for line in lines if re.search(r'● (Role|Text|Review)\s+·', line)]
             assert len(receipts) == 3, t.history_text()
-            assert {line.index('·') for line in receipts} == {11}, receipts
-            review = next(i for i, line in enumerate(lines) if '✓ Review' in line)
+            assert all(line.startswith('● ') for line in receipts), receipts
+            assert {line.index('·') for line in receipts} == {9}, receipts
+            review = next(i for i, line in enumerate(lines) if '● Review' in line)
             completion = [line for line in lines[review + 1:] if line.strip()]
             assert completion and all(line.startswith('  ') for line in completion), completion
             assert any(line.startswith('  Previous configuration') for line in completion)
             assert any(line.startswith('  Configuration saved') for line in completion)
             if width < 100:
-                assert any(line.startswith(' ' * 13) and '-tail' in line for line in lines)
+                assert any(line.startswith(' ' * 11) and '-tail' in line for line in lines)
             assert '\ufffd' not in t.transcript
         print(f'Setup PTY: {len(terminals)} scenarios passed, including production', flush=True)
     finally:
