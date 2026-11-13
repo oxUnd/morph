@@ -32,6 +32,28 @@ void morph_tui_widget_list_state_layout(struct morph_tui_widget_list_state *list
 int morph_tui_widget_list_state_update(struct morph_tui_widget_list_state *list, int key);
 size_t morph_tui_widget_scroll_update(size_t offset, size_t count, size_t page, int key);
 
+/* Grouped rows put one non-selectable header before each group. Callers own
+ * item order and provide per-group item counts; the component owns the
+ * row/item mapping, layout and header-skipping navigation. */
+struct morph_tui_widget_list_groups {
+	size_t *row_item;  /* row -> item ordinal; SIZE_MAX marks a group header */
+	size_t *row_group; /* row -> group index */
+	size_t *item_row;  /* item ordinal -> row */
+	size_t group_count;
+	size_t row_count;
+	size_t item_count;
+};
+
+int morph_tui_widget_list_groups_init(struct morph_tui_widget_list_groups *groups,
+				      const size_t *counts, size_t group_count);
+void morph_tui_widget_list_groups_cleanup(struct morph_tui_widget_list_groups *groups);
+void morph_tui_widget_list_state_layout_groups(struct morph_tui_widget_list_state *list,
+					       const struct morph_tui_widget_list_groups *groups,
+					       size_t page);
+int morph_tui_widget_list_state_update_groups(struct morph_tui_widget_list_state *list,
+					      const struct morph_tui_widget_list_groups *groups,
+					      size_t page, int key);
+
 /* A menu handles paste isolation, wrap navigation and confirmation together. */
 enum morph_tui_widget_result {
 	MORPH_TUI_WIDGET_UNHANDLED,
@@ -47,6 +69,9 @@ struct morph_tui_widget_menu_state {
 };
 
 int morph_tui_widget_menu_state_update(struct morph_tui_widget_menu_state *menu, int key);
+int morph_tui_widget_menu_state_update_groups(struct morph_tui_widget_menu_state *menu,
+					      const struct morph_tui_widget_list_groups *groups,
+					      size_t page, int key);
 
 /* Retained list control: copied items, built-in drawing, scrolling, focus,
  * invalidation, and ACTIVATE/CHANGED actions. Constructors join builder scope. */

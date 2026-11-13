@@ -411,6 +411,13 @@ active component. Domain actions run only after a component submits.
   windows are supported. Shortcut flags are explicit, so text fields do not
   accidentally inherit menu bindings. `morph_tui_widget_scroll_update` clamps a document's
   offset to its last complete viewport.
+- Grouped lists use `morph_tui_widget_list_groups`: callers supply per-group
+  item counts and keep their own item order and group metadata. The component
+  owns the row/item mapping, places one non-selectable header before each
+  group, and keeps the selection on item rows for Up/Down, Home/End and page
+  navigation through `morph_tui_widget_list_state_update_groups` and
+  `morph_tui_widget_menu_state_update_groups`. Header text, columns and styling
+  remain with the screen.
 - Menus return `MORPH_TUI_WIDGET_SUBMIT`, `MORPH_TUI_WIDGET_BACK`, or `MORPH_TUI_WIDGET_CANCEL` separately from selection
   changes. They ignore pasted navigation and confirmation. Hook trust decisions
   remain in `runtime_hooks_manage`, including snapshot/digest validation and

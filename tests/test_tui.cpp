@@ -6,6 +6,7 @@
 #include "util/cleanup.h"
 
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -385,6 +386,68 @@ TEST_F(TuiTest, ListsPreserveSelectionVisibilityAndHandleShrinkingData)
 	EXPECT_EQ(morph_tui_widget_scroll_update(0, 15, 5, MORPH_TUI_KEY_END), 10U);
 	EXPECT_EQ(morph_tui_widget_scroll_update(10, 15, 5, MORPH_TUI_KEY_DOWN), 10U);
 	EXPECT_EQ(morph_tui_widget_scroll_update(10, 3, 5, 0), 0U);
+}
+
+TEST_F(TuiTest, GroupedListRowsSkipHeadersAndMapItems)
+{
+	struct morph_tui_widget_list_groups groups{};
+	const size_t counts[] = {2, 0, 3};
+
+	ASSERT_EQ(morph_tui_widget_list_groups_init(&groups, counts, 3), 0);
+	EXPECT_EQ(groups.group_count, 3U);
+	EXPECT_EQ(groups.item_count, 5U);
+	EXPECT_EQ(groups.row_count, 8U);
+	EXPECT_EQ(groups.row_item[0], SIZE_MAX);
+	EXPECT_EQ(groups.row_item[1], 0U);
+	EXPECT_EQ(groups.row_item[2], 1U);
+	EXPECT_EQ(groups.row_item[3], SIZE_MAX);
+	EXPECT_EQ(groups.row_item[4], SIZE_MAX);
+	EXPECT_EQ(groups.row_item[5], 2U);
+	EXPECT_EQ(groups.item_row[4], 7U);
+	EXPECT_EQ(groups.row_group[6], 2U);
+
+	struct morph_tui_widget_list_state list{};
+	list.flags = MORPH_TUI_WIDGET_LIST_PAGED;
+	list.index = groups.item_row[0];
+	morph_tui_widget_list_state_layout_groups(&list, &groups, 4);
+	EXPECT_EQ(list.count, 8U);
+	EXPECT_EQ(list.index, 1U);
+	EXPECT_TRUE(morph_tui_widget_list_state_update_groups(
+		&list, &groups, 4, MORPH_TUI_KEY_DOWN));
+	EXPECT_EQ(list.index, 2U);
+	EXPECT_TRUE(morph_tui_widget_list_state_update_groups(
+		&list, &groups, 4, MORPH_TUI_KEY_DOWN));
+	EXPECT_EQ(list.index, 5U);
+	EXPECT_EQ(groups.row_item[list.index], 2U);
+	EXPECT_TRUE(morph_tui_widget_list_state_update_groups(
+		&list, &groups, 4, MORPH_TUI_KEY_UP));
+	EXPECT_EQ(list.index, 2U);
+	EXPECT_EQ(groups.row_item[list.index], 1U);
+	EXPECT_TRUE(morph_tui_widget_list_state_update_groups(
+		&list, &groups, 4, MORPH_TUI_KEY_END));
+	EXPECT_EQ(list.index, 7U);
+	EXPECT_TRUE(morph_tui_widget_list_state_update_groups(
+		&list, &groups, 4, MORPH_TUI_KEY_HOME));
+	EXPECT_EQ(list.index, 1U);
+
+	struct morph_tui_widget_menu_state menu{};
+	menu.list.flags = MORPH_TUI_WIDGET_LIST_VIM | MORPH_TUI_WIDGET_LIST_PAGED;
+	menu.list.index = groups.item_row[0];
+	morph_tui_widget_list_state_layout_groups(&menu.list, &groups, 2);
+	EXPECT_EQ(morph_tui_widget_menu_state_update_groups(
+			  &menu, &groups, 2, MORPH_TUI_KEY_DOWN),
+		  MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_EQ(menu.list.index, 2U);
+	EXPECT_EQ(morph_tui_widget_menu_state_update_groups(
+			  &menu, &groups, 2, MORPH_TUI_KEY_DOWN),
+		  MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_EQ(menu.list.index, 5U);
+	EXPECT_EQ(groups.row_item[menu.list.index], 2U);
+	EXPECT_EQ(morph_tui_widget_menu_state_update_groups(
+			  &menu, &groups, 2, '\n'),
+		  MORPH_TUI_WIDGET_SUBMIT);
+	EXPECT_EQ(groups.row_item[menu.list.index], 2U);
+	morph_tui_widget_list_groups_cleanup(&groups);
 }
 
 TEST_F(TuiTest, MenusWrapAndIgnorePastedShortcutsAndConfirmation)

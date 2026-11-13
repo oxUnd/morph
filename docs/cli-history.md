@@ -22,6 +22,15 @@ remember their working directory: `morph resume <name|id>` restores it
 automatically, while an explicit `--workdir` overrides it and rebinds the session.
 Configuration options work before or after `resume`:
 
+The picker groups sessions by working directory. The current directory's group
+comes first; every other group follows by most recent activity, including a
+single `unknown workdir` group for sessions without a remembered directory.
+Group headers show a `▾` marker, the abbreviated path, the session count and a
+`current` marker; sessions are indented beneath their group with `├`/`└`
+branches, and Up/Down and page keys skip the headers. The plain fallback picker
+uses the same groups and ordering. `/switch ^N` keeps its existing session
+ordering.
+
 ```bash
 morph resume
 morph resume c923843e

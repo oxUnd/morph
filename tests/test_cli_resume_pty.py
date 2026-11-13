@@ -39,22 +39,36 @@ def main():
 
             def frame(label, focus):
                 screen = terminal.snapshot(label)
-                page_size = rows - 12 if rows >= 14 else rows - 5
+                grouped = rows >= 14
+                page_size = rows - 12 if grouped else rows - 5
+                total = 446 if grouped else 445
                 start = focus // page_size * page_size
-                end = min(start + page_size, 445)
-                heading = 'Resume a session' if rows >= 14 else 'Sessions'
+                end = min(start + page_size, total)
+                heading = 'Resume a session' if grouped else 'Sessions'
                 assert screen.count(heading) == 1, screen
-                assert f'{focus // page_size + 1} / {(444 // page_size) + 1}' in screen, screen
-                assert f'Showing {start + 1}–{end} of 445' in screen, screen
+                assert f'{focus // page_size + 1} / {((total - 1) // page_size) + 1}' in screen, screen
+                if grouped:
+                    if start == 0:
+                        assert 'unknown workdir' in screen, screen
+                        assert '▾' in screen, screen
+                    assert '├' in screen or '└' in screen, screen
+                    assert f'Showing {max(start, 1)}–{end - 1} of 445' in screen, screen
+                    shown = end - start - (1 if start == 0 else 0)
+                    session = focus - 1
+                else:
+                    assert '├' not in screen and '└' not in screen, screen
+                    assert f'Showing {start + 1}–{end} of 445' in screen, screen
+                    shown = end - start
+                    session = focus
                 assert 'Esc' in terminal.screen.display[-1], screen
-                assert '›' not in screen and '├' not in screen, screen
+                assert '›' not in screen, screen
                 data_rows = [line for line in screen.splitlines() if '会话 ' in line]
-                assert len(data_rows) == end - start, screen
+                assert len(data_rows) == shown, screen
                 selected = [r for r in range(rows) if
                             terminal.screen.buffer[r][2].bg == '1d3038']
                 assert len(selected) == 1, screen
                 selected_row = selected[0]
-                assert ordered[focus][0][:12] in terminal.screen.display[selected_row], screen
+                assert ordered[session][0][:12] in terminal.screen.display[selected_row], screen
                 assert terminal.screen.buffer[selected_row][1].fg == '47d3e6', screen
                 assert terminal.screen.buffer[selected_row][2].bold, screen
                 assert terminal.screen.cursor.hidden, screen
@@ -71,8 +85,8 @@ def main():
                 return frame(f'resize to {height}x{width} without a key', focus)
 
             terminal.send('/resume\r')
-            frame('initial picker: 12 rows', 0)
-            terminal.send('\x1b[B' * 11)
+            frame('initial picker: 12 rows', 1)
+            terminal.send('\x1b[B' * 10)
             frame('down to last row', 11)
             terminal.send('\x1b[B')
             frame('down crosses page', 12)
@@ -99,11 +113,11 @@ def main():
             assert terminal.raw.count('\x1b[?2026h') == idle_frames
             terminal.send('\r')
             restored = terminal.snapshot('Enter restores composer and selected session')
-            assert 'resumed session: ' + ordered[18][0] in restored, restored
+            assert 'resumed session: ' + ordered[17][0] in restored, restored
             assert 'Resume a session' not in restored, restored
             assert not terminal.screen.cursor.hidden, restored
             terminal.send('/resume\r')
-            frame('reopen picker', 0)
+            frame('reopen picker', 1)
             terminal.send('\x1b')
             restored = terminal.snapshot('Escape restores composer')
             assert 'Resume a session' not in restored, restored
@@ -117,13 +131,13 @@ def main():
             resize(8, 80, 0)
             terminal.send('\x1b[B' * 5)
             frame('small terminal crosses page without scrolling', 5)
-            resize(24, 120, 5)
+            resize(24, 120, 6)
             terminal.send('q')
             terminal.send('/resume\r')
             terminal.send('\x1b[C' * 40)
-            frame('last partial page and right boundary', 444)
+            frame('last partial page and right boundary', 445)
             terminal.send('\x1b[B')
-            frame('down stays at final session', 444)
+            frame('down stays at final session', 445)
             terminal.send('\r')
             restored = terminal.snapshot('Enter resumes final session')
             assert 'resumed session: ' + ordered[444][0] in restored, restored

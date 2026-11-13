@@ -15,6 +15,7 @@ extern "C" {
 #include "event/event.h"
 #include "util/utf8.h"
 #include "util/json.h"
+#include "db/database.h"
 
 }
 
@@ -375,6 +376,68 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 	resume_terminal_pick(&context, "\033[B\033[B\033[B\033[A\r", small_selected, 6);
 	resume_terminal_pick(&context, "\033", small_selected, 24);
 	resume_terminal_pick(&context, "\003", small_selected, 24);
+
+	runtime_close(runtime);
+	std::error_code error;
+	(void)std::filesystem::remove_all(directory, error);
+}
+
+TEST(CliListTest, ResumeGroupsSessionsByWorkdir)
+{
+	char pattern[] = "/tmp/morph-cli-resume-groups-XXXXXX";
+	char *directory = mkdtemp(pattern);
+	ASSERT_NE(directory, nullptr);
+	std::string database = std::string(directory) + "/data.db";
+	struct runtime_options options{};
+	struct runtime *runtime = nullptr;
+	struct cli_application context{};
+	struct db db{};
+	struct session current_session{};
+	struct session other_session{};
+	struct session legacy_session{};
+
+	options.db_path = database.c_str();
+	options.workdir = directory;
+	options.front_name = "test";
+	ASSERT_EQ(runtime_open(&options, &runtime), 0);
+	context.runtime = runtime;
+	ASSERT_EQ(db_open(nullptr, &db, database.c_str()), 0);
+	ASSERT_EQ(session_create_with_workdir(&db, "in-project", "test",
+		runtime_workdir_borrow(runtime), &current_session), 0);
+	ASSERT_EQ(session_create_with_workdir(&db, "other-project", "test",
+		"/tmp/cli-resume-other", &other_session), 0);
+	ASSERT_EQ(session_create_with_workdir(&db, "legacy-session", "test", "",
+		&legacy_session), 0);
+	db_close(&db);
+
+	FILE *input = tmpfile();
+	ASSERT_NE(input, nullptr);
+	cli_output_fputs(&context, "q\n", input);
+	rewind(input);
+	int saved_stdin = dup(STDIN_FILENO);
+	ASSERT_GE(saved_stdin, 0);
+	ASSERT_GE(dup2(fileno(input), STDIN_FILENO), 0);
+	clearerr(stdin);
+	testing::internal::CaptureStdout();
+	int rc = cli_command_dispatch(&context, "/resume");
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_GE(dup2(saved_stdin, STDIN_FILENO), 0);
+	close(saved_stdin);
+	fclose(input);
+	clearerr(stdin);
+	EXPECT_EQ(rc, 0);
+
+	size_t current = output.find("current");
+	size_t other = output.find("/tmp/cli-resume-other");
+	size_t legacy = output.find("unknown workdir");
+
+	ASSERT_NE(current, std::string::npos) << output;
+	ASSERT_NE(other, std::string::npos) << output;
+	ASSERT_NE(legacy, std::string::npos) << output;
+	EXPECT_LT(current, other);
+	EXPECT_LT(current, legacy);
+	EXPECT_NE(output.find("other-project"), std::string::npos);
+	EXPECT_NE(output.find("legacy-session"), std::string::npos);
 
 	runtime_close(runtime);
 	std::error_code error;
