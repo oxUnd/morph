@@ -269,12 +269,66 @@ static int runtime_set_workdir(struct runtime *runtime)
 		strncpy(ctx->workdir, resolved ? resolved : runtime->options.workdir,
 			sizeof(ctx->workdir) - 1);
 		free(resolved);
+	} else if (runtime->startup_workdir_ready && runtime->startup_workdir[0]) {
+		resolved = file_resolve_path_copy(runtime->startup_workdir);
+		strncpy(ctx->workdir, resolved ? resolved : runtime->startup_workdir,
+			sizeof(ctx->workdir) - 1);
+		free(resolved);
 	} else if (!getcwd(ctx->workdir, sizeof(ctx->workdir))) {
 		strncpy(ctx->workdir, ".", sizeof(ctx->workdir) - 1);
 	}
 	rc = file_ensure_dir(ctx->config.general.output_dir);
 	if (rc != 0)
 		return rc;
+	return 0;
+}
+
+static void runtime_capture_session_workdir(struct runtime *runtime, const struct session *session)
+{
+	if (!runtime || !session || !session->workdir[0])
+		return;
+	if (runtime->options.workdir && runtime->options.workdir[0])
+		return;
+	strncpy(runtime->startup_workdir, session->workdir,
+		sizeof(runtime->startup_workdir) - 1);
+	runtime->startup_workdir_ready = 1;
+}
+
+static int runtime_resolve_startup_session(struct runtime *runtime)
+{
+	struct runtime_context *ctx = &runtime->context;
+	const char *session_name;
+
+	if (runtime->options.resume_session_ref && runtime->options.resume_session_ref[0]) {
+		struct session selected;
+		int rc = runtime_session_find_ref(runtime, runtime->options.resume_session_ref,
+						  &selected);
+
+		if (rc != 0)
+			return rc;
+		ctx->current_session = selected;
+		runtime->startup_session_preselected = 1;
+		runtime_capture_session_workdir(runtime, &selected);
+		return 0;
+	}
+	session_name = runtime->options.default_session;
+	if (!session_name || !session_name[0])
+		session_name = ctx->config.general.default_session;
+	if (!runtime->options.create_new_session && !runtime->options.restore_recent_session &&
+	    session_name && session_name[0]) {
+		struct session existing;
+
+		if (session_get_by_name(&ctx->database, session_name, &existing) == 0)
+			runtime_capture_session_workdir(runtime, &existing);
+	}
+	if (runtime->options.restore_recent_session) {
+		struct session *sessions = NULL;
+		int count = 0;
+
+		if (session_list(&ctx->database, &sessions, &count, 1, NULL) == 0 && count > 0)
+			runtime_capture_session_workdir(runtime, &sessions[0]);
+		free(sessions);
+	}
 	return 0;
 }
 
@@ -409,7 +463,9 @@ static int runtime_start_components(struct runtime *runtime)
 		runtime->options.create_new_session ?
 		"Waiting for your first message..." :
 		"Restoring your session...");
-	if (runtime->options.create_new_session) {
+	if (runtime->startup_session_preselected) {
+		/* Resolved before tool bootstrap so the session workdir is honored. */
+	} else if (runtime->options.create_new_session) {
 		memset(&ctx->current_session, 0,
 		       sizeof(ctx->current_session));
 	} else if (runtime->options.restore_recent_session) {
@@ -497,15 +553,29 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 		rc = runtime_checkpoints_init(runtime);
 	if (rc == 0)
 		rc = runtime_load_config(runtime, &error);
-	if (rc == 0)
-		rc = runtime_set_workdir(runtime);
 	if (rc == 0) {
 		runtime_emit_startup(runtime, "startup.database", "begin",
 				     "Opening workspace...");
 		rc = runtime_open_database(runtime);
 	}
 	if (rc == 0)
+		rc = runtime_resolve_startup_session(runtime);
+	if (rc == 0)
+		rc = runtime_set_workdir(runtime);
+	if (rc == 0)
 		rc = runtime_start_components(runtime);
+	if (rc == 0 && runtime->options.workdir && runtime->options.workdir[0] &&
+	    runtime->context.current_session.id > 0 &&
+	    strcmp(runtime->context.current_session.workdir, runtime->context.workdir) != 0) {
+		(void)session_update_workdir(&runtime->context.database,
+					     runtime->context.current_session.id,
+					     runtime->context.workdir);
+		strncpy(runtime->context.current_session.workdir,
+			runtime->context.workdir,
+			sizeof(runtime->context.current_session.workdir) - 1);
+		runtime->context.current_session.workdir[
+			sizeof(runtime->context.current_session.workdir) - 1] = '\0';
+	}
 	if (rc == 0) {
 		rc = hook_manager_init(&runtime->context.hooks,
 			&runtime->context.database, &runtime->context.config,

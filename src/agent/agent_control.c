@@ -2124,7 +2124,9 @@ static int spawn_agent(struct agent_control *control, const cJSON *args,
 	char session_name[96];
 	int rc = morph_random_id("agent_", session_name, sizeof(session_name));
 	if (rc == 0)
-		rc = session_create(control->db, session_name, agent->model, &session);
+		rc = session_create_with_workdir(control->db, session_name,
+						 agent->model, runtime->workdir,
+						 &session);
 	if (rc != 0)
 		return rc;
 	agent->info.child_session_id = session.id;

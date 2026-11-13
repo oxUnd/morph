@@ -53,6 +53,8 @@ struct runtime_options {
 	const char *output_dir_override;
 	const char *default_dynamic_tools_mode;
 	const char *default_session;
+	/* Existing session to restore before runtime components start. */
+	const char *resume_session_ref;
 	const char *front_name;
 	morph_event_cb event_cb;
 	void *event_user_data;

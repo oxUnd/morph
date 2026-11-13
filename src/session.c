@@ -20,8 +20,8 @@ static int generate_display_id(char *buf, size_t size)
 				      buf, size);
 }
 
-int session_create(struct db *db, const char *name, const char *model,
-		   struct session *out)
+int session_create_with_workdir(struct db *db, const char *name, const char *model,
+				const char *workdir, struct session *out)
 {
 	if (!db || !db->handle || !name)
 		return -EINVAL;
@@ -33,13 +33,19 @@ int session_create(struct db *db, const char *name, const char *model,
 
 	char name_buf[256];
 	char model_buf[64];
+	char workdir_buf[PATH_MAX];
 	name_buf[0] = '\0';
 	model_buf[0] = '\0';
+	workdir_buf[0] = '\0';
 	strncpy(name_buf, name, sizeof(name_buf) - 1);
 	name_buf[sizeof(name_buf) - 1] = '\0';
 	if (model) {
 		strncpy(model_buf, model, sizeof(model_buf) - 1);
 		model_buf[sizeof(model_buf) - 1] = '\0';
+	}
+	if (workdir) {
+		strncpy(workdir_buf, workdir, sizeof(workdir_buf) - 1);
+		workdir_buf[sizeof(workdir_buf) - 1] = '\0';
 	}
 
 	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
@@ -47,8 +53,9 @@ int session_create(struct db *db, const char *name, const char *model,
 	if (lock_rc != 0)
 		return lock_rc;
 	sqlite3_stmt *stmt;
-	const char *sql = "INSERT INTO sessions(display_id,name,model,created_at,updated_at,token_used)"
-			  " VALUES(?,?,?,?,?,0)";
+	const char *sql =
+		"INSERT INTO sessions(display_id,name,model,workdir,created_at,updated_at,token_used)"
+		" VALUES(?,?,?,?,?,?,0)";
 	int rc;
 	int retries = 3;
 	do {
@@ -64,8 +71,9 @@ int session_create(struct db *db, const char *name, const char *model,
 		sqlite3_bind_text(stmt, 1, display_id, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(stmt, 2, name_buf, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(stmt, 3, model_buf[0] ? model_buf : "", -1, SQLITE_TRANSIENT);
-		sqlite3_bind_int64(stmt, 4, now);
+		sqlite3_bind_text(stmt, 4, workdir_buf, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_int64(stmt, 5, now);
+		sqlite3_bind_int64(stmt, 6, now);
 		rc = sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
 	} while (rc == SQLITE_CONSTRAINT && retries-- > 0);
@@ -87,6 +95,7 @@ int session_create(struct db *db, const char *name, const char *model,
 		memcpy(out->display_id, display_id, sizeof(out->display_id));
 		memcpy(out->name, name_buf, sizeof(out->name));
 		memcpy(out->model, model_buf, sizeof(out->model));
+		memcpy(out->workdir, workdir_buf, sizeof(out->workdir));
 		out->created_at = now;
 		out->updated_at = now;
 	}
@@ -97,17 +106,25 @@ int session_create(struct db *db, const char *name, const char *model,
 	return 0;
 }
 
+int session_create(struct db *db, const char *name, const char *model,
+		   struct session *out)
+{
+	return session_create_with_workdir(db, name, model, NULL, out);
+}
+
 static void session_read_row(sqlite3_stmt *stmt, struct session *session)
 {
 	const char *display = (const char *)sqlite3_column_text(stmt, 1);
 	const char *name = (const char *)sqlite3_column_text(stmt, 2);
 	const char *model = (const char *)sqlite3_column_text(stmt, 3);
+	const char *workdir = (const char *)sqlite3_column_text(stmt, 7);
 
 	memset(session, 0, sizeof(*session));
 	session->id = sqlite3_column_int64(stmt, 0);
 	snprintf(session->display_id, sizeof(session->display_id), "%s", display ? display : "");
 	snprintf(session->name, sizeof(session->name), "%s", name ? name : "");
 	snprintf(session->model, sizeof(session->model), "%s", model ? model : "");
+	snprintf(session->workdir, sizeof(session->workdir), "%s", workdir ? workdir : "");
 	session->created_at = sqlite3_column_int64(stmt, 4);
 	session->updated_at = sqlite3_column_int64(stmt, 5);
 	session->token_used = sqlite3_column_int64(stmt, 6);
@@ -118,8 +135,9 @@ int session_get_by_name(struct db *db, const char *name, struct session *out)
 	if (!db || !db->handle || !name || !out)
 		return -EINVAL;
 	sqlite3_stmt *stmt;
-	const char *sql = "SELECT id,display_id,name,model,created_at,updated_at,token_used"
-			  " FROM sessions WHERE name=?";
+	const char *sql =
+		"SELECT id,display_id,name,model,created_at,updated_at,token_used,workdir"
+		" FROM sessions WHERE name=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
 		return MORPH_ERR_DB;
@@ -139,8 +157,9 @@ int session_get_by_id(const struct db *db, int64_t id, struct session *out)
 	if (!db || !db->handle || !out)
 		return -EINVAL;
 	sqlite3_stmt *stmt;
-	const char *sql = "SELECT id,display_id,name,model,created_at,updated_at,token_used"
-			  " FROM sessions WHERE id=?";
+	const char *sql =
+		"SELECT id,display_id,name,model,created_at,updated_at,token_used,workdir"
+		" FROM sessions WHERE id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
 		return MORPH_ERR_DB;
@@ -160,8 +179,9 @@ int session_get_by_display_id(struct db *db, const char *display_id, struct sess
 	if (!db || !db->handle || !display_id || !out)
 		return -EINVAL;
 	sqlite3_stmt *stmt;
-	const char *sql = "SELECT id,display_id,name,model,created_at,updated_at,token_used"
-			  " FROM sessions WHERE display_id=?";
+	const char *sql =
+		"SELECT id,display_id,name,model,created_at,updated_at,token_used,workdir"
+		" FROM sessions WHERE display_id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
 		return MORPH_ERR_DB;
@@ -193,7 +213,7 @@ int session_list(struct db *db, struct session **out, int *count, int limit, con
 	rc = morph_buf_init(&sql, 256);
 	if (rc == 0)
 		morph_buf_puts(&sql,
-			       "SELECT id,display_id,name,model,created_at,updated_at,token_used"
+			       "SELECT id,display_id,name,model,created_at,updated_at,token_used,workdir"
 			       " FROM sessions WHERE NOT EXISTS (SELECT 1 FROM sub_agent_tasks "
 			       "WHERE sub_agent_tasks.child_session_id=sessions.id) "
 			       "AND NOT EXISTS (SELECT 1 FROM agent_threads "
@@ -325,6 +345,24 @@ int session_update_model(struct db *db, int64_t id, const char *model)
 		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, model, -1, SQLITE_TRANSIENT);
 	/* Model synchronization also runs when merely opening a session. */
+	sqlite3_bind_int64(stmt, 2, id);
+	rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	if (rc != SQLITE_DONE)
+		return MORPH_ERR_DB;
+	return 0;
+}
+
+int session_update_workdir(struct db *db, int64_t id, const char *workdir)
+{
+	if (!db || !db->handle || id <= 0 || !workdir)
+		return -EINVAL;
+	sqlite3_stmt *stmt;
+	const char *sql = "UPDATE sessions SET workdir=? WHERE id=?";
+	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		return MORPH_ERR_DB;
+	sqlite3_bind_text(stmt, 1, workdir, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 2, id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);

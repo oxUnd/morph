@@ -422,7 +422,7 @@ TEST(CliListTest, QuitPrintsResumeCommandsOnlyForSavedInteractiveSessions)
 			std::string reference = std::string("resume ") + session.display_id;
 			EXPECT_NE(output.find("morph " + reference), std::string::npos);
 			EXPECT_NE(output.find("morphctl " + reference), std::string::npos);
-			EXPECT_NE(output.find(std::string("-w ") + runtime_workdir_borrow(runtime)),
+			EXPECT_EQ(output.find(std::string("-w ") + runtime_workdir_borrow(runtime)),
 				  std::string::npos);
 		} else {
 			EXPECT_EQ(output.find("To resume"), std::string::npos);

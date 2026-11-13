@@ -16,6 +16,7 @@ struct session {
 	char display_id[16];
 	char name[256];
 	char model[64];
+	char workdir[PATH_MAX];
 	int64_t created_at;
 	int64_t updated_at;
 	int64_t token_used;
@@ -42,6 +43,8 @@ struct message_attachment {
 };
 
 int session_create(struct db *db, const char *name, const char *model, struct session *out);
+int session_create_with_workdir(struct db *db, const char *name, const char *model,
+				const char *workdir, struct session *out);
 int session_get_by_name(struct db *db, const char *name, struct session *out);
 int session_get_by_id(const struct db *db, int64_t id, struct session *out);
 int session_get_by_display_id(struct db *db, const char *display_id, struct session *out);
@@ -51,6 +54,7 @@ int session_count(struct db *db);
 int session_rename(struct db *db, int64_t id, const char *new_name);
 int session_delete(struct db *db, int64_t id);
 int session_update_model(struct db *db, int64_t id, const char *model);
+int session_update_workdir(struct db *db, int64_t id, const char *workdir);
 int session_update_tokens(struct db *db, int64_t id, int64_t added_tokens);
 
 int session_ensure_display_id(struct db *db, struct session *s);

@@ -39,6 +39,9 @@ int runtime_agent_session_begin(struct runtime *runtime);
 struct runtime {
 	struct runtime_context context;
 	struct runtime_options options;
+	char startup_workdir[PATH_MAX];
+	int startup_workdir_ready;
+	int startup_session_preselected;
 	struct scheduled_task_event_sink task_events;
 	struct runtime_task_worker task_worker;
 	struct morph_sync_worker sync_worker;

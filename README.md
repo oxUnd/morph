@@ -102,6 +102,8 @@ to enter an existing session directly. `/resume` opens the same list during chat
 resumes (including `-s`) restore saved user messages, answers and tool summaries to
 terminal scrollback, including messages removed from the active model context by
 compression. Restoring history does not call the model or execute saved tools.
+Sessions remember their working directory: `morph resume <name|id>` restores it
+automatically, and an explicit `-w` overrides and rebinds it.
 See [session history](docs/cli-history.md) for display and inspection details.
 
 Use `/rewind` to restore code, conversation, or both to a saved turn checkpoint.

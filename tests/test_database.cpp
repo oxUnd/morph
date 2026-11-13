@@ -212,6 +212,33 @@ TEST_F(DatabaseTest, ForeignKeysEnabled) {
 	sqlite3_finalize(stmt);
 }
 
+TEST_F(DatabaseTest, LegacySessionsGainWorkdirColumn)
+{
+	sqlite3_stmt *stmt = nullptr;
+
+	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
+	ASSERT_EQ(db_exec(&db,
+			  "CREATE TABLE sessions ("
+			  "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+			  "display_id TEXT UNIQUE,"
+			  "name TEXT UNIQUE NOT NULL,"
+			  "model TEXT,"
+			  "created_at INTEGER NOT NULL,"
+			  "updated_at INTEGER NOT NULL,"
+			  "token_used INTEGER DEFAULT 0);"
+			  "INSERT INTO sessions(display_id,name,model,created_at,updated_at) "
+			  "VALUES('1234abcd','legacy','test',1,1);"),
+		  0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(sqlite3_prepare_v2(db.handle,
+				     "SELECT workdir FROM sessions WHERE name='legacy'", -1,
+				     &stmt, nullptr),
+		  SQLITE_OK);
+	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+	EXPECT_STREQ(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0)), "");
+	sqlite3_finalize(stmt);
+}
+
 static int count_permission_grant(const struct permission_grant *grant,
 				  void *user_data)
 {

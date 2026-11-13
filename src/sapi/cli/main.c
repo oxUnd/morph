@@ -120,13 +120,16 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 	rc = cli_application_init(&ctx, &logger, options.config_path, NULL, options.workdir,
-				  options.session_name, presentation_mode);
+				  options.session_name, options.resume_ref, presentation_mode);
 	cli_output_set_color_enabled(&ctx, !options.no_color);
 	if (rc < 0) {
 		log_err(&logger, "failed to initialize: %s", morph_strerror(rc));
 		if (ctx.startup_error.file[0])
 			cli_diagnostics_config(startup_ctx, 0, ctx.startup_error.file,
 					       &ctx.startup_error.detail);
+		else if (options.resume_ref)
+			fprintf(stderr, "morph: cannot resume session '%s': %s\n",
+				options.resume_ref, morph_strerror(rc));
 		else
 			fprintf(stderr, "morph: failed to initialize: %s\n", morph_strerror(rc));
 		http_cleanup();
@@ -136,19 +139,6 @@ int main(int argc, char *argv[])
 	ctx.trace_json = options.trace_json;
 	ctx.resume_requested = options.resume && !options.resume_ref;
 	if (options.resume_ref) {
-		struct session selected;
-
-		rc = runtime_session_find_ref(ctx.runtime, options.resume_ref, &selected);
-		if (!rc)
-			rc = runtime_session_select_existing(ctx.runtime, selected.id, NULL);
-		if (rc) {
-			fprintf(stderr, "morph: cannot resume session '%s': %s\n",
-				options.resume_ref, morph_strerror(rc));
-			cli_application_shutdown(&ctx);
-			http_cleanup();
-			log_shutdown(&logger);
-			return 1;
-		}
 		ctx.session_auto_named = 1;
 		ctx.session_history_pending = 1;
 	}
@@ -171,14 +161,14 @@ int main(int argc, char *argv[])
 			}
 			rc = cli_application_init(&ctx, &logger, options.config_path, NULL,
 						  options.workdir, options.session_name,
-						  presentation_mode);
+						  options.resume_ref, presentation_mode);
 			cli_output_set_color_enabled(&ctx, !options.no_color);
 			if (rc < 0 && file_exists(plan.rollback)) {
 				(void)morph_sync_rollback_db_replace(&plan);
 				restored = 0;
 				rc = cli_application_init(&ctx, &logger, options.config_path, NULL,
 							  options.workdir, options.session_name,
-							  presentation_mode);
+							  options.resume_ref, presentation_mode);
 				cli_output_set_color_enabled(&ctx, !options.no_color);
 			}
 			if (rc < 0) {

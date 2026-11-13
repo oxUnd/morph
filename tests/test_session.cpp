@@ -214,6 +214,33 @@ TEST_F(SessionTest, UpdateModel) {
 	EXPECT_STREQ(found.model, "claude-3.5");
 }
 
+TEST_F(SessionTest, WorkdirPersistsAndUpdates)
+{
+	struct session created;
+	struct session loaded;
+	struct session *list = nullptr;
+	int count = 0;
+
+	ASSERT_EQ(session_create_with_workdir(&db, "workdir_session", "gpt-4o",
+					      "/tmp/project one", &created),
+		  0);
+	EXPECT_STREQ(created.workdir, "/tmp/project one");
+
+	ASSERT_EQ(session_get_by_id(&db, created.id, &loaded), 0);
+	EXPECT_STREQ(loaded.workdir, "/tmp/project one");
+	ASSERT_EQ(session_get_by_name(&db, "workdir_session", &loaded), 0);
+	EXPECT_STREQ(loaded.workdir, "/tmp/project one");
+
+	ASSERT_EQ(session_update_workdir(&db, created.id, "/tmp/project two"), 0);
+	ASSERT_EQ(session_get_by_id(&db, created.id, &loaded), 0);
+	EXPECT_STREQ(loaded.workdir, "/tmp/project two");
+
+	ASSERT_EQ(session_list(&db, &list, &count, 0, nullptr), 0);
+	ASSERT_EQ(count, 1);
+	EXPECT_STREQ(list[0].workdir, "/tmp/project two");
+	free(list);
+}
+
 TEST_F(SessionTest, NullParams) {
 	struct session s;
 	EXPECT_NE(session_create(nullptr, "test", "gpt-4o", &s), 0);

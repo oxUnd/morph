@@ -211,7 +211,8 @@ struct morph_tui_application *cli_application_tui_borrow(struct cli_application 
 
 static int cli_application_initialize(struct cli_application *ctx, const char *config_path,
 				      const char *db_path, const char *workdir,
-				      const char *session_name, enum cli_presentation_mode mode)
+				      const char *session_name, const char *resume_ref,
+				      enum cli_presentation_mode mode)
 {
 	struct runtime_options options;
 	int rc;
@@ -250,6 +251,7 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 	options.db_path = db_path ? db_path : "~/.morph/data.db";
 	options.workdir = workdir;
 	options.default_session = session_name;
+	options.resume_session_ref = resume_ref;
 	options.front_name = "cli";
 	options.event_cb = ctx->event_cb;
 	options.event_user_data = ctx;
@@ -273,7 +275,8 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 	options.allocate_skill_registry = 1;
 	options.auto_connect_mcp = 1;
 	options.background_connect_mcp = ctx->presentation_mode == CLI_PRESENT_INTERACTIVE;
-	options.create_new_session = session_name && session_name[0] ? 0 : 1;
+	options.create_new_session =
+		(session_name && session_name[0]) || (resume_ref && resume_ref[0]) ? 0 : 1;
 	rc = runtime_open(&options, &ctx->runtime);
 	if (rc != 0) {
 		cli_event_queue_cleanup(ctx);
@@ -303,7 +306,8 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 
 int cli_application_init(struct cli_application *ctx, struct morph_log *logger,
 			 const char *config_path, const char *db_path, const char *workdir,
-			 const char *session_name, enum cli_presentation_mode mode)
+			 const char *session_name, const char *resume_ref,
+			 enum cli_presentation_mode mode)
 {
 	if (!ctx)
 		return -EINVAL;
@@ -313,7 +317,7 @@ int cli_application_init(struct cli_application *ctx, struct morph_log *logger,
 
 	if (rc == 0) {
 		rc = cli_application_initialize(ctx, config_path, db_path, workdir, session_name,
-						mode);
+						resume_ref, mode);
 		if (rc != 0) {
 			morph_signal_listener_stop(&ctx->signals);
 		} else {

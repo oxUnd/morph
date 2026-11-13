@@ -73,7 +73,8 @@ struct cli_application {
 
 int cli_application_init(struct cli_application *ctx, struct morph_log *logger,
 			 const char *config_path, const char *db_path, const char *workdir,
-			 const char *session_name, enum cli_presentation_mode mode);
+			 const char *session_name, const char *resume_ref,
+			 enum cli_presentation_mode mode);
 void cli_application_run(struct cli_application *ctx);
 void cli_application_run_once(struct cli_application *ctx, const char *prompt);
 void cli_application_shutdown(struct cli_application *ctx);

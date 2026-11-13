@@ -167,7 +167,7 @@ int main(int argc, char **argv)
 		return 2;
 	(void)setlocale(LC_ALL, "");
 	http_init(NULL);
-	rc = cli_application_init(&ctx, NULL, argv[1], argv[3], argv[2], NULL,
+	rc = cli_application_init(&ctx, NULL, argv[1], argv[3], argv[2], NULL, NULL,
 				  CLI_PRESENT_INTERACTIVE);
 	if (rc == 0) {
 		const char *advance = getenv("MORPH_PTY_ADVANCE_RECAP");

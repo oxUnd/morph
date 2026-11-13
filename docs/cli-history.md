@@ -17,8 +17,10 @@ longer answers. Plain/JSON output never includes terminal clipboard escape codes
 
 `morph resume` starts with the session picker. Select with the arrow keys and Enter,
 or cancel with Esc to return to a fresh composer. `morph resume <name|id>` accepts a
-session name, display ID or numeric ID and fails if it does not exist. Configuration
-and working-directory options work before or after `resume`:
+session name, display ID or numeric ID and fails if it does not exist. Sessions
+remember their working directory: `morph resume <name|id>` restores it
+automatically, while an explicit `--workdir` overrides it and rebinds the session.
+Configuration options work before or after `resume`:
 
 ```bash
 morph resume
@@ -28,9 +30,10 @@ morph resume --config ./dev.toml --workdir /path/to/project
 
 After `/quit` or `/q`, interactive sessions print both `morph resume ...` and
 `morphctl resume ...` commands below the goodbye message. Each command includes the
-current session's display ID, configuration file and working directory, with shell
-quoting for paths containing spaces or quotes. `morphctl` loads its credentials and
-forwards the resume arguments to `morph`. Unsaved fresh sessions have no resume hint.
+current session's display ID and configuration file. It also includes the working
+directory when the session does not already remember it, with shell quoting for
+paths containing spaces or quotes. `morphctl` loads its credentials and forwards
+the resume arguments to `morph`. Unsaved fresh sessions have no resume hint.
 
 Interactive session selection through `/resume`, `/resume <name|id>`, `/switch` or
 `-s <name>` restores saved conversation text to native terminal scrollback. This

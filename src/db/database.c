@@ -20,6 +20,7 @@ static const char schema_sql[] =
 	"display_id TEXT UNIQUE,"
 	"name TEXT UNIQUE NOT NULL,"
 	"model TEXT,"
+	"workdir TEXT NOT NULL DEFAULT '',"
 	"created_at INTEGER NOT NULL,"
 	"updated_at INTEGER NOT NULL,"
 	"token_used INTEGER DEFAULT 0);"
@@ -519,6 +520,14 @@ static void db_add_column_if_missing(struct db *db, const char *table,
 	db_exec(db, sql);
 }
 
+static int db_migrate_session_workdir(struct db *db)
+{
+	db_add_column_if_missing(db, "sessions", "workdir", "TEXT NOT NULL DEFAULT ''");
+	if (!db_table_has_column(db, "sessions", "workdir"))
+		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
+	return 0;
+}
+
 static int db_migrate_memory_columns(struct db *db)
 {
 	db_add_column_if_missing(db, "memory_scopes", "content_revision",
@@ -729,6 +738,9 @@ int db_init_schema(struct db *db)
 	if (rc != 0)
 		return rc;
 	rc = db_migrate_display_id(db);
+	if (rc != 0)
+		return rc;
+	rc = db_migrate_session_workdir(db);
 	if (rc != 0)
 		return rc;
 	rc = db_migrate_scheduled_task_columns(db);

@@ -2,6 +2,7 @@
 #include "runtime/session.h"
 
 #include "agent/context.h"
+#include "permission/context.h"
 #include "util/cleanup.h"
 #include "util/error.h"
 #include "util/log.h"
@@ -15,16 +16,23 @@ int runtime_session_get_or_create(struct runtime_engine *engine,
 				  struct session *out,
 				  int *created)
 {
+	const char *workdir = engine && engine->tool_context
+		? tool_context_workdir_borrow(engine->tool_context)
+		: NULL;
 	int rc;
 
 	if (!engine || !engine->db || !name || !model || !out)
 		return -EINVAL;
-	rc = session_create(engine->db, name, model, out);
+	rc = session_create_with_workdir(engine->db, name, model, workdir, out);
 	if (rc == -EEXIST) {
 		rc = session_get_by_name(engine->db, name, out);
 		if (rc == 0) {
 			(void)session_update_model(engine->db, out->id, model);
 			strncpy(out->model, model, sizeof(out->model) - 1);
+			if (!out->workdir[0] && workdir && workdir[0]) {
+				(void)session_update_workdir(engine->db, out->id, workdir);
+				strncpy(out->workdir, workdir, sizeof(out->workdir) - 1);
+			}
 		}
 		if (created)
 			*created = 0;
@@ -41,11 +49,14 @@ int runtime_session_create(struct runtime_engine *engine,
 			   const char *model,
 			   struct session *out)
 {
+	const char *workdir = engine && engine->tool_context
+		? tool_context_workdir_borrow(engine->tool_context)
+		: NULL;
 	int rc;
 
 	if (!engine || !engine->db || !name || !model || !out)
 		return -EINVAL;
-	rc = session_create(engine->db, name, model, out);
+	rc = session_create_with_workdir(engine->db, name, model, workdir, out);
 	if (rc == 0)
 		(void)session_ensure_display_id(engine->db, out);
 	return rc;

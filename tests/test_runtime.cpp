@@ -451,3 +451,64 @@ TEST_F(RuntimeLifecycleTest, SwitchingBeforeFirstTurnCreatesNoExtraSession)
 	runtime_session_list_free(sessions);
 	runtime_close(instance);
 }
+
+TEST_F(RuntimeLifecycleTest, ResumeUsesRememberedWorkdir)
+{
+	struct db seed{};
+	struct session stored{};
+	struct session current{};
+	runtime_options options{};
+	runtime *instance = nullptr;
+	char resolved[PATH_MAX];
+
+	ASSERT_NE(realpath(directory, resolved), nullptr);
+	ASSERT_EQ(db_open(nullptr, &seed, database), 0);
+	ASSERT_EQ(db_init_schema(&seed), 0);
+	ASSERT_EQ(session_create_with_workdir(&seed, "remembered", "test", resolved,
+					      &stored),
+		  0);
+	db_close(&seed);
+
+	options.db_path = database;
+	options.resume_session_ref = stored.display_id;
+	options.front_name = "test";
+	ASSERT_EQ(runtime_open(&options, &instance), 0);
+	EXPECT_STREQ(runtime_workdir_borrow(instance), resolved);
+	ASSERT_EQ(runtime_session_current(instance, &current), 0);
+	EXPECT_EQ(current.id, stored.id);
+	EXPECT_STREQ(current.workdir, resolved);
+	runtime_close(instance);
+}
+
+TEST_F(RuntimeLifecycleTest, ResumeExplicitWorkdirOverridesAndRebinds)
+{
+	struct db seed{};
+	struct session stored{};
+	struct session current{};
+	runtime_options options{};
+	runtime *instance = nullptr;
+	std::string override_dir = std::string(directory) + "/override";
+	char resolved[PATH_MAX];
+
+	ASSERT_EQ(mkdir(override_dir.c_str(), 0700), 0);
+	ASSERT_NE(realpath(directory, resolved), nullptr);
+	ASSERT_EQ(db_open(nullptr, &seed, database), 0);
+	ASSERT_EQ(db_init_schema(&seed), 0);
+	ASSERT_EQ(session_create_with_workdir(&seed, "remembered", "test", resolved,
+					      &stored),
+		  0);
+	db_close(&seed);
+
+	options.db_path = database;
+	options.workdir = override_dir.c_str();
+	options.resume_session_ref = stored.display_id;
+	options.front_name = "test";
+	ASSERT_EQ(runtime_open(&options, &instance), 0);
+	ASSERT_NE(realpath(override_dir.c_str(), resolved), nullptr);
+	EXPECT_STREQ(runtime_workdir_borrow(instance), resolved);
+	ASSERT_EQ(runtime_session_current(instance, &current), 0);
+	EXPECT_EQ(current.id, stored.id);
+	EXPECT_STREQ(current.workdir, resolved);
+	runtime_close(instance);
+	EXPECT_EQ(rmdir(override_dir.c_str()), 0);
+}

@@ -118,7 +118,9 @@ int runtime_session_create_detached(struct runtime *runtime, const char *name,
 	if (!ctx || !name || !name[0] || !out)
 		return -EINVAL;
 	pthread_mutex_lock(&ctx->execution_lock);
-	rc = session_create(&ctx->database, name, ctx->config.models.text.model, out);
+	rc = session_create_with_workdir(&ctx->database, name,
+					 ctx->config.models.text.model,
+					 ctx->workdir, out);
 	if (rc == 0)
 		(void)session_ensure_display_id(&ctx->database, out);
 	pthread_mutex_unlock(&ctx->execution_lock);
