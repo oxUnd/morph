@@ -55,7 +55,7 @@ def main():
                 colored = [i for i in range(terminal.screen.lines)
                            if terminal.screen.buffer[i][0].bg == '3a3a3a']
                 assert colored == [prompts[0] - 1, prompts[0], prompts[0] + 1], diagnostic
-                assert not any(terminal.screen.buffer[y][x].bg == 'blue'
+                assert not any(terminal.screen.buffer[y][x].bg in ('blue', '0000ee')
                                for y in range(terminal.screen.lines)
                                for x in range(columns)), diagnostic
                 terminal.send('\x1b[A')

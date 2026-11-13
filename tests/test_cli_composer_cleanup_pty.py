@@ -10,6 +10,7 @@ import threading
 import time
 
 from test_cli_pty import Terminal, pexpect, pyte
+from test_cli_transcript_pty import AlternateScreen
 
 
 class ComposerModel(http.server.BaseHTTPRequestHandler):
@@ -40,15 +41,81 @@ class ComposerModel(http.server.BaseHTTPRequestHandler):
 
 
 def empty_prompts(terminal):
+    history = getattr(terminal.screen, 'history', None)
     rows = [''.join(cell.data for _, cell in sorted(row.items()))
-            for row in terminal.screen.history.top] + terminal.screen.display
+            for row in history.top] if history is not None else []
+    rows += terminal.screen.display
     return [row for row in rows if row.split('Ctrl+T transcript')[0].strip() in ('>', '›')]
+
+
+class ComposerFrameStream:
+    """Check the resulting terminal cells at every synchronized publication."""
+
+    def __init__(self, terminal, color):
+        self.terminal = terminal
+        self.color = color
+        self.stream = pyte.Stream(terminal.screen)
+        self.pending = ''
+        self.frames = 0
+        self.submissions = 0
+
+    def check(self):
+        screen = self.terminal.screen
+        rows = screen.display
+        footers = [index for index, row in enumerate(rows) if 'perm: ' in row]
+        if not footers:
+            assert not self.frames or not hasattr(screen, '_main_screen'), '\n'.join(rows)
+            return
+        self.frames += 1
+        diagnostic = (f'frame {self.frames}, cursor={screen.cursor.y},{screen.cursor.x}\n'
+                      + '\n'.join(rows))
+        assert len(footers) == 1, diagnostic
+        # A submitted user bubble uses the same marker as the editable composer.
+        # Cursor ownership distinguishes them, even while typing the same text.
+        composer = screen.cursor.y
+        assert rows[composer].startswith(('› ', '> ')), diagnostic
+        prompts = [index for index, row in enumerate(rows)
+                   if row.startswith(('› ', '> '))]
+        assert composer in prompts, diagnostic
+        assert len(prompts) <= self.submissions + 1, diagnostic
+        for index in prompts:
+            if index != composer:
+                assert rows[index].strip() in ('› hello world', '> hello world'), diagnostic
+        assert len(empty_prompts(self.terminal)) <= 1, diagnostic
+        assert footers[0] >= composer + 2, diagnostic
+        assert not rows[composer - 1].strip(), diagnostic
+        assert not rows[composer + 1].strip(), diagnostic
+        # Every colored band must belong to the current composer or an actual
+        # submitted message. Extra blank prompt/padding bands are orphan UI.
+        painted = {row for prompt in prompts for row in (prompt - 1, prompt, prompt + 1)
+                   if 0 <= row < screen.lines}
+        for row in range(screen.lines):
+            backgrounds = [screen.buffer[row][column].bg for column in range(screen.columns)]
+            if self.color and row in painted:
+                assert all(background != 'default' for background in backgrounds), diagnostic
+            else:
+                assert all(background == 'default' for background in backgrounds), diagnostic
+
+    def feed(self, text):
+        self.pending += text
+        ending = '\x1b[?2026l'
+        while ending in self.pending:
+            frame, self.pending = self.pending.split(ending, 1)
+            self.stream.feed(frame + ending)
+            self.check()
+        if '\x1b[?2026h' not in self.pending:
+            split = self.pending.rfind('\x1b')
+            if split < 0 or self.pending[split:] not in (
+                    '\x1b', '\x1b[', '\x1b[?', '\x1b[?2', '\x1b[?20',
+                    '\x1b[?202', '\x1b[?2026'):
+                self.stream.feed(self.pending)
+                self.pending = ''
 
 
 def restored_composer_snapshot(terminal, label):
     # Output completion and composer restoration can arrive in separate
-    # frames. Wait for a live composer; the caller still counts all prompts,
-    # including scrollback, so duplicate/orphan prompts remain failures.
+    # frames. Wait for a live composer; the stream checks every published frame
+    # for duplicate prompts and orphan backgrounds before snapshots settle.
     deadline = time.monotonic() + 8
     while True:
         text = terminal.snapshot(label)
@@ -73,13 +140,14 @@ def main():
                                         hooks_enabled=False, production=True,
                                         extra_env={'NO_COLOR': '' if color else '1'})
                     terminal.child.setwinsize(24, width)
-                    terminal.screen = pyte.HistoryScreen(width, 24, history=2000)
-                    terminal.stream = pyte.Stream(terminal.screen)
+                    terminal.screen = AlternateScreen(width, 24)
+                    terminal.stream = ComposerFrameStream(terminal, color)
                     try:
                         terminal.wait_for_composer()
                         for turn in range(2):
                             terminal.send('hello world')
                             submitted = len(terminal.raw)
+                            terminal.stream.submissions += 1
                             terminal.send('\r')
                             deadline = time.monotonic() + 8
                             while terminal.raw.count('Worked for ') < turn + 1:
@@ -118,6 +186,7 @@ def main():
                                 assert len(empty_prompts(terminal)) == 1, terminal.screen.display
                                 # A window notification restores one composer per frame.
                                 start = len(terminal.raw)
+                                frame_count = terminal.stream.frames
                                 terminal.screen.resize(lines=24, columns=width + 4)
                                 terminal.child.setwinsize(24, width + 4)
                                 terminal.pump(.3)
@@ -126,9 +195,7 @@ def main():
                                 frames = re.findall(r'\x1b\[\?2026h(.*?)\x1b\[\?2026l',
                                                     terminal.raw[start:], re.S)
                                 assert frames, repr(terminal.raw[start:])
-                                for frame in frames:
-                                    plain = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]|\x1b[78]', '', frame)
-                                    assert plain.count('› ' if color else '> ') <= 1, repr(frame)
+                                assert terminal.stream.frames > frame_count
                                 assert len(empty_prompts(terminal)) == 1, terminal.screen.display
                                 terminal.send('\r\x1b[O\x1b[I')
                                 terminal.pump(1.1)
@@ -143,6 +210,9 @@ def main():
                         start = len(terminal.raw)
                         terminal.send('\r')
                         terminal.child.expect(pexpect.EOF, timeout=8)
+                        if terminal.child.before:
+                            terminal.raw += terminal.child.before
+                            terminal.stream.feed(terminal.child.before)
                         assert 'Ctrl+T transcript' not in terminal.raw[start:], repr(
                             terminal.raw[start:])
                         assert not empty_prompts(terminal), terminal.screen.display

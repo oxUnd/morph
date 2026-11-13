@@ -16,7 +16,9 @@
 #include "sapi/cli/presentation/turn_details.h"
 #include "sapi/cli/widgets/banner.h"
 #include "sapi/cli/widgets/composer.h"
+#include "sapi/cli/widgets/composer_panel.h"
 #include "sapi/cli/widgets/agents.h"
+#include "sapi/cli/widgets/jobs.h"
 #include "sapi/cli/widgets/notice.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/presenter_state.h"
@@ -32,6 +34,7 @@
 #include "sapi/cli/widgets/message.h"
 #include "sapi/cli/widgets/rich_document.h"
 #include "sapi/cli/widgets/media.h"
+#include "sapi/cli/widgets/mcp_tree.h"
 #include "sapi/cli/widgets/tool_call.h"
 #include "sapi/cli/widgets/feed_block.h"
 #include "sapi/cli/widgets/feed.h"
@@ -55,8 +58,9 @@ struct cli_chat_page {
 	struct morph_tui_view_controller *controller;
 	struct morph_tui_builder *builder;
 	struct morph_tui_view *scroll, *feed, *composer, *editor, *status, *footer;
-	struct morph_tui_view *stream_view, *output_view, *queue_title, *queue, *jobs;
-	struct morph_tui_view *last_assistant, *command_group;
+	struct morph_tui_view *panel_host, *panel;
+	struct morph_tui_view *stream_view, *output_view, *queue_title, *queue, *jobs, *agents;
+	struct morph_tui_view *last_assistant, *command_group, *command_tail;
 	char *last_assistant_text;
 	char *footer_text;
 	morph_buf_t stream, output;
@@ -64,7 +68,7 @@ struct cli_chat_page {
 	morph_array_t history;
 	char *draft;
 	size_t history_index;
-	int stream_kind, ready, columns, feed_rows;
+	int stream_kind, ready, columns, feed_rows, agents_waiting;
 	int64_t turn_started;
 };
 
@@ -86,6 +90,58 @@ int cli_chat_flush(struct cli_application *ctx)
 	return cli_chat_active(ctx) ? morph_tui_application_render(&ctx->base) : 0;
 }
 
+int cli_chat_panel_active(const struct cli_application *ctx)
+{
+	return cli_chat_active(ctx) && ctx->chat->panel;
+}
+
+int cli_chat_panel_show(struct cli_application *ctx,
+	const struct cli_composer_panel_options *options, const struct cli_composer_panel_ops *ops,
+	void *data)
+{
+	if (!cli_chat_active(ctx))
+		return -EINVAL;
+	if (!ctx->running)
+		return -ECANCELED;
+	struct cli_chat_page *page = ctx->chat;
+	if (page->panel)
+		return -EBUSY;
+	page->panel = cli_composer_panel_add_borrow(page->builder, page->panel_host, ctx,
+		options, ops, data);
+	if (!page->panel) {
+		(void)morph_tui_view_clear_children(page->panel_host);
+		return morph_tui_builder_error(page->builder);
+	}
+	morph_tui_builder_fail(page->builder, morph_tui_view_set_hidden(page->composer, 1));
+	morph_tui_builder_fail(page->builder, morph_tui_view_set_hidden(page->footer, 1));
+	morph_tui_builder_fail(page->builder, morph_tui_view_set_hidden(page->panel_host, 0));
+	morph_tui_builder_fail(page->builder, morph_tui_view_focus(page->panel));
+	return 0;
+}
+
+int cli_chat_panel_remove(struct cli_application *ctx, struct morph_tui_view *panel)
+{
+	if (!cli_chat_panel_active(ctx) || ctx->chat->panel != panel)
+		return -EINVAL;
+	struct cli_chat_page *page = ctx->chat;
+	page->panel = NULL;
+	int rc = morph_tui_view_set_hidden(page->panel_host, 1);
+	if (!rc)
+		rc = morph_tui_view_set_hidden(page->composer, 0);
+	if (!rc)
+		rc = morph_tui_view_set_hidden(page->footer, 0);
+	if (!rc)
+		rc = morph_tui_view_focus(page->editor);
+	if (!rc)
+		rc = morph_tui_view_clear_children(page->panel_host);
+	return rc;
+}
+
+int cli_chat_panel_cancel(struct cli_application *ctx, int result)
+{
+	return cli_chat_panel_active(ctx) ? cli_composer_panel_finish(ctx->chat->panel, result) : 0;
+}
+
 int cli_chat_reset(struct cli_application *ctx)
 {
 	if (!cli_chat_active(ctx))
@@ -96,6 +152,7 @@ int cli_chat_reset(struct cli_application *ctx)
 	page->stream_kind = 0;
 	page->last_assistant = NULL;
 	page->command_group = NULL;
+	page->command_tail = NULL;
 	free(page->last_assistant_text);
 	page->last_assistant_text = NULL;
 	morph_buf_reset(&page->stream);
@@ -162,6 +219,40 @@ int cli_chat_media(struct cli_application *ctx, const char *type, const char *pa
 	return cli_chat_page_error(page);
 }
 
+static struct morph_tui_view *cli_chat_page_report_parent(struct cli_chat_page *page)
+{
+	cli_chat_page_boundary(page);
+	if (page->command_group)
+		return page->command_group;
+	return morph_tui_widget_stack_add_borrow(page->builder, page->feed,
+		MORPH_TUI_WIDGET_STACK_VERTICAL, 0,
+		&(struct morph_tui_view_options){.margin = {.top = 1}});
+}
+
+int cli_chat_mcp_servers(struct cli_application *ctx, const struct runtime_mcp_status *servers,
+	size_t count)
+{
+	if (!cli_chat_active(ctx))
+		return -EINVAL;
+	struct cli_chat_page *page = ctx->chat;
+	struct morph_tui_view *parent = cli_chat_page_report_parent(page);
+	cli_mcp_tree_servers_add_borrow(page->builder, parent, servers, count,
+		cli_output_color_enabled(ctx));
+	return cli_chat_page_error(page);
+}
+
+int cli_chat_mcp_items(struct cli_application *ctx, const char *kind, const char *server,
+	const struct cli_mcp_tree_item *items, size_t count)
+{
+	if (!cli_chat_active(ctx))
+		return -EINVAL;
+	struct cli_chat_page *page = ctx->chat;
+	struct morph_tui_view *parent = cli_chat_page_report_parent(page);
+	cli_mcp_tree_items_add_borrow(page->builder, parent, kind, server, items, count,
+		cli_output_color_enabled(ctx));
+	return cli_chat_page_error(page);
+}
+
 int cli_chat_command_input(struct cli_application *ctx, const char *text)
 {
 	if (!cli_chat_active(ctx) || !text)
@@ -171,6 +262,7 @@ int cli_chat_command_input(struct cli_application *ctx, const char *text)
 	page->command_group = morph_tui_widget_stack_add_borrow(
 		page->builder, page->feed, MORPH_TUI_WIDGET_STACK_VERTICAL, 1,
 		&(struct morph_tui_view_options){.margin = {.bottom = 1}});
+	page->command_tail = page->command_group;
 	struct morph_tui_view_options style = {0};
 	if (cli_output_color_enabled(ctx))
 		style.style.foreground = (struct morph_tui_color){MORPH_TUI_COLOR_INDEXED, 141};
@@ -223,6 +315,7 @@ void cli_chat_turn_begin(struct cli_application *ctx)
 	if (!cli_chat_active(ctx))
 		return;
 	cli_chat_page_boundary(ctx->chat);
+	ctx->chat->agents_waiting = 0;
 	ctx->chat->turn_started = cli_chat_now();
 	cli_chat_activity(ctx, CLI_FEED_RUNNING " Working · Esc to interrupt");
 }
@@ -232,6 +325,7 @@ void cli_chat_turn_end(struct cli_application *ctx, int result)
 	if (!cli_chat_active(ctx))
 		return;
 	struct cli_chat_page *page = ctx->chat;
+	page->agents_waiting = 0;
 	cli_chat_page_boundary(page);
 	morph_buf_t receipt MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc = cli_work_status_completed(&receipt, page->columns,
@@ -296,12 +390,8 @@ int cli_chat_block(struct cli_application *ctx, const struct cli_feed_block *blo
 	}
 	if (block->kind == CLI_FEED_BLOCK_AGENT_RECEIPT) {
 		morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		int rc = morph_buf_printf(
-			&text, "%s Agent %s",
-			block->content.agent.status == AGENT_COMPLETED	 ? CLI_FEED_DONE
-			: block->content.agent.status == AGENT_CANCELLED ? CLI_FEED_CANCELLED
-									 : CLI_FEED_FAILED,
-			block->content.agent.id);
+		int rc = cli_agents_receipt_append(&text, block->content.agent.id,
+			block->content.agent.status, page->columns, cli_output_color_enabled(ctx));
 		if (!rc)
 			rc = cli_chat_output(ctx, morph_buf_cstr_borrow(&text));
 		cli_chat_page_boundary(page);
@@ -373,6 +463,9 @@ int cli_chat_react_event(struct cli_application *ctx, const struct morph_event *
 		const char *display = cJSON_GetStringValue(
 			cJSON_GetObjectItemCaseSensitive(event->data, "display_text"));
 		rc = cli_chat_message(ctx, CLI_MESSAGE_USER, display ? display : text);
+	} else if (!strcmp(name, "react.agents.wait.begin") ||
+		   !strcmp(name, "react.agents.wait.end")) {
+		page->agents_waiting = !strcmp(name, "react.agents.wait.begin");
 	} else if (!strcmp(name, "react.turn.begin") || !strcmp(name, "react.turn.end")) {
 		/* The turn service owns lifecycle and the completion receipt. */
 	} else
@@ -422,7 +515,7 @@ static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 		else
 			(void)ctx->input_execute(ctx, input);
 		(void)cli_event_queue_drain(ctx);
-		if (morph_tui_application_transition_pending(app))
+		if (page->panel || morph_tui_application_transition_pending(app))
 			ctx->application_command = 1;
 		else
 			cli_presentation_command_end(ctx);
@@ -647,25 +740,57 @@ static int cli_chat_page_layout(struct morph_tui_view *view)
 			return rc;
 		page->columns = content.width;
 	}
-	int controls = 0;
+	struct morph_tui_view_size editor = {0}, footer = {0}, composer;
+	struct morph_tui_view *input_view = page->panel ? page->panel_host : page->editor;
+	int rc = morph_tui_view_measure(input_view, content.width, &editor);
+	if (!rc && !page->panel)
+		rc = morph_tui_view_measure(page->footer, content.width, &footer);
+	if (rc)
+		return rc;
+	/* Input owns the scarce rows. Optional controls may use the space left
+	 * after editable text and one component-painted bottom padding row. */
+	int input = editor.height < content.height ? editor.height : content.height;
+	int remaining = content.height - input - (!page->panel && input < content.height ? 1 : 0);
+	int footer_rows = footer.height < remaining ? footer.height : remaining;
+	remaining -= footer_rows;
+	int auxiliary_rows = 0;
 	for (size_t i = 1; i < morph_tui_view_child_count(view); i++) {
 		struct morph_tui_view *child = morph_tui_view_child_borrow(view, i);
-		if (morph_tui_view_hidden(child))
+		if (morph_tui_view_hidden(child) || child == page->composer || child == page->panel_host ||
+		    child == page->footer)
 			continue;
 		struct morph_tui_view_size size;
-		int rc = morph_tui_view_measure(child, content.width, &size);
+		rc = morph_tui_view_measure(child, content.width, &size);
 		if (rc)
 			return rc;
-		controls += size.height;
+		int rows = size.height < remaining ? size.height : remaining;
+		auxiliary_rows += rows;
+		remaining -= rows;
 	}
+	int composer_space = content.height - footer_rows - auxiliary_rows;
+	if (page->panel)
+		composer = editor;
+	else {
+		size_t count = morph_tui_view_child_count(page->feed);
+		int separated = count && page->command_tail ==
+			morph_tui_view_child_borrow(page->feed, count - 1);
+
+		rc = cli_composer_fit(page->composer, content.width, composer_space, separated);
+		if (!rc)
+			rc = morph_tui_view_measure(page->composer, content.width, &composer);
+	}
+	if (rc)
+		return rc;
+	int composer_rows = composer.height < composer_space ? composer.height : composer_space;
+	int controls = footer_rows + auxiliary_rows + composer_rows;
 	struct morph_tui_view_size feed;
-	int rc = morph_tui_view_measure(page->feed, content.width, &feed);
+	rc = morph_tui_view_measure(page->feed, content.width, &feed);
 	if (rc)
 		return rc;
 	/* Follow the original document flow until the composer reaches the
 	 * bottom. Retain allocated feed space when a live preview shrinks. */
 	int available = content.height > controls ? content.height - controls : 0;
-	if (feed.height > page->feed_rows)
+	if (page->panel || feed.height > page->feed_rows)
 		page->feed_rows = feed.height;
 	int rows = page->feed_rows < available ? page->feed_rows : available;
 	int offset = 0;
@@ -674,12 +799,17 @@ static int cli_chat_page_layout(struct morph_tui_view *view)
 		if (morph_tui_view_hidden(child))
 			continue;
 		int height = rows;
-		if (i) {
+		if (child == page->composer || child == page->panel_host)
+			height = composer_rows;
+		else if (child == page->footer)
+			height = footer_rows;
+		else if (i) {
 			struct morph_tui_view_size size;
 			rc = morph_tui_view_measure(child, content.width, &size);
 			if (rc)
 				return rc;
-			height = size.height;
+			height = size.height < auxiliary_rows ? size.height : auxiliary_rows;
+			auxiliary_rows -= height;
 		}
 		if (height > content.height - offset)
 			height = content.height - offset;
@@ -719,6 +849,10 @@ static void cli_chat_page_build(struct morph_tui_view_controller *controller,
 	morph_tui_widget_text_view_set_content_sizing(page->status, 1);
 	morph_tui_view_set_focusable(page->status, 0);
 	morph_tui_view_set_hidden(page->status, 1);
+	page->agents = morph_tui_widget_text_view_add_borrow(builder, root, "", &jobs);
+	morph_tui_widget_text_view_set_content_sizing(page->agents, 1);
+	morph_tui_view_set_focusable(page->agents, 0);
+	morph_tui_view_set_hidden(page->agents, 1);
 	page->queue_title = morph_tui_widget_label_add_borrow(
 		builder, root, CLI_FEED_PENDING " Messages queued · Esc to apply now", NULL);
 	const struct morph_tui_view_options queue = {.max_height = 4};
@@ -727,6 +861,9 @@ static void cli_chat_page_build(struct morph_tui_view_controller *controller,
 	morph_tui_view_set_hidden(page->queue, 1);
 	morph_tui_view_set_hidden(page->queue_title, 1);
 	morph_tui_view_set_hidden(page->jobs, 1);
+	page->panel_host = morph_tui_widget_stack_add_borrow(builder, root,
+		MORPH_TUI_WIDGET_STACK_VERTICAL, 0, NULL);
+	morph_tui_view_set_hidden(page->panel_host, 1);
 	page->composer = cli_composer_add_borrow(builder, root, page->ctx, &page->editor);
 	page->footer = morph_tui_widget_text_view_add_borrow(builder, root, "",
 		&(struct morph_tui_view_options){.padding = {.left = 2, .right = 2}});
@@ -751,18 +888,21 @@ static int cli_chat_page_refresh(struct cli_chat_page *page);
 static int cli_chat_page_appear(struct morph_tui_view_controller *controller)
 {
 	struct cli_chat_page *page = controller->data;
+	int delivery_rc = cli_event_queue_set_events_enabled(page->ctx, 1);
+	if (delivery_rc)
+		return delivery_rc;
 	if (page->ctx->session_history_pending) {
 		page->ctx->session_history_pending = 0;
 		int rc = cli_session_history_restore(page->ctx);
 		if (rc)
 			return rc;
 	}
-	if (page->ctx->application_command) {
+	if (page->ctx->application_command && !page->panel) {
 		page->ctx->application_command = 0;
 		cli_presentation_command_end(page->ctx);
 	}
 	int rc = cli_chat_page_refresh(page);
-	return rc ? rc : morph_tui_view_focus(page->editor);
+	return rc ? rc : morph_tui_view_focus(page->panel ? page->panel : page->editor);
 }
 
 static void cli_chat_page_closed(struct morph_tui_view_controller *controller, int result)
@@ -797,16 +937,32 @@ static int cli_chat_page_refresh(struct cli_chat_page *page)
 	if (!page->ready)
 		return 0;
 	int64_t now = cli_chat_now();
-	if (ctx->turn_active) {
+	if (ctx->jobs) {
+		int64_t session = 0;
+
+		if (!runtime_session_current_id(ctx->runtime, &session))
+			cli_jobs_model_set_session(ctx->jobs, session);
+	}
+	if (ctx->turn_active && !cli_jobs_model_waiting(ctx->jobs)) {
 		morph_buf_t activity MORPH_CLEANUP(morph_buf_cleanup) = {0};
 		morph_buf_t agents MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		int rc = ctx->agents.count ? cli_agents_summary(&agents, ctx->agents.items,
-			ctx->agents.count, page->columns) : 0;
+		int rc = (ctx->agents.count || ctx->composer.ultra) ?
+			cli_agents_summary(&agents, ctx->agents.items, ctx->agents.count,
+					   page->columns) : 0;
 		if (rc)
 			return rc;
-		rc = cli_work_status_running(&activity, page->columns,
-			cli_output_color_enabled(ctx), now - page->turn_started, now,
-			morph_buf_cstr_borrow(&agents));
+		if (page->agents_waiting) {
+			int styled = cli_output_color_enabled(ctx);
+
+			rc = morph_buf_printf(&activity, "%s" CLI_FEED_RUNNING "%s Waiting for agents",
+				styled ? cli_style_running_color(now) : "",
+				styled ? ANSI_RESET : "");
+			if (!rc && agents.len)
+				rc = morph_buf_printf(&activity, " · %s", agents.data);
+		} else
+			rc = cli_work_status_running(&activity, page->columns,
+				cli_output_color_enabled(ctx), now - page->turn_started, now,
+				morph_buf_cstr_borrow(&agents));
 		if (!rc)
 			rc = cli_messages_set_rendered_view(page->status,
 				morph_buf_cstr_borrow(&activity), cli_output_color_enabled(ctx));
@@ -886,45 +1042,28 @@ static int cli_chat_page_refresh(struct cli_chat_page *page)
 	if (!rc)
 		rc = morph_tui_view_set_hidden(page->queue_title, !shown);
 	morph_buf_t jobs MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	if (ctx->jobs) {
-		int count = cli_jobs_model_count(ctx->jobs);
-		if (count > 0)
-			(void)morph_buf_printf(&jobs,
-					       CLI_FEED_RUNNING " %d background job%s · /jobs",
-					       count, count == 1 ? "" : "s");
-		int shown_jobs = 0;
-		const struct cli_jobs_job *job;
-		morph_array_foreach (job, &ctx->jobs->entries, struct cli_jobs_job) {
-			if (!cli_jobs_job_running(job->data) ||
-			    cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(
-				    job->data, "owner_session_id")) !=
-				    (double)ctx->jobs->session_id)
-				continue;
-			if (jobs.len)
-				(void)morph_buf_putc(&jobs, '\n');
-			(void)morph_buf_printf(&jobs, "%s%s · /jobs %.8s",
-					       shown_jobs + 1 < count ? "├ " : "└ ",
-					       cli_jobs_job_string(job->data, "description"),
-					       cli_jobs_job_short_id(job->data));
-			if (++shown_jobs == 2)
-				break;
-		}
-	}
+	if (ctx->jobs)
+		(void)cli_jobs_render(ctx->jobs, &jobs, page->columns,
+				      cli_output_color_enabled(ctx));
 	if (!rc)
 		rc = jobs.failed;
 	if (!rc)
-		rc = morph_tui_widget_text_view_set_text_copy(
-			page->jobs, jobs.data ? morph_buf_cstr_borrow(&jobs) : "");
+		rc = cli_messages_set_rendered_view(page->jobs, jobs.data ? jobs.data : "",
+						    cli_output_color_enabled(ctx));
 	if (!rc)
 		rc = morph_tui_view_set_hidden(page->jobs, !jobs.len);
-	struct morph_tui_text_style jobs_style = {0};
-	if (jobs.len && cli_output_color_enabled(ctx)) {
-		jobs_style.foreground = (struct morph_tui_color){MORPH_TUI_COLOR_INDEXED, 6};
-		jobs_style.attributes =
-			(now / CLI_STYLE_RUNNING_PULSE_MS) % 2 ? MORPH_TUI_STYLE_DIM : 0;
-	}
+	if (!rc && cli_jobs_model_waiting(ctx->jobs))
+		rc = morph_tui_view_set_hidden(page->status, 1);
+	morph_buf_t agents MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	(void)cli_agents_rows(&agents, ctx->agents.items, ctx->agents.count,
+		page->columns, 3, cli_output_color_enabled(ctx));
 	if (!rc)
-		rc = morph_tui_view_set_style(page->jobs, jobs_style);
+		rc = agents.failed;
+	if (!rc)
+		rc = cli_messages_set_rendered_view(page->agents, agents.data ? agents.data : "",
+						    cli_output_color_enabled(ctx));
+	if (!rc)
+		rc = morph_tui_view_set_hidden(page->agents, !agents.len);
 	if (!rc)
 		rc = cli_chat_page_error(page);
 	return rc;
@@ -941,9 +1080,11 @@ static int cli_chat_page_event(void *data, struct morph_tui_application *app,
 		morph_tui_application_stop(app, 0);
 		return 1;
 	}
-	int modal = morph_tui_application_depth(app) > 1;
+	int modal = page->panel || morph_tui_application_depth(app) > 1;
 	if (modal && cli_event_queue_owner_call_pending(ctx)) {
-		if (!morph_tui_application_transition_pending(app))
+		if (page->panel)
+			(void)cli_chat_panel_cancel(ctx, -ECANCELED);
+		else if (!morph_tui_application_transition_pending(app))
 			(void)morph_tui_application_dismiss_controller(app, 0);
 		(void)morph_tui_application_wake(app);
 		return 0;
@@ -960,7 +1101,9 @@ static int cli_chat_page_event(void *data, struct morph_tui_application *app,
 		(void)cli_resume_show(ctx);
 	}
 	if (morph_signal_flag_take(&ctx->interrupted)) {
-		if (modal)
+		if (page->panel)
+			(void)cli_chat_panel_cancel(ctx, -ECANCELED);
+		else if (modal)
 			(void)morph_tui_application_dismiss_controller(app, 0);
 		else if (page->job->active)
 			runtime_cancel_turn(ctx->runtime);
@@ -969,6 +1112,12 @@ static int cli_chat_page_event(void *data, struct morph_tui_application *app,
 		morph_tui_application_invalidate(app, MORPH_TUI_INVALIDATE_LAYOUT);
 	if (!ctx->running)
 		morph_tui_application_stop(app, 0);
+	if (page->panel && (event->type == MORPH_TUI_EVENT_TICK ||
+	    event->type == MORPH_TUI_EVENT_WAKE || event->type == MORPH_TUI_EVENT_RESIZE)) {
+		int rc = cli_composer_panel_update(page->panel, event);
+		if (rc < 0)
+			return rc;
+	}
 	return cli_chat_page_refresh(page);
 }
 

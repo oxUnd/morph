@@ -91,7 +91,7 @@ TEST_F(TuiTest, DecodesWheelAndFocusWithoutLeakingEscapeBytes)
 		{"\033[<64;10;20M", MORPH_TUI_KEY_WHEEL_UP},
 		{"\033[<65;10;20M", MORPH_TUI_KEY_WHEEL_DOWN},
 		{"\033[<64;10;20m", 0},
-		{"\033[<0;10;20M", 0},
+		{"\033[<0;10;20M", MORPH_TUI_KEY_MOUSE},
 		{"\033[I", MORPH_TUI_KEY_FOCUS_IN},
 		{"\033[O", MORPH_TUI_KEY_FOCUS_OUT},
 	};
@@ -107,6 +107,41 @@ TEST_F(TuiTest, DecodesWheelAndFocusWithoutLeakingEscapeBytes)
 			result = morph_tui_input_feed(&input, *byte);
 		}
 		EXPECT_EQ(result, item.expected);
+		EXPECT_EQ(morph_tui_input_feed(&input, 'x'), 'x');
+	}
+}
+
+TEST_F(TuiTest, DecodesMouseDragReleaseModifiersAndRejectsInvalidReports)
+{
+	struct morph_tui_input input{};
+	auto feed = [&input](const char *sequence) {
+		int key = 0;
+		for (const unsigned char *p = reinterpret_cast<const unsigned char *>(sequence);
+		     *p; p++)
+			key = morph_tui_input_feed(&input, *p);
+		return key;
+	};
+	EXPECT_EQ(feed("\033[<0;10;20M"), MORPH_TUI_KEY_MOUSE);
+	EXPECT_EQ(input.mouse.button, MORPH_TUI_MOUSE_LEFT);
+	EXPECT_EQ(input.mouse.action, MORPH_TUI_MOUSE_PRESS);
+	EXPECT_EQ(input.mouse.x, 9);
+	EXPECT_EQ(input.mouse.y, 19);
+	EXPECT_EQ(input.mouse.modifiers, 0U);
+	EXPECT_EQ(feed("\033[<60;80;24M"), MORPH_TUI_KEY_MOUSE);
+	EXPECT_EQ(input.mouse.action, MORPH_TUI_MOUSE_MOVE);
+	EXPECT_EQ(input.mouse.modifiers,
+		  static_cast<unsigned>(MORPH_TUI_MOUSE_SHIFT | MORPH_TUI_MOUSE_ALT |
+					MORPH_TUI_MOUSE_CTRL));
+	EXPECT_EQ(feed("\033[<0;80;24m"), MORPH_TUI_KEY_MOUSE);
+	EXPECT_EQ(input.mouse.action, MORPH_TUI_MOUSE_RELEASE);
+	EXPECT_EQ(feed("\033[<2;1;1M"), MORPH_TUI_KEY_MOUSE);
+	EXPECT_EQ(input.mouse.button, MORPH_TUI_MOUSE_RIGHT);
+	EXPECT_EQ(input.mouse.x, 0);
+	EXPECT_EQ(input.mouse.y, 0);
+	for (const char *invalid : {"\033[<0;0;1M", "\033[<0;1;0M", "\033[<3;1;1M",
+				    "\033[<128;1;1M", "\033[<0;2147483648;1M",
+				    "\033[<0;1;1X", "\033[<66;1;1M"}) {
+		EXPECT_EQ(feed(invalid), 0) << invalid;
 		EXPECT_EQ(morph_tui_input_feed(&input, 'x'), 'x');
 	}
 }
@@ -162,7 +197,7 @@ TEST_F(TuiTest, CellSanitizesControlsAndClipsCjkToViewport)
 	EXPECT_NE(text.find("中"), std::string::npos);
 	EXPECT_EQ(text.find("文"), std::string::npos);
 	ASSERT_EQ(morph_tui_draw_cell(output, 8, 2, 2, 8, 1, "x", ""), 0);
-	EXPECT_EQ(take(), "\033[2;8Hx");
+	EXPECT_EQ(take(), "\033[2;8H\033[0mx");
 	ASSERT_EQ(morph_tui_draw_cell(output, 8, 2, 0, 1, 2, "x", ""), 0);
 	EXPECT_TRUE(take().empty());
 }
@@ -203,7 +238,7 @@ TEST_F(TuiTest, SessionRestoresTermiosAndScreenModes)
 	ASSERT_EQ(tcgetattr(fileno(input), &during), 0);
 	EXPECT_EQ(during.c_lflag & (ICANON | ECHO | ISIG | IEXTEN), 0U);
 	EXPECT_EQ(morph_tui_terminal_session_enter(&session, input, output, 0), -EBUSY);
-	EXPECT_EQ(take(), "\033[?1049h\033[?25l\033[?2004h\033[?1000h\033[?1006h");
+	EXPECT_EQ(take(), "\033[?1049h\033[?25l\033[?2004h\033[?1000h\033[?1002h\033[?1006h");
 	ASSERT_EQ(morph_tui_terminal_session_leave(&session), 0);
 	ASSERT_EQ(tcgetattr(fileno(input), &after), 0);
 	/* BSD sets PENDIN when changing input processing on a PTY. */
@@ -218,7 +253,7 @@ TEST_F(TuiTest, SessionRestoresTermiosAndScreenModes)
 	EXPECT_EQ(after.c_iflag, before.c_iflag);
 	EXPECT_EQ(after.c_cc[VMIN], before.c_cc[VMIN]);
 	EXPECT_EQ(after.c_cc[VTIME], before.c_cc[VTIME]);
-	EXPECT_EQ(take(), "\033[?1006l\033[?1000l\033[?2004l\033[0m\033[?25h\033[?1049l");
+	EXPECT_EQ(take(), "\033[?1006l\033[?1002l\033[?1000l\033[?2004l\033[0m\033[?25h\033[?1049l");
 	EXPECT_EQ(morph_tui_terminal_session_leave(&session), 0);
 	EXPECT_TRUE(take().empty());
 	/* Inline sessions must preserve NO_COLOR's absence of SGR output. */
@@ -308,12 +343,28 @@ TEST_F(TuiTest, CellCompositionHasNoIoAndPropagatesErrorsBeforeOutput)
 	EXPECT_EQ(morph_tui_draw_cell_append(&commands, 10, 2, 1, 1, 4, "abc", ""), 0);
 	EXPECT_TRUE(take().empty());
 	EXPECT_EQ(morph_tui_draw_write(output, &commands), 0);
-	EXPECT_EQ(take(), "\033[1;1Habc ");
+	EXPECT_EQ(take(), "\033[1;1H\033[0mabc ");
 	/* A later drawing error must reject the entire composed screen. */
 	EXPECT_EQ(morph_tui_draw_cell_append(&commands, 10, 2, 1, 1, 4, nullptr, ""), -EINVAL);
 	EXPECT_EQ(morph_tui_draw_write(output, &commands), -EINVAL);
 	EXPECT_TRUE(take().empty());
 	morph_buf_cleanup(&commands);
+}
+
+TEST_F(TuiTest, CellsResetPreviousBackgroundAndSelectionBeforeApplyingTheirOwnStyle)
+{
+	morph_buf_t commands MORPH_CLEANUP(morph_buf_cleanup) = {};
+	ASSERT_EQ(morph_buf_init(&commands, 128), 0);
+	ASSERT_EQ(morph_tui_draw_cell_append(&commands, 8, 3, 1, 1, 8, "selected",
+					     "\033[7;48;2;16;18;20m"), 0);
+	ASSERT_EQ(morph_tui_draw_cell_append(&commands, 8, 3, 2, 1, 8, "normal", ""), 0);
+	ASSERT_EQ(morph_tui_draw_cell_append_aligned(&commands, 8, 3, 3, 1, 8, "42",
+						 "\033[36m", 1), 0);
+	const std::string text = morph_buf_cstr_borrow(&commands);
+	EXPECT_NE(text.find("\033[1;1H\033[0m\033[7;48;2;16;18;20mselected"),
+		  std::string::npos);
+	EXPECT_NE(text.find("\033[2;1H\033[0mnormal  "), std::string::npos);
+	EXPECT_NE(text.find("\033[3;1H\033[0m\033[36m      42"), std::string::npos);
 }
 
 TEST_F(TuiTest, FrameInvalidationAndOutputFailureForceFullRepaint)
@@ -357,7 +408,7 @@ TEST_F(TuiTest, LayoutRegionsClampAndClipAtTheirOwnBoundary)
 	morph_buf_t commands{};
 	ASSERT_EQ(morph_buf_init(&commands, 128), 0);
 	ASSERT_EQ(morph_tui_draw_region_cell(&commands, title, 0, 15, 8, "abc", ""), 0);
-	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&commands)), "\033[2;18H…");
+	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&commands)), "\033[2;18H\033[0m…");
 	morph_buf_reset(&commands);
 	EXPECT_EQ(morph_tui_draw_region_cell(&commands, body, 0, 0, 2, "x", ""), 0);
 	EXPECT_EQ(commands.len, 0U);
@@ -447,6 +498,34 @@ TEST_F(TuiTest, GroupedListRowsSkipHeadersAndMapItems)
 			  &menu, &groups, 2, '\n'),
 		  MORPH_TUI_WIDGET_SUBMIT);
 	EXPECT_EQ(groups.row_item[menu.list.index], 2U);
+	morph_tui_widget_list_groups_cleanup(&groups);
+}
+
+TEST_F(TuiTest, GroupedMenusDoNotActivateHeadersOrReportStationarySelectionChanges)
+{
+	struct morph_tui_widget_list_groups groups{};
+	const size_t counts[] = {0, 1, 0};
+	ASSERT_EQ(morph_tui_widget_list_groups_init(&groups, counts, 3), 0);
+	struct morph_tui_widget_menu_state menu{};
+	morph_tui_widget_list_state_layout_groups(&menu.list, &groups, 3);
+	ASSERT_EQ(menu.list.index, 2U);
+	EXPECT_EQ(morph_tui_widget_menu_state_update_groups(
+			  &menu, &groups, 3, MORPH_TUI_KEY_UP),
+		  MORPH_TUI_WIDGET_UNHANDLED);
+	EXPECT_EQ(menu.list.index, 2U);
+	EXPECT_FALSE(morph_tui_widget_list_state_update_groups(
+		&menu.list, &groups, 3, MORPH_TUI_KEY_END));
+	EXPECT_EQ(menu.list.index, 2U);
+	EXPECT_EQ(morph_tui_widget_menu_state_update_groups(&menu, &groups, 3, '\r'),
+		  MORPH_TUI_WIDGET_SUBMIT);
+	morph_tui_widget_list_groups_cleanup(&groups);
+	const size_t empty[] = {0, 0};
+	ASSERT_EQ(morph_tui_widget_list_groups_init(&groups, empty, 2), 0);
+	morph_tui_widget_list_state_layout_groups(&menu.list, &groups, 3);
+	EXPECT_EQ(morph_tui_widget_menu_state_update_groups(&menu, &groups, 3, '\r'),
+		  MORPH_TUI_WIDGET_UNHANDLED);
+	EXPECT_FALSE(morph_tui_widget_list_state_update_groups(
+		&menu.list, &groups, 3, MORPH_TUI_KEY_DOWN));
 	morph_tui_widget_list_groups_cleanup(&groups);
 }
 
@@ -886,7 +965,7 @@ TEST_F(TuiTest, NumericCellsAlignInsideTheirAllocatedWidth)
 	morph_buf_t commands{};
 	ASSERT_EQ(morph_buf_init(&commands, 128), 0);
 	ASSERT_EQ(morph_tui_draw_cell_append_aligned(&commands, 10, 2, 1, 2, 5, "42", "", 1), 0);
-	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&commands)), "\033[1;2H   42");
+	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&commands)), "\033[1;2H\033[0m   42");
 	morph_buf_cleanup(&commands);
 }
 
@@ -968,7 +1047,7 @@ TEST_F(TuiTest, TreeViewportScrollsAndErasesUnusedRows)
 	std::string text = morph_buf_cstr_borrow(&commands);
 	EXPECT_NE(text.find("Node 29"), std::string::npos);
 	EXPECT_EQ(text.find("Node 0"), std::string::npos);
-	EXPECT_NE(text.find("\033[5;2H\033[7m"), std::string::npos);
+	EXPECT_NE(text.find("\033[5;2H\033[0m\033[7m"), std::string::npos);
 	morph_buf_cleanup(&commands);
 	morph_tui_widget_tree_cleanup(&tree);
 }

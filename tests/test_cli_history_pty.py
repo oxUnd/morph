@@ -94,6 +94,10 @@ def main():
             assert '300 saved entries' in overview, overview
             assert 'estimated history' in overview, overview
             assert '#300' in overview and '中文 target latest' in overview, overview
+            assert all(terminal.screen.buffer[row][column].bg == 'default'
+                       and not terminal.screen.buffer[row][column].reverse
+                       for row in range(terminal.screen.lines)
+                       for column in range(terminal.screen.columns)), overview
             assert '\x1b[?1049h' in terminal.raw, 'viewer must use a temporary screen'
             unchanged = terminal.raw
             terminal.pump(.4)

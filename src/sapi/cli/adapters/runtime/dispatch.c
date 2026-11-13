@@ -1,4 +1,5 @@
 #include "sapi/cli/adapters/runtime/dispatch.h"
+#include "sapi/cli/adapters/runtime/events.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/services/event_queue_item.h"
@@ -6,7 +7,6 @@
 #include "sapi/cli/adapters/input/readline.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/notifications.h"
-#include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/application_internal.h"
@@ -16,7 +16,7 @@ int cli_dispatch_event(struct cli_application *ctx, const struct cli_event_queue
 	int rc = 0;
 
 	if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_MORPH_EVENT)
-		rc = cli_presentation_event(ctx, &item->event);
+		rc = cli_runtime_events_deliver(ctx, &item->event);
 	else if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL) {
 		int updating = cli_feed_update_active(ctx);
 

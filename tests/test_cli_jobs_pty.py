@@ -3,7 +3,6 @@ import http.server
 import json
 from pathlib import Path
 import queue
-import re
 import sqlite3
 import sys
 import tempfile
@@ -34,21 +33,43 @@ class StableComposerStream:
         self.stream = terminal.stream
         self.pending = ''
         self.positions = {}
+        self.draft = None
+        self.requested_draft = None
+        self.frames = []
+
+    def release_draft_guard(self):
+        self.draft = None
+        self.requested_draft = None
+        self.positions.clear()
 
     def feed(self, text):
         self.pending += text
         ending = '\x1b[?2026l'
         while ending in self.pending:
             frame, self.pending = self.pending.split(ending, 1)
+            self.terminal.screen.written_rows.clear()
             self.stream.feed(frame + ending)
-            rows = self.terminal.screen.display
+            screen = self.terminal.screen
+            rows = screen.display
+            indicators = [(index, screen.marker_dim.get((index, 0)), screen.buffer[index][0].fg)
+                          for index, row in enumerate(rows) if row.startswith('◉ ') and
+                          any(label in row for label in ('Working ·', 'background job',
+                                                         'Waiting for job ·'))]
+            self.frames.append({'time': time.monotonic(), 'rows': tuple(rows),
+                                'written': set(screen.written_rows), 'indicators': indicators,
+                                'cursor': (screen.cursor.x, screen.cursor.y), 'raw': frame})
             for draft in ('keep my draft', 'idle draft', 'draft during wait'):
+                if draft != self.requested_draft:
+                    continue
                 prompts = [index for index, row in enumerate(rows)
                            if row.startswith('› ' + draft)]
                 key = (draft, self.terminal.screen.columns, self.terminal.screen.lines)
                 if not prompts:
-                    self.positions.pop(key, None)
+                    assert self.draft != draft or not any('perm: ' in row for row in rows), \
+                        'draft disappeared from a published frame\n' + '\n'.join(rows)
                     continue
+                assert len(prompts) == 1, '\n'.join(rows)
+                self.draft = draft
                 previous = self.positions.get(key, prompts[0])
                 assert prompts[0] >= previous, (f'composer moved upward: {previous} -> '
                                                  f'{prompts[0]}\n' + '\n'.join(rows))
@@ -65,6 +86,61 @@ class StableComposerStream:
                 self.pending = ''
 
 
+class PulseScreen(AlternateScreen):
+    """Keep SGR faint state, which pyte deliberately omits from its cell type."""
+
+    def reset(self):
+        super().reset()
+        self.faint = False
+        self.marker_dim = {}
+        self.written_rows = set()
+
+    def select_graphic_rendition(self, *attrs):
+        super().select_graphic_rendition(*attrs)
+        codes = attrs or (0,)
+        index = 0
+        while index < len(codes):
+            code = codes[index]
+            if code in (0, 22):
+                self.faint = False
+            elif code == 2:
+                self.faint = True
+            elif code in (38, 48) and index + 1 < len(codes):
+                index += 2 if codes[index + 1] == 5 else 4
+            index += 1
+
+    def draw(self, data):
+        parts = data.split('◉')
+        for index, part in enumerate(parts):
+            if part:
+                first = self.cursor.y
+                super().draw(part)
+                self.written_rows.update(range(min(first, self.cursor.y),
+                                               max(first, self.cursor.y) + 1))
+            if index + 1 < len(parts):
+                super().draw('◉')
+                self.written_rows.add(self.cursor.y)
+                self.marker_dim[(self.cursor.y, self.cursor.x - 1)] = self.faint
+
+    def erase_in_line(self, how=0, private=False):
+        self.written_rows.add(self.cursor.y)
+        super().erase_in_line(how, private)
+
+    def erase_in_display(self, how=0, *args, **kwargs):
+        self.written_rows.update(range(self.lines))
+        super().erase_in_display(how, *args, **kwargs)
+
+
+class JobsTerminal(Terminal):
+    def send(self, text):
+        if '\x15' in text or '\r' in text:
+            self.stream.release_draft_guard()
+        for draft in ('keep my draft', 'idle draft', 'draft during wait'):
+            if draft in text:
+                self.stream.requested_draft = draft
+        super().send(text)
+
+
 def check_collapsed(terminal):
     rows = terminal.screen.display
     for index, row in enumerate(rows):
@@ -75,20 +151,41 @@ def check_collapsed(terminal):
 
 
 def check_pulse(terminal, marker_count, draft=None):
-    start = len(terminal.raw)
+    # The fixture sends three initial preview chunks before becoming quiet.
+    # Inspect animation after those legitimate content updates have settled.
+    terminal.pump(.7)
+    baseline = terminal.stream.frames[-1]
+    baseline_phases = {dim for _, dim, _ in baseline['indicators']}
+    assert len(baseline['indicators']) == marker_count and len(baseline_phases) == 1, baseline
+    assert None not in baseline_phases, baseline
+    phases = [(time.monotonic(), baseline_phases.pop())]
+    start = len(terminal.stream.frames)
     terminal.pump(1.25)
-    animation = terminal.raw[start:]
-    frames = re.findall(r'\x1b\[\?2026h(.*?)\x1b\[\?2026l', animation, re.S)
-    ticks = [frame for frame in frames if '◉' in frame and '\x1b[2K' not in frame]
-    assert ticks, 'running markers must update without clearing the composer'
-    dim = r'\x1b\[2m\x1b\[36m◉'
-    bright = r'(?<!\x1b\[2m)\x1b\[36m◉'
-    assert any(len(re.findall(dim, frame)) >= marker_count for frame in frames), frames
-    assert any(len(re.findall(bright, frame)) >= marker_count for frame in frames), frames
-    assert all(frame.count('\x1b7') == frame.count('\x1b8') for frame in ticks), ticks
-    assert all('background job' not in frame for frame in ticks), ticks
-    if marker_count == 1:
-        assert all('\x1b[38;2;' not in frame for frame in ticks), ticks
+    frames = terminal.stream.frames[start:]
+    assert frames, 'running markers did not publish an animation update'
+    for frame in frames:
+        rows = frame['rows']
+        diagnostic = '\n'.join(rows) + '\n' + repr(frame['raw'])
+        assert len(frame['indicators']) == marker_count, diagnostic
+        faint = {dim for _, dim, _ in frame['indicators']}
+        assert len(faint) == 1 and None not in faint, diagnostic
+        assert all(color in ('cyan', '00cdcd') for _, _, color in frame['indicators']), diagnostic
+        phase = faint.pop()
+        if not phases or phase != phases[-1][1]:
+            phases.append((frame['time'], phase))
+        status_rows = {index for index, _, _ in frame['indicators']}
+        # Retained rendering may clear and redraw an individual changed row.
+        # Only live status rows may be written during this quiet pulse window.
+        assert frame['written'] <= status_rows, diagnostic
+        assert '\x1b[2J' not in frame['raw'], diagnostic
+        composer = frame['cursor'][1]
+        assert not ({composer - 1, composer, composer + 1} & frame['written']), diagnostic
+        if draft:
+            assert any(row.startswith('› ' + draft) for row in rows), diagnostic
+    assert {phase for _, phase in phases} == {False, True}, phases
+    assert len(phases) >= 3, phases
+    for (previous, _), (current, _) in zip(phases[1:], phases[2:]):
+        assert .35 <= current - previous <= .7, phases
     text = '\n'.join(terminal.screen.display)
     status_rows = [row for row in terminal.screen.display
                    if 'Working ·' in row or 'background job' in row
@@ -113,9 +210,10 @@ def main():
     try:
         with tempfile.TemporaryDirectory(prefix='morph-jobs-pty-') as temp:
             directory = Path(temp)
-            terminal = Terminal(driver, directory, server.server_port)
+            terminal = JobsTerminal(driver, directory, server.server_port,
+                                    extra_env={'NO_COLOR': ''})
             terminal.child.setwinsize(30, 100)
-            terminal.screen = AlternateScreen(100, 30)
+            terminal.screen = PulseScreen(100, 30)
             terminal.stream = pyte.Stream(terminal.screen)
             terminal.stream = StableComposerStream(terminal)
             until(terminal, lambda text: 'perm: ' in text)

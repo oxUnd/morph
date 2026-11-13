@@ -19,6 +19,7 @@ int morph_tui_draw_cell_append(morph_buf_t *commands, int columns, int rows, int
 			       int width, const char *text, const char *style);
 
 /* One-based coordinates. Text is untrusted; style is a trusted ANSI string.
+ * Each cell starts with the terminal's default style before applying style.
  * Clip to the viewport, sanitize controls, and pad to the requested width. */
 int morph_tui_draw_cell(FILE *output, int columns, int rows, int row, int column, int width,
 			const char *text, const char *style);

@@ -89,6 +89,16 @@ TEST(CliAgentsBrowserTest, ComponentBoundsAndSanitizesBothResponsiveLayouts)
 				EXPECT_EQ(std::string(output.data).find("\033[2J"), std::string::npos);
 				if (!styled)
 					EXPECT_EQ(std::string(output.data).find('\033'), std::string::npos);
+				else {
+					EXPECT_EQ(std::string(output.data).find("\033[44;"),
+						  std::string::npos);
+					EXPECT_EQ(std::string(output.data).find("\033[48;"),
+						  std::string::npos);
+					EXPECT_EQ(std::string(output.data).find("\033[7m"),
+						  std::string::npos);
+					EXPECT_NE(std::string(output.data).find("\033[1m"),
+						  std::string::npos);
+				}
 				if (columns >= 100 && rows >= 24)
 					EXPECT_NE(std::string(plain).find("Task details"), std::string::npos);
 			}

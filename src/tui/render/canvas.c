@@ -181,6 +181,80 @@ static struct render_canvas_cell *render_canvas_cell(struct morph_tui_surface *s
 	return morph_array_borrow(&surface->cells, (size_t)y * (size_t)surface->width + (size_t)x);
 }
 
+static int render_canvas_selection_range(struct morph_tui_surface *surface,
+					 int *x1, int *y1, int *x2, int *y2)
+{
+	if (!surface->width || !surface->height)
+		return 0;
+	*x1 = *x1 < 0 ? 0 : *x1 >= surface->width ? surface->width - 1 : *x1;
+	*x2 = *x2 < 0 ? 0 : *x2 >= surface->width ? surface->width - 1 : *x2;
+	*y1 = *y1 < 0 ? 0 : *y1 >= surface->height ? surface->height - 1 : *y1;
+	*y2 = *y2 < 0 ? 0 : *y2 >= surface->height ? surface->height - 1 : *y2;
+	if (*y1 > *y2 || (*y1 == *y2 && *x1 > *x2)) {
+		int x = *x1, y = *y1;
+
+		*x1 = *x2;
+		*y1 = *y2;
+		*x2 = x;
+		*y2 = y;
+	}
+	if (*x1 > 0 && !render_canvas_cell(surface, *x1, *y1)->span)
+		(*x1)--;
+	if (*x2 + 1 < surface->width && render_canvas_cell(surface, *x2, *y2)->span == 2)
+		(*x2)++;
+	return 1;
+}
+
+int morph_tui_surface_selection_text(struct morph_tui_surface *surface,
+				     int x1, int y1, int x2, int y2, morph_buf_t *text)
+{
+	if (!surface || !text)
+		return -EINVAL;
+	morph_buf_reset(text);
+	if (!render_canvas_selection_range(surface, &x1, &y1, &x2, &y2))
+		return 0;
+	for (int y = y1; y <= y2; y++) {
+		int start = y == y1 ? x1 : 0;
+		int end = y == y2 ? x2 : surface->width - 1;
+		size_t row_start = text->len;
+
+		for (int x = start; x <= end; x++) {
+			struct render_canvas_cell *cell = render_canvas_cell(surface, x, y);
+
+			if (!cell->span)
+				continue;
+			if (cell->text.len)
+				morph_buf_append(text, cell->text.data, cell->text.len);
+			else
+				morph_buf_putc(text, ' ');
+		}
+		while (text->len > row_start && text->data[text->len - 1] == ' ')
+			text->data[--text->len] = '\0';
+		if (y != y2)
+			morph_buf_putc(text, '\n');
+	}
+	return text->failed;
+}
+
+int morph_tui_surface_selection_style(struct morph_tui_surface *surface,
+				      int x1, int y1, int x2, int y2, unsigned attributes)
+{
+	struct morph_tui_text_style style = {.attributes = attributes};
+
+	if (!surface || !morph_tui_text_style_valid(style))
+		return -EINVAL;
+	if (!render_canvas_selection_range(surface, &x1, &y1, &x2, &y2))
+		return 0;
+	for (int y = y1; y <= y2; y++) {
+		int start = y == y1 ? x1 : 0;
+		int end = y == y2 ? x2 : surface->width - 1;
+
+		for (int x = start; x <= end; x++)
+			render_canvas_cell(surface, x, y)->style.attributes |= attributes;
+	}
+	return 0;
+}
+
 static void render_canvas_erase(struct morph_tui_surface *surface, int x, int y)
 {
 	struct render_canvas_cell *cell = render_canvas_cell(surface, x, y);

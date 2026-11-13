@@ -11,8 +11,7 @@ import threading
 import time
 
 from test_cli_pty import Model, Terminal, terminal_environment
-from test_cli_transcript_pty import AlternateScreen
-from test_cli_jobs_pty import StableComposerStream
+from test_cli_jobs_pty import PulseScreen, StableComposerStream
 from cli_inline_test_support import inline_panel, stable_rows
 import pyte
 
@@ -26,6 +25,10 @@ def wait_for(terminal, predicate, timeout=8):
     raise AssertionError(terminal.raw[-8000:])
 
 
+def chat_visible(terminal):
+    return any(row.lstrip().startswith('morph ·') for row in terminal.screen.display)
+
+
 def tool_delta(name, arguments, call_id):
     return {'tool_calls': [{'index': 0, 'id': call_id, 'type': 'function',
                            'function': {'name': name, 'arguments': json.dumps(arguments)}}]}
@@ -36,7 +39,7 @@ def run(driver, port, columns):
     with tempfile.TemporaryDirectory(prefix='morph-agents-pty-') as temp:
         terminal = Terminal(driver, Path(temp), port, hooks_enabled=False,
                             extra_config='[agents]\nmulti_agent_mode="proactive"\n')
-        terminal.screen = AlternateScreen(80, 24)
+        terminal.screen = PulseScreen(80, 24)
         terminal.stream = pyte.Stream(terminal.screen)
         try:
             terminal.wait_for_composer()
@@ -47,7 +50,7 @@ def run(driver, port, columns):
             assert hasattr(terminal.screen, '_main_screen')
             assert 'Main conversation' in '\n'.join(stable_rows(terminal))
             terminal.send('\x1b')
-            wait_for(terminal, lambda: not hasattr(terminal.screen, '_main_screen'))
+            wait_for(terminal, lambda: chat_visible(terminal))
             terminal.send('exercise collaboration\r')
             _, root = terminal.request()
             releases.append(root)
@@ -113,10 +116,14 @@ def run(driver, port, columns):
                 selected = next(i for i, row in enumerate(rows) if row.startswith('> '))
                 assert '/root/worker' in rows[selected]
                 selected_end = (width - 1) * 3 // 5 - 1 if width >= 101 else width - 2
-                assert terminal.screen.buffer[selected][selected_end].bg == 'blue'
+                assert terminal.screen.buffer[selected][selected_end].bold
+                assert all(terminal.screen.buffer[row][column].bg == 'default'
+                           and not terminal.screen.buffer[row][column].reverse
+                           for row in range(terminal.screen.lines)
+                           for column in range(terminal.screen.columns)), '\n'.join(rows)
                 if width >= 101:
                     assert 'Task details' in '\n'.join(rows), '\n'.join(rows)
-                    assert terminal.screen.buffer[selected][width - 2].bg != 'blue'
+                    assert not terminal.screen.buffer[selected][width - 2].bold
                 assert 'Esc' in rows[-1]
             for height in (8, 4, 40, 24):
                 terminal.child.setwinsize(height, columns)
@@ -132,7 +139,7 @@ def run(driver, port, columns):
             wait_for(terminal, lambda: 'Agents · /root/worker' in terminal.screen.display[0])
             assert terminal.raw.count('\x1b[?1049h') == switches, 'nested alternate screen'
             terminal.send('\x1b')
-            wait_for(terminal, lambda: not hasattr(terminal.screen, '_main_screen'))
+            wait_for(terminal, lambda: chat_visible(terminal))
             terminal.stream = StableComposerStream(terminal)
             terminal.send('keep my draft')
             terminal.pump(.2)
@@ -158,9 +165,10 @@ def run(driver, port, columns):
             visible = '\n'.join(stable_rows(terminal))
             assert visible.count('keep my draft') == 1, visible
             terminal.child.send('\x15')
+            switches = terminal.raw.count('\x1b[?1049h')
             terminal.send('/subagents\r')
             wait_for(terminal, lambda: 'Main conversation' in '\n'.join(terminal.screen.display))
-            assert not hasattr(terminal.screen, '_main_screen'), 'subagents became full-screen'
+            assert terminal.raw.count('\x1b[?1049h') == switches, 'subagents switched screen buffers'
             inline_panel(terminal, 'Subagents', 'ROOT_INTEGRATED_RESULT',
                          maximum=12, command='/subagents')
             terminal.send('\x1b')
@@ -171,7 +179,7 @@ def run(driver, port, columns):
             assert 'CHILD_VERIFIED_RESULT' in '\n'.join(stable_rows(terminal))
             assert hasattr(terminal.screen, '_main_screen')
             terminal.send('\x1b')
-            wait_for(terminal, lambda: not hasattr(terminal.screen, '_main_screen'))
+            wait_for(terminal, lambda: chat_visible(terminal))
             assert sum(line.startswith('» ') for line in terminal.screen.display) == 1
             if columns == 120:
                 plain = subprocess.run(

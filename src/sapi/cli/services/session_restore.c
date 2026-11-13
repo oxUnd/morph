@@ -7,6 +7,7 @@
 #include "runtime/runtime.h"
 #include "util/error.h"
 #include "util/file.h"
+#include "util/cleanup.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -15,7 +16,7 @@ void cli_session_history_print_resume_hint(struct cli_application *ctx)
 	struct session session;
 	const char *config_path;
 	const char *workdir;
-	char *resolved_config;
+	char *resolved_config MORPH_CLEANUP(morph_charp_cleanup) = NULL;
 
 	if (!ctx || !ctx->runtime || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
@@ -25,12 +26,9 @@ void cli_session_history_print_resume_hint(struct cli_application *ctx)
 	resolved_config =
 		config_path && config_path[0] ? file_resolve_path_copy(config_path) : NULL;
 	workdir = runtime_workdir_borrow(ctx->runtime);
-	if (session.workdir[0] && workdir && strcmp(session.workdir, workdir) == 0)
-		workdir = NULL;
 	cli_history_render_resume_hint(ctx, session.display_id,
 				       resolved_config ? resolved_config : config_path,
 				       workdir);
-	free(resolved_config);
 }
 
 int cli_session_history_restore(struct cli_application *ctx)

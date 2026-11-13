@@ -10,7 +10,7 @@
 
 struct cli_composer {
 	struct morph_tui_widget base;
-	struct morph_tui_view *stack;
+	struct morph_tui_view *stack, *editor;
 	struct cli_application *ctx;
 	int frame;
 };
@@ -87,6 +87,25 @@ static const struct morph_tui_view_ops cli_composer_ops = {
 	.draw_padding = cli_composer_draw_padding,
 };
 
+int cli_composer_fit(struct morph_tui_view *view, int width, int height, int preceding_separator)
+{
+	if (!view || view->ops != &cli_composer_ops || width < 0 || height < 0)
+		return -EINVAL;
+	struct cli_composer *composer = (struct cli_composer *)view;
+	struct morph_tui_view_size editor;
+	int rc = morph_tui_view_measure(composer->editor, width, &editor);
+	if (rc)
+		return rc;
+	int spacing = height > editor.height ? height - editor.height : 0;
+	rc = morph_tui_view_set_margin(view,
+		(struct morph_tui_view_insets){
+			.top = spacing >= 3 && !preceding_separator ? 1 : 0});
+	if (!rc)
+		rc = morph_tui_view_set_padding(view, (struct morph_tui_view_insets){
+			.top = spacing >= 2 ? 1 : 0, .bottom = spacing >= 1 ? 1 : 0});
+	return rc;
+}
+
 int cli_composer_update(struct morph_tui_view *view, int64_t now_ms)
 {
 	if (!view || view->ops != &cli_composer_ops)
@@ -132,6 +151,7 @@ struct morph_tui_view *cli_composer_add_borrow(struct morph_tui_builder *builder
 	const struct morph_tui_view_options editor_options = {.max_height = 6};
 	struct morph_tui_view *editor = morph_tui_widget_text_field_add_borrow(
 		builder, composer->stack, "", 1024u * 1024u, 0, &editor_options);
+	composer->editor = editor;
 	if (editor) {
 		morph_tui_builder_fail(
 			builder, morph_tui_widget_text_field_set_multiline(editor, 1));

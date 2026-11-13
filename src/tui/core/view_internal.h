@@ -32,6 +32,7 @@ struct morph_tui_view_controller_state {
 	struct morph_tui_builder builder;
 	struct morph_tui_view *root, *focus;
 	struct morph_tui_view *text_target, *paste_target;
+	struct morph_tui_view *mouse_target;
 	struct utf8_terminal_sanitizer sanitizer;
 	morph_buf_t text;
 	int quit_key, visible;
@@ -48,6 +49,12 @@ struct morph_tui_window {
 	struct render_native_media *media;
 	int (*event)(void *, const struct morph_tui_event *);
 	void *event_data;
+	int (*copy_text)(void *, const char *);
+	void *copy_data;
+	morph_buf_t selection_text;
+	int selection_active, selection_dragging;
+	int selection_x1, selection_y1, selection_x2, selection_y2;
+	int selection_width, selection_height;
 };
 
 int core_view_draw(struct morph_tui_view *view, struct morph_tui_canvas *parent);
@@ -59,5 +66,8 @@ void core_window_destroy(struct morph_tui_window *window);
 void core_window_clear_media(struct morph_tui_window *window);
 void core_window_invalidate(struct morph_tui_window *window);
 int core_window_draw(struct morph_tui_window *window, const struct morph_tui_screen *screen);
+int core_window_mouse_event(struct morph_tui_window *window, const struct morph_tui_event *event);
+int core_window_selection_dragging(const struct morph_tui_window *window);
+void core_window_clear_selection(struct morph_tui_window *window);
 
 #endif

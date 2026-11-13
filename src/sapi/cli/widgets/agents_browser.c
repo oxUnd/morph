@@ -194,7 +194,7 @@ static int cli_agents_browser_list_row(morph_buf_t *out, const struct cli_agents
 	if (agent && data->detail && !strcmp(agent->id, data->detail->id))
 		agent = data->detail;
 	const char *style =
-		active && styled ? "\033[44;97m"
+		active && styled ? ANSI_CYAN ANSI_BOLD
 		: index == SIZE_MAX
 			? ""
 			: cli_agents_browser_status_style(cli_agents_browser_status(data, index));
@@ -283,7 +283,7 @@ static int cli_agents_browser_tabs(morph_buf_t *out, const struct cli_agents_bro
 	const char *short_names[] = {"All", "Run", "Wait", "Done", "Fail", "Stop", "Idle"};
 	for (int i = 0; i < CLI_AGENTS_BROWSER_FILTER_COUNT; i++) {
 		if (styled && state->filter == (enum cli_agents_browser_filter)i)
-			(void)morph_buf_puts(out, "\033[7m");
+			(void)morph_buf_puts(out, ANSI_CYAN ANSI_BOLD);
 		(void)morph_buf_printf(
 			out, "%s%s %zu%s  ",
 			!styled && state->filter == (enum cli_agents_browser_filter)i ? "[" : "",

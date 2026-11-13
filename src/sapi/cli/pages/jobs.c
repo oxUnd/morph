@@ -152,12 +152,13 @@ static int cli_jobs_draw(void *data, const struct morph_tui_screen *screen)
 				size_t index = view->selection.first + (size_t)(row - 2);
 				cJSON *job = cJSON_GetArrayItem(view->jobs, (int)index);
 				if (job) {
-					(void)morph_buf_printf(&line, "  %.8s  %-11s  %s",
+					(void)morph_buf_printf(&line, "%s %.8s  %-11s  %s",
+							       index == view->selection.index ? ">" : " ",
 							       cli_jobs_job_short_id(job),
 							       cli_jobs_job_string(job, "status"),
 							       cli_jobs_job_string(job, "command"));
 					if (index == view->selection.index)
-						style = ANSI_CYAN "\033[7m";
+						style = ANSI_CYAN ANSI_BOLD;
 				} else if (!cJSON_GetArraySize(view->jobs) && row == 2)
 					(void)morph_buf_puts(
 						&line, "  No background jobs in this session.");

@@ -18,7 +18,33 @@ enum terminal_input_state {
 	TERMINAL_INPUT_DISCARD
 };
 
-static int terminal_input_sequence_key(const char *sequence)
+static int terminal_input_mouse(struct morph_tui_input *input, const char *sequence)
+{
+	unsigned button, column, row;
+	char action;
+	int consumed = 0;
+
+	if (sscanf(sequence, "<%u;%u;%u%c%n", &button, &column, &row, &action, &consumed) != 4 ||
+	    sequence[consumed] || (action != 'M' && action != 'm') ||
+	    !column || !row || column > INT_MAX || row > INT_MAX || button > 127U)
+		return 0;
+	if (button & 64U)
+		return action == 'M' && (button & 3U) < 2U ?
+			(button & 1U ? MORPH_TUI_KEY_WHEEL_DOWN : MORPH_TUI_KEY_WHEEL_UP) : 0;
+	if ((button & 3U) == 3U)
+		return 0;
+	input->mouse = (struct morph_tui_mouse_event){
+		.button = (enum morph_tui_mouse_button)(button & 3U),
+		.action = action == 'm' ? MORPH_TUI_MOUSE_RELEASE :
+			(button & 32U ? MORPH_TUI_MOUSE_MOVE : MORPH_TUI_MOUSE_PRESS),
+		.x = (int)column - 1,
+		.y = (int)row - 1,
+		.modifiers = (button >> 2U) & 7U,
+	};
+	return MORPH_TUI_KEY_MOUSE;
+}
+
+static int terminal_input_sequence_key(struct morph_tui_input *input, const char *sequence)
 {
 	if (strcmp(sequence, "A") == 0)
 		return MORPH_TUI_KEY_UP;
@@ -54,14 +80,7 @@ static int terminal_input_sequence_key(const char *sequence)
 		return MORPH_TUI_KEY_FOCUS_IN;
 	if (strcmp(sequence, "O") == 0)
 		return MORPH_TUI_KEY_FOCUS_OUT;
-	unsigned button, column, row;
-	char action;
-	int consumed = 0;
-
-	if (sscanf(sequence, "<%u;%u;%u%c%n", &button, &column, &row, &action, &consumed) == 4 &&
-	    !sequence[consumed] && action == 'M' && (button & 64U))
-		return button & 1U ? MORPH_TUI_KEY_WHEEL_DOWN : MORPH_TUI_KEY_WHEEL_UP;
-	return 0;
+	return terminal_input_mouse(input, sequence);
 }
 
 int morph_tui_input_feed(struct morph_tui_input *input, unsigned char byte)
@@ -101,7 +120,7 @@ int morph_tui_input_feed(struct morph_tui_input *input, unsigned char byte)
 
 	if (input->state != TERMINAL_INPUT_DISCARD) {
 		input->sequence[input->length] = '\0';
-		key = terminal_input_sequence_key(input->sequence);
+		key = terminal_input_sequence_key(input, input->sequence);
 	}
 	input->length = 0;
 	input->state = TERMINAL_INPUT_TEXT;

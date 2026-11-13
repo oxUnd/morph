@@ -55,6 +55,10 @@ int morph_tui_screen_poll(struct morph_tui_screen *screen, struct morph_tui_even
 	event->type = MORPH_TUI_EVENT_KEY;
 	event->key = key;
 	event->pasting = screen->pasting;
+	if (key == MORPH_TUI_KEY_MOUSE) {
+		event->type = MORPH_TUI_EVENT_MOUSE;
+		event->mouse = screen->input.mouse;
+	}
 	if (key == MORPH_TUI_KEY_PASTE_END)
 		screen->pasting = 0;
 	return 0;

@@ -33,6 +33,7 @@ struct cli_event_queue {
 	int wake_write;
 	int mutex_initialized;
 	int owner_calls_stopped;
+	int events_enabled;
 };
 
 static void cli_event_queue_item_free(struct cli_event_queue_item *item)
@@ -166,6 +167,7 @@ int cli_event_queue_init(struct cli_application *ctx, cli_event_queue_dispatch_f
 		return -ENOMEM;
 	ui->wake_read = -1;
 	ui->wake_write = -1;
+	ui->events_enabled = 1;
 	morph_queue_init(&ui->pending);
 	mutex_rc = pthread_mutex_init(&ui->mutex, NULL);
 	if (mutex_rc != 0) {
@@ -421,6 +423,46 @@ int cli_event_queue_run_owner_call(struct cli_application *ctx,
 	return result;
 }
 
+int cli_event_queue_events_enabled(const struct cli_application *ctx)
+{
+	struct cli_event_queue *ui = ctx ? ctx->events : NULL;
+	if (!ui)
+		return 0;
+	pthread_mutex_lock(&ui->mutex);
+	int enabled = ui->events_enabled;
+	pthread_mutex_unlock(&ui->mutex);
+	return enabled;
+}
+
+int cli_event_queue_set_events_enabled(struct cli_application *ctx, int enabled)
+{
+	if (!ctx || !ctx->events)
+		return -EINVAL;
+	if (!cli_event_queue_is_owner(ctx))
+		return -EPERM;
+	struct cli_event_queue *ui = ctx->events;
+	pthread_mutex_lock(&ui->mutex);
+	int changed = ui->events_enabled != !!enabled;
+	ui->events_enabled = !!enabled;
+	int pending = !morph_queue_empty(&ui->pending);
+	pthread_mutex_unlock(&ui->mutex);
+	if (changed && enabled && pending)
+		cli_event_queue_wake(ui);
+	return 0;
+}
+
+static int cli_event_queue_pending_ready(struct cli_event_queue *ui)
+{
+	morph_queue_t *link;
+	morph_queue_foreach (link, &ui->pending) {
+		struct cli_event_queue_item *item =
+			morph_queue_data(link, struct cli_event_queue_item, link);
+		if (ui->events_enabled || item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL)
+			return 1;
+	}
+	return 0;
+}
+
 static int cli_event_queue_drain_limit(struct cli_application *ctx, int limit)
 {
 	struct cli_event_queue *ui;
@@ -437,16 +479,19 @@ static int cli_event_queue_drain_limit(struct cli_application *ctx, int limit)
 	cli_event_queue_consume_wake(ui);
 	morph_queue_init(&local);
 	pthread_mutex_lock(&ui->mutex);
-	if (!limit)
-		morph_queue_add(&local, &ui->pending);
-	else {
-		for (int i = 0; i < limit && !morph_queue_empty(&ui->pending); i++) {
-			link = morph_queue_head(&ui->pending);
-			morph_queue_remove(link);
-			morph_queue_insert_tail(&local, link);
-		}
+	int taken = 0;
+	morph_queue_foreach_safe (link, next, &ui->pending) {
+		if (limit && taken == limit)
+			break;
+		struct cli_event_queue_item *item =
+			morph_queue_data(link, struct cli_event_queue_item, link);
+		if (!ui->events_enabled && item->kind != CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL)
+			continue;
+		morph_queue_remove(link);
+		morph_queue_insert_tail(&local, link);
+		taken++;
 	}
-	int remaining = !morph_queue_empty(&ui->pending);
+	int remaining = cli_event_queue_pending_ready(ui);
 
 	pthread_mutex_unlock(&ui->mutex);
 	if (remaining)

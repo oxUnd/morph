@@ -16,12 +16,19 @@ int cli_runtime_events_callback(const struct morph_event *ev, void *user_data)
 	if (ctx->events) {
 		int rc;
 
-		if (!cli_event_queue_is_owner(ctx))
+		if (!cli_event_queue_is_owner(ctx) || !cli_event_queue_events_enabled(ctx))
 			return cli_event_queue_post_morph_event(ctx, ev);
 		rc = cli_event_queue_drain(ctx);
 		if (rc != 0)
 			return rc;
 	}
+	return cli_runtime_events_deliver(ctx, ev);
+}
+
+int cli_runtime_events_deliver(struct cli_application *ctx, const struct morph_event *ev)
+{
+	if (!ctx || !ev)
+		return -EINVAL;
 	if (ev->name && !strncmp(ev->name, "agent.", 6))
 		(void)cli_agents_refresh(ctx);
 	int subagent_rc = cli_subagents_event(ctx, ev);

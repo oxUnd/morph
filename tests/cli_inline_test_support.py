@@ -13,8 +13,9 @@ def stable_rows(terminal):
 
 
 def no_screen_switch(raw):
+    # A retained frame can repaint after resize; it must keep the same buffer.
     forbidden = re.compile(
-        r'\x1b\[(?:\?(?:47|1047|1049)[hl]|[23]J|(?:[01];[01])?[Hf])|\x1bc')
+        r'\x1b\[\?(?:47|1047|1049)[hl]|\x1bc')
     found = forbidden.search(raw)
     assert not found, f'inline panel used full-screen control {found.group()!r}'
 
@@ -68,7 +69,7 @@ def restored_composer(terminal, history_marker, expected='', command=None):
     backgrounds = [index for index in range(boundary + 1, len(rows))
                    if terminal.screen.buffer[index][0].bg == '3a3a3a']
     assert backgrounds == [row - 1, row, row + 1], (backgrounds, diagnostic)
-    assert not any(terminal.screen.buffer[y][x].bg == 'blue'
+    assert not any(terminal.screen.buffer[y][x].bg in ('blue', '0000ee')
                    for y in range(boundary + 1, len(rows))
                    for x in range(terminal.screen.columns)), diagnostic
     return row

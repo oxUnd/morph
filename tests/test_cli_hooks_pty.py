@@ -11,6 +11,12 @@ import pexpect
 import pyte
 
 
+class TerminalThemeScreen(AlternateScreen):
+    @property
+    def default_char(self):
+        return super().default_char._replace(fg='202020', bg='e8e6de')
+
+
 def main():
     driver = Path(sys.argv[1]).resolve()
     artifacts = Path(sys.argv[2]) if len(sys.argv) > 2 else None
@@ -35,7 +41,7 @@ def main():
             {'matcher': 'project-only', 'hooks': [{'type': 'command', 'command': command}]}]}}))
         terminal = Terminal(driver, directory, 1, extra_env={'HOME': str(home)})
         terminal.child.setwinsize(40, 120)
-        terminal.screen = AlternateScreen(120, 40)
+        terminal.screen = TerminalThemeScreen(120, 40)
         terminal.stream = pyte.Stream(terminal.screen)
         database = directory / 'data.db'
 
@@ -43,6 +49,12 @@ def main():
             text = terminal.snapshot(label)
             assert not marker.exists(), 'inspection or trust executed a hook'
             assert text.count('morph') >= 1, text
+            if '/ hooks' in terminal.screen.display[0]:
+                assert all(terminal.screen.buffer[row][column].bg == 'e8e6de'
+                           and not terminal.screen.buffer[row][column].reverse
+                           for row in range(terminal.screen.lines)
+                           for column in range(terminal.screen.columns)), (
+                               'fullscreen hooks must inherit the terminal background\n' + text)
             if artifacts:
                 (artifacts / f'{len(terminal.snapshots):02d}.txt').write_text(text)
             return text
@@ -57,8 +69,9 @@ def main():
             assert '/ hooks / review' in text and 'Review decision' in text, text
             assert 'Trust current definition' in text, text
             selected = [r for r in range(terminal.screen.lines)
-                        if terminal.screen.buffer[r][2].bg == '1d3038']
+                        if terminal.screen.buffer[r][1].data == '▏']
             assert len(selected) == 1, text
+            assert terminal.screen.buffer[selected[0]][2].bold, text
             assert 'Keep unchanged' in terminal.screen.display[selected[0]], text
             return text
 
@@ -85,6 +98,9 @@ def main():
             assert text.count('Lifecycle hooks') == 1, text
             assert 'COMMAND' in text and 'SOURCE' in text and 'STATE' in text, text
             assert 'Needs review' in text and 'Workspace untrusted' in text, text
+            title = next(row for row, line in enumerate(terminal.screen.display)
+                         if 'Lifecycle hooks' in line)
+            assert terminal.screen.buffer[title][2].fg == '202020', text
             assert not trust_rows()
             terminal.send('e')
             text = snapshot('lifecycle event overview')
@@ -116,8 +132,8 @@ def main():
             config.write_text(json.dumps(data))
             text = review()
             assert 'Definition changes' in text and '--strict' in text, text
-            assert any(terminal.screen.buffer[r][2].bg == '31181a' for r in range(40)), text
-            assert any(terminal.screen.buffer[r][2].bg == '162e21' for r in range(40)), text
+            assert any(terminal.screen.buffer[r][2].fg == 'f0a3a3' for r in range(40)), text
+            assert any(terminal.screen.buffer[r][2].fg == 'a0e3b6' for r in range(40)), text
             # Editing after review must fail the digest check, then show refreshed content.
             newest = command + ' --newest'
             data['hooks']['PreToolUse'][0]['hooks'][0]['command'] = newest

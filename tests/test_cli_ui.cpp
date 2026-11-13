@@ -19,6 +19,7 @@ extern "C" {
 #include "agent/tools/ask_user.h"
 #include "util/cancel.h"
 #include "util/cleanup.h"
+#include "util/json.h"
 #include "event/event.h"
 }
 
@@ -123,6 +124,93 @@ TEST_F(CliUiTest, TaskMutationsAvoidDuplicateToolOutput)
 	testing::internal::CaptureStdout();
 	EXPECT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
 	EXPECT_NE(testing::internal::GetCapturedStdout().find("task changed"), std::string::npos);
+}
+
+TEST_F(CliUiTest, PausedEventsRetainOwnerWorkerAndNotificationOrderUntilPresentationStarts)
+{
+	ASSERT_EQ(cli_event_queue_set_events_enabled(&ctx, 0), 0);
+	EXPECT_EQ(cli_event_queue_events_enabled(&ctx), 0);
+	struct morph_event event{MORPH_EVENT_ERROR, "startup.error", "end",
+		"first startup event", nullptr, nullptr};
+	testing::internal::CaptureStdout();
+	EXPECT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
+	event.message = "second startup event";
+	int posted = -1;
+	std::thread worker([&] { posted = cli_runtime_events_callback(&event, &ctx); });
+	worker.join();
+	EXPECT_EQ(posted, 0);
+	struct notification notification{};
+	std::strcpy(notification.title, "third startup notification");
+	EXPECT_EQ(cli_event_queue_post_notification(&ctx, &notification), 0);
+	EXPECT_EQ(cli_event_queue_drain(&ctx), 0);
+	EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
+	struct pollfd ready{};
+	ready.fd = cli_event_queue_wake_fd(&ctx);
+	ready.events = POLLIN;
+	EXPECT_EQ(poll(&ready, 1, 0), 0);
+	ASSERT_EQ(cli_event_queue_set_events_enabled(&ctx, 1), 0);
+	EXPECT_EQ(poll(&ready, 1, 0), 1);
+	testing::internal::CaptureStdout();
+	EXPECT_EQ(cli_event_queue_drain(&ctx), 0);
+	std::string output = testing::internal::GetCapturedStdout();
+	auto first = output.find("first startup event");
+	auto second = output.find("second startup event");
+	auto third = output.find("third startup notification");
+	ASSERT_NE(first, std::string::npos);
+	ASSERT_NE(second, std::string::npos);
+	ASSERT_NE(third, std::string::npos);
+	EXPECT_LT(first, second);
+	EXPECT_LT(second, third);
+	testing::internal::CaptureStdout();
+	EXPECT_EQ(cli_event_queue_drain(&ctx), 0);
+	EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
+}
+
+TEST_F(CliUiTest, PausedEventsAllowStartupOwnerCallsWithoutDeliveringTheirPredecessors)
+{
+	ASSERT_EQ(cli_event_queue_set_events_enabled(&ctx, 0), 0);
+	struct morph_event event{MORPH_EVENT_ERROR, "startup.error", "end",
+		"held startup event", nullptr, nullptr};
+	ASSERT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
+	ASSERT_EQ(cli_event_queue_drain(&ctx), 0);
+	cli_owner_call_data data{&ctx, 0};
+	int result = 0;
+	std::thread worker([&] { result = cli_event_queue_call_owner(&ctx, cli_owner_call, &data); });
+	struct pollfd ready{};
+	ready.fd = cli_event_queue_wake_fd(&ctx);
+	ready.events = POLLIN;
+	EXPECT_EQ(poll(&ready, 1, 1000), 1);
+	testing::internal::CaptureStdout();
+	EXPECT_EQ(cli_event_queue_drain_batch(&ctx), 0);
+	worker.join();
+	EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
+	EXPECT_EQ(data.ran_on_owner, 1);
+	EXPECT_EQ(result, 73);
+	ASSERT_EQ(cli_event_queue_set_events_enabled(&ctx, 1), 0);
+	testing::internal::CaptureStdout();
+	EXPECT_EQ(cli_event_queue_drain(&ctx), 0);
+	EXPECT_NE(testing::internal::GetCapturedStdout().find("held startup event"),
+		std::string::npos);
+}
+
+TEST_F(CliUiTest, EventDeliveryGateRejectsWorkerMutationAndKeepsJsonContract)
+{
+	int result = 0;
+	std::thread worker([&] { result = cli_event_queue_set_events_enabled(&ctx, 0); });
+	worker.join();
+	EXPECT_EQ(result, -EPERM);
+	EXPECT_EQ(cli_event_queue_events_enabled(&ctx), 1);
+	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
+	ctx.presentation_ready = 0;
+	struct morph_event event{MORPH_EVENT_MCP, "mcp.failed", "failed",
+		"MCP initialization finished", nullptr, nullptr};
+	testing::internal::CaptureStdout();
+	EXPECT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
+	std::string output = testing::internal::GetCapturedStdout();
+	cJSON *json MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(output.c_str());
+	ASSERT_NE(json, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(json, "name")),
+		"mcp.failed");
 }
 
 TEST_F(CliUiTest, CancelledOwnerPromptConsumesItsInterruptBeforeComposerRestore)

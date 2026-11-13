@@ -84,6 +84,7 @@ set(TEST_SOURCES
 	test_cli_share.cpp
 	test_cli_copy.cpp
 	test_cli_list.cpp
+	test_cli_mcp_tree.cpp
 	test_cli_presentation.cpp
 	test_cli_retained_widgets.cpp
 	test_cli_retained_media.cpp
@@ -95,6 +96,7 @@ set(TEST_SOURCES
 	test_tui.cpp
 	test_tui_application.cpp
 	test_tui_views.cpp
+	test_tui_selection.cpp
 	test_tui_media.cpp
 	test_cli_ui.cpp
 	test_utf8.cpp
@@ -237,6 +239,16 @@ if(Python3_Interpreter_FOUND)
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_native_media_pty.py
 				$<TARGET_FILE:morph-cli-pty-driver>)
 		set_tests_properties(cli_native_media_pty_integration PROPERTIES
+			SKIP_RETURN_CODE 77 TIMEOUT 90)
+		add_test(NAME cli_mcp_lifecycle_pty_integration
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_mcp_lifecycle_pty.py
+				$<TARGET_FILE:morph-cli-pty-driver> $<TARGET_FILE:morph>)
+		set_tests_properties(cli_mcp_lifecycle_pty_integration PROPERTIES
+			SKIP_RETURN_CODE 77 TIMEOUT 90)
+		add_test(NAME cli_mcp_tree_pty_integration
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_mcp_tree_pty.py
+				$<TARGET_FILE:morph-cli-pty-driver> $<TARGET_FILE:morph>)
+		set_tests_properties(cli_mcp_tree_pty_integration PROPERTIES
 			SKIP_RETURN_CODE 77 TIMEOUT 90)
 	endif()
 	if(UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIBRARY)
@@ -431,6 +443,17 @@ if(Python3_Interpreter_FOUND AND UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIB
 			$<TARGET_FILE:morph>)
 	set_tests_properties(cli_copy_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
+	add_test(NAME cli_mouse_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_mouse_pty.py
+			$<TARGET_FILE:morph>)
+	set_tests_properties(cli_mouse_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 90)
+	add_test(NAME cli_retained_panels_pty_integration
+		COMMAND ${Python3_EXECUTABLE}
+			${CMAKE_CURRENT_SOURCE_DIR}/test_cli_retained_panels_pty.py
+			$<TARGET_FILE:morph>)
+	set_tests_properties(cli_retained_panels_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 60)
 	add_test(NAME cli_transcript_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_transcript_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver>)

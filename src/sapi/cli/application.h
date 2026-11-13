@@ -83,6 +83,9 @@ void cli_application_shutdown(struct cli_application *ctx);
 struct morph_tui_application *cli_application_tui_borrow(struct cli_application *);
 int cli_application_present_screen(struct cli_application *, const struct morph_tui_screen_ops *,
 				   void *data, void (*complete)(void *, int));
+int cli_application_present_screen_with_flags(struct cli_application *,
+					      const struct morph_tui_screen_ops *, void *data,
+					      void (*complete)(void *, int), int flags);
 void cli_application_panel_complete(struct cli_application *, void *data,
 				    void (*complete)(void *, int), int result);
 

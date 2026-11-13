@@ -1,3 +1,4 @@
+#include "jobs_service.h"
 #include "runtime/runtime_internal.h"
 #include "agent/tools/exec_tool.h"
 #include "agent/tools/exec_jobs.h"
@@ -7,6 +8,7 @@
 #include "util/json.h"
 
 #include <errno.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -16,12 +18,33 @@ static const char *job_string(const cJSON *data, const char *key)
 	return text ? text : "";
 }
 
-static int runtime_process_event(const struct morph_event *event, void *user_data)
+static int64_t runtime_jobs_event_owner(const struct morph_event *event)
+{
+	if (!event || event->type != MORPH_EVENT_BACKGROUND || !event->name ||
+	    (strcmp(event->name, "process.started") && strcmp(event->name, "process.completed")) ||
+	    !cJSON_IsObject(event->data) || !job_string(event->data, "session_id")[0])
+		return 0;
+	const cJSON *item = cJSON_GetObjectItemCaseSensitive(event->data, "owner_session_id");
+
+	if (!cJSON_IsNumber(item))
+		return 0;
+	double number = cJSON_GetNumberValue(item);
+
+	/* 2^63 is exactly representable; (double)INT64_MAX rounds up to it. */
+	if (!isfinite(number) || number < 1.0 || number >= 0x1p63)
+		return 0;
+	int64_t owner = (int64_t)number;
+
+	return (double)owner == number ? owner : 0;
+}
+
+int runtime_jobs_event(const struct morph_event *event, void *user_data)
 {
 	struct runtime *runtime = user_data;
-	const cJSON *data = event->data;
-	int64_t owner = (int64_t)cJSON_GetNumberValue(
-		cJSON_GetObjectItemCaseSensitive(data, "owner_session_id"));
+	if (!runtime)
+		return -EINVAL;
+	const cJSON *data = event ? event->data : NULL;
+	int64_t owner = runtime_jobs_event_owner(event);
 	if (owner > 0) {
 		char *json = cJSON_PrintUnformatted(data);
 		sqlite3_stmt *stmt = NULL;
@@ -34,7 +57,8 @@ static int runtime_process_event(const struct morph_event *event, void *user_dat
 					"CONFLICT(process_id) DO UPDATE "
 					"SET "
 					"data_json=excluded.data_json,updated_at=excluded.updated_"
-					"at",
+						"at WHERE "
+						"process_jobs.session_id=excluded.session_id",
 					-1, &stmt, NULL)
 			      : SQLITE_NOMEM;
 		if (rc == SQLITE_OK) {
@@ -74,7 +98,7 @@ int runtime_jobs_init(struct runtime *runtime)
 	if (rc && rc != -ENOENT)
 		return rc;
 	runtime->jobs = runtime->jobs_owner.jobs;
-	rc = exec_tool_set_event_callback(&runtime->context.tools, runtime_process_event, runtime);
+	rc = exec_tool_set_event_callback(&runtime->context.tools, runtime_jobs_event, runtime);
 	return rc == -ENOENT ? 0 : rc;
 }
 

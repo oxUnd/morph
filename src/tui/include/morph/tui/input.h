@@ -1,6 +1,7 @@
 #ifndef MORPH_TUI_INPUT_H
 #define MORPH_TUI_INPUT_H
 
+#include <morph/tui/event.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -27,7 +28,9 @@ enum morph_tui_key {
 	MORPH_TUI_KEY_FOCUS_IN,
 	MORPH_TUI_KEY_FOCUS_OUT,
 	MORPH_TUI_KEY_DELETE,
-	MORPH_TUI_KEY_PASTE_CLIPBOARD
+	MORPH_TUI_KEY_PASTE_CLIPBOARD,
+	/* The complete mouse report is in the input stream's mouse field. */
+	MORPH_TUI_KEY_MOUSE
 };
 
 #define MORPH_TUI_INPUT_SEQUENCE_MAX 32
@@ -39,6 +42,7 @@ struct morph_tui_input {
 	size_t length;
 	int state;
 	int64_t deadline_ms;
+	struct morph_tui_mouse_event mouse;
 };
 
 /* feed/expire perform no I/O or clock reads. read uses a monotonic deadline,

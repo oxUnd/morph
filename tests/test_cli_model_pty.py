@@ -49,7 +49,7 @@ def panel(terminal, ultra=False):
     assert not any(line.startswith(('› ', '» ')) for line in rows[heading + 1:]), '\n'.join(rows)
     selected = next(i for i, line in enumerate(rows) if line.startswith('> '))
     assert ('Ultra (current)' if ultra else 'Normal (current)') in rows[selected], '\n'.join(rows)
-    assert terminal.screen.buffer[selected][0].bg == 'blue'
+    assert terminal.screen.buffer[selected][0].bg in ('blue', '0000ee')
     marker = getattr(terminal, 'model_history_marker', None)
     if marker:
         inline_panel(terminal, 'Select Model Mode', marker, maximum=10)
@@ -209,7 +209,7 @@ def main():
                     settled(terminal, True)
                     (directory / 'config.toml').rmdir()
                     (directory / 'config.toml').write_text(saved)
-                    for sequence in ('\x1b[?1049h', '\x1b[?1049l', '\x1b[2J', '\x1b[H'):
+                    for sequence in ('\x1b[?1049h', '\x1b[?1049l', '\x1bc'):
                         assert sequence not in terminal.raw[start:], repr(sequence)
                     assert Model.requests.empty(), 'mode selection requested an LLM'
                     # Structured mode uses receipts and keeps all animation escapes out of output.

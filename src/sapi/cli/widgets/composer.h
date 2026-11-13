@@ -12,5 +12,8 @@ struct morph_tui_view *cli_composer_add_borrow(struct morph_tui_builder *,
 					       struct cli_application *,
 					       struct morph_tui_view **editor_borrow);
 int cli_composer_update(struct morph_tui_view *, int64_t now_ms);
+/* Preserve editable rows before shrinking the component's own spacing.
+ * A preceding history separator replaces this component's leading margin. */
+int cli_composer_fit(struct morph_tui_view *, int width, int height, int preceding_separator);
 
 #endif

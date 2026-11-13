@@ -103,7 +103,8 @@ int core_application_loop_result(const struct core_application_loop *app)
 
 static int core_app_system_event(enum morph_tui_event_type type)
 {
-	return type != MORPH_TUI_EVENT_KEY && type != MORPH_TUI_EVENT_INPUT_READY;
+	return type != MORPH_TUI_EVENT_KEY && type != MORPH_TUI_EVENT_INPUT_READY &&
+	       type != MORPH_TUI_EVENT_MOUSE;
 }
 
 void core_application_loop_stop(struct core_application_loop *app, int result)
@@ -177,6 +178,10 @@ static void core_app_read_key(struct core_application_loop *app)
 		app->screen.pasting = 1;
 	event.key = key;
 	event.pasting = app->screen.pasting;
+	if (key == MORPH_TUI_KEY_MOUSE) {
+		event.type = MORPH_TUI_EVENT_MOUSE;
+		event.mouse = app->screen.input.mouse;
+	}
 	core_app_dispatch(app, &event);
 	if (key == MORPH_TUI_KEY_PASTE_END)
 		app->screen.pasting = 0;

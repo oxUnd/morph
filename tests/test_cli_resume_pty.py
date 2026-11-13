@@ -65,12 +65,14 @@ def main():
                 data_rows = [line for line in screen.splitlines() if '会话 ' in line]
                 assert len(data_rows) == shown, screen
                 selected = [r for r in range(rows) if
-                            terminal.screen.buffer[r][2].bg == '1d3038']
+                            terminal.screen.display[r][1:2] == '▏']
                 assert len(selected) == 1, screen
                 selected_row = selected[0]
                 assert ordered[session][0][:12] in terminal.screen.display[selected_row], screen
                 assert terminal.screen.buffer[selected_row][1].fg == '47d3e6', screen
                 assert terminal.screen.buffer[selected_row][2].bold, screen
+                assert all(terminal.screen.buffer[row][column].bg == 'default'
+                           for row in range(rows) for column in range(columns)), screen
                 assert terminal.screen.cursor.hidden, screen
                 if artifacts:
                     (artifacts / f'{len(terminal.snapshots):02d}.txt').write_text(screen)
@@ -118,6 +120,15 @@ def main():
             assert not terminal.screen.cursor.hidden, restored
             terminal.send('/resume\r')
             frame('reopen picker', 1)
+            terminal.send('\x1b[<0;8;8M\x1b[<0;8;8m')
+            frame('group header click does not resume', 1)
+            terminal.send('\x1b[<0;8;10M\x1b[<32;9;10M\x1b[<0;8;10m')
+            frame('dragging a session does not resume', 2)
+            terminal.send('\x1b[<0;8;10M\x1b[<0;8;10m')
+            restored = terminal.snapshot('mouse click resumes the selected session')
+            assert 'resumed session: ' + ordered[1][0] in restored, restored
+            terminal.send('/resume\r')
+            frame('reopen picker after mouse activation', 1)
             terminal.send('\x1b')
             restored = terminal.snapshot('Escape restores composer')
             assert 'Resume a session' not in restored, restored

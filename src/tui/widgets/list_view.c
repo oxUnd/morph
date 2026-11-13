@@ -13,6 +13,8 @@ struct widget_list_view {
 	size_t owned_count;
 	morph_tui_widget_list_source_fn source;
 	void *source_data;
+	int mouse_pressed;
+	size_t pressed_index;
 };
 
 static const char *widget_list_view_text(struct widget_list_view *list, size_t index)
@@ -53,32 +55,90 @@ static int widget_list_view_draw(struct morph_tui_view *view, struct morph_tui_c
 
 		if (index >= list->menu.list.count)
 			break;
-		unsigned style = morph_tui_view_focused(view) && index == list->menu.list.index
-								 ? MORPH_TUI_STYLE_SELECTED
-								: MORPH_TUI_STYLE_NORMAL;
+		int selected = morph_tui_view_focused(view) && index == list->menu.list.index;
+		struct morph_tui_text_style style = {
+			.attributes = selected ? MORPH_TUI_STYLE_BOLD : MORPH_TUI_STYLE_NORMAL,
+			.foreground = {selected ? MORPH_TUI_COLOR_INDEXED : MORPH_TUI_COLOR_INHERIT,
+				       selected ? 6U : 0U},
+		};
 		struct morph_tui_canvas line;
 
 		morph_tui_canvas_child_borrow(canvas, 0, row, canvas->width, 1, &line);
-		int rc = morph_tui_canvas_fill(&line, style);
+		int rc = morph_tui_canvas_fill_styled(&line, &style);
 
 		if (!rc)
-			rc = morph_tui_canvas_text(&line, 0, 0, widget_list_view_text(list, index),
-						   style);
+			rc = morph_tui_canvas_text_styled(&line, 0, 0,
+						  widget_list_view_text(list, index), &style);
 		if (rc)
 			return rc;
 	}
 	return 0;
 }
 
+static int widget_list_view_mouse(struct morph_tui_view *view,
+				  const struct morph_tui_mouse_event *mouse)
+{
+	struct widget_list_view *list = (struct widget_list_view *)view;
+	struct morph_tui_view_rect content = morph_tui_view_content_rect(view);
+	int inside = mouse->x >= 0 && mouse->x < content.width && mouse->y >= 0 &&
+		     mouse->y < content.height;
+	size_t index = inside ? list->menu.list.first + (size_t)mouse->y : SIZE_MAX;
+
+	if (mouse->action == MORPH_TUI_MOUSE_CANCEL) {
+		list->mouse_pressed = 0;
+		return 0;
+	}
+	if (mouse->button != MORPH_TUI_MOUSE_LEFT || mouse->modifiers) {
+		list->mouse_pressed = 0;
+		return 0;
+	}
+	inside = inside && index < list->menu.list.count;
+	if (mouse->action == MORPH_TUI_MOUSE_PRESS) {
+		list->mouse_pressed = inside;
+		if (!inside)
+			return 0;
+		list->pressed_index = index;
+		int changed = list->menu.list.index != index;
+
+		list->menu.list.index = index;
+		morph_tui_view_invalidate(view, 0);
+		int rc = changed ? morph_tui_widget_emit(view, MORPH_TUI_WIDGET_ACTION_CHANGED,
+							index, widget_list_view_text(list, index))
+				 : 0;
+
+		return rc ? rc : 1;
+	}
+	if (mouse->action == MORPH_TUI_MOUSE_MOVE) {
+		list->mouse_pressed = 0;
+		return 0;
+	}
+	int activate = mouse->action == MORPH_TUI_MOUSE_RELEASE && list->mouse_pressed &&
+		       inside && index == list->pressed_index;
+
+	list->mouse_pressed = 0;
+	if (!activate)
+		return 0;
+	int rc = morph_tui_widget_emit(view, MORPH_TUI_WIDGET_ACTION_ACTIVATE, index,
+				       widget_list_view_text(list, index));
+
+	return rc ? rc : 1;
+}
+
 static int widget_list_view_event(struct morph_tui_view *view, const struct morph_tui_event *event)
 {
 	struct widget_list_view *list = (struct widget_list_view *)view;
 
+	if (event->type == MORPH_TUI_EVENT_MOUSE)
+		return widget_list_view_mouse(view, &event->mouse);
 	if (event->type != MORPH_TUI_EVENT_KEY && event->type != MORPH_TUI_EVENT_TEXT)
 		return 0;
 	if (event->pasting)
 		return 0;
-	int result = morph_tui_widget_menu_state_update(&list->menu, event->key);
+	list->mouse_pressed = 0;
+	int key = event->key == MORPH_TUI_KEY_WHEEL_UP ? MORPH_TUI_KEY_UP
+		  : event->key == MORPH_TUI_KEY_WHEEL_DOWN ? MORPH_TUI_KEY_DOWN
+							  : event->key;
+	int result = morph_tui_widget_menu_state_update(&list->menu, key);
 
 	if (result != MORPH_TUI_WIDGET_CHANGED && result != MORPH_TUI_WIDGET_SUBMIT)
 		return 0;
@@ -99,6 +159,7 @@ static void widget_list_view_clear(struct widget_list_view *list)
 	free(list->items);
 	list->items = NULL;
 	list->owned_count = 0;
+	list->mouse_pressed = 0;
 }
 
 static void widget_list_view_destroy(struct morph_tui_view *view)
@@ -209,6 +270,7 @@ int morph_tui_widget_list_select(struct morph_tui_view *view, size_t index)
 		return -ERANGE;
 	if (list->menu.list.index == index)
 		return 0;
+	list->mouse_pressed = 0;
 	list->menu.list.index = index;
 	morph_tui_widget_list_state_layout(&list->menu.list, list->menu.list.count,
 					   list->menu.list.page);

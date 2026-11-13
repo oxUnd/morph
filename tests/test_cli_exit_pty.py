@@ -2,6 +2,7 @@
 from pathlib import Path
 import os
 import re
+import signal
 import shlex
 import sys
 import tempfile
@@ -10,8 +11,11 @@ from test_cli_resume_history_pty import seed, start
 import pexpect
 
 
-def finish(terminal, command='/quit'):
-    terminal.send(command + '\r')
+def finish(terminal, command='/quit', signal_number=None):
+    if signal_number is not None:
+        os.kill(terminal.child.pid, signal_number)
+    else:
+        terminal.send(command + '\r' if command is not None else '\x04')
     terminal.child.expect(pexpect.EOF, timeout=10)
     tail = terminal.child.before
     if tail:
@@ -19,7 +23,6 @@ def finish(terminal, command='/quit'):
         terminal.stream.feed(tail)
     terminal.child.close()
     assert terminal.child.exitstatus == 0, terminal.raw[-5000:]
-    assert 'Goodbye!' in terminal.raw, terminal.raw[-5000:]
     return '\n'.join(terminal.screen.display)
 
 
@@ -27,12 +30,16 @@ def commands(terminal, directory, identity, screen, color=True):
     plain = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', terminal.raw)
     matches = re.findall(r'^  ((?:morph|morphctl) resume [^\r\n]+)', plain, re.MULTILINE)
     assert len(matches) == 2, plain[-6000:]
+    assert terminal.raw.count('To resume this session, run:') == 1, plain[-6000:]
+    assert terminal.raw.index('To resume this session, run:') > terminal.raw.rfind(
+        '\x1b[?1049l'), plain[-6000:]
     result = [shlex.split(command) for command in matches]
     for executable, arguments in zip(('morph', 'morphctl'), result):
         assert arguments[:3] == [executable, 'resume', identity], arguments
         assert arguments[3:] == ['-c', str((directory / 'config.toml').resolve()),
                                   '-w', str(directory.resolve())], arguments
-    assert plain.index('Goodbye!') < plain.index('To resume this session, run:'), plain[-6000:]
+    if 'Goodbye!' in plain:
+        assert plain.index('Goodbye!') < plain.index('To resume this session, run:'), plain[-6000:]
     assert 'morph resume ' + identity in screen, screen
     assert 'morphctl resume ' + identity in screen, screen
     for executable in ('morph', 'morphctl'):
@@ -84,6 +91,12 @@ def main():
                     assert 'HISTORY_LAST_ANSWER' in terminal.raw, terminal.raw[-5000:]
                     screen = finish(terminal)
                     commands(terminal, directory, '1234abcd', screen, color=color)
+                if columns == 80:
+                    for exit_signal in (None, signal.SIGTERM):
+                        terminal = start(binary, directory, 1, columns, 'resume', '1234abcd')
+                        terminal.wait_for_composer()
+                        screen = finish(terminal, command=None, signal_number=exit_signal)
+                        commands(terminal, directory, '1234abcd', screen)
                 print(f'checked: {columns}: colored hints, no-color and both resume commands',
                       flush=True)
             finally:

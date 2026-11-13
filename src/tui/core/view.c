@@ -144,6 +144,8 @@ int morph_tui_view_clear_children(struct morph_tui_view *view)
 			scope->text_target = NULL;
 		if (scope->paste_target == node)
 			scope->paste_target = NULL;
+		if (scope->mouse_target == node)
+			scope->mouse_target = NULL;
 		if (node->ops && node->ops->destroy)
 			node->ops->destroy(node);
 		morph_array_cleanup(&node->state->children);

@@ -6,6 +6,7 @@
 #include "util/cleanup.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 int core_window_create(struct morph_tui_application *app, struct morph_tui_window **out)
 {
@@ -38,6 +39,7 @@ void core_window_destroy(struct morph_tui_window *window)
 	morph_tui_frame_cleanup(&window->frame);
 	morph_tui_surface_destroy(window->surface);
 	morph_buf_cleanup(&window->rows);
+	morph_buf_cleanup(&window->selection_text);
 	free(window);
 }
 
@@ -95,6 +97,120 @@ int morph_tui_window_set_event_handler_borrow(struct morph_tui_window *window,
 	return 0;
 }
 
+void core_window_clear_selection(struct morph_tui_window *window)
+{
+	if (!window)
+		return;
+	int changed = window->selection_active;
+
+	window->selection_active = 0;
+	window->selection_dragging = 0;
+	morph_buf_reset(&window->selection_text);
+	if (changed)
+		morph_tui_application_invalidate(window->app, MORPH_TUI_INVALIDATE_DISPLAY);
+}
+
+int morph_tui_window_set_text_copy_handler_borrow(struct morph_tui_window *window,
+						 int (*copy)(void *, const char *), void *data)
+{
+	if (!window)
+		return -EINVAL;
+	if (!morph_tui_application_is_owner(window->app))
+		return -EPERM;
+	core_window_clear_selection(window);
+	window->copy_text = copy;
+	window->copy_data = data;
+	return 0;
+}
+
+int core_window_selection_dragging(const struct morph_tui_window *window)
+{
+	return window && window->selection_dragging;
+}
+
+static int core_window_selection_capture(struct morph_tui_window *window)
+{
+	return morph_tui_surface_selection_text(window->surface, window->selection_x1,
+		window->selection_y1, window->selection_x2, window->selection_y2,
+		&window->selection_text);
+}
+
+int core_window_mouse_event(struct morph_tui_window *window, const struct morph_tui_event *event)
+{
+	if (!window || !event)
+		return -EINVAL;
+	if (event->type != MORPH_TUI_EVENT_MOUSE || !window->copy_text ||
+	    event->mouse.modifiers)
+		return 0;
+	const struct morph_tui_mouse_event *mouse = &event->mouse;
+	struct morph_tui_canvas canvas;
+
+	morph_tui_canvas_root_borrow(window->surface, &canvas);
+	if (!canvas.width || !canvas.height)
+		return 0;
+	if (mouse->button == MORPH_TUI_MOUSE_RIGHT && mouse->action == MORPH_TUI_MOUSE_PRESS) {
+		if (!window->selection_active || !window->selection_text.len)
+			return 0;
+		int rc = window->copy_text(window->copy_data,
+			morph_buf_cstr_borrow(&window->selection_text));
+
+		return rc < 0 ? rc : 1;
+	}
+	if (mouse->button != MORPH_TUI_MOUSE_LEFT)
+		return 0;
+	if (mouse->action == MORPH_TUI_MOUSE_PRESS) {
+		if (mouse->x < 0 || mouse->y < 0 || mouse->x >= canvas.width ||
+		    mouse->y >= canvas.height)
+			return 0;
+		core_window_clear_selection(window);
+		window->selection_dragging = 1;
+		window->selection_x1 = window->selection_x2 = mouse->x;
+		window->selection_y1 = window->selection_y2 = mouse->y;
+		window->selection_width = canvas.width;
+		window->selection_height = canvas.height;
+		return 1;
+	}
+	if (!window->selection_dragging)
+		return 0;
+	window->selection_x2 = mouse->x;
+	window->selection_y2 = mouse->y;
+	window->selection_active |= window->selection_x1 != mouse->x ||
+		window->selection_y1 != mouse->y;
+	if (mouse->action == MORPH_TUI_MOUSE_RELEASE)
+		window->selection_dragging = 0;
+	int rc = window->selection_active ? core_window_selection_capture(window) : 0;
+
+	if (rc)
+		core_window_clear_selection(window);
+	morph_tui_application_invalidate(window->app, MORPH_TUI_INVALIDATE_DISPLAY);
+	return rc ? rc : 1;
+}
+
+static int core_window_selection_draw(struct morph_tui_window *window,
+				       const struct morph_tui_screen *screen)
+{
+	if (window->selection_width != screen->area.width ||
+	    window->selection_height != screen->area.height) {
+		core_window_clear_selection(window);
+		return 0;
+	}
+	if (!window->selection_active)
+		return 0;
+	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int rc = morph_tui_surface_selection_text(window->surface, window->selection_x1,
+		window->selection_y1, window->selection_x2, window->selection_y2, &text);
+
+	if (rc)
+		return rc;
+	if (strcmp(morph_buf_cstr_borrow(&text), morph_buf_cstr_borrow(&window->selection_text))) {
+		core_window_clear_selection(window);
+		return 0;
+	}
+	return morph_tui_surface_selection_style(window->surface, window->selection_x1,
+		window->selection_y1, window->selection_x2, window->selection_y2,
+		MORPH_TUI_STYLE_SELECTED);
+}
+
 int core_window_draw(struct morph_tui_window *window, const struct morph_tui_screen *screen)
 {
 	morph_buf_t overlay MORPH_CLEANUP(morph_buf_cleanup) = {0};
@@ -105,6 +221,8 @@ int core_window_draw(struct morph_tui_window *window, const struct morph_tui_scr
 		return rc;
 	morph_tui_canvas_root_borrow(window->surface, &canvas);
 	rc = core_view_draw(window->controller->state->root, &canvas);
+	if (!rc)
+		rc = core_window_selection_draw(window, screen);
 	if (!rc && window->backend)
 		return window->backend->ops->present(window->backend, window->surface,
 						     screen->session.output);

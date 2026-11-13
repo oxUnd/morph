@@ -18,16 +18,16 @@
 #include <string.h>
 #include <unistd.h>
 
-#define CLI_HOOKS_UI_TEXT "\033[0;38;2;225;229;234;48;2;16;18;20m"
-#define CLI_HOOKS_UI_DIM "\033[0;38;2;142;150;161;48;2;16;18;20m"
-#define CLI_HOOKS_UI_CYAN "\033[0;38;2;71;211;230;48;2;16;18;20m"
-#define CLI_HOOKS_UI_GREEN "\033[0;38;2;124;217;167;48;2;16;18;20m"
-#define CLI_HOOKS_UI_AMBER "\033[0;38;2;226;185;91;48;2;16;18;20m"
-#define CLI_HOOKS_UI_RED "\033[0;38;2;240;163;163;48;2;49;24;26m"
-#define CLI_HOOKS_UI_ADD "\033[0;38;2;160;227;182;48;2;22;46;33m"
-#define CLI_HOOKS_UI_SELECTED "\033[0;38;2;239;244;248;48;2;29;48;56m"
-#define CLI_HOOKS_UI_BAR "\033[0;38;2;71;211;230;48;2;29;48;56m"
-#define CLI_HOOKS_UI_RULE "\033[0;38;2;48;57;65;48;2;16;18;20m"
+#define CLI_HOOKS_UI_TEXT "\033[0m"
+#define CLI_HOOKS_UI_DIM "\033[0;2m"
+#define CLI_HOOKS_UI_CYAN "\033[0;38;2;71;211;230m"
+#define CLI_HOOKS_UI_GREEN "\033[0;38;2;124;217;167m"
+#define CLI_HOOKS_UI_AMBER "\033[0;38;2;226;185;91m"
+#define CLI_HOOKS_UI_RED "\033[0;38;2;240;163;163m"
+#define CLI_HOOKS_UI_ADD "\033[0;38;2;160;227;182m"
+#define CLI_HOOKS_UI_SELECTED "\033[0;1;36m"
+#define CLI_HOOKS_UI_BAR "\033[0;1;36m"
+#define CLI_HOOKS_UI_RULE "\033[0;2m"
 
 struct cli_hooks_hook_line {
 	char *text;
@@ -104,10 +104,10 @@ static const char *cli_hooks_selected_state_style(const cJSON *row)
 	const char *state = cli_hooks_field(row, "state");
 
 	if (strcmp(state, "trusted") == 0)
-		return CLI_HOOKS_UI_GREEN "\033[48;2;29;48;56m";
+		return CLI_HOOKS_UI_GREEN "\033[1m";
 	if (strcmp(state, "disabled") == 0 || strcmp(state, "off") == 0)
-		return CLI_HOOKS_UI_DIM "\033[48;2;29;48;56m";
-	return CLI_HOOKS_UI_AMBER "\033[48;2;29;48;56m";
+		return CLI_HOOKS_UI_DIM "\033[1m";
+	return CLI_HOOKS_UI_AMBER "\033[1m";
 }
 
 /* Only trusted positioning/styles bypass the CLI output filter. */

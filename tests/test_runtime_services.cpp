@@ -4,6 +4,7 @@ extern "C" {
 #include "agent/tool.h"
 #include "db/scheduled_task.h"
 #include "runtime/runtime_internal.h"
+#include "runtime/jobs_service.h"
 #include "runtime/recap.h"
 #include "runtime/sync.h"
 #include "runtime/tasks.h"
@@ -19,6 +20,7 @@ extern "C" {
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <limits>
 
 TEST_F(RuntimeFacadeTest, DeferredSessionPollingIsEmptyAndSilent)
 {
@@ -841,6 +843,141 @@ TEST_F(RuntimeFacadeTest, ProcessServiceRetainsItsBindingAfterToolsAreUnregister
 	ASSERT_EQ(runtime_process_list(instance, &jobs), 0);
 	EXPECT_TRUE(cJSON_IsArray(jobs));
 	EXPECT_EQ(cJSON_GetArraySize(jobs), 0);
+}
+
+class RuntimeJobsEventTest : public RuntimeFacadeTest
+{
+      protected:
+	struct {
+		int count = 0, result = 0;
+		const struct morph_event *last = nullptr;
+	} events;
+
+	void Start()
+	{
+		WriteConfig("[memory]\nenabled=false\n");
+		struct runtime_options options{};
+
+		options.config_path = config_path.c_str();
+		options.event_user_data = this;
+		options.event_cb = [](const struct morph_event *event, void *data) {
+			auto *self = static_cast<RuntimeJobsEventTest *>(data);
+			self->events.count++;
+			self->events.last = event;
+			return self->events.result;
+		};
+		Open(&options);
+		ASSERT_EQ(runtime_session_create_and_select(instance, "job-owner-a", nullptr), 0);
+		events.count = 0;
+	}
+	void Emit(enum morph_event_type type, const char *name, cJSON *data)
+	{
+		struct morph_event event{};
+		int previous = events.count;
+
+		event.type = type;
+		event.name = name;
+		event.data = data;
+		EXPECT_EQ(runtime_jobs_event(&event, instance), events.result);
+		EXPECT_EQ(events.count, previous + 1);
+		EXPECT_EQ(events.last, &event);
+	}
+	void ExpectCount(int count)
+	{
+		cJSON *jobs MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+
+		ASSERT_EQ(runtime_process_list(instance, &jobs), 0);
+		EXPECT_EQ(cJSON_GetArraySize(jobs), count);
+	}
+};
+
+TEST_F(RuntimeJobsEventTest, WaitAndUnrelatedEventsAreForwardedWithoutPersisting)
+{
+	Start();
+	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
+		R"({"session_id":"proc_wait","status":"running"})");
+	ASSERT_NE(data, nullptr);
+	events.result = -EAGAIN;
+	Emit(MORPH_EVENT_BACKGROUND, "background.wait.begin", data);
+	Emit(MORPH_EVENT_BACKGROUND, "background.wait.end", data);
+	Emit(MORPH_EVENT_BACKGROUND, "process.started", nullptr);
+	ASSERT_NE(cJSON_AddNumberToObject(data, "owner_session_id",
+		static_cast<double>(instance->context.current_session.id)), nullptr);
+	Emit(MORPH_EVENT_TOOL, "process.started", data);
+	Emit(MORPH_EVENT_BACKGROUND, "process.updated", data);
+	Emit(MORPH_EVENT_BACKGROUND, nullptr, data);
+	cJSON_DeleteItemFromObjectCaseSensitive(data, "session_id");
+	Emit(MORPH_EVENT_BACKGROUND, "process.started", data);
+	ExpectCount(0);
+	events.result = 0;
+}
+
+TEST_F(RuntimeJobsEventTest, InvalidOwnerNumbersAndTypesCannotCreateRetainedJobs)
+{
+	Start();
+	for (const char *owner : {"null", "true", "[]", "{}", "\"1\""}) {
+		std::string json = std::string("{\"session_id\":\"proc_invalid\",\"owner_session_id\":")
+			+ owner + "}";
+		cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(json.c_str());
+
+		ASSERT_NE(data, nullptr);
+		Emit(MORPH_EVENT_BACKGROUND, "process.started", data);
+	}
+	const double owners[] = {std::numeric_limits<double>::quiet_NaN(),
+		std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(),
+		0.0, -1.0, .5, 1.5, 0x1p63, 1e100};
+	for (double owner : owners) {
+		cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+
+		ASSERT_NE(data, nullptr);
+		ASSERT_NE(cJSON_AddStringToObject(data, "session_id", "proc_invalid"), nullptr);
+		cJSON *number = cJSON_AddNumberToObject(data, "owner_session_id", 0);
+
+		ASSERT_NE(number, nullptr);
+		/* Inject invalid producer data without cJSON's constructor int cast. */
+		number->valuedouble = owner;
+		Emit(MORPH_EVENT_BACKGROUND, "process.completed", data);
+	}
+	cJSON *missing MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
+		R"({"session_id":"proc_invalid"})");
+	ASSERT_NE(missing, nullptr);
+	Emit(MORPH_EVENT_BACKGROUND, "process.started", missing);
+	ExpectCount(0);
+}
+
+TEST_F(RuntimeJobsEventTest, ProcessUpdatesKeepTheirOwnerAcrossCurrentSessionChanges)
+{
+	Start();
+	int64_t first = instance->context.current_session.id;
+	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
+		R"({"session_id":"proc_retained","status":"running","stdout":"started"})");
+	ASSERT_NE(data, nullptr);
+	ASSERT_NE(cJSON_AddNumberToObject(data, "owner_session_id", static_cast<double>(first)),
+		nullptr);
+	Emit(MORPH_EVENT_BACKGROUND, "process.started", data);
+	ExpectCount(1);
+	ASSERT_EQ(runtime_session_create_and_select(instance, "job-owner-b", nullptr), 0);
+	int64_t second = instance->context.current_session.id;
+	ExpectCount(0);
+	cJSON_SetValuestring(cJSON_GetObjectItem(data, "status"), "exited");
+	cJSON_SetValuestring(cJSON_GetObjectItem(data, "stdout"), "finished");
+	Emit(MORPH_EVENT_BACKGROUND, "process.completed", data);
+	ExpectCount(0);
+	cJSON_SetNumberValue(cJSON_GetObjectItem(data, "owner_session_id"),
+		static_cast<double>(second));
+	cJSON_SetValuestring(cJSON_GetObjectItem(data, "stdout"), "wrong owner overwrite");
+	Emit(MORPH_EVENT_BACKGROUND, "process.completed", data);
+	cJSON *job MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+
+	EXPECT_EQ(runtime_process_read(instance, "proc_retained", &job), -ENOENT);
+	EXPECT_EQ(job, nullptr);
+	ASSERT_EQ(runtime_session_select(instance, "job-owner-a", nullptr, nullptr), 0);
+	ExpectCount(1);
+	ASSERT_EQ(runtime_process_read(instance, "proc_retained", &job), 0);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(job, "status")), "exited");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(job, "stdout")), "finished");
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(job, "owner_session_id")),
+		static_cast<double>(first));
 }
 
 TEST_F(RuntimeFacadeTest, CopiedHistoryAndHooksRejectOccupiedOwnersWithoutDiscardingThem)

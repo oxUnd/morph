@@ -64,6 +64,14 @@ Modal pages share the root Application. Underlying feed updates and the unsent
 draft survive navigation. Session restoration rebuilds message/tool controls from
 canonical stored records, without executing tools or generating a new turn.
 
+`/mcp`, `/mcp list` and `/mcp status` produce a retained tree report. Service
+status markers share the feed's left edge; transport, negotiated server/protocol,
+capabilities, elapsed time and errors use explicit child branches. Tools,
+resources and prompts use the same component, including resource URIs. Reports
+own copied display snapshots and reflow their content on resize; right padding
+belongs to the View options. Tree prefixes come from the framework tree control,
+and long values wrap with continuation branches rather than table columns.
+
 ## Retained media
 
 The Canvas records immutable image assets and ancestor-clipped placements.

@@ -14,6 +14,7 @@
 #include "sapi/cli/adapters/clipboard/clipboard.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/pages/model.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/adapters/input/readline.h"
 
 static int cli_runtime_command_quit(struct cli_application *ctx, int argc, char **argv)
@@ -22,7 +23,8 @@ static int cli_runtime_command_quit(struct cli_application *ctx, int argc, char 
 	(void)argv;
 	ctx->running = 0;
 	CMD_OK(ctx, "Goodbye!");
-	cli_session_history_print_resume_hint(ctx);
+	if (!cli_chat_active(ctx))
+		cli_session_history_print_resume_hint(ctx);
 	return 0;
 }
 

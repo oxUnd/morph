@@ -86,6 +86,15 @@ int morph_tui_text_style_equal(struct morph_tui_text_style, struct morph_tui_tex
 int morph_tui_text_style_valid(struct morph_tui_text_style);
 void morph_tui_canvas_cursor(struct morph_tui_canvas *canvas, int x, int y);
 int morph_tui_surface_cursor(const struct morph_tui_surface *, int *x, int *y);
+/* Inclusive visible-cell range, in either drag direction. Endpoints clamp to
+ * the surface and expand to whole wide glyphs. Text excludes terminal styling
+ * and links, trims trailing spaces per physical row, and separates rows with
+ * newlines. Replaces text; a zero-sized surface produces an empty string. */
+int morph_tui_surface_selection_text(struct morph_tui_surface *, int x1, int y1,
+				     int x2, int y2, morph_buf_t *text);
+/* Adds attributes to the same normalized range without changing cell text. */
+int morph_tui_surface_selection_style(struct morph_tui_surface *, int x1, int y1,
+				      int x2, int y2, unsigned attributes);
 
 #ifdef __cplusplus
 }

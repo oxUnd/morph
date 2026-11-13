@@ -138,6 +138,11 @@ through the presenter interface.
 The event queue only copies/transports items, wakes the owner and completes or
 cancels owner calls. `adapters/runtime/dispatch` coordinates input suspension and
 presentation, while notification formatting belongs to `presentation`.
+Application pauses event/notification delivery before mounting interactive chat
+and before terminal teardown. Startup events are retained until the page appears;
+shutdown events cannot fall through to the parent shell. Owner calls remain
+available for startup interactions. Plain and JSON modes retain their delivery
+contracts. Resume instructions are printed once after terminal restoration.
 The transcript model projects tool events and historical results into owned records,
 retains reasoning positions, and resolves tool status without application state,
 terminal output, workspace access or a clock. The transcript service supplies the
@@ -151,7 +156,7 @@ The retained feed receives geometry from the framework. Legacy output adapters
 use the shared terminal-size helper, including row fallback.
 
 `/model` (or `/m`) replaces the editable composer with the inline Normal/Ultra
-selector, using the same controller presentation as `/permissions`. Escape and
+selector, using the same composer component as `/permissions`. Escape and
 Ctrl+C restore the composer without a receipt. Confirming a change persists the
 runtime collaboration mode; `/model normal`, `/model ultra`, `/model status` and
 `/model <name>` also work in noninteractive modes. Ultra keeps a purple `»`
@@ -161,10 +166,13 @@ content width. Prompt color is separate from the draft style; no-color output
 keeps the same geometry.
 
 `widgets/composer_panel` is the reusable presentation for replacing the editable
-composer with local interactions. Its controller owns input handoff, bounded
-height, relative redraw, resize cleanup and dismissal on the root Application's
-existing stack. It preserves the active alternate screen and conversation above the panel;
-pages append rows and handle semantic events without terminal cursor control.
+composer with local interactions. Retained chat hosts its temporary Widget and
+TextView in the same root tree, hides the editor and footer while it is active,
+and restores their focus and layout on completion. The root renders the submitted
+command and conversation together with the panel through the shared frame renderer.
+Legacy hosts use a controller on the root Application's existing stack. Both
+paths own bounded height, input handoff, ticks, resize and cleanup; pages append
+rows and handle semantic events without terminal cursor control.
 Panels always span the usable terminal width, reserving the last physical column
 to avoid automatic wrapping. Options set the row limit and tick frequency.
 A successful presentation owns the callback lifetime through `complete`; failure

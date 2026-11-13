@@ -70,6 +70,7 @@ struct cli_resume_model {
 	int64_t current_id;
 	struct cli_resume_group *groups;
 	int group_count;
+	int *group_order;
 	int *order; /* item ordinal -> sessions[] index */
 	struct morph_tui_widget_list_groups rows;
 };
@@ -79,6 +80,7 @@ static void cli_resume_model_cleanup(struct cli_resume_model *model)
 	if (!model)
 		return;
 	free(model->groups);
+	free(model->group_order);
 	free(model->order);
 	morph_tui_widget_list_groups_cleanup(&model->rows);
 	memset(model, 0, sizeof(*model));
@@ -179,12 +181,13 @@ static int cli_resume_model_build(struct cli_resume_model *model, const struct s
 	cli_resume_model_order(model, order, &ordered);
 	rc = cli_resume_model_fill(model, session_groups, order, counts);
 	free(session_groups);
-	free(order);
 	free(counts);
 	if (rc != 0) {
+		free(order);
 		cli_resume_model_cleanup(model);
 		return rc;
 	}
+	model->group_order = order;
 	return 0;
 }
 
@@ -222,7 +225,7 @@ static const struct cli_resume_group *cli_resume_model_row_group(
 {
 	if (!model || row < 0 || (size_t)row >= model->rows.row_count)
 		return NULL;
-	return &model->groups[model->rows.row_group[row]];
+	return &model->groups[model->group_order[model->rows.row_group[row]]];
 }
 
 static int cli_resume_append_group(morph_buf_t *buf, const struct cli_resume_group *group)
@@ -259,13 +262,14 @@ static int cli_resume_page(struct cli_application *ctx, const struct cli_resume_
 	for (int ordinal = start; ordinal < end; ordinal++) {
 		const struct session *session = cli_resume_model_session(model, ordinal);
 		int row = (int)model->rows.item_row[ordinal];
-		int group = (int)model->rows.row_group[row];
+		int group = model->group_order[model->rows.row_group[row]];
 		char number[16];
 		morph_buf_t metadata;
 		int rc;
 
 		if (ordinal == start ||
-		    group != (int)model->rows.row_group[model->rows.item_row[ordinal - 1]]) {
+		    group != model->group_order[
+			     model->rows.row_group[model->rows.item_row[ordinal - 1]]]) {
 			morph_buf_t label;
 
 			rc = morph_buf_init(&label, 64);
@@ -301,13 +305,13 @@ static int cli_resume_page(struct cli_application *ctx, const struct cli_resume_
 	return 0;
 }
 
-#define CLI_RESUME_NORMAL "\033[0;38;2;225;229;234;48;2;16;18;20m"
-#define CLI_RESUME_MUTED "\033[0;38;2;142;150;161;48;2;16;18;20m"
-#define CLI_RESUME_ACCENT "\033[0;38;2;71;211;230;48;2;16;18;20m"
-#define CLI_RESUME_RULE "\033[0;38;2;48;57;65;48;2;16;18;20m"
-#define CLI_RESUME_SELECTED "\033[0;38;2;239;244;248;48;2;29;48;56m"
-#define CLI_RESUME_SELECTED_META "\033[0;38;2;180;194;203;48;2;29;48;56m"
-#define CLI_RESUME_BAR "\033[0;38;2;71;211;230;48;2;29;48;56m"
+#define CLI_RESUME_NORMAL "\033[0m"
+#define CLI_RESUME_MUTED "\033[0;2m"
+#define CLI_RESUME_ACCENT "\033[0;38;2;71;211;230m"
+#define CLI_RESUME_RULE "\033[0;2m"
+#define CLI_RESUME_SELECTED "\033[0;1;38;2;71;211;230m"
+#define CLI_RESUME_SELECTED_META "\033[0;38;2;71;211;230m"
+#define CLI_RESUME_BAR "\033[0;38;2;71;211;230m"
 
 struct cli_resume_layout {
 	int rows;
@@ -586,6 +590,8 @@ struct cli_resume_picker {
 	int *selected;
 	int initialized;
 	int last_grouped;
+	int mouse_pressed;
+	size_t pressed_index;
 	struct morph_tui_widget_menu_state menu;
 	struct cli_resume_layout layout;
 	morph_buf_t frame;
@@ -638,20 +644,79 @@ static int cli_resume_draw(void *data, const struct morph_tui_screen *screen)
 				(int)picker->menu.list.index, &picker->layout);
 }
 
+static int cli_resume_submit(struct cli_resume_picker *picker)
+{
+	size_t item = picker->menu.list.index;
+
+	if (picker->layout.grouped) {
+		if (item >= picker->model->rows.row_count)
+			return MORPH_TUI_SCREEN_CONTINUE;
+		item = picker->model->rows.row_item[item];
+	}
+	if (item >= (size_t)picker->model->session_count)
+		return MORPH_TUI_SCREEN_CONTINUE;
+	*picker->selected = picker->model->order[item];
+	return MORPH_TUI_SCREEN_CLOSE;
+}
+
+static int cli_resume_mouse(struct cli_resume_picker *picker,
+			    const struct morph_tui_mouse_event *mouse)
+{
+	int row = mouse->y + 1 - picker->layout.first_row;
+	int inside = mouse->x >= 1 && mouse->x < picker->layout.width + 2 && row >= 0 &&
+		     row < picker->layout.page_size;
+	size_t index = inside ? picker->menu.list.first + (size_t)row : SIZE_MAX;
+
+	if (mouse->action == MORPH_TUI_MOUSE_CANCEL ||
+	    mouse->button != MORPH_TUI_MOUSE_LEFT || mouse->modifiers) {
+		picker->mouse_pressed = 0;
+		return MORPH_TUI_SCREEN_CONTINUE;
+	}
+	if (index >= picker->menu.list.count ||
+	    (picker->layout.grouped && picker->model->rows.row_item[index] == SIZE_MAX))
+		inside = 0;
+	if (mouse->action == MORPH_TUI_MOUSE_PRESS) {
+		picker->mouse_pressed = inside;
+		if (!inside)
+			return MORPH_TUI_SCREEN_CONTINUE;
+		picker->pressed_index = index;
+		picker->menu.list.index = index;
+		return MORPH_TUI_SCREEN_REDRAW;
+	}
+	if (mouse->action == MORPH_TUI_MOUSE_MOVE) {
+		picker->mouse_pressed = 0;
+		return MORPH_TUI_SCREEN_CONTINUE;
+	}
+	int activate = mouse->action == MORPH_TUI_MOUSE_RELEASE && picker->mouse_pressed &&
+		       inside && index == picker->pressed_index;
+
+	picker->mouse_pressed = 0;
+	return activate ? cli_resume_submit(picker) : MORPH_TUI_SCREEN_CONTINUE;
+}
+
 static int cli_resume_update(void *data, const struct morph_tui_event *event)
 {
 	struct cli_resume_picker *picker = data;
 
+	if (event->type == MORPH_TUI_EVENT_MOUSE)
+		return cli_resume_mouse(picker, &event->mouse);
+	if (event->type == MORPH_TUI_EVENT_RESIZE)
+		picker->mouse_pressed = 0;
 	if (event->type != MORPH_TUI_EVENT_KEY || event->pasting)
 		return MORPH_TUI_SCREEN_CONTINUE;
 	int key = event->key;
 
+	picker->mouse_pressed = 0;
 	if (key == 'q')
 		return MORPH_TUI_SCREEN_CLOSE;
 	if (key == 'n')
 		key = MORPH_TUI_KEY_PAGE_DOWN;
 	if (key == 'p')
 		key = MORPH_TUI_KEY_PAGE_UP;
+	if (key == MORPH_TUI_KEY_WHEEL_UP)
+		key = MORPH_TUI_KEY_UP;
+	if (key == MORPH_TUI_KEY_WHEEL_DOWN)
+		key = MORPH_TUI_KEY_DOWN;
 	int result;
 
 	if (picker->layout.grouped)
@@ -665,15 +730,8 @@ static int cli_resume_update(void *data, const struct morph_tui_event *event)
 		result = morph_tui_widget_menu_state_update(&picker->menu, key);
 	}
 
-	if (result == MORPH_TUI_WIDGET_SUBMIT) {
-		size_t item = picker->layout.grouped
-				      ? picker->model->rows.row_item[picker->menu.list.index]
-				      : picker->menu.list.index;
-
-		if (item < (size_t)picker->model->session_count)
-			*picker->selected = picker->model->order[item];
-		return MORPH_TUI_SCREEN_CLOSE;
-	}
+	if (result == MORPH_TUI_WIDGET_SUBMIT)
+		return cli_resume_submit(picker);
 	if (result == MORPH_TUI_WIDGET_BACK || result == MORPH_TUI_WIDGET_CANCEL)
 		return MORPH_TUI_SCREEN_CLOSE;
 	return result == MORPH_TUI_WIDGET_CHANGED ? MORPH_TUI_SCREEN_REDRAW
@@ -696,7 +754,8 @@ static int cli_resume_pick(struct cli_resume_model *model, int *selected)
 	if (rc == 0)
 		rc = morph_tui_screen_open(&screen, stdin, stdout,
 					   MORPH_TUI_TERMINAL_SESSION_ALTERNATE |
-						   MORPH_TUI_TERMINAL_SESSION_PASTE);
+						   MORPH_TUI_TERMINAL_SESSION_PASTE |
+						   MORPH_TUI_TERMINAL_SESSION_MOUSE);
 	if (rc == 0)
 		rc = morph_tui_screen_run(&screen, &ops, &picker);
 	int leave_rc = morph_tui_screen_close(&screen);
@@ -717,10 +776,11 @@ static int cli_resume_select(struct cli_application *ctx, int64_t id)
 		return rc;
 	}
 	ctx->session_auto_named = 1;
-	CMD_OK(ctx, "resumed session: %s", selected.name);
 	rc = cli_session_history_restore(ctx);
 	if (rc)
 		CMD_ERROR(ctx, "failed to restore session history: %s", morph_strerror(rc));
+	else
+		CMD_OK(ctx, "resumed session: %s", selected.name);
 	return rc;
 }
 
@@ -763,7 +823,8 @@ static int cli_resume_present(struct cli_application *ctx, struct cli_resume_mod
 	int rc = morph_buf_init(&picker->frame, BUFSIZ);
 
 	if (!rc)
-		rc = cli_application_present_screen(ctx, &ops, picker, cli_resume_close);
+		rc = cli_application_present_screen_with_flags(
+			ctx, &ops, picker, cli_resume_close, MORPH_TUI_TERMINAL_SESSION_MOUSE);
 	if (rc) {
 		runtime_session_list_free((struct session *)picker->model->sessions);
 		cli_resume_model_cleanup(picker->model);

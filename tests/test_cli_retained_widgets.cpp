@@ -266,6 +266,66 @@ TEST_F(CliRetainedWidgetsTest, LiveToolKeepsThreeTailRowsAndBranchPrefix)
 	EXPECT_EQ(retained_normalized(frame.c_str()), plain);
 }
 
+TEST_F(CliRetainedWidgetsTest, LiveAgentToolsMayOmitTheirBodyWithoutFailingLayout)
+{
+	tool.name = const_cast<char *>("spawn_agent");
+	tool.args = const_cast<char *>("{\"task_name\":\"worker\"}");
+	tool.result = const_cast<char *>("");
+	tool.subject = const_cast<char *>("");
+	tool.shell = 0;
+	tool.state = 0;
+	tool.ended = tool.started;
+	Present();
+	EXPECT_NE(retained_normalized(frame.c_str()).find("Spawning"), std::string::npos);
+	EXPECT_EQ(frame.find("Running…"), std::string::npos);
+	tool.name = const_cast<char *>("wait_agent");
+	tool.args = const_cast<char *>("{\"timeout_ms\":10000}");
+	ASSERT_EQ(cli_tool_call_update(component, &tool, 1, 0), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_NE(retained_normalized(frame.c_str()).find("Waiting for agents"),
+		  std::string::npos);
+	EXPECT_EQ(frame.find("Running…"), std::string::npos);
+	tool.state = 1;
+	tool.ended = tool.started + 1;
+	ASSERT_EQ(cli_tool_call_update(component, &tool, 1, 0), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_NE(retained_normalized(frame.c_str()).find("Finished waiting"),
+		  std::string::npos);
+}
+
+TEST_F(CliRetainedWidgetsTest, AnalyticsToolsHideRunningAndCompletedRowsUntilDetailsAreRequested)
+{
+	tool.name = const_cast<char *>("send_message");
+	tool.args = const_cast<char *>(
+		"{\"target\":\"/root/worker\",\"message\":\"DETAIL_SENTINEL\"}");
+	tool.result = const_cast<char *>("{\"data\":{\"agent_id\":\"/root/worker\"}}");
+	tool.subject = const_cast<char *>("");
+	tool.shell = 0;
+	Present();
+	for (const char *name :
+	     {"send_message", "followup_task", "interrupt_agent", "list_agents"}) {
+		tool.name = const_cast<char *>(name);
+		for (int state : {0, 1}) {
+			tool.state = state;
+			tool.ended = tool.started + state;
+			ASSERT_EQ(cli_tool_call_update(component, &tool, 1, 0), 0);
+			ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+			EXPECT_TRUE(morph_tui_view_hidden(component));
+			struct morph_tui_view_size size{};
+			ASSERT_EQ(morph_tui_view_measure(component, 120, &size), 0);
+			EXPECT_EQ(size.width, 0);
+			EXPECT_EQ(size.height, 0);
+			EXPECT_TRUE(retained_normalized(frame.c_str()).empty());
+			ASSERT_EQ(cli_tool_call_update(component, &tool, 1, 1), 0);
+			ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+			EXPECT_FALSE(morph_tui_view_hidden(component));
+			EXPECT_NE(frame.find("DETAIL_SENTINEL"), std::string::npos);
+			EXPECT_NE(frame.find("Arguments"), std::string::npos);
+			EXPECT_EQ(frame.find("Running…"), std::string::npos);
+		}
+	}
+}
+
 TEST_F(CliRetainedWidgetsTest, ComposerUltraWavePaintsOnlyTruePaddingAndPreservesDraftCursor)
 {
 	kind = Composer;

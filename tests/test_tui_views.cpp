@@ -29,7 +29,7 @@ struct TuiViewModel {
 	struct morph_tui_view *list = nullptr;
 	struct morph_tui_view *label = nullptr;
 	struct morph_tui_view_controller *controller = nullptr;
-	int actions = 0, closes = 0, widget_closes = 0, result = 0, submits = 0;
+	int actions = 0, closes = 0, widget_closes = 0, result = 0, submits = 0, activations = 0;
 	bool editor = true, failure = false, dialog = false;
 	std::string selected;
 };
@@ -68,6 +68,8 @@ static int tui_views_action(struct morph_tui_view_controller *controller,
 	model->actions++;
 	if (action->type == MORPH_TUI_WIDGET_ACTION_SUBMIT)
 		model->submits++;
+	if (action->type == MORPH_TUI_WIDGET_ACTION_ACTIVATE)
+		model->activations++;
 	model->selected = action->text;
 	int rc = morph_tui_widget_label_set_text_copy(model->label, action->text);
 	if (rc || !model->dialog || action->type == MORPH_TUI_WIDGET_ACTION_CHANGED)
@@ -535,6 +537,38 @@ TEST_F(TuiViewsTest, HiddenFocusAndTinyTerminalHaveBoundedLayout)
 	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
 	EXPECT_LE(morph_tui_view_frame(model.list).height, 1);
 	EXPECT_GE(morph_tui_view_frame(model.label).height, 0);
+}
+
+TEST_F(TuiViewsTest, MouseListActivationRespectsPaddingScrollAndDragging)
+{
+	model.editor = false;
+	ASSERT_EQ(present(), 0);
+	const char *items[] = {"row0", "row1", "row2", "row3", "row4",
+			       "row5", "row6", "row7", "row8", "row9"};
+	ASSERT_EQ(morph_tui_widget_list_set_items_copy(model.list, items, 10), 0);
+	ASSERT_EQ(morph_tui_view_set_padding(model.list, morph_tui_view_insets_all(1)), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	send("\033[F");
+	EXPECT_EQ(morph_tui_widget_list_selected(model.list), 9U);
+	send("\033[<0;3;3M");
+	EXPECT_EQ(morph_tui_widget_list_selected(model.list), 6U);
+	EXPECT_EQ(model.activations, 0);
+	send("\033[<0;3;3m");
+	EXPECT_EQ(model.activations, 1);
+	EXPECT_EQ(model.selected, "row6");
+	send("\033[<0;3;4M\033[<32;4;4M\033[<0;3;4m");
+	EXPECT_EQ(model.activations, 1);
+	send("\033[<0;3;4M\033[<32;40;20M\033[<0;3;4m");
+	EXPECT_EQ(model.activations, 1);
+	send("\r");
+	EXPECT_EQ(model.activations, 2);
+	EXPECT_EQ(model.selected, "row7");
+	ASSERT_EQ(morph_tui_widget_list_set_items_copy(model.list, items, 2), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	send("\033[<0;3;5M\033[<0;3;5m");
+	EXPECT_EQ(model.activations, 2);
+	send("\033[<0;1;1M\033[<0;1;1m");
+	EXPECT_EQ(model.activations, 2);
 }
 
 TEST_F(TuiViewsTest, BuildFailureClosesControllerAndLeavesNoPresentation)

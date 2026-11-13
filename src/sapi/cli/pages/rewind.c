@@ -1,5 +1,6 @@
 #include "sapi/cli/pages/rewind.h"
 #include "sapi/cli/application.h"
+#include "sapi/cli/presentation/style.h"
 #include "sapi/cli/widgets/list.h"
 #include "util/cleanup.h"
 #include "util/json.h"
@@ -63,7 +64,7 @@ static void cli_rewind_cell(morph_buf_t *frame, const struct morph_tui_screen *s
 	cli_list_compact_text(compact, sizeof(compact), text);
 	(void)morph_tui_draw_cell_append_aligned(frame, screen->area.width, screen->area.height,
 						 row, 1, screen->area.width, compact,
-						 selected ? "\033[44;97m" : "\033[0m", 0);
+						 selected ? ANSI_CYAN ANSI_BOLD : ANSI_RESET, 0);
 }
 
 static int cli_rewind_draw(void *opaque, const struct morph_tui_screen *screen)
@@ -133,14 +134,16 @@ static int cli_rewind_draw(void *opaque, const struct morph_tui_screen *screen)
 	     i++, row++) {
 		morph_buf_reset(&label);
 		if (picker->stage)
-			(void)morph_buf_printf(&label, "  %s%s", modes[i],
+			(void)morph_buf_printf(&label, "%s %s%s",
+					       picker->menu.list.index == i ? ">" : " ", modes[i],
 					       cli_rewind_available(picker, mode_values[i])
 						       ? ""
 						       : " (unavailable)");
 		else {
 			const cJSON *entry = cJSON_GetArrayItem(entries, (int)i);
 			(void)morph_buf_printf(
-				&label, "  #%lld  %s",
+				&label, "%s #%lld  %s",
+				picker->menu.list.index == i ? ">" : " ",
 				(long long)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "id")),
 				cli_rewind_prompt(entry));
 		}

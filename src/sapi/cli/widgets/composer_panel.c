@@ -3,16 +3,20 @@
 
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
+#include "sapi/cli/presentation/messages.h"
 #include "util/cleanup.h"
 #include "util/error.h"
 #include "util/utf8.h"
 #include <morph/tui/application.h>
 #include <morph/tui/controller.h>
 #include <morph/tui/draw.h>
+#include <morph/tui/widgets/text_view.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 struct cli_composer_panel {
 	struct cli_application *application;
@@ -230,6 +234,144 @@ static void cli_composer_panel_close(void *opaque, int result)
 	free(panel);
 }
 
+struct cli_composer_panel_retained {
+	struct morph_tui_widget base;
+	struct cli_application *application;
+	struct cli_composer_panel_options options;
+	struct cli_composer_panel_ops ops;
+	void *data;
+	struct morph_tui_view *text;
+	char *rendered;
+	int owned;
+	int64_t next_tick;
+};
+
+static int cli_composer_panel_retained_measure(struct morph_tui_view *view, int width,
+					       struct morph_tui_view_size *size)
+{
+	struct cli_composer_panel_retained *panel = (struct cli_composer_panel_retained *)view;
+	struct cli_composer_panel_frame frame MORPH_CLEANUP(cli_composer_panel_frame_cleanup) = {0};
+	int columns, height;
+	morph_tui_terminal_dimensions(STDOUT_FILENO, &columns, &height);
+	(void)columns;
+	int budget = height >= 5 ? height - 4 : 1;
+	frame.columns = width > 1 ? width - 1 : 0;
+	frame.rows = budget < panel->options.max_rows ? budget : panel->options.max_rows;
+	frame.color = cli_output_color_enabled(panel->application);
+	int rc = morph_buf_init(&frame.content, BUFSIZ);
+	if (!rc)
+		rc = panel->ops.draw(panel->data, &frame);
+	if (!rc)
+		rc = frame.content.failed;
+	if (!rc && (!panel->rendered || strcmp(panel->rendered, frame.content.data))) {
+		rc = cli_messages_set_rendered_view(panel->text, frame.content.data, frame.color);
+		if (!rc) {
+			free(panel->rendered);
+			panel->rendered = morph_buf_detach(&frame.content);
+		}
+	}
+	*size = (struct morph_tui_view_size){width, frame.line_count};
+	return rc;
+}
+
+static int cli_composer_panel_retained_layout(struct morph_tui_view *view)
+{
+	struct cli_composer_panel_retained *panel = (struct cli_composer_panel_retained *)view;
+	return morph_tui_view_arrange(panel->text, morph_tui_view_content_rect(view));
+}
+
+static int cli_composer_panel_retained_draw(struct morph_tui_view *view,
+					    struct morph_tui_canvas *canvas)
+{
+	if (morph_tui_view_focused(view))
+		morph_tui_canvas_cursor(canvas, 0, 0);
+	return 0;
+}
+
+static void cli_composer_panel_retained_destroy(struct morph_tui_view *view)
+{
+	struct cli_composer_panel_retained *panel = (struct cli_composer_panel_retained *)view;
+	free(panel->rendered);
+	if (panel->owned)
+		panel->ops.complete(panel->data, -ECANCELED);
+}
+
+int cli_composer_panel_finish(struct morph_tui_view *view, int result)
+{
+	struct cli_composer_panel_retained *panel = (struct cli_composer_panel_retained *)view;
+	struct cli_application *application = panel->application;
+	void (*complete)(void *, int) = panel->ops.complete;
+	void *data = panel->data;
+	panel->owned = 0;
+	int rc = cli_chat_panel_remove(application, view);
+	if (rc)
+		return rc;
+	cli_application_panel_complete(application, data, complete, result);
+	return 1;
+}
+
+int cli_composer_panel_update(struct morph_tui_view *view, const struct morph_tui_event *event)
+{
+	struct cli_composer_panel_retained *panel = (struct cli_composer_panel_retained *)view;
+	struct morph_tui_event input = *event;
+	if (event->type == MORPH_TUI_EVENT_PASTE || event->pasting)
+		return 1;
+	if (event->type == MORPH_TUI_EVENT_TEXT) {
+		if (event->text_length != 1 || (unsigned char)event->text[0] >= 128)
+			return 1;
+		input.type = MORPH_TUI_EVENT_KEY;
+		input.key = (unsigned char)event->text[0];
+	}
+	if (event->type == MORPH_TUI_EVENT_TICK) {
+		struct timespec now;
+		(void)clock_gettime(CLOCK_MONOTONIC, &now);
+		int64_t tick = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+		if (!panel->options.tick_ms || tick < panel->next_tick)
+			return 0;
+		panel->next_tick = tick + panel->options.tick_ms;
+	}
+	int rc = panel->ops.update(panel->data, &input);
+	if (rc == MORPH_TUI_SCREEN_CLOSE)
+		return cli_composer_panel_finish(view, 0);
+	if (rc == MORPH_TUI_SCREEN_REDRAW || event->type == MORPH_TUI_EVENT_RESIZE)
+		morph_tui_view_invalidate(view, 1);
+	if (rc < 0)
+		return rc;
+	return event->type == MORPH_TUI_EVENT_KEY || event->type == MORPH_TUI_EVENT_TEXT ? 1 : 0;
+}
+
+struct morph_tui_view *cli_composer_panel_add_borrow(struct morph_tui_builder *builder,
+	struct morph_tui_view *parent, struct cli_application *application,
+	const struct cli_composer_panel_options *options, const struct cli_composer_panel_ops *ops,
+	void *data)
+{
+	static const struct morph_tui_view_ops methods = {
+		.measure = cli_composer_panel_retained_measure,
+		.layout = cli_composer_panel_retained_layout,
+		.draw = cli_composer_panel_retained_draw,
+		.event = cli_composer_panel_update,
+		.destroy = cli_composer_panel_retained_destroy,
+	};
+	struct cli_composer_panel_retained *panel =
+		(struct cli_composer_panel_retained *)morph_tui_widget_add_borrow(
+			builder, parent, sizeof(*panel), &methods, NULL);
+	if (!panel)
+		return NULL;
+	panel->application = application;
+	panel->options = *options;
+	panel->ops = *ops;
+	panel->data = data;
+	struct morph_tui_view *view = &panel->base.view;
+	panel->text = morph_tui_widget_text_view_add_borrow(builder, view, "", NULL);
+	morph_tui_widget_text_view_set_content_sizing(panel->text, 1);
+	morph_tui_view_set_focusable(panel->text, 0);
+	morph_tui_view_set_focusable(view, 1);
+	if (morph_tui_builder_error(builder))
+		return NULL;
+	panel->owned = 1;
+	return view;
+}
+
 int cli_composer_panel_show(struct cli_application *application,
 			    const struct cli_composer_panel_options *options,
 			    const struct cli_composer_panel_ops *ops, void *data)
@@ -237,6 +379,8 @@ int cli_composer_panel_show(struct cli_application *application,
 	if (!application || !options || options->max_rows < 1 || options->tick_ms < 0 || !ops ||
 	    !ops->draw || !ops->update || !ops->complete)
 		return -EINVAL;
+	if (cli_chat_active(application))
+		return cli_chat_panel_show(application, options, ops, data);
 	struct cli_composer_panel *panel = calloc(1, sizeof(*panel));
 	if (!panel)
 		return -ENOMEM;

@@ -75,7 +75,7 @@ def main():
                     native, legacy = seed(database)
                     with sqlite3.connect(database) as db:
                         db.execute("UPDATE model_history_items SET content=? WHERE session_id=? "
-                                   "AND sequence_no=7", (answer, native))
+                                   "AND kind='assistant_message' AND active=1", (answer, native))
                         db.execute("UPDATE messages SET content=? WHERE session_id=? "
                                    "AND role='assistant' AND turn_id='recent-turn'", (answer, native))
                     terminal.send('/resume 1234abcd\r')

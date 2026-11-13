@@ -34,6 +34,7 @@ add_library(morph-cli STATIC
 	widgets/composer_panel.c
 	widgets/composer.c
 	widgets/message.c
+	widgets/mcp_tree.c
 	widgets/media.c
 	widgets/rich_document.c
 	widgets/tool_call.c
@@ -111,6 +112,7 @@ add_library(morph-cli STATIC
 	presentation/history.c
 	presentation/markdown.c
 	presentation/messages.c
+	presentation/mcp_tree.c
 	presentation/notifications.c
 	presentation/output.c
 	presentation/recap.c

@@ -33,6 +33,7 @@ def composer(terminal, expected=''):
 
 
 def permission_footer(terminal, expected):
+    wait_for(terminal, lambda: any(expected in line for line in terminal.screen.display))
     row = max(i for i, line in enumerate(terminal.screen.display)
               if line.startswith('› '))
     text = '\n'.join(terminal.screen.display)
@@ -68,13 +69,13 @@ def panel(terminal, marker):
     assert not any(row.startswith('› ') for row in rows[command + 1:]), text
     selected = [i for i, row in enumerate(rows) if row.startswith('> ')]
     assert len(selected) == 1, text
-    assert terminal.screen.buffer[selected[0]][0].bg == 'blue', text
+    assert terminal.screen.buffer[selected[0]][0].bg in ('blue', '0000ee'), text
     inline_panel(terminal, 'Update Model Permissions', marker, maximum=10)
     return selected[0]
 
 
 def no_screen_switch(raw):
-    for sequence in ('\x1b[?1049h', '\x1b[?1049l', '\x1b[2J', '\x1b[H'):
+    for sequence in ('\x1b[?1049h', '\x1b[?1049l', '\x1bc'):
         assert sequence not in raw, repr(sequence) + ' was used by the inline picker'
 
 
@@ -227,7 +228,7 @@ def main():
                     wait_for(terminal, lambda: 'rewound code to checkpoint' in
                              '\n'.join(terminal.screen.display))
                     composer(terminal)
-                    receipts = terminal.raw.count('rewound code to checkpoint')
+                    receipts = '\n'.join(terminal.screen.display).count('rewound code to checkpoint')
                     terminal.send('/rewind\r')
                     wait_for(terminal, lambda: 'Rewind · choose a turn' in
                              '\n'.join(terminal.screen.display))
@@ -247,7 +248,7 @@ def main():
                     composer(terminal)
                     command_heading(terminal, '/rewind')
                     result_gap(terminal, '/rewind')
-                    assert terminal.raw.count('rewound code to checkpoint') == receipts
+                    assert '\n'.join(terminal.screen.display).count('rewound code to checkpoint') == receipts
                     assert 'rewind cancelled' not in terminal.raw
                     assert Model.requests.empty(), 'rewind unexpectedly requested a model response'
                     print(f'PASS: inline permissions and live footer in every mode at {columns} columns')

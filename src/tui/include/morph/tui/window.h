@@ -25,6 +25,11 @@ int morph_tui_window_set_renderer_borrow(struct morph_tui_window *window,
 int morph_tui_window_set_event_handler_borrow(struct morph_tui_window *window,
 					      int (*event)(void *, const struct morph_tui_event *),
 					      void *data);
+/* Enables visible text selection with left-button drag and right-button copy.
+ * The host owns clipboard delivery; text is borrowed only during the callback.
+ * A NULL handler disables selection and clears any current selection. */
+int morph_tui_window_set_text_copy_handler_borrow(struct morph_tui_window *window,
+						 int (*copy)(void *, const char *), void *data);
 
 #ifdef __cplusplus
 }

@@ -39,7 +39,7 @@ int morph_tui_draw_cell_append_aligned(morph_buf_t *commands, int columns, int r
 	}
 	utf8_copy_ellipsized_display_width(clipped, capacity, safe, (size_t)width, 0);
 	int padding = width - (int)utf8_display_width(clipped);
-	int rc = morph_buf_printf(commands, "\033[%d;%dH%s%*s%s%*s", row, column, style,
+	int rc = morph_buf_printf(commands, "\033[%d;%dH\033[0m%s%*s%s%*s", row, column, style,
 				  right ? padding : 0, "", clipped, right ? 0 : padding, "");
 
 	free(clipped);

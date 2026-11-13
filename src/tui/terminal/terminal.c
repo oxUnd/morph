@@ -51,7 +51,7 @@ int morph_tui_terminal_session_enter(struct morph_tui_terminal_session *session,
 	if (flags & MORPH_TUI_TERMINAL_SESSION_FOCUS)
 		fputs("\033[?1004h", output);
 	if (flags & MORPH_TUI_TERMINAL_SESSION_MOUSE)
-		fputs("\033[?1000h\033[?1006h", output);
+		fputs("\033[?1000h\033[?1002h\033[?1006h", output);
 	if (fflush(output) != 0 || ferror(output)) {
 		int rc = errno ? -errno : -EIO;
 
@@ -68,7 +68,7 @@ int morph_tui_terminal_session_leave(struct morph_tui_terminal_session *session)
 	if (!session || !session->active)
 		return 0;
 	if (session->flags & MORPH_TUI_TERMINAL_SESSION_MOUSE)
-		fputs("\033[?1006l\033[?1000l", session->output);
+		fputs("\033[?1006l\033[?1002l\033[?1000l", session->output);
 	if (session->flags & MORPH_TUI_TERMINAL_SESSION_PASTE)
 		fputs("\033[?2004l", session->output);
 	if (session->flags & MORPH_TUI_TERMINAL_SESSION_FOCUS)
@@ -105,6 +105,6 @@ int morph_tui_terminal_session_reassert(struct morph_tui_terminal_session *sessi
 	if (session->flags & MORPH_TUI_TERMINAL_SESSION_FOCUS)
 		fputs("\033[?1004h", session->output);
 	if (session->flags & MORPH_TUI_TERMINAL_SESSION_MOUSE)
-		fputs("\033[?1000h\033[?1006h", session->output);
+		fputs("\033[?1000h\033[?1002h\033[?1006h", session->output);
 	return fflush(session->output) != 0 || ferror(session->output) ? (errno ? -errno : -EIO) : 0;
 }

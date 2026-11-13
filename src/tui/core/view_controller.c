@@ -3,6 +3,22 @@
 
 #include <stdlib.h>
 
+static void core_view_controller_mouse_cancel(struct morph_tui_view_controller *controller)
+{
+	struct morph_tui_view *target = controller->state->mouse_target;
+
+	controller->state->mouse_target = NULL;
+	if (!target || !target->ops || !target->ops->event)
+		return;
+	struct morph_tui_event cancel = {
+		.type = MORPH_TUI_EVENT_MOUSE,
+		.mouse = {.button = MORPH_TUI_MOUSE_LEFT, .action = MORPH_TUI_MOUSE_CANCEL,
+			  .x = -1, .y = -1},
+	};
+
+	target->ops->event(target, &cancel);
+}
+
 static int core_view_controller_layout(void *data, const struct morph_tui_terminal_rect *area)
 {
 	struct morph_tui_view_controller *controller = data;
@@ -43,6 +59,8 @@ static void core_view_controller_disappear(void *data, struct morph_tui_applicat
 	struct morph_tui_window *window = morph_tui_application_window_borrow(app);
 
 	controller->state->visible = 0;
+	core_view_controller_mouse_cancel(controller);
+	core_window_clear_selection(window);
 	if (window->controller == controller)
 		window->controller = NULL;
 	if (controller->ops->disappear)
@@ -61,13 +79,154 @@ static void core_view_controller_close(void *data, int result)
 	free(controller);
 }
 
+static int core_view_controller_mouse(struct morph_tui_view *view,
+				      const struct morph_tui_canvas *parent,
+				      const struct morph_tui_event *event)
+{
+	if (view->state->hidden)
+		return 0;
+	struct morph_tui_canvas canvas, content;
+	struct morph_tui_view_rect frame = view->state->frame;
+	struct morph_tui_view_rect rect = morph_tui_view_content_rect(view);
+
+	morph_tui_canvas_child_borrow(parent, frame.x, frame.y, frame.width, frame.height,
+				      &canvas);
+	morph_tui_canvas_child_borrow(&canvas, rect.x, rect.y, rect.width, rect.height, &content);
+	if (event->mouse.x < content.left || event->mouse.x >= content.right ||
+	    event->mouse.y < content.top || event->mouse.y >= content.bottom)
+		return 0;
+	struct morph_tui_canvas children = canvas;
+
+	children.left = content.left;
+	children.right = content.right;
+	children.top = content.top;
+	children.bottom = content.bottom;
+	children.y -= view->state->scroll_y;
+	for (size_t i = view->state->children.nelts; i > 0; i--) {
+		int rc = core_view_controller_mouse(morph_tui_view_child_borrow(view, i - 1),
+						    &children, event);
+
+		if (rc)
+			return rc;
+	}
+	if (!view->ops || !view->ops->event)
+		return 0;
+	struct morph_tui_view_controller *controller = view->state->controller;
+	size_t revision = controller->state->structure_revision;
+	struct morph_tui_event local = *event;
+
+	local.mouse.x -= content.x;
+	local.mouse.y -= content.y;
+	if (event->mouse.action == MORPH_TUI_MOUSE_PRESS &&
+	    event->mouse.button == MORPH_TUI_MOUSE_LEFT && core_view_can_focus(view)) {
+		int rc = morph_tui_view_focus(view);
+
+		if (rc)
+			return rc;
+	}
+	int rc = view->ops->event(view, &local);
+
+	if (revision != controller->state->structure_revision ||
+	    morph_tui_application_transition_pending(controller->state->app))
+		return rc < 0 ? rc : 1;
+	if (rc > 0 && event->mouse.action == MORPH_TUI_MOUSE_PRESS &&
+	    event->mouse.button == MORPH_TUI_MOUSE_LEFT)
+		controller->state->mouse_target = view;
+	return rc;
+}
+
+static int core_view_controller_mouse_content(struct morph_tui_view *view,
+					      const struct morph_tui_canvas *parent,
+					      struct morph_tui_view *target,
+					      struct morph_tui_canvas *result)
+{
+	if (view->state->hidden)
+		return 0;
+	struct morph_tui_canvas canvas, content;
+	struct morph_tui_view_rect frame = view->state->frame;
+	struct morph_tui_view_rect rect = morph_tui_view_content_rect(view);
+
+	morph_tui_canvas_child_borrow(parent, frame.x, frame.y, frame.width, frame.height,
+				      &canvas);
+	morph_tui_canvas_child_borrow(&canvas, rect.x, rect.y, rect.width, rect.height, &content);
+	if (view == target) {
+		*result = content;
+		return 1;
+	}
+	canvas.left = content.left;
+	canvas.right = content.right;
+	canvas.top = content.top;
+	canvas.bottom = content.bottom;
+	canvas.y -= view->state->scroll_y;
+	for (size_t i = 0; i < view->state->children.nelts; i++) {
+		if (core_view_controller_mouse_content(morph_tui_view_child_borrow(view, i),
+							&canvas, target, result))
+			return 1;
+	}
+	return 0;
+}
+
+static int core_view_controller_mouse_captured(struct morph_tui_view_controller *controller,
+					       const struct morph_tui_canvas *canvas,
+					       const struct morph_tui_event *event)
+{
+	struct morph_tui_view *target = controller->state->mouse_target;
+	struct morph_tui_canvas content;
+
+	if (!core_view_controller_mouse_content(controller->state->root, canvas, target,
+						&content)) {
+		core_view_controller_mouse_cancel(controller);
+		return 1;
+	}
+	struct morph_tui_event local = *event;
+
+	local.mouse.x -= content.x;
+	local.mouse.y -= content.y;
+	if (event->mouse.x < content.left || event->mouse.x >= content.right ||
+	    event->mouse.y < content.top || event->mouse.y >= content.bottom)
+		local.mouse.x = local.mouse.y = -1;
+	if (event->mouse.action == MORPH_TUI_MOUSE_RELEASE)
+		controller->state->mouse_target = NULL;
+	int rc = target->ops->event(target, &local);
+
+	return rc < 0 ? rc : 1;
+}
+
 static int core_view_controller_dispatch(void *data, struct morph_tui_application *app,
 					 const struct morph_tui_event *event)
 {
 	struct morph_tui_view_controller *controller = data;
 	struct morph_tui_view_controller_state *state = controller->state;
+	struct morph_tui_window *window = morph_tui_application_window_borrow(app);
 	int rc = 0;
 
+	if (event->type == MORPH_TUI_EVENT_RESIZE || event->type == MORPH_TUI_EVENT_KEY ||
+	    event->type == MORPH_TUI_EVENT_TEXT || event->type == MORPH_TUI_EVENT_PASTE) {
+		core_window_clear_selection(window);
+		core_view_controller_mouse_cancel(controller);
+		if (morph_tui_application_transition_pending(app))
+			return 1;
+	}
+	if (event->type == MORPH_TUI_EVENT_MOUSE) {
+		if (core_window_selection_dragging(window))
+			return core_window_mouse_event(window, event);
+		struct morph_tui_canvas canvas;
+
+		morph_tui_canvas_root_borrow(window->surface, &canvas);
+		if (state->mouse_target && event->mouse.button == MORPH_TUI_MOUSE_LEFT &&
+		    event->mouse.action != MORPH_TUI_MOUSE_PRESS)
+			return core_view_controller_mouse_captured(controller, &canvas, event);
+		if (event->mouse.action == MORPH_TUI_MOUSE_PRESS) {
+			core_view_controller_mouse_cancel(controller);
+			if (morph_tui_application_transition_pending(app))
+				return 1;
+			rc = core_view_controller_mouse(state->root, &canvas, event);
+		}
+		if (!rc)
+			rc = core_window_mouse_event(window, event);
+		if (rc || morph_tui_application_transition_pending(app))
+			return rc;
+	}
 	if (event->type == MORPH_TUI_EVENT_KEY || event->type == MORPH_TUI_EVENT_TEXT ||
 	    event->type == MORPH_TUI_EVENT_PASTE) {
 		if (!core_view_can_focus(state->focus))
@@ -96,7 +255,8 @@ static int core_view_controller_dispatch(void *data, struct morph_tui_applicatio
 			if (revision != state->structure_revision) {
 				int alive = 0;
 				for (size_t i = 0; i < state->views.nelts; i++) {
-					struct morph_tui_view **slot = morph_array_borrow(&state->views, i);
+					struct morph_tui_view **slot =
+						morph_array_borrow(&state->views, i);
 					alive |= *slot == view;
 				}
 				if (!alive)
@@ -112,8 +272,6 @@ static int core_view_controller_dispatch(void *data, struct morph_tui_applicatio
 		rc = controller->ops->event(controller, event);
 	if (rc || morph_tui_application_transition_pending(app))
 		return rc;
-	struct morph_tui_window *window = morph_tui_application_window_borrow(app);
-
 	if ((event->type == MORPH_TUI_EVENT_KEY || event->type == MORPH_TUI_EVENT_TEXT) &&
 	    window->event)
 		rc = window->event(window->event_data, event);
@@ -232,8 +390,8 @@ int morph_tui_view_controller_present_borrow(struct morph_tui_application *app,
 		.data = controller,
 		.input_mode = MORPH_TUI_INPUT_KEYS,
 		.terminal_flags =
-				MORPH_TUI_TERMINAL_SESSION_ALTERNATE | MORPH_TUI_TERMINAL_SESSION_PASTE |
-					spec->terminal_flags,
+			MORPH_TUI_TERMINAL_SESSION_ALTERNATE | MORPH_TUI_TERMINAL_SESSION_PASTE |
+				spec->terminal_flags,
 		.tick_ms = spec->tick_ms,
 	};
 

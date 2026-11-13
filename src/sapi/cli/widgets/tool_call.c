@@ -156,14 +156,15 @@ static int cli_tool_call_render(struct cli_tool_call *widget, int width)
 		body = newline + 1;
 	}
 	morph_buf_t live MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	if (!widget->details && cli_transcript_tool_is_running(widget->tool)) {
+	if (document.len && !widget->details && cli_transcript_tool_is_running(widget->tool)) {
 		rc = cli_tool_call_live_body(widget, &live, columns);
 		if (!rc)
-			body = morph_buf_cstr_borrow(&live);
+			body = live.data ? morph_buf_cstr_borrow(&live) : "";
 	}
 	if (!rc)
 		rc = cli_messages_set_rendered_view(
-			widget->heading, morph_buf_cstr_borrow(&document), widget->styled);
+			widget->heading, document.data ? morph_buf_cstr_borrow(&document) : "",
+			widget->styled);
 	if (!rc)
 		rc = cli_messages_set_rendered_view(widget->body, body, widget->styled);
 	if (!rc)

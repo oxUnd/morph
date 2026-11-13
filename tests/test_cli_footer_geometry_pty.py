@@ -31,6 +31,7 @@ def check(terminal, height, tasks, draft, label):
                   f'{terminal.screen.cursor.x}\n' +
                   '\n'.join(f'{index:03}: {row}' for index, row in enumerate(rows)))
     assert len(prompts) == 1, diagnostic
+    assert not terminal.screen.cursor.hidden, diagnostic
     prompt = prompts[0] - len(terminal.screen.history.top)
     last_row = (2 + len(draft)) // terminal.screen.columns
     assert prompt >= 0, diagnostic
@@ -89,6 +90,25 @@ retry_count = 0
             check(terminal, height, tasks, draft, f'{label}, wrapped draft')
             terminal.send('\x15')
             check(terminal, height, tasks, '', f'{label}, cleared draft')
+            terminal.send('x' * 160 + 'TAIL')
+            screen = terminal.snapshot(f'{label}, draft exceeds viewport')
+            cursor = terminal.screen.cursor
+            assert not cursor.hidden and 0 <= cursor.y < height, screen
+            assert terminal.screen.display[cursor.y][:cursor.x].endswith('TAIL'), screen
+            terminal.send('\x01')
+            screen = terminal.snapshot(f'{label}, edit beginning of long draft')
+            assert not terminal.screen.cursor.hidden, screen
+            assert terminal.screen.display[terminal.screen.cursor.y].startswith(('› ', '> ')), screen
+            terminal.send('\x05\x15')
+            check(terminal, height, tasks, '', f'{label}, cleared long draft')
+            terminal.screen.resize(lines=24, columns=40)
+            terminal.child.setwinsize(24, 40)
+            terminal.pump(.3)
+            check(terminal, 24, tasks, '', f'{label}, enlarge restores spacing')
+            terminal.screen.resize(lines=height, columns=40)
+            terminal.child.setwinsize(height, 40)
+            terminal.pump(.3)
+            check(terminal, height, tasks, '', f'{label}, shrink restores editable input')
         finally:
             terminal.child.close(force=True)
 

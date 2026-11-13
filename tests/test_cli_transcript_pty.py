@@ -141,8 +141,10 @@ class AlternateScreen(pyte.Screen):
         if kwargs.get('private') and 1049 in modes:
             saved = getattr(self, '_main_screen', None)
             if saved is not None:
+                lines, columns = self.lines, self.columns
                 self.__dict__.clear()
                 self.__dict__.update(saved)
+                self.resize(lines=lines, columns=columns)
             modes = tuple(mode for mode in modes if mode != 1049)
         super().reset_mode(*modes, **kwargs)
 

@@ -225,24 +225,26 @@ int morph_tui_widget_list_state_update_groups(struct morph_tui_widget_list_state
 					      const struct morph_tui_widget_list_groups *groups,
 					      size_t page, int key)
 {
-	int changed;
+	size_t old;
 
 	if (!list || !groups)
 		return 0;
+	old = list->index;
 	list->count = groups->row_count;
 	list->page = page ? page : 1;
-	changed = morph_tui_widget_list_state_update(list, key);
+	if (!groups->item_count)
+		return 0;
+	(void)morph_tui_widget_list_state_update(list, key);
 	if (groups->item_count && groups->row_item[list->index] == SIZE_MAX) {
 		size_t index = morph_tui_widget_list_groups_snap(
 			groups, list->index, morph_tui_widget_list_key_forward(list, key));
 
 		if (index != list->index) {
 			list->index = index;
-			changed = 1;
 		}
 	}
 	morph_tui_widget_list_state_layout(list, groups->row_count, list->page);
-	return changed;
+	return old != list->index;
 }
 
 int morph_tui_widget_menu_state_update_groups(struct morph_tui_widget_menu_state *menu,
@@ -250,12 +252,17 @@ int morph_tui_widget_menu_state_update_groups(struct morph_tui_widget_menu_state
 					      size_t page, int key)
 {
 	int result;
+	size_t old;
 
 	if (!menu || !groups)
 		return MORPH_TUI_WIDGET_UNHANDLED;
+	old = menu->list.index;
 	menu->list.count = groups->row_count;
 	menu->list.page = page ? page : 1;
 	result = morph_tui_widget_menu_state_update(menu, key);
+	if (!groups->item_count &&
+	    (result == MORPH_TUI_WIDGET_CHANGED || result == MORPH_TUI_WIDGET_SUBMIT))
+		return MORPH_TUI_WIDGET_UNHANDLED;
 	if ((result == MORPH_TUI_WIDGET_CHANGED || result == MORPH_TUI_WIDGET_SUBMIT) &&
 	    groups->item_count && groups->row_item[menu->list.index] == SIZE_MAX) {
 		menu->list.index = morph_tui_widget_list_groups_snap(
@@ -264,5 +271,7 @@ int morph_tui_widget_menu_state_update_groups(struct morph_tui_widget_menu_state
 		morph_tui_widget_list_state_layout(&menu->list, groups->row_count,
 						   menu->list.page);
 	}
+	if (result == MORPH_TUI_WIDGET_CHANGED && old == menu->list.index)
+		return MORPH_TUI_WIDGET_UNHANDLED;
 	return result;
 }

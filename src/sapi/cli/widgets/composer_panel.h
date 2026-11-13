@@ -3,6 +3,7 @@
 
 #include "util/buf.h"
 #include <morph/tui/event.h>
+#include <morph/tui/view.h>
 
 struct cli_application;
 
@@ -33,6 +34,11 @@ struct cli_composer_panel_ops {
 int cli_composer_panel_show(struct cli_application *application,
 			    const struct cli_composer_panel_options *options,
 			    const struct cli_composer_panel_ops *ops, void *data);
+struct morph_tui_view *cli_composer_panel_add_borrow(struct morph_tui_builder *,
+	struct morph_tui_view *parent, struct cli_application *,
+	const struct cli_composer_panel_options *, const struct cli_composer_panel_ops *, void *data);
+int cli_composer_panel_update(struct morph_tui_view *, const struct morph_tui_event *);
+int cli_composer_panel_finish(struct morph_tui_view *, int result);
 int cli_composer_panel_line(struct cli_composer_panel_frame *frame, const char *text,
 			    const char *style);
 /* Trusted renderer output may contain SGR. Cursor controls and OSC are removed. */

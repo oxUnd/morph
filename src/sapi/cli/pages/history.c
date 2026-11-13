@@ -452,7 +452,7 @@ static int cli_history_render(struct cli_history_view *view)
 						       "", cli_history_string(entry, "status"));
 				const char *status = cli_history_string(entry, "status");
 
-				style = index == view->selection.index ? ANSI_CYAN "\033[7m"
+				style = index == view->selection.index ? ANSI_CYAN ANSI_BOLD
 					: strcmp(status, "OUT") == 0   ? ANSI_DIM
 					: strcmp(status, "IN") == 0    ? ""
 								       : ANSI_YELLOW;

@@ -37,6 +37,8 @@
 #include "sapi/cli/pages/hooks.h"
 #include "sapi/cli/pages/subagents.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
+#include "sapi/cli/adapters/clipboard/clipboard.h"
+#include <morph/tui/window.h>
 #include "cJSON.h"
 
 struct cli_application_screen {
@@ -71,6 +73,8 @@ void cli_application_panel_complete(struct cli_application *ctx, void *data,
 {
 	complete(data, result);
 	if (ctx->application_command &&
+	    !cli_chat_panel_active(ctx) &&
+	    !morph_tui_application_transition_pending(cli_application_tui_borrow(ctx)) &&
 	    morph_tui_application_depth(cli_application_tui_borrow(ctx)) <= 1) {
 		ctx->application_command = 0;
 		if (result < 0 && result != -ECANCELED)
@@ -87,9 +91,9 @@ static void cli_application_screen_close(void *data, int result)
 	free(screen);
 }
 
-int cli_application_present_screen(struct cli_application *ctx,
-				   const struct morph_tui_screen_ops *ops, void *data,
-				   void (*complete)(void *data, int result))
+int cli_application_present_screen_with_flags(struct cli_application *ctx,
+					      const struct morph_tui_screen_ops *ops, void *data,
+					      void (*complete)(void *data, int result), int flags)
 {
 	if (!ctx || !cli_application_tui_borrow(ctx) || !ops || !ops->update || !ops->draw ||
 	    !complete)
@@ -110,7 +114,8 @@ int cli_application_present_screen(struct cli_application *ctx,
 		.data = screen,
 		.input_mode = MORPH_TUI_INPUT_KEYS,
 		.terminal_flags =
-			MORPH_TUI_TERMINAL_SESSION_ALTERNATE | MORPH_TUI_TERMINAL_SESSION_PASTE,
+			MORPH_TUI_TERMINAL_SESSION_ALTERNATE | MORPH_TUI_TERMINAL_SESSION_PASTE |
+			flags,
 		.tick_ms = 100,
 	};
 	int rc = morph_tui_application_present_controller_take(cli_application_tui_borrow(ctx),
@@ -121,18 +126,40 @@ int cli_application_present_screen(struct cli_application *ctx,
 	return rc;
 }
 
+int cli_application_present_screen(struct cli_application *ctx,
+				   const struct morph_tui_screen_ops *ops, void *data,
+				   void (*complete)(void *data, int result))
+{
+	return cli_application_present_screen_with_flags(ctx, ops, data, complete, 0);
+}
+
 static void cli_application_prepare_termination(struct morph_tui_application *base, int result)
 {
 	struct cli_application *ctx = (struct cli_application *)base;
 
 	(void)result;
 	ctx->running = 0;
+	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE)
+		(void)cli_event_queue_set_events_enabled(ctx, 0);
+	(void)cli_chat_panel_cancel(ctx, -ECANCELED);
 	(void)cli_event_queue_stop_owner_calls(ctx);
 	if (ctx->input_job && ctx->input_job->active) {
 		runtime_cancel_turn(ctx->runtime);
 		cli_chat_job_finished(ctx->chat, cli_command_job_finish(ctx->input_job));
 	}
 	cli_event_queue_attach_app(ctx, NULL);
+}
+
+static int cli_application_copy_selection(void *data, const char *text)
+{
+	struct cli_application *ctx = data;
+	int rc = cli_clipboard_copy_text(ctx, text);
+
+	if (rc < 0)
+		CMD_ERROR(ctx, "Copy failed: %s", morph_strerror(rc));
+	else if (rc == CLI_CLIPBOARD_REQUESTED)
+		cli_output_printf(ctx, "Copy requested from terminal\n");
+	return 0;
 }
 
 static void cli_application_run_session(struct cli_application *ctx, struct cli_command_job *job)
@@ -153,7 +180,11 @@ static void cli_application_run_session(struct cli_application *ctx, struct cli_
 	app_rc = morph_tui_application_init(&ctx->base, &options);
 	if (!app_rc) {
 		cli_event_queue_attach_app(ctx, &ctx->base);
-		app_rc = cli_chat_present(page);
+		app_rc = morph_tui_window_set_text_copy_handler_borrow(
+			morph_tui_application_window_borrow(&ctx->base),
+			cli_application_copy_selection, ctx);
+		if (!app_rc)
+			app_rc = cli_chat_present(page);
 		if (!app_rc)
 			app_rc = morph_tui_application_run(&ctx->base);
 		morph_tui_application_deinit(&ctx->base);
@@ -180,6 +211,8 @@ static void cli_application_run_interactive(struct cli_application *ctx)
 	ctx->input_job = NULL;
 	ctx->input_status.enabled = 0;
 	cli_command_job_cleanup(&job);
+	if (!ctx->pending_db_restore)
+		cli_session_history_print_resume_hint(ctx);
 }
 
 struct morph_tui_application *cli_application_tui_borrow(struct cli_application *ctx)
@@ -223,6 +256,8 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 		cli_input_cleanup(ctx);
 		return rc;
 	}
+	if (mode == CLI_PRESENT_INTERACTIVE)
+		(void)cli_event_queue_set_events_enabled(ctx, 0);
 	memset(&options, 0, sizeof(options));
 	options.logger = ctx->logger;
 	options.startup_error = &ctx->startup_error;
@@ -527,6 +562,7 @@ void cli_application_run(struct cli_application *ctx)
 		return;
 	}
 	if (plain) {
+		(void)cli_event_queue_set_events_enabled(ctx, 1);
 		cli_output_set_color_enabled(ctx, 0);
 		ctx->presentation_mode = CLI_PRESENT_ONCE_PLAIN;
 	}
@@ -694,6 +730,10 @@ void cli_application_shutdown(struct cli_application *ctx)
 {
 	if (!ctx)
 		return;
+	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
+		(void)cli_event_queue_set_events_enabled(ctx, 0);
+		ctx->presentation_ready = 0;
+	}
 	morph_signal_listener_stop(&ctx->signals);
 	cli_callbacks_cleanup(ctx);
 	runtime_close(ctx->runtime);

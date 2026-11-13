@@ -143,6 +143,28 @@ raw/paste/alternate-screen transitions, mouse/focus reporting and restoration of
 original termios and descriptor flags. It reverses the nonblocking flag set by
 `uv_poll_init`, since stdin and stdout may share an open file description.
 
+Mouse reporting includes button press, drag and release events, with modifiers
+and zero-based cell coordinates. Controllers receive window coordinates; Views
+receive content-local coordinates after the same margin, padding, scroll and
+ancestor clipping transforms used for drawing. A View that handles a left press
+captures its drag/release, including motion outside its content. Keyboard input,
+resize and page disappearance cancel the capture. Removing a captured subtree
+clears the borrowed target before destruction.
+
+A host can enable visible text selection with
+`morph_tui_window_set_text_copy_handler_borrow`. Left drag selects rendered cells;
+right press sends the selected UTF-8 text to the host's clipboard callback.
+Selection includes complete wide and combining characters, preserves intervening
+blank lines and removes trailing row padding. Terminal escapes and hyperlink
+destinations are excluded. Typing, resize, page changes and changes to selected
+content clear the selection. The callback owns clipboard policy and transport;
+the framework performs no platform clipboard I/O. Interactive controls handle
+their clicks before the window's text-selection fallback.
+
+Fullscreen pages inherit terminal default foreground and background colors.
+Selected list rows use foreground and weight changes; controls can explicitly
+style their own surfaces, such as the chat composer and submitted message boxes.
+
 The CLI chat ViewController builds a page layout with a Scroll container, feed
 Stack, activity/queue/jobs controls and a compound TextField composer. Short
 feeds retain document flow, then scroll when they fill the available area. Messages,
@@ -150,6 +172,14 @@ tools, plans and notices compose Label, TextView and Stack controls. The frame
 renderer is the only writer for this retained tree. Runtime events mutate models
 and controls on the owner thread; modal pages retain the underlying tree and
 draft. Closing a modal restores that tree and invalidates the frame.
+
+Inline model, permission and subagent pickers use a temporary compound Widget
+with a TextView inside the chat tree. The panel replaces the composer and footer
+while retaining the submitted command and feed. Its provider still supplies
+content and actions; the retained renderer owns layout, clipping and cursor
+placement. Closing the panel removes its subtree before invoking completion and
+restores the existing editor. Application shutdown cancels it before View scope
+destruction.
 
 Native Image controls retain immutable PNG/RGBA assets. Canvas image placements
 inherit View content clipping; the renderer crops pixels, caches encoded data,

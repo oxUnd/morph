@@ -4,9 +4,20 @@
 #include "mcp/mcp.h"
 #include "config/config.h"
 #include "sapi/cli/application_internal.h"
-#include "sapi/cli/presentation/command_output.h"
+#include "sapi/cli/presentation/mcp_tree.h"
+#include "util/array.h"
+#include "util/cleanup.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
+
+struct cli_mcp_descriptors {
+	void *items;
+};
+
+static void cli_mcp_descriptors_cleanup(struct cli_mcp_descriptors *descriptors)
+{
+	runtime_mcp_list_free(descriptors->items);
+}
 
 static int cli_mcp_event_tree_visible(const struct cli_application *ctx)
 {
@@ -18,208 +29,70 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 	const char *sub = cli_cmd_arg_borrow(argc, argv, 1);
 
 	if (!sub || strcmp(sub, "list") == 0 || strcmp(sub, "status") == 0) {
-		int server_count = runtime_mcp_count(ctx->runtime);
-		CMD_HEADER(ctx, "MCP servers (%d)", server_count);
-		if (server_count == 0) {
-			(void)cli_command_output_linef(
-				ctx, CLI_OUTPUT_STYLE_PLAIN, 2,
-				"(none — add servers to config.toml under [mcp.servers])");
-			return 0;
+		int count = runtime_mcp_count(ctx->runtime);
+		if (count < 0)
+			return count;
+		morph_array_t servers MORPH_CLEANUP(morph_array_cleanup) = {0};
+		struct runtime_mcp_status server;
+		int rc = morph_array_init(&servers, count ? (size_t)count : 1, sizeof(server));
+		for (int i = 0; !rc && i < count; i++) {
+			struct runtime_mcp_status *slot = morph_array_push_borrow(&servers);
+			if (!slot)
+				return -ENOMEM;
+			rc = runtime_mcp_info(ctx->runtime, i, slot);
 		}
-		for (int i = 0; i < server_count; i++) {
-			struct runtime_mcp_status info;
-			struct runtime_mcp_status *mc = &info;
-			if (runtime_mcp_info(ctx->runtime, i, &info) != 0)
-				continue;
-			const char *states[] = {"disconnected", "connecting", "discovering",
-						"registering",	"ready",      "failed"};
-			const char *status = states[mc->state];
-			const char *transport =
-				mc->config.transport == MCP_TRANSPORT_STDIO ? "stdio" : "http";
-
-			{
-				struct cli_output_column columns[] = {
-					{.width = 20,
-					 .align = CLI_OUTPUT_ALIGN_LEFT,
-					 .style = CLI_OUTPUT_STYLE_BOLD},
-					{.width = 0,
-					 .align = CLI_OUTPUT_ALIGN_LEFT,
-					 .style = CLI_OUTPUT_STYLE_PLAIN},
-					{.width = 0,
-					 .align = CLI_OUTPUT_ALIGN_LEFT,
-					 .style = CLI_OUTPUT_STYLE_PLAIN},
-				};
-				char transport_cell[16];
-				const char *cells[] = {mc->config.name, transport_cell, status};
-				struct cli_output_table table = {
-					.columns = columns,
-					.column_count = 3,
-					.cells = cells,
-					.row_count = 1,
-					.indent = "  ",
-					.gap = "  ",
-				};
-
-				snprintf(transport_cell, sizeof(transport_cell), "[%s]", transport);
-				(void)cli_command_output_table(ctx, &table);
-			}
-			if (mc->elapsed_ms > 0)
-				(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 4,
-							       "elapsed: %lld ms",
-							       (long long)mc->elapsed_ms);
-			if (mc->error_code < 0)
-				(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 4,
-							       "error: %s",
-							       morph_strerror(mc->error_code));
-			if (mc->connected) {
-				(void)cli_command_output_linef(
-					ctx, CLI_OUTPUT_STYLE_PLAIN, 4,
-					"server: %s v%s | proto: %s", mc->server_name,
-					mc->server_version, mc->negotiated_version);
-				{
-					struct cli_output_column columns[] = {
-						{.width = 0, .align = CLI_OUTPUT_ALIGN_LEFT},
-						{.width = 4, .align = CLI_OUTPUT_ALIGN_LEFT},
-						{.width = 0, .align = CLI_OUTPUT_ALIGN_LEFT},
-						{.width = 4, .align = CLI_OUTPUT_ALIGN_LEFT},
-						{.width = 0, .align = CLI_OUTPUT_ALIGN_LEFT},
-						{.width = 0, .align = CLI_OUTPUT_ALIGN_LEFT},
-					};
-					const char *cells[] = {
-						"tools:", mc->supports_tools ? "yes" : "no",
-						"resources:", mc->supports_resources ? "yes" : "no",
-						"prompts:", mc->supports_prompts ? "yes" : "no",
-					};
-					struct cli_output_table table = {
-						.columns = columns,
-						.column_count = 6,
-						.cells = cells,
-						.row_count = 1,
-						.indent = "    ",
-						.gap = " ",
-					};
-
-					(void)cli_command_output_table(ctx, &table);
-				}
-			}
-		}
-		return 0;
+		if (!rc)
+			rc = cli_mcp_tree_write(ctx, servers.elts, servers.nelts);
+		if (rc)
+			CMD_ERROR(ctx, "failed to inspect MCP servers: %s", morph_strerror(rc));
+		return rc;
 	}
 
-	if (strcmp(sub, "tools") == 0) {
+	if (!strcmp(sub, "tools") || !strcmp(sub, "resources") || !strcmp(sub, "prompts")) {
 		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
-			CMD_ERROR(ctx, "usage: /mcp tools <server_name>");
+			CMD_ERROR(ctx, "usage: /mcp %s <server_name>", sub);
 			return -EINVAL;
 		}
+		struct cli_mcp_descriptors descriptors
+			MORPH_CLEANUP(cli_mcp_descriptors_cleanup) = {0};
 		struct mcp_tool_desc *tools = NULL;
-		int count = 0;
-		int rc = runtime_mcp_list_tools(ctx->runtime, name, &tools, &count);
-		if (rc < 0) {
-			CMD_ERROR(ctx, "failed to list tools: %s", morph_strerror(rc));
-			return rc;
-		}
-		CMD_HEADER(ctx, "MCP tools for '%s' (%d)", name, count);
-		{
-			struct cli_output_column columns[] = {
-				{.width = 30, .align = CLI_OUTPUT_ALIGN_LEFT},
-				{.width = 0, .align = CLI_OUTPUT_ALIGN_LEFT},
-			};
-
-			for (int i = 0; i < count; i++) {
-				const char *cells[] = {tools[i].name, tools[i].description};
-				struct cli_output_table table = {
-					.columns = columns,
-					.column_count = 2,
-					.cells = cells,
-					.row_count = 1,
-					.indent = "  ",
-					.gap = " ",
-				};
-
-				(void)cli_command_output_table(ctx, &table);
-			}
-		}
-		runtime_mcp_list_free(tools);
-		return 0;
-	}
-
-	if (strcmp(sub, "resources") == 0) {
-		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
-		if (!name) {
-			CMD_ERROR(ctx, "usage: /mcp resources <server_name>");
-			return -EINVAL;
-		}
-		struct mcp_resource_desc *res = NULL;
-		int count = 0;
-		int rc = runtime_mcp_list_resources(ctx->runtime, name, &res, &count);
-		if (rc < 0) {
-			CMD_ERROR(ctx, "failed to list resources: %s", morph_strerror(rc));
-			return rc;
-		}
-		CMD_HEADER(ctx, "MCP resources for '%s' (%d)", name, count);
-		{
-			struct cli_output_column columns[] = {
-				{.width = 30, .align = CLI_OUTPUT_ALIGN_LEFT},
-				{.width = 0, .align = CLI_OUTPUT_ALIGN_LEFT},
-			};
-
-			for (int i = 0; i < count; i++) {
-				const char *cells[] = {res[i].name, res[i].description};
-				struct cli_output_table table = {
-					.columns = columns,
-					.column_count = 2,
-					.cells = cells,
-					.row_count = 1,
-					.indent = "  ",
-					.gap = " ",
-				};
-
-				(void)cli_command_output_table(ctx, &table);
-				(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 4,
-							       "uri: %s", res[i].uri);
-			}
-		}
-		runtime_mcp_list_free(res);
-		return 0;
-	}
-
-	if (strcmp(sub, "prompts") == 0) {
-		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
-		if (!name) {
-			CMD_ERROR(ctx, "usage: /mcp prompts <server_name>");
-			return -EINVAL;
-		}
+		struct mcp_resource_desc *resources = NULL;
 		struct mcp_prompt_desc *prompts = NULL;
 		int count = 0;
-		int rc = runtime_mcp_list_prompts(ctx->runtime, name, &prompts, &count);
-		if (rc < 0) {
-			CMD_ERROR(ctx, "failed to list prompts: %s", morph_strerror(rc));
+		int rc;
+		if (!strcmp(sub, "tools")) {
+			rc = runtime_mcp_list_tools(ctx->runtime, name, &tools, &count);
+			descriptors.items = tools;
+		} else if (!strcmp(sub, "resources")) {
+			rc = runtime_mcp_list_resources(ctx->runtime, name, &resources, &count);
+			descriptors.items = resources;
+		} else {
+			rc = runtime_mcp_list_prompts(ctx->runtime, name, &prompts, &count);
+			descriptors.items = prompts;
+		}
+		if (rc) {
+			CMD_ERROR(ctx, "failed to list %s: %s", sub, morph_strerror(rc));
 			return rc;
 		}
-		CMD_HEADER(ctx, "MCP prompts for '%s' (%d)", name, count);
-		{
-			struct cli_output_column columns[] = {
-				{.width = 30, .align = CLI_OUTPUT_ALIGN_LEFT},
-				{.width = 0, .align = CLI_OUTPUT_ALIGN_LEFT},
-			};
-
-			for (int i = 0; i < count; i++) {
-				const char *cells[] = {prompts[i].name, prompts[i].description};
-				struct cli_output_table table = {
-					.columns = columns,
-					.column_count = 2,
-					.cells = cells,
-					.row_count = 1,
-					.indent = "  ",
-					.gap = " ",
-				};
-
-				(void)cli_command_output_table(ctx, &table);
-			}
+		morph_array_t rows MORPH_CLEANUP(morph_array_cleanup) = {0};
+		struct cli_mcp_tree_item row;
+		rc = morph_array_init(&rows, count ? (size_t)count : 1, sizeof(row));
+		for (int i = 0; !rc && i < count; i++) {
+			struct cli_mcp_tree_item *slot = morph_array_push_borrow(&rows);
+			if (!slot)
+				return -ENOMEM;
+			if (tools)
+				*slot = (struct cli_mcp_tree_item){tools[i].name,
+					tools[i].description, NULL};
+			else if (resources)
+				*slot = (struct cli_mcp_tree_item){resources[i].name,
+					resources[i].description, resources[i].uri};
+			else
+				*slot = (struct cli_mcp_tree_item){prompts[i].name,
+					prompts[i].description, NULL};
 		}
-		runtime_mcp_list_free(prompts);
-		return 0;
+		return rc ? rc : cli_mcp_tree_items_write(ctx, sub, name, rows.elts, rows.nelts);
 	}
 
 	if (strcmp(sub, "connect") == 0) {
