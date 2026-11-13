@@ -1,4 +1,6 @@
 #include "sapi/cli/commands/registry.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/commands/ext.h"
 #include "sapi/cli/commands/hooks.h"
 #include "sapi/cli/commands/jobs.h"
@@ -16,8 +18,8 @@
 #include "sapi/cli/commands/tasks.h"
 #include "sapi/cli/application_internal.h"
 #include "cJSON.h"
+#include "sapi/cli/presentation/command_output.h"
 #include "sapi/cli/presentation/output.h"
-#include "sapi/cli/widgets/list.h"
 #include "util/array.h"
 #include "util/cleanup.h"
 
@@ -274,17 +276,16 @@ void cli_print_help(struct cli_application *ctx)
 {
 	int group_start = 0;
 	int num_commands = 0;
-	int columns = cli_list_columns();
 
 	while (cli_registry_command_at(num_commands, NULL))
 		num_commands++;
 
-	printf(ctx, "\n" ANSI_BOLD ANSI_CYAN "Commands" ANSI_RESET "\n");
+	cli_help_begin(ctx);
 	while (group_start < num_commands) {
 		const char *category = NULL;
 		int group_end = group_start;
-		int item_count = 0;
-		int group_last;
+		morph_array_t items MORPH_CLEANUP(morph_array_cleanup) = {0};
+		int rc;
 
 		(void)cli_registry_command_at(group_start, &category);
 		while (group_end < num_commands) {
@@ -296,52 +297,41 @@ void cli_print_help(struct cli_application *ctx)
 				break;
 			group_end++;
 		}
-		for (int i = group_start; i < group_end;) {
-			int alias_end = i;
-			while (alias_end + 1 < group_end &&
-			       cli_registry_command_at(alias_end + 1, NULL)->handler ==
-				       cli_registry_command_at(i, NULL)->handler)
-				alias_end++;
-			item_count++;
-			i = alias_end + 1;
+		rc = morph_array_init(&items, (size_t)(group_end - group_start),
+				      sizeof(struct cli_help_item));
+		if (rc != 0) {
+			cli_help_end(ctx);
+			return;
 		}
-		group_last = group_end == num_commands;
-		cli_list_group(ctx, category ? category : "Other", item_count, group_last);
-		for (int i = group_start, item = 0; i < group_end;) {
+		for (int i = group_start; i < group_end;) {
 			const char *desc = cli_registry_command_at(i, NULL)->desc;
+			const char *alias = NULL;
 			int alias_end = i;
-			char display[128];
+			struct cli_help_item *item;
+
 			while (alias_end + 1 < group_end &&
 			       cli_registry_command_at(alias_end + 1, NULL)->handler ==
 				       cli_registry_command_at(i, NULL)->handler)
 				alias_end++;
 			if (alias_end > i && strncmp(desc, "Alias for", 9) == 0)
 				desc = cli_registry_command_at(alias_end, NULL)->desc;
-			if (alias_end > i) {
-				const char *pri = cli_registry_command_at(i, NULL)->name;
-				const char *alt = cli_registry_command_at(i + 1, NULL)->name;
-				const char *shorter = strlen(pri) <= strlen(alt) ? pri : alt;
-				const char *longer = strlen(pri) <= strlen(alt) ? alt : pri;
-				const char *s = shorter + 1;
-				const char *l = longer + 1;
-				size_t slen = strlen(s);
-				if (strncmp(s, l, slen) == 0)
-					snprintf(display, sizeof(display), "/%s[%s]", s, l + slen);
-				else
-					snprintf(display, sizeof(display), "%s,%s", shorter,
-						 longer);
-			} else {
-				snprintf(display, sizeof(display), "%s",
-					 cli_registry_command_at(i, NULL)->name);
+			if (alias_end > i)
+				alias = cli_registry_command_at(i + 1, NULL)->name;
+			item = morph_array_push_borrow(&items);
+			if (!item) {
+				cli_help_end(ctx);
+				return;
 			}
-			item++;
-			cli_list_item(ctx, morph_tui_widget_tree_branch(group_last, 1),
-				      item == item_count, "", display, desc, 22, columns);
+			item->name = cli_registry_command_at(i, NULL)->name;
+			item->alias = alias;
+			item->description = desc;
 			i = alias_end + 1;
 		}
+		cli_help_group(ctx, category ? category : "Other", items.elts, (int)items.nelts,
+			       group_end == num_commands);
 		group_start = group_end;
 	}
-	printf(ctx, "\n" ANSI_DIM "Use /help <command> for details." ANSI_RESET "\n");
+	cli_help_end(ctx);
 }
 
 char *cli_command_completion_generator(const char *text, int state)

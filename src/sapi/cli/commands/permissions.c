@@ -1,7 +1,11 @@
 #include "sapi/cli/commands/permissions.h"
+#include "runtime/runtime.h"
 #include "util/cleanup.h"
 #include "cJSON.h"
+#include "sapi/cli/adapters/input/confirm.h"
 #include "sapi/cli/application_internal.h"
+#include "sapi/cli/presentation/command_output.h"
+#include "sapi/cli/presentation/confirm.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
@@ -71,9 +75,7 @@ static int cli_permissions_print_permissions(struct cli_application *ctx)
 		return rc;
 	CMD_HEADER(ctx, "persistent permissions (%d)", count);
 	if (count == 0) {
-		printf(ctx, ANSI_DIM);
-		cli_list_tree_prefix(ctx, NULL, 0, 1, 0);
-		printf(ctx, "none for this project" ANSI_RESET "\n");
+		cli_command_print_tree_note(ctx, "none for this project");
 		runtime_permission_list_free(grants);
 		return 0;
 	}
@@ -109,8 +111,7 @@ static int cli_permissions_print_permissions(struct cli_application *ctx)
 
 static int cli_permissions_confirm_clear(struct cli_application *ctx, int all_projects)
 {
-	char answer[64];
-	FILE *tty;
+	enum cli_input_confirm_result answer;
 
 	if (ctx && ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
 		cJSON *request = cJSON_CreateObject();
@@ -129,28 +130,15 @@ static int cli_permissions_confirm_clear(struct cli_application *ctx, int all_pr
 		return rc == 0 && confirmed;
 	}
 
-	if (all_projects)
-		printf(ctx, ANSI_BOLD ANSI_RED "? Type \"clear all\" to revoke permissions "
-					       "for every project: " ANSI_RESET);
-	else
-		printf(ctx, ANSI_BOLD ANSI_YELLOW "? Revoke all persistent permissions for "
-						  "this project? [y/N]: " ANSI_RESET);
-	fflush(stdout);
-	tty = fopen("/dev/tty", "r");
-	if (!tty) {
-		putchar(ctx, '\n');
-		return 0;
-	}
-	if (!fgets(answer, sizeof(answer), tty)) {
-		fclose(tty);
-		putchar(ctx, '\n');
-		return 0;
-	}
-	fclose(tty);
-	answer[strcspn(answer, "\r\n")] = '\0';
-	if (all_projects)
-		return strcmp(answer, "clear all") == 0;
-	return answer[0] == 'y' || answer[0] == 'Y';
+	cli_confirm_prompt_show(ctx,
+				all_projects ? CLI_CONFIRM_PROMPT_CLEAR_ALL_PERMISSIONS
+					     : CLI_CONFIRM_PROMPT_CLEAR_PROJECT_PERMISSIONS,
+				NULL);
+	answer = all_projects ? cli_input_confirm_phrase("clear all")
+			      : cli_input_confirm_yes_no();
+	if (answer == CLI_INPUT_CONFIRM_NO_TERMINAL || answer == CLI_INPUT_CONFIRM_READ_ERROR)
+		cli_confirm_prompt_end(ctx);
+	return answer == CLI_INPUT_CONFIRM_ACCEPTED;
 }
 
 static void cli_permissions_grants_cleanup(struct runtime_permission_grant **owner)
@@ -234,7 +222,7 @@ static int cli_permissions_command_permissions(struct cli_application *ctx, int 
 		if (rc != 0)
 			return rc;
 		CMD_HEADER(ctx, "permissions");
-		printf(ctx, "  %s: access=%s approval=%s reviewer=%s\n",
+		cli_output_printf(ctx, "  %s: access=%s approval=%s reviewer=%s\n",
 			runtime_permission_preset_name(&policy), permission_access_name(policy.access),
 			permission_approval_name(policy.approval), permission_reviewer_name(policy.reviewer));
 		return 0;
@@ -297,7 +285,7 @@ static int cli_permissions_command_permissions(struct cli_application *ctx, int 
 		if (!confirmed)
 			confirmed = cli_permissions_confirm_clear(ctx, all_projects);
 		if (!confirmed) {
-			printf(ctx, ANSI_DIM "  cancelled" ANSI_RESET "\n");
+			cli_command_print_cancelled(ctx);
 			return 0;
 		}
 		rc = runtime_permission_clear(ctx->runtime, all_projects, &deleted);

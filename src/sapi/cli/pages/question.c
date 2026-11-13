@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/question.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/adapters/input/state.h"
 #include "agent/tools/ask_user.h"
@@ -233,9 +234,9 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 
 	cli_cancel_monitor_clear(ctx);
 	cli_presentation_prepare_prompt(ctx);
-	printf(ctx, CLI_FEED_QUESTION_STYLE CLI_FEED_QUESTION " ");
+	cli_output_printf(ctx, CLI_FEED_QUESTION_STYLE CLI_FEED_QUESTION " ");
 	(void)cli_output_print_untrusted(ctx, question, UTF8_TERMINAL_TEXT_SINGLE_LINE);
-	printf(ctx, ANSI_RESET "\n");
+	cli_output_printf(ctx, ANSI_RESET "\n");
 	int timeout = options && options->optional ? options->timeout_seconds : 0;
 	char hint[160];
 	if (timeout)
@@ -331,12 +332,12 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 								       values, count);
 				if (!rc) {
 					for (int i = 0; i < count; i++) {
-						printf(ctx, "  %s" ANSI_GREEN CLI_FEED_DONE
+						cli_output_printf(ctx, "  %s" ANSI_GREEN CLI_FEED_DONE
 						       " " ANSI_RESET, i + 1 < count ? "├ " : "└ ");
 						(void)cli_output_print_untrusted(
 							ctx, values[i],
 							UTF8_TERMINAL_TEXT_SINGLE_LINE);
-						printf(ctx, "\n");
+						cli_output_printf(ctx, "\n");
 					}
 				}
 			}
@@ -347,7 +348,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 			if (tty)
 				fclose(tty);
 			if (rc == -ETIMEDOUT)
-				printf(ctx, "  No response; %s.\n",
+				cli_output_printf(ctx, "  No response; %s.\n",
 				       options->recommended_count
 					       ? "continuing with recommended choices"
 					       : "continuing without input");
@@ -358,17 +359,17 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 	}
 
 	char prompt[128];
-	printf(ctx, "%s\n", hint);
+	cli_output_printf(ctx, "%s\n", hint);
 	if (choices && choices_count > 0) {
 		for (int i = 0; i < choices_count; i++) {
-			printf(ctx, "  %d. ", i + 1);
+			cli_output_printf(ctx, "  %d. ", i + 1);
 			(void)cli_output_print_untrusted(ctx, choices[i],
 							 UTF8_TERMINAL_TEXT_SINGLE_LINE);
 			for (int j = 0; options && j < options->recommended_count; j++) {
 				if (options->recommended_indices[j] == i)
-					printf(ctx, " (Recommended)");
+					cli_output_printf(ctx, " (Recommended)");
 			}
-			printf(ctx, "\n");
+			cli_output_printf(ctx, "\n");
 		}
 		if (multi && max_choices > 0) {
 			snprintf(prompt, sizeof(prompt),
@@ -415,7 +416,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 			return -ETIMEDOUT;
 		}
 		if (!input) {
-			printf(ctx, "\n");
+			cli_output_printf(ctx, "\n");
 			return -EIO;
 		}
 		if (!input[0] && options && options->recommended_count) {
@@ -454,7 +455,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 		return line_rc;
 	FILE *tty = fopen("/dev/tty", "r");
 	if (!tty) {
-		printf(ctx, "\n");
+		cli_output_printf(ctx, "\n");
 		return -ENOTTY;
 	}
 	int64_t deadline = timeout ? morph_io_now_ms() + (int64_t)timeout * 1000 : 0;
@@ -462,7 +463,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 		if (!cli_input_fgets_until(ctx, chunk, sizeof(chunk), tty, &deadline)) {
 			int read_error = errno;
 			fclose(tty);
-			printf(ctx, "\n");
+			cli_output_printf(ctx, "\n");
 			return read_error ? morph_error_from_errno(read_error) : -EIO;
 		}
 		size_t length = strlen(chunk);

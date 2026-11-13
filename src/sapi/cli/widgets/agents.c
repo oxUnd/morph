@@ -1,4 +1,5 @@
 #include "sapi/cli/widgets/agents.h"
+#include "sapi/cli/models/agents.h"
 
 #include "sapi/cli/presentation/style.h"
 #include "util/utf8.h"
@@ -173,4 +174,20 @@ int cli_agents_rows(morph_buf_t *out, const struct agent_info *agents, int count
 		shown++;
 	}
 	return shown;
+}
+
+int cli_agents_model_visible(const struct cli_agents_model *model)
+{
+	return cli_agents_model_active(model);
+}
+
+int cli_agents_model_render(const struct cli_agents_model *model, morph_buf_t *out,
+			    morph_buf_t *summary, int columns, int maximum, int styled)
+{
+	if (!model || !out || !summary)
+		return -EINVAL;
+	if (!model->count)
+		return 0;
+	(void)cli_agents_summary(summary, model->items, model->count, columns);
+	return cli_agents_rows(out, model->items, model->count, columns, maximum, styled);
 }

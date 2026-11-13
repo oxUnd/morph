@@ -23,6 +23,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include "sapi/cli/services/agents.h"
 
 struct cli_subagents_feed {
 	struct morph_tui_frame frame;
@@ -60,7 +61,7 @@ struct cli_subagents_page {
 
 static void cli_subagents_detail_cleanup(struct agent_info **detail)
 {
-	runtime_agent_list_free(*detail, *detail ? 1 : 0);
+	cli_agents_list_free(*detail, *detail ? 1 : 0);
 }
 
 static struct agent_info *cli_subagents_detail_steal(struct agent_info **detail)
@@ -74,7 +75,7 @@ static void cli_subagents_feed_destroy(struct cli_subagents_feed *feed)
 {
 	if (!feed)
 		return;
-	runtime_agent_list_free(feed->detail, feed->detail ? 1 : 0);
+	cli_agents_list_free(feed->detail, feed->detail ? 1 : 0);
 	cli_subagents_thread_destroy(feed->thread);
 	morph_buf_cleanup(&feed->document);
 	morph_buf_cleanup(&feed->draft);
@@ -148,13 +149,13 @@ static int cli_subagents_refresh(struct cli_subagents_page *page)
 	int64_t session = 0;
 	(void)runtime_session_current_id(page->ctx->runtime, &session);
 	int rc = page->fullscreen && !page->viewing
-			 ? runtime_agent_list(page->ctx->runtime, session, &items, &count)
-			 : runtime_agent_activity(page->ctx->runtime, session, &items, &count);
+			 ? cli_agents_list(page->ctx, session, &items, &count)
+			 : cli_agents_activity(page->ctx, session, &items, &count);
 	if (rc != 0)
 		return rc;
 	char *selected MORPH_CLEANUP(morph_charp_cleanup) = strdup(cli_subagents_selected(page));
 	if (!selected) {
-		runtime_agent_list_free(items, count);
+		cli_agents_list_free(items, count);
 		return -ENOMEM;
 	}
 	if (page->session != session) {
@@ -162,7 +163,7 @@ static int cli_subagents_refresh(struct cli_subagents_page *page)
 		cli_subagents_feeds_clear(page);
 		page->session = session;
 	}
-	runtime_agent_list_free(page->items, page->count);
+	cli_agents_list_free(page->items, page->count);
 	page->items = items;
 	page->count = count;
 	page->selection.index = 0;
@@ -185,9 +186,9 @@ static int cli_subagents_refresh(struct cli_subagents_page *page)
 			    (items[i].status != feed->detail->status ||
 			     items[i].started_at_ms != feed->detail->started_at_ms)) {
 				struct agent_info *detail = NULL;
-				if (runtime_agent_read(page->ctx->runtime, feed->thread->id,
+				if (cli_agents_read(page->ctx, feed->thread->id,
 						       &detail) == 0) {
-					runtime_agent_list_free(feed->detail, 1);
+					cli_agents_list_free(feed->detail, 1);
 					feed->detail = detail;
 					feed->dirty = 1;
 				}
@@ -237,13 +238,13 @@ struct cli_subagents_events {
 
 static void cli_subagents_events_cleanup(struct cli_subagents_events *events)
 {
-	runtime_agent_events_free(events->items, events->count);
+	cli_agents_events_free(events->items, events->count);
 }
 
 static int cli_subagents_select(struct cli_subagents_page *page)
 {
 	const char *id = cli_subagents_selected(page);
-	(void)runtime_agent_select(page->ctx->runtime, NULL);
+	(void)cli_agents_select(page->ctx, NULL);
 	page->viewing = 0;
 	if (!strcmp(id, "/root"))
 		return 0;
@@ -252,19 +253,19 @@ static int cli_subagents_select(struct cli_subagents_page *page)
 		return rc;
 	struct cli_subagents_feed *feed = page->feed;
 	struct agent_info *detail MORPH_CLEANUP(cli_subagents_detail_cleanup) = NULL;
-	rc = runtime_agent_read(page->ctx->runtime, id, &detail);
+	rc = cli_agents_read(page->ctx, id, &detail);
 	if (rc != 0)
 		return rc;
-	runtime_agent_list_free(feed->detail, feed->detail ? 1 : 0);
+	cli_agents_list_free(feed->detail, feed->detail ? 1 : 0);
 	feed->detail = cli_subagents_detail_steal(&detail);
 	struct cli_subagents_events events MORPH_CLEANUP(cli_subagents_events_cleanup) = {0};
 	int64_t sequence = 0;
-	rc = runtime_agent_subscribe(page->ctx->runtime, id, &events.items, &events.count,
+	rc = cli_agents_subscribe(page->ctx, id, &events.items, &events.count,
 				     &sequence);
 	for (int i = 0; i < events.count && rc == 0; i++)
 		rc = cli_subagents_thread_replay(feed->thread, events.items[i]);
 	if (rc != 0) {
-		(void)runtime_agent_select(page->ctx->runtime, NULL);
+		(void)cli_agents_select(page->ctx, NULL);
 		return rc;
 	}
 	feed->thread->sequence = sequence;
@@ -618,7 +619,7 @@ static int cli_subagents_update(void *data, const struct morph_tui_event *event)
 		if (key == 'f') {
 			feed->editing = 1;
 		} else {
-			int rc = runtime_agent_interrupt(page->ctx->runtime, feed->thread->id);
+			int rc = cli_agents_interrupt(page->ctx, feed->thread->id);
 			morph_buf_reset(&feed->message);
 			(void)morph_buf_puts(&feed->message,
 					     rc ? morph_strerror(rc) : "Interrupt requested");
@@ -650,7 +651,7 @@ static void cli_subagents_complete(void *data, int result)
 	page->viewing = 0;
 	if (page->feed)
 		page->feed->editing = 0;
-	(void)runtime_agent_select(page->ctx->runtime, NULL);
+	(void)cli_agents_select(page->ctx, NULL);
 }
 
 static int cli_subagents_view_show(struct cli_subagents_page *page)
@@ -669,7 +670,8 @@ static void cli_subagents_picker_complete(void *data, int result)
 		int rc = cli_subagents_view_show(page);
 		if (rc == 0)
 			return;
-		morph_tui_application_stop(cli_application_tui_borrow(page->ctx), rc);
+		cli_subagents_complete(page, rc);
+		return;
 	}
 	cli_subagents_complete(page, result);
 }
@@ -679,7 +681,7 @@ void cli_subagents_cleanup(struct cli_application *ctx)
 	if (!ctx || !ctx->subagents)
 		return;
 	struct cli_subagents_page *page = ctx->subagents;
-	runtime_agent_list_free(page->items, page->count);
+	cli_agents_list_free(page->items, page->count);
 	cli_subagents_feeds_clear(page);
 	morph_tui_frame_cleanup(&page->picker_frame);
 	morph_array_cleanup(&page->feeds);

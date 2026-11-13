@@ -1,4 +1,6 @@
 #include "sapi/cli/commands/jobs.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/application.h"
 #include "cJSON.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
@@ -35,7 +37,7 @@ static int cli_jobs_command_jobs(struct cli_application *ctx, int argc, char **a
 		if (!json)
 			rc = -ENOMEM;
 		else {
-			printf(ctx, "%s\n", json);
+			cli_output_printf(ctx, "%s\n", json);
 			free(json);
 		}
 	}

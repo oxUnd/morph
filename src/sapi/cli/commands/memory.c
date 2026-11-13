@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/memory.h"
+#include "runtime/runtime.h"
 #include "agent/memory.h"
 #include "runtime/services.h"
 #include "sapi/cli/application_internal.h"
@@ -147,7 +148,7 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 		(void)cli_output_print_untrusted(
 			ctx, rendered ? rendered : "No long-term memory stored for this session.",
 			UTF8_TERMINAL_TEXT_MULTILINE);
-		printf(ctx, "\n");
+		cli_output_printf(ctx, "\n");
 		free(rendered);
 		return 0;
 	}

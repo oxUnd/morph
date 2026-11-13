@@ -1,4 +1,8 @@
 #include "sapi/cli/commands/tasks.h"
+#include "sapi/cli/presentation/command_output.h"
+#include "sapi/cli/presentation/output.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/presentation/style.h"
 #include "util/cleanup.h"
 #include "db/scheduled_task.h"
@@ -263,13 +267,10 @@ static int cli_tasks_command_tasks_list(struct cli_application *ctx, int argc, c
 		return rc;
 	}
 	CMD_HEADER(ctx, "scheduled tasks (%d)", count);
-	if (count == 0) {
-		printf(ctx, ANSI_DIM);
-		cli_list_tree_prefix(ctx, NULL, 0, 1, 0);
-		printf(ctx, "no tasks" ANSI_RESET "\n");
-	} else {
+	if (count == 0)
+		cli_command_print_tree_note(ctx, "no tasks");
+	else
 		rc = cli_tasks_print_task_list_tree(ctx, tasks, count);
-	}
 	scheduled_task_free_list(tasks, count);
 	return rc;
 }
@@ -302,12 +303,8 @@ static int cli_tasks_command_tasks_show(struct cli_application *ctx, int argc, c
 	if (rc != 0)
 		return rc;
 	rc = cli_tasks_append_task_show_markdown(&md, &task);
-	if (rc == 0) {
-		if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
-			printf(ctx, "%s", morph_buf_cstr_borrow(&md));
-		else
-			cli_markdown_render_ansi(ctx, morph_buf_cstr_borrow(&md));
-	}
+	if (rc == 0)
+		rc = cli_command_output_markdown_render(ctx, morph_buf_cstr_borrow(&md));
 	return rc;
 }
 
@@ -401,38 +398,6 @@ static void cli_tasks_notification_time_string(int64_t ts, char *buf, size_t buf
 		snprintf(buf, buf_len, "%lld", (long long)ts);
 }
 
-static int cli_tasks_markdown_table_cell(morph_buf_t *buf, const char *text)
-{
-	const char *s = text ? text : "";
-	int rc = 0;
-
-	for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-		switch (*p) {
-		case '|':
-			rc = morph_buf_puts(buf, "\\|");
-			break;
-		case '\\':
-			rc = morph_buf_puts(buf, "\\\\");
-			break;
-		case '\n':
-		case '\t':
-			rc = morph_buf_putc(buf, ' ');
-			break;
-		case '\r':
-			break;
-		default:
-			if (*p < 0x20)
-				rc = morph_buf_putc(buf, ' ');
-			else
-				rc = morph_buf_putc(buf, (char)*p);
-			break;
-		}
-		if (rc != 0)
-			return rc;
-	}
-	return 0;
-}
-
 static const char *cli_tasks_task_prompt_from_payload(cJSON **payload,
 						      const struct scheduled_task *task)
 {
@@ -447,53 +412,25 @@ static const char *cli_tasks_task_prompt_from_payload(cJSON **payload,
 	return task->title[0] ? task->title : "";
 }
 
-static int cli_tasks_append_markdown_indented_block(morph_buf_t *buf, const char *text)
-{
-	const char *s = text ? text : "";
-	int line_start = 1;
-	int rc = 0;
-
-	for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-		if (line_start) {
-			rc = morph_buf_puts(buf, "    ");
-			if (rc != 0)
-				return rc;
-			line_start = 0;
-		}
-		if (*p == '\r')
-			continue;
-		rc = morph_buf_putc(buf, (char)*p);
-		if (rc != 0)
-			return rc;
-		if (*p == '\n')
-			line_start = 1;
-	}
-	if (line_start)
-		rc = morph_buf_puts(buf, "    ");
-	if (rc == 0)
-		rc = morph_buf_putc(buf, '\n');
-	return rc;
-}
-
 static int cli_tasks_task_status_is_terminal(const char *status)
 {
 	return status && (strcmp(status, "completed") == 0 || strcmp(status, "cancelled") == 0 ||
 			  strcmp(status, "failed") == 0);
 }
 
-static const char *cli_tasks_task_status_marker(const char *status)
+static enum cli_output_status cli_tasks_task_status(const char *status)
 {
 	if (!status)
-		return ANSI_DIM CLI_FEED_PENDING ANSI_RESET;
+		return CLI_OUTPUT_STATUS_PENDING;
 	if (strcmp(status, "completed") == 0)
-		return ANSI_GREEN CLI_FEED_DONE ANSI_RESET;
+		return CLI_OUTPUT_STATUS_DONE;
 	if (strcmp(status, "failed") == 0)
-		return CLI_FEED_FAILED_STYLE CLI_FEED_FAILED ANSI_RESET;
+		return CLI_OUTPUT_STATUS_FAILED;
 	if (strcmp(status, "cancelled") == 0)
-		return ANSI_DIM CLI_FEED_CANCELLED ANSI_RESET;
+		return CLI_OUTPUT_STATUS_CANCELLED;
 	if (strcmp(status, "running") == 0)
-		return ANSI_CYAN CLI_FEED_RUNNING ANSI_RESET;
-	return ANSI_DIM CLI_FEED_PENDING ANSI_RESET;
+		return CLI_OUTPUT_STATUS_RUNNING;
+	return CLI_OUTPUT_STATUS_PENDING;
 }
 
 static void cli_tasks_task_list_schedule(const struct scheduled_task *task, char *schedule,
@@ -506,8 +443,8 @@ static void cli_tasks_task_list_schedule(const struct scheduled_task *task, char
 }
 
 static int cli_tasks_print_active_task(struct cli_application *ctx,
-				       const struct scheduled_task *task, const char *ancestor,
-				       int is_last, int columns)
+				       const struct scheduled_task *task, int group_is_last,
+				       int is_last)
 {
 	char due[32];
 	char attempts[32];
@@ -533,24 +470,40 @@ static int cli_tasks_print_active_task(struct cli_application *ctx,
 	}
 	rc = morph_buf_printf(&summary, "#%lld  %s · %s · next %s · %s", (long long)task->id,
 			      task->status, schedule, due, attempts);
-	if (rc == 0)
-		cli_list_item(ctx, ancestor, is_last, cli_tasks_task_status_marker(task->status),
-			      morph_buf_cstr_borrow(&summary), prompt, 46, columns);
+	if (rc == 0) {
+		struct cli_output_status_row row = {
+			.status = cli_tasks_task_status(task->status),
+			.place = CLI_OUTPUT_ROW_GROUP,
+			.group_is_last = group_is_last,
+			.is_last = is_last,
+			.wide = 1,
+			.name = morph_buf_cstr_borrow(&summary),
+			.description = prompt,
+		};
+
+		rc = cli_command_output_status_rows(ctx, &row, 1);
+	}
 	morph_buf_cleanup(&summary);
 	cJSON_Delete(payload);
 	return rc;
 }
 
 static void cli_tasks_print_historical_task(struct cli_application *ctx,
-					    const struct scheduled_task *task, int is_last,
-					    int columns)
+					    const struct scheduled_task *task, int is_last)
 {
 	char label[96];
 	const char *description = task->title[0] ? task->title : "task";
+	struct cli_output_status_row row;
 
 	snprintf(label, sizeof(label), "#%lld  %s", (long long)task->id, task->status);
-	cli_list_item(ctx, "  ", is_last, cli_tasks_task_status_marker(task->status), label,
-		      description, 24, columns);
+	row = (struct cli_output_status_row){
+		.status = cli_tasks_task_status(task->status),
+		.place = CLI_OUTPUT_ROW_INDENTED,
+		.is_last = is_last,
+		.name = label,
+		.description = description,
+	};
+	(void)cli_command_output_status_rows(ctx, &row, 1);
 }
 
 static int cli_tasks_print_task_list_tree(struct cli_application *ctx,
@@ -560,7 +513,6 @@ static int cli_tasks_print_task_list_tree(struct cli_application *ctx,
 	int history_count = 0;
 	int active_index = 0;
 	int history_index = 0;
-	int columns = cli_list_columns();
 	int rc = 0;
 
 	if (!tasks || count <= 0)
@@ -572,55 +524,52 @@ static int cli_tasks_print_task_list_tree(struct cli_application *ctx,
 			active_count++;
 	}
 	if (active_count > 0) {
-		cli_list_group(ctx, "active", active_count, history_count == 0);
+		(void)cli_command_output_group(ctx, "active", active_count,
+					       history_count == 0);
 		for (int i = 0; rc == 0 && i < count; i++) {
 			if (cli_tasks_task_status_is_terminal(tasks[i].status))
 				continue;
 			active_index++;
 			rc = cli_tasks_print_active_task(
-				ctx, &tasks[i], morph_tui_widget_tree_branch(history_count == 0, 1),
-				active_index == active_count, columns);
+					ctx, &tasks[i], history_count == 0,
+					active_index == active_count);
 		}
 	}
 	if (rc == 0 && history_count > 0) {
-		cli_list_group(ctx, "history", history_count, 1);
+		(void)cli_command_output_group(ctx, "history", history_count, 1);
 		for (int i = 0; i < count; i++) {
 			if (!cli_tasks_task_status_is_terminal(tasks[i].status))
 				continue;
 			history_index++;
 			cli_tasks_print_historical_task(ctx, &tasks[i],
-							history_index == history_count, columns);
+							history_index == history_count);
 		}
 	}
-	return rc;
-}
-
-static int cli_tasks_append_task_detail_row(morph_buf_t *buf, const char *field, const char *value)
-{
-	int rc;
-
-	rc = morph_buf_puts(buf, "| ");
-	if (rc == 0)
-		rc = cli_tasks_markdown_table_cell(buf, field);
-	if (rc == 0)
-		rc = morph_buf_puts(buf, " | ");
-	if (rc == 0)
-		rc = cli_tasks_markdown_table_cell(buf, value);
-	if (rc == 0)
-		rc = morph_buf_puts(buf, " |\n");
 	return rc;
 }
 
 static int cli_tasks_append_task_show_markdown(morph_buf_t *buf, const struct scheduled_task *task)
 {
 	char id[32];
+	char heading[48];
 	char due[32];
 	char created[32];
 	char updated[32];
 	char attempts[32];
 	char schedule[32];
+	const char *cells[18];
+	size_t rows = 0;
 	cJSON *payload = NULL;
 	const char *prompt;
+	static const struct cli_output_column columns[] = {
+		{.header = "Field", .align = CLI_OUTPUT_ALIGN_LEFT},
+		{.header = "Value", .align = CLI_OUTPUT_ALIGN_LEFT},
+	};
+	struct cli_output_table table = {
+		.columns = columns,
+		.column_count = 2,
+		.cells = cells,
+	};
 	int rc;
 
 	if (!buf || !task)
@@ -629,6 +578,7 @@ static int cli_tasks_append_task_show_markdown(morph_buf_t *buf, const struct sc
 	cli_tasks_notification_time_string(task->created_at, created, sizeof(created));
 	cli_tasks_notification_time_string(task->updated_at, updated, sizeof(updated));
 	snprintf(id, sizeof(id), "%lld", (long long)task->id);
+	snprintf(heading, sizeof(heading), "Task #%lld", (long long)task->id);
 	if (task->max_attempts > 0)
 		snprintf(attempts, sizeof(attempts), "%d/%d", task->attempts, task->max_attempts);
 	else
@@ -638,98 +588,91 @@ static int cli_tasks_append_task_show_markdown(morph_buf_t *buf, const struct sc
 	else
 		snprintf(schedule, sizeof(schedule), "once");
 	prompt = cli_tasks_task_prompt_from_payload(&payload, task);
-	rc = morph_buf_printf(buf, "## Task #%lld\n\n", (long long)task->id);
+	cells[rows * 2] = "ID";
+	cells[rows++ * 2 + 1] = id;
+	cells[rows * 2] = "Title";
+	cells[rows++ * 2 + 1] = task->title;
+	cells[rows * 2] = "Status";
+	cells[rows++ * 2 + 1] = task->status;
+	cells[rows * 2] = "Schedule";
+	cells[rows++ * 2 + 1] = schedule;
+	cells[rows * 2] = "Next run";
+	cells[rows++ * 2 + 1] = due;
+	cells[rows * 2] = "Attempts";
+	cells[rows++ * 2 + 1] = attempts;
+	if (task->last_error[0]) {
+		cells[rows * 2] = "Last error";
+		cells[rows++ * 2 + 1] = task->last_error;
+	}
+	cells[rows * 2] = "Created";
+	cells[rows++ * 2 + 1] = created;
+	cells[rows * 2] = "Updated";
+	cells[rows++ * 2 + 1] = updated;
+	table.row_count = rows;
+	rc = cli_command_output_markdown_heading(buf, 2, heading);
 	if (rc == 0)
-		rc = morph_buf_puts(buf, "| Field | Value |\n"
-					 "|---|---|\n");
+		rc = cli_command_output_markdown_table(buf, &table);
 	if (rc == 0)
-		rc = cli_tasks_append_task_detail_row(buf, "ID", id);
+		rc = cli_command_output_markdown_heading(buf, 3, "Prompt");
 	if (rc == 0)
-		rc = cli_tasks_append_task_detail_row(buf, "Title", task->title);
-	if (rc == 0)
-		rc = cli_tasks_append_task_detail_row(buf, "Status", task->status);
-	if (rc == 0)
-		rc = cli_tasks_append_task_detail_row(buf, "Schedule", schedule);
-	if (rc == 0)
-		rc = cli_tasks_append_task_detail_row(buf, "Next run", due);
-	if (rc == 0)
-		rc = cli_tasks_append_task_detail_row(buf, "Attempts", attempts);
-	if (rc == 0 && task->last_error[0])
-		rc = cli_tasks_append_task_detail_row(buf, "Last error", task->last_error);
-	if (rc == 0)
-		rc = cli_tasks_append_task_detail_row(buf, "Created", created);
-	if (rc == 0)
-		rc = cli_tasks_append_task_detail_row(buf, "Updated", updated);
-	if (rc == 0)
-		rc = morph_buf_puts(buf, "\n### Prompt\n\n");
-	if (rc == 0)
-		rc = cli_tasks_append_markdown_indented_block(buf, prompt);
+		rc = cli_command_output_markdown_block(buf, prompt);
 	cJSON_Delete(payload);
 	return rc;
 }
-
-static int cli_tasks_append_notification_table_row(morph_buf_t *buf, const struct notification *n)
-{
-	char created[32];
-	int rc;
-
-	if (!buf || !n)
-		return -EINVAL;
-	cli_tasks_notification_time_string(n->created_at, created, sizeof(created));
-	rc = morph_buf_printf(buf, "| %lld | ", (long long)n->id);
-	if (rc == 0)
-		rc = morph_buf_printf(buf, "%lld | ", (long long)n->task_id);
-	if (rc == 0)
-		rc = cli_tasks_markdown_table_cell(buf, n->level);
-	if (rc == 0)
-		rc = morph_buf_puts(buf, " | ");
-	if (rc == 0)
-		rc = cli_tasks_markdown_table_cell(buf, created);
-	if (rc == 0)
-		rc = morph_buf_puts(buf, " | ");
-	if (rc == 0)
-		rc = cli_tasks_markdown_table_cell(buf, n->delivery_status);
-	if (rc == 0)
-		rc = morph_buf_puts(buf, " | ");
-	if (rc == 0)
-		rc = cli_tasks_markdown_table_cell(buf, n->title);
-	if (rc == 0)
-		rc = morph_buf_puts(buf, " | ");
-	if (rc == 0)
-		rc = cli_tasks_markdown_table_cell(buf, n->body);
-	if (rc == 0)
-		rc = morph_buf_puts(buf, " |\n");
-	return rc;
-}
-
 static int cli_tasks_render_inbox(struct cli_application *ctx,
-	const struct notification *notifications, int count)
+		const struct notification *notifications, int count)
 {
+	static const struct cli_output_column columns[] = {
+		{.header = "ID", .align = CLI_OUTPUT_ALIGN_RIGHT},
+		{.header = "Task", .align = CLI_OUTPUT_ALIGN_RIGHT},
+		{.header = "Level", .align = CLI_OUTPUT_ALIGN_LEFT},
+		{.header = "Created", .align = CLI_OUTPUT_ALIGN_LEFT},
+		{.header = "Delivery", .align = CLI_OUTPUT_ALIGN_LEFT},
+		{.header = "Title", .align = CLI_OUTPUT_ALIGN_LEFT},
+		{.header = "Body", .align = CLI_OUTPUT_ALIGN_LEFT},
+	};
+	struct cli_output_table table = {
+		.columns = columns,
+		.column_count = sizeof(columns) / sizeof(columns[0]),
+	};
 	morph_buf_t md MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc = 0;
 
 	CMD_HEADER(ctx, "inbox");
 	if (count == 0) {
-		printf(ctx, "No unread notifications.\n");
-	} else {
-		rc = morph_buf_init(&md, 1024);
-		if (rc != 0)
-			return rc;
-		rc = morph_buf_puts(&md,
-				    "| ID | Task | Level | Created | Delivery | Title | Body |\n"
-				    "|---:|---:|---|---|---|---|---|\n");
-		for (int i = 0; rc == 0 && i < count; i++)
-			rc = cli_tasks_append_notification_table_row(&md, &notifications[i]);
-		if (rc == 0) {
-			if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
-				printf(ctx, "%s", morph_buf_cstr_borrow(&md));
-			else
-				cli_markdown_render_ansi(ctx, morph_buf_cstr_borrow(&md));
-		}
+		(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 0,
+					       "No unread notifications.");
+		return 0;
 	}
+	rc = morph_buf_init(&md, 1024);
+	if (rc != 0)
+		return rc;
+	rc = cli_command_output_markdown_table_header(&md, &table);
+	for (int i = 0; rc == 0 && i < count; i++) {
+		char id[32];
+		char task_id[32];
+		char created[32];
+		const char *cells[] = {
+			id,
+			task_id,
+			notifications[i].level,
+			created,
+			notifications[i].delivery_status,
+			notifications[i].title,
+			notifications[i].body,
+		};
+
+		snprintf(id, sizeof(id), "%lld", (long long)notifications[i].id);
+		snprintf(task_id, sizeof(task_id), "%lld",
+			 (long long)notifications[i].task_id);
+		cli_tasks_notification_time_string(notifications[i].created_at, created,
+						   sizeof(created));
+		rc = cli_command_output_markdown_table_row(&md, &table, cells);
+	}
+	if (rc == 0)
+		rc = cli_command_output_markdown_render(ctx, morph_buf_cstr_borrow(&md));
 	return rc;
 }
-
 static int cli_tasks_command_inbox_list(struct cli_application *ctx, int argc, char **argv)
 {
 	struct notification *notifications = NULL;

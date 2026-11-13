@@ -1,130 +1,90 @@
 #include "sapi/cli/commands/skill.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/application.h"
+#include "sapi/cli/presentation/command_output.h"
 #include "sapi/cli/presentation/style.h"
-#include "util/cleanup.h"
 #include "cJSON.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/widgets/list.h"
-#include "util/array.h"
-
-struct cli_skill_list_item {
-	int index;
-	int enabled;
-	int activated;
-	char name[SKILL_NAME_MAX];
-};
 
 static int cli_skill_item_compare(const void *left, const void *right)
 {
-	const struct cli_skill_list_item *a = left;
-	const struct cli_skill_list_item *b = right;
-	int state_a = !a->enabled ? 2 : (a->activated ? 0 : 1);
-	int state_b = !b->enabled ? 2 : (b->activated ? 0 : 1);
+	const struct cli_skill_list_row *a = left;
+	const struct cli_skill_list_row *b = right;
 
-	if (state_a != state_b)
-		return state_a - state_b;
+	if (a->state != b->state)
+		return (int)a->state - (int)b->state;
 	return strcmp(a->name, b->name);
 }
 
-static int cli_skill_collect(struct cli_application *ctx, morph_array_t *items, int *active_count)
+static void cli_skill_rows_cleanup(struct cli_skill_list_row *rows, size_t count)
 {
-	morph_array_t collected MORPH_CLEANUP(morph_array_cleanup) = {0};
-	int count = runtime_skill_count(ctx->runtime);
-	int rc;
+	if (!rows)
+		return;
+	for (size_t i = 0; i < count; i++) {
+		free((char *)rows[i].name);
+		free((char *)rows[i].description);
+	}
+	free(rows);
+}
 
+static int cli_skill_collect_rows(struct cli_application *ctx, struct cli_skill_list_row **out,
+				  size_t *count_out, int *active_count)
+{
+	struct cli_skill_list_row *rows;
+	int count = runtime_skill_count(ctx->runtime);
+	int rc = 0;
+
+	*out = NULL;
+	*count_out = 0;
 	*active_count = 0;
-	rc = morph_array_init(&collected, (size_t)(count > 0 ? count : 1),
-			      sizeof(struct cli_skill_list_item));
-	if (rc != 0)
-		return rc;
+	if (count <= 0)
+		return 0;
+	rows = calloc((size_t)count, sizeof(*rows));
+	if (!rows)
+		return -ENOMEM;
 	for (int i = 0; i < count; i++) {
 		struct skill_entry entry;
-		struct cli_skill_list_item *item;
 
 		rc = runtime_skill_info_borrow(ctx->runtime, i, &entry);
 		if (rc != 0)
-			return rc;
-		item = morph_array_push_borrow(&collected);
-		if (!item) {
+			break;
+		rows[i].state = !entry.enabled ? CLI_SKILL_LIST_DISABLED
+			       : entry.activated ? CLI_SKILL_LIST_ACTIVE
+						 : CLI_SKILL_LIST_AVAILABLE;
+		rows[i].name = strdup(entry.fm.name);
+		rows[i].description = strdup(entry.fm.description);
+		if (!rows[i].name || !rows[i].description) {
 			rc = -ENOMEM;
-			return rc;
+			break;
 		}
-		memset(item, 0, sizeof(*item));
-		item->index = i;
-		item->enabled = entry.enabled;
-		item->activated = entry.activated;
-		strncpy(item->name, entry.fm.name, sizeof(item->name) - 1);
 		if (entry.activated)
 			(*active_count)++;
 	}
-	qsort(collected.elts, collected.nelts, collected.size, cli_skill_item_compare);
-	return morph_array_take(items, &collected);
-}
-
-static int cli_skill_render_list(struct cli_application *ctx,
-	const morph_array_t *items, struct morph_tui_widget_tree *tree, int columns)
-{
-	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	struct cli_skill_list_item *item;
-	int rc;
-
-	rc = morph_buf_init(&output, 1024);
-	if (rc != 0)
+	if (rc != 0) {
+		cli_skill_rows_cleanup(rows, (size_t)count);
 		return rc;
-	morph_array_foreach (item, items, struct cli_skill_list_item) {
-		struct skill_entry entry;
-		morph_buf_t label MORPH_CLEANUP(morph_buf_cleanup) = {0};
-
-		if (runtime_skill_info_borrow(ctx->runtime, item->index, &entry) != 0)
-			continue;
-		rc = morph_buf_init(&label, 128);
-		if (rc != 0)
-			break;
-		/* Markers are data here; terminal styles stay out of the model. */
-		const char *marker =
-			!item->enabled ? "×" : (item->activated ? CLI_FEED_DONE : CLI_FEED_PENDING);
-		morph_buf_printf(&label, "%s %s", marker, entry.fm.name);
-		if (label.failed)
-			rc = label.failed;
-		else
-			morph_tui_widget_tree_add(tree, MORPH_TUI_WIDGET_TREE_ROOT,
-						  morph_buf_cstr_borrow(&label),
-						  entry.fm.description);
-		if (rc != 0)
-			break;
 	}
-	if (rc == 0)
-		rc = morph_tui_widget_tree_render(tree, &output, columns, 0, SIZE_MAX);
-	if (rc == 0)
-		fputs(ctx, morph_buf_cstr_borrow(&output), stdout);
-	return rc;
+	qsort(rows, (size_t)count, sizeof(*rows), cli_skill_item_compare);
+	*out = rows;
+	*count_out = (size_t)count;
+	return 0;
 }
 
 static int cli_skill_print_list(struct cli_application *ctx)
 {
-	morph_array_t items MORPH_CLEANUP(morph_array_cleanup) = {0};
-	int active_count;
-	int columns = cli_list_columns();
-	struct morph_tui_widget_tree tree
-		MORPH_CLEANUP(morph_tui_widget_tree_cleanup) = {0};
+	struct cli_skill_list_row *rows = NULL;
+	size_t count = 0;
+	int active_count = 0;
 	int rc;
 
-	rc = cli_skill_collect(ctx, &items, &active_count);
+	rc = cli_skill_collect_rows(ctx, &rows, &count, &active_count);
 	if (rc != 0)
 		return rc;
-	CMD_HEADER(ctx, "Skills %zu" ANSI_DIM " · %d active" ANSI_RESET, items.nelts, active_count);
-	if (items.nelts == 0) {
-		printf(ctx, "  " ANSI_DIM "(none — install to ~/.morph/skills/ "
-			    "or ~/.agents/skills/)" ANSI_RESET "\n");
-		return rc;
-	}
-	rc = morph_tui_widget_tree_init(&tree);
-	if (rc != 0)
-		return rc;
-	rc = cli_skill_render_list(ctx, &items, &tree, columns);
-	printf(ctx, "\n  " ANSI_DIM CLI_FEED_DONE " active   " CLI_FEED_PENDING
-		    " available   × disabled" ANSI_RESET "\n");
+	rc = cli_skill_list_render(ctx, rows, count, active_count);
+	cli_skill_rows_cleanup(rows, count);
 	return rc;
 }
 

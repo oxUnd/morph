@@ -1,11 +1,14 @@
 #include "sapi/cli/application.h"
+#include "runtime/runtime.h"
 #include "util/cleanup.h"
 #include "sapi/cli/adapters/input/state.h"
 #include "sapi/cli/adapters/runtime/dispatch.h"
 #include "sapi/cli/services/turn.h"
+#include "sapi/cli/services/agents.h"
+#include "sapi/cli/models/jobs.h"
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/pages/resume.h"
-#include "sapi/cli/services/session_history.h"
+#include "sapi/cli/services/session_restore.h"
 #include "sapi/cli/adapters/runtime/observer.h"
 #include <stdio.h>
 #include "sapi/cli/services/command_job.h"
@@ -14,6 +17,7 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/models/composer.h"
 #include "sapi/cli/commands/media.h"
+#include "sapi/cli/commands/input.h"
 #include "sapi/cli/adapters/input/readline.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/services/recap.h"
@@ -31,6 +35,7 @@
 #include "sapi/cli/adapters/input/reader.h"
 #include "sapi/cli/widgets/banner.h"
 #include "sapi/cli/pages/hooks.h"
+#include "sapi/cli/pages/subagents.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
 #include "cJSON.h"
 
@@ -239,7 +244,8 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 	}
 	rc = cli_event_queue_init(ctx, cli_dispatch_event);
 	if (rc != 0) {
-		cli_presentation_cleanup(ctx);
+		cli_subagents_cleanup(ctx);
+	cli_presentation_cleanup(ctx);
 		cli_feed_cleanup(ctx);
 		cli_input_cleanup(ctx);
 		return rc;
@@ -280,11 +286,13 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 	rc = runtime_open(&options, &ctx->runtime);
 	if (rc != 0) {
 		cli_event_queue_cleanup(ctx);
-		cli_presentation_cleanup(ctx);
+		cli_subagents_cleanup(ctx);
+	cli_presentation_cleanup(ctx);
 		cli_feed_cleanup(ctx);
 		cli_input_cleanup(ctx);
 		return rc;
 	}
+	(void)cli_agents_refresh(ctx);
 
 	ctx->session_auto_named = session_name && session_name[0] ? 1 : 0;
 	ctx->session_history_pending = ctx->session_auto_named;
@@ -312,6 +320,7 @@ int cli_application_init(struct cli_application *ctx, struct morph_log *logger,
 	if (!ctx)
 		return -EINVAL;
 	memset(ctx, 0, sizeof(*ctx));
+	ctx->input_execute = cli_command_input_execute;
 	ctx->logger = logger;
 	int rc = morph_signal_listener_start(&ctx->signals, cli_signal_received, ctx);
 
@@ -467,7 +476,7 @@ static void cli_application_run_plain(struct cli_application *ctx)
 			int continuation;
 
 			if (prompt) {
-				printf(ctx, "%s", input.len == 0 ? "> " : "… ");
+				cli_output_printf(ctx, "%s", input.len == 0 ? "> " : "… ");
 				fflush(stdout);
 			}
 			cli_cancel_state_reset(ctx);
@@ -659,7 +668,7 @@ static void cli_application_emit_trace_json(struct cli_application *ctx, double 
 	cJSON_AddNumberToObject(root, "elapsed_seconds", elapsed);
 	json = cJSON_PrintUnformatted(root);
 	if (json) {
-		printf(ctx, "%s\n", json);
+		cli_output_printf(ctx, "%s\n", json);
 		free(json);
 	}
 	cJSON_Delete(root);
@@ -724,7 +733,10 @@ void cli_application_shutdown(struct cli_application *ctx)
 	runtime_close(ctx->runtime);
 	ctx->runtime = NULL;
 	(void)cli_event_queue_drain(ctx);
+	cli_subagents_cleanup(ctx);
 	cli_presentation_cleanup(ctx);
+	cli_jobs_model_cleanup(ctx->jobs);
+	ctx->jobs = NULL;
 	cli_event_queue_cleanup(ctx);
 	cli_feed_cleanup(ctx);
 	cli_input_cleanup(ctx);

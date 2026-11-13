@@ -1,16 +1,15 @@
 #include "sapi/cli/services/recap.h"
-#include "sapi/cli/pages/turn_details.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
 #include "config/config.h"
 #include "cJSON.h"
-#include "sapi/cli/widgets/feed.h"
-#include "sapi/cli/widgets/feed_block.h"
-#include "util/cleanup.h"
 #include "sapi/cli/services/event_queue.h"
-#include "sapi/cli/application_internal.h"
+#include "util/error.h"
 
-#include <poll.h>
+#include <errno.h>
+#include <limits.h>
 #include <math.h>
+#include <poll.h>
 #include <time.h>
 
 int64_t cli_recap_now(void)
@@ -33,6 +32,14 @@ int cli_recap_due(const struct cli_recap_state *state, int64_t now)
 	    (state->has_recap && state->progress.completed_turns - state->last_recapped_turns < 2))
 		return 0;
 	return state->retry_at ? now >= state->retry_at : now - since >= CLI_RECAP_DELAY_MS;
+}
+
+void cli_recap_set_renderer(struct cli_application *ctx,
+			    const struct cli_recap_renderer *renderer)
+{
+	if (!ctx)
+		return;
+	ctx->recap.renderer = renderer;
 }
 
 void cli_recap_focus(struct cli_application *ctx, int focused, int64_t now)
@@ -97,14 +104,8 @@ static void cli_recap_failure(struct cli_application *ctx, int rc, int automatic
 	}
 	if (rc == -ECANCELED)
 		return;
-	if (rc == -EBUSY)
-		CMD_ERROR(ctx, "Wait for the current task to finish before running /recap.");
-	else if (rc == -EALREADY)
-		CMD_ERROR(ctx, "A conversation recap is already being generated.");
-	else if (rc == -ENODATA)
-		CMD_ERROR(ctx, "There is no conversation history to recap.");
-	else
-		CMD_ERROR(ctx, "Could not generate a recap: %s", morph_strerror(rc));
+	if (ctx->recap.renderer && ctx->recap.renderer->failed)
+		ctx->recap.renderer->failed(ctx, rc);
 }
 
 int cli_recap_start(struct cli_application *ctx, int automatic)
@@ -148,7 +149,7 @@ void cli_recap_tick(struct cli_application *ctx, int64_t now)
 	const struct config *config;
 	int64_t session_id;
 
-	if (!ctx->runtime || ctx->turn_active || cli_turn_details_is_open(ctx) ||
+	if (!ctx->runtime || ctx->turn_active || cli_output_overlay_visible(ctx) ||
 	    now < state->next_poll)
 		return;
 	state->next_poll = now + 1000;
@@ -182,38 +183,6 @@ void cli_recap_tick(struct cli_application *ctx, int64_t now)
 	config = runtime_config_borrow(ctx->runtime);
 	if (config && config->general.auto_recap && cli_recap_due(state, now))
 		(void)cli_recap_start(ctx, 1);
-}
-
-static void cli_recap_print_text(struct cli_application *ctx, const char *label, const char *text)
-{
-	char *safe = utf8_terminal_sanitize_dup(text, strlen(text), UTF8_TERMINAL_TEXT_SINGLE_LINE,
-						NULL);
-	const char *line = safe;
-	size_t columns = (size_t)cli_feed_columns(ctx);
-	size_t indent = utf8_display_width(label);
-	int first = 1;
-
-	if (!safe)
-		return;
-	if (columns <= indent + 3) {
-		printf(ctx, "%s\n", label);
-		indent = 0;
-		first = 0;
-	}
-	while (*line) {
-		size_t width = columns > indent + 1 ? columns - indent - 1 : 2;
-		const char *end = utf8_advance_display_width_borrow(line, width);
-
-		if (end == line)
-			end = utf8_advance_codepoints_borrow(line, 1);
-		printf(ctx, "%s%.*s%.*s\n", first ? label : "", first ? 0 : (int)indent,
-		       "                                  ", (int)(end - line), line);
-		first = 0;
-		line = end;
-		while (*line == ' ')
-			line++;
-	}
-	free(safe);
 }
 
 void cli_recap_event(struct cli_application *ctx, const struct morph_event *event)
@@ -272,23 +241,6 @@ void cli_recap_event(struct cli_application *ctx, const struct morph_event *even
 	ctx->recap.retry_at = 0;
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 		return;
-	cli_feed_history_begin(ctx);
-	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
-		morph_buf_t footer MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		if (next && *next)
-			(void)morph_buf_printf(&footer, "Next: %s", next);
-		(void)cli_feed_notice_write(ctx, CLI_NOTICE_SYSTEM, "Recap:", summary,
-			morph_buf_cstr_borrow(&footer));
-	} else {
-	if (cli_output_color_enabled(ctx))
-		printf(ctx, ANSI_DIM "\033[3m");
-	cli_recap_print_text(ctx, "  ↳ Recap: ", summary);
-	if (next && next[0])
-		cli_recap_print_text(ctx, "    Next: ", next);
-	if (cli_output_color_enabled(ctx))
-		printf(ctx, ANSI_RESET);
-	printf(ctx, "\n");
-	}
-	fflush(stdout);
-	cli_feed_history_end(ctx);
+	if (ctx->recap.renderer && ctx->recap.renderer->show)
+		ctx->recap.renderer->show(ctx, summary, next);
 }

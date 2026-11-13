@@ -1,4 +1,4 @@
-#include "sapi/cli/pages/turn_details.h"
+#include "sapi/cli/presentation/turn_details.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/widgets/transcript.h"
 #include "sapi/cli/models/transcript.h"

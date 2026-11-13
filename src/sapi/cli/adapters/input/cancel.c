@@ -1,4 +1,6 @@
 #include "sapi/cli/adapters/input/cancel.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/application_internal.h"
 #include "http/client.h"

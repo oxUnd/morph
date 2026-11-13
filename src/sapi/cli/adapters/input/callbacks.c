@@ -1,4 +1,5 @@
 #include "sapi/cli/adapters/input/callbacks.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/adapters/input/state.h"
 #include "sapi/cli/application_internal.h"
 #include "util/error.h"

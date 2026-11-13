@@ -10,9 +10,14 @@ int cli_output_color_enabled(struct cli_application *ctx);
 int cli_output_printf(struct cli_application *ctx, const char *fmt, ...);
 int cli_output_fputs(struct cli_application *ctx, const char *text, FILE *stream);
 int cli_output_putchar(struct cli_application *ctx, int ch);
+#define CLI_OUTPUT_PRINTF cli_output_printf
+#define CLI_OUTPUT_FPUTS cli_output_fputs
+#define CLI_OUTPUT_PUTCHAR cli_output_putchar
 int cli_output_write_json(const char *json);
 void cli_output_set_structured(struct cli_application *ctx, int enabled);
 int cli_output_is_structured(struct cli_application *ctx);
+int cli_output_overlay_open(const struct cli_application *ctx);
+int cli_output_overlay_visible(const struct cli_application *ctx);
 
 int cli_output_result_begin(struct cli_application *ctx);
 void cli_output_track_tail(int *tail, const char *bytes, size_t len);

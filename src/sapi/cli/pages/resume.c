@@ -1,9 +1,11 @@
 #include "sapi/cli/pages/resume.h"
+#include "sapi/cli/presentation/output.h"
+#include "runtime/runtime.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/widgets/list.h"
 #include "sapi/cli/pages/setup/controls.h"
 #include "sapi/cli/application.h"
-#include "sapi/cli/services/session_history.h"
+#include "sapi/cli/services/session_restore.h"
 #include <morph/tui/components.h>
 
 static int cli_resume_append_token_number(morph_buf_t *buf, int64_t tokens)
@@ -443,7 +445,7 @@ int cli_resume_show(struct cli_application *ctx)
 		rc = cli_resume_page(ctx, list, count, page, current_id, CLI_RESUME_PAGE_SIZE);
 		if (rc != 0)
 			break;
-		printf(ctx, "  Select 1-%d · n next · p previous · q cancel: ",
+		cli_output_printf(ctx, "  Select 1-%d · n next · p previous · q cancel: ",
 		       count - page * CLI_RESUME_PAGE_SIZE > CLI_RESUME_PAGE_SIZE
 			       ? CLI_RESUME_PAGE_SIZE
 			       : count - page * CLI_RESUME_PAGE_SIZE);

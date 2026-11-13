@@ -1,7 +1,12 @@
 #include "sapi/cli/commands/sync.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/application.h"
 #include "agent/plan.h"
 #include "cJSON.h"
+#include "sapi/cli/adapters/input/confirm.h"
 #include "sapi/cli/application_internal.h"
+#include "sapi/cli/presentation/command_output.h"
+#include "sapi/cli/presentation/confirm.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
@@ -100,9 +105,7 @@ static int cli_sync_command_conflicts(struct cli_application *ctx)
 		return rc;
 	CMD_HEADER(ctx, "sync conflicts (%d)", count);
 	if (count == 0) {
-		printf(ctx, ANSI_DIM);
-		cli_list_tree_prefix(ctx, NULL, 0, 1, 0);
-		printf(ctx, "none" ANSI_RESET "\n");
+		cli_command_print_tree_note(ctx, "none");
 		runtime_sync_conflicts_free(items);
 		return 0;
 	}
@@ -164,9 +167,7 @@ static int cli_sync_command_backups(struct cli_application *ctx, const char *pat
 		return rc;
 	CMD_HEADER(ctx, "database backups (%d)", count);
 	if (count == 0) {
-		printf(ctx, ANSI_DIM);
-		cli_list_tree_prefix(ctx, NULL, 0, 1, 0);
-		printf(ctx, "none" ANSI_RESET "\n");
+		cli_command_print_tree_note(ctx, "none");
 		morph_sync_backups_free(items);
 		return 0;
 	}
@@ -215,8 +216,7 @@ static int cli_sync_command_restore_db(struct cli_application *ctx, const char *
 
 static int cli_sync_confirm_db_replace(struct cli_application *ctx, const char *path)
 {
-	char answer[16];
-	FILE *tty;
+	enum cli_input_confirm_result answer;
 
 	if (ctx && ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
 		cJSON *request = cJSON_CreateObject();
@@ -235,21 +235,11 @@ static int cli_sync_confirm_db_replace(struct cli_application *ctx, const char *
 		return rc == 0 && confirmed;
 	}
 
-	printf(ctx,
-	       ANSI_BOLD ANSI_YELLOW
-	       "? Replace %s with this backup? Current data will be backed up. "
-	       "[y/N]: " ANSI_RESET,
-	       path);
-	fflush(stdout);
-	tty = fopen("/dev/tty", "r");
-	if (!tty) {
-		putchar(ctx, '\n');
-		return 0;
-	}
-	if (!fgets(answer, sizeof(answer), tty))
-		answer[0] = '\0';
-	fclose(tty);
-	return answer[0] == 'y' || answer[0] == 'Y';
+	cli_confirm_prompt_show(ctx, CLI_CONFIRM_PROMPT_REPLACE_DATABASE, path);
+	answer = cli_input_confirm_yes_no();
+	if (answer == CLI_INPUT_CONFIRM_NO_TERMINAL)
+		cli_confirm_prompt_end(ctx);
+	return answer == CLI_INPUT_CONFIRM_ACCEPTED;
 }
 
 static int cli_sync_command_replace_db(struct cli_application *ctx, const char *snapshot_id,
@@ -266,7 +256,7 @@ static int cli_sync_command_replace_db(struct cli_application *ctx, const char *
 	if (!confirmed && !cli_sync_confirm_db_replace(ctx, plan.path)) {
 		(void)morph_sync_rollback_db_replace(&plan);
 		(void)runtime_sync_start_instance(ctx->runtime, NULL, NULL);
-		printf(ctx, ANSI_DIM "  cancelled" ANSI_RESET "\n");
+		cli_command_print_cancelled(ctx);
 		return 0;
 	}
 	ctx->db_restore_plan = plan;

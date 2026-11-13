@@ -11,9 +11,17 @@
 
 struct cli_application;
 
+/* Presentation hooks. The service owns state, timing and event handling;
+ * terminal layout stays with the registered presentation module. */
+struct cli_recap_renderer {
+	void (*show)(struct cli_application *ctx, const char *summary, const char *next);
+	void (*failed)(struct cli_application *ctx, int code);
+};
+
 struct cli_recap_state {
 	struct runtime_recap_progress progress;
 	struct runtime_recap_progress request;
+	const struct cli_recap_renderer *renderer;
 	int64_t unfocused_since;
 	int64_t last_finished;
 	int64_t next_poll;
@@ -34,6 +42,8 @@ struct cli_recap_state {
 
 int64_t cli_recap_now(void);
 int cli_recap_due(const struct cli_recap_state *state, int64_t now);
+void cli_recap_set_renderer(struct cli_application *ctx,
+			    const struct cli_recap_renderer *renderer);
 void cli_recap_focus(struct cli_application *ctx, int focused, int64_t now);
 void cli_recap_tick(struct cli_application *ctx, int64_t now);
 void cli_recap_turn_finished(struct cli_application *ctx, int64_t now);

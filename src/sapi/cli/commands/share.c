@@ -1,4 +1,6 @@
 #include "sapi/cli/commands/share.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/services/share_store.h"
 #include "cJSON.h"
 #include "sapi/cli/application_internal.h"

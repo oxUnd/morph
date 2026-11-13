@@ -1,4 +1,5 @@
 #include "sapi/cli/adapters/input/keymap.h"
+#include "sapi/cli/application.h"
 #ifdef HAVE_READLINE
 #include <stdio.h>
 #include <readline/readline.h>

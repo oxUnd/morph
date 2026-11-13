@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/permissions.h"
+#include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"

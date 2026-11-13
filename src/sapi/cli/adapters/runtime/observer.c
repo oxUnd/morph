@@ -1,4 +1,7 @@
 #include "sapi/cli/adapters/runtime/observer.h"
+#include "sapi/cli/presentation/output.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/application_internal.h"
 #include "credits.h"
 #include "sapi/cli/services/event_queue.h"
@@ -38,7 +41,7 @@ static int cli_runtime_observer_credit_warning_on_owner(void *opaque)
 		(void)cli_feed_notice_write(ctx, CLI_NOTICE_WARNING,
 			morph_buf_cstr_borrow(&title), NULL, NULL);
 	} else {
-	printf(ctx, ANSI_YELLOW "credits warning: %lld / %d today" ANSI_RESET "\n",
+	cli_output_printf(ctx, ANSI_YELLOW "credits warning: %lld / %d today" ANSI_RESET "\n",
 	       (long long)warning->credits, warning->daily_limit);
 	}
 	cli_feed_history_end(warning->ctx);

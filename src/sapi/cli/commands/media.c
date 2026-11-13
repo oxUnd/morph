@@ -1,4 +1,6 @@
 #include "sapi/cli/commands/media.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/services/turn.h"
 #include "sapi/cli/application_internal.h"
 #include "ext/ext.h"
@@ -176,7 +178,7 @@ static int cli_media_command_render(struct cli_application *ctx, int argc, char 
 			return -EIO;
 		}
 		if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
-			printf(ctx, "%s", text);
+			cli_output_printf(ctx, "%s", text);
 		else
 			cli_markdown_render_ansi(ctx, text);
 		free(text);

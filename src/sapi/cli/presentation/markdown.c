@@ -1,7 +1,8 @@
 #include "sapi/cli/presentation/markdown.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/presentation/style.h"
 #include "util/cleanup.h"
-#include "sapi/cli/pages/turn_details.h"
+#include "sapi/cli/presentation/turn_details.h"
 #include "sapi/cli/presentation/presenter_state.h"
 #include "morph_markdown_kitty.h"
 #include "agent_ui/agent_ui.h"
@@ -110,7 +111,7 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 	/* The renderer buffers incomplete blocks. Emit the prefix only when it
 	 * actually writes, so Readline cannot erase a dangling marker meanwhile. */
 	if (output && output->prefix_pending) {
-		printf(output->ctx, "%s" ANSI_BOLD CLI_FEED_MESSAGE ANSI_RESET " ",
+		cli_output_printf(output->ctx, "%s" ANSI_BOLD CLI_FEED_MESSAGE ANSI_RESET " ",
 		       output->ctx->output.trailing_newlines < 2 ? "\n" : "");
 		output->prefix_pending = 0;
 	}
@@ -233,7 +234,7 @@ void cli_markdown_render_final(struct cli_application *ctx, const char *text)
 void cli_markdown_finish_final(struct cli_application *ctx)
 {
 	while (ctx->presenter->markdown_output.trailing_newlines < 2) {
-		putchar(ctx, '\n');
+		cli_output_putchar(ctx, '\n');
 		ctx->presenter->markdown_output.trailing_newlines++;
 	}
 }

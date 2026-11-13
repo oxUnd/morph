@@ -2,6 +2,8 @@
 #include "util/error.h"
 #include "util/cleanup.h"
 #include "util/json.h"
+/* Database model-history API (src/session_history.h); the CLI restore service
+ * lives in services/session_restore.h and no longer shares this name. */
 #include "session_history.h"
 #include "cJSON.h"
 #include <string.h>

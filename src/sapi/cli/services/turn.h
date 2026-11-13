@@ -3,7 +3,8 @@
 #include <stdint.h>
 struct cli_application;
 
-int cli_turn_execute(struct cli_application *, const char *input);
+void cli_turn_prepare(struct cli_application *ctx);
+int cli_turn_execute_prompt(struct cli_application *, const char *input);
 void cli_turn_record_media_credits(struct cli_application *ctx, const char *kind,
 				   int64_t image_units, int64_t video_seconds, const char *provider,
 				   const char *model, const char *metadata_json);

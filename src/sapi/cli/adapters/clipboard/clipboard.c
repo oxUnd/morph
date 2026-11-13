@@ -1,4 +1,6 @@
 #include "sapi/cli/adapters/clipboard/clipboard.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/application.h"
 #include "config/config.h"
 #include "stb_image.h"
 #include "util/signals.h"

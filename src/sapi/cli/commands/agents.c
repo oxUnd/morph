@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/agents.h"
+#include "runtime/runtime.h"
 
 #include "sapi/cli/application.h"
 #include "sapi/cli/pages/subagents.h"
@@ -51,7 +52,7 @@ static int cli_agents_command_agents(struct cli_application *ctx, int argc, char
 	int rc = runtime_agent_list(ctx->runtime, session, &snapshot.items, &snapshot.count);
 	if (rc == -ENOENT) {
 		CMD_HEADER(ctx, "Agents");
-		printf(ctx, "  Multi-agent collaboration is unavailable.\n");
+		cli_output_printf(ctx, "  Multi-agent collaboration is unavailable.\n");
 		return 0;
 	}
 	if (rc != 0) {
@@ -62,17 +63,17 @@ static int cli_agents_command_agents(struct cli_application *ctx, int argc, char
 	CMD_HEADER(ctx, "Agents (%d)", snapshot.count);
 	struct agent_budget budget = {0};
 	if (runtime_agent_budget(ctx->runtime, &budget) == 0 && budget.limit > 0)
-		printf(ctx, "  Shared session budget: %lld / %lld weighted units%s\n", (long long)budget.used,
+		cli_output_printf(ctx, "  Shared session budget: %lld / %lld weighted units%s\n", (long long)budget.used,
 		       (long long)budget.limit, budget.exhausted ? " (exhausted)" : "");
 	if (budget.limit == 0)
-		printf(ctx, "  Shared session usage: %lld weighted units (limit disabled).\n",
+		cli_output_printf(ctx, "  Shared session usage: %lld weighted units (limit disabled).\n",
 		       (long long)budget.used);
 	if (budget.request_tokens > 0)
-		printf(ctx, "  Last refused request: up to %lld weighted units "
+		cli_output_printf(ctx, "  Last refused request: up to %lld weighted units "
 		       "(input + configured maximum output).\n",
 		       (long long)budget.request_tokens);
 	if (!snapshot.count && !id)
-		printf(ctx, "  No agents have been spawned in this session.\n");
+		cli_output_printf(ctx, "  No agents have been spawned in this session.\n");
 	int found = !id;
 	for (int i = 0; i < snapshot.count; i++) {
 		const struct agent_info *agent = &snapshot.items[i];

@@ -1,4 +1,6 @@
 #include "sapi/cli/widgets/list.h"
+#include "sapi/cli/presentation/output.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/presentation/style.h"
 #include "util/terminal_size.h"
 #include "cJSON.h"
@@ -19,7 +21,7 @@ void cli_list_tree_prefix(struct cli_application *ctx, const int *last, int dept
 		return;
 	if (morph_tui_widget_tree_prefix(&output, last, (size_t)depth, is_last, continuation, 2) ==
 	    0)
-		fputs(ctx, morph_buf_cstr_borrow(&output), stdout);
+		cli_output_fputs(ctx, morph_buf_cstr_borrow(&output), stdout);
 	morph_buf_cleanup(&output);
 }
 
@@ -88,15 +90,15 @@ static void cli_list_print_clipped(struct cli_application *ctx, const char *text
 	(void)cli_list_compact_text(compact, sizeof(compact), text);
 	width = utf8_display_width(compact);
 	if (width <= (size_t)max_width) {
-		fputs(ctx, compact, stdout);
+		cli_output_fputs(ctx, compact, stdout);
 		return;
 	}
 	if (max_width == 1) {
-		fputs(ctx, "…", stdout);
+		cli_output_fputs(ctx, "…", stdout);
 		return;
 	}
 	(void)utf8_copy_display_width(clipped, sizeof(clipped), compact, (size_t)max_width - 1);
-	printf(ctx, "%s…", clipped);
+	cli_output_printf(ctx, "%s…", clipped);
 }
 
 void cli_list_group(struct cli_application *ctx, const char *name, int count, int is_last)
@@ -116,7 +118,7 @@ void cli_list_group(struct cli_application *ctx, const char *name, int count, in
 	if (!label.failed &&
 	    morph_tui_widget_tree_row(&output, "", is_last, "", morph_buf_cstr_borrow(&label), "",
 				      0, cli_list_columns(), ANSI_BOLD, ANSI_RESET) == 0)
-		fputs(ctx, morph_buf_cstr_borrow(&output), stdout);
+		cli_output_fputs(ctx, morph_buf_cstr_borrow(&output), stdout);
 	morph_buf_cleanup(&output);
 	morph_buf_cleanup(&label);
 }
@@ -136,7 +138,7 @@ void cli_list_item(struct cli_application *ctx, const char *ancestor, int is_las
 	if (morph_tui_widget_tree_row(&output, ancestor ? ancestor : "", is_last,
 				      marker ? marker : "", compact, detail, name_width, columns,
 				      ANSI_BOLD, ANSI_RESET) == 0)
-		fputs(ctx, morph_buf_cstr_borrow(&output), stdout);
+		cli_output_fputs(ctx, morph_buf_cstr_borrow(&output), stdout);
 	morph_buf_cleanup(&output);
 }
 
@@ -169,7 +171,7 @@ void cli_list_row(struct cli_application *ctx, const char *id, const char *name,
 	name_width = columns - 10 - id_width - metadata_width;
 	if (name_width > 52)
 		name_width = 52;
-	printf(ctx, "  " ANSI_DIM "%s" ANSI_RESET "%s%s%s " ANSI_DIM "%s" ANSI_RESET "  ", branch,
+	cli_output_printf(ctx, "  " ANSI_DIM "%s" ANSI_RESET "%s%s%s " ANSI_DIM "%s" ANSI_RESET "  ", branch,
 	       is_current ? ANSI_GREEN : ANSI_DIM, is_current ? CLI_FEED_DONE : CLI_FEED_PENDING,
 	       ANSI_RESET, id);
 	if (name_width >= 12) {
@@ -178,14 +180,14 @@ void cli_list_row(struct cli_application *ctx, const char *id, const char *name,
 		if (printed_width > name_width)
 			printed_width = name_width;
 		for (int i = printed_width; i < name_width; i++)
-			putchar(ctx, ' ');
-		printf(ctx, ANSI_DIM "  %s" ANSI_RESET "\n", metadata);
+			cli_output_putchar(ctx, ' ');
+		cli_output_printf(ctx, ANSI_DIM "  %s" ANSI_RESET "\n", metadata);
 		return;
 	}
 	name_width = columns - 9 - id_width;
 	cli_list_print_clipped(ctx, compact, name_width);
-	putchar(ctx, '\n');
-	printf(ctx, "  " ANSI_DIM "%s" ANSI_RESET "   " ANSI_DIM "%s%s" ANSI_RESET "\n",
+	cli_output_putchar(ctx, '\n');
+	cli_output_printf(ctx, "  " ANSI_DIM "%s" ANSI_RESET "   " ANSI_DIM "%s%s" ANSI_RESET "\n",
 	       continuation, morph_tui_widget_tree_branch(1, 0), metadata);
 }
 
@@ -202,13 +204,13 @@ void cli_list_value_field(struct cli_application *ctx, const char *label, const 
 	(void)cli_list_compact_text(safe_label, sizeof(safe_label), label);
 	label = safe_label;
 	cli_list_tree_prefix(ctx, NULL, 0, is_last, 0);
-	printf(ctx, ANSI_DIM "%s" ANSI_RESET, label);
+	cli_output_printf(ctx, ANSI_DIM "%s" ANSI_RESET, label);
 	used = (int)utf8_display_width(label);
 	for (int i = used; i < label_width; i++)
-		putchar(ctx, ' ');
-	putchar(ctx, ' ');
+		cli_output_putchar(ctx, ' ');
+	cli_output_putchar(ctx, ' ');
 	cli_list_print_clipped(ctx, value, columns - label_width - 5);
-	putchar(ctx, '\n');
+	cli_output_putchar(ctx, '\n');
 }
 
 static const char *cli_list_wrap_end(const char *text, int width)
@@ -238,7 +240,7 @@ void cli_list_text_field(struct cli_application *ctx, const char *label, const c
 
 	(void)cli_list_compact_text(safe_label, sizeof(safe_label), label ? label : "");
 	cli_list_tree_prefix(ctx, NULL, 0, is_last, 0);
-	printf(ctx, ANSI_DIM "%s" ANSI_RESET "\n", safe_label);
+	cli_output_printf(ctx, ANSI_DIM "%s" ANSI_RESET "\n", safe_label);
 	(void)cli_list_compact_text(compact, sizeof(compact), value);
 	line = compact;
 	if (width < 10)
@@ -246,7 +248,7 @@ void cli_list_text_field(struct cli_application *ctx, const char *label, const c
 	while (*line) {
 		end = cli_list_wrap_end(line, width);
 		cli_list_tree_prefix(ctx, &is_last, 1, !end[0], 0);
-		printf(ctx, "%.*s\n", (int)(end - line), line);
+		cli_output_printf(ctx, "%.*s\n", (int)(end - line), line);
 		line = end;
 		while (*line == ' ')
 			line++;
@@ -278,23 +280,23 @@ static void cli_list_json_node(struct cli_application *ctx, const cJSON *item, c
 	(void)cli_list_compact_text(safe_label, sizeof(safe_label), label ? label : "item");
 	label = safe_label;
 	cli_list_json_prefix(ctx, ancestors_last, depth, is_last);
-	printf(ctx, ANSI_DIM "%s" ANSI_RESET, label);
+	cli_output_printf(ctx, ANSI_DIM "%s" ANSI_RESET, label);
 	if (!cJSON_IsArray(item) && !cJSON_IsObject(item)) {
-		fputs(ctx, ": ", stdout);
+		cli_output_fputs(ctx, ": ", stdout);
 		scalar = cJSON_IsString(item) ? strdup(item->valuestring)
 					      : cJSON_PrintUnformatted(item);
 		cli_list_print_clipped(ctx, scalar,
 				       columns - prefix_width - (int)utf8_display_width(label) - 2);
 		free(scalar);
-		putchar(ctx, '\n');
+		cli_output_putchar(ctx, '\n');
 		return;
 	}
 	count = cli_list_json_count(item);
 	if (count == 0) {
-		printf(ctx, ": %s\n", cJSON_IsArray(item) ? "[]" : "{}");
+		cli_output_printf(ctx, ": %s\n", cJSON_IsArray(item) ? "[]" : "{}");
 		return;
 	}
-	putchar(ctx, '\n');
+	cli_output_putchar(ctx, '\n');
 	if (depth + 1 >= CLI_LIST_DEPTH_MAX)
 		return;
 	ancestors_last[depth] = is_last;
@@ -317,7 +319,7 @@ static void cli_list_json_node(struct cli_application *ctx, const cJSON *item, c
 	}
 	if (shown < count) {
 		cli_list_json_prefix(ctx, ancestors_last, depth + 1, 1);
-		printf(ctx, ANSI_DIM "… %d more" ANSI_RESET "\n", count - shown);
+		cli_output_printf(ctx, ANSI_DIM "… %d more" ANSI_RESET "\n", count - shown);
 	}
 }
 
@@ -330,7 +332,7 @@ void cli_list_json_field(struct cli_application *ctx, const char *label, const c
 
 	(void)cli_list_compact_text(safe_label, sizeof(safe_label), label ? label : "Schema");
 	cli_list_tree_prefix(ctx, NULL, 0, is_last, 0);
-	printf(ctx, ANSI_DIM "%s" ANSI_RESET "\n", safe_label);
+	cli_output_printf(ctx, ANSI_DIM "%s" ANSI_RESET "\n", safe_label);
 	if (!root)
 		return;
 	ancestors_last[0] = is_last;

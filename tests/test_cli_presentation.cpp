@@ -2,7 +2,7 @@
 
 extern "C" {
 #include "sapi/cli/adapters/input/state.h"
-#include "sapi/cli/pages/turn_details.h"
+#include "sapi/cli/presentation/turn_details.h"
 #include "sapi/cli/presentation/presenter_state.h"
 
 #include "sapi/cli/services/turn.h"
@@ -3141,7 +3141,7 @@ TEST_F(CliPresentationTest, AgentCompletionWaitsUntilParentMarkdownAnswerIsCompl
 	Emit(MORPH_EVENT_BACKGROUND, "agent.completed", "end", completed);
 	std::string pending = testing::internal::GetCapturedStdout();
 	EXPECT_EQ(pending.find("Finished"), std::string::npos);
-	EXPECT_GT(ctx.presenter->agent_receipts.nelts, 0u);
+	EXPECT_GT(ctx.agents.receipts.nelts, 0u);
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.final.delta", "delta", second);
 	Emit(MORPH_EVENT_REACT, "react.final", "end", answer);
@@ -3152,7 +3152,7 @@ TEST_F(CliPresentationTest, AgentCompletionWaitsUntilParentMarkdownAnswerIsCompl
 	ASSERT_NE(output.find("Finished"), std::string::npos);
 	EXPECT_LT(output.find("PARENT_END"), output.find("Finished"));
 	EXPECT_EQ(output.find("Finished"), output.rfind("Finished"));
-	EXPECT_EQ(ctx.presenter->agent_receipts.nelts, 0u);
+	EXPECT_EQ(ctx.agents.receipts.nelts, 0u);
 	cJSON_Delete(first);
 	cJSON_Delete(second);
 	cJSON_Delete(answer);
@@ -3185,7 +3185,7 @@ TEST_F(CliPresentationTest, AgentReceiptsFlushAfterFailedOrCancelledParentWithou
 		ASSERT_NE(output.find("Failed"), std::string::npos);
 		EXPECT_LT(output.find("PARENT_PARTIAL_BEFORE_ABORT"), output.find("Failed"));
 		EXPECT_EQ(output.find("Failed"), output.rfind("Failed"));
-		EXPECT_EQ(ctx.presenter->agent_receipts.nelts, 0u);
+		EXPECT_EQ(ctx.agents.receipts.nelts, 0u);
 		cJSON_Delete(body);
 		cJSON_Delete(completed);
 		cJSON_Delete(outcome);
@@ -3211,7 +3211,7 @@ TEST_F(CliPresentationTest, PresentationFinishCommitsParentBeforeDeferredAgentRe
 	ASSERT_NE(output.find("Interrupted"), std::string::npos);
 	EXPECT_LT(output.find("PARENT_FALLBACK_BOUNDARY"), output.find("Interrupted"));
 	EXPECT_EQ(output.find("Interrupted"), output.rfind("Interrupted"));
-	EXPECT_EQ(ctx.presenter->agent_receipts.nelts, 0u);
+	EXPECT_EQ(ctx.agents.receipts.nelts, 0u);
 	cJSON_Delete(body);
 	cJSON_Delete(completed);
 }
@@ -3233,7 +3233,7 @@ TEST_F(CliPresentationTest, AgentReceiptFlushesAtAuthoritativeCommentaryMessageB
 	ASSERT_NE(output.find("PARENT_COMMENTARY_BEFORE_CHILD_RECEIPT"), std::string::npos);
 	ASSERT_NE(output.find("Finished"), std::string::npos);
 	EXPECT_LT(output.find("PARENT_COMMENTARY_BEFORE_CHILD_RECEIPT"), output.find("Finished"));
-	EXPECT_EQ(ctx.presenter->agent_receipts.nelts, 0u);
+	EXPECT_EQ(ctx.agents.receipts.nelts, 0u);
 	cJSON_Delete(body);
 	cJSON_Delete(completed);
 }

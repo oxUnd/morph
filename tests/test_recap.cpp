@@ -6,6 +6,7 @@ extern "C" {
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/presentation/recap.h"
 }
 
 class RecapTest : public RuntimeMetadataTest {
@@ -37,6 +38,7 @@ protected:
 	{
 		struct morph_event event{MORPH_EVENT_BACKGROUND, "session.recap", "end",
 			"Conversation recap finished", data, nullptr};
+		cli_presentation_recap_attach(ctx);
 		testing::internal::CaptureStdout();
 		cli_recap_event(ctx, &event);
 		return testing::internal::GetCapturedStdout();

@@ -1,18 +1,20 @@
 #include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/application.h"
+#include "sapi/cli/models/jobs.h"
 #include "sapi/cli/widgets/feed_block.h"
 #include "sapi/cli/presentation/style.h"
 #include "util/terminal_size.h"
 #include "util/cleanup.h"
 #include "util/utf8.h"
 #include <morph/tui/terminal.h>
-#include "sapi/cli/pages/turn_details.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/services/command_job.h"
 #include "sapi/cli/widgets/transcript.h"
+#include "sapi/cli/widgets/agents.h"
+#include "sapi/cli/widgets/jobs.h"
 #include "sapi/cli/application_internal.h"
-#include "sapi/cli/pages/jobs.h"
-#include "sapi/cli/services/agents.h"
+#include "sapi/cli/models/agents.h"
 
 
 #define CLI_FEED_TERMINAL_DEFAULT_COLUMNS 80
@@ -423,7 +425,7 @@ void cli_feed_live_clear(struct cli_application *ctx)
 	if (!ctx || !ctx->terminal)
 		return;
 	terminal = ctx->terminal;
-	if (!cli_turn_details_is_visible(ctx) && terminal->transient && terminal->live_visible) {
+	if (!cli_output_overlay_visible(ctx) && terminal->transient && terminal->live_visible) {
 		cli_feed_clear_frame(terminal);
 		fflush(terminal->output);
 	}
@@ -446,27 +448,35 @@ void cli_feed_queue_changed(struct cli_application *ctx)
 		return;
 	terminal = ctx->terminal;
 	terminal->next_frame_ms = 0;
-	if (terminal->transient && !cli_turn_details_is_visible(ctx))
+	if (terminal->transient && !cli_output_overlay_visible(ctx))
 		cli_feed_render_frame(ctx, 1);
 }
 
 /* cursor_rows is the cursor's distance below the start of the composer.
  * Keep Readline, queued input and tool output untouched on animation ticks. */
+static int cli_feed_agents_visible(const struct cli_application *ctx)
+{
+	return (ctx->composer.ultra && ctx->turn_active) ||
+	       cli_agents_model_visible(&ctx->agents);
+}
+
 int cli_feed_render_tick(struct cli_application *ctx, int cursor_rows)
 {
 	struct cli_feed *terminal = ctx ? ctx->terminal : NULL;
 	int64_t now = cli_feed_now_ms();
 	int distance;
 	int work_animated = terminal &&
-		terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING && !cli_jobs_waiting(ctx);
-	int jobs_animated = terminal && terminal->background_rows && cli_jobs_visible(ctx);
+		terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING &&
+		!(ctx->jobs && cli_jobs_model_waiting(ctx->jobs));
+	int jobs_animated = terminal && terminal->background_rows && cli_jobs_model_visible(ctx->jobs);
 
 	if (!terminal || terminal->hidden || !terminal->transient || !terminal->live_visible ||
-	    cli_turn_details_is_visible(ctx) || (!work_animated && !jobs_animated) ||
+	    cli_output_overlay_visible(ctx) || (!work_animated && !jobs_animated) ||
 	    terminal->columns < 20 ||
 	    cli_feed_output_columns(terminal) != terminal->columns)
 		return 0;
-	if ((terminal->content_dirty || terminal->live_independent || cli_jobs_visible(ctx) ||
+	if ((terminal->content_dirty || terminal->live_independent ||
+	     cli_jobs_model_visible(ctx->jobs) ||
 	     terminal->job_rows) &&
 	    now >= terminal->next_content_ms)
 		return 0;
@@ -623,12 +633,12 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 	int preview_rows = 0;
 	int preview_reserved;
 
-	if (!ctx || !ctx->terminal || ctx->terminal->hidden || cli_turn_details_is_visible(ctx))
+	if (!ctx || !ctx->terminal || ctx->terminal->hidden || cli_output_overlay_visible(ctx))
 		return;
 	terminal = ctx->terminal;
 	if (!terminal->transient)
 		return;
-	waiting = cli_jobs_waiting(ctx);
+	waiting = ctx->jobs && cli_jobs_model_waiting(ctx->jobs);
 	status_visible = terminal->live_active && !waiting;
 	work_visible = waiting ? CLI_FEED_TERMINAL_WORK_NONE : terminal->work_state;
 	now = cli_feed_now_ms();
@@ -654,7 +664,8 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 				    terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING &&
 				    !status_visible && !queue_shown && !waiting;
 	if (!status_visible && !terminal->markdown_preview.len && queue_shown == 0 &&
-	    !terminal->work_state && !cli_jobs_visible(ctx) && !cli_agents_visible(ctx)) {
+	    !terminal->work_state && !cli_jobs_model_visible(ctx->jobs) &&
+	    !cli_feed_agents_visible(ctx)) {
 		if (terminal->live_visible) {
 			cli_feed_clear_frame(terminal);
 			fflush(terminal->output);
@@ -691,12 +702,13 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 		int max_jobs = 3;
 		if (cli_feed_output_rows(terminal) < 20)
 			max_jobs = 1;
-		job_rows = cli_jobs_render(ctx, &job_text, columns,
+		job_rows = cli_jobs_render(ctx->jobs, &job_text, columns,
 					   cli_output_color_enabled(ctx));
 		terminal->background_rows = job_rows;
-		if (cli_agents_visible(ctx))
-			job_rows += cli_agents_render(ctx, &job_text, &terminal->agent_summary,
-						     columns, max_jobs, cli_output_color_enabled(ctx));
+		if (cli_feed_agents_visible(ctx))
+			job_rows += cli_agents_model_render(&ctx->agents, &job_text,
+					     &terminal->agent_summary,
+					     columns, max_jobs, cli_output_color_enabled(ctx));
 	}
 	text = morph_buf_cstr_borrow(&terminal->live_text);
 	if (status_visible && morph_buf_init(&tool_text, 128) == 0) {
@@ -840,7 +852,8 @@ int cli_feed_next_frame_ms(const struct cli_application *ctx)
 	terminal = ctx->terminal;
 	if (!terminal->transient || (!terminal->live_active && !terminal->markdown_preview.len &&
 				     terminal->work_state != CLI_FEED_TERMINAL_WORK_RUNNING &&
-				     !cli_jobs_visible(ctx) && !cli_agents_visible(ctx) && !terminal->job_rows))
+			     !cli_jobs_model_visible(ctx->jobs) && !cli_feed_agents_visible(ctx) &&
+			     !terminal->job_rows))
 		return -1;
 	if (!terminal->live_visible)
 		return 0;
@@ -956,7 +969,7 @@ void cli_feed_history_begin(struct cli_application *ctx)
 {
 	struct cli_feed *terminal;
 
-	if (!ctx || !ctx->terminal || cli_turn_details_is_visible(ctx))
+	if (!ctx || !ctx->terminal || cli_output_overlay_visible(ctx))
 		return;
 	terminal = ctx->terminal;
 	if (!terminal->transient || !terminal->live_visible)

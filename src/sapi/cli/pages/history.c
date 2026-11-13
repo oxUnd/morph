@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/history.h"
+#include "runtime/runtime.h"
 #include "cJSON.h"
 #include "sapi/cli/presentation/output.h"
 #include <morph/tui/components.h>
@@ -654,11 +655,11 @@ void cli_history_print(struct cli_application *ctx, const cJSON *report, int lim
 	if (morph_buf_init(&line, 512) != 0)
 		return;
 
-	printf(ctx, "History · %d saved entries · showing %d\n", count, count - first);
-	printf(ctx, "Next turn (estimated): %lld replay items · %lld stored history tokens\n",
+	cli_output_printf(ctx, "History · %d saved entries · showing %d\n", count, count - first);
+	cli_output_printf(ctx, "Next turn (estimated): %lld replay items · %lld stored history tokens\n",
 	       (long long)cli_history_number(report, "active_items"),
 	       (long long)cli_history_number(report, "history_tokens"));
-	printf(ctx, "History only; instructions, memory, tool definitions and new input are "
+	cli_output_printf(ctx, "History only; instructions, memory, tool definitions and new input are "
 		    "additional.\n"
 		    "Selection may change after validation or compaction before send.\n");
 	for (int i = first; i < count; i++) {
@@ -676,10 +677,10 @@ void cli_history_print(struct cli_application *ctx, const cJSON *report, int lim
 			break;
 		(void)cli_output_print_untrusted(ctx, morph_buf_cstr_borrow(&line),
 						 UTF8_TERMINAL_TEXT_SINGLE_LINE);
-		putchar(ctx, '\n');
+		cli_output_putchar(ctx, '\n');
 	}
 	morph_buf_cleanup(&line);
-	printf(ctx,
+	cli_output_printf(ctx,
 	       "IN direct · VIA SUMMARY condensed · OUT not sent · LEGACY not yet migrated\n"
 	       "/history --entry N [--stored] · /history --last-request · /history --messages\n");
 }
@@ -704,7 +705,7 @@ int cli_history_entry_print(struct cli_application *ctx, const cJSON *report, in
 		(void)cli_output_print_untrusted(ctx, morph_buf_cstr_borrow(&text),
 						 UTF8_TERMINAL_TEXT_MULTILINE);
 	if (rc == 0)
-		putchar(ctx, '\n');
+		cli_output_putchar(ctx, '\n');
 	morph_buf_cleanup(&text);
 	return rc;
 }
@@ -721,7 +722,7 @@ int cli_history_request_print(struct cli_application *ctx)
 		(void)cli_output_print_untrusted(ctx, morph_buf_cstr_borrow(&text),
 						 UTF8_TERMINAL_TEXT_MULTILINE);
 	if (rc == 0)
-		putchar(ctx, '\n');
+		cli_output_putchar(ctx, '\n');
 	morph_buf_cleanup(&text);
 	return rc;
 }

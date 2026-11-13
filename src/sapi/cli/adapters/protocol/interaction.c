@@ -1,4 +1,5 @@
 #include "sapi/cli/adapters/protocol/interaction.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/adapters/input/state.h"
 #include "sapi/cli/adapters/input/reader.h"
 #include "cJSON.h"

@@ -1,7 +1,10 @@
 #include "sapi/cli/commands/mcp.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/application.h"
 #include "mcp/mcp.h"
 #include "config/config.h"
 #include "sapi/cli/application_internal.h"
+#include "sapi/cli/presentation/command_output.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
 
@@ -18,7 +21,9 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 		int server_count = runtime_mcp_count(ctx->runtime);
 		CMD_HEADER(ctx, "MCP servers (%d)", server_count);
 		if (server_count == 0) {
-			printf(ctx, "  (none — add servers to config.toml under [mcp.servers])\n");
+			(void)cli_command_output_linef(
+				ctx, CLI_OUTPUT_STYLE_PLAIN, 2,
+				"(none — add servers to config.toml under [mcp.servers])");
 			return 0;
 		}
 		for (int i = 0; i < server_count; i++) {
@@ -32,19 +37,70 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 			const char *transport =
 				mc->config.transport == MCP_TRANSPORT_STDIO ? "stdio" : "http";
 
-			printf(ctx, "  %s%-20s%s  [%s]  %s\n", ANSI_BOLD, mc->config.name,
-			       ANSI_RESET, transport, status);
+			{
+				struct cli_output_column columns[] = {
+					{.width = 20,
+					 .align = CLI_OUTPUT_ALIGN_LEFT,
+					 .style = CLI_OUTPUT_STYLE_BOLD},
+					{.width = 0,
+					 .align = CLI_OUTPUT_ALIGN_LEFT,
+					 .style = CLI_OUTPUT_STYLE_PLAIN},
+					{.width = 0,
+					 .align = CLI_OUTPUT_ALIGN_LEFT,
+					 .style = CLI_OUTPUT_STYLE_PLAIN},
+				};
+				char transport_cell[16];
+				const char *cells[] = {mc->config.name, transport_cell, status};
+				struct cli_output_table table = {
+					.columns = columns,
+					.column_count = 3,
+					.cells = cells,
+					.row_count = 1,
+					.indent = "  ",
+					.gap = "  ",
+				};
+
+				snprintf(transport_cell, sizeof(transport_cell), "[%s]", transport);
+				(void)cli_command_output_table(ctx, &table);
+			}
 			if (mc->elapsed_ms > 0)
-				printf(ctx, "    elapsed: %lld ms\n", (long long)mc->elapsed_ms);
+				(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 4,
+							       "elapsed: %lld ms",
+							       (long long)mc->elapsed_ms);
 			if (mc->error_code < 0)
-				printf(ctx, "    error: %s\n", morph_strerror(mc->error_code));
+				(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 4,
+							       "error: %s",
+							       morph_strerror(mc->error_code));
 			if (mc->connected) {
-				printf(ctx, "    server: %s v%s | proto: %s\n", mc->server_name,
-				       mc->server_version, mc->negotiated_version);
-				printf(ctx, "    tools: %-3s  resources: %-3s  prompts: %-3s\n",
-				       mc->supports_tools ? "yes" : "no",
-				       mc->supports_resources ? "yes" : "no",
-				       mc->supports_prompts ? "yes" : "no");
+				(void)cli_command_output_linef(
+					ctx, CLI_OUTPUT_STYLE_PLAIN, 4,
+					"server: %s v%s | proto: %s", mc->server_name,
+					mc->server_version, mc->negotiated_version);
+				{
+					struct cli_output_column columns[] = {
+						{.width = 0, .align = CLI_OUTPUT_ALIGN_LEFT},
+						{.width = 4, .align = CLI_OUTPUT_ALIGN_LEFT},
+						{.width = 0, .align = CLI_OUTPUT_ALIGN_LEFT},
+						{.width = 4, .align = CLI_OUTPUT_ALIGN_LEFT},
+						{.width = 0, .align = CLI_OUTPUT_ALIGN_LEFT},
+						{.width = 0, .align = CLI_OUTPUT_ALIGN_LEFT},
+					};
+					const char *cells[] = {
+						"tools:", mc->supports_tools ? "yes" : "no",
+						"resources:", mc->supports_resources ? "yes" : "no",
+						"prompts:", mc->supports_prompts ? "yes" : "no",
+					};
+					struct cli_output_table table = {
+						.columns = columns,
+						.column_count = 6,
+						.cells = cells,
+						.row_count = 1,
+						.indent = "    ",
+						.gap = " ",
+					};
+
+					(void)cli_command_output_table(ctx, &table);
+				}
 			}
 		}
 		return 0;
@@ -64,8 +120,25 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 			return rc;
 		}
 		CMD_HEADER(ctx, "MCP tools for '%s' (%d)", name, count);
-		for (int i = 0; i < count; i++) {
-			printf(ctx, "  %-30s %s\n", tools[i].name, tools[i].description);
+		{
+			struct cli_output_column columns[] = {
+				{.width = 30, .align = CLI_OUTPUT_ALIGN_LEFT},
+				{.width = 0, .align = CLI_OUTPUT_ALIGN_LEFT},
+			};
+
+			for (int i = 0; i < count; i++) {
+				const char *cells[] = {tools[i].name, tools[i].description};
+				struct cli_output_table table = {
+					.columns = columns,
+					.column_count = 2,
+					.cells = cells,
+					.row_count = 1,
+					.indent = "  ",
+					.gap = " ",
+				};
+
+				(void)cli_command_output_table(ctx, &table);
+			}
 		}
 		runtime_mcp_list_free(tools);
 		return 0;
@@ -85,9 +158,27 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 			return rc;
 		}
 		CMD_HEADER(ctx, "MCP resources for '%s' (%d)", name, count);
-		for (int i = 0; i < count; i++) {
-			printf(ctx, "  %-30s %s\n", res[i].name, res[i].description);
-			printf(ctx, "    uri: %s\n", res[i].uri);
+		{
+			struct cli_output_column columns[] = {
+				{.width = 30, .align = CLI_OUTPUT_ALIGN_LEFT},
+				{.width = 0, .align = CLI_OUTPUT_ALIGN_LEFT},
+			};
+
+			for (int i = 0; i < count; i++) {
+				const char *cells[] = {res[i].name, res[i].description};
+				struct cli_output_table table = {
+					.columns = columns,
+					.column_count = 2,
+					.cells = cells,
+					.row_count = 1,
+					.indent = "  ",
+					.gap = " ",
+				};
+
+				(void)cli_command_output_table(ctx, &table);
+				(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 4,
+							       "uri: %s", res[i].uri);
+			}
 		}
 		runtime_mcp_list_free(res);
 		return 0;
@@ -107,8 +198,25 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 			return rc;
 		}
 		CMD_HEADER(ctx, "MCP prompts for '%s' (%d)", name, count);
-		for (int i = 0; i < count; i++) {
-			printf(ctx, "  %-30s %s\n", prompts[i].name, prompts[i].description);
+		{
+			struct cli_output_column columns[] = {
+				{.width = 30, .align = CLI_OUTPUT_ALIGN_LEFT},
+				{.width = 0, .align = CLI_OUTPUT_ALIGN_LEFT},
+			};
+
+			for (int i = 0; i < count; i++) {
+				const char *cells[] = {prompts[i].name, prompts[i].description};
+				struct cli_output_table table = {
+					.columns = columns,
+					.column_count = 2,
+					.cells = cells,
+					.row_count = 1,
+					.indent = "  ",
+					.gap = " ",
+				};
+
+				(void)cli_command_output_table(ctx, &table);
+			}
 		}
 		runtime_mcp_list_free(prompts);
 		return 0;

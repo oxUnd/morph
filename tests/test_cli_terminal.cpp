@@ -9,7 +9,9 @@ extern "C" {
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/command_job.h"
 #include "sapi/cli/widgets/feed.h"
-#include "sapi/cli/pages/jobs.h"
+#include "sapi/cli/presentation/jobs.h"
+#include "sapi/cli/models/jobs.h"
+#include "sapi/cli/widgets/jobs.h"
 }
 
 #include <fcntl.h>
@@ -36,7 +38,8 @@ class CliTerminalTest : public ::testing::Test
 	{
 		cli_presentation_cleanup(&ctx);
 		cli_input_cleanup(&ctx);
-		cli_jobs_cleanup(&ctx);
+		cli_jobs_model_cleanup(ctx.jobs);
+		ctx.jobs = NULL;
 		cli_feed_cleanup(&ctx);
 		cli_output_set_color_enabled(&ctx, 1);
 	}
@@ -387,17 +390,17 @@ TEST_F(CliTerminalTest, JobsShowCompactSummaryAndOnlyExpandTheWaitedCommand)
 	ASSERT_EQ(cli_jobs_event(&ctx, &event), 1);
 	morph_buf_t output{};
 	ASSERT_EQ(morph_buf_init(&output, 128), 0);
-	EXPECT_EQ(cli_jobs_render(&ctx, &output, 80, 0), 1);
+	EXPECT_EQ(cli_jobs_render(ctx.jobs, &output, 80, 0), 1);
 	std::string text = morph_buf_cstr_borrow(&output);
 	EXPECT_EQ(text.find("◉ 1 background job running · /jobs"), 0u);
 	EXPECT_EQ(text.find("cmake --build"), std::string::npos);
 	EXPECT_EQ(text.find("PRIVATE LOG"), std::string::npos);
 	event.name = "background.wait.begin";
 	ASSERT_EQ(cli_jobs_event(&ctx, &event), 1);
-	EXPECT_EQ(cli_jobs_waiting(&ctx), 1);
+	EXPECT_EQ((ctx.jobs && cli_jobs_model_waiting(ctx.jobs)), 1);
 	for (int columns : {120, 80, 60, 40}) {
 		morph_buf_reset(&output);
-		EXPECT_EQ(cli_jobs_render(&ctx, &output, columns, 0), 2);
+		EXPECT_EQ(cli_jobs_render(ctx.jobs, &output, columns, 0), 2);
 		text = morph_buf_cstr_borrow(&output);
 		EXPECT_EQ(text.find("◉ Waiting for"), 0u) << text;
 		EXPECT_NE(text.find("/jobs"), std::string::npos) << text;
@@ -415,7 +418,7 @@ TEST_F(CliTerminalTest, JobsShowCompactSummaryAndOnlyExpandTheWaitedCommand)
 	}
 	event.name = "background.wait.end";
 	ASSERT_EQ(cli_jobs_event(&ctx, &event), 1);
-	EXPECT_EQ(cli_jobs_waiting(&ctx), 0);
+	EXPECT_EQ((ctx.jobs && cli_jobs_model_waiting(ctx.jobs)), 0);
 	morph_buf_cleanup(&output);
 	cJSON_Delete(data);
 }
@@ -435,10 +438,10 @@ TEST_F(CliTerminalTest, CompletedJobsLeaveOneHistoryReceiptAndNoLiveRows)
 	EXPECT_NE(receipt.find("exited 7"), std::string::npos);
 	morph_buf_t output{};
 	ASSERT_EQ(morph_buf_init(&output, 128), 0);
-	EXPECT_EQ(cli_jobs_render(&ctx, &output, 40, 0), 0);
+	EXPECT_EQ(cli_jobs_render(ctx.jobs, &output, 40, 0), 0);
 	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&output)).find("└"), std::string::npos);
 	EXPECT_TRUE(std::string(morph_buf_cstr_borrow(&output)).empty());
-	EXPECT_EQ(cli_jobs_visible(&ctx), 0);
+	EXPECT_EQ(cli_jobs_model_visible(ctx.jobs), 0);
 	morph_buf_cleanup(&output);
 	cJSON_Delete(data);
 }
@@ -467,14 +470,14 @@ TEST_F(CliTerminalTest, CompletedJobClearsLiveRowsWithoutAnActiveTurn)
 	event.data = data;
 	EXPECT_EQ(cli_jobs_event(&ctx, &event), 1);
 	cli_feed_render_frame(&ctx, 1);
-	EXPECT_EQ(cli_jobs_visible(&ctx), 1);
+	EXPECT_EQ(cli_jobs_model_visible(ctx.jobs), 1);
 	EXPECT_GE(cli_feed_next_frame_ms(&ctx), 0);
 	cJSON_ReplaceItemInObject(data, "status", cJSON_CreateString("exited"));
 	event.name = "process.completed";
 	testing::internal::CaptureStdout();
 	EXPECT_EQ(cli_jobs_event(&ctx, &event), 1);
 	(void)testing::internal::GetCapturedStdout();
-	EXPECT_EQ(cli_jobs_visible(&ctx), 0);
+	EXPECT_EQ(cli_jobs_model_visible(ctx.jobs), 0);
 	cli_feed_render_frame(&ctx, 1);
 	EXPECT_EQ(cli_feed_next_frame_ms(&ctx), -1);
 	cJSON_Delete(data);

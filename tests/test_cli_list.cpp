@@ -10,6 +10,7 @@ extern "C" {
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/widgets/list.h"
 #include "sapi/cli/models/composer.h"
+#include "sapi/cli/services/composer.h"
 #include "util/file.h"
 #include "event/event.h"
 #include "util/utf8.h"
@@ -792,9 +793,9 @@ TEST(CliMediaInputTest, ComposerKeepsImageReferencesAndAtomicBoundaries)
 	struct cli_composer_model composer;
 	ASSERT_EQ(cli_composer_model_init(&composer), 0);
 	const char *label;
-	ASSERT_EQ(cli_composer_model_add_image(&composer, path.c_str(), &label), 0);
+	ASSERT_EQ(cli_composer_service_add_image(&composer, path.c_str(), &label), 0);
 	EXPECT_STREQ(label, "[IMAGE#1]");
-	ASSERT_EQ(cli_composer_model_add_image(&composer, path.c_str(), &label), 0);
+	ASSERT_EQ(cli_composer_service_add_image(&composer, path.c_str(), &label), 0);
 	EXPECT_STREQ(label, "[IMAGE#2]");
 	char *expanded = cli_composer_model_expand_copy(&composer, "只看 [IMAGE#2]");
 	ASSERT_NE(expanded, nullptr);
@@ -813,10 +814,10 @@ TEST(CliMediaInputTest, ComposerKeepsImageReferencesAndAtomicBoundaries)
 	escaped.replace(escaped.find(' '), 1, "\\ ");
 	std::string input = "before\n\t\"" + path + "\"  " + escaped + "\nafter";
 	char *converted = nullptr;
-	ASSERT_EQ(cli_composer_model_convert_paths_copy(&composer, input.c_str(), &converted), 2);
+	ASSERT_EQ(cli_composer_service_convert_paths_copy(&composer, input.c_str(), &converted), 2);
 	ASSERT_NE(converted, nullptr);
 	char *saved = converted;
-	EXPECT_EQ(cli_composer_model_convert_paths_copy(&composer, "", &converted), -EEXIST);
+	EXPECT_EQ(cli_composer_service_convert_paths_copy(&composer, "", &converted), -EEXIST);
 	EXPECT_EQ(converted, saved);
 	EXPECT_STREQ(converted, "before\n\t[IMAGE#3]  [IMAGE#4]\nafter");
 	free(converted);

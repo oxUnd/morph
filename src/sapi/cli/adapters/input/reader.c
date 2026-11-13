@@ -1,4 +1,6 @@
 #include "sapi/cli/adapters/input/reader.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/adapters/input/state.h"
 #ifdef HAVE_READLINE
 #include <stdio.h>
@@ -9,7 +11,7 @@
 #include "sapi/cli/adapters/input/callbacks.h"
 #include "sapi/cli/services/command_job.h"
 #include "sapi/cli/application_internal.h"
-#include "sapi/cli/pages/jobs.h"
+#include "sapi/cli/models/jobs.h"
 #include "util/child_io.h"
 #include "util/cancel.h"
 #include <fcntl.h>
@@ -130,7 +132,8 @@ int cli_poll_getc(struct cli_application *ctx, FILE *stream)
 						return EOF;
 					}
 					if (!cli_command_job_expedite_prompts(ctx->input_job)) {
-						if (cli_jobs_waiting(ctx))
+						if (ctx->jobs &&
+						    cli_jobs_model_waiting(ctx->jobs))
 							runtime_interrupt_background_wait(ctx->runtime);
 						else
 							runtime_cancel_turn(ctx->runtime);

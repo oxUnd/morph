@@ -1,10 +1,13 @@
 #include "sapi/cli/commands/rewind.h"
+#include "sapi/cli/presentation/output.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/pages/rewind.h"
 #include "sapi/cli/pages/setup/controls.h"
 #include "sapi/cli/presentation/rewind.h"
 #include "sapi/cli/services/command_job.h"
-#include "sapi/cli/services/session_history.h"
+#include "sapi/cli/services/session_restore.h"
 #include "sapi/cli/widgets/list.h"
 #include "runtime/checkpoint.h"
 #include "util/cleanup.h"
@@ -12,7 +15,7 @@
 
 static void cli_rewind_help(struct cli_application *ctx)
 {
-	printf(ctx, "Usage: /rewind [list|preview <id>|code <id>|conversation <id>|both <id>]\n"
+	cli_output_printf(ctx, "Usage: /rewind [list|preview <id>|code <id>|conversation <id>|both <id>]\n"
 		    "Choose a turn checkpoint, then restore code, conversation, or both.\n"
 		    "Code rewind covers apply_patch edits; shell and external changes are not "
 		    "captured.\n");
@@ -47,11 +50,11 @@ static int cli_rewind_restore(struct cli_application *ctx, int64_t id,
 		else
 			CMD_ERROR(ctx, "rewind failed: %s", morph_strerror(rc));
 		if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(report, "code_restored")))
-			printf(ctx, "  Code was restored before this error.\n");
+			cli_output_printf(ctx, "  Code was restored before this error.\n");
 		if (conversation_restored)
-			printf(ctx, "  Conversation was restored before this error.\n");
+			cli_output_printf(ctx, "  Conversation was restored before this error.\n");
 		if (display_rc)
-			printf(ctx, "  History display refresh failed: %s\n",
+			cli_output_printf(ctx, "  History display refresh failed: %s\n",
 			       morph_strerror(display_rc));
 		cli_rewind_report_print(ctx, report);
 		return rc;
@@ -106,13 +109,13 @@ static int cli_rewind_list(struct cli_application *ctx, int interactive)
 		int count = cJSON_IsArray(files)    ? cJSON_GetArraySize(files)
 			    : cJSON_IsNumber(files) ? files->valueint
 						    : 0;
-		printf(ctx, "  %lld  %s (%d files)\n",
+		cli_output_printf(ctx, "  %lld  %s (%d files)\n",
 		       (long long)cJSON_GetNumberValue(
 			       cJSON_GetObjectItemCaseSensitive(entry, "id")),
 		       prompt, count);
 	}
 	if (!cJSON_GetArraySize(entries))
-		printf(ctx, "  No checkpoints in this session.\n");
+		cli_output_printf(ctx, "  No checkpoints in this session.\n");
 	if (interactive)
 		cli_rewind_help(ctx);
 	return 0;

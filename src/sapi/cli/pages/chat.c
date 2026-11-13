@@ -1,5 +1,6 @@
 #include "sapi/cli/pages/chat.h"
-#include "sapi/cli/pages/turn_details.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/presentation/turn_details.h"
 #include "sapi/cli/adapters/input/state.h"
 #include "sapi/cli/pages/resume.h"
 #include "sapi/cli/services/turn.h"
@@ -220,8 +221,7 @@ static int cli_chat_page_input(void *data, struct morph_tui_application *app,
 		cli_readline_clear_footer(ctx);
 		cli_readline_editor_close();
 		state->callback_installed = 0;
-		if (isatty(STDOUT_FILENO))
-			fprintf(stdout, "\033[?1004l");
+		cli_readline_focus_reporting_disable(ctx);
 		cli_feed_composer_suspend(ctx);
 		if (input[0] != '\0') {
 			int handled = 0;
@@ -274,7 +274,7 @@ static int cli_chat_page_input(void *data, struct morph_tui_application *app,
 			}
 			if (handled || input[0] == '/') {
 				if (!handled) {
-					command_rc = cli_turn_execute(ctx, input);
+					command_rc = ctx->input_execute(ctx, input);
 				}
 				(void)cli_event_queue_drain(ctx);
 				if (input[0] == '/' && ctx->running) {
@@ -375,8 +375,7 @@ void cli_chat_destroy(struct cli_chat_page *page, int app_rc)
 	}
 	if (cli_turn_details_is_open(ctx))
 		cli_turn_details_toggle(ctx);
-	if (isatty(STDOUT_FILENO))
-		fprintf(stdout, "\033[?1004l");
+	cli_readline_focus_reporting_disable(ctx);
 	if (ctx->input->readline_ready_input) {
 		free(ctx->input->readline_ready_input);
 		ctx->input->readline_ready_input = NULL;

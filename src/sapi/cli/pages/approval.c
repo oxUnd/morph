@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/approval.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/presentation/style.h"
 #include "util/terminal_size.h"
 #include <morph/tui/terminal.h>
@@ -61,7 +62,7 @@ static int cli_approval_select_choice(struct cli_application *ctx, int scoped, i
 	int rc = morph_tui_widget_select_init(&state, count, 0, 1, 1);
 
 	if (!rc) {
-		printf(ctx, "\n");
+		cli_output_printf(ctx, "\n");
 		fflush(stdout);
 		rc = morph_tui_widget_select_run(&state, &options, input, stdout, NULL);
 	}
@@ -86,7 +87,7 @@ static int cli_approval_read_choice(struct cli_application *ctx, int scoped, int
 	char *rl_input =
 		cli_readline_prompt_copy(ctx, cli_output_is_structured(ctx) ? "" : approval_prompt);
 	if (!rl_input) {
-		printf(ctx, "\n");
+		cli_output_printf(ctx, "\n");
 		return -ECANCELED;
 	}
 	if (!ephemeral && (rl_input[0] == 'a' || rl_input[0] == 'A'))
@@ -100,25 +101,25 @@ static int cli_approval_read_choice(struct cli_application *ctx, int scoped, int
 	free(rl_input);
 #else
 	if (scoped && ephemeral)
-		printf(ctx, "  [" ANSI_GREEN "y" ANSI_RESET "]es once / "
+		cli_output_printf(ctx, "  [" ANSI_GREEN "y" ANSI_RESET "]es once / "
 			    "[s]ession / [" ANSI_RED "n" ANSI_RESET "]o: ");
 	else if (scoped)
-		printf(ctx, "  [" ANSI_GREEN "y" ANSI_RESET "]es once / "
+		cli_output_printf(ctx, "  [" ANSI_GREEN "y" ANSI_RESET "]es once / "
 			    "[s]ession / [a]lways / [" ANSI_RED "n" ANSI_RESET "]o: ");
 	else
-		printf(ctx, "  [" ANSI_GREEN "y" ANSI_RESET "]es / [" ANSI_RED "n" ANSI_RESET
+		cli_output_printf(ctx, "  [" ANSI_GREEN "y" ANSI_RESET "]es / [" ANSI_RED "n" ANSI_RESET
 			    "]o / [a]lways: ");
 	fflush(stdout);
 
 	char buf[16];
 	FILE *tty = fopen("/dev/tty", "r");
 	if (!tty) {
-		printf(ctx, "\n");
+		cli_output_printf(ctx, "\n");
 		return -ECANCELED;
 	}
 	if (!cli_input_fgets(ctx, buf, sizeof(buf), tty)) {
 		fclose(tty);
-		printf(ctx, "\n");
+		cli_output_printf(ctx, "\n");
 		return -ECANCELED;
 	}
 	fclose(tty);
@@ -152,16 +153,16 @@ static int cli_approval_prompt_approval(struct cli_application *ctx, const char 
 	}
 
 	if (v > 0) {
-		printf(ctx, ANSI_GREEN CLI_FEED_DONE " Approved" ANSI_RESET " (");
+		cli_output_printf(ctx, ANSI_GREEN CLI_FEED_DONE " Approved" ANSI_RESET " (");
 		(void)cli_output_print_untrusted(ctx, subject ? subject : "",
 						 UTF8_TERMINAL_TEXT_SINGLE_LINE);
-		printf(ctx, "%s)\n",
+		cli_output_printf(ctx, "%s)\n",
 		       scoped && v == 2 ? ", session" : (v == (scoped ? 3 : 2) ? ", always" : ""));
 	} else {
-		printf(ctx, ANSI_DIM CLI_FEED_CANCELLED " Denied" ANSI_RESET " (");
+		cli_output_printf(ctx, ANSI_DIM CLI_FEED_CANCELLED " Denied" ANSI_RESET " (");
 		(void)cli_output_print_untrusted(ctx, subject ? subject : "",
 						 UTF8_TERMINAL_TEXT_SINGLE_LINE);
-		printf(ctx, ")\n");
+		cli_output_printf(ctx, ")\n");
 	}
 
 	fflush(stdout);
@@ -238,19 +239,19 @@ static void cli_approval_card_rule(struct cli_application *ctx, size_t width, co
 {
 	size_t used = 1;
 
-	printf(ctx, ANSI_YELLOW "%s", title ? "╭" : "╰");
+	cli_output_printf(ctx, ANSI_YELLOW "%s", title ? "╭" : "╰");
 	if (title && width > 5) {
 		const char *end = utf8_advance_display_width_borrow(title, width - 5);
 
-		printf(ctx, "─ " ANSI_BOLD);
+		cli_output_printf(ctx, "─ " ANSI_BOLD);
 		fwrite(title, 1, (size_t)(end - title), stdout);
-		printf(ctx, ANSI_RESET ANSI_YELLOW " ");
+		cli_output_printf(ctx, ANSI_RESET ANSI_YELLOW " ");
 		/* Approval titles contain only ASCII. */
 		used = 4u + (size_t)(end - title);
 	}
 	for (; used < width - 1u; used++)
-		printf(ctx, "─");
-	printf(ctx, "%s" ANSI_RESET "\n", title ? "╮" : "╯");
+		cli_output_printf(ctx, "─");
+	cli_output_printf(ctx, "%s" ANSI_RESET "\n", title ? "╮" : "╯");
 }
 
 static void cli_approval_card_field(struct cli_application *ctx, size_t width, const char *label,
@@ -269,8 +270,8 @@ static void cli_approval_card_field(struct cli_application *ctx, size_t width, c
 		return;
 	if (width == 0) {
 		if (indent)
-			printf(ctx, "%-8s ", label);
-		printf(ctx, "%s%s" ANSI_RESET "\n", style, safe);
+			cli_output_printf(ctx, "%-8s ", label);
+		cli_output_printf(ctx, "%s%s" ANSI_RESET "\n", style, safe);
 		free(safe);
 		return;
 	}
@@ -287,22 +288,22 @@ static void cli_approval_card_field(struct cli_application *ctx, size_t width, c
 		*end = '\0';
 		size_t used = indent + utf8_display_width(line);
 
-		printf(ctx, ANSI_YELLOW "│ " ANSI_RESET);
+		cli_output_printf(ctx, ANSI_YELLOW "│ " ANSI_RESET);
 		if (indent) {
 			size_t label_width = first ? utf8_display_width(label) : 0u;
 
 			if (first)
-				printf(ctx, "%s", label);
+				cli_output_printf(ctx, "%s", label);
 			for (; label_width < indent; label_width++)
-				putchar(ctx, ' ');
+				cli_output_putchar(ctx, ' ');
 		}
-		printf(ctx, "%s", style);
+		cli_output_printf(ctx, "%s", style);
 		fwrite(line, 1, (size_t)(end - line), stdout);
 		*end = saved;
-		printf(ctx, ANSI_RESET);
+		cli_output_printf(ctx, ANSI_RESET);
 		for (; used < width - 4u; used++)
-			putchar(ctx, ' ');
-		printf(ctx, ANSI_YELLOW " │" ANSI_RESET "\n");
+			cli_output_putchar(ctx, ' ');
+		cli_output_printf(ctx, ANSI_YELLOW " │" ANSI_RESET "\n");
 		line = end;
 		first = 0;
 	} while (*line);
@@ -316,15 +317,15 @@ void cli_approval_render_tool(struct cli_application *ctx, const char *tool_name
 		ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ? cli_approval_card_width() : 0u;
 
 	if (width) {
-		printf(ctx, "\n");
+		cli_output_printf(ctx, "\n");
 		cli_approval_card_rule(ctx, width, CLI_FEED_QUESTION " Approval required");
 	}
 	if (!width)
-		printf(ctx, "approval: ");
+		cli_output_printf(ctx, "approval: ");
 	cli_approval_card_field(ctx, width, width ? "Tool" : NULL, tool_name, ANSI_BOLD);
 	if (tool_args && *tool_args && strcmp(tool_args, "{}") != 0) {
 		if (!width)
-			printf(ctx, "args: ");
+			cli_output_printf(ctx, "args: ");
 		cli_approval_card_field(ctx, width, width ? "Args" : NULL, tool_args, ANSI_DIM);
 	}
 	if (width)
@@ -526,10 +527,10 @@ void cli_approval_render_operation(struct cli_application *ctx, const struct too
 			(op->kind == TOOL_OP_PATH_WRITE || op->kind == TOOL_OP_PATH_DELETE);
 
 	if (width) {
-		printf(ctx, "\n");
+		cli_output_printf(ctx, "\n");
 		cli_approval_card_rule(ctx, width, cli_approval_operation_approval_label(op));
 	} else {
-		printf(ctx, "approval: %s\n", cli_approval_operation_approval_label(op));
+		cli_output_printf(ctx, "approval: %s\n", cli_approval_operation_approval_label(op));
 	}
 	if (op->tool_name && *op->tool_name)
 		cli_approval_card_field(ctx, width, "Tool", op->tool_name, ANSI_BOLD);

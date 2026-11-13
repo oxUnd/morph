@@ -23,6 +23,10 @@ void cli_readline_redisplay(struct cli_application *);
  * The adapter consumes it even when no application is available. */
 void cli_readline_line_ready(struct cli_application *, char *input);
 char *cli_readline_suspend_copy(struct cli_application *, int *point);
+/* Releases Readline's callback terminal mode before a blocking owner call. */
+void cli_readline_suspend_callback(void);
+/* Stops terminal focus reporting opened by this adapter. */
+void cli_readline_focus_reporting_disable(struct cli_application *);
 /* Restores and takes a malloc-owned draft, clearing its source slot.
  * An invalid application or empty source leaves the source untouched. */
 void cli_readline_resume_take(struct cli_application *, char **draft, int point);

@@ -1,4 +1,7 @@
 #include "sapi/cli/commands/hooks.h"
+#include "sapi/cli/presentation/output.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/application.h"
 #include "cJSON.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/commands/registry.h"
@@ -48,28 +51,28 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 			digest[i * 2 + 1] = hex[hash[i] & 15];
 		}
 		digest[64] = '\0';
-		printf(ctx,
+		cli_output_printf(ctx,
 		       "Workspace: %s\nReview token: %s\n"
 		       "Trust: /hooks trust-project workspace %s\n",
 		       cwd, digest, digest);
 	} else if (strcmp(action, "list") == 0 || strcmp(action, "check") == 0) {
-		printf(ctx, "Hooks (%d); configuration inspection never executes commands.\n",
+		cli_output_printf(ctx, "Hooks (%d); configuration inspection never executes commands.\n",
 		       cJSON_GetArraySize(rows));
 		cJSON_ArrayForEach (row, rows) {
-			printf(ctx, "%s  %s  %s\n  source: %s\n  matcher: %s\n",
+			cli_output_printf(ctx, "%s  %s  %s\n  source: %s\n  matcher: %s\n",
 			       cli_hooks_hook_field(row, "id"), cli_hooks_hook_field(row, "event"),
 			       cli_hooks_hook_field(row, "state"),
 			       cli_hooks_hook_field(row, "source"),
 			       cli_hooks_hook_field(row, "matcher"));
 			if (*cli_hooks_hook_field(row, "diagnostic"))
-				printf(ctx, "  unavailable: %s\n",
+				cli_output_printf(ctx, "  unavailable: %s\n",
 				       cli_hooks_hook_field(row, "diagnostic"));
 		}
-		printf(ctx, "Review: /hooks review <id>\nWorkspace review: /hooks project\n");
+		cli_output_printf(ctx, "Review: /hooks review <id>\nWorkspace review: /hooks project\n");
 		if (cJSON_GetArraySize(rows) > 0) {
 			const char *digest =
 				cli_hooks_hook_field(cJSON_GetArrayItem(rows, 0), "review_digest");
-			printf(ctx,
+			cli_output_printf(ctx,
 			       "Trust all: /hooks trust-all workspace %s\n"
 			       "Reject all: /hooks deny-all workspace %s\n",
 			       digest, digest);
@@ -79,7 +82,7 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 		cJSON_ArrayForEach (row, rows) {
 			if (strcmp(cli_hooks_hook_field(row, "id"), argv[2]) != 0)
 				continue;
-			printf(ctx,
+			cli_output_printf(ctx,
 			       "Source: %s\nCwd: %s\nState: %s\n"
 			       "Previous definition:\n%s\nCurrent definition:\n%s\n"
 			       "Trust covers this definition, not mutable script contents.\n"
@@ -91,13 +94,13 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 			       cli_hooks_hook_field(row, "id"),
 			       cli_hooks_hook_field(row, "digest"));
 			if (*cli_hooks_hook_field(row, "diagnostic"))
-				printf(ctx, "Unavailable: %s\n",
+				cli_output_printf(ctx, "Unavailable: %s\n",
 				       cli_hooks_hook_field(row, "diagnostic"));
 			const cJSON *last = cJSON_GetObjectItem(row, "last_run");
 			if (last) {
 				char *text = cJSON_Print(last);
 				if (text) {
-					printf(ctx, "Last execution:\n%s\n", text);
+					cli_output_printf(ctx, "Last execution:\n%s\n", text);
 					free(text);
 				}
 			}
@@ -106,9 +109,9 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 	} else if (argc == 4) {
 		rc = runtime_hooks_manage(ctx->runtime, action, argv[2], argv[3]);
 		if (rc == 0)
-			printf(ctx, "Hook action completed: %s\n", action);
+			cli_output_printf(ctx, "Hook action completed: %s\n", action);
 	} else {
-		printf(ctx, "Usage: /hooks [list|check|project|review-all|review <id>|"
+		cli_output_printf(ctx, "Usage: /hooks [list|check|project|review-all|review <id>|"
 			    "trust|enable|disable|revoke <id> <digest>]\n");
 		rc = -EINVAL;
 	}

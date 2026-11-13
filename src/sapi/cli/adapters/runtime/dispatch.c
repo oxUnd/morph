@@ -1,14 +1,13 @@
 #include "sapi/cli/adapters/runtime/dispatch.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/services/event_queue_item.h"
 #include "sapi/cli/adapters/input/cancel.h"
+#include "sapi/cli/adapters/input/readline.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/notifications.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/widgets/feed.h"
-#ifdef HAVE_READLINE
-#include <readline/readline.h>
-#endif
 #include "sapi/cli/application_internal.h"
 
 int cli_dispatch_event(struct cli_application *ctx, const struct cli_event_queue_item *item)
@@ -20,13 +19,10 @@ int cli_dispatch_event(struct cli_application *ctx, const struct cli_event_queue
 	else if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL) {
 		int updating = cli_feed_update_active(ctx);
 
-#ifdef HAVE_READLINE
 		/* Only interactive owner calls need a blocking prompt. Keep
 		 * normal event refreshes in Readline's terminal mode so input
 		 * cannot be echoed, erased or have CR translated by the TTY. */
-		if (RL_ISSTATE(RL_STATE_CALLBACK))
-			rl_callback_handler_remove();
-#endif
+		cli_readline_suspend_callback();
 		cli_feed_update_end(ctx);
 		int result = cli_event_queue_run_owner_call(ctx, item->owner_call);
 

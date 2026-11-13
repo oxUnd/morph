@@ -1,4 +1,6 @@
 #include "sapi/cli/services/scheduler.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/application.h"
 #include "util/cleanup.h"
 #include "db/scheduled_task.h"
 #include "agent/turn.h"

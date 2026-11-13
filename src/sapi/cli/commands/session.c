@@ -1,6 +1,9 @@
 #include "sapi/cli/commands/session.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/application.h"
 #include "cJSON.h"
 #include "sapi/cli/application_internal.h"
+#include "sapi/cli/presentation/command_output.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/adapters/media/renderer.h"
@@ -8,7 +11,7 @@
 #include "sapi/cli/pages/setup/controls.h"
 #include "sapi/cli/pages/history.h"
 #include "sapi/cli/pages/resume.h"
-#include "sapi/cli/services/session_history.h"
+#include "sapi/cli/services/session_restore.h"
 
 static int cli_session_command_new(struct cli_application *ctx, int argc, char **argv)
 {
@@ -274,14 +277,22 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 				  morph_strerror(rc));
 			return rc;
 		}
-		printf(ctx,
-		       "history: active=%d dangling=%d orphan=%d invalid=%d "
-		       "token_mismatches=%d",
-		       report.active_items, report.dangling_calls, report.orphan_results,
-		       report.invalid_payloads, report.token_mismatches);
 		if (repair)
-			printf(ctx, " repaired=%d", changed);
-		printf(ctx, "\n");
+			(void)cli_command_output_linef(
+				ctx, CLI_OUTPUT_STYLE_PLAIN, 0,
+				"history: active=%d dangling=%d orphan=%d invalid=%d "
+				"token_mismatches=%d repaired=%d",
+				report.active_items, report.dangling_calls,
+				report.orphan_results, report.invalid_payloads,
+				report.token_mismatches, changed);
+		else
+			(void)cli_command_output_linef(
+				ctx, CLI_OUTPUT_STYLE_PLAIN, 0,
+				"history: active=%d dangling=%d orphan=%d invalid=%d "
+				"token_mismatches=%d",
+				report.active_items, report.dangling_calls,
+				report.orphan_results, report.invalid_payloads,
+				report.token_mismatches);
 		return 0;
 	}
 	if (export_path) {
@@ -312,18 +323,29 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 		for (int i = 0; i < skip && cur; i++)
 			cur = cur->next;
 		while (cur) {
-			printf(ctx, ANSI_DIM "[#%lld %s%s]" ANSI_RESET " ",
-			       (long long)cur->sequence_no, cur->kind,
-			       cur->active ? "" : " inactive");
+			char prefix[160];
+
+			snprintf(prefix, sizeof(prefix), "[#%lld %s%s]",
+				 (long long)cur->sequence_no, cur->kind,
+				 cur->active ? "" : " inactive");
 			if (strcmp(cur->kind, "tool_result") == 0) {
-				printf(ctx, "%s: %d tokens%s\n",
-				       cur->tool_name[0] ? cur->tool_name : "tool",
-				       cur->token_count, cur->truncated ? ", truncated" : "");
+				(void)cli_command_output_linef(
+					ctx, CLI_OUTPUT_STYLE_PLAIN, 0, "%s: %d tokens%s",
+					cur->tool_name[0] ? cur->tool_name : "tool",
+					cur->token_count,
+					cur->truncated ? ", truncated" : "");
 			} else {
-				(void)cli_output_print_untrusted(ctx,
-								 cur->content ? cur->content : "",
-								 UTF8_TERMINAL_TEXT_MULTILINE);
-				printf(ctx, "\n");
+				struct cli_output_segment segments[] = {
+					{.style = CLI_OUTPUT_STYLE_DIM, .text = prefix},
+					{.style = CLI_OUTPUT_STYLE_PLAIN, .text = " "},
+					{.style = CLI_OUTPUT_STYLE_PLAIN,
+					 .text = cur->content ? cur->content : "",
+					 .untrusted = 1,
+					 .untrusted_mode = UTF8_TERMINAL_TEXT_MULTILINE},
+				};
+
+				(void)cli_command_output_segments(
+					ctx, segments, sizeof(segments) / sizeof(segments[0]), 0, 1);
 			}
 			cur = cur->next;
 		}
@@ -364,19 +386,30 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 		const char *label = (strcmp(role, "user") == 0)	       ? "You"
 				    : (strcmp(role, "assistant") == 0) ? "AI"
 								       : role;
-		printf(ctx, ANSI_DIM "[%s]" ANSI_RESET " ", label);
-		if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
-			(void)cli_output_print_untrusted(ctx,
-							 cur->content ? cur->content : "(empty)",
-							 UTF8_TERMINAL_TEXT_MULTILINE);
-		else if (strcmp(role, "assistant") == 0 && cur->content && *cur->content)
+		struct cli_output_segment segments[5] = {
+			{.style = CLI_OUTPUT_STYLE_DIM, .text = "["},
+			{.style = CLI_OUTPUT_STYLE_DIM, .text = label},
+			{.style = CLI_OUTPUT_STYLE_DIM, .text = "]"},
+			{.style = CLI_OUTPUT_STYLE_PLAIN, .text = " "},
+		};
+		int markdown = ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON &&
+			       strcmp(role, "assistant") == 0 && cur->content &&
+			       *cur->content;
+
+		if (markdown) {
+			(void)cli_command_output_segments(ctx, segments, 4, 0, 0);
 			cli_markdown_render_ansi_with_media(ctx, cur->content, cli_renderer_media,
 							    NULL);
-		else
-			(void)cli_output_print_untrusted(ctx,
-							 cur->content ? cur->content : "(empty)",
-							 UTF8_TERMINAL_TEXT_MULTILINE);
-		printf(ctx, "\n");
+			(void)cli_command_output_newline(ctx);
+		} else {
+			segments[4] = (struct cli_output_segment){
+				.style = CLI_OUTPUT_STYLE_PLAIN,
+				.text = cur->content ? cur->content : "(empty)",
+				.untrusted = 1,
+				.untrusted_mode = UTF8_TERMINAL_TEXT_MULTILINE,
+			};
+			(void)cli_command_output_segments(ctx, segments, 5, 0, 1);
+		}
 		cur = cur->next;
 	}
 	runtime_session_messages_free(msgs);

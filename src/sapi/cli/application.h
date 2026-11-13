@@ -7,6 +7,7 @@ struct morph_log;
 #include "sapi/cli/services/recap.h"
 #include "util/buf.h"
 #include "sapi/cli/models/composer.h"
+#include "sapi/cli/models/agents.h"
 #include "util/signals.h"
 #include <morph/tui/application.h>
 #include "sapi/cli/models/presentation.h"
@@ -41,6 +42,7 @@ struct cli_application {
 
 	struct cli_recap_state recap;
 	struct runtime *runtime;
+	int (*input_execute)(struct cli_application *, const char *input);
 	struct config_file_error startup_error;
 	struct cli_event_queue *events;
 	morph_buf_t *application_output;
@@ -48,6 +50,7 @@ struct cli_application {
 	struct cli_feed *terminal;
 	struct cli_command_job *input_job;
 	struct cli_transcript_model *transcript;
+	struct cli_agents_model agents;
 	struct cli_turn_details *details;
 	struct cli_jobs *jobs;
 	struct cli_subagents_page *subagents;

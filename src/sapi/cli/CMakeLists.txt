@@ -5,6 +5,8 @@ add_library(morph-cli STATIC
 	# Application models
 	models/subagents.c
 	models/composer.c
+	models/agents.c
+	models/jobs.c
 	models/transcript.c
 
 	# Page controllers
@@ -20,7 +22,7 @@ add_library(morph-cli STATIC
 	pages/question.c
 	pages/resume.c
 	pages/rewind.c
-	pages/turn_details.c
+	presentation/turn_details.c
 	pages/setup/controls.c
 	pages/setup/wizard.c
 
@@ -32,6 +34,7 @@ add_library(morph-cli STATIC
 	widgets/composer_panel.c
 	widgets/feed.c
 	widgets/feed_block.c
+	widgets/jobs.c
 	widgets/list.c
 	widgets/notice.c
 	widgets/notification.c
@@ -43,6 +46,7 @@ add_library(morph-cli STATIC
 	commands/agents.c
 	commands/ext.c
 	commands/hooks.c
+	commands/input.c
 	commands/jobs.c
 	commands/mcp.c
 	commands/mcp_manage.c
@@ -62,6 +66,7 @@ add_library(morph-cli STATIC
 
 	# Application services
 	services/agents.c
+	services/composer.c
 	services/command_job.c
 	services/configuration/config.c
 	services/configuration/mcp.c
@@ -71,7 +76,7 @@ add_library(morph-cli STATIC
 	services/management.c
 	services/recap.c
 	services/scheduler.c
-	services/session_history.c
+	services/session_restore.c
 	services/share_store.c
 	services/skill_store.c
 	services/transcript.c
@@ -86,6 +91,8 @@ add_library(morph-cli STATIC
 	adapters/input/readline.c
 	adapters/input/state.c
 	adapters/media/image_loader.c
+	adapters/media/image_probe.c
+	adapters/input/confirm.c
 	adapters/media/renderer.c
 	adapters/protocol/interaction.c
 	adapters/runtime/events.c
@@ -101,6 +108,11 @@ add_library(morph-cli STATIC
 	presentation/messages.c
 	presentation/notifications.c
 	presentation/output.c
+	presentation/recap.c
+	presentation/command_output.c
+	presentation/confirm.c
+	presentation/agents.c
+	presentation/jobs.c
 	presentation/presenter.c
 	presentation/rewind.c
 	presentation/tool_preview.c

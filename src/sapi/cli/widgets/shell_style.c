@@ -1,4 +1,5 @@
 #include "sapi/cli/widgets/shell_style.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/application_internal.h"
 
 static int cli_shell_style_shell_operator(char ch)

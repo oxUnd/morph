@@ -1,17 +1,17 @@
 #include "sapi/cli/services/turn.h"
+#include "sapi/cli/application.h"
+#include "sapi/cli/services/agents.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/services/command_job.h"
 #include "agent/turn.h"
 #include "sapi/cli/adapters/input/callbacks.h"
 #include "sapi/cli/adapters/input/cancel.h"
-#include "sapi/cli/commands/media.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/services/scheduler.h"
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/services/event_queue.h"
-#include "sapi/cli/commands/registry.h"
 #include "runtime/runtime.h"
 #include <stdarg.h>
 #include "credits.h"
@@ -42,34 +42,20 @@ void cli_turn_record_input_images(struct cli_application *ctx, const char *input
 	cli_composer_model_visit_images(&ctx->composer, input, cli_turn_record_image, ctx);
 }
 
-int cli_turn_execute(struct cli_application *ctx, const char *input)
+void cli_turn_prepare(struct cli_application *ctx)
 {
-	int64_t command_started_at;
+	if (!ctx)
+		return;
+	(void)runtime_turn_prepare_tools(ctx->runtime, (int64_t)time(NULL));
+	cli_scheduler_process_due(ctx);
+}
+
+int cli_turn_execute_prompt(struct cli_application *ctx, const char *input)
+{
 	int owns_turn = 0;
 
 	if (!ctx || !input)
 		return -EINVAL;
-	command_started_at = (int64_t)time(NULL);
-	(void)runtime_turn_prepare_tools(ctx->runtime, command_started_at);
-
-	cli_scheduler_process_due(ctx);
-	{
-		int handled = 0;
-		int rc = cli_media_handle_path(ctx, input, &handled);
-
-		if (handled) {
-			if (rc != 0)
-				return rc;
-			return 0;
-		}
-	}
-
-	if (input[0] == '/') {
-		int rc = cli_command_dispatch(ctx, input);
-		cli_scheduler_process_due(ctx);
-		return rc;
-	}
-
 	morph_buf_t input_buf;
 	const char *effective_input = input;
 	int has_input_buf = 0;
@@ -139,6 +125,7 @@ void cli_turn_begin(struct cli_application *ctx)
 {
 	if (!ctx)
 		return;
+	(void)cli_agents_refresh(ctx);
 	cli_cancel_state_reset(ctx);
 	cli_presentation_reset(ctx);
 	ctx->turn_active = 1;
@@ -151,6 +138,7 @@ void cli_turn_finish(struct cli_application *ctx, int turn_rc)
 {
 	if (!ctx)
 		return;
+	(void)cli_agents_refresh(ctx);
 	cli_cancel_state_reset(ctx);
 	cli_presentation_finish(ctx);
 	ctx->turn_active = 0;
@@ -160,7 +148,7 @@ void cli_turn_finish(struct cli_application *ctx, int turn_rc)
 	    ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 		return;
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
-		printf(ctx, "error: %s\n", morph_strerror(turn_rc));
+		cli_output_printf(ctx, "error: %s\n", morph_strerror(turn_rc));
 	else
 		CMD_ERROR(ctx, "%s", morph_strerror(turn_rc));
 }

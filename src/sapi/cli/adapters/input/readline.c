@@ -1,7 +1,13 @@
 #include "sapi/cli/adapters/input/readline.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/application.h"
+#include "sapi/cli/services/composer.h"
 #include "util/cleanup.h"
+#include <stdio.h>
+#include <unistd.h>
 #include "util/child_io.h"
-#include "sapi/cli/pages/turn_details.h"
+#include "sapi/cli/presentation/output.h"
+#include "sapi/cli/presentation/turn_details.h"
 #include "sapi/cli/adapters/input/state.h"
 #include "sapi/cli/services/turn.h"
 #ifdef HAVE_READLINE
@@ -9,6 +15,21 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 #endif
+
+void cli_readline_suspend_callback(void)
+{
+#ifdef HAVE_READLINE
+	if (RL_ISSTATE(RL_STATE_CALLBACK))
+		rl_callback_handler_remove();
+#endif
+}
+
+void cli_readline_focus_reporting_disable(struct cli_application *ctx)
+{
+	(void)ctx;
+	if (isatty(STDOUT_FILENO))
+		fprintf(stdout, "\033[?1004l");
+}
 #include "sapi/cli/services/command_job.h"
 #include "credits.h"
 #include "sapi/cli/adapters/input/reader.h"
@@ -341,10 +362,10 @@ void cli_readline_redisplay(struct cli_application *ctx)
 		return;
 	cli_readline_clear_footer(ctx);
 	if (cli_output_color_enabled(ctx))
-		fputs(ctx, CLI_INPUT_BACKGROUND, stdout);
+		cli_output_fputs(ctx, CLI_INPUT_BACKGROUND, stdout);
 	rl_redisplay();
 	if (cli_output_color_enabled(ctx))
-		fputs(ctx, ANSI_RESET, stdout);
+		cli_output_fputs(ctx, ANSI_RESET, stdout);
 	cli_readline_color_images(ctx);
 	cli_readline_footer(ctx);
 	if (!ctx->input_status.suspended && RL_ISSTATE(RL_STATE_CALLBACK) &&
@@ -704,7 +725,7 @@ static int cli_readline_convert_images(struct cli_application *ctx)
 			return 0;
 	}
 
-	rc = cli_composer_model_convert_paths_copy(&ctx->composer, input, &converted);
+	rc = cli_composer_service_convert_paths_copy(&ctx->composer, input, &converted);
 	if (rc > 0) {
 		rl_begin_undo_group();
 		rl_delete_text(0, rl_end);
@@ -723,7 +744,7 @@ static int cli_readline_compose_image(struct cli_application *ctx, const char *p
 	int rc;
 
 	(void)ctx;
-	rc = cli_composer_model_add_image(&ctx->composer, path, &label);
+	rc = cli_composer_service_add_image(&ctx->composer, path, &label);
 	if (rc != 0)
 		return rc;
 	rl_begin_undo_group();
@@ -867,7 +888,7 @@ static int cli_readline_paste_image(struct cli_application *ctx, int count, int 
 			CMD_ERROR(ctx, "clipboard does not contain a supported image");
 			cli_readline_resume_take(ctx, &draft, point);
 		}
-		putchar(ctx, '\a');
+		cli_output_putchar(ctx, '\a');
 	}
 	free(path);
 	return rc == 0 ? 0 : 1;

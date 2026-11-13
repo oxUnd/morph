@@ -1,4 +1,5 @@
 #include "sapi/cli/services/command_job.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/services/turn.h"
 #include "cJSON.h"
 #include "sapi/cli/services/event_queue.h"
@@ -32,7 +33,7 @@ static int cli_command_job_command_handle(struct cli_application *ctx, const cha
 					  void *user_data)
 {
 	(void)user_data;
-	return cli_turn_execute(ctx, input);
+	return ctx->input_execute ? ctx->input_execute(ctx, input) : -ENOTSUP;
 }
 
 int cli_command_job_init(struct cli_command_job *job)

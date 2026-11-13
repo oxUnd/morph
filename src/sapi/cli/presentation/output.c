@@ -1,22 +1,19 @@
 #include "sapi/cli/presentation/output.h"
-#include "sapi/cli/pages/turn_details.h"
+#include "sapi/cli/application.h"
+#include "sapi/cli/presentation/turn_details.h"
 #include "sapi/cli/services/command_job.h"
 #include "agent/turn.h"
 #include "sapi/cli/adapters/input/callbacks.h"
 #include "sapi/cli/adapters/input/cancel.h"
-#include "sapi/cli/commands/media.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/services/scheduler.h"
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/application_internal.h"
-#include "sapi/cli/commands/registry.h"
 #include "runtime/runtime.h"
 #include <stdarg.h>
 
-#undef fputs
-#undef putchar
 
 void cli_output_set_color_enabled(struct cli_application *ctx, int enabled)
 {
@@ -38,6 +35,16 @@ void cli_output_set_structured(struct cli_application *ctx, int enabled)
 int cli_output_is_structured(struct cli_application *ctx)
 {
 	return (ctx && ctx->output.structured);
+}
+
+int cli_output_overlay_open(const struct cli_application *ctx)
+{
+	return cli_turn_details_is_open(ctx);
+}
+
+int cli_output_overlay_visible(const struct cli_application *ctx)
+{
+	return cli_turn_details_is_visible(ctx);
 }
 
 int cli_output_capture_begin(struct cli_application *ctx, morph_buf_t *output)
