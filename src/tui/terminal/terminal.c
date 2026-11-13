@@ -48,6 +48,8 @@ int morph_tui_terminal_session_enter(struct morph_tui_terminal_session *session,
 	fputs("\033[?25l", output);
 	if (flags & MORPH_TUI_TERMINAL_SESSION_PASTE)
 		fputs("\033[?2004h", output);
+	if (flags & MORPH_TUI_TERMINAL_SESSION_FOCUS)
+		fputs("\033[?1004h", output);
 	if (flags & MORPH_TUI_TERMINAL_SESSION_MOUSE)
 		fputs("\033[?1000h\033[?1006h", output);
 	if (fflush(output) != 0 || ferror(output)) {
@@ -69,6 +71,8 @@ int morph_tui_terminal_session_leave(struct morph_tui_terminal_session *session)
 		fputs("\033[?1006l\033[?1000l", session->output);
 	if (session->flags & MORPH_TUI_TERMINAL_SESSION_PASTE)
 		fputs("\033[?2004l", session->output);
+	if (session->flags & MORPH_TUI_TERMINAL_SESSION_FOCUS)
+		fputs("\033[?1004l", session->output);
 	if (session->flags & MORPH_TUI_TERMINAL_SESSION_ALTERNATE)
 		fputs("\033[0m", session->output);
 	fputs("\033[?25h", session->output);
@@ -83,4 +87,24 @@ int morph_tui_terminal_session_leave(struct morph_tui_terminal_session *session)
 		session->active = 0;
 	}
 	return rc;
+}
+
+int morph_tui_terminal_session_reassert(struct morph_tui_terminal_session *session)
+{
+	if (!session || !session->active)
+		return 0;
+	struct termios raw = session->saved;
+	raw.c_lflag &= (tcflag_t) ~(ICANON | ECHO | ISIG | IEXTEN);
+	raw.c_iflag &= (tcflag_t) ~(IXON | ICRNL);
+	raw.c_cc[VMIN] = 1;
+	raw.c_cc[VTIME] = 0;
+	if (tcsetattr(session->input_fd, TCSANOW, &raw) != 0)
+		return -errno;
+	if (session->flags & MORPH_TUI_TERMINAL_SESSION_PASTE)
+		fputs("\033[?2004h", session->output);
+	if (session->flags & MORPH_TUI_TERMINAL_SESSION_FOCUS)
+		fputs("\033[?1004h", session->output);
+	if (session->flags & MORPH_TUI_TERMINAL_SESSION_MOUSE)
+		fputs("\033[?1000h\033[?1006h", session->output);
+	return fflush(session->output) != 0 || ferror(session->output) ? (errno ? -errno : -EIO) : 0;
 }

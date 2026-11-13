@@ -66,33 +66,9 @@ static int cli_application_screen_draw(void *data, const struct morph_tui_screen
 	return screen->ops.draw(screen->data, terminal);
 }
 
-int cli_application_flush(struct cli_application *ctx)
-{
-	morph_buf_t *pending = ctx->application_output;
-
-	if (pending && pending->failed)
-		return pending->failed;
-	if (pending && pending->len) {
-		if (fwrite(morph_buf_cstr_borrow(pending), 1, pending->len, stdout) !=
-			    pending->len ||
-		    fflush(stdout) != 0)
-			return errno ? -errno : -EIO;
-		morph_buf_reset(pending);
-	}
-	return 0;
-}
-
 void cli_application_panel_complete(struct cli_application *ctx, void *data,
 				    void (*complete)(void *, int), int result)
 {
-	if (morph_tui_application_depth(cli_application_tui_borrow(ctx)) <= 1) {
-		int rc = cli_application_flush(ctx);
-
-		if (rc) {
-			result = rc;
-			morph_tui_application_stop(cli_application_tui_borrow(ctx), rc);
-		}
-	}
 	complete(data, result);
 	if (ctx->application_command &&
 	    morph_tui_application_depth(cli_application_tui_borrow(ctx)) <= 1) {
@@ -145,7 +121,6 @@ int cli_application_present_screen(struct cli_application *ctx,
 	return rc;
 }
 
-#ifdef HAVE_READLINE
 static void cli_application_prepare_termination(struct morph_tui_application *base, int result)
 {
 	struct cli_application *ctx = (struct cli_application *)base;
@@ -170,7 +145,6 @@ static void cli_application_run_session(struct cli_application *ctx, struct cli_
 		return;
 	}
 	const struct morph_tui_application_options options = cli_chat_options(page);
-	struct morph_tui_controller controller = cli_chat_controller(page);
 	static const struct morph_tui_application_ops methods = {
 		.prepare_termination = cli_application_prepare_termination,
 	};
@@ -179,17 +153,12 @@ static void cli_application_run_session(struct cli_application *ctx, struct cli_
 	app_rc = morph_tui_application_init(&ctx->base, &options);
 	if (!app_rc) {
 		cli_event_queue_attach_app(ctx, &ctx->base);
-		app_rc = morph_tui_application_present_controller_take(&ctx->base, &controller);
+		app_rc = cli_chat_present(page);
 		if (!app_rc)
 			app_rc = morph_tui_application_run(&ctx->base);
 		morph_tui_application_deinit(&ctx->base);
 		cli_feed_set_hidden(ctx, 0);
-		int flush_rc = cli_application_flush(ctx);
-
-		if (!app_rc)
-			app_rc = flush_rc;
 	}
-	ctx->application_output = NULL;
 	cli_chat_destroy(page, app_rc);
 }
 
@@ -203,11 +172,15 @@ static void cli_application_run_interactive(struct cli_application *ctx)
 		return;
 	}
 	ctx->input_job = &job;
-	cli_readline_run(ctx, &job, cli_application_run_session);
+	ctx->input_status.enabled = 1;
+	if (cli_composer_model_init(&ctx->composer) == 0) {
+		cli_application_run_session(ctx, &job);
+		cli_composer_model_cleanup(&ctx->composer);
+	}
 	ctx->input_job = NULL;
+	ctx->input_status.enabled = 0;
 	cli_command_job_cleanup(&job);
 }
-#endif
 
 struct morph_tui_application *cli_application_tui_borrow(struct cli_application *ctx)
 {
@@ -544,9 +517,6 @@ void cli_application_run(struct cli_application *ctx)
 	int standalone_resume = plain;
 	morph_buf_t directory;
 
-#ifndef HAVE_READLINE
-	standalone_resume = 1;
-#endif
 	if (!ctx)
 		return;
 	if (cli_scheduler_start(ctx) != 0)
@@ -581,7 +551,7 @@ void cli_application_run(struct cli_application *ctx)
 	if (hooks_rc != 0)
 		log_warn(ctx ? ctx->logger : NULL, "hook trust review failed: %s",
 			 morph_strerror(hooks_rc));
-	if (ctx->session_history_pending) {
+	if (plain && ctx->session_history_pending) {
 		ctx->session_history_pending = 0;
 		int rc = cli_session_history_restore(ctx);
 
@@ -603,11 +573,7 @@ void cli_application_run(struct cli_application *ctx)
 		return;
 	}
 
-#ifdef HAVE_READLINE
 	cli_application_run_interactive(ctx);
-#else
-	cli_application_run_plain(ctx);
-#endif
 }
 
 static void cli_application_emit_trace_json(struct cli_application *ctx, double elapsed)

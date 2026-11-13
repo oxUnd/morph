@@ -1,5 +1,6 @@
 #include "sapi/cli/services/session_restore.h"
 #include "sapi/cli/application.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/presentation/history.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/widgets/feed.h"
@@ -44,6 +45,9 @@ int cli_session_history_restore(struct cli_application *ctx)
 	/* Session commands retain their existing plain and NDJSON contracts. */
 	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return 0;
+	int reset_rc = cli_chat_reset(ctx);
+	if (reset_rc)
+		return reset_rc;
 	items = runtime_session_model_history_current_copy(ctx->runtime, 0, &count);
 	if (!items)
 		messages = runtime_session_messages_current_copy(ctx->runtime, &count);

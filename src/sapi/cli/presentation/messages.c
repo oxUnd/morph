@@ -5,6 +5,7 @@
 #include "sapi/cli/presentation/style.h"
 #include "util/cleanup.h"
 #include "util/utf8.h"
+#include <morph/tui/widgets/text_view.h>
 #include <errno.h>
 #include <limits.h>
 #include <string.h>
@@ -20,6 +21,22 @@ struct cli_messages_sgr {
 	struct cli_messages_color foreground;
 	struct cli_messages_color background;
 };
+
+static struct morph_tui_color cli_messages_color_value(struct cli_messages_color color)
+{
+	if (color.mode == 2)
+		return (struct morph_tui_color){MORPH_TUI_COLOR_RGB,
+			((unsigned)color.values[0] << 16u) | ((unsigned)color.values[1] << 8u) |
+			(unsigned)color.values[2]};
+	if (color.mode == 5)
+		return (struct morph_tui_color){MORPH_TUI_COLOR_INDEXED, (unsigned)color.values[0]};
+	if (color.code >= 90)
+		return (struct morph_tui_color){MORPH_TUI_COLOR_INDEXED,
+			(unsigned)(color.code % 10 + 8)};
+	if (color.code)
+		return (struct morph_tui_color){MORPH_TUI_COLOR_INDEXED, (unsigned)(color.code % 10)};
+	return (struct morph_tui_color){MORPH_TUI_COLOR_DEFAULT, 0};
+}
 
 static void cli_messages_sgr_apply(struct cli_messages_sgr *state, const int *values, size_t count)
 {
@@ -234,7 +251,8 @@ static int cli_messages_user(morph_buf_t *out, char *safe, const struct cli_mess
 	size_t content_width = width > 1 ? width - 1 : 1u;
 	size_t prefix = 2u;
 	size_t body_width = content_width > prefix ? content_width - prefix : 1u;
-	int rc = style->trailing_newlines < 2 ? morph_buf_putc(out, '\n') : 0;
+	int rc = 0;
+
 	if (rc == 0 && style->styled) {
 		rc = morph_buf_puts(out, ANSI_RESET CLI_INPUT_BACKGROUND);
 		if (rc == 0)
@@ -290,8 +308,6 @@ int cli_messages_append(morph_buf_t *out, enum cli_message_kind kind, const char
 	if (kind == CLI_MESSAGE_USER) {
 		rc = cli_messages_user(&document, safe, style);
 	} else {
-		if (style->trailing_newlines < 2)
-			rc = morph_buf_putc(&document, '\n');
 		if (rc == 0 && kind == CLI_MESSAGE_REASONING) {
 			if (!style->reasoning_expanded) {
 				const char *start = safe + strspn(safe, " \t\r\n");
@@ -328,15 +344,99 @@ int cli_messages_append(morph_buf_t *out, enum cli_message_kind kind, const char
 				rc = morph_buf_putc(&document, '\n');
 		}
 	}
-	size_t start = out->len;
 	int columns = kind == CLI_MESSAGE_USER ? style->columns :
 		style->columns > 1 ? style->columns - 1 : 1;
+	morph_buf_t rendered MORPH_CLEANUP(morph_buf_cleanup) = {0};
+
+	if (rc != 0)
+		return rc;
+	rc = morph_buf_init(&rendered, document.len + 16);
 	if (rc == 0)
 		rc = cli_messages_append_rendered(
-			out, morph_buf_cstr_borrow(&document), document.len,
+			&rendered, morph_buf_cstr_borrow(&document), document.len,
 			columns > 0 ? columns : 1, style->styled);
-	if (rc == 0)
-		cli_output_track_tail(&style->trailing_newlines, out->data + start,
-				      out->len - start);
-	return rc;
+	if (rc != 0)
+		return rc;
+	struct morph_tui_view_insets margin = style->margin;
+
+	if (!margin.top && !margin.right && !margin.bottom && !margin.left)
+		margin.top = 1;
+	return cli_output_block_append(out, morph_buf_cstr_borrow(&rendered), margin,
+				       &style->trailing_newlines);
+}
+
+int cli_messages_set_rendered_view(struct morph_tui_view *view, const char *text, int styled)
+{
+	if (!view || !text)
+		return -EINVAL;
+	morph_array_t spans MORPH_CLEANUP(morph_array_cleanup) = {0};
+	morph_buf_t bytes MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	struct morph_tui_text_span span;
+	int rc = morph_array_init(&spans, 16, sizeof(span));
+	if (!rc)
+		rc = morph_buf_init(&bytes, strlen(text) + 1);
+	struct cli_messages_sgr state = {0};
+	size_t length = strlen(text);
+	for (size_t i = 0; !rc && i < length;) {
+		if (text[i] == '\033') {
+			i += cli_messages_escape(text + i, length - i, &state);
+			continue;
+		}
+		size_t start = i;
+		while (i < length && text[i] != '\033')
+			i++;
+		span = (struct morph_tui_text_span){0};
+		if (styled) {
+			span.style.foreground = cli_messages_color_value(state.foreground);
+			span.style.background = cli_messages_color_value(state.background);
+			if (state.attributes & (1u << 1u))
+				span.style.attributes |= MORPH_TUI_STYLE_BOLD;
+			if (state.attributes & (1u << 2u))
+				span.style.attributes |= MORPH_TUI_STYLE_DIM;
+			if (state.attributes & (1u << 3u))
+				span.style.attributes |= MORPH_TUI_STYLE_ITALIC;
+			if (state.attributes & (1u << 4u))
+				span.style.attributes |= MORPH_TUI_STYLE_UNDERLINE;
+			if (state.attributes & (1u << 7u))
+				span.style.attributes |= MORPH_TUI_STYLE_SELECTED;
+			if (state.attributes & (1u << 9u))
+				span.style.attributes |= MORPH_TUI_STYLE_STRIKE;
+		}
+		/* Store offsets until the growable text buffer has its final address. */
+		span.text = NULL;
+		rc = morph_buf_append(&bytes, text + start, i - start);
+		if (!rc)
+			rc = morph_buf_putc(&bytes, '\0');
+		struct morph_tui_text_span *slot = rc ? NULL : morph_array_push_borrow(&spans);
+		if (!rc && !slot)
+			rc = -ENOMEM;
+		if (!rc)
+			*slot = span;
+	}
+	if (rc)
+		return rc;
+	size_t offset = 0;
+	for (size_t i = 0; i < spans.nelts; i++) {
+		struct morph_tui_text_span *slot = morph_array_borrow(&spans, i);
+		slot->text = bytes.data + offset;
+		offset += strlen(slot->text) + 1;
+	}
+	/* Component/Stack geometry owns external separation. Preserve interior
+	 * blank lines while removing legacy formatter boundary newlines. */
+	for (size_t i = 0; i < spans.nelts; i++) {
+		struct morph_tui_text_span *slot = morph_array_borrow(&spans, i);
+		while (*slot->text == '\n' || *slot->text == '\r')
+			slot->text++;
+		if (*slot->text)
+			break;
+	}
+	for (size_t i = spans.nelts; i > 0; i--) {
+		struct morph_tui_text_span *slot = morph_array_borrow(&spans, i - 1);
+		char *end = (char *)slot->text + strlen(slot->text);
+		while (end > slot->text && (end[-1] == '\n' || end[-1] == '\r'))
+			*--end = '\0';
+		if (end > slot->text)
+			break;
+	}
+	return morph_tui_widget_text_view_set_spans_copy(view, spans.elts, spans.nelts);
 }

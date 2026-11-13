@@ -8,6 +8,7 @@
 #include <morph/tui/window.h>
 #include <morph/tui/widgets/label.h>
 #include <morph/tui/widgets/stack.h>
+#include <morph/tui/widgets/scroll.h>
 #include <morph/tui/widgets/list.h>
 #include <morph/tui/widgets/text_field.h>
 #include <morph/tui/widgets/text_view.h>

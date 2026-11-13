@@ -74,16 +74,35 @@ static int core_view_controller_dispatch(void *data, struct morph_tui_applicatio
 			core_view_focus_next(controller, 0);
 		if (!event->pasting &&
 		    (event->key == '\t' || event->key == MORPH_TUI_KEY_BACK_TAB)) {
+			if (state->focus && state->focus->ops && state->focus->ops->event)
+				rc = state->focus->ops->event(state->focus, event);
+			if (rc)
+				return rc;
 			rc = core_view_focus_next(controller, event->key == MORPH_TUI_KEY_BACK_TAB);
 			return rc ? rc : 1;
 		}
 		for (struct morph_tui_view *view = event->pasting ? state->paste_target
 								  : state->focus;
-		     view && !rc; view = view->state->parent) {
+		     view && !rc;) {
+			size_t revision = state->structure_revision;
 			if (view->ops && view->ops->event)
 				rc = view->ops->event(view, event);
 			if (morph_tui_application_transition_pending(app))
 				return rc < 0 ? rc : 1;
+			if (rc)
+				return rc;
+			/* An action may replace its own subtree. Do not dereference a
+			 * sender or parent released by clear_children during dispatch. */
+			if (revision != state->structure_revision) {
+				int alive = 0;
+				for (size_t i = 0; i < state->views.nelts; i++) {
+					struct morph_tui_view **slot = morph_array_borrow(&state->views, i);
+					alive |= *slot == view;
+				}
+				if (!alive)
+					return 1;
+			}
+			view = view->state->parent;
 		}
 		/* Pasted bytes never reach page shortcuts or raw page handlers. */
 		if (event->pasting || event->key == MORPH_TUI_KEY_PASTE_END)
@@ -165,6 +184,9 @@ int morph_tui_view_controller_present_borrow(struct morph_tui_application *app,
 	struct morph_tui_view_controller *controller = NULL;
 
 	if (!spec || !spec->ops || !spec->ops->build || spec->tick_ms < 0 ||
+	    (spec->terminal_flags & ~(MORPH_TUI_TERMINAL_SESSION_ALTERNATE |
+		MORPH_TUI_TERMINAL_SESSION_PASTE | MORPH_TUI_TERMINAL_SESSION_MOUSE |
+		MORPH_TUI_TERMINAL_SESSION_FOCUS)) ||
 	    (spec->size && spec->size < sizeof(*controller)))
 		return -EINVAL;
 	size_t size = spec->size ? spec->size : sizeof(*controller);
@@ -210,7 +232,8 @@ int morph_tui_view_controller_present_borrow(struct morph_tui_application *app,
 		.data = controller,
 		.input_mode = MORPH_TUI_INPUT_KEYS,
 		.terminal_flags =
-			MORPH_TUI_TERMINAL_SESSION_ALTERNATE | MORPH_TUI_TERMINAL_SESSION_PASTE,
+				MORPH_TUI_TERMINAL_SESSION_ALTERNATE | MORPH_TUI_TERMINAL_SESSION_PASTE |
+					spec->terminal_flags,
 		.tick_ms = spec->tick_ms,
 	};
 

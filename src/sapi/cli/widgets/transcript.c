@@ -493,9 +493,13 @@ void cli_transcript_render_tool(struct cli_application *ctx, const struct cli_tr
 		return;
 	cli_transcript_tool_row(tool, &line, cli_transcript_columns(), 1);
 	(void)morph_buf_putc(&line, '\n');
-	int gap = ctx->output.trailing_newlines < 2 ||
-		  (ctx->output.capture && !ctx->output.capture_history);
-	cli_output_printf(ctx, "%s%s", gap ? "\n" : "", morph_buf_cstr_borrow(&line));
+	struct morph_tui_view_insets margin = {.top = 1};
+	int gap = cli_output_block_gap_margin(margin, ctx->output.trailing_newlines);
+	if (ctx->output.capture && !ctx->output.capture_history)
+		gap = 1;
+	for (int i = 0; i < gap; i++)
+		cli_output_putchar(ctx, '\n');
+	cli_output_printf(ctx, "%s", morph_buf_cstr_borrow(&line));
 	morph_buf_cleanup(&line);
 }
 

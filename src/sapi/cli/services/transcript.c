@@ -1,5 +1,6 @@
 #include "sapi/cli/services/transcript.h"
 #include "sapi/cli/application.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/tool_preview.h"
@@ -33,6 +34,7 @@ void cli_transcript_reset(struct cli_application *ctx)
 {
 	if (!ctx)
 		return;
+	cli_chat_transcript_reset(ctx);
 	cli_transcript_model_destroy(ctx->transcript);
 	ctx->transcript = NULL;
 }
@@ -93,6 +95,8 @@ int cli_transcript_restore_tool(struct cli_application *ctx, const struct cJSON 
 		return rc;
 	const struct cli_transcript_tool *tool = morph_array_borrow(&ctx->transcript->tools, index);
 
+	if (cli_chat_active(ctx))
+		return cli_chat_tool_changed(ctx, tool);
 	cli_transcript_render_tool(ctx, tool, !ctx->tool_details);
 	if (ctx->tool_details)
 		cli_transcript_render_tool_details(ctx, tool, 1);
@@ -118,6 +122,15 @@ int cli_transcript_event(struct cli_application *ctx, const struct morph_event *
 	if (change.kind == CLI_TRANSCRIPT_UNCHANGED)
 		return 0;
 	tool = morph_array_borrow(&ctx->transcript->tools, change.tool_index);
+	if (cli_chat_active(ctx)) {
+		if (change.kind == CLI_TRANSCRIPT_TOOL_STARTED) {
+			rc = cli_transcript_capture_preview(ctx, change.tool_index);
+			if (rc)
+				return rc;
+		}
+		rc = cli_chat_tool_changed(ctx, tool);
+		return rc ? rc : 1;
+	}
 	switch (change.kind) {
 	case CLI_TRANSCRIPT_OBSERVATION:
 		if (change.observation_added && ctx->tool_details)

@@ -137,31 +137,23 @@ are checked, preventing a resize wake from rendering an old-width frame. View
 controllers use the retained view, canvas, and responder machinery described
 below. Legacy controller draw callbacks continue to use their existing renderers.
 
-`MORPH_TUI_INPUT_EXTERNAL` gives readiness exclusively to an input adapter, currently
-Readline for chat. `MORPH_TUI_INPUT_KEYS` gives decoding and terminal modes to the
-application. Appear/disappear callbacks transfer input ownership. Only one adapter
-reads the terminal, and key decoding does not consume input for the next page.
-The application owns raw/paste/alternate-screen transitions and restores original
-termios and descriptor flags on destruction. In particular, it reverses the
-nonblocking flag set by `uv_poll_init`: stdin and stdout may share an open file
-description, and nonblocking stdio can truncate a large terminal frame.
+`MORPH_TUI_INPUT_EXTERNAL` gives readiness exclusively to an external input
+adapter. Retained chat uses `MORPH_TUI_INPUT_KEYS`: the framework owns decoding,
+raw/paste/alternate-screen transitions, mouse/focus reporting and restoration of
+original termios and descriptor flags. It reverses the nonblocking flag set by
+`uv_poll_init`, since stdin and stdout may share an open file description.
 
-The CLI root controller adapts the existing composer, footer, live feed, and
-transcript viewer. History, hooks, resume, and jobs are presented on the same
-application rather than running nested polling loops. Page snapshots outlive
-command dispatch and are released on close. Opening a panel suspends Readline;
-closing it restores the composer. Runtime messages continue to update state,
-while sanitized scrollback output is buffered until the panel leaves. Command
-completion and session-selection receipts run after leaving alternate screen.
+The CLI chat ViewController builds a root Stack with a Scroll container, feed
+Stack, activity/queue/jobs controls and multiline TextField composer. Messages,
+tools, plans and notices compose Label, TextView and Stack controls. The frame
+renderer is the only writer for this retained tree. Runtime events mutate models
+and controls on the owner thread; modal pages retain the underlying tree and
+draft. Closing a modal restores that tree and invalidates the frame.
 
-The input adapter retains the dimensions of its last paint. Terminals reflow
-the right-aligned hint and footer before delivering a resize event, so their
-previous row counts cannot be reused to erase the editor. Resize handling
-recovers the reflowed editor origin and clears only its transient tail before
-updating Readline's dimensions and restoring the draft. Input readiness also
-checks dimensions, since a key can arrive before the resize signal. Independent
-footer updates preserve the hint, and short terminals omit the optional task
-row when it would scroll the editable input out of view.
+The Scroll control measures its one content child at viewport width, allocates
+its full content height and clips descendants. Manual scrolling pauses following;
+End or scrolling to the bottom resumes it. Resize remeasures content and the
+multiline composer. No Readline erase/reflow arithmetic is involved in chat.
 
 The CLI embeds an Application subclass. Its `prepare_termination` hook cancels
 queued and future synchronous owner calls, cancels and joins the command worker,
@@ -176,8 +168,9 @@ their existing input/output contracts.
 Standalone startup review, setup, and legacy synchronous tool prompts continue
 to use the screen polling API below. Interactive runtime requests currently close
 an open navigation panel before invoking that prompt adapter. Replacing those
-blocking prompt adapters and replacing Readline remain explicit follow-up work. Deferred panel output is currently an
-in-memory buffer; bounded spill storage belongs with the transcript migration.
+blocking prompt adapters remains follow-up work. Primary feed updates are
+retained while another page is visible; stateless legacy consumers may still
+capture textual output.
 
 ## Retained application interface
 
@@ -265,6 +258,15 @@ const struct morph_tui_view_options box = {
 	.padding = {.left = 2, .right = 2},
 };
 ```
+
+TextView defaults to a scrollable document viewport. Opting into content sizing
+makes measurement return the height of all wrapped rows at the supplied content
+width. Structured text spans copy their text and style, including indexed/RGB
+foreground/background and bold, dim, italic, underline, reverse and strike
+attributes. Invalid styles fail without replacing existing content. View styles
+inherit through the tree; a View background paints its frame and padding while
+leaving its margin untouched. The CLI Markdown adapter converts trusted renderer
+SGR into these spans; arbitrary cursor/OSC sequences never reach Canvas.
 
 Frame sizes include padding and exclude margin. Measurement returns outer size;
 arrange applies margin once. Sibling margins add without collapsing. See the
@@ -461,10 +463,15 @@ bytes. A resize, output-target change, explicit `morph_tui_frame_invalidate`, or
 failure forces a full repaint. External writes to its owned screen require
 invalidation before the next present. Cleanup releases both cached buffers.
 
-The chat terminal, Readline composer, owner-thread event queue, streaming media,
-and transcript coordination remain separate CLI facilities. They have persistent
-streaming lifecycles and runtime-specific data. The modal framework neither owns
-nor duplicates those services.
+Legacy synchronous tool prompts can flush a dirty retained frame with
+`morph_tui_application_render` without reading input or reentering libuv. After
+the prompt, `morph_tui_application_restore_terminal` reasserts raw/paste/focus/
+mouse capabilities without switching screens and invalidates the frame. Both
+operations require the UI owner thread; rendering is guarded against recursion.
+
+The owner-thread event queue, media adapters and transcript reduction remain CLI
+facilities. The TUI owns retained View geometry, rich text, scroll clipping,
+multiline editing and frame presentation; it does not import runtime models.
 
 ## Design references
 

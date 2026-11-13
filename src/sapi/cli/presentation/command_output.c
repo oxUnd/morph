@@ -1,4 +1,5 @@
 #include "sapi/cli/presentation/command_output.h"
+#include "sapi/cli/pages/chat.h"
 
 #include "sapi/cli/application.h"
 #include "sapi/cli/application_internal.h"
@@ -508,6 +509,10 @@ enum cli_output_style cli_command_output_ratio_style(double ratio, double warn_r
 
 void cli_command_output_clear_screen(struct cli_application *ctx)
 {
+	if (cli_chat_active(ctx)) {
+		(void)cli_chat_reset(ctx);
+		return;
+	}
 	if (ctx && (ctx->output.structured || ctx->output.capture))
 		return;
 	if (fputs("\033[2J\033[H", stdout) == EOF)

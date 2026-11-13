@@ -2,6 +2,7 @@
 #define MORPH_CLI_PRESENTATION_MESSAGES_H
 
 #include "util/buf.h"
+#include <morph/tui/view.h>
 
 enum cli_message_kind {
 	CLI_MESSAGE_USER,
@@ -15,6 +16,7 @@ struct cli_message_style {
 	int ultra;
 	int trailing_newlines;
 	int reasoning_expanded;
+	struct morph_tui_view_insets margin;
 };
 
 /* Stateless message layout. Only style's local trailing-newline count changes. */
@@ -24,5 +26,7 @@ int cli_messages_append(morph_buf_t *out, enum cli_message_kind kind, const char
  * Retain SGR styling, wrap complete UTF-8, and make every physical row standalone. */
 int cli_messages_append_rendered(morph_buf_t *out, const char *bytes, size_t length, int columns,
 				 int styled);
+/* Bridges trusted Markdown renderer SGR into copied structured text spans. */
+int cli_messages_set_rendered_view(struct morph_tui_view *, const char *text, int styled);
 
 #endif

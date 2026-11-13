@@ -1,165 +1,95 @@
 # CLI tool feed
 
-Interactive tool output uses append-only blocks. The first row contains the
-tool name (`Exec` for `exec`), its command or target, and inline elapsed time.
-Tool names are never replaced by action verbs. Shell commands use the shared terminal-safe
-syntax highlighter. Status remains visible in a leading marker: green `●` for success, cyan `◉`
-for running, and bold red `✖` plus `TIMEOUT` or `FAILED` for failures. Shapes and explicit labels also distinguish states without color.
-There is no separate summary/command row. Background process results retain a
-running marker and label until the process finishes.
+Interactive chat runs in alternate screen as a retained TUI ViewController.
+The root Stack contains a scrolling feed, background activity, queued messages
+and a multiline TextField composer. The framework owns geometry, clipping,
+terminal modes and frame presentation. PgUp/PgDn and wheel scroll the feed;
+scrolling to the bottom resumes following new content.
 
-Command receipts, plans, approvals and MCP status share the large state markers:
-`●` for completed or active, `◉` for running, `◯` for pending or available,
-and bold red `✖` for failed. User questions and approvals use bold yellow `?`;
-warnings use yellow `⚠`, cancelled/skipped work uses dim `–`, and neutral system
-information uses `◇`. Missing historical results and disabled features use dim
-`◯`. Selection lists retain filled versus hollow circles. Queue
-headings use the pending marker. Password masks and Markdown list bullets
-belong to their content and are not status markers.
+## Components and state
 
-Glyph values are defined once in `src/util/terminal_status.h`; CLI renderers use
-the aliases and styles from `src/sapi/cli/presentation/style.h`. Subagent receipts,
-background jobs, diagnostics and setup follow the same convention. The application
-layout check rejects raw status glyphs in CLI sources.
+`widgets/message` composes a marker Label and content-sized TextView. Submitted
+user messages own their outer margin and inner padding/background. Reasoning uses
+muted italic text. Assistant messages retain source Markdown and remeasure it at
+the current content width; trusted renderer SGR is converted into structured
+text spans. Preview and completion update the same component.
 
-The compact preview contains at most three physical output lines. The first uses
-`  └ ` and continuation lines align beneath its text. Additional lines are counted
-and shown as `+ N lines (Ctrl+T to expand)`. Text payloads from files and MCP content
-blocks use the same limit. Long lines are clipped to the terminal width. Ctrl+T
-retains complete arguments, output, errors, reasoning and patch diffs in the
-existing details view. Plain and JSON event output keep their existing contracts.
+`widgets/tool_call` composes a Stack, heading Label and content-sized TextView.
+The transcript reducer retains tool state; call IDs locate existing controls.
+Running, streamed and completed events update that control in place. The heading
+contains status, tool name, target, outcome and completed elapsed time. Compact
+output follows the last three logical stream lines, wrapped at the component's
+content width. Ctrl+T toggles arguments, complete output, result and error in the
+current turn's controls. Tool output is sanitized and cannot move the cursor.
 
-While a tool streams, the live block follows its last three output lines instead
-of showing only `Running…`. Tabs and terminal controls use the same safe text
-path as completed previews. The full stream remains available in Ctrl+T details. The details viewport
-follows live output at the bottom; scrolling up pauses following, and scrolling
-back to the bottom or pressing End resumes it.
+Plan and notice components compose the same base controls. Plans retain explicit
+tree branches and per-step status. Background jobs remain visible outside an
+active turn. Queued messages use a List; Esc expedites queued steering, or
+interrupts the active turn when nothing is queued. Ctrl+C cancels the turn;
+Ctrl+D exits from an empty composer.
 
-Elapsed-time updates run once per second. The `Working` label and background-job
-summary start with a fixed-width `◉` marker that alternates normal and dim cyan
-every 500 ms. Both use the same monotonic-clock phase, including background jobs
-that outlive the turn. Animation ticks update the markers in place and preserve
-the composer, queued drafts and tool output. Completed history and no-color/plain
-output do not blink. The muted `Working` label retains its existing shimmer. Incoming data requests a coalesced update after 80 ms. Idle
-polling refreshes changed footer data without erasing the composer; an unchanged
-footer emits no bytes. The footer uses bold and dim text rather than separate
-colors for the model and directory.
+Component spacing comes from Stack spacing and actual four-edge View options. The framework
+measures content after removing margin/padding, allocates outer slots, and clips
+drawing. Sibling margins add. A background covers the frame and padding and
+leaves the outer margin on the normal background. No feed component computes
+its position by counting previously printed newlines.
 
-A contracting preview, tool completion or batch of background events retains the
-composer’s vertical position. Vacated rows stay on the normal background above
-the live feed and are reclaimed before committed output; the draft and footer
-must not move upward as live content shrinks. PTY tests inspect every published
-frame, including transitions that occur between final snapshots.
+## Status and editing
 
-Live layout uses the actual terminal width. Below 20 columns, a clipped
-`Widen terminal` row replaces the live block until the window grows. Compact
-headers and previews use a one-column ellipsis, including narrow Unicode text.
-Normal conversation output continues to use native terminal scrollback.
+Glyph values are defined once in `src/util/terminal_status.h`, with CLI aliases
+in `presentation/style.h`: pending `◯`, running `◉`, success `●`, failed `✖`,
+question `?`, cancelled `–`, warning `⚠`, and neutral information `◇`. Failures
+and questions use bold status colors. Historical calls without results stay
+pending. Timeouts explicitly include `TIMEOUT`.
 
-Markdown deltas preview unfinished paragraphs, inline formatting, code blocks
-and tables in the same transient region above the composer. The SDK sends
-replacement ANSI text separately from stable history output; it never moves the
-cursor to rewrite committed Markdown. A preview follows the last rows that fit
-after reserving space for the draft, work status and queued messages. Resizing
-reflows only the mutable tail. Stable blocks clear the old preview before being
-appended once, and completion or cancellation commits the remaining content.
+Working and background-job indicators share a monotonic 500 ms cyan/dim phase.
+Completed history remains static. No-color output does not animate brightness.
+A shrinking tool or a batch of completions changes feed layout without erasing
+or reconstructing the editor. Resize remeasures both the feed and composer.
 
-Preview rendering does not load images, invoke media callbacks or create math
-bitmaps. Those run when content becomes stable. Changes confined to the mutable
-tail reuse the stable boundary and render only that tail, avoiding repeated
-whole-document snapshots for each token. Plain and JSON modes retain their
-existing output behavior.
+The TextField owns UTF-8 editing and multiline wrapping. Enter submits; Ctrl+J,
+Shift+Enter and pasted newlines insert a newline. Up/Down recall submitted input.
+Tab completes slash commands. Clipboard image insertion and dragged image-path
+conversion reuse composer services. The footer retains permission, context,
+credits and background naming state.
 
-Nonempty `NO_COLOR`, `TERM=dumb`, `--no-color` and redirected stdout disable
-colors. Non-TTY stdin/stdout and dumb terminals use the existing line-oriented
-input path and plain event presenter, without Readline repainting, graphical
-output, or interactive key hints. JSON events retain their separate path.
+Modal pages share the root Application. Underlying feed updates and the unsent
+draft survive navigation. Session restoration rebuilds message/tool controls from
+canonical stored records, without executing tools or generating a new turn.
 
-Markdown normalization preserves literal fenced-code whitespace, repeated blank
-lines, and fence-like source lines; only a matching, sufficiently long fence
-without trailing source text closes a block.
+## Media boundary
 
-These refinements apply the lifecycle, redraw and width guidance from
-[tui-design](https://github.com/diegomarino/tui-design/blob/main/skills/tui-design/SKILL.md)
-and the prompt/state separation in
-[AI Coding Agents Terminal UI](https://github.com/vasilyu1983/AI-Agents-public/blob/main/frameworks/shared-skills/skills/ai-coding-agents-terminal-ui/SKILL.md).
+The retained Canvas currently supports text cells and structured styles. Feed
+media are represented by textual captions/paths; native Kitty image/video planes
+require a dedicated retained media component with viewport and lifetime handling.
+Legacy graphics writers are prevented from painting over the retained frame.
+Image attachment and clipboard ingestion still use the existing composer model.
 
-`transcript.c` owns tool state and formats the feed. `terminal.c` owns only the
-transient active block and its row accounting. On completion it clears that
-block before appending the final block to scrollback.
+## Compatibility adapters
 
-Content and tool blocks share one blank row. The output writer tracks the
-committed text's trailing newlines, including Markdown output. Live and completed
-tools reuse an existing Markdown paragraph gap; code and table frames receive
-the missing separator. Transient frame row counts follow the same spacing so
-redraws preserve the composer position. Interior Markdown blank lines stay intact.
+`widgets/feed_block`, `widgets/transcript` append functions and the old live-feed
+renderer remain available to stateless document renderers, child transcript
+views, replay fixtures and compatibility tests. Their text-output newline policy
+is not the retained View box model. New primary interactive content uses the
+retained controls above. Plain and JSON event modes keep their existing contracts.
 
-Reasoning, compact tool steps (including agent waits), and subagent completion
-receipts compose through `widgets/feed_block`. Their components render content;
-the block layout owns the shared blank row at each boundary. Immediate receipts
-use the same layout as deferred receipts. A deferred batch stays together with
-one outer gap, and its structured records are rendered at the current terminal
-width. Event handlers do not construct styled terminal rows or patch spacing.
-Live reasoning/tool previews reuse the block boundary calculation so committing
-them preserves the same gap. Other legacy feed paths can migrate independently.
+The legacy Markdown write adapter observes terminating newlines and normalizes
+the final boundary before duration output. The retained feed instead allocates
+spacing from View margins; final duration is a separate retained receipt.
+Composer replacement panels still use a shared row-rendering adapter on the same
+Application. In retained chat they preserve the current alternate-screen session;
+closing them restores the root tree, viewport and editor.
 
-Successful subagent calls show lifecycle rows without delegation prompt previews,
-both live and when restoring history. Task descriptions and assignment details
-remain in the agent panel and explicit transcript details; failures retain their
-diagnostics. Restoring a session never replays the delegation itself.
-
-## Final spacing ownership
-
-The Markdown SDK ends a normal paragraph with two newlines and a framed code
-block with one. Previously `presentation_final()` unconditionally appended
-another newline and `cli_terminal_turn_end()` prefixed the duration row with yet
-another. A paragraph therefore left three blank rows before the duration.
-
-The Markdown write adapter now observes the actual rendered tail without
-changing the renderer's bytes. Only `cli_markdown_finish_final()` establishes
-the final boundary: two terminating newlines, or one blank row before duration.
-The successful duration row adds no leading separator. Other turn endings retain
-their existing spacing. Paragraphs, lists, tables, fenced code and trailing input
-newlines are checked through the real PTY event loop; interior paragraph/code
-blank lines remain intact. User input, reasoning and answer styling are unchanged.
-
-The committed duration row ends the turn with one blank normal-background row.
-Command results own the same trailing gap. A command's first visible result is
-preceded by one blank row, supplied lazily by the shared output writer; existing
-leading result newlines do not add another row. Commands without output leave
-only their trailing blank row. Submitted command lines add no leading gap, so a
-command follows either kind of completed block consistently. Composer
-padding belongs to the editable input and is cleared on submission; it must never
-serve as the history separator. Finalizing work reserves the same gap before
-commit so the composer stays on its row when background cleanup finishes.
-
-Composer replacement options anchor at the editor's upper edge and expand
-downward. The shared `composer_panel` component reserves space below that anchor;
-when necessary, terminal scrolling moves history upward to make room. Drawing
-and resizing return the cursor to the top anchor, rather than deriving the next
-origin from the bottom of the last option. Pages render content without adding
-their own leading separator. Closing clears the region below the anchor and
-reclaims its temporary command gap before restoring the editor or printing a
-result.
-
-## Visual review
-
-Build and replay the deterministic concept fixture in a terminal:
+The deterministic compatibility fixture remains available for reviewing the
+stateless renderer without commands or network requests:
 
 ```sh
 cmake --build build
 build/bin/morph-cli-pty-driver --replay-events tests/fixtures/cli_tool_feed.jsonl
 ```
 
-Press Enter to close the replay. The fixture includes success, timeout, reasoning
-and an active command. It performs no commands or network requests. The PTY
-transcript test checks its visible rows at 100, 60, 40, 20 and 12 columns, as well as normal
-CLI streaming, details, scrolling and draft restoration. Terminal font, palette
-and line height remain controlled by the user's terminal.
-
-During an active turn, the Working status row ends with a purple
-`Ctrl+T transcript` shortcut hint. The editable composer contains no details hint.
-
-Top-level status markers share the leftmost column, including Working and
-background summaries. Children use explicit `├` / `└` branches, with `│`
-continuations for nested siblings; indentation alone does not indicate hierarchy.
+`cli_retained_chat_pty_integration` exercises the actual retained chat at 120,
+80 and 60 columns and the production no-color entry point. It covers UTF-8 paste,
+completion and recall, live tool updates, details, draft anchoring, scrolling,
+resize, panel return and terminal restoration. Framework tests separately check
+content sizing, structured styles, padding backgrounds and dynamic view cleanup.

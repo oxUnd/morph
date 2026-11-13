@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/approval.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/style.h"
 #include "util/terminal_size.h"
@@ -64,7 +65,9 @@ static int cli_approval_select_choice(struct cli_application *ctx, int scoped, i
 	if (!rc) {
 		cli_output_printf(ctx, "\n");
 		fflush(stdout);
-		rc = morph_tui_widget_select_run(&state, &options, input, stdout, NULL);
+		rc = cli_chat_flush(ctx);
+		if (!rc)
+			rc = morph_tui_widget_select_run(&state, &options, input, stdout, NULL);
 	}
 	if (!rc)
 		verdict = verdicts[state.menu.list.index];

@@ -43,6 +43,8 @@ struct morph_tui_view_options {
 	int grow;
 	struct morph_tui_view_insets margin, padding;
 	enum morph_tui_view_alignment alignment;
+	/* Inherited by descendants; a background paints the frame, including padding. */
+	struct morph_tui_text_style style;
 };
 
 /* Embed this base first in custom views. Omitted methods use base behavior.
@@ -73,13 +75,21 @@ int morph_tui_builder_error(const struct morph_tui_builder *builder);
 struct morph_tui_view_controller *morph_tui_view_owner_borrow(const struct morph_tui_view *view);
 size_t morph_tui_view_child_count(const struct morph_tui_view *view);
 struct morph_tui_view *morph_tui_view_child_borrow(const struct morph_tui_view *view, size_t index);
+/* Destroys descendants and invalidates their borrowed handles. The view itself
+ * remains attached. Owner thread only; useful for replacing dynamic content. */
+int morph_tui_view_clear_children(struct morph_tui_view *);
 struct morph_tui_view_rect morph_tui_view_frame(const struct morph_tui_view *view);
 /* Local content rectangle after padding; draw receives a canvas of this size. */
 struct morph_tui_view_rect morph_tui_view_content_rect(const struct morph_tui_view *view);
+/* Apply the box-model inset rules to an arbitrary slot. Margin is outside the
+ * returned frame; padding is not applied here. */
+struct morph_tui_view_rect morph_tui_view_inset_rect(struct morph_tui_view_rect rect,
+						     struct morph_tui_view_insets insets);
 struct morph_tui_view_insets morph_tui_view_insets_all(int cells);
 struct morph_tui_view_options morph_tui_view_get_options(const struct morph_tui_view *view);
 int morph_tui_view_set_margin(struct morph_tui_view *, struct morph_tui_view_insets);
 int morph_tui_view_set_padding(struct morph_tui_view *, struct morph_tui_view_insets);
+int morph_tui_view_set_style(struct morph_tui_view *, struct morph_tui_text_style);
 int morph_tui_view_is_owner(const struct morph_tui_view *view);
 /* Measurement includes margins. Arrange accepts that outer allocation and
  * stores a frame inside the margins, including padding. Root views follow

@@ -53,7 +53,8 @@ static int widget_list_view_draw(struct morph_tui_view *view, struct morph_tui_c
 
 		if (index >= list->menu.list.count)
 			break;
-		unsigned style = index == list->menu.list.index ? MORPH_TUI_STYLE_SELECTED
+		unsigned style = morph_tui_view_focused(view) && index == list->menu.list.index
+								 ? MORPH_TUI_STYLE_SELECTED
 								: MORPH_TUI_STYLE_NORMAL;
 		struct morph_tui_canvas line;
 
@@ -143,6 +144,13 @@ int morph_tui_widget_list_set_items_copy(struct morph_tui_view *view, const char
 		return rc;
 	}
 	struct widget_list_view *list = (struct widget_list_view *)view;
+	int equal = !list->source && list->owned_count == count;
+	for (size_t i = 0; equal && i < count; i++)
+		equal = !strcmp(list->items[i], replacement.items[i]);
+	if (equal) {
+		widget_list_view_clear(&replacement);
+		return 0;
+	}
 
 	widget_list_view_clear(list);
 	list->items = replacement.items;

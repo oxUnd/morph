@@ -9,7 +9,7 @@
 
 struct render_canvas_cell {
 	morph_buf_t text;
-	unsigned style;
+	struct morph_tui_text_style style;
 	int span;
 };
 
@@ -111,7 +111,7 @@ void morph_tui_surface_clear(struct morph_tui_surface *surface)
 
 		morph_buf_reset(&cell->text);
 		cell->span = 1;
-		cell->style = 0;
+		cell->style = (struct morph_tui_text_style){0};
 	}
 }
 
@@ -181,23 +181,68 @@ static void render_canvas_erase(struct morph_tui_surface *surface, int x, int y)
 	cell->span = 1;
 }
 
-int morph_tui_canvas_fill(struct morph_tui_canvas *canvas, unsigned style)
+int morph_tui_text_style_equal(struct morph_tui_text_style a, struct morph_tui_text_style b)
 {
-	if (!canvas || !canvas->surface)
+	return a.attributes == b.attributes && a.foreground.kind == b.foreground.kind &&
+	       a.foreground.value == b.foreground.value && a.background.kind == b.background.kind &&
+	       a.background.value == b.background.value;
+}
+
+int morph_tui_text_style_valid(struct morph_tui_text_style style)
+{
+	if (style.attributes & ~(unsigned)(MORPH_TUI_STYLE_BOLD | MORPH_TUI_STYLE_DIM |
+	    MORPH_TUI_STYLE_SELECTED | MORPH_TUI_STYLE_ITALIC | MORPH_TUI_STYLE_UNDERLINE |
+	    MORPH_TUI_STYLE_STRIKE))
+		return 0;
+	struct morph_tui_color colors[] = {style.foreground, style.background};
+	for (size_t i = 0; i < 2; i++) {
+		struct morph_tui_color color = colors[i];
+		if (color.kind < MORPH_TUI_COLOR_INHERIT || color.kind > MORPH_TUI_COLOR_RGB ||
+		    (color.kind <= MORPH_TUI_COLOR_DEFAULT && color.value) ||
+		    (color.kind == MORPH_TUI_COLOR_INDEXED && color.value > 255u) ||
+		    (color.kind == MORPH_TUI_COLOR_RGB && color.value > 0xffffffu))
+			return 0;
+	}
+	return 1;
+}
+
+int morph_tui_canvas_fill(struct morph_tui_canvas *canvas, unsigned attributes)
+{
+	if (!canvas)
+		return -EINVAL;
+	struct morph_tui_text_style style = canvas->style;
+	style.attributes |= attributes;
+	return morph_tui_canvas_fill_styled(canvas, &style);
+}
+
+int morph_tui_canvas_fill_styled(struct morph_tui_canvas *canvas,
+				 const struct morph_tui_text_style *style)
+{
+	if (!canvas || !canvas->surface || !style || !morph_tui_text_style_valid(*style))
 		return -EINVAL;
 	for (int y = canvas->top; y < canvas->bottom; y++) {
 		for (int x = canvas->left; x < canvas->right; x++) {
 			render_canvas_erase(canvas->surface, x, y);
-			render_canvas_cell(canvas->surface, x, y)->style = style;
+			render_canvas_cell(canvas->surface, x, y)->style = *style;
 		}
 	}
 	return 0;
 }
 
 int morph_tui_canvas_text(struct morph_tui_canvas *canvas, int x, int y, const char *text,
-			  unsigned style)
+			  unsigned attributes)
 {
-	if (!canvas || !canvas->surface || !text)
+	if (!canvas)
+		return -EINVAL;
+	struct morph_tui_text_style style = canvas->style;
+	style.attributes |= attributes;
+	return morph_tui_canvas_text_styled(canvas, x, y, text, &style);
+}
+
+int morph_tui_canvas_text_styled(struct morph_tui_canvas *canvas, int x, int y, const char *text,
+				 const struct morph_tui_text_style *style)
+{
+	if (!canvas || !canvas->surface || !text || !style || !morph_tui_text_style_valid(*style))
 		return -EINVAL;
 	if (y < 0 || y >= canvas->height)
 		return 0;
@@ -212,6 +257,16 @@ int morph_tui_canvas_text(struct morph_tui_canvas *canvas, int x, int y, const c
 	size_t length = strlen(safe), offset = 0;
 	int last = -1, rc = 0;
 	int64_t column = (int64_t)canvas->x + x;
+	if (column > canvas->left && column <= canvas->right) {
+		int previous = (int)column - 1;
+		struct render_canvas_cell *cell = render_canvas_cell(canvas->surface, previous, y);
+		if (!cell->span && previous > canvas->left) {
+			previous--;
+			cell = render_canvas_cell(canvas->surface, previous, y);
+		}
+		if (cell->text.len)
+			last = previous;
+	}
 
 	while (offset < length && !rc) {
 		unsigned cp;
@@ -245,14 +300,14 @@ int morph_tui_canvas_text(struct morph_tui_canvas *canvas, int x, int y, const c
 				rc = morph_buf_init(&cell->text, 8);
 			if (!rc)
 				rc = morph_buf_append(&cell->text, safe + offset, bytes);
-			cell->style = style;
+			cell->style = *style;
 			cell->span = width;
 			if (width == 2) {
 				struct render_canvas_cell *trail =
 					render_canvas_cell(canvas->surface, target + 1, y);
 
 				trail->span = 0;
-				trail->style = style;
+				trail->style = *style;
 			}
 			last = target;
 		} else if (width) {
@@ -271,22 +326,42 @@ int morph_tui_surface_rows(struct morph_tui_surface *surface, morph_buf_t *rows)
 		return -EINVAL;
 	morph_buf_reset(rows);
 	for (int y = 0; y < surface->height; y++) {
-		unsigned style = UINT_MAX;
+		struct morph_tui_text_style style = {0};
+		int styled = 0;
 
 		for (int x = 0; x < surface->width; x++) {
 			struct render_canvas_cell *cell = render_canvas_cell(surface, x, y);
 
 			if (!cell->span)
 				continue;
-			if (cell->style != style) {
+			if (!styled || !morph_tui_text_style_equal(cell->style, style)) {
+				styled = 1;
 				style = cell->style;
 				morph_buf_puts(rows, "\033[0m");
-				if (style & MORPH_TUI_STYLE_BOLD)
+				if (style.attributes & MORPH_TUI_STYLE_BOLD)
 					morph_buf_puts(rows, "\033[1m");
-				if (style & MORPH_TUI_STYLE_DIM)
+				if (style.attributes & MORPH_TUI_STYLE_DIM)
 					morph_buf_puts(rows, "\033[2m");
-				if (style & MORPH_TUI_STYLE_SELECTED)
+				if (style.attributes & MORPH_TUI_STYLE_SELECTED)
 					morph_buf_puts(rows, "\033[7m");
+				if (style.attributes & MORPH_TUI_STYLE_ITALIC)
+					morph_buf_puts(rows, "\033[3m");
+				if (style.attributes & MORPH_TUI_STYLE_UNDERLINE)
+					morph_buf_puts(rows, "\033[4m");
+				if (style.attributes & MORPH_TUI_STYLE_STRIKE)
+					morph_buf_puts(rows, "\033[9m");
+				struct morph_tui_color colors[] = {style.foreground, style.background};
+				for (size_t i = 0; i < 2; i++) {
+					unsigned code = i ? 48u : 38u;
+					struct morph_tui_color color = colors[i];
+					if (color.kind == MORPH_TUI_COLOR_INDEXED)
+						morph_buf_printf(rows, "\033[%u;5;%um", code, color.value);
+					else if (color.kind == MORPH_TUI_COLOR_RGB)
+						morph_buf_printf(rows, "\033[%u;2;%u;%u;%um", code,
+							(color.value >> 16u) & 255u,
+							(color.value >> 8u) & 255u, color.value & 255u);
+				}
+
 			}
 			if (cell->text.len)
 				morph_buf_append(rows, cell->text.data, cell->text.len);

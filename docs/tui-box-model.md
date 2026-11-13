@@ -138,15 +138,18 @@ pages combining vertical margins with horizontal padding.
 
 ## CLI chat spacing
 
-The current CLI composer adapter uses the same distinction for submitted chat
-boxes: colored inner padding belongs to the box; one normal-background blank row
-above and below it provides outer separation. Adjacent feed blocks reuse an
-existing separator rather than inserting another blank row.
+Interactive chat uses actual retained Views in alternate screen. A message's
+outer margin belongs to the feed Stack; its colored background covers its frame,
+including padding. The marker and text controls draw inside the content area.
+Tools, notices and plans compose base controls; the feed Stack supplies the
+common gap, while each component can declare additional margin/padding.
+Sibling margins add without collapsing, exactly as they do in other pages.
+Streaming and completed content update the same message/tool control.
 
-Reasoning previews, committed reasoning, answers, and tool output start beyond
-the box's bottom margin. Streaming-to-committed transitions preserve their
-position. Local slash commands retain their separate plain-line and result-gap
-rules described in [TUI architecture](tui-architecture.md).
+The legacy `cli_output_block_append` helper only normalizes newlines in text
+output. Its `insets` argument does not implement four-edge View geometry; it is
+retained for compatibility with stateless transcript/document renderers. It must
+not be used as the layout engine for new interactive components.
 
 ## Validation
 

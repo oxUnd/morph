@@ -175,9 +175,9 @@ TEST_F(TuiTest, FramesOnlyRedrawChangedRowsAndInvalidateOnResize)
 	ASSERT_EQ(morph_tui_frame_present(&frame, output, 80, 3, "one\ntwo\n"), 0);
 	EXPECT_TRUE(take().empty());
 	ASSERT_EQ(morph_tui_frame_present(&frame, output, 80, 3, "one\nshort\n"), 0);
-	EXPECT_EQ(take(), "\033[?2026h\033[2;1Hshort\033[0m\033[K\033[?2026l");
+	EXPECT_EQ(take(), "\033[?2026h\033[2;1H\033[0m\033[2Kshort\033[0m\033[?2026l");
 	ASSERT_EQ(morph_tui_frame_present(&frame, output, 80, 3, "one\n"), 0);
-	EXPECT_NE(take().find("\033[2;1H\033[0m\033[K"), std::string::npos);
+	EXPECT_NE(take().find("\033[2;1H\033[0m\033[2K"), std::string::npos);
 	ASSERT_EQ(morph_tui_frame_present(&frame, output, 40, 2, "one\n"), 0);
 	EXPECT_NE(take().find("\033[2J"), std::string::npos);
 	morph_tui_frame_cleanup(&frame);

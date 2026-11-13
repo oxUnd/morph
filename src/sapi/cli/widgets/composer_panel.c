@@ -1,4 +1,5 @@
 #include "sapi/cli/widgets/composer_panel.h"
+#include "sapi/cli/pages/chat.h"
 
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
@@ -253,7 +254,9 @@ int cli_composer_panel_show(struct cli_application *application,
 		.ops = &cli_composer_panel_controller_ops,
 		.data = panel,
 		.input_mode = MORPH_TUI_INPUT_KEYS,
-		.terminal_flags = MORPH_TUI_TERMINAL_SESSION_PASTE,
+		.terminal_flags = MORPH_TUI_TERMINAL_SESSION_PASTE |
+			(cli_chat_active(application) ? MORPH_TUI_TERMINAL_SESSION_ALTERNATE |
+			 MORPH_TUI_TERMINAL_SESSION_MOUSE | MORPH_TUI_TERMINAL_SESSION_FOCUS : 0),
 		.tick_ms = options->tick_ms,
 	};
 	int rc = morph_tui_application_present_controller_take(

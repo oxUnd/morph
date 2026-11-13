@@ -224,6 +224,13 @@ if(Python3_Interpreter_FOUND)
 	set_tests_properties(js_runner_host_io_integration PROPERTIES TIMEOUT 30)
 	add_test(NAME cli_application_layout_conventions
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_application_layout.py)
+	if(UNIX)
+		add_test(NAME cli_retained_chat_pty_integration
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_retained_chat_pty.py
+				$<TARGET_FILE:morph-cli-pty-driver> $<TARGET_FILE:morph>)
+		set_tests_properties(cli_retained_chat_pty_integration PROPERTIES
+			SKIP_RETURN_CODE 77 TIMEOUT 150)
+	endif()
 	if(UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIBRARY)
 		# Inline composer geometry requires the Readline input mode.
 		add_test(NAME cli_agents_pty_integration

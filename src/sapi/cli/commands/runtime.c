@@ -130,15 +130,15 @@ static int cli_runtime_command_model(struct cli_application *ctx, int argc, char
 		int rc = runtime_model_get_ultra(ctx->runtime, &ultra);
 		if (rc != 0)
 			return rc;
-			if (name)
-				(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 0,
-							       "current model: %s · mode: %s",
-							       current.model,
-							       ultra ? "ultra" : "normal");
-			else
-				(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 0,
-							       "current model: %s", current.model);
-		}
+		if (name)
+			(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 0,
+						       "current model: %s · mode: %s",
+						       current.model,
+						       ultra ? "ultra" : "normal");
+		else
+			(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 0,
+						       "current model: %s", current.model);
+	}
 	return 0;
 }
 

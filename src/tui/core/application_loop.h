@@ -31,6 +31,8 @@ int core_application_loop_result(const struct core_application_loop *app);
 void core_application_loop_destroy(struct core_application_loop *app);
 int core_application_loop_run(struct core_application_loop *app);
 int core_application_loop_step(struct core_application_loop *app, int wait);
+int core_application_loop_render(struct core_application_loop *app);
+int core_application_loop_restore_terminal(struct core_application_loop *app);
 int core_application_loop_is_owner(const struct core_application_loop *app);
 void core_application_loop_stop(struct core_application_loop *app, int result);
 int core_application_loop_wake(struct core_application_loop *app);

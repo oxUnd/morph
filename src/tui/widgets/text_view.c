@@ -19,9 +19,9 @@ int morph_tui_widget_text_layout_wrap_borrow(struct morph_tui_widget_text_layout
 	morph_array_clear(&view->lines);
 	view->text = text;
 	const char *start = text;
+	const char *newline = strchr(start, '\n');
 
 	while (*start) {
-		const char *newline = strchr(start, '\n');
 		const char *end = utf8_advance_display_width_borrow(start, width);
 
 		if (newline && newline < end)
@@ -34,7 +34,11 @@ int morph_tui_widget_text_layout_wrap_borrow(struct morph_tui_widget_text_layout
 			return -ENOMEM;
 		line->offset = (size_t)(start - text);
 		line->length = (size_t)(end - start);
-		start = *end == '\n' ? end + 1 : end;
+		if (*end == '\n') {
+			start = end + 1;
+			newline = strchr(start, '\n');
+		} else
+			start = end;
 	}
 	return 0;
 }

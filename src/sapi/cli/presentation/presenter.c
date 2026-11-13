@@ -1,5 +1,6 @@
 #include "sapi/cli/presentation/presenter.h"
 #include "runtime/runtime.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/models/agents.h"
 #include "sapi/cli/presentation/recap.h"
@@ -75,6 +76,11 @@ void cli_presentation_command_input(struct cli_application *ctx, const char *tex
 {
 	if (!ctx || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE || !text || text[0] != '/')
 		return;
+	if (cli_chat_active(ctx)) {
+		(void)cli_chat_command_input(ctx, text);
+		ctx->output.command_result_pending = 1;
+		return;
+	}
 	if (cli_output_color_enabled(ctx))
 		cli_output_printf(ctx, ANSI_RESET CLI_COMMAND_COLOR);
 	cli_presenter_print_safe_inline(ctx, text, SIZE_MAX);
@@ -90,6 +96,10 @@ void cli_presentation_command_end(struct cli_application *ctx)
 	if (!ctx || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
 	ctx->output.command_result_pending = 0;
+	if (cli_chat_active(ctx)) {
+		cli_chat_command_end(ctx);
+		return;
+	}
 	if (cli_output_color_enabled(ctx))
 		cli_output_printf(ctx, ANSI_RESET);
 	cli_output_putchar(ctx, '\n');
@@ -100,6 +110,10 @@ void cli_presentation_user_input(struct cli_application *ctx, const char *text)
 {
 	if (!ctx || !text || !*text)
 		return;
+	if (cli_chat_active(ctx)) {
+		(void)cli_chat_message(ctx, CLI_MESSAGE_USER, text);
+		return;
+	}
 	morph_buf_t document MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	struct cli_message_style style = {
 		.columns = cli_list_columns(),
@@ -115,6 +129,14 @@ void cli_presentation_user_input(struct cli_application *ctx, const char *text)
 static void cli_presenter_clear_status(struct cli_application *ctx)
 {
 	cli_feed_live_clear(ctx);
+}
+
+static void cli_presenter_block_gap(struct cli_application *ctx)
+{
+	struct morph_tui_view_insets margin = {.top = 1};
+
+	for (int i = cli_output_block_gap_margin(margin, ctx->output.trailing_newlines); i > 0; i--)
+		cli_output_putchar(ctx, '\n');
 }
 
 static void cli_presenter_status(struct cli_application *ctx, const char *text)
@@ -528,8 +550,8 @@ static void cli_presenter_print_stream(struct cli_application *ctx)
 		if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 			cli_presenter_print_plain_labeled(ctx, label, content);
 		} else {
-			cli_output_printf(ctx, "%s" ANSI_BOLD CLI_FEED_MESSAGE ANSI_RESET " ",
-			       ctx->output.trailing_newlines < 2 ? "\n" : "");
+			cli_presenter_block_gap(ctx);
+			cli_output_printf(ctx, ANSI_BOLD CLI_FEED_MESSAGE ANSI_RESET " ");
 			cli_markdown_render_ansi_with_media_indented(
 				ctx, content, 2, cli_renderer_media, ctx);
 		}
@@ -1124,9 +1146,10 @@ static void cli_presenter_final(struct cli_application *ctx, const struct morph_
 			}
 		}
 	} else {
-		if (!had_stream)
-			cli_output_printf(ctx, "%s" ANSI_BOLD CLI_FEED_MESSAGE ANSI_RESET " ",
-			       ctx->output.trailing_newlines < 2 ? "\n" : "");
+		if (!had_stream) {
+			cli_presenter_block_gap(ctx);
+			cli_output_printf(ctx, ANSI_BOLD CLI_FEED_MESSAGE ANSI_RESET " ");
+		}
 		if (!had_stream && text && text[0]) {
 			cli_markdown_render_final(ctx, text);
 		} else if (!had_stream) {
@@ -1605,6 +1628,9 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 			return handled < 0 ? handled : 0;
 	}
 
+	int chat_rc = cli_chat_react_event(ctx, ev);
+	if (chat_rc)
+		return chat_rc < 0 ? chat_rc : 0;
 	if (ev->type == MORPH_EVENT_REACT && ev->name) {
 		text = cli_presenter_event_string(ev, "text");
 		if (strcmp(ev->name, "react.agents.wait.begin") == 0) {

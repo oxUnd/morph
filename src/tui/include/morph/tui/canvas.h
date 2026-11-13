@@ -13,7 +13,34 @@ enum morph_tui_style {
 	MORPH_TUI_STYLE_NORMAL = 0,
 	MORPH_TUI_STYLE_BOLD = 1,
 	MORPH_TUI_STYLE_DIM = 2,
-	MORPH_TUI_STYLE_SELECTED = 4
+	MORPH_TUI_STYLE_SELECTED = 4,
+	MORPH_TUI_STYLE_ITALIC = 8,
+	MORPH_TUI_STYLE_UNDERLINE = 16,
+	MORPH_TUI_STYLE_STRIKE = 32
+};
+
+/* Zero inherits the parent. DEFAULT explicitly resets to terminal defaults;
+ * indexed values are 0..255 and RGB values are 0xRRGGBB. */
+enum morph_tui_color_kind {
+	MORPH_TUI_COLOR_INHERIT,
+	MORPH_TUI_COLOR_DEFAULT,
+	MORPH_TUI_COLOR_INDEXED,
+	MORPH_TUI_COLOR_RGB
+};
+
+struct morph_tui_color {
+	enum morph_tui_color_kind kind;
+	unsigned value;
+};
+
+struct morph_tui_text_style {
+	unsigned attributes;
+	struct morph_tui_color foreground, background;
+};
+
+struct morph_tui_text_span {
+	const char *text;
+	struct morph_tui_text_style style;
 };
 
 /* Canvas borrows surface until surface destruction. Coordinates are zero-based
@@ -23,6 +50,7 @@ struct morph_tui_canvas {
 	struct morph_tui_surface *surface;
 	int x, y, width, height;
 	int left, top, right, bottom;
+	struct morph_tui_text_style style;
 };
 
 /* out must be NULL; failure preserves it. Destroy releases the surface. */
@@ -38,6 +66,11 @@ void morph_tui_canvas_child_borrow(const struct morph_tui_canvas *parent, int x,
 int morph_tui_canvas_text(struct morph_tui_canvas *canvas, int x, int y, const char *text,
 			  unsigned style);
 int morph_tui_canvas_fill(struct morph_tui_canvas *canvas, unsigned style);
+int morph_tui_canvas_text_styled(struct morph_tui_canvas *, int x, int y, const char *,
+				 const struct morph_tui_text_style *);
+int morph_tui_canvas_fill_styled(struct morph_tui_canvas *, const struct morph_tui_text_style *);
+int morph_tui_text_style_equal(struct morph_tui_text_style, struct morph_tui_text_style);
+int morph_tui_text_style_valid(struct morph_tui_text_style);
 void morph_tui_canvas_cursor(struct morph_tui_canvas *canvas, int x, int y);
 int morph_tui_surface_cursor(const struct morph_tui_surface *, int *x, int *y);
 

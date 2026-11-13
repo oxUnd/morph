@@ -56,6 +56,7 @@ struct core_application_loop {
 	int accepting;
 	int stopping;
 	int stepping;
+	int rendering;
 	int input_enabled;
 	int result;
 	unsigned invalid;
@@ -489,9 +490,9 @@ static int core_app_transitions_commit(struct core_application_loop *app)
 	return 0;
 }
 
-static int core_app_render(struct core_application_loop *app)
+static int core_app_render(struct core_application_loop *app, int probe)
 {
-	if (!app->stopping)
+	if (probe && !app->stopping)
 		core_app_probe_size(app);
 	struct core_app_controller *top = core_app_top(app);
 
@@ -512,6 +513,37 @@ static int core_app_render(struct core_application_loop *app)
 	return rc;
 }
 
+static int core_app_render_guarded(struct core_application_loop *app, int probe)
+{
+	if (!core_application_loop_is_owner(app))
+		return -EPERM;
+	if (app->rendering)
+		return -EBUSY;
+	app->rendering = 1;
+	int rc = core_app_render(app, probe);
+	app->rendering = 0;
+	return rc;
+}
+
+int core_application_loop_render(struct core_application_loop *app)
+{
+	return core_app_render_guarded(app, 0);
+}
+
+int core_application_loop_restore_terminal(struct core_application_loop *app)
+{
+	if (!core_application_loop_is_owner(app))
+		return -EPERM;
+	if (app->rendering)
+		return -EBUSY;
+	int rc = morph_tui_terminal_session_reassert(&app->screen.session);
+	app->screen.input = (struct morph_tui_input){0};
+	app->screen.pasting = 0;
+	core_window_invalidate(app->window);
+	core_application_loop_invalidate(app, MORPH_TUI_INVALIDATE_LAYOUT);
+	return rc;
+}
+
 int core_application_loop_step(struct core_application_loop *app, int wait)
 {
 	if (!core_application_loop_is_owner(app))
@@ -524,14 +556,14 @@ int core_application_loop_step(struct core_application_loop *app, int wait)
 	int rc = core_app_transitions_commit(app);
 
 	if (!rc)
-		rc = core_app_render(app);
+		rc = core_app_render_guarded(app, 1);
 	if (!rc && !app->stopping) {
 		core_app_arm_timer(app);
 		(void)uv_run(&app->loop,
 			     wait && !app->transitions.nelts ? UV_RUN_ONCE : UV_RUN_NOWAIT);
 		rc = core_app_transitions_commit(app);
 		if (!rc)
-			rc = core_app_render(app);
+			rc = core_app_render_guarded(app, 1);
 	}
 	if (rc < 0)
 		core_application_loop_stop(app, rc);

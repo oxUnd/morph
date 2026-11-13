@@ -1,5 +1,6 @@
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/application.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/models/jobs.h"
 #include "sapi/cli/widgets/feed_block.h"
 #include "sapi/cli/presentation/style.h"
@@ -75,6 +76,8 @@ int cli_feed_update_active(const struct cli_application *ctx)
 
 void cli_feed_update_begin(struct cli_application *ctx)
 {
+	if (cli_chat_active(ctx))
+		return;
 	struct cli_feed *terminal = ctx ? ctx->terminal : NULL;
 
 	if (!terminal || terminal->hidden || !terminal->transient || terminal->update_active)
@@ -103,6 +106,10 @@ static int64_t cli_feed_now_ms(void)
 
 void cli_feed_turn_begin(struct cli_application *ctx)
 {
+	if (cli_chat_active(ctx)) {
+		cli_chat_turn_begin(ctx);
+		return;
+	}
 	if (!ctx || !ctx->terminal || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
 	ctx->terminal->work_state = CLI_FEED_TERMINAL_WORK_RUNNING;
@@ -200,6 +207,10 @@ static void cli_feed_work_row(struct cli_feed *terminal, int columns)
 
 void cli_feed_turn_end(struct cli_application *ctx, int result)
 {
+	if (cli_chat_active(ctx)) {
+		cli_chat_turn_end(ctx, result);
+		return;
+	}
 	struct cli_feed *terminal = ctx ? ctx->terminal : NULL;
 
 	if (!terminal || terminal->work_state != CLI_FEED_TERMINAL_WORK_RUNNING)
@@ -348,6 +359,10 @@ void cli_feed_cleanup(struct cli_application *ctx)
 static void cli_feed_set_live_state(struct cli_application *ctx, const char *text, int independent,
 				    int reasoning)
 {
+	if (cli_chat_active(ctx)) {
+		cli_chat_activity(ctx, text);
+		return;
+	}
 	struct cli_feed *terminal;
 	char *clean;
 	int changed;
@@ -420,6 +435,10 @@ int64_t cli_feed_activity_elapsed_ms(const struct cli_application *ctx)
 
 void cli_feed_live_clear(struct cli_application *ctx)
 {
+	if (cli_chat_active(ctx)) {
+		cli_chat_activity(ctx, "");
+		return;
+	}
 	struct cli_feed *terminal;
 
 	if (!ctx || !ctx->terminal)
@@ -462,6 +481,8 @@ static int cli_feed_agents_visible(const struct cli_application *ctx)
 
 int cli_feed_render_tick(struct cli_application *ctx, int cursor_rows)
 {
+	if (cli_chat_active(ctx))
+		return 0;
 	struct cli_feed *terminal = ctx ? ctx->terminal : NULL;
 	int64_t now = cli_feed_now_ms();
 	int distance;
@@ -516,7 +537,7 @@ int cli_feed_render_tick(struct cli_application *ctx, int cursor_rows)
 
 int cli_feed_can_preview(const struct cli_application *ctx)
 {
-	return ctx && ctx->terminal && ctx->terminal->transient;
+	return !cli_chat_active(ctx) && ctx && ctx->terminal && ctx->terminal->transient;
 }
 
 int cli_feed_markdown_preview_set(struct cli_application *ctx, const char *text, size_t len,
@@ -597,10 +618,14 @@ static int cli_feed_render_markdown_preview(struct cli_application *ctx, int res
 			visible += 2;
 		rows = cli_feed_preview_rows(visible, terminal->columns, prefix);
 	}
-	gap = prefix && ctx->output.trailing_newlines < 2;
+	struct morph_tui_view_insets preview_margin = {.top = 1};
+
+	gap = prefix ? cli_output_block_gap_margin(preview_margin,
+						   ctx->output.trailing_newlines)
+		     : 0;
 	if (!draw)
 		return rows + gap;
-	if (gap)
+	for (int i = 0; i < gap; i++)
 		fputc('\n', terminal->output);
 	if (prefix)
 		fprintf(terminal->output, ANSI_BOLD CLI_FEED_MESSAGE ANSI_RESET " ");
@@ -610,6 +635,8 @@ static int cli_feed_render_markdown_preview(struct cli_application *ctx, int res
 
 void cli_feed_render_frame(struct cli_application *ctx, int force)
 {
+	if (cli_chat_active(ctx))
+		return;
 	struct cli_feed *terminal;
 	const char *text;
 	char status_clipped[BUFSIZ];
@@ -741,8 +768,12 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 		preview_reserved = CLI_FEED_PREVIEW_RESERVED_ROWS;
 	preview_reserved += job_rows + (int)queue_shown;
 	preview_rows = cli_feed_render_markdown_preview(ctx, preview_reserved, 0);
-	status_gap = status_visible && (tool_live || terminal->live_reasoning) &&
-		     cli_feed_block_leading_rows(ctx->output.trailing_newlines);
+	struct morph_tui_view_insets status_margin = {.top = 1};
+
+	status_gap = status_visible && (tool_live || terminal->live_reasoning)
+			     ? cli_output_block_gap_margin(status_margin,
+							   ctx->output.trailing_newlines)
+			     : 0;
 	if (status_visible && tool_live && morph_buf_init(&tool_body, 128) == 0)
 		body_rows = cli_transcript_live_body(ctx->transcript, &tool_body, columns,
 						     cli_output_color_enabled(ctx));
@@ -767,7 +798,7 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 		fputc('\n', terminal->output);
 	if (status_visible) {
 		/* Match the committed reasoning line from its first streaming frame. */
-		if (status_gap)
+		for (int i = 0; i < status_gap; i++)
 			fputc('\n', terminal->output);
 		if (tool_live)
 			fprintf(terminal->output, "%s", text);
@@ -865,6 +896,8 @@ int cli_feed_next_frame_ms(const struct cli_application *ctx)
 
 void cli_feed_composer_suspend(struct cli_application *ctx)
 {
+	if (cli_chat_active(ctx))
+		return;
 	struct cli_feed *terminal;
 
 	if (!ctx || !ctx->terminal)
@@ -891,6 +924,8 @@ void cli_feed_composer_suspend(struct cli_application *ctx)
 
 void cli_feed_composer_resume(struct cli_application *ctx)
 {
+	if (cli_chat_active(ctx))
+		return;
 	struct cli_feed *terminal;
 
 	if (!ctx || !ctx->terminal)

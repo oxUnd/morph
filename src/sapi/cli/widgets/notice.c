@@ -3,8 +3,54 @@
 #include "sapi/cli/presentation/style.h"
 #include "util/cleanup.h"
 #include "util/utf8.h"
+#include <morph/tui/widgets/stack.h>
+#include <morph/tui/widgets/text_view.h>
 #include <errno.h>
 #include <string.h>
+
+static void cli_notice_add_text(struct morph_tui_builder *builder, struct morph_tui_view *parent,
+	const char *text, const struct morph_tui_view_options *options)
+{
+	if (!text || !*text)
+		return;
+	struct morph_tui_view *view = morph_tui_widget_text_view_add_borrow(builder, parent, text, options);
+	if (view) {
+		morph_tui_builder_fail(builder, morph_tui_widget_text_view_set_content_sizing(view, 1));
+		morph_tui_view_set_focusable(view, 0);
+	}
+}
+
+struct morph_tui_view *cli_notice_add_borrow(struct morph_tui_builder *builder,
+	struct morph_tui_view *parent, const struct cli_notice *notice, int styled)
+{
+	if (!notice) {
+		morph_tui_builder_fail(builder, -EINVAL);
+		return NULL;
+	}
+	const struct morph_tui_view_options outer = {0};
+	struct morph_tui_view *root = morph_tui_widget_stack_add_borrow(builder, parent,
+		MORPH_TUI_WIDGET_STACK_VERTICAL, 0, &outer);
+	struct morph_tui_view_options heading = {0};
+	if (styled) {
+		unsigned color = notice->status == CLI_NOTICE_FAILED ? 1u :
+			notice->status == CLI_NOTICE_DONE ? 2u : notice->status == CLI_NOTICE_RUNNING ? 6u :
+			notice->status == CLI_NOTICE_QUESTION || notice->status == CLI_NOTICE_WARNING ? 3u : 8u;
+		heading.style.foreground = (struct morph_tui_color){MORPH_TUI_COLOR_INDEXED, color};
+		if (notice->status == CLI_NOTICE_FAILED || notice->status == CLI_NOTICE_QUESTION)
+			heading.style.attributes = MORPH_TUI_STYLE_BOLD;
+	}
+	morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	int rc = morph_buf_printf(&title, "%s%s %s", notice->tree_branch == 1 ? "├ " :
+		notice->tree_branch == 2 ? "└ " : "", cli_notice_marker(notice->status),
+		notice->title ? notice->title : "");
+	morph_tui_builder_fail(builder, rc);
+	if (!rc)
+		cli_notice_add_text(builder, root, morph_buf_cstr_borrow(&title), &heading);
+	const struct morph_tui_view_options body = {.padding = {.left = 2}};
+	cli_notice_add_text(builder, root, notice->detail, &body);
+	cli_notice_add_text(builder, root, notice->footer, &body);
+	return root;
+}
 
 const char *cli_notice_marker(enum cli_notice_status status)
 {

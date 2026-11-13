@@ -16,6 +16,7 @@ struct morph_tui_view_state {
 	struct morph_tui_view_options options;
 	struct morph_tui_layout *layout;
 	int hidden, focusable, tag;
+	int scroll_y;
 	int (*action)(void *, const struct morph_tui_widget_action *);
 	void *action_data;
 };
@@ -34,6 +35,7 @@ struct morph_tui_view_controller_state {
 	struct utf8_terminal_sanitizer sanitizer;
 	morph_buf_t text;
 	int quit_key, visible;
+	size_t structure_revision;
 };
 
 struct morph_tui_window {

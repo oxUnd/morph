@@ -12,6 +12,7 @@
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/application_internal.h"
 #include "runtime/runtime.h"
+#include "sapi/cli/pages/chat.h"
 #include <stdarg.h>
 
 
@@ -197,6 +198,10 @@ static int cli_output_write_terminal_safe(const char *src, int allow_sgr)
 
 int cli_output_result_begin(struct cli_application *ctx)
 {
+	if (cli_chat_active(ctx)) {
+		ctx->output.command_result_pending = 0;
+		return 0;
+	}
 	if (!ctx || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE ||
 	    !ctx->output.command_result_pending || ctx->output.capture || ctx->output.structured)
 		return 0;
@@ -230,9 +235,83 @@ void cli_output_track_tail(int *tail, const char *bytes, size_t len)
 	free(safe);
 }
 
+int cli_output_block_gap_margin(struct morph_tui_view_insets margin, int trailing_newlines)
+{
+	struct morph_tui_view_rect slot = {
+		.x = 0,
+		.y = 0,
+		.width = 1,
+		.height = margin.top + 1,
+	};
+	struct morph_tui_view_rect frame = morph_tui_view_inset_rect(slot, margin);
+	int required = frame.y + 1;
+
+	/* Nothing precedes the first visible block, so it starts on the next
+	 * line rather than after a blank row. */
+	if (trailing_newlines <= 0)
+		return 1;
+	if (trailing_newlines >= required)
+		return 0;
+	return required - trailing_newlines;
+}
+
+int cli_output_block_append(morph_buf_t *out, const char *text,
+			    struct morph_tui_view_insets margin, int *trailing_newlines)
+{
+	size_t start;
+	int gap;
+	int rc;
+
+	if (!out || !text || !trailing_newlines)
+		return -EINVAL;
+	if (!text[0])
+		return 0;
+	gap = cli_output_block_gap_margin(margin, *trailing_newlines);
+	for (int i = 0; i < gap; i++) {
+		rc = morph_buf_putc(out, '\n');
+		if (rc != 0)
+			return rc;
+	}
+	start = out->len;
+	rc = morph_buf_puts(out, text);
+	if (rc != 0)
+		return rc;
+	if (out->len && out->data[out->len - 1] != '\n') {
+		rc = morph_buf_putc(out, '\n');
+		if (rc != 0)
+			return rc;
+	}
+	cli_output_track_tail(trailing_newlines, out->data + start, out->len - start);
+	return 0;
+}
+
+int cli_output_block_write(struct cli_application *ctx, const char *text,
+			   struct morph_tui_view_insets margin)
+{
+	morph_buf_t document = {0};
+	int trailing;
+	int rc;
+
+	if (!ctx || !text)
+		return -EINVAL;
+	if (!text[0])
+		return 0;
+	rc = morph_buf_init(&document, strlen(text) + 16);
+	if (rc != 0)
+		return rc;
+	trailing = ctx->output.trailing_newlines;
+	rc = cli_output_block_append(&document, text, margin, &trailing);
+	if (rc == 0)
+		rc = cli_output_printf(ctx, "%s", morph_buf_cstr_borrow(&document));
+	morph_buf_cleanup(&document);
+	return rc;
+}
+
 /* Add the command/result gap only when a visible result actually arrives. */
 static int cli_output_write_output(struct cli_application *ctx, const char *text)
 {
+	if (cli_chat_active(ctx))
+		return cli_chat_output(ctx, text);
 	if (ctx && ctx->presentation_mode == CLI_PRESENT_INTERACTIVE &&
 	    ctx->output.command_result_pending) {
 		while (*text == '\n' || *text == '\r')

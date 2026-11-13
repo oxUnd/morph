@@ -32,6 +32,11 @@ morph_tui_widget_text_view_add_borrow(struct morph_tui_builder *, struct morph_t
 				      const struct morph_tui_view_options *options);
 /* Copies and sanitizes text; the caller retains the input. */
 int morph_tui_widget_text_view_set_text_copy(struct morph_tui_view *, const char *text);
+/* Copies all span text/styles. Terminal controls in text are sanitized. */
+int morph_tui_widget_text_view_set_spans_copy(struct morph_tui_view *,
+					    const struct morph_tui_text_span *, size_t count);
+/* Content sizing measures all wrapped rows; default sizing is a scroll viewport. */
+int morph_tui_widget_text_view_set_content_sizing(struct morph_tui_view *, int enabled);
 
 #ifdef __cplusplus
 }

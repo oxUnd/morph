@@ -4,6 +4,7 @@
 #include "agent/agent_control.h"
 #include "util/buf.h"
 #include "sapi/cli/widgets/notice.h"
+#include <morph/tui/view.h>
 
 struct cli_application;
 struct cli_transcript_tool;
@@ -16,11 +17,13 @@ enum cli_feed_block_kind {
 	CLI_FEED_BLOCK_NOTICE,
 };
 
-/* All content is borrowed for rendering. Components do not own outer spacing. */
+/* All content is borrowed for rendering. Each component owns its outer box
+ * margin; the shared block writer applies it through the TUI box model. */
 struct cli_feed_block {
 	enum cli_feed_block_kind kind;
 	int join_previous;
 	int details;
+	struct morph_tui_view_insets margin;
 	union {
 		const char *reasoning;
 		const struct cli_transcript_tool *tool;
@@ -39,7 +42,7 @@ struct cli_feed_block_style {
 	int trailing_newlines;
 };
 
-int cli_feed_block_leading_rows(int trailing_newlines);
+int cli_feed_block_leading_rows(struct morph_tui_view_insets margin, int trailing_newlines);
 int cli_feed_block_append(morph_buf_t *out, const struct cli_feed_block *block,
 			 struct cli_feed_block_style *style);
 int cli_feed_block_write(struct cli_application *ctx, const struct cli_feed_block *block);

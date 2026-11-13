@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/question.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/adapters/input/state.h"
@@ -313,6 +314,8 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 				}
 				state.menu.list.index = (size_t)options->recommended_indices[0];
 			}
+			if (!rc)
+				rc = cli_chat_flush(ctx);
 			if (!rc)
 				rc = morph_tui_widget_select_run(&state, &select_options, input,
 								 stdout, &custom);

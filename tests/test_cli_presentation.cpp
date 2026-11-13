@@ -871,7 +871,7 @@ TEST_F(CliPresentationTest, InteractiveSeparatesToolBlocksFromFinalAnswer)
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_NE(output.find("◉ file_list"), std::string::npos);
-	EXPECT_NE(output.find("\n● "), std::string::npos);
+	EXPECT_NE(output.find("\n\n● "), std::string::npos);
 	EXPECT_EQ(output.find("\033"), std::string::npos);
 
 	cJSON_Delete(call);
@@ -2432,6 +2432,35 @@ TEST(CliPlanWidgetTest, PlanAndNoticeShareExactlyOneSeparatorWithOtherFeedBlocks
 			"BEFORE\n\n◉ Plan · 0/1 completed\n└ ◉ Inspect parser\n\n⚠ Warning\n");
 		EXPECT_EQ(style.trailing_newlines, 1);
 	}
+}
+
+TEST(CliPlanWidgetTest, FeedBlocksKeepOneBlankRowBetweenCommittedBlocks)
+{
+	morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {};
+	ASSERT_EQ(morph_buf_puts(&out, "TOOL\n"), 0);
+	struct cli_feed_block_style style{80, 0, 1};
+	struct cli_notice notice{CLI_NOTICE_SYSTEM, "Recap:", "summary", nullptr, 0};
+	struct cli_feed_block block{};
+	block.kind = CLI_FEED_BLOCK_NOTICE;
+	block.content.notice = &notice;
+	ASSERT_EQ(cli_feed_block_append(&out, &block, &style), 0);
+	EXPECT_STREQ(morph_buf_cstr_borrow(&out), "TOOL\n\n◇ Recap:\n└ summary\n");
+	EXPECT_EQ(style.trailing_newlines, 1);
+}
+
+TEST(CliFeedBlockTest, GapAddsMissingNewlinesForOneBlankRow)
+{
+	struct morph_tui_view_insets margin = {.top = 1};
+	struct morph_tui_view_insets wider = {.top = 2};
+	struct morph_tui_view_rect slot = {.width = 1, .height = 2};
+
+	EXPECT_EQ(margin.top, 1);
+	EXPECT_EQ(cli_output_block_gap_margin(margin, 0), 1);
+	EXPECT_EQ(cli_output_block_gap_margin(margin, 1), 1);
+	EXPECT_EQ(cli_output_block_gap_margin(wider, 1), 2);
+	EXPECT_EQ(cli_output_block_gap_margin(wider, 2), 1);
+	EXPECT_EQ(morph_tui_view_inset_rect(slot, margin).y, 1);
+	EXPECT_EQ(morph_tui_view_inset_rect(slot, wider).y, 2);
 }
 
 TEST_F(CliPresentationTest, PlainPlanUpdateKeepsItsExistingTextContract)

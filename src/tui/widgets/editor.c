@@ -56,6 +56,8 @@ int morph_tui_widget_editor_state_update(struct morph_tui_widget_editor_state *e
 		editor->pasting = 0;
 		return MORPH_TUI_WIDGET_CHANGED;
 	}
+	if (key == 4 && editor->text.len)
+		key = MORPH_TUI_KEY_DELETE;
 	if (editor->pasting && (key < 32 || key >= 256 || key == 127))
 		return MORPH_TUI_WIDGET_UNHANDLED;
 	if (key == 3 || key == 4)
@@ -73,6 +75,36 @@ int morph_tui_widget_editor_state_update(struct morph_tui_widget_editor_state *e
 		editor->overflow = 0;
 		return MORPH_TUI_WIDGET_CHANGED;
 	}
+	if (key == 11) {
+		widget_editor_wipe(text->data + editor->cursor, text->len - editor->cursor);
+		text->len = editor->cursor;
+		text->data[text->len] = '\0';
+		editor->overflow = 0;
+		return MORPH_TUI_WIDGET_CHANGED;
+	}
+	if (key == 23 && editor->cursor) {
+		size_t start = editor->cursor;
+		int word = 0;
+		while (start) {
+			size_t previous = (size_t)(utf8_prev_codepoint_borrow(text->data,
+				text->data + start) - text->data);
+			unsigned cp = 0;
+			size_t bytes = 0;
+			if (!utf8_decode_codepoint(text->data + previous, start - previous, &cp, &bytes))
+				return MORPH_ERR_FORMAT;
+			int space = utf8_is_unicode_space_cp(cp);
+			if (word && space)
+				break;
+			word |= !space;
+			start = previous;
+		}
+		memmove(text->data + start, text->data + editor->cursor,
+			text->len - editor->cursor + 1);
+		text->len -= editor->cursor - start;
+		editor->cursor = start;
+		editor->overflow = 0;
+		return MORPH_TUI_WIDGET_CHANGED;
+	}
 	if ((key == 127 || key == 8) && editor->cursor) {
 		size_t previous = (size_t)(utf8_prev_codepoint_borrow(text->data,
 								      text->data + editor->cursor) -
@@ -85,13 +117,13 @@ int morph_tui_widget_editor_state_update(struct morph_tui_widget_editor_state *e
 		editor->overflow = 0;
 		return MORPH_TUI_WIDGET_CHANGED;
 	}
-	if (key == MORPH_TUI_KEY_LEFT && editor->cursor) {
+	if ((key == MORPH_TUI_KEY_LEFT || key == 2) && editor->cursor) {
 		editor->cursor = (size_t)(utf8_prev_codepoint_borrow(text->data,
 								     text->data + editor->cursor) -
 					  text->data);
 		return MORPH_TUI_WIDGET_CHANGED;
 	}
-	if (key == MORPH_TUI_KEY_RIGHT && editor->cursor < text->len) {
+	if ((key == MORPH_TUI_KEY_RIGHT || key == 6) && editor->cursor < text->len) {
 		editor->cursor += utf8_next_codepoint_len(text->data + editor->cursor,
 							  text->len - editor->cursor);
 		return MORPH_TUI_WIDGET_CHANGED;
@@ -102,6 +134,17 @@ int morph_tui_widget_editor_state_update(struct morph_tui_widget_editor_state *e
 	}
 	if (key == MORPH_TUI_KEY_END || key == 5) {
 		editor->cursor = text->len;
+		return MORPH_TUI_WIDGET_CHANGED;
+	}
+	if (key == MORPH_TUI_KEY_DELETE) {
+		if (editor->cursor >= text->len)
+			return MORPH_TUI_WIDGET_CHANGED;
+		size_t bytes = utf8_next_codepoint_len(text->data + editor->cursor,
+			text->len - editor->cursor);
+		memmove(text->data + editor->cursor, text->data + editor->cursor + bytes,
+			text->len - editor->cursor - bytes + 1);
+		text->len -= bytes;
+		editor->overflow = 0;
 		return MORPH_TUI_WIDGET_CHANGED;
 	}
 	if (key < 32 || key >= 256 || key == 127)

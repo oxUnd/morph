@@ -1,4 +1,5 @@
 #include "sapi/cli/widgets/plan.h"
+#include <morph/tui/widgets/stack.h>
 
 #include "sapi/cli/widgets/notice.h"
 #include "sapi/cli/presentation/style.h"
@@ -47,7 +48,7 @@ static int cli_plan_line(morph_buf_t *out, const char *prefix, const char *text,
 	return rc != 0 ? rc : morph_buf_putc(out, '\n');
 }
 
-static int cli_plan_one(morph_buf_t *out, const cJSON *steps, const struct cli_plan_style *style)
+static enum cli_notice_status cli_plan_status(const cJSON *steps, int *completed_out)
 {
 	int completed = 0;
 	int count = cJSON_GetArraySize(steps);
@@ -67,6 +68,16 @@ static int cli_plan_one(morph_buf_t *out, const cJSON *steps, const struct cli_p
 		: count && completed == count ? CLI_NOTICE_DONE
 		: count && completed + cancelled == count ? CLI_NOTICE_CANCELLED
 		: CLI_NOTICE_PENDING;
+	*completed_out = completed;
+	return status;
+}
+
+static int cli_plan_one(morph_buf_t *out, const cJSON *steps, const struct cli_plan_style *style)
+{
+	int completed = 0;
+	int count = cJSON_GetArraySize(steps);
+	enum cli_notice_status status = cli_plan_status(steps, &completed);
+	const cJSON *step;
 	morph_buf_t heading MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc = morph_buf_printf(&heading, "Plan · %d/%d completed", completed, count);
 	if (rc == 0 && style->status_heading)
@@ -146,4 +157,48 @@ int cli_plan_append(morph_buf_t *out, const cJSON *state, const struct cli_plan_
 			break;
 	}
 	return 0;
+}
+
+struct morph_tui_view *cli_plan_add_borrow(struct morph_tui_builder *builder,
+	struct morph_tui_view *parent, const cJSON *state, int styled)
+{
+	const struct morph_tui_view_options outer = {0};
+	struct morph_tui_view *root = morph_tui_widget_stack_add_borrow(builder, parent,
+		MORPH_TUI_WIDGET_STACK_VERTICAL, 0, &outer);
+	const char *key = "id";
+	const char *selected = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(state, "selected_plan_id"));
+	if (!selected) {
+		selected = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(state, "selected_plan"));
+		key = "name";
+	}
+	const cJSON *plan;
+	cJSON_ArrayForEach(plan, cJSON_GetObjectItemCaseSensitive(state, "plans")) {
+		const cJSON *steps = cli_plan_steps(plan, key, selected);
+		if (!steps)
+			continue;
+		int completed = 0;
+		enum cli_notice_status status = cli_plan_status(steps, &completed);
+		morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		int rc = morph_buf_printf(&title, "Plan · %d/%d completed", completed,
+			cJSON_GetArraySize(steps));
+		morph_tui_builder_fail(builder, rc);
+		struct cli_notice heading = {.status = status, .title = morph_buf_cstr_borrow(&title)};
+		struct morph_tui_view *header = cli_notice_add_borrow(builder, root, &heading, styled);
+		if (header)
+			morph_tui_view_set_margin(header, (struct morph_tui_view_insets){0});
+		const cJSON *step;
+		cJSON_ArrayForEach(step, steps) {
+			const char *description = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(step, "description"));
+			if (!description)
+				continue;
+			struct cli_notice notice = {.status = cli_plan_step_status(step),
+				.title = description, .tree_branch = step->next ? 1 : 2};
+			struct morph_tui_view *row = cli_notice_add_borrow(builder, root, &notice, styled);
+			if (row)
+				morph_tui_view_set_margin(row, (struct morph_tui_view_insets){0});
+		}
+		if (selected)
+			break;
+	}
+	return root;
 }

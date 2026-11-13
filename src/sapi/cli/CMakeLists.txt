@@ -32,6 +32,8 @@ add_library(morph-cli STATIC
 	widgets/agents_browser.c
 	widgets/banner.c
 	widgets/composer_panel.c
+	widgets/message.c
+	widgets/tool_call.c
 	widgets/feed.c
 	widgets/feed_block.c
 	widgets/jobs.c
@@ -220,7 +222,7 @@ int main(void) { return rl_bracketed_paste_begin(1, 0); }
 	target_link_libraries(morph-cli PUBLIC ${MORPH_READLINE_LIBRARY})
 	message(STATUS "readline found: ${MORPH_READLINE_LIBRARY}")
 elseif(ENABLE_READLINE)
-	message(STATUS "readline not found, using fgets")
+	message(STATUS "legacy readline adapter unavailable; interactive chat uses retained TUI")
 else()
-	message(STATUS "readline disabled, using fgets")
+	message(STATUS "legacy readline adapter disabled; interactive chat uses retained TUI")
 endif()

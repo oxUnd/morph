@@ -24,6 +24,8 @@ static int core_view_insets_valid(struct morph_tui_view_insets insets)
 
 static int core_view_options_valid(const struct morph_tui_view_options *options)
 {
+	if (!morph_tui_text_style_valid(options->style))
+		return 0;
 	if (!core_view_insets_valid(options->margin) || !core_view_insets_valid(options->padding))
 		return 0;
 	int horizontal = options->margin.left + options->margin.right;
@@ -97,6 +99,9 @@ struct morph_tui_view *morph_tui_view_add_borrow(struct morph_tui_builder *build
 	} else {
 		scope->root = view;
 	}
+	if (!builder->error)
+		morph_tui_view_invalidate(view, 1);
+	scope->structure_revision++;
 	return view;
 }
 
@@ -116,6 +121,41 @@ struct morph_tui_view *morph_tui_view_child_borrow(const struct morph_tui_view *
 		view ? morph_array_borrow(&view->state->children, index) : NULL;
 
 	return slot ? *slot : NULL;
+}
+
+int morph_tui_view_clear_children(struct morph_tui_view *view)
+{
+	if (!view)
+		return -EINVAL;
+	if (!morph_tui_view_is_owner(view))
+		return -EPERM;
+	struct morph_tui_view_controller_state *scope = view->state->controller->state;
+	for (size_t i = scope->views.nelts; i > 0; i--) {
+		struct morph_tui_view **slot = morph_array_borrow(&scope->views, i - 1);
+		struct morph_tui_view *node = *slot;
+		struct morph_tui_view *ancestor = node->state->parent;
+		while (ancestor && ancestor != view)
+			ancestor = ancestor->state->parent;
+		if (!ancestor)
+			continue;
+		if (scope->focus == node)
+			scope->focus = NULL;
+		if (scope->text_target == node)
+			scope->text_target = NULL;
+		if (scope->paste_target == node)
+			scope->paste_target = NULL;
+		if (node->ops && node->ops->destroy)
+			node->ops->destroy(node);
+		morph_array_cleanup(&node->state->children);
+		free(node->state);
+		free(node);
+		memmove(slot, slot + 1, (scope->views.nelts - i) * sizeof(*slot));
+		morph_array_pop(&scope->views);
+	}
+	morph_array_clear(&view->state->children);
+	scope->structure_revision++;
+	morph_tui_view_invalidate(view, 1);
+	return 0;
 }
 
 struct morph_tui_view_rect morph_tui_view_frame(const struct morph_tui_view *view)
@@ -150,6 +190,12 @@ struct morph_tui_view_rect morph_tui_view_content_rect(const struct morph_tui_vi
 	frame.x = 0;
 	frame.y = 0;
 	return core_view_inset(frame, view->state->options.padding);
+}
+
+struct morph_tui_view_rect morph_tui_view_inset_rect(struct morph_tui_view_rect rect,
+						     struct morph_tui_view_insets insets)
+{
+	return core_view_inset(rect, insets);
 }
 
 struct morph_tui_view_options morph_tui_view_get_options(const struct morph_tui_view *view)
@@ -189,6 +235,19 @@ int morph_tui_view_set_margin(struct morph_tui_view *view, struct morph_tui_view
 int morph_tui_view_set_padding(struct morph_tui_view *view, struct morph_tui_view_insets insets)
 {
 	return core_view_set_insets(view, insets, 1);
+}
+
+int morph_tui_view_set_style(struct morph_tui_view *view, struct morph_tui_text_style style)
+{
+	if (!view || !morph_tui_text_style_valid(style))
+		return -EINVAL;
+	if (!morph_tui_view_is_owner(view))
+		return -EPERM;
+	if (!morph_tui_text_style_equal(view->state->options.style, style)) {
+		view->state->options.style = style;
+		morph_tui_view_invalidate(view, 0);
+	}
+	return 0;
 }
 
 int morph_tui_view_is_owner(const struct morph_tui_view *view)
@@ -408,14 +467,30 @@ int core_view_draw(struct morph_tui_view *view, struct morph_tui_canvas *parent)
 	morph_tui_canvas_child_borrow(parent, frame.x, frame.y, frame.width, frame.height, &canvas);
 	if (canvas.left >= canvas.right || canvas.top >= canvas.bottom)
 		return 0;
+	struct morph_tui_text_style style = view->state->options.style;
+	canvas.style.attributes |= style.attributes;
+	if (style.foreground.kind)
+		canvas.style.foreground = style.foreground;
+	if (style.background.kind) {
+		canvas.style.background = style.background;
+		int fill_rc = morph_tui_canvas_fill(&canvas, 0);
+		if (fill_rc)
+			return fill_rc;
+	}
 	struct morph_tui_view_rect rect = morph_tui_view_content_rect(view);
 	struct morph_tui_canvas content;
 
 	morph_tui_canvas_child_borrow(&canvas, rect.x, rect.y, rect.width, rect.height, &content);
 	int rc = view->ops && view->ops->draw ? view->ops->draw(view, &content) : 0;
 
+	struct morph_tui_canvas children = canvas;
+	children.left = content.left;
+	children.top = content.top;
+	children.right = content.right;
+	children.bottom = content.bottom;
+	children.y -= view->state->scroll_y;
 	for (size_t i = 0; i < view->state->children.nelts && !rc; i++)
-		rc = core_view_draw(morph_tui_view_child_borrow(view, i), &canvas);
+		rc = core_view_draw(morph_tui_view_child_borrow(view, i), &children);
 	return rc;
 }
 

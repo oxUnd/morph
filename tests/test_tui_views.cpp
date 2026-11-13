@@ -6,6 +6,7 @@
 #include <morph/tui/widgets/label.h>
 #include <morph/tui/widgets/list.h>
 #include <morph/tui/widgets/stack.h>
+#include <morph/tui/widgets/scroll.h>
 #include <morph/tui/widgets/text_field.h>
 #include <morph/tui/widgets/text_view.h>
 #include "util/utf8.h"
@@ -26,7 +27,7 @@ struct TuiViewModel {
 	struct morph_tui_view *list = nullptr;
 	struct morph_tui_view *label = nullptr;
 	struct morph_tui_view_controller *controller = nullptr;
-	int actions = 0, closes = 0, widget_closes = 0, result = 0;
+	int actions = 0, closes = 0, widget_closes = 0, result = 0, submits = 0;
 	bool editor = true, failure = false, dialog = false;
 	std::string selected;
 };
@@ -63,6 +64,8 @@ static int tui_views_action(struct morph_tui_view_controller *controller,
 {
 	auto *model = static_cast<TuiViewModel *>(controller->data);
 	model->actions++;
+	if (action->type == MORPH_TUI_WIDGET_ACTION_SUBMIT)
+		model->submits++;
 	model->selected = action->text;
 	int rc = morph_tui_widget_label_set_text_copy(model->label, action->text);
 	if (rc || !model->dialog || action->type == MORPH_TUI_WIDGET_ACTION_CHANGED)
@@ -89,7 +92,7 @@ class TuiViewsTest : public ::testing::Test
 	FILE *input = nullptr, *output = nullptr;
 	struct morph_tui_application *app = nullptr;
 	TuiViewModel model;
-	std::string frame;
+	std::string frame, styled_frame;
 	int frames = 0;
 	const struct morph_tui_view_controller_ops ops = {
 		tui_views_build, tui_views_action, nullptr, nullptr, nullptr, tui_views_close};
@@ -100,6 +103,8 @@ class TuiViewsTest : public ::testing::Test
 			int rc = morph_buf_init(&rows, BUFSIZ);
 			if (!rc)
 				rc = morph_tui_surface_rows(surface, &rows);
+			if (!rc)
+				self->styled_frame = morph_buf_cstr_borrow(&rows);
 			char *plain =
 				rc ? nullptr : utf8_strip_ansi_dup(rows.data, rows.len, nullptr);
 			if (plain)
@@ -738,16 +743,20 @@ TEST_F(TuiViewsTest, LayoutSubclassAndWidgetSubclassComposeThroughPublicInterfac
 TEST_F(TuiViewsTest, WorkerCannotMutateViewsAndMessagesRemainTheUpdateBoundary)
 {
 	ASSERT_EQ(present(), 0);
-	int label_rc = 0, focus_rc = 0, list_rc = 0;
+	int label_rc = 0, focus_rc = 0, list_rc = 0, render_rc = 0, terminal_rc = 0;
 	std::thread worker([&] {
 		label_rc = morph_tui_widget_label_set_text_copy(model.label, "Unsafe");
 		focus_rc = morph_tui_view_focus(model.list);
 		list_rc = morph_tui_widget_list_select(model.list, 2);
+		render_rc = morph_tui_application_render(app);
+		terminal_rc = morph_tui_application_restore_terminal(app);
 	});
 	worker.join();
 	EXPECT_EQ(label_rc, -EPERM);
 	EXPECT_EQ(focus_rc, -EPERM);
 	EXPECT_EQ(list_rc, -EPERM);
+	EXPECT_EQ(render_rc, -EPERM);
+	EXPECT_EQ(terminal_rc, -EPERM);
 	EXPECT_EQ(morph_tui_widget_list_selected(model.list), 0U);
 }
 
@@ -898,4 +907,187 @@ TEST_F(TuiViewsTest, TextFieldSetterCopiesAndPreservesValueOnValidationFailure)
 		  model.field);
 	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
 	EXPECT_NE(frame.find("updated"), std::string::npos);
+}
+
+TEST_F(TuiViewsTest, ScrollContainerComposesWrappedTextAndMultilineComposer)
+{
+	static const struct morph_tui_view_controller_ops scroll_ops = {
+		+[](struct morph_tui_view_controller *controller, struct morph_tui_builder *builder) {
+			auto *data = static_cast<TuiViewModel *>(controller->data);
+			struct morph_tui_view_options inset{};
+			inset.padding = {0, 1, 0, 1};
+			data->root = morph_tui_widget_stack_add_borrow(builder, nullptr,
+				MORPH_TUI_WIDGET_STACK_VERTICAL, 0, &inset);
+			morph_tui_widget_label_add_borrow(builder, data->root, "Header", nullptr);
+			struct morph_tui_view_options fill{};
+			fill.grow = 1;
+			data->list = morph_tui_widget_scroll_add_borrow(builder, data->root, &fill);
+			auto *content = morph_tui_widget_stack_add_borrow(builder, data->list,
+				MORPH_TUI_WIDGET_STACK_VERTICAL, 0, nullptr);
+			data->label = morph_tui_widget_text_view_add_borrow(builder, content,
+				"one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten", nullptr);
+			morph_tui_widget_text_view_set_content_sizing(data->label, 1);
+			morph_tui_view_set_focusable(data->label, 0);
+			struct morph_tui_view_options editor{};
+			editor.padding = {1, 1, 1, 1};
+			editor.max_height = 5;
+			data->field = morph_tui_widget_text_field_add_borrow(builder, data->root,
+				"", 4096, 1, &editor);
+			morph_tui_widget_text_field_set_multiline(data->field, 1);
+			morph_tui_widget_text_field_set_prompt_copy(data->field, "> ");
+			morph_tui_widget_label_add_borrow(builder, data->root, "Footer", nullptr);
+		}, nullptr, nullptr, nullptr, nullptr, nullptr};
+	struct morph_tui_view_controller_spec spec{};
+	spec.ops = &scroll_ops;
+	spec.data = &model;
+	ASSERT_EQ(morph_tui_view_controller_present_borrow(app, &spec), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_NE(frame.find("ten"), std::string::npos);
+	EXPECT_EQ(frame.find("one"), std::string::npos);
+	EXPECT_GT(morph_tui_widget_scroll_offset(model.list), 0);
+	ASSERT_EQ(morph_tui_widget_scroll_handle_key(model.list, MORPH_TUI_KEY_HOME), 1);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_NE(frame.find("one"), std::string::npos);
+	EXPECT_EQ(frame.find("ten"), std::string::npos);
+	ASSERT_EQ(morph_tui_widget_text_field_set_text_copy(model.field, "first\nsecond"), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_NE(frame.find("first"), std::string::npos);
+	EXPECT_NE(frame.find("second"), std::string::npos);
+	EXPECT_EQ(morph_tui_view_frame(model.field).height, 4);
+	ASSERT_EQ(morph_tui_widget_scroll_follow(model.list, 1), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_NE(frame.find("ten"), std::string::npos);
+}
+
+TEST_F(TuiViewsTest, RichTextMeasuresWrappedContentAndPaintsPaddingInsideMargins)
+{
+	static const struct morph_tui_view_controller_ops rich_ops = {
+		+[](struct morph_tui_view_controller *controller, struct morph_tui_builder *builder) {
+			auto *data = static_cast<TuiViewModel *>(controller->data);
+			struct morph_tui_view_options options{};
+			options.margin = {1, 2, 1, 3};
+			options.padding = {1, 1, 1, 2};
+			options.style.background = {MORPH_TUI_COLOR_RGB, 0x112233};
+			data->label = morph_tui_widget_text_view_add_borrow(builder, nullptr, "", &options);
+			struct morph_tui_text_span spans[3]{};
+			spans[0].text = "中ab";
+			spans[0].style.attributes = MORPH_TUI_STYLE_BOLD | MORPH_TUI_STYLE_UNDERLINE;
+			spans[0].style.foreground = {MORPH_TUI_COLOR_RGB, 0xabcdef};
+			spans[1].text = "文c";
+			spans[1].style.attributes = MORPH_TUI_STYLE_ITALIC;
+			spans[1].style.foreground = {MORPH_TUI_COLOR_INDEXED, 3};
+			spans[2].text = "!";
+			spans[2].style.foreground.kind = MORPH_TUI_COLOR_DEFAULT;
+			spans[2].style.background.kind = MORPH_TUI_COLOR_DEFAULT;
+			morph_tui_widget_text_view_set_spans_copy(data->label, spans, 3);
+			morph_tui_widget_text_view_set_content_sizing(data->label, 1);
+		}, nullptr, nullptr, nullptr, nullptr, nullptr};
+	struct morph_tui_view_controller_spec spec{};
+	spec.ops = &rich_ops;
+	spec.data = &model;
+	ASSERT_EQ(morph_tui_view_controller_present_borrow(app, &spec), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	struct morph_tui_view_size size{};
+	ASSERT_EQ(morph_tui_view_measure(model.label, 12, &size), 0);
+	EXPECT_EQ(size.width, 12);
+	EXPECT_EQ(size.height, 6);
+	EXPECT_NE(styled_frame.find("\033[48;2;17;34;51m"), std::string::npos);
+	EXPECT_NE(styled_frame.find("\033[38;2;171;205;239m"), std::string::npos);
+	EXPECT_NE(styled_frame.find("\033[38;5;3m"), std::string::npos);
+	EXPECT_NE(styled_frame.find("\033[4m"), std::string::npos);
+	EXPECT_NE(styled_frame.find("\033[3m"), std::string::npos);
+	EXPECT_NE(styled_frame.find("\033[0m!"), std::string::npos);
+	EXPECT_EQ(frame.substr(0, 30), std::string(30, ' '));
+	EXPECT_EQ(styled_frame.substr(0, styled_frame.find('\n')).find("48;2;"), std::string::npos);
+	struct morph_tui_text_span invalid{};
+	invalid.text = "replacement";
+	invalid.style.foreground = {MORPH_TUI_COLOR_INDEXED, 256};
+	EXPECT_EQ(morph_tui_widget_text_view_set_spans_copy(model.label, &invalid, 1), -EINVAL);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_NE(frame.find("中ab文c"), std::string::npos);
+	ASSERT_EQ(morph_tui_widget_text_view_set_text_copy(model.label, "a\n"), 0);
+	ASSERT_EQ(morph_tui_view_measure(model.label, 12, &size), 0);
+	EXPECT_EQ(size.height, 6);
+}
+
+TEST_F(TuiViewsTest, MultilinePasteDoesNotSubmitAndInsertionPreservesUtf8Cursor)
+{
+	ASSERT_EQ(present(), 0);
+	ASSERT_EQ(morph_tui_widget_text_field_set_multiline(model.field, 1), 0);
+	send("\033[200~first\n中文\033[201~");
+	EXPECT_STREQ(morph_tui_widget_text_field_text_borrow(model.field), "first\n中文");
+	EXPECT_EQ(model.submits, 0);
+	send("\033[D");
+	ASSERT_EQ(morph_tui_widget_text_field_insert_text_copy(model.field, "🙂"), 0);
+	EXPECT_STREQ(morph_tui_widget_text_field_text_borrow(model.field), "first\n中🙂文");
+	send("\033[3~");
+	EXPECT_STREQ(morph_tui_widget_text_field_text_borrow(model.field), "first\n中🙂");
+	int actions = model.actions;
+	send("\nnext");
+	EXPECT_GT(model.actions, actions);
+	EXPECT_STREQ(morph_tui_widget_text_field_text_borrow(model.field), "first\n中🙂\nnext");
+}
+
+TEST_F(TuiViewsTest, ClearingDynamicChildrenRemovesFocusAndCanBeRepeated)
+{
+	ASSERT_EQ(present(), 0);
+	EXPECT_EQ(morph_tui_view_child_count(model.root), 3u);
+	ASSERT_EQ(morph_tui_view_clear_children(model.root), 0);
+	EXPECT_EQ(morph_tui_view_child_count(model.root), 0u);
+	EXPECT_EQ(morph_tui_window_focus_borrow(morph_tui_application_window_borrow(app)), nullptr);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_EQ(frame.find("Alpha"), std::string::npos);
+	EXPECT_EQ(frame.find("Ready"), std::string::npos);
+	ASSERT_EQ(morph_tui_view_clear_children(model.root), 0);
+}
+
+TEST_F(TuiViewsTest, ActionCanClearItsOwnSubtreeDuringDispatch)
+{
+	static const struct morph_tui_view_controller_ops clear_ops = {
+		tui_views_build,
+		+[](struct morph_tui_view_controller *controller, const struct morph_tui_widget_action *) {
+			auto *data = static_cast<TuiViewModel *>(controller->data);
+			return morph_tui_view_clear_children(data->root);
+		}, nullptr, nullptr, nullptr, nullptr};
+	struct morph_tui_view_controller_spec spec{};
+	spec.ops = &clear_ops;
+	spec.data = &model;
+	ASSERT_EQ(morph_tui_view_controller_present_borrow(app, &spec), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	send("x");
+	EXPECT_EQ(morph_tui_view_child_count(model.root), 0u);
+	EXPECT_EQ(morph_tui_window_focus_borrow(morph_tui_application_window_borrow(app)), nullptr);
+}
+
+TEST(TuiCanvasTest, StyledSpansPreserveCombiningMarksAcrossStyleBoundaries)
+{
+	struct morph_tui_surface *surface = nullptr;
+	ASSERT_EQ(morph_tui_surface_create(&surface), 0);
+	ASSERT_EQ(morph_tui_surface_resize(surface, 4, 1), 0);
+	struct morph_tui_canvas canvas{};
+	morph_tui_canvas_root_borrow(surface, &canvas);
+	struct morph_tui_text_style first{}, second{};
+	first.foreground = {MORPH_TUI_COLOR_RGB, 0xabcdef};
+	second.foreground = {MORPH_TUI_COLOR_INDEXED, 2};
+	ASSERT_EQ(morph_tui_canvas_text_styled(&canvas, 0, 0, "e", &first), 0);
+	ASSERT_EQ(morph_tui_canvas_text_styled(&canvas, 1, 0, "\xcc\x81!", &second), 0);
+	morph_buf_t rows{};
+	ASSERT_EQ(morph_buf_init(&rows, 128), 0);
+	ASSERT_EQ(morph_tui_surface_rows(surface, &rows), 0);
+	EXPECT_NE(std::string(rows.data).find("e\xcc\x81"), std::string::npos);
+	EXPECT_NE(std::string(rows.data).find("38;5;2m!"), std::string::npos);
+	morph_buf_cleanup(&rows);
+	morph_tui_surface_destroy(surface);
+}
+
+TEST_F(TuiViewsTest, SynchronousRenderFlushesViewsWithoutReadingQueuedInput)
+{
+	ASSERT_EQ(present(), 0);
+	ASSERT_EQ(write(master, "x", 1), 1);
+	ASSERT_EQ(morph_tui_widget_label_set_text_copy(model.label, "Visible before prompt"), 0);
+	ASSERT_EQ(morph_tui_application_render(app), 0);
+	EXPECT_NE(frame.find("Visible before prompt"), std::string::npos);
+	EXPECT_EQ(model.actions, 0);
+	until([&] { return model.actions > 0; });
+	EXPECT_STREQ(morph_tui_widget_text_field_text_borrow(model.field), "x");
 }

@@ -121,6 +121,18 @@ def main():
     feed = code_only((CLI / 'widgets/feed.c').read_text())
     if re.search(r'\b(?:ioctl|TIOCGWINSZ|winsize)\b', feed):
         errors.append('widgets/feed.c: terminal dimensions belong to the shared size helper')
+    chat = code_only((CLI / 'pages/chat.c').read_text())
+    if 'morph_tui_view_controller_present_borrow' not in chat:
+        errors.append('pages/chat.c: chat must present a retained ViewController')
+    if re.search(r'\b(?:fprintf|printf|fputs|fwrite|putchar|morph_tui_frame_present|'
+                 r'cli_readline_(?:render_frame|suspend_copy|resume_take))\s*\(', chat):
+        errors.append('pages/chat.c: retained chat must not own terminal painting or Readline geometry')
+    for module in ('message', 'tool_call'):
+        component = code_only((CLI / f'widgets/{module}.c').read_text())
+        for api in ('morph_tui_widget_add_borrow', 'morph_tui_widget_label_add_borrow',
+                    'morph_tui_widget_text_view_add_borrow'):
+            if api not in component:
+                errors.append(f'widgets/{module}.c: domain component must compose base controls ({api})')
     for source in sorted(CLI.rglob('*')):
         if source.suffix not in ('.c', '.h'):
             continue

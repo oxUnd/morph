@@ -1,6 +1,7 @@
 #include "sapi/cli/widgets/feed_block.h"
 
 #include "sapi/cli/application.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/widgets/agents.h"
@@ -11,9 +12,9 @@
 #include "util/cleanup.h"
 #include <errno.h>
 
-int cli_feed_block_leading_rows(int trailing_newlines)
+int cli_feed_block_leading_rows(struct morph_tui_view_insets margin, int trailing_newlines)
 {
-	return trailing_newlines < 2;
+	return cli_output_block_gap_margin(margin, trailing_newlines);
 }
 
 int cli_feed_block_append(morph_buf_t *out, const struct cli_feed_block *block,
@@ -58,20 +59,22 @@ int cli_feed_block_append(morph_buf_t *out, const struct cli_feed_block *block,
 	}
 	if (rc != 0 || !body.len)
 		return rc;
-	size_t start = out->len;
-	if (!block->join_previous && cli_feed_block_leading_rows(style->trailing_newlines))
-		rc = morph_buf_putc(out, '\n');
-	if (rc == 0)
-		rc = morph_buf_append(out, body.data, body.len);
-	if (rc == 0)
-		cli_output_track_tail(&style->trailing_newlines, out->data + start, out->len - start);
-	return rc;
+	struct morph_tui_view_insets margin = block->margin;
+
+	if (block->join_previous)
+		margin = (struct morph_tui_view_insets){0};
+	else if (!margin.top && !margin.right && !margin.bottom && !margin.left)
+		margin.top = 1;
+	return cli_output_block_append(out, morph_buf_cstr_borrow(&body), margin,
+				       &style->trailing_newlines);
 }
 
 int cli_feed_block_write(struct cli_application *ctx, const struct cli_feed_block *block)
 {
 	if (!ctx)
 		return -EINVAL;
+	if (cli_chat_active(ctx))
+		return cli_chat_block(ctx, block);
 	morph_buf_t document MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	struct cli_feed_block_style style = {
 		.columns = cli_feed_columns(ctx), .styled = cli_output_color_enabled(ctx),

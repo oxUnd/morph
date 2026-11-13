@@ -27,9 +27,10 @@ comes first; every other group follows by most recent activity, including a
 single `unknown workdir` group for sessions without a remembered directory.
 Group headers show a `▾` marker, the abbreviated path, the session count and a
 `current` marker; sessions are indented beneath their group with `├`/`└`
-branches, and Up/Down and page keys skip the headers. The plain fallback picker
-uses the same groups and ordering. `/switch ^N` keeps its existing session
-ordering.
+branches, and the current session uses the filled `●` marker while other
+sessions use the hollow `◯` marker. Up/Down and page keys skip the headers.
+The plain fallback picker uses the same groups and ordering. `/switch ^N` keeps
+its existing session ordering.
 
 ```bash
 morph resume
@@ -45,7 +46,7 @@ paths containing spaces or quotes. `morphctl` loads its credentials and forwards
 the resume arguments to `morph`. Unsaved fresh sessions have no resume hint.
 
 Interactive session selection through `/resume`, `/resume <name|id>`, `/switch` or
-`-s <name>` restores saved conversation text to native terminal scrollback. This
+`-s <name>` rebuilds the retained conversation feed in alternate screen. This
 includes inactive messages from before context compression, assistant preambles
 and saved tool summaries. Internal summaries and background receipts are omitted.
 Ctrl+T inspects the latest restored turn's tool details and saved reasoning. Tools
@@ -58,7 +59,7 @@ Plain output and NDJSON session-command contracts remain unchanged.
 `/history` opens a read-only inspector in an interactive terminal. It shows the
 saved model history: user and assistant messages, tool-call batches, tool results,
 compaction summaries, and background receipts. Recent activity is selected first.
-The temporary alternate screen leaves the conversation's native scrollback intact.
+Closing the inspector restores the retained conversation, viewport and composer draft.
 
 Use Up/Down, Home/End and PgUp/PgDn to navigate, Enter for details, `/` to search,
 Tab to cycle All/Included/Summarized/Excluded, and Esc to return. Search matches
@@ -145,4 +146,4 @@ Only changed viewport rows are painted, and idle inspection emits no bytes.
 Validation includes runtime and adapter tests plus `test_cli_history_pty.py`,
 which exercises 300 saved entries, summary ancestry, actual request capture,
 Unicode search, filters, stored/request details, narrow/too-small resize, paste,
-Ctrl+C and restoration of scrollback and the Readline composer.
+Ctrl+C and restoration of the conversation viewport and retained composer.

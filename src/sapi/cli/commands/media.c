@@ -1,6 +1,7 @@
 #include "sapi/cli/commands/media.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/services/turn.h"
 #include "sapi/cli/application_internal.h"
 #include "ext/ext.h"
@@ -164,7 +165,7 @@ static int cli_media_command_render(struct cli_application *ctx, int argc, char 
 			free(expanded);
 			return MORPH_ERR_FORMAT;
 		}
-		if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON) {
+		if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON && !cli_chat_active(ctx)) {
 			(void)cli_output_result_begin(ctx);
 			image_render_terminal(ctx ? ctx->logger : NULL, expanded);
 		}

@@ -45,7 +45,6 @@ struct cli_application {
 	int (*input_execute)(struct cli_application *, const char *input);
 	struct config_file_error startup_error;
 	struct cli_event_queue *events;
-	morph_buf_t *application_output;
 	int application_command;
 	struct cli_feed *terminal;
 	struct cli_command_job *input_job;
@@ -84,7 +83,6 @@ void cli_application_shutdown(struct cli_application *ctx);
 struct morph_tui_application *cli_application_tui_borrow(struct cli_application *);
 int cli_application_present_screen(struct cli_application *, const struct morph_tui_screen_ops *,
 				   void *data, void (*complete)(void *, int));
-int cli_application_flush(struct cli_application *);
 void cli_application_panel_complete(struct cli_application *, void *data,
 				    void (*complete)(void *, int), int result);
 

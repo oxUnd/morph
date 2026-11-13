@@ -141,6 +141,20 @@ int morph_tui_application_run(struct morph_tui_application *app)
 	return rc;
 }
 
+int morph_tui_application_render(struct morph_tui_application *app)
+{
+	if (!app || !app->state)
+		return -EINVAL;
+	return core_application_loop_render(app->state->loop);
+}
+
+int morph_tui_application_restore_terminal(struct morph_tui_application *app)
+{
+	if (!app || !app->state)
+		return -EINVAL;
+	return core_application_loop_restore_terminal(app->state->loop);
+}
+
 int morph_tui_application_step(struct morph_tui_application *app, int wait)
 {
 	int rc = core_runner_launch(app);

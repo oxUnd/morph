@@ -40,6 +40,12 @@ static int terminal_input_sequence_key(const char *sequence)
 		return MORPH_TUI_KEY_PAGE_UP;
 	if (strcmp(sequence, "6~") == 0)
 		return MORPH_TUI_KEY_PAGE_DOWN;
+	if (strcmp(sequence, "3~") == 0)
+		return MORPH_TUI_KEY_DELETE;
+	if (strcmp(sequence, "13;2u") == 0 || strcmp(sequence, "27;2;13~") == 0)
+		return '\n';
+	if (strcmp(sequence, "118;13u") == 0 || strcmp(sequence, "86;13u") == 0)
+		return MORPH_TUI_KEY_PASTE_CLIPBOARD;
 	if (strcmp(sequence, "200~") == 0)
 		return MORPH_TUI_KEY_PASTE_BEGIN;
 	if (strcmp(sequence, "201~") == 0)
@@ -71,6 +77,10 @@ int morph_tui_input_feed(struct morph_tui_input *input, unsigned char byte)
 	if (input->state == TERMINAL_INPUT_TEXT)
 		return byte;
 	if (input->state == TERMINAL_INPUT_ESCAPE) {
+		if (byte == '\r') {
+			input->state = TERMINAL_INPUT_TEXT;
+			return '\n';
+		}
 		input->state = byte == '['   ? TERMINAL_INPUT_CSI
 			       : byte == 'O' ? INPUT_SS3
 					     : TERMINAL_INPUT_TEXT;

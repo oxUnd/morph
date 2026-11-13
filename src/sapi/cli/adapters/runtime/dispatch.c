@@ -8,6 +8,7 @@
 #include "sapi/cli/presentation/notifications.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/application_internal.h"
 
 int cli_dispatch_event(struct cli_application *ctx, const struct cli_event_queue_item *item)
@@ -25,6 +26,11 @@ int cli_dispatch_event(struct cli_application *ctx, const struct cli_event_queue
 		cli_readline_suspend_callback();
 		cli_feed_update_end(ctx);
 		int result = cli_event_queue_run_owner_call(ctx, item->owner_call);
+		if (cli_chat_active(ctx)) {
+			int restore_rc = morph_tui_application_restore_terminal(&ctx->base);
+			if (restore_rc)
+				return restore_rc;
+		}
 
 		/* A prompt consumes its cancellation key. Do not apply that
 		 * key again to the composer draft restored by its adapter. */

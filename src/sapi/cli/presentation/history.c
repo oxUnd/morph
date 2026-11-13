@@ -1,5 +1,7 @@
 #include "sapi/cli/presentation/history.h"
 #include "sapi/cli/application.h"
+#include "sapi/cli/pages/chat.h"
+#include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/output.h"
@@ -81,6 +83,10 @@ static void cli_history_answer(struct cli_application *ctx, const char *text)
 {
 	if (!text || !text[0])
 		return;
+	if (cli_chat_active(ctx)) {
+		(void)cli_chat_message(ctx, CLI_MESSAGE_ASSISTANT, text);
+		return;
+	}
 	cli_markdown_render_final(ctx, text);
 	cli_markdown_finish_final(ctx);
 }
@@ -96,6 +102,8 @@ static int cli_history_assistant(struct cli_application *ctx,
 
 	if (reasoning[0])
 		rc = cli_transcript_reasoning_append(ctx, reasoning, strlen(reasoning), 1);
+	if (!rc && reasoning[0] && cli_chat_active(ctx))
+		rc = cli_chat_message(ctx, CLI_MESSAGE_REASONING, reasoning);
 	cli_history_answer(ctx, item->content);
 	cJSON_ArrayForEach(call, cJSON_GetObjectItemCaseSensitive(payload, "calls")) {
 		if (rc)

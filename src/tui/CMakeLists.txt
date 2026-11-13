@@ -20,6 +20,7 @@ add_library(morph-tui STATIC
 	widgets/base.c
 	widgets/label.c
 	widgets/stack.c
+	widgets/scroll.c
 	widgets/list_view.c
 	widgets/text_field.c
 	widgets/editor.c

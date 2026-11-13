@@ -1,5 +1,6 @@
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/application.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/presentation/style.h"
 #include "util/cleanup.h"
 #include "sapi/cli/presentation/turn_details.h"
@@ -104,6 +105,15 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 		len -= 8;
 	if (!len)
 		return 0;
+	if (output && cli_chat_active(output->ctx)) {
+		morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		int rc = morph_buf_append(&text, bytes, len);
+		if (!rc)
+			rc = cli_chat_output(output->ctx, morph_buf_cstr_borrow(&text));
+		output->prefix_pending = 0;
+		cli_output_track_tail(&output->trailing_newlines, bytes, len);
+		return rc;
+	}
 	if (output)
 		cli_feed_history_begin(output->ctx);
 	if (output && cli_output_result_begin(output->ctx) != 0)
@@ -111,8 +121,13 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 	/* The renderer buffers incomplete blocks. Emit the prefix only when it
 	 * actually writes, so Readline cannot erase a dangling marker meanwhile. */
 	if (output && output->prefix_pending) {
-		cli_output_printf(output->ctx, "%s" ANSI_BOLD CLI_FEED_MESSAGE ANSI_RESET " ",
-		       output->ctx->output.trailing_newlines < 2 ? "\n" : "");
+		struct morph_tui_view_insets margin = {.top = 1};
+
+		for (int gap = cli_output_block_gap_margin(
+			     margin, output->ctx->output.trailing_newlines);
+		     gap > 0; gap--)
+			cli_output_putchar(output->ctx, '\n');
+		cli_output_printf(output->ctx, ANSI_BOLD CLI_FEED_MESSAGE ANSI_RESET " ");
 		output->prefix_pending = 0;
 	}
 	if (output)
@@ -177,7 +192,7 @@ static struct morph_md_kitty *cli_markdown_create(struct cli_application *ctx, u
 			    ? output->font_path
 			    : NULL;
 	options.font_path = font_path;
-	if (enable_math && cli_output_color_enabled(ctx) &&
+	if (!cli_chat_active(ctx) && enable_math && cli_output_color_enabled(ctx) &&
 	    cli_markdown_terminal_supports_kitty() && font_path)
 		options.features |= MORPH_MD_FEATURE_MATH;
 	options.write = cli_markdown_write;
@@ -188,6 +203,11 @@ static struct morph_md_kitty *cli_markdown_create(struct cli_application *ctx, u
 	options.media_user_data = user;
 	options.load_image = cli_image_loader_load;
 	options.release_image = cli_image_loader_release;
+	if (cli_chat_active(ctx)) {
+		options.media = NULL;
+		options.load_image = cli_markdown_document_image;
+		options.release_image = NULL;
+	}
 	options.image_max_width_columns = CLI_MARKDOWN_IMAGE_MAX_COLUMNS;
 	options.image_max_height_rows = CLI_MARKDOWN_IMAGE_MAX_ROWS;
 	options.image_caption = 1;

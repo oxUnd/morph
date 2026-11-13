@@ -62,6 +62,12 @@ void morph_tui_application_destroy(struct morph_tui_application *);
  * run/step retain the same initialized state until deinit. */
 int morph_tui_application_run(struct morph_tui_application *);
 int morph_tui_application_step(struct morph_tui_application *, int wait);
+/* Flush dirty layout/display without dispatching events or entering libuv.
+ * Owner-only; supports legacy synchronous terminal prompts during dispatch. */
+int morph_tui_application_render(struct morph_tui_application *);
+/* Reassert raw mode/capabilities after an external synchronous prompt, without
+ * switching screens. Invalidates the frame for restoration on the next step. */
+int morph_tui_application_restore_terminal(struct morph_tui_application *);
 int morph_tui_application_is_owner(const struct morph_tui_application *);
 void morph_tui_application_stop(struct morph_tui_application *, int result);
 int morph_tui_application_wake(struct morph_tui_application *);

@@ -16,7 +16,8 @@ struct morph_tui_widget {
 enum morph_tui_widget_action_type {
 	MORPH_TUI_WIDGET_ACTION_ACTIVATE,
 	MORPH_TUI_WIDGET_ACTION_CHANGED,
-	MORPH_TUI_WIDGET_ACTION_SUBMIT
+	MORPH_TUI_WIDGET_ACTION_SUBMIT,
+	MORPH_TUI_WIDGET_ACTION_COMPLETE
 };
 
 struct morph_tui_widget_action {

@@ -47,8 +47,11 @@ int morph_tui_frame_present(struct morph_tui_frame *frame, FILE *output, int col
 
 		if (resized || length != old_length || memcmp(current, previous, length) != 0) {
 			morph_buf_printf(commands, "\033[%d;1H", row);
+			/* Clear before painting: after a full-width row the terminal cursor
+			 * can remain on a wide glyph's trailing cell with wrap pending. */
+			morph_buf_puts(commands, "\033[0m\033[2K");
 			morph_buf_append(commands, current, length);
-			morph_buf_puts(commands, "\033[0m\033[K");
+			morph_buf_puts(commands, "\033[0m");
 		}
 		current += length + (current[length] == '\n');
 		previous += old_length + (previous[old_length] == '\n');

@@ -1,5 +1,7 @@
 #include "sapi/cli/adapters/media/renderer.h"
 #include "sapi/cli/application.h"
+#include "sapi/cli/pages/chat.h"
+#include "util/cleanup.h"
 #include "sapi/cli/presentation/presenter_state.h"
 #include "render/image.h"
 #include "render/video.h"
@@ -8,6 +10,12 @@
 void cli_renderer_media(const char *type, const char *path, void *user)
 {
 	struct cli_application *ctx = (struct cli_application *)user;
+	if (cli_chat_active(ctx)) {
+		morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		if (!morph_buf_printf(&text, "%s: %s", type ? type : "media", path ? path : ""))
+			(void)cli_chat_output(ctx, morph_buf_cstr_borrow(&text));
+		return;
+	}
 
 	/*
 	 * Markdown invokes this adapter at the media node's document position.

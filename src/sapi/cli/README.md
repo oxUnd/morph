@@ -50,16 +50,21 @@ Each header owns its module's declarations; commands include their own handler
 factory headers rather than declaring everything in the registry. Models do not
 import application state. Configuration services do not import wizard pages.
 
-Feed changes compose semantic components rather than building terminal rows in
-event handlers. `widgets/feed_block` owns the shared outer spacing for reasoning,
-compact tools, plans, notices and agent receipts; domain widgets own their content, clipping and
-status styling. Live previews reuse its boundary calculation. Deferred agent
-receipts retain data and render at the current width when committed. Keep new
-feed elements on this component path; do not add local ANSI/newline patches to
-services or event routing. `widgets/plan` owns checklist selection and status
-summaries. `widgets/notice` owns status receipts, diagnostics and tree rows;
-`widgets/notification` composes task notices with Markdown and media. Plain and
-JSON modes retain their separate output contracts.
+Interactive chat is a retained ViewController in alternate screen. Its root Stack
+contains a scrolling feed, activity/jobs/queue controls and a multiline TextField
+composer. `widgets/message` composes Label and content-sized TextView controls;
+`widgets/tool_call` composes a Stack, heading Label and expandable TextView. Plan
+and notice controls use the same base components. Stack spacing and View margin/padding determine
+spacing; pages and event handlers do not count terminal rows or move the cursor.
+Tool events update the existing control by call ID. Streaming messages keep their
+source and remeasure Markdown at the current content width. PgUp/PgDn and wheel
+scroll within the feed; reaching the bottom resumes following.
+
+`widgets/feed_block` and the stateless append formatters remain adapters for
+legacy renderers, child transcript documents, fixtures and non-retained consumers.
+Their trailing-newline helper is a text-output compatibility policy, not a View
+layout engine. Keep new interactive feed content on the retained component path.
+Plain and JSON modes retain their separate output contracts.
 
 The full-screen agents browser follows the same boundary: `widgets/agents_browser`
 owns responsive split/stacked layout, filters, selection and detail scrolling.
@@ -83,15 +88,16 @@ Interrupted tools retain an explicit result indicating that side effects may
 have occurred, so the agent can inspect state before retrying.
 
 For interactive chat, Application initializes the worker, creates the chat page,
-initializes its embedded TUI base and presents the chat controller. Readline is
-an external-input adapter; modal pages use key input on the same controller
-stack. The Application owns initialization, run and deinitialization. Pages
-supply controllers/options and handle page events.
+initializes its embedded TUI base and presents the retained chat ViewController.
+The framework owns key decoding, alternate screen, paste, mouse/focus reporting,
+resize and drawing. The TextField owns editing; the page owns submission, recall,
+completion and command routing. Modal pages use the same controller stack.
+Application owns initialization, run and deinitialization.
 
 The prepare-termination hook rejects new owner calls, cancels and joins an active
 worker and detaches its event queue before the framework destroys controllers
-and terminal state. Deferred chat output is flushed after terminal restoration;
-the chat page and job remain alive until this completes. Plain/JSON modes reuse
+and terminal state. Retained view state stays alive until the worker has joined and the framework
+has destroyed its controllers; the page and job are released afterward. Plain/JSON modes reuse
 the app's runtime, command services and output policies without opening a TUI.
 
 ## Extending the app
@@ -123,7 +129,8 @@ restoration. Keep the slash-command presentation contract in
 
 Application owns opaque presenter and input objects. Presenter owns stream buffers,
 Markdown renderer lifetime and artifact deduplication; input adapters own callback
-closures, completion storage, prompt constraints and the Readline draft/footer.
+closures and compatibility adapters. The retained chat page owns its TextField,
+recall history and completion actions; its footer is a Label.
 The root keeps runtime and execution lifecycle, rather than exposing renderer
 buffers as application state. Feed and turn services query final-output visibility
 through the presenter interface.
@@ -140,24 +147,22 @@ by `presentation/tool_preview`, so replay and redraw never reread today's files.
 The `turn_details` page owns scrolling and a shared TUI frame. Application controls
 its terminal session and input handoff just like other modal pages.
 
-Feed dimensions use the shared terminal-size helper, including row fallback.
-Readline retains native geometry queries where a failed query must disable cursor
-painting rather than apply fallback dimensions.
+The retained feed receives geometry from the framework. Legacy output adapters
+use the shared terminal-size helper, including row fallback.
 
 `/model` (or `/m`) replaces the editable composer with the inline Normal/Ultra
 selector, using the same controller presentation as `/permissions`. Escape and
 Ctrl+C restore the composer without a receipt. Confirming a change persists the
 runtime collaboration mode; `/model normal`, `/model ultra`, `/model status` and
 `/model <name>` also work in noninteractive modes. Ultra keeps a purple `»`
-prompt. Its one-shot 33 ms wave paints only the composer's empty padding, never
-the draft, and stops after 990 ms. Prompt geometry uses its actual display width
-for editing, image labels, wrapped text and terminal resize. Initial state,
-repeated selection and no-color output do not animate.
+prompt. The TextField measures its prompt and wrapped draft at the current
+content width. Prompt color is separate from the draft style; no-color output
+keeps the same geometry.
 
 `widgets/composer_panel` is the reusable presentation for replacing the editable
 composer with local interactions. Its controller owns input handoff, bounded
 height, relative redraw, resize cleanup and dismissal on the root Application's
-existing stack. It preserves the normal screen and history above the panel;
+existing stack. It preserves the active alternate screen and conversation above the panel;
 pages append rows and handle semantic events without terminal cursor control.
 Panels always span the usable terminal width, reserving the last physical column
 to avoid automatic wrapping. Options set the row limit and tick frequency.
@@ -184,7 +189,7 @@ Enter opens a child, Tab and Left/Right select agents in the picker or switch
 threads in the child feed, `f` edits a follow-up, `k` interrupts, and `d` or
 Ctrl+T toggles tool details. Each child retains its own transcript, viewport,
 details setting and unsent draft across navigation. Primary output continues
-reducing in the background and is committed to primary scrollback on return;
+reducing in the background and is reduced into the retained primary feed while the child is visible;
 the primary draft is preserved. `/agents` remains
 the textual inspection command for scripts and quick queries.
 
