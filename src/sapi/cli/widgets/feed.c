@@ -542,13 +542,15 @@ static int cli_feed_preview_rows(const char *text, int columns, int prefix)
 		size_t len = newline ? (size_t)(newline - line) : strlen(line);
 		char *copy = strndup(line, len);
 		size_t width = copy ? utf8_display_width_ansi(copy) : 0;
+		size_t line_rows;
 
 		free(copy);
 		if (first && prefix)
 			width += 2u;
-		rows += (int)((width + available - 1u) / available);
-		if (rows <= 0)
-			rows = 1;
+		/* An empty line still occupies one terminal row, and a trailing
+		 * newline leaves the cursor on that empty row. */
+		line_rows = width > 0 ? (width + available - 1u) / available : 1u;
+		rows += (int)line_rows;
 		first = 0;
 		line = newline ? newline + 1 : NULL;
 	}

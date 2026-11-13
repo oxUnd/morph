@@ -587,3 +587,48 @@ TEST_F(CliTerminalTest, MarkdownPreviewCountsWrappedRowsWhenClearing)
 	close(slave);
 	close(master);
 }
+
+TEST_F(CliTerminalTest, MarkdownPreviewCountsTrailingBlankRowWhenClearing)
+{
+	int master = posix_openpt(O_RDWR | O_NOCTTY);
+	ASSERT_GE(master, 0);
+	ASSERT_EQ(grantpt(master), 0);
+	ASSERT_EQ(unlockpt(master), 0);
+	int slave = open(ptsname(master), O_RDWR | O_NOCTTY);
+	ASSERT_GE(slave, 0);
+	FILE *output = fdopen(dup(slave), "w");
+	ASSERT_NE(output, nullptr);
+	ASSERT_NE(fcntl(master, F_SETFL, O_NONBLOCK), -1);
+	winsize size{};
+	size.ws_col = 80;
+	size.ws_row = 24;
+	ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
+	cli_output_set_color_enabled(&ctx, 1);
+	ASSERT_EQ(cli_feed_init(&ctx, output, slave), 0);
+	auto take = [&] {
+		std::string bytes;
+		char buffer[BUFSIZ];
+		ssize_t length;
+		while ((length = read(master, buffer, sizeof(buffer))) > 0)
+			bytes.append(buffer, static_cast<size_t>(length));
+		return bytes;
+	};
+
+	cli_feed_live_set(&ctx, "Working");
+	(void)take();
+	std::string text = "已知限制\n";
+	ASSERT_EQ(cli_feed_markdown_preview_set(&ctx, text.data(), text.size(), 0), 0);
+	cli_feed_render_frame(&ctx, 1);
+	(void)take();
+	cli_feed_render_frame(&ctx, 1);
+	std::string cleared = take();
+	size_t clear_rows = 0;
+	for (size_t pos = 0; (pos = cleared.find("\033[2K", pos)) != std::string::npos;
+	     pos += 4)
+		clear_rows++;
+	EXPECT_EQ(clear_rows, 3u);
+	cli_feed_cleanup(&ctx);
+	fclose(output);
+	close(slave);
+	close(master);
+}
