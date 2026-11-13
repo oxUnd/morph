@@ -528,12 +528,41 @@ int cli_feed_markdown_preview_set(struct cli_application *ctx, const char *text,
 	return 0;
 }
 
+/* The terminal wraps a logical preview line that exceeds the current width,
+ * so the frame height must count wrapped rows as well. */
+static int cli_feed_preview_rows(const char *text, int columns, int prefix)
+{
+	int rows = 0;
+	const char *line = text;
+	size_t available = columns > 0 ? (size_t)columns : 1u;
+	int first = 1;
+
+	while (line) {
+		const char *newline = strchr(line, '\n');
+		size_t len = newline ? (size_t)(newline - line) : strlen(line);
+		char *copy = strndup(line, len);
+		size_t width = copy ? utf8_display_width_ansi(copy) : 0;
+
+		free(copy);
+		if (first && prefix)
+			width += 2u;
+		rows += (int)((width + available - 1u) / available);
+		if (rows <= 0)
+			rows = 1;
+		first = 0;
+		line = newline ? newline + 1 : NULL;
+	}
+	return rows;
+}
+
 static int cli_feed_render_markdown_preview(struct cli_application *ctx, int reserved, int draw)
 {
 	struct cli_feed *terminal = ctx->terminal;
 	const char *text = morph_buf_cstr_borrow(&terminal->markdown_preview);
-	const char *cursor;
-	int rows = 1;
+	const char *original = text;
+	const char *visible = text;
+	int prefix = terminal->markdown_preview_prefix;
+	int rows;
 	int limit;
 	int gap;
 
@@ -542,27 +571,28 @@ static int cli_feed_render_markdown_preview(struct cli_application *ctx, int res
 	limit = cli_feed_output_rows(terminal) - reserved;
 	if (limit < 1)
 		return 0;
-	for (cursor = text; *cursor; cursor++)
-		if (*cursor == '\n')
-			rows++;
 	/* Keep every mutable row inside the viewport; committed history above it
 	 * must never be erased when a paragraph grows beyond one screen. */
+	rows = cli_feed_preview_rows(visible, terminal->columns, prefix);
 	while (rows > limit) {
-		text = strchr(text, '\n') + 1;
-		rows--;
+		const char *newline = strchr(visible, '\n');
+
+		if (!newline)
+			break;
+		text = newline + 1;
+		visible = text;
+		if (prefix && text != original && visible[0] == ' ' && visible[1] == ' ')
+			visible += 2;
+		rows = cli_feed_preview_rows(visible, terminal->columns, prefix);
 	}
-	gap = terminal->markdown_preview_prefix && ctx->output.trailing_newlines < 2;
+	gap = prefix && ctx->output.trailing_newlines < 2;
 	if (!draw)
 		return rows + gap;
 	if (gap)
 		fputc('\n', terminal->output);
-	if (terminal->markdown_preview_prefix) {
-		if (text != morph_buf_cstr_borrow(&terminal->markdown_preview) && text[0] == ' ' &&
-		    text[1] == ' ')
-			text += 2;
+	if (prefix)
 		fprintf(terminal->output, ANSI_BOLD CLI_FEED_MESSAGE ANSI_RESET " ");
-	}
-	fprintf(terminal->output, "%s" ANSI_RESET, text);
+	fprintf(terminal->output, "%s" ANSI_RESET, visible);
 	return rows + gap;
 }
 
