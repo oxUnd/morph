@@ -34,7 +34,8 @@ static struct morph_tui_color cli_messages_color_value(struct cli_messages_color
 		return (struct morph_tui_color){MORPH_TUI_COLOR_INDEXED,
 			(unsigned)(color.code % 10 + 8)};
 	if (color.code)
-		return (struct morph_tui_color){MORPH_TUI_COLOR_INDEXED, (unsigned)(color.code % 10)};
+		return (struct morph_tui_color){
+			MORPH_TUI_COLOR_INDEXED, (unsigned)(color.code % 10)};
 	return (struct morph_tui_color){MORPH_TUI_COLOR_DEFAULT, 0};
 }
 
@@ -371,6 +372,7 @@ int cli_messages_set_rendered_view(struct morph_tui_view *view, const char *text
 		return -EINVAL;
 	morph_array_t spans MORPH_CLEANUP(morph_array_cleanup) = {0};
 	morph_buf_t bytes MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	morph_buf_t hyperlink MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	struct morph_tui_text_span span;
 	int rc = morph_array_init(&spans, 16, sizeof(span));
 	if (!rc)
@@ -379,6 +381,15 @@ int cli_messages_set_rendered_view(struct morph_tui_view *view, const char *text
 	size_t length = strlen(text);
 	for (size_t i = 0; !rc && i < length;) {
 		if (text[i] == '\033') {
+			if (!strncmp(text + i, "\033]8;", 4)) {
+				const char *uri = strchr(text + i + 4, ';');
+				if (uri) {
+					uri++;
+					size_t uri_length = strcspn(uri, "\a\033");
+					morph_buf_reset(&hyperlink);
+					rc = morph_buf_append(&hyperlink, uri, uri_length);
+				}
+			}
 			i += cli_messages_escape(text + i, length - i, &state);
 			continue;
 		}
@@ -407,6 +418,11 @@ int cli_messages_set_rendered_view(struct morph_tui_view *view, const char *text
 		rc = morph_buf_append(&bytes, text + start, i - start);
 		if (!rc)
 			rc = morph_buf_putc(&bytes, '\0');
+		if (!rc)
+			rc = morph_buf_puts(&bytes,
+				styled && hyperlink.len ? hyperlink.data : "");
+		if (!rc)
+			rc = morph_buf_putc(&bytes, '\0');
 		struct morph_tui_text_span *slot = rc ? NULL : morph_array_push_borrow(&spans);
 		if (!rc && !slot)
 			rc = -ENOMEM;
@@ -420,6 +436,8 @@ int cli_messages_set_rendered_view(struct morph_tui_view *view, const char *text
 		struct morph_tui_text_span *slot = morph_array_borrow(&spans, i);
 		slot->text = bytes.data + offset;
 		offset += strlen(slot->text) + 1;
+		slot->hyperlink = bytes.data[offset] ? bytes.data + offset : NULL;
+		offset += strlen(bytes.data + offset) + 1;
 	}
 	/* Component/Stack geometry owns external separation. Preserve interior
 	 * blank lines while removing legacy formatter boundary newlines. */

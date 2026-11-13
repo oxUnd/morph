@@ -50,11 +50,11 @@ Each header owns its module's declarations; commands include their own handler
 factory headers rather than declaring everything in the registry. Models do not
 import application state. Configuration services do not import wizard pages.
 
-Interactive chat is a retained ViewController in alternate screen. Its root Stack
+Interactive chat is a retained ViewController in alternate screen. Its page layout
 contains a scrolling feed, activity/jobs/queue controls and a multiline TextField
 composer. `widgets/message` composes Label and content-sized TextView controls;
-`widgets/tool_call` composes a Stack, heading Label and expandable TextView. Plan
-and notice controls use the same base components. Stack spacing and View margin/padding determine
+`widgets/tool_call` composes a Stack and rich content-sized TextViews. Plan
+and notice controls use the same base components. View margin/padding determine
 spacing; pages and event handlers do not count terminal rows or move the cursor.
 Tool events update the existing control by call ID. Streaming messages keep their
 source and remeasure Markdown at the current content width. PgUp/PgDn and wheel
@@ -130,7 +130,7 @@ restoration. Keep the slash-command presentation contract in
 Application owns opaque presenter and input objects. Presenter owns stream buffers,
 Markdown renderer lifetime and artifact deduplication; input adapters own callback
 closures and compatibility adapters. The retained chat page owns its TextField,
-recall history and completion actions; its footer is a Label.
+recall history and completion actions; its adaptive footer is a TextView.
 The root keeps runtime and execution lifecycle, rather than exposing renderer
 buffers as application state. Feed and turn services query final-output visibility
 through the presenter interface.
@@ -155,7 +155,8 @@ selector, using the same controller presentation as `/permissions`. Escape and
 Ctrl+C restore the composer without a receipt. Confirming a change persists the
 runtime collaboration mode; `/model normal`, `/model ultra`, `/model status` and
 `/model <name>` also work in noninteractive modes. Ultra keeps a purple `»`
-prompt. The TextField measures its prompt and wrapped draft at the current
+prompt and its original padding sweep, drawn only on framework-provided padding
+canvases. The TextField measures its prompt and wrapped draft at the current
 content width. Prompt color is separate from the draft style; no-color output
 keeps the same geometry.
 

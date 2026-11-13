@@ -12,6 +12,8 @@ extern "C" {
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/history.h"
+#include "sapi/cli/presentation/composer_footer.h"
+#include "sapi/cli/presentation/work_status.h"
 #include "sapi/cli/presentation/agent_tools.h"
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/widgets/banner.h"
@@ -55,6 +57,7 @@ struct cli_cancel_monitor *cli_cancel_monitor_start(struct cli_application *ctx,
 #include <netinet/in.h>
 #include <thread>
 #include <vector>
+#include <memory>
 
 TEST(CliMarkdownImageTest, BlockPreviewsFitBoundsAndShowOriginalPathAndAlt)
 {
@@ -336,6 +339,118 @@ class CliPresentationTest : public ::testing::Test
 		return data;
 	}
 };
+
+TEST_F(CliPresentationTest, ComposerFooterPreservesAdaptiveOriginalFieldsAndStyles)
+{
+	const std::string config_path = std::string(dir) + "/footer.toml";
+	const std::string database = std::string(dir) + "/footer.db";
+	const char config[] = "[model.text]\nmodel = \"footer-model\"\ncontext_limit = 128000\n";
+	ASSERT_EQ(file_write_all(config_path.c_str(), config, sizeof(config) - 1), 0);
+	struct runtime_options options{};
+	options.config_path = config_path.c_str();
+	options.db_path = database.c_str();
+	options.workdir = dir;
+	options.front_name = "test";
+	struct runtime *opened = nullptr;
+	ASSERT_EQ(runtime_open(&options, &opened), 0);
+	std::unique_ptr<struct runtime, decltype(&runtime_close)> owner(opened, runtime_close);
+	ctx.runtime = owner.get();
+	ctx.input_status.tokens = 1234;
+	ctx.input_status.credits = 42;
+	for (int width : {120, 80, 60}) {
+		SCOPED_TRACE(width);
+		for (int styled : {0, 1}) {
+			SCOPED_TRACE(styled);
+			cli_output_set_color_enabled(&ctx, styled);
+			ctx.input_status.limit = 0;
+			morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			ASSERT_EQ(cli_composer_footer_render(&ctx, width, &text), 0);
+			EXPECT_EQ(ctx.input_status.limit, 128000);
+			const char *rendered = morph_buf_cstr_borrow(&text);
+			char *plain MORPH_CLEANUP(morph_charp_cleanup) =
+				utf8_terminal_sanitize_dup(rendered, text.len,
+							    UTF8_TERMINAL_TEXT_MULTILINE, nullptr);
+			ASSERT_NE(plain, nullptr);
+			std::string output(plain);
+			EXPECT_EQ(output.find("morph · "), 0u) << output;
+			EXPECT_NE(output.find("perm: ask · "), std::string::npos) << output;
+			EXPECT_NE(output.find(width >= 100 ? "context 1.23k / 128k  ·  42 credits"
+							 : "ctx 1.23k / 128k · 42 cr"),
+				  std::string::npos) << output;
+			EXPECT_LE(utf8_display_width(plain), static_cast<size_t>(width - 4));
+			EXPECT_EQ(output.find('\n'), std::string::npos);
+			if (width == 120)
+				EXPECT_NE(output.find("footer-model"), std::string::npos) << output;
+			if (styled) {
+				EXPECT_NE(std::string(rendered).find("\033[1mmorph\033[0m"),
+					  std::string::npos);
+				EXPECT_NE(std::string(rendered).find("\033[2mperm: ask"),
+					  std::string::npos);
+			} else
+				EXPECT_EQ(std::string(rendered).find('\033'), std::string::npos);
+		}
+	}
+	ctx.runtime = nullptr;
+}
+
+TEST(CliWorkStatusTest, RunningPreservesOriginalLabelClockAndTranscriptHint)
+{
+	for (int width : {120, 80, 60}) {
+		SCOPED_TRACE(width);
+		morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		ASSERT_EQ(cli_work_status_running(&text, width, 0, 65999, 1000, nullptr), 0);
+		std::string expected = "◉ Working · 1m 5s · esc to interrupt";
+		expected += width >= 76 ? " · Ctrl+T transcript" : " · Ctrl+T";
+		EXPECT_EQ(morph_buf_cstr_borrow(&text), expected);
+		EXPECT_LE(utf8_display_width(morph_buf_cstr_borrow(&text)),
+			  static_cast<size_t>(width));
+	}
+	morph_buf_t styled MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	ASSERT_EQ(cli_work_status_running(&styled, 60, 1, 900, 1000, "Agents: 2 running · 1 done"),
+		  0);
+	const std::string rendered = morph_buf_cstr_borrow(&styled);
+	EXPECT_NE(rendered.find("\033[36m◉\033[0m "), std::string::npos);
+	EXPECT_NE(rendered.find("\033[38;2;"), std::string::npos);
+	EXPECT_NE(rendered.find("\033[38;5;141m · Ctrl+T\033[0m"), std::string::npos);
+	char *plain MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
+		rendered.c_str(), rendered.size(), UTF8_TERMINAL_TEXT_MULTILINE, nullptr);
+	ASSERT_NE(plain, nullptr);
+	EXPECT_EQ(std::string(plain).find("◉ Working · 0s · esc · Agents:"), 0u);
+	EXPECT_LE(utf8_display_width(plain), 60u);
+}
+
+TEST(CliWorkStatusTest, CompletionPreservesIntegerDurationAndLocalTimestamp)
+{
+	struct tm finished{};
+	finished.tm_year = 126;
+	finished.tm_mon = 0;
+	finished.tm_mday = 1;
+	finished.tm_hour = 12;
+	finished.tm_min = 34;
+	finished.tm_isdst = -1;
+	time_t at = mktime(&finished);
+	ASSERT_NE(at, static_cast<time_t>(-1));
+	for (int result : {0, -ECANCELED, -EIO}) {
+		SCOPED_TRACE(result);
+		for (int styled : {0, 1}) {
+			morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			ASSERT_EQ(cli_work_status_completed(&text, 80, styled, result, 65999, at), 0);
+			std::string label = result == 0		     ? "Worked for "
+					    : result == -ECANCELED ? "Stopped after "
+								 : "Failed after ";
+			std::string expected;
+			if (styled)
+				expected += "\033[2m";
+			expected += label + "1m 5s · 12:34";
+			if (styled)
+				expected += "\033[0m";
+			EXPECT_EQ(morph_buf_cstr_borrow(&text), expected);
+		}
+	}
+	EXPECT_EQ(cli_work_status_interval_ms(600, 600), 32);
+	EXPECT_EQ(cli_work_status_interval_ms(2000, 2000), 500);
+	EXPECT_EQ(cli_work_status_interval_ms(2500, 2500), 500);
+}
 
 TEST_F(CliPresentationTest, RestoresInactiveHistoryAndToolsWithoutInternalRecords)
 {
@@ -921,9 +1036,11 @@ static CliTestTextStyle cli_test_style_at(const std::string &output, const char 
 				style.foreground = -1;
 			else if ((code == 38 || code == 48) && index + 1 < codes.size()) {
 				int mode = codes[++index];
+				int palette = mode == 5 && index + 1 < codes.size() ? codes[index + 1] : -1;
 				index += mode == 5 ? 1u : mode == 2 ? 3u : 0u;
 				if (code == 38)
-					style.foreground = -2;
+					style.foreground = palette >= 0 && palette < 8 ? 30 + palette
+						: palette >= 8 && palette < 16 ? 90 + palette - 8 : -2;
 			}
 		}
 		offset = end;

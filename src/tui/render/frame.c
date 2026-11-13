@@ -1,11 +1,12 @@
 #include <morph/tui/frame.h>
+#include "frame_internal.h"
 #include <morph/tui/draw.h>
 #include "util/error.h"
 
 #include <string.h>
 
-int morph_tui_frame_present(struct morph_tui_frame *frame, FILE *output, int columns, int rows,
-			    const char *lines)
+int render_frame_present_composed(struct morph_tui_frame *frame, FILE *output, int columns,
+				  int rows, const char *lines, const morph_buf_t *overlay)
 {
 	if (!frame || !output || !lines || columns < 1 || rows < 1)
 		return -EINVAL;
@@ -13,7 +14,8 @@ int morph_tui_frame_present(struct morph_tui_frame *frame, FILE *output, int col
 	size_t size = strlen(lines);
 
 	if (!resized && frame->previous.len == size &&
-	    memcmp(morph_buf_cstr_borrow(&frame->previous), lines, size) == 0)
+	    memcmp(morph_buf_cstr_borrow(&frame->previous), lines, size) == 0 &&
+	    (!overlay || !overlay->len))
 		return 0;
 	if (!frame->previous.data) {
 		int rc = morph_buf_init(&frame->previous, BUFSIZ);
@@ -56,6 +58,8 @@ int morph_tui_frame_present(struct morph_tui_frame *frame, FILE *output, int col
 		current += length + (current[length] == '\n');
 		previous += old_length + (previous[old_length] == '\n');
 	}
+	if (overlay)
+		morph_buf_append(commands, morph_buf_cstr_borrow(overlay), overlay->len);
 	morph_buf_puts(commands, "\033[?2026l");
 	rc = morph_tui_draw_write(output, commands);
 	if (rc != 0) {
@@ -68,6 +72,12 @@ int morph_tui_frame_present(struct morph_tui_frame *frame, FILE *output, int col
 	frame->columns = columns;
 	frame->target = output;
 	return rc;
+}
+
+int morph_tui_frame_present(struct morph_tui_frame *frame, FILE *output, int columns, int rows,
+			    const char *lines)
+{
+	return render_frame_present_composed(frame, output, columns, rows, lines, NULL);
 }
 
 void morph_tui_frame_invalidate(struct morph_tui_frame *frame)

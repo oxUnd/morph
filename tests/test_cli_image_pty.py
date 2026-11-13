@@ -36,7 +36,7 @@ def main():
             'MORPH_PTY_IMAGE': str(source)})
         releases = []
         try:
-            terminal.pump(1)
+            terminal.wait_for_composer()
             composer_raw_start = len(terminal.raw)
             terminal.send('Compare \x16\x16')
             deadline = time.monotonic() + 8

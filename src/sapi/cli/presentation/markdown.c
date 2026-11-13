@@ -13,12 +13,17 @@
 #include "sapi/cli/adapters/media/renderer.h"
 #include "sapi/cli/application_internal.h"
 #include "util/data.h"
+#include <morph/tui/media.h>
+#include "render/video.h"
 
 #include <limits.h>
 #include <sys/ioctl.h>
 
 #define CLI_MARKDOWN_IMAGE_MAX_COLUMNS 48u
 #define CLI_MARKDOWN_IMAGE_MAX_ROWS 12u
+
+static int cli_markdown_terminal_supports_kitty(void);
+static int cli_markdown_retained_document(morph_buf_t *, const char *, int, int, int);
 
 static char *cli_markdown_normalized_copy(const char *text)
 {
@@ -85,6 +90,95 @@ int cli_markdown_render_document(morph_buf_t *out, const char *text, int columns
 	if (rc == 0)
 		rc = morph_md_kitty_render(renderer);
 	return rc;
+}
+
+struct cli_markdown_retained {
+	morph_buf_t *out;
+	int columns, styled, error;
+};
+
+static void cli_markdown_retained_preview_cleanup(char **owner)
+{
+	if (*owner)
+		unlink(*owner);
+	morph_charp_cleanup(owner);
+}
+
+static void cli_markdown_retained_media(const char *type, const char *path, void *opaque)
+{
+	struct cli_markdown_retained *output = opaque;
+	if (output->error || strcmp(type, "video"))
+		return;
+	morph_buf_t url MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	output->error = video_file_url_append(path, &url);
+	if (output->error)
+		return;
+	char *preview MORPH_CLEANUP(cli_markdown_retained_preview_cleanup) = NULL;
+	if (output->styled && morph_tui_media_protocol_available() &&
+	    !video_preview_create_copy(path, &preview)) {
+		morph_buf_t preview_url MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		morph_buf_t markdown MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		output->error = video_file_url_append(preview, &preview_url);
+		if (!output->error)
+			output->error = morph_buf_printf(&markdown, "![](<%s>)\n",
+				morph_buf_cstr_borrow(&preview_url));
+		if (!output->error)
+			output->error = cli_markdown_retained_document(output->out,
+				morph_buf_cstr_borrow(&markdown), output->columns,
+				output->styled, 0);
+	}
+	if (!output->error)
+		output->error = morph_buf_printf(output->out,
+			"\n\033]8;;%s\033\\▶ Open video\033]8;;\033\\\n",
+			morph_buf_cstr_borrow(&url));
+}
+
+static int cli_markdown_retained_document(morph_buf_t *out, const char *text, int columns,
+	int styled, int image_caption)
+{
+	if (!out || !text)
+		return -EINVAL;
+	char *normalized MORPH_CLEANUP(morph_charp_cleanup) = cli_markdown_normalized_copy(text);
+	if (!normalized)
+		return -ENOMEM;
+	struct morph_md_kitty_options options;
+	cli_markdown_options(&options, 0, 0);
+	/* The retained message's View owns its right padding. */
+	options.content_padding_right_columns = 0;
+	options.write = cli_markdown_document_write;
+	options.user_data = out;
+	struct cli_markdown_retained output = {.out = out, .columns = columns, .styled = styled};
+	options.media = cli_markdown_retained_media;
+	options.media_user_data = &output;
+	options.terminal_fd = STDOUT_FILENO;
+	options.terminal_columns = columns > 0 ? (unsigned)columns : 1u;
+	options.image_max_width_columns = CLI_MARKDOWN_IMAGE_MAX_COLUMNS;
+	options.image_max_height_rows = CLI_MARKDOWN_IMAGE_MAX_ROWS;
+	options.image_caption = image_caption;
+	char font[PATH_MAX];
+	if (styled && morph_tui_media_protocol_available()) {
+		options.load_image = cli_image_loader_load;
+		options.release_image = cli_image_loader_release;
+		if (cli_markdown_terminal_supports_kitty() &&
+		    !morph_data_find(font, sizeof(font), "fonts/STIXTwoMath-Regular.ttf")) {
+			options.font_path = font;
+			options.features |= MORPH_MD_FEATURE_MATH;
+		}
+	} else
+		options.load_image = cli_markdown_document_image;
+	struct morph_md_kitty *renderer MORPH_CLEANUP(cli_markdown_renderer_cleanup) =
+		morph_md_kitty_create(&options);
+	if (!renderer)
+		return -ENOMEM;
+	int rc = morph_md_kitty_append(renderer, normalized, strlen(normalized), 1);
+	if (!rc)
+		rc = morph_md_kitty_render(renderer);
+	return rc ? rc : output.error;
+}
+
+int cli_markdown_render_retained(morph_buf_t *out, const char *text, int columns, int styled)
+{
+	return cli_markdown_retained_document(out, text, columns, styled, 1);
 }
 
 static int cli_markdown_write(const char *bytes, size_t len, void *user)
@@ -192,7 +286,7 @@ static struct morph_md_kitty *cli_markdown_create(struct cli_application *ctx, u
 			    ? output->font_path
 			    : NULL;
 	options.font_path = font_path;
-	if (!cli_chat_active(ctx) && enable_math && cli_output_color_enabled(ctx) &&
+	if (enable_math && cli_output_color_enabled(ctx) &&
 	    cli_markdown_terminal_supports_kitty() && font_path)
 		options.features |= MORPH_MD_FEATURE_MATH;
 	options.write = cli_markdown_write;
@@ -203,8 +297,8 @@ static struct morph_md_kitty *cli_markdown_create(struct cli_application *ctx, u
 	options.media_user_data = user;
 	options.load_image = cli_image_loader_load;
 	options.release_image = cli_image_loader_release;
-	if (cli_chat_active(ctx)) {
-		options.media = NULL;
+	if (cli_chat_active(ctx) &&
+	    (!cli_output_color_enabled(ctx) || !morph_tui_media_protocol_available())) {
 		options.load_image = cli_markdown_document_image;
 		options.release_image = NULL;
 	}

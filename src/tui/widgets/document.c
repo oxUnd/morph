@@ -12,7 +12,16 @@
 struct widget_document_span {
 	size_t start, length;
 	struct morph_tui_text_style style;
+	char *hyperlink;
 };
+
+static void widget_document_spans_cleanup(morph_array_t *spans)
+{
+	struct widget_document_span *span;
+	morph_array_foreach (span, spans, struct widget_document_span)
+		free(span->hyperlink);
+	morph_array_cleanup(spans);
+}
 
 struct widget_document {
 	struct morph_tui_widget base;
@@ -30,7 +39,8 @@ static int widget_document_measure(struct morph_tui_view *view, int width,
 {
 	struct widget_document *document = (struct widget_document *)view;
 	int rc = morph_tui_widget_text_layout_wrap_borrow(
-		&document->lines, document->text ? document->text : "", width > 0 ? (size_t)width : 1);
+		&document->lines, document->text ? document->text : "",
+		width > 0 ? (size_t)width : 1);
 	if (rc)
 		return rc;
 	size_t rows = document->lines.lines.nelts;
@@ -81,7 +91,8 @@ static int widget_document_draw(struct morph_tui_view *view, struct morph_tui_ca
 			break;
 		int x = 0;
 		for (size_t i = 0; i < document->spans.nelts; i++) {
-			const struct widget_document_span *span = morph_array_borrow(&document->spans, i);
+			const struct widget_document_span *span =
+				morph_array_borrow(&document->spans, i);
 			size_t start = span->start > line->offset ? span->start : line->offset;
 			size_t end = span->start + span->length;
 			if (end > line->offset + line->length)
@@ -89,7 +100,8 @@ static int widget_document_draw(struct morph_tui_view *view, struct morph_tui_ca
 			if (end <= start)
 				continue;
 			morph_buf_reset(&document->row);
-			int rc = morph_buf_append(&document->row, document->text + start, end - start);
+			int rc = morph_buf_append(&document->row,
+				document->text + start, end - start);
 			struct morph_tui_text_style style = canvas->style;
 			style.attributes |= span->style.attributes;
 			if (span->style.foreground.kind)
@@ -97,8 +109,9 @@ static int widget_document_draw(struct morph_tui_view *view, struct morph_tui_ca
 			if (span->style.background.kind)
 				style.background = span->style.background;
 			if (!rc)
-				rc = morph_tui_canvas_text_styled(canvas, x, y,
-					morph_buf_cstr_borrow(&document->row), &style);
+				rc = morph_tui_canvas_text_link(canvas, x, y,
+					morph_buf_cstr_borrow(&document->row), &style,
+					span->hyperlink);
 			if (rc)
 				return rc;
 			x += (int)utf8_display_width(morph_buf_cstr_borrow(&document->row));
@@ -134,7 +147,7 @@ static void widget_document_destroy(struct morph_tui_view *view)
 
 	morph_tui_widget_text_layout_cleanup(&document->lines);
 	morph_buf_cleanup(&document->row);
-	morph_array_cleanup(&document->spans);
+	widget_document_spans_cleanup(&document->spans);
 	free(document->text);
 }
 
@@ -156,7 +169,7 @@ int morph_tui_widget_text_view_set_spans_copy(struct morph_tui_view *view,
 	struct widget_document *document = (struct widget_document *)view;
 
 	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_array_t ranges MORPH_CLEANUP(morph_array_cleanup) = {0};
+	morph_array_t ranges MORPH_CLEANUP(widget_document_spans_cleanup) = {0};
 	struct widget_document_span range;
 	int rc = morph_buf_init(&text, 128);
 	if (!rc)
@@ -168,13 +181,24 @@ int morph_tui_widget_text_view_set_spans_copy(struct morph_tui_view *view,
 			spans[i].text, strlen(spans[i].text), UTF8_TERMINAL_TEXT_MULTILINE, NULL);
 		if (!safe)
 			return -ENOMEM;
-		range = (struct widget_document_span){text.len, strlen(safe), spans[i].style};
+		char *link MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+		if (spans[i].hyperlink) {
+			link = utf8_terminal_sanitize_dup(spans[i].hyperlink,
+				strlen(spans[i].hyperlink), UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+			if (!link)
+				return -ENOMEM;
+			if (strcmp(link, spans[i].hyperlink))
+				return -EINVAL;
+		}
+		range = (struct widget_document_span){text.len, strlen(safe), spans[i].style, NULL};
 		rc = morph_buf_puts(&text, safe);
 		struct widget_document_span *slot = rc ? NULL : morph_array_push_borrow(&ranges);
 		if (!rc && !slot)
 			rc = -ENOMEM;
-		if (!rc)
+		if (!rc) {
+			range.hyperlink = morph_charp_steal(&link);
 			*slot = range;
+		}
 	}
 	if (rc)
 		return rc;
@@ -184,13 +208,14 @@ int morph_tui_widget_text_view_set_spans_copy(struct morph_tui_view *view,
 		const struct widget_document_span *a = morph_array_borrow(&document->spans, i);
 		const struct widget_document_span *b = morph_array_borrow(&ranges, i);
 		equal = a->start == b->start && a->length == b->length &&
-			morph_tui_text_style_equal(a->style, b->style);
+			morph_tui_text_style_equal(a->style, b->style) &&
+			!strcmp(a->hyperlink ? a->hyperlink : "", b->hyperlink ? b->hyperlink : "");
 	}
 	if (equal)
 		return 0;
 	free(document->text);
 	document->text = morph_buf_detach(&text);
-	morph_array_cleanup(&document->spans);
+	widget_document_spans_cleanup(&document->spans);
 	rc = morph_array_take(&document->spans, &ranges);
 	if (rc)
 		return rc;

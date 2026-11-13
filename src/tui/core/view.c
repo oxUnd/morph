@@ -457,6 +457,33 @@ int morph_tui_view_set_layout_borrow(struct morph_tui_view *view, struct morph_t
 	return 0;
 }
 
+static int core_view_draw_padding(struct morph_tui_view *view,
+				  struct morph_tui_canvas *frame,
+				  struct morph_tui_view_rect content)
+{
+	if (!view->ops || !view->ops->draw_padding)
+		return 0;
+	const struct morph_tui_view_rect edges[] = {
+		{0, 0, frame->width, content.y},
+		{content.x + content.width, content.y,
+		 frame->width - content.x - content.width, content.height},
+		{0, content.y + content.height, frame->width,
+		 frame->height - content.y - content.height},
+		{0, content.y, content.x, content.height},
+	};
+	for (size_t i = 0; i < sizeof(edges) / sizeof(edges[0]); i++) {
+		struct morph_tui_canvas edge;
+		morph_tui_canvas_child_borrow(frame, edges[i].x, edges[i].y,
+			edges[i].width, edges[i].height, &edge);
+		if (edge.left >= edge.right || edge.top >= edge.bottom)
+			continue;
+		int rc = view->ops->draw_padding(view, (enum morph_tui_view_edge)i, &edge);
+		if (rc)
+			return rc;
+	}
+	return 0;
+}
+
 int core_view_draw(struct morph_tui_view *view, struct morph_tui_canvas *parent)
 {
 	if (view->state->hidden)
@@ -481,7 +508,9 @@ int core_view_draw(struct morph_tui_view *view, struct morph_tui_canvas *parent)
 	struct morph_tui_canvas content;
 
 	morph_tui_canvas_child_borrow(&canvas, rect.x, rect.y, rect.width, rect.height, &content);
-	int rc = view->ops && view->ops->draw ? view->ops->draw(view, &content) : 0;
+	int rc = core_view_draw_padding(view, &canvas, rect);
+	if (!rc && view->ops && view->ops->draw)
+		rc = view->ops->draw(view, &content);
 
 	struct morph_tui_canvas children = canvas;
 	children.left = content.left;

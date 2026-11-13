@@ -2,6 +2,7 @@
 #define MORPH_TUI_CANVAS_H
 
 #include "util/buf.h"
+#include <morph/tui/media.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,6 +42,8 @@ struct morph_tui_text_style {
 struct morph_tui_text_span {
 	const char *text;
 	struct morph_tui_text_style style;
+	/* Optional URI, copied by TextView and Canvas. Terminal controls are rejected. */
+	const char *hyperlink;
 };
 
 /* Canvas borrows surface until surface destruction. Coordinates are zero-based
@@ -59,6 +62,14 @@ void morph_tui_surface_destroy(struct morph_tui_surface *surface);
 int morph_tui_surface_resize(struct morph_tui_surface *surface, int width, int height);
 void morph_tui_surface_clear(struct morph_tui_surface *surface);
 int morph_tui_surface_rows(struct morph_tui_surface *surface, morph_buf_t *rows);
+/* Placements borrow immutable assets through the next clear/resize/destroy.
+ * The surface retains assets independently of the drawing widget. */
+size_t morph_tui_surface_image_count(const struct morph_tui_surface *);
+const struct morph_tui_media_placement *morph_tui_surface_image_borrow(
+	const struct morph_tui_surface *, size_t index);
+/* Records a visible native image, respecting all ancestor/content clips. */
+int morph_tui_canvas_image(struct morph_tui_canvas *, struct morph_tui_media_asset *,
+			   int x, int y, int width, int height);
 void morph_tui_canvas_root_borrow(struct morph_tui_surface *surface,
 				  struct morph_tui_canvas *canvas);
 void morph_tui_canvas_child_borrow(const struct morph_tui_canvas *parent, int x, int y, int width,
@@ -68,6 +79,8 @@ int morph_tui_canvas_text(struct morph_tui_canvas *canvas, int x, int y, const c
 int morph_tui_canvas_fill(struct morph_tui_canvas *canvas, unsigned style);
 int morph_tui_canvas_text_styled(struct morph_tui_canvas *, int x, int y, const char *,
 				 const struct morph_tui_text_style *);
+int morph_tui_canvas_text_link(struct morph_tui_canvas *, int x, int y, const char *,
+	const struct morph_tui_text_style *, const char *uri);
 int morph_tui_canvas_fill_styled(struct morph_tui_canvas *, const struct morph_tui_text_style *);
 int morph_tui_text_style_equal(struct morph_tui_text_style, struct morph_tui_text_style);
 int morph_tui_text_style_valid(struct morph_tui_text_style);

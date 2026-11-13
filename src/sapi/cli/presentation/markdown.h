@@ -10,6 +10,8 @@ struct cli_application;
  * writes, media callbacks or presenter streaming state are involved. */
 int cli_markdown_render_document(morph_buf_t *out, const char *text, int columns,
 				 unsigned int indent);
+/* Captures native media/math as well as text for retained rich-document parsing. */
+int cli_markdown_render_retained(morph_buf_t *out, const char *text, int columns, int styled);
 
 struct cli_markdown_output {
 	struct cli_application *ctx;

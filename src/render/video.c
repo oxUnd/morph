@@ -2,6 +2,7 @@
 #include "video.h"
 #include "image.h"
 #include "util/buf.h"
+#include "util/cleanup.h"
 #include "util/error.h"
 #include "util/log.h"
 #include <ctype.h>
@@ -17,7 +18,7 @@
 
 #define MAX_MPV_ARGS 16
 
-static int video_file_url(const char *path, morph_buf_t *url)
+int video_file_url_append(const char *path, morph_buf_t *url)
 {
 	const unsigned char *cursor;
 	int rc;
@@ -103,6 +104,23 @@ static int video_extract_preview(const char *path, char *preview,
 	return 0;
 }
 
+int video_preview_create_copy(const char *path, char **out_path)
+{
+	if (!out_path || *out_path)
+		return -EINVAL;
+	char preview[PATH_MAX];
+	int rc = video_extract_preview(path, preview, sizeof(preview));
+	if (rc)
+		return rc;
+	char *copy MORPH_CLEANUP(morph_charp_cleanup) = strdup(preview);
+	if (!copy) {
+		unlink(preview);
+		return -ENOMEM;
+	}
+	*out_path = morph_charp_steal(&copy);
+	return 0;
+}
+
 static void video_print_open_link(const char *url)
 {
 	printf("\033]8;;%s\033\\▶ Open video\033]8;;\033\\\n", url);
@@ -120,7 +138,7 @@ int video_render_terminal_preview(struct morph_log *logger, const char *path)
 	rc = morph_buf_init(&url, 128u);
 	if (rc != 0)
 		return rc;
-	rc = video_file_url(path, &url);
+	rc = video_file_url_append(path, &url);
 	if (rc != 0) {
 		morph_buf_cleanup(&url);
 		return rc;

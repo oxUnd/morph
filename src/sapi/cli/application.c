@@ -543,7 +543,7 @@ void cli_application_run(struct cli_application *ctx)
 	} else {
 		(void)morph_buf_puts(&directory, workdir && workdir[0] ? workdir : ".");
 	}
-	if (isatty(STDIN_FILENO) && isatty(STDOUT_FILENO))
+	if (plain && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO))
 		cli_banner_print(ctx, config ? config->models.text.model : NULL,
 				 morph_buf_cstr_borrow(&directory));
 	morph_buf_cleanup(&directory);

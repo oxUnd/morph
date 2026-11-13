@@ -1,26 +1,26 @@
 # CLI tool feed
 
 Interactive chat runs in alternate screen as a retained TUI ViewController.
-The root Stack contains a scrolling feed, background activity, queued messages
+The page layout contains a scrolling feed, background activity, queued messages
 and a multiline TextField composer. The framework owns geometry, clipping,
 terminal modes and frame presentation. PgUp/PgDn and wheel scroll the feed;
 scrolling to the bottom resumes following new content.
 
 ## Components and state
 
-`widgets/message` composes a marker Label and content-sized TextView. Submitted
+`widgets/message` composes a marker Label and content-sized document. Submitted
 user messages own their outer margin and inner padding/background. Reasoning uses
 muted italic text. Assistant messages retain source Markdown and remeasure it at
 the current content width; trusted renderer SGR is converted into structured
 text spans. Preview and completion update the same component.
 
-`widgets/tool_call` composes a Stack, heading Label and content-sized TextView.
+`widgets/tool_call` composes a Stack and content-sized rich TextViews.
 The transcript reducer retains tool state; call IDs locate existing controls.
 Running, streamed and completed events update that control in place. The heading
 contains status, tool name, target, outcome and completed elapsed time. Compact
 output follows the last three logical stream lines, wrapped at the component's
-content width. Ctrl+T toggles arguments, complete output, result and error in the
-current turn's controls. Tool output is sanitized and cannot move the cursor.
+content width. Ctrl+T opens the original transcript panel, preserving the draft
+underneath. Tool output is sanitized and cannot move the cursor.
 
 Plan and notice components compose the same base controls. Plans retain explicit
 tree branches and per-step status. Background jobs remain visible outside an
@@ -28,7 +28,7 @@ active turn. Queued messages use a List; Esc expedites queued steering, or
 interrupts the active turn when nothing is queued. Ctrl+C cancels the turn;
 Ctrl+D exits from an empty composer.
 
-Component spacing comes from Stack spacing and actual four-edge View options. The framework
+Component spacing comes from actual four-edge View options. The framework
 measures content after removing margin/padding, allocates outer slots, and clips
 drawing. Sibling margins add. A background covers the frame and padding and
 leaves the outer margin on the normal background. No feed component computes
@@ -53,16 +53,27 @@ Tab completes slash commands. Clipboard image insertion and dragged image-path
 conversion reuse composer services. The footer retains permission, context,
 credits and background naming state.
 
+The original welcome banner, adaptive footer, message styles and work rows are
+the visual baseline. Short feeds follow document flow; the composer reaches the
+bottom only as the feed grows. Once allocated, transient feed space is retained
+so a shrinking preview cannot pull a bottom-positioned draft upward. Composer
+and message padding is painted by the View framework, never simulated with
+blank output rows. Ultra decorates framework-provided padding canvases only.
+
 Modal pages share the root Application. Underlying feed updates and the unsent
 draft survive navigation. Session restoration rebuilds message/tool controls from
 canonical stored records, without executing tools or generating a new turn.
 
-## Media boundary
+## Retained media
 
-The retained Canvas currently supports text cells and structured styles. Feed
-media are represented by textual captions/paths; native Kitty image/video planes
-require a dedicated retained media component with viewport and lifetime handling.
-Legacy graphics writers are prevented from painting over the retained frame.
+The Canvas records immutable image assets and ancestor-clipped placements.
+The renderer owns Kitty, iTerm and Sixel transmission, placement, crop and cleanup
+inside the synchronized frame. Widgets never write graphics escape sequences.
+The welcome logo and direct image/video previews use Image controls. A rich
+document composes TextView and Image controls from trusted Markdown renderer
+output, preserving inline/table images and formula bitmap positions. Hyperlinks
+remain structured span metadata and are emitted by the frame renderer.
+Unsupported terminals and no-color mode retain textual paths/captions.
 Image attachment and clipboard ingestion still use the existing composer model.
 
 ## Compatibility adapters

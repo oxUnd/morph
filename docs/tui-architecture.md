@@ -143,12 +143,21 @@ raw/paste/alternate-screen transitions, mouse/focus reporting and restoration of
 original termios and descriptor flags. It reverses the nonblocking flag set by
 `uv_poll_init`, since stdin and stdout may share an open file description.
 
-The CLI chat ViewController builds a root Stack with a Scroll container, feed
-Stack, activity/queue/jobs controls and multiline TextField composer. Messages,
+The CLI chat ViewController builds a page layout with a Scroll container, feed
+Stack, activity/queue/jobs controls and a compound TextField composer. Short
+feeds retain document flow, then scroll when they fill the available area. Messages,
 tools, plans and notices compose Label, TextView and Stack controls. The frame
 renderer is the only writer for this retained tree. Runtime events mutate models
 and controls on the owner thread; modal pages retain the underlying tree and
 draft. Closing a modal restores that tree and invalidates the frame.
+
+Native Image controls retain immutable PNG/RGBA assets. Canvas image placements
+inherit View content clipping; the renderer crops pixels, caches encoded data,
+and owns Kitty/iTerm/Sixel plane placement and deletion in the same synchronized
+frame as text. Hyperlink spans are copied and serialized as cell metadata. A
+padding-decoration callback receives only framework-computed edge canvases,
+supporting the CLI's original Ultra animation without painting over its draft
+or reconstructing insets in application code.
 
 The Scroll control measures its one content child at viewport width, allocates
 its full content height and clips descendants. Manual scrolling pauses following;

@@ -725,6 +725,7 @@ void core_application_loop_destroy(struct core_application_loop *app)
 	if (app->initialized >= 1)
 		uv_close((uv_handle_t *)&app->wake, NULL);
 	core_app_disappear(app);
+	core_window_clear_media(app->window);
 	(void)morph_tui_terminal_session_leave(&app->screen.session);
 	int close_result = app->result < 0 ? app->result : -ECANCELED;
 

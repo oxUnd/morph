@@ -85,6 +85,8 @@ set(TEST_SOURCES
 	test_cli_copy.cpp
 	test_cli_list.cpp
 	test_cli_presentation.cpp
+	test_cli_retained_widgets.cpp
+	test_cli_retained_media.cpp
 	test_cli_subagents.cpp
 	test_cli_composer_panel.cpp
 	test_cli_model.cpp
@@ -93,6 +95,7 @@ set(TEST_SOURCES
 	test_tui.cpp
 	test_tui_application.cpp
 	test_tui_views.cpp
+	test_tui_media.cpp
 	test_cli_ui.cpp
 	test_utf8.cpp
 	test_kitty_protocol.cpp
@@ -230,6 +233,11 @@ if(Python3_Interpreter_FOUND)
 				$<TARGET_FILE:morph-cli-pty-driver> $<TARGET_FILE:morph>)
 		set_tests_properties(cli_retained_chat_pty_integration PROPERTIES
 			SKIP_RETURN_CODE 77 TIMEOUT 150)
+		add_test(NAME cli_native_media_pty_integration
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_native_media_pty.py
+				$<TARGET_FILE:morph-cli-pty-driver>)
+		set_tests_properties(cli_native_media_pty_integration PROPERTIES
+			SKIP_RETURN_CODE 77 TIMEOUT 90)
 	endif()
 	if(UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIBRARY)
 		# Inline composer geometry requires the Readline input mode.

@@ -32,7 +32,10 @@ add_library(morph-cli STATIC
 	widgets/agents_browser.c
 	widgets/banner.c
 	widgets/composer_panel.c
+	widgets/composer.c
 	widgets/message.c
+	widgets/media.c
+	widgets/rich_document.c
 	widgets/tool_call.c
 	widgets/feed.c
 	widgets/feed_block.c
@@ -112,12 +115,14 @@ add_library(morph-cli STATIC
 	presentation/output.c
 	presentation/recap.c
 	presentation/command_output.c
+	presentation/composer_footer.c
 	presentation/confirm.c
 	presentation/agents.c
 	presentation/jobs.c
 	presentation/presenter.c
 	presentation/rewind.c
 	presentation/tool_preview.c
+	presentation/work_status.c
 	presentation/share.c
 
 )

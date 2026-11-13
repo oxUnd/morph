@@ -14,9 +14,12 @@ add_library(morph-tui STATIC
 
 	render/draw.c
 	render/canvas.c
+	render/media.c
 	render/frame.c
+	render/native_media.c
 
 	widgets/card.c
+	widgets/image.c
 	widgets/base.c
 	widgets/label.c
 	widgets/stack.c

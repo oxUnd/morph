@@ -165,7 +165,13 @@ static int cli_media_command_render(struct cli_application *ctx, int argc, char 
 			free(expanded);
 			return MORPH_ERR_FORMAT;
 		}
-		if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON && !cli_chat_active(ctx)) {
+		if (cli_chat_active(ctx)) {
+			int rc = cli_chat_media(ctx, "image", expanded);
+			if (rc) {
+				free(expanded);
+				return rc;
+			}
+		} else if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON) {
 			(void)cli_output_result_begin(ctx);
 			image_render_terminal(ctx ? ctx->logger : NULL, expanded);
 		}

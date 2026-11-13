@@ -3,53 +3,92 @@
 #include "sapi/cli/presentation/style.h"
 #include "util/cleanup.h"
 #include "util/utf8.h"
-#include <morph/tui/widgets/stack.h>
+#include "sapi/cli/presentation/messages.h"
+#include <morph/tui/widget.h>
 #include <morph/tui/widgets/text_view.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 
-static void cli_notice_add_text(struct morph_tui_builder *builder, struct morph_tui_view *parent,
-	const char *text, const struct morph_tui_view_options *options)
+struct cli_notice_widget {
+	struct morph_tui_widget base;
+	struct morph_tui_view *body;
+	struct cli_notice notice;
+	char *title, *detail, *footer;
+	int columns, styled;
+};
+
+static int cli_notice_widget_measure(struct morph_tui_view *view, int width,
+				     struct morph_tui_view_size *size)
 {
-	if (!text || !*text)
-		return;
-	struct morph_tui_view *view = morph_tui_widget_text_view_add_borrow(builder, parent, text, options);
-	if (view) {
-		morph_tui_builder_fail(builder, morph_tui_widget_text_view_set_content_sizing(view, 1));
-		morph_tui_view_set_focusable(view, 0);
+	struct cli_notice_widget *widget = (struct cli_notice_widget *)view;
+	if (widget->columns != width) {
+		morph_buf_t rendered MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		int rc = cli_notice_append(&rendered, &widget->notice,
+			width + (int)CLI_CONTENT_RIGHT_PADDING, widget->styled);
+		while (!rc && rendered.len && rendered.data[rendered.len - 1] == '\n')
+			rendered.data[--rendered.len] = '\0';
+		if (!rc)
+			rc = cli_messages_set_rendered_view(
+				widget->body, morph_buf_cstr_borrow(&rendered), widget->styled);
+		if (rc)
+			return rc;
+		widget->columns = width;
 	}
+	return morph_tui_view_measure(widget->body, width, size);
 }
+
+static int cli_notice_widget_layout(struct morph_tui_view *view)
+{
+	return morph_tui_view_arrange(((struct cli_notice_widget *)view)->body,
+				      morph_tui_view_content_rect(view));
+}
+
+static void cli_notice_widget_destroy(struct morph_tui_view *view)
+{
+	struct cli_notice_widget *widget = (struct cli_notice_widget *)view;
+	free(widget->title);
+	free(widget->detail);
+	free(widget->footer);
+}
+
+static const struct morph_tui_view_ops cli_notice_widget_ops = {
+	.measure = cli_notice_widget_measure,
+	.layout = cli_notice_widget_layout,
+	.destroy = cli_notice_widget_destroy,
+};
 
 struct morph_tui_view *cli_notice_add_borrow(struct morph_tui_builder *builder,
 	struct morph_tui_view *parent, const struct cli_notice *notice, int styled)
 {
-	if (!notice) {
+	if (!notice || !notice->title) {
 		morph_tui_builder_fail(builder, -EINVAL);
 		return NULL;
 	}
-	const struct morph_tui_view_options outer = {0};
-	struct morph_tui_view *root = morph_tui_widget_stack_add_borrow(builder, parent,
-		MORPH_TUI_WIDGET_STACK_VERTICAL, 0, &outer);
-	struct morph_tui_view_options heading = {0};
-	if (styled) {
-		unsigned color = notice->status == CLI_NOTICE_FAILED ? 1u :
-			notice->status == CLI_NOTICE_DONE ? 2u : notice->status == CLI_NOTICE_RUNNING ? 6u :
-			notice->status == CLI_NOTICE_QUESTION || notice->status == CLI_NOTICE_WARNING ? 3u : 8u;
-		heading.style.foreground = (struct morph_tui_color){MORPH_TUI_COLOR_INDEXED, color};
-		if (notice->status == CLI_NOTICE_FAILED || notice->status == CLI_NOTICE_QUESTION)
-			heading.style.attributes = MORPH_TUI_STYLE_BOLD;
+	const struct morph_tui_view_options options = {
+		.margin = {.top = 1}, .padding = {.right = (int)CLI_CONTENT_RIGHT_PADDING}};
+	struct cli_notice_widget *widget = (struct cli_notice_widget *)morph_tui_widget_add_borrow(
+		builder, parent, sizeof(*widget), &cli_notice_widget_ops, &options);
+	if (!widget)
+		return NULL;
+	struct morph_tui_view *view = &widget->base.view;
+	widget->title = strdup(notice->title);
+	widget->detail = strdup(notice->detail ? notice->detail : "");
+	widget->footer = strdup(notice->footer ? notice->footer : "");
+	if (!widget->title || !widget->detail || !widget->footer)
+		morph_tui_builder_fail(builder, -ENOMEM);
+	widget->notice = (struct cli_notice){.status = notice->status,
+		.title = widget->title, .detail = widget->detail, .footer = widget->footer,
+		.tree_branch = notice->tree_branch};
+	widget->columns = -1;
+	widget->styled = styled;
+	widget->body = morph_tui_widget_text_view_add_borrow(builder, view, "", NULL);
+	if (widget->body) {
+		morph_tui_builder_fail(builder,
+			morph_tui_widget_text_view_set_content_sizing(widget->body, 1));
+		morph_tui_view_set_focusable(widget->body, 0);
 	}
-	morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_printf(&title, "%s%s %s", notice->tree_branch == 1 ? "├ " :
-		notice->tree_branch == 2 ? "└ " : "", cli_notice_marker(notice->status),
-		notice->title ? notice->title : "");
-	morph_tui_builder_fail(builder, rc);
-	if (!rc)
-		cli_notice_add_text(builder, root, morph_buf_cstr_borrow(&title), &heading);
-	const struct morph_tui_view_options body = {.padding = {.left = 2}};
-	cli_notice_add_text(builder, root, notice->detail, &body);
-	cli_notice_add_text(builder, root, notice->footer, &body);
-	return root;
+	return view;
 }
 
 const char *cli_notice_marker(enum cli_notice_status status)
@@ -151,7 +190,8 @@ int cli_notice_append(morph_buf_t *out, const struct cli_notice *notice, int col
 	int rc = morph_buf_printf(out, "%s%s%s ", prefix, color, cli_notice_marker(notice->status));
 	if (rc == 0)
 		rc = cli_notice_text(out, notice->title, width - 2 - (notice->tree_branch ? 2 : 0),
-			notice->tree_branch == 1 ? "│   " : notice->tree_branch == 2 ? "    " : "  ");
+			notice->tree_branch == 1 ? "│   " :
+			notice->tree_branch == 2 ? "    " : "  ");
 	if (rc == 0)
 		rc = morph_buf_puts(out, styled ? ANSI_RESET "\n" : "\n");
 	int footer = notice->footer && *notice->footer;

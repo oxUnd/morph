@@ -2,6 +2,7 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
+#include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/widgets/list.h"
 #include "util/base64.h"
 #include "util/buf.h"
@@ -9,6 +10,9 @@
 #include "util/data.h"
 #include "util/file.h"
 #include "util/utf8.h"
+#include <morph/tui/widgets/image.h>
+#include <morph/tui/widget.h>
+#include <morph/tui/widgets/text_view.h>
 
 #include <errno.h>
 #include <limits.h>
@@ -93,15 +97,19 @@ static size_t cli_banner_text(struct cli_application *ctx, const char *text,
 	return utf8_display_width(clipped);
 }
 
-static void cli_banner_header(struct cli_application *ctx, size_t width, size_t padding)
+static void cli_banner_header(struct cli_application *ctx, size_t width, size_t padding,
+	int retained_logo)
 {
 	const char *version = "v" MORPH_VERSION;
 	size_t version_width = utf8_display_width(version);
 	size_t used = 0;
 
 	cli_banner_spaces(ctx, padding);
-	if (width >= 30 && cli_banner_logo(ctx)) {
-		cli_output_putchar(ctx, ' ');
+	if (width >= 30 && (retained_logo || cli_banner_logo(ctx))) {
+		if (retained_logo)
+			cli_banner_spaces(ctx, 3);
+		else
+			cli_output_putchar(ctx, ' ');
 		used = 3;
 	}
 	cli_output_printf(ctx, CLI_COMMAND_COLOR ANSI_BOLD);
@@ -184,7 +192,9 @@ static void cli_banner_hints(struct cli_application *ctx,
 	cli_output_putchar(ctx, '\n');
 }
 
-void cli_banner_print(struct cli_application *ctx, const char *model, const char *directory)
+static void cli_banner_format(struct cli_application *ctx, const char *model,
+			      const char *directory, size_t width, size_t padding,
+			      int retained_logo)
 {
 	static const struct cli_banner_hint commands[] = {
 		{"/help", "Commands"},
@@ -197,10 +207,6 @@ void cli_banner_print(struct cli_application *ctx, const char *model, const char
 		{"Esc", "Cancel"},
 		{"Ctrl+Cmd+V", "Paste image"},
 	};
-	int columns = cli_list_columns();
-	size_t padding = columns > (int)(2u * CLI_BANNER_PADDING) ? CLI_BANNER_PADDING : 0;
-	size_t width = columns > 0 ? (size_t)columns - 2u * padding : 1;
-
 	if (cli_output_is_structured(ctx))
 		return;
 	if (width > CLI_BANNER_MAX_WIDTH)
@@ -215,7 +221,7 @@ void cli_banner_print(struct cli_application *ctx, const char *model, const char
 	if (!safe_model || !safe_directory)
 		return;
 	cli_output_putchar(ctx, '\n');
-	cli_banner_header(ctx, width, padding);
+	cli_banner_header(ctx, width, padding, retained_logo);
 	if (width >= CLI_BANNER_SPLIT_WIDTH) {
 		size_t left = width - CLI_BANNER_ACTION_WIDTH - CLI_BANNER_COLUMN_GAP;
 
@@ -246,4 +252,127 @@ void cli_banner_print(struct cli_application *ctx, const char *model, const char
 	cli_banner_hints(ctx, keys, sizeof(keys) / sizeof(keys[0]), width, padding,
 			 CLI_BANNER_MUTED);
 	cli_output_putchar(ctx, '\n');
+}
+
+void cli_banner_print(struct cli_application *ctx, const char *model, const char *directory)
+{
+	int columns = cli_list_columns();
+	size_t padding = columns > (int)(2u * CLI_BANNER_PADDING) ? CLI_BANNER_PADDING : 0;
+	size_t width = columns > 0 ? (size_t)columns - 2u * padding : 1;
+	cli_banner_format(ctx, model, directory, width, padding, 0);
+}
+
+struct cli_banner {
+	struct morph_tui_widget base;
+	struct cli_application *ctx;
+	struct morph_tui_view *text, *logo;
+	int columns;
+};
+
+static int cli_banner_measure(struct morph_tui_view *view, int width,
+			      struct morph_tui_view_size *size)
+{
+	struct cli_banner *banner = (struct cli_banner *)view;
+	if (banner->columns != width) {
+		morph_buf_t rendered MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		morph_buf_t directory MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		const char *workdir = runtime_workdir_borrow(banner->ctx->runtime);
+		const char *home = getenv("HOME");
+		if (!workdir || !*workdir)
+			workdir = ".";
+		int rc = 0;
+		if (home && *home && !strncmp(workdir, home, strlen(home)) &&
+		    (workdir[strlen(home)] == '/' || workdir[strlen(home)] == '\0')) {
+			rc = morph_buf_putc(&directory, '~');
+			workdir += strlen(home);
+		}
+		if (!rc)
+			rc = morph_buf_puts(&directory, workdir);
+		if (!rc)
+			rc = cli_output_capture_styled_begin(banner->ctx, &rendered);
+		if (rc)
+			return rc;
+		int logo = banner->logo && width >= 30;
+		if (banner->logo)
+			morph_tui_view_set_hidden(banner->logo, !logo);
+		cli_banner_format(banner->ctx,
+			runtime_config_borrow(banner->ctx->runtime)->models.text.model,
+			morph_buf_cstr_borrow(&directory), width > 0 ? (size_t)width : 1u,
+			0, logo);
+		cli_output_capture_end(banner->ctx);
+		if (rendered.failed)
+			return -ENOMEM;
+		rc = cli_messages_set_rendered_view(banner->text,
+			morph_buf_cstr_borrow(&rendered), cli_output_color_enabled(banner->ctx));
+		if (rc)
+			return rc;
+		banner->columns = width;
+	}
+	return morph_tui_view_measure(banner->text, width, size);
+}
+
+static int cli_banner_layout(struct morph_tui_view *view)
+{
+	struct cli_banner *banner = (struct cli_banner *)view;
+	struct morph_tui_view_rect rect = morph_tui_view_content_rect(view);
+	int rc = morph_tui_view_arrange(banner->text, rect);
+	if (!rc && banner->logo && !morph_tui_view_hidden(banner->logo))
+		rc = morph_tui_view_arrange(banner->logo,
+			(struct morph_tui_view_rect){rect.x, rect.y, 2, 1});
+	return rc;
+}
+
+static void cli_banner_asset_cleanup(struct morph_tui_media_asset **owner)
+{
+	morph_tui_media_asset_destroy(*owner);
+	*owner = NULL;
+}
+
+static struct morph_tui_view *cli_banner_logo_add_borrow(struct morph_tui_builder *builder,
+	struct morph_tui_view *parent, struct cli_application *ctx)
+{
+	const char *term = getenv("TERM");
+	const char *program = getenv("TERM_PROGRAM");
+	int kitty = getenv("KITTY_WINDOW_ID") || (term && strstr(term, "kitty")) ||
+		    (program && !strcmp(program, "ghostty"));
+	int iterm = getenv("ITERM_PROFILE") || (program && !strcmp(program, "iTerm.app"));
+	if (!cli_output_color_enabled(ctx) || getenv("TMUX") || getenv("STY") ||
+	    (!kitty && !iterm))
+		return NULL;
+	char path[PATH_MAX];
+	if (morph_data_find(path, sizeof(path), "morph-logo.png"))
+		return NULL;
+	size_t length = 0;
+	char *bytes MORPH_CLEANUP(morph_charp_cleanup) = file_read_all_copy(path, &length);
+	if (!bytes)
+		return NULL;
+	struct morph_tui_media_asset *asset MORPH_CLEANUP(cli_banner_asset_cleanup) = NULL;
+	if (morph_tui_media_asset_create_png_copy(&asset, (const unsigned char *)bytes, length))
+		return NULL;
+	const struct morph_tui_view_options options = {.width = 2, .height = 1};
+	return morph_tui_widget_image_add_borrow(builder, parent, asset, &options);
+}
+
+struct morph_tui_view *cli_banner_add_borrow(struct morph_tui_builder *builder,
+	struct morph_tui_view *parent, struct cli_application *ctx)
+{
+	static const struct morph_tui_view_ops cli_banner_ops = {
+		.measure = cli_banner_measure, .layout = cli_banner_layout};
+	const struct morph_tui_view_options options = {
+		.margin = {.top = 1},
+		.padding = {.left = CLI_BANNER_PADDING, .right = CLI_BANNER_PADDING}};
+	struct cli_banner *banner = (struct cli_banner *)morph_tui_widget_add_borrow(
+		builder, parent, sizeof(*banner), &cli_banner_ops, &options);
+	if (!banner)
+		return NULL;
+	banner->ctx = ctx;
+	banner->columns = -1;
+	banner->logo = cli_banner_logo_add_borrow(builder, &banner->base.view, ctx);
+	banner->text = morph_tui_widget_text_view_add_borrow(builder, &banner->base.view, "", NULL);
+	if (banner->text) {
+		morph_tui_view_set_focusable(banner->text, 0);
+		morph_tui_builder_fail(builder,
+			morph_tui_widget_text_view_set_content_sizing(banner->text, 1));
+	}
+	return &banner->base.view;
 }

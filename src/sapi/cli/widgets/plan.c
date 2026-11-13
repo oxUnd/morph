@@ -1,5 +1,7 @@
 #include "sapi/cli/widgets/plan.h"
-#include <morph/tui/widgets/stack.h>
+#include "sapi/cli/presentation/messages.h"
+#include <morph/tui/widget.h>
+#include <morph/tui/widgets/text_view.h>
 
 #include "sapi/cli/widgets/notice.h"
 #include "sapi/cli/presentation/style.h"
@@ -92,7 +94,8 @@ static int cli_plan_one(morph_buf_t *out, const cJSON *steps, const struct cli_p
 		if (!description || rc != 0)
 			continue;
 		const cJSON *next = step->next;
-		while (next && !cJSON_IsString(cJSON_GetObjectItemCaseSensitive(next, "description")))
+		while (next && !cJSON_IsString(
+			cJSON_GetObjectItemCaseSensitive(next, "description")))
 			next = next->next;
 		rc = cli_plan_line(out, next ? "├ " : "└ ", description, style->columns,
 			style->styled, cli_plan_step_status(step));
@@ -142,7 +145,8 @@ int cli_plan_append(morph_buf_t *out, const cJSON *state, const struct cli_plan_
 	const char *selected = cJSON_GetStringValue(
 		cJSON_GetObjectItemCaseSensitive(state, "selected_plan_id"));
 	if (!selected) {
-		selected = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(state, "selected_plan"));
+		selected = cJSON_GetStringValue(
+			cJSON_GetObjectItemCaseSensitive(state, "selected_plan"));
 		key = "name";
 	}
 	const cJSON *plan;
@@ -159,46 +163,76 @@ int cli_plan_append(morph_buf_t *out, const cJSON *state, const struct cli_plan_
 	return 0;
 }
 
+struct cli_plan_widget {
+	struct morph_tui_widget base;
+	struct morph_tui_view *body;
+	cJSON *state;
+	int columns, styled;
+};
+
+static int cli_plan_widget_measure(struct morph_tui_view *view, int width,
+				   struct morph_tui_view_size *size)
+{
+	struct cli_plan_widget *widget = (struct cli_plan_widget *)view;
+	if (widget->columns != width) {
+		morph_buf_t rendered MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		const struct cli_plan_style style = {
+			.columns = width + (int)CLI_CONTENT_RIGHT_PADDING,
+			.styled = widget->styled, .status_heading = 1};
+		int rc = cli_plan_append(&rendered, widget->state, &style);
+		while (!rc && rendered.len && rendered.data[rendered.len - 1] == '\n')
+			rendered.data[--rendered.len] = '\0';
+		if (!rc)
+			rc = cli_messages_set_rendered_view(
+				widget->body, morph_buf_cstr_borrow(&rendered), widget->styled);
+		if (rc)
+			return rc;
+		widget->columns = width;
+	}
+	return morph_tui_view_measure(widget->body, width, size);
+}
+
+static int cli_plan_widget_layout(struct morph_tui_view *view)
+{
+	return morph_tui_view_arrange(((struct cli_plan_widget *)view)->body,
+				      morph_tui_view_content_rect(view));
+}
+
+static void cli_plan_widget_destroy(struct morph_tui_view *view)
+{
+	cJSON_Delete(((struct cli_plan_widget *)view)->state);
+}
+
+static const struct morph_tui_view_ops cli_plan_widget_ops = {
+	.measure = cli_plan_widget_measure,
+	.layout = cli_plan_widget_layout,
+	.destroy = cli_plan_widget_destroy,
+};
+
 struct morph_tui_view *cli_plan_add_borrow(struct morph_tui_builder *builder,
 	struct morph_tui_view *parent, const cJSON *state, int styled)
 {
-	const struct morph_tui_view_options outer = {0};
-	struct morph_tui_view *root = morph_tui_widget_stack_add_borrow(builder, parent,
-		MORPH_TUI_WIDGET_STACK_VERTICAL, 0, &outer);
-	const char *key = "id";
-	const char *selected = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(state, "selected_plan_id"));
-	if (!selected) {
-		selected = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(state, "selected_plan"));
-		key = "name";
+	if (!state) {
+		morph_tui_builder_fail(builder, -EINVAL);
+		return NULL;
 	}
-	const cJSON *plan;
-	cJSON_ArrayForEach(plan, cJSON_GetObjectItemCaseSensitive(state, "plans")) {
-		const cJSON *steps = cli_plan_steps(plan, key, selected);
-		if (!steps)
-			continue;
-		int completed = 0;
-		enum cli_notice_status status = cli_plan_status(steps, &completed);
-		morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		int rc = morph_buf_printf(&title, "Plan · %d/%d completed", completed,
-			cJSON_GetArraySize(steps));
-		morph_tui_builder_fail(builder, rc);
-		struct cli_notice heading = {.status = status, .title = morph_buf_cstr_borrow(&title)};
-		struct morph_tui_view *header = cli_notice_add_borrow(builder, root, &heading, styled);
-		if (header)
-			morph_tui_view_set_margin(header, (struct morph_tui_view_insets){0});
-		const cJSON *step;
-		cJSON_ArrayForEach(step, steps) {
-			const char *description = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(step, "description"));
-			if (!description)
-				continue;
-			struct cli_notice notice = {.status = cli_plan_step_status(step),
-				.title = description, .tree_branch = step->next ? 1 : 2};
-			struct morph_tui_view *row = cli_notice_add_borrow(builder, root, &notice, styled);
-			if (row)
-				morph_tui_view_set_margin(row, (struct morph_tui_view_insets){0});
-		}
-		if (selected)
-			break;
+	const struct morph_tui_view_options options = {
+		.margin = {.top = 1}, .padding = {.right = (int)CLI_CONTENT_RIGHT_PADDING}};
+	struct cli_plan_widget *widget = (struct cli_plan_widget *)morph_tui_widget_add_borrow(
+		builder, parent, sizeof(*widget), &cli_plan_widget_ops, &options);
+	if (!widget)
+		return NULL;
+	struct morph_tui_view *view = &widget->base.view;
+	widget->state = cJSON_Duplicate(state, 1);
+	if (!widget->state)
+		morph_tui_builder_fail(builder, -ENOMEM);
+	widget->columns = -1;
+	widget->styled = styled;
+	widget->body = morph_tui_widget_text_view_add_borrow(builder, view, "", NULL);
+	if (widget->body) {
+		morph_tui_builder_fail(builder,
+			morph_tui_widget_text_view_set_content_sizing(widget->body, 1));
+		morph_tui_view_set_focusable(widget->body, 0);
 	}
-	return root;
+	return view;
 }

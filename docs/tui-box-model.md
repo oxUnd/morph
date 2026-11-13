@@ -130,6 +130,10 @@ boundaries:
   Do not subtract the child's margin first; arrange applies it exactly once.
 - A `draw` callback draws at content-local coordinates. Do not add padding to
   canvas coordinates. Parent and terminal clipping are already inherited.
+- Optional `draw_padding` receives one clipped padding-edge canvas at a time.
+  The framework owns edge geometry and clipping, including corner ownership
+  (top/bottom). This supports decorative backgrounds without reconstructing
+  padding in application code. It never exposes margin as a paintable region.
 - Wrapping, paging, and scrolling use content dimensions rather than outer frame
   dimensions. This keeps the visible viewport consistent with drawing.
 
@@ -139,10 +143,10 @@ pages combining vertical margins with horizontal padding.
 ## CLI chat spacing
 
 Interactive chat uses actual retained Views in alternate screen. A message's
-outer margin belongs to the feed Stack; its colored background covers its frame,
+outer margin belongs to the message component; its colored background covers its frame,
 including padding. The marker and text controls draw inside the content area.
-Tools, notices and plans compose base controls; the feed Stack supplies the
-common gap, while each component can declare additional margin/padding.
+Tools, notices and plans compose base controls and declare their own margin.
+The feed Stack has zero spacing; component options own external separation.
 Sibling margins add without collapsing, exactly as they do in other pages.
 Streaming and completed content update the same message/tool control.
 
@@ -156,7 +160,7 @@ not be used as the layout engine for new interactive components.
 `tests/test_tui_views.cpp` covers asymmetric insets, root and child geometry,
 custom allocation, growth and maximum sizes, alignment, hidden children,
 runtime setters, owner-thread checks, and bounded empty frames.
-`tests/test_cli_reasoning_pty.py` and `tests/test_cli_composer_cleanup_pty.py`
-check unpainted chat margins, wrapped/multiline input, color modes, and stable
-reasoning positions. Answer tests in `tests/test_cli_presentation.cpp` verify
+`tests/test_cli_retained_chat_pty.py` checks original visual geometry and styles,
+unpainted margins, wrapped/multiline input, color modes, and stable draft
+positions. Answer tests in `tests/test_cli_presentation.cpp` verify
 that streaming and non-streaming answers reuse the submitted input separator.

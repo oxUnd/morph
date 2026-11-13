@@ -12,7 +12,8 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 	# Select the terminal framework's utility closure from the shared manifest.
 	# The full utility target also includes the shell parser and image helpers.
 	set(TUI_SAMPLE_UTIL_MODULES
-		array buf cancel child_io error file log signals str terminal_size utf8 utf8proc
+		array base64 buf cancel child_io error file id image_util log signals str
+		terminal_size utf8 utf8proc
 	)
 	file(STRINGS "${MORPH_SOURCE_ROOT}/src/util/sources.list" TUI_SAMPLE_UTIL_MANIFEST)
 	set(TUI_SAMPLE_UTIL_SOURCES)

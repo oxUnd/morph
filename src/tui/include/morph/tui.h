@@ -7,6 +7,7 @@
 #include <morph/tui/view_controller.h>
 #include <morph/tui/window.h>
 #include <morph/tui/widgets/label.h>
+#include <morph/tui/widgets/image.h>
 #include <morph/tui/widgets/stack.h>
 #include <morph/tui/widgets/scroll.h>
 #include <morph/tui/widgets/list.h>

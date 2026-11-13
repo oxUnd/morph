@@ -1,6 +1,9 @@
 #include "view_internal.h"
 #include "util/error.h"
 #include <morph/tui/draw.h>
+#include "tui/render/native_media.h"
+#include "tui/render/frame_internal.h"
+#include "util/cleanup.h"
 
 #include <stdlib.h>
 
@@ -31,15 +34,25 @@ void core_window_destroy(struct morph_tui_window *window)
 {
 	if (!window)
 		return;
+	core_window_clear_media(window);
 	morph_tui_frame_cleanup(&window->frame);
 	morph_tui_surface_destroy(window->surface);
 	morph_buf_cleanup(&window->rows);
 	free(window);
 }
 
+void core_window_clear_media(struct morph_tui_window *window)
+{
+	if (!window)
+		return;
+	render_native_media_destroy(window->media);
+	window->media = NULL;
+}
+
 void core_window_invalidate(struct morph_tui_window *window)
 {
 	morph_tui_frame_invalidate(&window->frame);
+	render_native_media_invalidate(window->media);
 	if (window->backend && window->backend->ops->invalidate)
 		window->backend->ops->invalidate(window->backend);
 }
@@ -61,6 +74,8 @@ int morph_tui_window_set_renderer_borrow(struct morph_tui_window *window,
 		return -EINVAL;
 	if (!morph_tui_application_is_owner(window->app))
 		return -EPERM;
+	if (window->backend != backend)
+		core_window_clear_media(window);
 	window->backend = backend;
 	core_window_invalidate(window);
 	morph_tui_application_invalidate(window->app, MORPH_TUI_INVALIDATE_DISPLAY);
@@ -82,6 +97,7 @@ int morph_tui_window_set_event_handler_borrow(struct morph_tui_window *window,
 
 int core_window_draw(struct morph_tui_window *window, const struct morph_tui_screen *screen)
 {
+	morph_buf_t overlay MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	int rc = morph_tui_surface_resize(window->surface, screen->area.width, screen->area.height);
 	struct morph_tui_canvas canvas;
 
@@ -95,19 +111,25 @@ int core_window_draw(struct morph_tui_window *window, const struct morph_tui_scr
 	if (!rc)
 		rc = morph_tui_surface_rows(window->surface, &window->rows);
 	if (!rc)
-		rc = morph_tui_frame_present(&window->frame, screen->session.output,
-					     screen->area.width, screen->area.height,
-					     morph_buf_cstr_borrow(&window->rows));
+		rc = render_native_media_prepare(&window->media, window->surface, &window->frame);
+	if (!rc && render_native_media_needs_refresh(window->media, window->surface,
+						    &window->frame,
+						    morph_buf_cstr_borrow(&window->rows)))
+		rc = render_native_media_append(window->media, window->surface,
+						screen->session.output, &overlay);
 	if (!rc) {
 		int x, y;
 		int visible = morph_tui_surface_cursor(window->surface, &x, &y);
-
-		morph_buf_reset(&window->rows);
 		if (visible)
-			morph_buf_printf(&window->rows, "\033[%d;%dH\033[?25h", y + 1, x + 1);
+			rc = morph_buf_printf(&overlay, "\033[%d;%dH\033[?25h", y + 1, x + 1);
 		else
-			morph_buf_puts(&window->rows, "\033[?25l");
-		rc = morph_tui_draw_write(screen->session.output, &window->rows);
+			rc = morph_buf_puts(&overlay, "\033[?25l");
 	}
+	if (!rc)
+		rc = render_frame_present_composed(&window->frame, screen->session.output,
+					     screen->area.width, screen->area.height,
+					     morph_buf_cstr_borrow(&window->rows), &overlay);
+	if (rc)
+		render_native_media_invalidate(window->media);
 	return rc;
 }

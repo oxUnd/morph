@@ -45,6 +45,7 @@ struct morph_tui_window {
 	struct morph_tui_frame frame;
 	morph_buf_t rows;
 	struct morph_tui_renderer *backend;
+	struct render_native_media *media;
 	int (*event)(void *, const struct morph_tui_event *);
 	void *event_data;
 };
@@ -55,6 +56,7 @@ int core_view_focus_next(struct morph_tui_view_controller *controller, int backw
 int core_view_can_focus(const struct morph_tui_view *view);
 int core_window_create(struct morph_tui_application *app, struct morph_tui_window **out);
 void core_window_destroy(struct morph_tui_window *window);
+void core_window_clear_media(struct morph_tui_window *window);
 void core_window_invalidate(struct morph_tui_window *window);
 int core_window_draw(struct morph_tui_window *window, const struct morph_tui_screen *screen);
 

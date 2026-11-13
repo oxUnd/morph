@@ -29,6 +29,13 @@ enum morph_tui_view_alignment {
 	MORPH_TUI_VIEW_END
 };
 
+enum morph_tui_view_edge {
+	MORPH_TUI_VIEW_EDGE_TOP,
+	MORPH_TUI_VIEW_EDGE_RIGHT,
+	MORPH_TUI_VIEW_EDGE_BOTTOM,
+	MORPH_TUI_VIEW_EDGE_LEFT
+};
+
 struct morph_tui_view_insets {
 	int top, right, bottom, left;
 };
@@ -55,6 +62,11 @@ struct morph_tui_view_ops {
 	int (*draw)(struct morph_tui_view *, struct morph_tui_canvas *);
 	int (*event)(struct morph_tui_view *, const struct morph_tui_event *);
 	void (*destroy)(struct morph_tui_view *);
+	/* Optional decoration of framework-owned padding. Each canvas contains
+	 * only one edge, with corners assigned to top/bottom. Margins are never
+	 * passed to this callback; ordinary draw still receives content only. */
+	int (*draw_padding)(struct morph_tui_view *, enum morph_tui_view_edge,
+			    struct morph_tui_canvas *);
 };
 
 struct morph_tui_view {

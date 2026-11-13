@@ -14,6 +14,7 @@ void cli_chat_job_finished(struct cli_chat_page *, int result);
 void cli_chat_destroy(struct cli_chat_page *, int result);
 int cli_chat_active(const struct cli_application *);
 int cli_chat_output(struct cli_application *, const char *text);
+int cli_chat_media(struct cli_application *, const char *type, const char *path);
 int cli_chat_command_input(struct cli_application *, const char *text);
 void cli_chat_command_end(struct cli_application *);
 int cli_chat_message(struct cli_application *, int kind, const char *text);

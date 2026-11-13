@@ -127,10 +127,15 @@ def main():
     if re.search(r'\b(?:fprintf|printf|fputs|fwrite|putchar|morph_tui_frame_present|'
                  r'cli_readline_(?:render_frame|suspend_copy|resume_take))\s*\(', chat):
         errors.append('pages/chat.c: retained chat must not own terminal painting or Readline geometry')
+    if re.search(r'\b(?:morph_tui_view_get_options|'
+                 r'morph_tui_canvas_(?:text|fill|child)\w*)\s*\(', chat):
+        errors.append('pages/chat.c: margin and padding painting belongs to framework views')
     for module in ('message', 'tool_call'):
         component = code_only((CLI / f'widgets/{module}.c').read_text())
-        for api in ('morph_tui_widget_add_borrow', 'morph_tui_widget_label_add_borrow',
-                    'morph_tui_widget_text_view_add_borrow'):
+        apis = ['morph_tui_widget_add_borrow', 'morph_tui_widget_text_view_add_borrow']
+        if module == 'message':
+            apis.append('morph_tui_widget_label_add_borrow')
+        for api in apis:
             if api not in component:
                 errors.append(f'widgets/{module}.c: domain component must compose base controls ({api})')
     for source in sorted(CLI.rglob('*')):
