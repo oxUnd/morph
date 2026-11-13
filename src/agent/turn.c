@@ -74,10 +74,17 @@ static void turn_unbind_history(struct react_context *react)
 	react->memory_options = NULL;
 }
 
+static void turn_messages_cleanup(struct message **owner)
+{
+	message_free_list(*owner);
+	*owner = NULL;
+}
+
 int agent_session_load_history(const struct agent_session_runtime *runtime)
 {
-	struct message *list;
-	struct message *cur;
+	struct message *list MORPH_CLEANUP(turn_messages_cleanup) = NULL;
+	struct message_list *messages MORPH_CLEANUP(msg_list_clear) = NULL;
+	struct message_list **tail = &messages;
 	int count = 0;
 	int rc;
 
@@ -104,20 +111,19 @@ int agent_session_load_history(const struct agent_session_runtime *runtime)
 
 	count = 0;
 	list = message_list(runtime->db, runtime->session_id, &count);
-	cur = list;
-	while (cur) {
+	for (const struct message *cur = list; cur; cur = cur->next) {
 		struct message_list *m MORPH_CLEANUP(msg_list_clear) = NULL;
 
 		m = msg_list_create(cur->role, cur->content, cur->token_count);
-		if (!m) {
-			message_free_list(list);
+		if (!m)
 			return -ENOMEM;
-		}
 		m->compressed = cur->compressed;
-		(void)msg_list_append_take(&runtime->react->messages, &m);
-		cur = cur->next;
+		rc = msg_list_append_take(tail, &m);
+		if (rc)
+			return rc;
+		tail = &(*tail)->next;
 	}
-	message_free_list(list);
+	runtime->react->messages = msg_list_steal(&messages);
 	return 0;
 }
 

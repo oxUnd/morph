@@ -334,7 +334,8 @@ int runtime_session_select_existing(struct runtime *runtime, int64_t id,
 		ctx->current_session = session;
 		runtime_context_select_plan_session(ctx, session.id);
 		(void)runtime_context_update_tool_runtime_context(ctx, session.id);
-		runtime_session_load_history(&ctx->engine, session.id);
+		/* Navigation defers model replay and repair until the next turn. */
+		runtime_session_clear_history(ctx->react);
 		if (out)
 			*out = session;
 	}
@@ -404,35 +405,63 @@ int runtime_session_context_stats(struct runtime *runtime, int *messages,
 	return 0;
 }
 
+static void runtime_statement_cleanup(sqlite3_stmt **statement)
+{
+	sqlite3_finalize(*statement);
+	*statement = NULL;
+}
+
 int runtime_session_model_context_stats(struct runtime *runtime,
 	int *active_items, int *tokens, int *tool_tokens,
 	int *compactions, int *limit)
 {
-	struct model_history_item *items;
-	int count = 0;
-	int total = 0;
-	int tools = 0;
+	sqlite3_stmt *statement MORPH_CLEANUP(runtime_statement_cleanup) = NULL;
+	int64_t total = 0;
+	int64_t tools = 0;
 	int replay_items = 0;
 	int compact_count = 0;
 
 	if (!runtime)
 		return -EINVAL;
 	/* Deferred sessions have no persisted history or compactions. */
-	items = NULL;
-	if (runtime->context.current_session.id > 0)
-		items = model_history_list(&runtime->context.database,
-			runtime->context.current_session.id, 1, &count);
-	if (count < 0)
-		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, MORPH_ERR_DB);
-	for (struct model_history_item *item = items; item; item = item->next) {
-		if (!agent_history_item_replayable(item))
-			continue;
-		replay_items++;
-		total += item->token_count;
-		if (strcmp(item->kind, "tool_result") == 0)
-			tools += item->token_count;
+	if (runtime->context.current_session.id > 0) {
+		/* Only receipts need their body to decide replayability. Avoid copying
+		 * full answers and tool results whenever the footer polls its totals. */
+		const char *sql =
+			"SELECT kind,token_count,"
+			"CASE WHEN kind='background_receipt' THEN content END,"
+			"CASE WHEN kind='background_receipt' THEN payload_json END "
+			"FROM model_history_items WHERE session_id=? AND active=1";
+		int rc = sqlite3_prepare_v2(runtime->context.database.handle, sql, -1,
+			&statement, NULL);
+		if (rc == SQLITE_OK)
+			rc = sqlite3_bind_int64(statement, 1, runtime->context.current_session.id);
+		if (rc != SQLITE_OK)
+			return MORPH_TRACE_ERROR(runtime->options.logger, MORPH_ERR_DB);
+		while ((rc = sqlite3_step(statement)) == SQLITE_ROW) {
+			struct model_history_item item = {0};
+			const char *kind = (const char *)sqlite3_column_text(statement, 0);
+
+			if (kind)
+				snprintf(item.kind, sizeof(item.kind), "%s", kind);
+			item.token_count = sqlite3_column_int(statement, 1);
+			/* The predicate borrows these SQLite fields until the next step. */
+			item.content = (char *)sqlite3_column_text(statement, 2);
+			item.payload_json = (char *)sqlite3_column_text(statement, 3);
+			if (!agent_history_item_replayable(&item))
+				continue;
+			if (replay_items == INT_MAX)
+				return -EOVERFLOW;
+			replay_items++;
+			total += item.token_count;
+			if (strcmp(item.kind, "tool_result") == 0)
+				tools += item.token_count;
+		}
+		if (rc != SQLITE_DONE)
+			return MORPH_TRACE_ERROR(runtime->options.logger, MORPH_ERR_DB);
 	}
-	model_history_free_list(items);
+	if (total > INT_MAX || total < INT_MIN || tools > INT_MAX || tools < INT_MIN)
+		return -EOVERFLOW;
 	if (runtime->context.current_session.id > 0)
 		compact_count = model_history_compaction_count(
 			&runtime->context.database, runtime->context.current_session.id);
@@ -441,9 +470,9 @@ int runtime_session_model_context_stats(struct runtime *runtime,
 	if (active_items)
 		*active_items = replay_items;
 	if (tokens)
-		*tokens = total;
+		*tokens = (int)total;
 	if (tool_tokens)
-		*tool_tokens = tools;
+		*tool_tokens = (int)tools;
 	if (compactions)
 		*compactions = compact_count;
 	if (limit)

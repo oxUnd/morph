@@ -1428,3 +1428,113 @@ TEST_F(TuiViewsTest, ImageAspectRatioUsesFixedAndMaximumWidthConstraints)
 	EXPECT_EQ(size.width, 12);
 	EXPECT_EQ(size.height, 3);
 }
+
+TEST_F(TuiViewsTest, StackMeasuresEachChildOncePerArrangement)
+{
+	struct Probe {
+		struct morph_tui_view base;
+		int *calls;
+	};
+	struct Data {
+		struct morph_tui_view *root = nullptr;
+		struct morph_tui_view *children[3]{};
+		int calls[3]{};
+	} data;
+	static const struct morph_tui_view_ops probe_ops = {
+		+[](struct morph_tui_view *view, int width, struct morph_tui_view_size *size) {
+			auto *probe = reinterpret_cast<Probe *>(view);
+			(*probe->calls)++;
+			*size = {width / 2, 2};
+			return 0;
+		}, nullptr, nullptr, nullptr, nullptr, nullptr};
+	static const struct morph_tui_view_controller_ops controller_ops = {
+		+[](struct morph_tui_view_controller *controller,
+		    struct morph_tui_builder *builder) {
+			auto *state = static_cast<Data *>(controller->data);
+			struct morph_tui_view_options root_options{};
+			root_options.padding = {1, 1, 1, 1};
+			state->root = morph_tui_widget_stack_add_borrow(builder, nullptr,
+				MORPH_TUI_WIDGET_STACK_VERTICAL, 0, &root_options);
+			struct morph_tui_view_options options{};
+			options.margin = {0, 2, 0, 1};
+			options.alignment = MORPH_TUI_VIEW_CENTER;
+			for (size_t i = 0; i < 3; i++) {
+				Probe *probe = reinterpret_cast<Probe *>(morph_tui_view_add_borrow(
+					builder, state->root, sizeof(*probe), &probe_ops,
+					&options));
+				if (probe) {
+					probe->calls = &state->calls[i];
+					state->children[i] = &probe->base;
+				}
+			}
+		}, nullptr, nullptr, nullptr, nullptr, nullptr};
+	struct morph_tui_view_controller_spec spec{};
+	spec.ops = &controller_ops;
+	spec.data = &data;
+	ASSERT_EQ(morph_tui_view_controller_present_borrow(app, &spec), 0);
+	for (int width : {20, 16, 20}) {
+		for (int &calls : data.calls)
+			calls = 0;
+		ASSERT_EQ(morph_tui_view_arrange(data.root, {0, 0, width, 8}), 0);
+		const int intrinsic = (width - 5) / 2;
+		const int x = 2 + (width - 5 - intrinsic) / 2;
+		for (size_t i = 0; i < 3; i++) {
+			EXPECT_EQ(data.calls[i], 1);
+			struct morph_tui_view_rect placed = morph_tui_view_frame(data.children[i]);
+			EXPECT_EQ(placed.x, x);
+			EXPECT_EQ(placed.y, 1 + 2 * static_cast<int>(i));
+			EXPECT_EQ(placed.width, intrinsic);
+			EXPECT_EQ(placed.height, 2);
+		}
+	}
+}
+
+TEST_F(TuiViewsTest, DocumentWrapCacheTracksTextStylesAndNormalizedWidths)
+{
+	static const struct morph_tui_view_controller_ops controller_ops = {
+		+[](struct morph_tui_view_controller *controller,
+		    struct morph_tui_builder *builder) {
+			auto *data = static_cast<TuiViewModel *>(controller->data);
+			data->label = morph_tui_widget_text_view_add_borrow(builder, nullptr,
+				"中ab\n", nullptr);
+			morph_tui_widget_text_view_set_content_sizing(data->label, 1);
+		}, nullptr, nullptr, nullptr, nullptr, nullptr};
+	struct morph_tui_view_controller_spec spec{};
+	spec.ops = &controller_ops;
+	spec.data = &model;
+	ASSERT_EQ(morph_tui_view_controller_present_borrow(app, &spec), 0);
+	auto measure = [&](int width, int rows) {
+		struct morph_tui_view_size size{};
+		EXPECT_EQ(morph_tui_view_measure(model.label, width, &size), 0);
+		EXPECT_EQ(size.width, width);
+		EXPECT_EQ(size.height, rows);
+		EXPECT_EQ(morph_tui_view_arrange(model.label, {0, 0, width, 8}), 0);
+		EXPECT_EQ(morph_tui_view_measure(model.label, width, &size), 0);
+		EXPECT_EQ(size.height, rows);
+	};
+	measure(3, 3);
+	measure(3, 3);
+	measure(4, 2);
+	measure(0, 4);
+	measure(1, 4);
+	measure(0, 4);
+	ASSERT_EQ(morph_tui_widget_text_view_set_text_copy(model.label, ""), 0);
+	measure(0, 0);
+	measure(1, 0);
+	ASSERT_EQ(morph_tui_widget_text_view_set_text_copy(model.label, "\n"), 0);
+	measure(1, 2);
+	ASSERT_EQ(morph_tui_widget_text_view_set_text_copy(model.label, "1234\n"), 0);
+	measure(2, 3);
+	struct morph_tui_text_span span{};
+	span.text = "1234\n";
+	span.style.attributes = MORPH_TUI_STYLE_BOLD;
+	ASSERT_EQ(morph_tui_widget_text_view_set_spans_copy(model.label, &span, 1), 0);
+	measure(2, 3);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_NE(styled_frame.find("\033[1m1234"), std::string::npos);
+	span.style.attributes = MORPH_TUI_STYLE_UNDERLINE;
+	ASSERT_EQ(morph_tui_widget_text_view_set_spans_copy(model.label, &span, 1), 0);
+	measure(2, 3);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_NE(styled_frame.find("\033[4m1234"), std::string::npos);
+}

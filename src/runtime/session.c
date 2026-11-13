@@ -2,6 +2,7 @@
 #include "runtime/session.h"
 
 #include "agent/context.h"
+#include "session_history.h"
 #include "permission/context.h"
 #include "util/cleanup.h"
 #include "util/error.h"
@@ -109,4 +110,6 @@ void runtime_session_clear_history(struct react_context *react)
 		return;
 	msg_list_destroy(react->messages);
 	react->messages = NULL;
+	model_history_free_list(react->history_items);
+	react->history_items = NULL;
 }

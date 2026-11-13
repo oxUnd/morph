@@ -30,7 +30,7 @@ struct cli_rich_document_images {
 struct cli_rich_document {
 	struct morph_tui_widget base;
 	struct morph_tui_builder *builder;
-	struct morph_tui_view *text;
+	struct morph_tui_view *text, *media;
 	struct cli_rich_document_images images;
 	int styled;
 };
@@ -56,12 +56,14 @@ static int cli_rich_document_layout(struct morph_tui_view *view)
 	struct cli_rich_document *document = (struct cli_rich_document *)view;
 	struct morph_tui_view_rect content = morph_tui_view_content_rect(view);
 	int rc = morph_tui_view_arrange(document->text, content);
+	if (!rc && document->media)
+		rc = morph_tui_view_arrange(document->media, content);
 	struct cli_rich_document_image *image;
 	morph_array_foreach (image, &document->images.items, struct cli_rich_document_image) {
 		if (rc || !image->view)
 			continue;
 		rc = morph_tui_view_arrange(image->view, (struct morph_tui_view_rect){
-			content.x + image->x, content.y + image->y, image->columns, image->rows});
+			image->x, image->y, image->columns, image->rows});
 	}
 	return rc;
 }
@@ -311,27 +313,42 @@ int cli_rich_document_set_rendered_copy(struct morph_tui_view *view, const char 
 		rc = cli_rich_document_parse(document, &images, &text, source);
 	if (rc)
 		return rc;
-	rc = morph_tui_view_clear_children(view);
-	if (rc)
-		return rc;
-	document->text = morph_tui_widget_text_view_add_borrow(document->builder, view, "", NULL);
-	if (!document->text)
-		return morph_tui_builder_error(document->builder);
-	morph_tui_widget_text_view_set_content_sizing(document->text, 1);
-	morph_tui_view_set_focusable(document->text, 0);
+	/* Keep text controls stable: replacing each one would scan the owning
+	 * controller's entire View scope once per restored message. */
 	rc = cli_messages_set_rendered_view(document->text, morph_buf_cstr_borrow(&text), styled);
 	if (rc)
 		return rc;
+	if (document->media && morph_tui_view_child_count(document->media)) {
+		rc = morph_tui_view_clear_children(document->media);
+		if (rc)
+			return rc;
+		struct cli_rich_document_image *old;
+		morph_array_foreach (old, &document->images.items, struct cli_rich_document_image)
+			old->view = NULL;
+	}
 	struct cli_rich_document_image *entry;
 	int leading = cli_rich_document_leading_rows(morph_buf_cstr_borrow(&text));
 	morph_array_foreach (entry, &images.items, struct cli_rich_document_image) {
 		if (!entry->asset || !entry->placed)
 			continue;
+		if (!document->media) {
+			struct morph_tui_widget *media = morph_tui_widget_add_borrow(
+				document->builder, view, sizeof(*media), NULL, NULL);
+			if (!media)
+				return morph_tui_builder_error(document->builder);
+			document->media = &media->view;
+		}
 		const struct morph_tui_view_options options = {
 			.width = entry->columns, .height = entry->rows};
 		entry->y = entry->y > leading ? entry->y - leading : 0;
-		entry->view = morph_tui_widget_image_add_borrow(document->builder, view,
+		entry->view = morph_tui_widget_image_add_borrow(document->builder, document->media,
 			entry->asset, &options);
+	}
+	if (document->media) {
+		rc = morph_tui_view_set_hidden(document->media,
+			!morph_tui_view_child_count(document->media));
+		if (rc)
+			return rc;
 	}
 	cli_rich_document_images_cleanup(&document->images);
 	rc = morph_array_take(&document->images.items, &images.items);

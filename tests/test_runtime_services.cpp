@@ -2,6 +2,8 @@
 
 extern "C" {
 #include "agent/tool.h"
+#include "agent/history.h"
+#include "agent/turn.h"
 #include "db/scheduled_task.h"
 #include "runtime/runtime_internal.h"
 #include "runtime/jobs_service.h"
@@ -21,6 +23,12 @@ extern "C" {
 #include <cstring>
 #include <ctime>
 #include <limits>
+
+static void runtime_test_model_history_cleanup(struct model_history_item **items)
+{
+	model_history_free_list(*items);
+	*items = nullptr;
+}
 
 TEST_F(RuntimeFacadeTest, DeferredSessionPollingIsEmptyAndSilent)
 {
@@ -476,6 +484,96 @@ TEST_F(RuntimeFacadeTest, SessionSelectionDefersModelHistoryLoadingUntilTurn)
 	EXPECT_STREQ(instance->context.react->messages->content, "saved history");
 }
 
+TEST_F(RuntimeFacadeTest, ExistingSessionNavigationDefersReplayUntilNextTurn)
+{
+	struct session first{}, second{}, selected{};
+
+	Open();
+	ASSERT_EQ(runtime_session_current(instance, &first), 0);
+	ASSERT_EQ(message_add_with_turn_id(&instance->context.database, first.id,
+		"user", "old session question", 3, "old-turn"), 0);
+	ASSERT_EQ(message_add_with_turn_id(&instance->context.database, first.id,
+		"assistant", "old session answer", 3, "old-turn"), 0);
+	ASSERT_EQ(runtime_session_reload_current(instance), 0);
+	ASSERT_NE(instance->context.react->messages, nullptr);
+	ASSERT_NE(instance->context.react->history_items, nullptr);
+	ASSERT_EQ(runtime_session_create_detached(instance, "incoming", &second), 0);
+	ASSERT_EQ(message_add_with_turn_id(&instance->context.database, second.id,
+		"user", "incoming question", 4, "incoming-turn"), 0);
+	ASSERT_EQ(message_add_with_turn_id(&instance->context.database, second.id,
+		"assistant", "incoming answer", 4, "incoming-turn"), 0);
+	ASSERT_EQ(model_history_count(&instance->context.database, second.id, 0), 0);
+
+	ASSERT_EQ(runtime_session_select_existing(instance, second.id, &selected), 0);
+	EXPECT_EQ(selected.id, second.id);
+	EXPECT_EQ(instance->context.react->messages, nullptr);
+	EXPECT_EQ(instance->context.react->history_items, nullptr);
+	EXPECT_EQ(model_history_count(&instance->context.database, second.id, 0), 0);
+	EXPECT_EQ(message_count(&instance->context.database, second.id), 2);
+
+	struct agent_session_runtime runtime{};
+	runtime.db = &instance->context.database;
+	runtime.session_id = selected.id;
+	runtime.react = instance->context.react;
+	runtime.flags = AGENT_TURN_LOAD_HISTORY;
+	struct agent_turn_input input{};
+	input.model_input = "Continue selected session";
+	struct agent_turn turn{};
+	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+	const struct message_list *message = instance->context.react->messages;
+	ASSERT_NE(message, nullptr);
+	EXPECT_STREQ(message->content, "incoming question");
+	ASSERT_NE(message->next, nullptr);
+	EXPECT_STREQ(message->next->content, "incoming answer");
+	EXPECT_EQ(message->next->next, nullptr);
+	ASSERT_NE(instance->context.react->history_items, nullptr);
+	EXPECT_EQ(instance->context.react->history_items->session_id, second.id);
+	EXPECT_EQ(model_history_count(&instance->context.database, second.id, 0), 2);
+	EXPECT_EQ(message_count(&instance->context.database, second.id), 2);
+	EXPECT_EQ(agent_turn_finish(&turn, nullptr), 0);
+}
+
+TEST_F(RuntimeFacadeTest, StartupResumeDefersModelHistoryUntilNextTurn)
+{
+	struct session stored{};
+	Open();
+	ASSERT_EQ(runtime_session_current(instance, &stored), 0);
+	ASSERT_NE(stored.display_id[0], '\0');
+	ASSERT_EQ(message_add_with_turn_id(&instance->context.database, stored.id,
+		"user", "startup question", 3, "startup-turn"), 0);
+	ASSERT_EQ(message_add_with_turn_id(&instance->context.database, stored.id,
+		"assistant", "startup answer", 3, "startup-turn"), 0);
+	ASSERT_EQ(model_history_count(&instance->context.database, stored.id, 0), 0);
+	runtime_close(instance);
+	instance = nullptr;
+	struct runtime_options options{};
+	options.resume_session_ref = stored.display_id;
+	Open(&options);
+	EXPECT_EQ(instance->context.current_session.id, stored.id);
+	EXPECT_EQ(instance->context.react->messages, nullptr);
+	EXPECT_EQ(instance->context.react->history_items, nullptr);
+	EXPECT_EQ(model_history_count(&instance->context.database, stored.id, 0), 0);
+
+	struct agent_session_runtime runtime{};
+	runtime.db = &instance->context.database;
+	runtime.session_id = stored.id;
+	runtime.react = instance->context.react;
+	runtime.flags = AGENT_TURN_LOAD_HISTORY;
+	struct agent_turn_input input{};
+	input.model_input = "Continue startup session";
+	struct agent_turn turn{};
+	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+	const struct message_list *message = instance->context.react->messages;
+	ASSERT_NE(message, nullptr);
+	EXPECT_STREQ(message->content, "startup question");
+	ASSERT_NE(message->next, nullptr);
+	EXPECT_STREQ(message->next->content, "startup answer");
+	EXPECT_EQ(message->next->next, nullptr);
+	EXPECT_EQ(model_history_count(&instance->context.database, stored.id, 0), 2);
+	EXPECT_EQ(message_count(&instance->context.database, stored.id), 2);
+	EXPECT_EQ(agent_turn_finish(&turn, nullptr), 0);
+}
+
 TEST_F(RuntimeFacadeTest, SessionListFilterModelAndStatsUseRuntimeDatabase)
 {
 	struct session created{};
@@ -502,6 +600,107 @@ TEST_F(RuntimeFacadeTest, SessionListFilterModelAndStatsUseRuntimeDatabase)
 	EXPECT_EQ(messages, 0);
 	EXPECT_EQ(tokens, 0);
 	EXPECT_GT(limit, 0);
+}
+
+TEST_F(RuntimeFacadeTest, ModelContextStatsMatchReplayRulesWithoutLoadingBodies)
+{
+	Open();
+	const int64_t session_id = instance->context.current_session.id;
+	const std::string large(1024 * 1024, 'x');
+	struct record {
+		const char *kind, *content, *payload;
+		int tokens, active;
+	} records[] = {
+		{"user_message", "question", nullptr, 2, 1},
+		{"assistant_message", large.c_str(), nullptr, 3, 1},
+		{"assistant_tool_calls", "calling", large.c_str(), 5, 1},
+		{"tool_result", large.c_str(), nullptr, 7, 1},
+		{"compaction_summary", "summary", nullptr, 11, 1},
+		{"background_receipt", "result", R"({"task":"build"})", 13, 1},
+		{"background_receipt", "internal", R"({"task":"memory_consolidation"})", 17, 1},
+		{"background_receipt", "[Background receipt] memory_consolidation: done",
+		 nullptr, 19, 1},
+		{"background_receipt", "malformed payload", "{broken", 23, 1},
+		{"background_receipt", nullptr, nullptr, 29, 1},
+		{"turn_outcome", "done", nullptr, 31, 1},
+		{"unknown", "not replayed", nullptr, 37, 1},
+		{"assistant_message", "inactive answer", nullptr, 41, 0},
+		{"tool_result", "inactive result", nullptr, 43, 0},
+	};
+	int64_t summary_id = 0;
+	for (const auto &record : records) {
+		struct model_history_insert insert{};
+		insert.session_id = session_id;
+		insert.kind = record.kind;
+		insert.role = "system";
+		insert.content = record.content;
+		insert.payload_json = record.payload;
+		insert.token_count = record.tokens;
+		insert.active = record.active;
+		int64_t id = 0;
+		ASSERT_EQ(model_history_add(&instance->context.database, &insert, &id), 0);
+		if (std::strcmp(record.kind, "compaction_summary") == 0)
+			summary_id = id;
+	}
+	const std::string compaction =
+		"INSERT INTO history_compactions(session_id,turn_id,cutoff_sequence_no,"
+		"summary_item_id,input_tokens,output_tokens,trigger_kind,created_at) VALUES(" +
+		std::to_string(session_id) + ",'compact',0," + std::to_string(summary_id) +
+		",100,11,'manual',1)";
+	ASSERT_EQ(db_exec(&instance->context.database, compaction.c_str()), 0);
+	for (int pass = 0; pass < 2; pass++) {
+		int count = 0;
+		struct model_history_item *items MORPH_CLEANUP(runtime_test_model_history_cleanup) =
+			model_history_list(&instance->context.database, session_id, 1, &count);
+		ASSERT_GT(count, 0);
+		ASSERT_NE(items, nullptr);
+		int expected_count = 0, expected_tokens = 0, expected_tools = 0;
+		for (const struct model_history_item *item = items; item; item = item->next) {
+			if (!agent_history_item_replayable(item))
+				continue;
+			expected_count++;
+			expected_tokens += item->token_count;
+			if (std::strcmp(item->kind, "tool_result") == 0)
+				expected_tools += item->token_count;
+		}
+		int active = -1, tokens = -1, tools = -1, compactions = -1, limit = -1;
+		ASSERT_EQ(runtime_session_model_context_stats(instance, &active, &tokens,
+			&tools, &compactions, &limit), 0);
+		EXPECT_EQ(active, expected_count);
+		EXPECT_EQ(tokens, expected_tokens);
+		EXPECT_EQ(tools, expected_tools);
+		EXPECT_EQ(compactions, pass + 1);
+		EXPECT_EQ(limit, instance->context.tokenizer->context_limit);
+		ASSERT_EQ(db_exec(&instance->context.database,
+			"UPDATE model_history_items SET active=0 WHERE kind='tool_result';"), 0);
+		ASSERT_EQ(db_exec(&instance->context.database, compaction.c_str()), 0);
+	}
+}
+
+TEST_F(RuntimeFacadeTest, ModelContextStatsRejectUnrepresentableTotals)
+{
+	Open();
+	struct model_history_insert insert{};
+	insert.session_id = instance->context.current_session.id;
+	insert.kind = "user_message";
+	insert.role = "user";
+	insert.content = "question";
+	insert.active = 1;
+	insert.token_count = std::numeric_limits<int>::max();
+	ASSERT_EQ(model_history_add(&instance->context.database, &insert, nullptr), 0);
+	insert.kind = "assistant_message";
+	insert.role = "assistant";
+	insert.content = "answer";
+	insert.token_count = 1;
+	ASSERT_EQ(model_history_add(&instance->context.database, &insert, nullptr), 0);
+	int active = -7, tokens = -7, tools = -7, compactions = -7, limit = -7;
+	EXPECT_EQ(runtime_session_model_context_stats(instance, &active, &tokens,
+		&tools, &compactions, &limit), -EOVERFLOW);
+	EXPECT_EQ(active, -7);
+	EXPECT_EQ(tokens, -7);
+	EXPECT_EQ(tools, -7);
+	EXPECT_EQ(compactions, -7);
+	EXPECT_EQ(limit, -7);
 }
 
 TEST_F(RuntimeFacadeTest, ToolRegistrationIsVisibleThroughFacade)

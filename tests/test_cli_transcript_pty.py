@@ -54,7 +54,7 @@ def check_mutable_markdown_preview(driver):
             with tempfile.TemporaryDirectory(prefix='morph-markdown-preview-') as temp:
                 terminal = Terminal(driver, Path(temp), server.server_port, hooks_enabled=False)
                 terminal.child.setwinsize(24, width)
-                terminal.screen = pyte.HistoryScreen(width, 24, history=2000)
+                terminal.screen = AlternateScreen(width, 24)
                 terminal.stream = pyte.Stream(terminal.screen)
                 chunks = None
                 try:
@@ -100,11 +100,10 @@ def check_mutable_markdown_preview(driver):
                     completed = terminal.snapshot(f'{width}: final keeps one composer and tail')
                     assert completed.count('FINAL_PREVIEW') == 1, completed
                     assert 'draft🙂' in completed, completed
-                    history = '\n'.join(''.join(cell.data for _, cell in sorted(line.items()))
-                                        for line in terminal.screen.history.top)
-                    combined = history + '\n' + completed
+                    combined = collect_retained_history(terminal, 'draft🙂')
                     for marker in ('FIRST_PREVIEW', 'SECOND_PREVIEW', 'LIVE_TABLE',
-                                   'int value = 1;', 'LIVE_ROW_049'):
+                                   'int value = 1;', 'FINAL_PREVIEW',
+                                   *(f'LIVE_ROW_{index:03d}' for index in range(50))):
                         assert combined.count(marker) == 1, (marker, combined)
                     assert not terminal.duplicate_prompts, terminal.duplicate_prompts
                     assert '\x1b[3J' not in terminal.raw, terminal.raw
@@ -147,6 +146,47 @@ class AlternateScreen(pyte.Screen):
                 self.resize(lines=lines, columns=columns)
             modes = tuple(mode for mode in modes if mode != 1049)
         super().reset_mode(*modes, **kwargs)
+
+
+def collect_retained_history(terminal, draft):
+    """Read logical history through overlapping viewports, retaining duplicates."""
+    rows = terminal.screen.display
+    composer = next(index for index, row in enumerate(rows) if draft in row)
+    cursor = (terminal.screen.cursor.x, terminal.screen.cursor.y)
+    history = rows[:composer - 2]
+    previous = history
+
+    def viewport(label):
+        terminal.snapshot(label)
+        assert draft in terminal.screen.display[composer], '\n'.join(terminal.screen.display)
+        assert (terminal.screen.cursor.x, terminal.screen.cursor.y) == cursor
+        return terminal.screen.display[:composer - 2]
+
+    def prepend(page):
+        nonlocal history
+        overlap = next((count for count in range(len(page), 0, -1)
+                        if page[-count:] == history[:count]), 0)
+        assert overlap, 'scrolling skipped the overlapping history row'
+        history = page[:-overlap] + history
+
+    for pages in range(20):
+        # PgUp moves one viewport; one wheel-down row creates a shared boundary.
+        terminal.send('\x1b[5~\x1b[<65;1;1M')
+        page = viewport('retained history page up with one-row overlap')
+        if page == previous:
+            break
+        prepend(page)
+        previous = page
+    else:
+        raise AssertionError('retained history did not reach its beginning')
+    terminal.send('\x1b[<64;1;1M')
+    first = viewport('retained history begins at the first physical row')
+    if first != previous:
+        prepend(first)
+    terminal.send('\x1b[6~' * (pages + 2))
+    bottom = viewport('retained history returns to the draft and final tail')
+    assert any('FINAL_PREVIEW' in row for row in bottom), '\n'.join(bottom)
+    return '\n'.join(history)
 
 
 def check_details_follow(driver):

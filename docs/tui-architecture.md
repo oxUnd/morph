@@ -307,6 +307,11 @@ inherit through the tree; a View background paints its frame and padding while
 leaving its margin untouched. The CLI Markdown adapter converts trusted renderer
 SGR into these spans; arbitrary cursor/OSC sequences never reach Canvas.
 
+TextView shares its wrapped-line cache between measure and layout, keyed by the
+normalized content width. Replacing text or spans invalidates that cache; repeated
+same-width measurements reuse it. Stack arrangement stores each child's first
+measurement for that pass instead of measuring it again before arrangement.
+
 Frame sizes include padding and exclude margin. Measurement returns outer size;
 arrange applies margin once. Sibling margins add without collapsing. See the
 [TUI box model](tui-box-model.md) for the geometry diagram, size formulas,

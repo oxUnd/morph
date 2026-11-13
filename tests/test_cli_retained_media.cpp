@@ -63,6 +63,8 @@ class CliRetainedMediaTest : public ::testing::Test
 	FILE *input = nullptr, *output = nullptr;
 	struct morph_tui_application *app = nullptr;
 	struct morph_tui_view *document = nullptr;
+	struct morph_tui_view *original_text = nullptr;
+	int text_actions = 0;
 	std::string source, frame, plain;
 	std::vector<Placement> placements;
 	struct morph_tui_renderer renderer{};
@@ -83,7 +85,8 @@ class CliRetainedMediaTest : public ::testing::Test
 			for (size_t i = 0; i < morph_tui_surface_image_count(surface); i++) {
 				const auto *image = morph_tui_surface_image_borrow(surface, i);
 				self->placements.push_back({image->x, image->y,
-					image->width, image->height, image->source_x, image->source_y,
+					image->width, image->height,
+					image->source_x, image->source_y,
 					image->source_width, image->source_height,
 					morph_tui_media_asset_key(image->asset),
 					reinterpret_cast<uintptr_t>(image->asset)});
@@ -91,11 +94,19 @@ class CliRetainedMediaTest : public ::testing::Test
 			return rc;
 		}, nullptr};
 	const struct morph_tui_view_controller_ops ops = {
-		+[](struct morph_tui_view_controller *controller, struct morph_tui_builder *builder) {
+		+[](struct morph_tui_view_controller *controller,
+		    struct morph_tui_builder *builder) {
 			auto *self = static_cast<CliRetainedMediaTest *>(controller->data);
 			auto *root = morph_tui_widget_stack_add_borrow(builder, nullptr,
 				MORPH_TUI_WIDGET_STACK_VERTICAL, 0, nullptr);
 			self->document = cli_rich_document_add_borrow(builder, root);
+			self->original_text = morph_tui_view_child_borrow(self->document, 0);
+			morph_tui_builder_fail(builder, morph_tui_widget_set_action_borrow(
+				self->original_text,
+				+[](void *data, const struct morph_tui_widget_action *) {
+					static_cast<CliRetainedMediaTest *>(data)->text_actions++;
+					return 0;
+				}, self));
 			morph_tui_builder_fail(builder, cli_rich_document_set_rendered_copy(
 				self->document, self->source.c_str(), 1));
 		}, nullptr, nullptr, nullptr, nullptr, nullptr};
@@ -237,4 +248,77 @@ TEST_F(CliRetainedMediaTest, PlainStyledDocumentKeepsTextAndNoNativePlacements)
 	EXPECT_EQ(plain.find("plain"), 0u);
 	EXPECT_NE(plain.find("bold and 中文🙂"), std::string::npos);
 	EXPECT_NE(frame.find("\033[1m"), std::string::npos);
+}
+
+TEST_F(CliRetainedMediaTest, TextUpdatesKeepTheirOriginalViewBindingAndReflowWithoutChildren)
+{
+	source = "initial text";
+	Present();
+	ASSERT_NE(original_text, nullptr);
+	ASSERT_EQ(morph_tui_view_child_borrow(document, 0), original_text);
+	ASSERT_EQ(morph_tui_view_child_count(document), 1u);
+	for (int update = 0; update < 100; update++) {
+		source = "update " + std::to_string(update) + "\n\n\033[1mbold\033[0m and 中文🙂 "
+			"\033]8;;https://example.com/history\033\\linked\033]8;;\033\\";
+		ASSERT_EQ(cli_rich_document_set_rendered_copy(document, source.c_str(), 1), 0);
+		ASSERT_EQ(morph_tui_view_child_borrow(document, 0), original_text);
+		ASSERT_EQ(morph_tui_view_child_count(document), 1u);
+	}
+	ASSERT_EQ(morph_tui_widget_emit(morph_tui_view_child_borrow(document, 0),
+		MORPH_TUI_WIDGET_ACTION_ACTIVATE, 0, "retained"), 0);
+	EXPECT_EQ(text_actions, 1);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_EQ(placements.size(), 0u);
+	EXPECT_EQ(plain.find("update 99"), 0u);
+	EXPECT_NE(frame.find("\033[1m"), std::string::npos);
+	EXPECT_NE(frame.find("https://example.com/history"), std::string::npos);
+	struct morph_tui_view_size wide{}, narrow{}, restored{};
+	ASSERT_EQ(morph_tui_view_measure(document, 80, &wide), 0);
+	ASSERT_EQ(morph_tui_view_measure(document, 12, &narrow), 0);
+	ASSERT_EQ(morph_tui_view_measure(document, 80, &restored), 0);
+	EXPECT_GT(narrow.height, wide.height);
+	EXPECT_EQ(restored.height, wide.height);
+	EXPECT_EQ(morph_tui_view_child_borrow(document, 0), original_text);
+}
+
+TEST_F(CliRetainedMediaTest, MediaTransitionsKeepTextViewAndReleaseOnlyImageChildren)
+{
+	source = "before media";
+	Present();
+	const unsigned first = 0x53445566u, second = 0x53556677u;
+	source = "before " + PngTransfer(first) + retained_media_placeholders(first, 0, 3) +
+		" after\n";
+	ASSERT_EQ(cli_rich_document_set_rendered_copy(document, source.c_str(), 1), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	ASSERT_EQ(placements.size(), 1u);
+	const auto original = placements[0];
+	auto *images = morph_tui_view_child_borrow(document, 1);
+	ASSERT_NE(images, nullptr);
+	EXPECT_EQ(morph_tui_view_child_count(images), 1u);
+	EXPECT_EQ(morph_tui_view_child_borrow(document, 0), original_text);
+	source = "before " + PngTransfer(second) + retained_media_placeholders(second, 0, 3) +
+		" after\n";
+	ASSERT_EQ(cli_rich_document_set_rendered_copy(document, source.c_str(), 1), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	ASSERT_EQ(placements.size(), 1u);
+	EXPECT_EQ(placements[0].identity, original.identity);
+	EXPECT_EQ(morph_tui_view_child_borrow(document, 1), images);
+	EXPECT_EQ(morph_tui_view_child_borrow(document, 0), original_text);
+	ASSERT_EQ(cli_rich_document_set_rendered_copy(document, "text after media", 1), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_EQ(placements.size(), 0u);
+	EXPECT_EQ(morph_tui_view_child_count(images), 0u);
+	EXPECT_TRUE(morph_tui_view_hidden(images));
+	EXPECT_EQ(plain.find("text after media"), 0u);
+	EXPECT_EQ(morph_tui_view_child_borrow(document, 0), original_text);
+	ASSERT_EQ(morph_tui_widget_emit(morph_tui_view_child_borrow(document, 0),
+		MORPH_TUI_WIDGET_ACTION_ACTIVATE, 0, "retained"), 0);
+	EXPECT_EQ(text_actions, 1);
+	source = PngTransfer(first) + retained_media_placeholders(first, 0, 3) + " again";
+	ASSERT_EQ(cli_rich_document_set_rendered_copy(document, source.c_str(), 1), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	ASSERT_EQ(placements.size(), 1u);
+	EXPECT_EQ(placements[0].key, original.key);
+	EXPECT_FALSE(morph_tui_view_hidden(images));
+	EXPECT_EQ(morph_tui_view_child_borrow(document, 0), original_text);
 }

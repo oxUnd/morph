@@ -67,7 +67,6 @@ struct cli_resume_group {
 struct cli_resume_model {
 	const struct session *sessions;
 	int session_count;
-	int64_t current_id;
 	struct cli_resume_group *groups;
 	int group_count;
 	int *group_order;
@@ -503,31 +502,18 @@ static int cli_resume_frame(morph_buf_t *frame, const struct cli_resume_model *m
 			cli_resume_cell(frame, layout, row, 2, 1, "▏", CLI_RESUME_BAR, 0);
 		if (layout->grouped) {
 			int name_width = layout->name_width - 4;
-			int current = session->id == model->current_id;
-			const char *marker = current ? CLI_FEED_DONE : CLI_FEED_PENDING;
-			const char *marker_style =
-				current ? (selected ? ANSI_GREEN "\033[1m" : ANSI_GREEN)
-					: (selected ? ANSI_DIM "\033[1m" : ANSI_DIM);
 
 			if (name_width < 1)
 				name_width = 1;
-			cli_resume_cell(frame, layout, row, 3, 1, marker, marker_style, 0);
 			cli_resume_cell(frame, layout, row, 5, 1,
 					last_in_group ? "└" : "├", metadata, 0);
 			cli_resume_cell(frame, layout, row, 7, name_width, session->name,
 					text, 0);
 		} else {
 			int name_width = layout->name_width - 2;
-			int current = session->id == model->current_id;
-			const char *marker_style =
-				current ? (selected ? ANSI_GREEN "\033[1m" : ANSI_GREEN)
-					: (selected ? ANSI_DIM "\033[1m" : ANSI_DIM);
 
 			if (name_width < 1)
 				name_width = 1;
-			cli_resume_cell(frame, layout, row, 3, 1,
-					current ? CLI_FEED_DONE : CLI_FEED_PENDING,
-					marker_style, 0);
 			cli_resume_cell(frame, layout, row, 5, name_width, session->name,
 					text, 0);
 		}
@@ -862,7 +848,6 @@ int cli_resume_show(struct cli_application *ctx)
 		return rc;
 	}
 	(void)runtime_session_current_id(ctx->runtime, &current_id);
-	model.current_id = current_id;
 	if (cli_setup_controls_available(stdin, stdout)) {
 		if (cli_application_tui_borrow(ctx)) {
 			rc = cli_resume_present(ctx, &model);

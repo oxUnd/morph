@@ -28,28 +28,37 @@ struct widget_document {
 	struct morph_tui_widget_text_layout lines;
 	char *text;
 	morph_buf_t row;
-	size_t offset;
+	size_t offset, length;
 	int width;
 	int content_sizing;
 	morph_array_t spans;
 };
 
+static int widget_document_wrap(struct widget_document *document, int width)
+{
+	width = width > 0 ? width : 1;
+	if (document->width == width)
+		return 0;
+	document->width = 0;
+	int rc = morph_tui_widget_text_layout_wrap_borrow(
+		&document->lines, document->text ? document->text : "", (size_t)width);
+	if (!rc)
+		document->width = width;
+	return rc;
+}
+
 static int widget_document_measure(struct morph_tui_view *view, int width,
 				   struct morph_tui_view_size *size)
 {
 	struct widget_document *document = (struct widget_document *)view;
-	int rc = morph_tui_widget_text_layout_wrap_borrow(
-		&document->lines, document->text ? document->text : "",
-		width > 0 ? (size_t)width : 1);
+	int rc = widget_document_wrap(document, width);
 	if (rc)
 		return rc;
 	size_t rows = document->lines.lines.nelts;
-	size_t length = document->text ? strlen(document->text) : 0;
-	if (length && document->text[length - 1] == '\n')
+	if (document->length && document->text[document->length - 1] == '\n')
 		rows++;
 	if (rows > INT_MAX)
 		return -EOVERFLOW;
-	document->width = width;
 	*size = (struct morph_tui_view_size){width, document->content_sizing
 		? (int)rows : 1};
 	return 0;
@@ -59,15 +68,7 @@ static int widget_document_layout(struct morph_tui_view *view)
 {
 	struct widget_document *document = (struct widget_document *)view;
 	struct morph_tui_view_rect content = morph_tui_view_content_rect(view);
-	int width = content.width > 0 ? content.width : 1;
-	int rc = 0;
-
-	if (document->width != width) {
-		rc = morph_tui_widget_text_layout_wrap_borrow(
-			&document->lines, document->text ? document->text : "", (size_t)width);
-		if (!rc)
-			document->width = width;
-	}
+	int rc = widget_document_wrap(document, content.width);
 	int height = content.height > 0 ? content.height : 1;
 
 	document->offset = morph_tui_widget_scroll_update(
@@ -214,6 +215,7 @@ int morph_tui_widget_text_view_set_spans_copy(struct morph_tui_view *view,
 	if (equal)
 		return 0;
 	free(document->text);
+	document->length = text.len;
 	document->text = morph_buf_detach(&text);
 	widget_document_spans_cleanup(&document->spans);
 	rc = morph_array_take(&document->spans, &ranges);

@@ -8,6 +8,7 @@
 
 struct widget_stack_item {
 	struct morph_tui_view *view;
+	struct morph_tui_view_size measured;
 	int span, weight, maximum;
 };
 
@@ -90,8 +91,9 @@ static int widget_stack_arrange(struct morph_tui_layout *layout, struct morph_tu
 
 		if (!item)
 			return -ENOMEM;
-		*item = (struct widget_stack_item){child, span, weight,
-						   maximum ? maximum + margin : 0};
+		*item = (struct widget_stack_item){
+			.view = child, .measured = measured, .span = span, .weight = weight,
+			.maximum = maximum ? maximum + margin : 0};
 		used += span;
 		if (stack->plan.nelts > 1)
 			used += stack->spacing;
@@ -140,12 +142,7 @@ static int widget_stack_arrange(struct morph_tui_layout *layout, struct morph_tu
 		int margin = vertical ? opts.margin.left + opts.margin.right
 				      : opts.margin.top + opts.margin.bottom;
 		int full_cross = cross;
-		struct morph_tui_view_size measured;
-		int measure_rc = morph_tui_view_measure(item.view, width, &measured);
-
-		if (measure_rc)
-			return measure_rc;
-		int intrinsic = vertical ? measured.width : measured.height;
+		int intrinsic = vertical ? item.measured.width : item.measured.height;
 
 		if (opts.alignment != MORPH_TUI_VIEW_STRETCH && cross > intrinsic)
 			cross = intrinsic;

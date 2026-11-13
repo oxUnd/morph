@@ -89,6 +89,65 @@ TEST_F(AgentTurnTest, FailedHistoryRepairCannotRollbackACallersTransaction)
 	EXPECT_EQ(message_count(&db, sess.id), 1);
 }
 
+TEST_F(AgentTurnTest, LoadsLongTranscriptInOrderWithItsStoredMetadata)
+{
+	constexpr int rounds = 512;
+	ASSERT_EQ(db_exec(&db, "BEGIN IMMEDIATE;"), 0);
+	for (int round = 0; round < rounds; round++) {
+		const std::string turn_id = "saved-" + std::to_string(round);
+		const std::string question = "question " + std::to_string(round);
+		const std::string answer = "answer " + std::to_string(round);
+		ASSERT_EQ(message_add_with_turn_id(&db, sess.id, "user",
+			question.c_str(), 7, turn_id.c_str()), 0);
+		ASSERT_EQ(message_add_with_turn_id(&db, sess.id, "assistant",
+			answer.c_str(), 11, turn_id.c_str()), 0);
+	}
+	ASSERT_EQ(db_exec(&db, "UPDATE messages SET compressed=1 WHERE id%3=0; COMMIT;"), 0);
+	struct agent_session_runtime runtime{};
+	runtime.db = &db;
+	runtime.session_id = sess.id;
+	runtime.react = react;
+	ASSERT_EQ(agent_session_load_history(&runtime), 0);
+	const struct message_list *message = react->messages;
+	for (int index = 0; index < rounds * 2; index++) {
+		SCOPED_TRACE(index);
+		ASSERT_NE(message, nullptr);
+		const bool assistant = index % 2 != 0;
+		const std::string content = (assistant ? "answer " : "question ") +
+			std::to_string(index / 2);
+		EXPECT_STREQ(message->role, assistant ? "assistant" : "user");
+		EXPECT_STREQ(message->content, content.c_str());
+		EXPECT_EQ(message->token_count, assistant ? 11 : 7);
+		EXPECT_EQ(message->compressed, (index + 1) % 3 == 0);
+		message = message->next;
+	}
+	EXPECT_EQ(message, nullptr);
+	EXPECT_EQ(message_count(&db, sess.id), rounds * 2);
+}
+
+TEST_F(AgentTurnTest, FailedHistoryLoadingClearsOldContextWithoutRollingBackCaller)
+{
+	ASSERT_EQ(message_add_with_turn_id(&db, sess.id, "user", "question", 2, "saved"), 0);
+	ASSERT_EQ(message_add_with_turn_id(&db, sess.id, "assistant", "answer", 2, "saved"), 0);
+	struct agent_session_runtime runtime{};
+	runtime.db = &db;
+	runtime.session_id = sess.id;
+	runtime.react = react;
+	ASSERT_EQ(agent_session_load_history(&runtime), 0);
+	ASSERT_NE(react->messages, nullptr);
+	ASSERT_NE(react->history_items, nullptr);
+	ASSERT_EQ(db_exec(&db, "BEGIN IMMEDIATE;"), 0);
+	ASSERT_EQ(message_add(&db, sess.id, "user", "caller-owned write", 3), 0);
+	EXPECT_EQ(agent_session_load_history(&runtime), MORPH_ERR_DB);
+	EXPECT_EQ(react->messages, nullptr);
+	EXPECT_EQ(react->history_items, nullptr);
+	EXPECT_EQ(sqlite3_get_autocommit(db.handle), 0);
+	ASSERT_EQ(db_exec(&db, "COMMIT;"), 0);
+	EXPECT_EQ(message_count(&db, sess.id), 3);
+	ASSERT_EQ(agent_session_load_history(&runtime), 0);
+	EXPECT_EQ(msg_list_count(react->messages), 3);
+}
+
 TEST_F(AgentTurnTest, PersistsExecutionOutcomeWithoutInventingTaskCompletion)
 {
 	const enum react_outcome outcomes[] = {

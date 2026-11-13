@@ -513,9 +513,7 @@ static int runtime_start_components(struct runtime *runtime)
 		profile.models = &dynamic_models;
 		(void)runtime_bootstrap_dynamic_tools(&profile, session_id);
 	}
-	if (ctx->current_session.id > 0)
-		runtime_session_load_history(&ctx->engine,
-					     ctx->current_session.id);
+	/* Opening a session defers model replay and repair until its first turn. */
 	return 0;
 }
 

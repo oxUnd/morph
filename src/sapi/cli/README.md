@@ -60,6 +60,19 @@ Tool events update the existing control by call ID. Streaming messages keep thei
 source and remeasure Markdown at the current content width. PgUp/PgDn and wheel
 scroll within the feed; reaching the bottom resumes following.
 
+Session navigation restores the complete display history without loading or
+repairing the model replay window; that work belongs to the next turn. Rich
+documents retain their TextView while content changes, and TextView reuses its
+wrapped rows until text or width changes. Stack arrangement reuses its first
+measurement of each child. Footer token totals query a narrow projection instead
+of allocating copies of every stored answer and tool result.
+
+`python tests/test_cli_resume_scale_pty.py build/bin/morph 1000 5000 10000`
+reports resume, input readiness and page-up timings on a synthetic Markdown and
+Unicode transcript. It also checks that the oldest and newest records remain
+reachable, drafts survive scrolling and resize, and replay does not add records.
+The CI case uses 1,000 turns and has no machine-dependent timing threshold.
+
 `widgets/feed_block` and the stateless append formatters remain adapters for
 legacy renderers, child transcript documents, fixtures and non-retained consumers.
 Their trailing-newline helper is a text-output compatibility policy, not a View
