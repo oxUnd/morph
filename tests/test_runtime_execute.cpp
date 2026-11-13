@@ -19,6 +19,7 @@ extern "C" {
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <mutex>
 #include <string>
@@ -38,6 +39,8 @@ struct RuntimeScriptedModel {
 	int calls = 0;
 	void *observed_usage_user_data = nullptr;
 	std::vector<std::string> observed_messages;
+	std::vector<std::string> stream_chunks;
+	std::function<void()> after_stream_chunk;
 	std::vector<std::pair<std::string, std::string>> actions;
 	size_t action_cursor = 0;
 };
@@ -68,7 +71,7 @@ static int runtime_scripted_chat(struct model *self, const char *, const char **
 static int runtime_scripted_chat_with_tools(struct model *self, const char *,
 					    struct chat_message *messages, int count,
 					    struct tool_desc *, int, struct chat_response *response,
-					    sse_callback, void *)
+					    sse_callback callback, void *user_data)
 {
 	auto *state = static_cast<RuntimeScriptedModel *>(self->handle);
 	{
@@ -88,6 +91,15 @@ static int runtime_scripted_chat_with_tools(struct model *self, const char *,
 	}
 	if (state->error)
 		return state->error;
+	for (const auto &chunk : state->stream_chunks) {
+		if (callback) {
+			int rc = callback(chunk.c_str(), user_data);
+			if (rc != 0)
+				return rc;
+		}
+		if (state->after_stream_chunk)
+			state->after_stream_chunk();
+	}
 	if (state->action_cursor < state->actions.size()) {
 		const auto &action = state->actions[state->action_cursor++];
 
@@ -172,6 +184,49 @@ protected:
 		request.turn_flags = AGENT_TURN_DEFAULT_FLAGS;
 		return runtime_execute_turn(instance, &request, result);
 	}
+
+	void ExpectCancelledRequestInNextInput(const char *original, const char *steering)
+	{
+		cJSON *snapshot MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+		ASSERT_EQ(runtime_session_last_request_copy(instance, &snapshot), 0);
+		const char *input = cJSON_GetStringValue(cJSON_GetObjectItem(snapshot, "input_json"));
+		ASSERT_NE(input, nullptr);
+		cJSON *parsed MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(input);
+		ASSERT_NE(parsed, nullptr);
+		cJSON *messages = cJSON_GetObjectItem(parsed, "messages");
+		ASSERT_TRUE(cJSON_IsArray(messages));
+		int original_count = 0;
+		int steering_count = 0;
+		int continuation_count = 0;
+		cJSON *message = nullptr;
+		cJSON_ArrayForEach(message, messages) {
+			const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(message, "role"));
+			const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(message, "content"));
+			ASSERT_NE(role, nullptr);
+			EXPECT_STRNE(role, "tool");
+			EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(message, "tool_calls")), 0);
+			if (!text)
+				continue;
+			EXPECT_EQ(strstr(text, "PARTIAL_CANCELLED_RESPONSE"), nullptr);
+			if (strncmp(text, original, strlen(original)) == 0) {
+				original_count++;
+				EXPECT_STREQ(role, "user");
+				EXPECT_NE(strstr(text, "Historical turn execution ended: cancelled"),
+					nullptr);
+				EXPECT_NE(strstr(text, "Tool side effects are not rolled back"), nullptr);
+			}
+			if (steering && strncmp(text, steering, strlen(steering)) == 0) {
+				steering_count++;
+				EXPECT_STREQ(role, "user");
+				EXPECT_NE(strstr(text, "cancelled"), nullptr);
+			}
+			if (strcmp(text, "continue") == 0)
+				continuation_count++;
+		}
+		EXPECT_EQ(original_count, 1);
+		EXPECT_EQ(steering_count, steering ? 1 : 0);
+		EXPECT_EQ(continuation_count, 1);
+	}
 };
 
 static int runtime_count_events(const struct morph_event *, void *user_data)
@@ -187,6 +242,27 @@ static int runtime_count_action_drains(void *user_data,
 	return 0;
 }
 
+struct RuntimePendingSteering {
+	bool delivered = false;
+};
+
+static int runtime_cancel_test_steering(void *user_data, struct react_action *out, int)
+{
+	auto *state = static_cast<RuntimePendingSteering *>(user_data);
+	if (state->delivered)
+		return 0;
+	state->delivered = true;
+	out->type = "prompt";
+	out->payload_json = "{\"text\":\"preserve component padding\"}";
+	return 1;
+}
+
+static void runtime_cancel_test_messages_cleanup(struct message **messages)
+{
+	runtime_session_messages_free(*messages);
+	*messages = nullptr;
+}
+
 TEST_F(RuntimeExecuteTest, SuccessfulTurnPersistsUserAndAssistantMessages)
 {
 	struct runtime_result result{};
@@ -196,7 +272,8 @@ TEST_F(RuntimeExecuteTest, SuccessfulTurnPersistsUserAndAssistantMessages)
 	ASSERT_NE(result.final_text, nullptr);
 	EXPECT_STREQ(result.final_text, "scripted answer");
 	int count = 0;
-	struct message *messages = runtime_session_messages_current_copy(instance, &count);
+	struct message *messages MORPH_CLEANUP(runtime_cancel_test_messages_cleanup) =
+		runtime_session_messages_current_copy(instance, &count);
 	ASSERT_NE(messages, nullptr);
 	EXPECT_EQ(count, 2);
 	EXPECT_STREQ(messages->role, "user");
@@ -204,7 +281,6 @@ TEST_F(RuntimeExecuteTest, SuccessfulTurnPersistsUserAndAssistantMessages)
 	ASSERT_NE(messages->next, nullptr);
 	EXPECT_STREQ(messages->next->role, "assistant");
 	EXPECT_STREQ(messages->next->content, "scripted answer");
-	runtime_session_messages_free(messages);
 }
 
 TEST_F(RuntimeExecuteTest, SecondTurnReceivesEarlierSessionHistory)
@@ -383,6 +459,91 @@ TEST_F(RuntimeExecuteTest, ConcurrentTurnIsBusyAndCancellationIsObserved)
 	worker.join();
 	EXPECT_NE(first_rc, 0);
 	EXPECT_EQ(first.outcome, RUNTIME_OUTCOME_CANCELLED);
+	ASSERT_EQ(runtime_session_reload_current(instance), 0);
+	ASSERT_EQ(Execute("continue", &second), 0);
+	ExpectCancelledRequestInNextInput("blocking", nullptr);
+}
+
+TEST_F(RuntimeExecuteTest, CancelledStreamPreservesRequestAndSteeringInNextDispatch)
+{
+	OpenScripted();
+	scripted.stream_chunks = {"PARTIAL_CANCELLED_RESPONSE", "discarded stream chunk"};
+	scripted.after_stream_chunk = [&] { runtime_cancel_turn(instance); };
+	RuntimePendingSteering steering;
+	struct runtime_request request{};
+	request.model_input = "complete the current feed page";
+	request.stored_user_input = request.model_input;
+	request.turn_flags = AGENT_TURN_DEFAULT_FLAGS;
+	request.override_action_drain = 1;
+	request.action_drain_fn = runtime_cancel_test_steering;
+	request.action_drain_user_data = &steering;
+	struct runtime_result cancelled{};
+	EXPECT_EQ(runtime_execute_turn(instance, &request, &cancelled), -ECANCELED);
+	EXPECT_EQ(cancelled.outcome, RUNTIME_OUTCOME_CANCELLED);
+	EXPECT_TRUE(steering.delivered);
+	scripted.stream_chunks.clear();
+	scripted.after_stream_chunk = {};
+	ASSERT_EQ(runtime_session_reload_current(instance), 0);
+	struct runtime_result continued{};
+	ASSERT_EQ(Execute("continue", &continued), 0);
+	EXPECT_EQ(continued.outcome, RUNTIME_OUTCOME_COMPLETED);
+	ExpectCancelledRequestInNextInput(request.model_input, "preserve component padding");
+	int count = 0;
+	struct message *messages MORPH_CLEANUP(runtime_cancel_test_messages_cleanup) =
+		runtime_session_messages_current_copy(instance, &count);
+	int original_count = 0;
+	for (auto *message = messages; message; message = message->next) {
+		if (strcmp(message->role, "user") == 0 &&
+		    strcmp(message->content, request.model_input) == 0)
+			original_count++;
+	}
+	EXPECT_EQ(original_count, 1);
+}
+
+TEST_F(RuntimeExecuteTest, CancelledToolExecutionKeepsRequestWithoutReplayingToolChain)
+{
+	OpenScripted();
+	struct CancelState {
+		struct runtime *instance;
+		std::atomic<int> executions{0};
+	} state{instance};
+	struct tool_spec tool{};
+	tool.name = "cancel_fixture";
+	tool.description = "Cancel the current turn during a tool execution";
+	tool.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
+	tool.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	tool.flags = TOOL_FLAG_READONLY;
+	tool.user_data = &state;
+	tool.exec = [](const char *, struct tool_result *result, void *user_data) -> int {
+		auto *context = static_cast<CancelState *>(user_data);
+		context->executions.fetch_add(1);
+		int rc = tool_result_error_copy(result, "CANCELLED", "Cancelled fixture execution");
+		if (rc != 0)
+			return rc;
+		runtime_cancel_turn(context->instance);
+		return -ECANCELED;
+	};
+	ASSERT_EQ(tool_register_borrow(&instance->context.tools, &tool), 0);
+	scripted.actions.emplace_back("cancel_fixture", "{}");
+	RuntimePendingSteering steering;
+	struct runtime_request request{};
+	request.model_input = "finish the tool component implementation";
+	request.stored_user_input = request.model_input;
+	request.turn_flags = AGENT_TURN_DEFAULT_FLAGS;
+	request.override_action_drain = 1;
+	request.action_drain_fn = runtime_cancel_test_steering;
+	request.action_drain_user_data = &steering;
+	struct runtime_result cancelled{};
+	EXPECT_EQ(runtime_execute_turn(instance, &request, &cancelled), -ECANCELED);
+	EXPECT_EQ(cancelled.outcome, RUNTIME_OUTCOME_CANCELLED);
+	EXPECT_EQ(state.executions.load(), 1);
+	EXPECT_TRUE(steering.delivered);
+	ASSERT_EQ(runtime_session_reload_current(instance), 0);
+	struct runtime_result continued{};
+	ASSERT_EQ(Execute("continue", &continued), 0);
+	EXPECT_EQ(continued.outcome, RUNTIME_OUTCOME_COMPLETED);
+	ExpectCancelledRequestInNextInput(request.model_input, "preserve component padding");
+	EXPECT_EQ(state.executions.load(), 1);
 }
 
 TEST_F(RuntimeExecuteTest, InvalidTurnArgumentsAreRejected)

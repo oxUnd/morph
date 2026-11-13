@@ -37,6 +37,22 @@ def tools(release, calls):
     release.set()
 
 
+def retained_cancelled_requests(body, requests):
+    messages = body['messages']
+    users = [message.get('content', '') for message in messages
+             if message['role'] == 'user']
+    for request in requests:
+        matches = [content for content in users
+                   if content.split('\n\n[Historical turn execution ended:', 1)[0] == request]
+        assert len(matches) == 1, (request, users)
+        assert 'Historical turn execution ended: cancelled.' in matches[0], matches[0]
+        assert 'Tool side effects are not rolled back.' in matches[0], matches[0]
+    assert not any(message.get('tool_calls') or message['role'] == 'tool'
+                   for message in messages), messages
+    assert not any('Live output' in message.get('content', '')
+                   for message in messages if message['role'] == 'assistant'), messages
+
+
 def main():
     driver = Path(sys.argv[1]).resolve()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
@@ -66,8 +82,9 @@ def main():
             release.set()
 
             terminal.send('\x15cancel foreground exec\r')
-            _, release = terminal.request()
+            body, release = terminal.request()
             releases.append(release)
+            retained_cancelled_requests(body, ['cancel silent model'])
             tools(release, [('exec', {
                 'command': "trap '' TERM; printf $$ > foreground.pid; "
                            'while :; do sleep .05; done',
@@ -82,8 +99,9 @@ def main():
             no_process(terminal, directory / 'foreground.pid')
 
             terminal.send('cancel all current background jobs\r')
-            _, release = terminal.request()
+            body, release = terminal.request()
             releases.append(release)
+            retained_cancelled_requests(body, ['cancel silent model', 'cancel foreground exec'])
             calls = []
             for index, mode in enumerate(({}, {'service': True}, {'notify_only': True})):
                 calls.append(('exec', {
@@ -104,8 +122,10 @@ def main():
             release.set()
 
             terminal.send('\x15cancel a question\r')
-            _, release = terminal.request()
+            body, release = terminal.request()
             releases.append(release)
+            retained_cancelled_requests(body, ['cancel silent model', 'cancel foreground exec',
+                                             'cancel all current background jobs'])
             tools(release, [('ask_user', {'question': 'Cancel this question',
                                          'choices': ['Yes', 'No']})])
             until(terminal, lambda text: 'Cancel this question' in text)
@@ -120,12 +140,15 @@ def main():
             releases.append(release)
             users = [m['content'] for m in body['messages'] if m['role'] == 'user']
             assert users[-1] == 'followup 中文', users
+            retained_cancelled_requests(body, ['cancel silent model', 'cancel foreground exec',
+                                             'cancel all current background jobs',
+                                             'cancel a question'])
             release.delta = {'content': 'Recovered after every cancellation.'}
             release.set()
             until(terminal, lambda text: 'Recovered after every cancellation.' in text)
             assert not terminal.duplicate_prompts, terminal.duplicate_prompts
             print('PASS: prompt ESC, foreground and background termination, question cancellation, '
-                  'and input recovery')
+                  'retained cancelled requests, clean tool replay, and input recovery')
     finally:
         for release in releases:
             release.set()

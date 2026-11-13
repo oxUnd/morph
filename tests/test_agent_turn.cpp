@@ -60,6 +60,18 @@ static int agent_turn_summary(const char *, void *, char **out)
 	return *out ? 0 : -ENOMEM;
 }
 
+static void agent_turn_test_messages_cleanup(struct message **messages)
+{
+	message_free_list(*messages);
+	*messages = nullptr;
+}
+
+static void agent_turn_test_history_cleanup(struct model_history_item **items)
+{
+	model_history_free_list(*items);
+	*items = nullptr;
+}
+
 TEST_F(AgentTurnTest, FailedTurnBeginCannotRollbackACallersTransaction)
 {
 	ASSERT_EQ(db_exec(&db, "BEGIN IMMEDIATE;"), 0);
@@ -568,7 +580,8 @@ TEST_F(AgentTurnTest, FailedTurnKeepsUserWithoutPoisoningNextTurn)
 	EXPECT_EQ(model_history_count(&db, sess.id, 1), 1);
 	EXPECT_EQ(model_history_count(&db, sess.id, 0), 3);
 
-	struct message *transcript = message_list(&db, sess.id, &count);
+	struct message *transcript MORPH_CLEANUP(agent_turn_test_messages_cleanup) =
+		message_list(&db, sess.id, &count);
 	ASSERT_EQ(count, 2);
 	ASSERT_NE(transcript, nullptr);
 	EXPECT_STREQ(transcript->role, "user");
@@ -576,7 +589,6 @@ TEST_F(AgentTurnTest, FailedTurnKeepsUserWithoutPoisoningNextTurn)
 	EXPECT_STREQ(transcript->next->role, "assistant");
 	EXPECT_NE(std::strstr(transcript->next->content, "empty response"),
 		nullptr);
-	message_free_list(transcript);
 
 	struct agent_turn_input next_input = {};
 	struct agent_turn next_turn;
@@ -608,6 +620,253 @@ TEST_F(AgentTurnTest, FailedTurnKeepsUserWithoutPoisoningNextTurn)
 	EXPECT_STREQ(active->next->next->kind, "assistant_message");
 	EXPECT_STREQ(active->next->next->content, "recovered");
 	model_history_free_list(active);
+}
+
+TEST_F(AgentTurnTest, CancelledTurnKeepsOriginalRequestAndEverySteeringMessage)
+{
+	struct agent_session_runtime runtime{};
+	runtime.db = &db;
+	runtime.session_id = sess.id;
+	runtime.react = react;
+	runtime.flags = AGENT_TURN_LOAD_HISTORY | AGENT_TURN_SAVE_MESSAGES;
+	struct agent_turn_input input{};
+	input.model_input = "unfinished model request";
+	input.stored_user_input = "visible unfinished request";
+	input.turn_id = "cancelled-before-response";
+	struct agent_turn turn{};
+	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+	ASSERT_EQ(agent_history_record_user_steer(react, "preserve the visual layout", 1), 0);
+	ASSERT_EQ(agent_history_record_user_steer(react, "use component padding", 2), 0);
+	react->state = REACT_STATE_ABORT;
+	react->outcome = REACT_OUTCOME_CANCELLED;
+	react->last_error_code = -ECANCELED;
+	ASSERT_EQ(agent_turn_finish(&turn, nullptr), 0);
+	EXPECT_EQ(model_history_count(&db, sess.id, 1), 3);
+	EXPECT_EQ(message_count(&db, sess.id), 1);
+
+	struct agent_turn_input continuation{};
+	continuation.model_input = "continue";
+	continuation.turn_id = "continue-cancelled-request";
+	struct agent_turn next{};
+	ASSERT_EQ(agent_turn_begin(&next, &runtime, &continuation), 0);
+	morph_array_t messages MORPH_CLEANUP(agent_chat_messages_cleanup) = {};
+	ASSERT_EQ(agent_history_messages_copy(nullptr, react->history_items, &messages), 0);
+	ASSERT_EQ(messages.nelts, 3U);
+	const char *expected[] = {
+		"unfinished model request", "preserve the visual layout", "use component padding",
+	};
+	for (size_t index = 0; index < messages.nelts; index++) {
+		const auto *message = static_cast<const struct chat_message *>(
+			morph_array_borrow(&messages, index));
+		SCOPED_TRACE(index);
+		EXPECT_STREQ(message->role, "user");
+		ASSERT_NE(message->content, nullptr);
+		EXPECT_NE(strstr(message->content, expected[index]), nullptr);
+		EXPECT_NE(strstr(message->content, "cancelled"), nullptr);
+		EXPECT_EQ(message->tool_call_count, 0);
+	}
+	EXPECT_EQ(model_history_count(&db, sess.id, 1), 4);
+	react->state = REACT_STATE_DONE;
+	react->outcome = REACT_OUTCOME_SUCCESS;
+	react->final_answer = strdup("Finished the interrupted request.");
+	ASSERT_NE(react->final_answer, nullptr);
+	ASSERT_EQ(agent_turn_finish(&next, nullptr), 0);
+	ASSERT_EQ(agent_session_load_history(&runtime), 0);
+	ASSERT_EQ(agent_session_load_history(&runtime), 0);
+	EXPECT_EQ(model_history_count(&db, sess.id, 1), 5);
+	int count = 0;
+	struct message *transcript MORPH_CLEANUP(agent_turn_test_messages_cleanup) =
+		message_list(&db, sess.id, &count);
+	ASSERT_EQ(count, 3);
+	ASSERT_NE(transcript, nullptr);
+	EXPECT_STREQ(transcript->role, "user");
+	EXPECT_STREQ(transcript->content, "visible unfinished request");
+	ASSERT_NE(transcript->next, nullptr);
+	EXPECT_STREQ(transcript->next->content, "continue");
+}
+
+TEST_F(AgentTurnTest, CancelledTurnDoesNotReplayToolsOrPartialFinalDespiteEarlierToolError)
+{
+	struct agent_session_runtime runtime{};
+	runtime.db = &db;
+	runtime.session_id = sess.id;
+	runtime.react = react;
+	runtime.flags = AGENT_TURN_LOAD_HISTORY | AGENT_TURN_SAVE_MESSAGES;
+	struct agent_turn_input input{};
+	input.model_input = "finish the current implementation";
+	input.turn_id = "cancelled-tool-chain";
+	struct agent_turn turn{};
+	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+	struct tool_call call{};
+	call.id = const_cast<char *>("provider-completed");
+	call.tool_call_id = const_cast<char *>("local-completed");
+	call.name = const_cast<char *>("exec");
+	call.arguments = const_cast<char *>("{\"command\":\"inspect workspace\"}");
+	ASSERT_EQ(agent_history_record_tool_calls(react, nullptr, nullptr, &call, 1), 0);
+	ASSERT_EQ(agent_history_record_tool_result(react, call.tool_call_id, call.id,
+		call.name, "earlier tool failed", -EIO), 0);
+	ASSERT_EQ(agent_history_record_user_steer(react, "also preserve the box model", 1), 0);
+	call.id = const_cast<char *>("provider-pending");
+	call.tool_call_id = const_cast<char *>("local-pending");
+	ASSERT_EQ(agent_history_record_tool_calls(react, "unfinished tool commentary",
+		nullptr, &call, 1), 0);
+	react->final_answer = strdup("partial final answer must not be replayed");
+	ASSERT_NE(react->final_answer, nullptr);
+	react->state = REACT_STATE_ABORT;
+	react->outcome = REACT_OUTCOME_CANCELLED;
+	react->last_error_code = -ECANCELED;
+	react->terminal_tool_error = -EIO;
+	ASSERT_EQ(agent_turn_finish(&turn, nullptr), 0);
+	EXPECT_EQ(model_history_count(&db, sess.id, 0), 5);
+	EXPECT_EQ(model_history_count(&db, sess.id, 1), 2);
+	ASSERT_EQ(agent_session_load_history(&runtime), 0);
+	struct agent_history_diagnostic diagnostic{};
+	ASSERT_EQ(agent_history_diagnose(react->history_items, tok, &diagnostic), 0);
+	EXPECT_EQ(diagnostic.dangling_calls, 0);
+	EXPECT_EQ(diagnostic.orphan_results, 0);
+	morph_array_t messages MORPH_CLEANUP(agent_chat_messages_cleanup) = {};
+	ASSERT_EQ(agent_history_messages_copy(nullptr, react->history_items, &messages), 0);
+	ASSERT_EQ(messages.nelts, 2U);
+	for (size_t index = 0; index < messages.nelts; index++) {
+		const auto *message = static_cast<const struct chat_message *>(
+			morph_array_borrow(&messages, index));
+		EXPECT_STREQ(message->role, "user");
+		ASSERT_NE(message->content, nullptr);
+		EXPECT_EQ(strstr(message->content, "partial final answer"), nullptr);
+		EXPECT_EQ(strstr(message->content, "unfinished tool commentary"), nullptr);
+		EXPECT_EQ(message->tool_call_count, 0);
+	}
+	int count = 0;
+	struct message *transcript MORPH_CLEANUP(agent_turn_test_messages_cleanup) =
+		message_list(&db, sess.id, &count);
+	ASSERT_EQ(count, 2);
+	ASSERT_NE(transcript, nullptr);
+	EXPECT_STREQ(transcript->content, input.model_input);
+	ASSERT_NE(transcript->next, nullptr);
+	EXPECT_STREQ(transcript->next->content, "partial final answer must not be replayed");
+}
+
+TEST_F(AgentTurnTest, CancelledOutcomeWriteFailureRollsBackHistoryDeactivation)
+{
+	struct agent_session_runtime runtime{};
+	runtime.db = &db;
+	runtime.session_id = sess.id;
+	runtime.react = react;
+	runtime.flags = AGENT_TURN_LOAD_HISTORY | AGENT_TURN_SAVE_MESSAGES;
+	struct agent_turn_input input{};
+	input.model_input = "request saved before cancellation";
+	input.turn_id = "cancelled-outcome-rollback";
+	struct agent_turn turn{};
+	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+	ASSERT_EQ(agent_history_record_user_steer(react, "preserve this requirement too", 1), 0);
+	struct tool_call call{};
+	call.id = const_cast<char *>("provider-rollback");
+	call.tool_call_id = const_cast<char *>("local-rollback");
+	call.name = const_cast<char *>("exec");
+	call.arguments = const_cast<char *>("{\"command\":\"inspect\"}");
+	ASSERT_EQ(agent_history_record_tool_calls(react, nullptr, nullptr, &call, 1), 0);
+	ASSERT_EQ(agent_history_record_tool_result(react, call.tool_call_id, call.id,
+		call.name, "tool evidence must survive a failed commit", 0), 0);
+	int count = 0;
+	struct model_history_item *before MORPH_CLEANUP(agent_turn_test_history_cleanup) =
+		model_history_list(&db, sess.id, 0, &count);
+	ASSERT_EQ(count, 4);
+	ASSERT_EQ(db_exec(&db, "CREATE TRIGGER reject_cancelled_outcome BEFORE UPDATE OF "
+		"payload_json ON model_history_items BEGIN "
+		"SELECT RAISE(ABORT, 'injected cancelled outcome failure'); END;"), 0);
+	react->state = REACT_STATE_ABORT;
+	react->outcome = REACT_OUTCOME_CANCELLED;
+	react->last_error_code = -ECANCELED;
+	react->final_answer = strdup("partial answer cannot be committed");
+	ASSERT_NE(react->final_answer, nullptr);
+	struct agent_turn_result result{};
+	EXPECT_EQ(agent_turn_finish(&turn, &result), MORPH_ERR_DB);
+	EXPECT_EQ(result.message_persistence_rc, MORPH_ERR_DB);
+	EXPECT_EQ(sqlite3_get_autocommit(db.handle), 1);
+	EXPECT_EQ(message_count(&db, sess.id), 1);
+	EXPECT_EQ(model_history_count(&db, sess.id, 1), 4);
+	struct model_history_item *after MORPH_CLEANUP(agent_turn_test_history_cleanup) =
+		model_history_list(&db, sess.id, 0, &count);
+	ASSERT_EQ(count, 4);
+	for (auto *saved = before, *current = after; saved; saved = saved->next) {
+		ASSERT_NE(current, nullptr);
+		EXPECT_EQ(current->active, saved->active);
+		EXPECT_STREQ(current->kind, saved->kind);
+		EXPECT_STREQ(current->content, saved->content);
+		EXPECT_STREQ(current->payload_json, saved->payload_json);
+		current = current->next;
+	}
+}
+
+TEST_F(AgentTurnTest, CancelledCompactionOrHookKeepsCheckpointAndExecutedWork)
+{
+	for (const bool compacted : {false, true}) {
+		SCOPED_TRACE(compacted);
+		const char *name = compacted ? "cancelled-compaction" : "cancelled-hook";
+		ASSERT_EQ(session_create(&db, name, "gpt-test", &sess), 0);
+		struct agent_session_runtime runtime{};
+		runtime.db = &db;
+		runtime.session_id = sess.id;
+		runtime.react = react;
+		runtime.flags = AGENT_TURN_LOAD_HISTORY | AGENT_TURN_SAVE_MESSAGES;
+		struct agent_turn_input input{};
+		input.model_input = "resume work after a checkpoint";
+		input.turn_id = compacted ? "cancelled-compaction" : "cancelled-hook";
+		struct agent_turn turn{};
+		ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+		struct tool_call call{};
+		call.id = const_cast<char *>("provider-checkpoint");
+		call.tool_call_id = const_cast<char *>("local-checkpoint");
+		call.name = const_cast<char *>("exec");
+		call.arguments = const_cast<char *>("{\"command\":\"build\"}");
+		ASSERT_EQ(agent_history_record_tool_calls(react, nullptr, nullptr, &call, 1), 0);
+		ASSERT_EQ(agent_history_record_tool_result(react, call.tool_call_id, call.id,
+			call.name, "completed build at /tmp/checkpoint-output", 0), 0);
+		struct model_history_insert summary{};
+		summary.session_id = sess.id;
+		summary.turn_id = input.turn_id;
+		summary.kind = "compaction_summary";
+		summary.role = "system";
+		summary.content = "Prior context exists only in this checkpoint.";
+		summary.active = 1;
+		ASSERT_EQ(model_history_add(&db, &summary, nullptr), 0);
+		call.id = const_cast<char *>("provider-checkpoint-pending");
+		call.tool_call_id = const_cast<char *>("local-checkpoint-pending");
+		ASSERT_EQ(agent_history_record_tool_calls(react, nullptr, nullptr, &call, 1), 0);
+		react->in_turn_compaction_count = compacted ? 1 : 0;
+		react->hook_continuation_count = compacted ? 0 : 1;
+		react->state = REACT_STATE_ABORT;
+		react->outcome = REACT_OUTCOME_CANCELLED;
+		react->last_error_code = -ECANCELED;
+		ASSERT_EQ(agent_turn_finish(&turn, nullptr), 0);
+		ASSERT_EQ(agent_session_load_history(&runtime), 0);
+		bool found_summary = false;
+		bool found_result = false;
+		bool found_interrupted = false;
+		for (auto *item = react->history_items; item; item = item->next) {
+			if (strcmp(item->kind, "compaction_summary") == 0) {
+				found_summary = true;
+				EXPECT_STREQ(item->content, summary.content);
+			}
+			if (strcmp(item->kind, "tool_result") == 0) {
+				if (strcmp(item->tool_call_id, "local-checkpoint-pending") == 0) {
+					found_interrupted = true;
+					EXPECT_NE(strstr(item->content, "interrupted"), nullptr);
+				} else {
+					found_result = true;
+					EXPECT_NE(strstr(item->content, "/tmp/checkpoint-output"),
+						nullptr);
+				}
+			}
+		}
+		EXPECT_TRUE(found_summary);
+		EXPECT_TRUE(found_result);
+		EXPECT_TRUE(found_interrupted);
+		struct agent_history_diagnostic diagnostic{};
+		ASSERT_EQ(agent_history_diagnose(react->history_items, tok, &diagnostic), 0);
+		EXPECT_EQ(diagnostic.dangling_calls, 0);
+		EXPECT_EQ(diagnostic.orphan_results, 0);
+	}
 }
 
 TEST_F(AgentTurnTest, FailedCompactionKeepsExecutedWorkAndCheckpointOnResume)

@@ -542,7 +542,8 @@ static int turn_should_keep_user_history(const struct agent_turn *turn)
 	if (!turn || !turn->runtime.react)
 		return 0;
 	react = turn->runtime.react;
-	return react->outcome == REACT_OUTCOME_LLM_ERROR ||
+	return react->outcome == REACT_OUTCOME_CANCELLED ||
+		react->outcome == REACT_OUTCOME_LLM_ERROR ||
 		react->outcome == REACT_OUTCOME_MAX_ITERATIONS ||
 		react->terminal_tool_error < 0;
 }
@@ -595,21 +596,6 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 			local_result.trace_saved =
 				turn->runtime.react->steps ? 1 : 0;
 	}
-	if ((flags & AGENT_TURN_SAVE_MESSAGES) &&
-	    !turn_model_history_succeeded(turn) &&
-	    !turn_should_keep_complete_history(turn)) {
-		if (turn_should_keep_user_history(turn)) {
-			step_rc = model_history_deactivate_turn_except_user(
-				turn->runtime.db, turn->runtime.session_id,
-				turn->runtime.react->turn_id);
-		} else {
-			step_rc = model_history_deactivate_turn(
-				turn->runtime.db, turn->runtime.session_id,
-				turn->runtime.react->turn_id);
-		}
-		turn_set_first_error(&rc, step_rc);
-	}
-
 	if (flags & AGENT_TURN_SAVE_MESSAGES) {
 		struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
 		int began = 0;
@@ -620,6 +606,18 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 			step_rc = db_exec(turn->runtime.db, "BEGIN IMMEDIATE;");
 			began = step_rc == 0;
 		}
+		if (step_rc == 0 && !turn_model_history_succeeded(turn) &&
+		    !turn_should_keep_complete_history(turn)) {
+			if (turn_should_keep_user_history(turn)) {
+				step_rc = model_history_deactivate_turn_except_user(
+					turn->runtime.db, turn->runtime.session_id,
+					turn->runtime.react->turn_id);
+			} else {
+				step_rc = model_history_deactivate_turn(
+					turn->runtime.db, turn->runtime.session_id,
+					turn->runtime.react->turn_id);
+			}
+		}
 		if (step_rc == 0) {
 			step_rc = turn_persist_user(turn, &local_result);
 			local_result.user_rc = step_rc;
@@ -629,7 +627,8 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 			local_result.assistant_rc = step_rc;
 		}
 		if (step_rc == 0 && (turn_model_history_succeeded(turn) ||
-		    turn->runtime.react->terminal_tool_error < 0) &&
+		    (turn->runtime.react->outcome != REACT_OUTCOME_CANCELLED &&
+		     turn->runtime.react->terminal_tool_error < 0)) &&
 		    turn->runtime.react->final_answer &&
 		    turn->runtime.react->final_answer[0])
 			step_rc = agent_history_record_assistant(

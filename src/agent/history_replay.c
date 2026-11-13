@@ -285,13 +285,23 @@ char *history_user_content_create(const struct model_history_item *item)
 
 	if (rc == 0)
 		rc = morph_buf_puts(&text, item->content ? item->content : "");
-	if (rc == 0 && cJSON_IsString(status) && cJSON_IsTrue(finished))
+	if (rc == 0 && cJSON_IsString(status) && cJSON_IsTrue(finished)) {
 		rc = morph_buf_printf(
-			&text,
-			"\n\n[Historical turn execution ended: %s. This records "
-			"execution status, not completion of a broader objective. "
-			"Later results supersede earlier checkpoint TODOs for this turn.]",
+			&text, "\n\n[Historical turn execution ended: %s. ",
 			status->valuestring);
+		if (rc == 0 && strcmp(status->valuestring, "cancelled") == 0)
+			rc = morph_buf_puts(
+				&text,
+				"Execution was stopped by the user; the request and follow-up "
+				"instructions remain context for later turns. Tool side effects "
+				"are not rolled back. Inspect current files or external state "
+				"before repeating actions. ");
+		if (rc == 0)
+			rc = morph_buf_puts(
+				&text, "This records execution status, not completion of a "
+				"broader objective. Later results supersede earlier checkpoint "
+				"TODOs for this turn.]");
+	}
 	cJSON_Delete(payload);
 	if (rc != 0) {
 		morph_buf_cleanup(&text);

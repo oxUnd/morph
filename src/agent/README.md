@@ -44,6 +44,16 @@ and `history_inspection.c` owns diagnosis and repair. Their shared helpers stay
 in `history_internal.h`. Model-generated checkpoints are produced outside the
 commit transaction; replay and active-request validation still precede commit.
 
+Cancelling a turn stops execution while retaining its original user request and
+steering messages in active model history. Ordinary cancellation deactivates that
+turn's tool chain and partial assistant output; transcript records remain visible.
+The existing turn-outcome annotation marks cancellation during replay and reminds
+the model that tool side effects have not been rolled back. Turns with in-turn
+compaction or hook continuation keep their active history so that cancellation
+cannot erase a checkpoint or work already represented there. History repair closes
+any interrupted tool exchanges before replay. History deactivation and final
+message/outcome persistence share one transaction.
+
 `memory.c` prepares local memory, learns facts and tips, and saves task results.
 `memory_summary.c` organizes source-bound summaries after extraction.
 `memory_reply.c` loads compact summaries and a directory without model requests, `memory_render.c` formats the session
