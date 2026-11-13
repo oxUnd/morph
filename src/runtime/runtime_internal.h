@@ -10,9 +10,9 @@
 struct runtime_mcp_job {
 	struct runtime *runtime;
 	struct mcp_client *client;
-	pthread_t thread;
-	pthread_mutex_t lock;
-	struct morph_cancel_token cancel;
+	nb_thread *thread;
+	nb_mutex *lock;
+	struct nb_cancel cancel;
 	enum runtime_mcp_state state;
 	int error_code;
 	int started;
@@ -51,11 +51,11 @@ struct runtime {
 	struct runtime_title_job *title_jobs[RUNTIME_TITLE_JOB_MAX];
 	struct runtime_recap_job *recap_job;
 	uint64_t recap_revision;
-	pthread_mutex_t jobs_lock;
+	nb_mutex *jobs_lock;
 	int jobs_lock_ready;
 	struct exec_tool_jobs_handle jobs_owner;
 	struct exec_jobs *jobs;
-	pthread_mutex_t checkpoint_lock;
+	nb_mutex *checkpoint_lock;
 	int checkpoint_lock_ready;
 	int checkpoint_failed;
 };

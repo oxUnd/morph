@@ -1,20 +1,22 @@
 #include "sapi/fastcgi/presentation/media_refs.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
+#include "nb/file.h"
 #include "sapi/fastcgi/services/turn_job_internal.h"
 #include "sapi/fastcgi/agent_bridge.h"
 #include "sapi/fastcgi/session_store.h"
 #include "sapi/fastcgi/storage/events.h"
 #include "sapi/fastcgi/storage/artifacts.h"
 #include "cJSON.h"
-#include "util/error.h"
-#include "util/child_io.h"
+#include "errors.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "util/file.h"
-#include "util/buf.h"
+#include "nb/file.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/file.h"
 #include <sys/stat.h>
 
 static const char *bridge_output_dir(struct fcgi_turn_job *j)
@@ -60,21 +62,9 @@ static const char *artifact_kind_for_path(const char *path)
 
 static int relative_under_root(const char *root, const char *path, char rel[512])
 {
-	char root_real[PATH_MAX];
-	char file_real[PATH_MAX];
-	size_t root_len;
-
-	if (!realpath(root, root_real))
-		return 0;
-	if (!realpath(path, file_real))
-		return 0;
-	root_len = strlen(root_real);
-	if (strncmp(root_real, file_real, root_len) != 0)
-		return 0;
-	if (file_real[root_len] != '/' && file_real[root_len] != '\0')
-		return 0;
-	snprintf(rel, 512, "%s", file_real[root_len] == '/' ? file_real + root_len + 1 : "");
-	return rel[0] != '\0';
+	nb_buf relative NB_CLEANUP(nb_buf_destroy) = {0};
+	return nb_path_relative_under(&relative, path, root, false, NULL) == NB_OK &&
+	       !nb_buf_empty(&relative) && nb_str_copy_to(nb_buf_str(&relative), rel, 512) == NB_OK;
 }
 
 static void artifact_publish_ready(struct fcgi_turn_job *j, const struct fcgi_turn_artifact *a)
@@ -103,6 +93,8 @@ static void artifact_publish_ready(struct fcgi_turn_job *j, const struct fcgi_tu
 struct fcgi_turn_artifact *fcgi_media_artifact_borrow(struct fcgi_turn_job *j, const char *path,
 						      const char *kind)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	char rel[512];
 	char real[PATH_MAX];
 	char *expanded;
@@ -113,7 +105,9 @@ struct fcgi_turn_artifact *fcgi_media_artifact_borrow(struct fcgi_turn_job *j, c
 
 	if (!j || !path || !kind)
 		return NULL;
-	expanded = file_expand_path_copy(path);
+	expanded = (nb_path_expand(&file_value_1, path, NULL) == NB_OK
+			    ? strdup(nb_buf_cstr(&file_value_1))
+			    : NULL);
 	if (!expanded)
 		return NULL;
 	if (stat(expanded, &st) != 0 || !S_ISREG(st.st_mode)) {
@@ -213,14 +207,14 @@ static void html_attr_escape(const char *src, char *dst, size_t dst_size)
 	dst[pos] = '\0';
 }
 
-static int append_artifact_tag(morph_buf_t *buf, const struct fcgi_turn_artifact *a)
+static int append_artifact_tag(nb_buf *buf, const struct fcgi_turn_artifact *a)
 {
 	char tag[1400];
 	char filename[512];
 	char url[256];
 
 	if (!a)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	html_attr_escape(a->filename, filename, sizeof(filename));
 	html_attr_escape(a->url, url, sizeof(url));
 	if (strcmp(a->kind, "image") == 0) {
@@ -236,18 +230,26 @@ static int append_artifact_tag(morph_buf_t *buf, const struct fcgi_turn_artifact
 			 "></video></a>",
 			 url, url);
 	}
-	return morph_buf_puts(buf, tag);
+	return (nb_buf_append_cstr(buf, tag) ? 0 : NB_ERR_NOMEM);
 }
 
 static int candidate_path(struct fcgi_turn_job *j, const char *token, char out[PATH_MAX])
 {
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_2 = NB_OK;
+
 	if (!token || !*token)
 		return 0;
 	if (token[0] == '/' || token[0] == '~') {
 		snprintf(out, PATH_MAX, "%s", token);
 		return 1;
 	}
-	if (file_path_join(out, PATH_MAX, bridge_output_dir(j), token) != 0)
+	if (((file_status_2 = nb_path_concat(&file_value_2, bridge_output_dir(j), token)) != NB_OK
+		     ? file_status_2
+	     : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), out, PATH_MAX)) ==
+			     NB_ERR_RANGE
+		     ? NB_ERR_NAME_TOO_LONG
+		     : file_status_2) != 0)
 		return 0;
 	return 1;
 }
@@ -255,11 +257,11 @@ static int candidate_path(struct fcgi_turn_job *j, const char *token, char out[P
 char *fcgi_media_refs_render_copy(struct fcgi_turn_job *j, const char *text)
 {
 	const char *p;
-	morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf out NB_CLEANUP(nb_buf_cleanup) = {0};
 
 	if (!text)
 		return strdup("");
-	if (morph_buf_init(&out, 256) < 0)
+	if ((nb_buf_init(&out), nb_buf_reserve(&out, 256) ? 0 : NB_ERR_NOMEM) < 0)
 		return strdup("");
 
 	p = text;
@@ -275,7 +277,7 @@ char *fcgi_media_refs_render_copy(struct fcgi_turn_job *j, const char *text)
 		while (*p && !path_char((unsigned char)*p))
 			p++;
 		if (p > start)
-			morph_buf_append(&out, start, (size_t)(p - start));
+			nb_buf_append(&out, start, (size_t)(p - start));
 		start = p;
 		while (*p && path_char((unsigned char)*p))
 			p++;
@@ -287,23 +289,23 @@ char *fcgi_media_refs_render_copy(struct fcgi_turn_job *j, const char *text)
 		trim_candidate_path(token);
 		kind = artifact_kind_for_path(token);
 		if (!kind || !candidate_path(j, token, path)) {
-			morph_buf_append(&out, start, raw_len);
+			nb_buf_append(&out, start, raw_len);
 			continue;
 		}
 		a = fcgi_media_artifact_borrow(j, path, kind);
 		if (!a) {
-			morph_buf_append(&out, start, raw_len);
+			nb_buf_append(&out, start, raw_len);
 			continue;
 		}
 		append_artifact_tag(&out, a);
 		if (strlen(token) < raw_len)
-			morph_buf_append(&out, start + strlen(token), raw_len - strlen(token));
+			nb_buf_append(&out, start + strlen(token), raw_len - strlen(token));
 	}
 	if (out.len == 0) {
-		morph_buf_cleanup(&out);
+		nb_buf_cleanup(&out);
 		return strdup(text);
 	}
-	return morph_buf_detach(&out);
+	return (nb_buf_ok(&out) ? strdup(nb_buf_cstr(&out)) : NULL);
 }
 
 char *fcgi_media_refs_store_copy(const char *text, void *user_data)
@@ -313,19 +315,19 @@ char *fcgi_media_refs_store_copy(const char *text, void *user_data)
 
 char *fcgi_media_refs_summary_copy(struct fcgi_turn_job *j)
 {
-	morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf out NB_CLEANUP(nb_buf_cleanup) = {0};
 
 	if (!j || j->artifacts_count <= 0)
 		return NULL;
-	if (morph_buf_init(&out, 256) < 0)
+	if ((nb_buf_init(&out), nb_buf_reserve(&out, 256) ? 0 : NB_ERR_NOMEM) < 0)
 		return NULL;
-	morph_buf_puts(&out, "Generation stopped after reaching the iteration limit, "
-			     "but these artifacts were created:\n\n");
+	nb_buf_append_cstr(&out, "Generation stopped after reaching the iteration limit, "
+				 "but these artifacts were created:\n\n");
 	for (int i = 0; i < j->artifacts_count; i++) {
 		struct fcgi_turn_artifact *a = &j->artifacts[i];
-		morph_buf_printf(&out, "%d. `%s`\n\n", i + 1, a->path);
+		nb_buf_printf(&out, "%d. `%s`\n\n", i + 1, a->path);
 		append_artifact_tag(&out, a);
-		morph_buf_puts(&out, "\n\n");
+		nb_buf_append_cstr(&out, "\n\n");
 	}
-	return morph_buf_detach(&out);
+	return (nb_buf_ok(&out) ? strdup(nb_buf_cstr(&out)) : NULL);
 }

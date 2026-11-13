@@ -1,6 +1,7 @@
 #include "sapi/cli/commands/permissions.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "cJSON.h"
 #include "sapi/cli/adapters/input/confirm.h"
 #include "sapi/cli/application_internal.h"
@@ -150,9 +151,8 @@ static void cli_permissions_grants_cleanup(struct runtime_permission_grant **own
 static int cli_permissions_revoke_subject_matches(struct cli_application *ctx, const char *name,
 						  int *deleted)
 {
-	struct runtime_permission_grant *grants
-		MORPH_CLEANUP(cli_permissions_grants_cleanup) = NULL;
-	morph_array_t subjects MORPH_CLEANUP(morph_array_cleanup) = {0};
+	struct runtime_permission_grant *grants NB_CLEANUP(cli_permissions_grants_cleanup) = NULL;
+	nb_vec subjects NB_CLEANUP(nb_vec_cleanup) = {0};
 	int count = 0;
 	int rc;
 
@@ -160,7 +160,8 @@ static int cli_permissions_revoke_subject_matches(struct cli_application *ctx, c
 	rc = runtime_permission_list(ctx->runtime, &grants, &count);
 	if (rc != 0)
 		return rc;
-	rc = morph_array_init(&subjects, 4, sizeof(char *));
+	rc = (nb_vec_init(&subjects, sizeof(char *)),
+	      nb_vec_reserve(&subjects, 4) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
 		return rc;
 	}
@@ -173,7 +174,9 @@ static int cli_permissions_revoke_subject_matches(struct cli_application *ctx, c
 		    !(strcmp(grants[i].resource_kind, "command") == 0 &&
 		      strcmp(grants[i].resource, name) == 0))
 			continue;
-		morph_array_foreach (stored, &subjects, char *) {
+		for (size_t _i_ = 0;
+		     _i_ < nb_vec_len(&subjects) && (stored = (char **)nb_vec_at(&subjects, _i_));
+		     _i_++) {
 			if (strcmp(*stored, grants[i].subject) == 0) {
 				exists = 1;
 				break;
@@ -181,9 +184,9 @@ static int cli_permissions_revoke_subject_matches(struct cli_application *ctx, c
 		}
 		if (exists)
 			continue;
-		stored = morph_array_push_borrow(&subjects);
+		stored = nb_vec_push(&subjects);
 		if (!stored) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			return rc;
 		}
 		*stored = grants[i].subject;
@@ -191,7 +194,9 @@ static int cli_permissions_revoke_subject_matches(struct cli_application *ctx, c
 	{
 		char **subject;
 
-		morph_array_foreach (subject, &subjects, char *) {
+		for (size_t _i_ = 0;
+		     _i_ < nb_vec_len(&subjects) && (subject = (char **)nb_vec_at(&subjects, _i_));
+		     _i_++) {
 			int subject_deleted = 0;
 
 			rc = runtime_permission_revoke_subject(ctx->runtime, *subject,
@@ -235,7 +240,7 @@ static int cli_permissions_command_permissions(struct cli_application *ctx, int 
 		else if (!strcmp(action, "set") && argc == 5)
 			rc = permission_policy_parse(argv[2], argv[3], argv[4], &policy);
 		else
-			rc = -EINVAL;
+			rc = NB_ERR_INVAL;
 		if (rc == 0)
 			rc = runtime_permission_set_policy(ctx->runtime, &policy);
 		if (rc == 0)
@@ -251,7 +256,7 @@ static int cli_permissions_command_permissions(struct cli_application *ctx, int 
 		target = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!target) {
 			CMD_ERROR(ctx, "usage: /permissions revoke <id|program>");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 		errno = 0;
 		id = strtoll(target, &end, 10);
@@ -263,7 +268,7 @@ static int cli_permissions_command_permissions(struct cli_application *ctx, int 
 			return rc;
 		if (deleted == 0) {
 			CMD_ERROR(ctx, "permission not found: %s", target);
-			return -ENOENT;
+			return NB_ERR_NOT_FOUND;
 		}
 		CMD_OK(ctx, "revoked %d persistent permission%s", deleted, deleted == 1 ? "" : "s");
 		return 0;
@@ -279,7 +284,7 @@ static int cli_permissions_command_permissions(struct cli_application *ctx, int 
 				confirmed = 1;
 			else {
 				CMD_ERROR(ctx, "unknown option: %s", argv[i]);
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			}
 		}
 		if (!confirmed)
@@ -297,7 +302,7 @@ static int cli_permissions_command_permissions(struct cli_application *ctx, int 
 	}
 	CMD_ERROR(ctx, "usage: /permissions [list|revoke <id|program>|"
 		       "clear [--all-projects] [--yes]]");
-	return -EINVAL;
+	return NB_ERR_INVAL;
 }
 
 static const struct cli_command cli_permissions_entries[] = {

@@ -1,4 +1,6 @@
 #include "sapi/cli/models/jobs.h"
+#include "nb/err.h"
+#include "nb/time.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -7,11 +9,9 @@
 
 int64_t cli_jobs_now(void)
 {
-	struct timespec now;
+	int64_t now = nb_time_monotonic_ns();
 
-	if (clock_gettime(CLOCK_MONOTONIC, &now))
-		return 0;
-	return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+	return now > 0 ? now / 1000000 : 0;
 }
 
 const char *cli_jobs_job_string(const cJSON *data, const char *key)
@@ -56,11 +56,12 @@ int cli_jobs_model_create(struct cli_jobs **jobs)
 	int rc;
 
 	if (!jobs || *jobs)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	created = calloc(1, sizeof(*created));
 	if (!created)
-		return -ENOMEM;
-	rc = morph_array_init(&created->entries, 8, sizeof(struct cli_jobs_job));
+		return NB_ERR_NOMEM;
+	rc = (nb_vec_init(&created->entries, sizeof(struct cli_jobs_job)),
+	      nb_vec_reserve(&created->entries, 8) ? 0 : NB_ERR_NOMEM);
 	if (rc) {
 		free(created);
 		return rc;
@@ -75,9 +76,11 @@ void cli_jobs_model_cleanup(struct cli_jobs *jobs)
 
 	if (!jobs)
 		return;
-	morph_array_foreach (job, &jobs->entries, struct cli_jobs_job)
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&jobs->entries) &&
+			     (job = (struct cli_jobs_job *)nb_vec_at(&jobs->entries, _i_));
+	     _i_++)
 		cJSON_Delete(job->data);
-	morph_array_cleanup(&jobs->entries);
+	nb_vec_cleanup(&jobs->entries);
 	free(jobs);
 }
 
@@ -93,11 +96,13 @@ int cli_jobs_model_remember(struct cli_jobs *jobs, const cJSON *data)
 	cJSON *copy;
 
 	if (!jobs)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	copy = cJSON_Duplicate(data, 1);
 	if (!copy)
-		return -ENOMEM;
-	morph_array_foreach (job, &jobs->entries, struct cli_jobs_job) {
+		return NB_ERR_NOMEM;
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&jobs->entries) &&
+			     (job = (struct cli_jobs_job *)nb_vec_at(&jobs->entries, _i_));
+	     _i_++) {
 		if (!strcmp(cli_jobs_job_string(job->data, "session_id"),
 			    cli_jobs_job_string(data, "session_id"))) {
 			cJSON_Delete(job->data);
@@ -106,10 +111,10 @@ int cli_jobs_model_remember(struct cli_jobs *jobs, const cJSON *data)
 			return 0;
 		}
 	}
-	job = morph_array_push_borrow(&jobs->entries);
+	job = nb_vec_push(&jobs->entries);
 	if (!job) {
 		cJSON_Delete(copy);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	*job = (struct cli_jobs_job){.data = copy, .updated = cli_jobs_now()};
 	return 0;
@@ -121,7 +126,9 @@ int cli_jobs_model_visible(const struct cli_jobs *jobs)
 
 	if (!jobs)
 		return 0;
-	morph_array_foreach (job, &jobs->entries, struct cli_jobs_job) {
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&jobs->entries) &&
+			     (job = (struct cli_jobs_job *)nb_vec_at(&jobs->entries, _i_));
+	     _i_++) {
 		if (cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(
 			    job->data, "owner_session_id")) == (double)jobs->session_id &&
 		    cli_jobs_job_running(job->data))
@@ -136,7 +143,9 @@ int cli_jobs_model_waiting(const struct cli_jobs *jobs)
 
 	if (!jobs)
 		return 0;
-	morph_array_foreach (job, &jobs->entries, struct cli_jobs_job) {
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&jobs->entries) &&
+			     (job = (struct cli_jobs_job *)nb_vec_at(&jobs->entries, _i_));
+	     _i_++) {
 		if (job->waiting &&
 		    cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(
 			    job->data, "owner_session_id")) == (double)jobs->session_id &&
@@ -153,7 +162,9 @@ int cli_jobs_model_count(const struct cli_jobs *jobs)
 
 	if (!jobs)
 		return 0;
-	morph_array_foreach (job, &jobs->entries, struct cli_jobs_job) {
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&jobs->entries) &&
+			     (job = (struct cli_jobs_job *)nb_vec_at(&jobs->entries, _i_));
+	     _i_++) {
 		if (cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(
 			    job->data, "owner_session_id")) == (double)jobs->session_id &&
 		    cli_jobs_job_running(job->data))

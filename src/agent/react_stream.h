@@ -2,8 +2,10 @@
 #define MORPH_REACT_STREAM_H
 
 #include "agent/react_output.h"
+#include "nb/thread.h"
 #include "models/llm.h"
-#include "util/buf.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include <signal.h>
 
 #ifdef __cplusplus
@@ -16,14 +18,14 @@ typedef int (*react_stream_emit_fn)(enum react_step_type type, const char *text,
 struct react_stream_options {
 	react_stream_emit_fn emit;
 	void *user_data;
-	const volatile sig_atomic_t *cancelled;
+	const nb_atomic_int *cancelled;
 };
 
 /* One model request owns this stream and its reusable text buffer. */
 struct react_stream {
 	struct react_stream_options options;
-	morph_buf_t text;
-	morph_buf_t reasoning;
+	nb_buf text;
+	nb_buf reasoning;
 	size_t emitted;
 	size_t scanned;
 	size_t candidate;

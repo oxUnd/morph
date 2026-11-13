@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
-#include "util/cleanup.h"
+#include "nb/time.h"
+#include <stdlib.h>
+#include "nb/err.h"
+#include "nb/cleanup.h"
 #include "agent/tool.h"
 #include "agent/guardrail.h"
 #include "config/config.h"
@@ -7,9 +10,10 @@
 #include <fcntl.h>
 #include "db/database.h"
 #include "db/scheduled_task.h"
-#include "util/child_io.h"
-#include "util/file.h"
-#include "util/cancel.h"
+#include "nb/process.h"
+#include "nb/time.h"
+#include "nb/file.h"
+#include "nb/cancel.h"
 #include <atomic>
 #include <condition_variable>
 #include <cstring>
@@ -42,7 +46,7 @@ static int rejected_tool(const char *, tool_result *out, void *)
 static int conflicting_tool(const char *, tool_result *out, void *)
 {
 	tool_result_success_text_copy(out, "must not be successful");
-	return -EACCES;
+	return NB_ERR_PERMISSION;
 }
 
 static int malformed_tool(const char *, tool_result *out, void *)
@@ -63,18 +67,18 @@ TEST(Stability, ToolBusinessFailureAndConflictsAreNormalized)
 	ASSERT_EQ(tool_register_borrow(&reg, &rejected), 0);
 	ASSERT_EQ(tool_register_borrow(&reg, &conflict), 0);
 	ASSERT_EQ(tool_register_borrow(&reg, &malformed), 0);
-	EXPECT_EQ(tool_exec(&reg, "reject", "{}", &out), -EINVAL);
+	EXPECT_EQ(tool_exec(&reg, "reject", "{}", &out), NB_ERR_INVAL);
 	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(out.envelope, "ok")));
-	EXPECT_EQ(tool_exec(&reg, "conflict", "{}", &out), -EACCES);
+	EXPECT_EQ(tool_exec(&reg, "conflict", "{}", &out), NB_ERR_PERMISSION);
 	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(out.envelope, "ok")));
-	EXPECT_EQ(tool_exec(&reg, "malformed", "{}", &out), MORPH_ERR_PROTOCOL);
-	EXPECT_EQ(tool_exec(&reg, "missing", "{}", &out), -ENOENT);
+	EXPECT_EQ(tool_exec(&reg, "malformed", "{}", &out), NB_ERR_PROTOCOL);
+	EXPECT_EQ(tool_exec(&reg, "missing", "{}", &out), NB_ERR_NOT_FOUND);
 	ASSERT_NE(out.envelope, nullptr);
 	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(out.envelope, "ok")));
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(
 		cJSON_GetObjectItemCaseSensitive(out.envelope, "error"), "code")), "tool_not_found");
 	EXPECT_EQ(tool_disable(&reg, "reject"), 0);
-	EXPECT_EQ(tool_exec(&reg, "reject", "{}", &out), -EPERM);
+	EXPECT_EQ(tool_exec(&reg, "reject", "{}", &out), NB_ERR_NOT_PERMITTED);
 	EXPECT_EQ(out.envelope, nullptr);
 	tool_result_cleanup(&out);
 	tool_registry_cleanup(&reg);
@@ -122,7 +126,7 @@ TEST(Stability, ExecutingBindingSurvivesUnregisterAndReplacement)
 		tool_result out{};
 		tool_result_init(&out);
 		EXPECT_EQ(tool_exec(&reg, "versioned", "{}", &out), 0);
-		EXPECT_NE(std::string(out.text.data).find("old binding"), std::string::npos);
+		EXPECT_NE(std::string(out.text.ptr).find("old binding"), std::string::npos);
 		tool_result_cleanup(&out);
 	});
 	{
@@ -186,7 +190,7 @@ class StableTask : public ::testing::Test
 		input.trigger_type = "once";
 		input.next_run_at = 1;
 		input.payload_json = "{}";
-		scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+		scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
 		EXPECT_EQ(scheduled_task_create(&database, &input, &task), 0);
 		int64_t id = task.id;
 		scheduled_task_cleanup(&task);
@@ -213,7 +217,7 @@ TEST(Stability, LegacyScheduledTaskMigrationPreservesExistingRows)
 		0);
 	ASSERT_EQ(db_init_schema(&database), 0);
 	ASSERT_EQ(db_init_schema(&database), 0);
-	scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
 	ASSERT_EQ(scheduled_task_get(&database, 1, &task), 0);
 	EXPECT_STREQ(task.title, "legacy");
 	EXPECT_STREQ(task.status, "pending");
@@ -237,7 +241,7 @@ static int successful_task(const scheduled_task *, scheduled_task_action_result 
 
 static int failing_observer(const morph_event *, void *)
 {
-	return -EIO;
+	return NB_ERR_IO;
 }
 
 TEST_F(StableTask, ObserverFailureDoesNotUndoOrRepeatSuccessfulExecution)
@@ -250,7 +254,7 @@ TEST_F(StableTask, ObserverFailureDoesNotUndoOrRepeatSuccessfulExecution)
 		  0);
 	EXPECT_EQ(calls, 1);
 	EXPECT_EQ(ran, 1);
-	scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
 	ASSERT_EQ(scheduled_task_get(&database, id, &task), 0);
 	EXPECT_STREQ(task.status, "completed");
 	scheduled_task_cleanup(&task);
@@ -330,7 +334,7 @@ TEST_F(StableTask, NotificationFailureRollsBackStateAndCleansInitializedOutput)
 	EXPECT_EQ(out, nullptr);
 	EXPECT_EQ(count, 0);
 	EXPECT_EQ(calls, 1);
-	scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
 	ASSERT_EQ(scheduled_task_get(&database, id, &task), 0);
 	EXPECT_STREQ(task.status, "running");
 	EXPECT_EQ(task.attempts, 0);
@@ -349,8 +353,8 @@ TEST_F(StableTask, CancelledRunCannotOverwriteCancellation)
 	int ran = 0;
 	EXPECT_EQ(scheduled_task_run_due_with_runner(&database, 2, 10, cancel_running_task,
 						     &database, &ran),
-		  -ESTALE);
-	scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+		  NB_ERR_STALE);
+	scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
 	ASSERT_EQ(scheduled_task_get(&database, id, &task), 0);
 	EXPECT_STREQ(task.status, "cancelled");
 	scheduled_task_cleanup(&task);
@@ -358,77 +362,54 @@ TEST_F(StableTask, CancelledRunCannotOverwriteCancellation)
 
 TEST(Stability, ChildIoDrainsStderrWhileSendingLargeInput)
 {
-	int input[2], output[2], errors[2];
-	ASSERT_EQ(pipe(input), 0);
-	ASSERT_EQ(pipe(output), 0);
-	ASSERT_EQ(pipe(errors), 0);
-	pid_t pid = fork();
-	ASSERT_GE(pid, 0);
-	if (pid == 0) {
-		close(input[1]);
-		close(output[0]);
-		close(errors[0]);
-		char bytes[4096]{};
-		for (int i = 0; i < 64; i++) {
-			if (write(errors[1], bytes, sizeof(bytes)) <= 0) {
-				_exit(3);
-			}
-		}
-		while (read(input[0], bytes, sizeof(bytes)) > 0) {}
-		(void)write(output[1], "done", 4);
-		_exit(0);
-	}
-	close(input[0]);
-	close(output[1]);
-	close(errors[1]);
-	morph_buf_t out{}, err{};
-	ASSERT_EQ(morph_buf_init(&out, 128), 0);
-	ASSERT_EQ(morph_buf_init(&err, 128), 0);
+	const char *argv[] = {"/bin/sh", "-c",
+			      "dd if=/dev/zero bs=4096 count=64 1>&2 2>/dev/null; "
+			      "cat >/dev/null; printf done",
+			      nullptr};
+	nb_process_options spawn{};
+	spawn.argv = argv;
+	spawn.new_group = true;
+	spawn.close_fds = true;
+	nb_process *child NB_CLEANUP(nb_process_cleanup) = nullptr;
+	ASSERT_EQ(nb_process_spawn(&spawn, &child, nullptr), NB_OK);
+	nb_buf out NB_CLEANUP(nb_buf_cleanup) = {};
+	nb_buf err NB_CLEANUP(nb_buf_cleanup) = {};
 	std::string request(256 * 1024, 'x');
-	int status = 0;
-	EXPECT_EQ(morph_child_exchange(pid, input[1], output[0], errors[0], request.data(),
-				       request.size(), 5000, 1024, nullptr, nullptr, &out, &err,
-				       &status),
-		  0);
-	EXPECT_TRUE(WIFEXITED(status));
-	EXPECT_EQ(WEXITSTATUS(status), 0);
-	EXPECT_STREQ(morph_buf_cstr_borrow(&out), "done");
-	EXPECT_NE(std::string(err.data + 1024).find("truncated"), std::string::npos);
-	close(output[0]);
-	close(errors[0]);
-	morph_buf_cleanup(&out);
-	morph_buf_cleanup(&err);
+	bool truncated = false;
+	nb_process_exchange_options exchange{};
+	exchange.timeout_ms = 5000;
+	exchange.max_output = 1024;
+	exchange.stderr_truncated = &truncated;
+	int status = -1;
+	EXPECT_EQ(nb_process_exchange(child, request.data(), request.size(), &exchange, &out, &err,
+				      &status, nullptr),
+		  NB_OK);
+	EXPECT_EQ(status, 0);
+	EXPECT_STREQ(nb_buf_cstr(&out), "done");
+	EXPECT_EQ(nb_buf_len(&err), 1024u);
+	EXPECT_TRUE(truncated);
 }
 
 TEST(Stability, ChildIoTimesOutAfterChildClosesStreamsWithoutExiting)
 {
-	int input[2], output[2];
-	ASSERT_EQ(pipe(input), 0);
-	ASSERT_EQ(pipe(output), 0);
-	pid_t pid = fork();
-	ASSERT_GE(pid, 0);
-	if (pid == 0) {
-		close(input[1]);
-		close(output[0]);
-		close(output[1]);
-		for (;;) {
-			pause();
-		}
-	}
-	close(input[0]);
-	close(output[1]);
-	morph_buf_t out{}, err{};
-	ASSERT_EQ(morph_buf_init(&out, 16), 0);
-	ASSERT_EQ(morph_buf_init(&err, 16), 0);
-	int status = 0;
-	EXPECT_EQ(morph_child_exchange(pid, input[1], output[0], -1, "", 0, 100, 1024, nullptr,
-				       nullptr, &out, &err, &status),
-		  -ETIMEDOUT);
+	const char *argv[] = {"/bin/sh", "-c", "exec 0<&- 1>&- 2>&-; sleep 5", nullptr};
+	nb_process_options spawn{};
+	spawn.argv = argv;
+	spawn.new_group = true;
+	nb_process *child NB_CLEANUP(nb_process_cleanup) = nullptr;
+	nb_err error{};
+	ASSERT_EQ(nb_process_spawn(&spawn, &child, &error), NB_OK) << error.msg;
+	pid_t pid = (pid_t)nb_process_id(child);
+	nb_buf out NB_CLEANUP(nb_buf_cleanup) = {};
+	nb_buf err NB_CLEANUP(nb_buf_cleanup) = {};
+	nb_process_exchange_options exchange{};
+	exchange.timeout_ms = 100;
+	exchange.max_output = 1024;
+	int status = -1;
+	EXPECT_EQ(nb_process_exchange(child, "", 0, &exchange, &out, &err, &status, nullptr),
+		  NB_ERR_TIMEOUT);
 	EXPECT_EQ(waitpid(pid, nullptr, WNOHANG), -1);
 	EXPECT_EQ(errno, ECHILD);
-	close(output[0]);
-	morph_buf_cleanup(&out);
-	morph_buf_cleanup(&err);
 }
 
 TEST(Stability, BlockedPipeSendHonorsDeadlineAndRestoresFlags)
@@ -438,9 +419,10 @@ TEST(Stability, BlockedPipeSendHonorsDeadlineAndRestoresFlags)
 	int flags = fcntl(fds[1], F_GETFL);
 	ASSERT_GE(flags, 0);
 	std::string request(1024 * 1024, 'x');
-	EXPECT_EQ(morph_io_write(fds[1], request.data(), request.size(), morph_io_now_ms() + 50,
-				 nullptr, nullptr),
-		  -ETIMEDOUT);
+	EXPECT_EQ(nb_fd_write_until(fds[1], request.data(), request.size(),
+				    (nb_time_monotonic_ms() + 50) * 1000000, nullptr, nullptr,
+				    nullptr),
+		  NB_ERR_TIMEOUT);
 	/* Darwin may add internal pipe flags after a large write. Compare the
 	 * mutable status flags rather than kernel-maintained bookkeeping. */
 	constexpr int mutable_flags = O_NONBLOCK | O_APPEND | O_ASYNC;
@@ -454,15 +436,16 @@ TEST(Stability, ClosedPipeSendDoesNotDeliverSigpipe)
 	int fds[2];
 	ASSERT_EQ(pipe(fds), 0);
 	close(fds[0]);
-	EXPECT_EQ(morph_io_write(fds[1], "x", 1, morph_io_now_ms() + 100, nullptr, nullptr),
-		  -EPIPE);
+	EXPECT_EQ(nb_fd_write_until(fds[1], "x", 1, (nb_time_monotonic_ms() + 100) * 1000000,
+				    nullptr, nullptr, nullptr),
+		  NB_ERR_BROKEN_PIPE);
 	close(fds[1]);
 }
 
 TEST(Stability, ChildIoMarksBothPipeEndsCloseOnExec)
 {
 	int fds[2];
-	ASSERT_EQ(morph_io_pipe(fds), 0);
+	ASSERT_EQ(nb_pipe_open(fds, nullptr), 0);
 	EXPECT_NE(fcntl(fds[0], F_GETFD) & FD_CLOEXEC, 0);
 	EXPECT_NE(fcntl(fds[1], F_GETFD) & FD_CLOEXEC, 0);
 	close(fds[0]);
@@ -471,40 +454,25 @@ TEST(Stability, ChildIoMarksBothPipeEndsCloseOnExec)
 
 TEST(Stability, ChildIoDoesNotReportSuccessWhenRequestWasNotSent)
 {
-	int input[2], output[2];
-	ASSERT_EQ(morph_io_pipe(input), 0);
-	ASSERT_EQ(morph_io_pipe(output), 0);
-	/* Keep a reader open and fill stdin so POLLOUT cannot hide the race.
-	 * EOF/reap must not cause the unsent request to disappear from completion. */
-	ASSERT_EQ(fcntl(input[1], F_SETFL, O_NONBLOCK), 0);
-	char bytes[4096]{};
-	while (write(input[1], bytes, sizeof(bytes)) > 0) {}
-	ASSERT_EQ(errno, EAGAIN);
-	ASSERT_EQ(fcntl(input[1], F_SETFL, 0), 0);
-	pid_t pid = fork();
-	ASSERT_GE(pid, 0);
-	if (pid == 0) {
-		close(input[1]);
-		close(input[0]);
-		close(output[0]);
-		close(output[1]);
-		_exit(0);
-	}
-	close(output[1]);
+	const char *argv[] = {"/bin/sh", "-c", "exec 0<&-; exit 0", nullptr};
+	nb_process_options spawn{};
+	spawn.argv = argv;
+	spawn.new_group = true;
+	nb_process *child NB_CLEANUP(nb_process_cleanup) = nullptr;
+	ASSERT_EQ(nb_process_spawn(&spawn, &child, nullptr), NB_OK);
+	pid_t pid = (pid_t)nb_process_id(child);
+	nb_buf out NB_CLEANUP(nb_buf_cleanup) = {};
+	nb_buf err NB_CLEANUP(nb_buf_cleanup) = {};
+	nb_process_exchange_options exchange{};
+	exchange.timeout_ms = 1000;
+	exchange.max_output = 1024;
 	std::string request(1024 * 1024, 'x');
-	morph_buf_t out{}, err{};
-	ASSERT_EQ(morph_buf_init(&out, 16), 0);
-	ASSERT_EQ(morph_buf_init(&err, 16), 0);
-	int status = 0;
-	EXPECT_EQ(morph_child_exchange(pid, input[1], output[0], -1, request.data(), request.size(),
-				       1000, 1024, nullptr, nullptr, &out, &err, &status),
-		  -EPIPE);
+	int status = -1;
+	EXPECT_EQ(nb_process_exchange(child, request.data(), request.size(), &exchange, &out, &err,
+				      &status, nullptr),
+		  NB_ERR_BROKEN_PIPE);
 	EXPECT_EQ(waitpid(pid, nullptr, WNOHANG), -1);
 	EXPECT_EQ(errno, ECHILD);
-	close(input[0]);
-	close(output[0]);
-	morph_buf_cleanup(&out);
-	morph_buf_cleanup(&err);
 }
 
 TEST(Stability, ReplacementRejectsFailedRegistryInitializationWithoutTakingOwnership)
@@ -515,8 +483,8 @@ TEST(Stability, ReplacementRejectsFailedRegistryInitializationWithoutTakingOwner
 	int destroyed = 0;
 	spec.user_data = &destroyed;
 	spec.user_data_destroy = [](void *data) { ++*static_cast<int *>(data); };
-	reg.init_error = -ENOMEM;
-	EXPECT_EQ(tool_register_replace_take(&reg, &spec, TOOL_FLAG_DYNAMIC), -ENOMEM);
+	reg.init_error = NB_ERR_NOMEM;
+	EXPECT_EQ(tool_register_replace_take(&reg, &spec, TOOL_FLAG_DYNAMIC), NB_ERR_NOMEM);
 	EXPECT_EQ(tool_borrow(&reg, "candidate"), nullptr);
 	tool_registry_cleanup(&reg);
 	EXPECT_EQ(destroyed, 0);
@@ -524,22 +492,36 @@ TEST(Stability, ReplacementRejectsFailedRegistryInitializationWithoutTakingOwner
 
 TEST(Stability, AtomicFileReplacementPreservesModeAndRejectsSymlinks)
 {
+	const nb_file_write_options file_write_options_1 = {0, 0600, false, true, false, nullptr};
+	const nb_file_write_options file_write_options_2 = {0, 0600, false, true, false, nullptr};
+	const nb_file_write_options file_write_options_3 = {0, 0600, false, true, false, nullptr};
+
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	char directory[] = "/tmp/morph-atomic-XXXXXX";
 	ASSERT_NE(mkdtemp(directory), nullptr);
 	std::string path = std::string(directory) + "/data";
-	ASSERT_EQ(file_write_atomic(path.c_str(), "old", 3), 0);
+	ASSERT_EQ(nb_file_write_all_atomic(path.c_str(), "old", 3, &file_write_options_1, NULL), 0);
 	ASSERT_EQ(chmod(path.c_str(), 0640), 0);
-	EXPECT_EQ(file_write_atomic(path.c_str(), "new", 3), 0);
+	EXPECT_EQ(nb_file_write_all_atomic(path.c_str(), "new", 3, &file_write_options_2, NULL), 0);
 	struct stat st{};
 	ASSERT_EQ(stat(path.c_str(), &st), 0);
 	EXPECT_EQ(st.st_mode & 0777, 0640);
-	char *text = file_read_all_copy(path.c_str(), nullptr);
+	char *text =
+		(nb_file_read_all(path.c_str(), &file_value_1, 0, NULL) == NB_OK &&
+				 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
+				   nb_buf_len(&file_value_1) + 1),
+			    nb_charp_steal(&file_copy_1))
+			 : NULL);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "new");
 	free(text);
 	std::string link = std::string(directory) + "/link";
 	ASSERT_EQ(symlink(path.c_str(), link.c_str()), 0);
-	EXPECT_LT(file_write_atomic(link.c_str(), "bad", 3), 0);
+	EXPECT_LT(nb_file_write_all_atomic(link.c_str(), "bad", 3, &file_write_options_3, NULL), 0);
 	unlink(link.c_str());
 	unlink(path.c_str());
 	rmdir(directory);
@@ -560,7 +542,7 @@ TEST(Stability, BufferedFileCloseFailureIsReported)
 			_exit(2);
 		}
 		char bytes[100]{};
-		_exit(file_write_all(path, bytes, sizeof(bytes)) < 0 ? 0 : 1);
+		_exit(nb_file_write_all(path, bytes, sizeof(bytes), NULL) < 0 ? 0 : 1);
 	}
 	int status = 0;
 	ASSERT_EQ(waitpid(pid, &status, 0), pid);
@@ -571,10 +553,18 @@ TEST(Stability, BufferedFileCloseFailureIsReported)
 
 TEST(Stability, AtomicFileWriteFailurePreservesCommittedContents)
 {
+	const nb_file_write_options file_write_options_4 = {0, 0600, false, true, false, nullptr};
+	const nb_file_write_options file_write_options_5 = {0, 0600, false, true, false, nullptr};
+
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	char directory[] = "/tmp/morph-atomic-failure-XXXXXX";
 	ASSERT_NE(mkdtemp(directory), nullptr);
 	std::string path = std::string(directory) + "/data";
-	ASSERT_EQ(file_write_atomic(path.c_str(), "committed", 9), 0);
+	ASSERT_EQ(
+		nb_file_write_all_atomic(path.c_str(), "committed", 9, &file_write_options_4, NULL),
+		0);
 	pid_t pid = fork();
 	ASSERT_GE(pid, 0);
 	if (pid == 0) {
@@ -583,13 +573,23 @@ TEST(Stability, AtomicFileWriteFailurePreservesCommittedContents)
 		if (setrlimit(RLIMIT_FSIZE, &limit) != 0) {
 			_exit(2);
 		}
-		_exit(file_write_atomic(path.c_str(), "replacement", 11) < 0 ? 0 : 1);
+		_exit(nb_file_write_all_atomic(path.c_str(), "replacement", 11,
+					       &file_write_options_5, NULL) < 0
+			      ? 0
+			      : 1);
 	}
 	int status = 0;
 	ASSERT_EQ(waitpid(pid, &status, 0), pid);
 	ASSERT_TRUE(WIFEXITED(status));
 	EXPECT_EQ(WEXITSTATUS(status), 0);
-	char *contents = file_read_all_copy(path.c_str(), nullptr);
+	char *contents =
+		(nb_file_read_all(path.c_str(), &file_value_2, 0, NULL) == NB_OK &&
+				 (file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
+				   nb_buf_len(&file_value_2) + 1),
+			    nb_charp_steal(&file_copy_2))
+			 : NULL);
 	ASSERT_NE(contents, nullptr);
 	EXPECT_STREQ(contents, "committed");
 	free(contents);
@@ -628,7 +628,7 @@ TEST(Stability, GuardrailErrorPolicyIsValidatedByConfigSchema)
 			"[[react.guardrail_ext_rules]]\nname = \"checker\"\non_error = \"";
 		text += policy;
 		text += "\"\n";
-		ASSERT_EQ(file_write_all(path, text.data(), text.size()), 0);
+		ASSERT_EQ(nb_file_write_all(path, text.data(), text.size(), NULL), 0);
 		config_validation_error error{};
 		int rc = config_validate_file(path, &error);
 		EXPECT_EQ(rc == 0, std::strcmp(policy, "invalid") != 0);
@@ -638,26 +638,26 @@ TEST(Stability, GuardrailErrorPolicyIsValidatedByConfigSchema)
 
 TEST(Stability, CancellationTokenIsSafeForConcurrentReaders)
 {
-	morph_cancel_token token{};
+	nb_cancel token{};
 	std::atomic<int> observed{0};
 	std::thread first([&] {
-		while (!morph_cancel_token_is_cancelled(&token)) {
+		while (!nb_cancel_requested(&token)) {
 			std::this_thread::yield();
 		}
 		observed.fetch_add(1);
 	});
 	std::thread second([&] {
-		while (!morph_cancel_token_is_cancelled(&token)) {
+		while (!nb_cancel_requested(&token)) {
 			std::this_thread::yield();
 		}
 		observed.fetch_add(1);
 	});
-	morph_cancel_token_cancel(&token);
+	nb_cancel_request(&token);
 	first.join();
 	second.join();
 	EXPECT_EQ(observed.load(), 2);
-	morph_cancel_token_reset(&token);
-	EXPECT_FALSE(morph_cancel_token_is_cancelled(&token));
+	nb_cancel_reset(&token);
+	EXPECT_FALSE(nb_cancel_requested(&token));
 }
 
 TEST(Stability, ConcurrentJsonParsingKeepsErrorCursorsThreadLocal)
@@ -710,8 +710,8 @@ TEST_F(StableTask, ObsoleteRunCannotOverwriteANewerCompletedGeneration)
 	int ran = 0;
 	EXPECT_EQ(scheduled_task_run_due_with_runner(&database, 2, 10, replace_running_generation,
 						     &database, &ran),
-		  -ESTALE);
-	scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+		  NB_ERR_STALE);
+	scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
 	ASSERT_EQ(scheduled_task_get(&database, id, &task), 0);
 	EXPECT_STREQ(task.status, "completed");
 	EXPECT_EQ(task.attempts, 1);
@@ -733,20 +733,26 @@ TEST(Stability, OversizedMcpFrameDisconnectsInsteadOfGrowingWithoutBound)
 	client.stdin_fd = input[1];
 	client.stdout_fd = output[0];
 	client.server_pid = -1;
-	ASSERT_EQ(morph_buf_init(&client.read_buffer, MCP_STDIO_MAX_FRAME_BYTES + 1), 0);
+	ASSERT_EQ((nb_buf_init(&client.read_buffer),
+		   nb_buf_reserve(&client.read_buffer, MCP_STDIO_MAX_FRAME_BYTES + 1)
+			   ? 0
+			   : NB_ERR_NOMEM),
+		  0);
 	std::string frame(MCP_STDIO_MAX_FRAME_BYTES, 'x');
-	ASSERT_EQ(morph_buf_append(&client.read_buffer, frame.data(), frame.size()), 0);
+	ASSERT_EQ(
+		(nb_buf_append(&client.read_buffer, frame.data(), frame.size()) ? 0 : NB_ERR_NOMEM),
+		0);
 	ASSERT_EQ(write(output[1], "x", 1), 1);
-	mcp_wire_request request MORPH_CLEANUP(mcp_wire_request_cleanup) = {};
+	mcp_wire_request request NB_CLEANUP(mcp_wire_request_cleanup) = {};
 	request.id = 7;
 	request.json = strdup("{}");
 	ASSERT_NE(request.json, nullptr);
 	mcp_wire_reply reply{};
-	EXPECT_EQ(mcp_stdio_exchange(&client, &request, 1000, &reply), -EFBIG);
+	EXPECT_EQ(mcp_stdio_exchange(&client, &request, 1000, &reply), NB_ERR_TOO_BIG);
 	EXPECT_EQ(reply.json, nullptr);
 	EXPECT_EQ(client.stdin_fd, -1);
 	EXPECT_EQ(client.stdout_fd, -1);
-	EXPECT_EQ(client.read_buffer.data, nullptr);
+	EXPECT_EQ(client.read_buffer.ptr, nullptr);
 	close(input[0]);
 	close(output[1]);
 }

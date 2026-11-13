@@ -1,8 +1,8 @@
 #include "responses_codec.h"
-#include "util/log.h"
-#include "util/json.h"
-#include "util/error.h"
-#include "util/cleanup.h"
+#include "nb/log.h"
+#include "cJSON.h"
+#include "errors.h"
+#include "nb/cleanup.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -11,41 +11,44 @@
 
 static cJSON *build_responses_tools_cjson(const struct tool_desc *tools, int tool_count)
 {
-	cJSON *array MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
+	cJSON *array NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateArray();
 	if (!array)
 		return NULL;
 	for (int i = 0; i < tool_count; i++) {
-		cJSON *tool MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		cJSON *tool NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 		if (!tool)
 			return NULL;
 		if (tools[i].input_kind == TOOL_INPUT_TEXT) {
 			if (!cJSON_AddStringToObject(tool, "type", "custom"))
 				return NULL;
 			if (tools[i].input_format && tools[i].input_format[0]) {
-				cJSON *format MORPH_CLEANUP(morph_json_cleanup) =
+				cJSON *format NB_CLEANUP(cJSON_DeleteOwner) =
 					cJSON_Parse(tools[i].input_format);
-				if (!format || morph_json_object_take(tool, "format", &format) != 0)
+				if (!format || (cJSON_AddItemToObject(tool, "format", format)
+							? (format = NULL, NB_OK)
+							: NB_ERR_NOMEM) != 0)
 					return NULL;
 			}
 		} else {
-			cJSON *params MORPH_CLEANUP(morph_json_cleanup) =
+			cJSON *params NB_CLEANUP(cJSON_DeleteOwner) =
 				tools[i].input_schema && tools[i].input_schema[0]
 					? cJSON_Parse(tools[i].input_schema)
 					: NULL;
-			cJSON *schema MORPH_CLEANUP(morph_json_cleanup) =
-				llm_codec_schema_copy(params);
+			cJSON *schema NB_CLEANUP(cJSON_DeleteOwner) = llm_codec_schema_copy(params);
 			if (!schema && (cJSON_IsObject(params) || cJSON_IsArray(params)))
 				return NULL;
 			if (!schema)
 				schema = cJSON_Parse(TOOL_EMPTY_INPUT_SCHEMA);
 			if (!schema || !cJSON_AddStringToObject(tool, "type", "function") ||
-			    morph_json_object_take(tool, "parameters", &schema) != 0)
+			    (cJSON_AddItemToObject(tool, "parameters", schema)
+				     ? (schema = NULL, NB_OK)
+				     : NB_ERR_NOMEM) != 0)
 				return NULL;
 		}
 		if (!cJSON_AddStringToObject(tool, "name", tools[i].name) ||
 		    !cJSON_AddStringToObject(tool, "description",
 					     tools[i].description ? tools[i].description : "") ||
-		    morph_json_array_take(array, &tool) != 0)
+		    (cJSON_AddItemToArray(array, tool) ? (tool = NULL, NB_OK) : NB_ERR_NOMEM) != 0)
 			return NULL;
 	}
 	cJSON *owned = array;
@@ -143,30 +146,6 @@ static struct tool_call *responses_find_tool_call(struct llm_stream_ctx *ctx, co
 	return &ctx->tool_calls[0];
 }
 
-static int responses_append_call_input(struct llm_stream_ctx *ctx, struct tool_call *call,
-				       const char *delta)
-{
-	(void)ctx;
-	size_t old_len;
-	size_t add_len;
-	char *next;
-
-	if (!delta)
-		return 0;
-	if (!call)
-		return MORPH_ERR_PROTOCOL;
-	old_len = call->arguments ? strlen(call->arguments) : 0;
-	add_len = strlen(delta);
-	if (add_len > SIZE_MAX - old_len - 1)
-		return -EOVERFLOW;
-	next = realloc(call->arguments, old_len + add_len + 1);
-	if (!next)
-		return -ENOMEM;
-	memcpy(next + old_len, delta, add_len + 1);
-	call->arguments = next;
-	return 0;
-}
-
 static int responses_parse_output_item(struct llm_stream_ctx *ctx, cJSON *item, int complete)
 {
 	cJSON *type = cJSON_GetObjectItem(item, "type");
@@ -192,7 +171,7 @@ static int responses_parse_output_item(struct llm_stream_ctx *ctx, cJSON *item, 
 	if (!call)
 		call = llm_stream_tool_call_ensure_borrow(ctx, ctx->tool_call_count);
 	if (!call)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	call->input_kind = kind;
 	int rc = 0;
 	if (cJSON_IsString(id) && id->valuestring) {
@@ -207,7 +186,7 @@ static int responses_parse_output_item(struct llm_stream_ctx *ctx, cJSON *item, 
 	if (rc != 0)
 		return rc;
 	if (complete && cJSON_IsString(input) && input->valuestring)
-		return llm_stream_string_copy(&call->arguments, input->valuestring);
+		return llm_stream_call_input_set(ctx, call, input->valuestring);
 	return 0;
 }
 
@@ -248,7 +227,8 @@ static int responses_terminal(struct llm_stream_ctx *ctx, cJSON *root, const cha
 	if (!detail)
 		detail = reason ? reason : "Model stream ended without a complete response.";
 	ctx->terminal_error = !strcmp(event_type, "response.failed") || !strcmp(event_type, "error")
-				? MORPH_ERR_API : MORPH_ERR_PROTOCOL;
+				      ? MORPH_ERR_API
+				      : NB_ERR_PROTOCOL;
 	llm_usage_copy(ctx->usage.finish_reason, sizeof(ctx->usage.finish_reason),
 		      !strcmp(event_type, "response.incomplete") ? "incomplete" : "failed");
 	return llm_stream_string_copy(&ctx->terminal_detail, detail);
@@ -299,7 +279,7 @@ static int llm_responses_sse_event_cb(const char *event, const char *data, void 
 		const char *delta = cJSON_GetStringValue(cJSON_GetObjectItem(root, "delta"));
 		struct tool_call *call = responses_find_tool_call(ctx, item_id);
 
-		rc = responses_append_call_input(ctx, call, delta);
+		rc = llm_stream_call_input_append(ctx, call, delta);
 	} else if (!strcmp(event_type, "response.function_call_arguments.done") ||
 		   !strcmp(event_type, "response.custom_tool_call_input.done")) {
 		const char *item_id = cJSON_GetStringValue(cJSON_GetObjectItem(root, "item_id"));
@@ -308,8 +288,7 @@ static int llm_responses_sse_event_cb(const char *event, const char *data, void 
 				? "arguments" : "input"));
 		struct tool_call *call = responses_find_tool_call(ctx, item_id);
 
-		rc = call && input ? llm_stream_string_copy(&call->arguments, input)
-				   : MORPH_ERR_PROTOCOL;
+		rc = call && input ? llm_stream_call_input_set(ctx, call, input) : NB_ERR_PROTOCOL;
 	} else if (!strcmp(event_type, "response.completed") ||
 		   !strcmp(event_type, "response.incomplete") ||
 		   !strcmp(event_type, "response.failed") || !strcmp(event_type, "error")) {

@@ -3,12 +3,13 @@
 #include "prompt_context.h"
 #include "react.h"
 #include "tokenizer.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/log.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/log.h"
+#include "nb/utf8.h"
 #include <errno.h>
 #include <limits.h>
 #include <ctype.h>
@@ -22,7 +23,7 @@
 
 static char *history_json_text_copy(const cJSON *value)
 {
-	char *printed MORPH_CLEANUP(morph_json_text_cleanup) = morph_json_print_copy(value);
+	char *printed NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(value);
 
 	return printed ? strdup(printed) : NULL;
 }
@@ -53,13 +54,13 @@ static int history_secret_prefix(const char *start, const char *text, size_t *pr
 
 static char *history_redact(const char *text)
 {
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *cur;
 	int rc;
 
 	if (!text)
 		return NULL;
-	rc = morph_buf_init(&buf, strlen(text) + 1);
+	rc = (nb_buf_init(&buf), nb_buf_reserve(&buf, strlen(text) + 1) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return NULL;
 	cur = text;
@@ -75,7 +76,9 @@ static char *history_redact(const char *text)
 				header++;
 			if (base64 && (size_t)(base64 - cur) < 128 &&
 			    header == base64 + strlen(";base64")) {
-				rc = morph_buf_puts(&buf, "[binary data omitted]");
+				rc = (nb_buf_append_cstr(&buf, "[binary data omitted]")
+					      ? 0
+					      : NB_ERR_NOMEM);
 				cur = base64 + strlen(";base64,");
 				while (*cur &&
 				       (isalnum((unsigned char)*cur) || strchr("+/=", *cur)))
@@ -87,15 +90,15 @@ static char *history_redact(const char *text)
 		}
 
 		if (!history_secret_prefix(text, cur, &prefix_len, &preserve_prefix)) {
-			rc = morph_buf_putc(&buf, *cur++);
+			rc = (nb_buf_append_char(&buf, *cur++) ? 0 : NB_ERR_NOMEM);
 			if (rc != 0)
 				break;
 			continue;
 		}
 		if (preserve_prefix)
-			rc = morph_buf_append(&buf, cur, prefix_len);
+			rc = (nb_buf_append(&buf, cur, prefix_len) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_puts(&buf, "[REDACTED]");
+			rc = (nb_buf_append_cstr(&buf, "[REDACTED]") ? 0 : NB_ERR_NOMEM);
 		cur += prefix_len;
 		while (*cur && isspace((unsigned char)*cur))
 			cur++;
@@ -106,15 +109,15 @@ static char *history_redact(const char *text)
 			break;
 	}
 	if (rc != 0) {
-		morph_buf_cleanup(&buf);
+		nb_buf_cleanup(&buf);
 		return NULL;
 	}
-	return morph_buf_detach(&buf);
+	return (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
 }
 
 static char *history_redact_exact(const char *text, const char *secret)
 {
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *cur;
 	const char *match;
 	int rc;
@@ -123,25 +126,25 @@ static char *history_redact_exact(const char *text, const char *secret)
 		return NULL;
 	if (!secret || strlen(secret) < 4)
 		return strdup(text);
-	rc = morph_buf_init(&buf, strlen(text) + 1);
+	rc = (nb_buf_init(&buf), nb_buf_reserve(&buf, strlen(text) + 1) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return NULL;
 	cur = text;
 	while ((match = strstr(cur, secret)) != NULL) {
-		rc = morph_buf_append(&buf, cur, (size_t)(match - cur));
+		rc = (nb_buf_append(&buf, cur, (size_t)(match - cur)) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_puts(&buf, "[REDACTED]");
+			rc = (nb_buf_append_cstr(&buf, "[REDACTED]") ? 0 : NB_ERR_NOMEM);
 		if (rc != 0) {
-			morph_buf_cleanup(&buf);
+			nb_buf_cleanup(&buf);
 			return NULL;
 		}
 		cur = match + strlen(secret);
 	}
-	if (morph_buf_puts(&buf, cur) != 0) {
-		morph_buf_cleanup(&buf);
+	if ((nb_buf_append_cstr(&buf, cur) ? 0 : NB_ERR_NOMEM) != 0) {
+		nb_buf_cleanup(&buf);
 		return NULL;
 	}
-	return morph_buf_detach(&buf);
+	return (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
 }
 
 char *history_redacted_text_create(struct react_context *ctx, const char *text)
@@ -177,10 +180,10 @@ static int history_redact_json_values(struct react_context *ctx, cJSON *value, i
 		int rc;
 
 		if (!safe)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		if (strcmp(value->valuestring, safe) != 0)
 			*changed = 1;
-		rc = cJSON_SetValuestring(value, safe) ? 0 : -ENOMEM;
+		rc = cJSON_SetValuestring(value, safe) ? 0 : NB_ERR_NOMEM;
 
 		free(safe);
 		return rc;
@@ -217,7 +220,7 @@ static char *history_truncate_result(struct tokenizer *tokenizer, const char *co
 				     int max_tokens, int *truncated)
 {
 	const char *marker = "\n…(tool output truncated)…\n";
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	size_t len = strlen(content);
 	size_t budget;
 	int tokens;
@@ -240,32 +243,32 @@ static char *history_truncate_result(struct tokenizer *tokenizer, const char *co
 	budget = (size_t)((double)len * (double)max_tokens / (double)tokens);
 	if (budget >= len)
 		budget = len - 1;
-	rc = morph_buf_init(&buf, 128);
+	rc = (nb_buf_init(&buf), nb_buf_reserve(&buf, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return NULL;
 	for (;;) {
-		size_t head = utf8_clamp_bytes(content, budget * 3 / 5);
-		size_t tail = utf8_clamp_bytes(content, len - (budget - budget * 3 / 5));
+		size_t head = nb_utf8_clamp_bytes(content, budget * 3 / 5);
+		size_t tail = nb_utf8_clamp_bytes(content, len - (budget - budget * 3 / 5));
 		size_t next;
 
-		morph_buf_reset(&buf);
-		rc = morph_buf_append(&buf, content, head);
+		nb_buf_clear(&buf);
+		rc = (nb_buf_append(&buf, content, head) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_puts(&buf, marker);
+			rc = (nb_buf_append_cstr(&buf, marker) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_puts(&buf, content + tail);
+			rc = (nb_buf_append_cstr(&buf, content + tail) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0) {
-			morph_buf_cleanup(&buf);
+			nb_buf_cleanup(&buf);
 			return NULL;
 		}
-		tokens = tokenizer_count(tokenizer, morph_buf_cstr_borrow(&buf));
+		tokens = tokenizer_count(tokenizer, nb_buf_cstr(&buf));
 		if (tokens <= max_tokens)
 			break;
 		next = (size_t)((double)budget * (double)max_tokens / (double)tokens);
 		budget = next < budget ? next : budget - 1;
 	}
 	*truncated = 1;
-	return morph_buf_detach(&buf);
+	return (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
 }
 
 static int history_agent_status_array(const cJSON *array)
@@ -338,23 +341,24 @@ static int history_shorten_agent_page(cJSON *data, cJSON *payload)
 	    !cJSON_IsNumber(total) || total->valuedouble < offset->valuedouble)
 		return 0;
 	size_t length = strlen(payload->valuestring);
-	size_t retained = utf8_clamp_bytes(payload->valuestring, length / 2);
+	size_t retained = nb_utf8_clamp_bytes(payload->valuestring, length / 2);
 	if (!retained)
-		return -E2BIG;
-	char *prefix MORPH_CLEANUP(morph_charp_cleanup) =
-		strndup(payload->valuestring, retained);
+		return NB_ERR_TOO_BIG;
+	char *prefix NB_CLEANUP(nb_charp_cleanup) = strndup(payload->valuestring, retained);
 	if (!prefix || !cJSON_SetValuestring(payload, prefix))
-		return -ENOMEM;
-	cJSON *next MORPH_CLEANUP(morph_json_cleanup) =
+		return NB_ERR_NOMEM;
+	cJSON *next NB_CLEANUP(cJSON_DeleteOwner) =
 		cJSON_CreateNumber(offset->valuedouble + (double)retained);
-	cJSON *more MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateBool(1);
+	cJSON *more NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateBool(1);
 	if (!next || !more)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	cJSON_DeleteItemFromObjectCaseSensitive(data, "next_offset");
 	cJSON_DeleteItemFromObjectCaseSensitive(data, "has_more");
-	if (morph_json_object_take(data, "next_offset", &next) != 0 ||
-	    morph_json_object_take(data, "has_more", &more) != 0)
-		return -ENOMEM;
+	if ((cJSON_AddItemToObject(data, "next_offset", next) ? (next = NULL, NB_OK)
+							      : NB_ERR_NOMEM) != 0 ||
+	    (cJSON_AddItemToObject(data, "has_more", more) ? (more = NULL, NB_OK) : NB_ERR_NOMEM) !=
+		    0)
+		return NB_ERR_NOMEM;
 	return 1;
 }
 
@@ -480,19 +484,19 @@ int agent_history_tool_content_copy(struct react_context *ctx, const char *conte
 	int was_truncated = 0;
 
 	if (!ctx || !prepared)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*prepared)
-		return -EALREADY;
+		return NB_ERR_STATE;
 	/* Repair malformed tool bytes before redaction or UTF-8 boundary selection. */
 	limited = strdup(content ? content : "");
 	if (!limited)
-		return -ENOMEM;
-	utf8_sanitize_inplace(limited);
+		return NB_ERR_NOMEM;
+	nb_utf8_sanitize_inplace(limited);
 	/* Redaction may expand short secrets into longer replacement strings. */
 	safe = history_redacted_json_create(ctx, limited);
 	free(limited);
 	if (!safe)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	{
 		cJSON *root = cJSON_ParseWithOpts(safe, NULL, 1);
 		int budget = ctx->history_tool_result_tokens > 0
@@ -505,7 +509,7 @@ int agent_history_tool_content_copy(struct react_context *ctx, const char *conte
 			cJSON_Delete(root);
 			if (!limited) {
 				free(safe);
-				return -E2BIG;
+				return NB_ERR_TOO_BIG;
 			}
 		} else {
 			limited = history_truncate_result(ctx->tokenizer, safe, budget,
@@ -514,9 +518,10 @@ int agent_history_tool_content_copy(struct react_context *ctx, const char *conte
 	}
 	free(safe);
 	if (!limited)
-		return -ENOMEM;
-	log_dbg(ctx ? ctx->logger : NULL, "history tool result: %zu -> %zu bytes, truncated=%d",
-		content ? strlen(content) : 0, strlen(limited), was_truncated);
+		return NB_ERR_NOMEM;
+	nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_DEBUG,
+		     "history tool result: %zu -> %zu bytes, truncated=%d",
+		     content ? strlen(content) : 0, strlen(limited), was_truncated);
 	*prepared = limited;
 	if (truncated)
 		*truncated = was_truncated;

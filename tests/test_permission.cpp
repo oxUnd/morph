@@ -1,4 +1,6 @@
+#include "errors.h"
 #include "runtime_test_support.hpp"
+#include "nb/err.h"
 #include "model_metadata_test_support.hpp"
 
 extern "C" {
@@ -10,8 +12,8 @@ extern "C" {
 #include "agent/tools/exec_tool.h"
 #include "config/edit.h"
 #include "sandbox/permission.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 #include "ext/ext.h"
 }
 
@@ -83,9 +85,9 @@ TEST(Permission, PresetsAndCustomPoliciesRoundTripWithoutDuplicateModeState)
 	struct permission_policy policy{};
 	ASSERT_EQ(permission_policy_parse("read_only", "never", "model", &policy), 0);
 	EXPECT_STREQ(runtime_permission_preset_name(&policy), "custom");
-	EXPECT_EQ(runtime_permission_preset("typo", &policy), -EINVAL);
-	EXPECT_EQ(permission_policy_parse("invalid", "never", "user", &policy), -EINVAL);
-	EXPECT_EQ(permission_policy_validate(nullptr), -EINVAL);
+	EXPECT_EQ(runtime_permission_preset("typo", &policy), NB_ERR_INVAL);
+	EXPECT_EQ(permission_policy_parse("invalid", "never", "user", &policy), NB_ERR_INVAL);
+	EXPECT_EQ(permission_policy_validate(nullptr), NB_ERR_INVAL);
 }
 
 TEST(Permission, AutomaticReviewAndMandatoryHumanShareOneRouter)
@@ -110,11 +112,12 @@ TEST(Permission, AutomaticReviewAndMandatoryHumanShareOneRouter)
 	EXPECT_EQ(permission_authorize(&context, &operation, PERMISSION_REVIEW, &verdict), 0);
 	EXPECT_EQ(user.calls, 2);
 	model.defer = 0;
-	model.rc = -ETIMEDOUT;
+	model.rc = NB_ERR_TIMEOUT;
 	EXPECT_EQ(permission_authorize(&context, &operation, PERMISSION_REVIEW, &verdict), 0);
 	EXPECT_EQ(user.calls, 3);
-	model.rc = -ECANCELED;
-	EXPECT_EQ(permission_authorize(&context, &operation, PERMISSION_REVIEW, &verdict), -ECANCELED);
+	model.rc = NB_ERR_CANCELLED;
+	EXPECT_EQ(permission_authorize(&context, &operation, PERMISSION_REVIEW, &verdict),
+		  NB_ERR_CANCELLED);
 	EXPECT_EQ(user.calls, 3);
 	permission_context_cleanup(&context);
 }
@@ -125,9 +128,11 @@ TEST(Permission, MissingApprovalAndNeverFailClosed)
 	ASSERT_EQ(permission_context_init(&context), 0);
 	struct tool_operation operation{};
 	enum tool_operation_verdict verdict;
-	EXPECT_EQ(permission_authorize(&context, &operation, PERMISSION_REVIEW, &verdict), -EPERM);
+	EXPECT_EQ(permission_authorize(&context, &operation, PERMISSION_REVIEW, &verdict),
+		  NB_ERR_NOT_PERMITTED);
 	context.policy.approval = PERMISSION_NEVER;
-	EXPECT_EQ(permission_authorize(&context, &operation, PERMISSION_REVIEW, &verdict), -EACCES);
+	EXPECT_EQ(permission_authorize(&context, &operation, PERMISSION_REVIEW, &verdict),
+		  NB_ERR_PERMISSION);
 	EXPECT_EQ(permission_authorize(&context, &operation, PERMISSION_ALLOW, &verdict), 0);
 	EXPECT_EQ(verdict, TOOL_OP_ALLOW);
 	permission_context_cleanup(&context);
@@ -147,12 +152,14 @@ TEST(Permission, ThreeModelDenialsRequireHumanAndCannotCreatePersistentAuthority
 	struct tool_operation operation{};
 	enum tool_operation_verdict verdict;
 	for (int i = 0; i < 3; i++)
-		EXPECT_EQ(permission_authorize(&context, &operation, PERMISSION_REVIEW, &verdict), -EACCES);
+		EXPECT_EQ(permission_authorize(&context, &operation, PERMISSION_REVIEW, &verdict),
+			  NB_ERR_PERMISSION);
 	EXPECT_EQ(permission_authorize(&context, &operation, PERMISSION_REVIEW, &verdict), 0);
 	EXPECT_EQ(model.calls, 3);
 	EXPECT_EQ(user.calls, 1);
 	model.verdict = TOOL_OP_ALWAYS;
-	EXPECT_EQ(permission_authorize(&context, &operation, PERMISSION_REVIEW, &verdict), -EPROTO);
+	EXPECT_EQ(permission_authorize(&context, &operation, PERMISSION_REVIEW, &verdict),
+		  NB_ERR_PROTOCOL);
 	permission_context_cleanup(&context);
 }
 
@@ -168,7 +175,7 @@ TEST(Permission, ReviewerJsonRejectsUnknownOrPartialOutput)
 		"{\"verdict\":\"allow\",\"reason\":\"\"}",
 		"{\"verdict\":\"allow\",\"reason\":\"x\",\"scope\":\"session\"}",
 		"{\"verdict\":\"allow\",\"reason\":\"x\"} garbage"})
-		EXPECT_EQ(runtime_approval_parse(json, &result), -EPROTO) << json;
+		EXPECT_EQ(runtime_approval_parse(json, &result), NB_ERR_PROTOCOL) << json;
 }
 
 TEST_F(RuntimeFacadeTest, PermissionPolicyPersistsThreeDimensionsAndRetainsOtherConfig)
@@ -201,9 +208,9 @@ TEST_F(RuntimeFacadeTest, PermissionPolicyBusyAndSaveFailuresPreserveActivePolic
 	Open(&options);
 	struct permission_policy policy{};
 	ASSERT_EQ(runtime_permission_preset("full", &policy), 0);
-	pthread_mutex_lock(&instance->context.execution_lock);
-	EXPECT_EQ(runtime_permission_set_policy(instance, &policy), -EBUSY);
-	pthread_mutex_unlock(&instance->context.execution_lock);
+	nb_mutex_lock(instance->context.execution_lock);
+	EXPECT_EQ(runtime_permission_set_policy(instance, &policy), NB_ERR_BUSY);
+	nb_mutex_unlock(instance->context.execution_lock);
 	std::filesystem::remove(config_path);
 	EXPECT_NE(runtime_permission_set_policy(instance, &policy), 0);
 	EXPECT_EQ(instance->context.tctx->permissions.policy.access, PERMISSION_WORKSPACE);
@@ -222,12 +229,17 @@ TEST_F(RuntimeFacadeTest, ReadOnlyPatchDenialAndLaterInvalidTargetLeaveFilesUnto
 	struct tool_result result{};
 	tool_result_init(&result);
 	EXPECT_EQ(tool_exec(&registry, "apply_patch",
-		"*** Begin Patch\n*** Add File: first.txt\n+hello\n*** End Patch", &result), -EPERM);
+			    "*** Begin Patch\n*** Add File: first.txt\n+hello\n*** End Patch",
+			    &result),
+		  NB_ERR_NOT_PERMITTED);
 	EXPECT_FALSE(std::filesystem::exists(directory + "/first.txt"));
 	int approvals = 0;
 	tool_context_set_operation_approval(context, approve, &approvals);
 	EXPECT_EQ(tool_exec(&registry, "apply_patch",
-		"*** Begin Patch\n*** Add File: first.txt\n+hello\n*** Add File: ../escape.txt\n+bad\n*** End Patch", &result), -EINVAL);
+			    "*** Begin Patch\n*** Add File: first.txt\n+hello\n*** Add File: "
+			    "../escape.txt\n+bad\n*** End Patch",
+			    &result),
+		  NB_ERR_INVAL);
 	EXPECT_FALSE(std::filesystem::exists(directory + "/first.txt"));
 	EXPECT_EQ(approvals, 0);
 	tool_context_set_operation_approval(context,
@@ -237,8 +249,10 @@ TEST_F(RuntimeFacadeTest, ReadOnlyPatchDenialAndLaterInvalidTargetLeaveFilesUnto
 				TOOL_OP_ALLOW : TOOL_OP_DENY;
 		}, &approvals);
 	EXPECT_EQ(tool_exec(&registry, "apply_patch",
-		"*** Begin Patch\n*** Add File: first.txt\n+hello\n*** Add File: second.txt\n+bad\n*** End Patch",
-		&result), -EACCES);
+			    "*** Begin Patch\n*** Add File: first.txt\n+hello\n*** Add File: "
+			    "second.txt\n+bad\n*** End Patch",
+			    &result),
+		  NB_ERR_PERMISSION);
 	EXPECT_FALSE(std::filesystem::exists(directory + "/first.txt"));
 	EXPECT_FALSE(std::filesystem::exists(directory + "/second.txt"));
 	EXPECT_EQ(approvals, 2);
@@ -283,8 +297,8 @@ TEST_F(PermissionModelTest, IndependentModelReviewsExactActionWithoutTools)
 	worker.join();
 	ASSERT_TRUE(requested);
 	EXPECT_EQ(rc, 0);
-	EXPECT_EQ(context->scoped_grants.nelts, 0u);
-	EXPECT_EQ(context->persistent_grants.nelts, 0u);
+	EXPECT_EQ(context->scoped_grants.len, 0u);
+	EXPECT_EQ(context->persistent_grants.len, 0u);
 	EXPECT_STREQ(instance->context.llm->model_id, "title-test");
 }
 
@@ -341,7 +355,7 @@ TEST_F(PermissionModelTest, LongObjectiveAndConfiguredOutputBudgetReachReviewerI
 	std::thread worker([&] { rc = tool_context_check_operation(ctx.tctx, &operation); });
 	const bool requested = WaitRequest();
 	if (requested) {
-		cJSON *body MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(request_body.c_str());
+		cJSON *body NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(request_body.c_str());
 		EXPECT_NE(body, nullptr);
 		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(body, "max_tokens")), 16384);
 		EXPECT_NE(request_body.find(objective), std::string::npos);
@@ -399,7 +413,7 @@ TEST_F(RuntimeFacadeTest, OpaqueToolsAndChildRegistriesShareAuthority)
 	EXPECT_EQ(child.permission_context, context);
 	struct tool_result result{};
 	tool_result_init(&result);
-	EXPECT_EQ(tool_exec(&child, "opaque", "{}", &result), -EPERM);
+	EXPECT_EQ(tool_exec(&child, "opaque", "{}", &result), NB_ERR_NOT_PERMITTED);
 	EXPECT_EQ(executions, 0);
 	int approvals = 0;
 	tool_context_set_operation_approval(context, approve, &approvals);
@@ -424,9 +438,11 @@ TEST_F(RuntimeFacadeTest, ReadOnlyDoesNotInheritProfileOrPersistentWriteAuthorit
 	request.principal = "*";
 	request.command = "Write project files";
 	request.path = directory.c_str();
-	EXPECT_EQ(tool_context_request_directory_access(context, &request, nullptr, 0), -EACCES);
+	EXPECT_EQ(tool_context_request_directory_access(context, &request, nullptr, 0),
+		  NB_ERR_PERMISSION);
 	EXPECT_EQ(tool_context_authorize_path(context, TOOL_PATH_WRITE,
-		(directory + "/blocked").c_str(), nullptr, 0), -EACCES);
+					      (directory + "/blocked").c_str(), nullptr, 0),
+		  NB_ERR_PERMISSION);
 	tool_context_destroy(context);
 }
 
@@ -439,10 +455,12 @@ TEST_F(RuntimeFacadeTest, ExecHostRequestInWorkspaceCannotBypassApproval)
 	ASSERT_EQ(exec_tool_init(&registry, context, nullptr), 0);
 	struct tool_result result{};
 	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&registry, "exec", "{\"command\":\"printf forbidden\",\"host\":true}",
+			    &result),
+		  NB_ERR_NOT_PERMITTED);
 	EXPECT_EQ(tool_exec(&registry, "exec",
-		"{\"command\":\"printf forbidden\",\"host\":true}", &result), -EPERM);
-	EXPECT_EQ(tool_exec(&registry, "exec",
-		"{\"command\":\"printf forbidden\",\"network\":true}", &result), -EPERM);
+			    "{\"command\":\"printf forbidden\",\"network\":true}", &result),
+		  NB_ERR_NOT_PERMITTED);
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&registry);
 	tool_context_destroy(context);
@@ -455,7 +473,7 @@ TEST(Permission, SandboxIntersectionCannotExceedManifestOrApplication)
 	char sibling[] = "/other";
 	char *manifest[] = {manifest_root, sibling};
 	char *parent[] = {parent_root};
-	struct sandbox_config requested MORPH_CLEANUP(sandbox_config_cleanup) = {};
+	struct sandbox_config requested NB_CLEANUP(sandbox_config_cleanup) = {};
 	struct sandbox_config ceiling{};
 	requested.write_paths = manifest;
 	requested.write_paths_count = 2;
@@ -492,12 +510,12 @@ TEST_F(RuntimeFacadeTest, LiveBackgroundProcessBlocksPolicyChangeUntilStopped)
 	ASSERT_NE(id, nullptr);
 	std::string process_id = id;
 	struct permission_policy policy{PERMISSION_READ_ONLY, PERMISSION_ON_REQUEST, PERMISSION_USER};
-	EXPECT_EQ(runtime_permission_set_policy(instance, &policy), -EBUSY);
+	EXPECT_EQ(runtime_permission_set_policy(instance, &policy), NB_ERR_BUSY);
 	ASSERT_EQ(runtime_process_stop(instance, process_id.c_str()), 0);
-	int rc = -EBUSY;
-	for (int i = 0; i < 100 && rc == -EBUSY; i++) {
+	int rc = NB_ERR_BUSY;
+	for (int i = 0; i < 100 && rc == NB_ERR_BUSY; i++) {
 		rc = runtime_permission_set_policy(instance, &policy);
-		if (rc == -EBUSY)
+		if (rc == NB_ERR_BUSY)
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	EXPECT_EQ(rc, 0);
@@ -529,8 +547,9 @@ TEST(Permission, ConcurrentReviewsAreSerializedAndKeepTheirOwnReasons)
 			operation.action = action.c_str();
 			operation.review_out = &decision;
 			enum tool_operation_verdict verdict;
-			EXPECT_EQ(permission_authorize(&context, &operation,
-				PERMISSION_REVIEW, &verdict), -EACCES);
+			EXPECT_EQ(permission_authorize(&context, &operation, PERMISSION_REVIEW,
+						       &verdict),
+				  NB_ERR_PERMISSION);
 			EXPECT_STREQ(decision.reason, action.c_str());
 		});
 	}
@@ -546,7 +565,8 @@ TEST(Permission, ConcurrentReviewsAreSerializedAndKeepTheirOwnReasons)
 	struct tool_operation operation{};
 	operation.review_out = &decision;
 	enum tool_operation_verdict verdict;
-	EXPECT_EQ(permission_authorize(&context, &operation, PERMISSION_REVIEW, &verdict), -EACCES);
+	EXPECT_EQ(permission_authorize(&context, &operation, PERMISSION_REVIEW, &verdict),
+		  NB_ERR_PERMISSION);
 	EXPECT_EQ(decision.reason[sizeof(decision.reason) - 1], '\0');
 	permission_context_cleanup(&context);
 }
@@ -572,7 +592,7 @@ TEST_F(RuntimeFacadeTest, ToolCallGrantsRespectScopeMandatoryHumanAndPolicySwitc
 	EXPECT_EQ(tool_context_check_operation(context, &operation), 0);
 	EXPECT_EQ(user.calls, 3);
 	operation.forbidden = 1;
-	EXPECT_EQ(tool_context_check_operation(context, &operation), -EACCES);
+	EXPECT_EQ(tool_context_check_operation(context, &operation), NB_ERR_PERMISSION);
 	EXPECT_EQ(user.calls, 3);
 	operation = {};
 	operation.kind = TOOL_OP_TOOL_CALL;
@@ -581,8 +601,9 @@ TEST_F(RuntimeFacadeTest, ToolCallGrantsRespectScopeMandatoryHumanAndPolicySwitc
 	EXPECT_EQ(tool_context_authorize_path(context, TOOL_PATH_READ, "/usr", nullptr, 0), 0);
 	struct permission_policy policy{PERMISSION_READ_ONLY, PERMISSION_NEVER, PERMISSION_USER};
 	ASSERT_EQ(tool_context_set_permission_policy(context, &policy), 0);
-	EXPECT_EQ(tool_context_check_operation(context, &operation), -EACCES);
-	EXPECT_EQ(tool_context_authorize_path(context, TOOL_PATH_READ, "/usr", nullptr, 0), -EACCES);
+	EXPECT_EQ(tool_context_check_operation(context, &operation), NB_ERR_PERMISSION);
+	EXPECT_EQ(tool_context_authorize_path(context, TOOL_PATH_READ, "/usr", nullptr, 0),
+		  NB_ERR_PERMISSION);
 	tool_context_destroy(context);
 }
 
@@ -609,7 +630,8 @@ TEST_F(RuntimeFacadeTest, RetainedHostProcessInputRequiresAnotherApproval)
 		user.verdict = TOOL_OP_DENY;
 		std::string input = "{\"action\":\"write\",\"session_id\":\"" + session +
 			"\",\"input\":\"blocked\"}";
-		EXPECT_EQ(tool_exec(&registry, "background", input.c_str(), &result), -EACCES);
+		EXPECT_EQ(tool_exec(&registry, "background", input.c_str(), &result),
+			  NB_ERR_PERMISSION);
 		EXPECT_EQ(user.calls, host ? 2 : 1);
 		std::string stop = "{\"action\":\"kill\",\"session_id\":\"" + session + "\"}";
 		EXPECT_EQ(tool_exec(&registry, "background", stop.c_str(), &result), 0);
@@ -642,10 +664,11 @@ TEST(Permission, NativeExtensionCannotClaimRestrictedProcessEnforcement)
 	extension.enabled = 1;
 	std::snprintf(extension.manifest.type, sizeof(extension.manifest.type), "so");
 	extension.run = [](const char *, char **) { return 0; };
-	struct sandbox_config limits MORPH_CLEANUP(sandbox_config_cleanup) = {};
+	struct sandbox_config limits NB_CLEANUP(sandbox_config_cleanup) = {};
 	limits.path_policy_enabled = 1;
 	char *output = nullptr;
-	EXPECT_EQ(ext_run_bounded(&extension, "{}", &output, nullptr, nullptr, &limits), -ENOTSUP);
+	EXPECT_EQ(ext_run_bounded(&extension, "{}", &output, nullptr, nullptr, &limits),
+		  NB_ERR_UNSUPPORTED);
 	EXPECT_EQ(output, nullptr);
 }
 
@@ -671,7 +694,7 @@ TEST_F(RuntimeFacadeTest, ExecutableExtensionIntersectionEnforcesReadOnlyAtTheOs
 	ASSERT_NE(context, nullptr);
 	struct permission_policy policy{PERMISSION_READ_ONLY, PERMISSION_NEVER, PERMISSION_USER};
 	ASSERT_EQ(tool_context_set_permission_policy(context, &policy), 0);
-	struct sandbox_config limits MORPH_CLEANUP(sandbox_config_cleanup) = {};
+	struct sandbox_config limits NB_CLEANUP(sandbox_config_cleanup) = {};
 	ASSERT_EQ(sandbox_permission_prepare(context, "bounded", nullptr, &limits), 0);
 	char *output = nullptr;
 	EXPECT_EQ(ext_run_bounded(&extension, "{}", &output, nullptr, nullptr, &limits), 0);

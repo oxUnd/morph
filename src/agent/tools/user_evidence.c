@@ -1,10 +1,11 @@
 #include "user_evidence.h"
 
 #include "agent/tool_runtime.h"
-#include "util/buf.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/utf8.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/utf8.h"
 
 #include <errno.h>
 #include <string.h>
@@ -17,14 +18,15 @@ static void user_evidence_statement_cleanup(sqlite3_stmt **statement)
 int tool_user_evidence_token_copy(const struct tool_runtime_context *runtime, const char *quote,
 				  char **out)
 {
-	sqlite3_stmt *stmt MORPH_CLEANUP(user_evidence_statement_cleanup) = NULL;
-	morph_buf_t token MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	sqlite3_stmt *stmt NB_CLEANUP(user_evidence_statement_cleanup) = NULL;
+	nb_buf token NB_CLEANUP(nb_buf_cleanup) = {0};
 
 	if (!runtime || !runtime->db || !runtime->db->handle || !out || !quote ||
-	    strlen(quote) > 4096 || utf8valid(quote) || utf8len(quote) < 4)
-		return -EINVAL;
+	    strlen(quote) > 4096 || nb_utf8_validate(nb_str_from_cstr(quote), NULL) ||
+	    nb_utf8_count(nb_str_from_cstr(quote)) < 4)
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (sqlite3_prepare_v2(
 		    runtime->db->handle,
 		    "SELECT id,content FROM model_history_items WHERE session_id=? AND role='user' "
@@ -36,14 +38,19 @@ int tool_user_evidence_token_copy(const struct tool_runtime_context *runtime, co
 	int step = sqlite3_step(stmt);
 
 	if (step != SQLITE_ROW)
-		return step == SQLITE_DONE ? -EPERM : MORPH_ERR_DB;
+		return step == SQLITE_DONE ? NB_ERR_NOT_PERMITTED : MORPH_ERR_DB;
 	const char *input = (const char *)sqlite3_column_text(stmt, 1);
 
 	if (!input || !strstr(input, quote))
-		return -EPERM;
-	int rc = morph_buf_printf(&token, "history:%lld", (long long)sqlite3_column_int64(stmt, 0));
+		return NB_ERR_NOT_PERMITTED;
+	int rc = (nb_buf_printf(&token, "history:%lld", (long long)sqlite3_column_int64(stmt, 0))
+			  ? 0
+			  : NB_ERR_NOMEM);
 
-	if (rc == 0)
-		*out = morph_buf_detach(&token);
+	if (rc == 0) {
+		*out = (nb_buf_ok(&token) ? strdup(nb_buf_cstr(&token)) : NULL);
+		if (!*out)
+			rc = NB_ERR_NOMEM;
+	}
 	return rc;
 }

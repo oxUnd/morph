@@ -5,7 +5,7 @@ extern "C" {
 #include <morph/tui/canvas.h>
 #include "tui/render/native_media.h"
 #include "tui/render/frame_internal.h"
-#include "util/base64.h"
+#include "encoding_fixture.h"
 }
 
 #include <vector>
@@ -25,16 +25,18 @@ TEST(TuiMediaTest, PngRoundTripAndCropPreservePixelsAndStableContentKey)
 	}
 	struct morph_tui_media_asset *asset = nullptr, *decoded = nullptr, *crop = nullptr;
 	ASSERT_EQ(morph_tui_media_asset_create_rgba_copy(&asset, pixels.data(), 4, 4), 0);
-	morph_buf_t png{}, cropped{};
+	nb_buf png{}, cropped{};
 	ASSERT_EQ(morph_tui_media_asset_png_append(asset, 0, 0, 4, 4, &png), 0);
-	ASSERT_EQ(morph_tui_media_asset_create_png_copy(&decoded,
-		reinterpret_cast<const unsigned char *>(png.data), png.len), 0);
+	ASSERT_EQ(morph_tui_media_asset_create_png_copy(
+			  &decoded, reinterpret_cast<const unsigned char *>(png.ptr), png.len),
+		  0);
 	EXPECT_EQ(morph_tui_media_asset_key(asset), morph_tui_media_asset_key(decoded));
 	EXPECT_EQ(morph_tui_media_asset_width(decoded), 4);
 	EXPECT_EQ(morph_tui_media_asset_height(decoded), 4);
 	ASSERT_EQ(morph_tui_media_asset_png_append(asset, 1, 1, 2, 2, &cropped), 0);
-	ASSERT_EQ(morph_tui_media_asset_create_png_copy(&crop,
-		reinterpret_cast<const unsigned char *>(cropped.data), cropped.len), 0);
+	ASSERT_EQ(morph_tui_media_asset_create_png_copy(
+			  &crop, reinterpret_cast<const unsigned char *>(cropped.ptr), cropped.len),
+		  0);
 	EXPECT_EQ(morph_tui_media_asset_width(crop), 2);
 	EXPECT_EQ(morph_tui_media_asset_height(crop), 2);
 	const unsigned char *result = morph_tui_media_asset_pixels_borrow(crop);
@@ -47,8 +49,8 @@ TEST(TuiMediaTest, PngRoundTripAndCropPreservePixelsAndStableContentKey)
 	morph_tui_media_asset_destroy(crop);
 	morph_tui_media_asset_destroy(decoded);
 	morph_tui_media_asset_destroy(asset);
-	morph_buf_cleanup(&png);
-	morph_buf_cleanup(&cropped);
+	nb_buf_cleanup(&png);
+	nb_buf_cleanup(&cropped);
 }
 
 TEST(TuiMediaTest, InvalidAssetsAndCropsPreserveOwners)
@@ -65,13 +67,13 @@ TEST(TuiMediaTest, InvalidAssetsAndCropsPreserveOwners)
 	auto *original = asset;
 	EXPECT_LT(morph_tui_media_asset_create_rgba_copy(&asset, pixel, 1, 1), 0);
 	EXPECT_EQ(asset, original);
-	morph_buf_t png{};
+	nb_buf png{};
 	EXPECT_LT(morph_tui_media_asset_png_append(asset, 1, 0, 1, 1, &png), 0);
 	EXPECT_EQ(png.len, 0u);
 	EXPECT_LT(morph_tui_media_asset_png_append(asset, -1, 0, 1, 1, &png), 0);
 	EXPECT_EQ(png.len, 0u);
 	morph_tui_media_asset_destroy(asset);
-	morph_buf_cleanup(&png);
+	nb_buf_cleanup(&png);
 }
 
 TEST(TuiMediaTest, CanvasClipsImagesToAncestorContentAndRetainsTheirAssets)
@@ -217,8 +219,8 @@ TEST_F(TuiNativeMediaTest, ITermUsesCroppedPngAndExactCellPlacement)
 	size_t end = bytes.find('\a', start);
 	ASSERT_NE(end, std::string::npos);
 	size_t decoded_length = 0;
-	unsigned char *decoded = base64_decode_copy(bytes.substr(start, end - start).c_str(),
-		&decoded_length);
+	unsigned char *decoded =
+		test_decode_bytes(bytes.substr(start, end - start).c_str(), &decoded_length);
 	ASSERT_NE(decoded, nullptr);
 	struct morph_tui_media_asset *cropped = nullptr;
 	ASSERT_EQ(morph_tui_media_asset_create_png_copy(&cropped, decoded, decoded_length), 0);
@@ -276,14 +278,14 @@ TEST_F(TuiNativeMediaTest, TextAndImagesShareOneAtomicFrameAndUnrelatedRowsSkipO
 	ASSERT_EQ(morph_tui_canvas_text(&canvas, 0, 0, "ATOMIC", 0), 0);
 	ASSERT_EQ(render_native_media_prepare(&media, surface, &frame), 0);
 	ASSERT_NE(media, nullptr);
-	morph_buf_t rows{}, overlay{};
+	nb_buf rows{}, overlay{};
 	ASSERT_EQ(morph_tui_surface_rows(surface, &rows), 0);
 	ASSERT_EQ(render_native_media_append(media, surface, output, &overlay), 0);
 	EXPECT_EQ(Read(), "");
-	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&overlay)).find("\033[?2026"),
-		std::string::npos);
-	ASSERT_EQ(render_frame_present_composed(&frame, output, 10, 6,
-		morph_buf_cstr_borrow(&rows), &overlay), 0);
+	EXPECT_EQ(std::string(nb_buf_cstr(&overlay)).find("\033[?2026"), std::string::npos);
+	ASSERT_EQ(
+		render_frame_present_composed(&frame, output, 10, 6, nb_buf_cstr(&rows), &overlay),
+		0);
 	std::string bytes = Read();
 	size_t start = bytes.find("\033[?2026h"), end = bytes.find("\033[?2026l");
 	ASSERT_NE(start, std::string::npos);
@@ -293,15 +295,15 @@ TEST_F(TuiNativeMediaTest, TextAndImagesShareOneAtomicFrameAndUnrelatedRowsSkipO
 	EXPECT_LT(start, bytes.find("ATOMIC"));
 	EXPECT_LT(bytes.find("ATOMIC"), bytes.find("\033_Ga=t,"));
 	EXPECT_LT(bytes.find("\033_Ga=p,"), end);
-	std::string unrelated = morph_buf_cstr_borrow(&rows);
+	std::string unrelated = nb_buf_cstr(&rows);
 	unrelated[unrelated.find("ATOMIC")] = 'B';
 	EXPECT_EQ(render_native_media_needs_refresh(media, surface, &frame, unrelated.c_str()), 0);
-	std::string overlaps = morph_buf_cstr_borrow(&rows);
+	std::string overlaps = nb_buf_cstr(&rows);
 	size_t row_two = overlaps.find('\n', overlaps.find('\n') + 1) + 1;
 	size_t cell = overlaps.find(' ', row_two);
 	ASSERT_NE(cell, std::string::npos);
 	overlaps[cell] = 'E';
 	EXPECT_EQ(render_native_media_needs_refresh(media, surface, &frame, overlaps.c_str()), 1);
-	morph_buf_cleanup(&rows);
-	morph_buf_cleanup(&overlay);
+	nb_buf_cleanup(&rows);
+	nb_buf_cleanup(&overlay);
 }

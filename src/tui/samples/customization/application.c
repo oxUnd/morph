@@ -5,12 +5,12 @@ static int sample_customization_application_launch(struct morph_tui_application 
 {
 	struct sample_customization_application *app =
 		(struct sample_customization_application *)base;
-	int rc = morph_buf_init(&app->name, 128);
+	int rc = (nb_buf_init(&app->name), nb_buf_reserve(&app->name, 128) ? 0 : NB_ERR_NOMEM);
 
 	app->value = 3;
 	app->step = 1;
 	if (!rc)
-		rc = morph_buf_puts(&app->name, "Ada");
+		rc = (nb_buf_append_cstr(&app->name, "Ada") ? 0 : NB_ERR_NOMEM);
 	if (!rc)
 		rc = morph_tui_application_post(base, SAMPLE_CUSTOMIZATION_READY);
 	return rc;
@@ -42,7 +42,7 @@ static void sample_customization_application_terminate(struct morph_tui_applicat
 		(struct sample_customization_application *)base;
 
 	(void)result;
-	morph_buf_cleanup(&app->name);
+	nb_buf_cleanup(&app->name);
 }
 
 const struct morph_tui_application_ops *sample_customization_application_methods(void)
@@ -59,8 +59,8 @@ const struct morph_tui_application_ops *sample_customization_application_methods
 int sample_customization_application_set_name(struct sample_customization_application *app,
 					      const char *name)
 {
-	morph_buf_reset(&app->name);
-	int rc = morph_buf_puts(&app->name, name);
+	nb_buf_clear(&app->name);
+	int rc = (nb_buf_append_cstr(&app->name, name) ? 0 : NB_ERR_NOMEM);
 
 	if (!rc)
 		app->name_revision++;

@@ -1,7 +1,8 @@
 #include "sapi/cli/services/configuration/config.h"
 #include "sapi/cli/services/configuration/role.h"
 #include "config/edit.h"
-#include "tomlc17.h"
+#include "nb/toml.h"
+#include "nb/cleanup.h"
 #include <string.h>
 
 int cli_setup_config_merge_copy(const char *old, const char *patch, char **out)
@@ -21,9 +22,14 @@ int cli_setup_config_mcp_add_copy(const char *text, const char *server, char **o
 
 int cli_setup_config_role(const char *text)
 {
-	toml_result_t parsed = toml_parse(text, (int)strlen(text));
-	toml_datum_t role = toml_get(toml_get(parsed.toptab, "setup"), "role");
-	int selected = role.type == TOML_STRING ? cli_setup_role_find(role.u.s) : CLI_SETUP_GENERAL;
-	toml_free(parsed);
+	nb_err parse_error = {0};
+	nb_toml *parsed NB_CLEANUP(nb_toml_cleanup) =
+		nb_toml_parse(nb_str_from_cstr(text), &parse_error);
+	const nb_toml_value *role = nb_toml_table_get_cstr(
+		nb_toml_table_get_cstr(nb_toml_root(parsed), "setup"), "role");
+	int selected = nb_toml_type_of(role) == NB_TOML_STRING
+			       ? cli_setup_role_find(nb_toml_string(role).ptr)
+			       : CLI_SETUP_GENERAL;
+	nb_toml_cleanup(&parsed);
 	return selected;
 }

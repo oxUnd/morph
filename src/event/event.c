@@ -1,6 +1,7 @@
 #include "event/event.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/err.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -37,46 +38,47 @@ const char *morph_event_type_name(enum morph_event_type type)
 
 int morph_event_json_create(const struct morph_event *ev, cJSON **out)
 {
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	cJSON *data_copy MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	cJSON *data_copy NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 
 	if (!ev || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 
 	root = cJSON_CreateObject();
 	if (!root)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 
 	if (!cJSON_AddStringToObject(root, "type",
 				     morph_event_type_name(ev->type)) ||
 	    !cJSON_AddStringToObject(root, "name",
 				     ev->name ? ev->name : "")) {
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (ev->phase &&
 	    !cJSON_AddStringToObject(root, "phase", ev->phase)) {
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (ev->message &&
 	    !cJSON_AddStringToObject(root, "message", ev->message)) {
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (ev->turn_id &&
 	    !cJSON_AddStringToObject(root, "turn_id", ev->turn_id)) {
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (ev->data) {
 		data_copy = cJSON_Duplicate(ev->data, 1);
 		if (!data_copy)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 	} else {
 		data_copy = cJSON_CreateObject();
 		if (!data_copy)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 	}
-	int rc = morph_json_object_take(root, "data", &data_copy);
+	int rc = (cJSON_AddItemToObject(root, "data", data_copy) ? (data_copy = NULL, NB_OK)
+								 : NB_ERR_NOMEM);
 	if (rc < 0)
 		return rc;
 
@@ -101,7 +103,7 @@ int morph_event_emit(morph_event_cb cb, void *user_data,
 		     const struct morph_event *ev)
 {
 	if (!ev)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!cb)
 		return 0;
 	return cb(ev, user_data);
@@ -126,9 +128,9 @@ int morph_event_emit_simple(morph_event_cb cb, void *user_data,
 int morph_event_recorder_init(struct morph_event_recorder *rec)
 {
 	if (!rec)
-		return -EINVAL;
-	return morph_array_init(&rec->records, MORPH_ARRAY_INIT_CAP,
-				sizeof(struct morph_event_record));
+		return NB_ERR_INVAL;
+	return (nb_vec_init(&rec->records, sizeof(struct morph_event_record)),
+		nb_vec_reserve(&rec->records, 16) ? 0 : NB_ERR_NOMEM);
 }
 
 void morph_event_recorder_cleanup(struct morph_event_recorder *rec)
@@ -137,11 +139,13 @@ void morph_event_recorder_cleanup(struct morph_event_recorder *rec)
 
 	if (!rec)
 		return;
-	morph_array_foreach(record, &rec->records, struct morph_event_record) {
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&rec->records) &&
+			     (record = (struct morph_event_record *)nb_vec_at(&rec->records, _i_));
+	     _i_++) {
 		cJSON_free(record->json);
 		record->json = NULL;
 	}
-	morph_array_cleanup(&rec->records);
+	nb_vec_cleanup(&rec->records);
 }
 
 int morph_event_recorder_cb(const struct morph_event *ev, void *user_data)
@@ -151,14 +155,14 @@ int morph_event_recorder_cb(const struct morph_event *ev, void *user_data)
 	char *json;
 
 	if (!rec || !ev)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	json = morph_event_json_text_copy(ev);
 	if (!json)
-		return -ENOMEM;
-	record = morph_array_push_borrow(&rec->records);
+		return NB_ERR_NOMEM;
+	record = nb_vec_push(&rec->records);
 	if (!record) {
 		cJSON_free(json);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	record->json = json;
 	return 0;
@@ -168,7 +172,7 @@ size_t morph_event_recorder_count(const struct morph_event_recorder *rec)
 {
 	if (!rec)
 		return 0;
-	return rec->records.nelts;
+	return rec->records.len;
 }
 
 const char *morph_event_recorder_borrow(const struct morph_event_recorder *rec, size_t index)
@@ -177,7 +181,7 @@ const char *morph_event_recorder_borrow(const struct morph_event_recorder *rec, 
 
 	if (!rec)
 		return NULL;
-	record = morph_array_borrow(&rec->records, index);
+	record = nb_vec_at(&rec->records, index);
 	if (!record)
 		return NULL;
 	return record->json;

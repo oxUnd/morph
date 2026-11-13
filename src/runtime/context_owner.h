@@ -18,12 +18,12 @@
 #include "skill/skill.h"
 
 #include <limits.h>
-#include <pthread.h>
+#include "nb/thread.h"
 #include <stddef.h>
 
 #define RUNTIME_PLAN_SESSION_CACHE_MAX 32
 
-struct morph_log;
+struct nb_log;
 
 enum runtime_agent_phase {
 	RUNTIME_AGENTS_IDLE,
@@ -34,8 +34,8 @@ enum runtime_agent_phase {
 
 struct runtime_context {
 	char *approval_objective;
-	pthread_mutex_t approval_objective_lock;
-	struct morph_log *logger;
+	nb_mutex *approval_objective_lock;
+	struct nb_log *logger;
 	struct model_usage_sink usage_sink;
 	struct hook_manager hooks;
 	struct config config;
@@ -62,14 +62,14 @@ struct runtime_context {
 	struct runtime_turn_scope turn_scope;
 	struct tool_checkpoint_context checkpoint;
 	struct memory_options memory_options;
-	pthread_mutex_t execution_lock;
-	pthread_mutex_t agent_interaction_lock;
+	nb_mutex *execution_lock;
+	nb_mutex *agent_interaction_lock;
 	enum runtime_agent_phase agent_phase;
 	int64_t agent_actor_session_id;
 	int agent_restrict_memory_to_user;
 	char agent_user_id[64];
 	char agent_credit_session_id[64];
-	pthread_mutex_t tool_registry_lock;
+	nb_mutex *tool_registry_lock;
 	int execution_lock_ready;
 	char config_path[PATH_MAX];
 	char workdir[PATH_MAX];

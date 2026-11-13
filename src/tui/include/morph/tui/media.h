@@ -1,7 +1,8 @@
 #ifndef MORPH_TUI_MEDIA_H
 #define MORPH_TUI_MEDIA_H
 
-#include "util/buf.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -29,8 +30,8 @@ const unsigned char *morph_tui_media_asset_pixels_borrow(const struct morph_tui_
 /* Stable content key for renderer caches, including dimensions and RGBA bytes. */
 uint64_t morph_tui_media_asset_key(const struct morph_tui_media_asset *);
 /* Appends an encoded PNG of a bounded pixel crop. out remains caller-owned. */
-int morph_tui_media_asset_png_append(const struct morph_tui_media_asset *,
-				     int x, int y, int width, int height, morph_buf_t *out);
+int morph_tui_media_asset_png_append(const struct morph_tui_media_asset *, int x, int y, int width,
+				     int height, nb_buf *out);
 
 struct morph_tui_media_placement {
 	struct morph_tui_media_asset *asset;

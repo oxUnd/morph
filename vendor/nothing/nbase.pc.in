@@ -1,0 +1,11 @@
+prefix=${pcfiledir}/../..
+exec_prefix=${prefix}
+libdir=${exec_prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: nbase
+Description: Small C base library
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lnbase
+Libs.private: @NB_PC_PRIVATE_LIBS@
+Cflags: -I${includedir}

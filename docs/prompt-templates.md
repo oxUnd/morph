@@ -11,7 +11,7 @@ the same API and choose their own rendering lifecycle and context.
 
 The implementation lives in `src/prompt/template.c`, with its API in
 `src/prompt/template.h`, in the `morph-prompt` static library. It depends only on
-`morph-util`; `morph-agent` links it publicly for agent and frontend consumers.
+`nbase::nbase`; `morph-agent` links it publicly for agent and frontend consumers.
 The renderer does not automatically reinterpret existing prompt files or change
 runtime behavior. The CLI setup consumer now renders shipped scenario templates
 into private snapshots; see [Setup](setup.md). Other producers opt in through
@@ -64,9 +64,10 @@ strings and false booleans are valid explicit values. Bindings are borrowed for
 the call, and the renderer has no global state.
 
 Error details contain a bundle-relative source path (or `<string>`), a 1-based
-line and byte column, and an English explanation. The return value is a negative errno for
-I/O, allocation, or resource limits, or `MORPH_ERR_FORMAT` for template errors.
-Callers display `morph_strerror(rc)` with the optional diagnostic; they must not
+line and byte column, and an English explanation. The return value is a portable negative `NB_ERR_*` status for
+I/O, allocation, or resource limits, or the application `MORPH_ERR_FORMAT` code
+for template errors. Callers display `nb_err_str` with the application error
+catalog and the optional diagnostic; they must not
 log variable values, which may contain user content.
 
 For example, a prompt producer can render its own capability snapshot:

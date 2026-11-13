@@ -1,11 +1,13 @@
 #include "edit.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "config/config.h"
 #include "cJSON.h"
-#include "util/array.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "tomlc17.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/toml.h"
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,62 +15,50 @@
 struct config_text_edit {
 	size_t start;
 	size_t end;
-	int inline_members;
+	size_t inline_members;
 	int section;
-	morph_buf_t text;
+	nb_buf text;
 };
 
 struct config_text_edits {
 	const char *source;
 	const char *patch;
 	const char *eol;
-	morph_array_t items;
+	nb_vec items;
 };
 
-static const toml_datum_t *config_edit_member(const toml_datum_t *table, const char *key)
+static void config_text_edits_cleanup(struct config_text_edits *edits)
 {
-	for (int i = 0; table && table->type == TOML_TABLE && i < table->u.tab.size; i++)
-		if (strcmp(table->u.tab.key[i], key) == 0)
-			return &table->u.tab.value[i];
+	for (size_t i = 0; i < nb_vec_len(&edits->items); i++) {
+		struct config_text_edit *edit = nb_vec_at(&edits->items, i);
+		nb_buf_destroy(&edit->text);
+	}
+	nb_vec_destroy(&edits->items);
+}
+
+static const nb_toml_value *config_edit_member(const nb_toml_value *table, const char *key)
+{
+	for (size_t i = 0;
+	     table && nb_toml_type_of(table) == NB_TOML_TABLE && i < nb_toml_table_size(table); i++)
+		if (strcmp(nb_toml_table_key_at(table, (size_t)(i)).ptr, key) == 0)
+			return nb_toml_table_value_at(table, (size_t)(i));
 	return NULL;
 }
 
-static int config_edit_equivalent(const toml_datum_t *a, const toml_datum_t *b)
+static int config_edit_equivalent(const nb_toml_value *a, const nb_toml_value *b)
 {
-	if (!a || !b)
-		return a == b;
-	toml_result_t left = {.ok = true, .toptab = *a};
-	toml_result_t right = {.ok = true, .toptab = *b};
-	return toml_equiv(&left, &right);
+	return nb_toml_value_equal(a, b);
 }
 
-static size_t config_edit_source_offset(const char *source, const toml_datum_t *node)
+static size_t config_edit_source_offset(const char *source, const nb_toml_value *node)
 {
-	const char *line = source;
-	for (int i = 1; i < node->lineno && *line; i++) {
-		const char *next = strchr(line, '\n');
-		line = next ? next + 1 : line + strlen(line);
-	}
-	return (size_t)(line - source) + (node->colno > 0 ? (size_t)node->colno - 1 : 0);
+	(void)source;
+	return nb_toml_location_of(node).start;
 }
 
-/* tomlc17 locates strings at their contents, after the opening quotes and
- * optional first newline. Other values are located at their opening token. */
-static size_t config_edit_value_offset(const char *source, const toml_datum_t *node)
+static size_t config_edit_value_offset(const char *source, const nb_toml_value *node)
 {
-	size_t at = config_edit_source_offset(source, node);
-	if (node->type != TOML_STRING)
-		return at;
-	size_t quotes = at;
-	if (quotes && source[quotes - 1] == '\n') {
-		quotes--;
-		if (quotes && source[quotes - 1] == '\r')
-			quotes--;
-	}
-	if (quotes >= 3 && (source[quotes - 1] == '"' || source[quotes - 1] == '\'') &&
-	    source[quotes - 2] == source[quotes - 1] && source[quotes - 3] == source[quotes - 1])
-		return quotes - 3;
-	return at && (source[at - 1] == '"' || source[at - 1] == '\'') ? at - 1 : at;
+	return config_edit_source_offset(source, node);
 }
 
 /* The TOML parser validates syntax. This scanner only locates token ends for
@@ -98,41 +88,13 @@ static size_t config_edit_string_end(const char *text, size_t start)
 	return at;
 }
 
-static size_t config_edit_value_end(const char *text, const toml_datum_t *value)
+static size_t config_edit_value_end(const char *text, const nb_toml_value *value)
 {
-	size_t start = config_edit_value_offset(text, value);
-	if (text[start] == '"' || text[start] == '\'')
-		return config_edit_string_end(text, start);
-	if (text[start] == '[' || text[start] == '{') {
-		unsigned depth = 0;
-		for (size_t at = start; text[at]; at++) {
-			if (text[at] == '"' || text[at] == '\'') {
-				at = config_edit_string_end(text, at) - 1;
-			} else if (text[at] == '#') {
-				while (text[at] && text[at] != '\n')
-					at++;
-				if (!text[at])
-					return at;
-			} else if (text[at] == '[' || text[at] == '{')
-				depth++;
-			else if ((text[at] == ']' || text[at] == '}') && --depth == 0)
-				return at + 1;
-		}
-		return strlen(text);
-	}
-	size_t end = start;
-	while (text[end] && !strchr(" \t\r\n#,]}", text[end]))
-		end++;
-	if ((value->type == TOML_DATETIME || value->type == TOML_DATETIMETZ) && end - start == 10 &&
-	    text[end] == ' ') {
-		end++;
-		while (text[end] && !strchr(" \t\r\n#,]}", text[end]))
-			end++;
-	}
-	return end;
+	(void)text;
+	return nb_toml_location_of(value).end;
 }
 
-static int config_edit_key_text(morph_buf_t *out, const char *key)
+static int config_edit_key_text(nb_buf *out, const char *key)
 {
 	int bare = *key != '\0';
 	for (const char *p = key; *p; p++)
@@ -140,109 +102,119 @@ static int config_edit_key_text(morph_buf_t *out, const char *key)
 		      (*p >= '0' && *p <= '9') || *p == '_' || *p == '-'))
 			bare = 0;
 	if (bare)
-		return morph_buf_puts(out, key);
+		return (nb_buf_append_cstr(out, key) ? 0 : NB_ERR_NOMEM);
 	cJSON *string = cJSON_CreateString(key);
 	char *encoded = string ? cJSON_PrintUnformatted(string) : NULL;
 	cJSON_Delete(string);
 	if (!encoded)
-		return -ENOMEM;
-	int rc = morph_buf_puts(out, encoded);
+		return NB_ERR_NOMEM;
+	int rc = (nb_buf_append_cstr(out, encoded) ? 0 : NB_ERR_NOMEM);
 	free(encoded);
 	return rc;
 }
 
-static int config_edit_child_path(morph_buf_t *out, const char *parent, const char *key)
+static int config_edit_child_path(nb_buf *out, const char *parent, const char *key)
 {
-	int rc = morph_buf_init(out, 128);
+	int rc = (nb_buf_init(out), nb_buf_reserve(out, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && *parent)
-		rc = morph_buf_printf(out, "%s.", parent);
+		rc = (nb_buf_printf(out, "%s.", parent) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = config_edit_key_text(out, key);
 	return rc;
 }
 
-static int config_edit_patch_value(struct config_text_edits *edits, const toml_datum_t *value,
-				  morph_buf_t *out, unsigned depth)
+static int config_edit_patch_value(struct config_text_edits *edits, const nb_toml_value *value,
+				   nb_buf *out, unsigned depth)
 {
 	if (depth > 64)
-		return -ELOOP;
-	if (value->type != TOML_TABLE) {
+		return NB_ERR_LOOP;
+	if (nb_toml_type_of(value) != NB_TOML_TABLE) {
 		size_t start = config_edit_value_offset(edits->patch, value);
-		return morph_buf_append(out, edits->patch + start,
-					config_edit_value_end(edits->patch, value) - start);
+		return (nb_buf_append(out, edits->patch + start,
+				      config_edit_value_end(edits->patch, value) - start)
+				? 0
+				: NB_ERR_NOMEM);
 	}
-	int rc = morph_buf_putc(out, '{');
-	for (int i = 0; rc == 0 && i < value->u.tab.size; i++) {
+	int rc = (nb_buf_append_char(out, '{') ? 0 : NB_ERR_NOMEM);
+	for (size_t i = 0; rc == 0 && i < nb_toml_table_size(value); i++) {
 		if (i)
-			rc = morph_buf_puts(out, ", ");
+			rc = (nb_buf_append_cstr(out, ", ") ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = config_edit_key_text(out, value->u.tab.key[i]);
+			rc = config_edit_key_text(out,
+						  nb_toml_table_key_at(value, (size_t)(i)).ptr);
 		if (rc == 0)
-			rc = morph_buf_puts(out, " = ");
+			rc = (nb_buf_append_cstr(out, " = ") ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = config_edit_patch_value(edits, &value->u.tab.value[i], out, depth + 1);
+			rc = config_edit_patch_value(
+				edits, nb_toml_table_value_at(value, (size_t)(i)), out, depth + 1);
 	}
 	if (rc == 0)
-		rc = morph_buf_putc(out, '}');
+		rc = (nb_buf_append_char(out, '}') ? 0 : NB_ERR_NOMEM);
 	return rc;
 }
 
 static struct config_text_edit *config_edit_edit_at(struct config_text_edits *edits, size_t start,
 						  size_t end, int section)
 {
-	for (size_t i = 0; start == end && i < edits->items.nelts; i++) {
-		struct config_text_edit *edit = morph_array_borrow(&edits->items, i);
+	for (size_t i = 0; start == end && i < edits->items.len; i++) {
+		struct config_text_edit *edit = nb_vec_at(&edits->items, i);
 		if (edit->start == start && edit->end == end && edit->section == section)
 			return edit;
 	}
-	struct config_text_edit *edit = morph_array_push_borrow(&edits->items);
+	struct config_text_edit *edit = nb_vec_push(&edits->items);
 	if (!edit)
 		return NULL;
 	*edit = (struct config_text_edit){.start = start, .end = end, .section = section};
-	if (morph_buf_init(&edit->text, 128) != 0)
+	if ((nb_buf_init(&edit->text), nb_buf_reserve(&edit->text, 128) ? 0 : NB_ERR_NOMEM) != 0)
 		return NULL;
 	return edit;
 }
 
-static int config_edit_new_table(struct config_text_edits *edits, const toml_datum_t *table,
-				const char *path, unsigned depth)
+static int config_edit_new_table(struct config_text_edits *edits, const nb_toml_value *table,
+				 const char *path, unsigned depth)
 {
 	if (depth > 64)
-		return -ELOOP;
+		return NB_ERR_LOOP;
 	struct config_text_edit *edit =
 		config_edit_edit_at(edits, strlen(edits->source), strlen(edits->source), 1);
 	if (!edit)
-		return -ENOMEM;
-	int rc = morph_buf_printf(&edit->text, "%s[%s]%s", edits->eol, path, edits->eol);
-	for (int i = 0; rc == 0 && i < table->u.tab.size; i++) {
-		if (table->u.tab.value[i].type == TOML_TABLE)
+		return NB_ERR_NOMEM;
+	int rc = (nb_buf_printf(&edit->text, "%s[%s]%s", edits->eol, path, edits->eol)
+			  ? 0
+			  : NB_ERR_NOMEM);
+	for (size_t i = 0; rc == 0 && i < nb_toml_table_size(table); i++) {
+		if (nb_toml_type_of(nb_toml_table_value_at(table, (size_t)(i))) == NB_TOML_TABLE)
 			continue;
-		rc = config_edit_key_text(&edit->text, table->u.tab.key[i]);
+		rc = config_edit_key_text(&edit->text,
+					  nb_toml_table_key_at(table, (size_t)(i)).ptr);
 		if (rc == 0)
-			rc = morph_buf_puts(&edit->text, " = ");
+			rc = (nb_buf_append_cstr(&edit->text, " = ") ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = config_edit_patch_value(edits, &table->u.tab.value[i], &edit->text,
-						    depth);
+			rc = config_edit_patch_value(edits,
+						     nb_toml_table_value_at(table, (size_t)(i)),
+						     &edit->text, depth);
 		if (rc == 0)
-			rc = morph_buf_puts(&edit->text, edits->eol);
+			rc = (nb_buf_append_cstr(&edit->text, edits->eol) ? 0 : NB_ERR_NOMEM);
 	}
-	for (int i = 0; rc == 0 && i < table->u.tab.size; i++) {
-		if (table->u.tab.value[i].type != TOML_TABLE)
+	for (size_t i = 0; rc == 0 && i < nb_toml_table_size(table); i++) {
+		if (nb_toml_type_of(nb_toml_table_value_at(table, (size_t)(i))) != NB_TOML_TABLE)
 			continue;
-		morph_buf_t child MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		rc = config_edit_child_path(&child, path, table->u.tab.key[i]);
+		nb_buf child NB_CLEANUP(nb_buf_cleanup) = {0};
+		rc = config_edit_child_path(&child, path,
+					    nb_toml_table_key_at(table, (size_t)(i)).ptr);
 		if (rc == 0)
-			rc = config_edit_new_table(edits, &table->u.tab.value[i],
-						   morph_buf_cstr_borrow(&child), depth + 1);
-		morph_buf_cleanup(&child);
+			rc = config_edit_new_table(edits,
+						   nb_toml_table_value_at(table, (size_t)(i)),
+						   nb_buf_cstr(&child), depth + 1);
+		nb_buf_cleanup(&child);
 	}
 	return rc;
 }
 
-static int config_edit_add_member(struct config_text_edits *edits, const toml_datum_t *anchor,
-				 const char *relative, const toml_datum_t *value)
+static int config_edit_add_member(struct config_text_edits *edits, const nb_toml_value *anchor,
+				  const char *relative, const nb_toml_value *value)
 {
-	int inlined = anchor && (anchor->flag & TOML_FLAG_INLINED);
+	int inlined = anchor && nb_toml_location_of(anchor).inline_table;
 	size_t at = anchor ? config_edit_source_offset(edits->source, anchor) : 0;
 	if (inlined)
 		at++;
@@ -252,75 +224,72 @@ static int config_edit_add_member(struct config_text_edits *edits, const toml_da
 	}
 	struct config_text_edit *edit = config_edit_edit_at(edits, at, at, 0);
 	if (!edit)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	int rc = 0;
 	if (inlined) {
 		if (edit->text.len)
-			rc = morph_buf_puts(&edit->text, ", ");
-		edit->inline_members = anchor->u.tab.size;
+			rc = (nb_buf_append_cstr(&edit->text, ", ") ? 0 : NB_ERR_NOMEM);
+		edit->inline_members = nb_toml_table_size(anchor);
 	} else if (!edit->text.len && at && edits->source[at - 1] != '\n') {
-		rc = morph_buf_puts(&edit->text, edits->eol);
+		rc = (nb_buf_append_cstr(&edit->text, edits->eol) ? 0 : NB_ERR_NOMEM);
 	}
 	if (rc == 0)
-		rc = morph_buf_printf(&edit->text, "%s = ", relative);
+		rc = (nb_buf_printf(&edit->text, "%s = ", relative) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = config_edit_patch_value(edits, value, &edit->text, 0);
 	if (rc == 0 && !inlined)
-		rc = morph_buf_puts(&edit->text, edits->eol);
+		rc = (nb_buf_append_cstr(&edit->text, edits->eol) ? 0 : NB_ERR_NOMEM);
 	return rc;
 }
 
-static int config_edit_collect_edits(struct config_text_edits *edits, const toml_datum_t *before,
-				    const toml_datum_t *after, const char *path,
-				    const toml_datum_t *anchor, const char *relative,
-				    unsigned depth)
+static int config_edit_collect_edits(struct config_text_edits *edits, const nb_toml_value *before,
+				     const nb_toml_value *after, const char *path,
+				     const nb_toml_value *anchor, const char *relative,
+				     unsigned depth)
 {
 	if (depth > 64)
-		return -ELOOP;
-	if (before && ((before->flag & TOML_FLAG_INLINED) ||
-		       ((before->flag & (TOML_FLAG_STDEXPR | TOML_FLAG_EXPLICIT)) ==
-			(TOML_FLAG_STDEXPR | TOML_FLAG_EXPLICIT)))) {
+		return NB_ERR_LOOP;
+	if (before && (nb_toml_location_of(before).inline_table ||
+		       nb_toml_location_of(before).table_header)) {
 		anchor = before;
 		relative = "";
 	}
-	for (int i = 0; i < after->u.tab.size; i++) {
-		const char *key = after->u.tab.key[i];
-		const toml_datum_t *next = &after->u.tab.value[i];
-		const toml_datum_t *previous = config_edit_member(before, key);
+	for (size_t i = 0; i < nb_toml_table_size(after); i++) {
+		const char *key = nb_toml_table_key_at(after, (size_t)(i)).ptr;
+		const nb_toml_value *next = nb_toml_table_value_at(after, (size_t)(i));
+		const nb_toml_value *previous = config_edit_member(before, key);
 		if (config_edit_equivalent(previous, next))
 			continue;
-		morph_buf_t child MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		morph_buf_t local MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf child NB_CLEANUP(nb_buf_cleanup) = {0};
+		nb_buf local NB_CLEANUP(nb_buf_cleanup) = {0};
 		int rc = config_edit_child_path(&child, path, key);
 		if (rc == 0)
 			rc = config_edit_child_path(&local, relative, key);
-		if (rc == 0 && previous && previous->type == TOML_TABLE &&
-		    next->type == TOML_TABLE) {
-			rc = config_edit_collect_edits(edits, previous, next,
-						       morph_buf_cstr_borrow(&child), anchor,
-						       morph_buf_cstr_borrow(&local), depth + 1);
-		} else if (rc == 0 && !previous && next->type == TOML_TABLE &&
-			   (!anchor || !(anchor->flag & TOML_FLAG_INLINED))) {
-			rc = config_edit_new_table(edits, next, morph_buf_cstr_borrow(&child),
-						   depth + 1);
+		if (rc == 0 && previous && nb_toml_type_of(previous) == NB_TOML_TABLE &&
+		    nb_toml_type_of(next) == NB_TOML_TABLE) {
+			rc = config_edit_collect_edits(edits, previous, next, nb_buf_cstr(&child),
+						       anchor, nb_buf_cstr(&local), depth + 1);
+		} else if (rc == 0 && !previous && nb_toml_type_of(next) == NB_TOML_TABLE &&
+			   (!anchor || !nb_toml_location_of(anchor).inline_table)) {
+			rc = config_edit_new_table(edits, next, nb_buf_cstr(&child), depth + 1);
 		} else if (rc == 0 && !previous) {
-			rc = config_edit_add_member(edits, anchor, morph_buf_cstr_borrow(&local),
-						    next);
+			rc = config_edit_add_member(edits, anchor, nb_buf_cstr(&local), next);
 		} else if (rc == 0) {
 			/* Setup only replaces scalar values and adds tables. */
-			if (previous->type == TOML_TABLE && !(previous->flag & TOML_FLAG_INLINED)) {
-				rc = MORPH_ERR_FORMAT;
+			if (nb_toml_type_of(previous) == NB_TOML_TABLE &&
+			    !nb_toml_location_of(previous).inline_table) {
+				rc = NB_ERR_FORMAT;
 			} else {
 				size_t start = config_edit_value_offset(edits->source, previous);
 				struct config_text_edit *edit = config_edit_edit_at(
 					edits, start,
 					config_edit_value_end(edits->source, previous), 0);
 				rc = edit ? config_edit_patch_value(edits, next, &edit->text, 0)
-					  : -ENOMEM;
+					  : NB_ERR_NOMEM;
 			}
 		}
-		morph_buf_cleanup(&local);
-		morph_buf_cleanup(&child);
+		nb_buf_cleanup(&local);
+		nb_buf_cleanup(&child);
 		if (rc != 0)
 			return rc;
 	}
@@ -338,24 +307,28 @@ static int config_edit_compare_edits(const void *a, const void *b)
 	return left->section - right->section;
 }
 
-static int config_edit_merged_matches(const toml_datum_t *before, const toml_datum_t *patch,
-				     const toml_datum_t *result, unsigned depth)
+static int config_edit_merged_matches(const nb_toml_value *before, const nb_toml_value *patch,
+				      const nb_toml_value *result, unsigned depth)
 {
 	if (depth > 64)
 		return 0;
-	if (!before || !patch || before->type != TOML_TABLE || patch->type != TOML_TABLE)
+	if (!before || !patch || nb_toml_type_of(before) != NB_TOML_TABLE ||
+	    nb_toml_type_of(patch) != NB_TOML_TABLE)
 		return config_edit_equivalent(patch ? patch : before, result);
-	if (!result || result->type != TOML_TABLE)
+	if (!result || nb_toml_type_of(result) != NB_TOML_TABLE)
 		return 0;
-	int count = before->u.tab.size;
-	for (int i = 0; i < patch->u.tab.size; i++)
-		if (!config_edit_member(before, patch->u.tab.key[i]))
+	size_t count = nb_toml_table_size(before);
+	for (size_t i = 0; i < nb_toml_table_size(patch); i++)
+		if (!config_edit_member(before, nb_toml_table_key_at(patch, (size_t)(i)).ptr))
 			count++;
-	if (result->u.tab.size != count)
+	if (nb_toml_table_size(result) != count)
 		return 0;
-	for (int i = 0; i < before->u.tab.size + patch->u.tab.size; i++) {
-		const char *key = i < before->u.tab.size ? before->u.tab.key[i]
-							 : patch->u.tab.key[i - before->u.tab.size];
+	for (size_t i = 0; i < nb_toml_table_size(before) + nb_toml_table_size(patch); i++) {
+		const char *key = i < nb_toml_table_size(before)
+					  ? nb_toml_table_key_at(before, (size_t)(i)).ptr
+					  : nb_toml_table_key_at(
+						    patch, (size_t)(i - nb_toml_table_size(before)))
+						    .ptr;
 		if (!config_edit_merged_matches(config_edit_member(before, key),
 					       config_edit_member(patch, key),
 					       config_edit_member(result, key), depth + 1))
@@ -366,68 +339,76 @@ static int config_edit_merged_matches(const toml_datum_t *before, const toml_dat
 
 int config_text_merge_copy(const char *old, const char *patch, char **out)
 {
+	nb_err parse_error = {0};
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (!old || !patch)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (strlen(old) > INT_MAX || strlen(patch) > INT_MAX)
-		return -EFBIG;
-	toml_result_t before = toml_parse(old, (int)strlen(old));
-	toml_result_t after = toml_parse(patch, (int)strlen(patch));
-	struct config_text_edits edits = {
+		return NB_ERR_TOO_BIG;
+	nb_toml *before NB_CLEANUP(nb_toml_cleanup) =
+		nb_toml_parse(nb_str_from_cstr(old), &parse_error);
+	nb_toml *after NB_CLEANUP(nb_toml_cleanup) =
+		nb_toml_parse(nb_str_from_cstr(patch), &parse_error);
+	struct config_text_edits edits NB_CLEANUP(config_text_edits_cleanup) = {
 		.source = old, .patch = patch, .eol = strstr(old, "\r\n") ? "\r\n" : "\n"};
-	morph_buf_t result MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf result NB_CLEANUP(nb_buf_cleanup) = {0};
 	struct config_text_edit sizing = {0};
-	int rc = before.ok && after.ok ? morph_array_init(&edits.items, 16, sizeof(sizing))
-				       : MORPH_ERR_PARSE;
+	int rc = before && after ? (nb_vec_init(&edits.items, sizeof(sizing)),
+				    nb_vec_reserve(&edits.items, 16) ? 0 : NB_ERR_NOMEM)
+				 : NB_ERR_PARSE;
 	if (rc == 0)
-		rc = config_edit_collect_edits(&edits, &before.toptab, &after.toptab, "", NULL, "",
-					      0);
+		rc = config_edit_collect_edits(&edits, nb_toml_root(before), nb_toml_root(after),
+					       "", NULL, "", 0);
 	if (rc == 0)
-		rc = morph_buf_init(&result, 0);
+		rc = (nb_buf_init(&result), nb_buf_reserve(&result, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0) {
-		if (edits.items.nelts > 1)
-			qsort(edits.items.elts, edits.items.nelts, edits.items.size,
+		if (edits.items.len > 1)
+			qsort(((void *)edits.items.data), edits.items.len, edits.items.elem_size,
 			      config_edit_compare_edits);
 		size_t cursor = 0;
-		for (size_t i = 0; rc == 0 && i < edits.items.nelts; i++) {
-			struct config_text_edit *edit = morph_array_borrow(&edits.items, i);
+		for (size_t i = 0; rc == 0 && i < edits.items.len; i++) {
+			struct config_text_edit *edit = nb_vec_at(&edits.items, i);
 			if (edit->start < cursor) {
-				rc = MORPH_ERR_FORMAT;
+				rc = NB_ERR_FORMAT;
 				break;
 			}
-			rc = morph_buf_append(&result, old + cursor, edit->start - cursor);
+			rc = (nb_buf_append(&result, old + cursor, edit->start - cursor)
+				      ? 0
+				      : NB_ERR_NOMEM);
 			if (rc == 0)
-				rc = morph_buf_append(&result, edit->text.data, edit->text.len);
+				rc = (nb_buf_append(&result, edit->text.ptr, edit->text.len)
+					      ? 0
+					      : NB_ERR_NOMEM);
 			if (rc == 0 && edit->inline_members)
-				rc = morph_buf_puts(&result, ", ");
+				rc = (nb_buf_append_cstr(&result, ", ") ? 0 : NB_ERR_NOMEM);
 			cursor = edit->end;
 		}
 		if (rc == 0)
-			rc = morph_buf_puts(&result, old + cursor);
+			rc = (nb_buf_append_cstr(&result, old + cursor) ? 0 : NB_ERR_NOMEM);
 	}
 	if (rc == 0 && result.len > INT_MAX)
-		rc = -EFBIG;
+		rc = NB_ERR_TOO_BIG;
 	if (rc == 0) {
-		toml_result_t checked = toml_parse(morph_buf_cstr_borrow(&result), (int)result.len);
-		rc = checked.ok ? 0 : MORPH_ERR_PARSE;
+		nb_toml *checked NB_CLEANUP(nb_toml_cleanup) = nb_toml_parse(
+			nb_str_from_parts(nb_buf_cstr(&result), result.len), &parse_error);
+		rc = checked ? 0 : NB_ERR_PARSE;
 		if (rc == 0 &&
-		    !config_edit_merged_matches(&before.toptab, &after.toptab, &checked.toptab, 0))
-			rc = MORPH_ERR_FORMAT;
-		toml_free(checked);
+		    !config_edit_merged_matches(nb_toml_root(before), nb_toml_root(after),
+						nb_toml_root(checked), 0))
+			rc = NB_ERR_FORMAT;
+		nb_toml_cleanup(&checked);
 	}
-	if (rc == 0)
-		*out = morph_buf_detach(&result);
-	for (size_t i = 0; i < edits.items.nelts; i++) {
-		struct config_text_edit *edit = morph_array_borrow(&edits.items, i);
-		morph_buf_cleanup(&edit->text);
+	if (rc == 0) {
+		*out = nb_buf_ok(&result) ? strdup(nb_buf_cstr(&result)) : NULL;
+		if (!*out)
+			rc = NB_ERR_NOMEM;
 	}
-	morph_array_cleanup(&edits.items);
-	morph_buf_cleanup(&result);
-	toml_free(before);
-	toml_free(after);
+	nb_buf_cleanup(&result);
+	nb_toml_cleanup(&before);
+	nb_toml_cleanup(&after);
 	return rc;
 }
 
@@ -437,16 +418,17 @@ static int config_edit_model_name(const char *key)
 	       strcmp(key, "image") == 0 || strcmp(key, "video") == 0;
 }
 
-static int config_edit_unused_credential(const toml_datum_t *table, const char *key)
+static int config_edit_unused_credential(const nb_toml_value *table, const char *key)
 {
 	if (strcmp(key, "api_key") != 0 && strcmp(key, "api_key_env") != 0)
 		return 0;
-	const toml_datum_t *value = config_edit_member(table, key);
-	if (!value || value->type != TOML_STRING)
+	const nb_toml_value *value = config_edit_member(table, key);
+	if (!value || nb_toml_type_of(value) != NB_TOML_STRING)
 		return 0;
-	const toml_datum_t *direct = config_edit_member(table, "api_key");
-	return !value->u.s[0] || (strcmp(key, "api_key_env") == 0 && direct &&
-				  direct->type == TOML_STRING && direct->u.s[0]);
+	const nb_toml_value *direct = config_edit_member(table, "api_key");
+	return !nb_toml_string(value).ptr[0] ||
+	       (strcmp(key, "api_key_env") == 0 && direct &&
+		nb_toml_type_of(direct) == NB_TOML_STRING && nb_toml_string(direct).ptr[0]);
 }
 
 /* The parsed value position identifies the assignment. Skip quoted tokens and
@@ -473,8 +455,8 @@ static size_t config_edit_assignment_start(const char *text, size_t value, size_
 	return start;
 }
 
-static int config_edit_remove_credential(struct config_text_edits *edits, const toml_datum_t *value,
-					int inlined)
+static int config_edit_remove_credential(struct config_text_edits *edits,
+					 const nb_toml_value *value, int inlined)
 {
 	const char *text = edits->source;
 	size_t separator;
@@ -497,7 +479,7 @@ static int config_edit_remove_credential(struct config_text_edits *edits, const 
 			separator = next;
 		if (text[separator] == ',' &&
 		    !config_edit_edit_at(edits, separator, separator + 1, 0))
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 	} else {
 		size_t line = start;
 		while (line && text[line - 1] != '\n')
@@ -510,27 +492,27 @@ static int config_edit_remove_credential(struct config_text_edits *edits, const 
 			end = tail + (text[tail] == '\n' ? 1u : 0u);
 		}
 	}
-	return config_edit_edit_at(edits, start, end, 0) ? 0 : -ENOMEM;
+	return config_edit_edit_at(edits, start, end, 0) ? 0 : NB_ERR_NOMEM;
 }
 
-static int config_edit_credential_result_matches(const toml_datum_t *before,
-						const toml_datum_t *after, int level)
+static int config_edit_credential_result_matches(const nb_toml_value *before,
+						 const nb_toml_value *after, int level)
 {
-	if (!before || before->type != TOML_TABLE)
+	if (!before || nb_toml_type_of(before) != NB_TOML_TABLE)
 		return config_edit_equivalent(before, after);
-	if (!after || after->type != TOML_TABLE)
+	if (!after || nb_toml_type_of(after) != NB_TOML_TABLE)
 		return 0;
-	int count = before->u.tab.size;
-	for (int i = 0; i < before->u.tab.size; i++) {
-		const char *key = before->u.tab.key[i];
-		const toml_datum_t *next = config_edit_member(after, key);
+	size_t count = nb_toml_table_size(before);
+	for (size_t i = 0; i < nb_toml_table_size(before); i++) {
+		const char *key = nb_toml_table_key_at(before, (size_t)(i)).ptr;
+		const nb_toml_value *next = config_edit_member(after, key);
 		if (level == 2 && config_edit_unused_credential(before, key)) {
 			if (next)
 				return 0;
 			count--;
 			continue;
 		}
-		const toml_datum_t *previous = &before->u.tab.value[i];
+		const nb_toml_value *previous = nb_toml_table_value_at(before, (size_t)(i));
 		int child = level == 0 && strcmp(key, "model") == 0    ? 1
 			    : level == 1 && config_edit_model_name(key) ? 2
 								       : -1;
@@ -538,80 +520,90 @@ static int config_edit_credential_result_matches(const toml_datum_t *before,
 			      : !config_edit_credential_result_matches(previous, next, child))
 			return 0;
 	}
-	return count == after->u.tab.size;
+	return count == nb_toml_table_size(after);
 }
 
 int config_text_credentials_copy(const char *text, char **out)
 {
+	nb_err parse_error = {0};
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (!text)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (strlen(text) > INT_MAX)
-		return -EFBIG;
-	toml_result_t parsed = toml_parse(text, (int)strlen(text));
-	struct config_text_edits edits = {.source = text};
+		return NB_ERR_TOO_BIG;
+	nb_toml *parsed NB_CLEANUP(nb_toml_cleanup) =
+		nb_toml_parse(nb_str_from_cstr(text), &parse_error);
+	struct config_text_edits edits NB_CLEANUP(config_text_edits_cleanup) = {.source = text};
 	struct config_text_edit sizing = {0};
-	morph_buf_t result MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = parsed.ok ? morph_array_init(&edits.items, 8, sizeof(sizing)) : MORPH_ERR_PARSE;
-	const toml_datum_t *models = parsed.ok ? config_edit_member(&parsed.toptab, "model") : NULL;
-	for (int i = 0; rc == 0 && models && models->type == TOML_TABLE && i < models->u.tab.size;
+	nb_buf result NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = parsed ? (nb_vec_init(&edits.items, sizeof(sizing)),
+			   nb_vec_reserve(&edits.items, 8) ? 0 : NB_ERR_NOMEM)
+			: NB_ERR_PARSE;
+	const nb_toml_value *models =
+		parsed ? config_edit_member(nb_toml_root(parsed), "model") : NULL;
+	for (size_t i = 0; rc == 0 && models && nb_toml_type_of(models) == NB_TOML_TABLE &&
+			   i < nb_toml_table_size(models);
 	     i++) {
-		const toml_datum_t *entry = &models->u.tab.value[i];
-		if (!config_edit_model_name(models->u.tab.key[i]) || entry->type != TOML_TABLE)
+		const nb_toml_value *entry = nb_toml_table_value_at(models, (size_t)(i));
+		if (!config_edit_model_name(nb_toml_table_key_at(models, (size_t)(i)).ptr) ||
+		    nb_toml_type_of(entry) != NB_TOML_TABLE)
 			continue;
-		for (int k = 0; rc == 0 && k < entry->u.tab.size; k++)
-			if (config_edit_unused_credential(entry, entry->u.tab.key[k]))
-				rc = config_edit_remove_credential(&edits, &entry->u.tab.value[k],
-								  (models->flag | entry->flag) &
-									  TOML_FLAG_INLINED);
+		for (size_t k = 0; rc == 0 && k < nb_toml_table_size(entry); k++)
+			if (config_edit_unused_credential(
+				    entry, nb_toml_table_key_at(entry, (size_t)(k)).ptr))
+				rc = config_edit_remove_credential(
+					&edits, nb_toml_table_value_at(entry, (size_t)(k)),
+					(nb_toml_location_of(models).inline_table ||
+					 nb_toml_location_of(entry).inline_table));
 	}
 	if (rc == 0)
-		rc = morph_buf_init(&result, 0);
+		rc = (nb_buf_init(&result), nb_buf_reserve(&result, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0) {
-		if (edits.items.nelts > 1)
-			qsort(edits.items.elts, edits.items.nelts, edits.items.size,
+		if (edits.items.len > 1)
+			qsort(((void *)edits.items.data), edits.items.len, edits.items.elem_size,
 			      config_edit_compare_edits);
 		size_t cursor = 0;
-		for (size_t i = 0; rc == 0 && i < edits.items.nelts; i++) {
-			struct config_text_edit *edit = morph_array_borrow(&edits.items, i);
+		for (size_t i = 0; rc == 0 && i < edits.items.len; i++) {
+			struct config_text_edit *edit = nb_vec_at(&edits.items, i);
 			if (edit->start > cursor)
-				rc = morph_buf_append(&result, text + cursor, edit->start - cursor);
+				rc = (nb_buf_append(&result, text + cursor, edit->start - cursor)
+					      ? 0
+					      : NB_ERR_NOMEM);
 			if (edit->end > cursor)
 				cursor = edit->end;
 		}
 		if (rc == 0)
-			rc = morph_buf_puts(&result, text + cursor);
+			rc = (nb_buf_append_cstr(&result, text + cursor) ? 0 : NB_ERR_NOMEM);
 	}
 	if (rc == 0) {
-		toml_result_t checked = toml_parse(morph_buf_cstr_borrow(&result), (int)result.len);
-		rc = checked.ok ? 0 : MORPH_ERR_PARSE;
-		if (rc == 0 &&
-		    !config_edit_credential_result_matches(&parsed.toptab, &checked.toptab, 0))
-			rc = MORPH_ERR_FORMAT;
-		toml_free(checked);
+		nb_toml *checked NB_CLEANUP(nb_toml_cleanup) = nb_toml_parse(
+			nb_str_from_parts(nb_buf_cstr(&result), result.len), &parse_error);
+		rc = checked ? 0 : NB_ERR_PARSE;
+		if (rc == 0 && !config_edit_credential_result_matches(nb_toml_root(parsed),
+								      nb_toml_root(checked), 0))
+			rc = NB_ERR_FORMAT;
+		nb_toml_cleanup(&checked);
 	}
-	if (rc == 0)
-		*out = morph_buf_detach(&result);
-	for (size_t i = 0; i < edits.items.nelts; i++) {
-		struct config_text_edit *edit = morph_array_borrow(&edits.items, i);
-		morph_buf_cleanup(&edit->text);
+	if (rc == 0) {
+		*out = nb_buf_ok(&result) ? strdup(nb_buf_cstr(&result)) : NULL;
+		if (!*out)
+			rc = NB_ERR_NOMEM;
 	}
-	morph_array_cleanup(&edits.items);
-	morph_buf_cleanup(&result);
-	toml_free(parsed);
+	nb_buf_cleanup(&result);
+	nb_toml_cleanup(&parsed);
 	return rc;
 }
 
-static const char *config_edit_string_member(const toml_datum_t *table, const char *key)
+static const char *config_edit_string_member(const nb_toml_value *table, const char *key)
 {
-	const toml_datum_t *value = config_edit_member(table, key);
-	return value && value->type == TOML_STRING ? value->u.s : "";
+	const nb_toml_value *value = config_edit_member(table, key);
+	return value && nb_toml_type_of(value) == NB_TOML_STRING ? nb_toml_string(value).ptr : "";
 }
 
-static int config_edit_same_mcp(const toml_datum_t *before, const toml_datum_t *added)
+static int config_edit_same_mcp(const nb_toml_value *before, const nb_toml_value *added)
 {
 	if (strcmp(config_edit_string_member(before, "name"),
 		   config_edit_string_member(added, "name")) == 0)
@@ -625,12 +617,16 @@ static int config_edit_same_mcp(const toml_datum_t *before, const toml_datum_t *
 	const char *package = strcmp(name, "playwright") == 0		? "@playwright/mcp"
 			      : strcmp(name, "macos-computer-use") == 0 ? "macos-computer-use-kit"
 									: NULL;
-	const toml_datum_t *args = config_edit_member(before, "args");
-	for (int i = 0; package && args && args->type == TOML_ARRAY && i < args->u.arr.size; i++) {
-		const toml_datum_t *arg = &args->u.arr.elem[i];
+	const nb_toml_value *args = config_edit_member(before, "args");
+	for (size_t i = 0; package && args && nb_toml_type_of(args) == NB_TOML_ARRAY &&
+			   i < nb_toml_array_size(args);
+	     i++) {
+		const nb_toml_value *arg = nb_toml_array_get(args, (size_t)(i));
 		size_t len = strlen(package);
-		if (arg->type == TOML_STRING && strncmp(arg->u.s, package, len) == 0 &&
-		    (!arg->u.s[len] || arg->u.s[len] == '@' || arg->u.s[len] == '='))
+		if (nb_toml_type_of(arg) == NB_TOML_STRING &&
+		    strncmp(nb_toml_string(arg).ptr, package, len) == 0 &&
+		    (!nb_toml_string(arg).ptr[len] || nb_toml_string(arg).ptr[len] == '@' ||
+		     nb_toml_string(arg).ptr[len] == '='))
 			return 1;
 	}
 	const char *command = config_edit_string_member(before, "command");
@@ -641,91 +637,106 @@ static int config_edit_same_mcp(const toml_datum_t *before, const toml_datum_t *
 
 int config_text_mcp_add_copy(const char *text, const char *server, char **out)
 {
+	nb_err parse_error = {0};
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (!text || !server)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (strlen(text) > INT_MAX || strlen(server) > INT_MAX)
-		return -EFBIG;
+		return NB_ERR_TOO_BIG;
 	struct config_validation_error error = {0};
 	int rc = config_validate_text(server, &error);
 	if (rc != 0)
 		return rc;
-	toml_result_t before = toml_parse(text, (int)strlen(text));
-	toml_result_t preset = toml_parse(server, (int)strlen(server));
-	const toml_datum_t *mcp = before.ok ? config_edit_member(&before.toptab, "mcp") : NULL;
-	const toml_datum_t *servers = config_edit_member(mcp, "servers");
-	const toml_datum_t *list =
-		preset.ok ? config_edit_member(config_edit_member(&preset.toptab, "mcp"), "servers")
-			  : NULL;
-	const toml_datum_t *added = list && list->type == TOML_ARRAY && list->u.arr.size == 1
-					    ? &list->u.arr.elem[0]
-					    : NULL;
-	rc = before.ok && added && added->type == TOML_TABLE ? 0 : MORPH_ERR_PARSE;
-	int count = servers && servers->type == TOML_ARRAY ? servers->u.arr.size : 0;
+	nb_toml *before NB_CLEANUP(nb_toml_cleanup) =
+		nb_toml_parse(nb_str_from_cstr(text), &parse_error);
+	nb_toml *preset NB_CLEANUP(nb_toml_cleanup) =
+		nb_toml_parse(nb_str_from_cstr(server), &parse_error);
+	const nb_toml_value *mcp = before ? config_edit_member(nb_toml_root(before), "mcp") : NULL;
+	const nb_toml_value *servers = config_edit_member(mcp, "servers");
+	const nb_toml_value *list =
+		preset ? config_edit_member(config_edit_member(nb_toml_root(preset), "mcp"),
+					    "servers")
+		       : NULL;
+	const nb_toml_value *added =
+		list && nb_toml_type_of(list) == NB_TOML_ARRAY && nb_toml_array_size(list) == 1
+			? nb_toml_array_get(list, (size_t)(0))
+			: NULL;
+	rc = before && added && nb_toml_type_of(added) == NB_TOML_TABLE ? 0 : NB_ERR_PARSE;
+	size_t count = servers && nb_toml_type_of(servers) == NB_TOML_ARRAY
+			       ? nb_toml_array_size(servers)
+			       : 0;
 	int exists = 0;
-	for (int i = 0; rc == 0 && i < count; i++)
-		if (config_edit_same_mcp(&servers->u.arr.elem[i], added))
+	for (size_t i = 0; rc == 0 && i < count; i++)
+		if (config_edit_same_mcp(nb_toml_array_get(servers, (size_t)(i)), added))
 			exists = 1;
-	morph_buf_t result MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf result NB_CLEANUP(nb_buf_cleanup) = {0};
 	if (rc == 0 && exists) {
 		*out = strdup(text);
 		if (!*out)
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 	} else if (rc == 0 && count >= MCP_SERVER_MAX) {
-		rc = -ENOSPC;
+		rc = NB_ERR_NO_SPACE;
 	} else if (rc == 0) {
-		rc = morph_buf_init(&result, 0);
-		if (rc == 0 && servers && (servers->flag & TOML_FLAG_INLINED)) {
-			size_t at =
-				count ? config_edit_value_end(text, &servers->u.arr.elem[count - 1])
-				      : config_edit_value_offset(text, servers) + 1;
-			rc = morph_buf_append(&result, text, at);
+		rc = (nb_buf_init(&result), nb_buf_reserve(&result, 4096) ? 0 : NB_ERR_NOMEM);
+		if (rc == 0 && servers && nb_toml_location_of(servers).line != 0) {
+			size_t at = count ? config_edit_value_end(
+						    text,
+						    nb_toml_array_get(servers, (size_t)(count - 1)))
+					  : config_edit_value_offset(text, servers) + 1;
+			rc = (nb_buf_append(&result, text, at) ? 0 : NB_ERR_NOMEM);
 			if (rc == 0 && count)
-				rc = morph_buf_puts(&result, ", ");
-			struct config_text_edits edits = {.patch = server};
+				rc = (nb_buf_append_cstr(&result, ", ") ? 0 : NB_ERR_NOMEM);
+			struct config_text_edits edits NB_CLEANUP(config_text_edits_cleanup) = {
+				.patch = server};
 			if (rc == 0)
 				rc = config_edit_patch_value(&edits, added, &result, 0);
 			if (rc == 0)
-				rc = morph_buf_puts(&result, text + at);
-		} else if (rc == 0 && mcp && (mcp->flag & TOML_FLAG_INLINED)) {
-			morph_buf_t patch MORPH_CLEANUP(morph_buf_cleanup) = {0};
-			rc = morph_buf_init(&patch, 0);
+				rc = (nb_buf_append_cstr(&result, text + at) ? 0 : NB_ERR_NOMEM);
+		} else if (rc == 0 && mcp && nb_toml_location_of(mcp).inline_table) {
+			nb_buf patch NB_CLEANUP(nb_buf_cleanup) = {0};
+			rc = (nb_buf_init(&patch), nb_buf_reserve(&patch, 4096) ? 0 : NB_ERR_NOMEM);
 			if (rc == 0)
-				rc = morph_buf_puts(&patch, "[mcp]\nservers = [");
-			struct config_text_edits edits = {.patch = server};
+				rc = (nb_buf_append_cstr(&patch, "[mcp]\nservers = [")
+					      ? 0
+					      : NB_ERR_NOMEM);
+			struct config_text_edits edits NB_CLEANUP(config_text_edits_cleanup) = {
+				.patch = server};
 			if (rc == 0)
 				rc = config_edit_patch_value(&edits, added, &patch, 0);
 			if (rc == 0)
-				rc = morph_buf_puts(&patch, "]\n");
+				rc = (nb_buf_append_cstr(&patch, "]\n") ? 0 : NB_ERR_NOMEM);
 			char *merged = NULL;
 			if (rc == 0)
-				rc = config_text_merge_copy(text, morph_buf_cstr_borrow(&patch),
-							    &merged);
+				rc = config_text_merge_copy(text, nb_buf_cstr(&patch), &merged);
 			if (rc == 0)
-				rc = morph_buf_puts(&result, merged);
+				rc = (nb_buf_append_cstr(&result, merged) ? 0 : NB_ERR_NOMEM);
 			free(merged);
-			morph_buf_cleanup(&patch);
+			nb_buf_cleanup(&patch);
 		} else if (rc == 0) {
-			rc = morph_buf_puts(&result, text);
+			rc = (nb_buf_append_cstr(&result, text) ? 0 : NB_ERR_NOMEM);
 			const char *eol = strstr(text, "\r\n") ? "\r\n" : "\n";
 			if (rc == 0)
-				rc = morph_buf_puts(&result, eol);
+				rc = (nb_buf_append_cstr(&result, eol) ? 0 : NB_ERR_NOMEM);
 			for (const char *p = server; rc == 0 && *p; p++)
-				rc = *p == '\n' ? morph_buf_puts(&result, eol)
-						: morph_buf_putc(&result, *p);
+				rc = *p == '\n'
+					     ? (nb_buf_append_cstr(&result, eol) ? 0 : NB_ERR_NOMEM)
+					     : (nb_buf_append_char(&result, *p) ? 0 : NB_ERR_NOMEM);
 		}
 		if (rc == 0 && result.len > INT_MAX)
-			rc = -EFBIG;
+			rc = NB_ERR_TOO_BIG;
 		if (rc == 0)
-			rc = config_validate_text(morph_buf_cstr_borrow(&result), &error);
-		if (rc == 0)
-			*out = morph_buf_detach(&result);
+			rc = config_validate_text(nb_buf_cstr(&result), &error);
+		if (rc == 0) {
+			*out = nb_buf_ok(&result) ? strdup(nb_buf_cstr(&result)) : NULL;
+			if (!*out)
+				rc = NB_ERR_NOMEM;
+		}
 	}
-	morph_buf_cleanup(&result);
-	toml_free(preset);
-	toml_free(before);
+	nb_buf_cleanup(&result);
+	nb_toml_cleanup(&preset);
+	nb_toml_cleanup(&before);
 	return rc;
 }

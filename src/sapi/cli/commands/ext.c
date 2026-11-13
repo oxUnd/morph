@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/ext.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/command_output.h"
@@ -84,7 +85,7 @@ static int cli_ext_collect_tools(struct cli_application *ctx,
 		return 0;
 	rows = calloc((size_t)count, sizeof(*rows));
 	if (!rows)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	for (int i = 0; i < count; i++) {
 		struct tool_desc desc;
 		enum tool_origin origin;
@@ -104,7 +105,7 @@ static int cli_ext_collect_tools(struct cli_application *ctx,
 		rows[i].name = strdup(desc.name);
 		rows[i].description = strdup(desc.description);
 		if (!rows[i].name || !rows[i].description) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			break;
 		}
 		if (enabled)
@@ -163,10 +164,10 @@ static int cli_ext_find_tool_index(struct cli_application *ctx, const char *name
 			continue;
 		if (runtime_tool_origin(ctx->runtime, i, origin) != 0 ||
 		    runtime_tool_flags(ctx->runtime, i, flags) != 0)
-			return -EIO;
+			return NB_ERR_IO;
 		return i;
 	}
-	return -ENOENT;
+	return NB_ERR_NOT_FOUND;
 }
 
 static int cli_ext_print_info(struct cli_application *ctx, const char *name)
@@ -181,13 +182,13 @@ static int cli_ext_print_info(struct cli_application *ctx, const char *name)
 
 	if (runtime_tool_find_borrow(ctx->runtime, name, &desc) != 0) {
 		CMD_ERROR(ctx, "tool not found: %s", name);
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	}
 	index = cli_ext_find_tool_index(ctx, name, &origin, &flags);
 	if (index < 0)
 		return index;
 	if (runtime_tool_enabled(ctx->runtime, index, &enabled) != 0)
-		return -EIO;
+		return NB_ERR_IO;
 	CMD_HEADER(ctx, "Tool %s", desc.name);
 	cli_list_value_field(ctx, "Status", enabled ? CLI_FEED_DONE " enabled"
 						 : CLI_FEED_PENDING " disabled", 0, 12, columns);
@@ -215,7 +216,7 @@ static int cli_ext_command_ext(struct cli_application *ctx, int argc, char **arg
 		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR(ctx, "usage: /ext info <name>");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 		return cli_ext_print_info(ctx, name);
 	}
@@ -228,7 +229,7 @@ static int cli_ext_command_ext(struct cli_application *ctx, int argc, char **arg
 		}
 		if (!source) {
 			CMD_ERROR(ctx, "usage: /ext install <github-source-or-tree-url> [--yes]");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 		struct ext_install_options opts;
 		memset(&opts, 0, sizeof(opts));
@@ -240,7 +241,8 @@ static int cli_ext_command_ext(struct cli_application *ctx, int argc, char **arg
 		struct ext_install_result res;
 		int rc = ext_install_source(ctx ? ctx->logger : NULL, source, &opts, &res);
 		if (rc < 0) {
-			CMD_ERROR(ctx, "ext install failed: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "ext install failed: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
 		CMD_OK(ctx, "installed ext %s to %s", res.name, res.path);

@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 
 #include "models/llm.h"
 #include "models/llm/codec.h"
@@ -6,8 +7,8 @@ extern "C" {
 #include "models/llm/chat_codec.h"
 }
 #include "models/llm/stream.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 
 #include <cerrno>
 #include <climits>
@@ -17,7 +18,7 @@ extern "C" {
 
 TEST(TestModelOwnership, MessageCloneOutlivesBorrowedSource)
 {
-	struct chat_message copy MORPH_CLEANUP(chat_message_cleanup) = {};
+	struct chat_message copy NB_CLEANUP(chat_message_cleanup) = {};
 	{
 		char role[] = "assistant";
 		char content[] = "answer";
@@ -65,9 +66,9 @@ TEST(TestModelOwnership, ChatStreamAndClonePreserveLongToolIdentities)
 		std::string event = "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,"
 			"\"id\":\"" + id + "\",\"function\":{\"name\":\"" + name +
 			"\",\"arguments\":\"{}\"}}]}}]}";
-		struct tool_call copy MORPH_CLEANUP(tool_call_cleanup) = {};
+		struct tool_call copy NB_CLEANUP(tool_call_cleanup) = {};
 		{
-			struct llm_stream_ctx stream MORPH_CLEANUP(llm_stream_cleanup) = {};
+			struct llm_stream_ctx stream NB_CLEANUP(llm_stream_cleanup) = {};
 			llm_stream_init(&stream, nullptr, nullptr);
 			ASSERT_EQ(llm_chat_decode_event("message", event.c_str(), &stream), 0);
 			ASSERT_EQ(stream.tool_call_count, 1);
@@ -86,7 +87,7 @@ TEST(TestModelOwnership, ResponsesKeepItemAndCallIdsAcrossInterleavedDeltas)
 	struct model model{};
 	strcpy(model.adapter, "openai-responses");
 	const struct llm_codec *codec = llm_codec_borrow(&model);
-	struct llm_stream_ctx stream MORPH_CLEANUP(llm_stream_cleanup) = {};
+	struct llm_stream_ctx stream NB_CLEANUP(llm_stream_cleanup) = {};
 	llm_stream_init(&stream, nullptr, nullptr);
 	std::string prefix(1024, 'i');
 	std::string name(512, 'n');
@@ -117,23 +118,29 @@ TEST(TestModelOwnership, ResponsesKeepItemAndCallIdsAcrossInterleavedDeltas)
 		EXPECT_STREQ(stream.tool_calls[i].name, name.c_str());
 		EXPECT_STREQ(stream.tool_calls[i].arguments, "{}");
 	}
-	EXPECT_EQ(codec->event("message", "{\"type\":\"response.function_call_arguments.delta\","
-		"\"item_id\":\"unknown\",\"delta\":\"wrong\"}", &stream), MORPH_ERR_PROTOCOL);
-	EXPECT_EQ(codec->event("message", "{\"type\":\"response.function_call_arguments.delta\","
-		"\"delta\":\"ambiguous\"}", &stream), MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(codec->event("message",
+			       "{\"type\":\"response.function_call_arguments.delta\","
+			       "\"item_id\":\"unknown\",\"delta\":\"wrong\"}",
+			       &stream),
+		  NB_ERR_PROTOCOL);
+	EXPECT_EQ(codec->event("message",
+			       "{\"type\":\"response.function_call_arguments.delta\","
+			       "\"delta\":\"ambiguous\"}",
+			       &stream),
+		  NB_ERR_PROTOCOL);
 }
 
 TEST(TestModelOwnership, InvalidMessageCloneLeavesDestinationEmpty)
 {
 	struct chat_message source{};
-	struct chat_message copy MORPH_CLEANUP(chat_message_cleanup) = {};
+	struct chat_message copy NB_CLEANUP(chat_message_cleanup) = {};
 	source.tool_call_count = 1;
-	EXPECT_EQ(chat_message_clone(&source, &copy), -EINVAL);
+	EXPECT_EQ(chat_message_clone(&source, &copy), NB_ERR_INVAL);
 	EXPECT_EQ(copy.role, nullptr);
 	EXPECT_EQ(copy.tool_calls, nullptr);
 	EXPECT_EQ(copy.tool_call_count, 0);
 	source.tool_call_count = -1;
-	EXPECT_EQ(chat_message_clone(&source, &copy), -EINVAL);
+	EXPECT_EQ(chat_message_clone(&source, &copy), NB_ERR_INVAL);
 	EXPECT_EQ(copy.content, nullptr);
 }
 
@@ -142,32 +149,32 @@ TEST(TestModelOwnership, CloningRejectsAnOccupiedOwnerWithoutChangingEitherObjec
 	struct chat_message source{};
 	char source_content[] = "source";
 	source.content = source_content;
-	struct chat_message owned MORPH_CLEANUP(chat_message_cleanup) = {};
+	struct chat_message owned NB_CLEANUP(chat_message_cleanup) = {};
 	owned.content = strdup("original");
 	ASSERT_NE(owned.content, nullptr);
 	char *original = owned.content;
-	EXPECT_EQ(chat_message_clone(&source, &owned), -EEXIST);
+	EXPECT_EQ(chat_message_clone(&source, &owned), NB_ERR_EXISTS);
 	EXPECT_EQ(owned.content, original);
 	EXPECT_STREQ(owned.content, "original");
 	EXPECT_STREQ(source.content, "source");
 	struct tool_call call{};
 	char input[] = "new input";
 	call.arguments = input;
-	struct tool_call existing MORPH_CLEANUP(tool_call_cleanup) = {};
+	struct tool_call existing NB_CLEANUP(tool_call_cleanup) = {};
 	existing.arguments = strdup("old input");
 	ASSERT_NE(existing.arguments, nullptr);
 	char *old_input = existing.arguments;
-	EXPECT_EQ(tool_call_clone(&call, &existing), -EEXIST);
+	EXPECT_EQ(tool_call_clone(&call, &existing), NB_ERR_EXISTS);
 	EXPECT_EQ(existing.arguments, old_input);
 	EXPECT_STREQ(existing.arguments, "old input");
 }
 
 TEST(TestModelOwnership, StreamTransfersCallsWithoutRetainingAnOwner)
 {
-	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
+	struct chat_response response NB_CLEANUP(chat_response_free) = {};
 	struct tool_call *transferred;
 	{
-		struct llm_stream_ctx stream MORPH_CLEANUP(llm_stream_cleanup) = {};
+		struct llm_stream_ctx stream NB_CLEANUP(llm_stream_cleanup) = {};
 		llm_stream_init(&stream, nullptr, nullptr);
 		struct tool_call *call = llm_stream_tool_call_ensure_borrow(&stream, 0);
 		ASSERT_NE(call, nullptr);
@@ -175,12 +182,12 @@ TEST(TestModelOwnership, StreamTransfersCallsWithoutRetainingAnOwner)
 		call->arguments = strdup("{\"ok\":true}");
 		ASSERT_NE(call->arguments, nullptr);
 		transferred = stream.tool_calls;
-		llm_stream_tool_calls_move(&stream, &response);
+		ASSERT_EQ(llm_stream_tool_calls_move(&stream, &response), 0);
 		EXPECT_EQ(stream.tool_calls, nullptr);
 		EXPECT_EQ(stream.tool_call_count, 0);
-		EXPECT_EQ(stream.tool_call_cap, 0);
+		EXPECT_EQ(stream.call_storage.len, 0u);
 	}
-	ASSERT_EQ(response.tool_calls, transferred);
+	ASSERT_NE(response.tool_calls, transferred);
 	ASSERT_EQ(response.tool_call_count, 1);
 	EXPECT_STREQ(response.tool_calls[0].id, "call_1");
 	EXPECT_STREQ(response.tool_calls[0].arguments, "{\"ok\":true}");
@@ -191,18 +198,18 @@ TEST(TestModelOwnership, StreamTransfersCallsWithoutRetainingAnOwner)
 
 TEST(TestModelOwnership, StreamRejectsInvalidIndicesWithoutChangingCalls)
 {
-	struct llm_stream_ctx stream MORPH_CLEANUP(llm_stream_cleanup) = {};
+	struct llm_stream_ctx stream NB_CLEANUP(llm_stream_cleanup) = {};
 	llm_stream_init(&stream, nullptr, nullptr);
 	EXPECT_EQ(llm_stream_tool_call_ensure_borrow(&stream, -1), nullptr);
 	EXPECT_EQ(llm_stream_tool_call_ensure_borrow(&stream, INT_MAX), nullptr);
 	EXPECT_EQ(stream.tool_calls, nullptr);
 	EXPECT_EQ(stream.tool_call_count, 0);
-	EXPECT_EQ(stream.tool_call_cap, 0);
+	EXPECT_EQ(stream.call_storage.len, 0u);
 }
 
 TEST(TestModelOwnership, StreamCallMoveReplacesAnExistingDestinationOwner)
 {
-	struct chat_response response MORPH_CLEANUP(chat_response_free) = {};
+	struct chat_response response NB_CLEANUP(chat_response_free) = {};
 	response.content = strdup("existing content");
 	response.tool_calls = static_cast<tool_call *>(calloc(1, sizeof(*response.tool_calls)));
 	ASSERT_NE(response.content, nullptr);
@@ -210,15 +217,15 @@ TEST(TestModelOwnership, StreamCallMoveReplacesAnExistingDestinationOwner)
 	response.tool_call_count = 1;
 	response.tool_calls[0].arguments = strdup("old arguments");
 	ASSERT_NE(response.tool_calls[0].arguments, nullptr);
-	struct llm_stream_ctx stream MORPH_CLEANUP(llm_stream_cleanup) = {};
+	struct llm_stream_ctx stream NB_CLEANUP(llm_stream_cleanup) = {};
 	llm_stream_init(&stream, nullptr, nullptr);
 	struct tool_call *call = llm_stream_tool_call_ensure_borrow(&stream, 0);
 	ASSERT_NE(call, nullptr);
 	call->arguments = strdup("new arguments");
 	ASSERT_NE(call->arguments, nullptr);
 	struct tool_call *incoming = stream.tool_calls;
-	llm_stream_tool_calls_move(&stream, &response);
-	EXPECT_EQ(response.tool_calls, incoming);
+	ASSERT_EQ(llm_stream_tool_calls_move(&stream, &response), 0);
+	EXPECT_NE(response.tool_calls, incoming);
 	ASSERT_EQ(response.tool_call_count, 1);
 	EXPECT_STREQ(response.tool_calls[0].arguments, "new arguments");
 	EXPECT_STREQ(response.content, "existing content");
@@ -228,32 +235,32 @@ TEST(TestModelOwnership, StreamCallMoveReplacesAnExistingDestinationOwner)
 
 TEST(TestModelOwnership, SchemaCopyDoesNotNormalizeOrConsumeItsObjectSource)
 {
-	cJSON *source MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
+	cJSON *source NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(
 		"{\"description\":\"source\",\"properties\":{\"value\":{\"type\":\"string\"}}}");
 	ASSERT_NE(source, nullptr);
-	cJSON *copy MORPH_CLEANUP(morph_json_cleanup) = llm_codec_schema_copy(source);
+	cJSON *copy NB_CLEANUP(cJSON_DeleteOwner) = llm_codec_schema_copy(source);
 	ASSERT_NE(copy, nullptr);
 	EXPECT_NE(copy, source);
 	EXPECT_FALSE(cJSON_HasObjectItem(source, "type"));
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(copy, "type")), "object");
 	cJSON_SetValuestring(cJSON_GetObjectItem(source, "description"), "changed");
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(copy, "description")), "source");
-	morph_json_cleanup(&source);
+	cJSON_DeleteOwner(&source);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(copy, "description")), "source");
 }
 
 TEST(TestModelOwnership, SchemaCopyOwnsAnIndependentProjectionOfAnArraySource)
 {
-	cJSON *source MORPH_CLEANUP(morph_json_cleanup) =
+	cJSON *source NB_CLEANUP(cJSON_DeleteOwner) =
 		cJSON_Parse("[{\"name\":\"value\",\"description\":\"source\",\"required\":true}]");
 	ASSERT_NE(source, nullptr);
-	cJSON *copy MORPH_CLEANUP(morph_json_cleanup) = llm_codec_schema_copy(source);
+	cJSON *copy NB_CLEANUP(cJSON_DeleteOwner) = llm_codec_schema_copy(source);
 	ASSERT_NE(copy, nullptr);
 	EXPECT_TRUE(cJSON_IsArray(source));
 	ASSERT_EQ(cJSON_GetArraySize(source), 1);
 	cJSON *source_item = cJSON_GetArrayItem(source, 0);
 	cJSON_SetValuestring(cJSON_GetObjectItem(source_item, "name"), "changed");
-	morph_json_cleanup(&source);
+	cJSON_DeleteOwner(&source);
 	cJSON *properties = cJSON_GetObjectItem(copy, "properties");
 	cJSON *value = cJSON_GetObjectItem(properties, "value");
 	ASSERT_NE(value, nullptr);
@@ -266,7 +273,7 @@ TEST(TestModelOwnership, SchemaCopyOwnsAnIndependentProjectionOfAnArraySource)
 
 TEST(TestModelOwnership, SchemaCopyRejectsInvalidInputWithoutConsumingIt)
 {
-	cJSON *source MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateString("not a schema");
+	cJSON *source NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateString("not a schema");
 	ASSERT_NE(source, nullptr);
 	EXPECT_EQ(llm_codec_schema_copy(source), nullptr);
 	EXPECT_TRUE(cJSON_IsString(source));
@@ -276,15 +283,15 @@ TEST(TestModelOwnership, SchemaCopyRejectsInvalidInputWithoutConsumingIt)
 
 TEST(TestModelOwnership, ChatBodyCreationRejectsAnOccupiedOwner)
 {
-	cJSON *value MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateString("original");
+	cJSON *value NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateString("original");
 	ASSERT_NE(value, nullptr);
-	char *body MORPH_CLEANUP(morph_json_text_cleanup) = morph_json_print_copy(value);
+	char *body NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(value);
 	ASSERT_NE(body, nullptr);
 	char *original = body;
 	size_t length = 37;
 	EXPECT_EQ(llm_chat_body_create(nullptr, "model", nullptr, nullptr, 0, 0, 0, nullptr,
 				       nullptr, 0, &body, &length),
-		  -EEXIST);
+		  NB_ERR_EXISTS);
 	EXPECT_EQ(body, original);
 	EXPECT_EQ(length, 37U);
 	EXPECT_STREQ(body, "\"original\"");
@@ -298,7 +305,7 @@ TEST(TestModelOwnership, ResponsesCompletedInputsReplaceIncompleteDeltaPrefixes)
 		struct model model{};
 		strcpy(model.adapter, "openai-responses");
 		const struct llm_codec *codec = llm_codec_borrow(&model);
-		struct llm_stream_ctx stream MORPH_CLEANUP(llm_stream_cleanup) = {};
+		struct llm_stream_ctx stream NB_CLEANUP(llm_stream_cleanup) = {};
 		llm_stream_init(&stream, nullptr, nullptr);
 		std::string kind = custom ? "custom_tool_call" : "function_call";
 		std::string field = custom ? "input" : "arguments";
@@ -323,5 +330,26 @@ TEST(TestModelOwnership, ResponsesCompletedInputsReplaceIncompleteDeltaPrefixes)
 			"\",\"" + field + "\":\"authoritative item input\"}}";
 		ASSERT_EQ(codec->event("message", done.c_str(), &stream), 0);
 		EXPECT_STREQ(stream.tool_calls[0].arguments, "authoritative item input");
+	}
+}
+
+TEST(TestModelOwnership, NativeStreamBuffersSurviveGrowthAndPublication)
+{
+	struct llm_stream_ctx stream NB_CLEANUP(llm_stream_cleanup) = {};
+	struct chat_response response NB_CLEANUP(chat_response_free) = {};
+	llm_stream_init(&stream, nullptr, nullptr);
+	for (int i = 0; i < 40; i++) {
+		struct tool_call *call = llm_stream_tool_call_ensure_borrow(&stream, i);
+		ASSERT_NE(call, nullptr);
+		for (int j = 0; j < 256; j++)
+			ASSERT_EQ(llm_stream_call_input_append(&stream, call, "fragment"), 0);
+		EXPECT_EQ(strlen(call->arguments), 256u * 8u);
+	}
+	ASSERT_EQ(llm_stream_tool_calls_move(&stream, &response), 0);
+	llm_stream_cleanup(&stream);
+	ASSERT_EQ(response.tool_call_count, 40);
+	for (int i = 0; i < response.tool_call_count; i++) {
+		EXPECT_EQ(strlen(response.tool_calls[i].arguments), 256u * 8u);
+		EXPECT_EQ(strncmp(response.tool_calls[i].arguments, "fragmentfragment", 16), 0);
 	}
 }

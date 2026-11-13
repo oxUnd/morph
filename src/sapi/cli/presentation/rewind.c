@@ -1,7 +1,7 @@
 #include "sapi/cli/presentation/rewind.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/widgets/list.h"
-#include "util/error.h"
+#include "errors.h"
 #include <limits.h>
 #include <stdio.h>
 
@@ -51,12 +51,14 @@ void cli_rewind_report_print(struct cli_application *ctx, const cJSON *report)
 		char recovery[PATH_MAX];
 		cli_list_compact_text(path, sizeof(path), cli_rewind_string(item, "path"));
 		if (compensation_failed)
-			cli_output_printf(ctx,
-					  "  Could not return %s to its state before rewind: %s\n",
-					  path, morph_strerror(error ? error : -EIO));
+			cli_output_printf(
+				ctx, "  Could not return %s to its state before rewind: %s\n", path,
+				nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+					   error ? error : NB_ERR_IO));
 		if (cleanup_error)
 			cli_output_printf(ctx, "  Temporary-file cleanup failed for %s: %s\n", path,
-					  morph_strerror(cleanup_error));
+					  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+						     cleanup_error));
 		if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(item, "recovery_available"))) {
 			cli_list_compact_text(recovery, sizeof(recovery),
 					      cli_rewind_string(item, "recovery_path"));

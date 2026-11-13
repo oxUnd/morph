@@ -1,109 +1,37 @@
+#include "read_lines.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/err.h"
+#include "nb/file.h"
+#include "nb/str.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #define DEFAULT_MAX_BYTES 65536UL
 #define HARD_MAX_BYTES 262144UL
 #define MAX_LINE_COUNT 1000LL
 
-struct buf {
-	char *data;
-	size_t len;
-	size_t cap;
-};
-
 struct read_args {
-	char *path;
+	nb_buf path;
 	long long start_line;
 	long long line_count;
 	int include_line_numbers;
 	size_t max_bytes;
 };
 
-static char *xstrdup(const char *s)
+static void read_args_cleanup(struct read_args *args)
 {
-	size_t len;
-	char *copy;
-
-	if (!s)
-		return NULL;
-	len = strlen(s);
-	copy = malloc(len + 1);
-	if (!copy)
-		return NULL;
-	memcpy(copy, s, len + 1);
-	return copy;
+	nb_buf_destroy(&args->path);
 }
 
-static int buf_init(struct buf *buf, size_t cap)
+static void read_file_cleanup(FILE **owner)
 {
-	buf->data = malloc(cap);
-	if (!buf->data)
-		return -1;
-	buf->data[0] = '\0';
-	buf->len = 0;
-	buf->cap = cap;
-	return 0;
-}
-
-static void buf_free(struct buf *buf)
-{
-	if (!buf)
-		return;
-	free(buf->data);
-	buf->data = NULL;
-	buf->len = 0;
-	buf->cap = 0;
-}
-
-static int buf_reserve(struct buf *buf, size_t need)
-{
-	size_t new_cap;
-	char *new_data;
-
-	if (need <= buf->cap)
-		return 0;
-	new_cap = buf->cap ? buf->cap : 128;
-	while (new_cap < need) {
-		if (new_cap > ((size_t)-1) / 2)
-			return -1;
-		new_cap *= 2;
-	}
-	new_data = realloc(buf->data, new_cap);
-	if (!new_data)
-		return -1;
-	buf->data = new_data;
-	buf->cap = new_cap;
-	return 0;
-}
-
-static int buf_append_n(struct buf *buf, const char *s, size_t n)
-{
-	if (buf_reserve(buf, buf->len + n + 1) != 0)
-		return -1;
-	memcpy(buf->data + buf->len, s, n);
-	buf->len += n;
-	buf->data[buf->len] = '\0';
-	return 0;
-}
-
-static int buf_append_c(struct buf *buf, char c)
-{
-	if (buf_reserve(buf, buf->len + 2) != 0)
-		return -1;
-	buf->data[buf->len++] = c;
-	buf->data[buf->len] = '\0';
-	return 0;
-}
-
-static int buf_append_str(struct buf *buf, const char *s)
-{
-	return buf_append_n(buf, s, strlen(s));
+	if (owner && *owner)
+		fclose(*owner);
 }
 
 static const char *skip_ws(const char *p)
@@ -146,11 +74,11 @@ static const char *find_key(const char *json, const char *key)
 	return NULL;
 }
 
-static int json_parse_string_contents(const char *p, struct buf *buf)
+static int json_parse_string_contents(const char *p, nb_buf *buf)
 {
 	while (*p && *p != '"') {
 		if ((unsigned char)*p < 0x20) {
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 		if (*p == '\\') {
 			p++;
@@ -158,76 +86,64 @@ static int json_parse_string_contents(const char *p, struct buf *buf)
 			case '"':
 			case '\\':
 			case '/':
-				if (buf_append_c(buf, *p) != 0)
-					return -ENOMEM;
+				if (!nb_buf_append_char(buf, *p))
+					return NB_ERR_NOMEM;
 				break;
 			case 'b':
-				if (buf_append_c(buf, '\b') != 0)
-					return -ENOMEM;
+				if (!nb_buf_append_char(buf, '\b'))
+					return NB_ERR_NOMEM;
 				break;
 			case 'f':
-				if (buf_append_c(buf, '\f') != 0)
-					return -ENOMEM;
+				if (!nb_buf_append_char(buf, '\f'))
+					return NB_ERR_NOMEM;
 				break;
 			case 'n':
-				if (buf_append_c(buf, '\n') != 0)
-					return -ENOMEM;
+				if (!nb_buf_append_char(buf, '\n'))
+					return NB_ERR_NOMEM;
 				break;
 			case 'r':
-				if (buf_append_c(buf, '\r') != 0)
-					return -ENOMEM;
+				if (!nb_buf_append_char(buf, '\r'))
+					return NB_ERR_NOMEM;
 				break;
 			case 't':
-				if (buf_append_c(buf, '\t') != 0)
-					return -ENOMEM;
+				if (!nb_buf_append_char(buf, '\t'))
+					return NB_ERR_NOMEM;
 				break;
 			case 'u':
 				if (!isxdigit((unsigned char)p[1]) ||
 				    !isxdigit((unsigned char)p[2]) ||
 				    !isxdigit((unsigned char)p[3]) ||
 				    !isxdigit((unsigned char)p[4])) {
-					return -EINVAL;
+					return NB_ERR_INVAL;
 				}
-				if (buf_append_c(buf, '?') != 0)
-					return -ENOMEM;
+				if (!nb_buf_append_char(buf, '?'))
+					return NB_ERR_NOMEM;
 				p += 4;
 				break;
 			default:
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			}
 			p++;
 		} else {
-			if (buf_append_c(buf, *p++) != 0)
-				return -ENOMEM;
+			if (!nb_buf_append_char(buf, *p++))
+				return NB_ERR_NOMEM;
 		}
 	}
 	if (*p != '"') {
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	return 1;
 }
 
-static int json_get_string(const char *json, const char *key, char **out)
+static int json_get_string(const char *json, const char *key, nb_buf *out)
 {
-	const char *p;
-	struct buf buf;
+	const char *p = find_key(json, key);
 
-	*out = NULL;
-	p = find_key(json, key);
 	if (!p)
 		return 0;
 	if (*p != '"')
-		return -EINVAL;
-	p++;
-	if (buf_init(&buf, 128) != 0)
-		return -ENOMEM;
-	int rc = json_parse_string_contents(p, &buf);
-	if (rc < 0) {
-		buf_free(&buf);
-		return rc;
-	}
-	*out = buf.data;
-	return rc;
+		return NB_ERR_INVAL;
+	return json_parse_string_contents(p + 1, out);
 }
 
 static int json_get_int(const char *json, const char *key, long long *out)
@@ -242,7 +158,7 @@ static int json_get_int(const char *json, const char *key, long long *out)
 	errno = 0;
 	value = strtoll(p, &end, 10);
 	if (p == end || errno == ERANGE)
-		return -1;
+		return NB_ERR_INVAL;
 	*out = value;
 	return 1;
 }
@@ -262,7 +178,7 @@ static int json_get_bool(const char *json, const char *key, int *out)
 		*out = 0;
 		return 1;
 	}
-	return -1;
+	return NB_ERR_INVAL;
 }
 
 static int parse_args(const char *json, struct read_args *args)
@@ -270,191 +186,135 @@ static int parse_args(const char *json, struct read_args *args)
 	long long max_bytes;
 	int rc;
 
-	memset(args, 0, sizeof(*args));
 	args->max_bytes = DEFAULT_MAX_BYTES;
 
 	rc = json_get_string(json, "path", &args->path);
 	if (rc <= 0)
-		return -1;
+		return rc < 0 ? rc : NB_ERR_INVAL;
 	rc = json_get_int(json, "start_line", &args->start_line);
 	if (rc <= 0)
-		return -1;
+		return NB_ERR_INVAL;
 	rc = json_get_int(json, "line_count", &args->line_count);
 	if (rc <= 0)
-		return -1;
+		return NB_ERR_INVAL;
 	rc = json_get_bool(json, "include_line_numbers",
 			   &args->include_line_numbers);
 	if (rc < 0)
-		return -1;
+		return NB_ERR_INVAL;
 	rc = json_get_int(json, "max_bytes", &max_bytes);
 	if (rc < 0)
-		return -1;
+		return NB_ERR_INVAL;
 	if (rc > 0) {
 		if (max_bytes <= 0)
-			return -1;
+			return NB_ERR_INVAL;
 		if ((unsigned long long)max_bytes > HARD_MAX_BYTES)
-			return -1;
+			return NB_ERR_INVAL;
 		args->max_bytes = (size_t)max_bytes;
 	}
 
 	if (args->start_line <= 0 || args->line_count <= 0 ||
 	    args->line_count > MAX_LINE_COUNT)
-		return -1;
+		return NB_ERR_INVAL;
 	if (args->start_line > LLONG_MAX - args->line_count)
-		return -1;
+		return NB_ERR_INVAL;
 	return 0;
 }
 
-static void free_args(struct read_args *args)
-{
-	free(args->path);
-	memset(args, 0, sizeof(*args));
-}
-
-static int append_json_string(struct buf *buf, const char *s)
+static int append_json_string(nb_buf *buf, const char *s)
 {
 	const unsigned char *p;
-	char tmp[7];
 
-	if (buf_append_c(buf, '"') != 0)
-		return -1;
+	if (!nb_buf_append_char(buf, '"'))
+		return nb_buf_status(buf);
 	for (p = (const unsigned char *)s; *p; p++) {
 		switch (*p) {
 		case '"':
-			if (buf_append_str(buf, "\\\"") != 0)
-				return -1;
+			if (!nb_buf_append_cstr(buf, "\\\""))
+				return nb_buf_status(buf);
 			break;
 		case '\\':
-			if (buf_append_str(buf, "\\\\") != 0)
-				return -1;
+			if (!nb_buf_append_cstr(buf, "\\\\"))
+				return nb_buf_status(buf);
 			break;
 		case '\b':
-			if (buf_append_str(buf, "\\b") != 0)
-				return -1;
+			if (!nb_buf_append_cstr(buf, "\\b"))
+				return nb_buf_status(buf);
 			break;
 		case '\f':
-			if (buf_append_str(buf, "\\f") != 0)
-				return -1;
+			if (!nb_buf_append_cstr(buf, "\\f"))
+				return nb_buf_status(buf);
 			break;
 		case '\n':
-			if (buf_append_str(buf, "\\n") != 0)
-				return -1;
+			if (!nb_buf_append_cstr(buf, "\\n"))
+				return nb_buf_status(buf);
 			break;
 		case '\r':
-			if (buf_append_str(buf, "\\r") != 0)
-				return -1;
+			if (!nb_buf_append_cstr(buf, "\\r"))
+				return nb_buf_status(buf);
 			break;
 		case '\t':
-			if (buf_append_str(buf, "\\t") != 0)
-				return -1;
+			if (!nb_buf_append_cstr(buf, "\\t"))
+				return nb_buf_status(buf);
 			break;
 		default:
 			if (*p < 0x20) {
-				snprintf(tmp, sizeof(tmp), "\\u%04x", *p);
-				if (buf_append_str(buf, tmp) != 0)
-					return -1;
-			} else if (buf_append_c(buf, (char)*p) != 0) {
-				return -1;
+				if (!nb_buf_printf(buf, "\\u%04x", *p))
+					return nb_buf_status(buf);
+			} else if (!nb_buf_append_char(buf, (char)*p)) {
+				return nb_buf_status(buf);
 			}
 			break;
 		}
 	}
-	return buf_append_c(buf, '"');
+	return nb_buf_append_char(buf, '"') ? NB_OK : nb_buf_status(buf);
 }
 
 static char *make_error(const char *message)
 {
-	struct buf out;
+	nb_buf out NB_CLEANUP(nb_buf_destroy) = {0};
 
-	if (buf_init(&out, 128) != 0)
-		return xstrdup("{\"error\":\"out of memory\"}");
-	if (buf_append_str(&out, "{\"error\":") != 0 ||
-	    append_json_string(&out, message) != 0 ||
-	    buf_append_c(&out, '}') != 0) {
-		buf_free(&out);
-		return xstrdup("{\"error\":\"out of memory\"}");
-	}
-	return out.data;
+	if (!nb_buf_append_cstr(&out, "{\"error\":") ||
+	    append_json_string(&out, message) != NB_OK || !nb_buf_append_char(&out, '}'))
+		return strdup("{\"error\":\"out of memory\"}");
+	return strdup(nb_buf_cstr(&out));
 }
 
-static int path_has_boundary(const char *path, size_t root_len)
+static int path_allowed(const char *path)
 {
-	return path[root_len] == '\0' || path[root_len] == '/';
-}
+	const char *roots = getenv("MORPH_READ_LINES_ROOTS");
+	nb_buf root NB_CLEANUP(nb_buf_destroy) = {0};
 
-static int path_under_root(const char *path, const char *root)
-{
-	size_t root_len;
+	if (roots && roots[0]) {
+		nb_split_iter iter;
+		nb_str token;
 
-	root_len = strlen(root);
-	if (root_len == 0)
-		return 0;
-	while (root_len > 1 && root[root_len - 1] == '/')
-		root_len--;
-	return strncmp(path, root, root_len) == 0 &&
-	       path_has_boundary(path, root_len);
-}
-
-static int allowed_by_roots_env(const char *real_path, const char *roots)
-{
-	const char *p;
-
-	p = roots;
-	while (*p) {
-		const char *end;
-		size_t len;
-		char raw[PATH_MAX];
-		char resolved[PATH_MAX];
-
-		end = strchr(p, ':');
-		len = end ? (size_t)(end - p) : strlen(p);
-		if (len > 0 && len < sizeof(raw)) {
-			memcpy(raw, p, len);
-			raw[len] = '\0';
-			if (realpath(raw, resolved) &&
-			    path_under_root(real_path, resolved))
+		nb_split_init(&iter, nb_str_from_cstr(roots), ':');
+		nb_split_skip_empty(&iter, true);
+		while (nb_split_next(&iter, &token)) {
+			nb_buf_clear(&root);
+			if (!nb_buf_append(&root, token.ptr, token.len))
+				return nb_buf_status(&root);
+			if (nb_path_is_within(path, nb_buf_cstr(&root), false))
 				return 1;
 		}
-		if (!end)
-			break;
-		p = end + 1;
+		return 0;
 	}
-	return 0;
-}
-
-static int append_home_root(char *dst, size_t dst_size, const char *home,
-			    const char *name)
-{
-	int n;
-
-	n = snprintf(dst, dst_size, "%s/%s", home, name);
-	return n > 0 && (size_t)n < dst_size;
-}
-
-static int path_allowed(const char *real_path)
-{
-	const char *roots;
-	char cwd[PATH_MAX];
-	const char *home;
-	char home_root[PATH_MAX];
-	char resolved[PATH_MAX];
-
-	roots = getenv("MORPH_READ_LINES_ROOTS");
-	if (roots && roots[0])
-		return allowed_by_roots_env(real_path, roots);
-
-	if (getcwd(cwd, sizeof(cwd)) && path_under_root(real_path, cwd))
+	int rc = nb_path_canonical(&root, ".", NULL);
+	if (rc == NB_ERR_NOMEM)
+		return rc;
+	if (rc == NB_OK && nb_path_is_within(path, nb_buf_cstr(&root), false))
 		return 1;
-
-	home = getenv("HOME");
+	const char *home = getenv("HOME");
 	if (!home || !home[0])
 		return 0;
-	if (append_home_root(home_root, sizeof(home_root), home, ".morph") &&
-	    realpath(home_root, resolved) && path_under_root(real_path, resolved))
-		return 1;
-	if (append_home_root(home_root, sizeof(home_root), home, ".agents") &&
-	    realpath(home_root, resolved) && path_under_root(real_path, resolved))
-		return 1;
+	const char *const names[] = {".morph", ".agents"};
+	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+		rc = nb_path_join(&root, home, names[i]);
+		if (rc != NB_OK)
+			return rc;
+		if (nb_path_is_within(path, nb_buf_cstr(&root), false))
+			return 1;
+	}
 	return 0;
 }
 
@@ -464,32 +324,30 @@ static int skip_line(FILE *f)
 
 	while ((c = fgetc(f)) != EOF) {
 		if (c == '\0')
-			return -2;
+			return NB_ERR_FORMAT;
 		if (c == '\n')
 			return 1;
 	}
 	if (ferror(f))
-		return -1;
+		return nb_status_from_errno(errno, NULL);
 	return 0;
 }
 
-static int read_line_capped(FILE *f, struct buf *line, size_t cap,
-			    int *overflow)
+static int read_line_capped(FILE *f, nb_buf *line, size_t cap, int *overflow)
 {
 	int c;
 	int saw_any;
 
-	line->len = 0;
-	line->data[0] = '\0';
+	nb_buf_clear(line);
 	*overflow = 0;
 	saw_any = 0;
 	while ((c = fgetc(f)) != EOF) {
 		saw_any = 1;
 		if (c == '\0')
-			return -2;
+			return NB_ERR_FORMAT;
 		if (line->len + 1 <= cap) {
-			if (buf_append_c(line, (char)c) != 0)
-				return -1;
+			if (!nb_buf_append_char(line, (char)c))
+				return nb_buf_status(line);
 		} else {
 			*overflow = 1;
 		}
@@ -497,28 +355,17 @@ static int read_line_capped(FILE *f, struct buf *line, size_t cap,
 			return 1;
 	}
 	if (ferror(f))
-		return -1;
+		return nb_status_from_errno(errno, NULL);
 	return saw_any ? 1 : 0;
 }
 
-static int append_line_prefix(struct buf *content, long long line_no)
-{
-	char prefix[64];
-	int n;
-
-	n = snprintf(prefix, sizeof(prefix), "%lld: ", line_no);
-	if (n <= 0 || (size_t)n >= sizeof(prefix))
-		return -1;
-	return buf_append_n(content, prefix, (size_t)n);
-}
-
-static int read_lines(FILE *f, const struct read_args *args,
-		      struct buf *content, long long *end_line,
+static int read_lines(FILE *f, const struct read_args *args, nb_buf *content, long long *end_line,
 		      long long *next_line, int *eof, int *truncated)
 {
 	long long line_no;
 	long long i;
-	struct buf line;
+	nb_buf line NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf prefix NB_CLEANUP(nb_buf_destroy) = {0};
 	int rc;
 
 	*end_line = 0;
@@ -537,194 +384,121 @@ static int read_lines(FILE *f, const struct read_args *args,
 		}
 	}
 
-	if (buf_init(&line, args->max_bytes + 1) != 0)
-		return -1;
-
 	for (i = 0; i < args->line_count; i++, line_no++) {
 		int overflow;
 		size_t prefix_len;
 		size_t needed;
 
 		rc = read_line_capped(f, &line, args->max_bytes, &overflow);
-		if (rc < 0) {
-			buf_free(&line);
+		if (rc < 0)
 			return rc;
-		}
 		if (rc == 0) {
 			*eof = 1;
 			*next_line = 0;
 			break;
 		}
 
-		prefix_len = 0;
-		if (args->include_line_numbers) {
-			char prefix[64];
-			int n = snprintf(prefix, sizeof(prefix), "%lld: ",
-					 line_no);
-			if (n <= 0 || (size_t)n >= sizeof(prefix)) {
-				buf_free(&line);
-				return -1;
-			}
-			prefix_len = (size_t)n;
-		}
+		nb_buf_clear(&prefix);
+		if (args->include_line_numbers && !nb_buf_printf(&prefix, "%lld: ", line_no))
+			return nb_buf_status(&prefix);
+		prefix_len = prefix.len;
 
 		needed = prefix_len + line.len;
 		if (overflow || content->len + needed > args->max_bytes) {
 			*truncated = 1;
 			*next_line = line_no;
-			buf_free(&line);
 			return 0;
 		}
 
-		if (args->include_line_numbers &&
-		    append_line_prefix(content, line_no) != 0) {
-			buf_free(&line);
-			return -1;
-		}
-		if (buf_append_n(content, line.data, line.len) != 0) {
-			buf_free(&line);
-			return -1;
-		}
+		if (!nb_buf_append(content, prefix.ptr, prefix.len) ||
+		    !nb_buf_append(content, line.ptr, line.len))
+			return nb_buf_status(content);
+
 		*end_line = line_no;
 		*next_line = line_no + 1;
 	}
 
 	if (!*eof && i >= args->line_count)
 		*next_line = line_no;
-	buf_free(&line);
 	return 0;
 }
 
-static int append_result(struct buf *out, const char *path,
-	const struct read_args *args, long long end_line, long long next_line,
-	int eof, int truncated, const char *content)
+static char *make_result(const char *path, const struct read_args *args, long long end_line,
+			 long long next_line, int eof, int truncated, const char *content)
 {
-	char num[128];
+	nb_buf out NB_CLEANUP(nb_buf_destroy) = {0};
 
-	if (buf_append_str(out, "{\"path\":") != 0 ||
-	    append_json_string(out, path) != 0 ||
-	    buf_append_str(out, ",\"start_line\":") != 0)
-		return -ENOMEM;
-	snprintf(num, sizeof(num), "%lld", args->start_line);
-	if (buf_append_str(out, num) != 0 ||
-	    buf_append_str(out, ",\"line_count\":") != 0)
-		return -ENOMEM;
-	snprintf(num, sizeof(num), "%lld", args->line_count);
-	if (buf_append_str(out, num) != 0 ||
-	    buf_append_str(out, ",\"end_line\":") != 0)
-		return -ENOMEM;
-	snprintf(num, sizeof(num), "%lld", end_line);
-	if (buf_append_str(out, num) != 0 ||
-	    buf_append_str(out, ",\"next_line\":") != 0)
-		return -ENOMEM;
-	if (next_line > 0) {
-		snprintf(num, sizeof(num), "%lld", next_line);
-		if (buf_append_str(out, num) != 0)
-			return -ENOMEM;
-	} else if (buf_append_str(out, "null") != 0) {
-		return -ENOMEM;
-	}
-	if (buf_append_str(out, ",\"eof\":") != 0 ||
-	    buf_append_str(out, eof ? "true" : "false") != 0 ||
-	    buf_append_str(out, ",\"truncated\":") != 0 ||
-	    buf_append_str(out, truncated ? "true" : "false") != 0 ||
-	    buf_append_str(out, ",\"content\":") != 0 ||
-	    append_json_string(out, content) != 0 ||
-	    buf_append_c(out, '}') != 0)
-		return -ENOMEM;
-	return 0;
-}
-
-static char *make_result(const char *path, const struct read_args *args,
-			 long long end_line, long long next_line,
-			 int eof, int truncated, const char *content)
-{
-	struct buf out;
-
-	if (buf_init(&out, 1024) != 0)
-		return make_error("out of memory");
-	if (append_result(&out, path, args, end_line, next_line, eof, truncated, content) != 0) {
-		buf_free(&out);
-		return make_error("out of memory");
-	}
-	return out.data;
+	(void)nb_buf_append_cstr(&out, "{\"path\":");
+	int rc = append_json_string(&out, path);
+	if (!rc &&
+	    !nb_buf_printf(
+		    &out,
+		    ",\"start_line\":%lld,\"line_count\":%lld,\"end_line\":%lld,\"next_line\":",
+		    args->start_line, args->line_count, end_line))
+		rc = nb_buf_status(&out);
+	if (!rc && !(next_line > 0 ? nb_buf_printf(&out, "%lld", next_line)
+				   : nb_buf_append_cstr(&out, "null")))
+		rc = nb_buf_status(&out);
+	if (!rc && !nb_buf_printf(&out, ",\"eof\":%s,\"truncated\":%s,\"content\":",
+				  eof ? "true" : "false", truncated ? "true" : "false"))
+		rc = nb_buf_status(&out);
+	if (!rc)
+		rc = append_json_string(&out, content);
+	if (!rc && !nb_buf_append_char(&out, '}'))
+		rc = nb_buf_status(&out);
+	return rc ? NULL : strdup(nb_buf_cstr(&out));
 }
 
 int ext_run(const char *args_json, char **result_json)
 {
-	struct read_args args;
-	char real_path[PATH_MAX];
-	struct stat st;
-	FILE *f;
-	struct buf content;
-	long long end_line;
-	long long next_line;
-	int eof;
-	int truncated;
-	int rc;
+	struct read_args args NB_CLEANUP(read_args_cleanup) = {0};
+	nb_buf path NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf content NB_CLEANUP(nb_buf_destroy) = {0};
+	FILE *file NB_CLEANUP(read_file_cleanup) = NULL;
+	long long end_line = 0, next_line = 0;
+	int eof = 0, truncated = 0;
 
 	if (!args_json || !result_json)
-		return -1;
+		return NB_ERR_INVAL;
 	*result_json = NULL;
-	if (parse_args(args_json, &args) != 0) {
+	int rc = parse_args(args_json, &args);
+	if (rc != NB_OK) {
 		*result_json = make_error("invalid arguments");
-		return -1;
+		return rc;
 	}
-
-	if (args.path[0] != '/') {
+	if (!nb_path_is_absolute(nb_buf_cstr(&args.path))) {
 		*result_json = make_error("path must be absolute");
-		free_args(&args);
-		return -1;
+		return NB_ERR_INVAL;
 	}
-	if (!realpath(args.path, real_path)) {
+	rc = nb_path_canonical(&path, nb_buf_cstr(&args.path), NULL);
+	if (rc != NB_OK) {
 		*result_json = make_error("file not found");
-		free_args(&args);
-		return -1;
+		return rc;
 	}
-	if (!path_allowed(real_path)) {
+	rc = path_allowed(nb_buf_cstr(&path));
+	if (rc <= 0) {
 		*result_json = make_error("path is not under an allowed root");
-		free_args(&args);
-		return -1;
+		return rc < 0 ? rc : NB_ERR_PERMISSION;
 	}
-	if (stat(real_path, &st) != 0 || !S_ISREG(st.st_mode)) {
+	nb_file_info info = {0};
+	rc = nb_file_stat(nb_buf_cstr(&path), true, &info, NULL);
+	if (rc != NB_OK || !info.is_regular) {
 		*result_json = make_error("path is not a regular file");
-		free_args(&args);
-		return -1;
+		return rc != NB_OK ? rc : NB_ERR_INVAL;
 	}
-
-	f = fopen(real_path, "rb");
-	if (!f) {
+	file = fopen(nb_buf_cstr(&path), "rb");
+	if (!file) {
+		rc = nb_status_from_errno(errno, NULL);
 		*result_json = make_error("failed to open file");
-		free_args(&args);
-		return -1;
+		return rc;
 	}
-
-	if (buf_init(&content, args.max_bytes + 1) != 0) {
-		fclose(f);
-		free_args(&args);
-		*result_json = make_error("out of memory");
-		return -1;
+	rc = read_lines(file, &args, &content, &end_line, &next_line, &eof, &truncated);
+	if (rc != NB_OK) {
+		*result_json = make_error(rc == NB_ERR_FORMAT ? "file appears to be binary"
+							      : "failed to read file");
+		return rc;
 	}
-
-	rc = read_lines(f, &args, &content, &end_line, &next_line, &eof,
-			&truncated);
-	fclose(f);
-	if (rc == -2) {
-		*result_json = make_error("file appears to be binary");
-		buf_free(&content);
-		free_args(&args);
-		return -1;
-	}
-	if (rc != 0) {
-		*result_json = make_error("failed to read file");
-		buf_free(&content);
-		free_args(&args);
-		return -1;
-	}
-
-	*result_json = make_result(real_path, &args, end_line, next_line, eof,
-				   truncated, content.data);
-	buf_free(&content);
-	free_args(&args);
-	return *result_json ? 0 : -1;
+	*result_json = make_result(nb_buf_cstr(&path), &args, end_line, next_line, eof, truncated,
+				   nb_buf_cstr(&content));
+	return *result_json ? NB_OK : NB_ERR_NOMEM;
 }

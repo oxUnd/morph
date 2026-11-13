@@ -1,6 +1,8 @@
 #include "sapi/cli/models/composer.h"
-#include "util/cleanup.h"
-#include "util/buf.h"
+#include "nb/err.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -22,7 +24,8 @@ int cli_composer_model_init(struct cli_composer_model *composer)
 	int rc;
 
 	memset(composer, 0, sizeof(*composer));
-	rc = morph_array_init(&composer->images, MORPH_ARRAY_INIT_CAP, sizeof(image));
+	rc = (nb_vec_init(&composer->images, sizeof(image)),
+	      nb_vec_reserve(&composer->images, 16) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	return 0;
@@ -32,9 +35,12 @@ void cli_composer_model_cleanup(struct cli_composer_model *composer)
 {
 	struct cli_composer_model_input_image *image;
 
-	morph_array_foreach (image, &composer->images, struct cli_composer_model_input_image)
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(&composer->images) &&
+	     (image = (struct cli_composer_model_input_image *)nb_vec_at(&composer->images, _i_));
+	     _i_++)
 		free(image->path);
-	morph_array_cleanup(&composer->images);
+	nb_vec_cleanup(&composer->images);
 }
 
 int cli_composer_model_add_image_resolved(struct cli_composer_model *composer,
@@ -45,19 +51,19 @@ int cli_composer_model_add_image_resolved(struct cli_composer_model *composer,
 	char *path;
 
 	if (!composer || !absolute_path || !absolute_path[0] || !label)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (width <= 0 || height <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (composer->next_image == SIZE_MAX) {
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	}
 	path = strdup(absolute_path);
 	if (!path)
-		return -ENOMEM;
-	image = morph_array_push_borrow(&composer->images);
+		return NB_ERR_NOMEM;
+	image = nb_vec_push(&composer->images);
 	if (!image) {
 		free(path);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	image->path = path;
 	image->width = width;
@@ -73,7 +79,10 @@ void cli_composer_model_visit_images(struct cli_composer_model *composer, const 
 {
 	struct cli_composer_model_input_image *image;
 
-	morph_array_foreach (image, &composer->images, struct cli_composer_model_input_image) {
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(&composer->images) &&
+	     (image = (struct cli_composer_model_input_image *)nb_vec_at(&composer->images, _i_));
+	     _i_++) {
 		if (strstr(input, image->label))
 			visit(data, image->width, image->height);
 	}
@@ -81,18 +90,21 @@ void cli_composer_model_visit_images(struct cli_composer_model *composer, const 
 
 char *cli_composer_model_expand_copy(struct cli_composer_model *composer, const char *input)
 {
-	morph_buf_t result MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf result NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *cursor = input;
 
-	if (morph_buf_init(&result, strlen(input) + 1) != 0)
+	if ((nb_buf_init(&result), nb_buf_reserve(&result, strlen(input) + 1) ? 0 : NB_ERR_NOMEM) !=
+	    0)
 		return NULL;
 	while (*cursor) {
 		struct cli_composer_model_input_image *image;
 		struct cli_composer_model_input_image *matched = NULL;
 		const char *next = NULL;
 
-		morph_array_foreach (image, &composer->images,
-				     struct cli_composer_model_input_image) {
+		for (size_t _i_ = 0; _i_ < nb_vec_len(&composer->images) &&
+				     (image = (struct cli_composer_model_input_image *)nb_vec_at(
+					      &composer->images, _i_));
+		     _i_++) {
 			const char *found = strstr(cursor, image->label);
 
 			if (found && (!next || found < next)) {
@@ -101,18 +113,18 @@ char *cli_composer_model_expand_copy(struct cli_composer_model *composer, const 
 			}
 		}
 		if (!matched) {
-			(void)morph_buf_puts(&result, cursor);
+			(void)nb_buf_append_cstr(&result, cursor);
 			break;
 		}
-		(void)morph_buf_append(&result, cursor, (size_t)(next - cursor));
-		(void)morph_buf_printf(&result, "%s [Image: %s]", matched->label, matched->path);
+		(void)nb_buf_append(&result, cursor, (size_t)(next - cursor));
+		(void)nb_buf_printf(&result, "%s [Image: %s]", matched->label, matched->path);
 		cursor = next + strlen(matched->label);
 	}
-	if (result.failed) {
-		morph_buf_cleanup(&result);
+	if (nb_buf_status(&result)) {
+		nb_buf_cleanup(&result);
 		return NULL;
 	}
-	return morph_buf_detach(&result);
+	return (nb_buf_ok(&result) ? strdup(nb_buf_cstr(&result)) : NULL);
 }
 
 int cli_composer_model_image_span(struct cli_composer_model *composer, const char *input, int point,
@@ -120,7 +132,10 @@ int cli_composer_model_image_span(struct cli_composer_model *composer, const cha
 {
 	struct cli_composer_model_input_image *image;
 
-	morph_array_foreach (image, &composer->images, struct cli_composer_model_input_image) {
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(&composer->images) &&
+	     (image = (struct cli_composer_model_input_image *)nb_vec_at(&composer->images, _i_));
+	     _i_++) {
 		const char *found = input;
 
 		while ((found = strstr(found, image->label))) {

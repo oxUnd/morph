@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -101,6 +102,7 @@ retry_count = 0
         arguments = (['-c', str(config), '-w', str(directory)] if production else
                      [str(config), str(directory), str(directory / 'data.db')])
         arguments += list(extra_arguments)
+        self.fast_recap = bool(extra_env and extra_env.get('MORPH_PTY_ADVANCE_RECAP') == '1')
         self.child = pexpect.spawn(str(driver), arguments,
                                    env=terminal_environment(directory, extra_env),
                                    encoding='utf-8', dimensions=(24, 80), timeout=8)
@@ -121,7 +123,23 @@ retry_count = 0
             except pexpect.EOF:
                 return
             self.raw += data
-            self.stream.feed(data)
+            # A retained renderer emits differences, so reconstruct each complete
+            # synchronized frame before asserting stable composer/footer geometry.
+            if not hasattr(self, 'published_frames'):
+                self.published_frames = []
+                self.frame_tail = ''
+            combined = self.frame_tail + data
+            consumed = 0
+            for boundary in re.finditer(r'\x1b\[\?2026l', combined):
+                end = boundary.end() - len(self.frame_tail)
+                if end <= 0:
+                    continue
+                self.stream.feed(data[consumed:end])
+                self.published_frames.append(('\n'.join(self.screen.display),
+                                               self.screen.cursor.y))
+                consumed = end
+            self.stream.feed(data[consumed:])
+            self.frame_tail = combined[-8:]
             screen = '\n'.join(self.screen.display)
             if 'Messages queued' in screen:
                 self.queued_states.append(screen)
@@ -144,7 +162,10 @@ retry_count = 0
         return text
 
     def send(self, text):
-        self.child.send(text)
+        if getattr(self, 'fast_recap', False) and text == '\x1b[99;9~':
+            os.kill(self.child.pid, signal.SIGUSR2)
+        else:
+            self.child.send(text)
         self.pump()
 
     def wait_for_composer(self, timeout=8):
@@ -313,21 +334,29 @@ def main():
             first, release = terminal.request()
             releases.append(release)
             assert '›' in terminal.snapshot('model running'), 'composer missing'
-            frames = re.findall(r'\x1b\[\?2026h(.*?)\x1b\[\?2026l',
-                                terminal.raw, re.S)
-            feed_frames = [frame for frame in frames if 'Live output' in frame]
+            feed_frames = [frame for frame, _ in terminal.published_frames
+                           if 'Live output' in frame]
             assert feed_frames, 'streaming feed must use synchronized updates'
             for frame in feed_frames:
                 assert '› ' in frame and 'ctx ' in frame, repr(frame)
                 assert frame.rfind('› ') > frame.rfind('Live output'), repr(frame)
             terminal.pump(0.8)
             tick_start = len(terminal.raw)
+            tick_frames = len(terminal.published_frames)
+            before_ticks = terminal.snapshot('settled composer before animation')
             terminal.pump(1.1)
             ticks = terminal.raw[tick_start:]
-            assert '\x1b[38;2;' in ticks, 'waiting status must keep animating'
-            assert '\x1b[2m\x1b[36m◉' in ticks, 'running dot must enter its dim phase'
-            assert '\x1b[0m\x1b[36m◉' in ticks, 'running dot must enter its bright phase'
-            assert '\x1b[2K' not in ticks, 'animation erased the composer or feed'
+            cyan = r'\x1b\[(?:36|38;5;6)m◉'
+            assert re.search(r'\x1b\[2m' + cyan, ticks), 'running dot must enter its dim phase'
+            assert re.search(r'\x1b\[0m' + cyan, ticks), 'running dot must enter its bright phase'
+            animated = terminal.published_frames[tick_frames:]
+            assert len(animated) >= 2, 'waiting status must keep animating'
+            for frame, cursor in animated:
+                rows = frame.splitlines()
+                composer = max(i for i, row in enumerate(rows) if row.strip() == '›')
+                assert cursor == composer, frame
+                assert 'ctx ' in frame, frame
+                assert frame.count('Live output') == before_ticks.count('Live output'), frame
             assert 'Live output' not in ticks and 'ctx ' not in ticks, repr(ticks)
             terminal.send('改成中文🙂')
             draft = terminal.snapshot('Chinese draft during spinner')
@@ -414,13 +443,17 @@ def main():
             assert 'Working ·' not in completed, completed
             assert completed.count('ctx ') == 1, completed
             assert ' cr' in completed, completed
-            idle_start = len(terminal.raw)
+            idle_start = len(terminal.published_frames)
+            completed_receipt = next(row.strip() for row in completed.splitlines()
+                                     if 'Worked for ' in row)
             terminal.pump(2)
             terminal.send('\x1b[O\x1b[I')
             terminal.send('\x15' + 'long 中文 ' * 10)
             idle = terminal.snapshot('completed work remains single during idle refresh')
             assert idle.count('Worked for ') == 1, idle
-            assert 'Worked for ' not in terminal.raw[idle_start:], terminal.raw[idle_start:]
+            for frame, _ in terminal.published_frames[idle_start:]:
+                receipts = [row.strip() for row in frame.splitlines() if 'Worked for ' in row]
+                assert receipts == [completed_receipt], frame
             idle_rows = idle.splitlines()
             worked_row = next(i for i, row in enumerate(idle_rows) if 'Worked for ' in row)
             idle_composer_row = next(i for i, row in enumerate(idle_rows)

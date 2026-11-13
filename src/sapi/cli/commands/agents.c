@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/agents.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
 
 #include "sapi/cli/application.h"
@@ -8,7 +9,7 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/widgets/agents.h"
 #include "sapi/cli/widgets/list.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include <string.h>
 
 struct cli_agents_snapshot {
@@ -24,13 +25,13 @@ static void cli_agents_snapshot_cleanup(struct cli_agents_snapshot *snapshot)
 static int cli_agents_print_detail(struct cli_application *ctx, const char *label,
 				   const char *value)
 {
-	morph_buf_t detail MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_init(&detail, 1024);
+	nb_buf detail NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&detail), nb_buf_reserve(&detail, 1024) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = cli_agents_detail(&detail, label, value, cli_list_columns(),
 				       cli_output_color_enabled(ctx));
 	if (rc == 0)
-		cli_output_printf(ctx, "%s", morph_buf_cstr_borrow(&detail));
+		cli_output_printf(ctx, "%s", nb_buf_cstr(&detail));
 	return rc;
 }
 
@@ -38,25 +39,27 @@ static int cli_agents_command_agents(struct cli_application *ctx, int argc, char
 {
 	if (argc > 2) {
 		CMD_ERROR(ctx, "usage: /agents [/root/name]");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
 		int rc = cli_subagents_show_fullscreen(ctx, cli_cmd_arg_borrow(argc, argv, 1));
 		if (rc != 0)
-			CMD_ERROR(ctx, "cannot open agents: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "cannot open agents: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
-	struct cli_agents_snapshot snapshot MORPH_CLEANUP(cli_agents_snapshot_cleanup) = {0};
+	struct cli_agents_snapshot snapshot NB_CLEANUP(cli_agents_snapshot_cleanup) = {0};
 	int64_t session = 0;
 	(void)runtime_session_current_id(ctx->runtime, &session);
 	int rc = runtime_agent_list(ctx->runtime, session, &snapshot.items, &snapshot.count);
-	if (rc == -ENOENT) {
+	if (rc == NB_ERR_NOT_FOUND) {
 		CMD_HEADER(ctx, "Agents");
 		cli_output_printf(ctx, "  Multi-agent collaboration is unavailable.\n");
 		return 0;
 	}
 	if (rc != 0) {
-		CMD_ERROR(ctx, "cannot inspect agents: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "cannot inspect agents: %s",
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 	const char *id = cli_cmd_arg_borrow(argc, argv, 1);
@@ -105,7 +108,7 @@ static int cli_agents_command_agents(struct cli_application *ctx, int argc, char
 	}
 	if (!found) {
 		CMD_ERROR(ctx, "agent not found: %s", id);
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	}
 	return 0;
 }
@@ -114,11 +117,12 @@ static int cli_agents_command_subagents(struct cli_application *ctx, int argc, c
 {
 	if (argc > 2) {
 		CMD_ERROR(ctx, "usage: /subagents [/root/name]");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	int rc = cli_subagents_show(ctx, cli_cmd_arg_borrow(argc, argv, 1));
 	if (rc != 0)
-		CMD_ERROR(ctx, "cannot open subagents: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "cannot open subagents: %s",
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	return rc;
 }
 

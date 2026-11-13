@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "agent/react.h"
+#include "nb/err.h"
 #include "agent/history.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
@@ -30,7 +31,7 @@ extern "C" {
  * agent, model, or tool registry behind it. Platform callbacks are injected at
  * creation time so the same runtime can serve CLI, Android, or another host.
  */
-struct morph_log;
+struct nb_log;
 
 struct runtime;
 
@@ -46,7 +47,7 @@ typedef void (*runtime_usage_observer_fn)(const struct model_usage *usage,
 typedef int (*runtime_after_models_fn)(struct react_context *react,
 	void *user_data);
 struct runtime_options {
-	struct morph_log *logger;
+	struct nb_log *logger;
 	const char *config_path;
 	const char *db_path;
 	const char *workdir;
@@ -100,7 +101,7 @@ struct runtime_permission_grant {
 	int64_t created_at;
 };
 
-/* Owned output slots must be initialized empty. Occupied owners return -EEXIST
+/* Owned output slots must be initialized empty. Occupied owners return NB_ERR_EXISTS
  * without losing their resources; failures leave empty slots empty. */
 int runtime_open(const struct runtime_options *options,
 		 struct runtime **out);
@@ -134,7 +135,7 @@ int runtime_session_rename_and_update(struct runtime *runtime, int64_t id,
 int runtime_session_list_all(struct runtime *runtime, struct session **out,
 			     int *count, int recent_first);
 /* Active history tokens used by automatic compaction, excluding billed usage.
- * Returns -ENODATA for legacy sessions without model history. */
+ * Returns NB_ERR_NO_DATA for legacy sessions without model history. */
 int runtime_session_context_tokens(struct runtime *runtime, int64_t session_id,
 				   int64_t *out);
 void runtime_session_list_free(struct session *sessions);
@@ -142,9 +143,9 @@ int runtime_session_reload_current(struct runtime *runtime);
 const char *runtime_session_current_name_borrow(struct runtime *runtime);
 struct message *runtime_session_messages_current_copy(struct runtime *runtime, int *count);
 void runtime_session_messages_free(struct message *messages);
-/* Copy outputs require NULL owner slots; -EEXIST preserves existing owners.
+/* Copy outputs require NULL owner slots; NB_ERR_EXISTS preserves existing owners.
  * Last nonempty assistant answer, including inactive history. Caller frees text.
- * Returns -ENODATA when absent and -EBUSY while a turn owns the session. */
+ * Returns NB_ERR_NO_DATA when absent and NB_ERR_BUSY while a turn owns the session. */
 int runtime_session_last_answer_copy(struct runtime *runtime, char **out);
 /* Read a session without selecting it. Caller frees the JSON on success. */
 /* Latest answered turn, including persisted tool results. Caller owns JSON. */
@@ -155,7 +156,7 @@ struct model_history_item *runtime_session_model_history_current_copy(struct run
 								      int active_only, int *count);
 void runtime_session_model_history_free(struct model_history_item *items);
 /* Empty output slots receive independent JSON owners, released with cJSON_Delete().
- * Read-only context inspection returns -EBUSY during a turn. */
+ * Read-only context inspection returns NB_ERR_BUSY during a turn. */
 int runtime_session_history_inspect_copy(struct runtime *runtime, cJSON **out);
 int runtime_session_history_entry_input_copy(struct runtime *runtime, int64_t sequence,
 					     cJSON **out);
@@ -177,6 +178,8 @@ const char *runtime_config_path_borrow(const struct runtime *runtime);
 char *runtime_output_json_copy(struct runtime *runtime, const char *path);
 /* Host management only; never register these operations as model tools.
  * An empty output receives independent JSON owned until cJSON_Delete(). */
+/* Stable review token for the runtime workspace. */
+void runtime_hooks_workspace_token(struct runtime *runtime, char out[65]);
 int runtime_hooks_snapshot_copy(struct runtime *runtime, cJSON **out);
 int runtime_hooks_manage(struct runtime *runtime, const char *action,
 	const char *id, const char *expected_digest);

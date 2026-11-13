@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/share.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/share_store.h"
@@ -12,22 +13,24 @@ static int cli_share_command_share(struct cli_application *ctx, int argc, char *
 	(void)argv;
 	if (argc != 1) {
 		CMD_ERROR(ctx, "usage: /share");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	cJSON *document = NULL;
 	int rc = runtime_session_share_current(ctx->runtime, &document);
 	if (rc != 0) {
-		if (rc == -ENODATA)
+		if (rc == NB_ERR_NO_DATA)
 			CMD_ERROR(ctx, "no completed conversation is available to share");
 		else
-			CMD_ERROR(ctx, "share failed: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "share failed: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 	char *path = NULL;
 	rc = cli_share_store_save(document, &path);
 	cJSON_Delete(document);
 	if (rc != 0)
-		CMD_ERROR(ctx, "share failed: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "share failed: %s",
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	else
 		CMD_OK(ctx, "saved conversation to %s", path);
 	free(path);

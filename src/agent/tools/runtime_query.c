@@ -1,14 +1,14 @@
 #include "runtime_query.h"
 #include "user_evidence.h"
 #include "memory_update.h"
-#include "util/json.h"
-#include "util/cleanup.h"
+#include "cJSON.h"
+#include "nb/cleanup.h"
 #include "agent/memory.h"
 #include "agent/tokenizer.h"
-#include "util/utf8.h"
+#include "nb/utf8.h"
 #include "agent/tool_runtime.h"
 #include "credits.h"
-#include "util/error.h"
+#include "errors.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdio.h>
@@ -42,7 +42,7 @@ static int credits_exec(const char *args_json, struct tool_result *result,
 	struct credit_summary session;
 	struct credit_summary total;
 	cJSON *root;
-	char *json MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
+	char *json NB_CLEANUP(cJSON_FreeTextOwner) = NULL;
 	int rc;
 
 	(void)args_json;
@@ -64,7 +64,7 @@ static int credits_exec(const char *args_json, struct tool_result *result,
 
 	root = cJSON_CreateObject();
 	if (!root)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	summary_to_json(root, "today", &today);
 	summary_to_json(root, "session", &session);
 	summary_to_json(root, "total", &total);
@@ -78,7 +78,7 @@ static int credits_exec(const char *args_json, struct tool_result *result,
 	json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
 	if (!json)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	return tool_result_success_json_text_copy(result, json);
 }
 
@@ -151,7 +151,7 @@ static void parse_memory_query(const char *args_json,
 static int memory_page_result_set(struct tool_result *result, const char *page, int scope_all,
 				  int scope_project, size_t offset, size_t returned, size_t total)
 {
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	int rc;
 
 	const char *scope = scope_all ? "all" : scope_project ? "project" : "session";
@@ -163,7 +163,7 @@ static int memory_page_result_set(struct tool_result *result, const char *page, 
 	    !cJSON_AddNumberToObject(data, "total_chars", (double)total) ||
 	    !cJSON_AddNumberToObject(data, "next_offset_chars", (double)(offset + returned)) ||
 	    !cJSON_AddBoolToObject(data, "has_more", offset + returned < total))
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	rc = tool_result_success_copy(result, data);
 	if (rc == 0)
 		rc = tool_result_finalize(result);
@@ -175,9 +175,9 @@ static int memory_exec(const char *args_json, struct tool_result *result,
 {
 	const struct tool_runtime_context *rt = result->runtime;
 	struct memory_query_options q;
-	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = args_json ? cJSON_Parse(args_json) : NULL;
-	char *text MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	char *page MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	cJSON *args NB_CLEANUP(cJSON_DeleteOwner) = args_json ? cJSON_Parse(args_json) : NULL;
+	char *text NB_CLEANUP(nb_charp_cleanup) = NULL;
+	char *page NB_CLEANUP(nb_charp_cleanup) = NULL;
 	const cJSON *offset = cJSON_GetObjectItemCaseSensitive(args, "offset_chars");
 	const cJSON *maximum = cJSON_GetObjectItemCaseSensitive(args, "max_chars");
 	size_t offset_chars = 0;
@@ -189,7 +189,7 @@ static int memory_exec(const char *args_json, struct tool_result *result,
 	if (!rt || !rt->db)
 		return tool_result_error_copy(result, "tool_failed",
 		"Runtime context is unavailable.");
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	int lock_rc = db_lock_acquire(rt->db, &lock);
 
 	if (lock_rc != 0)
@@ -213,7 +213,7 @@ static int memory_exec(const char *args_json, struct tool_result *result,
 	parse_memory_query(args_json, rt->config, &q);
 	const cJSON *query = cJSON_GetObjectItemCaseSensitive(args, "query");
 	if (query && (!cJSON_IsString(query) || strlen(query->valuestring) > 2048 ||
-		      utf8valid(query->valuestring)))
+		      nb_utf8_validate(nb_str_from_cstr(query->valuestring), NULL)))
 		return tool_result_error_copy(result, "invalid_query",
 					      "query must be valid UTF-8 and at most 2048 bytes.");
 	q.query = cJSON_GetStringValue(query);
@@ -247,26 +247,26 @@ static int memory_exec(const char *args_json, struct tool_result *result,
 	}
 	text = memory_query_text_create(rt->db, rt->memory_session_id, &q);
 	if (!text)
-		return -ENOMEM;
-	size_t total_chars = utf8len(text);
+		return NB_ERR_NOMEM;
+	size_t total_chars = nb_utf8_count(nb_str_from_cstr(text));
 	if (offset_chars > total_chars)
 		return tool_result_error_copy(result, "invalid_offset",
 			"offset_chars exceeds the current memory text length.");
-	const char *start = utf8_advance_codepoints_borrow(text, offset_chars);
-	const char *end = utf8_advance_codepoints_borrow(start, max_chars);
+	const char *start = nb_utf8_advance(text, offset_chars);
+	const char *end = nb_utf8_advance(start, max_chars);
 	page = strndup(start, (size_t)(end - start));
 	if (!page)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	/* Count the finalized result, including duplicated compatibility fields and
 	 * JSON escaping. Select the largest complete UTF-8 prefix that fits. */
 	size_t lower = 0;
-	size_t upper = utf8len(page);
+	size_t upper = nb_utf8_count(nb_str_from_cstr(page));
 	size_t returned = upper;
 	for (;;) {
 		if (!returned && offset_chars < total_chars)
 			return tool_result_error_copy(result, "memory_budget_too_small",
 				"The configured tool result budget cannot fit a memory page.");
-		char *cut = (char *)utf8_advance_codepoints_borrow(page, returned);
+		char *cut = (char *)nb_utf8_advance(page, returned);
 		char saved = *cut;
 		*cut = '\0';
 		int rc = memory_page_result_set(result, page, q.scope_all, q.scope_project,
@@ -274,7 +274,7 @@ static int memory_exec(const char *args_json, struct tool_result *result,
 		*cut = saved;
 		if (rc != 0)
 			return rc;
-		if (tokenizer_estimate_tokens(result->text.data) <= budget) {
+		if (tokenizer_estimate_tokens(result->text.ptr) <= budget) {
 			lower = returned;
 			if (lower == upper)
 				return 0;
@@ -298,7 +298,7 @@ static int preference_exec(const char *args_json, struct tool_result *result,
 	cJSON *value = cJSON_GetObjectItemCaseSensitive(args, "value");
 	cJSON *scope = cJSON_GetObjectItemCaseSensitive(args, "scope");
 	cJSON *evidence = cJSON_GetObjectItemCaseSensitive(args, "evidence");
-	char *token MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *token NB_CLEANUP(nb_charp_cleanup) = NULL;
 	int rc;
 
 	(void)user_data;
@@ -312,15 +312,15 @@ static int preference_exec(const char *args_json, struct tool_result *result,
 			"Memory must be enabled; provide key, value (null to unset), scope "
 			"and user evidence.");
 	}
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	rc = db_lock_acquire(rt->db, &lock);
 	if (rc != 0) {
 		cJSON_Delete(args);
 		return rc;
 	}
-	if (morph_cancel_token_is_cancelled(rt->http.cancel_token)) {
+	if (nb_cancel_requested(rt->http.cancel_token)) {
 		cJSON_Delete(args);
-		return -ECANCELED;
+		return NB_ERR_CANCELLED;
 	}
 	rc = tool_user_evidence_token_copy(rt, evidence->valuestring, &token);
 	if (rc != 0) {
@@ -334,16 +334,18 @@ static int preference_exec(const char *args_json, struct tool_result *result,
 		evidence->valuestring, token);
 	cJSON_Delete(args);
 	if (rc != 0)
-		return tool_result_error_copy(result, "preference_not_saved", morph_strerror(rc));
+		return tool_result_error_copy(
+			result, "preference_not_saved",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	{
 		char *effective = preference_render_copy(rt->db, rt->memory_session_id, 0);
 		cJSON *response = cJSON_CreateObject();
-		char *json MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
+		char *json NB_CLEANUP(cJSON_FreeTextOwner) = NULL;
 
 		if (!response || !effective) {
 			cJSON_Delete(response);
 			free(effective);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		cJSON_AddBoolToObject(response, "saved", 1);
 		cJSON_AddStringToObject(response, "effective_preferences", effective);
@@ -351,7 +353,7 @@ static int preference_exec(const char *args_json, struct tool_result *result,
 		json = cJSON_PrintUnformatted(response);
 		cJSON_Delete(response);
 		if (!json)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		return tool_result_success_json_text_copy(result, json);
 	}
 }
@@ -362,7 +364,7 @@ int runtime_query_tools_init(struct tool_registry *reg)
 	struct tool_entry *e;
 
 	if (!reg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = tool_register_borrow(
 		reg, &(struct tool_spec){.origin = TOOL_ORIGIN_BUILTIN,
 					 .name = "credits",

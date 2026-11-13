@@ -2,6 +2,7 @@
 #define MORPH_DYNAMIC_TOOL_STORE_H
 
 #include "dynamic_tool_internal.h"
+#include "nb/err.h"
 
 struct dynamic_tool_definition {
 	/* Owned backing document; the text views borrow it until cleanup. */
@@ -14,7 +15,7 @@ struct dynamic_tool_definition {
 	int legacy_source;
 };
 
-/* Missing files return -ENOENT, invalid JSON PARSE, invalid fields FORMAT. */
+/* Missing files return NB_ERR_NOT_FOUND, invalid JSON PARSE, invalid fields FORMAT. */
 int dynamic_tool_store_load_definition(const char *meta_path, const char *source_path,
 				       struct dynamic_tool_definition *definition);
 void dynamic_tool_store_definition_cleanup(struct dynamic_tool_definition *definition);
@@ -44,7 +45,7 @@ int dynamic_tool_store_restore_tool_checkpoint(const char *tool_dir, const char 
 					       const struct tool_checkpoint *cp);
 int dynamic_tool_store_remove_tree(const char *path);
 char *dynamic_tool_store_optional_text_create(const char *path);
-int dynamic_tool_store_append_whole_file_diff(morph_buf_t *buf, const char *label,
-					      const char *old_text, const char *new_text);
+int dynamic_tool_store_append_whole_file_diff(nb_buf *buf, const char *label, const char *old_text,
+					      const char *new_text);
 
 #endif

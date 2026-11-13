@@ -15,6 +15,7 @@ extern "C" {
 }
 
 #include <fcntl.h>
+#include <cerrno>
 #include <poll.h>
 #include <regex>
 #include <string>
@@ -22,6 +23,29 @@ extern "C" {
 #include <thread>
 #include <sys/ioctl.h>
 #include <unistd.h>
+
+static std::string collect_terminal_output(int master)
+{
+	std::string bytes;
+	char chunk[BUFSIZ];
+	for (;;) {
+		struct pollfd pending = {master, POLLIN, 0};
+		int ready = poll(&pending, 1, bytes.empty() ? 1000 : 20);
+		if (ready < 0 && errno == EINTR)
+			continue;
+		EXPECT_GE(ready, 0);
+		if (ready <= 0)
+			break;
+		ssize_t count = read(master, chunk, sizeof(chunk));
+		if (count < 0 && (errno == EINTR || errno == EAGAIN))
+			continue;
+		EXPECT_GT(count, 0);
+		if (count <= 0)
+			break;
+		bytes.append(chunk, static_cast<size_t>(count));
+	}
+	return bytes;
+}
 
 class CliTerminalTest : public ::testing::Test
 {
@@ -152,21 +176,16 @@ TEST_F(CliTerminalTest, TtyViewportRendersAndConsumesPromptQueue)
 	cli_output_set_color_enabled(&ctx, 1);
 	ASSERT_EQ(cli_feed_init(&ctx, output, slave), 0);
 
-	char bytes[BUFSIZ];
 	cli_feed_queue_changed(&ctx);
-	ssize_t count = read(master, bytes, sizeof(bytes) - 1);
-	ASSERT_GT(count, 0);
-	bytes[count] = '\0';
-	std::string queue_only(bytes);
+	std::string queue_only = collect_terminal_output(master);
+	ASSERT_FALSE(queue_only.empty());
 	EXPECT_NE(queue_only.find("first adjustment"), std::string::npos);
 	EXPECT_EQ(queue_only.find("Thinking…"), std::string::npos);
 
 	cli_feed_live_set(&ctx, "Thinking…");
 	cli_feed_render_frame(&ctx, 1);
-	count = read(master, bytes, sizeof(bytes) - 1);
-	ASSERT_GT(count, 0);
-	bytes[count] = '\0';
-	std::string queued(bytes);
+	std::string queued = collect_terminal_output(master);
+	ASSERT_FALSE(queued.empty());
 	size_t first = queued.find("first adjustment");
 	size_t second = queued.find("second adjustment");
 	size_t status = queued.find("Thinking…");
@@ -186,10 +205,8 @@ TEST_F(CliTerminalTest, TtyViewportRendersAndConsumesPromptQueue)
 	EXPECT_STREQ(consumed, "first adjustment");
 	free(consumed);
 	cli_feed_render_frame(&ctx, 1);
-	count = read(master, bytes, sizeof(bytes) - 1);
-	ASSERT_GT(count, 0);
-	bytes[count] = '\0';
-	std::string redrawn(bytes);
+	std::string redrawn = collect_terminal_output(master);
+	ASSERT_FALSE(redrawn.empty());
 	EXPECT_EQ(redrawn.find("first adjustment"), std::string::npos);
 	EXPECT_NE(redrawn.find("second adjustment"), std::string::npos);
 	EXPECT_NE(redrawn.find("third adjustment"), std::string::npos);
@@ -345,18 +362,16 @@ TEST_F(CliTerminalTest, FinalOutputKeepsComposerRowWhileWorkerFinishes)
 	ctx.presenter->final_rendered = 1;
 	cli_feed_composer_resume(&ctx);
 	fflush(output);
-	char bytes[BUFSIZ];
-	ssize_t count = read(master, bytes, sizeof(bytes));
-	ASSERT_GT(count, 0);
-	EXPECT_NE(std::string(bytes, static_cast<size_t>(count)).find("esc to interrupt"),
-		  std::string::npos);
+	auto collect = [&] { return collect_terminal_output(master); };
+	std::string active = collect();
+	ASSERT_FALSE(active.empty());
+	EXPECT_NE(active.find("esc to interrupt"), std::string::npos);
 	cli_feed_composer_suspend(&ctx);
 	cli_feed_turn_end(&ctx, 0);
 	cli_feed_composer_resume(&ctx);
 	fflush(output);
-	count = read(master, bytes, sizeof(bytes));
-	ASSERT_GT(count, 0);
-	std::string transition(bytes, static_cast<size_t>(count));
+	std::string transition = collect();
+	ASSERT_FALSE(transition.empty());
 	EXPECT_NE(transition.find("Worked for"), std::string::npos);
 	/* No text wraps at this width. Count vertical cursor controls and LF
 	 * to verify the composer ends at the exact row it started on. */
@@ -371,7 +386,7 @@ TEST_F(CliTerminalTest, FinalOutputKeepsComposerRowWhileWorkerFinishes)
 			displacement += (*match)[2] == "A" ? -rows : rows;
 		}
 	}
-	EXPECT_EQ(displacement, 0);
+	EXPECT_EQ(displacement, 0) << transition;
 	cli_feed_cleanup(&ctx);
 	fclose(output);
 	close(slave);
@@ -388,10 +403,10 @@ TEST_F(CliTerminalTest, JobsShowCompactSummaryAndOnlyExpandTheWaitedCommand)
 	event.name = "process.started";
 	event.data = data;
 	ASSERT_EQ(cli_jobs_event(&ctx, &event), 1);
-	morph_buf_t output{};
-	ASSERT_EQ(morph_buf_init(&output, 128), 0);
+	nb_buf output{};
+	ASSERT_EQ((nb_buf_init(&output), nb_buf_reserve(&output, 128) ? 0 : NB_ERR_NOMEM), 0);
 	EXPECT_EQ(cli_jobs_render(ctx.jobs, &output, 80, 0), 1);
-	std::string text = morph_buf_cstr_borrow(&output);
+	std::string text = nb_buf_cstr(&output);
 	EXPECT_EQ(text.find("◉ 1 background job running · /jobs"), 0u);
 	EXPECT_EQ(text.find("cmake --build"), std::string::npos);
 	EXPECT_EQ(text.find("PRIVATE LOG"), std::string::npos);
@@ -399,9 +414,9 @@ TEST_F(CliTerminalTest, JobsShowCompactSummaryAndOnlyExpandTheWaitedCommand)
 	ASSERT_EQ(cli_jobs_event(&ctx, &event), 1);
 	EXPECT_EQ((ctx.jobs && cli_jobs_model_waiting(ctx.jobs)), 1);
 	for (int columns : {120, 80, 60, 40}) {
-		morph_buf_reset(&output);
+		nb_buf_clear(&output);
 		EXPECT_EQ(cli_jobs_render(ctx.jobs, &output, columns, 0), 2);
-		text = morph_buf_cstr_borrow(&output);
+		text = nb_buf_cstr(&output);
 		EXPECT_EQ(text.find("◉ Waiting for"), 0u) << text;
 		EXPECT_NE(text.find("/jobs"), std::string::npos) << text;
 		EXPECT_NE(text.find("Esc"), std::string::npos) << text;
@@ -411,7 +426,7 @@ TEST_F(CliTerminalTest, JobsShowCompactSummaryAndOnlyExpandTheWaitedCommand)
 		for (size_t offset = 0; offset < text.size();) {
 			size_t end = text.find('\n', offset);
 			auto line = text.substr(offset, end - offset);
-			EXPECT_LT(utf8_display_width(line.c_str()), static_cast<size_t>(columns));
+			EXPECT_LT(nb_utf8_width_cstr(line.c_str()), static_cast<size_t>(columns));
 			if (end == std::string::npos) break;
 			offset = end + 1;
 		}
@@ -419,7 +434,7 @@ TEST_F(CliTerminalTest, JobsShowCompactSummaryAndOnlyExpandTheWaitedCommand)
 	event.name = "background.wait.end";
 	ASSERT_EQ(cli_jobs_event(&ctx, &event), 1);
 	EXPECT_EQ((ctx.jobs && cli_jobs_model_waiting(ctx.jobs)), 0);
-	morph_buf_cleanup(&output);
+	nb_buf_cleanup(&output);
 	cJSON_Delete(data);
 }
 
@@ -436,13 +451,13 @@ TEST_F(CliTerminalTest, CompletedJobsLeaveOneHistoryReceiptAndNoLiveRows)
 	ASSERT_EQ(cli_jobs_event(&ctx, &event), 1);
 	std::string receipt = testing::internal::GetCapturedStdout();
 	EXPECT_NE(receipt.find("exited 7"), std::string::npos);
-	morph_buf_t output{};
-	ASSERT_EQ(morph_buf_init(&output, 128), 0);
+	nb_buf output{};
+	ASSERT_EQ((nb_buf_init(&output), nb_buf_reserve(&output, 128) ? 0 : NB_ERR_NOMEM), 0);
 	EXPECT_EQ(cli_jobs_render(ctx.jobs, &output, 40, 0), 0);
-	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&output)).find("└"), std::string::npos);
-	EXPECT_TRUE(std::string(morph_buf_cstr_borrow(&output)).empty());
+	EXPECT_EQ(std::string(nb_buf_cstr(&output)).find("└"), std::string::npos);
+	EXPECT_TRUE(std::string(nb_buf_cstr(&output)).empty());
 	EXPECT_EQ(cli_jobs_model_visible(ctx.jobs), 0);
-	morph_buf_cleanup(&output);
+	nb_buf_cleanup(&output);
 	cJSON_Delete(data);
 }
 

@@ -1,4 +1,6 @@
+#include "nb/err.h"
 #include <ctype.h>
+#include "nb/err.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,7 +27,7 @@ static int append_tag(char *out, size_t cap, const char *tag)
 	size_t used = strlen(out);
 	size_t need = strlen(tag) + (used ? 2 : 0);
 	if (used + need + 1 >= cap)
-		return -ENOSPC;
+		return NB_ERR_NO_SPACE;
 	if (used) {
 		strcat(out, ", ");
 		used += 2;
@@ -85,16 +87,16 @@ int guardrail_check(const char *text, const char *rule,
 	(void)rule;
 	(void)description;
 	if (!result_json)
-		return -1;
+		return NB_ERR_INVAL;
 	if (!text || !*text) {
 		*result_json = json_result(1, "");
-		return *result_json ? 0 : -1;
+		return *result_json ? NB_OK : NB_ERR_NOMEM;
 	}
 
 	char unknown[256] = {0};
 	if (!find_unsupported_tags(text, unknown, sizeof(unknown))) {
 		*result_json = json_result(1, "");
-		return *result_json ? 0 : -1;
+		return *result_json ? NB_OK : NB_ERR_NOMEM;
 	}
 
 	char reason[512];
@@ -104,5 +106,5 @@ int guardrail_check(const char *text, const char *rule,
 		 "are supported. ask_user is a tool call, not an m:* tag.",
 		 unknown);
 	*result_json = json_result(0, reason);
-	return *result_json ? 0 : -1;
+	return *result_json ? NB_OK : NB_ERR_NOMEM;
 }

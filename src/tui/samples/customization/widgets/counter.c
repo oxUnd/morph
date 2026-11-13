@@ -1,9 +1,9 @@
 #include "widgets/counter.h"
-#include "util/error.h"
+#include "errors.h"
 
 struct sample_customization_widget_counter {
 	struct morph_tui_widget base;
-	morph_buf_t row;
+	nb_buf row;
 	int value;
 	int step;
 };
@@ -16,23 +16,23 @@ static int sample_customization_widget_counter_draw(struct morph_tui_view *view,
 	unsigned style = morph_tui_view_focused(view) ? MORPH_TUI_STYLE_SELECTED : 0;
 	int rc = morph_tui_canvas_fill(canvas, style);
 
-	morph_buf_reset(&counter->row);
+	nb_buf_clear(&counter->row);
 	if (!rc)
-		rc = morph_buf_printf(&counter->row, "Custom Counter | value %d | step %d",
-				      counter->value, counter->step);
+		rc = (nb_buf_printf(&counter->row, "Custom Counter | value %d | step %d",
+				    counter->value, counter->step)
+			      ? 0
+			      : NB_ERR_NOMEM);
 	if (!rc)
-		rc = morph_tui_canvas_text(canvas, 0, 0, morph_buf_cstr_borrow(&counter->row),
-					   style);
-	morph_buf_reset(&counter->row);
-	morph_buf_putc(&counter->row, '[');
+		rc = morph_tui_canvas_text(canvas, 0, 0, nb_buf_cstr(&counter->row), style);
+	nb_buf_clear(&counter->row);
+	nb_buf_append_char(&counter->row, '[');
 	for (int i = 0; i < 20; i++)
-		morph_buf_putc(&counter->row, i < counter->value ? '#' : '.');
-	morph_buf_putc(&counter->row, ']');
+		nb_buf_append_char(&counter->row, i < counter->value ? '#' : '.');
+	nb_buf_append_char(&counter->row, ']');
 	if (!rc)
-		rc = counter->row.failed;
+		rc = nb_buf_ok(&counter->row) ? NB_OK : NB_ERR_NOMEM;
 	if (!rc)
-		rc = morph_tui_canvas_text(canvas, 0, 1, morph_buf_cstr_borrow(&counter->row),
-					   style);
+		rc = morph_tui_canvas_text(canvas, 0, 1, nb_buf_cstr(&counter->row), style);
 	if (!rc)
 		rc = morph_tui_canvas_text(canvas, 0, 2,
 					   "+/- or Left/Right: value; Space: step; Enter: inspect",
@@ -43,11 +43,11 @@ static int sample_customization_widget_counter_draw(struct morph_tui_view *view,
 int sample_customization_widget_counter_set(struct morph_tui_view *view, int value, int step)
 {
 	if (!view || !view->ops || view->ops->draw != sample_customization_widget_counter_draw)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	if (step != 1 && step != 5)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct sample_customization_widget_counter *counter =
 		(struct sample_customization_widget_counter *)view;
 
@@ -100,19 +100,21 @@ static int sample_customization_widget_counter_event(struct morph_tui_view *view
 	}
 	int rc = sample_customization_widget_counter_set(view, value, step);
 
-	morph_buf_reset(&counter->row);
+	nb_buf_clear(&counter->row);
 	if (!rc)
-		rc = morph_buf_printf(&counter->row, "Counter action: value %d, step %d",
-				      counter->value, counter->step);
+		rc = (nb_buf_printf(&counter->row, "Counter action: value %d, step %d",
+				    counter->value, counter->step)
+			      ? 0
+			      : NB_ERR_NOMEM);
 	if (!rc)
 		rc = morph_tui_widget_emit(view, action, (size_t)counter->value,
-					   morph_buf_cstr_borrow(&counter->row));
+					   nb_buf_cstr(&counter->row));
 	return rc ? rc : 1;
 }
 
 static void sample_customization_widget_counter_destroy(struct morph_tui_view *view)
 {
-	morph_buf_cleanup(&((struct sample_customization_widget_counter *)view)->row);
+	nb_buf_cleanup(&((struct sample_customization_widget_counter *)view)->row);
 }
 
 struct morph_tui_view *sample_customization_widget_counter_create(struct morph_tui_builder *builder,
@@ -133,7 +135,8 @@ struct morph_tui_view *sample_customization_widget_counter_create(struct morph_t
 		return NULL;
 	struct morph_tui_view *view = &counter->base.view;
 
-	morph_tui_builder_fail(builder, morph_buf_init(&counter->row, 128));
+	morph_tui_builder_fail(builder, (nb_buf_init(&counter->row),
+					 nb_buf_reserve(&counter->row, 128) ? 0 : NB_ERR_NOMEM));
 	morph_tui_builder_fail(builder, sample_customization_widget_counter_set(view, value, step));
 	morph_tui_widget_set_tag(view, tag);
 	morph_tui_view_set_focusable(view, 1);

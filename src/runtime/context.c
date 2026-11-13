@@ -1,6 +1,6 @@
 #include "runtime/context.h"
 
-#include "util/error.h"
+#include "errors.h"
 
 #include <errno.h>
 #include <string.h>
@@ -155,7 +155,7 @@ int runtime_tool_context_for_session(struct db *db,
 	const char *credit_session_id = NULL;
 
 	if (!db || !config || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(out, 0, sizeof(*out));
 	out->db = db;
 	out->config = config;

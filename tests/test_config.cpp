@@ -1,10 +1,13 @@
 #include <gtest/gtest.h>
+#include <stdlib.h>
+#include "nb/cleanup.h"
 #include "config/config.h"
-#include "util/file.h"
-#include "util/error.h"
+#include "nb/file.h"
+#include "errors.h"
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <string>
 
 class ConfigTest : public ::testing::Test {
@@ -93,7 +96,7 @@ TEST_F(ConfigTest, RolloutBudgetRequiresExplicitOptInAndAcceptsFractionalAndZero
 	const char *text = "[features.rollout_budget]\nenabled=true\nlimit_tokens=1000\n"
 		"reminder_at_remaining_tokens=[500,100]\nprefill_token_weight=0.25\n"
 		"sampling_token_weight=0\n";
-	ASSERT_EQ(file_write_all(config_path, text, strlen(text)), 0);
+	ASSERT_EQ(nb_file_write_all(config_path, text, strlen(text), NULL), 0);
 	struct config cfg;
 	ASSERT_EQ(config_load(nullptr, &cfg, config_path), 0);
 	EXPECT_TRUE(cfg.agents.rollout_budget.enabled);
@@ -110,7 +113,7 @@ TEST_F(ConfigTest, LegacyAgentBudgetKeysDoNotEnableLimits)
 	const char *text = "[agents]\nmax_total_tokens=500000\nbudget_input_weight=2\n"
 		"budget_output_weight=4\nbudget_warning_percent=70\n"
 		"budget_primary_reserve_percent=20\nbudget_enforcement=\"hard\"\n";
-	ASSERT_EQ(file_write_all(config_path, text, strlen(text)), 0);
+	ASSERT_EQ(nb_file_write_all(config_path, text, strlen(text), NULL), 0);
 	struct config cfg;
 	ASSERT_EQ(config_load(nullptr, &cfg, config_path), 0);
 	EXPECT_FALSE(cfg.agents.rollout_budget.enabled);
@@ -143,7 +146,7 @@ TEST_F(ConfigTest, RolloutBudgetValidatesRequiredFieldsAndThresholds)
 		"limit_tokens=100\nreminder_at_remaining_tokens=[50]\n",
 		"enabled=true\nlimit_tokens=100\nreminder_at_remaining_tokens=[]\n"}) {
 		std::string text = std::string("[features.rollout_budget]\n") + fields;
-		ASSERT_EQ(file_write_all(config_path, text.c_str(), text.size()), 0);
+		ASSERT_EQ(nb_file_write_all(config_path, text.c_str(), text.size(), NULL), 0);
 		struct config cfg;
 		ASSERT_EQ(config_load(nullptr, &cfg, config_path), 0);
 		EXPECT_EQ(cfg.agents.rollout_budget.enabled, strstr(fields, "enabled=true") != nullptr);
@@ -155,7 +158,7 @@ TEST_F(ConfigTest, MultiAgentConfiguration)
 	const char *toml = "[agents]\nenabled=true\nmax_threads=4\nmax_depth=3\n"
 		"task_timeout_seconds=120\nfinalize_wait_seconds=10\nfinalize_grace_seconds=0\n"
 		"multi_agent_mode=\"proactive\"\n";
-	ASSERT_EQ(file_write_all(config_path, toml, strlen(toml)), 0);
+	ASSERT_EQ(nb_file_write_all(config_path, toml, strlen(toml), NULL), 0);
 	struct config cfg;
 	ASSERT_EQ(config_load(NULL, &cfg, config_path), 0);
 	EXPECT_EQ(cfg.agents.enabled, 1);
@@ -173,18 +176,18 @@ TEST_F(ConfigTest, AgentConvergenceLimitsRejectInvalidValues)
 				  "finalize_wait_seconds=-1", "finalize_wait_seconds=3601",
 				  "finalize_grace_seconds=-1", "finalize_grace_seconds=3601"}) {
 		std::string text = std::string("[agents]\n") + field + "\n";
-		ASSERT_EQ(file_write_all(config_path, text.c_str(), text.size()), 0);
-		struct config cfg;
-		EXPECT_NE(config_load(nullptr, &cfg, config_path), 0) << field;
+		ASSERT_EQ(nb_file_write_all(config_path, text.c_str(), text.size(), NULL), 0);
+		auto cfg = std::make_unique<struct config>();
+		EXPECT_NE(config_load(nullptr, cfg.get(), config_path), 0) << field;
 	}
 	const char *disabled = "[agents]\ntask_timeout_seconds=0\nfinalize_wait_seconds=0\n"
 		"finalize_grace_seconds=0\n";
-	ASSERT_EQ(file_write_all(config_path, disabled, strlen(disabled)), 0);
-	struct config cfg;
-	ASSERT_EQ(config_load(nullptr, &cfg, config_path), 0);
-	EXPECT_EQ(cfg.agents.task_timeout_seconds, 0);
-	EXPECT_EQ(cfg.agents.finalize_wait_seconds, 0);
-	EXPECT_EQ(cfg.agents.finalize_grace_seconds, 0);
+	ASSERT_EQ(nb_file_write_all(config_path, disabled, strlen(disabled), NULL), 0);
+	auto cfg = std::make_unique<struct config>();
+	ASSERT_EQ(config_load(nullptr, cfg.get(), config_path), 0);
+	EXPECT_EQ(cfg->agents.task_timeout_seconds, 0);
+	EXPECT_EQ(cfg->agents.finalize_wait_seconds, 0);
+	EXPECT_EQ(cfg->agents.finalize_grace_seconds, 0);
 }
 
 TEST_F(ConfigTest, PromptRejectsUnknownModes)
@@ -192,7 +195,7 @@ TEST_F(ConfigTest, PromptRejectsUnknownModes)
 	for (const char *toml : {
 	     "[prompt]\nmode = \"replcae\"\n",
 	     "[[agent.sub_agents]]\nname = \"child\"\nsystem_prompt_mode = \"off\"\n"}) {
-		ASSERT_EQ(file_write_all(config_path, toml, strlen(toml)), 0);
+		ASSERT_EQ(nb_file_write_all(config_path, toml, strlen(toml), NULL), 0);
 		struct config cfg;
 		EXPECT_NE(config_load(NULL, &cfg, config_path), 0);
 	}
@@ -203,7 +206,7 @@ TEST_F(ConfigTest, MigratesLegacyDefaultSyncIncludes) {
 [sync]
 include = ["config.toml", "data.db", "skills", "tools", "exts", "output"]
 )";
-	file_write_all(config_path, toml, strlen(toml));
+	nb_file_write_all(config_path, toml, strlen(toml), NULL);
 
 	struct config cfg;
 	ASSERT_EQ(config_load(NULL, &cfg, config_path), 0);
@@ -216,7 +219,7 @@ TEST_F(ConfigTest, EmptyDisabledToolsLeavesAllToolsEnabled) {
 [react]
 disabled_tools = []
 )";
-	file_write_all(config_path, toml, strlen(toml));
+	nb_file_write_all(config_path, toml, strlen(toml), NULL);
 
 	struct config cfg;
 	ASSERT_EQ(config_load(NULL, &cfg, config_path), 0);
@@ -295,7 +298,7 @@ interval_seconds = 60
 retention_days = 14
 include = ["config.toml", "output"]
 )";
-	file_write_all(config_path, toml, strlen(toml));
+	nb_file_write_all(config_path, toml, strlen(toml), nullptr);
 
 	struct config cfg;
 	int rc = config_load(NULL, &cfg, config_path);
@@ -382,7 +385,7 @@ input_per_million = 2.0
 cached_input_per_million = 0.0
 output_per_million = 10.0
 )";
-	file_write_all(config_path, toml, strlen(toml));
+	nb_file_write_all(config_path, toml, strlen(toml), NULL);
 
 	struct config cfg;
 	int rc = config_load(NULL, &cfg, config_path);
@@ -428,7 +431,7 @@ default_session = "partial_test"
 [react]
 max_iterations = 20
 )";
-	file_write_all(config_path, toml, strlen(toml));
+	nb_file_write_all(config_path, toml, strlen(toml), NULL);
 
 	struct config cfg;
 	int rc = config_load(NULL, &cfg, config_path);
@@ -445,7 +448,7 @@ TEST_F(ConfigTest, CommentLines) {
 # another comment
 default_session = "comment_test"
 )";
-	file_write_all(config_path, toml, strlen(toml));
+	nb_file_write_all(config_path, toml, strlen(toml), NULL);
 
 	struct config cfg;
 	int rc = config_load(NULL, &cfg, config_path);
@@ -469,7 +472,7 @@ transport = "stdio"
 command = "npx"
 args = ["-y", "other-server"]
 )";
-	file_write_all(config_path, toml, strlen(toml));
+	nb_file_write_all(config_path, toml, strlen(toml), NULL);
 
 	struct config cfg;
 	int rc = config_load(NULL, &cfg, config_path);
@@ -496,8 +499,22 @@ TEST(ConfigValidationTest, ReportsTomlLine)
 
 	EXPECT_LT(config_validate_text("[general]\nlog_level = \"unterminated\n", &error), 0);
 	EXPECT_EQ(error.code, CONFIG_VALIDATION_SYNTAX);
-	EXPECT_EQ(error.line, 3);
-	EXPECT_NE(std::string(error.message).find("line 3"), std::string::npos);
+	EXPECT_EQ(error.line, 2);
+	EXPECT_NE(std::string(error.message).find("line 2"), std::string::npos);
+}
+
+TEST(ConfigValidationTest, RejectsEscapedNulInStringsAndKeys)
+{
+	for (const char *text :
+	     {"[general]\nlog_level = \"info\\u0000hidden\"\n", "\"key\\u0000hidden\" = 1\n",
+	      "[future]\nvalues = [\"a\\u0000b\"]\n"}) {
+		SCOPED_TRACE(text);
+		struct config_validation_error error = {};
+		EXPECT_EQ(config_validate_text(text, &error), MORPH_ERR_CONFIG);
+		EXPECT_EQ(error.code, CONFIG_VALIDATION_VALUE);
+		EXPECT_GT(error.line, 0);
+		EXPECT_NE(std::string(error.message).find("NUL"), std::string::npos);
+	}
 }
 
 struct config_warning_state {
@@ -757,7 +774,7 @@ TEST_F(ConfigTest, IgnoresUnknownKeysInExistingFile)
 	struct config_validation_error error = {};
 	struct config cfg;
 
-	ASSERT_EQ(file_write_all(config_path, toml, strlen(toml)), 0);
+	ASSERT_EQ(nb_file_write_all(config_path, toml, strlen(toml), NULL), 0);
 	EXPECT_EQ(config_validate_file(config_path, &error), 0);
 	EXPECT_EQ(config_load(NULL, &cfg, config_path), 0);
 	EXPECT_STREQ(cfg.general.log_level, "info");
@@ -799,6 +816,22 @@ cached_input_per_million = 0.25
 	EXPECT_NE(result.find("\"stable\":true"), std::string::npos);
 }
 
+TEST(ConfigValidationTest, DescriptionsKeepLongKeysAndArrayIdentitiesComplete)
+{
+	std::string key(2048, 'k');
+	std::string name(2048, 's');
+	std::string text = "[custom]\n\"" + key +
+			   "\" = 1\n"
+			   "[[mcp.servers]]\nname = \"" +
+			   name + "\"\nurl = \"https://example.test\"\n";
+	struct config_validation_error error = {};
+	char *json NB_CLEANUP(nb_charp_cleanup) = config_describe_text_copy(text.c_str(), &error);
+	ASSERT_NE(json, nullptr) << error.message;
+	std::string result(json);
+	EXPECT_NE(result.find("custom." + key), std::string::npos);
+	EXPECT_NE(result.find("mcp.servers[name=" + name + "].url"), std::string::npos);
+}
+
 TEST(ConfigValidationTest, ReportsUnstableUnknownArrayTables)
 {
 	const char *text = "[[custom.items]]\nvalue = 1\n";
@@ -816,7 +849,7 @@ TEST_F(ConfigTest, McpProtocolVersionIsLoadedAndValidated)
 {
 	const char *toml = "[[mcp.servers]]\nname = \"pinned\"\ntransport = \"stdio\"\n"
 		"command = \"server\"\nprotocol_version = \"2026-07-28\"\n";
-	ASSERT_EQ(file_write_all(config_path, toml, strlen(toml)), 0);
+	ASSERT_EQ(nb_file_write_all(config_path, toml, strlen(toml), NULL), 0);
 	struct config cfg;
 	ASSERT_EQ(config_load(NULL, &cfg, config_path), 0);
 	EXPECT_STREQ(cfg.mcp.servers[0].protocol_version, "2026-07-28");
@@ -842,7 +875,7 @@ TEST_F(ConfigTest, PlainMemoryKeysOverrideCompatibleOlderKeys)
 	const char *older = "[memory]\nhot_path_enabled=false\ncold_path_enabled=false\n"
 			    "llm_extract_enabled=false\nmax_episodes=2\nmax_procedures=3\n"
 			    "max_context_chars=700\n";
-	ASSERT_EQ(file_write_all(config_path, older, strlen(older)), 0);
+	ASSERT_EQ(nb_file_write_all(config_path, older, strlen(older), NULL), 0);
 	struct config cfg;
 	ASSERT_EQ(config_load(NULL, &cfg, config_path), 0);
 	EXPECT_EQ(cfg.memory.capture_input_enabled, 0);
@@ -855,7 +888,7 @@ TEST_F(ConfigTest, PlainMemoryKeysOverrideCompatibleOlderKeys)
 			      "capture_input_enabled=true\nsave_tasks_enabled=true\n"
 			      "learn_from_chats_enabled=true\nmax_past_tasks=5\nmax_tips=6\n"
 			      "max_reply_chars=900\n";
-	ASSERT_EQ(file_write_all(config_path, updated.c_str(), updated.size()), 0);
+	ASSERT_EQ(nb_file_write_all(config_path, updated.c_str(), updated.size(), NULL), 0);
 	ASSERT_EQ(config_load(NULL, &cfg, config_path), 0);
 	EXPECT_EQ(cfg.memory.capture_input_enabled, 1);
 	EXPECT_EQ(cfg.memory.save_tasks_enabled, 1);

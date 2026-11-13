@@ -1,4 +1,6 @@
+#include "errors.h"
 #include <gtest/gtest.h>
+#include "nb/err.h"
 
 extern "C" {
 #include "sapi/cli/adapters/input/state.h"
@@ -28,10 +30,11 @@ extern "C" {
 #include "sapi/cli/widgets/plan.h"
 #include "sapi/cli/widgets/list.h"
 #include "sapi/cli/widgets/shell_style.h"
-#include "util/utf8.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/file.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "nb/file.h"
 #include "agent/react.h"
 #include "agent/tool_context.h"
 #include "event/event.h"
@@ -109,22 +112,22 @@ TEST(CliMarkdownImageTest, BlockPreviewsFitBoundsAndShowOriginalPathAndAlt)
 
 TEST(CliShellStyleTest, ColorsCommandsStringsAndOperatorsWithoutChangingText)
 {
-	morph_buf_t styled;
+	nb_buf styled;
 	const char *source = "MODE=1 rg '中文 | text' src/ && head -20 > out";
-	ASSERT_EQ(morph_buf_init(&styled, 128), 0);
+	ASSERT_EQ((nb_buf_init(&styled), nb_buf_reserve(&styled, 128) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(cli_shell_style(&styled, source, 0), 0);
-	std::string output = morph_buf_cstr_borrow(&styled);
+	std::string output = nb_buf_cstr(&styled);
 	EXPECT_NE(output.find("\033[36mrg\033[0m"), std::string::npos);
 	EXPECT_NE(output.find("\033[32m'中文 | text'\033[0m"), std::string::npos);
 	EXPECT_NE(output.find("\033[33m&&\033[0m"), std::string::npos);
 	EXPECT_NE(output.find("\033[36mhead\033[0m"), std::string::npos);
 	EXPECT_EQ(output.find("\033[36mout"), std::string::npos);
-	char *plain = utf8_terminal_sanitize_dup(output.c_str(), output.size(),
-						 UTF8_TERMINAL_TEXT_MULTILINE, nullptr);
+	char *plain = morph_terminal_sanitize_dup(output.c_str(), output.size(),
+						  MORPH_TERMINAL_TEXT_MULTILINE, nullptr);
 	ASSERT_NE(plain, nullptr);
 	EXPECT_STREQ(plain, source);
 	free(plain);
-	morph_buf_cleanup(&styled);
+	nb_buf_cleanup(&styled);
 }
 
 TEST(CliMarkdownImageTest, SupportedFormatsRenderInsideTableAndReleaseFiles)
@@ -146,9 +149,9 @@ TEST(CliMarkdownImageTest, SupportedFormatsRenderInsideTableAndReleaseFiles)
 			uint8_t *encoded = nullptr;
 			size_t length = WebPEncodeLosslessRGB(pixels, 12, 36, 36, &encoded);
 			ASSERT_GT(length, 0u);
-			written = file_write_all(source.c_str(),
-						 reinterpret_cast<const char *>(encoded),
-						 length) == 0;
+			written = nb_file_write_all(source.c_str(),
+						    reinterpret_cast<const char *>(encoded), length,
+						    NULL) == 0;
 			WebPFree(encoded);
 		}
 		ASSERT_NE(written, 0);
@@ -236,15 +239,15 @@ TEST(CliMarkdownImageTest, RemoteGifRendersInsideTable)
 
 TEST(CliShellStyleTest, WrapsUtf8AndDropsTerminalControls)
 {
-	morph_buf_t styled;
-	ASSERT_EQ(morph_buf_init(&styled, 128), 0);
+	nb_buf styled;
+	ASSERT_EQ((nb_buf_init(&styled), nb_buf_reserve(&styled, 128) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(cli_shell_style(&styled, "printf '中文🙂abcdef'\033]0;unsafe\a | cat", 12), 0);
-	std::string output = morph_buf_cstr_borrow(&styled);
+	std::string output = nb_buf_cstr(&styled);
 	EXPECT_EQ(output.find("unsafe"), std::string::npos);
-	EXPECT_EQ(utf8valid(output.c_str()), nullptr);
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(output.c_str()), NULL), NB_UTF8_OK);
 	EXPECT_NE(output.find("\n    "), std::string::npos);
 	EXPECT_NE(output.find("\033[36mcat"), std::string::npos);
-	morph_buf_cleanup(&styled);
+	nb_buf_cleanup(&styled);
 }
 
 TEST(CliShellStyleTest, SummaryHidesOnlyLiteralCurrentDirectoryPrefix)
@@ -345,7 +348,7 @@ TEST_F(CliPresentationTest, ComposerFooterPreservesAdaptiveOriginalFieldsAndStyl
 	const std::string config_path = std::string(dir) + "/footer.toml";
 	const std::string database = std::string(dir) + "/footer.db";
 	const char config[] = "[model.text]\nmodel = \"footer-model\"\ncontext_limit = 128000\n";
-	ASSERT_EQ(file_write_all(config_path.c_str(), config, sizeof(config) - 1), 0);
+	ASSERT_EQ(nb_file_write_all(config_path.c_str(), config, sizeof(config) - 1, NULL), 0);
 	struct runtime_options options{};
 	options.config_path = config_path.c_str();
 	options.db_path = database.c_str();
@@ -363,13 +366,12 @@ TEST_F(CliPresentationTest, ComposerFooterPreservesAdaptiveOriginalFieldsAndStyl
 			SCOPED_TRACE(styled);
 			cli_output_set_color_enabled(&ctx, styled);
 			ctx.input_status.limit = 0;
-			morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 			ASSERT_EQ(cli_composer_footer_render(&ctx, width, &text), 0);
 			EXPECT_EQ(ctx.input_status.limit, 128000);
-			const char *rendered = morph_buf_cstr_borrow(&text);
-			char *plain MORPH_CLEANUP(morph_charp_cleanup) =
-				utf8_terminal_sanitize_dup(rendered, text.len,
-							    UTF8_TERMINAL_TEXT_MULTILINE, nullptr);
+			const char *rendered = nb_buf_cstr(&text);
+			char *plain NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+				rendered, text.len, MORPH_TERMINAL_TEXT_MULTILINE, nullptr);
 			ASSERT_NE(plain, nullptr);
 			std::string output(plain);
 			EXPECT_EQ(output.find("morph · "), 0u) << output;
@@ -377,7 +379,7 @@ TEST_F(CliPresentationTest, ComposerFooterPreservesAdaptiveOriginalFieldsAndStyl
 			EXPECT_NE(output.find(width >= 100 ? "context 1.23k / 128k  ·  42 credits"
 							 : "ctx 1.23k / 128k · 42 cr"),
 				  std::string::npos) << output;
-			EXPECT_LE(utf8_display_width(plain), static_cast<size_t>(width - 4));
+			EXPECT_LE(nb_utf8_width_cstr(plain), static_cast<size_t>(width - 4));
 			EXPECT_EQ(output.find('\n'), std::string::npos);
 			if (width == 120)
 				EXPECT_NE(output.find("footer-model"), std::string::npos) << output;
@@ -397,26 +399,25 @@ TEST(CliWorkStatusTest, RunningPreservesOriginalLabelClockAndTranscriptHint)
 {
 	for (int width : {120, 80, 60}) {
 		SCOPED_TRACE(width);
-		morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 		ASSERT_EQ(cli_work_status_running(&text, width, 0, 65999, 1000, nullptr), 0);
 		std::string expected = "◉ Working · 1m 5s · esc to interrupt";
 		expected += width >= 76 ? " · Ctrl+T transcript" : " · Ctrl+T";
-		EXPECT_EQ(morph_buf_cstr_borrow(&text), expected);
-		EXPECT_LE(utf8_display_width(morph_buf_cstr_borrow(&text)),
-			  static_cast<size_t>(width));
+		EXPECT_EQ(nb_buf_cstr(&text), expected);
+		EXPECT_LE(nb_utf8_width_cstr(nb_buf_cstr(&text)), static_cast<size_t>(width));
 	}
-	morph_buf_t styled MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf styled NB_CLEANUP(nb_buf_cleanup) = {0};
 	ASSERT_EQ(cli_work_status_running(&styled, 60, 1, 900, 1000, "Agents: 2 running · 1 done"),
 		  0);
-	const std::string rendered = morph_buf_cstr_borrow(&styled);
+	const std::string rendered = nb_buf_cstr(&styled);
 	EXPECT_NE(rendered.find("\033[36m◉\033[0m "), std::string::npos);
 	EXPECT_NE(rendered.find("\033[38;2;"), std::string::npos);
 	EXPECT_NE(rendered.find("\033[38;5;141m · Ctrl+T\033[0m"), std::string::npos);
-	char *plain MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
-		rendered.c_str(), rendered.size(), UTF8_TERMINAL_TEXT_MULTILINE, nullptr);
+	char *plain NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		rendered.c_str(), rendered.size(), MORPH_TERMINAL_TEXT_MULTILINE, nullptr);
 	ASSERT_NE(plain, nullptr);
 	EXPECT_EQ(std::string(plain).find("◉ Working · 0s · esc · Agents:"), 0u);
-	EXPECT_LE(utf8_display_width(plain), 60u);
+	EXPECT_LE(nb_utf8_width_cstr(plain), 60u);
 }
 
 TEST(CliWorkStatusTest, CompletionPreservesIntegerDurationAndLocalTimestamp)
@@ -430,21 +431,21 @@ TEST(CliWorkStatusTest, CompletionPreservesIntegerDurationAndLocalTimestamp)
 	finished.tm_isdst = -1;
 	time_t at = mktime(&finished);
 	ASSERT_NE(at, static_cast<time_t>(-1));
-	for (int result : {0, -ECANCELED, -EIO}) {
+	for (int result : std::initializer_list<int>{0, NB_ERR_CANCELLED, NB_ERR_IO}) {
 		SCOPED_TRACE(result);
 		for (int styled : {0, 1}) {
-			morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 			ASSERT_EQ(cli_work_status_completed(&text, 80, styled, result, 65999, at), 0);
-			std::string label = result == 0		     ? "Worked for "
-					    : result == -ECANCELED ? "Stopped after "
-								 : "Failed after ";
+			std::string label = result == 0			 ? "Worked for "
+					    : result == NB_ERR_CANCELLED ? "Stopped after "
+									 : "Failed after ";
 			std::string expected;
 			if (styled)
 				expected += "\033[2m";
 			expected += label + "1m 5s · 12:34";
 			if (styled)
 				expected += "\033[0m";
-			EXPECT_EQ(morph_buf_cstr_borrow(&text), expected);
+			EXPECT_EQ(nb_buf_cstr(&text), expected);
 		}
 	}
 	EXPECT_EQ(cli_work_status_interval_ms(600, 600), 32);
@@ -843,7 +844,7 @@ TEST_F(CliPresentationTest, CompactionCompletionFitsNarrowTerminal)
 	std::istringstream lines(output);
 	std::string line;
 	while (std::getline(lines, line))
-		EXPECT_LE(utf8_display_width_ansi(line.c_str()), 23U);
+		EXPECT_LE(morph_terminal_display_width_ansi(line.c_str()), 23U);
 	EXPECT_NE(output.find("● Context compacted"), std::string::npos);
 	cJSON_Delete(data);
 }
@@ -911,10 +912,8 @@ TEST_F(CliPresentationTest, InteractiveDefersMediaRenderingUntilFinal)
 	Emit(MORPH_EVENT_ARTIFACT, "artifact.ready", "ready", image);
 	Emit(MORPH_EVENT_ARTIFACT, "artifact.ready", "ready", video);
 	Emit(MORPH_EVENT_ARTIFACT, "artifact.ready", "ready", video);
-	EXPECT_FALSE(
-		morph_strmap_contains(&ctx.presenter->rendered_artifacts, "/tmp/generated.png"));
-	EXPECT_FALSE(
-		morph_strmap_contains(&ctx.presenter->rendered_artifacts, "/tmp/generated.mp4"));
+	EXPECT_FALSE(nb_map_has_cstr(ctx.presenter->rendered_artifacts, "/tmp/generated.png"));
+	EXPECT_FALSE(nb_map_has_cstr(ctx.presenter->rendered_artifacts, "/tmp/generated.mp4"));
 	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
 	std::string output = testing::internal::GetCapturedStdout();
 
@@ -922,10 +921,8 @@ TEST_F(CliPresentationTest, InteractiveDefersMediaRenderingUntilFinal)
 			      "  └ video: /tmp/generated.mp4\n"),
 		  0u);
 	EXPECT_NE(output.find("[image unavailable:"), std::string::npos);
-	EXPECT_FALSE(
-		morph_strmap_contains(&ctx.presenter->rendered_artifacts, "/tmp/generated.png"));
-	EXPECT_FALSE(
-		morph_strmap_contains(&ctx.presenter->rendered_artifacts, "/tmp/generated.mp4"));
+	EXPECT_FALSE(nb_map_has_cstr(ctx.presenter->rendered_artifacts, "/tmp/generated.png"));
+	EXPECT_FALSE(nb_map_has_cstr(ctx.presenter->rendered_artifacts, "/tmp/generated.mp4"));
 	cJSON_Delete(image);
 	cJSON_Delete(video);
 	cJSON_Delete(final);
@@ -1050,8 +1047,8 @@ static CliTestTextStyle cli_test_style_at(const std::string &output, const char 
 
 static std::string cli_test_plain_text(const std::string &output)
 {
-	char *plain MORPH_CLEANUP(morph_charp_cleanup) =
-		utf8_strip_ansi_dup(output.c_str(), output.size(), nullptr);
+	char *plain NB_CLEANUP(nb_charp_cleanup) =
+		morph_terminal_strip_ansi_dup(output.c_str(), output.size(), nullptr);
 	return plain ? plain : "";
 }
 
@@ -1288,7 +1285,7 @@ TEST_F(CliPresentationTest, CancelledTurnUsesNeutralStatus)
 		cli_output_set_color_enabled(&ctx, 1);
 		cJSON *data = cJSON_CreateObject();
 		cJSON_AddStringToObject(data, "outcome", "cancelled");
-		cJSON_AddNumberToObject(data, "error_code", -ECANCELED);
+		cJSON_AddNumberToObject(data, "error_code", NB_ERR_CANCELLED);
 		cJSON_AddStringToObject(data, "error", "Operation canceled");
 		cJSON_AddStringToObject(data, "detail", "user_cancelled");
 		testing::internal::CaptureStdout();
@@ -1311,7 +1308,7 @@ TEST_F(CliPresentationTest, FailedTurnStillUsesErrorStatus)
 	cli_output_set_color_enabled(&ctx, 1);
 	cJSON *data = cJSON_CreateObject();
 	cJSON_AddStringToObject(data, "outcome", "internal_error");
-	cJSON_AddNumberToObject(data, "error_code", -ECANCELED);
+	cJSON_AddNumberToObject(data, "error_code", NB_ERR_CANCELLED);
 	cJSON_AddStringToObject(data, "error", "Operation canceled");
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.turn.end", "failed", data);
@@ -1386,8 +1383,8 @@ TEST_F(CliPresentationTest, AnswerSharesSubmittedInputMarginWithAndWithoutStream
 			Emit(MORPH_EVENT_REACT, "react.final", "end", answer);
 			std::string output = testing::internal::GetCapturedStdout();
 			char *plain =
-				utf8_terminal_sanitize_dup(output.c_str(), output.size(),
-							   UTF8_TERMINAL_TEXT_MULTILINE, nullptr);
+				morph_terminal_sanitize_dup(output.c_str(), output.size(),
+							    MORPH_TERMINAL_TEXT_MULTILINE, nullptr);
 			ASSERT_NE(plain, nullptr);
 			std::istringstream rows(plain);
 			std::string normalized;
@@ -1815,8 +1812,8 @@ TEST_F(CliPresentationTest, InteractiveRendersApplyPatchAsDiff)
 	const char *content = "foo\nold value\nbar\n";
 
 	std::filesystem::create_directories(std::string(dir) + "/src");
-	ASSERT_EQ(file_write_all((std::string(dir) + "/src/example.c").c_str(), content,
-				 std::strlen(content)),
+	ASSERT_EQ(nb_file_write_all((std::string(dir) + "/src/example.c").c_str(), content,
+				    std::strlen(content), NULL),
 		  0);
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	ctx.tool_details = 1;
@@ -1858,8 +1855,8 @@ TEST_F(CliPresentationTest, InteractiveCompactFeedShowsApplyPatchDiff)
 	const char *content = "foo\nold value\nbar\n";
 
 	std::filesystem::create_directories(std::string(dir) + "/src");
-	ASSERT_EQ(file_write_all((std::string(dir) + "/src/example.c").c_str(), content,
-				 std::strlen(content)),
+	ASSERT_EQ(nb_file_write_all((std::string(dir) + "/src/example.c").c_str(), content,
+				    std::strlen(content), NULL),
 		  0);
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
@@ -1872,8 +1869,8 @@ TEST_F(CliPresentationTest, InteractiveCompactFeedShowsApplyPatchDiff)
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
-	ASSERT_EQ(file_write_all((std::string(dir) + "/src/example.c").c_str(),
-				 "foo\nnew value\nbar\n", 18),
+	ASSERT_EQ(nb_file_write_all((std::string(dir) + "/src/example.c").c_str(),
+				    "foo\nnew value\nbar\n", 18, NULL),
 		  0);
 	Emit(MORPH_EVENT_TOOL, "tool.result", "end", result);
 	std::string output = testing::internal::GetCapturedStdout();
@@ -2100,12 +2097,12 @@ TEST_F(CliPresentationTest, ExecCommandRemainsVisibleAndRestoresLegacyCmdHistory
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 	(void)testing::internal::GetCapturedStdout();
-	morph_buf_t live{};
-	ASSERT_EQ(morph_buf_init(&live, 128), 0);
+	nb_buf live{};
+	ASSERT_EQ((nb_buf_init(&live), nb_buf_reserve(&live, 128) ? 0 : NB_ERR_NOMEM), 0);
 	EXPECT_EQ(cli_transcript_live_text(ctx.transcript, &live, 80, 0), 1);
-	EXPECT_NE(std::string(morph_buf_cstr_borrow(&live)).find("Exec printf ALIAS_COMMAND"),
+	EXPECT_NE(std::string(nb_buf_cstr(&live)).find("Exec printf ALIAS_COMMAND"),
 		  std::string::npos);
-	morph_buf_cleanup(&live);
+	nb_buf_cleanup(&live);
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.result", "end", result);
 	cli_presentation_finish(&ctx);
@@ -2298,8 +2295,8 @@ TEST_F(CliPresentationTest, ToolRowsUseTerminalWidthWithRightGutter)
 		EXPECT_NE(start, std::string::npos);
 		if (start != std::string::npos) {
 			std::string row = output.substr(start, output.find('\n', start) - start);
-			EXPECT_LE(utf8_display_width(row.c_str()), (size_t)(columns - 2));
-			EXPECT_GE(utf8_display_width(row.c_str()), (size_t)(columns - 3));
+			EXPECT_LE(nb_utf8_width_cstr(row.c_str()), (size_t)(columns - 2));
+			EXPECT_GE(nb_utf8_width_cstr(row.c_str()), (size_t)(columns - 3));
 		}
 	}
 	if (had_columns)
@@ -2322,7 +2319,7 @@ TEST_F(CliPresentationTest, OversizedRemoteToolNameDoesNotWrapFeedHeader)
 	size_t start = output.find("xxx");
 	ASSERT_NE(start, std::string::npos);
 	std::string row = output.substr(start, output.find('\n', start) - start);
-	EXPECT_LE(utf8_display_width(row.c_str()), static_cast<size_t>(cli_list_columns() - 2));
+	EXPECT_LE(nb_utf8_width_cstr(row.c_str()), static_cast<size_t>(cli_list_columns() - 2));
 	EXPECT_NE(row.find("…"), std::string::npos);
 	cJSON_Delete(call);
 }
@@ -2339,12 +2336,12 @@ TEST_F(CliPresentationTest, LiveToolPreviewFollowsTailAndRetainsFullStream)
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 	Emit(MORPH_EVENT_TOOL, "tool.stream.delta", "update", delta);
 	(void)testing::internal::GetCapturedStdout();
-	morph_buf_t body;
-	ASSERT_EQ(morph_buf_init(&body, 128), 0);
+	nb_buf body;
+	ASSERT_EQ((nb_buf_init(&body), nb_buf_reserve(&body, 128) ? 0 : NB_ERR_NOMEM), 0);
 	EXPECT_EQ(cli_transcript_live_body(ctx.transcript, &body, 100, 0), 3);
-	EXPECT_STREQ(morph_buf_cstr_borrow(&body), "  └ second\n    third\n    中文 progress");
-	EXPECT_EQ(utf8valid(morph_buf_cstr_borrow(&body)), nullptr);
-	morph_buf_cleanup(&body);
+	EXPECT_STREQ(nb_buf_cstr(&body), "  └ second\n    third\n    中文 progress");
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(nb_buf_cstr(&body)), NULL), NB_UTF8_OK);
+	nb_buf_cleanup(&body);
 	testing::internal::CaptureStdout();
 	ToggleDetails();
 	std::string details = testing::internal::GetCapturedStdout();
@@ -2375,8 +2372,9 @@ TEST_F(CliPresentationTest, NarrowTimeoutRowsFitActualWidth)
 		std::istringstream lines(output);
 		std::string line;
 		while (std::getline(lines, line)) {
-			EXPECT_EQ(utf8valid(line.c_str()), nullptr);
-			EXPECT_LE(utf8_display_width_ansi(line.c_str()),
+			EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(line.c_str()), NULL),
+				  NB_UTF8_OK);
+			EXPECT_LE(morph_terminal_display_width_ansi(line.c_str()),
 				  static_cast<size_t>(columns - 2))
 				<< line;
 		}
@@ -2501,7 +2499,7 @@ TEST(CliPlanWidgetTest, StatusesAndUnsafeDescriptionsUseSharedMarkersWithinTheWi
 	for (int columns : {120, 80, 60}) {
 		for (const auto &item : cases) {
 			SCOPED_TRACE(std::to_string(columns) + item.status);
-			cJSON *state MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
+			cJSON *state NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(
 				R"({"plans":[{"steps":[{"description":"Inspect parser"}]}]})");
 			ASSERT_NE(state, nullptr);
 			cJSON *step = cJSON_GetArrayItem(cJSON_GetObjectItem(
@@ -2512,29 +2510,29 @@ TEST(CliPlanWidgetTest, StatusesAndUnsafeDescriptionsUseSharedMarkersWithinTheWi
 				text += "中文🙂";
 			cJSON_ReplaceItemInObject(step, "description", cJSON_CreateString(text.c_str()));
 			struct cli_plan_style style{columns, 1, 1};
-			morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {};
+			nb_buf out NB_CLEANUP(nb_buf_cleanup) = {};
 			ASSERT_EQ(cli_plan_append(&out, state, &style), 0);
-			std::string output = morph_buf_cstr_borrow(&out);
+			std::string output = nb_buf_cstr(&out);
 			EXPECT_NE(output.find(std::string(item.marker) + "\033[0m Plan"), std::string::npos);
 			EXPECT_EQ(output.find("\033[2J"), std::string::npos);
 			EXPECT_NE(output.find("…"), std::string::npos);
 			std::istringstream lines(output);
 			std::string line;
 			while (std::getline(lines, line))
-				EXPECT_LE(utf8_display_width_ansi(line.c_str()),
-					static_cast<size_t>(columns - 2));
+				EXPECT_LE(morph_terminal_display_width_ansi(line.c_str()),
+					  static_cast<size_t>(columns - 2));
 		}
 	}
 }
 
 TEST(CliPlanWidgetTest, PlanAndNoticeShareExactlyOneSeparatorWithOtherFeedBlocks)
 {
-	cJSON *state MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
+	cJSON *state NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(
 		R"({"plans":[{"steps":[{"description":"Inspect parser","status":"in_progress"}]}]})");
 	ASSERT_NE(state, nullptr);
 	for (int columns : {120, 80, 60}) {
-		morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {};
-		ASSERT_EQ(morph_buf_puts(&out, "BEFORE\n"), 0);
+		nb_buf out NB_CLEANUP(nb_buf_cleanup) = {};
+		ASSERT_EQ((nb_buf_append_cstr(&out, "BEFORE\n") ? 0 : NB_ERR_NOMEM), 0);
 		struct cli_feed_block_style style{columns, 0, 1};
 		struct cli_feed_block plan{};
 		plan.kind = CLI_FEED_BLOCK_PLAN;
@@ -2545,23 +2543,23 @@ TEST(CliPlanWidgetTest, PlanAndNoticeShareExactlyOneSeparatorWithOtherFeedBlocks
 		block.kind = CLI_FEED_BLOCK_NOTICE;
 		block.content.notice = &notice;
 		ASSERT_EQ(cli_feed_block_append(&out, &block, &style), 0);
-		EXPECT_STREQ(morph_buf_cstr_borrow(&out),
-			"BEFORE\n\n◉ Plan · 0/1 completed\n└ ◉ Inspect parser\n\n⚠ Warning\n");
+		EXPECT_STREQ(nb_buf_cstr(&out),
+			     "BEFORE\n\n◉ Plan · 0/1 completed\n└ ◉ Inspect parser\n\n⚠ Warning\n");
 		EXPECT_EQ(style.trailing_newlines, 1);
 	}
 }
 
 TEST(CliPlanWidgetTest, FeedBlocksKeepOneBlankRowBetweenCommittedBlocks)
 {
-	morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {};
-	ASSERT_EQ(morph_buf_puts(&out, "TOOL\n"), 0);
+	nb_buf out NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ((nb_buf_append_cstr(&out, "TOOL\n") ? 0 : NB_ERR_NOMEM), 0);
 	struct cli_feed_block_style style{80, 0, 1};
 	struct cli_notice notice{CLI_NOTICE_SYSTEM, "Recap:", "summary", nullptr, 0};
 	struct cli_feed_block block{};
 	block.kind = CLI_FEED_BLOCK_NOTICE;
 	block.content.notice = &notice;
 	ASSERT_EQ(cli_feed_block_append(&out, &block, &style), 0);
-	EXPECT_STREQ(morph_buf_cstr_borrow(&out), "TOOL\n\n◇ Recap:\n└ summary\n");
+	EXPECT_STREQ(nb_buf_cstr(&out), "TOOL\n\n◇ Recap:\n└ summary\n");
 	EXPECT_EQ(style.trailing_newlines, 1);
 }
 
@@ -2583,7 +2581,7 @@ TEST(CliFeedBlockTest, GapAddsMissingNewlinesForOneBlankRow)
 TEST_F(CliPresentationTest, PlainPlanUpdateKeepsItsExistingTextContract)
 {
 	ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
-	cJSON *state MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
+	cJSON *state NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(
 		R"({"plans":[{"steps":[{"description":"Inspect parser","status":"in_progress"}]}]})");
 	ASSERT_NE(state, nullptr);
 	testing::internal::CaptureStdout();
@@ -2729,8 +2727,8 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 			}
 			std::string output = testing::internal::GetCapturedStdout();
 			char *safe =
-				utf8_terminal_sanitize_dup(output.c_str(), output.size(),
-							   UTF8_TERMINAL_TEXT_MULTILINE, nullptr);
+				morph_terminal_sanitize_dup(output.c_str(), output.size(),
+							    MORPH_TERMINAL_TEXT_MULTILINE, nullptr);
 			EXPECT_NE(safe, nullptr);
 			if (!safe)
 				continue;
@@ -2743,8 +2741,9 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 			while (std::getline(lines, line)) {
 				if (line.empty())
 					continue;
-				EXPECT_EQ(utf8valid(line.c_str()), nullptr);
-				EXPECT_EQ(utf8_display_width(line.c_str()), width) << line;
+				EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(line.c_str()), NULL),
+					  NB_UTF8_OK);
+				EXPECT_EQ(nb_utf8_width_cstr(line.c_str()), width) << line;
 				if (line.rfind("╭", 0) == 0 || line.rfind("╰", 0) == 0) {
 					const std::string corner =
 						line.rfind("╭", 0) == 0 ? "╮" : "╯";
@@ -2814,7 +2813,7 @@ TEST(CliUserInputTest, WrapsWithoutTruncatingWideText)
 	     pos += strlen("🙂"))
 		count++;
 	EXPECT_EQ(count, 160u);
-	EXPECT_EQ(utf8valid(output.c_str()), nullptr);
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(output.c_str()), NULL), NB_UTF8_OK);
 	EXPECT_EQ(output.find("truncated"), std::string::npos);
 	cli_output_set_color_enabled(_cli_output_context_ptr, 1);
 }
@@ -2848,11 +2847,11 @@ TEST(CliWelcomeTest, FitsBoundedLayoutAndWrapsHintsAtNarrowWidths)
 		std::string output = testing::internal::GetCapturedStdout();
 
 		EXPECT_EQ(output.find("\033"), std::string::npos);
-		EXPECT_EQ(utf8valid(output.c_str()), nullptr);
+		EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(output.c_str()), NULL), NB_UTF8_OK);
 		std::istringstream lines(output);
 		std::string line;
 		while (std::getline(lines, line)) {
-			EXPECT_LE(utf8_display_width(line.c_str()),
+			EXPECT_LE(nb_utf8_width_cstr(line.c_str()),
 				  static_cast<size_t>(std::min(width, 80)));
 		}
 		if (width >= 40) {
@@ -2902,11 +2901,11 @@ TEST(CliWelcomeTest, SanitizesMetadataAndKeepsLongPathTail)
 		EXPECT_EQ(output.find("\033"), std::string::npos);
 		EXPECT_EQ(output.find('\r'), std::string::npos);
 		EXPECT_EQ(output.find('\a'), std::string::npos);
-		EXPECT_EQ(utf8valid(output.c_str()), nullptr);
+		EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(output.c_str()), NULL), NB_UTF8_OK);
 		std::istringstream lines(output);
 		std::string line;
 		while (std::getline(lines, line)) {
-			EXPECT_LE(utf8_display_width(line.c_str()),
+			EXPECT_LE(nb_utf8_width_cstr(line.c_str()),
 				  static_cast<size_t>(std::min(width, 80)));
 		}
 		if (width >= 40) {
@@ -3074,12 +3073,12 @@ TEST_F(CliPresentationTest, CollaborationUsesSemanticTitlesAndNoGenericRunningBo
 	std::string pending = testing::internal::GetCapturedStdout();
 	EXPECT_NE(pending.find("Spawning"), std::string::npos);
 	EXPECT_EQ(pending.find("spawn_agent"), std::string::npos);
-	morph_buf_t line{};
-	morph_buf_t body{};
-	ASSERT_EQ(morph_buf_init(&line, 128), 0);
-	ASSERT_EQ(morph_buf_init(&body, 128), 0);
+	nb_buf line{};
+	nb_buf body{};
+	ASSERT_EQ((nb_buf_init(&line), nb_buf_reserve(&line, 128) ? 0 : NB_ERR_NOMEM), 0);
+	ASSERT_EQ((nb_buf_init(&body), nb_buf_reserve(&body, 128) ? 0 : NB_ERR_NOMEM), 0);
 	EXPECT_EQ(cli_transcript_live_text(ctx.transcript, &line, 60, 0), 1);
-	EXPECT_STREQ(morph_buf_cstr_borrow(&line), "◉ Spawning /root/parser");
+	EXPECT_STREQ(nb_buf_cstr(&line), "◉ Spawning /root/parser");
 	EXPECT_EQ(cli_transcript_live_body(ctx.transcript, &body, 60, 0), 0);
 	EXPECT_EQ(body.len, 0u);
 	cJSON *result = cJSON_Parse(R"({"tool":"spawn_agent","tool_call_id":"spawn",
@@ -3090,15 +3089,15 @@ TEST_F(CliPresentationTest, CollaborationUsesSemanticTitlesAndNoGenericRunningBo
 	EXPECT_NE(completed.find("Spawned"), std::string::npos);
 	EXPECT_NE(completed.find("/root/parser"), std::string::npos);
 	EXPECT_EQ(completed.find("Inspect the parser independently."), std::string::npos);
-	morph_buf_t details MORPH_CLEANUP(morph_buf_cleanup) = {};
-	ASSERT_EQ(morph_buf_init(&details, 128), 0);
+	nb_buf details NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ((nb_buf_init(&details), nb_buf_reserve(&details, 128) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(cli_transcript_render_details(&ctx, ctx.transcript, &details), 0);
-	EXPECT_NE(std::string(details.data).find("Inspect the parser independently."),
+	EXPECT_NE(std::string(details.ptr).find("Inspect the parser independently."),
 		  std::string::npos);
 	EXPECT_EQ(completed.find("agent_id"), std::string::npos);
 	EXPECT_EQ(completed.find("Running…"), std::string::npos);
-	morph_buf_cleanup(&line);
-	morph_buf_cleanup(&body);
+	nb_buf_cleanup(&line);
+	nb_buf_cleanup(&body);
 	cJSON_Delete(result);
 	cJSON_Delete(call);
 }
@@ -3130,18 +3129,18 @@ TEST(CliAgentsPresentationTest, CompactActivityBoundsRowsAndOmitsTaskPrompts)
 		agents[i].description = instruction.data();
 	}
 	for (int columns : {120, 80, 60}) {
-		morph_buf_t out{};
-		ASSERT_EQ(morph_buf_init(&out, 128), 0);
+		nb_buf out{};
+		ASSERT_EQ((nb_buf_init(&out), nb_buf_reserve(&out, 128) ? 0 : NB_ERR_NOMEM), 0);
 		EXPECT_EQ(cli_agents_rows(&out, agents, 4, columns, 3, 0), 4);
-		std::string rendered = morph_buf_cstr_borrow(&out);
+		std::string rendered = nb_buf_cstr(&out);
 		EXPECT_NE(rendered.find("/root/worker_0"), std::string::npos);
 		EXPECT_EQ(rendered.find(instruction), std::string::npos);
 		EXPECT_NE(rendered.find("└ +1 more · /agents"), std::string::npos);
 		std::istringstream lines(rendered);
 		std::string line;
 		while (std::getline(lines, line))
-			EXPECT_LT(utf8_display_width(line.c_str()), static_cast<size_t>(columns));
-		morph_buf_cleanup(&out);
+			EXPECT_LT(nb_utf8_width_cstr(line.c_str()), static_cast<size_t>(columns));
+		nb_buf_cleanup(&out);
 	}
 }
 
@@ -3151,7 +3150,7 @@ TEST_F(CliPresentationTest, NestedAgentToolRowsKeepTheParentPath)
 	for (const char *operation : {"spawn_agent", "send_message", "followup_task",
 				      "interrupt_agent"}) {
 		SCOPED_TRACE(operation);
-		cJSON *call MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		cJSON *call NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 		cJSON_AddStringToObject(call, "tool", operation);
 		cJSON_AddStringToObject(call, "tool_call_id", operation);
 		cJSON_AddStringToObject(call, "agent_id", "/root/b");
@@ -3163,10 +3162,10 @@ TEST_F(CliPresentationTest, NestedAgentToolRowsKeepTheParentPath)
 		(void)testing::internal::GetCapturedStdout();
 		const auto *tool = cli_transcript_model_active_borrow(ctx.transcript);
 		ASSERT_NE(tool, nullptr);
-		morph_buf_t row MORPH_CLEANUP(morph_buf_cleanup) = {};
-		ASSERT_EQ(morph_buf_init(&row, 128), 0);
+		nb_buf row NB_CLEANUP(nb_buf_cleanup) = {};
+		ASSERT_EQ((nb_buf_init(&row), nb_buf_reserve(&row, 128) ? 0 : NB_ERR_NOMEM), 0);
 		EXPECT_EQ(cli_agent_tools_row(tool, &row, 80, 0), 1);
-		EXPECT_NE(strstr(morph_buf_cstr_borrow(&row), "/root/b/aa"), nullptr);
+		EXPECT_NE(strstr(nb_buf_cstr(&row), "/root/b/aa"), nullptr);
 	}
 }
 
@@ -3178,11 +3177,11 @@ TEST(CliAgentsPresentationTest, NestedActivityDistinguishesSameNamesAcrossBranch
 	for (auto &agent : agents)
 		agent.status = AGENT_RUNNING;
 	for (int columns : {120, 80, 60}) {
-		morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {};
-		ASSERT_EQ(morph_buf_init(&out, 128), 0);
+		nb_buf out NB_CLEANUP(nb_buf_cleanup) = {};
+		ASSERT_EQ((nb_buf_init(&out), nb_buf_reserve(&out, 128) ? 0 : NB_ERR_NOMEM), 0);
 		EXPECT_EQ(cli_agents_rows(&out, agents, 2, columns, 3, 0), 2);
-		EXPECT_NE(strstr(morph_buf_cstr_borrow(&out), "/root/a/aa"), nullptr);
-		EXPECT_NE(strstr(morph_buf_cstr_borrow(&out), "/root/b/aa"), nullptr);
+		EXPECT_NE(strstr(nb_buf_cstr(&out), "/root/a/aa"), nullptr);
+		EXPECT_NE(strstr(nb_buf_cstr(&out), "/root/b/aa"), nullptr);
 	}
 }
 
@@ -3201,12 +3200,12 @@ TEST_F(CliPresentationTest, MultiAgentV2AnalyticsCallsStayInDetailsWithoutDefaul
 		Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 		std::string pending = testing::internal::GetCapturedStdout();
 		EXPECT_TRUE(pending.empty());
-		morph_buf_t live{};
-		ASSERT_EQ(morph_buf_init(&live, 128), 0);
+		nb_buf live{};
+		ASSERT_EQ((nb_buf_init(&live), nb_buf_reserve(&live, 128) ? 0 : NB_ERR_NOMEM), 0);
 		EXPECT_EQ(cli_transcript_live_text(ctx.transcript, &live, 80, 0), 0);
 		EXPECT_EQ(cli_transcript_live_body(ctx.transcript, &live, 80, 0), 0);
 		EXPECT_EQ(live.len, 0u);
-		morph_buf_cleanup(&live);
+		nb_buf_cleanup(&live);
 		cJSON *result = cJSON_CreateObject();
 		cJSON_AddStringToObject(result, "tool", name);
 		cJSON_AddStringToObject(result, "tool_call_id", name);
@@ -3219,13 +3218,13 @@ TEST_F(CliPresentationTest, MultiAgentV2AnalyticsCallsStayInDetailsWithoutDefaul
 		cJSON_Delete(result);
 		cJSON_Delete(call);
 	}
-	morph_buf_t details{};
-	ASSERT_EQ(morph_buf_init(&details, 1024), 0);
+	nb_buf details{};
+	ASSERT_EQ((nb_buf_init(&details), nb_buf_reserve(&details, 1024) ? 0 : NB_ERR_NOMEM), 0);
 	EXPECT_EQ(cli_transcript_render_details(&ctx, ctx.transcript, &details), 0);
-	EXPECT_NE(strstr(morph_buf_cstr_borrow(&details), "Preserved steering evidence"), nullptr);
-	EXPECT_NE(strstr(morph_buf_cstr_borrow(&details), "Preserved operation result"), nullptr);
-	EXPECT_NE(strstr(morph_buf_cstr_borrow(&details), "/root/reader"), nullptr);
-	morph_buf_cleanup(&details);
+	EXPECT_NE(strstr(nb_buf_cstr(&details), "Preserved steering evidence"), nullptr);
+	EXPECT_NE(strstr(nb_buf_cstr(&details), "Preserved operation result"), nullptr);
+	EXPECT_NE(strstr(nb_buf_cstr(&details), "/root/reader"), nullptr);
+	nb_buf_cleanup(&details);
 }
 
 TEST(CliAgentsPresentationTest, AgentDetailsPreserveLargeMultilineResultsAndStripControls)
@@ -3233,20 +3232,21 @@ TEST(CliAgentsPresentationTest, AgentDetailsPreserveLargeMultilineResultsAndStri
 	std::string result(10000, 'x');
 	result += "\n\n```c\nint answer = 42;\n```\n\033[2JTAIL_AFTER_LONG_RESULT";
 	for (int columns : {120, 80, 60}) {
-		morph_buf_t details{};
-		ASSERT_EQ(morph_buf_init(&details, 128), 0);
+		nb_buf details{};
+		ASSERT_EQ((nb_buf_init(&details), nb_buf_reserve(&details, 128) ? 0 : NB_ERR_NOMEM),
+			  0);
 		ASSERT_EQ(cli_agents_detail(&details, "Result", result.c_str(), columns, 0), 0);
-		std::string rendered = morph_buf_cstr_borrow(&details);
+		std::string rendered = nb_buf_cstr(&details);
 		EXPECT_EQ(static_cast<size_t>(std::count(rendered.begin(), rendered.end(), 'x')), 10000u);
 		EXPECT_NE(rendered.find("\n    \n    ```c\n    int answer = 42;\n"), std::string::npos);
 		EXPECT_NE(rendered.find("TAIL_AFTER_LONG_RESULT"), std::string::npos);
 		EXPECT_EQ(rendered.find('\033'), std::string::npos);
-		EXPECT_EQ(utf8valid(rendered.c_str()), nullptr);
+		EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(rendered.c_str()), NULL), NB_UTF8_OK);
 		std::istringstream lines(rendered);
 		std::string line;
 		while (std::getline(lines, line))
-			EXPECT_LT(utf8_display_width(line.c_str()), static_cast<size_t>(columns));
-		morph_buf_cleanup(&details);
+			EXPECT_LT(nb_utf8_width_cstr(line.c_str()), static_cast<size_t>(columns));
+		nb_buf_cleanup(&details);
 	}
 }
 
@@ -3256,19 +3256,24 @@ TEST(CliAgentsPresentationTest, ReceiptComponentClipsAndSanitizesAllOutcomes)
 	for (int columns : {120, 80, 60, 20, 12}) {
 		for (auto status : {AGENT_COMPLETED, AGENT_FAILED, AGENT_CANCELLED}) {
 			for (int styled : {0, 1}) {
-				morph_buf_t row MORPH_CLEANUP(morph_buf_cleanup) = {};
-				ASSERT_EQ(morph_buf_init(&row, 128), 0);
+				nb_buf row NB_CLEANUP(nb_buf_cleanup) = {};
+				ASSERT_EQ((nb_buf_init(&row),
+					   nb_buf_reserve(&row, 128) ? 0 : NB_ERR_NOMEM),
+					  0);
 				ASSERT_EQ(cli_agents_receipt_append(&row, id.c_str(), status,
 					columns, styled), 0);
-				char *plain MORPH_CLEANUP(morph_charp_cleanup) =
-					utf8_terminal_sanitize_dup(row.data, row.len,
-						UTF8_TERMINAL_TEXT_MULTILINE, nullptr);
+				char *plain NB_CLEANUP(nb_charp_cleanup) =
+					morph_terminal_sanitize_dup(row.ptr, row.len,
+								    MORPH_TERMINAL_TEXT_MULTILINE,
+								    nullptr);
 				ASSERT_NE(plain, nullptr);
 				EXPECT_EQ(std::count(plain, plain + strlen(plain), '\n'), 1);
-				EXPECT_LE(utf8_display_width(plain), static_cast<size_t>(columns - 2));
-				EXPECT_EQ(std::string(row.data).find("\033[2J"), std::string::npos);
+				EXPECT_LE(nb_utf8_width_cstr(plain),
+					  static_cast<size_t>(columns - 2));
+				EXPECT_EQ(std::string(row.ptr).find("\033[2J"), std::string::npos);
 				if (!styled)
-					EXPECT_EQ(std::string(row.data).find('\033'), std::string::npos);
+					EXPECT_EQ(std::string(row.ptr).find('\033'),
+						  std::string::npos);
 			}
 		}
 	}
@@ -3287,7 +3292,7 @@ TEST_F(CliPresentationTest, AgentCompletionWaitsUntilParentMarkdownAnswerIsCompl
 	Emit(MORPH_EVENT_BACKGROUND, "agent.completed", "end", completed);
 	std::string pending = testing::internal::GetCapturedStdout();
 	EXPECT_EQ(pending.find("Finished"), std::string::npos);
-	EXPECT_GT(ctx.agents.receipts.nelts, 0u);
+	EXPECT_GT(ctx.agents.receipts.len, 0u);
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.final.delta", "delta", second);
 	Emit(MORPH_EVENT_REACT, "react.final", "end", answer);
@@ -3298,7 +3303,7 @@ TEST_F(CliPresentationTest, AgentCompletionWaitsUntilParentMarkdownAnswerIsCompl
 	ASSERT_NE(output.find("Finished"), std::string::npos);
 	EXPECT_LT(output.find("PARENT_END"), output.find("Finished"));
 	EXPECT_EQ(output.find("Finished"), output.rfind("Finished"));
-	EXPECT_EQ(ctx.agents.receipts.nelts, 0u);
+	EXPECT_EQ(ctx.agents.receipts.len, 0u);
 	cJSON_Delete(first);
 	cJSON_Delete(second);
 	cJSON_Delete(answer);
@@ -3331,7 +3336,7 @@ TEST_F(CliPresentationTest, AgentReceiptsFlushAfterFailedOrCancelledParentWithou
 		ASSERT_NE(output.find("Failed"), std::string::npos);
 		EXPECT_LT(output.find("PARENT_PARTIAL_BEFORE_ABORT"), output.find("Failed"));
 		EXPECT_EQ(output.find("Failed"), output.rfind("Failed"));
-		EXPECT_EQ(ctx.agents.receipts.nelts, 0u);
+		EXPECT_EQ(ctx.agents.receipts.len, 0u);
 		cJSON_Delete(body);
 		cJSON_Delete(completed);
 		cJSON_Delete(outcome);
@@ -3357,7 +3362,7 @@ TEST_F(CliPresentationTest, PresentationFinishCommitsParentBeforeDeferredAgentRe
 	ASSERT_NE(output.find("Interrupted"), std::string::npos);
 	EXPECT_LT(output.find("PARENT_FALLBACK_BOUNDARY"), output.find("Interrupted"));
 	EXPECT_EQ(output.find("Interrupted"), output.rfind("Interrupted"));
-	EXPECT_EQ(ctx.agents.receipts.nelts, 0u);
+	EXPECT_EQ(ctx.agents.receipts.len, 0u);
 	cJSON_Delete(body);
 	cJSON_Delete(completed);
 }
@@ -3379,7 +3384,7 @@ TEST_F(CliPresentationTest, AgentReceiptFlushesAtAuthoritativeCommentaryMessageB
 	ASSERT_NE(output.find("PARENT_COMMENTARY_BEFORE_CHILD_RECEIPT"), std::string::npos);
 	ASSERT_NE(output.find("Finished"), std::string::npos);
 	EXPECT_LT(output.find("PARENT_COMMENTARY_BEFORE_CHILD_RECEIPT"), output.find("Finished"));
-	EXPECT_EQ(ctx.agents.receipts.nelts, 0u);
+	EXPECT_EQ(ctx.agents.receipts.len, 0u);
 	cJSON_Delete(body);
 	cJSON_Delete(completed);
 }
@@ -3427,10 +3432,10 @@ TEST_F(CliPresentationTest, ToolStatusesUseCanonicalShapesStylesAndPlainFallback
 	for (const auto &item : cases) {
 		SCOPED_TRACE(item.status);
 		cli_presentation_reset(&ctx);
-		cJSON *call MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+		cJSON *call NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 		call = cJSON_Parse(
 			R"({"tool":"exec","tool_call_id":"status","args":{"command":"verify"}})");
-		cJSON *result MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+		cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 		result = cJSON_CreateObject();
 		std::string envelope = std::string("{\"data\":{\"status\":\"") +
 			item.status + "\"}}";
@@ -3441,14 +3446,16 @@ TEST_F(CliPresentationTest, ToolStatusesUseCanonicalShapesStylesAndPlainFallback
 		Emit(MORPH_EVENT_TOOL, "tool.result", "end", result);
 		(void)testing::internal::GetCapturedStdout();
 		const auto *tool = static_cast<const cli_transcript_tool *>(
-			morph_array_borrow(&ctx.transcript->tools, 0));
+			nb_vec_at(&ctx.transcript->tools, 0));
 		ASSERT_NE(tool, nullptr);
 		for (int columns : {120, 80, 60}) {
 			for (int styled : {0, 1}) {
-				morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {};
-				ASSERT_EQ(morph_buf_init(&out, 128), 0);
+				nb_buf out NB_CLEANUP(nb_buf_cleanup) = {};
+				ASSERT_EQ((nb_buf_init(&out),
+					   nb_buf_reserve(&out, 128) ? 0 : NB_ERR_NOMEM),
+					  0);
 				ASSERT_EQ(cli_transcript_tool_append(&out, tool, columns, styled, 0), 0);
-				std::string row = morph_buf_cstr_borrow(&out);
+				std::string row = nb_buf_cstr(&out);
 				EXPECT_NE(row.find(item.marker), std::string::npos);
 				if (styled) {
 					EXPECT_EQ(cli_test_style_at(row, item.marker).foreground,

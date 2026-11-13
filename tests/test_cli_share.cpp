@@ -1,11 +1,12 @@
 #include "runtime_test_support.hpp"
-#include "util/json.h"
+#include "nb/err.h"
+#include "cJSON.h"
 
 extern "C" {
 #include "sapi/cli/services/share_store.h"
 #include "sapi/cli/presentation/share.h"
 #include "sapi/cli/commands/registry.h"
-#include "util/file.h"
+#include "nb/file.h"
 }
 
 #include <filesystem>
@@ -86,9 +87,9 @@ TEST_F(ShareTest, SkipsInterruptedAnswerAndDoesNotCrossSessions)
 	cJSON *document = Document();
 	ASSERT_NE(document, nullptr);
 	EXPECT_STREQ(cJSON_GetObjectItem(document, "answer")->valuestring, "Complete answer");
-	morph_json_cleanup(&document);
+	cJSON_DeleteOwner(&document);
 	ASSERT_EQ(runtime_session_create_and_select(instance, "empty", &current), 0);
-	EXPECT_EQ(runtime_session_share_current(instance, &document), -ENODATA);
+	EXPECT_EQ(runtime_session_share_current(instance, &document), NB_ERR_NO_DATA);
 	EXPECT_EQ(document, nullptr);
 }
 
@@ -101,10 +102,10 @@ TEST_F(ShareTest, HtmlIsSelfContainedAndEscapesUntrustedContent)
 		"<script>alert(2)</script>\n\n![alt](https://example.com/leak)\n\n"
 		"[bad](javascript:alert%283%29)");
 	cJSON *document = Document();
-	morph_buf_t output{};
-	ASSERT_EQ(morph_buf_init(&output, 1024), 0);
+	nb_buf output{};
+	ASSERT_EQ((nb_buf_init(&output), nb_buf_reserve(&output, 1024) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(cli_share_html(document, 1793172600, &output), 0);
-	std::string html = morph_buf_cstr_borrow(&output);
+	std::string html = nb_buf_cstr(&output);
 	EXPECT_NE(html.find("data:image/png;base64,"), std::string::npos);
 	EXPECT_NE(html.find("Shared from morph"), std::string::npos);
 	EXPECT_NE(html.find("UTC"), std::string::npos);
@@ -117,7 +118,7 @@ TEST_F(ShareTest, HtmlIsSelfContainedAndEscapesUntrustedContent)
 	EXPECT_EQ(html.find("https://example.com/leak"), std::string::npos);
 	EXPECT_EQ(html.find("href=\"javascript:"), std::string::npos);
 	EXPECT_EQ(html.find("<details class=process open"), std::string::npos);
-	morph_buf_cleanup(&output);
+	nb_buf_cleanup(&output);
 	cJSON_Delete(document);
 }
 
@@ -139,7 +140,7 @@ TEST_F(ShareTest, RepeatedExportsPublishDistinctVisibleFiles)
 	else unsetenv("HOME");
 	ASSERT_EQ(first_rc, 0);
 	ASSERT_EQ(second_rc, 0);
-	EXPECT_EQ(occupied_rc, -EEXIST);
+	EXPECT_EQ(occupied_rc, NB_ERR_EXISTS);
 	EXPECT_EQ(first, saved_first);
 	ASSERT_NE(first, nullptr);
 	ASSERT_NE(second, nullptr);
@@ -203,17 +204,17 @@ TEST_F(ShareTest, NestedImagesUseTheMarkdownResourcePolicy)
 		"before ![![inner](https://example.com/inner)](https://example.com/outer) "
 		"middle ![sibling](https://example.com/sibling) after");
 	cJSON *document = Document();
-	morph_buf_t output{};
-	ASSERT_EQ(morph_buf_init(&output, 1024), 0);
+	nb_buf output{};
+	ASSERT_EQ((nb_buf_init(&output), nb_buf_reserve(&output, 1024) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(cli_share_html(document, 1793172600, &output), 0);
-	std::string html = morph_buf_cstr_borrow(&output);
+	std::string html = nb_buf_cstr(&output);
 	EXPECT_NE(html.find("before "), std::string::npos);
 	EXPECT_NE(html.find(" middle "), std::string::npos);
 	EXPECT_NE(html.find(" after"), std::string::npos);
 	EXPECT_NE(html.find("src=\"data:,\""), std::string::npos);
 	EXPECT_NE(html.find("Images omitted from this export."), std::string::npos);
 	EXPECT_EQ(html.find("https://example.com"), std::string::npos);
-	morph_buf_cleanup(&output);
+	nb_buf_cleanup(&output);
 	cJSON_Delete(document);
 }
 
@@ -223,7 +224,7 @@ TEST_F(ShareTest, MalformedSelectedMetadataReportsParseError)
 	Add("one", "tool_result", "Output", "invalid metadata");
 	Add("one", "assistant_message", "Answer");
 	cJSON *document = nullptr;
-	EXPECT_EQ(runtime_session_share_current(instance, &document), MORPH_ERR_PARSE);
+	EXPECT_EQ(runtime_session_share_current(instance, &document), NB_ERR_PARSE);
 	EXPECT_EQ(document, nullptr);
 }
 
@@ -252,12 +253,12 @@ TEST_F(ShareTest, ResourceOpenFailurePreservesErrno)
 		struct rlimit limit{0, 0};
 		if (setrlimit(RLIMIT_NOFILE, &limit) != 0)
 			_exit(2);
-		morph_buf_t output{};
-		int rc = morph_buf_init(&output, 1024);
+		nb_buf output{};
+		int rc = (nb_buf_init(&output), nb_buf_reserve(&output, 1024) ? 0 : NB_ERR_NOMEM);
 		if (!rc)
 			rc = cli_share_html(document, 1793172600, &output);
-		morph_buf_cleanup(&output);
-		_exit(rc == -EMFILE ? 0 : 1);
+		nb_buf_cleanup(&output);
+		_exit(rc == NB_ERR_RESOURCE ? 0 : 1);
 	}
 	int status = 0;
 	ASSERT_EQ(waitpid(child, &status, 0), child);
@@ -281,7 +282,7 @@ TEST_F(ShareTest, PartialWriteFailureLeavesNoPublishedOrStagingFile)
 		signal(SIGXFSZ, SIG_IGN);
 		char *path = nullptr;
 		int rc = cli_share_store_save(document, &path);
-		_exit(rc == -EFBIG && !path ? 0 : 1);
+		_exit(rc == NB_ERR_TOO_BIG && !path ? 0 : 1);
 	}
 	int status = 0;
 	ASSERT_EQ(waitpid(child, &status, 0), child);
@@ -302,10 +303,10 @@ TEST_F(ShareTest, MarkdownExporterPreservesMathFootnotesAndSafeLinks)
 		"[script](javascript:alert%281%29) [file](file:///private/secret)\n\n"
 		"[relative](../secret) [encoded](java&#x73;cript:alert%281%29)");
 	cJSON *document = Document();
-	morph_buf_t output{};
-	ASSERT_EQ(morph_buf_init(&output, 1024), 0);
+	nb_buf output{};
+	ASSERT_EQ((nb_buf_init(&output), nb_buf_reserve(&output, 1024) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(cli_share_html(document, 1793172600, &output), 0);
-	std::string html = morph_buf_cstr_borrow(&output);
+	std::string html = nb_buf_cstr(&output);
 	EXPECT_NE(html.find("class=\"morph-markdown\""), std::string::npos);
 	EXPECT_NE(html.find("<math "), std::string::npos);
 	EXPECT_NE(html.find("<mfrac>"), std::string::npos);
@@ -318,6 +319,6 @@ TEST_F(ShareTest, MarkdownExporterPreservesMathFootnotesAndSafeLinks)
 	EXPECT_EQ(html.find("href=\"javascript:"), std::string::npos);
 	EXPECT_EQ(html.find("file:///private/secret"), std::string::npos);
 	EXPECT_EQ(html.find("href=\"../secret\""), std::string::npos);
-	morph_buf_cleanup(&output);
+	nb_buf_cleanup(&output);
 	cJSON_Delete(document);
 }

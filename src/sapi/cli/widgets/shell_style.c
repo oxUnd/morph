@@ -1,4 +1,5 @@
 #include "sapi/cli/widgets/shell_style.h"
+#include "nb/err.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/application_internal.h"
 
@@ -11,7 +12,7 @@ static int cli_shell_style_shell_operator(char ch)
 const char *cli_shell_summary_borrow(const char *text, const char *workdir)
 {
 	const char *p = text;
-	morph_buf_t path;
+	nb_buf path NB_CLEANUP(nb_buf_cleanup) = {0};
 	char quote = 0;
 	int valid = 1;
 
@@ -27,7 +28,7 @@ const char *cli_shell_summary_borrow(const char *text, const char *workdir)
 		while (*p == ' ' || *p == '\t')
 			p++;
 	}
-	if (morph_buf_init(&path, 128) != 0)
+	if ((nb_buf_init(&path), nb_buf_reserve(&path, 128) ? 0 : NB_ERR_NOMEM) != 0)
 		return text;
 	while (*p) {
 		char ch = *p;
@@ -43,12 +44,12 @@ const char *cli_shell_summary_borrow(const char *text, const char *workdir)
 			valid = 0;
 			break;
 		} else {
-			(void)morph_buf_putc(&path, ch);
+			(void)nb_buf_append_char(&path, ch);
 		}
 	}
-	valid = valid && !quote && !path.failed && path.len &&
-		(strcmp(path.data, workdir) == 0 || strcmp(path.data, ".") == 0);
-	morph_buf_cleanup(&path);
+	valid = valid && !quote && !nb_buf_status(&path) && path.len &&
+		(strcmp(path.ptr, workdir) == 0 || strcmp(path.ptr, ".") == 0);
+	nb_buf_cleanup(&path);
 	while (*p == ' ' || *p == '\t')
 		p++;
 	if (valid && strncmp(p, "&&", 2) == 0)
@@ -73,7 +74,7 @@ static int cli_shell_style_shell_assignment(const char *text, size_t len)
 	return i < len && text[i] == '=';
 }
 
-static void cli_shell_style_shell_span(morph_buf_t *out, const char *start, const char *end,
+static void cli_shell_style_shell_span(nb_buf *out, const char *start, const char *end,
 				       const char *color, int width, int *column)
 {
 	int span_width = 0;
@@ -81,47 +82,47 @@ static void cli_shell_style_shell_span(morph_buf_t *out, const char *start, cons
 	/* Prefer wrapping between words, falling back to codepoint wrapping for
 	 * a single long word. Colors never participate in width calculations. */
 	for (const char *p = start; p < end;) {
-		utf8_int32_t cp;
+		int32_t cp;
 
-		p = utf8codepoint(p, &cp);
-		span_width += utf8_codepoint_width((unsigned)cp);
+		p = nb_utf8_next_cstr(p, &cp);
+		span_width += nb_utf8_width_cp((unsigned)cp);
 	}
 	if (width > 0 && *column > 0 && span_width <= width && *column + span_width > width) {
-		(void)morph_buf_puts(out, "\n    ");
+		(void)nb_buf_append_cstr(out, "\n    ");
 		*column = 0;
 	}
-	(void)morph_buf_puts(out, color);
+	(void)nb_buf_append_cstr(out, color);
 	while (start < end) {
-		utf8_int32_t cp;
-		const char *next = utf8codepoint(start, &cp);
-		int columns = utf8_codepoint_width((unsigned)cp);
+		int32_t cp;
+		const char *next = nb_utf8_next_cstr(start, &cp);
+		int columns = nb_utf8_width_cp((unsigned)cp);
 
 		if (cp == '\n' || (width > 0 && *column > 0 && *column + columns > width)) {
-			(void)morph_buf_puts(out, ANSI_RESET "\n    ");
-			(void)morph_buf_puts(out, color);
+			(void)nb_buf_append_cstr(out, ANSI_RESET "\n    ");
+			(void)nb_buf_append_cstr(out, color);
 			*column = 0;
 		}
 		if (cp != '\n') {
-			(void)morph_buf_append(out, start, (size_t)(next - start));
+			(void)nb_buf_append(out, start, (size_t)(next - start));
 			*column += columns;
 		}
 		start = next;
 	}
 	if (color[0])
-		(void)morph_buf_puts(out, ANSI_RESET);
+		(void)nb_buf_append_cstr(out, ANSI_RESET);
 }
 
-int cli_shell_style(morph_buf_t *out, const char *text, int width)
+int cli_shell_style(nb_buf *out, const char *text, int width)
 {
-	char *safe =
-		utf8_terminal_sanitize_dup(text, strlen(text), UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+	char *safe = morph_terminal_sanitize_dup(text, strlen(text), MORPH_TERMINAL_TEXT_MULTILINE,
+						 NULL);
 	const char *p = safe;
 	int command = 1;
 	int redirect = 0;
 	int column = 0;
 
 	if (!safe)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	while (*p) {
 		const char *start = p;
 		const char *color = "";
@@ -177,7 +178,7 @@ int cli_shell_style(morph_buf_t *out, const char *text, int width)
 		cli_shell_style_shell_span(out, start, p, color, width, &column);
 	}
 	free(safe);
-	if (out->failed)
-		return out->failed;
+	if (nb_buf_status(out))
+		return nb_buf_status(out);
 	return 0;
 }

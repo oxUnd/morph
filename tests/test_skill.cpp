@@ -1,11 +1,12 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 #include "skill/skill.h"
 #include "skill/skill_parse.h"
 #include "agent/tools/skill_activate.h"
 #include "agent/tool.h"
-#include "util/file.h"
-#include "util/cleanup.h"
-#include "util/utf8.h"
+#include "nb/file.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,7 +36,7 @@ TEST_F(SkillParseTest, ParsePreservesExistingBodyOwnerAndFrontmatter)
 	char *saved = body;
 	strcpy(fm.name, "existing-name");
 	const char *data = "---\nname: replacement\n---\nnew body";
-	EXPECT_EQ(skill_parse(nullptr, data, strlen(data), &fm, &body), -EEXIST);
+	EXPECT_EQ(skill_parse(nullptr, data, strlen(data), &fm, &body), NB_ERR_EXISTS);
 	EXPECT_EQ(body, saved);
 	EXPECT_STREQ(body, "owned body");
 	EXPECT_STREQ(fm.name, "existing-name");
@@ -163,13 +164,30 @@ protected:
 	}
 	void create_skill(const char *dir_name, const char *name,
 			  const char *description, const char *body_text) {
+		nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
+		int file_status_1 = NB_OK;
+		nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
+		int file_status_2 = NB_OK;
+
 		char skill_dir[512];
-		ASSERT_EQ(file_path_join(skill_dir, sizeof(skill_dir),
-					 tmpdir, dir_name), 0);
+		ASSERT_EQ(
+			((file_status_1 = nb_path_concat(&file_value_1, tmpdir, dir_name)) != NB_OK
+				 ? file_status_1
+			 : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), skill_dir,
+							   sizeof(skill_dir))) == NB_ERR_RANGE
+				 ? NB_ERR_NAME_TOO_LONG
+				 : file_status_1),
+			0);
 		mkdir(skill_dir, 0755);
 		char md_path[PATH_MAX];
-		ASSERT_EQ(file_path_join(md_path, sizeof(md_path),
-					 skill_dir, "SKILL.md"), 0);
+		ASSERT_EQ(((file_status_2 = nb_path_concat(&file_value_2, skill_dir, "SKILL.md")) !=
+					   NB_OK
+				   ? file_status_2
+			   : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), md_path,
+							     sizeof(md_path))) == NB_ERR_RANGE
+				   ? NB_ERR_NAME_TOO_LONG
+				   : file_status_2),
+			  0);
 		FILE *f = fopen(md_path, "w");
 		ASSERT_NE(f, nullptr);
 		fprintf(f, "---\nname: %s\ndescription: %s\n---\n%s\n",
@@ -177,12 +195,29 @@ protected:
 		fclose(f);
 	}
 	void remove_skill(const char *dir_name) {
+		nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {};
+		int file_status_3 = NB_OK;
+		nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {};
+		int file_status_4 = NB_OK;
+
 		char skill_dir[512];
-		ASSERT_EQ(file_path_join(skill_dir, sizeof(skill_dir),
-					 tmpdir, dir_name), 0);
+		ASSERT_EQ(
+			((file_status_3 = nb_path_concat(&file_value_3, tmpdir, dir_name)) != NB_OK
+				 ? file_status_3
+			 : (file_status_3 = nb_str_copy_to(nb_buf_str(&file_value_3), skill_dir,
+							   sizeof(skill_dir))) == NB_ERR_RANGE
+				 ? NB_ERR_NAME_TOO_LONG
+				 : file_status_3),
+			0);
 		char md_path[PATH_MAX];
-		ASSERT_EQ(file_path_join(md_path, sizeof(md_path),
-					 skill_dir, "SKILL.md"), 0);
+		ASSERT_EQ(((file_status_4 = nb_path_concat(&file_value_4, skill_dir, "SKILL.md")) !=
+					   NB_OK
+				   ? file_status_4
+			   : (file_status_4 = nb_str_copy_to(nb_buf_str(&file_value_4), md_path,
+							     sizeof(md_path))) == NB_ERR_RANGE
+				   ? NB_ERR_NAME_TOO_LONG
+				   : file_status_4),
+			  0);
 		unlink(md_path);
 		rmdir(skill_dir);
 	}
@@ -230,7 +265,7 @@ TEST_F(SkillRegistryTest, GrowthBeyondSixtyFourKeepsBorrowedEntriesStable)
 	EXPECT_EQ(first->body, body);
 	EXPECT_STREQ(first->body, "Original instructions\n");
 	EXPECT_NE(skill_borrow(&reg, "growth-149"), nullptr);
-	const struct skill_entry **sorted MORPH_CLEANUP(skill_entry_list_cleanup) = nullptr;
+	const struct skill_entry **sorted NB_CLEANUP(skill_entry_list_cleanup) = nullptr;
 	ASSERT_EQ(skill_sorted_entries_create(&reg, &sorted), 0);
 	EXPECT_EQ(sorted[0], first);
 	for (int i = 0; i < 150; i++) {
@@ -245,18 +280,18 @@ TEST_F(SkillRegistryTest, RegistryCopiesOwnedBodyAndRejectsDuplicateWithoutMutat
 	struct skill_entry source = {};
 	strcpy(source.fm.name, "copy");
 	strcpy(source.fm.description, "Copied entry.");
-	char *body MORPH_CLEANUP(morph_charp_cleanup) = strdup("Original body");
+	char *body NB_CLEANUP(nb_charp_cleanup) = strdup("Original body");
 	ASSERT_NE(body, nullptr);
 	source.body = body;
 	source.enabled = 1;
 	source.body_loaded = 1;
 	ASSERT_EQ(skill_registry_add_copy(&reg, &source), 0);
-	morph_charp_cleanup(&body);
+	nb_charp_cleanup(&body);
 	source.body = nullptr;
 	auto *copy = skill_borrow(&reg, "copy");
 	ASSERT_NE(copy, nullptr);
 	EXPECT_STREQ(copy->body, "Original body");
-	EXPECT_EQ(skill_registry_add_copy(&reg, &source), -EEXIST);
+	EXPECT_EQ(skill_registry_add_copy(&reg, &source), NB_ERR_EXISTS);
 	EXPECT_EQ(reg.count, 1);
 	EXPECT_EQ(skill_borrow(&reg, "copy"), copy);
 }
@@ -292,7 +327,7 @@ TEST_F(SkillRegistryTest, Lookup) {
 	struct skill_entry *e = skill_borrow(&reg, "find-me");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->fm.name, "find-me");
-	EXPECT_EQ(morph_strmap_borrow(&reg.by_name, "find-me"), e);
+	EXPECT_EQ(nb_map_get_cstr(reg.by_name, "find-me"), e);
 	EXPECT_EQ(skill_borrow(&reg, "not-here"), nullptr);
 	remove_skill("find-me");
 }
@@ -372,7 +407,7 @@ TEST_F(SkillRegistryTest, SortedOutputPreservesRegistryLookupPointers)
 	ASSERT_EQ(skill_activate(zeta), 0);
 	ASSERT_EQ(skill_activate(alpha), 0);
 	const struct skill_entry *entries[2];
-	EXPECT_EQ(skill_sorted_entries_borrow(&reg, entries, 1), -ENOSPC);
+	EXPECT_EQ(skill_sorted_entries_borrow(&reg, entries, 1), NB_ERR_NO_SPACE);
 	ASSERT_EQ(skill_sorted_entries_borrow(&reg, entries, 2), 2);
 	EXPECT_EQ(entries[0], alpha);
 	EXPECT_EQ(entries[1], zeta);
@@ -392,6 +427,9 @@ TEST_F(SkillRegistryTest, SortedOutputPreservesRegistryLookupPointers)
 }
 
 TEST_F(SkillRegistryTest, DuplicateNameSkipped) {
+	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {};
+	int file_status_5 = NB_OK;
+
 	create_skill("dup-name", "dup-name", "First.", "A");
 	skill_discover(&reg, tmpdir);
 	EXPECT_EQ(reg.count, 1);
@@ -399,8 +437,13 @@ TEST_F(SkillRegistryTest, DuplicateNameSkipped) {
 	snprintf(skill_dir2, sizeof(skill_dir2), "%s/dup-name-2", tmpdir);
 	mkdir(skill_dir2, 0755);
 	char md_path[PATH_MAX];
-	ASSERT_EQ(file_path_join(md_path, sizeof(md_path),
-				 skill_dir2, "SKILL.md"), 0);
+	ASSERT_EQ(((file_status_5 = nb_path_concat(&file_value_5, skill_dir2, "SKILL.md")) != NB_OK
+			   ? file_status_5
+		   : (file_status_5 = nb_str_copy_to(nb_buf_str(&file_value_5), md_path,
+						     sizeof(md_path))) == NB_ERR_RANGE
+			   ? NB_ERR_NAME_TOO_LONG
+			   : file_status_5),
+		  0);
 	FILE *f = fopen(md_path, "w");
 	ASSERT_NE(f, nullptr);
 	fprintf(f, "---\nname: dup-name\ndescription: Second.\n---\nB\n");
@@ -415,17 +458,17 @@ TEST_F(SkillRegistryTest, DuplicateNameSkipped) {
 TEST_F(SkillRegistryTest, NullParams) {
 	skill_registry_init(NULL, nullptr);
 	skill_registry_cleanup(nullptr);
-	EXPECT_EQ(skill_discover(nullptr, "/tmp"), -EINVAL);
-	EXPECT_EQ(skill_discover(&reg, nullptr), -EINVAL);
+	EXPECT_EQ(skill_discover(nullptr, "/tmp"), NB_ERR_INVAL);
+	EXPECT_EQ(skill_discover(&reg, nullptr), NB_ERR_INVAL);
 	EXPECT_EQ(skill_borrow(nullptr, "x"), nullptr);
 	EXPECT_EQ(skill_borrow(&reg, nullptr), nullptr);
-	EXPECT_EQ(skill_activate(nullptr), -EINVAL);
+	EXPECT_EQ(skill_activate(nullptr), NB_ERR_INVAL);
 	skill_deactivate(nullptr);
 	skill_deactivate_all(nullptr);
 	char *instructions = nullptr;
 	EXPECT_EQ(skill_activated_instructions_create(nullptr, &instructions), 0);
 	EXPECT_EQ(instructions, nullptr);
-	EXPECT_EQ(skill_build_catalog(nullptr, nullptr, 0), -EINVAL);
+	EXPECT_EQ(skill_build_catalog(nullptr, nullptr, 0), NB_ERR_INVAL);
 }
 
 class SkillActivateToolTest : public ::testing::Test {
@@ -442,13 +485,30 @@ protected:
 	}
 	void create_skill_file(const char *root_dir, const char *dir_name,
 			       const char *name, const char *body) {
+		nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {};
+		int file_status_6 = NB_OK;
+		nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {};
+		int file_status_7 = NB_OK;
+
 		char skill_dir[PATH_MAX];
-		ASSERT_EQ(file_path_join(skill_dir, sizeof(skill_dir),
-					 root_dir, dir_name), 0);
+		ASSERT_EQ(((file_status_6 = nb_path_concat(&file_value_6, root_dir, dir_name)) !=
+					   NB_OK
+				   ? file_status_6
+			   : (file_status_6 = nb_str_copy_to(nb_buf_str(&file_value_6), skill_dir,
+							     sizeof(skill_dir))) == NB_ERR_RANGE
+				   ? NB_ERR_NAME_TOO_LONG
+				   : file_status_6),
+			  0);
 		mkdir(skill_dir, 0755);
 		char md_path[PATH_MAX];
-		ASSERT_EQ(file_path_join(md_path, sizeof(md_path),
-					 skill_dir, "SKILL.md"), 0);
+		ASSERT_EQ(((file_status_7 = nb_path_concat(&file_value_7, skill_dir, "SKILL.md")) !=
+					   NB_OK
+				   ? file_status_7
+			   : (file_status_7 = nb_str_copy_to(nb_buf_str(&file_value_7), md_path,
+							     sizeof(md_path))) == NB_ERR_RANGE
+				   ? NB_ERR_NAME_TOO_LONG
+				   : file_status_7),
+			  0);
 		FILE *f = fopen(md_path, "w");
 		ASSERT_NE(f, nullptr);
 		fprintf(f, "---\nname: %s\ndescription: Test skill.\n---\n%s\n",
@@ -456,12 +516,29 @@ protected:
 		fclose(f);
 	}
 	void remove_skill_file(const char *root_dir, const char *dir_name) {
+		nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {};
+		int file_status_8 = NB_OK;
+		nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {};
+		int file_status_9 = NB_OK;
+
 		char skill_dir[PATH_MAX];
-		ASSERT_EQ(file_path_join(skill_dir, sizeof(skill_dir),
-					 root_dir, dir_name), 0);
+		ASSERT_EQ(((file_status_8 = nb_path_concat(&file_value_8, root_dir, dir_name)) !=
+					   NB_OK
+				   ? file_status_8
+			   : (file_status_8 = nb_str_copy_to(nb_buf_str(&file_value_8), skill_dir,
+							     sizeof(skill_dir))) == NB_ERR_RANGE
+				   ? NB_ERR_NAME_TOO_LONG
+				   : file_status_8),
+			  0);
 		char md_path[PATH_MAX];
-		ASSERT_EQ(file_path_join(md_path, sizeof(md_path),
-					 skill_dir, "SKILL.md"), 0);
+		ASSERT_EQ(((file_status_9 = nb_path_concat(&file_value_9, skill_dir, "SKILL.md")) !=
+					   NB_OK
+				   ? file_status_9
+			   : (file_status_9 = nb_str_copy_to(nb_buf_str(&file_value_9), md_path,
+							     sizeof(md_path))) == NB_ERR_RANGE
+				   ? NB_ERR_NAME_TOO_LONG
+				   : file_status_9),
+			  0);
 		unlink(md_path);
 		rmdir(skill_dir);
 	}
@@ -494,7 +571,7 @@ TEST_F(SkillActivateToolTest, ActivateViaTool) {
 	int rc = tool_exec(&tools, "activate_skill",
 			   "{\"name\":\"review\"}", &result);
 	EXPECT_EQ(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
 	ASSERT_NE(result.data, nullptr);
 	cJSON *text = cJSON_GetObjectItem(result.data, "text");
 	ASSERT_TRUE(cJSON_IsString(text));
@@ -538,11 +615,11 @@ TEST_F(SkillActivateToolTest, RegistryScopedSkillRegistry) {
 		"{\"name\":\"first\"}", &result1), 0);
 	EXPECT_EQ(tool_exec(&other_tools, "activate_skill",
 		"{\"name\":\"second\"}", &result2), 0);
-	ASSERT_NE(result1.text.data, nullptr);
-	ASSERT_NE(result2.text.data, nullptr);
-	EXPECT_EQ(strstr(result1.text.data, "First body."), nullptr);
+	ASSERT_NE(result1.text.ptr, nullptr);
+	ASSERT_NE(result2.text.ptr, nullptr);
+	EXPECT_EQ(strstr(result1.text.ptr, "First body."), nullptr);
 	EXPECT_STREQ(skill_borrow(&skills, "first")->body, "First body.\n");
-	EXPECT_EQ(strstr(result2.text.data, "Second body."), nullptr);
+	EXPECT_EQ(strstr(result2.text.ptr, "Second body."), nullptr);
 	EXPECT_STREQ(skill_borrow(&other_skills, "second")->body, "Second body.\n");
 
 	tool_result_cleanup(&result1);
@@ -652,11 +729,11 @@ TEST_F(SkillParseFrontmatterTest, UnicodeDescriptionUsesCharacterLimit)
 	write_file(content.c_str());
 	ASSERT_EQ(skill_parse_frontmatter(NULL, tmppath, &fm), 0);
 	EXPECT_STREQ(fm.description, description.c_str());
-	EXPECT_EQ(utf8valid(fm.description), nullptr);
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(fm.description), NULL), NB_UTF8_OK);
 	description += "界";
 	content = "---\nname: unicode\ndescription: " + description + "\n---\nBody\n";
 	write_file(content.c_str());
-	EXPECT_EQ(skill_parse_frontmatter(NULL, tmppath, &fm), -E2BIG);
+	EXPECT_EQ(skill_parse_frontmatter(NULL, tmppath, &fm), NB_ERR_TOO_BIG);
 }
 
 TEST_F(SkillParseFrontmatterTest, LongSingleMetadataLineIsNotSplitByReader)
@@ -675,13 +752,13 @@ TEST_F(SkillParseTest, OversizedFieldsAndMetadataCountsReturnExplicitErrors)
 {
 	std::string name(SKILL_NAME_MAX_CHARS + 1, 'n');
 	std::string content = "---\nname: " + name + "\ndescription: Test\n---\nBody\n";
-	EXPECT_EQ(skill_parse(NULL, content.c_str(), content.size(), &fm, &body), -E2BIG);
+	EXPECT_EQ(skill_parse(NULL, content.c_str(), content.size(), &fm, &body), NB_ERR_TOO_BIG);
 	EXPECT_EQ(body, nullptr);
 	content = "---\nname: metadata\ndescription: Test\nmetadata:\n";
 	for (int i = 0; i < SKILL_METADATA_MAX + 1; i++)
 		content += "  key" + std::to_string(i) + ": value\n";
 	content += "---\nBody\n";
-	EXPECT_EQ(skill_parse(NULL, content.c_str(), content.size(), &fm, &body), -E2BIG);
+	EXPECT_EQ(skill_parse(NULL, content.c_str(), content.size(), &fm, &body), NB_ERR_TOO_BIG);
 	EXPECT_EQ(body, nullptr);
 }
 
@@ -690,7 +767,7 @@ TEST_F(SkillParseTest, InvalidUtf8MetadataIsRejected)
 	std::string content = "---\nname: invalid\ndescription: broken";
 	content.push_back(static_cast<char>(0xe4));
 	content += "\n---\nBody\n";
-	EXPECT_EQ(skill_parse(NULL, content.c_str(), content.size(), &fm, &body), MORPH_ERR_FORMAT);
+	EXPECT_EQ(skill_parse(NULL, content.c_str(), content.size(), &fm, &body), NB_ERR_FORMAT);
 	EXPECT_EQ(body, nullptr);
 }
 
@@ -717,7 +794,7 @@ TEST_F(SkillParseTest, ClosingDelimiterAndTrailingNewlinesMayEndAtBufferBoundary
 TEST_F(SkillParseTest, UnterminatedFrontmatterNewlinesStayWithinTheSuppliedLength)
 {
 	const char bytes[] = {'-', '-', '-', '\n', '\r', '\n'};
-	EXPECT_EQ(skill_parse(NULL, bytes, sizeof(bytes), &fm, &body), MORPH_ERR_PARSE);
+	EXPECT_EQ(skill_parse(NULL, bytes, sizeof(bytes), &fm, &body), NB_ERR_PARSE);
 	EXPECT_EQ(body, nullptr);
 }
 

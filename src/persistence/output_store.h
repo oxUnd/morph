@@ -2,6 +2,7 @@
 #define MORPH_OUTPUT_STORE_H
 
 #include <stdint.h>
+#include "nb/err.h"
 
 struct db;
 
@@ -54,9 +55,9 @@ struct output_record {
 int output_store_find_id(struct db *db, const char *path, int64_t *id);
 /* A previously recorded path succeeds with *id == 0. Input strings are borrowed. */
 int output_store_insert(struct db *db, const struct output_record_input *record, int64_t *id);
-/* Outputs must be zero-initialized and empty. Occupied owners return -EEXIST. */
+/* Outputs must be zero-initialized and empty. Occupied owners return NB_ERR_EXISTS. */
 /* A returned record owns its strings. Input records only borrow their fields.
- * Missing paths return -ENODATA. Failures leave the output empty. */
+ * Missing paths return NB_ERR_NO_DATA. Failures leave the output empty. */
 int output_store_copy(struct db *db, const char *path, struct output_record *record);
 void output_record_cleanup(struct output_record *record);
 

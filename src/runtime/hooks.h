@@ -1,13 +1,15 @@
 #ifndef MORPH_RUNTIME_HOOKS_H
 #define MORPH_RUNTIME_HOOKS_H
 
-struct morph_log;
+struct nb_log;
 #include "agent/hooks.h"
+#include "nb/thread.h"
 #include "config/config.h"
 #include "db/database.h"
 #include "event/event.h"
-#include "util/array.h"
-#include "util/cancel.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/cancel.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,12 +19,12 @@ struct tool_context;
 
 struct hook_manager {
 	struct tool_context *permissions;
-	struct morph_log *logger;
+	struct nb_log *logger;
 	struct db *db;
 	const struct config *config;
 	char config_path[PATH_MAX];
 	char workdir[PATH_MAX];
-	morph_array_t entries;
+	nb_vec entries;
 	int ready;
 	int enabled;
 	struct config_file_error error;
@@ -35,8 +37,8 @@ struct hook_manager {
 	const char *model;
 	morph_event_cb event_cb;
 	void *event_user;
-	const volatile sig_atomic_t *cancelled;
-	struct morph_cancel_token *cancel_token;
+	const nb_atomic_int *cancelled;
+	struct nb_cancel *cancel_token;
 };
 
 int hook_manager_init(struct hook_manager *manager, struct db *db, const struct config *config,

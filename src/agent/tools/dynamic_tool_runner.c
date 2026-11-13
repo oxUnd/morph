@@ -1,17 +1,18 @@
 #include "dynamic_tool_runner.h"
-#include "util/signals.h"
-#include "util/child_io.h"
+#include "nb/signal.h"
+#include "nb/process.h"
 #include "sandbox/sandbox.h"
 #include "sandbox/permission.h"
 #include "agent/tool_runtime.h"
 #include "ipc/jsonrpc.h"
-#include "util/buf.h"
-#include "util/data.h"
-#include "util/error.h"
-#include "util/cleanup.h"
-#include "util/file.h"
-#include "util/name.h"
-#include "util/log.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "runtime/resources.h"
+#include "errors.h"
+#include "nb/cleanup.h"
+#include "nb/file.h"
+#include "nb/str.h"
+#include "nb/log.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -36,7 +37,7 @@
 static const char *runner_path(char buffer[PATH_MAX]);
 static const struct config_dynamic_tool_profile *
 active_profile(const struct config_dynamic_tools *cfg);
-static int append_list(morph_buf_t *buf, const char *value, int *first);
+static int append_list(nb_buf *buf, const char *value, int *first);
 static char *join_caps(char caps[][DYNAMIC_TOOL_CAP_LEN_MAX], int count);
 static char *join_allow(const char values[][DYNAMIC_TOOL_ALLOW_LEN_MAX], int count);
 static char *join_path_allow(const char values[][DYNAMIC_TOOL_ALLOW_LEN_MAX], int count,
@@ -88,60 +89,63 @@ active_profile(const struct config_dynamic_tools *cfg)
 	return &cfg->local;
 }
 
-static int append_list(morph_buf_t *buf, const char *value, int *first)
+static int append_list(nb_buf *buf, const char *value, int *first)
 {
 	int rc;
 
 	if (!value || !*value)
 		return 0;
 	if (!*first) {
-		rc = morph_buf_putc(buf, ',');
+		rc = (nb_buf_append_char(buf, ',') ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
 	*first = 0;
-	return morph_buf_puts(buf, value);
+	return (nb_buf_append_cstr(buf, value) ? 0 : NB_ERR_NOMEM);
 }
 
 static char *join_caps(char caps[][DYNAMIC_TOOL_CAP_LEN_MAX], int count)
 {
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	int first = 1;
 
-	if (morph_buf_init(&buf, 128) != 0)
+	if ((nb_buf_init(&buf), nb_buf_reserve(&buf, 128) ? 0 : NB_ERR_NOMEM) != 0)
 		return NULL;
 	for (int i = 0; i < count; i++) {
 		if (append_list(&buf, caps[i], &first) != 0) {
-			morph_buf_cleanup(&buf);
+			nb_buf_cleanup(&buf);
 			return NULL;
 		}
 	}
-	return morph_buf_detach(&buf);
+	return (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
 }
 
 static char *join_allow(const char values[][DYNAMIC_TOOL_ALLOW_LEN_MAX], int count)
 {
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	int first = 1;
 
-	if (morph_buf_init(&buf, 128) != 0)
+	if ((nb_buf_init(&buf), nb_buf_reserve(&buf, 128) ? 0 : NB_ERR_NOMEM) != 0)
 		return NULL;
 	for (int i = 0; i < count; i++) {
 		if (append_list(&buf, values[i], &first) != 0) {
-			morph_buf_cleanup(&buf);
+			nb_buf_cleanup(&buf);
 			return NULL;
 		}
 	}
-	return morph_buf_detach(&buf);
+	return (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
 }
 
 static char *join_path_allow(const char values[][DYNAMIC_TOOL_ALLOW_LEN_MAX], int count,
 			     const char *root)
 {
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	int first = 1;
 
-	if (morph_buf_init(&buf, 128) != 0)
+	if ((nb_buf_init(&buf), nb_buf_reserve(&buf, 128) ? 0 : NB_ERR_NOMEM) != 0)
 		return NULL;
 	for (int i = 0; i < count; i++) {
 		char *candidate;
@@ -153,28 +157,36 @@ static char *join_path_allow(const char values[][DYNAMIC_TOOL_ALLOW_LEN_MAX], in
 		if (strcmp(values[i], "*") == 0) {
 			rc = append_list(&buf, values[i], &first);
 		} else {
-			candidate = file_path_is_absolute(values[i])
+			candidate = nb_path_is_absolute(values[i])
 					    ? strdup(values[i])
-					    : file_path_full_alloc(root, values[i]);
+					    : (nb_path_join(&file_value_1, root, values[i]) == NB_OK
+						       ? strdup(nb_buf_cstr(&file_value_1))
+						       : NULL);
 			if (!candidate) {
-				morph_buf_cleanup(&buf);
+				nb_buf_cleanup(&buf);
 				return NULL;
 			}
-			resolved = file_resolve_path_copy(candidate);
+			resolved =
+				(nb_path_expand(&file_value_2, candidate, NULL) == NB_OK &&
+						 nb_path_canonical_missing(
+							 &file_value_2, nb_buf_cstr(&file_value_2),
+							 NULL) == NB_OK
+					 ? strdup(nb_buf_cstr(&file_value_2))
+					 : NULL);
 			free(candidate);
 			if (!resolved) {
-				morph_buf_cleanup(&buf);
+				nb_buf_cleanup(&buf);
 				return NULL;
 			}
 			rc = append_list(&buf, resolved, &first);
 			free(resolved);
 		}
 		if (rc != 0) {
-			morph_buf_cleanup(&buf);
+			nb_buf_cleanup(&buf);
 			return NULL;
 		}
 	}
-	return morph_buf_detach(&buf);
+	return (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
 }
 
 static int effective_caps(struct dynamic_tool *dt,
@@ -184,10 +196,10 @@ static int effective_caps(struct dynamic_tool *dt,
 	int count = 0;
 
 	if (!dt || !dt->cfg || !out || !out_count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	profile = active_profile(dt->cfg);
 	if (!profile)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	for (int i = 0; i < profile->default_capabilities_count && count < DYNAMIC_TOOL_CAP_MAX;
 	     i++) {
 		strncpy(out[count], profile->default_capabilities[i], DYNAMIC_TOOL_CAP_LEN_MAX - 1);
@@ -232,11 +244,11 @@ static int set_child_env(struct dynamic_tool *dt)
 	int rc;
 
 	if (!dt || !dt->tctx)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	workdir = tool_context_workdir_borrow(dt->tctx);
 	output_dir = tool_context_output_dir_borrow(dt->tctx);
 	if (!workdir || !*workdir || !output_dir || !*output_dir)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	profile = active_profile(dt->cfg);
 	rc = effective_caps(dt, caps, &caps_count);
 	if (rc < 0)
@@ -254,7 +266,7 @@ static int set_child_env(struct dynamic_tool *dt)
 		free(write_str);
 		free(command_str);
 		free(network_str);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	snprintf(timeout_buf, sizeof(timeout_buf), "%d",
 		 dt->cfg->default_timeout_seconds > 0 ? dt->cfg->default_timeout_seconds : 30);
@@ -271,7 +283,7 @@ static int set_child_env(struct dynamic_tool *dt)
 	    setenv("MORPH_RUNNER_MAX_CAPTURE_BYTES", capture_buf, 1) != 0 ||
 	    setenv("MORPH_DYNAMIC_WORKDIR", workdir, 1) != 0 ||
 	    setenv("MORPH_DYNAMIC_OUTPUT_DIR", output_dir, 1) != 0)
-		rc = -errno;
+		rc = nb_status_from_errno(errno, NULL);
 	free(cap_str);
 	free(read_str);
 	free(write_str);
@@ -280,88 +292,72 @@ static int set_child_env(struct dynamic_tool *dt)
 	return rc;
 }
 
+struct dynamic_child_context {
+	struct dynamic_tool *tool;
+	struct sandbox_config *sandbox;
+};
+
+static nb_status dynamic_prepare_child(void *opaque)
+{
+	struct dynamic_child_context *context = opaque;
+	/* The child uses only its private configuration, without parent locks. */
+	context->sandbox->logger = NULL;
+	int rc = set_child_env(context->tool);
+	if (rc == NB_OK && !context->sandbox->read_all)
+		rc = sandbox_enter(context->sandbox);
+	return (nb_status)rc;
+}
+
 int dynamic_tool_runner_execute(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct dynamic_tool *dt = user_data;
-	int stdin_pipe[2];
-	int stdout_pipe[2];
-	int stderr_pipe[2];
-	pid_t pid;
 	char *request_str = NULL;
-	morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_t err MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf out NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf err NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc;
 
 	int status = 0;
 
 	if (!dt || !result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	size_t output_limit = dt->cfg->default_max_output_bytes > 0
 		? (size_t)dt->cfg->default_max_output_bytes : DYN_TOOL_OUTPUT_LIMIT;
-	char snapshot[] = "/tmp/morph-tool-XXXXXX";
-	int snapshot_fd = mkstemp(snapshot);
-	if (snapshot_fd < 0) {
-		return -errno;
-	}
-	rc = dt->source != NULL ? file_write_all(snapshot, dt->source, strlen(dt->source))
-				: -ENOENT;
+	nb_buf snapshot_path NB_CLEANUP(nb_buf_cleanup) = {0};
+	rc = nb_file_temp_in(&snapshot_path, "/tmp", NULL, NULL);
+	if (rc != NB_OK)
+		return rc;
+	char *snapshot = snapshot_path.ptr;
+	rc = dt->source != NULL ? nb_file_write_all(snapshot, dt->source, strlen(dt->source), NULL)
+				: NB_ERR_NOT_FOUND;
 	if (rc != 0) {
-		close(snapshot_fd);
 		unlink(snapshot);
 		return rc;
 	}
-	close(snapshot_fd);
 
-	if ((rc = morph_io_pipe(stdin_pipe)) != 0) {
-		unlink(snapshot);
-		return rc;
-	}
-	if ((rc = morph_io_pipe(stdout_pipe)) != 0) {
-		close(stdin_pipe[0]);
-		close(stdin_pipe[1]);
-		unlink(snapshot);
-		return rc;
-	}
-	if ((rc = morph_io_pipe(stderr_pipe)) != 0) {
-		close(stdin_pipe[0]);
-		close(stdin_pipe[1]);
-		close(stdout_pipe[0]);
-		close(stdout_pipe[1]);
-		unlink(snapshot);
-		return rc;
-	}
-	struct sandbox_config sandbox MORPH_CLEANUP(sandbox_config_cleanup) = {0};
-	morph_array_t read_views MORPH_CLEANUP(morph_array_cleanup) = {0};
+	struct sandbox_config sandbox NB_CLEANUP(sandbox_config_cleanup) = {0};
+	nb_vec read_views NB_CLEANUP(nb_vec_cleanup) = {0};
 	char runner_storage[PATH_MAX];
 	const char *runner = runner_path(runner_storage);
 
 	rc = sandbox_permission_prepare(dt->tctx, dt->name, NULL, &sandbox);
 	if (rc != 0) {
-		close(stdin_pipe[0]);
-		close(stdin_pipe[1]);
-		close(stdout_pipe[0]);
-		close(stdout_pipe[1]);
-		close(stderr_pipe[0]);
-		close(stderr_pipe[1]);
+
 		unlink(snapshot);
 		return rc;
 	}
 	if (!sandbox.read_all) {
-		rc = morph_array_init(&read_views, (size_t)sandbox.read_paths_count + 2,
-				      sizeof(char *));
-		char **reads = rc == 0 ? morph_array_push_n_borrow(
-						 &read_views, (size_t)sandbox.read_paths_count + 2)
-				       : NULL;
+		rc = (nb_vec_init(&read_views, sizeof(char *)),
+		      nb_vec_reserve(&read_views, (size_t)sandbox.read_paths_count + 2)
+			      ? 0
+			      : NB_ERR_NOMEM);
+		char **reads =
+			rc == 0 ? nb_vec_push_n(&read_views, (size_t)sandbox.read_paths_count + 2)
+				: NULL;
 
 		if (!reads) {
-			close(stdin_pipe[0]);
-			close(stdin_pipe[1]);
-			close(stdout_pipe[0]);
-			close(stdout_pipe[1]);
-			close(stderr_pipe[0]);
-			close(stderr_pipe[1]);
+
 			unlink(snapshot);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		memcpy(reads, sandbox.read_paths,
 		       (size_t)sandbox.read_paths_count * sizeof(*reads));
@@ -369,55 +365,23 @@ int dynamic_tool_runner_execute(const char *args_json, struct tool_result *resul
 		reads[sandbox.read_paths_count++] = (char *)runner;
 		sandbox.read_paths = reads;
 	}
-	pid = fork();
-	if (pid < 0) {
-		int e = errno;
-		close(stdin_pipe[0]);
-		close(stdin_pipe[1]);
-		close(stdout_pipe[0]);
-		close(stdout_pipe[1]);
-		close(stderr_pipe[0]);
-		close(stderr_pipe[1]);
+	struct dynamic_child_context context = {.tool = dt, .sandbox = &sandbox};
+	const char *argv[] = {nb_file_exists(runner) ? runner : "morph-js-runner", snapshot, NULL};
+	nb_process_options options = {
+		.argv = argv,
+		.cwd = tool_context_workdir_borrow(dt->tctx),
+		.search_path = true,
+		.close_fds = true,
+		.new_session = true,
+		.prepare = dynamic_prepare_child,
+		.prepare_ctx = &context,
+	};
+	nb_process *child NB_CLEANUP(nb_process_cleanup) = NULL;
+	rc = nb_process_spawn(&options, &child, NULL);
+	if (rc != NB_OK) {
 		unlink(snapshot);
-		return -e;
+		return rc;
 	}
-	if (pid == 0) {
-		morph_signals_reset_child();
-		if (sandbox_start_isolated_session() != 0) {
-			_exit(126);
-		}
-		const char *workdir;
-
-		close(stdin_pipe[1]);
-		close(stdout_pipe[0]);
-		close(stderr_pipe[0]);
-		dup2(stdin_pipe[0], STDIN_FILENO);
-		dup2(stdout_pipe[1], STDOUT_FILENO);
-		dup2(stderr_pipe[1], STDERR_FILENO);
-		close(stdin_pipe[0]);
-		close(stdout_pipe[1]);
-		close(stderr_pipe[1]);
-		rc = set_child_env(dt);
-		if (rc < 0) {
-			fprintf(stderr, "dynamic tool path context is unavailable\n");
-			_exit(126);
-		}
-		workdir = tool_context_workdir_borrow(dt->tctx);
-		if (chdir(workdir) != 0) {
-			fprintf(stderr, "dynamic tool chdir(%s) failed: %s\n", workdir,
-				strerror(errno));
-			_exit(126);
-		}
-		if (sandbox_close_inherited_fds() != 0 ||
-		    (!sandbox.read_all && sandbox_enter(&sandbox) != 0))
-			_exit(126);
-		execl(runner, runner, snapshot, (char *)NULL);
-		execlp("morph-js-runner", "morph-js-runner", snapshot, (char *)NULL);
-		_exit(127);
-	}
-	close(stdin_pipe[0]);
-	close(stdout_pipe[1]);
-	close(stderr_pipe[1]);
 	{
 		struct jsonrpc_request req;
 		memset(&req, 0, sizeof(req));
@@ -427,95 +391,91 @@ int dynamic_tool_runner_execute(const char *args_json, struct tool_result *resul
 		request_str = jsonrpc_request_create(&req);
 	}
 	if (!request_str) {
-		close(stdin_pipe[1]);
-		close(stdout_pipe[0]);
-		close(stderr_pipe[0]);
-		kill(pid, SIGKILL);
-		while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+
 		unlink(snapshot);
 		return tool_result_error_copy(result, "tool_failed",
 					      "failed to build dynamic tool request");
 	}
-	morph_buf_t request MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	rc = morph_buf_init(&request, strlen(request_str) + 2);
+	nb_buf request NB_CLEANUP(nb_buf_cleanup) = {0};
+	rc = (nb_buf_init(&request),
+	      nb_buf_reserve(&request, strlen(request_str) + 2) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0) {
-		rc = morph_buf_puts(&request, request_str);
+		rc = (nb_buf_append_cstr(&request, request_str) ? 0 : NB_ERR_NOMEM);
 	}
 	if (rc == 0) {
-		rc = morph_buf_putc(&request, '\n');
+		rc = (nb_buf_append_char(&request, '\n') ? 0 : NB_ERR_NOMEM);
 	}
 	free(request_str);
 	if (rc == 0) {
-		rc = morph_buf_init(&out, 8192);
+		rc = (nb_buf_init(&out), nb_buf_reserve(&out, 8192) ? 0 : NB_ERR_NOMEM);
 	}
 	if (rc == 0) {
-		rc = morph_buf_init(&err, 1024);
+		rc = (nb_buf_init(&err), nb_buf_reserve(&err, 1024) ? 0 : NB_ERR_NOMEM);
 	}
-	if (rc == 0) {
+	bool truncated = false;
+	if (rc == NB_OK) {
 		int seconds = dt->cfg->default_timeout_seconds;
 		int milliseconds = seconds <= 0		      ? 300000
 				   : seconds > INT_MAX / 1000 ? INT_MAX
 							      : seconds * 1000;
-		rc = morph_child_exchange(
-			pid, stdin_pipe[1], stdout_pipe[0], stderr_pipe[0],
-			morph_buf_cstr_borrow(&request), request.len, milliseconds,
-			output_limit,
-			dynamic_tool_runner_cancelled, result, &out, &err, &status);
-	} else {
-		close(stdin_pipe[1]);
-		kill(pid, SIGKILL);
-		while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+		nb_process_exchange_options exchange = {
+			.timeout_ms = milliseconds,
+			.max_output = output_limit,
+			.cancelled = dynamic_tool_runner_cancelled,
+			.cancel_ctx = result,
+			.stdout_truncated = &truncated,
+		};
+		rc = nb_process_exchange(child, nb_buf_cstr(&request), nb_buf_len(&request),
+					 &exchange, &out, &err, &status, NULL);
 	}
-	close(stdout_pipe[0]);
-	close(stderr_pipe[0]);
 	unlink(snapshot);
-	morph_buf_cleanup(&request);
+	nb_buf_cleanup(&request);
 
 	if (err.len > 0)
-		log_warn(result && result->runtime ? result->runtime->http.logger : NULL,
-			 "dynamic tool %s stderr: %s", dt->name, morph_buf_cstr_borrow(&err));
+		nb_log_write(result && result->runtime ? result->runtime->http.logger : NULL,
+			     NB_LOG_WARN, "dynamic tool %s stderr: %s", dt->name,
+			     nb_buf_cstr(&err));
 	if (rc < 0) {
-		morph_buf_cleanup(&out);
-		morph_buf_cleanup(&err);
+		nb_buf_cleanup(&out);
+		nb_buf_cleanup(&err);
 		return rc;
 	}
-	if (out.len > output_limit) {
+	if (truncated) {
 		(void)tool_result_error_format(result, "output_limit_exceeded",
 			"Dynamic tool output exceeds the configured %zu-byte capture limit. "
 			"Return a smaller result or save large data to a file and return its path.",
 			output_limit);
-		return -EFBIG;
+		return NB_ERR_TOO_BIG;
 	}
-	if (WIFSIGNALED(status)) {
-		morph_buf_cleanup(&out);
-		morph_buf_cleanup(&err);
+	if (nb_process_exit_signal(child) != 0) {
+		nb_buf_cleanup(&out);
+		nb_buf_cleanup(&err);
 		(void)tool_result_error_copy(result, "tool_failed",
 					     "dynamic tool process terminated");
-		return -EIO;
+		return NB_ERR_IO;
 	}
-	if (WIFEXITED(status) && WEXITSTATUS(status) != 0 && out.len == 0) {
+	if (nb_process_exit_signal(child) == 0 && status != 0 && out.len == 0) {
 		char msg[1024];
 
-		snprintf(msg, sizeof(msg), "dynamic tool process exited with status %d%s%s",
-			 WEXITSTATUS(status), err.len > 0 ? ": " : "",
-			 err.len > 0 ? morph_buf_cstr_borrow(&err) : "");
-		morph_buf_cleanup(&out);
-		morph_buf_cleanup(&err);
+		snprintf(msg, sizeof(msg), "dynamic tool process exited with status %d%s%s", status,
+			 err.len > 0 ? ": " : "", err.len > 0 ? nb_buf_cstr(&err) : "");
+		nb_buf_cleanup(&out);
+		nb_buf_cleanup(&err);
 		(void)tool_result_error_copy(result, "tool_failed", msg);
-		return -EIO;
+		return NB_ERR_IO;
 	}
 	{
 		struct jsonrpc_response jr = {0};
-		char *raw = morph_buf_detach(&out);
+		char *raw = (nb_buf_ok(&out) ? strdup(nb_buf_cstr(&out)) : NULL);
 		int prc;
 		if (!raw) {
-			morph_buf_cleanup(&err);
-			return -ENOMEM;
+			nb_buf_cleanup(&err);
+			return NB_ERR_NOMEM;
 		}
 		prc = jsonrpc_response_copy(raw, &jr);
 		free(raw);
 		if (prc < 0) {
-			morph_buf_cleanup(&err);
+			nb_buf_cleanup(&err);
 			(void)tool_result_error_copy(result, "tool_failed",
 						     "invalid dynamic tool response");
 			return prc;
@@ -525,146 +485,87 @@ int dynamic_tool_runner_execute(const char *args_json, struct tool_result *resul
 			snprintf(msg, sizeof(msg), "dynamic tool error: %s",
 				 jr.error_message ? jr.error_message : "unknown");
 			jsonrpc_response_free(&jr);
-			morph_buf_cleanup(&err);
+			nb_buf_cleanup(&err);
 			(void)tool_result_error_copy(result, "tool_failed", msg);
-			return -EIO;
+			return NB_ERR_IO;
 		}
 		rc = tool_result_success_json_text_copy(result,
 							jr.result_json ? jr.result_json : "null");
 		jsonrpc_response_free(&jr);
 	}
-	morph_buf_cleanup(&err);
+	nb_buf_cleanup(&err);
 	return rc;
 }
 
 int dynamic_tool_runner_check_js_source(const char *source_path, char **error_out)
 {
-	pid_t pid;
-	int output_pipe[2] = {-1, -1};
-	int status = 0;
+	if (!source_path || (error_out && *error_out))
+		return NB_ERR_INVAL;
 	char runner_storage[PATH_MAX];
 	const char *runner = runner_path(runner_storage);
-
-	if (!source_path)
-		return -EINVAL;
-	if (error_out && *error_out)
-		return -EALREADY;
-	int pipe_rc = morph_io_pipe(output_pipe);
-	if (pipe_rc != 0)
-		return pipe_rc;
-	pid = fork();
-	if (pid < 0) {
-		int rc = -errno;
-		close(output_pipe[0]);
-		close(output_pipe[1]);
+	const char *argv[] = {nb_file_exists(runner) ? runner : "morph-js-runner", "--check",
+			      source_path, NULL};
+	nb_process_options options = {
+		.argv = argv,
+		.search_path = true,
+		.close_fds = true,
+		.new_session = true,
+		.merge_stderr = true,
+	};
+	nb_process *child NB_CLEANUP(nb_process_cleanup) = NULL;
+	int rc = nb_process_spawn(&options, &child, NULL);
+	if (rc != NB_OK)
 		return rc;
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf errors NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_process_exchange_options exchange = {.timeout_ms = 30000, .max_output = 8192};
+	int code = 0;
+	rc = nb_process_exchange(child, "", 0, &exchange, &output, &errors, &code, NULL);
+	if (error_out && nb_buf_len(&output)) {
+		*error_out = strdup(nb_buf_cstr(&output));
+		if (!*error_out)
+			return NB_ERR_NOMEM;
 	}
-	if (pid == 0) {
-		morph_signals_reset_child();
-		int first_errno;
-		close(output_pipe[0]);
-		dup2(output_pipe[1], STDOUT_FILENO);
-		dup2(output_pipe[1], STDERR_FILENO);
-		close(output_pipe[1]);
-		if (sandbox_start_isolated_session() != 0 || sandbox_close_inherited_fds() != 0) {
-			_exit(126);
-		}
-		execl(runner, runner, "--check", source_path, (char *)NULL);
-		first_errno = errno;
-		execlp("morph-js-runner", "morph-js-runner", "--check", source_path, (char *)NULL);
-		fprintf(stderr,
-			"failed to exec morph-js-runner. runner=%s "
-			"source=%s direct_errno=%s fallback_errno=%s\n",
-			runner ? runner : "(null)", source_path ? source_path : "(null)",
-			strerror(first_errno), strerror(errno));
-		_exit(127);
-	}
-	close(output_pipe[1]);
-	morph_buf_t output = {0}, errors = {0};
-	int input_fd = open("/dev/null", O_WRONLY);
-	int rc = input_fd < 0 ? -errno : morph_buf_init(&output, 512);
-	if (rc == 0) {
-		rc = morph_buf_init(&errors, 16);
-	}
-	if (rc == 0) {
-		rc = morph_child_exchange(pid, input_fd, output_pipe[0], -1, "", 0, 30000, 8192,
-					  NULL, NULL, &output, &errors, &status);
-	} else {
-		if (input_fd >= 0) {
-			close(input_fd);
-		}
-		kill(pid, SIGKILL);
-		while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
-	}
-	close(output_pipe[0]);
-	morph_buf_cleanup(&errors);
-	if (error_out != NULL && output.len != 0) {
-		*error_out = morph_buf_detach(&output);
-	}
-	morph_buf_cleanup(&output);
-	if (rc != 0) {
+	if (rc != NB_OK)
 		return rc;
-	}
-	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+	if (code != 0) {
 		if (error_out && !*error_out) {
-			morph_buf_t err MORPH_CLEANUP(morph_buf_cleanup) = {0};
-			if (morph_buf_init(&err, 256) == 0) {
-				if (WIFEXITED(status)) {
-					(void)morph_buf_printf(&err,
-							       "morph-js-runner --check failed "
-							       "without output. runner=%s "
-							       "source=%s exit_status=%d",
-							       runner,
-							       source_path ? source_path : "(null)",
-							       WEXITSTATUS(status));
-				} else if (WIFSIGNALED(status)) {
-					(void)morph_buf_printf(&err,
-							       "morph-js-runner --check was "
-							       "terminated by signal %d. "
-							       "runner=%s source=%s",
-							       WTERMSIG(status), runner,
-							       source_path ? source_path
-									   : "(null)");
-				} else {
-					(void)morph_buf_printf(&err,
-							       "morph-js-runner --check failed "
-							       "without output. runner=%s "
-							       "source=%s status=%d",
-							       runner,
-							       source_path ? source_path : "(null)",
-							       status);
-				}
-				*error_out = morph_buf_detach(&err);
-			}
+			nb_buf detail NB_CLEANUP(nb_buf_cleanup) = {0};
+			if (!nb_buf_printf(&detail,
+					   "morph-js-runner --check failed without output. "
+					   "runner=%s source=%s exit_status=%d",
+					   runner, source_path, code))
+				return NB_ERR_NOMEM;
+			*error_out = strdup(nb_buf_cstr(&detail));
+			if (!*error_out)
+				return NB_ERR_NOMEM;
 		}
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
-	return 0;
+	return NB_OK;
 }
 
 int dynamic_tool_runner_check_unpublished_source(const char *source, char **error_out)
 {
-	char path[] = "/tmp/morph-tool-check-XXXXXX";
-	int fd;
+	nb_buf temporary NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc;
 
 	if (!source || !error_out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*error_out)
-		return -EALREADY;
-	fd = mkstemp(path);
-	if (fd < 0) {
-		return -errno;
-	}
-	rc = close(fd) == 0 ? 0 : -errno;
+		return NB_ERR_STATE;
+	rc = nb_file_temp_in(&temporary, "/tmp", NULL, NULL);
+	if (rc != NB_OK)
+		return rc;
+	const char *path = nb_buf_cstr(&temporary);
 	if (rc == 0) {
-		rc = file_write_all(path, source, strlen(source));
+		rc = nb_file_write_all(path, source, strlen(source), NULL);
 	}
 	if (rc == 0) {
 		rc = dynamic_tool_runner_check_js_source(path, error_out);
 	}
 	if (unlink(path) != 0 && rc == 0) {
-		rc = -errno;
+		rc = nb_status_from_errno(errno, NULL);
 	}
 	return rc;
 }

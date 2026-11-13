@@ -1,5 +1,5 @@
 """First-run wizard: real PTY, rendered-screen assertions, isolated credentials."""
-import errno
+from nbase_status import native_status
 import os
 from pathlib import Path
 import signal
@@ -44,27 +44,37 @@ class Terminal:
             self.child.send(f'{role}\r')
             self.wait('Review your setup')
 
-    def wait(self, text):
-        # A resize must actually be rendered before an old matching label can
-        # satisfy the assertion; pyte cannot restore text clipped on shrinking.
+    def wait(self, text, detail=None):
+        # Input and resize must publish a complete new frame before an old
+        # matching menu item or breadcrumb can satisfy the assertion.
         fresh = not getattr(self, 'needs_redraw', False)
+        previous_frames = self.transcript.count('\x1b[?2026l')
+
+        def matches():
+            display = '\n'.join(self.screen.display)
+            complete = (self.transcript.rfind('\x1b[?2026l') >
+                        self.transcript.rfind('\x1b[?2026h'))
+            return (fresh and complete and text in display and
+                    (detail is None or detail in display))
+
         deadline = time.monotonic() + 6
         while time.monotonic() < deadline:
             try:
                 data = self.child.read_nonblocking(65536, timeout=.03)
             except pexpect.TIMEOUT:
                 # Read a complete burst of redraws before inspecting the screen.
-                if fresh and text in '\n'.join(self.screen.display):
+                if matches():
                     return
                 continue
             except pexpect.EOF:
-                if text in '\n'.join(self.screen.display):
+                if matches():
                     return
                 break
             self.transcript += data
             self.stream.feed(data)
-            fresh = True
-            self.needs_redraw = False
+            fresh = fresh or self.transcript.count('\x1b[?2026l') > previous_frames
+            if fresh:
+                self.needs_redraw = False
         raise AssertionError(f'Missing {text!r}\n' + '\n'.join(self.screen.display))
 
     def history_text(self):
@@ -92,9 +102,10 @@ class Terminal:
         self.child.setwinsize(rows, columns)
         self.needs_redraw = True
 
-    def send(self, keys, text):
+    def send(self, keys, text, detail=None):
+        self.needs_redraw = True
         self.child.send(keys)
-        self.wait(text)
+        self.wait(text, detail)
 
     def finish(self, result, key_ready=None):
         deadline = time.monotonic() + 6
@@ -303,17 +314,21 @@ def tests(driver, directory, production):
         # Every edit retains an unambiguous model category and current model.
         t = start('contexts', ready=True, role=7)
         for number, kind in ((2, 'Text'), (3, 'Vision'), (4, 'Image'), (5, 'Video')):
-            t.send(f'{number}\r', 'Model settings')
+            model_detail = 'Edit only what you need; Done returns to overview.'
+            advanced_detail = 'Defaults work for most people. Edit only what you need.'
+            t.send(f'{number}\r', 'Model settings', model_detail)
             context(t, kind)
-            t.send('3\r', 'Model name / endpoint ID')
+            t.send('3\r', 'Model name / endpoint ID',
+                   'Use the model name from your provider.')
             context(t, kind)
-            t.send('\x1b', 'Model settings')
-            t.send('5\r', 'Advanced settings')
+            t.send('\x1b', 'Model settings', model_detail)
+            t.send('5\r', 'Advanced settings', advanced_detail)
             context(t, kind)
-            t.send('3\r', 'API base URL')
+            t.send('3\r', 'API base URL',
+                   'Use the API base URL, including its version path.')
             context(t, kind)
-            t.send('\x1b', 'Advanced settings')
-            t.send('\x1b', 'Model settings')
+            t.send('\x1b', 'Advanced settings', advanced_detail)
+            t.send('\x1b', 'Model settings', model_detail)
             t.send('\x1b', 'Review your setup')
         t.save()
 
@@ -430,24 +445,24 @@ def tests(driver, directory, production):
         t.send('\x1b[200~1\n\x1b[201~', 'Review your setup')
         assert not t.path.exists()
         t.child.send('\x03')
-        t.finish(-errno.ECANCELED)
+        t.finish(native_status('NB_ERR_CANCELLED'))
 
         for name, keys in (('cancel-review', '9\r'), ('cancel-key', '\x03')):
             t = start(name, ready=True)
             t.child.send(keys)
-            t.finish(-errno.ECANCELED)
+            t.finish(native_status('NB_ERR_CANCELLED'))
             assert not t.path.exists()
 
         t = start('cancel-edit', ready=True)
         t.send('2\r', 'Model settings')
         t.send('3\r', 'Model name / endpoint ID')
         t.child.send('\x04')
-        t.finish(-errno.ECANCELED)
+        t.finish(native_status('NB_ERR_CANCELLED'))
         assert not t.path.exists()
 
         t = start('signal', ready=True)
         os.kill(t.child.pid, signal.SIGTERM)
-        t.finish(-errno.ECANCELED)
+        t.finish(native_status('NB_ERR_CANCELLED'))
         assert not t.path.exists()
 
         # Reconfiguration keeps custom instructions without another prompt dialog.

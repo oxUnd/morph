@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 #include <morph/tui/application.h>
 #include <morph/tui/canvas.h>
 #include <morph/tui/renderer.h>
@@ -7,7 +8,7 @@
 #include <morph/tui/widgets/scroll.h>
 #include <morph/tui/widgets/stack.h>
 #include <morph/tui/window.h>
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 
 extern "C" {
 #include "tui/core/view_internal.h"
@@ -16,6 +17,7 @@ extern "C" {
 #include <climits>
 #include <cstdlib>
 #include <fcntl.h>
+#include <poll.h>
 #include <string>
 #include <sys/ioctl.h>
 #include <thread>
@@ -37,9 +39,9 @@ class TuiSelectionSurfaceTest : public ::testing::Test
 	void TearDown() override { morph_tui_surface_destroy(surface); }
 	std::string selected(int x1, int y1, int x2, int y2)
 	{
-		morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {};
+		nb_buf text NB_CLEANUP(nb_buf_cleanup) = {};
 		EXPECT_EQ(morph_tui_surface_selection_text(surface, x1, y1, x2, y2, &text), 0);
-		const char *value = morph_buf_cstr_borrow(&text);
+		const char *value = nb_buf_cstr(&text);
 
 		return value ? value : "";
 	}
@@ -73,17 +75,16 @@ TEST_F(TuiSelectionSurfaceTest, CopyContainsVisibleTextWithoutLinksOrTerminalSty
 	ASSERT_EQ(morph_tui_surface_selection_style(surface, 0, 0, 5, 0,
 		MORPH_TUI_STYLE_SELECTED), 0);
 	EXPECT_EQ(selected(0, 0, 5, 0), "linked");
-	morph_buf_t rows MORPH_CLEANUP(morph_buf_cleanup) = {};
+	nb_buf rows NB_CLEANUP(nb_buf_cleanup) = {};
 	ASSERT_EQ(morph_tui_surface_rows(surface, &rows), 0);
-	EXPECT_NE(std::string(rows.data).find("\033[1m\033[7m\033[38;5;6m"),
-		std::string::npos);
+	EXPECT_NE(std::string(rows.ptr).find("\033[1m\033[7m\033[38;5;6m"), std::string::npos);
 }
 
 TEST_F(TuiSelectionSurfaceTest, EmptySurfaceAndInvalidAttributesAreSafe)
 {
 	ASSERT_EQ(morph_tui_surface_resize(surface, 0, 0), 0);
 	EXPECT_EQ(selected(INT_MIN, INT_MIN, INT_MAX, INT_MAX), "");
-	EXPECT_EQ(morph_tui_surface_selection_style(surface, 0, 0, 1, 1, UINT_MAX), -EINVAL);
+	EXPECT_EQ(morph_tui_surface_selection_style(surface, 0, 0, 1, 1, UINT_MAX), NB_ERR_INVAL);
 }
 
 class TuiWindowSelectionTest : public ::testing::Test
@@ -105,11 +106,11 @@ class TuiWindowSelectionTest : public ::testing::Test
 	const struct morph_tui_renderer_ops renderer_ops = {
 		+[](struct morph_tui_renderer *backend, struct morph_tui_surface *surface, FILE *) {
 			auto *self = static_cast<TuiWindowSelectionTest *>(backend->data);
-			morph_buf_t rows MORPH_CLEANUP(morph_buf_cleanup) = {};
+			nb_buf rows NB_CLEANUP(nb_buf_cleanup) = {};
 			int rc = morph_tui_surface_rows(surface, &rows);
 
 			if (!rc)
-				self->rendered = morph_buf_cstr_borrow(&rows);
+				self->rendered = nb_buf_cstr(&rows);
 			return rc;
 		}, nullptr};
 	struct morph_tui_renderer renderer{};
@@ -182,6 +183,9 @@ class TuiWindowSelectionTest : public ::testing::Test
 	{
 		ASSERT_EQ(write(master, bytes.data(), bytes.size()),
 			static_cast<ssize_t>(bytes.size()));
+		struct pollfd ready = {fileno(input), POLLIN, 0};
+		ASSERT_EQ(poll(&ready, 1, 2000), 1);
+		ASSERT_NE(ready.revents & POLLIN, 0);
 		for (size_t n = 0; n < bytes.size() + 3; n++)
 			ASSERT_EQ(morph_tui_application_step(app, 0), 0);
 	}
@@ -232,7 +236,7 @@ TEST_F(TuiWindowSelectionTest, ClipboardHandlerIsOwnerOnlyAndCanBeRemoved)
 		result = morph_tui_window_set_text_copy_handler_borrow(window, nullptr, nullptr);
 	});
 	worker.join();
-	EXPECT_EQ(result, -EPERM);
+	EXPECT_EQ(result, NB_ERR_NOT_PERMITTED);
 	select();
 	ASSERT_EQ(morph_tui_window_set_text_copy_handler_borrow(window, nullptr, nullptr), 0);
 	EXPECT_EQ(mouse(MORPH_TUI_MOUSE_RIGHT, MORPH_TUI_MOUSE_PRESS, 0, 0), 0);

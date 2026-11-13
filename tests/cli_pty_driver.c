@@ -1,29 +1,22 @@
 #include "sapi/cli/presentation/output.h"
+#include "nb/err.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/widgets/agents_browser.h"
-#include "util/cleanup.h"
-#include "util/terminal_size.h"
+#include "nb/cleanup.h"
+#include <morph/tui/terminal/size.h>
 /* Exercise the real CLI with an isolated database and a local model server. */
 #include "sapi/cli/application.h"
 #include "http/client.h"
-#ifdef MORPH_PTY_RECAP_CLOCK
-#include "sapi/cli/adapters/input/callbacks.h"
 #include "sapi/cli/services/recap.h"
-#include <readline/readline.h>
-#endif
+#include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/application_internal.h"
 #include <locale.h>
-#ifdef MORPH_PTY_RECAP_CLOCK
-
-#define MORPH_PTY_RECAP_KEY "\033[99;9~"
-
 /* Age scheduling state on the UI owner. The host's next timer event starts
- * the real recap, after this Readline callback and its redisplay have ended. */
-static int advance_recap(struct cli_application *ctx, int count, int key)
+ * the real recap, after this owner callback has returned. */
+static int advance_recap(void *opaque)
 {
-	(void)count;
-	(void)key;
+	struct cli_application *ctx = opaque;
 	if (ctx->turn_active)
 		return 0;
 	int64_t now = cli_recap_now();
@@ -39,7 +32,12 @@ static int advance_recap(struct cli_application *ctx, int count, int key)
 		morph_tui_application_schedule(app, 0);
 	return 0;
 }
-#endif
+
+static void advance_recap_signal(int number, void *opaque)
+{
+	if (number == SIGUSR2)
+		(void)cli_event_queue_call_owner(opaque, advance_recap, opaque);
+}
 
 /* Replay the real presenter without a model, for deterministic visual review. */
 static int replay_feed(const char *path)
@@ -51,7 +49,7 @@ static int replay_feed(const char *path)
 	int rc;
 
 	if (!input)
-		return -errno;
+		return nb_status_from_errno(errno, NULL);
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	ctx.presentation_ready = 1;
 	ctx.turn_active = 1;
@@ -66,7 +64,7 @@ static int replay_feed(const char *path)
 
 		if (!cJSON_IsString(name)) {
 			cJSON_Delete(json);
-			rc = (MORPH_ERR_PARSE);
+			rc = (NB_ERR_PARSE);
 			break;
 		}
 		event.name = name->valuestring;
@@ -131,15 +129,15 @@ static int preview_agents_browser(void)
 	};
 	struct cli_agents_browser_state state = {0};
 	state.selection.index = 1;
-	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
 	int columns = 100;
 	int rows = 24;
 	morph_terminal_dimensions(STDOUT_FILENO, &columns, &rows);
-	int rc = morph_buf_init(&output, BUFSIZ);
+	int rc = (nb_buf_init(&output), nb_buf_reserve(&output, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = cli_agents_browser_append(&output, &state, &data, columns - 1, rows, 1);
 	if (rc == 0) {
-		cli_output_printf(NULL, "%s", morph_buf_cstr_borrow(&output));
+		cli_output_printf(NULL, "%s", nb_buf_cstr(&output));
 		fflush(stdout);
 		if (isatty(STDIN_FILENO))
 			(void)getchar();
@@ -151,7 +149,7 @@ int main(int argc, char **argv)
 {
 	struct cli_application _cli_output_context = {0};
 	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
-	struct cli_application ctx;
+	struct cli_application ctx = {0};
 	int rc;
 	if (argc == 2 && strcmp(argv[1], "--agents-browser-fixture") == 0) {
 		(void)setlocale(LC_ALL, "");
@@ -166,31 +164,25 @@ int main(int argc, char **argv)
 	if (argc != 4)
 		return 2;
 	(void)setlocale(LC_ALL, "");
+	nb_signal_listener *recap_clock NB_CLEANUP(nb_signal_listener_cleanup) = NULL;
+	const char *advance = getenv("MORPH_PTY_ADVANCE_RECAP");
+	if (advance && strcmp(advance, "1") == 0) {
+		const int signals[] = {SIGUSR2};
+		rc = nb_signal_listener_start(&recap_clock, signals, 1, advance_recap_signal, &ctx,
+					      NULL);
+		if (rc != NB_OK)
+			return 1;
+	}
 	http_init(NULL);
 	rc = cli_application_init(&ctx, NULL, argv[1], argv[3], argv[2], NULL, NULL,
 				  CLI_PRESENT_INTERACTIVE);
 	if (rc == 0) {
-		const char *advance = getenv("MORPH_PTY_ADVANCE_RECAP");
-		int fast_recap = advance && strcmp(advance, "1") == 0;
-#ifdef MORPH_PTY_RECAP_CLOCK
-		if (fast_recap) {
-			rl_initialize();
-			int (*callback)(int, int) = cli_callback_key(&ctx, advance_recap);
-			if (!callback || rl_bind_keyseq(MORPH_PTY_RECAP_KEY, callback) != 0)
-				rc = -EIO;
-		}
-#else
-		if (fast_recap)
-			rc = -ENOTSUP;
-#endif
-		if (rc == 0)
-			cli_application_run(&ctx);
-#ifdef MORPH_PTY_RECAP_CLOCK
-		if (fast_recap)
-			(void)rl_bind_keyseq(MORPH_PTY_RECAP_KEY, NULL);
-#endif
+		cli_application_run(&ctx);
+		(void)cli_event_queue_stop_owner_calls(&ctx);
+		(void)nb_signal_listener_stop(&recap_clock, NULL);
 		cli_application_shutdown(&ctx);
 	}
+
 	http_cleanup();
 	return rc == 0 ? 0 : 1;
 }

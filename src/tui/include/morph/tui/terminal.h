@@ -28,6 +28,9 @@ struct morph_tui_terminal_session {
 
 int morph_tui_terminal_available(FILE *input, FILE *output);
 void morph_tui_terminal_dimensions(int output_fd, int *columns, int *rows);
+/* Move to a one-based cell and clear the remaining viewport. The caller reserves
+ * the region and restores its retained frame after a synchronous inline prompt. */
+int morph_tui_terminal_clear_below(FILE *output, int row, int column);
 int morph_tui_terminal_session_enter(struct morph_tui_terminal_session *session, FILE *input,
 				     FILE *output, int flags);
 int morph_tui_terminal_session_leave(struct morph_tui_terminal_session *session);

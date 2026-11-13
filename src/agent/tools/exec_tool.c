@@ -11,12 +11,13 @@
 #include "sandbox/tool_paths.h"
 #include "sandbox/permission.h"
 #include "path_policy.h"
-#include "util/bash_parse.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/id.h"
+#include "permission/command_analysis.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "nb/random.h"
 #include "cJSON.h"
 
 #include <errno.h>
@@ -25,7 +26,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
-#include <pthread.h>
+#include "nb/thread.h"
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -35,7 +36,7 @@
 #define EXEC_DEFAULT_YIELD_MS 10000u
 
 struct exec_runtime {
-	pthread_mutex_t mutex;
+	nb_mutex *mutex;
 	int refs;
 	struct process_manager *manager;
 	struct exec_jobs *jobs;
@@ -58,7 +59,7 @@ static void exec_scratch_directory_cleanup(DIR **directory)
  * unlinked as leaves; external paths are never followed during cleanup. */
 static void exec_scratch_remove_contents(int descriptor, int depth)
 {
-	DIR *directory MORPH_CLEANUP(exec_scratch_directory_cleanup) = fdopendir(descriptor);
+	DIR *directory NB_CLEANUP(exec_scratch_directory_cleanup) = fdopendir(descriptor);
 	if (!directory) {
 		close(descriptor);
 		return;
@@ -103,16 +104,16 @@ static void exec_runtime_destroy(void *opaque)
 
 	if (!runtime)
 		return;
-	pthread_mutex_lock(&runtime->mutex);
+	nb_mutex_lock(runtime->mutex);
 	runtime->refs--;
 	if (runtime->refs == 0)
 		destroy = 1;
-	pthread_mutex_unlock(&runtime->mutex);
+	nb_mutex_unlock(runtime->mutex);
 	if (!destroy)
 		return;
 	process_manager_destroy(runtime->manager);
 	exec_jobs_destroy(runtime->jobs);
-	pthread_mutex_destroy(&runtime->mutex);
+	(nb_mutex_free(runtime->mutex), runtime->mutex = NULL);
 	exec_scratch_remove(runtime->scratch);
 	free(runtime);
 }
@@ -142,17 +143,23 @@ static int exec_runtime_create(struct tool_context *tctx,
 	int rc;
 
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*out = NULL;
 	runtime = calloc(1, sizeof(*runtime));
 	if (!runtime)
-		return -ENOMEM;
-	snprintf(runtime->scratch, sizeof(runtime->scratch), "/tmp/morph-exec-XXXXXX");
-	if (!mkdtemp(runtime->scratch)) {
-		rc = -errno;
+		return NB_ERR_NOMEM;
+	nb_buf directory NB_CLEANUP(nb_buf_cleanup) = {0};
+	rc = nb_file_temp_dir(&directory, "/tmp", "morph-exec-", NULL);
+	if (rc == NB_OK)
+		rc = nb_str_copy_to(nb_buf_str(&directory), runtime->scratch,
+				    sizeof(runtime->scratch));
+	if (rc != NB_OK) {
+		if (!nb_buf_empty(&directory))
+			(void)nb_file_remove_all(nb_buf_cstr(&directory), 0, NULL);
 		free(runtime);
-		return rc;
+		return rc == NB_ERR_RANGE ? NB_ERR_NAME_TOO_LONG : rc;
 	}
+
 	runtime->refs = 2;
 	runtime->tool_context = tctx;
 	runtime->default_timeout_ms = exec_config ?
@@ -161,14 +168,14 @@ static int exec_runtime_create(struct tool_context *tctx,
 		(uint64_t)exec_config->yield_time_ms : EXEC_DEFAULT_YIELD_MS;
 	runtime->max_wait_ms = exec_config && exec_config->max_wait_ms > 0 ?
 		(uint64_t)exec_config->max_wait_ms : EXEC_MAX_WAIT_MS_DEFAULT;
-	rc = pthread_mutex_init(&runtime->mutex, NULL);
+	rc = ((runtime->mutex = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
 	if (rc != 0) {
 		exec_runtime_discard(runtime);
-		return -rc;
+		return rc;
 	}
 	rc = exec_jobs_create(&runtime->jobs);
 	if (rc != 0) {
-		pthread_mutex_destroy(&runtime->mutex);
+		(nb_mutex_free(runtime->mutex), runtime->mutex = NULL);
 		exec_runtime_discard(runtime);
 		return rc;
 	}
@@ -177,7 +184,7 @@ static int exec_runtime_create(struct tool_context *tctx,
 	rc = process_manager_create(&config, &runtime->manager);
 	if (rc != 0) {
 		exec_jobs_destroy(runtime->jobs);
-		pthread_mutex_destroy(&runtime->mutex);
+		(nb_mutex_free(runtime->mutex), runtime->mutex = NULL);
 		exec_runtime_discard(runtime);
 		return rc;
 	}
@@ -228,21 +235,20 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 		bash_parse_result_cleanup(&analysis);
 		(void)tool_result_error_copy(result, "approval_required",
 					     "shell command could not be analyzed safely");
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	}
 	if (runtime->tool_context) {
-		if (analysis.commands.nelts >= (size_t)INT_MAX) {
+		if (analysis.commands.len >= (size_t)INT_MAX) {
 			bash_parse_result_cleanup(&analysis);
-			return -E2BIG;
+			return NB_ERR_TOO_BIG;
 		}
-		programs = calloc(analysis.commands.nelts + 1, sizeof(*programs));
+		programs = calloc(analysis.commands.len + 1, sizeof(*programs));
 		if (!programs) {
 			bash_parse_result_cleanup(&analysis);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
-		for (size_t i = 0; i < analysis.commands.nelts; i++) {
-			const struct bash_parse_command *parsed =
-				morph_array_borrow(&analysis.commands, i);
+		for (size_t i = 0; i < analysis.commands.len; i++) {
+			const struct bash_parse_command *parsed = nb_vec_at(&analysis.commands, i);
 			int duplicate = 0;
 
 			if (!parsed || !parsed->name[0]) {
@@ -294,23 +300,25 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 				runtime->tool_context, &operation, &verdict);
 			free(programs);
 			if (rc != 0 || verdict == TOOL_OP_DENY) {
-				const char *code = rc == -EACCES ?
-					"permission_denied" :
-					rc == -EPERM ?
-					"approval_unavailable" :
-					"approval_required";
-				const char *message = rc == -EACCES ?
-					review.reason[0] ? review.reason : "Command permission was denied." :
-					rc == -EPERM ?
-					"Interactive command approval is unavailable." :
-					"Command approval failed.";
+				const char *code = rc == NB_ERR_PERMISSION ? "permission_denied"
+						   : rc == NB_ERR_NOT_PERMITTED
+							   ? "approval_unavailable"
+							   : "approval_required";
+				const char *message =
+					rc == NB_ERR_PERMISSION
+						? review.reason[0]
+							  ? review.reason
+							  : "Command permission was denied."
+					: rc == NB_ERR_NOT_PERMITTED
+						? "Interactive command approval is unavailable."
+						: "Command approval failed.";
 
 				bash_parse_result_cleanup(&analysis);
 				(void)tool_result_error_format(
 					result, code,
 					"%s Do not bypass a denial through another tool or route.",
 					message);
-				return rc != 0 ? rc : -EPERM;
+				return rc != 0 ? rc : NB_ERR_NOT_PERMITTED;
 			}
 		}
 	}
@@ -351,10 +359,12 @@ static void snapshot_add_json(cJSON *object,
 	cJSON_AddBoolToObject(object, "stderr_path_truncated", snapshot->stderr_path_truncated);
 	if (snapshot->stdout_capture_error)
 		cJSON_AddStringToObject(object, "stdout_capture_error",
-			morph_strerror(snapshot->stdout_capture_error));
+					nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+						   snapshot->stdout_capture_error));
 	if (snapshot->stderr_capture_error)
 		cJSON_AddStringToObject(object, "stderr_capture_error",
-			morph_strerror(snapshot->stderr_capture_error));
+					nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+						   snapshot->stderr_capture_error));
 	if (snapshot->stdout_truncated || snapshot->stderr_truncated ||
 	    snapshot->stdout_path_truncated || snapshot->stderr_path_truncated)
 		cJSON_AddStringToObject(object, "output_note",
@@ -378,11 +388,11 @@ static int result_snapshot(struct tool_result *result,
 			   const struct process_snapshot *snapshot,
 			   const char *execution_mode)
 {
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	int rc;
 
 	if (!data)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	cJSON_AddStringToObject(data, "session_id", session_id);
 	if (command)
 		cJSON_AddStringToObject(data, "command", command);
@@ -515,12 +525,12 @@ static int exec_run(const char *args_json, struct tool_result *result,
 			void *user_data)
 {
 	struct exec_runtime *runtime = user_data;
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	const char *command;
 	const char *workdir;
 	struct process_spawn_options options;
-	struct sandbox_config sandbox MORPH_CLEANUP(sandbox_config_cleanup) = {0};
-	struct agent_shell_scope agent_scope MORPH_CLEANUP(agent_shell_scope_cleanup) = {0};
+	struct sandbox_config sandbox NB_CLEANUP(sandbox_config_cleanup) = {0};
+	struct agent_shell_scope agent_scope NB_CLEANUP(agent_shell_scope_cleanup) = {0};
 	char resolved_workdir[PATH_MAX];
 	char git_dir[PATH_MAX] = {0};
 	char principal[TOOL_CONTEXT_CLI_NAME_MAX] = "shell";
@@ -530,7 +540,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	int read_path_count = 0;
 	int write_path_count = 0;
 	int delete_path_count = 0;
-	struct process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {0};
+	struct process_snapshot snapshot NB_CLEANUP(process_snapshot_cleanup) = {0};
 	char session_id[PROCESS_SESSION_ID_MAX] = {0};
 	int host;
 	int network;
@@ -540,12 +550,12 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	struct permission_policy policy = permission_policy_default();
 
 	if (!runtime || !result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	root = args_json ? cJSON_Parse(args_json) : NULL;
 	if (!root) {
 		(void)tool_result_error_copy(result, "invalid_request",
 					     "exec arguments must be a JSON object");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	command = json_string(root, "command");
 	workdir = json_string(root, "workdir");
@@ -554,7 +564,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	if (!command || !*command) {
 
 		(void)tool_result_error_copy(result, "invalid_request", "command is required");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	const struct tool_runtime_context *actor = result->runtime;
 	int scoped_child = actor && actor->agents && actor->agent_id && *actor->agent_id &&
@@ -564,7 +574,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 		(void)tool_result_error_copy(result, "persistent_child_job_disabled",
 			"Child jobs must finish before their write_paths are released. "
 			"Ask the primary agent to start persistent services or notify-only jobs.");
-		return -EACCES;
+		return NB_ERR_PERMISSION;
 	}
 	if (runtime->tool_context)
 		(void)tool_context_get_permission_policy(runtime->tool_context, &policy);
@@ -576,7 +586,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 		(void)tool_result_error_copy(
 			result, "host_execution_disabled",
 			"Host execution requires an explicit permission context.");
-		return -EACCES;
+		return NB_ERR_PERMISSION;
 	}
 	host = json_bool(root, "host", 0) ||
 	       (runtime->tool_context && policy.access == PERMISSION_FULL);
@@ -672,7 +682,9 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	sandbox.allow_pty = options.pty;
 	if (rc != 0) {
 
-		(void)tool_result_error_copy(result, "sandbox_policy_failed", morph_strerror(rc));
+		(void)tool_result_error_copy(
+			result, "sandbox_policy_failed",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 	sandbox.logger = tool_context_logger_borrow(runtime->tool_context);
@@ -684,12 +696,15 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	memset(&snapshot, 0, sizeof(snapshot));
 	rc = process_spawn(runtime->manager, &options, session_id, &snapshot);
 	if (rc != 0) {
-		if (rc == -ECANCELED && session_id[0])
+		if (rc == NB_ERR_CANCELLED && session_id[0])
 			(void)process_session_kill(runtime->manager, session_id);
-		const char *code = rc == -ENOENT ? "invalid_workdir" :
-			rc == -ENOTDIR ? "invalid_workdir" : "spawn_failed";
+		const char *code = rc == NB_ERR_NOT_FOUND ? "invalid_workdir"
+				   : rc == NB_ERR_NOT_DIR ? "invalid_workdir"
+							  : "spawn_failed";
 
-		(void)tool_result_error_copy(result, code, morph_strerror(rc));
+		(void)tool_result_error_copy(
+			result, code,
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		process_snapshot_cleanup(&snapshot);
 		return rc;
 	}
@@ -712,7 +727,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 		(void)process_session_kill(runtime->manager, session_id);
 		process_snapshot_cleanup(&snapshot);
 
-		return -ECANCELED;
+		return NB_ERR_CANCELLED;
 	}
 	rc = result_snapshot(result, session_id, command, workdir, &snapshot,
 		host ? "host" : "sandbox");
@@ -725,33 +740,33 @@ static int background_run(const char *args_json, struct tool_result *result,
 			   void *user_data)
 {
 	struct exec_runtime *runtime = user_data;
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	const char *session_id;
 	const char *action;
 	const char *input;
-	struct process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {0};
+	struct process_snapshot snapshot NB_CLEANUP(process_snapshot_cleanup) = {0};
 	int rc;
 
 	if (!runtime || !result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	root = args_json ? cJSON_Parse(args_json) : NULL;
 	if (!root) {
 		(void)tool_result_error_copy(result, "invalid_request",
 					     "background arguments must be a JSON object");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	session_id = json_string(root, "session_id");
 	action = json_string(root, "action");
 	input = json_string(root, "input");
 	if (action && !strcmp(action, "list")) {
-		cJSON *jobs MORPH_CLEANUP(morph_json_cleanup) = NULL;
+		cJSON *jobs NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 		int64_t owner = result->runtime ? result->runtime->memory_session_id : 0;
 		rc = exec_jobs_list(runtime->jobs, owner, &jobs);
 
 		if (rc) return rc;
-		cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 		if (!data || !cJSON_AddItemToObject(data, "jobs", jobs))
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		jobs = NULL;
 		rc = tool_result_success_take(result, &data);
 		return rc;
@@ -760,7 +775,7 @@ static int background_run(const char *args_json, struct tool_result *result,
 
 		(void)tool_result_error_copy(result, "invalid_request",
 					     "session_id and action are required");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	rc = exec_jobs_authorize(runtime->jobs, session_id,
 		result->runtime ? result->runtime->memory_session_id : 0);
@@ -785,7 +800,7 @@ static int background_run(const char *args_json, struct tool_result *result,
 			"wait_ms must be an integer from 0 to %llu; omit it to wait up to %llu ms",
 			(unsigned long long)runtime->max_wait_ms,
 			(unsigned long long)default_wait_ms);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	int collects = !strcmp(action, "wait") || !strcmp(action, "poll");
 	uint64_t wait_ms = collects ? (uint64_t)requested_wait_ms : 0;
@@ -794,7 +809,7 @@ static int background_run(const char *args_json, struct tool_result *result,
 				   &cursor.stderr_offset, &used) != 2 ||
 			    cursor_text[used] != '\0')) {
 
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	if (!strcmp(action, "write") && input && *input && runtime->tool_context) {
 		int host = 0, network = 0;
@@ -815,7 +830,9 @@ static int background_run(const char *args_json, struct tool_result *result,
 		if (rc != 0) {
 
 			(void)tool_result_error_copy(
-				result, rc == -EPERM ? "approval_unavailable" : "permission_denied",
+				result,
+				rc == NB_ERR_NOT_PERMITTED ? "approval_unavailable"
+							   : "permission_denied",
 				"Process input requires permission for its retained access.");
 			return rc;
 		}
@@ -830,13 +847,16 @@ static int background_run(const char *args_json, struct tool_result *result,
 	else if (strcmp(action, "poll") == 0 || strcmp(action, "wait") == 0)
 		rc = 0;
 	else
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 	if (rc != 0) {
-		const char *code = rc == -ENOENT ? "process_not_found" :
-			rc == -EPIPE ? "process_not_running" :
-			rc == -EAGAIN ? "io_error" : "invalid_request";
+		const char *code = rc == NB_ERR_NOT_FOUND     ? "process_not_found"
+				   : rc == NB_ERR_BROKEN_PIPE ? "process_not_running"
+				   : rc == NB_ERR_AGAIN	      ? "io_error"
+							      : "invalid_request";
 
-		(void)tool_result_error_copy(result, code, morph_strerror(rc));
+		(void)tool_result_error_copy(
+			result, code,
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 	if (!strcmp(action, "wait") && wait_ms)
@@ -910,12 +930,12 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 		   const struct config_exec *config)
 {
 	struct exec_runtime *runtime;
-	struct tool_spec exec_spec MORPH_CLEANUP(tool_spec_cleanup) = {0};
-	struct tool_spec background_spec MORPH_CLEANUP(tool_spec_cleanup) = {0};
+	struct tool_spec exec_spec NB_CLEANUP(tool_spec_cleanup) = {0};
+	struct tool_spec background_spec NB_CLEANUP(tool_spec_cleanup) = {0};
 	int rc;
 
 	if (!reg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = tool_path_policy_init(tctx);
 	if (rc != 0)
 		return rc;
@@ -990,48 +1010,64 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	background_spec.origin = TOOL_ORIGIN_BUILTIN;
 	background_spec.name = "background";
 	background_spec.title = "Manage background jobs";
-	morph_buf_t description MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_t schema MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	rc = morph_buf_init(&description, 1024);
+	nb_buf description NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf schema NB_CLEANUP(nb_buf_cleanup) = {0};
+	rc = (nb_buf_init(&description), nb_buf_reserve(&description, 1024) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_init(&schema, 1024);
+		rc = (nb_buf_init(&schema), nb_buf_reserve(&schema, 1024) ? 0 : NB_ERR_NOMEM);
 	uint64_t default_wait_ms = runtime->max_wait_ms < 30000 ? runtime->max_wait_ms : 30000;
 	if (rc == 0)
-		rc = morph_buf_printf(&description,
-			"Manage background jobs started by exec in this session: list, wait for exit, "
-			"poll output, write to, "
-			"interrupt, "
-			"or kill. Use action=wait for builds/tests: it waits for exit despite "
-			"intermediate output. Use poll for interactive output. Choose wait_ms "
-			"from 0 to %llu ms; omit it for %llu ms. Zero reads immediately. "
-			"This per-call wait budget is not the process timeout. "
-			"If status is running, "
-			"wait again on the same session_id. Pass next_cursor as cursor for "
-			"incremental output. Never use shell sleep just to wait for a process. "
-			"Explicit cursors replay still-retained ranges. Output files are redacted "
-			"prefixes starting at byte zero, sharing a 64 MiB quota and removed at "
-			"runtime shutdown. Check *_path_bytes and *_path_truncated. "
-			"next_cursor skips inline omissions; read file ranges to recover those. "
-			"If *_unrecoverable_bytes is nonzero, the range from *_path_bytes to "
-			"*_retained_from is lost; rerun a narrower query. "
-			"Cancelling a wait leaves the process running.",
-			(unsigned long long)runtime->max_wait_ms,
-			(unsigned long long)default_wait_ms);
+		rc = (nb_buf_printf(
+			      &description,
+			      "Manage background jobs started by exec in this session: list, wait "
+			      "for exit, "
+			      "poll output, write to, "
+			      "interrupt, "
+			      "or kill. Use action=wait for builds/tests: it waits for exit "
+			      "despite "
+			      "intermediate output. Use poll for interactive output. Choose "
+			      "wait_ms "
+			      "from 0 to %llu ms; omit it for %llu ms. Zero reads immediately. "
+			      "This per-call wait budget is not the process timeout. "
+			      "If status is running, "
+			      "wait again on the same session_id. Pass next_cursor as cursor for "
+			      "incremental output. Never use shell sleep just to wait for a "
+			      "process. "
+			      "Explicit cursors replay still-retained ranges. Output files are "
+			      "redacted "
+			      "prefixes starting at byte zero, sharing a 64 MiB quota and removed "
+			      "at "
+			      "runtime shutdown. Check *_path_bytes and *_path_truncated. "
+			      "next_cursor skips inline omissions; read file ranges to recover "
+			      "those. "
+			      "If *_unrecoverable_bytes is nonzero, the range from *_path_bytes to "
+			      "*_retained_from is lost; rerun a narrower query. "
+			      "Cancelling a wait leaves the process running.",
+			      (unsigned long long)runtime->max_wait_ms,
+			      (unsigned long long)default_wait_ms)
+			      ? 0
+			      : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_printf(&schema,
-			"{\"type\":\"object\",\"properties\":{\"session_id\":{\"type\":\"string\"},"
-			"\"action\":{\"type\":\"string\",\"enum\":[\"list\",\"poll\",\"wait\","
-			"\"write\",\"interrupt\",\"kill\"]},\"input\":{\"type\":\"string\"},"
-			"\"wait_ms\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":%llu,"
-			"\"default\":%llu,\"description\":\"Choose this per-call wait budget in "
-			"milliseconds. Zero reads immediately. "
-			"This does not set the command timeout.\"},"
-			"\"cursor\":{\"type\":\"string\"}},\"required\":[\"action\"],"
-			"\"additionalProperties\":false}",
-			(unsigned long long)runtime->max_wait_ms,
-			(unsigned long long)default_wait_ms);
-	background_spec.description = morph_buf_cstr_borrow(&description);
-	background_spec.input_schema = morph_buf_cstr_borrow(&schema);
+		rc = (nb_buf_printf(
+			      &schema,
+			      "{\"type\":\"object\",\"properties\":{\"session_id\":{\"type\":"
+			      "\"string\"},"
+			      "\"action\":{\"type\":\"string\",\"enum\":[\"list\",\"poll\","
+			      "\"wait\","
+			      "\"write\",\"interrupt\",\"kill\"]},\"input\":{\"type\":\"string\"},"
+			      "\"wait_ms\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":%llu,"
+			      "\"default\":%llu,\"description\":\"Choose this per-call wait budget "
+			      "in "
+			      "milliseconds. Zero reads immediately. "
+			      "This does not set the command timeout.\"},"
+			      "\"cursor\":{\"type\":\"string\"}},\"required\":[\"action\"],"
+			      "\"additionalProperties\":false}",
+			      (unsigned long long)runtime->max_wait_ms,
+			      (unsigned long long)default_wait_ms)
+			      ? 0
+			      : NB_ERR_NOMEM);
+	background_spec.description = nb_buf_cstr(&description);
+	background_spec.input_schema = nb_buf_cstr(&schema);
 	background_spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	background_spec.exec = background_run;
 	background_spec.user_data = runtime;
@@ -1040,8 +1076,8 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	background_spec.timeout_seconds = (int)((runtime->max_wait_ms + 999) / 1000) + 30;
 	if (rc == 0)
 		rc = tool_register_take(reg, &background_spec);
-	morph_buf_cleanup(&description);
-	morph_buf_cleanup(&schema);
+	nb_buf_cleanup(&description);
+	nb_buf_cleanup(&schema);
 	if (rc != 0)
 		return rc;
 	return 0;
@@ -1057,21 +1093,21 @@ void exec_tool_jobs_release(struct exec_tool_jobs_handle *owner)
 
 int exec_tool_jobs_acquire(struct tool_registry *reg, struct exec_tool_jobs_handle *out)
 {
-	struct exec_tool_jobs_handle candidate MORPH_CLEANUP(exec_tool_jobs_release) = {0};
+	struct exec_tool_jobs_handle candidate NB_CLEANUP(exec_tool_jobs_release) = {0};
 	int rc;
 
 	if (!reg || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (out->tool.binding || out->jobs)
-		return -EALREADY;
+		return NB_ERR_STATE;
 	rc = tool_registry_acquire(reg, "exec", &candidate.tool);
 	if (rc != 0)
 		return rc;
 	if (candidate.tool.exec != exec_run)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	struct exec_runtime *runtime = candidate.tool.user_data;
 	if (!runtime)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	candidate.jobs = runtime->jobs;
 	*out = candidate;
 	memset(&candidate, 0, sizeof(candidate));
@@ -1080,7 +1116,7 @@ int exec_tool_jobs_acquire(struct tool_registry *reg, struct exec_tool_jobs_hand
 
 int exec_tool_set_event_callback(struct tool_registry *reg, morph_event_cb cb, void *user_data)
 {
-	struct exec_tool_jobs_handle jobs MORPH_CLEANUP(exec_tool_jobs_release) = {0};
+	struct exec_tool_jobs_handle jobs NB_CLEANUP(exec_tool_jobs_release) = {0};
 	int rc = exec_tool_jobs_acquire(reg, &jobs);
 
 	if (rc != 0)
@@ -1092,24 +1128,24 @@ int exec_tool_set_event_callback(struct tool_registry *reg, morph_event_cb cb, v
 
 int exec_tool_jobs_list(struct tool_registry *reg, int64_t owner, cJSON **out)
 {
-	struct exec_tool_jobs_handle jobs MORPH_CLEANUP(exec_tool_jobs_release) = {0};
+	struct exec_tool_jobs_handle jobs NB_CLEANUP(exec_tool_jobs_release) = {0};
 	int rc;
 
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EALREADY;
+		return NB_ERR_STATE;
 	rc = exec_tool_jobs_acquire(reg, &jobs);
-	if (rc == -ENOENT) {
+	if (rc == NB_ERR_NOT_FOUND) {
 		*out = cJSON_CreateArray();
-		return *out ? 0 : -ENOMEM;
+		return *out ? 0 : NB_ERR_NOMEM;
 	}
 	return rc == 0 ? exec_jobs_list(jobs.jobs, owner, out) : rc;
 }
 
 int exec_tool_job_read(struct tool_registry *reg, int64_t owner, const char *id, cJSON **out)
 {
-	struct exec_tool_jobs_handle jobs MORPH_CLEANUP(exec_tool_jobs_release) = {0};
+	struct exec_tool_jobs_handle jobs NB_CLEANUP(exec_tool_jobs_release) = {0};
 	int rc = exec_tool_jobs_acquire(reg, &jobs);
 
 	return rc == 0 ? exec_jobs_read(jobs.jobs, owner, id, out) : rc;
@@ -1117,7 +1153,7 @@ int exec_tool_job_read(struct tool_registry *reg, int64_t owner, const char *id,
 
 int exec_tool_job_stop(struct tool_registry *reg, int64_t owner, const char *id)
 {
-	struct exec_tool_jobs_handle jobs MORPH_CLEANUP(exec_tool_jobs_release) = {0};
+	struct exec_tool_jobs_handle jobs NB_CLEANUP(exec_tool_jobs_release) = {0};
 	int rc = exec_tool_jobs_acquire(reg, &jobs);
 
 	return rc == 0 ? exec_jobs_stop(jobs.jobs, owner, id) : rc;

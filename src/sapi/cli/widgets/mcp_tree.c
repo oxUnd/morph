@@ -1,9 +1,10 @@
 #include "sapi/cli/widgets/mcp_tree.h"
+#include "nb/err.h"
 #include "sapi/cli/presentation/mcp_tree.h"
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/presentation/style.h"
 #include "runtime/runtime.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include <morph/tui/widgets/text_view.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,7 +12,7 @@
 struct cli_mcp_tree {
 	struct morph_tui_widget base;
 	struct morph_tui_view *body;
-	morph_array_t servers, items;
+	nb_vec servers, items;
 	char *kind, *server;
 	int columns, styled;
 };
@@ -21,16 +22,16 @@ static int cli_mcp_tree_measure(struct morph_tui_view *view, int width,
 {
 	struct cli_mcp_tree *tree = (struct cli_mcp_tree *)view;
 	if (tree->columns != width) {
-		morph_buf_t rendered MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		int rc = tree->kind
-			? cli_mcp_tree_items_render(&rendered, tree->kind, tree->server,
-				tree->items.elts, tree->items.nelts, width > 0 ? width : 1,
-				tree->styled)
-			: cli_mcp_tree_render(&rendered, tree->servers.elts, tree->servers.nelts,
-				width > 0 ? width : 1, tree->styled);
+		nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
+		int rc = tree->kind ? cli_mcp_tree_items_render(&rendered, tree->kind, tree->server,
+								((void *)tree->items.data),
+								tree->items.len,
+								width > 0 ? width : 1, tree->styled)
+				    : cli_mcp_tree_render(&rendered, ((void *)tree->servers.data),
+							  tree->servers.len, width > 0 ? width : 1,
+							  tree->styled);
 		if (!rc)
-			rc = cli_messages_set_rendered_view(tree->body, rendered.data,
-				tree->styled);
+			rc = cli_messages_set_rendered_view(tree->body, rendered.ptr, tree->styled);
 		if (rc)
 			return rc;
 		tree->columns = width;
@@ -48,13 +49,15 @@ static void cli_mcp_tree_destroy(struct morph_tui_view *view)
 {
 	struct cli_mcp_tree *tree = (struct cli_mcp_tree *)view;
 	struct cli_mcp_tree_item *item;
-	morph_array_foreach (item, &tree->items, struct cli_mcp_tree_item) {
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&tree->items) &&
+			     (item = (struct cli_mcp_tree_item *)nb_vec_at(&tree->items, _i_));
+	     _i_++) {
 		free((char *)item->name);
 		free((char *)item->description);
 		free((char *)item->uri);
 	}
-	morph_array_cleanup(&tree->items);
-	morph_array_cleanup(&tree->servers);
+	nb_vec_cleanup(&tree->items);
+	nb_vec_cleanup(&tree->servers);
 	free(tree->kind);
 	free(tree->server);
 }
@@ -87,18 +90,19 @@ struct morph_tui_view *cli_mcp_tree_servers_add_borrow(struct morph_tui_builder 
 	size_t count, int styled)
 {
 	if (!servers && count) {
-		morph_tui_builder_fail(builder, -EINVAL);
+		morph_tui_builder_fail(builder, NB_ERR_INVAL);
 		return NULL;
 	}
 	struct cli_mcp_tree *tree = cli_mcp_tree_add(builder, parent, styled);
 	if (!tree)
 		return NULL;
 	struct runtime_mcp_status snapshot;
-	int rc = morph_array_init(&tree->servers, count ? count : 1, sizeof(snapshot));
+	int rc = (nb_vec_init(&tree->servers, sizeof(snapshot)),
+		  nb_vec_reserve(&tree->servers, count ? count : 1) ? 0 : NB_ERR_NOMEM);
 	for (size_t i = 0; !rc && i < count; i++) {
-		struct runtime_mcp_status *copy = morph_array_push_borrow(&tree->servers);
+		struct runtime_mcp_status *copy = nb_vec_push(&tree->servers);
 		if (!copy) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			break;
 		}
 		/* Copy display fields only; credentials and process configuration
@@ -127,7 +131,7 @@ struct morph_tui_view *cli_mcp_tree_items_add_borrow(struct morph_tui_builder *b
 	const struct cli_mcp_tree_item *items, size_t count, int styled)
 {
 	if (!kind || !server || (!items && count)) {
-		morph_tui_builder_fail(builder, -EINVAL);
+		morph_tui_builder_fail(builder, NB_ERR_INVAL);
 		return NULL;
 	}
 	struct cli_mcp_tree *tree = cli_mcp_tree_add(builder, parent, styled);
@@ -137,18 +141,20 @@ struct morph_tui_view *cli_mcp_tree_items_add_borrow(struct morph_tui_builder *b
 	tree->server = strdup(server);
 	struct cli_mcp_tree_item item;
 	int rc = tree->kind && tree->server
-		? morph_array_init(&tree->items, count ? count : 1, sizeof(item)) : -ENOMEM;
+			 ? (nb_vec_init(&tree->items, sizeof(item)),
+			    nb_vec_reserve(&tree->items, count ? count : 1) ? 0 : NB_ERR_NOMEM)
+			 : NB_ERR_NOMEM;
 	for (size_t i = 0; !rc && i < count; i++) {
-		struct cli_mcp_tree_item *copy = morph_array_push_borrow(&tree->items);
+		struct cli_mcp_tree_item *copy = nb_vec_push(&tree->items);
 		if (!copy) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			break;
 		}
 		copy->name = strdup(items[i].name ? items[i].name : "");
 		copy->description = strdup(items[i].description ? items[i].description : "");
 		copy->uri = strdup(items[i].uri ? items[i].uri : "");
 		if (!copy->name || !copy->description || !copy->uri)
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 	}
 	morph_tui_builder_fail(builder, rc);
 	return &tree->base.view;

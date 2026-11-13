@@ -4,12 +4,15 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/pages/setup/controls.h"
 #include "runtime/runtime.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/array.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 
 #include <errno.h>
 #include <limits.h>
@@ -35,7 +38,7 @@ struct cli_hooks_hook_line {
 };
 
 struct cli_hooks_hook_screen {
-	morph_buf_t frame;
+	nb_buf frame;
 	int height;
 	int columns;
 	int width;
@@ -124,9 +127,9 @@ static void cli_hooks_rule(struct cli_hooks_hook_screen *screen, int row)
 {
 	if (row < 1 || row > screen->height)
 		return;
-	morph_buf_printf(&screen->frame, "\033[%d;3H%s", row, CLI_HOOKS_UI_RULE);
+	nb_buf_printf(&screen->frame, "\033[%d;3H%s", row, CLI_HOOKS_UI_RULE);
 	for (int i = 0; i < screen->width; i++)
-		morph_buf_puts(&screen->frame, "─");
+		nb_buf_append_cstr(&screen->frame, "─");
 }
 
 static void cli_hooks_selected(struct cli_hooks_hook_screen *screen, int row, const char *text)
@@ -246,73 +249,74 @@ static void cli_hooks_events_frame(struct cli_hooks_hook_screen *screen, const c
 		       "↑↓ Select  Enter Handlers  r Refresh  Esc All hooks", CLI_HOOKS_UI_DIM);
 }
 
-static int cli_hooks_add_line(morph_array_t *lines, const char *text, const char *style, int width)
+static int cli_hooks_add_line(nb_vec *lines, const char *text, const char *style, int width)
 {
-	char *safe MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
-		text, strlen(text), UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		text, strlen(text), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 
 	if (!safe)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	const char *cursor = safe;
 	int rc = 0;
 
 	do {
-		const char *end = utf8_advance_display_width_borrow(cursor, (size_t)width);
+		const char *end =
+			morph_terminal_advance_display_width_borrow(cursor, (size_t)width);
 		if (*cursor && end == cursor)
-			end = utf8_advance_codepoints_borrow(cursor, 1);
+			end = nb_utf8_advance(cursor, 1);
 		size_t length = (size_t)(end - cursor);
-		char *copy MORPH_CLEANUP(morph_charp_cleanup) = malloc(length + 1);
-		struct cli_hooks_hook_line *line = copy ? morph_array_push_borrow(lines) : NULL;
+		char *copy NB_CLEANUP(nb_charp_cleanup) = malloc(length + 1);
+		struct cli_hooks_hook_line *line = copy ? nb_vec_push(lines) : NULL;
 
 		if (!copy || !line) {
-			rc = (-ENOMEM);
+			rc = (NB_ERR_NOMEM);
 			break;
 		}
 		memcpy(copy, cursor, length);
 		copy[length] = '\0';
-		*line = (struct cli_hooks_hook_line){morph_charp_steal(&copy), style};
+		*line = (struct cli_hooks_hook_line){nb_charp_steal(&copy), style};
 		cursor = end;
 	} while (*cursor);
 	return rc;
 }
 
-static int cli_hooks_detail_field(morph_array_t *lines, morph_buf_t *buffer, const char *label,
+static int cli_hooks_detail_field(nb_vec *lines, nb_buf *buffer, const char *label,
 				  const char *value, int width)
 {
-	morph_buf_reset(buffer);
-	int rc = morph_buf_printf(buffer, "%-13s %s", label, *value ? value : "—");
+	nb_buf_clear(buffer);
+	int rc =
+		(nb_buf_printf(buffer, "%-13s %s", label, *value ? value : "—") ? 0 : NB_ERR_NOMEM);
 
-	return rc == 0 ? cli_hooks_add_line(lines, morph_buf_cstr_borrow(buffer), CLI_HOOKS_UI_TEXT,
-					    width)
+	return rc == 0 ? cli_hooks_add_line(lines, nb_buf_cstr(buffer), CLI_HOOKS_UI_TEXT, width)
 		       : rc;
 }
 
-static int cli_hooks_diff_property(morph_array_t *lines, morph_buf_t *buffer, const cJSON *value,
+static int cli_hooks_diff_property(nb_vec *lines, nb_buf *buffer, const cJSON *value,
 				   const char *prefix, const char *style, int width)
 {
-	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(value);
+	char *json NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(value);
 	if (!json)
-		return -ENOMEM;
-	morph_buf_reset(buffer);
-	int rc = morph_buf_printf(buffer, "%s  \"%s\": %s%s", prefix, value->string, json,
-				  value->next ? "," : "");
-	return rc == 0 ? cli_hooks_add_line(lines, morph_buf_cstr_borrow(buffer), style, width)
-		       : rc;
+		return NB_ERR_NOMEM;
+	nb_buf_clear(buffer);
+	int rc = (nb_buf_printf(buffer, "%s  \"%s\": %s%s", prefix, value->string, json,
+				value->next ? "," : "")
+			  ? 0
+			  : NB_ERR_NOMEM);
+	return rc == 0 ? cli_hooks_add_line(lines, nb_buf_cstr(buffer), style, width) : rc;
 }
 
-static int cli_hooks_definition_lines(morph_array_t *lines, morph_buf_t *buffer, const cJSON *row,
-				      int width)
+static int cli_hooks_definition_lines(nb_vec *lines, nb_buf *buffer, const cJSON *row, int width)
 {
-	cJSON *current MORPH_CLEANUP(morph_json_cleanup) =
+	cJSON *current NB_CLEANUP(cJSON_DeleteOwner) =
 		cJSON_Parse(cli_hooks_field(row, "definition"));
-	cJSON *previous MORPH_CLEANUP(morph_json_cleanup) =
+	cJSON *previous NB_CLEANUP(cJSON_DeleteOwner) =
 		cJSON_Parse(cli_hooks_field(row, "previous_definition"));
 	const cJSON *value;
 	if (previous && cJSON_Compare(current, previous, 1)) {
-		morph_json_cleanup(&previous);
+		cJSON_DeleteOwner(&previous);
 	}
 	if (!cJSON_IsObject(current)) {
-		return MORPH_ERR_PARSE;
+		return NB_ERR_PARSE;
 	}
 	int rc = cli_hooks_add_line(lines, previous ? "Definition changes" : "Current definition",
 				    CLI_HOOKS_UI_TEXT "\033[1m", width);
@@ -345,18 +349,20 @@ static int cli_hooks_definition_lines(morph_array_t *lines, morph_buf_t *buffer,
 	return rc;
 }
 
-static int cli_hooks_document(morph_array_t *lines, const cJSON *row, int width, int review)
+static int cli_hooks_document(nb_vec *lines, const cJSON *row, int width, int review)
 {
-	morph_buf_t buffer MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_init(&buffer, 256);
+	nb_buf buffer NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&buffer), nb_buf_reserve(&buffer, 256) ? 0 : NB_ERR_NOMEM);
 	const char *keys[] = {"id", "command", "matcher", "source", "cwd"};
 	const char *labels[] = {"ID", "Command", "Matcher", "Source", "Working dir"};
 
 	if (rc == 0 && !review) {
-		rc = morph_buf_printf(&buffer, "%s · %s", cli_hooks_field(row, "event"),
-				      cli_hooks_state_label(row));
+		rc = (nb_buf_printf(&buffer, "%s · %s", cli_hooks_field(row, "event"),
+				    cli_hooks_state_label(row))
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = cli_hooks_add_line(lines, morph_buf_cstr_borrow(&buffer),
+			rc = cli_hooks_add_line(lines, nb_buf_cstr(&buffer),
 						CLI_HOOKS_UI_TEXT "\033[1m", width);
 	}
 
@@ -388,18 +394,22 @@ static int cli_hooks_document(morph_array_t *lines, const cJSON *row, int width,
 					width);
 	const cJSON *last = cJSON_GetObjectItemCaseSensitive(row, "last_run");
 	if (rc == 0 && last) {
-		morph_buf_reset(&buffer);
-		rc = morph_buf_puts(&buffer, cli_hooks_field(last, "name"));
+		nb_buf_clear(&buffer);
+		rc = (nb_buf_append_cstr(&buffer, cli_hooks_field(last, "name")) ? 0
+										 : NB_ERR_NOMEM);
 		const cJSON *exit = cJSON_GetObjectItemCaseSensitive(last, "exit_code");
 		const cJSON *duration = cJSON_GetObjectItemCaseSensitive(last, "duration_ms");
 
 		if (rc == 0 && cJSON_IsNumber(exit))
-			rc = morph_buf_printf(&buffer, " · exit %d", exit->valueint);
+			rc = (nb_buf_printf(&buffer, " · exit %d", exit->valueint) ? 0
+										   : NB_ERR_NOMEM);
 		if (rc == 0 && cJSON_IsNumber(duration))
-			rc = morph_buf_printf(&buffer, " · %.0f ms", duration->valuedouble);
+			rc = (nb_buf_printf(&buffer, " · %.0f ms", duration->valuedouble)
+				      ? 0
+				      : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = cli_hooks_add_line(lines, morph_buf_cstr_borrow(&buffer),
-						CLI_HOOKS_UI_DIM, width);
+			rc = cli_hooks_add_line(lines, nb_buf_cstr(&buffer), CLI_HOOKS_UI_DIM,
+						width);
 		if (rc == 0 && *cli_hooks_field(last, "error"))
 			rc = cli_hooks_detail_field(lines, &buffer, "Error",
 						    cli_hooks_field(last, "error"), width);
@@ -559,14 +569,14 @@ static void cli_hooks_render_batch(struct cli_hooks_hook_screen *screen, const c
 		       "↑↓ Choose  Enter Confirm  Esc Keep unchanged", CLI_HOOKS_UI_DIM);
 }
 
-static void cli_hooks_lines_cleanup(morph_array_t *lines)
+static void cli_hooks_lines_cleanup(nb_vec *lines)
 {
-	for (size_t i = 0; i < lines->nelts; i++) {
-		struct cli_hooks_hook_line *line = morph_array_borrow(lines, i);
+	for (size_t i = 0; i < lines->len; i++) {
+		struct cli_hooks_hook_line *line = nb_vec_at(lines, i);
 
 		free(line->text);
 	}
-	morph_array_cleanup(lines);
+	nb_vec_cleanup(lines);
 }
 
 static int cli_hooks_render(struct cli_hooks_hook_screen *screen, const cJSON *rows)
@@ -576,20 +586,23 @@ static int cli_hooks_render(struct cli_hooks_hook_screen *screen, const cJSON *r
 	int detail_start;
 	struct cli_hooks_hook_action items[4];
 	int action_count = cli_hooks_actions(row, items);
-	morph_array_t lines MORPH_CLEANUP(cli_hooks_lines_cleanup) = {0};
+	nb_vec lines NB_CLEANUP(cli_hooks_lines_cleanup) = {0};
 
 	struct cli_hooks_hook_line element;
-	int rc = morph_array_init(&lines, 32, sizeof(element));
+	int rc = (nb_vec_init(&lines, sizeof(element)),
+		  nb_vec_reserve(&lines, 32) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 
-	if (!screen->frame.data)
-		rc = morph_buf_init(&screen->frame, BUFSIZ);
+	if (!screen->frame.ptr)
+		rc = (nb_buf_init(&screen->frame),
+		      nb_buf_reserve(&screen->frame, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	else
-		morph_buf_reset(&screen->frame);
+		nb_buf_clear(&screen->frame);
 	if (rc == 0)
-		rc = morph_buf_printf(&screen->frame, "\033[?2026h%s\033[H\033[J",
-				      CLI_HOOKS_UI_TEXT);
+		rc = (nb_buf_printf(&screen->frame, "\033[?2026h%s\033[H\033[J", CLI_HOOKS_UI_TEXT)
+			      ? 0
+			      : NB_ERR_NOMEM);
 	cli_hooks_cell(screen, 1, 3, 5, "morph", CLI_HOOKS_UI_CYAN);
 	cli_hooks_cell(screen, 1, 9, screen->width - 6,
 		       screen->review ? "/ hooks / review" : "/ hooks", CLI_HOOKS_UI_DIM);
@@ -656,7 +669,7 @@ static int cli_hooks_render(struct cli_hooks_hook_screen *screen, const cJSON *r
 			screen->document_height = 0;
 		if (rc == 0 && row)
 			rc = cli_hooks_document(&lines, row, screen->width, screen->review);
-		screen->document_lines = lines.nelts > INT_MAX ? INT_MAX : (int)lines.nelts;
+		screen->document_lines = lines.len > INT_MAX ? INT_MAX : (int)lines.len;
 		int max_scroll = screen->document_lines - screen->document_height;
 		if (max_scroll < 0)
 			max_scroll = 0;
@@ -664,7 +677,7 @@ static int cli_hooks_render(struct cli_hooks_hook_screen *screen, const cJSON *r
 			screen->scroll = max_scroll;
 		for (int i = 0; rc == 0 && i < screen->document_height; i++) {
 			struct cli_hooks_hook_line *line =
-				morph_array_borrow(&lines, (size_t)(screen->scroll + i));
+				nb_vec_at(&lines, (size_t)(screen->scroll + i));
 			if (!line)
 				break;
 			cli_hooks_cell(screen, detail_start + i, 3, screen->width, line->text,
@@ -707,7 +720,7 @@ static int cli_hooks_render(struct cli_hooks_hook_screen *screen, const cJSON *r
 		cli_hooks_cell(screen, height - 1, 3, screen->width, status, CLI_HOOKS_UI_DIM);
 	}
 	if (rc == 0)
-		rc = morph_buf_puts(&screen->frame, "\033[0m\033[?2026l");
+		rc = (nb_buf_append_cstr(&screen->frame, "\033[0m\033[?2026l") ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = morph_tui_draw_write(stdout, &screen->frame);
 	return rc;
@@ -864,7 +877,8 @@ static int cli_hooks_update(void *data, const struct morph_tui_event *event)
 				screen->choice = 2;
 				snprintf(screen->message, sizeof(screen->message),
 					 "Action failed: %s. Review the refreshed hooks.",
-					 morph_strerror(result));
+					 nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+						    result));
 			}
 		}
 		return MORPH_TUI_SCREEN_REDRAW;
@@ -913,7 +927,9 @@ static int cli_hooks_update(void *data, const struct morph_tui_event *event)
 
 			snprintf(screen->message, sizeof(screen->message),
 				 result == 0 ? "Completed: %s" : "Action failed: %s",
-				 result == 0 ? action : morph_strerror(result));
+				 result == 0 ? action
+					     : nb_err_str(morph_error_descriptions(),
+							  MORPH_ERROR_COUNT, result));
 			rc = cli_hooks_refresh(ctx, rows, screen);
 			if (rc != 0)
 				return rc;
@@ -933,7 +949,7 @@ static void cli_hooks_close(void *data, int result)
 	struct cli_hooks_hook_controller *controller = data;
 
 	(void)result;
-	morph_buf_cleanup(&controller->screen.frame);
+	nb_buf_cleanup(&controller->screen.frame);
 	cJSON_Delete(controller->owned_rows);
 	free(controller);
 }
@@ -962,9 +978,9 @@ static int cli_hooks_present(struct cli_application *ctx, cJSON **rows, const ch
 			screen->focus++;
 		}
 		if (!found)
-			return -ENOENT;
+			return NB_ERR_NOT_FOUND;
 		screen->review = 1;
-		struct cli_hooks_hook_action items[3];
+		struct cli_hooks_hook_action items[4];
 
 		screen->choice = cli_hooks_actions(row, items) - 1;
 	}
@@ -972,13 +988,13 @@ static int cli_hooks_present(struct cli_application *ctx, cJSON **rows, const ch
 		struct cli_hooks_hook_controller *owned = calloc(1, sizeof(*owned));
 
 		if (!owned)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		*owned = controller;
 		owned->owned_rows = cJSON_Duplicate(*rows, 1);
 		owned->rows = &owned->owned_rows;
 		int rc = owned->owned_rows
 				 ? cli_application_present_screen(ctx, &ops, owned, cli_hooks_close)
-				 : -ENOMEM;
+				 : NB_ERR_NOMEM;
 
 		if (rc)
 			cli_hooks_close(owned, rc);
@@ -990,7 +1006,7 @@ static int cli_hooks_present(struct cli_application *ctx, cJSON **rows, const ch
 
 	if (rc == 0)
 		rc = morph_tui_screen_run(&terminal, &ops, &controller);
-	morph_buf_cleanup(&screen->frame);
+	nb_buf_cleanup(&screen->frame);
 	int leave_rc = morph_tui_screen_close(&terminal);
 
 	if (rc == 0)

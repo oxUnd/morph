@@ -4,9 +4,10 @@ extern "C" {
 #include "sapi/cli/presentation/mcp_tree.h"
 #include "sapi/cli/presentation/style.h"
 #include "runtime/runtime.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 }
 
 #include <cerrno>
@@ -16,8 +17,8 @@ extern "C" {
 
 static std::string mcp_tree_plain(const char *source)
 {
-	char *plain MORPH_CLEANUP(morph_charp_cleanup) =
-		utf8_strip_ansi_dup(source, std::strlen(source), nullptr);
+	char *plain NB_CLEANUP(nb_charp_cleanup) =
+		morph_terminal_strip_ansi_dup(source, std::strlen(source), nullptr);
 	return plain ? plain : "";
 }
 
@@ -43,8 +44,7 @@ static std::string mcp_tree_unwrap(const std::string &text)
 		while (offset < line.size()) {
 			unsigned cp = 0;
 			size_t bytes = 0;
-			if (!utf8_decode_codepoint(line.data() + offset, line.size() - offset,
-				&cp, &bytes))
+			if (!nb_utf8_read(line.data() + offset, line.size() - offset, &cp, &bytes))
 				break;
 			if (cp != ' ' && cp != 0x2502u && cp != 0x251cu && cp != 0x2514u)
 				break;
@@ -58,17 +58,18 @@ static std::string mcp_tree_unwrap(const std::string &text)
 static void mcp_tree_expect_width(const std::string &output, int columns)
 {
 	for (const auto &line : mcp_tree_lines(output)) {
-		EXPECT_LE(utf8_display_width(line.c_str()), static_cast<size_t>(columns))
+		EXPECT_LE(nb_utf8_width_cstr(line.c_str()), static_cast<size_t>(columns))
 			<< columns << ": " << line;
-		EXPECT_EQ(utf8valid(line.c_str()), nullptr) << line;
+		EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(line.c_str()), NULL), NB_UTF8_OK)
+			<< line;
 	}
 }
 
 TEST(CliMcpTreeTest, EmptyReportHasARealTreeChildAndNoTablePadding)
 {
-	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
 	ASSERT_EQ(cli_mcp_tree_render(&output, nullptr, 0, 60, 0), 0);
-	std::string plain = morph_buf_cstr_borrow(&output);
+	std::string plain = nb_buf_cstr(&output);
 	EXPECT_NE(plain.find("MCP servers (0)"), std::string::npos);
 	EXPECT_NE(plain.find("└ "), std::string::npos);
 	EXPECT_NE(plain.find("none"), std::string::npos);
@@ -96,14 +97,14 @@ TEST(CliMcpTreeTest, ServerPeersUseCanonicalMarkersAtTheLeftmostColumn)
 			i % 2 ? MCP_TRANSPORT_STREAMABLE_HTTP : MCP_TRANSPORT_STDIO;
 		servers[i].state = states[i];
 	}
-	servers[5].error_code = -EIO;
-	servers[6].error_code = -ECANCELED;
-	servers[7].error_code = -ETIMEDOUT;
+	servers[5].error_code = NB_ERR_IO;
+	servers[6].error_code = NB_ERR_CANCELLED;
+	servers[7].error_code = NB_ERR_TIMEOUT;
 	for (int width : {120, 80, 60}) {
-		morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
 		ASSERT_EQ(cli_mcp_tree_render(&output, servers.data(), servers.size(),
 			width, 0), 0);
-		std::string plain = morph_buf_cstr_borrow(&output);
+		std::string plain = nb_buf_cstr(&output);
 		auto lines = mcp_tree_lines(plain);
 		EXPECT_NE(plain.find("MCP servers (8)"), std::string::npos);
 		for (size_t i = 0; i < servers.size(); i++) {
@@ -141,9 +142,9 @@ TEST(CliMcpTreeTest, ConnectedMetadataAndCapabilitiesRemainExplicitChildren)
 	std::strcpy(server.server_version, "2.4.0");
 	std::strcpy(server.negotiated_version, "2025-06-18");
 	for (int width : {120, 80, 60}) {
-		morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
 		ASSERT_EQ(cli_mcp_tree_render(&output, servers.data(), 1, width, 0), 0);
-		std::string plain = morph_buf_cstr_borrow(&output);
+		std::string plain = nb_buf_cstr(&output);
 		EXPECT_NE(plain.find("Fixture server"), std::string::npos);
 		EXPECT_NE(plain.find("2.4.0"), std::string::npos);
 		EXPECT_NE(plain.find("2025-06-18"), std::string::npos);
@@ -181,16 +182,16 @@ TEST(CliMcpTreeTest, UnicodeValuesWrapWithTreeContinuationsWithoutLosingMetadata
 	std::strcpy(server.negotiated_version, "2025-06-18");
 	for (int width : {120, 80, 60}) {
 		for (int styled : {0, 1}) {
-			morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
 			ASSERT_EQ(cli_mcp_tree_render(&output, servers.data(), 1,
 				width, styled), 0);
-			std::string plain = mcp_tree_plain(morph_buf_cstr_borrow(&output));
+			std::string plain = mcp_tree_plain(nb_buf_cstr(&output));
 			EXPECT_NE(mcp_tree_unwrap(plain).find(value), std::string::npos) << plain;
 			EXPECT_EQ(plain.find("…"), std::string::npos) << plain;
 			mcp_tree_expect_width(plain, width);
 			if (!styled)
-				EXPECT_EQ(std::string(morph_buf_cstr_borrow(&output)).find('\033'),
-					std::string::npos);
+				EXPECT_EQ(std::string(nb_buf_cstr(&output)).find('\033'),
+					  std::string::npos);
 		}
 	}
 }
@@ -201,18 +202,20 @@ TEST(CliMcpTreeTest, StylingDoesNotChangeTreeTextAndErrorsKeepBoldFailureStyle)
 	auto &server = servers.front();
 	std::strcpy(server.config.name, "failed_server");
 	server.state = RUNTIME_MCP_FAILED;
-	server.error_code = -EIO;
-	morph_buf_t plain MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_t styled MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	server.error_code = NB_ERR_IO;
+	nb_buf plain NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf styled NB_CLEANUP(nb_buf_cleanup) = {0};
 	ASSERT_EQ(cli_mcp_tree_render(&plain, servers.data(), 1, 80, 0), 0);
 	ASSERT_EQ(cli_mcp_tree_render(&styled, servers.data(), 1, 80, 1), 0);
-	std::string colored = morph_buf_cstr_borrow(&styled);
-	EXPECT_EQ(mcp_tree_plain(colored.c_str()), morph_buf_cstr_borrow(&plain));
+	std::string colored = nb_buf_cstr(&styled);
+	EXPECT_EQ(mcp_tree_plain(colored.c_str()), nb_buf_cstr(&plain));
 	size_t marker = colored.find(CLI_FEED_FAILED);
 	ASSERT_NE(marker, std::string::npos);
 	EXPECT_NE(colored.substr(0, marker).find(ANSI_BOLD), std::string::npos);
 	EXPECT_NE(colored.substr(0, marker).find(ANSI_RED), std::string::npos);
-	EXPECT_NE(mcp_tree_plain(colored.c_str()).find(morph_strerror(-EIO)),
+	EXPECT_NE(
+		mcp_tree_plain(colored.c_str())
+			.find(nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, NB_ERR_IO)),
 		std::string::npos);
 }
 
@@ -232,9 +235,9 @@ TEST(CliMcpTreeTest, ServerTextCannotInjectTerminalControlsAndCredentialsStayPri
 	std::strcpy(server.config.env_vals[0], "MCP_TOPSECRET_VALUE");
 	server.config.env_count = 1;
 	for (int styled : {0, 1}) {
-		morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
 		ASSERT_EQ(cli_mcp_tree_render(&output, servers.data(), 1, 60, styled), 0);
-		std::string text = morph_buf_cstr_borrow(&output);
+		std::string text = nb_buf_cstr(&output);
 		EXPECT_EQ(text.find("\033[2J"), std::string::npos);
 		EXPECT_EQ(text.find("\033]52;"), std::string::npos);
 		EXPECT_EQ(text.find('\r'), std::string::npos);
@@ -254,10 +257,10 @@ TEST(CliMcpTreeTest, ResourceItemsUseSiblingBranchesAndKeepDescriptionsAndUrisWh
 		{"First document", description.c_str(), uri.c_str()},
 		{"Second document", "Read another document", "fixture://documents/second"}};
 	for (int width : {120, 80, 60}) {
-		morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
 		ASSERT_EQ(cli_mcp_tree_items_render(&output, "resources", "fixture",
 			items, 2, width, 0), 0);
-		std::string plain = morph_buf_cstr_borrow(&output);
+		std::string plain = nb_buf_cstr(&output);
 		EXPECT_NE(plain.find("MCP resources for 'fixture' (2)"), std::string::npos);
 		EXPECT_NE(plain.find("├ First document"), std::string::npos);
 		EXPECT_NE(plain.find("└ Second document"), std::string::npos);
@@ -271,11 +274,11 @@ TEST(CliMcpTreeTest, ResourceItemsUseSiblingBranchesAndKeepDescriptionsAndUrisWh
 
 TEST(CliMcpTreeTest, InvalidArgumentsDoNotAppendPartialTreeOutput)
 {
-	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	ASSERT_EQ(morph_buf_puts(&output, "retained"), 0);
-	EXPECT_EQ(cli_mcp_tree_render(&output, nullptr, 1, 80, 0), -EINVAL);
-	EXPECT_EQ(cli_mcp_tree_render(&output, nullptr, 0, 0, 0), -EINVAL);
-	EXPECT_EQ(cli_mcp_tree_items_render(&output, "tools", "fixture", nullptr, 1,
-		80, 0), -EINVAL);
-	EXPECT_STREQ(morph_buf_cstr_borrow(&output), "retained");
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
+	ASSERT_EQ((nb_buf_append_cstr(&output, "retained") ? 0 : NB_ERR_NOMEM), 0);
+	EXPECT_EQ(cli_mcp_tree_render(&output, nullptr, 1, 80, 0), NB_ERR_INVAL);
+	EXPECT_EQ(cli_mcp_tree_render(&output, nullptr, 0, 0, 0), NB_ERR_INVAL);
+	EXPECT_EQ(cli_mcp_tree_items_render(&output, "tools", "fixture", nullptr, 1, 80, 0),
+		  NB_ERR_INVAL);
+	EXPECT_STREQ(nb_buf_cstr(&output), "retained");
 }

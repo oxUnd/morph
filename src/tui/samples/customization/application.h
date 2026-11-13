@@ -8,7 +8,7 @@
 
 struct sample_customization_application {
 	struct morph_tui_application base;
-	morph_buf_t name;
+	nb_buf name;
 	int value;
 	int step;
 	unsigned name_revision;

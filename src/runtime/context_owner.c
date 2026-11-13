@@ -1,8 +1,8 @@
 #include "runtime/context_owner.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/log.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/log.h"
+#include "nb/utf8.h"
 #include <stdio.h>
 
 #include "runtime/bootstrap.h"
@@ -24,27 +24,27 @@ int runtime_context_init_lock(struct runtime_context *ctx)
 	int rc;
 
 	if (!ctx)
-		return -EINVAL;
-	rc = pthread_mutex_init(&ctx->execution_lock, NULL);
+		return NB_ERR_INVAL;
+	rc = ((ctx->execution_lock = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
 	if (rc != 0)
-		return -rc;
-	rc = pthread_mutex_init(&ctx->tool_registry_lock, NULL);
+		return rc;
+	rc = ((ctx->tool_registry_lock = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
 	if (rc != 0) {
-		pthread_mutex_destroy(&ctx->execution_lock);
-		return -rc;
+		(nb_mutex_free(ctx->execution_lock), ctx->execution_lock = NULL);
+		return rc;
 	}
-	rc = pthread_mutex_init(&ctx->approval_objective_lock, NULL);
+	rc = ((ctx->approval_objective_lock = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
 	if (rc != 0) {
-		pthread_mutex_destroy(&ctx->tool_registry_lock);
-		pthread_mutex_destroy(&ctx->execution_lock);
-		return -rc;
+		(nb_mutex_free(ctx->tool_registry_lock), ctx->tool_registry_lock = NULL);
+		(nb_mutex_free(ctx->execution_lock), ctx->execution_lock = NULL);
+		return rc;
 	}
-	rc = pthread_mutex_init(&ctx->agent_interaction_lock, NULL);
+	rc = ((ctx->agent_interaction_lock = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
 	if (rc != 0) {
-		pthread_mutex_destroy(&ctx->approval_objective_lock);
-		pthread_mutex_destroy(&ctx->tool_registry_lock);
-		pthread_mutex_destroy(&ctx->execution_lock);
-		return -rc;
+		(nb_mutex_free(ctx->approval_objective_lock), ctx->approval_objective_lock = NULL);
+		(nb_mutex_free(ctx->tool_registry_lock), ctx->tool_registry_lock = NULL);
+		(nb_mutex_free(ctx->execution_lock), ctx->execution_lock = NULL);
+		return rc;
 	}
 	ctx->execution_lock_ready = 1;
 	return 0;
@@ -54,11 +54,11 @@ void runtime_context_cleanup_lock(struct runtime_context *ctx)
 {
 	if (!ctx || !ctx->execution_lock_ready)
 		return;
-	morph_charp_cleanup(&ctx->approval_objective);
-	pthread_mutex_destroy(&ctx->agent_interaction_lock);
-	pthread_mutex_destroy(&ctx->approval_objective_lock);
-	pthread_mutex_destroy(&ctx->tool_registry_lock);
-	pthread_mutex_destroy(&ctx->execution_lock);
+	nb_charp_cleanup(&ctx->approval_objective);
+	(nb_mutex_free(ctx->agent_interaction_lock), ctx->agent_interaction_lock = NULL);
+	(nb_mutex_free(ctx->approval_objective_lock), ctx->approval_objective_lock = NULL);
+	(nb_mutex_free(ctx->tool_registry_lock), ctx->tool_registry_lock = NULL);
+	(nb_mutex_free(ctx->execution_lock), ctx->execution_lock = NULL);
 	ctx->execution_lock_ready = 0;
 }
 
@@ -66,7 +66,7 @@ void runtime_context_configure_engine(struct runtime_context *ctx)
 {
 	if (!ctx)
 		return;
-	runtime_engine_configure(&ctx->engine, &ctx->database, ctx->react, &ctx->execution_lock);
+	runtime_engine_configure(&ctx->engine, &ctx->database, ctx->react, ctx->execution_lock);
 	ctx->engine.tool_context = ctx->tctx;
 	ctx->engine.config = &ctx->config;
 	ctx->engine.hooks = &ctx->hooks;
@@ -110,7 +110,8 @@ void runtime_context_select_plan_session(struct runtime_context *ctx, int64_t se
 	runtime_plan_session_select(ctx->plan_sessions, RUNTIME_PLAN_SESSION_CACHE_MAX,
 				    &ctx->active_plan_session_id, &ctx->plans, session_id);
 	if (session_id > 0 && plan_registry_bind(&ctx->plans, &ctx->database, session_id) != 0)
-		log_warn(ctx ? ctx->logger : NULL, "cannot restore session plan checkpoint");
+		nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_WARN,
+			     "cannot restore session plan checkpoint");
 }
 
 void runtime_context_forget_plan_session(struct runtime_context *ctx, int64_t session_id)
@@ -127,7 +128,7 @@ int runtime_context_update_tool_runtime_context(struct runtime_context *ctx, int
 	int rc;
 
 	if (!ctx || !ctx->react)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (ctx->agents && session_id > 0) {
 		rc = agent_control_set_parent_session(ctx->agents, session_id);
 		if (rc != 0)
@@ -155,7 +156,7 @@ int runtime_context_tool_credit_session_id(struct runtime_context *ctx, int64_t 
 	int rc;
 
 	if (!ctx || !buf || buf_size == 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = runtime_tool_context_for_session(&ctx->database, &ctx->config, &ctx->current_session,
 					      session_id, &rt);
 	if (rc != 0)
@@ -194,17 +195,16 @@ int runtime_context_prepare_turn(struct runtime_context *ctx, const struct runti
 	struct runtime_turn_scope_context scope;
 
 	if (!ctx || !request || request->session_id <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	const char *objective =
 		request->stored_user_input ? request->stored_user_input : request->model_input;
-	char *objective_copy MORPH_CLEANUP(morph_charp_cleanup) = strdup(objective ? objective :
-	"");
+	char *objective_copy NB_CLEANUP(nb_charp_cleanup) = strdup(objective ? objective : "");
 	if (!objective_copy)
-		return -ENOMEM;
-	pthread_mutex_lock(&ctx->approval_objective_lock);
+		return NB_ERR_NOMEM;
+	nb_mutex_lock(ctx->approval_objective_lock);
 	free(ctx->approval_objective);
-	ctx->approval_objective = morph_charp_steal(&objective_copy);
-	pthread_mutex_unlock(&ctx->approval_objective_lock);
+	ctx->approval_objective = nb_charp_steal(&objective_copy);
+	nb_mutex_unlock(ctx->approval_objective_lock);
 	tool_context_reset_denials(ctx->tctx);
 	if (ctx->agents) {
 		int agent_rc = agent_control_set_parent_session(ctx->agents, request->session_id);
@@ -255,8 +255,9 @@ void runtime_context_finish_turn(struct runtime_context *ctx)
 	if (ctx->current_session.id > 0) {
 		int rc = runtime_context_update_tool_runtime_context(ctx, ctx->current_session.id);
 		if (rc != 0)
-			log_warn(ctx->logger, "cannot restore selected session context: %s",
-				 morph_strerror(rc));
+			nb_log_write(ctx->logger, NB_LOG_WARN,
+				     "cannot restore selected session context: %s",
+				     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	}
 }
 

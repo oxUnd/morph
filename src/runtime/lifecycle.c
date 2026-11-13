@@ -1,5 +1,6 @@
 #include "runtime/runtime_internal.h"
 
+#include "nb/cleanup.h"
 #include "runtime/approval.h"
 #include "runtime/bootstrap.h"
 #include "runtime/mcp.h"
@@ -10,10 +11,13 @@
 #include "runtime/output.h"
 #include "agent/history.h"
 #include "event/event.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/id.h"
-#include "util/log.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "nb/random.h"
+#include "nb/encoding.h"
+#include "nb/log.h"
+#include "nb/str.h"
+#include "nb/utf8.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -29,12 +33,12 @@ static int runtime_create_startup_session(struct runtime_context *ctx,
 {
 	char name[256];
 	time_t now;
-	int rc = -EEXIST;
+	int rc = NB_ERR_EXISTS;
 
 	if (!ctx || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	now = time(NULL);
-	for (int i = 0; i < RUNTIME_NEW_SESSION_RETRIES && rc == -EEXIST; i++) {
+	for (int i = 0; i < RUNTIME_NEW_SESSION_RETRIES && rc == NB_ERR_EXISTS; i++) {
 		if (i == 0) {
 			snprintf(name, sizeof(name), "new_%lld",
 				 (long long)now);
@@ -57,11 +61,11 @@ int runtime_ensure_current_session(struct runtime *runtime)
 	int rc = 0;
 
 	if (!runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	ctx = &runtime->context;
 	if (ctx->current_session.id > 0)
 		return 0;
-	pthread_mutex_lock(&ctx->execution_lock);
+	nb_mutex_lock(ctx->execution_lock);
 	if (ctx->current_session.id <= 0) {
 		rc = runtime_create_startup_session(ctx, &session);
 		if (rc == 0) {
@@ -72,7 +76,7 @@ int runtime_ensure_current_session(struct runtime *runtime)
 			runtime_session_clear_history(ctx->react);
 		}
 	}
-	pthread_mutex_unlock(&ctx->execution_lock);
+	nb_mutex_unlock(ctx->execution_lock);
 	if (rc != 0)
 		return rc;
 	return 0;
@@ -99,7 +103,7 @@ static int runtime_emit_background(void *user_data, const char *name,
 	int rc;
 
 	if (!runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (runtime->context.react)
 		(void)agent_history_record_receipt(runtime->context.react,
 			name, phase, message, task, count, error_code);
@@ -112,14 +116,15 @@ static int runtime_emit_background(void *user_data, const char *name,
 		return 0;
 	data = cJSON_CreateObject();
 	if (!data)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	cJSON_AddStringToObject(data, "task", task ? task : "");
 	if (count >= 0)
 		cJSON_AddNumberToObject(data, "count", count);
 	if (error_code < 0) {
 		cJSON_AddNumberToObject(data, "error_code", error_code);
-		cJSON_AddStringToObject(data, "error",
-					morph_strerror(error_code));
+		cJSON_AddStringToObject(
+			data, "error",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, error_code));
 	}
 	rc = morph_event_emit_simple(cb, event_user_data,
 				     MORPH_EVENT_BACKGROUND, name, phase,
@@ -132,6 +137,8 @@ static int runtime_sync_source_directory(const struct runtime *runtime,
 					 const char *expanded_database,
 					 char source[PATH_MAX])
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	char *expanded = NULL;
 	char *slash;
 	const char *base = runtime->context.config_path;
@@ -140,29 +147,38 @@ static int runtime_sync_source_directory(const struct runtime *runtime,
 		if (expanded_database) {
 			base = expanded_database;
 		} else {
-			expanded = file_expand_path_copy(runtime->options.db_path);
+			expanded = (nb_path_expand(&file_value_1, runtime->options.db_path, NULL) ==
+						    NB_OK
+					    ? strdup(nb_buf_cstr(&file_value_1))
+					    : NULL);
 			if (!expanded)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			base = expanded;
 		}
 	}
 	if (strlen(base) >= PATH_MAX) {
 		free(expanded);
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	}
-	strncpy(source, base, PATH_MAX - 1);
+	(void)nb_str_copy_to(nb_str_from_parts(base, nb_utf8_clamp_bytes(base, PATH_MAX - 1)),
+			     source, (PATH_MAX - 1) + 1);
 	source[PATH_MAX - 1] = '\0';
 	free(expanded);
 	slash = strrchr(source, '/');
 	if (slash)
 		*slash = '\0';
 	else
-		strncpy(source, ".", PATH_MAX - 1);
+		(void)nb_str_copy_to(nb_str_from_parts(".", nb_utf8_clamp_bytes(".", PATH_MAX - 1)),
+				     source, (PATH_MAX - 1) + 1);
 	return 0;
 }
 
 static int runtime_load_config(struct runtime *runtime, struct config_file_error *error)
 {
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	struct runtime_context *ctx = &runtime->context;
 	char *expanded = NULL;
 	char *expanded_output = NULL;
@@ -170,20 +186,28 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 
 	config_set_defaults(runtime ? runtime->options.logger : NULL, &ctx->config);
 	if (runtime->options.config_path && runtime->options.config_path[0]) {
-		expanded = file_expand_path_copy(runtime->options.config_path);
+		expanded =
+			(nb_path_expand(&file_value_2, runtime->options.config_path, NULL) == NB_OK
+				 ? strdup(nb_buf_cstr(&file_value_2))
+				 : NULL);
 		if (!expanded)
-			return -ENOMEM;
-		strncpy(ctx->config_path, expanded,
-			sizeof(ctx->config_path) - 1);
-		if (file_exists(expanded)) {
+			return NB_ERR_NOMEM;
+		(void)nb_str_copy_to(
+			nb_str_from_parts(
+				expanded,
+				nb_utf8_clamp_bytes(expanded, sizeof(ctx->config_path) - 1)),
+			ctx->config_path, (sizeof(ctx->config_path) - 1) + 1);
+		if (nb_file_exists(expanded)) {
 			rc = config_load(runtime ? runtime->options.logger : NULL, &ctx->config,
 					 expanded);
 			if (rc != 0) {
 				snprintf(error->file, sizeof(error->file), "%s", expanded);
 				(void)config_validate_file(expanded, &error->detail);
 				if (!error->detail.message[0])
-					snprintf(error->detail.message, sizeof(error->detail.message),
-						 "%s", morph_strerror(rc));
+					snprintf(error->detail.message,
+						 sizeof(error->detail.message), "%s",
+						 nb_err_str(morph_error_descriptions(),
+							    MORPH_ERROR_COUNT, rc));
 				free(expanded);
 				return rc;
 			}
@@ -191,32 +215,53 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 	}
 	if (runtime->options.output_dir_override &&
 	    runtime->options.output_dir_override[0]) {
-		expanded_output = file_expand_path_copy(runtime->options.output_dir_override);
+		expanded_output =
+			(nb_path_expand(&file_value_3, runtime->options.output_dir_override,
+					NULL) == NB_OK
+				 ? strdup(nb_buf_cstr(&file_value_3))
+				 : NULL);
 		if (!expanded_output) {
 			free(expanded);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
-		strncpy(ctx->config.general.output_dir, expanded_output,
-			sizeof(ctx->config.general.output_dir) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(
+				expanded_output,
+				nb_utf8_clamp_bytes(expanded_output,
+						    sizeof(ctx->config.general.output_dir) - 1)),
+			ctx->config.general.output_dir,
+			(sizeof(ctx->config.general.output_dir) - 1) + 1);
 		ctx->config.general.output_dir[
 			sizeof(ctx->config.general.output_dir) - 1] = '\0';
 	} else if (ctx->config.general.output_dir[0] == '~') {
-		expanded_output = file_expand_path_copy(ctx->config.general.output_dir);
+		expanded_output = (nb_path_expand(&file_value_4, ctx->config.general.output_dir,
+						  NULL) == NB_OK
+					   ? strdup(nb_buf_cstr(&file_value_4))
+					   : NULL);
 		if (!expanded_output) {
 			free(expanded);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
-		strncpy(ctx->config.general.output_dir, expanded_output,
-			sizeof(ctx->config.general.output_dir) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(
+				expanded_output,
+				nb_utf8_clamp_bytes(expanded_output,
+						    sizeof(ctx->config.general.output_dir) - 1)),
+			ctx->config.general.output_dir,
+			(sizeof(ctx->config.general.output_dir) - 1) + 1);
 		ctx->config.general.output_dir[
 			sizeof(ctx->config.general.output_dir) - 1] = '\0';
 	}
 	if (!ctx->config.dynamic_tools.mode_explicit &&
 	    runtime->options.default_dynamic_tools_mode &&
 	    runtime->options.default_dynamic_tools_mode[0]) {
-		strncpy(ctx->config.dynamic_tools.mode,
-			runtime->options.default_dynamic_tools_mode,
-			sizeof(ctx->config.dynamic_tools.mode) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(
+				runtime->options.default_dynamic_tools_mode,
+				nb_utf8_clamp_bytes(runtime->options.default_dynamic_tools_mode,
+						    sizeof(ctx->config.dynamic_tools.mode) - 1)),
+			ctx->config.dynamic_tools.mode,
+			(sizeof(ctx->config.dynamic_tools.mode) - 1) + 1);
 	}
 	free(expanded);
 	free(expanded_output);
@@ -225,6 +270,9 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 
 static int runtime_open_database(struct runtime *runtime)
 {
+	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	struct runtime_context *ctx = &runtime->context;
 	char source[PATH_MAX];
 	char *expanded;
@@ -232,10 +280,12 @@ static int runtime_open_database(struct runtime *runtime)
 	int rc;
 
 	if (!runtime->options.db_path || !runtime->options.db_path[0])
-		return -EINVAL;
-	expanded = file_expand_path_copy(runtime->options.db_path);
+		return NB_ERR_INVAL;
+	expanded = (nb_path_expand(&file_value_5, runtime->options.db_path, NULL) == NB_OK
+			    ? strdup(nb_buf_cstr(&file_value_5))
+			    : NULL);
 	if (!expanded)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	rc = runtime_sync_source_directory(runtime, expanded, source);
 	if (rc == 0)
 		rc = morph_sync_recover_db_replacements(runtime ? runtime->options.logger : NULL,
@@ -244,9 +294,11 @@ static int runtime_open_database(struct runtime *runtime)
 		free(expanded);
 		return rc;
 	}
-	dir = file_expand_path_copy("~/.morph");
+	dir = (nb_path_expand(&file_value_6, "~/.morph", NULL) == NB_OK
+		       ? strdup(nb_buf_cstr(&file_value_6))
+		       : NULL);
 	if (dir) {
-		(void)file_ensure_dir(dir);
+		(void)nb_file_mkdir(dir, true, NULL);
 		free(dir);
 	}
 	rc = db_open(runtime ? runtime->options.logger : NULL, &ctx->database, expanded);
@@ -258,26 +310,55 @@ static int runtime_open_database(struct runtime *runtime)
 
 static int runtime_set_workdir(struct runtime *runtime)
 {
+	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	struct runtime_context *ctx = &runtime->context;
 	char *resolved;
 	int rc;
 
 	if (runtime->options.workdir && runtime->options.workdir[0]) {
-		resolved = file_resolve_path_copy(runtime->options.workdir);
+		resolved =
+			(nb_path_expand(&file_value_7, runtime->options.workdir, NULL) == NB_OK &&
+					 nb_path_canonical_missing(&file_value_7,
+								   nb_buf_cstr(&file_value_7),
+								   NULL) == NB_OK
+				 ? strdup(nb_buf_cstr(&file_value_7))
+				 : NULL);
 		if (!resolved)
-			resolved = file_expand_path_copy(runtime->options.workdir);
-		strncpy(ctx->workdir, resolved ? resolved : runtime->options.workdir,
-			sizeof(ctx->workdir) - 1);
+			resolved = (nb_path_expand(&file_value_8, runtime->options.workdir, NULL) ==
+						    NB_OK
+					    ? strdup(nb_buf_cstr(&file_value_8))
+					    : NULL);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(
+				resolved ? resolved : runtime->options.workdir,
+				nb_utf8_clamp_bytes(resolved ? resolved : runtime->options.workdir,
+						    sizeof(ctx->workdir) - 1)),
+			ctx->workdir, (sizeof(ctx->workdir) - 1) + 1);
 		free(resolved);
 	} else if (runtime->startup_workdir_ready && runtime->startup_workdir[0]) {
-		resolved = file_resolve_path_copy(runtime->startup_workdir);
-		strncpy(ctx->workdir, resolved ? resolved : runtime->startup_workdir,
-			sizeof(ctx->workdir) - 1);
+		resolved =
+			(nb_path_expand(&file_value_9, runtime->startup_workdir, NULL) == NB_OK &&
+					 nb_path_canonical_missing(&file_value_9,
+								   nb_buf_cstr(&file_value_9),
+								   NULL) == NB_OK
+				 ? strdup(nb_buf_cstr(&file_value_9))
+				 : NULL);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(
+				resolved ? resolved : runtime->startup_workdir,
+				nb_utf8_clamp_bytes(resolved ? resolved : runtime->startup_workdir,
+						    sizeof(ctx->workdir) - 1)),
+			ctx->workdir, (sizeof(ctx->workdir) - 1) + 1);
 		free(resolved);
 	} else if (!getcwd(ctx->workdir, sizeof(ctx->workdir))) {
-		strncpy(ctx->workdir, ".", sizeof(ctx->workdir) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(".", nb_utf8_clamp_bytes(".", sizeof(ctx->workdir) - 1)),
+			ctx->workdir, (sizeof(ctx->workdir) - 1) + 1);
 	}
-	rc = file_ensure_dir(ctx->config.general.output_dir);
+	rc = nb_file_mkdir(ctx->config.general.output_dir, true, NULL);
 	if (rc != 0)
 		return rc;
 	return 0;
@@ -289,8 +370,11 @@ static void runtime_capture_session_workdir(struct runtime *runtime, const struc
 		return;
 	if (runtime->options.workdir && runtime->options.workdir[0])
 		return;
-	strncpy(runtime->startup_workdir, session->workdir,
-		sizeof(runtime->startup_workdir) - 1);
+	(void)nb_str_copy_to(
+		nb_str_from_parts(session->workdir,
+				  nb_utf8_clamp_bytes(session->workdir,
+						      sizeof(runtime->startup_workdir) - 1)),
+		runtime->startup_workdir, (sizeof(runtime->startup_workdir) - 1) + 1);
 	runtime->startup_workdir_ready = 1;
 }
 
@@ -447,7 +531,7 @@ static int runtime_start_components(struct runtime *runtime)
 	ctx->memory_options = runtime_context_memory_options_borrow(ctx);
 	ctx->memory_options.worker = memory_worker_create(runtime ? runtime->options.logger : NULL);
 	if (!ctx->memory_options.worker)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	ctx->engine.memory_options = &ctx->memory_options;
 	ctx->engine.prepare_turn = runtime_prepare_turn;
 	ctx->engine.finish_turn = runtime_finish_turn;
@@ -524,14 +608,14 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 	struct config_file_error error = {0};
 
 	if (!options || !out || !options->db_path)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (options->startup_error)
 		memset(options->startup_error, 0, sizeof(*options->startup_error));
 	runtime = calloc(1, sizeof(*runtime));
 	if (!runtime)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	runtime->options = *options;
 	if (options->task_events) {
 		runtime->task_events = *options->task_events;
@@ -568,9 +652,14 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 		(void)session_update_workdir(&runtime->context.database,
 					     runtime->context.current_session.id,
 					     runtime->context.workdir);
-		strncpy(runtime->context.current_session.workdir,
-			runtime->context.workdir,
-			sizeof(runtime->context.current_session.workdir) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(
+				runtime->context.workdir,
+				nb_utf8_clamp_bytes(
+					runtime->context.workdir,
+					sizeof(runtime->context.current_session.workdir) - 1)),
+			runtime->context.current_session.workdir,
+			(sizeof(runtime->context.current_session.workdir) - 1) + 1);
 		runtime->context.current_session.workdir[
 			sizeof(runtime->context.current_session.workdir) - 1] = '\0';
 	}
@@ -590,9 +679,10 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 			cleanup_rc = morph_sync_finalize_db_replacements(
 				runtime ? runtime->options.logger : NULL, source);
 			if (cleanup_rc != 0) {
-				log_warn(runtime ? runtime->options.logger : NULL,
-					 "database restore cleanup deferred: %s",
-					 morph_strerror(cleanup_rc));
+				nb_log_write(runtime ? runtime->options.logger : NULL, NB_LOG_WARN,
+					     "database restore cleanup deferred: %s",
+					     nb_err_str(morph_error_descriptions(),
+							MORPH_ERROR_COUNT, cleanup_rc));
 			}
 		}
 	}
@@ -610,9 +700,13 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 				cJSON_AddStringToObject(data, "key", error.detail.path);
 			}
 		}
-		(void)morph_event_emit_simple(options->event_cb, options->event_user_data,
-			MORPH_EVENT_STARTUP, "startup.failed", "failed",
-			error.detail.message[0] ? error.detail.message : morph_strerror(rc), data);
+		(void)morph_event_emit_simple(
+			options->event_cb, options->event_user_data, MORPH_EVENT_STARTUP,
+			"startup.failed", "failed",
+			error.detail.message[0]
+				? error.detail.message
+				: nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc),
+			data);
 		cJSON_Delete(data);
 		runtime_close(runtime);
 		return rc;
@@ -648,17 +742,17 @@ void runtime_close(struct runtime *runtime)
 	if (!runtime)
 		return;
 	if (runtime->context.execution_lock_ready) {
-		pthread_mutex_lock(&runtime->context.agent_interaction_lock);
+		nb_mutex_lock(runtime->context.agent_interaction_lock);
 		runtime->context.agent_phase = RUNTIME_AGENTS_CLOSING;
 		agent_control_set_interactions_blocked(runtime->context.agents, 1);
 		agent_control_cancel(runtime->context.agents);
-		pthread_mutex_unlock(&runtime->context.agent_interaction_lock);
+		nb_mutex_unlock(runtime->context.agent_interaction_lock);
 	}
 	runtime_mcp_background_stop(runtime);
 	runtime_task_worker_stop(&runtime->task_worker);
 	runtime_sync_stop_instance(runtime);
 	if (runtime->context.execution_lock_ready)
-		pthread_mutex_lock(&runtime->context.execution_lock);
+		nb_mutex_lock(runtime->context.execution_lock);
 	agent_control_join(runtime->context.agents);
 	runtime_title_stop(runtime);
 	runtime_recap_stop(runtime);
@@ -683,7 +777,7 @@ void runtime_close(struct runtime *runtime)
 	runtime_jobs_cleanup(runtime);
 	runtime_checkpoints_cleanup(runtime);
 	if (runtime->context.execution_lock_ready)
-		pthread_mutex_unlock(&runtime->context.execution_lock);
+		nb_mutex_unlock(runtime->context.execution_lock);
 	runtime_context_cleanup_lock(&runtime->context);
 	free(runtime);
 }
@@ -693,16 +787,29 @@ int runtime_execute_turn(struct runtime *runtime,
 			 struct runtime_result *result)
 
 {
+	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_10 = NB_OK;
+
 	struct runtime_request effective;
 	char turn_id[64];
 
 	if (!runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!request)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	effective = *request;
 	if (!effective.turn_id || !effective.turn_id[0]) {
-		int rc = morph_random_id("turn_", turn_id, sizeof(turn_id));
+		int rc = ((file_status_10 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+					     : !(nb_buf_clear(&file_value_10),
+						 nb_buf_append_cstr(&file_value_10, "turn_"))
+						     ? NB_ERR_NOMEM
+						     : nb_random_hex(&file_value_10, 16, NULL))) !=
+					  NB_OK
+				  ? file_status_10
+			  : (file_status_10 = nb_str_copy_to(nb_buf_str(&file_value_10), turn_id,
+							     sizeof(turn_id))) == NB_ERR_RANGE
+				  ? NB_ERR_NO_SPACE
+				  : file_status_10);
 
 		if (rc != 0)
 			return rc;
@@ -764,10 +871,10 @@ int runtime_prepare_turn(void *user_data, const struct runtime_request *request)
 {
 	struct runtime *runtime = user_data;
 	struct runtime_context *context = &runtime->context;
-	pthread_mutex_lock(&context->agent_interaction_lock);
+	nb_mutex_lock(context->agent_interaction_lock);
 	if (context->agent_phase == RUNTIME_AGENTS_CLOSING) {
-		pthread_mutex_unlock(&context->agent_interaction_lock);
-		return -ECANCELED;
+		nb_mutex_unlock(context->agent_interaction_lock);
+		return NB_ERR_CANCELLED;
 	}
 	context->agent_phase = RUNTIME_AGENTS_RUNNING;
 	agent_control_set_interactions_blocked(context->agents, 1);
@@ -785,7 +892,7 @@ int runtime_prepare_turn(void *user_data, const struct runtime_request *request)
 		}
 		agent_control_set_interactions_blocked(context->agents, 0);
 	}
-	pthread_mutex_unlock(&context->agent_interaction_lock);
+	nb_mutex_unlock(context->agent_interaction_lock);
 
 	if (rc == 0)
 		rc = runtime_checkpoint_begin_turn(runtime, request);
@@ -795,8 +902,10 @@ int runtime_prepare_turn(void *user_data, const struct runtime_request *request)
 		int title_rc = runtime_title_start(runtime, request);
 
 		if (title_rc != 0)
-			log_dbg(runtime ? runtime->options.logger : NULL,
-				"session title skipped: %s", morph_strerror(title_rc));
+			nb_log_write(runtime ? runtime->options.logger : NULL, NB_LOG_DEBUG,
+				     "session title skipped: %s",
+				     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+						title_rc));
 	}
 	return rc;
 }
@@ -804,34 +913,34 @@ int runtime_prepare_turn(void *user_data, const struct runtime_request *request)
 void runtime_drain_turn(void *user_data)
 {
 	struct runtime_context *context = &((struct runtime *)user_data)->context;
-	pthread_mutex_lock(&context->agent_interaction_lock);
+	nb_mutex_lock(context->agent_interaction_lock);
 	if (context->agent_phase != RUNTIME_AGENTS_CLOSING)
 		context->agent_phase = RUNTIME_AGENTS_FINISHING;
-	pthread_mutex_unlock(&context->agent_interaction_lock);
+	nb_mutex_unlock(context->agent_interaction_lock);
 }
 
 int runtime_agent_actor_begin(struct runtime *runtime, struct runtime_agent_actor *actor)
 {
 	if (!runtime || !actor || !runtime->context.execution_lock_ready)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct runtime_context *context = &runtime->context;
-	pthread_mutex_lock(&context->agent_interaction_lock);
+	nb_mutex_lock(context->agent_interaction_lock);
 	if (context->agent_phase == RUNTIME_AGENTS_CLOSING) {
-		pthread_mutex_unlock(&context->agent_interaction_lock);
-		return -ECANCELED;
+		nb_mutex_unlock(context->agent_interaction_lock);
+		return NB_ERR_CANCELLED;
 	}
 	int active = context->agent_phase == RUNTIME_AGENTS_RUNNING ||
 		     context->agent_phase == RUNTIME_AGENTS_FINISHING;
 	int64_t session_id =
 		active ? context->turn_scope.memory_session_id : context->current_session.id;
 	if (session_id <= 0) {
-		pthread_mutex_unlock(&context->agent_interaction_lock);
-		return -ESTALE;
+		nb_mutex_unlock(context->agent_interaction_lock);
+		return NB_ERR_STALE;
 	}
 	if (context->agents) {
 		int rc = agent_control_set_parent_session(context->agents, session_id);
 		if (rc != 0) {
-			pthread_mutex_unlock(&context->agent_interaction_lock);
+			nb_mutex_unlock(context->agent_interaction_lock);
 			return rc;
 		}
 	}
@@ -845,8 +954,11 @@ int runtime_agent_actor_begin(struct runtime *runtime, struct runtime_agent_acto
 			     : context->current_session.display_id[0]
 				     ? context->current_session.display_id
 				     : context->current_session.name;
-	snprintf(actor->credit_session_id, sizeof(actor->credit_session_id), "%s",
-		 credit && *credit ? credit : "local");
+	credit = credit && *credit ? credit : "local";
+	(void)nb_str_copy_to(
+		nb_str_from_parts(
+			credit, nb_utf8_clamp_bytes(credit, sizeof(actor->credit_session_id) - 1)),
+		actor->credit_session_id, sizeof(actor->credit_session_id));
 	actor->context = (struct tool_runtime_context){
 		.agents = context->agents,
 		.permission_context = context->tctx,
@@ -869,20 +981,20 @@ int runtime_agent_actor_begin(struct runtime *runtime, struct runtime_agent_acto
 void runtime_agent_actor_end(struct runtime *runtime)
 {
 	if (runtime)
-		pthread_mutex_unlock(&runtime->context.agent_interaction_lock);
+		nb_mutex_unlock(runtime->context.agent_interaction_lock);
 }
 
 int runtime_agent_session_begin(struct runtime *runtime)
 {
 	if (!runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct runtime_context *context = &runtime->context;
-	pthread_mutex_lock(&context->agent_interaction_lock);
-	int rc = context->agent_phase == RUNTIME_AGENTS_CLOSING ? -ECANCELED
-		 : agent_control_active(context->agents, 0)	? -EBUSY
+	nb_mutex_lock(context->agent_interaction_lock);
+	int rc = context->agent_phase == RUNTIME_AGENTS_CLOSING ? NB_ERR_CANCELLED
+		 : agent_control_active(context->agents, 0)	? NB_ERR_BUSY
 								: 0;
 	if (rc != 0)
-		pthread_mutex_unlock(&context->agent_interaction_lock);
+		nb_mutex_unlock(context->agent_interaction_lock);
 	return rc;
 }
 
@@ -893,11 +1005,11 @@ void runtime_finish_turn(void *user_data, const struct runtime_request *request,
 	(void)result;
 	runtime_checkpoint_end_turn(user_data);
 	struct runtime_context *context = &((struct runtime *)user_data)->context;
-	pthread_mutex_lock(&context->agent_interaction_lock);
+	nb_mutex_lock(context->agent_interaction_lock);
 	runtime_context_finish_turn(context);
 	if (context->agent_phase != RUNTIME_AGENTS_CLOSING)
 		context->agent_phase = RUNTIME_AGENTS_IDLE;
-	pthread_mutex_unlock(&context->agent_interaction_lock);
+	nb_mutex_unlock(context->agent_interaction_lock);
 }
 
 const struct config *runtime_config_borrow(const struct runtime *runtime)

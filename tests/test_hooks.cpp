@@ -1,14 +1,15 @@
 #include <gtest/gtest.h>
+#include "nb/thread.h"
 #include "runtime/hooks.h"
 #include "runtime/runtime.h"
 #include "agent/react.h"
 #include "agent/tokenizer.h"
 #include "models/llm.h"
-#include "util/file.h"
-#include "util/sha256.h"
-#include "util/error.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/file.h"
+#include "nb/hash.h"
+#include "errors.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -168,7 +169,8 @@ TEST_F(HooksTest, BatchTrustRejectsChangedSnapshotWithoutPartialApproval)
 	auto digest = field(cJSON_GetArrayItem(rows, 0), "review_digest");
 	cJSON_Delete(rows);
 	Define("Stop", "touch changed-script");
-	EXPECT_EQ(hook_manager_action(&hooks, "trust-all", "workspace", digest.c_str()), -ESTALE);
+	EXPECT_EQ(hook_manager_action(&hooks, "trust-all", "workspace", digest.c_str()),
+		  NB_ERR_STALE);
 	rows = hook_manager_list(&hooks);
 	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 0), "state"), "needs_review");
 	cJSON_Delete(rows);
@@ -237,12 +239,12 @@ TEST_F(HooksTest, ProjectBatchTrustDoesNotTransferToAnotherWorkspace)
 
 static std::string hook_test_hash(const std::string &text)
 {
-	struct sha256_ctx ctx;
+	struct nb_sha256_ctx ctx;
 	unsigned char hash[32];
 	char hex[65];
-	sha256_init(&ctx);
-	sha256_update(&ctx, reinterpret_cast<const unsigned char *>(text.data()), text.size());
-	sha256_final(&ctx, hash);
+	nb_sha256_init(&ctx);
+	nb_sha256_update(&ctx, reinterpret_cast<const unsigned char *>(text.data()), text.size());
+	nb_sha256_final(&ctx, hash);
 	for (size_t i = 0; i < sizeof(hash); i++)
 		std::snprintf(hex + i * 2, 3, "%02x", hash[i]);
 	return hex;
@@ -334,7 +336,7 @@ TEST_F(HooksTest, ChangedDefinitionRequiresNewReviewAndRejectsStaleTrust)
 	auto digest = field(cJSON_GetArrayItem(rows, 0), "digest");
 	cJSON_Delete(rows);
 	Define("Stop", "touch changed-script");
-	EXPECT_EQ(hook_manager_action(&hooks, "trust", id.c_str(), digest.c_str()), -ESTALE);
+	EXPECT_EQ(hook_manager_action(&hooks, "trust", id.c_str(), digest.c_str()), NB_ERR_STALE);
 	rows = hook_manager_list(&hooks);
 	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 0), "state"), "changed / needs_review");
 	EXPECT_FALSE(field(cJSON_GetArrayItem(rows, 0), "previous_definition").empty());
@@ -371,7 +373,7 @@ TEST_F(HooksTest, UnsupportedAndInvalidEntriesCannotBeTrusted)
 		const cJSON *row = cJSON_GetArrayItem(rows, i);
 		EXPECT_EQ(hook_manager_action(&hooks, "trust", field(row, "id").c_str(),
 					      field(row, "digest").c_str()),
-			  -EPERM);
+			  NB_ERR_NOT_PERMITTED);
 	}
 	cJSON_Delete(rows);
 }
@@ -419,7 +421,7 @@ TEST_F(HooksTest, InterruptRunsAfterCancellationAndExhaustedTurnBudget)
 	Define("Interrupt", "cat > interrupted.json; printf '{\"continue\":false}'");
 	Init();
 	TrustAll();
-	volatile sig_atomic_t cancelled = 1;
+	nb_atomic_int cancelled = 1;
 	hooks.cancelled = &cancelled;
 	hooks.remaining_ms = 0;
 	cJSON *out = Dispatch("Interrupt");
@@ -541,7 +543,7 @@ TEST_F(HooksTest, InlineTomlIsPortableAndStaleReviewIsRejected)
 	cJSON_Delete(rows);
 	Write("[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype='command'\ncommand='true'\n",
 	      "config.toml");
-	EXPECT_EQ(hook_manager_action(&hooks, "trust", id.c_str(), digest.c_str()), -ESTALE);
+	EXPECT_EQ(hook_manager_action(&hooks, "trust", id.c_str(), digest.c_str()), NB_ERR_STALE);
 }
 
 TEST_F(HooksTest, ConcurrentHandlersAllStartEvenWhenOneBlocks)
@@ -577,14 +579,14 @@ TEST_F(HooksTest, CancellationStopsChildren)
 	Define("Stop", "sleep 10", "", 3);
 	Init();
 	TrustAll();
-	struct morph_cancel_token cancel{};
+	struct nb_cancel cancel{};
 	hooks.cancel_token = &cancel;
 	std::thread thread([&] {
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
-		morph_cancel_token_cancel(&cancel);
+		nb_cancel_request(&cancel);
 	});
 	cJSON *out = nullptr;
-	EXPECT_EQ(hook_manager_dispatch(&hooks, "Stop", nullptr, &out), -ECANCELED);
+	EXPECT_EQ(hook_manager_dispatch(&hooks, "Stop", nullptr, &out), NB_ERR_CANCELLED);
 	thread.join();
 	cJSON_Delete(out);
 }
@@ -678,11 +680,11 @@ TEST_F(HooksTest, CodexCommandOutputDecisionMatrix)
 		else
 			ASSERT_EQ(hook_manager_reload(&hooks), 0);
 		TrustAll();
-		cJSON *output MORPH_CLEANUP(morph_json_cleanup) = Dispatch(item.event);
+		cJSON *output NB_CLEANUP(cJSON_DeleteOwner) = Dispatch(item.event);
 		ASSERT_NE(output, nullptr);
 		EXPECT_EQ(cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked")), item.blocked);
 		EXPECT_EQ(cJSON_IsTrue(cJSON_GetObjectItem(output, "terminate")), item.terminate);
-		cJSON *rows MORPH_CLEANUP(morph_json_cleanup) = hook_manager_list(&hooks);
+		cJSON *rows NB_CLEANUP(cJSON_DeleteOwner) = hook_manager_list(&hooks);
 		const cJSON *last = cJSON_GetObjectItem(cJSON_GetArrayItem(rows, 0), "last_run");
 		EXPECT_EQ(field(last, "name") == "hook.failed", item.failed);
 	}
@@ -697,7 +699,7 @@ TEST_F(HooksTest, EmptyExitTwoReasonFailsOpenForDecisionEvents)
 		else
 			ASSERT_EQ(hook_manager_reload(&hooks), 0);
 		TrustAll();
-		cJSON *output MORPH_CLEANUP(morph_json_cleanup) = Dispatch(event);
+		cJSON *output NB_CLEANUP(cJSON_DeleteOwner) = Dispatch(event);
 		EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked"))) << event;
 	}
 }
@@ -717,7 +719,7 @@ TEST_F(HooksTest, ValidWarningSurvivesSemanticFailureAndUnicodePadding)
 			static_cast<std::vector<std::string> *>(user)->emplace_back(event->message);
 		return 0;
 	};
-	cJSON *output MORPH_CLEANUP(morph_json_cleanup) = Dispatch("Stop");
+	cJSON *output NB_CLEANUP(cJSON_DeleteOwner) = Dispatch("Stop");
 
 	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked")));
 	ASSERT_EQ(warnings.size(), 1u);
@@ -734,7 +736,7 @@ TEST_F(HooksTest, StopTerminationOverridesAnotherHandlersContinuation)
 	]}]}})");
 	Init();
 	TrustAll();
-	cJSON *output MORPH_CLEANUP(morph_json_cleanup) = Dispatch("Stop");
+	cJSON *output NB_CLEANUP(cJSON_DeleteOwner) = Dispatch("Stop");
 	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked")));
 	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(output, "terminate")));
 }
@@ -753,22 +755,22 @@ TEST_F(HooksTest, LastCompletedRewriteWinsWithoutBlocking)
 	]}]}})");
 	Init();
 	TrustAll();
-	cJSON *output MORPH_CLEANUP(morph_json_cleanup) = Dispatch("PreToolUse");
+	cJSON *output NB_CLEANUP(cJSON_DeleteOwner) = Dispatch("PreToolUse");
 	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked")));
 	EXPECT_EQ(field(cJSON_GetObjectItem(output, "updatedInput"), "command"), "last");
 }
 
 TEST(Sha256, KnownDigest)
 {
-	struct sha256_ctx sha;
+	struct nb_sha256_ctx sha;
 	unsigned char digest[32];
 	const unsigned char expected[] = {0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
 					  0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
 					  0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
 					  0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad};
-	sha256_init(&sha);
-	sha256_update(&sha, reinterpret_cast<const unsigned char *>("abc"), 3);
-	sha256_final(&sha, digest);
+	nb_sha256_init(&sha);
+	nb_sha256_update(&sha, reinterpret_cast<const unsigned char *>("abc"), 3);
+	nb_sha256_final(&sha, digest);
 	EXPECT_EQ(memcmp(digest, expected, sizeof(digest)), 0);
 }
 } /* namespace */
@@ -802,7 +804,8 @@ TEST_F(HooksTest, ProjectTrustIsSeparateFromHookTrust)
 	auto workspace_digest = field(row, "workspace_digest");
 	EXPECT_EQ(field(row, "state"), "project_untrusted");
 	cJSON_Delete(rows);
-	EXPECT_EQ(hook_manager_action(&hooks, "trust", id.c_str(), digest.c_str()), -EPERM);
+	EXPECT_EQ(hook_manager_action(&hooks, "trust", id.c_str(), digest.c_str()),
+		  NB_ERR_NOT_PERMITTED);
 	ASSERT_EQ(
 	    hook_manager_action(&hooks, "trust-project", "workspace", workspace_digest.c_str()), 0);
 	ASSERT_EQ(hook_manager_action(&hooks, "trust", id.c_str(), digest.c_str()), 0);
@@ -977,7 +980,7 @@ TEST_F(HooksTest, JsonSyntaxDiagnosticSurvivesRuntimeFailure)
 		return 0;
 	};
 	options.event_user_data = &event_json;
-	EXPECT_EQ(runtime_open(&options, &instance), MORPH_ERR_PARSE);
+	EXPECT_EQ(runtime_open(&options, &instance), NB_ERR_PARSE);
 	EXPECT_EQ(instance, nullptr);
 	EXPECT_EQ(std::filesystem::canonical(error.file),
 		std::filesystem::canonical(directory + "/.morph/hooks.json"));
@@ -1002,11 +1005,11 @@ TEST_F(HooksTest, JsonDiagnosticsCoverTruncationTrailingInputAndRecovery)
 {
 	Write("{\n  \"hooks\":");
 	EXPECT_EQ(hook_manager_init(&hooks, &database, cfg.get(), "", directory.c_str()),
-		MORPH_ERR_PARSE);
+		  NB_ERR_PARSE);
 	EXPECT_EQ(hooks.error.detail.line, 2);
 	EXPECT_NE(strstr(hooks.error.detail.message, "end of JSON"), nullptr);
 	Write(R"({"hooks":{}} trailing)");
-	EXPECT_EQ(hook_manager_reload(&hooks), MORPH_ERR_PARSE);
+	EXPECT_EQ(hook_manager_reload(&hooks), NB_ERR_PARSE);
 	EXPECT_EQ(hooks.error.detail.line, 1);
 	EXPECT_EQ(hooks.error.detail.column, 14);
 	Write(R"({"hooks":[]})");

@@ -1,9 +1,9 @@
 #include "view_internal.h"
-#include "util/error.h"
+#include "errors.h"
 #include <morph/tui/draw.h>
 #include "tui/render/native_media.h"
 #include "tui/render/frame_internal.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -11,18 +11,19 @@
 int core_window_create(struct morph_tui_application *app, struct morph_tui_window **out)
 {
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	struct morph_tui_window *window = calloc(1, sizeof(*window));
 
 	if (!window)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	window->app = app;
 	int rc = morph_tui_surface_create(&window->surface);
 
 	if (!rc)
-		rc = morph_buf_init(&window->rows, BUFSIZ);
+		rc = (nb_buf_init(&window->rows),
+		      nb_buf_reserve(&window->rows, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (rc) {
 		core_window_destroy(window);
 		return rc;
@@ -38,8 +39,8 @@ void core_window_destroy(struct morph_tui_window *window)
 	core_window_clear_media(window);
 	morph_tui_frame_cleanup(&window->frame);
 	morph_tui_surface_destroy(window->surface);
-	morph_buf_cleanup(&window->rows);
-	morph_buf_cleanup(&window->selection_text);
+	nb_buf_cleanup(&window->rows);
+	nb_buf_cleanup(&window->selection_text);
 	free(window);
 }
 
@@ -73,9 +74,9 @@ int morph_tui_window_set_renderer_borrow(struct morph_tui_window *window,
 					 struct morph_tui_renderer *backend)
 {
 	if (!window || (backend && (!backend->ops || !backend->ops->present)))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_application_is_owner(window->app))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	if (window->backend != backend)
 		core_window_clear_media(window);
 	window->backend = backend;
@@ -89,9 +90,9 @@ int morph_tui_window_set_event_handler_borrow(struct morph_tui_window *window,
 					      void *data)
 {
 	if (!window)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_application_is_owner(window->app))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	window->event = event;
 	window->event_data = data;
 	return 0;
@@ -105,7 +106,7 @@ void core_window_clear_selection(struct morph_tui_window *window)
 
 	window->selection_active = 0;
 	window->selection_dragging = 0;
-	morph_buf_reset(&window->selection_text);
+	nb_buf_clear(&window->selection_text);
 	if (changed)
 		morph_tui_application_invalidate(window->app, MORPH_TUI_INVALIDATE_DISPLAY);
 }
@@ -114,9 +115,9 @@ int morph_tui_window_set_text_copy_handler_borrow(struct morph_tui_window *windo
 						 int (*copy)(void *, const char *), void *data)
 {
 	if (!window)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_application_is_owner(window->app))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	core_window_clear_selection(window);
 	window->copy_text = copy;
 	window->copy_data = data;
@@ -138,7 +139,7 @@ static int core_window_selection_capture(struct morph_tui_window *window)
 int core_window_mouse_event(struct morph_tui_window *window, const struct morph_tui_event *event)
 {
 	if (!window || !event)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (event->type != MORPH_TUI_EVENT_MOUSE || !window->copy_text ||
 	    event->mouse.modifiers)
 		return 0;
@@ -151,8 +152,7 @@ int core_window_mouse_event(struct morph_tui_window *window, const struct morph_
 	if (mouse->button == MORPH_TUI_MOUSE_RIGHT && mouse->action == MORPH_TUI_MOUSE_PRESS) {
 		if (!window->selection_active || !window->selection_text.len)
 			return 0;
-		int rc = window->copy_text(window->copy_data,
-			morph_buf_cstr_borrow(&window->selection_text));
+		int rc = window->copy_text(window->copy_data, nb_buf_cstr(&window->selection_text));
 
 		return rc < 0 ? rc : 1;
 	}
@@ -196,13 +196,13 @@ static int core_window_selection_draw(struct morph_tui_window *window,
 	}
 	if (!window->selection_active)
 		return 0;
-	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc = morph_tui_surface_selection_text(window->surface, window->selection_x1,
 		window->selection_y1, window->selection_x2, window->selection_y2, &text);
 
 	if (rc)
 		return rc;
-	if (strcmp(morph_buf_cstr_borrow(&text), morph_buf_cstr_borrow(&window->selection_text))) {
+	if (strcmp(nb_buf_cstr(&text), nb_buf_cstr(&window->selection_text))) {
 		core_window_clear_selection(window);
 		return 0;
 	}
@@ -213,7 +213,7 @@ static int core_window_selection_draw(struct morph_tui_window *window,
 
 int core_window_draw(struct morph_tui_window *window, const struct morph_tui_screen *screen)
 {
-	morph_buf_t overlay MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf overlay NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc = morph_tui_surface_resize(window->surface, screen->area.width, screen->area.height);
 	struct morph_tui_canvas canvas;
 
@@ -230,23 +230,24 @@ int core_window_draw(struct morph_tui_window *window, const struct morph_tui_scr
 		rc = morph_tui_surface_rows(window->surface, &window->rows);
 	if (!rc)
 		rc = render_native_media_prepare(&window->media, window->surface, &window->frame);
-	if (!rc && render_native_media_needs_refresh(window->media, window->surface,
-						    &window->frame,
-						    morph_buf_cstr_borrow(&window->rows)))
+	if (!rc && render_native_media_needs_refresh(window->media, window->surface, &window->frame,
+						     nb_buf_cstr(&window->rows)))
 		rc = render_native_media_append(window->media, window->surface,
 						screen->session.output, &overlay);
 	if (!rc) {
 		int x, y;
 		int visible = morph_tui_surface_cursor(window->surface, &x, &y);
 		if (visible)
-			rc = morph_buf_printf(&overlay, "\033[%d;%dH\033[?25h", y + 1, x + 1);
+			rc = (nb_buf_printf(&overlay, "\033[%d;%dH\033[?25h", y + 1, x + 1)
+				      ? 0
+				      : NB_ERR_NOMEM);
 		else
-			rc = morph_buf_puts(&overlay, "\033[?25l");
+			rc = (nb_buf_append_cstr(&overlay, "\033[?25l") ? 0 : NB_ERR_NOMEM);
 	}
 	if (!rc)
 		rc = render_frame_present_composed(&window->frame, screen->session.output,
-					     screen->area.width, screen->area.height,
-					     morph_buf_cstr_borrow(&window->rows), &overlay);
+						   screen->area.width, screen->area.height,
+						   nb_buf_cstr(&window->rows), &overlay);
 	if (rc)
 		render_native_media_invalidate(window->media);
 	return rc;

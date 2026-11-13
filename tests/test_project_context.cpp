@@ -1,4 +1,5 @@
 #include "agent/project_context.h"
+#include "nb/err.h"
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <fstream>
@@ -33,7 +34,7 @@ protected:
 		environment_context env{};
 		env.cwd = cwd.c_str();
 		env.git_root = git ? root.c_str() : nullptr;
-		char *out MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+		char *out NB_CLEANUP(nb_charp_cleanup) = nullptr;
 		EXPECT_EQ(project_context_create(NULL, &env, global.c_str(), &out), 0);
 		return out ? out : "";
 	}
@@ -93,7 +94,7 @@ TEST_F(ProjectContextTest, OccupiedOutputPreservesExistingSnapshot)
 	char *snapshot = strdup("retained guidance");
 	ASSERT_NE(snapshot, nullptr);
 	char *owner = snapshot;
-	EXPECT_EQ(project_context_create(nullptr, &environment, nullptr, &snapshot), -EALREADY);
+	EXPECT_EQ(project_context_create(nullptr, &environment, nullptr, &snapshot), NB_ERR_STATE);
 	EXPECT_EQ(snapshot, owner);
 	EXPECT_STREQ(snapshot, "retained guidance");
 	free(snapshot);
@@ -106,12 +107,12 @@ TEST_F(ProjectContextTest, ConfiguredBudgetLoadsLargerFilesWithoutPartialInstruc
 	std::string cwd = (base / "repo" / "child").string();
 	struct environment_context environment{};
 	environment.cwd = cwd.c_str();
-	char *snapshot MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	char *snapshot NB_CLEANUP(nb_charp_cleanup) = nullptr;
 	ASSERT_EQ(project_context_create_with_budget(nullptr, &environment, nullptr, 65536,
 		&snapshot), 0);
 	ASSERT_NE(snapshot, nullptr);
 	EXPECT_NE(std::string(snapshot).find(content), std::string::npos);
-	morph_charp_cleanup(&snapshot);
+	nb_charp_cleanup(&snapshot);
 	ASSERT_EQ(project_context_create_with_budget(nullptr, &environment, nullptr, 32768,
 		&snapshot), 0);
 	EXPECT_NE(std::string(snapshot).find("file_read"), std::string::npos);

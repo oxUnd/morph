@@ -1,7 +1,7 @@
 #ifndef MORPH_CLI_PRESENTATION_STYLE_H
 #define MORPH_CLI_PRESENTATION_STYLE_H
 
-#include "util/terminal_status.h"
+#include <morph/tui/terminal/status.h>
 #include <stdint.h>
 
 /* Shared right gutter for conversation text and compact tool rows. */

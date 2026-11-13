@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 
 extern "C" {
 #include "sapi/cli/application.h"
@@ -11,9 +12,10 @@ extern "C" {
 #include "sapi/cli/widgets/subagents.h"
 #include "sapi/cli/widgets/agents_browser.h"
 #include "sapi/cli/widgets/transcript.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 }
 
 #include <cstring>
@@ -69,34 +71,39 @@ TEST(CliAgentsBrowserTest, ComponentBoundsAndSanitizesBothResponsiveLayouts)
 			for (int styled : {0, 1}) {
 				cli_agents_browser_state state{};
 				state.selection.index = 1;
-				morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {};
-				ASSERT_EQ(morph_buf_init(&output, 128), 0);
+				nb_buf output NB_CLEANUP(nb_buf_cleanup) = {};
+				ASSERT_EQ((nb_buf_init(&output),
+					   nb_buf_reserve(&output, 128) ? 0 : NB_ERR_NOMEM),
+					  0);
 				ASSERT_EQ(cli_agents_browser_append(&output, &state, &data,
 					columns, rows, styled), 0);
-				char *plain MORPH_CLEANUP(morph_charp_cleanup) =
-					utf8_terminal_sanitize_dup(output.data, output.len,
-						UTF8_TERMINAL_TEXT_MULTILINE, nullptr);
+				char *plain NB_CLEANUP(nb_charp_cleanup) =
+					morph_terminal_sanitize_dup(output.ptr, output.len,
+								    MORPH_TERMINAL_TEXT_MULTILINE,
+								    nullptr);
 				ASSERT_NE(plain, nullptr);
 				std::istringstream lines(plain);
 				std::string line;
 				int count = 0;
 				while (std::getline(lines, line)) {
-					EXPECT_LE(utf8_display_width(line.c_str()),
-						static_cast<size_t>(columns));
+					EXPECT_LE(nb_utf8_width_cstr(line.c_str()),
+						  static_cast<size_t>(columns));
 					count++;
 				}
 				EXPECT_EQ(count, rows);
-				EXPECT_EQ(std::string(output.data).find("\033[2J"), std::string::npos);
+				EXPECT_EQ(std::string(output.ptr).find("\033[2J"),
+					  std::string::npos);
 				if (!styled)
-					EXPECT_EQ(std::string(output.data).find('\033'), std::string::npos);
+					EXPECT_EQ(std::string(output.ptr).find('\033'),
+						  std::string::npos);
 				else {
-					EXPECT_EQ(std::string(output.data).find("\033[44;"),
+					EXPECT_EQ(std::string(output.ptr).find("\033[44;"),
 						  std::string::npos);
-					EXPECT_EQ(std::string(output.data).find("\033[48;"),
+					EXPECT_EQ(std::string(output.ptr).find("\033[48;"),
 						  std::string::npos);
-					EXPECT_EQ(std::string(output.data).find("\033[7m"),
+					EXPECT_EQ(std::string(output.ptr).find("\033[7m"),
 						  std::string::npos);
-					EXPECT_NE(std::string(output.data).find("\033[1m"),
+					EXPECT_NE(std::string(output.ptr).find("\033[1m"),
 						  std::string::npos);
 				}
 				if (columns >= 100 && rows >= 24)
@@ -122,13 +129,13 @@ TEST(CliAgentsBrowserTest, DetailScrollingKeepsItsHeadingAndTaskSelection)
 	state.selection.index = 1;
 	cli_agents_browser_update(&state, &data, MORPH_TUI_KEY_RIGHT);
 	cli_agents_browser_update(&state, &data, MORPH_TUI_KEY_PAGE_DOWN);
-	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {};
-	ASSERT_EQ(morph_buf_init(&output, 128), 0);
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ((nb_buf_init(&output), nb_buf_reserve(&output, 128) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(cli_agents_browser_append(&output, &state, &data, 120, 12, 0), 0);
 	EXPECT_GT(state.detail_scroll, 0u);
 	EXPECT_EQ(cli_agents_browser_selected(&state, &data), 1u);
-	EXPECT_NE(std::string(output.data).find("Task details"), std::string::npos);
-	EXPECT_NE(std::string(output.data).find("scroll details"), std::string::npos);
+	EXPECT_NE(std::string(output.ptr).find("Task details"), std::string::npos);
+	EXPECT_NE(std::string(output.ptr).find("scroll details"), std::string::npos);
 }
 
 static SubagentThread make_thread(const char *id)
@@ -221,16 +228,16 @@ TEST(CliSubagentsTest, ThreadReplayKeepsContentToolAndFollowupChronology)
 		ASSERT_EQ(cli_subagents_thread_replay(thread.get(), event), 0);
 	struct cli_application ctx{};
 	ctx.output.color_disabled = 1;
-	morph_buf_t document MORPH_CLEANUP(morph_buf_cleanup) = {};
-	ASSERT_EQ(morph_buf_init(&document, 1024), 0);
+	nb_buf document NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ((nb_buf_init(&document), nb_buf_reserve(&document, 1024) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(cli_subagents_transcript(&ctx, thread.get(), &document, 80, 0), 0);
-	std::string text = morph_buf_cstr_borrow(&document);
+	std::string text = nb_buf_cstr(&document);
 	EXPECT_LT(text.find("FIRST_USER"), text.find("BEFORE_TOOL"));
 	EXPECT_LT(text.find("BEFORE_TOOL"), text.find("FIRST_FILE"));
 	EXPECT_LT(text.find("FIRST_FILE"), text.find("AFTER_TOOL"));
 	EXPECT_LT(text.find("AFTER_TOOL"), text.find("FOLLOWUP_USER"));
 	EXPECT_LT(text.find("FOLLOWUP_USER"), text.find("SECOND_FILE"));
-	EXPECT_EQ(thread->transcript->tools.nelts, 2u);
+	EXPECT_EQ(thread->transcript->tools.len, 2u);
 }
 
 TEST(CliSubagentsTest, ReplayFrontierDropsQueuedDuplicatesAndOtherThreads)
@@ -281,10 +288,9 @@ TEST(CliSubagentsTest, ReplayFrontierDropsQueuedDuplicatesAndOtherThreads)
   }
 })"),
 		  0);
-	ASSERT_EQ(thread->segments.nelts, 1u);
-	auto *segment =
-		static_cast<cli_subagents_segment *>(morph_array_borrow(&thread->segments, 0));
-	EXPECT_STREQ(morph_buf_cstr_borrow(&segment->text), "甲乙丙");
+	ASSERT_EQ(thread->segments.len, 1u);
+	auto *segment = static_cast<cli_subagents_segment *>(nb_vec_at(&thread->segments, 0));
+	EXPECT_STREQ(nb_buf_cstr(&segment->text), "甲乙丙");
 	EXPECT_EQ(thread->sequence, 21);
 }
 
@@ -294,7 +300,7 @@ TEST(CliSubagentsTest, ClosedViewerCannotPollutePrimaryTranscriptWithScopedCallb
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	ctx.presentation_ready = 1;
 	ASSERT_EQ(cli_transcript_model_create(&ctx.transcript), 0);
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(R"({
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(R"({
 		"agent_id":"/root/child","agent_event_sequence":1,"tool":"file_read",
 		"tool_call_id":"same","args":{"file_path":"foreign"}})");
 	struct morph_event event{};
@@ -305,7 +311,7 @@ TEST(CliSubagentsTest, ClosedViewerCannotPollutePrimaryTranscriptWithScopedCallb
 	EXPECT_EQ(cli_presentation_event(&ctx, &event), 0);
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_TRUE(output.empty());
-	EXPECT_EQ(ctx.transcript->tools.nelts, 0u);
+	EXPECT_EQ(ctx.transcript->tools.len, 0u);
 	cli_transcript_model_destroy(ctx.transcript);
 }
 
@@ -314,7 +320,7 @@ TEST(CliSubagentsTest, LargeMessagesRetainCompleteUtf8Tail)
 	auto thread = make_thread("/root/worker");
 	std::string text(20000, 'x');
 	text += "\n尾部_SENTINEL";
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	cJSON_AddStringToObject(data, "agent_id", "/root/worker");
 	cJSON_AddNumberToObject(data, "agent_event_sequence", 1);
 	cJSON_AddStringToObject(data, "text", text.c_str());
@@ -326,10 +332,12 @@ TEST(CliSubagentsTest, LargeMessagesRetainCompleteUtf8Tail)
 	struct cli_application ctx{};
 	ctx.output.color_disabled = 1;
 	for (int columns : {120, 80, 60}) {
-		morph_buf_t document MORPH_CLEANUP(morph_buf_cleanup) = {};
-		ASSERT_EQ(morph_buf_init(&document, 1024), 0);
+		nb_buf document NB_CLEANUP(nb_buf_cleanup) = {};
+		ASSERT_EQ((nb_buf_init(&document),
+			   nb_buf_reserve(&document, 1024) ? 0 : NB_ERR_NOMEM),
+			  0);
 		ASSERT_EQ(cli_subagents_transcript(&ctx, thread.get(), &document, columns, 0), 0);
-		EXPECT_NE(strstr(morph_buf_cstr_borrow(&document), "尾部_SENTINEL"), nullptr);
+		EXPECT_NE(strstr(nb_buf_cstr(&document), "尾部_SENTINEL"), nullptr);
 	}
 }
 
@@ -346,12 +354,11 @@ TEST(CliSubagentsTest, NonstreamedCommentsAndFinalOnlyResponsesRemainVisible)
 	};
 	for (const char *event : events)
 		ASSERT_EQ(cli_subagents_thread_replay(thread.get(), event), 0);
-	ASSERT_EQ(thread->segments.nelts, 3u);
-	auto *first =
-		static_cast<cli_subagents_segment *>(morph_array_borrow(&thread->segments, 0));
-	auto *last = static_cast<cli_subagents_segment *>(morph_array_borrow(&thread->segments, 2));
-	EXPECT_STREQ(morph_buf_cstr_borrow(&first->text), "Nonstreamed comment");
-	EXPECT_STREQ(morph_buf_cstr_borrow(&last->text), "Final-only response");
+	ASSERT_EQ(thread->segments.len, 3u);
+	auto *first = static_cast<cli_subagents_segment *>(nb_vec_at(&thread->segments, 0));
+	auto *last = static_cast<cli_subagents_segment *>(nb_vec_at(&thread->segments, 2));
+	EXPECT_STREQ(nb_buf_cstr(&first->text), "Nonstreamed comment");
+	EXPECT_STREQ(nb_buf_cstr(&last->text), "Final-only response");
 }
 
 class SubagentsColumns
@@ -380,10 +387,10 @@ class SubagentsColumns
 static int subagents_text_event(struct cli_subagents_thread *thread, const char *name,
 				const char *text)
 {
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	if (!data || !cJSON_AddStringToObject(data, "agent_id", thread->id) ||
 	    !cJSON_AddStringToObject(data, "text", text))
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	struct morph_event event{};
 	event.name = name;
 	event.type = MORPH_EVENT_REACT;
@@ -391,18 +398,18 @@ static int subagents_text_event(struct cli_subagents_thread *thread, const char 
 	return cli_subagents_thread_event(thread, &event);
 }
 
-static std::string subagents_plain(const morph_buf_t &document)
+static std::string subagents_plain(const nb_buf &document)
 {
-	char *plain MORPH_CLEANUP(morph_charp_cleanup) =
-		utf8_strip_ansi_dup(morph_buf_cstr_borrow(&document), document.len, nullptr);
+	char *plain NB_CLEANUP(nb_charp_cleanup) =
+		morph_terminal_strip_ansi_dup(nb_buf_cstr(&document), document.len, nullptr);
 	return plain ? plain : "";
 }
 
-static void subagents_expect_sgr_rows(const morph_buf_t &document, int columns,
+static void subagents_expect_sgr_rows(const nb_buf &document, int columns,
 				      bool full_background = false)
 {
-	std::string text = morph_buf_cstr_borrow(&document);
-	EXPECT_EQ(utf8valid(text.c_str()), nullptr);
+	std::string text = nb_buf_cstr(&document);
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(text.c_str()), NULL), NB_UTF8_OK);
 	for (size_t offset = 0; offset < text.size(); offset++) {
 		if (text[offset] != '\033')
 			continue;
@@ -416,7 +423,7 @@ static void subagents_expect_sgr_rows(const morph_buf_t &document, int columns,
 	std::istringstream lines(text);
 	std::string line;
 	while (std::getline(lines, line)) {
-		EXPECT_LE(utf8_display_width_ansi(line.c_str()),
+		EXPECT_LE(morph_terminal_display_width_ansi(line.c_str()),
 			  static_cast<size_t>(full_background ? columns : columns - 1));
 		if (!line.empty()) {
 			EXPECT_EQ(line.find("\033[0m"), 0u);
@@ -437,10 +444,10 @@ TEST(CliSubagentsTest, UserBlocksMatchThePrimaryFeedWithoutCaptureOrCursorContro
 	testing::internal::CaptureStdout();
 	cli_presentation_user_input(&ctx, text);
 	std::string primary = testing::internal::GetCapturedStdout();
-	morph_buf_t document MORPH_CLEANUP(morph_buf_cleanup) = {};
-	ASSERT_EQ(morph_buf_init(&document, 256), 0);
+	nb_buf document NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ((nb_buf_init(&document), nb_buf_reserve(&document, 256) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(cli_subagents_transcript(&ctx, thread.get(), &document, 80, 0), 0);
-	EXPECT_EQ(primary, morph_buf_cstr_borrow(&document));
+	EXPECT_EQ(primary, nb_buf_cstr(&document));
 	EXPECT_NE(primary.find("\033[48;5;237m"), std::string::npos);
 	EXPECT_NE(primary.find("» "), std::string::npos);
 	EXPECT_EQ(primary.find("\033[31m"), std::string::npos);
@@ -455,7 +462,7 @@ TEST(CliSubagentsTest, PlanUpdatesUseTheSameWidgetAndBoundaryAsThePrimaryFeed)
 	ASSERT_EQ(cli_subagents_thread_create("/root/reader", &owner), 0);
 	SubagentThread thread(owner, cli_subagents_thread_destroy);
 	ASSERT_EQ(subagents_text_event(thread.get(), "react.content.end", "BEFORE_PLAN"), 0);
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(
 		R"({"agent_id":"/root/reader","plans":[{"steps":[
 		{"description":"Inspect parser","status":"in_progress"}]}]})");
 	ASSERT_NE(data, nullptr);
@@ -468,7 +475,7 @@ TEST(CliSubagentsTest, PlanUpdatesUseTheSameWidgetAndBoundaryAsThePrimaryFeed)
 	struct cli_application ctx{};
 	cli_output_set_color_enabled(&ctx, 0);
 	for (int columns : {120, 80, 60}) {
-		morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {};
+		nb_buf out NB_CLEANUP(nb_buf_cleanup) = {};
 		ASSERT_EQ(cli_subagents_transcript(&ctx, thread.get(), &out, columns, 0), 0);
 		std::string text = subagents_plain(out);
 		EXPECT_NE(text.find("BEFORE_PLAN\n\n◉ Plan · 0/1 completed\n└ ◉ Inspect parser\n\n"),
@@ -496,14 +503,19 @@ TEST(CliSubagentsTest, AssistantMarkdownUsesFeedStylesAndKeepsRootStreamsUntouch
 	presenter.markdown_stream_kind = 123;
 	presenter.markdown_stream_visible = 1;
 	presenter.reasoning_stream_offset = 7;
-	ASSERT_EQ(morph_buf_init(&presenter.markdown_stream_text, 32), 0);
-	ASSERT_EQ(morph_buf_puts(&presenter.markdown_stream_text, "ROOT_STREAM"), 0);
-	morph_buf_t captured MORPH_CLEANUP(morph_buf_cleanup) = {};
-	ASSERT_EQ(morph_buf_init(&captured, 32), 0);
-	ASSERT_EQ(morph_buf_puts(&captured, "ROOT_CAPTURE"), 0);
+	ASSERT_EQ((nb_buf_init(&presenter.markdown_stream_text),
+		   nb_buf_reserve(&presenter.markdown_stream_text, 32) ? 0 : NB_ERR_NOMEM),
+		  0);
+	ASSERT_EQ((nb_buf_append_cstr(&presenter.markdown_stream_text, "ROOT_STREAM")
+			   ? 0
+			   : NB_ERR_NOMEM),
+		  0);
+	nb_buf captured NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ((nb_buf_init(&captured), nb_buf_reserve(&captured, 32) ? 0 : NB_ERR_NOMEM), 0);
+	ASSERT_EQ((nb_buf_append_cstr(&captured, "ROOT_CAPTURE") ? 0 : NB_ERR_NOMEM), 0);
 	ctx.output.capture = &captured;
-	morph_buf_t document MORPH_CLEANUP(morph_buf_cleanup) = {};
-	ASSERT_EQ(morph_buf_init(&document, 256), 0);
+	nb_buf document NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ((nb_buf_init(&document), nb_buf_reserve(&document, 256) ? 0 : NB_ERR_NOMEM), 0);
 	testing::internal::CaptureStdout();
 	int rc = cli_subagents_transcript(&ctx, thread.get(), &document, 60, 0);
 	std::string leaked = testing::internal::GetCapturedStdout();
@@ -519,20 +531,20 @@ TEST(CliSubagentsTest, AssistantMarkdownUsesFeedStylesAndKeepsRootStreamsUntouch
 	EXPECT_EQ(plain.find("```"), std::string::npos);
 	EXPECT_EQ(plain.find("PAYLOAD"), std::string::npos);
 	EXPECT_EQ(plain.find("Assistant\n"), std::string::npos);
-	EXPECT_NE(strstr(morph_buf_cstr_borrow(&document), "\033[1m"), nullptr);
-	EXPECT_NE(strstr(morph_buf_cstr_borrow(&document), "\033[38;"), nullptr);
+	EXPECT_NE(strstr(nb_buf_cstr(&document), "\033[1m"), nullptr);
+	EXPECT_NE(strstr(nb_buf_cstr(&document), "\033[38;"), nullptr);
 	subagents_expect_sgr_rows(document, 60);
 	EXPECT_EQ(ctx.output.capture, &captured);
 	EXPECT_EQ(ctx.output.capture_styled, 1);
 	EXPECT_EQ(ctx.output.capture_history, 1);
 	EXPECT_EQ(ctx.output.trailing_newlines, 1);
 	EXPECT_EQ(ctx.output.command_result_pending, 1);
-	EXPECT_STREQ(morph_buf_cstr_borrow(&captured), "ROOT_CAPTURE");
+	EXPECT_STREQ(nb_buf_cstr(&captured), "ROOT_CAPTURE");
 	EXPECT_EQ(presenter.markdown_stream_kind, 123);
 	EXPECT_EQ(presenter.markdown_stream_visible, 1);
 	EXPECT_EQ(presenter.reasoning_stream_offset, 7u);
-	EXPECT_STREQ(morph_buf_cstr_borrow(&presenter.markdown_stream_text), "ROOT_STREAM");
-	morph_buf_cleanup(&presenter.markdown_stream_text);
+	EXPECT_STREQ(nb_buf_cstr(&presenter.markdown_stream_text), "ROOT_STREAM");
+	nb_buf_cleanup(&presenter.markdown_stream_text);
 }
 
 TEST(CliSubagentsTest, CompactToolsReuseTheFeedAndDetailsRetainFullArgumentsAndResults)
@@ -548,18 +560,18 @@ TEST(CliSubagentsTest, CompactToolsReuseTheFeedAndDetailsRetainFullArgumentsAndR
 		"result":"{\"ok\":true,\"data\":{\"content\":\"FIRST_LINE\\nSECOND_LINE\\nTHIRD_LINE\\nRESULT_TAIL\"}}"}})"),
 		  0);
 	struct cli_application ctx{};
-	morph_buf_t compact MORPH_CLEANUP(morph_buf_cleanup) = {};
-	morph_buf_t details MORPH_CLEANUP(morph_buf_cleanup) = {};
-	ASSERT_EQ(morph_buf_init(&compact, 256), 0);
-	ASSERT_EQ(morph_buf_init(&details, 256), 0);
+	nb_buf compact NB_CLEANUP(nb_buf_cleanup) = {};
+	nb_buf details NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ((nb_buf_init(&compact), nb_buf_reserve(&compact, 256) ? 0 : NB_ERR_NOMEM), 0);
+	ASSERT_EQ((nb_buf_init(&details), nb_buf_reserve(&details, 256) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(cli_subagents_transcript(&ctx, thread.get(), &compact, 80, 0), 0);
-	auto *tool = static_cast<const cli_transcript_tool *>(
-		morph_array_borrow(&thread->transcript->tools, 0));
+	auto *tool =
+		static_cast<const cli_transcript_tool *>(nb_vec_at(&thread->transcript->tools, 0));
 	ASSERT_NE(tool, nullptr);
 	testing::internal::CaptureStdout();
 	cli_transcript_render_tool(&ctx, tool, 1);
 	std::string primary = testing::internal::GetCapturedStdout();
-	EXPECT_EQ(primary, morph_buf_cstr_borrow(&compact));
+	EXPECT_EQ(primary, nb_buf_cstr(&compact));
 	std::string plain = subagents_plain(compact);
 	EXPECT_NE(plain.find("src/example.c"), std::string::npos);
 	EXPECT_NE(plain.find("FIRST_LINE"), std::string::npos);
@@ -585,20 +597,23 @@ TEST(CliSubagentsTest, ReasoningIsQuietByDefaultAndFullyScrollableInDetailsWitho
 	struct cli_application ctx{};
 	ctx.output.color_disabled = 1;
 	for (int width : {120, 80, 60}) {
-		morph_buf_t compact MORPH_CLEANUP(morph_buf_cleanup) = {};
-		morph_buf_t details MORPH_CLEANUP(morph_buf_cleanup) = {};
-		ASSERT_EQ(morph_buf_init(&compact, 256), 0);
-		ASSERT_EQ(morph_buf_init(&details, 1024), 0);
+		nb_buf compact NB_CLEANUP(nb_buf_cleanup) = {};
+		nb_buf details NB_CLEANUP(nb_buf_cleanup) = {};
+		ASSERT_EQ((nb_buf_init(&compact), nb_buf_reserve(&compact, 256) ? 0 : NB_ERR_NOMEM),
+			  0);
+		ASSERT_EQ(
+			(nb_buf_init(&details), nb_buf_reserve(&details, 1024) ? 0 : NB_ERR_NOMEM),
+			0);
 		ASSERT_EQ(cli_subagents_transcript(&ctx, thread.get(), &compact, width, 0), 0);
-		EXPECT_NE(strstr(compact.data, "Check dependencies first."), nullptr);
-		EXPECT_EQ(strstr(compact.data, "REASONING_TAIL"), nullptr);
-		EXPECT_EQ(strstr(compact.data, "Reasoning\n"), nullptr);
+		EXPECT_NE(strstr(compact.ptr, "Check dependencies first."), nullptr);
+		EXPECT_EQ(strstr(compact.ptr, "REASONING_TAIL"), nullptr);
+		EXPECT_EQ(strstr(compact.ptr, "Reasoning\n"), nullptr);
 		ASSERT_EQ(cli_subagents_transcript(&ctx, thread.get(), &details, width, 1), 0);
-		EXPECT_NE(strstr(details.data, "REASONING_TAIL"), nullptr);
-		EXPECT_EQ(strchr(details.data, '\033'), nullptr);
-		EXPECT_EQ(utf8valid(details.data), nullptr);
+		EXPECT_NE(strstr(details.ptr, "REASONING_TAIL"), nullptr);
+		EXPECT_EQ(strchr(details.ptr, '\033'), nullptr);
+		EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(details.ptr), NULL), NB_UTF8_OK);
 		size_t emoji_count = 0;
-		std::string full = details.data;
+		std::string full = details.ptr;
 		for (size_t offset = 0; (offset = full.find("🙂", offset)) != std::string::npos;
 		     offset += strlen("🙂"))
 			emoji_count++;

@@ -1,4 +1,5 @@
 #include "runtime/usage.h"
+#include "nb/err.h"
 #include "models/llm.h"
 
 #include "cJSON.h"
@@ -83,7 +84,7 @@ int runtime_record_model_usage_with_credits(struct db *db, const struct config_c
 	int rc;
 
 	if (!db || !credits || !user_id || !session_id || !usage)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!runtime_model_usage_is_billable(usage))
 		return 0;
 	metadata = runtime_model_usage_metadata_copy(usage);
@@ -109,7 +110,7 @@ int runtime_record_model_usage_for_user(struct db *db, const struct config *conf
 					const struct model_usage *usage)
 {
 	if (!config)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return runtime_record_model_usage_with_credits(db, &config->credits, user_id, session_id,
 						       usage, config->models.text.provider,
 						       config->models.text.model);

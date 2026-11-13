@@ -1,9 +1,11 @@
 #include "database.h"
-#include "util/log.h"
-#include "util/error.h"
-#include "util/buf.h"
-#include "util/cleanup.h"
-#include "util/utf8.h"
+#include "error_migration.h"
+#include "nb/log.h"
+#include "errors.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -368,30 +370,31 @@ static void db_text_contains(sqlite3_context *context, int count, sqlite3_value 
 	(void)count;
 	const char *text = (const char *)sqlite3_value_text(values[0]);
 	const char *query = (const char *)sqlite3_value_text(values[1]);
-	char *folded_text MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	char *folded_query MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	nb_buf folded_text NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf folded_query NB_CLEANUP(nb_buf_destroy) = {0};
 
 	if (!text || !query) {
 		sqlite3_result_int(context, 0);
 		return;
 	}
-	if (utf8valid(text) || utf8valid(query)) {
+	if (nb_utf8_validate(nb_str_from_cstr(text), NULL) ||
+	    nb_utf8_validate(nb_str_from_cstr(query), NULL)) {
 		sqlite3_result_error(context, "Invalid UTF-8 text", -1);
 		return;
 	}
-	folded_text = utf8_casefold_copy(text);
-	folded_query = utf8_casefold_copy(query);
-	if (!folded_text || !folded_query) {
+	if (nb_utf8_casefold(nb_str_from_cstr(text), &folded_text, NULL) != NB_OK ||
+	    nb_utf8_casefold(nb_str_from_cstr(query), &folded_query, NULL) != NB_OK) {
 		sqlite3_result_error_nomem(context);
 		return;
 	}
-	sqlite3_result_int(context, strstr(folded_text, folded_query) != NULL);
+	sqlite3_result_int(context,
+			   strstr(nb_buf_cstr(&folded_text), nb_buf_cstr(&folded_query)) != NULL);
 }
 
-int db_open(struct morph_log *logger, struct db *db, const char *path)
+int db_open(struct nb_log *logger, struct db *db, const char *path)
 {
 	if (!db || !path)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(db, 0, sizeof(*db));
 	db->logger = logger;
 	strncpy(db->path, path, sizeof(db->path) - 1);
@@ -399,10 +402,12 @@ int db_open(struct morph_log *logger, struct db *db, const char *path)
 		SQLITE_OPEN_FULLMUTEX;
 	int rc = sqlite3_open_v2(path, &db->handle, flags, NULL);
 	if (rc != SQLITE_OK) {
-		log_err(logger, "failed to open db %s: %s", path, sqlite3_errmsg(db->handle));
+		nb_log_write(logger, NB_LOG_ERROR, "failed to open db %s: %s", path,
+			     sqlite3_errmsg(db->handle));
 		sqlite3_close(db->handle);
 		db->handle = NULL;
-		return MORPH_TRACE_ERROR(logger, MORPH_ERR_DB);
+		return nb_err_trace(logger, MORPH_ERR_DB, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	}
 	rc = sqlite3_create_function_v2(db->handle, "morph_text_contains", 2,
 					SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, db_text_contains,
@@ -416,20 +421,20 @@ int db_open(struct morph_log *logger, struct db *db, const char *path)
 	sqlite3_exec(db->handle, "PRAGMA foreign_keys=ON;", NULL, NULL, NULL);
 	/* Multiple frontends and background workers may write this WAL database. */
 	sqlite3_busy_timeout(db->handle, 5000);
-	log_info(logger, "database opened: %s", path);
+	nb_log_write(logger, NB_LOG_INFO, "database opened: %s", path);
 	return 0;
 }
 
 int db_lock_acquire(struct db *db, struct db_lock *lock)
 {
 	if (!db || !db->handle || !lock)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (lock->mutex)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	sqlite3_mutex *mutex = sqlite3_db_mutex(db->handle);
 
 	if (!mutex)
-		return -ENOTSUP;
+		return NB_ERR_UNSUPPORTED;
 	sqlite3_mutex_enter(mutex);
 	lock->mutex = mutex;
 	return 0;
@@ -448,20 +453,21 @@ void db_close(struct db *db)
 	if (db && db->handle) {
 		sqlite3_close(db->handle);
 		db->handle = NULL;
-		log_info(db ? db->logger : NULL, "database closed: %s", db->path);
+		nb_log_write(db ? db->logger : NULL, NB_LOG_INFO, "database closed: %s", db->path);
 	}
 }
 
 int db_exec(struct db *db, const char *sql)
 {
 	if (!db || !db->handle || !sql)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	char *err = NULL;
 	int rc = sqlite3_exec(db->handle, sql, NULL, NULL, &err);
 	if (rc != SQLITE_OK) {
-		log_err(db ? db->logger : NULL, "db exec error: %s", err);
+		nb_log_write(db ? db->logger : NULL, NB_LOG_ERROR, "db exec error: %s", err);
 		sqlite3_free(err);
-		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
+		return nb_err_trace(db->logger, MORPH_ERR_DB, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	}
 	return 0;
 }
@@ -524,7 +530,8 @@ static int db_migrate_session_workdir(struct db *db)
 {
 	db_add_column_if_missing(db, "sessions", "workdir", "TEXT NOT NULL DEFAULT ''");
 	if (!db_table_has_column(db, "sessions", "workdir"))
-		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
+		return nb_err_trace(db->logger, MORPH_ERR_DB, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	return 0;
 }
 
@@ -547,13 +554,16 @@ static int db_migrate_memory_columns(struct db *db)
 	    !db_table_has_column(db, "memory_scopes", "content_revision") ||
 	    !db_table_has_column(db, "memory_jobs", "stage") ||
 	    !db_table_has_column(db, "memory_jobs", "content_revision"))
-		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
+		return nb_err_trace(db->logger, MORPH_ERR_DB, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	db_add_column_if_missing(db, "memory_episodes", "job_id", "INTEGER");
 	if (!db_table_has_column(db, "memory_episodes", "job_id"))
-		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
+		return nb_err_trace(db->logger, MORPH_ERR_DB, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	if (db_exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_episode_job "
 		"ON memory_episodes(job_id) WHERE job_id IS NOT NULL") != 0)
-		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
+		return nb_err_trace(db->logger, MORPH_ERR_DB, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	db_add_column_if_missing(db, "memory_facts", "category",
 				 "TEXT DEFAULT 'general'");
 	db_add_column_if_missing(db, "memory_facts", "importance",
@@ -617,13 +627,15 @@ static int db_retire_memory_receipts(struct db *db)
 		"SELECT 1 FROM schema_migrations WHERE version=2", -1, &stmt, NULL);
 
 	if (rc != SQLITE_OK)
-		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
+		return nb_err_trace(db->logger, MORPH_ERR_DB, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc == SQLITE_ROW)
 		return 0;
 	if (rc != SQLITE_DONE)
-		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
+		return nb_err_trace(db->logger, MORPH_ERR_DB, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	rc = db_exec(db, "SAVEPOINT retire_memory_receipts;");
 	if (rc != 0)
 		return rc;
@@ -643,7 +655,7 @@ static int db_retire_memory_receipts(struct db *db)
 int db_init_credit_schema(struct db *db)
 {
 	if (!db || !db->handle)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return db_exec(db, credit_schema_sql);
 }
 
@@ -676,21 +688,23 @@ static int db_init_memory_notes(struct db *db)
 	for (size_t table = 0; rc == 0 && table < sizeof(tables) / sizeof(tables[0]); table++) {
 		for (size_t event = 0; rc == 0 && event < sizeof(events) / sizeof(events[0]);
 		     event++) {
-			morph_buf_t sql MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			nb_buf sql NB_CLEANUP(nb_buf_cleanup) = {0};
 			const char *row = event == 2 ? "OLD" : "NEW";
 
-			rc = morph_buf_init(&sql, 512);
+			rc = (nb_buf_init(&sql), nb_buf_reserve(&sql, 512) ? 0 : NB_ERR_NOMEM);
 			if (rc == 0)
-				rc = morph_buf_printf(&sql,
-						      "CREATE TRIGGER IF NOT EXISTS "
-						      "%s_revision_%zu AFTER %s ON %s "
-						      "BEGIN UPDATE memory_scopes SET "
-						      "content_revision=content_revision+1 "
-						      "WHERE session_id=%s.session_id; END;",
-						      tables[table], event, events[event],
-						      tables[table], row);
+				rc = (nb_buf_printf(&sql,
+						    "CREATE TRIGGER IF NOT EXISTS "
+						    "%s_revision_%zu AFTER %s ON %s "
+						    "BEGIN UPDATE memory_scopes SET "
+						    "content_revision=content_revision+1 "
+						    "WHERE session_id=%s.session_id; END;",
+						    tables[table], event, events[event],
+						    tables[table], row)
+					      ? 0
+					      : NB_ERR_NOMEM);
 			if (rc == 0)
-				rc = db_exec(db, morph_buf_cstr_borrow(&sql));
+				rc = db_exec(db, nb_buf_cstr(&sql));
 		}
 	}
 	return rc;
@@ -699,7 +713,7 @@ static int db_init_memory_notes(struct db *db)
 int db_init_schema(struct db *db)
 {
 	if (!db || !db->handle)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int rc = db_exec(db, schema_sql);
 	if (rc != 0)
 		return rc;
@@ -711,7 +725,8 @@ int db_init_schema(struct db *db)
 		return rc;
 	db_add_column_if_missing(db, "agent_threads", "assignment_json", "TEXT");
 	if (!db_table_has_column(db, "agent_threads", "assignment_json"))
-		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
+		return nb_err_trace(db->logger, MORPH_ERR_DB, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	rc = db_exec(db, sub_agent_schema_sql);
 	if (rc != 0)
 		return rc;
@@ -724,7 +739,8 @@ int db_init_schema(struct db *db)
 	db_add_column_if_missing(db, "model_history_items",
 		"idempotency_key", "TEXT");
 	if (!db_table_has_column(db, "model_history_items", "idempotency_key"))
-		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
+		return nb_err_trace(db->logger, MORPH_ERR_DB, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	rc = db_exec(db,
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_model_history_idempotency "
 		"ON model_history_items(session_id,idempotency_key) "
@@ -759,6 +775,9 @@ int db_init_schema(struct db *db)
 	if (rc != 0)
 		return rc;
 	rc = db_init_credit_schema(db);
+	if (rc != 0)
+		return rc;
+	rc = db_migrate_error_codes(db);
 	if (rc != 0)
 		return rc;
 	return db_exec(db, schema_baseline_sql);

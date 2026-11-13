@@ -1,11 +1,12 @@
 #include "file_list.h"
 #include "agent/tool_context.h"
 #include "agent/tool_runtime.h"
-#include "util/array.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/error.h"
-#include "util/utf8.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "errors.h"
+#include "nb/utf8.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -51,13 +52,13 @@ static int entry_name_validate(const char *name)
 	size_t len = strlen(name);
 
 	if (len == 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	for (size_t pos = 0; pos < len;) {
 		unsigned cp;
 		size_t count;
 
-		if (!utf8_decode_codepoint(name + pos, len - pos, &cp, &count))
-			return -EILSEQ;
+		if (!nb_utf8_read(name + pos, len - pos, &cp, &count))
+			return NB_ERR_ENCODING;
 		pos += count;
 	}
 	return 0;
@@ -72,10 +73,10 @@ static int list_integer(cJSON *root, const char *key, size_t min,
 		return 0;
 	if (!cJSON_IsNumber(item) || !(item->valuedouble >= (double)min) ||
 	    !(item->valuedouble <= (double)max))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	size_t number = (size_t)item->valuedouble;
 	if ((double)number != item->valuedouble)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*value = number;
 	return 0;
 }
@@ -87,27 +88,27 @@ static int list_options_parse(cJSON *root, struct list_options *opts)
 
 	if (!cJSON_IsObject(root) || !cJSON_IsString(path) ||
 	    entry_name_validate(path->valuestring) < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	opts->path = path->valuestring;
 	opts->limit = FILE_LIST_DEFAULT_LIMIT;
 	opts->max_bytes = FILE_LIST_DEFAULT_BYTES;
 	if (list_integer(root, "limit", 1, FILE_LIST_MAX_LIMIT, &opts->limit) < 0 ||
 	    list_integer(root, "max_bytes", FILE_LIST_MIN_BYTES,
 			 FILE_LIST_MAX_BYTES, &opts->max_bytes) < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!after)
 		return 0;
 	cJSON *name = cJSON_GetObjectItemCaseSensitive(after, "name");
 	cJSON *type = cJSON_GetObjectItemCaseSensitive(after, "type");
 	if (!cJSON_IsObject(after) || !cJSON_IsString(name) || !cJSON_IsString(type))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	const char *kind = type->valuestring;
 	if (strcmp(kind, "dir") && strcmp(kind, "file") && strcmp(kind, "symlink") &&
 	    strcmp(kind, "fifo") && strcmp(kind, "socket") && strcmp(kind, "char") &&
 	    strcmp(kind, "block") && strcmp(kind, "unknown"))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (entry_name_validate(name->valuestring) < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	opts->after.name = name->valuestring;
 	opts->after.type = kind;
 	opts->has_after = 1;
@@ -130,7 +131,7 @@ static const char *entry_type(DIR *directory, const struct dirent *entry, int *e
 #endif
 	struct stat st;
 	if (fstatat(dirfd(directory), entry->d_name, &st, AT_SYMLINK_NOFOLLOW) < 0) {
-		*error = (-errno);
+		*error = (nb_status_from_errno(errno, NULL));
 		return NULL;
 	}
 	if (S_ISDIR(st.st_mode)) return "dir";
@@ -144,27 +145,27 @@ static const char *entry_type(DIR *directory, const struct dirent *entry, int *e
 }
 
 /* Keep only the first page-sized set in a max-heap: O(n log limit), O(limit) memory. */
-static int list_keep_entry(morph_array_t *items, const struct list_entry *entry, size_t capacity)
+static int list_keep_entry(nb_vec *items, const struct list_entry *entry, size_t capacity)
 {
 	size_t index;
-	struct list_entry *values = items->elts;
+	struct list_entry *values = ((void *)items->data);
 
-	if (items->nelts == capacity && entry_compare(entry, &values[0]) >= 0)
+	if (items->len == capacity && entry_compare(entry, &values[0]) >= 0)
 		return 0;
 	char *name = strdup(entry->name);
 	if (!name)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 
-	if (items->nelts < capacity) {
-		struct list_entry *slot = morph_array_push_borrow(items);
+	if (items->len < capacity) {
+		struct list_entry *slot = nb_vec_push(items);
 		if (!slot) {
 			free(name);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		*slot = *entry;
 		slot->name = name;
-		index = items->nelts - 1;
-		values = items->elts;
+		index = items->len - 1;
+		values = ((void *)items->data);
 		while (index > 0) {
 			size_t parent = (index - 1) / 2;
 			if (entry_compare(&values[parent], &values[index]) >= 0)
@@ -180,9 +181,9 @@ static int list_keep_entry(morph_array_t *items, const struct list_entry *entry,
 	values[0] = *entry;
 	values[0].name = name;
 	index = 0;
-	while (index * 2 + 1 < items->nelts) {
+	while (index * 2 + 1 < items->len) {
 		size_t child = index * 2 + 1;
-		if (child + 1 < items->nelts && entry_compare(&values[child + 1], &values[child]) > 0)
+		if (child + 1 < items->len && entry_compare(&values[child + 1], &values[child]) > 0)
 			child++;
 		if (entry_compare(&values[index], &values[child]) >= 0)
 			break;
@@ -195,8 +196,8 @@ static int list_keep_entry(morph_array_t *items, const struct list_entry *entry,
 }
 
 static int list_scan(DIR *directory, const struct list_options *opts,
-		     const struct http_control *control, morph_array_t *items,
-		     size_t *total, size_t *eligible)
+		     const struct http_control *control, nb_vec *items, size_t *total,
+		     size_t *eligible)
 {
 	for (;;) {
 		if ((*total % 64) == 0) {
@@ -208,7 +209,7 @@ static int list_scan(DIR *directory, const struct list_options *opts,
 		struct dirent *entry = readdir(directory);
 		if (!entry) {
 			if (errno)
-				return -errno;
+				return nb_status_from_errno(errno, NULL);
 			return 0;
 		}
 		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
@@ -245,18 +246,18 @@ static cJSON *list_entry_json(const struct list_entry *entry)
 	return item;
 }
 
-static int list_result(const struct list_options *opts, morph_array_t *items,
-		       size_t total, size_t eligible, struct tool_result *result)
+static int list_result(const struct list_options *opts, nb_vec *items, size_t total,
+		       size_t eligible, struct tool_result *result)
 {
-	cJSON *out MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *out NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	cJSON *entries = out ? cJSON_AddArrayToObject(out, "entries") : NULL;
 	size_t returned = 0;
 	size_t bytes = 2;
 
 	if (!entries)
-		return -ENOMEM;
-	qsort(items->elts, items->nelts, items->size, entry_compare);
-	for (size_t i = 0; i < items->nelts; i++) {
+		return NB_ERR_NOMEM;
+	qsort(((void *)items->data), items->len, items->elem_size, entry_compare);
+	for (size_t i = 0; i < items->len; i++) {
 		if ((i % 64) == 0) {
 			const struct http_control *control = result->runtime ?
 				&result->runtime->http : NULL;
@@ -265,51 +266,55 @@ static int list_result(const struct list_options *opts, morph_array_t *items,
 			if (rc < 0)
 				return rc;
 		}
-		const struct list_entry *entry = morph_array_borrow(items, i);
-		cJSON *item MORPH_CLEANUP(morph_json_cleanup) = list_entry_json(entry);
-		char *json MORPH_CLEANUP(morph_json_text_cleanup) =
+		const struct list_entry *entry = nb_vec_at(items, i);
+		cJSON *item NB_CLEANUP(cJSON_DeleteOwner) = list_entry_json(entry);
+		char *json NB_CLEANUP(cJSON_FreeTextOwner) =
 			item ? cJSON_PrintUnformatted(item) : NULL;
 
 		if (!json)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		size_t length = strlen(json) + (returned != 0);
 		if (bytes + length > opts->max_bytes) {
 			if (returned == 0)
-				return -EFBIG;
+				return NB_ERR_TOO_BIG;
 			break;
 		}
-		if (morph_json_array_take(entries, &item) != 0)
-			return -ENOMEM;
+		if ((cJSON_AddItemToArray(entries, item) ? (item = NULL, NB_OK) : NB_ERR_NOMEM) !=
+		    0)
+			return NB_ERR_NOMEM;
 		bytes += length;
 		returned++;
 	}
 	int more = returned < eligible;
-	cJSON *next MORPH_CLEANUP(morph_json_cleanup) = more && returned ?
-		list_entry_json(morph_array_borrow(items, returned - 1)) : cJSON_CreateNull();
+	cJSON *next NB_CLEANUP(cJSON_DeleteOwner) =
+		more && returned ? list_entry_json(nb_vec_at(items, returned - 1))
+				 : cJSON_CreateNull();
 
-	if (!next || morph_json_object_take(out, "next_after", &next) != 0)
-		return -ENOMEM;
+	if (!next || (cJSON_AddItemToObject(out, "next_after", next) ? (next = NULL, NB_OK)
+								     : NB_ERR_NOMEM) != 0)
+		return NB_ERR_NOMEM;
 	if (!cJSON_AddStringToObject(out, "dir_path", opts->path) ||
 	    !cJSON_AddNumberToObject(out, "total_entries", (double)total) ||
 	    !cJSON_AddNumberToObject(out, "returned_entries", (double)returned) ||
 	    !cJSON_AddBoolToObject(out, "truncated", more) ||
 	    !cJSON_AddStringToObject(out, "truncation_reason",
-		more ? (returned < items->nelts ? "max_bytes" : "limit") : ""))
-		return -ENOMEM;
+				     more ? (returned < items->len ? "max_bytes" : "limit") : ""))
+		return NB_ERR_NOMEM;
 	if (more && !cJSON_AddStringToObject(out, "note",
 		"Continue with after=next_after and the same dir_path. "
 		"Directory contents may change between pages."))
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	return tool_result_success_take(result, &out);
 }
 
-static void list_entries_cleanup(morph_array_t *items)
+static void list_entries_cleanup(nb_vec *items)
 {
 	struct list_entry *item;
 
-	morph_array_foreach(item, items, struct list_entry)
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(items) && (item = (struct list_entry *)nb_vec_at(items, _i_)); _i_++)
 		free(item->name);
-	morph_array_cleanup(items);
+	nb_vec_cleanup(items);
 }
 
 static void list_directory_cleanup(DIR **directory)
@@ -322,8 +327,8 @@ static void list_directory_cleanup(DIR **directory)
 static int list_execute(struct tool_context *tctx, const struct list_options *opts,
 			struct tool_result *result)
 {
-	morph_array_t items MORPH_CLEANUP(list_entries_cleanup) = {0};
-	DIR *directory MORPH_CLEANUP(list_directory_cleanup) = NULL;
+	nb_vec items NB_CLEANUP(list_entries_cleanup) = {0};
+	DIR *directory NB_CLEANUP(list_directory_cleanup) = NULL;
 	char resolved[PATH_MAX];
 	size_t total = 0;
 	size_t eligible = 0;
@@ -338,22 +343,23 @@ static int list_execute(struct tool_context *tctx, const struct list_options *op
 		if (rc < 0)
 			return rc;
 	} else if (strlen(opts->path) >= sizeof(resolved)) {
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	} else {
 		memcpy(resolved, opts->path, strlen(opts->path) + 1);
 	}
 	directory = opendir(resolved);
 	if (!directory)
-		return -errno;
+		return nb_status_from_errno(errno, NULL);
 	struct list_entry sample;
-	rc = morph_array_init(&items, opts->limit, sizeof(sample));
+	rc = (nb_vec_init(&items, sizeof(sample)),
+	      nb_vec_reserve(&items, opts->limit) ? 0 : NB_ERR_NOMEM);
 	if (rc < 0)
 		return rc;
 	rc = list_scan(directory, opts, control, &items, &total, &eligible);
 	if (rc == 0)
 		rc = http_wait_cancelable(control, 0);
 	if (closedir(directory) < 0 && rc == 0)
-		rc = -errno;
+		rc = nb_status_from_errno(errno, NULL);
 	directory = NULL;
 	if (rc == 0)
 		rc = list_result(opts, &items, total, eligible, result);
@@ -364,10 +370,10 @@ static int file_list_exec(const char *args_json, struct tool_result *result, voi
 {
 	struct tool_context *tctx = user_data;
 	struct list_options opts = {0};
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	root = args_json ? cJSON_Parse(args_json) : NULL;
 	int rc = list_options_parse(root, &opts);
 	if (rc < 0) {
@@ -379,11 +385,14 @@ static int file_list_exec(const char *args_json, struct tool_result *result, voi
 	}
 	rc = list_execute(tctx, &opts, result);
 	if (rc < 0) {
-		const char *message = rc == -EPERM ?
-			"list path outside workspace: permission denied" :
-			rc == -EFBIG ? "Directory entry exceeds max_bytes; increase max_bytes." :
-			rc == -EILSEQ ? "Directory contains a name that is not valid UTF-8." :
-			morph_strerror(rc);
+		const char *message =
+			rc == NB_ERR_NOT_PERMITTED
+				? "list path outside workspace: permission denied"
+			: rc == NB_ERR_TOO_BIG
+				? "Directory entry exceeds max_bytes; increase max_bytes."
+			: rc == NB_ERR_ENCODING
+				? "Directory contains a name that is not valid UTF-8."
+				: nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc);
 		(void)tool_result_error_copy(result, "file_list_failed", message);
 	}
 	return rc;
@@ -392,7 +401,7 @@ static int file_list_exec(const char *args_json, struct tool_result *result, voi
 int file_list_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return tool_register_borrow(
 		reg,
 		&(struct tool_spec){

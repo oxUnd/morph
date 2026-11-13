@@ -33,9 +33,11 @@ CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 Makefile
+!exts/read-lines/Makefile
 !exts/file-write/Makefile
 *.cmake.in
 !CMakeLists.txt
+!vendor/nothing/cmake/nbaseConfig.cmake.in
 
 # Dependencies (fetched by CMake)
 vendor/md4c/

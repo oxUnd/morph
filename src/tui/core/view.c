@@ -1,5 +1,5 @@
 #include "view_internal.h"
-#include "util/error.h"
+#include "errors.h"
 
 #include <limits.h>
 #include <stdlib.h>
@@ -13,7 +13,7 @@ void morph_tui_builder_fail(struct morph_tui_builder *builder, int error)
 
 int morph_tui_builder_error(const struct morph_tui_builder *builder)
 {
-	return builder ? builder->error : -EINVAL;
+	return builder ? builder->error : NB_ERR_INVAL;
 }
 
 static int core_view_insets_valid(struct morph_tui_view_insets insets)
@@ -56,13 +56,13 @@ struct morph_tui_view *morph_tui_view_add_borrow(struct morph_tui_builder *build
 		options ? *options : (struct morph_tui_view_options){0};
 
 	if (!morph_tui_application_is_owner(scope->app)) {
-		morph_tui_builder_fail(builder, -EPERM);
+		morph_tui_builder_fail(builder, NB_ERR_NOT_PERMITTED);
 		return NULL;
 	}
 	if (size < sizeof(*parent) || !core_view_options_valid(&opts) ||
 	    (parent && (!parent->state || parent->state->controller != builder->controller)) ||
 	    (!parent && scope->root)) {
-		morph_tui_builder_fail(builder, -EINVAL);
+		morph_tui_builder_fail(builder, NB_ERR_INVAL);
 		return NULL;
 	}
 	struct morph_tui_view *view = calloc(1, size);
@@ -71,7 +71,7 @@ struct morph_tui_view *morph_tui_view_add_borrow(struct morph_tui_builder *build
 	if (!view || !state) {
 		free(state);
 		free(view);
-		morph_tui_builder_fail(builder, -ENOMEM);
+		morph_tui_builder_fail(builder, NB_ERR_NOMEM);
 		return NULL;
 	}
 	view->ops = ops;
@@ -79,23 +79,24 @@ struct morph_tui_view *morph_tui_view_add_borrow(struct morph_tui_builder *build
 	state->controller = builder->controller;
 	state->parent = parent;
 	state->options = opts;
-	int rc = morph_array_init(&state->children, 4, sizeof(view));
-	struct morph_tui_view **slot = rc ? NULL : morph_array_push_borrow(&scope->views);
+	int rc = (nb_vec_init(&state->children, sizeof(view)),
+		  nb_vec_reserve(&state->children, 4) ? 0 : NB_ERR_NOMEM);
+	struct morph_tui_view **slot = rc ? NULL : nb_vec_push(&scope->views);
 
 	if (!slot) {
-		morph_array_cleanup(&state->children);
+		nb_vec_cleanup(&state->children);
 		free(state);
 		free(view);
-		morph_tui_builder_fail(builder, rc ? rc : -ENOMEM);
+		morph_tui_builder_fail(builder, rc ? rc : NB_ERR_NOMEM);
 		return NULL;
 	}
 	*slot = view;
 	if (parent) {
-		slot = morph_array_push_borrow(&parent->state->children);
+		slot = nb_vec_push(&parent->state->children);
 		if (slot)
 			*slot = view;
 		else
-			morph_tui_builder_fail(builder, -ENOMEM);
+			morph_tui_builder_fail(builder, NB_ERR_NOMEM);
 	} else {
 		scope->root = view;
 	}
@@ -112,13 +113,12 @@ struct morph_tui_view_controller *morph_tui_view_owner_borrow(const struct morph
 
 size_t morph_tui_view_child_count(const struct morph_tui_view *view)
 {
-	return view && view->state ? view->state->children.nelts : 0;
+	return view && view->state ? view->state->children.len : 0;
 }
 
 struct morph_tui_view *morph_tui_view_child_borrow(const struct morph_tui_view *view, size_t index)
 {
-	struct morph_tui_view **slot =
-		view ? morph_array_borrow(&view->state->children, index) : NULL;
+	struct morph_tui_view **slot = view ? nb_vec_at(&view->state->children, index) : NULL;
 
 	return slot ? *slot : NULL;
 }
@@ -126,12 +126,12 @@ struct morph_tui_view *morph_tui_view_child_borrow(const struct morph_tui_view *
 int morph_tui_view_clear_children(struct morph_tui_view *view)
 {
 	if (!view)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct morph_tui_view_controller_state *scope = view->state->controller->state;
-	for (size_t i = scope->views.nelts; i > 0; i--) {
-		struct morph_tui_view **slot = morph_array_borrow(&scope->views, i - 1);
+	for (size_t i = scope->views.len; i > 0; i--) {
+		struct morph_tui_view **slot = nb_vec_at(&scope->views, i - 1);
 		struct morph_tui_view *node = *slot;
 		struct morph_tui_view *ancestor = node->state->parent;
 		while (ancestor && ancestor != view)
@@ -148,13 +148,12 @@ int morph_tui_view_clear_children(struct morph_tui_view *view)
 			scope->mouse_target = NULL;
 		if (node->ops && node->ops->destroy)
 			node->ops->destroy(node);
-		morph_array_cleanup(&node->state->children);
+		nb_vec_cleanup(&node->state->children);
 		free(node->state);
 		free(node);
-		memmove(slot, slot + 1, (scope->views.nelts - i) * sizeof(*slot));
-		morph_array_pop(&scope->views);
+		nb_vec_remove(&scope->views, i - 1);
 	}
-	morph_array_clear(&view->state->children);
+	nb_vec_clear(&view->state->children);
 	scope->structure_revision++;
 	morph_tui_view_invalidate(view, 1);
 	return 0;
@@ -209,9 +208,9 @@ static int core_view_set_insets(struct morph_tui_view *view, struct morph_tui_vi
 				int padding)
 {
 	if (!view)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct morph_tui_view_options opts = view->state->options;
 	struct morph_tui_view_insets old = padding ? opts.padding : opts.margin;
 
@@ -220,7 +219,7 @@ static int core_view_set_insets(struct morph_tui_view *view, struct morph_tui_vi
 	else
 		opts.margin = insets;
 	if (!core_view_options_valid(&opts))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (old.top == insets.top && old.right == insets.right && old.bottom == insets.bottom &&
 	    old.left == insets.left)
 		return 0;
@@ -242,9 +241,9 @@ int morph_tui_view_set_padding(struct morph_tui_view *view, struct morph_tui_vie
 int morph_tui_view_set_style(struct morph_tui_view *view, struct morph_tui_text_style style)
 {
 	if (!view || !morph_tui_text_style_valid(style))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	if (!morph_tui_text_style_equal(view->state->options.style, style)) {
 		view->state->options.style = style;
 		morph_tui_view_invalidate(view, 0);
@@ -270,9 +269,9 @@ static int core_view_extent(int value, int minimum, int maximum)
 int morph_tui_view_measure(struct morph_tui_view *view, int width, struct morph_tui_view_size *size)
 {
 	if (!view || !size || width < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	*size = (struct morph_tui_view_size){0};
 	if (view->state->hidden)
 		return 0;
@@ -295,7 +294,7 @@ int morph_tui_view_measure(struct morph_tui_view *view, int width, struct morph_
 		return rc;
 	if (size->width < 0 || size->height < 0 || size->width > INT_MAX - padding_width ||
 	    size->height > INT_MAX - padding_height)
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	size->width += padding_width;
 	size->height += padding_height;
 	if (opts.width)
@@ -305,7 +304,7 @@ int morph_tui_view_measure(struct morph_tui_view *view, int width, struct morph_
 	size->width = core_view_extent(size->width, opts.min_width, opts.max_width);
 	size->height = core_view_extent(size->height, opts.min_height, opts.max_height);
 	if (size->width > INT_MAX - margin_width || size->height > INT_MAX - margin_height)
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	size->width += margin_width;
 	size->height += margin_height;
 	return 0;
@@ -314,11 +313,11 @@ int morph_tui_view_measure(struct morph_tui_view *view, int width, struct morph_
 int morph_tui_view_arrange(struct morph_tui_view *view, struct morph_tui_view_rect frame)
 {
 	if (!view || frame.x < 0 || frame.y < 0 || frame.width < 0 || frame.height < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (frame.x > INT_MAX - frame.width || frame.y > INT_MAX - frame.height)
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	view->state->frame = core_view_inset(frame, view->state->options.margin);
 	struct morph_tui_layout *manager = view->state->layout;
 
@@ -331,7 +330,7 @@ int morph_tui_view_arrange(struct morph_tui_view *view, struct morph_tui_view_re
 
 void morph_tui_view_invalidate(struct morph_tui_view *view, int layout)
 {
-	if (!view)
+	if (!view || !view->state->controller->state->visible)
 		return;
 	morph_tui_application_invalidate(view->state->controller->state->app,
 					 MORPH_TUI_INVALIDATE_DISPLAY |
@@ -346,9 +345,9 @@ int morph_tui_view_hidden(const struct morph_tui_view *view)
 int morph_tui_view_set_hidden(struct morph_tui_view *view, int hidden)
 {
 	if (!view)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	if (view->state->hidden == !!hidden)
 		return 0;
 	view->state->hidden = !!hidden;
@@ -372,9 +371,9 @@ int core_view_can_focus(const struct morph_tui_view *view)
 int morph_tui_view_set_focusable(struct morph_tui_view *view, int focusable)
 {
 	if (!view)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	if (view->state->focusable == !!focusable)
 		return 0;
 	view->state->focusable = !!focusable;
@@ -387,9 +386,9 @@ int morph_tui_view_set_focusable(struct morph_tui_view *view, int focusable)
 int morph_tui_view_focus(struct morph_tui_view *view)
 {
 	if (!core_view_can_focus(view))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	if (morph_tui_view_focused(view))
 		return 0;
 	view->state->controller->state->focus = view;
@@ -410,7 +409,7 @@ int core_view_focus_next(struct morph_tui_view_controller *controller, int backw
 	int found = scope->focus == NULL;
 
 	/* Walk the actual tree, including children attached after later siblings. */
-	for (size_t n = 0; view && n < scope->views.nelts; n++) {
+	for (size_t n = 0; view && n < scope->views.len; n++) {
 		if (core_view_can_focus(view)) {
 			if (!first)
 				first = view;
@@ -451,9 +450,9 @@ int core_view_focus_next(struct morph_tui_view_controller *controller, int backw
 int morph_tui_view_set_layout_borrow(struct morph_tui_view *view, struct morph_tui_layout *layout)
 {
 	if (!view || (layout && !layout->ops))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	view->state->layout = layout;
 	morph_tui_view_invalidate(view, 1);
 	return 0;
@@ -520,21 +519,21 @@ int core_view_draw(struct morph_tui_view *view, struct morph_tui_canvas *parent)
 	children.right = content.right;
 	children.bottom = content.bottom;
 	children.y -= view->state->scroll_y;
-	for (size_t i = 0; i < view->state->children.nelts && !rc; i++)
+	for (size_t i = 0; i < view->state->children.len && !rc; i++)
 		rc = core_view_draw(morph_tui_view_child_borrow(view, i), &children);
 	return rc;
 }
 
 void core_view_scope_destroy(struct morph_tui_view_controller *controller)
 {
-	for (size_t i = controller->state->views.nelts; i > 0; i--) {
-		struct morph_tui_view **slot = morph_array_borrow(&controller->state->views, i - 1);
+	for (size_t i = controller->state->views.len; i > 0; i--) {
+		struct morph_tui_view **slot = nb_vec_at(&controller->state->views, i - 1);
 
 		if ((*slot)->ops && (*slot)->ops->destroy)
 			(*slot)->ops->destroy(*slot);
-		morph_array_cleanup(&(*slot)->state->children);
+		nb_vec_cleanup(&(*slot)->state->children);
 		free((*slot)->state);
 		free(*slot);
 	}
-	morph_array_cleanup(&controller->state->views);
+	nb_vec_cleanup(&controller->state->views);
 }

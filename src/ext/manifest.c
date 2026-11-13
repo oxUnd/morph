@@ -1,62 +1,65 @@
 #include "manifest.h"
-#include "util/log.h"
-#include "util/error.h"
-#include "util/cleanup.h"
-#include "util/utf8.h"
+#include "nb/log.h"
+#include "errors.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
 #include <limits.h>
-#include "tomlc17.h"
+#include "nb/toml.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static int manifest_string_valid(toml_datum_t value)
+static int manifest_string_valid(const nb_toml_value *value)
 {
-	if (value.type != TOML_STRING || value.u.str.len < 0)
-		return -EINVAL;
-	size_t len = (size_t)value.u.str.len;
-	if (memchr(value.u.s, '\0', len) || utf8nvalid(value.u.s, len))
-		return -EILSEQ;
+	if (nb_toml_type_of(value) != NB_TOML_STRING || false)
+		return NB_ERR_INVAL;
+	size_t len = (size_t)nb_toml_string(value).len;
+	if (memchr(nb_toml_string(value).ptr, '\0', len) ||
+	    nb_utf8_validate(nb_str_from_parts(nb_toml_string(value).ptr, len), NULL))
+		return NB_ERR_ENCODING;
 	return 0;
 }
 
-static int manifest_string_copy(struct morph_log *logger, toml_datum_t value, const char *key,
+static int manifest_string_copy(struct nb_log *logger, const nb_toml_value *value, const char *key,
 				char *destination, size_t capacity)
 {
 	int rc;
 
-	if (value.type == TOML_UNKNOWN)
+	if (nb_toml_type_of(value) == NB_TOML_NONE)
 		return 0;
 	rc = manifest_string_valid(value);
-	if (rc == 0 && (size_t)value.u.str.len >= capacity)
-		rc = -E2BIG;
+	if (rc == 0 && (size_t)nb_toml_string(value).len >= capacity)
+		rc = NB_ERR_TOO_BIG;
 	if (rc != 0) {
-		log_err(logger, "manifest field '%s' must be valid UTF-8 within %zu bytes: %s",
-			key, capacity - 1, morph_strerror(rc));
+		nb_log_write(logger, NB_LOG_ERROR,
+			     "manifest field '%s' must be valid UTF-8 within %zu bytes: %s", key,
+			     capacity - 1,
+			     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
-	memcpy(destination, value.u.s, (size_t)value.u.str.len + 1);
+	memcpy(destination, nb_toml_string(value).ptr, (size_t)nb_toml_string(value).len + 1);
 	return 0;
 }
 
-static int parse_string_list(toml_datum_t arr, char ***out_list, int *out_count)
+static int parse_string_list(const nb_toml_value *arr, char ***out_list, int *out_count)
 {
-	if (arr.type != TOML_ARRAY || arr.u.arr.size <= 0)
+	if (nb_toml_type_of(arr) != NB_TOML_ARRAY || nb_toml_array_size(arr) <= 0)
 		return 0;
-	int n = arr.u.arr.size;
+	size_t n = nb_toml_array_size(arr);
 	char **list = calloc((size_t)n, sizeof(*list));
 	if (!list)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	*out_list = list;
 	*out_count = 0;
-	for (int i = 0; i < n; i++) {
-		toml_datum_t value = arr.u.arr.elem[i];
+	for (size_t i = 0; i < n; i++) {
+		const nb_toml_value *value = nb_toml_array_get(arr, (size_t)(i));
 		int rc = manifest_string_valid(value);
 		if (rc != 0)
 			return rc;
-		list[*out_count] = strdup(value.u.s);
+		list[*out_count] = strdup(nb_toml_string(value).ptr);
 		if (!list[*out_count])
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		(*out_count)++;
 	}
 	return 0;
@@ -75,7 +78,7 @@ static enum ext_purpose parse_purpose(const char *s)
 	return EXT_PURPOSE_TOOL;
 }
 
-static int parse_sandbox_capabilities(struct morph_log *logger, toml_datum_t arr,
+static int parse_sandbox_capabilities(struct nb_log *logger, const nb_toml_value *arr,
 				      unsigned int *permissions, int *named_filesystem)
 {
 	static const struct {
@@ -92,19 +95,22 @@ static int parse_sandbox_capabilities(struct morph_log *logger, toml_datum_t arr
 		{ "temporary_directory", EXT_PERM_TEMP },
 	};
 
-	if (arr.type == TOML_UNKNOWN)
+	if (nb_toml_type_of(arr) == NB_TOML_NONE)
 		return 0;
-	if (arr.type != TOML_ARRAY || !permissions)
-		return -EINVAL;
-	for (int i = 0; i < arr.u.arr.size; i++) {
-		toml_datum_t item = arr.u.arr.elem[i];
+	if (nb_toml_type_of(arr) != NB_TOML_ARRAY || !permissions)
+		return NB_ERR_INVAL;
+	for (size_t i = 0; i < nb_toml_array_size(arr); i++) {
+		const nb_toml_value *item = nb_toml_array_get(arr, (size_t)(i));
 		int found = 0;
 
-		if (item.type != TOML_STRING)
-			return -EINVAL;
+		if (nb_toml_type_of(item) != NB_TOML_STRING)
+			return NB_ERR_INVAL;
+		int string_rc = manifest_string_valid(item);
+		if (string_rc != NB_OK)
+			return string_rc;
 		for (size_t j = 0; j < sizeof(capabilities) /
 					      sizeof(capabilities[0]); j++) {
-			if (strcmp(item.u.s, capabilities[j].name) == 0) {
+			if (strcmp(nb_toml_string(item).ptr, capabilities[j].name) == 0) {
 				*permissions |= capabilities[j].permission;
 				if (named_filesystem &&
 				    capabilities[j].permission == EXT_PERM_FILESYS)
@@ -114,8 +120,9 @@ static int parse_sandbox_capabilities(struct morph_log *logger, toml_datum_t arr
 			}
 		}
 		if (!found) {
-			log_err(logger, "unknown sandbox capability: %s", item.u.s);
-			return -EINVAL;
+			nb_log_write(logger, NB_LOG_ERROR, "unknown sandbox capability: %s",
+				     nb_toml_string(item).ptr);
+			return NB_ERR_INVAL;
 		}
 	}
 	return 0;
@@ -141,24 +148,28 @@ static char *normalize_manifest_schema_copy(const char *schema, int is_output)
 	return strdup(schema);
 }
 
-static int manifest_parse_table(struct morph_log *logger, toml_datum_t tbl,
+static int manifest_parse_table(struct nb_log *logger, const nb_toml_value *tbl,
 				struct ext_manifest *out)
 {
 	int named_filesystem = 0;
 	int rc;
-	if (tbl.type != TOML_TABLE || !out)
-		return -EINVAL;
+	if (nb_toml_type_of(tbl) != NB_TOML_TABLE || !out)
+		return NB_ERR_INVAL;
 	memset(out, 0, sizeof(*out));
 
-#define MGET_INT(key, var) do { \
-	toml_datum_t _d = toml_get(tbl, key); \
-	if (_d.type == TOML_INT64) var = (int)_d.u.int64; \
-} while (0)
+#define MGET_INT(key, var)                                                                         \
+	do {                                                                                       \
+		const nb_toml_value *_d = nb_toml_table_get_cstr(tbl, key);                        \
+		if (nb_toml_type_of(_d) == NB_TOML_INTEGER)                                        \
+			var = (int)nb_toml_integer(_d);                                            \
+	} while (0)
 
-#define MGET_UINT(key, var) do { \
-	toml_datum_t _d = toml_get(tbl, key); \
-	if (_d.type == TOML_INT64) var = (unsigned int)_d.u.int64; \
-} while (0)
+#define MGET_UINT(key, var)                                                                        \
+	do {                                                                                       \
+		const nb_toml_value *_d = nb_toml_table_get_cstr(tbl, key);                        \
+		if (nb_toml_type_of(_d) == NB_TOML_INTEGER)                                        \
+			var = (unsigned int)nb_toml_integer(_d);                                   \
+	} while (0)
 
 	struct manifest_string_slot {
 		const char *key;
@@ -175,128 +186,139 @@ static int manifest_parse_table(struct morph_log *logger, toml_datum_t tbl,
 		{"action_text", out->action_text, sizeof(out->action_text)},
 	};
 	for (size_t i = 0; i < sizeof(strings) / sizeof(strings[0]); i++) {
-		rc = manifest_string_copy(logger, toml_get(tbl, strings[i].key), strings[i].key,
-					  strings[i].destination, strings[i].capacity);
+		rc = manifest_string_copy(logger, nb_toml_table_get_cstr(tbl, strings[i].key),
+					  strings[i].key, strings[i].destination,
+					  strings[i].capacity);
 		if (rc != 0)
 			return rc;
 	}
 	const char *resource_keys[] = {"max_memory_mb", "max_cpu_seconds", "max_open_files",
 				       "permissions"};
 	for (size_t i = 0; i < sizeof(resource_keys) / sizeof(resource_keys[0]); i++) {
-		toml_datum_t value = toml_get(tbl, resource_keys[i]);
+		const nb_toml_value *value = nb_toml_table_get_cstr(tbl, resource_keys[i]);
 		int64_t maximum = i == 3 ? UINT_MAX : INT_MAX;
-		if (value.type != TOML_UNKNOWN &&
-		    (value.type != TOML_INT64 || value.u.int64 < 0 || value.u.int64 > maximum)) {
-			log_err(logger, "manifest field '%s' is outside its supported "
-				"integer range",
-				resource_keys[i]);
-			return -ERANGE;
+		if (nb_toml_type_of(value) != NB_TOML_NONE &&
+		    (nb_toml_type_of(value) != NB_TOML_INTEGER || nb_toml_integer(value) < 0 ||
+		     nb_toml_integer(value) > maximum)) {
+			nb_log_write(logger, NB_LOG_ERROR,
+				     "manifest field '%s' is outside its supported "
+				     "integer range",
+				     resource_keys[i]);
+			return NB_ERR_RANGE;
 		}
 	}
 	if (!out->type[0])
 		strncpy(out->type, "exec", sizeof(out->type) - 1);
 
 	{
-		toml_datum_t pd = toml_get(tbl, "purpose");
-		out->purpose = parse_purpose(pd.type == TOML_STRING ? pd.u.s : NULL);
+		const nb_toml_value *pd = nb_toml_table_get_cstr(tbl, "purpose");
+		if (nb_toml_type_of(pd) == NB_TOML_STRING) {
+			rc = manifest_string_valid(pd);
+			if (rc != NB_OK)
+				return rc;
+		}
+		out->purpose = parse_purpose(
+			nb_toml_type_of(pd) == NB_TOML_STRING ? nb_toml_string(pd).ptr : NULL);
 	}
 
 	MGET_UINT("permissions", out->permissions);
 	{
-		toml_datum_t capabilities = toml_get(tbl,
-			"sandbox_capabilities");
+		const nb_toml_value *capabilities =
+			nb_toml_table_get_cstr(tbl, "sandbox_capabilities");
 		int capability_rc = parse_sandbox_capabilities(
 			logger, capabilities, &out->permissions, &named_filesystem);
 
 		if (capability_rc != 0)
 			return capability_rc;
 	}
-	toml_datum_t ap = toml_get(tbl, "allowed_paths");
+	const nb_toml_value *ap = nb_toml_table_get_cstr(tbl, "allowed_paths");
 	rc = parse_string_list(ap, &out->allowed_paths, &out->allowed_paths_count);
 	if (rc != 0)
 		return rc;
 	if (named_filesystem && out->allowed_paths_count == 0) {
-		log_err(logger, "filesystem capability requires allowed_paths");
-		return -EINVAL;
+		nb_log_write(logger, NB_LOG_ERROR, "filesystem capability requires allowed_paths");
+		return NB_ERR_INVAL;
 	}
 	MGET_INT("max_memory_mb", out->max_memory_mb);
 	MGET_INT("max_cpu_seconds", out->max_cpu_seconds);
 	MGET_INT("max_open_files", out->max_open_files);
 
-	toml_datum_t is = toml_get(tbl, "input_schema");
-	if (is.type != TOML_STRING)
-		is = toml_get(tbl, "args_schema");
-	if (is.type == TOML_STRING) {
+	const nb_toml_value *is = nb_toml_table_get_cstr(tbl, "input_schema");
+	if (nb_toml_type_of(is) != NB_TOML_STRING)
+		is = nb_toml_table_get_cstr(tbl, "args_schema");
+	if (nb_toml_type_of(is) == NB_TOML_STRING) {
 		rc = manifest_string_valid(is);
 		if (rc != 0)
 			return rc;
-		out->input_schema = normalize_manifest_schema_copy(is.u.s, 0);
+		out->input_schema = normalize_manifest_schema_copy(nb_toml_string(is).ptr, 0);
 	} else
 		out->input_schema = schema_default_input();
 
-	toml_datum_t os = toml_get(tbl, "output_schema");
-	if (os.type == TOML_STRING) {
+	const nb_toml_value *os = nb_toml_table_get_cstr(tbl, "output_schema");
+	if (nb_toml_type_of(os) == NB_TOML_STRING) {
 		rc = manifest_string_valid(os);
 		if (rc != 0)
 			return rc;
-		out->output_schema = normalize_manifest_schema_copy(os.u.s, 1);
+		out->output_schema = normalize_manifest_schema_copy(nb_toml_string(os).ptr, 1);
 	} else
 		out->output_schema = schema_default_output();
 
 	if (!out->input_schema || !out->output_schema)
-		return -ENOMEM;
-	toml_datum_t fronts = toml_get(tbl, "fronts");
+		return NB_ERR_NOMEM;
+	const nb_toml_value *fronts = nb_toml_table_get_cstr(tbl, "fronts");
 	rc = parse_string_list(fronts, &out->fronts, &out->fronts_count);
 	if (rc != 0)
 		return rc;
 
-	toml_datum_t cats = toml_get(tbl, "categories");
+	const nb_toml_value *cats = nb_toml_table_get_cstr(tbl, "categories");
 	rc = parse_string_list(cats, &out->categories, &out->categories_count);
 	if (rc != 0)
 		return rc;
 
-	toml_datum_t build = toml_get(tbl, "build");
-	if (build.type == TOML_TABLE) {
-		toml_datum_t cmd = toml_get(build, "command");
+	const nb_toml_value *build = nb_toml_table_get_cstr(tbl, "build");
+	if (nb_toml_type_of(build) == NB_TOML_TABLE) {
+		const nb_toml_value *cmd = nb_toml_table_get_cstr(build, "command");
 		rc = manifest_string_copy(logger, cmd, "build.command", out->build_command,
 					  sizeof(out->build_command));
 		if (rc != 0)
 			return rc;
 	}
 
-	toml_datum_t ae = toml_get(tbl, "allowed_env");
+	const nb_toml_value *ae = nb_toml_table_get_cstr(tbl, "allowed_env");
 	rc = parse_string_list(ae, &out->allowed_env, &out->allowed_env_count);
 	if (rc != 0)
 		return rc;
 
-	toml_datum_t am = toml_get(tbl, "allowed_mach_services");
+	const nb_toml_value *am = nb_toml_table_get_cstr(tbl, "allowed_mach_services");
 	rc = parse_string_list(am, &out->allowed_mach_services, &out->allowed_mach_services_count);
 	if (rc != 0)
 		return rc;
 
-	log_info(logger, "manifest parsed: name=%s type=%s purpose=%d", out->name, out->type,
-		 out->purpose);
+	nb_log_write(logger, NB_LOG_INFO, "manifest parsed: name=%s type=%s purpose=%d", out->name,
+		     out->type, out->purpose);
 	return 0;
 }
 
-int manifest_parse(struct morph_log *logger, const char *toml_data, struct ext_manifest *out)
+int manifest_parse(struct nb_log *logger, const char *toml_data, struct ext_manifest *out)
 {
+	nb_err parse_error = {0};
 	if (!toml_data || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (manifest_output_occupied(out))
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (strlen(toml_data) > INT_MAX)
-		return -EFBIG;
-	struct ext_manifest manifest MORPH_CLEANUP(ext_manifest_cleanup) = {0};
-	toml_result_t parsed = toml_parse(toml_data, (int)strlen(toml_data));
-	if (!parsed.ok) {
-		log_err(logger, "manifest parse error: %s", parsed.errmsg);
-		toml_free(parsed);
-		return MORPH_ERR_PARSE;
+		return NB_ERR_TOO_BIG;
+	struct ext_manifest manifest NB_CLEANUP(ext_manifest_cleanup) = {0};
+	nb_toml *parsed NB_CLEANUP(nb_toml_cleanup) =
+		nb_toml_parse(nb_str_from_cstr(toml_data), &parse_error);
+	if (!parsed) {
+		nb_log_write(logger, NB_LOG_ERROR, "manifest parse error: %s", parse_error.msg);
+		nb_toml_cleanup(&parsed);
+		return NB_ERR_PARSE;
 	}
 
-	int rc = manifest_parse_table(logger, parsed.toptab, &manifest);
-	toml_free(parsed);
+	int rc = manifest_parse_table(logger, nb_toml_root(parsed), &manifest);
+	nb_toml_cleanup(&parsed);
 	if (rc == 0) {
 		*out = manifest;
 		memset(&manifest, 0, sizeof(manifest));
@@ -304,30 +326,32 @@ int manifest_parse(struct morph_log *logger, const char *toml_data, struct ext_m
 	return rc;
 }
 
-int manifest_parse_file(struct morph_log *logger, const char *path, struct ext_manifest *out)
+int manifest_parse_file(struct nb_log *logger, const char *path, struct ext_manifest *out)
 {
+	nb_err parse_error = {0};
 	FILE *file;
-	toml_result_t parsed;
+	nb_toml *parsed NB_CLEANUP(nb_toml_cleanup) = NULL;
 	int rc;
 
 	if (!path || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (manifest_output_occupied(out))
-		return -EEXIST;
-	struct ext_manifest manifest MORPH_CLEANUP(ext_manifest_cleanup) = {0};
+		return NB_ERR_EXISTS;
+	struct ext_manifest manifest NB_CLEANUP(ext_manifest_cleanup) = {0};
 	file = fopen(path, "r");
 	if (!file)
-		return morph_error_from_errno(errno);
-	parsed = toml_parse_file(file);
+		return nb_status_from_errno(errno, NULL);
+	parsed = nb_toml_load(path, &parse_error);
 	fclose(file);
-	if (!parsed.ok) {
-		log_err(logger, "manifest parse error in %s: %s", path, parsed.errmsg);
-		toml_free(parsed);
-		return MORPH_ERR_PARSE;
+	if (!parsed) {
+		nb_log_write(logger, NB_LOG_ERROR, "manifest parse error in %s: %s", path,
+			     parse_error.msg);
+		nb_toml_cleanup(&parsed);
+		return NB_ERR_PARSE;
 	}
 
-	rc = manifest_parse_table(logger, parsed.toptab, &manifest);
-	toml_free(parsed);
+	rc = manifest_parse_table(logger, nb_toml_root(parsed), &manifest);
+	nb_toml_cleanup(&parsed);
 	if (rc == 0) {
 		*out = manifest;
 		memset(&manifest, 0, sizeof(manifest));

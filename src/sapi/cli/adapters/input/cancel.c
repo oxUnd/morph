@@ -1,4 +1,5 @@
 #include "sapi/cli/adapters/input/cancel.h"
+#include "nb/thread.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/event_queue.h"
@@ -12,8 +13,8 @@
 
 struct cli_cancel_monitor {
 	struct cli_application *ctx;
-	pthread_t thread;
-	volatile sig_atomic_t stop;
+	nb_thread *thread;
+	nb_atomic_int stop;
 	int fd;
 	struct termios saved_termios;
 };
@@ -42,7 +43,7 @@ static void *cli_cancel_monitor_thread(void *user_data)
 {
 	struct cli_cancel_monitor *monitor = user_data;
 
-	while (!morph_signal_flag_get(&monitor->stop)) {
+	while (!nb_atomic_int_load(&monitor->stop)) {
 		unsigned char ch;
 		ssize_t count = read(monitor->fd, &ch, sizeof(ch));
 
@@ -54,7 +55,7 @@ static void *cli_cancel_monitor_thread(void *user_data)
 		if (count == 0 || ch != 0x1b)
 			continue;
 		if (cli_cancel_escape_has_sequence_suffix(monitor->fd) ||
-		    morph_signal_flag_get(&monitor->stop))
+		    nb_atomic_int_load(&monitor->stop))
 			continue;
 		cli_request_cancel(monitor->ctx);
 		break;
@@ -66,7 +67,7 @@ void cli_request_cancel(struct cli_application *ctx)
 {
 	if (!ctx)
 		return;
-	morph_signal_flag_set(&ctx->interrupted, 1);
+	nb_atomic_int_store(&ctx->interrupted, 1);
 	runtime_cancel_turn(ctx->runtime);
 	cli_event_queue_notify(ctx);
 }
@@ -76,11 +77,11 @@ void cli_signal_received(int number, void *opaque)
 	struct cli_application *ctx = opaque;
 
 	if (number == SIGWINCH)
-		morph_signal_flag_set(&ctx->resized, 1);
+		nb_atomic_int_store(&ctx->resized, 1);
 	else {
-		morph_signal_flag_set(&ctx->interrupted, 1);
+		nb_atomic_int_store(&ctx->interrupted, 1);
 		if (number != SIGINT)
-			morph_signal_flag_set(&ctx->terminate_requested, 1);
+			nb_atomic_int_store(&ctx->terminate_requested, 1);
 	}
 	if (__atomic_load_n(&ctx->signals_ready, __ATOMIC_ACQUIRE)) {
 		if (number != SIGWINCH)
@@ -92,7 +93,7 @@ void cli_signal_received(int number, void *opaque)
 void cli_cancel_state_reset(struct cli_application *ctx)
 {
 	if (ctx)
-		morph_signal_flag_set(&ctx->interrupted, 0);
+		nb_atomic_int_store(&ctx->interrupted, 0);
 }
 
 struct cli_cancel_monitor *cli_cancel_monitor_start(struct cli_application *ctx, int fd)
@@ -119,7 +120,7 @@ struct cli_cancel_monitor *cli_cancel_monitor_start(struct cli_application *ctx,
 		free(monitor);
 		return NULL;
 	}
-	if (pthread_create(&monitor->thread, NULL, cli_cancel_monitor_thread, monitor) != 0) {
+	if (nb_thread_create(&monitor->thread, cli_cancel_monitor_thread, monitor, NULL) != 0) {
 		(void)tcsetattr(fd, TCSANOW, &monitor->saved_termios);
 		free(monitor);
 		return NULL;
@@ -131,8 +132,8 @@ void cli_cancel_monitor_stop(struct cli_cancel_monitor *monitor)
 {
 	if (!monitor)
 		return;
-	morph_signal_flag_set(&monitor->stop, 1);
-	(void)pthread_join(monitor->thread, NULL);
+	nb_atomic_int_store(&monitor->stop, 1);
+	(void)nb_thread_join_take(&monitor->thread, NULL);
 	(void)tcsetattr(monitor->fd, TCSANOW, &monitor->saved_termios);
 	free(monitor);
 }

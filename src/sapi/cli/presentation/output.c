@@ -1,4 +1,5 @@
 #include "sapi/cli/presentation/output.h"
+#include "nb/err.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/turn_details.h"
 #include "sapi/cli/services/command_job.h"
@@ -48,10 +49,10 @@ int cli_output_overlay_visible(const struct cli_application *ctx)
 	return cli_turn_details_is_visible(ctx);
 }
 
-int cli_output_capture_begin(struct cli_application *ctx, morph_buf_t *output)
+int cli_output_capture_begin(struct cli_application *ctx, nb_buf *output)
 {
 	if (!ctx || !output || ctx->output.capture)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	ctx->output.capture = output;
 	return 0;
 }
@@ -73,12 +74,12 @@ int cli_output_capture_write(struct cli_application *ctx, const char *bytes, siz
 	if (!ctx || !ctx->output.capture)
 		return 0;
 	if (ctx->output.capture_styled) {
-		rc = morph_buf_append(ctx->output.capture, bytes, len);
+		rc = (nb_buf_append(ctx->output.capture, bytes, len) ? 0 : NB_ERR_NOMEM);
 	} else {
-		safe = utf8_terminal_sanitize_dup(bytes, len, UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+		safe = morph_terminal_sanitize_dup(bytes, len, MORPH_TERMINAL_TEXT_MULTILINE, NULL);
 		if (!safe)
-			return -ENOMEM;
-		rc = morph_buf_puts(ctx->output.capture, safe);
+			return NB_ERR_NOMEM;
+		rc = (nb_buf_append_cstr(ctx->output.capture, safe) ? 0 : NB_ERR_NOMEM);
 		free(safe);
 	}
 	if (!rc && ctx->output.capture_history)
@@ -87,7 +88,7 @@ int cli_output_capture_write(struct cli_application *ctx, const char *bytes, siz
 }
 
 /* Only for renderers whose untrusted inputs have already been sanitized. */
-int cli_output_capture_styled_begin(struct cli_application *ctx, morph_buf_t *output)
+int cli_output_capture_styled_begin(struct cli_application *ctx, nb_buf *output)
 {
 	int rc = cli_output_capture_begin(ctx, output);
 
@@ -99,7 +100,7 @@ int cli_output_capture_styled_begin(struct cli_application *ctx, morph_buf_t *ou
 static int cli_output_capture_text(struct cli_application *ctx, const char *text)
 {
 	if (!ctx || !ctx->output.capture || !text)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int rc = cli_output_capture_write(ctx, text, strlen(text));
 	return rc < 0 ? rc : 0;
 }
@@ -119,12 +120,12 @@ static const unsigned char *cli_output_skip_control_string(const unsigned char *
 static int cli_output_write_visible_control(unsigned cp)
 {
 	if (cp == '\a')
-		return fputs("\\a", stdout) == EOF ? -EIO : 0;
+		return fputs("\\a", stdout) == EOF ? NB_ERR_IO : 0;
 	if (cp == '\b')
-		return fputs("\\b", stdout) == EOF ? -EIO : 0;
+		return fputs("\\b", stdout) == EOF ? NB_ERR_IO : 0;
 	if (cp <= 0xffu)
-		return fprintf(stdout, "\\x%02x", cp) < 0 ? -EIO : 0;
-	return fprintf(stdout, "\\u%04x", cp) < 0 ? -EIO : 0;
+		return fprintf(stdout, "\\x%02x", cp) < 0 ? NB_ERR_IO : 0;
+	return fprintf(stdout, "\\u%04x", cp) < 0 ? NB_ERR_IO : 0;
 }
 
 static int cli_output_write_terminal_safe(const char *src, int allow_sgr)
@@ -148,7 +149,7 @@ static int cli_output_write_terminal_safe(const char *src, int allow_sgr)
 					if (allow_sgr && cursor[-1] == 'm' &&
 					    fwrite(start, 1, (size_t)(cursor - start), stdout) !=
 						    (size_t)(cursor - start))
-						return -EIO;
+						return NB_ERR_IO;
 				}
 				continue;
 			}
@@ -166,9 +167,9 @@ static int cli_output_write_terminal_safe(const char *src, int allow_sgr)
 
 			if (cp == '\n' || cp == '\t') {
 				if (fputc((int)cp, stdout) == EOF)
-					return -EIO;
+					return NB_ERR_IO;
 			} else if (cli_output_write_visible_control(cp) != 0) {
-				return -EIO;
+				return NB_ERR_IO;
 			}
 			continue;
 		}
@@ -177,21 +178,21 @@ static int cli_output_write_terminal_safe(const char *src, int allow_sgr)
 			size_t avail = (size_t)(end - cursor);
 			size_t cp_len;
 
-			if (!utf8_decode_codepoint((const char *)cursor, avail, &cp, &cp_len)) {
+			if (!nb_utf8_read((const char *)cursor, avail, &cp, &cp_len)) {
 				cursor++;
 				continue;
 			}
 			if (cp >= 0x80u && cp <= 0x9fu) {
 				if (cli_output_write_visible_control(cp) != 0)
-					return -EIO;
+					return NB_ERR_IO;
 			} else if (fwrite(cursor, 1, cp_len, stdout) != cp_len) {
-				return -EIO;
+				return NB_ERR_IO;
 			}
 			cursor += cp_len;
 			continue;
 		}
 		if (fputc(*cursor++, stdout) == EOF)
-			return -EIO;
+			return NB_ERR_IO;
 	}
 	return 0;
 }
@@ -207,14 +208,14 @@ int cli_output_result_begin(struct cli_application *ctx)
 		return 0;
 	ctx->output.command_result_pending = 0;
 	if (fputc('\n', stdout) == EOF)
-		return -EIO;
+		return NB_ERR_IO;
 	return 0;
 }
 
 /* Track committed text only; transient terminal frames own their own rows. */
 void cli_output_track_tail(int *tail, const char *bytes, size_t len)
 {
-	char *safe = utf8_terminal_sanitize_dup(bytes, len, UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+	char *safe = morph_terminal_sanitize_dup(bytes, len, MORPH_TERMINAL_TEXT_MULTILINE, NULL);
 	int newlines = 0;
 	size_t end;
 
@@ -255,55 +256,56 @@ int cli_output_block_gap_margin(struct morph_tui_view_insets margin, int trailin
 	return required - trailing_newlines;
 }
 
-int cli_output_block_append(morph_buf_t *out, const char *text,
-			    struct morph_tui_view_insets margin, int *trailing_newlines)
+int cli_output_block_append(nb_buf *out, const char *text, struct morph_tui_view_insets margin,
+			    int *trailing_newlines)
 {
 	size_t start;
 	int gap;
 	int rc;
 
 	if (!out || !text || !trailing_newlines)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!text[0])
 		return 0;
 	gap = cli_output_block_gap_margin(margin, *trailing_newlines);
 	for (int i = 0; i < gap; i++) {
-		rc = morph_buf_putc(out, '\n');
+		rc = (nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
 	start = out->len;
-	rc = morph_buf_puts(out, text);
+	rc = (nb_buf_append_cstr(out, text) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
-	if (out->len && out->data[out->len - 1] != '\n') {
-		rc = morph_buf_putc(out, '\n');
+	if (out->len && out->ptr[out->len - 1] != '\n') {
+		rc = (nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
-	cli_output_track_tail(trailing_newlines, out->data + start, out->len - start);
+	cli_output_track_tail(trailing_newlines, out->ptr + start, out->len - start);
 	return 0;
 }
 
 int cli_output_block_write(struct cli_application *ctx, const char *text,
 			   struct morph_tui_view_insets margin)
 {
-	morph_buf_t document = {0};
+	nb_buf document NB_CLEANUP(nb_buf_cleanup) = {0};
 	int trailing;
 	int rc;
 
 	if (!ctx || !text)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!text[0])
 		return 0;
-	rc = morph_buf_init(&document, strlen(text) + 16);
+	rc = (nb_buf_init(&document),
+	      nb_buf_reserve(&document, strlen(text) + 16) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	trailing = ctx->output.trailing_newlines;
 	rc = cli_output_block_append(&document, text, margin, &trailing);
 	if (rc == 0)
-		rc = cli_output_printf(ctx, "%s", morph_buf_cstr_borrow(&document));
-	morph_buf_cleanup(&document);
+		rc = cli_output_printf(ctx, "%s", nb_buf_cstr(&document));
+	nb_buf_cleanup(&document);
 	return rc;
 }
 
@@ -316,8 +318,9 @@ static int cli_output_write_output(struct cli_application *ctx, const char *text
 	    ctx->output.command_result_pending) {
 		while (*text == '\n' || *text == '\r')
 			text++;
-		if (utf8_display_width_ansi(text) > 0 && cli_output_result_begin(ctx) != 0)
-			return -EIO;
+		if (morph_terminal_display_width_ansi(text) > 0 &&
+		    cli_output_result_begin(ctx) != 0)
+			return NB_ERR_IO;
 	}
 	int rc = cli_output_write_terminal_safe(text, !ctx || !ctx->output.color_disabled);
 	if (!rc && ctx && !cli_turn_details_is_visible(ctx)) {
@@ -344,7 +347,7 @@ int cli_output_printf(struct cli_application *ctx, const char *fmt, ...)
 	char *buf = malloc((size_t)n + 1);
 	if (!buf) {
 		va_end(ap);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	vsnprintf(buf, (size_t)n + 1, fmt, ap);
 	va_end(ap);
@@ -362,7 +365,7 @@ int cli_output_printf(struct cli_application *ctx, const char *fmt, ...)
 	}
 	if (cli_output_write_output(ctx, buf) != 0) {
 		free(buf);
-		return -EIO;
+		return NB_ERR_IO;
 	}
 	free(buf);
 	return n;
@@ -373,7 +376,7 @@ int cli_output_fputs(struct cli_application *ctx, const char *text, FILE *stream
 	int rc;
 
 	if (!text || !stream)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (stream != stdout)
 		return fputs(text, stream);
 	if (ctx && ctx->output.capture) {
@@ -393,6 +396,8 @@ int cli_output_putchar(struct cli_application *ctx, int ch)
 		return cli_output_capture_text(ctx, text) == 0 ? ch : EOF;
 	if ((ctx && ctx->output.structured))
 		return ch;
+	if (cli_chat_active(ctx))
+		return cli_chat_output(ctx, text) == 0 ? ch : EOF;
 	if (ctx && ctx->presentation_mode == CLI_PRESENT_INTERACTIVE &&
 	    ctx->output.command_result_pending) {
 		if (ch == '\n' || ch == '\r')
@@ -413,27 +418,27 @@ int cli_output_write_json(const char *json)
 	size_t len;
 
 	if (!json)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	len = strlen(json);
 	if (fwrite(json, 1, len, stdout) != len || fputc('\n', stdout) == EOF)
-		return -EIO;
+		return NB_ERR_IO;
 	fflush(stdout);
 	return 0;
 }
 
 int cli_output_print_untrusted(struct cli_application *ctx, const char *text,
-			       enum utf8_terminal_text_mode mode)
+			       enum morph_terminal_text_mode mode)
 {
 	char *safe;
 	int rc = 0;
 
 	if (!text)
 		return 0;
-	safe = utf8_terminal_sanitize_dup(text, strlen(text), mode, NULL);
+	safe = morph_terminal_sanitize_dup(text, strlen(text), mode, NULL);
 	if (!safe)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (cli_output_fputs(ctx, safe, stdout) == EOF)
-		rc = -EIO;
+		rc = NB_ERR_IO;
 	free(safe);
 	if (rc != 0)
 		return rc;
@@ -449,10 +454,10 @@ void cli_output_print_padded(struct cli_application *ctx, const char *s, int tar
 
 	if (!s)
 		s = "";
-	safe = utf8_terminal_sanitize_dup(s, strlen(s), UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	safe = morph_terminal_sanitize_dup(s, strlen(s), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 	if (!safe)
 		return;
-	width = utf8_display_width(safe);
+	width = nb_utf8_width_cstr(safe);
 	dw = width > (size_t)INT_MAX ? INT_MAX : (int)width;
 	(void)cli_output_fputs(ctx, safe, stdout);
 	free(safe);

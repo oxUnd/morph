@@ -1,8 +1,8 @@
 #include "memory_repository.h"
 
 #include "preferences.h"
-#include "util/error.h"
-#include "util/cleanup.h"
+#include "errors.h"
+#include "nb/cleanup.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -13,10 +13,10 @@
 int memory_store_begin_write(struct db *db)
 {
 	if (!db || !db->handle)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	sqlite3_mutex *mutex = sqlite3_db_mutex(db->handle);
 	if (!mutex)
-		return -ENOTSUP;
+		return NB_ERR_UNSUPPORTED;
 	sqlite3_mutex_enter(mutex);
 	int rc = db_exec(db, "BEGIN IMMEDIATE");
 	if (rc != 0)
@@ -44,11 +44,11 @@ int memory_store_write_fact(struct db *db, int64_t session_id, const char *key_n
 				 "ORDER BY updated_at DESC LIMIT 1";
 	int rc;
 	int64_t old_id = 0;
-	char *old_value MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *old_value NB_CLEANUP(nb_charp_cleanup) = NULL;
 	int64_t now = (int64_t)time(NULL);
 
 	if (!db || !db->handle || !key_name || !value_text || !*value_text)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!category || !*category)
 		category = "general";
 	if (importance < 0.0 || importance > 1.0)
@@ -56,7 +56,7 @@ int memory_store_write_fact(struct db *db, int64_t session_id, const char *key_n
 
 	rc = sqlite3_prepare_v2(db->handle, select_sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	sqlite3_bind_text(stmt, 2, key_name, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(stmt);
@@ -72,7 +72,7 @@ int memory_store_write_fact(struct db *db, int64_t session_id, const char *key_n
 	if (rc != SQLITE_ROW && rc != SQLITE_DONE)
 		return MORPH_ERR_DB;
 	if (old_id && !old_value)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 
 	/* Same value as the current fact: refresh metadata only, no
 	 * supersession needed. */
@@ -84,7 +84,7 @@ int memory_store_write_fact(struct db *db, int64_t session_id, const char *key_n
 			"WHERE id=?";
 		rc = sqlite3_prepare_v2(db->handle, update_sql, -1, &stmt, NULL);
 		if (rc != SQLITE_OK) {
-			return -EIO;
+			return NB_ERR_IO;
 		}
 		sqlite3_bind_text(stmt, 1, source_text ? source_text : "", -1, SQLITE_TRANSIENT);
 		sqlite3_bind_int64(stmt, 2, now);
@@ -93,7 +93,7 @@ int memory_store_write_fact(struct db *db, int64_t session_id, const char *key_n
 		sqlite3_bind_int64(stmt, 5, old_id);
 		rc = sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
-		return rc == SQLITE_DONE ? 0 : -EIO;
+		return rc == SQLITE_DONE ? 0 : NB_ERR_IO;
 	}
 
 	if (old_id > 0) {
@@ -102,14 +102,14 @@ int memory_store_write_fact(struct db *db, int64_t session_id, const char *key_n
 					 "WHERE id=?";
 		rc = sqlite3_prepare_v2(db->handle, expire_sql, -1, &stmt, NULL);
 		if (rc != SQLITE_OK)
-			return -EIO;
+			return NB_ERR_IO;
 		sqlite3_bind_int64(stmt, 1, now);
 		sqlite3_bind_int64(stmt, 2, now);
 		sqlite3_bind_int64(stmt, 3, old_id);
 		rc = sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
 		if (rc != SQLITE_DONE)
-			return -EIO;
+			return NB_ERR_IO;
 	}
 
 	{
@@ -122,7 +122,7 @@ int memory_store_write_fact(struct db *db, int64_t session_id, const char *key_n
 		int64_t new_id;
 		rc = sqlite3_prepare_v2(db->handle, insert_sql, -1, &stmt, NULL);
 		if (rc != SQLITE_OK)
-			return -EIO;
+			return NB_ERR_IO;
 		sqlite3_bind_int64(stmt, 1, session_id);
 		sqlite3_bind_text(stmt, 2, key_name, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(stmt, 3, value_text, -1, SQLITE_TRANSIENT);
@@ -135,19 +135,19 @@ int memory_store_write_fact(struct db *db, int64_t session_id, const char *key_n
 		rc = sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
 		if (rc != SQLITE_DONE)
-			return -EIO;
+			return NB_ERR_IO;
 		new_id = sqlite3_last_insert_rowid(db->handle);
 		if (old_id > 0) {
 			const char *link_sql = "UPDATE memory_facts SET superseded_by=? WHERE id=?";
 			rc = sqlite3_prepare_v2(db->handle, link_sql, -1, &stmt, NULL);
 			if (rc != SQLITE_OK)
-				return -EIO;
+				return NB_ERR_IO;
 			sqlite3_bind_int64(stmt, 1, new_id);
 			sqlite3_bind_int64(stmt, 2, old_id);
 			rc = sqlite3_step(stmt);
 			sqlite3_finalize(stmt);
 			if (rc != SQLITE_DONE)
-				return -EIO;
+				return NB_ERR_IO;
 		}
 	}
 
@@ -158,7 +158,7 @@ int memory_store_upsert_fact(struct db *db, int64_t session_id, const char *key_
 			     const char *value_text, const char *source_text, const char *category,
 			     double importance)
 {
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	int rc = db_lock_acquire(db, &lock);
 
 	if (rc != 0)
@@ -204,7 +204,7 @@ int memory_store_read_version(struct db *db, int64_t session_id, int64_t *memory
 		*memory_version = sqlite3_column_int64(stmt, 0);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_ROW)
-		return rc == SQLITE_DONE ? -ENOENT : MORPH_ERR_DB;
+		return rc == SQLITE_DONE ? NB_ERR_NOT_FOUND : MORPH_ERR_DB;
 	return 0;
 }
 
@@ -217,7 +217,7 @@ int memory_store_begin_versioned_write(struct db *db, int64_t session_id, int64_
 		return rc;
 	rc = memory_store_read_version(db, session_id, &current);
 	if (rc == 0 && current != expected)
-		rc = -ESTALE;
+		rc = NB_ERR_STALE;
 	if (rc != 0)
 		return memory_store_finish_write(db, rc);
 	return 0;
@@ -226,11 +226,11 @@ int memory_store_begin_versioned_write(struct db *db, int64_t session_id, int64_
 int memory_store_clear(struct db *db, int64_t session_id, enum memory_clear_scope scope)
 {
 	sqlite3_stmt *stmt = NULL;
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	int rc;
 
 	if (!db || !db->handle || scope < MEMORY_CLEAR_ALL || scope > MEMORY_CLEAR_TIPS)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = db_lock_acquire(db, &lock);
 	if (rc != 0)
 		return rc;
@@ -391,7 +391,7 @@ int memory_store_event_token(struct db *db, int64_t session_id, const char *even
 	int rc;
 
 	if (!db || !event_token || !out || !capacity)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = sqlite3_prepare_v2(
 		db->handle,
 		"SELECT id FROM model_history_items WHERE session_id=? AND role='user' "
@@ -408,7 +408,7 @@ int memory_store_event_token(struct db *db, int64_t session_id, const char *even
 				     (long long)sqlite3_column_int64(stmt, 0));
 
 		sqlite3_finalize(stmt);
-		return bytes < 0 || (size_t)bytes >= capacity ? -ENAMETOOLONG : 1;
+		return bytes < 0 || (size_t)bytes >= capacity ? NB_ERR_NAME_TOO_LONG : 1;
 	}
 	sqlite3_finalize(stmt);
 	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
@@ -440,7 +440,7 @@ int memory_store_add_task(struct db *db, int64_t session_id, const struct memory
 	int rc;
 
 	if (!db || !input || !input->task_type || !input->summary || !input->outcome)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = sqlite3_prepare_v2(
 		db->handle,
 		"INSERT INTO "
@@ -478,7 +478,7 @@ static void memory_note_statement_cleanup(sqlite3_stmt **statement)
 int memory_store_add_note(struct db *db, int64_t session_id, const char *kind, const char *key,
 			  const char *value, const char *source)
 {
-	sqlite3_stmt *stmt MORPH_CLEANUP(memory_note_statement_cleanup) = NULL;
+	sqlite3_stmt *stmt NB_CLEANUP(memory_note_statement_cleanup) = NULL;
 	int rc = sqlite3_prepare_v2(
 		db->handle,
 		"INSERT INTO memory_candidates(session_id,kind,key,value,source) "

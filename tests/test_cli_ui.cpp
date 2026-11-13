@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 
 extern "C" {
 #include "sapi/cli/adapters/runtime/dispatch.h"
@@ -17,9 +18,9 @@ extern "C" {
 #include "sapi/cli/services/event_queue.h"
 #include "agent/tool_context.h"
 #include "agent/tools/ask_user.h"
-#include "util/cancel.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/cancel.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 #include "event/event.h"
 }
 
@@ -198,7 +199,7 @@ TEST_F(CliUiTest, EventDeliveryGateRejectsWorkerMutationAndKeepsJsonContract)
 	int result = 0;
 	std::thread worker([&] { result = cli_event_queue_set_events_enabled(&ctx, 0); });
 	worker.join();
-	EXPECT_EQ(result, -EPERM);
+	EXPECT_EQ(result, NB_ERR_NOT_PERMITTED);
 	EXPECT_EQ(cli_event_queue_events_enabled(&ctx), 1);
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
 	ctx.presentation_ready = 0;
@@ -207,7 +208,7 @@ TEST_F(CliUiTest, EventDeliveryGateRejectsWorkerMutationAndKeepsJsonContract)
 	testing::internal::CaptureStdout();
 	EXPECT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
 	std::string output = testing::internal::GetCapturedStdout();
-	cJSON *json MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(output.c_str());
+	cJSON *json NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(output.c_str());
 	ASSERT_NE(json, nullptr);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(json, "name")),
 		"mcp.failed");
@@ -219,11 +220,11 @@ TEST_F(CliUiTest, CancelledOwnerPromptConsumesItsInterruptBeforeComposerRestore)
 	std::thread worker([&] {
 		result = cli_event_queue_call_owner(
 			&ctx,
-			+[](void *data) {
+			+[](void *data) -> int {
 				auto *context = static_cast<struct cli_application *>(data);
 
-				morph_signal_flag_set(&context->interrupted, 1);
-				return -ECANCELED;
+				nb_atomic_int_store(&context->interrupted, 1);
+				return NB_ERR_CANCELLED;
 			},
 			&ctx);
 	});
@@ -233,8 +234,8 @@ TEST_F(CliUiTest, CancelledOwnerPromptConsumesItsInterruptBeforeComposerRestore)
 	EXPECT_EQ(poll(&ready, 1, 1000), 1);
 	EXPECT_EQ(cli_event_queue_drain_batch(&ctx), 0);
 	worker.join();
-	EXPECT_EQ(result, -ECANCELED);
-	EXPECT_EQ(morph_signal_flag_get(&ctx.interrupted), 0);
+	EXPECT_EQ(result, NB_ERR_CANCELLED);
+	EXPECT_EQ(nb_atomic_int_load(&ctx.interrupted), 0);
 }
 
 TEST_F(CliUiTest, BoundedDrainYieldsAndKeepsQueuedEventsOrderedAndSignaled)
@@ -291,7 +292,7 @@ TEST_F(CliUiTest, TaskLifecycleWithNotificationDoesNotRepeatResult)
 
 TEST_F(CliUiTest, NotificationSeverityUsesDistinctMarkers)
 {
-	struct notification notification MORPH_CLEANUP(notification_cleanup) = {};
+	struct notification notification NB_CLEANUP(notification_cleanup) = {};
 	notification.id = 43;
 	std::snprintf(notification.title, sizeof(notification.title), "network check");
 	for (const char *level : {"error", "warning"}) {
@@ -308,7 +309,7 @@ TEST_F(CliUiTest, NotificationSeverityUsesDistinctMarkers)
 
 TEST_F(CliUiTest, WakePipeSignalsQueuedWorkAndDrains)
 {
-	struct notification notification MORPH_CLEANUP(notification_cleanup) = {};
+	struct notification notification NB_CLEANUP(notification_cleanup) = {};
 	notification.id = 42;
 	notification.task_id = 17;
 	notification.created_at = 1792639574;
@@ -394,7 +395,7 @@ TEST_F(CliUiTest, ConcurrentProducersPreserveEveryNotification)
 	for (int worker = 0; worker < worker_count; worker++) {
 		workers.emplace_back([&, worker] {
 			for (int index = 0; index < events_per_worker; index++) {
-				struct notification notification MORPH_CLEANUP(
+				struct notification notification NB_CLEANUP(
 					notification_cleanup) = {};
 
 				notification.id = worker * events_per_worker + index;
@@ -428,7 +429,7 @@ TEST_F(CliUiTest, NonOwnerCannotDrainPresentationState)
 	int drain_rc = 0;
 	std::thread worker([&] { drain_rc = cli_event_queue_drain(&ctx); });
 	worker.join();
-	EXPECT_EQ(drain_rc, -EPERM);
+	EXPECT_EQ(drain_rc, NB_ERR_NOT_PERMITTED);
 }
 
 TEST_F(CliUiTest, SynchronousOwnerCallRunsOnUiThread)
@@ -479,13 +480,13 @@ TEST_F(CliUiTest, ShutdownCancelsQueuedAndFutureOwnerCallsWithoutDroppingOutput)
 	ASSERT_EQ(cli_event_queue_stop_owner_calls(&ctx), 0);
 	EXPECT_FALSE(cli_event_queue_owner_call_pending(&ctx));
 	/* Joining cannot depend on pumping a prompt after the UI has stopped. */
-	EXPECT_EQ(cli_command_job_finish(&job), -ECANCELED);
+	EXPECT_EQ(cli_command_job_finish(&job), NB_ERR_CANCELLED);
 	EXPECT_EQ(data.ran_on_owner, 0);
-	EXPECT_EQ(cli_event_queue_call_owner(&ctx, cli_owner_call, &data), -ECANCELED);
+	EXPECT_EQ(cli_event_queue_call_owner(&ctx, cli_owner_call, &data), NB_ERR_CANCELLED);
 	ASSERT_EQ(cli_command_job_start_fn(&job, &ctx, "late test", cli_command_with_owner_call,
 					   &data),
 		  0);
-	EXPECT_EQ(cli_command_job_finish(&job), -ECANCELED);
+	EXPECT_EQ(cli_command_job_finish(&job), NB_ERR_CANCELLED);
 	EXPECT_EQ(data.ran_on_owner, 0);
 	testing::internal::CaptureStdout();
 	EXPECT_EQ(cli_event_queue_drain(&ctx), 0);
@@ -812,12 +813,12 @@ TEST(CliCommandPrompts, CopyRejectsOccupiedSlotsAndPreservesTheirOwners)
 	struct cli_command_job job{};
 	ASSERT_EQ(cli_command_job_init(&job), 0);
 	ASSERT_EQ(cli_command_job_prompt(&job, "queued", nullptr), 0);
-	char *retained MORPH_CLEANUP(morph_charp_cleanup) = strdup("retained");
+	char *retained NB_CLEANUP(nb_charp_cleanup) = strdup("retained");
 	ASSERT_NE(retained, nullptr);
 	char *items[2] = {retained, nullptr};
 	size_t total = 17;
 
-	EXPECT_EQ(cli_command_job_prompts_copy(&job, items, 2, &total), -EEXIST);
+	EXPECT_EQ(cli_command_job_prompts_copy(&job, items, 2, &total), NB_ERR_EXISTS);
 	EXPECT_EQ(items[0], retained);
 	EXPECT_STREQ(items[0], "retained");
 	EXPECT_EQ(items[1], nullptr);
@@ -830,7 +831,7 @@ TEST(CliCommandPrompts, CopyRejectsOccupiedSlotsAndPreservesTheirOwners)
 #ifdef HAVE_READLINE
 TEST(CliReadlineOwnership, InvalidApplicationPreservesDraftForRetry)
 {
-	char *draft MORPH_CLEANUP(morph_charp_cleanup) = strdup("keep this draft");
+	char *draft NB_CLEANUP(nb_charp_cleanup) = strdup("keep this draft");
 	ASSERT_NE(draft, nullptr);
 	char *original = draft;
 
@@ -927,7 +928,7 @@ TEST_F(CliUiTest, OptionalStructuredQuestionExpiresWithoutAReply)
 						   &answers, &count, &ctx);
 		},
 		[](int) { std::this_thread::sleep_for(std::chrono::milliseconds(1400)); });
-	EXPECT_EQ(rc, -ETIMEDOUT);
+	EXPECT_EQ(rc, NB_ERR_TIMEOUT);
 	EXPECT_EQ(answers, nullptr);
 	EXPECT_EQ(count, 0);
 	cJSON *event = find_json_event(output, "interaction.request");
@@ -994,7 +995,7 @@ TEST_F(CliUiTest, StaleReplyDoesNotDisableNextQuestionDeadline)
 						   &options, &answers, &count, &ctx);
 		},
 		[](int) { std::this_thread::sleep_for(std::chrono::milliseconds(1400)); });
-	EXPECT_EQ(rc, -ETIMEDOUT);
+	EXPECT_EQ(rc, NB_ERR_TIMEOUT);
 	EXPECT_EQ(answers, nullptr);
 	EXPECT_NE(output.find("interaction.invalid_response"), std::string::npos);
 	EXPECT_NE(output.find("timeout_no_input"), std::string::npos);
@@ -1008,7 +1009,7 @@ TEST_F(CliUiTest, RequiredStructuredQuestionObservesRuntimeCancellation)
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
 	ctx.event_cb = cli_runtime_events_callback;
 	ctx.event_user_data = &ctx;
-	morph_cancel_token cancel{};
+	nb_cancel cancel{};
 	ask_user_options options{};
 	options.cancel_token = &cancel;
 	char **answers = nullptr;
@@ -1022,10 +1023,10 @@ TEST_F(CliUiTest, RequiredStructuredQuestionObservesRuntimeCancellation)
 		},
 		[&cancel](int) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(200));
-			morph_cancel_token_cancel(&cancel);
+			nb_cancel_request(&cancel);
 			std::this_thread::sleep_for(std::chrono::milliseconds(300));
 		});
-	EXPECT_EQ(rc, -ECANCELED);
+	EXPECT_EQ(rc, NB_ERR_CANCELLED);
 	EXPECT_EQ(answers, nullptr);
 	EXPECT_EQ(ctx.input->input_cancel_token, nullptr);
 	EXPECT_NE(output.find("interaction.cancelled"), std::string::npos);

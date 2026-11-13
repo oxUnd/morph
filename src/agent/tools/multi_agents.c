@@ -1,8 +1,8 @@
 #include "multi_agents.h"
 
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/error.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "errors.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -24,58 +24,61 @@ struct multi_agent_binding {
 static int multi_agent_exec(const char *arguments, struct tool_result *result, void *opaque)
 {
 	struct multi_agent_binding *binding = opaque;
-	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(arguments ? arguments : "{}");
-	cJSON *out MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *args NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(arguments ? arguments : "{}");
+	cJSON *out NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	int rc = agent_control_call(binding->control, binding->operation, args, result->runtime,
 				    &out);
 	if (rc != 0) {
-		const char *code = rc == -EAGAIN		  ? "capacity_exceeded"
+		const char *code = rc == NB_ERR_AGAIN		  ? "capacity_exceeded"
 				   : rc == MORPH_ERR_TOKEN_BUDGET ? "token_budget_exhausted"
 				   : rc == MORPH_ERR_AGENT_BUDGET ? "agent_budget_reserved"
-				   : rc == -EINVAL		  ? "invalid_arguments"
-				   : rc == -ESHUTDOWN		  ? "agent_finishing"
-				   : rc == -ECANCELED		  ? "cancelled"
-				   : rc == -ENOENT		  ? "not_found"
-				   : rc == -ELOOP		  ? "agent_depth_exceeded"
-				   : rc == -EEXIST		  ? "agent_exists"
+				   : rc == NB_ERR_INVAL		  ? "invalid_arguments"
+				   : rc == NB_ERR_CLOSED	  ? "agent_finishing"
+				   : rc == NB_ERR_CANCELLED	  ? "cancelled"
+				   : rc == NB_ERR_NOT_FOUND	  ? "not_found"
+				   : rc == NB_ERR_LOOP		  ? "agent_depth_exceeded"
+				   : rc == NB_ERR_EXISTS	  ? "agent_exists"
 								  : "invalid_operation";
 		const char *message =
-			rc == -ESHUTDOWN ? "This task is collecting final results. "
-					   "Return current verified work and limitations; "
-					   "do not spawn or restart more agents."
-			: rc == -ELOOP ? "The agent nesting limit has been reached. Return current "
-					 "evidence or coordinate with the existing parent instead "
-					 "of delegating again."
-			: rc == -EEXIST ? "That agent identity already exists. Use send_message "
-					  "for progress or followup_task for a distinct remaining "
-					  "assignment."
-			: rc == -EAGAIN ? "Agent execution capacity is full. Wait for "
-					  "a running agent to finish "
-					  "before spawning or resuming work."
-			: rc == -EINVAL && !strcmp(binding->operation, "wait_agent")
+			rc == NB_ERR_CLOSED ? "This task is collecting final results. "
+					      "Return current verified work and limitations; "
+					      "do not spawn or restart more agents."
+			: rc == NB_ERR_LOOP
+				? "The agent nesting limit has been reached. Return current "
+				  "evidence or coordinate with the existing parent instead "
+				  "of delegating again."
+			: rc == NB_ERR_EXISTS
+				? "That agent identity already exists. Use send_message "
+				  "for progress or followup_task for a distinct remaining "
+				  "assignment."
+			: rc == NB_ERR_AGAIN ? "Agent execution capacity is full. Wait for "
+					       "a running agent to finish "
+					       "before spawning or resuming work."
+			: rc == NB_ERR_INVAL && !strcmp(binding->operation, "wait_agent")
 				? "timeout_ms must be an integer from 1 to 3600000."
-			: rc == -EINVAL && strcmp(binding->operation, "spawn_agent")
+			: rc == NB_ERR_INVAL && strcmp(binding->operation, "spawn_agent")
 				? "Invalid collaboration arguments. Check this tool "
 				  "schema for required "
 				  "target/message fields, field types, and permitted "
 				  "optional fields."
-			: rc == -EINVAL ? "Invalid collaboration arguments. "
-					  "task_name accepts 1-64 lowercase "
-					  "letters, digits, '_' or '-'; fork_turns "
-					  "is 'all' or 'none'; model "
-					  "overrides require 'none'; write_paths "
-					  "must resolve inside the workspace. "
-					  "Check the tool schema before retrying."
-			: rc == -EBUSY	? "Write ownership conflicts with an active "
-					  "agent or patch, or the target "
-					  "is already running. Use disjoint "
-					  "write_paths or wait before reassigning."
-					: morph_strerror(rc);
+			: rc == NB_ERR_INVAL ? "Invalid collaboration arguments. "
+					       "task_name accepts 1-64 lowercase "
+					       "letters, digits, '_' or '-'; fork_turns "
+					       "is 'all' or 'none'; model "
+					       "overrides require 'none'; write_paths "
+					       "must resolve inside the workspace. "
+					       "Check the tool schema before retrying."
+			: rc == NB_ERR_BUSY
+				? "Write ownership conflicts with an active "
+				  "agent or patch, or the target "
+				  "is already running. Use disjoint "
+				  "write_paths or wait before reassigning."
+				: nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc);
 		int result_rc = tool_result_error_copy(result, code, message);
 		return result_rc == 0 ? rc : result_rc;
 	}
-	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(out);
-	return json ? tool_result_success_json_text_copy(result, json) : -ENOMEM;
+	char *json NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(out);
+	return json ? tool_result_success_json_text_copy(result, json) : NB_ERR_NOMEM;
 }
 
 static void binding_destroy(void *binding)
@@ -161,14 +164,14 @@ int multi_agents_register(struct tool_registry *tools, struct agent_control *con
 		 "\"minimum\":1,\"maximum\":3600000}},\"additionalProperties\":false}"},
 	};
 	if (!tools || !control)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	for (size_t i = 0; i < sizeof(specs) / sizeof(specs[0]); i++) {
 		struct multi_agent_binding *binding = calloc(1, sizeof(*binding));
 		if (!binding)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		binding->control = control;
 		binding->operation = specs[i].name;
-		struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
+		struct tool_spec spec NB_CLEANUP(tool_spec_cleanup) = {
 			.origin = TOOL_ORIGIN_BUILTIN,
 			.name = specs[i].name,
 			.description = specs[i].description,

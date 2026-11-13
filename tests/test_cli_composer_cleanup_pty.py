@@ -89,9 +89,14 @@ class ComposerFrameStream:
         # submitted message. Extra blank prompt/padding bands are orphan UI.
         painted = {row for prompt in prompts for row in (prompt - 1, prompt, prompt + 1)
                    if 0 <= row < screen.lines}
+        # Scrolling can clip a submitted marker just above the viewport while
+        # leaving its single bottom padding row visible at the top edge.
+        clipped_message_padding = (self.color and len(prompts) - 1 < self.submissions
+                                   and not rows[0].strip())
         for row in range(screen.lines):
             backgrounds = [screen.buffer[row][column].bg for column in range(screen.columns)]
-            if self.color and row in painted:
+            if self.color and (row in painted or (row == 0 and clipped_message_padding
+                                                  and any(bg != 'default' for bg in backgrounds))):
                 assert all(background != 'default' for background in backgrounds), diagnostic
             else:
                 assert all(background == 'default' for background in backgrounds), diagnostic
@@ -147,6 +152,7 @@ def main():
                         for turn in range(2):
                             terminal.send('hello world')
                             submitted = len(terminal.raw)
+                            submission_frame = len(terminal.published_frames)
                             terminal.stream.submissions += 1
                             terminal.send('\r')
                             deadline = time.monotonic() + 8
@@ -157,11 +163,18 @@ def main():
                             # composer redraw and synchronized-update end marker.
                             restored_composer_snapshot(
                                 terminal, f'completed turn {turn + 1} at {width} columns')
-                            output = terminal.raw[submitted:]
-                            thought = output.index('The user says')
-                            committed = output.rfind('hello world', 0, thought)
-                            assert committed >= 0, repr(output)
-                            assert 'Ctrl+T transcript' not in output[:committed], repr(output)
+                            publications = terminal.published_frames[submission_frame:]
+                            assert publications, repr(terminal.raw[submitted:])
+                            assert any('The user says' in frame for frame, _ in publications), repr(
+                                terminal.raw[submitted:])
+                            for frame, cursor in publications:
+                                committed_rows = [index for index, row in enumerate(frame.splitlines())
+                                                  if index != cursor and row.startswith(
+                                                      ('› hello world', '> hello world'))]
+                                assert len(committed_rows) <= turn + 1, frame
+                                if committed_rows:
+                                    assert 'Ctrl+T transcript' not in '\n'.join(
+                                        frame.splitlines()[:committed_rows[-1]]), frame
                             assert len(empty_prompts(terminal)) == 1, terminal.screen.display
                             rows = terminal.screen.display
                             question = max(i for i, row in enumerate(rows)

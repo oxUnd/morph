@@ -1,7 +1,9 @@
 #include "runtime/task_worker.h"
+#include "nb/str.h"
+#include "nb/utf8.h"
 
-#include "util/error.h"
-#include "util/log.h"
+#include "errors.h"
+#include "nb/log.h"
 
 #include <errno.h>
 #include <string.h>
@@ -19,7 +21,7 @@ int runtime_task_run_due_collect(struct db *db, int limit,
 	int64_t now;
 
 	if (!db || !runner)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (limit <= 0)
 		limit = 20;
 	now = (int64_t)time(NULL);
@@ -53,41 +55,38 @@ static void *runtime_task_worker_main(void *arg)
 	    db_init_schema(&scheduler_db) == 0) {
 		opened = 1;
 	} else {
-		log_warn(worker ? worker->logger : NULL,
-			 "runtime: task worker failed to open database");
+		nb_log_write(worker ? worker->logger : NULL, NB_LOG_WARN,
+			     "runtime: task worker failed to open database");
 	}
 
 	while (opened) {
 		int rc;
 
-		pthread_mutex_lock(&worker->lock);
+		nb_mutex_lock(worker->lock);
 		if (worker->stop) {
-			pthread_mutex_unlock(&worker->lock);
+			nb_mutex_unlock(worker->lock);
 			break;
 		}
-		pthread_mutex_unlock(&worker->lock);
+		nb_mutex_unlock(worker->lock);
 
 		rc = runtime_task_run_due_collect(
 			&scheduler_db, worker->limit, worker->runner,
 			worker->runner_user_data, worker->notification_cb,
 			worker->notification_user_data);
 		if (rc < 0)
-			log_warn(worker ? worker->logger : NULL, "runtime: task worker failed: %s",
-				 morph_strerror(rc));
+			nb_log_write(worker ? worker->logger : NULL, NB_LOG_WARN,
+				     "runtime: task worker failed: %s",
+				     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 
-		pthread_mutex_lock(&worker->lock);
+		nb_mutex_lock(worker->lock);
 		if (!worker->stop) {
-			struct timespec ts;
-			clock_gettime(CLOCK_REALTIME, &ts);
-			ts.tv_sec += 1;
-			(void)pthread_cond_timedwait(&worker->cond,
-						     &worker->lock, &ts);
+			(void)nb_cond_timedwait(worker->cond, worker->lock, INT64_C(1000000000));
 		}
 		if (worker->stop) {
-			pthread_mutex_unlock(&worker->lock);
+			nb_mutex_unlock(worker->lock);
 			break;
 		}
-		pthread_mutex_unlock(&worker->lock);
+		nb_mutex_unlock(worker->lock);
 	}
 
 	if (opened)
@@ -106,34 +105,36 @@ int runtime_task_worker_start(struct runtime_task_worker *worker,
 	int rc;
 
 	if (!worker || !db || !db->path[0] || !runner)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (worker->started)
 		return 0;
 	memset(worker, 0, sizeof(*worker));
 	worker->logger = db->logger;
-	strncpy(worker->db_path, db->path, sizeof(worker->db_path) - 1);
+	(void)nb_str_copy_to(
+		nb_str_from_parts(db->path,
+				  nb_utf8_clamp_bytes(db->path, sizeof(worker->db_path) - 1)),
+		worker->db_path, (sizeof(worker->db_path) - 1) + 1);
 	worker->runner = runner;
 	worker->runner_user_data = runner_user_data;
 	worker->notification_cb = notification_cb;
 	worker->notification_user_data = notification_user_data;
 	worker->limit = limit > 0 ? limit : 50;
-	rc = pthread_mutex_init(&worker->lock, NULL);
+	rc = ((worker->lock = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
 	if (rc != 0)
-		return -rc;
-	rc = pthread_cond_init(&worker->cond, NULL);
+		return rc;
+	rc = ((worker->cond = nb_cond_new()) ? NB_OK : NB_ERR_NOMEM);
 	if (rc != 0) {
-		pthread_mutex_destroy(&worker->lock);
-		return -rc;
+		(nb_mutex_free(worker->lock), worker->lock = NULL);
+		return rc;
 	}
-	rc = pthread_create(&worker->thread, NULL,
-			    runtime_task_worker_main, worker);
+	rc = nb_thread_create(&worker->thread, runtime_task_worker_main, worker, NULL);
 	if (rc != 0) {
-		pthread_cond_destroy(&worker->cond);
-		pthread_mutex_destroy(&worker->lock);
-		return -rc;
+		(nb_cond_free(worker->cond), worker->cond = NULL);
+		(nb_mutex_free(worker->lock), worker->lock = NULL);
+		return rc;
 	}
 	worker->started = 1;
-	log_info(worker ? worker->logger : NULL, "runtime: task worker started");
+	nb_log_write(worker ? worker->logger : NULL, NB_LOG_INFO, "runtime: task worker started");
 	return 0;
 }
 
@@ -141,14 +142,14 @@ void runtime_task_worker_stop(struct runtime_task_worker *worker)
 {
 	if (!worker || !worker->started)
 		return;
-	pthread_mutex_lock(&worker->lock);
+	nb_mutex_lock(worker->lock);
 	worker->stop = 1;
-	pthread_cond_signal(&worker->cond);
-	pthread_mutex_unlock(&worker->lock);
-	pthread_join(worker->thread, NULL);
-	pthread_cond_destroy(&worker->cond);
-	pthread_mutex_destroy(&worker->lock);
+	nb_cond_signal(worker->cond);
+	nb_mutex_unlock(worker->lock);
+	nb_thread_join_take(&worker->thread, NULL);
+	(nb_cond_free(worker->cond), worker->cond = NULL);
+	(nb_mutex_free(worker->lock), worker->lock = NULL);
 	worker->started = 0;
 	worker->stop = 0;
-	log_info(worker ? worker->logger : NULL, "runtime: task worker stopped");
+	nb_log_write(worker ? worker->logger : NULL, NB_LOG_INFO, "runtime: task worker stopped");
 }

@@ -7,10 +7,10 @@
 #include "persistence/memory_repository.h"
 #include "persistence/memory_search.h"
 #include "persistence/memory_summary_store.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/json.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "cJSON.h"
+#include "nb/utf8.h"
 
 #include <errno.h>
 #include <string.h>
@@ -22,27 +22,28 @@ static int memory_update_integer(const cJSON *args, const char *name, int64_t *o
 	if (!cJSON_IsNumber(item) || item->valuedouble < 0 ||
 	    item->valuedouble > 9007199254740991.0 ||
 	    (double)(int64_t)item->valuedouble != item->valuedouble)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*out = (int64_t)item->valuedouble;
 	return 0;
 }
 
 static int memory_update_valid_text(const char *text, size_t maximum)
 {
-	return text && *text && strlen(text) <= maximum && !utf8valid(text);
+	return text && *text && strlen(text) <= maximum &&
+	       !nb_utf8_validate(nb_str_from_cstr(text), NULL);
 }
 
 static int memory_update_existing(const struct tool_runtime_context *runtime, const cJSON *args,
 				  const char *action, const char *evidence)
 {
-	struct memory_search_result matches MORPH_CLEANUP(memory_search_result_cleanup) = {0};
+	struct memory_search_result matches NB_CLEANUP(memory_search_result_cleanup) = {0};
 	const char *kind = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "type"));
 	const char *scope = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "scope"));
 	const char *expected =
 		cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "expected_text"));
 	const char *replacement =
 		cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "text"));
-	char *safe MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *safe NB_CLEANUP(nb_charp_cleanup) = NULL;
 	int64_t id = 0, version = 0;
 	struct memory_search_options options = {
 		.kind = kind,
@@ -56,22 +57,22 @@ static int memory_update_existing(const struct tool_runtime_context *runtime, co
 	    memory_update_integer(args, "record_id", &id) != 0 || id <= 0 ||
 	    memory_update_integer(args, "expected_version", &version) != 0 ||
 	    (!strcmp(action, "replace") && !memory_update_valid_text(replacement, 16000)))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	options.record_id = id;
 	int rc = memory_search_records(runtime->db, runtime->memory_session_id, &options, &matches);
 
 	if (rc != 0)
 		return rc;
-	if (matches.records.nelts != 1)
-		return -ENOENT;
-	const struct memory_record *record = morph_array_borrow(&matches.records, 0);
+	if (matches.records.len != 1)
+		return NB_ERR_NOT_FOUND;
+	const struct memory_record *record = nb_vec_at(&matches.records, 0);
 
 	if (record->memory_version != version || strcmp(record->value, expected))
-		return -ESTALE;
+		return NB_ERR_STALE;
 	if (!strcmp(action, "replace")) {
 		safe = history_redacted_text_create(NULL, replacement);
 		if (!safe)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 	}
 	return memory_record_edit(runtime->db, record->session_id, kind, id, version, expected,
 				  safe, evidence);
@@ -80,14 +81,14 @@ static int memory_update_existing(const struct tool_runtime_context *runtime, co
 static int memory_update_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	const struct tool_runtime_context *runtime = result->runtime;
-	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(args_json);
+	cJSON *args NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(args_json);
 	const char *action = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "action"));
 	const char *evidence =
 		cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "evidence"));
-	char *token MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	char *safe MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	char *safe_title MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	char *safe_evidence MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *token NB_CLEANUP(nb_charp_cleanup) = NULL;
+	char *safe NB_CLEANUP(nb_charp_cleanup) = NULL;
+	char *safe_title NB_CLEANUP(nb_charp_cleanup) = NULL;
+	char *safe_evidence NB_CLEANUP(nb_charp_cleanup) = NULL;
 	int rc;
 
 	(void)user_data;
@@ -95,12 +96,12 @@ static int memory_update_exec(const char *args_json, struct tool_result *result,
 	    !runtime->config->memory.capture_input_enabled || !action)
 		return tool_result_error_copy(result, "memory_unavailable",
 					      "Memory updates are disabled.");
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	rc = db_lock_acquire(runtime->db, &lock);
 	if (rc != 0)
 		return rc;
-	if (morph_cancel_token_is_cancelled(runtime->http.cancel_token))
-		return -ECANCELED;
+	if (nb_cancel_requested(runtime->http.cancel_token))
+		return NB_ERR_CANCELLED;
 	rc = tool_user_evidence_token_copy(runtime, evidence, &token);
 	if (rc != 0)
 		return tool_result_error_copy(
@@ -108,7 +109,7 @@ static int memory_update_exec(const char *args_json, struct tool_result *result,
 			"Quote the latest user's explicit remember, correct or forget request.");
 	safe_evidence = history_redacted_text_create(NULL, evidence);
 	if (!safe_evidence)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (!strcmp(action, "save")) {
 		const char *title =
 			cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "title"));
@@ -123,7 +124,7 @@ static int memory_update_exec(const char *args_json, struct tool_result *result,
 		safe = history_redacted_text_create(NULL, text);
 		safe_title = history_redacted_text_create(NULL, title);
 		if (!safe || !safe_title)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		rc = memory_store_prepare_session(runtime->db, runtime->memory_session_id);
 		if (rc == 0)
 			rc = memory_note_save(runtime->db, runtime->memory_session_id, safe_title,
@@ -132,10 +133,12 @@ static int memory_update_exec(const char *args_json, struct tool_result *result,
 	} else if (!strcmp(action, "replace") || !strcmp(action, "delete")) {
 		rc = memory_update_existing(runtime, args, action, safe_evidence);
 	} else {
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 	}
 	if (rc != 0)
-		return tool_result_error_copy(result, "memory_not_updated", morph_strerror(rc));
+		return tool_result_error_copy(
+			result, "memory_not_updated",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	return tool_result_success_json_text_copy(result, "{\"updated\":true}");
 }
 

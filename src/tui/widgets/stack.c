@@ -1,7 +1,8 @@
 #include <morph/tui/widgets/stack.h>
 #include <morph/tui/layout.h>
-#include "util/array.h"
-#include "util/error.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "errors.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -15,7 +16,7 @@ struct widget_stack_item {
 struct widget_stack {
 	struct morph_tui_widget base;
 	struct morph_tui_layout layout;
-	morph_array_t plan;
+	nb_vec plan;
 	enum morph_tui_widget_stack_axis axis;
 	int spacing;
 };
@@ -50,7 +51,7 @@ static int widget_stack_measure(struct morph_tui_layout *layout, struct morph_tu
 			cross = child_cross;
 	}
 	if (main > INT_MAX)
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	*size = stack->axis == MORPH_TUI_WIDGET_STACK_VERTICAL
 			? (struct morph_tui_view_size){cross, (int)main}
 			: (struct morph_tui_view_size){(int)main, cross};
@@ -68,7 +69,7 @@ static int widget_stack_arrange(struct morph_tui_layout *layout, struct morph_tu
 	int64_t used = 0;
 
 	(void)layout;
-	morph_array_clear(&stack->plan);
+	nb_vec_clear(&stack->plan);
 	for (size_t i = 0; i < morph_tui_view_child_count(view); i++) {
 		struct morph_tui_view *child = morph_tui_view_child_borrow(view, i);
 		struct morph_tui_view_size measured;
@@ -87,15 +88,15 @@ static int widget_stack_arrange(struct morph_tui_layout *layout, struct morph_tu
 		int maximum = vertical ? opts.max_height : opts.max_width;
 		int span = weight ? (vertical ? opts.min_height : opts.min_width) + margin
 				  : (vertical ? measured.height : measured.width);
-		struct widget_stack_item *item = morph_array_push_borrow(&stack->plan);
+		struct widget_stack_item *item = nb_vec_push(&stack->plan);
 
 		if (!item)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		*item = (struct widget_stack_item){
 			.view = child, .measured = measured, .span = span, .weight = weight,
 			.maximum = maximum ? maximum + margin : 0};
 		used += span;
-		if (stack->plan.nelts > 1)
+		if (stack->plan.len > 1)
 			used += stack->spacing;
 	}
 	int remaining = used < available ? available - (int)used : 0;
@@ -103,8 +104,8 @@ static int widget_stack_arrange(struct morph_tui_layout *layout, struct morph_tu
 	while (remaining > 0) {
 		int64_t weight = 0;
 
-		for (size_t i = 0; i < stack->plan.nelts; i++) {
-			struct widget_stack_item *item = morph_array_borrow(&stack->plan, i);
+		for (size_t i = 0; i < stack->plan.len; i++) {
+			struct widget_stack_item *item = nb_vec_at(&stack->plan, i);
 
 			if (!item->maximum || item->span < item->maximum)
 				weight += item->weight;
@@ -113,8 +114,8 @@ static int widget_stack_arrange(struct morph_tui_layout *layout, struct morph_tu
 			break;
 		int budget = remaining;
 
-		for (size_t i = 0; i < stack->plan.nelts && remaining; i++) {
-			struct widget_stack_item *item = morph_array_borrow(&stack->plan, i);
+		for (size_t i = 0; i < stack->plan.len && remaining; i++) {
+			struct widget_stack_item *item = nb_vec_at(&stack->plan, i);
 
 			if (!item->weight || (item->maximum && item->span >= item->maximum))
 				continue;
@@ -132,9 +133,9 @@ static int widget_stack_arrange(struct morph_tui_layout *layout, struct morph_tu
 	}
 	int offset = 0;
 
-	for (size_t i = 0; i < stack->plan.nelts; i++) {
+	for (size_t i = 0; i < stack->plan.len; i++) {
 		struct widget_stack_item item =
-			*(struct widget_stack_item *)morph_array_borrow(&stack->plan, i);
+			*(struct widget_stack_item *)nb_vec_at(&stack->plan, i);
 		struct morph_tui_view_options opts = morph_tui_view_get_options(item.view);
 		int cross = vertical ? width : height;
 		int fixed = vertical ? opts.width : opts.height;
@@ -176,7 +177,7 @@ static int widget_stack_arrange(struct morph_tui_layout *layout, struct morph_tu
 
 static void widget_stack_destroy(struct morph_tui_view *view)
 {
-	morph_array_cleanup(&((struct widget_stack *)view)->plan);
+	nb_vec_cleanup(&((struct widget_stack *)view)->plan);
 }
 
 struct morph_tui_view *
@@ -194,7 +195,7 @@ morph_tui_widget_stack_add_borrow(struct morph_tui_builder *builder, struct morp
 
 	if (spacing < 0 || (axis != MORPH_TUI_WIDGET_STACK_VERTICAL &&
 			    axis != MORPH_TUI_WIDGET_STACK_HORIZONTAL)) {
-		morph_tui_builder_fail(builder, -EINVAL);
+		morph_tui_builder_fail(builder, NB_ERR_INVAL);
 		return NULL;
 	}
 	stack = (struct widget_stack *)morph_tui_widget_add_borrow(builder, parent, sizeof(*stack),
@@ -204,7 +205,8 @@ morph_tui_widget_stack_add_borrow(struct morph_tui_builder *builder, struct morp
 	stack->axis = axis;
 	stack->spacing = spacing;
 	stack->layout.ops = &layout;
-	morph_tui_builder_fail(builder, morph_array_init(&stack->plan, 8, sizeof(item)));
+	morph_tui_builder_fail(builder, (nb_vec_init(&stack->plan, sizeof(item)),
+					 nb_vec_reserve(&stack->plan, 8) ? 0 : NB_ERR_NOMEM));
 	morph_tui_view_set_layout_borrow(&stack->base.view, &stack->layout);
 	return &stack->base.view;
 }

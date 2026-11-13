@@ -1,2 +1,8 @@
 # Preserve the upstream-generated Unicode database byte-for-byte.
-vendor/utf8proc/utf8proc_data.c -whitespace linguist-generated=true
+vendor/nothing/vendor/utf8proc/utf8proc_data.c -whitespace linguist-generated=true
+
+# Keep parser fixtures and imported benchmark measurements byte-for-byte.
+vendor/nothing/tests/toml-test/** -whitespace
+vendor/nothing/benchmarks/*.csv whitespace=cr-at-eol
+# Unified patches contain a space on otherwise blank context lines.
+vendor/patches/*.patch -whitespace

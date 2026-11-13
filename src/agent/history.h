@@ -1,7 +1,7 @@
 #ifndef AGENT_HISTORY_H
 #define AGENT_HISTORY_H
 
-struct morph_log;
+struct nb_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -9,7 +9,8 @@ extern "C" {
 #include "models/llm.h"
 #include "agent/tool.h"
 #include "session.h"
-#include "util/array.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 
 struct react_context;
 struct tokenizer;
@@ -27,10 +28,10 @@ int agent_history_item_replayable(const struct model_history_item *item);
 
 /* Copies into an empty array (zeroed or initialized for chat_message).
  * Failures preserve the empty output; every message field is owned. */
-int agent_history_messages_copy(struct morph_log *logger, const struct model_history_item *items,
-				morph_array_t *messages);
-void agent_chat_messages_cleanup(morph_array_t *messages);
-void agent_chat_messages_move(morph_array_t *out, morph_array_t *source);
+int agent_history_messages_copy(struct nb_log *logger, const struct model_history_item *items,
+				nb_vec *messages);
+void agent_chat_messages_cleanup(nb_vec *messages);
+void agent_chat_messages_move(nb_vec *out, nb_vec *source);
 int agent_history_record_request(struct react_context *ctx, const struct model *model,
 	const char *system_prompt, const struct chat_message *messages, int count,
 	const struct tool_desc *tools, int tool_count);

@@ -1,5 +1,6 @@
 CC      ?= clang
 CFLAGS  ?= -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion
+CPPFLAGS += -I../../vendor/nothing/include
 TARGET   = locate
 UNAME_S := $(shell uname -s)
 
@@ -25,14 +26,14 @@ all: $(TARGET)
 	@echo "Built $(APP_BUNDLE)"
 
 $(TARGET): locate.c
-	$(CC) $(CFLAGS) -o $@ locate.c $(LIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ locate.c $(LIBS)
 
 else
 	# Linux: compile plain C, link sd-bus for GeoClue2 D-Bus
 	LIBS = -lsystemd -lm
 
 $(TARGET): locate.c
-	$(CC) $(CFLAGS) -o $@ locate.c $(LIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ locate.c $(LIBS)
 
 endif
 

@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/skill.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/command_output.h"
@@ -44,7 +45,7 @@ static int cli_skill_collect_rows(struct cli_application *ctx, struct cli_skill_
 		return 0;
 	rows = calloc((size_t)count, sizeof(*rows));
 	if (!rows)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	for (int i = 0; i < count; i++) {
 		struct skill_entry entry;
 
@@ -57,7 +58,7 @@ static int cli_skill_collect_rows(struct cli_application *ctx, struct cli_skill_
 		rows[i].name = strdup(entry.fm.name);
 		rows[i].description = strdup(entry.fm.description);
 		if (!rows[i].name || !rows[i].description) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			break;
 		}
 		if (entry.activated)
@@ -137,7 +138,7 @@ static int cli_skill_print_info(struct cli_application *ctx, const char *name)
 
 	if (runtime_skill_find_borrow(ctx->runtime, name, &entry) != 0) {
 		CMD_ERROR(ctx, "skill not found: %s", name);
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	}
 	CMD_HEADER(ctx, "Skill %s", entry.fm.name);
 	cli_list_value_field(ctx, "Status", cli_skill_status(&entry), 0, 14, columns);
@@ -173,7 +174,7 @@ static int cli_skill_command_skill(struct cli_application *ctx, int argc, char *
 		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR(ctx, "usage: /skill info <name>");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 		return cli_skill_print_info(ctx, name);
 	}
@@ -181,12 +182,12 @@ static int cli_skill_command_skill(struct cli_application *ctx, int argc, char *
 		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR(ctx, "usage: /skill activate <name>");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 		struct skill_entry entry;
 		if (runtime_skill_find_borrow(ctx->runtime, name, &entry) != 0) {
 			CMD_ERROR(ctx, "skill not found: %s", name);
-			return -ENOENT;
+			return NB_ERR_NOT_FOUND;
 		}
 		int changed = 0;
 		int rc = runtime_skill_set_active(ctx->runtime, name, 1, &changed);
@@ -194,7 +195,7 @@ static int cli_skill_command_skill(struct cli_application *ctx, int argc, char *
 			CMD_OK(ctx, "skill '%s' activated", name);
 		else if (rc < 0)
 			CMD_ERROR(ctx, "failed to activate skill '%s': %s", name,
-				  morph_strerror(rc));
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		else
 			CMD_OK(ctx, "skill '%s' already activated", name);
 		return rc < 0 ? rc : 0;
@@ -203,12 +204,12 @@ static int cli_skill_command_skill(struct cli_application *ctx, int argc, char *
 		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR(ctx, "usage: /skill deactivate <name>");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 		struct skill_entry entry;
 		if (runtime_skill_find_borrow(ctx->runtime, name, &entry) != 0) {
 			CMD_ERROR(ctx, "skill not found: %s", name);
-			return -ENOENT;
+			return NB_ERR_NOT_FOUND;
 		}
 		(void)runtime_skill_set_active(ctx->runtime, name, 0, NULL);
 		CMD_OK(ctx, "skill '%s' deactivated", name);

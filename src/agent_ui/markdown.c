@@ -1,8 +1,9 @@
 #include "agent_ui.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 
-#include "util/buf.h"
-#include "util/utf8.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
 
 #include <ctype.h>
 #include <stdlib.h>
@@ -24,7 +25,7 @@ static int decode_cp(const char *s, size_t len, size_t off,
 {
 	if (!s || off >= len || !cp || !cp_len)
 		return 0;
-	return utf8_decode_codepoint(s + off, len - off, cp, cp_len);
+	return nb_utf8_read(s + off, len - off, cp, cp_len);
 }
 
 static int fullwidth_markdown_char(unsigned cp, char *out)
@@ -64,8 +65,7 @@ static int fullwidth_table_sep_char(unsigned cp, char *out)
 	return 0;
 }
 
-static int append_normalized_chars(morph_buf_t *out, const char *s,
-				   size_t len, int table_sep)
+static int append_normalized_chars(nb_buf *out, const char *s, size_t len, int table_sep)
 {
 	size_t i = 0;
 
@@ -78,14 +78,14 @@ static int append_normalized_chars(morph_buf_t *out, const char *s,
 			if ((table_sep ?
 			     fullwidth_table_sep_char(cp, &repl) :
 			     fullwidth_markdown_char(cp, &repl))) {
-				if (morph_buf_putc(out, repl) < 0)
-					return -1;
+				if ((nb_buf_append_char(out, repl) ? 0 : NB_ERR_NOMEM) < 0)
+					return NB_ERR_NOMEM;
 				i += cp_len;
 				continue;
 			}
 		}
-		if (morph_buf_putc(out, s[i]) < 0)
-			return -1;
+		if ((nb_buf_append_char(out, s[i]) ? 0 : NB_ERR_NOMEM) < 0)
+			return NB_ERR_NOMEM;
 		i++;
 	}
 	return 0;
@@ -168,7 +168,7 @@ static int line_has_pipe(const char *line, size_t len)
 		if (line[i] == '|')
 			return 1;
 		if (decode_cp(line, len, i, &cp, &cp_len)) {
-			if (utf8_is_fullwidth_pipe_cp(cp))
+			if (cp == 0xFF5C)
 				return 1;
 			i += cp_len;
 		} else {
@@ -198,13 +198,13 @@ static int line_is_table_sep(const char *line, size_t len)
 		} else if (c == ':' || c == ' ' || c == '\t') {
 			i++;
 		} else if (decode_cp(line, len, i, &cp, &cp_len)) {
-			if (utf8_is_fullwidth_pipe_cp(cp)) {
+			if (cp == 0xFF5C) {
 				has_pipe = 1;
 				i += cp_len;
-			} else if (utf8_is_fullwidth_dash_cp(cp)) {
+			} else if (cp == 0xFF0D) {
 				has_dash = 1;
 				i += cp_len;
-			} else if (utf8_is_fullwidth_colon_cp(cp)) {
+			} else if (cp == 0xFF1A) {
 				i += cp_len;
 			} else {
 				return 0;
@@ -343,24 +343,22 @@ static int needs_blank_before(enum markdown_line_kind kind,
 	return 1;
 }
 
-static int append_fence_close(morph_buf_t *out, char marker, int len)
+static int append_fence_close(nb_buf *out, char marker, int len)
 {
-	if (morph_buf_putc(out, '\n') < 0)
-		return -1;
+	if ((nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM) < 0)
+		return NB_ERR_NOMEM;
 	for (int i = 0; i < len; i++) {
-		if (morph_buf_putc(out, marker) < 0)
-			return -1;
+		if ((nb_buf_append_char(out, marker) ? 0 : NB_ERR_NOMEM) < 0)
+			return NB_ERR_NOMEM;
 	}
-	return morph_buf_putc(out, '\n');
+	return (nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM);
 }
 
-static int append_normalized_line(morph_buf_t *out, const char *line,
-				  size_t len, int *previous_blank,
-				  enum markdown_line_kind *prev_kind,
-				  int *in_fence, char *fence_marker,
-				  int *fence_len)
+static int append_normalized_line(nb_buf *out, const char *line, size_t len, int *previous_blank,
+				  enum markdown_line_kind *prev_kind, int *in_fence,
+				  char *fence_marker, int *fence_len)
 {
-	morph_buf_t normalized MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf normalized NB_CLEANUP(nb_buf_cleanup) = {0};
 	enum markdown_line_kind kind;
 	char line_fence_marker = 0;
 	int line_fence_len = 0;
@@ -377,7 +375,7 @@ static int append_normalized_line(morph_buf_t *out, const char *line,
 		size_t tail = indent;
 
 		for (int i = 0; i < line_fence_len && tail < len; i++)
-			tail += utf8_next_codepoint_len(line + tail, len - tail);
+			tail += nb_utf8_next_codepoint_len(line + tail, len - tail);
 		while (tail < len && (line[tail] == ' ' || line[tail] == '\t'))
 			tail++;
 		is_fence = indent <= 3 && !memchr(line, '\t', indent) &&
@@ -387,26 +385,26 @@ static int append_normalized_line(morph_buf_t *out, const char *line,
 	table_sep = !was_in_fence && line_is_table_sep(line, len);
 	normalize_body = !was_in_fence || is_fence;
 
-	if (morph_buf_init(&normalized, len + 1) < 0)
-		return -1;
+	if ((nb_buf_init(&normalized), nb_buf_reserve(&normalized, len + 1) ? 0 : NB_ERR_NOMEM) < 0)
+		return NB_ERR_NOMEM;
 	if (normalize_body) {
 		if (append_normalized_chars(&normalized, line, len,
 					    table_sep) < 0) {
-			rc = -1;
+			rc = NB_ERR_NOMEM;
 			return rc;
 		}
-	} else if (morph_buf_append(&normalized, line, len) < 0) {
-		rc = -1;
+	} else if ((nb_buf_append(&normalized, line, len) ? 0 : NB_ERR_NOMEM) < 0) {
+		rc = NB_ERR_NOMEM;
 		return rc;
 	}
 
-	line = morph_buf_cstr_borrow(&normalized);
+	line = nb_buf_cstr(&normalized);
 	len = normalized.len;
 	/* Code is literal: blank rows, whitespace and fence-like source survive. */
 	if (was_in_fence && !is_fence) {
-		rc = morph_buf_append(out, line, len);
+		rc = (nb_buf_append(out, line, len) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_putc(out, '\n');
+			rc = (nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM);
 		*previous_blank = len == 0;
 		return rc;
 	}
@@ -425,15 +423,15 @@ static int append_normalized_line(morph_buf_t *out, const char *line,
 						   previous_blank, prev_kind,
 						   in_fence, fence_marker,
 						   fence_len) < 0) {
-				rc = -1;
+				rc = NB_ERR_NOMEM;
 			}
 			return rc;
 		}
 	}
 	if (!was_in_fence && line_is_horizontal_rule(line, len)) {
 		if (out->len > 0 && !*previous_blank) {
-			if (morph_buf_putc(out, '\n') < 0) {
-				rc = -1;
+			if ((nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM) < 0) {
+				rc = NB_ERR_NOMEM;
 				return rc;
 			}
 		}
@@ -455,8 +453,8 @@ static int append_normalized_line(morph_buf_t *out, const char *line,
 	}
 	if (len == 0) {
 		if (out->len > 0 && !*previous_blank) {
-			if (morph_buf_putc(out, '\n') < 0) {
-				rc = -1;
+			if ((nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM) < 0) {
+				rc = NB_ERR_NOMEM;
 				return rc;
 			}
 		}
@@ -467,14 +465,14 @@ static int append_normalized_line(morph_buf_t *out, const char *line,
 	if (!was_in_fence && needs_blank_before(kind, *prev_kind,
 						*previous_blank,
 						out->len > 0)) {
-		if (morph_buf_putc(out, '\n') < 0) {
-			rc = -1;
+		if ((nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM) < 0) {
+			rc = NB_ERR_NOMEM;
 			return rc;
 		}
 	}
-	if (morph_buf_append(out, line, len) < 0 ||
-	    morph_buf_putc(out, '\n') < 0) {
-		rc = -1;
+	if ((nb_buf_append(out, line, len) ? 0 : NB_ERR_NOMEM) < 0 ||
+	    !nb_buf_append_char(out, '\n')) {
+		rc = NB_ERR_NOMEM;
 		return rc;
 	}
 	*previous_blank = 0;
@@ -484,7 +482,7 @@ static int append_normalized_line(morph_buf_t *out, const char *line,
 
 char *agent_ui_normalize_markdown(const char *input)
 {
-	morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf out NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *s;
 	size_t len;
 	size_t pos = 0;
@@ -497,7 +495,7 @@ char *agent_ui_normalize_markdown(const char *input)
 	if (!input)
 		input = "";
 	len = strlen(input);
-	if (morph_buf_init(&out, len + 32) < 0)
+	if ((nb_buf_init(&out), nb_buf_reserve(&out, len + 32) ? 0 : NB_ERR_NOMEM) < 0)
 		return NULL;
 	s = input;
 	while (pos < len) {
@@ -515,7 +513,7 @@ char *agent_ui_normalize_markdown(const char *input)
 					   &previous_blank, &prev_kind,
 					   &in_fence, &fence_marker,
 					   &fence_len) < 0) {
-			morph_buf_cleanup(&out);
+			nb_buf_cleanup(&out);
 			return NULL;
 		}
 		if (pos < len && s[pos] == '\r')
@@ -524,8 +522,8 @@ char *agent_ui_normalize_markdown(const char *input)
 			pos++;
 	}
 	if (in_fence && append_fence_close(&out, fence_marker, fence_len) < 0) {
-		morph_buf_cleanup(&out);
+		nb_buf_cleanup(&out);
 		return NULL;
 	}
-	return morph_buf_detach(&out);
+	return (nb_buf_ok(&out) ? strdup(nb_buf_cstr(&out)) : NULL);
 }

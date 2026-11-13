@@ -1,8 +1,9 @@
 #include "sapi/cli/models/subagents.h"
+#include "nb/err.h"
 
 #include "sapi/cli/models/transcript.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,15 +17,16 @@ static const char *cli_subagents_string(const cJSON *data, const char *key)
 int cli_subagents_thread_create(const char *id, struct cli_subagents_thread **out)
 {
 	if (!id || !out || *out || strlen(id) >= sizeof((*out)->id))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct cli_subagents_thread *thread = calloc(1, sizeof(*thread));
 	if (!thread)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	memcpy(thread->id, id, strlen(id) + 1);
 	struct cli_subagents_segment segment = {0};
 	int rc = cli_transcript_model_create(&thread->transcript);
 	if (rc == 0)
-		rc = morph_array_init(&thread->segments, 16, sizeof(segment));
+		rc = (nb_vec_init(&thread->segments, sizeof(segment)),
+		      nb_vec_reserve(&thread->segments, 16) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
 		cli_subagents_thread_destroy(thread);
 		return rc;
@@ -39,9 +41,12 @@ void cli_subagents_thread_destroy(struct cli_subagents_thread *thread)
 		return;
 	cli_transcript_model_destroy(thread->transcript);
 	struct cli_subagents_segment *segment;
-	morph_array_foreach (segment, &thread->segments, struct cli_subagents_segment)
-		morph_buf_cleanup(&segment->text);
-	morph_array_cleanup(&thread->segments);
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(&thread->segments) &&
+	     (segment = (struct cli_subagents_segment *)nb_vec_at(&thread->segments, _i_));
+	     _i_++)
+		nb_buf_cleanup(&segment->text);
+	nb_vec_cleanup(&thread->segments);
 	free(thread);
 }
 
@@ -49,26 +54,26 @@ static int cli_subagents_append(struct cli_subagents_thread *thread,
 				enum cli_subagents_segment_kind kind, const char *text, int begin)
 {
 	struct cli_subagents_segment *segment =
-		thread->segments.nelts
-			? morph_array_borrow(&thread->segments, thread->segments.nelts - 1)
-			: NULL;
+		thread->segments.len ? nb_vec_at(&thread->segments, thread->segments.len - 1)
+				     : NULL;
 	if (!segment || segment->kind != kind || begin) {
-		segment = morph_array_push_borrow(&thread->segments);
+		segment = nb_vec_push(&thread->segments);
 		if (!segment)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		memset(segment, 0, sizeof(*segment));
 		segment->kind = kind;
-		int rc = morph_buf_init(&segment->text, 256);
+		int rc = (nb_buf_init(&segment->text),
+			  nb_buf_reserve(&segment->text, 256) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
-	return morph_buf_puts(&segment->text, text);
+	return (nb_buf_append_cstr(&segment->text, text) ? 0 : NB_ERR_NOMEM);
 }
 
 int cli_subagents_thread_event(struct cli_subagents_thread *thread, const struct morph_event *event)
 {
 	if (!thread || !event || !event->name)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	const char *id = cli_subagents_string(event->data, "agent_id");
 	if (strcmp(id, thread->id))
 		return 0;
@@ -91,11 +96,11 @@ int cli_subagents_thread_event(struct cli_subagents_thread *thread, const struct
 		thread->reasoning_open = 1;
 	} else if (!strcmp(name, "react.thought.end") && *text) {
 		struct cli_subagents_segment *last =
-			thread->segments.nelts
-				? morph_array_borrow(&thread->segments, thread->segments.nelts - 1)
+			thread->segments.len
+				? nb_vec_at(&thread->segments, thread->segments.len - 1)
 				: NULL;
 		if (!last || last->kind != CLI_SUBAGENTS_REASONING ||
-		    strcmp(morph_buf_cstr_borrow(&last->text), text))
+		    strcmp(nb_buf_cstr(&last->text), text))
 			rc = cli_subagents_append(thread, CLI_SUBAGENTS_REASONING, text, 1);
 		thread->reasoning_open = 0;
 	} else if (!strcmp(name, "react.reasoning.end")) {
@@ -114,9 +119,9 @@ int cli_subagents_thread_event(struct cli_subagents_thread *thread, const struct
 		}
 		thread->content_open = 0;
 	} else if (!strcmp(name, "plan.updated")) {
-		char *state MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(event->data);
+		char *state NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(event->data);
 		if (!state)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		rc = cli_subagents_append(thread, CLI_SUBAGENTS_PLAN, state, 1);
 		thread->reasoning_open = 0;
 		thread->content_open = 0;
@@ -131,9 +136,9 @@ int cli_subagents_thread_event(struct cli_subagents_thread *thread, const struct
 	if (rc == 0)
 		rc = cli_transcript_model_reduce(thread->transcript, event, timestamp, &change);
 	if (rc == 0 && change.kind == CLI_TRANSCRIPT_TOOL_STARTED) {
-		struct cli_subagents_segment *segment = morph_array_push_borrow(&thread->segments);
+		struct cli_subagents_segment *segment = nb_vec_push(&thread->segments);
 		if (!segment)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		memset(segment, 0, sizeof(*segment));
 		segment->kind = CLI_SUBAGENTS_TOOL;
 		segment->tool_index = change.tool_index;
@@ -148,9 +153,9 @@ int cli_subagents_thread_event(struct cli_subagents_thread *thread, const struct
 
 int cli_subagents_thread_replay(struct cli_subagents_thread *thread, const char *json)
 {
-	cJSON *record MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(json);
+	cJSON *record NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(json);
 	if (!record)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct morph_event event = {
 		.type = MORPH_EVENT_BACKGROUND,
 		.name = cli_subagents_string(record, "name"),

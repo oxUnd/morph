@@ -75,7 +75,7 @@ def main():
             terminal.send('\x1b[I')
             terminal.send('\x14')
             terminal.send('\x1b[O\x1b[I')
-            assert 'esc back' in terminal.snapshot('focus reports preserve transcript view')
+            assert 'Esc back' in terminal.snapshot('focus reports preserve transcript view')
             terminal.send('\x14')
             assert 'draft' in terminal.snapshot('closing transcript restores the draft')
             terminal.send('\x15/recap\r')
@@ -118,6 +118,8 @@ def main():
             terminal.pump(1)
             screen = terminal.snapshot('recap preserves a single completed work status')
             assert screen.count('Worked for ') == 1, screen
+            completed_receipts = [row.strip() for row in screen.splitlines()
+                                  if 'Worked for ' in row]
 
             terminal.child.setwinsize(24, 32)
             terminal.screen.resize(lines=24, columns=32)
@@ -134,7 +136,10 @@ def main():
             screen = terminal.snapshot('narrow recap wraps and sanitizes terminal controls')
             assert 'Recap:' in screen and 'Next:' in screen, screen
             assert screen.count('Worked for ') <= 1, screen
-            assert 'Worked for ' not in terminal.raw[start:], terminal.raw[start:]
+            # A retained viewport may repaint historical rows when the recap
+            # moves them. Its completed receipt must remain unchanged and unique.
+            assert [row.strip() for row in screen.splitlines()
+                    if 'Worked for ' in row] == completed_receipts, screen
             assert '\x1b[2J' not in terminal.raw[start:]
             terminal.send('/quit\r')
             terminal.child.expect(__import__('pexpect').EOF, timeout=10)

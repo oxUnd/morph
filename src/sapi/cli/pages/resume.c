@@ -1,4 +1,6 @@
 #include "sapi/cli/pages/resume.h"
+#include "nb/err.h"
+#include "nb/cleanup.h"
 #include "sapi/cli/presentation/output.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application_internal.h"
@@ -8,7 +10,7 @@
 #include "sapi/cli/services/session_restore.h"
 #include <morph/tui/components.h>
 
-static int cli_resume_append_token_number(morph_buf_t *buf, int64_t tokens)
+static int cli_resume_append_token_number(nb_buf *buf, int64_t tokens)
 {
 	char raw[32];
 	const char *digits;
@@ -18,32 +20,32 @@ static int cli_resume_append_token_number(morph_buf_t *buf, int64_t tokens)
 	snprintf(raw, sizeof(raw), "%lld", (long long)tokens);
 	digits = raw;
 	if (*digits == '-') {
-		rc = morph_buf_putc(buf, *digits++);
+		rc = (nb_buf_append_char(buf, *digits++) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
 	length = strlen(digits);
 	for (size_t i = 0; i < length; i++) {
 		if (i > 0 && (length - i) % 3 == 0) {
-			rc = morph_buf_putc(buf, ',');
+			rc = (nb_buf_append_char(buf, ',') ? 0 : NB_ERR_NOMEM);
 			if (rc != 0)
 				return rc;
 		}
-		rc = morph_buf_putc(buf, digits[i]);
+		rc = (nb_buf_append_char(buf, digits[i]) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
 	return 0;
 }
 
-static int cli_resume_append_token_count(morph_buf_t *buf, int64_t tokens)
+static int cli_resume_append_token_count(nb_buf *buf, int64_t tokens)
 {
 	int rc = cli_resume_append_token_number(buf, tokens);
 
-	return rc == 0 ? morph_buf_puts(buf, " tokens") : rc;
+	return rc == 0 ? (nb_buf_append_cstr(buf, " tokens") ? 0 : NB_ERR_NOMEM) : rc;
 }
 
-static int cli_resume_append_session_time(morph_buf_t *buf, int64_t updated_at, int64_t created_at)
+static int cli_resume_append_session_time(nb_buf *buf, int64_t updated_at, int64_t created_at)
 {
 	char formatted[16];
 	struct tm local;
@@ -52,8 +54,8 @@ static int cli_resume_append_session_time(morph_buf_t *buf, int64_t updated_at, 
 	timestamp = (time_t)(updated_at > 0 ? updated_at : created_at);
 	if (timestamp <= 0 || !localtime_r(&timestamp, &local) ||
 	    strftime(formatted, sizeof(formatted), "%m-%d %H:%M", &local) == 0)
-		return morph_buf_puts(buf, " · -- --:--");
-	return morph_buf_printf(buf, " · %s", formatted);
+		return (nb_buf_append_cstr(buf, " · -- --:--") ? 0 : NB_ERR_NOMEM);
+	return (nb_buf_printf(buf, " · %s", formatted) ? 0 : NB_ERR_NOMEM);
 }
 
 #define CLI_RESUME_PAGE_SIZE 10
@@ -83,6 +85,14 @@ static void cli_resume_model_cleanup(struct cli_resume_model *model)
 	free(model->order);
 	morph_tui_widget_list_groups_cleanup(&model->rows);
 	memset(model, 0, sizeof(*model));
+}
+
+static void cli_resume_sessions_cleanup(struct session **sessions)
+{
+	if (!sessions)
+		return;
+	runtime_session_list_free(*sessions);
+	*sessions = NULL;
 }
 
 static int cli_resume_model_group(const struct cli_resume_model *model, const char *workdir)
@@ -160,7 +170,7 @@ static int cli_resume_model_build(struct cli_resume_model *model, const struct s
 	int rc;
 
 	if (!model || !sessions || count <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(model, 0, sizeof(*model));
 	model->sessions = sessions;
 	model->session_count = count;
@@ -174,7 +184,7 @@ static int cli_resume_model_build(struct cli_resume_model *model, const struct s
 		free(order);
 		free(counts);
 		cli_resume_model_cleanup(model);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	cli_resume_model_accumulate(model, session_groups, current_workdir);
 	cli_resume_model_order(model, order, &ordered);
@@ -227,7 +237,7 @@ static const struct cli_resume_group *cli_resume_model_row_group(
 	return &model->groups[model->group_order[model->rows.row_group[row]]];
 }
 
-static int cli_resume_append_group(morph_buf_t *buf, const struct cli_resume_group *group)
+static int cli_resume_append_group(nb_buf *buf, const struct cli_resume_group *group)
 {
 	const char *workdir = group->workdir;
 	const char *home = getenv("HOME");
@@ -235,17 +245,17 @@ static int cli_resume_append_group(morph_buf_t *buf, const struct cli_resume_gro
 	int rc;
 
 	if (!workdir || !workdir[0]) {
-		rc = morph_buf_puts(buf, "unknown workdir");
+		rc = (nb_buf_append_cstr(buf, "unknown workdir") ? 0 : NB_ERR_NOMEM);
 	} else if (home_length > 0 && strncmp(workdir, home, home_length) == 0 &&
 		   (workdir[home_length] == '\0' || workdir[home_length] == '/')) {
-		rc = morph_buf_putc(buf, '~');
+		rc = (nb_buf_append_char(buf, '~') ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_puts(buf, workdir + home_length);
+			rc = (nb_buf_append_cstr(buf, workdir + home_length) ? 0 : NB_ERR_NOMEM);
 	} else {
-		rc = morph_buf_puts(buf, workdir);
+		rc = (nb_buf_append_cstr(buf, workdir) ? 0 : NB_ERR_NOMEM);
 	}
 	if (rc == 0 && group->current)
-		rc = morph_buf_puts(buf, " · current");
+		rc = (nb_buf_append_cstr(buf, " · current") ? 0 : NB_ERR_NOMEM);
 	return rc;
 }
 
@@ -263,29 +273,29 @@ static int cli_resume_page(struct cli_application *ctx, const struct cli_resume_
 		int row = (int)model->rows.item_row[ordinal];
 		int group = model->group_order[model->rows.row_group[row]];
 		char number[16];
-		morph_buf_t metadata;
+		nb_buf metadata NB_CLEANUP(nb_buf_cleanup) = {0};
 		int rc;
 
 		if (ordinal == start ||
 		    group != model->group_order[
 			     model->rows.row_group[model->rows.item_row[ordinal - 1]]]) {
-			morph_buf_t label;
+			nb_buf label NB_CLEANUP(nb_buf_cleanup) = {0};
 
-			rc = morph_buf_init(&label, 64);
+			rc = (nb_buf_init(&label), nb_buf_reserve(&label, 64) ? 0 : NB_ERR_NOMEM);
 			if (rc != 0)
 				return rc;
 			rc = cli_resume_append_group(&label, &model->groups[group]);
 			if (rc == 0)
-				cli_list_group(ctx, morph_buf_cstr_borrow(&label),
-					       model->groups[group].count, 0);
-			morph_buf_cleanup(&label);
+				cli_list_group(ctx, nb_buf_cstr(&label), model->groups[group].count,
+					       0);
+			nb_buf_cleanup(&label);
 			if (rc != 0)
 				return rc;
 		}
-		rc = morph_buf_init(&metadata, 64);
+		rc = (nb_buf_init(&metadata), nb_buf_reserve(&metadata, 64) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
-		rc = morph_buf_printf(&metadata, "%s · ", session->display_id);
+		rc = (nb_buf_printf(&metadata, "%s · ", session->display_id) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
 			rc = cli_resume_append_token_count(&metadata, session->token_used);
 		if (rc == 0)
@@ -293,11 +303,11 @@ static int cli_resume_page(struct cli_application *ctx, const struct cli_resume_
 							    session->created_at);
 		if (rc == 0) {
 			snprintf(number, sizeof(number), "%d", ordinal - start + 1);
-			cli_list_row(ctx, number, session->name,
-				     morph_buf_cstr_borrow(&metadata), session->id == current_id,
-				     ordinal == end - 1, cli_list_columns());
+			cli_list_row(ctx, number, session->name, nb_buf_cstr(&metadata),
+				     session->id == current_id, ordinal == end - 1,
+				     cli_list_columns());
 		}
-		morph_buf_cleanup(&metadata);
+		nb_buf_cleanup(&metadata);
 		if (rc != 0)
 			return rc;
 	}
@@ -355,7 +365,7 @@ static struct cli_resume_layout cli_resume_dimensions(const struct morph_tui_scr
 }
 
 /* All data passes through the single-line sanitizer before raw frame output. */
-static void cli_resume_cell(morph_buf_t *frame, const struct cli_resume_layout *layout, int row,
+static void cli_resume_cell(nb_buf *frame, const struct cli_resume_layout *layout, int row,
 			    int column, int width, const char *text, const char *style, int right)
 {
 	char compact[BUFSIZ];
@@ -365,11 +375,11 @@ static void cli_resume_cell(morph_buf_t *frame, const struct cli_resume_layout *
 						 width, compact, style, right);
 }
 
-static void cli_resume_rule(morph_buf_t *frame, int row, int width)
+static void cli_resume_rule(nb_buf *frame, int row, int width)
 {
-	morph_buf_printf(frame, "\033[%d;3H%s", row, CLI_RESUME_RULE);
+	nb_buf_printf(frame, "\033[%d;3H%s", row, CLI_RESUME_RULE);
 	for (int i = 0; i < width; i++)
-		morph_buf_puts(frame, "─");
+		nb_buf_append_cstr(frame, "─");
 }
 
 static const struct session *cli_resume_focus_session(const struct cli_resume_model *model,
@@ -384,7 +394,7 @@ static const struct session *cli_resume_focus_session(const struct cli_resume_mo
 	return cli_resume_model_session(model, focus);
 }
 
-static int cli_resume_frame(morph_buf_t *frame, const struct cli_resume_model *model, int focus,
+static int cli_resume_frame(nb_buf *frame, const struct cli_resume_model *model, int focus,
 			    const struct cli_resume_layout *layout)
 {
 	int count = layout->grouped ? (int)model->rows.row_count : model->session_count;
@@ -395,20 +405,20 @@ static int cli_resume_frame(morph_buf_t *frame, const struct cli_resume_model *m
 	int shown_first = 0;
 	int shown_last = 0;
 	char label[128];
-	morph_buf_t tokens;
-	int rc = morph_buf_init(&tokens, 32);
+	nb_buf tokens NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&tokens), nb_buf_reserve(&tokens, 32) ? 0 : NB_ERR_NOMEM);
 
 	if (rc != 0)
 		return rc;
-	morph_buf_reset(frame);
-	morph_buf_printf(frame, "\033[?2026h%s\033[H\033[J", CLI_RESUME_NORMAL);
+	nb_buf_clear(frame);
+	nb_buf_printf(frame, "\033[?2026h%s\033[H\033[J", CLI_RESUME_NORMAL);
 	if (layout->columns < 5) {
 		const struct session *session = cli_resume_focus_session(model, layout, focus);
 
 		cli_resume_cell(frame, layout, 1, 1, layout->columns,
 				session ? session->name : "", CLI_RESUME_SELECTED, 0);
-		morph_buf_puts(frame, "\033[0m\033[?2026l");
-		morph_buf_cleanup(&tokens);
+		nb_buf_append_cstr(frame, "\033[0m\033[?2026l");
+		nb_buf_cleanup(&tokens);
 		return morph_tui_draw_write(stdout, frame);
 	}
 	if (layout->rows >= 14) {
@@ -461,9 +471,9 @@ static int cli_resume_frame(morph_buf_t *frame, const struct cli_resume_model *m
 			int item = cli_resume_model_row_item(model, i);
 
 			if (!group || item < 0) {
-				morph_buf_reset(&tokens);
+				nb_buf_clear(&tokens);
 				if (!group) {
-					rc = -EINVAL;
+					rc = NB_ERR_INVAL;
 					break;
 				}
 				rc = cli_resume_append_group(&tokens, group);
@@ -473,11 +483,10 @@ static int cli_resume_frame(morph_buf_t *frame, const struct cli_resume_model *m
 						group->current ? CLI_RESUME_ACCENT
 							       : CLI_RESUME_MUTED,
 						0);
-				cli_resume_cell(frame, layout, row, 5, layout->width - 2,
-						morph_buf_cstr_borrow(&tokens),
-						group->current ? CLI_RESUME_ACCENT
-							       : CLI_RESUME_MUTED,
-						0);
+				cli_resume_cell(
+					frame, layout, row, 5, layout->width - 2,
+					nb_buf_cstr(&tokens),
+					group->current ? CLI_RESUME_ACCENT : CLI_RESUME_MUTED, 0);
 				continue;
 			}
 			session = cli_resume_model_session(model, item);
@@ -521,22 +530,21 @@ static int cli_resume_frame(morph_buf_t *frame, const struct cli_resume_model *m
 			cli_resume_cell(frame, layout, row, layout->id_column, 8,
 					session->display_id, metadata, 0);
 		if (layout->tokens_column) {
-			morph_buf_reset(&tokens);
+			nb_buf_clear(&tokens);
 			rc = cli_resume_append_token_number(&tokens, session->token_used);
 			if (rc != 0)
 				break;
 			cli_resume_cell(frame, layout, row, layout->tokens_column, 12,
-					morph_buf_cstr_borrow(&tokens), metadata, 1);
+					nb_buf_cstr(&tokens), metadata, 1);
 		}
 		if (layout->updated_column) {
-			morph_buf_reset(&tokens);
+			nb_buf_clear(&tokens);
 			rc = cli_resume_append_session_time(&tokens, session->updated_at,
 							    session->created_at);
 			if (rc != 0)
 				break;
 			cli_resume_cell(frame, layout, row, layout->updated_column, 14,
-					morph_buf_cstr_borrow(&tokens) + strlen(" · "), metadata,
-					0);
+					nb_buf_cstr(&tokens) + strlen(" · "), metadata, 0);
 		}
 	}
 	if (layout->rows >= 6) {
@@ -562,15 +570,16 @@ static int cli_resume_frame(morph_buf_t *frame, const struct cli_resume_model *m
 			cli_resume_cell(frame, layout, layout->rows, 3 + layout->width - 10, 10,
 					"Esc Cancel", CLI_RESUME_NORMAL, 1);
 	}
-	morph_buf_puts(frame, "\033[0m\033[?2026l");
+	nb_buf_append_cstr(frame, "\033[0m\033[?2026l");
 	if (rc == 0)
 		rc = morph_tui_draw_write(stdout, frame);
-	morph_buf_cleanup(&tokens);
+	nb_buf_cleanup(&tokens);
 	return rc;
 }
 
 struct cli_resume_picker {
 	struct cli_application *ctx;
+	struct session *owned_sessions;
 	int selection;
 	struct cli_resume_model *model;
 	int *selected;
@@ -580,7 +589,7 @@ struct cli_resume_picker {
 	size_t pressed_index;
 	struct morph_tui_widget_menu_state menu;
 	struct cli_resume_layout layout;
-	morph_buf_t frame;
+	nb_buf frame;
 };
 
 /* Keep the same session selected when the terminal crosses the grouping threshold. */
@@ -731,7 +740,8 @@ static int cli_resume_pick(struct cli_resume_model *model, int *selected)
 	struct morph_tui_screen screen = {0};
 	const struct morph_tui_screen_ops ops = {.update = cli_resume_update,
 						 .draw = cli_resume_draw};
-	int rc = morph_buf_init(&picker.frame, BUFSIZ);
+	int rc = (nb_buf_init(&picker.frame),
+		  nb_buf_reserve(&picker.frame, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 
 	*selected = -1;
 	picker.menu.list.flags = MORPH_TUI_WIDGET_LIST_VIM | MORPH_TUI_WIDGET_LIST_TAB |
@@ -748,7 +758,7 @@ static int cli_resume_pick(struct cli_resume_model *model, int *selected)
 
 	if (rc == 0)
 		rc = leave_rc;
-	morph_buf_cleanup(&picker.frame);
+	nb_buf_cleanup(&picker.frame);
 	return rc;
 }
 
@@ -758,16 +768,33 @@ static int cli_resume_select(struct cli_application *ctx, int64_t id)
 	int rc = runtime_session_select_existing(ctx->runtime, id, &selected);
 
 	if (rc) {
-		CMD_ERROR(ctx, "failed to resume session: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "failed to resume session: %s",
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 	ctx->session_auto_named = 1;
 	rc = cli_session_history_restore(ctx);
 	if (rc)
-		CMD_ERROR(ctx, "failed to restore session history: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "failed to restore session history: %s",
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	else
 		CMD_OK(ctx, "resumed session: %s", selected.name);
 	return rc;
+}
+
+static void cli_resume_picker_cleanup(struct cli_resume_picker **owner)
+{
+	struct cli_resume_picker *picker = owner ? *owner : NULL;
+	if (!picker)
+		return;
+	if (picker->model) {
+		cli_resume_model_cleanup(picker->model);
+		free(picker->model);
+	}
+	cli_resume_sessions_cleanup(&picker->owned_sessions);
+	nb_buf_destroy(&picker->frame);
+	free(picker);
+	*owner = NULL;
 }
 
 static void cli_resume_close(void *data, int result)
@@ -775,56 +802,50 @@ static void cli_resume_close(void *data, int result)
 	struct cli_resume_picker *picker = data;
 	struct cli_application *ctx = picker->ctx;
 
-	if (!result && picker->selection >= 0) {
+	if (!result && picker->selection >= 0)
 		(void)cli_resume_select(ctx, picker->model->sessions[picker->selection].id);
-	}
-	runtime_session_list_free((struct session *)picker->model->sessions);
-	cli_resume_model_cleanup(picker->model);
-	free(picker->model);
-	morph_buf_cleanup(&picker->frame);
-	free(picker);
+	cli_resume_picker_cleanup(&picker);
 }
 
-static int cli_resume_present(struct cli_application *ctx, struct cli_resume_model *model)
+static int cli_resume_present_take(struct cli_application *ctx, struct session **sessions,
+				   int count)
 {
-	struct cli_resume_picker *picker = calloc(1, sizeof(*picker));
+	struct cli_resume_picker *picker NB_CLEANUP(cli_resume_picker_cleanup) =
+		calloc(1, sizeof(*picker));
 	const struct morph_tui_screen_ops ops = {.update = cli_resume_update,
 						 .draw = cli_resume_draw};
 
 	if (!picker)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	picker->ctx = ctx;
 	picker->model = calloc(1, sizeof(*picker->model));
-	if (!picker->model) {
-		free(picker);
-		return -ENOMEM;
-	}
-	*picker->model = *model;
-	memset(model, 0, sizeof(*model));
+	if (!picker->model)
+		return NB_ERR_NOMEM;
+	int rc = cli_resume_model_build(picker->model, *sessions, count,
+					runtime_workdir_borrow(ctx->runtime));
+	if (rc != NB_OK)
+		return rc;
 	picker->selection = -1;
 	picker->selected = &picker->selection;
 	picker->menu.list.flags = MORPH_TUI_WIDGET_LIST_VIM | MORPH_TUI_WIDGET_LIST_TAB |
 				  MORPH_TUI_WIDGET_LIST_HORIZONTAL_PAGES |
 				  MORPH_TUI_WIDGET_LIST_PAGED;
-	int rc = morph_buf_init(&picker->frame, BUFSIZ);
-
-	if (!rc)
-		rc = cli_application_present_screen_with_flags(
-			ctx, &ops, picker, cli_resume_close, MORPH_TUI_TERMINAL_SESSION_MOUSE);
-	if (rc) {
-		runtime_session_list_free((struct session *)picker->model->sessions);
-		cli_resume_model_cleanup(picker->model);
-		free(picker->model);
-		morph_buf_cleanup(&picker->frame);
-		free(picker);
+	if (!nb_buf_reserve(&picker->frame, BUFSIZ))
+		return NB_ERR_NOMEM;
+	rc = cli_application_present_screen_with_flags(ctx, &ops, picker, cli_resume_close,
+						       MORPH_TUI_TERMINAL_SESSION_MOUSE);
+	if (rc == NB_OK) {
+		picker->owned_sessions = *sessions;
+		*sessions = NULL;
+		picker = NULL;
 	}
 	return rc;
 }
 
 int cli_resume_show(struct cli_application *ctx)
 {
-	struct session *list = NULL;
-	struct cli_resume_model model;
+	struct session *list NB_CLEANUP(cli_resume_sessions_cleanup) = NULL;
+	struct cli_resume_model model NB_CLEANUP(cli_resume_model_cleanup) = {0};
 	int64_t current_id = 0;
 	int count = 0;
 	int page = 0;
@@ -832,37 +853,27 @@ int cli_resume_show(struct cli_application *ctx)
 
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
 		CMD_ERROR(ctx, "use /resume <name|id> in JSON mode");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	rc = runtime_session_list_query(ctx->runtime, &list, &count, 0, NULL);
 	if (rc != 0)
 		return rc;
 	if (count == 0) {
 		CMD_OK(ctx, "no sessions to resume");
-		runtime_session_list_free(list);
 		return 0;
 	}
+	int controls_available = cli_setup_controls_available(stdin, stdout);
+	if (controls_available && cli_application_tui_borrow(ctx))
+		return cli_resume_present_take(ctx, &list, count);
 	rc = cli_resume_model_build(&model, list, count, runtime_workdir_borrow(ctx->runtime));
-	if (rc != 0) {
-		runtime_session_list_free(list);
+	if (rc != NB_OK)
 		return rc;
-	}
 	(void)runtime_session_current_id(ctx->runtime, &current_id);
-	if (cli_setup_controls_available(stdin, stdout)) {
-		if (cli_application_tui_borrow(ctx)) {
-			rc = cli_resume_present(ctx, &model);
-			if (model.sessions)
-				runtime_session_list_free(list);
-			cli_resume_model_cleanup(&model);
-			return rc;
-		}
+	if (controls_available) {
 		int index;
-
 		rc = cli_resume_pick(&model, &index);
-		if (rc == 0 && index >= 0)
+		if (rc == NB_OK && index >= 0)
 			rc = cli_resume_select(ctx, list[index].id);
-		cli_resume_model_cleanup(&model);
-		runtime_session_list_free(list);
 		return rc;
 	}
 	while (count > 0) {
@@ -921,6 +932,5 @@ int cli_resume_show(struct cli_application *ctx)
 		rc = cli_resume_select(ctx, session->id);
 		break;
 	}
-	runtime_session_list_free(list);
 	return rc;
 }

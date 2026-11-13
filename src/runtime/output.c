@@ -1,8 +1,9 @@
 #include "runtime/output.h"
+#include "nb/err.h"
 #include "persistence/output_store.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 
-#include "util/log.h"
+#include "nb/log.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -216,11 +217,11 @@ int runtime_output_record_event(const struct runtime_output_context *context,
 		return 0;
 	arguments = cJSON_Parse(event->tool_args);
 	if (!arguments)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	recipe_json = build_recipe(context->db, event->tool_name, arguments);
 	if (!recipe_json) {
 		cJSON_Delete(arguments);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	for (int i = 0; i < event->artifacts->count; i++) {
 		int64_t id = 0;
@@ -244,7 +245,7 @@ static int output_add_text(cJSON *root, const char *name, const char *value)
 
 char *runtime_output_json_by_path_copy(struct db *db, const char *path)
 {
-	struct output_record record MORPH_CLEANUP(output_record_cleanup) = {0};
+	struct output_record record NB_CLEANUP(output_record_cleanup) = {0};
 	cJSON *root;
 	char *json = NULL;
 	int ok;
@@ -285,7 +286,7 @@ char *runtime_output_json_by_path_copy(struct db *db, const char *path)
 	return json;
 }
 
-char *runtime_output_json_from_database_copy(struct morph_log *logger, const char *database_path,
+char *runtime_output_json_from_database_copy(struct nb_log *logger, const char *database_path,
 					     const char *artifact_path)
 {
 	struct db db;

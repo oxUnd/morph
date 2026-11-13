@@ -4,12 +4,13 @@
 #include "prompt_context.h"
 #include "react.h"
 #include "tokenizer.h"
-#include "util/cleanup.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/json.h"
-#include "util/log.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "cJSON.h"
+#include "nb/log.h"
+#include "nb/utf8.h"
 #include <errno.h>
 #include <limits.h>
 #include <ctype.h>
@@ -30,7 +31,7 @@ int agent_history_record_request(struct react_context *ctx, const struct model *
 	int rc;
 
 	if (!ctx || !model)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!ctx->history_enabled || !ctx->history_db || ctx->history_session_id <= 0)
 		return 0;
 	rc = model_input_snapshot_create(model, system_prompt, messages, count, tools, tool_count,
@@ -40,11 +41,11 @@ int agent_history_record_request(struct react_context *ctx, const struct model *
 	json = cJSON_PrintUnformatted(input);
 	cJSON_Delete(input);
 	if (!json)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	safe = history_redacted_json_create(ctx, json);
 	free(json);
 	if (!safe)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	rc = sqlite3_prepare_v2(
 		ctx->history_db->handle,
 		"INSERT INTO model_request_snapshots(session_id,turn_id,provider,model,"
@@ -84,7 +85,7 @@ static int history_store(struct react_context *ctx, const struct model_history_i
 	if ((insert->content && !content) || (insert->payload_json && !payload)) {
 		free(content);
 		free(payload);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	safe = *insert;
 	safe.content = content;
@@ -96,13 +97,12 @@ static int history_store(struct react_context *ctx, const struct model_history_i
 		tokens += tokenizer_count(ctx->tokenizer, payload);
 	if (strcmp(insert->kind, "user_message") == 0 && payload) {
 		struct model_history_item item = {.content = content, .payload_json = payload};
-		char *rendered MORPH_CLEANUP(morph_charp_cleanup) =
-			history_user_content_create(&item);
+		char *rendered NB_CLEANUP(nb_charp_cleanup) = history_user_content_create(&item);
 
 		if (!rendered) {
 			free(content);
 			free(payload);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		tokens = tokenizer_count(ctx->tokenizer, rendered);
 	}
@@ -153,20 +153,21 @@ int agent_history_record_user_steer(struct react_context *ctx, const char *conte
 	};
 
 	if (sequence <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	snprintf(key, sizeof(key), "turn:%s:user:steer:%d",
 		 ctx && ctx->turn_id[0] ? ctx->turn_id : "unknown", sequence);
 	item.idempotency_key = key;
 	return history_store(ctx, &item);
 }
 
-static int history_xml_append(morph_buf_t *text, const char *value)
+static int history_xml_append(nb_buf *text, const char *value)
 {
 	for (const char *at = value; *at; at++) {
 		const char *escaped = *at == '&' ? "&amp;" : *at == '<' ? "&lt;"
 			: *at == '>' ? "&gt;" : *at == '"' ? "&quot;" : *at == '\'' ? "&apos;"
 			: NULL;
-		int rc = escaped ? morph_buf_puts(text, escaped) : morph_buf_putc(text, *at);
+		int rc = escaped ? (nb_buf_append_cstr(text, escaped) ? 0 : NB_ERR_NOMEM)
+				 : (nb_buf_append_char(text, *at) ? 0 : NB_ERR_NOMEM);
 
 		if (rc != 0)
 			return rc;
@@ -176,31 +177,31 @@ static int history_xml_append(morph_buf_t *text, const char *value)
 
 char *agent_history_hook_prompt_create(const char *content, const char *hook_run_id)
 {
-	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 
 	if (!content || !hook_run_id || !*hook_run_id)
 		return NULL;
-	int rc = morph_buf_init(&text, 256);
+	int rc = (nb_buf_init(&text), nb_buf_reserve(&text, 256) ? 0 : NB_ERR_NOMEM);
 
 	if (rc == 0)
-		rc = morph_buf_puts(&text, "<hook_prompt hook_run_id=\"");
+		rc = (nb_buf_append_cstr(&text, "<hook_prompt hook_run_id=\"") ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = history_xml_append(&text, hook_run_id);
 	if (rc == 0)
-		rc = morph_buf_puts(&text, "\">");
+		rc = (nb_buf_append_cstr(&text, "\">") ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = history_xml_append(&text, content);
 	if (rc == 0)
-		rc = morph_buf_puts(&text, "</hook_prompt>");
-	return rc == 0 ? morph_buf_detach(&text) : NULL;
+		rc = (nb_buf_append_cstr(&text, "</hook_prompt>") ? 0 : NB_ERR_NOMEM);
+	return rc == 0 ? (nb_buf_ok(&text) ? strdup(nb_buf_cstr(&text)) : NULL) : NULL;
 }
 
 int agent_history_record_hook_prompt(struct react_context *ctx, const char *content,
 	const char *hook_run_id, int sequence)
 {
 	char key[192];
-	cJSON *payload MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	char *json MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	cJSON *payload NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	char *json NB_CLEANUP(nb_charp_cleanup) = NULL;
 	struct model_history_insert item = {
 		.session_id = ctx ? ctx->history_session_id : 0,
 		.turn_id = ctx ? ctx->turn_id : NULL,
@@ -211,15 +212,15 @@ int agent_history_record_hook_prompt(struct react_context *ctx, const char *cont
 	};
 
 	if (!content || !hook_run_id || !*hook_run_id || sequence <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	payload = cJSON_CreateObject();
 	if (!payload || !cJSON_AddStringToObject(payload, "source", "hook") ||
 	    !cJSON_AddStringToObject(payload, "hook_event_name", "Stop") ||
 	    !cJSON_AddStringToObject(payload, "hook_run_id", hook_run_id))
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	json = cJSON_PrintUnformatted(payload);
 	if (!json)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	item.payload_json = json;
 	snprintf(key, sizeof(key), "turn:%s:user:hook:%d",
 		 ctx && ctx->turn_id[0] ? ctx->turn_id : "unknown", sequence);
@@ -256,16 +257,16 @@ int agent_history_record_assistant(struct react_context *ctx, const char *conten
 		int rc;
 
 		if (!payload)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		if (!cJSON_AddStringToObject(payload, "reasoning_content",
 					     ctx->final_reasoning_content)) {
 			cJSON_Delete(payload);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		json = cJSON_PrintUnformatted(payload);
 		cJSON_Delete(payload);
 		if (!json)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		item.payload_json = json;
 		rc = history_store(ctx, &item);
 		free(json);
@@ -322,7 +323,7 @@ int history_store_turn_outcomes(struct db *db, int64_t session_id, const char *t
 		if (old && !cJSON_IsObject(payload)) {
 			cJSON_Delete(outcome);
 			cJSON_Delete(payload);
-			error = (MORPH_ERR_PARSE);
+			error = (NB_ERR_PARSE);
 			break;
 		}
 		if (!payload || !outcome || !cJSON_AddStringToObject(outcome, "status", status) ||
@@ -330,14 +331,14 @@ int history_store_turn_outcomes(struct db *db, int64_t session_id, const char *t
 		    !cJSON_AddNumberToObject(outcome, "error_code", error_code)) {
 			cJSON_Delete(outcome);
 			cJSON_Delete(payload);
-			error = (-ENOMEM);
+			error = (NB_ERR_NOMEM);
 			break;
 		}
 		cJSON_DeleteItemFromObjectCaseSensitive(payload, "turn_outcome");
 		if (!cJSON_AddItemToObject(payload, "turn_outcome", outcome)) {
 			cJSON_Delete(outcome);
 			cJSON_Delete(payload);
-			error = (-ENOMEM);
+			error = (NB_ERR_NOMEM);
 			break;
 		}
 		json = cJSON_PrintUnformatted(payload);
@@ -348,7 +349,7 @@ int history_store_turn_outcomes(struct db *db, int64_t session_id, const char *t
 			rendered = history_user_content_create(&item);
 		if (!rendered) {
 			free(json);
-			error = (-ENOMEM);
+			error = (NB_ERR_NOMEM);
 			break;
 		}
 		sqlite3_bind_text(update, 1, json, -1, SQLITE_TRANSIENT);
@@ -392,20 +393,20 @@ int agent_history_record_tool_calls(struct react_context *ctx, const char *conte
 				    int call_count)
 {
 	struct model_history_insert item = {0};
-	morph_buf_t key MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf key NB_CLEANUP(nb_buf_cleanup) = {0};
 	cJSON *array;
 	cJSON *root;
 	char *json;
 	int rc;
 
 	if (!ctx || !calls || call_count <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	root = cJSON_CreateObject();
 	array = cJSON_CreateArray();
 	if (!root || !array) {
 		cJSON_Delete(root);
 		cJSON_Delete(array);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	cJSON_AddItemToObject(root, "calls", array);
 	if (reasoning_content)
@@ -416,7 +417,7 @@ int agent_history_record_tool_calls(struct react_context *ctx, const char *conte
 
 		if (!call) {
 			cJSON_Delete(root);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		cJSON_AddStringToObject(call, "tool_call_id", calls[i].tool_call_id);
 		cJSON_AddStringToObject(call, "provider_call_id", calls[i].id);
@@ -441,19 +442,21 @@ int agent_history_record_tool_calls(struct react_context *ctx, const char *conte
 	json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
 	if (!json)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	item.session_id = ctx->history_session_id;
 	item.turn_id = ctx->turn_id;
 	item.kind = "assistant_tool_calls";
 	item.role = "assistant";
 	item.content = content;
 	item.payload_json = json;
-	rc = morph_buf_printf(&key, "calls:%s", calls[0].tool_call_id ? calls[0].tool_call_id : "");
+	rc = (nb_buf_printf(&key, "calls:%s", calls[0].tool_call_id ? calls[0].tool_call_id : "")
+		      ? 0
+		      : NB_ERR_NOMEM);
 	if (rc != 0) {
 		free(json);
 		return rc;
 	}
-	item.idempotency_key = morph_buf_cstr_borrow(&key);
+	item.idempotency_key = nb_buf_cstr(&key);
 	item.token_count = tokenizer_count(ctx->tokenizer, json);
 	item.active = 1;
 	rc = history_store(ctx, &item);
@@ -470,7 +473,7 @@ int agent_history_record_tool_result_ex(struct react_context *ctx, const char *t
 					const cJSON *tool_meta)
 {
 	struct model_history_insert item = {0};
-	morph_buf_t key MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf key NB_CLEANUP(nb_buf_cleanup) = {0};
 	cJSON *metadata;
 	char *payload = NULL;
 	char *stored = NULL;
@@ -478,7 +481,7 @@ int agent_history_record_tool_result_ex(struct react_context *ctx, const char *t
 	int rc;
 
 	if (!ctx)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = agent_history_tool_content_copy(ctx, content, &stored, &truncated);
 	if (rc != 0)
 		return rc;
@@ -490,22 +493,24 @@ int agent_history_record_tool_result_ex(struct react_context *ctx, const char *t
 	item.tool_call_id = tool_call_id;
 	item.provider_call_id = provider_call_id;
 	item.tool_name = tool_name;
-	rc = morph_buf_printf(&key, "result:%s", tool_call_id ? tool_call_id : "unknown");
+	rc = (nb_buf_printf(&key, "result:%s", tool_call_id ? tool_call_id : "unknown")
+		      ? 0
+		      : NB_ERR_NOMEM);
 	if (rc != 0) {
 		free(stored);
 		return rc;
 	}
-	item.idempotency_key = morph_buf_cstr_borrow(&key);
+	item.idempotency_key = nb_buf_cstr(&key);
 	metadata = cJSON_CreateObject();
 	if (!metadata) {
 		free(stored);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	cJSON_AddStringToObject(metadata, "status",
-				error_code == -ETIMEDOUT   ? "timed_out"
-				: error_code == -ECANCELED ? "cancelled"
-				: error_code < 0	   ? "failed"
-							   : "completed");
+				error_code == NB_ERR_TIMEOUT	 ? "timed_out"
+				: error_code == NB_ERR_CANCELLED ? "cancelled"
+				: error_code < 0		 ? "failed"
+								 : "completed");
 	cJSON_AddNumberToObject(metadata, "error_code", error_code);
 	cJSON_AddStringToObject(metadata, "tool_call_id", tool_call_id ? tool_call_id : "");
 	cJSON_AddStringToObject(metadata, "provider_call_id",
@@ -519,16 +524,16 @@ int agent_history_record_tool_result_ex(struct react_context *ctx, const char *t
 		if (!original) {
 			cJSON_Delete(metadata);
 			free(stored);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
-		utf8_sanitize_inplace(original);
+		nb_utf8_sanitize_inplace(original);
 		redacted = history_redacted_json_create(ctx, original);
 		free(original);
 		if (!redacted || !cJSON_AddStringToObject(metadata, "original_content", redacted)) {
 			free(redacted);
 			cJSON_Delete(metadata);
 			free(stored);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		free(redacted);
 	}
@@ -555,7 +560,7 @@ int agent_history_record_tool_result_ex(struct react_context *ctx, const char *t
 	cJSON_Delete(metadata);
 	if (!payload) {
 		free(stored);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	item.payload_json = payload;
 	item.token_count = tokenizer_count(ctx->tokenizer, stored);
@@ -579,33 +584,35 @@ int agent_history_record_receipt(struct react_context *ctx, const char *name, co
 				 const char *message, const char *task, int count, int error_code)
 {
 	struct model_history_insert item = {0};
-	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 	cJSON *payload;
 	char *json;
 	char key[320];
 	int rc;
 
 	if (!ctx)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	/* Memory maintenance is UI/log telemetry, not conversation evidence. */
 	if (task && strcmp(task, "memory_consolidation") == 0)
 		return 0;
 	if (!ctx->history_enabled || !ctx->history_db)
 		return 0;
-	rc = morph_buf_init(&text, 256);
+	rc = (nb_buf_init(&text), nb_buf_reserve(&text, 256) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_printf(&text, "[Background receipt] %s: %s",
-			      task ? task : (name ? name : "task"),
-			      message ? message : (phase ? phase : "updated"));
+	rc = (nb_buf_printf(&text, "[Background receipt] %s: %s",
+			    task ? task : (name ? name : "task"),
+			    message ? message : (phase ? phase : "updated"))
+		      ? 0
+		      : NB_ERR_NOMEM);
 	if (rc != 0) {
-		morph_buf_cleanup(&text);
+		nb_buf_cleanup(&text);
 		return rc;
 	}
 	payload = cJSON_CreateObject();
 	if (!payload) {
-		morph_buf_cleanup(&text);
-		return -ENOMEM;
+		nb_buf_cleanup(&text);
+		return NB_ERR_NOMEM;
 	}
 	cJSON_AddStringToObject(payload, "name", name ? name : "");
 	cJSON_AddStringToObject(payload, "phase", phase ? phase : "");
@@ -615,8 +622,8 @@ int agent_history_record_receipt(struct react_context *ctx, const char *name, co
 	json = cJSON_PrintUnformatted(payload);
 	cJSON_Delete(payload);
 	if (!json) {
-		morph_buf_cleanup(&text);
-		return -ENOMEM;
+		nb_buf_cleanup(&text);
+		return NB_ERR_NOMEM;
 	}
 	snprintf(key, sizeof(key), "receipt:%s:%s:%s:%d",
 		 ctx->turn_id[0] ? ctx->turn_id : "unknown", name ? name : "", phase ? phase : "",
@@ -625,13 +632,13 @@ int agent_history_record_receipt(struct react_context *ctx, const char *name, co
 	item.turn_id = ctx->turn_id;
 	item.kind = "background_receipt";
 	item.role = "system";
-	item.content = morph_buf_cstr_borrow(&text);
+	item.content = nb_buf_cstr(&text);
 	item.payload_json = json;
 	item.idempotency_key = key;
 	item.token_count = tokenizer_count(ctx->tokenizer, item.content);
 	item.active = 1;
 	rc = history_store(ctx, &item);
 	free(json);
-	morph_buf_cleanup(&text);
+	nb_buf_cleanup(&text);
 	return rc;
 }

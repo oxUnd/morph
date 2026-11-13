@@ -1,4 +1,5 @@
 #include "sapi/cli/adapters/runtime/events.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/presenter.h"
@@ -12,7 +13,7 @@ int cli_runtime_events_callback(const struct morph_event *ev, void *user_data)
 	struct cli_application *ctx = user_data;
 
 	if (!ctx || !ev)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (ctx->events) {
 		int rc;
 
@@ -28,7 +29,7 @@ int cli_runtime_events_callback(const struct morph_event *ev, void *user_data)
 int cli_runtime_events_deliver(struct cli_application *ctx, const struct morph_event *ev)
 {
 	if (!ctx || !ev)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (ev->name && !strncmp(ev->name, "agent.", 6))
 		(void)cli_agents_refresh(ctx);
 	int subagent_rc = cli_subagents_event(ctx, ev);

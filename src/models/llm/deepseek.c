@@ -1,5 +1,5 @@
 #include "adapter.h"
-#include "util/error.h"
+#include "errors.h"
 #include <errno.h>
 #include <string.h>
 
@@ -45,15 +45,15 @@ static int deepseek_disable_thinking(cJSON *request)
 {
 	cJSON *thinking = cJSON_CreateObject();
 	if (!thinking)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (!cJSON_AddStringToObject(thinking, "type", "disabled")) {
 		cJSON_Delete(thinking);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	cJSON_DeleteItemFromObjectCaseSensitive(request, "thinking");
 	if (!cJSON_AddItemToObject(request, "thinking", thinking)) {
 		cJSON_Delete(thinking);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	cJSON *kwargs = cJSON_GetObjectItemCaseSensitive(request, "chat_template_kwargs");
 	if (cJSON_IsObject(kwargs)) {
@@ -76,7 +76,7 @@ static int deepseek_add_message_fields(const struct model *model, cJSON *message
 		if (chat_message->is_context_summary) {
 			cJSON *role = cJSON_GetObjectItemCaseSensitive(message, "role");
 
-			return cJSON_SetValuestring(role, "user") ? 0 : -ENOMEM;
+			return cJSON_SetValuestring(role, "user") ? 0 : NB_ERR_NOMEM;
 		}
 	} else if (!chat_message->reasoning_content) {
 		return 0;
@@ -84,7 +84,7 @@ static int deepseek_add_message_fields(const struct model *model, cJSON *message
 	if (!cJSON_AddStringToObject(message, "reasoning_content",
 				     chat_message->reasoning_content ?
 				     chat_message->reasoning_content : ""))
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	return 0;
 }
 

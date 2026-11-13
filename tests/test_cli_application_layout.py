@@ -170,7 +170,7 @@ def main():
             if status_glyphs.intersection(literal):
                 errors.append(f'{source}: hardcoded status glyph; use presentation/style.h')
     style = (CLI / 'presentation/style.h').read_text()
-    canonical = (ROOT / 'src/util/terminal_status.h').read_text()
+    canonical = (ROOT / 'src/tui/include/morph/tui/terminal/status.h').read_text()
     for state, glyph in {'PENDING': '◯', 'RUNNING': '◉', 'DONE': '●',
                          'FAILED': '✖', 'QUESTION': '?', 'CANCELLED': '–',
                          'WARNING': '⚠', 'SYSTEM': '◇'}.items():

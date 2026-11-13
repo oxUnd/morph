@@ -1,7 +1,7 @@
 # morph-fastcgi — FastCGI front-end for the Morph agent
 #
 # Builds a single executable `morph-fastcgi` that links against the static
-# libraries already produced by the parent project (morph-util, morph-db,
+# libraries already produced by the parent project (nbase::nbase morph-cjson, morph-db,
 # morph-session, morph-agent, etc).  Optional; gated on BUILD_FASTCGI.
 
 find_package(PkgConfig QUIET)

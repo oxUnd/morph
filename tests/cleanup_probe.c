@@ -1,6 +1,6 @@
 #include "cleanup_probe.h"
-#include "util/cleanup.h"
-#include "util/error.h"
+#include "nb/cleanup.h"
+#include "errors.h"
 
 struct cleanup_probe {
 	int *order;
@@ -17,11 +17,11 @@ static void cleanup_probe_record(struct cleanup_probe *probe)
 int cleanup_probe_run(int early, int *order, int *count)
 {
 	if (!order || !count)
-		return -EINVAL;
-	struct cleanup_probe first MORPH_CLEANUP(cleanup_probe_record) = {order, count, 1};
-	struct cleanup_probe second MORPH_CLEANUP(cleanup_probe_record) = {order, count, 2};
+		return NB_ERR_INVAL;
+	struct cleanup_probe first NB_CLEANUP(cleanup_probe_record) = {order, count, 1};
+	struct cleanup_probe second NB_CLEANUP(cleanup_probe_record) = {order, count, 2};
 
 	if (early)
-		return -ECANCELED;
+		return NB_ERR_CANCELLED;
 	return 0;
 }

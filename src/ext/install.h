@@ -1,7 +1,7 @@
 #ifndef EXT_INSTALL_H
 #define EXT_INSTALL_H
 
-struct morph_log;
+struct nb_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -36,7 +36,7 @@ struct ext_install_result {
 };
 
 int ext_source_parse(const char *source, struct ext_source *out);
-int ext_install_source(struct morph_log *logger, const char *source,
+int ext_install_source(struct nb_log *logger, const char *source,
 		       const struct ext_install_options *opts, struct ext_install_result *result);
 
 #ifdef __cplusplus

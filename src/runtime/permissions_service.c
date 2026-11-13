@@ -2,10 +2,12 @@
 
 #include "db/permission_grant.h"
 #include "runtime/runtime_internal.h"
-#include "util/array.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/buf.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include "config/edit.h"
 #include "agent/tools/exec_jobs.h"
 
@@ -21,7 +23,7 @@
 int runtime_permission_preset(const char *name, struct permission_policy *out)
 {
 	if (!name || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*out = permission_policy_default();
 	if (!strcmp(name, "ask"))
 		return 0;
@@ -33,7 +35,7 @@ int runtime_permission_preset(const char *name, struct permission_policy *out)
 	} else if (!strcmp(name, "read_only"))
 		out->access = PERMISSION_READ_ONLY;
 	else
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return 0;
 }
 
@@ -57,11 +59,11 @@ const char *runtime_permission_preset_name(const struct permission_policy *polic
 int runtime_permission_get_policy(struct runtime *runtime, struct permission_policy *out)
 {
 	if (!runtime || !out)
-		return -EINVAL;
-	if (pthread_mutex_trylock(&runtime->context.execution_lock) != 0)
-		return -EBUSY;
+		return NB_ERR_INVAL;
+	if (nb_mutex_trylock(runtime->context.execution_lock) != 0)
+		return NB_ERR_BUSY;
 	int rc = tool_context_get_permission_policy(runtime->context.tctx, out);
-	pthread_mutex_unlock(&runtime->context.execution_lock);
+	nb_mutex_unlock(runtime->context.execution_lock);
 	return rc;
 }
 
@@ -89,8 +91,11 @@ static int permission_children_active(struct runtime *runtime)
 
 static int permission_save_policy(struct runtime *runtime, const struct permission_policy *policy)
 {
-	morph_buf_t patch = {0};
-	morph_buf_t lock_path = {0};
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
+	nb_buf patch NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf lock_path NB_CLEANUP(nb_buf_cleanup) = {0};
 	char *before = NULL;
 	char *after = NULL;
 	struct config_validation_error validation = {0};
@@ -99,43 +104,54 @@ static int permission_save_policy(struct runtime *runtime, const struct permissi
 	int rc;
 
 	if (!*path)
-		return -ENOENT;
-	rc = morph_buf_init(&lock_path, strlen(path) + 6);
+		return NB_ERR_NOT_FOUND;
+	rc = (nb_buf_init(&lock_path),
+	      nb_buf_reserve(&lock_path, strlen(path) + 6) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_printf(&lock_path, "%s.lock", path);
+		rc = (nb_buf_printf(&lock_path, "%s.lock", path) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0) {
-		fd = open(morph_buf_cstr_borrow(&lock_path), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+		fd = open(nb_buf_cstr(&lock_path), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
 		if (fd < 0)
-			rc = -errno;
+			rc = nb_status_from_errno(errno, NULL);
 		else if (flock(fd, LOCK_EX | LOCK_NB) != 0)
-			rc = -errno;
+			rc = nb_status_from_errno(errno, NULL);
 	}
 	if (rc == 0) {
-		before = file_read_all_copy(path, NULL);
+		before = (nb_file_read_all(path, &file_value_1, 0, NULL) == NB_OK &&
+					  (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) +
+									1)) != NULL
+				  ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
+					    nb_buf_len(&file_value_1) + 1),
+				     nb_charp_steal(&file_copy_1))
+				  : NULL);
 		if (!before)
-			rc = errno ? -errno : -EIO;
+			rc = errno ? nb_status_from_errno(errno, NULL) : NB_ERR_IO;
 	}
 	if (rc == 0)
-		rc = morph_buf_init(&patch, 128);
+		rc = (nb_buf_init(&patch), nb_buf_reserve(&patch, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_printf(
-			&patch,
-			"[permissions]\naccess = \"%s\"\napproval = \"%s\"\nreviewer = \"%s\"\n",
-			permission_access_name(policy->access),
-			permission_approval_name(policy->approval),
-			permission_reviewer_name(policy->reviewer));
+		rc = (nb_buf_printf(&patch,
+				    "[permissions]\naccess = \"%s\"\napproval = \"%s\"\nreviewer = "
+				    "\"%s\"\n",
+				    permission_access_name(policy->access),
+				    permission_approval_name(policy->approval),
+				    permission_reviewer_name(policy->reviewer))
+			      ? 0
+			      : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = config_text_merge_copy(before, morph_buf_cstr_borrow(&patch), &after);
+		rc = config_text_merge_copy(before, nb_buf_cstr(&patch), &after);
 	if (rc == 0)
 		rc = config_validate_text(after, &validation);
 	if (rc == 0)
-		rc = file_write_atomic(path, after, strlen(after));
+		rc = nb_file_write_all_atomic(
+			path, after, strlen(after),
+			&(nb_file_write_options){.new_file_mode = 0600, .sync_dir = true}, NULL);
 	if (fd >= 0)
 		close(fd);
 	free(after);
 	free(before);
-	morph_buf_cleanup(&patch);
-	morph_buf_cleanup(&lock_path);
+	nb_buf_cleanup(&patch);
+	nb_buf_cleanup(&lock_path);
 	return rc;
 }
 
@@ -144,12 +160,12 @@ int runtime_permission_set_policy(struct runtime *runtime, const struct permissi
 	int rc;
 
 	if (!runtime || permission_policy_validate(policy) != 0)
-		return -EINVAL;
-	if (pthread_mutex_trylock(&runtime->context.execution_lock) != 0)
-		return -EBUSY;
+		return NB_ERR_INVAL;
+	if (nb_mutex_trylock(runtime->context.execution_lock) != 0)
+		return NB_ERR_BUSY;
 	rc = permission_children_active(runtime);
 	if (rc > 0)
-		rc = -EBUSY;
+		rc = NB_ERR_BUSY;
 	else if (rc == 0)
 		rc = permission_save_policy(runtime, policy);
 	if (rc == 0) {
@@ -157,12 +173,12 @@ int runtime_permission_set_policy(struct runtime *runtime, const struct permissi
 		runtime->context.config.permissions = *policy;
 		runtime->context.config.permissions_explicit = 1;
 	}
-	pthread_mutex_unlock(&runtime->context.execution_lock);
+	nb_mutex_unlock(runtime->context.execution_lock);
 	return rc;
 }
 
 struct permission_list_state {
-	morph_array_t grants;
+	nb_vec grants;
 };
 
 static int collect_permission(const struct permission_grant *grant, void *user_data)
@@ -170,9 +186,9 @@ static int collect_permission(const struct permission_grant *grant, void *user_d
 	struct permission_list_state *state = user_data;
 	struct runtime_permission_grant *item;
 
-	item = morph_array_push_borrow(&state->grants);
+	item = nb_vec_push(&state->grants);
 	if (!item)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	memset(item, 0, sizeof(*item));
 	item->id = grant->id;
 	item->created_at = grant->created_at;
@@ -191,31 +207,39 @@ int runtime_permission_list(struct runtime *runtime, struct runtime_permission_g
 	int rc;
 
 	if (!runtime || !out || !count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	*count = 0;
 	tctx = runtime->context.tctx;
 	if (!tctx || !tool_context_grant_project_root_borrow(tctx)[0])
-		return -ENOENT;
-	rc = morph_array_init(&state.grants, 8, sizeof(struct runtime_permission_grant));
+		return NB_ERR_NOT_FOUND;
+	rc = (nb_vec_init(&state.grants, sizeof(struct runtime_permission_grant)),
+	      nb_vec_reserve(&state.grants, 8) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
-	pthread_mutex_lock(&runtime->context.execution_lock);
+	nb_mutex_lock(runtime->context.execution_lock);
 	rc = permission_grant_each(&runtime->context.database,
 				   tool_context_grant_project_root_borrow(tctx), collect_permission,
 				   &state);
-	pthread_mutex_unlock(&runtime->context.execution_lock);
-	if (rc == 0 && state.grants.nelts > INT_MAX)
-		rc = -EOVERFLOW;
+	nb_mutex_unlock(runtime->context.execution_lock);
+	if (rc == 0 && state.grants.len > INT_MAX)
+		rc = NB_ERR_RANGE;
 	if (rc != 0) {
-		morph_array_cleanup(&state.grants);
+		nb_vec_cleanup(&state.grants);
 		return rc;
 	}
-	*out = state.grants.elts;
-	*count = (int)state.grants.nelts;
-	state.grants.elts = NULL;
-	morph_array_cleanup(&state.grants);
+	*out = state.grants.len ? malloc(state.grants.len * state.grants.elem_size) : NULL;
+	if (state.grants.len && !*out) {
+		nb_vec_cleanup(&state.grants);
+		return NB_ERR_NOMEM;
+	}
+	if (state.grants.len)
+		memcpy(*out, state.grants.data, state.grants.len * state.grants.elem_size);
+	*count = (int)state.grants.len;
+	state.grants.len = 0;
+	nb_vec_cleanup(&state.grants);
+	nb_vec_cleanup(&state.grants);
 	return 0;
 }
 
@@ -237,15 +261,15 @@ int runtime_permission_revoke_id(struct runtime *runtime, int64_t id, int *delet
 	int rc;
 
 	if (!runtime || !deleted || id <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	tctx = runtime->context.tctx;
 	if (!tctx || !tool_context_grant_project_root_borrow(tctx)[0])
-		return -ENOENT;
-	pthread_mutex_lock(&runtime->context.execution_lock);
+		return NB_ERR_NOT_FOUND;
+	nb_mutex_lock(runtime->context.execution_lock);
 	rc = permission_grant_delete_id(&runtime->context.database,
 					tool_context_grant_project_root_borrow(tctx), id, deleted);
 	rc = reload_after_delete(runtime, rc, *deleted);
-	pthread_mutex_unlock(&runtime->context.execution_lock);
+	nb_mutex_unlock(runtime->context.execution_lock);
 	return rc;
 }
 
@@ -255,16 +279,16 @@ int runtime_permission_revoke_subject(struct runtime *runtime, const char *subje
 	int rc;
 
 	if (!runtime || !subject || !*subject || !deleted)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	tctx = runtime->context.tctx;
 	if (!tctx || !tool_context_grant_project_root_borrow(tctx)[0])
-		return -ENOENT;
-	pthread_mutex_lock(&runtime->context.execution_lock);
+		return NB_ERR_NOT_FOUND;
+	nb_mutex_lock(runtime->context.execution_lock);
 	rc = permission_grant_delete_subject(&runtime->context.database,
 					     tool_context_grant_project_root_borrow(tctx), subject,
 					     deleted);
 	rc = reload_after_delete(runtime, rc, *deleted);
-	pthread_mutex_unlock(&runtime->context.execution_lock);
+	nb_mutex_unlock(runtime->context.execution_lock);
 	return rc;
 }
 
@@ -274,11 +298,11 @@ int runtime_permission_clear(struct runtime *runtime, int all_projects, int *del
 	int rc;
 
 	if (!runtime || !deleted)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	tctx = runtime->context.tctx;
 	if (!tctx || !tool_context_grant_project_root_borrow(tctx)[0])
-		return -ENOENT;
-	pthread_mutex_lock(&runtime->context.execution_lock);
+		return NB_ERR_NOT_FOUND;
+	nb_mutex_lock(runtime->context.execution_lock);
 	if (all_projects)
 		rc = permission_grant_clear_all(&runtime->context.database, deleted);
 	else
@@ -286,6 +310,6 @@ int runtime_permission_clear(struct runtime *runtime, int all_projects, int *del
 						    tool_context_grant_project_root_borrow(tctx),
 						    deleted);
 	rc = reload_after_delete(runtime, rc, *deleted);
-	pthread_mutex_unlock(&runtime->context.execution_lock);
+	nb_mutex_unlock(runtime->context.execution_lock);
 	return rc;
 }

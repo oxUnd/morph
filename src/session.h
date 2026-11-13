@@ -7,7 +7,8 @@ extern "C" {
 
 #include "db/database.h"
 #include "session_history.h"
-#include "util/array.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 #include <limits.h>
 #include <stdint.h>
 

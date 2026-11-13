@@ -71,23 +71,30 @@ Failure returns `ok: false`, `code`, and `error`.
 
 ## Operation Semantics
 
-- `write`: creates a new regular file with `O_EXCL`; fails if it already exists.
-- `overwrite`: writes to a same-directory temp file, `fsync`s it, closes it, then
-  renames it over the target.
+- `write`: uses `nb_file_write_all_atomic` with create-only publication and mode
+  0600; fails if the target already exists.
+- `overwrite`: uses the same native atomic writer with mode 0600.
 - `append`: opens the target with `O_APPEND`, creating it if needed.
-- `patch`: streams an existing regular file through a same-directory temp file,
-  replacing `length` bytes at `offset` with decoded `content`, then renames the
-  temp file over the target.
+- `patch`: streams an existing regular file through a native same-directory
+  temporary file, replacing `length` bytes at `offset` with decoded `content`.
+  `nb_file_copy` owns final atomic publication and preserves the destination mode.
+  Range selection and fixed-size copying remain patch-domain logic; all full fd
+  writes use `nb_fd_write_until`. Typed cleanup closes fds and removes the staged
+  file on success and failure.
 - `mkdir`: creates the requested directory and parents; repeated calls are
   accepted.
-- `copy`: copies only regular files from read-authorized `path` to
-  write-authorized `dst_path`.
+- `copy`: `nb_file_copy` streams regular files from read-authorized `path` to
+  write-authorized `dst_path`, rejects source links at open time, and publishes
+  atomically. New destinations use mode 0600; existing modes remain unchanged.
 - `rename`: moves only regular files from write-authorized `path` to
   write-authorized `dst_path`.
 - `delete`: deletes regular files with `unlink` or empty directories with
   `rmdir`.
 
-Decoded `content` is capped at 10 MiB per call.
+Decoded content uses native `nb_buf`; `nb_base64_valid` / `nb_base64_decode`
+provide the standard alphabet, optional padding and ASCII whitespace policy.
+Malformed padding, nonalphabet bytes and nonzero trailing bits are rejected
+before writing the destination. Decoded `content` is capped at 10 MiB per call.
 This cap applies to `write`, `overwrite`, `append`, and the replacement content
 for `patch`. Larger files can be built with repeated `append` calls, while
 `copy` and the existing-file portion of `patch` are streamed and are primarily
@@ -108,7 +115,7 @@ Relative write paths resolve under `output_dir`, because this is the existing
 still be allowed by the frontend approval callback.
 
 When no `tool_context` is available, the tool should not be exposed to the
-agent. The standalone ext entrypoint enforces this by returning `-ENOTSUP`.
+agent. The standalone ext entrypoint enforces this by returning `NB_ERR_UNSUPPORTED`.
 
 ## Safety Boundaries
 
@@ -118,7 +125,8 @@ The v1 safety boundaries are intentional:
 - No directory copy.
 - No symlink creation, replacement, or mutation.
 - No chmod/chown.
-- No ACL, xattr, owner, timestamp, or mode preservation.
+- No optional ACL, xattr, owner or timestamp cloning. Copy and patch preserve
+  existing destination modes; new-file modes are internal policy.
 - No shell command execution.
 - No line-number patch operations.
 
@@ -163,12 +171,15 @@ Covered scenarios:
 - rename regular file
 - delete regular file
 - delete empty directory
-- write base64-decoded bytes
+- padded/unpadded/whitespace Base64, embedded NUL bytes, malformed input rejection
+  and unchanged destinations on invalid content
 - byte-range patch replace, insert, and out-of-range rejection
+- existing 0750/0640 modes and a 12 MiB sparse binary patch beyond the content cap
 - deny write outside `output_dir` without approval
 
-The tests intentionally stay inside the ext directory and are not added to the
-core `tests/` target.
+The core CMake target `morph-file-write-tests` compiles the extension-local
+fixtures and is registered as the `file_write_extension` CTest. The Makefile
+uses that same target and its transitive native dependencies.
 
 ## Known Gaps
 
@@ -179,7 +190,7 @@ Future versions may add:
 - non-empty directory delete with explicit recursive opt-in
 - file metadata preservation
 - frontend-visible operation previews before approval
-- richer error messages mapped from `morph_strerror`
+- richer error messages mapped from `nb_err_str`
 
 These are excluded from v1 to keep the mobile file mutation surface small and
 auditable.

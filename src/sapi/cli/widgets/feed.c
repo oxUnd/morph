@@ -1,12 +1,14 @@
 #include "sapi/cli/widgets/feed.h"
+#include "nb/err.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/models/jobs.h"
 #include "sapi/cli/widgets/feed_block.h"
 #include "sapi/cli/presentation/style.h"
-#include "util/terminal_size.h"
-#include "util/cleanup.h"
-#include "util/utf8.h"
+#include <morph/tui/terminal/size.h>
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 #include <morph/tui/terminal.h>
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/output.h"
@@ -16,7 +18,7 @@
 #include "sapi/cli/widgets/jobs.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/models/agents.h"
-
+#include "nb/time.h"
 
 #define CLI_FEED_TERMINAL_DEFAULT_COLUMNS 80
 #define CLI_FEED_TERMINAL_FRAME_MS 80
@@ -38,9 +40,9 @@ struct cli_feed {
 	int hidden;
 	FILE *output;
 	int output_fd;
-	morph_buf_t live_text;
-	morph_buf_t markdown_preview;
-	morph_buf_t agent_summary;
+	nb_buf live_text;
+	nb_buf markdown_preview;
+	nb_buf agent_summary;
 	int markdown_preview_prefix;
 	int live_active;
 	int live_independent;
@@ -97,11 +99,9 @@ void cli_feed_update_end(struct cli_application *ctx)
 
 static int64_t cli_feed_now_ms(void)
 {
-	struct timespec now;
+	int64_t now = nb_time_monotonic_ns();
 
-	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
-		return 0;
-	return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+	return now > 0 ? now / 1000000 : 0;
 }
 
 void cli_feed_turn_begin(struct cli_application *ctx)
@@ -156,7 +156,7 @@ static int cli_feed_work_interval(const struct cli_feed *terminal, int64_t now)
 
 static void cli_feed_work_row(struct cli_feed *terminal, int columns)
 {
-	morph_buf_t text;
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 	char clipped[BUFSIZ];
 	int64_t elapsed = terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING
 				  ? cli_feed_now_ms() - terminal->work_started_ms
@@ -165,33 +165,33 @@ static void cli_feed_work_row(struct cli_feed *terminal, int columns)
 	struct tm finished;
 	char clock[32] = "";
 
-	if (morph_buf_init(&text, 128) != 0)
+	if ((nb_buf_init(&text), nb_buf_reserve(&text, 128) ? 0 : NB_ERR_NOMEM) != 0)
 		return;
-	(void)morph_buf_puts(
+	(void)nb_buf_append_cstr(
 		&text, terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING	  ? ""
 		       : terminal->work_state == CLI_FEED_TERMINAL_WORK_COMPLETED ? "Worked for "
-		       : terminal->work_state == CLI_FEED_TERMINAL_WORK_STOPPED ? "Stopped after "
+		       : terminal->work_state == CLI_FEED_TERMINAL_WORK_STOPPED	  ? "Stopped after "
 										: "Failed after ");
 	if (seconds >= 60)
-		(void)morph_buf_printf(&text, "%lldm ", (long long)(seconds / 60));
-	(void)morph_buf_printf(&text, "%llds", (long long)(seconds % 60));
+		(void)nb_buf_printf(&text, "%lldm ", (long long)(seconds / 60));
+	(void)nb_buf_printf(&text, "%llds", (long long)(seconds % 60));
 	if (terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING) {
-		(void)morph_buf_puts(&text, terminal->agent_summary.len && columns < 76
-				      ? " · esc" : " · esc to interrupt");
+		(void)nb_buf_append_cstr(&text, terminal->agent_summary.len && columns < 76
+							? " · esc"
+							: " · esc to interrupt");
 		if (terminal->agent_summary.len)
-			(void)morph_buf_printf(&text, " · %s",
-					       morph_buf_cstr_borrow(&terminal->agent_summary));
+			(void)nb_buf_printf(&text, " · %s", nb_buf_cstr(&terminal->agent_summary));
 	} else if (localtime_r(&terminal->work_finished_at, &finished)) {
 		(void)strftime(clock, sizeof(clock), "%H:%M", &finished);
-		(void)morph_buf_printf(&text, " · %s", clock);
+		(void)nb_buf_printf(&text, " · %s", clock);
 	}
 	int running = terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING;
 	int prefix = running ? 12 : 2;
 	const char *hint = columns < 76 ? " · Ctrl+T" : " · Ctrl+T transcript";
-	int hint_width = running && columns >= 45 ? (int)utf8_display_width(hint) : 0;
+	int hint_width = running && columns >= 45 ? (int)nb_utf8_width_cstr(hint) : 0;
 
-	(void)utf8_copy_ellipsized_display_width(
-		clipped, sizeof(clipped), morph_buf_cstr_borrow(&text),
+	(void)morph_terminal_copy_ellipsized_display_width(
+		clipped, sizeof(clipped), nb_buf_cstr(&text),
 		(size_t)(columns > prefix + hint_width ? columns - prefix - hint_width : 1), 0);
 	if (terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING) {
 		cli_feed_work_label(terminal, elapsed);
@@ -202,7 +202,7 @@ static void cli_feed_work_row(struct cli_feed *terminal, int columns)
 	fprintf(terminal->output, ANSI_DIM "%s" ANSI_RESET, clipped);
 	if (hint_width)
 		fprintf(terminal->output, CLI_COMMAND_COLOR "%s" ANSI_RESET, hint);
-	morph_buf_cleanup(&text);
+	nb_buf_cleanup(&text);
 }
 
 void cli_feed_turn_end(struct cli_application *ctx, int result)
@@ -217,9 +217,9 @@ void cli_feed_turn_end(struct cli_application *ctx, int result)
 		return;
 	terminal->work_elapsed_ms = cli_feed_now_ms() - terminal->work_started_ms;
 	terminal->work_finished_at = time(NULL);
-	terminal->work_state = result >= 0	      ? CLI_FEED_TERMINAL_WORK_COMPLETED
-			       : result == -ECANCELED ? CLI_FEED_TERMINAL_WORK_STOPPED
-						      : CLI_FEED_TERMINAL_WORK_FAILED;
+	terminal->work_state = result >= 0		    ? CLI_FEED_TERMINAL_WORK_COMPLETED
+			       : result == NB_ERR_CANCELLED ? CLI_FEED_TERMINAL_WORK_STOPPED
+							    : CLI_FEED_TERMINAL_WORK_FAILED;
 	/* A finished duration is immutable history, not a live footer. */
 	if (terminal->transient) {
 		cli_feed_history_begin(ctx);
@@ -284,7 +284,7 @@ static void cli_feed_sanitize_line(char *text)
 {
 	if (!text)
 		return;
-	utf8_sanitize_inplace(text);
+	nb_utf8_sanitize_inplace(text);
 	for (char *cur = text; *cur; cur++) {
 		unsigned char ch = (unsigned char)*cur;
 
@@ -299,7 +299,7 @@ static int cli_feed_text_changed(const struct cli_feed *terminal, const char *te
 
 	if (!terminal || !text)
 		return 0;
-	current = morph_buf_cstr_borrow(&terminal->live_text);
+	current = nb_buf_cstr(&terminal->live_text);
 	return !current || strcmp(current, text) != 0;
 }
 
@@ -309,25 +309,28 @@ int cli_feed_init(struct cli_application *ctx, FILE *output, int output_fd)
 	int rc;
 
 	if (!ctx)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	terminal = calloc(1, sizeof(*terminal));
 	if (!terminal)
-		return -ENOMEM;
-	rc = morph_buf_init(&terminal->live_text, BUFSIZ);
+		return NB_ERR_NOMEM;
+	rc = (nb_buf_init(&terminal->live_text),
+	      nb_buf_reserve(&terminal->live_text, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
 		free(terminal);
 		return rc;
 	}
-	rc = morph_buf_init(&terminal->markdown_preview, BUFSIZ);
+	rc = (nb_buf_init(&terminal->markdown_preview),
+	      nb_buf_reserve(&terminal->markdown_preview, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
-		morph_buf_cleanup(&terminal->live_text);
+		nb_buf_cleanup(&terminal->live_text);
 		free(terminal);
 		return rc;
 	}
-	rc = morph_buf_init(&terminal->agent_summary, 128);
+	rc = (nb_buf_init(&terminal->agent_summary),
+	      nb_buf_reserve(&terminal->agent_summary, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
-		morph_buf_cleanup(&terminal->markdown_preview);
-		morph_buf_cleanup(&terminal->live_text);
+		nb_buf_cleanup(&terminal->markdown_preview);
+		nb_buf_cleanup(&terminal->live_text);
 		free(terminal);
 		return rc;
 	}
@@ -349,9 +352,9 @@ void cli_feed_cleanup(struct cli_application *ctx)
 	terminal = ctx->terminal;
 	cli_feed_live_clear(ctx);
 	cli_feed_update_end(ctx);
-	morph_buf_cleanup(&terminal->live_text);
-	morph_buf_cleanup(&terminal->markdown_preview);
-	morph_buf_cleanup(&terminal->agent_summary);
+	nb_buf_cleanup(&terminal->live_text);
+	nb_buf_cleanup(&terminal->markdown_preview);
+	nb_buf_cleanup(&terminal->agent_summary);
 	free(terminal);
 	ctx->terminal = NULL;
 }
@@ -370,14 +373,14 @@ static void cli_feed_set_live_state(struct cli_application *ctx, const char *tex
 	if (!ctx || !ctx->terminal || !text || !text[0])
 		return;
 	terminal = ctx->terminal;
-	clean = utf8_dup_clamped(text, CLI_FEED_TERMINAL_STATUS_MAX);
+	clean = nb_utf8_ellipsize_bytes(text, CLI_FEED_TERMINAL_STATUS_MAX);
 	if (!clean)
 		return;
 	cli_feed_sanitize_line(clean);
 	changed = cli_feed_text_changed(terminal, clean);
 	if (changed) {
-		morph_buf_reset(&terminal->live_text);
-		if (morph_buf_puts(&terminal->live_text, clean) != 0) {
+		nb_buf_clear(&terminal->live_text);
+		if ((nb_buf_append_cstr(&terminal->live_text, clean) ? 0 : NB_ERR_NOMEM) != 0) {
 			free(clean);
 			return;
 		}
@@ -456,7 +459,7 @@ void cli_feed_live_clear(struct cli_application *ctx)
 	terminal->live_anchored = 0;
 	terminal->live_rows = 0;
 	terminal->next_frame_ms = 0;
-	morph_buf_reset(&terminal->live_text);
+	nb_buf_clear(&terminal->live_text);
 }
 
 void cli_feed_queue_changed(struct cli_application *ctx)
@@ -547,9 +550,9 @@ int cli_feed_markdown_preview_set(struct cli_application *ctx, const char *text,
 	int rc;
 
 	if (!terminal || (!text && len > 0u))
-		return -EINVAL;
-	morph_buf_reset(&terminal->markdown_preview);
-	rc = morph_buf_append(&terminal->markdown_preview, text, len);
+		return NB_ERR_INVAL;
+	nb_buf_clear(&terminal->markdown_preview);
+	rc = (nb_buf_append(&terminal->markdown_preview, text, len) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	terminal->markdown_preview_prefix = prefix;
@@ -572,7 +575,7 @@ static int cli_feed_preview_rows(const char *text, int columns, int prefix)
 		const char *newline = strchr(line, '\n');
 		size_t len = newline ? (size_t)(newline - line) : strlen(line);
 		char *copy = strndup(line, len);
-		size_t width = copy ? utf8_display_width_ansi(copy) : 0;
+		size_t width = copy ? morph_terminal_display_width_ansi(copy) : 0;
 		size_t line_rows;
 
 		free(copy);
@@ -591,7 +594,7 @@ static int cli_feed_preview_rows(const char *text, int columns, int prefix)
 static int cli_feed_render_markdown_preview(struct cli_application *ctx, int reserved, int draw)
 {
 	struct cli_feed *terminal = ctx->terminal;
-	const char *text = morph_buf_cstr_borrow(&terminal->markdown_preview);
+	const char *text = nb_buf_cstr(&terminal->markdown_preview);
 	const char *original = text;
 	const char *visible = text;
 	int prefix = terminal->markdown_preview_prefix;
@@ -641,9 +644,9 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 	const char *text;
 	char status_clipped[BUFSIZ];
 	char queue_clipped[BUFSIZ];
-	morph_buf_t tool_text = {0};
-	morph_buf_t tool_body = {0};
-	morph_buf_t job_text = {0};
+	nb_buf tool_text NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf tool_body NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf job_text NB_CLEANUP(nb_buf_cleanup) = {0};
 	int job_rows = 0;
 	char *queue_items[CLI_FEED_TERMINAL_QUEUE_VISIBLE] = {0};
 	size_t queue_total = 0;
@@ -710,9 +713,9 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 			cli_feed_clear_frame(terminal);
 		else
 			cli_feed_clear_current(terminal);
-		(void)utf8_copy_ellipsized_display_width(status_clipped, sizeof(status_clipped),
-							 "Widen terminal", (size_t)(columns - 1),
-							 0);
+		(void)morph_terminal_copy_ellipsized_display_width(
+			status_clipped, sizeof(status_clipped), "Widen terminal",
+			(size_t)(columns - 1), 0);
 		fprintf(terminal->output, ANSI_DIM "%s" ANSI_RESET, status_clipped);
 		fflush(terminal->output);
 		for (size_t i = 0; i < queue_shown; i++)
@@ -723,9 +726,9 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 		terminal->next_frame_ms = now + CLI_FEED_TERMINAL_WORK_FRAME_MS;
 		return;
 	}
-	morph_buf_reset(&terminal->agent_summary);
+	nb_buf_clear(&terminal->agent_summary);
 	terminal->background_rows = 0;
-	if (morph_buf_init(&job_text, 128) == 0) {
+	if ((nb_buf_init(&job_text), nb_buf_reserve(&job_text, 128) ? 0 : NB_ERR_NOMEM) == 0) {
 		int max_jobs = 3;
 		if (cli_feed_output_rows(terminal) < 20)
 			max_jobs = 1;
@@ -737,8 +740,9 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 					     &terminal->agent_summary,
 					     columns, max_jobs, cli_output_color_enabled(ctx));
 	}
-	text = morph_buf_cstr_borrow(&terminal->live_text);
-	if (status_visible && morph_buf_init(&tool_text, 128) == 0) {
+	text = nb_buf_cstr(&terminal->live_text);
+	if (status_visible &&
+	    (nb_buf_init(&tool_text), nb_buf_reserve(&tool_text, 128) ? 0 : NB_ERR_NOMEM) == 0) {
 		if (terminal->live_independent) {
 			char elapsed[32];
 			int length =
@@ -746,23 +750,23 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 					 (long long)(cli_feed_activity_elapsed_ms(ctx) / 1000));
 			int available = terminal->columns - 6 - length;
 
-			(void)utf8_copy_ellipsized_display_width(
+			(void)morph_terminal_copy_ellipsized_display_width(
 				status_clipped, sizeof(status_clipped), text,
 				(size_t)(available > 0 ? available : 1), 0);
-			(void)morph_buf_printf(&tool_text, "%s  %s", status_clipped, elapsed);
-			text = morph_buf_cstr_borrow(&tool_text);
+			(void)nb_buf_printf(&tool_text, "%s  %s", status_clipped, elapsed);
+			text = nb_buf_cstr(&tool_text);
 		} else if (!terminal->live_reasoning) {
 			tool_live = cli_transcript_live_text(ctx->transcript, &tool_text, columns,
 							     cli_output_color_enabled(ctx));
 			if (tool_live)
-				text = morph_buf_cstr_borrow(&tool_text);
+				text = nb_buf_cstr(&tool_text);
 		}
 	}
 	budget = terminal->columns - 4;
 	if (budget < 1)
 		budget = 1;
-	(void)utf8_copy_sanitized_display_width(status_clipped, sizeof(status_clipped),
-						text ? text : "", (size_t)budget);
+	(void)morph_terminal_copy_sanitized_display_width(status_clipped, sizeof(status_clipped),
+							  text ? text : "", (size_t)budget);
 	preview_reserved = ctx->input_status.composer_rows + 6;
 	if (preview_reserved < CLI_FEED_PREVIEW_RESERVED_ROWS)
 		preview_reserved = CLI_FEED_PREVIEW_RESERVED_ROWS;
@@ -774,7 +778,8 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 			     ? cli_output_block_gap_margin(status_margin,
 							   ctx->output.trailing_newlines)
 			     : 0;
-	if (status_visible && tool_live && morph_buf_init(&tool_body, 128) == 0)
+	if (status_visible && tool_live &&
+	    (nb_buf_init(&tool_body), nb_buf_reserve(&tool_body, 128) ? 0 : NB_ERR_NOMEM) == 0)
 		body_rows = cli_transcript_live_body(ctx->transcript, &tool_body, columns,
 						     cli_output_color_enabled(ctx));
 	int frame_rows = preview_rows + job_rows + status_visible + status_gap + body_rows +
@@ -809,14 +814,14 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 				CLI_FEED_RUNNING, terminal->live_independent ? ANSI_DIM : "",
 				status_clipped);
 		if (body_rows)
-			fprintf(terminal->output, "\n%s", morph_buf_cstr_borrow(&tool_body));
+			fprintf(terminal->output, "\n%s", nb_buf_cstr(&tool_body));
 		if (queue_shown || work_visible)
 			fputc('\n', terminal->output);
 	}
 	if (job_rows) {
 		if (status_visible && !queue_shown && !work_visible)
 			fputc('\n', terminal->output);
-		fprintf(terminal->output, "%s", morph_buf_cstr_borrow(&job_text));
+		fprintf(terminal->output, "%s", nb_buf_cstr(&job_text));
 		if (work_visible || queue_shown)
 			fputc('\n', terminal->output);
 	}
@@ -836,14 +841,14 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 		fprintf(terminal->output,
 			ANSI_DIM CLI_FEED_PENDING ANSI_RESET " \033[38;5;252m%s" ANSI_RESET,
 			heading);
-		if ((size_t)terminal->columns >= utf8_display_width(heading) + 25)
+		if ((size_t)terminal->columns >= nb_utf8_width_cstr(heading) + 25)
 			fprintf(terminal->output, ANSI_DIM " (Esc to apply now)" ANSI_RESET);
 	}
 	for (size_t i = 0; i < queue_shown; i++) {
 		cli_feed_sanitize_line(queue_items[i]);
-		(void)utf8_copy_ellipsized_display_width(queue_clipped, sizeof(queue_clipped),
-							 queue_items[i],
-							 (size_t)(terminal->columns - 4), 0);
+		(void)morph_terminal_copy_ellipsized_display_width(
+			queue_clipped, sizeof(queue_clipped), queue_items[i],
+			(size_t)(terminal->columns - 4), 0);
 		fprintf(terminal->output, "\n  " ANSI_DIM "%s%s" ANSI_RESET,
 			i + 1 < queue_total ? "├ " : "└ ", queue_clipped);
 		free(queue_items[i]);
@@ -851,9 +856,9 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 	if (queue_total > queue_shown)
 		fprintf(terminal->output, "\n  " ANSI_DIM "└ +%zu more queued" ANSI_RESET,
 			queue_total - queue_shown);
-	morph_buf_cleanup(&tool_text);
-	morph_buf_cleanup(&tool_body);
-	morph_buf_cleanup(&job_text);
+	nb_buf_cleanup(&tool_text);
+	nb_buf_cleanup(&tool_body);
+	nb_buf_cleanup(&job_text);
 	fflush(terminal->output);
 	terminal->live_visible = 1;
 	terminal->live_anchored = 0;
@@ -964,8 +969,8 @@ void cli_feed_history_advance(struct cli_application *ctx, const char *text, siz
 
 	if (!terminal || terminal->composer_reserved_rows <= 0)
 		return;
-	char *safe MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
-		text, length, UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+	char *safe NB_CLEANUP(nb_charp_cleanup) =
+		morph_terminal_sanitize_dup(text, length, MORPH_TERMINAL_TEXT_MULTILINE, NULL);
 	if (!safe)
 		return;
 	const char *cursor = safe;
@@ -975,7 +980,7 @@ void cli_feed_history_advance(struct cli_application *ctx, const char *text, siz
 		unsigned cp;
 		size_t bytes;
 
-		if (!utf8_decode_codepoint(cursor, (size_t)(end - cursor), &cp, &bytes))
+		if (!nb_utf8_read(cursor, (size_t)(end - cursor), &cp, &bytes))
 			return;
 		cursor += bytes;
 		if (cp == '\n') {
@@ -987,8 +992,7 @@ void cli_feed_history_advance(struct cli_application *ctx, const char *text, siz
 			terminal->history_column = 0;
 			continue;
 		}
-		int width = cp == '\t' ? 8 - terminal->history_column % 8
-				       : utf8_codepoint_width(cp);
+		int width = cp == '\t' ? 8 - terminal->history_column % 8 : nb_utf8_width_cp(cp);
 
 		if (width <= 0)
 			continue;

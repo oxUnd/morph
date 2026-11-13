@@ -1,10 +1,10 @@
 #define _GNU_SOURCE
 #include "mcp/mcp_internal.h"
-#include "util/child_io.h"
+#include "nb/process.h"
 #include "cJSON.h"
-#include "util/error.h"
-#include "util/cleanup.h"
-#include "util/log.h"
+#include "errors.h"
+#include "nb/cleanup.h"
+#include "nb/log.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,8 +17,11 @@
 #include <time.h>
 #include <limits.h>
 #include <spawn.h>
-#include "util/array.h"
-#include "util/buf.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/time.h"
 
 extern char **environ;
 
@@ -26,42 +29,36 @@ extern char **environ;
 
 static int64_t mcp_stdio_now_ms(void)
 {
-	struct timespec now;
+	int64_t now = nb_time_monotonic_ns();
 
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+	return now > 0 ? now / 1000000 : 0;
 }
 
 static int mcp_stdio_recv(struct mcp_client *client, int req_id,
 	int timeout_ms, char **response)
 {
-	morph_buf_t *buffer = &client->read_buffer;
+	nb_buf *buffer = &client->read_buffer;
 	int64_t deadline = mcp_stdio_now_ms() + timeout_ms;
 	char chunk[BUFSIZ];
 	int rc;
 
-	if (!buffer->data) {
-		rc = morph_buf_init(buffer, BUFSIZ);
+	if (!buffer->ptr) {
+		rc = (nb_buf_init(buffer), nb_buf_reserve(buffer, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
 	for (;;) {
 		if (client->interrupt_check &&
 		    client->interrupt_check(client->interrupt_user_data))
-			return -ECANCELED;
+			return NB_ERR_CANCELLED;
 		int64_t remaining = deadline - mcp_stdio_now_ms();
 		if (remaining <= 0)
-			return -ETIMEDOUT;
-		char *newline = memchr(buffer->data, '\n', buffer->len);
-		if (newline) {
-			size_t length = (size_t)(newline - buffer->data);
-			char *line = strndup(buffer->data, length);
-
+			return NB_ERR_TIMEOUT;
+		nb_str next_line;
+		if (nb_buf_next_line(buffer, &next_line)) {
+			char *line = strndup(next_line.ptr, next_line.len);
 			if (!line)
-				return -ENOMEM;
-			memmove(buffer->data, newline + 1, buffer->len - length - 1);
-			buffer->len -= length + 1;
-			buffer->data[buffer->len] = '\0';
+				return NB_ERR_NOMEM;
 			cJSON *object = cJSON_Parse(line);
 			cJSON *id = cJSON_GetObjectItemCaseSensitive(object, "id");
 			int matches = cJSON_IsNumber(id) && id->valueint == req_id;
@@ -81,7 +78,7 @@ static int mcp_stdio_recv(struct mcp_client *client, int req_id,
 		if (ready < 0) {
 			if (errno == EINTR)
 				continue;
-			return -errno;
+			return nb_status_from_errno(errno, NULL);
 		}
 		if (ready == 0)
 			continue;
@@ -90,15 +87,15 @@ static int mcp_stdio_recv(struct mcp_client *client, int req_id,
 		if (received < 0) {
 			if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
 				continue;
-			return -errno;
+			return nb_status_from_errno(errno, NULL);
 		}
 		if (received == 0)
-			return -EPIPE;
+			return NB_ERR_BROKEN_PIPE;
 		if ((size_t)received > MCP_STDIO_MAX_FRAME_BYTES ||
-		    buffer->len > MCP_STDIO_MAX_FRAME_BYTES - (size_t)received) {
-			return -EFBIG;
+		    nb_buf_len(buffer) > MCP_STDIO_MAX_FRAME_BYTES - (size_t)received) {
+			return NB_ERR_TOO_BIG;
 		}
-		rc = morph_buf_append(buffer, chunk, (size_t)received);
+		rc = (nb_buf_append(buffer, chunk, (size_t)received) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
@@ -108,16 +105,17 @@ int mcp_stdio_exchange(struct mcp_client *client, const struct mcp_wire_request 
 		       int timeout_ms, struct mcp_wire_reply *reply)
 {
 	if (!client || !request || !request->json || !reply)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (reply->json || reply->session_id)
-		return -EEXIST;
-	struct mcp_wire_reply received MORPH_CLEANUP(mcp_wire_reply_cleanup) = {0};
-	int64_t deadline = morph_io_now_ms() + timeout_ms;
-	int rc = morph_io_write(client->stdin_fd, request->json, strlen(request->json), deadline,
-				client->interrupt_check, client->interrupt_user_data);
+		return NB_ERR_EXISTS;
+	struct mcp_wire_reply received NB_CLEANUP(mcp_wire_reply_cleanup) = {0};
+	int64_t deadline = mcp_stdio_now_ms() + timeout_ms;
+	int rc = nb_fd_write_until(client->stdin_fd, request->json, strlen(request->json),
+				   deadline * 1000000, client->interrupt_check,
+				   client->interrupt_user_data, NULL);
 	if (rc == 0) {
-		rc = morph_io_write(client->stdin_fd, "\n", 1, deadline, client->interrupt_check,
-				    client->interrupt_user_data);
+		rc = nb_fd_write_until(client->stdin_fd, "\n", 1, deadline * 1000000,
+				       client->interrupt_check, client->interrupt_user_data, NULL);
 	}
 	if (rc != 0) {
 		/* A partial line cannot safely be followed by another request. */
@@ -127,12 +125,12 @@ int mcp_stdio_exchange(struct mcp_client *client, const struct mcp_wire_request 
 	if (request->id < 0) {
 		return 0;
 	}
-	int64_t remaining = deadline - morph_io_now_ms();
+	int64_t remaining = deadline - mcp_stdio_now_ms();
 	if (remaining <= 0) {
-		return -ETIMEDOUT;
+		return NB_ERR_TIMEOUT;
 	}
 	rc = mcp_stdio_recv(client, request->id, (int)remaining, &received.json);
-	if (rc == -EFBIG) {
+	if (rc == NB_ERR_TOO_BIG) {
 		mcp_stdio_disconnect(client);
 	}
 	if (rc == 0) {
@@ -144,25 +142,13 @@ int mcp_stdio_exchange(struct mcp_client *client, const struct mcp_wire_request 
 
 /* ----- Public stdio transport functions ----- */
 
-static void mcp_environment_cleanup(morph_array_t *environment)
+static void mcp_environment_cleanup(nb_vec *environment)
 {
 	char **entry;
-	morph_array_foreach (entry, environment, char *)
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(environment) && (entry = (char **)nb_vec_at(environment, _i_)); _i_++)
 		free(*entry);
-	morph_array_cleanup(environment);
-}
-
-struct mcp_stdio_pipe {
-	int fd[2];
-};
-
-static void mcp_stdio_pipe_cleanup(struct mcp_stdio_pipe *pipe_owner)
-{
-	for (size_t i = 0; i < sizeof(pipe_owner->fd) / sizeof(pipe_owner->fd[0]); i++) {
-		if (pipe_owner->fd[i] >= 0)
-			close(pipe_owner->fd[i]);
-		pipe_owner->fd[i] = -1;
-	}
+	nb_vec_cleanup(environment);
 }
 
 static int mcp_stdio_spawn(struct mcp_client *client)
@@ -171,33 +157,19 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 	    client->config.cmd_args_count < 0 ||
 	    client->config.cmd_args_count > MCP_CMD_MAX ||
 	    client->config.env_count < 0 || client->config.env_count > MCP_ENV_MAX)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
-	struct mcp_stdio_pipe to_child MORPH_CLEANUP(mcp_stdio_pipe_cleanup) =
-		{.fd = {-1, -1}};
-	struct mcp_stdio_pipe from_child MORPH_CLEANUP(mcp_stdio_pipe_cleanup) =
-		{.fd = {-1, -1}};
-	int pipe_rc = morph_io_pipe(to_child.fd);
-
-	if (pipe_rc != 0)
-		return pipe_rc;
-	pipe_rc = morph_io_pipe(from_child.fd);
-	if (pipe_rc != 0)
-		return pipe_rc;
-
-	morph_array_t environment MORPH_CLEANUP(mcp_environment_cleanup) = {0};
-	posix_spawn_file_actions_t actions;
-	posix_spawnattr_t attributes;
+	nb_vec environment NB_CLEANUP(mcp_environment_cleanup) = {0};
 	char *argv[MCP_CMD_MAX + 2];
-	pid_t pid = -1;
 	int rc;
 
 	size_t environment_count = 0;
 	for (char **item = environ; *item; item++)
 		environment_count++;
-	rc = morph_array_init(&environment,
-			      environment_count + (size_t)client->config.env_count + 1,
-			      sizeof(*argv));
+	rc = (nb_vec_init(&environment, sizeof(*argv)),
+	      nb_vec_reserve(&environment, environment_count + (size_t)client->config.env_count + 1)
+		      ? 0
+		      : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	for (char **item = environ; *item; item++) {
@@ -211,40 +183,44 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 				overridden = 1;
 		}
 		if (!overridden) {
-			char **slot = morph_array_push_borrow(&environment);
+			char **slot = nb_vec_push(&environment);
 
 			if (!slot) {
-				rc = (-ENOMEM);
+				rc = (NB_ERR_NOMEM);
 				return rc;
 			}
 			*slot = strdup(*item);
 			if (!*slot) {
-				rc = -ENOMEM;
+				rc = NB_ERR_NOMEM;
 				return rc;
 			}
 		}
 	}
 	for (int i = 0; i < client->config.env_count; i++) {
-		morph_buf_t value MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf value NB_CLEANUP(nb_buf_cleanup) = {0};
 		char **slot;
 
-		rc = morph_buf_init(&value, 64);
+		rc = (nb_buf_init(&value), nb_buf_reserve(&value, 64) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
-		rc = morph_buf_printf(&value, "%s=%s", client->config.env_keys[i],
-			client->config.env_vals[i]);
+		rc = (nb_buf_printf(&value, "%s=%s", client->config.env_keys[i],
+				    client->config.env_vals[i])
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
-		slot = morph_array_push_borrow(&environment);
+		slot = nb_vec_push(&environment);
 		if (!slot) {
-			rc = (-ENOMEM);
+			rc = (NB_ERR_NOMEM);
 			return rc;
 		}
-		*slot = morph_buf_detach(&value);
+		*slot = (nb_buf_ok(&value) ? strdup(nb_buf_cstr(&value)) : NULL);
+		if (!*slot)
+			return NB_ERR_NOMEM;
 	}
-	char **last = morph_array_push_borrow(&environment);
+	char **last = nb_vec_push(&environment);
 	if (!last) {
-		rc = (-ENOMEM);
+		rc = (NB_ERR_NOMEM);
 		return rc;
 	}
 	*last = NULL;
@@ -252,51 +228,23 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 	for (int i = 0; i < client->config.cmd_args_count; i++)
 		argv[i + 1] = client->config.cmd_args[i];
 	argv[client->config.cmd_args_count + 1] = NULL;
-	rc = posix_spawn_file_actions_init(&actions);
-	if (rc != 0) {
-		rc = (-rc);
+	nb_process_options options = {
+		.argv = (const char *const *)argv,
+		.env = (const char *const *)environment.data,
+		.search_path = true,
+		.close_fds = true,
+		.new_group = true,
+		.stderr_mode = NB_PROCESS_NULL,
+	};
+	rc = nb_process_spawn(&options, &client->child, NULL);
+	if (rc != NB_OK)
 		return rc;
-	}
-	rc = posix_spawn_file_actions_adddup2(&actions, to_child.fd[0], STDIN_FILENO);
-	if (rc == 0)
-		rc = posix_spawn_file_actions_adddup2(&actions, from_child.fd[1], STDOUT_FILENO);
-	if (rc == 0)
-		rc = posix_spawn_file_actions_addopen(&actions, STDERR_FILENO,
-			"/dev/null", O_WRONLY, 0);
-	int attribute_rc = posix_spawnattr_init(&attributes);
+	client->server_pid = (pid_t)nb_process_id(client->child);
+	client->stdin_fd = nb_process_stdin_fd(client->child);
+	client->stdout_fd = nb_process_stdout_fd(client->child);
 
-	if (attribute_rc == 0) {
-		sigset_t empty;
-		short flags = POSIX_SPAWN_SETSIGMASK;
-
-		sigemptyset(&empty);
-#ifdef __APPLE__
-		flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
-#endif
-		attribute_rc = posix_spawnattr_setsigmask(&attributes, &empty);
-		if (attribute_rc == 0)
-			attribute_rc = posix_spawnattr_setflags(&attributes, flags);
-		if (rc == 0 && attribute_rc == 0)
-			rc = posix_spawnp(&pid, client->config.command, &actions, &attributes, argv,
-					  environment.elts);
-		posix_spawnattr_destroy(&attributes);
-	}
-	if (rc == 0)
-		rc = attribute_rc;
-	posix_spawn_file_actions_destroy(&actions);
-	if (rc != 0) {
-		rc = (-rc);
-		return rc;
-	}
-
-	client->server_pid = pid;
-	client->stdin_fd = to_child.fd[1];
-	client->stdout_fd = from_child.fd[0];
-	to_child.fd[1] = -1;
-	from_child.fd[0] = -1;
-
-	log_info(client ? client->config.logger : NULL, "mcp stdio: started '%s' (pid=%d)",
-		 client->config.name, pid);
+	nb_log_write(client ? client->config.logger : NULL, NB_LOG_INFO,
+		     "mcp stdio: started '%s' (pid=%d)", client->config.name, client->server_pid);
 	return 0;
 }
 
@@ -310,41 +258,22 @@ void mcp_stdio_disconnect(struct mcp_client *client)
 	if (!client)
 		return;
 
-	if (client->stdin_fd >= 0) {
-		close(client->stdin_fd);
-		client->stdin_fd = -1;
+	if (client->child) {
+		(void)nb_process_terminate(client->child, 1000);
+		nb_process_free(client->child);
+		client->child = NULL;
+		nb_log_write(client->config.logger, NB_LOG_INFO,
+			     "mcp stdio: disconnected '%s' (pid=%d)", client->config.name,
+			     client->server_pid);
+	} else {
+		if (client->stdin_fd >= 0)
+			close(client->stdin_fd);
+		if (client->stdout_fd >= 0)
+			close(client->stdout_fd);
 	}
-	if (client->stdout_fd >= 0) {
-		close(client->stdout_fd);
-		client->stdout_fd = -1;
-	}
-
-	if (client->server_pid > 0) {
-		kill(client->server_pid, SIGTERM);
-
-		int status;
-		int reaped = 0;
-		for (int i = 0; i < 10; i++) {
-			pid_t ret = waitpid(client->server_pid, &status, WNOHANG);
-			if (ret > 0 || (ret < 0 && errno == ECHILD)) {
-				reaped = 1;
-				break;
-			}
-			usleep(100000);
-		}
-
-		if (!reaped) {
-			kill(client->server_pid, SIGKILL);
-			while (waitpid(client->server_pid, NULL, 0) < 0 && errno == EINTR)
-				;
-		}
-
-		log_info(client ? client->config.logger : NULL,
-			 "mcp stdio: disconnected '%s' (pid=%d)", client->config.name,
-			 client->server_pid);
-		client->server_pid = -1;
-	}
-
-	morph_buf_cleanup(&client->read_buffer);
+	client->stdin_fd = -1;
+	client->stdout_fd = -1;
+	client->server_pid = -1;
+	nb_buf_cleanup(&client->read_buffer);
 	client->connected = 0;
 }

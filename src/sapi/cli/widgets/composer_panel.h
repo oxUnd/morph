@@ -1,7 +1,8 @@
 #ifndef MORPH_CLI_WIDGETS_COMPOSER_PANEL_H
 #define MORPH_CLI_WIDGETS_COMPOSER_PANEL_H
 
-#include "util/buf.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include <morph/tui/event.h>
 #include <morph/tui/view.h>
 
@@ -14,11 +15,12 @@ struct cli_composer_panel_options {
 
 /* Append through the line helpers. Each line occupies one clipped physical row. */
 struct cli_composer_panel_frame {
-	morph_buf_t content;
+	nb_buf content;
 	int columns;
 	int rows;
 	int line_count;
 	int color;
+	int error;
 };
 
 struct cli_composer_panel_ops {

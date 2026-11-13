@@ -2,7 +2,8 @@
 #define MORPH_CLI_WIDGETS_FEED_BLOCK_H
 
 #include "agent/agent_control.h"
-#include "util/buf.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include "sapi/cli/widgets/notice.h"
 #include <morph/tui/view.h>
 
@@ -43,8 +44,8 @@ struct cli_feed_block_style {
 };
 
 int cli_feed_block_leading_rows(struct morph_tui_view_insets margin, int trailing_newlines);
-int cli_feed_block_append(morph_buf_t *out, const struct cli_feed_block *block,
-			 struct cli_feed_block_style *style);
+int cli_feed_block_append(nb_buf *out, const struct cli_feed_block *block,
+			  struct cli_feed_block_style *style);
 int cli_feed_block_write(struct cli_application *ctx, const struct cli_feed_block *block);
 int cli_feed_notice_write(struct cli_application *ctx, enum cli_notice_status status,
 			  const char *title, const char *detail, const char *footer);

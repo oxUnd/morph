@@ -1,14 +1,17 @@
 #include "runtime/hooks.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "runtime/hooks_internal.h"
 
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/log.h"
-#include "util/json.h"
-#include "util/sha256.h"
-#include "util/utf8.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "nb/log.h"
+#include "cJSON.h"
+#include "nb/hash.h"
+#include "nb/encoding.h"
+#include "runtime/runtime.h"
+#include "nb/utf8.h"
 
 #include <errno.h>
 #include <regex.h>
@@ -28,18 +31,14 @@ const char *hook_json_string_borrow(const cJSON *obj, const char *key)
 
 static void digest_text(const char *text, char out[65])
 {
-	struct sha256_ctx ctx;
-	unsigned char hash[32];
-	static const char hex[] = "0123456789abcdef";
+	unsigned char hash[NB_SHA256_DIGEST_SIZE];
+	nb_sha256(text, strlen(text), hash);
+	(void)nb_hex_encode_to(hash, sizeof(hash), false, out, 65, NULL);
+}
 
-	sha256_init(&ctx);
-	sha256_update(&ctx, (const unsigned char *)text, strlen(text));
-	sha256_final(&ctx, hash);
-	for (size_t i = 0; i < sizeof(hash); i++) {
-		out[i * 2] = hex[hash[i] >> 4];
-		out[i * 2 + 1] = hex[hash[i] & 15];
-	}
-	out[64] = '\0';
+void runtime_hooks_workspace_token(struct runtime *runtime, char out[65])
+{
+	digest_text(runtime_workdir_borrow(runtime), out);
 }
 
 static int event_supported(const char *event)
@@ -125,8 +124,10 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 		     const char *matcher, const cJSON *handler, int project, int group_index,
 		     int handler_index)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	struct hook_entry *entry;
-	morph_buf_t identity = {0};
+	nb_buf identity NB_CLEANUP(nb_buf_cleanup) = {0};
 	cJSON *canonical = cJSON_CreateObject();
 	const cJSON *timeout = cJSON_GetObjectItemCaseSensitive(handler, "timeout");
 	const cJSON *limit = cJSON_GetObjectItemCaseSensitive(handler, "additionalContextLimit");
@@ -137,17 +138,22 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 		cJSON_Delete(canonical);
 		return MORPH_ERR_CONFIG;
 	}
-	if (!canonical || manager->entries.nelts >= HOOK_LIMIT) {
+	if (!canonical || manager->entries.len >= HOOK_LIMIT) {
 		cJSON_Delete(canonical);
-		return canonical ? -E2BIG : -ENOMEM;
+		return canonical ? NB_ERR_TOO_BIG : NB_ERR_NOMEM;
 	}
-	entry = morph_array_push_borrow(&manager->entries);
+	entry = nb_vec_push(&manager->entries);
 	if (!entry) {
 		cJSON_Delete(canonical);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	memset(entry, 0, sizeof(*entry));
-	entry->source = file_resolve_path_copy(source);
+	entry->source =
+		(nb_path_expand(&file_value_1, source, NULL) == NB_OK &&
+				 nb_path_canonical_missing(
+					 &file_value_1, nb_buf_cstr(&file_value_1), NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&file_value_1))
+			 : NULL);
 	if (!entry->source)
 		entry->source = strdup(source);
 	entry->event = strdup(event);
@@ -161,7 +167,7 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 	if (!entry->source || !entry->event || !entry->matcher || !entry->command ||
 	    !entry->status_message) {
 		cJSON_Delete(canonical);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if ((timeout &&
 	     (!cJSON_IsNumber(timeout) || timeout->valuedouble != (double)timeout->valueint)) ||
@@ -189,25 +195,29 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 	    !cJSON_AddNumberToObject(canonical, "timeout", entry->timeout) ||
 	    !cJSON_AddNumberToObject(canonical, "additionalContextLimit", entry->context_limit)) {
 		cJSON_Delete(canonical);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	entry->definition = cJSON_PrintUnformatted(canonical);
 	cJSON_Delete(canonical);
 	if (!entry->definition)
-		return -ENOMEM;
-	rc = morph_buf_init(&identity, 128);
+		return NB_ERR_NOMEM;
+	rc = (nb_buf_init(&identity), nb_buf_reserve(&identity, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_printf(&identity, "%s\n%s\n%s\n%d\n%d",
-				      project ? manager->workdir : "user", entry->source, event,
-				      group_index, handler_index);
+		rc = (nb_buf_printf(&identity, "%s\n%s\n%s\n%d\n%d",
+				    project ? manager->workdir : "user", entry->source, event,
+				    group_index, handler_index)
+			      ? 0
+			      : NB_ERR_NOMEM);
 	if (rc == 0) {
-		digest_text(morph_buf_cstr_borrow(&identity), entry->id);
-		morph_buf_reset(&identity);
-		rc = morph_buf_printf(&identity, "%s\n%s", entry->id, entry->definition);
+		digest_text(nb_buf_cstr(&identity), entry->id);
+		nb_buf_clear(&identity);
+		rc = (nb_buf_printf(&identity, "%s\n%s", entry->id, entry->definition)
+			      ? 0
+			      : NB_ERR_NOMEM);
 	}
 	if (rc == 0)
-		digest_text(morph_buf_cstr_borrow(&identity), entry->digest);
-	morph_buf_cleanup(&identity);
+		digest_text(nb_buf_cstr(&identity), entry->digest);
+	nb_buf_cleanup(&identity);
 	if (rc != 0)
 		return rc;
 	int portable = 1;
@@ -231,27 +241,31 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 					: "";
 	entry->status = strdup(!valid ? "invalid" : !entry->supported ? "unsupported" : "");
 	if (!entry->status)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	rc = hook_refresh_trust(manager, entry);
 	if (rc == 0 && !project && !entry->recorded) {
 		char legacy_id[65];
 		char legacy_digest[65];
-		morph_buf_t legacy MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf legacy NB_CLEANUP(nb_buf_cleanup) = {0};
 		sqlite3_stmt *stmt = NULL;
 
-		rc = morph_buf_init(&legacy, 128);
+		rc = (nb_buf_init(&legacy), nb_buf_reserve(&legacy, 128) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
-		rc = morph_buf_printf(&legacy, "%s\n%s\n%s\n%d\n%d", manager->workdir, source,
-				      event, group_index, handler_index);
+		rc = (nb_buf_printf(&legacy, "%s\n%s\n%s\n%d\n%d", manager->workdir, source, event,
+				    group_index, handler_index)
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (rc == 0) {
-			digest_text(morph_buf_cstr_borrow(&legacy), legacy_id);
-			morph_buf_reset(&legacy);
-			rc = morph_buf_printf(&legacy, "%s\n%s", legacy_id, entry->definition);
+			digest_text(nb_buf_cstr(&legacy), legacy_id);
+			nb_buf_clear(&legacy);
+			rc = (nb_buf_printf(&legacy, "%s\n%s", legacy_id, entry->definition)
+				      ? 0
+				      : NB_ERR_NOMEM);
 		}
 		if (rc == 0)
-			digest_text(morph_buf_cstr_borrow(&legacy), legacy_digest);
-		morph_buf_cleanup(&legacy);
+			digest_text(nb_buf_cstr(&legacy), legacy_digest);
+		nb_buf_cleanup(&legacy);
 		if (rc != 0)
 			return rc;
 		rc = sqlite3_prepare_v2(
@@ -338,13 +352,14 @@ static int hook_load_error(struct hook_manager *manager, const char *path, int r
 	snprintf(manager->error.file, sizeof(manager->error.file), "%s", path);
 	if (message != manager->error.detail.message)
 		snprintf(manager->error.detail.message, sizeof(manager->error.detail.message), "%s",
-			 message ? message : morph_strerror(rc));
+			 message ? message
+				 : nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	if (manager->error.detail.code == CONFIG_VALIDATION_NONE)
 		manager->error.detail.code =
-			rc == MORPH_ERR_PARSE ? CONFIG_VALIDATION_SYNTAX : CONFIG_VALIDATION_VALUE;
-	log_err(manager ? manager->logger : NULL, "failed to load hooks %s:%d:%d: %s", path,
-		manager->error.detail.line, manager->error.detail.column,
-		manager->error.detail.message);
+			rc == NB_ERR_PARSE ? CONFIG_VALIDATION_SYNTAX : CONFIG_VALIDATION_VALUE;
+	nb_log_write(manager ? manager->logger : NULL, NB_LOG_ERROR,
+		     "failed to load hooks %s:%d:%d: %s", path, manager->error.detail.line,
+		     manager->error.detail.column, manager->error.detail.message);
 	return rc;
 }
 
@@ -364,11 +379,15 @@ static void hook_json_error_position(struct hook_manager *manager, const char *t
 	}
 	manager->error.detail.line = line;
 	manager->error.detail.column =
-		(int)utf8nlen(line_start, (size_t)(position - line_start)) + 1;
+		(int)nb_utf8_count(nb_str_from_parts(line_start, (size_t)(position - line_start))) +
+		1;
 }
 
 static int load_json_file(struct hook_manager *manager, const char *path, int project)
 {
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	struct stat st;
 	char *text;
 	cJSON *root;
@@ -379,26 +398,34 @@ static int load_json_file(struct hook_manager *manager, const char *path, int pr
 	if (realpath(path, canonical))
 		path = canonical;
 	struct hook_entry *existing;
-	morph_array_foreach (existing, &manager->entries, struct hook_entry) {
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&manager->entries) &&
+			     (existing = (struct hook_entry *)nb_vec_at(&manager->entries, _i_));
+	     _i_++) {
 		if (strcmp(existing->source, path) == 0)
 			return 0;
 	}
 	if (stat(path, &st) != 0) {
-		rc = -errno;
-		return rc == -ENOENT ? 0 : hook_load_error(manager, path, rc, NULL);
+		rc = nb_status_from_errno(errno, NULL);
+		return rc == NB_ERR_NOT_FOUND ? 0 : hook_load_error(manager, path, rc, NULL);
 	}
 	if (!S_ISREG(st.st_mode) || st.st_size > CONFIG_HOOKS_JSON_MAX)
 		return hook_load_error(
-			manager, path, -EFBIG,
+			manager, path, NB_ERR_TOO_BIG,
 			"Hooks configuration must be a regular file within the size limit.");
-	text = file_read_all_copy(path, NULL);
+	text = (nb_file_read_all(path, &file_value_2, 0, NULL) == NB_OK &&
+				(file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) + 1)) !=
+					NULL
+			? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
+				  nb_buf_len(&file_value_2) + 1),
+			   nb_charp_steal(&file_copy_2))
+			: NULL);
 	if (!text)
-		return hook_load_error(manager, path, -EIO, NULL);
+		return hook_load_error(manager, path, NB_ERR_IO, NULL);
 	root = cJSON_ParseWithOpts(text, &parse_end, 1);
 	if (!root) {
 		hook_json_error_position(manager, text, parse_end);
 		rc = hook_load_error(
-			manager, path, MORPH_ERR_PARSE,
+			manager, path, NB_ERR_PARSE,
 			parse_end && *parse_end
 				? "Invalid JSON syntax; check quotes, commas, and brackets."
 				: "Unexpected end of JSON input; expected a complete JSON "
@@ -429,22 +456,24 @@ static int load_inline(struct hook_manager *manager, const char *path, const cha
 	struct hook_entry *entry;
 	const char *slash = strrchr(path, '/');
 	if (slash) {
-		morph_array_foreach (entry, &manager->entries, struct hook_entry) {
+		for (size_t _i_ = 0;
+		     _i_ < nb_vec_len(&manager->entries) &&
+		     (entry = (struct hook_entry *)nb_vec_at(&manager->entries, _i_));
+		     _i_++) {
 			const char *source_slash = strrchr(entry->source, '/');
 			if (source_slash &&
 			    (size_t)(source_slash - entry->source) == (size_t)(slash - path) &&
 			    strncmp(entry->source, path, (size_t)(slash - path)) == 0) {
-				log_warn(manager ? manager->logger : NULL,
-					 "Both hooks.json and inline hooks found; merging: %s",
-					 path);
+				nb_log_write(manager ? manager->logger : NULL, NB_LOG_WARN,
+					     "Both hooks.json and inline hooks found; merging: %s",
+					     path);
 				break;
 			}
 		}
 	}
 	hooks = cJSON_ParseWithOpts(json, NULL, 1);
 	if (!hooks)
-		return hook_load_error(manager, path, MORPH_ERR_PARSE,
-				       "Invalid inline hooks JSON.");
+		return hook_load_error(manager, path, NB_ERR_PARSE, "Invalid inline hooks JSON.");
 	rc = load_object(manager, hooks, path, project);
 	cJSON_Delete(hooks);
 	if (rc != 0)
@@ -454,40 +483,58 @@ static int load_inline(struct hook_manager *manager, const char *path, const cha
 
 int hook_manager_reload(struct hook_manager *manager)
 {
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_4 = NB_OK;
+	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_5 = NB_OK;
+	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_6 = NB_OK;
+
 	struct hook_entry *entry;
 	char path[PATH_MAX];
-	char *home = file_expand_path_copy("~/.morph/hooks.json");
+	char *home = (nb_path_expand(&file_value_3, "~/.morph/hooks.json", NULL) == NB_OK
+			      ? strdup(nb_buf_cstr(&file_value_3))
+			      : NULL);
 	int rc;
 	int enabled = manager ? manager->config->hooks_enabled : 0;
 
 	if (!manager || !manager->ready || !home) {
 		free(home);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	memset(&manager->error, 0, sizeof(manager->error));
-	morph_array_foreach (entry, &manager->entries, struct hook_entry)
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&manager->entries) &&
+			     (entry = (struct hook_entry *)nb_vec_at(&manager->entries, _i_));
+	     _i_++)
 		entry_cleanup(entry);
-	morph_array_clear(&manager->entries);
+	nb_vec_clear(&manager->entries);
 	rc = load_json_file(manager, home, 0);
 	free(home);
 	if (rc == 0 && manager->config_path[0]) {
 		char *directory = strdup(manager->config_path);
 		if (!directory)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		char *slash = strrchr(directory, '/');
 		if (slash)
 			*slash = '\0';
 		else
 			strcpy(directory, ".");
-		rc = file_path_join(path, sizeof(path), *directory ? directory : "/", "hooks.json");
+		rc = ((file_status_4 = nb_path_concat(&file_value_4, *directory ? directory : "/",
+						      "hooks.json")) != NB_OK
+			      ? file_status_4
+		      : (file_status_4 = nb_str_copy_to(nb_buf_str(&file_value_4), path,
+							sizeof(path))) == NB_ERR_RANGE
+			      ? NB_ERR_NAME_TOO_LONG
+			      : file_status_4);
 		free(directory);
 		if (rc == 0)
 			rc = load_json_file(manager, path, 0);
 	}
-	if (rc == 0 && manager->config_path[0] && file_exists(manager->config_path)) {
+	if (rc == 0 && manager->config_path[0] && nb_file_exists(manager->config_path)) {
 		struct config *fresh = calloc(1, sizeof(*fresh));
 		if (!fresh)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		rc = config_load(manager ? manager->logger : NULL, fresh, manager->config_path);
 		if (rc != 0) {
 			(void)config_validate_file(manager->config_path, &manager->error.detail);
@@ -504,16 +551,28 @@ int hook_manager_reload(struct hook_manager *manager)
 		rc = load_inline(manager, manager->config_path, manager->config->hooks_json, 0);
 	}
 	if (rc == 0)
-		rc = file_path_join(path, sizeof(path), manager->workdir, ".morph/hooks.json");
+		rc = ((file_status_5 = nb_path_concat(&file_value_5, manager->workdir,
+						      ".morph/hooks.json")) != NB_OK
+			      ? file_status_5
+		      : (file_status_5 = nb_str_copy_to(nb_buf_str(&file_value_5), path,
+							sizeof(path))) == NB_ERR_RANGE
+			      ? NB_ERR_NAME_TOO_LONG
+			      : file_status_5);
 	if (rc == 0)
 		rc = load_json_file(manager, path, 1);
 	/* Project TOML is parsed with the normal schema, never applied to runtime. */
 	if (rc == 0)
-		rc = file_path_join(path, sizeof(path), manager->workdir, ".morph/config.toml");
-	if (rc == 0 && file_exists(path) && strcmp(path, manager->config_path) != 0) {
+		rc = ((file_status_6 = nb_path_concat(&file_value_6, manager->workdir,
+						      ".morph/config.toml")) != NB_OK
+			      ? file_status_6
+		      : (file_status_6 = nb_str_copy_to(nb_buf_str(&file_value_6), path,
+							sizeof(path))) == NB_ERR_RANGE
+			      ? NB_ERR_NAME_TOO_LONG
+			      : file_status_6);
+	if (rc == 0 && nb_file_exists(path) && strcmp(path, manager->config_path) != 0) {
 		struct config *project = calloc(1, sizeof(*project));
 		if (!project)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		rc = config_load(manager ? manager->logger : NULL, project, path);
 		if (rc != 0) {
 			(void)config_validate_file(path, &manager->error.detail);
@@ -535,17 +594,24 @@ int hook_manager_reload(struct hook_manager *manager)
 int hook_manager_init(struct hook_manager *manager, struct db *db, const struct config *config,
 		      const char *config_path, const char *workdir)
 {
+	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	int rc;
 
 	if (!manager || !db || !db->handle || !config || !workdir)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(manager, 0, sizeof(*manager));
 	manager->logger = config->logger;
 	manager->db = db;
 	manager->config = config;
 	snprintf(manager->config_path, sizeof(manager->config_path), "%s",
 		 config_path ? config_path : "");
-	char *resolved = file_resolve_path_copy(workdir);
+	char *resolved =
+		(nb_path_expand(&file_value_7, workdir, NULL) == NB_OK &&
+				 nb_path_canonical_missing(
+					 &file_value_7, nb_buf_cstr(&file_value_7), NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&file_value_7))
+			 : NULL);
 	snprintf(manager->workdir, sizeof(manager->workdir), "%s", resolved ? resolved : workdir);
 	free(resolved);
 	rc = db_exec(db,
@@ -554,13 +620,14 @@ int hook_manager_init(struct hook_manager *manager, struct db *db, const struct 
 		     "definition TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hook_workspaces("
 		     "path TEXT PRIMARY KEY)");
 	if (rc == 0)
-		rc = morph_array_init(&manager->entries, 8, sizeof(struct hook_entry));
+		rc = (nb_vec_init(&manager->entries, sizeof(struct hook_entry)),
+		      nb_vec_reserve(&manager->entries, 8) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	manager->recent = cJSON_CreateArray();
 	if (!manager->recent) {
-		morph_array_cleanup(&manager->entries);
-		return -ENOMEM;
+		nb_vec_cleanup(&manager->entries);
+		return NB_ERR_NOMEM;
 	}
 	manager->remaining_ms = 600000;
 	manager->ready = 1;
@@ -573,9 +640,11 @@ void hook_manager_cleanup(struct hook_manager *manager)
 
 	if (!manager || !manager->ready)
 		return;
-	morph_array_foreach (entry, &manager->entries, struct hook_entry)
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&manager->entries) &&
+			     (entry = (struct hook_entry *)nb_vec_at(&manager->entries, _i_));
+	     _i_++)
 		entry_cleanup(entry);
-	morph_array_cleanup(&manager->entries);
+	nb_vec_cleanup(&manager->entries);
 	free(manager->session_context);
 	cJSON_Delete(manager->recent);
 	memset(manager, 0, sizeof(*manager));
@@ -598,34 +667,41 @@ const char *hook_entry_state(struct hook_manager *manager, struct hook_entry *en
 
 static int hook_review_digest(struct hook_manager *manager, char digest[65])
 {
-	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 	struct hook_entry *entry;
-	int rc = morph_buf_init(&text, 256);
+	int rc = (nb_buf_init(&text), nb_buf_reserve(&text, 256) ? 0 : NB_ERR_NOMEM);
 
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_printf(&text, "%s\n%d\n", manager->workdir, manager->enabled);
-	morph_array_foreach (entry, &manager->entries, struct hook_entry) {
+	rc = (nb_buf_printf(&text, "%s\n%d\n", manager->workdir, manager->enabled) ? 0
+										   : NB_ERR_NOMEM);
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&manager->entries) &&
+			     (entry = (struct hook_entry *)nb_vec_at(&manager->entries, _i_));
+	     _i_++) {
 		if (rc == 0)
-			rc = morph_buf_printf(&text, "%s:%s:%d\n", entry->id, entry->digest,
-					      entry->supported);
+			rc = (nb_buf_printf(&text, "%s:%s:%d\n", entry->id, entry->digest,
+					    entry->supported)
+				      ? 0
+				      : NB_ERR_NOMEM);
 	}
 	if (rc == 0)
-		digest_text(morph_buf_cstr_borrow(&text), digest);
-	morph_buf_cleanup(&text);
+		digest_text(nb_buf_cstr(&text), digest);
+	nb_buf_cleanup(&text);
 	return rc;
 }
 
 cJSON *hook_manager_list(struct hook_manager *manager)
 {
-	cJSON *list MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
+	cJSON *list NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateArray();
 	struct hook_entry *entry;
 	char review_digest[65];
 
 	if (!manager || !manager->ready || !list || hook_review_digest(manager, review_digest) != 0)
 		return NULL;
-	morph_array_foreach (entry, &manager->entries, struct hook_entry) {
-		cJSON *row MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&manager->entries) &&
+			     (entry = (struct hook_entry *)nb_vec_at(&manager->entries, _i_));
+	     _i_++) {
+		cJSON *row NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 		char workspace_digest[65];
 
 		if (!row || hook_refresh_trust(manager, entry) != 0)
@@ -654,15 +730,16 @@ cJSON *hook_manager_list(struct hook_manager *manager)
 		const cJSON *last;
 		cJSON_ArrayForEach (last, manager->recent) {
 			if (strcmp(hook_json_string_borrow(last, "hook_id"), entry->id) == 0) {
-				cJSON *run MORPH_CLEANUP(morph_json_cleanup) =
-					cJSON_Duplicate(last, 1);
+				cJSON *run NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Duplicate(last, 1);
 
 				cJSON_DeleteItemFromObject(row, "last_run");
-				if (!run || morph_json_object_take(row, "last_run", &run) != 0)
+				if (!run || (cJSON_AddItemToObject(row, "last_run", run)
+						     ? (run = NULL, NB_OK)
+						     : NB_ERR_NOMEM) != 0)
 					return NULL;
 			}
 		}
-		if (morph_json_array_take(list, &row) != 0)
+		if ((cJSON_AddItemToArray(list, row) ? (row = NULL, NB_OK) : NB_ERR_NOMEM) != 0)
 			return NULL;
 	}
 	cJSON *result = list;
@@ -679,7 +756,7 @@ static void hook_batch_stmt_cleanup(sqlite3_stmt **statement)
 static int hook_manager_batch_write(struct hook_manager *manager, int trust)
 {
 	struct hook_entry *entry;
-	sqlite3_stmt *stmt MORPH_CLEANUP(hook_batch_stmt_cleanup) = NULL;
+	sqlite3_stmt *stmt NB_CLEANUP(hook_batch_stmt_cleanup) = NULL;
 	int rc;
 
 	if (trust) {
@@ -708,7 +785,9 @@ static int hook_manager_batch_write(struct hook_manager *manager, int trust)
 		rc = (MORPH_ERR_DB);
 		return rc;
 	}
-	morph_array_foreach (entry, &manager->entries, struct hook_entry) {
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&manager->entries) &&
+			     (entry = (struct hook_entry *)nb_vec_at(&manager->entries, _i_));
+	     _i_++) {
 		if (!entry->supported)
 			continue;
 		sqlite3_reset(stmt);
@@ -730,7 +809,7 @@ static int hook_manager_batch_write(struct hook_manager *manager, int trust)
 
 static int hook_manager_batch(struct hook_manager *manager, int trust, const char *expected_digest)
 {
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	char digest[65];
 	int rc = hook_manager_reload(manager);
 
@@ -739,7 +818,7 @@ static int hook_manager_batch(struct hook_manager *manager, int trust, const cha
 	if (rc != 0)
 		return rc;
 	if (strcmp(digest, expected_digest) != 0)
-		return -ESTALE;
+		return NB_ERR_STALE;
 	rc = db_lock_acquire(manager->db, &lock);
 	if (rc == 0)
 		rc = db_exec(manager->db, "SAVEPOINT hook_batch;");
@@ -761,7 +840,7 @@ int hook_manager_action(struct hook_manager *manager, const char *action, const 
 	int rc;
 
 	if (!manager || !action || !id || !expected_digest)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (strcmp(action, "trust-all") == 0 || strcmp(action, "deny-all") == 0)
 		return hook_manager_batch(manager, strcmp(action, "trust-all") == 0,
 					  expected_digest);
@@ -769,7 +848,7 @@ int hook_manager_action(struct hook_manager *manager, const char *action, const 
 		char digest[65];
 		digest_text(manager->workdir, digest);
 		if (strcmp(expected_digest, digest) != 0)
-			return -ESTALE;
+			return NB_ERR_STALE;
 		rc = sqlite3_prepare_v2(
 			manager->db->handle,
 			strcmp(action, "trust-project") == 0
@@ -784,18 +863,18 @@ int hook_manager_action(struct hook_manager *manager, const char *action, const 
 		if (rc != 0)
 			return rc;
 		entry = NULL;
-		for (size_t i = 0; i < manager->entries.nelts; i++) {
-			struct hook_entry *candidate = morph_array_borrow(&manager->entries, i);
+		for (size_t i = 0; i < manager->entries.len; i++) {
+			struct hook_entry *candidate = nb_vec_at(&manager->entries, i);
 			if (strcmp(candidate->id, id) == 0)
 				entry = candidate;
 		}
 		if (!entry)
-			return -ENOENT;
+			return NB_ERR_NOT_FOUND;
 		if (strcmp(entry->digest, expected_digest) != 0)
-			return -ESTALE;
+			return NB_ERR_STALE;
 		if (strcmp(action, "trust") == 0) {
 			if (!entry->supported || (entry->project && !project_trusted(manager)))
-				return -EPERM;
+				return NB_ERR_NOT_PERMITTED;
 			rc = sqlite3_prepare_v2(
 				manager->db->handle,
 				"INSERT INTO hook_trust(id,digest,disabled,definition) "
@@ -826,7 +905,7 @@ int hook_manager_action(struct hook_manager *manager, const char *action, const 
 			if (rc == SQLITE_OK)
 				sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT);
 		} else {
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 		if (rc == SQLITE_OK && strcmp(action, "disable") != 0 &&
 		    strcmp(action, "enable") != 0)

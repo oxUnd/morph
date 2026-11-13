@@ -1,17 +1,18 @@
 #include "img_compose.h"
-#include "util/json.h"
-#include "util/cleanup.h"
+#include "cJSON.h"
+#include "nb/cleanup.h"
 #include "annotation.h"
 #include "agent/tool_runtime.h"
 #include "models/llm.h"
 #include "agent/tool_context.h"
 #include "models/image_gen.h"
 #include "models/media_output.h"
-#include "util/log.h"
-#include "util/file.h"
-#include "util/error.h"
-#include "util/buf.h"
-#include "util/image_util.h"
+#include "nb/log.h"
+#include "nb/file.h"
+#include "errors.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "media/image.h"
 #include "cJSON.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
@@ -100,7 +101,10 @@ static int find_source_bbox(const struct annotation *annotation, int img_idx, do
 {
 	const struct annotation_bbox *bbox;
 
-	morph_array_foreach (bbox, &annotation->bboxes, const struct annotation_bbox) {
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(&annotation->bboxes) &&
+	     (bbox = (const struct annotation_bbox *)nb_vec_at(&annotation->bboxes, _i_));
+	     _i_++) {
 		struct annotation_rect rect;
 		double bx, by, bw, bh;
 
@@ -123,7 +127,7 @@ static int find_source_bbox(const struct annotation *annotation, int img_idx, do
 }
 
 struct draft_png {
-	morph_buf_t bytes;
+	nb_buf bytes;
 	int error;
 };
 
@@ -132,7 +136,8 @@ static void draft_png_append(void *opaque, void *data, int size)
 	struct draft_png *draft = opaque;
 
 	if (draft->error == 0)
-		draft->error = morph_buf_append(&draft->bytes, data, (size_t)size);
+		draft->error =
+			(nb_buf_append(&draft->bytes, data, (size_t)size) ? 0 : NB_ERR_NOMEM);
 }
 
 static int img_compose_exec(const char *args_json, struct tool_result *result, void *user_data)
@@ -149,12 +154,12 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
 
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
 		(void)tool_result_success_json_text_copy(result, "{\"error\":\"invalid JSON\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	if (!ctx || !ctx->image_llm || !model_api_key_borrow(ctx->image_llm)[0]) {
@@ -164,7 +169,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 		return MORPH_ERR_NOT_CONFIGURED;
 	}
 
-	struct annotation annotation MORPH_CLEANUP(annotation_cleanup) = {0};
+	struct annotation annotation NB_CLEANUP(annotation_cleanup) = {0};
 	int parse_rc = annotation_parse_copy(root, &annotation);
 
 	if (parse_rc != 0) {
@@ -190,17 +195,17 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"invalid size for the configured image model\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
-	if (annotation.arrows.nelts == 0) {
+	if (annotation.arrows.len == 0) {
 		annotation_cleanup(&annotation);
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"img_compose needs arrows (arrow + label = "
 				"cross-image fusion). For bbox region generation use "
 				"img_inpaint.\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	int main_idx = annotation_main_image(&annotation);
@@ -209,7 +214,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"could not determine target image from arrows\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	const struct annotation_image *main_image = annotation_image_borrow(&annotation, main_idx);
@@ -219,7 +224,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"no path for target image\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	char resolved_main[PATH_MAX];
@@ -246,13 +251,16 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"failed to load target image\"}");
-		return MORPH_ERR_FORMAT;
+		return NB_ERR_FORMAT;
 	}
 
 	cJSON *labels = cJSON_CreateArray();
 	int fused = 0;
 	const struct annotation_arrow *arrow;
-	morph_array_foreach (arrow, &annotation.arrows, const struct annotation_arrow) {
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(&annotation.arrows) &&
+	     (arrow = (const struct annotation_arrow *)nb_vec_at(&annotation.arrows, _i_));
+	     _i_++) {
 		int from_idx = arrow->from.image_index;
 		const struct annotation_image *image;
 		const char *src_path;
@@ -349,24 +357,25 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"no arrows could be applied to the target image\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	/* Write the rough pre-composite draft. */
 	const char *odir_in = tctx ? tool_context_output_dir_borrow(tctx) : NULL;
 	char draft_path[PATH_MAX];
 	struct draft_png draft = {0};
-	int draft_rc = morph_buf_init(&draft.bytes, 4096);
+	int draft_rc =
+		(nb_buf_init(&draft.bytes), nb_buf_reserve(&draft.bytes, 4096) ? 0 : NB_ERR_NOMEM);
 
 	if (draft_rc == 0 &&
 	    !stbi_write_png_to_func(draft_png_append, &draft, cw, ch, 4, canvas, cw * 4))
-		draft_rc = -EIO;
+		draft_rc = NB_ERR_IO;
 	if (draft_rc == 0)
 		draft_rc = draft.error;
 	if (draft_rc == 0)
-		draft_rc = media_output_write(odir_in, "img_compose_draft", "png", draft.bytes.data,
+		draft_rc = media_output_write(odir_in, "img_compose_draft", "png", draft.bytes.ptr,
 					      draft.bytes.len, draft_path, sizeof(draft_path));
-	morph_buf_cleanup(&draft.bytes);
+	nb_buf_cleanup(&draft.bytes);
 	free(canvas);
 	if (draft_rc != 0) {
 		cJSON_Delete(labels);
@@ -378,36 +387,36 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 	}
 
 	/* Build a deterministic harmonization prompt and refine via i2i. */
-	morph_buf_t lb MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_init(&lb, 128);
+	nb_buf lb NB_CLEANUP(nb_buf_cleanup) = {0};
+	(nb_buf_init(&lb), nb_buf_reserve(&lb, 128));
 	int nl = cJSON_GetArraySize(labels);
 	for (int i = 0; i < nl; i++) {
 		cJSON *l = cJSON_GetArrayItem(labels, i);
 		if (!cJSON_IsString(l))
 			continue;
-		morph_buf_printf(&lb, "%s%s", lb.len ? ", " : "", l->valuestring);
+		nb_buf_printf(&lb, "%s%s", lb.len ? ", " : "", l->valuestring);
 	}
 	int have_labels = lb.len > 0;
 
-	morph_buf_t pb MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_init(&pb, 512);
-	morph_buf_printf(&pb,
-			 "The provided image is a rough composite: one or more elements "
-			 "have been pasted onto a background. Seamlessly blend the "
-			 "inserted element(s)%s%s into the scene — harmonize lighting, "
-			 "shadows, perspective, scale, color grading, and edges so the "
-			 "result is photorealistic and coherent. Preserve the position "
-			 "and identity of each inserted element; only refine how it fits.",
-			 have_labels ? ": " : "", morph_buf_cstr_borrow(&lb));
+	nb_buf pb NB_CLEANUP(nb_buf_cleanup) = {0};
+	(nb_buf_init(&pb), nb_buf_reserve(&pb, 512));
+	nb_buf_printf(&pb,
+		      "The provided image is a rough composite: one or more elements "
+		      "have been pasted onto a background. Seamlessly blend the "
+		      "inserted element(s)%s%s into the scene — harmonize lighting, "
+		      "shadows, perspective, scale, color grading, and edges so the "
+		      "result is photorealistic and coherent. Preserve the position "
+		      "and identity of each inserted element; only refine how it fits.",
+		      have_labels ? ": " : "", nb_buf_cstr(&lb));
 	if (user_prompt && user_prompt[0])
-		morph_buf_printf(&pb, " Additional direction: %s", user_prompt);
+		nb_buf_printf(&pb, " Additional direction: %s", user_prompt);
 
 	struct image_result r = {0};
 	const char *references[] = {draft_path};
-	int rc = image_gen_create(ctx->image_llm, morph_buf_cstr_borrow(&pb), style, size,
-				  references, 1, odir_in, &r);
-	morph_buf_cleanup(&lb);
-	morph_buf_cleanup(&pb);
+	int rc = image_gen_create(ctx->image_llm, nb_buf_cstr(&pb), style, size, references, 1,
+				  odir_in, &r);
+	nb_buf_cleanup(&lb);
+	nb_buf_cleanup(&pb);
 
 	cJSON *out = cJSON_CreateObject();
 	if (rc < 0) {
@@ -426,7 +435,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 
 	if (labels)
 		cJSON_Delete(labels);
-	char *out_str MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(out);
+	char *out_str NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(out);
 	cJSON_Delete(out);
 	annotation_cleanup(&annotation);
 	cJSON_Delete(root);
@@ -438,15 +447,15 @@ static int img_compose_exec(const char *args_json, struct tool_result *result, v
 int img_compose_init(struct tool_registry *reg, struct model *image_llm, struct tool_context *tctx)
 {
 	if (!reg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	struct img_compose_context *ctx = malloc(sizeof(*ctx));
 	if (!ctx)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	ctx->image_llm = image_llm;
 	ctx->tctx = tctx;
 
-	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
+	struct tool_spec spec NB_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.flags = TOOL_FLAG_MEDIA,
 		.name = "img_compose",

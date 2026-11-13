@@ -1,14 +1,14 @@
 #ifndef MORPH_SYSTEM_PROMPT_H
 #define MORPH_SYSTEM_PROMPT_H
 
-struct morph_log;
+struct nb_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* On success, out owns the loaded text, or NULL when no source is configured. */
 /* Creates a malloc-owned snapshot in a NULL output; failure preserves NULL. */
-int morph_prompt_load(struct morph_log *logger, const char *file, const char *dir, char **out);
+int morph_prompt_load(struct nb_log *logger, const char *file, const char *dir, char **out);
 
 #ifdef __cplusplus
 }

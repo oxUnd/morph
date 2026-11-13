@@ -1,9 +1,9 @@
 #include "image_provider.h"
 #include "image_gen.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/image_util.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "media/image.h"
+#include "cJSON.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdio.h>
@@ -15,7 +15,7 @@ static int volcengine_capabilities(const struct model *model,
 {
 	(void)model;
 	if (!caps)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(caps, 0, sizeof(*caps));
 	caps->supports_generate = 1;
 	caps->supports_edit = 1;
@@ -29,7 +29,7 @@ static int volcengine_normalize_size(const struct model *model,
 {
 	(void)model;
 	if (!out || out_cap == 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!size || !*size)
 		size = "2048x2048";
 	if (strcmp(size, "2k") == 0 || strcmp(size, "4k") == 0) {
@@ -37,7 +37,7 @@ static int volcengine_normalize_size(const struct model *model,
 		return 0;
 	}
 	if (image_gen_validate_size(size) != 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	snprintf(out, out_cap, "%s", size);
 	return 0;
 }
@@ -49,13 +49,13 @@ int image_volcengine_request_body_create(const struct model *model,
 	char *body_text = NULL;
 
 	if (!model || !request || !request->prompt || !body_out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*body_out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	body = cJSON_CreateObject();
 	if (!body) {
 
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	cJSON_AddStringToObject(body, "model", model->model_id);
 	cJSON_AddStringToObject(body, "prompt", request->prompt);
@@ -69,10 +69,10 @@ int image_volcengine_request_body_create(const struct model *model,
 		if (!images) {
 			cJSON_Delete(body);
 
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		for (int i = 0; i < request->reference_image_count; i++) {
-			char *uri MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+			char *uri NB_CLEANUP(nb_charp_cleanup) = NULL;
 			int encode_rc = image_encode_data_uri_copy(request->reference_images[i],
 								   2048, &uri);
 
@@ -82,13 +82,15 @@ int image_volcengine_request_body_create(const struct model *model,
 
 				return encode_rc;
 			}
-			cJSON *item = morph_json_string_take(&uri);
+			cJSON *item = cJSON_CreateString(uri);
+			if (item)
+				nb_charp_cleanup(&uri);
 			if (!item || !cJSON_AddItemToArray(images, item)) {
 				cJSON_Delete(item);
 				cJSON_Delete(images);
 				cJSON_Delete(body);
 
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			}
 		}
 		cJSON_AddItemToObject(body, "image", images);
@@ -97,7 +99,7 @@ int image_volcengine_request_body_create(const struct model *model,
 	cJSON_Delete(body);
 
 	if (!body_text) {
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	*body_out = body_text;
 	return 0;
@@ -107,13 +109,13 @@ static int volcengine_execute(struct model *model,
 			      const struct image_request *request,
 			      struct image_payload *payload)
 {
-	char *body_text MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
+	char *body_text NB_CLEANUP(cJSON_FreeTextOwner) = NULL;
 	int rc;
 
 	if (!model || !request || !request->prompt || !payload)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (payload->data)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	rc = image_volcengine_request_body_create(model, request, &body_text);
 	if (rc != 0)
 		return rc;

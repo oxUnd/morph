@@ -1,9 +1,10 @@
 #include "config.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/utf8.h"
-#include "tomlc17.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "nb/utf8.h"
+#include "nb/toml.h"
 #include "cJSON.h"
 
 #include <errno.h>
@@ -25,8 +26,8 @@ enum schema_flags {
 
 struct schema_entry {
 	const char *path;
-	toml_type_t type;
-	toml_type_t item_type;
+	nb_toml_type type;
+	nb_toml_type item_type;
 	int flags;
 	size_t max_len;
 	int max_items;
@@ -35,20 +36,18 @@ struct schema_entry {
 	const char *values;
 };
 
-#define TABLE(p) { (p), TOML_TABLE, TOML_UNKNOWN, 0, 0, 0, 0, 0, NULL }
-#define STRING(p, n) { (p), TOML_STRING, TOML_UNKNOWN, 0, (n), 0, 0, 0, NULL }
-#define ENUM(p, n, v) { (p), TOML_STRING, TOML_UNKNOWN, 0, (n), 0, 0, 0, (v) }
-#define BOOL(p) { (p), TOML_BOOLEAN, TOML_UNKNOWN, 0, 0, 0, 0, 0, NULL }
-#define INT(p, lo, hi) { (p), TOML_INT64, TOML_UNKNOWN, SCHEMA_RANGE, 0, 0, (lo), (hi), NULL }
-#define NUMBER(p, lo, hi) \
-	{ (p), TOML_FP64, TOML_UNKNOWN, SCHEMA_NUMBER | SCHEMA_RANGE, \
-	  0, 0, (lo), (hi), NULL }
-#define STRINGS(p, count, len) { (p), TOML_ARRAY, TOML_STRING, 0, (len), (count), 0, 0, NULL }
-#define INTEGERS(p, count) { (p), TOML_ARRAY, TOML_INT64, 0, 0, (count), 0, 0, NULL }
-#define TABLES(p, count) { (p), TOML_ARRAY, TOML_TABLE, 0, 0, (count), 0, 0, NULL }
-#define DYNAMIC(p, count, len) \
-	{ (p), TOML_TABLE, TOML_UNKNOWN, SCHEMA_DYNAMIC_STRINGS, \
-	  (len), (count), 0, 0, NULL }
+#define TABLE(p) {(p), NB_TOML_TABLE, NB_TOML_NONE, 0, 0, 0, 0, 0, NULL}
+#define STRING(p, n) {(p), NB_TOML_STRING, NB_TOML_NONE, 0, (n), 0, 0, 0, NULL}
+#define ENUM(p, n, v) {(p), NB_TOML_STRING, NB_TOML_NONE, 0, (n), 0, 0, 0, (v)}
+#define BOOL(p) {(p), NB_TOML_BOOLEAN, NB_TOML_NONE, 0, 0, 0, 0, 0, NULL}
+#define INT(p, lo, hi) {(p), NB_TOML_INTEGER, NB_TOML_NONE, SCHEMA_RANGE, 0, 0, (lo), (hi), NULL}
+#define NUMBER(p, lo, hi)                                                                          \
+	{(p), NB_TOML_FLOAT, NB_TOML_NONE, SCHEMA_NUMBER | SCHEMA_RANGE, 0, 0, (lo), (hi), NULL}
+#define STRINGS(p, count, len) {(p), NB_TOML_ARRAY, NB_TOML_STRING, 0, (len), (count), 0, 0, NULL}
+#define INTEGERS(p, count) {(p), NB_TOML_ARRAY, NB_TOML_INTEGER, 0, 0, (count), 0, 0, NULL}
+#define TABLES(p, count) {(p), NB_TOML_ARRAY, NB_TOML_TABLE, 0, 0, (count), 0, 0, NULL}
+#define DYNAMIC(p, count, len)                                                                     \
+	{(p), NB_TOML_TABLE, NB_TOML_NONE, SCHEMA_DYNAMIC_STRINGS, (len), (count), 0, 0, NULL}
 
 #define MODEL_FIELDS(name) \
 	TABLE("model." name), \
@@ -302,10 +301,8 @@ static const struct schema_entry *schema_find(const char *path)
 	return NULL;
 }
 
-static int set_error(struct config_validation_error *error,
-			     enum config_validation_code code,
-			     const toml_datum_t *value, const char *path,
-			     const char *format, ...)
+static int set_error(struct config_validation_error *error, enum config_validation_code code,
+		     const nb_toml_value *value, const char *path, const char *format, ...)
 {
 	va_list ap;
 
@@ -313,8 +310,8 @@ static int set_error(struct config_validation_error *error,
 		memset(error, 0, sizeof(*error));
 		error->code = code;
 		if (value) {
-			error->line = value->lineno;
-			error->column = value->colno;
+			error->line = nb_toml_location_of(value).line;
+			error->column = nb_toml_location_of(value).column;
 		}
 		if (path)
 			strncpy(error->path, path, sizeof(error->path) - 1);
@@ -322,8 +319,39 @@ static int set_error(struct config_validation_error *error,
 		vsnprintf(error->message, sizeof(error->message), format, ap);
 		va_end(ap);
 	}
-	return code == CONFIG_VALIDATION_SYNTAX ? MORPH_ERR_PARSE :
-		MORPH_ERR_CONFIG;
+	return code == CONFIG_VALIDATION_SYNTAX ? NB_ERR_PARSE : MORPH_ERR_CONFIG;
+}
+
+/* Configuration strings enter C APIs and fixed fields; escaped NUL cannot
+ * represent a configuration value or key even though it is valid TOML. */
+static int validate_text_values(const nb_toml_value *value, struct config_validation_error *error)
+{
+	if (nb_toml_type_of(value) == NB_TOML_STRING) {
+		nb_str text = nb_toml_string(value);
+		if (memchr(text.ptr, '\0', text.len))
+			return set_error(error, CONFIG_VALIDATION_VALUE, value, NULL,
+					 "configuration strings must not contain NUL");
+	} else if (nb_toml_type_of(value) == NB_TOML_TABLE) {
+		nb_toml_table_iter iter;
+		nb_toml_table_iter_init(value, &iter);
+		nb_str key;
+		const nb_toml_value *child;
+		while (nb_toml_table_iter_next(&iter, &key, &child)) {
+			if (memchr(key.ptr, '\0', key.len))
+				return set_error(error, CONFIG_VALIDATION_VALUE, child, NULL,
+						 "configuration keys must not contain NUL");
+			int rc = validate_text_values(child, error);
+			if (rc != 0)
+				return rc;
+		}
+	} else if (nb_toml_type_of(value) == NB_TOML_ARRAY) {
+		for (size_t i = 0; i < nb_toml_array_size(value); i++) {
+			int rc = validate_text_values(nb_toml_array_get(value, i), error);
+			if (rc != 0)
+				return rc;
+		}
+	}
+	return NB_OK;
 }
 
 static int value_is_allowed(const char *allowed, const char *value)
@@ -345,116 +373,115 @@ static int value_is_allowed(const char *allowed, const char *value)
 	return 0;
 }
 
-static int validate_value(const struct schema_entry *entry,
-			  const toml_datum_t *value, const char *path,
-			  struct config_validation_error *error)
+static int validate_value(const struct schema_entry *entry, const nb_toml_value *value,
+			  const char *path, struct config_validation_error *error)
 {
 	if ((entry->flags & SCHEMA_NUMBER) != 0) {
-		if (value->type != TOML_FP64 && value->type != TOML_INT64)
+		if (nb_toml_type_of(value) != NB_TOML_FLOAT &&
+		    nb_toml_type_of(value) != NB_TOML_INTEGER)
 			return set_error(error, CONFIG_VALIDATION_TYPE, value, path,
 				"%s must be a number", path);
-	} else if (value->type != entry->type) {
+	} else if (nb_toml_type_of(value) != entry->type) {
 		return set_error(error, CONFIG_VALIDATION_TYPE, value, path,
 			"%s has the wrong TOML type", path);
 	}
-	if (value->type == TOML_STRING) {
-		if ((size_t)value->u.str.len > entry->max_len)
+	if (nb_toml_type_of(value) == NB_TOML_STRING) {
+		if ((size_t)nb_toml_string(value).len > entry->max_len)
 			return set_error(error, CONFIG_VALIDATION_LIMIT, value, path,
 				"%s exceeds the maximum length of %zu bytes",
 				path, entry->max_len);
-		if (!value_is_allowed(entry->values, value->u.s))
+		if (!value_is_allowed(entry->values, nb_toml_string(value).ptr))
 			return set_error(error, CONFIG_VALIDATION_VALUE, value, path,
-				"%s has unsupported value '%s'", path, value->u.s);
+					 "%s has unsupported value '%s'", path,
+					 nb_toml_string(value).ptr);
 	}
 	if ((entry->flags & SCHEMA_RANGE) != 0) {
-		double number = value->type == TOML_INT64 ?
-			(double)value->u.int64 : value->u.fp64;
+		double number = nb_toml_type_of(value) == NB_TOML_INTEGER
+					? (double)nb_toml_integer(value)
+					: nb_toml_float(value);
 		if (!isfinite(number) || number < entry->min_value ||
 		    number > entry->max_value)
 			return set_error(error, CONFIG_VALIDATION_RANGE, value, path,
 				"%s must be between %.6g and %.6g", path,
 				entry->min_value, entry->max_value);
 	}
-	if (value->type == TOML_ARRAY) {
-		if (value->u.arr.size > entry->max_items)
+	if (nb_toml_type_of(value) == NB_TOML_ARRAY) {
+		if (nb_toml_array_size(value) > (size_t)entry->max_items)
 			return set_error(error, CONFIG_VALIDATION_LIMIT, value, path,
-				"%s has %d items; maximum is %d", path,
-				value->u.arr.size, entry->max_items);
-		for (int i = 0; i < value->u.arr.size; i++) {
-			const toml_datum_t *item = &value->u.arr.elem[i];
-			if (item->type != entry->item_type)
-				return set_error(error, CONFIG_VALIDATION_TYPE, item,
-					path, "%s item %d has the wrong TOML type",
-					path, i);
-			if (item->type == TOML_STRING &&
-			    (size_t)item->u.str.len > entry->max_len)
-				return set_error(error, CONFIG_VALIDATION_LIMIT, item,
-					path, "%s item %d exceeds %zu bytes", path,
-					i, entry->max_len);
+					 "%s has %zu items; maximum is %d", path,
+					 nb_toml_array_size(value), entry->max_items);
+		for (size_t i = 0; i < nb_toml_array_size(value); i++) {
+			const nb_toml_value *item = nb_toml_array_get(value, (size_t)(i));
+			if (nb_toml_type_of(item) != entry->item_type)
+				return set_error(error, CONFIG_VALIDATION_TYPE, item, path,
+						 "%s item %zu has the wrong TOML type", path, i);
+			if (nb_toml_type_of(item) == NB_TOML_STRING &&
+			    (size_t)nb_toml_string(item).len > entry->max_len)
+				return set_error(error, CONFIG_VALIDATION_LIMIT, item, path,
+						 "%s item %zu exceeds %zu bytes", path, i,
+						 entry->max_len);
 		}
 	}
 	return 0;
 }
 
-static int append_path(morph_buf_t *path, const char *key)
+static int append_path(nb_buf *path, const char *key)
 {
 	int rc;
 
 	if (path->len > 0) {
-		rc = morph_buf_putc(path, '.');
+		rc = (nb_buf_append_char(path, '.') ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
-	return morph_buf_puts(path, key);
+	return (nb_buf_append_cstr(path, key) ? 0 : NB_ERR_NOMEM);
 }
 
-static int validate_table(const toml_datum_t *table, morph_buf_t *path,
+static int validate_table(const nb_toml_value *table, nb_buf *path,
 			  struct config_validation_error *error,
-			  config_validation_warning_fn warning_fn,
-			  void *warning_user_data)
+			  config_validation_warning_fn warning_fn, void *warning_user_data)
 {
-	for (int i = 0; i < table->u.tab.size; i++) {
-		const toml_datum_t *value = &table->u.tab.value[i];
+	for (size_t i = 0; i < nb_toml_table_size(table); i++) {
+		const nb_toml_value *value = nb_toml_table_value_at(table, (size_t)(i));
 		const struct schema_entry *entry;
 		size_t old_len = path->len;
-		int rc = append_path(path, table->u.tab.key[i]);
+		int rc = append_path(path, nb_toml_table_key_at(table, (size_t)(i)).ptr);
 
 		if (rc != 0)
 			return rc;
-		entry = schema_find(morph_buf_cstr_borrow(path));
+		entry = schema_find(nb_buf_cstr(path));
 		if (!entry) {
 			struct config_validation_error warning = {0};
 
 			(void)set_error(&warning, CONFIG_VALIDATION_UNKNOWN_KEY, value,
-					morph_buf_cstr_borrow(path),
-					"unknown configuration key: %s",
-					morph_buf_cstr_borrow(path));
+					nb_buf_cstr(path), "unknown configuration key: %s",
+					nb_buf_cstr(path));
 			if (warning_fn)
 				warning_fn(&warning, warning_user_data);
 			path->len = old_len;
-			path->data[old_len] = '\0';
+			path->ptr[old_len] = '\0';
 			continue;
 		}
-		rc = validate_value(entry, value, morph_buf_cstr_borrow(path), error);
+		rc = validate_value(entry, value, nb_buf_cstr(path), error);
 		if (rc != 0)
 			return rc;
-		if (value->type == TOML_TABLE) {
+		if (nb_toml_type_of(value) == NB_TOML_TABLE) {
 			if ((entry->flags & SCHEMA_DYNAMIC_STRINGS) != 0) {
-				if (value->u.tab.size > entry->max_items)
+				if (nb_toml_table_size(value) > (size_t)entry->max_items)
 					return set_error(error, CONFIG_VALIDATION_LIMIT, value,
-							 morph_buf_cstr_borrow(path),
+							 nb_buf_cstr(path),
 							 "%s has too many entries",
-							 morph_buf_cstr_borrow(path));
-				for (int j = 0; j < value->u.tab.size; j++) {
-					const toml_datum_t *child = &value->u.tab.value[j];
-					if (child->type != TOML_STRING ||
-					    (size_t)child->u.str.len > entry->max_len)
+							 nb_buf_cstr(path));
+				for (size_t j = 0; j < nb_toml_table_size(value); j++) {
+					const nb_toml_value *child =
+						nb_toml_table_value_at(value, (size_t)(j));
+					if (nb_toml_type_of(child) != NB_TOML_STRING ||
+					    (size_t)nb_toml_string(child).len > entry->max_len)
 						return set_error(error, CONFIG_VALIDATION_TYPE,
-								 child, morph_buf_cstr_borrow(path),
+								 child, nb_buf_cstr(path),
 								 "%s values must be strings no "
 								 "longer than %zu bytes",
-								 morph_buf_cstr_borrow(path),
-								 entry->max_len);
+								 nb_buf_cstr(path), entry->max_len);
 				}
 			} else {
 				rc = validate_table(value, path, error, warning_fn,
@@ -462,152 +489,160 @@ static int validate_table(const toml_datum_t *table, morph_buf_t *path,
 				if (rc != 0)
 					return rc;
 			}
-		} else if (value->type == TOML_ARRAY &&
-			   entry->item_type == TOML_TABLE) {
-			rc = morph_buf_puts(path, "[]");
+		} else if (nb_toml_type_of(value) == NB_TOML_ARRAY &&
+			   entry->item_type == NB_TOML_TABLE) {
+			rc = (nb_buf_append_cstr(path, "[]") ? 0 : NB_ERR_NOMEM);
 			if (rc != 0)
 				return rc;
-			for (int j = 0; j < value->u.arr.size; j++) {
-				rc = validate_table(&value->u.arr.elem[j], path, error,
-					warning_fn, warning_user_data);
+			for (size_t j = 0; j < nb_toml_array_size(value); j++) {
+				rc = validate_table(nb_toml_array_get(value, (size_t)(j)), path,
+						    error, warning_fn, warning_user_data);
 				if (rc != 0)
 					return rc;
 			}
 		}
 		path->len = old_len;
-		path->data[old_len] = '\0';
+		path->ptr[old_len] = '\0';
 	}
 	return 0;
 }
 
-static const toml_datum_t *table_get(const toml_datum_t *table,
-				      const char *key)
+static const nb_toml_value *table_get(const nb_toml_value *table, const char *key)
 {
-	if (!table || table->type != TOML_TABLE)
+	if (!table || nb_toml_type_of(table) != NB_TOML_TABLE)
 		return NULL;
-	for (int i = 0; i < table->u.tab.size; i++) {
-		if (strcmp(table->u.tab.key[i], key) == 0)
-			return &table->u.tab.value[i];
+	for (size_t i = 0; i < nb_toml_table_size(table); i++) {
+		if (strcmp(nb_toml_table_key_at(table, (size_t)(i)).ptr, key) == 0)
+			return nb_toml_table_value_at(table, (size_t)(i));
 	}
 	return NULL;
 }
 
-static int require_string(const toml_datum_t *table, const char *key,
-			  const char *path, struct config_validation_error *error)
+static int require_string(const nb_toml_value *table, const char *key, const char *path,
+			  struct config_validation_error *error)
 {
-	const toml_datum_t *value = table_get(table, key);
+	const nb_toml_value *value = table_get(table, key);
 
-	if (!value || value->type != TOML_STRING || !value->u.s[0])
+	if (!value || nb_toml_type_of(value) != NB_TOML_STRING || !nb_toml_string(value).ptr[0])
 		return set_error(error, CONFIG_VALIDATION_REQUIRED,
 			value ? value : table, path, "%s is required", path);
 	return 0;
 }
 
-static int validate_named_array(const toml_datum_t *root, const char *section,
+static int validate_named_array(const nb_toml_value *root, const char *section,
 				const char *array_name, const char *path,
 				struct config_validation_error *error)
 {
-	const toml_datum_t *parent = table_get(root, section);
-	const toml_datum_t *array = table_get(parent, array_name);
+	const nb_toml_value *parent = table_get(root, section);
+	const nb_toml_value *array = table_get(parent, array_name);
 
 	if (!array)
 		return 0;
-	for (int i = 0; i < array->u.arr.size; i++) {
-		const toml_datum_t *item = &array->u.arr.elem[i];
-		const toml_datum_t *name = table_get(item, "name");
+	for (size_t i = 0; i < nb_toml_array_size(array); i++) {
+		const nb_toml_value *item = nb_toml_array_get(array, (size_t)(i));
+		const nb_toml_value *name = table_get(item, "name");
 		int rc = require_string(item, "name", path, error);
 		if (rc != 0)
 			return rc;
-		for (int j = 0; j < i; j++) {
-			const toml_datum_t *other = table_get(&array->u.arr.elem[j],
-				"name");
-			if (other && strcmp(name->u.s, other->u.s) == 0)
-				return set_error(error, CONFIG_VALIDATION_CONFLICT,
-					name, path, "duplicate %s '%s'", path,
-					name->u.s);
+		for (size_t j = 0; j < i; j++) {
+			const nb_toml_value *other =
+				table_get(nb_toml_array_get(array, (size_t)(j)), "name");
+			if (other &&
+			    strcmp(nb_toml_string(name).ptr, nb_toml_string(other).ptr) == 0)
+				return set_error(error, CONFIG_VALIDATION_CONFLICT, name, path,
+						 "duplicate %s '%s'", path,
+						 nb_toml_string(name).ptr);
 		}
 	}
 	return 0;
 }
 
-static int validate_permission_profiles(const toml_datum_t *react,
+static int validate_permission_profiles(const nb_toml_value *react,
 					struct config_validation_error *error)
 {
 	static const char *const keys[] = {
 		"workspace_roots", "write_paths", "delete_paths"
 	};
-	const toml_datum_t *profiles = table_get(react, "permission_profiles");
-	const toml_datum_t *permissions = table_get(react, "permissions");
-	const toml_datum_t *active = table_get(permissions, "active_profile");
-	int active_found = !active || !active->u.s[0];
+	const nb_toml_value *profiles = table_get(react, "permission_profiles");
+	const nb_toml_value *permissions = table_get(react, "permissions");
+	const nb_toml_value *active = table_get(permissions, "active_profile");
+	int active_found = !active || !nb_toml_string(active).ptr[0];
 
 	if (!profiles)
-		return active_found ? 0 : set_error(error,
-			CONFIG_VALIDATION_CONFLICT, active,
-			"react.permissions.active_profile",
-			"active permission profile '%s' is not defined", active->u.s);
-	for (int i = 0; i < profiles->u.arr.size; i++) {
-		const toml_datum_t *profile = &profiles->u.arr.elem[i];
-		const toml_datum_t *name = table_get(profile, "name");
+		return active_found ? 0
+				    : set_error(error, CONFIG_VALIDATION_CONFLICT, active,
+						"react.permissions.active_profile",
+						"active permission profile '%s' is not defined",
+						nb_toml_string(active).ptr);
+	for (size_t i = 0; i < nb_toml_array_size(profiles); i++) {
+		const nb_toml_value *profile = nb_toml_array_get(profiles, (size_t)(i));
+		const nb_toml_value *name = table_get(profile, "name");
 
-		if (active && name && strcmp(active->u.s, name->u.s) == 0)
+		if (active && name &&
+		    strcmp(nb_toml_string(active).ptr, nb_toml_string(name).ptr) == 0)
 			active_found = 1;
 		for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
-			const toml_datum_t *paths = table_get(profile, keys[k]);
+			const nb_toml_value *paths = table_get(profile, keys[k]);
 
 			if (!paths)
 				continue;
-			for (int j = 0; j < paths->u.arr.size; j++) {
-				const toml_datum_t *item = &paths->u.arr.elem[j];
-				const char *value = item->u.s;
+			for (size_t j = 0; j < nb_toml_array_size(paths); j++) {
+				const nb_toml_value *item = nb_toml_array_get(paths, (size_t)(j));
+				const char *value = nb_toml_string(item).ptr;
 				char path[CONFIG_MAX_KEY_LEN];
 
-				if (file_path_is_absolute(value) || value[0] == '~')
+				if (nb_path_is_absolute(value) || value[0] == '~')
 					continue;
 				snprintf(path, sizeof(path),
 					 "react.permission_profiles[].%s", keys[k]);
-				return set_error(error, CONFIG_VALIDATION_VALUE,
-					item, path,
-					"%s item %d must be an absolute or ~ path",
-					path, j);
+				return set_error(error, CONFIG_VALIDATION_VALUE, item, path,
+						 "%s item %zu must be an absolute or ~ path", path,
+						 j);
 			}
 		}
 	}
 	if (!active_found)
 		return set_error(error, CONFIG_VALIDATION_CONFLICT, active,
-			"react.permissions.active_profile",
-			"active permission profile '%s' is not defined", active->u.s);
+				 "react.permissions.active_profile",
+				 "active permission profile '%s' is not defined",
+				 nb_toml_string(active).ptr);
 	return 0;
 }
 
-static int validate_active_permission_directories(
-	const toml_datum_t *root, struct config_validation_error *error)
+static int validate_active_permission_directories(const nb_toml_value *root,
+						  struct config_validation_error *error)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	static const char *const keys[] = {
 		"workspace_roots", "write_paths", "delete_paths"
 	};
-	const toml_datum_t *react = table_get(root, "react");
-	const toml_datum_t *permissions = table_get(react, "permissions");
-	const toml_datum_t *active = table_get(permissions, "active_profile");
-	const toml_datum_t *profiles = table_get(react, "permission_profiles");
+	const nb_toml_value *react = table_get(root, "react");
+	const nb_toml_value *permissions = table_get(react, "permissions");
+	const nb_toml_value *active = table_get(permissions, "active_profile");
+	const nb_toml_value *profiles = table_get(react, "permission_profiles");
 
-	if (!active || !active->u.s[0] || !profiles)
+	if (!active || !nb_toml_string(active).ptr[0] || !profiles)
 		return 0;
-	for (int i = 0; i < profiles->u.arr.size; i++) {
-		const toml_datum_t *profile = &profiles->u.arr.elem[i];
-		const toml_datum_t *name = table_get(profile, "name");
+	for (size_t i = 0; i < nb_toml_array_size(profiles); i++) {
+		const nb_toml_value *profile = nb_toml_array_get(profiles, (size_t)(i));
+		const nb_toml_value *name = table_get(profile, "name");
 
-		if (!name || strcmp(active->u.s, name->u.s) != 0)
+		if (!name || strcmp(nb_toml_string(active).ptr, nb_toml_string(name).ptr) != 0)
 			continue;
 		for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
-			const toml_datum_t *paths = table_get(profile, keys[k]);
+			const nb_toml_value *paths = table_get(profile, keys[k]);
 
 			if (!paths)
 				continue;
-			for (int j = 0; j < paths->u.arr.size; j++) {
-				const toml_datum_t *item = &paths->u.arr.elem[j];
+			for (size_t j = 0; j < nb_toml_array_size(paths); j++) {
+				const nb_toml_value *item = nb_toml_array_get(paths, (size_t)(j));
 				char path[CONFIG_MAX_KEY_LEN];
-				char *expanded = file_expand_path_copy(item->u.s);
+				char *expanded =
+					(nb_path_expand(&file_value_1, nb_toml_string(item).ptr,
+							NULL) == NB_OK
+						 ? strdup(nb_buf_cstr(&file_value_1))
+						 : NULL);
 				struct stat st;
 				int stat_rc;
 				int saved_errno;
@@ -615,7 +650,7 @@ static int validate_active_permission_directories(
 				snprintf(path, sizeof(path),
 					 "react.permission_profiles[].%s", keys[k]);
 				if (!expanded)
-					return -ENOMEM;
+					return NB_ERR_NOMEM;
 				stat_rc = stat(expanded, &st);
 				saved_errno = errno;
 				if (stat_rc == 0 && S_ISDIR(st.st_mode)) {
@@ -623,21 +658,21 @@ static int validate_active_permission_directories(
 					continue;
 				}
 				if (stat_rc == 0) {
-					int rc = set_error(error,
-						CONFIG_VALIDATION_VALUE, item, path,
-						"active permission profile '%s' %s item %d "
+					int rc = set_error(
+						error, CONFIG_VALIDATION_VALUE, item, path,
+						"active permission profile '%s' %s item %zu "
 						"is not a directory: %s",
-						active->u.s, keys[k], j, expanded);
+						nb_toml_string(active).ptr, keys[k], j, expanded);
 
 					free(expanded);
 					return rc;
 				}
 				{
-					int rc = set_error(error,
-						CONFIG_VALIDATION_VALUE, item, path,
+					int rc = set_error(
+						error, CONFIG_VALIDATION_VALUE, item, path,
 						"cannot use active permission profile '%s': "
-						"directory '%s' from %s item %d: %s",
-						active->u.s, expanded, keys[k], j,
+						"directory '%s' from %s item %zu: %s",
+						nb_toml_string(active).ptr, expanded, keys[k], j,
 						strerror(saved_errno));
 
 					free(expanded);
@@ -664,19 +699,18 @@ static int extra_body_key_is_reserved(const char *key)
 	return 0;
 }
 
-static int validate_model_extra_body(const toml_datum_t *model,
-				     const char *name,
+static int validate_model_extra_body(const nb_toml_value *model, const char *name,
 				     struct config_validation_error *error)
 {
-	const toml_datum_t *value = table_get(model, "extra_body_json");
+	const nb_toml_value *value = table_get(model, "extra_body_json");
 	cJSON *extra;
 	cJSON *item;
 	char path[CONFIG_MAX_KEY_LEN];
 
-	if (!value || !value->u.s[0])
+	if (!value || !nb_toml_string(value).ptr[0])
 		return 0;
 	snprintf(path, sizeof(path), "model.%s.extra_body_json", name);
-	extra = cJSON_ParseWithOpts(value->u.s, NULL, 1);
+	extra = cJSON_ParseWithOpts(nb_toml_string(value).ptr, NULL, 1);
 	if (!extra)
 		return set_error(error, CONFIG_VALIDATION_VALUE, value, path,
 			"%s must contain valid JSON", path);
@@ -700,26 +734,25 @@ static int validate_model_extra_body(const toml_datum_t *model,
 	return 0;
 }
 
-static int validate_rollout_budget(const toml_datum_t *root,
-				   struct config_validation_error *error)
+static int validate_rollout_budget(const nb_toml_value *root, struct config_validation_error *error)
 {
-	const toml_datum_t *budget = table_get(table_get(root, "features"), "rollout_budget");
-	const toml_datum_t *enabled = table_get(budget, "enabled");
-	const toml_datum_t *limit = table_get(budget, "limit_tokens");
-	const toml_datum_t *reminders = table_get(budget, "reminder_at_remaining_tokens");
-	if (enabled && enabled->u.boolean && !limit)
+	const nb_toml_value *budget = table_get(table_get(root, "features"), "rollout_budget");
+	const nb_toml_value *enabled = table_get(budget, "enabled");
+	const nb_toml_value *limit = table_get(budget, "limit_tokens");
+	const nb_toml_value *reminders = table_get(budget, "reminder_at_remaining_tokens");
+	if (enabled && nb_toml_boolean(enabled) && !limit)
 		return set_error(error, CONFIG_VALIDATION_REQUIRED, budget,
 			"features.rollout_budget.limit_tokens",
 			"limit_tokens is required when rollout budget is enabled");
-	if (enabled && enabled->u.boolean && !reminders)
+	if (enabled && nb_toml_boolean(enabled) && !reminders)
 		return set_error(error, CONFIG_VALIDATION_REQUIRED, budget,
 			"features.rollout_budget.reminder_at_remaining_tokens",
 			"reminder_at_remaining_tokens is required when rollout budget is enabled");
 	if (reminders) {
-		for (int i = 0; i < reminders->u.arr.size; i++) {
-			const toml_datum_t *value = &reminders->u.arr.elem[i];
-			if (value->u.int64 <= 0 || value->u.int64 > INT_MAX ||
-			    (limit && value->u.int64 >= limit->u.int64))
+		for (size_t i = 0; i < nb_toml_array_size(reminders); i++) {
+			const nb_toml_value *value = nb_toml_array_get(reminders, (size_t)(i));
+			if (nb_toml_integer(value) <= 0 || nb_toml_integer(value) > INT_MAX ||
+			    (limit && nb_toml_integer(value) >= nb_toml_integer(limit)))
 				return set_error(error, CONFIG_VALIDATION_RANGE, value,
 					"features.rollout_budget.reminder_at_remaining_tokens",
 					"reminders must be positive integers below limit_tokens");
@@ -728,23 +761,19 @@ static int validate_rollout_budget(const toml_datum_t *root,
 	return 0;
 }
 
-static int validate_relations(const toml_datum_t *root,
-			      struct config_validation_error *error)
+static int validate_relations(const nb_toml_value *root, struct config_validation_error *error)
 {
-	const toml_datum_t *context = table_get(root, "context");
-	const toml_datum_t *summarize = table_get(context,
-		"summarize_threshold_ratio");
-	const toml_datum_t *target = table_get(context, "compress_target_ratio");
-	const toml_datum_t *mcp = table_get(root, "mcp");
-	const toml_datum_t *servers = table_get(mcp, "servers");
-	const toml_datum_t *react = table_get(root, "react");
-	const toml_datum_t *exec = table_get(root, "exec");
-	const toml_datum_t *shell = table_get(exec, "shell");
-	const toml_datum_t *inline_output = table_get(exec,
-		"max_inline_output");
-	const toml_datum_t *session_output = table_get(exec,
-		"max_session_output");
-	const toml_datum_t *model = table_get(root, "model");
+	const nb_toml_value *context = table_get(root, "context");
+	const nb_toml_value *summarize = table_get(context, "summarize_threshold_ratio");
+	const nb_toml_value *target = table_get(context, "compress_target_ratio");
+	const nb_toml_value *mcp = table_get(root, "mcp");
+	const nb_toml_value *servers = table_get(mcp, "servers");
+	const nb_toml_value *react = table_get(root, "react");
+	const nb_toml_value *exec = table_get(root, "exec");
+	const nb_toml_value *shell = table_get(exec, "shell");
+	const nb_toml_value *inline_output = table_get(exec, "max_inline_output");
+	const nb_toml_value *session_output = table_get(exec, "max_session_output");
+	const nb_toml_value *model = table_get(root, "model");
 	static const char *const model_names[] = {
 		"text", "vision", "image", "video", "approval"
 	};
@@ -757,17 +786,17 @@ static int validate_relations(const toml_datum_t *root,
 	if (rc != 0)
 		return rc;
 
-	const toml_datum_t *legacy_agents = table_get(table_get(root, "agent"), "sub_agents");
+	const nb_toml_value *legacy_agents = table_get(table_get(root, "agent"), "sub_agents");
 	if (legacy_agents)
 		return set_error(error, CONFIG_VALIDATION_VALUE, legacy_agents, "agent.sub_agents",
 			"agent.sub_agents was removed; configure [agents] and use spawn_agent instead");
-	if (shell && !shell->u.s[0])
+	if (shell && !nb_toml_string(shell).ptr[0])
 		return set_error(error, CONFIG_VALIDATION_VALUE, shell,
 			"exec.shell", "exec.shell must not be empty");
 	if (inline_output)
-		inline_limit = inline_output->u.int64;
+		inline_limit = nb_toml_integer(inline_output);
 	if (session_output)
-		session_limit = session_output->u.int64;
+		session_limit = nb_toml_integer(session_output);
 	if (inline_limit > session_limit)
 		return set_error(error, CONFIG_VALIDATION_CONFLICT,
 			inline_output ? inline_output : session_output,
@@ -775,11 +804,13 @@ static int validate_relations(const toml_datum_t *root,
 			"exec.max_inline_output must not exceed "
 			"exec.max_session_output");
 	if (summarize)
-		summarize_ratio = summarize->type == TOML_INT64 ?
-			(double)summarize->u.int64 : summarize->u.fp64;
+		summarize_ratio = nb_toml_type_of(summarize) == NB_TOML_INTEGER
+					  ? (double)nb_toml_integer(summarize)
+					  : nb_toml_float(summarize);
 	if (target)
-		target_ratio = target->type == TOML_INT64 ?
-			(double)target->u.int64 : target->u.fp64;
+		target_ratio = nb_toml_type_of(target) == NB_TOML_INTEGER
+				       ? (double)nb_toml_integer(target)
+				       : nb_toml_float(target);
 	if (target_ratio >= summarize_ratio)
 		return set_error(error, CONFIG_VALIDATION_CONFLICT,
 			target ? target : summarize,
@@ -787,12 +818,12 @@ static int validate_relations(const toml_datum_t *root,
 				"context.compress_target_ratio must be less than summarize_threshold_ratio");
 	for (size_t i = 0;
 	     i < sizeof(model_names) / sizeof(model_names[0]); i++) {
-		const toml_datum_t *entry = table_get(model, model_names[i]);
-		const toml_datum_t *output = table_get(entry, "max_tokens");
-		const toml_datum_t *window = table_get(entry, "context_limit");
+		const nb_toml_value *entry = table_get(model, model_names[i]);
+		const nb_toml_value *output = table_get(entry, "max_tokens");
+		const nb_toml_value *window = table_get(entry, "context_limit");
 
-		if (i < 2 && output && window && window->u.int64 > 0 &&
-		    output->u.int64 > window->u.int64) {
+		if (i < 2 && output && window && nb_toml_integer(window) > 0 &&
+		    nb_toml_integer(output) > nb_toml_integer(window)) {
 			char path[CONFIG_MAX_KEY_LEN];
 
 			snprintf(path, sizeof(path), "model.%s.max_tokens", model_names[i]);
@@ -817,14 +848,14 @@ static int validate_relations(const toml_datum_t *root,
 	if (rc != 0)
 		return rc;
 	if (servers) {
-		for (int i = 0; i < servers->u.arr.size; i++) {
-			const toml_datum_t *server = &servers->u.arr.elem[i];
-			const toml_datum_t *transport = table_get(server, "transport");
+		for (size_t i = 0; i < nb_toml_array_size(servers); i++) {
+			const nb_toml_value *server = nb_toml_array_get(servers, (size_t)(i));
+			const nb_toml_value *transport = table_get(server, "transport");
 			rc = require_string(server, "transport",
 				"mcp.servers[].transport", error);
 			if (rc != 0)
 				return rc;
-			if (strcmp(transport->u.s, "stdio") == 0)
+			if (strcmp(nb_toml_string(transport).ptr, "stdio") == 0)
 				rc = require_string(server, "command",
 					"mcp.servers[].command", error);
 			else
@@ -837,9 +868,9 @@ static int validate_relations(const toml_datum_t *root,
 	return 0;
 }
 
-static int model_explicit_thinking(const toml_datum_t *entry)
+static int model_explicit_thinking(const nb_toml_value *entry)
 {
-	const toml_datum_t *body = table_get(entry, "extra_body_json");
+	const nb_toml_value *body = table_get(entry, "extra_body_json");
 	cJSON *root;
 	cJSON *thinking;
 	cJSON *type;
@@ -847,9 +878,9 @@ static int model_explicit_thinking(const toml_datum_t *entry)
 	cJSON *kwargs;
 	int enabled;
 
-	if (!body || !body->u.s[0])
+	if (!body || !nb_toml_string(body).ptr[0])
 		return 0;
-	root = cJSON_Parse(body->u.s);
+	root = cJSON_Parse(nb_toml_string(body).ptr);
 	thinking = cJSON_GetObjectItemCaseSensitive(root, "thinking");
 	type = cJSON_GetObjectItemCaseSensitive(thinking, "type");
 	effort = cJSON_GetObjectItemCaseSensitive(root, "reasoning_effort");
@@ -866,24 +897,26 @@ static int model_explicit_thinking(const toml_datum_t *entry)
 	return enabled;
 }
 
-static void warn_token_budgets(const toml_datum_t *root,
-	config_validation_warning_fn warning_fn, void *warning_user_data)
+static void warn_token_budgets(const nb_toml_value *root, config_validation_warning_fn warning_fn,
+			       void *warning_user_data)
 {
-	const toml_datum_t *models = table_get(root, "model");
+	const nb_toml_value *models = table_get(root, "model");
 	static const char *const names[] = {"text", "vision", "approval"};
 
 	if (!warning_fn)
 		return;
 	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
-		const toml_datum_t *entry = table_get(models, names[i]);
-		const toml_datum_t *output = table_get(entry, "max_tokens");
-		const toml_datum_t *window = table_get(entry, "context_limit");
-		int64_t budget = output && output->u.int64 > 0 ? output->u.int64 : 4096;
+		const nb_toml_value *entry = table_get(models, names[i]);
+		const nb_toml_value *output = table_get(entry, "max_tokens");
+		const nb_toml_value *window = table_get(entry, "context_limit");
+		int64_t budget =
+			output && nb_toml_integer(output) > 0 ? nb_toml_integer(output) : 4096;
 		struct config_validation_error warning = {0};
 		char path[CONFIG_MAX_KEY_LEN];
 
 		snprintf(path, sizeof(path), "model.%s.max_tokens", names[i]);
-		if (window && window->u.int64 > 0 && budget >= (window->u.int64 + 1) / 2) {
+		if (window && nb_toml_integer(window) > 0 &&
+		    budget >= (nb_toml_integer(window) + 1) / 2) {
 			(void)set_error(&warning, CONFIG_VALIDATION_BUDGET,
 				output ? output : window, path,
 				"%s reserves at least half of model.%s.context_limit for output; "
@@ -909,7 +942,7 @@ static int parse_error_line(const char *message)
 	int line = 0;
 
 	if (message)
-		(void)sscanf(message, "(line %d)", &line);
+		(void)sscanf(message, "TOML line %d", &line);
 	return line;
 }
 
@@ -919,9 +952,10 @@ static int config_validate_text_internal(const char *text,
 			    void *warning_user_data,
 			    int validate_directories)
 {
-	toml_result_t parsed;
-	morph_buf_t path;
-	const utf8_int8_t *invalid;
+	nb_err parse_error = {0};
+	nb_toml *parsed NB_CLEANUP(nb_toml_cleanup) = NULL;
+	nb_buf path NB_CLEANUP(nb_buf_cleanup) = {0};
+	size_t invalid_offset = 0;
 	size_t text_len;
 	int path_ready = 0;
 	int rc;
@@ -929,16 +963,15 @@ static int config_validate_text_internal(const char *text,
 	if (error)
 		memset(error, 0, sizeof(*error));
 	if (!text)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	text_len = strlen(text);
 	if (text_len > (size_t)INT_MAX)
 		return set_error(error, CONFIG_VALIDATION_LIMIT, NULL, NULL,
 			"configuration text is too large");
-	invalid = utf8valid((const utf8_int8_t *)text);
-	if (invalid) {
+	if (nb_utf8_validate(nb_str_from_cstr(text), &invalid_offset) != NB_UTF8_OK) {
 		int line = 1;
 		int column = 1;
-		for (const char *p = text; p < (const char *)invalid; p++) {
+		for (const char *p = text; p < text + invalid_offset; p++) {
 			if (*p == '\n') {
 				line++;
 				column = 1;
@@ -954,30 +987,32 @@ static int config_validate_text_internal(const char *text,
 		}
 		return rc;
 	}
-	parsed = toml_parse(text, (int)text_len);
-	if (!parsed.ok) {
-		rc = set_error(error, CONFIG_VALIDATION_SYNTAX, NULL, NULL,
-			"%s", parsed.errmsg[0] ? parsed.errmsg : "invalid TOML");
+	parsed = nb_toml_parse(nb_str_from_parts(text, text_len), &parse_error);
+	if (!parsed) {
+		rc = set_error(error, CONFIG_VALIDATION_SYNTAX, NULL, NULL, "%s",
+			       parse_error.msg[0] ? parse_error.msg : "invalid TOML");
 		if (error)
-			error->line = parse_error_line(parsed.errmsg);
-		toml_free(parsed);
+			error->line = parse_error_line(parse_error.msg);
+		nb_toml_cleanup(&parsed);
 		return rc;
 	}
-	rc = morph_buf_init(&path, 128);
+	rc = (nb_buf_init(&path), nb_buf_reserve(&path, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0) {
 		path_ready = 1;
-		rc = validate_table(&parsed.toptab, &path, error, warning_fn,
-			warning_user_data);
+		rc = validate_text_values(nb_toml_root(parsed), error);
+		if (rc == 0)
+			rc = validate_table(nb_toml_root(parsed), &path, error, warning_fn,
+					    warning_user_data);
 	}
 	if (rc == 0)
-		rc = validate_relations(&parsed.toptab, error);
+		rc = validate_relations(nb_toml_root(parsed), error);
 	if (rc == 0 && validate_directories)
-		rc = validate_active_permission_directories(&parsed.toptab, error);
+		rc = validate_active_permission_directories(nb_toml_root(parsed), error);
 	if (rc == 0)
-		warn_token_budgets(&parsed.toptab, warning_fn, warning_user_data);
+		warn_token_budgets(nb_toml_root(parsed), warning_fn, warning_user_data);
 	if (path_ready)
-		morph_buf_cleanup(&path);
-	toml_free(parsed);
+		nb_buf_cleanup(&path);
+	nb_toml_cleanup(&parsed);
 	return rc;
 }
 
@@ -1000,16 +1035,25 @@ int config_validate_file_with_warnings(const char *path,
 			    config_validation_warning_fn warning_fn,
 			    void *warning_user_data)
 {
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	char *text;
 	size_t length = 0;
 	int rc;
 
 	if (!path)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	errno = 0;
-	text = file_read_all_copy(path, &length);
+	text = (nb_file_read_all(path, &file_value_2, 0, NULL) == NB_OK &&
+				(file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) + 1)) !=
+					NULL
+			? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
+				  nb_buf_len(&file_value_2) + 1),
+			   *(&length) = nb_buf_len(&file_value_2), nb_charp_steal(&file_copy_2))
+			: NULL);
 	if (!text)
-		return errno ? -errno : -EIO;
+		return errno ? nb_status_from_errno(errno, NULL) : NB_ERR_IO;
 	(void)length;
 	rc = config_validate_text_internal(text, error, warning_fn,
 		warning_user_data, 1);

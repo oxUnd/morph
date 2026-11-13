@@ -2,6 +2,7 @@
 #define MORPH_RUNTIME_SERVICES_H
 
 #include "agent/memory.h"
+#include "nb/err.h"
 #include "agent/tool.h"
 #include "credits.h"
 #include "mcp/mcp.h"
@@ -12,7 +13,7 @@
 struct runtime;
 
 /* Owned outputs require zero-initialized empty slots. Existing owners return
- * -EEXIST unchanged; failed construction leaves empty outputs empty. */
+ * NB_ERR_EXISTS unchanged; failed construction leaves empty outputs empty. */
 
 struct runtime_trace_step {
 	enum react_step_type type;
@@ -33,7 +34,7 @@ struct runtime_turn_status {
 	int step_count;
 };
 
-/* Copy into a zero-initialized empty owner; -EEXIST preserves occupied output. */
+/* Copy into a zero-initialized empty owner; NB_ERR_EXISTS preserves occupied output. */
 int runtime_turn_status_copy(struct runtime *runtime, struct runtime_turn_status *out);
 void runtime_turn_status_cleanup(struct runtime_turn_status *status);
 char *runtime_turn_notification_body_copy(struct runtime *runtime);
@@ -156,7 +157,7 @@ int runtime_mcp_connect(struct runtime *runtime, const char *name);
 int runtime_mcp_disconnect(struct runtime *runtime, const char *name);
 int runtime_mcp_discover(struct runtime *runtime, const char *name,
 			 int *tools, int *resources, int *prompts);
-/* List output owners must be initialized to NULL; occupied outputs return -EEXIST. */
+/* List output owners must be initialized to NULL; occupied outputs return NB_ERR_EXISTS. */
 int runtime_mcp_list_tools(struct runtime *runtime, const char *name,
 			   struct mcp_tool_desc **out, int *count);
 int runtime_mcp_list_resources(struct runtime *runtime, const char *name,

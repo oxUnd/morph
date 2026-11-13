@@ -1,10 +1,11 @@
 #include "exec/process.h"
 
 #include "sandbox/sandbox.h"
-#include "util/buf.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/json.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "cJSON.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -22,7 +23,7 @@ static void eval_manager_cleanup(struct process_manager **owner)
 
 static int eval_json(int rc, const struct process_snapshot *snapshot)
 {
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	if (!report)
 		return 2;
 	(void)cJSON_AddBoolToObject(report, "ok",
@@ -30,7 +31,9 @@ static int eval_json(int rc, const struct process_snapshot *snapshot)
 					    snapshot->exit_code == 0);
 	(void)cJSON_AddNumberToObject(report, "error_code", rc);
 	if (rc != 0)
-		(void)cJSON_AddStringToObject(report, "error", morph_strerror(rc));
+		(void)cJSON_AddStringToObject(
+			report, "error",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	if (snapshot) {
 		(void)cJSON_AddStringToObject(report, "status",
 					      process_state_name(snapshot->state));
@@ -53,7 +56,7 @@ static int eval_json(int rc, const struct process_snapshot *snapshot)
 					    snapshot->stdout_capture_error ||
 						    snapshot->stderr_capture_error);
 	}
-	char *text MORPH_CLEANUP(morph_json_text_cleanup) = morph_json_print_copy(report);
+	char *text NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(report);
 	if (!text)
 		return 2;
 	puts(text);
@@ -65,34 +68,35 @@ static int eval_json(int rc, const struct process_snapshot *snapshot)
 static int eval_directory(const char *path, char **out)
 {
 	if (!path)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*out = realpath(path, NULL);
 	if (!*out)
-		return morph_error_from_errno(errno);
+		return nb_status_from_errno(errno, NULL);
 	struct stat info;
 	if (stat(*out, &info) != 0)
-		return morph_error_from_errno(errno);
+		return nb_status_from_errno(errno, NULL);
 	if (!S_ISDIR(info.st_mode) || !strcmp(*out, "/") || info.st_uid != getuid() ||
 	    (info.st_mode & 0077) != 0)
-		return -EACCES;
+		return NB_ERR_PERMISSION;
 	return 0;
 }
 
-static int eval_argument(morph_buf_t *command, const char *argument)
+static int eval_argument(nb_buf *command, const char *argument)
 {
-	int rc = command->len ? morph_buf_putc(command, ' ') : 0;
+	int rc = command->len ? (nb_buf_append_char(command, ' ') ? 0 : NB_ERR_NOMEM) : 0;
 	if (rc == 0)
-		rc = morph_buf_putc(command, '\'');
+		rc = (nb_buf_append_char(command, '\'') ? 0 : NB_ERR_NOMEM);
 	for (const char *at = argument; rc == 0 && *at; at++)
-		rc = *at == '\'' ? morph_buf_puts(command, "'\\''") : morph_buf_putc(command, *at);
-	return rc == 0 ? morph_buf_putc(command, '\'') : rc;
+		rc = *at == '\'' ? (nb_buf_append_cstr(command, "'\\''") ? 0 : NB_ERR_NOMEM)
+				 : (nb_buf_append_char(command, *at) ? 0 : NB_ERR_NOMEM);
+	return rc == 0 ? (nb_buf_append_char(command, '\'') ? 0 : NB_ERR_NOMEM) : rc;
 }
 
 static int eval_execute(const char *workdir, const char *temporary, uint64_t timeout,
 			const char *command)
 {
-	struct process_manager *manager MORPH_CLEANUP(eval_manager_cleanup) = NULL;
-	struct process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {0};
+	struct process_manager *manager NB_CLEANUP(eval_manager_cleanup) = NULL;
+	struct process_snapshot snapshot NB_CLEANUP(process_snapshot_cleanup) = {0};
 	struct process_manager_config config = {
 		.shell = "/bin/sh",
 		.max_session_output = 65536,
@@ -100,7 +104,7 @@ static int eval_execute(const char *workdir, const char *temporary, uint64_t tim
 		.kill_grace_ms = 100,
 	};
 	char *paths[] = {(char *)workdir, (char *)temporary};
-	struct sandbox_config sandbox = {
+	struct sandbox_config sandbox NB_CLEANUP(sandbox_config_cleanup) = {
 		.path_policy_enabled = 1,
 		.read_all = 1,
 		.process_exec = 1,
@@ -150,7 +154,7 @@ int main(int argc, char **argv)
 			break;
 		}
 		if (i + 1 >= argc) {
-			rc = -EINVAL;
+			rc = NB_ERR_INVAL;
 			break;
 		}
 		if (!strcmp(argv[i], "--workdir"))
@@ -164,29 +168,29 @@ int main(int argc, char **argv)
 			errno = 0;
 			unsigned long long parsed = strtoull(argv[++i], &end, 10);
 			if (errno || !end || *end || !parsed || parsed > 600000)
-				rc = -EINVAL;
+				rc = NB_ERR_INVAL;
 			else
 				timeout = (uint64_t)parsed;
 		} else
-			rc = -EINVAL;
+			rc = NB_ERR_INVAL;
 	}
-	char *work MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	char *temp MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	morph_buf_t command MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	char *work NB_CLEANUP(nb_charp_cleanup) = NULL;
+	char *temp NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf command NB_CLEANUP(nb_buf_cleanup) = {0};
 	if (rc == 0)
 		rc = eval_directory(workdir, &work);
 	if (rc == 0)
 		rc = eval_directory(temporary, &temp);
 	if (rc == 0)
-		rc = morph_buf_init(&command, 128);
+		rc = (nb_buf_init(&command), nb_buf_reserve(&command, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && shell && first != argc)
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 	if (rc == 0 && shell)
-		rc = morph_buf_puts(&command, shell);
+		rc = (nb_buf_append_cstr(&command, shell) ? 0 : NB_ERR_NOMEM);
 	for (int i = first; rc == 0 && !shell && i < argc; i++)
 		rc = eval_argument(&command, argv[i]);
 	if (rc == 0 && (!command.len || command.len >= PROCESS_COMMAND_MAX))
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 	return rc != 0 ? eval_json(rc, NULL)
-		       : eval_execute(work, temp, timeout, morph_buf_cstr_borrow(&command));
+		       : eval_execute(work, temp, timeout, nb_buf_cstr(&command));
 }

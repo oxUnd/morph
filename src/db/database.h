@@ -9,10 +9,10 @@ extern "C" {
 #include <sqlite3.h>
 #include <stdint.h>
 
-struct morph_log;
+struct nb_log;
 
 struct db {
-	struct morph_log *logger;
+	struct nb_log *logger;
 	sqlite3 *handle;
 	char path[PATH_MAX];
 };
@@ -26,7 +26,7 @@ struct db_lock {
 int db_lock_acquire(struct db *db, struct db_lock *lock);
 void db_lock_cleanup(struct db_lock *lock);
 
-int db_open(struct morph_log *logger, struct db *db, const char *path);
+int db_open(struct nb_log *logger, struct db *db, const char *path);
 void db_close(struct db *db);
 int db_exec(struct db *db, const char *sql);
 int db_init_schema(struct db *db);

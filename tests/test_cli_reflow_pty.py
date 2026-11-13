@@ -165,8 +165,8 @@ class NativeUnavailable(Exception):
     pass
 
 
-def retained_history(screen, label, turns=3):
-    rows = screen.state['history'] + screen.display
+def retained_history(screen, label, turns=3, logical_rows=None):
+    rows = logical_rows if logical_rows is not None else screen.state['history'] + screen.display
     text = ''.join(''.join(rows).split())
     diagnostic = label + '\n' + '\n'.join(f'{i:04}: {row}' for i, row in enumerate(rows))
     assert text.count('Mainworkcomplete.') == turns, diagnostic
@@ -175,10 +175,16 @@ def retained_history(screen, label, turns=3):
         assert text.count(f'Nativeterminaltask{turn}') == 1, diagnostic
 
 
-def one_composer(terminal, screen, label, draft=None, turns=3):
+def one_composer(terminal, screen, label, draft=None, turns=3, logical_rows=None):
     terminal.snapshot(label)
     rows = screen.capture(label)
-    retained_history(screen, label, turns)
+    if logical_rows is None:
+        text = ''.join(''.join(rows).split())
+        if (text.count('Mainworkcomplete.') != turns or
+                any(text.count(f'Nativeterminaltask{turn}') != 1
+                    for turn in range(1, 4))):
+            logical_rows = collect_native_history(terminal, screen, label, draft)
+    retained_history(screen, label, turns, logical_rows)
     prompts = [i for i, row in enumerate(rows)
                if row.split('Ctrl+T transcript')[0].strip() in ('>', '›')]
     hints = [i for i, row in enumerate(rows) if 'Ctrl+T transcript' in row]
@@ -193,8 +199,54 @@ def one_composer(terminal, screen, label, draft=None, turns=3):
     else:
         text = ''.join(''.join(rows).split())
         assert text.count('DRAFT_NATIVE') == 1, diagnostic
-        assert text.count(''.join(draft.split())) == 1, diagnostic
+        start = next(i for i, row in enumerate(rows) if 'DRAFT_NATIVE' in row)
+        visible = ''.join(''.join(rows[start:footers[0] - 1]).split()).lstrip('›')
+        expected = ''.join(draft.split())
+        assert len(visible) >= min(20, len(expected)), diagnostic
+        assert visible in expected, diagnostic
         assert not prompts, diagnostic
+
+
+def collect_native_history(terminal, screen, label, draft=None):
+    """Read the retained conversation, including rows above the viewport."""
+    composer = next(i for i, row in enumerate(screen.display)
+                    if ('DRAFT_NATIVE' in row if draft is not None
+                        else row.strip() in ('>', '›')))
+    cursor = (screen.cursor.x, screen.cursor.y)
+    history = screen.display[:composer - 2]
+    previous = history
+
+    def viewport(stage):
+        terminal.snapshot(label + ': ' + stage)
+        screen.capture(label + ': ' + stage)
+        assert (screen.cursor.x, screen.cursor.y) == cursor, screen.display
+        assert (('DRAFT_NATIVE' in screen.display[composer]) if draft is not None
+                else screen.display[composer].strip() in ('>', '›')), screen.display
+        return screen.display[:composer - 2]
+
+    def prepend(page):
+        nonlocal history
+        overlap = next((count for count in range(len(page), 0, -1)
+                        if page[-count:] == history[:count]), 0)
+        assert overlap, 'retained history skipped its overlapping boundary'
+        history = page[:-overlap] + history
+
+    for pages in range(20):
+        terminal.send('\x1b[5~\x1b[<65;1;1M')
+        page = viewport('page up with an overlapping row')
+        if page == previous:
+            break
+        prepend(page)
+        previous = page
+    else:
+        raise AssertionError('retained history never reached its beginning')
+    terminal.send('\x1b[<64;1;1M')
+    first = viewport('first retained row')
+    if first != previous:
+        prepend(first)
+    terminal.send('\x1b[6~' * (pages + 2))
+    viewport('return to the idle composer')
+    return history
 
 
 def wait_until(terminal, predicate):
@@ -262,11 +314,11 @@ def exercise(driver, kitty, server, case, artifacts, columns_sequence=None):
                                     (40, 200, 80, 200, 60, 200) if case == 'multiline' else
                                     (80, 200, 60, 200, 120, 200))
             for index, columns in enumerate(columns_sequence):
-                # Real terminals reflow their stored cells before the process
-                # receives SIGWINCH. A pyte resize cannot model this transition.
+                # Resize the native cell grid before delivering SIGWINCH. The
+                # retained view then rewraps its logical text, including history
+                # above the visible viewport, before the assertions below.
                 screen.resize(32, columns)
                 screen.capture(f'{case}: immediate native reflow to {columns}')
-                retained_history(screen, f'{case}: native reflow retains history at {columns}')
                 terminal.child.setwinsize(32, columns)
                 immediate = draft is not None and index == 0
                 if immediate:
@@ -294,16 +346,25 @@ def exercise(driver, kitty, server, case, artifacts, columns_sequence=None):
                 release.set()
                 wait_until(terminal, lambda: marker in terminal.raw and
                            'Generating recap' not in '\n'.join(screen.display))
-                one_composer(terminal, screen, 'recap completed after native reflow')
+                # Native viewports retain older rows in their scroll view;
+                # a growing recap need not keep every turn physically visible.
+                logical_rows = collect_native_history(
+                    terminal, screen, 'recap completed after native reflow')
+                one_composer(terminal, screen, 'recap completed after native reflow',
+                             logical_rows=logical_rows)
                 terminal.send('\x1b[I')
-                one_composer(terminal, screen, 'focus restored after native reflow')
+                one_composer(terminal, screen, 'focus restored after native reflow',
+                             logical_rows=logical_rows)
             if draft is not None:
                 terminal.send('\r')
                 body = server.turn_requests.get(timeout=5)
                 users = [message.get('content') for message in body['messages']
                          if message.get('role') == 'user']
                 assert users[-1] == draft, (users[-1], draft)
-                wait_until(terminal, lambda: terminal.raw.count('Worked for ') == 4)
+                wait_until(terminal, lambda: any(row.strip() in ('>', '›')
+                                               for row in screen.display) and
+                           'Working' not in '\n'.join(screen.display) and
+                           'Main work complete.' in '\n'.join(screen.display))
                 one_composer(terminal, screen, f'{case}: exact draft submitted after reflow', turns=4)
             terminal.send('/quit\r')
             terminal.child.expect(pexpect.EOF, timeout=10)

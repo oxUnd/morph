@@ -34,6 +34,8 @@ void cli_chat_turn_begin(struct cli_application *);
 void cli_chat_turn_end(struct cli_application *, int result);
 int cli_chat_reset(struct cli_application *);
 int cli_chat_flush(struct cli_application *);
+int cli_chat_prompt_begin(struct cli_application *, int rows);
+void cli_chat_prompt_end(struct cli_application *);
 int cli_chat_panel_active(const struct cli_application *);
 int cli_chat_panel_show(struct cli_application *, const struct cli_composer_panel_options *,
 	const struct cli_composer_panel_ops *, void *data);

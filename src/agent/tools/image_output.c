@@ -1,13 +1,15 @@
 #include "image_output.h"
-#include "util/cleanup.h"
+#include <stdlib.h>
+#include "nb/cleanup.h"
 
 #include "agent/tool_result.h"
 #include "models/media_output.h"
 #include "permission/context.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/image_util.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "media/image.h"
 #include "stb_image_write.h"
 
 #include <errno.h>
@@ -17,7 +19,7 @@
 #include <strings.h>
 
 struct image_output_sink {
-	morph_buf_t bytes;
+	nb_buf bytes;
 	size_t limit;
 	int error;
 };
@@ -44,10 +46,10 @@ static void image_output_append(void *data, void *bytes, int length)
 	if (sink->error)
 		return;
 	if (length < 0 || (size_t)length > sink->limit - sink->bytes.len) {
-		sink->error = -EFBIG;
+		sink->error = NB_ERR_TOO_BIG;
 		return;
 	}
-	sink->error = morph_buf_append(&sink->bytes, bytes, (size_t)length);
+	sink->error = (nb_buf_append(&sink->bytes, bytes, (size_t)length) ? 0 : NB_ERR_NOMEM);
 }
 
 static int image_output_encode(const struct tool_image_output *image,
@@ -60,12 +62,12 @@ static int image_output_encode(const struct tool_image_output *image,
 	if (rc != 0)
 		return rc;
 	if (image->channels < 1 || image->channels > 4)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (pixels > (SIZE_MAX - BUFSIZ) / 2)
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	/* Two RGBA images plus headers cover PNG, JPEG, BMP and TGA expansion. */
 	sink->limit = pixels * 2 + BUFSIZ;
-	rc = morph_buf_init(&sink->bytes, BUFSIZ);
+	rc = (nb_buf_init(&sink->bytes), nb_buf_reserve(&sink->bytes, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	if (strcmp(image->format, "png") == 0)
@@ -84,7 +86,7 @@ static int image_output_encode(const struct tool_image_output *image,
 		encoded = stbi_write_tga_to_func(image_output_append, sink, image->width,
 						 image->height, image->channels, image->pixels);
 	else
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (sink->error)
 		return sink->error;
 	return encoded && sink->bytes.len ? 0 : MORPH_ERR_PROCESSING;
@@ -94,13 +96,14 @@ static int image_output_error(struct tool_result *result, int error)
 {
 	int rc;
 
-	if (error == -EPERM || error == -EACCES)
+	if (error == NB_ERR_NOT_PERMITTED || error == NB_ERR_PERMISSION)
 		rc = tool_result_error_copy(
 			result, "permission_denied",
 			"write path outside output directory: permission denied");
 	else
-		rc = tool_result_error_format(result, "image_write_failed",
-					      "failed to write output: %s", morph_strerror(error));
+		rc = tool_result_error_format(
+			result, "image_write_failed", "failed to write output: %s",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, error));
 	return rc != 0 ? rc : error;
 }
 
@@ -115,7 +118,7 @@ int tool_image_write_output(struct tool_context *context, const char *requested_
 
 	if (!image || !image->pixels || (!image->format && !explicit_path) || !result || !path ||
 	    !path_size)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	path[0] = '\0';
 	if (explicit_path) {
 		if (context) {
@@ -127,7 +130,7 @@ int tool_image_write_output(struct tool_context *context, const char *requested_
 			}
 		} else {
 			if (strlen(requested_path) >= path_size)
-				return image_output_error(result, -ENAMETOOLONG);
+				return image_output_error(result, NB_ERR_NAME_TOO_LONG);
 			memcpy(path, requested_path, strlen(requested_path) + 1);
 		}
 	}
@@ -137,13 +140,16 @@ int tool_image_write_output(struct tool_context *context, const char *requested_
 	rc = image_output_encode(&encoded_image, &sink);
 	if (rc == 0) {
 		if (explicit_path)
-			rc = file_write_atomic(path, sink.bytes.data, sink.bytes.len);
+			rc = nb_file_write_all_atomic(
+				path, sink.bytes.ptr, sink.bytes.len,
+				&(nb_file_write_options){.new_file_mode = 0600, .sync_dir = true},
+				NULL);
 		else
 			rc = media_output_write(
 				context ? tool_context_output_dir_borrow(context) : NULL, prefix,
-				image->format, sink.bytes.data, sink.bytes.len, path, path_size);
+				image->format, sink.bytes.ptr, sink.bytes.len, path, path_size);
 	}
-	morph_buf_cleanup(&sink.bytes);
+	nb_buf_cleanup(&sink.bytes);
 	if (rc != 0) {
 		path[0] = '\0';
 		return image_output_error(result, rc);

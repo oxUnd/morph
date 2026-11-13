@@ -10,7 +10,7 @@ target_include_directories(morph-sandbox PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 	${CMAKE_SOURCE_DIR}/src/ext
 )
-target_link_libraries(morph-sandbox PUBLIC morph-util morph-permission ${CMAKE_DL_LIBS})
+target_link_libraries(morph-sandbox PUBLIC nbase::nbase morph-cjson morph-permission ${CMAKE_DL_LIBS})
 
 if(APPLE)
 	find_library(SECURITY_FRAMEWORK Security)

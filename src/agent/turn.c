@@ -3,11 +3,13 @@
 #include "agent/history.h"
 #include "agent/tokenizer.h"
 #include "session.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/id.h"
-#include "util/buf.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/random.h"
+#include "nb/encoding.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -60,7 +62,7 @@ static int turn_validate_runtime(const struct agent_session_runtime *runtime)
 {
 	if (!runtime || !runtime->db || !runtime->db->handle ||
 	    runtime->session_id <= 0 || !runtime->react)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return 0;
 }
 
@@ -82,8 +84,8 @@ static void turn_messages_cleanup(struct message **owner)
 
 int agent_session_load_history(const struct agent_session_runtime *runtime)
 {
-	struct message *list MORPH_CLEANUP(turn_messages_cleanup) = NULL;
-	struct message_list *messages MORPH_CLEANUP(msg_list_clear) = NULL;
+	struct message *list NB_CLEANUP(turn_messages_cleanup) = NULL;
+	struct message_list *messages NB_CLEANUP(msg_list_clear) = NULL;
 	struct message_list **tail = &messages;
 	int count = 0;
 	int rc;
@@ -112,11 +114,11 @@ int agent_session_load_history(const struct agent_session_runtime *runtime)
 	count = 0;
 	list = message_list(runtime->db, runtime->session_id, &count);
 	for (const struct message *cur = list; cur; cur = cur->next) {
-		struct message_list *m MORPH_CLEANUP(msg_list_clear) = NULL;
+		struct message_list *m NB_CLEANUP(msg_list_clear) = NULL;
 
 		m = msg_list_create(cur->role, cur->content, cur->token_count);
 		if (!m)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		m->compressed = cur->compressed;
 		rc = msg_list_append_take(tail, &m);
 		if (rc)
@@ -129,7 +131,7 @@ int agent_session_load_history(const struct agent_session_runtime *runtime)
 
 static int turn_prepare_memory_reply(struct agent_turn *turn)
 {
-	char *reply_memory MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *reply_memory NB_CLEANUP(nb_charp_cleanup) = NULL;
 	int rc;
 
 	if (!(turn_flags(&turn->runtime) & AGENT_TURN_PREPARE_MEMORY_REPLY))
@@ -149,11 +151,14 @@ static int turn_prepare_memory_reply(struct agent_turn *turn)
 int agent_turn_begin(struct agent_turn *turn, const struct agent_session_runtime *runtime,
 		     const struct agent_turn_input *input)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_1 = NB_OK;
+
 	unsigned flags;
 	int rc;
 
 	if (!turn || !input || !input->model_input)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(turn, 0, sizeof(*turn));
 
 	rc = turn_validate_runtime(runtime);
@@ -186,7 +191,16 @@ int agent_turn_begin(struct agent_turn *turn, const struct agent_session_runtime
 	} else {
 		char turn_id[64];
 
-		rc = morph_random_id("turn_", turn_id, sizeof(turn_id));
+		rc = ((file_status_1 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+					: !(nb_buf_clear(&file_value_1),
+					    nb_buf_append_cstr(&file_value_1, "turn_"))
+						? NB_ERR_NOMEM
+						: nb_random_hex(&file_value_1, 16, NULL))) != NB_OK
+			      ? file_status_1
+		      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), turn_id,
+							sizeof(turn_id))) == NB_ERR_RANGE
+			      ? NB_ERR_NO_SPACE
+			      : file_status_1);
 		if (rc != 0) {
 			turn_unbind_history(turn->runtime.react);
 			return rc;
@@ -206,7 +220,7 @@ int agent_turn_begin(struct agent_turn *turn, const struct agent_session_runtime
 	}
 
 	if (flags & AGENT_TURN_SAVE_MESSAGES) {
-		struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+		struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 		const char *stored = turn->input.stored_user_input ?
 			turn->input.stored_user_input : turn->input.model_input;
 		int tokens = tokenizer_count(turn->runtime.react->tokenizer,
@@ -263,47 +277,47 @@ static int turn_save_trace(struct agent_turn *turn)
 
 	arr = cJSON_CreateArray();
 	if (!arr)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 
 	cur = turn->runtime.react->steps;
 	while (cur) {
 		cJSON *obj = cJSON_CreateObject();
 		if (!obj) {
 			cJSON_Delete(arr);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		if (!cJSON_AddStringToObject(obj, "type",
 					     react_step_type_name(cur->type))) {
 			cJSON_Delete(obj);
 			cJSON_Delete(arr);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		if (cur->content &&
 		    !cJSON_AddStringToObject(obj, "content", cur->content)) {
 			cJSON_Delete(obj);
 			cJSON_Delete(arr);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		if (cur->tool_name &&
 		    !cJSON_AddStringToObject(obj, "tool_name",
 					     cur->tool_name)) {
 			cJSON_Delete(obj);
 			cJSON_Delete(arr);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		if (cur->tool_args &&
 		    !cJSON_AddStringToObject(obj, "tool_args",
 					     cur->tool_args)) {
 			cJSON_Delete(obj);
 			cJSON_Delete(arr);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		if (cur->tool_call_id &&
 		    !cJSON_AddStringToObject(obj, "tool_call_id",
 					     cur->tool_call_id)) {
 			cJSON_Delete(obj);
 			cJSON_Delete(arr);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		if (cur->error_code < 0)
 			cJSON_AddNumberToObject(obj, "error_code",
@@ -322,7 +336,7 @@ static int turn_save_trace(struct agent_turn *turn)
 	json = cJSON_PrintUnformatted(arr);
 	cJSON_Delete(arr);
 	if (!json)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 
 	round_no = trace_get_next_round_no(turn->runtime.db,
 					   turn->runtime.session_id);
@@ -375,14 +389,14 @@ static int turn_assistant_text_create(struct agent_turn *turn, char **out)
 	const char *answer = turn->runtime.react->final_answer;
 	if (!answer || (!(turn_flags(&turn->runtime) & AGENT_TURN_SAVE_EMPTY_ASSISTANT) && !*answer))
 		return 0;
-	char *rendered MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *rendered NB_CLEANUP(nb_charp_cleanup) = NULL;
 	if (turn->runtime.render_assistant)
 		rendered = turn->runtime.render_assistant(answer, turn->runtime.render_user_data);
 	if (!rendered)
 		rendered = strdup(answer);
 	if (!rendered)
-		return -ENOMEM;
-	*out = morph_charp_steal(&rendered);
+		return NB_ERR_NOMEM;
+	*out = nb_charp_steal(&rendered);
 	return 0;
 }
 
@@ -409,8 +423,8 @@ static void turn_memory_statement_cleanup(sqlite3_stmt **statement)
 
 static int turn_memory_input_create(struct agent_turn *turn, char **out)
 {
-	sqlite3_stmt *stmt MORPH_CLEANUP(turn_memory_statement_cleanup) = NULL;
-	morph_buf_t input MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	sqlite3_stmt *stmt NB_CLEANUP(turn_memory_statement_cleanup) = NULL;
+	nb_buf input NB_CLEANUP(nb_buf_cleanup) = {0};
 	int step;
 
 	if (sqlite3_prepare_v2(
@@ -423,7 +437,7 @@ static int turn_memory_input_create(struct agent_turn *turn, char **out)
 		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, turn->runtime.session_id);
 	sqlite3_bind_text(stmt, 2, turn_id_value(turn), -1, SQLITE_TRANSIENT);
-	int rc = morph_buf_init(&input, 2048);
+	int rc = (nb_buf_init(&input), nb_buf_reserve(&input, 2048) ? 0 : NB_ERR_NOMEM);
 
 	if (rc != 0)
 		return rc;
@@ -432,20 +446,25 @@ static int turn_memory_input_create(struct agent_turn *turn, char **out)
 
 		if (!text)
 			continue;
-		size_t length = utf8_clamp_bytes(text, 1800);
+		size_t length = nb_utf8_clamp_bytes(text, 1800);
 
-		rc = morph_buf_printf(
-			&input, "User input or correction:\n%.*s%s\n", (int)length, text,
-			text[length] ? " [excerpt; full input remains in history]" : "");
+		rc = (nb_buf_printf(&input, "User input or correction:\n%.*s%s\n", (int)length,
+				    text,
+				    text[length] ? " [excerpt; full input remains in history]" : "")
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
 	if (step != SQLITE_DONE)
 		return MORPH_ERR_DB;
 	if (!input.len)
-		rc = morph_buf_puts(&input, turn_stored_user_input(turn));
-	if (rc == 0)
-		*out = morph_buf_detach(&input);
+		rc = (nb_buf_append_cstr(&input, turn_stored_user_input(turn)) ? 0 : NB_ERR_NOMEM);
+	if (rc == 0) {
+		*out = (nb_buf_ok(&input) ? strdup(nb_buf_cstr(&input)) : NULL);
+		if (!*out)
+			rc = NB_ERR_NOMEM;
+	}
 	return rc;
 }
 
@@ -455,7 +474,7 @@ static int turn_save_memory(struct agent_turn *turn, struct agent_turn_result *r
 	int rc;
 	int success;
 	struct memory_options background = {0};
-	char *memory_input MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *memory_input NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	if (turn->runtime.memory_options)
 		background = *turn->runtime.memory_options;
@@ -569,16 +588,16 @@ static int turn_should_keep_complete_history(const struct agent_turn *turn)
 int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 {
 	struct agent_turn_result local_result;
-	char *assistant_for_memory MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *assistant_for_memory NB_CLEANUP(nb_charp_cleanup) = NULL;
 	const char *memory_answer;
 	unsigned flags;
 	int rc = 0;
 	int step_rc;
 
 	if (!turn || !turn->begun)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (turn->finished)
-		return -EALREADY;
+		return NB_ERR_STATE;
 	step_rc = turn_validate_runtime(&turn->runtime);
 	if (step_rc != 0)
 		return step_rc;
@@ -597,7 +616,7 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 				turn->runtime.react->steps ? 1 : 0;
 	}
 	if (flags & AGENT_TURN_SAVE_MESSAGES) {
-		struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+		struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 		int began = 0;
 		step_rc = turn_assistant_text_create(turn, &assistant_for_memory);
 		if (step_rc == 0)
@@ -645,7 +664,7 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 			local_result.assistant_saved = 0;
 			local_result.user_tokens = 0;
 			local_result.assistant_tokens = 0;
-			morph_charp_cleanup(&assistant_for_memory);
+			nb_charp_cleanup(&assistant_for_memory);
 			if (local_result.user_rc == 0)
 				local_result.user_rc = step_rc;
 			if (local_result.assistant_rc == 0)

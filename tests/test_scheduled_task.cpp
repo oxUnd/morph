@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
-#include "util/cleanup.h"
+#include "nb/err.h"
+#include "nb/cleanup.h"
 #include "db/database.h"
 #include "db/scheduled_task.h"
 #include "session.h"
@@ -13,7 +14,7 @@
 #include <string>
 #include <cstdio>
 #include <cstring>
-#include <pthread.h>
+#include "nb/thread.h"
 #include <unistd.h>
 
 TEST(ScheduledTaskOwnershipTest, OccupiedSnapshotRejectsWritesAndPreservesTheExistingTask)
@@ -27,13 +28,13 @@ TEST(ScheduledTaskOwnershipTest, OccupiedSnapshotRejectsWritesAndPreservesTheExi
 	input.trigger_type = "once";
 	input.action_type = "notify";
 	input.payload_json = "{}";
-	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
 	ASSERT_EQ(scheduled_task_create(&database, &input, &task), 0);
 	char *original = task.payload_json;
 	input.title = "replacement";
-	EXPECT_EQ(scheduled_task_create(&database, &input, &task), -EEXIST);
-	EXPECT_EQ(scheduled_task_update(&database, task.id, &input, &task), -EEXIST);
-	EXPECT_EQ(scheduled_task_get(&database, task.id, &task), -EEXIST);
+	EXPECT_EQ(scheduled_task_create(&database, &input, &task), NB_ERR_EXISTS);
+	EXPECT_EQ(scheduled_task_update(&database, task.id, &input, &task), NB_ERR_EXISTS);
+	EXPECT_EQ(scheduled_task_get(&database, task.id, &task), NB_ERR_EXISTS);
 	EXPECT_EQ(task.payload_json, original);
 	EXPECT_STREQ(task.title, "original");
 	struct scheduled_task *items = nullptr;
@@ -63,7 +64,7 @@ static int failing_runner(const struct scheduled_task *task,
 	(void)task;
 	(void)user_data;
 	result->error = strdup("runner failed");
-	return -EIO;
+	return NB_ERR_IO;
 }
 
 static int watch_runner(const struct scheduled_task *task,
@@ -150,13 +151,12 @@ static void *inbox_reader_thread(void *arg)
 
 TEST_F(ScheduledTaskTest, ConcurrentNotificationInboxAccess) {
 	const int thread_count = 4;
-	pthread_t threads[thread_count];
+	nb_thread *threads[thread_count];
 	std::atomic<int> failed{0};
 	struct inbox_reader_args args = {&db, &failed};
 
 	for (int i = 0; i < thread_count; i++) {
-		ASSERT_EQ(pthread_create(&threads[i], nullptr,
-					 inbox_reader_thread, &args), 0);
+		ASSERT_EQ(nb_thread_create(&threads[i], inbox_reader_thread, &args, NULL), 0);
 	}
 
 	for (int i = 0; i < 100; i++) {
@@ -167,7 +167,7 @@ TEST_F(ScheduledTaskTest, ConcurrentNotificationInboxAccess) {
 	}
 
 	for (int i = 0; i < thread_count; i++)
-		ASSERT_EQ(pthread_join(threads[i], nullptr), 0);
+		ASSERT_EQ(nb_thread_join_take(&threads[i], nullptr), 0);
 
 	struct notification *notifications = nullptr;
 	int count = 0;
@@ -198,13 +198,13 @@ TEST_F(ScheduledTaskTest, ConcurrentCreatesReturnTheirOwnTasksAndNotifications)
 				input.trigger_type = "once";
 				input.action_type = "notify";
 				input.payload_json = "{}";
-				struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+				struct scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
 				if (scheduled_task_create(&db, &input, &task) != 0 ||
 				    title != task.title) {
 					failures.fetch_add(1);
 					continue;
 				}
-				struct notification notice MORPH_CLEANUP(notification_cleanup) = {};
+				struct notification notice NB_CLEANUP(notification_cleanup) = {};
 				if (notification_create(&db, task.id, "info", title.c_str(),
 					"body", "inbox", &notice) != 0 ||
 				    title != notice.title || task.id != notice.task_id)
@@ -220,7 +220,7 @@ TEST_F(ScheduledTaskTest, ConcurrentCreatesReturnTheirOwnTasksAndNotifications)
 
 TEST_F(ScheduledTaskTest, CreateAndGetTask) {
 	struct scheduled_task_input input = {};
-	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
 
 	input.title = "Check coffee";
 	input.kind = "watch";
@@ -254,9 +254,9 @@ TEST_F(ScheduledTaskTest, CreateAndGetTask) {
 
 TEST_F(ScheduledTaskTest, TaskAndNotificationTrackSessions) {
 	struct scheduled_task_input input = {};
-	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
-	struct scheduled_task fetched MORPH_CLEANUP(scheduled_task_cleanup) = {};
-	struct notification notification MORPH_CLEANUP(notification_cleanup) = {};
+	struct scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task fetched NB_CLEANUP(scheduled_task_cleanup) = {};
+	struct notification notification NB_CLEANUP(notification_cleanup) = {};
 	struct session source = {};
 	struct session run = {};
 
@@ -296,7 +296,7 @@ TEST_F(ScheduledTaskTest, CreateUpdateCancelEmitTaskEvents) {
 	struct morph_event_recorder rec;
 	struct scheduled_task_event_sink events;
 	struct scheduled_task_input input = {};
-	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
 	cJSON *root;
 	cJSON *data;
 	int64_t id;
@@ -339,7 +339,7 @@ TEST_F(ScheduledTaskTest, CreateUpdateCancelEmitTaskEvents) {
 	EXPECT_EQ(id, (int64_t)cJSON_GetObjectItem(data, "task_id")->valuedouble);
 	EXPECT_STREQ("cancelled",
 		     cJSON_GetObjectItem(data, "status")->valuestring);
-	EXPECT_EQ(-ECANCELED, cJSON_GetObjectItem(data, "error_code")->valueint);
+	EXPECT_EQ(NB_ERR_CANCELLED, cJSON_GetObjectItem(data, "error_code")->valueint);
 	EXPECT_STREQ("cancelled",
 		     cJSON_GetObjectItem(data, "reason")->valuestring);
 	cJSON_Delete(root);
@@ -354,24 +354,24 @@ TEST_F(ScheduledTaskTest, RejectsInvalidTaskFields) {
 	input.trigger_type = "once";
 	input.next_run_at = 10;
 	input.action_type = "reminder";
-	EXPECT_EQ(scheduled_task_create(&db, &input, nullptr), -EINVAL);
+	EXPECT_EQ(scheduled_task_create(&db, &input, nullptr), NB_ERR_INVAL);
 
 	input.kind = "reminder";
 	input.trigger_type = "interval";
 	input.interval_seconds = 0;
-	EXPECT_EQ(scheduled_task_create(&db, &input, nullptr), -EINVAL);
+	EXPECT_EQ(scheduled_task_create(&db, &input, nullptr), NB_ERR_INVAL);
 
 	input.kind = "action";
 	input.trigger_type = "once";
 	input.interval_seconds = 0;
 	input.payload_json = nullptr;
-	EXPECT_EQ(scheduled_task_create(&db, &input, nullptr), -EINVAL);
+	EXPECT_EQ(scheduled_task_create(&db, &input, nullptr), NB_ERR_INVAL);
 }
 
 TEST_F(ScheduledTaskTest, UpdateTaskFields) {
 	struct scheduled_task_input input = {};
 	struct scheduled_task_input update = {};
-	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
 
 	input.title = "Original";
 	input.kind = "reminder";
@@ -430,7 +430,7 @@ TEST_F(ScheduledTaskTest, ListDueTasks) {
 TEST_F(ScheduledTaskTest, CountsActiveTasksAcrossLifecycle) {
 	struct scheduled_task_counts counts = {};
 	struct scheduled_task_input input = {};
-	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
 
 	ASSERT_EQ(scheduled_task_count_active(&db, &counts), 0);
 	EXPECT_EQ(counts.running, 0);
@@ -456,7 +456,7 @@ TEST_F(ScheduledTaskTest, CountsActiveTasksAcrossLifecycle) {
 
 TEST_F(ScheduledTaskTest, ListTasksByStatus) {
 	struct scheduled_task_input input = {};
-	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
 	struct scheduled_task *tasks = nullptr;
 	int count = 0;
 
@@ -478,8 +478,8 @@ TEST_F(ScheduledTaskTest, ListTasksByStatus) {
 
 TEST_F(ScheduledTaskTest, UpdateAndCancelTask) {
 	struct scheduled_task_input input = {};
-	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
-	struct scheduled_task fetched MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task fetched NB_CLEANUP(scheduled_task_cleanup) = {};
 
 	input.title = "Retry task";
 	input.kind = "watch";
@@ -510,7 +510,7 @@ TEST_F(ScheduledTaskTest, UpdateAndCancelTask) {
 }
 
 TEST_F(ScheduledTaskTest, NotificationInboxUnreadFlow) {
-	struct notification notification MORPH_CLEANUP(notification_cleanup) = {};
+	struct notification notification NB_CLEANUP(notification_cleanup) = {};
 	struct notification *notifications = nullptr;
 	int count = 0;
 
@@ -756,7 +756,7 @@ TEST_F(ScheduledTaskTest, RunDueClaimPreventsDuplicateProcessing) {
 TEST_F(ScheduledTaskTest, ToolCreateDelaySecondsUsesTimeAnchor) {
 	struct tool_registry reg;
 	struct tool_result result;
-	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
 	cJSON *root;
 	cJSON *id_item;
 	int64_t id;
@@ -770,8 +770,8 @@ TEST_F(ScheduledTaskTest, ToolCreateDelaySecondsUsesTimeAnchor) {
 	ASSERT_EQ(scheduled_tasks_tool_init(&reg, &db), 0);
 	ASSERT_EQ(scheduled_tasks_tool_set_time_anchor(&reg, 1000), 0);
 	ASSERT_EQ(tool_exec(&reg, "tasks", args, &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	root = cJSON_Parse(result.text.data);
+	ASSERT_NE(result.text.ptr, nullptr);
+	root = cJSON_Parse(result.text.ptr);
 	ASSERT_NE(root, nullptr);
 	id_item = cJSON_GetObjectItem(root, "id");
 	ASSERT_TRUE(cJSON_IsNumber(id_item));
@@ -921,7 +921,7 @@ TEST_F(ScheduledTaskTest, RunDueMaxAttemptsEmitsReasonAndErrorCode) {
 	EXPECT_STREQ("failed", cJSON_GetObjectItem(data, "status")->valuestring);
 	EXPECT_STREQ("max_attempts",
 		     cJSON_GetObjectItem(data, "reason")->valuestring);
-	EXPECT_EQ(-EIO, cJSON_GetObjectItem(data, "error_code")->valueint);
+	EXPECT_EQ(NB_ERR_IO, cJSON_GetObjectItem(data, "error_code")->valueint);
 	EXPECT_EQ(1, cJSON_GetObjectItem(data, "attempts")->valueint);
 	EXPECT_EQ(1, cJSON_GetObjectItem(data, "max_attempts")->valueint);
 	cJSON_Delete(root);

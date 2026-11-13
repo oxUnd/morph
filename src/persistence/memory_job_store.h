@@ -2,7 +2,9 @@
 #define MORPH_MEMORY_JOB_STORE_H
 
 #include "db/database.h"
-#include "util/array.h"
+#include "nb/err.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -23,10 +25,10 @@ struct memory_job_record {
 };
 
 struct memory_job_records {
-	morph_array_t rows;
+	nb_vec rows;
 };
 
-/* Outputs must be zero-initialized and empty. Occupied owners return -EEXIST. */
+/* Outputs must be zero-initialized and empty. Occupied owners return NB_ERR_EXISTS. */
 /* Record strings are copied and remain valid until records cleanup. */
 int memory_job_store_recoverable(struct db *db, struct memory_job_records *out);
 int memory_job_store_recent(struct db *db, int64_t session_id, int limit,

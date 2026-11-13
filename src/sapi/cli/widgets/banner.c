@@ -1,15 +1,18 @@
 #include "sapi/cli/widgets/banner.h"
+#include "nb/err.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/widgets/list.h"
-#include "util/base64.h"
-#include "util/buf.h"
-#include "util/cleanup.h"
-#include "util/data.h"
-#include "util/file.h"
-#include "util/utf8.h"
+#include "nb/encoding.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
+#include "runtime/resources.h"
+#include "nb/file.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 #include <morph/tui/widgets/image.h>
 #include <morph/tui/widget.h>
 #include <morph/tui/widgets/text_view.h>
@@ -34,6 +37,9 @@
 /* Small, inline brand asset; unsupported terminals keep the text wordmark. */
 static int cli_banner_logo(struct cli_application *ctx)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	const char *term = getenv("TERM");
 	const char *program = getenv("TERM_PROGRAM");
 	int kitty = getenv("KITTY_WINDOW_ID") != NULL || (term && strstr(term, "kitty")) ||
@@ -42,9 +48,10 @@ static int cli_banner_logo(struct cli_application *ctx)
 		getenv("ITERM_PROFILE") != NULL || (program && strcmp(program, "iTerm.app") == 0);
 	char path[PATH_MAX];
 	size_t length = 0;
-	char *data MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	char *encoded MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	morph_buf_t control MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	char *data NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf encoded_bytes NB_CLEANUP(nb_buf_destroy) = {0};
+	const char *encoded;
+	nb_buf control NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc;
 
 	if (!cli_output_color_enabled(ctx) || !isatty(STDOUT_FILENO) ||
@@ -53,29 +60,41 @@ static int cli_banner_logo(struct cli_application *ctx)
 		return 0;
 	if (morph_data_find(path, sizeof(path), "morph-logo.png") != 0)
 		return 0;
-	data = file_read_all_copy(path, &length);
+	data = (nb_file_read_all(path, &file_value_1, 0, NULL) == NB_OK &&
+				(file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
+					NULL
+			? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
+				  nb_buf_len(&file_value_1) + 1),
+			   *(&length) = nb_buf_len(&file_value_1), nb_charp_steal(&file_copy_1))
+			: NULL);
 	if (!data)
 		return 0;
-	encoded = base64_encode_copy((const unsigned char *)data, length);
-	if (!encoded)
+	if (nb_base64_encode((const unsigned char *)data, length, NB_B64_STD, true, &encoded_bytes,
+			     NULL) != NB_OK)
 		return 0;
+	encoded = nb_buf_cstr(&encoded_bytes);
 	/* The bundled 36px PNG fits a single Kitty graphics packet. */
-	if (strlen(encoded) > 4096 || morph_buf_init(&control, 4096) != 0)
+	if (strlen(encoded) > 4096 ||
+	    (nb_buf_init(&control), nb_buf_reserve(&control, 4096) ? 0 : NB_ERR_NOMEM) != 0)
 		return 0;
 	if (kitty) {
-		rc = morph_buf_printf(&control, "\033_Ga=T,f=100,c=2,r=1,C=1,q=2;%s\033\\\033[2C",
-				      encoded);
+		rc = (nb_buf_printf(&control, "\033_Ga=T,f=100,c=2,r=1,C=1,q=2;%s\033\\\033[2C",
+				    encoded)
+			      ? 0
+			      : NB_ERR_NOMEM);
 	} else {
-		rc = morph_buf_printf(&control,
-				      "\0337\033]1337;File=inline=1;size=%zu;width=2;height=1;"
-				      "preserveAspectRatio=1:%s\a\0338\033[2C",
-				      length, encoded);
+		rc = (nb_buf_printf(&control,
+				    "\0337\033]1337;File=inline=1;size=%zu;width=2;height=1;"
+				    "preserveAspectRatio=1:%s\a\0338\033[2C",
+				    length, encoded)
+			      ? 0
+			      : NB_ERR_NOMEM);
 	}
 	if (rc == 0) {
 		fflush(stdout);
-		size_t written = fwrite(control.data, 1, control.len, stdout);
+		size_t written = fwrite(control.ptr, 1, control.len, stdout);
 
-		rc = written == control.len ? 0 : -EIO;
+		rc = written == control.len ? 0 : NB_ERR_IO;
 	}
 	return rc == 0;
 }
@@ -91,17 +110,17 @@ static size_t cli_banner_text(struct cli_application *ctx, const char *text,
 {
 	char clipped[BUFSIZ];
 
-	(void)utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), text, width,
-					       keep_tail);
+	(void)morph_terminal_copy_ellipsized_display_width(clipped, sizeof(clipped), text, width,
+							   keep_tail);
 	cli_output_printf(ctx, "%s", clipped);
-	return utf8_display_width(clipped);
+	return nb_utf8_width_cstr(clipped);
 }
 
 static void cli_banner_header(struct cli_application *ctx, size_t width, size_t padding,
 	int retained_logo)
 {
 	const char *version = "v" MORPH_VERSION;
-	size_t version_width = utf8_display_width(version);
+	size_t version_width = nb_utf8_width_cstr(version);
 	size_t used = 0;
 
 	cli_banner_spaces(ctx, padding);
@@ -134,7 +153,7 @@ static size_t cli_banner_field(struct cli_application *ctx, const char *label,
 
 	if (width >= CLI_BANNER_LABEL_WIDTH + 7u) {
 		cli_output_printf(ctx, CLI_BANNER_MUTED "%s" ANSI_RESET, label);
-		cli_banner_spaces(ctx, CLI_BANNER_LABEL_WIDTH - utf8_display_width(label));
+		cli_banner_spaces(ctx, CLI_BANNER_LABEL_WIDTH - nb_utf8_width_cstr(label));
 		used = CLI_BANNER_LABEL_WIDTH;
 	}
 	cli_output_printf(ctx, CLI_BANNER_TEXT);
@@ -175,8 +194,8 @@ static void cli_banner_hints(struct cli_application *ctx,
 
 	cli_banner_spaces(ctx, padding);
 	for (size_t i = 0; i < count; i++) {
-		size_t length = utf8_display_width(hints[i].key) + 1 +
-				utf8_display_width(hints[i].description);
+		size_t length = nb_utf8_width_cstr(hints[i].key) + 1 +
+				nb_utf8_width_cstr(hints[i].description);
 
 		if (used && used + 3 + length > width) {
 			cli_output_putchar(ctx, '\n');
@@ -213,10 +232,10 @@ static void cli_banner_format(struct cli_application *ctx, const char *model,
 		width = CLI_BANNER_MAX_WIDTH;
 	model = model && model[0] ? model : "model";
 	directory = directory && directory[0] ? directory : ".";
-	char *safe_model MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
-		model, strlen(model), UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
-	char *safe_directory MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
-		directory, strlen(directory), UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	char *safe_model NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		model, strlen(model), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	char *safe_directory NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		directory, strlen(directory), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 
 	if (!safe_model || !safe_directory)
 		return;
@@ -274,8 +293,8 @@ static int cli_banner_measure(struct morph_tui_view *view, int width,
 {
 	struct cli_banner *banner = (struct cli_banner *)view;
 	if (banner->columns != width) {
-		morph_buf_t rendered MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		morph_buf_t directory MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
+		nb_buf directory NB_CLEANUP(nb_buf_cleanup) = {0};
 		const char *workdir = runtime_workdir_borrow(banner->ctx->runtime);
 		const char *home = getenv("HOME");
 		if (!workdir || !*workdir)
@@ -283,11 +302,11 @@ static int cli_banner_measure(struct morph_tui_view *view, int width,
 		int rc = 0;
 		if (home && *home && !strncmp(workdir, home, strlen(home)) &&
 		    (workdir[strlen(home)] == '/' || workdir[strlen(home)] == '\0')) {
-			rc = morph_buf_putc(&directory, '~');
+			rc = (nb_buf_append_char(&directory, '~') ? 0 : NB_ERR_NOMEM);
 			workdir += strlen(home);
 		}
 		if (!rc)
-			rc = morph_buf_puts(&directory, workdir);
+			rc = (nb_buf_append_cstr(&directory, workdir) ? 0 : NB_ERR_NOMEM);
 		if (!rc)
 			rc = cli_output_capture_styled_begin(banner->ctx, &rendered);
 		if (rc)
@@ -296,14 +315,13 @@ static int cli_banner_measure(struct morph_tui_view *view, int width,
 		if (banner->logo)
 			morph_tui_view_set_hidden(banner->logo, !logo);
 		cli_banner_format(banner->ctx,
-			runtime_config_borrow(banner->ctx->runtime)->models.text.model,
-			morph_buf_cstr_borrow(&directory), width > 0 ? (size_t)width : 1u,
-			0, logo);
+				  runtime_config_borrow(banner->ctx->runtime)->models.text.model,
+				  nb_buf_cstr(&directory), width > 0 ? (size_t)width : 1u, 0, logo);
 		cli_output_capture_end(banner->ctx);
-		if (rendered.failed)
-			return -ENOMEM;
-		rc = cli_messages_set_rendered_view(banner->text,
-			morph_buf_cstr_borrow(&rendered), cli_output_color_enabled(banner->ctx));
+		if (nb_buf_status(&rendered))
+			return NB_ERR_NOMEM;
+		rc = cli_messages_set_rendered_view(banner->text, nb_buf_cstr(&rendered),
+						    cli_output_color_enabled(banner->ctx));
 		if (rc)
 			return rc;
 		banner->columns = width;
@@ -331,6 +349,9 @@ static void cli_banner_asset_cleanup(struct morph_tui_media_asset **owner)
 static struct morph_tui_view *cli_banner_logo_add_borrow(struct morph_tui_builder *builder,
 	struct morph_tui_view *parent, struct cli_application *ctx)
 {
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	const char *term = getenv("TERM");
 	const char *program = getenv("TERM_PROGRAM");
 	int kitty = getenv("KITTY_WINDOW_ID") || (term && strstr(term, "kitty")) ||
@@ -343,10 +364,17 @@ static struct morph_tui_view *cli_banner_logo_add_borrow(struct morph_tui_builde
 	if (morph_data_find(path, sizeof(path), "morph-logo.png"))
 		return NULL;
 	size_t length = 0;
-	char *bytes MORPH_CLEANUP(morph_charp_cleanup) = file_read_all_copy(path, &length);
+	char *bytes NB_CLEANUP(nb_charp_cleanup) =
+		(nb_file_read_all(path, &file_value_2, 0, NULL) == NB_OK &&
+				 (file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
+				   nb_buf_len(&file_value_2) + 1),
+			    *(&length) = nb_buf_len(&file_value_2), nb_charp_steal(&file_copy_2))
+			 : NULL);
 	if (!bytes)
 		return NULL;
-	struct morph_tui_media_asset *asset MORPH_CLEANUP(cli_banner_asset_cleanup) = NULL;
+	struct morph_tui_media_asset *asset NB_CLEANUP(cli_banner_asset_cleanup) = NULL;
 	if (morph_tui_media_asset_create_png_copy(&asset, (const unsigned char *)bytes, length))
 		return NULL;
 	const struct morph_tui_view_options options = {.width = 2, .height = 1};

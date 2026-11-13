@@ -1,11 +1,13 @@
 #include "sapi/cli/widgets/media.h"
+#include "nb/err.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/adapters/media/renderer.h"
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/presentation/output.h"
 #include "render/video.h"
-#include "util/cleanup.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 #include <morph/tui/widgets/image.h>
 #include <morph/tui/widgets/text_view.h>
 #include <morph/tui/window.h>
@@ -50,7 +52,7 @@ static int cli_media_measure(struct morph_tui_view *view, int width,
 	struct morph_tui_view_size caption = {0};
 	int rc = media->caption ? morph_tui_view_measure(media->caption, width, &caption) : 0;
 	if (!rc && media->rows > INT_MAX - caption.height)
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	if (!rc)
 		*size = (struct morph_tui_view_size){width, media->rows + caption.height};
 	return rc;
@@ -83,11 +85,11 @@ struct morph_tui_view *cli_media_add_borrow(struct morph_tui_builder *builder,
 	const char *path, const struct morph_tui_view_options *options)
 {
 	if (!ctx || !type || !path || !*path || (strcmp(type, "image") && strcmp(type, "video"))) {
-		morph_tui_builder_fail(builder, -EINVAL);
+		morph_tui_builder_fail(builder, NB_ERR_INVAL);
 		return NULL;
 	}
 	int video = !strcmp(type, "video");
-	struct morph_tui_media_asset *asset MORPH_CLEANUP(cli_media_asset_cleanup) = NULL;
+	struct morph_tui_media_asset *asset NB_CLEANUP(cli_media_asset_cleanup) = NULL;
 	if (cli_output_color_enabled(ctx) && morph_tui_media_protocol_available())
 		(void)cli_renderer_media_asset_create_copy(type, path, &asset);
 	static const struct morph_tui_view_ops ops = {
@@ -104,19 +106,23 @@ struct morph_tui_view *cli_media_add_borrow(struct morph_tui_builder *builder,
 		media->image = morph_tui_widget_image_add_borrow(builder, view, asset, NULL);
 	}
 	if (video || !asset) {
-		morph_buf_t caption MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf caption NB_CLEANUP(nb_buf_cleanup) = {0};
 		int rc;
 		if (video) {
-			morph_buf_t url MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			nb_buf url NB_CLEANUP(nb_buf_cleanup) = {0};
 			rc = video_file_url_append(path, &url);
 			if (!rc)
-				rc = morph_buf_printf(&caption,
-					"\033]8;;%s\033\\▶ Open video\033]8;;\033\\",
-					morph_buf_cstr_borrow(&url));
+				rc = (nb_buf_printf(&caption,
+						    "\033]8;;%s\033\\▶ Open video\033]8;;\033\\",
+						    nb_buf_cstr(&url))
+					      ? 0
+					      : NB_ERR_NOMEM);
 		} else {
-			char *safe MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
-				path, strlen(path), UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
-			rc = safe ? morph_buf_printf(&caption, "(image: %s)", safe) : -ENOMEM;
+			char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+				path, strlen(path), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
+			rc = safe ? (nb_buf_printf(&caption, "(image: %s)", safe) ? 0
+										  : NB_ERR_NOMEM)
+				  : NB_ERR_NOMEM;
 		}
 		morph_tui_builder_fail(builder, rc);
 		media->caption = morph_tui_widget_text_view_add_borrow(builder, view, "", NULL);
@@ -125,9 +131,10 @@ struct morph_tui_view *cli_media_add_borrow(struct morph_tui_builder *builder,
 			morph_tui_builder_fail(builder,
 				morph_tui_widget_text_view_set_content_sizing(media->caption, 1));
 			if (!rc)
-				morph_tui_builder_fail(builder, cli_messages_set_rendered_view(
-					media->caption, morph_buf_cstr_borrow(&caption),
-					cli_output_color_enabled(ctx)));
+				morph_tui_builder_fail(
+					builder, cli_messages_set_rendered_view(
+							 media->caption, nb_buf_cstr(&caption),
+							 cli_output_color_enabled(ctx)));
 		}
 	}
 	return view;

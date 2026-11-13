@@ -1,6 +1,7 @@
 #include "sapi/cli/widgets/notification.h"
+#include <time.h>
 #include "sapi/cli/widgets/feed_block.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/services/event_queue_item.h"
 #include "sapi/cli/presentation/output.h"
@@ -25,22 +26,26 @@ void cli_notification_write(struct cli_application *ctx, const struct cli_event_
 
 	int interactive = ctx->presentation_mode == CLI_PRESENT_INTERACTIVE;
 	if (interactive) {
-		morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		(void)morph_buf_puts(&title, "[task] ");
+		nb_buf title NB_CLEANUP(nb_buf_cleanup) = {0};
+		(void)nb_buf_append_cstr(&title, "[task] ");
 		if (item->notification_task_id > 0)
-			(void)morph_buf_printf(&title, "#%lld ", (long long)item->notification_task_id);
-		(void)morph_buf_printf(&title, "%s · %s",
-			item->notification_title ? item->notification_title : "Task", status);
-		(void)cli_feed_notice_write(ctx, item->notification_failed ? CLI_NOTICE_FAILED
-			: item->notification_warning ? CLI_NOTICE_WARNING : CLI_NOTICE_DONE,
-			morph_buf_cstr_borrow(&title), NULL, NULL);
+			(void)nb_buf_printf(&title, "#%lld ",
+					    (long long)item->notification_task_id);
+		(void)nb_buf_printf(&title, "%s · %s",
+				    item->notification_title ? item->notification_title : "Task",
+				    status);
+		(void)cli_feed_notice_write(ctx,
+					    item->notification_failed	 ? CLI_NOTICE_FAILED
+					    : item->notification_warning ? CLI_NOTICE_WARNING
+									 : CLI_NOTICE_DONE,
+					    nb_buf_cstr(&title), NULL, NULL);
 	} else {
 	cli_output_printf(ctx, "\n%s%s" ANSI_RESET " " ANSI_CYAN "[task]" ANSI_RESET " ", color, mark);
 	if (item->notification_task_id > 0)
 		cli_output_printf(ctx, ANSI_DIM "#%lld " ANSI_RESET, (long long)item->notification_task_id);
 	(void)cli_output_print_untrusted(
 		ctx, item->notification_title ? item->notification_title : "Task",
-		UTF8_TERMINAL_TEXT_SINGLE_LINE);
+		MORPH_TERMINAL_TEXT_SINGLE_LINE);
 	cli_output_printf(ctx, ANSI_DIM " · " ANSI_RESET "%s%s" ANSI_RESET "\n", color, status);
 	}
 	if (item->notification_body && item->notification_body[0]) {

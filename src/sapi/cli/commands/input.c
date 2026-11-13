@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/input.h"
+#include "nb/err.h"
 
 #include "sapi/cli/application.h"
 #include "sapi/cli/commands/media.h"
@@ -13,7 +14,7 @@ int cli_command_input_execute(struct cli_application *ctx, const char *input)
 	int rc;
 
 	if (!ctx || !input)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	cli_turn_prepare(ctx);
 	rc = cli_media_handle_path(ctx, input, &handled);
 	if (handled)

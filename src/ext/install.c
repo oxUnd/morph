@@ -1,12 +1,13 @@
-#include "util/signals.h"
+#include "nb/process.h"
+#include "nb/utf8.h"
 #include "install.h"
 #include "ext.h"
 #include "manifest.h"
-#include "util/file.h"
-#include "util/error.h"
-#include "util/log.h"
-#include "util/name.h"
-#include "util/cleanup.h"
+#include "nb/file.h"
+#include "errors.h"
+#include "nb/log.h"
+#include "nb/str.h"
+#include "nb/cleanup.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -36,7 +37,7 @@ static int valid_subdir(const char *s)
 			return 0;
 		for (size_t i = 0; i < len; i++) {
 			char ch = p[i];
-			if (!morph_name_char_valid(ch, "-_.+"))
+			if (!nb_str_is_alnum(nb_str_from_parts(&(ch), 1), "-_.+"))
 				return 0;
 		}
 		if (!slash)
@@ -50,9 +51,9 @@ static int copy_part(char *dst, size_t dst_size,
 		     const char *start, size_t len)
 {
 	if (!dst || dst_size == 0 || !start)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (len + 1 > dst_size)
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	memcpy(dst, start, len);
 	dst[len] = '\0';
 	return 0;
@@ -66,24 +67,24 @@ int ext_source_parse(const char *source, struct ext_source *out)
 	size_t https_prefix_len = strlen(https_prefix);
 
 	if (!source || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(out, 0, sizeof(*out));
 
 	if (strncmp(source, https_prefix, https_prefix_len) == 0) {
 		const char *spec = source + https_prefix_len;
 		const char *owner_end = strchr(spec, '/');
 		if (!owner_end)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		const char *repo_start = owner_end + 1;
 		const char *repo_end = strchr(repo_start, '/');
 		if (!repo_end)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		if (strncmp(repo_end, "/tree/", 6) != 0)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		const char *ref_start = repo_end + 6;
 		const char *ref_end = strchr(ref_start, '/');
 		if (!ref_end)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 
 		int rc = copy_part(out->owner, sizeof(out->owner),
 				   spec, (size_t)(owner_end - spec));
@@ -101,16 +102,16 @@ int ext_source_parse(const char *source, struct ext_source *out)
 			       ref_end + 1, strlen(ref_end + 1));
 		if (rc < 0)
 			return rc;
-		if (!morph_name_valid(out->owner, "-_") ||
-		    !morph_name_valid(out->repo, "-_.") ||
-		    !morph_name_valid(out->ref, "-_./+") ||
+		if (!nb_str_is_alnum(nb_str_from_cstr(out->owner), "-_") ||
+		    !nb_str_is_alnum(nb_str_from_cstr(out->repo), "-_.") ||
+		    !nb_str_is_alnum(nb_str_from_cstr(out->ref), "-_./+") ||
 		    !valid_subdir(out->subdir))
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		return 0;
 	}
 
 	if (strncmp(source, prefix, prefix_len) != 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	const char *spec = source + prefix_len;
 	const char *sub = strstr(spec, "//");
@@ -121,17 +122,17 @@ int ext_source_parse(const char *source, struct ext_source *out)
 		if (rc < 0)
 			return rc;
 		if (!valid_subdir(out->subdir))
-			return -EINVAL;
+			return NB_ERR_INVAL;
 	}
 
 	const char *slash = memchr(spec, '/', main_len);
 	if (!slash)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	const char *at = memchr(slash + 1, '@',
 				main_len - (size_t)(slash + 1 - spec));
 	const char *repo_end = at ? at : spec + main_len;
 	if (slash == spec || repo_end == slash + 1)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	int rc = copy_part(out->owner, sizeof(out->owner),
 			   spec, (size_t)(slash - spec));
@@ -143,106 +144,78 @@ int ext_source_parse(const char *source, struct ext_source *out)
 		return rc;
 	if (at) {
 		if (at + 1 == spec + main_len)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		rc = copy_part(out->ref, sizeof(out->ref),
 			       at + 1, (size_t)(spec + main_len - at - 1));
 		if (rc < 0)
 			return rc;
 	} else {
-		strncpy(out->ref, "HEAD", sizeof(out->ref) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts("HEAD",
+					  nb_utf8_clamp_bytes("HEAD", sizeof(out->ref) - 1)),
+			out->ref, (sizeof(out->ref) - 1) + 1);
 	}
 
-	if (!morph_name_valid(out->owner, "-_") ||
-	    !morph_name_valid(out->repo, "-_.") ||
-	    !morph_name_valid(out->ref, "-_./+"))
-		return -EINVAL;
+	if (!nb_str_is_alnum(nb_str_from_cstr(out->owner), "-_") ||
+	    !nb_str_is_alnum(nb_str_from_cstr(out->repo), "-_.") ||
+	    !nb_str_is_alnum(nb_str_from_cstr(out->ref), "-_./+"))
+		return NB_ERR_INVAL;
 
-	return 0;
-}
-
-static int wait_child(pid_t pid)
-{
-	int status;
-	while (waitpid(pid, &status, 0) < 0) {
-		if (errno == EINTR)
-			continue;
-		return morph_error_from_errno(errno);
-	}
-	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
-		return -EIO;
 	return 0;
 }
 
 static int run_cmd(char *const argv[], const char *cwd)
 {
-	pid_t pid = fork();
-	if (pid < 0)
-		return morph_error_from_errno(errno);
-	if (pid == 0) {
-		morph_signals_reset_child();
-		if (cwd && chdir(cwd) != 0)
-			_exit(127);
-		execvp(argv[0], argv);
-		_exit(127);
-	}
-	return wait_child(pid);
+	nb_process_options options = {
+		.argv = (const char *const *)argv,
+		.cwd = cwd,
+		.search_path = true,
+		.close_fds = true,
+		.stdin_mode = NB_PROCESS_INHERIT,
+		.stdout_mode = NB_PROCESS_INHERIT,
+		.stderr_mode = NB_PROCESS_INHERIT,
+	};
+	nb_process *child NB_CLEANUP(nb_process_cleanup) = NULL;
+	int rc = nb_process_spawn(&options, &child, NULL);
+	if (rc != NB_OK)
+		return rc;
+	int code = 0;
+	rc = nb_process_wait(child, -1, &code, NULL, NULL);
+	return rc != NB_OK ? rc : code == 0 ? NB_OK : MORPH_ERR_PROCESSING;
 }
 
 static int run_cmd_capture(char *const argv[], const char *cwd,
 			   char *dst, size_t dst_size)
 {
 	if (!dst || dst_size == 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	dst[0] = '\0';
-
-	int fds[2];
-	if (pipe(fds) != 0)
-		return morph_error_from_errno(errno);
-
-	pid_t pid = fork();
-	if (pid < 0) {
-		int err = errno;
-		close(fds[0]);
-		close(fds[1]);
-		return -err;
-	}
-	if (pid == 0) {
-		morph_signals_reset_child();
-		close(fds[0]);
-		dup2(fds[1], STDOUT_FILENO);
-		close(fds[1]);
-		if (cwd && chdir(cwd) != 0)
-			_exit(127);
-		execvp(argv[0], argv);
-		_exit(127);
-	}
-
-	close(fds[1]);
-	size_t len = 0;
-	while (len + 1 < dst_size) {
-		ssize_t n = read(fds[0], dst + len, dst_size - len - 1);
-		if (n < 0) {
-			if (errno == EINTR)
-				continue;
-			close(fds[0]);
-			(void)wait_child(pid);
-			return morph_error_from_errno(errno);
-		}
-		if (n == 0)
-			break;
-		len += (size_t)n;
-	}
-	dst[len] = '\0';
-	close(fds[0]);
-
-	int rc = wait_child(pid);
-	if (rc < 0)
+	nb_process_options options = {
+		.argv = (const char *const *)argv,
+		.cwd = cwd,
+		.search_path = true,
+		.close_fds = true,
+		.new_group = true,
+		.stdin_mode = NB_PROCESS_NULL,
+		.stderr_mode = NB_PROCESS_INHERIT,
+	};
+	nb_process *child NB_CLEANUP(nb_process_cleanup) = NULL;
+	int rc = nb_process_spawn(&options, &child, NULL);
+	if (rc != NB_OK)
 		return rc;
-	while (len > 0 && (dst[len - 1] == '\n' || dst[len - 1] == '\r' ||
-			   dst[len - 1] == ' ' || dst[len - 1] == '\t')) {
-		dst[--len] = '\0';
-	}
-	return 0;
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf errors NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_process_exchange_options exchange = {.max_output = dst_size - 1};
+	int code = 0;
+	rc = nb_process_exchange(child, "", 0, &exchange, &output, &errors, &code, NULL);
+	if (rc != NB_OK)
+		return rc;
+	if (code != 0)
+		return MORPH_ERR_PROCESSING;
+	nb_str trimmed = nb_str_rtrim(nb_buf_str(&output));
+	memcpy(dst, trimmed.ptr, trimmed.len);
+	dst[trimmed.len] = '\0';
+	return NB_OK;
 }
 
 static int git_fetch_source(const struct ext_source *src, const char *repo_dir,
@@ -255,7 +228,7 @@ static int git_fetch_source(const struct ext_source *src, const char *repo_dir,
 	int n = snprintf(url, sizeof(url), "%s/%s/%s.git",
 			 base, src->owner, src->repo);
 	if (n < 0 || (size_t)n >= sizeof(url))
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 
 	char *init_argv[] = {"git", "init", (char *)repo_dir, NULL};
 	int rc = run_cmd(init_argv, NULL);
@@ -291,17 +264,32 @@ static int git_fetch_source(const struct ext_source *src, const char *repo_dir,
 
 static int find_manifest_path(const char *dir, char *dst, size_t dst_size)
 {
-	int rc = file_path_join(dst, dst_size, dir, "manifest.toml");
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_1 = NB_OK;
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_2 = NB_OK;
+
+	int rc = ((file_status_1 = nb_path_concat(&file_value_1, dir, "manifest.toml")) != NB_OK
+			  ? file_status_1
+		  : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), dst, dst_size)) ==
+				  NB_ERR_RANGE
+			  ? NB_ERR_NAME_TOO_LONG
+			  : file_status_1);
 	if (rc < 0)
 		return rc;
-	if (file_exists(dst))
+	if (nb_file_exists(dst))
 		return 0;
-	rc = file_path_join(dst, dst_size, dir, "morph-ext.toml");
+	rc = ((file_status_2 = nb_path_concat(&file_value_2, dir, "morph-ext.toml")) != NB_OK
+		      ? file_status_2
+	      : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), dst, dst_size)) ==
+			      NB_ERR_RANGE
+		      ? NB_ERR_NAME_TOO_LONG
+		      : file_status_2);
 	if (rc < 0)
 		return rc;
-	if (file_exists(dst))
+	if (nb_file_exists(dst))
 		return 0;
-	return -ENOENT;
+	return NB_ERR_NOT_FOUND;
 }
 
 static int prompt_confirm(const struct ext_install_options *opts,
@@ -328,158 +316,37 @@ static int run_build_command(const char *package_dir, const char *command)
 	return run_cmd(argv, package_dir);
 }
 
-static int remove_tree(const char *path)
+static nb_status ext_package_copy_filter(const char *source, const char *destination,
+					 const nb_file_copy_entry *entry, bool *include,
+					 void *context, nb_err *err)
 {
-	struct stat st;
-	if (lstat(path, &st) != 0) {
-		if (errno == ENOENT)
-			return 0;
-		return morph_error_from_errno(errno);
-	}
-	if (!S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) {
-		if (unlink(path) != 0)
-			return morph_error_from_errno(errno);
-		return 0;
-	}
-
-	DIR *dir = opendir(path);
-	if (!dir)
-		return morph_error_from_errno(errno);
-	int rc = 0;
-	struct dirent *ent;
-	while ((ent = readdir(dir)) != NULL) {
-		if (strcmp(ent->d_name, ".") == 0 ||
-		    strcmp(ent->d_name, "..") == 0)
-			continue;
-		char child[PATH_MAX];
-		rc = file_path_join(child, sizeof(child), path, ent->d_name);
-		if (rc < 0)
-			break;
-		rc = remove_tree(child);
-		if (rc < 0)
-			break;
-	}
-	closedir(dir);
-	if (rc < 0)
-		return rc;
-	if (rmdir(path) != 0)
-		return morph_error_from_errno(errno);
-	return 0;
-}
-
-static int copy_file(const char *src, const char *dst, mode_t mode)
-{
-	int in = open(src, O_RDONLY);
-	if (in < 0)
-		return morph_error_from_errno(errno);
-	int out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, mode & 0777);
-	if (out < 0) {
-		int err = errno;
-		close(in);
-		return -err;
-	}
-
-	char buf[BUFSIZ];
-	int rc = 0;
-	while (1) {
-		ssize_t n = read(in, buf, sizeof(buf));
-		if (n < 0) {
-			if (errno == EINTR)
-				continue;
-			rc = -errno;
-			break;
-		}
-		if (n == 0)
-			break;
-		char *p = buf;
-		ssize_t left = n;
-		while (left > 0) {
-			ssize_t w = write(out, p, (size_t)left);
-			if (w < 0) {
-				if (errno == EINTR)
-					continue;
-				rc = -errno;
-				break;
-			}
-			p += w;
-			left -= w;
-		}
-		if (rc < 0)
-			break;
-	}
-	if (close(in) != 0 && rc == 0)
-		rc = -errno;
-	if (close(out) != 0 && rc == 0)
-		rc = -errno;
-	if (rc == 0 && chmod(dst, mode & 0777) != 0)
-		rc = -errno;
-	return rc;
-}
-
-static int copy_symlink(const char *src, const char *dst)
-{
-	char target[PATH_MAX];
-	ssize_t n = readlink(src, target, sizeof(target) - 1);
-	if (n < 0)
-		return morph_error_from_errno(errno);
-	target[n] = '\0';
-	if (symlink(target, dst) != 0)
-		return morph_error_from_errno(errno);
-	return 0;
-}
-
-static int copy_tree(const char *src, const char *dst)
-{
-	struct stat st;
-	if (lstat(src, &st) != 0)
-		return morph_error_from_errno(errno);
-
-	if (S_ISLNK(st.st_mode))
-		return copy_symlink(src, dst);
-	if (S_ISREG(st.st_mode))
-		return copy_file(src, dst, st.st_mode);
-	if (!S_ISDIR(st.st_mode))
-		return 0;
-
-	if (mkdir(dst, st.st_mode & 0777) != 0 && errno != EEXIST)
-		return morph_error_from_errno(errno);
-	(void)chmod(dst, st.st_mode & 0777);
-
-	DIR *dir = opendir(src);
-	if (!dir)
-		return morph_error_from_errno(errno);
-	int rc = 0;
-	struct dirent *ent;
-	while ((ent = readdir(dir)) != NULL) {
-		if (strcmp(ent->d_name, ".") == 0 ||
-		    strcmp(ent->d_name, "..") == 0 ||
-		    strcmp(ent->d_name, ".git") == 0)
-			continue;
-		char child_src[PATH_MAX];
-		char child_dst[PATH_MAX];
-		rc = file_path_join(child_src, sizeof(child_src),
-				    src, ent->d_name);
-		if (rc == 0)
-			rc = file_path_join(child_dst, sizeof(child_dst),
-					    dst, ent->d_name);
-		if (rc == 0)
-			rc = copy_tree(child_src, child_dst);
-		if (rc < 0)
-			break;
-	}
-	closedir(dir);
-	return rc;
+	(void)destination;
+	(void)context;
+	(void)err;
+	*include = !(entry->depth > 0 && !strcmp(nb_path_basename(source), ".git")) &&
+		   (entry->info.is_regular || entry->info.is_dir || entry->info.is_symlink);
+	return NB_OK;
 }
 
 static int validate_ext_name(const char *name)
 {
-	return morph_name_valid(name, "-_.");
+	return nb_str_is_alnum(nb_str_from_cstr(name), "-_.");
 }
 
-static int ext_install_package(struct morph_log *logger,
-	const struct ext_source *src, const char *directory,
-	const struct ext_install_options *opts, struct ext_install_result *result)
+static int ext_install_package(struct nb_log *logger, const struct ext_source *src,
+			       const char *directory, const struct ext_install_options *opts,
+			       struct ext_install_result *result)
 {
+	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_6 = NB_OK;
+	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_7 = NB_OK;
+	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_8 = NB_OK;
+	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_10 = NB_OK;
+
 	char repo_dir[PATH_MAX];
 	char package_dir[PATH_MAX];
 	char manifest_path[PATH_MAX];
@@ -487,12 +354,17 @@ static int ext_install_package(struct morph_log *logger,
 	char target_dir[PATH_MAX];
 	char target_tmp[PATH_MAX];
 	char resolved_ref[64] = {0};
-	struct ext_manifest m MORPH_CLEANUP(ext_manifest_cleanup) = {0};
+	struct ext_manifest m NB_CLEANUP(ext_manifest_cleanup) = {0};
 	int rc = 0;
 	const char *install_dir = opts && opts->install_dir ?
 		opts->install_dir : "~/.morph/exts";
 
-	rc = file_path_join(repo_dir, sizeof(repo_dir), directory, "repo");
+	rc = ((file_status_6 = nb_path_concat(&file_value_6, directory, "repo")) != NB_OK
+		      ? file_status_6
+	      : (file_status_6 = nb_str_copy_to(nb_buf_str(&file_value_6), repo_dir,
+						sizeof(repo_dir))) == NB_ERR_RANGE
+		      ? NB_ERR_NAME_TOO_LONG
+		      : file_status_6);
 	if (rc < 0)
 		return rc;
 	rc = git_fetch_source(src, repo_dir, opts ? opts->github_base_url : NULL,
@@ -501,8 +373,13 @@ static int ext_install_package(struct morph_log *logger,
 		return rc;
 
 	if (src->subdir[0])
-		rc = file_path_join(package_dir, sizeof(package_dir),
-				    repo_dir, src->subdir);
+		rc = ((file_status_7 = nb_path_concat(&file_value_7, repo_dir, src->subdir)) !=
+				      NB_OK
+			      ? file_status_7
+		      : (file_status_7 = nb_str_copy_to(nb_buf_str(&file_value_7), package_dir,
+							sizeof(package_dir))) == NB_ERR_RANGE
+			      ? NB_ERR_NAME_TOO_LONG
+			      : file_status_7);
 	else
 		rc = copy_part(package_dir, sizeof(package_dir),
 			       repo_dir, strlen(repo_dir));
@@ -518,13 +395,13 @@ static int ext_install_package(struct morph_log *logger,
 		return rc;
 	if (!m.name[0] || !m.entry[0] || !validate_ext_name(m.name) ||
 	    !valid_subdir(m.entry)) {
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 		return rc;
 	}
 
 	if (m.build_command[0]) {
 		if (!prompt_confirm(opts, &m)) {
-			rc = -ECANCELED;
+			rc = NB_ERR_CANCELLED;
 			return rc;
 		}
 		rc = run_build_command(package_dir, m.build_command);
@@ -532,68 +409,97 @@ static int ext_install_package(struct morph_log *logger,
 			return rc;
 	}
 
-	rc = file_path_join(entry_path, sizeof(entry_path),
-			    package_dir, m.entry);
+	rc = ((file_status_8 = nb_path_concat(&file_value_8, package_dir, m.entry)) != NB_OK
+		      ? file_status_8
+	      : (file_status_8 = nb_str_copy_to(nb_buf_str(&file_value_8), entry_path,
+						sizeof(entry_path))) == NB_ERR_RANGE
+		      ? NB_ERR_NAME_TOO_LONG
+		      : file_status_8);
 	if (rc < 0)
 		return rc;
-	if (!file_exists(entry_path)) {
-		rc = -ENOENT;
+	if (!nb_file_exists(entry_path)) {
+		rc = NB_ERR_NOT_FOUND;
 		return rc;
 	}
 
-	char *expanded_install MORPH_CLEANUP(morph_charp_cleanup) =
-		file_expand_path_copy(install_dir);
+	char *expanded_install NB_CLEANUP(nb_charp_cleanup) =
+		(nb_path_expand(&file_value_9, install_dir, NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&file_value_9))
+			 : NULL);
 	if (!expanded_install) {
-		rc = -ENOMEM;
+		rc = NB_ERR_NOMEM;
 		return rc;
 	}
-	rc = file_ensure_dir(expanded_install);
+	rc = nb_file_mkdir(expanded_install, true, NULL);
 	if (rc == 0)
-		rc = file_path_join(target_dir, sizeof(target_dir),
-				    expanded_install, m.name);
-	morph_charp_cleanup(&expanded_install);
+		rc = ((file_status_10 = nb_path_concat(&file_value_10, expanded_install, m.name)) !=
+				      NB_OK
+			      ? file_status_10
+		      : (file_status_10 = nb_str_copy_to(nb_buf_str(&file_value_10), target_dir,
+							 sizeof(target_dir))) == NB_ERR_RANGE
+			      ? NB_ERR_NAME_TOO_LONG
+			      : file_status_10);
+	nb_charp_cleanup(&expanded_install);
 	if (rc < 0)
 		return rc;
-	if (file_exists(target_dir)) {
-		rc = -EEXIST;
+	if (nb_file_exists(target_dir)) {
+		rc = NB_ERR_EXISTS;
 		return rc;
 	}
 	int n = snprintf(target_tmp, sizeof(target_tmp), "%s.tmp.%ld",
 			 target_dir, (long)getpid());
 	if (n < 0 || (size_t)n >= sizeof(target_tmp)) {
-		rc = -ENAMETOOLONG;
+		rc = NB_ERR_NAME_TOO_LONG;
 		return rc;
 	}
-	(void)remove_tree(target_tmp);
-	rc = copy_tree(package_dir, target_tmp);
+	(void)nb_file_remove_all(target_tmp, 0, NULL);
+	rc = nb_file_copy(package_dir, target_tmp,
+			  &(nb_file_copy_options){.recursive = true,
+						  .preserve_mode = true,
+						  .copy_symlinks = true,
+						  .overwrite = true,
+						  .filter = ext_package_copy_filter},
+			  NULL);
 	if (rc < 0)
 		return rc;
 	if (rename(target_tmp, target_dir) != 0) {
-		rc = -errno;
-		(void)remove_tree(target_tmp);
+		rc = nb_status_from_errno(errno, NULL);
+		(void)nb_file_remove_all(target_tmp, 0, NULL);
 		return rc;
 	}
 
 	if (result) {
-		strncpy(result->name, m.name, sizeof(result->name) - 1);
-		strncpy(result->path, target_dir, sizeof(result->path) - 1);
-		strncpy(result->resolved_ref, resolved_ref,
-			sizeof(result->resolved_ref) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(m.name,
+					  nb_utf8_clamp_bytes(m.name, sizeof(result->name) - 1)),
+			result->name, (sizeof(result->name) - 1) + 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(
+				target_dir,
+				nb_utf8_clamp_bytes(target_dir, sizeof(result->path) - 1)),
+			result->path, (sizeof(result->path) - 1) + 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(resolved_ref,
+					  nb_utf8_clamp_bytes(resolved_ref,
+							      sizeof(result->resolved_ref) - 1)),
+			result->resolved_ref, (sizeof(result->resolved_ref) - 1) + 1);
 	}
 
 	return rc;
 }
 
-int ext_install_source(struct morph_log *logger, const char *source,
+int ext_install_source(struct nb_log *logger, const char *source,
 		       const struct ext_install_options *opts, struct ext_install_result *result)
 {
+	nb_buf file_value_11 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	struct ext_source src;
 	char temporary[PATH_MAX];
 	const char *tmp_base = getenv("TMPDIR");
 	int rc;
 
 	if (!source)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (result)
 		memset(result, 0, sizeof(*result));
 	rc = ext_source_parse(source, &src);
@@ -601,14 +507,19 @@ int ext_install_source(struct morph_log *logger, const char *source,
 		return rc;
 	if (!tmp_base || !tmp_base[0])
 		tmp_base = "/tmp";
-	rc = file_path_join(temporary, sizeof(temporary), tmp_base, "morph-ext-XXXXXX");
-	if (rc < 0)
-		return rc;
-	if (!mkdtemp(temporary))
-		return morph_error_from_errno(errno);
+	rc = nb_file_temp_dir(&file_value_11, tmp_base, "morph-ext-", NULL);
+	if (rc == NB_OK)
+		rc = nb_str_copy_to(nb_buf_str(&file_value_11), temporary, sizeof(temporary));
+	if (rc != NB_OK) {
+		if (!nb_buf_empty(&file_value_11))
+			(void)nb_file_remove_all(nb_buf_cstr(&file_value_11), 0, NULL);
+		return rc == NB_ERR_RANGE ? NB_ERR_NAME_TOO_LONG : rc;
+	}
+
 	rc = ext_install_package(logger, &src, temporary, opts, result);
-	(void)remove_tree(temporary);
+	(void)nb_file_remove_all(temporary, 0, NULL);
 	if (rc < 0)
-		log_err(logger, "ext install failed for %s: %s", source, morph_strerror(rc));
+		nb_log_write(logger, NB_LOG_ERROR, "ext install failed for %s: %s", source,
+			     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	return rc;
 }

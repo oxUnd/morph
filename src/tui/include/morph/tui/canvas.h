@@ -1,7 +1,8 @@
 #ifndef MORPH_TUI_CANVAS_H
 #define MORPH_TUI_CANVAS_H
 
-#include "util/buf.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include <morph/tui/media.h>
 
 #ifdef __cplusplus
@@ -61,7 +62,7 @@ int morph_tui_surface_create(struct morph_tui_surface **out);
 void morph_tui_surface_destroy(struct morph_tui_surface *surface);
 int morph_tui_surface_resize(struct morph_tui_surface *surface, int width, int height);
 void morph_tui_surface_clear(struct morph_tui_surface *surface);
-int morph_tui_surface_rows(struct morph_tui_surface *surface, morph_buf_t *rows);
+int morph_tui_surface_rows(struct morph_tui_surface *surface, nb_buf *rows);
 /* Placements borrow immutable assets through the next clear/resize/destroy.
  * The surface retains assets independently of the drawing widget. */
 size_t morph_tui_surface_image_count(const struct morph_tui_surface *);
@@ -90,8 +91,8 @@ int morph_tui_surface_cursor(const struct morph_tui_surface *, int *x, int *y);
  * the surface and expand to whole wide glyphs. Text excludes terminal styling
  * and links, trims trailing spaces per physical row, and separates rows with
  * newlines. Replaces text; a zero-sized surface produces an empty string. */
-int morph_tui_surface_selection_text(struct morph_tui_surface *, int x1, int y1,
-				     int x2, int y2, morph_buf_t *text);
+int morph_tui_surface_selection_text(struct morph_tui_surface *, int x1, int y1, int x2, int y2,
+				     nb_buf *text);
 /* Adds attributes to the same normalized range without changing cell text. */
 int morph_tui_surface_selection_style(struct morph_tui_surface *, int x1, int y1,
 				      int x2, int y2, unsigned attributes);

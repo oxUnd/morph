@@ -1,13 +1,13 @@
 #include <morph/tui/screen.h>
-#include "util/signals.h"
-#include "util/error.h"
+#include "nb/signal.h"
+#include "errors.h"
 
 #include <unistd.h>
 
 int morph_tui_screen_open(struct morph_tui_screen *screen, FILE *input, FILE *output, int flags)
 {
 	if (!screen || !input || !output)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int rc = morph_tui_terminal_session_enter(&screen->session, input, output, flags);
 
 	if (rc != 0)
@@ -26,10 +26,10 @@ int morph_tui_screen_poll(struct morph_tui_screen *screen, struct morph_tui_even
 			  int timeout_ms)
 {
 	if (!screen || !event || !screen->session.active)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*event = (struct morph_tui_event){.type = MORPH_TUI_EVENT_TICK};
-	if (morph_signal_flag_get(screen->interrupted))
-		return -EINTR;
+	if (nb_atomic_int_load(screen->interrupted))
+		return NB_ERR_INTERRUPTED;
 	int columns, rows;
 
 	morph_tui_terminal_dimensions(screen->output_fd, &columns, &rows);
@@ -42,7 +42,7 @@ int morph_tui_screen_poll(struct morph_tui_screen *screen, struct morph_tui_even
 	}
 	int key = morph_tui_input_read(&screen->input, screen->session.input_fd, timeout_ms);
 
-	if (key == -ECANCELED) {
+	if (key == NB_ERR_CANCELLED) {
 		event->type = MORPH_TUI_EVENT_EOF;
 		return 0;
 	}
@@ -68,10 +68,10 @@ int morph_tui_screen_run(struct morph_tui_screen *screen, const struct morph_tui
 			 void *data)
 {
 	if (!screen || !ops || !ops->update || !ops->draw)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	for (;;) {
-		if (morph_signal_flag_get(screen->interrupted))
-			return -EINTR;
+		if (nb_atomic_int_load(screen->interrupted))
+			return NB_ERR_INTERRUPTED;
 		if (screen->dirty) {
 			int rc = ops->draw(data, screen);
 
@@ -82,7 +82,7 @@ int morph_tui_screen_run(struct morph_tui_screen *screen, const struct morph_tui
 		struct morph_tui_event event;
 		int rc = morph_tui_screen_poll(screen, &event, 100);
 
-		if (rc == -EINTR)
+		if (rc == NB_ERR_INTERRUPTED)
 			continue;
 		if (rc != 0)
 			return rc;

@@ -6,8 +6,9 @@ extern "C" {
 #endif
 
 #include "cJSON.h"
-#include "util/array.h"
-#include "util/error.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "errors.h"
 
 enum morph_event_type {
 	MORPH_EVENT_STARTUP,
@@ -39,7 +40,7 @@ struct morph_event_record {
 };
 
 struct morph_event_recorder {
-	morph_array_t records;
+	nb_vec records;
 };
 
 /* Immutable process-lifetime text. */

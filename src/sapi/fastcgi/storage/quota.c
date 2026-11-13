@@ -1,7 +1,7 @@
 #include "sapi/fastcgi/storage/quota.h"
 #include "sapi/fastcgi/session_store_internal.h"
 #include "cJSON.h"
-#include "util/error.h"
+#include "errors.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -40,13 +40,13 @@ int store_user_quota_json(struct session_store *s, const char *user_id, char **o
 	char *json = NULL;
 
 	if (!s || !user_id || !out_json)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &stmt, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	sqlite3_bind_text(stmt, 1, user_id, -1, SQLITE_TRANSIENT);
 	if (sqlite3_step(stmt) != SQLITE_ROW) {
 		sqlite3_finalize(stmt);
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	}
 
 	root = cJSON_CreateObject();
@@ -61,7 +61,7 @@ int store_user_quota_json(struct session_store *s, const char *user_id, char **o
 		cJSON_Delete(conc);
 		cJSON_Delete(credits);
 		sqlite3_finalize(stmt);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	cJSON_AddStringToObject(root, "profile", (const char *)sqlite3_column_text(stmt, 0));
 	add_limit_obj(daily, "turns", sqlite3_column_int(stmt, 6), sqlite3_column_int(stmt, 1));
@@ -104,7 +104,7 @@ int store_user_quota_json(struct session_store *s, const char *user_id, char **o
 	cJSON_Delete(root);
 	sqlite3_finalize(stmt);
 	if (!json)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	*out_json = json;
 	return 0;
 }
@@ -135,7 +135,7 @@ int store_quota_begin_turn(struct session_store *s, const char *user_id, const c
 	int64_t now = fcgi_store_now();
 
 	if (!s || !user_id || !session_id)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = fcgi_random_id("turn_", turn_id, sizeof(turn_id));
 	if (rc < 0)
 		return rc;
@@ -144,13 +144,13 @@ int store_quota_begin_turn(struct session_store *s, const char *user_id, const c
 	if (rc != 0)
 		return rc;
 	if (sqlite3_prepare_v2(s->db.handle, qsql, -1, &st, NULL) != SQLITE_OK)
-		return store_transaction_end(s, -EIO);
+		return store_transaction_end(s, NB_ERR_IO);
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(st);
 	if (rc != SQLITE_ROW) {
 		sqlite3_finalize(st);
-		return store_transaction_end(s, rc == SQLITE_DONE ? -ENOENT : -EIO);
+		return store_transaction_end(s, rc == SQLITE_DONE ? NB_ERR_NOT_FOUND : NB_ERR_IO);
 	}
 	daily_limit = sqlite3_column_int(st, 0);
 	concurrent_limit = sqlite3_column_int(st, 1);
@@ -159,20 +159,20 @@ int store_quota_begin_turn(struct session_store *s, const char *user_id, const c
 	sqlite3_finalize(st);
 
 	if (daily_limit >= 0 && used_turns >= daily_limit)
-		return store_transaction_end(s, -EDQUOT);
+		return store_transaction_end(s, NB_ERR_NO_SPACE);
 	if (concurrent_limit >= 0 && running >= concurrent_limit)
-		return store_transaction_end(s, -EAGAIN);
+		return store_transaction_end(s, NB_ERR_AGAIN);
 
 	if (sqlite3_prepare_v2(s->db.handle, usql, -1, &st, NULL) != SQLITE_OK)
-		return store_transaction_end(s, -EIO);
+		return store_transaction_end(s, NB_ERR_IO);
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(st);
 	sqlite3_finalize(st);
 	if (rc != SQLITE_DONE)
-		return store_transaction_end(s, -EIO);
+		return store_transaction_end(s, NB_ERR_IO);
 
 	if (sqlite3_prepare_v2(s->db.handle, isql, -1, &st, NULL) != SQLITE_OK)
-		return store_transaction_end(s, -EIO);
+		return store_transaction_end(s, NB_ERR_IO);
 	sqlite3_bind_text(st, 1, turn_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 3, session_id, -1, SQLITE_TRANSIENT);
@@ -181,7 +181,7 @@ int store_quota_begin_turn(struct session_store *s, const char *user_id, const c
 	rc = sqlite3_step(st);
 	sqlite3_finalize(st);
 	if (rc != SQLITE_DONE)
-		return store_transaction_end(s, -EIO);
+		return store_transaction_end(s, NB_ERR_IO);
 
 	rc = store_transaction_end(s, 0);
 	if (rc != 0)

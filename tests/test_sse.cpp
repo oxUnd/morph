@@ -29,7 +29,7 @@ protected:
 };
 
 TEST_F(SseTest, Init) {
-	EXPECT_NE(parser.buf.data, nullptr);
+	EXPECT_NE(parser.buf.ptr, nullptr);
 	EXPECT_EQ(parser.buf.len, 0);
 }
 
@@ -70,7 +70,7 @@ TEST_F(SseTest, IgnoresIdRetryAndCommentFields) {
 	EXPECT_EQ(event_count, 1);
 	EXPECT_EQ(last_event, "message");
 	EXPECT_EQ(last_data, "payload");
-	EXPECT_STREQ(parser.id.data, "42");
+	EXPECT_STREQ(parser.id.ptr, "42");
 	EXPECT_EQ(parser.retry_ms, 1000);
 }
 

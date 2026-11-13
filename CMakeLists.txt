@@ -1,6 +1,18 @@
 cmake_minimum_required(VERSION 3.20)
 project(morph LANGUAGES C CXX VERSION 0.4.2)
 
+# Modern linkers can resolve static archives independent of their command-line
+# position. Let CMake remove duplicate dependencies using that capability.
+if(POLICY CMP0156)
+    cmake_policy(SET CMP0156 NEW)
+endif()
+if(POLICY CMP0179)
+    cmake_policy(SET CMP0179 NEW)
+endif()
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.31)
+    set(CMAKE_LINK_LIBRARIES_STRATEGY REORDER_FREELY)
+endif()
+
 include(GNUInstallDirs)
 
 set(CMAKE_C_STANDARD 11)
@@ -9,10 +21,14 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(CheckCSourceCompiles)
+set(CMAKE_REQUIRED_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/vendor/nothing/include")
 check_c_source_compiles("\
-#include \"${CMAKE_CURRENT_SOURCE_DIR}/src/util/cleanup.h\"
+#include \"nb/cleanup.h\"
+#if !defined(__GNUC__) && !defined(__clang__)
+#error scope cleanup is required
+#endif
 int main(void) {
-    char *text MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+    char *text NB_CLEANUP(nb_charp_cleanup) = NULL;
     return text != NULL;
 }" MORPH_HAS_SCOPE_CLEANUP)
 if(NOT MORPH_HAS_SCOPE_CLEANUP)
@@ -175,6 +191,7 @@ if(NOT APPLE)
 	target_link_libraries(quickjs PUBLIC dl)
 endif()
 
+include(cmake/ApplyMathJaxPatch.cmake)
 add_library(mathjax STATIC
         vendor/mathjax-c/src/api.c
         vendor/mathjax-c/src/ast/node.c
@@ -215,6 +232,8 @@ target_link_libraries(mathjax PUBLIC
         m
 )
 if(APPLE)
+        # Upstream mathjax-c uses sprintf; isolate SDK deprecation diagnostics.
+        target_compile_options(mathjax PRIVATE -Wno-deprecated-declarations)
         find_library(CORE_TEXT CoreText)
         find_library(CORE_GRAPHICS CoreGraphics)
         if(CORE_TEXT AND CORE_GRAPHICS)
@@ -225,6 +244,8 @@ if(APPLE)
         endif()
 endif()
 
+set(MORPH_MATHJAX_DIR "${CMAKE_SOURCE_DIR}/vendor/mathjax-c" CACHE PATH
+    "MathJax source used by morph and its Markdown renderer" FORCE)
 set(MORPH_MARKDOWN_BUILD_TESTS ${BUILD_TESTS} CACHE BOOL "" FORCE)
 set(MORPH_MARKDOWN_BUILD_KITTY ON CACHE BOOL "" FORCE)
 set(MORPH_MARKDOWN_BUILD_KITTY_DEMO OFF CACHE BOOL "" FORCE)
@@ -292,6 +313,16 @@ add_custom_target(morph-data ALL
 	COMMENT "Staging morph runtime data"
 )
 
+# nbase is a pinned source dependency. Its tests and examples have their own
+# CMake entry point and are not part of the morph build.
+set(NB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(NB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(NB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(NB_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(NB_BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
+add_subdirectory(vendor/nothing EXCLUDE_FROM_ALL)
+
+add_subdirectory(vendor)
 add_subdirectory(src)
 
 install(FILES

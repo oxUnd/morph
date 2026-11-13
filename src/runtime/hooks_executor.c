@@ -1,20 +1,22 @@
 #include "runtime/hooks_internal.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 
-#include "util/signals.h"
+#include "nb/signal.h"
 #include "permission/context.h"
 #include "sandbox/permission.h"
 #include "runtime/runtime.h"
 #include "exec/process.h"
 #include "agent/tokenizer.h"
 #include "agent/react.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/log.h"
-#include "util/sha256.h"
-#include "util/utf8.h"
-#include "util/json.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "nb/log.h"
+#include "nb/hash.h"
+#include "nb/utf8.h"
+#include "cJSON.h"
+#include "nb/time.h"
 
 #include <errno.h>
 #include <regex.h>
@@ -57,7 +59,9 @@ int hook_manager_has(struct hook_manager *manager, const char *event)
 
 	if (!manager || !manager->ready || !manager->enabled)
 		return 0;
-	morph_array_foreach (entry, &manager->entries, struct hook_entry) {
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&manager->entries) &&
+			     (entry = (struct hook_entry *)nb_vec_at(&manager->entries, _i_));
+	     _i_++) {
 		if (entry->supported && strcmp(entry->event, event) == 0 &&
 		    hook_refresh_trust(manager, entry) == 0 &&
 		    strcmp(hook_entry_state(manager, entry), "trusted") == 0)
@@ -84,7 +88,9 @@ static void hook_emit(struct hook_manager *manager, struct hook_entry *entry, co
 	}
 	if (rc < 0) {
 		cJSON_AddNumberToObject(data, "error_code", rc);
-		cJSON_AddStringToObject(data, "error", morph_strerror(rc));
+		cJSON_AddStringToObject(
+			data, "error",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	}
 	if (strcmp(name, "hook.started") != 0 && manager->recent) {
 		cJSON_AddStringToObject(data, "name", name);
@@ -119,20 +125,25 @@ static int collect_run(struct process_manager *processes, struct hook_run *run)
 		    HOOK_OUTPUT_MAX ||
 	    run->err.len + strlen(snapshot.stderr_text ? snapshot.stderr_text : "") >
 		    HOOK_OUTPUT_MAX) {
-		rc = -E2BIG;
+		rc = NB_ERR_TOO_BIG;
 	} else {
-		rc = morph_buf_puts(&run->out, snapshot.stdout_text ? snapshot.stdout_text : "");
+		rc = (nb_buf_append_cstr(&run->out,
+					 snapshot.stdout_text ? snapshot.stdout_text : "")
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_puts(&run->err,
-					    snapshot.stderr_text ? snapshot.stderr_text : "");
+			rc = (nb_buf_append_cstr(&run->err,
+						 snapshot.stderr_text ? snapshot.stderr_text : "")
+				      ? 0
+				      : NB_ERR_NOMEM);
 	}
 	if (snapshot.state >= PROCESS_EXITED) {
 		run->done = 1;
 		run->exit_code = snapshot.exit_code;
 		if (snapshot.state == PROCESS_TIMED_OUT)
-			rc = -ETIMEDOUT;
+			rc = NB_ERR_TIMEOUT;
 		else if (snapshot.state != PROCESS_EXITED)
-			rc = -ECANCELED;
+			rc = NB_ERR_CANCELLED;
 	}
 	run->duration_ms = snapshot.duration_ms;
 	process_snapshot_cleanup(&snapshot);
@@ -141,17 +152,16 @@ static int collect_run(struct process_manager *processes, struct hook_run *run)
 
 static uint64_t hook_now_ms(void)
 {
-	struct timespec ts;
+	int64_t now = nb_time_monotonic_ns();
 
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+	return now > 0 ? (uint64_t)now / 1000000u : 0u;
 }
 
 struct hook_dispatch {
 	struct process_manager *processes;
-	morph_array_t runs;
-	morph_buf_t context;
-	morph_buf_t reason;
+	nb_vec runs;
+	nb_buf context;
+	nb_buf reason;
 	cJSON *payload;
 	cJSON *updated;
 	char *wire;
@@ -161,18 +171,18 @@ static void hook_dispatch_cleanup(struct hook_dispatch *dispatch)
 {
 	process_manager_destroy(dispatch->processes);
 	dispatch->processes = NULL;
-	for (size_t i = 0; i < dispatch->runs.nelts; i++) {
-		struct hook_run *item = morph_array_borrow(&dispatch->runs, i);
-		morph_buf_cleanup(&item->out);
-		morph_buf_cleanup(&item->err);
+	for (size_t i = 0; i < dispatch->runs.len; i++) {
+		struct hook_run *item = nb_vec_at(&dispatch->runs, i);
+		nb_buf_cleanup(&item->out);
+		nb_buf_cleanup(&item->err);
 		free(item->system_message);
 	}
-	morph_array_cleanup(&dispatch->runs);
-	morph_buf_cleanup(&dispatch->context);
-	morph_buf_cleanup(&dispatch->reason);
-	morph_json_cleanup(&dispatch->payload);
-	morph_json_cleanup(&dispatch->updated);
-	morph_json_text_cleanup(&dispatch->wire);
+	nb_vec_cleanup(&dispatch->runs);
+	nb_buf_cleanup(&dispatch->context);
+	nb_buf_cleanup(&dispatch->reason);
+	cJSON_DeleteOwner(&dispatch->payload);
+	cJSON_DeleteOwner(&dispatch->updated);
+	cJSON_FreeTextOwner(&dispatch->wire);
 }
 
 static int hook_dispatch_execute(struct hook_manager *manager, const char *event,
@@ -186,7 +196,7 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 		.shell = "/bin/sh",
 	};
 	struct hook_entry *entry;
-	cJSON *result MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	int rc = 0, blocked = 0, ask = 0, terminate = 0;
 	int progress_shown = 0;
 	size_t completed_runs = 0, updated_order = 0;
@@ -201,7 +211,7 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 				     manager->model ? manager->model : "") ||
 	    !cJSON_AddStringToObject(dispatch->payload, "turn_id",
 				     manager->turn_id ? manager->turn_id : "")) {
-		rc = -ENOMEM;
+		rc = NB_ERR_NOMEM;
 		return rc;
 	}
 	struct permission_policy policy;
@@ -211,26 +221,33 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 	    tool_context_get_permission_policy(manager->permissions, &policy) == 0)
 		preset = runtime_permission_preset_name(&policy);
 	if (!cJSON_AddStringToObject(dispatch->payload, "permission_mode", preset)) {
-		rc = -ENOMEM;
+		rc = NB_ERR_NOMEM;
 		return rc;
 	}
 	dispatch->wire = cJSON_PrintUnformatted(dispatch->payload);
 	if (!dispatch->wire || strlen(dispatch->wire) > HOOK_INPUT_MAX) {
-		rc = (dispatch->wire ? -E2BIG : -ENOMEM);
+		rc = (dispatch->wire ? NB_ERR_TOO_BIG : NB_ERR_NOMEM);
 		return rc;
 	}
-	rc = morph_array_init(&dispatch->runs, 8, sizeof(struct hook_run));
+	rc = (nb_vec_init(&dispatch->runs, sizeof(struct hook_run)),
+	      nb_vec_reserve(&dispatch->runs, 8) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_init(&dispatch->context, 256);
+		rc = (nb_buf_init(&dispatch->context),
+		      nb_buf_reserve(&dispatch->context, 256) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && strcmp(event, "UserPromptSubmit") == 0 && manager->session_context)
-		rc = morph_buf_puts(&dispatch->context, manager->session_context);
+		rc = (nb_buf_append_cstr(&dispatch->context, manager->session_context)
+			      ? 0
+			      : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_init(&dispatch->reason, 256);
+		rc = (nb_buf_init(&dispatch->reason),
+		      nb_buf_reserve(&dispatch->reason, 256) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = process_manager_create(&pcfg, &dispatch->processes);
 	if (rc != 0)
 		return rc;
-	morph_array_foreach (entry, &manager->entries, struct hook_entry) {
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&manager->entries) &&
+			     (entry = (struct hook_entry *)nb_vec_at(&manager->entries, _i_));
+	     _i_++) {
 		struct hook_run *run;
 		FILE *stdin_file;
 		struct process_spawn_options options = {.logger = manager->logger};
@@ -242,27 +259,29 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 			continue;
 		}
 		if (manager->remaining_ms == 0 && strcmp(event, "Interrupt") != 0) {
-			hook_emit(manager, entry, "hook.failed", -ETIMEDOUT, 0, NULL);
+			hook_emit(manager, entry, "hook.failed", NB_ERR_TIMEOUT, 0, NULL);
 			continue;
 		}
-		run = morph_array_push_borrow(&dispatch->runs);
+		run = nb_vec_push(&dispatch->runs);
 		if (!run) {
-			rc = (-ENOMEM);
+			rc = (NB_ERR_NOMEM);
 			return rc;
 		}
 		memset(run, 0, sizeof(*run));
 		run->entry = entry;
-		run->rc = morph_buf_init(&run->out, 256);
+		run->rc =
+			(nb_buf_init(&run->out), nb_buf_reserve(&run->out, 256) ? 0 : NB_ERR_NOMEM);
 		if (run->rc == 0)
-			run->rc = morph_buf_init(&run->err, 256);
+			run->rc = (nb_buf_init(&run->err),
+				   nb_buf_reserve(&run->err, 256) ? 0 : NB_ERR_NOMEM);
 		stdin_file = tmpfile();
 		if (!stdin_file) {
-			run->rc = -errno;
+			run->rc = nb_status_from_errno(errno, NULL);
 		} else if (run->rc == 0) {
 			if (fwrite(dispatch->wire, 1, strlen(dispatch->wire), stdin_file) !=
 				    strlen(dispatch->wire) ||
 			    fflush(stdin_file) != 0 || fseek(stdin_file, 0, SEEK_SET) != 0)
-				run->rc = -EIO;
+				run->rc = NB_ERR_IO;
 			if (run->rc == 0) {
 				options.command = entry->command;
 				options.workdir = manager->workdir;
@@ -277,8 +296,8 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 				options.use_stdin_fd = 1;
 				options.stdin_fd = fileno(stdin_file);
 				hook_emit(manager, entry, "hook.started", 0, 0, NULL);
-				struct sandbox_config sandbox MORPH_CLEANUP(
-					sandbox_config_cleanup) = {0};
+				struct sandbox_config sandbox NB_CLEANUP(sandbox_config_cleanup) = {
+					0};
 
 				if (manager->permissions) {
 					run->rc = sandbox_permission_prepare(
@@ -301,15 +320,17 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 		int pending = 0;
 		struct hook_run *run;
 		int cancelled = strcmp(event, "Interrupt") != 0 &&
-				(morph_signal_flag_get(manager->cancelled) ||
-				 morph_cancel_token_is_cancelled(manager->cancel_token));
+				(nb_atomic_int_load(manager->cancelled) ||
+				 nb_cancel_requested(manager->cancel_token));
 
-		morph_array_foreach (run, &dispatch->runs, struct hook_run) {
+		for (size_t _i_ = 0; _i_ < nb_vec_len(&dispatch->runs) &&
+				     (run = (struct hook_run *)nb_vec_at(&dispatch->runs, _i_));
+		     _i_++) {
 			if (run->done)
 				continue;
 			if (cancelled) {
 				(void)process_session_kill(dispatch->processes, run->session);
-				run->rc = -ECANCELED;
+				run->rc = NB_ERR_CANCELLED;
 				run->done = 1;
 				continue;
 			}
@@ -323,7 +344,7 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 			pending += !run->done;
 		}
 		if (cancelled) {
-			rc = (-ECANCELED);
+			rc = (NB_ERR_CANCELLED);
 			break;
 		}
 		if (!pending)
@@ -331,8 +352,8 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 		if (!progress_shown && hook_now_ms() - started >= 300) {
 			const char *message = "Running hooks";
 
-			if (dispatch->runs.nelts == 1) {
-				struct hook_run *only = morph_array_borrow(&dispatch->runs, 0);
+			if (dispatch->runs.len == 1) {
+				struct hook_run *only = nb_vec_at(&dispatch->runs, 0);
 				message = *only->entry->status_message ? only->entry->status_message
 								       : "Running hook";
 			}
@@ -345,25 +366,29 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 		nanosleep(&delay, NULL);
 	}
 	struct hook_run *run;
-	morph_array_foreach (run, &dispatch->runs, struct hook_run) {
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&dispatch->runs) &&
+			     (run = (struct hook_run *)nb_vec_at(&dispatch->runs, _i_));
+	     _i_++) {
 		int decision = 0;
 		size_t context_before = dispatch->context.len, reason_before = dispatch->reason.len;
-		cJSON *run_updated MORPH_CLEANUP(morph_json_cleanup) = NULL;
+		cJSON *run_updated NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 		int ask_before = ask, terminate_before = terminate;
 		int decode_rc = hook_decode_output(
 			manager, run, event, &dispatch->context, &dispatch->reason,
 			&run_updated, &decision, &ask, &terminate);
 		if (decode_rc < 0) {
 			if (!run->context_valid)
-				(void)morph_buf_truncate(&dispatch->context, context_before);
+				(void)nb_buf_truncate(&dispatch->context, context_before);
 			if (!run->context_error)
-				(void)morph_buf_truncate(&dispatch->reason, reason_before);
+				(void)nb_buf_truncate(&dispatch->reason, reason_before);
 			if (run->context_error) {
 				decision = 1;
-				(void)morph_buf_printf(&dispatch->reason,
+				(void)nb_buf_printf(
+					&dispatch->reason,
 					"Hook context could not be preserved: %s. Processing is "
 					"blocked.\n",
-					morph_strerror(run->context_error));
+					nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+						   run->context_error));
 			} else {
 				ask = ask_before;
 				terminate = terminate_before;
@@ -372,7 +397,7 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 		}
 		if (decode_rc == 0 && run_updated && run->completion_order >= updated_order) {
 			cJSON_Delete(dispatch->updated);
-			dispatch->updated = morph_json_steal(&run_updated);
+			dispatch->updated = cJSON_StealOwner(&run_updated);
 			updated_order = run->completion_order;
 		}
 		blocked |= decision;
@@ -387,7 +412,7 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 			  decode_rc, decision, run);
 		cJSON *last = cJSON_GetArrayItem(manager->recent,
 						 cJSON_GetArraySize(manager->recent) - 1);
-		char *diagnostic = utf8_dup_clamped(morph_buf_cstr_borrow(&run->err), 16384);
+		char *diagnostic = nb_utf8_ellipsize_bytes(nb_buf_cstr(&run->err), 16384);
 		if (diagnostic) {
 			cJSON_AddStringToObject(last, "stderr", diagnostic);
 			free(diagnostic);
@@ -398,61 +423,64 @@ static int hook_dispatch_execute(struct hook_manager *manager, const char *event
 	manager->context_bytes += dispatch->context.len;
 	result = cJSON_CreateObject();
 	if (!result) {
-		rc = (-ENOMEM);
+		rc = (NB_ERR_NOMEM);
 		return rc;
 	}
 	if (strcmp(event, "Stop") == 0 && terminate)
 		blocked = 0;
 	if (blocked)
-		morph_json_cleanup(&dispatch->updated);
-	if (!cJSON_AddStringToObject(result, "context",
-				   morph_buf_cstr_borrow(&dispatch->context)) ||
-	    !cJSON_AddStringToObject(result, "reason", morph_buf_cstr_borrow(&dispatch->reason)) ||
+		cJSON_DeleteOwner(&dispatch->updated);
+	if (!cJSON_AddStringToObject(result, "context", nb_buf_cstr(&dispatch->context)) ||
+	    !cJSON_AddStringToObject(result, "reason", nb_buf_cstr(&dispatch->reason)) ||
 	    !cJSON_AddBoolToObject(result, "blocked", blocked) ||
 	    !cJSON_AddBoolToObject(result, "ask", ask) ||
 	    !cJSON_AddBoolToObject(result, "terminate", terminate)) {
-		rc = -ENOMEM;
+		rc = NB_ERR_NOMEM;
 		return rc;
 	}
 	if (strcmp(event, "SessionStart") == 0 &&
 	    strcmp(hook_json_string_borrow(input, "source"), "compact") == 0) {
-		char *saved = strdup(morph_buf_cstr_borrow(&dispatch->context));
+		char *saved = strdup(nb_buf_cstr(&dispatch->context));
 
 		if (!saved) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			return rc;
 		}
 		free(manager->session_context);
 		manager->session_context = saved;
 	}
 	if (dispatch->updated) {
-		rc = morph_json_object_take(result, "updatedInput", &dispatch->updated);
+		rc = (cJSON_AddItemToObject(result, "updatedInput", dispatch->updated)
+			      ? (dispatch->updated = NULL, NB_OK)
+			      : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
 
-	*output = morph_json_steal(&result);
+	*output = cJSON_StealOwner(&result);
 	return 0;
 }
 
 int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, cJSON **output)
 {
 	struct hook_manager *manager = opaque;
-	struct hook_dispatch dispatch MORPH_CLEANUP(hook_dispatch_cleanup) = {0};
+	struct hook_dispatch dispatch NB_CLEANUP(hook_dispatch_cleanup) = {0};
 	struct hook_entry *entry;
-	cJSON *result MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	int rc;
 	uint64_t started = hook_now_ms();
 	uint64_t elapsed;
 
 	if (!manager || !output || !event)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*output)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (!manager->ready || !manager->enabled)
 		return 0;
 	int matching = 0;
-	morph_array_foreach (entry, &manager->entries, struct hook_entry) {
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&manager->entries) &&
+			     (entry = (struct hook_entry *)nb_vec_at(&manager->entries, _i_));
+	     _i_++) {
 		if (!hook_matches(entry, event, input))
 			continue;
 		if (hook_refresh_trust(manager, entry) == 0 && entry->supported &&
@@ -466,25 +494,24 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 			result = cJSON_CreateObject();
 			if (!result ||
 			    !cJSON_AddStringToObject(result, "context", manager->session_context))
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			*output = result;
 			result = NULL;
 		}
 		return 0;
 	}
 	if (strcmp(event, "Interrupt") != 0 &&
-	    (morph_signal_flag_get(manager->cancelled) ||
-	     morph_cancel_token_is_cancelled(manager->cancel_token)))
-		return -ECANCELED;
+	    (nb_atomic_int_load(manager->cancelled) || nb_cancel_requested(manager->cancel_token)))
+		return NB_ERR_CANCELLED;
 	dispatch.payload = input ? cJSON_Duplicate(input, 1) : cJSON_CreateObject();
 	if (!dispatch.payload)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	rc = hook_dispatch_execute(manager, event, input, &dispatch, started, &result);
 	elapsed = hook_now_ms() - started;
 	manager->remaining_ms =
 		elapsed < manager->remaining_ms ? manager->remaining_ms - elapsed : 0;
 	hook_dispatch_cleanup(&dispatch);
 	if (rc == 0)
-		*output = morph_json_steal(&result);
+		*output = cJSON_StealOwner(&result);
 	return rc;
 }

@@ -1,6 +1,7 @@
 #ifndef MORPH_CLI_MODELS_PRESENTATION_H
 #define MORPH_CLI_MODELS_PRESENTATION_H
-#include "util/buf.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include "db/scheduled_task.h"
 #include "permission/permission.h"
 #include <stdint.h>
@@ -34,7 +35,7 @@ struct cli_output {
 	int command_result_pending;
 	/* Logical history tail, including deferred scrollback, capped at two. */
 	int trailing_newlines;
-	morph_buf_t *capture;
+	nb_buf *capture;
 	int capture_styled;
 	/* Captured history advances the tail; alternate-screen frames do not. */
 	int capture_history;

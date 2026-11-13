@@ -2,6 +2,7 @@
 #define MORPH_HISTORY_STORE_H
 
 #include "session.h"
+#include "nb/err.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -67,14 +68,14 @@ int history_store_context_tokens(struct db *db, int64_t session_id, int64_t *tok
 /* Text copies require a NULL output slot and return malloc-owned strings.
  * Failure preserves an occupied owner, or leaves an empty slot NULL. */
 int history_store_last_answer_copy(struct db *db, int64_t session_id, char **answer);
-int history_store_summary_sources(struct db *db, int64_t session_id, morph_array_t *ids);
-/* Outputs must be zero-initialized and empty. Occupied owners return -EEXIST. */
+int history_store_summary_sources(struct db *db, int64_t session_id, nb_vec *ids);
+/* Outputs must be zero-initialized and empty. Occupied owners return NB_ERR_EXISTS. */
 int history_store_request_snapshot(struct db *db, int64_t session_id,
 				   struct history_request_snapshot *snapshot);
 void history_request_snapshot_cleanup(struct history_request_snapshot *snapshot);
 int history_store_visit_messages(struct db *db, int64_t session_id, history_message_visitor visitor,
 				 void *data);
-/* An absent imported display table returns -ENODATA. */
+/* An absent imported display table returns NB_ERR_NO_DATA. */
 int history_store_visit_display(struct db *db, int64_t session_id, history_display_visitor visitor,
 				void *data);
 int history_store_visit_traces(struct db *db, int64_t session_id, history_trace_visitor visitor,

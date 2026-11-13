@@ -1,15 +1,15 @@
 #include "jsonrpc.h"
 #include "cJSON.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "cJSON.h"
 #include <stdlib.h>
 #include <string.h>
 
 char *jsonrpc_request_create(const struct jsonrpc_request *req)
 {
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	cJSON *params MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 
 	if (!req || !req->method)
 		return NULL;
@@ -24,24 +24,26 @@ char *jsonrpc_request_create(const struct jsonrpc_request *req)
 		params = cJSON_Parse(req->params_json);
 		if (!params)
 			params = cJSON_CreateString(req->params_json);
-		if (!params || morph_json_object_take(root, "params", &params) < 0)
+		if (!params ||
+		    (cJSON_AddItemToObject(root, "params", params) ? (params = NULL, NB_OK)
+								   : NB_ERR_NOMEM) < 0)
 			return NULL;
 	}
-	return morph_json_print_copy(root);
+	return cJSON_PrintUnformatted(root);
 }
 
 int jsonrpc_response_copy(const char *resp_str, struct jsonrpc_response *out)
 {
-	struct jsonrpc_response candidate MORPH_CLEANUP(jsonrpc_response_free) = {0};
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	struct jsonrpc_response candidate NB_CLEANUP(jsonrpc_response_free) = {0};
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 
 	if (!resp_str || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (out->result_json || out->error_message)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	root = cJSON_Parse(resp_str);
 	if (!root)
-		return -EPROTO;
+		return NB_ERR_PROTOCOL;
 	cJSON *id_item = cJSON_GetObjectItem(root, "id");
 
 	if (cJSON_IsNumber(id_item))
@@ -58,21 +60,21 @@ int jsonrpc_response_copy(const char *resp_str, struct jsonrpc_response *out)
 		if (cJSON_IsString(msg) && msg->valuestring) {
 			candidate.error_message = strdup(msg->valuestring);
 			if (!candidate.error_message)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 		}
 	} else {
 		cJSON *result_item = cJSON_GetObjectItem(root, "result");
 
 		if (result_item) {
-			candidate.result_json = morph_json_print_copy(result_item);
+			candidate.result_json = cJSON_PrintUnformatted(result_item);
 			if (!candidate.result_json)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 		} else {
 			candidate.has_error = 1;
 			candidate.error_code = -32603;
 			candidate.error_message = strdup("response missing result");
 			if (!candidate.error_message)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 		}
 	}
 	*out = candidate;

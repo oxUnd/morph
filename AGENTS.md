@@ -47,7 +47,7 @@
 
 ## CLI Status Symbols
 
-- Terminal status glyph values are defined only in `src/util/terminal_status.h`;
+- Terminal status glyph values are defined only in `src/tui/include/morph/tui/terminal/status.h`;
   CLI aliases and styles live in `src/sapi/cli/presentation/style.h`. All CLI
   commands, pages, tool feeds, background jobs, subagents, plans, notifications,
   diagnostics, setup flows and shared terminal spinners reuse those definitions.
@@ -151,41 +151,72 @@
 
 ## Libraries (all static, from CMake link targets)
 ```
-morph-toml (vendor/tomlc17)
-morph-util (cleanup, log, file, cJSON, base64, utf8, spin)
-  ├─ morph-db (SQLite) → morph-session → morph-persistence → morph-credits
-  ├─ morph-http (libcurl, SSE) → morph-models
-  ├─ morph-event, morph-exec (→ morph-sandbox), morph-render, morph-ipc
-  └─ morph-sandbox → morph-ext
-morph-permission (policy, operations, grants; util, db, threads)
+nbase::nbase (vendor/nothing; nb containers, errors, log, files/paths,
+              Unicode, encoding/hash, time, cancellation, threads, processes)
+morph-cjson, morph-regex (independent third-party targets)
+morph-db → morph-session → morph-persistence → morph-credits
+morph-app-data (runtime/resources), morph-bpe (agent/bpe)
+morph-command-analysis (permission/command_analysis; tree-sitter-bash)
+morph-media (media/image; stb), morph-terminal (tui/terminal text/size/activity)
+morph-http (libcurl, SSE) → morph-models
+morph-event, morph-exec (→ morph-sandbox), morph-render, morph-ipc
+morph-permission (policy, operations, grants; nbase, db, command analysis)
 morph-agent (react, context, compress, tokenizer, tool, plan)
-morph-tools, morph-skill, morph-mcp
-morph-config
+morph-tools, morph-skill, morph-mcp, morph-config
 morph-runtime ← morph-agent, config, credits, event, mcp, session, skill, sync, tools
-morph-tui ← morph-util, libuv (core, terminal, render, widgets)
+morph-tui ← nbase, morph-terminal, morph-media, libuv
 morph-cli → morph (executable)
 ```
-Entrypoint: `src/sapi/cli/main.c` → logging, HTTP, config, open runtime, `cli_application_run()`.
+Declare the dependencies actually consumed by a target. There is no shared
+`morph-util` facade. Entrypoint: `src/sapi/cli/main.c` → logging, HTTP, config,
+open runtime, `cli_application_run()`.
 
 ## Vendor
-`vendor/`: cJSON, stb_image{,_write,_resize2}, tomlc17, utf8proc 2.12.0 — compiled in, never fetched.
-md4c is fetched by CMake FetchContent. stb write/resize2 have warning suppressions in `src/agent/tools/CMakeLists.txt`.
+`vendor/nothing/` is a pinned nbase source snapshot with recorded local changes
+in `vendor/nothing/README.morph.md`; do not fetch a floating version at build time.
+The nbase Unicode backend vendors utf8proc 2.12.0 (Unicode 18.0.0) under
+`vendor/nothing/vendor/utf8proc/`. cJSON and stb remain dedicated dependencies;
+TOML uses `nb/toml.h`. The nbase main-library license remains a distribution
+prerequisite until upstream provides an explicit grant.
 
 ## UTF-8
-Always use `src/util/utf8.h` (`#include "util/utf8.h"` from outside `src/util/`, `"utf8.h"` inside); never hand-roll decode/encode/width. It wraps vendored `vendor/utf8proc/` (v2.12.0, Unicode 18.0.0), compiled into `morph-util` through the shared `src/util/sources.list` manifest. Only `src/util/utf8.c` may include or call the upstream API; public headers and callers use project-owned types and helpers. Decoding, encoding, validation, character width and general Unicode categories come from utf8proc. Legacy names `utf8codepoint`, `utf8len`, `utf8valid`, and `utf8dup` remain as compatibility adapters. Prefer bounded `utf8_decode_codepoint` / `utf8_encode_codepoint`, `utf8_clamp_bytes`, `utf8_sanitize_into` / `_inplace`, and `utf8_display_width` for new code. ANSI filtering, layout/clipping and tokenizer language-block policies remain application logic. The header is the source of truth.
+Include `nb/utf8.h` and use its bounded decoder, encoder, validation, character
+width and category APIs. Do not add a local UTF-8 decoder or Unicode facade.
+`nb_utf8_validate` returns `NB_UTF8_OK` on success and can report the failing
+byte offset; `nb_utf8_count` returns `SIZE_MAX` on invalid input. `nb_utf8_read`
+provides the bounded one-code-point operation used by text consumers.
+Unicode widths/category/casefold come from nbase's pinned utf8proc backend.
+ANSI filtering, terminal sanitization, display clipping and ellipsis policies
+belong to `<morph/tui/terminal/text.h>`; language-block token weights belong to
+`agent/tokenizer.c`. See `docs/unicode.md`.
 
-## Core Data Structures (`src/util/`, link `morph-util`)
+## Core Data Structures (include `nb/*.h`, link `nbase::nbase`)
 Prefer these over hand-rolled equivalents.
-- **Scope cleanup** `cleanup.h` — required GCC/Clang `MORPH_CLEANUP(fn)`. Initialize local owners to `NULL`/`{0}`; callbacks are typed. Heap objects own their fields. APIs use `*_borrow` for views, `*_copy`/`*_clone` for independent data, and `*_create` for new owners. Fallible `*_take` receives the owner by address (`T **` for pointers, `T *` for values) and clears it only on success; failure preserves ownership. Typed `*_steal(T **)` transfers without allocating. See `docs/state-ownership.md`.
-- **`morph_buf_t`** `buf.h` — growable string builder: `morph_buf_init`, `append`/`puts`/`putc`/`printf`, `cstr_borrow`, `str_borrow`, `detach`, `cleanup`. Never `char[N]` + `snprintf` accumulation.
-- **`morph_array_t`** `array.h` — generic dynamic array: `morph_array_init`, `push_borrow`/`push_n_borrow`/`pop`/`borrow`/`reserve`/`clear`, `foreach`, `cleanup`. `push_borrow` may realloc — don't hold element pointers across pushes.
-- **`morph_strmap_t`** `strmap.h` — open-addressing string→`void *`: `init`/`cleanup`/`clear`, `set_borrow`/`borrow`/`contains`/`remove`/`len`.
-- **`morph_str_t`** `str.h` — non-owning `{len, const char *}` view: `morph_strdup`/`strndup`, `morph_strcmp`/`strcasecmp`/`strncmp`, `morph_str_cstr_copy`, `morph_str_chr_borrow`/`rchr_borrow`/`trim_borrow`, `MORPH_STRLIT`.
-- **`morph_queue_t`** `queue.h` — intrusive doubly-linked list, header-only (`morph_queue_init`, `insert_head/tail`, `remove`, `foreach`/`foreach_safe`, `morph_queue_data`).
+- **Scope cleanup** `nb/cleanup.h` — required GCC/Clang `NB_CLEANUP(fn)`.
+  Initialize local owners to `NULL`/`{0}`. Callbacks are typed. Heap objects own
+  their fields. Application fallible `*_take` APIs clear the source only after
+  success; infallible typed steal transfers without allocating. See
+  `docs/state-ownership.md`.
+- **`nb_buf`** `nb/buf.h` — initialize/destroy; append/append_cstr/append_char,
+  printf, cstr/str, reserve, consume/compact, next_line. Mutations return bool
+  and set a sticky error; check `nb_buf_ok`. `nb_buf_move` **swaps** handles.
+  `nb_buf_detach` requires retaining capacity for `nb_free`; never give detached
+  storage to an API that releases an ordinary malloc owner.
+- **`nb_vec`** `nb/vec.h` — initialize with element size; push/push_n/at,
+  reserve/insert/remove/pop/clear/destroy. Growth invalidates slot pointers;
+  new slots are uninitialized and elements need their own cleanup.
+- **`nb_map *`** `nb/map.h` — opaque map owner; put/get/has/del and free.
+  A configured value destructor handles only values still retained at clear/free;
+  displaced/deleted values are returned to their caller.
+- **`nb_str`** `nb/str.h` — borrowed `{ptr, len}`; `NB_STR_LIT`, from_cstr,
+  from_parts, trim/find/compare. Comparisons use lexical ordering. A view need
+  not be NUL-terminated; copy through explicit owning or caller-buffer APIs.
+- **`nb_queue_t`** `nb/queue.h` — intrusive queue with stable node addresses.
+  The containing owner determines each node's lifetime.
 
 ## Dependencies
 - Required: SQLite3, libcurl, libuv ≥ 1.44, CMake ≥ 3.20.
-- Fetched: md4c v0.5.3, GoogleTest v1.14.0.
+- Fetched: cmark-gfm (Markdown), QuickJS, wasm3, BLAKE3, tree-sitter and GoogleTest v1.14.0; versions are pinned in CMake.
 - Optional: readline (auto-detected; falls back to fgets); libseccomp (Linux sandbox).
 
 ## Configuration
@@ -194,12 +225,22 @@ Prefer these over hand-rolled equivalents.
 - Logs `~/.morph/log/agent.log`; output `~/.morph/output`; `MORPH_DEBUG=1` logs every HTTP request/response.
 
 ## Error Handling
-- `typedef int morph_err_t` (`src/util/error.h`): `0` = success, `< 0` = error; never return bare `-1`.
-- Use POSIX `-errno` for system errors; return `-errno` (not a fixed code) from failing `pipe`/`fork`/`select`/`opendir` calls.
-- Use `MORPH_ERR_*` for domain errors: NOT_CONFIGURED (-257), NOT_INITIALIZED (-258), API (-259), NETWORK (-260), PARSE (-261), PROTOCOL (-262), DB (-263), FORMAT (-264), PROCESSING (-265), SANDBOX (-266), LOAD (-267), LLM (-268).
-- Use explicit `return code;`. Optional `MORPH_TRACE_ERROR(logger, code)` is an expression that calls a typed tracing function with the source location; write `return MORPH_TRACE_ERROR(logger, code);` when tracing is useful. It never hides control flow and evaluates both arguments once in all builds. Diagnostics use `LOG_DEBUG` file logs, never terminal output.
-- Preserve error codes explicitly before cleanup. Use `rc = MORPH_TRACE_ERROR(logger, code);` for optional tracing. Capture syscall errors immediately with `rc = morph_error_from_errno(errno);` before cleanup. Logging contexts are explicit, never global or thread-local.
-- `morph_strerror(err)` for all user/LLM-facing messages; never raw `%d`.
+- Portable mechanism errors use `nb_status`: `NB_OK` is zero; `NB_ERR_*` values
+  are negative. `-errno` is not a portable nbase status; never return bare `-1`.
+- Capture syscall errno immediately using `nb_status_from_errno(errno, &err)`.
+  An optional `nb_err` preserves the exact OS diagnostic in `os_errno`; cleanup
+  must not replace the captured failure.
+- Application errors live in `src/errors.h`, allocated with `NB_ERR_USER(n)`.
+  Keep model/configuration/protocol error descriptions in that catalog rather
+  than adding another generic error framework.
+- Use explicit `return code;` and `rc = code;`. Optional `nb_err_trace` receives
+  an explicit logger, description table and source location, returns the code
+  unchanged and preserves errno. It never renders UI.
+- Use `nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, code)` for
+  application-facing descriptions, or `nb_status_str` for known base statuses.
+  Emit diagnostics through the owned `nb_log` at `NB_LOG_DEBUG`.
+- `nb_log_write(NULL, ...)` disables logging. Do not install the nbase default
+  logger or change the global allocator while runtimes are executing.
 
 ## `goto`
 - Do not use `goto` in project-owned C/C++/Objective-C source, including macros,
@@ -216,8 +257,8 @@ Prefer these over hand-rolled equivalents.
 - Source strings in English for errors, logs, status, UI, model instructions; keep non-English only as input data/fixtures/examples. Localization lives in a shared i18n layer, not business logic.
 - `sizeof(var)`, not `sizeof(type)`.
 - Use `<limits.h>` for system limits: paths → `PATH_MAX`; stdio → `BUFSIZ`; `strncpy` uses `sizeof(dst) - 1`. Do **not** use `NAME_MAX` for logical names (tool/skill names) — use app `#define`s like `TOOL_NAME_MAX`.
-- Negatives errno or `MORPH_ERR_*`; use explicit `return code;` for error returns.
-- Memory: ordinary heap ownership with required `MORPH_CLEANUP(fn)` for local owners; `morph_buf`/`morph_array` for growth. Every object has typed cleanup/destroy. No bulk allocation contexts. Transfers use success-only `*_take(T **)` or infallible typed steal; failure retains the source. Do not shallow-copy owned fields. Raw allocations need NULL checks and cleanup on every path.
+- Use `NB_ERR_*` portable statuses or application `NB_ERR_USER` codes; use explicit `return code;` for error returns.
+- Memory: ordinary heap ownership with required `NB_CLEANUP(fn)` for local owners; `nb_buf`/`nb_vec` for growth. Every object has typed cleanup/destroy. No bulk allocation contexts. Transfers use success-only `*_take(T **)` or infallible typed steal; failure retains the source. Do not shallow-copy owned fields. Raw allocations need NULL checks and cleanup on every path.
 - Multi-statement macros wrapped in `do { } while (0)`.
 - Naming: functions `snake_case`, types `struct foo`, macros `UPPER_CASE`.
 - Do not introduce global variables.
@@ -231,7 +272,7 @@ Prefer these over hand-rolled equivalents.
 - Expect Valgrind + ASan + UBSan clean.
 
 ## Gotchas
-- Config parsed by vendored tomlc17 and validated against the embedded schema in `src/config/schema.c`.
-- `img_resize.c` / `img_convert.c` need stb warning suppressions (already in CMake).
+- Config parsed by `nb_toml` and validated against the embedded schema in `src/config/schema.c`.
+- `src/media/image.c`, `img_resize.c` and `img_convert.c` need the recorded stb warning suppressions.
 - Gitignored: `config.toml` (API keys — use `config.toml.example`), `vendor/md4c/` (fetched), `.morph/` (runtime data).
 - macOS sandbox uses `sandbox_init` with an SBPL allowlist (no `sandbox-exec` wrapper); Linux uses seccomp-BPF denylist + Landlock.

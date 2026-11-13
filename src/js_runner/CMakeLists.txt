@@ -10,7 +10,6 @@ add_dependencies(morph-js-runner morph-data)
 
 target_include_directories(morph-js-runner PRIVATE
 	${CMAKE_SOURCE_DIR}/src
-	${CMAKE_SOURCE_DIR}/src/util
 	${VIPS_INCLUDE_DIRS}
 	${CAIRO_INCLUDE_DIRS}
 	${PANGOCAIRO_INCLUDE_DIRS}
@@ -29,7 +28,8 @@ list(REMOVE_DUPLICATES MORPH_JS_MEDIA_LIBRARIES)
 target_link_libraries(morph-js-runner PRIVATE
 	quickjs
 	morph-http
-	morph-util
+	nbase::nbase morph-cjson
+	morph-media
 	m3
 	${MORPH_JS_MEDIA_LIBRARIES}
 )

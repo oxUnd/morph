@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
-#include "util/cleanup.h"
+#include "nb/err.h"
+#include "nb/cleanup.h"
 #include <morph/tui/application.h>
 #include <morph/tui/view_controller.h>
 
@@ -16,6 +17,12 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+
+static void tui_application_test_file_cleanup(FILE **file)
+{
+	if (*file)
+		fclose(*file);
+}
 
 struct AppPage {
 	std::vector<std::string> *log = nullptr;
@@ -37,6 +44,30 @@ struct AppPage {
 	int failure = 0;
 	std::vector<int> codes;
 };
+
+#if defined(__linux__) || defined(__APPLE__)
+TEST(TuiApplicationErrorsTest, UnpollableInputUsesPortableErrorNamespace)
+{
+	FILE *input NB_CLEANUP(tui_application_test_file_cleanup) = tmpfile();
+	FILE *output NB_CLEANUP(tui_application_test_file_cleanup) = tmpfile();
+	ASSERT_NE(input, nullptr);
+	ASSERT_NE(output, nullptr);
+	struct morph_tui_application_options options{};
+	options.external_signals = 1;
+	options.input = input;
+	options.output = output;
+	struct morph_tui_application *application = nullptr;
+	int result = morph_tui_application_create(&options, &application);
+#ifdef __linux__
+	EXPECT_EQ(result, NB_ERR_NOT_PERMITTED);
+#else
+	EXPECT_EQ(result, NB_ERR_INVAL);
+#endif
+	EXPECT_EQ(application, nullptr);
+	if (application)
+		morph_tui_application_destroy(application);
+}
+#endif
 
 static int page_appear(void *data, struct morph_tui_application *)
 {
@@ -191,7 +222,7 @@ TEST_F(TuiApplicationTest, PresentationIsDeferredAndRestoresUnderlyingController
 	EXPECT_EQ(morph_tui_application_depth(app), 1U);
 	EXPECT_EQ(panel.closes, 1);
 	EXPECT_EQ(panel.close_result, 19);
-	EXPECT_EQ(panel.reentry, -EBUSY);
+	EXPECT_EQ(panel.reentry, NB_ERR_BUSY);
 	EXPECT_EQ(root.messages, 0);
 	EXPECT_EQ(root.draws, 2);
 	EXPECT_EQ(log, (std::vector<std::string>{"root:appear", "root:disappear", "panel:appear",
@@ -208,8 +239,7 @@ TEST_F(TuiApplicationTest, BackgroundPostsKeepOrderAndReleaseEachPayload)
 	int posted = 0;
 	std::thread worker([&] {
 		for (int i = 0; i < 257; i++) {
-			struct morph_tui_message message MORPH_CLEANUP(
-				morph_tui_message_cleanup) = {
+			struct morph_tui_message message NB_CLEANUP(morph_tui_message_cleanup) = {
 				&released, +[](void *data) {
 					static_cast<std::atomic<int> *>(data)->fetch_add(1);
 				}};
@@ -235,24 +265,24 @@ TEST_F(TuiApplicationTest, StopRejectsPostsAndReleasesAlreadyQueuedMessages)
 	ASSERT_EQ(present(root), 0);
 	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
 	ASSERT_EQ(present(pending), 0);
-	struct morph_tui_message accepted MORPH_CLEANUP(morph_tui_message_cleanup) = {
+	struct morph_tui_message accepted NB_CLEANUP(morph_tui_message_cleanup) = {
 		&released,
 		+[](void *data) { static_cast<std::atomic<int> *>(data)->fetch_add(1); }};
 	ASSERT_EQ(morph_tui_application_post_take(app, 1, &accepted), 0);
 	EXPECT_EQ(accepted.data, nullptr);
 	EXPECT_EQ(accepted.release, nullptr);
-	morph_tui_application_stop(app, -EIO);
-	EXPECT_EQ(morph_tui_application_wake(app), -ECANCELED);
-	struct morph_tui_message rejected MORPH_CLEANUP(morph_tui_message_cleanup) = {&released,
-										      nullptr};
-	EXPECT_EQ(morph_tui_application_post_take(app, 2, &rejected), -ECANCELED);
+	morph_tui_application_stop(app, NB_ERR_IO);
+	EXPECT_EQ(morph_tui_application_wake(app), NB_ERR_CANCELLED);
+	struct morph_tui_message rejected NB_CLEANUP(morph_tui_message_cleanup) = {&released,
+										   nullptr};
+	EXPECT_EQ(morph_tui_application_post_take(app, 2, &rejected), NB_ERR_CANCELLED);
 	EXPECT_EQ(rejected.data, &released);
-	EXPECT_EQ(morph_tui_application_step(app, 0), -EIO);
+	EXPECT_EQ(morph_tui_application_step(app, 0), NB_ERR_IO);
 	morph_tui_application_destroy(app);
 	app = nullptr;
 	EXPECT_EQ(released.load(), 1);
 	EXPECT_EQ(root.closes, 1);
-	EXPECT_EQ(root.close_result, -EIO);
+	EXPECT_EQ(root.close_result, NB_ERR_IO);
 	EXPECT_EQ(pending.closes, 1);
 	EXPECT_EQ(root.messages, 0);
 }
@@ -277,6 +307,35 @@ TEST_F(TuiApplicationTest, TimersAndInvalidationHaveSeparateLayoutAndDrawPhases)
 	EXPECT_EQ(root.draws, 3);
 }
 
+TEST_F(TuiApplicationTest, ScheduledTicksReturnFromBlockingStepsWithoutInput)
+{
+	AppPage &root = page();
+	ASSERT_EQ(present(root), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	for (int delay : {20, 0}) {
+		/* Rendering or a synchronous command can leave libuv's cached time old. */
+		std::this_thread::sleep_for(std::chrono::milliseconds(80));
+		int before = root.ticks;
+		morph_tui_application_schedule(app, delay);
+		std::atomic<bool> returned{false};
+		std::thread fallback([&] {
+			auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+			while (!returned.load() && std::chrono::steady_clock::now() < deadline)
+				std::this_thread::sleep_for(std::chrono::milliseconds(2));
+			if (!returned.load())
+				(void)morph_tui_application_wake(app);
+		});
+		auto start = std::chrono::steady_clock::now();
+		int rc = morph_tui_application_step(app, 1);
+		auto elapsed = std::chrono::steady_clock::now() - start;
+		returned.store(true);
+		fallback.join();
+		EXPECT_EQ(rc, 0);
+		EXPECT_EQ(root.ticks, before + 1);
+		EXPECT_LT(elapsed, std::chrono::milliseconds(500));
+	}
+}
+
 TEST_F(TuiApplicationTest, OwnerThreadIsRequiredForLifecycle)
 {
 	AppPage &root = page();
@@ -291,27 +350,27 @@ TEST_F(TuiApplicationTest, OwnerThreadIsRequiredForLifecycle)
 	});
 	worker.join();
 	EXPECT_FALSE(owner);
-	EXPECT_EQ(step_rc, -EPERM);
-	EXPECT_EQ(present_rc, -EPERM);
-	EXPECT_EQ(dismiss_rc, -EPERM);
+	EXPECT_EQ(step_rc, NB_ERR_NOT_PERMITTED);
+	EXPECT_EQ(present_rc, NB_ERR_NOT_PERMITTED);
+	EXPECT_EQ(dismiss_rc, NB_ERR_NOT_PERMITTED);
 }
 
 TEST_F(TuiApplicationTest, DrawFailureStopsAndCleanupRunsOnce)
 {
 	AppPage &root = page();
-	root.failure = -EIO;
+	root.failure = NB_ERR_IO;
 	ASSERT_EQ(present(root), 0);
-	EXPECT_EQ(morph_tui_application_run(app), -EIO);
+	EXPECT_EQ(morph_tui_application_run(app), NB_ERR_IO);
 	morph_tui_application_destroy(app);
 	app = nullptr;
 	EXPECT_EQ(root.closes, 1);
-	EXPECT_EQ(root.close_result, -EIO);
+	EXPECT_EQ(root.close_result, NB_ERR_IO);
 }
 
 TEST_F(TuiApplicationTest, CreateRejectsOccupiedApplicationOwner)
 {
 	auto *saved = app;
-	EXPECT_EQ(morph_tui_application_create(nullptr, &app), -EEXIST);
+	EXPECT_EQ(morph_tui_application_create(nullptr, &app), NB_ERR_EXISTS);
 	EXPECT_EQ(app, saved);
 	EXPECT_TRUE(morph_tui_application_is_owner(app));
 }
@@ -323,7 +382,7 @@ TEST_F(TuiApplicationTest, PresentTakesDescriptorOnlyAfterAcceptance)
 	controller.ops = &ops;
 	controller.data = &root;
 	controller.tick_ms = -1;
-	EXPECT_EQ(morph_tui_application_present_controller_take(app, &controller), -EINVAL);
+	EXPECT_EQ(morph_tui_application_present_controller_take(app, &controller), NB_ERR_INVAL);
 	EXPECT_EQ(controller.ops, &ops);
 	EXPECT_EQ(controller.data, &root);
 	EXPECT_EQ(root.closes, 0);
@@ -331,7 +390,7 @@ TEST_F(TuiApplicationTest, PresentTakesDescriptorOnlyAfterAcceptance)
 	ASSERT_EQ(morph_tui_application_present_controller_take(app, &controller), 0);
 	EXPECT_EQ(controller.ops, nullptr);
 	EXPECT_EQ(controller.data, nullptr);
-	EXPECT_EQ(morph_tui_application_present_controller_take(app, &controller), -EINVAL);
+	EXPECT_EQ(morph_tui_application_present_controller_take(app, &controller), NB_ERR_INVAL);
 	morph_tui_application_destroy(app);
 	app = nullptr;
 	EXPECT_EQ(root.closes, 1);
@@ -350,13 +409,13 @@ TEST_F(TuiApplicationTest, FailedTerminalEntryClosesMountedAndQueuedPagesOnce)
 	controller.input_mode = MORPH_TUI_INPUT_KEYS;
 	ASSERT_EQ(morph_tui_application_present_controller_take(app, &controller), 0);
 	ASSERT_EQ(present(queued), 0);
-	EXPECT_EQ(morph_tui_application_run(app), -ENOTTY);
+	EXPECT_EQ(morph_tui_application_run(app), NB_ERR_NOT_TERMINAL);
 	morph_tui_application_destroy(app);
 	app = nullptr;
 	EXPECT_EQ(root.closes, 1);
 	EXPECT_EQ(panel.closes, 1);
 	EXPECT_EQ(queued.closes, 1);
-	EXPECT_EQ(panel.close_result, -ENOTTY);
+	EXPECT_EQ(panel.close_result, NB_ERR_NOT_TERMINAL);
 }
 
 TEST_F(TuiApplicationTest, OutputFailureStopsTheApplication)
@@ -374,11 +433,11 @@ TEST_F(TuiApplicationTest, OutputFailureStopsTheApplication)
 	AppPage &root = page();
 	root.write_output = true;
 	ASSERT_EQ(present(root), 0);
-	EXPECT_EQ(morph_tui_application_run(app), -EIO);
+	EXPECT_EQ(morph_tui_application_run(app), NB_ERR_IO);
 	morph_tui_application_destroy(app);
 	app = nullptr;
 	EXPECT_EQ(root.closes, 1);
-	EXPECT_EQ(root.close_result, -EIO);
+	EXPECT_EQ(root.close_result, NB_ERR_IO);
 }
 
 TEST_F(TuiApplicationTest, RawPanelRestoresTerminalAndDoesNotReadAhead)
@@ -477,6 +536,6 @@ TEST_F(TuiApplicationTest, DestroyIsDeferredDuringCallbacksAndDirectStopKeepsIts
 	ASSERT_EQ(morph_tui_application_present_controller_take(app, &controller), 0);
 	ASSERT_EQ(morph_tui_application_post(app, 1), 0);
 	EXPECT_EQ(morph_tui_application_step(app, 0), 0);
-	morph_tui_application_stop(app, -EIO);
-	EXPECT_EQ(morph_tui_application_step(app, 0), -EIO);
+	morph_tui_application_stop(app, NB_ERR_IO);
+	EXPECT_EQ(morph_tui_application_step(app, 0), NB_ERR_IO);
 }

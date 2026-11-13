@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "database.h"
+#include "nb/err.h"
 #include "event/event.h"
 #include <stdint.h>
 
@@ -85,7 +86,7 @@ struct scheduled_task_event_sink {
 	void *user_data;
 };
 
-/* Owned outputs must be zero-initialized and empty; -EEXIST preserves them.
+/* Owned outputs must be zero-initialized and empty; NB_ERR_EXISTS preserves them.
  * A NULL optional create/update output discards its snapshot. Successful
  * snapshots own their JSON/body fields until the corresponding cleanup. */
 int scheduled_task_create(struct db *db,

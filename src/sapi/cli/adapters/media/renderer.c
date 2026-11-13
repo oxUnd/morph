@@ -1,13 +1,13 @@
 #include "sapi/cli/adapters/media/renderer.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/pages/chat.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "sapi/cli/presentation/presenter_state.h"
 #include "render/image.h"
 #include "render/video.h"
 #include "sapi/cli/application_internal.h"
-#include "util/image_util.h"
-#include "util/error.h"
+#include "media/image.h"
+#include "errors.h"
 #include "stb_image.h"
 #include <morph/tui/media.h>
 #include <errno.h>
@@ -24,27 +24,27 @@ static void cli_renderer_preview_cleanup(char **owner)
 {
 	if (*owner)
 		unlink(*owner);
-	morph_charp_cleanup(owner);
+	nb_charp_cleanup(owner);
 }
 
 int cli_renderer_media_asset_create_copy(const char *type, const char *path,
 	struct morph_tui_media_asset **out)
 {
 	if (!type || !path || !*path || !out || *out)
-		return -EINVAL;
-	char *preview MORPH_CLEANUP(cli_renderer_preview_cleanup) = NULL;
+		return NB_ERR_INVAL;
+	char *preview NB_CLEANUP(cli_renderer_preview_cleanup) = NULL;
 	if (!strcmp(type, "video")) {
 		int rc = video_preview_create_copy(path, &preview);
 		if (rc)
 			return rc;
 		path = preview;
 	} else if (strcmp(type, "image"))
-		return -ENOTSUP;
+		return NB_ERR_UNSUPPORTED;
 	int width = 0, height = 0, channels = 0;
-	unsigned char *pixels MORPH_CLEANUP(cli_renderer_pixels_cleanup) =
+	unsigned char *pixels NB_CLEANUP(cli_renderer_pixels_cleanup) =
 		image_load_bounded_copy(path, &width, &height, &channels, 4);
 	if (!pixels)
-		return MORPH_ERR_FORMAT;
+		return NB_ERR_FORMAT;
 	return morph_tui_media_asset_create_rgba_copy(out, pixels, width, height);
 }
 
@@ -61,9 +61,9 @@ void cli_renderer_media(const char *type, const char *path, void *user)
 	 * Artifact/observation events only announce paths and never call it.
 	 */
 	if (ctx && ctx->presenter && path && path[0]) {
-		if (morph_strmap_contains(&ctx->presenter->rendered_artifacts, path))
+		if (nb_map_has_cstr(ctx->presenter->rendered_artifacts, path))
 			return;
-		(void)morph_strmap_set_borrow(&ctx->presenter->rendered_artifacts, path, (void *)1);
+		(void)nb_map_put_cstr(ctx->presenter->rendered_artifacts, path, (void *)1, NULL);
 	}
 	if (strcmp(type, "image") == 0) {
 		image_render_terminal(ctx ? ctx->logger : NULL, path);

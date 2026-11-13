@@ -1,11 +1,12 @@
 #include <gtest/gtest.h>
+#include <stdlib.h>
 #include "agent/tokenizer.h"
 #include "agent/context.h"
-#include "util/bpe.h"
-#include "util/file.h"
-#include "util/base64.h"
-#include "util/utf8.h"
-#include "util/cleanup.h"
+#include "agent/bpe.h"
+#include "nb/file.h"
+#include "encoding_fixture.h"
+#include "nb/utf8.h"
+#include "nb/cleanup.h"
 #include <chrono>
 #include <climits>
 #include <filesystem>
@@ -316,7 +317,7 @@ TEST(BpeCountTest, IndexedMergeHeapMatchesTheLeftmostRankReference)
 	};
 	std::string serialized;
 	for (const auto &entry : vocabulary) {
-		char *encoded MORPH_CLEANUP(morph_charp_cleanup) = base64_encode_copy(
+		char *encoded NB_CLEANUP(nb_charp_cleanup) = test_encode_bytes(
 			reinterpret_cast<const unsigned char *>(entry.first.data()),
 			entry.first.size());
 		ASSERT_NE(encoded, nullptr);
@@ -325,7 +326,9 @@ TEST(BpeCountTest, IndexedMergeHeapMatchesTheLeftmostRankReference)
 	for (auto encoding : {BPE_CL100K_BASE, BPE_O200K_BASE}) {
 		std::string path = directory.path + (encoding == BPE_CL100K_BASE ?
 			"/cl100k_base.tiktoken" : "/o200k_base.tiktoken");
-		ASSERT_EQ(file_write_all(path.c_str(), serialized.data(), serialized.size()), 0);
+		ASSERT_EQ(
+			nb_file_write_all(path.c_str(), serialized.data(), serialized.size(), NULL),
+			0);
 		std::unique_ptr<struct bpe_encoder, decltype(&bpe_encoder_destroy)> encoder(
 			bpe_encoder_create(nullptr, encoding, directory.path.c_str()),
 			bpe_encoder_destroy);
@@ -392,7 +395,7 @@ TEST(BpeCountTest, VocabularyLoadsLongTokensUpToItsRepresentableBoundary)
 	ASSERT_EQ(prefix, 65535u);
 	std::string serialized;
 	for (const auto &entry : vocabulary) {
-		char *encoded MORPH_CLEANUP(morph_charp_cleanup) = base64_encode_copy(
+		char *encoded NB_CLEANUP(nb_charp_cleanup) = test_encode_bytes(
 			reinterpret_cast<const unsigned char *>(entry.first.data()),
 			entry.first.size());
 		ASSERT_NE(encoded, nullptr);
@@ -401,7 +404,9 @@ TEST(BpeCountTest, VocabularyLoadsLongTokensUpToItsRepresentableBoundary)
 	for (auto encoding : {BPE_CL100K_BASE, BPE_O200K_BASE}) {
 		std::string path = directory.path + (encoding == BPE_CL100K_BASE ?
 			"/cl100k_base.tiktoken" : "/o200k_base.tiktoken");
-		ASSERT_EQ(file_write_all(path.c_str(), serialized.data(), serialized.size()), 0);
+		ASSERT_EQ(
+			nb_file_write_all(path.c_str(), serialized.data(), serialized.size(), NULL),
+			0);
 		std::unique_ptr<struct bpe_encoder, decltype(&bpe_encoder_destroy)> encoder(
 			bpe_encoder_create(nullptr, encoding, directory.path.c_str()),
 			bpe_encoder_destroy);
@@ -424,14 +429,16 @@ TEST(BpeCountTest, VocabularyRejectsTokensBeyondItsRepresentableBoundary)
 		}
 	} directory = {temp};
 	std::string token(65536, 'x');
-	char *encoded MORPH_CLEANUP(morph_charp_cleanup) = base64_encode_copy(
+	char *encoded NB_CLEANUP(nb_charp_cleanup) = test_encode_bytes(
 		reinterpret_cast<const unsigned char *>(token.data()), token.size());
 	ASSERT_NE(encoded, nullptr);
 	std::string serialized = std::string(encoded) + " 0\n";
 	for (auto encoding : {BPE_CL100K_BASE, BPE_O200K_BASE}) {
 		std::string path = directory.path + (encoding == BPE_CL100K_BASE ?
 			"/cl100k_base.tiktoken" : "/o200k_base.tiktoken");
-		ASSERT_EQ(file_write_all(path.c_str(), serialized.data(), serialized.size()), 0);
+		ASSERT_EQ(
+			nb_file_write_all(path.c_str(), serialized.data(), serialized.size(), NULL),
+			0);
 		std::unique_ptr<struct bpe_encoder, decltype(&bpe_encoder_destroy)> encoder(
 			bpe_encoder_create(nullptr, encoding, directory.path.c_str()),
 			bpe_encoder_destroy);
@@ -471,14 +478,14 @@ TEST(BpeCountTest, UnicodeCategoriesDriveCaseAndDigitBoundaries)
 		for (size_t length = 2; length <= strlen(word); length++) {
 			if (!prefixes.insert(std::string(word, length)).second)
 				continue;
-			char *encoded = base64_encode_copy(
+			char *encoded = test_encode_bytes(
 				reinterpret_cast<const unsigned char *>(word), length);
 			ASSERT_NE(encoded, nullptr);
 			vocabulary += std::string(encoded) + " " + std::to_string(rank++) + "\n";
 			free(encoded);
 		}
 	}
-	ASSERT_EQ(file_write_all(path.c_str(), vocabulary.data(), vocabulary.size()), 0);
+	ASSERT_EQ(nb_file_write_all(path.c_str(), vocabulary.data(), vocabulary.size(), NULL), 0);
 	std::unique_ptr<struct bpe_encoder, decltype(&bpe_encoder_destroy)> encoder(
 		bpe_encoder_create(nullptr, BPE_O200K_BASE, directory.path.c_str()),
 		bpe_encoder_destroy);
@@ -502,7 +509,7 @@ TEST(TokenizerEstimateTest, UnicodePropertiesReplaceEmojiBlockGuesses)
 	for (const auto &example : cases) {
 		SCOPED_TRACE(example.cp);
 		char bytes[4];
-		size_t count = utf8_encode_codepoint(example.cp, bytes);
+		size_t count = nb_utf8_encode(example.cp, bytes);
 		ASSERT_GT(count, 0u);
 		std::string text(bytes, count);
 		EXPECT_EQ(tokenizer_estimate_tokens(text.c_str()), example.tokens);

@@ -1,17 +1,18 @@
 #include "agent/memory.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "agent/memory_internal.h"
 #include "agent/history_internal.h"
 #include "models/llm.h"
-#include "util/utf8.h"
-#include "util/json.h"
+#include "nb/utf8.h"
+#include "cJSON.h"
 #include "persistence/memory_job_store.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/log.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/log.h"
 #include "cJSON.h"
 #include <errno.h>
-#include <pthread.h>
+#include "nb/thread.h"
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,29 +54,29 @@ struct memory_job {
 };
 
 struct memory_worker {
-	struct morph_log *logger;
-	pthread_mutex_t lock;
-	pthread_cond_t cv;
+	struct nb_log *logger;
+	nb_mutex *lock;
+	nb_cond *cv;
 	struct memory_job *head;
 	struct memory_job *tail;
-	pthread_t thread;
+	nb_thread *thread;
 	int running;
 	int stop;
 	int active;
 };
 
-struct memory_worker *memory_worker_create(struct morph_log *logger)
+struct memory_worker *memory_worker_create(struct nb_log *logger)
 {
 	struct memory_worker *worker = calloc(1, sizeof(*worker));
 
 	if (!worker)
 		return NULL;
-	if (pthread_mutex_init(&worker->lock, NULL) != 0) {
+	if (((worker->lock = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM) != 0) {
 		free(worker);
 		return NULL;
 	}
-	if (pthread_cond_init(&worker->cv, NULL) != 0) {
-		pthread_mutex_destroy(&worker->lock);
+	if (((worker->cv = nb_cond_new()) ? NB_OK : NB_ERR_NOMEM) != 0) {
+		(nb_mutex_free(worker->lock), worker->lock = NULL);
 		free(worker);
 		return NULL;
 	}
@@ -88,8 +89,8 @@ void memory_worker_destroy(struct memory_worker *worker)
 	if (!worker)
 		return;
 	memory_async_shutdown(worker);
-	pthread_cond_destroy(&worker->cv);
-	pthread_mutex_destroy(&worker->lock);
+	(nb_cond_free(worker->cv), worker->cv = NULL);
+	(nb_mutex_free(worker->lock), worker->lock = NULL);
 	free(worker);
 }
 
@@ -125,8 +126,7 @@ static struct react_step *memory_steps_steal(struct react_step **owner)
 
 static struct react_step *memory_step_clone(const struct react_step *source)
 {
-	struct react_step *node MORPH_CLEANUP(memory_steps_cleanup) =
-		calloc(1, sizeof(*node));
+	struct react_step *node NB_CLEANUP(memory_steps_cleanup) = calloc(1, sizeof(*node));
 
 	if (!node)
 		return NULL;
@@ -166,12 +166,11 @@ static struct react_step *memory_step_clone(const struct react_step *source)
 
 static struct react_step *memory_steps_dup(const struct react_step *src)
 {
-	struct react_step *head MORPH_CLEANUP(memory_steps_cleanup) = NULL;
+	struct react_step *head NB_CLEANUP(memory_steps_cleanup) = NULL;
 	struct react_step *tail = NULL;
 
 	for (const struct react_step *cur = src; cur; cur = cur->next) {
-		struct react_step *node MORPH_CLEANUP(memory_steps_cleanup) =
-			memory_step_clone(cur);
+		struct react_step *node NB_CLEANUP(memory_steps_cleanup) = memory_step_clone(cur);
 
 		if (!node)
 			return NULL;
@@ -211,7 +210,7 @@ static int memory_job_record(struct db *db, struct memory_job *job)
 				   job->opts.learn_from_chats_enabled) ||
 	    !cJSON_AddBoolToObject(payload, "save_tasks", job->opts.save_tasks_enabled)) {
 		cJSON_Delete(payload);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	for (struct react_step *step = job->steps; step; step = step->next) {
 		cJSON *name;
@@ -222,13 +221,13 @@ static int memory_job_record(struct db *db, struct memory_job *job)
 		if (!name || !cJSON_AddItemToArray(tools, name)) {
 			cJSON_Delete(name);
 			cJSON_Delete(payload);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 	}
 	cJSON *saved_steps = cJSON_AddArrayToObject(payload, "steps");
 	if (!saved_steps) {
 		cJSON_Delete(payload);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	size_t count = 0;
 	size_t index = 0;
@@ -241,11 +240,11 @@ static int memory_job_record(struct db *db, struct memory_job *job)
 			continue;
 		if (++index + 12 < count)
 			continue;
-		cJSON *entry MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
-		char *content MORPH_CLEANUP(morph_charp_cleanup) =
-			utf8_dup_clamped(step->content ? step->content : "", 1024);
-		char *arguments MORPH_CLEANUP(morph_charp_cleanup) =
-			utf8_dup_clamped(step->tool_args ? step->tool_args : "", 1024);
+		cJSON *entry NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+		char *content NB_CLEANUP(nb_charp_cleanup) =
+			nb_utf8_ellipsize_bytes(step->content ? step->content : "", 1024);
+		char *arguments NB_CLEANUP(nb_charp_cleanup) =
+			nb_utf8_ellipsize_bytes(step->tool_args ? step->tool_args : "", 1024);
 
 		if (!entry || !content || !arguments ||
 		    !cJSON_AddNumberToObject(entry, "type", step->type) ||
@@ -254,19 +253,20 @@ static int memory_job_record(struct db *db, struct memory_job *job)
 					     step->tool_name ? step->tool_name : "") ||
 		    !cJSON_AddStringToObject(entry, "content", content) ||
 		    !cJSON_AddStringToObject(entry, "arguments", arguments) ||
-		    morph_json_array_take(saved_steps, &entry) != 0) {
+		    (cJSON_AddItemToArray(saved_steps, entry) ? (entry = NULL, NB_OK)
+							      : NB_ERR_NOMEM) != 0) {
 			cJSON_Delete(payload);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 	}
 	json = cJSON_PrintUnformatted(payload);
 	cJSON_Delete(payload);
 	if (!json)
-		return -ENOMEM;
-	char *safe MORPH_CLEANUP(morph_charp_cleanup) = history_redacted_json_create(NULL, json);
+		return NB_ERR_NOMEM;
+	char *safe NB_CLEANUP(nb_charp_cleanup) = history_redacted_json_create(NULL, json);
 	if (!safe) {
 		free(json);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	rc = memory_job_store_add(db, job->session_id, job->opts.memory_version, safe,
 				  &job->opts.background_job_id);
@@ -283,11 +283,11 @@ static void *memory_async_worker(void *arg)
 	for (;;) {
 		struct memory_job *job = NULL;
 
-		pthread_mutex_lock(&worker->lock);
+		nb_mutex_lock(worker->lock);
 		while (!worker->stop && !worker->head)
-			pthread_cond_wait(&worker->cv, &worker->lock);
+			nb_cond_wait(worker->cv, worker->lock);
 		if (worker->stop && !worker->head) {
-			pthread_mutex_unlock(&worker->lock);
+			nb_mutex_unlock(worker->lock);
 			break;
 		}
 		job = worker->head;
@@ -295,7 +295,7 @@ static void *memory_async_worker(void *arg)
 		if (!worker->head)
 			worker->tail = NULL;
 		worker->active = 1;
-		pthread_mutex_unlock(&worker->lock);
+		nb_mutex_unlock(worker->lock);
 
 		if (!job)
 			continue;
@@ -318,20 +318,22 @@ static void *memory_async_worker(void *arg)
 			} else if (claimed < 0) {
 				rc = claimed;
 			}
-			if (rc != 0 && rc != -ESTALE)
-				log_err(worker ? worker->logger : NULL,
-					"memory: background extraction failed: %s",
-					morph_strerror(rc));
+			if (rc != 0 && rc != NB_ERR_STALE)
+				nb_log_write(worker ? worker->logger : NULL, NB_LOG_ERROR,
+					     "memory: background extraction failed: %s",
+					     nb_err_str(morph_error_descriptions(),
+							MORPH_ERROR_COUNT, rc));
 			db_close(&worker_db);
 		} else {
-			log_dbg(worker ? worker->logger : NULL,
-				"memory: async worker failed to open db: %s", morph_strerror(rc));
+			nb_log_write(worker ? worker->logger : NULL, NB_LOG_DEBUG,
+				     "memory: async worker failed to open db: %s",
+				     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		}
 		memory_job_free(job);
 
-		pthread_mutex_lock(&worker->lock);
+		nb_mutex_lock(worker->lock);
 		worker->active = 0;
-		pthread_mutex_unlock(&worker->lock);
+		nb_mutex_unlock(worker->lock);
 	}
 	return NULL;
 }
@@ -340,16 +342,16 @@ static int memory_async_ensure_worker(struct memory_worker *worker)
 {
 	int rc = 0;
 
-	pthread_mutex_lock(&worker->lock);
+	nb_mutex_lock(worker->lock);
 	if (!worker->running) {
 		worker->stop = 0;
-		int err = pthread_create(&worker->thread, NULL, memory_async_worker, worker);
+		int err = nb_thread_create(&worker->thread, memory_async_worker, worker, NULL);
 		if (err != 0)
-			rc = -err;
+			rc = err;
 		else
 			worker->running = 1;
 	}
-	pthread_mutex_unlock(&worker->lock);
+	nb_mutex_unlock(worker->lock);
 	return rc;
 }
 
@@ -364,11 +366,11 @@ int memory_save_turn_async(struct db *db, int64_t session_id, const char *user_i
 		return 0;
 
 	if (!worker || !strcmp(db->path, ":memory:"))
-		return -ENOTSUP;
+		return NB_ERR_UNSUPPORTED;
 
 	job = calloc(1, sizeof(*job));
 	if (!job)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	job->db_path = strdup(db->path);
 	job->user_input = strdup(user_input);
 	if (assistant_output)
@@ -387,7 +389,7 @@ int memory_save_turn_async(struct db *db, int64_t session_id, const char *user_i
 	if (!job->db_path || !job->user_input || (assistant_output && !job->assistant_output) ||
 	    (steps && !job->steps)) {
 		memory_job_free(job);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 
 	{
@@ -404,40 +406,40 @@ int memory_save_turn_async(struct db *db, int64_t session_id, const char *user_i
 		return 0;
 	}
 
-	pthread_mutex_lock(&worker->lock);
+	nb_mutex_lock(worker->lock);
 	if (worker->tail)
 		worker->tail->next = job;
 	else
 		worker->head = job;
 	worker->tail = job;
-	pthread_cond_signal(&worker->cv);
-	pthread_mutex_unlock(&worker->lock);
+	nb_cond_signal(worker->cv);
+	nb_mutex_unlock(worker->lock);
 	return 0;
 }
 
 void memory_async_shutdown(struct memory_worker *worker)
 {
-	pthread_t th;
+	nb_thread *th;
 	int running;
 
 	if (!worker)
 		return;
-	pthread_mutex_lock(&worker->lock);
+	nb_mutex_lock(worker->lock);
 	running = worker->running;
 	if (running) {
 		worker->stop = 1;
 		th = worker->thread;
-		pthread_cond_broadcast(&worker->cv);
+		nb_cond_broadcast(worker->cv);
 	}
-	pthread_mutex_unlock(&worker->lock);
+	nb_mutex_unlock(worker->lock);
 
 	if (running)
-		pthread_join(th, NULL);
+		nb_thread_join_take(&th, NULL);
 
-	pthread_mutex_lock(&worker->lock);
+	nb_mutex_lock(worker->lock);
 	worker->running = 0;
 	worker->active = 0;
-	pthread_mutex_unlock(&worker->lock);
+	nb_mutex_unlock(worker->lock);
 }
 
 int memory_async_pending(struct memory_worker *worker)
@@ -446,9 +448,9 @@ int memory_async_pending(struct memory_worker *worker)
 
 	if (!worker)
 		return 0;
-	pthread_mutex_lock(&worker->lock);
+	nb_mutex_lock(worker->lock);
 	pending = worker->running && (worker->active || worker->head != NULL);
-	pthread_mutex_unlock(&worker->lock);
+	nb_mutex_unlock(worker->lock);
 	return pending;
 }
 
@@ -556,7 +558,7 @@ static struct memory_job *memory_job_restore(struct db *db, const struct memory_
 
 int memory_async_resume(struct db *db, const struct memory_options *opts)
 {
-	struct memory_job_records records MORPH_CLEANUP(memory_job_records_cleanup) = {0};
+	struct memory_job_records records NB_CLEANUP(memory_job_records_cleanup) = {0};
 	struct memory_job_record *record;
 	struct memory_worker *worker = opts ? opts->worker : NULL;
 	int rc;
@@ -567,7 +569,9 @@ int memory_async_resume(struct db *db, const struct memory_options *opts)
 	rc = memory_job_store_recoverable(db, &records);
 	if (rc)
 		return rc;
-	morph_array_foreach (record, &records.rows, struct memory_job_record) {
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&records.rows) &&
+			     (record = (struct memory_job_record *)nb_vec_at(&records.rows, _i_));
+	     _i_++) {
 		const char *state = record->state;
 		int64_t id = record->id;
 		struct memory_job *job;
@@ -591,7 +595,7 @@ int memory_async_resume(struct db *db, const struct memory_options *opts)
 		job = memory_job_restore(db, record);
 		if (!job) {
 			memory_job_records_cleanup(&records);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		job->opts.worker = worker;
 		job->opts.llm = opts->llm;
@@ -601,7 +605,7 @@ int memory_async_resume(struct db *db, const struct memory_options *opts)
 			memory_job_records_cleanup(&records);
 			return result;
 		}
-		pthread_mutex_lock(&worker->lock);
+		nb_mutex_lock(worker->lock);
 		{
 			int exists = 0;
 
@@ -621,10 +625,10 @@ int memory_async_resume(struct db *db, const struct memory_options *opts)
 				else
 					worker->head = job;
 				worker->tail = job;
-				pthread_cond_signal(&worker->cv);
+				nb_cond_signal(worker->cv);
 			}
 		}
-		pthread_mutex_unlock(&worker->lock);
+		nb_mutex_unlock(worker->lock);
 	}
 	memory_job_records_cleanup(&records);
 	return 0;
@@ -638,8 +642,8 @@ static void memory_refresh_statement_cleanup(sqlite3_stmt **statement)
 int memory_refresh_summaries_async(struct db *db, int64_t session_id,
 				   const struct memory_options *options)
 {
-	sqlite3_stmt *stmt MORPH_CLEANUP(memory_refresh_statement_cleanup) = NULL;
-	morph_array_t sessions MORPH_CLEANUP(morph_array_cleanup) = {0};
+	sqlite3_stmt *stmt NB_CLEANUP(memory_refresh_statement_cleanup) = NULL;
+	nb_vec sessions NB_CLEANUP(nb_vec_cleanup) = {0};
 	int step;
 
 	if (!options->enabled || !options->learn_from_chats_enabled || !options->worker ||
@@ -668,7 +672,8 @@ int memory_refresh_summaries_async(struct db *db, int64_t session_id,
 		    -1, &stmt, NULL) != SQLITE_OK)
 		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
-	int rc = morph_array_init(&sessions, 4, sizeof(session_id));
+	int rc = (nb_vec_init(&sessions, sizeof(session_id)),
+		  nb_vec_reserve(&sessions, 4) ? 0 : NB_ERR_NOMEM);
 
 	if (rc != 0)
 		return rc;
@@ -678,20 +683,20 @@ int memory_refresh_summaries_async(struct db *db, int64_t session_id,
 		if (options->visible_fn && !options->visible_fn(display, options->visible_user_id,
 								options->visible_user_data))
 			continue;
-		int64_t *saved = morph_array_push_borrow(&sessions);
+		int64_t *saved = nb_vec_push(&sessions);
 
 		if (!saved)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		*saved = sqlite3_column_int64(stmt, 0);
-		if (sessions.nelts >= 4)
+		if (sessions.len >= 4)
 			break;
 	}
 	if (step != SQLITE_ROW && step != SQLITE_DONE)
 		return MORPH_ERR_DB;
 	sqlite3_finalize(stmt);
 	stmt = NULL;
-	for (size_t i = 0; i < sessions.nelts; i++) {
-		int64_t target = *(int64_t *)morph_array_borrow(&sessions, i);
+	for (size_t i = 0; i < sessions.len; i++) {
+		int64_t target = *(int64_t *)nb_vec_at(&sessions, i);
 		struct memory_options refresh = *options;
 
 		refresh.organize_only = 1;
@@ -705,7 +710,7 @@ int memory_refresh_summaries_async(struct db *db, int64_t session_id,
 int memory_retry_updates(struct db *db, int64_t session_id, const struct memory_options *opts)
 {
 	if (!db || !db->handle || !opts || !opts->enabled || session_id <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int rc = memory_job_store_retry_session(db, session_id);
 
 	if (rc < 0)

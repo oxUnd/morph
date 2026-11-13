@@ -1,5 +1,6 @@
 /* artifacts.c — zero-copy output_dir artifact access */
 #define _GNU_SOURCE
+#include "nb/cleanup.h"
 #include "handlers.h"
 #include "sapi/fastcgi/storage/artifacts.h"
 #include "sapi/fastcgi/storage/sessions.h"
@@ -13,7 +14,7 @@
 #include <sys/stat.h>
 
 #include "cJSON.h"
-#include "util/file.h"
+#include "nb/file.h"
 
 __attribute__((weak)) const char *fcgi_artifact_output_dir_borrow(struct fcgi_bridge *bridge);
 
@@ -26,26 +27,14 @@ static const char *artifact_root(request_t *r)
 
 static int path_within_root(const char *root, const char *rel, char out_path[PATH_MAX])
 {
-	char joined[PATH_MAX];
-	char root_real[PATH_MAX];
-	char file_real[PATH_MAX];
-	size_t root_len;
-
+	nb_buf path NB_CLEANUP(nb_buf_destroy) = {0};
 	if (!root || !rel || rel[0] == '/' || strstr(rel, ".."))
 		return 0;
-	if (file_path_join(joined, sizeof(joined), root, rel) != 0)
+	if (nb_path_concat(&path, root, rel) != NB_OK ||
+	    nb_path_canonical(&path, nb_buf_cstr(&path), NULL) != NB_OK ||
+	    !nb_path_is_within(nb_buf_cstr(&path), root, false))
 		return 0;
-	if (!realpath(root, root_real))
-		return 0;
-	if (!realpath(joined, file_real))
-		return 0;
-	root_len = strlen(root_real);
-	if (strncmp(root_real, file_real, root_len) != 0)
-		return 0;
-	if (file_real[root_len] != '/' && file_real[root_len] != '\0')
-		return 0;
-	snprintf(out_path, PATH_MAX, "%s", file_real);
-	return 1;
+	return nb_str_copy_to(nb_buf_str(&path), out_path, PATH_MAX) == NB_OK;
 }
 
 static char *artifact_meta_json(const struct artifact_record *a)

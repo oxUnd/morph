@@ -1,9 +1,10 @@
 #include <morph/tui/widgets/text_field.h>
 #include <morph/tui/widgets/editor.h>
 #include <morph/tui/widgets/list.h>
-#include "util/error.h"
-#include "util/utf8.h"
-#include "util/cleanup.h"
+#include "errors.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
+#include "nb/cleanup.h"
 #include <morph/tui/widgets/text_view.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -13,7 +14,7 @@
 struct widget_text_field {
 	struct morph_tui_widget base;
 	struct morph_tui_widget_editor_state editor;
-	morph_buf_t display;
+	nb_buf display;
 	struct morph_tui_widget_text_layout lines;
 	char *prompt;
 	int multiline;
@@ -29,7 +30,7 @@ struct widget_text_field {
 static size_t widget_text_field_indent(const struct widget_text_field *field, size_t row)
 {
 	return field->prompt && (field->prompt_hanging_indent || !row)
-		       ? utf8_display_width(field->prompt)
+		       ? nb_utf8_width_cstr(field->prompt)
 		       : 0;
 }
 
@@ -43,27 +44,28 @@ static size_t widget_text_field_capacity(const struct widget_text_field *field, 
 static int widget_text_field_wrap(struct widget_text_field *field, int width)
 {
 	struct morph_tui_widget_text_layout *layout = &field->lines;
-	if (!layout->lines.elts) {
+	if (!((void *)layout->lines.data)) {
 		struct morph_tui_widget_text_line line;
-		int rc = morph_array_init(&layout->lines, 32, sizeof(line));
+		int rc = (nb_vec_init(&layout->lines, sizeof(line)),
+			  nb_vec_reserve(&layout->lines, 32) ? 0 : NB_ERR_NOMEM);
 		if (rc)
 			return rc;
 	}
-	morph_array_clear(&layout->lines);
-	const char *text = morph_buf_cstr_borrow(&field->editor.text);
+	nb_vec_clear(&layout->lines);
+	const char *text = nb_buf_cstr(&field->editor.text);
 	layout->text = text;
 	const char *start = text;
 	const char *newline = strchr(start, '\n');
 	while (*start) {
-		size_t capacity = widget_text_field_capacity(field, width, layout->lines.nelts);
-		const char *end = utf8_advance_display_width_borrow(start, capacity);
+		size_t capacity = widget_text_field_capacity(field, width, layout->lines.len);
+		const char *end = morph_terminal_advance_display_width_borrow(start, capacity);
 		if (newline && newline < end)
 			end = newline;
 		if (end == start && *start != '\n')
-			end = utf8_advance_codepoints_borrow(start, 1);
-		struct morph_tui_widget_text_line *line = morph_array_push_borrow(&layout->lines);
+			end = nb_utf8_advance(start, 1);
+		struct morph_tui_widget_text_line *line = nb_vec_push(&layout->lines);
 		if (!line)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		*line = (struct morph_tui_widget_text_line){(size_t)(start - text),
 							    (size_t)(end - start)};
 		if (*end == '\n') {
@@ -73,17 +75,16 @@ static int widget_text_field_wrap(struct widget_text_field *field, int width)
 			start = end;
 	}
 	int trailing = !field->editor.text.len || text[field->editor.text.len - 1] == '\n';
-	if (!trailing && layout->lines.nelts) {
-		size_t row = layout->lines.nelts - 1;
-		const struct morph_tui_widget_text_line *last =
-			morph_array_borrow(&layout->lines, row);
-		trailing = utf8_display_width(text + last->offset) >=
+	if (!trailing && layout->lines.len) {
+		size_t row = layout->lines.len - 1;
+		const struct morph_tui_widget_text_line *last = nb_vec_at(&layout->lines, row);
+		trailing = nb_utf8_width_cstr(text + last->offset) >=
 			   widget_text_field_capacity(field, width, row);
 	}
 	if (trailing) {
-		struct morph_tui_widget_text_line *line = morph_array_push_borrow(&layout->lines);
+		struct morph_tui_widget_text_line *line = nb_vec_push(&layout->lines);
 		if (!line)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		*line = (struct morph_tui_widget_text_line){field->editor.text.len, 0};
 	}
 	return 0;
@@ -96,9 +97,9 @@ static int widget_text_field_measure(struct morph_tui_view *view, int width,
 	int rc = field->multiline ? widget_text_field_wrap(field, width) : 0;
 	if (rc)
 		return rc;
-	size_t rows = field->multiline ? field->lines.lines.nelts : 1;
+	size_t rows = field->multiline ? field->lines.lines.len : 1;
 	if (rows > INT_MAX)
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	*size = (struct morph_tui_view_size){width, rows ? (int)rows : 1};
 	return 0;
 }
@@ -113,21 +114,21 @@ static int widget_text_field_draw_text(struct widget_text_field *field,
 	for (size_t i = 0; i < length;) {
 		unsigned cp = 0xfffdu;
 		size_t bytes = 1;
-		(void)utf8_decode_codepoint(text + i, length - i, &cp, &bytes);
+		(void)nb_utf8_read(text + i, length - i, &cp, &bytes);
 		struct morph_tui_text_style style = canvas->style;
 		style.attributes |= attributes;
-		int rc = field->decorate(field->decoration_data,
-			morph_buf_cstr_borrow(&field->editor.text), offset + i, &style);
+		int rc = field->decorate(field->decoration_data, nb_buf_cstr(&field->editor.text),
+					 offset + i, &style);
 		if (rc)
 			return rc;
 		if (!morph_tui_text_style_valid(style))
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		char glyph[5] = {0};
 		memcpy(glyph, text + i, bytes);
 		rc = morph_tui_canvas_text_styled(canvas, x, y, glyph, &style);
 		if (rc)
 			return rc;
-		int width = utf8_codepoint_width(cp);
+		int width = nb_utf8_width_cp(cp);
 		x += width < 0 ? 1 : width;
 		i += bytes;
 	}
@@ -142,22 +143,22 @@ static int widget_text_field_draw(struct morph_tui_view *view, struct morph_tui_
 		if (rc)
 			return rc;
 		size_t cursor_row = 0, cursor_column = 0;
-		for (size_t i = 0; i < field->lines.lines.nelts; i++) {
+		for (size_t i = 0; i < field->lines.lines.len; i++) {
 			const struct morph_tui_widget_text_line *line =
-				morph_array_borrow(&field->lines.lines, i);
+				nb_vec_at(&field->lines.lines, i);
 			if (field->editor.cursor >= line->offset) {
 				cursor_row = i;
 				size_t bytes = field->editor.cursor - line->offset;
 				if (bytes > line->length)
 					bytes = line->length;
-				morph_buf_reset(&field->display);
-				rc = morph_buf_append(&field->display,
-						      field->editor.text.data + line->offset,
-						      bytes);
+				nb_buf_clear(&field->display);
+				rc = (nb_buf_append(&field->display,
+						    field->editor.text.ptr + line->offset, bytes)
+					      ? 0
+					      : NB_ERR_NOMEM);
 				if (rc)
 					return rc;
-				cursor_column =
-					utf8_display_width(morph_buf_cstr_borrow(&field->display));
+				cursor_column = nb_utf8_width_cstr(nb_buf_cstr(&field->display));
 			}
 		}
 		if (cursor_column >= widget_text_field_capacity(field, canvas->width, cursor_row)) {
@@ -166,19 +167,21 @@ static int widget_text_field_draw(struct morph_tui_view *view, struct morph_tui_
 		}
 		size_t height = canvas->height > 0 ? (size_t)canvas->height : 1;
 		size_t first = cursor_row >= height ? cursor_row - height + 1 : 0;
-		for (size_t row = first;
-		     row < field->lines.lines.nelts && row - first < height; row++) {
+		for (size_t row = first; row < field->lines.lines.len && row - first < height;
+		     row++) {
 			const struct morph_tui_widget_text_line *line =
-				morph_array_borrow(&field->lines.lines, row);
-			morph_buf_reset(&field->display);
-			rc = morph_buf_append(&field->display,
-					      field->editor.text.data + line->offset, line->length);
+				nb_vec_at(&field->lines.lines, row);
+			nb_buf_clear(&field->display);
+			rc = (nb_buf_append(&field->display, field->editor.text.ptr + line->offset,
+					    line->length)
+				      ? 0
+				      : NB_ERR_NOMEM);
 			size_t indent = widget_text_field_indent(field, row);
 			int prefix = indent < (size_t)canvas->width ? (int)indent : canvas->width;
 			if (!rc)
-				rc = widget_text_field_draw_text(field, canvas, prefix,
-					(int)(row - first), morph_buf_cstr_borrow(&field->display),
-					line->offset, 0);
+				rc = widget_text_field_draw_text(
+					field, canvas, prefix, (int)(row - first),
+					nb_buf_cstr(&field->display), line->offset, 0);
 			if (rc)
 				return rc;
 		}
@@ -202,7 +205,7 @@ static int widget_text_field_draw(struct morph_tui_view *view, struct morph_tui_
 	unsigned style = morph_tui_view_focused(view) ? MORPH_TUI_STYLE_SELECTED : 0;
 	int rc = morph_tui_canvas_fill(canvas, style);
 
-	morph_buf_reset(&field->display);
+	nb_buf_clear(&field->display);
 	if (!rc)
 		rc = morph_tui_widget_editor_state_view(
 			&field->editor, &field->display,
@@ -210,15 +213,16 @@ static int widget_text_field_draw(struct morph_tui_view *view, struct morph_tui_
 	if (!rc) {
 		size_t offset = 0;
 		if (field->decorate && !field->editor.secret && canvas->width > 0) {
-			char *text = field->editor.text.data;
+			char *text = field->editor.text.ptr;
 			char saved = text[field->editor.cursor];
 			text[field->editor.cursor] = '\0';
-			offset = (size_t)(utf8_suffix_display_width_borrow(text,
-				(size_t)canvas->width - 1) - text);
+			offset = (size_t)(morph_terminal_suffix_display_width_borrow(
+						  text, (size_t)canvas->width - 1) -
+					  text);
 			text[field->editor.cursor] = saved;
 		}
-		rc = widget_text_field_draw_text(field, canvas, 0, 0,
-			morph_buf_cstr_borrow(&field->display), offset, style);
+		rc = widget_text_field_draw_text(field, canvas, 0, 0, nb_buf_cstr(&field->display),
+						 offset, style);
 	}
 	if (!rc && morph_tui_view_focused(view))
 		morph_tui_canvas_cursor(canvas, (int)cursor, 0);
@@ -235,14 +239,13 @@ static int widget_text_field_atomic(struct widget_text_field *field, int key, in
 	if (!field->resolve_atomic || field->editor.pasting || (!backward && !forward))
 		return 0;
 	size_t start = 0, end = 0;
-	int rc = field->resolve_atomic(field->atomic_data,
-		morph_buf_cstr_borrow(&field->editor.text), field->editor.cursor,
-		backward, &start, &end);
+	int rc = field->resolve_atomic(field->atomic_data, nb_buf_cstr(&field->editor.text),
+				       field->editor.cursor, backward, &start, &end);
 	if (rc <= 0)
 		return rc;
 	if (start >= end || end > field->editor.text.len || field->editor.cursor < start ||
 	    field->editor.cursor > end)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int erase = key == 127 || key == 8 || key == 23 || key == MORPH_TUI_KEY_DELETE || key == 4;
 	rc = erase ? morph_tui_widget_editor_state_replace_range_copy(&field->editor,
 								     start, end, "")
@@ -261,7 +264,8 @@ static int widget_text_field_event(struct morph_tui_view *view, const struct mor
 	if (field->completion && event->type == MORPH_TUI_EVENT_KEY &&
 	    !event->pasting && event->key == '\t') {
 		int rc = morph_tui_widget_emit(view, MORPH_TUI_WIDGET_ACTION_COMPLETE,
-			field->editor.cursor, morph_buf_cstr_borrow(&field->editor.text));
+					       field->editor.cursor,
+					       nb_buf_cstr(&field->editor.text));
 		return rc ? rc : 1;
 	}
 
@@ -309,7 +313,7 @@ static int widget_text_field_event(struct morph_tui_view *view, const struct mor
 				       result == MORPH_TUI_WIDGET_SUBMIT
 					       ? MORPH_TUI_WIDGET_ACTION_SUBMIT
 					       : MORPH_TUI_WIDGET_ACTION_CHANGED,
-				       0, morph_buf_cstr_borrow(&field->editor.text));
+				       0, nb_buf_cstr(&field->editor.text));
 
 	return rc ? rc : 1;
 }
@@ -319,7 +323,7 @@ static void widget_text_field_destroy(struct morph_tui_view *view)
 	struct widget_text_field *field = (struct widget_text_field *)view;
 
 	morph_tui_widget_editor_state_cleanup(&field->editor);
-	morph_buf_cleanup(&field->display);
+	nb_buf_cleanup(&field->display);
 	morph_tui_widget_text_layout_cleanup(&field->lines);
 	free(field->prompt);
 }
@@ -328,7 +332,7 @@ const char *morph_tui_widget_text_field_text_borrow(const struct morph_tui_view 
 {
 	if (!view || !view->ops || view->ops->draw != widget_text_field_draw)
 		return "";
-	return morph_buf_cstr_borrow(&((const struct widget_text_field *)view)->editor.text);
+	return nb_buf_cstr(&((const struct widget_text_field *)view)->editor.text);
 }
 
 size_t morph_tui_widget_text_field_cursor(const struct morph_tui_view *view)
@@ -341,9 +345,9 @@ size_t morph_tui_widget_text_field_cursor(const struct morph_tui_view *view)
 int morph_tui_widget_text_field_set_cursor(struct morph_tui_view *view, size_t offset)
 {
 	if (!view || !view->ops || view->ops->draw != widget_text_field_draw)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	int rc = morph_tui_widget_editor_state_set_cursor(
 		&((struct widget_text_field *)view)->editor, offset);
 	if (!rc)
@@ -355,15 +359,16 @@ int morph_tui_widget_text_field_replace_range_copy(struct morph_tui_view *view, 
 						 size_t end, const char *replacement)
 {
 	if (!view || !view->ops || view->ops->draw != widget_text_field_draw || !replacement)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct widget_text_field *field = (struct widget_text_field *)view;
-	char *safe MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(replacement,
-		strlen(replacement), field->multiline ? UTF8_TERMINAL_TEXT_MULTILINE :
-		UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		replacement, strlen(replacement),
+		field->multiline ? MORPH_TERMINAL_TEXT_MULTILINE : MORPH_TERMINAL_TEXT_SINGLE_LINE,
+		NULL);
 	if (!safe)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	int rc = morph_tui_widget_editor_state_replace_range_copy(&field->editor, start, end, safe);
 	if (!rc)
 		morph_tui_view_invalidate(view, field->multiline);
@@ -373,12 +378,12 @@ int morph_tui_widget_text_field_replace_range_copy(struct morph_tui_view *view, 
 int morph_tui_widget_text_field_set_text_copy(struct morph_tui_view *view, const char *text)
 {
 	if (!view || !view->ops || view->ops->draw != widget_text_field_draw)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct widget_text_field *field = (struct widget_text_field *)view;
-	struct morph_tui_widget_editor_state replacement
-		MORPH_CLEANUP(morph_tui_widget_editor_state_cleanup) = {0};
+	struct morph_tui_widget_editor_state replacement NB_CLEANUP(
+		morph_tui_widget_editor_state_cleanup) = {0};
 	int rc = morph_tui_widget_editor_state_init(&replacement, text, field->editor.limit,
 						    field->editor.secret);
 
@@ -392,9 +397,9 @@ int morph_tui_widget_text_field_set_text_copy(struct morph_tui_view *view, const
 int morph_tui_widget_text_field_set_multiline(struct morph_tui_view *view, int enabled)
 {
 	if (!view || !view->ops || view->ops->draw != widget_text_field_draw)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct widget_text_field *field = (struct widget_text_field *)view;
 	if (field->multiline == !!enabled)
 		return 0;
@@ -406,9 +411,9 @@ int morph_tui_widget_text_field_set_multiline(struct morph_tui_view *view, int e
 int morph_tui_widget_text_field_set_completion(struct morph_tui_view *view, int enabled)
 {
 	if (!view || !view->ops || view->ops->draw != widget_text_field_draw)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	((struct widget_text_field *)view)->completion = !!enabled;
 	return 0;
 }
@@ -416,9 +421,9 @@ int morph_tui_widget_text_field_set_completion(struct morph_tui_view *view, int 
 int morph_tui_widget_text_field_insert_text_copy(struct morph_tui_view *view, const char *text)
 {
 	if (!view || !view->ops || view->ops->draw != widget_text_field_draw || !text)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct widget_text_field *field = (struct widget_text_field *)view;
 	return morph_tui_widget_text_field_replace_range_copy(view, field->editor.cursor,
 		field->editor.cursor, text);
@@ -427,18 +432,18 @@ int morph_tui_widget_text_field_insert_text_copy(struct morph_tui_view *view, co
 int morph_tui_widget_text_field_set_prompt_copy(struct morph_tui_view *view, const char *prompt)
 {
 	if (!view || !view->ops || view->ops->draw != widget_text_field_draw || !prompt)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
-	char *copy MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
-		prompt, strlen(prompt), UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+		return NB_ERR_NOT_PERMITTED;
+	char *copy NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		prompt, strlen(prompt), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 	if (!copy)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	struct widget_text_field *field = (struct widget_text_field *)view;
 	if (field->prompt && !strcmp(field->prompt, copy))
 		return 0;
 	free(field->prompt);
-	field->prompt = morph_charp_steal(&copy);
+	field->prompt = nb_charp_steal(&copy);
 	morph_tui_view_invalidate(view, 1);
 	return 0;
 }
@@ -447,9 +452,9 @@ int morph_tui_widget_text_field_set_prompt_hanging_indent(struct morph_tui_view 
 							   int enabled)
 {
 	if (!view || !view->ops || view->ops->draw != widget_text_field_draw)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct widget_text_field *field = (struct widget_text_field *)view;
 	if (field->prompt_hanging_indent != !!enabled) {
 		field->prompt_hanging_indent = !!enabled;
@@ -463,9 +468,9 @@ int morph_tui_widget_text_field_set_prompt_style(struct morph_tui_view *view,
 {
 	if (!view || !view->ops || view->ops->draw != widget_text_field_draw ||
 	    !morph_tui_text_style_valid(style))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct widget_text_field *field = (struct widget_text_field *)view;
 	if (!morph_tui_text_style_equal(field->prompt_style, style)) {
 		field->prompt_style = style;
@@ -478,9 +483,9 @@ int morph_tui_widget_text_field_set_decoration_borrow(struct morph_tui_view *vie
 	int (*decorate)(void *, const char *, size_t, struct morph_tui_text_style *), void *data)
 {
 	if (!view || !view->ops || view->ops->draw != widget_text_field_draw)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct widget_text_field *field = (struct widget_text_field *)view;
 	if (field->decorate != decorate || field->decoration_data != data) {
 		field->decorate = decorate;
@@ -494,9 +499,9 @@ int morph_tui_widget_text_field_set_atomic_range_resolver_borrow(struct morph_tu
 	int (*resolve)(void *, const char *, size_t, int, size_t *, size_t *), void *data)
 {
 	if (!view || !view->ops || view->ops->draw != widget_text_field_draw)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct widget_text_field *field = (struct widget_text_field *)view;
 	field->resolve_atomic = resolve;
 	field->atomic_data = data;
@@ -523,7 +528,8 @@ struct morph_tui_view *morph_tui_widget_text_field_add_borrow(
 	int rc = morph_tui_widget_editor_state_init(&field->editor, text, limit, 0);
 
 	if (!rc)
-		rc = morph_buf_init(&field->display, 64);
+		rc = (nb_buf_init(&field->display),
+		      nb_buf_reserve(&field->display, 64) ? 0 : NB_ERR_NOMEM);
 	morph_tui_builder_fail(builder, rc);
 	morph_tui_view_set_focusable(&field->base.view, 1);
 	morph_tui_widget_set_tag(&field->base.view, tag);

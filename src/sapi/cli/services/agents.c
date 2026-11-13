@@ -1,4 +1,5 @@
 #include "sapi/cli/services/agents.h"
+#include "nb/err.h"
 #include "sapi/cli/models/agents.h"
 
 #include "sapi/cli/application.h"
@@ -14,7 +15,7 @@ int cli_agents_refresh(struct cli_application *ctx)
 	int rc;
 
 	if (!ctx || !ctx->runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = runtime_session_current_id(ctx->runtime, &session);
 	if (rc != 0)
 		return rc;
@@ -30,7 +31,7 @@ int cli_agents_list(struct cli_application *ctx, int64_t session, struct agent_i
 		    int *count)
 {
 	if (!ctx || !ctx->runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return runtime_agent_list(ctx->runtime, session, items, count);
 }
 
@@ -38,14 +39,14 @@ int cli_agents_activity(struct cli_application *ctx, int64_t session, struct age
 			int *count)
 {
 	if (!ctx || !ctx->runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return runtime_agent_activity(ctx->runtime, session, items, count);
 }
 
 int cli_agents_read(struct cli_application *ctx, const char *id, struct agent_info **out)
 {
 	if (!ctx || !ctx->runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return runtime_agent_read(ctx->runtime, id, out);
 }
 
@@ -53,28 +54,28 @@ int cli_agents_subscribe(struct cli_application *ctx, const char *id, char ***ev
 			 int *count, int64_t *sequence)
 {
 	if (!ctx || !ctx->runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return runtime_agent_subscribe(ctx->runtime, id, events, count, sequence);
 }
 
 int cli_agents_select(struct cli_application *ctx, const char *id)
 {
 	if (!ctx || !ctx->runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return runtime_agent_select(ctx->runtime, id);
 }
 
 int cli_agents_followup(struct cli_application *ctx, const char *id, const char *message)
 {
 	if (!ctx || !ctx->runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return runtime_agent_followup(ctx->runtime, id, message);
 }
 
 int cli_agents_interrupt(struct cli_application *ctx, const char *id)
 {
 	if (!ctx || !ctx->runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return runtime_agent_interrupt(ctx->runtime, id);
 }
 

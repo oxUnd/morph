@@ -5,8 +5,8 @@ extern "C" {
 #include "runtime/runtime_internal.h"
 #include "persistence/checkpoint_store.h"
 #include "skill/skill.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 }
 
 class RuntimeSkillCheckpointTest : public RuntimeFacadeTest
@@ -51,12 +51,12 @@ TEST_F(RuntimeSkillCheckpointTest, RewindReloadsSkillsAndSelectionAndColdRestore
 		  0);
 	ASSERT_EQ(runtime_skill_set_active(instance, "before", 0, nullptr), 0);
 	ASSERT_EQ(runtime_skill_set_active(instance, "after", 1, nullptr), 0);
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_checkpoint_restore(instance, checkpoint_id, RUNTIME_REWIND_CODE, &report),
 		  0);
 	ExpectActive("before", false);
 	ExpectActive("after", true);
-	morph_json_cleanup(&report);
+	cJSON_DeleteOwner(&report);
 	ASSERT_EQ(instance->context.active_skill_session_id, session_id);
 	ASSERT_EQ(runtime_checkpoint_restore(instance, checkpoint_id, RUNTIME_REWIND_CONVERSATION,
 					     &report),

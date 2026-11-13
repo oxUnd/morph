@@ -1,7 +1,7 @@
 #include "tokenizer.h"
 #include "agent/context.h"
-#include "util/bpe.h"
-#include "util/utf8.h"
+#include "agent/bpe.h"
+#include "nb/utf8.h"
 #include <stdlib.h>
 #include <stdint.h>
 #include <limits.h>
@@ -32,6 +32,60 @@
  * 1. Classify each Unicode character and compute a "token weight"
  * 2. Add overhead for BPE merging inefficiency on short words
  */
+
+static int utf8_is_cjk_cp(unsigned cp)
+{
+	if (cp >= 0x4E00 && cp <= 0x9FFF)
+		return 1;
+	if (cp >= 0x3400 && cp <= 0x4DBF)
+		return 1;
+	if (cp >= 0xF900 && cp <= 0xFAFF)
+		return 1;
+	if (cp >= 0x20000 && cp <= 0x2EBEF)
+		return 1;
+	if (cp >= 0x30000 && cp <= 0x3134F)
+		return 1;
+	if (cp >= 0x2E80 && cp <= 0x2EFF)
+		return 1;
+	if (cp >= 0x2F00 && cp <= 0x2FDF)
+		return 1;
+	if (cp >= 0x3100 && cp <= 0x312F)
+		return 1;
+	if (cp >= 0x3040 && cp <= 0x309F)
+		return 1;
+	if (cp >= 0x30A0 && cp <= 0x30FF)
+		return 1;
+	if (cp >= 0xAC00 && cp <= 0xD7AF)
+		return 1;
+	if (cp >= 0x1100 && cp <= 0x11FF)
+		return 1;
+	if (cp >= 0x3130 && cp <= 0x318F)
+		return 1;
+	if (cp >= 0xFF01 && cp <= 0xFFEF)
+		return 1;
+	return 0;
+}
+
+static int utf8_is_hiragana_cp(unsigned cp)
+{
+	return cp >= 0x3040 && cp <= 0x309F;
+}
+
+static int utf8_is_katakana_cp(unsigned cp)
+{
+	return cp >= 0x30A0 && cp <= 0x30FF;
+}
+
+static int utf8_is_hangul_cp(unsigned cp)
+{
+	return (cp >= 0xAC00 && cp <= 0xD7AF) || (cp >= 0x1100 && cp <= 0x11FF) ||
+	       (cp >= 0x3130 && cp <= 0x318F);
+}
+
+static int utf8_is_latin_extended_cp(unsigned cp)
+{
+	return (cp >= 0x00C0 && cp <= 0x024F) || (cp >= 0x1E00 && cp <= 0x1EFF);
+}
 
 /* Unicode code point classification */
 enum char_class {
@@ -69,8 +123,7 @@ static enum char_class classify_utf8(const unsigned char **p,
 	unsigned cp;
 	size_t cp_len;
 
-	if (!utf8_decode_codepoint((const char *)*p, (size_t)(end - *p),
-			 &cp, &cp_len)) {
+	if (!nb_utf8_read((const char *)*p, (size_t)(end - *p), &cp, &cp_len)) {
 		(*p)++;
 		return CHAR_OTHER;
 	}
@@ -87,7 +140,7 @@ static enum char_class classify_utf8(const unsigned char **p,
 		return CHAR_KATAKANA;
 	if (utf8_is_hangul_cp(cp))
 		return CHAR_HANGUL;
-	if (utf8_is_emoji_component_cp(cp))
+	if (nb_utf8_is_emoji_component_cp(cp))
 		return CHAR_EMOJI_OTHER;
 	if (utf8_is_latin_extended_cp(cp))
 		return CHAR_LATIN_EXTENDED;
@@ -227,8 +280,7 @@ int tokenizer_estimate_tokens(const char *text)
 	return tokens > INT_MAX ? INT_MAX : (int)tokens;
 }
 
-struct tokenizer *tokenizer_create(struct morph_log *logger, const char *model_name,
-				   int context_limit)
+struct tokenizer *tokenizer_create(struct nb_log *logger, const char *model_name, int context_limit)
 {
 	struct tokenizer *tok = calloc(1, sizeof(*tok));
 	if (!tok)

@@ -7,4 +7,4 @@ target_include_directories(morph-event PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 )
 
-target_link_libraries(morph-event PUBLIC morph-util)
+target_link_libraries(morph-event PUBLIC nbase::nbase morph-cjson)

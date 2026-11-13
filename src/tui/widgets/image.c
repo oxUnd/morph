@@ -1,5 +1,5 @@
 #include <morph/tui/widgets/image.h>
-#include "util/error.h"
+#include "errors.h"
 
 #include <limits.h>
 
@@ -31,7 +31,7 @@ static int widget_image_measure(struct morph_tui_view *view, int width,
 	int64_t rows = ((int64_t)pixels_high * columns + (int64_t)pixels_wide * 2 - 1) /
 		((int64_t)pixels_wide * 2);
 	if (rows > INT_MAX)
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	*size = (struct morph_tui_view_size){columns, rows > 0 ? (int)rows : 1};
 	return 0;
 }
@@ -58,9 +58,9 @@ int morph_tui_widget_image_set_asset_borrow(struct morph_tui_view *view,
 					   struct morph_tui_media_asset *asset)
 {
 	if (!view || view->ops != &widget_image_ops)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct widget_image *image = (struct widget_image *)view;
 	if (image->asset != asset) {
 		morph_tui_media_asset_retain(asset);

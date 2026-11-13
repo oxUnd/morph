@@ -36,7 +36,7 @@ its position by counting previously printed newlines.
 
 ## Status and editing
 
-Glyph values are defined once in `src/util/terminal_status.h`, with CLI aliases
+Glyph values are defined once in `src/tui/include/morph/tui/terminal/status.h`, with CLI aliases
 in `presentation/style.h`: pending `◯`, running `◉`, success `●`, failed `✖`,
 question `?`, cancelled `–`, warning `⚠`, and neutral information `◇`. Failures
 and questions use bold status colors. Historical calls without results stay

@@ -142,7 +142,7 @@ target_link_libraries(morph-cli PUBLIC PkgConfig::CLI_WEBP PRIVATE CURL::libcurl
 target_compile_definitions(morph-cli PUBLIC MORPH_VERSION="${PROJECT_VERSION}")
 target_link_libraries(morph-cli PUBLIC
 	morph-runtime
-	morph-util
+	nbase::nbase morph-cjson
 	morph-tui
 	morph-db
 	morph-agent
@@ -159,6 +159,8 @@ target_link_libraries(morph-cli PUBLIC
 	morph-ext
 	morph-mcp
 	morph-ipc
+	morph-app-data
+	morph-media
 	morph-sandbox
 	morph-event
 	morph-agent-ui

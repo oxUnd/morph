@@ -1,20 +1,10 @@
 #include "content_hash.h"
-#include "util/error.h"
+#include "errors.h"
 #include "blake3.h"
+#include "nb/encoding.h"
 
 #include <errno.h>
 #include <stdio.h>
-
-static void hash_to_hex(const unsigned char hash[BLAKE3_OUT_LEN], char out[MORPH_SYNC_HASH_LEN])
-{
-	static const char hex[] = "0123456789abcdef";
-
-	for (size_t i = 0; i < BLAKE3_OUT_LEN; i++) {
-		out[i * 2] = hex[hash[i] >> 4];
-		out[i * 2 + 1] = hex[hash[i] & 0x0f];
-	}
-	out[BLAKE3_OUT_LEN * 2] = '\0';
-}
 
 void sync_hash_bytes(const void *data, size_t len, char out[MORPH_SYNC_HASH_LEN])
 {
@@ -24,7 +14,7 @@ void sync_hash_bytes(const void *data, size_t len, char out[MORPH_SYNC_HASH_LEN]
 	blake3_hasher_init(&hasher);
 	blake3_hasher_update(&hasher, data, len);
 	blake3_hasher_finalize(&hasher, hash, sizeof(hash));
-	hash_to_hex(hash, out);
+	(void)nb_hex_encode_to(hash, sizeof(hash), false, out, MORPH_SYNC_HASH_LEN, NULL);
 }
 
 int sync_hash_file(const char *path, char out[MORPH_SYNC_HASH_LEN])
@@ -37,16 +27,16 @@ int sync_hash_file(const char *path, char out[MORPH_SYNC_HASH_LEN])
 
 	file = fopen(path, "rb");
 	if (!file)
-		return morph_error_from_errno(errno);
+		return nb_status_from_errno(errno, NULL);
 	blake3_hasher_init(&hasher);
 	while ((read_size = fread(buffer, 1, sizeof(buffer), file)) > 0)
 		blake3_hasher_update(&hasher, buffer, read_size);
 	if (ferror(file)) {
 		fclose(file);
-		return -EIO;
+		return NB_ERR_IO;
 	}
 	fclose(file);
 	blake3_hasher_finalize(&hasher, hash, sizeof(hash));
-	hash_to_hex(hash, out);
+	(void)nb_hex_encode_to(hash, sizeof(hash), false, out, MORPH_SYNC_HASH_LEN, NULL);
 	return 0;
 }

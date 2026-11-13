@@ -4,7 +4,8 @@
 #include "config/config.h"
 #include "cJSON.h"
 #include "sapi/cli/services/event_queue.h"
-#include "util/error.h"
+#include "errors.h"
+#include "nb/time.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -14,11 +15,9 @@
 
 int64_t cli_recap_now(void)
 {
-	struct timespec now;
+	int64_t now = nb_time_monotonic_ns();
 
-	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
-		return 0;
-	return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+	return now > 0 ? now / 1000000 : 0;
 }
 
 int cli_recap_due(const struct cli_recap_state *state, int64_t now)
@@ -102,7 +101,7 @@ static void cli_recap_failure(struct cli_application *ctx, int rc, int automatic
 		}
 		return;
 	}
-	if (rc == -ECANCELED)
+	if (rc == NB_ERR_CANCELLED)
 		return;
 	if (ctx->recap.renderer && ctx->recap.renderer->failed)
 		ctx->recap.renderer->failed(ctx, rc);
@@ -113,7 +112,7 @@ int cli_recap_start(struct cli_application *ctx, int automatic)
 	int rc;
 
 	if (ctx->turn_active)
-		rc = -EBUSY;
+		rc = NB_ERR_BUSY;
 	else
 		rc = runtime_recap_request(ctx->runtime, automatic, &ctx->recap.request);
 	if (rc != 0) {
@@ -229,7 +228,7 @@ void cli_recap_event(struct cli_application *ctx, const struct morph_event *even
 	if (automatic && !runtime_config_borrow(ctx->runtime)->general.auto_recap)
 		return;
 	if (rc < 0 || !summary || !summary[0]) {
-		ctx->recap.result_code = rc < 0 ? rc : MORPH_ERR_PROTOCOL;
+		ctx->recap.result_code = rc < 0 ? rc : NB_ERR_PROTOCOL;
 		if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON)
 			cli_recap_failure(ctx, ctx->recap.result_code, automatic);
 		return;

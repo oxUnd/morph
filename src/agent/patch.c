@@ -1,9 +1,10 @@
 #include "patch.h"
-#include "util/cleanup.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "nb/utf8.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -21,8 +22,8 @@
 
 struct patch_chunk {
 	char *context;
-	morph_array_t old_lines;
-	morph_array_t new_lines;
+	nb_vec old_lines;
+	nb_vec new_lines;
 	size_t line_number;
 	int end_of_file;
 };
@@ -32,7 +33,7 @@ struct patch_hunk {
 	char *path;
 	char *move_path;
 	char *add_content;
-	morph_array_t chunks;
+	nb_vec chunks;
 	int added;
 	int removed;
 };
@@ -142,34 +143,34 @@ static enum patch_header patch_header_kind(const char *line,
 	return PATCH_HEADER_NONE;
 }
 
-static int patch_string_array_init(morph_array_t *array)
+static int patch_string_array_init(nb_vec *array)
 {
 	memset(array, 0, sizeof(*array));
-	return morph_array_init(array, 4, sizeof(char *));
+	return (nb_vec_init(array, sizeof(char *)), nb_vec_reserve(array, 4) ? 0 : NB_ERR_NOMEM);
 }
 
-static void patch_string_array_cleanup(morph_array_t *array)
+static void patch_string_array_cleanup(nb_vec *array)
 {
 	char **value;
 
 	if (!array)
 		return;
-	morph_array_foreach(value, array, char *)
+	for (size_t _i_ = 0; _i_ < nb_vec_len(array) && (value = (char **)nb_vec_at(array, _i_));
+	     _i_++)
 		free(*value);
-	morph_array_cleanup(array);
+	nb_vec_cleanup(array);
 }
 
-static int patch_string_array_push(morph_array_t *array, const char *text,
-				   size_t len)
+static int patch_string_array_push(nb_vec *array, const char *text, size_t len)
 {
-	char **slot = morph_array_push_borrow(array);
+	char **slot = nb_vec_push(array);
 
 	if (!slot)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	*slot = strndup(text, len);
 	if (!*slot) {
-		array->nelts--;
-		return -ENOMEM;
+		array->len--;
+		return NB_ERR_NOMEM;
 	}
 	return 0;
 }
@@ -184,28 +185,29 @@ static void patch_chunk_cleanup(struct patch_chunk *chunk)
 	memset(chunk, 0, sizeof(*chunk));
 }
 
-static void patch_hunks_cleanup(morph_array_t *hunks)
+static void patch_hunks_cleanup(nb_vec *hunks)
 {
 	struct patch_hunk *hunk;
 
 	if (!hunks)
 		return;
-	morph_array_foreach(hunk, hunks, struct patch_hunk) {
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(hunks) && (hunk = (struct patch_hunk *)nb_vec_at(hunks, _i_));
+	     _i_++) {
 		free(hunk->path);
 		free(hunk->move_path);
 		free(hunk->add_content);
-		for (size_t chunk_index = 0;
-		     chunk_index < hunk->chunks.nelts; chunk_index++) {
-			struct patch_chunk *chunk = morph_array_borrow(&hunk->chunks, chunk_index);
+		for (size_t chunk_index = 0; chunk_index < hunk->chunks.len; chunk_index++) {
+			struct patch_chunk *chunk = nb_vec_at(&hunk->chunks, chunk_index);
 
 			patch_chunk_cleanup(chunk);
 		}
-		morph_array_cleanup(&hunk->chunks);
+		nb_vec_cleanup(&hunk->chunks);
 	}
-	morph_array_cleanup(hunks);
+	nb_vec_cleanup(hunks);
 }
 
-static int patch_split_lines(char *copy, morph_array_t *lines)
+static int patch_split_lines(char *copy, nb_vec *lines)
 {
 	char *start = copy;
 	char *cursor = copy;
@@ -215,9 +217,9 @@ static int patch_split_lines(char *copy, morph_array_t *lines)
 			char **slot;
 
 			*cursor = '\0';
-			slot = morph_array_push_borrow(lines);
+			slot = nb_vec_push(lines);
 			if (!slot)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			*slot = start;
 			cursor += 2;
 			start = cursor;
@@ -228,9 +230,9 @@ static int patch_split_lines(char *copy, morph_array_t *lines)
 			int done = *cursor == '\0';
 
 			*cursor = '\0';
-			slot = morph_array_push_borrow(lines);
+			slot = nb_vec_push(lines);
 			if (!slot)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			*slot = start;
 			if (done)
 				break;
@@ -241,15 +243,15 @@ static int patch_split_lines(char *copy, morph_array_t *lines)
 	return 0;
 }
 
-static int patch_append_add_line(morph_buf_t *content, const char *line)
+static int patch_append_add_line(nb_buf *content, const char *line)
 {
 	int rc;
 
 	if (line[0] != '+')
-		return -EINVAL;
-	rc = morph_buf_puts(content, line + 1);
+		return NB_ERR_INVAL;
+	rc = (nb_buf_append_cstr(content, line + 1) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_putc(content, '\n');
+		rc = (nb_buf_append_char(content, '\n') ? 0 : NB_ERR_NOMEM);
 	return rc;
 }
 
@@ -284,8 +286,8 @@ static int patch_parse_change_line(struct patch_hunk *hunk,
 	} else if (marker == ' ' || marker == '+' || marker == '-') {
 		text = line + 1;
 	} else {
-		return patch_error(error, error_size, -EINVAL,
-			"invalid hunk line %zu in %s", line_number, hunk->path);
+		return patch_error(error, error_size, NB_ERR_INVAL, "invalid hunk line %zu in %s",
+				   line_number, hunk->path);
 	}
 	if (marker != '+') {
 		rc = patch_string_array_push(&chunk->old_lines, text,
@@ -320,7 +322,7 @@ static int patch_parse_update(char **lines, size_t *index, size_t end,
 		if (header == PATCH_HEADER_MOVE) {
 			hunk->move_path = strndup(value, value_len);
 			if (!hunk->move_path)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			(*index)++;
 		}
 	}
@@ -333,12 +335,12 @@ static int patch_parse_update(char **lines, size_t *index, size_t end,
 		if (header == PATCH_HEADER_ADD || header == PATCH_HEADER_UPDATE ||
 		    header == PATCH_HEADER_DELETE || header == PATCH_HEADER_END)
 			break;
-		chunk = morph_array_push_borrow(&hunk->chunks);
+		chunk = nb_vec_push(&hunk->chunks);
 		if (!chunk)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		rc = patch_chunk_init(chunk);
 		if (rc != 0) {
-			hunk->chunks.nelts--;
+			hunk->chunks.len--;
 			return rc;
 		}
 		chunk->line_number = *index + 1;
@@ -348,12 +350,12 @@ static int patch_parse_update(char **lines, size_t *index, size_t end,
 		} else if (trimmed_len > 3 && memcmp(trimmed, "@@ ", 3) == 0) {
 			chunk->context = strndup(trimmed + 3, trimmed_len - 3);
 			if (!chunk->context)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			(*index)++;
-		} else if (hunk->chunks.nelts > 1) {
-			return patch_error(error, error_size, -EINVAL,
-				"expected @@ hunk header at line %zu in %s",
-				*index + 1, hunk->path);
+		} else if (hunk->chunks.len > 1) {
+			return patch_error(error, error_size, NB_ERR_INVAL,
+					   "expected @@ hunk header at line %zu in %s", *index + 1,
+					   hunk->path);
 		}
 		while (*index < end) {
 			patch_trim_view(lines[*index], &trimmed, &trimmed_len);
@@ -379,21 +381,20 @@ static int patch_parse_update(char **lines, size_t *index, size_t end,
 				return rc;
 			(*index)++;
 		}
-		if (chunk->old_lines.nelts == 0 && chunk->new_lines.nelts == 0)
-			return patch_error(error, error_size, -EINVAL,
-				"empty update hunk at line %zu in %s", *index + 1,
-				hunk->path);
+		if (chunk->old_lines.len == 0 && chunk->new_lines.len == 0)
+			return patch_error(error, error_size, NB_ERR_INVAL,
+					   "empty update hunk at line %zu in %s", *index + 1,
+					   hunk->path);
 	}
-	if (hunk->chunks.nelts == 0)
-		return patch_error(error, error_size, -EINVAL,
-			"update file hunk for path '%s' is empty", hunk->path);
+	if (hunk->chunks.len == 0)
+		return patch_error(error, error_size, NB_ERR_INVAL,
+				   "update file hunk for path '%s' is empty", hunk->path);
 	return 0;
 }
 
-static int patch_parse(char *copy, morph_array_t *hunks, char *error,
-		       size_t error_size)
+static int patch_parse(char *copy, nb_vec *hunks, char *error, size_t error_size)
 {
-	morph_array_t lines;
+	nb_vec lines;
 	char **line;
 	size_t first = 0;
 	size_t end;
@@ -401,16 +402,16 @@ static int patch_parse(char *copy, morph_array_t *hunks, char *error,
 	int rc;
 
 	memset(&lines, 0, sizeof(lines));
-	rc = morph_array_init(&lines, 64, sizeof(char *));
+	rc = (nb_vec_init(&lines, sizeof(char *)), nb_vec_reserve(&lines, 64) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	rc = patch_split_lines(copy, &lines);
 	if (rc != 0) {
-		morph_array_cleanup(&lines);
+		nb_vec_cleanup(&lines);
 		return rc;
 	}
-	line = lines.elts;
-	end = lines.nelts;
+	line = ((void *)lines.data);
+	end = lines.len;
 	while (first < end && patch_view_equal(line[first], ""))
 		first++;
 	while (end > first && patch_view_equal(line[end - 1], ""))
@@ -425,15 +426,15 @@ static int patch_parse(char *copy, morph_array_t *hunks, char *error,
 	}
 	if (first >= end ||
 	    patch_header_kind(line[first], NULL, NULL) != PATCH_HEADER_BEGIN) {
-		rc = patch_error(error, error_size, -EINVAL,
-			"patch must start with *** Begin Patch");
-		morph_array_cleanup(&lines);
+		rc = patch_error(error, error_size, NB_ERR_INVAL,
+				 "patch must start with *** Begin Patch");
+		nb_vec_cleanup(&lines);
 		return rc;
 	}
 	if (patch_header_kind(line[end - 1], NULL, NULL) != PATCH_HEADER_END) {
-		rc = patch_error(error, error_size, -EINVAL,
-			"patch must end with *** End Patch");
-		morph_array_cleanup(&lines);
+		rc = patch_error(error, error_size, NB_ERR_INVAL,
+				 "patch must end with *** End Patch");
+		nb_vec_cleanup(&lines);
 		return rc;
 	}
 	index = first + 1;
@@ -449,14 +450,14 @@ static int patch_parse(char *copy, morph_array_t *hunks, char *error,
 
 		if (header != PATCH_HEADER_ADD && header != PATCH_HEADER_UPDATE &&
 		    header != PATCH_HEADER_DELETE) {
-			rc = patch_error(error, error_size, -EINVAL,
-				"invalid patch hunk on line %zu: %s", index + 1,
-				line[index]);
+			rc = patch_error(error, error_size, NB_ERR_INVAL,
+					 "invalid patch hunk on line %zu: %s", index + 1,
+					 line[index]);
 			break;
 		}
-		hunk = morph_array_push_borrow(hunks);
+		hunk = nb_vec_push(hunks);
 		if (!hunk) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			break;
 		}
 		memset(hunk, 0, sizeof(*hunk));
@@ -465,29 +466,30 @@ static int patch_parse(char *copy, morph_array_t *hunks, char *error,
 			PATCH_ACTION_DELETE;
 		hunk->path = strndup(value, value_len);
 		if (!hunk->path) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			break;
 		}
-		rc = morph_array_init(&hunk->chunks, 2,
-			sizeof(struct patch_chunk));
+		rc = (nb_vec_init(&hunk->chunks, sizeof(struct patch_chunk)),
+		      nb_vec_reserve(&hunk->chunks, 2) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			break;
 		index++;
 		if (hunk->action == PATCH_ACTION_ADD) {
-			morph_buf_t content MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			nb_buf content NB_CLEANUP(nb_buf_cleanup) = {0};
 
-			rc = morph_buf_init(&content, 128);
+			rc = (nb_buf_init(&content),
+			      nb_buf_reserve(&content, 128) ? 0 : NB_ERR_NOMEM);
 			if (rc != 0)
 				break;
 			while (index < end - 1 &&
 			       patch_header_kind(line[index], NULL, NULL) ==
 			       PATCH_HEADER_NONE) {
 				rc = patch_append_add_line(&content, line[index]);
-				if (rc == -EINVAL) {
-					rc = patch_error(error, error_size, -EINVAL,
-						"invalid add-file line %zu in %s: "
-						"content lines must start with '+'",
-						index + 1, hunk->path);
+				if (rc == NB_ERR_INVAL) {
+					rc = patch_error(error, error_size, NB_ERR_INVAL,
+							 "invalid add-file line %zu in %s: "
+							 "content lines must start with '+'",
+							 index + 1, hunk->path);
 					break;
 				}
 				if (rc != 0)
@@ -496,11 +498,13 @@ static int patch_parse(char *copy, morph_array_t *hunks, char *error,
 				index++;
 			}
 			if (rc == 0 && hunk->added == 0)
-				rc = patch_error(error, error_size, -EINVAL,
-					"add file has no content lines: %s", hunk->path);
+				rc = patch_error(error, error_size, NB_ERR_INVAL,
+						 "add file has no content lines: %s", hunk->path);
 			if (rc == 0)
-				hunk->add_content = morph_buf_detach(&content);
-			morph_buf_cleanup(&content);
+				hunk->add_content =
+					(nb_buf_ok(&content) ? strdup(nb_buf_cstr(&content))
+							     : NULL);
+			nb_buf_cleanup(&content);
 		} else if (hunk->action == PATCH_ACTION_UPDATE) {
 			rc = patch_parse_update(line, &index, end - 1, hunk,
 				error, error_size);
@@ -508,10 +512,9 @@ static int patch_parse(char *copy, morph_array_t *hunks, char *error,
 		if (rc != 0)
 			break;
 	}
-	if (rc == 0 && hunks->nelts == 0)
-		rc = patch_error(error, error_size, -EINVAL,
-			"No files were modified.");
-	morph_array_cleanup(&lines);
+	if (rc == 0 && hunks->len == 0)
+		rc = patch_error(error, error_size, NB_ERR_INVAL, "No files were modified.");
+	nb_vec_cleanup(&lines);
 	return rc;
 }
 
@@ -519,7 +522,7 @@ static int patch_path_valid(const char *path)
 {
 	const char *part;
 
-	if (!path || !*path || file_path_is_absolute(path))
+	if (!path || !*path || nb_path_is_absolute(path))
 		return 0;
 	part = path;
 	while (*part) {
@@ -545,7 +548,7 @@ static int patch_reject_symlink_components(const char *root, const char *path,
 	struct stat st;
 
 	if (strlen(root) >= sizeof(current))
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	strncpy(current, root, sizeof(current) - 1);
 	current[sizeof(current) - 1] = '\0';
 	while (*part) {
@@ -554,13 +557,13 @@ static int patch_reject_symlink_components(const char *root, const char *path,
 		size_t used = strlen(current);
 
 		if (used + len + 2 > sizeof(current))
-			return -ENAMETOOLONG;
+			return NB_ERR_NAME_TOO_LONG;
 		current[used++] = '/';
 		memcpy(current + used, part, len);
 		current[used + len] = '\0';
 		if (lstat(current, &st) == 0 && S_ISLNK(st.st_mode))
-			return patch_error(error, error_size, -ELOOP,
-				"symbolic-link targets are not supported: %s", path);
+			return patch_error(error, error_size, NB_ERR_LOOP,
+					   "symbolic-link targets are not supported: %s", path);
 		if (!slash)
 			break;
 		part = slash + 1;
@@ -572,15 +575,22 @@ static int patch_resolve_target(const char *root, const char *path,
 				char *resolved, size_t resolved_size,
 				char *error, size_t error_size)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_1 = NB_OK;
+
 	int rc;
 
 	if (!patch_path_valid(path))
-		return patch_error(error, error_size, -EINVAL,
-			"invalid relative path: %s", path ? path : "(null)");
+		return patch_error(error, error_size, NB_ERR_INVAL, "invalid relative path: %s",
+				   path ? path : "(null)");
 	rc = patch_reject_symlink_components(root, path, error, error_size);
 	if (rc != 0)
 		return rc;
-	rc = file_path_join(resolved, resolved_size, root, path);
+	rc = ((file_status_1 = nb_path_concat(&file_value_1, root, path)) != NB_OK ? file_status_1
+	      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), resolved,
+						resolved_size)) == NB_ERR_RANGE
+		      ? NB_ERR_NAME_TOO_LONG
+		      : file_status_1);
 	if (rc != 0)
 		return rc;
 	return 0;
@@ -592,14 +602,14 @@ static int patch_parent_ensure(const char *path)
 	char *slash;
 
 	if (strlen(path) >= sizeof(parent))
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	strncpy(parent, path, sizeof(parent) - 1);
 	parent[sizeof(parent) - 1] = '\0';
 	slash = strrchr(parent, '/');
 	if (!slash)
 		return 0;
 	*slash = '\0';
-	return file_ensure_dir(parent);
+	return nb_file_mkdir(parent, true, NULL);
 }
 
 static void patch_line_trim(const char **text, size_t *len, int leading)
@@ -615,16 +625,17 @@ static void patch_line_trim(const char **text, size_t *len, int leading)
 	}
 }
 
-static int patch_normalize_line(const char *text, morph_buf_t *normalized)
+static int patch_normalize_line(const char *text, nb_buf *normalized)
 {
-	const utf8_int8_t *cursor = (const utf8_int8_t *)text;
-	int rc = morph_buf_init(normalized, strlen(text) + 1);
+	const char *cursor = (const char *)text;
+	int rc = (nb_buf_init(normalized),
+		  nb_buf_reserve(normalized, strlen(text) + 1) ? 0 : NB_ERR_NOMEM);
 
 	if (rc != 0)
 		return rc;
 	while (*cursor) {
-		utf8_int32_t codepoint;
-		const utf8_int8_t *next = utf8codepoint(cursor, &codepoint);
+		int32_t codepoint;
+		const char *next = nb_utf8_next_cstr(cursor, &codepoint);
 		char replacement = '\0';
 
 		switch (codepoint) {
@@ -648,12 +659,13 @@ static int patch_normalize_line(const char *text, morph_buf_t *normalized)
 			break;
 		}
 		if (replacement)
-			rc = morph_buf_putc(normalized, replacement);
+			rc = (nb_buf_append_char(normalized, replacement) ? 0 : NB_ERR_NOMEM);
 		else
-			rc = morph_buf_append(normalized, cursor,
-				(size_t)(next - cursor));
+			rc = (nb_buf_append(normalized, cursor, (size_t)(next - cursor))
+				      ? 0
+				      : NB_ERR_NOMEM);
 		if (rc != 0) {
-			morph_buf_cleanup(normalized);
+			nb_buf_cleanup(normalized);
 			return rc;
 		}
 		cursor = next;
@@ -677,8 +689,8 @@ static int patch_lines_equal(const char *left, const char *right, int mode)
 			memcmp(left_text, right_text, left_len) == 0;
 	}
 	{
-		morph_buf_t left_normalized MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		morph_buf_t right_normalized MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf left_normalized NB_CLEANUP(nb_buf_cleanup) = {0};
+		nb_buf right_normalized NB_CLEANUP(nb_buf_cleanup) = {0};
 		int equal;
 		int normalize_rc;
 
@@ -698,44 +710,42 @@ static int patch_lines_equal(const char *left, const char *right, int mode)
 			normalize_rc = patch_normalize_line(right_copy,
 				&right_normalized);
 		if (normalize_rc != 0) {
-			morph_buf_cleanup(&left_normalized);
-			morph_buf_cleanup(&right_normalized);
+			nb_buf_cleanup(&left_normalized);
+			nb_buf_cleanup(&right_normalized);
 			free(left_copy);
 			free(right_copy);
 			return 0;
 		}
-		equal = strcmp(morph_buf_cstr_borrow(&left_normalized),
-			       morph_buf_cstr_borrow(&right_normalized)) == 0;
-		morph_buf_cleanup(&left_normalized);
-		morph_buf_cleanup(&right_normalized);
+		equal = strcmp(nb_buf_cstr(&left_normalized), nb_buf_cstr(&right_normalized)) == 0;
+		nb_buf_cleanup(&left_normalized);
+		nb_buf_cleanup(&right_normalized);
 		free(left_copy);
 		free(right_copy);
 		return equal;
 	}
 }
 
-static int patch_seek_sequence(morph_array_t *lines, morph_array_t *pattern,
-			       size_t start, int end_of_file, size_t *found)
+static int patch_seek_sequence(nb_vec *lines, nb_vec *pattern, size_t start, int end_of_file,
+			       size_t *found)
 {
-	char **source = lines->elts;
-	char **wanted = pattern->elts;
+	char **source = ((void *)lines->data);
+	char **wanted = ((void *)pattern->data);
 	size_t search_start;
 
-	if (pattern->nelts == 0) {
+	if (pattern->len == 0) {
 		*found = start;
 		return 1;
 	}
-	if (pattern->nelts > lines->nelts)
+	if (pattern->len > lines->len)
 		return 0;
-	search_start = end_of_file ? lines->nelts - pattern->nelts : start;
-	if (search_start > lines->nelts - pattern->nelts)
+	search_start = end_of_file ? lines->len - pattern->len : start;
+	if (search_start > lines->len - pattern->len)
 		return 0;
 	for (int mode = 0; mode < 4; mode++) {
-		for (size_t i = search_start;
-		     i <= lines->nelts - pattern->nelts; i++) {
+		for (size_t i = search_start; i <= lines->len - pattern->len; i++) {
 			int matches = 1;
 
-			for (size_t j = 0; j < pattern->nelts; j++) {
+			for (size_t j = 0; j < pattern->len; j++) {
 				if (!patch_lines_equal(source[i + j], wanted[j], mode)) {
 					matches = 0;
 					break;
@@ -750,7 +760,7 @@ static int patch_seek_sequence(morph_array_t *lines, morph_array_t *pattern,
 	return 0;
 }
 
-static int patch_content_lines(const char *content, morph_array_t *lines)
+static int patch_content_lines(const char *content, nb_vec *lines)
 {
 	const char *start = content;
 	const char *cursor = content;
@@ -778,44 +788,45 @@ static int patch_content_lines(const char *content, morph_array_t *lines)
 	return 0;
 }
 
-static int patch_compute_replacements(morph_array_t *source,
-				      struct patch_hunk *hunk,
-				      morph_array_t *replacements,
+static int patch_compute_replacements(nb_vec *source, struct patch_hunk *hunk, nb_vec *replacements,
 				      char *error, size_t error_size)
 {
 	size_t cursor = 0;
 	struct patch_chunk *chunk;
 
-	morph_array_foreach(chunk, &hunk->chunks, struct patch_chunk) {
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&hunk->chunks) &&
+			     (chunk = (struct patch_chunk *)nb_vec_at(&hunk->chunks, _i_));
+	     _i_++) {
 		struct patch_replacement *replacement;
 		size_t found;
 		size_t chunk_cursor = cursor;
-		morph_array_t *old_lines = &chunk->old_lines;
-		size_t old_count = old_lines->nelts;
-		size_t new_count = chunk->new_lines.nelts;
+		nb_vec *old_lines = &chunk->old_lines;
+		size_t old_count = old_lines->len;
+		size_t new_count = chunk->new_lines.len;
 		int matched;
 
 		if (chunk->context) {
-			morph_array_t context;
+			nb_vec context;
 			char *context_value = chunk->context;
 
 			memset(&context, 0, sizeof(context));
-			if (morph_array_init(&context, 1, sizeof(char *)) != 0)
-				return -ENOMEM;
-			char **slot = morph_array_push_borrow(&context);
+			if ((nb_vec_init(&context, sizeof(char *)),
+			     nb_vec_reserve(&context, 1) ? 0 : NB_ERR_NOMEM) != 0)
+				return NB_ERR_NOMEM;
+			char **slot = nb_vec_push(&context);
 			if (!slot) {
-				morph_array_cleanup(&context);
-				return -ENOMEM;
+				nb_vec_cleanup(&context);
+				return NB_ERR_NOMEM;
 			}
 			*slot = context_value;
 			matched = patch_seek_sequence(source, &context, cursor, 0,
 				&found);
-			morph_array_cleanup(&context);
+			nb_vec_cleanup(&context);
 			if (matched)
 				cursor = found + 1;
 		}
 		if (old_count == 0) {
-			found = source->nelts;
+			found = source->len;
 		} else {
 			matched = patch_seek_sequence(source, old_lines, cursor,
 				chunk->end_of_file, &found);
@@ -823,11 +834,12 @@ static int patch_compute_replacements(morph_array_t *source,
 				matched = patch_seek_sequence(source, old_lines,
 					chunk_cursor, chunk->end_of_file, &found);
 			if (!matched && old_count > 0 &&
-			    ((char **)old_lines->elts)[old_count - 1][0] == '\0') {
-				old_lines->nelts--;
+			    ((char **)((void *)old_lines->data))[old_count - 1][0] == '\0') {
+				old_lines->len--;
 				old_count--;
 				if (new_count > 0 &&
-				    ((char **)chunk->new_lines.elts)[new_count - 1][0] == '\0')
+				    ((char **)((void *)chunk->new_lines.data))[new_count - 1][0] ==
+					    '\0')
 					new_count--;
 				matched = patch_seek_sequence(source, old_lines, cursor,
 					chunk->end_of_file, &found);
@@ -835,22 +847,22 @@ static int patch_compute_replacements(morph_array_t *source,
 					matched = patch_seek_sequence(source, old_lines,
 						chunk_cursor, chunk->end_of_file,
 						&found);
-				old_lines->nelts++;
+				old_lines->len++;
 			}
 			if (!matched)
-				return patch_error(error, error_size, -EINVAL,
-					"failed to find expected lines from patch "
-					"line %zu in %s", chunk->line_number,
-					hunk->path);
+				return patch_error(error, error_size, NB_ERR_INVAL,
+						   "failed to find expected lines from patch "
+						   "line %zu in %s",
+						   chunk->line_number, hunk->path);
 			cursor = found + old_count;
 		}
-		replacement = morph_array_push_borrow(replacements);
+		replacement = nb_vec_push(replacements);
 		if (!replacement)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		*replacement = (struct patch_replacement){
 			.start = found,
 			.old_count = old_count,
-			.order = replacements->nelts - 1,
+			.order = replacements->len - 1,
 			.chunk = chunk,
 			.new_count = new_count,
 		};
@@ -879,9 +891,9 @@ static int patch_build_updated_content(const char *original,
 				       char **updated, char *error,
 				       size_t error_size)
 {
-	morph_array_t source;
-	morph_array_t replacements;
-	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_vec source;
+	nb_vec replacements;
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
 	size_t source_index = 0;
 	int rc;
 
@@ -890,8 +902,8 @@ static int patch_build_updated_content(const char *original,
 	rc = patch_content_lines(original, &source);
 	if (rc != 0)
 		return rc;
-	rc = morph_array_init(&replacements, hunk->chunks.nelts,
-		sizeof(struct patch_replacement));
+	rc = (nb_vec_init(&replacements, sizeof(struct patch_replacement)),
+	      nb_vec_reserve(&replacements, hunk->chunks.len) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
 		patch_string_array_cleanup(&source);
 		return rc;
@@ -899,25 +911,28 @@ static int patch_build_updated_content(const char *original,
 	rc = patch_compute_replacements(&source, hunk, &replacements, error,
 		error_size);
 	if (rc != 0) {
-		morph_array_cleanup(&replacements);
+		nb_vec_cleanup(&replacements);
 		patch_string_array_cleanup(&source);
 		return rc;
 	}
-	qsort(replacements.elts, replacements.nelts,
-		sizeof(struct patch_replacement), patch_replacement_compare);
-	rc = morph_buf_init(&output, strlen(original) + 128);
+	qsort(((void *)replacements.data), replacements.len, sizeof(struct patch_replacement),
+	      patch_replacement_compare);
+	rc = (nb_buf_init(&output),
+	      nb_buf_reserve(&output, strlen(original) + 128) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
-		morph_array_cleanup(&replacements);
+		nb_vec_cleanup(&replacements);
 		patch_string_array_cleanup(&source);
 		return rc;
 	}
-	for (size_t i = 0; i < replacements.nelts; i++) {
-		struct patch_replacement *replacement = morph_array_borrow(&replacements, i);
-		char **source_lines = source.elts;
-		char **new_lines = replacement->chunk->new_lines.elts;
+	for (size_t i = 0; i < replacements.len; i++) {
+		struct patch_replacement *replacement = nb_vec_at(&replacements, i);
+		char **source_lines = ((void *)source.data);
+		char **new_lines = ((void *)replacement->chunk->new_lines.data);
 
 		while (source_index < replacement->start) {
-			rc = morph_buf_printf(&output, "%s\n", source_lines[source_index]);
+			rc = (nb_buf_printf(&output, "%s\n", source_lines[source_index])
+				      ? 0
+				      : NB_ERR_NOMEM);
 			if (rc != 0)
 				break;
 			source_index++;
@@ -925,7 +940,7 @@ static int patch_build_updated_content(const char *original,
 		if (rc != 0)
 			break;
 		for (size_t j = 0; j < replacement->new_count; j++) {
-			rc = morph_buf_printf(&output, "%s\n", new_lines[j]);
+			rc = (nb_buf_printf(&output, "%s\n", new_lines[j]) ? 0 : NB_ERR_NOMEM);
 			if (rc != 0)
 				break;
 		}
@@ -934,22 +949,24 @@ static int patch_build_updated_content(const char *original,
 		source_index = replacement->start + replacement->old_count;
 	}
 	if (rc == 0) {
-		char **source_lines = source.elts;
+		char **source_lines = ((void *)source.data);
 
-		while (source_index < source.nelts) {
-			rc = morph_buf_printf(&output, "%s\n", source_lines[source_index]);
+		while (source_index < source.len) {
+			rc = (nb_buf_printf(&output, "%s\n", source_lines[source_index])
+				      ? 0
+				      : NB_ERR_NOMEM);
 			if (rc != 0)
 				break;
 			source_index++;
 		}
 	}
 	if (rc == 0) {
-		*updated = morph_buf_detach(&output);
+		*updated = (nb_buf_ok(&output) ? strdup(nb_buf_cstr(&output)) : NULL);
 		if (!*updated)
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 	}
-	morph_buf_cleanup(&output);
-	morph_array_cleanup(&replacements);
+	nb_buf_cleanup(&output);
+	nb_vec_cleanup(&replacements);
 	patch_string_array_cleanup(&source);
 	return rc;
 }
@@ -965,26 +982,25 @@ struct patch_diff_op {
 	const char *text;
 };
 
-static int patch_diff_push(morph_array_t *ops, enum patch_diff_kind kind,
-			   const char *text)
+static int patch_diff_push(nb_vec *ops, enum patch_diff_kind kind, const char *text)
 {
-	struct patch_diff_op *op = morph_array_push_borrow(ops);
+	struct patch_diff_op *op = nb_vec_push(ops);
 
 	if (!op)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	op->kind = kind;
 	op->text = text;
 	return 0;
 }
 
-static int patch_diff_emit(morph_buf_t *out, char prefix, const char *line)
+static int patch_diff_emit(nb_buf *out, char prefix, const char *line)
 {
-	int rc = morph_buf_putc(out, prefix);
+	int rc = (nb_buf_append_char(out, prefix) ? 0 : NB_ERR_NOMEM);
 
 	if (rc == 0)
-		rc = morph_buf_puts(out, line);
+		rc = (nb_buf_append_cstr(out, line) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_putc(out, '\n');
+		rc = (nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM);
 	return rc;
 }
 
@@ -993,11 +1009,10 @@ static int patch_diff_emit(morph_buf_t *out, char prefix, const char *line)
  * unchanged lines inside a chunk stay as context lines. Oversized blocks
  * fall back to a plain remove-then-add listing to bound memory.
  */
-static int patch_diff_block(char **old_lines, size_t old_count,
-			    char **new_lines, size_t new_count,
-			    morph_array_t *ops)
+static int patch_diff_block(char **old_lines, size_t old_count, char **new_lines, size_t new_count,
+			    nb_vec *ops)
 {
-	size_t base = ops->nelts;
+	size_t base = ops->len;
 	size_t rows = old_count + 1;
 	size_t cols = new_count + 1;
 	uint32_t *table = NULL;
@@ -1020,7 +1035,7 @@ static int patch_diff_block(char **old_lines, size_t old_count,
 	}
 	table = calloc(rows * cols, sizeof(*table));
 	if (!table)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	for (i = 1; i < rows; i++) {
 		for (j = 1; j < cols; j++) {
 			if (strcmp(old_lines[i - 1], new_lines[j - 1]) == 0)
@@ -1062,10 +1077,10 @@ static int patch_diff_block(char **old_lines, size_t old_count,
 	free(table);
 	if (rc != 0)
 		return rc;
-	if (ops->nelts > base) {
-		struct patch_diff_op *items = ops->elts;
+	if (ops->len > base) {
+		struct patch_diff_op *items = ((void *)ops->data);
 
-		for (i = base, j = ops->nelts - 1; i < j; i++, j--) {
+		for (i = base, j = ops->len - 1; i < j; i++, j--) {
 			struct patch_diff_op swap = items[i];
 
 			items[i] = items[j];
@@ -1075,17 +1090,16 @@ static int patch_diff_block(char **old_lines, size_t old_count,
 	return 0;
 }
 
-static int patch_build_file_ops(morph_array_t *source,
-				morph_array_t *replacements, morph_array_t *ops)
+static int patch_build_file_ops(nb_vec *source, nb_vec *replacements, nb_vec *ops)
 {
-	char **source_lines = source->elts;
-	struct patch_replacement *items = replacements->elts;
+	char **source_lines = ((void *)source->data);
+	struct patch_replacement *items = ((void *)replacements->data);
 	size_t old_index = 0;
 	int rc;
 
-	for (size_t k = 0; k < replacements->nelts; k++) {
+	for (size_t k = 0; k < replacements->len; k++) {
 		struct patch_replacement *replacement = &items[k];
-		char **new_lines = replacement->chunk->new_lines.elts;
+		char **new_lines = ((void *)replacement->chunk->new_lines.data);
 
 		while (old_index < replacement->start) {
 			rc = patch_diff_push(ops, PATCH_DIFF_COMMON,
@@ -1101,7 +1115,7 @@ static int patch_build_file_ops(morph_array_t *source,
 			return rc;
 		old_index = replacement->start + replacement->old_count;
 	}
-	while (old_index < source->nelts) {
+	while (old_index < source->len) {
 		rc = patch_diff_push(ops, PATCH_DIFF_COMMON,
 			source_lines[old_index]);
 		if (rc != 0)
@@ -1111,10 +1125,10 @@ static int patch_build_file_ops(morph_array_t *source,
 	return 0;
 }
 
-static int patch_render_diff_hunks(morph_buf_t *out, morph_array_t *ops)
+static int patch_render_diff_hunks(nb_buf *out, nb_vec *ops)
 {
-	struct patch_diff_op *items = ops->elts;
-	size_t count = ops->nelts;
+	struct patch_diff_op *items = ((void *)ops->data);
+	size_t count = ops->len;
 	size_t index = 0;
 	int rc = 0;
 
@@ -1181,8 +1195,10 @@ static int patch_render_diff_hunks(morph_buf_t *out, morph_array_t *ops)
 			if (items[i].kind != PATCH_DIFF_REMOVE)
 				new_len++;
 		}
-		rc = morph_buf_printf(out, "@@ -%zu,%zu +%zu,%zu @@\n",
-			old_start, old_len, new_start, new_len);
+		rc = (nb_buf_printf(out, "@@ -%zu,%zu +%zu,%zu @@\n", old_start, old_len, new_start,
+				    new_len)
+			      ? 0
+			      : NB_ERR_NOMEM);
 		for (size_t i = begin; i < end && rc == 0; i++) {
 			char prefix = items[i].kind == PATCH_DIFF_COMMON ? ' ' :
 				items[i].kind == PATCH_DIFF_REMOVE ? '-' : '+';
@@ -1194,88 +1210,99 @@ static int patch_render_diff_hunks(morph_buf_t *out, morph_array_t *ops)
 	return rc;
 }
 
-static int patch_render_update_preview(morph_buf_t *out, morph_array_t *source,
-				       struct patch_hunk *hunk, char *error,
-				       size_t error_size)
+static int patch_render_update_preview(nb_buf *out, nb_vec *source, struct patch_hunk *hunk,
+				       char *error, size_t error_size)
 {
-	morph_array_t replacements;
-	morph_array_t ops;
+	nb_vec replacements;
+	nb_vec ops;
 	int rc;
 
 	memset(&replacements, 0, sizeof(replacements));
 	memset(&ops, 0, sizeof(ops));
-	rc = morph_array_init(&replacements, hunk->chunks.nelts,
-		sizeof(struct patch_replacement));
+	rc = (nb_vec_init(&replacements, sizeof(struct patch_replacement)),
+	      nb_vec_reserve(&replacements, hunk->chunks.len) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	rc = patch_compute_replacements(source, hunk, &replacements, error,
 		error_size);
 	if (rc == 0)
-		qsort(replacements.elts, replacements.nelts,
-			sizeof(struct patch_replacement),
-			patch_replacement_compare);
+		qsort(((void *)replacements.data), replacements.len,
+		      sizeof(struct patch_replacement), patch_replacement_compare);
 	if (rc == 0)
-		rc = morph_array_init(&ops, source->nelts + 8,
-			sizeof(struct patch_diff_op));
+		rc = (nb_vec_init(&ops, sizeof(struct patch_diff_op)),
+		      nb_vec_reserve(&ops, source->len + 8) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = patch_build_file_ops(source, &replacements, &ops);
 	if (rc == 0)
 		rc = patch_render_diff_hunks(out, &ops);
-	morph_array_cleanup(&ops);
-	morph_array_cleanup(&replacements);
+	nb_vec_cleanup(&ops);
+	nb_vec_cleanup(&replacements);
 	return rc;
 }
 
-static int patch_render_add_preview(morph_buf_t *out, struct patch_hunk *hunk)
+static int patch_render_add_preview(nb_buf *out, struct patch_hunk *hunk)
 {
-	morph_array_t lines;
+	nb_vec lines;
 	char **entries;
 	int rc;
 
 	rc = patch_content_lines(hunk->add_content, &lines);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_printf(out, "*** Add File: %s\n@@ -0,0 +1,%zu @@\n",
-		hunk->path, lines.nelts);
-	entries = lines.elts;
-	for (size_t i = 0; rc == 0 && i < lines.nelts; i++)
+	rc = (nb_buf_printf(out, "*** Add File: %s\n@@ -0,0 +1,%zu @@\n", hunk->path, lines.len)
+		      ? 0
+		      : NB_ERR_NOMEM);
+	entries = ((void *)lines.data);
+	for (size_t i = 0; rc == 0 && i < lines.len; i++)
 		rc = patch_diff_emit(out, '+', entries[i]);
 	patch_string_array_cleanup(&lines);
 	return rc;
 }
 
-static int patch_render_delete_preview(morph_buf_t *out, const char *path,
-				       const char *resolved, char *error,
-				       size_t error_size)
+static int patch_render_delete_preview(nb_buf *out, const char *path, const char *resolved,
+				       char *error, size_t error_size)
 {
-	char *content = file_read_all_copy(resolved, NULL);
-	morph_array_t lines;
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
+	char *content =
+		(nb_file_read_all(resolved, &file_value_2, 0, NULL) == NB_OK &&
+				 (file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
+				   nb_buf_len(&file_value_2) + 1),
+			    nb_charp_steal(&file_copy_2))
+			 : NULL);
+	nb_vec lines;
 	char **entries;
 	int rc;
 
 	if (!content)
-		return patch_error(error, error_size, -errno,
-			"failed to read file to delete %s", resolved);
+		return patch_error(error, error_size, nb_status_from_errno(errno, NULL),
+				   "failed to read file to delete %s", resolved);
 	rc = patch_content_lines(content, &lines);
 	free(content);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_printf(out, "*** Delete File: %s\n@@ -1,%zu +0,0 @@\n",
-		path, lines.nelts);
-	entries = lines.elts;
-	for (size_t i = 0; rc == 0 && i < lines.nelts; i++)
+	rc = (nb_buf_printf(out, "*** Delete File: %s\n@@ -1,%zu +0,0 @@\n", path, lines.len)
+		      ? 0
+		      : NB_ERR_NOMEM);
+	entries = ((void *)lines.data);
+	for (size_t i = 0; rc == 0 && i < lines.len; i++)
 		rc = patch_diff_emit(out, '-', entries[i]);
 	patch_string_array_cleanup(&lines);
 	return rc;
 }
 
-static int patch_render_hunk_preview(morph_buf_t *out, const char *root,
-				     struct patch_hunk *hunk, char *error,
-				     size_t error_size)
+static int patch_render_hunk_preview(nb_buf *out, const char *root, struct patch_hunk *hunk,
+				     char *error, size_t error_size)
 {
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_3 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	char source_path[PATH_MAX];
 	char *original;
-	morph_array_t source;
+	nb_vec source;
 	int rc;
 
 	rc = patch_resolve_target(root, hunk->path, source_path,
@@ -1287,17 +1314,23 @@ static int patch_render_hunk_preview(morph_buf_t *out, const char *root,
 	if (hunk->action == PATCH_ACTION_DELETE)
 		return patch_render_delete_preview(out, hunk->path, source_path,
 			error, error_size);
-	original = file_read_all_copy(source_path, NULL);
+	original = (nb_file_read_all(source_path, &file_value_3, 0, NULL) == NB_OK &&
+				    (file_copy_3 = (char *)malloc(nb_buf_len(&file_value_3) + 1)) !=
+					    NULL
+			    ? (memcpy(file_copy_3, nb_buf_cstr(&file_value_3),
+				      nb_buf_len(&file_value_3) + 1),
+			       nb_charp_steal(&file_copy_3))
+			    : NULL);
 	if (!original)
-		return patch_error(error, error_size, -errno,
-			"failed to read file to update %s", source_path);
+		return patch_error(error, error_size, nb_status_from_errno(errno, NULL),
+				   "failed to read file to update %s", source_path);
 	rc = patch_content_lines(original, &source);
 	free(original);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_printf(out, "*** Update File: %s\n", hunk->path);
+	rc = (nb_buf_printf(out, "*** Update File: %s\n", hunk->path) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && hunk->move_path)
-		rc = morph_buf_printf(out, "*** Move to: %s\n", hunk->move_path);
+		rc = (nb_buf_printf(out, "*** Move to: %s\n", hunk->move_path) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = patch_render_update_preview(out, &source, hunk, error,
 			error_size);
@@ -1305,39 +1338,47 @@ static int patch_render_hunk_preview(morph_buf_t *out, const char *root,
 	return rc;
 }
 
-int patch_preview(const char *workdir, const char *input, morph_buf_t *out,
-		  char *error, size_t error_size)
+int patch_preview(const char *workdir, const char *input, nb_buf *out, char *error,
+		  size_t error_size)
 {
-	morph_array_t hunks;
+	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+
+	nb_vec hunks;
 	struct patch_hunk *hunk;
 	char *root;
 	char *copy;
 	int rc;
 
 	if (!workdir || !input || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(&hunks, 0, sizeof(hunks));
 	if (error && error_size > 0)
 		error[0] = '\0';
 	if (strlen(input) > PATCH_MAX_BYTES)
-		return patch_error(error, error_size, -EFBIG,
-			"patch exceeds the 64 KiB limit");
-	if (utf8valid(input) != NULL)
-		return patch_error(error, error_size, -EINVAL,
-			"patch is not valid UTF-8");
-	root = file_resolve_path_copy(workdir);
+		return patch_error(error, error_size, NB_ERR_TOO_BIG,
+				   "patch exceeds the 64 KiB limit");
+	if (nb_utf8_validate(nb_str_from_cstr(input), NULL) != NB_UTF8_OK)
+		return patch_error(error, error_size, NB_ERR_INVAL, "patch is not valid UTF-8");
+	root = (nb_path_expand(&file_value_4, workdir, NULL) == NB_OK &&
+				nb_path_canonical_missing(&file_value_4, nb_buf_cstr(&file_value_4),
+							  NULL) == NB_OK
+			? strdup(nb_buf_cstr(&file_value_4))
+			: NULL);
 	if (!root)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	copy = strdup(input);
 	if (!copy) {
 		free(root);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
-	rc = morph_array_init(&hunks, 4, sizeof(struct patch_hunk));
+	rc = (nb_vec_init(&hunks, sizeof(struct patch_hunk)),
+	      nb_vec_reserve(&hunks, 4) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = patch_parse(copy, &hunks, error, error_size);
 	if (rc == 0) {
-		morph_array_foreach(hunk, &hunks, struct patch_hunk) {
+		for (size_t _i_ = 0; _i_ < nb_vec_len(&hunks) &&
+				     (hunk = (struct patch_hunk *)nb_vec_at(&hunks, _i_));
+		     _i_++) {
 			rc = patch_render_hunk_preview(out, root, hunk, error,
 				error_size);
 			if (rc != 0)
@@ -1352,9 +1393,11 @@ int patch_preview(const char *workdir, const char *input, morph_buf_t *out,
 
 static int patch_atomic_write(const char *path, const char *content, mode_t mode)
 {
-	int rc = file_write_atomic(path, content, strlen(content));
+	int rc = nb_file_write_all_atomic(
+		path, content, strlen(content),
+		&(nb_file_write_options){.new_file_mode = 0600, .sync_dir = true}, NULL);
 	if (rc == 0 && chmod(path, mode) < 0) {
-		rc = -errno;
+		rc = nb_status_from_errno(errno, NULL);
 	}
 	return rc;
 }
@@ -1362,14 +1405,14 @@ static int patch_atomic_write(const char *path, const char *content, mode_t mode
 static int patch_result_add(struct patch_result *result,
 			    struct patch_hunk *hunk, const char *path)
 {
-	struct patch_change *change = morph_array_push_borrow(&result->changes);
+	struct patch_change *change = nb_vec_push(&result->changes);
 
 	if (!change)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	memset(change, 0, sizeof(*change));
 	if (strlen(path) >= sizeof(change->path)) {
-		result->changes.nelts--;
-		return -ENAMETOOLONG;
+		result->changes.len--;
+		return NB_ERR_NAME_TOO_LONG;
 	}
 	strncpy(change->path, path, sizeof(change->path) - 1);
 	change->action = hunk->action;
@@ -1385,14 +1428,15 @@ static int patch_validate_write(const struct patch_write_policy *policy,
 	if (!policy)
 		return 0;
 	if (policy->max_file_bytes && bytes > policy->max_file_bytes)
-		return patch_error(error, error_size, -EFBIG,
-			"patched file exceeds the %zu-byte checkpoint limit: %s",
-			policy->max_file_bytes, path);
+		return patch_error(error, error_size, NB_ERR_TOO_BIG,
+				   "patched file exceeds the %zu-byte checkpoint limit: %s",
+				   policy->max_file_bytes, path);
 	int rc = policy->validate ?
 		policy->validate(path, bytes, removed_path, policy->user_data) : 0;
 	if (rc != 0)
 		return patch_error(error, error_size, rc,
-			"checkpoint postimage budget rejected %s: %s", path, morph_strerror(rc));
+				   "checkpoint postimage budget rejected %s: %s", path,
+				   nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	return 0;
 }
 
@@ -1400,6 +1444,9 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 			    struct patch_result *result, char *error,
 			    size_t error_size, const struct patch_write_policy *policy)
 {
+	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_5 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	char source_path[PATH_MAX];
 	char destination_path[PATH_MAX];
 	struct stat source_stat;
@@ -1412,8 +1459,8 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 		return rc;
 	source_exists = lstat(source_path, &source_stat) == 0;
 	if (source_exists && !S_ISREG(source_stat.st_mode))
-		return patch_error(error, error_size, -EINVAL,
-			"target is not a regular file: %s", hunk->path);
+		return patch_error(error, error_size, NB_ERR_INVAL,
+				   "target is not a regular file: %s", hunk->path);
 	if (hunk->action == PATCH_ACTION_ADD) {
 		mode_t mode = source_exists ? source_stat.st_mode & 0777 : 0644;
 		rc = patch_validate_write(policy, source_path, strlen(hunk->add_content), NULL,
@@ -1428,28 +1475,34 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 			rc = patch_result_add(result, hunk, hunk->path);
 	} else if (hunk->action == PATCH_ACTION_DELETE) {
 		if (!source_exists)
-			return patch_error(error, error_size, -ENOENT,
-				"failed to delete file %s", source_path);
+			return patch_error(error, error_size, NB_ERR_NOT_FOUND,
+					   "failed to delete file %s", source_path);
 		rc = patch_validate_write(policy, source_path, 0, NULL, error, error_size);
 		if (rc != 0)
 			return rc;
-		rc = unlink(source_path) == 0 ? 0 : -errno;
+		rc = unlink(source_path) == 0 ? 0 : nb_status_from_errno(errno, NULL);
 		if (rc == 0)
 			rc = patch_result_add(result, hunk, hunk->path);
 	} else {
-		char *original MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-		char *updated MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+		char *original NB_CLEANUP(nb_charp_cleanup) = NULL;
+		char *updated NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 		if (!source_exists)
-			return patch_error(error, error_size, -ENOENT,
-				"failed to read file to update %s", source_path);
-		original = file_read_all_copy(source_path, NULL);
+			return patch_error(error, error_size, NB_ERR_NOT_FOUND,
+					   "failed to read file to update %s", source_path);
+		original = (nb_file_read_all(source_path, &file_value_5, 0, NULL) == NB_OK &&
+					    (file_copy_5 = (char *)malloc(
+						     nb_buf_len(&file_value_5) + 1)) != NULL
+				    ? (memcpy(file_copy_5, nb_buf_cstr(&file_value_5),
+					      nb_buf_len(&file_value_5) + 1),
+				       nb_charp_steal(&file_copy_5))
+				    : NULL);
 		if (!original)
-			return patch_error(error, error_size, -errno,
-				"failed to read file to update %s", source_path);
+			return patch_error(error, error_size, nb_status_from_errno(errno, NULL),
+					   "failed to read file to update %s", source_path);
 		rc = patch_build_updated_content(original, hunk, &updated, error,
 			error_size);
-		morph_charp_cleanup(&original);
+		nb_charp_cleanup(&original);
 		if (rc != 0)
 			return rc;
 		if (hunk->move_path) {
@@ -1461,7 +1514,7 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 				error_size);
 			if (rc == 0 && lstat(destination_path, &destination_stat) == 0) {
 				if (!S_ISREG(destination_stat.st_mode))
-					rc = -EINVAL;
+					rc = NB_ERR_INVAL;
 				else
 					mode = destination_stat.st_mode & 0777;
 			}
@@ -1476,7 +1529,8 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 			if (rc == 0)
 				rc = patch_atomic_write(destination_path, updated, mode);
 			if (rc == 0 && strcmp(source_path, destination_path) != 0)
-				rc = unlink(source_path) == 0 ? 0 : -errno;
+				rc = unlink(source_path) == 0 ? 0
+							      : nb_status_from_errno(errno, NULL);
 			if (rc == 0)
 				rc = patch_result_add(result, hunk, hunk->move_path);
 		} else {
@@ -1500,21 +1554,23 @@ struct patch_permission_target {
 	int deletion;
 };
 
-static int patch_authorize_hunks(const char *root, const morph_array_t *hunks,
-	char *error, size_t error_size, patch_authorize_fn authorize, void *user_data)
+static int patch_authorize_hunks(const char *root, const nb_vec *hunks, char *error,
+				 size_t error_size, patch_authorize_fn authorize, void *user_data)
 {
-	morph_array_t targets;
+	nb_vec targets;
 	struct patch_hunk *hunk;
 	struct patch_permission_target *target;
-	int rc = morph_array_init(&targets, hunks->nelts,
-		sizeof(*target));
+	int rc = (nb_vec_init(&targets, sizeof(*target)),
+		  nb_vec_reserve(&targets, hunks->len) ? 0 : NB_ERR_NOMEM);
 
 	if (rc != 0)
 		return rc;
-	morph_array_foreach(hunk, hunks, struct patch_hunk) {
-		target = morph_array_push_borrow(&targets);
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(hunks) && (hunk = (struct patch_hunk *)nb_vec_at(hunks, _i_));
+	     _i_++) {
+		target = nb_vec_push(&targets);
 		if (!target) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			break;
 		}
 		rc = patch_resolve_target(root, hunk->path, target->path,
@@ -1524,9 +1580,9 @@ static int patch_authorize_hunks(const char *root, const morph_array_t *hunks,
 			break;
 		if (!hunk->move_path)
 			continue;
-		target = morph_array_push_borrow(&targets);
+		target = nb_vec_push(&targets);
 		if (!target) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			break;
 		}
 		rc = patch_resolve_target(root, hunk->move_path, target->path,
@@ -1536,13 +1592,16 @@ static int patch_authorize_hunks(const char *root, const morph_array_t *hunks,
 			break;
 	}
 	if (rc == 0) {
-		morph_array_foreach(target, &targets, struct patch_permission_target) {
+		for (size_t _i_ = 0;
+		     _i_ < nb_vec_len(&targets) &&
+		     (target = (struct patch_permission_target *)nb_vec_at(&targets, _i_));
+		     _i_++) {
 			rc = authorize(target->path, target->deletion, user_data);
 			if (rc != 0)
 				break;
 		}
 	}
-	morph_array_cleanup(&targets);
+	nb_vec_cleanup(&targets);
 	return rc;
 }
 
@@ -1551,44 +1610,53 @@ int patch_apply_authorized_with_policy(const char *workdir, const char *input,
 		patch_authorize_fn authorize, void *user_data,
 		const struct patch_write_policy *policy)
 {
-	struct patch_result candidate MORPH_CLEANUP(patch_result_cleanup) = {0};
-	morph_array_t hunks;
+	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
+
+	struct patch_result candidate NB_CLEANUP(patch_result_cleanup) = {0};
+	nb_vec hunks;
 	char *root;
 	char *copy;
 	int rc;
 
 	if (!workdir || !input || !result)
-		return -EINVAL;
-	if (result->changes.elts || result->changes.nelts)
-		return -EALREADY;
+		return NB_ERR_INVAL;
+	if (((void *)result->changes.data) || result->changes.len)
+		return NB_ERR_STATE;
 	memset(&hunks, 0, sizeof(hunks));
 	if (error && error_size > 0)
 		error[0] = '\0';
 	if (strlen(input) > PATCH_MAX_BYTES)
-		return patch_error(error, error_size, -EFBIG,
-			"patch exceeds the 64 KiB limit");
-	if (utf8valid(input) != NULL)
-		return patch_error(error, error_size, -EINVAL,
-			"patch is not valid UTF-8");
-	root = file_resolve_path_copy(workdir);
+		return patch_error(error, error_size, NB_ERR_TOO_BIG,
+				   "patch exceeds the 64 KiB limit");
+	if (nb_utf8_validate(nb_str_from_cstr(input), NULL) != NB_UTF8_OK)
+		return patch_error(error, error_size, NB_ERR_INVAL, "patch is not valid UTF-8");
+	root = (nb_path_expand(&file_value_6, workdir, NULL) == NB_OK &&
+				nb_path_canonical_missing(&file_value_6, nb_buf_cstr(&file_value_6),
+							  NULL) == NB_OK
+			? strdup(nb_buf_cstr(&file_value_6))
+			: NULL);
 	if (!root)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	copy = strdup(input);
 	if (!copy) {
 		free(root);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
-	rc = morph_array_init(&hunks, 4, sizeof(struct patch_hunk));
+	rc = (nb_vec_init(&hunks, sizeof(struct patch_hunk)),
+	      nb_vec_reserve(&hunks, 4) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = patch_parse(copy, &hunks, error, error_size);
 	if (rc == 0 && authorize)
 		rc = patch_authorize_hunks(root, &hunks, error, error_size, authorize, user_data);
 	if (rc == 0)
-		rc = morph_array_init(&candidate.changes, hunks.nelts, sizeof(struct patch_change));
+		rc = (nb_vec_init(&candidate.changes, sizeof(struct patch_change)),
+		      nb_vec_reserve(&candidate.changes, hunks.len) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0) {
 		struct patch_hunk *hunk;
 
-		morph_array_foreach(hunk, &hunks, struct patch_hunk) {
+		for (size_t _i_ = 0; _i_ < nb_vec_len(&hunks) &&
+				     (hunk = (struct patch_hunk *)nb_vec_at(&hunks, _i_));
+		     _i_++) {
 			rc = patch_apply_hunk(root, hunk, &candidate, error, error_size, policy);
 			if (rc != 0)
 				break;
@@ -1632,7 +1700,7 @@ void patch_result_cleanup(struct patch_result *result)
 {
 	if (!result)
 		return;
-	morph_array_cleanup(&result->changes);
+	nb_vec_cleanup(&result->changes);
 	memset(result, 0, sizeof(*result));
 }
 

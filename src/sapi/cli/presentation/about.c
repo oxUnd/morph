@@ -1,12 +1,14 @@
 #include "sapi/cli/presentation/about.h"
+#include <limits.h>
+#include "nb/cleanup.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/diagnostics.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
 #include "config/config.h"
 #include "skill/skill.h"
-#include "util/data.h"
-#include "util/file.h"
+#include "runtime/resources.h"
+#include "nb/file.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +31,11 @@
 
 int cli_about_print(struct cli_application *ctx, const char *config_path)
 {
+	int directory_status_1 = NB_OK;
+
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	struct utsname uts;
 	int rc = 0;
 
@@ -37,7 +44,11 @@ int cli_about_print(struct cli_application *ctx, const char *config_path)
 	struct config cfg;
 	config_set_defaults(ctx ? ctx->logger : NULL, &cfg);
 
-	char *cfg_path = file_expand_path_copy(config_path ? config_path : "~/.morph/config.toml");
+	char *cfg_path =
+		(nb_path_expand(&file_value_1, config_path ? config_path : "~/.morph/config.toml",
+				NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&file_value_1))
+			 : NULL);
 	if (cfg_path) {
 		rc = config_load(ctx ? ctx->logger : NULL, &cfg, cfg_path);
 		if (rc != 0) {
@@ -62,10 +73,21 @@ int cli_about_print(struct cli_application *ctx, const char *config_path)
 	}
 
 	int ext_count = 0;
-	char **ext_dirs = NULL;
-	char *exts_path = file_expand_path_copy(cfg.ext.dir[0] ? cfg.ext.dir : "~/.morph/exts");
+	nb_dir_listing ext_dirs NB_CLEANUP(nb_dir_listing_destroy) = {0};
+	char *exts_path =
+		(nb_path_expand(&file_value_2, cfg.ext.dir[0] ? cfg.ext.dir : "~/.morph/exts",
+				NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&file_value_2))
+			 : NULL);
 	if (exts_path) {
-		file_list_dirs_copy(exts_path, &ext_dirs, &ext_count);
+		(void)((directory_status_1 = nb_dir_scan(exts_path,
+							 NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN |
+								 NB_DIR_SCAN_FOLLOW_LINKS,
+							 &ext_dirs, NULL)) != NB_OK
+			       ? directory_status_1
+		       : ext_dirs.names.len > INT_MAX
+			       ? NB_ERR_RANGE
+			       : (ext_count = (int)ext_dirs.names.len, NB_OK));
 		free(exts_path);
 	}
 
@@ -176,7 +198,7 @@ int cli_about_print(struct cli_application *ctx, const char *config_path)
 		for (int i = 0; i < ext_count && i < 5; i++) {
 			if (i > 0)
 				cli_output_printf(ctx, ", ");
-			cli_output_printf(ctx, "%s", ext_dirs[i]);
+			cli_output_printf(ctx, "%s", nb_dir_listing_name(&ext_dirs, (size_t)(i)));
 		}
 		if (ext_count > 5)
 			cli_output_printf(ctx, ", …");
@@ -199,8 +221,8 @@ int cli_about_print(struct cli_application *ctx, const char *config_path)
 			  cfg_path ? cfg_path : "none");
 	cli_output_printf(ctx, "\n");
 
-	if (ext_dirs)
-		file_free_list(ext_dirs, ext_count);
+	if (ext_dirs.initialized)
+		nb_dir_listing_destroy(&ext_dirs);
 	skill_registry_cleanup(&skills);
 	free(cfg_path);
 	return 0;

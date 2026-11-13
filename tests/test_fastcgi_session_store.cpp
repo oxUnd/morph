@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 
 extern "C" {
 #include "sapi/fastcgi/storage/quota.h"
@@ -6,6 +7,9 @@ extern "C" {
 #include "sapi/fastcgi/storage/sessions.h"
 #include "sapi/fastcgi/storage/events.h"
 #include "sapi/fastcgi/storage/canvas.h"
+#include "sapi/fastcgi/storage/tokens.h"
+#include "nb/file.h"
+#include "nb/cleanup.h"
 #include "cJSON.h"
 
 #include "sapi/fastcgi/session_store.h"
@@ -19,6 +23,146 @@ extern "C" {
 #include <string>
 #include <thread>
 #include <vector>
+#include <csignal>
+#include <cstring>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+class FastcgiLoginTokenTest : public ::testing::Test
+{
+      protected:
+	std::vector<std::string> owned;
+
+	std::string create()
+	{
+		char token[64] = {0};
+		int rc = login_token_create("token-user", "alice", "user", 1, token);
+		EXPECT_EQ(rc, NB_OK);
+		if (rc != NB_OK)
+			return {};
+		owned.emplace_back(token);
+		return token;
+	}
+
+	std::string path(const std::string &token)
+	{
+		return "/tmp/morph-sess/" + token + ".json";
+	}
+
+	std::string record(int64_t expires, size_t padding = 0)
+	{
+		return "{\"padding\":\"" + std::string(padding, 'x') +
+		       "\",\"user_id\":\"token-user\",\"username\":\"alice\",\"role\":\"user\","
+		       "\"expires_at\":" +
+		       std::to_string(expires) + "}";
+	}
+
+	void write(const std::string &token, const std::string &content)
+	{
+		ASSERT_EQ(nb_file_write_all(path(token).c_str(), content.data(), content.size(),
+					    nullptr),
+			  NB_OK);
+	}
+
+	void TearDown() override
+	{
+		for (const auto &token : owned)
+			login_token_revoke(token.c_str());
+	}
+};
+
+TEST_F(FastcgiLoginTokenTest, PublishesPrivateCompleteCredentialAndRevokesIt)
+{
+	auto token = create();
+	ASSERT_FALSE(token.empty());
+	nb_file_info info{};
+	ASSERT_EQ(nb_file_stat(path(token).c_str(), false, &info, nullptr), NB_OK);
+	EXPECT_EQ(info.mode & 0777u, 0600u);
+	ASSERT_EQ(nb_file_stat("/tmp/morph-sess", false, &info, nullptr), NB_OK);
+	EXPECT_EQ(info.mode & 0777u, 0700u);
+	char user[64] = {0}, name[64] = {0}, role[24] = {0};
+	ASSERT_EQ(login_token_verify(token.c_str(), user, name, role, nullptr), 1);
+	EXPECT_STREQ(user, "token-user");
+	EXPECT_STREQ(name, "alice");
+	EXPECT_STREQ(role, "user");
+	login_token_revoke(token.c_str());
+	EXPECT_FALSE(nb_file_exists(path(token).c_str()));
+	EXPECT_EQ(login_token_verify(token.c_str(), user, name, role, nullptr), 0);
+	EXPECT_EQ(login_token_verify("../escaped", user, name, role, nullptr), 0);
+}
+
+TEST_F(FastcgiLoginTokenTest, ReadsLongCompleteRecordsAndPrunesOnlyParsedExpiredTokens)
+{
+	auto active = create(), expired = create(), malformed = create();
+	ASSERT_FALSE(active.empty());
+	ASSERT_FALSE(expired.empty());
+	ASSERT_FALSE(malformed.empty());
+	const int64_t future = INT64_MAX / 1000 - 1;
+	write(active, record(future, 5000));
+	write(expired, record(1, 6000));
+	write(malformed, "{malformed");
+	char user[64] = {0}, name[64] = {0}, role[24] = {0};
+	int64_t expires = 0;
+	ASSERT_EQ(login_token_verify(active.c_str(), user, name, role, &expires), 1);
+	EXPECT_EQ(expires, future);
+	EXPECT_STREQ(user, "token-user");
+	EXPECT_STREQ(name, "alice");
+	EXPECT_STREQ(role, "user");
+	ASSERT_EQ(login_token_prune(), NB_OK);
+	EXPECT_TRUE(nb_file_exists(path(active).c_str()));
+	EXPECT_FALSE(nb_file_exists(path(expired).c_str()));
+	EXPECT_TRUE(nb_file_exists(path(malformed).c_str()));
+}
+
+TEST_F(FastcgiLoginTokenTest, RejectsOversizeOrTrailingBytesWithoutDeletingInvalidRecords)
+{
+	auto oversized = create(), trailing = create(), invalid_expiry = create(),
+	     rounded_expiry = create();
+	ASSERT_FALSE(oversized.empty());
+	ASSERT_FALSE(trailing.empty());
+	ASSERT_FALSE(invalid_expiry.empty());
+	ASSERT_FALSE(rounded_expiry.empty());
+	write(oversized, record(1, 65536));
+	write(trailing, record(1) + std::string(1, '\0') + "trailing");
+	write(invalid_expiry, "{\"expires_at\":1e100}");
+	write(rounded_expiry, record(INT64_MAX));
+	for (const auto &token : {oversized, trailing, invalid_expiry, rounded_expiry})
+		EXPECT_EQ(login_token_verify(token.c_str(), nullptr, nullptr, nullptr, nullptr), 0);
+	ASSERT_EQ(login_token_prune(), NB_OK);
+	for (const auto &token : {oversized, trailing, invalid_expiry, rounded_expiry})
+		EXPECT_TRUE(nb_file_exists(path(token).c_str()));
+	char output[64] = "unchanged";
+	std::string too_long(65536, 'x');
+	EXPECT_EQ(login_token_create("id", too_long.c_str(), "user", 1, output), NB_ERR_TOO_BIG);
+	EXPECT_STREQ(output, "unchanged");
+}
+
+TEST_F(FastcgiLoginTokenTest, FailedCredentialWriteDoesNotPublishAToken)
+{
+	auto initial = create();
+	ASSERT_FALSE(initial.empty());
+	pid_t child = fork();
+	ASSERT_GE(child, 0);
+	if (child == 0) {
+		struct rlimit limit{};
+		if (getrlimit(RLIMIT_FSIZE, &limit) != 0)
+			_exit(2);
+		limit.rlim_cur = 0;
+		if (setrlimit(RLIMIT_FSIZE, &limit) != 0 || signal(SIGXFSZ, SIG_IGN) == SIG_ERR)
+			_exit(3);
+		char token[64] = "unchanged";
+		int rc = login_token_create("id", "name", "user", 1, token);
+		bool failed = rc < 0 && strcmp(token, "unchanged") == 0;
+		if (rc == NB_OK)
+			login_token_revoke(token);
+		_exit(failed ? 0 : 1);
+	}
+	int status = 0;
+	ASSERT_EQ(waitpid(child, &status, 0), child);
+	ASSERT_TRUE(WIFEXITED(status));
+	EXPECT_EQ(WEXITSTATUS(status), 0);
+}
 
 class FastcgiSessionStoreTest : public ::testing::Test
 {
@@ -175,7 +319,7 @@ TEST_F(FastcgiSessionStoreTest, ConcurrentArtifactsRespectImageAndStorageQuotas)
 
 				if (rc == 0)
 					successes++;
-				else if (rc == -EDQUOT)
+				else if (rc == NB_ERR_NO_SPACE)
 					rejected++;
 				else
 					failures++;
@@ -201,7 +345,7 @@ TEST_F(FastcgiSessionStoreTest, ArtifactFailureRollsBackUsageAndReleasesConnecti
 			       "BEGIN SELECT RAISE(FAIL,'test usage failure'); END",
 			       nullptr, nullptr, nullptr),
 		  SQLITE_OK);
-	EXPECT_EQ(register_artifact(), -EIO);
+	EXPECT_EQ(register_artifact(), NB_ERR_IO);
 	EXPECT_EQ(sqlite3_get_autocommit(store->db.handle), 1);
 	EXPECT_EQ(query("SELECT count(*) FROM fcgi_artifacts"), 0);
 	EXPECT_EQ(query("SELECT count(*) FROM fcgi_usage_storage"), 0);
@@ -209,7 +353,7 @@ TEST_F(FastcgiSessionStoreTest, ArtifactFailureRollsBackUsageAndReleasesConnecti
 			       nullptr),
 		  SQLITE_OK);
 	sqlite3_commit_hook(store->db.handle, [](void *) { return 1; }, nullptr);
-	EXPECT_EQ(register_artifact(), -EIO);
+	EXPECT_EQ(register_artifact(), NB_ERR_IO);
 	sqlite3_commit_hook(store->db.handle, nullptr, nullptr);
 	EXPECT_EQ(sqlite3_get_autocommit(store->db.handle), 1);
 	EXPECT_EQ(query("SELECT count(*) FROM fcgi_artifacts"), 0);
@@ -224,9 +368,9 @@ TEST_F(FastcgiSessionStoreTest, FailedBeginPreservesTheExistingTransaction)
 {
 	ASSERT_EQ(sqlite3_exec(store->db.handle, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr),
 		  SQLITE_OK);
-	EXPECT_EQ(register_artifact(), -EIO);
-	EXPECT_EQ(store_quota_begin_turn(store, "user", "session", nullptr), -EIO);
-	EXPECT_EQ(store_delete_session(store, "session", "user"), -EIO);
+	EXPECT_EQ(register_artifact(), NB_ERR_IO);
+	EXPECT_EQ(store_quota_begin_turn(store, "user", "session", nullptr), NB_ERR_IO);
+	EXPECT_EQ(store_delete_session(store, "session", "user"), NB_ERR_IO);
 	struct action_record action{};
 
 	EXPECT_EQ(actions_drain_one(store, "actions", &action), 0);

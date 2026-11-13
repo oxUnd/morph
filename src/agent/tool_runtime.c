@@ -1,4 +1,5 @@
 #include "tool_runtime.h"
+#include "nb/err.h"
 #include "cJSON.h"
 #include <stddef.h>
 
@@ -14,7 +15,7 @@ int tool_runtime_emit_stream(const struct tool_runtime_context *ctx, const char 
 
 	data = cJSON_CreateObject();
 	if (!data)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	cJSON_AddStringToObject(data, "tool", tool ? tool : "");
 	cJSON_AddStringToObject(data, "tool_call_id",
 				ctx->tool_call_id ? ctx->tool_call_id : "");
@@ -39,8 +40,8 @@ int tool_runtime_stream_to_buf_cb(const char *token, void *user_data)
 	int rc;
 
 	if (!sink || !sink->buf)
-		return -EINVAL;
-	rc = morph_buf_puts(sink->buf, text);
+		return NB_ERR_INVAL;
+	rc = (nb_buf_append_cstr(sink->buf, text) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	(void)tool_runtime_emit_stream(sink->runtime, sink->tool, sink->kind, text);

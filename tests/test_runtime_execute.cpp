@@ -1,4 +1,5 @@
 #include "runtime_test_support.hpp"
+#include "nb/err.h"
 
 extern "C" {
 #include "models/llm.h"
@@ -7,8 +8,8 @@ extern "C" {
 #include "permission/context_internal.h"
 #include "agent/tools/exec_tool.h"
 #include "agent/tool_runtime.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 }
 
 #include <atomic>
@@ -106,7 +107,7 @@ static int runtime_scripted_chat_with_tools(struct model *self, const char *,
 		response->tool_calls = static_cast<struct tool_call *>(
 			std::calloc(1, sizeof(*response->tool_calls)));
 		if (!response->tool_calls)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		response->tool_call_count = 1;
 		auto &call = response->tool_calls[0];
 		call.id = strdup(("checkpoint_test_" +
@@ -114,10 +115,10 @@ static int runtime_scripted_chat_with_tools(struct model *self, const char *,
 		call.name = strdup(action.first.c_str());
 		call.input_kind = action.first == "apply_patch" ? TOOL_INPUT_TEXT : TOOL_INPUT_JSON;
 		call.arguments = strdup(action.second.c_str());
-		return call.id && call.name && call.arguments ? 200 : -ENOMEM;
+		return call.id && call.name && call.arguments ? 200 : NB_ERR_NOMEM;
 	}
 	response->content = strdup(state->response.c_str());
-	return response->content ? 200 : -ENOMEM;
+	return response->content ? 200 : NB_ERR_NOMEM;
 }
 
 static void runtime_scripted_model_destroy(struct model *model)
@@ -187,11 +188,11 @@ protected:
 
 	void ExpectCancelledRequestInNextInput(const char *original, const char *steering)
 	{
-		cJSON *snapshot MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+		cJSON *snapshot NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 		ASSERT_EQ(runtime_session_last_request_copy(instance, &snapshot), 0);
 		const char *input = cJSON_GetStringValue(cJSON_GetObjectItem(snapshot, "input_json"));
 		ASSERT_NE(input, nullptr);
-		cJSON *parsed MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(input);
+		cJSON *parsed NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(input);
 		ASSERT_NE(parsed, nullptr);
 		cJSON *messages = cJSON_GetObjectItem(parsed, "messages");
 		ASSERT_TRUE(cJSON_IsArray(messages));
@@ -272,7 +273,7 @@ TEST_F(RuntimeExecuteTest, SuccessfulTurnPersistsUserAndAssistantMessages)
 	ASSERT_NE(result.final_text, nullptr);
 	EXPECT_STREQ(result.final_text, "scripted answer");
 	int count = 0;
-	struct message *messages MORPH_CLEANUP(runtime_cancel_test_messages_cleanup) =
+	struct message *messages NB_CLEANUP(runtime_cancel_test_messages_cleanup) =
 		runtime_session_messages_current_copy(instance, &count);
 	ASSERT_NE(messages, nullptr);
 	EXPECT_EQ(count, 2);
@@ -307,7 +308,7 @@ TEST_F(RuntimeExecuteTest, CapturesDispatchedInputWithoutTheLaterAssistantAnswer
 	struct runtime_result result{};
 	OpenScripted();
 	ASSERT_EQ(Execute("inspect actual model input", &result), 0);
-	cJSON *snapshot MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *snapshot NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_session_last_request_copy(instance, &snapshot), 0);
 	const char *input = cJSON_GetStringValue(cJSON_GetObjectItem(snapshot, "input_json"));
 	ASSERT_NE(input, nullptr);
@@ -315,7 +316,7 @@ TEST_F(RuntimeExecuteTest, CapturesDispatchedInputWithoutTheLaterAssistantAnswer
 	EXPECT_EQ(strstr(input, "scripted answer"), nullptr);
 	EXPECT_NE(strstr(input, "messages"), nullptr);
 	EXPECT_NE(strstr(input, "tools"), nullptr);
-	morph_json_cleanup(&snapshot);
+	cJSON_DeleteOwner(&snapshot);
 }
 
 TEST_F(RuntimeExecuteTest, MemoryMaintenanceNeverEntersTheDispatchedPrompt)
@@ -338,7 +339,7 @@ TEST_F(RuntimeExecuteTest, MemoryMaintenanceNeverEntersTheDispatchedPrompt)
 	ASSERT_EQ(model_history_add(&handle, &item, nullptr), 0);
 	struct runtime_result result{};
 	ASSERT_EQ(Execute("continue after the background build", &result), 0);
-	cJSON *snapshot MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *snapshot NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_session_last_request_copy(instance, &snapshot), 0);
 	const char *input = cJSON_GetStringValue(cJSON_GetObjectItem(snapshot, "input_json"));
 	ASSERT_NE(input, nullptr);
@@ -347,7 +348,7 @@ TEST_F(RuntimeExecuteTest, MemoryMaintenanceNeverEntersTheDispatchedPrompt)
 	EXPECT_NE(strstr(input, "archive created"), nullptr);
 	EXPECT_EQ(model_history_count(&handle, session.id, 0), 4);
 	EXPECT_EQ(model_history_count(&handle, session.id, 1), 3);
-	morph_json_cleanup(&snapshot);
+	cJSON_DeleteOwner(&snapshot);
 	db_close(&handle);
 }
 
@@ -362,8 +363,8 @@ TEST_F(RuntimeExecuteTest, InputSnapshotFailureDoesNotPreventModelDispatch)
 	ASSERT_EQ(Execute("still execute this request", &result), 0);
 	EXPECT_EQ(result.outcome, RUNTIME_OUTCOME_COMPLETED);
 	EXPECT_EQ(scripted.calls, 1);
-	cJSON *snapshot MORPH_CLEANUP(morph_json_cleanup) = nullptr;
-	EXPECT_EQ(runtime_session_last_request_copy(instance, &snapshot), -ENODATA);
+	cJSON *snapshot NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
+	EXPECT_EQ(runtime_session_last_request_copy(instance, &snapshot), NB_ERR_NO_DATA);
 	db_close(&database_handle);
 }
 
@@ -422,8 +423,8 @@ TEST_F(RuntimeExecuteTest, ModelFailureReturnsFailedOutcomeAndErrorSnapshot)
 {
 	struct runtime_result result{};
 	OpenScripted();
-	scripted.error = -EIO;
-	EXPECT_EQ(Execute("fail", &result), -EIO);
+	scripted.error = NB_ERR_IO;
+	EXPECT_EQ(Execute("fail", &result), NB_ERR_IO);
 	EXPECT_EQ(result.outcome, RUNTIME_OUTCOME_FAILED);
 	char *json = runtime_turn_error_json_copy(instance);
 	ASSERT_NE(json, nullptr);
@@ -447,7 +448,7 @@ TEST_F(RuntimeExecuteTest, ConcurrentTurnIsBusyAndCancellationIsObserved)
 	}
 	EXPECT_TRUE(entered);
 	if (entered) {
-		EXPECT_EQ(Execute("concurrent", &second), -EBUSY);
+		EXPECT_EQ(Execute("concurrent", &second), NB_ERR_BUSY);
 		EXPECT_EQ(second.outcome, RUNTIME_OUTCOME_BUSY);
 	}
 	runtime_cancel_turn(instance);
@@ -478,7 +479,7 @@ TEST_F(RuntimeExecuteTest, CancelledStreamPreservesRequestAndSteeringInNextDispa
 	request.action_drain_fn = runtime_cancel_test_steering;
 	request.action_drain_user_data = &steering;
 	struct runtime_result cancelled{};
-	EXPECT_EQ(runtime_execute_turn(instance, &request, &cancelled), -ECANCELED);
+	EXPECT_EQ(runtime_execute_turn(instance, &request, &cancelled), NB_ERR_CANCELLED);
 	EXPECT_EQ(cancelled.outcome, RUNTIME_OUTCOME_CANCELLED);
 	EXPECT_TRUE(steering.delivered);
 	scripted.stream_chunks.clear();
@@ -489,7 +490,7 @@ TEST_F(RuntimeExecuteTest, CancelledStreamPreservesRequestAndSteeringInNextDispa
 	EXPECT_EQ(continued.outcome, RUNTIME_OUTCOME_COMPLETED);
 	ExpectCancelledRequestInNextInput(request.model_input, "preserve component padding");
 	int count = 0;
-	struct message *messages MORPH_CLEANUP(runtime_cancel_test_messages_cleanup) =
+	struct message *messages NB_CLEANUP(runtime_cancel_test_messages_cleanup) =
 		runtime_session_messages_current_copy(instance, &count);
 	int original_count = 0;
 	for (auto *message = messages; message; message = message->next) {
@@ -521,7 +522,7 @@ TEST_F(RuntimeExecuteTest, CancelledToolExecutionKeepsRequestWithoutReplayingToo
 		if (rc != 0)
 			return rc;
 		runtime_cancel_turn(context->instance);
-		return -ECANCELED;
+		return NB_ERR_CANCELLED;
 	};
 	ASSERT_EQ(tool_register_borrow(&instance->context.tools, &tool), 0);
 	scripted.actions.emplace_back("cancel_fixture", "{}");
@@ -534,7 +535,7 @@ TEST_F(RuntimeExecuteTest, CancelledToolExecutionKeepsRequestWithoutReplayingToo
 	request.action_drain_fn = runtime_cancel_test_steering;
 	request.action_drain_user_data = &steering;
 	struct runtime_result cancelled{};
-	EXPECT_EQ(runtime_execute_turn(instance, &request, &cancelled), -ECANCELED);
+	EXPECT_EQ(runtime_execute_turn(instance, &request, &cancelled), NB_ERR_CANCELLED);
 	EXPECT_EQ(cancelled.outcome, RUNTIME_OUTCOME_CANCELLED);
 	EXPECT_EQ(state.executions.load(), 1);
 	EXPECT_TRUE(steering.delivered);
@@ -551,9 +552,9 @@ TEST_F(RuntimeExecuteTest, InvalidTurnArgumentsAreRejected)
 	struct runtime_result result{};
 	struct runtime_request request{};
 	OpenScripted();
-	EXPECT_EQ(runtime_execute_turn(nullptr, &request, &result), -EINVAL);
-	EXPECT_EQ(runtime_execute_turn(instance, nullptr, &result), -EINVAL);
-	EXPECT_EQ(runtime_execute_turn(instance, &request, &result), -EINVAL);
+	EXPECT_EQ(runtime_execute_turn(nullptr, &request, &result), NB_ERR_INVAL);
+	EXPECT_EQ(runtime_execute_turn(instance, nullptr, &result), NB_ERR_INVAL);
+	EXPECT_EQ(runtime_execute_turn(instance, &request, &result), NB_ERR_INVAL);
 }
 
 TEST_F(RuntimeFacadeTest, PathPoliciesAndCustomSkillsLoadWithoutExec)
@@ -576,7 +577,7 @@ TEST_F(RuntimeFacadeTest, PathPoliciesAndCustomSkillsLoadWithoutExec)
 		auto *state = static_cast<State *>(data);
 		state->called = true;
 		EXPECT_EQ(tool_borrow(tools, "exec"), nullptr);
-		EXPECT_GT(tctx->builtin_paths.nelts, 32u);
+		EXPECT_GT(tctx->builtin_paths.len, 32u);
 		EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
 			(state->skills + "/SKILL.md").c_str(), NULL, 0), 0);
 		EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
@@ -612,7 +613,7 @@ TEST_F(RuntimeExecuteTest, TrustedStopCommandRunsThroughRuntimeAndPersistsOneAns
 	options.after_models_user_data = &scripted;
 	Open(&options);
 	ASSERT_NE(instance, nullptr);
-	cJSON *hooks MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *hooks NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_hooks_snapshot_copy(instance, &hooks), 0);
 	const cJSON *row;
 	int trusted = 0;
@@ -626,7 +627,7 @@ TEST_F(RuntimeExecuteTest, TrustedStopCommandRunsThroughRuntimeAndPersistsOneAns
 			trusted++;
 		}
 	}
-	morph_json_cleanup(&hooks);
+	cJSON_DeleteOwner(&hooks);
 	ASSERT_EQ(trusted, 1);
 	struct runtime_result result{};
 	ASSERT_EQ(Execute("finish the work", &result), 0);
@@ -687,30 +688,30 @@ TEST_F(RuntimeFacadeTest, ProcessResultsSurviveRestartAndRespectSessionOwnership
 			[&] { return notices.completed > 0; }));
 	}
 	std::string service = start(R"({"command":"sleep 20","service":true})");
-	cJSON *jobs MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *jobs NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_process_list(instance, &jobs), 0);
 	EXPECT_EQ(cJSON_GetArraySize(jobs), 2);
-	morph_json_cleanup(&jobs);
+	cJSON_DeleteOwner(&jobs);
 	runtime_close(instance);
 	instance = nullptr;
 	Open(&options);
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_process_read(instance, finished.c_str(), &data), 0);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "stdout")), "persisted");
 	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data, "exit_code")), 7);
 	EXPECT_EQ(cJSON_GetObjectItem(data, "stdout_path"), nullptr);
-	morph_json_cleanup(&data);
+	cJSON_DeleteOwner(&data);
 	ASSERT_EQ(runtime_process_read(instance, service.c_str(), &data), 0);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "status")), "unavailable");
-	morph_json_cleanup(&data);
-	EXPECT_EQ(runtime_process_stop(instance, service.c_str()), -ENOENT);
+	cJSON_DeleteOwner(&data);
+	EXPECT_EQ(runtime_process_stop(instance, service.c_str()), NB_ERR_NOT_FOUND);
 	struct session other{};
 	int created = 0;
 	ASSERT_EQ(runtime_session_select(instance, "other-process-session", &other, &created), 0);
 	ASSERT_EQ(runtime_process_list(instance, &jobs), 0);
 	EXPECT_EQ(cJSON_GetArraySize(jobs), 0);
-	morph_json_cleanup(&jobs);
-	EXPECT_EQ(runtime_process_read(instance, finished.c_str(), &data), -ENOENT);
+	cJSON_DeleteOwner(&jobs);
+	EXPECT_EQ(runtime_process_read(instance, finished.c_str(), &data), NB_ERR_NOT_FOUND);
 }
 
 TEST_F(RuntimeExecuteTest, HookPreparationFailureRestoresBorrowedCallbacksAndUsage)
@@ -804,7 +805,7 @@ TEST_F(RuntimeExecuteTest, CheckpointsTrackRealToolEditsAndModelUndoPreservesDir
 	struct runtime_result result{};
 	ASSERT_EQ(Execute("edit the second line", &result), 0);
 	EXPECT_EQ(runtime_checkpoint_read_file(path), "user change\nnew\n");
-	cJSON *list MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *list NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_checkpoint_list_copy(instance, &list), 0);
 	auto *rows = cJSON_GetObjectItemCaseSensitive(list, "checkpoints");
 	ASSERT_EQ(cJSON_GetArraySize(rows), 1);
@@ -839,7 +840,7 @@ TEST_F(RuntimeExecuteTest, CheckpointsPersistAcrossReopenAndRequirePermissionToR
 		 "*** Begin Patch\n*** Add File: created.c\n+created\n*** End Patch\n"}};
 	struct runtime_result result{};
 	ASSERT_EQ(Execute("create one file", &result), 0);
-	cJSON *list MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *list NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_checkpoint_list_copy(instance, &list), 0);
 	auto *row = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(list, "checkpoints"), 0);
 	ASSERT_NE(row, nullptr);
@@ -851,13 +852,13 @@ TEST_F(RuntimeExecuteTest, CheckpointsPersistAcrossReopenAndRequirePermissionToR
 	options.config_path = config_path.c_str();
 	options.enable_apply_patch = 1;
 	Open(&options);
-	cJSON *preview MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *preview NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_checkpoint_preview_copy(instance, target, &preview), 0);
 	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(preview, "files")), 1);
 	auto policy = permission_policy_default();
 	policy.access = PERMISSION_READ_ONLY;
 	ASSERT_EQ(tool_context_set_permission_policy(instance->context.tctx, &policy), 0);
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	EXPECT_LT(runtime_checkpoint_restore(instance, target, RUNTIME_REWIND_CODE, &report), 0);
 	EXPECT_TRUE(std::filesystem::exists(directory + "/created.c"));
 	policy.access = PERMISSION_WORKSPACE;
@@ -878,14 +879,14 @@ TEST_F(RuntimeExecuteTest, CheckpointConflictPreservesManualChangesAndConversati
 					    "manual.c\n@@\n-before\n+after\n*** End Patch\n"}};
 	struct runtime_result result{};
 	ASSERT_EQ(Execute("change the file", &result), 0);
-	cJSON *list MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *list NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_checkpoint_list_copy(instance, &list), 0);
 	auto *row = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(list, "checkpoints"), 0);
 	ASSERT_NE(row, nullptr);
 	const auto target = static_cast<int64_t>(
 		cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(row, "id")));
 	std::ofstream(directory + "/manual.c") << "manual edit\n";
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	EXPECT_LT(runtime_checkpoint_restore(instance, target, RUNTIME_REWIND_BOTH, &report), 0);
 	ASSERT_NE(report, nullptr);
 	EXPECT_GT(cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(report, "conflicts")), 0);
@@ -914,13 +915,13 @@ TEST_F(RuntimeExecuteTest, FailedMultiFilePatchRetainsCheckpointForActualPartial
 	struct runtime_result result{};
 	ASSERT_EQ(Execute("attempt a multi-file patch", &result), 0);
 	ASSERT_EQ(runtime_checkpoint_read_file(directory + "/first.c"), "after\n");
-	cJSON *list MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *list NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_checkpoint_list_copy(instance, &list), 0);
 	auto *row = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(list, "checkpoints"), 0);
 	ASSERT_NE(row, nullptr);
 	const auto target = static_cast<int64_t>(
 		cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(row, "id")));
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_checkpoint_restore(instance, target, RUNTIME_REWIND_CODE, &report), 0);
 	EXPECT_EQ(runtime_checkpoint_read_file(directory + "/first.c"), "before\n");
 	EXPECT_FALSE(std::filesystem::exists(directory + "/missing.c"));
@@ -929,22 +930,22 @@ TEST_F(RuntimeExecuteTest, FailedMultiFilePatchRetainsCheckpointForActualPartial
 TEST_F(RuntimeExecuteTest, CheckpointFacadeRejectsBusyAndOccupiedOutputs)
 {
 	OpenScripted();
-	cJSON *out MORPH_CLEANUP(morph_json_cleanup) = nullptr;
-	ASSERT_EQ(pthread_mutex_lock(&instance->context.execution_lock), 0);
-	EXPECT_EQ(runtime_checkpoint_list_copy(instance, &out), -EBUSY);
-	EXPECT_EQ(runtime_checkpoint_preview_copy(instance, 1, &out), -EBUSY);
-	EXPECT_EQ(runtime_checkpoint_restore(instance, 1, RUNTIME_REWIND_BOTH, &out), -EBUSY);
-	ASSERT_EQ(pthread_mutex_unlock(&instance->context.execution_lock), 0);
+	cJSON *out NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
+	ASSERT_EQ(nb_mutex_lock(instance->context.execution_lock), 0);
+	EXPECT_EQ(runtime_checkpoint_list_copy(instance, &out), NB_ERR_BUSY);
+	EXPECT_EQ(runtime_checkpoint_preview_copy(instance, 1, &out), NB_ERR_BUSY);
+	EXPECT_EQ(runtime_checkpoint_restore(instance, 1, RUNTIME_REWIND_BOTH, &out), NB_ERR_BUSY);
+	nb_mutex_unlock(instance->context.execution_lock);
 	out = cJSON_CreateObject();
 	auto *owner = out;
-	EXPECT_EQ(runtime_checkpoint_list_copy(instance, &out), -EEXIST);
+	EXPECT_EQ(runtime_checkpoint_list_copy(instance, &out), NB_ERR_EXISTS);
 	EXPECT_EQ(out, owner);
 }
 
 TEST_F(RuntimeExecuteTest, FailedCheckpointSealStopsFurtherTrackedEditsUntilNextTurn)
 {
 	OpenScripted(true);
-	cJSON *empty MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *empty NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_checkpoint_list_copy(instance, &empty), 0);
 	ASSERT_EQ(sqlite3_exec(
 			  instance->context.database.handle,

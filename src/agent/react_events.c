@@ -1,7 +1,7 @@
 #include "react_events.h"
 
 #include "agent/tool_registry.h"
-#include "util/error.h"
+#include "errors.h"
 #include <string.h>
 #include <errno.h>
 
@@ -37,7 +37,7 @@ int react_emit_text_event(struct react_event_sink sink, enum morph_event_type ty
 		return 0;
 	data = cJSON_CreateObject();
 	if (!data)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	cJSON_AddStringToObject(data, "text", text ? text : "");
 	rc = react_emit_event(sink, type, name, phase, message, data);
 	cJSON_Delete(data);
@@ -58,13 +58,15 @@ int react_emit_observation_event(struct react_event_sink sink, const char *text,
 		return 0;
 	data = cJSON_CreateObject();
 	if (!data)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	cJSON_AddStringToObject(data, "text", text ? text : "");
 	if (tool)
 		cJSON_AddStringToObject(data, "tool", tool);
 	if (error_code < 0) {
 		cJSON_AddNumberToObject(data, "error_code", error_code);
-		cJSON_AddStringToObject(data, "error", morph_strerror(error_code));
+		cJSON_AddStringToObject(
+			data, "error",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, error_code));
 	}
 	if (artifacts && artifacts->count > 0) {
 		artifact_json = tool_artifact_list_json_create(artifacts);
@@ -98,7 +100,7 @@ int react_emit_auth_required(struct react_event_sink sink, const char *backend,
 		return 0;
 	data = cJSON_CreateObject();
 	if (!data)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	cJSON_AddStringToObject(data, "kind", "auth_required");
 	cJSON_AddStringToObject(data, "backend", backend ? backend : "");
 	cJSON_AddStringToObject(data, "provider", provider ? provider : "");
@@ -126,7 +128,7 @@ int react_emit_tool_event(struct react_event_sink sink, const char *name, const 
 		return 0;
 	data = cJSON_CreateObject();
 	if (!data)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	cJSON_AddStringToObject(data, "tool", tool ? tool : "");
 	if (sink.tools && tool) {
 		tool_registry_lock(sink.tools);
@@ -150,13 +152,14 @@ int react_emit_tool_event(struct react_event_sink sink, const char *name, const 
 		args = cJSON_CreateObject();
 	if (!args) {
 		cJSON_Delete(data);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	cJSON_AddItemToObject(data, "args", args);
 	if (result)
 		cJSON_AddStringToObject(data, "result", result);
 	if (error_code < 0) {
-		const char *error = morph_strerror(error_code);
+		const char *error =
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, error_code);
 
 		if (result && result[0]) {
 			static const char prefix[] = "tool error: ";
@@ -183,7 +186,7 @@ int react_emit_artifact_event(struct react_event_sink sink, const char *kind, co
 		return 0;
 	data = cJSON_CreateObject();
 	if (!data)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	cJSON_AddStringToObject(data, "kind", kind ? kind : "");
 	cJSON_AddStringToObject(data, "path", path ? path : "");
 	if (source)
@@ -218,7 +221,7 @@ int react_emit_hitl_event(struct react_event_sink sink, const char *name, const 
 		return 0;
 	data = cJSON_CreateObject();
 	if (!data)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	cJSON_AddStringToObject(data, "tool", tool ? tool : "");
 	cJSON_AddStringToObject(data, "tool_call_id", tool_call_id ? tool_call_id : "");
 	args = args_json && *args_json ? cJSON_Parse(args_json) : NULL;
@@ -226,7 +229,7 @@ int react_emit_hitl_event(struct react_event_sink sink, const char *name, const 
 		args = cJSON_CreateObject();
 	if (!args) {
 		cJSON_Delete(data);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	cJSON_AddItemToObject(data, "args", args);
 	if (verdict)

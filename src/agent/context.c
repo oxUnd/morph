@@ -1,14 +1,15 @@
 #include "context.h"
+#include "nb/err.h"
 #include "agent/tokenizer.h"
-#include "util/bpe.h"
-#include "util/cleanup.h"
+#include "agent/bpe.h"
+#include "nb/cleanup.h"
 #include <stdlib.h>
 #include <limits.h>
 #include <string.h>
 
 struct message_list *msg_list_create(const char *role, const char *content, int token_count)
 {
-	struct message_list *m MORPH_CLEANUP(msg_list_clear) = calloc(1, sizeof(*m));
+	struct message_list *m NB_CLEANUP(msg_list_clear) = calloc(1, sizeof(*m));
 	if (!m)
 		return NULL;
 	m->role = strdup(role ? role : "");
@@ -28,11 +29,11 @@ int msg_list_append_take(struct message_list **head, struct message_list **msg)
 	struct message_list **tail;
 
 	if (!head || !msg || !*msg || head == msg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	tail = head;
 	while (*tail) {
 		if (*tail == *msg)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		tail = &(*tail)->next;
 	}
 	*tail = *msg;

@@ -1,9 +1,11 @@
 #include "js_canvas.h"
-#include "util/cleanup.h"
+#include "nb/err.h"
+#include "nb/cleanup.h"
 #include "js_values.h"
 #include "js_image.h"
-#include "util/buf.h"
-#include "util/file.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/file.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -103,10 +105,11 @@ static void image_data_finalizer(JSRuntime *rt, JSValue val)
 
 static cairo_status_t png_buf_write(void *closure, const unsigned char *data, unsigned int length)
 {
-	morph_buf_t *buf = closure;
+	nb_buf *buf = closure;
 
-	return morph_buf_append(buf, (const char *)data, length) == 0 ? CAIRO_STATUS_SUCCESS
-								      : CAIRO_STATUS_WRITE_ERROR;
+	return (nb_buf_append(buf, (const char *)data, length) ? 0 : NB_ERR_NOMEM) == 0
+		       ? CAIRO_STATUS_SUCCESS
+		       : CAIRO_STATUS_WRITE_ERROR;
 }
 
 int js_canvas_write_surface(cairo_surface_t *surface, const char *path)
@@ -120,21 +123,21 @@ int js_canvas_write_surface(cairo_surface_t *surface, const char *path)
 	int ok;
 
 	if (!surface || !path)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (cairo_image_surface_get_format(surface) != CAIRO_FORMAT_ARGB32)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	cairo_surface_flush(surface);
 	src = cairo_image_surface_get_data(surface);
 	width = cairo_image_surface_get_width(surface);
 	height = cairo_image_surface_get_height(surface);
 	stride = cairo_image_surface_get_stride(surface);
 	if (!src || width <= 0 || height <= 0 || stride <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	channels =
 		(js_image_path_ext_is(path, ".jpg") || js_image_path_ext_is(path, ".jpeg")) ? 3 : 4;
 	out = malloc((size_t)width * (size_t)height * (size_t)channels);
 	if (!out)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	for (int y = 0; y < height; y++) {
 		unsigned char *row = src + (size_t)y * (size_t)stride;
 		unsigned char *dst = out + (size_t)y * (size_t)width * (size_t)channels;
@@ -168,7 +171,7 @@ int js_canvas_write_surface(cairo_surface_t *surface, const char *path)
 	else
 		ok = stbi_write_png(path, width, height, 4, out, width * 4);
 	free(out);
-	return ok ? 0 : -EIO;
+	return ok ? 0 : NB_ERR_IO;
 }
 
 static void canvas_owner_cleanup(struct canvas **owner)
@@ -188,7 +191,7 @@ static void canvas_owner_cleanup(struct canvas **owner)
 
 static JSValue new_canvas_object(JSContext *ctx, int width, int height)
 {
-	struct canvas *canvas MORPH_CLEANUP(canvas_owner_cleanup) = NULL;
+	struct canvas *canvas NB_CLEANUP(canvas_owner_cleanup) = NULL;
 	JSValue obj;
 
 	if (width <= 0 || height <= 0 || width > 32768 || height > 32768)
@@ -269,7 +272,7 @@ static int parse_color(const char *s, double *r, double *g, double *b, double *a
 	unsigned int bv;
 
 	if (!s || !r || !g || !b || !a)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*a = 1.0;
 	if (strcmp(s, "white") == 0) {
 		*r = 1.0;
@@ -307,7 +310,7 @@ static int parse_color(const char *s, double *r, double *g, double *b, double *a
 		*b = (double)bv / 255.0;
 		return 0;
 	}
-	return -EINVAL;
+	return NB_ERR_INVAL;
 }
 
 static void canvas_set_source(JSContext *ctx, JSValueConst this_val, const char *prop)
@@ -529,14 +532,14 @@ static int canvas_parse_font_string(const char *font, PangoFontDescription *desc
 	double size;
 
 	if (!font || !desc)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	copy = strdup(font);
 	if (!copy)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	px = strstr(copy, "px");
 	if (!px) {
 		free(copy);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	size_start = px;
 	while (size_start > copy) {
@@ -548,12 +551,12 @@ static int canvas_parse_font_string(const char *font, PangoFontDescription *desc
 	}
 	if (size_start == px) {
 		free(copy);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	size = strtod(size_start, NULL);
 	if (size <= 0.0 || size > 4096.0) {
 		free(copy);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	*size_start = '\0';
 	family = px + 2;
@@ -965,7 +968,7 @@ static JSValue canvas_to_buffer(JSContext *ctx, JSValueConst this_val, int argc,
 {
 	struct canvas *canvas =
 		JS_GetOpaque2(ctx, this_val, js_values_state_borrow(ctx)->canvas_class_id);
-	morph_buf_t buf;
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	cairo_status_t status;
 	JSValue out;
 
@@ -973,16 +976,16 @@ static JSValue canvas_to_buffer(JSContext *ctx, JSValueConst this_val, int argc,
 	(void)argv;
 	if (!canvas)
 		return JS_EXCEPTION;
-	if (morph_buf_init(&buf, 8192) != 0)
+	if ((nb_buf_init(&buf), nb_buf_reserve(&buf, 8192) ? 0 : NB_ERR_NOMEM) != 0)
 		return JS_ThrowOutOfMemory(ctx);
 	cairo_surface_flush(canvas->surface);
 	status = cairo_surface_write_to_png_stream(canvas->surface, png_buf_write, &buf);
 	if (status != CAIRO_STATUS_SUCCESS) {
-		morph_buf_cleanup(&buf);
+		nb_buf_cleanup(&buf);
 		return JS_ThrowInternalError(ctx, "failed to encode canvas");
 	}
-	out = JS_NewArrayBufferCopy(ctx, (const uint8_t *)buf.data, buf.len);
-	morph_buf_cleanup(&buf);
+	out = JS_NewArrayBufferCopy(ctx, (const uint8_t *)buf.ptr, buf.len);
+	nb_buf_cleanup(&buf);
 	return out;
 }
 

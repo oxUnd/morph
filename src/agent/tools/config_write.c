@@ -1,10 +1,13 @@
 #include "config_write.h"
-#include "util/json.h"
-#include "util/cleanup.h"
+#include "nb/str.h"
+#include "nb/utf8.h"
+#include "cJSON.h"
+#include "nb/cleanup.h"
 #include "agent/tool_context.h"
 #include "agent/patch.h"
-#include "util/file.h"
-#include "util/error.h"
+#include "nb/file.h"
+#include "nb/file.h"
+#include "errors.h"
 #include "config/config.h"
 #include "cJSON.h"
 #include <errno.h>
@@ -33,14 +36,20 @@ static void config_edit_context_destroy(void *user_data)
 
 static int path_equal_config(const char *path, const char *config_path)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	char *a;
 	char *b;
 	int same;
 
 	if (!path || !config_path)
 		return 0;
-	a = file_expand_path_copy(path);
-	b = file_expand_path_copy(config_path);
+	a = (nb_path_expand(&file_value_1, path, NULL) == NB_OK ? strdup(nb_buf_cstr(&file_value_1))
+								: NULL);
+	b = (nb_path_expand(&file_value_2, config_path, NULL) == NB_OK
+		     ? strdup(nb_buf_cstr(&file_value_2))
+		     : NULL);
 	if (!a || !b) {
 		free(a);
 		free(b);
@@ -59,17 +68,22 @@ static int validate_config_content(const char *content, char *errbuf,
 	int rc;
 
 	if (!content)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (errbuf_size > 0)
 		errbuf[0] = '\0';
 	rc = config_validate_text(content, &error);
-	if (rc != 0 && errbuf_size > 0) {
+	if (rc != NB_OK && errbuf_size > 0) {
+		nb_buf message NB_CLEANUP(nb_buf_cleanup) = {0};
 		if (error.path[0])
-			snprintf(errbuf, errbuf_size, "%s: %s",
-				error.path, error.message);
+			(void)nb_buf_printf(&message, "%s: %s", error.path, error.message);
 		else
-			snprintf(errbuf, errbuf_size, "%s", error.message);
+			(void)nb_buf_append_cstr(&message, error.message);
+		(void)nb_str_copy_to(nb_str_from_parts(nb_buf_cstr(&message),
+						       nb_utf8_clamp_bytes(nb_buf_cstr(&message),
+									   errbuf_size - 1)),
+				     errbuf, errbuf_size);
 	}
+
 	return rc;
 }
 
@@ -79,13 +93,14 @@ static int ensure_parent_dir(const char *path)
 	char *dir;
 
 	if (!path)
-		return -EINVAL;
-	strncpy(tmp, path, sizeof(tmp) - 1);
+		return NB_ERR_INVAL;
+	(void)nb_str_copy_to(nb_str_from_parts(path, nb_utf8_clamp_bytes(path, sizeof(tmp) - 1)),
+			     tmp, (sizeof(tmp) - 1) + 1);
 	tmp[sizeof(tmp) - 1] = '\0';
 	dir = dirname(tmp);
 	if (!dir || !*dir)
 		return 0;
-	return file_ensure_dir(dir);
+	return nb_file_mkdir(dir, true, NULL);
 }
 
 static int validate_patch_scope(const char *patch, char *error,
@@ -97,10 +112,10 @@ static int validate_patch_scope(const char *patch, char *error,
 	int updates = 0;
 
 	if (!patch || strlen(patch) > CONFIG_EDIT_MAX_SIZE)
-		return -EFBIG;
+		return NB_ERR_TOO_BIG;
 	copy = strdup(patch);
 	if (!copy)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	for (line = strtok_r(copy, "\n", &save); line;
 	     line = strtok_r(NULL, "\n", &save)) {
 		char *begin = line;
@@ -120,7 +135,7 @@ static int validate_patch_scope(const char *patch, char *error,
 					 "patch may only update %s",
 					 CONFIG_EDIT_PATCH_FILE);
 				free(copy);
-				return -EACCES;
+				return NB_ERR_PERMISSION;
 			}
 			updates++;
 		} else if (strncmp(begin, "*** Add File: ", 14) == 0 ||
@@ -129,7 +144,7 @@ static int validate_patch_scope(const char *patch, char *error,
 			snprintf(error, error_size,
 				 "config_edit only accepts an update patch");
 			free(copy);
-			return -EACCES;
+			return NB_ERR_PERMISSION;
 		}
 	}
 	free(copy);
@@ -137,7 +152,7 @@ static int validate_patch_scope(const char *patch, char *error,
 		snprintf(error, error_size,
 			 "patch must contain exactly one update for %s",
 			 CONFIG_EDIT_PATCH_FILE);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	return 0;
 }
@@ -146,42 +161,59 @@ static int build_content_from_patch(const char *old_content,
 				    const char *patch, char **out,
 				    char *error, size_t error_size)
 {
-	char temp_dir[] = "/tmp/morph-config-edit-XXXXXX";
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_3 = NB_OK;
+	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_4 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
+	nb_buf directory NB_CLEANUP(nb_buf_cleanup) = {0};
 	char stage_path[PATH_MAX];
 	struct patch_result patch_result = {0};
 	struct patch_change *change;
 	int rc;
 
 	if (!old_content || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	stage_path[0] = '\0';
 	*out = NULL;
 	rc = validate_patch_scope(patch, error, error_size);
 	if (rc != 0)
 		return rc;
-	if (!mkdtemp(temp_dir))
-		return morph_error_from_errno(errno);
-	rc = file_path_join(stage_path, sizeof(stage_path), temp_dir,
-		CONFIG_EDIT_PATCH_FILE);
+	rc = nb_file_temp_dir(&directory, "/tmp", "morph-config-edit-", NULL);
+	if (rc != NB_OK)
+		return rc;
+	const char *temp_dir = nb_buf_cstr(&directory);
+	rc = ((file_status_3 = nb_path_concat(&file_value_3, temp_dir, CONFIG_EDIT_PATCH_FILE)) !=
+			      NB_OK
+		      ? file_status_3
+	      : (file_status_3 = nb_str_copy_to(nb_buf_str(&file_value_3), stage_path,
+						sizeof(stage_path))) == NB_ERR_RANGE
+		      ? NB_ERR_NAME_TOO_LONG
+		      : file_status_3);
 	if (rc == 0)
-		rc = file_write_all(stage_path, old_content, strlen(old_content));
+		rc = nb_file_write_all(stage_path, old_content, strlen(old_content), NULL);
 	if (rc == 0 && chmod(stage_path, 0600) != 0)
-		rc = -errno;
+		rc = nb_status_from_errno(errno, NULL);
 	if (rc == 0)
 		rc = patch_apply(temp_dir, patch, &patch_result,
 			error, error_size);
-	change = patch_result.changes.nelts == 1 ? morph_array_borrow(&patch_result.changes, 0)
-						 : NULL;
+	change = patch_result.changes.len == 1 ? nb_vec_at(&patch_result.changes, 0) : NULL;
 	if (rc == 0 && (!change || change->action != PATCH_ACTION_UPDATE ||
 			strcmp(change->path, CONFIG_EDIT_PATCH_FILE) != 0)) {
 		snprintf(error, error_size,
 			 "patch must only update %s", CONFIG_EDIT_PATCH_FILE);
-		rc = -EACCES;
+		rc = NB_ERR_PERMISSION;
 	}
 	if (rc == 0) {
-		*out = file_read_all_copy(stage_path, NULL);
+		*out = (nb_file_read_all(stage_path, &file_value_4, 0, NULL) == NB_OK &&
+					(file_copy_4 = (char *)malloc(nb_buf_len(&file_value_4) +
+								      1)) != NULL
+				? (memcpy(file_copy_4, nb_buf_cstr(&file_value_4),
+					  nb_buf_len(&file_value_4) + 1),
+				   nb_charp_steal(&file_copy_4))
+				: NULL);
 		if (!*out)
-			rc = -EIO;
+			rc = NB_ERR_IO;
 	}
 	patch_result_cleanup(&patch_result);
 	if (stage_path[0])
@@ -190,63 +222,19 @@ static int build_content_from_patch(const char *old_content,
 	return rc;
 }
 
-static int write_all_fd(int fd, const char *data, size_t len)
+static int content_unchanged(const char *path, int existed, const char *expected)
 {
-	size_t written = 0;
+	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_5 NB_CLEANUP(nb_charp_cleanup) = NULL;
 
-	while (written < len) {
-		ssize_t count = write(fd, data + written, len - written);
-
-		if (count < 0 && errno == EINTR)
-			continue;
-		if (count < 0)
-			return morph_error_from_errno(errno);
-		if (count == 0)
-			return -EIO;
-		written += (size_t)count;
-	}
-	return 0;
-}
-
-static int atomic_write_config(const char *path, const char *content,
-			       mode_t mode)
-{
-	char parent_copy[PATH_MAX];
-	char temporary[PATH_MAX];
-	char *parent;
-	int fd;
-	int rc;
-
-	if (!path || !content)
-		return -EINVAL;
-	strncpy(parent_copy, path, sizeof(parent_copy) - 1);
-	parent_copy[sizeof(parent_copy) - 1] = '\0';
-	parent = dirname(parent_copy);
-	if (snprintf(temporary, sizeof(temporary),
-		     "%s/.morph-config-edit-XXXXXX", parent) >=
-	    (int)sizeof(temporary))
-		return -ENAMETOOLONG;
-	fd = mkstemp(temporary);
-	if (fd < 0)
-		return morph_error_from_errno(errno);
-	rc = fchmod(fd, mode);
-	if (rc == 0)
-		rc = write_all_fd(fd, content, strlen(content));
-	if (rc == 0 && fsync(fd) != 0)
-		rc = -errno;
-	if (close(fd) != 0 && rc == 0)
-		rc = -errno;
-	if (rc == 0 && rename(temporary, path) != 0)
-		rc = -errno;
-	if (rc != 0)
-		(void)unlink(temporary);
-	return rc;
-}
-
-static int content_unchanged(const char *path, int existed,
-			     const char *expected)
-{
-	char *current = file_read_all_copy(path, NULL);
+	char *current =
+		(nb_file_read_all(path, &file_value_5, 0, NULL) == NB_OK &&
+				 (file_copy_5 = (char *)malloc(nb_buf_len(&file_value_5) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_5, nb_buf_cstr(&file_value_5),
+				   nb_buf_len(&file_value_5) + 1),
+			    nb_charp_steal(&file_copy_5))
+			 : NULL);
 	int unchanged;
 
 	if (!existed) {
@@ -273,12 +261,18 @@ static void config_edit_lock_cleanup(int *fd)
 static int config_edit_exec(const char *args_json, struct tool_result *result,
 			    void *user_data)
 {
+	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_7 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_8 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	struct config_edit_context *ctx = user_data;
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	char *target_expanded MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	char *old_content MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	char *new_content MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	char *written_content MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	char *target_expanded NB_CLEANUP(nb_charp_cleanup) = NULL;
+	char *old_content NB_CLEANUP(nb_charp_cleanup) = NULL;
+	char *new_content NB_CLEANUP(nb_charp_cleanup) = NULL;
+	char *written_content NB_CLEANUP(nb_charp_cleanup) = NULL;
 	const char *path;
 	const char *reason;
 	const char *patch = NULL;
@@ -288,13 +282,13 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 	struct stat target_stat;
 	mode_t mode = 0600;
 	int existed = 0;
-	int lock_fd MORPH_CLEANUP(config_edit_lock_cleanup) = -1;
+	int lock_fd NB_CLEANUP(config_edit_lock_cleanup) = -1;
 	int rc = 0;
 
 	errbuf[0] = '\0';
 
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!ctx || !ctx->config_path[0]) {
 		(void)tool_result_error_copy(result, "tool_failed",
 					     "config_edit is not configured");
@@ -303,7 +297,7 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 	root = cJSON_Parse(args_json);
 	if (!root) {
 		(void)tool_result_error_copy(result, "tool_failed", "invalid JSON");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	cJSON *path_item = cJSON_GetObjectItem(root, "path");
 	cJSON *content_item = cJSON_GetObjectItem(root, "content");
@@ -312,7 +306,7 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 	if (cJSON_IsString(content_item) && cJSON_IsString(patch_item)) {
 		rc = tool_result_error_copy(result, "tool_failed",
 					    "provide only one of 'patch' or 'content'");
-		rc = rc != 0 ? rc : -EINVAL;
+		rc = rc != 0 ? rc : NB_ERR_INVAL;
 		return rc;
 	}
 	path = cJSON_IsString(path_item) && path_item->valuestring[0] ?
@@ -320,19 +314,21 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 	reason = cJSON_IsString(reason_item) ? reason_item->valuestring : "";
 	if (!reason[0]) {
 		rc = tool_result_error_copy(result, "tool_failed", "missing 'reason' parameter");
-		rc = rc != 0 ? rc : -EINVAL;
+		rc = rc != 0 ? rc : NB_ERR_INVAL;
 		return rc;
 	}
 	if (!path_equal_config(path, ctx->config_path)) {
 		rc = tool_result_error_copy(
 			result, "tool_failed",
 			"config_edit can only edit the active Morph config file");
-		rc = rc != 0 ? rc : -EACCES;
+		rc = rc != 0 ? rc : NB_ERR_PERMISSION;
 		return rc;
 	}
-	target_expanded = file_expand_path_copy(ctx->config_path);
+	target_expanded = (nb_path_expand(&file_value_6, ctx->config_path, NULL) == NB_OK
+				   ? strdup(nb_buf_cstr(&file_value_6))
+				   : NULL);
 	if (!target_expanded) {
-		rc = -ENOMEM;
+		rc = NB_ERR_NOMEM;
 		return rc;
 	}
 	if (lstat(target_expanded, &target_stat) == 0) {
@@ -341,68 +337,76 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 			rc = tool_result_error_copy(
 				result, "tool_failed",
 				"active config must be a regular file, not a symlink");
-			rc = rc != 0 ? rc : -ELOOP;
+			rc = rc != 0 ? rc : NB_ERR_LOOP;
 			return rc;
 		}
 		if (target_stat.st_size > (off_t)CONFIG_EDIT_MAX_SIZE) {
 			rc = tool_result_error_copy(result, "tool_failed",
 						    "active config is too large to edit safely");
-			rc = rc != 0 ? rc : -EFBIG;
+			rc = rc != 0 ? rc : NB_ERR_TOO_BIG;
 			return rc;
 		}
 		existed = 1;
 		mode = target_stat.st_mode & 0777;
-		old_content = file_read_all_copy(target_expanded, NULL);
+		old_content = (nb_file_read_all(target_expanded, &file_value_7, 0, NULL) == NB_OK &&
+					       (file_copy_7 = (char *)malloc(
+							nb_buf_len(&file_value_7) + 1)) != NULL
+				       ? (memcpy(file_copy_7, nb_buf_cstr(&file_value_7),
+						 nb_buf_len(&file_value_7) + 1),
+					  nb_charp_steal(&file_copy_7))
+				       : NULL);
 		if (!old_content) {
-			rc = -errno;
+			rc = nb_status_from_errno(errno, NULL);
 			return rc;
 		}
 	} else if (errno != ENOENT) {
-		rc = -errno;
+		rc = nb_status_from_errno(errno, NULL);
 		return rc;
 	} else {
 		old_content = strdup("");
 		if (!old_content) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			return rc;
 		}
 	}
 	if (cJSON_IsString(content_item) && content_item->valuestring) {
 		if (strlen(content_item->valuestring) > CONFIG_EDIT_MAX_SIZE) {
 			rc = tool_result_error_copy(result, "tool_failed", "content too large");
-			rc = rc != 0 ? rc : -EFBIG;
+			rc = rc != 0 ? rc : NB_ERR_TOO_BIG;
 			return rc;
 		}
 		new_content = strdup(content_item->valuestring);
 		if (!new_content) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			return rc;
 		}
 	} else if (cJSON_IsString(patch_item) && patch_item->valuestring) {
 		if (!existed) {
 			rc = tool_result_error_copy(result, "tool_failed",
 						    "patch mode requires an existing config file");
-			rc = rc != 0 ? rc : -ENOENT;
+			rc = rc != 0 ? rc : NB_ERR_NOT_FOUND;
 			return rc;
 		}
 		patch = patch_item->valuestring;
 		rc = build_content_from_patch(old_content, patch, &new_content,
 			errbuf, sizeof(errbuf));
 		if (rc != 0) {
-			(void)tool_result_error_format(result, "tool_failed",
-						       "invalid config patch: %s",
-						       errbuf[0] ? errbuf : morph_strerror(rc));
+			(void)tool_result_error_format(
+				result, "tool_failed", "invalid config patch: %s",
+				errbuf[0] ? errbuf
+					  : nb_err_str(morph_error_descriptions(),
+						       MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
 	} else {
 		rc = tool_result_error_copy(result, "tool_failed",
 					    "provide 'patch' or complete 'content'");
-		rc = rc != 0 ? rc : -EINVAL;
+		rc = rc != 0 ? rc : NB_ERR_INVAL;
 		return rc;
 	}
 	if (strlen(new_content) > CONFIG_EDIT_MAX_SIZE) {
 		rc = tool_result_error_copy(result, "tool_failed", "content too large");
-		rc = rc != 0 ? rc : -EFBIG;
+		rc = rc != 0 ? rc : NB_ERR_TOO_BIG;
 		return rc;
 	}
 	rc = validate_config_content(new_content, errbuf, sizeof(errbuf));
@@ -412,10 +416,10 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		return rc;
 	}
 	if (strcmp(old_content, new_content) == 0) {
-		cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 
 		if (!data) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			return rc;
 		}
 		cJSON_AddStringToObject(data, "path", target_expanded);
@@ -428,7 +432,7 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 	if (!ctx->tctx) {
 		rc = tool_result_error_copy(result, "tool_failed",
 					    "config_edit requires an approval context");
-		rc = rc != 0 ? rc : -EACCES;
+		rc = rc != 0 ? rc : NB_ERR_PERMISSION;
 		return rc;
 	}
 	{
@@ -460,49 +464,64 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		     target_expanded) >= (int)sizeof(lock_path) ||
 	    snprintf(backup_path, sizeof(backup_path), "%s.bak",
 		     target_expanded) >= (int)sizeof(backup_path)) {
-		rc = -ENAMETOOLONG;
+		rc = NB_ERR_NAME_TOO_LONG;
 		return rc;
 	}
 	lock_fd = open(lock_path, O_CREAT | O_RDWR, 0600);
 	if (lock_fd < 0) {
-		rc = -errno;
+		rc = nb_status_from_errno(errno, NULL);
 		return rc;
 	}
 	if (flock(lock_fd, LOCK_EX) != 0) {
-		rc = -errno;
+		rc = nb_status_from_errno(errno, NULL);
 		return rc;
 	}
 	if (!content_unchanged(target_expanded, existed, old_content)) {
 		rc = tool_result_error_copy(result, "tool_failed",
 					    "config changed during approval; inspect it and retry");
-		rc = rc != 0 ? rc : -EAGAIN;
+		rc = rc != 0 ? rc : NB_ERR_AGAIN;
 		return rc;
 	}
 	if (existed) {
-		rc = atomic_write_config(backup_path, old_content, mode);
+		rc = nb_file_write_all_atomic(
+			backup_path, old_content, strlen(old_content),
+			&(nb_file_write_options){.mode = mode, .sync_dir = true}, NULL);
 		if (rc != 0)
 			return rc;
 	}
-	rc = atomic_write_config(target_expanded, new_content, mode);
+	rc = nb_file_write_all_atomic(target_expanded, new_content, strlen(new_content),
+				      &(nb_file_write_options){.mode = mode, .sync_dir = true},
+				      NULL);
 	if (rc != 0)
 		return rc;
-	written_content = file_read_all_copy(target_expanded, NULL);
+	written_content =
+		(nb_file_read_all(target_expanded, &file_value_8, 0, NULL) == NB_OK &&
+				 (file_copy_8 = (char *)malloc(nb_buf_len(&file_value_8) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_8, nb_buf_cstr(&file_value_8),
+				   nb_buf_len(&file_value_8) + 1),
+			    nb_charp_steal(&file_copy_8))
+			 : NULL);
 	if (!written_content ||
 	    validate_config_content(written_content, errbuf,
 				    sizeof(errbuf)) != 0) {
-		int failure = written_content ? MORPH_ERR_CONFIG : -EIO;
+		int failure = written_content ? MORPH_ERR_CONFIG : NB_ERR_IO;
 		int rollback_rc;
 
 		if (existed)
-			rollback_rc = atomic_write_config(target_expanded,
-				old_content, mode);
+			rollback_rc = nb_file_write_all_atomic(
+				target_expanded, old_content, strlen(old_content),
+				&(nb_file_write_options){.mode = mode, .sync_dir = true}, NULL);
 		else
-			rollback_rc = unlink(target_expanded) == 0 ? 0 : -errno;
+			rollback_rc = unlink(target_expanded) == 0
+					      ? 0
+					      : nb_status_from_errno(errno, NULL);
 		if (rollback_rc != 0) {
 			(void)tool_result_error_format(
 				result, "tool_failed",
 				"config verification and rollback failed: %s",
-				morph_strerror(rollback_rc));
+				nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+					   rollback_rc));
 			rc = rollback_rc;
 		} else {
 			(void)tool_result_error_copy(
@@ -514,9 +533,9 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 	}
 	{
 		cJSON *out_json = cJSON_CreateObject();
-		char *out_str MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
+		char *out_str NB_CLEANUP(cJSON_FreeTextOwner) = NULL;
 		if (!out_json) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			return rc;
 		}
 		cJSON_AddStringToObject(out_json, "path", target_expanded);
@@ -542,7 +561,7 @@ int config_edit_init(struct tool_registry *reg, struct tool_context *tctx,
 		     const char *config_path)
 {
 	struct config_edit_context *ctx;
-	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
+	struct tool_spec spec NB_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.name = "config_edit",
 		.description = "Safely edit the active Morph config. Requires user approval "
@@ -571,12 +590,15 @@ int config_edit_init(struct tool_registry *reg, struct tool_context *tctx,
 	int rc;
 
 	if (!reg || !config_path || !config_path[0])
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	ctx = calloc(1, sizeof(*ctx));
 	if (!ctx)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	ctx->tctx = tctx;
-	strncpy(ctx->config_path, config_path, sizeof(ctx->config_path) - 1);
+	(void)nb_str_copy_to(
+		nb_str_from_parts(config_path,
+				  nb_utf8_clamp_bytes(config_path, sizeof(ctx->config_path) - 1)),
+		ctx->config_path, (sizeof(ctx->config_path) - 1) + 1);
 	spec.user_data = ctx;
 	rc = tool_register_take(reg, &spec);
 	if (rc < 0)

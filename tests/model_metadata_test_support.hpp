@@ -6,7 +6,7 @@
 extern "C" {
 #include "runtime/runtime_internal.h"
 #include "runtime/session_title.h"
-#include "util/utf8.h"
+#include "nb/utf8.h"
 #include "credits.h"
 }
 
@@ -165,9 +165,9 @@ protected:
 		struct runtime_request request{};
 		request.session_id = instance->context.current_session.id;
 		request.stored_user_input = prompt.c_str();
-		pthread_mutex_lock(&instance->context.execution_lock);
+		nb_mutex_lock(instance->context.execution_lock);
 		int rc = runtime_title_start(instance, &request);
-		pthread_mutex_unlock(&instance->context.execution_lock);
+		nb_mutex_unlock(instance->context.execution_lock);
 		return rc;
 	}
 

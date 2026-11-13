@@ -1,7 +1,8 @@
 #include <gtest/gtest.h>
+#include "nb/cleanup.h"
 #include "render/image.h"
 #include "render/video.h"
-#include "util/file.h"
+#include "nb/file.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -86,20 +87,20 @@ TEST(RenderDetect, TextHtml)    { EXPECT_STREQ(detect_render_type("page.html"), 
 /* ---- render command: file existence checks ---- */
 
 TEST(RenderFile, NonexistentFile) {
-	EXPECT_EQ(file_exists("/tmp/morph_test_nonexistent_12345.png"), 0);
+	EXPECT_EQ(nb_file_exists("/tmp/morph_test_nonexistent_12345.png"), 0);
 }
 
 TEST(RenderFile, ExistingImageFile) {
 	const char *path = "/tmp/morph_test_render_exist.png";
 	ASSERT_EQ(create_test_png(path), 0);
-	EXPECT_NE(file_exists(path), 0);
+	EXPECT_NE(nb_file_exists(path), 0);
 	remove(path);
 }
 
 TEST(RenderFile, ExistingTextFile) {
 	const char *path = "/tmp/morph_test_render_exist.md";
 	ASSERT_EQ(create_test_text(path, "# Hello"), 0);
-	EXPECT_NE(file_exists(path), 0);
+	EXPECT_NE(nb_file_exists(path), 0);
 	remove(path);
 }
 
@@ -180,14 +181,22 @@ TEST(RenderVideo, PreviewFallsBackToClickableFileLink) {
 /* ---- render command: path expansion ---- */
 
 TEST(RenderPath, TildeExpansion) {
-	char *expanded = file_expand_path_copy("~/test.txt");
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
+
+	char *expanded = (nb_path_expand(&file_value_1, "~/test.txt", NULL) == NB_OK
+				  ? strdup(nb_buf_cstr(&file_value_1))
+				  : NULL);
 	ASSERT_NE(expanded, nullptr);
 	EXPECT_NE(strstr(expanded, "/test.txt"), nullptr);
 	free(expanded);
 }
 
 TEST(RenderPath, AbsolutePath) {
-	char *expanded = file_expand_path_copy("/tmp/test.txt");
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
+
+	char *expanded = (nb_path_expand(&file_value_2, "/tmp/test.txt", NULL) == NB_OK
+				  ? strdup(nb_buf_cstr(&file_value_2))
+				  : NULL);
 	ASSERT_NE(expanded, nullptr);
 	EXPECT_STREQ(expanded, "/tmp/test.txt");
 	free(expanded);

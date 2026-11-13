@@ -1,16 +1,20 @@
 #include "img_inpaint.h"
-#include "util/json.h"
-#include "util/cleanup.h"
+#include "nb/str.h"
+#include "nb/utf8.h"
+#include "cJSON.h"
+#include "nb/cleanup.h"
 #include "annotation.h"
 #include "agent/tool_runtime.h"
 #include "models/llm.h"
 #include "agent/tool_context.h"
 #include "models/image_gen.h"
-#include "util/log.h"
-#include "util/error.h"
-#include "util/buf.h"
-#include "util/array.h"
-#include "util/image_util.h"
+#include "nb/log.h"
+#include "errors.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "media/image.h"
 #include "cJSON.h"
 #include "stb_image.h"
 
@@ -41,14 +45,15 @@ struct inpaint_img {
 };
 
 /* Find existing per-image state by index, or append a fresh zeroed entry. */
-static struct inpaint_img *img_state_for(morph_array_t *arr, int idx)
+static struct inpaint_img *img_state_for(nb_vec *arr, int idx)
 {
 	struct inpaint_img *it;
-	morph_array_foreach (it, arr, struct inpaint_img) {
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(arr) && (it = (struct inpaint_img *)nb_vec_at(arr, _i_)); _i_++) {
 		if (it->image_index == idx)
 			return it;
 	}
-	it = morph_array_push_borrow(arr);
+	it = nb_vec_push(arr);
 	if (!it)
 		return NULL;
 	memset(it, 0, sizeof(*it));
@@ -70,12 +75,12 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result, v
 	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
 
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
 		(void)tool_result_success_json_text_copy(result, "{\"error\":\"invalid JSON\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	if (!ctx || !ctx->image_llm || !model_api_key_borrow(ctx->image_llm)[0]) {
@@ -85,7 +90,7 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result, v
 		return MORPH_ERR_NOT_CONFIGURED;
 	}
 
-	struct annotation annotation MORPH_CLEANUP(annotation_cleanup) = {0};
+	struct annotation annotation NB_CLEANUP(annotation_cleanup) = {0};
 	int parse_rc = annotation_parse_copy(root, &annotation);
 
 	if (parse_rc != 0) {
@@ -111,34 +116,37 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result, v
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"invalid size for the configured image model\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
-	if (annotation.bboxes.nelts == 0) {
+	if (annotation.bboxes.len == 0) {
 		annotation_cleanup(&annotation);
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"img_inpaint needs at least one bbox with a "
 				"label. For arrow-based cross-image fusion use img_compose.\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	const char *output_dir = tctx ? tool_context_output_dir_borrow(tctx) : NULL;
 
-	morph_array_t imgs;
+	nb_vec imgs;
 	struct inpaint_img *it;
-	if (morph_array_init(&imgs, MORPH_ARRAY_INIT_CAP, sizeof(*it)) != 0) {
+	if ((nb_vec_init(&imgs, sizeof(*it)), nb_vec_reserve(&imgs, 16) ? 0 : NB_ERR_NOMEM) != 0) {
 		annotation_cleanup(&annotation);
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text_copy(result, "{\"error\":\"oom\"}");
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 
 	int hard_error = 0;
 	char err_msg[256] = {0};
 
 	const struct annotation_bbox *bbox;
-	morph_array_foreach (bbox, &annotation.bboxes, const struct annotation_bbox) {
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(&annotation.bboxes) &&
+	     (bbox = (const struct annotation_bbox *)nb_vec_at(&annotation.bboxes, _i_));
+	     _i_++) {
 		int idx = bbox->image_index;
 		const char *label = bbox->label;
 
@@ -175,10 +183,18 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result, v
 					break;
 				}
 			} else {
-				strncpy(resolved_in, p, sizeof(resolved_in) - 1);
+				(void)nb_str_copy_to(
+					nb_str_from_parts(
+						p, nb_utf8_clamp_bytes(p, sizeof(resolved_in) - 1)),
+					resolved_in, (sizeof(resolved_in) - 1) + 1);
 				resolved_in[sizeof(resolved_in) - 1] = '\0';
 			}
-			strncpy(st_img->current_ref, resolved_in, sizeof(st_img->current_ref) - 1);
+			(void)nb_str_copy_to(
+				nb_str_from_parts(
+					resolved_in,
+					nb_utf8_clamp_bytes(resolved_in,
+							    sizeof(st_img->current_ref) - 1)),
+				st_img->current_ref, (sizeof(st_img->current_ref) - 1) + 1);
 			st_img->current_ref[sizeof(st_img->current_ref) - 1] = '\0';
 			st_img->W = image->width;
 			st_img->H = image->height;
@@ -201,30 +217,30 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result, v
 		double x1 = x0 + wp, y1 = y0 + hp;
 		double cx = x0 + wp / 2.0, cy = y0 + hp / 2.0;
 
-		morph_buf_t pb MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		if (morph_buf_init(&pb, 512) != 0) {
+		nb_buf pb NB_CLEANUP(nb_buf_cleanup) = {0};
+		if ((nb_buf_init(&pb), nb_buf_reserve(&pb, 512) ? 0 : NB_ERR_NOMEM) != 0) {
 			snprintf(err_msg, sizeof(err_msg), "oom");
 			hard_error = 1;
 			break;
 		}
-		morph_buf_printf(&pb,
-				 "Edit the provided reference image. Within the "
-				 "rectangular region spanning horizontally from %.1f%% "
-				 "to %.1f%% and vertically from %.1f%% to %.1f%% of the "
-				 "image (region center at %.1f%%, %.1f%%; region size "
-				 "%.1f%% wide by %.1f%% tall), generate: %s. Keep "
-				 "everything outside this region unchanged, and match "
-				 "the surrounding lighting, perspective, color, and "
-				 "style so the result looks natural and seamless.",
-				 x0, x1, y0, y1, cx, cy, wp, hp, label);
+		nb_buf_printf(&pb,
+			      "Edit the provided reference image. Within the "
+			      "rectangular region spanning horizontally from %.1f%% "
+			      "to %.1f%% and vertically from %.1f%% to %.1f%% of the "
+			      "image (region center at %.1f%%, %.1f%%; region size "
+			      "%.1f%% wide by %.1f%% tall), generate: %s. Keep "
+			      "everything outside this region unchanged, and match "
+			      "the surrounding lighting, perspective, color, and "
+			      "style so the result looks natural and seamless.",
+			      x0, x1, y0, y1, cx, cy, wp, hp, label);
 		if (user_prompt && user_prompt[0])
-			morph_buf_printf(&pb, " Additional direction: %s", user_prompt);
+			nb_buf_printf(&pb, " Additional direction: %s", user_prompt);
 
 		struct image_result r = {0};
 		const char *references[] = {st_img->current_ref};
-		int rc = image_gen_create(ctx->image_llm, morph_buf_cstr_borrow(&pb), style, size,
-					  references, 1, output_dir, &r);
-		morph_buf_cleanup(&pb);
+		int rc = image_gen_create(ctx->image_llm, nb_buf_cstr(&pb), style, size, references,
+					  1, output_dir, &r);
+		nb_buf_cleanup(&pb);
 		if (rc < 0) {
 			snprintf(err_msg, sizeof(err_msg), "image edit failed for label '%s'",
 				 label);
@@ -232,15 +248,22 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result, v
 			break;
 		}
 
-		strncpy(st_img->current_ref, r.path, sizeof(st_img->current_ref) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(r.path, nb_utf8_clamp_bytes(
+							  r.path, sizeof(st_img->current_ref) - 1)),
+			st_img->current_ref, (sizeof(st_img->current_ref) - 1) + 1);
 		st_img->current_ref[sizeof(st_img->current_ref) - 1] = '\0';
-		strncpy(st_img->final_path, r.path, sizeof(st_img->final_path) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(r.path, nb_utf8_clamp_bytes(
+							  r.path, sizeof(st_img->final_path) - 1)),
+			st_img->final_path, (sizeof(st_img->final_path) - 1) + 1);
 		st_img->final_path[sizeof(st_img->final_path) - 1] = '\0';
 		st_img->applied++;
 	}
 
 	cJSON *results = cJSON_CreateArray();
-	morph_array_foreach (it, &imgs, struct inpaint_img) {
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(&imgs) && (it = (struct inpaint_img *)nb_vec_at(&imgs, _i_)); _i_++) {
 		if (it->applied == 0)
 			continue;
 		cJSON *one = cJSON_CreateObject();
@@ -262,28 +285,28 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result, v
 		if (cJSON_IsString(path) && path->valuestring)
 			(void)tool_result_add_image_copy(result, path->valuestring, 0, 0);
 	}
-	char *out_str MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(out);
+	char *out_str NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(out);
 	cJSON_Delete(out);
-	morph_array_cleanup(&imgs);
+	nb_vec_cleanup(&imgs);
 	annotation_cleanup(&annotation);
 	cJSON_Delete(root);
 
 	(void)tool_result_success_json_text_copy(result, out_str ? out_str : "{\"error\":\"oom\"}");
-	return hard_error && produced == 0 ? -EIO : 0;
+	return hard_error && produced == 0 ? NB_ERR_IO : 0;
 }
 
 int img_inpaint_init(struct tool_registry *reg, struct model *image_llm, struct tool_context *tctx)
 {
 	if (!reg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	struct img_inpaint_context *ctx = malloc(sizeof(*ctx));
 	if (!ctx)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	ctx->image_llm = image_llm;
 	ctx->tctx = tctx;
 
-	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
+	struct tool_spec spec NB_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.flags = TOOL_FLAG_MEDIA,
 		.name = "img_inpaint",

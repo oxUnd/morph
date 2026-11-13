@@ -30,8 +30,10 @@ class AlternateScreen(pyte.Screen):
         if kwargs.get('private') and 1049 in modes:
             saved = getattr(self, '_main_screen', None)
             assert saved is not None, 'alternate-screen exit without entry'
+            lines, columns = self.lines, self.columns
             self.__dict__.clear()
             self.__dict__.update(saved)
+            self.resize(lines=lines, columns=columns)
             modes = tuple(mode for mode in modes if mode != 1049)
         super().reset_mode(*modes, **kwargs)
 
@@ -104,9 +106,10 @@ def panel(terminal, marker):
     assert len(rows) <= 8, '\n'.join(rows)
     selected = next(index for index, row in enumerate(terminal.screen.display)
                     if row.startswith('>'))
-    assert terminal.screen.buffer[selected][terminal.screen.columns - 2].bg == 'blue', (
+    assert terminal.screen.buffer[selected][terminal.screen.columns - 2].bg == '0000ee', (
         '\n'.join(terminal.screen.display))
-    assert not hasattr(terminal.screen, '_main_screen'), 'selector changed screen buffers'
+    assert getattr(terminal.screen, '_main_screen', None) is terminal.parent_buffer, (
+        'selector changed the retained application screen buffer')
     return rows
 
 
@@ -140,7 +143,7 @@ def resize(terminal, marker, columns):
     terminal.child.setwinsize(40, columns)
     terminal.screen.resize(lines=40, columns=columns)
     wait_for(terminal, lambda: 'Subagents' in visible(terminal))
-    if hasattr(terminal.screen, '_main_screen'):
+    if 'Subagents ·' in visible(terminal):
         feed(terminal, marker)
     else:
         panel(terminal, marker)
@@ -158,6 +161,7 @@ def run(driver, port, columns):
         terminal.stream = pyte.Stream(terminal.screen)
         try:
             terminal.wait_for_composer()
+            terminal.parent_buffer = getattr(terminal.screen, '_main_screen', None)
             terminal.child.setwinsize(40, columns)
             terminal.screen.resize(lines=40, columns=columns)
             marker = f'ROOT_FEED_SENTINEL_{columns}'
@@ -319,7 +323,7 @@ def run(driver, port, columns):
             cached_body = feed(terminal, marker)[3:-2]
             press(terminal, '\x1b')
             wait_for(terminal, lambda: 'Subagents' not in visible(terminal))
-            assert not hasattr(terminal.screen, '_main_screen'), visible(terminal)
+            assert hasattr(terminal.screen, '_main_screen') == (terminal.parent_buffer is not None), visible(terminal)
             wait_for(terminal, lambda: 'ROOT_DEFERRED_SENTINEL' in visible(terminal))
             restored_composer(terminal, marker, command=terminal.subagents_command)
             assert 'CHILD_TOOL_DETAIL_END' not in visible(terminal), visible(terminal)
@@ -385,8 +389,9 @@ def run(driver, port, columns):
             wait_for(terminal, lambda: 'Subagents' not in visible(terminal))
             restored_composer(terminal, 'ROOT_VERIFIED_FINAL',
                               command=terminal.subagents_command)
-            assert terminal.raw[start:].count('\x1b[?1049h') == 3, terminal.raw[start:]
-            assert terminal.raw[start:].count('\x1b[?1049l') == 3, terminal.raw[start:]
+            # Each child scope suspends and restores the retained root screen.
+            assert terminal.raw[start:].count('\x1b[?1049h') == 6, terminal.raw[start:]
+            assert terminal.raw[start:].count('\x1b[?1049l') == 6, terminal.raw[start:]
             assert '\x1b[3J' not in terminal.raw[start:], 'agent switch erased scrollback'
             print(f'PASS: independent subagent feed, styles, details, streaming and actions at {columns}',
                   flush=True)

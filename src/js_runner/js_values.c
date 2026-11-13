@@ -1,7 +1,9 @@
 #include "js_values.h"
-#include "util/buf.h"
-#include "util/file.h"
-#include "util/cleanup.h"
+#include "nb/err.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/file.h"
+#include "nb/cleanup.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -27,7 +29,7 @@ void js_buffer_view_cleanup(struct js_buffer_view *view)
 
 int js_values_buffer_borrow(JSContext *ctx, JSValueConst value, struct js_buffer_view *out)
 {
-	struct js_buffer_view candidate MORPH_CLEANUP(js_buffer_view_cleanup) = {
+	struct js_buffer_view candidate NB_CLEANUP(js_buffer_view_cleanup) = {
 		.context = ctx, .owner = JS_UNDEFINED};
 	JSValue offset_val;
 	JSValue length_val;
@@ -38,39 +40,39 @@ int js_values_buffer_borrow(JSContext *ctx, JSValueConst value, struct js_buffer
 	int has_range = 0;
 
 	if (!ctx || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (out->context || out->data || out->length)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (!JS_IsObject(value))
-		return -ENOTSUP;
+		return NB_ERR_UNSUPPORTED;
 	candidate.owner = JS_GetPropertyStr(ctx, value, "buffer");
 	if (JS_IsException(candidate.owner))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!JS_IsUndefined(candidate.owner)) {
 		has_range = 1;
 		offset_val = JS_GetPropertyStr(ctx, value, "byteOffset");
 		if (JS_IsException(offset_val))
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		int rc = JS_ToIndex(ctx, &offset, offset_val);
 		JS_FreeValue(ctx, offset_val);
 		if (rc < 0)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		length_val = JS_GetPropertyStr(ctx, value, "byteLength");
 		if (JS_IsException(length_val))
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		rc = JS_ToIndex(ctx, &byte_length, length_val);
 		JS_FreeValue(ctx, length_val);
 		if (rc < 0)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 	} else {
 		candidate.owner = JS_DupValue(ctx, value);
 	}
 	bytes = JS_GetArrayBuffer(ctx, &buffer_len, candidate.owner);
 	if (!bytes && JS_HasException(ctx))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (has_range && (offset > buffer_len || byte_length > buffer_len - offset)) {
 		JS_ThrowRangeError(ctx, "typed array range is invalid");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	candidate.data = bytes ? bytes + (size_t)offset : (const uint8_t *)"";
 	candidate.length = has_range ? (size_t)byte_length : buffer_len;
@@ -97,7 +99,7 @@ int js_values_object_int_prop(JSContext *ctx, JSValueConst object, const char *n
 	JSValue value;
 
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*out = def;
 	if (!JS_IsObject(object))
 		return 0;
@@ -108,7 +110,7 @@ int js_values_object_int_prop(JSContext *ctx, JSValueConst object, const char *n
 	}
 	if (JS_ToInt32(ctx, out, value) < 0) {
 		JS_FreeValue(ctx, value);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	JS_FreeValue(ctx, value);
 	return 0;

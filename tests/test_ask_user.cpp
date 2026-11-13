@@ -1,8 +1,9 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 #include "agent/tools/ask_user.h"
 #include "agent/tool.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 #include <stdlib.h>
 #include <string.h>
 #include <string>
@@ -51,21 +52,21 @@ static int set_mock_answers(char ***answers,
 			    int values_count)
 {
 	if (!answers || !answers_count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*answers = nullptr;
 	*answers_count = 0;
 	if (values_count <= 0)
 		return 0;
 	char **out = static_cast<char **>(calloc(values_count, sizeof(char *)));
 	if (!out)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	for (int i = 0; i < values_count; i++) {
 		out[i] = strdup(values[i] ? values[i] : "");
 		if (!out[i]) {
 			for (int j = 0; j < i; j++)
 				free(out[j]);
 			free(out);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 	}
 	*answers = out;
@@ -141,7 +142,7 @@ static int mock_ask_user_error_cb(const char *question,
 	(void)answers;
 	(void)answers_count;
 	(void)user_data;
-	return -ENOTTY;
+	return NB_ERR_NOT_TERMINAL;
 }
 
 static int mock_ask_user_empty_cb(const char *question,
@@ -235,7 +236,7 @@ static int mock_ask_user_data_cb(const char *question,
 	(void)min_choices;
 	(void)max_choices;
 	if (!user_data)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	const char *values[] = { (const char *)user_data };
 	return set_mock_answers(answers, answers_count, values, 1);
 }
@@ -279,7 +280,7 @@ TEST_F(AskUserToolTest, QuestionOnly) {
 	int rc = tool_exec(&tools, "ask_user",
 			   "{\"question\":\"What is your name?\"}", &result);
 	EXPECT_EQ(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
 	ASSERT_NE(result.data, nullptr);
 	ASSERT_NE(result.ui, nullptr);
 	cJSON *kind = cJSON_GetObjectItem(result.data, "kind");
@@ -305,7 +306,7 @@ TEST_F(AskUserToolTest, QuestionWithChoices) {
 			   "{\"question\":\"Pick one\","
 			   "\"choices\":[\"red\",\"green\",\"blue\"]}", &result);
 	EXPECT_EQ(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
 	EXPECT_EQ(state.choices_count, 3);
 	ASSERT_NE(result.data, nullptr);
 	cJSON *choices = cJSON_GetObjectItem(result.data, "choices");
@@ -366,7 +367,7 @@ TEST_F(AskUserToolTest, MultiSelectRejectsImpossibleLimitsWithoutOpeningPrompt) 
 			   "\"max_choices\":7,"
 			   "\"choices\":[\"build\",\"install\"]}",
 			   &result);
-	EXPECT_EQ(rc, -EINVAL);
+	EXPECT_EQ(rc, NB_ERR_INVAL);
 	EXPECT_EQ(state.calls, 0);
 	tool_result_cleanup(&result);
 }
@@ -378,12 +379,12 @@ TEST_F(AskUserToolTest, LongUnicodeQuestionReachesCallbackAndResultIntact)
 	for (int i = 0; i < 1200; i++)
 		question += "界";
 	question += "QUESTION_END";
-	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *args NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	ASSERT_NE(args, nullptr);
 	ASSERT_NE(cJSON_AddStringToObject(args, "question", question.c_str()), nullptr);
-	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(args);
+	char *json NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(args);
 	ASSERT_NE(json, nullptr);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&tools, "ask_user", json, &result), 0);
 	EXPECT_EQ(state.question, question);
@@ -395,18 +396,18 @@ TEST_F(AskUserToolTest, LongUnicodeQuestionReachesCallbackAndResultIntact)
 TEST_F(AskUserToolTest, ChoiceCountOverflowReturnsErrorInsteadOfDroppingChoices)
 {
 	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
-	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *args NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	ASSERT_NE(args, nullptr);
 	ASSERT_NE(cJSON_AddStringToObject(args, "question", "Choose"), nullptr);
 	cJSON *choices = cJSON_AddArrayToObject(args, "choices");
 	ASSERT_NE(choices, nullptr);
 	for (int i = 0; i < ASK_USER_CHOICES_MAX + 1; i++)
 		ASSERT_TRUE(cJSON_AddItemToArray(choices, cJSON_CreateString("Complete choice")));
-	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(args);
+	char *json NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(args);
 	ASSERT_NE(json, nullptr);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
-	EXPECT_EQ(tool_exec(&tools, "ask_user", json, &result), -E2BIG);
+	EXPECT_EQ(tool_exec(&tools, "ask_user", json, &result), NB_ERR_TOO_BIG);
 	EXPECT_EQ(state.calls, 0);
 }
 
@@ -414,12 +415,13 @@ TEST_F(AskUserToolTest, AnswerBudgetRejectsOverflowWithoutReturningAPrefix)
 {
 	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
 	state.answer_override = std::string(ASK_USER_ANSWER_MAX_BYTES + 1, 'x');
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
-	EXPECT_EQ(tool_exec(&tools, "ask_user", "{\"question\":\"Explain\"}", &result), -E2BIG);
+	EXPECT_EQ(tool_exec(&tools, "ask_user", "{\"question\":\"Explain\"}", &result),
+		  NB_ERR_TOO_BIG);
 	ASSERT_NE(result.envelope, nullptr);
-	EXPECT_NE(strstr(result.text.data, "error"), nullptr);
-	EXPECT_EQ(strstr(result.text.data, "ask_user_response"), nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "error"), nullptr);
+	EXPECT_EQ(strstr(result.text.ptr, "ask_user_response"), nullptr);
 }
 
 TEST_F(AskUserToolTest, MissingQuestion) {
@@ -428,8 +430,8 @@ TEST_F(AskUserToolTest, MissingQuestion) {
 	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user", "{}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "question"), nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "question"), nullptr);
 	tool_result_cleanup(&result);
 }
 
@@ -450,8 +452,8 @@ TEST_F(AskUserToolTest, CallbackError) {
 	int rc = tool_exec(&tools, "ask_user",
 			   "{\"question\":\"hello?\"}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "error"), nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "error"), nullptr);
 	tool_result_cleanup(&result);
 }
 
@@ -462,7 +464,7 @@ TEST_F(AskUserToolTest, EmptyAnswer) {
 	int rc = tool_exec(&tools, "ask_user",
 			   "{\"question\":\"hello?\"}", &result);
 	EXPECT_EQ(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
 	ASSERT_NE(result.data, nullptr);
 	cJSON *no_input = cJSON_GetObjectItem(result.data, "no_input");
 	ASSERT_TRUE(cJSON_IsBool(no_input));
@@ -507,8 +509,8 @@ TEST_F(AskUserToolTest, RegistryScopedCallbackData) {
 			    "{\"question\":\"hello?\"}", &result2);
 	EXPECT_EQ(rc1, 0);
 	EXPECT_EQ(rc2, 0);
-	ASSERT_NE(result1.text.data, nullptr);
-	ASSERT_NE(result2.text.data, nullptr);
+	ASSERT_NE(result1.text.ptr, nullptr);
+	ASSERT_NE(result2.text.ptr, nullptr);
 	ASSERT_NE(result1.data, nullptr);
 	ASSERT_NE(result2.data, nullptr);
 	cJSON *answers1 = cJSON_GetObjectItem(result1.data, "answers");
@@ -567,7 +569,7 @@ TEST_F(AskUserToolTest, ToolNotFound) {
 
 TEST_F(AskUserToolTest, OptionalTimeoutAdoptsRecommendationAndIdentifiesSource)
 {
-	state.callback_rc = -ETIMEDOUT;
+	state.callback_rc = NB_ERR_TIMEOUT;
 	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
 	tool_result result{};
 	tool_result_init(&result);
@@ -587,10 +589,10 @@ TEST_F(AskUserToolTest, OptionalTimeoutAdoptsRecommendationAndIdentifiesSource)
 
 TEST_F(AskUserToolTest, OptionalTimeoutRecommendationMustFitTheAnswerBudget)
 {
-	state.callback_rc = -ETIMEDOUT;
+	state.callback_rc = NB_ERR_TIMEOUT;
 	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
 	std::string choice(ASK_USER_ANSWER_MAX_BYTES + 1, 'x');
-	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *args NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	ASSERT_NE(args, nullptr);
 	ASSERT_NE(cJSON_AddStringToObject(args, "question", "Preference?"), nullptr);
 	ASSERT_NE(cJSON_AddStringToObject(args, "response_policy", "optional"), nullptr);
@@ -600,18 +602,18 @@ TEST_F(AskUserToolTest, OptionalTimeoutRecommendationMustFitTheAnswerBudget)
 	ASSERT_NE(recommended, nullptr);
 	ASSERT_TRUE(cJSON_AddItemToArray(choices, cJSON_CreateString(choice.c_str())));
 	ASSERT_TRUE(cJSON_AddItemToArray(recommended, cJSON_CreateNumber(0)));
-	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(args);
+	char *json NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(args);
 	ASSERT_NE(json, nullptr);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
-	EXPECT_EQ(tool_exec(&tools, "ask_user", json, &result), -E2BIG);
-	EXPECT_NE(strstr(result.text.data, "ask_user_failed"), nullptr);
-	EXPECT_EQ(strstr(result.text.data, "ask_user_response"), nullptr);
+	EXPECT_EQ(tool_exec(&tools, "ask_user", json, &result), NB_ERR_TOO_BIG);
+	EXPECT_NE(strstr(result.text.ptr, "ask_user_failed"), nullptr);
+	EXPECT_EQ(strstr(result.text.ptr, "ask_user_response"), nullptr);
 }
 
 TEST_F(AskUserToolTest, OptionalTimeoutWithoutRecommendationReturnsNoInput)
 {
-	state.callback_rc = -ETIMEDOUT;
+	state.callback_rc = NB_ERR_TIMEOUT;
 	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
 	tool_result result{};
 	tool_result_init(&result);
@@ -628,7 +630,7 @@ TEST_F(AskUserToolTest, OptionalTimeoutWithoutRecommendationReturnsNoInput)
 
 TEST_F(AskUserToolTest, OptionalMultiTimeoutAdoptsWholeRecommendedCombination)
 {
-	state.callback_rc = -ETIMEDOUT;
+	state.callback_rc = NB_ERR_TIMEOUT;
 	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
 	tool_result result{};
 	tool_result_init(&result);
@@ -647,19 +649,21 @@ TEST_F(AskUserToolTest, OptionalMultiTimeoutAdoptsWholeRecommendedCombination)
 TEST_F(AskUserToolTest, CancellationAndRequiredTimeoutNeverAdoptRecommendation)
 {
 	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
-	for (int rc : {-ECANCELED, -EINTR, -ETIMEDOUT}) {
+	for (int rc : {NB_ERR_CANCELLED, NB_ERR_INTERRUPTED, NB_ERR_TIMEOUT}) {
 		state.callback_rc = rc;
 		tool_result result{};
 		tool_result_init(&result);
-		const char *args = rc == -ETIMEDOUT ?
-			R"({"question":"Critical input?","choices":["A","B"],
+		const char *args = rc == NB_ERR_TIMEOUT
+					   ?
+					   R"({"question":"Critical input?","choices":["A","B"],
 			"recommended_indices":[1],"response_policy":"required",
-			"timeout_seconds":1})" :
-			R"({"question":"Preference?","choices":["A","B"],
+			"timeout_seconds":1})"
+					   :
+					   R"({"question":"Preference?","choices":["A","B"],
 			"recommended_indices":[1],"response_policy":"optional"})";
 		EXPECT_EQ(tool_exec(&tools, "ask_user", args, &result), rc);
 		EXPECT_EQ(cJSON_GetObjectItem(result.data, "answers"), nullptr);
-		if (rc == -ETIMEDOUT)
+		if (rc == NB_ERR_TIMEOUT)
 			EXPECT_EQ(state.options.timeout_seconds, 0);
 		tool_result_cleanup(&result);
 	}
@@ -703,7 +707,7 @@ TEST_F(AskUserToolTest, InvalidFallbackParametersNeverOpenPrompt)
 		args += "}";
 		tool_result result{};
 		tool_result_init(&result);
-		EXPECT_EQ(tool_exec(&tools, "ask_user", args.c_str(), &result), -EINVAL)
+		EXPECT_EQ(tool_exec(&tools, "ask_user", args.c_str(), &result), NB_ERR_INVAL)
 			<< parameters;
 		tool_result_cleanup(&result);
 	}
@@ -713,19 +717,20 @@ TEST_F(AskUserToolTest, InvalidFallbackParametersNeverOpenPrompt)
 TEST_F(AskUserToolTest, ResponseCollectionInsertionFailureReturnsAllocationError)
 {
 	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	AskUserJsonHooksReset restore_hooks;
 
 	tool_result_init(&result);
 	state.fail_choices_key = true;
-	EXPECT_EQ(tool_exec(&tools, "ask_user",
-		"{\"question\":\"q\",\"choices\":[\"A\",\"B\"]}", &result), -ENOMEM);
+	EXPECT_EQ(tool_exec(&tools, "ask_user", "{\"question\":\"q\",\"choices\":[\"A\",\"B\"]}",
+			    &result),
+		  NB_ERR_NOMEM);
 	EXPECT_EQ(state.calls, 1);
 }
 
 TEST_F(AskUserToolTest, RecommendationInsertionFailureReturnsAllocationError)
 {
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	ASSERT_NE(data, nullptr);
 	struct ask_user_options options = {};
 	options.recommended_count = 1;
@@ -734,6 +739,6 @@ TEST_F(AskUserToolTest, RecommendationInsertionFailureReturnsAllocationError)
 	cJSON_Hooks hooks = {ask_user_fail_recommended_key, free};
 
 	cJSON_InitHooks(&hooks);
-	EXPECT_EQ(ask_user_options_to_json(data, &options), -ENOMEM);
+	EXPECT_EQ(ask_user_options_to_json(data, &options), NB_ERR_NOMEM);
 	EXPECT_EQ(cJSON_GetObjectItem(data, "recommended_indices"), nullptr);
 }

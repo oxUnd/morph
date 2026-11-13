@@ -22,14 +22,15 @@
 #include "agent/tool_runtime.h"
 #include "event/event.h"
 #include "render/image.h"
-#include "util/file.h"
-#include "util/error.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/image_util.h"
-#include "util/base64.h"
+#include "nb/file.h"
+#include "errors.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "media/image.h"
+#include "encoding_fixture.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
+#include "stb_image_resize2.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -41,7 +42,7 @@ struct FakeImageQaState {
 	int max_tokens{};
 	long timeout_seconds{};
 	int max_dim{};
-	const struct morph_cancel_token *cancel_token{};
+	const struct nb_cancel *cancel_token{};
 };
 
 static int fake_chat_with_image(struct model *self, const char *system_prompt, const char *prompt,
@@ -156,7 +157,7 @@ TEST(ImageGen, RejectsMultipleReferencesForUnsupportedModel) {
 	snprintf(image_model.api_key, sizeof(image_model.api_key), "test-key");
 	int rc = image_gen_create(&image_model, "combine them", NULL,
 				  "2k", references, 2, NULL, &result);
-	EXPECT_EQ(rc, -ENOTSUP);
+	EXPECT_EQ(rc, NB_ERR_UNSUPPORTED);
 	EXPECT_NE(strstr(image_model.last_error, "multiple reference images"),
 		  nullptr);
 }
@@ -169,7 +170,7 @@ TEST(ImageGen, RejectsTooManyReferences) {
 				  references,
 				  IMAGE_GEN_MAX_REFERENCE_IMAGES + 1,
 				  NULL, &result);
-	EXPECT_EQ(rc, -EINVAL);
+	EXPECT_EQ(rc, NB_ERR_INVAL);
 }
 
 TEST(ImageGen, ValidateSizeAllowsAliasesAndBounds) {
@@ -268,7 +269,7 @@ TEST(ImageGen, KeepsDalleSizeProfile) {
 }
 
 TEST(ImageGen, ParsesUrlAndBase64Responses) {
-	struct image_payload payload MORPH_CLEANUP(image_payload_cleanup) = {};
+	struct image_payload payload NB_CLEANUP(image_payload_cleanup) = {};
 	const char *url_json =
 		"{\"data\":[{\"url\":\"https://example.com/a.png\"}]}";
 	const char *b64_json =
@@ -292,7 +293,7 @@ TEST(ImageGen, ParsesUrlAndBase64Responses) {
 }
 
 TEST(ImageGen, RejectsMalformedImageResponses) {
-	struct image_payload payload MORPH_CLEANUP(image_payload_cleanup) = {};
+	struct image_payload payload NB_CLEANUP(image_payload_cleanup) = {};
 
 	EXPECT_NE(image_provider_parse_response(NULL, "{}", &payload), 0);
 	EXPECT_NE(image_provider_parse_response(
@@ -302,30 +303,32 @@ TEST(ImageGen, RejectsMalformedImageResponses) {
 
 TEST(ImageGen, ResponseParsingRejectsOccupiedPayloadAndPreservesFailureOutput)
 {
-	struct image_payload payload MORPH_CLEANUP(image_payload_cleanup) = {};
+	struct image_payload payload NB_CLEANUP(image_payload_cleanup) = {};
 	payload.data = strdup("original");
 	ASSERT_NE(payload.data, nullptr);
 	payload.kind = IMAGE_PAYLOAD_BASE64;
 	strcpy(payload.output_format, "webp");
 	char *original = payload.data;
 	EXPECT_EQ(image_provider_parse_response(NULL, "{\"data\":[{\"url\":\"new\"}]}", &payload),
-		  -EEXIST);
+		  NB_ERR_EXISTS);
 	EXPECT_EQ(payload.data, original);
 	EXPECT_EQ(payload.kind, IMAGE_PAYLOAD_BASE64);
 	EXPECT_STREQ(payload.output_format, "webp");
 	struct model model = {};
 	struct image_request request = {};
 	request.prompt = "example";
-	EXPECT_EQ(image_openai_provider_borrow()->execute(&model, &request, &payload), -EEXIST);
-	EXPECT_EQ(image_volcengine_provider_borrow()->execute(&model, &request, &payload), -EEXIST);
+	EXPECT_EQ(image_openai_provider_borrow()->execute(&model, &request, &payload),
+		  NB_ERR_EXISTS);
+	EXPECT_EQ(image_volcengine_provider_borrow()->execute(&model, &request, &payload),
+		  NB_ERR_EXISTS);
 	EXPECT_EQ(payload.data, original);
 	image_payload_cleanup(&payload);
 	payload.kind = IMAGE_PAYLOAD_BASE64;
 	payload.usage.total_tokens = 73;
 	strcpy(payload.output_format, "unchanged");
-	EXPECT_EQ(image_provider_parse_response(NULL, "not json", &payload), MORPH_ERR_PARSE);
+	EXPECT_EQ(image_provider_parse_response(NULL, "not json", &payload), NB_ERR_PARSE);
 	EXPECT_EQ(image_provider_parse_response(NULL, "{\"data\":[{}]}", &payload),
-		  MORPH_ERR_PROTOCOL);
+		  NB_ERR_PROTOCOL);
 	EXPECT_EQ(payload.data, nullptr);
 	EXPECT_EQ(payload.kind, IMAGE_PAYLOAD_BASE64);
 	EXPECT_EQ(payload.usage.total_tokens, 73);
@@ -334,7 +337,7 @@ TEST(ImageGen, ResponseParsingRejectsOccupiedPayloadAndPreservesFailureOutput)
 
 TEST(ImageGen, ParsedPayloadOutlivesItsBorrowedResponse)
 {
-	struct image_payload payload MORPH_CLEANUP(image_payload_cleanup) = {};
+	struct image_payload payload NB_CLEANUP(image_payload_cleanup) = {};
 	{
 		char response[] = "{\"data\":[{\"url\":\"independent\"}]}";
 		ASSERT_EQ(image_provider_parse_response(NULL, response, &payload), 0);
@@ -348,33 +351,33 @@ TEST(ImageGen, RequestBuildersPreserveOccupiedOutputs)
 	struct model model = {};
 	struct image_request request = {};
 	request.prompt = "example";
-	cJSON *value MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateString("original");
+	cJSON *value NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateString("original");
 	ASSERT_NE(value, nullptr);
-	char *body MORPH_CLEANUP(morph_json_text_cleanup) = morph_json_print_copy(value);
+	char *body NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(value);
 	ASSERT_NE(body, nullptr);
 	char *original = body;
-	EXPECT_EQ(image_volcengine_request_body_create(&model, &request, &body), -EEXIST);
+	EXPECT_EQ(image_volcengine_request_body_create(&model, &request, &body), NB_ERR_EXISTS);
 	EXPECT_EQ(body, original);
-	morph_buf_t url MORPH_CLEANUP(morph_buf_cleanup) = {};
-	morph_buf_t auth MORPH_CLEANUP(morph_buf_cleanup) = {};
-	ASSERT_EQ(morph_buf_init(&auth, 32), 0);
-	ASSERT_EQ(morph_buf_puts(&auth, "original"), 0);
-	char *auth_storage = auth.data;
-	EXPECT_EQ(image_provider_build_request_meta(&model, "/images", &url, &auth), -EEXIST);
-	EXPECT_EQ(url.data, nullptr);
-	EXPECT_EQ(auth.data, auth_storage);
-	EXPECT_STREQ(morph_buf_cstr_borrow(&auth), "original");
+	nb_buf url NB_CLEANUP(nb_buf_cleanup) = {};
+	nb_buf auth NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ((nb_buf_init(&auth), nb_buf_reserve(&auth, 32) ? 0 : NB_ERR_NOMEM), 0);
+	ASSERT_EQ((nb_buf_append_cstr(&auth, "original") ? 0 : NB_ERR_NOMEM), 0);
+	char *auth_storage = auth.ptr;
+	EXPECT_EQ(image_provider_build_request_meta(&model, "/images", &url, &auth), NB_ERR_EXISTS);
+	EXPECT_EQ(url.ptr, nullptr);
+	EXPECT_EQ(auth.ptr, auth_storage);
+	EXPECT_STREQ(nb_buf_cstr(&auth), "original");
 }
 
 TEST(ImageGen, DecodesBase64Payloads) {
 	size_t decoded_len = 0;
-	unsigned char *decoded = base64_decode_copy("aGVsbG8=", &decoded_len);
+	unsigned char *decoded = test_decode_bytes("aGVsbG8=", &decoded_len);
 
 	ASSERT_NE(decoded, nullptr);
 	ASSERT_EQ(decoded_len, 5);
 	EXPECT_EQ(memcmp(decoded, "hello", decoded_len), 0);
 	free(decoded);
-	EXPECT_EQ(base64_decode_copy("bad", &decoded_len), nullptr);
+	EXPECT_EQ(test_decode_bytes("bad", &decoded_len), nullptr);
 	EXPECT_EQ(decoded_len, 0);
 }
 
@@ -387,11 +390,11 @@ TEST(ImageEncode, PreservesSmallPngWithoutTranscoding) {
 	ASSERT_EQ(image_encode_base64_copy(path, 360, &encoded), 0);
 	ASSERT_NE(encoded.base64, nullptr);
 	EXPECT_STREQ(encoded.mime_type, "image/png");
-	char *original = base64_encode_file_copy(path);
+	char *original = test_media_file_payload(path);
 	ASSERT_NE(original, nullptr);
 	EXPECT_STREQ(encoded.base64, original);
 	free(original);
-	unsigned char *decoded = base64_decode_copy(encoded.base64, &decoded_len);
+	unsigned char *decoded = test_decode_bytes(encoded.base64, &decoded_len);
 	ASSERT_NE(decoded, nullptr);
 	ASSERT_GE(decoded_len, 8u);
 	EXPECT_EQ(memcmp(decoded, "\x89PNG\r\n\x1a\n", 8), 0);
@@ -409,11 +412,11 @@ TEST(ImageEncode, PreservesSmallJpegWithoutTranscoding) {
 	ASSERT_EQ(image_encode_base64_copy(path, 360, &encoded), 0);
 	ASSERT_NE(encoded.base64, nullptr);
 	EXPECT_STREQ(encoded.mime_type, "image/jpeg");
-	char *original = base64_encode_file_copy(path);
+	char *original = test_media_file_payload(path);
 	ASSERT_NE(original, nullptr);
 	EXPECT_STREQ(encoded.base64, original);
 	free(original);
-	unsigned char *decoded = base64_decode_copy(encoded.base64, &decoded_len);
+	unsigned char *decoded = test_decode_bytes(encoded.base64, &decoded_len);
 	ASSERT_NE(decoded, nullptr);
 	ASSERT_GE(decoded_len, 3u);
 	EXPECT_EQ(decoded[0], 0xff);
@@ -435,7 +438,7 @@ TEST(ImageEncode, ResizesJpegAndKeepsJpegMime) {
 	ASSERT_EQ(create_solid_jpeg(path, 800, 400), 0);
 	ASSERT_EQ(image_encode_base64_copy(path, 360, &encoded), 0);
 	EXPECT_STREQ(encoded.mime_type, "image/jpeg");
-	unsigned char *decoded = base64_decode_copy(encoded.base64, &decoded_len);
+	unsigned char *decoded = test_decode_bytes(encoded.base64, &decoded_len);
 	ASSERT_NE(decoded, nullptr);
 	ASSERT_TRUE(stbi_info_from_memory(decoded, (int)decoded_len,
 					  &width, &height, &channels));
@@ -457,7 +460,7 @@ TEST(ImageEncode, ResizesPngAndKeepsPngMime) {
 	ASSERT_EQ(create_solid_png(path, 800, 400), 0);
 	ASSERT_EQ(image_encode_base64_copy(path, 360, &encoded), 0);
 	EXPECT_STREQ(encoded.mime_type, "image/png");
-	unsigned char *decoded = base64_decode_copy(encoded.base64, &decoded_len);
+	unsigned char *decoded = test_decode_bytes(encoded.base64, &decoded_len);
 	ASSERT_NE(decoded, nullptr);
 	ASSERT_TRUE(stbi_info_from_memory(decoded, (int)decoded_len,
 					  &width, &height, &channels));
@@ -510,6 +513,100 @@ TEST(ImageGen, ProbeAndResizeFileExact) {
 	EXPECT_EQ(w, 37);
 	EXPECT_EQ(h, 19);
 	remove(path);
+}
+
+TEST(ImageGen, ResizeFiltersPreserveConstantChannelsAcrossVerticalRatios)
+{
+	constexpr int input_width = 13;
+	constexpr int input_height = 64;
+	constexpr int output_width = 19;
+	const stbir_pixel_layout layouts[] = {STBIR_1CHANNEL, STBIR_2CHANNEL, STBIR_RGB,
+					      STBIR_4CHANNEL};
+	for (int channels = 1; channels <= 4; channels++) {
+		std::vector<float> input(
+			static_cast<size_t>(input_width * input_height * channels));
+		for (size_t i = 0; i < input.size(); i++)
+			input[i] = static_cast<float>(i % static_cast<size_t>(channels) + 1) / 8.0f;
+		for (int output_height : {1, 2, 3, 4, 7, 8, 9, 17, 31, 63, 65, 127}) {
+			for (stbir_filter filter :
+			     {STBIR_FILTER_BOX, STBIR_FILTER_TRIANGLE, STBIR_FILTER_CUBICBSPLINE,
+			      STBIR_FILTER_CATMULLROM, STBIR_FILTER_MITCHELL}) {
+				SCOPED_TRACE(::testing::Message() << "channels=" << channels
+								  << " height=" << output_height
+								  << " filter=" << filter);
+				std::vector<float> output(
+					static_cast<size_t>(output_width * output_height *
+							    channels),
+					-1.0f);
+				STBIR_RESIZE resize{};
+				stbir_resize_init(&resize, input.data(), input_width, input_height,
+						  0, output.data(), output_width, output_height, 0,
+						  layouts[channels - 1], STBIR_TYPE_FLOAT);
+				ASSERT_TRUE(stbir_set_filters(&resize, filter, filter));
+				int resized = stbir_resize_extended(&resize);
+				stbir_free_samplers(&resize);
+				ASSERT_TRUE(resized);
+				for (size_t i = 0; i < output.size(); i++) {
+					float expected =
+						static_cast<float>(
+							i % static_cast<size_t>(channels) + 1) /
+						8.0f;
+					ASSERT_NEAR(output[i], expected, 0.00001f)
+						<< "sample=" << i;
+				}
+			}
+		}
+	}
+}
+
+TEST(ImageGen, ResizePreservesModesAndUnrelatedTemporaryNamesAcrossFormats)
+{
+	char directory[] = "/tmp/morph-resize-atomic-XXXXXX";
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	for (const char *extension : {"png", "jpg", "bmp", "tga"}) {
+		std::string path = std::string(directory) + "/image." + extension;
+		std::string sentinel = path + ".tmp";
+		ASSERT_EQ(create_solid_png(path.c_str(), 8, 8), 0);
+		ASSERT_EQ(chmod(path.c_str(), 0600), 0);
+		ASSERT_EQ(nb_file_write_all(sentinel.c_str(), "keep", 4, nullptr), NB_OK);
+		ASSERT_EQ(image_resize_file_exact(path.c_str(), 11, 7), 0);
+		int width = 0, height = 0;
+		ASSERT_EQ(image_probe_size(path.c_str(), &width, &height), 0);
+		EXPECT_EQ(width, 11);
+		EXPECT_EQ(height, 7);
+		struct stat metadata{};
+		ASSERT_EQ(stat(path.c_str(), &metadata), 0);
+		EXPECT_EQ(metadata.st_mode & 0777, 0600u);
+		nb_buf retained NB_CLEANUP(nb_buf_cleanup) = {};
+		ASSERT_EQ(nb_file_read_all(sentinel.c_str(), &retained, 0, nullptr), NB_OK);
+		EXPECT_TRUE(nb_str_eq_cstr(nb_buf_str(&retained), "keep"));
+		EXPECT_EQ(unlink(path.c_str()), 0);
+		EXPECT_EQ(unlink(sentinel.c_str()), 0);
+	}
+	EXPECT_TRUE(std::filesystem::is_empty(directory));
+	EXPECT_EQ(rmdir(directory), 0);
+}
+
+TEST(ImageGen, ResizeRejectsSymlinkWithoutChangingTarget)
+{
+	char directory[] = "/tmp/morph-resize-link-XXXXXX";
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	std::string target = std::string(directory) + "/target.png";
+	std::string link = std::string(directory) + "/link.png";
+	ASSERT_EQ(create_solid_png(target.c_str(), 8, 8), 0);
+	ASSERT_EQ(symlink(target.c_str(), link.c_str()), 0);
+	EXPECT_EQ(image_resize_file_exact(link.c_str(), 11, 7), NB_ERR_IO);
+	struct stat metadata{};
+	ASSERT_EQ(lstat(link.c_str(), &metadata), 0);
+	EXPECT_TRUE(S_ISLNK(metadata.st_mode));
+	int width = 0, height = 0;
+	ASSERT_EQ(image_probe_size(target.c_str(), &width, &height), 0);
+	EXPECT_EQ(width, 8);
+	EXPECT_EQ(height, 8);
+	EXPECT_EQ(unlink(link.c_str()), 0);
+	EXPECT_EQ(unlink(target.c_str()), 0);
+	EXPECT_TRUE(std::filesystem::is_empty(directory));
+	EXPECT_EQ(rmdir(directory), 0);
 }
 
 TEST(ImageRender, NullPath) {
@@ -592,14 +689,15 @@ TEST_F(ImgGenToolTest, ExecMissingPrompt) {
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "img_gen", "{}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_TRUE(strstr(result.text.data, "error") != NULL ||
-		    strstr(result.text.data, "missing") != NULL);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_TRUE(strstr(result.text.ptr, "error") != NULL ||
+		    strstr(result.text.ptr, "missing") != NULL);
 	tool_result_cleanup(&result);
 }
 
-TEST_F(ImgGenToolTest, ToolNotFound) {
-	struct tool_result result;
+TEST_F(ImgGenToolTest, ToolNotFound)
+{
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "nonexistent", "{}", &result);
 	EXPECT_NE(rc, 0);
@@ -612,8 +710,8 @@ TEST_F(ImgGenToolTest, ExecInvalidSize) {
 	int rc = tool_exec(&reg, "img_gen",
 		"{\"prompt\":\"a cat\",\"size\":\"1920x1080\"}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "invalid size"), nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "invalid size"), nullptr);
 	tool_result_cleanup(&result);
 }
 
@@ -624,9 +722,9 @@ TEST_F(ImgGenToolTest, ExecRejectsAutoSize) {
 	int rc = tool_exec(&reg, "img_gen",
 		"{\"prompt\":\"a cat\",\"size\":\"auto\"}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "invalid size"), nullptr);
-	EXPECT_EQ(strstr(result.text.data, "auto"), nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "invalid size"), nullptr);
+	EXPECT_EQ(strstr(result.text.ptr, "auto"), nullptr);
 	tool_result_cleanup(&result);
 }
 
@@ -642,8 +740,8 @@ TEST_F(ImgGenToolTest, ExecAcceptsCustomSizeFromConfiguredModelProfile) {
 		"{\"prompt\":\"a cat\",\"size\":\"1024x1024\"}",
 		&result);
 	EXPECT_EQ(rc, MORPH_ERR_NOT_CONFIGURED);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_EQ(strstr(result.text.data, "invalid size"), nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_EQ(strstr(result.text.ptr, "invalid size"), nullptr);
 	tool_result_cleanup(&result);
 }
 
@@ -656,11 +754,11 @@ TEST_F(ImgGenToolTest, ExecAcceptsDallePortraitLandscapeAndAutomaticSizes)
 	for (const char *size : {"1024x1024", "1024x1792", "1792x1024", "auto"}) {
 		SCOPED_TRACE(size);
 		std::string args = std::string("{\"prompt\":\"a cat\",\"size\":\"") + size + "\"}";
-		struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+		struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 		EXPECT_EQ(tool_exec(&reg, "img_gen", args.c_str(), &result),
 		MORPH_ERR_NOT_CONFIGURED);
-		ASSERT_NE(result.text.data, nullptr);
-		EXPECT_EQ(strstr(result.text.data, "invalid size"), nullptr);
+		ASSERT_NE(result.text.ptr, nullptr);
+		EXPECT_EQ(strstr(result.text.ptr, "invalid size"), nullptr);
 	}
 }
 
@@ -672,9 +770,9 @@ TEST_F(ImgGenToolTest, ExecRejectsSingularAndPluralReferencesTogether) {
 		"{\"prompt\":\"combine them\","
 		"\"reference_image\":\"one.png\","
 		"\"reference_images\":[\"two.png\"]}", &result);
-	EXPECT_EQ(rc, -EINVAL);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "not both"), nullptr);
+	EXPECT_EQ(rc, NB_ERR_INVAL);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "not both"), nullptr);
 	tool_result_cleanup(&result);
 }
 
@@ -687,9 +785,9 @@ TEST_F(ImgGenToolTest, ExecRejectsMoreThanTenReferences) {
 		"\"1.png\",\"2.png\",\"3.png\",\"4.png\",\"5.png\","
 		"\"6.png\",\"7.png\",\"8.png\",\"9.png\",\"10.png\","
 		"\"11.png\"]}", &result);
-	EXPECT_EQ(rc, -EINVAL);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "at most 10"), nullptr);
+	EXPECT_EQ(rc, NB_ERR_INVAL);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "at most 10"), nullptr);
 	tool_result_cleanup(&result);
 }
 
@@ -700,9 +798,9 @@ TEST_F(ImgGenToolTest, ExecRejectsInvalidReferenceArrayItem) {
 	int rc = tool_exec(&reg, "img_gen",
 		"{\"prompt\":\"combine them\","
 		"\"reference_images\":[\"one.png\",42]}", &result);
-	EXPECT_EQ(rc, -EINVAL);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "non-empty file path"), nullptr);
+	EXPECT_EQ(rc, NB_ERR_INVAL);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "non-empty file path"), nullptr);
 	tool_result_cleanup(&result);
 }
 
@@ -720,8 +818,8 @@ TEST_F(ImgGenToolTest, InpaintExecBadJson) {
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "img_inpaint", "not json", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_TRUE(strstr(result.text.data, "error") != NULL);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_TRUE(strstr(result.text.ptr, "error") != NULL);
 	tool_result_cleanup(&result);
 }
 
@@ -739,8 +837,8 @@ TEST_F(ImgGenToolTest, ComposeExecBadJson) {
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "img_compose", "not json", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_TRUE(strstr(result.text.data, "error") != NULL);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_TRUE(strstr(result.text.ptr, "error") != NULL);
 	tool_result_cleanup(&result);
 }
 
@@ -758,7 +856,7 @@ TEST_F(ImgGenToolTest, InfoMissingPath) {
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "img_info", "{}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
 	tool_result_cleanup(&result);
 }
 
@@ -768,7 +866,7 @@ TEST_F(ImgGenToolTest, InfoInvalidFile) {
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "img_info", "{\"file_path\":\"/nonexistent.png\"}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
 	tool_result_cleanup(&result);
 }
 
@@ -776,7 +874,7 @@ TEST_F(ImgGenToolTest, InfoDeniesSymlinkEscape) {
 	const char *work = "/tmp/morph_img_work";
 	const char *outside = "/tmp/morph_img_outside.png";
 	const char *link_path = "/tmp/morph_img_work/link.png";
-	file_ensure_dir(work);
+	nb_file_mkdir(work, true, NULL);
 	ASSERT_EQ(create_test_png(outside), 0);
 	std::remove(link_path);
 	ASSERT_EQ(symlink(outside, link_path), 0);
@@ -787,9 +885,9 @@ TEST_F(ImgGenToolTest, InfoDeniesSymlinkEscape) {
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "img_info",
 		"{\"file_path\":\"link.png\"}", &result);
-	EXPECT_EQ(rc, -EPERM);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_TRUE(strstr(result.text.data, "permission denied") != NULL);
+	EXPECT_EQ(rc, NB_ERR_NOT_PERMITTED);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_TRUE(strstr(result.text.ptr, "permission denied") != NULL);
 	tool_result_cleanup(&result);
 	tool_context_destroy(tctx);
 	std::remove(link_path);
@@ -819,8 +917,8 @@ TEST_F(ImgGenToolTest, QaMissingPath) {
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "img_qa", "{}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_TRUE(strstr(result.text.data, "file_path") != NULL);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_TRUE(strstr(result.text.ptr, "file_path") != NULL);
 	tool_result_cleanup(&result);
 }
 
@@ -835,8 +933,8 @@ TEST_F(ImgGenToolTest, QaRequiresConfiguredLlm) {
 			   "{\"file_path\":\"/tmp/nonexistent.png\"}",
 			   &result);
 	EXPECT_EQ(rc, MORPH_ERR_NOT_CONFIGURED);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_TRUE(strstr(result.text.data, "multimodal") != NULL);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_TRUE(strstr(result.text.ptr, "multimodal") != NULL);
 	tool_result_cleanup(&result);
 }
 
@@ -867,7 +965,7 @@ TEST_F(ImgGenToolTest, QaCallsMultimodalLlm) {
 			   "\"prompt\":\"OCR this\"}",
 			   &result);
 	EXPECT_EQ(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
 	ASSERT_NE(result.data, nullptr);
 	{
 		cJSON *text = cJSON_GetObjectItem(result.data, "text");
@@ -933,10 +1031,10 @@ TEST_F(ImgGenToolTest, QaReturnsProviderFailureDetail) {
 			   "\"prompt\":\"What is this?\"}",
 			   &result);
 	EXPECT_EQ(rc, MORPH_ERR_API);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_TRUE(strstr(result.text.data, "image QA LLM call failed") != NULL);
-	EXPECT_TRUE(strstr(result.text.data, "model does not support image input") != NULL);
-	EXPECT_TRUE(strstr(result.text.data, "[model.vision]") != NULL);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_TRUE(strstr(result.text.ptr, "image QA LLM call failed") != NULL);
+	EXPECT_TRUE(strstr(result.text.ptr, "model does not support image input") != NULL);
+	EXPECT_TRUE(strstr(result.text.ptr, "[model.vision]") != NULL);
 	tool_result_cleanup(&result);
 	std::remove(path);
 }
@@ -949,7 +1047,7 @@ TEST_F(ImgGenToolTest, QaUsesConfiguredOutputBudgetAndSupportsOriginalDetail)
 	fake.chat_with_image = fake_chat_with_image;
 	fake.handle = &qa;
 	ASSERT_EQ(img_qa_init(&reg, &fake, nullptr), 0);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	ASSERT_EQ(tool_exec(&reg, "img_qa",
 		"{\"file_path\":\"/tmp/original.png\",\"detail\":\"original\"}", &result), 0);
 	EXPECT_EQ(qa.max_tokens, 16384);
@@ -967,7 +1065,7 @@ TEST_F(ImgGenToolTest, QaUsesConfiguredOutputBudgetAndSupportsOriginalDetail)
 		"{\"file_path\":\"a.png\",\"detail\":\"low\"}"}) {
 		SCOPED_TRACE(invalid);
 		tool_result_cleanup(&result);
-		EXPECT_EQ(tool_exec(&reg, "img_qa", invalid, &result), -EINVAL);
+		EXPECT_EQ(tool_exec(&reg, "img_qa", invalid, &result), NB_ERR_INVAL);
 	}
 }
 
@@ -985,7 +1083,7 @@ TEST_F(ImgGenToolTest, ResizeMissingArgs) {
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "img_resize", "{}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
 	tool_result_cleanup(&result);
 }
 
@@ -997,14 +1095,14 @@ TEST_F(ImgGenToolTest, ResizeInvalidFile) {
 		"{\"file_path\":\"/nonexistent.png\",\"width\":10,\"height\":10}",
 		&result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
 	tool_result_cleanup(&result);
 }
 
 TEST_F(ImgGenToolTest, ResizeDeniesOutsideInput) {
 	const char *work = "/tmp/morph_img_work";
 	const char *outside = "/tmp/morph_img_outside.png";
-	file_ensure_dir(work);
+	nb_file_mkdir(work, true, NULL);
 	ASSERT_EQ(create_test_png(outside), 0);
 	struct tool_context *tctx = tool_context_create(NULL, work, "/tmp/morph_img_out");
 	ASSERT_NE(tctx, nullptr);
@@ -1015,9 +1113,9 @@ TEST_F(ImgGenToolTest, ResizeDeniesOutsideInput) {
 		"{\"file_path\":\"/tmp/morph_img_outside.png\","
 		"\"width\":4,\"height\":4}",
 		&result);
-	EXPECT_EQ(rc, -EPERM);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_TRUE(strstr(result.text.data, "permission denied") != NULL);
+	EXPECT_EQ(rc, NB_ERR_NOT_PERMITTED);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_TRUE(strstr(result.text.ptr, "permission denied") != NULL);
 	tool_result_cleanup(&result);
 	tool_context_destroy(tctx);
 	std::remove(outside);
@@ -1038,7 +1136,7 @@ TEST_F(ImgGenToolTest, ConvertMissingArgs) {
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "img_convert", "{}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
 	tool_result_cleanup(&result);
 }
 
@@ -1050,14 +1148,14 @@ TEST_F(ImgGenToolTest, ConvertUnsupportedFormat) {
 		"{\"file_path\":\"/tmp/x.png\",\"format\":\"avif\"}",
 		&result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
 	tool_result_cleanup(&result);
 }
 
 TEST_F(ImgGenToolTest, ConvertDeniesOutsideInputBeforeOutput) {
 	const char *work = "/tmp/morph_img_work";
 	const char *outside = "/tmp/morph_img_outside.png";
-	file_ensure_dir(work);
+	nb_file_mkdir(work, true, NULL);
 	ASSERT_EQ(create_test_png(outside), 0);
 	struct tool_context *tctx = tool_context_create(NULL, work, "/tmp/morph_img_out");
 	ASSERT_NE(tctx, nullptr);
@@ -1068,9 +1166,9 @@ TEST_F(ImgGenToolTest, ConvertDeniesOutsideInputBeforeOutput) {
 		"{\"file_path\":\"/tmp/morph_img_outside.png\","
 		"\"format\":\"jpg\"}",
 		&result);
-	EXPECT_EQ(rc, -EPERM);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_TRUE(strstr(result.text.data, "permission denied") != NULL);
+	EXPECT_EQ(rc, NB_ERR_NOT_PERMITTED);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_TRUE(strstr(result.text.ptr, "permission denied") != NULL);
 	tool_result_cleanup(&result);
 	tool_context_destroy(tctx);
 	std::remove(outside);
@@ -1097,33 +1195,10 @@ TEST(ImageDetectFmt, ShortBuffer) {
 	EXPECT_EQ(image_detect_fmt(buf, 1), 0);
 }
 
-static int create_test_jpeg(const char *path) {
-	unsigned char buf[] = {
-		0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46,
-		0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
-		0x00, 0x01, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43,
-		0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08,
-		0x07, 0x07, 0x07, 0x09, 0x09, 0x08, 0x0A, 0x0C,
-		0x14, 0x0D, 0x0C, 0x0B, 0x0B, 0x0C, 0x19, 0x12,
-		0x13, 0x0F, 0x14, 0x1D, 0x1A, 0x1F, 0x1E, 0x1D,
-		0x1A, 0x1C, 0x1C, 0x20, 0x24, 0x2E, 0x27, 0x20,
-		0x22, 0x2C, 0x23, 0x1C, 0x1C, 0x28, 0x37, 0x29,
-		0x2C, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1F, 0x27,
-		0x39, 0x3D, 0x38, 0x32, 0x3C, 0x2E, 0x33, 0x34,
-		0x32, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01,
-		0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4,
-		0x00, 0x1F, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01,
-		0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
-		0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
-		0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0xFF, 0xDA,
-		0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00,
-		0x7B, 0x94, 0x11, 0xCD, 0xA5, 0xFF, 0xD9
-	};
-	FILE *f = fopen(path, "wb");
-	if (!f) return -1;
-	size_t written = fwrite(buf, 1, sizeof(buf), f);
-	fclose(f);
-	return (written == sizeof(buf)) ? 0 : -1;
+static int create_test_jpeg(const char *path)
+{
+	const unsigned char pixel[] = {240, 120, 40};
+	return stbi_write_jpg(path, 1, 1, 3, pixel, 90) ? 0 : NB_ERR_IO;
 }
 
 TEST(ImageRender, KittyJpegProtocol) {
@@ -1310,13 +1385,13 @@ TEST(ImageEncode, RejectsExcessivePixelsAndDimensionsBeforeAllocation)
 	size_t bytes = 0;
 	EXPECT_EQ(image_pixel_bytes(4096, 4096, 4, &bytes), 0);
 	EXPECT_EQ(bytes, 64u * 1024u * 1024u);
-	EXPECT_EQ(image_pixel_bytes(32768, 32768, 4, &bytes), -EFBIG);
-	EXPECT_EQ(image_pixel_bytes(INT_MAX, INT_MAX, 4, &bytes), -EFBIG);
-	EXPECT_EQ(image_pixel_bytes(0, 100, 4, &bytes), -EINVAL);
-	EXPECT_EQ(image_pixel_bytes(100, 100, 5, &bytes), -EINVAL);
+	EXPECT_EQ(image_pixel_bytes(32768, 32768, 4, &bytes), NB_ERR_TOO_BIG);
+	EXPECT_EQ(image_pixel_bytes(INT_MAX, INT_MAX, 4, &bytes), NB_ERR_TOO_BIG);
+	EXPECT_EQ(image_pixel_bytes(0, 100, 4, &bytes), NB_ERR_INVAL);
+	EXPECT_EQ(image_pixel_bytes(100, 100, 5, &bytes), NB_ERR_INVAL);
 	const char *path = "/tmp/morph_resize_limit.png";
 	ASSERT_EQ(create_solid_png(path, 16, 16), 0);
-	EXPECT_EQ(image_resize_file_exact(path, 32768, 32768), -EFBIG);
+	EXPECT_EQ(image_resize_file_exact(path, 32768, 32768), NB_ERR_TOO_BIG);
 	int w = 0, h = 0;
 	ASSERT_EQ(image_probe_size(path, &w, &h), 0);
 	EXPECT_EQ(w, 16);
@@ -1326,6 +1401,9 @@ TEST(ImageEncode, RejectsExcessivePixelsAndDimensionsBeforeAllocation)
 
 TEST(MediaOutputTest, ConcurrentArtifactsKeepIndependentBytes)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	char directory[] = "/tmp/morph-media-output-XXXXXX";
 	ASSERT_NE(mkdtemp(directory), nullptr);
 	constexpr int count = 20;
@@ -1346,8 +1424,18 @@ TEST(MediaOutputTest, ConcurrentArtifactsKeepIndependentBytes)
 		worker.join();
 	for (int i = 0; i < count; i++) {
 		ASSERT_EQ(results[i], 0);
+		struct stat metadata{};
+		ASSERT_EQ(stat(paths[i].c_str(), &metadata), 0);
+		EXPECT_EQ(metadata.st_mode & 0777, 0600u);
 		std::string expected = "artifact " + std::to_string(i);
-		char *content = file_read_all_copy(paths[i].c_str(), nullptr);
+		char *content =
+			(nb_file_read_all(paths[i].c_str(), &file_value_1, 0, NULL) == NB_OK &&
+					 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) +
+								       1)) != NULL
+				 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
+					   nb_buf_len(&file_value_1) + 1),
+				    nb_charp_steal(&file_copy_1))
+				 : NULL);
 		ASSERT_NE(content, nullptr);
 		EXPECT_EQ(std::string(content), expected);
 		free(content);
@@ -1366,7 +1454,7 @@ TEST(MediaOutputTest, FailureLeavesNoPublishedOrTemporaryFile)
 	char output[2] = {'x', '\0'};
 
 	EXPECT_EQ(media_output_write(directory, "vid", "mp4", "data", 4, output, sizeof(output)),
-		  -ENAMETOOLONG);
+		  NB_ERR_NAME_TOO_LONG);
 	EXPECT_EQ(output[0], '\0');
 	EXPECT_TRUE(std::filesystem::is_empty(directory));
 	EXPECT_EQ(rmdir(directory), 0);
@@ -1393,13 +1481,13 @@ TEST(AnnotationTest, ParsedCopySurvivesSourceReleaseForAllEstablishedShapes)
 		ASSERT_EQ(annotation_parse_copy(input, &parsed), 0);
 		cJSON_Delete(input);
 		input = nullptr;
-		ASSERT_EQ(parsed.images.nelts, 1u);
-		ASSERT_EQ(parsed.bboxes.nelts, 1u);
+		ASSERT_EQ(parsed.images.len, 1u);
+		ASSERT_EQ(parsed.bboxes.len, 1u);
 		const auto *image = annotation_image_borrow(&parsed, 0);
 		ASSERT_NE(image, nullptr);
 		EXPECT_STREQ(image->path, "input.png");
 		const auto *bbox =
-			static_cast<const annotation_bbox *>(morph_array_borrow(&parsed.bboxes, 0));
+			static_cast<const annotation_bbox *>(nb_vec_at(&parsed.bboxes, 0));
 		annotation_rect normalized{};
 		ASSERT_EQ(annotation_rect_normalize(&bbox->rect, image->width, image->height,
 						    &normalized),
@@ -1421,7 +1509,7 @@ TEST(AnnotationTest, OccupiedOutputPreservesExistingOwner)
 	annotation parsed{};
 	ASSERT_EQ(annotation_parse_copy(input, &parsed), 0);
 	cJSON *owner = parsed.owned;
-	EXPECT_EQ(annotation_parse_copy(input, &parsed), -EALREADY);
+	EXPECT_EQ(annotation_parse_copy(input, &parsed), NB_ERR_STATE);
 	EXPECT_EQ(parsed.owned, owner);
 	cJSON_Delete(input);
 	EXPECT_STREQ(annotation_image_borrow(&parsed, 0)->path, "source.png");
@@ -1440,13 +1528,13 @@ TEST(AnnotationTest, RejectsInvalidCoordinatesAndImageIndices)
 		json += "]}";
 		cJSON *input = cJSON_Parse(json.c_str());
 		annotation parsed{};
-		EXPECT_EQ(annotation_parse_copy(input, &parsed), -EINVAL);
+		EXPECT_EQ(annotation_parse_copy(input, &parsed), NB_ERR_INVAL);
 		annotation_cleanup(&parsed);
 		cJSON_Delete(input);
 	}
 	annotation_rect invalid{-0.1, 0, 0.5, 0.5};
 	annotation_rect out{};
-	EXPECT_EQ(annotation_rect_normalize(&invalid, 100, 100, &out), -EINVAL);
+	EXPECT_EQ(annotation_rect_normalize(&invalid, 100, 100, &out), NB_ERR_INVAL);
 	annotation_rect normalized{0.1, 0.2, 0.3, 0.4};
 	ASSERT_EQ(annotation_rect_normalize(&normalized, 0, 0, &out), 0);
 	EXPECT_DOUBLE_EQ(out.width, 0.3);
@@ -1462,8 +1550,7 @@ TEST(AnnotationTest, MainImageUsesArrowCountThenSmallestIndex)
 	annotation parsed{};
 	ASSERT_EQ(annotation_parse_copy(input, &parsed), 0);
 	EXPECT_EQ(annotation_main_image(&parsed), 0);
-	const auto *arrow =
-		static_cast<const annotation_arrow *>(morph_array_borrow(&parsed.arrows, 0));
+	const auto *arrow = static_cast<const annotation_arrow *>(nb_vec_at(&parsed.arrows, 0));
 	double x, y;
 	ASSERT_EQ(annotation_point_pixels(&arrow->from, 100, 100, &x, &y), 0);
 	EXPECT_DOUBLE_EQ(x, 20);
@@ -1481,9 +1568,9 @@ TEST_F(ImgGenToolTest, QaRequestControlsDoNotMutateTheConfiguredModel)
 	ASSERT_NE(mkdtemp(directory), nullptr);
 	const std::string path = std::string(directory) + "/input.png";
 	ASSERT_EQ(create_test_png(path.c_str()), 0);
-	struct morph_cancel_token original{};
-	struct morph_cancel_token first{};
-	struct morph_cancel_token second{};
+	struct nb_cancel original{};
+	struct nb_cancel first{};
+	struct nb_cancel second{};
 	struct model fake{};
 	fake.api_key[0] = 'x';
 	fake.chat_with_image = fake_chat_with_image;
@@ -1514,13 +1601,13 @@ TEST_F(ImgGenToolTest, ResizeAndConvertShareAuthorizedDecodeFailures)
 	const std::string broken = std::string(directory) + "/broken.png";
 	const std::string missing = std::string(directory) + "/missing.png";
 	const std::string output = std::string(directory) + "/output.png";
-	ASSERT_EQ(file_write_all(broken.c_str(), "not an image", 12), 0);
+	ASSERT_EQ(nb_file_write_all(broken.c_str(), "not an image", 12, NULL), 0);
 	struct tool_context *context = tool_context_create(nullptr, directory, directory);
 	ASSERT_NE(context, nullptr);
 	ASSERT_EQ(img_resize_init(&reg, context), 0);
 	ASSERT_EQ(img_convert_init(&reg, context), 0);
 	for (const auto &path : {missing, broken}) {
-		const int expected = path == missing ? -ENOENT : MORPH_ERR_FORMAT;
+		const int expected = path == missing ? NB_ERR_NOT_FOUND : NB_ERR_FORMAT;
 		for (const char *name : {"img_resize", "img_convert"}) {
 			SCOPED_TRACE(name);
 			const std::string arguments =
@@ -1531,9 +1618,9 @@ TEST_F(ImgGenToolTest, ResizeAndConvertShareAuthorizedDecodeFailures)
 			struct tool_result result;
 			tool_result_init(&result);
 			EXPECT_EQ(tool_exec(&reg, name, arguments.c_str(), &result), expected);
-			ASSERT_NE(result.text.data, nullptr);
-			EXPECT_NE(strstr(result.text.data, "failed to load image"), nullptr);
-			EXPECT_FALSE(file_exists(output.c_str()));
+			ASSERT_NE(result.text.ptr, nullptr);
+			EXPECT_NE(strstr(result.text.ptr, "failed to load image"), nullptr);
+			EXPECT_FALSE(nb_file_exists(output.c_str()));
 			tool_result_cleanup(&result);
 		}
 	}
@@ -1621,6 +1708,11 @@ TEST_F(ImgGenToolTest, DefaultTransformsPublishDistinctCompleteImages)
 
 TEST_F(ImgGenToolTest, ExplicitTransformsKeepTheirOwnFormatSelection)
 {
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_3 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	char directory[] = "/tmp/morph-image-explicit-XXXXXX";
 	ASSERT_NE(mkdtemp(directory), nullptr);
 	const std::string input = std::string(directory) + "/input.png";
@@ -1654,7 +1746,15 @@ TEST_F(ImgGenToolTest, ExplicitTransformsKeepTheirOwnFormatSelection)
 		ASSERT_EQ(result.artifacts.count, 1);
 		EXPECT_TRUE(std::filesystem::equivalent(result.artifacts.items[0].path, output));
 		size_t bytes = 0;
-		char *encoded = file_read_all_copy(output.c_str(), &bytes);
+		char *encoded =
+			(nb_file_read_all(output.c_str(), &file_value_2, 0, NULL) == NB_OK &&
+					 (file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) +
+								       1)) != NULL
+				 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
+					   nb_buf_len(&file_value_2) + 1),
+				    *(&bytes) = nb_buf_len(&file_value_2),
+				    nb_charp_steal(&file_copy_2))
+				 : NULL);
 		ASSERT_NE(encoded, nullptr);
 		ASSERT_GE(bytes, item.magic_length);
 		EXPECT_EQ(memcmp(encoded, item.magic, item.magic_length), 0);
@@ -1667,7 +1767,7 @@ TEST_F(ImgGenToolTest, ExplicitTransformsKeepTheirOwnFormatSelection)
 	}
 	const std::string target = std::string(directory) + "/canonical.png";
 	const std::string alias = std::string(directory) + "/alias.jpg";
-	ASSERT_EQ(file_write_all(target.c_str(), "old", 3), 0);
+	ASSERT_EQ(nb_file_write_all(target.c_str(), "old", 3, NULL), 0);
 	ASSERT_EQ(symlink("canonical.png", alias.c_str()), 0);
 	const std::string args =
 		"{\"file_path\":\"" + input + "\",\"width\":4,\"output_path\":\"" + alias + "\"}";
@@ -1675,7 +1775,14 @@ TEST_F(ImgGenToolTest, ExplicitTransformsKeepTheirOwnFormatSelection)
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "img_resize", args.c_str(), &result), 0);
 	EXPECT_TRUE(std::filesystem::is_symlink(alias));
-	char *encoded = file_read_all_copy(target.c_str(), nullptr);
+	char *encoded =
+		(nb_file_read_all(target.c_str(), &file_value_3, 0, NULL) == NB_OK &&
+				 (file_copy_3 = (char *)malloc(nb_buf_len(&file_value_3) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_3, nb_buf_cstr(&file_value_3),
+				   nb_buf_len(&file_value_3) + 1),
+			    nb_charp_steal(&file_copy_3))
+			 : NULL);
 	ASSERT_NE(encoded, nullptr);
 	EXPECT_EQ(memcmp(encoded, "\x89PNG", 4), 0);
 	free(encoded);
@@ -1686,14 +1793,17 @@ TEST_F(ImgGenToolTest, ExplicitTransformsKeepTheirOwnFormatSelection)
 
 TEST_F(ImgGenToolTest, TransformOutputFailuresLeaveNoArtifactOrTemporaryFiles)
 {
+	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_4 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	char directory[] = "/tmp/morph-image-output-failure-XXXXXX";
 	ASSERT_NE(mkdtemp(directory), nullptr);
 	const std::string input = std::string(directory) + "/input.png";
 	const std::string blocked = std::string(directory) + "/blocked";
 	const std::string marker = blocked + "/marker.txt";
 	ASSERT_EQ(create_solid_png(input.c_str(), 8, 4), 0);
-	ASSERT_EQ(file_ensure_dir(blocked.c_str()), 0);
-	ASSERT_EQ(file_write_all(marker.c_str(), "unchanged", 9), 0);
+	ASSERT_EQ(nb_file_mkdir(blocked.c_str(), true, NULL), 0);
+	ASSERT_EQ(nb_file_write_all(marker.c_str(), "unchanged", 9, NULL), 0);
 	struct tool_context *context = tool_context_create(nullptr, directory, directory);
 	ASSERT_NE(context, nullptr);
 	ASSERT_EQ(img_resize_init(&reg, context), 0);
@@ -1706,11 +1816,18 @@ TEST_F(ImgGenToolTest, TransformOutputFailuresLeaveNoArtifactOrTemporaryFiles)
 		tool_result_init(&result);
 		EXPECT_LT(tool_exec(&reg, name, args.c_str(), &result), 0);
 		EXPECT_EQ(result.artifacts.count, 0);
-		ASSERT_NE(result.text.data, nullptr);
-		EXPECT_NE(strstr(result.text.data, "failed to write output"), nullptr);
+		ASSERT_NE(result.text.ptr, nullptr);
+		EXPECT_NE(strstr(result.text.ptr, "failed to write output"), nullptr);
 		tool_result_cleanup(&result);
 	}
-	char *contents = file_read_all_copy(marker.c_str(), nullptr);
+	char *contents =
+		(nb_file_read_all(marker.c_str(), &file_value_4, 0, NULL) == NB_OK &&
+				 (file_copy_4 = (char *)malloc(nb_buf_len(&file_value_4) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_4, nb_buf_cstr(&file_value_4),
+				   nb_buf_len(&file_value_4) + 1),
+			    nb_charp_steal(&file_copy_4))
+			 : NULL);
 	ASSERT_NE(contents, nullptr);
 	EXPECT_STREQ(contents, "unchanged");
 	free(contents);
@@ -1726,12 +1843,15 @@ TEST_F(ImgGenToolTest, TransformOutputFailuresLeaveNoArtifactOrTemporaryFiles)
 
 TEST_F(ImgGenToolTest, ConvertRejectsUnboundedQualityBeforeWriting)
 {
+	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_5 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	char directory[] = "/tmp/morph-image-quality-XXXXXX";
 	ASSERT_NE(mkdtemp(directory), nullptr);
 	const std::string input = std::string(directory) + "/input.png";
 	const std::string output = std::string(directory) + "/existing.jpg";
 	ASSERT_EQ(create_solid_png(input.c_str(), 8, 4), 0);
-	ASSERT_EQ(file_write_all(output.c_str(), "unchanged", 9), 0);
+	ASSERT_EQ(nb_file_write_all(output.c_str(), "unchanged", 9, NULL), 0);
 	ASSERT_EQ(img_convert_init(&reg, nullptr), 0);
 	for (const char *quality : {"1e400", "1e100", "-1", "101"}) {
 		SCOPED_TRACE(quality);
@@ -1740,11 +1860,18 @@ TEST_F(ImgGenToolTest, ConvertRejectsUnboundedQualityBeforeWriting)
 					 "\",\"quality\":" + quality + "}";
 		struct tool_result result;
 		tool_result_init(&result);
-		EXPECT_EQ(tool_exec(&reg, "img_convert", args.c_str(), &result), -EINVAL);
+		EXPECT_EQ(tool_exec(&reg, "img_convert", args.c_str(), &result), NB_ERR_INVAL);
 		EXPECT_EQ(result.artifacts.count, 0);
 		tool_result_cleanup(&result);
 	}
-	char *contents = file_read_all_copy(output.c_str(), nullptr);
+	char *contents =
+		(nb_file_read_all(output.c_str(), &file_value_5, 0, NULL) == NB_OK &&
+				 (file_copy_5 = (char *)malloc(nb_buf_len(&file_value_5) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_5, nb_buf_cstr(&file_value_5),
+				   nb_buf_len(&file_value_5) + 1),
+			    nb_charp_steal(&file_copy_5))
+			 : NULL);
 	ASSERT_NE(contents, nullptr);
 	EXPECT_STREQ(contents, "unchanged");
 	free(contents);
@@ -1759,23 +1886,23 @@ TEST(ImageEncode, CopiesSurviveSourceRemovalAndPreserveOccupiedOwners)
 		ASSERT_GE(fd, 0);
 		ASSERT_EQ(close(fd), 0);
 		ASSERT_EQ(create_solid_png(path, 8, 4), 0);
-		struct image_encoded encoded MORPH_CLEANUP(image_encoded_cleanup) = {};
-		char *uri MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+		struct image_encoded encoded NB_CLEANUP(image_encoded_cleanup) = {};
+		char *uri NB_CLEANUP(nb_charp_cleanup) = nullptr;
 		ASSERT_EQ(image_encode_base64_copy(path, max_dim, &encoded), 0);
 		ASSERT_EQ(image_encode_data_uri_copy(path, max_dim, &uri), 0);
 		char *base64_owner = encoded.base64;
 		const char *mime_owner = encoded.mime_type;
 		char *uri_owner = uri;
 		ASSERT_EQ(unlink(path), 0);
-		EXPECT_EQ(image_encode_base64_copy(path, max_dim, &encoded), -EALREADY);
+		EXPECT_EQ(image_encode_base64_copy(path, max_dim, &encoded), NB_ERR_STATE);
 		EXPECT_EQ(encoded.base64, base64_owner);
 		EXPECT_EQ(encoded.mime_type, mime_owner);
-		EXPECT_EQ(image_encode_data_uri_copy(path, max_dim, &uri), -EALREADY);
+		EXPECT_EQ(image_encode_data_uri_copy(path, max_dim, &uri), NB_ERR_STATE);
 		EXPECT_EQ(uri, uri_owner);
 		EXPECT_STREQ(encoded.mime_type, "image/png");
 		EXPECT_EQ(std::string(uri), std::string("data:image/png;base64,") + encoded.base64);
 		size_t length = 0;
-		unsigned char *decoded = base64_decode_copy(encoded.base64, &length);
+		unsigned char *decoded = test_decode_bytes(encoded.base64, &length);
 		ASSERT_NE(decoded, nullptr);
 		int width = 0;
 		int height = 0;
@@ -1795,12 +1922,12 @@ TEST(ImageEncode, InvalidSourceLeavesBothOutputOwnersEmpty)
 	ASSERT_GE(fd, 0);
 	ASSERT_EQ(write(fd, "invalid", 7), 7);
 	ASSERT_EQ(close(fd), 0);
-	struct image_encoded encoded MORPH_CLEANUP(image_encoded_cleanup) = {};
-	char *uri MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
-	EXPECT_EQ(image_encode_base64_copy(path, 64, &encoded), MORPH_ERR_FORMAT);
+	struct image_encoded encoded NB_CLEANUP(image_encoded_cleanup) = {};
+	char *uri NB_CLEANUP(nb_charp_cleanup) = nullptr;
+	EXPECT_EQ(image_encode_base64_copy(path, 64, &encoded), NB_ERR_FORMAT);
 	EXPECT_EQ(encoded.base64, nullptr);
 	EXPECT_EQ(encoded.mime_type, nullptr);
-	EXPECT_EQ(image_encode_data_uri_copy(path, 64, &uri), MORPH_ERR_FORMAT);
+	EXPECT_EQ(image_encode_data_uri_copy(path, 64, &uri), NB_ERR_FORMAT);
 	EXPECT_EQ(uri, nullptr);
 	ASSERT_EQ(unlink(path), 0);
 }
@@ -1812,13 +1939,13 @@ TEST(ImageEncode, SharedInputOwnerRejectsReplacementAndClearsAfterRelease)
 	ASSERT_GE(fd, 0);
 	ASSERT_EQ(close(fd), 0);
 	ASSERT_EQ(create_solid_png(path, 8, 4), 0);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
-	struct tool_image_input image MORPH_CLEANUP(tool_image_input_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
+	struct tool_image_input image NB_CLEANUP(tool_image_input_cleanup) = {};
 	ASSERT_EQ(tool_image_load_input(nullptr, path, &result, &image), 0);
 	ASSERT_NE(image.pixels, nullptr);
 	auto *owner = image.pixels;
 	ASSERT_EQ(unlink(path), 0);
-	EXPECT_EQ(tool_image_load_input(nullptr, path, &result, &image), -EALREADY);
+	EXPECT_EQ(tool_image_load_input(nullptr, path, &result, &image), NB_ERR_STATE);
 	EXPECT_EQ(image.pixels, owner);
 	EXPECT_EQ(image.width, 8);
 	EXPECT_EQ(image.height, 4);

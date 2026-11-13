@@ -1,4 +1,5 @@
 #include "permission.h"
+#include "nb/err.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -30,7 +31,7 @@ int permission_policy_validate(const struct permission_policy *policy)
 	    policy->approval < PERMISSION_ON_REQUEST ||
 	    policy->approval > PERMISSION_NEVER ||
 	    policy->reviewer < PERMISSION_USER || policy->reviewer > PERMISSION_MODEL)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return 0;
 }
 
@@ -66,7 +67,7 @@ int permission_policy_parse(const char *access, const char *approval,
 	const char *reviewer, struct permission_policy *out)
 {
 	if (!access || !approval || !reviewer || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	for (int a = PERMISSION_READ_ONLY; a <= PERMISSION_FULL; a++) {
 		for (int p = PERMISSION_ON_REQUEST; p <= PERMISSION_NEVER; p++) {
 			for (int r = PERMISSION_USER; r <= PERMISSION_MODEL; r++) {
@@ -85,7 +86,7 @@ int permission_policy_parse(const char *access, const char *approval,
 			}
 		}
 	}
-	return -EINVAL;
+	return NB_ERR_INVAL;
 }
 
 int permission_context_init(struct permission_context *context)
@@ -93,17 +94,17 @@ int permission_context_init(struct permission_context *context)
 	int rc;
 
 	if (!context)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(context, 0, sizeof(*context));
 	context->policy = permission_policy_default();
-	rc = pthread_mutex_init(&context->review_lock, NULL);
-	return rc ? -rc : 0;
+	rc = ((context->review_lock = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
+	return rc ? rc : 0;
 }
 
 void permission_context_cleanup(struct permission_context *context)
 {
 	if (context)
-		pthread_mutex_destroy(&context->review_lock);
+		(nb_mutex_free(context->review_lock), context->review_lock = NULL);
 }
 
 enum permission_requirement permission_check(const struct permission_policy *policy,
@@ -131,7 +132,7 @@ static int permission_review_operation(struct permission_context *context,
 		context->policy.reviewer == PERMISSION_MODEL && context->consecutive_denials < 3;
 	if (automatic && context->model_review) {
 		rc = context->model_review(operation, review, context->model_data);
-		if (rc == -ECANCELED)
+		if (rc == NB_ERR_CANCELLED)
 			return rc;
 	} else {
 		review->defer = 1;
@@ -141,7 +142,7 @@ static int permission_review_operation(struct permission_context *context,
 		if (!context->user_review) {
 			snprintf(review->reason, sizeof(review->reason),
 				"Human approval is unavailable.");
-			rc = -EPERM;
+			rc = NB_ERR_NOT_PERMITTED;
 			return rc;
 		}
 		rc = context->user_review(operation, review, context->user_data);
@@ -150,17 +151,17 @@ static int permission_review_operation(struct permission_context *context,
 	if (rc != 0)
 		return rc;
 	if (review->defer || review->verdict < TOOL_OP_DENY || review->verdict > TOOL_OP_ALWAYS) {
-		rc = -EPROTO;
+		rc = NB_ERR_PROTOCOL;
 		return rc;
 	}
 	if (automatic && review->verdict > TOOL_OP_ALLOW) {
-		rc = -EPROTO;
+		rc = NB_ERR_PROTOCOL;
 		return rc;
 	}
 	if (review->verdict == TOOL_OP_DENY) {
 		if (automatic)
 			context->consecutive_denials++;
-		rc = -EACCES;
+		rc = NB_ERR_PERMISSION;
 	} else {
 		context->consecutive_denials = 0;
 		*verdict = review->verdict;
@@ -177,7 +178,7 @@ int permission_authorize(struct permission_context *context,
 
 	if (!context || !operation || !verdict ||
 	    permission_policy_validate(&context->policy) != 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*verdict = TOOL_OP_DENY;
 	if (operation->review_out)
 		*operation->review_out = review;
@@ -186,7 +187,7 @@ int permission_authorize(struct permission_context *context,
 			snprintf(operation->review_out->reason,
 				sizeof(operation->review_out->reason),
 				"The permission policy forbids this operation.");
-		return -EACCES;
+		return NB_ERR_PERMISSION;
 	}
 	if (requirement == PERMISSION_ALLOW) {
 		*verdict = TOOL_OP_ALLOW;
@@ -194,12 +195,12 @@ int permission_authorize(struct permission_context *context,
 	}
 	if ((requirement != PERMISSION_REVIEW && requirement != PERMISSION_REQUIRE_USER) ||
 	    context->policy.approval == PERMISSION_NEVER)
-		return -EACCES;
-	pthread_mutex_lock(&context->review_lock);
+		return NB_ERR_PERMISSION;
+	nb_mutex_lock(context->review_lock);
 	rc = permission_review_operation(context, operation, requirement, verdict, &review);
 	review.reason[sizeof(review.reason) - 1] = '\0';
 	if (operation->review_out)
 		*operation->review_out = review;
-	pthread_mutex_unlock(&context->review_lock);
+	nb_mutex_unlock(context->review_lock);
 	return rc;
 }

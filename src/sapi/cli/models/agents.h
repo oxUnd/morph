@@ -2,7 +2,8 @@
 #define MORPH_CLI_MODELS_AGENTS_H
 
 #include "agent/agent_control.h"
-#include "util/array.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 #include <stdint.h>
 
 struct cli_agents_receipt {
@@ -16,7 +17,7 @@ struct cli_agents_model {
 	struct agent_info *items;
 	int count;
 	int64_t session_id;
-	morph_array_t receipts;
+	nb_vec receipts;
 };
 
 int cli_agents_model_init(struct cli_agents_model *model);

@@ -1,19 +1,19 @@
 #include "memory.h"
 
 #include "persistence/memory_search.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "cJSON.h"
 #include "cJSON.h"
 
 #include <errno.h>
 
 static int memory_report_add_record(cJSON *entries, const struct memory_record *record)
 {
-	cJSON *entry MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *entry NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 
 	if (!entry)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (!cJSON_AddNumberToObject(entry, "id", (double)record->id) ||
 	    !cJSON_AddStringToObject(entry, "kind", record->kind) ||
 	    !cJSON_AddStringToObject(entry, "key", record->key) ||
@@ -24,26 +24,26 @@ static int memory_report_add_record(cJSON *entries, const struct memory_record *
 	    !cJSON_AddNumberToObject(entry, "updated_at", (double)record->updated_at) ||
 	    !cJSON_AddNumberToObject(entry, "score", record->score) ||
 	    !cJSON_AddNumberToObject(entry, "memory_version", (double)record->memory_version))
-		return -ENOMEM;
-	return morph_json_array_take(entries, &entry);
+		return NB_ERR_NOMEM;
+	return (cJSON_AddItemToArray(entries, entry) ? (entry = NULL, NB_OK) : NB_ERR_NOMEM);
 }
 
 int memory_report_create(struct db *db, int64_t session_id, const struct memory_options *options,
 			 const char *query, cJSON **out)
 {
-	struct memory_search_result matches MORPH_CLEANUP(memory_search_result_cleanup) = {0};
+	struct memory_search_result matches NB_CLEANUP(memory_search_result_cleanup) = {0};
 	struct memory_search_options search = {.query = query, .project = 1};
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	char *preferences MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	char *history MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	char *jobs MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	char *preferences NB_CLEANUP(nb_charp_cleanup) = NULL;
+	char *history NB_CLEANUP(nb_charp_cleanup) = NULL;
+	char *jobs NB_CLEANUP(nb_charp_cleanup) = NULL;
 	struct memory_record *record;
 	int rc;
 
 	if (!db || !options || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	search.visible_fn = options->visible_fn;
 	search.user_id = options->visible_user_id;
 	search.visible_data = options->visible_user_data;
@@ -57,7 +57,7 @@ int memory_report_create(struct db *db, int64_t session_id, const struct memory_
 		return MORPH_ERR_DB;
 	report = cJSON_CreateObject();
 	if (!report)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	cJSON *entries = cJSON_AddArrayToObject(report, "entries");
 	if (!entries || !cJSON_AddBoolToObject(report, "enabled", options->enabled) ||
 	    !cJSON_AddBoolToObject(report, "learning_enabled", options->learn_from_chats_enabled) ||
@@ -66,12 +66,14 @@ int memory_report_create(struct db *db, int64_t session_id, const struct memory_
 	    !cJSON_AddStringToObject(report, "preferences", preferences) ||
 	    !cJSON_AddStringToObject(report, "history", history) ||
 	    !cJSON_AddStringToObject(report, "jobs", jobs))
-		return -ENOMEM;
-	morph_array_foreach (record, &matches.records, struct memory_record) {
+		return NB_ERR_NOMEM;
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&matches.records) &&
+			     (record = (struct memory_record *)nb_vec_at(&matches.records, _i_));
+	     _i_++) {
 		rc = memory_report_add_record(entries, record);
 		if (rc != 0)
 			return rc;
 	}
-	*out = morph_json_steal(&report);
+	*out = cJSON_StealOwner(&report);
 	return 0;
 }

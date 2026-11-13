@@ -1,16 +1,16 @@
 #include "sapi/fastcgi/adapters/turn_interactions.h"
+#include "nb/time.h"
 #include "sapi/fastcgi/services/turn_job_internal.h"
 #include "sapi/fastcgi/storage/events.h"
 #include "cJSON.h"
-#include "util/error.h"
-#include "util/child_io.h"
+#include "errors.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "sapi/fastcgi/action_pump.h"
-#include "util/cancel.h"
+#include "nb/cancel.h"
 
 #define FCGI_ACTION_WAIT_SECONDS 300
 
@@ -54,7 +54,7 @@ int fcgi_turn_interactions_drain(void *user_data, struct react_action *out, int 
 	int got;
 
 	if (!j || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	free(j->action_payload);
 	j->action_payload = NULL;
 	j->action_type[0] = '\0';
@@ -117,20 +117,20 @@ static int action_answers(const char *payload, char ***answers, int *answers_cou
 	int written = 0;
 
 	if (!answers || !answers_count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*answers = NULL;
 	*answers_count = 0;
 	root = cJSON_Parse(payload ? payload : "{}");
 	if (!cJSON_IsObject(root)) {
 		cJSON_Delete(root);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	items = cJSON_GetObjectItem(root, "answers");
 	text = cJSON_GetObjectItem(root, "text");
 	count = cJSON_IsArray(items) ? cJSON_GetArraySize(items) : (cJSON_IsString(text) ? 1 : 0);
 	if (count > 64) {
 		cJSON_Delete(root);
-		return -E2BIG;
+		return NB_ERR_TOO_BIG;
 	}
 	if (count == 0) {
 		cJSON_Delete(root);
@@ -139,7 +139,7 @@ static int action_answers(const char *payload, char ***answers, int *answers_cou
 	values = calloc((size_t)count, sizeof(*values));
 	if (!values) {
 		cJSON_Delete(root);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	for (int i = 0; i < count; i++) {
 		cJSON *item = cJSON_IsArray(items) ? cJSON_GetArrayItem(items, i) : text;
@@ -151,7 +151,7 @@ static int action_answers(const char *payload, char ***answers, int *answers_cou
 				free(values[k]);
 			free(values);
 			cJSON_Delete(root);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		written++;
 	}
@@ -178,7 +178,7 @@ int fcgi_turn_ask_user(const char *question, const char *const *choices, int cho
 {
 	struct fcgi_turn_job *j = turn_data;
 	if (!j || !answers || !answers_count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*answers = NULL;
 	*answers_count = 0;
 	char request_id[128];
@@ -189,7 +189,7 @@ int fcgi_turn_ask_user(const char *question, const char *const *choices, int cho
 	if (!data || !array) {
 		cJSON_Delete(array);
 		cJSON_Delete(data);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	cJSON_AddItemToObject(data, "choices", array);
 	cJSON_AddStringToObject(data, "question", question ? question : "");
@@ -201,7 +201,7 @@ int fcgi_turn_ask_user(const char *question, const char *const *choices, int cho
 	for (int i = 0; !rc && i < choices_count; i++) {
 		cJSON *choice = cJSON_CreateString(choices[i]);
 		if (!choice)
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 		else
 			cJSON_AddItemToArray(array, choice);
 	}
@@ -210,26 +210,27 @@ int fcgi_turn_ask_user(const char *question, const char *const *choices, int cho
 		return rc;
 	}
 	publish_interaction(j, "ask_user", "user input required", data);
-	int64_t deadline = options && options->optional
-				   ? morph_io_now_ms() + (int64_t)options->timeout_seconds * 1000
-				   : 0;
+	int64_t deadline =
+		options && options->optional
+			? nb_time_monotonic_ms() + (int64_t)options->timeout_seconds * 1000
+			: 0;
 	for (;;) {
 		struct action_record record = {0};
-		if (options && morph_cancel_token_is_cancelled(options->cancel_token)) {
+		if (options && nb_cancel_requested(options->cancel_token)) {
 			publish_question_end(j, request_id, "cancelled");
-			return -ECANCELED;
+			return NB_ERR_CANCELLED;
 		}
 		/* Recheck a monotonic deadline even after unrelated queue wakeups. */
 		int got = action_pump_wait(j->store, j->session_id, 1, &record);
 		if (got < 0)
 			return got;
 		if (!got) {
-			if (deadline && morph_io_now_ms() >= deadline) {
+			if (deadline && nb_time_monotonic_ms() >= deadline) {
 				publish_question_end(j, request_id,
 						     options->recommended_count
 							     ? "timeout_recommended"
 							     : "timeout_no_input");
-				return -ETIMEDOUT;
+				return NB_ERR_TIMEOUT;
 			}
 			continue;
 		}
@@ -241,7 +242,7 @@ int fcgi_turn_ask_user(const char *question, const char *const *choices, int cho
 		if (strcmp(record.type, "cancel") == 0 && (!scoped || matching)) {
 			turn_action_record_cleanup(&record);
 			publish_question_end(j, request_id, "cancelled");
-			return -ECANCELED;
+			return NB_ERR_CANCELLED;
 		}
 		if (strcmp(record.type, "progress") == 0) {
 			if (matching)
@@ -253,18 +254,18 @@ int fcgi_turn_ask_user(const char *question, const char *const *choices, int cho
 			turn_save_pending_action(j, &record);
 			turn_action_record_cleanup(&record);
 			publish_question_end(j, request_id, "interrupted");
-			return -EAGAIN;
+			return NB_ERR_AGAIN;
 		}
 		/* Legacy required prompts still accept unscoped replies. Optional
 		 * prompts require IDs so late answers cannot answer a new question. */
 		if (!matching && (scoped || (options && options->optional))) {
 			turn_action_record_cleanup(&record);
-			if (deadline && morph_io_now_ms() >= deadline) {
+			if (deadline && nb_time_monotonic_ms() >= deadline) {
 				publish_question_end(j, request_id,
 						     options->recommended_count
 							     ? "timeout_recommended"
 							     : "timeout_no_input");
-				return -ETIMEDOUT;
+				return NB_ERR_TIMEOUT;
 			}
 			continue;
 		}

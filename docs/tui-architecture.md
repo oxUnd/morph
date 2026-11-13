@@ -2,8 +2,8 @@
 
 `morph-tui` is the terminal UI framework used by the interactive CLI, setup wizard,
 session picker, hooks review, history inspector, and `ask_user` selector. It depends
-on `morph-util`, libuv 1.44 or newer, and POSIX terminal
-APIs. It does not depend on CLI context, runtime services, model configuration,
+on `nbase::nbase`, the terminal text/size/activity target `morph-terminal`,
+`morph-media`, libuv 1.44 or newer, and POSIX terminal APIs. It does not depend on CLI context, runtime services, model configuration,
 sessions, or agent types.
 
 The framework covers the components these screens currently need. Application
@@ -61,7 +61,7 @@ src/sapi/cli/                 complete TUI application
   `components.h` remain convenience umbrellas for consumers; they own no types
   or declarations. Application and controller headers do not include widgets.
 - Keep terminal protocols in `terminal/`, output primitives in `render/`, and
-  reusable controls in `widgets/`. Framework code depends on `morph-util` and
+  reusable controls in `widgets/`. Framework code depends on nbase, terminal/media domains and
   platform libraries; runtime DTOs, command semantics, and CLI state stay in the
   frontend. Create further directories when an implemented module needs them.
 - Consumers follow the [TUI application directory conventions](tui-application-layout.md).
@@ -356,7 +356,7 @@ retains its view tree and focus while hidden and resumes them on dismissal.
 Invalidations coalesce in the host. Layout runs before composition, followed by
 frame comparison and output. Canvas draws in local coordinates with inherited
 clipping and typed styles. Surface cells track wide-character continuations and
-combining marks; input text is sanitized through `util/utf8.h`. Clearing and
+combining marks; input text is sanitized through `nb/utf8.h` and `<morph/tui/terminal/text.h>`. Clearing and
 composing a full visible surface keeps overlap/resize behavior deterministic;
 row diffs suppress unchanged terminal rows. This uses the project's Unicode
 width policy rather than claiming full emoji-grapheme shaping.
@@ -493,7 +493,8 @@ active component. Domain actions run only after a component submits.
 ## Rendering contracts
 
 `morph_tui_draw_cell_append` accepts untrusted text and a trusted ANSI style. Initialize its
-command buffer with `morph_buf_init`; appends preserve errors on that buffer.
+command buffer as an empty `nb_buf`; appends return bool and preserve sticky allocation errors.
+Check `nb_buf_ok` before publishing.
 `morph_tui_draw_region_cell` additionally clips to an allocated layout region. The shared
 `morph_tui_draw_write` rejects a failed buffer before any terminal output, then writes
 and flushes the composed bytes. A construction error cannot expose a partial

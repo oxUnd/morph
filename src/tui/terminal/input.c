@@ -1,5 +1,6 @@
 #include <morph/tui/input.h>
-#include "util/error.h"
+#include "errors.h"
+#include "nb/time.h"
 
 #include <limits.h>
 #include <poll.h>
@@ -86,7 +87,7 @@ static int terminal_input_sequence_key(struct morph_tui_input *input, const char
 int morph_tui_input_feed(struct morph_tui_input *input, unsigned char byte)
 {
 	if (!input)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	input->deadline_ms = 0;
 	if (byte == 27) {
 		input->state = TERMINAL_INPUT_ESCAPE;
@@ -130,7 +131,7 @@ int morph_tui_input_feed(struct morph_tui_input *input, unsigned char byte)
 int morph_tui_input_expire(struct morph_tui_input *input)
 {
 	if (!input)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int key = input->state == TERMINAL_INPUT_ESCAPE ? 27 : 0;
 
 	input->state = TERMINAL_INPUT_TEXT;
@@ -141,12 +142,8 @@ int morph_tui_input_expire(struct morph_tui_input *input)
 
 static int terminal_input_monotonic_ms(int64_t *value)
 {
-	struct timespec now;
-
-	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
-		return -errno;
-	*value = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
-	return 0;
+	*value = nb_time_monotonic_ms();
+	return *value > 0 ? 0 : NB_ERR_IO;
 }
 
 static int terminal_input_remaining_ms(int64_t deadline, int64_t now)
@@ -161,9 +158,9 @@ int morph_tui_input_read(struct morph_tui_input *input, int input_fd, int timeou
 	int64_t now;
 
 	if (!input)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (input_fd < 0)
-		return -EBADF;
+		return NB_ERR_BAD_HANDLE;
 	int rc = terminal_input_monotonic_ms(&now);
 
 	if (rc != 0)
@@ -187,19 +184,19 @@ int morph_tui_input_read(struct morph_tui_input *input, int input_fd, int timeou
 		int ready = poll(&fd, 1, wait);
 
 		if (ready < 0)
-			return -errno;
+			return nb_status_from_errno(errno, NULL);
 		if (fd.revents & POLLNVAL)
-			return -EBADF;
+			return NB_ERR_BAD_HANDLE;
 		if (ready) {
 			unsigned char byte;
 			ssize_t count = read(input_fd, &byte, sizeof(byte));
 
 			if (count < 0)
-				return -errno;
+				return nb_status_from_errno(errno, NULL);
 			if (!count) {
 				int key = morph_tui_input_expire(input);
 
-				return key ? key : -ECANCELED;
+				return key ? key : NB_ERR_CANCELLED;
 			}
 			int key = morph_tui_input_feed(input, byte);
 

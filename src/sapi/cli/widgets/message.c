@@ -1,10 +1,12 @@
 #include "sapi/cli/widgets/message.h"
+#include "nb/err.h"
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/widgets/rich_document.h"
-#include "util/cleanup.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 #include <morph/tui/widgets/label.h>
 #include <morph/tui/widgets/text_view.h>
 #include <errno.h>
@@ -28,30 +30,31 @@ static int cli_message_measure(struct morph_tui_view *view, int width,
 	if (message->columns != columns) {
 		int rc;
 		if (message->kind == CLI_MESSAGE_ASSISTANT) {
-			morph_buf_t rendered MORPH_CLEANUP(morph_buf_cleanup) = {0};
-			rc = morph_buf_init(&rendered, 128);
+			nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
+			rc = (nb_buf_init(&rendered),
+			      nb_buf_reserve(&rendered, 128) ? 0 : NB_ERR_NOMEM);
 			if (!rc)
 				rc = cli_markdown_render_retained(&rendered, message->text, columns,
 					message->styled);
 			/* The message owns outer spacing through its View options. */
-			while (!rc && rendered.len && rendered.data[rendered.len - 1] == '\n')
-				rendered.data[--rendered.len] = '\0';
+			while (!rc && rendered.len && rendered.ptr[rendered.len - 1] == '\n')
+				rendered.ptr[--rendered.len] = '\0';
 			if (!rc)
 				rc = cli_rich_document_set_rendered_copy(
-					message->body, morph_buf_cstr_borrow(&rendered),
-					message->styled);
+					message->body, nb_buf_cstr(&rendered), message->styled);
 		} else if (message->kind == CLI_MESSAGE_REASONING &&
 			   !message->reasoning_expanded) {
-			morph_buf_t rendered MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
 			struct cli_message_style style = {
 				.columns = columns, .styled = message->styled};
-			rc = morph_buf_init(&rendered, 128);
+			rc = (nb_buf_init(&rendered),
+			      nb_buf_reserve(&rendered, 128) ? 0 : NB_ERR_NOMEM);
 			if (!rc)
 				rc = cli_messages_append(&rendered, CLI_MESSAGE_REASONING,
 					message->text, &style);
 			if (!rc)
-				rc = cli_messages_set_rendered_view(message->body,
-					morph_buf_cstr_borrow(&rendered), message->styled);
+				rc = cli_messages_set_rendered_view(
+					message->body, nb_buf_cstr(&rendered), message->styled);
 		} else
 			rc = morph_tui_widget_text_view_set_text_copy(message->body, message->text);
 		if (rc)
@@ -97,9 +100,9 @@ static const struct morph_tui_view_ops cli_message_ops = {
 int cli_message_set_reasoning_expanded(struct morph_tui_view *view, int expanded)
 {
 	if (!view || view->ops != &cli_message_ops)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct cli_message *message = (struct cli_message *)view;
 	if (message->reasoning_expanded != !!expanded) {
 		message->reasoning_expanded = !!expanded;
@@ -112,14 +115,15 @@ int cli_message_set_reasoning_expanded(struct morph_tui_view *view, int expanded
 int cli_message_set_ultra(struct morph_tui_view *view, int ultra)
 {
 	if (!view || view->ops != &cli_message_ops)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct cli_message *message = (struct cli_message *)view;
 	if (message->kind != CLI_MESSAGE_USER)
 		return 0;
-	int rc = morph_tui_widget_label_set_text_copy(message->marker,
-		ultra ? "»" : message->styled ? "›" : ">");
+	int rc = morph_tui_widget_label_set_text_copy(message->marker, ultra		 ? "» "
+								       : message->styled ? "› "
+											 : "> ");
 	struct morph_tui_text_style style = {0};
 	if (message->styled) {
 		style.foreground = (struct morph_tui_color){MORPH_TUI_COLOR_INDEXED,
@@ -132,18 +136,18 @@ int cli_message_set_ultra(struct morph_tui_view *view, int ultra)
 int cli_message_set_text_copy(struct morph_tui_view *view, const char *text)
 {
 	if (!view || view->ops != &cli_message_ops || !text)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct cli_message *message = (struct cli_message *)view;
 	if (message->text && !strcmp(message->text, text))
 		return 0;
-	char *copy MORPH_CLEANUP(morph_charp_cleanup) =
-		utf8_terminal_sanitize_dup(text, strlen(text), UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+	char *copy NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		text, strlen(text), MORPH_TERMINAL_TEXT_MULTILINE, NULL);
 	if (!copy)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	free(message->text);
-	message->text = morph_charp_steal(&copy);
+	message->text = nb_charp_steal(&copy);
 	message->columns = -1;
 	morph_tui_view_invalidate(view, 1);
 	return 0;
@@ -183,8 +187,9 @@ struct morph_tui_view *cli_message_add_borrow(struct morph_tui_builder *builder,
 		if (styled && kind == CLI_MESSAGE_ASSISTANT)
 			marker.style.attributes = MORPH_TUI_STYLE_BOLD;
 		message->marker = morph_tui_widget_label_add_borrow(
-			builder, view, kind == CLI_MESSAGE_USER ? (styled ? "›" : ">")
-							     : CLI_FEED_MESSAGE, &marker);
+			builder, view,
+			kind == CLI_MESSAGE_USER ? (styled ? "› " : "> ") : CLI_FEED_MESSAGE,
+			&marker);
 	}
 	message->body = kind == CLI_MESSAGE_ASSISTANT
 		? cli_rich_document_add_borrow(builder, view)

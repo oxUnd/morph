@@ -1,8 +1,8 @@
 #include "sapi/cli/services/configuration/role.h"
 #include "sapi/cli/models/setup.h"
 #include "prompt/template.h"
-#include "util/data.h"
-#include "util/error.h"
+#include "runtime/resources.h"
+#include "errors.h"
 #include <stdio.h>
 #include <string.h>
 

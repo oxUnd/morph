@@ -1,7 +1,7 @@
 #ifndef MEMORY_H
 #define MEMORY_H
 
-struct morph_log;
+struct nb_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -15,7 +15,7 @@ struct model;
 struct memory_worker;
 
 struct memory_options {
-	struct morph_log *logger;
+	struct nb_log *logger;
 	/* Borrowed dependencies; the owner drains the worker before model teardown. */
 	struct memory_worker *worker;
 	struct model *llm;
@@ -40,7 +40,7 @@ struct memory_options {
 };
 
 /* Each runtime owns an independent queue and worker. */
-struct memory_worker *memory_worker_create(struct morph_log *logger);
+struct memory_worker *memory_worker_create(struct nb_log *logger);
 void memory_worker_destroy(struct memory_worker *worker);
 
 /* Prepare local memory and recover background work without interpreting input. */

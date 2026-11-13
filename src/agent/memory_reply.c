@@ -1,12 +1,13 @@
 #include "agent/memory_internal.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 
 #include "agent/memory.h"
 #include "persistence/memory_snapshot.h"
 #include "persistence/memory_search.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/utf8.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/utf8.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -19,7 +20,7 @@
 #define MEMORY_RENDER_CAP (1024 * 1024)
 
 struct memory_reply_writer {
-	morph_buf_t *buffer;
+	nb_buf *buffer;
 	size_t limit;
 	size_t characters;
 	const char *notice;
@@ -32,30 +33,31 @@ struct memory_reply_writer {
 static int memory_reply_append(struct memory_reply_writer *writer, const char *heading,
 			       const char *format, ...)
 {
-	morph_buf_t entry MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf entry NB_CLEANUP(nb_buf_cleanup) = {0};
 	va_list args;
-	int rc = morph_buf_init(&entry, 256);
+	int rc = (nb_buf_init(&entry), nb_buf_reserve(&entry, 256) ? 0 : NB_ERR_NOMEM);
 
 	if (rc == 0 && heading)
-		rc = morph_buf_puts(&entry, heading);
+		rc = (nb_buf_append_cstr(&entry, heading) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	va_start(args, format);
-	rc = morph_buf_vprintf(&entry, format, args);
+	rc = (nb_buf_vprintf(&entry, format, args) ? 0 : NB_ERR_NOMEM);
 	va_end(args);
 	if (rc != 0)
 		return rc;
-	const char *text = morph_buf_cstr_borrow(&entry);
-	if (utf8valid(text))
-		return MORPH_ERR_FORMAT;
-	size_t characters = utf8len(text);
-	size_t notice = utf8len(writer->notice) + (writer->counted_notice ? 20u : 0u);
+	const char *text = nb_buf_cstr(&entry);
+	if (nb_utf8_validate(nb_str_from_cstr(text), NULL))
+		return NB_ERR_FORMAT;
+	size_t characters = nb_utf8_count(nb_str_from_cstr(text));
+	size_t notice = nb_utf8_count(nb_str_from_cstr(writer->notice)) +
+			(writer->counted_notice ? 20u : 0u);
 	if (characters > writer->limit - writer->characters ||
 	    notice > writer->limit - writer->characters - characters) {
 		writer->omitted++;
 		return 0;
 	}
-	rc = morph_buf_puts(writer->buffer, text);
+	rc = (nb_buf_append_cstr(writer->buffer, text) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	writer->characters += characters;
@@ -99,7 +101,7 @@ static int memory_reply_add_directory(struct db *db, int64_t session_id,
 				      const struct memory_options *opts,
 				      struct memory_reply_writer *writer, int summaries)
 {
-	struct memory_search_result matches MORPH_CLEANUP(memory_search_result_cleanup) = {0};
+	struct memory_search_result matches NB_CLEANUP(memory_search_result_cleanup) = {0};
 	struct memory_search_options options = {
 		.kind = summaries ? "summary" : NULL,
 		.project = 1,
@@ -117,7 +119,9 @@ static int memory_reply_add_directory(struct db *db, int64_t session_id,
 
 	if (rc != 0)
 		return rc;
-	morph_array_foreach (record, &matches.records, struct memory_record) {
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&matches.records) &&
+			     (record = (struct memory_record *)nb_vec_at(&matches.records, _i_));
+	     _i_++) {
 		if (!summaries && (!strcmp(record->kind, "summary") ||
 				   !strcmp(record->kind, "unapplied_settings") ||
 				   !strcmp(record->kind, "unapplied_rules")))
@@ -136,12 +140,12 @@ static int memory_reply_add_directory(struct db *db, int64_t session_id,
 			continue;
 		}
 		const char *end = summaries ? record->value + strlen(record->value)
-					    : utf8_advance_codepoints_borrow(record->value, 120);
-		char *description MORPH_CLEANUP(morph_charp_cleanup) =
+					    : nb_utf8_advance(record->value, 120);
+		char *description NB_CLEANUP(nb_charp_cleanup) =
 			strndup(record->value, (size_t)(end - record->value));
 
 		if (!description)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		rc = memory_reply_append(
 			writer, heading, "- [%s#%lld version=%lld session=%s] %s: %s%s\n",
 			record->kind, (long long)record->id, (long long)record->memory_version,
@@ -155,7 +159,7 @@ static int memory_reply_add_directory(struct db *db, int64_t session_id,
 }
 
 static int memory_reply_render(struct db *db, int64_t session_id, const struct memory_options *opts,
-			       morph_buf_t *buffer)
+			       nb_buf *buffer)
 {
 	static const char instructions[] =
 		"Persistent memory: preferences below are explicit user settings. "
@@ -190,32 +194,38 @@ static int memory_reply_render(struct db *db, int64_t session_id, const struct m
 		return rc;
 	if (writer.omitted)
 		return writer.counted_notice
-			       ? morph_buf_printf(buffer, writer.notice, writer.omitted)
-			       : morph_buf_puts(buffer, writer.notice);
+			       ? (nb_buf_printf(buffer, writer.notice, writer.omitted)
+					  ? 0
+					  : NB_ERR_NOMEM)
+			       : (nb_buf_append_cstr(buffer, writer.notice) ? 0 : NB_ERR_NOMEM);
 	return 0;
 }
 
 int memory_reply_text_create(struct db *db, int64_t session_id, const char *query,
 			     const struct memory_options *opts, char **out)
 {
-	morph_buf_t context MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf context NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc;
 
 	(void)query;
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EALREADY;
+		return NB_ERR_STATE;
 	if (!db || !db->handle || !opts || !opts->enabled)
 		return 0;
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	rc = db_lock_acquire(db, &lock);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_init(&context, MEMORY_APPEND_INIT_CAP);
+	rc = (nb_buf_init(&context),
+	      nb_buf_reserve(&context, MEMORY_APPEND_INIT_CAP) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = memory_reply_render(db, session_id, opts, &context);
-	if (rc == 0 && context.len)
-		*out = morph_buf_detach(&context);
+	if (rc == 0 && context.len) {
+		*out = (nb_buf_ok(&context) ? strdup(nb_buf_cstr(&context)) : NULL);
+		if (!*out)
+			rc = NB_ERR_NOMEM;
+	}
 	return rc;
 }

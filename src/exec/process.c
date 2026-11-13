@@ -1,16 +1,20 @@
-#include "util/signals.h"
-#include "util/cleanup.h"
+#include "nb/signal.h"
+#include "nb/cleanup.h"
 #include "process.h"
+#include "nb/process.h"
 #include "sandbox.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/id.h"
-#include "util/utf8.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/random.h"
+#include "nb/encoding.h"
+#include "nb/utf8.h"
+#include "nb/time.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <pthread.h>
+#include "nb/thread.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,8 +45,8 @@ struct process_secret {
 };
 
 struct process_stream {
-	morph_buf_t data;
-	morph_buf_t pending;
+	nb_buf data;
+	nb_buf pending;
 	char path[PATH_MAX];
 	int spool_fd;
 	int spool_stopped;
@@ -55,6 +59,7 @@ struct process_stream {
 
 struct process_session {
 	char id[PROCESS_SESSION_ID_MAX];
+	nb_process *child;
 	pid_t pid;
 	pid_t pgid;
 	int stdout_fd;
@@ -81,9 +86,9 @@ struct process_session {
 };
 
 struct process_manager {
-	pthread_mutex_t mutex;
-	pthread_cond_t condition;
-	pthread_t thread;
+	nb_mutex *mutex;
+	nb_cond *condition;
+	nb_thread *thread;
 	int thread_started;
 	int stopping;
 	process_completion_fn completed;
@@ -95,9 +100,7 @@ struct process_manager {
 	char shell[PATH_MAX];
 	struct process_secret secrets[PROCESS_SECRET_MAX];
 	size_t secret_count;
-	struct process_session *sessions;
-	size_t session_count;
-	size_t session_capacity;
+	nb_vec sessions;
 };
 
 static void process_secrets_cleanup(struct process_manager *manager)
@@ -111,12 +114,9 @@ static void process_secrets_cleanup(struct process_manager *manager)
 
 static uint64_t process_now_ms(void)
 {
-	struct timespec now;
+	int64_t now = nb_time_monotonic_ns();
 
-	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
-		return 0;
-	return (uint64_t)now.tv_sec * 1000u +
-		(uint64_t)now.tv_nsec / 1000000u;
+	return now > 0 ? (uint64_t)now / 1000000u : 0u;
 }
 
 static int set_nonblocking(int fd)
@@ -125,9 +125,9 @@ static int set_nonblocking(int fd)
 
 	flags = fcntl(fd, F_GETFL, 0);
 	if (flags < 0)
-		return morph_error_from_errno(errno);
+		return nb_status_from_errno(errno, NULL);
 	if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
-		return morph_error_from_errno(errno);
+		return nb_status_from_errno(errno, NULL);
 	return 0;
 }
 
@@ -159,8 +159,8 @@ static void stream_cleanup(struct process_stream *stream)
 		(void)unlink(stream->path);
 		close_fd(&stream->spool_fd);
 	}
-	morph_buf_cleanup(&stream->data);
-	morph_buf_cleanup(&stream->pending);
+	nb_buf_cleanup(&stream->data);
+	nb_buf_cleanup(&stream->pending);
 	memset(stream, 0, sizeof(*stream));
 	stream->spool_fd = -1;
 }
@@ -169,22 +169,21 @@ static int stream_init(struct process_stream *stream)
 {
 	memset(stream, 0, sizeof(*stream));
 	stream->spool_fd = -1;
-	return morph_buf_init(&stream->data, 4096);
+	return (nb_buf_init(&stream->data), nb_buf_reserve(&stream->data, 4096) ? 0 : NB_ERR_NOMEM);
 }
 
 static size_t stream_prefix_boundary(const char *data, size_t length, size_t limit)
 {
 	size_t keep = length < limit ? length : limit;
 
-	while (keep > 0 && keep < length &&
-	       utf8_is_continuation_byte((unsigned char)data[keep]))
+	while (keep > 0 && keep < length && nb_utf8_is_continuation_byte((unsigned char)data[keep]))
 		keep--;
 	return keep;
 }
 
 static size_t stream_suffix_boundary(const char *data, size_t length, size_t start)
 {
-	while (start < length && utf8_is_continuation_byte((unsigned char)data[start]))
+	while (start < length && nb_utf8_is_continuation_byte((unsigned char)data[start]))
 		start++;
 	return start;
 }
@@ -196,18 +195,17 @@ static void stream_spool_append(struct process_manager *manager, struct process_
 	if (!length || stream->spool_stopped)
 		return;
 	if (stream->spool_fd < 0) {
-		snprintf(stream->path, sizeof(stream->path), "/tmp/morph-process-XXXXXX");
-		stream->spool_fd = mkstemp(stream->path);
-		if (stream->spool_fd < 0) {
-			stream->capture_error = morph_error_from_errno(errno);
-			stream->path[0] = '\0';
-			stream->spool_stopped = 1;
-			return;
-		}
-		if (fcntl(stream->spool_fd, F_SETFD, FD_CLOEXEC) < 0) {
-			stream->capture_error = morph_error_from_errno(errno);
+		nb_buf path NB_CLEANUP(nb_buf_cleanup) = {0};
+		int rc = nb_file_temp_in(&path, "/tmp", &stream->spool_fd, NULL);
+		if (rc == NB_OK)
+			rc = nb_str_copy_to(nb_buf_str(&path), stream->path, sizeof(stream->path));
+		if (rc != NB_OK) {
+			stream->capture_error = rc;
 			stream->spool_stopped = 1;
 			close_fd(&stream->spool_fd);
+			if (!nb_buf_empty(&path))
+				(void)nb_file_remove(nb_buf_cstr(&path), NULL);
+			stream->path[0] = '\0';
 			return;
 		}
 	}
@@ -220,7 +218,8 @@ static void stream_spool_append(struct process_manager *manager, struct process_
 		if (written < 0 && errno == EINTR)
 			continue;
 		if (written <= 0) {
-			stream->capture_error = written < 0 ? morph_error_from_errno(errno) : -EIO;
+			stream->capture_error =
+				written < 0 ? nb_status_from_errno(errno, NULL) : NB_ERR_IO;
 			stream->spool_stopped = 1;
 			break;
 		}
@@ -243,25 +242,24 @@ static int stream_store(struct process_manager *manager, struct process_stream *
 	if (!length)
 		return 0;
 	if (length > SIZE_MAX - stream->total)
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	stream_spool_append(manager, stream, data, length);
 	stream->total += length;
 	if (length >= manager->max_session_output) {
 		drop = stream_suffix_boundary(data, length, length - manager->max_session_output);
 		data += drop;
 		length -= drop;
-		morph_buf_reset(&stream->data);
-	} else if (stream->data.len > manager->max_session_output - length) {
-		drop = stream_suffix_boundary(stream->data.data, stream->data.len,
-			stream->data.len - (manager->max_session_output - length));
-		memmove(stream->data.data, stream->data.data + drop, stream->data.len - drop);
-		stream->data.len -= drop;
-		stream->data.data[stream->data.len] = '\0';
+		nb_buf_clear(&stream->data);
+	} else if (nb_buf_len(&stream->data) > manager->max_session_output - length) {
+		drop = stream_suffix_boundary(nb_buf_cstr(&stream->data), nb_buf_len(&stream->data),
+					      nb_buf_len(&stream->data) -
+						      (manager->max_session_output - length));
+		nb_buf_consume(&stream->data, drop);
 	}
-	rc = morph_buf_append(&stream->data, data, length);
+	rc = (nb_buf_append(&stream->data, data, length) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
-		morph_buf_reset(&stream->data);
-	stream->base = stream->total - stream->data.len;
+		nb_buf_clear(&stream->data);
+	stream->base = stream->total - nb_buf_len(&stream->data);
 	return rc;
 }
 
@@ -269,33 +267,35 @@ static int stream_store(struct process_manager *manager, struct process_stream *
 static int stream_append(struct process_manager *manager, struct process_stream *stream,
 			 const char *data, size_t length, int finish)
 {
-	morph_buf_t redacted MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf redacted NB_CLEANUP(nb_buf_cleanup) = {0};
 	size_t position = 0;
 	size_t literal = 0;
 	int rc;
 
-	if (!length && !stream->pending.len) {
+	if (!length && !nb_buf_len(&stream->pending)) {
 		if (finish)
 			close_fd(&stream->spool_fd);
 		return 0;
 	}
-	if (stream->capture_error == -ENOMEM)
-		return -ENOMEM;
-	if (!stream->pending.data) {
-		rc = morph_buf_init(&stream->pending, BUFSIZ);
+	if (stream->capture_error == NB_ERR_NOMEM)
+		return NB_ERR_NOMEM;
+	if (!stream->pending.ptr) {
+		rc = (nb_buf_init(&stream->pending),
+		      nb_buf_reserve(&stream->pending, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
-	rc = morph_buf_append(&stream->pending, data, length);
+	rc = (nb_buf_append(&stream->pending, data, length) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_init(&redacted, stream->pending.len + 1);
+	rc = (nb_buf_init(&redacted),
+	      nb_buf_reserve(&redacted, nb_buf_len(&stream->pending) + 1) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
-	while (position < stream->pending.len) {
+	while (position < nb_buf_len(&stream->pending)) {
 		const struct process_secret *match = NULL;
 		size_t matched = 0;
-		size_t available = stream->pending.len - position;
+		size_t available = nb_buf_len(&stream->pending) - position;
 		int partial = 0;
 
 		for (size_t i = 0; i < manager->secret_count; i++) {
@@ -303,7 +303,8 @@ static int stream_append(struct process_manager *manager, struct process_stream 
 			size_t secret_len = strlen(secret->value);
 			size_t compare = available < secret_len ? available : secret_len;
 
-			if (memcmp(stream->pending.data + position, secret->value, compare) != 0)
+			if (memcmp(nb_buf_cstr(&stream->pending) + position, secret->value,
+				   compare) != 0)
 				continue;
 			if (available < secret_len)
 				partial = !finish;
@@ -318,25 +319,28 @@ static int stream_append(struct process_manager *manager, struct process_stream 
 			position++;
 			continue;
 		}
-		rc = morph_buf_append(&redacted, stream->pending.data + literal,
-			position - literal);
+		rc = (nb_buf_append(&redacted, nb_buf_cstr(&stream->pending) + literal,
+				    position - literal)
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_printf(&redacted, "[REDACTED:%s]", match->name);
+			rc = (nb_buf_printf(&redacted, "[REDACTED:%s]", match->name)
+				      ? 0
+				      : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 		position += matched;
 		literal = position;
 	}
-	rc = morph_buf_append(&redacted, stream->pending.data + literal, position - literal);
+	rc = (nb_buf_append(&redacted, nb_buf_cstr(&stream->pending) + literal, position - literal)
+		      ? 0
+		      : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
-	rc = stream_store(manager, stream, morph_buf_cstr_borrow(&redacted), redacted.len);
+	rc = stream_store(manager, stream, nb_buf_cstr(&redacted), redacted.len);
 	if (rc != 0)
 		return rc;
-	memmove(stream->pending.data, stream->pending.data + position,
-		stream->pending.len - position);
-	stream->pending.len -= position;
-	stream->pending.data[stream->pending.len] = '\0';
+	nb_buf_consume(&stream->pending, position);
 	if (finish)
 		close_fd(&stream->spool_fd);
 	return 0;
@@ -345,11 +349,11 @@ static int stream_append(struct process_manager *manager, struct process_stream 
 static char *redact_text(const struct process_manager *manager,
 			 const char *input, size_t length)
 {
-	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *cursor = input;
 	const char *end = input + length;
 
-	if (morph_buf_init(&output, length + 1) != 0)
+	if ((nb_buf_init(&output), nb_buf_reserve(&output, length + 1) ? 0 : NB_ERR_NOMEM) != 0)
 		return NULL;
 	while (cursor < end) {
 		const char *match = NULL;
@@ -368,19 +372,17 @@ static char *redact_text(const struct process_manager *manager,
 			}
 		}
 		if (!match) {
-			(void)morph_buf_append(&output, cursor,
-				(size_t)(end - cursor));
+			(void)nb_buf_append(&output, cursor, (size_t)(end - cursor));
 			break;
 		}
-		(void)morph_buf_append(&output, cursor,
-			(size_t)(match - cursor));
-		(void)morph_buf_printf(&output, "[REDACTED:%s]", secret->name);
+		(void)nb_buf_append(&output, cursor, (size_t)(match - cursor));
+		(void)nb_buf_printf(&output, "[REDACTED:%s]", secret->name);
 		cursor = match + strlen(secret->value);
 	}
 	{
-		char *result = morph_buf_detach(&output);
+		char *result = (nb_buf_ok(&output) ? strdup(nb_buf_cstr(&output)) : NULL);
 
-		morph_buf_cleanup(&output);
+		nb_buf_cleanup(&output);
 		return result;
 	}
 }
@@ -390,9 +392,10 @@ static struct process_session *find_session(struct process_manager *manager,
 {
 	if (!manager || !id)
 		return NULL;
-	for (size_t i = 0; i < manager->session_count; i++)
-		if (strcmp(manager->sessions[i].id, id) == 0)
-			return &manager->sessions[i];
+	for (size_t i = 0; i < manager->sessions.len; i++)
+		if (strcmp(((struct process_session *)nb_vec_at(&manager->sessions, i))->id, id) ==
+		    0)
+			return nb_vec_at(&manager->sessions, i);
 	return NULL;
 }
 
@@ -401,7 +404,7 @@ static int append_snapshot_stream(struct process_stream *stream, char **out,
 {
 	size_t start;
 	size_t length;
-	morph_buf_t value MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf value NB_CLEANUP(nb_buf_cleanup) = {0};
 
 	*out = NULL;
 	*omitted = stream->cursor < stream->base ? stream->base - stream->cursor : 0;
@@ -410,45 +413,44 @@ static int append_snapshot_stream(struct process_stream *stream, char **out,
 		start = 0;
 	else
 		start = stream->cursor - stream->base;
-	if (start > stream->data.len)
-		start = stream->data.len;
-	length = stream->data.len - start;
+	if (start > nb_buf_len(&stream->data))
+		start = nb_buf_len(&stream->data);
+	length = nb_buf_len(&stream->data) - start;
 	if (length <= limit) {
-		*out = strndup(stream->data.data + start, length);
-		return *out ? 0 : -ENOMEM;
+		*out = strndup(nb_buf_cstr(&stream->data) + start, length);
+		return *out ? 0 : NB_ERR_NOMEM;
 	}
 	*truncated = 1;
 	*omitted += length - limit;
-	if (morph_buf_init(&value, limit + 64) != 0)
-		return -ENOMEM;
+	if ((nb_buf_init(&value), nb_buf_reserve(&value, limit + 64) ? 0 : NB_ERR_NOMEM) != 0)
+		return NB_ERR_NOMEM;
 	{
-		size_t head = stream_prefix_boundary(stream->data.data + start,
-			length, limit / 4);
-		size_t tail_start = stream_suffix_boundary(stream->data.data,
-			stream->data.len, stream->data.len - (limit - limit / 4));
-			size_t tail = stream->data.len - tail_start;
+		size_t head = stream_prefix_boundary(nb_buf_cstr(&stream->data) + start, length,
+						     limit / 4);
+		size_t tail_start = stream_suffix_boundary(
+			nb_buf_cstr(&stream->data), nb_buf_len(&stream->data),
+			nb_buf_len(&stream->data) - (limit - limit / 4));
+		size_t tail = nb_buf_len(&stream->data) - tail_start;
 
-		(void)morph_buf_append(&value, stream->data.data + start, head);
-		(void)morph_buf_puts(&value,
-			"\n...[output truncated]...\n");
-		(void)morph_buf_append(&value,
-				stream->data.data + tail_start, tail);
+		(void)nb_buf_append(&value, nb_buf_cstr(&stream->data) + start, head);
+		(void)nb_buf_append_cstr(&value, "\n...[output truncated]...\n");
+		(void)nb_buf_append(&value, nb_buf_cstr(&stream->data) + tail_start, tail);
 		*omitted += limit - head - tail;
 	}
 	{
-		*out = morph_buf_detach(&value);
+		*out = (nb_buf_ok(&value) ? strdup(nb_buf_cstr(&value)) : NULL);
 	}
-	morph_buf_cleanup(&value);
-	return *out ? 0 : -ENOMEM;
+	nb_buf_cleanup(&value);
+	return *out ? 0 : NB_ERR_NOMEM;
 }
 
 static int snapshot_budget_locked(struct process_session *session,
 				   struct process_snapshot *snapshot, size_t limit)
 {
-	struct process_snapshot candidate MORPH_CLEANUP(process_snapshot_cleanup) = {0};
+	struct process_snapshot candidate NB_CLEANUP(process_snapshot_cleanup) = {0};
 
 	if (snapshot->stdout_text || snapshot->stderr_text)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	candidate.state = session->state;
 	candidate.exit_code = session->exit_code;
 	candidate.signal_number = session->signal_number;
@@ -457,16 +459,16 @@ static int snapshot_budget_locked(struct process_session *session,
 	if (append_snapshot_stream(&session->stdout_stream, &candidate.stdout_text,
 				   &candidate.stdout_omitted_bytes, &candidate.stdout_truncated,
 				   limit) != 0)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (append_snapshot_stream(&session->stderr_stream, &candidate.stderr_text,
 				   &candidate.stderr_omitted_bytes, &candidate.stderr_truncated,
 				   limit) != 0) {
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
-	session->stdout_stream.cursor = session->stdout_stream.base +
-		session->stdout_stream.data.len;
-	session->stderr_stream.cursor = session->stderr_stream.base +
-		session->stderr_stream.data.len;
+	session->stdout_stream.cursor =
+		session->stdout_stream.base + nb_buf_len(&session->stdout_stream.data);
+	session->stderr_stream.cursor =
+		session->stderr_stream.base + nb_buf_len(&session->stderr_stream.data);
 	candidate.next_cursor.stdout_offset = session->stdout_stream.cursor;
 	candidate.next_cursor.stderr_offset = session->stderr_stream.cursor;
 	const struct process_stream *output = &session->stdout_stream;
@@ -542,7 +544,7 @@ static void drain_fd(struct process_manager *manager, int *fd,
 			*open = 0;
 			return;
 		}
-		stream->capture_error = morph_error_from_errno(errno);
+		stream->capture_error = nb_status_from_errno(errno, NULL);
 		stream_finish(manager, stream);
 		close_fd(fd);
 		*open = 0;
@@ -550,33 +552,28 @@ static void drain_fd(struct process_manager *manager, int *fd,
 	}
 }
 
-static void finish_session(struct process_session *session, int status)
+static void finish_session(struct process_session *session, int exit_code)
 {
 	session->ended_ms = process_now_ms();
-	if (WIFEXITED(status)) {
-		session->exit_code = WEXITSTATUS(status);
-		session->state = session->timeout_requested ?
-			PROCESS_TIMED_OUT : session->kill_requested ?
-			PROCESS_KILLED : PROCESS_EXITED;
-	} else if (WIFSIGNALED(status)) {
-		session->signal_number = WTERMSIG(status);
-		session->state = session->timeout_requested ?
-			PROCESS_TIMED_OUT : session->kill_requested ?
-			PROCESS_KILLED : PROCESS_SIGNALED;
-	}
+	session->exit_code = exit_code;
+	session->signal_number = nb_process_exit_signal(session->child);
+	session->state = session->timeout_requested ? PROCESS_TIMED_OUT
+			 : session->kill_requested  ? PROCESS_KILLED
+			 : session->signal_number   ? PROCESS_SIGNALED
+						    : PROCESS_EXITED;
 }
 
 static void monitor_session(struct process_manager *manager,
 				    struct process_session *session,
 				    uint64_t now)
 {
-	int status;
-	pid_t result;
+	int exit_code = 0;
+	bool exited = false;
 
 	if (session->state >= PROCESS_EXITED) {
 		if (session->kill_deadline_ms > 0 &&
 			now >= session->kill_deadline_ms) {
-			(void)kill(-session->pgid, SIGKILL);
+			(void)nb_process_signal(session->child, SIGKILL, NULL);
 			session->kill_deadline_ms = 0;
 		}
 		return;
@@ -590,28 +587,28 @@ static void monitor_session(struct process_manager *manager,
 		now >= session->started_ms + session->timeout_ms &&
 		!session->timeout_requested) {
 		session->timeout_requested = 1;
-		(void)kill(-session->pgid, SIGTERM);
+		(void)nb_process_signal(session->child, SIGTERM, NULL);
 		session->kill_deadline_ms = now + manager->kill_grace_ms;
 	}
 	if (session->kill_deadline_ms > 0 &&
 		now >= session->kill_deadline_ms) {
-		(void)kill(-session->pgid, SIGKILL);
+		(void)nb_process_signal(session->child, SIGKILL, NULL);
 		session->kill_deadline_ms = 0;
 	}
-	result = waitpid(session->pid, &status, WNOHANG);
-	if (result == session->pid) {
+	(void)nb_process_wait(session->child, 0, &exit_code, &exited, NULL);
+	if (exited) {
 		drain_fd(manager, &session->stdout_fd, &session->stdout_stream,
 			 &session->stdout_open, session->pty);
 		if (!session->pty)
 			drain_fd(manager, &session->stderr_fd, &session->stderr_stream,
 				 &session->stderr_open, 0);
 		if (session->hook_mode || session->kill_descendants_on_exit)
-			(void)kill(-session->pgid, SIGKILL);
+			(void)nb_process_signal(session->child, SIGKILL, NULL);
 		stream_finish(manager, &session->stdout_stream);
 		stream_finish(manager, &session->stderr_stream);
-		finish_session(session, status);
+		finish_session(session, exit_code);
 		close_session_fds(session);
-		pthread_cond_broadcast(&manager->condition);
+		nb_cond_broadcast(manager->condition);
 	}
 }
 
@@ -620,38 +617,30 @@ static void *process_monitor_thread(void *opaque)
 	struct process_manager *manager = opaque;
 
 	for (;;) {
-		struct timespec deadline;
-
-		pthread_mutex_lock(&manager->mutex);
+		nb_mutex_lock(manager->mutex);
 		if (manager->stopping) {
-			pthread_mutex_unlock(&manager->mutex);
+			nb_mutex_unlock(manager->mutex);
 			break;
 		}
-		for (size_t i = 0; i < manager->session_count; i++)
-			monitor_session(manager, &manager->sessions[i],
+		for (size_t i = 0; i < manager->sessions.len; i++)
+			monitor_session(manager, nb_vec_at(&manager->sessions, i),
 					process_now_ms());
 		/* Completion callbacks may inspect a session without deadlocking. */
-		for (size_t i = 0; manager->completed && i < manager->session_count; i++) {
-			struct process_session *session = &manager->sessions[i];
+		for (size_t i = 0; manager->completed && i < manager->sessions.len; i++) {
+			struct process_session *session = nb_vec_at(&manager->sessions, i);
 			char id[PROCESS_SESSION_ID_MAX];
 
 			if (session->state < PROCESS_EXITED || session->completion_sent)
 				continue;
 			session->completion_sent = 1;
 			snprintf(id, sizeof(id), "%s", session->id);
-			pthread_mutex_unlock(&manager->mutex);
+			nb_mutex_unlock(manager->mutex);
 			manager->completed(id, manager->completed_user_data);
-			pthread_mutex_lock(&manager->mutex);
+			nb_mutex_lock(manager->mutex);
 		}
-		clock_gettime(CLOCK_REALTIME, &deadline);
-		deadline.tv_nsec += PROCESS_POLL_MS * 1000000L;
-		if (deadline.tv_nsec >= 1000000000L) {
-			deadline.tv_sec++;
-			deadline.tv_nsec -= 1000000000L;
-		}
-		(void)pthread_cond_timedwait(&manager->condition,
-			&manager->mutex, &deadline);
-		pthread_mutex_unlock(&manager->mutex);
+		(void)nb_cond_timedwait(manager->condition, manager->mutex,
+					PROCESS_POLL_MS * INT64_C(1000000));
+		nb_mutex_unlock(manager->mutex);
 	}
 	return NULL;
 }
@@ -663,222 +652,84 @@ static int validate_workdir(const char *workdir)
 	if (!workdir || !*workdir)
 		return 0;
 	if (stat(workdir, &info) != 0)
-		return morph_error_from_errno(errno);
+		return nb_status_from_errno(errno, NULL);
 	if (!S_ISDIR(info.st_mode))
-		return -ENOTDIR;
+		return NB_ERR_NOT_DIR;
 	if (access(workdir, X_OK) != 0)
-		return morph_error_from_errno(errno);
-	return 0;
-}
-
-static int session_reserve(struct process_manager *manager)
-{
-	struct process_session *sessions;
-	size_t capacity;
-
-	if (manager->session_count < manager->session_capacity)
-		return 0;
-	capacity = manager->session_capacity ? manager->session_capacity * 2 : 16;
-	sessions = realloc(manager->sessions,
-		capacity * sizeof(*manager->sessions));
-	if (!sessions)
-		return -ENOMEM;
-	manager->sessions = sessions;
-	manager->session_capacity = capacity;
+		return nb_status_from_errno(errno, NULL);
 	return 0;
 }
 
 static int prepare_child_execution(const struct process_spawn_options *options)
 {
 	if (options->temp_dir && setenv("TMPDIR", options->temp_dir, 1) != 0)
-		return morph_error_from_errno(errno);
-	int rc = options->sandbox ? sandbox_enter(options->sandbox) :
-		options->host_execution ? sandbox_close_inherited_fds() : 0;
+		return nb_status_from_errno(errno, NULL);
+	/* The forked child must not acquire a logger mutex held by another
+	 * parent worker. This only changes its private post-fork copy. */
+	if (options->sandbox)
+		options->sandbox->logger = NULL;
+	int rc = options->sandbox ? sandbox_enter(options->sandbox) : NB_OK;
 	if (rc == 0 && options->temp_dir) {
 		if (setenv("TMPDIR", options->temp_dir, 1) != 0 ||
 		    setenv("MORPH_AGENT_SCRATCH", options->temp_dir, 1) != 0)
-			rc = morph_error_from_errno(errno);
+			rc = nb_status_from_errno(errno, NULL);
 	}
 	return rc;
 }
 
-struct process_start_pipe {
-	int fd[2];
-};
-
-static void process_start_pipe_cleanup(struct process_start_pipe *owner)
+static nb_status process_prepare_child(void *opaque)
 {
-	close_fd(&owner->fd[0]);
-	close_fd(&owner->fd[1]);
-}
-
-static int spawn_pipe_process(struct process_manager *manager,
-				      const struct process_spawn_options *options,
-				      struct process_session *session)
-{
-	int stdout_pipe[2] = {-1, -1};
-	int stderr_pipe[2] = {-1, -1};
-	int stdin_pipe[2] = {-1, -1};
-	struct process_start_pipe ready MORPH_CLEANUP(process_start_pipe_cleanup) =
-		{.fd = {-1, -1}};
-	pid_t pid;
-
-	if (pipe(ready.fd) != 0)
-		return morph_error_from_errno(errno);
-	if (pipe(stdout_pipe) != 0)
-		return morph_error_from_errno(errno);
-	if (pipe(stderr_pipe) != 0) {
-		int rc = -errno;
-		close(stdout_pipe[0]);
-		close(stdout_pipe[1]);
-		return rc;
+	const struct process_spawn_options *options = opaque;
+	if (options->hook_mode) {
+		static const char *const allowed[] = {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"};
+		int rc = sandbox_apply_env(NULL, allowed, 5, 0);
+		if (rc != NB_OK)
+			return (nb_status)rc;
+		if (setenv("MORPH_HOOK_ACTIVE", "1", 1) != 0)
+			return nb_status_from_errno(errno, NULL);
 	}
-	if (pipe(stdin_pipe) != 0) {
-		int rc = -errno;
-		close(stdout_pipe[0]);
-		close(stdout_pipe[1]);
-		close(stderr_pipe[0]);
-		close(stderr_pipe[1]);
-		return rc;
-	}
-	pid = fork();
-	if (pid < 0) {
-		int rc = -errno;
-		close(stdout_pipe[0]); close(stdout_pipe[1]);
-		close(stderr_pipe[0]); close(stderr_pipe[1]);
-		close(stdin_pipe[0]); close(stdin_pipe[1]);
-		return rc;
-	}
-	if (pid == 0) {
-		morph_signals_reset_child();
-		const char *shell = process_manager_shell_borrow(manager);
-
-		/* Interactive descendants must never acquire the CLI's terminal.
-		 * A process group alone still shares its controlling terminal. */
-		close(ready.fd[0]);
-		if (sandbox_start_isolated_session() != 0)
-			_exit(126);
-		char started = 1;
-		ssize_t written;
-
-		do {
-			written = write(ready.fd[1], &started, sizeof(started));
-		} while (written < 0 && errno == EINTR);
-		if (written != sizeof(started))
-			_exit(126);
-		close(ready.fd[1]);
-		if (options->workdir && chdir(options->workdir) != 0)
-			_exit(126);
-		close(stdout_pipe[0]);
-		close(stderr_pipe[0]);
-		close(stdin_pipe[1]);
-		(void)dup2(stdout_pipe[1], STDOUT_FILENO);
-		(void)dup2(stderr_pipe[1], STDERR_FILENO);
-		(void)dup2(options->use_stdin_fd ? options->stdin_fd :
-			   stdin_pipe[0], STDIN_FILENO);
-		close(stdout_pipe[1]);
-		close(stderr_pipe[1]);
-		close(stdin_pipe[0]);
-		if (options->hook_mode) {
-			static const char *const allowed[] = {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"};
-			if (sandbox_apply_env(options ? options->logger : NULL, allowed, 5, 0) != 0)
-				_exit(126);
-			(void)setenv("MORPH_HOOK_ACTIVE", "1", 1);
-			(void)sandbox_close_inherited_fds();
-		}
+	if (!options->pty) {
 		(void)setenv("TERM", "dumb", 0);
 		(void)setenv("NO_COLOR", "1", 0);
-		if (prepare_child_execution(options) != 0)
-			_exit(126);
-		execl(shell, shell, options->hook_mode ? "-c" : "-lc",
-		      options->command, (char *)NULL);
-		_exit(127);
 	}
-	close(stdout_pipe[1]);
-	close(stderr_pipe[1]);
-	close(stdin_pipe[0]);
-	close_fd(&ready.fd[1]);
-	char started = 0;
-	ssize_t received;
-
-	/* Publish the session only after its process group exists, so an
-	 * immediate interrupt/kill cannot race the child's setsid(). */
-	do {
-		received = read(ready.fd[0], &started, sizeof(started));
-	} while (received < 0 && errno == EINTR);
-	if (received != sizeof(started) || started != 1) {
-		int rc = received < 0 ? morph_error_from_errno(errno) : -EIO;
-
-		(void)kill(pid, SIGKILL);
-		while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
-		}
-		close(stdout_pipe[0]);
-		close(stderr_pipe[0]);
-		close(stdin_pipe[1]);
-		return rc;
-	}
-	session->pid = pid;
-	session->pgid = pid;
-	session->stdout_fd = stdout_pipe[0];
-	session->stderr_fd = stderr_pipe[0];
-	session->stdin_fd = stdin_pipe[1];
-	if (options->use_stdin_fd)
-		close_fd(&session->stdin_fd);
-	if (set_nonblocking(session->stdout_fd) != 0 ||
-		set_nonblocking(session->stderr_fd) != 0 ||
-		(session->stdin_fd >= 0 && set_nonblocking(session->stdin_fd) != 0)) {
-		int rc = -errno;
-
-		(void)kill(-session->pgid, SIGKILL);
-		(void)waitpid(session->pid, NULL, 0);
-		close_session_fds(session);
-		return rc;
-	}
-	return 0;
+	return (nb_status)prepare_child_execution(options);
 }
 
-static int spawn_pty_process(struct process_manager *manager,
-				     const struct process_spawn_options *options,
-				     struct process_session *session)
+static int process_start_child(struct process_manager *manager,
+			       const struct process_spawn_options *options,
+			       struct process_session *session)
 {
-#if defined(__APPLE__) || defined(__linux__)
-	int master = -1;
-	pid_t pid;
-
-	pid = forkpty(&master, NULL, NULL, NULL);
-	if (pid < 0)
-		return morph_error_from_errno(errno);
-	if (pid == 0) {
-		morph_signals_reset_child();
-		const char *shell = process_manager_shell_borrow(manager);
-
-		(void)setpgid(0, 0);
-		if (options->workdir && chdir(options->workdir) != 0)
-			_exit(126);
-		if (prepare_child_execution(options) != 0)
-			_exit(126);
-		execl(shell, shell, options->hook_mode ? "-c" : "-lc",
-		      options->command, (char *)NULL);
-		_exit(127);
+	const char *shell = process_manager_shell_borrow(manager);
+	const char *argv[] = {shell, options->hook_mode ? "-c" : "-lc", options->command, NULL};
+	nb_process_options child_options = {
+		.argv = argv,
+		.cwd = options->workdir,
+		.new_session = !options->pty,
+		.new_group = true,
+		.close_fds = true,
+		.pty = options->pty != 0,
+		.stdin_mode = options->use_stdin_fd ? NB_PROCESS_FD : NB_PROCESS_PIPE,
+		.stdin_fd = options->stdin_fd,
+		.prepare = process_prepare_child,
+		.prepare_ctx = (void *)options,
+	};
+	int rc = nb_process_spawn(&child_options, &session->child, NULL);
+	if (rc != NB_OK)
+		return rc;
+	session->pid = (pid_t)nb_process_id(session->child);
+	session->pgid = session->pid;
+	session->stdout_fd = nb_process_take_stdout(session->child);
+	session->stderr_fd = nb_process_take_stderr(session->child);
+	session->stdin_fd = nb_process_take_stdin(session->child);
+	session->pty = options->pty;
+	if (set_nonblocking(session->stdout_fd) != NB_OK ||
+	    (session->stderr_fd >= 0 && set_nonblocking(session->stderr_fd) != NB_OK) ||
+	    (session->stdin_fd >= 0 && set_nonblocking(session->stdin_fd) != NB_OK)) {
+		rc = nb_status_from_errno(errno, NULL);
+		(void)nb_process_terminate(session->child, 0);
+		return rc;
 	}
-	(void)setpgid(pid, pid);
-	session->pid = pid;
-	session->pgid = pid;
-	session->stdout_fd = master;
-	session->stderr_fd = -1;
-	session->stdin_fd = master;
-	session->pty = 1;
-	if (set_nonblocking(master) != 0) {
-		close(master);
-		return -errno;
-	}
-	return 0;
-#else
-	(void)manager;
-	(void)options;
-	(void)session;
-	return -ENOTSUP;
-#endif
+	return NB_OK;
 }
 
 int process_manager_create(const struct process_manager_config *config,
@@ -888,12 +739,13 @@ int process_manager_create(const struct process_manager_config *config,
 	int rc;
 
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	manager = calloc(1, sizeof(*manager));
 	if (!manager)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
+	nb_vec_init(&manager->sessions, sizeof(struct process_session));
 	manager->max_session_output = config && config->max_session_output ?
 		config->max_session_output : PROCESS_DEFAULT_MAX_SESSION_OUTPUT;
 	manager->max_inline_output = config && config->max_inline_output ?
@@ -913,42 +765,40 @@ int process_manager_create(const struct process_manager_config *config,
 
 			if (value && strlen(value) >= 4 &&
 				manager->secret_count < PROCESS_SECRET_MAX) {
-				char *copy MORPH_CLEANUP(morph_charp_cleanup) = strdup(value);
+				char *copy NB_CLEANUP(nb_charp_cleanup) = strdup(value);
 
 				if (!copy) {
 					process_secrets_cleanup(manager);
 					free(manager);
-					return -ENOMEM;
+					return NB_ERR_NOMEM;
 				}
-				manager->secrets[manager->secret_count++] =
-					(struct process_secret){secret_names[i],
-						morph_charp_steal(&copy)};
+				manager->secrets[manager->secret_count++] = (struct process_secret){
+					secret_names[i], nb_charp_steal(&copy)};
 			}
 		}
 	}
-	rc = pthread_mutex_init(&manager->mutex, NULL);
+	rc = ((manager->mutex = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
 	if (rc != 0) {
 		process_secrets_cleanup(manager);
 		free(manager);
-		return -rc;
+		return rc;
 	}
-	rc = pthread_cond_init(&manager->condition, NULL);
+	rc = ((manager->condition = nb_cond_new()) ? NB_OK : NB_ERR_NOMEM);
 	if (rc != 0) {
-		pthread_mutex_destroy(&manager->mutex);
+		(nb_mutex_free(manager->mutex), manager->mutex = NULL);
 		process_secrets_cleanup(manager);
 		free(manager);
-		return -rc;
+		return rc;
 	}
 	manager->completed = config ? config->completed : NULL;
 	manager->completed_user_data = config ? config->completed_user_data : NULL;
-	rc = pthread_create(&manager->thread, NULL, process_monitor_thread,
-		manager);
+	rc = nb_thread_create(&manager->thread, process_monitor_thread, manager, NULL);
 	if (rc != 0) {
-		pthread_cond_destroy(&manager->condition);
-		pthread_mutex_destroy(&manager->mutex);
+		(nb_cond_free(manager->condition), manager->condition = NULL);
+		(nb_mutex_free(manager->mutex), manager->mutex = NULL);
 		process_secrets_cleanup(manager);
 		free(manager);
-		return -rc;
+		return rc;
 	}
 	manager->thread_started = 1;
 	*out = manager;
@@ -959,36 +809,38 @@ void process_manager_destroy(struct process_manager *manager)
 {
 	if (!manager)
 		return;
-	pthread_mutex_lock(&manager->mutex);
+	nb_mutex_lock(manager->mutex);
 	manager->stopping = 1;
-	for (size_t i = 0; i < manager->session_count; i++) {
-		struct process_session *session = &manager->sessions[i];
+	for (size_t i = 0; i < manager->sessions.len; i++) {
+		struct process_session *session = nb_vec_at(&manager->sessions, i);
 
 		if (session->state < PROCESS_EXITED ||
 			session->kill_deadline_ms > 0)
-			(void)kill(-session->pgid, SIGTERM);
+			(void)nb_process_signal(session->child, SIGTERM, NULL);
 	}
-	pthread_cond_broadcast(&manager->condition);
-	pthread_mutex_unlock(&manager->mutex);
+	nb_cond_broadcast(manager->condition);
+	nb_mutex_unlock(manager->mutex);
 	if (manager->thread_started)
-		pthread_join(manager->thread, NULL);
-	for (size_t i = 0; i < manager->session_count; i++) {
-		struct process_session *session = &manager->sessions[i];
+		nb_thread_join_take(&manager->thread, NULL);
+	for (size_t i = 0; i < manager->sessions.len; i++) {
+		struct process_session *session = nb_vec_at(&manager->sessions, i);
 
 		if (session->state < PROCESS_EXITED ||
 			session->kill_deadline_ms > 0) {
-			(void)kill(-session->pgid, SIGKILL);
+			(void)nb_process_signal(session->child, SIGKILL, NULL);
 			if (session->state < PROCESS_EXITED)
-				(void)waitpid(session->pid, NULL, 0);
+				(void)nb_process_wait(session->child, -1, NULL, NULL, NULL);
 		}
 		close_session_fds(session);
+		nb_process_free(session->child);
+		session->child = NULL;
 		stream_cleanup(&session->stdout_stream);
 		stream_cleanup(&session->stderr_stream);
 	}
-	free(manager->sessions);
+	nb_vec_destroy(&manager->sessions);
 	process_secrets_cleanup(manager);
-	pthread_cond_destroy(&manager->condition);
-	pthread_mutex_destroy(&manager->mutex);
+	(nb_cond_free(manager->condition), manager->condition = NULL);
+	(nb_mutex_free(manager->mutex), manager->mutex = NULL);
 	free(manager);
 }
 
@@ -997,10 +849,13 @@ int process_spawn(struct process_manager *manager,
 			  char session_id[PROCESS_SESSION_ID_MAX],
 			  struct process_snapshot *snapshot)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_1 = NB_OK;
+
 	struct process_session *session;
 	/*
 	 * The index of this session, rather than its address. session_reserve()
-	 * can realloc() manager->sessions while this call is parked in the wait
+	 * can grow manager->sessions while this call is parked in the wait
 	 * loop below, which moves the array; an index survives that, a cached
 	 * pointer does not.
 	 */
@@ -1008,23 +863,28 @@ int process_spawn(struct process_manager *manager,
 	int rc;
 
 	if (!manager || !options || !options->command || !session_id)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (snapshot && (snapshot->stdout_text || snapshot->stderr_text))
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	session_id[0] = '\0';
 	if (options->cancelled && options->cancelled(options->cancel_data))
-		return -ECANCELED;
+		return NB_ERR_CANCELLED;
 	rc = validate_workdir(options->workdir);
 	if (rc != 0)
 		return rc;
-	pthread_mutex_lock(&manager->mutex);
-	rc = session_reserve(manager);
+	if (options->sandbox) {
+		rc = sandbox_prepare_temporary_paths(options->sandbox, options->temp_dir);
+		if (rc != NB_OK)
+			return rc;
+	}
+	nb_mutex_lock(manager->mutex);
+	rc = nb_vec_reserve(&manager->sessions, manager->sessions.len + 1) ? 0 : NB_ERR_NOMEM;
 	if (rc != 0) {
-		pthread_mutex_unlock(&manager->mutex);
+		nb_mutex_unlock(manager->mutex);
 		return rc;
 	}
-	session = &manager->sessions[manager->session_count++];
-	session_index = manager->session_count - 1;
+	session = nb_vec_push(&manager->sessions);
+	session_index = manager->sessions.len - 1;
 	memset(session, 0, sizeof(*session));
 	session->stdout_fd = -1;
 	session->stderr_fd = -1;
@@ -1032,22 +892,32 @@ int process_spawn(struct process_manager *manager,
 	session->state = PROCESS_STARTING;
 	session->timeout_ms = options->timeout_ms;
 	session->started_ms = process_now_ms();
-	rc = morph_random_id("proc_", session->id, sizeof(session->id));
+	rc = ((file_status_1 =
+		       ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+			: !(nb_buf_clear(&file_value_1), nb_buf_append_cstr(&file_value_1, "proc_"))
+				? NB_ERR_NOMEM
+				: nb_random_hex(&file_value_1, 16, NULL))) != NB_OK
+		      ? file_status_1
+	      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), session->id,
+						sizeof(session->id))) == NB_ERR_RANGE
+		      ? NB_ERR_NO_SPACE
+		      : file_status_1);
 	if (rc == 0)
 		rc = stream_init(&session->stdout_stream);
 	if (rc == 0)
 		rc = stream_init(&session->stderr_stream);
 	if (rc == 0)
-		rc = options->pty ? spawn_pty_process(manager, options, session) :
-		spawn_pipe_process(manager, options, session);
+		rc = process_start_child(manager, options, session);
 	if (rc != 0) {
 		close_fd(&session->stdout_fd);
 		close_fd(&session->stderr_fd);
 		close_fd(&session->stdin_fd);
+		nb_process_free(session->child);
+		session->child = NULL;
 		stream_cleanup(&session->stdout_stream);
 		stream_cleanup(&session->stderr_stream);
-		manager->session_count--;
-		pthread_mutex_unlock(&manager->mutex);
+		nb_vec_pop(&manager->sessions);
+		nb_mutex_unlock(manager->mutex);
 		return rc;
 	}
 	session->hook_mode = options->hook_mode;
@@ -1058,47 +928,41 @@ int process_spawn(struct process_manager *manager,
 	session->stdin_open = 1;
 	session->state = PROCESS_RUNNING;
 	snprintf(session_id, PROCESS_SESSION_ID_MAX, "%s", session->id);
-	pthread_cond_broadcast(&manager->condition);
+	nb_cond_broadcast(manager->condition);
 	if (!options->background && options->yield_time_ms > 0) {
 		uint64_t deadline = process_now_ms() + options->yield_time_ms;
 
 		for (;;) {
 			uint64_t now = process_now_ms();
-			struct timespec wait_until;
 
 			/*
 			 * Re-resolve the session before touching it:
-			 * pthread_cond_timedwait() released the mutex, so a
+			 * nb_cond_timedwait() released the mutex, so a
 			 * concurrent spawn may have grown the array and freed
 			 * the block this call was pointing at.
 			 */
-			session = &manager->sessions[session_index];
+			session = nb_vec_at(&manager->sessions, session_index);
 			if (options->cancelled && options->cancelled(options->cancel_data)) {
-				rc = -ECANCELED;
+				rc = NB_ERR_CANCELLED;
 				break;
 			}
 			if (session->state >= PROCESS_EXITED)
 				break;
 			if (now >= deadline)
 				break;
-			clock_gettime(CLOCK_REALTIME, &wait_until);
 			uint64_t remain = deadline - now;
 			if (options->cancelled && remain > PROCESS_POLL_MS)
 				remain = PROCESS_POLL_MS;
-			wait_until.tv_sec += (time_t)(remain / 1000u);
-			wait_until.tv_nsec += (long)((remain % 1000u) * 1000000u);
-			if (wait_until.tv_nsec >= 1000000000L) {
-				wait_until.tv_sec++;
-				wait_until.tv_nsec -= 1000000000L;
-			}
-			(void)pthread_cond_timedwait(&manager->condition,
-				&manager->mutex, &wait_until);
+			int64_t duration = remain > (uint64_t)INT64_MAX / 1000000u
+						   ? INT64_MAX
+						   : (int64_t)remain * INT64_C(1000000);
+			(void)nb_cond_timedwait(manager->condition, manager->mutex, duration);
 		}
-		session = &manager->sessions[session_index];
+		session = nb_vec_at(&manager->sessions, session_index);
 	}
 	if (rc == 0 && snapshot)
 		rc = snapshot_locked(manager, session, snapshot);
-	pthread_mutex_unlock(&manager->mutex);
+	nb_mutex_unlock(manager->mutex);
 	return rc;
 }
 
@@ -1110,43 +974,42 @@ static int session_collect(struct process_manager *manager, const char *session_
 	uint64_t deadline;
 	int rc = 0;
 	if (!manager || !session_id || !snapshot)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (snapshot->stdout_text || snapshot->stderr_text)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	uint64_t now = process_now_ms();
 	if (wait_ms > UINT64_MAX - now)
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	deadline = now + wait_ms;
-	pthread_mutex_lock(&manager->mutex);
+	nb_mutex_lock(manager->mutex);
 	for (;;) {
 		struct process_session *session = find_session(manager, session_id);
 		struct process_cursor start;
-		struct timespec until;
 		if (!session) {
-			rc = -ENOENT;
+			rc = NB_ERR_NOT_FOUND;
 			break;
 		}
 		start.stdout_offset =
 		    cursor ? cursor->stdout_offset : session->stdout_stream.cursor;
 		start.stderr_offset =
 		    cursor ? cursor->stderr_offset : session->stderr_stream.cursor;
-		if (start.stdout_offset >
-			session->stdout_stream.base + session->stdout_stream.data.len ||
-		    start.stderr_offset >
-			session->stderr_stream.base + session->stderr_stream.data.len) {
-			rc = -EINVAL;
+		if (start.stdout_offset > session->stdout_stream.base +
+						  nb_buf_len(&session->stdout_stream.data) ||
+		    start.stderr_offset > session->stderr_stream.base +
+						  nb_buf_len(&session->stderr_stream.data)) {
+			rc = NB_ERR_INVAL;
 			break;
 		}
 		if (cancelled && cancelled(cancel_data)) {
-			rc = -ECANCELED;
+			rc = NB_ERR_CANCELLED;
 			break;
 		}
 		if (session->state >= PROCESS_EXITED || process_now_ms() >= deadline ||
 		    (!until_exit &&
-		     (session->stdout_stream.base + session->stdout_stream.data.len >
-			start.stdout_offset ||
-		      session->stderr_stream.base + session->stderr_stream.data.len >
-			start.stderr_offset))) {
+		     (session->stdout_stream.base + nb_buf_len(&session->stdout_stream.data) >
+			      start.stdout_offset ||
+		      session->stderr_stream.base + nb_buf_len(&session->stderr_stream.data) >
+			      start.stderr_offset))) {
 			size_t saved_out = session->stdout_stream.cursor;
 			size_t saved_err = session->stderr_stream.cursor;
 			session->stdout_stream.cursor = start.stdout_offset;
@@ -1158,16 +1021,10 @@ static int session_collect(struct process_manager *manager, const char *session_
 			}
 			break;
 		}
-		clock_gettime(CLOCK_REALTIME, &until);
-		until.tv_nsec += 25000000L;
-		if (until.tv_nsec >= 1000000000L) {
-			until.tv_sec++;
-			until.tv_nsec -= 1000000000L;
-		}
-		(void)pthread_cond_timedwait(&manager->condition, &manager->mutex, &until);
+		(void)nb_cond_timedwait(manager->condition, manager->mutex, INT64_C(25000000));
 		/* Never hold a session pointer across a wait: the array can grow. */
 	}
-	pthread_mutex_unlock(&manager->mutex);
+	nb_mutex_unlock(manager->mutex);
 	return rc;
 }
 
@@ -1198,12 +1055,12 @@ int process_session_inspect(struct process_manager *manager, const char *session
 			    int full_output, struct process_snapshot *snapshot)
 {
 	if (!manager || !session_id || !snapshot)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (snapshot->stdout_text || snapshot->stderr_text)
-		return -EEXIST;
-	pthread_mutex_lock(&manager->mutex);
+		return NB_ERR_EXISTS;
+	nb_mutex_lock(manager->mutex);
 	struct process_session *session = find_session(manager, session_id);
-	int rc = -ENOENT;
+	int rc = NB_ERR_NOT_FOUND;
 	if (session) {
 		size_t saved_out = session->stdout_stream.cursor;
 		size_t saved_err = session->stderr_stream.cursor;
@@ -1214,7 +1071,7 @@ int process_session_inspect(struct process_manager *manager, const char *session
 		session->stdout_stream.cursor = saved_out;
 		session->stderr_stream.cursor = saved_err;
 	}
-	pthread_mutex_unlock(&manager->mutex);
+	nb_mutex_unlock(manager->mutex);
 	return rc;
 }
 
@@ -1222,10 +1079,10 @@ int process_session_status(struct process_manager *manager, const char *session_
 			   struct process_snapshot *snapshot)
 {
 	if (!manager || !session_id || !snapshot)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (snapshot->stdout_text || snapshot->stderr_text)
-		return -EEXIST;
-	pthread_mutex_lock(&manager->mutex);
+		return NB_ERR_EXISTS;
+	nb_mutex_lock(manager->mutex);
 	struct process_session *session = find_session(manager, session_id);
 	if (session) {
 		memset(snapshot, 0, sizeof(*snapshot));
@@ -1237,8 +1094,8 @@ int process_session_status(struct process_manager *manager, const char *session_
 			session->started_ms;
 	}
 	int found = session != NULL;
-	pthread_mutex_unlock(&manager->mutex);
-	return found ? 0 : -ENOENT;
+	nb_mutex_unlock(manager->mutex);
+	return found ? 0 : NB_ERR_NOT_FOUND;
 }
 
 int process_session_snapshot(struct process_manager *manager,
@@ -1249,16 +1106,16 @@ int process_session_snapshot(struct process_manager *manager,
 	int rc;
 
 	if (!manager || !session_id || !snapshot)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (snapshot->stdout_text || snapshot->stderr_text)
-		return -EEXIST;
-	pthread_mutex_lock(&manager->mutex);
+		return NB_ERR_EXISTS;
+	nb_mutex_lock(manager->mutex);
 	session = find_session(manager, session_id);
 	if (!session)
-		rc = -ENOENT;
+		rc = NB_ERR_NOT_FOUND;
 	else
 		rc = snapshot_locked(manager, session, snapshot);
-	pthread_mutex_unlock(&manager->mutex);
+	nb_mutex_unlock(manager->mutex);
 	return rc;
 }
 
@@ -1269,20 +1126,20 @@ static int signal_session(struct process_manager *manager,
 	struct process_session *session;
 	int rc = 0;
 
-	pthread_mutex_lock(&manager->mutex);
+	nb_mutex_lock(manager->mutex);
 	session = find_session(manager, session_id);
 	if (!session)
-		rc = -ENOENT;
+		rc = NB_ERR_NOT_FOUND;
 	else if (session->state >= PROCESS_EXITED)
 		rc = 0;
-	else if (kill(-session->pgid, signal_number) != 0)
-		rc = errno == ESRCH ? 0 : morph_error_from_errno(errno);
+	else if ((rc = nb_process_signal(session->child, signal_number, NULL)) != NB_OK)
+		rc = rc == NB_ERR_STATE ? NB_OK : rc;
 	else if (kill_request && !session->kill_requested) {
 		session->kill_requested = 1;
 		session->kill_deadline_ms = process_now_ms() +
 			manager->kill_grace_ms;
 	}
-	pthread_mutex_unlock(&manager->mutex);
+	nb_mutex_unlock(manager->mutex);
 	return rc;
 }
 
@@ -1290,7 +1147,7 @@ int process_session_interrupt(struct process_manager *manager,
 				      const char *session_id)
 {
 	if (!manager || !session_id)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return signal_session(manager, session_id, SIGINT, 0);
 }
 
@@ -1298,7 +1155,7 @@ int process_session_kill(struct process_manager *manager,
 				  const char *session_id)
 {
 	if (!manager || !session_id)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return signal_session(manager, session_id, SIGTERM, 1);
 }
 
@@ -1310,16 +1167,16 @@ int process_session_write(struct process_manager *manager,
 	size_t offset = 0;
 
 	if (!manager || !session_id || (!input && input_len > 0))
-		return -EINVAL;
-	pthread_mutex_lock(&manager->mutex);
+		return NB_ERR_INVAL;
+	nb_mutex_lock(manager->mutex);
 	session = find_session(manager, session_id);
 	if (!session) {
-		pthread_mutex_unlock(&manager->mutex);
-		return -ENOENT;
+		nb_mutex_unlock(manager->mutex);
+		return NB_ERR_NOT_FOUND;
 	}
 	if (session->state >= PROCESS_EXITED || !session->stdin_open) {
-		pthread_mutex_unlock(&manager->mutex);
-		return -EPIPE;
+		nb_mutex_unlock(manager->mutex);
+		return NB_ERR_BROKEN_PIPE;
 	}
 	while (offset < input_len) {
 		ssize_t written = write(session->stdin_fd, input + offset,
@@ -1332,13 +1189,13 @@ int process_session_write(struct process_manager *manager,
 		if (written < 0 && errno == EINTR)
 			continue;
 		if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-			pthread_mutex_unlock(&manager->mutex);
-			return -EAGAIN;
+			nb_mutex_unlock(manager->mutex);
+			return NB_ERR_AGAIN;
 		}
-		pthread_mutex_unlock(&manager->mutex);
-		return morph_error_from_errno(errno);
+		nb_mutex_unlock(manager->mutex);
+		return nb_status_from_errno(errno, NULL);
 	}
-	pthread_mutex_unlock(&manager->mutex);
+	nb_mutex_unlock(manager->mutex);
 	return 0;
 }
 

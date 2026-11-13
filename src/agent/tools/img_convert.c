@@ -1,12 +1,12 @@
 #include "img_convert.h"
-#include "util/json.h"
-#include "util/cleanup.h"
+#include "cJSON.h"
+#include "nb/cleanup.h"
 #include "image_input.h"
 #include "image_output.h"
 #include "agent/tool_runtime.h"
 #include "agent/tool_context.h"
-#include "util/log.h"
-#include "util/error.h"
+#include "nb/log.h"
+#include "errors.h"
 #include "cJSON.h"
 #include "stb_image.h"
 #include <errno.h>
@@ -20,7 +20,7 @@
 static int normalize_format(const char *fmt, char *out, size_t out_len)
 {
 	if (!fmt || !out || out_len == 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (strcasecmp(fmt, "png") == 0) {
 		strncpy(out, "png", out_len - 1);
 	} else if (strcasecmp(fmt, "jpg") == 0 || strcasecmp(fmt, "jpeg") == 0) {
@@ -30,7 +30,7 @@ static int normalize_format(const char *fmt, char *out, size_t out_len)
 	} else if (strcasecmp(fmt, "tga") == 0) {
 		strncpy(out, "tga", out_len - 1);
 	} else {
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	out[out_len - 1] = '\0';
 	return 0;
@@ -39,14 +39,14 @@ static int normalize_format(const char *fmt, char *out, size_t out_len)
 static int img_convert_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	struct tool_context *tctx = user_data;
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
 		(void)tool_result_success_json_text_copy(result, "{\"error\":\"invalid JSON\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	cJSON *fp = cJSON_GetObjectItem(root, "file_path");
@@ -62,7 +62,7 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 		cJSON_Delete(root);
 		(void)tool_result_error_copy(result, "invalid_arguments",
 					     "JPEG quality must be between 1 and 100");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	int quality = cJSON_IsNumber(q) ? (int)q->valuedouble : 90;
 
@@ -72,7 +72,7 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 			result, "{\"error\":\"missing 'file_path' or 'format' parameter. "
 				"Usage: img_convert({\\\"file_path\\\": \\\"img.png\\\", "
 				"\\\"format\\\": \\\"jpg\\\"})\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	char nfmt[8];
@@ -80,10 +80,10 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"unsupported format (use png/jpg/bmp/tga)\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
-	struct tool_image_input input MORPH_CLEANUP(tool_image_input_cleanup) = {0};
+	struct tool_image_input input NB_CLEANUP(tool_image_input_cleanup) = {0};
 	int input_rc = tool_image_load_input(tctx, file_path, result, &input);
 
 	if (input_rc != 0) {
@@ -112,16 +112,16 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 	}
 
 	size_t msg_len = strlen(final_path) + strlen(nfmt) + 64;
-	char *msg MORPH_CLEANUP(morph_charp_cleanup) = malloc(msg_len);
+	char *msg NB_CLEANUP(nb_charp_cleanup) = malloc(msg_len);
 	if (!msg) {
 		cJSON_Delete(root);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	snprintf(msg, msg_len, "image converted: %s (%s, %dx%d)", final_path, nfmt, w, h);
 	(void)tool_result_success_json_text_copy(result, msg);
 	(void)tool_result_add_image_copy(result, final_path, w, h);
-	log_dbg(result && result->runtime ? result->runtime->http.logger : NULL, "img_convert: %s",
-		msg);
+	nb_log_write(result && result->runtime ? result->runtime->http.logger : NULL, NB_LOG_DEBUG,
+		     "img_convert: %s", msg);
 
 	cJSON_Delete(root);
 	return 0;
@@ -130,7 +130,7 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 int img_convert_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return tool_register_borrow(
 		reg,
 		&(struct tool_spec){

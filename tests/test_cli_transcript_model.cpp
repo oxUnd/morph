@@ -5,7 +5,7 @@ extern "C" {
 #include "sapi/cli/widgets/transcript.h"
 #include "session_history.h"
 #include "cJSON.h"
-#include "util/error.h"
+#include "errors.h"
 }
 
 #include <cstring>
@@ -30,7 +30,7 @@ class CliTranscriptModelTest : public ::testing::Test
 	{
 		cJSON *data = cJSON_Parse(json);
 		if (!data)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		morph_event event{};
 		event.type = type;
 		event.name = name;
@@ -42,15 +42,14 @@ class CliTranscriptModelTest : public ::testing::Test
 
 	const cli_transcript_tool *Tool(size_t index) const
 	{
-		return static_cast<const cli_transcript_tool *>(
-			morph_array_borrow(&model->tools, index));
+		return static_cast<const cli_transcript_tool *>(nb_vec_at(&model->tools, index));
 	}
 };
 
 TEST_F(CliTranscriptModelTest, CreatePreservesExistingModelOwner)
 {
 	auto *saved = model;
-	EXPECT_EQ(cli_transcript_model_create(&model), -EEXIST);
+	EXPECT_EQ(cli_transcript_model_create(&model), NB_ERR_EXISTS);
 	EXPECT_EQ(model, saved);
 }
 
@@ -71,14 +70,14 @@ TEST_F(CliTranscriptModelTest, InterleavedCallsKeepTheirIdsAndReasoningPositions
 			11),
 		  0);
 	ASSERT_EQ(cli_transcript_model_reasoning_append(model, " after", 6, 0), 0);
-	ASSERT_EQ(model->reasoning.nelts, 2u);
-	const auto *first = static_cast<const cli_transcript_reasoning *>(
-		morph_array_borrow(&model->reasoning, 0));
-	const auto *second = static_cast<const cli_transcript_reasoning *>(
-		morph_array_borrow(&model->reasoning, 1));
+	ASSERT_EQ(model->reasoning.len, 2u);
+	const auto *first =
+		static_cast<const cli_transcript_reasoning *>(nb_vec_at(&model->reasoning, 0));
+	const auto *second =
+		static_cast<const cli_transcript_reasoning *>(nb_vec_at(&model->reasoning, 1));
 	EXPECT_EQ(first->after_tools, 0u);
 	EXPECT_EQ(second->after_tools, 1u);
-	EXPECT_STREQ(morph_buf_cstr_borrow(&second->text), "middle after");
+	EXPECT_STREQ(nb_buf_cstr(&second->text), "middle after");
 	ASSERT_EQ(Apply(MORPH_EVENT_TOOL, "tool.result",
 			"{\"tool\":\"file_read\",\"tool_call_id\":\"a\","
 			"\"result\":\"{\\\"data\\\":{\\\"returned_lines\\\":3}}\"}",
@@ -110,7 +109,7 @@ TEST_F(CliTranscriptModelTest, StreamingAndResultSemanticsWorkWithoutAnApplicati
 		  0);
 	EXPECT_EQ(change.kind, CLI_TRANSCRIPT_TOOL_STREAMED);
 	EXPECT_EQ(change.stream_offset, 6u);
-	EXPECT_STREQ(morph_buf_cstr_borrow(&Tool(0)->stream), "hello world");
+	EXPECT_STREQ(nb_buf_cstr(&Tool(0)->stream), "hello world");
 	ASSERT_EQ(Apply(MORPH_EVENT_TOOL, "tool.result",
 			"{\"tool_call_id\":\"exec\",\"result\":\"{\\\"ok\\\":false,"
 			"\\\"data\\\":{\\\"exit_code\\\":2,\\\"stderr\\\":\\\"failure\\\","
@@ -217,14 +216,15 @@ TEST_F(CliTranscriptModelTest, HistoricalFailuresKeepOriginalResultAndErrorMetad
 	model_history_item result{};
 	result.content = const_cast<char *>("stored abbreviated result");
 	std::string metadata = "{\"original_content\":\"full result\",\"error_code\":" +
-			       std::to_string(-ETIMEDOUT) + "}";
+			       std::to_string(NB_ERR_TIMEOUT) + "}";
 	result.payload_json = metadata.data();
 	size_t index;
 	ASSERT_EQ(cli_transcript_model_restore(model, call, &result, &index), 0);
 	cJSON_Delete(call);
 	EXPECT_STREQ(Tool(index)->result, "full result");
 	EXPECT_EQ(Tool(index)->state, -1);
-	EXPECT_STREQ(Tool(index)->error, morph_strerror(-ETIMEDOUT));
+	EXPECT_STREQ(Tool(index)->error,
+		     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, NB_ERR_TIMEOUT));
 	EXPECT_TRUE(Tool(index)->timed_out);
 	EXPECT_TRUE(Tool(index)->historical);
 }
@@ -260,13 +260,13 @@ TEST_F(CliTranscriptModelTest, LegacyProcessNameIsExplicitlyDeprecatedInDisplay)
 		"session_id":"proc_old"}})", 1), 0);
 	EXPECT_TRUE(Tool(0)->shell);
 	EXPECT_STREQ(Tool(0)->name, "process");
-	morph_buf_t row{};
-	ASSERT_EQ(morph_buf_init(&row, 128), 0);
+	nb_buf row{};
+	ASSERT_EQ((nb_buf_init(&row), nb_buf_reserve(&row, 128) ? 0 : NB_ERR_NOMEM), 0);
 	for (int columns : {120, 80, 60, 40}) {
-		morph_buf_reset(&row);
+		nb_buf_clear(&row);
 		EXPECT_EQ(cli_transcript_live_text(model, &row, columns, 0), 1);
-		EXPECT_NE(std::string(morph_buf_cstr_borrow(&row)).find("process [deprecated]"),
+		EXPECT_NE(std::string(nb_buf_cstr(&row)).find("process [deprecated]"),
 			  std::string::npos);
 	}
-	morph_buf_cleanup(&row);
+	nb_buf_cleanup(&row);
 }

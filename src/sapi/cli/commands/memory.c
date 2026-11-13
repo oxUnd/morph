@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/memory.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
 #include "agent/memory.h"
 #include "runtime/services.h"
@@ -27,7 +28,7 @@ static const char *cli_memory_scope_display(enum memory_clear_scope scope)
 static int cli_memory_parse_scope(const char *name, enum memory_clear_scope *scope)
 {
 	if (!scope)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!name || strcmp(name, "all") == 0) {
 		*scope = MEMORY_CLEAR_ALL;
 		return 0;
@@ -45,7 +46,7 @@ static int cli_memory_parse_scope(const char *name, enum memory_clear_scope *sco
 		*scope = MEMORY_CLEAR_TIPS;
 		return 0;
 	}
-	return -EINVAL;
+	return NB_ERR_INVAL;
 }
 
 static int cli_memory_command_memory(struct cli_application *ctx, int argc, char **argv)
@@ -57,7 +58,8 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 		int rc = cli_memory_page_show(ctx);
 
 		if (rc != 0)
-			CMD_ERROR(ctx, "Failed to open memory panel: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "Failed to open memory panel: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 
@@ -65,7 +67,8 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 		int rc = runtime_memory_retry_current(ctx->runtime);
 
 		if (rc != 0)
-			CMD_ERROR(ctx, "Failed to retry memory updates: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "Failed to retry memory updates: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		else
 			CMD_OK(ctx, "Memory update retry requested.");
 		return rc;
@@ -77,7 +80,7 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 		if (!jobs)
 			return MORPH_ERR_DB;
 		CMD_HEADER(ctx, "Background jobs: queued = pending; completed = finished");
-		(void)cli_output_print_untrusted(ctx, jobs, UTF8_TERMINAL_TEXT_MULTILINE);
+		(void)cli_output_print_untrusted(ctx, jobs, MORPH_TERMINAL_TEXT_MULTILINE);
 		free(jobs);
 		return 0;
 	}
@@ -92,11 +95,12 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 		if (!key || (setting && !value) || argc > (setting ? 5 : 4)) {
 			CMD_ERROR(ctx, "/memory set <key> <value> [personal|project|session]"
 				       "; /memory unset <key> [personal|project|session]");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 		rc = runtime_preference_set(ctx->runtime, scope ? scope : "personal", key, value);
 		if (rc != 0) {
-			CMD_ERROR(ctx, "Failed to update preference: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "Failed to update preference: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
 		if (setting)
@@ -111,7 +115,7 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 			char *effective = runtime_preferences_render_copy(ctx->runtime, 0);
 
 			(void)cli_output_print_untrusted(ctx, effective ? effective : "",
-							 UTF8_TERMINAL_TEXT_MULTILINE);
+							 MORPH_TERMINAL_TEXT_MULTILINE);
 			free(effective);
 		}
 		return 0;
@@ -128,10 +132,10 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 		}
 		CMD_HEADER(ctx, "Effective preferences (session > project > personal; "
 				"explicit settings override legacy records)");
-		(void)cli_output_print_untrusted(ctx, effective, UTF8_TERMINAL_TEXT_MULTILINE);
+		(void)cli_output_print_untrusted(ctx, effective, MORPH_TERMINAL_TEXT_MULTILINE);
 		CMD_HEADER(ctx, "Preference history and sources; "
 				"unset removes a scope override and restores inheritance");
-		(void)cli_output_print_untrusted(ctx, history, UTF8_TERMINAL_TEXT_MULTILINE);
+		(void)cli_output_print_untrusted(ctx, history, MORPH_TERMINAL_TEXT_MULTILINE);
 		free(history);
 		free(effective);
 		return 0;
@@ -147,7 +151,7 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 		CMD_HEADER(ctx, "memory (%s)", runtime_session_current_name_borrow(ctx->runtime));
 		(void)cli_output_print_untrusted(
 			ctx, rendered ? rendered : "No long-term memory stored for this session.",
-			UTF8_TERMINAL_TEXT_MULTILINE);
+			MORPH_TERMINAL_TEXT_MULTILINE);
 		cli_output_printf(ctx, "\n");
 		free(rendered);
 		return 0;
@@ -158,11 +162,11 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 		const char *target = cli_cmd_arg_borrow(argc, argv, 2);
 		if (cli_memory_parse_scope(target, &scope) != 0) {
 			CMD_ERROR(ctx, "usage: /memory clear [all|facts|past_tasks|tips]");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 		if (runtime_memory_clear_current(ctx->runtime, scope) != 0) {
 			CMD_ERROR(ctx, "failed to clear memory");
-			return -EIO;
+			return NB_ERR_IO;
 		}
 		CMD_OK(ctx,
 		       "cleared %s memory for session: %s (personal/project preferences retained)",
@@ -172,7 +176,7 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 	}
 
 	CMD_ERROR(ctx, "usage: /memory [show|history|explain|set|unset|clear|jobs]");
-	return -EINVAL;
+	return NB_ERR_INVAL;
 }
 
 static const struct cli_command cli_memory_entries[] = {

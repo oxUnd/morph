@@ -1,14 +1,15 @@
-#include "util/signals.h"
+#include "nb/signal.h"
 #include "sandbox/permission.h"
-#include "util/child_io.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/process.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 #include "ext.h"
 #include "loader.h"
-#include "util/file.h"
-#include "util/log.h"
-#include "util/buf.h"
-#include "util/error.h"
+#include "nb/file.h"
+#include "nb/log.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
 #include "manifest.h"
 #include "ipc/jsonrpc.h"
 #include <errno.h>
@@ -21,33 +22,50 @@
 #include <fcntl.h>
 #include <dlfcn.h>
 
-int ext_load(struct morph_log *logger, struct ext *ex, const char *dir_path)
+int ext_load(struct nb_log *logger, struct ext *ex, const char *dir_path)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_1 = NB_OK;
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_2 = NB_OK;
+
 	if (!ex || !dir_path)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (ex->dl_handle || ex->run || ex->enabled || ex->manifest.input_schema ||
 	    ex->manifest.output_schema || ex->manifest.fronts || ex->manifest.categories ||
 	    ex->manifest.allowed_paths || ex->manifest.allowed_env ||
 	    ex->manifest.allowed_mach_services)
-		return -EEXIST;
-	struct ext loaded MORPH_CLEANUP(ext_unload) = {0};
+		return NB_ERR_EXISTS;
+	struct ext loaded NB_CLEANUP(ext_unload) = {0};
 	if (strlen(dir_path) >= sizeof(loaded.path))
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	loaded.logger = logger;
 	memcpy(loaded.path, dir_path, strlen(dir_path) + 1);
 	char manifest_path[PATH_MAX];
-	int rc = file_path_join(manifest_path, sizeof(manifest_path), dir_path, "manifest.toml");
+	int rc =
+		((file_status_1 = nb_path_concat(&file_value_1, dir_path, "manifest.toml")) != NB_OK
+			 ? file_status_1
+		 : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), manifest_path,
+						   sizeof(manifest_path))) == NB_ERR_RANGE
+			 ? NB_ERR_NAME_TOO_LONG
+			 : file_status_1);
 	if (rc != 0)
 		return rc;
 	struct stat info;
 	if (stat(manifest_path, &info) != 0) {
-		rc = file_path_join(manifest_path, sizeof(manifest_path), dir_path,
-				    "morph-ext.toml");
+		rc = ((file_status_2 = nb_path_concat(&file_value_2, dir_path, "morph-ext.toml")) !=
+				      NB_OK
+			      ? file_status_2
+		      : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), manifest_path,
+							sizeof(manifest_path))) == NB_ERR_RANGE
+			      ? NB_ERR_NAME_TOO_LONG
+			      : file_status_2);
 		if (rc != 0)
 			return rc;
 		if (stat(manifest_path, &info) != 0) {
-			rc = morph_error_from_errno(errno);
-			log_err(logger, "ext manifest not found in: %s", dir_path);
+			rc = nb_status_from_errno(errno, NULL);
+			nb_log_write(logger, NB_LOG_ERROR, "ext manifest not found in: %s",
+				     dir_path);
 			return rc;
 		}
 	}
@@ -59,16 +77,17 @@ int ext_load(struct morph_log *logger, struct ext *ex, const char *dir_path)
 	else if (strcmp(loaded.manifest.type, "so") == 0)
 		rc = ext_load_so(&loaded, dir_path);
 	else {
-		log_warn(logger, "unknown ext type: %s", loaded.manifest.type);
-		rc = -EINVAL;
+		nb_log_write(logger, NB_LOG_WARN, "unknown ext type: %s", loaded.manifest.type);
+		rc = NB_ERR_INVAL;
 	}
 	if (rc != 0) {
-		log_err(logger, "ext_load: failed to load %s: %s", loaded.manifest.name,
-			morph_strerror(rc));
+		nb_log_write(logger, NB_LOG_ERROR, "ext_load: failed to load %s: %s",
+			     loaded.manifest.name,
+			     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 	if (!loaded.manifest.input_schema || !loaded.manifest.output_schema)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	loaded.enabled = 1;
 	*ex = loaded;
 	memset(&loaded, 0, sizeof(loaded));
@@ -85,9 +104,10 @@ int ext_load(struct morph_log *logger, struct ext *ex, const char *dir_path)
 int ext_unload(struct ext *ex)
 {
 	if (!ex)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (ex->dl_handle) {
-		log_info(ex ? ex->logger : NULL, "ext_unload: dlclose %s", ex->manifest.name);
+		nb_log_write(ex ? ex->logger : NULL, NB_LOG_INFO, "ext_unload: dlclose %s",
+			     ex->manifest.name);
 		dlclose(ex->dl_handle);
 		ex->dl_handle = NULL;
 	}
@@ -145,27 +165,40 @@ void ext_user_data_destroy(void *user_data)
 
 static char *ext_resolve_sandbox_path(const char *path)
 {
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	char cwd[PATH_MAX];
 	char *expanded;
 	char *absolute;
 	char *resolved;
 
-	expanded = file_expand_path_copy(path);
+	expanded = (nb_path_expand(&file_value_3, path, NULL) == NB_OK
+			    ? strdup(nb_buf_cstr(&file_value_3))
+			    : NULL);
 	if (!expanded)
 		return NULL;
-	if (file_path_is_absolute(expanded)) {
+	if (nb_path_is_absolute(expanded)) {
 		absolute = expanded;
 	} else {
 		if (!getcwd(cwd, sizeof(cwd))) {
 			free(expanded);
 			return NULL;
 		}
-		absolute = file_path_full_alloc(cwd, expanded);
+		absolute = (nb_path_join(&file_value_4, cwd, expanded) == NB_OK
+				    ? strdup(nb_buf_cstr(&file_value_4))
+				    : NULL);
 		free(expanded);
 		if (!absolute)
 			return NULL;
 	}
-	resolved = file_resolve_path_copy(absolute);
+	resolved =
+		(nb_path_expand(&file_value_5, absolute, NULL) == NB_OK &&
+				 nb_path_canonical_missing(
+					 &file_value_5, nb_buf_cstr(&file_value_5), NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&file_value_5))
+			 : NULL);
 	free(absolute);
 	return resolved;
 }
@@ -178,46 +211,47 @@ void ext_sandbox_config_cleanup(struct sandbox_config *config)
 int ext_sandbox_config_prepare(const struct ext *ex, struct sandbox_config *config)
 {
 	if (!ex || !config || ex->manifest.allowed_paths_count < 0)
-		return -EINVAL;
-	if (config->owned_paths.read.elts || config->owned_paths.write.elts ||
-	    config->owned_paths.remove.elts)
-		return -EEXIST;
-	struct sandbox_config prepared MORPH_CLEANUP(sandbox_config_cleanup) = {0};
-	struct sandbox_path_set paths MORPH_CLEANUP(sandbox_path_set_cleanup) = {0};
+		return NB_ERR_INVAL;
+	if (((void *)config->owned_paths.read.data) || ((void *)config->owned_paths.write.data) ||
+	    ((void *)config->owned_paths.remove.data) || config->temporary_paths_ready ||
+	    config->temporary_paths.count)
+		return NB_ERR_EXISTS;
+	struct sandbox_config prepared NB_CLEANUP(sandbox_config_cleanup) = {0};
+	struct sandbox_path_set paths NB_CLEANUP(sandbox_path_set_cleanup) = {0};
 	int count = ex->manifest.allowed_paths_count;
-	int rc = morph_array_init(&paths.read, (size_t)count + 1, sizeof(*prepared.read_paths));
+	int rc = (nb_vec_init(&paths.read, sizeof(*prepared.read_paths)),
+		  nb_vec_reserve(&paths.read, (size_t)count + 1) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_array_init(&paths.write, (size_t)count + 1,
-				      sizeof(*prepared.read_paths));
+		rc = (nb_vec_init(&paths.write, sizeof(*prepared.read_paths)),
+		      nb_vec_reserve(&paths.write, (size_t)count + 1) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_array_init(&paths.remove, (size_t)count + 1,
-				      sizeof(*prepared.read_paths));
+		rc = (nb_vec_init(&paths.remove, sizeof(*prepared.read_paths)),
+		      nb_vec_reserve(&paths.remove, (size_t)count + 1) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	for (int i = 0; i <= count; i++) {
 		const char *source = i ? ex->manifest.allowed_paths[i - 1] : ex->path;
-		char *resolved MORPH_CLEANUP(morph_charp_cleanup) =
-			ext_resolve_sandbox_path(source);
+		char *resolved NB_CLEANUP(nb_charp_cleanup) = ext_resolve_sandbox_path(source);
 		if (!resolved)
-			return -ENOENT;
-		char **slot = morph_array_push_borrow(&paths.read);
+			return NB_ERR_NOT_FOUND;
+		char **slot = nb_vec_push(&paths.read);
 		if (!slot)
-			return -ENOMEM;
-		*slot = morph_charp_steal(&resolved);
+			return NB_ERR_NOMEM;
+		*slot = nb_charp_steal(&resolved);
 		if (i && (ex->manifest.permissions & EXT_PERM_FILESYS)) {
 			const char *path = *slot;
-			char **write = morph_array_push_borrow(&paths.write);
+			char **write = nb_vec_push(&paths.write);
 			if (!write)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			*write = strdup(path);
 			if (!*write)
-				return -ENOMEM;
-			char **remove = morph_array_push_borrow(&paths.remove);
+				return NB_ERR_NOMEM;
+			char **remove = nb_vec_push(&paths.remove);
 			if (!remove)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			*remove = strdup(path);
 			if (!*remove)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 		}
 	}
 	prepared.logger = ex->logger;
@@ -238,6 +272,9 @@ int ext_sandbox_config_prepare(const struct ext *ex, struct sandbox_config *conf
 	prepared.max_memory_mb = ex->manifest.max_memory_mb;
 	prepared.max_cpu_seconds = ex->manifest.max_cpu_seconds;
 	prepared.max_open_files = ex->manifest.max_open_files;
+	rc = sandbox_prepare_temporary_paths(&prepared, NULL);
+	if (rc != NB_OK)
+		return rc;
 	*config = prepared;
 	memset(&prepared, 0, sizeof(prepared));
 	return 0;
@@ -252,100 +289,53 @@ int ext_sandbox_config_prepare(const struct ext *ex, struct sandbox_config *conf
  * \param[in] user: Borrowed cancellation context until return.
  * \return Zero on success, negative error otherwise; output may contain diagnostics.
  */
+static nb_status ext_prepare_child(void *opaque)
+{
+	struct sandbox_config *config = opaque;
+	/* Logger locks belong to parent workers and cannot cross fork. */
+	config->logger = NULL;
+	int rc = sandbox_enter(config);
+	return (nb_status)rc;
+}
+
 int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 		       int (*cancelled)(void *), void *user, const struct sandbox_config *limits)
 {
 	if (!ex || !args_json || !result_json)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*result_json)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (cancelled != NULL && cancelled(user)) {
-		return -ECANCELED;
+		return NB_ERR_CANCELLED;
 	}
 	if (!ex->enabled)
-		return -EACCES;
+		return NB_ERR_PERMISSION;
 	if (ex->run)
-		return limits ? -ENOTSUP : ex->run(args_json, result_json);
+		return limits ? NB_ERR_UNSUPPORTED : ex->run(args_json, result_json);
 
 	if (strcmp(ex->manifest.type, "exec") == 0 && ex->exec_path[0]) {
-		log_info(ex ? ex->logger : NULL, "executing ext: %s", ex->exec_path);
+		nb_log_write(ex ? ex->logger : NULL, NB_LOG_INFO, "executing ext: %s",
+			     ex->exec_path);
 
-		int stdin_pipe[2];
-		int stdout_pipe[2];
-		int stderr_pipe[2];
-		int rc;
-
-		if ((rc = morph_io_pipe(stdin_pipe)) != 0) {
-			log_err(ex ? ex->logger : NULL, "ext_run: pipe failed");
+		struct sandbox_config sandbox NB_CLEANUP(sandbox_config_cleanup) = {0};
+		int rc = ext_sandbox_config_prepare(ex, &sandbox);
+		if (rc == NB_OK && limits)
+			rc = sandbox_permission_intersect(&sandbox, limits);
+		if (rc != NB_OK)
 			return rc;
-		}
-		if ((rc = morph_io_pipe(stdout_pipe)) != 0) {
-			close(stdin_pipe[0]);
-			close(stdin_pipe[1]);
-			log_err(ex ? ex->logger : NULL, "ext_run: pipe failed");
+		const char *argv[] = {ex->exec_path, NULL};
+		nb_process_options options = {
+			.argv = argv,
+			.search_path = true,
+			.close_fds = true,
+			.new_session = true,
+			.prepare = ext_prepare_child,
+			.prepare_ctx = &sandbox,
+		};
+		nb_process *child NB_CLEANUP(nb_process_cleanup) = NULL;
+		rc = nb_process_spawn(&options, &child, NULL);
+		if (rc != NB_OK)
 			return rc;
-		}
-		if ((rc = morph_io_pipe(stderr_pipe)) != 0) {
-			close(stdin_pipe[0]);
-			close(stdin_pipe[1]);
-			close(stdout_pipe[0]);
-			close(stdout_pipe[1]);
-			log_err(ex ? ex->logger : NULL, "ext_run: pipe failed");
-			return rc;
-		}
-
-		pid_t pid = fork();
-		if (pid < 0) {
-			int err = errno;
-			close(stdin_pipe[0]);
-			close(stdin_pipe[1]);
-			close(stdout_pipe[0]);
-			close(stdout_pipe[1]);
-			close(stderr_pipe[0]);
-			close(stderr_pipe[1]);
-			log_err(ex ? ex->logger : NULL, "ext_run: fork failed");
-			return -err;
-		}
-
-		if (pid == 0) {
-			morph_signals_reset_child();
-			close(stdin_pipe[1]);
-			close(stdout_pipe[0]);
-			close(stderr_pipe[0]);
-			dup2(stdin_pipe[0], STDIN_FILENO);
-			dup2(stdout_pipe[1], STDOUT_FILENO);
-			dup2(stderr_pipe[1], STDERR_FILENO);
-			close(stdin_pipe[0]);
-			close(stdout_pipe[1]);
-			close(stderr_pipe[1]);
-			if (sandbox_start_isolated_session() != 0)
-				_exit(126);
-			if (sandbox_close_inherited_fds() != 0)
-				_exit(126);
-
-			struct sandbox_config sb_cfg MORPH_CLEANUP(sandbox_config_cleanup) = {0};
-
-			if (ext_sandbox_config_prepare(ex, &sb_cfg) != 0)
-				_exit(126);
-
-			if (limits && sandbox_permission_intersect(&sb_cfg, limits) != 0) {
-				sandbox_config_cleanup(&sb_cfg);
-				_exit(126);
-			}
-
-			if (sandbox_enter(&sb_cfg) != 0) {
-				sandbox_config_cleanup(&sb_cfg);
-				_exit(126);
-			}
-			sandbox_config_cleanup(&sb_cfg);
-
-			execlp(ex->exec_path, ex->exec_path, (char *)NULL);
-			_exit(127);
-		}
-
-		close(stdin_pipe[0]);
-		close(stdout_pipe[1]);
-		close(stderr_pipe[1]);
 
 		struct jsonrpc_request req;
 		memset(&req, 0, sizeof(req));
@@ -353,81 +343,76 @@ int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 		req.method = "run";
 		req.params_json = args_json;
 
-		char *request_str MORPH_CLEANUP(morph_json_text_cleanup) =
-			jsonrpc_request_create(&req);
+		char *request_str NB_CLEANUP(cJSON_FreeTextOwner) = jsonrpc_request_create(&req);
 		if (!request_str) {
-			close(stdin_pipe[1]);
-			close(stdout_pipe[0]);
-			close(stderr_pipe[0]);
-			kill(pid, SIGKILL);
-			while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
 			*result_json = strdup("{\"error\":\"failed to build JSON-RPC request\"}");
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 
-		morph_buf_t request MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		morph_buf_t errors MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		rc = morph_buf_init(&request, strlen(request_str) + 2);
+		nb_buf request NB_CLEANUP(nb_buf_cleanup) = {0};
+		nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
+		nb_buf errors NB_CLEANUP(nb_buf_cleanup) = {0};
+		rc = (nb_buf_init(&request),
+		      nb_buf_reserve(&request, strlen(request_str) + 2) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0) {
-			rc = morph_buf_puts(&request, request_str);
+			rc = (nb_buf_append_cstr(&request, request_str) ? 0 : NB_ERR_NOMEM);
 		}
 		if (rc == 0) {
-			rc = morph_buf_putc(&request, '\n');
+			rc = (nb_buf_append_char(&request, '\n') ? 0 : NB_ERR_NOMEM);
 		}
 		if (rc == 0) {
-			rc = morph_buf_init(&output, BUFSIZ);
+			rc = (nb_buf_init(&output),
+			      nb_buf_reserve(&output, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 		}
 		if (rc == 0) {
-			rc = morph_buf_init(&errors, BUFSIZ);
+			rc = (nb_buf_init(&errors),
+			      nb_buf_reserve(&errors, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 		}
-		morph_json_text_cleanup(&request_str);
+		cJSON_FreeTextOwner(&request_str);
 		int status = 0;
-		if (rc == 0) {
-			rc = morph_child_exchange(pid, stdin_pipe[1], stdout_pipe[0],
-						  stderr_pipe[0], morph_buf_cstr_borrow(&request),
-						  request.len, 300000, 1024 * 1024, cancelled, user,
-						  &output, &errors, &status);
-		} else {
-			close(stdin_pipe[1]);
-			kill(pid, SIGKILL);
-			while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
-		}
-		close(stdout_pipe[0]);
-		close(stderr_pipe[0]);
-		morph_buf_cleanup(&request);
-		if (rc == 0 && output.len > 1024u * 1024u) {
+		bool truncated = false;
+		nb_process_exchange_options exchange = {
+			.timeout_ms = 300000,
+			.max_output = 1024u * 1024u,
+			.cancelled = cancelled,
+			.cancel_ctx = user,
+			.stdout_truncated = &truncated,
+		};
+		if (rc == NB_OK)
+			rc = nb_process_exchange(child, nb_buf_cstr(&request), nb_buf_len(&request),
+						 &exchange, &output, &errors, &status, NULL);
+		if (rc == NB_OK && truncated) {
 			*result_json = strdup("{\"error\":\"Extension output exceeds the 1 MiB "
 				"capture limit; save large data to a file and return its path\"}");
-			return *result_json ? -EFBIG : -ENOMEM;
+			return *result_json ? NB_ERR_TOO_BIG : NB_ERR_NOMEM;
 		}
-		char *raw_response = morph_buf_detach(&output);
-		char *child_stderr = morph_buf_detach(&errors);
+		char *raw_response = (nb_buf_ok(&output) ? strdup(nb_buf_cstr(&output)) : NULL);
+		char *child_stderr = (nb_buf_ok(&errors) ? strdup(nb_buf_cstr(&errors)) : NULL);
 
 		if (child_stderr && child_stderr[0]) {
-			log_warn(ex ? ex->logger : NULL, "ext %s stderr: %s", ex->manifest.name,
-				 child_stderr);
+			nb_log_write(ex ? ex->logger : NULL, NB_LOG_WARN, "ext %s stderr: %s",
+				     ex->manifest.name, child_stderr);
 		}
 
 		if (rc < 0 || !raw_response) {
 			free(child_stderr);
 			free(raw_response);
 			*result_json = strdup("{\"error\":\"failed to read ext output\"}");
-			return rc < 0 ? rc : -EIO;
+			return rc < 0 ? rc : NB_ERR_IO;
 		}
 
 		/* If the child was killed (sandbox), report that */
-		if (WIFSIGNALED(status)) {
-			log_warn(ex ? ex->logger : NULL, "ext %s killed by signal %d",
-				 ex->manifest.name, WTERMSIG(status));
+		if (nb_process_exit_signal(child) != 0) {
+			nb_log_write(ex ? ex->logger : NULL, NB_LOG_WARN,
+				     "ext %s killed by signal %d", ex->manifest.name,
+				     nb_process_exit_signal(child));
 			free(child_stderr);
 			free(raw_response);
 			*result_json = strdup("{\"error\":\"ext process was terminated\"}");
 			return MORPH_ERR_SANDBOX;
 		}
-		if (WIFEXITED(status) && WEXITSTATUS(status) != 0 &&
-		    raw_response[0] == '\0') {
-			int exit_code = WEXITSTATUS(status);
+		if (nb_process_exit_signal(child) == 0 && status != 0 && raw_response[0] == '\0') {
+			int exit_code = status;
 
 			free(child_stderr);
 			free(raw_response);
@@ -437,7 +422,7 @@ int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 				"producing a JSON-RPC response\"}");
 			if (exit_code == 126)
 				return MORPH_ERR_SANDBOX;
-			return -ECHILD;
+			return NB_ERR_NO_CHILD;
 		}
 		free(child_stderr);
 
@@ -448,7 +433,7 @@ int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 
 		if (parse_rc < 0) {
 			*result_json = strdup("{\"error\":\"invalid JSON-RPC response\"}");
-			return MORPH_ERR_PARSE;
+			return NB_ERR_PARSE;
 		}
 
 		if (jr.has_error) {
@@ -458,22 +443,23 @@ int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 						    jr.error_message != NULL
 							    ? jr.error_message
 							    : "Extension protocol error")) {
-				char *text MORPH_CLEANUP(morph_json_text_cleanup) =
-					morph_json_print_copy(error);
+				char *text NB_CLEANUP(cJSON_FreeTextOwner) =
+					cJSON_PrintUnformatted(error);
 				if (text)
 					*result_json = strdup(text);
 			}
 			cJSON_Delete(error);
 			jsonrpc_response_free(&jr);
-			return *result_json == NULL ? -ENOMEM : MORPH_ERR_PROTOCOL;
+			return *result_json == NULL ? NB_ERR_NOMEM : NB_ERR_PROTOCOL;
 		}
 
 		*result_json = strdup(jr.result_json ? jr.result_json : "{}");
 		jsonrpc_response_free(&jr);
-		return *result_json ? 0 : -ENOMEM;
+		return *result_json ? 0 : NB_ERR_NOMEM;
 	}
 
-	log_info(ex ? ex->logger : NULL, "ext_run: no run function for %s", ex->manifest.name);
+	nb_log_write(ex ? ex->logger : NULL, NB_LOG_INFO, "ext_run: no run function for %s",
+		     ex->manifest.name);
 	return MORPH_ERR_NOT_CONFIGURED;
 }
 

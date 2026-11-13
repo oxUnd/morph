@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/history.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
 #include "cJSON.h"
 #include "sapi/cli/presentation/output.h"
@@ -13,9 +14,9 @@
 struct cli_history_view {
 	struct cli_application *ctx;
 	cJSON *report;
-	morph_array_t matches;
+	nb_vec matches;
 	struct morph_tui_widget_text_layout document_view;
-	morph_buf_t document;
+	nb_buf document;
 	struct morph_tui_frame frame;
 	struct morph_tui_widget_editor_state query;
 	struct morph_tui_widget_list_state selection;
@@ -87,9 +88,9 @@ static int cli_history_contains(const char *text, const char *query)
 static int cli_history_filter(struct cli_history_view *view)
 {
 	cJSON *entry;
-	const char *query = morph_buf_cstr_borrow(&view->query.text);
+	const char *query = nb_buf_cstr(&view->query.text);
 
-	morph_array_clear(&view->matches);
+	nb_vec_clear(&view->matches);
 	cJSON_ArrayForEach (entry, cJSON_GetObjectItemCaseSensitive(view->report, "entries")) {
 		char sequence[32];
 
@@ -104,20 +105,20 @@ static int cli_history_filter(struct cli_history_view *view)
 		    !cli_history_contains(sequence, query) &&
 		    !cli_history_contains(cli_history_label(entry), query))
 			continue;
-		cJSON **slot = morph_array_push_borrow(&view->matches);
+		cJSON **slot = nb_vec_push(&view->matches);
 
 		if (!slot)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		*slot = entry;
 	}
-	morph_tui_widget_list_state_layout(&view->selection, view->matches.nelts,
+	morph_tui_widget_list_state_layout(&view->selection, view->matches.len,
 					   view->selection.page);
 	return 0;
 }
 
 static cJSON *cli_history_selected(struct cli_history_view *view)
 {
-	cJSON **slot = morph_array_borrow(&view->matches, view->selection.index);
+	cJSON **slot = nb_vec_at(&view->matches, view->selection.index);
 
 	return slot ? *slot : NULL;
 }
@@ -126,7 +127,7 @@ static void cli_history_preview(const cJSON *entry, char *preview, size_t capaci
 {
 	const char *content = cli_history_string(entry, "content");
 	cJSON *payload = NULL;
-	morph_buf_t call = {0};
+	nb_buf call NB_CLEANUP(nb_buf_cleanup) = {0};
 	char *limited;
 
 	if (strcmp(cli_history_string(entry, "kind"), "assistant_tool_calls") == 0) {
@@ -137,97 +138,107 @@ static void cli_history_preview(const cJSON *entry, char *preview, size_t capaci
 
 		if (!*arguments)
 			arguments = cli_history_string(first, "input");
-		char *short_arguments = utf8_dup_clamped(arguments, CLI_HISTORY_PREVIEW_MAX);
+		char *short_arguments = nb_utf8_ellipsize_bytes(arguments, CLI_HISTORY_PREVIEW_MAX);
 
-		if (first && short_arguments && morph_buf_init(&call, 128) == 0) {
-			(void)morph_buf_printf(&call, "%s %s", cli_history_string(first, "name"),
-					       short_arguments);
+		if (first && short_arguments &&
+		    (nb_buf_init(&call), nb_buf_reserve(&call, 128) ? 0 : NB_ERR_NOMEM) == 0) {
+			(void)nb_buf_printf(&call, "%s %s", cli_history_string(first, "name"),
+					    short_arguments);
 			if (cJSON_GetArraySize(calls) > 1)
-				(void)morph_buf_printf(&call, " (+%d calls)",
-						       cJSON_GetArraySize(calls) - 1);
-			content = morph_buf_cstr_borrow(&call);
+				(void)nb_buf_printf(&call, " (+%d calls)",
+						    cJSON_GetArraySize(calls) - 1);
+			content = nb_buf_cstr(&call);
 		}
 		free(short_arguments);
 	}
 	if (!*content)
 		content = cli_history_string(entry, "payload_json");
-	limited = utf8_dup_clamped(content, CLI_HISTORY_PREVIEW_MAX);
+	limited = nb_utf8_ellipsize_bytes(content, CLI_HISTORY_PREVIEW_MAX);
 	cli_list_compact_text(preview, capacity, limited ? limited : "");
 	free(limited);
-	morph_buf_cleanup(&call);
+	nb_buf_cleanup(&call);
 	cJSON_Delete(payload);
 }
 
-static int cli_history_json_text(const cJSON *json, morph_buf_t *text)
+static int cli_history_json_text(const cJSON *json, nb_buf *text)
 {
 	char *pretty = cJSON_Print(json);
 	int rc;
 
 	if (!pretty)
-		return -ENOMEM;
-	rc = morph_buf_puts(text, pretty);
+		return NB_ERR_NOMEM;
+	rc = (nb_buf_append_cstr(text, pretty) ? 0 : NB_ERR_NOMEM);
 	free(pretty);
 	return rc;
 }
 
-static int cli_history_request_document(struct cli_application *ctx, morph_buf_t *text)
+static int cli_history_request_document(struct cli_application *ctx, nb_buf *text)
 {
 	cJSON *snapshot = NULL;
 	int rc = runtime_session_last_request_copy(ctx->runtime, &snapshot);
 
-	if (rc == -ENODATA)
-		return morph_buf_puts(text,
-				      "No captured request for this session.\n"
-				      "Snapshots are recorded for new structured model calls.\n");
+	if (rc == NB_ERR_NO_DATA)
+		return (nb_buf_append_cstr(
+				text, "No captured request for this session.\n"
+				      "Snapshots are recorded for new structured model calls.\n")
+				? 0
+				: NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_printf(text,
-			      "Last submitted model input\nModel: %s / %s\n"
-			      "Turn: %s\nCaptured at: %lld (Unix time)\n\n"
-			      "Captured before dispatch; provider acceptance is not implied.\n"
-			      "Adapter-normalized input; credentials redacted, headers and "
-			      "generation options omitted.\n\n",
-			      cli_history_string(snapshot, "provider"),
-			      cli_history_string(snapshot, "model"),
-			      cli_history_string(snapshot, "turn_id"),
-			      (long long)cli_history_number(snapshot, "created_at"));
+	rc = (nb_buf_printf(text,
+			    "Last submitted model input\nModel: %s / %s\n"
+			    "Turn: %s\nCaptured at: %lld (Unix time)\n\n"
+			    "Captured before dispatch; provider acceptance is not implied.\n"
+			    "Adapter-normalized input; credentials redacted, headers and "
+			    "generation options omitted.\n\n",
+			    cli_history_string(snapshot, "provider"),
+			    cli_history_string(snapshot, "model"),
+			    cli_history_string(snapshot, "turn_id"),
+			    (long long)cli_history_number(snapshot, "created_at"))
+		      ? 0
+		      : NB_ERR_NOMEM);
 	cJSON *input = cJSON_Parse(cli_history_string(snapshot, "input_json"));
 
 	if (rc == 0)
-		rc = input ? cli_history_json_text(input, text) : MORPH_ERR_PARSE;
+		rc = input ? cli_history_json_text(input, text) : NB_ERR_PARSE;
 	cJSON_Delete(input);
 	cJSON_Delete(snapshot);
 	return rc;
 }
 
 static int cli_history_entry_document(struct cli_application *ctx, const cJSON *entry, int stored,
-				      morph_buf_t *text)
+				      nb_buf *text)
 {
 	int64_t sequence = cli_history_number(entry, "sequence_no");
-	int rc = morph_buf_printf(
-		text,
-		"#%lld  %s  %s\nNext turn: %s · %lld stored tokens\n"
-		"%s\nTurn: %s\nCall ID: %s\n\n%s\n\n",
-		(long long)sequence, cli_history_label(entry),
-		cli_history_string(entry, "tool_name"), cli_history_string(entry, "status"),
-		(long long)cli_history_number(entry, "token_count"),
-		cli_history_string(entry, "reason"), cli_history_string(entry, "turn_id"),
-		cli_history_string(entry, "tool_call_id"),
-		stored ? "Stored view" : "Estimated request view");
+	int rc = (nb_buf_printf(text,
+				"#%lld  %s  %s\nNext turn: %s · %lld stored tokens\n"
+				"%s\nTurn: %s\nCall ID: %s\n\n%s\n\n",
+				(long long)sequence, cli_history_label(entry),
+				cli_history_string(entry, "tool_name"),
+				cli_history_string(entry, "status"),
+				(long long)cli_history_number(entry, "token_count"),
+				cli_history_string(entry, "reason"),
+				cli_history_string(entry, "turn_id"),
+				cli_history_string(entry, "tool_call_id"),
+				stored ? "Stored view" : "Estimated request view")
+			  ? 0
+			  : NB_ERR_NOMEM);
 
 	if (rc != 0)
 		return rc;
 	if (stored) {
-		rc = morph_buf_puts(text, cli_history_string(entry, "content"));
+		rc = (nb_buf_append_cstr(text, cli_history_string(entry, "content"))
+			      ? 0
+			      : NB_ERR_NOMEM);
 		const char *payload = cli_history_string(entry, "payload_json");
 
 		if (rc == 0 && *payload) {
 			cJSON *json = cJSON_Parse(payload);
 
-			rc = morph_buf_puts(text, "\n\nStored metadata\n");
+			rc = (nb_buf_append_cstr(text, "\n\nStored metadata\n") ? 0 : NB_ERR_NOMEM);
 			if (rc == 0)
 				rc = json ? cli_history_json_text(json, text)
-					  : morph_buf_puts(text, payload);
+					  : (nb_buf_append_cstr(text, payload) ? 0 : NB_ERR_NOMEM);
 			cJSON_Delete(json);
 		}
 		return rc;
@@ -235,12 +246,15 @@ static int cli_history_entry_document(struct cli_application *ctx, const cJSON *
 	cJSON *input = NULL;
 
 	rc = runtime_session_history_entry_input_copy(ctx->runtime, sequence, &input);
-	if (rc == -ENODATA || rc == -ENOENT)
-		return morph_buf_puts(
-			text, "Original entry is not directly sent in the current window.\n"
-			      "Use Stored view for retained content. VIA SUMMARY entries are "
-			      "represented by summaries.\n"
-			      "LEGACY entries require migration and validation before replay.\n");
+	if (rc == NB_ERR_NO_DATA || rc == NB_ERR_NOT_FOUND)
+		return (nb_buf_append_cstr(
+				text,
+				"Original entry is not directly sent in the current window.\n"
+				"Use Stored view for retained content. VIA SUMMARY entries are "
+				"represented by summaries.\n"
+				"LEGACY entries require migration and validation before replay.\n")
+				? 0
+				: NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = cli_history_json_text(input, text);
 	cJSON_Delete(input);
@@ -251,8 +265,8 @@ static int cli_history_document(struct cli_history_view *view)
 {
 	struct cli_application *ctx = view->ctx;
 	(void)ctx;
-	morph_buf_t text = {0};
-	int rc = morph_buf_init(&text, BUFSIZ);
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&text), nb_buf_reserve(&text, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 
 	if (rc != 0)
 		return rc;
@@ -261,22 +275,22 @@ static int cli_history_document(struct cli_history_view *view)
 	else if (cli_history_selected(view))
 		rc = cli_history_entry_document(view->ctx, cli_history_selected(view), view->stored,
 						&text);
-	char *safe = rc == 0 ? utf8_terminal_sanitize_dup(morph_buf_cstr_borrow(&text), text.len,
-							  UTF8_TERMINAL_TEXT_MULTILINE, NULL)
+	char *safe = rc == 0 ? morph_terminal_sanitize_dup(nb_buf_cstr(&text), text.len,
+							   MORPH_TERMINAL_TEXT_MULTILINE, NULL)
 			     : NULL;
 
 	if (rc == 0 && !safe)
-		rc = -ENOMEM;
-	morph_buf_reset(&view->document);
+		rc = NB_ERR_NOMEM;
+	nb_buf_clear(&view->document);
 	if (rc == 0) {
 		for (char *p = safe; *p; p++) {
 			if (*p == '\t')
 				*p = ' ';
 		}
-		rc = morph_buf_puts(&view->document, safe);
+		rc = (nb_buf_append_cstr(&view->document, safe) ? 0 : NB_ERR_NOMEM);
 	}
 	free(safe);
-	morph_buf_cleanup(&text);
+	nb_buf_cleanup(&text);
 	return rc;
 }
 
@@ -284,25 +298,27 @@ static int cli_history_wrap(struct cli_history_view *view)
 {
 	size_t width = view->columns > 4 ? (size_t)view->columns - 4 : 1;
 
-	return morph_tui_widget_text_layout_wrap_borrow(
-		&view->document_view, morph_buf_cstr_borrow(&view->document), width);
+	return morph_tui_widget_text_layout_wrap_borrow(&view->document_view,
+							nb_buf_cstr(&view->document), width);
 }
 
-static int cli_history_frame_line(struct cli_application *ctx, morph_buf_t *frame, int columns,
+static int cli_history_frame_line(struct cli_application *ctx, nb_buf *frame, int columns,
 				  const char *text, const char *style)
 {
 	char clipped[BUFSIZ];
-	char *safe = utf8_terminal_sanitize_dup(text, strlen(text), UTF8_TERMINAL_TEXT_SINGLE_LINE,
-						NULL);
+	char *safe = morph_terminal_sanitize_dup(text, strlen(text),
+						 MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 	int rc;
 
 	if (!safe)
-		return -ENOMEM;
-	utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), safe,
-					   (size_t)(columns > 1 ? columns - 1 : 0), 0);
+		return NB_ERR_NOMEM;
+	morph_terminal_copy_ellipsized_display_width(clipped, sizeof(clipped), safe,
+						     (size_t)(columns > 1 ? columns - 1 : 0), 0);
 	free(safe);
-	rc = morph_buf_printf(frame, "%s%s%s\n", cli_output_color_enabled(ctx) ? style : "",
-			      clipped, cli_output_color_enabled(ctx) ? ANSI_RESET : "");
+	rc = (nb_buf_printf(frame, "%s%s%s\n", cli_output_color_enabled(ctx) ? style : "", clipped,
+			    cli_output_color_enabled(ctx) ? ANSI_RESET : "")
+		      ? 0
+		      : NB_ERR_NOMEM);
 	return rc;
 }
 
@@ -319,54 +335,54 @@ static int cli_history_page_size(const struct cli_history_view *view)
 
 static int cli_history_render(struct cli_history_view *view)
 {
-	morph_buf_t frame = {0};
-	morph_buf_t text = {0};
-	int rc = morph_buf_init(&frame, BUFSIZ);
+	nb_buf frame NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&frame), nb_buf_reserve(&frame, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 
 	if (rc == 0)
-		rc = morph_buf_init(&text, BUFSIZ);
+		rc = (nb_buf_init(&text), nb_buf_reserve(&text, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
-		morph_buf_cleanup(&frame);
+		nb_buf_cleanup(&frame);
 		return rc;
 	}
 	int page = cli_history_page_size(view);
-	morph_tui_widget_list_state_layout(&view->selection, view->matches.nelts, (size_t)page);
+	morph_tui_widget_list_state_layout(&view->selection, view->matches.len, (size_t)page);
 	size_t first = view->selection.first;
-	view->scroll = morph_tui_widget_scroll_update(view->scroll, view->document_view.lines.nelts,
+	view->scroll = morph_tui_widget_scroll_update(view->scroll, view->document_view.lines.len,
 						      (size_t)page, 0);
 	for (int row = 1; row <= view->rows && rc == 0; row++) {
 		const char *style = ANSI_DIM;
 
-		morph_buf_reset(&text);
+		nb_buf_clear(&text);
 		if (view->columns < 32 || view->rows < 12) {
 			if (row == 1)
-				(void)morph_buf_puts(&text, "Widen terminal · Esc back");
+				(void)nb_buf_append_cstr(&text, "Widen terminal · Esc back");
 		} else if (row == 1) {
-			(void)morph_buf_puts(&text,
-					     view->detail == 2
-						     ? "  morph / history / last submitted input"
-					     : view->detail ? "  morph / history / entry details"
-							    : "  morph / history");
+			(void)nb_buf_append_cstr(
+				&text, view->detail == 2
+					       ? "  morph / history / last submitted input"
+				       : view->detail ? "  morph / history / entry details"
+						      : "  morph / history");
 			style = ANSI_BOLD;
 		} else if (view->detail && row >= 3 && row < 3 + page) {
-			struct morph_tui_widget_text_line *line = morph_array_borrow(
+			struct morph_tui_widget_text_line *line = nb_vec_at(
 				&view->document_view.lines, view->scroll + (size_t)(row - 3));
 
 			if (line) {
-				(void)morph_buf_puts(&text, "  ");
-				(void)morph_buf_append(&text, view->document.data + line->offset,
-						       line->length);
+				(void)nb_buf_append_cstr(&text, "  ");
+				(void)nb_buf_append(&text, view->document.ptr + line->offset,
+						    line->length);
 				style = "";
 			}
 		} else if (view->detail && row == view->rows - 1) {
-			(void)morph_buf_printf(&text, "  Lines %zu–%zu of %zu", view->scroll + 1,
-					       view->scroll + (size_t)page <
-							       view->document_view.lines.nelts
-						       ? view->scroll + (size_t)page
-						       : view->document_view.lines.nelts,
-					       view->document_view.lines.nelts);
+			(void)nb_buf_printf(&text, "  Lines %zu–%zu of %zu", view->scroll + 1,
+					    view->scroll + (size_t)page <
+							    view->document_view.lines.len
+						    ? view->scroll + (size_t)page
+						    : view->document_view.lines.len,
+					    view->document_view.lines.len);
 		} else if (view->detail && row == view->rows) {
-			(void)morph_buf_puts(
+			(void)nb_buf_append_cstr(
 				&text,
 				view->columns < 76
 					? (view->detail == 2 ? "  Up/Down PgUp/PgDn · Esc back"
@@ -375,22 +391,22 @@ static int cli_history_render(struct cli_history_view *view)
 						    : "  v request/stored · s last request · "
 						      "PgUp/PgDn scroll · Esc back");
 		} else if (!view->detail && row == 2) {
-			(void)morph_buf_printf(
+			(void)nb_buf_printf(
 				&text, "  %d saved entries · %zu matching",
 				cJSON_GetArraySize(cJSON_GetObjectItem(view->report, "entries")),
-				view->matches.nelts);
+				view->matches.len);
 			if (view->columns >= 76)
-				(void)morph_buf_printf(&text, " · %s",
-						       cli_history_string(view->report, "model"));
+				(void)nb_buf_printf(&text, " · %s",
+						    cli_history_string(view->report, "model"));
 		} else if (!view->detail && row == 4) {
 			if (view->columns < 76)
-				(void)morph_buf_printf(
+				(void)nb_buf_printf(
 					&text, "  Next (est): %lld items · %lld tok",
 					(long long)cli_history_number(view->report, "active_items"),
 					(long long)cli_history_number(view->report,
 								      "history_tokens"));
 			else
-				(void)morph_buf_printf(
+				(void)nb_buf_printf(
 					&text,
 					"  Next turn · estimated history: %lld tokens / %lld limit",
 					(long long)cli_history_number(view->report,
@@ -398,7 +414,7 @@ static int cli_history_render(struct cli_history_view *view)
 					(long long)cli_history_number(view->report,
 								      "context_limit"));
 		} else if (!view->detail && row == 5) {
-			(void)morph_buf_puts(
+			(void)nb_buf_append_cstr(
 				&text,
 				cJSON_IsTrue(cJSON_GetObjectItem(view->report, "needs_repair"))
 					? "  Replay needs repair before send; current membership "
@@ -410,20 +426,20 @@ static int cli_history_render(struct cli_history_view *view)
 			const char *filters[] = {"All", "Included", "Summarized", "Excluded"};
 
 			if (view->columns < 50)
-				(void)morph_buf_printf(&text, "  Filter: %s (Tab)",
-						       filters[view->filter]);
+				(void)nb_buf_printf(&text, "  Filter: %s (Tab)",
+						    filters[view->filter]);
 			else {
 				for (int i = 0; i < 4; i++)
-					(void)morph_buf_printf(
+					(void)nb_buf_printf(
 						&text, "  %s%s%s", i == view->filter ? "[" : "",
 						filters[i], i == view->filter ? "]" : "");
 			}
 		} else if (!view->detail && row == 8) {
-			(void)morph_buf_printf(&text, "  ENTRY / ACTIVITY%*sNEXT TURN",
-					       view->columns - 37, "");
+			(void)nb_buf_printf(&text, "  ENTRY / ACTIVITY%*sNEXT TURN",
+					    view->columns - 37, "");
 		} else if (!view->detail && row >= 9 && row < 9 + page) {
 			size_t index = first + (size_t)(row - 9);
-			cJSON **slot = morph_array_borrow(&view->matches, index);
+			cJSON **slot = nb_vec_at(&view->matches, index);
 
 			if (slot) {
 				char preview[CLI_HISTORY_PREVIEW_MAX + 1];
@@ -432,58 +448,57 @@ static int cli_history_render(struct cli_history_view *view)
 				cJSON *entry = *slot;
 
 				cli_history_preview(entry, preview, sizeof(preview));
-				(void)morph_buf_printf(
+				(void)nb_buf_printf(
 					&text, "%s #%lld %s %s %s",
 					index == view->selection.index ? ">" : " ",
 					(long long)cli_history_number(entry, "sequence_no"),
 					cli_history_label(entry),
 					cli_history_string(entry, "tool_name"), preview);
-				char *safe = utf8_terminal_sanitize_dup(
-					morph_buf_cstr_borrow(&text), text.len,
-					UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+				char *safe = morph_terminal_sanitize_dup(
+					nb_buf_cstr(&text), text.len,
+					MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 
-				utf8_copy_ellipsized_display_width(clipped, sizeof(clipped),
-								   safe ? safe : "", (size_t)left,
-								   0);
+				morph_terminal_copy_ellipsized_display_width(
+					clipped, sizeof(clipped), safe ? safe : "", (size_t)left,
+					0);
 				free(safe);
-				morph_buf_reset(&text);
-				(void)morph_buf_printf(&text, "%s%*s%s", clipped,
-						       left - (int)utf8_display_width(clipped) + 1,
-						       "", cli_history_string(entry, "status"));
+				nb_buf_clear(&text);
+				(void)nb_buf_printf(&text, "%s%*s%s", clipped,
+						    left - (int)nb_utf8_width_cstr(clipped) + 1, "",
+						    cli_history_string(entry, "status"));
 				const char *status = cli_history_string(entry, "status");
 
 				style = index == view->selection.index ? ANSI_CYAN ANSI_BOLD
 					: strcmp(status, "OUT") == 0   ? ANSI_DIM
 					: strcmp(status, "IN") == 0    ? ""
 								       : ANSI_YELLOW;
-			} else if (!view->matches.nelts && row == 9) {
-				(void)morph_buf_puts(&text, "  No matching history entries.");
+			} else if (!view->matches.len && row == 9) {
+				(void)nb_buf_append_cstr(&text, "  No matching history entries.");
 			}
 		} else if (!view->detail && row == view->rows - 2) {
-			(void)morph_buf_puts(&text,
-					     "  IN direct · VIA SUMMARY condensed · OUT not sent");
+			(void)nb_buf_append_cstr(
+				&text, "  IN direct · VIA SUMMARY condensed · OUT not sent");
 		} else if (!view->detail && row == view->rows - 1) {
-			(void)morph_buf_printf(&text, "  %s%s%s",
-					       view->searching ? "Search: " : "/ ",
-					       morph_buf_cstr_borrow(&view->query.text),
-					       view->message ? view->message : "");
+			(void)nb_buf_printf(&text, "  %s%s%s", view->searching ? "Search: " : "/ ",
+					    nb_buf_cstr(&view->query.text),
+					    view->message ? view->message : "");
 		} else if (!view->detail && row == view->rows) {
-			(void)morph_buf_puts(
+			(void)nb_buf_append_cstr(
 				&text, view->columns < 70 ? "  Up/Down Enter / Tab s Esc back"
 							  : "  Up/Down · Enter details · / search "
 							    "· Tab filter · s request · Esc back");
 		}
-		if (text.failed)
-			rc = -ENOMEM;
+		if (nb_buf_status(&text))
+			rc = NB_ERR_NOMEM;
 		else
 			rc = cli_history_frame_line(view->ctx, &frame, view->columns,
-						    morph_buf_cstr_borrow(&text), style);
+						    nb_buf_cstr(&text), style);
 	}
 	if (rc == 0)
 		rc = morph_tui_frame_present(&view->frame, stdout, view->columns, view->rows,
-					     morph_buf_cstr_borrow(&frame));
-	morph_buf_cleanup(&text);
-	morph_buf_cleanup(&frame);
+					     nb_buf_cstr(&frame));
+	nb_buf_cleanup(&text);
+	nb_buf_cleanup(&frame);
 	return rc;
 }
 
@@ -571,9 +586,9 @@ static int cli_history_update(void *data, const struct morph_tui_event *event)
 	if (view->detail) {
 		size_t old = view->scroll;
 
-		view->scroll = morph_tui_widget_scroll_update(
-			view->scroll, view->document_view.lines.nelts,
-			(size_t)cli_history_page_size(view), key);
+		view->scroll =
+			morph_tui_widget_scroll_update(view->scroll, view->document_view.lines.len,
+						       (size_t)cli_history_page_size(view), key);
 		return old != view->scroll ? MORPH_TUI_SCREEN_REDRAW : MORPH_TUI_SCREEN_CONTINUE;
 	}
 	return morph_tui_widget_list_state_update(&view->selection, key)
@@ -586,9 +601,9 @@ static void cli_history_close(void *data, int result)
 	struct cli_history_view *view = data;
 
 	(void)result;
-	morph_array_cleanup(&view->matches);
+	nb_vec_cleanup(&view->matches);
 	morph_tui_widget_text_layout_cleanup(&view->document_view);
-	morph_buf_cleanup(&view->document);
+	nb_buf_cleanup(&view->document);
 	morph_tui_frame_cleanup(&view->frame);
 	morph_tui_widget_editor_state_cleanup(&view->query);
 	cJSON_Delete(view->report);
@@ -603,20 +618,23 @@ int cli_history_view(struct cli_application *ctx, cJSON *report)
 	const struct morph_tui_screen_ops ops = {.update = cli_history_update,
 						 .draw = cli_history_draw};
 	if (!view)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	*view = (struct cli_history_view){.ctx = ctx, .rows = 24, .columns = 80};
 	view->report = cJSON_Duplicate(report, 1);
-	int rc = view->report ? morph_array_init(&view->matches, 32, sizeof(entry)) : -ENOMEM;
+	int rc = view->report ? (nb_vec_init(&view->matches, sizeof(entry)),
+				 nb_vec_reserve(&view->matches, 32) ? 0 : NB_ERR_NOMEM)
+			      : NB_ERR_NOMEM;
 
 	view->selection.flags = MORPH_TUI_WIDGET_LIST_VIM;
 	if (rc == 0)
-		rc = morph_buf_init(&view->document, BUFSIZ);
+		rc = (nb_buf_init(&view->document),
+		      nb_buf_reserve(&view->document, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = morph_tui_widget_editor_state_init(&view->query, "", CLI_HISTORY_QUERY_MAX, 0);
 	if (rc == 0)
 		rc = cli_history_filter(view);
-	if (rc == 0 && view->matches.nelts)
-		view->selection.index = view->matches.nelts - 1;
+	if (rc == 0 && view->matches.len)
+		view->selection.index = view->matches.len - 1;
 	if (!rc && cli_application_tui_borrow(ctx)) {
 		rc = cli_application_present_screen(ctx, &ops, view, cli_history_close);
 		if (!rc)
@@ -626,7 +644,7 @@ int cli_history_view(struct cli_application *ctx, cJSON *report)
 		cli_history_close(view, rc);
 		return rc;
 	}
-	morph_signal_flag_set(&ctx->interrupted, 0);
+	nb_atomic_int_store(&ctx->interrupted, 0);
 	screen.interrupted = &ctx->interrupted;
 	if (rc == 0)
 		rc = morph_tui_screen_open(&screen, stdin, stdout,
@@ -634,10 +652,10 @@ int cli_history_view(struct cli_application *ctx, cJSON *report)
 						   MORPH_TUI_TERMINAL_SESSION_PASTE);
 	if (rc == 0)
 		rc = morph_tui_screen_run(&screen, &ops, view);
-	int caught = morph_signal_flag_take(&ctx->interrupted);
+	int caught = nb_atomic_int_exchange(&ctx->interrupted, 0);
 	int leave_rc = morph_tui_screen_close(&screen);
 
-	if (caught && rc == -EINTR)
+	if (caught && rc == NB_ERR_INTERRUPTED)
 		rc = 0;
 	if (rc == 0)
 		rc = leave_rc;
@@ -650,9 +668,9 @@ void cli_history_print(struct cli_application *ctx, const cJSON *report, int lim
 	const cJSON *entries = cJSON_GetObjectItemCaseSensitive(report, "entries");
 	int count = cJSON_GetArraySize(entries);
 	int first = !all && count > limit ? count - limit : 0;
-	morph_buf_t line;
+	nb_buf line NB_CLEANUP(nb_buf_cleanup) = {0};
 
-	if (morph_buf_init(&line, 512) != 0)
+	if ((nb_buf_init(&line), nb_buf_reserve(&line, 512) ? 0 : NB_ERR_NOMEM) != 0)
 		return;
 
 	cli_output_printf(ctx, "History · %d saved entries · showing %d\n", count, count - first);
@@ -667,19 +685,20 @@ void cli_history_print(struct cli_application *ctx, const cJSON *report, int lim
 		char preview[CLI_HISTORY_PREVIEW_MAX + 1];
 
 		cli_history_preview(entry, preview, sizeof(preview));
-		morph_buf_reset(&line);
-		if (morph_buf_printf(&line, "[#%lld %s] %s %s · %lld tokens · %s",
-				     (long long)cli_history_number(entry, "sequence_no"),
-				     cli_history_string(entry, "status"), cli_history_label(entry),
-				     cli_history_string(entry, "tool_name"),
-				     (long long)cli_history_number(entry, "token_count"),
-				     preview) != 0)
+		nb_buf_clear(&line);
+		if ((nb_buf_printf(&line, "[#%lld %s] %s %s · %lld tokens · %s",
+				   (long long)cli_history_number(entry, "sequence_no"),
+				   cli_history_string(entry, "status"), cli_history_label(entry),
+				   cli_history_string(entry, "tool_name"),
+				   (long long)cli_history_number(entry, "token_count"), preview)
+			     ? 0
+			     : NB_ERR_NOMEM) != 0)
 			break;
-		(void)cli_output_print_untrusted(ctx, morph_buf_cstr_borrow(&line),
-						 UTF8_TERMINAL_TEXT_SINGLE_LINE);
+		(void)cli_output_print_untrusted(ctx, nb_buf_cstr(&line),
+						 MORPH_TERMINAL_TEXT_SINGLE_LINE);
 		cli_output_putchar(ctx, '\n');
 	}
-	morph_buf_cleanup(&line);
+	nb_buf_cleanup(&line);
 	cli_output_printf(ctx,
 	       "IN direct · VIA SUMMARY condensed · OUT not sent · LEGACY not yet migrated\n"
 	       "/history --entry N [--stored] · /history --last-request · /history --messages\n");
@@ -689,12 +708,12 @@ int cli_history_entry_print(struct cli_application *ctx, const cJSON *report, in
 			    int stored)
 {
 	cJSON *entry;
-	morph_buf_t text;
-	int rc = morph_buf_init(&text, BUFSIZ);
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&text), nb_buf_reserve(&text, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 
 	if (rc != 0)
 		return rc;
-	rc = -ENOENT;
+	rc = NB_ERR_NOT_FOUND;
 	cJSON_ArrayForEach (entry, cJSON_GetObjectItemCaseSensitive(report, "entries")) {
 		if (cli_history_number(entry, "sequence_no") == sequence) {
 			rc = cli_history_entry_document(ctx, entry, stored, &text);
@@ -702,27 +721,27 @@ int cli_history_entry_print(struct cli_application *ctx, const cJSON *report, in
 		}
 	}
 	if (rc == 0)
-		(void)cli_output_print_untrusted(ctx, morph_buf_cstr_borrow(&text),
-						 UTF8_TERMINAL_TEXT_MULTILINE);
+		(void)cli_output_print_untrusted(ctx, nb_buf_cstr(&text),
+						 MORPH_TERMINAL_TEXT_MULTILINE);
 	if (rc == 0)
 		cli_output_putchar(ctx, '\n');
-	morph_buf_cleanup(&text);
+	nb_buf_cleanup(&text);
 	return rc;
 }
 
 int cli_history_request_print(struct cli_application *ctx)
 {
-	morph_buf_t text;
-	int rc = morph_buf_init(&text, BUFSIZ);
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&text), nb_buf_reserve(&text, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 
 	if (rc != 0)
 		return rc;
 	rc = cli_history_request_document(ctx, &text);
 	if (rc == 0)
-		(void)cli_output_print_untrusted(ctx, morph_buf_cstr_borrow(&text),
-						 UTF8_TERMINAL_TEXT_MULTILINE);
+		(void)cli_output_print_untrusted(ctx, nb_buf_cstr(&text),
+						 MORPH_TERMINAL_TEXT_MULTILINE);
 	if (rc == 0)
 		cli_output_putchar(ctx, '\n');
-	morph_buf_cleanup(&text);
+	nb_buf_cleanup(&text);
 	return rc;
 }

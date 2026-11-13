@@ -1,8 +1,9 @@
 #include "runtime/runtime_internal.h"
+#include "nb/err.h"
 
 #include "agent/tools/scheduled_tasks.h"
 #include "runtime/task_worker.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -11,14 +12,14 @@
 int runtime_tasks_execute(struct runtime *runtime, const char *args_json,
 			  int64_t now, char **out_json)
 {
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {0};
-	char *json MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {0};
+	char *json NB_CLEANUP(nb_charp_cleanup) = NULL;
 	int rc;
 
 	if (!runtime || !out_json)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out_json)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	(void)scheduled_tasks_tool_set_time_anchor(&runtime->context.tools, now);
 	(void)scheduled_tasks_tool_set_source_session(&runtime->context.tools,
 		runtime->context.current_session.id);
@@ -27,10 +28,10 @@ int runtime_tasks_execute(struct runtime *runtime, const char *args_json,
 		       args_json ? args_json : "{}", &result);
 	if (rc != 0)
 		return rc;
-	json = strdup(result.text.data ? result.text.data : "{}");
+	json = strdup(result.text.ptr ? result.text.ptr : "{}");
 	if (!json)
-		return -ENOMEM;
-	*out_json = morph_charp_steal(&json);
+		return NB_ERR_NOMEM;
+	*out_json = nb_charp_steal(&json);
 	return 0;
 }
 
@@ -41,7 +42,7 @@ int runtime_task_scheduler_start(
 	int limit)
 {
 	if (!runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return runtime_task_worker_start(&runtime->task_worker,
 		&runtime->context.database, runner, runner_user_data,
 		notification_cb, notification_user_data, limit);
@@ -64,7 +65,7 @@ int runtime_tasks_run_due_for_runtime(
 	void *notification_user_data)
 {
 	if (!runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return runtime_task_run_due_collect(&runtime->context.database, limit,
 		runner, runner_user_data, notification_cb, notification_user_data);
 }

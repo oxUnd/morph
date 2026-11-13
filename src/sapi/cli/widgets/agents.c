@@ -1,9 +1,11 @@
 #include "sapi/cli/widgets/agents.h"
+#include "nb/err.h"
 #include "sapi/cli/models/agents.h"
 
 #include "sapi/cli/presentation/style.h"
-#include "util/utf8.h"
-#include "util/cleanup.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
+#include "nb/cleanup.h"
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -25,26 +27,26 @@ const char *cli_agents_status(enum agent_status status)
 	return "unknown";
 }
 
-static void cli_agents_append(morph_buf_t *out, const char *text, int columns, const char *style)
+static void cli_agents_append(nb_buf *out, const char *text, int columns, const char *style)
 {
-	char *safe MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
-		text, strlen(text), UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		text, strlen(text), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 	char clipped[BUFSIZ];
 	if (!safe || columns < 1)
 		return;
-	(void)utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), safe, (size_t)columns,
-						 0);
-	(void)morph_buf_puts(out, style);
-	(void)morph_buf_puts(out, clipped);
+	(void)morph_terminal_copy_ellipsized_display_width(clipped, sizeof(clipped), safe,
+							   (size_t)columns, 0);
+	(void)nb_buf_append_cstr(out, style);
+	(void)nb_buf_append_cstr(out, clipped);
 	if (*style)
-		(void)morph_buf_puts(out, ANSI_RESET);
+		(void)nb_buf_append_cstr(out, ANSI_RESET);
 }
 
-int cli_agents_receipt_append(morph_buf_t *out, const char *id, enum agent_status status,
-			     int columns, int styled)
+int cli_agents_receipt_append(nb_buf *out, const char *id, enum agent_status status, int columns,
+			      int styled)
 {
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int completed = status == AGENT_COMPLETED;
 	int cancelled = status == AGENT_CANCELLED;
 	const char *action = completed ? "Finished" : cancelled ? "Interrupted" : "Failed";
@@ -53,50 +55,53 @@ int cli_agents_receipt_append(morph_buf_t *out, const char *id, enum agent_statu
 	const char *color = completed ? ANSI_GREEN
 		: cancelled ? ANSI_DIM : CLI_FEED_FAILED_STYLE;
 	int width = columns - (int)CLI_CONTENT_RIGHT_PADDING - 2;
-	int rc = morph_buf_printf(out, "%s%s%s ", styled ? color : "", marker,
-		styled ? ANSI_RESET : "");
+	int rc = (nb_buf_printf(out, "%s%s%s ", styled ? color : "", marker,
+				styled ? ANSI_RESET : "")
+			  ? 0
+			  : NB_ERR_NOMEM);
 	if (rc == 0)
 		cli_agents_append(out, action, width, "");
 	if (rc == 0 && width > (int)strlen(action) + 1) {
-		rc = morph_buf_putc(out, ' ');
+		rc = (nb_buf_append_char(out, ' ') ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
 			cli_agents_append(out, id ? id : "agent", width - (int)strlen(action) - 1,
 				styled ? CLI_COMMAND_COLOR : "");
 	}
 	if (rc == 0)
-		rc = morph_buf_putc(out, '\n');
-	return rc != 0 ? rc : out->failed;
+		rc = (nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM);
+	return rc != 0 ? rc : nb_buf_status(out);
 }
 
-int cli_agents_detail(morph_buf_t *out, const char *label, const char *value, int columns,
-		      int styled)
+int cli_agents_detail(nb_buf *out, const char *label, const char *value, int columns, int styled)
 {
 	if (!out || !label || !value)
-		return -EINVAL;
-	char *safe MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
-		value, strlen(value), UTF8_TERMINAL_TEXT_MULTILINE, NULL);
-	char *heading MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
-		label, strlen(label), UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+		return NB_ERR_INVAL;
+	char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		value, strlen(value), MORPH_TERMINAL_TEXT_MULTILINE, NULL);
+	char *heading NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		label, strlen(label), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 	if (!safe || !heading)
-		return -ENOMEM;
-	int rc = morph_buf_printf(out, "  %s%s%s\n", styled ? ANSI_DIM : "", heading,
-				  styled ? ANSI_RESET : "");
+		return NB_ERR_NOMEM;
+	int rc = (nb_buf_printf(out, "  %s%s%s\n", styled ? ANSI_DIM : "", heading,
+				styled ? ANSI_RESET : "")
+			  ? 0
+			  : NB_ERR_NOMEM);
 	int width = columns > 5 ? columns - 5 : 1;
 	const char *line = safe;
 	while (rc == 0 && *line) {
 		const char *newline = strchr(line, '\n');
-		const char *end = utf8_advance_display_width_borrow(line, (size_t)width);
+		const char *end = morph_terminal_advance_display_width_borrow(line, (size_t)width);
 		if (newline && newline < end)
 			end = newline;
 		if (end == line && *line != '\n')
-			end += utf8_next_codepoint_len(line, strnlen(line, 4));
-		rc = morph_buf_printf(out, "    %.*s\n", (int)(end - line), line);
+			end += nb_utf8_next_codepoint_len(line, strnlen(line, 4));
+		rc = (nb_buf_printf(out, "    %.*s\n", (int)(end - line), line) ? 0 : NB_ERR_NOMEM);
 		line = *end == '\n' ? end + 1 : end;
 	}
 	return rc;
 }
 
-int cli_agents_summary(morph_buf_t *out, const struct agent_info *agents, int count, int columns)
+int cli_agents_summary(nb_buf *out, const struct agent_info *agents, int count, int columns)
 {
 	int active = 0, completed = 0, failed = 0, interrupted = 0;
 	for (int i = 0; i < count; i++) {
@@ -106,20 +111,27 @@ int cli_agents_summary(morph_buf_t *out, const struct agent_info *agents, int co
 		interrupted += agents[i].status == AGENT_CANCELLED;
 	}
 	if (columns < 76 && (failed || interrupted))
-		return morph_buf_printf(out, "Agents: %d run · %d %s", active,
-			failed ? failed : interrupted, failed ? "failed" : "interrupted");
-	int rc = morph_buf_printf(out, columns < 76 ? "Agents: %d running · %d done" :
-		"Agents: %d running · %d completed", active, completed);
+		return (nb_buf_printf(out, "Agents: %d run · %d %s", active,
+				      failed ? failed : interrupted,
+				      failed ? "failed" : "interrupted")
+				? 0
+				: NB_ERR_NOMEM);
+	int rc = (nb_buf_printf(out,
+				columns < 76 ? "Agents: %d running · %d done"
+					     : "Agents: %d running · %d completed",
+				active, completed)
+			  ? 0
+			  : NB_ERR_NOMEM);
 	if (rc == 0 && failed)
-		rc = morph_buf_printf(out, " · %d failed", failed);
+		rc = (nb_buf_printf(out, " · %d failed", failed) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && interrupted)
-		rc = morph_buf_printf(out, " · %d interrupted", interrupted);
+		rc = (nb_buf_printf(out, " · %d interrupted", interrupted) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && columns >= 100 && !failed && !interrupted)
-		rc = morph_buf_puts(out, " · /agents");
+		rc = (nb_buf_append_cstr(out, " · /agents") ? 0 : NB_ERR_NOMEM);
 	return rc;
 }
 
-int cli_agents_rows(morph_buf_t *out, const struct agent_info *agents, int count, int columns,
+int cli_agents_rows(nb_buf *out, const struct agent_info *agents, int count, int columns,
 		    int max_agents, int styled)
 {
 	if (columns < 20 || max_agents < 1)
@@ -128,8 +140,8 @@ int cli_agents_rows(morph_buf_t *out, const struct agent_info *agents, int count
 	for (int i = 0; i < count; i++)
 		active += agents[i].status == AGENT_RUNNING || agents[i].status == AGENT_PENDING;
 	int visible = active < max_agents ? active : max_agents;
-	morph_buf_t activity MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	if (morph_buf_init(&activity, 128) != 0)
+	nb_buf activity NB_CLEANUP(nb_buf_cleanup) = {0};
+	if ((nb_buf_init(&activity), nb_buf_reserve(&activity, 128) ? 0 : NB_ERR_NOMEM) != 0)
 		return 0;
 	for (int i = 0; i < count && shown < visible; i++) {
 		const struct agent_info *agent = &agents[i];
@@ -138,39 +150,38 @@ int cli_agents_rows(morph_buf_t *out, const struct agent_info *agents, int count
 		const char *name = agent->id;
 		const char *status =
 			agent->activity ? agent->activity : cli_agents_status(agent->status);
-		morph_buf_reset(&activity);
+		nb_buf_clear(&activity);
 		if (!strncmp(status, "Tool: ", 6))
-			(void)morph_buf_printf(&activity, "Running %s", status + 6);
+			(void)nb_buf_printf(&activity, "Running %s", status + 6);
 		else
-			(void)morph_buf_puts(&activity, status);
+			(void)nb_buf_append_cstr(&activity, status);
 		if (out->len)
-			(void)morph_buf_putc(out, '\n');
+			(void)nb_buf_append_char(out, '\n');
 		cli_agents_append(out, shown + 1 == active ? "  └ " : "  ├ ", 4,
 				  styled ? ANSI_DIM : "");
 		cli_agents_append(out, agent->status == AGENT_RUNNING ? CLI_FEED_RUNNING
 							    : CLI_FEED_PENDING, 1,
 				  styled ? (agent->status == AGENT_RUNNING ? ANSI_CYAN : ANSI_DIM)
 					 : "");
-		(void)morph_buf_puts(out, " ");
+		(void)nb_buf_append_cstr(out, " ");
 		int name_width = columns / 2;
 		if (name_width > 28)
 			name_width = 28;
-		int actual = (int)utf8_display_width(name);
+		int actual = (int)nb_utf8_width_cstr(name);
 		if (actual < name_width)
 			name_width = actual;
 		cli_agents_append(out, name, name_width, styled ? CLI_COMMAND_COLOR : "");
-		(void)morph_buf_puts(out, "  ");
-		cli_agents_append(out, morph_buf_cstr_borrow(&activity), columns - name_width - 9,
+		(void)nb_buf_append_cstr(out, "  ");
+		cli_agents_append(out, nb_buf_cstr(&activity), columns - name_width - 9,
 				  styled ? ANSI_DIM : "");
 		shown++;
 	}
 	if (active > shown) {
 		if (out->len)
-			(void)morph_buf_putc(out, '\n');
-		morph_buf_reset(&activity);
-		(void)morph_buf_printf(&activity, "  └ +%d more · /agents", active - shown);
-		cli_agents_append(out, morph_buf_cstr_borrow(&activity), columns - 1,
-				  styled ? ANSI_DIM : "");
+			(void)nb_buf_append_char(out, '\n');
+		nb_buf_clear(&activity);
+		(void)nb_buf_printf(&activity, "  └ +%d more · /agents", active - shown);
+		cli_agents_append(out, nb_buf_cstr(&activity), columns - 1, styled ? ANSI_DIM : "");
 		shown++;
 	}
 	return shown;
@@ -181,11 +192,11 @@ int cli_agents_model_visible(const struct cli_agents_model *model)
 	return cli_agents_model_active(model);
 }
 
-int cli_agents_model_render(const struct cli_agents_model *model, morph_buf_t *out,
-			    morph_buf_t *summary, int columns, int maximum, int styled)
+int cli_agents_model_render(const struct cli_agents_model *model, nb_buf *out, nb_buf *summary,
+			    int columns, int maximum, int styled)
 {
 	if (!model || !out || !summary)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!model->count)
 		return 0;
 	(void)cli_agents_summary(summary, model->items, model->count, columns);

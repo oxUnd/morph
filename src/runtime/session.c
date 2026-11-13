@@ -4,9 +4,9 @@
 #include "agent/context.h"
 #include "session_history.h"
 #include "permission/context.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/log.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/log.h"
 
 #include <errno.h>
 #include <string.h>
@@ -23,9 +23,9 @@ int runtime_session_get_or_create(struct runtime_engine *engine,
 	int rc;
 
 	if (!engine || !engine->db || !name || !model || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = session_create_with_workdir(engine->db, name, model, workdir, out);
-	if (rc == -EEXIST) {
+	if (rc == NB_ERR_EXISTS) {
 		rc = session_get_by_name(engine->db, name, out);
 		if (rc == 0) {
 			(void)session_update_model(engine->db, out->id, model);
@@ -56,7 +56,7 @@ int runtime_session_create(struct runtime_engine *engine,
 	int rc;
 
 	if (!engine || !engine->db || !name || !model || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = session_create_with_workdir(engine->db, name, model, workdir, out);
 	if (rc == 0)
 		(void)session_ensure_display_id(engine->db, out);
@@ -77,14 +77,14 @@ int runtime_session_rename(struct runtime_engine *engine,
 			   const char *new_name)
 {
 	if (!engine || !engine->db || id <= 0 || !new_name)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return session_rename(engine->db, id, new_name);
 }
 
 int runtime_session_delete(struct runtime_engine *engine, int64_t id)
 {
 	if (!engine || !engine->db || id <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return session_delete(engine->db, id);
 }
 
@@ -100,8 +100,8 @@ void runtime_session_load_history(struct runtime_engine *engine,
 	runtime.session_id = session_id;
 	runtime.react = engine->react;
 	agent_session_load_history(&runtime);
-	log_info(engine ? engine->logger : NULL, "runtime: loaded messages for session id=%lld",
-		 (long long)session_id);
+	nb_log_write(engine ? engine->logger : NULL, NB_LOG_INFO,
+		     "runtime: loaded messages for session id=%lld", (long long)session_id);
 }
 
 void runtime_session_clear_history(struct react_context *react)

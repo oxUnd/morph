@@ -11,10 +11,10 @@ extern "C" {
 #include "models/llm.h"
 #include "permission/context.h"
 #include "session.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/json.h"
-#include "util/signals.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "cJSON.h"
+#include "nb/signal.h"
 }
 
 #include <chrono>
@@ -170,7 +170,7 @@ TEST_F(AgentBudgetVerificationTest, CustomRemindersAreOrderedDeduplicatedAndPers
 	EXPECT_EQ(budget.reminder_level, 3);
 	EXPECT_FALSE(budget.exhausted);
 	EXPECT_EQ(agent_control_budget_check_for(control, "/root/child", 50), 0);
-	char *mail MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	char *mail NB_CLEANUP(nb_charp_cleanup) = nullptr;
 	int64_t cursor = 0;
 	ASSERT_EQ(agent_control_receive(control, "/root", session.id, &mail, &cursor), 0);
 	ASSERT_NE(mail, nullptr);
@@ -184,7 +184,7 @@ TEST_F(AgentBudgetVerificationTest, CustomRemindersAreOrderedDeduplicatedAndPers
 	EXPECT_LT(second, third);
 	EXPECT_EQ(strstr(first + 1, "Threshold: 600"), nullptr);
 	ASSERT_EQ(agent_control_ack(control, "/root", session.id, cursor, &database), 0);
-	morph_charp_cleanup(&mail);
+	nb_charp_cleanup(&mail);
 	agent_control_end_turn(control);
 	Reopen();
 	agent_control_begin_turn(control, nullptr);
@@ -347,7 +347,7 @@ TEST_F(AgentBudgetVerificationTest, OversizedRequestDoesNotCancelOrPoisonSmaller
 	EXPECT_EQ(reservation, 0);
 	EXPECT_EQ(agent_control_budget_check(control, 201), MORPH_ERR_REQUEST_BUDGET);
 	EXPECT_EQ(agent_control_budget_check(control, 0), 0);
-	EXPECT_FALSE(morph_signal_flag_get(&react->cancelled));
+	EXPECT_FALSE(nb_atomic_int_load(&react->cancelled));
 	ASSERT_EQ(agent_control_budget_reserve_request(control, "/root", 100, &output,
 						       &reservation), 0);
 	EXPECT_EQ(output, 64);
@@ -455,7 +455,7 @@ TEST_F(AgentBudgetVerificationTest, FittedOutputIsSentToProviderWithoutChangingM
 	EXPECT_EQ(react_run(react, "Integrate the findings", nullptr, nullptr), 0);
 	auto requests = server.snapshot();
 	ASSERT_FALSE(requests.empty());
-	cJSON *body MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(requests.front().c_str());
+	cJSON *body NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(requests.front().c_str());
 	int output = static_cast<int>(cJSON_GetNumberValue(cJSON_GetObjectItem(body, "max_tokens")));
 	EXPECT_GT(output, 0);
 	EXPECT_LT(output, 103699);
@@ -485,7 +485,7 @@ TEST_F(AgentBudgetVerificationTest, ReservationWaitObservesCancellation)
 	});
 	EXPECT_EQ(next.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
 	react_cancel(react);
-	EXPECT_EQ(next.get(), -ECANCELED);
+	EXPECT_EQ(next.get(), NB_ERR_CANCELLED);
 	agent_control_budget_release(control, held);
 	agent_control_end_turn(control);
 	react_context_destroy(react);
@@ -505,7 +505,7 @@ TEST_F(AgentBudgetVerificationTest, RebindingActiveSessionPreservesInflightReser
 	EXPECT_EQ(budget.reserved, 100);
 	struct session another{};
 	ASSERT_EQ(session_create(&database, "another root", "test-model", &another), 0);
-	EXPECT_EQ(agent_control_set_parent_session(control, another.id), -EBUSY);
+	EXPECT_EQ(agent_control_set_parent_session(control, another.id), NB_ERR_BUSY);
 	agent_control_budget_release(control, reservation);
 	agent_control_end_turn(control);
 	ASSERT_EQ(agent_control_set_parent_session(control, another.id), 0);
@@ -570,7 +570,7 @@ TEST_F(AgentBudgetVerificationTest, ExhaustedAllocationKeepsLateFollowupQueued)
 	struct agent_budget budget{};
 	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
 	EXPECT_TRUE(budget.exhausted);
-	char *mail MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	char *mail NB_CLEANUP(nb_charp_cleanup) = nullptr;
 	int64_t cursor = 0;
 	ASSERT_EQ(agent_control_receive(control, "/root/reader", session.id, &mail, &cursor), 0);
 	ASSERT_NE(mail, nullptr);
@@ -697,10 +697,10 @@ TEST_F(AgentBudgetVerificationTest,
 	tool_result_init(&result);
 	result.runtime = &child;
 	EXPECT_EQ(tool_exec(&tools, "exec", R"({"command":"sleep 60","service":true})", &result),
-		  -EACCES);
+		  NB_ERR_PERMISSION);
 	EXPECT_EQ(
 		tool_exec(&tools, "exec", R"({"command":"sleep 60","notify_only":true})", &result),
-		-EACCES);
+		NB_ERR_PERMISSION);
 	const char *metadata_probe =
 		"mkdir -p \"$MORPH_AGENT_SCRATCH/metadata/source\" "
 		"\"$MORPH_AGENT_SCRATCH/metadata/copy\" && "
@@ -715,13 +715,12 @@ TEST_F(AgentBudgetVerificationTest,
 		"python3 -c 'import os; p=os.path.join(os.environ[\"MORPH_AGENT_SCRATCH\"],"
 		"\"metadata/copy/probe\"); assert int(os.stat(p).st_mtime)==456; "
 		"print(\"TIMESTAMP_ROUNDTRIP_OK\")'";
-	cJSON *metadata_args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *metadata_args NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	ASSERT_NE(metadata_args, nullptr);
 	cJSON_AddStringToObject(metadata_args, "command", metadata_probe);
 	cJSON_AddNumberToObject(metadata_args, "yield_time_ms", 10000);
 	cJSON_AddNumberToObject(metadata_args, "timeout_ms", 15000);
-	char *metadata_json MORPH_CLEANUP(morph_json_text_cleanup) =
-		cJSON_PrintUnformatted(metadata_args);
+	char *metadata_json NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(metadata_args);
 	ASSERT_NE(metadata_json, nullptr);
 	ASSERT_EQ(tool_exec(&tools, "exec", metadata_json, &result), 0);
 	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0)
@@ -809,7 +808,7 @@ TEST_F(AgentBudgetVerificationTest,
 	if (parent_readonly_rc == 0)
 		EXPECT_NE(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0);
 	else
-		EXPECT_EQ(parent_readonly_rc, -EACCES);
+		EXPECT_EQ(parent_readonly_rc, NB_ERR_PERMISSION);
 	tool_result_cleanup(&result);
 	std::ifstream own_source(std::string(directory) + "/main.c");
 	std::getline(own_source, content);

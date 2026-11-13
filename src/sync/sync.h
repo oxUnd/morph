@@ -1,14 +1,14 @@
 #ifndef MORPH_SYNC_H
 #define MORPH_SYNC_H
 
-struct morph_log;
+struct nb_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #include <limits.h>
 #include <stdint.h>
-#include <pthread.h>
+#include "nb/thread.h"
 
 #define MORPH_SYNC_INCLUDE_MAX 16
 #define MORPH_SYNC_INCLUDE_LEN_MAX PATH_MAX
@@ -43,7 +43,7 @@ struct morph_sync_backend {
 };
 
 struct morph_sync_config {
-	struct morph_log *logger;
+	struct nb_log *logger;
 	int enabled;
 	char source_dir[PATH_MAX];
 	/* Optional local directory mapped to the portable output/ namespace. */
@@ -94,9 +94,9 @@ struct morph_sync_restore_plan {
 struct morph_sync_worker {
 	struct morph_sync_config cfg;
 	struct morph_sync_status status;
-	pthread_t thread;
-	pthread_mutex_t lock;
-	pthread_cond_t cond;
+	nb_thread *thread;
+	nb_mutex *lock;
+	nb_cond *cond;
 	int started;
 	int stop;
 };
@@ -122,8 +122,8 @@ int morph_sync_prepare_db_replace(const struct morph_sync_config *cfg,
 int morph_sync_apply_db_replace(struct morph_sync_restore_plan *plan);
 int morph_sync_commit_db_replace(struct morph_sync_restore_plan *plan);
 int morph_sync_rollback_db_replace(struct morph_sync_restore_plan *plan);
-int morph_sync_recover_db_replacements(struct morph_log *logger, const char *source_dir);
-int morph_sync_finalize_db_replacements(struct morph_log *logger, const char *source_dir);
+int morph_sync_recover_db_replacements(struct nb_log *logger, const char *source_dir);
+int morph_sync_finalize_db_replacements(struct nb_log *logger, const char *source_dir);
 char *morph_sync_restore_plan_to_json(
 	const struct morph_sync_restore_plan *plan);
 int morph_sync_restore_plan_from_json(const char *json,

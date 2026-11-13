@@ -1,4 +1,5 @@
 #include "sapi/cli/services/turn.h"
+#include "nb/err.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/agents.h"
 #include "sapi/cli/application_internal.h"
@@ -55,29 +56,32 @@ int cli_turn_execute_prompt(struct cli_application *ctx, const char *input)
 	int owns_turn = 0;
 
 	if (!ctx || !input)
-		return -EINVAL;
-	morph_buf_t input_buf;
+		return NB_ERR_INVAL;
+	nb_buf input_buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *effective_input = input;
 	int has_input_buf = 0;
 
 	memset(&input_buf, 0, sizeof(input_buf));
 	if (ctx->image_path[0]) {
-		int rc = morph_buf_init(&input_buf, 256);
+		int rc = (nb_buf_init(&input_buf),
+			  nb_buf_reserve(&input_buf, 256) ? 0 : NB_ERR_NOMEM);
 
 		if (rc != 0)
 			return rc;
 		has_input_buf = 1;
-		rc = morph_buf_printf(
-			&input_buf,
-			"[Image: %s]\n"
-			"(The user attached the image above; if the task involves "
-			"understanding or reading the image, use img_qa to view it.)\n%s",
-			ctx->image_path, input);
+		rc = (nb_buf_printf(
+			      &input_buf,
+			      "[Image: %s]\n"
+			      "(The user attached the image above; if the task involves "
+			      "understanding or reading the image, use img_qa to view it.)\n%s",
+			      ctx->image_path, input)
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (rc != 0) {
-			morph_buf_cleanup(&input_buf);
+			nb_buf_cleanup(&input_buf);
 			return rc;
 		}
-		effective_input = morph_buf_cstr_borrow(&input_buf);
+		effective_input = nb_buf_cstr(&input_buf);
 		ctx->image_path[0] = '\0';
 	}
 
@@ -105,16 +109,16 @@ int cli_turn_execute_prompt(struct cli_application *ctx, const char *input)
 	};
 	struct runtime_result runtime_result;
 	int react_rc = runtime_execute_turn(ctx->runtime, &request, &runtime_result);
-	if (react_rc != -EBUSY)
+	if (react_rc != NB_ERR_BUSY)
 		ctx->session_auto_named = 1;
 	if (has_input_buf)
-		morph_buf_cleanup(&input_buf);
+		nb_buf_cleanup(&input_buf);
 	struct cli_cancel_monitor *cancel_monitor = ctx->cancel_monitor;
 	ctx->cancel_monitor = NULL;
 	cli_cancel_monitor_stop(cancel_monitor);
 	if (owns_turn)
 		cli_turn_finish(ctx, react_rc);
-	if (react_rc == -EBUSY)
+	if (react_rc == NB_ERR_BUSY)
 		return react_rc;
 
 	cli_scheduler_process_due(ctx);
@@ -148,7 +152,10 @@ void cli_turn_finish(struct cli_application *ctx, int turn_rc)
 	    ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 		return;
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
-		cli_output_printf(ctx, "error: %s\n", morph_strerror(turn_rc));
+		cli_output_printf(
+			ctx, "error: %s\n",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, turn_rc));
 	else
-		CMD_ERROR(ctx, "%s", morph_strerror(turn_rc));
+		CMD_ERROR(ctx, "%s",
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, turn_rc));
 }

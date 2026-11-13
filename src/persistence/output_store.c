@@ -1,7 +1,7 @@
 #include "output_store.h"
 #include "db/database.h"
-#include "util/cleanup.h"
-#include "util/error.h"
+#include "nb/cleanup.h"
+#include "errors.h"
 
 #include <errno.h>
 #include <string.h>
@@ -13,7 +13,7 @@ int output_store_find_id(struct db *db, const char *path, int64_t *id)
 	int step;
 
 	if (!db || !db->handle || !path || !id)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*id = 0;
 	if (sqlite3_prepare_v2(db->handle,
 			       "SELECT id FROM outputs WHERE path=? ORDER BY id DESC LIMIT 1", -1,
@@ -39,7 +39,7 @@ int output_store_insert(struct db *db, const struct output_record_input *record,
 	int rc;
 
 	if (!db || !db->handle || !record || !record->path || !id)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*id = 0;
 	mutex = sqlite3_db_mutex(db->handle);
 	sqlite3_mutex_enter(mutex);
@@ -105,17 +105,17 @@ static void output_record_move(struct output_record *destination, struct output_
 
 int output_store_copy(struct db *db, const char *path, struct output_record *out)
 {
-	struct output_record value MORPH_CLEANUP(output_record_cleanup) = {0};
+	struct output_record value NB_CLEANUP(output_record_cleanup) = {0};
 	struct output_record *record = &value;
 	sqlite3_stmt *stmt = NULL;
 	int rc;
 
 	if (!db || !db->handle || !path || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (out->kind || out->path || out->prompt || out->model || out->request_prompt ||
 	    out->provider || out->tool_name || out->tool_call_id || out->turn_id ||
 	    out->recipe_json || out->mime)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	rc = sqlite3_prepare_v2(
 		db->handle,
 		"SELECT id,session_id,kind,path,prompt,model,request_prompt,provider,"
@@ -155,7 +155,7 @@ int output_store_copy(struct db *db, const char *path, struct output_record *out
 	if (rc == SQLITE_ROW)
 		output_record_move(out, &value);
 	return rc == SQLITE_ROW	    ? 0
-	       : rc == SQLITE_DONE  ? -ENODATA
-	       : rc == SQLITE_NOMEM ? -ENOMEM
+	       : rc == SQLITE_DONE  ? NB_ERR_NO_DATA
+	       : rc == SQLITE_NOMEM ? NB_ERR_NOMEM
 				    : MORPH_ERR_DB;
 }

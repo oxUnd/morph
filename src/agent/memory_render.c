@@ -1,13 +1,14 @@
 #include "agent/memory_internal.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 
 #include "agent/memory.h"
 #include "persistence/memory_snapshot.h"
 #include "persistence/memory_job_store.h"
 #include "persistence/memory_search.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/utf8.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/utf8.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -19,7 +20,7 @@
 
 /* Session memory tree presentation. */
 
-static void memory_emit_profile_body(morph_buf_t *b, const char *vbar, const char *body)
+static void memory_emit_profile_body(nb_buf *b, const char *vbar, const char *body)
 {
 	const char *p = body;
 	int first = 1;
@@ -54,7 +55,7 @@ static void memory_emit_profile_body(morph_buf_t *b, const char *vbar, const cha
  * outer tree structure (│   /     guides) never gets broken by the
  * inner content.
  */
-static void memory_emit_wrapped(morph_buf_t *b, const char *prefix_first, const char *prefix_cont,
+static void memory_emit_wrapped(nb_buf *b, const char *prefix_first, const char *prefix_cont,
 				const char *label, const char *body, size_t wrap)
 {
 	const char *p;
@@ -81,7 +82,7 @@ static void memory_emit_wrapped(morph_buf_t *b, const char *prefix_first, const 
 			p = nl ? nl + 1 : p + strlen(p);
 			continue;
 		}
-		take = logical > wrap ? utf8_clamp_bytes(p, wrap) : logical;
+		take = logical > wrap ? nb_utf8_clamp_bytes(p, wrap) : logical;
 		if (take == 0)
 			take = logical;
 
@@ -133,12 +134,12 @@ static int memory_copy_field(char *dst, size_t cap, const char *src, size_t n)
 	while (take > 0 && (src[take - 1] == ' ' || src[take - 1] == '\t' || src[take - 1] == '\n'))
 		take--;
 	/* Snap to UTF-8 boundary. */
-	take = utf8_clamp_bytes(src, take);
+	take = nb_utf8_clamp_bytes(src, take);
 	memcpy(dst, src, take);
 	dst[take] = '\0';
 	if (shortened)
 		memcpy(dst + take, "…", sizeof("…"));
-	utf8_sanitize_inplace(dst);
+	nb_utf8_sanitize_inplace(dst);
 	return shortened;
 }
 
@@ -218,8 +219,8 @@ static void memory_parse_task_summary(const char *summary, struct memory_task_su
 
 static char *memory_render_archive(struct db *db, int64_t session_id, int max_past_tasks)
 {
-	struct memory_snapshot snapshot MORPH_CLEANUP(memory_snapshot_cleanup) = {0};
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	struct memory_snapshot snapshot NB_CLEANUP(memory_snapshot_cleanup) = {0};
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	/*
 	 * max_past_tasks is a soft cap: <= 0 means "render everything".
 	 * The /mem command intentionally passes 0 to show the full record.
@@ -238,7 +239,8 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_pa
 	if (!db || !db->handle)
 		return NULL;
 
-	if (morph_buf_init(&buf, MEMORY_APPEND_INIT_CAP) != 0)
+	if ((nb_buf_init(&buf), nb_buf_reserve(&buf, MEMORY_APPEND_INIT_CAP) ? 0 : NB_ERR_NOMEM) !=
+	    0)
 		return NULL;
 
 	struct memory_snapshot_options read_options = {
@@ -250,22 +252,22 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_pa
 	};
 
 	if (memory_snapshot_read(db, session_id, &read_options, &snapshot) != 0) {
-		morph_buf_cleanup(&buf);
+		nb_buf_cleanup(&buf);
 		return NULL;
 	}
 	has_user_summary = snapshot.user_summary && snapshot.user_summary[0];
-	n_facts = (int)snapshot.facts.nelts;
-	n_rules = (int)snapshot.rules.nelts;
+	n_facts = (int)snapshot.facts.len;
+	n_rules = (int)snapshot.rules.len;
 	task_total = snapshot.task_count;
-	task_count = (int)snapshot.tasks.nelts;
-	n_changes = (int)snapshot.changes.nelts;
+	task_count = (int)snapshot.tasks.len;
+	n_changes = (int)snapshot.changes.len;
 
 	sections_total = (has_user_summary ? 1 : 0) + (n_facts > 0 ? 1 : 0) +
 			 (n_rules > 0 ? 1 : 0) + (task_count > 0 ? 1 : 0) + (n_changes > 0 ? 1 : 0);
 
 	if (sections_total == 0) {
 		memory_snapshot_cleanup(&snapshot);
-		morph_buf_cleanup(&buf);
+		nb_buf_cleanup(&buf);
 		return strdup("No long-term memory stored for this session.");
 	}
 
@@ -289,9 +291,8 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_pa
 		const char *vbar = last ? "    " : "│   ";
 		int idx = 0;
 		memory_appendf(&buf, MEMORY_RENDER_CAP, "%s Current facts (%d)\n", branch, n_facts);
-		for (size_t row = 0; row < snapshot.facts.nelts; row++) {
-			const struct memory_fact_record *record =
-				morph_array_borrow(&snapshot.facts, row);
+		for (size_t row = 0; row < snapshot.facts.len; row++) {
+			const struct memory_fact_record *record = nb_vec_at(&snapshot.facts, row);
 
 			const char *key_name = record->key;
 			const char *value_text = record->value;
@@ -317,9 +318,8 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_pa
 		int idx = 0;
 		memory_appendf(&buf, MEMORY_RENDER_CAP, "%s Unapplied rules (%d)\n", branch,
 			       n_rules);
-		for (size_t row = 0; row < snapshot.rules.nelts; row++) {
-			const struct memory_rule_record *record =
-				morph_array_borrow(&snapshot.rules, row);
+		for (size_t row = 0; row < snapshot.rules.len; row++) {
+			const struct memory_rule_record *record = nb_vec_at(&snapshot.rules, row);
 
 			const char *rule_text = record->text;
 			int evidence = record->evidence;
@@ -342,9 +342,8 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_pa
 		int idx = 0;
 		memory_appendf(&buf, MEMORY_RENDER_CAP, "%s Past tasks (%d/%d)\n", branch,
 			       task_count, task_total);
-		for (size_t row = 0; row < snapshot.tasks.nelts; row++) {
-			const struct memory_task_record *record =
-				morph_array_borrow(&snapshot.tasks, row);
+		for (size_t row = 0; row < snapshot.tasks.len; row++) {
+			const struct memory_task_record *record = nb_vec_at(&snapshot.tasks, row);
 
 			const char *summary = record->summary;
 			const char *decisions = record->decisions;
@@ -443,9 +442,9 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_pa
 		const char *vbar = "    ";
 		int idx = 0;
 		memory_appendf(&buf, MEMORY_RENDER_CAP, "└── Recent changes (%d)\n", n_changes);
-		for (size_t row = 0; row < snapshot.changes.nelts; row++) {
+		for (size_t row = 0; row < snapshot.changes.len; row++) {
 			const struct memory_change_record *record =
-				morph_array_borrow(&snapshot.changes, row);
+				nb_vec_at(&snapshot.changes, row);
 
 			const char *key_name = record->key;
 			const char *old_value = record->old_value;
@@ -463,37 +462,43 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_pa
 	}
 
 	memory_snapshot_cleanup(&snapshot);
-	return morph_buf_detach(&buf);
+	return (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
 }
 
 char *memory_session_text_create(struct db *db, int64_t session_id, int max_past_tasks)
 {
-	char *effective MORPH_CLEANUP(morph_charp_cleanup) =
-		preference_render_copy(db, session_id, 0);
-	char *archive MORPH_CLEANUP(morph_charp_cleanup) =
+	char *effective NB_CLEANUP(nb_charp_cleanup) = preference_render_copy(db, session_id, 0);
+	char *archive NB_CLEANUP(nb_charp_cleanup) =
 		memory_render_archive(db, session_id, max_past_tasks);
-	struct memory_search_result matches MORPH_CLEANUP(memory_search_result_cleanup) = {0};
+	struct memory_search_result matches NB_CLEANUP(memory_search_result_cleanup) = {0};
 	struct memory_search_options options = {.kind = "learned_notes"};
 	struct memory_record *record;
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc = memory_search_records(db, session_id, &options, &matches);
 
 	if (rc != 0 || !effective || !archive)
 		return NULL;
-	if (!*effective && !matches.records.nelts)
-		return morph_charp_steal(&archive);
-	rc = morph_buf_init(&buf, 512);
+	if (!*effective && !matches.records.len)
+		return nb_charp_steal(&archive);
+	rc = (nb_buf_init(&buf), nb_buf_reserve(&buf, 512) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && *effective)
-		rc = morph_buf_printf(&buf, "Effective preferences\n%s\n", effective);
-	if (rc == 0 && (!matches.records.nelts ||
+		rc = (nb_buf_printf(&buf, "Effective preferences\n%s\n", effective) ? 0
+										    : NB_ERR_NOMEM);
+	if (rc == 0 && (!matches.records.len ||
 			strcmp(archive, "No long-term memory stored for this session.")))
-		rc = morph_buf_printf(&buf, "Session archive (not preference instructions)\n%s",
-				      archive);
-	if (rc == 0 && matches.records.nelts)
-		rc = morph_buf_puts(&buf,
-				    "\nLearned memory (inferred; suggested settings are not active "
-				    "preferences)\n");
-	morph_array_foreach (record, &matches.records, struct memory_record) {
+		rc = (nb_buf_printf(&buf, "Session archive (not preference instructions)\n%s",
+				    archive)
+			      ? 0
+			      : NB_ERR_NOMEM);
+	if (rc == 0 && matches.records.len)
+		rc = (nb_buf_append_cstr(
+			      &buf, "\nLearned memory (inferred; suggested settings are not active "
+				    "preferences)\n")
+			      ? 0
+			      : NB_ERR_NOMEM);
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&matches.records) &&
+			     (record = (struct memory_record *)nb_vec_at(&matches.records, _i_));
+	     _i_++) {
 		if (rc != 0)
 			return NULL;
 		rc = memory_appendf(&buf, MEMORY_RENDER_CAP, "[%s#%lld] %s: %s\nSource: %s\n",
@@ -502,38 +507,44 @@ char *memory_session_text_create(struct db *db, int64_t session_id, int max_past
 	}
 	if (rc != 0)
 		return NULL;
-	return morph_buf_detach(&buf);
+	return (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
 }
 
 char *memory_background_text_create(struct db *db, int64_t session_id)
 {
-	struct memory_job_records records MORPH_CLEANUP(memory_job_records_cleanup) = {0};
+	struct memory_job_records records NB_CLEANUP(memory_job_records_cleanup) = {0};
 	struct memory_job_record *record;
-	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc = memory_job_store_recent(db, session_id, 20, &records);
 
 	if (rc)
 		return NULL;
-	rc = morph_buf_init(&text, 512);
+	rc = (nb_buf_init(&text), nb_buf_reserve(&text, 512) ? 0 : NB_ERR_NOMEM);
 	if (rc) {
 		memory_job_records_cleanup(&records);
 		return NULL;
 	}
-	morph_array_foreach (record, &records.rows, struct memory_job_record) {
-		rc = morph_buf_printf(&text, "job #%lld: %s — %s (attempts=%d; %s)\n",
-				      (long long)record->id, record->state,
-				      !strcmp(record->stage, "organize") ? "updating saved summary"
-									 : "reading recent work",
-				      record->attempts,
-				      record->error_code ? morph_strerror(record->error_code)
-							 : "ok");
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&records.rows) &&
+			     (record = (struct memory_job_record *)nb_vec_at(&records.rows, _i_));
+	     _i_++) {
+		rc = (nb_buf_printf(&text, "job #%lld: %s — %s (attempts=%d; %s)\n",
+				    (long long)record->id, record->state,
+				    !strcmp(record->stage, "organize") ? "updating saved summary"
+								       : "reading recent work",
+				    record->attempts,
+				    record->error_code
+					    ? nb_err_str(morph_error_descriptions(),
+							 MORPH_ERROR_COUNT, record->error_code)
+					    : "ok")
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (rc)
 			break;
 	}
 	memory_job_records_cleanup(&records);
 	if (rc) {
-		morph_buf_cleanup(&text);
+		nb_buf_cleanup(&text);
 		return NULL;
 	}
-	return morph_buf_detach(&text);
+	return (nb_buf_ok(&text) ? strdup(nb_buf_cstr(&text)) : NULL);
 }

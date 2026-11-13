@@ -1,5 +1,5 @@
 #include "credit_store.h"
-#include "util/error.h"
+#include "errors.h"
 #include <errno.h>
 #include <sqlite3.h>
 #include <string.h>
@@ -8,7 +8,7 @@
 int credit_store_init_schema(struct db *db)
 {
 	if (!db || !db->handle)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return db_init_credit_schema(db);
 }
 
@@ -25,7 +25,7 @@ int credit_store_record_event(struct db *db,
 	int rc;
 
 	if (!db || !db->handle || !event || !event->kind)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
 		return MORPH_ERR_DB;
@@ -58,7 +58,7 @@ static int credit_store_summary_query(struct db *db, const char *sql,
 	sqlite3_stmt *stmt = NULL;
 
 	if (!db || !db->handle || !sql || !value || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(out, 0, sizeof(*out));
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
 		return MORPH_ERR_DB;

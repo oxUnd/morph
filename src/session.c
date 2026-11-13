@@ -1,10 +1,13 @@
 #include "session.h"
-#include "util/array.h"
-#include "util/buf.h"
-#include "util/cleanup.h"
-#include "util/id.h"
-#include "util/log.h"
-#include "util/error.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
+#include "nb/random.h"
+#include "nb/encoding.h"
+#include "nb/log.h"
+#include "errors.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -16,15 +19,29 @@
 
 static int generate_display_id(char *buf, size_t size)
 {
-	return morph_random_id_nbytes("", SESSION_DISPLAY_ID_RANDOM_BYTES,
-				      buf, size);
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_1 = NB_OK;
+
+	return ((file_status_1 =
+			 ((SESSION_DISPLAY_ID_RANDOM_BYTES) == 0 ||
+					  (SESSION_DISPLAY_ID_RANDOM_BYTES) > 16
+				  ? NB_ERR_INVAL
+			  : !(nb_buf_clear(&file_value_1), nb_buf_append_cstr(&file_value_1, ""))
+				  ? NB_ERR_NOMEM
+				  : nb_random_hex(&file_value_1, SESSION_DISPLAY_ID_RANDOM_BYTES,
+						  NULL))) != NB_OK
+			? file_status_1
+		: (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), buf, size)) ==
+				NB_ERR_RANGE
+			? NB_ERR_NO_SPACE
+			: file_status_1);
 }
 
 int session_create_with_workdir(struct db *db, const char *name, const char *model,
 				const char *workdir, struct session *out)
 {
 	if (!db || !db->handle || !name)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int64_t now = (int64_t)time(NULL);
 	char display_id[16];
 	int id_rc = generate_display_id(display_id, sizeof(display_id));
@@ -48,7 +65,7 @@ int session_create_with_workdir(struct db *db, const char *name, const char *mod
 		workdir_buf[sizeof(workdir_buf) - 1] = '\0';
 	}
 
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	int lock_rc = db_lock_acquire(db, &lock);
 	if (lock_rc != 0)
 		return lock_rc;
@@ -80,11 +97,12 @@ int session_create_with_workdir(struct db *db, const char *name, const char *mod
 
 	if (rc != SQLITE_DONE) {
 		if (rc == SQLITE_CONSTRAINT) {
-			log_dbg(db ? db->logger : NULL, "session already exists: %s", name);
-			return -EEXIST;
+			nb_log_write(db ? db->logger : NULL, NB_LOG_DEBUG,
+				     "session already exists: %s", name);
+			return NB_ERR_EXISTS;
 		}
-		log_err(db ? db->logger : NULL, "session create failed: %s",
-			sqlite3_errmsg(db->handle));
+		nb_log_write(db ? db->logger : NULL, NB_LOG_ERROR, "session create failed: %s",
+			     sqlite3_errmsg(db->handle));
 		return MORPH_ERR_DB;
 	}
 	int64_t created_id = sqlite3_last_insert_rowid(db->handle);
@@ -99,10 +117,9 @@ int session_create_with_workdir(struct db *db, const char *name, const char *mod
 		out->created_at = now;
 		out->updated_at = now;
 	}
-	log_info(db ? db->logger : NULL, "session created: %s (id=%lld, display=%s)",
-		 out ? out->name : name,
-		 (long long)created_id,
-		 display_id);
+	nb_log_write(db ? db->logger : NULL, NB_LOG_INFO,
+		     "session created: %s (id=%lld, display=%s)", out ? out->name : name,
+		     (long long)created_id, display_id);
 	return 0;
 }
 
@@ -133,7 +150,7 @@ static void session_read_row(sqlite3_stmt *stmt, struct session *session)
 int session_get_by_name(struct db *db, const char *name, struct session *out)
 {
 	if (!db || !db->handle || !name || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	sqlite3_stmt *stmt;
 	const char *sql =
 		"SELECT id,display_id,name,model,created_at,updated_at,token_used,workdir"
@@ -149,13 +166,13 @@ int session_get_by_name(struct db *db, const char *name, struct session *out)
 		return 0;
 	}
 	sqlite3_finalize(stmt);
-	return rc == SQLITE_DONE ? -ENOENT : MORPH_ERR_DB;
+	return rc == SQLITE_DONE ? NB_ERR_NOT_FOUND : MORPH_ERR_DB;
 }
 
 int session_get_by_id(const struct db *db, int64_t id, struct session *out)
 {
 	if (!db || !db->handle || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	sqlite3_stmt *stmt;
 	const char *sql =
 		"SELECT id,display_id,name,model,created_at,updated_at,token_used,workdir"
@@ -171,13 +188,13 @@ int session_get_by_id(const struct db *db, int64_t id, struct session *out)
 		return 0;
 	}
 	sqlite3_finalize(stmt);
-	return rc == SQLITE_DONE ? -ENOENT : MORPH_ERR_DB;
+	return rc == SQLITE_DONE ? NB_ERR_NOT_FOUND : MORPH_ERR_DB;
 }
 
 int session_get_by_display_id(struct db *db, const char *display_id, struct session *out)
 {
 	if (!db || !db->handle || !display_id || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	sqlite3_stmt *stmt;
 	const char *sql =
 		"SELECT id,display_id,name,model,created_at,updated_at,token_used,workdir"
@@ -193,63 +210,65 @@ int session_get_by_display_id(struct db *db, const char *display_id, struct sess
 		return 0;
 	}
 	sqlite3_finalize(stmt);
-	return rc == SQLITE_DONE ? -ENOENT : MORPH_ERR_DB;
+	return rc == SQLITE_DONE ? NB_ERR_NOT_FOUND : MORPH_ERR_DB;
 }
 
 int session_list(struct db *db, struct session **out, int *count, int limit, const char *filter)
 {
-	morph_buf_t sql = {0};
-	morph_buf_t pattern = {0};
-	morph_array_t sessions = {0};
+	nb_buf sql NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf pattern NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_vec sessions = {0};
 	sqlite3_stmt *stmt = NULL;
 	int parameter = 1;
 	int step = SQLITE_DONE;
 	int rc;
 
 	if (!db || !db->handle || !out || !count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*out = NULL;
 	*count = 0;
-	rc = morph_buf_init(&sql, 256);
+	rc = (nb_buf_init(&sql), nb_buf_reserve(&sql, 256) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		morph_buf_puts(&sql,
-			       "SELECT id,display_id,name,model,created_at,updated_at,token_used,workdir"
-			       " FROM sessions WHERE NOT EXISTS (SELECT 1 FROM sub_agent_tasks "
-			       "WHERE sub_agent_tasks.child_session_id=sessions.id) "
-			       "AND NOT EXISTS (SELECT 1 FROM agent_threads "
-			       "WHERE agent_threads.session_id=sessions.id)");
+		nb_buf_append_cstr(
+			&sql,
+			"SELECT id,display_id,name,model,created_at,updated_at,token_used,workdir"
+			" FROM sessions WHERE NOT EXISTS (SELECT 1 FROM sub_agent_tasks "
+			"WHERE sub_agent_tasks.child_session_id=sessions.id) "
+			"AND NOT EXISTS (SELECT 1 FROM agent_threads "
+			"WHERE agent_threads.session_id=sessions.id)");
 	if (rc == 0 && filter && filter[0])
-		morph_buf_puts(&sql, " AND name LIKE ?");
+		nb_buf_append_cstr(&sql, " AND name LIKE ?");
 	if (rc == 0)
-		morph_buf_puts(&sql, " ORDER BY updated_at DESC");
+		nb_buf_append_cstr(&sql, " ORDER BY updated_at DESC");
 	if (rc == 0 && limit > 0)
-		morph_buf_puts(&sql, " LIMIT ?");
+		nb_buf_append_cstr(&sql, " LIMIT ?");
 	if (rc == 0)
-		rc = sql.failed;
-	if (rc == 0 && sqlite3_prepare_v2(db->handle, morph_buf_cstr_borrow(&sql), -1, &stmt,
-					  NULL) != SQLITE_OK)
+		rc = nb_buf_status(&sql);
+	if (rc == 0 &&
+	    sqlite3_prepare_v2(db->handle, nb_buf_cstr(&sql), -1, &stmt, NULL) != SQLITE_OK)
 		rc = MORPH_ERR_DB;
-	morph_buf_cleanup(&sql);
+	nb_buf_cleanup(&sql);
 	if (rc != 0)
 		return rc;
 	if (filter && filter[0]) {
-		rc = morph_buf_init(&pattern, 256);
+		rc = (nb_buf_init(&pattern), nb_buf_reserve(&pattern, 256) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_printf(&pattern, "%%%s%%", filter);
-		if (rc == 0 && sqlite3_bind_text(stmt, parameter++, morph_buf_cstr_borrow(&pattern),
-						 -1, SQLITE_TRANSIENT) != SQLITE_OK)
+			rc = (nb_buf_printf(&pattern, "%%%s%%", filter) ? 0 : NB_ERR_NOMEM);
+		if (rc == 0 && sqlite3_bind_text(stmt, parameter++, nb_buf_cstr(&pattern), -1,
+						 SQLITE_TRANSIENT) != SQLITE_OK)
 			rc = MORPH_ERR_DB;
-		morph_buf_cleanup(&pattern);
+		nb_buf_cleanup(&pattern);
 	}
 	if (rc == 0 && limit > 0 && sqlite3_bind_int(stmt, parameter, limit) != SQLITE_OK)
 		rc = MORPH_ERR_DB;
 	if (rc == 0)
-		rc = morph_array_init(&sessions, 16, sizeof(struct session));
+		rc = (nb_vec_init(&sessions, sizeof(struct session)),
+		      nb_vec_reserve(&sessions, 16) ? 0 : NB_ERR_NOMEM);
 	while (rc == 0 && (step = sqlite3_step(stmt)) == SQLITE_ROW) {
-		struct session *session = morph_array_push_borrow(&sessions);
+		struct session *session = nb_vec_push(&sessions);
 
 		if (!session) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			break;
 		}
 		session_read_row(stmt, session);
@@ -257,21 +276,29 @@ int session_list(struct db *db, struct session **out, int *count, int limit, con
 	sqlite3_finalize(stmt);
 	if (rc == 0 && step != SQLITE_DONE)
 		rc = MORPH_ERR_DB;
-	if (rc == 0 && sessions.nelts > INT_MAX)
-		rc = -EOVERFLOW;
+	if (rc == 0 && sessions.len > INT_MAX)
+		rc = NB_ERR_RANGE;
 	if (rc != 0) {
-		morph_array_cleanup(&sessions);
+		nb_vec_cleanup(&sessions);
 		return rc;
 	}
-	*out = sessions.elts;
-	*count = (int)sessions.nelts;
+	*out = sessions.len ? malloc(sessions.len * sessions.elem_size) : NULL;
+	if (sessions.len && !*out) {
+		nb_vec_cleanup(&sessions);
+		return NB_ERR_NOMEM;
+	}
+	if (sessions.len)
+		memcpy(*out, sessions.data, sessions.len * sessions.elem_size);
+	*count = (int)sessions.len;
+	sessions.len = 0;
+	nb_vec_cleanup(&sessions);
 	return 0;
 }
 
 int session_count(struct db *db)
 {
 	if (!db || !db->handle)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	sqlite3_stmt *stmt;
 	const char *sql = "SELECT COUNT(*) FROM sessions";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
@@ -288,8 +315,8 @@ int session_count(struct db *db)
 int session_rename(struct db *db, int64_t id, const char *new_name)
 {
 	if (!db || !db->handle || !new_name)
-		return -EINVAL;
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+		return NB_ERR_INVAL;
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	int lock_rc = db_lock_acquire(db, &lock);
 	if (lock_rc != 0)
 		return lock_rc;
@@ -307,14 +334,14 @@ int session_rename(struct db *db, int64_t id, const char *new_name)
 	if (rc != SQLITE_DONE)
 		return MORPH_ERR_DB;
 	if (changed <= 0)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	return 0;
 }
 
 int session_delete(struct db *db, int64_t id)
 {
 	if (!db || !db->handle)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	sqlite3_stmt *stmt;
 	const char *sql =
 		"DELETE FROM sessions WHERE id=? OR id IN ("
@@ -337,7 +364,7 @@ int session_delete(struct db *db, int64_t id)
 int session_update_model(struct db *db, int64_t id, const char *model)
 {
 	if (!db || !db->handle || !model)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	sqlite3_stmt *stmt;
 	const char *sql = "UPDATE sessions SET model=? WHERE id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
@@ -356,7 +383,7 @@ int session_update_model(struct db *db, int64_t id, const char *model)
 int session_update_workdir(struct db *db, int64_t id, const char *workdir)
 {
 	if (!db || !db->handle || id <= 0 || !workdir)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	sqlite3_stmt *stmt;
 	const char *sql = "UPDATE sessions SET workdir=? WHERE id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
@@ -374,7 +401,7 @@ int session_update_workdir(struct db *db, int64_t id, const char *workdir)
 int session_update_tokens(struct db *db, int64_t id, int64_t added_tokens)
 {
 	if (!db || !db->handle)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	sqlite3_stmt *stmt;
 	const char *sql = "UPDATE sessions SET token_used = token_used + ?, updated_at = ? WHERE id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
@@ -402,7 +429,7 @@ int message_add_with_turn_id(struct db *db, int64_t session_id,
 			     int token_count, const char *turn_id)
 {
 	if (!db || !db->handle || !role || !content)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	sqlite3_stmt *stmt;
 	const char *sql =
 		"INSERT INTO messages(session_id,role,content,turn_id,"
@@ -441,7 +468,7 @@ int message_add_with_turn_id(struct db *db, int64_t session_id,
 int message_delete(struct db *db, int64_t message_id)
 {
 	if (!db || !db->handle)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	sqlite3_stmt *stmt;
 	const char *sql = "DELETE FROM messages WHERE id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
@@ -507,7 +534,7 @@ void message_free_list(struct message *head)
 int message_count(struct db *db, int64_t session_id)
 {
 	if (!db || !db->handle)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	sqlite3_stmt *stmt;
 	const char *sql = "SELECT COUNT(*) FROM messages WHERE session_id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
@@ -526,7 +553,7 @@ int trace_save(struct db *db, int64_t session_id, int round_no,
 	       const char *steps_json, int aborted)
 {
 	if (!db || !db->handle || !steps_json)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	sqlite3_stmt *stmt;
 	const char *sql = "INSERT INTO react_traces(session_id,round_no,steps_json,aborted,created_at)"
 			  " VALUES(?,?,?,?,?)";
@@ -573,7 +600,7 @@ char *trace_load_latest(struct db *db, int64_t session_id,
 int session_ensure_display_id(struct db *db, struct session *s)
 {
 	if (!db || !db->handle || !s)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (s->display_id[0])
 		return 0;
 	char id_str[16];

@@ -1,11 +1,13 @@
 #include "sapi/cli/widgets/tool_call.h"
+#include "nb/err.h"
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/presentation/agent_tools.h"
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/widgets/transcript.h"
-#include "util/cleanup.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 #include <morph/tui/widgets/stack.h>
 #include <morph/tui/widgets/text_view.h>
 #include <morph/tui/widgets/tree.h>
@@ -33,7 +35,7 @@ static void cli_tool_call_snapshot_destroy(struct cli_transcript_tool *tool)
 	free(tool->error);
 	free(tool->summary);
 	free(tool->patch_preview);
-	morph_buf_cleanup(&tool->stream);
+	nb_buf_cleanup(&tool->stream);
 	free(tool);
 }
 
@@ -51,10 +53,10 @@ static char *cli_tool_call_string_copy(const char *text)
 static int cli_tool_call_snapshot_copy(const struct cli_transcript_tool *source,
 				       struct cli_transcript_tool **out)
 {
-	struct cli_transcript_tool *tool MORPH_CLEANUP(cli_tool_call_snapshot_cleanup) =
+	struct cli_transcript_tool *tool NB_CLEANUP(cli_tool_call_snapshot_cleanup) =
 		calloc(1, sizeof(*tool));
 	if (!tool)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	tool->id = cli_tool_call_string_copy(source->id);
 	tool->name = cli_tool_call_string_copy(source->name);
 	tool->agent_id = cli_tool_call_string_copy(source->agent_id);
@@ -66,9 +68,10 @@ static int cli_tool_call_snapshot_copy(const struct cli_transcript_tool *source,
 	tool->patch_preview = cli_tool_call_string_copy(source->patch_preview);
 	if (!tool->id || !tool->name || !tool->agent_id || !tool->args || !tool->subject ||
 	    !tool->result || !tool->error || !tool->summary || !tool->patch_preview)
-		return -ENOMEM;
-	int rc = morph_buf_append(&tool->stream, morph_buf_cstr_borrow(&source->stream),
-				  source->stream.len);
+		return NB_ERR_NOMEM;
+	int rc = (nb_buf_append(&tool->stream, nb_buf_cstr(&source->stream), source->stream.len)
+			  ? 0
+			  : NB_ERR_NOMEM);
 	if (rc)
 		return rc;
 	tool->state = source->state;
@@ -86,18 +89,20 @@ static int cli_tool_call_snapshot_copy(const struct cli_transcript_tool *source,
 }
 
 /* The live preview keeps the same three tail rows and branches as the original feed. */
-static int cli_tool_call_live_body(struct cli_tool_call *widget, morph_buf_t *out, int columns)
+static int cli_tool_call_live_body(struct cli_tool_call *widget, nb_buf *out, int columns)
 {
 	const struct cli_transcript_tool *tool = widget->tool;
 	if (cli_agent_tools_matches(tool->name))
 		return 0;
-	const char *stream = morph_buf_cstr_borrow(&tool->stream);
+	const char *stream = nb_buf_cstr(&tool->stream);
 	const char *end = stream + tool->stream.len;
 	while (end > stream && end[-1] == '\n')
 		end--;
 	if (end == stream)
-		return morph_buf_printf(out, "%s    Running…%s", widget->styled ? ANSI_DIM : "",
-					 widget->styled ? ANSI_RESET : "");
+		return (nb_buf_printf(out, "%s    Running…%s", widget->styled ? ANSI_DIM : "",
+				      widget->styled ? ANSI_RESET : "")
+				? 0
+				: NB_ERR_NOMEM);
 	const char *start = end;
 	int rows = 0;
 	while (start > stream) {
@@ -110,27 +115,28 @@ static int cli_tool_call_live_body(struct cli_tool_call *widget, morph_buf_t *ou
 	int rc = 0;
 	while (!rc && start < end) {
 		const char *newline = memchr(start, '\n', (size_t)(end - start));
-		char *line MORPH_CLEANUP(morph_charp_cleanup) =
+		char *line NB_CLEANUP(nb_charp_cleanup) =
 			strndup(start, (size_t)((newline ? newline : end) - start));
 		if (!line)
-			return -ENOMEM;
-		const char *limit = utf8_advance_display_width_borrow(line,
-								  width > 0 ? (size_t)width : 0);
+			return NB_ERR_NOMEM;
+		const char *limit = morph_terminal_advance_display_width_borrow(
+			line, width > 0 ? (size_t)width : 0);
 		int clipped = width > 0 && *limit;
 		if (clipped)
-			limit = utf8_advance_display_width_borrow(line, (size_t)(width - 1));
+			limit = morph_terminal_advance_display_width_borrow(line,
+									    (size_t)(width - 1));
 		if (rows)
-			rc = morph_buf_putc(out, '\n');
+			rc = (nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM);
 		if (!rc && widget->styled)
-			rc = morph_buf_puts(out, ANSI_DIM);
+			rc = (nb_buf_append_cstr(out, ANSI_DIM) ? 0 : NB_ERR_NOMEM);
 		if (!rc)
 			rc = morph_tui_widget_tree_prefix(out, NULL, 0, 1, rows != 0, 2);
 		if (!rc)
-			rc = morph_buf_append(out, line, (size_t)(limit - line));
+			rc = (nb_buf_append(out, line, (size_t)(limit - line)) ? 0 : NB_ERR_NOMEM);
 		if (!rc && clipped)
-			rc = morph_buf_puts(out, "…");
+			rc = (nb_buf_append_cstr(out, "…") ? 0 : NB_ERR_NOMEM);
 		if (!rc && widget->styled)
-			rc = morph_buf_puts(out, ANSI_RESET);
+			rc = (nb_buf_append_cstr(out, ANSI_RESET) ? 0 : NB_ERR_NOMEM);
 		rows++;
 		start = newline ? newline + 1 : end;
 	}
@@ -141,30 +147,30 @@ static int cli_tool_call_render(struct cli_tool_call *widget, int width)
 {
 	if (widget->columns == width)
 		return 0;
-	morph_buf_t document MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf document NB_CLEANUP(nb_buf_cleanup) = {0};
 	int columns = width + (int)CLI_CONTENT_RIGHT_PADDING;
 	int rc = cli_transcript_tool_append(&document, widget->tool, columns, widget->styled,
 					    widget->details);
 	if (rc)
 		return rc;
-	while (document.len && document.data[document.len - 1] == '\n')
-		document.data[--document.len] = '\0';
-	char *newline = document.data ? strchr(document.data, '\n') : NULL;
+	while (document.len && document.ptr[document.len - 1] == '\n')
+		document.ptr[--document.len] = '\0';
+	char *newline = document.ptr ? strchr(document.ptr, '\n') : NULL;
 	const char *body = "";
 	if (newline) {
 		*newline = '\0';
 		body = newline + 1;
 	}
-	morph_buf_t live MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf live NB_CLEANUP(nb_buf_cleanup) = {0};
 	if (document.len && !widget->details && cli_transcript_tool_is_running(widget->tool)) {
 		rc = cli_tool_call_live_body(widget, &live, columns);
 		if (!rc)
-			body = live.data ? morph_buf_cstr_borrow(&live) : "";
+			body = live.ptr ? nb_buf_cstr(&live) : "";
 	}
 	if (!rc)
-		rc = cli_messages_set_rendered_view(
-			widget->heading, document.data ? morph_buf_cstr_borrow(&document) : "",
-			widget->styled);
+		rc = cli_messages_set_rendered_view(widget->heading,
+						    document.ptr ? nb_buf_cstr(&document) : "",
+						    widget->styled);
 	if (!rc)
 		rc = cli_messages_set_rendered_view(widget->body, body, widget->styled);
 	if (!rc)
@@ -205,9 +211,9 @@ int cli_tool_call_update(struct morph_tui_view *view, const struct cli_transcrip
 			 int styled, int details)
 {
 	if (!view || view->ops != &cli_tool_call_ops || !tool)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct cli_tool_call *widget = (struct cli_tool_call *)view;
 	struct cli_transcript_tool *copy = NULL;
 	int rc = cli_tool_call_snapshot_copy(tool, &copy);

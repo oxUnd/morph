@@ -1,4 +1,5 @@
 #include "sapi/cli/presentation/command_output.h"
+#include "nb/err.h"
 #include "sapi/cli/pages/chat.h"
 
 #include "sapi/cli/application.h"
@@ -7,9 +8,10 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/widgets/list.h"
-#include "util/buf.h"
-#include "util/cleanup.h"
-#include "util/utf8.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -41,7 +43,7 @@ static int cli_command_output_spaces(struct cli_application *ctx, unsigned count
 {
 	for (unsigned i = 0; i < count; i++) {
 		if (cli_output_putchar(ctx, ' ') == EOF)
-			return -EIO;
+			return NB_ERR_IO;
 	}
 	return 0;
 }
@@ -53,11 +55,11 @@ static int cli_command_output_styled(struct cli_application *ctx, enum cli_outpu
 	int styled = prefix[0] != '\0';
 
 	if (styled && cli_output_fputs(ctx, prefix, stdout) == EOF)
-		return -EIO;
+		return NB_ERR_IO;
 	if (cli_output_fputs(ctx, text ? text : "", stdout) == EOF)
-		return -EIO;
+		return NB_ERR_IO;
 	if (styled && cli_output_fputs(ctx, ANSI_RESET, stdout) == EOF)
-		return -EIO;
+		return NB_ERR_IO;
 	return 0;
 }
 
@@ -76,7 +78,7 @@ int cli_command_output_segments(struct cli_application *ctx,
 		int styled = prefix[0] != '\0';
 
 		if (styled && cli_output_fputs(ctx, prefix, stdout) == EOF)
-			return -EIO;
+			return NB_ERR_IO;
 		if (segment->untrusted) {
 			rc = cli_output_print_untrusted(ctx, segment->text ? segment->text : "",
 							segment->untrusted_mode);
@@ -84,20 +86,20 @@ int cli_command_output_segments(struct cli_application *ctx,
 				return rc;
 		} else if (cli_output_fputs(ctx, segment->text ? segment->text : "", stdout) ==
 			   EOF) {
-			return -EIO;
+			return NB_ERR_IO;
 		}
 		if (styled && cli_output_fputs(ctx, ANSI_RESET, stdout) == EOF)
-			return -EIO;
+			return NB_ERR_IO;
 	}
 	if (newline && cli_output_putchar(ctx, '\n') == EOF)
-		return -EIO;
+		return NB_ERR_IO;
 	return 0;
 }
 
 int cli_command_output_line(struct cli_application *ctx, const struct cli_output_line *line)
 {
 	if (!line)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return cli_command_output_segments(ctx, line->segments, line->segment_count, line->indent, 1);
 }
 
@@ -108,7 +110,7 @@ int cli_command_output_linef(struct cli_application *ctx, enum cli_output_style 
 		.style = style,
 		.text = NULL,
 		.untrusted = 0,
-		.untrusted_mode = UTF8_TERMINAL_TEXT_SINGLE_LINE,
+		.untrusted_mode = MORPH_TERMINAL_TEXT_SINGLE_LINE,
 	};
 	va_list ap;
 	va_list ap_size;
@@ -117,7 +119,7 @@ int cli_command_output_linef(struct cli_application *ctx, enum cli_output_style 
 	int rc;
 
 	if (!fmt)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	va_start(ap, fmt);
 	va_copy(ap_size, ap);
 	needed = vsnprintf(NULL, 0, fmt, ap_size);
@@ -129,7 +131,7 @@ int cli_command_output_linef(struct cli_application *ctx, enum cli_output_style 
 	text = malloc((size_t)needed + 1);
 	if (!text) {
 		va_end(ap);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	(void)vsnprintf(text, (size_t)needed + 1, fmt, ap);
 	va_end(ap);
@@ -141,7 +143,7 @@ int cli_command_output_linef(struct cli_application *ctx, enum cli_output_style 
 
 int cli_command_output_newline(struct cli_application *ctx)
 {
-	return cli_output_putchar(ctx, '\n') == EOF ? -EIO : 0;
+	return cli_output_putchar(ctx, '\n') == EOF ? NB_ERR_IO : 0;
 }
 
 const char *cli_command_output_status_marker(enum cli_output_status status)
@@ -198,17 +200,17 @@ static int cli_command_output_field_value(struct cli_application *ctx,
 {
 	switch (field->kind) {
 	case CLI_OUTPUT_FIELD_INT:
-		return cli_output_printf(ctx, "%lld", field->integer) < 0 ? -EIO : 0;
+		return cli_output_printf(ctx, "%lld", field->integer) < 0 ? NB_ERR_IO : 0;
 	case CLI_OUTPUT_FIELD_DECIMAL_1:
-		return cli_output_printf(ctx, "%.1f", field->decimal) < 0 ? -EIO : 0;
+		return cli_output_printf(ctx, "%.1f", field->decimal) < 0 ? NB_ERR_IO : 0;
 	case CLI_OUTPUT_FIELD_DECIMAL_3:
-		return cli_output_printf(ctx, "%.3f", field->decimal) < 0 ? -EIO : 0;
+		return cli_output_printf(ctx, "%.3f", field->decimal) < 0 ? NB_ERR_IO : 0;
 	case CLI_OUTPUT_FIELD_DECIMAL_6:
-		return cli_output_printf(ctx, "%.6f", field->decimal) < 0 ? -EIO : 0;
+		return cli_output_printf(ctx, "%.6f", field->decimal) < 0 ? NB_ERR_IO : 0;
 	case CLI_OUTPUT_FIELD_TEXT:
 	default:
 		return cli_output_fputs(ctx, field->text ? field->text : "", stdout) == EOF
-			       ? -EIO
+			       ? NB_ERR_IO
 			       : 0;
 	}
 }
@@ -225,21 +227,21 @@ static int cli_command_output_field(struct cli_application *ctx,
 	if (rc != 0)
 		return rc;
 	if (cli_output_fputs(ctx, field->label ? field->label : "", stdout) == EOF)
-		return -EIO;
+		return NB_ERR_IO;
 	if (!field->separator && cli_output_fputs(ctx, " ", stdout) == EOF)
-		return -EIO;
+		return NB_ERR_IO;
 	if (cli_output_fputs(ctx, separator, stdout) == EOF)
-		return -EIO;
+		return NB_ERR_IO;
 	if (field->kind == CLI_OUTPUT_FIELD_LIST) {
 		for (size_t i = 0; i < field->item_count; i++) {
 			if (cli_output_printf(ctx, " %s",
 					      field->items && field->items[i] ? field->items[i] : "") <
 			    0)
-				return -EIO;
+				return NB_ERR_IO;
 		}
 	} else {
 		if (cli_output_fputs(ctx, " ", stdout) == EOF)
-			return -EIO;
+			return NB_ERR_IO;
 		rc = cli_command_output_field_value(ctx, field);
 		if (rc != 0)
 			return rc;
@@ -269,7 +271,7 @@ int cli_command_output_sections(struct cli_application *ctx,
 		if (section->title &&
 		    cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_BOLD, 0, "[%s]",
 					     section->title) != 0)
-			return -EIO;
+			return NB_ERR_IO;
 		for (size_t j = 0; section->fields && j < section->field_count; j++) {
 			int rc = cli_command_output_field(ctx, &section->fields[j],
 							  default_indent);
@@ -285,7 +287,7 @@ static int cli_command_output_table_cell(struct cli_application *ctx, const char
 					 const struct cli_output_column *column)
 {
 	const char *value = text ? text : "";
-	int width = (int)utf8_display_width(value);
+	int width = (int)nb_utf8_width_cstr(value);
 	int pad = column->width > width ? column->width - width : 0;
 	int rc;
 
@@ -309,14 +311,14 @@ static int cli_command_output_table_row(struct cli_application *ctx,
 	int rc;
 
 	if (cli_output_fputs(ctx, table->indent ? table->indent : "", stdout) == EOF)
-		return -EIO;
+		return NB_ERR_IO;
 	for (size_t i = 0; i < table->column_count; i++) {
 		rc = cli_command_output_table_cell(ctx, cells ? cells[i] : NULL,
 						   &table->columns[i]);
 		if (rc != 0)
 			return rc;
 		if (i + 1 < table->column_count && cli_output_fputs(ctx, gap, stdout) == EOF)
-			return -EIO;
+			return NB_ERR_IO;
 	}
 	return cli_command_output_newline(ctx);
 }
@@ -326,12 +328,12 @@ int cli_command_output_table(struct cli_application *ctx, const struct cli_outpu
 	int rc;
 
 	if (!table || !table->columns || table->column_count == 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (table->header) {
 		const char **headers = calloc(table->column_count, sizeof(*headers));
 
 		if (!headers)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		for (size_t i = 0; i < table->column_count; i++)
 			headers[i] = table->columns[i].header;
 		rc = cli_command_output_table_row(ctx, table, headers);
@@ -349,7 +351,7 @@ int cli_command_output_table(struct cli_application *ctx, const struct cli_outpu
 	return 0;
 }
 
-static int cli_command_output_markdown_cell(morph_buf_t *buf, const char *text)
+static int cli_command_output_markdown_cell(nb_buf *buf, const char *text)
 {
 	const char *value = text ? text : "";
 	int rc = 0;
@@ -357,22 +359,22 @@ static int cli_command_output_markdown_cell(morph_buf_t *buf, const char *text)
 	for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
 		switch (*p) {
 		case '|':
-			rc = morph_buf_puts(buf, "\\|");
+			rc = (nb_buf_append_cstr(buf, "\\|") ? 0 : NB_ERR_NOMEM);
 			break;
 		case '\\':
-			rc = morph_buf_puts(buf, "\\\\");
+			rc = (nb_buf_append_cstr(buf, "\\\\") ? 0 : NB_ERR_NOMEM);
 			break;
 		case '\n':
 		case '\t':
-			rc = morph_buf_putc(buf, ' ');
+			rc = (nb_buf_append_char(buf, ' ') ? 0 : NB_ERR_NOMEM);
 			break;
 		case '\r':
 			break;
 		default:
 			if (*p < 0x20)
-				rc = morph_buf_putc(buf, ' ');
+				rc = (nb_buf_append_char(buf, ' ') ? 0 : NB_ERR_NOMEM);
 			else
-				rc = morph_buf_putc(buf, (char)*p);
+				rc = (nb_buf_append_char(buf, (char)*p) ? 0 : NB_ERR_NOMEM);
 			break;
 		}
 		if (rc != 0)
@@ -381,78 +383,83 @@ static int cli_command_output_markdown_cell(morph_buf_t *buf, const char *text)
 	return 0;
 }
 
-int cli_command_output_markdown_heading(morph_buf_t *buf, unsigned level, const char *text)
+int cli_command_output_markdown_heading(nb_buf *buf, unsigned level, const char *text)
 {
 	int rc;
 
 	if (!buf || !text)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (buf->len > 0) {
-		rc = morph_buf_putc(buf, '\n');
+		rc = (nb_buf_append_char(buf, '\n') ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
 	for (unsigned i = 0; i < level; i++) {
-		rc = morph_buf_putc(buf, '#');
+		rc = (nb_buf_append_char(buf, '#') ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
-	return morph_buf_printf(buf, " %s\n\n", text);
+	return (nb_buf_printf(buf, " %s\n\n", text) ? 0 : NB_ERR_NOMEM);
 }
 
-int cli_command_output_markdown_table_header(morph_buf_t *buf, const struct cli_output_table *table)
+int cli_command_output_markdown_table_header(nb_buf *buf, const struct cli_output_table *table)
 {
 	int rc;
 
 	if (!buf || !table || !table->columns || table->column_count == 0)
-		return -EINVAL;
-	rc = morph_buf_putc(buf, '|');
+		return NB_ERR_INVAL;
+	rc = (nb_buf_append_char(buf, '|') ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	for (size_t i = 0; i < table->column_count; i++) {
-		rc = morph_buf_printf(buf, " %s |",
-				      table->columns[i].header ? table->columns[i].header : "");
+		rc = (nb_buf_printf(buf, " %s |",
+				    table->columns[i].header ? table->columns[i].header : "")
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
-	rc = morph_buf_putc(buf, '\n');
+	rc = (nb_buf_append_char(buf, '\n') ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_putc(buf, '|');
+	rc = (nb_buf_append_char(buf, '|') ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	for (size_t i = 0; i < table->column_count; i++) {
-		rc = morph_buf_puts(buf, table->columns[i].align == CLI_OUTPUT_ALIGN_RIGHT ? "---:|"
-										      : "---|");
+		rc = (nb_buf_append_cstr(buf, table->columns[i].align == CLI_OUTPUT_ALIGN_RIGHT
+						      ? "---:|"
+						      : "---|")
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
-	return morph_buf_putc(buf, '\n');
+	return (nb_buf_append_char(buf, '\n') ? 0 : NB_ERR_NOMEM);
 }
 
-int cli_command_output_markdown_table_row(morph_buf_t *buf, const struct cli_output_table *table,
+int cli_command_output_markdown_table_row(nb_buf *buf, const struct cli_output_table *table,
 					  const char *const *cells)
 {
 	int rc;
 
 	if (!buf || !table || !table->columns || !cells)
-		return -EINVAL;
-	rc = morph_buf_putc(buf, '|');
+		return NB_ERR_INVAL;
+	rc = (nb_buf_append_char(buf, '|') ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	for (size_t i = 0; i < table->column_count; i++) {
-		rc = morph_buf_putc(buf, ' ');
+		rc = (nb_buf_append_char(buf, ' ') ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
 			rc = cli_command_output_markdown_cell(buf, cells[i]);
 		if (rc == 0)
-			rc = morph_buf_puts(buf, " |");
+			rc = (nb_buf_append_cstr(buf, " |") ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
-	return morph_buf_putc(buf, '\n');
+	return (nb_buf_append_char(buf, '\n') ? 0 : NB_ERR_NOMEM);
 }
 
-int cli_command_output_markdown_table(morph_buf_t *buf, const struct cli_output_table *table)
+int cli_command_output_markdown_table(nb_buf *buf, const struct cli_output_table *table)
 {
 	int rc;
 
@@ -464,7 +471,7 @@ int cli_command_output_markdown_table(morph_buf_t *buf, const struct cli_output_
 	return rc;
 }
 
-int cli_command_output_markdown_block(morph_buf_t *buf, const char *text)
+int cli_command_output_markdown_block(nb_buf *buf, const char *text)
 {
 	const char *value = text ? text : "";
 	int line_start = 1;
@@ -472,32 +479,32 @@ int cli_command_output_markdown_block(morph_buf_t *buf, const char *text)
 
 	for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
 		if (line_start) {
-			rc = morph_buf_puts(buf, "    ");
+			rc = (nb_buf_append_cstr(buf, "    ") ? 0 : NB_ERR_NOMEM);
 			if (rc != 0)
 				return rc;
 			line_start = 0;
 		}
 		if (*p == '\r')
 			continue;
-		rc = morph_buf_putc(buf, (char)*p);
+		rc = (nb_buf_append_char(buf, (char)*p) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 		if (*p == '\n')
 			line_start = 1;
 	}
 	if (line_start)
-		rc = morph_buf_puts(buf, "    ");
+		rc = (nb_buf_append_cstr(buf, "    ") ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_putc(buf, '\n');
+		rc = (nb_buf_append_char(buf, '\n') ? 0 : NB_ERR_NOMEM);
 	return rc;
 }
 
 int cli_command_output_markdown_render(struct cli_application *ctx, const char *markdown)
 {
 	if (!markdown)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (ctx && ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
-		return cli_output_printf(ctx, "%s", markdown) < 0 ? -EIO : 0;
+		return cli_output_printf(ctx, "%s", markdown) < 0 ? NB_ERR_IO : 0;
 	cli_markdown_render_ansi(ctx, markdown);
 	return 0;
 }
@@ -582,8 +589,8 @@ static const char *cli_command_output_skill_marker(enum cli_skill_list_state sta
 int cli_skill_list_render(struct cli_application *ctx, const struct cli_skill_list_row *rows,
 			  size_t count, int active_count)
 {
-	struct morph_tui_widget_tree tree MORPH_CLEANUP(morph_tui_widget_tree_cleanup) = {0};
-	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	struct morph_tui_widget_tree tree NB_CLEANUP(morph_tui_widget_tree_cleanup) = {0};
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
 	int columns = cli_list_columns();
 	int rc;
 
@@ -597,29 +604,29 @@ int cli_skill_list_render(struct cli_application *ctx, const struct cli_skill_li
 	rc = morph_tui_widget_tree_init(&tree);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_init(&output, 1024);
+	rc = (nb_buf_init(&output), nb_buf_reserve(&output, 1024) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	for (size_t i = 0; i < count; i++) {
-		morph_buf_t label MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf label NB_CLEANUP(nb_buf_cleanup) = {0};
 
-		rc = morph_buf_init(&label, 128);
+		rc = (nb_buf_init(&label), nb_buf_reserve(&label, 128) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			break;
-		morph_buf_printf(&label, "%s %s", cli_command_output_skill_marker(rows[i].state), rows[i].name);
-		if (label.failed)
-			rc = label.failed;
+		nb_buf_printf(&label, "%s %s", cli_command_output_skill_marker(rows[i].state),
+			      rows[i].name);
+		if (nb_buf_status(&label))
+			rc = nb_buf_status(&label);
 		else
 			(void)morph_tui_widget_tree_add(&tree, MORPH_TUI_WIDGET_TREE_ROOT,
-							morph_buf_cstr_borrow(&label),
-							rows[i].description);
+							nb_buf_cstr(&label), rows[i].description);
 		if (rc != 0)
 			break;
 	}
 	if (rc == 0)
 		rc = morph_tui_widget_tree_render(&tree, &output, columns, 0, SIZE_MAX);
 	if (rc == 0)
-		cli_output_fputs(ctx, morph_buf_cstr_borrow(&output), stdout);
+		cli_output_fputs(ctx, nb_buf_cstr(&output), stdout);
 	cli_output_printf(ctx, "\n  " ANSI_DIM CLI_FEED_DONE " active   " CLI_FEED_PENDING
 			  " available   × disabled" ANSI_RESET "\n");
 	return rc;
@@ -641,7 +648,7 @@ static int cli_command_output_tool_group_name_width(const struct cli_tool_list_r
 
 		if (rows[i].group != group)
 			continue;
-		item_width = utf8_display_width(rows[i].name);
+		item_width = nb_utf8_width_cstr(rows[i].name);
 		if (item_width > (size_t)width)
 			width = item_width > 28u ? 28 : (int)item_width;
 	}

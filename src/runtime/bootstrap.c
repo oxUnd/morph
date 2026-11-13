@@ -1,5 +1,8 @@
 #include "runtime/bootstrap.h"
+#include "nb/str.h"
+#include "nb/utf8.h"
 
+#include "nb/cleanup.h"
 #include "agent/compress.h"
 #include "agent/guardrail.h"
 #include "agent/system_prompt.h"
@@ -33,10 +36,10 @@
 #include "models/video_gen.h"
 #include "runtime/usage.h"
 #include "runtime/runtime_internal.h"
-#include "util/data.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/log.h"
+#include "runtime/resources.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "nb/log.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -127,10 +130,17 @@ static void runtime_configure_model(struct model *model, const struct config_mod
 	if (!model || !cfg)
 		return;
 	if (cfg->adapter[0])
-		strncpy(model->adapter, cfg->adapter, sizeof(model->adapter) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(
+				cfg->adapter,
+				nb_utf8_clamp_bytes(cfg->adapter, sizeof(model->adapter) - 1)),
+			model->adapter, (sizeof(model->adapter) - 1) + 1);
 	if (cfg->extra_body_json[0])
-		strncpy(model->extra_body_json, cfg->extra_body_json,
-			sizeof(model->extra_body_json) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(cfg->extra_body_json,
+					  nb_utf8_clamp_bytes(cfg->extra_body_json,
+							      sizeof(model->extra_body_json) - 1)),
+			model->extra_body_json, (sizeof(model->extra_body_json) - 1) + 1);
 	model->timeout_seconds = cfg->timeout_seconds;
 	model->retry_count = cfg->retry_count;
 	model->poll_interval_seconds = cfg->poll_interval_seconds;
@@ -141,7 +151,7 @@ static void runtime_configure_model(struct model *model, const struct config_mod
 		model->context_limit = cfg->context_limit;
 }
 
-static struct model *runtime_create_model(struct morph_log *logger,
+static struct model *runtime_create_model(struct nb_log *logger,
 					  const struct config_model_entry *cfg, int nullable_model)
 {
 	const char *api_key;
@@ -162,7 +172,7 @@ static int runtime_apply_system_prompt(struct react_context *react, const struct
 	int rc;
 
 	if (!react || !config)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = morph_prompt_load(react ? react->logger : NULL, config->prompt.system_prompt_file,
 			       config->prompt.system_prompt_dir, &content);
 	if (rc != 0)
@@ -197,7 +207,7 @@ static int runtime_apply_guardrails(struct react_context *react, const struct co
 				    struct model *llm)
 {
 	if (!react || !config)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	react->guardrail.logger = react->logger;
 	react->guardrail.enabled = config->react.guardrail_enabled;
 	react->guardrail.max_retries = config->react.guardrail_max_retries;
@@ -232,7 +242,7 @@ static int runtime_apply_guardrails(struct react_context *react, const struct co
 	if (llm && config->react.guardrail_llm_model[0]) {
 		react->guardrail_model = model_llm_clone(llm, react->logger);
 		if (!react->guardrail_model)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		snprintf(react->guardrail_model->model_id, sizeof(react->guardrail_model->model_id),
 			 "%s", config->react.guardrail_llm_model);
 		react->guardrail_model->usage_sink = llm->usage_sink;
@@ -249,32 +259,38 @@ static int runtime_apply_guardrails(struct react_context *react, const struct co
 
 int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	struct compress_config compress_cfg;
 	struct guardrail_config guardrail_cfg;
 	struct runtime_models *models;
 	struct config *config;
 
 	if (!profile || !profile->config || !profile->tools || !profile->models)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	config = profile->config;
 	models = profile->models;
 	if (config->models.image.model[0] &&
 	    !image_gen_adapter_supported(config->models.image.provider,
 					 config->models.image.adapter)) {
-		log_err(profile ? profile->logger : NULL,
-			"unsupported image adapter '%s' for provider '%s'",
-			config->models.image.adapter[0] ? config->models.image.adapter : "(auto)",
-			config->models.image.provider);
-		return -EINVAL;
+		nb_log_write(profile ? profile->logger : NULL, NB_LOG_ERROR,
+			     "unsupported image adapter '%s' for provider '%s'",
+			     config->models.image.adapter[0] ? config->models.image.adapter
+							     : "(auto)",
+			     config->models.image.provider);
+		return NB_ERR_INVAL;
 	}
 	if (config->models.video.model[0] &&
 	    !video_gen_adapter_supported(config->models.video.provider,
 					 config->models.video.adapter)) {
-		log_err(profile ? profile->logger : NULL,
-			"unsupported video adapter '%s' for provider '%s'",
-			config->models.video.adapter[0] ? config->models.video.adapter : "(auto)",
-			config->models.video.provider);
-		return -EINVAL;
+		nb_log_write(profile ? profile->logger : NULL, NB_LOG_ERROR,
+			     "unsupported video adapter '%s' for provider '%s'",
+			     config->models.video.adapter[0] ? config->models.video.adapter
+							     : "(auto)",
+			     config->models.video.provider);
+		return NB_ERR_INVAL;
 	}
 	memset(models, 0, sizeof(*models));
 	tool_registry_init(profile ? profile->logger : NULL, profile->tools);
@@ -282,7 +298,7 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 		tokenizer_create(profile ? profile->logger : NULL, config->models.text.model,
 				 config->models.text.context_limit);
 	if (!models->tokenizer)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	memset(&compress_cfg, 0, sizeof(compress_cfg));
 	compress_cfg.project_doc_max_bytes = config->context.project_doc_max_bytes;
 	compress_cfg.max_context_tokens = config->models.text.context_limit;
@@ -303,7 +319,7 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 	models->react = react_context_create(profile->tools, models->tokenizer, &compress_cfg,
 					     &guardrail_cfg);
 	if (!models->react)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	react_set_event_callback(models->react, profile->event_cb, profile->event_user_data);
 	models->react->tool_timeout_seconds = config->react.tool_timeout_seconds;
 	models->react->tool_max_retries = config->react.tool_max_retries;
@@ -318,14 +334,24 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 	if (profile->workdir && profile->workdir[0])
 		models->react->workdir = strdup(profile->workdir);
 	if (config->context.compaction_prompt_file[0]) {
-		char *path = file_expand_path_copy(config->context.compaction_prompt_file);
+		char *path = (nb_path_expand(&file_value_1, config->context.compaction_prompt_file,
+					     NULL) == NB_OK
+				      ? strdup(nb_buf_cstr(&file_value_1))
+				      : NULL);
 
 		if (path)
-			models->react->history_compaction_prompt = file_read_all_copy(path, NULL);
+			models->react->history_compaction_prompt =
+				(nb_file_read_all(path, &file_value_2, 0, NULL) == NB_OK &&
+						 (file_copy_2 = (char *)malloc(
+							  nb_buf_len(&file_value_2) + 1)) != NULL
+					 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
+						   nb_buf_len(&file_value_2) + 1),
+					    nb_charp_steal(&file_copy_2))
+					 : NULL);
 		if (!models->react->history_compaction_prompt)
-			log_warn(profile ? profile->logger : NULL,
-				 "cannot read compaction prompt '%s'; using built-in",
-				 config->context.compaction_prompt_file);
+			nb_log_write(profile ? profile->logger : NULL, NB_LOG_WARN,
+				     "cannot read compaction prompt '%s'; using built-in",
+				     config->context.compaction_prompt_file);
 		free(path);
 	}
 	int prompt_rc = runtime_apply_system_prompt(models->react, config);
@@ -360,11 +386,11 @@ static int runtime_discover_skills(struct runtime_bootstrap_profile *profile)
 	struct skill_registry *skills;
 
 	if (!profile || !profile->skills || !profile->models)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (profile->allocate_skill_registry) {
 		*profile->skills = calloc(1, sizeof(**profile->skills));
 		if (!*profile->skills)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 	}
 	if (!*profile->skills)
 		return 0;
@@ -392,6 +418,8 @@ static int runtime_discover_skills(struct runtime_bootstrap_profile *profile)
 
 int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 {
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	struct config *config;
 	struct tool_context *tctx;
 	struct runtime_models *models;
@@ -399,7 +427,7 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 
 	if (!profile || !profile->config || !profile->db || !profile->tools ||
 	    !profile->tool_context || !profile->models)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	config = profile->config;
 	models = profile->models;
 	if (!*profile->tool_context) {
@@ -407,7 +435,7 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 			tool_context_create(profile ? profile->logger : NULL, profile->workdir,
 					    config->general.output_dir);
 		if (!*profile->tool_context)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 	}
 	tctx = *profile->tool_context;
 	profile->tools->permission_context = tctx;
@@ -416,8 +444,9 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 		return rc;
 	rc = tool_context_set_grant_store(tctx, profile->db, profile->workdir);
 	if (rc != 0)
-		log_warn(profile ? profile->logger : NULL,
-			 "failed to load persistent permission grants: %s", morph_strerror(rc));
+		nb_log_write(profile ? profile->logger : NULL, NB_LOG_WARN,
+			     "failed to load persistent permission grants: %s",
+			     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	if (profile->operation_approval_cb)
 		tool_context_set_operation_approval(tctx, profile->operation_approval_cb,
 						    profile->operation_approval_user_data);
@@ -429,9 +458,10 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 
 	permission_profile = active_permission_profile(&config->react);
 	if (config->react.permission_active_profile[0] && !permission_profile) {
-		log_err(profile ? profile->logger : NULL, "active permission profile not found: %s",
-			config->react.permission_active_profile);
-		return -ENOENT;
+		nb_log_write(profile ? profile->logger : NULL, NB_LOG_ERROR,
+			     "active permission profile not found: %s",
+			     config->react.permission_active_profile);
+		return NB_ERR_NOT_FOUND;
 	}
 	if (permission_profile) {
 		for (int i = 0; i < permission_profile->workspace_roots_count; i++) {
@@ -458,11 +488,13 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 		}
 	}
 	if (config->skill.dir[0]) {
-		char *dir = file_expand_path_copy(config->skill.dir);
+		char *dir = (nb_path_expand(&file_value_3, config->skill.dir, NULL) == NB_OK
+				     ? strdup(nb_buf_cstr(&file_value_3))
+				     : NULL);
 
 		if (!dir)
-			return -ENOMEM;
-		rc = file_ensure_dir(dir);
+			return NB_ERR_NOMEM;
+		rc = nb_file_mkdir(dir, true, NULL);
 		if (rc == 0)
 			rc = tool_context_add_builtin_path(tctx, TOOL_PATH_READ, dir);
 		if (rc == 0)
@@ -477,8 +509,8 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	if (config->models.vision.model[0] && models->vision)
 		img_qa_init(profile->tools, models->vision, tctx);
 	else
-		log_info(profile ? profile->logger : NULL,
-			 "img_qa unavailable: [model.vision] is not configured");
+		nb_log_write(profile ? profile->logger : NULL, NB_LOG_INFO,
+			     "img_qa unavailable: [model.vision] is not configured");
 	img_gen_init(profile->tools, models->image, tctx);
 	img_inpaint_init(profile->tools, models->image, tctx);
 	img_compose_init(profile->tools, models->image, tctx);
@@ -513,9 +545,10 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	}
 #else
 	if (profile->enable_config_write)
-		log_info(profile->logger, "config_edit disabled for this runtime build");
+		nb_log_write(profile->logger, NB_LOG_INFO,
+			     "config_edit disabled for this runtime build");
 	if (profile->enable_exec)
-		log_info(profile->logger, "exec disabled for this runtime build");
+		nb_log_write(profile->logger, NB_LOG_INFO, "exec disabled for this runtime build");
 #endif
 	if (profile->ask_user_cb)
 		ask_user_init(profile->tools, profile->ask_user_cb, profile->ask_user_user_data);
@@ -531,8 +564,9 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 		if (rc == 0 && profile->tool_context)
 			plan_tool_set_context(profile->tools, *profile->tool_context);
 		if (rc < 0)
-			log_warn(profile ? profile->logger : NULL,
-				 "failed to register plan tool: %s", morph_strerror(rc));
+			nb_log_write(profile ? profile->logger : NULL, NB_LOG_WARN,
+				     "failed to register plan tool: %s",
+				     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	}
 	if (profile->task_events)
 		rc = scheduled_tasks_tool_init_events(profile->tools, profile->db,
@@ -540,22 +574,25 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	else
 		rc = scheduled_tasks_tool_init(profile->tools, profile->db);
 	if (rc < 0)
-		log_warn(profile ? profile->logger : NULL, "failed to register tasks tool: %s",
-			 morph_strerror(rc));
+		nb_log_write(profile ? profile->logger : NULL, NB_LOG_WARN,
+			     "failed to register tasks tool: %s",
+			     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 #ifndef MORPH_NO_SHELL
 	if (profile->enable_img_annotate) {
 		img_annotate_init(profile->tools, profile->img_annotate_pause_cb,
 				  profile->img_annotate_resume_cb, profile->img_annotate_user_data,
 				  tctx);
 	} else {
-		log_info(profile ? profile->logger : NULL,
-			 "img_annotate disabled for this runtime profile");
+		nb_log_write(profile ? profile->logger : NULL, NB_LOG_INFO,
+			     "img_annotate disabled for this runtime profile");
 	}
 #else
 	if (profile->enable_img_annotate)
-		log_info(profile->logger, "img_annotate disabled for this runtime build");
+		nb_log_write(profile->logger, NB_LOG_INFO,
+			     "img_annotate disabled for this runtime build");
 	else
-		log_info(profile->logger, "img_annotate disabled for this runtime profile");
+		nb_log_write(profile->logger, NB_LOG_INFO,
+			     "img_annotate disabled for this runtime profile");
 #endif
 	rc = runtime_discover_skills(profile);
 	if (rc < 0)
@@ -571,8 +608,9 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 		/* Preserve explicit denials written with the deprecated tool name. */
 		if (!strcmp(name, "process")) {
 			name = "background";
-			log_warn(profile->logger,
-				 "Disabled tool 'process' is deprecated; use 'background' instead");
+			nb_log_write(
+				profile->logger, NB_LOG_WARN,
+				"Disabled tool 'process' is deprecated; use 'background' instead");
 		}
 		rc = tool_disable(profile->tools, name);
 		if (rc)
@@ -587,7 +625,7 @@ int runtime_bootstrap_dynamic_tools(struct runtime_bootstrap_profile *profile,
 {
 	if (!profile || !profile->tool_context || !*profile->tool_context || !profile->tools ||
 	    !profile->config || !session_id)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return dynamic_tools_init(profile->tools, *profile->tool_context,
 				  &profile->config->dynamic_tools, session_id);
 }
@@ -636,18 +674,18 @@ static int runtime_child_usage_bind(struct runtime_child_state *state, struct mo
 				    const struct tool_runtime_context *context,
 				    struct runtime *owner)
 {
-	char *user MORPH_CLEANUP(morph_charp_cleanup) =
+	char *user NB_CLEANUP(nb_charp_cleanup) =
 		strdup(context->user_id && *context->user_id ? context->user_id : "local");
-	char *session MORPH_CLEANUP(morph_charp_cleanup) =
+	char *session NB_CLEANUP(nb_charp_cleanup) =
 		strdup(context->credit_session_id && *context->credit_session_id
 			       ? context->credit_session_id
 			       : "local");
 	if (!user || !session)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	free(state->user_id);
 	free(state->credit_session_id);
-	state->user_id = morph_charp_steal(&user);
-	state->credit_session_id = morph_charp_steal(&session);
+	state->user_id = nb_charp_steal(&user);
+	state->credit_session_id = nb_charp_steal(&session);
 	state->usage_db = owner ? &owner->context.database : context->db;
 	state->usage_config = context->config;
 	state->usage_observer = owner ? owner->options.usage_observer : NULL;
@@ -696,7 +734,7 @@ static int runtime_child_tools(struct runtime_child_state *state, struct tool_re
 	if ((runtime->config->models.vision.model[0] && !state->vision) ||
 	    (runtime->config->models.image.model[0] && !state->image) ||
 	    (runtime->config->models.video.model[0] && !state->video))
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	struct model *clients[] = {state->vision, state->image, state->video};
 	for (size_t i = 0; i < sizeof(clients) / sizeof(clients[0]); i++) {
 		if (clients[i]) {
@@ -747,17 +785,17 @@ int runtime_bootstrap_child(struct tool_registry *tools, struct plan_registry *p
 			    struct agent_child_state *owner, void *user_data)
 {
 	if (!tools || !react || !model || !runtime || !owner || !runtime->config)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!owner->data) {
 		struct runtime_child_state *state = calloc(1, sizeof(*state));
 		if (!state)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		skill_registry_init(react->logger, &state->skills);
 		owner->data = state;
 		owner->destroy = runtime_child_state_destroy;
 	}
 	if (owner->destroy != runtime_child_state_destroy)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct runtime_child_state *state = owner->data;
 	int usage_rc = runtime_child_usage_bind(state, model, runtime, user_data);
 	if (usage_rc != 0)
@@ -768,7 +806,7 @@ int runtime_bootstrap_child(struct tool_registry *tools, struct plan_registry *p
 						   runtime->config->skill.dir);
 		if (rc < 0)
 			return rc;
-		char *builtin MORPH_CLEANUP(morph_charp_cleanup) = morph_data_find_alloc("skills");
+		char *builtin NB_CLEANUP(nb_charp_cleanup) = morph_data_find_alloc("skills");
 		if (builtin) {
 			rc = skill_discover(&state->skills, builtin);
 			if (rc < 0)
@@ -797,14 +835,14 @@ int runtime_bootstrap_child(struct tool_registry *tools, struct plan_registry *p
 int runtime_bootstrap_agents(struct runtime_bootstrap_profile *profile, struct agent_control **out)
 {
 	if (!profile || !profile->config || !profile->models || !out || *out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!profile->enable_multi_agent || !profile->config->agents.enabled)
 		return 0;
 	*out = agent_control_create(profile->tools, profile->models->text,
 				    profile->models->tokenizer, &profile->models->react->compress,
 				    &profile->config->agents, profile->db);
 	if (!*out)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	agent_control_set_event_callback(*out, profile->event_cb, profile->event_user_data);
 	profile->models->react->agents = *out;
 	int rc = agent_control_set_child_initializer(*out, runtime_bootstrap_child, profile->owner);

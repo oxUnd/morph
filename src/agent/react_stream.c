@@ -1,8 +1,8 @@
 #include "react_stream.h"
 
-#include "util/signals.h"
-#include "util/utf8.h"
-#include "util/error.h"
+#include "nb/signal.h"
+#include "nb/utf8.h"
+#include "errors.h"
 #include <errno.h>
 #include <string.h>
 
@@ -51,11 +51,12 @@ const char *react_stream_final_borrow(const char *base, const char *from, size_t
 int react_stream_init(struct react_stream *stream, const struct react_stream_options *options)
 {
 	if (!stream || !options)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(stream, 0, sizeof(*stream));
 	stream->options = *options;
 	stream->candidate_possible = 1;
-	stream->error = morph_buf_init(&stream->text, 8192);
+	stream->error = (nb_buf_init(&stream->text),
+			 nb_buf_reserve(&stream->text, 8192) ? 0 : NB_ERR_NOMEM);
 	return stream->error;
 }
 
@@ -63,28 +64,28 @@ void react_stream_cleanup(struct react_stream *stream)
 {
 	if (!stream)
 		return;
-	morph_buf_cleanup(&stream->text);
-	morph_buf_cleanup(&stream->reasoning);
+	nb_buf_cleanup(&stream->text);
+	nb_buf_cleanup(&stream->reasoning);
 	memset(stream, 0, sizeof(*stream));
 }
 
 static int stream_status(const struct react_stream *stream)
 {
 	if (!stream)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (stream->emitting)
-		return -EBUSY;
+		return NB_ERR_BUSY;
 	if (stream->error != 0)
 		return stream->error;
-	if (stream->options.cancelled && morph_signal_flag_get(stream->options.cancelled))
-		return -EINTR;
+	if (stream->options.cancelled && nb_atomic_int_load(stream->options.cancelled))
+		return NB_ERR_INTERRUPTED;
 	return 0;
 }
 
-static int stream_emit(struct react_stream *stream, enum react_step_type type, morph_buf_t *buffer,
+static int stream_emit(struct react_stream *stream, enum react_step_type type, nb_buf *buffer,
 		       size_t offset, size_t length)
 {
-	char *text = buffer->data + offset;
+	char *text = buffer->ptr ? buffer->ptr + buffer->off + offset : NULL;
 	char saved;
 	int rc;
 
@@ -105,29 +106,29 @@ static int stream_emit(struct react_stream *stream, enum react_step_type type, m
 	rc = stream->options.emit(type, text, stream->options.user_data);
 	stream->emitting = 0;
 	text[length] = saved;
-	return rc > 0 ? MORPH_ERR_PROTOCOL : rc;
+	return rc > 0 ? NB_ERR_PROTOCOL : rc;
 }
 
 static int stream_drain_reasoning(struct react_stream *stream)
 {
-	morph_buf_t *buffer = &stream->reasoning;
+	nb_buf *buffer = &stream->reasoning;
 	size_t safe;
 	int rc;
 
-	if (buffer->len == 0)
+	if (nb_buf_empty(buffer))
 		return 0;
-	safe = utf8_clamp_bytes(buffer->data, buffer->len);
+	safe = nb_utf8_clamp_bytes(nb_buf_cstr(buffer), nb_buf_len(buffer));
 	rc = stream_emit(stream, REACT_STEP_REASONING, buffer, 0, safe);
 	if (rc != 0)
 		return rc;
-	memmove(buffer->data, buffer->data + safe, buffer->len - safe);
-	return morph_buf_truncate(buffer, buffer->len - safe);
+	nb_buf_consume(buffer, safe);
+	return 0;
 }
 
 /* Each byte is examined once. Only an unfinished line-prefix is held back. */
 static int stream_scan_final(struct react_stream *stream, size_t *marker_end)
 {
-	const char *base = stream->text.data;
+	const char *base = stream->text.ptr;
 
 	while (stream->scanned < stream->text.len) {
 		if (!stream->candidate_possible) {
@@ -175,7 +176,7 @@ static int stream_scan_final(struct react_stream *stream, size_t *marker_end)
 
 static int stream_drain(struct react_stream *stream, int finish)
 {
-	const char *base = stream->text.data;
+	const char *base = stream->text.ptr;
 	size_t available = stream->text.len - stream->emitted;
 	enum react_step_type type = stream->typed_content ? REACT_STEP_CONTENT
 				    : stream->in_final	  ? REACT_STEP_FINAL
@@ -200,13 +201,13 @@ static int stream_drain(struct react_stream *stream, int finish)
 		if (!finish && stream->candidate_possible)
 			available = stream->candidate - stream->emitted;
 	}
-	available = utf8_clamp_bytes(base + stream->emitted, available);
+	available = nb_utf8_clamp_bytes(base + stream->emitted, available);
 	rc = stream_emit(stream, type, &stream->text, stream->emitted, available);
 	if (rc != 0)
 		return rc;
 	stream->emitted += available;
 	if (finish && stream->emitted != stream->text.len)
-		return MORPH_ERR_PROTOCOL;
+		return NB_ERR_PROTOCOL;
 	return 0;
 }
 
@@ -219,8 +220,8 @@ int react_stream_finish(struct react_stream *stream)
 	stream->error = stream_drain_reasoning(stream);
 	if (stream->error == 0)
 		stream->error = stream_drain(stream, 1);
-	if (stream->error == 0 && stream->reasoning.len > 0)
-		stream->error = MORPH_ERR_PROTOCOL;
+	if (stream->error == 0 && !nb_buf_empty(&stream->reasoning))
+		stream->error = NB_ERR_PROTOCOL;
 	return stream->error;
 }
 
@@ -232,8 +233,8 @@ int react_stream_cb(const char *token, void *user_data)
 	if (rc != 0)
 		return rc;
 	if (!token)
-		return -EINVAL;
-	rc = morph_buf_puts(&stream->text, token);
+		return NB_ERR_INVAL;
+	rc = (nb_buf_append_cstr(&stream->text, token) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = stream_drain(stream, 0);
 	stream->error = rc;
@@ -248,14 +249,14 @@ int react_typed_stream_cb(enum llm_stream_kind kind, const char *token, void *us
 	if (rc != 0)
 		return rc;
 	if (!token)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (kind == LLM_STREAM_REASONING) {
-		morph_buf_t *buffer = &stream->reasoning;
+		nb_buf *buffer = &stream->reasoning;
 
-		if (!buffer->data)
-			rc = morph_buf_init(buffer, 64);
+		if (!buffer->ptr)
+			rc = (nb_buf_init(buffer), nb_buf_reserve(buffer, 64) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_puts(buffer, token);
+			rc = (nb_buf_append_cstr(buffer, token) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0) {
 			stream->error = rc;
 			return rc;

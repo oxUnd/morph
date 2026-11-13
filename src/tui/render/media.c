@@ -1,7 +1,7 @@
 #include <morph/tui/media.h>
-#include "util/cleanup.h"
-#include "util/image_util.h"
-#include "util/error.h"
+#include "nb/cleanup.h"
+#include "media/image.h"
+#include "errors.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
 
@@ -44,19 +44,19 @@ int morph_tui_media_asset_create_rgba_copy(struct morph_tui_media_asset **out,
 					  const unsigned char *pixels, int width, int height)
 {
 	if (!out || *out || !pixels)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	size_t bytes = 0;
 	int rc = image_pixel_bytes(width, height, 4, &bytes);
 	if (rc)
 		return rc;
-	struct morph_tui_media_asset *asset MORPH_CLEANUP(render_media_asset_cleanup) =
+	struct morph_tui_media_asset *asset NB_CLEANUP(render_media_asset_cleanup) =
 		calloc(1, sizeof(*asset));
 	if (!asset)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	atomic_init(&asset->references, 1);
 	asset->pixels = malloc(bytes);
 	if (!asset->pixels)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	memcpy(asset->pixels, pixels, bytes);
 	asset->width = width;
 	asset->height = height;
@@ -77,20 +77,20 @@ int morph_tui_media_asset_create_png_copy(struct morph_tui_media_asset **out,
 					 const unsigned char *bytes, size_t length)
 {
 	if (!out || *out || !bytes || !length || length > INT_MAX)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (length < 8 || memcmp(bytes, "\211PNG\r\n\032\n", 8))
-		return MORPH_ERR_FORMAT;
+		return NB_ERR_FORMAT;
 	int width = 0, height = 0, channels = 0;
 	if (!stbi_info_from_memory(bytes, (int)length, &width, &height, &channels))
-		return MORPH_ERR_FORMAT;
+		return NB_ERR_FORMAT;
 	size_t size = 0;
 	int rc = image_pixel_bytes(width, height, 4, &size);
 	if (rc)
 		return rc;
-	unsigned char *pixels MORPH_CLEANUP(render_media_pixels_cleanup) =
+	unsigned char *pixels NB_CLEANUP(render_media_pixels_cleanup) =
 		stbi_load_from_memory(bytes, (int)length, &width, &height, &channels, 4);
 	if (!pixels)
-		return MORPH_ERR_FORMAT;
+		return NB_ERR_FORMAT;
 	return morph_tui_media_asset_create_rgba_copy(out, pixels, width, height);
 }
 
@@ -131,20 +131,20 @@ uint64_t morph_tui_media_asset_key(const struct morph_tui_media_asset *asset)
 
 static void render_media_png_write(void *context, void *bytes, int length)
 {
-	morph_buf_t *out = context;
+	nb_buf *out = context;
 	if (length > 0)
-		(void)morph_buf_append(out, bytes, (size_t)length);
+		(void)nb_buf_append(out, bytes, (size_t)length);
 }
 
-int morph_tui_media_asset_png_append(const struct morph_tui_media_asset *asset,
-				     int x, int y, int width, int height, morph_buf_t *out)
+int morph_tui_media_asset_png_append(const struct morph_tui_media_asset *asset, int x, int y,
+				     int width, int height, nb_buf *out)
 {
 	if (!asset || !out || x < 0 || y < 0 || width < 1 || height < 1 ||
 	    x > asset->width - width || y > asset->height - height)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	const unsigned char *start = asset->pixels +
 		((size_t)y * (size_t)asset->width + (size_t)x) * 4u;
 	int success = stbi_write_png_to_func(render_media_png_write, out, width, height, 4,
 		start, asset->width * 4);
-	return out->failed ? out->failed : success ? 0 : MORPH_ERR_FORMAT;
+	return nb_buf_status(out) ? nb_buf_status(out) : success ? 0 : NB_ERR_FORMAT;
 }

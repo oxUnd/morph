@@ -16,7 +16,7 @@ extern "C" {
 #include "runtime/bootstrap.h"
 #include "session.h"
 #include "skill/skill.h"
-#include "util/error.h"
+#include "errors.h"
 }
 
 #include <cstring>
@@ -153,7 +153,7 @@ TEST_F(AgentChildRuntimeTest, SkillActivationIsPrivateAndRestoresAfterColdFollow
 	ASSERT_EQ(requests.size(), 2u);
 	EXPECT_EQ(requests[0].find("CHILD_PRIVATE_SKILL_INSTRUCTIONS"), std::string::npos);
 	EXPECT_NE(requests[1].find("CHILD_PRIVATE_SKILL_INSTRUCTIONS"), std::string::npos);
-	struct skill_registry restored MORPH_CLEANUP(skill_registry_cleanup) = {};
+	struct skill_registry restored NB_CLEANUP(skill_registry_cleanup) = {};
 	skill_registry_init(nullptr, &restored);
 	ASSERT_EQ(skill_discover(&restored, config->skill.dir), 1);
 	ASSERT_EQ(skill_restore_session(&restored, &database, Info().child_session_id), 0);
@@ -230,7 +230,7 @@ TEST_F(AgentChildRuntimeTest, DrainingKeepsLateSteeringQueuedUntilAnExplicitRest
 	EXPECT_TRUE(observer.followed);
 	EXPECT_EQ(Info().status, AGENT_COMPLETED);
 	EXPECT_EQ(server.snapshot().size(), 1u);
-	char *mail MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	char *mail NB_CLEANUP(nb_charp_cleanup) = nullptr;
 	int64_t cursor = 0;
 	ASSERT_EQ(agent_control_receive(control, "/root/reader", session.id, &mail, &cursor), 0);
 	ASSERT_NE(mail, nullptr);
@@ -340,10 +340,10 @@ TEST_F(AgentChildRuntimeTest, SessionSkillRowsCascadeWithTheirSession)
 TEST(AgentChildGuardrailTest, CheckerRequestUsesTurnCancellationWithoutChangingItsClient)
 {
 	struct Checker {
-		const struct morph_cancel_token *expected;
+		const struct nb_cancel *expected;
 		bool called;
 	};
-	struct morph_cancel_token token{};
+	struct nb_cancel token{};
 	struct Checker checked{&token, false};
 	struct model client{};
 	client.handle = &checked;
@@ -388,7 +388,7 @@ TEST_F(AgentChildRuntimeTest, MutableToolBindingsRemainPrivateAndNeverBorrowAFro
 			[](const char *, const char *const *, int, const char *, int, int,
 			   const struct ask_user_options *, char ***, int *, void *opaque) -> int {
 				++*static_cast<int *>(opaque);
-				return -ECANCELED;
+				return NB_ERR_CANCELLED;
 			},
 			&frontend_calls),
 		0);
@@ -396,11 +396,11 @@ TEST_F(AgentChildRuntimeTest, MutableToolBindingsRemainPrivateAndNeverBorrowAFro
 	ASSERT_EQ(session_create(&database, "child-context", "root-model", &child_session), 0);
 	struct tool_runtime_context child = runtime;
 	child.memory_session_id = child_session.id;
-	struct agent_child_state owner MORPH_CLEANUP(child_test_state_cleanup) = {};
-	struct tool_registry child_tools MORPH_CLEANUP(tool_registry_cleanup) = {};
+	struct agent_child_state owner NB_CLEANUP(child_test_state_cleanup) = {};
+	struct tool_registry child_tools NB_CLEANUP(tool_registry_cleanup) = {};
 	tool_registry_init(nullptr, &child_tools);
 	ASSERT_EQ(tool_registry_copy(&child_tools, &tools), 0);
-	struct react_context *react MORPH_CLEANUP(react_context_clear) =
+	struct react_context *react NB_CLEANUP(react_context_clear) =
 		react_context_create(&child_tools, tokenizer, nullptr, nullptr);
 	ASSERT_NE(react, nullptr);
 	ASSERT_EQ(runtime_bootstrap_child(&child_tools, nullptr, react, model, &child, &owner,
@@ -416,7 +416,7 @@ TEST_F(AgentChildRuntimeTest, MutableToolBindingsRemainPrivateAndNeverBorrowAFro
 	EXPECT_EQ(child_dynamic->reg, &child_tools);
 	EXPECT_STREQ(root_dynamic->session_id, "root-session");
 	EXPECT_STREQ(child_dynamic->session_id, "child-updated");
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
 	result.runtime = &child;
 	EXPECT_EQ(tool_exec(&child_tools, "ask_user", R"({"question":"Need clarification"})",

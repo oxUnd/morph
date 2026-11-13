@@ -35,11 +35,11 @@ structured facts.
 
 ## Hard Constraints
 
-- Use shared foundational containers from `src/util/`:
-  - `morph_buf_t` for variable-length JSON/text assembly.
-  - `morph_array_t` for event queues, subscriber lists, and dynamic batches.
-  - `morph_str_t` for string views when ownership is external.
-  - `morph_strmap_t` for string-keyed subscriptions or event name lookup.
+- Use native foundational containers from `nbase::nbase` (`nb/*.h`):
+  - `nb_buf` for variable-length JSON/text assembly.
+  - `nb_vec` for event queues, subscriber lists, and dynamic batches.
+  - `nb_str` for string views when ownership is external.
+  - `nb_map *` for string-keyed subscriptions or event name lookup.
 - Do not hand-roll growable buffers, dynamic arrays, hash maps, or UTF-8 logic.
 - Use `cJSON` for structured event payloads in the first implementation.
 - Event `message` is for human fallback only. Front ends must depend on
@@ -470,7 +470,7 @@ GUI/Android renderer:
 
 Test recorder:
 
-- Records events in `morph_array_t`.
+- Records events in `nb_vec`.
 - Supports assertions on event order, names, phases, and payload fields.
 
 ## Required Migration Points

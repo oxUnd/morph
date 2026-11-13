@@ -1,6 +1,6 @@
 #include <morph/tui/terminal.h>
-#include "util/error.h"
-#include "util/terminal_size.h"
+#include "errors.h"
+#include <morph/tui/terminal/size.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -19,26 +19,35 @@ void morph_tui_terminal_dimensions(int output_fd, int *columns, int *rows)
 	morph_terminal_dimensions(output_fd, columns, rows);
 }
 
+int morph_tui_terminal_clear_below(FILE *output, int row, int column)
+{
+	if (!output || row < 1 || column < 1)
+		return NB_ERR_INVAL;
+	if (fprintf(output, "\033[%d;%dH\033[J", row, column) < 0 || fflush(output) != 0)
+		return NB_ERR_IO;
+	return 0;
+}
+
 int morph_tui_terminal_session_enter(struct morph_tui_terminal_session *session, FILE *input,
 				     FILE *output, int flags)
 {
 	struct termios raw;
 
 	if (!session || !input || !output)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (session->active)
-		return -EBUSY;
+		return NB_ERR_BUSY;
 	int fd = fileno(input);
 
 	if (tcgetattr(fd, &session->saved) != 0)
-		return -errno;
+		return nb_status_from_errno(errno, NULL);
 	raw = session->saved;
 	raw.c_lflag &= (tcflag_t) ~(ICANON | ECHO | ISIG | IEXTEN);
 	raw.c_iflag &= (tcflag_t) ~(IXON | ICRNL);
 	raw.c_cc[VMIN] = 1;
 	raw.c_cc[VTIME] = 0;
 	if (tcsetattr(fd, TCSANOW, &raw) != 0)
-		return -errno;
+		return nb_status_from_errno(errno, NULL);
 	session->input_fd = fd;
 	session->output = output;
 	session->flags = flags;
@@ -53,7 +62,7 @@ int morph_tui_terminal_session_enter(struct morph_tui_terminal_session *session,
 	if (flags & MORPH_TUI_TERMINAL_SESSION_MOUSE)
 		fputs("\033[?1000h\033[?1002h\033[?1006h", output);
 	if (fflush(output) != 0 || ferror(output)) {
-		int rc = errno ? -errno : -EIO;
+		int rc = errno ? nb_status_from_errno(errno, NULL) : NB_ERR_IO;
 
 		(void)morph_tui_terminal_session_leave(session);
 		return rc;
@@ -79,10 +88,10 @@ int morph_tui_terminal_session_leave(struct morph_tui_terminal_session *session)
 	if (session->flags & MORPH_TUI_TERMINAL_SESSION_ALTERNATE)
 		fputs("\033[?1049l", session->output);
 	if (fflush(session->output) != 0 || ferror(session->output))
-		rc = (errno ? -errno : -EIO);
+		rc = (errno ? nb_status_from_errno(errno, NULL) : NB_ERR_IO);
 	if (tcsetattr(session->input_fd, TCSANOW, &session->saved) != 0) {
 		if (rc == 0)
-			rc = (-errno);
+			rc = (nb_status_from_errno(errno, NULL));
 	} else {
 		session->active = 0;
 	}
@@ -99,12 +108,14 @@ int morph_tui_terminal_session_reassert(struct morph_tui_terminal_session *sessi
 	raw.c_cc[VMIN] = 1;
 	raw.c_cc[VTIME] = 0;
 	if (tcsetattr(session->input_fd, TCSANOW, &raw) != 0)
-		return -errno;
+		return nb_status_from_errno(errno, NULL);
 	if (session->flags & MORPH_TUI_TERMINAL_SESSION_PASTE)
 		fputs("\033[?2004h", session->output);
 	if (session->flags & MORPH_TUI_TERMINAL_SESSION_FOCUS)
 		fputs("\033[?1004h", session->output);
 	if (session->flags & MORPH_TUI_TERMINAL_SESSION_MOUSE)
 		fputs("\033[?1000h\033[?1002h\033[?1006h", session->output);
-	return fflush(session->output) != 0 || ferror(session->output) ? (errno ? -errno : -EIO) : 0;
+	return fflush(session->output) != 0 || ferror(session->output)
+		       ? (errno ? nb_status_from_errno(errno, NULL) : NB_ERR_IO)
+		       : 0;
 }

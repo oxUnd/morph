@@ -1,4 +1,6 @@
 #include "sapi/cli/pages/setup/controls.h"
+#include "nb/thread.h"
+#include "nb/cleanup.h"
 #include "sapi/cli/services/configuration/model.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
@@ -7,16 +9,17 @@
 #include <morph/tui/components.h>
 #include "sapi/cli/services/configuration/mcp.h"
 #include "sapi/cli/application.h"
-#include "util/error.h"
-#include "util/utf8.h"
-#include "util/name.h"
+#include "errors.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
+#include "nb/str.h"
 #include <signal.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-#define CLI_CONTROLS_SETUP_BACK (-EAGAIN)
+#define CLI_CONTROLS_SETUP_BACK (NB_ERR_AGAIN)
 
 enum cli_controls_setup_phase {
 	CLI_CONTROLS_SETUP_ROLE,
@@ -35,8 +38,8 @@ enum cli_controls_setup_action {
 };
 
 struct cli_controls_setup_ui {
-	volatile sig_atomic_t interrupted;
-	struct morph_signal_listener signals;
+	nb_atomic_int interrupted;
+	nb_signal_listener *signals;
 	struct morph_tui_screen screen;
 	FILE *output;
 	int fd;
@@ -67,41 +70,43 @@ int cli_setup_print(FILE *output, const char *format, ...)
 	if (!isatty(fileno(output))) {
 		int written = vfprintf(output, format, args);
 		va_end(args);
-		return written < 0 ? -EIO : 0;
+		return written < 0 ? NB_ERR_IO : 0;
 	}
-	morph_buf_t text = {0};
-	morph_buf_t rendered = {0};
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
 	struct morph_tui_widget_text_layout view = {0};
-	int rc = morph_buf_init(&text, 0);
+	int rc = (nb_buf_init(&text), nb_buf_reserve(&text, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_vprintf(&text, format, args);
+		rc = (nb_buf_vprintf(&text, format, args) ? 0 : NB_ERR_NOMEM);
 	va_end(args);
-	char *safe = rc == 0 ? utf8_terminal_sanitize_dup(morph_buf_cstr_borrow(&text), text.len,
-							  UTF8_TERMINAL_TEXT_MULTILINE, NULL)
+	char *safe = rc == 0 ? morph_terminal_sanitize_dup(nb_buf_cstr(&text), text.len,
+							   MORPH_TERMINAL_TEXT_MULTILINE, NULL)
 			     : NULL;
 	if (rc == 0 && !safe)
-		rc = -ENOMEM;
+		rc = NB_ERR_NOMEM;
 	int columns, rows;
 	morph_tui_terminal_dimensions(fileno(output), &columns, &rows);
 	size_t width = columns > 4 ? (size_t)columns - 4 : 1;
 	if (rc == 0)
 		rc = morph_tui_widget_text_layout_wrap_borrow(&view, safe, width);
 	if (rc == 0)
-		rc = morph_buf_init(&rendered, 0);
-	for (size_t i = 0; rc == 0 && i < view.lines.nelts; i++) {
-		const struct morph_tui_widget_text_line *row = morph_array_borrow(&view.lines, i);
+		rc = (nb_buf_init(&rendered), nb_buf_reserve(&rendered, 4096) ? 0 : NB_ERR_NOMEM);
+	for (size_t i = 0; rc == 0 && i < view.lines.len; i++) {
+		const struct morph_tui_widget_text_line *row = nb_vec_at(&view.lines, i);
 		if (row->length)
-			rc = morph_buf_puts(&rendered, "  ");
+			rc = (nb_buf_append_cstr(&rendered, "  ") ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_append(&rendered, safe + row->offset, row->length);
+			rc = (nb_buf_append(&rendered, safe + row->offset, row->length)
+				      ? 0
+				      : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_puts(&rendered, "\r\n");
+			rc = (nb_buf_append_cstr(&rendered, "\r\n") ? 0 : NB_ERR_NOMEM);
 	}
 	if (rc == 0)
 		rc = morph_tui_draw_write(output, &rendered);
 	morph_tui_widget_text_layout_cleanup(&view);
-	morph_buf_cleanup(&rendered);
-	morph_buf_cleanup(&text);
+	nb_buf_cleanup(&rendered);
+	nb_buf_cleanup(&text);
 	free(safe);
 	return rc;
 }
@@ -111,7 +116,7 @@ static void cli_controls_setup_signal(int number, void *opaque)
 	struct cli_controls_setup_ui *ui = opaque;
 
 	if (number != SIGWINCH)
-		morph_signal_flag_set(&ui->interrupted, number);
+		nb_atomic_int_store(&ui->interrupted, number);
 }
 
 static int cli_controls_read_key(struct cli_controls_setup_ui *ui)
@@ -120,14 +125,14 @@ static int cli_controls_read_key(struct cli_controls_setup_ui *ui)
 		struct morph_tui_event event;
 		int rc = morph_tui_screen_poll(&ui->screen, &event, 100);
 
-		if (morph_signal_flag_get(&ui->interrupted))
-			return -ECANCELED;
-		if (rc == -EINTR)
+		if (nb_atomic_int_load(&ui->interrupted))
+			return NB_ERR_CANCELLED;
+		if (rc == NB_ERR_INTERRUPTED)
 			continue;
 		if (rc != 0)
 			return rc;
 		if (event.type == MORPH_TUI_EVENT_EOF)
-			return -ECANCELED;
+			return NB_ERR_CANCELLED;
 		if (event.type == MORPH_TUI_EVENT_RESIZE)
 			return 0;
 		if (event.type == MORPH_TUI_EVENT_KEY)
@@ -142,68 +147,71 @@ static void cli_controls_dimensions(struct cli_controls_setup_ui *ui)
 
 /* The cursor normally rests on the blank line below the active prompt.
  * Only these owned lines are redrawn; completed answers stay in scrollback. */
-static void cli_controls_clear_active(struct cli_controls_setup_ui *ui, morph_buf_t *frame)
+static void cli_controls_clear_active(struct cli_controls_setup_ui *ui, nb_buf *frame)
 {
 	int old_columns = ui->columns;
 	int old_rows = ui->rows;
 	cli_controls_dimensions(ui);
-	morph_buf_puts(frame, "\033[?2026h");
+	nb_buf_append_cstr(frame, "\033[?2026h");
 	if (ui->active_lines &&
 	    (old_columns != ui->columns || old_rows != ui->rows || ui->active_lines >= old_rows)) {
 		/* A terminal may reflow old lines on resize. Do not guess their
 		 * new positions and risk erasing history; append a fresh prompt. */
-		morph_buf_puts(frame, "\033[999B\r\n");
+		nb_buf_append_cstr(frame, "\033[999B\r\n");
 	} else if (ui->active_lines) {
-		morph_buf_putc(frame, '\r');
+		nb_buf_append_char(frame, '\r');
 		if (ui->cursor_up)
-			morph_buf_printf(frame, "\033[%dB", ui->cursor_up);
-		morph_buf_printf(frame, "\033[%dA", ui->active_lines);
+			nb_buf_printf(frame, "\033[%dB", ui->cursor_up);
+		nb_buf_printf(frame, "\033[%dA", ui->active_lines);
 		for (int i = 0; i < ui->active_lines; i++)
-			morph_buf_puts(frame, "\033[2K\r\n");
-		morph_buf_printf(frame, "\033[%dA\r", ui->active_lines);
+			nb_buf_append_cstr(frame, "\033[2K\r\n");
+		nb_buf_printf(frame, "\033[%dA\r", ui->active_lines);
 	}
 	ui->active_lines = 0;
 	ui->cursor_up = 0;
 	ui->frame_lines = 0;
 }
 
-static void cli_controls_line(struct cli_controls_setup_ui *ui, morph_buf_t *frame,
-			      const char *style, const char *text)
+static void cli_controls_line(struct cli_controls_setup_ui *ui, nb_buf *frame, const char *style,
+			      const char *text)
 {
 	char clipped[BUFSIZ];
 	size_t width = ui->columns > 4 ? (size_t)ui->columns - 4 : 1;
-	utf8_copy_sanitized_display_width(clipped, sizeof(clipped), text, width);
-	morph_buf_printf(frame, "  %s%s%s\r\n", ui->color ? style : "", clipped,
-			 ui->color ? ANSI_RESET : "");
+	morph_terminal_copy_sanitized_display_width(clipped, sizeof(clipped), text, width);
+	nb_buf_printf(frame, "  %s%s%s\r\n", ui->color ? style : "", clipped,
+		      ui->color ? ANSI_RESET : "");
 	ui->frame_lines++;
 }
 
-static int cli_controls_frame_start(struct cli_controls_setup_ui *ui, morph_buf_t *frame,
+static int cli_controls_frame_start(struct cli_controls_setup_ui *ui, nb_buf *frame,
 				    const char *title, const char *detail)
 {
-	int rc = morph_buf_init(frame, 0);
+	int rc = (nb_buf_init(frame), nb_buf_reserve(frame, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc < 0)
 		return rc;
-	morph_buf_puts(frame, "\033[?25l");
+	nb_buf_append_cstr(frame, "\033[?25l");
 	cli_controls_clear_active(ui, frame);
 	const char *progress[] = {"1/2  Role", "Model settings", "Model settings", "2/2  Review"};
 	if (ui->rows >= 8)
 		cli_controls_line(ui, frame, "\033[2m", progress[ui->phase]);
 	if (ui->step >= 0 && ui->step < CLI_SETUP_MODEL_COUNT) {
-		morph_buf_t scope = {0};
-		rc = morph_buf_init(&scope, 0);
+		nb_buf scope NB_CLEANUP(nb_buf_cleanup) = {0};
+		rc = (nb_buf_init(&scope), nb_buf_reserve(&scope, 4096) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_printf(
-				&scope, "%s · %s / %s", cli_setup_model_label(ui->step),
-				ui->entries[ui->step].provider[0] ? ui->entries[ui->step].provider
-								  : "No provider",
-				ui->entries[ui->step].model[0] ? ui->entries[ui->step].model
-							       : "Not configured");
+			rc = (nb_buf_printf(&scope, "%s · %s / %s", cli_setup_model_label(ui->step),
+					    ui->entries[ui->step].provider[0]
+						    ? ui->entries[ui->step].provider
+						    : "No provider",
+					    ui->entries[ui->step].model[0]
+						    ? ui->entries[ui->step].model
+						    : "Not configured")
+				      ? 0
+				      : NB_ERR_NOMEM);
 		if (rc == 0)
-			cli_controls_line(ui, frame, "\033[36m", morph_buf_cstr_borrow(&scope));
-		morph_buf_cleanup(&scope);
+			cli_controls_line(ui, frame, "\033[36m", nb_buf_cstr(&scope));
+		nb_buf_cleanup(&scope);
 		if (rc != 0) {
-			morph_buf_cleanup(frame);
+			nb_buf_cleanup(frame);
 			return rc;
 		}
 	}
@@ -220,12 +228,12 @@ static int cli_controls_frame_start(struct cli_controls_setup_ui *ui, morph_buf_
 	return 0;
 }
 
-static int cli_controls_frame_show(struct cli_controls_setup_ui *ui, morph_buf_t *frame)
+static int cli_controls_frame_show(struct cli_controls_setup_ui *ui, nb_buf *frame)
 {
-	morph_buf_puts(frame, "\033[?2026l");
+	nb_buf_append_cstr(frame, "\033[?2026l");
 	int rc = morph_tui_draw_write(ui->output, frame);
 	ui->active_lines = ui->frame_lines;
-	morph_buf_cleanup(frame);
+	nb_buf_cleanup(frame);
 	if (rc < 0)
 		return rc;
 	return 0;
@@ -233,75 +241,78 @@ static int cli_controls_frame_show(struct cli_controls_setup_ui *ui, morph_buf_t
 
 static int cli_controls_record_answer(struct cli_controls_setup_ui *ui, const char *answer)
 {
-	morph_buf_t frame;
-	int rc = morph_buf_init(&frame, 0);
+	nb_buf frame NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&frame), nb_buf_reserve(&frame, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc < 0)
 		return rc;
 	cli_controls_clear_active(ui, &frame);
 	const char *names[] = {"Text", "Vision", "Images", "Video", "Review"};
 	char safe[BUFSIZ];
-	utf8_copy_sanitized_clamped(safe, sizeof(safe), answer, sizeof(safe) - 1);
+	nb_utf8_copy_sanitized_clamped(safe, sizeof(safe), answer, sizeof(safe) - 1);
 	struct morph_tui_widget_text_layout view = {0};
 	size_t width = ui->columns > 13 ? (size_t)ui->columns - 13 : 1;
 	rc = morph_tui_widget_text_layout_wrap_borrow(&view, safe, width);
 	if (rc == 0)
-		rc = morph_buf_printf(&frame, "%s" CLI_FEED_DONE " %-6s%s · ",
-				      ui->color ? ANSI_GREEN : "",
-				      ui->step < 0 ? "Role" : names[ui->step],
-				      ui->color ? ANSI_RESET : "");
-	if (rc == 0 && !view.lines.nelts)
-		rc = morph_buf_puts(&frame, "\r\n");
-	for (size_t i = 0; rc == 0 && i < view.lines.nelts; i++) {
-		const struct morph_tui_widget_text_line *row = morph_array_borrow(&view.lines, i);
+		rc = (nb_buf_printf(
+			      &frame, "%s" CLI_FEED_DONE " %-6s%s · ", ui->color ? ANSI_GREEN : "",
+			      ui->step < 0 ? "Role" : names[ui->step], ui->color ? ANSI_RESET : "")
+			      ? 0
+			      : NB_ERR_NOMEM);
+	if (rc == 0 && !view.lines.len)
+		rc = (nb_buf_append_cstr(&frame, "\r\n") ? 0 : NB_ERR_NOMEM);
+	for (size_t i = 0; rc == 0 && i < view.lines.len; i++) {
+		const struct morph_tui_widget_text_line *row = nb_vec_at(&view.lines, i);
 		if (i)
-			rc = morph_buf_puts(&frame, "           ");
+			rc = (nb_buf_append_cstr(&frame, "           ") ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_append(&frame, safe + row->offset, row->length);
+			rc = (nb_buf_append(&frame, safe + row->offset, row->length)
+				      ? 0
+				      : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_puts(&frame, "\r\n");
+			rc = (nb_buf_append_cstr(&frame, "\r\n") ? 0 : NB_ERR_NOMEM);
 	}
 	morph_tui_widget_text_layout_cleanup(&view);
 	if (rc != 0) {
-		morph_buf_cleanup(&frame);
+		nb_buf_cleanup(&frame);
 		return rc;
 	}
 	/* Committed rows are not owned by a subsequent editable frame. */
 	return cli_controls_frame_show(ui, &frame);
 }
 
-static void cli_controls_card_border(struct cli_controls_setup_ui *ui, morph_buf_t *frame,
-				     int selected, int width, int bottom)
+static void cli_controls_card_border(struct cli_controls_setup_ui *ui, nb_buf *frame, int selected,
+				     int width, int bottom)
 {
-	morph_buf_t border = {0};
-	int rc = morph_buf_init(&border, 128);
+	nb_buf border NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&border), nb_buf_reserve(&border, 128) ? 0 : NB_ERR_NOMEM);
 
 	if (rc == 0)
 		rc = morph_tui_widget_card_border(&border, width, bottom);
 	if (rc == 0)
 		cli_controls_line(ui, frame, selected ? "\033[36m" : "\033[2m",
-				  morph_buf_cstr_borrow(&border));
+				  nb_buf_cstr(&border));
 	if (rc != 0)
-		frame->failed = (rc);
-	morph_buf_cleanup(&border);
+		frame->error = (rc);
+	nb_buf_cleanup(&border);
 }
 
-static void cli_controls_card_text(struct cli_controls_setup_ui *ui, morph_buf_t *frame,
+static void cli_controls_card_text(struct cli_controls_setup_ui *ui, nb_buf *frame,
 				   const char *text, int width, const char *style)
 {
-	morph_buf_t row = {0};
-	int rc = morph_buf_init(&row, 128);
+	nb_buf row NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&row), nb_buf_reserve(&row, 128) ? 0 : NB_ERR_NOMEM);
 
 	if (rc == 0)
 		rc = morph_tui_widget_card_row(&row, width, text);
 	if (rc == 0)
-		cli_controls_line(ui, frame, style, morph_buf_cstr_borrow(&row));
+		cli_controls_line(ui, frame, style, nb_buf_cstr(&row));
 	if (rc != 0)
-		frame->failed = (rc);
-	morph_buf_cleanup(&row);
+		frame->error = (rc);
+	nb_buf_cleanup(&row);
 }
 
 struct cli_controls_role_preview {
-	morph_buf_t models;
+	nb_buf models;
 	struct morph_tui_widget_text_layout blocks[3];
 	size_t visible[3];
 	int rows;
@@ -312,27 +323,28 @@ static void cli_controls_role_preview_cleanup(struct cli_controls_role_preview *
 {
 	for (int i = 0; i < 3; i++)
 		morph_tui_widget_text_layout_cleanup(&preview->blocks[i]);
-	morph_buf_cleanup(&preview->models);
+	nb_buf_cleanup(&preview->models);
 }
 
 static int cli_controls_role_preview_init(struct cli_controls_setup_ui *ui, int selected,
 					  struct cli_controls_role_preview *preview)
 {
 	const char *models[] = {"Text", "Vision", "Image", "Video"};
-	int rc = morph_buf_init(&preview->models, 0);
+	int rc = (nb_buf_init(&preview->models),
+		  nb_buf_reserve(&preview->models, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_puts(&preview->models, "Models: ");
+		rc = (nb_buf_append_cstr(&preview->models, "Models: ") ? 0 : NB_ERR_NOMEM);
 	int count = 0;
 	for (int i = 0; rc == 0 && i < CLI_SETUP_MODEL_COUNT; i++) {
 		if (!cli_setup_role_requires(selected, i))
 			continue;
 		if (count++)
-			rc = morph_buf_puts(&preview->models, " + ");
+			rc = (nb_buf_append_cstr(&preview->models, " + ") ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_puts(&preview->models, models[i]);
+			rc = (nb_buf_append_cstr(&preview->models, models[i]) ? 0 : NB_ERR_NOMEM);
 	}
 	struct cli_setup_role role = cli_setup_role_get(selected);
-	const char *text[] = {role.description, morph_buf_cstr_borrow(&preview->models),
+	const char *text[] = {role.description, nb_buf_cstr(&preview->models),
 			      cli_setup_mcp_summary(selected)};
 	size_t width = ui->columns > 4 ? (size_t)ui->columns - 4 : 1;
 	int available = ui->rows - ui->frame_lines - 3;
@@ -346,7 +358,7 @@ static int cli_controls_role_preview_init(struct cli_controls_setup_ui *ui, int 
 		rc = morph_tui_widget_text_layout_wrap_borrow(&preview->blocks[i], text[i], width);
 		if (rc != 0)
 			break;
-		size_t lines = preview->blocks[i].lines.nelts;
+		size_t lines = preview->blocks[i].lines.len;
 		if (i != 1 && lines > budget)
 			continue;
 		preview->visible[i] = lines < budget ? lines : budget;
@@ -358,7 +370,7 @@ static int cli_controls_role_preview_init(struct cli_controls_setup_ui *ui, int 
 	return rc;
 }
 
-static void cli_controls_role_preview_draw(struct cli_controls_setup_ui *ui, morph_buf_t *frame,
+static void cli_controls_role_preview_draw(struct cli_controls_setup_ui *ui, nb_buf *frame,
 					   const struct cli_controls_role_preview *preview)
 {
 	if (preview->gap)
@@ -367,10 +379,10 @@ static void cli_controls_role_preview_draw(struct cli_controls_setup_ui *ui, mor
 		const struct morph_tui_widget_text_layout *block = &preview->blocks[i];
 		for (size_t row = 0; row < preview->visible[i]; row++) {
 			const struct morph_tui_widget_text_line *span =
-				morph_array_borrow(&block->lines, row);
-			morph_buf_puts(frame, ui->color ? "  \033[2m" : "  ");
-			morph_buf_append(frame, block->text + span->offset, span->length);
-			morph_buf_puts(frame, ui->color ? "\033[0m\r\n" : "\r\n");
+				nb_vec_at(&block->lines, row);
+			nb_buf_append_cstr(frame, ui->color ? "  \033[2m" : "  ");
+			nb_buf_append(frame, block->text + span->offset, span->length);
+			nb_buf_append_cstr(frame, ui->color ? "\033[0m\r\n" : "\r\n");
 			ui->frame_lines++;
 		}
 	}
@@ -386,7 +398,7 @@ static int cli_controls_select_menu(struct cli_controls_setup_ui *ui, const char
 	menu_state.list.flags = MORPH_TUI_WIDGET_LIST_WRAP | MORPH_TUI_WIDGET_LIST_VIM |
 				MORPH_TUI_WIDGET_LIST_TAB | MORPH_TUI_WIDGET_LIST_DIGITS;
 	for (;;) {
-		morph_buf_t frame;
+		nb_buf frame NB_CLEANUP(nb_buf_cleanup) = {0};
 		int roles = ui->phase == CLI_CONTROLS_SETUP_ROLE;
 		int rc = cli_controls_frame_start(ui, &frame, title, roles ? NULL : detail);
 		if (rc < 0)
@@ -397,7 +409,7 @@ static int cli_controls_select_menu(struct cli_controls_setup_ui *ui, const char
 							    &preview);
 		if (rc != 0) {
 			cli_controls_role_preview_cleanup(&preview);
-			morph_buf_cleanup(&frame);
+			nb_buf_cleanup(&frame);
 			return rc;
 		}
 		int available = ui->rows - ui->frame_lines - 2 - preview.rows;
@@ -410,11 +422,11 @@ static int cli_controls_select_menu(struct cli_controls_setup_ui *ui, const char
 		selected = (int)menu_state.list.index;
 		int first = (int)menu_state.list.first;
 		for (int i = first; i < count && i < first + visible; i++) {
-			morph_buf_t label;
-			rc = morph_buf_init(&label, 0);
+			nb_buf label NB_CLEANUP(nb_buf_cleanup) = {0};
+			rc = (nb_buf_init(&label), nb_buf_reserve(&label, 4096) ? 0 : NB_ERR_NOMEM);
 			if (rc < 0) {
 				cli_controls_role_preview_cleanup(&preview);
-				morph_buf_cleanup(&frame);
+				nb_buf_cleanup(&frame);
 				return rc;
 			}
 			if (roles) {
@@ -422,18 +434,16 @@ static int cli_controls_select_menu(struct cli_controls_setup_ui *ui, const char
 						  : ui->role_confirmed || ui->state->existing_config
 							  ? "  (current)"
 							  : "  (default)";
-				morph_buf_printf(&label, "%s %d  %s%s", i == selected ? "›" : " ",
-						 i + 1, items[i], tag);
+				nb_buf_printf(&label, "%s %d  %s%s", i == selected ? "›" : " ",
+					      i + 1, items[i], tag);
 			} else
-				morph_buf_printf(&label, "%s %s", i == selected ? "›" : " ",
-						 items[i]);
+				nb_buf_printf(&label, "%s %s", i == selected ? "›" : " ", items[i]);
 			if (cards) {
 				int width = ui->columns - 4;
 				if (width > 72)
 					width = 72;
 				cli_controls_card_border(ui, &frame, i == selected, width, 0);
-				cli_controls_card_text(ui, &frame, morph_buf_cstr_borrow(&label),
-						       width,
+				cli_controls_card_text(ui, &frame, nb_buf_cstr(&label), width,
 						       i == selected ? "\033[1;36;48;5;235m" : "");
 				cli_controls_card_text(ui, &frame, descriptions[i], width,
 						       i == selected ? "\033[2;36;48;5;235m"
@@ -441,11 +451,11 @@ static int cli_controls_select_menu(struct cli_controls_setup_ui *ui, const char
 				cli_controls_card_border(ui, &frame, i == selected, width, 1);
 			} else {
 				cli_controls_line(ui, &frame, i == selected ? "\033[1;30;46m" : "",
-						  morph_buf_cstr_borrow(&label));
+						  nb_buf_cstr(&label));
 			}
-			if (label.failed)
-				frame.failed = (label.failed);
-			morph_buf_cleanup(&label);
+			if (nb_buf_status(&label))
+				frame.error = (nb_buf_status(&label));
+			nb_buf_cleanup(&label);
 		}
 		if (roles)
 			cli_controls_role_preview_draw(ui, &frame, &preview);
@@ -468,7 +478,7 @@ static int cli_controls_select_menu(struct cli_controls_setup_ui *ui, const char
 		int result = morph_tui_widget_menu_state_update(&menu_state, key);
 
 		if (result == MORPH_TUI_WIDGET_CANCEL)
-			return -ECANCELED;
+			return NB_ERR_CANCELLED;
 		if (result == MORPH_TUI_WIDGET_BACK)
 			return CLI_CONTROLS_SETUP_BACK;
 		if (result == MORPH_TUI_WIDGET_SUBMIT)
@@ -486,11 +496,11 @@ static int cli_controls_edit(struct cli_controls_setup_ui *ui, const char *title
 			     const char *detail, char *value, size_t capacity, int secret)
 {
 	struct morph_tui_widget_editor_state editor = {0};
-	morph_buf_t shown = {0};
+	nb_buf shown NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc = morph_tui_widget_editor_state_init(&editor, secret ? "" : value, capacity, secret);
 
 	if (rc == 0)
-		rc = morph_buf_init(&shown, 128);
+		rc = (nb_buf_init(&shown), nb_buf_reserve(&shown, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
 		morph_tui_widget_editor_state_cleanup(&editor);
 		return rc;
@@ -498,7 +508,7 @@ static int cli_controls_edit(struct cli_controls_setup_ui *ui, const char *title
 	const char *validation = NULL;
 
 	for (;;) {
-		morph_buf_t frame;
+		nb_buf frame NB_CLEANUP(nb_buf_cleanup) = {0};
 		rc = cli_controls_frame_start(
 			ui, &frame, validation && ui->rows < 14 ? "Value required" : title,
 			editor.overflow ? "Value is too long. Shorten it before continuing."
@@ -509,22 +519,22 @@ static int cli_controls_edit(struct cli_controls_setup_ui *ui, const char *title
 		size_t width = ui->columns > 4 ? (size_t)ui->columns - 4 : 1;
 		size_t column;
 
-		morph_buf_reset(&shown);
+		nb_buf_clear(&shown);
 		rc = morph_tui_widget_editor_state_view(&editor, &shown, width, &column);
 		if (rc != 0) {
-			morph_buf_cleanup(&frame);
+			nb_buf_cleanup(&frame);
 			break;
 		}
 		int input_row = ui->frame_lines;
 
-		cli_controls_line(ui, &frame, "\033[36m", morph_buf_cstr_borrow(&shown));
+		cli_controls_line(ui, &frame, "\033[36m", nb_buf_cstr(&shown));
 		cli_controls_line(
 			ui, &frame, "\033[2m",
 			ui->columns < 60
 				? "Enter OK  Esc Back  ^U Clear"
 				: "Enter Continue · Esc Back · Ctrl+U Clear · Ctrl+C Exit");
 		ui->cursor_up = ui->frame_lines - input_row;
-		morph_buf_printf(&frame, "\033[%dA\r\033[%zuC\033[?25h", ui->cursor_up, column + 2);
+		nb_buf_printf(&frame, "\033[%dA\r\033[%zuC\033[?25h", ui->cursor_up, column + 2);
 		rc = cli_controls_frame_show(ui, &frame);
 		if (rc < 0)
 			break;
@@ -534,6 +544,10 @@ static int cli_controls_edit(struct cli_controls_setup_ui *ui, const char *title
 			rc = key;
 			break;
 		}
+		if (key == 4 && !editor.pasting) {
+			rc = NB_ERR_CANCELLED;
+			break;
+		}
 		int result = morph_tui_widget_editor_state_update(&editor, key);
 
 		if (result < 0) {
@@ -541,7 +555,7 @@ static int cli_controls_edit(struct cli_controls_setup_ui *ui, const char *title
 			break;
 		}
 		if (result == MORPH_TUI_WIDGET_CANCEL) {
-			rc = -ECANCELED;
+			rc = NB_ERR_CANCELLED;
 			break;
 		}
 		if (result == MORPH_TUI_WIDGET_BACK) {
@@ -550,7 +564,7 @@ static int cli_controls_edit(struct cli_controls_setup_ui *ui, const char *title
 		}
 		if (result == MORPH_TUI_WIDGET_SUBMIT) {
 			if (morph_tui_widget_editor_state_valid(&editor)) {
-				memcpy(value, editor.text.data, editor.text.len + 1);
+				memcpy(value, editor.text.ptr, editor.text.len + 1);
 				rc = cli_controls_record_answer(
 					ui, secret ? "API key entered (hidden)" : value);
 				break;
@@ -562,7 +576,7 @@ static int cli_controls_edit(struct cli_controls_setup_ui *ui, const char *title
 		}
 	}
 	morph_tui_widget_editor_state_cleanup(&editor);
-	morph_buf_cleanup(&shown);
+	nb_buf_cleanup(&shown);
 	return rc;
 }
 
@@ -617,7 +631,8 @@ static int cli_controls_credentials(struct cli_controls_setup_ui *ui,
 		for (;;) {
 			rc = cli_controls_edit(ui, "API key environment variable", hint, name,
 					       sizeof(name), 0);
-			if (rc < 0 || morph_env_name_valid(name))
+			if (rc < 0 || (nb_str_is_alnum(nb_str_from_cstr(name), "_") &&
+				       !((name)[0] >= '0' && (name)[0] <= '9')))
 				break;
 			hint = "Start with a letter or underscore; use letters, digits and "
 			       "underscores.";
@@ -626,7 +641,8 @@ static int cli_controls_credentials(struct cli_controls_setup_ui *ui,
 			continue;
 		if (rc < 0)
 			return rc;
-		if (morph_env_name_valid(name)) {
+		if ((nb_str_is_alnum(nb_str_from_cstr(name), "_") &&
+		     !((name)[0] >= '0' && (name)[0] <= '9'))) {
 			memset(entry->api_key, 0, sizeof(entry->api_key));
 			strcpy(entry->api_key_env, name);
 			ui->deferred[ui->step] = 1;
@@ -645,34 +661,34 @@ static int cli_controls_edit_token_count(struct cli_controls_setup_ui *ui,
 	char text[CLI_SETUP_TOKEN_INPUT_MAX] = "";
 	if (*value > 0)
 		snprintf(text, sizeof(text), "%d", *value);
-	morph_buf_t hint;
-	int rc = morph_buf_init(&hint, 0);
+	nb_buf hint NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&hint), nb_buf_reserve(&hint, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc < 0)
 		return rc;
-	morph_buf_printf(&hint, "Enter %d-%d tokens from your model's documentation.",
-			 output ? 1 : 2, ceiling);
-	if (hint.failed) {
-		morph_buf_cleanup(&hint);
-		return -ENOMEM;
+	nb_buf_printf(&hint, "Enter %d-%d tokens from your model's documentation.", output ? 1 : 2,
+		      ceiling);
+	if (nb_buf_status(&hint)) {
+		nb_buf_cleanup(&hint);
+		return NB_ERR_NOMEM;
 	}
 	for (;;) {
 		rc = cli_controls_edit(ui,
 				       output ? "Max output (tokens)" : "Context window (tokens)",
-				       morph_buf_cstr_borrow(&hint), text, sizeof(text), 0);
+				       nb_buf_cstr(&hint), text, sizeof(text), 0);
 		if (rc < 0)
 			break;
 		rc = cli_setup_parse_token_count(text, output ? 1 : 2, ceiling, value);
 		if (rc == 0)
 			break;
-		morph_buf_reset(&hint);
-		morph_buf_printf(&hint, "Invalid token count. Enter a whole number from %d to %d.",
-				 output ? 1 : 2, ceiling);
-		if (hint.failed) {
-			rc = -ENOMEM;
+		nb_buf_clear(&hint);
+		nb_buf_printf(&hint, "Invalid token count. Enter a whole number from %d to %d.",
+			      output ? 1 : 2, ceiling);
+		if (nb_buf_status(&hint)) {
+			rc = NB_ERR_NOMEM;
 			break;
 		}
 	}
-	morph_buf_cleanup(&hint);
+	nb_buf_cleanup(&hint);
 	if (rc < 0)
 		return rc;
 	if (!output && entry->max_tokens >= entry->context_limit)
@@ -722,56 +738,56 @@ static int cli_controls_advanced_settings(struct cli_controls_setup_ui *ui,
 
 	for (;;) {
 		ui->phase = CLI_CONTROLS_SETUP_PREFERENCES;
-		morph_buf_t labels;
-		int rc = morph_buf_init(&labels, 0);
+		nb_buf labels NB_CLEANUP(nb_buf_cleanup) = {0};
+		int rc = (nb_buf_init(&labels), nb_buf_reserve(&labels, 4096) ? 0 : NB_ERR_NOMEM);
 		if (rc < 0)
 			return rc;
 		/* Store offsets until the buffer stops growing. */
 		size_t offsets[5];
 		offsets[0] = labels.len;
-		morph_buf_printf(&labels, "Model    %s",
-				 entry->model[0] ? entry->model : "Choose a model");
-		morph_buf_putc(&labels, '\0');
+		nb_buf_printf(&labels, "Model    %s",
+			      entry->model[0] ? entry->model : "Choose a model");
+		nb_buf_append_char(&labels, '\0');
 		offsets[1] = labels.len;
-		morph_buf_printf(&labels, "API URL  %s",
-				 entry->api_base[0] ? entry->api_base : "Set URL");
-		morph_buf_putc(&labels, '\0');
+		nb_buf_printf(&labels, "API URL  %s",
+			      entry->api_base[0] ? entry->api_base : "Set URL");
+		nb_buf_append_char(&labels, '\0');
 		offsets[2] = labels.len;
 		int key_status = cli_controls_has_key(ui, entry);
 		if (key_status == 2)
-			morph_buf_puts(&labels, "API key  Save to config (hidden)");
+			nb_buf_append_cstr(&labels, "API key  Save to config (hidden)");
 		else if (key_status)
-			morph_buf_puts(&labels, "API key  Ready");
+			nb_buf_append_cstr(&labels, "API key  Ready");
 		else if (ui->deferred[ui->step] && entry->api_key_env[0])
-			morph_buf_printf(&labels, "API key  %s (not exported)", entry->api_key_env);
+			nb_buf_printf(&labels, "API key  %s (not exported)", entry->api_key_env);
 		else
-			morph_buf_puts(&labels, "API key  Not set yet");
-		morph_buf_putc(&labels, '\0');
+			nb_buf_append_cstr(&labels, "API key  Not set yet");
+		nb_buf_append_char(&labels, '\0');
 		for (int i = 3; i < 5; i++) {
 			offsets[i] = labels.len;
 			int tokens = i == 3 ? entry->context_limit : entry->max_tokens;
-			morph_buf_printf(&labels, "%s  ", i == 3 ? "Context window" : "Max output");
+			nb_buf_printf(&labels, "%s  ", i == 3 ? "Context window" : "Max output");
 			if (tokens > 0)
-				morph_buf_printf(&labels, "%d tokens", tokens);
+				nb_buf_printf(&labels, "%d tokens", tokens);
 			else
-				morph_buf_puts(&labels, "Required for this model");
-			morph_buf_putc(&labels, '\0');
+				nb_buf_append_cstr(&labels, "Required for this model");
+			nb_buf_append_char(&labels, '\0');
 		}
-		if (labels.failed) {
-			morph_buf_cleanup(&labels);
-			return -ENOMEM;
+		if (nb_buf_status(&labels)) {
+			nb_buf_cleanup(&labels);
+			return NB_ERR_NOMEM;
 		}
 		const char *items[] = {"Done",
-				       labels.data + offsets[0],
-				       labels.data + offsets[1],
-				       labels.data + offsets[2],
-				       labels.data + offsets[3],
-				       labels.data + offsets[4]};
+				       labels.ptr + offsets[0],
+				       labels.ptr + offsets[1],
+				       labels.ptr + offsets[2],
+				       labels.ptr + offsets[3],
+				       labels.ptr + offsets[4]};
 		int selected =
 			cli_controls_menu(ui, "Advanced settings",
 					  "Defaults work for most people. Edit only what you need.",
 					  items, chat ? 6 : 4, 0);
-		morph_buf_cleanup(&labels);
+		nb_buf_cleanup(&labels);
 		if (selected < 0)
 			return selected;
 		if (selected == 0) {
@@ -929,8 +945,8 @@ static int cli_controls_configure_model_ui(struct cli_controls_setup_ui *ui)
 
 static int cli_controls_review(struct cli_controls_setup_ui *ui)
 {
-	morph_buf_t labels = {0};
-	int rc = morph_buf_init(&labels, 0);
+	nb_buf labels NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&labels), nb_buf_reserve(&labels, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	int ready = 1;
@@ -946,31 +962,31 @@ static int cli_controls_review(struct cli_controls_setup_ui *ui)
 		if (!valid || (active && !cli_controls_has_key(ui, entry)))
 			ready = 0;
 		offsets[i] = labels.len;
-		morph_buf_printf(&labels, "%s · %s%s%s", cli_setup_model_label(i),
-				 active ? entry->model[0] ? entry->model : "Model required" : "Off",
-				 active ? (cli_controls_has_key(ui, entry) ? " · Key ready"
-									   : " · Key needed")
-					: "",
-				 required ? "" : " (optional)");
-		morph_buf_putc(&labels, '\0');
+		nb_buf_printf(&labels, "%s · %s%s%s", cli_setup_model_label(i),
+			      active ? entry->model[0] ? entry->model : "Model required" : "Off",
+			      active ? (cli_controls_has_key(ui, entry) ? " · Key ready"
+									: " · Key needed")
+				     : "",
+			      required ? "" : " (optional)");
+		nb_buf_append_char(&labels, '\0');
 	}
 	offsets[CLI_SETUP_MODEL_COUNT] = labels.len;
-	morph_buf_printf(&labels, "Instructions · %s",
-			 ui->state->replace_prompt    ? "Use role prompt"
-			 : ui->state->existing_prompt ? "Keep existing"
-						      : "Built-in");
-	if (labels.failed) {
-		morph_buf_cleanup(&labels);
-		return -ENOMEM;
+	nb_buf_printf(&labels, "Instructions · %s",
+		      ui->state->replace_prompt	   ? "Use role prompt"
+		      : ui->state->existing_prompt ? "Keep existing"
+						   : "Built-in");
+	if (nb_buf_status(&labels)) {
+		nb_buf_cleanup(&labels);
+		return NB_ERR_NOMEM;
 	}
 	const char *items[CLI_CONTROLS_SETUP_ACTION_COUNT] = {
 		!complete ? "Complete required settings →"
 		: ready	  ? "Save and exit →"
 			  : "Connect accounts and save →"};
 	for (int i = 0; i < CLI_SETUP_MODEL_COUNT; i++)
-		items[i + 1] = labels.data + offsets[i];
+		items[i + 1] = labels.ptr + offsets[i];
 	items[CLI_CONTROLS_SETUP_CHANGE_ROLE] = "Change role";
-	items[CLI_CONTROLS_SETUP_INSTRUCTIONS] = labels.data + offsets[CLI_SETUP_MODEL_COUNT];
+	items[CLI_CONTROLS_SETUP_INSTRUCTIONS] = labels.ptr + offsets[CLI_SETUP_MODEL_COUNT];
 	items[CLI_CONTROLS_SETUP_SAVE_LATER] = "Save for later (without connecting)";
 	items[CLI_CONTROLS_SETUP_CANCEL] = "Cancel without saving";
 	ui->phase = CLI_CONTROLS_SETUP_START;
@@ -978,7 +994,7 @@ static int cli_controls_review(struct cli_controls_setup_ui *ui)
 	int selected = cli_controls_menu(ui, "Review your setup",
 					 "Defaults are ready. Select a setting only to change it.",
 					 items, CLI_CONTROLS_SETUP_ACTION_COUNT, 0);
-	morph_buf_cleanup(&labels);
+	nb_buf_cleanup(&labels);
 	return selected;
 }
 
@@ -1025,7 +1041,9 @@ int cli_setup_controls_collect(struct cli_application *ctx, const char *path, FI
 					   .step = -1,
 					   .entries = state->entries,
 					   .state = state};
-	int signal_rc = morph_signal_listener_start(&ui.signals, cli_controls_setup_signal, &ui);
+	int signal_rc = nb_signal_listener_start(
+		&ui.signals, (const int[]){SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGWINCH}, 5,
+		cli_controls_setup_signal, &ui, NULL);
 
 	if (signal_rc != 0)
 		return signal_rc;
@@ -1034,7 +1052,7 @@ int cli_setup_controls_collect(struct cli_application *ctx, const char *path, FI
 		morph_tui_screen_open(&ui.screen, input, output, MORPH_TUI_TERMINAL_SESSION_PASTE);
 
 	if (enter_rc != 0) {
-		morph_signal_listener_stop(&ui.signals);
+		nb_signal_listener_stop(&ui.signals, NULL);
 		return enter_rc;
 	}
 	fputs("\r\n  morph  /  Setup\r\n\r\n", output);
@@ -1059,7 +1077,7 @@ int cli_setup_controls_collect(struct cli_application *ctx, const char *path, FI
 			}
 			if (rc < 0) {
 				if (rc == CLI_CONTROLS_SETUP_BACK)
-					rc = -ECANCELED;
+					rc = NB_ERR_CANCELLED;
 				break;
 			}
 			int changed = !ui.role_confirmed || state->role != rc;
@@ -1083,7 +1101,7 @@ int cli_setup_controls_collect(struct cli_application *ctx, const char *path, FI
 		if (rc < 0)
 			break;
 		if (rc == CLI_CONTROLS_SETUP_CANCEL) {
-			rc = -ECANCELED;
+			rc = NB_ERR_CANCELLED;
 			break;
 		}
 		if (rc == CLI_CONTROLS_SETUP_SAVE || rc == CLI_CONTROLS_SETUP_SAVE_LATER) {
@@ -1107,8 +1125,8 @@ int cli_setup_controls_collect(struct cli_application *ctx, const char *path, FI
 			break;
 		ui.step = CLI_SETUP_MODEL_COUNT;
 	}
-	morph_buf_t ending;
-	int ending_rc = morph_buf_init(&ending, 0);
+	nb_buf ending NB_CLEANUP(nb_buf_cleanup) = {0};
+	int ending_rc = (nb_buf_init(&ending), nb_buf_reserve(&ending, 4096) ? 0 : NB_ERR_NOMEM);
 	if (ending_rc == 0) {
 		cli_controls_clear_active(&ui, &ending);
 		ending_rc = cli_controls_frame_show(&ui, &ending);
@@ -1119,7 +1137,7 @@ int cli_setup_controls_collect(struct cli_application *ctx, const char *path, FI
 
 	if (rc == 0)
 		rc = leave_rc;
-	morph_signal_listener_stop(&ui.signals);
+	nb_signal_listener_stop(&ui.signals, NULL);
 	if (rc < 0)
 		return rc;
 	return 0;

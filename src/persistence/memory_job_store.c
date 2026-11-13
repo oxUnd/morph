@@ -1,7 +1,7 @@
 #include "memory_job_store.h"
 
-#include "util/cleanup.h"
-#include "util/error.h"
+#include "nb/cleanup.h"
+#include "errors.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -12,11 +12,11 @@ void memory_job_records_cleanup(struct memory_job_records *records)
 {
 	if (!records)
 		return;
-	for (size_t i = 0; i < records->rows.nelts; i++) {
-		struct memory_job_record *row = morph_array_borrow(&records->rows, i);
+	for (size_t i = 0; i < records->rows.len; i++) {
+		struct memory_job_record *row = nb_vec_at(&records->rows, i);
 		free(row->payload_json);
 	}
-	morph_array_cleanup(&records->rows);
+	nb_vec_cleanup(&records->rows);
 	memset(records, 0, sizeof(*records));
 }
 
@@ -30,16 +30,17 @@ static void memory_job_records_move(struct memory_job_records *destination,
 static int read_records(struct db *db, const char *sql, int64_t session_id, int limit,
 			struct memory_job_records *out)
 {
-	struct memory_job_records value MORPH_CLEANUP(memory_job_records_cleanup) = {0};
+	struct memory_job_records value NB_CLEANUP(memory_job_records_cleanup) = {0};
 	struct memory_job_record row;
 	sqlite3_stmt *stmt = NULL;
 	int rc;
 
 	if (!db || !db->handle || !out)
-		return -EINVAL;
-	if (out->rows.elts)
-		return -EEXIST;
-	rc = morph_array_init(&value.rows, MORPH_ARRAY_INIT_CAP, sizeof(row));
+		return NB_ERR_INVAL;
+	if (((void *)out->rows.data))
+		return NB_ERR_EXISTS;
+	rc = (nb_vec_init(&value.rows, sizeof(row)),
+	      nb_vec_reserve(&value.rows, 16) ? 0 : NB_ERR_NOMEM);
 	if (rc) {
 		return rc;
 	}
@@ -69,14 +70,14 @@ static int read_records(struct db *db, const char *sql, int64_t session_id, int 
 		snprintf(row.state, sizeof(row.state), "%s", state ? state : "");
 		row.payload_json = payload ? strdup(payload) : NULL;
 		if (payload && !row.payload_json) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			break;
 		}
-		struct memory_job_record *slot = morph_array_push_borrow(&value.rows);
+		struct memory_job_record *slot = nb_vec_push(&value.rows);
 
 		if (!slot) {
 			free(row.payload_json);
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			break;
 		}
 		*slot = row;
@@ -106,7 +107,7 @@ int memory_job_store_recent(struct db *db, int64_t session_id, int limit,
 			    struct memory_job_records *out)
 {
 	if (session_id < 0 || limit <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return read_records(
 		db,
 		"SELECT id,session_id,generation,NULL,state,worker_pid,attempts,error_code,stage "
@@ -122,11 +123,11 @@ int memory_job_store_add(struct db *db, int64_t session_id, int64_t memory_versi
 	int rc;
 
 	if (!db || !db->handle || session_id <= 0 || !payload_json || !id)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*id = 0;
 	mutex = sqlite3_db_mutex(db->handle);
 	if (!mutex)
-		return -ENOTSUP;
+		return NB_ERR_UNSUPPORTED;
 	/* Keep the insert and its connection-local identity indivisible. */
 	sqlite3_mutex_enter(mutex);
 	rc = sqlite3_prepare_v2(
@@ -155,10 +156,10 @@ static int change_job(struct db *db, int64_t id, const char *sql, const char *st
 	int rc;
 
 	if (!db || !db->handle || id <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	mutex = sqlite3_db_mutex(db->handle);
 	if (!mutex)
-		return -ENOTSUP;
+		return NB_ERR_UNSUPPORTED;
 	sqlite3_mutex_enter(mutex);
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc == SQLITE_OK) {
@@ -191,14 +192,14 @@ int memory_job_store_claim(struct db *db, int64_t id, int64_t worker_pid)
 int memory_job_store_requeue(struct db *db, int64_t id, const char *expected_state)
 {
 	if (!expected_state)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return change_job(db, id, "UPDATE memory_jobs SET state='queued' WHERE state=?1 AND id=?2",
 			  expected_state, 0);
 }
 
 int memory_job_store_complete(struct db *db, int64_t id, int error)
 {
-	const char *state = error == -ESTALE ? "cancelled" : error ? "failed" : "completed";
+	const char *state = error == NB_ERR_STALE ? "cancelled" : error ? "failed" : "completed";
 	int rc = change_job(
 		db, id,
 		"UPDATE memory_jobs SET state=?1,error_code=?3,content_revision=COALESCE("
@@ -213,7 +214,7 @@ int memory_job_store_complete(struct db *db, int64_t id, int error)
 int memory_job_store_stage(struct db *db, int64_t id, const char *stage)
 {
 	if (!stage || (strcmp(stage, "extract") && strcmp(stage, "organize")))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int rc = change_job(db, id,
 			    "UPDATE memory_jobs SET stage=?1,content_revision=COALESCE((SELECT "
 			    "content_revision "

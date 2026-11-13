@@ -1,16 +1,18 @@
 #include "sapi/cli/commands/mcp_manage.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "mcp/mcp.h"
 #include "config/config.h"
 #include "cJSON.h"
 #include "sapi/cli/services/management.h"
 #include "http/client.h"
 #include "runtime/mcp.h"
-#include "util/array.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/name.h"
-#include "tomlc17.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "nb/file.h"
+#include "nb/str.h"
+#include "nb/toml.h"
 #include <errno.h>
 #include <getopt.h>
 #include <limits.h>
@@ -90,7 +92,7 @@ static int cli_mcp_manage_mcp_parse(int argc, char **argv, const char *path,
 			options->command_index = i + 1;
 			prefix_argc = i;
 			if (i + 1 == argc)
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			break;
 		}
 	}
@@ -106,7 +108,7 @@ static int cli_mcp_manage_mcp_parse(int argc, char **argv, const char *path,
 			break;
 		case 'e':
 			if (options->env_count == MCP_ENV_MAX)
-				return -E2BIG;
+				return NB_ERR_TOO_BIG;
 			options->env[options->env_count++] = optarg;
 			break;
 		case CLI_MCP_MANAGE_MCP_OPTION_URL:
@@ -121,14 +123,14 @@ static int cli_mcp_manage_mcp_parse(int argc, char **argv, const char *path,
 		case CLI_MCP_MANAGE_MCP_OPTION_SCOPE:
 			if (strcmp(optarg, "user") != 0) {
 				fputs("morph: MCP currently supports --scope user only\n", stderr);
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			}
 			break;
 		case 'h':
 			options->action = "--help";
 			return 0;
 		default:
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 	}
 	if (optind < prefix_argc)
@@ -136,68 +138,72 @@ static int cli_mcp_manage_mcp_parse(int argc, char **argv, const char *path,
 	if (optind < prefix_argc && !options->url)
 		options->url = argv[optind++];
 	if (optind != prefix_argc)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (strcmp(options->action, "list") != 0 &&
 	    (!options->name || !cli_management_name_valid(options->name) ||
 	     strlen(options->name) >= MCP_SERVER_NAME_MAX))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (strcmp(options->action, "add") != 0 &&
 	    (options->url || options->transport || options->token_env || options->env_count ||
 	     options->replace || options->command_index))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (strcmp(options->action, "list") == 0 && options->name)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return 0;
 }
 
 /* JSON string quoting is also valid TOML basic-string quoting. */
-static int cli_mcp_manage_mcp_quote(morph_buf_t *buffer, const char *text)
+static int cli_mcp_manage_mcp_quote(nb_buf *buffer, const char *text)
 {
 	cJSON *item = cJSON_CreateString(text);
 	char *quoted = item ? cJSON_PrintUnformatted(item) : NULL;
 	int rc;
 
 	cJSON_Delete(item);
-	if (!quoted)
-		return buffer->failed = -ENOMEM;
-	rc = morph_buf_puts(buffer, quoted);
+	if (!quoted) {
+		nb_buf_set_error(buffer, NB_ERR_NOMEM);
+		return NB_ERR_NOMEM;
+	}
+	rc = (nb_buf_append_cstr(buffer, quoted) ? 0 : NB_ERR_NOMEM);
 	free(quoted);
 	return rc;
 }
 
-static int cli_mcp_manage_mcp_field(morph_buf_t *buffer, const char *key, const char *value)
+static int cli_mcp_manage_mcp_field(nb_buf *buffer, const char *key, const char *value)
 {
-	morph_buf_printf(buffer, "%s = ", key);
+	nb_buf_printf(buffer, "%s = ", key);
 	cli_mcp_manage_mcp_quote(buffer, value);
-	morph_buf_putc(buffer, '\n');
-	return buffer->failed;
+	nb_buf_append_char(buffer, '\n');
+	return nb_buf_status(buffer);
 }
 
 static int cli_mcp_manage_mcp_build(const struct cli_mcp_manage_mcp_options *options, int argc,
-				    char **argv, morph_buf_t *buffer)
+				    char **argv, nb_buf *buffer)
 {
 	const char *transport =
 		options->transport ? options->transport : (options->url ? "http" : "stdio");
 
 	if (strcmp(transport, "http") != 0 && strcmp(transport, "stdio") != 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (strcmp(transport, "http") == 0) {
 		if (!options->url || options->command_index || options->env_count ||
 		    (strncmp(options->url, "https://", 8) != 0 &&
 		     strncmp(options->url, "http://", 7) != 0) ||
 		    strlen(options->url) >= PATH_MAX)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 	} else if (!options->command_index || options->url || options->token_env) {
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
-	morph_buf_puts(buffer, "\n[[mcp.servers]]\n");
+	nb_buf_append_cstr(buffer, "\n[[mcp.servers]]\n");
 	cli_mcp_manage_mcp_field(buffer, "name", options->name);
 	cli_mcp_manage_mcp_field(buffer, "transport", transport);
 	if (options->url)
 		cli_mcp_manage_mcp_field(buffer, "url", options->url);
 	if (options->token_env) {
-		if (!morph_env_name_valid(options->token_env) || strlen(options->token_env) >= 64)
-			return -EINVAL;
+		if (!(nb_str_is_alnum(nb_str_from_cstr(options->token_env), "_") &&
+		      !((options->token_env)[0] >= '0' && (options->token_env)[0] <= '9')) ||
+		    strlen(options->token_env) >= 64)
+			return NB_ERR_INVAL;
 		cli_mcp_manage_mcp_field(buffer, "auth_token_env", options->token_env);
 	}
 	if (options->command_index) {
@@ -205,20 +211,20 @@ static int cli_mcp_manage_mcp_build(const struct cli_mcp_manage_mcp_options *opt
 
 		if (!argv[index][0] || strlen(argv[index]) >= 256 ||
 		    argc - index - 1 > MCP_CMD_ARGS_MAX)
-			return -E2BIG;
+			return NB_ERR_TOO_BIG;
 		cli_mcp_manage_mcp_field(buffer, "command", argv[index++]);
-		morph_buf_puts(buffer, "args = [");
+		nb_buf_append_cstr(buffer, "args = [");
 		for (int i = index; i < argc; i++) {
 			if (strlen(argv[i]) >= MCP_CMD_ARG_LEN_MAX)
-				return -E2BIG;
+				return NB_ERR_TOO_BIG;
 			if (i != index)
-				morph_buf_puts(buffer, ", ");
+				nb_buf_append_cstr(buffer, ", ");
 			cli_mcp_manage_mcp_quote(buffer, argv[i]);
 		}
-		morph_buf_puts(buffer, "]\n");
+		nb_buf_append_cstr(buffer, "]\n");
 	}
 	if (options->env_count) {
-		morph_buf_puts(buffer, "env = { ");
+		nb_buf_append_cstr(buffer, "env = { ");
 		for (int i = 0; i < options->env_count; i++) {
 			const char *pair = options->env[i];
 			const char *equal = strchr(pair, '=');
@@ -226,20 +232,21 @@ static int cli_mcp_manage_mcp_build(const struct cli_mcp_manage_mcp_options *opt
 
 			if (!equal || equal == pair || (size_t)(equal - pair) >= sizeof(key) ||
 			    strlen(equal + 1) >= MCP_ENV_VAL_MAX)
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			memcpy(key, pair, (size_t)(equal - pair));
 			key[equal - pair] = '\0';
-			if (!morph_env_name_valid(key))
-				return -EINVAL;
+			if (!(nb_str_is_alnum(nb_str_from_cstr(key), "_") &&
+			      !((key)[0] >= '0' && (key)[0] <= '9')))
+				return NB_ERR_INVAL;
 			if (i)
-				morph_buf_puts(buffer, ", ");
+				nb_buf_append_cstr(buffer, ", ");
 			cli_mcp_manage_mcp_quote(buffer, key);
-			morph_buf_puts(buffer, " = ");
+			nb_buf_append_cstr(buffer, " = ");
 			cli_mcp_manage_mcp_quote(buffer, equal + 1);
 		}
-		morph_buf_puts(buffer, " }\n");
+		nb_buf_append_cstr(buffer, " }\n");
 	}
-	return buffer->failed;
+	return nb_buf_status(buffer);
 }
 
 struct cli_mcp_manage_mcp_header {
@@ -256,35 +263,37 @@ static const char *cli_mcp_manage_mcp_line(const char *text, int line)
 	return text;
 }
 
-static int cli_mcp_manage_mcp_headers(const toml_datum_t *node, const toml_datum_t *selected,
-				      const char *text, int selected_parent, morph_array_t *headers)
+static int cli_mcp_manage_mcp_headers(const nb_toml_value *node, const nb_toml_value *selected,
+				      const char *text, int selected_parent, nb_vec *headers)
 {
 	int remove = selected_parent || node == selected;
 
-	if (node->type == TOML_TABLE) {
-		const char *line = cli_mcp_manage_mcp_line(text, node->lineno);
+	if (nb_toml_type_of(node) == NB_TOML_TABLE) {
+		const char *line = cli_mcp_manage_mcp_line(text, nb_toml_location_of(node).line);
 
 		while (*line == ' ' || *line == '\t')
 			line++;
-		if (node->lineno > 0 && *line == '[' && !(node->flag & TOML_FLAG_INLINED)) {
-			struct cli_mcp_manage_mcp_header *header = morph_array_push_borrow(headers);
+		if (nb_toml_location_of(node).line > 0 && *line == '[' &&
+		    !nb_toml_location_of(node).inline_table) {
+			struct cli_mcp_manage_mcp_header *header = nb_vec_push(headers);
 
 			if (!header)
-				return -ENOMEM;
-			header->line = node->lineno;
+				return NB_ERR_NOMEM;
+			header->line = nb_toml_location_of(node).line;
 			header->remove = remove;
 		}
-		for (int i = 0; i < node->u.tab.size; i++) {
-			int rc = cli_mcp_manage_mcp_headers(&node->u.tab.value[i], selected, text,
-							    remove, headers);
+		for (size_t i = 0; i < nb_toml_table_size(node); i++) {
+			int rc = cli_mcp_manage_mcp_headers(
+				nb_toml_table_value_at(node, (size_t)(i)), selected, text, remove,
+				headers);
 
 			if (rc != 0)
 				return rc;
 		}
-	} else if (node->type == TOML_ARRAY) {
-		for (int i = 0; i < node->u.arr.size; i++) {
-			int rc = cli_mcp_manage_mcp_headers(&node->u.arr.elem[i], selected, text,
-							    remove, headers);
+	} else if (nb_toml_type_of(node) == NB_TOML_ARRAY) {
+		for (size_t i = 0; i < nb_toml_array_size(node); i++) {
+			int rc = cli_mcp_manage_mcp_headers(nb_toml_array_get(node, (size_t)(i)),
+							    selected, text, remove, headers);
 
 			if (rc != 0)
 				return rc;
@@ -303,24 +312,23 @@ static int cli_mcp_manage_mcp_header_compare(const void *left, const void *right
 	return (a->line > b->line) - (a->line < b->line);
 }
 
-static int cli_mcp_manage_mcp_without_server(const toml_result_t *parsed,
-					     const toml_datum_t *server, const char *text,
-					     morph_buf_t *output)
+static int cli_mcp_manage_mcp_without_server(const nb_toml *parsed, const nb_toml_value *server,
+					     const char *text, nb_buf *output)
 {
-	morph_array_t headers = {0};
+	nb_vec headers = {0};
 	const char *cursor = text;
-	int rc = morph_array_init(&headers, 16, sizeof(struct cli_mcp_manage_mcp_header));
+	int rc = (nb_vec_init(&headers, sizeof(struct cli_mcp_manage_mcp_header)),
+		  nb_vec_reserve(&headers, 16) ? 0 : NB_ERR_NOMEM);
 
 	if (rc != 0)
 		return rc;
-	rc = cli_mcp_manage_mcp_headers(&parsed->toptab, server, text, 0, &headers);
+	rc = cli_mcp_manage_mcp_headers(nb_toml_root(parsed), server, text, 0, &headers);
 	if (rc == 0) {
-		qsort(headers.elts, headers.nelts, headers.size, cli_mcp_manage_mcp_header_compare);
-		for (size_t i = 0; i < headers.nelts; i++) {
-			const struct cli_mcp_manage_mcp_header *header =
-				morph_array_borrow(&headers, i);
-			const struct cli_mcp_manage_mcp_header *next =
-				morph_array_borrow(&headers, i + 1);
+		qsort(((void *)headers.data), headers.len, headers.elem_size,
+		      cli_mcp_manage_mcp_header_compare);
+		for (size_t i = 0; i < headers.len; i++) {
+			const struct cli_mcp_manage_mcp_header *header = nb_vec_at(&headers, i);
+			const struct cli_mcp_manage_mcp_header *next = nb_vec_at(&headers, i + 1);
 			const char *start;
 			const char *end;
 
@@ -331,7 +339,7 @@ static int cli_mcp_manage_mcp_without_server(const toml_result_t *parsed,
 				   : text + strlen(text);
 			if (start < cursor)
 				continue;
-			morph_buf_append(output, cursor, (size_t)(start - cursor));
+			nb_buf_append(output, cursor, (size_t)(start - cursor));
 			/* Retain comments and whitespace introducing the next section. */
 			const char *tail = end;
 			while (tail > start) {
@@ -349,61 +357,78 @@ static int cli_mcp_manage_mcp_without_server(const toml_result_t *parsed,
 					break;
 				tail = previous;
 			}
-			morph_buf_append(output, tail, (size_t)(end - tail));
+			nb_buf_append(output, tail, (size_t)(end - tail));
 			cursor = end;
 		}
-		morph_buf_puts(output, cursor);
-		rc = output->failed;
+		nb_buf_append_cstr(output, cursor);
+		rc = nb_buf_status(output);
 	}
-	morph_array_cleanup(&headers);
+	nb_vec_cleanup(&headers);
 	return rc;
 }
 
-static int cli_mcp_manage_mcp_read_command(struct morph_log *logger,
+static int cli_mcp_manage_mcp_read_command(struct nb_log *logger,
 					   const struct cli_mcp_manage_mcp_options *options,
-					   const char *path, const toml_datum_t *servers)
+					   const char *path, const nb_toml_value *servers)
 {
-	int count = servers->type == TOML_ARRAY ? servers->u.arr.size : 0;
+	size_t count = nb_toml_type_of(servers) == NB_TOML_ARRAY ? nb_toml_array_size(servers) : 0;
 
-	for (int i = 0; i < count; i++) {
-		toml_datum_t server = servers->u.arr.elem[i];
-		toml_datum_t name = toml_get(server, "name");
-		toml_datum_t transport = toml_get(server, "transport");
-		toml_datum_t target = toml_get(
-			server, transport.type == TOML_STRING && strcmp(transport.u.s, "http") == 0
+	for (size_t i = 0; i < count; i++) {
+		const nb_toml_value *server = nb_toml_array_get(servers, (size_t)(i));
+		const nb_toml_value *name = nb_toml_table_get_cstr(server, "name");
+		const nb_toml_value *transport = nb_toml_table_get_cstr(server, "transport");
+		const nb_toml_value *target = nb_toml_table_get_cstr(
+			server, nb_toml_type_of(transport) == NB_TOML_STRING &&
+						strcmp(nb_toml_string(transport).ptr, "http") == 0
 					? "url"
 					: "command");
 
-		if (name.type != TOML_STRING)
+		if (nb_toml_type_of(name) != NB_TOML_STRING)
 			continue;
 		if (strcmp(options->action, "list") == 0) {
-			printf("%s\t%s\t%s\n", name.u.s,
-			       transport.type == TOML_STRING ? transport.u.s : "stdio",
-			       target.type == TOML_STRING ? target.u.s : "");
+			printf("%s\t%s\t%s\n", nb_toml_string(name).ptr,
+			       nb_toml_type_of(transport) == NB_TOML_STRING
+				       ? nb_toml_string(transport).ptr
+				       : "stdio",
+			       nb_toml_type_of(target) == NB_TOML_STRING
+				       ? nb_toml_string(target).ptr
+				       : "");
 			continue;
 		}
-		if (strcmp(options->name, name.u.s) != 0)
+		if (strcmp(options->name, nb_toml_string(name).ptr) != 0)
 			continue;
 		if (strcmp(options->action, "get") == 0) {
-			printf("Name: %s\nTransport: %s\nTarget: %s\nConfig: %s\n", name.u.s,
-			       transport.type == TOML_STRING ? transport.u.s : "stdio",
-			       target.type == TOML_STRING ? target.u.s : "", path);
-			toml_datum_t args = toml_get(server, "args");
-			toml_datum_t env = toml_get(server, "env");
-			toml_datum_t token = toml_get(server, "auth_token_env");
+			printf("Name: %s\nTransport: %s\nTarget: %s\nConfig: %s\n",
+			       nb_toml_string(name).ptr,
+			       nb_toml_type_of(transport) == NB_TOML_STRING
+				       ? nb_toml_string(transport).ptr
+				       : "stdio",
+			       nb_toml_type_of(target) == NB_TOML_STRING
+				       ? nb_toml_string(target).ptr
+				       : "",
+			       path);
+			const nb_toml_value *args = nb_toml_table_get_cstr(server, "args");
+			const nb_toml_value *env = nb_toml_table_get_cstr(server, "env");
+			const nb_toml_value *token =
+				nb_toml_table_get_cstr(server, "auth_token_env");
 
-			if (args.type == TOML_ARRAY) {
-				for (int j = 0; j < args.u.arr.size; j++) {
-					if (args.u.arr.elem[j].type == TOML_STRING)
-						printf("Arg: %s\n", args.u.arr.elem[j].u.s);
+			if (nb_toml_type_of(args) == NB_TOML_ARRAY) {
+				for (size_t j = 0; j < nb_toml_array_size(args); j++) {
+					if (nb_toml_type_of(nb_toml_array_get(args, (size_t)(j))) ==
+					    NB_TOML_STRING)
+						printf("Arg: %s\n",
+						       nb_toml_string(
+							       nb_toml_array_get(args, (size_t)(j)))
+							       .ptr);
 				}
 			}
-			if (env.type == TOML_TABLE) {
-				for (int j = 0; j < env.u.tab.size; j++)
-					printf("Env: %s=<redacted>\n", env.u.tab.key[j]);
+			if (nb_toml_type_of(env) == NB_TOML_TABLE) {
+				for (size_t j = 0; j < nb_toml_table_size(env); j++)
+					printf("Env: %s=<redacted>\n",
+					       nb_toml_table_key_at(env, (size_t)(j)).ptr);
 			}
-			if (token.type == TOML_STRING)
-				printf("Token environment: %s\n", token.u.s);
+			if (nb_toml_type_of(token) == NB_TOML_STRING)
+				printf("Token environment: %s\n", nb_toml_string(token).ptr);
 			return 0;
 		}
 		struct config *config = calloc(1, sizeof(*config));
@@ -412,11 +437,11 @@ static int cli_mcp_manage_mcp_read_command(struct morph_log *logger,
 		int rc;
 
 		if (!config)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		config_set_defaults(logger, config);
 		rc = config_load(logger, config, path);
-		if (rc == 0 && i >= config->mcp.server_count)
-			rc = -E2BIG;
+		if (rc == 0 && i >= (size_t)config->mcp.server_count)
+			rc = NB_ERR_TOO_BIG;
 		if (rc == 0)
 			rc = runtime_mcp_server_config_from_config(&config->mcp.servers[i],
 								   &connection);
@@ -426,29 +451,34 @@ static int cli_mcp_manage_mcp_read_command(struct morph_log *logger,
 		http_init(logger);
 		rc = mcp_test_connection(&connection, message, sizeof(message));
 		http_cleanup();
-		printf("%s: %s\n", name.u.s, message);
+		printf("%s: %s\n", nb_toml_string(name).ptr, message);
 		return rc;
 	}
 	if (strcmp(options->action, "list") == 0)
 		return 0;
-	return -ENOENT;
+	return NB_ERR_NOT_FOUND;
 }
 
-static void cli_mcp_manage_toml_cleanup(toml_result_t *parsed)
-{
-	toml_free(*parsed);
-	memset(parsed, 0, sizeof(*parsed));
-}
-
-static int cli_mcp_manage_mcp_apply(struct morph_log *logger,
+static int cli_mcp_manage_mcp_apply(struct nb_log *logger,
 				    const struct cli_mcp_manage_mcp_options *options, int argc,
 				    char **argv, const char *path)
 {
-	char *text MORPH_CLEANUP(morph_charp_cleanup) = file_read_all_copy(path, NULL);
-	toml_result_t parsed MORPH_CLEANUP(cli_mcp_manage_toml_cleanup) = {0};
-	toml_datum_t servers = {0};
-	const toml_datum_t *selected = NULL;
-	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
+	nb_err parse_error = {0};
+	char *text NB_CLEANUP(nb_charp_cleanup) =
+		(nb_file_read_all(path, &file_value_1, 0, NULL) == NB_OK &&
+				 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
+				   nb_buf_len(&file_value_1) + 1),
+			    nb_charp_steal(&file_copy_1))
+			 : NULL);
+	nb_toml *parsed NB_CLEANUP(nb_toml_cleanup) = {0};
+	const nb_toml_value *servers = {0};
+	const nb_toml_value *selected = NULL;
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
 	struct config_validation_error error = {0};
 	int add = strcmp(options->action, "add") == 0;
 	int remove = strcmp(options->action, "remove") == 0;
@@ -457,75 +487,83 @@ static int cli_mcp_manage_mcp_apply(struct morph_log *logger,
 	if (!text && errno == ENOENT)
 		text = strdup("");
 	if (!text)
-		return -EIO;
+		return NB_ERR_IO;
 	if (strlen(text) > 1024 * 1024) {
-		rc = (-EFBIG);
+		rc = (NB_ERR_TOO_BIG);
 		return rc;
 	}
-	parsed = toml_parse(text, (int)strlen(text));
-	if (!parsed.ok) {
-		fprintf(stderr, "morph: invalid config: %s\n", parsed.errmsg);
-		rc = (MORPH_ERR_PARSE);
+	parsed = nb_toml_parse(nb_str_from_cstr(text), &parse_error);
+	if (!parsed) {
+		fprintf(stderr, "morph: invalid config: %s\n", parse_error.msg);
+		rc = (NB_ERR_PARSE);
 		return rc;
 	}
-	servers = toml_get(toml_get(parsed.toptab, "mcp"), "servers");
+	servers = nb_toml_table_get_cstr(nb_toml_table_get_cstr(nb_toml_root(parsed), "mcp"),
+					 "servers");
 	if (!add && !remove) {
-		rc = cli_mcp_manage_mcp_read_command(logger, options, path, &servers);
+		rc = cli_mcp_manage_mcp_read_command(logger, options, path, servers);
 		return rc;
 	}
-	if (servers.type == TOML_ARRAY) {
-		if (servers.flag & TOML_FLAG_INLINED) {
+	if (nb_toml_type_of(servers) == NB_TOML_ARRAY) {
+		if (nb_toml_location_of(servers).line != 0) {
 			fputs("morph: convert inline MCP servers to "
 			      "[[mcp.servers]] before editing\n",
 			      stderr);
-			rc = (-ENOTSUP);
+			rc = (NB_ERR_UNSUPPORTED);
 			return rc;
 		}
-		for (int i = 0; i < servers.u.arr.size; i++) {
-			toml_datum_t name = toml_get(servers.u.arr.elem[i], "name");
+		for (size_t i = 0; i < nb_toml_array_size(servers); i++) {
+			const nb_toml_value *name = nb_toml_table_get_cstr(
+				nb_toml_array_get(servers, (size_t)(i)), "name");
 
-			if (name.type == TOML_STRING && strcmp(name.u.s, options->name) == 0) {
+			if (nb_toml_type_of(name) == NB_TOML_STRING &&
+			    strcmp(nb_toml_string(name).ptr, options->name) == 0) {
 				if (selected) {
-					rc = (-EEXIST);
+					rc = (NB_ERR_EXISTS);
 					return rc;
 				}
-				selected = &servers.u.arr.elem[i];
+				selected = nb_toml_array_get(servers, (size_t)(i));
 			}
 		}
 	}
 	if ((add && selected && !options->replace) ||
-	    (add && !selected && servers.type == TOML_ARRAY &&
-	     servers.u.arr.size >= MCP_SERVER_MAX)) {
-		rc = (-EEXIST);
+	    (add && !selected && nb_toml_type_of(servers) == NB_TOML_ARRAY &&
+	     nb_toml_array_size(servers) >= MCP_SERVER_MAX)) {
+		rc = (NB_ERR_EXISTS);
 		return rc;
 	}
 	if (remove && !selected) {
-		rc = (-ENOENT);
+		rc = (NB_ERR_NOT_FOUND);
 		return rc;
 	}
-	rc = morph_buf_init(&output, 0);
+	rc = (nb_buf_init(&output), nb_buf_reserve(&output, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	if (selected)
-		rc = cli_mcp_manage_mcp_without_server(&parsed, selected, text, &output);
+		rc = cli_mcp_manage_mcp_without_server(parsed, selected, text, &output);
 	else
-		rc = morph_buf_puts(&output, text);
+		rc = (nb_buf_append_cstr(&output, text) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && add)
 		rc = cli_mcp_manage_mcp_build(options, argc, argv, &output);
 	if (rc == 0)
-		rc = config_validate_text(morph_buf_cstr_borrow(&output), &error);
+		rc = config_validate_text(nb_buf_cstr(&output), &error);
 	if (rc != 0 && error.message[0])
 		fprintf(stderr, "morph: invalid config: %s\n", error.message);
 	if (rc == 0)
-		rc = cli_management_atomic_write(path, morph_buf_cstr_borrow(&output), output.len);
+		rc = nb_file_write_all_atomic(
+			path, nb_buf_cstr(&output), output.len,
+			&(nb_file_write_options){.new_file_mode = 0600, .sync_dir = true}, NULL);
 	if (rc == 0)
 		printf("%s MCP server '%s' in %s (user scope).\n", remove ? "Removed" : "Saved",
 		       options->name, path);
 	return rc;
 }
 
-int cli_mcp_manage_run(struct morph_log *logger, int argc, char **argv, const char *config_path)
+int cli_mcp_manage_run(struct nb_log *logger, int argc, char **argv, const char *config_path)
 {
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	struct cli_mcp_manage_mcp_options options;
 	char *path;
 	char *lock_path;
@@ -546,13 +584,20 @@ int cli_mcp_manage_run(struct morph_log *logger, int argc, char **argv, const ch
 		cli_mcp_manage_mcp_usage();
 		return 2;
 	}
-	path = file_expand_path_copy(options.config ? options.config : "~/.morph/config.toml");
+	path = (nb_path_expand(&file_value_2,
+			       options.config ? options.config : "~/.morph/config.toml",
+			       NULL) == NB_OK
+			? strdup(nb_buf_cstr(&file_value_2))
+			: NULL);
 	if (!path)
-		return cli_management_error(-ENOMEM, "configuration path");
-	lock_path = file_path_append_alloc(path, ".lock");
+		return cli_management_error(NB_ERR_NOMEM, "configuration path");
+	lock_path =
+		(nb_buf_clear(&file_value_3), nb_buf_printf(&file_value_3, "%s%s", path, ".lock")
+						      ? strdup(nb_buf_cstr(&file_value_3))
+						      : NULL);
 	if (!lock_path) {
 		free(path);
-		return cli_management_error(-ENOMEM, "configuration lock");
+		return cli_management_error(NB_ERR_NOMEM, "configuration lock");
 	}
 	if (strcmp(options.action, "add") == 0 || strcmp(options.action, "remove") == 0) {
 		struct stat st;
@@ -560,14 +605,14 @@ int cli_mcp_manage_run(struct morph_log *logger, int argc, char **argv, const ch
 		char *slash = parent ? strrchr(parent, '/') : NULL;
 
 		if (!parent)
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 		else if (slash) {
 			*slash = '\0';
-			rc = file_ensure_dir(*parent ? parent : "/");
+			rc = nb_file_mkdir(*parent ? parent : "/", true, NULL);
 		}
 		free(parent);
 		if (rc == 0 && lstat(path, &st) == 0 && !S_ISREG(st.st_mode))
-			rc = -ELOOP;
+			rc = NB_ERR_LOOP;
 		if (rc == 0) {
 			fd = cli_management_lock(lock_path);
 			if (fd < 0)

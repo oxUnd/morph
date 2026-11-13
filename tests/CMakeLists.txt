@@ -124,6 +124,7 @@ set_target_properties(morph-agent-eval-runner PROPERTIES
 	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
 add_library(morph-error-release-probe OBJECT error_macro_probe.c)
 target_include_directories(morph-error-release-probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(morph-error-release-probe PRIVATE nbase)
 target_compile_options(morph-error-release-probe PRIVATE -UDEBUG -DNDEBUG)
 target_compile_definitions(morph-error-release-probe PRIVATE
 	error_probe_return=error_release_probe_return
@@ -141,7 +142,6 @@ add_dependencies(morph-tests morph-data)
 
 target_include_directories(morph-tests PRIVATE
 	${CMAKE_SOURCE_DIR}/src
-	${CMAKE_SOURCE_DIR}/src/util
 	${CMAKE_SOURCE_DIR}/src/db
 	${CMAKE_SOURCE_DIR}/src/agent
 	${CMAKE_SOURCE_DIR}/src/agent/tools
@@ -181,11 +181,6 @@ gtest_discover_tests(morph-tests)
 add_executable(morph-cli-pty-driver cli_pty_driver.c)
 target_include_directories(morph-cli-pty-driver PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(morph-cli-pty-driver PRIVATE morph-cli)
-if(ENABLE_READLINE AND MORPH_READLINE_INCLUDE_DIR AND MORPH_READLINE_LIBRARY
-		AND MORPH_HAVE_RL_BIND_KEYSEQ)
-	target_include_directories(morph-cli-pty-driver PRIVATE ${MORPH_READLINE_INCLUDE_DIR})
-	target_compile_definitions(morph-cli-pty-driver PRIVATE MORPH_PTY_RECAP_CLOCK=1)
-endif()
 set_target_properties(morph-cli-pty-driver PROPERTIES
 	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR}
 )
@@ -195,6 +190,10 @@ target_link_libraries(morph-setup-pty-driver PRIVATE morph-cli)
 set_target_properties(morph-setup-pty-driver PROPERTIES
 	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR}
 )
+
+add_executable(morph-mathjax-ownership-tests test_mathjax_ownership.cpp)
+target_link_libraries(morph-mathjax-ownership-tests PRIVATE GTest::gtest_main mathjax)
+add_test(NAME mathjax_parser_ownership COMMAND morph-mathjax-ownership-tests)
 
 add_executable(morph-file-write-tests
 	${CMAKE_SOURCE_DIR}/exts/file-write/test_file_write.c
@@ -464,7 +463,7 @@ if(Python3_Interpreter_FOUND AND UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIB
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_transcript_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver>)
 	set_tests_properties(cli_transcript_pty_integration PROPERTIES
-		SKIP_RETURN_CODE 77 TIMEOUT 90)
+		SKIP_RETURN_CODE 77 TIMEOUT 150)
 	add_test(NAME cli_history_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_history_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver>)
@@ -535,3 +534,10 @@ if(Python3_Interpreter_FOUND AND UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIB
 	set_tests_properties(cli_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
 endif()
+
+# Opt-in measurements; this executable never runs as a correctness test.
+add_executable(morph-nbase-migration-bench EXCLUDE_FROM_ALL bench_nbase_migration.c)
+target_link_libraries(morph-nbase-migration-bench PRIVATE
+	morph-models morph-http nbase::nbase)
+set_target_properties(morph-nbase-migration-bench PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})

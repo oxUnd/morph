@@ -1,9 +1,9 @@
 #include "img_info.h"
-#include "util/json.h"
-#include "util/cleanup.h"
+#include "cJSON.h"
+#include "nb/cleanup.h"
 #include "agent/tool_context.h"
-#include "util/log.h"
-#include "util/error.h"
+#include "nb/log.h"
+#include "errors.h"
 #include "cJSON.h"
 #include "stb_image.h"
 #include <errno.h>
@@ -27,12 +27,13 @@ static const char *fmt_name(const char *path)
 static int img_info_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct tool_context *tctx = user_data;
-	if (!result) return -EINVAL;
+	if (!result)
+		return NB_ERR_INVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
 		(void)tool_result_success_json_text_copy(result, "{\"error\":\"invalid JSON\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	cJSON *f = cJSON_GetObjectItem(root, "file_path");
 	const char *file_path = cJSON_IsString(f) ? f->valuestring : NULL;
@@ -41,7 +42,7 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"missing 'file_path' parameter. "
 				"Usage: img_info({\\\"file_path\\\": \\\"img.png\\\"})\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	char resolved_path[PATH_MAX];
@@ -51,7 +52,7 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 						     sizeof(resolved_path));
 		if (rc < 0) {
 			cJSON_Delete(root);
-			if (rc == -ENOENT)
+			if (rc == NB_ERR_NOT_FOUND)
 				(void)tool_result_success_json_text_copy(
 					result, "{\"error\":\"not a valid image\"}");
 			else
@@ -70,7 +71,7 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text_copy(result,
 							 "{\"error\":\"not a valid image\"}");
-		return MORPH_ERR_FORMAT;
+		return NB_ERR_FORMAT;
 	}
 
 	cJSON *out = cJSON_CreateObject();
@@ -79,7 +80,7 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 	cJSON_AddNumberToObject(out, "height", h);
 	cJSON_AddNumberToObject(out, "channels", ch);
 	cJSON_AddStringToObject(out, "format", fmt_name(file_path));
-	char *str MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(out);
+	char *str NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(out);
 	cJSON_Delete(out);
 	cJSON_Delete(root);
 	(void)tool_result_success_json_text_copy(result, str);
@@ -88,7 +89,8 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 
 int img_info_init(struct tool_registry *reg, struct tool_context *tctx)
 {
-	if (!reg) return -EINVAL;
+	if (!reg)
+		return NB_ERR_INVAL;
 	return tool_register_borrow(
 		reg,
 		&(struct tool_spec){

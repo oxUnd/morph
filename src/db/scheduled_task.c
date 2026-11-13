@@ -1,9 +1,11 @@
 #include "scheduled_task.h"
-#include "util/cleanup.h"
-#include "util/id.h"
-#include "util/array.h"
-#include "util/error.h"
-#include "util/log.h"
+#include "nb/cleanup.h"
+#include "nb/random.h"
+#include "nb/encoding.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/log.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <limits.h>
@@ -25,22 +27,26 @@ static void task_stmt_cleanup(sqlite3_stmt **stmt)
 	*stmt = NULL;
 }
 
-static void task_array_cleanup(morph_array_t *array)
+static void task_array_cleanup(nb_vec *array)
 {
 	struct scheduled_task *task;
 
-	morph_array_foreach(task, array, struct scheduled_task)
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(array) && (task = (struct scheduled_task *)nb_vec_at(array, _i_));
+	     _i_++)
 		scheduled_task_cleanup(task);
-	morph_array_cleanup(array);
+	nb_vec_cleanup(array);
 }
 
-static void notification_array_cleanup(morph_array_t *array)
+static void notification_array_cleanup(nb_vec *array)
 {
 	struct notification *notification;
 
-	morph_array_foreach(notification, array, struct notification)
+	for (size_t _i_ = 0; _i_ < nb_vec_len(array) &&
+			     (notification = (struct notification *)nb_vec_at(array, _i_));
+	     _i_++)
 		notification_cleanup(notification);
-	morph_array_cleanup(array);
+	nb_vec_cleanup(array);
 }
 
 static void task_batch_cleanup(struct task_batch *batch)
@@ -80,10 +86,10 @@ static int task_emit_event(const struct scheduled_task_event_sink *events,
 	if (!events || !events->cb)
 		return 0;
 	if (!name || !task)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	data = cJSON_CreateObject();
 	if (!data)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (!cJSON_AddNumberToObject(data, "task_id", (double)task->id) ||
 	    !cJSON_AddNumberToObject(data, "source_session_id",
 				     (double)task->source_session_id) ||
@@ -101,23 +107,23 @@ static int task_emit_event(const struct scheduled_task_event_sink *events,
 	    !cJSON_AddNumberToObject(data, "max_attempts",
 				     task->max_attempts)) {
 		cJSON_Delete(data);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (task->interval_seconds > 0 &&
 	    !cJSON_AddNumberToObject(data, "interval_seconds",
 				     task->interval_seconds)) {
 		cJSON_Delete(data);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (error_code != 0 &&
 	    !cJSON_AddNumberToObject(data, "error_code", error_code)) {
 		cJSON_Delete(data);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (reason &&
 	    !cJSON_AddStringToObject(data, "reason", reason)) {
 		cJSON_Delete(data);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (notification) {
 		if (!cJSON_AddNumberToObject(data, "notification_id",
@@ -132,7 +138,7 @@ static int task_emit_event(const struct scheduled_task_event_sink *events,
 					     notification->body ?
 					     notification->body : "")) {
 			cJSON_Delete(data);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 	}
 	rc = morph_event_emit_simple(events->cb, events->user_data,
@@ -165,7 +171,7 @@ static char *column_strdup(sqlite3_stmt *stmt, int col)
 static int task_from_stmt(sqlite3_stmt *stmt, struct scheduled_task *task)
 {
 	if (!stmt || !task)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	memset(task, 0, sizeof(*task));
 	task->id = sqlite3_column_int64(stmt, 0);
@@ -200,7 +206,7 @@ static int task_from_stmt(sqlite3_stmt *stmt, struct scheduled_task *task)
 	    (sqlite3_column_type(stmt, 14) != SQLITE_NULL && !task->policy_json) ||
 	    (sqlite3_column_type(stmt, 15) != SQLITE_NULL && !task->notify_json)) {
 		scheduled_task_cleanup(task);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	return 0;
 }
@@ -209,7 +215,7 @@ static int notification_from_stmt(sqlite3_stmt *stmt,
 				  struct notification *notification)
 {
 	if (!stmt || !notification)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	memset(notification, 0, sizeof(*notification));
 	notification->id = sqlite3_column_int64(stmt, 0);
@@ -227,14 +233,14 @@ static int notification_from_stmt(sqlite3_stmt *stmt,
 		  (const char *)sqlite3_column_text(stmt, 8));
 
 	if (!notification->body)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	return 0;
 }
 
 static int notification_get(struct db *db, int64_t id,
 			    struct notification *notification)
 {
-	struct notification value MORPH_CLEANUP(notification_cleanup) = {0};
+	struct notification value NB_CLEANUP(notification_cleanup) = {0};
 	sqlite3_stmt *stmt = NULL;
 	int rc;
 	const char *sql =
@@ -242,9 +248,9 @@ static int notification_get(struct db *db, int64_t id,
 		"delivery_status FROM notifications WHERE id=?";
 
 	if (!db || !db->handle || id <= 0 || !notification)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (notification->body)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
 		return MORPH_ERR_DB;
@@ -262,7 +268,7 @@ static int notification_get(struct db *db, int64_t id,
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
 		return MORPH_ERR_DB;
-	return -ENOENT;
+	return NB_ERR_NOT_FOUND;
 }
 
 static int str_in_set(const char *s, const char *const *values, int count)
@@ -288,31 +294,31 @@ static int scheduled_task_validate_input(
 
 	if (!input || !input->title || !input->kind ||
 	    !input->trigger_type || !input->action_type)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!input->title[0] || !input->kind[0] ||
 	    !input->trigger_type[0] || !input->action_type[0])
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (strlen(input->title) >= SCHEDULED_TASK_TEXT_MAX ||
 	    strlen(input->kind) >= SCHEDULED_TASK_TYPE_MAX ||
 	    strlen(input->trigger_type) >= SCHEDULED_TASK_TYPE_MAX ||
 	    strlen(input->action_type) >= SCHEDULED_TASK_TYPE_MAX)
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	if (!str_in_set(input->kind, kinds, (int)(sizeof(kinds) /
 	    sizeof(kinds[0]))))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!str_in_set(input->trigger_type, triggers,
 	    (int)(sizeof(triggers) / sizeof(triggers[0]))))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (input->next_run_at < 0 || input->interval_seconds < 0 ||
 	    input->timeout_at < 0 || input->max_attempts < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (strcmp(input->trigger_type, "interval") == 0 &&
 	    input->interval_seconds <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if ((strcmp(input->kind, "agent") == 0 ||
 	     strcmp(input->kind, "action") == 0 ||
 	     strcmp(input->kind, "watch") == 0) && !input->payload_json)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return 0;
 }
 
@@ -320,20 +326,21 @@ static int task_list_query(struct db *db, const char *sql, const char *status,
 			   int64_t now, int limit, struct scheduled_task **out,
 			   int *count)
 {
-	morph_array_t arr MORPH_CLEANUP(task_array_cleanup) = {0};
-	sqlite3_stmt *stmt MORPH_CLEANUP(task_stmt_cleanup) = NULL;
+	nb_vec arr NB_CLEANUP(task_array_cleanup) = {0};
+	sqlite3_stmt *stmt NB_CLEANUP(task_stmt_cleanup) = NULL;
 	int bind_idx = 1;
 	int rc;
 
 	if (!db || !db->handle || !sql || !out || !count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (limit <= 0)
 		limit = 100;
 
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	*count = 0;
-	rc = morph_array_init(&arr, 8, sizeof(struct scheduled_task));
+	rc = (nb_vec_init(&arr, sizeof(struct scheduled_task)),
+	      nb_vec_reserve(&arr, 8) ? 0 : NB_ERR_NOMEM);
 	if (rc < 0)
 		return rc;
 
@@ -348,12 +355,12 @@ static int task_list_query(struct db *db, const char *sql, const char *status,
 	sqlite3_bind_int(stmt, bind_idx, limit);
 
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-		if (arr.nelts >= INT_MAX) {
-			return -EOVERFLOW;
+		if (arr.len >= INT_MAX) {
+			return NB_ERR_RANGE;
 		}
-		struct scheduled_task *task = morph_array_push_borrow(&arr);
+		struct scheduled_task *task = nb_vec_push(&arr);
 		if (!task) {
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		rc = task_from_stmt(stmt, task);
 		if (rc != 0)
@@ -363,12 +370,18 @@ static int task_list_query(struct db *db, const char *sql, const char *status,
 		return MORPH_ERR_DB;
 	}
 	task_stmt_cleanup(&stmt);
-	if (arr.nelts > INT_MAX) {
-		return -EOVERFLOW;
+	if (arr.len > INT_MAX) {
+		return NB_ERR_RANGE;
 	}
-	*out = arr.elts;
-	*count = (int)arr.nelts;
-	memset(&arr, 0, sizeof(arr));
+	*out = arr.len ? malloc(arr.len * arr.elem_size) : NULL;
+	if (arr.len && !*out) {
+		return NB_ERR_NOMEM;
+	}
+	if (arr.len)
+		memcpy(*out, arr.data, arr.len * arr.elem_size);
+	*count = (int)arr.len;
+	arr.len = 0;
+	nb_vec_cleanup(&arr);
 	return 0;
 }
 
@@ -376,9 +389,9 @@ int scheduled_task_create_with_events(
 	struct db *db, const struct scheduled_task_input *input,
 	struct scheduled_task *out, const struct scheduled_task_event_sink *events)
 {
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	sqlite3_stmt *stmt = NULL;
-	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {0};
+	struct scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {0};
 	int task_ready = 0;
 	int64_t now;
 	int rc;
@@ -391,9 +404,9 @@ int scheduled_task_create_with_events(
 		" VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
 	if (!db || !db->handle)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (out && (out->payload_json || out->policy_json || out->notify_json))
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	rc = scheduled_task_validate_input(input);
 	if (rc != 0)
 		return rc;
@@ -443,8 +456,8 @@ int scheduled_task_create_with_events(
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE) {
-		log_err(db ? db->logger : NULL, "scheduled task create failed: %s",
-			sqlite3_errmsg(db->handle));
+		nb_log_write(db ? db->logger : NULL, NB_LOG_ERROR,
+			     "scheduled task create failed: %s", sqlite3_errmsg(db->handle));
 		return MORPH_ERR_DB;
 	}
 
@@ -477,7 +490,7 @@ int scheduled_task_create(struct db *db,
 
 int scheduled_task_get(struct db *db, int64_t id, struct scheduled_task *out)
 {
-	struct scheduled_task value MORPH_CLEANUP(scheduled_task_cleanup) = {0};
+	struct scheduled_task value NB_CLEANUP(scheduled_task_cleanup) = {0};
 	sqlite3_stmt *stmt = NULL;
 	int rc;
 	const char *sql = "SELECT id,source_session_id,latest_session_id,title,kind,"
@@ -487,9 +500,9 @@ int scheduled_task_get(struct db *db, int64_t id, struct scheduled_task *out)
 			  "updated_at,run_token FROM scheduled_tasks WHERE id=?";
 
 	if (!db || !db->handle || id <= 0 || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (out->payload_json || out->policy_json || out->notify_json)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
 		return MORPH_ERR_DB;
@@ -507,15 +520,18 @@ int scheduled_task_get(struct db *db, int64_t id, struct scheduled_task *out)
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
 		return MORPH_ERR_DB;
-	return -ENOENT;
+	return NB_ERR_NOT_FOUND;
 }
 
 int scheduled_task_update_with_events(
 	struct db *db, int64_t id, const struct scheduled_task_input *input,
 	struct scheduled_task *out, const struct scheduled_task_event_sink *events)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_1 = NB_OK;
+
 	sqlite3_stmt *stmt = NULL;
-	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {0};
+	struct scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {0};
 	int task_ready = 0;
 	int64_t now;
 	int rc;
@@ -527,13 +543,22 @@ int scheduled_task_update_with_events(
 			  "attempts=0,last_error=NULL,updated_at=?,run_token=? WHERE id=?";
 
 	if (!db || !db->handle || id <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (out && (out->payload_json || out->policy_json || out->notify_json))
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	rc = scheduled_task_validate_input(input);
 	if (rc != 0)
 		return rc;
-	rc = morph_random_id("revision_", revision, sizeof(revision));
+	rc = ((file_status_1 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+				: !(nb_buf_clear(&file_value_1),
+				    nb_buf_append_cstr(&file_value_1, "revision_"))
+					? NB_ERR_NOMEM
+					: nb_random_hex(&file_value_1, 16, NULL))) != NB_OK
+		      ? file_status_1
+	      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), revision,
+						sizeof(revision))) == NB_ERR_RANGE
+		      ? NB_ERR_NO_SPACE
+		      : file_status_1);
 	if (rc != 0) {
 		return rc;
 	}
@@ -571,7 +596,7 @@ int scheduled_task_update_with_events(
 	if (rc < 0)
 		return rc;
 	if (rc == 0)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	memset(&task, 0, sizeof(task));
 	rc = scheduled_task_get(db, id, &task);
 	if (rc != 0)
@@ -607,7 +632,7 @@ int scheduled_task_count_active(struct db *db, struct scheduled_task_counts *out
 	int rc;
 
 	if (!db || !db->handle || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(out, 0, sizeof(*out));
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
@@ -655,7 +680,7 @@ int scheduled_task_list_due(struct db *db, int64_t now, int limit,
 			  "ORDER BY next_run_at ASC, id ASC LIMIT ?";
 
 	if (!db || !db->handle || now < 0 || !out || !count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return task_list_query(db, sql, NULL, now, limit, out, count);
 }
 
@@ -673,7 +698,7 @@ static int task_update_run(struct db *db, int64_t id, const char *status, int64_
 
 	if (!db || !db->handle || id <= 0 || !status || next_run_at < 0 ||
 	    attempts < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	now = (int64_t)time(NULL);
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
@@ -700,7 +725,7 @@ static int task_update_run(struct db *db, int64_t id, const char *status, int64_
 	if (rc < 0)
 		return rc;
 	if (rc == 0)
-		return run_token != NULL ? -ESTALE : -ENOENT;
+		return run_token != NULL ? NB_ERR_STALE : NB_ERR_NOT_FOUND;
 	return 0;
 }
 
@@ -724,7 +749,7 @@ int scheduled_task_recover_stale_running(struct db *db, int64_t now,
 		"updated_at=? WHERE status='running' AND updated_at <= ?";
 
 	if (!db || !db->handle || now < 0 || stale_after_seconds < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	cutoff = now - stale_after_seconds;
 	if (cutoff < 0)
 		cutoff = 0;
@@ -746,7 +771,7 @@ int scheduled_task_cancel_with_events(
 	struct db *db, int64_t id, const struct scheduled_task_event_sink *events)
 {
 	sqlite3_stmt *stmt = NULL;
-	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {0};
+	struct scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {0};
 	int64_t now;
 	int rc;
 	const char *sql =
@@ -754,7 +779,7 @@ int scheduled_task_cancel_with_events(
 		"WHERE id=?";
 
 	if (!db || !db->handle || id <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	now = (int64_t)time(NULL);
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
@@ -765,14 +790,13 @@ int scheduled_task_cancel_with_events(
 	if (rc < 0)
 		return rc;
 	if (rc == 0)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	memset(&task, 0, sizeof(task));
 	rc = scheduled_task_get(db, id, &task);
 	if (rc != 0)
 		return rc;
-	rc = task_emit_event(events, "task.cancelled", "cancelled",
-			     "task cancelled", &task, task.status,
-			     task.next_run_at, task.attempts, -ECANCELED,
+	rc = task_emit_event(events, "task.cancelled", "cancelled", "task cancelled", &task,
+			     task.status, task.next_run_at, task.attempts, NB_ERR_CANCELLED,
 			     "cancelled", NULL);
 	scheduled_task_cleanup(&task);
 	return rc;
@@ -803,6 +827,9 @@ static char *task_payload_message(const struct scheduled_task *task)
 
 static int task_claim_due(struct db *db, struct scheduled_task *task)
 {
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_2 = NB_OK;
+
 	sqlite3_stmt *stmt = NULL;
 	int64_t now;
 	int rc;
@@ -812,9 +839,18 @@ static int task_claim_due(struct db *db, struct scheduled_task *task)
 		"WHERE id=? AND status IN ('pending','waiting') AND next_run_at=? AND run_token=?";
 
 	if (!db || !db->handle || !task)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memcpy(previous, task->run_token, sizeof(previous));
-	rc = morph_random_id("run_", task->run_token, sizeof(task->run_token));
+	rc = ((file_status_2 =
+		       ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+			: !(nb_buf_clear(&file_value_2), nb_buf_append_cstr(&file_value_2, "run_"))
+				? NB_ERR_NOMEM
+				: nb_random_hex(&file_value_2, 16, NULL))) != NB_OK
+		      ? file_status_2
+	      : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), task->run_token,
+						sizeof(task->run_token))) == NB_ERR_RANGE
+		      ? NB_ERR_NO_SPACE
+		      : file_status_2);
 	if (rc != 0) {
 		return rc;
 	}
@@ -900,8 +936,9 @@ static int task_commit_result(struct db *db, const struct scheduled_task *task, 
 	if (rc != 0) {
 		int rollback_rc = db_exec(db, "ROLLBACK TO task_result; RELEASE task_result;");
 		if (rollback_rc != 0) {
-			log_err(db->logger, "task result rollback failed: %s",
-				morph_strerror(rollback_rc));
+			nb_log_write(db->logger, NB_LOG_ERROR, "task result rollback failed: %s",
+				     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+						rollback_rc));
 		}
 		notification_cleanup(notification);
 	}
@@ -924,7 +961,7 @@ static int run_due_reminder(struct db *db, const struct scheduled_task *task,
 	if (!body)
 		body = strdup(task->title);
 	if (!body)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 
 	attempts = task->attempts + 1;
 	if (task->timeout_at > 0 && now >= task->timeout_at) {
@@ -948,10 +985,8 @@ static int run_due_reminder(struct db *db, const struct scheduled_task *task,
 		rc = task_emit_notification_event(events, task, notification);
 	}
 	if (rc == 0)
-		rc = task_emit_result_event(events, task, status, next_run_at,
-					    attempts,
-					    strcmp(status, "timed_out") == 0 ?
-					    -ETIMEDOUT : 0,
+		rc = task_emit_result_event(events, task, status, next_run_at, attempts,
+					    strcmp(status, "timed_out") == 0 ? NB_ERR_TIMEOUT : 0,
 					    reason, notification);
 	return rc;
 }
@@ -1004,7 +1039,7 @@ static int task_emit_result_event(
 	const char *message = "task updated";
 
 	if (!status)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (strcmp(status, "completed") == 0) {
 		name = "task.completed";
 		message = "task completed";
@@ -1050,7 +1085,7 @@ static int run_due_agent(struct db *db, const struct scheduled_task *task,
 	int nrc;
 
 	if (!db || !task || !notification)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!runner)
 		return run_due_unsupported(db, task, notification, events);
 
@@ -1075,18 +1110,20 @@ static int run_due_agent(struct db *db, const struct scheduled_task *task,
 		body = result.error ? result.error : "Task timed out.";
 		last_error = body;
 		reason = "timeout";
-		error_code = -ETIMEDOUT;
+		error_code = NB_ERR_TIMEOUT;
 	} else if (task->max_attempts > 0 && attempts >= task->max_attempts) {
 		level = "warning";
 		status = "failed";
-		body = result.error ? result.error : morph_strerror(rc);
+		body = result.error ? result.error
+				    : nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc);
 		last_error = body;
 		reason = "max_attempts";
 		error_code = rc;
 	} else if (task->interval_seconds > 0) {
 		level = "warning";
 		status = "waiting";
-		body = result.error ? result.error : morph_strerror(rc);
+		body = result.error ? result.error
+				    : nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc);
 		last_error = body;
 		reason = "retry";
 		error_code = rc;
@@ -1094,7 +1131,8 @@ static int run_due_agent(struct db *db, const struct scheduled_task *task,
 	} else {
 		level = "warning";
 		status = "failed";
-		body = result.error ? result.error : morph_strerror(rc);
+		body = result.error ? result.error
+				    : nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc);
 		last_error = body;
 		reason = "runner_error";
 		error_code = rc;
@@ -1132,7 +1170,7 @@ static int run_due_action(struct db *db, const struct scheduled_task *task,
 	int nrc;
 
 	if (!db || !task || !notification)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!runner)
 		return run_due_unsupported(db, task, notification, events);
 
@@ -1150,11 +1188,12 @@ static int run_due_action(struct db *db, const struct scheduled_task *task,
 		body = result.error ? result.error : "Task timed out.";
 		last_error = body;
 		reason = "timeout";
-		error_code = -ETIMEDOUT;
+		error_code = NB_ERR_TIMEOUT;
 	} else if (action_should_retry(task, attempts)) {
 		level = "warning";
 		status = "waiting";
-		body = result.error ? result.error : morph_strerror(rc);
+		body = result.error ? result.error
+				    : nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc);
 		last_error = body;
 		reason = "retry";
 		error_code = rc;
@@ -1162,7 +1201,8 @@ static int run_due_action(struct db *db, const struct scheduled_task *task,
 	} else {
 		level = "warning";
 		status = "failed";
-		body = result.error ? result.error : morph_strerror(rc);
+		body = result.error ? result.error
+				    : nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc);
 		last_error = body;
 		reason = task->max_attempts > 0 && attempts >= task->max_attempts ?
 			"max_attempts" : "runner_error";
@@ -1201,7 +1241,7 @@ static int run_due_watch(struct db *db, const struct scheduled_task *task,
 	int nrc;
 
 	if (!db || !task || !notification)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!runner)
 		return run_due_unsupported(db, task, notification, events);
 
@@ -1219,21 +1259,25 @@ static int run_due_watch(struct db *db, const struct scheduled_task *task,
 		body = result.error ? result.error : "Watch task timed out.";
 		last_error = body;
 		reason = "timeout";
-		error_code = -ETIMEDOUT;
+		error_code = NB_ERR_TIMEOUT;
 	} else if (task->max_attempts > 0 && attempts >= task->max_attempts) {
 		level = "warning";
 		status = rc == 0 ? "timed_out" : "failed";
-		body = rc == 0 ? "Watch condition did not complete." :
-			(result.error ? result.error : morph_strerror(rc));
+		body = rc == 0 ? "Watch condition did not complete."
+			       : (result.error ? result.error
+					       : nb_err_str(morph_error_descriptions(),
+							    MORPH_ERROR_COUNT, rc));
 		last_error = body;
 		reason = "max_attempts";
-		error_code = rc == 0 ? -ETIMEDOUT : rc;
+		error_code = rc == 0 ? NB_ERR_TIMEOUT : rc;
 	} else {
 		level = "info";
 		status = "waiting";
 		body = result.body ? result.body : "Watch condition not met.";
-		last_error = rc == 0 ? NULL :
-			(result.error ? result.error : morph_strerror(rc));
+		last_error = rc == 0 ? NULL
+				     : (result.error ? result.error
+						     : nb_err_str(morph_error_descriptions(),
+								  MORPH_ERROR_COUNT, rc));
 		reason = rc == 0 ? "condition_not_met" : "retry";
 		error_code = rc;
 		next_run_at = now + task_retry_after(task, &result);
@@ -1261,7 +1305,7 @@ static int run_due_unsupported(struct db *db, const struct scheduled_task *task,
 	int rc;
 
 	if (!db || !task)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	snprintf(body, sizeof(body),
 		 "Task kind '%s' is due but no runner is registered.",
 		 task->kind);
@@ -1272,9 +1316,8 @@ static int run_due_unsupported(struct db *db, const struct scheduled_task *task,
 		rc = task_emit_notification_event(events, task, notification);
 	}
 	if (rc == 0)
-		rc = task_emit_result_event(events, task, "failed", 0,
-					    attempts, -ENOSYS, "no_runner",
-					    notification);
+		rc = task_emit_result_event(events, task, "failed", 0, attempts, NB_ERR_UNSUPPORTED,
+					    "no_runner", notification);
 	return rc;
 }
 
@@ -1291,7 +1334,8 @@ static int task_observe(const struct morph_event *event, void *opaque)
 			 ? observer->sink->cb(event, observer->sink->user_data)
 			 : 0;
 	if (rc != 0) {
-		log_warn(observer->db->logger, "task observer failed: %s", morph_strerror(rc));
+		nb_log_write(observer->db->logger, NB_LOG_WARN, "task observer failed: %s",
+			     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	}
 	return 0;
 }
@@ -1306,16 +1350,17 @@ int scheduled_task_run_due_collect_with_runner_events(
 	struct scheduled_task_event_sink observations = {.cb = task_observe,
 							 .user_data = &observer};
 	events = &observations;
-	morph_array_t arr MORPH_CLEANUP(notification_array_cleanup) = {0};
-	struct task_batch tasks MORPH_CLEANUP(task_batch_cleanup) = {0};
+	nb_vec arr NB_CLEANUP(notification_array_cleanup) = {0};
+	struct task_batch tasks NB_CLEANUP(task_batch_cleanup) = {0};
 	int rc;
 
 	if (!db || !db->handle || now < 0 || !notifications || !count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*notifications)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	*count = 0;
-	rc = morph_array_init(&arr, 4, sizeof(struct notification));
+	rc = (nb_vec_init(&arr, sizeof(struct notification)),
+	      nb_vec_reserve(&arr, 4) ? 0 : NB_ERR_NOMEM);
 	if (rc < 0)
 		return rc;
 
@@ -1328,7 +1373,7 @@ int scheduled_task_run_due_collect_with_runner_events(
 		int claimed;
 
 		if (tasks.items[i].attempts >= INT_MAX || now > INT64_MAX - INT_MAX) {
-			return -EOVERFLOW;
+			return NB_ERR_RANGE;
 		}
 		claimed = task_claim_due(db, &tasks.items[i]);
 		if (claimed < 0) {
@@ -1350,12 +1395,12 @@ int scheduled_task_run_due_collect_with_runner_events(
 		if (rc != 0)
 			return rc;
 
-		if (arr.nelts >= INT_MAX) {
-			return -EOVERFLOW;
+		if (arr.len >= INT_MAX) {
+			return NB_ERR_RANGE;
 		}
-		notification = morph_array_push_borrow(&arr);
+		notification = nb_vec_push(&arr);
 		if (!notification) {
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		memset(notification, 0, sizeof(*notification));
 		if (strcmp(tasks.items[i].kind, "agent") == 0)
@@ -1379,12 +1424,18 @@ int scheduled_task_run_due_collect_with_runner_events(
 		if (rc != 0)
 			return rc;
 	}
-	if (arr.nelts > INT_MAX) {
-		return -EOVERFLOW;
+	if (arr.len > INT_MAX) {
+		return NB_ERR_RANGE;
 	}
-	*notifications = arr.elts;
-	*count = (int)arr.nelts;
-	memset(&arr, 0, sizeof(arr));
+	*notifications = arr.len ? malloc(arr.len * arr.elem_size) : NULL;
+	if (arr.len && !*notifications) {
+		return NB_ERR_NOMEM;
+	}
+	if (arr.len)
+		memcpy(*notifications, arr.data, arr.len * arr.elem_size);
+	*count = (int)arr.len;
+	arr.len = 0;
+	nb_vec_cleanup(&arr);
 	return 0;
 }
 
@@ -1475,7 +1526,7 @@ int notification_create_for_session(struct db *db, int64_t task_id,
 				    const char *delivery_status,
 				    struct notification *out)
 {
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	sqlite3_stmt *stmt = NULL;
 	int64_t now;
 	int rc;
@@ -1485,9 +1536,9 @@ int notification_create_for_session(struct db *db, int64_t task_id,
 
 	if (!db || !db->handle || !level || !title || !body ||
 	    !delivery_status)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (out && out->body)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	rc = db_lock_acquire(db, &lock);
 	if (rc != 0)
 		return rc;
@@ -1532,8 +1583,8 @@ int notification_create(struct db *db, int64_t task_id, const char *level,
 int notification_list_unread(struct db *db, int limit,
 			     struct notification **out, int *count)
 {
-	morph_array_t arr MORPH_CLEANUP(notification_array_cleanup) = {0};
-	sqlite3_stmt *stmt MORPH_CLEANUP(task_stmt_cleanup) = NULL;
+	nb_vec arr NB_CLEANUP(notification_array_cleanup) = {0};
+	sqlite3_stmt *stmt NB_CLEANUP(task_stmt_cleanup) = NULL;
 	int rc;
 	const char *sql =
 		"SELECT id,task_id,session_id,level,title,body,created_at,read_at,"
@@ -1541,14 +1592,15 @@ int notification_list_unread(struct db *db, int limit,
 		"ORDER BY created_at DESC, id DESC LIMIT ?";
 
 	if (!db || !db->handle || !out || !count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (limit <= 0)
 		limit = 100;
 
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	*count = 0;
-	rc = morph_array_init(&arr, 8, sizeof(struct notification));
+	rc = (nb_vec_init(&arr, sizeof(struct notification)),
+	      nb_vec_reserve(&arr, 8) ? 0 : NB_ERR_NOMEM);
 	if (rc < 0)
 		return rc;
 
@@ -1558,12 +1610,12 @@ int notification_list_unread(struct db *db, int limit,
 	}
 	sqlite3_bind_int(stmt, 1, limit);
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-		if (arr.nelts >= INT_MAX) {
-			return -EOVERFLOW;
+		if (arr.len >= INT_MAX) {
+			return NB_ERR_RANGE;
 		}
-		struct notification *notification = morph_array_push_borrow(&arr);
+		struct notification *notification = nb_vec_push(&arr);
 		if (!notification) {
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		rc = notification_from_stmt(stmt, notification);
 		if (rc != 0)
@@ -1573,12 +1625,18 @@ int notification_list_unread(struct db *db, int limit,
 		return MORPH_ERR_DB;
 	}
 	task_stmt_cleanup(&stmt);
-	if (arr.nelts > INT_MAX) {
-		return -EOVERFLOW;
+	if (arr.len > INT_MAX) {
+		return NB_ERR_RANGE;
 	}
-	*out = arr.elts;
-	*count = (int)arr.nelts;
-	memset(&arr, 0, sizeof(arr));
+	*out = arr.len ? malloc(arr.len * arr.elem_size) : NULL;
+	if (arr.len && !*out) {
+		return NB_ERR_NOMEM;
+	}
+	if (arr.len)
+		memcpy(*out, arr.data, arr.len * arr.elem_size);
+	*count = (int)arr.len;
+	arr.len = 0;
+	nb_vec_cleanup(&arr);
 	return 0;
 }
 
@@ -1589,7 +1647,7 @@ int notification_mark_read(struct db *db, int64_t id, int64_t read_at)
 	const char *sql = "UPDATE notifications SET read_at=? WHERE id=?";
 
 	if (!db || !db->handle || id <= 0 || read_at < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (read_at == 0)
 		read_at = (int64_t)time(NULL);
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
@@ -1601,7 +1659,7 @@ int notification_mark_read(struct db *db, int64_t id, int64_t read_at)
 	if (rc < 0)
 		return rc;
 	if (rc == 0)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	return 0;
 }
 

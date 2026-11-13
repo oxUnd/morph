@@ -1,4 +1,4 @@
-"""Exercise full-screen tool details through the production Readline event loop."""
+"""Exercise full-screen tool details through the production TUI event loop."""
 import http.server
 import json
 from pathlib import Path
@@ -148,7 +148,7 @@ class AlternateScreen(pyte.Screen):
         super().reset_mode(*modes, **kwargs)
 
 
-def collect_retained_history(terminal, draft):
+def collect_retained_history(terminal, draft, final_marker='FINAL_PREVIEW'):
     """Read logical history through overlapping viewports, retaining duplicates."""
     rows = terminal.screen.display
     composer = next(index for index, row in enumerate(rows) if draft in row)
@@ -185,7 +185,7 @@ def collect_retained_history(terminal, draft):
         prepend(first)
     terminal.send('\x1b[6~' * (pages + 2))
     bottom = viewport('retained history returns to the draft and final tail')
-    assert any('FINAL_PREVIEW' in row for row in bottom), '\n'.join(bottom)
+    assert any(final_marker in row for row in bottom), '\n'.join(bottom)
     return '\n'.join(history)
 
 
@@ -698,8 +698,7 @@ def main():
             narrow = terminal.snapshot('narrow transcript toggles')
             assert '草稿🙂 taiXl' in narrow, narrow
             assert 'UPDATED ANSWER' in narrow, narrow
-            assert '\x1b[?1049h' in terminal.raw, 'must use a separate details screen'
-            assert '\x1b[?1049l' in terminal.raw, 'must restore the main screen'
+            assert terminal.raw.count('\x1b[?1049h') == 1, 'application owns its alternate screen'
             assert '\x1b[3J' not in terminal.raw, 'must preserve terminal scrollback'
             assert not terminal.duplicate_prompts, terminal.duplicate_prompts
             terminal.send('\x15ask a question\r')
@@ -722,6 +721,11 @@ def main():
                        for m in answered['messages']), answered
             assert 'question draft' in terminal.snapshot('draft restored after question')
             answered_release.set()
+            terminal.pump(1)
+            terminal.send('\x15/quit\r')
+            terminal.child.expect(pexpect.EOF, timeout=10)
+            terminal.pump(.05)
+            assert '\x1b[?1049l' in terminal.raw, 'shutdown must restore the main screen'
         finally:
             for release in releases:
                 release.set()

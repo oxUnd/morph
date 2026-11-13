@@ -1,11 +1,12 @@
 #include "skill.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "skill_parse.h"
-#include "util/log.h"
-#include "util/file.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/utf8.h"
+#include "nb/log.h"
+#include "nb/file.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/utf8.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,13 +23,13 @@ static void skill_entry_cleanup(struct skill_entry **owner)
 	*owner = NULL;
 }
 
-void skill_registry_init(struct morph_log *logger, struct skill_registry *reg)
+void skill_registry_init(struct nb_log *logger, struct skill_registry *reg)
 {
 	if (!reg)
 		return;
 	memset(reg, 0, sizeof(*reg));
 	reg->logger = logger;
-	(void)morph_strmap_init(&reg->by_name, MORPH_ARRAY_INIT_CAP);
+	reg->by_name = nb_map_new_with_cap(16);
 }
 
 void skill_registry_cleanup(struct skill_registry *reg)
@@ -36,17 +37,18 @@ void skill_registry_cleanup(struct skill_registry *reg)
 	if (!reg)
 		return;
 	for (int i = 0; i < reg->count; i++) {
-		struct skill_entry **entry = morph_array_borrow(&reg->entries, (size_t)i);
+		struct skill_entry **entry = nb_vec_at(&reg->entries, (size_t)i);
 		skill_entry_cleanup(entry);
 	}
 	reg->count = 0;
-	morph_strmap_cleanup(&reg->by_name);
-	morph_array_cleanup(&reg->entries);
+	nb_map_free(reg->by_name);
+	reg->by_name = NULL;
+	nb_vec_cleanup(&reg->entries);
 }
 
 struct skill_entry *skill_entry_borrow_at(const struct skill_registry *reg, size_t index)
 {
-	struct skill_entry **entry = reg ? morph_array_borrow(&reg->entries, index) : NULL;
+	struct skill_entry **entry = reg ? nb_vec_at(&reg->entries, index) : NULL;
 	return entry ? *entry : NULL;
 }
 
@@ -54,24 +56,24 @@ struct skill_entry *skill_borrow(struct skill_registry *reg, const char *name)
 {
 	if (!reg || !name)
 		return NULL;
-	return morph_strmap_borrow(&reg->by_name, name);
+	return nb_map_get_cstr(reg->by_name, name);
 }
 
 int skill_registry_add_copy(struct skill_registry *reg, const struct skill_entry *source)
 {
-	struct skill_entry *entry MORPH_CLEANUP(skill_entry_cleanup) = NULL;
+	struct skill_entry *entry NB_CLEANUP(skill_entry_cleanup) = NULL;
 	struct skill_entry **slot;
 	int rc;
 
 	if (!reg || !source || !source->fm.name[0])
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (skill_borrow(reg, source->fm.name))
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (reg->count == INT_MAX)
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	entry = calloc(1, sizeof(*entry));
 	if (!entry)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	entry->logger = source->logger;
 	entry->fm = source->fm;
 	memcpy(entry->skill_dir, source->skill_dir, sizeof(entry->skill_dir));
@@ -82,25 +84,25 @@ int skill_registry_add_copy(struct skill_registry *reg, const struct skill_entry
 	if (source->body) {
 		entry->body = strdup(source->body);
 		if (!entry->body)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 	}
-	if (!reg->entries.size) {
-		rc = morph_array_init(&reg->entries, MORPH_ARRAY_INIT_CAP, sizeof(entry));
+	if (!reg->entries.elem_size) {
+		rc = (nb_vec_init(&reg->entries, sizeof(entry)),
+		      nb_vec_reserve(&reg->entries, 16) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
-	if (!reg->by_name.entries) {
-		rc = morph_strmap_init(&reg->by_name, MORPH_ARRAY_INIT_CAP);
-		if (rc != 0)
-			return rc;
+	if (!reg->by_name) {
+		reg->by_name = nb_map_new_with_cap(16);
+		if (!reg->by_name)
+			return NB_ERR_NOMEM;
 	}
-	slot = morph_array_push_borrow(&reg->entries);
+	slot = nb_vec_push(&reg->entries);
 	if (!slot)
-		return -ENOMEM;
-	rc = morph_strmap_set_borrow(&reg->by_name, entry->fm.name, entry);
-	if (rc != 0) {
-		morph_array_pop(&reg->entries);
-		return rc;
+		return NB_ERR_NOMEM;
+	if (!nb_map_put_cstr(reg->by_name, entry->fm.name, entry, NULL)) {
+		nb_vec_pop(&reg->entries);
+		return NB_ERR_NOMEM;
 	}
 	*slot = entry;
 	entry = NULL;
@@ -111,21 +113,32 @@ int skill_registry_add_copy(struct skill_registry *reg, const struct skill_entry
 int skill_discover_configured(struct skill_registry *reg, const char *workdir,
 			     const char *user_dir)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	int rc = 0;
 	int initial;
 
 	if (!reg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	initial = reg->count;
 
 	if (workdir && *workdir) {
-		char *project = file_path_join_alloc(workdir, ".agents/skills");
+		char *project = (nb_path_concat(&file_value_1, workdir, ".agents/skills") == NB_OK
+					 ? strdup(nb_buf_cstr(&file_value_1))
+					 : NULL);
 
 		if (!project)
-			return -ENOMEM;
-		char *resolved = file_resolve_path_copy(project);
+			return NB_ERR_NOMEM;
+		char *resolved = (nb_path_expand(&file_value_2, project, NULL) == NB_OK &&
+						  nb_path_canonical_missing(
+							  &file_value_2, nb_buf_cstr(&file_value_2),
+							  NULL) == NB_OK
+					  ? strdup(nb_buf_cstr(&file_value_2))
+					  : NULL);
 
-		rc = resolved ? skill_discover(reg, resolved) : -ENOMEM;
+		rc = resolved ? skill_discover(reg, resolved) : NB_ERR_NOMEM;
 		free(resolved);
 		free(project);
 		if (rc < 0)
@@ -134,7 +147,9 @@ int skill_discover_configured(struct skill_registry *reg, const char *workdir,
 	rc = skill_discover(reg, user_dir && *user_dir ? user_dir : "~/.morph/skills");
 	if (rc < 0)
 		return rc;
-	char *default_dir = file_expand_path_copy("~/.morph/skills");
+	char *default_dir = (nb_path_expand(&file_value_3, "~/.morph/skills", NULL) == NB_OK
+				     ? strdup(nb_buf_cstr(&file_value_3))
+				     : NULL);
 	int use_shared = !user_dir || !*user_dir ||
 		strcmp(user_dir, "~/.morph/skills") == 0 ||
 		(default_dir && strcmp(user_dir, default_dir) == 0);
@@ -150,12 +165,20 @@ int skill_discover_configured(struct skill_registry *reg, const char *workdir,
 
 int skill_discover(struct skill_registry *reg, const char *dir_path)
 {
-	if (!reg || !dir_path)
-		return -EINVAL;
+	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_5 = NB_OK;
+	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_6 = NB_OK;
 
-	char *expanded = file_expand_path_copy(dir_path);
+	if (!reg || !dir_path)
+		return NB_ERR_INVAL;
+
+	char *expanded = (nb_path_expand(&file_value_4, dir_path, NULL) == NB_OK
+				  ? strdup(nb_buf_cstr(&file_value_4))
+				  : NULL);
 	if (!expanded)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 
 	struct stat st;
 	if (stat(expanded, &st) != 0 || !S_ISDIR(st.st_mode)) {
@@ -167,7 +190,7 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 	if (!dir) {
 		int err = errno;
 		free(expanded);
-		return -err;
+		return nb_status_from_errno(err, NULL);
 	}
 
 	int discovered = 0;
@@ -177,8 +200,12 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 			continue;
 
 		char subdir[SKILL_PATH_MAX];
-		if (file_path_join(subdir, sizeof(subdir),
-				   expanded, ent->d_name) != 0)
+		if (((file_status_5 = nb_path_concat(&file_value_5, expanded, ent->d_name)) != NB_OK
+			     ? file_status_5
+		     : (file_status_5 = nb_str_copy_to(nb_buf_str(&file_value_5), subdir,
+						       sizeof(subdir))) == NB_ERR_RANGE
+			     ? NB_ERR_NAME_TOO_LONG
+			     : file_status_5) != 0)
 			continue;
 
 		struct stat sub_st;
@@ -186,13 +213,17 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 			continue;
 
 		char skill_md_path[SKILL_PATH_MAX];
-		if (file_path_join(skill_md_path, sizeof(skill_md_path),
-				   subdir, "SKILL.md") != 0)
+		if (((file_status_6 = nb_path_concat(&file_value_6, subdir, "SKILL.md")) != NB_OK
+			     ? file_status_6
+		     : (file_status_6 = nb_str_copy_to(nb_buf_str(&file_value_6), skill_md_path,
+						       sizeof(skill_md_path))) == NB_ERR_RANGE
+			     ? NB_ERR_NAME_TOO_LONG
+			     : file_status_6) != 0)
 			continue;
 
 		if (stat(skill_md_path, &sub_st) != 0) {
-			log_dbg(reg ? reg->logger : NULL, "skill_discover: no SKILL.md in %s",
-				subdir);
+			nb_log_write(reg ? reg->logger : NULL, NB_LOG_DEBUG,
+				     "skill_discover: no SKILL.md in %s", subdir);
 			continue;
 		}
 
@@ -200,35 +231,38 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 		memset(&fm, 0, sizeof(fm));
 		int rc = skill_parse_frontmatter(reg ? reg->logger : NULL, skill_md_path, &fm);
 		if (rc < 0) {
-			log_warn(reg ? reg->logger : NULL, "skill_discover: failed to parse %s: %d",
-				 skill_md_path, rc);
+			nb_log_write(reg ? reg->logger : NULL, NB_LOG_WARN,
+				     "skill_discover: failed to parse %s: %d", skill_md_path, rc);
 			continue;
 		}
 
 		if (fm.description[0] == '\0') {
-			log_warn(reg ? reg->logger : NULL,
-				 "skill_discover: skipping %s, missing description",
-				 fm.name[0] ? fm.name : ent->d_name);
+			nb_log_write(reg ? reg->logger : NULL, NB_LOG_WARN,
+				     "skill_discover: skipping %s, missing description",
+				     fm.name[0] ? fm.name : ent->d_name);
 			continue;
 		}
 
 		if (fm.name[0] == '\0') {
-			if (strlen(ent->d_name) >= sizeof(fm.name) || utf8valid(ent->d_name) ||
-			    utf8len(ent->d_name) > SKILL_NAME_MAX_CHARS) {
-				log_warn(reg->logger,
-				"skill_discover: skill directory name is too long");
+			if (strlen(ent->d_name) >= sizeof(fm.name) ||
+			    nb_utf8_validate(nb_str_from_cstr(ent->d_name), NULL) ||
+			    nb_utf8_count(nb_str_from_cstr(ent->d_name)) > SKILL_NAME_MAX_CHARS) {
+				nb_log_write(reg->logger, NB_LOG_WARN,
+					     "skill_discover: skill directory name is too long");
 				continue;
 			}
 			memcpy(fm.name, ent->d_name, strlen(ent->d_name) + 1);
-			log_dbg(reg ? reg->logger : NULL,
-				"skill_discover: using dir name as skill name: %s", ent->d_name);
+			nb_log_write(reg ? reg->logger : NULL, NB_LOG_DEBUG,
+				     "skill_discover: using dir name as skill name: %s",
+				     ent->d_name);
 		}
 
 		if (skill_borrow(reg, fm.name)) {
-			log_info(reg ? reg->logger : NULL,
-				 "skill_discover: '%s' already registered, skipping duplicate from "
-				 "%s",
-				 fm.name, subdir);
+			nb_log_write(
+				reg ? reg->logger : NULL, NB_LOG_INFO,
+				"skill_discover: '%s' already registered, skipping duplicate from "
+				"%s",
+				fm.name, subdir);
 			continue;
 		}
 
@@ -242,7 +276,8 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 			return rc;
 		}
 		discovered++;
-		log_info(reg ? reg->logger : NULL, "skill_discover: found '%s'", fm.name);
+		nb_log_write(reg ? reg->logger : NULL, NB_LOG_INFO, "skill_discover: found '%s'",
+			     fm.name);
 	}
 
 	closedir(dir);
@@ -253,9 +288,9 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 int skill_activate(struct skill_entry *skill)
 {
 	if (!skill)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!skill->enabled)
-		return -EACCES;
+		return NB_ERR_PERMISSION;
 	if (skill->activated && skill->body_loaded)
 		return 0;
 
@@ -266,8 +301,9 @@ int skill_activate(struct skill_entry *skill)
 		int rc = skill_parse_file(skill ? skill->logger : NULL, skill->skill_md_path,
 					  &fm_tmp, &body);
 		if (rc < 0) {
-			log_err(skill ? skill->logger : NULL,
-				"skill_activate: failed to read %s: %d", skill->skill_md_path, rc);
+			nb_log_write(skill ? skill->logger : NULL, NB_LOG_ERROR,
+				     "skill_activate: failed to read %s: %d", skill->skill_md_path,
+				     rc);
 			return rc;
 		}
 		free(skill->body);
@@ -276,7 +312,8 @@ int skill_activate(struct skill_entry *skill)
 	}
 
 	skill->activated = 1;
-	log_info(skill ? skill->logger : NULL, "skill_activate: activated '%s'", skill->fm.name);
+	nb_log_write(skill ? skill->logger : NULL, NB_LOG_INFO, "skill_activate: activated '%s'",
+		     skill->fm.name);
 	return 0;
 }
 
@@ -288,8 +325,8 @@ void skill_deactivate(struct skill_entry *skill)
 	skill->body = NULL;
 	skill->body_loaded = 0;
 	skill->activated = 0;
-	log_info(skill ? skill->logger : NULL, "skill_deactivate: deactivated '%s'",
-		 skill->fm.name);
+	nb_log_write(skill ? skill->logger : NULL, NB_LOG_INFO,
+		     "skill_deactivate: deactivated '%s'", skill->fm.name);
 }
 
 static int skill_entry_compare(const void *left, const void *right)
@@ -304,9 +341,9 @@ int skill_sorted_entries_borrow(const struct skill_registry *reg,
 				const struct skill_entry **entries, size_t capacity)
 {
 	if (!reg || !entries)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if ((size_t)reg->count > capacity)
-		return -ENOSPC;
+		return NB_ERR_NO_SPACE;
 	for (int i = 0; i < reg->count; i++)
 		entries[i] = skill_entry_borrow_at(reg, (size_t)i);
 	qsort(entries, (size_t)reg->count, sizeof(entries[0]), skill_entry_compare);
@@ -324,18 +361,18 @@ void skill_entry_list_cleanup(const struct skill_entry ***entries)
 int skill_sorted_entries_create(const struct skill_registry *reg,
 				const struct skill_entry ***out)
 {
-	const struct skill_entry **entries MORPH_CLEANUP(skill_entry_list_cleanup) = NULL;
+	const struct skill_entry **entries NB_CLEANUP(skill_entry_list_cleanup) = NULL;
 	int rc;
 
 	if (!reg || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (!reg->count)
 		return 0;
 	entries = calloc((size_t)reg->count, sizeof(*entries));
 	if (!entries)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	rc = skill_sorted_entries_borrow(reg, entries, (size_t)reg->count);
 	if (rc < 0)
 		return rc;
@@ -354,21 +391,21 @@ void skill_deactivate_all(struct skill_registry *reg)
 
 int skill_activated_instructions_create(struct skill_registry *reg, char **out)
 {
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc;
 
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (!reg)
 		return 0;
-	const struct skill_entry **entries MORPH_CLEANUP(skill_entry_list_cleanup) = NULL;
+	const struct skill_entry **entries NB_CLEANUP(skill_entry_list_cleanup) = NULL;
 
 	rc = skill_sorted_entries_create(reg, &entries);
 	if (rc < 0)
 		return rc;
-	rc = morph_buf_init(&buf, 8192);
+	rc = (nb_buf_init(&buf), nb_buf_reserve(&buf, 8192) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	for (int i = 0; i < reg->count; i++) {
@@ -376,28 +413,29 @@ int skill_activated_instructions_create(struct skill_registry *reg, char **out)
 
 		if (!e->enabled || !e->activated || !e->body || !e->body[0])
 			continue;
-		rc = morph_buf_printf(&buf,
-			"<skill name=\"%s\" dir=\"%s\">\n%s\n</skill>\n\n",
-			e->fm.name, e->skill_dir, e->body);
+		rc = (nb_buf_printf(&buf, "<skill name=\"%s\" dir=\"%s\">\n%s\n</skill>\n\n",
+				    e->fm.name, e->skill_dir, e->body)
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (rc != 0) {
-			morph_buf_cleanup(&buf);
+			nb_buf_cleanup(&buf);
 			return rc;
 		}
 	}
 	if (buf.len) {
-		*out = morph_buf_detach(&buf);
+		*out = (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
 		if (!*out)
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 	}
-	morph_buf_cleanup(&buf);
+	nb_buf_cleanup(&buf);
 	return rc;
 }
 
 int skill_build_catalog(struct skill_registry *reg, char *buf, size_t buf_size)
 {
 	if (!reg || !buf || buf_size == 0)
-		return -EINVAL;
-	const struct skill_entry **entries MORPH_CLEANUP(skill_entry_list_cleanup) = NULL;
+		return NB_ERR_INVAL;
+	const struct skill_entry **entries NB_CLEANUP(skill_entry_list_cleanup) = NULL;
 	int rc = skill_sorted_entries_create(reg, &entries);
 
 	if (rc < 0)
@@ -414,7 +452,7 @@ int skill_build_catalog(struct skill_registry *reg, char *buf, size_t buf_size)
 		int n = snprintf(buf + len, buf_size - len, "- %s: %s\n",
 				 e->fm.name, e->fm.description);
 		if (n < 0 || (size_t)n >= buf_size - len)
-			return -ENOSPC;
+			return NB_ERR_NO_SPACE;
 		len += (size_t)n;
 		written++;
 	}

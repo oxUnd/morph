@@ -7,4 +7,4 @@ target_include_directories(morph-models PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
 )
-target_link_libraries(morph-models PUBLIC morph-util morph-http)
+target_link_libraries(morph-models PUBLIC nbase::nbase morph-cjson morph-http morph-media)

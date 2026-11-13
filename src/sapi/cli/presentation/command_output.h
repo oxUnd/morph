@@ -3,8 +3,10 @@
 
 #include <stddef.h>
 
-#include "util/buf.h"
-#include "util/utf8.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 
 struct cli_application;
 
@@ -26,7 +28,7 @@ struct cli_output_segment {
 	enum cli_output_style style;
 	const char *text;
 	int untrusted;
-	enum utf8_terminal_text_mode untrusted_mode;
+	enum morph_terminal_text_mode untrusted_mode;
 };
 
 struct cli_output_line {
@@ -136,12 +138,12 @@ struct cli_output_table {
 };
 
 int cli_command_output_table(struct cli_application *ctx, const struct cli_output_table *table);
-int cli_command_output_markdown_heading(morph_buf_t *buf, unsigned level, const char *text);
-int cli_command_output_markdown_table_header(morph_buf_t *buf, const struct cli_output_table *table);
-int cli_command_output_markdown_table_row(morph_buf_t *buf, const struct cli_output_table *table,
+int cli_command_output_markdown_heading(nb_buf *buf, unsigned level, const char *text);
+int cli_command_output_markdown_table_header(nb_buf *buf, const struct cli_output_table *table);
+int cli_command_output_markdown_table_row(nb_buf *buf, const struct cli_output_table *table,
 					  const char *const *cells);
-int cli_command_output_markdown_table(morph_buf_t *buf, const struct cli_output_table *table);
-int cli_command_output_markdown_block(morph_buf_t *buf, const char *text);
+int cli_command_output_markdown_table(nb_buf *buf, const struct cli_output_table *table);
+int cli_command_output_markdown_block(nb_buf *buf, const char *text);
 int cli_command_output_markdown_render(struct cli_application *ctx, const char *markdown);
 
 /* Ratio styling keeps threshold policy in presentation. */

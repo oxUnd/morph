@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/rewind.h"
+#include "nb/err.h"
 #include "sapi/cli/presentation/output.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
@@ -10,8 +11,8 @@
 #include "sapi/cli/services/session_restore.h"
 #include "sapi/cli/widgets/list.h"
 #include "runtime/checkpoint.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 
 static void cli_rewind_help(struct cli_application *ctx)
 {
@@ -30,7 +31,7 @@ static const char *cli_rewind_string(const cJSON *object, const char *key)
 static int cli_rewind_restore(struct cli_application *ctx, int64_t id,
 			      enum runtime_rewind_mode mode)
 {
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	int rc = runtime_checkpoint_restore(ctx->runtime, id, mode, &report);
 	int conversation_restored =
 		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(report, "conversation_restored"));
@@ -48,20 +49,22 @@ static int cli_rewind_restore(struct cli_application *ctx, int64_t id,
 			CMD_ERROR(ctx, "rewind applied; history note could not be saved: %s",
 				  receipt);
 		else
-			CMD_ERROR(ctx, "rewind failed: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "rewind failed: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(report, "code_restored")))
 			cli_output_printf(ctx, "  Code was restored before this error.\n");
 		if (conversation_restored)
 			cli_output_printf(ctx, "  Conversation was restored before this error.\n");
 		if (display_rc)
 			cli_output_printf(ctx, "  History display refresh failed: %s\n",
-			       morph_strerror(display_rc));
+					  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+						     display_rc));
 		cli_rewind_report_print(ctx, report);
 		return rc;
 	}
 	if (display_rc) {
 		CMD_ERROR(ctx, "rewind completed; history display failed: %s",
-			  morph_strerror(display_rc));
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, display_rc));
 		cli_rewind_report_print(ctx, report);
 		return display_rc;
 	}
@@ -81,18 +84,18 @@ static int cli_rewind_id(const char *text, int64_t *id)
 	long long value;
 
 	if (!text || !*text || *text < '0' || *text > '9')
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	errno = 0;
 	value = strtoll(text, &end, 10);
 	if (errno || *end || value <= 0 || value > INT64_MAX)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*id = (int64_t)value;
 	return 0;
 }
 
 static int cli_rewind_list(struct cli_application *ctx, int interactive)
 {
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	int rc = runtime_checkpoint_list_copy(ctx->runtime, &report);
 	if (rc)
 		return rc;
@@ -129,10 +132,10 @@ static int cli_rewind_command(struct cli_application *ctx, int argc, char **argv
 		return 0;
 	}
 	if (!ctx || !ctx->runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (ctx->turn_active || (ctx->input_job && ctx->input_job->active)) {
 		CMD_ERROR(ctx, "wait for the active turn before rewinding");
-		return -EBUSY;
+		return NB_ERR_BUSY;
 	}
 	int rc;
 	if (argc == 1 || (argc == 2 && !strcmp(argv[1], "list"))) {
@@ -142,10 +145,10 @@ static int cli_rewind_command(struct cli_application *ctx, int argc, char **argv
 		int64_t id;
 		if (argc != 3 || cli_rewind_id(argv[2], &id) != 0) {
 			cli_rewind_help(ctx);
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 		if (!strcmp(argv[1], "preview")) {
-			cJSON *report MORPH_CLEANUP(morph_json_cleanup) = NULL;
+			cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 			rc = runtime_checkpoint_preview_copy(ctx->runtime, id, &report);
 			if (report) {
 				char prompt[BUFSIZ];
@@ -162,13 +165,14 @@ static int cli_rewind_command(struct cli_application *ctx, int argc, char **argv
 								   : 0;
 			if (!mode) {
 				cli_rewind_help(ctx);
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			}
 			return cli_rewind_restore(ctx, id, mode);
 		}
 	}
 	if (rc)
-		CMD_ERROR(ctx, "rewind failed: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "rewind failed: %s",
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	return rc;
 }
 

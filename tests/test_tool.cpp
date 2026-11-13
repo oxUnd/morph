@@ -1,13 +1,16 @@
+#include "errors.h"
 #include <gtest/gtest.h>
+#include <stdlib.h>
+#include "nb/err.h"
 #include "agent/tool.h"
 #include "agent/tool_runtime.h"
 #include "agent/tool_context.h"
 #include "agent/tools/file_read.h"
 #include "agent/tools/file_list.h"
 #include "agent/tools/file_info.h"
-#include "util/file.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/file.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 #include <string.h>
 #include <cstdio>
 #include <sys/stat.h>
@@ -26,7 +29,7 @@ static int error_tool_exec(const char *args_json, struct tool_result *result, vo
 	(void)args_json;
 	(void)result;
 	(void)user_data;
-	return -EIO;
+	return NB_ERR_IO;
 }
 
 static int register_test_tool(enum tool_origin origin, struct tool_registry *reg,
@@ -75,6 +78,52 @@ TEST_F(ToolTest, Init) {
 	EXPECT_EQ(reg.count, 0);
 }
 
+TEST_F(ToolTest, ContextRefreshRetainsCopiedBindingDuringSelfRemoval)
+{
+	struct RefreshState {
+		struct tool_registry *owner;
+		int calls = 0;
+		bool destroyed = false;
+		bool alive_during_callback = false;
+	} state{nullptr};
+	struct Payload {
+		RefreshState *state;
+	};
+	struct tool_spec spec NB_CLEANUP(tool_spec_cleanup) = {};
+	spec.origin = TOOL_ORIGIN_BUILTIN;
+	spec.name = "refreshable";
+	spec.description = "Refresh domain prompt context";
+	spec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
+	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	spec.exec = mock_tool_exec;
+	spec.refresh_context = [](void *user_data) -> int {
+		auto *payload = static_cast<Payload *>(user_data);
+		auto *observed = payload->state;
+		observed->calls++;
+		EXPECT_EQ(tool_unregister(observed->owner, "refreshable"), NB_OK);
+		observed->alive_during_callback = !observed->destroyed;
+		return NB_ERR_STALE;
+	};
+	spec.user_data = new Payload{&state};
+	spec.user_data_destroy = [](void *user_data) {
+		auto *payload = static_cast<Payload *>(user_data);
+		payload->state->destroyed = true;
+		delete payload;
+	};
+	ASSERT_EQ(tool_register_take(&reg, &spec), NB_OK);
+	struct tool_registry copied NB_CLEANUP(tool_registry_cleanup) = {};
+	tool_registry_init(nullptr, &copied);
+	ASSERT_EQ(tool_registry_copy(&copied, &reg), NB_OK);
+	ASSERT_EQ(tool_unregister(&reg, "refreshable"), NB_OK);
+	EXPECT_FALSE(state.destroyed);
+	state.owner = &copied;
+	EXPECT_EQ(tool_refresh_context(&copied, "refreshable"), NB_ERR_STALE);
+	EXPECT_EQ(state.calls, 1);
+	EXPECT_TRUE(state.alive_during_callback);
+	EXPECT_TRUE(state.destroyed);
+	EXPECT_EQ(tool_refresh_context(&copied, "refreshable"), NB_OK);
+}
+
 TEST_F(ToolTest, RegisterAndLookup) {
 	int rc = register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "test_tool", "A test tool",
 			       TOOL_EMPTY_INPUT_SCHEMA, mock_tool_exec, nullptr, nullptr);
@@ -83,7 +132,7 @@ TEST_F(ToolTest, RegisterAndLookup) {
 	struct tool_entry *e = tool_borrow(&reg, "test_tool");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->desc.name, "test_tool");
-	EXPECT_EQ(morph_strmap_borrow(&reg.by_name, "test_tool"), e);
+	EXPECT_EQ(nb_map_get_cstr(reg.by_name, "test_tool"), e);
 }
 
 TEST_F(ToolTest, RegisterStoresOptionalTitle) {
@@ -138,7 +187,7 @@ TEST_F(ToolTest, DuplicateName) {
 TEST_F(ToolTest, DisableUsesNameIndex) {
 	EXPECT_EQ(tool_disable(&reg, "blocked"), 0);
 	EXPECT_TRUE(tool_is_disabled(&reg, "blocked"));
-	EXPECT_TRUE(morph_strmap_contains(&reg.disabled_by_name, "blocked"));
+	EXPECT_TRUE(nb_map_has_cstr(reg.disabled_by_name, "blocked"));
 	EXPECT_EQ(tool_disable(&reg, "blocked"), 0);
 	EXPECT_EQ(reg.disabled_count, 1);
 }
@@ -154,7 +203,7 @@ TEST_F(ToolTest, ExecTool) {
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "exec_test", "{}", &result);
 	EXPECT_EQ(rc, 0);
-	EXPECT_NE(result.text.data, nullptr);
+	EXPECT_NE(result.text.ptr, nullptr);
 	tool_result_cleanup(&result);
 }
 
@@ -170,9 +219,9 @@ TEST_F(ToolTest, UnknownReadReportsTheAvailableFileToolWithoutRunningIt)
 {
 	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "Read a file",
 		nullptr, mock_tool_exec, nullptr, nullptr), 0);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
-	EXPECT_EQ(tool_exec(&reg, "read", "{}", &result), -ENOENT);
+	EXPECT_EQ(tool_exec(&reg, "read", "{}", &result), NB_ERR_NOT_FOUND);
 	const cJSON *error = cJSON_GetObjectItemCaseSensitive(result.envelope, "error");
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(error, "code")),
 		"tool_not_found");
@@ -181,8 +230,8 @@ TEST_F(ToolTest, UnknownReadReportsTheAvailableFileToolWithoutRunningIt)
 	ASSERT_NE(message, nullptr);
 	EXPECT_NE(strstr(message, "'read' is not registered"), nullptr);
 	EXPECT_NE(strstr(message, "Use file_read"), nullptr);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "tool_not_found"), nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "tool_not_found"), nullptr);
 }
 
 TEST_F(ToolTest, ExecError) {
@@ -190,7 +239,7 @@ TEST_F(ToolTest, ExecError) {
 	struct tool_result result;
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "error_tool", "{}", &result);
-	EXPECT_EQ(rc, -EIO);
+	EXPECT_EQ(rc, NB_ERR_IO);
 	ASSERT_NE(result.envelope, nullptr);
 	cJSON *ok = cJSON_GetObjectItem(result.envelope, "ok");
 	cJSON *error = cJSON_GetObjectItem(result.envelope, "error");
@@ -200,9 +249,9 @@ TEST_F(ToolTest, ExecError) {
 	ASSERT_TRUE(cJSON_IsString(code));
 	EXPECT_STREQ(code->valuestring, "tool_failed");
 	ASSERT_TRUE(cJSON_IsString(message));
-	EXPECT_STREQ(message->valuestring, "Input/output error");
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "\"ok\":false"), nullptr);
+	EXPECT_STREQ(message->valuestring, "I/O error");
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "\"ok\":false"), nullptr);
 	tool_result_cleanup(&result);
 }
 
@@ -222,11 +271,11 @@ TEST_F(ToolTest, StructuredResultFieldsAreOwnedAndCleared) {
 	struct tool_result result;
 	tool_result_init(&result);
 
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	ASSERT_NE(data, nullptr);
 	ASSERT_NE(cJSON_AddStringToObject(data, "kind", "test"), nullptr);
 
-	cJSON *ui MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *ui NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	ASSERT_NE(ui, nullptr);
 	ASSERT_NE(cJSON_AddStringToObject(ui, "component", "test"), nullptr);
 
@@ -365,16 +414,16 @@ TEST_F(ToolTest, HandleAcquisitionReportsDisabledToolsAndClearsFailedOutputs)
 	ASSERT_EQ(tool_registry_acquire(&reg, "disabled", &handle), 0);
 	EXPECT_EQ(handle.disabled, 1);
 	tool_handle_release(&handle);
-	EXPECT_EQ(tool_registry_acquire(&reg, "missing", &handle), -ENOENT);
+	EXPECT_EQ(tool_registry_acquire(&reg, "missing", &handle), NB_ERR_NOT_FOUND);
 	EXPECT_EQ(handle.exec, nullptr);
 	EXPECT_EQ(handle.binding, nullptr);
-	EXPECT_EQ(tool_registry_acquire(nullptr, "missing", &handle), -EINVAL);
+	EXPECT_EQ(tool_registry_acquire(nullptr, "missing", &handle), NB_ERR_INVAL);
 	struct tool_registry uninitialized{};
 
 	EXPECT_EQ(tool_registry_acquire(&uninitialized, "missing", &handle),
 		MORPH_ERR_NOT_INITIALIZED);
-	uninitialized.init_error = -ENOMEM;
-	EXPECT_EQ(tool_registry_acquire(&uninitialized, "missing", &handle), -ENOMEM);
+	uninitialized.init_error = NB_ERR_NOMEM;
+	EXPECT_EQ(tool_registry_acquire(&uninitialized, "missing", &handle), NB_ERR_NOMEM);
 	tool_handle_release(&handle);
 }
 
@@ -447,7 +496,7 @@ TEST_F(ToolTest, UnregisterRemovesEntryAndRebuildsIndex) {
 	EXPECT_EQ(reg.count, 2);
 	EXPECT_EQ(tool_borrow(&reg, "middle"), nullptr);
 	ASSERT_NE(tool_borrow(&reg, "last"), nullptr);
-	EXPECT_EQ(morph_strmap_borrow(&reg.by_name, "last"), tool_borrow(&reg, "last"));
+	EXPECT_EQ(nb_map_get_cstr(reg.by_name, "last"), tool_borrow(&reg, "last"));
 
 	struct tool_result result;
 	tool_result_init(&result);
@@ -470,7 +519,7 @@ TEST_F(ToolTest, UnregisterCallsDestroyAndClearsDisabled) {
 	EXPECT_EQ(destruction.last, val);
 	EXPECT_FALSE(tool_is_disabled(&reg, "drop_me"));
 	EXPECT_EQ(reg.disabled_count, 0);
-	EXPECT_EQ(tool_unregister(&reg, "drop_me"), -ENOENT);
+	EXPECT_EQ(tool_unregister(&reg, "drop_me"), NB_ERR_NOT_FOUND);
 }
 
 TEST_F(ToolTest, CleanupIdempotent) {
@@ -484,8 +533,8 @@ TEST_F(ToolTest, CleanupIdempotent) {
 TEST_F(ToolTest, FileReadUsesWorkdirPolicy) {
 	const char *work = "/tmp/morph_tool_work";
 	const char *path = "/tmp/morph_tool_work/read.txt";
-	file_ensure_dir(work);
-	file_write_all(path, "hello\n", 6);
+	nb_file_mkdir(work, true, NULL);
+	nb_file_write_all(path, "hello\n", 6, NULL);
 	struct tool_context *tctx = tool_context_create(NULL, work, "/tmp/morph_tool_out");
 	ASSERT_NE(tctx, nullptr);
 	ASSERT_EQ(file_read_init(&reg, tctx), 0);
@@ -494,8 +543,8 @@ TEST_F(ToolTest, FileReadUsesWorkdirPolicy) {
 	int rc = tool_exec(&reg, "file_read",
 			   "{\"file_path\":\"read.txt\"}", &result);
 	EXPECT_EQ(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "hello"), nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "hello"), nullptr);
 	tool_result_cleanup(&result);
 	tool_context_destroy(tctx);
 	std::remove(path);
@@ -506,8 +555,8 @@ TEST_F(ToolTest, FileReadDeniesSymlinkEscape) {
 	const char *work = "/tmp/morph_tool_work";
 	const char *secret = "/tmp/morph_tool_secret.txt";
 	const char *link_path = "/tmp/morph_tool_work/link.txt";
-	file_ensure_dir(work);
-	file_write_all(secret, "secret\n", 7);
+	nb_file_mkdir(work, true, NULL);
+	nb_file_write_all(secret, "secret\n", 7, NULL);
 	std::remove(link_path);
 	ASSERT_EQ(symlink(secret, link_path), 0);
 	struct tool_context *tctx = tool_context_create(NULL, work, "/tmp/morph_tool_out");
@@ -517,9 +566,9 @@ TEST_F(ToolTest, FileReadDeniesSymlinkEscape) {
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "file_read",
 			   "{\"file_path\":\"link.txt\"}", &result);
-	EXPECT_EQ(rc, -EPERM);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "permission denied"), nullptr);
+	EXPECT_EQ(rc, NB_ERR_NOT_PERMITTED);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "permission denied"), nullptr);
 	tool_result_cleanup(&result);
 	tool_context_destroy(tctx);
 	std::remove(link_path);
@@ -530,8 +579,8 @@ TEST_F(ToolTest, FileReadDeniesSymlinkEscape) {
 TEST_F(ToolTest, FileListDeniesParentTraversal) {
 	const char *work = "/tmp/morph_tool_work";
 	const char *outside = "/tmp/morph_tool_outside";
-	file_ensure_dir(work);
-	file_ensure_dir(outside);
+	nb_file_mkdir(work, true, NULL);
+	nb_file_mkdir(outside, true, NULL);
 	struct tool_context *tctx = tool_context_create(NULL, work, "/tmp/morph_tool_out");
 	ASSERT_NE(tctx, nullptr);
 	ASSERT_EQ(file_list_init(&reg, tctx), 0);
@@ -540,9 +589,9 @@ TEST_F(ToolTest, FileListDeniesParentTraversal) {
 	int rc = tool_exec(&reg, "file_list",
 			   "{\"dir_path\":\"../morph_tool_outside\"}",
 			   &result);
-	EXPECT_EQ(rc, -EPERM);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "permission denied"), nullptr);
+	EXPECT_EQ(rc, NB_ERR_NOT_PERMITTED);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "permission denied"), nullptr);
 	tool_result_cleanup(&result);
 	tool_context_destroy(tctx);
 	rmdir(outside);
@@ -553,9 +602,9 @@ TEST_F(ToolTest, FileListAllowsOutputDir) {
 	const char *work = "/tmp/morph_tool_work";
 	const char *out = "/tmp/morph_tool_out";
 	const char *artifact = "/tmp/morph_tool_out/artifact.txt";
-	file_ensure_dir(work);
-	file_ensure_dir(out);
-	file_write_all(artifact, "artifact", 8);
+	nb_file_mkdir(work, true, NULL);
+	nb_file_mkdir(out, true, NULL);
+	nb_file_write_all(artifact, "artifact", 8, NULL);
 	struct tool_context *tctx = tool_context_create(NULL, work, out);
 	ASSERT_NE(tctx, nullptr);
 	ASSERT_EQ(file_list_init(&reg, tctx), 0);
@@ -565,8 +614,8 @@ TEST_F(ToolTest, FileListAllowsOutputDir) {
 			   "{\"dir_path\":\"/tmp/morph_tool_out\"}",
 			   &result);
 	EXPECT_EQ(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "artifact.txt"), nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "artifact.txt"), nullptr);
 	tool_result_cleanup(&result);
 	tool_context_destroy(tctx);
 	std::remove(artifact);
@@ -577,8 +626,8 @@ TEST_F(ToolTest, FileListAllowsOutputDir) {
 TEST_F(ToolTest, FileInfoUsesResolvedWorkdirPath) {
 	const char *work = "/tmp/morph_tool_work";
 	const char *path = "/tmp/morph_tool_work/info.txt";
-	file_ensure_dir(work);
-	file_write_all(path, "info", 4);
+	nb_file_mkdir(work, true, NULL);
+	nb_file_write_all(path, "info", 4, NULL);
 	struct tool_context *tctx = tool_context_create(NULL, work, "/tmp/morph_tool_out");
 	ASSERT_NE(tctx, nullptr);
 	ASSERT_EQ(file_info_init(&reg, tctx), 0);
@@ -587,8 +636,8 @@ TEST_F(ToolTest, FileInfoUsesResolvedWorkdirPath) {
 	int rc = tool_exec(&reg, "file_info",
 			   "{\"file_path\":\"info.txt\"}", &result);
 	EXPECT_EQ(rc, 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "\"type\":\"file\""), nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "\"type\":\"file\""), nullptr);
 	tool_result_cleanup(&result);
 	tool_context_destroy(tctx);
 	std::remove(path);
@@ -627,7 +676,7 @@ TEST_F(ToolTest, DescriptorOwnsExactStringsAcrossGrowthAndRemoval)
 
 TEST(ToolResultOwnershipTest, BorrowedJsonTextRemainsUsableAfterSettingTheResult)
 {
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	const char *text = "{\"answer\":42}";
 
 	ASSERT_EQ(tool_result_success_json_text_copy(&result, text), 0);
@@ -639,8 +688,8 @@ TEST(ToolResultOwnershipTest, BorrowedJsonTextRemainsUsableAfterSettingTheResult
 
 TEST(ToolResultOwnershipTest, TakingJsonMovesTheNodeAndClearsTheSource)
 {
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse("{\"answer\":42}");
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse("{\"answer\":42}");
 	cJSON *original = data;
 
 	ASSERT_NE(data, nullptr);
@@ -653,8 +702,8 @@ TEST(ToolResultOwnershipTest, TakingJsonMovesTheNodeAndClearsTheSource)
 
 TEST(ToolResultOwnershipTest, JsonTakeFailurePreservesTheSourceAndExistingResult)
 {
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse("{\"answer\":42}");
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse("{\"answer\":42}");
 	ASSERT_EQ(tool_result_success_text_copy(&result, "previous"), 0);
 	cJSON *original = data;
 	cJSON *previous = result.envelope;
@@ -666,7 +715,7 @@ TEST(ToolResultOwnershipTest, JsonTakeFailurePreservesTheSourceAndExistingResult
 	int rc = tool_result_success_take(&result, &data);
 	cJSON_InitHooks(nullptr);
 
-	EXPECT_EQ(rc, -ENOMEM);
+	EXPECT_EQ(rc, NB_ERR_NOMEM);
 	EXPECT_EQ(data, original);
 	EXPECT_EQ(result.envelope, previous);
 	EXPECT_STREQ(cJSON_GetObjectItem(result.data, "text")->valuestring, "previous");
@@ -674,12 +723,12 @@ TEST(ToolResultOwnershipTest, JsonTakeFailurePreservesTheSourceAndExistingResult
 
 TEST(ToolResultOwnershipTest, TextTakePreservesFailuresAndClearsSuccessfulOwners)
 {
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
-	char *text MORPH_CLEANUP(morph_charp_cleanup) = strdup("{\"answer\":42}");
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
+	char *text NB_CLEANUP(nb_charp_cleanup) = strdup("{\"answer\":42}");
 	char *original = text;
 
 	ASSERT_NE(text, nullptr);
-	EXPECT_EQ(tool_result_success_json_text_take(nullptr, &text), -EINVAL);
+	EXPECT_EQ(tool_result_success_json_text_take(nullptr, &text), NB_ERR_INVAL);
 	EXPECT_EQ(text, original);
 	ASSERT_EQ(tool_result_success_json_text_take(&result, &text), 0);
 	EXPECT_EQ(text, nullptr);
@@ -688,8 +737,8 @@ TEST(ToolResultOwnershipTest, TextTakePreservesFailuresAndClearsSuccessfulOwners
 
 TEST(ToolResultOwnershipTest, UiTakeFailurePreservesBothOwnersAndSuccessMovesTheNode)
 {
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
-	cJSON *ui MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse("{\"component\":\"test\"}");
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
+	cJSON *ui NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse("{\"component\":\"test\"}");
 	ASSERT_EQ(tool_result_success_text_copy(&result, "previous"), 0);
 	cJSON *original = ui;
 	cJSON *previous = result.envelope;
@@ -701,7 +750,7 @@ TEST(ToolResultOwnershipTest, UiTakeFailurePreservesBothOwnersAndSuccessMovesThe
 	int rc = tool_result_set_ui_take(&result, &ui);
 	cJSON_InitHooks(nullptr);
 
-	EXPECT_EQ(rc, -ENOMEM);
+	EXPECT_EQ(rc, NB_ERR_NOMEM);
 	EXPECT_EQ(ui, original);
 	EXPECT_EQ(result.envelope, previous);
 	ASSERT_EQ(tool_result_set_ui_take(&result, &ui), 0);
@@ -713,32 +762,32 @@ TEST(ToolResultOwnershipTest, UiTakeFailurePreservesBothOwnersAndSuccessMovesThe
 
 TEST(ToolResultOwnershipTest, BorrowedMetaIsCopiedAndDoesNotDependOnItsSource)
 {
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
-	cJSON *meta MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse("{\"source\":\"caller\"}");
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
+	cJSON *meta NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse("{\"source\":\"caller\"}");
 
 	ASSERT_EQ(tool_result_set_meta_copy(&result, meta), 0);
 	ASSERT_NE(result.meta, meta);
-	morph_json_cleanup(&meta);
+	cJSON_DeleteOwner(&meta);
 	ASSERT_EQ(tool_result_finalize(&result), 0);
 	EXPECT_STREQ(cJSON_GetObjectItem(result.meta, "source")->valuestring, "caller");
 }
 
 TEST(ToolResultOwnershipTest, TakingAnExistingResultFieldIsRejectedWithoutMutation)
 {
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	ASSERT_EQ(tool_result_success_text_copy(&result, "previous"), 0);
 	cJSON *previous = result.envelope;
 	cJSON *data = result.data;
 
-	EXPECT_EQ(tool_result_success_take(&result, &result.data), -EINVAL);
+	EXPECT_EQ(tool_result_success_take(&result, &result.data), NB_ERR_INVAL);
 	EXPECT_EQ(result.envelope, previous);
 	EXPECT_EQ(result.data, data);
 }
 
 TEST(ToolResultOwnershipTest, ArtifactTakeFailurePreservesSourceAndExistingArtifacts)
 {
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
-	cJSON *artifacts MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
+	cJSON *artifacts NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateArray();
 	ASSERT_EQ(tool_result_add_image_copy(&result, "/tmp/previous.png", 10, 20), 0);
 	ASSERT_NE(artifacts, nullptr);
 	for (int i = 0; i <= TOOL_ARTIFACT_MAX; i++) {
@@ -749,7 +798,7 @@ TEST(ToolResultOwnershipTest, ArtifactTakeFailurePreservesSourceAndExistingArtif
 	}
 	cJSON *original = artifacts;
 
-	EXPECT_EQ(tool_result_set_artifacts_take(&result, &artifacts), -ENOSPC);
+	EXPECT_EQ(tool_result_set_artifacts_take(&result, &artifacts), NB_ERR_NO_SPACE);
 	EXPECT_EQ(artifacts, original);
 	ASSERT_EQ(result.artifacts.count, 1);
 	EXPECT_STREQ(result.artifacts.items[0].path, "/tmp/previous.png");
@@ -757,18 +806,18 @@ TEST(ToolResultOwnershipTest, ArtifactTakeFailurePreservesSourceAndExistingArtif
 
 TEST(ToolResultOwnershipTest, AttachedDescendantsCannotBePassedAsIndependentOwners)
 {
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	ASSERT_EQ(tool_result_success_json_text_copy(&result, "{\"nested\":{\"answer\":42}}"), 0);
 	cJSON *previous = result.envelope;
 	cJSON *nested = cJSON_GetObjectItem(result.data, "nested");
 	cJSON *source = nested;
 	ASSERT_NE(nested, nullptr);
 
-	EXPECT_EQ(tool_result_success_take(&result, &source), -EINVAL);
+	EXPECT_EQ(tool_result_success_take(&result, &source), NB_ERR_INVAL);
 	EXPECT_EQ(source, nested);
-	EXPECT_EQ(tool_result_set_ui_take(&result, &source), -EINVAL);
-	EXPECT_EQ(tool_result_set_meta_take(&result, &source), -EINVAL);
-	EXPECT_EQ(tool_result_set_artifacts_take(&result, &source), -EINVAL);
+	EXPECT_EQ(tool_result_set_ui_take(&result, &source), NB_ERR_INVAL);
+	EXPECT_EQ(tool_result_set_meta_take(&result, &source), NB_ERR_INVAL);
+	EXPECT_EQ(tool_result_set_artifacts_take(&result, &source), NB_ERR_INVAL);
 	EXPECT_EQ(result.envelope, previous);
 	EXPECT_EQ(cJSON_GetObjectItem(nested, "answer")->valueint, 42);
 	EXPECT_EQ(source, nested);

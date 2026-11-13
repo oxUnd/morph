@@ -1,22 +1,24 @@
 #include <morph/tui/canvas.h>
-#include "util/array.h"
-#include "util/error.h"
-#include "util/utf8.h"
-#include "util/cleanup.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
+#include "nb/cleanup.h"
 
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
 struct render_canvas_cell {
-	morph_buf_t text;
-	morph_buf_t hyperlink;
+	nb_buf text;
+	nb_buf hyperlink;
 	struct morph_tui_text_style style;
 	int span;
 };
 
 struct morph_tui_surface {
-	morph_array_t cells, images;
+	nb_vec cells, images;
 	int width, height;
 	int cursor_x, cursor_y, cursor_visible;
 };
@@ -24,21 +26,23 @@ struct morph_tui_surface {
 int morph_tui_surface_create(struct morph_tui_surface **out)
 {
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	struct morph_tui_surface *surface = calloc(1, sizeof(*surface));
 	struct render_canvas_cell cell;
 
 	if (!surface)
-		return -ENOMEM;
-	int rc = morph_array_init(&surface->cells, 16, sizeof(cell));
+		return NB_ERR_NOMEM;
+	int rc = (nb_vec_init(&surface->cells, sizeof(cell)),
+		  nb_vec_reserve(&surface->cells, 16) ? 0 : NB_ERR_NOMEM);
 	struct morph_tui_media_placement placement;
 	if (!rc)
-		rc = morph_array_init(&surface->images, 4, sizeof(placement));
+		rc = (nb_vec_init(&surface->images, sizeof(placement)),
+		      nb_vec_reserve(&surface->images, 4) ? 0 : NB_ERR_NOMEM);
 
 	if (rc) {
-		morph_array_cleanup(&surface->cells);
+		nb_vec_cleanup(&surface->cells);
 		free(surface);
 		return rc;
 	}
@@ -48,26 +52,26 @@ int morph_tui_surface_create(struct morph_tui_surface **out)
 
 static void render_canvas_clear_images(struct morph_tui_surface *surface)
 {
-	for (size_t i = 0; i < surface->images.nelts; i++) {
-		struct morph_tui_media_placement *image = morph_array_borrow(&surface->images, i);
+	for (size_t i = 0; i < surface->images.len; i++) {
+		struct morph_tui_media_placement *image = nb_vec_at(&surface->images, i);
 		morph_tui_media_asset_destroy(image->asset);
 	}
-	morph_array_clear(&surface->images);
+	nb_vec_clear(&surface->images);
 }
 
 void morph_tui_surface_destroy(struct morph_tui_surface *surface)
 {
 	if (!surface)
 		return;
-	for (size_t i = 0; i < surface->cells.nelts; i++) {
-		struct render_canvas_cell *cell = morph_array_borrow(&surface->cells, i);
+	for (size_t i = 0; i < surface->cells.len; i++) {
+		struct render_canvas_cell *cell = nb_vec_at(&surface->cells, i);
 
-		morph_buf_cleanup(&cell->text);
-		morph_buf_cleanup(&cell->hyperlink);
+		nb_buf_cleanup(&cell->text);
+		nb_buf_cleanup(&cell->hyperlink);
 	}
-	morph_array_cleanup(&surface->cells);
+	nb_vec_cleanup(&surface->cells);
 	render_canvas_clear_images(surface);
-	morph_array_cleanup(&surface->images);
+	nb_vec_cleanup(&surface->images);
 	free(surface);
 }
 
@@ -99,18 +103,17 @@ int morph_tui_surface_cursor(const struct morph_tui_surface *surface, int *x, in
 int morph_tui_surface_resize(struct morph_tui_surface *surface, int width, int height)
 {
 	if (!surface || width < 0 || height < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (height && (size_t)width > SIZE_MAX / (size_t)height)
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	size_t count = (size_t)width * (size_t)height;
 
-	if (count > surface->cells.nelts) {
-		size_t added = count - surface->cells.nelts;
-		struct render_canvas_cell *cells =
-			morph_array_push_n_borrow(&surface->cells, added);
+	if (count > surface->cells.len) {
+		size_t added = count - surface->cells.len;
+		struct render_canvas_cell *cells = nb_vec_push_n(&surface->cells, added);
 
 		if (!cells)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		memset(cells, 0, added * sizeof(*cells));
 	}
 	surface->width = width;
@@ -125,11 +128,11 @@ void morph_tui_surface_clear(struct morph_tui_surface *surface)
 		return;
 	surface->cursor_visible = 0;
 	render_canvas_clear_images(surface);
-	for (size_t i = 0; i < surface->cells.nelts; i++) {
-		struct render_canvas_cell *cell = morph_array_borrow(&surface->cells, i);
+	for (size_t i = 0; i < surface->cells.len; i++) {
+		struct render_canvas_cell *cell = nb_vec_at(&surface->cells, i);
 
-		morph_buf_reset(&cell->text);
-		morph_buf_reset(&cell->hyperlink);
+		nb_buf_clear(&cell->text);
+		nb_buf_clear(&cell->hyperlink);
 		cell->span = 1;
 		cell->style = (struct morph_tui_text_style){0};
 	}
@@ -178,7 +181,7 @@ void morph_tui_canvas_child_borrow(const struct morph_tui_canvas *parent, int x,
 static struct render_canvas_cell *render_canvas_cell(struct morph_tui_surface *surface, int x,
 						     int y)
 {
-	return morph_array_borrow(&surface->cells, (size_t)y * (size_t)surface->width + (size_t)x);
+	return nb_vec_at(&surface->cells, (size_t)y * (size_t)surface->width + (size_t)x);
 }
 
 static int render_canvas_selection_range(struct morph_tui_surface *surface,
@@ -205,12 +208,12 @@ static int render_canvas_selection_range(struct morph_tui_surface *surface,
 	return 1;
 }
 
-int morph_tui_surface_selection_text(struct morph_tui_surface *surface,
-				     int x1, int y1, int x2, int y2, morph_buf_t *text)
+int morph_tui_surface_selection_text(struct morph_tui_surface *surface, int x1, int y1, int x2,
+				     int y2, nb_buf *text)
 {
 	if (!surface || !text)
-		return -EINVAL;
-	morph_buf_reset(text);
+		return NB_ERR_INVAL;
+	nb_buf_clear(text);
 	if (!render_canvas_selection_range(surface, &x1, &y1, &x2, &y2))
 		return 0;
 	for (int y = y1; y <= y2; y++) {
@@ -224,16 +227,16 @@ int morph_tui_surface_selection_text(struct morph_tui_surface *surface,
 			if (!cell->span)
 				continue;
 			if (cell->text.len)
-				morph_buf_append(text, cell->text.data, cell->text.len);
+				nb_buf_append(text, cell->text.ptr, cell->text.len);
 			else
-				morph_buf_putc(text, ' ');
+				nb_buf_append_char(text, ' ');
 		}
-		while (text->len > row_start && text->data[text->len - 1] == ' ')
-			text->data[--text->len] = '\0';
+		while (text->len > row_start && text->ptr[text->len - 1] == ' ')
+			text->ptr[--text->len] = '\0';
 		if (y != y2)
-			morph_buf_putc(text, '\n');
+			nb_buf_append_char(text, '\n');
 	}
-	return text->failed;
+	return nb_buf_status(text);
 }
 
 int morph_tui_surface_selection_style(struct morph_tui_surface *surface,
@@ -242,7 +245,7 @@ int morph_tui_surface_selection_style(struct morph_tui_surface *surface,
 	struct morph_tui_text_style style = {.attributes = attributes};
 
 	if (!surface || !morph_tui_text_style_valid(style))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!render_canvas_selection_range(surface, &x1, &y1, &x2, &y2))
 		return 0;
 	for (int y = y1; y <= y2; y++) {
@@ -262,19 +265,19 @@ static void render_canvas_erase(struct morph_tui_surface *surface, int x, int y)
 	if (!cell->span && x > 0) {
 		struct render_canvas_cell *lead = render_canvas_cell(surface, x - 1, y);
 
-		morph_buf_reset(&lead->text);
-		morph_buf_reset(&lead->hyperlink);
+		nb_buf_clear(&lead->text);
+		nb_buf_clear(&lead->hyperlink);
 		lead->span = 1;
 	}
 	if (cell->span == 2 && x + 1 < surface->width) {
 		struct render_canvas_cell *trail = render_canvas_cell(surface, x + 1, y);
 
-		morph_buf_reset(&trail->text);
-		morph_buf_reset(&trail->hyperlink);
+		nb_buf_clear(&trail->text);
+		nb_buf_clear(&trail->hyperlink);
 		trail->span = 1;
 	}
-	morph_buf_reset(&cell->text);
-	morph_buf_reset(&cell->hyperlink);
+	nb_buf_clear(&cell->text);
+	nb_buf_clear(&cell->hyperlink);
 	cell->span = 1;
 }
 
@@ -306,7 +309,7 @@ int morph_tui_text_style_valid(struct morph_tui_text_style style)
 int morph_tui_canvas_fill(struct morph_tui_canvas *canvas, unsigned attributes)
 {
 	if (!canvas)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct morph_tui_text_style style = canvas->style;
 	style.attributes |= attributes;
 	return morph_tui_canvas_fill_styled(canvas, &style);
@@ -316,7 +319,7 @@ int morph_tui_canvas_fill_styled(struct morph_tui_canvas *canvas,
 				 const struct morph_tui_text_style *style)
 {
 	if (!canvas || !canvas->surface || !style || !morph_tui_text_style_valid(*style))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	for (int y = canvas->top; y < canvas->bottom; y++) {
 		for (int x = canvas->left; x < canvas->right; x++) {
 			render_canvas_erase(canvas->surface, x, y);
@@ -330,7 +333,7 @@ int morph_tui_canvas_text(struct morph_tui_canvas *canvas, int x, int y, const c
 			  unsigned attributes)
 {
 	if (!canvas)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct morph_tui_text_style style = canvas->style;
 	style.attributes |= attributes;
 	return morph_tui_canvas_text_styled(canvas, x, y, text, &style);
@@ -346,25 +349,25 @@ int morph_tui_canvas_text_link(struct morph_tui_canvas *canvas, int x, int y, co
 	const struct morph_tui_text_style *style, const char *uri)
 {
 	if (!canvas || !canvas->surface || !text || !style || !morph_tui_text_style_valid(*style))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (uri) {
-		char *safe_uri MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
-			uri, strlen(uri), UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+		char *safe_uri NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+			uri, strlen(uri), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 		if (!safe_uri)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		if (strcmp(uri, safe_uri))
-			return -EINVAL;
+			return NB_ERR_INVAL;
 	}
 	if (y < 0 || y >= canvas->height)
 		return 0;
 	y += canvas->y;
 	if (y < canvas->top || y >= canvas->bottom)
 		return 0;
-	char *safe = utf8_terminal_sanitize_dup(text, strlen(text), UTF8_TERMINAL_TEXT_SINGLE_LINE,
-						NULL);
+	char *safe = morph_terminal_sanitize_dup(text, strlen(text),
+						 MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 
 	if (!safe)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	size_t length = strlen(safe), offset = 0;
 	int last = -1, rc = 0;
 	int64_t column = (int64_t)canvas->x + x;
@@ -383,11 +386,11 @@ int morph_tui_canvas_text_link(struct morph_tui_canvas *canvas, int x, int y, co
 		unsigned cp;
 		size_t bytes;
 
-		if (!utf8_decode_codepoint(safe + offset, length - offset, &cp, &bytes)) {
-			rc = MORPH_ERR_FORMAT;
+		if (!nb_utf8_read(safe + offset, length - offset, &cp, &bytes)) {
+			rc = NB_ERR_FORMAT;
 			break;
 		}
-		int width = utf8_codepoint_width(cp);
+		int width = nb_utf8_width_cp(cp);
 
 		if (width < 0)
 			width = 1;
@@ -396,7 +399,9 @@ int morph_tui_canvas_text_link(struct morph_tui_canvas *canvas, int x, int y, co
 				struct render_canvas_cell *cell =
 					render_canvas_cell(canvas->surface, last, y);
 
-				rc = morph_buf_append(&cell->text, safe + offset, bytes);
+				rc = (nb_buf_append(&cell->text, safe + offset, bytes)
+					      ? 0
+					      : NB_ERR_NOMEM);
 			}
 		} else if (column >= canvas->left && column + width <= canvas->right) {
 			int target = (int)column;
@@ -407,12 +412,15 @@ int morph_tui_canvas_text_link(struct morph_tui_canvas *canvas, int x, int y, co
 			struct render_canvas_cell *cell =
 				render_canvas_cell(canvas->surface, target, y);
 
-			if (!cell->text.data)
-				rc = morph_buf_init(&cell->text, 8);
+			if (!cell->text.ptr)
+				rc = (nb_buf_init(&cell->text),
+				      nb_buf_reserve(&cell->text, 8) ? 0 : NB_ERR_NOMEM);
 			if (!rc)
-				rc = morph_buf_append(&cell->text, safe + offset, bytes);
+				rc = (nb_buf_append(&cell->text, safe + offset, bytes)
+					      ? 0
+					      : NB_ERR_NOMEM);
 			if (!rc && uri && *uri)
-				rc = morph_buf_puts(&cell->hyperlink, uri);
+				rc = (nb_buf_append_cstr(&cell->hyperlink, uri) ? 0 : NB_ERR_NOMEM);
 			cell->style = *style;
 			cell->span = width;
 			if (width == 2) {
@@ -433,11 +441,11 @@ int morph_tui_canvas_text_link(struct morph_tui_canvas *canvas, int x, int y, co
 	return rc;
 }
 
-int morph_tui_surface_rows(struct morph_tui_surface *surface, morph_buf_t *rows)
+int morph_tui_surface_rows(struct morph_tui_surface *surface, nb_buf *rows)
 {
 	if (!surface || !rows)
-		return -EINVAL;
-	morph_buf_reset(rows);
+		return NB_ERR_INVAL;
+	nb_buf_clear(rows);
 	for (int y = 0; y < surface->height; y++) {
 		struct morph_tui_text_style style = {0};
 		int styled = 0;
@@ -448,74 +456,74 @@ int morph_tui_surface_rows(struct morph_tui_surface *surface, morph_buf_t *rows)
 
 			if (!cell->span)
 				continue;
-			const char *uri = cell->hyperlink.len ? cell->hyperlink.data : "";
+			const char *uri = cell->hyperlink.len ? cell->hyperlink.ptr : "";
 			if (strcmp(uri, hyperlink)) {
 				if (*hyperlink)
-					morph_buf_puts(rows, "\033]8;;\033\\");
+					nb_buf_append_cstr(rows, "\033]8;;\033\\");
 				if (*uri)
-					morph_buf_printf(rows, "\033]8;;%s\033\\", uri);
+					nb_buf_printf(rows, "\033]8;;%s\033\\", uri);
 				hyperlink = uri;
 			}
 			if (!styled || !morph_tui_text_style_equal(cell->style, style)) {
 				styled = 1;
 				style = cell->style;
-				morph_buf_puts(rows, "\033[0m");
+				nb_buf_append_cstr(rows, "\033[0m");
 				if (style.attributes & MORPH_TUI_STYLE_BOLD)
-					morph_buf_puts(rows, "\033[1m");
+					nb_buf_append_cstr(rows, "\033[1m");
 				if (style.attributes & MORPH_TUI_STYLE_DIM)
-					morph_buf_puts(rows, "\033[2m");
+					nb_buf_append_cstr(rows, "\033[2m");
 				if (style.attributes & MORPH_TUI_STYLE_SELECTED)
-					morph_buf_puts(rows, "\033[7m");
+					nb_buf_append_cstr(rows, "\033[7m");
 				if (style.attributes & MORPH_TUI_STYLE_ITALIC)
-					morph_buf_puts(rows, "\033[3m");
+					nb_buf_append_cstr(rows, "\033[3m");
 				if (style.attributes & MORPH_TUI_STYLE_UNDERLINE)
-					morph_buf_puts(rows, "\033[4m");
+					nb_buf_append_cstr(rows, "\033[4m");
 				if (style.attributes & MORPH_TUI_STYLE_STRIKE)
-					morph_buf_puts(rows, "\033[9m");
+					nb_buf_append_cstr(rows, "\033[9m");
 				struct morph_tui_color colors[] = {
 					style.foreground, style.background};
 				for (size_t i = 0; i < 2; i++) {
 					unsigned code = i ? 48u : 38u;
 					struct morph_tui_color color = colors[i];
 					if (color.kind == MORPH_TUI_COLOR_INDEXED)
-						morph_buf_printf(rows, "\033[%u;5;%um",
-							code, color.value);
+						nb_buf_printf(rows, "\033[%u;5;%um", code,
+							      color.value);
 					else if (color.kind == MORPH_TUI_COLOR_RGB)
-						morph_buf_printf(rows, "\033[%u;2;%u;%u;%um", code,
-							(color.value >> 16u) & 255u,
-							(color.value >> 8u) & 255u,
-							color.value & 255u);
+						nb_buf_printf(rows, "\033[%u;2;%u;%u;%um", code,
+							      (color.value >> 16u) & 255u,
+							      (color.value >> 8u) & 255u,
+							      color.value & 255u);
 				}
 
 			}
 			if (cell->text.len)
-				morph_buf_append(rows, cell->text.data, cell->text.len);
+				nb_buf_append(rows, cell->text.ptr, cell->text.len);
 			else
-				morph_buf_putc(rows, ' ');
+				nb_buf_append_char(rows, ' ');
 		}
 		if (*hyperlink)
-			morph_buf_puts(rows, "\033]8;;\033\\");
-		morph_buf_puts(rows, "\033[0m\n");
+			nb_buf_append_cstr(rows, "\033]8;;\033\\");
+		nb_buf_append_cstr(rows, "\033[0m\n");
 	}
-	return rows->failed;
+	return nb_buf_status(rows);
 }
 
 size_t morph_tui_surface_image_count(const struct morph_tui_surface *surface)
 {
-	return surface ? surface->images.nelts : 0;
+	return surface ? surface->images.len : 0;
 }
 
 const struct morph_tui_media_placement *morph_tui_surface_image_borrow(
 	const struct morph_tui_surface *surface, size_t index)
 {
-	return surface ? morph_array_borrow(&surface->images, index) : NULL;
+	return surface ? nb_vec_at(&surface->images, index) : NULL;
 }
 
 int morph_tui_canvas_image(struct morph_tui_canvas *canvas, struct morph_tui_media_asset *asset,
 			   int x, int y, int width, int height)
 {
 	if (!canvas || !canvas->surface || !asset || width < 0 || height < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!width || !height)
 		return 0;
 	int64_t origin_x = (int64_t)canvas->x + x;
@@ -532,10 +540,9 @@ int morph_tui_canvas_image(struct morph_tui_canvas *canvas, struct morph_tui_med
 	int source_y = (int)((top - origin_y) * pixels_high / height);
 	int end_x = (int)(((right - origin_x) * pixels_wide + width - 1) / width);
 	int end_y = (int)(((bottom - origin_y) * pixels_high + height - 1) / height);
-	struct morph_tui_media_placement *placement =
-		morph_array_push_borrow(&canvas->surface->images);
+	struct morph_tui_media_placement *placement = nb_vec_push(&canvas->surface->images);
 	if (!placement)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	*placement = (struct morph_tui_media_placement){
 		.asset = morph_tui_media_asset_retain(asset),
 		.x = (int)left, .y = (int)top,

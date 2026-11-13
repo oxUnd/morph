@@ -1,4 +1,8 @@
 #include "sapi/cli/commands/session.h"
+#include <string.h>
+#include <stdlib.h>
+#include "nb/cleanup.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "cJSON.h"
@@ -39,11 +43,11 @@ static int cli_session_command_switch(struct cli_application *ctx, int argc, cha
 	const char *name = cli_cmd_arg_borrow(argc, argv, 1);
 	if (!name) {
 		CMD_ERROR(ctx, "usage: /switch <name|id|^N>");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	struct session s;
-	int rc = -ENOENT;
+	int rc = NB_ERR_NOT_FOUND;
 
 	if (name[0] == '^') {
 		int idx = 1;
@@ -53,7 +57,7 @@ static int cli_session_command_switch(struct cli_application *ctx, int argc, cha
 			long n = strtol(name + 1, &end, 10);
 			if (*end != '\0' || errno != 0 || n < 1) {
 				CMD_ERROR(ctx, "session not found: %s", name);
-				return -ENOENT;
+				return NB_ERR_NOT_FOUND;
 			}
 			idx = (int)n;
 		}
@@ -65,7 +69,7 @@ static int cli_session_command_switch(struct cli_application *ctx, int argc, cha
 		struct session current;
 		(void)runtime_session_current(ctx->runtime, &current);
 		int picked = 0;
-		rc = -ENOENT;
+		rc = NB_ERR_NOT_FOUND;
 		for (int i = 0; i < count; i++) {
 			if (list[i].id == current.id)
 				continue;
@@ -86,10 +90,12 @@ static int cli_session_command_switch(struct cli_application *ctx, int argc, cha
 		if (rc != 0)
 			return rc;
 		ctx->session_auto_named = 1;
-		CMD_OK(ctx, "switched to session: %s", s.name);
 		rc = cli_session_history_restore(ctx);
 		if (rc)
-			CMD_ERROR(ctx, "failed to restore session history: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "failed to restore session history: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+		else
+			CMD_OK(ctx, "switched to session: %s", s.name);
 	} else {
 		CMD_ERROR(ctx, "session not found: %s", name);
 	}
@@ -108,7 +114,7 @@ static int cli_session_command_rename(struct cli_application *ctx, int argc, cha
 	const char *new_name = cli_cmd_arg_borrow(argc, argv, 1);
 	if (!new_name) {
 		CMD_ERROR(ctx, "usage: /rename <new_name>");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	int64_t current_id;
 	(void)runtime_session_current_id(ctx->runtime, &current_id);
@@ -126,7 +132,7 @@ static int cli_session_command_delete(struct cli_application *ctx, int argc, cha
 	const char *name = cli_cmd_arg_borrow(argc, argv, 1);
 	if (!name) {
 		CMD_ERROR(ctx, "usage: /delete <name|id>");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	int64_t id = -1;
 	struct session s;
@@ -141,13 +147,13 @@ static int cli_session_command_delete(struct cli_application *ctx, int argc, cha
 	}
 	if (id < 0) {
 		CMD_ERROR(ctx, "session not found: %s", name);
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	}
 	int64_t current_id;
 	(void)runtime_session_current_id(ctx->runtime, &current_id);
 	if (id == current_id) {
 		CMD_ERROR(ctx, "cannot delete current session, switch first");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	int rc = runtime_session_delete_and_update(ctx->runtime, id);
 	if (rc == 0) {
@@ -160,6 +166,8 @@ static int cli_session_command_delete(struct cli_application *ctx, int argc, cha
 
 static int cli_session_history_export_items(struct model_history_item *items, const char *path)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	cJSON *array = cJSON_CreateArray();
 	char *expanded;
 	char *json;
@@ -167,14 +175,14 @@ static int cli_session_history_export_items(struct model_history_item *items, co
 
 	if (!array || !path) {
 		cJSON_Delete(array);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	for (struct model_history_item *item = items; item; item = item->next) {
 		cJSON *entry = cJSON_CreateObject();
 
 		if (!entry) {
 			cJSON_Delete(array);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		cJSON_AddNumberToObject(entry, "sequence_no", (double)item->sequence_no);
 		cJSON_AddStringToObject(entry, "turn_id", item->turn_id ? item->turn_id : "");
@@ -195,13 +203,15 @@ static int cli_session_history_export_items(struct model_history_item *items, co
 	json = cJSON_Print(array);
 	cJSON_Delete(array);
 	if (!json)
-		return -ENOMEM;
-	expanded = file_expand_path_copy(path);
+		return NB_ERR_NOMEM;
+	expanded = (nb_path_expand(&file_value_1, path, NULL) == NB_OK
+			    ? strdup(nb_buf_cstr(&file_value_1))
+			    : NULL);
 	if (!expanded) {
 		free(json);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
-	rc = file_write_all(expanded, json, strlen(json));
+	rc = nb_file_write_all(expanded, json, strlen(json), NULL);
 	free(expanded);
 	free(json);
 	return rc;
@@ -244,7 +254,7 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 			sequence = strtoll(value, &end, 10);
 			if (errno || end == value || *end || sequence <= 0) {
 				CMD_ERROR(ctx, "history entry must be a positive sequence number");
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			}
 		} else if (strcmp(argv[i], "--export") == 0 && i + 1 < argc)
 			export_path = argv[++i];
@@ -256,12 +266,12 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 			value = strtol(argv[i], &end, 10);
 			if (errno || *end || value <= 0 || value > INT_MAX) {
 				CMD_ERROR(ctx, "history count must be a positive integer");
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			}
 			n = (int)value;
 		} else {
 			CMD_ERROR(ctx, "unknown or incomplete history option: %s", argv[i]);
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 	}
 	if (n <= 0)
@@ -274,7 +284,7 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 
 		if (rc != 0) {
 			CMD_ERROR(ctx, "history %s failed: %s", repair ? "repair" : "diagnosis",
-				  morph_strerror(rc));
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
 		if (repair)
@@ -303,7 +313,8 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 
 		runtime_session_model_history_free(items);
 		if (rc != 0) {
-			CMD_ERROR(ctx, "history export failed: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "history export failed: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
 		CMD_OK(ctx, "exported %d model history items to %s", count, export_path);
@@ -341,7 +352,7 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 					{.style = CLI_OUTPUT_STYLE_PLAIN,
 					 .text = cur->content ? cur->content : "",
 					 .untrusted = 1,
-					 .untrusted_mode = UTF8_TERMINAL_TEXT_MULTILINE},
+					 .untrusted_mode = MORPH_TERMINAL_TEXT_MULTILINE},
 				};
 
 				(void)cli_command_output_segments(
@@ -368,7 +379,8 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 			cli_history_print(ctx, report, n, show_all);
 		cJSON_Delete(report);
 		if (rc != 0)
-			CMD_ERROR(ctx, "history inspection failed: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "history inspection failed: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 	int count = 0;
@@ -406,7 +418,7 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 				.style = CLI_OUTPUT_STYLE_PLAIN,
 				.text = cur->content ? cur->content : "(empty)",
 				.untrusted = 1,
-				.untrusted_mode = UTF8_TERMINAL_TEXT_MULTILINE,
+				.untrusted_mode = MORPH_TERMINAL_TEXT_MULTILINE,
 			};
 			(void)cli_command_output_segments(ctx, segments, 5, 0, 1);
 		}

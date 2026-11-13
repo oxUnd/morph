@@ -1,8 +1,10 @@
 #include "sapi/cli/widgets/notice.h"
+#include "nb/err.h"
 
 #include "sapi/cli/presentation/style.h"
-#include "util/cleanup.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 #include "sapi/cli/presentation/messages.h"
 #include <morph/tui/widget.h>
 #include <morph/tui/widgets/text_view.h>
@@ -23,14 +25,14 @@ static int cli_notice_widget_measure(struct morph_tui_view *view, int width,
 {
 	struct cli_notice_widget *widget = (struct cli_notice_widget *)view;
 	if (widget->columns != width) {
-		morph_buf_t rendered MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
 		int rc = cli_notice_append(&rendered, &widget->notice,
 			width + (int)CLI_CONTENT_RIGHT_PADDING, widget->styled);
-		while (!rc && rendered.len && rendered.data[rendered.len - 1] == '\n')
-			rendered.data[--rendered.len] = '\0';
+		while (!rc && rendered.len && rendered.ptr[rendered.len - 1] == '\n')
+			rendered.ptr[--rendered.len] = '\0';
 		if (!rc)
-			rc = cli_messages_set_rendered_view(
-				widget->body, morph_buf_cstr_borrow(&rendered), widget->styled);
+			rc = cli_messages_set_rendered_view(widget->body, nb_buf_cstr(&rendered),
+							    widget->styled);
 		if (rc)
 			return rc;
 		widget->columns = width;
@@ -62,7 +64,7 @@ struct morph_tui_view *cli_notice_add_borrow(struct morph_tui_builder *builder,
 	struct morph_tui_view *parent, const struct cli_notice *notice, int styled)
 {
 	if (!notice || !notice->title) {
-		morph_tui_builder_fail(builder, -EINVAL);
+		morph_tui_builder_fail(builder, NB_ERR_INVAL);
 		return NULL;
 	}
 	const struct morph_tui_view_options options = {
@@ -76,7 +78,7 @@ struct morph_tui_view *cli_notice_add_borrow(struct morph_tui_builder *builder,
 	widget->detail = strdup(notice->detail ? notice->detail : "");
 	widget->footer = strdup(notice->footer ? notice->footer : "");
 	if (!widget->title || !widget->detail || !widget->footer)
-		morph_tui_builder_fail(builder, -ENOMEM);
+		morph_tui_builder_fail(builder, NB_ERR_NOMEM);
 	widget->notice = (struct cli_notice){.status = notice->status,
 		.title = widget->title, .detail = widget->detail, .footer = widget->footer,
 		.tree_branch = notice->tree_branch};
@@ -118,19 +120,19 @@ const char *cli_notice_color(enum cli_notice_status status)
 	}
 }
 
-static int cli_notice_text(morph_buf_t *out, const char *text, int columns,
-			   const char *continuation)
+static int cli_notice_text(nb_buf *out, const char *text, int columns, const char *continuation)
 {
-	char *safe MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
-		text, strlen(text), UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		text, strlen(text), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 	if (!safe)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (columns < 1)
 		return 0;
 	const char *line = safe;
 	int rc = 0;
 	while (*line && rc == 0) {
-		const char *end = utf8_advance_display_width_borrow(line, (size_t)columns);
+		const char *end =
+			morph_terminal_advance_display_width_borrow(line, (size_t)columns);
 		if (*end) {
 			const char *space = end;
 			while (space > line && *space != ' ')
@@ -139,61 +141,64 @@ static int cli_notice_text(morph_buf_t *out, const char *text, int columns,
 				end = space;
 		}
 		if (end == line)
-			return morph_buf_puts(out, "…");
-		rc = morph_buf_append(out, line, (size_t)(end - line));
+			return (nb_buf_append_cstr(out, "…") ? 0 : NB_ERR_NOMEM);
+		rc = (nb_buf_append(out, line, (size_t)(end - line)) ? 0 : NB_ERR_NOMEM);
 		line = end;
 		while (*line == ' ')
 			line++;
 		if (*line && rc == 0)
-			rc = morph_buf_printf(out, "\n%s", continuation);
+			rc = (nb_buf_printf(out, "\n%s", continuation) ? 0 : NB_ERR_NOMEM);
 	}
 	return rc;
 }
 
-static int cli_notice_children(morph_buf_t *out, const char *text, int columns, int last)
+static int cli_notice_children(nb_buf *out, const char *text, int columns, int last)
 {
-	char *safe MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
-		text, strlen(text), UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+	char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		text, strlen(text), MORPH_TERMINAL_TEXT_MULTILINE, NULL);
 	if (!safe)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	const char *line = safe;
 	int first = 1;
 	int width = columns > 4 ? columns - 4 : 1;
 	int rc = 0;
 	while (*line && rc == 0) {
 		const char *newline = strchr(line, '\n');
-		const char *end = utf8_advance_display_width_borrow(line, (size_t)width);
+		const char *end = morph_terminal_advance_display_width_borrow(line, (size_t)width);
 		if (newline && newline < end)
 			end = newline;
 		if (end == line && *line != '\n')
-			end += utf8_next_codepoint_len(line, strlen(line));
-		rc = morph_buf_puts(out, first ? (last ? "└ " : "├ ")
-					     : (last ? "  " : "│ "));
+			end += nb_utf8_next_codepoint_len(line, strlen(line));
+		rc = (nb_buf_append_cstr(out, first ? (last ? "└ " : "├ ") : (last ? "  " : "│ "))
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_append(out, line, (size_t)(end - line));
+			rc = (nb_buf_append(out, line, (size_t)(end - line)) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_putc(out, '\n');
+			rc = (nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM);
 		line = *end == '\n' ? end + 1 : end;
 		first = 0;
 	}
 	return rc;
 }
 
-int cli_notice_append(morph_buf_t *out, const struct cli_notice *notice, int columns, int styled)
+int cli_notice_append(nb_buf *out, const struct cli_notice *notice, int columns, int styled)
 {
 	if (!out || !notice || !notice->title)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int width = columns - (int)CLI_CONTENT_RIGHT_PADDING;
 	const char *prefix = notice->tree_branch == 1 ? "├ "
 		: notice->tree_branch == 2 ? "└ " : "";
 	const char *color = styled ? cli_notice_color(notice->status) : "";
-	int rc = morph_buf_printf(out, "%s%s%s ", prefix, color, cli_notice_marker(notice->status));
+	int rc = (nb_buf_printf(out, "%s%s%s ", prefix, color, cli_notice_marker(notice->status))
+			  ? 0
+			  : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = cli_notice_text(out, notice->title, width - 2 - (notice->tree_branch ? 2 : 0),
 			notice->tree_branch == 1 ? "│   " :
 			notice->tree_branch == 2 ? "    " : "  ");
 	if (rc == 0)
-		rc = morph_buf_puts(out, styled ? ANSI_RESET "\n" : "\n");
+		rc = (nb_buf_append_cstr(out, styled ? ANSI_RESET "\n" : "\n") ? 0 : NB_ERR_NOMEM);
 	int footer = notice->footer && *notice->footer;
 	if (rc == 0 && notice->detail && *notice->detail)
 		rc = cli_notice_children(out, notice->detail, width, !footer);

@@ -1,14 +1,14 @@
 #include "img_gen.h"
-#include "util/json.h"
-#include "util/cleanup.h"
+#include "cJSON.h"
+#include "nb/cleanup.h"
 #include "agent/tool_runtime.h"
 #include "models/llm.h"
 #include "agent/tool_context.h"
 #include "models/image_gen.h"
 #include "render/image.h"
-#include "util/log.h"
-#include "util/error.h"
-#include "util/image_util.h"
+#include "nb/log.h"
+#include "errors.h"
+#include "media/image.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -30,7 +30,7 @@ static int img_gen_validate_public_size(const struct model *image_llm,
 					const char *size)
 {
 	if (!size || !*size)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return image_llm
 		? image_gen_validate_size_for_model(image_llm, size)
 		: image_gen_validate_size(size);
@@ -50,7 +50,7 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
 
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
 	const char *prompt = NULL;
@@ -110,13 +110,13 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"missing 'prompt' parameter. "
 				"Usage: img_gen({\\\"prompt\\\": \\\"a cat\\\"})\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	if (reference_error) {
 		(void)tool_result_success_format(result, "invalid reference images: %s",
 						 reference_error);
 		cJSON_Delete(root);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	if (img_gen_validate_public_size(ctx ? ctx->image_llm : NULL,
@@ -125,7 +125,7 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"invalid size for the configured image model; "
 				"use a size supported by that model and adapter\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	const char *output_dir = tctx ? tool_context_output_dir_borrow(tctx) : NULL;
@@ -140,7 +140,7 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 
 			if (rc < 0) {
 				cJSON_Delete(root);
-				if (rc == -ENOENT)
+				if (rc == NB_ERR_NOT_FOUND)
 					(void)tool_result_success_format(
 						result, "reference image#%d not found", i + 1);
 				else
@@ -173,15 +173,15 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 	}
 
 	size_t msg_len = strlen(img_res.path) + 64;
-	char *msg MORPH_CLEANUP(morph_charp_cleanup) = malloc(msg_len);
+	char *msg NB_CLEANUP(nb_charp_cleanup) = malloc(msg_len);
 	if (!msg)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	snprintf(msg, msg_len, "image generated: %s (%dx%d)",
 		 img_res.path, img_res.width, img_res.height);
 	(void)tool_result_success_json_text_copy(result, msg);
 	(void)tool_result_add_image_copy(result, img_res.path, img_res.width, img_res.height);
-	log_dbg(result && result->runtime ? result->runtime->http.logger : NULL, "img_gen: %s",
-		msg);
+	nb_log_write(result && result->runtime ? result->runtime->http.logger : NULL, NB_LOG_DEBUG,
+		     "img_gen: %s", msg);
 
 	return 0;
 }
@@ -189,7 +189,7 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 int img_gen_init(struct tool_registry *reg, struct model *image_llm,
 		 struct tool_context *tctx)
 {
-	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
+	struct tool_spec spec NB_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.flags = TOOL_FLAG_MEDIA,
 		.name = "img_gen",
@@ -231,11 +231,11 @@ int img_gen_init(struct tool_registry *reg, struct model *image_llm,
 	int rc;
 
 	if (!reg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	ctx = malloc(sizeof(*ctx));
 	if (!ctx)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	ctx->image_llm = image_llm;
 	ctx->tctx = tctx;
 	spec.user_data = ctx;

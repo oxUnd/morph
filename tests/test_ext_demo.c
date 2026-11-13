@@ -1,12 +1,12 @@
 #include "ext/ext.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
 int main(void)
 {
-	struct ext ex MORPH_CLEANUP(ext_unload) = {0};
+	struct ext ex NB_CLEANUP(ext_unload) = {0};
 	int rc = ext_load(NULL, &ex, "exts/demo-translate");
 	if (rc < 0) {
 		rc = ext_load(NULL, &ex, "../exts/demo-translate");
@@ -21,7 +21,7 @@ int main(void)
 	printf("ext loaded: name='%s' type='%s' entry='%s'\n",
 	       ex.manifest.name, ex.manifest.type, ex.manifest.entry);
 
-	char *result MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *result NB_CLEANUP(nb_charp_cleanup) = NULL;
 	rc = ext_run(&ex, "{\"text\":\"hello world\",\"target_lang\":\"zh\"}", &result);
 	if (rc < 0) {
 		printf("FAIL: ext_run failed (%d)\n", rc);

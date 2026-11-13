@@ -1,10 +1,10 @@
 #include "runtime/execute.h"
 #include "agent/agent_control.h"
-#include "util/signals.h"
+#include "nb/signal.h"
 #include "runtime/runtime_internal.h"
 #include "runtime/output.h"
-#include "util/log.h"
-#include "util/error.h"
+#include "nb/log.h"
+#include "errors.h"
 
 #include <errno.h>
 #include <string.h>
@@ -31,8 +31,9 @@ static int runtime_output_forward(const struct react_output_event *event, void *
 	output.event_user_data = forwarder->engine->react->event_user_data;
 	rc = runtime_output_record_event(&output, event);
 	if (rc != 0)
-		log_warn(forwarder->engine->logger, "failed to record generation output: %s",
-			 morph_strerror(rc));
+		nb_log_write(forwarder->engine->logger, NB_LOG_WARN,
+			     "failed to record generation output: %s",
+			     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	if (forwarder->request->output_cb)
 		return forwarder->request->output_cb(event, forwarder->request->output_user_data);
 	return 0;
@@ -72,8 +73,8 @@ static int runtime_execute_locked(struct runtime_engine *engine,
 	session_runtime.flags =
 		request->turn_flags ? request->turn_flags : AGENT_TURN_DEFAULT_FLAGS;
 	memset(&turn, 0, sizeof(turn));
-	morph_signal_flag_set(&engine->react->cancelled, 0);
-	morph_cancel_token_reset(&engine->react->cancel_token);
+	nb_atomic_int_store(&engine->react->cancelled, 0);
+	nb_cancel_reset(&engine->react->cancel_token);
 	rc = 0;
 	rc = runtime_turn_scope_start_hooks(engine, request);
 	if (rc == 0) {
@@ -89,9 +90,10 @@ static int runtime_execute_locked(struct runtime_engine *engine,
 			engine->react->last_error_detail = NULL;
 			react_reset(engine->react);
 			engine->react->last_error_detail = detail;
-			engine->react->outcome = rc == -ECANCELED ? REACT_OUTCOME_CANCELLED
-						 : rc == -EPERM	  ? REACT_OUTCOME_GUARDRAIL_DENIED
-								  : REACT_OUTCOME_INTERNAL_ERROR;
+			engine->react->outcome = rc == NB_ERR_CANCELLED ? REACT_OUTCOME_CANCELLED
+						 : rc == NB_ERR_NOT_PERMITTED
+							 ? REACT_OUTCOME_GUARDRAIL_DENIED
+							 : REACT_OUTCOME_INTERNAL_ERROR;
 			engine->react->state = REACT_STATE_ABORT;
 			engine->react->last_error_code = rc;
 		}
@@ -102,7 +104,7 @@ static int runtime_execute_locked(struct runtime_engine *engine,
 		output_forwarder.engine = engine;
 		rc = react_run(engine->react, request->model_input, runtime_output_forward,
 			       &output_forwarder);
-	} else if (rc == -ECANCELED && engine->hooks) {
+	} else if (rc == NB_ERR_CANCELLED && engine->hooks) {
 		cJSON *output = NULL;
 
 		(void)hook_manager_dispatch(engine->hooks, "Interrupt", NULL, &output);
@@ -142,7 +144,7 @@ int runtime_execute(struct runtime_engine *engine, const struct runtime_request 
 
 	if (!engine || !engine->db || !engine->react || !request || request->session_id <= 0 ||
 	    !request->model_input || !result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(result, 0, sizeof(*result));
 	result->outcome = RUNTIME_OUTCOME_FAILED;
 	rc = runtime_lock_turn(engine, request, result);

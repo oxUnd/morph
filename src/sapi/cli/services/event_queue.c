@@ -2,8 +2,8 @@
 #include "sapi/cli/services/event_queue_item.h"
 #include "sapi/cli/application.h"
 #include "cJSON.h"
-#include "util/error.h"
-#include "util/cleanup.h"
+#include "errors.h"
+#include "nb/cleanup.h"
 #include <morph/tui/application.h>
 
 #include <errno.h>
@@ -15,8 +15,8 @@
 #define CLI_EVENT_QUEUE_UI_EVENT_BUDGET 64
 
 struct cli_event_queue_owner_call {
-	pthread_mutex_t mutex;
-	pthread_cond_t cond;
+	nb_mutex *mutex;
+	nb_cond *cond;
 	cli_event_queue_call_fn fn;
 	void *data;
 	int result;
@@ -26,9 +26,9 @@ struct cli_event_queue_owner_call {
 struct cli_event_queue {
 	struct morph_tui_application *application;
 	cli_event_queue_dispatch_fn dispatch;
-	pthread_mutex_t mutex;
-	morph_queue_t pending;
-	pthread_t owner;
+	nb_mutex *mutex;
+	nb_queue pending;
+	nb_thread_id owner;
 	int wake_read;
 	int wake_write;
 	int mutex_initialized;
@@ -60,23 +60,23 @@ static void cli_event_queue_complete_owner_call(struct cli_event_queue_owner_cal
 {
 	if (!call)
 		return;
-	pthread_mutex_lock(&call->mutex);
+	nb_mutex_lock(call->mutex);
 	call->result = result;
 	call->complete = 1;
-	pthread_cond_signal(&call->cond);
-	pthread_mutex_unlock(&call->mutex);
+	nb_cond_signal(call->cond);
+	nb_mutex_unlock(call->mutex);
 }
 
 static int cli_event_queue_dup_optional(const char *source, char **out)
 {
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*out = NULL;
 	if (!source)
 		return 0;
 	*out = strdup(source);
 	if (!*out)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	return 0;
 }
 
@@ -86,14 +86,14 @@ static int cli_event_queue_set_fd_flags(int fd)
 
 	flags = fcntl(fd, F_GETFL, 0);
 	if (flags < 0)
-		return -errno;
+		return nb_status_from_errno(errno, NULL);
 	if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
-		return -errno;
+		return nb_status_from_errno(errno, NULL);
 	flags = fcntl(fd, F_GETFD, 0);
 	if (flags < 0)
-		return -errno;
+		return nb_status_from_errno(errno, NULL);
 	if (fcntl(fd, F_SETFD, flags | FD_CLOEXEC) < 0)
-		return -errno;
+		return nb_status_from_errno(errno, NULL);
 	return 0;
 }
 
@@ -101,10 +101,10 @@ static void cli_event_queue_wake(struct cli_event_queue *ui)
 {
 	if (!ui || ui->wake_write < 0)
 		return;
-	pthread_mutex_lock(&ui->mutex);
+	nb_mutex_lock(ui->mutex);
 	if (ui->application)
 		(void)morph_tui_application_wake(ui->application);
-	pthread_mutex_unlock(&ui->mutex);
+	nb_mutex_unlock(ui->mutex);
 	unsigned char byte = 1;
 	ssize_t count;
 
@@ -137,18 +137,18 @@ static int cli_event_queue_enqueue_take(struct cli_application *ctx,
 	struct cli_event_queue *ui;
 
 	if (!ctx || !ctx->events || !owner || !*owner)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct cli_event_queue_item *item = *owner;
 
 	ui = ctx->events;
-	pthread_mutex_lock(&ui->mutex);
+	nb_mutex_lock(ui->mutex);
 	if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL && ui->owner_calls_stopped) {
-		pthread_mutex_unlock(&ui->mutex);
-		return -ECANCELED;
+		nb_mutex_unlock(ui->mutex);
+		return NB_ERR_CANCELLED;
 	}
-	morph_queue_insert_tail(&ui->pending, &item->link);
+	nb_queue_insert_tail(&ui->pending, &item->link);
 	*owner = NULL;
-	pthread_mutex_unlock(&ui->mutex);
+	nb_mutex_unlock(ui->mutex);
 	cli_event_queue_wake(ui);
 	return 0;
 }
@@ -161,23 +161,23 @@ int cli_event_queue_init(struct cli_application *ctx, cli_event_queue_dispatch_f
 	int rc;
 
 	if (!ctx || !dispatch)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	ui = calloc(1, sizeof(*ui));
 	if (!ui)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	ui->wake_read = -1;
 	ui->wake_write = -1;
 	ui->events_enabled = 1;
-	morph_queue_init(&ui->pending);
-	mutex_rc = pthread_mutex_init(&ui->mutex, NULL);
+	nb_queue_init(&ui->pending);
+	mutex_rc = ((ui->mutex = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
 	if (mutex_rc != 0) {
 		free(ui);
-		return -mutex_rc;
+		return mutex_rc;
 	}
 	ui->mutex_initialized = 1;
 	if (pipe(wake_fds) != 0) {
-		rc = -errno;
-		pthread_mutex_destroy(&ui->mutex);
+		rc = nb_status_from_errno(errno, NULL);
+		(nb_mutex_free(ui->mutex), ui->mutex = NULL);
 		free(ui);
 		return rc;
 	}
@@ -187,13 +187,13 @@ int cli_event_queue_init(struct cli_application *ctx, cli_event_queue_dispatch_f
 	if (rc != 0) {
 		close(wake_fds[0]);
 		close(wake_fds[1]);
-		pthread_mutex_destroy(&ui->mutex);
+		(nb_mutex_free(ui->mutex), ui->mutex = NULL);
 		free(ui);
 		return rc;
 	}
 	ui->wake_read = wake_fds[0];
 	ui->wake_write = wake_fds[1];
-	ui->owner = pthread_self();
+	ui->owner = nb_thread_current_id();
 	ui->dispatch = dispatch;
 	ctx->events = ui;
 	return 0;
@@ -202,26 +202,27 @@ int cli_event_queue_init(struct cli_application *ctx, cli_event_queue_dispatch_f
 void cli_event_queue_cleanup(struct cli_application *ctx)
 {
 	struct cli_event_queue *ui;
-	morph_queue_t local;
-	morph_queue_t *link;
-	morph_queue_t *next;
+	nb_queue local;
+	nb_queue *link;
+	nb_queue *next;
 
 	if (!ctx || !ctx->events)
 		return;
 	ui = ctx->events;
-	morph_queue_init(&local);
+	nb_queue_init(&local);
 	if (ui->mutex_initialized) {
-		pthread_mutex_lock(&ui->mutex);
-		morph_queue_add(&local, &ui->pending);
-		pthread_mutex_unlock(&ui->mutex);
+		nb_mutex_lock(ui->mutex);
+		nb_queue_add(&local, &ui->pending);
+		nb_mutex_unlock(ui->mutex);
 	}
-	morph_queue_foreach_safe (link, next, &local) {
+	NB_QUEUE_FOREACH_SAFE(link, next, &local)
+	{
 		struct cli_event_queue_item *item =
-			morph_queue_data(link, struct cli_event_queue_item, link);
+			NB_QUEUE_DATA(link, struct cli_event_queue_item, link);
 
-		morph_queue_remove(link);
+		nb_queue_remove(link);
 		if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL)
-			cli_event_queue_complete_owner_call(item->owner_call, -ECANCELED);
+			cli_event_queue_complete_owner_call(item->owner_call, NB_ERR_CANCELLED);
 		cli_event_queue_item_free(item);
 	}
 	if (ui->wake_read >= 0)
@@ -229,14 +230,14 @@ void cli_event_queue_cleanup(struct cli_application *ctx)
 	if (ui->wake_write >= 0)
 		close(ui->wake_write);
 	if (ui->mutex_initialized)
-		pthread_mutex_destroy(&ui->mutex);
+		(nb_mutex_free(ui->mutex), ui->mutex = NULL);
 	free(ui);
 	ctx->events = NULL;
 }
 
 int cli_event_queue_is_owner(const struct cli_application *ctx)
 {
-	return ctx && ctx->events && pthread_equal(ctx->events->owner, pthread_self());
+	return ctx && ctx->events && nb_thread_id_equal(ctx->events->owner, nb_thread_current_id());
 }
 
 int cli_event_queue_wake_fd(const struct cli_application *ctx)
@@ -248,23 +249,23 @@ void cli_event_queue_attach_app(struct cli_application *ctx, struct morph_tui_ap
 {
 	if (!ctx || !ctx->events)
 		return;
-	pthread_mutex_lock(&ctx->events->mutex);
+	nb_mutex_lock(ctx->events->mutex);
 	ctx->events->application = app;
-	pthread_mutex_unlock(&ctx->events->mutex);
+	nb_mutex_unlock(ctx->events->mutex);
 	if (app)
 		(void)morph_tui_application_wake(app);
 }
 
 int cli_event_queue_post_morph_event(struct cli_application *ctx, const struct morph_event *event)
 {
-	struct cli_event_queue_item *item MORPH_CLEANUP(cli_event_queue_item_clear) = NULL;
+	struct cli_event_queue_item *item NB_CLEANUP(cli_event_queue_item_clear) = NULL;
 	int rc;
 
 	if (!ctx || !event)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	item = calloc(1, sizeof(*item));
 	if (!item)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	item->kind = CLI_EVENT_QUEUE_UI_ITEM_MORPH_EVENT;
 	item->event.type = event->type;
 	rc = cli_event_queue_dup_optional(event->name, &item->name);
@@ -277,7 +278,7 @@ int cli_event_queue_post_morph_event(struct cli_application *ctx, const struct m
 	if (rc == 0 && event->data) {
 		item->event.data = cJSON_Duplicate(event->data, 1);
 		if (!item->event.data)
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 	}
 	if (rc != 0) {
 		return rc;
@@ -296,14 +297,14 @@ int cli_event_queue_post_morph_event(struct cli_application *ctx, const struct m
 int cli_event_queue_post_notification(struct cli_application *ctx,
 				      const struct notification *notification)
 {
-	struct cli_event_queue_item *item MORPH_CLEANUP(cli_event_queue_item_clear) = NULL;
+	struct cli_event_queue_item *item NB_CLEANUP(cli_event_queue_item_clear) = NULL;
 	int rc;
 
 	if (!ctx || !notification)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	item = calloc(1, sizeof(*item));
 	if (!item)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	item->kind = CLI_EVENT_QUEUE_UI_ITEM_NOTIFICATION;
 	item->notification_id = notification->id;
 	item->notification_task_id = notification->task_id;
@@ -326,86 +327,88 @@ int cli_event_queue_post_notification(struct cli_application *ctx,
 int cli_event_queue_call_owner(struct cli_application *ctx, cli_event_queue_call_fn fn, void *data)
 {
 	struct cli_event_queue_owner_call call;
-	struct cli_event_queue_item *item MORPH_CLEANUP(cli_event_queue_item_clear) = NULL;
+	struct cli_event_queue_item *item NB_CLEANUP(cli_event_queue_item_clear) = NULL;
 	int mutex_rc;
 	int cond_rc;
 	int rc;
 
 	if (!ctx || !ctx->events || !fn)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (cli_event_queue_is_owner(ctx)) {
-		pthread_mutex_lock(&ctx->events->mutex);
+		nb_mutex_lock(ctx->events->mutex);
 		int stopped = ctx->events->owner_calls_stopped;
 
-		pthread_mutex_unlock(&ctx->events->mutex);
+		nb_mutex_unlock(ctx->events->mutex);
 		if (stopped)
-			return -ECANCELED;
+			return NB_ERR_CANCELLED;
 		return fn(data);
 	}
 	memset(&call, 0, sizeof(call));
-	mutex_rc = pthread_mutex_init(&call.mutex, NULL);
+	mutex_rc = ((call.mutex = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
 	if (mutex_rc != 0)
-		return -mutex_rc;
-	cond_rc = pthread_cond_init(&call.cond, NULL);
+		return mutex_rc;
+	cond_rc = ((call.cond = nb_cond_new()) ? NB_OK : NB_ERR_NOMEM);
 	if (cond_rc != 0) {
-		pthread_mutex_destroy(&call.mutex);
-		return -cond_rc;
+		(nb_mutex_free(call.mutex), call.mutex = NULL);
+		return cond_rc;
 	}
 	call.fn = fn;
 	call.data = data;
 	item = calloc(1, sizeof(*item));
 	if (!item) {
-		pthread_cond_destroy(&call.cond);
-		pthread_mutex_destroy(&call.mutex);
-		return -ENOMEM;
+		(nb_cond_free(call.cond), call.cond = NULL);
+		(nb_mutex_free(call.mutex), call.mutex = NULL);
+		return NB_ERR_NOMEM;
 	}
 	item->kind = CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL;
 	item->owner_call = &call;
 	rc = cli_event_queue_enqueue_take(ctx, &item);
 	if (rc != 0) {
-		pthread_cond_destroy(&call.cond);
-		pthread_mutex_destroy(&call.mutex);
+		(nb_cond_free(call.cond), call.cond = NULL);
+		(nb_mutex_free(call.mutex), call.mutex = NULL);
 		return rc;
 	}
-	pthread_mutex_lock(&call.mutex);
+	nb_mutex_lock(call.mutex);
 	while (!call.complete)
-		pthread_cond_wait(&call.cond, &call.mutex);
+		nb_cond_wait(call.cond, call.mutex);
 	rc = call.result;
-	pthread_mutex_unlock(&call.mutex);
-	pthread_cond_destroy(&call.cond);
-	pthread_mutex_destroy(&call.mutex);
+	nb_mutex_unlock(call.mutex);
+	(nb_cond_free(call.cond), call.cond = NULL);
+	(nb_mutex_free(call.mutex), call.mutex = NULL);
 	return rc;
 }
 
 int cli_event_queue_stop_owner_calls(struct cli_application *ctx)
 {
 	if (!ctx || !ctx->events)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!cli_event_queue_is_owner(ctx))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct cli_event_queue *ui = ctx->events;
-	morph_queue_t cancelled;
-	morph_queue_t *link, *next;
+	nb_queue cancelled;
+	nb_queue *link, *next;
 
-	morph_queue_init(&cancelled);
-	pthread_mutex_lock(&ui->mutex);
+	nb_queue_init(&cancelled);
+	nb_mutex_lock(ui->mutex);
 	ui->owner_calls_stopped = 1;
-	morph_queue_foreach_safe (link, next, &ui->pending) {
+	NB_QUEUE_FOREACH_SAFE(link, next, &ui->pending)
+	{
 		struct cli_event_queue_item *item =
-			morph_queue_data(link, struct cli_event_queue_item, link);
+			NB_QUEUE_DATA(link, struct cli_event_queue_item, link);
 
 		if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL) {
-			morph_queue_remove(link);
-			morph_queue_insert_tail(&cancelled, link);
+			nb_queue_remove(link);
+			nb_queue_insert_tail(&cancelled, link);
 		}
 	}
-	pthread_mutex_unlock(&ui->mutex);
-	morph_queue_foreach_safe (link, next, &cancelled) {
+	nb_mutex_unlock(ui->mutex);
+	NB_QUEUE_FOREACH_SAFE(link, next, &cancelled)
+	{
 		struct cli_event_queue_item *item =
-			morph_queue_data(link, struct cli_event_queue_item, link);
+			NB_QUEUE_DATA(link, struct cli_event_queue_item, link);
 
-		morph_queue_remove(link);
-		cli_event_queue_complete_owner_call(item->owner_call, -ECANCELED);
+		nb_queue_remove(link);
+		cli_event_queue_complete_owner_call(item->owner_call, NB_ERR_CANCELLED);
 		cli_event_queue_item_free(item);
 	}
 	return 0;
@@ -417,7 +420,7 @@ int cli_event_queue_run_owner_call(struct cli_application *ctx,
 	int result;
 
 	if (!call)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	result = cli_event_queue_call_owner(ctx, call->fn, call->data);
 	cli_event_queue_complete_owner_call(call, result);
 	return result;
@@ -428,24 +431,24 @@ int cli_event_queue_events_enabled(const struct cli_application *ctx)
 	struct cli_event_queue *ui = ctx ? ctx->events : NULL;
 	if (!ui)
 		return 0;
-	pthread_mutex_lock(&ui->mutex);
+	nb_mutex_lock(ui->mutex);
 	int enabled = ui->events_enabled;
-	pthread_mutex_unlock(&ui->mutex);
+	nb_mutex_unlock(ui->mutex);
 	return enabled;
 }
 
 int cli_event_queue_set_events_enabled(struct cli_application *ctx, int enabled)
 {
 	if (!ctx || !ctx->events)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!cli_event_queue_is_owner(ctx))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct cli_event_queue *ui = ctx->events;
-	pthread_mutex_lock(&ui->mutex);
+	nb_mutex_lock(ui->mutex);
 	int changed = ui->events_enabled != !!enabled;
 	ui->events_enabled = !!enabled;
-	int pending = !morph_queue_empty(&ui->pending);
-	pthread_mutex_unlock(&ui->mutex);
+	int pending = !nb_queue_empty(&ui->pending);
+	nb_mutex_unlock(ui->mutex);
 	if (changed && enabled && pending)
 		cli_event_queue_wake(ui);
 	return 0;
@@ -453,10 +456,11 @@ int cli_event_queue_set_events_enabled(struct cli_application *ctx, int enabled)
 
 static int cli_event_queue_pending_ready(struct cli_event_queue *ui)
 {
-	morph_queue_t *link;
-	morph_queue_foreach (link, &ui->pending) {
+	nb_queue *link;
+	NB_QUEUE_FOREACH(link, &ui->pending)
+	{
 		struct cli_event_queue_item *item =
-			morph_queue_data(link, struct cli_event_queue_item, link);
+			NB_QUEUE_DATA(link, struct cli_event_queue_item, link);
 		if (ui->events_enabled || item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL)
 			return 1;
 	}
@@ -466,40 +470,42 @@ static int cli_event_queue_pending_ready(struct cli_event_queue *ui)
 static int cli_event_queue_drain_limit(struct cli_application *ctx, int limit)
 {
 	struct cli_event_queue *ui;
-	morph_queue_t local;
-	morph_queue_t *link;
-	morph_queue_t *next;
+	nb_queue local;
+	nb_queue *link;
+	nb_queue *next;
 	int first_error = 0;
 
 	if (!ctx || !ctx->events)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!cli_event_queue_is_owner(ctx))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	ui = ctx->events;
 	cli_event_queue_consume_wake(ui);
-	morph_queue_init(&local);
-	pthread_mutex_lock(&ui->mutex);
+	nb_queue_init(&local);
+	nb_mutex_lock(ui->mutex);
 	int taken = 0;
-	morph_queue_foreach_safe (link, next, &ui->pending) {
+	NB_QUEUE_FOREACH_SAFE(link, next, &ui->pending)
+	{
 		if (limit && taken == limit)
 			break;
 		struct cli_event_queue_item *item =
-			morph_queue_data(link, struct cli_event_queue_item, link);
+			NB_QUEUE_DATA(link, struct cli_event_queue_item, link);
 		if (!ui->events_enabled && item->kind != CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL)
 			continue;
-		morph_queue_remove(link);
-		morph_queue_insert_tail(&local, link);
+		nb_queue_remove(link);
+		nb_queue_insert_tail(&local, link);
 		taken++;
 	}
 	int remaining = cli_event_queue_pending_ready(ui);
 
-	pthread_mutex_unlock(&ui->mutex);
+	nb_mutex_unlock(ui->mutex);
 	if (remaining)
 		cli_event_queue_wake(ui);
-	morph_queue_foreach_safe (link, next, &local) {
+	NB_QUEUE_FOREACH_SAFE(link, next, &local)
+	{
 		struct cli_event_queue_item *item =
-			morph_queue_data(link, struct cli_event_queue_item, link);
-		morph_queue_remove(link);
+			NB_QUEUE_DATA(link, struct cli_event_queue_item, link);
+		nb_queue_remove(link);
 		int rc = ui->dispatch(ctx, item);
 
 		if (first_error == 0 && rc != 0)
@@ -525,16 +531,17 @@ int cli_event_queue_owner_call_pending(struct cli_application *ctx)
 	if (!ui)
 		return 0;
 	int pending = 0;
-	pthread_mutex_lock(&ui->mutex);
-	morph_queue_t *link;
-	morph_queue_foreach (link, &ui->pending) {
+	nb_mutex_lock(ui->mutex);
+	nb_queue *link;
+	NB_QUEUE_FOREACH(link, &ui->pending)
+	{
 		struct cli_event_queue_item *item =
-			morph_queue_data(link, struct cli_event_queue_item, link);
+			NB_QUEUE_DATA(link, struct cli_event_queue_item, link);
 		if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL) {
 			pending = 1;
 			break;
 		}
 	}
-	pthread_mutex_unlock(&ui->mutex);
+	nb_mutex_unlock(ui->mutex);
 	return pending;
 }

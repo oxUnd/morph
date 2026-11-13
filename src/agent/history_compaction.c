@@ -4,12 +4,14 @@
 #include "prompt_context.h"
 #include "react.h"
 #include "tokenizer.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/log.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "nb/time.h"
+#include "cJSON.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/log.h"
+#include "nb/utf8.h"
 #include <errno.h>
 #include <limits.h>
 #include <ctype.h>
@@ -39,7 +41,7 @@ static const char *history_compaction_text(const struct model_history_item *item
 			cJSON_Delete(payload);
 			return NULL;
 		}
-		char *json MORPH_CLEANUP(morph_json_text_cleanup) = morph_json_print_copy(payload);
+		char *json NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(payload);
 		*rendered = json ? strdup(json) : NULL;
 		cJSON_Delete(payload);
 		return *rendered;
@@ -47,10 +49,10 @@ static const char *history_compaction_text(const struct model_history_item *item
 	return item->content;
 }
 
-static int history_retained(const morph_array_t *preserved, const struct model_history_item *item)
+static int history_retained(const nb_vec *preserved, const struct model_history_item *item)
 {
-	for (size_t i = 0; preserved && i < preserved->nelts; i++) {
-		const int64_t *id = morph_array_borrow(preserved, i);
+	for (size_t i = 0; preserved && i < preserved->len; i++) {
+		const int64_t *id = nb_vec_at(preserved, i);
 		if (*id == item->id)
 			return 1;
 	}
@@ -87,14 +89,17 @@ static int history_result_in_omitted_group(const struct model_history_item *item
 	return 0;
 }
 
-static int history_compaction_input(const struct model_history_item *items, morph_buf_t *buf,
-				    int64_t omitted_through, const morph_array_t *preserved)
+static int history_compaction_input(const struct model_history_item *items, nb_buf *buf,
+				    int64_t omitted_through, const nb_vec *preserved)
 {
 	const struct model_history_item *item = items;
 	if (omitted_through &&
-	    morph_buf_puts(buf, "Earlier tool groups were omitted to fit the summary request; do "
-				"not infer their results.\n") != 0)
-		return -ENOMEM;
+	    (nb_buf_append_cstr(buf,
+				"Earlier tool groups were omitted to fit the summary request; do "
+				"not infer their results.\n")
+		     ? 0
+		     : NB_ERR_NOMEM) != 0)
+		return NB_ERR_NOMEM;
 
 	while (item) {
 		/* Keep user requests as objective references; exclude retained exchanges. */
@@ -116,17 +121,18 @@ static int history_compaction_input(const struct model_history_item *items, morp
 
 		if (!text && agent_history_item_replayable(item) &&
 		    (item->content || item->payload_json))
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		if (text && text[0] &&
-		    morph_buf_printf(buf, "[%s/%s]\n%s\n\n", label,
-				     history_retained(preserved, item)
-					     ? "retained_request_reference"
-					     : item->kind,
-				     text) != 0)
-			rc = -ENOMEM;
+		    (nb_buf_printf(buf, "[%s/%s]\n%s\n\n", label,
+				   history_retained(preserved, item) ? "retained_request_reference"
+								     : item->kind,
+				   text)
+			     ? 0
+			     : NB_ERR_NOMEM) != 0)
+			rc = NB_ERR_NOMEM;
 		free(rendered);
 		if (rc != 0)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		item = item->next;
 	}
 	return 0;
@@ -138,7 +144,7 @@ int agent_history_reload(struct react_context *ctx)
 	int count = 0;
 
 	if (!ctx || !ctx->history_enabled || !ctx->history_db || ctx->history_session_id <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	items = model_history_list(ctx->history_db, ctx->history_session_id, 1, &count);
 	if (!items && count != 0)
 		return MORPH_ERR_DB;
@@ -171,12 +177,13 @@ int agent_history_reload(struct react_context *ctx)
 	return 0;
 }
 
-static int history_validate_replay(struct morph_log *logger, const struct model_history_item *items)
+static int history_validate_replay(struct nb_log *logger, const struct model_history_item *items)
 {
-	morph_array_t messages MORPH_CLEANUP(agent_chat_messages_cleanup) = {0};
+	nb_vec messages NB_CLEANUP(agent_chat_messages_cleanup) = {0};
 	int rc;
 
-	rc = morph_array_init(&messages, 64, sizeof(struct chat_message));
+	rc = (nb_vec_init(&messages, sizeof(struct chat_message)),
+	      nb_vec_reserve(&messages, 64) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = agent_history_messages_copy(logger, items, &messages);
 	if (rc == 0) {
@@ -185,7 +192,7 @@ static int history_validate_replay(struct morph_log *logger, const struct model_
 		rc = agent_history_diagnose(items, NULL, &diagnostic);
 		if (rc == 0 && (diagnostic.invalid_payloads || diagnostic.dangling_calls ||
 				diagnostic.orphan_results))
-			rc = MORPH_ERR_PROTOCOL;
+			rc = NB_ERR_PROTOCOL;
 	}
 
 	return rc;
@@ -201,11 +208,11 @@ static int history_retention_tokens(const struct model_history_item *item, void 
 }
 
 static int history_record_summary_sources(struct react_context *ctx, int64_t summary_id,
-					  const morph_array_t *preserved)
+					  const nb_vec *preserved)
 {
-	morph_array_t ids = {0};
+	nb_vec ids = {0};
 	int64_t id;
-	int rc = morph_array_init(&ids, MORPH_ARRAY_INIT_CAP, sizeof(id));
+	int rc = (nb_vec_init(&ids, sizeof(id)), nb_vec_reserve(&ids, 16) ? 0 : NB_ERR_NOMEM);
 
 	if (rc)
 		return rc;
@@ -217,24 +224,24 @@ static int history_record_summary_sources(struct react_context *ctx, int64_t sum
 		int has_text = text && text[0];
 
 		if (strcmp(item->kind, "user_message") == 0 && !rendered)
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 		free(rendered);
 		if (rc)
 			break;
 		if (!has_text)
 			continue;
-		int64_t *slot = morph_array_push_borrow(&ids);
+		int64_t *slot = nb_vec_push(&ids);
 
 		if (!slot) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			break;
 		}
 		*slot = item->id;
 	}
 	if (!rc)
-		rc = history_store_add_summary_sources(ctx->history_db, summary_id, ids.elts,
-						       ids.nelts);
-	morph_array_cleanup(&ids);
+		rc = history_store_add_summary_sources(ctx->history_db, summary_id,
+						       ((void *)ids.data), ids.len);
+	nb_vec_cleanup(&ids);
 	return rc;
 }
 
@@ -242,9 +249,9 @@ static int history_compact_checked(struct react_context *ctx, const char *summar
 				   int summary_tokens, int input_tokens, const char *trigger_kind,
 				   int record_sources, int *active_count,
 				   history_compaction_validator validate, void *user_data,
-				   const morph_array_t *preserved, int64_t cutoff)
+				   const nb_vec *preserved, int64_t cutoff)
 {
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	struct model_history_item *candidate = NULL;
 	int64_t summary_id = 0;
 	int count = 0;
@@ -288,23 +295,26 @@ static char *history_finish_summary(struct react_context *ctx, const char *summa
 {
 	if (!pruned_groups)
 		return history_redacted_text_create(ctx, summary);
-	morph_buf_t marked MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	if (morph_buf_init(&marked, 256) != 0)
+	nb_buf marked NB_CLEANUP(nb_buf_cleanup) = {0};
+	if ((nb_buf_init(&marked), nb_buf_reserve(&marked, 256) ? 0 : NB_ERR_NOMEM) != 0)
 		return NULL;
 	cJSON *root = cJSON_ParseWithOpts(summary, NULL, 1);
 	cJSON *state = cJSON_GetObjectItemCaseSensitive(root, "working_state");
-	int rc = morph_buf_printf(
-		&marked, "%d older tool groups were omitted; their outcomes are unavailable.\n%s",
-		pruned_groups, cJSON_IsString(state) ? state->valuestring : summary);
+	int rc = (nb_buf_printf(
+			  &marked,
+			  "%d older tool groups were omitted; their outcomes are unavailable.\n%s",
+			  pruned_groups, cJSON_IsString(state) ? state->valuestring : summary)
+			  ? 0
+			  : NB_ERR_NOMEM);
 	char *text = NULL;
 	if (rc == 0 && cJSON_IsString(state)) {
-		if (cJSON_SetValuestring(state, morph_buf_cstr_borrow(&marked)))
+		if (cJSON_SetValuestring(state, nb_buf_cstr(&marked)))
 			text = cJSON_PrintUnformatted(root);
 	} else if (rc == 0) {
-		text = morph_buf_detach(&marked);
+		text = (nb_buf_ok(&marked) ? strdup(nb_buf_cstr(&marked)) : NULL);
 	}
 	cJSON_Delete(root);
-	morph_buf_cleanup(&marked);
+	nb_buf_cleanup(&marked);
 	char *redacted = text ? history_redacted_text_create(ctx, text) : NULL;
 	free(text);
 	return redacted;
@@ -324,9 +334,9 @@ static int history_window_tokens(const struct react_context *ctx)
 static int history_compact_selected(struct react_context *ctx, int force,
 				    const char *trigger_kind_in,
 				    history_compaction_validator validate, void *user_data,
-				    const morph_array_t *preserved, int64_t cutoff)
+				    const nb_vec *preserved, int64_t cutoff)
 {
-	morph_buf_t input MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf input NB_CLEANUP(nb_buf_cleanup) = {0};
 	char *summary = NULL;
 	int max_summary_tokens;
 	int user_budget;
@@ -353,24 +363,22 @@ static int history_compact_selected(struct react_context *ctx, int force,
 		return 0;
 	if (!ctx->history_items)
 		return 0;
-	rc = morph_buf_init(&input, 8192);
+	rc = (nb_buf_init(&input), nb_buf_reserve(&input, 8192) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	rc = history_compaction_input(ctx->history_items, &input, omitted_through, preserved);
 	if (rc == 0) {
 		for (int attempt = 0; attempt < 3; attempt++) {
-			struct timespec started = {0};
-			struct timespec finished = {0};
-			int timed = clock_gettime(CLOCK_MONOTONIC, &started) == 0;
+			int64_t started = nb_time_monotonic_ns();
 
-			log_info(ctx->logger,
-				 "history summary request: session=%lld turn=%s trigger=%s "
-				 "attempt=%d/3 input_bytes=%zu history_tokens=%d "
-				 "summary_max_tokens=%d omitted_groups=%d",
-				 (long long)ctx->history_session_id, ctx->turn_id, trigger_kind,
-				 attempt + 1, input.len, input_tokens,
-				 ctx->compress.compaction_summary_max_tokens, pruned_groups);
-			rc = ctx->compress.summarize(morph_buf_cstr_borrow(&input),
+			nb_log_write(ctx->logger, NB_LOG_INFO,
+				     "history summary request: session=%lld turn=%s trigger=%s "
+				     "attempt=%d/3 input_bytes=%zu history_tokens=%d "
+				     "summary_max_tokens=%d omitted_groups=%d",
+				     (long long)ctx->history_session_id, ctx->turn_id, trigger_kind,
+				     attempt + 1, input.len, input_tokens,
+				     ctx->compress.compaction_summary_max_tokens, pruned_groups);
+			rc = ctx->compress.summarize(nb_buf_cstr(&input),
 						     ctx->compress.summarize_user_data, &summary);
 			if (rc == 0 && summary && summary[0]) {
 				char *prepared =
@@ -378,38 +386,37 @@ static int history_compact_selected(struct react_context *ctx, int force,
 				free(summary);
 				summary = prepared;
 				if (!summary)
-					rc = (-ENOMEM);
+					rc = (NB_ERR_NOMEM);
 			}
-			double elapsed_ms =
-				timed && clock_gettime(CLOCK_MONOTONIC, &finished) == 0
-					? (double)(finished.tv_sec - started.tv_sec) * 1000.0 +
-						  (double)(finished.tv_nsec - started.tv_nsec) /
-							  1000000.0
-					: 0.0;
+			int64_t finished = nb_time_monotonic_ns();
+			double elapsed_ms = started > 0 && finished >= started
+						    ? (double)(finished - started) / 1000000.0
+						    : 0.0;
 			int empty = !summary || !summary[0];
 
 			int limit = ctx->compress.compaction_summary_max_tokens;
 			if (rc == 0 && summary && summary[0] && limit > 0 &&
 			    tokenizer_count(ctx->tokenizer, summary) > limit) {
-				log_warn(ctx->logger,
-					 "history summary exceeds tokenizer budget; "
-					 "retrying without truncating checkpoint fields");
-				rc = MORPH_ERR_PROTOCOL;
+				nb_log_write(ctx->logger, NB_LOG_WARN,
+					     "history summary exceeds tokenizer budget; "
+					     "retrying without truncating checkpoint fields");
+				rc = NB_ERR_PROTOCOL;
 			}
-			log_write(ctx->logger, rc == 0 && !empty ? LOG_INFO : LOG_WARN,
-				  "history summary response: session=%lld turn=%s trigger=%s "
-				  "attempt=%d/3 elapsed_ms=%.0f result=%s summary_bytes=%zu "
-				  "error=%s",
-				  (long long)ctx->history_session_id, ctx->turn_id, trigger_kind,
-				  attempt + 1, elapsed_ms,
-				  rc != 0 ? "failed"
-				  : empty ? "empty_summary"
-					  : "ok",
-				  summary ? strlen(summary) : 0, morph_strerror(rc));
+			nb_log_write(ctx->logger, rc == 0 && !empty ? NB_LOG_INFO : NB_LOG_WARN,
+				     "history summary response: session=%lld turn=%s trigger=%s "
+				     "attempt=%d/3 elapsed_ms=%.0f result=%s summary_bytes=%zu "
+				     "error=%s",
+				     (long long)ctx->history_session_id, ctx->turn_id, trigger_kind,
+				     attempt + 1, elapsed_ms,
+				     rc != 0 ? "failed"
+				     : empty ? "empty_summary"
+					     : "ok",
+				     summary ? strlen(summary) : 0,
+				     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			if (rc == 0 && summary && summary[0])
 				break;
 			if (rc == 0)
-				rc = MORPH_ERR_PROTOCOL;
+				rc = NB_ERR_PROTOCOL;
 			free(summary);
 			summary = NULL;
 			if (rc == MORPH_ERR_CONTEXT_LIMIT && pruned_groups < 32) {
@@ -427,41 +434,44 @@ static int history_compact_selected(struct react_context *ctx, int force,
 				     group = group->next)
 					omitted_through = group->sequence_no;
 				pruned_groups++;
-				morph_buf_reset(&input);
+				nb_buf_clear(&input);
 				rc = history_compaction_input(ctx->history_items, &input,
 							      omitted_through, preserved);
 				if (rc != 0)
 					break;
-				log_warn(ctx ? ctx->logger : NULL,
-					 "summary context recovery: omitted %d old tool groups",
-					 pruned_groups);
+				nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_WARN,
+					     "summary context recovery: omitted %d old tool groups",
+					     pruned_groups);
 				attempt--;
 				continue;
 			}
-			if (attempt == 2 || (rc != MORPH_ERR_NETWORK && rc != MORPH_ERR_PROTOCOL &&
-					     rc != -ETIMEDOUT))
+			if (attempt == 2 || (rc != MORPH_ERR_NETWORK && rc != NB_ERR_PROTOCOL &&
+					     rc != NB_ERR_TIMEOUT))
 				break;
-			if (rc == MORPH_ERR_PROTOCOL) {
+			if (rc == NB_ERR_PROTOCOL) {
 				int target = ctx->compress.compaction_summary_max_tokens;
 				target = target > 0 ? target / (attempt + 2) : 1000;
-				if (morph_buf_printf(
-					    &input,
-					    "\n\n[Checkpoint retry instruction: the previous "
-					    "response "
-					    "was unusable. Return a complete, concise factual "
-					    "checkpoint in at most %d tokens. Preserve completed "
-					    "work, exact paths and pending checks. Do not "
-					    "continue the task or call tools.]\n",
-					    target > 0 ? target : 1) != 0) {
-					rc = (-ENOMEM);
+				if ((nb_buf_printf(
+					     &input,
+					     "\n\n[Checkpoint retry instruction: the previous "
+					     "response "
+					     "was unusable. Return a complete, concise factual "
+					     "checkpoint in at most %d tokens. Preserve completed "
+					     "work, exact paths and pending checks. Do not "
+					     "continue the task or call tools.]\n",
+					     target > 0 ? target : 1)
+					     ? 0
+					     : NB_ERR_NOMEM) != 0) {
+					rc = (NB_ERR_NOMEM);
 					break;
 				}
 			}
-			log_warn(ctx->logger,
-				 "history summary retry scheduled: session=%lld turn=%s "
-				 "next_attempt=%d/3 delay_ms=%u error=%s",
-				 (long long)ctx->history_session_id, ctx->turn_id, attempt + 2,
-				 (unsigned int)(attempt + 1) * 1000u, morph_strerror(rc));
+			nb_log_write(ctx->logger, NB_LOG_WARN,
+				     "history summary retry scheduled: session=%lld turn=%s "
+				     "next_attempt=%d/3 delay_ms=%u error=%s",
+				     (long long)ctx->history_session_id, ctx->turn_id, attempt + 2,
+				     (unsigned int)(attempt + 1) * 1000u,
+				     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			rc = http_wait_cancelable(
 				&(struct http_control){.cancel_token = &ctx->cancel_token,
 						       .cancel_flag = &ctx->cancelled},
@@ -470,21 +480,22 @@ static int history_compact_selected(struct react_context *ctx, int force,
 				break;
 		}
 	}
-	morph_buf_cleanup(&input);
+	nb_buf_cleanup(&input);
 	record_sources = rc == 0 && summary && summary[0] && !pruned_groups;
 	if (rc != 0 || !summary || !summary[0]) {
-		int failure = rc != 0 ? rc : MORPH_ERR_PROTOCOL;
+		int failure = rc != 0 ? rc : NB_ERR_PROTOCOL;
 
 		free(summary);
 		(void)model_history_compaction_attempt_add(
 			ctx->history_db, ctx->history_session_id, ctx->turn_id, trigger_kind,
-			"failed", input_tokens, 0, failure, morph_strerror(failure));
+			"failed", input_tokens, 0, failure,
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, failure));
 		return failure;
 	}
 	max_summary_tokens = tokenizer_count(ctx->tokenizer, summary);
 	if (!summary[0]) {
 		free(summary);
-		return MORPH_ERR_PROTOCOL;
+		return NB_ERR_PROTOCOL;
 	}
 	user_budget = (int)((double)ctx->compress.max_context_tokens *
 			    ctx->compress.compress_target_ratio) -
@@ -503,21 +514,22 @@ static int history_compact_selected(struct react_context *ctx, int force,
 				     cutoff);
 	free(summary);
 	if (rc != 0) {
-		(void)model_history_compaction_attempt_add(ctx->history_db, ctx->history_session_id,
-							   ctx->turn_id, trigger_kind, "failed",
-							   input_tokens, 0, rc, morph_strerror(rc));
+		(void)model_history_compaction_attempt_add(
+			ctx->history_db, ctx->history_session_id, ctx->turn_id, trigger_kind,
+			"failed", input_tokens, 0, rc,
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 	(void)model_history_compaction_attempt_add(ctx->history_db, ctx->history_session_id,
 						   ctx->turn_id, trigger_kind, "completed",
 						   input_tokens, max_summary_tokens, 0, NULL);
-	log_info(ctx ? ctx->logger : NULL,
-		 "model history compaction %s: session=%lld turn=%s trigger=%s "
-		 "history_tokens=%d summary_tokens=%d active_items=%d "
-		 "user_budget=%d recent_budget=%d omitted_groups=%d",
-		 strncmp(trigger_kind, "in_turn_", 8) == 0 ? "prepared" : "committed",
-		 (long long)ctx->history_session_id, ctx->turn_id, trigger_kind, input_tokens,
-		 max_summary_tokens, count, user_budget, recent_budget, pruned_groups);
+	nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_INFO,
+		     "model history compaction %s: session=%lld turn=%s trigger=%s "
+		     "history_tokens=%d summary_tokens=%d active_items=%d "
+		     "user_budget=%d recent_budget=%d omitted_groups=%d",
+		     strncmp(trigger_kind, "in_turn_", 8) == 0 ? "prepared" : "committed",
+		     (long long)ctx->history_session_id, ctx->turn_id, trigger_kind, input_tokens,
+		     max_summary_tokens, count, user_budget, recent_budget, pruned_groups);
 	if (ctx->compress.compaction_warning_count > 0) {
 		int compactions =
 			model_history_compaction_count(ctx->history_db, ctx->history_session_id);
@@ -525,10 +537,10 @@ static int history_compact_selected(struct react_context *ctx, int force,
 		if (compactions >= ctx->compress.compaction_warning_count) {
 			cJSON *data = cJSON_CreateObject();
 
-			log_warn(ctx ? ctx->logger : NULL,
-				 "model history has been compacted %d times; "
-				 "consider starting a new session",
-				 compactions);
+			nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_WARN,
+				     "model history has been compacted %d times; "
+				     "consider starting a new session",
+				     compactions);
 			if (data) {
 				cJSON_AddNumberToObject(data, "count", compactions);
 				(void)morph_event_emit_simple(
@@ -547,8 +559,8 @@ static int history_compact_selected(struct react_context *ctx, int force,
 int agent_history_compact_validated(struct react_context *ctx, int force, const char *trigger_kind,
 				    history_compaction_validator validate, void *user_data)
 {
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
-	morph_array_t preserved = {0};
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
+	nb_vec preserved = {0};
 	int64_t cutoff = 0;
 	int rc;
 
@@ -597,7 +609,7 @@ int agent_history_compact_validated(struct react_context *ctx, int force, const 
 		rc = history_compact_selected(ctx, force, trigger_kind, validate, user_data,
 					      &preserved, cutoff);
 	}
-	morph_array_cleanup(&preserved);
+	nb_vec_cleanup(&preserved);
 	if (rc > 0) {
 		int hook_rc = agent_hook_compaction(ctx, "PostCompact", hook_trigger);
 

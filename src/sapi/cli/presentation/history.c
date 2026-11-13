@@ -9,67 +9,67 @@
 #include "sapi/cli/widgets/transcript.h"
 #include "sapi/cli/services/transcript.h"
 #include "session.h"
-#include "util/error.h"
-#include "util/strmap.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "errors.h"
+#include "nb/map.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 #include "cJSON.h"
 #include <string.h>
 
-static void cli_history_shell_argument(morph_buf_t *command, const char *value)
+static void cli_history_shell_argument(nb_buf *command, const char *value)
 {
 	static const char safe[] =
 		"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-";
 
-	(void)morph_buf_putc(command, ' ');
+	(void)nb_buf_append_char(command, ' ');
 	if (value[0] && strspn(value, safe) == strlen(value)) {
-		(void)morph_buf_puts(command, value);
+		(void)nb_buf_append_cstr(command, value);
 		return;
 	}
-	(void)morph_buf_putc(command, '\'');
+	(void)nb_buf_append_char(command, '\'');
 	for (const char *p = value; *p; p++) {
 		if (*p == '\'')
-			(void)morph_buf_puts(command, "'\\''");
+			(void)nb_buf_append_cstr(command, "'\\''");
 		else
-			(void)morph_buf_putc(command, *p);
+			(void)nb_buf_append_char(command, *p);
 	}
-	(void)morph_buf_putc(command, '\'');
+	(void)nb_buf_append_char(command, '\'');
 }
 
 void cli_history_render_resume_hint(struct cli_application *ctx, const char *session_ref,
 				     const char *config_path, const char *workdir)
 {
-	morph_buf_t arguments;
+	nb_buf arguments NB_CLEANUP(nb_buf_cleanup) = {0};
 	int color = cli_output_color_enabled(ctx);
 	const char *command_style = color ? ANSI_BOLD CLI_COMMAND_COLOR : "";
 	const char *dim = color ? ANSI_DIM : "";
 	const char *reset = color ? ANSI_RESET : "";
 
-	if (morph_buf_init(&arguments, 128) != 0)
+	if ((nb_buf_init(&arguments), nb_buf_reserve(&arguments, 128) ? 0 : NB_ERR_NOMEM) != 0)
 		return;
-	(void)morph_buf_puts(&arguments, command_style);
-	(void)morph_buf_puts(&arguments, "resume");
+	(void)nb_buf_append_cstr(&arguments, command_style);
+	(void)nb_buf_append_cstr(&arguments, "resume");
 	if (color)
-		(void)morph_buf_puts(&arguments, ANSI_RESET ANSI_BOLD ANSI_CYAN);
+		(void)nb_buf_append_cstr(&arguments, ANSI_RESET ANSI_BOLD ANSI_CYAN);
 	cli_history_shell_argument(&arguments, session_ref);
-	(void)morph_buf_puts(&arguments, reset);
-	(void)morph_buf_puts(&arguments, dim);
+	(void)nb_buf_append_cstr(&arguments, reset);
+	(void)nb_buf_append_cstr(&arguments, dim);
 	if (config_path && config_path[0]) {
-		(void)morph_buf_puts(&arguments, " -c");
+		(void)nb_buf_append_cstr(&arguments, " -c");
 		cli_history_shell_argument(&arguments, config_path);
 	}
 	if (workdir && workdir[0]) {
-		(void)morph_buf_puts(&arguments, " -w");
+		(void)nb_buf_append_cstr(&arguments, " -w");
 		cli_history_shell_argument(&arguments, workdir);
 	}
-	(void)morph_buf_puts(&arguments, reset);
-	if (!arguments.failed)
+	(void)nb_buf_append_cstr(&arguments, reset);
+	if (!nb_buf_status(&arguments))
 		cli_output_printf(ctx,
 				  "\n%sTo resume this session, run:%s\n"
 				  "  %smorph %s\n  %smorphctl %s\n",
-				  dim, reset, command_style, morph_buf_cstr_borrow(&arguments),
-				  command_style, morph_buf_cstr_borrow(&arguments));
-	morph_buf_cleanup(&arguments);
+				  dim, reset, command_style, nb_buf_cstr(&arguments), command_style,
+				  nb_buf_cstr(&arguments));
+	nb_buf_cleanup(&arguments);
 }
 
 static const char *cli_history_string(const cJSON *object, const char *key)
@@ -91,9 +91,8 @@ static void cli_history_answer(struct cli_application *ctx, const char *text)
 	cli_markdown_finish_final(ctx);
 }
 
-static int cli_history_assistant(struct cli_application *ctx,
-				 const struct model_history_item *item,
-				 const morph_strmap_t *results)
+static int cli_history_assistant(struct cli_application *ctx, const struct model_history_item *item,
+				 const nb_map *results)
 {
 	cJSON *payload = item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
 	const char *reasoning = cli_history_string(payload, "reasoning_content");
@@ -109,7 +108,7 @@ static int cli_history_assistant(struct cli_application *ctx,
 		if (rc)
 			break;
 		const char *id = cli_history_string(call, "tool_call_id");
-		struct model_history_item *result = morph_strmap_borrow(results, id);
+		struct model_history_item *result = nb_map_get_cstr(results, id);
 
 		rc = cli_transcript_restore_tool(ctx, call, result);
 	}
@@ -120,9 +119,9 @@ static int cli_history_assistant(struct cli_application *ctx,
 int cli_history_render_session(struct cli_application *ctx, struct model_history_item *items,
 			       const struct message *messages)
 {
-	morph_strmap_t results;
+	nb_map *results = nb_map_new_with_cap(32);
 	const char *turn = NULL;
-	int rc = morph_strmap_init(&results, 32);
+	int rc = results ? 0 : NB_ERR_NOMEM;
 
 	if (rc)
 		return rc;
@@ -130,16 +129,17 @@ int cli_history_render_session(struct cli_application *ctx, struct model_history
 	for (struct model_history_item *item = items; item; item = item->next) {
 		if (strcmp(item->kind, "tool_result") || !item->tool_call_id)
 			continue;
-		rc = morph_strmap_set_borrow(&results, item->tool_call_id, item);
-		if (rc)
+		if (!nb_map_put_cstr(results, item->tool_call_id, item, NULL)) {
+			rc = NB_ERR_NOMEM;
 			break;
+		}
 	}
 	for (const struct model_history_item *item = items; !rc && item; item = item->next) {
 		if (strcmp(item->kind, "user_message") == 0) {
 			if (!turn || !turn[0] || !item->turn_id || strcmp(turn, item->turn_id))
 				cli_transcript_reset(ctx);
 			turn = item->turn_id;
-			cJSON *payload MORPH_CLEANUP(morph_json_cleanup) =
+			cJSON *payload NB_CLEANUP(cJSON_DeleteOwner) =
 				item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
 
 			if (strcmp(cli_history_string(payload, "source"), "hook") == 0)
@@ -148,7 +148,7 @@ int cli_history_render_session(struct cli_application *ctx, struct model_history
 				cli_presentation_user_input(ctx, item->content);
 		} else if (strcmp(item->kind, "assistant_message") == 0 ||
 			   strcmp(item->kind, "assistant_tool_calls") == 0) {
-			rc = cli_history_assistant(ctx, item, &results);
+			rc = cli_history_assistant(ctx, item, results);
 		}
 	}
 	/* Older/imported sessions can contain messages without canonical model history. */
@@ -159,6 +159,6 @@ int cli_history_render_session(struct cli_application *ctx, struct model_history
 			cli_history_answer(ctx, message->content);
 	}
 	cli_transcript_finish(ctx);
-	morph_strmap_cleanup(&results);
+	nb_map_free(results);
 	return rc;
 }

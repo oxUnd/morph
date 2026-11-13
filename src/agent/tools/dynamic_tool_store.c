@@ -1,6 +1,10 @@
 #include "dynamic_tool_store.h"
-#include "util/error.h"
-#include "util/file.h"
+#include "nb/str.h"
+#include "nb/utf8.h"
+#include <limits.h>
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/file.h"
 #include "cJSON.h"
 #include <dirent.h>
 #include <errno.h>
@@ -17,9 +21,18 @@ static int next_checkpoint_id(const char *tool_dir, char *id, size_t id_size);
 
 static int read_definition_text(const char *path, char **text)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	errno = 0;
-	*text = file_read_all_copy(path, NULL);
-	return *text ? 0 : morph_error_from_errno(errno);
+	*text = (nb_file_read_all(path, &file_value_1, 0, NULL) == NB_OK &&
+				 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
+				   nb_buf_len(&file_value_1) + 1),
+			    nb_charp_steal(&file_copy_1))
+			 : NULL);
+	return *text ? 0 : nb_status_from_errno(errno, NULL);
 }
 
 void dynamic_tool_store_definition_cleanup(struct dynamic_tool_definition *definition)
@@ -41,7 +54,7 @@ static int definition_load_source(struct dynamic_tool_definition *definition,
 
 	if (field) {
 		definition->source = cJSON_GetStringValue(field);
-		return definition->source ? 0 : MORPH_ERR_FORMAT;
+		return definition->source ? 0 : NB_ERR_FORMAT;
 	}
 	rc = read_definition_text(source_path, &legacy);
 	if (rc != 0)
@@ -49,7 +62,7 @@ static int definition_load_source(struct dynamic_tool_definition *definition,
 	field = cJSON_AddStringToObject(definition->document, "source", legacy);
 	free(legacy);
 	if (!field)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	definition->source = cJSON_GetStringValue(field);
 	definition->legacy_source = 1;
 	return 0;
@@ -73,7 +86,7 @@ int dynamic_tool_store_load_definition(const char *meta_path, const char *source
 	int rc;
 
 	if (!meta_path || !source_path || !definition)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(definition, 0, sizeof(*definition));
 	rc = read_definition_text(meta_path, &text);
 	if (rc != 0)
@@ -81,15 +94,15 @@ int dynamic_tool_store_load_definition(const char *meta_path, const char *source
 	definition->document = cJSON_ParseWithOpts(text, NULL, 1);
 	free(text);
 	if (!definition->document)
-		return MORPH_ERR_PARSE;
+		return NB_ERR_PARSE;
 	if (!cJSON_IsObject(definition->document)) {
 		dynamic_tool_store_definition_cleanup(definition);
-		return MORPH_ERR_FORMAT;
+		return NB_ERR_FORMAT;
 	}
 	definition->name = cJSON_GetStringValue(cJSON_GetObjectItem(definition->document, "name"));
 	if (!definition->name) {
 		dynamic_tool_store_definition_cleanup(definition);
-		return MORPH_ERR_FORMAT;
+		return NB_ERR_FORMAT;
 	}
 	definition->description =
 		cJSON_GetStringValue(cJSON_GetObjectItem(definition->document, "description"));
@@ -106,7 +119,7 @@ int dynamic_tool_store_load_definition(const char *meta_path, const char *source
 	definition->output_schema = definition_schema(output, TOOL_OBJECT_OUTPUT_SCHEMA);
 	if (!definition->input_schema || !definition->output_schema) {
 		dynamic_tool_store_definition_cleanup(definition);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	return 0;
 }
@@ -123,13 +136,16 @@ int dynamic_tool_store_copy_tool_snapshot(const char *source_meta, const char *s
 		return rc;
 	serialized = cJSON_PrintUnformatted(definition.document);
 	if (!serialized)
-		rc = -ENOMEM;
+		rc = NB_ERR_NOMEM;
 	if (rc == 0) {
-		rc = file_write_atomic(destination_file, definition.source,
-				       strlen(definition.source));
+		rc = nb_file_write_all_atomic(
+			destination_file, definition.source, strlen(definition.source),
+			&(nb_file_write_options){.new_file_mode = 0600, .sync_dir = true}, NULL);
 	}
 	if (rc == 0) {
-		rc = file_write_atomic(destination_meta, serialized, strlen(serialized));
+		rc = nb_file_write_all_atomic(
+			destination_meta, serialized, strlen(serialized),
+			&(nb_file_write_options){.new_file_mode = 0600, .sync_dir = true}, NULL);
 	}
 	free(serialized);
 	dynamic_tool_store_definition_cleanup(&definition);
@@ -138,18 +154,28 @@ int dynamic_tool_store_copy_tool_snapshot(const char *source_meta, const char *s
 
 int dynamic_tool_store_write_tool_files(struct dynamic_tool *dt, const char *source)
 {
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_2 = NB_OK;
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_3 = NB_OK;
+
 	cJSON *meta = NULL;
 	char *meta_json = NULL;
 	char meta_path[PATH_MAX];
 	int rc;
 
-	rc = file_ensure_dir(dt->dir);
+	rc = nb_file_mkdir(dt->dir, true, NULL);
 	if (rc < 0)
 		return rc;
 	/* Normalize the committed definition before changing its legacy source mirror. */
 	struct stat previous;
 
-	rc = file_path_join(meta_path, sizeof(meta_path), dt->dir, DYN_TOOL_META_FILE);
+	rc = ((file_status_2 = nb_path_concat(&file_value_2, dt->dir, DYN_TOOL_META_FILE)) != NB_OK
+		      ? file_status_2
+	      : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), meta_path,
+						sizeof(meta_path))) == NB_ERR_RANGE
+		      ? NB_ERR_NAME_TOO_LONG
+		      : file_status_2);
 	if (rc != 0)
 		return rc;
 	if (lstat(meta_path, &previous) == 0) {
@@ -161,48 +187,61 @@ int dynamic_tool_store_write_tool_files(struct dynamic_tool *dt, const char *sou
 		if (definition.legacy_source) {
 			char *upgraded = cJSON_PrintUnformatted(definition.document);
 
-			rc = upgraded ? file_write_atomic(meta_path, upgraded, strlen(upgraded))
-				      : -ENOMEM;
+			rc = upgraded ? nb_file_write_all_atomic(
+						meta_path, upgraded, strlen(upgraded),
+						&(nb_file_write_options){.new_file_mode = 0600,
+									 .sync_dir = true},
+						NULL)
+				      : NB_ERR_NOMEM;
 			free(upgraded);
 		}
 		dynamic_tool_store_definition_cleanup(&definition);
 		if (rc != 0)
 			return rc;
 	} else if (errno != ENOENT) {
-		return morph_error_from_errno(errno);
+		return nb_status_from_errno(errno, NULL);
 	}
 	char *owned_source = strdup(source);
 
 	if (!owned_source)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	free(dt->source);
 	dt->source = owned_source;
 	source = owned_source;
-	rc = file_write_atomic(dt->source_path, source, strlen(source));
+	rc = nb_file_write_all_atomic(
+		dt->source_path, source, strlen(source),
+		&(nb_file_write_options){.new_file_mode = 0600, .sync_dir = true}, NULL);
 	if (rc < 0)
 		return rc;
-	rc = file_path_join(meta_path, sizeof(meta_path), dt->dir, DYN_TOOL_META_FILE);
+	rc = ((file_status_3 = nb_path_concat(&file_value_3, dt->dir, DYN_TOOL_META_FILE)) != NB_OK
+		      ? file_status_3
+	      : (file_status_3 = nb_str_copy_to(nb_buf_str(&file_value_3), meta_path,
+						sizeof(meta_path))) == NB_ERR_RANGE
+		      ? NB_ERR_NAME_TOO_LONG
+		      : file_status_3);
 	if (rc < 0)
 		return rc;
 	meta = cJSON_CreateObject();
 	if (!meta)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (!cJSON_AddStringToObject(meta, "source", source)) {
 		cJSON_Delete(meta);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (!cJSON_AddStringToObject(meta, "name", dt->name) ||
 	    !cJSON_AddStringToObject(meta, "description", dt->description ? dt->description : "") ||
 	    !cJSON_AddStringToObject(meta, "input_schema", dt->input_schema) ||
 	    !cJSON_AddStringToObject(meta, "output_schema", dt->output_schema)) {
 		cJSON_Delete(meta);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	meta_json = cJSON_PrintUnformatted(meta);
 	cJSON_Delete(meta);
 	if (!meta_json)
-		return -ENOMEM;
-	rc = file_write_atomic(meta_path, meta_json, strlen(meta_json));
+		return NB_ERR_NOMEM;
+	rc = nb_file_write_all_atomic(
+		meta_path, meta_json, strlen(meta_json),
+		&(nb_file_write_options){.new_file_mode = 0600, .sync_dir = true}, NULL);
 	free(meta_json);
 	return rc;
 }
@@ -210,31 +249,63 @@ int dynamic_tool_store_write_tool_files(struct dynamic_tool *dt, const char *sou
 int dynamic_tool_store_tool_file_paths(const char *dir, char *meta_path, size_t meta_size,
 				       char *source_path, size_t source_size)
 {
+	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_4 = NB_OK;
+	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_5 = NB_OK;
+
 	int rc;
 
 	if (!dir)
-		return -EINVAL;
-	rc = file_path_join(meta_path, meta_size, dir, DYN_TOOL_META_FILE);
+		return NB_ERR_INVAL;
+	rc = ((file_status_4 = nb_path_concat(&file_value_4, dir, DYN_TOOL_META_FILE)) != NB_OK
+		      ? file_status_4
+	      : (file_status_4 = nb_str_copy_to(nb_buf_str(&file_value_4), meta_path, meta_size)) ==
+			      NB_ERR_RANGE
+		      ? NB_ERR_NAME_TOO_LONG
+		      : file_status_4);
 	if (rc < 0)
 		return rc;
-	return file_path_join(source_path, source_size, dir, DYN_TOOL_SOURCE_FILE);
+	return ((file_status_5 = nb_path_concat(&file_value_5, dir, DYN_TOOL_SOURCE_FILE)) != NB_OK
+			? file_status_5
+		: (file_status_5 = nb_str_copy_to(nb_buf_str(&file_value_5), source_path,
+						  source_size)) == NB_ERR_RANGE
+			? NB_ERR_NAME_TOO_LONG
+			: file_status_5);
 }
 
 int dynamic_tool_store_history_dir_path(const char *tool_dir, char *path, size_t path_size)
 {
-	return file_path_join(path, path_size, tool_dir, DYN_TOOL_HISTORY_DIR);
+	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_6 = NB_OK;
+
+	return ((file_status_6 = nb_path_concat(&file_value_6, tool_dir, DYN_TOOL_HISTORY_DIR)) !=
+				NB_OK
+			? file_status_6
+		: (file_status_6 = nb_str_copy_to(nb_buf_str(&file_value_6), path, path_size)) ==
+				NB_ERR_RANGE
+			? NB_ERR_NAME_TOO_LONG
+			: file_status_6);
 }
 
 int dynamic_tool_store_checkpoint_dir_path(const char *tool_dir, const char *checkpoint_id,
 					   char *path, size_t path_size)
 {
+	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_7 = NB_OK;
+
 	char history[PATH_MAX];
 	int rc;
 
 	rc = dynamic_tool_store_history_dir_path(tool_dir, history, sizeof(history));
 	if (rc < 0)
 		return rc;
-	return file_path_join(path, path_size, history, checkpoint_id);
+	return ((file_status_7 = nb_path_concat(&file_value_7, history, checkpoint_id)) != NB_OK
+			? file_status_7
+		: (file_status_7 = nb_str_copy_to(nb_buf_str(&file_value_7), path, path_size)) ==
+				NB_ERR_RANGE
+			? NB_ERR_NAME_TOO_LONG
+			: file_status_7);
 }
 
 static uint64_t fnv1a64(const char *data, size_t len)
@@ -267,10 +338,10 @@ int dynamic_tool_store_checkpoint_id_value(const char *id)
 	int value = 0;
 
 	if (!id || !*id)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	for (const char *p = id; *p; p++) {
 		if (*p < '0' || *p > '9')
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		value = value * 10 + (*p - '0');
 	}
 	return value;
@@ -278,32 +349,40 @@ int dynamic_tool_store_checkpoint_id_value(const char *id)
 
 int dynamic_tool_store_latest_checkpoint_id(const char *tool_dir, char *id, size_t id_size)
 {
+	int directory_status_1 = NB_OK;
+
 	char history[PATH_MAX];
-	char **dirs = NULL;
+	nb_dir_listing dirs NB_CLEANUP(nb_dir_listing_destroy) = {0};
 	int count = 0;
 	int max_id = -1;
 	int rc;
 
 	if (!id || id_size == 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	id[0] = '\0';
 	rc = dynamic_tool_store_history_dir_path(tool_dir, history, sizeof(history));
 	if (rc < 0)
 		return rc;
-	if (!file_exists(history))
-		return -ENOENT;
-	if (file_list_dirs_copy(history, &dirs, &count) != 0)
-		return -ENOENT;
+	if (!nb_file_exists(history))
+		return NB_ERR_NOT_FOUND;
+	if (((directory_status_1 = nb_dir_scan(
+		      history, NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN | NB_DIR_SCAN_FOLLOW_LINKS,
+		      &dirs, NULL)) != NB_OK
+		     ? directory_status_1
+	     : dirs.names.len > INT_MAX ? NB_ERR_RANGE
+					: (count = (int)dirs.names.len, NB_OK)) != 0)
+		return NB_ERR_NOT_FOUND;
 	for (int i = 0; i < count; i++) {
-		int value = dynamic_tool_store_checkpoint_id_value(dirs[i]);
+		int value = dynamic_tool_store_checkpoint_id_value(
+			nb_dir_listing_name(&dirs, (size_t)(i)));
 		if (value > max_id)
 			max_id = value;
 	}
-	file_free_list(dirs, count);
+	nb_dir_listing_destroy(&dirs);
 	if (max_id < 0)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	if (snprintf(id, id_size, "%04d", max_id) >= (int)id_size)
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	return 0;
 }
 
@@ -316,28 +395,37 @@ static int next_checkpoint_id(const char *tool_dir, char *id, size_t id_size)
 	rc = dynamic_tool_store_latest_checkpoint_id(tool_dir, latest, sizeof(latest));
 	if (rc == 0)
 		value = dynamic_tool_store_checkpoint_id_value(latest);
-	else if (rc != -ENOENT)
+	else if (rc != NB_ERR_NOT_FOUND)
 		return rc;
 	value++;
 	if (snprintf(id, id_size, "%04d", value) >= (int)id_size)
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	return 0;
 }
 
 int dynamic_tool_store_write_checkpoint_meta(const char *checkpoint_dir,
 					     const struct tool_checkpoint *cp)
 {
+	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_8 = NB_OK;
+
 	char path[PATH_MAX];
 	cJSON *root;
 	char *json;
 	int rc;
 
-	rc = file_path_join(path, sizeof(path), checkpoint_dir, DYN_TOOL_CHECKPOINT_META_FILE);
+	rc = ((file_status_8 = nb_path_concat(&file_value_8, checkpoint_dir,
+					      DYN_TOOL_CHECKPOINT_META_FILE)) != NB_OK
+		      ? file_status_8
+	      : (file_status_8 = nb_str_copy_to(nb_buf_str(&file_value_8), path, sizeof(path))) ==
+			      NB_ERR_RANGE
+		      ? NB_ERR_NAME_TOO_LONG
+		      : file_status_8);
 	if (rc < 0)
 		return rc;
 	root = cJSON_CreateObject();
 	if (!root)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	cJSON_AddStringToObject(root, "id", cp->id);
 	cJSON_AddStringToObject(root, "name", cp->name);
 	cJSON_AddStringToObject(root, "before_state", cp->before_state);
@@ -348,14 +436,21 @@ int dynamic_tool_store_write_checkpoint_meta(const char *checkpoint_dir,
 	json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
 	if (!json)
-		return -ENOMEM;
-	rc = file_write_atomic(path, json, strlen(json));
+		return NB_ERR_NOMEM;
+	rc = nb_file_write_all_atomic(
+		path, json, strlen(json),
+		&(nb_file_write_options){.new_file_mode = 0600, .sync_dir = true}, NULL);
 	free(json);
 	return rc;
 }
 
 int dynamic_tool_store_read_checkpoint_meta(const char *checkpoint_dir, struct tool_checkpoint *cp)
 {
+	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_9 = NB_OK;
+	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_10 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	char path[PATH_MAX];
 	char *json;
 	cJSON *root;
@@ -363,93 +458,155 @@ int dynamic_tool_store_read_checkpoint_meta(const char *checkpoint_dir, struct t
 	int rc;
 
 	if (!cp)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(cp, 0, sizeof(*cp));
-	rc = file_path_join(path, sizeof(path), checkpoint_dir, DYN_TOOL_CHECKPOINT_META_FILE);
+	rc = ((file_status_9 = nb_path_concat(&file_value_9, checkpoint_dir,
+					      DYN_TOOL_CHECKPOINT_META_FILE)) != NB_OK
+		      ? file_status_9
+	      : (file_status_9 = nb_str_copy_to(nb_buf_str(&file_value_9), path, sizeof(path))) ==
+			      NB_ERR_RANGE
+		      ? NB_ERR_NAME_TOO_LONG
+		      : file_status_9);
 	if (rc < 0)
 		return rc;
-	json = file_read_all_copy(path, NULL);
+	json = (nb_file_read_all(path, &file_value_10, 0, NULL) == NB_OK &&
+				(file_copy_10 = (char *)malloc(nb_buf_len(&file_value_10) + 1)) !=
+					NULL
+			? (memcpy(file_copy_10, nb_buf_cstr(&file_value_10),
+				  nb_buf_len(&file_value_10) + 1),
+			   nb_charp_steal(&file_copy_10))
+			: NULL);
 	if (!json)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	root = cJSON_Parse(json);
 	free(json);
 	if (!root)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	item = cJSON_GetObjectItem(root, "id");
 	if (cJSON_IsString(item) && item->valuestring)
-		strncpy(cp->id, item->valuestring, sizeof(cp->id) - 1);
+		(void)nb_str_copy_to(nb_str_from_parts(item->valuestring,
+						       nb_utf8_clamp_bytes(item->valuestring,
+									   sizeof(cp->id) - 1)),
+				     cp->id, (sizeof(cp->id) - 1) + 1);
 	item = cJSON_GetObjectItem(root, "name");
 	if (cJSON_IsString(item) && item->valuestring)
-		strncpy(cp->name, item->valuestring, sizeof(cp->name) - 1);
+		(void)nb_str_copy_to(nb_str_from_parts(item->valuestring,
+						       nb_utf8_clamp_bytes(item->valuestring,
+									   sizeof(cp->name) - 1)),
+				     cp->name, (sizeof(cp->name) - 1) + 1);
 	item = cJSON_GetObjectItem(root, "before_state");
 	if (cJSON_IsString(item) && item->valuestring)
-		strncpy(cp->before_state, item->valuestring, sizeof(cp->before_state) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(item->valuestring,
+					  nb_utf8_clamp_bytes(item->valuestring,
+							      sizeof(cp->before_state) - 1)),
+			cp->before_state, (sizeof(cp->before_state) - 1) + 1);
 	item = cJSON_GetObjectItem(root, "origin");
 	if (cJSON_IsString(item) && item->valuestring)
-		strncpy(cp->origin, item->valuestring, sizeof(cp->origin) - 1);
+		(void)nb_str_copy_to(nb_str_from_parts(item->valuestring,
+						       nb_utf8_clamp_bytes(item->valuestring,
+									   sizeof(cp->origin) - 1)),
+				     cp->origin, (sizeof(cp->origin) - 1) + 1);
 	item = cJSON_GetObjectItem(root, "old_hash");
 	if (cJSON_IsString(item) && item->valuestring)
-		strncpy(cp->old_hash, item->valuestring, sizeof(cp->old_hash) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(
+				item->valuestring,
+				nb_utf8_clamp_bytes(item->valuestring, sizeof(cp->old_hash) - 1)),
+			cp->old_hash, (sizeof(cp->old_hash) - 1) + 1);
 	item = cJSON_GetObjectItem(root, "new_hash");
 	if (cJSON_IsString(item) && item->valuestring)
-		strncpy(cp->new_hash, item->valuestring, sizeof(cp->new_hash) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(
+				item->valuestring,
+				nb_utf8_clamp_bytes(item->valuestring, sizeof(cp->new_hash) - 1)),
+			cp->new_hash, (sizeof(cp->new_hash) - 1) + 1);
 	item = cJSON_GetObjectItem(root, "created_at");
 	if (cJSON_IsNumber(item))
 		cp->created_at = (long)item->valuedouble;
 	cJSON_Delete(root);
 	if (!cp->id[0] || !cp->name[0] || !cp->before_state[0])
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return 0;
 }
 
 int dynamic_tool_store_remove_checkpoint_ids_from(const char *tool_dir, int min_id)
 {
+	int directory_status_1 = NB_OK;
+
+	nb_buf file_value_11 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_11 = NB_OK;
+
 	char history[PATH_MAX];
-	char **dirs = NULL;
+	nb_dir_listing dirs NB_CLEANUP(nb_dir_listing_destroy) = {0};
 	int count = 0;
 	int rc;
 
 	rc = dynamic_tool_store_history_dir_path(tool_dir, history, sizeof(history));
 	if (rc < 0)
 		return rc;
-	if (!file_exists(history))
+	if (!nb_file_exists(history))
 		return 0;
-	if (file_list_dirs_copy(history, &dirs, &count) != 0)
+	if (((directory_status_1 = nb_dir_scan(
+		      history, NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN | NB_DIR_SCAN_FOLLOW_LINKS,
+		      &dirs, NULL)) != NB_OK
+		     ? directory_status_1
+	     : dirs.names.len > INT_MAX ? NB_ERR_RANGE
+					: (count = (int)dirs.names.len, NB_OK)) != 0)
 		return 0;
 	for (int i = 0; i < count; i++) {
-		int value = dynamic_tool_store_checkpoint_id_value(dirs[i]);
+		int value = dynamic_tool_store_checkpoint_id_value(
+			nb_dir_listing_name(&dirs, (size_t)(i)));
 		char path[PATH_MAX];
 
 		if (value < min_id)
 			continue;
-		if (file_path_join(path, sizeof(path), history, dirs[i]) != 0)
+		if (((file_status_11 = nb_path_concat(&file_value_11, history,
+						      nb_dir_listing_name(&dirs, (size_t)(i)))) !=
+				     NB_OK
+			     ? file_status_11
+		     : (file_status_11 = nb_str_copy_to(nb_buf_str(&file_value_11), path,
+							sizeof(path))) == NB_ERR_RANGE
+			     ? NB_ERR_NAME_TOO_LONG
+			     : file_status_11) != 0)
 			continue;
 		(void)dynamic_tool_store_remove_tree(path);
 	}
-	file_free_list(dirs, count);
+	nb_dir_listing_destroy(&dirs);
 	return 0;
 }
 
 int dynamic_tool_store_prune_checkpoint_history(const char *tool_dir)
 {
+	int directory_status_1 = NB_OK;
+
+	nb_buf file_value_12 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_12 = NB_OK;
+
 	char history[PATH_MAX];
-	char **dirs = NULL;
+	nb_dir_listing dirs NB_CLEANUP(nb_dir_listing_destroy) = {0};
 	int count = 0;
 	int rc;
 
 	rc = dynamic_tool_store_history_dir_path(tool_dir, history, sizeof(history));
 	if (rc < 0)
 		return rc;
-	if (!file_exists(history))
+	if (!nb_file_exists(history))
 		return 0;
-	if (file_list_dirs_copy(history, &dirs, &count) != 0)
+	if (((directory_status_1 = nb_dir_scan(
+		      history, NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN | NB_DIR_SCAN_FOLLOW_LINKS,
+		      &dirs, NULL)) != NB_OK
+		     ? directory_status_1
+	     : dirs.names.len > INT_MAX ? NB_ERR_RANGE
+					: (count = (int)dirs.names.len, NB_OK)) != 0)
 		return 0;
 	while (count > DYN_TOOL_HISTORY_LIMIT) {
 		int min_idx = -1;
 		int min_id = INT_MAX;
 
 		for (int i = 0; i < count; i++) {
-			int value = dynamic_tool_store_checkpoint_id_value(dirs[i]);
+			int value = dynamic_tool_store_checkpoint_id_value(
+				nb_dir_listing_name(&dirs, (size_t)(i)));
 			if (value >= 0 && value < min_id) {
 				min_id = value;
 				min_idx = i;
@@ -459,15 +616,21 @@ int dynamic_tool_store_prune_checkpoint_history(const char *tool_dir)
 			break;
 		{
 			char path[PATH_MAX];
-			if (file_path_join(path, sizeof(path), history, dirs[min_idx]) == 0)
+			if (((file_status_12 = nb_path_concat(
+				      &file_value_12, history,
+				      nb_dir_listing_name(&dirs, (size_t)(min_idx)))) != NB_OK
+				     ? file_status_12
+			     : (file_status_12 = nb_str_copy_to(nb_buf_str(&file_value_12), path,
+								sizeof(path))) == NB_ERR_RANGE
+				     ? NB_ERR_NAME_TOO_LONG
+				     : file_status_12) == 0)
 				(void)dynamic_tool_store_remove_tree(path);
 		}
-		free(dirs[min_idx]);
-		for (int i = min_idx; i < count - 1; i++)
-			dirs[i] = dirs[i + 1];
+		nb_buf_destroy(nb_vec_at(&dirs.names, (size_t)min_idx));
+		nb_vec_remove(&dirs.names, (size_t)min_idx);
 		count--;
 	}
-	file_free_list(dirs, count);
+	nb_dir_listing_destroy(&dirs);
 	return 0;
 }
 
@@ -476,6 +639,9 @@ int dynamic_tool_store_create_tool_checkpoint(const char *tool_dir,
 					      struct tool_checkpoint *cp, char *checkpoint_dir,
 					      size_t checkpoint_dir_size)
 {
+	nb_buf file_value_13 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_13 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	char history[PATH_MAX];
 	char id[16];
 	char old_meta[PATH_MAX];
@@ -487,32 +653,51 @@ int dynamic_tool_store_create_tool_checkpoint(const char *tool_dir,
 	int rc;
 
 	if (!tool_dir || !name || !cp || !checkpoint_dir)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(cp, 0, sizeof(*cp));
-	rc = file_ensure_dir(tool_dir);
+	rc = nb_file_mkdir(tool_dir, true, NULL);
 	if (rc < 0)
 		return rc;
 	rc = dynamic_tool_store_history_dir_path(tool_dir, history, sizeof(history));
 	if (rc == 0)
-		rc = file_ensure_dir(history);
+		rc = nb_file_mkdir(history, true, NULL);
 	if (rc == 0)
 		rc = next_checkpoint_id(tool_dir, id, sizeof(id));
 	if (rc == 0)
 		rc = dynamic_tool_store_checkpoint_dir_path(tool_dir, id, checkpoint_dir,
 							    checkpoint_dir_size);
 	if (rc == 0)
-		rc = file_ensure_dir(checkpoint_dir);
+		rc = nb_file_mkdir(checkpoint_dir, true, NULL);
 	if (rc < 0)
 		return rc;
-	strncpy(cp->id, id, sizeof(cp->id) - 1);
-	strncpy(cp->name, name, sizeof(cp->name) - 1);
-	strncpy(cp->before_state, "absent", sizeof(cp->before_state) - 1);
-	strncpy(cp->origin, "none", sizeof(cp->origin) - 1);
-	strncpy(cp->old_hash, "absent", sizeof(cp->old_hash) - 1);
+	(void)nb_str_copy_to(nb_str_from_parts(id, nb_utf8_clamp_bytes(id, sizeof(cp->id) - 1)),
+			     cp->id, (sizeof(cp->id) - 1) + 1);
+	(void)nb_str_copy_to(
+		nb_str_from_parts(name, nb_utf8_clamp_bytes(name, sizeof(cp->name) - 1)), cp->name,
+		(sizeof(cp->name) - 1) + 1);
+	(void)nb_str_copy_to(
+		nb_str_from_parts("absent",
+				  nb_utf8_clamp_bytes("absent", sizeof(cp->before_state) - 1)),
+		cp->before_state, (sizeof(cp->before_state) - 1) + 1);
+	(void)nb_str_copy_to(
+		nb_str_from_parts("none", nb_utf8_clamp_bytes("none", sizeof(cp->origin) - 1)),
+		cp->origin, (sizeof(cp->origin) - 1) + 1);
+	(void)nb_str_copy_to(
+		nb_str_from_parts("absent",
+				  nb_utf8_clamp_bytes("absent", sizeof(cp->old_hash) - 1)),
+		cp->old_hash, (sizeof(cp->old_hash) - 1) + 1);
 	cp->created_at = (long)time(NULL);
 	if (old_dt) {
-		strncpy(cp->before_state, "present", sizeof(cp->before_state) - 1);
-		strncpy(cp->origin, origin_name(old_dt->origin), sizeof(cp->origin) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(
+				"present",
+				nb_utf8_clamp_bytes("present", sizeof(cp->before_state) - 1)),
+			cp->before_state, (sizeof(cp->before_state) - 1) + 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(origin_name(old_dt->origin),
+					  nb_utf8_clamp_bytes(origin_name(old_dt->origin),
+							      sizeof(cp->origin) - 1)),
+			cp->origin, (sizeof(cp->origin) - 1) + 1);
 		rc = dynamic_tool_store_tool_file_paths(old_dt->dir, old_meta, sizeof(old_meta),
 							old_source, sizeof(old_source));
 		if (rc == 0)
@@ -524,9 +709,16 @@ int dynamic_tool_store_create_tool_checkpoint(const char *tool_dir,
 								   cp_source);
 		}
 		if (rc == 0) {
-			source = file_read_all_copy(cp_source, &source_len);
+			source = (nb_file_read_all(cp_source, &file_value_13, 0, NULL) == NB_OK &&
+						  (file_copy_13 = (char *)malloc(
+							   nb_buf_len(&file_value_13) + 1)) != NULL
+					  ? (memcpy(file_copy_13, nb_buf_cstr(&file_value_13),
+						    nb_buf_len(&file_value_13) + 1),
+					     *(&source_len) = nb_buf_len(&file_value_13),
+					     nb_charp_steal(&file_copy_13))
+					  : NULL);
 			if (!source)
-				rc = -ENOENT;
+				rc = NB_ERR_NOT_FOUND;
 		}
 		if (rc == 0) {
 			dynamic_tool_store_hash_text(source, source_len, cp->old_hash);
@@ -553,15 +745,15 @@ int dynamic_tool_store_restore_tool_checkpoint(const char *tool_dir, const char 
 	int rc;
 
 	if (!tool_dir || !checkpoint_dir || !cp)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (strcmp(cp->before_state, "absent") == 0) {
-		if (file_exists(tool_dir))
+		if (nb_file_exists(tool_dir))
 			return dynamic_tool_store_remove_tree(tool_dir);
 		return 0;
 	}
 	if (strcmp(cp->before_state, "present") != 0)
-		return -EINVAL;
-	rc = file_ensure_dir(tool_dir);
+		return NB_ERR_INVAL;
+	rc = nb_file_mkdir(tool_dir, true, NULL);
 	if (rc == 0)
 		rc = dynamic_tool_store_tool_file_paths(checkpoint_dir, old_meta, sizeof(old_meta),
 							old_source, sizeof(old_source));
@@ -577,29 +769,37 @@ int dynamic_tool_store_restore_tool_checkpoint(const char *tool_dir, const char 
 
 int dynamic_tool_store_remove_tree(const char *path)
 {
+	nb_buf file_value_14 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_14 = NB_OK;
+
 	struct stat st;
 	DIR *dir;
 	struct dirent *ent;
 
 	if (!path || !*path)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (lstat(path, &st) != 0)
-		return -errno;
+		return nb_status_from_errno(errno, NULL);
 	if (!S_ISDIR(st.st_mode)) {
 		if (unlink(path) != 0)
-			return -errno;
+			return nb_status_from_errno(errno, NULL);
 		return 0;
 	}
 	dir = opendir(path);
 	if (!dir)
-		return -errno;
+		return nb_status_from_errno(errno, NULL);
 	while ((ent = readdir(dir)) != NULL) {
 		char child[PATH_MAX];
 		int rc;
 
 		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
 			continue;
-		rc = file_path_join(child, sizeof(child), path, ent->d_name);
+		rc = ((file_status_14 = nb_path_concat(&file_value_14, path, ent->d_name)) != NB_OK
+			      ? file_status_14
+		      : (file_status_14 = nb_str_copy_to(nb_buf_str(&file_value_14), child,
+							 sizeof(child))) == NB_ERR_RANGE
+			      ? NB_ERR_NAME_TOO_LONG
+			      : file_status_14);
 		if (rc < 0) {
 			closedir(dir);
 			return rc;
@@ -612,19 +812,28 @@ int dynamic_tool_store_remove_tree(const char *path)
 	}
 	closedir(dir);
 	if (rmdir(path) != 0)
-		return -errno;
+		return nb_status_from_errno(errno, NULL);
 	return 0;
 }
 
 char *dynamic_tool_store_optional_text_create(const char *path)
 {
-	if (!path || !file_exists(path))
+	nb_buf file_value_15 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_15 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
+	if (!path || !nb_file_exists(path))
 		return strdup("");
-	return file_read_all_copy(path, NULL);
+	return (nb_file_read_all(path, &file_value_15, 0, NULL) == NB_OK &&
+				(file_copy_15 = (char *)malloc(nb_buf_len(&file_value_15) + 1)) !=
+					NULL
+			? (memcpy(file_copy_15, nb_buf_cstr(&file_value_15),
+				  nb_buf_len(&file_value_15) + 1),
+			   nb_charp_steal(&file_copy_15))
+			: NULL);
 }
 
-int dynamic_tool_store_append_whole_file_diff(morph_buf_t *buf, const char *label,
-					      const char *old_text, const char *new_text)
+int dynamic_tool_store_append_whole_file_diff(nb_buf *buf, const char *label, const char *old_text,
+					      const char *new_text)
 {
 	const char *old_ptr = old_text ? old_text : "";
 	const char *new_ptr = new_text ? new_text : "";
@@ -644,21 +853,23 @@ int dynamic_tool_store_append_whole_file_diff(morph_buf_t *buf, const char *labe
 			new_lines++;
 	if (*new_ptr)
 		new_lines++;
-	rc = morph_buf_printf(buf, "--- a/%s\n+++ b/%s\n@@ -1,%d +1,%d @@\n", label, label,
-			      old_lines, new_lines);
+	rc = (nb_buf_printf(buf, "--- a/%s\n+++ b/%s\n@@ -1,%d +1,%d @@\n", label, label, old_lines,
+			    new_lines)
+		      ? 0
+		      : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	for (const char *p = old_ptr; *p;) {
 		const char *eol = strchr(p, '\n');
 		size_t len = eol ? (size_t)(eol - p) + 1 : strlen(p);
 
-		rc = morph_buf_putc(buf, '-');
+		rc = (nb_buf_append_char(buf, '-') ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_append(buf, p, len);
+			rc = (nb_buf_append(buf, p, len) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 		if (!eol)
-			rc = morph_buf_putc(buf, '\n');
+			rc = (nb_buf_append_char(buf, '\n') ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 		p += len;
@@ -667,13 +878,13 @@ int dynamic_tool_store_append_whole_file_diff(morph_buf_t *buf, const char *labe
 		const char *eol = strchr(p, '\n');
 		size_t len = eol ? (size_t)(eol - p) + 1 : strlen(p);
 
-		rc = morph_buf_putc(buf, '+');
+		rc = (nb_buf_append_char(buf, '+') ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_append(buf, p, len);
+			rc = (nb_buf_append(buf, p, len) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 		if (!eol)
-			rc = morph_buf_putc(buf, '\n');
+			rc = (nb_buf_append_char(buf, '\n') ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 		p += len;

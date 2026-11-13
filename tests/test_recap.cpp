@@ -1,4 +1,5 @@
 #include "model_metadata_test_support.hpp"
+#include "nb/err.h"
 
 extern "C" {
 #include "sapi/cli/presentation/presenter.h"
@@ -122,12 +123,12 @@ TEST_F(RuntimeFacadeTest, DeferredSessionSkipsRecapPollingAndClearsStaleRetry)
 	ctx.recap.retried = 1;
 	cli_recap_focus(&ctx, 0, 1);
 	/* The empty-session path must skip progress queries even while execution is locked. */
-	pthread_mutex_lock(&instance->context.execution_lock);
+	nb_mutex_lock(instance->context.execution_lock);
 	testing::internal::CaptureStderr();
 	for (int i = 1; i <= 3; i++)
 		cli_recap_tick(&ctx, i * CLI_RECAP_DELAY_MS);
 	std::string diagnostics = testing::internal::GetCapturedStderr();
-	pthread_mutex_unlock(&instance->context.execution_lock);
+	nb_mutex_unlock(instance->context.execution_lock);
 	EXPECT_TRUE(diagnostics.empty()) << diagnostics;
 	EXPECT_EQ(ctx.recap.progress.session_id, 0);
 	EXPECT_EQ(ctx.recap.retry_at, 0);
@@ -159,7 +160,7 @@ TEST_F(RecapTest, BackgroundRequestUsesOnlyVisibleBoundedHistory)
 	ASSERT_EQ(runtime_recap_request(instance, 0, &progress), 0);
 	EXPECT_LT(TitleClock::now() - started, std::chrono::seconds(1));
 	ASSERT_TRUE(WaitRequest());
-	EXPECT_EQ(runtime_recap_request(instance, 0, nullptr), -EALREADY);
+	EXPECT_EQ(runtime_recap_request(instance, 0, nullptr), NB_ERR_STATE);
 	cJSON *body = cJSON_Parse(request_body.c_str());
 	ASSERT_NE(body, nullptr);
 	EXPECT_EQ(cJSON_GetObjectItem(body, "tools"), nullptr);
@@ -169,7 +170,7 @@ TEST_F(RecapTest, BackgroundRequestUsesOnlyVisibleBoundedHistory)
 		const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(
 			cJSON_GetArrayItem(messages, i), "content"));
 		ASSERT_NE(content, nullptr);
-		EXPECT_EQ(utf8valid(content), nullptr);
+		EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(content), NULL), NB_UTF8_OK);
 		bytes += strlen(content);
 		EXPECT_EQ(strstr(content, "SECRET_TOOL_OUTPUT"), nullptr);
 		EXPECT_EQ(strstr(content, "HIDDEN_REASONING"), nullptr);
@@ -394,8 +395,8 @@ TEST_F(RecapTest, ManualRecapSurvivesFocusReturnAndSwitchingRemembersProgress)
 TEST_F(RecapTest, MissingHistoryAndForegroundExecutionHaveExplicitErrors)
 {
 	Start();
-	EXPECT_EQ(runtime_recap_request(instance, 0, nullptr), -ENODATA);
-	pthread_mutex_lock(&instance->context.execution_lock);
-	EXPECT_EQ(runtime_recap_request(instance, 0, nullptr), -EBUSY);
-	pthread_mutex_unlock(&instance->context.execution_lock);
+	EXPECT_EQ(runtime_recap_request(instance, 0, nullptr), NB_ERR_NO_DATA);
+	nb_mutex_lock(instance->context.execution_lock);
+	EXPECT_EQ(runtime_recap_request(instance, 0, nullptr), NB_ERR_BUSY);
+	nb_mutex_unlock(instance->context.execution_lock);
 }

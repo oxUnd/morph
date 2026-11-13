@@ -1,0 +1,86 @@
+# Build outputs
+/build/
+/build-*/
+/out/
+/cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+install_manifest.txt
+compile_commands.json
+Makefile
+nbase.pc
+*.ninja
+.ninja_deps
+.ninja_log
+
+# Local reference sources (large, third-party, distinct licenses)
+/reference/
+
+# Object files and libraries
+*.o
+*.obj
+*.lo
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.dll.a
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.map
+
+# Executables and bundles
+*.out
+*.app/
+*.dSYM/
+
+# Coverage and profiling
+*.gcda
+*.gcno
+*.gcov
+*.profraw
+*.profdata
+coverage/
+lcov.info
+
+# Test and log artifacts
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+test-results/
+
+# Editor and IDE files
+.vscode/
+.idea/
+.clangd/
+.cache/
+*.swp
+*.swo
+*~
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+xcuserdata/
+*.xcodeproj/
+*.xcworkspace/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Dependency manager state
+vcpkg_installed/
+.conan/
+conan/

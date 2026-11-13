@@ -1,8 +1,8 @@
 #include "sapi/fastcgi/storage/artifacts.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "sapi/fastcgi/session_store_internal.h"
 #include "cJSON.h"
-#include "util/error.h"
+#include "errors.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -71,9 +71,9 @@ static int artifact_quota_allows(struct session_store *s, const char *user_id, c
 	int rc = 0;
 
 	if (!s || !user_id || !kind || size_bytes < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 	if (sqlite3_step(st) == SQLITE_ROW) {
 		image_limit = sqlite3_column_int64(st, 0);
@@ -83,13 +83,13 @@ static int artifact_quota_allows(struct session_store *s, const char *user_id, c
 		video_used = sqlite3_column_int64(st, 4);
 		storage_used = sqlite3_column_int64(st, 5);
 		if (strcmp(kind, "image") == 0 && image_limit >= 0 && image_used >= image_limit)
-			rc = -EDQUOT;
+			rc = NB_ERR_NO_SPACE;
 		else if (strcmp(kind, "video") == 0 && video_limit >= 0 &&
 			 video_used >= video_limit)
-			rc = -EDQUOT;
+			rc = NB_ERR_NO_SPACE;
 		else if (storage_limit >= 0 && (storage_used > storage_limit ||
 						size_bytes > storage_limit - storage_used))
-			rc = -EDQUOT;
+			rc = NB_ERR_NO_SPACE;
 	}
 	sqlite3_finalize(st);
 	return rc;
@@ -109,7 +109,7 @@ static int store_artifact_register_write(struct session_store *s, const char *us
 			  "(id,user_id,session_id,kind,mime,filename,relative_path,"
 			  "size_bytes,status,created_at)"
 			  " VALUES(?,?,?,?,?,?,?,?, 'ready', ?)";
-	sqlite3_stmt *st MORPH_CLEANUP(artifact_statement_cleanup) = NULL;
+	sqlite3_stmt *st NB_CLEANUP(artifact_statement_cleanup) = NULL;
 	int rc;
 
 	rc = artifact_quota_allows(s, user_id, kind, size_bytes);
@@ -119,7 +119,7 @@ static int store_artifact_register_write(struct session_store *s, const char *us
 	if (rc < 0)
 		return rc;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) {
-		rc = -EIO;
+		rc = NB_ERR_IO;
 		return rc;
 	}
 	sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
@@ -134,7 +134,7 @@ static int store_artifact_register_write(struct session_store *s, const char *us
 	rc = sqlite3_step(st);
 	artifact_statement_cleanup(&st);
 	if (rc != SQLITE_DONE) {
-		rc = -EIO;
+		rc = NB_ERR_IO;
 		return rc;
 	}
 
@@ -143,7 +143,7 @@ static int store_artifact_register_write(struct session_store *s, const char *us
 	      "ON CONFLICT(user_id) DO UPDATE SET "
 	      "used_bytes=used_bytes+excluded.used_bytes";
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) {
-		rc = -EIO;
+		rc = NB_ERR_IO;
 		return rc;
 	}
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
@@ -151,7 +151,7 @@ static int store_artifact_register_write(struct session_store *s, const char *us
 	rc = sqlite3_step(st);
 	artifact_statement_cleanup(&st);
 	if (rc != SQLITE_DONE) {
-		rc = -EIO;
+		rc = NB_ERR_IO;
 		return rc;
 	}
 	if (strcmp(kind, "image") == 0 || strcmp(kind, "video") == 0) {
@@ -163,14 +163,14 @@ static int store_artifact_register_write(struct session_store *s, const char *us
 			 "ON CONFLICT(user_id,day) DO UPDATE SET %s=%s+1",
 			 col, col, col);
 		if (sqlite3_prepare_v2(s->db.handle, usage_sql, -1, &st, NULL) != SQLITE_OK) {
-			rc = -EIO;
+			rc = NB_ERR_IO;
 			return rc;
 		}
 		sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 		rc = sqlite3_step(st);
 		artifact_statement_cleanup(&st);
 		if (rc != SQLITE_DONE) {
-			rc = -EIO;
+			rc = NB_ERR_IO;
 			return rc;
 		}
 	}
@@ -185,7 +185,7 @@ int store_artifact_register(struct session_store *s, const char *user_id, const 
 	int rc;
 
 	if (!s || !user_id || !session_id || !kind || !mime || !filename || !relative_path)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	/* Keep the quota check and both usage records in one transaction. */
 	rc = store_transaction_begin(s);
 	if (rc != 0)
@@ -210,9 +210,9 @@ int store_artifact_get(struct session_store *s, const char *artifact_id, const c
 	int found = 0;
 
 	if (!s || !artifact_id || !user_id || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	sqlite3_bind_text(st, 1, artifact_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
 	if (sqlite3_step(st) == SQLITE_ROW) {
@@ -237,7 +237,7 @@ int store_artifact_get(struct session_store *s, const char *artifact_id, const c
 		found = 1;
 	}
 	sqlite3_finalize(st);
-	return found ? 0 : -ENOENT;
+	return found ? 0 : NB_ERR_NOT_FOUND;
 }
 
 int store_artifact_list_json(struct session_store *s, const char *user_id, const char *session_id,
@@ -250,15 +250,15 @@ int store_artifact_list_json(struct session_store *s, const char *user_id, const
 	char *json;
 
 	if (!s || !user_id || !session_id || !out_json)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, session_id, -1, SQLITE_TRANSIENT);
 	json = artifact_json_array(st);
 	sqlite3_finalize(st);
 	if (!json)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	*out_json = json;
 	return 0;
 }

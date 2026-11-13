@@ -1,12 +1,13 @@
 #include "runtime/session_title.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "runtime/runtime_internal.h"
 #include "runtime/usage.h"
 #include "credits.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/utf8.h"
-#include "util/log.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/utf8.h"
+#include "nb/log.h"
 
 #include <errno.h>
 #include <ctype.h>
@@ -28,9 +29,9 @@ static const char title_instructions[] =
 	"Do not include quotes around the title, Markdown, or trailing punctuation.";
 
 struct runtime_title_job {
-	pthread_t thread;
-	pthread_mutex_t lock;
-	struct morph_cancel_token cancel;
+	nb_thread *thread;
+	nb_mutex *lock;
+	struct nb_cancel cancel;
 	int done;
 	struct model *model;
 	struct session session;
@@ -65,55 +66,56 @@ char *runtime_title_parse(const char *response)
 {
 	cJSON *root = response ? cJSON_ParseWithOpts(response, NULL, 1) : NULL;
 	const cJSON *field = cJSON_GetObjectItemCaseSensitive(root, "title");
-	morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf title NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *cursor;
 	int pending_space = 0;
 	size_t characters = 0;
 	char *out = NULL;
 
 	if (!cJSON_IsObject(root) || !cJSON_IsString(field) || cJSON_GetArraySize(root) != 1 ||
-	    utf8valid(field->valuestring)) {
+	    nb_utf8_validate(nb_str_from_cstr(field->valuestring), NULL)) {
 		cJSON_Delete(root);
 		return NULL;
 	}
-	if (morph_buf_init(&title, SESSION_TITLE_MAX_CHARS * 4 + 1) != 0) {
+	if ((nb_buf_init(&title),
+	     nb_buf_reserve(&title, SESSION_TITLE_MAX_CHARS * 4 + 1) ? 0 : NB_ERR_NOMEM) != 0) {
 		cJSON_Delete(root);
 		return NULL;
 	}
 	cursor = field->valuestring;
 	while (*cursor && characters < SESSION_TITLE_MAX_CHARS) {
-		utf8_int32_t cp;
-		const char *next = utf8codepoint(cursor, &cp);
+		int32_t cp;
+		const char *next = nb_utf8_next_cstr(cursor, &cp);
 
 		if ((cp < 128 && isspace((unsigned char)cp)) ||
-		    utf8_is_unicode_space_cp((unsigned)cp)) {
+		    nb_utf8_is_unicode_space_cp((unsigned)cp)) {
 			pending_space = title.len > 0;
 		} else if (cp < 32 || cp == 127) {
-			morph_buf_cleanup(&title);
+			nb_buf_cleanup(&title);
 			cJSON_Delete(root);
 			return NULL;
 		} else {
 			if (pending_space) {
 				if (characters + 1 >= SESSION_TITLE_MAX_CHARS)
 					break;
-				(void)morph_buf_putc(&title, ' ');
+				(void)nb_buf_append_char(&title, ' ');
 				characters++;
 				pending_space = 0;
 			}
-			(void)morph_buf_append(&title, cursor, (size_t)(next - cursor));
+			(void)nb_buf_append(&title, cursor, (size_t)(next - cursor));
 			characters++;
 		}
 		cursor = next;
 	}
-	while (title.len && strchr(" .?!\"'`", title.data[title.len - 1]))
-		title.data[--title.len] = '\0';
-	if (title.len && !title.failed) {
-		const char *start = title.data + strspn(title.data, "\"'`");
+	while (title.len && strchr(" .?!\"'`", title.ptr[title.len - 1]))
+		title.ptr[--title.len] = '\0';
+	if (title.len && !nb_buf_status(&title)) {
+		const char *start = title.ptr + strspn(title.ptr, "\"'`");
 
 		if (*start)
 			out = strdup(start);
 	}
-	morph_buf_cleanup(&title);
+	nb_buf_cleanup(&title);
 	cJSON_Delete(root);
 	return out;
 }
@@ -127,7 +129,8 @@ static int title_save(struct db *db, const struct session *session, const char *
 		&stmt, NULL);
 
 	if (rc != SQLITE_OK)
-		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
+		return nb_err_trace(db->logger, MORPH_ERR_DB, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	sqlite3_bind_text(stmt, 1, title, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 2, session->id);
 	sqlite3_bind_text(stmt, 3, session->display_id, -1, SQLITE_TRANSIENT);
@@ -135,44 +138,49 @@ static int title_save(struct db *db, const struct session *session, const char *
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc == SQLITE_CONSTRAINT)
-		return MORPH_TRACE_ERROR(db->logger, -EEXIST);
-	return MORPH_TRACE_ERROR(db->logger, rc == SQLITE_DONE ? 0 : MORPH_ERR_DB);
+		return nb_err_trace(db->logger, NB_ERR_EXISTS, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
+	return nb_err_trace(db->logger, rc == SQLITE_DONE ? 0 : MORPH_ERR_DB,
+			    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__, __LINE__);
 }
 
 static int title_save_unique(struct db *db, const struct session *session, const char *title)
 {
-	morph_buf_t unique MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf unique NB_CLEANUP(nb_buf_cleanup) = {0};
 	size_t suffix_chars = strlen(session->display_id) + 3;
 	const char *end;
 	int rc = title_save(db, session, title);
 
-	if (rc != -EEXIST)
+	if (rc != NB_ERR_EXISTS)
 		return rc;
-	end = utf8_advance_codepoints_borrow(title, SESSION_TITLE_MAX_CHARS - suffix_chars);
-	rc = morph_buf_init(&unique, SESSION_TITLE_MAX_CHARS * 4 + 1);
+	end = nb_utf8_advance(title, SESSION_TITLE_MAX_CHARS - suffix_chars);
+	rc = (nb_buf_init(&unique),
+	      nb_buf_reserve(&unique, SESSION_TITLE_MAX_CHARS * 4 + 1) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
-		return MORPH_TRACE_ERROR(db->logger, rc);
-	(void)morph_buf_append(&unique, title, (size_t)(end - title));
-	(void)morph_buf_printf(&unique, " [%s]", session->display_id);
-	rc = unique.failed ? unique.failed
-			   : title_save(db, session, morph_buf_cstr_borrow(&unique));
-	morph_buf_cleanup(&unique);
-	return MORPH_TRACE_ERROR(db->logger, rc);
+		return nb_err_trace(db->logger, rc, morph_error_descriptions(), MORPH_ERROR_COUNT,
+				    __FILE__, __LINE__);
+	(void)nb_buf_append(&unique, title, (size_t)(end - title));
+	(void)nb_buf_printf(&unique, " [%s]", session->display_id);
+	rc = nb_buf_status(&unique) ? nb_buf_status(&unique)
+				    : title_save(db, session, nb_buf_cstr(&unique));
+	nb_buf_cleanup(&unique);
+	return nb_err_trace(db->logger, rc, morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+			    __LINE__);
 }
 
 static void *title_worker(void *opaque)
 {
 	struct runtime_title_job *job = opaque;
-	struct chat_response response MORPH_CLEANUP(chat_response_free) = {0};
+	struct chat_response response NB_CLEANUP(chat_response_free) = {0};
 	struct chat_message message = {.role = "user", .content = job->prompt};
 	struct db db = {0};
 	char *title = NULL;
-	int rc = -ENOMEM;
+	int rc = NB_ERR_NOMEM;
 
 	title_event(job, "begin");
 	/* Isolate cancellation and billing from the foreground turn's TLS state. */
 	job->model->http.cancel_token = &job->cancel;
-	if (!morph_cancel_token_is_cancelled(&job->cancel))
+	if (!nb_cancel_requested(&job->cancel))
 		rc = job->model->chat_with_tools(job->model, title_instructions, &message, 1, NULL,
 						 0, &response, NULL, NULL);
 	if (rc >= 0 && response.tool_call_count == 0)
@@ -181,20 +189,21 @@ static void *title_worker(void *opaque)
 		(void)runtime_record_model_usage_with_credits(
 			&db, &job->credits, job->user_id, job->session.display_id, &response.usage,
 			job->model->provider, job->model->model_id);
-		pthread_mutex_lock(&job->lock);
-		if (title && !morph_cancel_token_is_cancelled(&job->cancel))
+		nb_mutex_lock(job->lock);
+		if (title && !nb_cancel_requested(&job->cancel))
 			rc = title_save_unique(&db, &job->session, title);
-		pthread_mutex_unlock(&job->lock);
+		nb_mutex_unlock(job->lock);
 		db_close(&db);
 	}
 	if (rc < 0)
-		log_dbg(job->model ? job->model->http.logger : NULL,
-			"session title generation failed: %s", morph_strerror(rc));
+		nb_log_write(job->model ? job->model->http.logger : NULL, NB_LOG_DEBUG,
+			     "session title generation failed: %s",
+			     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	free(title);
 	title_event(job, "end");
-	pthread_mutex_lock(&job->lock);
+	nb_mutex_lock(job->lock);
 	job->done = 1;
-	pthread_mutex_unlock(&job->lock);
+	nb_mutex_unlock(job->lock);
 	return NULL;
 }
 
@@ -203,7 +212,7 @@ static void title_job_free(struct runtime_title_job *job)
 	model_destroy(job->model);
 	free(job->prompt);
 	free(job->user_id);
-	pthread_mutex_destroy(&job->lock);
+	(nb_mutex_free(job->lock), job->lock = NULL);
 	free(job);
 }
 
@@ -225,13 +234,13 @@ int runtime_title_start(struct runtime *runtime, const struct runtime_request *r
 		if (job) {
 			int done;
 
-			pthread_mutex_lock(&job->lock);
+			nb_mutex_lock(job->lock);
 			done = job->done;
-			pthread_mutex_unlock(&job->lock);
+			nb_mutex_unlock(job->lock);
 			if (!done && job->session.id == request->session_id)
 				return 0;
 			if (done) {
-				pthread_join(job->thread, NULL);
+				nb_thread_join_take(&job->thread, NULL);
 				title_job_free(job);
 				runtime->title_jobs[i] = NULL;
 			}
@@ -240,23 +249,28 @@ int runtime_title_start(struct runtime *runtime, const struct runtime_request *r
 			slot = i;
 	}
 	if (slot < 0)
-		return MORPH_TRACE_ERROR(runtime->options.logger, -EAGAIN);
+		return nb_err_trace(runtime->options.logger, NB_ERR_AGAIN,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
 	job = calloc(1, sizeof(*job));
 	if (!job)
-		return MORPH_TRACE_ERROR(runtime->options.logger, -ENOMEM);
-	rc = pthread_mutex_init(&job->lock, NULL);
+		return nb_err_trace(runtime->options.logger, NB_ERR_NOMEM,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
+	rc = ((job->lock = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
 	if (rc != 0) {
 		free(job);
-		return MORPH_TRACE_ERROR(runtime->options.logger, -rc);
+		return nb_err_trace(runtime->options.logger, rc, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	}
 	rc = session_get_by_id(&ctx->database, request->session_id, &job->session);
 	if (rc == 0) {
 		job->model = model_llm_clone(source, runtime->options.logger);
-		job->prompt = utf8_dup_clamped(input, SESSION_TITLE_PROMPT_MAX_BYTES -
-							      strlen(title_instructions));
+		job->prompt = nb_utf8_ellipsize_bytes(input, SESSION_TITLE_PROMPT_MAX_BYTES -
+								     strlen(title_instructions));
 		job->user_id = strdup(request->user_id ? request->user_id : "local");
 		if (!job->model || !job->prompt || !job->user_id)
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 	}
 	if (rc == 0) {
 		job->model->timeout_seconds = SESSION_TITLE_TIMEOUT_SECONDS;
@@ -266,11 +280,12 @@ int runtime_title_start(struct runtime *runtime, const struct runtime_request *r
 		job->event_cb = runtime->options.event_cb;
 		job->event_user_data = runtime->options.event_user_data;
 		memcpy(job->database, ctx->database.path, sizeof(job->database));
-		rc = -pthread_create(&job->thread, NULL, title_worker, job);
+		rc = nb_thread_create(&job->thread, title_worker, job, NULL);
 	}
 	if (rc != 0) {
 		title_job_free(job);
-		return MORPH_TRACE_ERROR(runtime->options.logger, rc);
+		return nb_err_trace(runtime->options.logger, rc, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	}
 	runtime->title_jobs[slot] = job;
 	return 0;
@@ -282,9 +297,9 @@ void runtime_title_cancel(struct runtime *runtime, int64_t session_id)
 		struct runtime_title_job *job = runtime->title_jobs[i];
 
 		if (job && job->session.id == session_id) {
-			pthread_mutex_lock(&job->lock);
-			morph_cancel_token_cancel(&job->cancel);
-			pthread_mutex_unlock(&job->lock);
+			nb_mutex_lock(job->lock);
+			nb_cancel_request(&job->cancel);
+			nb_mutex_unlock(job->lock);
 		}
 	}
 }
@@ -299,7 +314,7 @@ void runtime_title_stop(struct runtime *runtime)
 
 		if (!job)
 			continue;
-		pthread_join(job->thread, NULL);
+		nb_thread_join_take(&job->thread, NULL);
 		title_job_free(job);
 		runtime->title_jobs[i] = NULL;
 	}

@@ -1,13 +1,18 @@
 #include "sapi/cli/adapters/clipboard/clipboard.h"
+#include "nb/time.h"
+#include <string.h>
+#include <stdlib.h>
+#include "nb/cleanup.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "config/config.h"
 #include "stb_image.h"
-#include "util/signals.h"
+#include "nb/process.h"
 #include "sapi/cli/application_internal.h"
-#include "util/id.h"
-#include "util/base64.h"
-#include "util/child_io.h"
+#include "nb/random.h"
+#include "nb/encoding.h"
+#include "nb/encoding.h"
 #include "sapi/cli/widgets/feed.h"
 
 #include <fcntl.h>
@@ -18,97 +23,38 @@
 #define CLI_CLIPBOARD_COPY_TIMEOUT_MS 5000
 #define CLI_CLIPBOARD_OSC52_MAX_BYTES 100000
 
-static int cli_clipboard_spawn_text(const char *const argv[], const int input[2], int null_fd,
-				    pid_t *pid)
-{
-	posix_spawn_file_actions_t actions;
-	posix_spawnattr_t attributes;
-	extern char **environ;
-	int rc = posix_spawn_file_actions_init(&actions);
-
-	if (rc)
-		return -rc;
-	rc = posix_spawn_file_actions_adddup2(&actions, input[0], STDIN_FILENO);
-	if (!rc)
-		rc = posix_spawn_file_actions_adddup2(&actions, null_fd, STDOUT_FILENO);
-	if (!rc)
-		rc = posix_spawn_file_actions_adddup2(&actions, null_fd, STDERR_FILENO);
-	for (int i = 0; i < 2 && !rc; i++)
-		rc = posix_spawn_file_actions_addclose(&actions, input[i]);
-	if (!rc)
-		rc = posix_spawn_file_actions_addclose(&actions, null_fd);
-	if (!rc) {
-		rc = posix_spawnattr_init(&attributes);
-		if (!rc) {
-			sigset_t empty;
-			short flags = POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETPGROUP;
-
-			sigemptyset(&empty);
-			rc = posix_spawnattr_setsigmask(&attributes, &empty);
-			if (!rc)
-				rc = posix_spawnattr_setpgroup(&attributes, 0);
-#ifdef POSIX_SPAWN_CLOEXEC_DEFAULT
-			flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
-#endif
-			if (!rc)
-				rc = posix_spawnattr_setflags(&attributes, flags);
-			if (!rc)
-				rc = posix_spawnp(pid, argv[0], &actions, &attributes,
-						  (char *const *)argv, environ);
-			posix_spawnattr_destroy(&attributes);
-		}
-	}
-	posix_spawn_file_actions_destroy(&actions);
-	return -rc;
-}
-
 static int cli_clipboard_write_text(const char *const argv[], const char *text, int64_t deadline)
 {
-	morph_buf_t output = {0};
-	morph_buf_t errors = {0};
-	int input[2] = {-1, -1};
-	int null_fd = -1;
-	int status;
-	pid_t pid;
-	int rc = morph_buf_init(&output, 16);
-
-	if (!rc)
-		rc = morph_buf_init(&errors, 16);
-	if (!rc)
-		rc = morph_io_pipe(input);
-	if (!rc) {
-		null_fd = open("/dev/null", O_RDWR | O_CLOEXEC);
-		if (null_fd < 0)
-			rc = -errno;
-	}
-	if (!rc)
-		rc = cli_clipboard_spawn_text(argv, input, null_fd, &pid);
-	if (input[0] >= 0)
-		close(input[0]);
-	if (!rc) {
-		int64_t remaining = deadline - morph_io_now_ms();
-
-		/* An EOF-only output fd avoids waiting for a clipboard daemon's stdout. */
-		rc = morph_child_exchange(pid, input[1], null_fd, -1, text, strlen(text),
-			remaining > 0 ? (int)remaining : 1, 0, NULL, NULL,
-			&output, &errors, &status);
-		input[1] = -1;
-		if ((!rc || rc == -EPIPE) &&
-		    (!WIFEXITED(status) || WEXITSTATUS(status) != 0))
-			rc = -EIO;
-	}
-	if (input[1] >= 0)
-		close(input[1]);
-	if (null_fd >= 0)
-		close(null_fd);
-	morph_buf_cleanup(&errors);
-	morph_buf_cleanup(&output);
+	nb_process_options options = {
+		.argv = argv,
+		.search_path = true,
+		.close_fds = true,
+		.new_group = true,
+		.stdout_mode = NB_PROCESS_NULL,
+		.stderr_mode = NB_PROCESS_NULL,
+	};
+	nb_process *child NB_CLEANUP(nb_process_cleanup) = NULL;
+	int rc = nb_process_spawn(&options, &child, NULL);
+	if (rc != NB_OK)
+		return rc;
+	int64_t remaining = deadline - nb_time_monotonic_ms();
+	nb_process_exchange_options exchange = {
+		.timeout_ms = remaining > 0 ? (int)remaining : 1,
+		.max_output = 0,
+	};
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf errors NB_CLEANUP(nb_buf_cleanup) = {0};
+	int code = 0;
+	rc = nb_process_exchange(child, text, strlen(text), &exchange, &output, &errors, &code,
+				 NULL);
+	if (rc == NB_OK && code != 0)
+		return code == 127 ? NB_ERR_NOT_FOUND : NB_ERR_IO;
 	return rc;
 }
 
 static int cli_clipboard_native_text(const char *text)
 {
-	int64_t deadline = morph_io_now_ms() + CLI_CLIPBOARD_COPY_TIMEOUT_MS;
+	int64_t deadline = nb_time_monotonic_ms() + CLI_CLIPBOARD_COPY_TIMEOUT_MS;
 #ifdef __APPLE__
 	const char *argv[] = {"pbcopy", NULL};
 
@@ -118,11 +64,11 @@ static int cli_clipboard_native_text(const char *text)
 	const char *xclip[] = {"xclip", "-selection", "clipboard", "-t", "UTF8_STRING", "-i", NULL};
 	const char *xsel[] = {"xsel", "--clipboard", "--input", NULL};
 	const char *const *backends[] = {wl_copy, xclip, xsel};
-	int rc = -ENOENT;
+	int rc = NB_ERR_NOT_FOUND;
 
 	for (size_t i = 0; i < sizeof(backends) / sizeof(backends[0]); i++) {
 		rc = cli_clipboard_write_text(backends[i], text, deadline);
-		if (!rc || morph_io_now_ms() >= deadline)
+		if (!rc || nb_time_monotonic_ms() >= deadline)
 			break;
 	}
 	return rc;
@@ -138,42 +84,48 @@ static int cli_clipboard_environment(const char *name)
 
 static int cli_clipboard_terminal_text(struct cli_application *ctx, const char *text)
 {
-	morph_buf_t sequence;
-	char *encoded;
+	nb_buf sequence NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf encoded_bytes NB_CLEANUP(nb_buf_destroy) = {0};
+	const char *encoded;
 	int tmux = cli_clipboard_environment("TMUX");
 	int rc;
 
 	if (!ctx || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE || !isatty(STDOUT_FILENO))
-		return -ENOTSUP;
+		return NB_ERR_UNSUPPORTED;
 	if (strlen(text) > CLI_CLIPBOARD_OSC52_MAX_BYTES)
-		return -E2BIG;
-	encoded = base64_encode_copy((const unsigned char *)text, strlen(text));
-	if (!encoded)
-		return -ENOMEM;
-	rc = morph_buf_init(&sequence, strlen(encoded) + 32);
+		return NB_ERR_TOO_BIG;
+	if (nb_base64_encode((const unsigned char *)text, strlen(text), NB_B64_STD, true,
+			     &encoded_bytes, NULL) != NB_OK)
+		return NB_ERR_NOMEM;
+	encoded = nb_buf_cstr(&encoded_bytes);
+	rc = (nb_buf_init(&sequence),
+	      nb_buf_reserve(&sequence, strlen(encoded) + 32) ? 0 : NB_ERR_NOMEM);
 	if (!rc) {
-		rc = morph_buf_printf(&sequence, tmux ? "\033Ptmux;\033\033]52;c;%s\007\033\\" :
-			"\033]52;c;%s\007", encoded);
+		rc = (nb_buf_printf(&sequence,
+				    tmux ? "\033Ptmux;\033\033]52;c;%s\007\033\\"
+					 : "\033]52;c;%s\007",
+				    encoded)
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (!rc) {
 			cli_feed_history_begin(ctx);
-			if (fwrite(sequence.data, 1, sequence.len, stdout) != sequence.len ||
+			if (fwrite(sequence.ptr, 1, sequence.len, stdout) != sequence.len ||
 			    fflush(stdout) != 0)
-				rc = errno ? -errno : -EIO;
+				rc = errno ? nb_status_from_errno(errno, NULL) : NB_ERR_IO;
 		}
-		morph_buf_cleanup(&sequence);
+		nb_buf_cleanup(&sequence);
 	}
-	free(encoded);
 	return rc;
 }
 
 int cli_clipboard_copy_text(struct cli_application *ctx, const char *text)
 {
 	if (!ctx || !text)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!text[0])
-		return -ENODATA;
+		return NB_ERR_NO_DATA;
 	int native = cli_clipboard_native_text(text);
-	int terminal = -ENOTSUP;
+	int terminal = NB_ERR_UNSUPPORTED;
 
 	/* Forward for remote clients even when the host clipboard succeeds. */
 	if (native || cli_clipboard_environment("TMUX") ||
@@ -184,62 +136,46 @@ int cli_clipboard_copy_text(struct cli_application *ctx, const char *text)
 		return CLI_CLIPBOARD_COPIED;
 	if (!terminal)
 		return CLI_CLIPBOARD_REQUESTED;
-	return terminal == -ENOTSUP ? native : terminal;
+	return terminal == NB_ERR_UNSUPPORTED ? native : terminal;
 }
 
 static int cli_clipboard_run(const char *const argv[], const char *stdout_path)
 {
-	pid_t pid;
-	int output_fd = -1;
-	int status;
-
 	if (!argv || !argv[0])
-		return -EINVAL;
+		return NB_ERR_INVAL;
+	int output_fd = -1;
 	if (stdout_path) {
-		output_fd = open(stdout_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+		output_fd = open(stdout_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
 		if (output_fd < 0)
-			return morph_error_from_errno(errno);
+			return nb_status_from_errno(errno, NULL);
 	}
-	pid = fork();
-	if (pid < 0) {
-		int rc = -errno;
-
-		if (output_fd >= 0)
-			close(output_fd);
-		return rc;
-	}
-	if (pid == 0) {
-		morph_signals_reset_child();
-		int null_fd = open("/dev/null", O_WRONLY);
-
-		if (output_fd >= 0 && dup2(output_fd, STDOUT_FILENO) < 0)
-			_exit(126);
-		if (null_fd >= 0 && dup2(null_fd, STDERR_FILENO) < 0)
-			_exit(126);
-		if (output_fd >= 0)
-			close(output_fd);
-		if (null_fd >= 0)
-			close(null_fd);
-		execvp(argv[0], (char *const *)argv);
-		_exit(127);
-	}
+	nb_process_options options = {
+		.argv = argv,
+		.search_path = true,
+		.close_fds = true,
+		.stdin_mode = NB_PROCESS_INHERIT,
+		.stdout_mode = stdout_path ? NB_PROCESS_FD : NB_PROCESS_INHERIT,
+		.stdout_fd = output_fd,
+		.stderr_mode = NB_PROCESS_NULL,
+	};
+	nb_process *child NB_CLEANUP(nb_process_cleanup) = NULL;
+	int rc = nb_process_spawn(&options, &child, NULL);
 	if (output_fd >= 0)
 		close(output_fd);
-	for (;;) {
-		pid_t waited = waitpid(pid, &status, 0);
-
-		if (waited >= 0)
-			break;
-		if (errno != EINTR)
-			return morph_error_from_errno(errno);
-	}
-	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
-		return -ENOENT;
-	return 0;
+	if (rc != NB_OK)
+		return rc;
+	int code = 0;
+	rc = nb_process_wait(child, -1, &code, NULL, NULL);
+	return rc != NB_OK ? rc : code == 0 ? NB_OK : NB_ERR_NOT_FOUND;
 }
 
 static int cli_clipboard_output_path(struct cli_application *ctx, char **out_path)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_1 = NB_OK;
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	const struct config *config;
 	char id[CLI_CLIPBOARD_ID_SIZE];
 	char *filename;
@@ -247,24 +183,37 @@ static int cli_clipboard_output_path(struct cli_application *ctx, char **out_pat
 	int rc;
 
 	if (!ctx || !ctx->runtime || !out_path)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*out_path = NULL;
 	config = runtime_config_borrow(ctx->runtime);
 	if (!config || !config->general.output_dir[0])
 		return MORPH_ERR_NOT_CONFIGURED;
-	rc = file_ensure_dir(config->general.output_dir);
+	rc = nb_file_mkdir(config->general.output_dir, true, NULL);
 	if (rc != 0)
 		return rc;
-	rc = morph_random_id("clipboard_", id, sizeof(id));
+	rc = ((file_status_1 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+				: !(nb_buf_clear(&file_value_1),
+				    nb_buf_append_cstr(&file_value_1, "clipboard_"))
+					? NB_ERR_NOMEM
+					: nb_random_hex(&file_value_1, 16, NULL))) != NB_OK
+		      ? file_status_1
+	      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), id, sizeof(id))) ==
+			      NB_ERR_RANGE
+		      ? NB_ERR_NO_SPACE
+		      : file_status_1);
 	if (rc != 0)
 		return rc;
-	filename = file_path_append_alloc(id, ".png");
+	filename = (nb_buf_clear(&file_value_2), nb_buf_printf(&file_value_2, "%s%s", id, ".png")
+							 ? strdup(nb_buf_cstr(&file_value_2))
+							 : NULL);
 	if (!filename)
-		return -ENOMEM;
-	path = file_path_join_alloc(config->general.output_dir, filename);
+		return NB_ERR_NOMEM;
+	path = (nb_path_concat(&file_value_3, config->general.output_dir, filename) == NB_OK
+			? strdup(nb_buf_cstr(&file_value_3))
+			: NULL);
 	free(filename);
 	if (!path)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	*out_path = path;
 	return 0;
 }
@@ -273,6 +222,8 @@ static int cli_clipboard_output_path(struct cli_application *ctx, char **out_pat
 
 static int cli_clipboard_save_platform_image(const char *png_path)
 {
+	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	static const char script[] = "on run argv\n"
 				     "set outFile to open for access POSIX file (item 1 of argv) "
 				     "with write permission\n"
@@ -290,9 +241,12 @@ static int cli_clipboard_save_platform_image(const char *png_path)
 	const char *sips_argv[8];
 	int rc;
 
-	tiff_path = file_path_append_alloc(png_path, ".tiff");
+	tiff_path = (nb_buf_clear(&file_value_4),
+		     nb_buf_printf(&file_value_4, "%s%s", png_path, ".tiff")
+			     ? strdup(nb_buf_cstr(&file_value_4))
+			     : NULL);
 	if (!tiff_path)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	osascript_argv[0] = "osascript";
 	osascript_argv[1] = "-e";
 	osascript_argv[2] = script;
@@ -345,9 +299,9 @@ int cli_clipboard_save_image(struct cli_application *ctx, char **out_path)
 	int rc;
 
 	if (!out_path)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out_path)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	rc = cli_clipboard_output_path(ctx, &path);
 	if (rc != 0)
 		return rc;
@@ -355,7 +309,7 @@ int cli_clipboard_save_image(struct cli_application *ctx, char **out_path)
 	if (rc != 0 || !stbi_info(path, &width, &height, &channels)) {
 		(void)unlink(path);
 		free(path);
-		return rc != 0 ? rc : MORPH_ERR_FORMAT;
+		return rc != 0 ? rc : NB_ERR_FORMAT;
 	}
 	*out_path = path;
 	return 0;

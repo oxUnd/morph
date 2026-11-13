@@ -2,8 +2,9 @@
 
 extern "C" {
 #include "sapi/cli/widgets/rich_document.h"
-#include "util/base64.h"
-#include "util/utf8.h"
+#include "encoding_fixture.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 #include "morph_kitty_protocol.h"
 #include <morph/tui/application.h>
 #include <morph/tui/view_controller.h>
@@ -36,7 +37,7 @@ static std::string retained_media_placeholders(unsigned id, unsigned row, unsign
 static std::string retained_media_transfer(unsigned id, unsigned format, int columns, int rows,
 	const unsigned char *bytes, size_t length, int width = 0, int height = 0)
 {
-	char *encoded = base64_encode_copy(bytes, length);
+	char *encoded = test_encode_bytes(bytes, length);
 	if (!encoded)
 		return "";
 	std::string result = "\033_Ga=T,f=" + std::to_string(format) + ",i=" +
@@ -71,16 +72,17 @@ class CliRetainedMediaTest : public ::testing::Test
 	const struct morph_tui_renderer_ops renderer_ops = {
 		+[](struct morph_tui_renderer *backend, struct morph_tui_surface *surface, FILE *) {
 			auto *self = static_cast<CliRetainedMediaTest *>(backend->data);
-			morph_buf_t rows{};
+			nb_buf rows{};
 			int rc = morph_tui_surface_rows(surface, &rows);
 			if (!rc) {
-				self->frame = morph_buf_cstr_borrow(&rows);
-				char *plain = utf8_strip_ansi_dup(rows.data, rows.len, nullptr);
+				self->frame = nb_buf_cstr(&rows);
+				char *plain =
+					morph_terminal_strip_ansi_dup(rows.ptr, rows.len, nullptr);
 				if (plain)
 					self->plain = plain;
 				free(plain);
 			}
-			morph_buf_cleanup(&rows);
+			nb_buf_cleanup(&rows);
 			self->placements.clear();
 			for (size_t i = 0; i < morph_tui_surface_image_count(surface); i++) {
 				const auto *image = morph_tui_surface_image_borrow(surface, i);
@@ -160,12 +162,13 @@ class CliRetainedMediaTest : public ::testing::Test
 		struct morph_tui_media_asset *asset = nullptr;
 		int rc = morph_tui_media_asset_create_rgba_copy(&asset, pixels.data(), 4, 2);
 		EXPECT_EQ(rc, 0);
-		morph_buf_t png{};
+		nb_buf png{};
 		rc = morph_tui_media_asset_png_append(asset, 0, 0, 4, 2, &png);
 		EXPECT_EQ(rc, 0);
-		std::string result = retained_media_transfer(id, 100, columns, rows,
-			reinterpret_cast<const unsigned char *>(png.data), png.len);
-		morph_buf_cleanup(&png);
+		std::string result = retained_media_transfer(
+			id, 100, columns, rows, reinterpret_cast<const unsigned char *>(png.ptr),
+			png.len);
+		nb_buf_cleanup(&png);
 		morph_tui_media_asset_destroy(asset);
 		return result;
 	}

@@ -5,13 +5,15 @@
 #include <morph/tui/layout.h>
 #include <morph/tui/window.h>
 #include <morph/tui/frame.h>
-#include "util/array.h"
-#include "util/utf8.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 
 struct morph_tui_view_state {
 	struct morph_tui_view_controller *controller;
 	struct morph_tui_view *parent;
-	morph_array_t children;
+	nb_vec children;
 	struct morph_tui_view_rect frame;
 	struct morph_tui_view_options options;
 	struct morph_tui_layout *layout;
@@ -28,13 +30,13 @@ struct morph_tui_builder {
 
 struct morph_tui_view_controller_state {
 	struct morph_tui_application *app;
-	morph_array_t views;
+	nb_vec views;
 	struct morph_tui_builder builder;
 	struct morph_tui_view *root, *focus;
 	struct morph_tui_view *text_target, *paste_target;
 	struct morph_tui_view *mouse_target;
-	struct utf8_terminal_sanitizer sanitizer;
-	morph_buf_t text;
+	struct morph_terminal_sanitizer sanitizer;
+	nb_buf text;
 	int quit_key, visible;
 	size_t structure_revision;
 };
@@ -44,14 +46,14 @@ struct morph_tui_window {
 	struct morph_tui_view_controller *controller;
 	struct morph_tui_surface *surface;
 	struct morph_tui_frame frame;
-	morph_buf_t rows;
+	nb_buf rows;
 	struct morph_tui_renderer *backend;
 	struct render_native_media *media;
 	int (*event)(void *, const struct morph_tui_event *);
 	void *event_data;
 	int (*copy_text)(void *, const char *);
 	void *copy_data;
-	morph_buf_t selection_text;
+	nb_buf selection_text;
 	int selection_active, selection_dragging;
 	int selection_x1, selection_y1, selection_x2, selection_y2;
 	int selection_width, selection_height;

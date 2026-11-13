@@ -1,7 +1,8 @@
 #include "mcp_internal.h"
-#include "util/base64.h"
-#include "util/buf.h"
-#include "util/error.h"
+#include "nb/encoding.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -28,35 +29,38 @@ static int header_needs_encoding(const char *value)
 	return 0;
 }
 
-int mcp_protocol_add_header_copy(morph_array_t *headers, const char *name, const char *value)
+int mcp_protocol_add_header_copy(nb_vec *headers, const char *name, const char *value)
 {
-	if (!headers || headers->size != sizeof(char *) || !name || !value)
-		return -EINVAL;
-	morph_buf_t buffer MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	char *encoded = NULL;
-	int rc = morph_buf_init(&buffer, 128);
+	if (!headers || headers->elem_size != sizeof(char *) || !name || !value)
+		return NB_ERR_INVAL;
+	nb_buf buffer NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf encoded_bytes NB_CLEANUP(nb_buf_destroy) = {0};
+	const char *encoded;
+	int rc = (nb_buf_init(&buffer), nb_buf_reserve(&buffer, 128) ? 0 : NB_ERR_NOMEM);
 
 	if (rc != 0)
 		return rc;
 	if (header_needs_encoding(value)) {
-		encoded = base64_encode_copy((const unsigned char *)value, strlen(value));
-		if (!encoded)
-			return -ENOMEM;
-		rc = morph_buf_printf(&buffer, "%s: =?base64?%s?=", name, encoded);
+		if (nb_base64_encode((const unsigned char *)value, strlen(value), NB_B64_STD, true,
+				     &encoded_bytes, NULL) != NB_OK)
+			return NB_ERR_NOMEM;
+		encoded = nb_buf_cstr(&encoded_bytes);
+		rc = (nb_buf_printf(&buffer, "%s: =?base64?%s?=", name, encoded) ? 0
+										 : NB_ERR_NOMEM);
 	} else {
-		rc = morph_buf_printf(&buffer, "%s: %s", name, value);
+		rc = (nb_buf_printf(&buffer, "%s: %s", name, value) ? 0 : NB_ERR_NOMEM);
 	}
-	free(encoded);
 	if (rc != 0)
 		return rc;
-	char *text MORPH_CLEANUP(morph_charp_cleanup) = morph_buf_detach(&buffer);
+	char *text NB_CLEANUP(nb_charp_cleanup) =
+		(nb_buf_ok(&buffer) ? strdup(nb_buf_cstr(&buffer)) : NULL);
 	if (!text)
-		return -ENOMEM;
-	char **slot = morph_array_push_borrow(headers);
+		return NB_ERR_NOMEM;
+	char **slot = nb_vec_push(headers);
 
 	if (!slot)
-		return -ENOMEM;
-	*slot = morph_charp_steal(&text);
+		return NB_ERR_NOMEM;
+	*slot = nb_charp_steal(&text);
 	return 0;
 }
 
@@ -73,8 +77,7 @@ static int header_token_valid(const char *name)
 	return 1;
 }
 
-static int validate_annotation(const cJSON *schema, int property,
-	morph_strmap_t *seen)
+static int validate_annotation(const cJSON *schema, int property, nb_map *seen)
 {
 	const cJSON *header = cJSON_GetObjectItemCaseSensitive(schema, "x-mcp-header");
 
@@ -85,17 +88,18 @@ static int validate_annotation(const cJSON *schema, int property,
 	if (!property || !cJSON_IsString(header) || !header_token_valid(header->valuestring) ||
 	    !cJSON_IsString(type) || (strcmp(type->valuestring, "string") != 0 &&
 	    strcmp(type->valuestring, "integer") != 0 && strcmp(type->valuestring, "boolean") != 0))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	char *key = strdup(header->valuestring);
 
 	if (!key)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	for (char *p = key; *p; p++) {
 		if (*p >= 'A' && *p <= 'Z')
 			*p = (char)(*p - 'A' + 'a');
 	}
-	int rc = morph_strmap_contains(seen, key) ? -EINVAL
-						  : morph_strmap_set_borrow(seen, key, seen);
+	int rc = nb_map_has_cstr(seen, key)
+			 ? NB_ERR_INVAL
+			 : (nb_map_put_cstr(seen, key, seen, NULL) ? 0 : NB_ERR_NOMEM);
 
 	free(key);
 	return rc;
@@ -104,8 +108,7 @@ static int validate_annotation(const cJSON *schema, int property,
 /* Only properties chains can emit headers; other schema positions are checked
  * so annotations hidden under $ref/composition/arrays are rejected as specified.
  * Instance values in enum/const/default/examples are data, not schemas. */
-static int validate_schema(const cJSON *schema, int reachable, int property,
-	morph_strmap_t *seen)
+static int validate_schema(const cJSON *schema, int reachable, int property, nb_map *seen)
 {
 	if (!cJSON_IsObject(schema))
 		return 0;
@@ -153,71 +156,75 @@ int mcp_protocol_cache_tool_copy(struct mcp_client *client, const char *name, co
 	if (!client->protocol || !client->protocol->per_request ||
 	    client->config.transport != MCP_TRANSPORT_STREAMABLE_HTTP)
 		return 0;
-	morph_strmap_t seen;
-	int rc = morph_strmap_init(&seen, 8);
+	nb_map *seen = nb_map_new_with_cap(8);
+	int rc = seen ? 0 : NB_ERR_NOMEM;
 
 	if (rc != 0)
 		return rc;
-	rc = validate_schema(schema, 1, 0, &seen);
-	morph_strmap_cleanup(&seen);
+	rc = validate_schema(schema, 1, 0, seen);
+	nb_map_free(seen);
 	if (rc != 0)
 		return rc;
 	cJSON *copy = cJSON_Duplicate(schema, 1);
 
 	if (!copy)
-		return -ENOMEM;
-	pthread_mutex_lock(&client->lock);
-	if (!client->tool_schemas.entries)
-		rc = morph_strmap_init(&client->tool_schemas, 16);
-	cJSON *previous = morph_strmap_borrow(&client->tool_schemas, name);
+		return NB_ERR_NOMEM;
+	nb_mutex_lock(client->lock);
+	if (!client->tool_schemas) {
+		client->tool_schemas = nb_map_new_with_cap(16);
+		if (!client->tool_schemas)
+			rc = NB_ERR_NOMEM;
+	}
+	cJSON *previous = nb_map_get_cstr(client->tool_schemas, name);
 
 	if (rc == 0)
-		rc = morph_strmap_set_borrow(&client->tool_schemas, name, copy);
+		rc = nb_map_put_cstr(client->tool_schemas, name, copy, NULL) ? 0 : NB_ERR_NOMEM;
 	if (rc == 0)
 		cJSON_Delete(previous);
 	else
 		cJSON_Delete(copy);
-	pthread_mutex_unlock(&client->lock);
+	nb_mutex_unlock(client->lock);
 	return rc;
 }
 
-static int parameter_header(const cJSON *schema, const cJSON *value, morph_array_t *headers)
+static int parameter_header(const cJSON *schema, const cJSON *value, nb_vec *headers)
 {
 	const cJSON *annotation = cJSON_GetObjectItemCaseSensitive(schema, "x-mcp-header");
 
 	if (!annotation || !value || cJSON_IsNull(value))
 		return 0;
 	const cJSON *type = cJSON_GetObjectItemCaseSensitive(schema, "type");
-	morph_buf_t name MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_init(&name, 64);
+	nb_buf name NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&name), nb_buf_reserve(&name, 64) ? 0 : NB_ERR_NOMEM);
 
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_printf(&name, "Mcp-Param-%s", annotation->valuestring);
+	rc = (nb_buf_printf(&name, "Mcp-Param-%s", annotation->valuestring) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_init(&text, 64);
+	rc = (nb_buf_init(&text), nb_buf_reserve(&text, 64) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	if (strcmp(type->valuestring, "string") == 0 && cJSON_IsString(value))
-		rc = morph_buf_puts(&text, value->valuestring);
+		rc = (nb_buf_append_cstr(&text, value->valuestring) ? 0 : NB_ERR_NOMEM);
 	else if (strcmp(type->valuestring, "boolean") == 0 && cJSON_IsBool(value))
-		rc = morph_buf_puts(&text, cJSON_IsTrue(value) ? "true" : "false");
+		rc = (nb_buf_append_cstr(&text, cJSON_IsTrue(value) ? "true" : "false")
+			      ? 0
+			      : NB_ERR_NOMEM);
 	else if (strcmp(type->valuestring, "integer") == 0 && cJSON_IsNumber(value) &&
 	    value->valuedouble >= -9007199254740991.0 &&
 	    value->valuedouble <= 9007199254740991.0 &&
 	    (double)(int64_t)value->valuedouble == value->valuedouble)
-		rc = morph_buf_printf(&text, "%.0f", value->valuedouble);
+		rc = (nb_buf_printf(&text, "%.0f", value->valuedouble) ? 0 : NB_ERR_NOMEM);
 	else
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (rc != 0)
 		return rc;
-	return mcp_protocol_add_header_copy(headers, morph_buf_cstr_borrow(&name),
-					    morph_buf_cstr_borrow(&text));
+	return mcp_protocol_add_header_copy(headers, nb_buf_cstr(&name), nb_buf_cstr(&text));
 }
 
-static int property_headers(const cJSON *schema, const cJSON *arguments, morph_array_t *headers)
+static int property_headers(const cJSON *schema, const cJSON *arguments, nb_vec *headers)
 {
 	const cJSON *properties = cJSON_GetObjectItemCaseSensitive(schema, "properties");
 	const cJSON *property;
@@ -235,40 +242,41 @@ static int property_headers(const cJSON *schema, const cJSON *arguments, morph_a
 	return 0;
 }
 
-static void header_copies_cleanup(morph_array_t *headers)
+static void header_copies_cleanup(nb_vec *headers)
 {
 	char **header;
-	morph_array_foreach (header, headers, char *)
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(headers) && (header = (char **)nb_vec_at(headers, _i_)); _i_++)
 		free(*header);
-	morph_array_cleanup(headers);
+	nb_vec_cleanup(headers);
 }
 
 /* Caller holds the connection lock, including access to the schema cache. */
-int mcp_protocol_tool_headers_copy(struct mcp_client *client, const cJSON *params,
-				   morph_array_t *headers)
+int mcp_protocol_tool_headers_copy(struct mcp_client *client, const cJSON *params, nb_vec *headers)
 {
-	if (!client || !params || !headers || headers->size != sizeof(char *))
-		return -EINVAL;
+	if (!client || !params || !headers || headers->elem_size != sizeof(char *))
+		return NB_ERR_INVAL;
 	const cJSON *name = cJSON_GetObjectItemCaseSensitive(params, "name");
 	const cJSON *arguments = cJSON_GetObjectItemCaseSensitive(params, "arguments");
-	const cJSON *schema =
-		cJSON_IsString(name) ? morph_strmap_borrow(&client->tool_schemas, name->valuestring)
-				     : NULL;
+	const cJSON *schema = cJSON_IsString(name)
+				      ? nb_map_get_cstr(client->tool_schemas, name->valuestring)
+				      : NULL;
 
 	if (!schema)
-		return -ENOENT;
-	morph_array_t copies MORPH_CLEANUP(header_copies_cleanup) = {0};
-	int rc = morph_array_init(&copies, 8, sizeof(char *));
+		return NB_ERR_NOT_FOUND;
+	nb_vec copies NB_CLEANUP(header_copies_cleanup) = {0};
+	int rc = (nb_vec_init(&copies, sizeof(char *)),
+		  nb_vec_reserve(&copies, 8) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = property_headers(schema, arguments, &copies);
-	if (rc != 0 || !copies.nelts)
+	if (rc != 0 || !copies.len)
 		return rc;
-	if (copies.nelts > SIZE_MAX - headers->nelts)
-		return -EOVERFLOW;
-	char **destination = morph_array_push_n_borrow(headers, copies.nelts);
+	if (copies.len > SIZE_MAX - headers->len)
+		return NB_ERR_RANGE;
+	char **destination = nb_vec_push_n(headers, copies.len);
 	if (!destination)
-		return -ENOMEM;
-	memcpy(destination, copies.elts, copies.nelts * sizeof(*destination));
-	copies.nelts = 0;
+		return NB_ERR_NOMEM;
+	memcpy(destination, copies.data, copies.len * sizeof(*destination));
+	copies.len = 0;
 	return 0;
 }

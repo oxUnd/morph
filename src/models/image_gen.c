@@ -3,14 +3,15 @@
 #include "image_provider.h"
 #include "media_output.h"
 #include "models/llm.h"
-#include "util/log.h"
-#include "util/file.h"
-#include "util/base64.h"
-#include "util/image_util.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/buf.h"
-#include "util/error.h"
+#include "nb/log.h"
+#include "nb/file.h"
+#include "nb/encoding.h"
+#include "media/image.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
 #include "http/client.h"
 #include "cJSON.h"
 #include <errno.h>
@@ -23,24 +24,27 @@
 
 #include "stb_image.h"
 
-int image_provider_build_request_meta(const struct model *model, const char *path, morph_buf_t *url,
-				      morph_buf_t *auth)
+int image_provider_build_request_meta(const struct model *model, const char *path, nb_buf *url,
+				      nb_buf *auth)
 {
 	if (!model || !path || !url || !auth || url == auth)
-		return -EINVAL;
-	if (url->data || auth->data)
-		return -EEXIST;
-	morph_buf_t url_owner MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_t auth_owner MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_init(&url_owner, strlen(model->api_base) + strlen(path) + 1);
+		return NB_ERR_INVAL;
+	if (url->ptr || auth->ptr)
+		return NB_ERR_EXISTS;
+	nb_buf url_owner NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf auth_owner NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&url_owner),
+		  nb_buf_reserve(&url_owner, strlen(model->api_base) + strlen(path) + 1)
+			  ? 0
+			  : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_printf(&url_owner, "%s%s", model->api_base, path);
+		rc = (nb_buf_printf(&url_owner, "%s%s", model->api_base, path) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = model_authorization_header_create(model, &auth_owner);
 	if (rc != 0)
 		return rc;
-	morph_buf_move(url, &url_owner);
-	morph_buf_move(auth, &auth_owner);
+	(nb_buf_destroy(url), nb_buf_move(url, &url_owner));
+	(nb_buf_destroy(auth), nb_buf_move(auth, &auth_owner));
 	return 0;
 }
 
@@ -48,32 +52,32 @@ int image_provider_post_json(struct model *model, const char *path, const char *
 			     const char *body, struct image_payload *payload)
 {
 	struct http_response response = {0};
-	morph_buf_t url = {0};
-	morph_buf_t auth = {0};
+	nb_buf url NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf auth NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *headers[1];
 	int rc;
 
 	if (!label || !body || !payload)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (payload->data)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	rc = image_provider_build_request_meta(model, path, &url, &auth);
 	if (rc != 0)
 		return rc;
-	headers[0] = morph_buf_cstr_borrow(&auth);
-	rc = http_post_ex_timeout(&model->http, morph_buf_cstr_borrow(&url), body, strlen(body),
+	headers[0] = nb_buf_cstr(&auth);
+	rc = http_post_ex_timeout(&model->http, nb_buf_cstr(&url), body, strlen(body),
 				  "application/json", headers, 1, model->timeout_seconds,
 				  &response);
-	morph_buf_cleanup(&auth);
-	morph_buf_cleanup(&url);
+	nb_buf_cleanup(&auth);
+	nb_buf_cleanup(&url);
 	if (rc == 0) {
 		if (response.status_code != 200) {
 			snprintf(model->last_error, sizeof(model->last_error),
 				 "%s returned HTTP %d: %.400s", label, response.status_code,
-				 response.body.data ? response.body.data : "");
+				 response.body.ptr ? response.body.ptr : "");
 			rc = MORPH_ERR_API;
 		} else {
-			rc = image_provider_parse_response(model, response.body.data, payload);
+			rc = image_provider_parse_response(model, response.body.ptr, payload);
 		}
 	}
 	http_response_free(&response);
@@ -127,20 +131,20 @@ static int download_url(const struct http_control *control, const char *url, con
 	int rc = http_get(control, url, &resp);
 	if (rc < 0) {
 		http_response_free(&resp);
-		log_err(control ? control->logger : NULL, "download failed: %s", url);
+		nb_log_write(control ? control->logger : NULL, NB_LOG_ERROR, "download failed: %s",
+			     url);
 		return rc;
 	}
 	if (resp.status_code != 200) {
-		log_err(control ? control->logger : NULL, "download returned HTTP %d",
-			resp.status_code);
+		nb_log_write(control ? control->logger : NULL, NB_LOG_ERROR,
+			     "download returned HTTP %d", resp.status_code);
 		http_response_free(&resp);
 		return MORPH_ERR_API;
 	}
-	const char *ext = image_gen_ext_from_content_type(morph_buf_cstr_borrow(&resp.headers));
+	const char *ext = image_gen_ext_from_content_type(nb_buf_cstr(&resp.headers));
 	if (!ext)
-		ext = image_gen_ext_from_magic((const unsigned char *)resp.body.data,
-					       resp.body.len);
-	rc = media_output_write(out_dir, "img", ext, resp.body.data, resp.body.len, out_path,
+		ext = image_gen_ext_from_magic((const unsigned char *)resp.body.ptr, resp.body.len);
+	rc = media_output_write(out_dir, "img", ext, resp.body.ptr, resp.body.len, out_path,
 				out_cap);
 	http_response_free(&resp);
 	return rc;
@@ -187,21 +191,21 @@ int image_gen_validate_size(const char *size)
 	errno = 0;
 	width = strtol(size, &end, 10);
 	if (errno != 0 || end == size || !end || *end != 'x')
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (width <= 0 || width > INT_MAX)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	size = end + 1;
 	errno = 0;
 	height = strtol(size, &end, 10);
 	if (errno != 0 || end == size || !end || *end != '\0')
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (height <= 0 || height > INT_MAX)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	pixels = (long long)width * (long long)height;
 	if (pixels < min_pixels || pixels > max_pixels)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	return 0;
 }
@@ -278,7 +282,7 @@ int image_gen_validate_size_for_model(const struct model *model, const char *siz
 	char normalized[64];
 
 	if (!ops)
-		return -ENOTSUP;
+		return NB_ERR_UNSUPPORTED;
 	return ops->normalize_size(model, size, normalized, sizeof(normalized));
 }
 
@@ -293,23 +297,23 @@ void image_payload_cleanup(struct image_payload *payload)
 int image_provider_parse_response(struct model *model, const char *response_json,
 				  struct image_payload *payload)
 {
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	cJSON *data;
 	cJSON *first;
 	cJSON *value;
 	cJSON *usage;
 
 	if (!response_json || !payload)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (payload->data)
-		return -EEXIST;
-	struct image_payload parsed MORPH_CLEANUP(image_payload_cleanup) = {0};
+		return NB_ERR_EXISTS;
+	struct image_payload parsed NB_CLEANUP(image_payload_cleanup) = {0};
 	root = cJSON_Parse(response_json);
 	if (!root)
-		return MORPH_ERR_PARSE;
+		return NB_ERR_PARSE;
 	data = cJSON_GetObjectItem(root, "data");
 	if (!cJSON_IsArray(data) || cJSON_GetArraySize(data) == 0) {
-		return MORPH_ERR_PROTOCOL;
+		return NB_ERR_PROTOCOL;
 	}
 	first = cJSON_GetArrayItem(data, 0);
 	value = cJSON_GetObjectItem(first, "b64_json");
@@ -317,7 +321,7 @@ int image_provider_parse_response(struct model *model, const char *response_json
 		parsed.kind = IMAGE_PAYLOAD_BASE64;
 		parsed.data = strdup(value->valuestring);
 		if (!parsed.data) {
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 	} else {
 		value = cJSON_GetObjectItem(first, "url");
@@ -325,12 +329,12 @@ int image_provider_parse_response(struct model *model, const char *response_json
 			parsed.kind = IMAGE_PAYLOAD_URL;
 			parsed.data = strdup(value->valuestring);
 			if (!parsed.data) {
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			}
 		}
 	}
 	if (!parsed.data) {
-		return MORPH_ERR_PROTOCOL;
+		return NB_ERR_PROTOCOL;
 	}
 	value = cJSON_GetObjectItem(root, "output_format");
 	snprintf(parsed.output_format, sizeof(parsed.output_format), "%s",
@@ -363,20 +367,25 @@ static int image_materialize(const struct http_control *control,
 			     const struct image_payload *payload, const char *output_dir,
 			     struct image_result *result)
 {
-	unsigned char *decoded MORPH_CLEANUP(morph_ucharp_cleanup) = NULL;
-	char *out_dir MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+
+	nb_buf decoded NB_CLEANUP(nb_buf_destroy) = {0};
+	char *out_dir NB_CLEANUP(nb_charp_cleanup) = NULL;
 	char out_path[PATH_MAX];
 	const char *ext;
 	size_t decoded_len = 0;
 	int rc;
 
 	if (!payload || !payload->data || !result)
-		return -EINVAL;
-	out_dir =
-		file_expand_path_copy(output_dir && output_dir[0] ? output_dir : "~/.morph/output");
+		return NB_ERR_INVAL;
+	out_dir = (nb_path_expand(&file_value_1,
+				  output_dir && output_dir[0] ? output_dir : "~/.morph/output",
+				  NULL) == NB_OK
+			   ? strdup(nb_buf_cstr(&file_value_1))
+			   : NULL);
 	if (!out_dir)
-		return -ENOMEM;
-	rc = file_ensure_dir(out_dir);
+		return NB_ERR_NOMEM;
+	rc = nb_file_mkdir(out_dir, true, NULL);
 	if (rc != 0)
 		return rc;
 	if (payload->kind == IMAGE_PAYLOAD_URL) {
@@ -385,9 +394,11 @@ static int image_materialize(const struct http_control *control,
 		if (rc != 0)
 			return rc;
 	} else {
-		decoded = base64_decode_copy(payload->data, &decoded_len);
-		if (!decoded || decoded_len == 0) {
-			rc = MORPH_ERR_PARSE;
+		nb_status status = nb_base64_decode(nb_str_from_cstr(payload->data), NB_B64_STD,
+						    &decoded, NULL);
+		decoded_len = nb_buf_len(&decoded);
+		if (status != NB_OK || decoded_len == 0) {
+			rc = NB_ERR_PARSE;
 			return rc;
 		}
 		if (strcmp(payload->output_format, "jpeg") == 0 ||
@@ -398,10 +409,11 @@ static int image_materialize(const struct http_control *control,
 		} else if (strcmp(payload->output_format, "png") == 0) {
 			ext = "png";
 		} else {
-			ext = image_gen_ext_from_magic(decoded, decoded_len);
+			ext = image_gen_ext_from_magic((const unsigned char *)nb_buf_cstr(&decoded),
+						       decoded_len);
 		}
-		rc = media_output_write(out_dir, "img", ext, decoded, decoded_len, out_path,
-					sizeof(out_path));
+		rc = media_output_write(out_dir, "img", ext, nb_buf_cstr(&decoded), decoded_len,
+					out_path, sizeof(out_path));
 		if (rc != 0)
 			return rc;
 	}
@@ -422,18 +434,18 @@ int image_gen_create(struct model *self, const char *prompt, const char *style, 
 {
 	const struct image_provider_ops *ops;
 	struct image_capabilities caps;
-	struct image_payload payload MORPH_CLEANUP(image_payload_cleanup) = {0};
+	struct image_payload payload NB_CLEANUP(image_payload_cleanup) = {0};
 	struct image_request request;
-	morph_buf_t prompt_buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf prompt_buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	char normalized_size[64];
 	int rc;
 
 	if (!prompt || !result || image_count < 0 || image_count > IMAGE_GEN_MAX_REFERENCE_IMAGES ||
 	    (image_count > 0 && !image_paths))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	for (int i = 0; i < image_count; i++) {
 		if (!image_paths[i] || !image_paths[i][0])
-			return -EINVAL;
+			return NB_ERR_INVAL;
 	}
 	memset(result, 0, sizeof(*result));
 	memset(&payload, 0, sizeof(payload));
@@ -443,7 +455,7 @@ int image_gen_create(struct model *self, const char *prompt, const char *style, 
 	if (!ops) {
 		snprintf(self->last_error, sizeof(self->last_error),
 			 "unsupported image adapter for provider '%s'", self->provider);
-		return -ENOTSUP;
+		return NB_ERR_UNSUPPORTED;
 	}
 	rc = ops->normalize_size(self, size, normalized_size, sizeof(normalized_size));
 	if (rc != 0)
@@ -456,31 +468,32 @@ int image_gen_create(struct model *self, const char *prompt, const char *style, 
 			 "image adapter '%s' does not support multiple reference "
 			 "images for model '%s'",
 			 ops->name, self->model_id);
-		return -ENOTSUP;
+		return NB_ERR_UNSUPPORTED;
 	}
 	if (image_count > 0 && !caps.supports_edit) {
 		snprintf(self->last_error, sizeof(self->last_error),
 			 "image adapter '%s' does not support reference edits "
 			 "for model '%s'",
 			 ops->name, self->model_id);
-		return -ENOTSUP;
+		return NB_ERR_UNSUPPORTED;
 	}
-	if (morph_buf_init(&prompt_buf, strlen(prompt) + 64) != 0)
-		return -ENOMEM;
-	rc = morph_buf_puts(&prompt_buf, style_prefix(style));
+	if ((nb_buf_init(&prompt_buf),
+	     nb_buf_reserve(&prompt_buf, strlen(prompt) + 64) ? 0 : NB_ERR_NOMEM) != 0)
+		return NB_ERR_NOMEM;
+	rc = (nb_buf_append_cstr(&prompt_buf, style_prefix(style)) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_puts(&prompt_buf, prompt);
+		rc = (nb_buf_append_cstr(&prompt_buf, prompt) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
-		morph_buf_cleanup(&prompt_buf);
+		nb_buf_cleanup(&prompt_buf);
 		return rc;
 	}
 	memset(&request, 0, sizeof(request));
-	request.prompt = morph_buf_cstr_borrow(&prompt_buf);
+	request.prompt = nb_buf_cstr(&prompt_buf);
 	request.size = normalized_size;
 	request.reference_images = image_paths;
 	request.reference_image_count = image_count;
 	rc = ops->execute(self, &request, &payload);
-	morph_buf_cleanup(&prompt_buf);
+	nb_buf_cleanup(&prompt_buf);
 	if (rc != 0) {
 		image_payload_cleanup(&payload);
 		return rc;

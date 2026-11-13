@@ -1,8 +1,9 @@
 #include "auth.h"
+#include "nb/cleanup.h"
 #include "sapi/fastcgi/storage/users.h"
 #include "sapi/fastcgi/storage/tokens.h"
 
-#include <pthread.h>
+#include "nb/thread.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,7 +11,7 @@
 
 #include "security.h"
 #include "session_store.h"
-#include "util/file.h"
+#include "nb/file.h"
 
 /* ---- in-memory token cache (hash table) ---- */
 #define TOKEN_CACHE_SIZE 256
@@ -29,7 +30,7 @@ struct fcgi_auth {
 	char trust_header[64];
 	struct token_entry *tokens[TOKEN_CACHE_SIZE];
 	size_t token_count;
-	pthread_mutex_t lock;
+	nb_mutex *lock;
 };
 
 static unsigned token_hash(const char *s)
@@ -124,7 +125,7 @@ struct fcgi_auth *auth_create(const char *trust_header)
 
 	if (!ctx)
 		return NULL;
-	if (pthread_mutex_init(&ctx->lock, NULL) != 0) {
+	if (((ctx->lock = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM) != 0) {
 		free(ctx);
 		return NULL;
 	}
@@ -147,7 +148,7 @@ void auth_destroy(struct fcgi_auth *ctx)
 			entry = next;
 		}
 	}
-	pthread_mutex_destroy(&ctx->lock);
+	(nb_mutex_free(ctx->lock), ctx->lock = NULL);
 	free(ctx);
 }
 
@@ -178,52 +179,31 @@ int auth_check(request_t *r)
 		int64_t now = (int64_t)time(NULL);
 
 		if (ctx)
-			pthread_mutex_lock(&ctx->lock);
+			nb_mutex_lock(ctx->lock);
 		struct token_entry *e = cache_get(ctx, tok);
 		if (e && e->expires_at > now) {
 			snprintf(r->user_id, sizeof(r->user_id), "%s", e->user_id);
 			snprintf(r->username, sizeof(r->username), "%s", e->username);
 			snprintf(r->role, sizeof(r->role), "%s", e->role);
 			if (ctx)
-				pthread_mutex_unlock(&ctx->lock);
+				nb_mutex_unlock(ctx->lock);
 			return 1;
 		}
 		if (ctx)
-			pthread_mutex_unlock(&ctx->lock);
+			nb_mutex_unlock(ctx->lock);
 
 		/* cache miss or expired → read file */
 		int64_t expires = 0;
 		char uid[64] = {0}, uname[64] = {0}, urole[24] = {0};
-		if (login_token_verify(tok, uid, uname, urole)) {
-			/* re-read file to get expires_at for caching */
-			char path[512];
-			if (file_path_join_append(path, sizeof(path), "/tmp/morph-sess", tok,
-						  ".json") != 0)
-				return 1;
-			FILE *fp = fopen(path, "r");
-			if (fp) {
-				char buf[1024];
-				size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
-				fclose(fp);
-				if (n > 0) {
-					buf[n] = '\0';
-					/* quick scan for expires_at without full JSON parse */
-					const char *p = strstr(buf, "\"expires_at\"");
-					if (p) {
-						p = strchr(p + 12, ':');
-						if (p)
-							expires = strtoll(p + 1, NULL, 10);
-					}
-				}
-			}
+		if (login_token_verify(tok, uid, uname, urole, &expires)) {
 			snprintf(r->user_id, sizeof(r->user_id), "%s", uid);
 			snprintf(r->username, sizeof(r->username), "%s", uname);
 			snprintf(r->role, sizeof(r->role), "%s", urole);
 			if (ctx)
-				pthread_mutex_lock(&ctx->lock);
+				nb_mutex_lock(ctx->lock);
 			cache_put(ctx, tok, uid, uname, urole, expires);
 			if (ctx)
-				pthread_mutex_unlock(&ctx->lock);
+				nb_mutex_unlock(ctx->lock);
 			return 1;
 		}
 	}
@@ -234,17 +214,17 @@ void auth_token_created(struct fcgi_auth *ctx, const char *token, const char *us
 			const char *username, const char *role, int64_t expires_at)
 {
 	if (ctx)
-		pthread_mutex_lock(&ctx->lock);
+		nb_mutex_lock(ctx->lock);
 	cache_put(ctx, token, user_id, username, role, expires_at);
 	if (ctx)
-		pthread_mutex_unlock(&ctx->lock);
+		nb_mutex_unlock(ctx->lock);
 }
 
 void auth_token_revoked(struct fcgi_auth *ctx, const char *token)
 {
 	if (ctx)
-		pthread_mutex_lock(&ctx->lock);
+		nb_mutex_lock(ctx->lock);
 	cache_del(ctx, token);
 	if (ctx)
-		pthread_mutex_unlock(&ctx->lock);
+		nb_mutex_unlock(ctx->lock);
 }

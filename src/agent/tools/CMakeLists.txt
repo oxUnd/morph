@@ -15,7 +15,11 @@ target_include_directories(morph-tools PUBLIC
 	${CMAKE_SOURCE_DIR}/src/models
 )
 target_link_libraries(morph-tools PUBLIC
-	morph-agent morph-models morph-http morph-util morph-skill
+	morph-agent morph-models morph-http nbase::nbase morph-cjson morph-skill
 	morph-sandbox morph-db morph-credits morph-session morph-config
-	morph-exec
+	morph-exec morph-command-analysis morph-app-data morph-media
 )
+
+if(UNIX)
+	target_link_libraries(morph-tools PUBLIC m)
+endif()

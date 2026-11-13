@@ -1,11 +1,13 @@
 #include <morph/tui/widgets/select.h>
+#include "nb/time.h"
+#include "nb/err.h"
 #include <morph/tui/widgets/editor.h>
 #include <morph/tui/screen.h>
 #include <morph/tui/draw.h>
-#include "util/signals.h"
-#include "util/utf8.h"
-#include "util/child_io.h"
-#include "util/cancel.h"
+#include "nb/signal.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
+#include "nb/cancel.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -36,18 +38,18 @@ struct widget_select_prompt_view {
 	size_t answer_limit;
 };
 
-static void widget_select_prompt_clear(struct widget_select_prompt_view *view, morph_buf_t *frame,
+static void widget_select_prompt_clear(struct widget_select_prompt_view *view, nb_buf *frame,
 				       int columns, int rows)
 {
 	if (view->active_lines) {
 		if (view->cursor_up)
-			(void)morph_buf_printf(frame, "\033[%dB", view->cursor_up);
+			(void)nb_buf_printf(frame, "\033[%dB", view->cursor_up);
 		if ((columns != view->columns && (size_t)columns <= view->active_width) ||
 		    rows != view->rows || view->active_lines >= rows) {
 			/* Reflow may have moved old rows into scrollback. */
-			(void)morph_buf_puts(frame, "\033[999B\r\n");
+			(void)nb_buf_append_cstr(frame, "\033[999B\r\n");
 		} else {
-			(void)morph_buf_printf(frame, "\r\033[%dA\033[J", view->active_lines);
+			(void)nb_buf_printf(frame, "\r\033[%dA\033[J", view->active_lines);
 		}
 	}
 	view->columns = columns;
@@ -57,44 +59,44 @@ static void widget_select_prompt_clear(struct widget_select_prompt_view *view, m
 	view->cursor_up = 0;
 }
 
-static void widget_select_prompt_line(struct widget_select_prompt_view *view, morph_buf_t *frame,
+static void widget_select_prompt_line(struct widget_select_prompt_view *view, nb_buf *frame,
 				      const char *text, const char *style)
 {
 	char clipped[BUFSIZ];
 	size_t width = view->columns > 1 ? (size_t)view->columns - 1 : 0;
-	char *safe = utf8_terminal_sanitize_dup(text, strlen(text), UTF8_TERMINAL_TEXT_SINGLE_LINE,
-						NULL);
+	char *safe = morph_terminal_sanitize_dup(text, strlen(text),
+						 MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 
 	if (!safe) {
-		frame->failed = -ENOMEM;
+		frame->error = NB_ERR_NOMEM;
 		return;
 	}
-	utf8_copy_sanitized_display_width(clipped, sizeof(clipped), safe, width);
+	morph_terminal_copy_sanitized_display_width(clipped, sizeof(clipped), safe, width);
 	free(safe);
-	size_t used = utf8_display_width(clipped);
+	size_t used = nb_utf8_width_cstr(clipped);
 
 	if (used > view->active_width)
 		view->active_width = used;
-	(void)morph_buf_printf(frame, "%s%s%s\r\n", view->color ? style : "", clipped,
-			       view->color ? WIDGET_SELECT_PROMPT_RESET : "");
+	(void)nb_buf_printf(frame, "%s%s%s\r\n", view->color ? style : "", clipped,
+			    view->color ? WIDGET_SELECT_PROMPT_RESET : "");
 	view->active_lines++;
 }
 
 static int widget_select_prompt_draw(struct widget_select_prompt_view *view,
 				     const struct morph_tui_screen *screen)
 {
-	morph_buf_t frame = {0}, label = {0};
-	int rc = morph_buf_init(&frame, BUFSIZ);
+	nb_buf frame = {0}, label = {0};
+	int rc = (nb_buf_init(&frame), nb_buf_reserve(&frame, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 
 	if (!rc)
-		rc = morph_buf_init(&label, 128);
+		rc = (nb_buf_init(&label), nb_buf_reserve(&label, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc) {
-		morph_buf_cleanup(&frame);
+		nb_buf_cleanup(&frame);
 		return rc;
 	}
-	(void)morph_buf_puts(&frame, "\033[?2026h");
+	(void)nb_buf_append_cstr(&frame, "\033[?2026h");
 	widget_select_prompt_clear(view, &frame, screen->area.width, screen->area.height);
-	(void)morph_buf_puts(&frame, "\033[?25l");
+	(void)nb_buf_append_cstr(&frame, "\033[?25l");
 	struct morph_tui_widget_select *state = view->state;
 	struct morph_tui_widget_list_state *list = &state->menu.list;
 	if (view->editing) {
@@ -108,23 +110,23 @@ static int widget_select_prompt_draw(struct widget_select_prompt_view *view,
 
 		rc = morph_tui_widget_editor_state_view(&view->editor, &label, width, &column);
 		if (!rc) {
-			morph_buf_t input = {0};
-			rc = morph_buf_init(&input, 128);
+			nb_buf input NB_CLEANUP(nb_buf_cleanup) = {0};
+			rc = (nb_buf_init(&input), nb_buf_reserve(&input, 128) ? 0 : NB_ERR_NOMEM);
 			if (!rc)
-				rc = morph_buf_printf(&input, "  %s",
-						      morph_buf_cstr_borrow(&label));
+				rc = (nb_buf_printf(&input, "  %s", nb_buf_cstr(&label))
+					      ? 0
+					      : NB_ERR_NOMEM);
 			if (!rc)
-				widget_select_prompt_line(view, &frame,
-							  morph_buf_cstr_borrow(&input),
+				widget_select_prompt_line(view, &frame, nb_buf_cstr(&input),
 							  WIDGET_SELECT_PROMPT_CYAN);
-			morph_buf_cleanup(&input);
+			nb_buf_cleanup(&input);
 		}
 		if (!rc) {
 			widget_select_prompt_line(view, &frame,
 						  "  Enter save · Esc back · Ctrl+U clear",
 						  WIDGET_SELECT_PROMPT_DIM);
 			view->cursor_up = 2;
-			(void)morph_buf_printf(&frame, "\033[2A\r\033[%zuC\033[?25h", column + 2);
+			(void)nb_buf_printf(&frame, "\033[2A\r\033[%zuC\033[?25h", column + 2);
 		}
 	} else {
 		int page = screen->area.height > 4 ? screen->area.height - 4 : 1;
@@ -133,8 +135,8 @@ static int widget_select_prompt_draw(struct widget_select_prompt_view *view,
 			page = 8;
 		morph_tui_widget_list_state_layout(list, list->count, (size_t)page);
 		for (size_t i = list->first; i < list->count && i - list->first < list->page; i++) {
-			morph_buf_reset(&label);
-			(void)morph_buf_printf(
+			nb_buf_clear(&label);
+			(void)nb_buf_printf(
 				&label, "  %s %s %zu. %s", i == list->index ? "›" : " ",
 				state->multi ? (morph_tui_widget_select_selected(state, i) ? "[x]"
 											   : "[ ]")
@@ -144,24 +146,23 @@ static int widget_select_prompt_draw(struct widget_select_prompt_view *view,
 					? (view->answer ? view->answer
 							: "Other · Type your own answer")
 					: view->choices[i]);
-			if (label.failed)
-				frame.failed = label.failed;
+			if (nb_buf_status(&label))
+				frame.error = nb_buf_status(&label);
 			widget_select_prompt_line(
-				view, &frame, morph_buf_cstr_borrow(&label),
+				view, &frame, nb_buf_cstr(&label),
 				i == list->index
 					? WIDGET_SELECT_PROMPT_BOLD WIDGET_SELECT_PROMPT_CYAN
 					: "");
 		}
-		morph_buf_reset(&label);
+		nb_buf_clear(&label);
 		if (state->multi)
-			(void)morph_buf_printf(&label, "  %zu selected · choose %zu-%zu%s",
-					       state->selected_count, state->minimum,
-					       state->maximum,
-					       state->invalid ? " · Selection limit" : "");
+			(void)nb_buf_printf(&label, "  %zu selected · choose %zu-%zu%s",
+					    state->selected_count, state->minimum, state->maximum,
+					    state->invalid ? " · Selection limit" : "");
 		else if (list->count > list->page)
-			(void)morph_buf_printf(&label, "  %zu/%zu", list->index + 1, list->count);
+			(void)nb_buf_printf(&label, "  %zu/%zu", list->index + 1, list->count);
 		if (label.len && screen->area.height > 3)
-			widget_select_prompt_line(view, &frame, morph_buf_cstr_borrow(&label),
+			widget_select_prompt_line(view, &frame, nb_buf_cstr(&label),
 						  state->invalid ? WIDGET_SELECT_PROMPT_RED
 								 : WIDGET_SELECT_PROMPT_DIM);
 		if (screen->area.height > 2)
@@ -181,14 +182,14 @@ static int widget_select_prompt_draw(struct widget_select_prompt_view *view,
 						  ? "  Auto-continue paused while answering."
 						  : view->hint,
 					  WIDGET_SELECT_PROMPT_DIM);
-	if (label.failed)
-		frame.failed = label.failed;
+	if (nb_buf_status(&label))
+		frame.error = nb_buf_status(&label);
 	if (rc)
-		frame.failed = rc;
-	(void)morph_buf_puts(&frame, "\033[?2026l");
+		frame.error = rc;
+	(void)nb_buf_append_cstr(&frame, "\033[?2026l");
 	rc = morph_tui_draw_write(view->output, &frame);
-	morph_buf_cleanup(&label);
-	morph_buf_cleanup(&frame);
+	nb_buf_cleanup(&label);
+	nb_buf_cleanup(&frame);
 	return rc;
 }
 
@@ -205,10 +206,10 @@ static int widget_select_prompt_update(struct widget_select_prompt_view *view, i
 		} else if (result == MORPH_TUI_WIDGET_SUBMIT) {
 			view->input_invalid = !morph_tui_widget_editor_state_valid(&view->editor);
 			if (!view->input_invalid) {
-				char *answer = strdup(morph_buf_cstr_borrow(&view->editor.text));
+				char *answer = strdup(nb_buf_cstr(&view->editor.text));
 
 				if (!answer) {
-					return -ENOMEM;
+					return NB_ERR_NOMEM;
 				}
 				free(view->answer);
 				view->answer = answer;
@@ -243,9 +244,9 @@ int morph_tui_widget_select_run(struct morph_tui_widget_select *state,
 				const struct morph_tui_widget_select_options *options, FILE *input,
 				FILE *output, char **custom)
 {
-	if (!state || !options || !options->items || !input || !output || !state->checked.nelts ||
+	if (!state || !options || !options->items || !input || !output || !state->checked.len ||
 	    (options->allow_custom && !custom))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (custom)
 		*custom = NULL;
 	struct morph_tui_screen screen = {0};
@@ -260,7 +261,7 @@ int morph_tui_widget_select_run(struct morph_tui_widget_select *state,
 							: 1024u * 1024u + 1,
 	};
 	if (!view.answer_limit)
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	int rc = morph_tui_widget_editor_state_init(&view.editor, "", view.answer_limit, 0);
 
 	if (rc)
@@ -271,38 +272,49 @@ int morph_tui_widget_select_run(struct morph_tui_widget_select *state,
 		return rc;
 	}
 	screen.interrupted = options->interrupted;
-	int64_t deadline = options->timeout_seconds > 0
-				   ? morph_io_now_ms() + (int64_t)options->timeout_seconds * 1000
-				   : 0;
+	int64_t deadline =
+		options->timeout_seconds > 0
+			? nb_time_monotonic_ms() + (int64_t)options->timeout_seconds * 1000
+			: 0;
 	if (options->allow_custom && state->menu.list.count == 1)
 		view.editing = 1;
+	int first_frame = 1;
 	for (;;) {
-		if (morph_cancel_token_is_cancelled(options->cancel_token)) {
-			rc = -ECANCELED;
+		if (nb_cancel_requested(options->cancel_token)) {
+			rc = NB_ERR_CANCELLED;
 			break;
 		}
-		/* Drain a bracketed paste before repainting. Repainting each byte can
-		 * fill terminal output while its sender is still writing the input. */
-		if (screen.dirty && !screen.pasting) {
+		if (first_frame) {
 			rc = widget_select_prompt_draw(&view, &screen);
 			if (rc)
 				break;
 			screen.dirty = 0;
+			first_frame = 0;
 		}
 		struct morph_tui_event event;
 
-		rc = morph_tui_screen_poll(&screen, &event, 100);
-		if (rc == -EINTR && !morph_signal_flag_get(options->interrupted))
+		/* Drain available input before repainting, including unbracketed
+		 * text bursts. Per-byte redraw can fill output while the sender is
+		 * blocked writing a long UTF-8 answer to the same terminal. */
+		rc = morph_tui_screen_poll(&screen, &event,
+					   screen.dirty && !screen.pasting ? 0 : 100);
+		if (rc == NB_ERR_INTERRUPTED && !nb_atomic_int_load(options->interrupted))
 			continue;
 		if (rc)
 			break;
 		if (event.type == MORPH_TUI_EVENT_EOF) {
-			rc = -ECANCELED;
+			rc = NB_ERR_CANCELLED;
 			break;
 		}
 		if (event.type != MORPH_TUI_EVENT_KEY) {
-			if (deadline && morph_io_now_ms() >= deadline) {
-				rc = -ETIMEDOUT;
+			if (event.type == MORPH_TUI_EVENT_TICK && screen.dirty && !screen.pasting) {
+				rc = widget_select_prompt_draw(&view, &screen);
+				if (rc)
+					break;
+				screen.dirty = 0;
+			}
+			if (deadline && nb_time_monotonic_ms() >= deadline) {
+				rc = NB_ERR_TIMEOUT;
 				break;
 			}
 			continue;
@@ -312,12 +324,13 @@ int morph_tui_widget_select_run(struct morph_tui_widget_select *state,
 			view.timeout_paused = 1;
 			screen.dirty = 1;
 		}
+		int was_invalid = view.input_invalid || state->invalid;
 		int result = widget_select_prompt_update(&view, event.key);
 
 		if (result == MORPH_TUI_WIDGET_SUBMIT)
 			break;
 		if (result == MORPH_TUI_WIDGET_BACK || result == MORPH_TUI_WIDGET_CANCEL) {
-			rc = -ECANCELED;
+			rc = NB_ERR_CANCELLED;
 			break;
 		}
 		if (result < 0) {
@@ -325,15 +338,23 @@ int morph_tui_widget_select_run(struct morph_tui_widget_select *state,
 			break;
 		}
 		screen.dirty = screen.dirty || result == MORPH_TUI_WIDGET_CHANGED;
+		/* Publish a rejection once even if subsequent editing keys are already
+		 * queued. Successful text bursts still redraw only after input drains. */
+		if (!screen.pasting && !was_invalid && (view.input_invalid || state->invalid)) {
+			rc = widget_select_prompt_draw(&view, &screen);
+			if (rc)
+				break;
+			screen.dirty = 0;
+		}
 	}
-	morph_buf_t ending = {0};
-	int ending_rc = morph_buf_init(&ending, 128);
+	nb_buf ending NB_CLEANUP(nb_buf_cleanup) = {0};
+	int ending_rc = (nb_buf_init(&ending), nb_buf_reserve(&ending, 128) ? 0 : NB_ERR_NOMEM);
 
 	if (!ending_rc) {
 		widget_select_prompt_clear(&view, &ending, screen.area.width, screen.area.height);
 		ending_rc = morph_tui_draw_write(output, &ending);
 	}
-	morph_buf_cleanup(&ending);
+	nb_buf_cleanup(&ending);
 	int leave_rc = morph_tui_screen_close(&screen);
 
 	if (!rc)

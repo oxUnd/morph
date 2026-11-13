@@ -1,7 +1,7 @@
 #include "sapi/fastcgi/session_store.h"
 #include "sapi/fastcgi/session_store_internal.h"
 #include "sapi/fastcgi/storage/events.h"
-#include "util/error.h"
+#include "errors.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -117,12 +117,12 @@ static int init_default_quota_profiles(sqlite3 *db)
 	if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
 		fprintf(stderr, "fcgi quota profiles: %s\n", err ? err : "?");
 		sqlite3_free(err);
-		return -EIO;
+		return NB_ERR_IO;
 	}
 	return 0;
 }
 
-struct session_store *session_store_open(struct morph_log *logger, const char *db_path)
+struct session_store *session_store_open(struct nb_log *logger, const char *db_path)
 {
 	struct session_store *s = calloc(1, sizeof(*s));
 	if (!s)
@@ -153,8 +153,14 @@ struct session_store *session_store_open(struct morph_log *logger, const char *d
 	}
 	(void)store_maintenance(s);
 
-	pthread_mutex_init(&s->mu, NULL);
-	pthread_cond_init(&s->cv, NULL);
+	s->mu = nb_mutex_new(0);
+	s->cv = s->mu ? nb_cond_new() : NULL;
+	if (!s->cv) {
+		nb_mutex_free(s->mu);
+		db_close(&s->db);
+		free(s);
+		return NULL;
+	}
 	return s;
 }
 
@@ -163,8 +169,8 @@ void session_store_close(struct session_store *s)
 	if (!s)
 		return;
 	store_events_cleanup(s);
-	pthread_mutex_destroy(&s->mu);
-	pthread_cond_destroy(&s->cv);
+	(nb_mutex_free(s->mu), s->mu = NULL);
+	(nb_cond_free(s->cv), s->cv = NULL);
 	db_close(&s->db);
 	free(s);
 }
@@ -180,11 +186,11 @@ int store_transaction_begin(struct session_store *s)
 
 	/* Hold the FULLMUTEX connection lock across every transaction statement. */
 	if (!mutex)
-		return -ENOTSUP;
+		return NB_ERR_UNSUPPORTED;
 	sqlite3_mutex_enter(mutex);
 	if (sqlite3_exec(s->db.handle, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
 		sqlite3_mutex_leave(mutex);
-		return -EIO;
+		return NB_ERR_IO;
 	}
 	return 0;
 }
@@ -192,7 +198,7 @@ int store_transaction_begin(struct session_store *s)
 int store_transaction_end(struct session_store *s, int rc)
 {
 	if (rc == 0 && sqlite3_exec(s->db.handle, "COMMIT", NULL, NULL, NULL) != SQLITE_OK)
-		rc = -EIO;
+		rc = NB_ERR_IO;
 	if (rc != 0)
 		(void)sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
 	sqlite3_mutex_leave(sqlite3_db_mutex(s->db.handle));
@@ -223,24 +229,24 @@ int store_maintenance(struct session_store *s)
 	int64_t now = fcgi_store_now();
 
 	if (!s)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	snprintf(sql, sizeof(sql), "DELETE FROM fcgi_events WHERE ts < %lld",
 		 (long long)(now - (int64_t)event_days * 86400));
 	if (sqlite3_exec(s->db.handle, sql, NULL, NULL, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	snprintf(sql, sizeof(sql), "DELETE FROM fcgi_actions WHERE consumed=1 AND ts < %lld",
 		 (long long)(now - (int64_t)action_days * 86400));
 	if (sqlite3_exec(s->db.handle, sql, NULL, NULL, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	snprintf(sql, sizeof(sql), "DELETE FROM fcgi_running_turns WHERE heartbeat_at < %lld",
 		 (long long)(now - stale_seconds));
 	if (sqlite3_exec(s->db.handle, sql, NULL, NULL, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	snprintf(sql, sizeof(sql),
 		 "DELETE FROM fcgi_artifacts WHERE expires_at IS NOT NULL"
 		 " AND expires_at < %lld",
 		 (long long)now);
 	if (sqlite3_exec(s->db.handle, sql, NULL, NULL, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	return 0;
 }

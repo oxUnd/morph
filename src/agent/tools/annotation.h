@@ -2,7 +2,8 @@
 #define MORPH_TOOL_ANNOTATION_H
 
 #include "cJSON.h"
-#include "util/array.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,9 +43,9 @@ struct annotation_arrow {
 /* Owns an independent parsed tree; field views remain valid until cleanup. */
 struct annotation {
 	cJSON *owned;
-	morph_array_t images;
-	morph_array_t bboxes;
-	morph_array_t arrows;
+	nb_vec images;
+	nb_vec bboxes;
+	nb_vec arrows;
 };
 
 int annotation_parse_copy(const cJSON *input, struct annotation *out);

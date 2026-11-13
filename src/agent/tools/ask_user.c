@@ -1,16 +1,16 @@
 #include "ask_user.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 #include "agent/tool_runtime.h"
-#include "util/log.h"
+#include "nb/log.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "util/error.h"
-#include "util/cancel.h"
-#include "util/utf8.h"
+#include "errors.h"
+#include "nb/cancel.h"
+#include "nb/utf8.h"
 
 struct ask_user_context {
 	ask_user_callback_fn cb;
@@ -24,25 +24,27 @@ int ask_user_options_to_json(cJSON *data, const struct ask_user_options *options
 		options = &defaults;
 	if (!cJSON_IsObject(data) || options->recommended_count < 0 ||
 	    options->recommended_count > ASK_USER_CHOICES_MAX)
-		return -EINVAL;
-	cJSON *indices MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
+		return NB_ERR_INVAL;
+	cJSON *indices NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateArray();
 	if (!indices)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	for (int i = 0; i < options->recommended_count; i++) {
-		cJSON *index MORPH_CLEANUP(morph_json_cleanup) =
+		cJSON *index NB_CLEANUP(cJSON_DeleteOwner) =
 			cJSON_CreateNumber(options->recommended_indices[i]);
 		if (!index) {
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
-		if (morph_json_array_take(indices, &index) != 0)
-			return -ENOMEM;
+		if ((cJSON_AddItemToArray(indices, index) ? (index = NULL, NB_OK) : NB_ERR_NOMEM) !=
+		    0)
+			return NB_ERR_NOMEM;
 	}
-	if (morph_json_object_take(data, "recommended_indices", &indices) != 0)
-		return -ENOMEM;
+	if ((cJSON_AddItemToObject(data, "recommended_indices", indices) ? (indices = NULL, NB_OK)
+									 : NB_ERR_NOMEM) != 0)
+		return NB_ERR_NOMEM;
 	if (!cJSON_AddStringToObject(data, "response_policy",
 		options->optional ? "optional" : "required") ||
 	    !cJSON_AddNumberToObject(data, "timeout_seconds", options->timeout_seconds))
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	return 0;
 }
 
@@ -57,7 +59,7 @@ static int parse_ask_user_options(const cJSON *root, const char *const *choices,
 		if (!cJSON_IsString(policy) ||
 		    (strcmp(policy->valuestring, "optional") != 0 &&
 		     strcmp(policy->valuestring, "required") != 0))
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		options->optional = strcmp(policy->valuestring, "optional") == 0;
 	}
 	options->timeout_seconds = options->optional ? ASK_USER_TIMEOUT_DEFAULT : 0;
@@ -65,7 +67,7 @@ static int parse_ask_user_options(const cJSON *root, const char *const *choices,
 		if (!cJSON_IsNumber(timeout) || timeout->valuedouble < 1 ||
 		    timeout->valuedouble > 86400 ||
 		    timeout->valuedouble != (double)timeout->valueint)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		if (options->optional)
 			options->timeout_seconds = timeout->valueint;
 	}
@@ -73,25 +75,25 @@ static int parse_ask_user_options(const cJSON *root, const char *const *choices,
 		return 0;
 	cJSON *items = cJSON_GetObjectItemCaseSensitive(root, "choices");
 	if (items && (!cJSON_IsArray(items) || cJSON_GetArraySize(items) != choices_count))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!cJSON_IsArray(indices) || cJSON_GetArraySize(indices) > ASK_USER_CHOICES_MAX)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int count = cJSON_GetArraySize(indices);
 	if (count && (count < min || (max > 0 && count > max)))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	for (int i = 0; i < count; i++) {
 		cJSON *index = cJSON_GetArrayItem(indices, i);
 		if (!cJSON_IsNumber(index) || index->valuedouble < 0 ||
 		    index->valuedouble >= choices_count ||
 		    index->valuedouble != (double)index->valueint)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		if (!choices[index->valueint][0])
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		for (int j = 0; j < i; j++) {
 			if (options->recommended_indices[j] == index->valueint ||
 			    strcmp(choices[options->recommended_indices[j]],
 				   choices[index->valueint]) == 0)
-				return -EINVAL;
+				return NB_ERR_INVAL;
 		}
 		options->recommended_indices[i] = index->valueint;
 	}
@@ -114,12 +116,12 @@ static cJSON *ask_user_data_to_json(const char *question,
 				    int answers_count,
 				    int no_input)
 {
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	if (!root)
 		return NULL;
 
-	cJSON *choices_json MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
-	cJSON *answers_json MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *choices_json NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateArray();
+	cJSON *answers_json NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	if (!choices_json)
 		return NULL;
 	answers_json = cJSON_CreateArray();
@@ -137,32 +139,36 @@ static cJSON *ask_user_data_to_json(const char *question,
 		return NULL;
 
 	for (int i = 0; i < choices_count; i++) {
-		cJSON *choice MORPH_CLEANUP(morph_json_cleanup) =
+		cJSON *choice NB_CLEANUP(cJSON_DeleteOwner) =
 			cJSON_CreateString(choices[i] ? choices[i] : "");
 		if (!choice)
 			return NULL;
-		if (morph_json_array_take(choices_json, &choice) != 0)
+		if ((cJSON_AddItemToArray(choices_json, choice) ? (choice = NULL, NB_OK)
+								: NB_ERR_NOMEM) != 0)
 			return NULL;
 	}
 
 	for (int i = 0; i < answers_count; i++) {
-		cJSON *answer MORPH_CLEANUP(morph_json_cleanup) =
+		cJSON *answer NB_CLEANUP(cJSON_DeleteOwner) =
 			cJSON_CreateString(answers[i] ? answers[i] : "");
 		if (!answer)
 			return NULL;
-		if (morph_json_array_take(answers_json, &answer) != 0)
+		if ((cJSON_AddItemToArray(answers_json, answer) ? (answer = NULL, NB_OK)
+								: NB_ERR_NOMEM) != 0)
 			return NULL;
 	}
 
-	if (morph_json_object_take(root, "choices", &choices_json) != 0 ||
-	    morph_json_object_take(root, "answers", &answers_json) != 0)
+	if ((cJSON_AddItemToObject(root, "choices", choices_json) ? (choices_json = NULL, NB_OK)
+								  : NB_ERR_NOMEM) != 0 ||
+	    (cJSON_AddItemToObject(root, "answers", answers_json) ? (answers_json = NULL, NB_OK)
+								  : NB_ERR_NOMEM) != 0)
 		return NULL;
-	return morph_json_steal(&root);
+	return cJSON_StealOwner(&root);
 }
 
 static cJSON *ask_user_ui_to_json(cJSON *data)
 {
-	cJSON *ui MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *ui NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	if (!ui)
 		return NULL;
 
@@ -170,12 +176,12 @@ static cJSON *ask_user_ui_to_json(cJSON *data)
 	    !cJSON_AddStringToObject(ui, "version", "1"))
 		return NULL;
 
-	cJSON *copy MORPH_CLEANUP(morph_json_cleanup) = cJSON_Duplicate(data, 1);
+	cJSON *copy NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Duplicate(data, 1);
 	if (!copy)
 		return NULL;
-	if (morph_json_object_take(ui, "data", &copy) != 0)
+	if ((cJSON_AddItemToObject(ui, "data", copy) ? (copy = NULL, NB_OK) : NB_ERR_NOMEM) != 0)
 		return NULL;
-	return morph_json_steal(&ui);
+	return cJSON_StealOwner(&ui);
 }
 
 static int attach_ask_user_result(struct tool_result *result,
@@ -191,19 +197,19 @@ static int attach_ask_user_result(struct tool_result *result,
 				  const struct ask_user_options *options,
 				  const char *resolution)
 {
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) =
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) =
 		ask_user_data_to_json(question, choices, choices_count, selection_mode, min_choices,
 				      max_choices, answers, answers_count, no_input);
 	if (!data)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (ask_user_options_to_json(data, options) != 0 ||
 	    !cJSON_AddStringToObject(data, "resolution", resolution)) {
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 
-	cJSON *ui MORPH_CLEANUP(morph_json_cleanup) = ask_user_ui_to_json(data);
+	cJSON *ui NB_CLEANUP(cJSON_DeleteOwner) = ask_user_ui_to_json(data);
 	if (!ui) {
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 
 	int rc = tool_result_success_take(result, &data);
@@ -229,15 +235,14 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 				    : NULL;
 
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!callback) {
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"ask_user callback not configured\"}");
 		return MORPH_ERR_NOT_CONFIGURED;
 	}
 
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) =
-		args_json ? cJSON_Parse(args_json) : NULL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = args_json ? cJSON_Parse(args_json) : NULL;
 	const cJSON *q = cJSON_GetObjectItemCaseSensitive(root, "question");
 	const char *question = cJSON_GetStringValue(q);
 	const char *selection_mode = "single";
@@ -251,10 +256,11 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	const cJSON *minimum = cJSON_GetObjectItemCaseSensitive(root, "min_choices");
 	const cJSON *maximum = cJSON_GetObjectItemCaseSensitive(root, "max_choices");
 
-	if (!cJSON_IsObject(root) || !question || !*question || utf8valid(question)) {
+	if (!cJSON_IsObject(root) || !question || !*question ||
+	    nb_utf8_validate(nb_str_from_cstr(question), NULL)) {
 		(void)tool_result_error_copy(result, "invalid_question",
 			"Provide a nonempty UTF-8 question.");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	if (mode) {
 		selection_mode = cJSON_GetStringValue(mode);
@@ -262,7 +268,7 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 					strcmp(selection_mode, "multi"))) {
 			(void)tool_result_error_copy(result, "invalid_selection_mode",
 				"selection_mode must be single or multi.");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 	}
 	if (items) {
@@ -270,15 +276,16 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 			(void)tool_result_error_format(result, "invalid_choices",
 				"choices must contain at most %d complete strings.",
 				ASK_USER_CHOICES_MAX);
-			return -E2BIG;
+			return NB_ERR_TOO_BIG;
 		}
 		choices_count = cJSON_GetArraySize(items);
 		for (int i = 0; i < choices_count; i++) {
 			choices[i] = cJSON_GetStringValue(cJSON_GetArrayItem(items, i));
-			if (!choices[i] || !*choices[i] || utf8valid(choices[i])) {
+			if (!choices[i] || !*choices[i] ||
+			    nb_utf8_validate(nb_str_from_cstr(choices[i]), NULL)) {
 				(void)tool_result_error_copy(result, "invalid_choice",
 					"Each choice must be a nonempty UTF-8 string.");
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			}
 		}
 	}
@@ -287,14 +294,14 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 		minimum->valuedouble != (double)minimum->valueint)) {
 		(void)tool_result_error_copy(result, "invalid_min_choices",
 			"min_choices must be an integer within the choices count.");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	if (maximum && (!cJSON_IsNumber(maximum) || maximum->valuedouble < 0 ||
 		maximum->valuedouble > choices_count ||
 		maximum->valuedouble != (double)maximum->valueint)) {
 		(void)tool_result_error_copy(result, "invalid_max_choices",
 			"max_choices must be an integer within the choices count.");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	if (!strcmp(selection_mode, "multi")) {
 		min_choices = minimum ? minimum->valueint : (choices_count ? 1 : 0);
@@ -302,7 +309,7 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 		if (max_choices && max_choices < min_choices) {
 			(void)tool_result_error_copy(result, "invalid_choice_bounds",
 				"max_choices must not be smaller than min_choices.");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 	} else {
 		min_choices = choices_count ? 1 : 0;
@@ -322,10 +329,10 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	int rc = callback(question, choices, choices_count, selection_mode, min_choices,
 			  max_choices, &options, &answers, &answers_count, callback_data);
 
-	if (morph_cancel_token_is_cancelled(options.cancel_token))
-		rc = -ECANCELED;
+	if (nb_cancel_requested(options.cancel_token))
+		rc = NB_ERR_CANCELLED;
 	const char *resolution = "user";
-	if (rc == -ETIMEDOUT && options.optional) {
+	if (rc == NB_ERR_TIMEOUT && options.optional) {
 		/* A timeout never impersonates an explicit answer or cancellation. */
 		if (answers) {
 			for (int i = 0; i < answers_count; i++)
@@ -339,11 +346,11 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 		if (options.recommended_count) {
 			answers = calloc((size_t)options.recommended_count, sizeof(*answers));
 			if (!answers)
-				rc = -ENOMEM;
+				rc = NB_ERR_NOMEM;
 			for (int i = 0; !rc && i < options.recommended_count; i++) {
 				answers[i] = strdup(choices[options.recommended_indices[i]]);
 				if (!answers[i])
-					rc = -ENOMEM;
+					rc = NB_ERR_NOMEM;
 				else
 					answers_count++;
 			}
@@ -355,14 +362,14 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 		size_t total = 0;
 		if (answers_count < 0 || answers_count > ASK_USER_CHOICES_MAX ||
 		    (answers_count && !answers))
-			rc = MORPH_ERR_PROTOCOL;
+			rc = NB_ERR_PROTOCOL;
 		for (int i = 0; rc >= 0 && i < answers_count; i++) {
 			const char *answer = answers[i] ? answers[i] : "";
 			size_t length = strlen(answer);
-			if (utf8valid(answer))
-				rc = MORPH_ERR_FORMAT;
+			if (nb_utf8_validate(nb_str_from_cstr(answer), NULL))
+				rc = NB_ERR_FORMAT;
 			else if (length > ASK_USER_ANSWER_MAX_BYTES - total)
-				rc = -E2BIG;
+				rc = NB_ERR_TOO_BIG;
 			else
 				total += length;
 		}
@@ -373,9 +380,9 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 				free(answers[i]);
 			free(answers);
 		}
-		(void)tool_result_error_format(result, "ask_user_failed",
-					       "Failed to get user response: %s",
-					       morph_strerror(rc));
+		(void)tool_result_error_format(
+			result, "ask_user_failed", "Failed to get user response: %s",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 
@@ -406,8 +413,8 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	int result_rc = attach_ask_user_result(result, question, choices, choices_count,
 				     selection_mode, min_choices, max_choices,
 				     answers, answers_count, 0, &options, resolution);
-	log_info(result && result->runtime ? result->runtime->http.logger : NULL,
-		 "ask_user: question='%s' answers_count=%d", question, answers_count);
+	nb_log_write(result && result->runtime ? result->runtime->http.logger : NULL, NB_LOG_INFO,
+		     "ask_user: question='%s' answers_count=%d", question, answers_count);
 	for (int i = 0; i < answers_count; i++)
 		free(answers[i]);
 	free(answers);
@@ -417,15 +424,15 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 static int ask_user_register(struct tool_registry *reg, ask_user_callback_fn cb, void *user_data)
 {
 	if (!reg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	struct ask_user_context *ctx = malloc(sizeof(*ctx));
 	if (!ctx)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	ctx->cb = cb;
 	ctx->user_data = user_data;
 
-	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
+	struct tool_spec spec NB_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.name = "ask_user",
 		.description =
@@ -493,7 +500,7 @@ static int ask_user_register(struct tool_registry *reg, ask_user_callback_fn cb,
 int ask_user_init(struct tool_registry *reg, ask_user_callback_fn callback, void *user_data)
 {
 	if (!callback)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return ask_user_register(reg, callback, user_data);
 }
 

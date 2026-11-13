@@ -1,10 +1,10 @@
 #include "codec.h"
 #include "chat_codec.h"
 #include "responses_codec.h"
-#include "util/log.h"
-#include "util/error.h"
-#include "util/json.h"
-#include "util/cleanup.h"
+#include "nb/log.h"
+#include "errors.h"
+#include "cJSON.h"
+#include "nb/cleanup.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,7 +17,7 @@ const struct llm_codec *llm_codec_borrow(const struct model *model)
 
 cJSON *llm_codec_schema_copy(const cJSON *params)
 {
-	cJSON *schema MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *schema NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	if (cJSON_IsObject(params)) {
 		schema = cJSON_Duplicate(params, 1);
 		if (!schema)
@@ -27,7 +27,7 @@ cJSON *llm_codec_schema_copy(const cJSON *params)
 			return NULL;
 	} else if (cJSON_IsArray(params)) {
 		schema = cJSON_CreateObject();
-		cJSON *required MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
+		cJSON *required NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateArray();
 		cJSON *properties = schema ? cJSON_AddObjectToObject(schema, "properties") : NULL;
 		if (!schema || !required || !properties ||
 		    !cJSON_AddStringToObject(schema, "type", "object"))
@@ -47,14 +47,17 @@ cJSON *llm_codec_schema_copy(const cJSON *params)
 						     description->valuestring))
 				return NULL;
 			if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(item, "required"))) {
-				cJSON *entry MORPH_CLEANUP(morph_json_cleanup) =
+				cJSON *entry NB_CLEANUP(cJSON_DeleteOwner) =
 					cJSON_CreateString(name->valuestring);
-				if (!entry || morph_json_array_take(required, &entry) != 0)
+				if (!entry ||
+				    (cJSON_AddItemToArray(required, entry) ? (entry = NULL, NB_OK)
+									   : NB_ERR_NOMEM) != 0)
 					return NULL;
 			}
 		}
 		if (cJSON_GetArraySize(required) &&
-		    morph_json_object_take(schema, "required", &required) != 0)
+		    (cJSON_AddItemToObject(schema, "required", required) ? (required = NULL, NB_OK)
+									 : NB_ERR_NOMEM) != 0)
 			return NULL;
 	} else {
 		return NULL;
@@ -85,7 +88,7 @@ static int extra_body_key_is_reserved(const char *key)
 	return 0;
 }
 
-int llm_codec_add_options(struct morph_log *logger, cJSON *root, const char *json)
+int llm_codec_add_options(struct nb_log *logger, cJSON *root, const char *json)
 {
 	cJSON *extra;
 	cJSON *item;
@@ -95,23 +98,28 @@ int llm_codec_add_options(struct morph_log *logger, cJSON *root, const char *jso
 	extra = cJSON_ParseWithOpts(json, NULL, 1);
 	if (!extra || !cJSON_IsObject(extra)) {
 		cJSON_Delete(extra);
-		log_err(logger, "extra_body_json must contain a valid JSON object");
-		return MORPH_TRACE_ERROR(logger, MORPH_ERR_CONFIG);
+		nb_log_write(logger, NB_LOG_ERROR,
+			     "extra_body_json must contain a valid JSON object");
+		return nb_err_trace(logger, MORPH_ERR_CONFIG, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	}
 	cJSON_ArrayForEach (item, extra) {
 		cJSON *copy;
 
 		if (!item->string || extra_body_key_is_reserved(item->string)) {
-			log_err(logger, "extra_body_json contains reserved or invalid field: %s",
-				item->string ? item->string : "<unnamed>");
+			nb_log_write(logger, NB_LOG_ERROR,
+				     "extra_body_json contains reserved or invalid field: %s",
+				     item->string ? item->string : "<unnamed>");
 			cJSON_Delete(extra);
-			return MORPH_TRACE_ERROR(logger, MORPH_ERR_CONFIG);
+			return nb_err_trace(logger, MORPH_ERR_CONFIG, morph_error_descriptions(),
+					    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 		}
 		copy = cJSON_Duplicate(item, 1);
 		if (!copy || !cJSON_AddItemToObject(root, item->string, copy)) {
 			cJSON_Delete(copy);
 			cJSON_Delete(extra);
-			return MORPH_TRACE_ERROR(logger, -ENOMEM);
+			return nb_err_trace(logger, NB_ERR_NOMEM, morph_error_descriptions(),
+					    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 		}
 	}
 	cJSON_Delete(extra);

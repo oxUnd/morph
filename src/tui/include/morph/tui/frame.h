@@ -1,7 +1,8 @@
 #ifndef MORPH_TUI_FRAME_H
 #define MORPH_TUI_FRAME_H
 
-#include "util/buf.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include <stdio.h>
 
 #ifdef __cplusplus
@@ -12,8 +13,8 @@ extern "C" {
  * Rows are newline-separated trusted terminal text, already sanitized and
  * clipped by the caller; ANSI styles are allowed, cursor controls are not. */
 struct morph_tui_frame {
-	morph_buf_t previous;
-	morph_buf_t output;
+	nb_buf previous;
+	nb_buf output;
 	FILE *target;
 	int columns;
 	int rows;

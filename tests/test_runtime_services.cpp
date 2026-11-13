@@ -1,4 +1,6 @@
+#include "errors.h"
 #include "runtime_test_support.hpp"
+#include "nb/err.h"
 
 extern "C" {
 #include "agent/tool.h"
@@ -12,8 +14,8 @@ extern "C" {
 #include "runtime/tasks.h"
 #include "cJSON.h"
 #include "persistence/history_store.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 }
 
 #include <sqlite3.h>
@@ -73,11 +75,11 @@ TEST_F(RuntimeFacadeTest, DeferredSessionExportsReportNoDataWithoutCreatingASess
 	options.create_new_session = 1;
 	Open(&options);
 	ASSERT_EQ(instance->context.current_session.id, 0);
-	EXPECT_EQ(runtime_session_last_answer_copy(instance, &answer), -ENODATA);
+	EXPECT_EQ(runtime_session_last_answer_copy(instance, &answer), NB_ERR_NO_DATA);
 	EXPECT_EQ(answer, nullptr);
-	EXPECT_EQ(runtime_session_share_current(instance, &document), -ENODATA);
+	EXPECT_EQ(runtime_session_share_current(instance, &document), NB_ERR_NO_DATA);
 	EXPECT_EQ(document, nullptr);
-	EXPECT_EQ(runtime_session_last_request_copy(instance, &document), -ENODATA);
+	EXPECT_EQ(runtime_session_last_request_copy(instance, &document), NB_ERR_NO_DATA);
 	EXPECT_EQ(document, nullptr);
 	EXPECT_EQ(instance->context.current_session.id, 0);
 }
@@ -102,13 +104,13 @@ TEST_F(RuntimeFacadeTest, ManualCompactionRunsTrustedHooksAndHonorsVeto)
 	history.token_count = 10;
 	history.active = 1;
 	ASSERT_EQ(model_history_add(&instance->context.database, &history, nullptr), 0);
-	cJSON *rows MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *rows NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_hooks_snapshot_copy(instance, &rows), 0);
 	const cJSON *row = cJSON_GetArrayItem(rows, 0);
 	ASSERT_NE(row, nullptr);
 	ASSERT_EQ(runtime_hooks_manage(instance, "trust-all", "workspace",
 		cJSON_GetObjectItem(row, "review_digest")->valuestring), 0);
-	morph_json_cleanup(&rows);
+	cJSON_DeleteOwner(&rows);
 	int summaries = 0;
 	react->compress.summarize_user_data = &summaries;
 	react->compress.summarize = [](const char *, void *user, char **out) -> int {
@@ -116,7 +118,8 @@ TEST_F(RuntimeFacadeTest, ManualCompactionRunsTrustedHooksAndHonorsVeto)
 		*out = strdup("Checkpoint");
 		return 0;
 	};
-	EXPECT_EQ(runtime_session_compress(instance, nullptr, nullptr, nullptr), -EPERM);
+	EXPECT_EQ(runtime_session_compress(instance, nullptr, nullptr, nullptr),
+		  NB_ERR_NOT_PERMITTED);
 	EXPECT_EQ(summaries, 0);
 	EXPECT_EQ(react->hook_fn, nullptr);
 	ASSERT_NE(react->last_error_detail, nullptr);
@@ -128,7 +131,7 @@ TEST_F(RuntimeFacadeTest, ManualCompactionRunsTrustedHooksAndHonorsVeto)
 	request.session_id = instance->context.current_session.id;
 	request.model_input = "Continue after automatic compaction";
 	request.turn_id = "hook-auto-compact";
-	EXPECT_EQ(runtime_execute_turn(instance, &request, &result), -EPERM);
+	EXPECT_EQ(runtime_execute_turn(instance, &request, &result), NB_ERR_NOT_PERMITTED);
 	EXPECT_EQ(summaries, 0);
 	EXPECT_EQ(react->outcome, REACT_OUTCOME_GUARDRAIL_DENIED);
 	EXPECT_EQ(react->hook_fn, nullptr);
@@ -185,6 +188,160 @@ static void create_session_import_fixture(const std::string &path, const char *n
 	db_close(&source);
 }
 
+static void seed_session_import_errors(const std::string &path, bool legacy)
+{
+	struct db source NB_CLEANUP(db_close) = {};
+	nb_buf sql NB_CLEANUP(nb_buf_cleanup) = {};
+
+	ASSERT_EQ(db_open(nullptr, &source, path.c_str()), 0);
+	if (legacy) {
+		ASSERT_EQ(db_exec(&source,
+				  "DELETE FROM schema_migrations WHERE version=3;"
+				  "ALTER TABLE memory_jobs DROP COLUMN legacy_error_code;"
+				  "ALTER TABLE sub_agent_tasks DROP COLUMN legacy_error_code;"
+				  "ALTER TABLE agent_threads DROP COLUMN legacy_error_code;"
+				  "ALTER TABLE history_compaction_attempts DROP COLUMN "
+				  "legacy_error_code;"),
+			  0);
+	}
+	ASSERT_TRUE(nb_buf_printf(
+		&sql,
+		"INSERT INTO sub_agent_tasks(task_id,parent_session_id,agent_name,description,"
+		"mode,status,started_at,error_code) "
+		"VALUES('error-task',1,'agent','scope','auto',3,1,%d);"
+		"INSERT INTO sub_agent_events(task_id,event_json,created_at) "
+		"VALUES('error-task','{\"error_code\":-261}',1);"
+		"INSERT INTO agent_threads(root_session_id,agent_id,parent_agent_id,session_id,"
+		"model,effort,depth,description,status,started_at,error_code) "
+		"VALUES(1,'/root/error','/root',1,'test','',1,'scope',3,1,%d);"
+		"INSERT INTO "
+		"history_compaction_attempts(session_id,trigger_kind,status,created_at,error_code) "
+		"VALUES(1,'manual','failed',1,%d);",
+		legacy ? -261 : NB_ERR_CANCELLED, legacy ? -1 : NB_ERR_NOT_PERMITTED,
+		legacy ? -35 : NB_ERR_AGAIN));
+	ASSERT_EQ(db_exec(&source, nb_buf_cstr(&sql)), 0);
+	if (!legacy) {
+		ASSERT_EQ(db_exec(&source,
+				  "UPDATE sub_agent_tasks SET legacy_error_code=-89;"
+				  "UPDATE agent_threads SET legacy_error_code=-1;"
+				  "UPDATE history_compaction_attempts SET legacy_error_code=-35;"),
+			  0);
+	}
+}
+
+static void session_import_statement_cleanup(sqlite3_stmt **statement)
+{
+	if (*statement)
+		sqlite3_finalize(*statement);
+}
+
+static void expect_session_import_errors(struct runtime *runtime, bool legacy)
+{
+	const char *const queries[] = {
+		"SELECT error_code,legacy_error_code FROM sub_agent_tasks",
+		"SELECT error_code,legacy_error_code FROM agent_threads",
+		"SELECT error_code,legacy_error_code FROM history_compaction_attempts",
+	};
+	const int expected_codes[] = {
+		legacy ? NB_ERR_PARSE : NB_ERR_CANCELLED,
+		NB_ERR_NOT_PERMITTED,
+		legacy ? NB_ERR_OS : NB_ERR_AGAIN,
+	};
+	const int expected_audits[] = {legacy ? -261 : -89, -1, -35};
+	for (size_t index = 0; index < sizeof(queries) / sizeof(queries[0]); index++) {
+		sqlite3_stmt *statement NB_CLEANUP(session_import_statement_cleanup) = nullptr;
+
+		ASSERT_EQ(sqlite3_prepare_v2(runtime->context.database.handle, queries[index], -1,
+					     &statement, nullptr),
+			  SQLITE_OK);
+		ASSERT_EQ(sqlite3_step(statement), SQLITE_ROW);
+		EXPECT_EQ(sqlite3_column_int(statement, 0), expected_codes[index]);
+		EXPECT_EQ(sqlite3_column_int(statement, 1), expected_audits[index]);
+		EXPECT_EQ(sqlite3_step(statement), SQLITE_DONE);
+	}
+	sqlite3_stmt *statement NB_CLEANUP(session_import_statement_cleanup) = nullptr;
+	ASSERT_EQ(sqlite3_prepare_v2(runtime->context.database.handle,
+				     "SELECT event_json FROM sub_agent_events", -1, &statement,
+				     nullptr),
+		  SQLITE_OK);
+	ASSERT_EQ(sqlite3_step(statement), SQLITE_ROW);
+	EXPECT_STREQ(reinterpret_cast<const char *>(sqlite3_column_text(statement, 0)),
+		     "{\"error_code\":-261}");
+}
+
+TEST_F(RuntimeFacadeTest, SessionImportMigratesLegacyErrorsWithoutChangingBackup)
+{
+	Open();
+	std::string source = directory + "/legacy-errors.db";
+	create_session_import_fixture(source, "legacy-errors");
+	seed_session_import_errors(source, true);
+	nb_buf before NB_CLEANUP(nb_buf_cleanup) = {};
+	nb_buf after NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ(nb_file_read_all(source.c_str(), &before, 0, nullptr), NB_OK);
+	struct runtime_session_import_result result{};
+	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "legacy-device", &result),
+		  0);
+	EXPECT_EQ(result.imported, 1);
+	expect_session_import_errors(instance, true);
+	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "legacy-device", &result),
+		  0);
+	EXPECT_EQ(result.imported, 0);
+	EXPECT_EQ(result.unchanged, 1);
+	ASSERT_EQ(nb_file_read_all(source.c_str(), &after, 0, nullptr), NB_OK);
+	EXPECT_TRUE(nb_str_eq(nb_buf_str(&before), nb_buf_str(&after)));
+}
+
+TEST_F(RuntimeFacadeTest, SessionImportPreservesNativeErrorsAndLegacyAudit)
+{
+	Open();
+	std::string source = directory + "/native-errors.db";
+	create_session_import_fixture(source, "native-errors");
+	seed_session_import_errors(source, false);
+	struct runtime_session_import_result result{};
+	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "native-device", &result),
+		  0);
+	EXPECT_EQ(result.imported, 1);
+	expect_session_import_errors(instance, false);
+}
+
+TEST_F(RuntimeFacadeTest, SessionImportLegacyErrorFailureRollsBackAllRowsAndReceipts)
+{
+	Open();
+	std::string source = directory + "/legacy-errors.db";
+	create_session_import_fixture(source, "legacy-errors");
+	seed_session_import_errors(source, true);
+	ASSERT_EQ(db_exec(&instance->context.database,
+			  "CREATE TRIGGER reject_error_import BEFORE INSERT ON agent_threads "
+			  "BEGIN SELECT RAISE(ABORT,'injected error import failure'); END;"),
+		  0);
+	struct runtime_session_import_result result{};
+	EXPECT_EQ(runtime_session_import_file(instance, source.c_str(), "legacy-device", &result),
+		  MORPH_ERR_DB);
+	EXPECT_EQ(result.imported, 0);
+	const char *const tables[] = {"sub_agent_tasks", "sub_agent_events", "agent_threads",
+				      "history_compaction_attempts"};
+	for (const char *table : tables) {
+		nb_buf query NB_CLEANUP(nb_buf_cleanup) = {};
+		sqlite3_stmt *statement NB_CLEANUP(session_import_statement_cleanup) = nullptr;
+
+		ASSERT_TRUE(nb_buf_printf(&query, "SELECT count(*) FROM %s", table));
+		ASSERT_EQ(sqlite3_prepare_v2(instance->context.database.handle, nb_buf_cstr(&query),
+					     -1, &statement, nullptr),
+			  SQLITE_OK);
+		ASSERT_EQ(sqlite3_step(statement), SQLITE_ROW);
+		EXPECT_EQ(sqlite3_column_int(statement, 0), 0) << table;
+	}
+	EXPECT_NE(sqlite3_table_column_metadata(instance->context.database.handle, nullptr,
+						"sync_import_receipts", "origin", nullptr, nullptr,
+						nullptr, nullptr, nullptr),
+		  SQLITE_OK);
+	ASSERT_EQ(db_exec(&instance->context.database, "DROP TRIGGER reject_error_import"), 0);
+	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "legacy-device", &result),
+		  0);
+	EXPECT_EQ(result.imported, 1);
+	expect_session_import_errors(instance, true);
+}
+
 TEST_F(RuntimeFacadeTest, SessionImportPreservesLocalHistoryAndRemapsDisplayAndModelHistory)
 {
 	Open();
@@ -206,10 +363,10 @@ TEST_F(RuntimeFacadeTest, SessionImportPreservesLocalHistoryAndRemapsDisplayAndM
 	sessions = nullptr;
 	EXPECT_EQ(message_count(&instance->context.database, current.id), 1);
 	EXPECT_EQ(message_count(&instance->context.database, imported), 2);
-	char *json MORPH_CLEANUP(morph_json_text_cleanup) = nullptr;
+	char *json NB_CLEANUP(cJSON_FreeTextOwner) = nullptr;
 	ASSERT_EQ(runtime_session_transcript_json_copy(instance, imported, &json), 0);
 	cJSON *root = cJSON_Parse(json);
-	morph_json_text_cleanup(&json);
+	cJSON_FreeTextOwner(&json);
 	ASSERT_NE(root, nullptr);
 	cJSON *messages = cJSON_GetObjectItem(root, "messages");
 	cJSON *display = cJSON_GetObjectItem(root, "display");
@@ -375,10 +532,10 @@ TEST_F(RuntimeFacadeTest, TranscriptReadsDetachedSessionWithoutSelectingIt)
 		"[]", 1), 0);
 	ASSERT_EQ(trace_save(&instance->context.database, current.id, 1,
 		"[]", 0), 0);
-	char *json MORPH_CLEANUP(morph_json_text_cleanup) = nullptr;
+	char *json NB_CLEANUP(cJSON_FreeTextOwner) = nullptr;
 	ASSERT_EQ(runtime_session_transcript_json_copy(instance, imported.id, &json), 0);
 	cJSON *root = cJSON_Parse(json);
-	morph_json_text_cleanup(&json);
+	cJSON_FreeTextOwner(&json);
 	ASSERT_NE(root, nullptr);
 	EXPECT_STREQ(cJSON_GetObjectItem(root, "identity")->valuestring,
 		imported.display_id);
@@ -399,7 +556,7 @@ TEST_F(RuntimeFacadeTest, TranscriptReadsDetachedSessionWithoutSelectingIt)
 	EXPECT_EQ(json, nullptr);
 	ASSERT_EQ(runtime_session_transcript_json_copy(instance, current.id, &json), 0);
 	root = cJSON_Parse(json);
-	morph_json_text_cleanup(&json);
+	cJSON_FreeTextOwner(&json);
 	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(root, "messages")), 0);
 	cJSON_Delete(root);
 }
@@ -409,7 +566,7 @@ static int facade_task_runner(const struct scheduled_task *,
 {
 	result->completed = 1;
 	result->body = strdup("task completed");
-	return result->body ? 0 : -ENOMEM;
+	return result->body ? 0 : NB_ERR_NOMEM;
 }
 
 static void facade_notification_counter(const struct notification *, void *user)
@@ -441,7 +598,7 @@ TEST_F(RuntimeFacadeTest, SessionCrudAndLookupAreConsistent)
 	ASSERT_EQ(runtime_session_select_existing(instance, first.id, &selected), 0);
 	EXPECT_EQ(selected.id, first.id);
 	EXPECT_EQ(runtime_session_delete_and_update(instance, second.id), 0);
-	EXPECT_EQ(runtime_session_find_ref(instance, "renamed", &found), -ENOENT);
+	EXPECT_EQ(runtime_session_find_ref(instance, "renamed", &found), NB_ERR_NOT_FOUND);
 }
 
 TEST_F(RuntimeFacadeTest, DetachedSessionDoesNotChangeCurrentSession)
@@ -650,7 +807,7 @@ TEST_F(RuntimeFacadeTest, ModelContextStatsMatchReplayRulesWithoutLoadingBodies)
 	ASSERT_EQ(db_exec(&instance->context.database, compaction.c_str()), 0);
 	for (int pass = 0; pass < 2; pass++) {
 		int count = 0;
-		struct model_history_item *items MORPH_CLEANUP(runtime_test_model_history_cleanup) =
+		struct model_history_item *items NB_CLEANUP(runtime_test_model_history_cleanup) =
 			model_history_list(&instance->context.database, session_id, 1, &count);
 		ASSERT_GT(count, 0);
 		ASSERT_NE(items, nullptr);
@@ -694,8 +851,9 @@ TEST_F(RuntimeFacadeTest, ModelContextStatsRejectUnrepresentableTotals)
 	insert.token_count = 1;
 	ASSERT_EQ(model_history_add(&instance->context.database, &insert, nullptr), 0);
 	int active = -7, tokens = -7, tools = -7, compactions = -7, limit = -7;
-	EXPECT_EQ(runtime_session_model_context_stats(instance, &active, &tokens,
-		&tools, &compactions, &limit), -EOVERFLOW);
+	EXPECT_EQ(runtime_session_model_context_stats(instance, &active, &tokens, &tools,
+						      &compactions, &limit),
+		  NB_ERR_RANGE);
 	EXPECT_EQ(active, -7);
 	EXPECT_EQ(tokens, -7);
 	EXPECT_EQ(tools, -7);
@@ -728,7 +886,7 @@ TEST_F(RuntimeFacadeTest, ToolRegistrationIsVisibleThroughFacade)
 	ASSERT_EQ(runtime_tool_origin(instance, before, &origin), 0);
 	EXPECT_EQ(origin, TOOL_ORIGIN_EXT);
 	EXPECT_NE(runtime_register_tool_borrow(instance, &spec), 0);
-	EXPECT_EQ(runtime_tool_find_borrow(instance, "missing", &desc), -ENOENT);
+	EXPECT_EQ(runtime_tool_find_borrow(instance, "missing", &desc), NB_ERR_NOT_FOUND);
 }
 
 TEST_F(RuntimeFacadeTest, McpRegistryReturnsCopiedStatusWithoutConnecting)
@@ -746,8 +904,8 @@ TEST_F(RuntimeFacadeTest, McpRegistryReturnsCopiedStatusWithoutConnecting)
 	ASSERT_EQ(runtime_mcp_find(instance, "offline", &status), 0);
 	EXPECT_STREQ(status.config.name, "offline");
 	EXPECT_EQ(status.connected, 0);
-	EXPECT_EQ(runtime_mcp_info(instance, 1, &status), -EINVAL);
-	EXPECT_EQ(runtime_mcp_find(instance, "missing", &status), -ENOENT);
+	EXPECT_EQ(runtime_mcp_info(instance, 1, &status), NB_ERR_INVAL);
+	EXPECT_EQ(runtime_mcp_find(instance, "missing", &status), NB_ERR_NOT_FOUND);
 }
 
 TEST_F(RuntimeFacadeTest, MediaCreditsAreAttributedToCurrentSession)
@@ -768,9 +926,9 @@ TEST_F(RuntimeFacadeTest, TaskCrudRunsEntirelyThroughFacade)
 {
 	struct session current{};
 	struct scheduled_task_input input{};
-	struct scheduled_task created MORPH_CLEANUP(scheduled_task_cleanup) = {};
-	struct scheduled_task loaded MORPH_CLEANUP(scheduled_task_cleanup) = {};
-	struct scheduled_task updated MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task created NB_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task loaded NB_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task updated NB_CLEANUP(scheduled_task_cleanup) = {};
 	struct scheduled_task *items = nullptr;
 	int count = 0;
 
@@ -809,7 +967,7 @@ TEST_F(RuntimeFacadeTest, DueTaskCreatesAndAcknowledgesNotification)
 {
 	struct session current{};
 	struct scheduled_task_input input{};
-	struct scheduled_task created MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task created NB_CLEANUP(scheduled_task_cleanup) = {};
 	struct notification *notifications = nullptr;
 	int count = 0;
 	int delivered = 0;
@@ -877,18 +1035,18 @@ TEST(RuntimeFacadeValidationTest, RejectsInvalidFacadeArguments)
 	struct credit_summary credits{};
 	struct runtime_turn_status status{};
 
-	EXPECT_EQ(runtime_session_current(nullptr, &session), -EINVAL);
-	EXPECT_EQ(runtime_session_current_id(nullptr, nullptr), -EINVAL);
-	EXPECT_EQ(runtime_session_find_ref(nullptr, "x", &session), -EINVAL);
-	EXPECT_EQ(runtime_tool_info_borrow(nullptr, 0, &tool), -EINVAL);
-	EXPECT_EQ(runtime_tool_enabled(nullptr, 0, &enabled), -EINVAL);
-	EXPECT_EQ(runtime_tool_origin(nullptr, 0, &origin), -EINVAL);
-	EXPECT_EQ(runtime_turn_status_copy(nullptr, &status), -EINVAL);
-	EXPECT_EQ(runtime_credit_summary_today_get(nullptr, &credits), -EINVAL);
-	EXPECT_EQ(runtime_task_cancel(nullptr, 1), -EINVAL);
-	EXPECT_EQ(runtime_sync_status_instance(nullptr, nullptr), -EINVAL);
-	EXPECT_EQ(runtime_permission_list(nullptr, nullptr, nullptr), -EINVAL);
-	EXPECT_EQ(runtime_permission_clear(nullptr, 0, nullptr), -EINVAL);
+	EXPECT_EQ(runtime_session_current(nullptr, &session), NB_ERR_INVAL);
+	EXPECT_EQ(runtime_session_current_id(nullptr, nullptr), NB_ERR_INVAL);
+	EXPECT_EQ(runtime_session_find_ref(nullptr, "x", &session), NB_ERR_INVAL);
+	EXPECT_EQ(runtime_tool_info_borrow(nullptr, 0, &tool), NB_ERR_INVAL);
+	EXPECT_EQ(runtime_tool_enabled(nullptr, 0, &enabled), NB_ERR_INVAL);
+	EXPECT_EQ(runtime_tool_origin(nullptr, 0, &origin), NB_ERR_INVAL);
+	EXPECT_EQ(runtime_turn_status_copy(nullptr, &status), NB_ERR_INVAL);
+	EXPECT_EQ(runtime_credit_summary_today_get(nullptr, &credits), NB_ERR_INVAL);
+	EXPECT_EQ(runtime_task_cancel(nullptr, 1), NB_ERR_INVAL);
+	EXPECT_EQ(runtime_sync_status_instance(nullptr, nullptr), NB_ERR_INVAL);
+	EXPECT_EQ(runtime_permission_list(nullptr, nullptr, nullptr), NB_ERR_INVAL);
+	EXPECT_EQ(runtime_permission_clear(nullptr, 0, nullptr), NB_ERR_INVAL);
 	runtime_turn_status_cleanup(nullptr);
 	runtime_session_list_free(nullptr);
 	runtime_mcp_list_free(nullptr);
@@ -897,14 +1055,13 @@ TEST(RuntimeFacadeValidationTest, RejectsInvalidFacadeArguments)
 TEST_F(RuntimeFacadeTest, RequestSnapshotRejectsAnOccupiedOwnerWithoutDiscardingItsData)
 {
 	Open();
-	struct history_request_snapshot snapshot MORPH_CLEANUP(
-		history_request_snapshot_cleanup) = {};
+	struct history_request_snapshot snapshot NB_CLEANUP(history_request_snapshot_cleanup) = {};
 	snapshot.turn_id = strdup("owned-turn");
 	ASSERT_NE(snapshot.turn_id, nullptr);
 	char *original = snapshot.turn_id;
 
 	EXPECT_EQ(history_store_request_snapshot(&instance->context.database, 1, &snapshot),
-		  -EEXIST);
+		  NB_ERR_EXISTS);
 	EXPECT_EQ(snapshot.turn_id, original);
 	EXPECT_STREQ(snapshot.turn_id, "owned-turn");
 }
@@ -921,7 +1078,7 @@ TEST_F(RuntimeFacadeTest, TurnStatusCopyOwnsStringsAndStepsIndependentlyOfTheRun
 	free(react->final_answer);
 	react->final_answer = strdup("original answer");
 	ASSERT_NE(react->final_answer, nullptr);
-	struct runtime_turn_status status MORPH_CLEANUP(runtime_turn_status_cleanup) = {};
+	struct runtime_turn_status status NB_CLEANUP(runtime_turn_status_cleanup) = {};
 
 	ASSERT_EQ(runtime_turn_status_copy(instance, &status), 0);
 	ASSERT_EQ(status.step_count, 1);
@@ -939,12 +1096,12 @@ TEST_F(RuntimeFacadeTest, TurnStatusCopyOwnsStringsAndStepsIndependentlyOfTheRun
 TEST_F(RuntimeFacadeTest, TurnStatusCopyRejectsOccupiedOutputWithoutDroppingTheOwner)
 {
 	Open();
-	struct runtime_turn_status status MORPH_CLEANUP(runtime_turn_status_cleanup) = {};
+	struct runtime_turn_status status NB_CLEANUP(runtime_turn_status_cleanup) = {};
 	status.final_answer = strdup("already owned");
 	ASSERT_NE(status.final_answer, nullptr);
 	char *original = status.final_answer;
 
-	EXPECT_EQ(runtime_turn_status_copy(instance, &status), -EEXIST);
+	EXPECT_EQ(runtime_turn_status_copy(instance, &status), NB_ERR_EXISTS);
 	EXPECT_EQ(status.final_answer, original);
 	EXPECT_STREQ(status.final_answer, "already owned");
 }
@@ -956,10 +1113,10 @@ TEST_F(RuntimeFacadeTest, TurnStatusCopyRejectsInvalidCountsWithoutPublishingPar
 	ASSERT_NE(react, nullptr);
 	int original_count = react->step_count;
 	react->step_count = -1;
-	struct runtime_turn_status status MORPH_CLEANUP(runtime_turn_status_cleanup) = {};
+	struct runtime_turn_status status NB_CLEANUP(runtime_turn_status_cleanup) = {};
 	int rc = runtime_turn_status_copy(instance, &status);
 	react->step_count = original_count;
-	EXPECT_EQ(rc, -EOVERFLOW);
+	EXPECT_EQ(rc, NB_ERR_RANGE);
 	EXPECT_EQ(status.steps, nullptr);
 	EXPECT_EQ(status.final_answer, nullptr);
 	EXPECT_EQ(status.outcome_reason, nullptr);
@@ -982,7 +1139,7 @@ TEST_F(RuntimeFacadeTest, RegisterToolTakeClearsTheSourceAndReleasesItWithTheRun
 {
 	Open();
 	int destroyed = 0;
-	struct tool_spec source MORPH_CLEANUP(tool_spec_cleanup) = {};
+	struct tool_spec source NB_CLEANUP(tool_spec_cleanup) = {};
 	source.origin = TOOL_ORIGIN_EXT;
 	source.name = "owned-facade-tool";
 	source.description = "Owned runtime facade test";
@@ -1013,12 +1170,12 @@ TEST_F(RuntimeFacadeTest, RegisterToolTakeFailurePreservesTheSourceOwner)
 	borrowed.exec = facade_test_tool;
 	ASSERT_EQ(runtime_register_tool_borrow(instance, &borrowed), 0);
 	int destroyed = 0;
-	struct tool_spec source MORPH_CLEANUP(tool_spec_cleanup) = borrowed;
+	struct tool_spec source NB_CLEANUP(tool_spec_cleanup) = borrowed;
 	source.user_data = new runtime_tool_payload{&destroyed};
 	source.user_data_destroy = runtime_tool_payload_destroy;
 	void *original = source.user_data;
 
-	EXPECT_EQ(runtime_register_tool_take(instance, &source), -EEXIST);
+	EXPECT_EQ(runtime_register_tool_take(instance, &source), NB_ERR_EXISTS);
 	EXPECT_EQ(source.user_data, original);
 	EXPECT_EQ(source.user_data_destroy, runtime_tool_payload_destroy);
 	EXPECT_EQ(destroyed, 0);
@@ -1037,7 +1194,7 @@ TEST_F(RuntimeFacadeTest, ProcessServiceRetainsItsBindingAfterToolsAreUnregister
 	EXPECT_EQ(instance->jobs, instance->jobs_owner.jobs);
 	ASSERT_EQ(tool_unregister(&instance->context.tools, "exec"), 0);
 	ASSERT_EQ(tool_unregister(&instance->context.tools, "background"), 0);
-	cJSON *jobs MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *jobs NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 
 	ASSERT_EQ(runtime_process_list(instance, &jobs), 0);
 	EXPECT_TRUE(cJSON_IsArray(jobs));
@@ -1083,7 +1240,7 @@ class RuntimeJobsEventTest : public RuntimeFacadeTest
 	}
 	void ExpectCount(int count)
 	{
-		cJSON *jobs MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+		cJSON *jobs NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 
 		ASSERT_EQ(runtime_process_list(instance, &jobs), 0);
 		EXPECT_EQ(cJSON_GetArraySize(jobs), count);
@@ -1093,10 +1250,10 @@ class RuntimeJobsEventTest : public RuntimeFacadeTest
 TEST_F(RuntimeJobsEventTest, WaitAndUnrelatedEventsAreForwardedWithoutPersisting)
 {
 	Start();
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
-		R"({"session_id":"proc_wait","status":"running"})");
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) =
+		cJSON_Parse(R"({"session_id":"proc_wait","status":"running"})");
 	ASSERT_NE(data, nullptr);
-	events.result = -EAGAIN;
+	events.result = NB_ERR_AGAIN;
 	Emit(MORPH_EVENT_BACKGROUND, "background.wait.begin", data);
 	Emit(MORPH_EVENT_BACKGROUND, "background.wait.end", data);
 	Emit(MORPH_EVENT_BACKGROUND, "process.started", nullptr);
@@ -1117,7 +1274,7 @@ TEST_F(RuntimeJobsEventTest, InvalidOwnerNumbersAndTypesCannotCreateRetainedJobs
 	for (const char *owner : {"null", "true", "[]", "{}", "\"1\""}) {
 		std::string json = std::string("{\"session_id\":\"proc_invalid\",\"owner_session_id\":")
 			+ owner + "}";
-		cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(json.c_str());
+		cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(json.c_str());
 
 		ASSERT_NE(data, nullptr);
 		Emit(MORPH_EVENT_BACKGROUND, "process.started", data);
@@ -1126,7 +1283,7 @@ TEST_F(RuntimeJobsEventTest, InvalidOwnerNumbersAndTypesCannotCreateRetainedJobs
 		std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(),
 		0.0, -1.0, .5, 1.5, 0x1p63, 1e100};
 	for (double owner : owners) {
-		cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 
 		ASSERT_NE(data, nullptr);
 		ASSERT_NE(cJSON_AddStringToObject(data, "session_id", "proc_invalid"), nullptr);
@@ -1137,8 +1294,8 @@ TEST_F(RuntimeJobsEventTest, InvalidOwnerNumbersAndTypesCannotCreateRetainedJobs
 		number->valuedouble = owner;
 		Emit(MORPH_EVENT_BACKGROUND, "process.completed", data);
 	}
-	cJSON *missing MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
-		R"({"session_id":"proc_invalid"})");
+	cJSON *missing NB_CLEANUP(cJSON_DeleteOwner) =
+		cJSON_Parse(R"({"session_id":"proc_invalid"})");
 	ASSERT_NE(missing, nullptr);
 	Emit(MORPH_EVENT_BACKGROUND, "process.started", missing);
 	ExpectCount(0);
@@ -1148,7 +1305,7 @@ TEST_F(RuntimeJobsEventTest, ProcessUpdatesKeepTheirOwnerAcrossCurrentSessionCha
 {
 	Start();
 	int64_t first = instance->context.current_session.id;
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(
 		R"({"session_id":"proc_retained","status":"running","stdout":"started"})");
 	ASSERT_NE(data, nullptr);
 	ASSERT_NE(cJSON_AddNumberToObject(data, "owner_session_id", static_cast<double>(first)),
@@ -1166,9 +1323,9 @@ TEST_F(RuntimeJobsEventTest, ProcessUpdatesKeepTheirOwnerAcrossCurrentSessionCha
 		static_cast<double>(second));
 	cJSON_SetValuestring(cJSON_GetObjectItem(data, "stdout"), "wrong owner overwrite");
 	Emit(MORPH_EVENT_BACKGROUND, "process.completed", data);
-	cJSON *job MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *job NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 
-	EXPECT_EQ(runtime_process_read(instance, "proc_retained", &job), -ENOENT);
+	EXPECT_EQ(runtime_process_read(instance, "proc_retained", &job), NB_ERR_NOT_FOUND);
 	EXPECT_EQ(job, nullptr);
 	ASSERT_EQ(runtime_session_select(instance, "job-owner-a", nullptr, nullptr), 0);
 	ExpectCount(1);
@@ -1182,33 +1339,33 @@ TEST_F(RuntimeJobsEventTest, ProcessUpdatesKeepTheirOwnerAcrossCurrentSessionCha
 TEST_F(RuntimeFacadeTest, CopiedHistoryAndHooksRejectOccupiedOwnersWithoutDiscardingThem)
 {
 	Open();
-	char *text MORPH_CLEANUP(morph_charp_cleanup) = strdup("caller-owned text");
-	cJSON *document MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse("{\"caller\":true}");
+	char *text NB_CLEANUP(nb_charp_cleanup) = strdup("caller-owned text");
+	cJSON *document NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse("{\"caller\":true}");
 	ASSERT_NE(text, nullptr);
 	ASSERT_NE(document, nullptr);
 	char *original_text = text;
 	cJSON *original_document = document;
 	int64_t session_id = instance->context.current_session.id;
 
-	EXPECT_EQ(runtime_session_last_answer_copy(instance, &text), -EEXIST);
-	EXPECT_EQ(runtime_session_transcript_json_copy(instance, session_id, &text), -EEXIST);
+	EXPECT_EQ(runtime_session_last_answer_copy(instance, &text), NB_ERR_EXISTS);
+	EXPECT_EQ(runtime_session_transcript_json_copy(instance, session_id, &text), NB_ERR_EXISTS);
 	EXPECT_EQ(history_store_last_answer_copy(&instance->context.database, session_id, &text),
-		  -EEXIST);
+		  NB_ERR_EXISTS);
 	EXPECT_EQ(history_store_previous_question_copy(&instance->context.database, session_id, 1,
 						       &text),
-		  -EEXIST);
+		  NB_ERR_EXISTS);
 	EXPECT_EQ(text, original_text);
 	EXPECT_STREQ(text, "caller-owned text");
-	EXPECT_EQ(runtime_session_share_current(instance, &document), -EEXIST);
-	EXPECT_EQ(runtime_process_list(instance, &document), -EEXIST);
-	EXPECT_EQ(runtime_process_read(instance, "proc_missing", &document), -EEXIST);
-	EXPECT_EQ(runtime_session_history_inspect_copy(instance, &document), -EEXIST);
-	EXPECT_EQ(runtime_session_history_entry_input_copy(instance, 1, &document), -EEXIST);
-	EXPECT_EQ(runtime_session_last_request_copy(instance, &document), -EEXIST);
-	EXPECT_EQ(runtime_hooks_snapshot_copy(instance, &document), -EEXIST);
+	EXPECT_EQ(runtime_session_share_current(instance, &document), NB_ERR_EXISTS);
+	EXPECT_EQ(runtime_process_list(instance, &document), NB_ERR_EXISTS);
+	EXPECT_EQ(runtime_process_read(instance, "proc_missing", &document), NB_ERR_EXISTS);
+	EXPECT_EQ(runtime_session_history_inspect_copy(instance, &document), NB_ERR_EXISTS);
+	EXPECT_EQ(runtime_session_history_entry_input_copy(instance, 1, &document), NB_ERR_EXISTS);
+	EXPECT_EQ(runtime_session_last_request_copy(instance, &document), NB_ERR_EXISTS);
+	EXPECT_EQ(runtime_hooks_snapshot_copy(instance, &document), NB_ERR_EXISTS);
 	EXPECT_EQ(
 		hook_manager_dispatch(&instance->context.hooks, "SessionStart", nullptr, &document),
-		-EEXIST);
+		NB_ERR_EXISTS);
 	EXPECT_EQ(document, original_document);
 	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(document, "caller")));
 }
@@ -1216,7 +1373,7 @@ TEST_F(RuntimeFacadeTest, CopiedHistoryAndHooksRejectOccupiedOwnersWithoutDiscar
 TEST_F(RuntimeFacadeTest, HistoryCopyLeavesEmptyOutputsOnDatabaseFailure)
 {
 	Open();
-	cJSON *document MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *document NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(db_exec(&instance->context.database, "DROP TABLE model_request_snapshots"), 0);
 
 	EXPECT_EQ(runtime_session_last_request_copy(instance, &document), MORPH_ERR_DB);
@@ -1231,10 +1388,10 @@ TEST_F(RuntimeFacadeTest, HooksCopyRejectsAllocationFailureWithinARowWithoutPubl
 	struct runtime_options options{};
 	options.config_path = config_path.c_str();
 	Open(&options);
-	cJSON *snapshot MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *snapshot NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_hooks_snapshot_copy(instance, &snapshot), 0);
 	ASSERT_GT(cJSON_GetArraySize(snapshot), 0);
-	morph_json_cleanup(&snapshot);
+	cJSON_DeleteOwner(&snapshot);
 	cJSON_Hooks hooks{};
 	hooks.malloc_fn = [](size_t bytes) -> void * {
 		return bytes == 65 ? nullptr : malloc(bytes);
@@ -1244,7 +1401,7 @@ TEST_F(RuntimeFacadeTest, HooksCopyRejectsAllocationFailureWithinARowWithoutPubl
 	int rc = runtime_hooks_snapshot_copy(instance, &snapshot);
 	cJSON_InitHooks(nullptr);
 
-	EXPECT_EQ(rc, -ENOMEM);
+	EXPECT_EQ(rc, NB_ERR_NOMEM);
 	EXPECT_EQ(snapshot, nullptr);
 	ASSERT_EQ(runtime_hooks_snapshot_copy(instance, &snapshot), 0);
 	EXPECT_GT(cJSON_GetArraySize(snapshot), 0);
@@ -1256,7 +1413,7 @@ TEST_F(RuntimeFacadeTest, OccupiedRuntimeAndSessionListOwnersRemainUsable)
 	struct runtime *original = instance;
 	struct runtime_options options{};
 	options.db_path = database.c_str();
-	EXPECT_EQ(runtime_open(&options, &instance), -EEXIST);
+	EXPECT_EQ(runtime_open(&options, &instance), NB_ERR_EXISTS);
 	EXPECT_EQ(instance, original);
 	struct session *sessions = nullptr;
 	int count = 0;
@@ -1264,7 +1421,8 @@ TEST_F(RuntimeFacadeTest, OccupiedRuntimeAndSessionListOwnersRemainUsable)
 	ASSERT_NE(sessions, nullptr);
 	struct session *retained = sessions;
 	int retained_count = count;
-	EXPECT_EQ(runtime_session_list_query(instance, &sessions, &count, 0, nullptr), -EEXIST);
+	EXPECT_EQ(runtime_session_list_query(instance, &sessions, &count, 0, nullptr),
+		  NB_ERR_EXISTS);
 	EXPECT_EQ(sessions, retained);
 	EXPECT_EQ(count, retained_count);
 	runtime_session_list_free(sessions);
@@ -1274,17 +1432,17 @@ TEST_F(RuntimeFacadeTest, ProcessAndTaskFailuresKeepOutputsEmptyAndPreserveError
 {
 	Open();
 	ASSERT_EQ(tool_unregister(&instance->context.tools, "tasks"), 0);
-	char *task_json MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
-	EXPECT_EQ(runtime_tasks_execute(instance, "{}", 0, &task_json), -ENOENT);
+	char *task_json NB_CLEANUP(nb_charp_cleanup) = nullptr;
+	EXPECT_EQ(runtime_tasks_execute(instance, "{}", 0, &task_json), NB_ERR_NOT_FOUND);
 	EXPECT_EQ(task_json, nullptr);
 	std::string sql = "INSERT INTO process_jobs(process_id,session_id,data_json,updated_at) "
 			  "VALUES('proc_broken'," +
 			  std::to_string(instance->context.current_session.id) + ",'not-json',0)";
 	ASSERT_EQ(db_exec(&instance->context.database, sql.c_str()), 0);
-	cJSON *document MORPH_CLEANUP(morph_json_cleanup) = nullptr;
-	EXPECT_EQ(runtime_process_list(instance, &document), MORPH_ERR_PARSE);
+	cJSON *document NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
+	EXPECT_EQ(runtime_process_list(instance, &document), NB_ERR_PARSE);
 	EXPECT_EQ(document, nullptr);
-	EXPECT_EQ(runtime_process_read(instance, "proc_broken", &document), MORPH_ERR_PARSE);
+	EXPECT_EQ(runtime_process_read(instance, "proc_broken", &document), NB_ERR_PARSE);
 	EXPECT_EQ(document, nullptr);
 }
 
@@ -1383,8 +1541,9 @@ TEST_F(RuntimeFacadeTest, DeprecatedProcessDisableStillRejectsBackgroundExecutio
 	options.enable_exec = 1;
 	Open(&options);
 	EXPECT_TRUE(tool_is_disabled(&instance->context.tools, "background"));
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
-	EXPECT_EQ(tool_exec(&instance->context.tools, "background", R"({"action":"list"})",
-			    &result), -EPERM);
+	EXPECT_EQ(
+		tool_exec(&instance->context.tools, "background", R"({"action":"list"})", &result),
+		NB_ERR_NOT_PERMITTED);
 }

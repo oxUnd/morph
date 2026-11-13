@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/jobs.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
@@ -8,7 +9,7 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/widgets/feed_block.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "sapi/cli/widgets/list.h"
 #include "sapi/cli/models/jobs.h"
 #include "sapi/cli/widgets/jobs.h"
@@ -24,7 +25,7 @@ struct cli_jobs_view {
 	struct morph_tui_frame frame;
 	struct morph_tui_widget_list_state selection;
 	struct morph_tui_widget_text_layout lines;
-	morph_buf_t document;
+	nb_buf document;
 	int detail;
 	int64_t refreshed;
 	size_t scroll;
@@ -41,7 +42,7 @@ static int cli_jobs_refresh(struct cli_jobs_view *view)
 	char *selected_id = selected ? strdup(cli_jobs_job_string(selected, "session_id")) : NULL;
 	if (selected && !selected_id) {
 		cJSON_Delete(jobs);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	cJSON_Delete(view->jobs);
 	view->jobs = jobs;
@@ -73,35 +74,35 @@ static int cli_jobs_refresh(struct cli_jobs_view *view)
 
 static int cli_jobs_document(struct cli_jobs_view *view)
 {
-	morph_buf_reset(&view->document);
-	(void)morph_buf_printf(&view->document, "%s\n%s\nDirectory: %s\nStatus: %s",
-			       cli_jobs_job_string(view->details, "description"),
-			       cli_jobs_job_string(view->details, "command"),
-			       cli_jobs_job_string(view->details, "workdir"),
-			       cli_jobs_job_string(view->details, "status"));
+	nb_buf_clear(&view->document);
+	(void)nb_buf_printf(&view->document, "%s\n%s\nDirectory: %s\nStatus: %s",
+			    cli_jobs_job_string(view->details, "description"),
+			    cli_jobs_job_string(view->details, "command"),
+			    cli_jobs_job_string(view->details, "workdir"),
+			    cli_jobs_job_string(view->details, "status"));
 	const cJSON *exit_code = cJSON_GetObjectItemCaseSensitive(view->details, "exit_code");
 	if (cJSON_IsNumber(exit_code))
-		(void)morph_buf_printf(&view->document, " · exit %d", exit_code->valueint);
-	(void)morph_buf_printf(&view->document, "\n\n%s%s",
-			       cli_jobs_job_string(view->details, "stdout"),
-			       cli_jobs_job_string(view->details, "stderr"));
+		(void)nb_buf_printf(&view->document, " · exit %d", exit_code->valueint);
+	(void)nb_buf_printf(&view->document, "\n\n%s%s",
+			    cli_jobs_job_string(view->details, "stdout"),
+			    cli_jobs_job_string(view->details, "stderr"));
 	if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(view->details, "stdout_truncated")) ||
 	    cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(view->details, "stderr_truncated")))
-		(void)morph_buf_puts(&view->document,
-				     "\n[Output truncated; retained window shown]");
-	return view->document.failed;
+		(void)nb_buf_append_cstr(&view->document,
+					 "\n[Output truncated; retained window shown]");
+	return nb_buf_status(&view->document);
 }
 
 static int cli_jobs_draw(void *data, const struct morph_tui_screen *screen)
 {
 	struct cli_jobs_view *view = data;
 	int columns = screen->area.width, rows = screen->area.height;
-	morph_buf_t frame = {0}, line = {0};
-	int rc = morph_buf_init(&frame, BUFSIZ);
+	nb_buf frame = {0}, line = {0};
+	int rc = (nb_buf_init(&frame), nb_buf_reserve(&frame, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (!rc)
-		rc = morph_buf_init(&line, BUFSIZ);
+		rc = (nb_buf_init(&line), nb_buf_reserve(&line, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (rc) {
-		morph_buf_cleanup(&frame);
+		nb_buf_cleanup(&frame);
 		return rc;
 	}
 	int page = rows > 5 ? rows - 5 : 1;
@@ -110,77 +111,81 @@ static int cli_jobs_draw(void *data, const struct morph_tui_screen *screen)
 	if (view->detail && view->details) {
 		rc = cli_jobs_document(view);
 		if (rc) {
-			morph_buf_cleanup(&frame);
-			morph_buf_cleanup(&line);
+			nb_buf_cleanup(&frame);
+			nb_buf_cleanup(&line);
 			return rc;
 		}
-		char *safe = utf8_terminal_sanitize_dup(morph_buf_cstr_borrow(&view->document),
-							view->document.len,
-							UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+		char *safe = morph_terminal_sanitize_dup(nb_buf_cstr(&view->document),
+							 view->document.len,
+							 MORPH_TERMINAL_TEXT_MULTILINE, NULL);
 		if (!safe)
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 		if (!rc) {
-			morph_buf_reset(&view->document);
-			rc = morph_buf_puts(&view->document, safe);
+			nb_buf_clear(&view->document);
+			rc = (nb_buf_append_cstr(&view->document, safe) ? 0 : NB_ERR_NOMEM);
 		}
 		free(safe);
 		if (!rc)
 			rc = morph_tui_widget_text_layout_wrap_borrow(
-				&view->lines, morph_buf_cstr_borrow(&view->document),
+				&view->lines, nb_buf_cstr(&view->document),
 				(size_t)(columns > 4 ? columns - 4 : 1));
-		view->scroll = morph_tui_widget_scroll_update(view->scroll, view->lines.lines.nelts,
+		view->scroll = morph_tui_widget_scroll_update(view->scroll, view->lines.lines.len,
 							      (size_t)page, 0);
 	}
 	for (int row = 0; row < rows && !rc; row++) {
-		morph_buf_reset(&line);
+		nb_buf_clear(&line);
 		const char *style = "";
 		if (!row) {
-			(void)morph_buf_puts(&line, view->detail ? "  morph / jobs / output"
-								 : "  morph / jobs");
+			(void)nb_buf_append_cstr(&line, view->detail ? "  morph / jobs / output"
+								     : "  morph / jobs");
 			style = ANSI_BOLD;
 		} else if (row >= 2 && row < page + 2) {
 			if (view->detail) {
-				struct morph_tui_widget_text_line *text = morph_array_borrow(
+				struct morph_tui_widget_text_line *text = nb_vec_at(
 					&view->lines.lines, view->scroll + (size_t)(row - 2));
 				if (text) {
-					(void)morph_buf_puts(&line, "  ");
-					(void)morph_buf_append(&line,
-							       view->document.data + text->offset,
-							       text->length);
+					(void)nb_buf_append_cstr(&line, "  ");
+					(void)nb_buf_append(&line,
+							    view->document.ptr + text->offset,
+							    text->length);
 				}
 			} else {
 				size_t index = view->selection.first + (size_t)(row - 2);
 				cJSON *job = cJSON_GetArrayItem(view->jobs, (int)index);
 				if (job) {
-					(void)morph_buf_printf(&line, "%s %.8s  %-11s  %s",
-							       index == view->selection.index ? ">" : " ",
-							       cli_jobs_job_short_id(job),
-							       cli_jobs_job_string(job, "status"),
-							       cli_jobs_job_string(job, "command"));
+					(void)nb_buf_printf(&line, "%s %.8s  %-11s  %s",
+							    index == view->selection.index ? ">"
+											   : " ",
+							    cli_jobs_job_short_id(job),
+							    cli_jobs_job_string(job, "status"),
+							    cli_jobs_job_string(job, "command"));
 					if (index == view->selection.index)
 						style = ANSI_CYAN ANSI_BOLD;
 				} else if (!cJSON_GetArraySize(view->jobs) && row == 2)
-					(void)morph_buf_puts(
+					(void)nb_buf_append_cstr(
 						&line, "  No background jobs in this session.");
 			}
 		} else if (row == rows - 2 && view->message)
-			(void)morph_buf_printf(&line, "  %s", view->message);
+			(void)nb_buf_printf(&line, "  %s", view->message);
 		else if (row == rows - 1)
-			(void)morph_buf_puts(
+			(void)nb_buf_append_cstr(
 				&line, "  Up/Down · Enter output · k stop · r refresh · Esc back");
 		char compact[BUFSIZ], clipped[BUFSIZ];
-		cli_list_compact_text(compact, sizeof(compact), morph_buf_cstr_borrow(&line));
-		utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), compact,
-						   (size_t)(columns > 1 ? columns - 1 : 0), 0);
-		rc = morph_buf_printf(&frame, "%s%s%s\n",
-				      cli_output_color_enabled(view->ctx) ? style : "", clipped,
-				      cli_output_color_enabled(view->ctx) ? ANSI_RESET : "");
+		cli_list_compact_text(compact, sizeof(compact), nb_buf_cstr(&line));
+		morph_terminal_copy_ellipsized_display_width(
+			clipped, sizeof(clipped), compact, (size_t)(columns > 1 ? columns - 1 : 0),
+			0);
+		rc = (nb_buf_printf(&frame, "%s%s%s\n",
+				    cli_output_color_enabled(view->ctx) ? style : "", clipped,
+				    cli_output_color_enabled(view->ctx) ? ANSI_RESET : "")
+			      ? 0
+			      : NB_ERR_NOMEM);
 	}
 	if (!rc)
 		rc = morph_tui_frame_present(&view->frame, stdout, columns, rows,
-					     morph_buf_cstr_borrow(&frame));
-	morph_buf_cleanup(&frame);
-	morph_buf_cleanup(&line);
+					     nb_buf_cstr(&frame));
+	nb_buf_cleanup(&frame);
+	nb_buf_cleanup(&line);
 	return rc;
 }
 
@@ -209,7 +214,9 @@ static int cli_jobs_update(void *data, const struct morph_tui_event *event)
 		if (job) {
 			int rc = runtime_process_stop(view->ctx->runtime,
 						      cli_jobs_job_string(job, "session_id"));
-			view->message = rc ? morph_strerror(rc) : "Stop requested";
+			view->message =
+				rc ? nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc)
+				   : "Stop requested";
 		}
 	} else if (key == '\r' || key == '\n') {
 		view->detail = 1;
@@ -226,7 +233,7 @@ static int cli_jobs_update(void *data, const struct morph_tui_event *event)
 		if (key == MORPH_TUI_KEY_HOME)
 			view->scroll = 0;
 		if (key == MORPH_TUI_KEY_END)
-			view->scroll = view->lines.lines.nelts;
+			view->scroll = view->lines.lines.len;
 	} else {
 		(void)morph_tui_widget_list_state_update(&view->selection, key);
 	}
@@ -238,7 +245,7 @@ static void cli_jobs_view_cleanup(struct cli_jobs_view *view)
 {
 	cJSON_Delete(view->jobs);
 	cJSON_Delete(view->details);
-	morph_buf_cleanup(&view->document);
+	nb_buf_cleanup(&view->document);
 	morph_tui_frame_cleanup(&view->frame);
 	morph_tui_widget_text_layout_cleanup(&view->lines);
 }
@@ -286,8 +293,8 @@ static int cli_jobs_controller_sync(struct cli_jobs_controller *page, int focus)
 	if (!rc && view->detail && view->details) {
 		rc = cli_jobs_document(view);
 		if (!rc)
-			rc = morph_tui_widget_text_view_set_text_copy(
-				page->document, morph_buf_cstr_borrow(&view->document));
+			rc = morph_tui_widget_text_view_set_text_copy(page->document,
+								      nb_buf_cstr(&view->document));
 	}
 	if (!rc && focus)
 		rc = morph_tui_view_focus(view->detail ? page->document : page->list);
@@ -358,7 +365,9 @@ static int cli_jobs_controller_event(struct morph_tui_view_controller *controlle
 				int rc = runtime_process_stop(
 					view->ctx->runtime, cli_jobs_job_string(job, "session_id"));
 
-				view->message = rc ? morph_strerror(rc) : "Stop requested";
+				view->message = rc ? nb_err_str(morph_error_descriptions(),
+								MORPH_ERROR_COUNT, rc)
+						   : "Stop requested";
 			}
 		} else if (event->key != 'r')
 			return 0;
@@ -401,7 +410,8 @@ int cli_jobs_view(struct cli_application *ctx, const char *id)
 	struct cli_jobs_view view = {.ctx = ctx};
 	struct morph_tui_screen screen = {0};
 	const struct morph_tui_screen_ops ops = {.draw = cli_jobs_draw, .update = cli_jobs_update};
-	int rc = morph_buf_init(&view.document, BUFSIZ);
+	int rc = (nb_buf_init(&view.document),
+		  nb_buf_reserve(&view.document, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (!rc)
 		rc = cli_jobs_refresh(&view);
 	if (!rc && id) {
@@ -420,7 +430,7 @@ int cli_jobs_view(struct cli_application *ctx, const char *id)
 				index++;
 			}
 			if (!view.detail)
-				rc = -ENOENT;
+				rc = NB_ERR_NOT_FOUND;
 			else
 				rc = cli_jobs_refresh(&view);
 		}
@@ -457,14 +467,14 @@ int cli_jobs_view(struct cli_application *ctx, const char *id)
 	if (!rc)
 		rc = morph_tui_screen_run(&screen, &ops, &view);
 	int leave_rc = morph_tui_screen_close(&screen);
-	if (rc == -EINTR)
+	if (rc == NB_ERR_INTERRUPTED)
 		rc = 0;
 	if (!rc)
 		rc = leave_rc;
-	morph_signal_flag_set(&ctx->interrupted, 0);
+	nb_atomic_int_store(&ctx->interrupted, 0);
 	cJSON_Delete(view.jobs);
 	cJSON_Delete(view.details);
-	morph_buf_cleanup(&view.document);
+	nb_buf_cleanup(&view.document);
 	morph_tui_frame_cleanup(&view.frame);
 	morph_tui_widget_text_layout_cleanup(&view.lines);
 	return rc;

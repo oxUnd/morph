@@ -16,8 +16,8 @@ extern "C" {
 #include "runtime/runtime.h"
 #include "permission/context.h"
 #include "session.h"
-#include "util/json.h"
-#include "util/signals.h"
+#include "cJSON.h"
+#include "nb/signal.h"
 }
 
 #include <arpa/inet.h>
@@ -32,7 +32,7 @@ extern "C" {
 #include <future>
 #include <memory>
 extern "C" {
-#include "util/error.h"
+#include "errors.h"
 }
 #include <filesystem>
 #include <fstream>
@@ -127,25 +127,25 @@ TEST_F(AgentControlTest, ReplacesLegacyToolsAndUsesCodexSchemas)
 {
 	EXPECT_EQ(tool_borrow(&tools, "delegate"), nullptr);
 	EXPECT_EQ(call("spawn_agent", R"({"task_name":"a","message":"task","fork_context":true})"),
-		  -EINVAL);
+		  NB_ERR_INVAL);
 	EXPECT_EQ(call("spawn_agent", R"({"task_name":"a","message":"task","fork_turns":3})"),
-		  -EINVAL);
+		  NB_ERR_INVAL);
 	EXPECT_EQ(
 		call("spawn_agent",
 		     R"({"task_name":"a","message":"task","fork_turns":"none","reasoning_effort":""})"),
-		-EINVAL);
+		NB_ERR_INVAL);
 
 	EXPECT_EQ(tool_borrow(&tools, "fanout"), nullptr);
 	EXPECT_EQ(tool_borrow(&tools, "agent_status"), nullptr);
 	for (const char *name : {"spawn_agent", "send_message", "followup_task", "interrupt_agent",
 				 "list_agents", "read_agent", "wait_agent"})
 		EXPECT_NE(tool_borrow(&tools, name), nullptr);
-	EXPECT_EQ(call("spawn_agent", R"({"task_name":"../bad","message":"task"})"), -EINVAL);
+	EXPECT_EQ(call("spawn_agent", R"({"task_name":"../bad","message":"task"})"), NB_ERR_INVAL);
 	EXPECT_EQ(
 		call("spawn_agent", R"({"task_name":"a","message":"task","fork_turns":"summary"})"),
-		-EINVAL);
+		NB_ERR_INVAL);
 	EXPECT_EQ(call("spawn_agent", R"({"task_name":"a","message":"task","model":"other"})"),
-		  -EINVAL);
+		  NB_ERR_INVAL);
 }
 
 TEST_F(AgentControlTest, SpawnsIndependentClientsAndDeliversAttributedResult)
@@ -185,7 +185,7 @@ TEST_F(AgentControlTest, CoordinationOnlyParentCannotInvestigateUntilChildEviden
 		return tool_result_success_text_copy(result, "read");
 	};
 	ASSERT_EQ(tool_register_borrow(&tools, &spec), 0);
-	cJSON *reply MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *reply NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(call("spawn_agent", R"({"task_name":"reader","message":"Review containers only",
 		"fork_turns":"none","assignment":{"scope":"containers","parent_task":"",
 		"expected_evidence":"file:line and repro","stop_condition":"report confirmed findings"}})",
@@ -196,10 +196,10 @@ TEST_F(AgentControlTest, CoordinationOnlyParentCannotInvestigateUntilChildEviden
 	EXPECT_FALSE(agent_control_tool_allowed(control, "/root", "investigate"));
 	EXPECT_TRUE(agent_control_tool_allowed(control, "/root/reader", "investigate"));
 	EXPECT_TRUE(agent_control_tool_allowed(control, "/root", "wait_agent"));
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	runtime.agents = control;
 	result.runtime = &runtime;
-	EXPECT_EQ(tool_exec(&tools, "investigate", "{}", &result), -EAGAIN);
+	EXPECT_EQ(tool_exec(&tools, "investigate", "{}", &result), NB_ERR_AGAIN);
 	EXPECT_EQ(executed, 0);
 	ASSERT_NE(result.envelope, nullptr);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
@@ -208,7 +208,7 @@ TEST_F(AgentControlTest, CoordinationOnlyParentCannotInvestigateUntilChildEviden
 	parent.agents = control;
 	parent.tools = &tools;
 	strcpy(parent.agent_id, "/root");
-	morph_array_t descriptors MORPH_CLEANUP(react_tool_descriptors_cleanup) = {};
+	nb_vec descriptors NB_CLEANUP(react_tool_descriptors_cleanup) = {};
 	struct tool_desc *visible = nullptr;
 	int count = 0;
 	ASSERT_EQ(react_prepare_active_tools(&parent, &descriptors, &visible, &count), 0);
@@ -217,11 +217,10 @@ TEST_F(AgentControlTest, CoordinationOnlyParentCannotInvestigateUntilChildEviden
 	struct chat_message historical{};
 	historical.role = const_cast<char *>("user");
 	historical.content = const_cast<char *>("HISTORY_BEFORE_ASSIGNMENT_STATE");
-	struct react_request_messages request MORPH_CLEANUP(react_request_messages_cleanup) = {};
+	struct react_request_messages request NB_CLEANUP(react_request_messages_cleanup) = {};
 	ASSERT_EQ(react_request_messages_create(&parent, model, "base", &historical, 1, &request), 0);
-	ASSERT_EQ(request.messages.nelts, 2u);
-	auto *checkpoint = static_cast<struct chat_message *>(
-		morph_array_borrow(&request.messages, 1));
+	ASSERT_EQ(request.messages.len, 2u);
+	auto *checkpoint = static_cast<struct chat_message *>(nb_vec_at(&request.messages, 1));
 	EXPECT_STREQ(checkpoint->role, "system");
 	EXPECT_NE(strstr(checkpoint->content, "containers"), nullptr);
 	EXPECT_NE(strstr(checkpoint->content, "wait_for_findings_or_blockers"), nullptr);
@@ -283,7 +282,8 @@ TEST_F(AgentControlTest, IndependentParentWorkAndLegacyAssignmentsKeepToolsAvail
 	EXPECT_TRUE(agent_control_tool_allowed(control, "/root", "exec"));
 	EXPECT_EQ(call("followup_task", R"({"target":"reader","message":"steer",
 		"assignment":{"scope":"new","parent_task":"","expected_evidence":"repro",
-		"stop_condition":"report"}})"), -EBUSY);
+		"stop_condition":"report"}})"),
+		  NB_ERR_BUSY);
 	release.set_value();
 	agent_control_join(control);
 }
@@ -295,23 +295,23 @@ TEST_F(AgentControlTest, AssignmentSurvivesRestoreAndIsReplacedOrClearedByFollow
 		"expected_evidence":"repro","stop_condition":"report"}})"), 0);
 	agent_control_join(control);
 	reopen();
-	morph_buf_t state MORPH_CLEANUP(morph_buf_cleanup) = {};
-	ASSERT_EQ(morph_buf_init(&state, 256), 0);
+	nb_buf state NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ((nb_buf_init(&state), nb_buf_reserve(&state, 256) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(agent_control_checkpoint(control, "/root/reader", &state), 0);
-	EXPECT_NE(strstr(morph_buf_cstr_borrow(&state), "\"scope\":\"text\""), nullptr);
+	EXPECT_NE(strstr(nb_buf_cstr(&state), "\"scope\":\"text\""), nullptr);
 	ASSERT_EQ(call("followup_task", R"({"target":"reader","message":"new gap",
 		"assignment":{"scope":"containers","parent_task":"review build",
 		"expected_evidence":"test","stop_condition":"one finding"}})"), 0);
 	agent_control_join(control);
 	reopen();
-	morph_buf_reset(&state);
+	nb_buf_clear(&state);
 	ASSERT_EQ(agent_control_checkpoint(control, "/root/reader", &state), 0);
-	EXPECT_NE(strstr(morph_buf_cstr_borrow(&state), "containers"), nullptr);
-	EXPECT_EQ(strstr(morph_buf_cstr_borrow(&state), "\"scope\":\"text\""), nullptr);
+	EXPECT_NE(strstr(nb_buf_cstr(&state), "containers"), nullptr);
+	EXPECT_EQ(strstr(nb_buf_cstr(&state), "\"scope\":\"text\""), nullptr);
 	ASSERT_EQ(call("followup_task", R"({"target":"reader","message":"legacy gap"})"), 0);
 	agent_control_join(control);
 	reopen();
-	morph_buf_reset(&state);
+	nb_buf_clear(&state);
 	ASSERT_EQ(agent_control_checkpoint(control, "/root/reader", &state), 0);
 	EXPECT_EQ(state.len, 0u);
 }
@@ -325,7 +325,7 @@ TEST_F(AgentControlTest, InvalidAssignmentDoesNotStartAWorker)
 		std::string args =
 			std::string(R"({"task_name":"invalid","message":"review","assignment":)") +
 			assignment + "}";
-		EXPECT_EQ(call("spawn_agent", args.c_str()), -EINVAL);
+		EXPECT_EQ(call("spawn_agent", args.c_str()), NB_ERR_INVAL);
 	}
 	EXPECT_TRUE(server.snapshot().empty());
 	EXPECT_EQ(agent_control_active(control, session.id), 0);
@@ -375,7 +375,8 @@ TEST_F(AgentControlTest, IdleIdentitiesDoNotConsumeExecutionCapacity)
 	agent_control_join(control);
 	ASSERT_EQ(call("spawn_agent", R"({"task_name":"second","message":"task"})"), 0);
 	agent_control_join(control);
-	EXPECT_EQ(call("spawn_agent", R"({"task_name":"reader","message":"duplicate"})"), -EEXIST);
+	EXPECT_EQ(call("spawn_agent", R"({"task_name":"reader","message":"duplicate"})"),
+		  NB_ERR_EXISTS);
 	EXPECT_EQ(call("followup_task", R"({"target":"reader","message":"reuse"})"), 0);
 	agent_control_join(control);
 }
@@ -405,31 +406,31 @@ TEST_F(AgentControlTest, ForksHistoryWithoutPendingToolExchange)
 
 TEST_F(AgentControlTest, ExplicitAndProactiveInstructionsAreIndependentOfReasoning)
 {
-	morph_buf_t prompt{};
-	ASSERT_EQ(morph_buf_init(&prompt, 1024), 0);
+	nb_buf prompt{};
+	ASSERT_EQ((nb_buf_init(&prompt), nb_buf_reserve(&prompt, 1024) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(agent_control_prompt(control, "/root", &prompt), 0);
-	EXPECT_NE(strstr(morph_buf_cstr_borrow(&prompt), "Proactive multi-agent"), nullptr);
-	morph_buf_cleanup(&prompt);
+	EXPECT_NE(strstr(nb_buf_cstr(&prompt), "Proactive multi-agent"), nullptr);
+	nb_buf_cleanup(&prompt);
 	strcpy(config.multi_agent_mode, "explicit");
 	reopen();
-	ASSERT_EQ(morph_buf_init(&prompt, 1024), 0);
+	ASSERT_EQ((nb_buf_init(&prompt), nb_buf_reserve(&prompt, 1024) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(agent_control_prompt(control, "/root", &prompt), 0);
-	EXPECT_NE(strstr(morph_buf_cstr_borrow(&prompt), "Only spawn agents"), nullptr);
-	morph_buf_cleanup(&prompt);
+	EXPECT_NE(strstr(nb_buf_cstr(&prompt), "Only spawn agents"), nullptr);
+	nb_buf_cleanup(&prompt);
 }
 
 TEST_F(AgentControlTest, WaitReturnsForCompletedScopeAndCancellationIsObserved)
 {
-	cJSON *result MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(call("wait_agent", R"({"timeout_ms":30000})", &result), 0);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result, "reason")),
 		     "no_active_agents");
 	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(result, "timed_out")));
-	morph_cancel_token token{};
-	morph_cancel_token_cancel(&token);
+	nb_cancel token{};
+	nb_cancel_request(&token);
 	runtime.http.cancel_token = &token;
-	EXPECT_EQ(call("wait_agent", R"({"timeout_ms":30000})"), -ECANCELED);
-	EXPECT_EQ(call("wait_agent", R"({"timeout_ms":1.5})"), -EINVAL);
+	EXPECT_EQ(call("wait_agent", R"({"timeout_ms":30000})"), NB_ERR_CANCELLED);
+	EXPECT_EQ(call("wait_agent", R"({"timeout_ms":1.5})"), NB_ERR_INVAL);
 }
 
 TEST_F(AgentControlTest, CompactStatusPreservesRunningAgentsAfterLargeCompletedReports)
@@ -452,7 +453,7 @@ TEST_F(AgentControlTest, CompactStatusPreservesRunningAgentsAfterLargeCompletedR
 		     R"({"task_name":"running","message":"hold this agent","fork_turns":"none"})"),
 		0);
 	ASSERT_TRUE(server.await_requests(5));
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
 	result.runtime = &runtime;
 	ASSERT_EQ(tool_exec(&tools, "list_agents", "{}", &result), 0);
@@ -460,12 +461,12 @@ TEST_F(AgentControlTest, CompactStatusPreservesRunningAgentsAfterLargeCompletedR
 		react_context_create(&tools, tokenizer, nullptr, nullptr), react_context_destroy);
 	ASSERT_NE(react, nullptr);
 	react->history_tool_result_tokens = 2048;
-	char *prepared MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	char *prepared NB_CLEANUP(nb_charp_cleanup) = nullptr;
 	int truncated = 0;
-	ASSERT_EQ(agent_history_tool_content_copy(react.get(), result.text.data, &prepared,
+	ASSERT_EQ(agent_history_tool_content_copy(react.get(), result.text.ptr, &prepared,
 						  &truncated),
 		  0);
-	cJSON *observation MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(prepared);
+	cJSON *observation NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(prepared);
 	ASSERT_NE(observation, nullptr);
 	const cJSON *data = cJSON_GetObjectItem(observation, "data");
 	const cJSON *agents = cJSON_GetObjectItem(data, "agents");
@@ -486,7 +487,7 @@ TEST_F(AgentControlTest, CompactStatusPreservesRunningAgentsAfterLargeCompletedR
 	for (int page = 0; page < 20; page++) {
 		std::string args = "{\"target\":\"done_0\",\"max_bytes\":4096,\"offset\":" +
 				   std::to_string(offset) + "}";
-		cJSON *part MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+		cJSON *part NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 		ASSERT_EQ(call("read_agent", args.c_str(), &part), 0);
 		reconstructed += cJSON_GetStringValue(cJSON_GetObjectItem(part, "result"));
 		if (cJSON_IsFalse(cJSON_GetObjectItem(part, "has_more")))
@@ -497,8 +498,8 @@ TEST_F(AgentControlTest, CompactStatusPreservesRunningAgentsAfterLargeCompletedR
 		offset = next;
 	}
 	EXPECT_EQ(reconstructed, report);
-	EXPECT_EQ(call("read_agent", R"({"target":"done_0","offset":-1})"), -EINVAL);
-	EXPECT_EQ(call("read_agent", R"({"target":"done_0","max_bytes":1})"), -EINVAL);
+	EXPECT_EQ(call("read_agent", R"({"target":"done_0","offset":-1})"), NB_ERR_INVAL);
+	EXPECT_EQ(call("read_agent", R"({"target":"done_0","max_bytes":1})"), NB_ERR_INVAL);
 }
 
 TEST_F(AgentControlTest, StatusPagingAndChildDefaultsKeepEveryIdentityReachable)
@@ -513,7 +514,7 @@ TEST_F(AgentControlTest, StatusPagingAndChildDefaultsKeepEveryIdentityReachable)
 	int offset = 0;
 	for (int page = 0; page < 12; page++) {
 		const std::string args = "{\"limit\":3,\"offset\":" + std::to_string(offset) + "}";
-		cJSON *result MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+		cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 		ASSERT_EQ(call("list_agents", args.c_str(), &result), 0);
 		const cJSON *agents = cJSON_GetObjectItem(result, "agents");
 		EXPECT_LE(cJSON_GetArraySize(agents), 3);
@@ -538,7 +539,7 @@ TEST_F(AgentControlTest, StatusPagingAndChildDefaultsKeepEveryIdentityReachable)
 		       R"({"task_name":"child","message":"nested","fork_turns":"none"})"),
 		  0);
 	agent_control_join(control);
-	cJSON *result MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(call("list_agents", "{}", &result), 0);
 	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result, "total")), 2);
 	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(result, "agents")), 2);
@@ -570,7 +571,7 @@ TEST_F(AgentControlTest, FinishRequestClosesOnlyItsSubtreeAndInterruptCascades)
 	EXPECT_EQ(agent_control_finish_requested(control, "/root/a/child"), 1);
 	EXPECT_EQ(agent_control_finish_requested(control, "/root/b"), 0);
 	EXPECT_EQ(call("spawn_agent", R"({"task_name":"late","message":"repeat audit"})"),
-		  -ESHUTDOWN);
+		  NB_ERR_CLOSED);
 	runtime.agent_id = "/root/b";
 	ASSERT_EQ(
 		call("spawn_agent",
@@ -588,7 +589,7 @@ TEST_F(AgentControlTest, FinishRequestClosesOnlyItsSubtreeAndInterruptCascades)
 	EXPECT_EQ(agent_control_descendants_active(control, "/root"), 0);
 	ASSERT_EQ(agent_control_request_finish(control, "/root"), 0);
 	EXPECT_EQ(call("spawn_agent", R"({"task_name":"closed","message":"new work"})"),
-		  -ESHUTDOWN);
+		  NB_ERR_CLOSED);
 	agent_control_begin_turn(control, nullptr);
 	EXPECT_EQ(
 		call("spawn_agent",
@@ -618,7 +619,7 @@ TEST_F(AgentControlTest, InterruptionPreservesVisiblePartialEvidenceWithoutReaso
 	ASSERT_EQ(agent_control_list_copy(control, session.id, &agents, &count), 0);
 	ASSERT_EQ(count, 1);
 	EXPECT_EQ(agents[0].status, AGENT_CANCELLED);
-	EXPECT_EQ(agents[0].error_code, -ECANCELED);
+	EXPECT_EQ(agents[0].error_code, NB_ERR_CANCELLED);
 	ASSERT_NE(agents[0].result, nullptr);
 	EXPECT_NE(strstr(agents[0].result, "Agent did not complete"), nullptr);
 	EXPECT_NE(strstr(agents[0].result, "Confirmed visible repro evidence"), nullptr);
@@ -645,23 +646,25 @@ TEST_F(AgentControlTest, TaskDeadlineIsInheritedAndEndsLongWaitWithSummaryReason
 		call("spawn_agent",
 		     R"({"task_name":"child","message":"specific remaining gap","fork_turns":"none"})"),
 		0);
-	morph_buf_t parent_prompt MORPH_CLEANUP(morph_buf_cleanup) = {};
-	morph_buf_t child_prompt MORPH_CLEANUP(morph_buf_cleanup) = {};
-	ASSERT_EQ(morph_buf_init(&parent_prompt, 256), 0);
-	ASSERT_EQ(morph_buf_init(&child_prompt, 256), 0);
+	nb_buf parent_prompt NB_CLEANUP(nb_buf_cleanup) = {};
+	nb_buf child_prompt NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ((nb_buf_init(&parent_prompt),
+		   nb_buf_reserve(&parent_prompt, 256) ? 0 : NB_ERR_NOMEM),
+		  0);
+	ASSERT_EQ(
+		(nb_buf_init(&child_prompt), nb_buf_reserve(&child_prompt, 256) ? 0 : NB_ERR_NOMEM),
+		0);
 	ASSERT_EQ(agent_control_prompt(control, "/root/parent", &parent_prompt), 0);
 	ASSERT_EQ(agent_control_prompt(control, "/root/parent/child", &child_prompt), 0);
-	const char *parent_deadline =
-		strstr(morph_buf_cstr_borrow(&parent_prompt), "<task_deadline>");
-	const char *child_deadline =
-		strstr(morph_buf_cstr_borrow(&child_prompt), "<task_deadline>");
+	const char *parent_deadline = strstr(nb_buf_cstr(&parent_prompt), "<task_deadline>");
+	const char *child_deadline = strstr(nb_buf_cstr(&child_prompt), "<task_deadline>");
 	ASSERT_NE(parent_deadline, nullptr);
 	ASSERT_NE(child_deadline, nullptr);
 	EXPECT_LE(strtoll(child_deadline + strlen("<task_deadline>"), nullptr, 10),
 		  strtoll(parent_deadline + strlen("<task_deadline>"), nullptr, 10));
 	runtime.agent_id = "/root/parent/child";
 	runtime.agent_depth = 2;
-	cJSON *result MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(call("wait_agent", R"({"timeout_ms":30000})", &result), 0);
 	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(result, "timed_out")));
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result, "reason")),
@@ -679,16 +682,16 @@ TEST_F(AgentControlTest, UltraEffortSelectsProactiveModeAsInCodex)
 	strcpy(config.multi_agent_mode, "auto");
 	strcpy(model->extra_body_json, R"({"reasoning_effort":"ultra"})");
 	reopen();
-	morph_buf_t prompt{};
-	ASSERT_EQ(morph_buf_init(&prompt, 1024), 0);
+	nb_buf prompt{};
+	ASSERT_EQ((nb_buf_init(&prompt), nb_buf_reserve(&prompt, 1024) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(agent_control_prompt(control, "/root", &prompt), 0);
-	EXPECT_NE(strstr(morph_buf_cstr_borrow(&prompt), "Proactive multi-agent"), nullptr);
-	morph_buf_cleanup(&prompt);
+	EXPECT_NE(strstr(nb_buf_cstr(&prompt), "Proactive multi-agent"), nullptr);
+	nb_buf_cleanup(&prompt);
 	strcpy(model->extra_body_json, R"({"reasoning_effort":"high"})");
-	ASSERT_EQ(morph_buf_init(&prompt, 1024), 0);
+	ASSERT_EQ((nb_buf_init(&prompt), nb_buf_reserve(&prompt, 1024) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(agent_control_prompt(control, "/root", &prompt), 0);
-	EXPECT_NE(strstr(morph_buf_cstr_borrow(&prompt), "Only spawn agents"), nullptr);
-	morph_buf_cleanup(&prompt);
+	EXPECT_NE(strstr(nb_buf_cstr(&prompt), "Only spawn agents"), nullptr);
+	nb_buf_cleanup(&prompt);
 }
 
 TEST_F(AgentControlTest, RootCollectsChildResultBeforeFinalAnswer)
@@ -793,7 +796,7 @@ TEST_F(AgentControlTest, SessionsHaveIndependentAgentNamespacesAndMailboxes)
 	ASSERT_EQ(session_create(&database, "other", "test-model", &other), 0);
 	ASSERT_EQ(agent_control_set_parent_session(control, other.id), 0);
 	EXPECT_EQ(call("send_message", R"({"target":"reader","message":"wrong session"})"),
-		  -ENOENT);
+		  NB_ERR_NOT_FOUND);
 	ASSERT_EQ(call("spawn_agent",
 		       R"({"task_name":"reader","message":"second session","fork_turns":"none"})"),
 		  0);
@@ -814,7 +817,7 @@ TEST_F(AgentControlTest, DepthLimitAndSiblingCommunicationUseCanonicalPaths)
 	agent_control_join(control);
 	runtime.agent_id = "/root/reader/nested";
 	runtime.agent_depth = 2;
-	EXPECT_EQ(call("spawn_agent", R"({"task_name":"deep","message":"too deep"})"), -ELOOP);
+	EXPECT_EQ(call("spawn_agent", R"({"task_name":"deep","message":"too deep"})"), NB_ERR_LOOP);
 	EXPECT_EQ(call("send_message", R"({"target":"/root","message":"nested finding"})"), 0);
 	EXPECT_NE(receive().find("nested finding"), std::string::npos);
 }
@@ -845,11 +848,12 @@ TEST_F(AgentControlTest, HierarchicalNamesStayDistinctAcrossParentsAndColdRestor
 	ASSERT_EQ(call("send_message", R"({"target":"/root/a/aa","message":"across branches"})"),
 		  0);
 	EXPECT_NE(receive("/root/a/aa").find("across branches"), std::string::npos);
-	EXPECT_EQ(call("spawn_agent", R"({"task_name":"aa","message":"duplicate"})"), -EEXIST);
+	EXPECT_EQ(call("spawn_agent", R"({"task_name":"aa","message":"duplicate"})"),
+		  NB_ERR_EXISTS);
 	runtime.agent_id = "/root";
 	runtime.agent_depth = 0;
 	reopen();
-	cJSON *out MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *out NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(call("list_agents", R"({"path_prefix":"/root/b"})", &out), 0);
 	const cJSON *agents = cJSON_GetObjectItem(out, "agents");
 	ASSERT_EQ(cJSON_GetArraySize(agents), 3);
@@ -1041,7 +1045,7 @@ TEST_F(AgentControlTest, RestoringActiveAgentMarksInterruptedWithoutModelCalls)
 	ASSERT_EQ(agent_control_list_copy(control, session.id, &agents, &count), 0);
 	ASSERT_EQ(count, 1);
 	EXPECT_EQ(agents[0].status, AGENT_CANCELLED);
-	EXPECT_EQ(agents[0].error_code, -ECANCELED);
+	EXPECT_EQ(agents[0].error_code, NB_ERR_CANCELLED);
 	agent_control_free_list(agents, count);
 	EXPECT_EQ(server.snapshot().size(), 1u);
 }
@@ -1127,20 +1131,21 @@ TEST_F(AgentControlTest, WriteClaimsRejectOverlapTraversalAndRootConflictsUntilC
 	EXPECT_EQ(
 		call("spawn_agent",
 		     R"({"task_name":"conflict","message":"overlap","write_paths":["owned/new.c"]})"),
-		-EBUSY);
+		NB_ERR_BUSY);
 	EXPECT_EQ(call("spawn_agent",
 		       R"({"task_name":"escape","message":"outside","write_paths":["../"]})"),
-		  -EACCES);
+		  NB_ERR_PERMISSION);
 	std::string owned = std::string(directory) + "/owned/new.c";
 	std::string other = std::string(directory) + "/other.c";
 	EXPECT_EQ(agent_control_write_check(control, "/root/writer", owned.c_str()), 0);
-	EXPECT_EQ(agent_control_write_check(control, "/root/writer", other.c_str()), -EACCES);
-	EXPECT_EQ(agent_control_write_check(control, "/root", owned.c_str()), -EBUSY);
+	EXPECT_EQ(agent_control_write_check(control, "/root/writer", other.c_str()),
+		  NB_ERR_PERMISSION);
+	EXPECT_EQ(agent_control_write_check(control, "/root", owned.c_str()), NB_ERR_BUSY);
 	EXPECT_EQ(agent_control_write_check(control, "/root", other.c_str()), 0);
 	EXPECT_TRUE(agent_control_shell_readonly(control, "/root"));
 	EXPECT_EQ(call("followup_task",
 		       R"({"target":"writer","message":"change scope","write_paths":[]})"),
-		  -EBUSY);
+		  NB_ERR_BUSY);
 	release->set_value();
 	agent_control_join(control);
 	EXPECT_EQ(agent_control_write_check(control, "/root", owned.c_str()), 0);
@@ -1148,7 +1153,8 @@ TEST_F(AgentControlTest, WriteClaimsRejectOverlapTraversalAndRootConflictsUntilC
 	EXPECT_TRUE(agent_control_shell_readonly(control, "/root/writer"));
 	/* Restored identities cannot silently regain old writable claims. */
 	reopen();
-	EXPECT_EQ(agent_control_write_check(control, "/root/writer", owned.c_str()), -EACCES);
+	EXPECT_EQ(agent_control_write_check(control, "/root/writer", owned.c_str()),
+		  NB_ERR_PERMISSION);
 	std::filesystem::remove_all(directory);
 	runtime.workdir = nullptr;
 }
@@ -1159,13 +1165,14 @@ TEST_F(AgentControlTest, ActivePatchPreventsNewWritableAssignments)
 	agent_control_patch_begin(control);
 	EXPECT_EQ(call("spawn_agent",
 		       R"({"task_name":"writer","message":"edit","write_paths":["/tmp"]})"),
-		  -EBUSY);
+		  NB_ERR_BUSY);
 	agent_control_patch_end(control);
 	EXPECT_EQ(call("spawn_agent",
 		       R"({"task_name":"reader","message":"inspect","write_paths":[]})"),
 		  0);
 	agent_control_join(control);
-	EXPECT_EQ(agent_control_write_check(control, "/root/reader", "/tmp/not-owned"), -EACCES);
+	EXPECT_EQ(agent_control_write_check(control, "/root/reader", "/tmp/not-owned"),
+		  NB_ERR_PERMISSION);
 }
 
 TEST_F(AgentControlTest, ChildPatchKeepsOwnershipWhileFullAccessShellUsesHost)
@@ -1193,7 +1200,7 @@ TEST_F(AgentControlTest, ChildPatchKeepsOwnershipWhileFullAccessShellUsesHost)
 	EXPECT_EQ(tool_exec(&tools, "apply_patch",
 			    "*** Begin Patch\n*** Add File: forbidden.txt\n+bad\n*** End Patch",
 			    &result),
-		  -EACCES);
+		  NB_ERR_PERMISSION);
 	const char *diagnostic = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(
 		cJSON_GetObjectItemCaseSensitive(result.envelope, "error"), "message"));
 	ASSERT_NE(diagnostic, nullptr);
@@ -1208,7 +1215,7 @@ TEST_F(AgentControlTest, ChildPatchKeepsOwnershipWhileFullAccessShellUsesHost)
 			    "yield_time_ms":10000,"timeout_ms":15000})",
 			    &result),
 		  0);
-	char *host_outcome MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(result.data);
+	char *host_outcome NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(result.data);
 	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0)
 		<< (host_outcome ? host_outcome : "No process result");
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "execution_mode")),
@@ -1232,16 +1239,16 @@ TEST_F(AgentControlTest, ChildPatchKeepsOwnershipWhileFullAccessShellUsesHost)
 		"c=socket.create_connection(s.getsockname()); a,_=s.accept(); "
 		"c.sendall(b\"ok\"); print(a.recv(2).decode())'";
 	for (bool host : {true, false}) {
-		cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		cJSON *args NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 		ASSERT_NE(args, nullptr);
 		cJSON_AddStringToObject(args, "command", host ? "printf child-host" : socket_probe);
 		cJSON_AddBoolToObject(args, "host", host);
 		cJSON_AddBoolToObject(args, "network", !host);
 		cJSON_AddNumberToObject(args, "yield_time_ms", 10000);
 		cJSON_AddNumberToObject(args, "timeout_ms", 15000);
-		char *arguments MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(args);
+		char *arguments NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(args);
 		ASSERT_NE(arguments, nullptr);
-		struct tool_result probe MORPH_CLEANUP(tool_result_cleanup) = {};
+		struct tool_result probe NB_CLEANUP(tool_result_cleanup) = {};
 		probe.runtime = &child;
 		ASSERT_EQ(tool_exec(&tools, "exec", arguments, &probe), 0);
 		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(probe.data, "exit_code")), 0)
@@ -1313,7 +1320,7 @@ TEST_F(AgentControlTest, BudgetFailureReplacesStaleToolErrorWithUsageAndRequestC
 	ASSERT_EQ(agent_control_budget_copy(control, &budget), 0);
 	EXPECT_GT(budget.request_tokens, budget.limit);
 	EXPECT_FALSE(budget.exhausted);
-	EXPECT_FALSE(morph_signal_flag_get(&react->cancelled));
+	EXPECT_FALSE(nb_atomic_int_load(&react->cancelled));
 	agent_control_end_turn(control);
 	react_context_destroy(react);
 }
@@ -1332,8 +1339,9 @@ TEST_F(AgentControlTest, SpawnAndIdleFollowupShareTheExecutionLimit)
 	};
 	ASSERT_EQ(call("spawn_agent", R"({"task_name":"busy","message":"task"})"), 0);
 	ASSERT_TRUE(server.await_requests(2));
-	EXPECT_EQ(call("spawn_agent", R"({"task_name":"extra","message":"task"})"), -EAGAIN);
-	EXPECT_EQ(call("followup_task", R"({"target":"idle","message":"more work"})"), -EAGAIN);
+	EXPECT_EQ(call("spawn_agent", R"({"task_name":"extra","message":"task"})"), NB_ERR_AGAIN);
+	EXPECT_EQ(call("followup_task", R"({"target":"idle","message":"more work"})"),
+		  NB_ERR_AGAIN);
 	release->set_value();
 	agent_control_join(control);
 	EXPECT_EQ(call("followup_task", R"({"target":"idle","message":"more work"})"), 0);
@@ -1431,11 +1439,11 @@ TEST_F(AgentControlTest, NestedWriterBorrowsParentScopeUntilItsExecutionFinishes
 	std::string path = std::string(directory) + "/owned/a.c";
 	std::string other = std::string(directory) + "/owned/b.c";
 	EXPECT_EQ(agent_control_write_check(control, "/root/parent/nested", path.c_str()), 0);
-	EXPECT_EQ(agent_control_write_check(control, "/root/parent", path.c_str()), -EBUSY);
-	EXPECT_EQ(agent_control_write_check(control, "/root", path.c_str()), -EBUSY);
+	EXPECT_EQ(agent_control_write_check(control, "/root/parent", path.c_str()), NB_ERR_BUSY);
+	EXPECT_EQ(agent_control_write_check(control, "/root", path.c_str()), NB_ERR_BUSY);
 	EXPECT_EQ(agent_control_write_check(control, "/root/parent", other.c_str()), 0);
 	EXPECT_EQ(agent_control_write_check(control, "/root/parent/nested", other.c_str()),
-		  -EACCES);
+		  NB_ERR_PERMISSION);
 	release->set_value();
 	agent_control_join(control);
 	EXPECT_EQ(agent_control_write_check(control, "/root/parent", path.c_str()), 0);
@@ -1456,7 +1464,7 @@ TEST_F(AgentControlTest, ReadonlySiblingCannotReassignAnotherAgentsWriteAuthorit
 	runtime.agent_depth = 1;
 	EXPECT_EQ(call("followup_task", R"({"target":"/root/worker","message":"edit outside",
 		"write_paths":["/tmp"]})"),
-		  -EACCES);
+		  NB_ERR_PERMISSION);
 	runtime.agent_id = "/root";
 	runtime.agent_depth = 0;
 	runtime.workdir = nullptr;
@@ -1475,7 +1483,8 @@ TEST_F(AgentControlTest, WriteOwnershipResolvesNewDirectoriesWithoutUnresolvedTr
 	EXPECT_EQ(agent_control_write_check(control, "/root/writer", path.c_str()), 0);
 	EXPECT_EQ(agent_control_write_check(control, "", path.c_str()), 0);
 	std::string ambiguous = std::string(directory) + "/missing/../new_module/x.c";
-	EXPECT_EQ(agent_control_write_check(control, "/root/writer", ambiguous.c_str()), -EACCES);
+	EXPECT_EQ(agent_control_write_check(control, "/root/writer", ambiguous.c_str()),
+		  NB_ERR_PERMISSION);
 	std::filesystem::remove_all(directory);
 	runtime.workdir = nullptr;
 }

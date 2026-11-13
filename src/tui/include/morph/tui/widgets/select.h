@@ -2,7 +2,9 @@
 #define MORPH_TUI_WIDGET_SELECT_H
 
 #include <morph/tui/widgets/list.h>
-#include "util/array.h"
+#include "nb/thread.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 #include <signal.h>
 #include <stdio.h>
 
@@ -10,14 +12,14 @@
 extern "C" {
 #endif
 
-struct morph_cancel_token;
+struct nb_cancel;
 
 /* Select owns check state independently of labels and presentation.
  * Zero-initialize, init once, and cleanup on every exit. A zero maximum means
  * all items in multi mode. Invalid confirmation keeps the component open. */
 struct morph_tui_widget_select {
 	struct morph_tui_widget_menu_state menu;
-	morph_array_t checked;
+	nb_vec checked;
 	size_t selected_count;
 	size_t minimum;
 	size_t maximum;
@@ -38,7 +40,7 @@ void morph_tui_widget_select_cleanup(struct morph_tui_widget_select *select);
  * The caller owns signals and maps cancellation to application actions. */
 struct morph_tui_widget_select_options {
 	const char *const *items;
-	const volatile sig_atomic_t *interrupted;
+	const nb_atomic_int *interrupted;
 	int color;
 	int allow_custom;
 	/* Maximum custom answer bytes, excluding NUL; zero defaults to 1 MiB. */
@@ -46,7 +48,7 @@ struct morph_tui_widget_select_options {
 	/* Zero disables automatic expiry. Any answer key disables it permanently. */
 	int timeout_seconds;
 	const char *hint;
-	const struct morph_cancel_token *cancel_token;
+	const struct nb_cancel *cancel_token;
 };
 
 int morph_tui_widget_select_run(struct morph_tui_widget_select *select,

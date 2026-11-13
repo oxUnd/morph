@@ -346,7 +346,7 @@ runtime_open / runtime_execute_turn / runtime_close
 | 语言与构建 | C11 / C++17 测试，CMake ≥ 3.20，要求 GCC/Clang cleanup attribute |
 | 网络与存储 | libcurl、SQLite3、pthreads |
 | TUI | 自有 Application/View/Canvas/widgets，libuv；Readline 可选 |
-| JSON / TOML / Unicode | vendored cJSON、tomlc17、utf8proc，经项目适配接口调用 |
+| JSON / TOML / Unicode | 独立 cJSON target、nbase TOML 与 nbase 内置 utf8proc Unicode 后端 |
 | Markdown | `fronts/morph-markdown` 及 Kitty SDK；cmark-gfm 由该构建集成 |
 | 图像 | stb_image / write / resize2；动态工具图像与画布使用 libvips、cairo、pangocairo |
 | 数学排版 | MorphMarkdown 构建中的 MathJax-C 及字体/排版依赖 |
@@ -474,7 +474,7 @@ default_max_output_bytes = 1048576
 | `src/skill/`、`src/prompt/` | Skill 发现/激活和提示模板 |
 | `src/mcp/`、`src/ext/`、`src/ipc/` | 远程能力及扩展调用 |
 | `src/js_runner/`、`src/sandbox/` | QuickJS Host API 与平台沙箱 |
-| `src/event/`、`src/credits.c`、`src/credits.h`、`src/sync/`、`src/util/` | 事件、计费、同步和基础组件 |
+| `src/event/`、`src/credits.c`、`src/credits.h`、`src/sync/`、`vendor/nothing/` | 事件、计费、同步和 nbase 基础组件 |
 | `prompts/`、`skills/`、`exts/` | 已提供的提示、技能及扩展示例 |
 | `tests/` | 单元和集成测试 |
 
@@ -484,7 +484,7 @@ default_max_output_bytes = 1048576
 
 #### 6.9.0 所有权与作用域清理
 
-普通堆对象使用单一明确 owner，局部拥有者初始化为 `NULL` 或 `{0}`，使用 `MORPH_CLEANUP(fn)` 和 typed cleanup。允许部分初始化，销毁前先回收依赖它的异步任务。
+普通堆对象使用单一明确 owner，局部拥有者初始化为 `NULL` 或 `{0}`，使用 `NB_CLEANUP(fn)` 和 typed cleanup。允许部分初始化，销毁前先回收依赖它的异步任务。
 
 `*_borrow` 返回有生命周期限制的视图，`*_copy` / `*_clone` 创建独立副本，fallible `*_take` 仅成功时清空来源，typed `*_steal` 执行无分配转移。禁止浅拷贝拥有指针的结构。参见 [状态所有权](state-ownership.md)。
 
@@ -492,13 +492,14 @@ default_max_output_bytes = 1048576
 
 | 容器 | API 与约束 |
 | --- | --- |
-| [morph_buf](../src/util/buf.h) | 动态拼接字节/字符串；插入调用方使用 `reserve` 时须显式计入数据和结尾 NUL 所需空间 |
-| [morph_array](../src/util/array.h) | `push_borrow` / `push_n_borrow` / `borrow` / `reserve`；增长后不得继续使用旧槽位指针 |
-| [morph_strmap](../src/util/strmap.h) | `set_borrow` / `borrow` / `contains` / `remove`，保存字符串索引 |
-| [morph_str](../src/util/str.h) | 非拥有字符串切片及明确的复制接口 |
-| [morph_queue](../src/util/queue.h) | 侵入式队列，按 owner 生命周期保存稳定节点 |
+| [nb_buf](../vendor/nothing/include/nb/buf.h) | 原生拥有缓冲；append/reserve 返回 bool，错误为 sticky；move 交换两个 handle；detach 必须保留 capacity 配对 nb_free |
+| [nb_vec](../vendor/nothing/include/nb/vec.h) | 原生值数组；push/at/reserve/insert/remove；新槽未初始化，增长使旧槽指针失效；元素资源由业务 owner 清理 |
+| [nb_map](../vendor/nothing/include/nb/map.h) | 不透明字符串索引；value dtor 仅处理 clear/free 时仍保留的值，替换/删除的值交给调用方 |
+| [nb_str](../vendor/nothing/include/nb/str.h) | 非拥有 `{ptr, len}`；字典序比较；借用失效和复制边界显式表达 |
+| [nb_queue_t](../vendor/nothing/include/nb/queue.h) | 侵入式队列，按 owner 生命周期保存稳定节点 |
 
-业务代码复用这些容器和 [UTF-8 适配](../src/util/utf8.h)，不重复实现字符串增长、哈希表或 Unicode 解码。
+业务直接使用 nbase 类型与 API；Unicode 使用 [nb/utf8.h](../vendor/nothing/include/nb/utf8.h)。
+终端过滤与裁剪属于 `tui/terminal/text`，token 权重属于 `agent/tokenizer`；不得重建 morph 通用基础库 facade。
 
 #### 6.9.1 ReAct
 
@@ -589,7 +590,7 @@ Chat compatible、Responses 和 DeepSeek 使用各自 codec 编解码工具调�
 
 #### 6.9.16 Tokenizer
 
-[tokenizer.h](../src/agent/tokenizer.h) 和 [bpe.h](../src/util/bpe.h) 定义计数接口。分批只控制临时工作量，不截断剩余输入；长连续片段使用等价合并堆。分词失败或分配失败保留相应保守计数路径。
+[tokenizer.h](../src/agent/tokenizer.h) 和 [bpe.h](../src/agent/bpe.h) 定义计数接口。分批只控制临时工作量，不截断剩余输入；长连续片段使用等价合并堆。分词失败或分配失败保留相应保守计数路径。
 
 ### 6.10 Skill
 
@@ -608,7 +609,7 @@ TUI 公开 Application、View、Canvas 和 widget 对象。自定义类型将公
 
 View 使用四边 margin/padding：measure 返回含 margin 的外尺寸，arrange 接收 outer slot；size limits 含 padding、不含 margin，兄弟 margin 相加。
 
-CLI Application 复用该框架管理模式和页面，feed 显示 Working、耗时、推理、回答、工具与后台任务。`util/spin` 是独立可复用工具，不作为 CLI 的全部线程和输出契约。
+CLI Application 复用该框架管理模式和页面，feed 显示 Working、耗时、推理、回答、工具与后台任务。`tui/terminal/activity` 是独立可复用工具，不作为 CLI 的全部线程和输出契约。
 
 参见 [TUI 架构](tui-architecture.md)、[应用布局](tui-application-layout.md) 和 [盒模型](tui-box-model.md)。
 
@@ -620,12 +621,12 @@ CLI Application 复用该框架管理模式和页面，feed 显示 Working、耗
 - `sizeof(var)`；系统路径使用 `PATH_MAX`，逻辑名称使用项目常量。
 - 可变字符串、数组和索引使用共享容器；不得在增长后继续持有失效借用。
 - fallible take 失败保留来源；每个 owner 有独立 cleanup/destroy；不引入全局变量。
-- 多语句宏使用 `do { } while (0)`，错误使用负 errno 或 `MORPH_ERR_*`。
+- 多语句宏使用 `do { } while (0)`，错误使用 nbase 的负 `NB_ERR_*` 状态或应用 `NB_ERR_USER` 领域码。
 - 使用 `-Wall -Wextra -Wpedantic -Wshadow -Wconversion`；源码约束由相关 convention 检查执行。
 
 ## 7. 错误处理
 
-`morph_err_t` 为 `int`，零成功、负值错误。系统错误在失败位置捕获 errno，使用 `morph_error_from_errno` 保留原始失败；错误信息通过 `morph_strerror` 提供。
+通用机制使用 `nb_status`：零成功、负值错误。系统错误在失败位置通过 `nb_status_from_errno(errno, &err)` 映射，原始 errno 保留在 `nb_err.os_errno`。应用领域错误使用 `src/errors.h` 中的 `NB_ERR_USER` 描述表；用户文案通过 `nb_err_str`/`nb_status_str` 提供，不直接显示整数码。
 
 | 错误域 | 已定义常量 |
 | --- | --- |
@@ -634,7 +635,7 @@ CLI Application 复用该框架管理模式和页面，feed 显示 Working、耗
 | 数据与处理 | `MORPH_ERR_PARSE`、`MORPH_ERR_DB`、`MORPH_ERR_FORMAT`、`MORPH_ERR_PROCESSING`、`MORPH_ERR_LOAD` |
 | 执行边界 | `MORPH_ERR_SANDBOX`、`MORPH_ERR_REACT_MAX_ITERATIONS`、`MORPH_ERR_CONTEXT_LIMIT` |
 
-`MORPH_TRACE_ERROR(logger, code)` 只附源码位置并返回原错误，不隐藏 return 或赋值。logger 显式传递，诊断不直接写终端。定义见 [error.h](../src/util/error.h)。
+`nb_err_trace` 显式接收 logger、错误码、描述表与源码位置，保留 errno 并返回原错误；不隐藏 return 或赋值，不直接写终端。定义见 [nb/err.h](../vendor/nothing/include/nb/err.h)。
 
 ## 8. 日志与可观测性
 
@@ -722,7 +723,7 @@ ctest --test-dir build --output-on-failure
 | MCP、Ext、QuickJS、WASM 及 Skill | `src/mcp/`、`src/ext/`、`src/js_runner/`、`src/skill/` |
 | patch 跟踪和代码/对话回退 | `src/agent/patch.c`、`src/runtime/checkpoint.c`、`src/persistence/checkpoint_store.c` |
 | CLI/TUI、FastCGI 和统一事件 | `src/sapi/`、`src/tui/`、`src/event/` |
-| 长输入安全与边界回归 | `src/tui/widgets/editor.c`、`src/util/bpe.c`、`tests/` |
+| 长输入安全与边界回归 | `src/tui/widgets/editor.c`、`src/agent/bpe.c`、`tests/` |
 
 ## 12. 已实现行为的边界
 

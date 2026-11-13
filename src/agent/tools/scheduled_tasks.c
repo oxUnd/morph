@@ -1,8 +1,8 @@
 #include "scheduled_tasks.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 #include "db/scheduled_task.h"
-#include "util/error.h"
+#include "errors.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -154,7 +154,7 @@ static int bind_create_input(cJSON *root, struct scheduled_task_input *input,
 	int rc = 0;
 
 	if (!root || !input || !owned_payload_json)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(input, 0, sizeof(*input));
 	input->source_session_id = 0;
 	*owned_payload_json = NULL;
@@ -174,7 +174,7 @@ static int bind_create_input(cJSON *root, struct scheduled_task_input *input,
 	if (cJSON_IsNumber(item)) {
 		int64_t delay = (int64_t)item->valuedouble;
 		if (delay < 0)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		if (!has_next_run_at) {
 			if (time_anchor <= 0)
 				time_anchor = (int64_t)time(NULL);
@@ -196,12 +196,12 @@ static int bind_create_input(cJSON *root, struct scheduled_task_input *input,
 	if (cJSON_IsString(item) && item->valuestring[0]) {
 		payload = cJSON_CreateObject();
 		if (!payload)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		cJSON_AddStringToObject(payload, "prompt", item->valuestring);
 		payload_json = cJSON_PrintUnformatted(payload);
 		cJSON_Delete(payload);
 		if (!payload_json)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		input->payload_json = payload_json;
 		*owned_payload_json = payload_json;
 	}
@@ -214,7 +214,7 @@ static int bind_create_input(cJSON *root, struct scheduled_task_input *input,
 
 	if (!input->title || !has_next_run_at || input->next_run_at < 0 ||
 	    !input->payload_json)
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 	return rc;
 }
 
@@ -222,7 +222,7 @@ static char *tasks_tool_create(struct scheduled_tasks_tool_context *ctx,
 			       cJSON *root)
 {
 	struct scheduled_task_input input;
-	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {0};
+	struct scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {0};
 	cJSON *out;
 	cJSON *arr;
 	char *owned_payload_json = NULL;
@@ -240,7 +240,7 @@ static char *tasks_tool_create(struct scheduled_tasks_tool_context *ctx,
 					       &ctx->events);
 	free(owned_payload_json);
 	if (rc != 0)
-		return json_error(morph_strerror(rc));
+		return json_error(nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 
 	out = cJSON_CreateObject();
 	arr = cJSON_CreateArray();
@@ -266,7 +266,7 @@ static char *tasks_tool_update(struct scheduled_tasks_tool_context *ctx,
 			       cJSON *root)
 {
 	struct scheduled_task_input input;
-	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {0};
+	struct scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {0};
 	cJSON *id_item;
 	cJSON *out;
 	cJSON *arr;
@@ -289,7 +289,7 @@ static char *tasks_tool_update(struct scheduled_tasks_tool_context *ctx,
 					       &input, &task, &ctx->events);
 	free(owned_payload_json);
 	if (rc != 0)
-		return json_error(morph_strerror(rc));
+		return json_error(nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	out = cJSON_CreateObject();
 	arr = cJSON_CreateArray();
 	if (!out || !arr) {
@@ -327,7 +327,7 @@ static char *tasks_tool_list(struct db *db, cJSON *root)
 		status = item->valuestring;
 	rc = scheduled_task_list(db, status, limit, &tasks, &count);
 	if (rc != 0)
-		return json_error(morph_strerror(rc));
+		return json_error(nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	out = tasks_to_json(tasks, count);
 	scheduled_task_free_list(tasks, count);
 	return out ? out : json_error("out of memory");
@@ -345,7 +345,7 @@ static char *tasks_tool_cancel(struct scheduled_tasks_tool_context *ctx,
 					       (int64_t)item->valuedouble,
 					       &ctx->events);
 	if (rc != 0)
-		return json_error(morph_strerror(rc));
+		return json_error(nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	return strdup("{\"status\":\"cancelled\"}");
 }
 
@@ -371,7 +371,7 @@ static char *tasks_tool_inbox(struct db *db, cJSON *root)
 		limit = (int)item->valuedouble;
 	rc = notification_list_unread(db, limit, &notifications, &count);
 	if (rc != 0)
-		return json_error(morph_strerror(rc));
+		return json_error(nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	out = notifications_to_json(notifications, count);
 	notification_free_list(notifications, count);
 	return out ? out : json_error("out of memory");
@@ -386,7 +386,7 @@ static char *tasks_tool_mark_read(struct db *db, cJSON *root)
 		return json_error("missing notification id");
 	rc = notification_mark_read(db, (int64_t)item->valuedouble, 0);
 	if (rc != 0)
-		return json_error(morph_strerror(rc));
+		return json_error(nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	return strdup("{\"status\":\"read\"}");
 }
 
@@ -398,10 +398,10 @@ static int scheduled_tasks_tool_run(const char *args_json,
 	cJSON *root;
 	cJSON *op_item;
 	const char *op;
-	char *out MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
+	char *out NB_CLEANUP(cJSON_FreeTextOwner) = NULL;
 
 	if (!ctx || !ctx->db || !ctx->db->handle)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	root = cJSON_Parse(args_json ? args_json : "{}");
 	if (!root) {
 		(void)tool_result_success_json_text_copy(result, "{\"error\":\"invalid JSON\"}");
@@ -440,15 +440,15 @@ int scheduled_tasks_tool_init_events(
 	int rc;
 
 	if (!reg || !db)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	ctx = calloc(1, sizeof(*ctx));
 	if (!ctx)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	ctx->db = db;
 	ctx->time_anchor = (int64_t)time(NULL);
 	if (events)
 		ctx->events = *events;
-	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
+	struct tool_spec spec NB_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.name = "tasks",
 		.description = "Create and manage persistent scheduled tasks and the inbox. "
@@ -500,10 +500,10 @@ int scheduled_tasks_tool_set_time_anchor(struct tool_registry *reg,
 	struct scheduled_tasks_tool_context *ctx;
 
 	if (!reg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	entry = tool_borrow(reg, "tasks");
 	if (!entry || !entry->user_data)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	ctx = entry->user_data;
 	ctx->time_anchor = time_anchor > 0 ? time_anchor : (int64_t)time(NULL);
 	return 0;
@@ -516,10 +516,10 @@ int scheduled_tasks_tool_set_source_session(struct tool_registry *reg,
 	struct scheduled_tasks_tool_context *ctx;
 
 	if (!reg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	entry = tool_borrow(reg, "tasks");
 	if (!entry || !entry->user_data)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	ctx = entry->user_data;
 	ctx->source_session_id = session_id > 0 ? session_id : 0;
 	return 0;
@@ -529,7 +529,7 @@ int scheduled_tasks_tool_rebind(struct tool_registry *reg, struct db *db, int64_
 {
 	struct tool_entry *entry = reg ? tool_borrow(reg, "tasks") : NULL;
 	if (!entry || !entry->user_data || !db)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	const struct scheduled_tasks_tool_context *previous = entry->user_data;
 	struct scheduled_task_event_sink events = previous->events;
 	unsigned int flags = entry->flags;

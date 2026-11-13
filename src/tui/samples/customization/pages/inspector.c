@@ -28,8 +28,8 @@ static void sample_customization_page_inspector_build(struct morph_tui_view_cont
 	morph_tui_widget_label_add_borrow(builder, content, "Shared value", &label);
 	sample_customization_widget_counter_create(builder, content, 10, app->value, app->step);
 	morph_tui_widget_label_add_borrow(builder, root, "Shared name (Enter saves)", NULL);
-	morph_tui_widget_text_field_add_borrow(builder, root, morph_buf_cstr_borrow(&app->name),
-					       128, 20, NULL);
+	morph_tui_widget_text_field_add_borrow(builder, root, nb_buf_cstr(&app->name), 128, 20,
+					       NULL);
 	page->status = morph_tui_widget_label_add_borrow(builder, root,
 							 "Changes persist when returning", NULL);
 	morph_tui_widget_label_add_borrow(

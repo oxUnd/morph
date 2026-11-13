@@ -2,6 +2,7 @@
 #define MORPH_JS_VALUES_H
 
 #include "runner_api.h"
+#include "nb/err.h"
 
 struct js_buffer_view {
 	JSContext *context;
@@ -12,7 +13,7 @@ struct js_buffer_view {
 
 /* Retains the ArrayBuffer backing data until cleanup. No JS calls while using data:
  * arbitrary JS can detach the buffer. out must be zero-initialized and empty.
- * -ENOTSUP means a non-object input; object errors preserve a JS exception. */
+ * NB_ERR_UNSUPPORTED means a non-object input; object errors preserve a JS exception. */
 int js_values_buffer_borrow(JSContext *ctx, JSValueConst value, struct js_buffer_view *out);
 void js_buffer_view_cleanup(struct js_buffer_view *view);
 

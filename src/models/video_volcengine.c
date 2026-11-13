@@ -1,15 +1,20 @@
 #include "video_provider.h"
+#include "nb/str.h"
+#include "nb/utf8.h"
 #include "video_gen.h"
 #include "media_output.h"
 #include "models/llm.h"
-#include "util/log.h"
-#include "util/file.h"
-#include "util/base64.h"
-#include "util/image_util.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/buf.h"
-#include "util/error.h"
+#include "nb/log.h"
+#include "nb/time.h"
+#include "nb/file.h"
+#include "nb/encoding.h"
+#include "media/image.h"
+#include "media/image.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
 #include "http/client.h"
 #include "cJSON.h"
 #include <errno.h>
@@ -46,24 +51,24 @@ static int video_add_reference_take(cJSON *content, const char *type, const char
 				    size_t *budget)
 {
 	if (!content || !uri || !*uri || !budget)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	size_t len = strlen(*uri);
 	if (len > *budget)
-		return -EFBIG;
-	cJSON *item MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		return NB_ERR_TOO_BIG;
+	cJSON *item NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	cJSON *url = item ? cJSON_AddObjectToObject(item, type) : NULL;
 	if (!url)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	cJSON *value = cJSON_CreateStringReference(*uri);
 	if (!value)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (!cJSON_AddItemToObject(url, "url", value)) {
 		cJSON_Delete(value);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (!cJSON_AddStringToObject(item, "type", type) ||
 	    !cJSON_AddStringToObject(item, "role", role) || !cJSON_AddItemToArray(content, item))
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	value->type &= ~cJSON_IsReference;
 	*uri = NULL;
 	item = NULL;
@@ -73,26 +78,27 @@ static int video_add_reference_take(cJSON *content, const char *type, const char
 
 static int video_reference_uri(const char *path, int audio, size_t budget, char **uri)
 {
-	morph_buf_t prefix;
+	nb_buf prefix NB_CLEANUP(nb_buf_cleanup) = {0};
 	size_t max_bytes = budget / 4 * 3;
 	int rc;
 
 	if (strncmp(path, "http://", 7) == 0 || strncmp(path, "https://", 8) == 0) {
 		*uri = strdup(path);
 		if (!*uri)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		return 0;
 	}
 	if (max_bytes > MORPH_MEDIA_MAX_FILE_BYTES)
 		max_bytes = MORPH_MEDIA_MAX_FILE_BYTES;
-	rc = morph_buf_init(&prefix, 64);
+	rc = (nb_buf_init(&prefix), nb_buf_reserve(&prefix, 64) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_printf(&prefix, "data:%s;base64,", video_reference_mime(path, audio));
+	rc = (nb_buf_printf(&prefix, "data:%s;base64,", video_reference_mime(path, audio))
+		      ? 0
+		      : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = base64_encode_file_prefixed_copy(path, morph_buf_cstr_borrow(&prefix),
-						      max_bytes, uri);
-	morph_buf_cleanup(&prefix);
+		rc = image_file_payload_copy(path, nb_buf_cstr(&prefix), max_bytes, uri);
+	nb_buf_cleanup(&prefix);
 	return rc;
 }
 
@@ -119,7 +125,7 @@ static int volcengine_video_capabilities(const struct model *model, struct video
 	int minor = 0;
 
 	if (!model || !caps)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(caps, 0, sizeof(*caps));
 	caps->supports_generate = 1;
 	caps->supports_reference_images = 1;
@@ -145,16 +151,17 @@ static int download_url(struct model *self, const char *url, const char *output_
 	int rc = http_get(&self->http, url, &resp);
 	if (rc < 0) {
 		http_response_free(&resp);
-		log_err(self ? self->http.logger : NULL, "video download failed: %s", url);
+		nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR,
+			     "video download failed: %s", url);
 		return rc;
 	}
 	if (resp.status_code != 200) {
-		log_err(self ? self->http.logger : NULL, "video download returned HTTP %d",
-			resp.status_code);
+		nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR,
+			     "video download returned HTTP %d", resp.status_code);
 		http_response_free(&resp);
 		return MORPH_ERR_API;
 	}
-	rc = media_output_write(output_dir, "vid", "mp4", resp.body.data, resp.body.len, out_path,
+	rc = media_output_write(output_dir, "vid", "mp4", resp.body.ptr, resp.body.len, out_path,
 				out_size);
 	http_response_free(&resp);
 	return rc;
@@ -182,21 +189,21 @@ static int volcengine_video_poll(struct model *self, const char *query_url, cons
 				 char *video_url, size_t video_url_size,
 				 struct video_result *result)
 {
-	struct timespec now;
+	int64_t now = nb_time_monotonic_ms();
 	int64_t deadline;
 
-	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
-		return morph_error_from_errno(errno);
-	deadline =
-		(int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + (int64_t)poll_timeout * 1000;
+	if (now <= 0)
+		return NB_ERR_IO;
+	deadline = now + (int64_t)poll_timeout * 1000;
 	for (;;) {
 		int64_t remaining;
 		int64_t wait_ms = (int64_t)poll_interval * 1000;
 		int wait_rc;
 
-		if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
-			return morph_error_from_errno(errno);
-		remaining = deadline - ((int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000);
+		now = nb_time_monotonic_ms();
+		if (now <= 0)
+			return NB_ERR_IO;
+		remaining = deadline - now;
 		if (remaining <= 0)
 			break;
 		if (wait_ms > remaining)
@@ -215,19 +222,19 @@ static int volcengine_video_poll(struct model *self, const char *query_url, cons
 
 		if (qrc < 0) {
 			http_response_free(&qresp);
-			if (qrc == -ECANCELED)
+			if (qrc == NB_ERR_CANCELLED)
 				return qrc;
-			log_warn(self ? self->http.logger : NULL,
-				 "video_gen: query request failed, retrying...");
+			nb_log_write(self ? self->http.logger : NULL, NB_LOG_WARN,
+				     "video_gen: query request failed, retrying...");
 			continue;
 		}
 
-		if (qresp.status_code != 200 || !qresp.body.data) {
+		if (qresp.status_code != 200 || !qresp.body.ptr) {
 			http_response_free(&qresp);
 			continue;
 		}
 
-		cJSON *qroot = cJSON_Parse(qresp.body.data);
+		cJSON *qroot = cJSON_Parse(qresp.body.ptr);
 		if (!qroot) {
 			http_response_free(&qresp);
 			continue;
@@ -241,7 +248,12 @@ static int volcengine_video_poll(struct model *self, const char *query_url, cons
 			if (cJSON_IsObject(vcontent)) {
 				cJSON *vurl = cJSON_GetObjectItem(vcontent, "video_url");
 				if (cJSON_IsString(vurl) && vurl->valuestring)
-					strncpy(video_url, vurl->valuestring, video_url_size - 1);
+					(void)nb_str_copy_to(
+						nb_str_from_parts(
+							vurl->valuestring,
+							nb_utf8_clamp_bytes(vurl->valuestring,
+									    video_url_size - 1)),
+						video_url, (video_url_size - 1) + 1);
 			}
 			cJSON_Delete(qroot);
 			http_response_free(&qresp);
@@ -260,16 +272,17 @@ static int volcengine_video_poll(struct model *self, const char *query_url, cons
 						      : "";
 			snprintf(result->error_msg, sizeof(result->error_msg),
 				 "video_gen: task %s failed: %s %s", task_id, err_code, err_msg);
-			log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
-			log_dbg(self ? self->http.logger : NULL,
-				"video_gen: poll response body:\n%s", qresp.body.data);
+			nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR, "%s",
+				     result->error_msg);
+			nb_log_write(self ? self->http.logger : NULL, NB_LOG_DEBUG,
+				     "video_gen: poll response body:\n%s", qresp.body.ptr);
 			cJSON_Delete(qroot);
 			http_response_free(&qresp);
 			return MORPH_ERR_API;
 		}
 
-		log_info(self ? self->http.logger : NULL, "video_gen: task %s status=%s", task_id,
-			 st);
+		nb_log_write(self ? self->http.logger : NULL, NB_LOG_INFO,
+			     "video_gen: task %s status=%s", task_id, st);
 
 		cJSON_Delete(qroot);
 		http_response_free(&qresp);
@@ -279,7 +292,7 @@ static int volcengine_video_poll(struct model *self, const char *query_url, cons
 		return 0;
 	snprintf(result->error_msg, sizeof(result->error_msg), "video_gen: timed out for task: %s",
 		 task_id);
-	return -ETIMEDOUT;
+	return NB_ERR_TIMEOUT;
 }
 
 static int volcengine_video_execute(struct model *self, const char *prompt,
@@ -302,7 +315,8 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	if (!api_key[0]) {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "video_gen: no api_key configured");
-		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
+		nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR, "%s",
+			     result->error_msg);
 
 		return MORPH_ERR_NOT_CONFIGURED;
 	}
@@ -310,7 +324,8 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	if (!api_base[0]) {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "video_gen: no api_base configured");
-		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
+		nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR, "%s",
+			     result->error_msg);
 
 		return MORPH_ERR_NOT_CONFIGURED;
 	}
@@ -323,36 +338,41 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 
 	cJSON *content_arr = cJSON_AddArrayToObject(body_json, "content");
 
-	morph_buf_t prompt_buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int prompt_rc = morph_buf_init(&prompt_buf, 256);
+	nb_buf prompt_buf NB_CLEANUP(nb_buf_cleanup) = {0};
+	int prompt_rc =
+		(nb_buf_init(&prompt_buf), nb_buf_reserve(&prompt_buf, 256) ? 0 : NB_ERR_NOMEM);
 	const int counts[] = {num_images > 1 ? num_images : 0, num_videos, num_audios};
 	const char *labels[] = {"image", "video", "audio"};
 	if (prompt_rc == 0)
-		prompt_rc = morph_buf_puts(&prompt_buf, prompt);
+		prompt_rc = (nb_buf_append_cstr(&prompt_buf, prompt) ? 0 : NB_ERR_NOMEM);
 	for (size_t kind = 0; prompt_rc == 0 && kind < 3; kind++) {
 		if (counts[kind] <= 0)
 			continue;
-		prompt_rc = morph_buf_printf(&prompt_buf, "\n[Ref %ss: ", labels[kind]);
+		prompt_rc =
+			(nb_buf_printf(&prompt_buf, "\n[Ref %ss: ", labels[kind]) ? 0
+										  : NB_ERR_NOMEM);
 		for (int i = 0; prompt_rc == 0 && i < counts[kind]; i++)
-			prompt_rc = morph_buf_printf(&prompt_buf, "%s%s#%d", i ? ", " : "",
-						     labels[kind], i + 1);
+			prompt_rc = (nb_buf_printf(&prompt_buf, "%s%s#%d", i ? ", " : "",
+						   labels[kind], i + 1)
+					     ? 0
+					     : NB_ERR_NOMEM);
 		if (prompt_rc == 0)
-			prompt_rc = morph_buf_putc(&prompt_buf, ']');
+			prompt_rc = (nb_buf_append_char(&prompt_buf, ']') ? 0 : NB_ERR_NOMEM);
 	}
 	cJSON *item = cJSON_CreateObject();
 	if (prompt_rc != 0 || !content_arr || !item ||
 	    !cJSON_AddStringToObject(item, "type", "text") ||
-	    !cJSON_AddStringToObject(item, "text", morph_buf_cstr_borrow(&prompt_buf)) ||
+	    !cJSON_AddStringToObject(item, "text", nb_buf_cstr(&prompt_buf)) ||
 	    !cJSON_AddItemToArray(content_arr, item)) {
 		cJSON_Delete(item);
 		cJSON_Delete(body_json);
 
-		return prompt_rc != 0 ? prompt_rc : -ENOMEM;
+		return prompt_rc != 0 ? prompt_rc : NB_ERR_NOMEM;
 	}
 
 	size_t reference_budget = VIDEO_REFERENCE_MAX_ENCODED_BYTES;
 	for (int i = 0; i < num_images; i++) {
-		char *uri MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+		char *uri NB_CLEANUP(nb_charp_cleanup) = NULL;
 		int rc;
 
 		if (!image_paths || !image_paths[i] || !image_paths[i][0])
@@ -368,7 +388,8 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 			cJSON_Delete(body_json);
 
 			snprintf(result->error_msg, sizeof(result->error_msg),
-				 "video_gen: image reference: %s", morph_strerror(rc));
+				 "video_gen: image reference: %s",
+				 nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
 	}
@@ -378,7 +399,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 		int count = audio ? num_audios : num_videos;
 
 		for (int i = 0; i < count; i++) {
-			char *uri MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+			char *uri NB_CLEANUP(nb_charp_cleanup) = NULL;
 			int rc;
 
 			if (!paths || !paths[i] || !paths[i][0])
@@ -393,7 +414,9 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 				cJSON_Delete(body_json);
 
 				snprintf(result->error_msg, sizeof(result->error_msg),
-					 "video_gen: media reference: %s", morph_strerror(rc));
+					 "video_gen: media reference: %s",
+					 nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+						    rc));
 				return rc;
 			}
 		}
@@ -404,23 +427,24 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	if (generate_audio >= 0)
 		cJSON_AddBoolToObject(body_json, "generate_audio", generate_audio != 0);
 
-	char *body_str MORPH_CLEANUP(morph_json_text_cleanup) = morph_json_print_copy(body_json);
+	char *body_str NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(body_json);
 	cJSON_Delete(body_json);
 
 	if (!body_str) {
 
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 
-	log_info(self ? self->http.logger : NULL, "video_gen: request body (%zu bytes)",
-		 strlen(body_str));
-	log_dbg(self ? self->http.logger : NULL, "video_gen: request body:\n%s", body_str);
+	nb_log_write(self ? self->http.logger : NULL, NB_LOG_INFO,
+		     "video_gen: request body (%zu bytes)", strlen(body_str));
+	nb_log_write(self ? self->http.logger : NULL, NB_LOG_DEBUG, "video_gen: request body:\n%s",
+		     body_str);
 
-	morph_buf_t auth_header MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf auth_header NB_CLEANUP(nb_buf_cleanup) = {0};
 	int auth_rc = model_authorization_header_create(self, &auth_header);
 	if (auth_rc != 0)
 		return auth_rc;
-	const char *hdrs[] = {morph_buf_cstr_borrow(&auth_header)};
+	const char *hdrs[] = {nb_buf_cstr(&auth_header)};
 
 	struct http_response resp = {0};
 	int rc = http_post_ex(&self->http, submit_url, body_str, strlen(body_str),
@@ -429,8 +453,10 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	if (rc < 0) {
 		http_response_free(&resp);
 		snprintf(result->error_msg, sizeof(result->error_msg),
-			 "video_gen: submit request failed: %s", morph_strerror(rc));
-		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
+			 "video_gen: submit request failed: %s",
+			 nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+		nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR, "%s",
+			     result->error_msg);
 
 		return rc;
 	}
@@ -439,35 +465,50 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	char task_status[32] = {0};
 	char video_url[2048] = {0};
 
-	if (resp.status_code == 200 && resp.body.data) {
-		log_dbg(self ? self->http.logger : NULL, "video_gen: submit response (%d):\n%s",
-			resp.status_code, resp.body.data);
-		cJSON *root = cJSON_Parse(resp.body.data);
+	if (resp.status_code == 200 && resp.body.ptr) {
+		nb_log_write(self ? self->http.logger : NULL, NB_LOG_DEBUG,
+			     "video_gen: submit response (%d):\n%s", resp.status_code,
+			     resp.body.ptr);
+		cJSON *root = cJSON_Parse(resp.body.ptr);
 		if (root) {
 			cJSON *id_item = cJSON_GetObjectItem(root, "id");
 			if (cJSON_IsString(id_item) && id_item->valuestring)
-				strncpy(task_id, id_item->valuestring, sizeof(task_id) - 1);
+				(void)nb_str_copy_to(
+					nb_str_from_parts(id_item->valuestring,
+							  nb_utf8_clamp_bytes(id_item->valuestring,
+									      sizeof(task_id) - 1)),
+					task_id, (sizeof(task_id) - 1) + 1);
 			cJSON *status_item = cJSON_GetObjectItem(root, "status");
 			if (cJSON_IsString(status_item) && status_item->valuestring)
-				strncpy(task_status, status_item->valuestring,
-					sizeof(task_status) - 1);
+				(void)nb_str_copy_to(
+					nb_str_from_parts(
+						status_item->valuestring,
+						nb_utf8_clamp_bytes(status_item->valuestring,
+								    sizeof(task_status) - 1)),
+					task_status, (sizeof(task_status) - 1) + 1);
 			cJSON *content = cJSON_GetObjectItem(root, "content");
 			if (cJSON_IsObject(content)) {
 				cJSON *vurl = cJSON_GetObjectItem(content, "video_url");
 				if (cJSON_IsString(vurl) && vurl->valuestring)
-					strncpy(video_url, vurl->valuestring,
-						sizeof(video_url) - 1);
+					(void)nb_str_copy_to(
+						nb_str_from_parts(
+							vurl->valuestring,
+							nb_utf8_clamp_bytes(vurl->valuestring,
+									    sizeof(video_url) - 1)),
+						video_url, (sizeof(video_url) - 1) + 1);
 			}
 			cJSON_Delete(root);
 		} else {
-			log_err(self ? self->http.logger : NULL,
-				"video_gen: failed to parse submit response: %s", resp.body.data);
+			nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR,
+				     "video_gen: failed to parse submit response: %s",
+				     resp.body.ptr);
 		}
 	} else {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "video_gen: submit HTTP %d, body: %s", resp.status_code,
-			 resp.body.data ? resp.body.data : "(empty)");
-		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
+			 resp.body.ptr ? resp.body.ptr : "(empty)");
+		nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR, "%s",
+			     result->error_msg);
 	}
 	http_response_free(&resp);
 
@@ -475,15 +516,17 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 		if (!result->error_msg[0])
 			snprintf(result->error_msg, sizeof(result->error_msg),
 				 "video_gen: no task id in submit response");
-		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
+		nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR, "%s",
+			     result->error_msg);
 
-		return MORPH_ERR_PROTOCOL;
+		return NB_ERR_PROTOCOL;
 	}
 	if (task_status[0])
-		log_info(self ? self->http.logger : NULL,
-			 "video_gen: task submitted: %s (status=%s)", task_id, task_status);
+		nb_log_write(self ? self->http.logger : NULL, NB_LOG_INFO,
+			     "video_gen: task submitted: %s (status=%s)", task_id, task_status);
 	else
-		log_info(self ? self->http.logger : NULL, "video_gen: task submitted: %s", task_id);
+		nb_log_write(self ? self->http.logger : NULL, NB_LOG_INFO,
+			     "video_gen: task submitted: %s", task_id);
 
 	if (!video_url[0]) {
 		char query_url[640];
@@ -497,7 +540,10 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	if (rc != 0)
 		return rc;
 
-	strncpy(result->url, video_url, sizeof(result->url) - 1);
+	(void)nb_str_copy_to(
+		nb_str_from_parts(video_url,
+				  nb_utf8_clamp_bytes(video_url, sizeof(result->url) - 1)),
+		result->url, (sizeof(result->url) - 1) + 1);
 
 	char out_path[PATH_MAX];
 
@@ -505,12 +551,15 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	if (rc < 0)
 		return rc;
 
-	strncpy(result->path, out_path, sizeof(result->path) - 1);
+	(void)nb_str_copy_to(
+		nb_str_from_parts(out_path,
+				  nb_utf8_clamp_bytes(out_path, sizeof(result->path) - 1)),
+		result->path, (sizeof(result->path) - 1) + 1);
 	result->duration_seconds = duration > 0 ? duration : 5;
 	result->status = 1;
 
-	log_dbg(self ? self->http.logger : NULL, "video generated: %s (%ds)", out_path,
-		result->duration_seconds);
+	nb_log_write(self ? self->http.logger : NULL, NB_LOG_DEBUG, "video generated: %s (%ds)",
+		     out_path, result->duration_seconds);
 	video_report_usage(self, model_id, task_id, result);
 	return 0;
 }

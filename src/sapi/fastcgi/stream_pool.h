@@ -4,13 +4,12 @@
 
 #include "fcgi_io.h"
 
-struct morph_log;
+struct nb_log;
 struct fcgi_stream_pool;
 
 typedef void (*fcgi_stream_fn)(request_t *r);
 
-struct fcgi_stream_pool *fcgi_stream_pool_create(int threads, int queue_max,
-						 struct morph_log *logger);
+struct fcgi_stream_pool *fcgi_stream_pool_create(int threads, int queue_max, struct nb_log *logger);
 void fcgi_stream_pool_destroy(struct fcgi_stream_pool *pool);
 
 /* Success takes the wrapper's FCGX_Request, clears wrapper->fcgx, marks it

@@ -1,9 +1,10 @@
 #include "sapi/cli/presentation/diagnostics.h"
+#include "nb/cleanup.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
 #include "config/config.h"
-#include "util/file.h"
-#include "util/error.h"
+#include "nb/file.h"
+#include "errors.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -70,32 +71,40 @@ static void cli_diagnostics_print_config_warning(const struct config_validation_
 
 void cli_diagnostics_config_error(struct cli_application *ctx, const char *config_path, int rc)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	struct config_validation_error error = {0};
 	const char *requested = config_path ? config_path : "~/.morph/config.toml";
-	char *expanded = file_expand_path_copy(requested);
+	char *expanded = (nb_path_expand(&file_value_1, requested, NULL) == NB_OK
+				  ? strdup(nb_buf_cstr(&file_value_1))
+				  : NULL);
 	const char *display = expanded ? expanded : requested;
-	int validation_rc = expanded ? config_validate_file(expanded, &error) : -EINVAL;
+	int validation_rc = expanded ? config_validate_file(expanded, &error) : NB_ERR_INVAL;
 
-	if ((validation_rc == MORPH_ERR_CONFIG || validation_rc == MORPH_ERR_PARSE) &&
+	if ((validation_rc == MORPH_ERR_CONFIG || validation_rc == NB_ERR_PARSE) &&
 	    error.message[0]) {
 		cli_diagnostics_config(ctx, 0, display, &error);
 	} else {
 		fprintf(stderr, "morph: failed to load configuration %s: %s\n", display,
-			morph_strerror(rc));
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	}
 	free(expanded);
 }
 
 int cli_diagnostics_preflight(struct cli_application *ctx, const char *config_path)
 {
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	struct config_validation_error error = {0};
 	const char *requested = config_path ? config_path : "~/.morph/config.toml";
-	char *expanded = file_expand_path_copy(requested);
+	char *expanded = (nb_path_expand(&file_value_2, requested, NULL) == NB_OK
+				  ? strdup(nb_buf_cstr(&file_value_2))
+				  : NULL);
 	int rc;
 
 	if (!expanded)
 		return 0;
-	if (!file_exists(expanded)) {
+	if (!nb_file_exists(expanded)) {
 		free(expanded);
 		return 0;
 	}

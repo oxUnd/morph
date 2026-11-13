@@ -2,7 +2,7 @@
 #define MORPH_FCGI_SERVICES_TURN_JOB_INTERNAL_H
 
 #include <limits.h>
-#include <pthread.h>
+#include "nb/thread.h"
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -39,7 +39,7 @@ struct fcgi_turn_job {
 	struct fcgi_turn_ticket *ticket;
 	int queue_position;
 	int64_t enqueued_ms;
-	pthread_t heartbeat_thread;
+	nb_thread *heartbeat_thread;
 	atomic_int heartbeat_stop;
 	int heartbeat_started;
 	char pending_thought[2048];

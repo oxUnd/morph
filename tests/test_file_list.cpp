@@ -1,10 +1,14 @@
 #include <gtest/gtest.h>
+#include <string.h>
+#include <stdlib.h>
+#include "nb/cleanup.h"
+#include "nb/err.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
 #include "agent/tool_runtime.h"
 #include "agent/tools/file_list.h"
-#include "util/cancel.h"
-#include "util/file.h"
+#include "nb/cancel.h"
+#include "nb/file.h"
 #include <algorithm>
 #include <filesystem>
 #include <fcntl.h>
@@ -47,7 +51,7 @@ protected:
 
 	void File(const std::string &name)
 	{
-		ASSERT_EQ(file_write_all(Path(name).c_str(), "", 0), 0);
+		ASSERT_EQ(nb_file_write_all(Path(name).c_str(), "", 0, NULL), 0);
 	}
 
 	void Directory(const std::string &name)
@@ -230,20 +234,20 @@ TEST_F(FileListTest, RejectsMalformedOptions)
 		"{\"after\":{\"name\":\"x\",\"type\":\"invalid\"}}"}) {
 		SCOPED_TRACE(options);
 		List(options);
-		EXPECT_EQ(status, -EINVAL);
+		EXPECT_EQ(status, NB_ERR_INVAL);
 		EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(result.envelope, "ok")));
 	}
 	List("{}", "");
-	EXPECT_EQ(status, -EINVAL);
+	EXPECT_EQ(status, NB_ERR_INVAL);
 }
 
 TEST_F(FileListTest, MissingAndNonDirectoryErrorsAreDistinct)
 {
 	List("{}", "missing");
-	EXPECT_EQ(status, -ENOENT);
+	EXPECT_EQ(status, NB_ERR_NOT_FOUND);
 	File("regular");
 	List("{}", "regular");
-	EXPECT_EQ(status, -ENOTDIR);
+	EXPECT_EQ(status, NB_ERR_NOT_DIR);
 }
 
 TEST_F(FileListTest, PermissionDeniedIsPreserved)
@@ -253,7 +257,7 @@ TEST_F(FileListTest, PermissionDeniedIsPreserved)
 	Directory("denied");
 	ASSERT_EQ(chmod(Path("denied").c_str(), 0000), 0);
 	List("{}", "denied");
-	EXPECT_EQ(status, -EACCES);
+	EXPECT_EQ(status, NB_ERR_PERMISSION);
 	ASSERT_EQ(chmod(Path("denied").c_str(), 0700), 0);
 }
 
@@ -266,16 +270,16 @@ TEST_F(FileListTest, RejectsInvalidUtf8NamesWithoutChangingTheirIdentity)
 	ASSERT_GE(fd, 0);
 	close(fd);
 	List();
-	EXPECT_EQ(status, -EILSEQ);
+	EXPECT_EQ(status, NB_ERR_ENCODING);
 }
 
 TEST_F(FileListTest, CancellationBeforeOpeningDirectory)
 {
-	struct morph_cancel_token token = {};
-	morph_cancel_token_cancel(&token);
+	struct nb_cancel token = {};
+	nb_cancel_request(&token);
 	runtime.http.cancel_token = &token;
 	List();
-	EXPECT_EQ(status, -ECANCELED);
+	EXPECT_EQ(status, NB_ERR_CANCELLED);
 }
 
 TEST_F(FileListTest, CancellationWhileScanning)
@@ -289,7 +293,7 @@ TEST_F(FileListTest, CancellationWhileScanning)
 		return ++*count >= 5 ? 1 : 0;
 	};
 	List();
-	EXPECT_EQ(status, -ECANCELED);
+	EXPECT_EQ(status, NB_ERR_CANCELLED);
 	EXPECT_EQ(checks, 5);
 	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(result.envelope, "ok")));
 }
@@ -298,12 +302,19 @@ TEST_F(FileListTest, ListingAnExternalSymlinkDirectoryIsDenied)
 {
 	ASSERT_EQ(symlink("/", Path("outside").c_str()), 0);
 	List("{}", "outside");
-	EXPECT_EQ(status, -EPERM);
+	EXPECT_EQ(status, NB_ERR_NOT_PERMITTED);
 }
 
 TEST_F(FileListTest, ReaddirFailureDoesNotReturnSuccessfulPartialListing)
 {
-	char *canonical = file_resolve_path_copy(directory);
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
+
+	char *canonical =
+		(nb_path_expand(&file_value_1, directory, NULL) == NB_OK &&
+				 nb_path_canonical_missing(
+					 &file_value_1, nb_buf_cstr(&file_value_1), NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&file_value_1))
+			 : NULL);
 	ASSERT_NE(canonical, nullptr);
 	struct CloseDirectory {
 		const char *path;
@@ -338,7 +349,7 @@ TEST_F(FileListTest, ReaddirFailureDoesNotReturnSuccessfulPartialListing)
 	};
 	List();
 	EXPECT_TRUE(state.closed);
-	EXPECT_EQ(status, -EBADF);
+	EXPECT_EQ(status, NB_ERR_BAD_HANDLE);
 	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(result.envelope, "ok")));
 	free(canonical);
 }

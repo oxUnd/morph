@@ -1,3 +1,4 @@
+#include "nb/err.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,7 +78,8 @@ int guardrail_check(const char *text, const char *rule,
 {
 	(void)rule;
 	(void)description;
-	if (!text || !result_json) return -1;
+	if (!text || !result_json)
+		return NB_ERR_INVAL;
 
 	int passed = 1;
 	const char *reason = "";
@@ -105,7 +107,8 @@ int guardrail_check(const char *text, const char *rule,
 	size_t rlen = strlen(reason);
 	size_t bufsize = rlen + 64;
 	char *buf = (char *)malloc(bufsize);
-	if (!buf) return -1;
+	if (!buf)
+		return NB_ERR_NOMEM;
 
 	snprintf(buf, bufsize,
 		 "{\"pass\":%s,\"reason\":\"%s\"}",

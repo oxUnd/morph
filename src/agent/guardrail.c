@@ -1,14 +1,17 @@
-#include "util/signals.h"
-#include "util/cleanup.h"
-#include "util/child_io.h"
+#include "nb/signal.h"
+#include "nb/str.h"
+#include "nb/utf8.h"
+#include "nb/cleanup.h"
+#include "nb/process.h"
 #include <spawn.h>
 #include "guardrail.h"
 #include "react.h"
 #include "models/llm.h"
-#include "util/log.h"
-#include "util/file.h"
-#include "util/buf.h"
-#include "util/error.h"
+#include "nb/log.h"
+#include "nb/file.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
 #include "ipc/jsonrpc.h"
 #include "cJSON.h"
 #include "re.h"
@@ -70,9 +73,9 @@ enum guardrail_retry_policy guardrail_tool_retry_policy(const struct react_step 
 		return GUARDRAIL_RETRY_BLOCKED;
 	if (terminal)
 		return GUARDRAIL_RETRY_NEVER;
-	if (observation->error_code == -EPERM ||
-	    observation->error_code == -EACCES ||
-	    observation->error_code == -ECANCELED ||
+	if (observation->error_code == NB_ERR_NOT_PERMITTED ||
+	    observation->error_code == NB_ERR_PERMISSION ||
+	    observation->error_code == NB_ERR_CANCELLED ||
 	    observation->error_code == MORPH_ERR_NOT_CONFIGURED)
 		return GUARDRAIL_RETRY_NEEDS_USER;
 	return GUARDRAIL_RETRY_UNSPECIFIED;
@@ -88,7 +91,11 @@ static int build_tool_outcomes(const struct react_step *steps,
 	while (cur && count < max_out) {
 		if (cur->type == REACT_STEP_ACTION && cur->tool_name) {
 			struct tool_outcome *o = &out[count++];
-			strncpy(o->name, cur->tool_name, sizeof(o->name) - 1);
+			(void)nb_str_copy_to(
+				nb_str_from_parts(
+					cur->tool_name,
+					nb_utf8_clamp_bytes(cur->tool_name, sizeof(o->name) - 1)),
+				o->name, (sizeof(o->name) - 1) + 1);
 			o->name[sizeof(o->name) - 1] = '\0';
 			o->is_creative = is_creative_tool(cur->tool_name);
 			o->succeeded = 0;
@@ -227,7 +234,7 @@ gr_creative_file_missing(const struct guardrail_eval_ctx *ctx,
 	for (int i = 0; i < ctx->tool_artifacts->count; i++) {
 		const struct tool_artifact *artifact =
 			&ctx->tool_artifacts->items[i];
-		if (artifact->path[0] && !file_exists(artifact->path)) {
+		if (artifact->path[0] && !nb_file_exists(artifact->path)) {
 			snprintf(reason_out, reason_cap,
 				 "Creative tool '%s' reported output '%s' "
 				 "but the file does not exist on disk.",
@@ -276,6 +283,8 @@ static int markdown_url_is_local(const char *url)
 
 static char *markdown_local_path_from_url(const char *url)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	const char *path;
 
 	if (!url)
@@ -286,7 +295,9 @@ static char *markdown_local_path_from_url(const char *url)
 		path += 7;
 
 	if (path[0] == '~')
-		return file_expand_path_copy(path);
+		return (nb_path_expand(&file_value_1, path, NULL) == NB_OK
+				? strdup(nb_buf_cstr(&file_value_1))
+				: NULL);
 	return strdup(path);
 }
 
@@ -377,7 +388,7 @@ gr_final_local_file_missing(const struct guardrail_eval_ctx *ctx,
 		}
 
 		path = markdown_local_path_from_url(url);
-		if (path && !file_exists(path)) {
+		if (path && !nb_file_exists(path)) {
 			snprintf(reason_out, reason_cap,
 				 "Referenced local file does not exist: %s",
 				 path);
@@ -405,33 +416,49 @@ int guardrail_rule_register(struct guardrail_config *cfg,
 			     const char *ext_entry,
 			     const char *action_text)
 {
-	if (!cfg || !name) return -EINVAL;
-	if (cfg->rule_count >= GUARDRAIL_RULES_MAX) return -ENOSPC;
+	if (!cfg || !name)
+		return NB_ERR_INVAL;
+	if (cfg->rule_count >= GUARDRAIL_RULES_MAX)
+		return NB_ERR_NO_SPACE;
 	if (guardrail_rule_borrow(cfg, name))
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	struct guardrail_rule *r = &cfg->rules[cfg->rule_count];
 	memset(r, 0, sizeof(*r));
-	strncpy(r->name, name, sizeof(r->name) - 1);
+	(void)nb_str_copy_to(
+		nb_str_from_parts(name, nb_utf8_clamp_bytes(name, sizeof(r->name) - 1)), r->name,
+		(sizeof(r->name) - 1) + 1);
 	r->hook = hook;
 	r->type = type;
 	r->enabled = 1;
 	r->check = (type == GUARDRAIL_RULE_C) ? check : NULL;
 	if (description)
-		strncpy(r->description, description, sizeof(r->description) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(
+				description,
+				nb_utf8_clamp_bytes(description, sizeof(r->description) - 1)),
+			r->description, (sizeof(r->description) - 1) + 1);
 	if (ext_entry)
-		strncpy(r->ext_entry, ext_entry, sizeof(r->ext_entry) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(ext_entry,
+					  nb_utf8_clamp_bytes(ext_entry, sizeof(r->ext_entry) - 1)),
+			r->ext_entry, (sizeof(r->ext_entry) - 1) + 1);
 	if (action_text)
-		strncpy(r->action_text, action_text, sizeof(r->action_text) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(
+				action_text,
+				nb_utf8_clamp_bytes(action_text, sizeof(r->action_text) - 1)),
+			r->action_text, (sizeof(r->action_text) - 1) + 1);
 	cfg->rule_count++;
-	log_dbg(cfg ? cfg->logger : NULL, "guardrail: registered rule '%s' (hook=%d, type=%d)",
-		name, hook, type);
+	nb_log_write(cfg ? cfg->logger : NULL, NB_LOG_DEBUG,
+		     "guardrail: registered rule '%s' (hook=%d, type=%d)", name, hook, type);
 	return 0;
 }
 
 int guardrail_rule_disable(struct guardrail_config *cfg, const char *name)
 {
 	struct guardrail_rule *r = guardrail_rule_borrow(cfg, name);
-	if (!r) return -ENOENT;
+	if (!r)
+		return NB_ERR_NOT_FOUND;
 	r->enabled = 0;
 	return 0;
 }
@@ -439,7 +466,8 @@ int guardrail_rule_disable(struct guardrail_config *cfg, const char *name)
 int guardrail_rule_enable(struct guardrail_config *cfg, const char *name)
 {
 	struct guardrail_rule *r = guardrail_rule_borrow(cfg, name);
-	if (!r) return -ENOENT;
+	if (!r)
+		return NB_ERR_NOT_FOUND;
 	r->enabled = 1;
 	return 0;
 }
@@ -457,7 +485,7 @@ struct guardrail_rule *guardrail_rule_borrow(struct guardrail_config *cfg, const
 
 static int llm_collect_cb(const char *token, void *user_data)
 {
-	return morph_buf_append_cb(token, user_data);
+	return nb_buf_append_cstr(user_data, token) ? 0 : NB_ERR_NOMEM;
 }
 
 static enum guardrail_verdict
@@ -467,8 +495,8 @@ guardrail_llm_check(const struct guardrail_rule *rule,
 		    char *reason_out, size_t reason_cap)
 {
 	if (!cfg->llm) {
-		log_warn(cfg ? cfg->logger : NULL,
-			 "guardrail: LLM rule '%s' has no LLM model, skipping", rule->name);
+		nb_log_write(cfg ? cfg->logger : NULL, NB_LOG_WARN,
+			     "guardrail: LLM rule '%s' has no LLM model, skipping", rule->name);
 		return GUARDRAIL_PASS;
 	}
 
@@ -483,43 +511,46 @@ guardrail_llm_check(const struct guardrail_rule *rule,
 	}
 	if (!check_text || !*check_text) return GUARDRAIL_PASS;
 
-	morph_buf_t prompt MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int prompt_rc = morph_buf_printf(&prompt,
-		"Check if the following text passes this rule: \"%s\"\n\n"
-		"Text: \"%s\"\n\n"
-		"Respond with ONLY a JSON object: "
-		"{\"pass\": true/false, \"reason\": \"brief explanation\"}\n"
-		"Do not include any other text.",
-		rule->description, check_text);
+	nb_buf prompt NB_CLEANUP(nb_buf_cleanup) = {0};
+	int prompt_rc = (nb_buf_printf(&prompt,
+				       "Check if the following text passes this rule: \"%s\"\n\n"
+				       "Text: \"%s\"\n\n"
+				       "Respond with ONLY a JSON object: "
+				       "{\"pass\": true/false, \"reason\": \"brief explanation\"}\n"
+				       "Do not include any other text.",
+				       rule->description, check_text)
+				 ? 0
+				 : NB_ERR_NOMEM);
 	if (prompt_rc != 0) {
-		log_warn(cfg->logger, "guardrail: could not build LLM prompt: %s",
-			 morph_strerror(prompt_rc));
+		nb_log_write(cfg->logger, NB_LOG_WARN, "guardrail: could not build LLM prompt: %s",
+			     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, prompt_rc));
 		return GUARDRAIL_PASS;
 	}
 
-	morph_buf_t collect MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	if (morph_buf_init(&collect, 4096) != 0)
+	nb_buf collect NB_CLEANUP(nb_buf_cleanup) = {0};
+	if ((nb_buf_init(&collect), nb_buf_reserve(&collect, 4096) ? 0 : NB_ERR_NOMEM) != 0)
 		return GUARDRAIL_PASS;
 
-	const char *msgs[1] = { morph_buf_cstr_borrow(&prompt) };
+	const char *msgs[1] = {nb_buf_cstr(&prompt)};
 	/* A request view borrows the model's credential/handle owners for this call. */
 	struct model request = *cfg->llm;
 	request.http.cancel_token = ctx->cancel_token;
 	int status = request.chat(&request, NULL, msgs, 1, NULL, llm_collect_cb, &collect);
 	if (status < 0 || collect.len == 0) {
-		log_warn(cfg ? cfg->logger : NULL,
-			 "guardrail: LLM call failed for rule '%s', defaulting PASS", rule->name);
-		morph_buf_cleanup(&collect);
+		nb_log_write(cfg ? cfg->logger : NULL, NB_LOG_WARN,
+			     "guardrail: LLM call failed for rule '%s', defaulting PASS",
+			     rule->name);
+		nb_buf_cleanup(&collect);
 		return GUARDRAIL_PASS;
 	}
 
-	char *result_str = morph_buf_detach(&collect);
+	char *result_str = (nb_buf_ok(&collect) ? strdup(nb_buf_cstr(&collect)) : NULL);
 	cJSON *root = cJSON_Parse(result_str);
 	free(result_str);
 	if (!root) {
-		log_warn(cfg ? cfg->logger : NULL,
-			 "guardrail: LLM response not JSON for rule '%s', defaulting PASS",
-			 rule->name);
+		nb_log_write(cfg ? cfg->logger : NULL, NB_LOG_WARN,
+			     "guardrail: LLM response not JSON for rule '%s', defaulting PASS",
+			     rule->name);
 		return GUARDRAIL_PASS;
 	}
 
@@ -530,7 +561,11 @@ guardrail_llm_check(const struct guardrail_rule *rule,
 		cJSON *reason_item = cJSON_GetObjectItem(root, "reason");
 		const char *reason = cJSON_IsString(reason_item)
 			? reason_item->valuestring : rule->description;
-		snprintf(reason_out, reason_cap, "%s", reason);
+		if (reason_cap)
+			(void)nb_str_copy_to(
+				nb_str_from_parts(reason,
+						  nb_utf8_clamp_bytes(reason, reason_cap - 1)),
+				reason_out, reason_cap);
 	}
 
 	cJSON_Delete(root);
@@ -553,17 +588,17 @@ static const char *gr_check_text(const struct guardrail_rule *rule,
 	return NULL;
 }
 
-static enum guardrail_verdict guardrail_parse_check_result(struct morph_log *logger,
+static enum guardrail_verdict guardrail_parse_check_result(struct nb_log *logger,
 							   const char *result_json,
 							   const struct guardrail_rule *rule,
 							   char *reason_out, size_t reason_cap)
 {
 	cJSON *root = cJSON_Parse(result_json);
 	if (!root) {
-		log_warn(logger,
-			 "guardrail: ext rule '%s' returned invalid JSON, "
-			 "check unavailable",
-			 rule->name);
+		nb_log_write(logger, NB_LOG_WARN,
+			     "guardrail: ext rule '%s' returned invalid JSON, "
+			     "check unavailable",
+			     rule->name);
 		return GUARDRAIL_ERROR;
 	}
 	cJSON *pass_item = cJSON_GetObjectItem(root, "pass");
@@ -576,32 +611,39 @@ static enum guardrail_verdict guardrail_parse_check_result(struct morph_log *log
 		cJSON *reason_item = cJSON_GetObjectItem(root, "reason");
 		const char *reason = cJSON_IsString(reason_item)
 			? reason_item->valuestring : rule->description;
-		snprintf(reason_out, reason_cap, "%s", reason);
+		if (reason_cap)
+			(void)nb_str_copy_to(
+				nb_str_from_parts(reason,
+						  nb_utf8_clamp_bytes(reason, reason_cap - 1)),
+				reason_out, reason_cap);
 	}
 	cJSON_Delete(root);
 	return passed ? GUARDRAIL_PASS : GUARDRAIL_FAIL;
 }
 
-int guardrail_ext_so_load(struct morph_log *logger, struct guardrail_rule *rule)
+int guardrail_ext_so_load(struct nb_log *logger, struct guardrail_rule *rule)
 {
-	if (!rule || !rule->ext_entry[0]) return -EINVAL;
+	if (!rule || !rule->ext_entry[0])
+		return NB_ERR_INVAL;
 	void *handle = dlopen(rule->ext_entry, RTLD_NOW | RTLD_LOCAL);
 	if (!handle) {
-		log_err(logger, "guardrail: dlopen %s failed: %s", rule->ext_entry, dlerror());
+		nb_log_write(logger, NB_LOG_ERROR, "guardrail: dlopen %s failed: %s",
+			     rule->ext_entry, dlerror());
 		return MORPH_ERR_LOAD;
 	}
 	void *sym = dlsym(handle, "guardrail_check");
 	guardrail_ext_check_fn fn = NULL;
 	memcpy(&fn, &sym, sizeof(fn));
 	if (!fn) {
-		log_err(logger, "guardrail: no 'guardrail_check' symbol in %s", rule->ext_entry);
+		nb_log_write(logger, NB_LOG_ERROR, "guardrail: no 'guardrail_check' symbol in %s",
+			     rule->ext_entry);
 		dlclose(handle);
 		return MORPH_ERR_LOAD;
 	}
 	rule->dl_handle = handle;
 	rule->ext_check = fn;
-	log_info(logger, "guardrail: loaded .so ext rule '%s' from %s", rule->name,
-		 rule->ext_entry);
+	nb_log_write(logger, NB_LOG_INFO, "guardrail: loaded .so ext rule '%s' from %s", rule->name,
+		     rule->ext_entry);
 	return 0;
 }
 
@@ -619,8 +661,8 @@ guardrail_ext_so_check(const struct guardrail_rule *rule,
 		       char *reason_out, size_t reason_cap)
 {
 	if (!rule->ext_check) {
-		log_warn(ctx ? ctx->logger : NULL, "guardrail: .so rule '%s' has no check fn",
-			 rule->name);
+		nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_WARN,
+			     "guardrail: .so rule '%s' has no check fn", rule->name);
 		return GUARDRAIL_ERROR;
 	}
 	const char *text = gr_check_text(rule, ctx);
@@ -629,10 +671,10 @@ guardrail_ext_so_check(const struct guardrail_rule *rule,
 	int rc = rule->ext_check(text, rule->name, rule->description,
 				 &result_json);
 	if (rc != 0 || !result_json) {
-		log_warn(ctx ? ctx->logger : NULL,
-			 "guardrail: .so rule '%s' returned %d, "
-			 "check unavailable",
-			 rule->name, rc);
+		nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_WARN,
+			     "guardrail: .so rule '%s' returned %d, "
+			     "check unavailable",
+			     rule->name, rc);
 		free(result_json);
 		return GUARDRAIL_ERROR;
 	}
@@ -646,7 +688,7 @@ guardrail_ext_so_check(const struct guardrail_rule *rule,
 static int guardrail_cancelled(void *opaque)
 {
 	const struct guardrail_eval_ctx *ctx = opaque;
-	return ctx != NULL && morph_cancel_token_is_cancelled(ctx->cancel_token);
+	return ctx != NULL && nb_cancel_requested(ctx->cancel_token);
 }
 
 /** \brief Preserve the execution error for the caller. */
@@ -663,19 +705,15 @@ static enum guardrail_verdict guardrail_ext_exec_check(const struct guardrail_ru
 						       const struct guardrail_eval_ctx *ctx,
 						       char *reason_out, size_t reason_cap)
 {
-	int input_pipe[2], output_pipe[2];
 	int status = 0;
-	pid_t pid;
-	morph_buf_t request MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_t output MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_t errors MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf request NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf errors NB_CLEANUP(nb_buf_cleanup) = {0};
 	struct jsonrpc_response response = {0};
 	cJSON *params;
 	char *params_json;
 	char *json;
 	int rc;
-	posix_spawn_file_actions_t actions;
-	extern char **environ;
 
 	if (rule->ext_entry[0] == '\0') {
 		return GUARDRAIL_ERROR;
@@ -702,98 +740,54 @@ static enum guardrail_verdict guardrail_ext_exec_check(const struct guardrail_ru
 	if (json == NULL) {
 		return GUARDRAIL_ERROR;
 	}
-	rc = morph_buf_init(&request, strlen(json) + 2);
+	rc = (nb_buf_init(&request), nb_buf_reserve(&request, strlen(json) + 2) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0) {
-		rc = morph_buf_puts(&request, json);
+		rc = (nb_buf_append_cstr(&request, json) ? 0 : NB_ERR_NOMEM);
 	}
 	if (rc == 0) {
-		rc = morph_buf_putc(&request, '\n');
+		rc = (nb_buf_append_char(&request, '\n') ? 0 : NB_ERR_NOMEM);
 	}
 	free(json);
 	if (rc == 0) {
-		rc = morph_buf_init(&output, BUFSIZ);
+		rc = (nb_buf_init(&output), nb_buf_reserve(&output, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	}
 	if (rc == 0) {
-		rc = morph_buf_init(&errors, BUFSIZ);
+		rc = (nb_buf_init(&errors), nb_buf_reserve(&errors, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	}
 	if (rc != 0) {
 		return guardrail_ext_failure(ctx, rc);
 	}
-	rc = morph_io_pipe(input_pipe);
-	if (rc != 0) {
+	const char *argv[] = {rule->ext_entry, NULL};
+	nb_process_options options = {
+		.argv = argv,
+		.search_path = true,
+		.close_fds = true,
+		.new_group = true,
+		.stderr_mode = NB_PROCESS_NULL,
+	};
+	nb_process *child NB_CLEANUP(nb_process_cleanup) = NULL;
+	rc = nb_process_spawn(&options, &child, NULL);
+	if (rc != NB_OK)
 		return guardrail_ext_failure(ctx, rc);
-	}
-	rc = morph_io_pipe(output_pipe);
-	if (rc != 0) {
-		close(input_pipe[0]);
-		close(input_pipe[1]);
-		return guardrail_ext_failure(ctx, rc);
-	}
-	rc = posix_spawn_file_actions_init(&actions);
+	bool truncated = false;
+	nb_process_exchange_options exchange = {
+		.timeout_ms = 30000,
+		.max_output = 1024u * 1024u,
+		.cancelled = guardrail_cancelled,
+		.cancel_ctx = (void *)ctx,
+		.stdout_truncated = &truncated,
+	};
+	rc = nb_process_exchange(child, nb_buf_cstr(&request), nb_buf_len(&request), &exchange,
+				 &output, &errors, &status, NULL);
+	if (rc == NB_OK && truncated)
+		rc = NB_ERR_TOO_BIG;
+	if (rc == NB_OK && status != 0)
+		rc = NB_ERR_NO_CHILD;
 	if (rc == 0) {
-		rc = posix_spawn_file_actions_adddup2(&actions, input_pipe[0], STDIN_FILENO);
-		if (rc == 0) {
-			rc = posix_spawn_file_actions_adddup2(&actions, output_pipe[1],
-							      STDOUT_FILENO);
-		}
-		if (rc == 0) {
-			rc = posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null",
-							      O_WRONLY, 0);
-		}
-		for (int i = 0; i < 2 && rc == 0; i++) {
-			rc = posix_spawn_file_actions_addclose(&actions, input_pipe[i]);
-			if (rc == 0) {
-				rc = posix_spawn_file_actions_addclose(&actions, output_pipe[i]);
-			}
-		}
-		char *argv[] = {(char *)rule->ext_entry, NULL};
-		posix_spawnattr_t attributes;
-		int attribute_rc = posix_spawnattr_init(&attributes);
-		if (attribute_rc == 0) {
-			sigset_t empty;
-			sigemptyset(&empty);
-			attribute_rc = posix_spawnattr_setsigmask(&attributes, &empty);
-			if (attribute_rc == 0) {
-				attribute_rc = posix_spawnattr_setpgroup(&attributes, 0);
-			}
-			if (attribute_rc == 0) {
-				short flags = POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETPGROUP;
-#ifdef POSIX_SPAWN_CLOEXEC_DEFAULT
-				flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
-#endif
-				attribute_rc = posix_spawnattr_setflags(&attributes, flags);
-			}
-			if (rc == 0 && attribute_rc == 0) {
-				rc = posix_spawnp(&pid, rule->ext_entry, &actions, &attributes,
-						  argv, environ);
-			}
-			posix_spawnattr_destroy(&attributes);
-		}
-		if (rc == 0) {
-			rc = attribute_rc;
-		}
-		posix_spawn_file_actions_destroy(&actions);
-	}
-	close(input_pipe[0]);
-	close(output_pipe[1]);
-	if (rc != 0) {
-		close(input_pipe[1]);
-		close(output_pipe[0]);
-		rc = -rc;
-		return guardrail_ext_failure(ctx, rc);
-	}
-	rc = morph_child_exchange(pid, input_pipe[1], output_pipe[0], -1,
-				  morph_buf_cstr_borrow(&request), request.len, 30000, 1024 * 1024,
-				  guardrail_cancelled, (void *)ctx, &output, &errors, &status);
-	close(output_pipe[0]);
-	if (rc == 0 && (!WIFEXITED(status) || WEXITSTATUS(status) != 0)) {
-		rc = -ECHILD;
-	}
-	if (rc == 0) {
-		rc = jsonrpc_response_copy(morph_buf_cstr_borrow(&output), &response);
+		rc = jsonrpc_response_copy(nb_buf_cstr(&output), &response);
 	}
 	if (rc == 0 && (response.has_error || response.result_json == NULL)) {
-		rc = MORPH_ERR_PROTOCOL;
+		rc = NB_ERR_PROTOCOL;
 	}
 	if (rc == 0) {
 		enum guardrail_verdict verdict =
@@ -828,7 +822,7 @@ struct guardrail_result guardrail_run_hook(const struct guardrail_config *cfg,
 	};
 	if (!cfg || !cfg->enabled) return r;
 	if (eval == NULL) {
-		r.check_error = -EINVAL;
+		r.check_error = NB_ERR_INVAL;
 		return r;
 	}
 	int check_error = 0;
@@ -861,7 +855,8 @@ struct guardrail_result guardrail_run_hook(const struct guardrail_config *cfg,
 
 		if (v == GUARDRAIL_ERROR) {
 			r.check_error = check_error < 0 ? check_error : MORPH_ERR_PROCESSING;
-			log_warn(cfg->logger, "guardrail check unavailable: %s", rule->name);
+			nb_log_write(cfg->logger, NB_LOG_WARN, "guardrail check unavailable: %s",
+				     rule->name);
 			if (rule->block_on_error) {
 				snprintf(r.reason, sizeof(r.reason),
 					 "Guardrail check unavailable: %s", rule->name);
@@ -871,8 +866,8 @@ struct guardrail_result guardrail_run_hook(const struct guardrail_config *cfg,
 		if (v == GUARDRAIL_FAIL) {
 			r.verdict = GUARDRAIL_FAIL;
 			r.triggered_rule = rule;
-			log_info(cfg ? cfg->logger : NULL, "guardrail[%s]: FAIL - %s", rule->name,
-				 r.reason);
+			nb_log_write(cfg ? cfg->logger : NULL, NB_LOG_INFO,
+				     "guardrail[%s]: FAIL - %s", rule->name, r.reason);
 			return r;
 		}
 	}

@@ -1,12 +1,14 @@
 #include "sapi/cli/commands/mcp.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "mcp/mcp.h"
 #include "config/config.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/mcp_tree.h"
-#include "util/array.h"
-#include "util/cleanup.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
 
@@ -32,19 +34,21 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 		int count = runtime_mcp_count(ctx->runtime);
 		if (count < 0)
 			return count;
-		morph_array_t servers MORPH_CLEANUP(morph_array_cleanup) = {0};
+		nb_vec servers NB_CLEANUP(nb_vec_cleanup) = {0};
 		struct runtime_mcp_status server;
-		int rc = morph_array_init(&servers, count ? (size_t)count : 1, sizeof(server));
+		int rc = (nb_vec_init(&servers, sizeof(server)),
+			  nb_vec_reserve(&servers, count ? (size_t)count : 1) ? 0 : NB_ERR_NOMEM);
 		for (int i = 0; !rc && i < count; i++) {
-			struct runtime_mcp_status *slot = morph_array_push_borrow(&servers);
+			struct runtime_mcp_status *slot = nb_vec_push(&servers);
 			if (!slot)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			rc = runtime_mcp_info(ctx->runtime, i, slot);
 		}
 		if (!rc)
-			rc = cli_mcp_tree_write(ctx, servers.elts, servers.nelts);
+			rc = cli_mcp_tree_write(ctx, ((void *)servers.data), servers.len);
 		if (rc)
-			CMD_ERROR(ctx, "failed to inspect MCP servers: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "failed to inspect MCP servers: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 
@@ -52,10 +56,10 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR(ctx, "usage: /mcp %s <server_name>", sub);
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
-		struct cli_mcp_descriptors descriptors
-			MORPH_CLEANUP(cli_mcp_descriptors_cleanup) = {0};
+		struct cli_mcp_descriptors descriptors NB_CLEANUP(cli_mcp_descriptors_cleanup) = {
+			0};
 		struct mcp_tool_desc *tools = NULL;
 		struct mcp_resource_desc *resources = NULL;
 		struct mcp_prompt_desc *prompts = NULL;
@@ -72,16 +76,18 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 			descriptors.items = prompts;
 		}
 		if (rc) {
-			CMD_ERROR(ctx, "failed to list %s: %s", sub, morph_strerror(rc));
+			CMD_ERROR(ctx, "failed to list %s: %s", sub,
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
-		morph_array_t rows MORPH_CLEANUP(morph_array_cleanup) = {0};
+		nb_vec rows NB_CLEANUP(nb_vec_cleanup) = {0};
 		struct cli_mcp_tree_item row;
-		rc = morph_array_init(&rows, count ? (size_t)count : 1, sizeof(row));
+		rc = (nb_vec_init(&rows, sizeof(row)),
+		      nb_vec_reserve(&rows, count ? (size_t)count : 1) ? 0 : NB_ERR_NOMEM);
 		for (int i = 0; !rc && i < count; i++) {
-			struct cli_mcp_tree_item *slot = morph_array_push_borrow(&rows);
+			struct cli_mcp_tree_item *slot = nb_vec_push(&rows);
 			if (!slot)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			if (tools)
 				*slot = (struct cli_mcp_tree_item){tools[i].name,
 					tools[i].description, NULL};
@@ -92,19 +98,20 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 				*slot = (struct cli_mcp_tree_item){prompts[i].name,
 					prompts[i].description, NULL};
 		}
-		return rc ? rc : cli_mcp_tree_items_write(ctx, sub, name, rows.elts, rows.nelts);
+		return rc ? rc
+			  : cli_mcp_tree_items_write(ctx, sub, name, ((void *)rows.data), rows.len);
 	}
 
 	if (strcmp(sub, "connect") == 0) {
 		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR(ctx, "usage: /mcp connect <server_name>");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 		struct runtime_mcp_status info;
 		if (runtime_mcp_find(ctx->runtime, name, &info) != 0) {
 			CMD_ERROR(ctx, "MCP server not found: %s", name);
-			return -ENOENT;
+			return NB_ERR_NOT_FOUND;
 		}
 		if (info.state == RUNTIME_MCP_CONNECTING || info.state == RUNTIME_MCP_DISCOVERING ||
 		    info.state == RUNTIME_MCP_REGISTERING) {
@@ -119,7 +126,8 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 		if (rc < 0) {
 			if (!cli_mcp_event_tree_visible(ctx))
 				CMD_ERROR(ctx, "failed to connect to '%s': %s", name,
-					  morph_strerror(rc));
+					  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+						     rc));
 			return rc;
 		}
 		int tools;
@@ -129,7 +137,8 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 		if (rc < 0) {
 			if (!cli_mcp_event_tree_visible(ctx))
 				CMD_ERROR(ctx, "failed to discover '%s': %s", name,
-					  morph_strerror(rc));
+					  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+						     rc));
 			return rc;
 		}
 		if (!cli_mcp_event_tree_visible(ctx))
@@ -141,16 +150,17 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR(ctx, "usage: /mcp disconnect <server_name>");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 		struct runtime_mcp_status info;
 		if (runtime_mcp_find(ctx->runtime, name, &info) != 0) {
 			CMD_ERROR(ctx, "MCP server not found: %s", name);
-			return -ENOENT;
+			return NB_ERR_NOT_FOUND;
 		}
 		int rc = runtime_mcp_disconnect(ctx->runtime, name);
 		if (rc < 0) {
-			CMD_ERROR(ctx, "failed to disconnect '%s': %s", name, morph_strerror(rc));
+			CMD_ERROR(ctx, "failed to disconnect '%s': %s", name,
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
 		CMD_OK(ctx, "MCP server '%s' disconnected", name);
@@ -161,7 +171,7 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 		  "unknown MCP subcommand: %s. Try: list, tools, resources, "
 		  "prompts, connect, disconnect",
 		  sub);
-	return -EINVAL;
+	return NB_ERR_INVAL;
 }
 
 static const struct cli_command cli_mcp_entries[] = {

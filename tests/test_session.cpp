@@ -1,13 +1,15 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 #include "db/database.h"
 #include "agent/history.h"
 #include "agent/react.h"
 #include "agent/tokenizer.h"
 #include "session.h"
 #include "persistence/history_store.h"
-#include "util/array.h"
-#include "util/cleanup.h"
-#include "util/utf8.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -36,7 +38,7 @@ protected:
 static int history_summary_failure(const char *, void *, char **out)
 {
 	*out = nullptr;
-	return -EIO;
+	return NB_ERR_IO;
 }
 
 TEST_F(SessionTest, CreateSession) {
@@ -48,7 +50,7 @@ TEST_F(SessionTest, CreateSession) {
 	EXPECT_GT(s.id, 0);
 	EXPECT_STRNE(s.display_id, "");
 	EXPECT_EQ(strlen(s.display_id), 8);
-	// hex format
+	/* hex format */
 	for (int i = 0; s.display_id[i]; i++)
 		EXPECT_TRUE(isxdigit(s.display_id[i]));
 }
@@ -123,9 +125,10 @@ TEST_F(SessionTest, HistoryVisitorPropagatesFailureAndReleasesItsStatement)
 	ASSERT_EQ(message_add(&db, session.id, "user", "first", 1), 0);
 	ASSERT_EQ(message_add(&db, session.id, "assistant", "second", 1), 0);
 	EXPECT_EQ(history_store_visit_messages(
-			  &db, session.id, [](const struct message *, void *) { return -EPIPE; },
+			  &db, session.id,
+			  [](const struct message *, void *) -> int { return NB_ERR_BROKEN_PIPE; },
 			  nullptr),
-		  -EPIPE);
+		  NB_ERR_BROKEN_PIPE);
 	EXPECT_EQ(sqlite3_next_stmt(db.handle, nullptr), nullptr);
 	EXPECT_EQ(history_store_visit_messages(
 			  &db, session.id,
@@ -339,7 +342,7 @@ TEST_F(SessionTest, DisplayIdUnique) {
 	struct session s1, s2;
 	session_create(&db, "unique1", "gpt-4o", &s1);
 	session_create(&db, "unique2", "gpt-4o", &s2);
-	// extremely unlikely to collide, but still…
+	/* Collisions are extremely unlikely. */
 	EXPECT_STRNE(s1.display_id, s2.display_id);
 	EXPECT_EQ(strlen(s1.display_id), strlen(s2.display_id));
 }
@@ -467,7 +470,7 @@ TEST_F(SessionTest, ModelHistoryDeactivateTurnKeepsOtherTurns) {
 	ASSERT_NE(items->next, nullptr);
 	EXPECT_STREQ(items->next->turn_id, "turn_good");
 	model_history_free_list(items);
-	EXPECT_EQ(model_history_deactivate_turn(&db, s.id, ""), -EINVAL);
+	EXPECT_EQ(model_history_deactivate_turn(&db, s.id, ""), NB_ERR_INVAL);
 }
 
 TEST_F(SessionTest, ModelHistoryMigratesTranscriptOnce) {
@@ -589,14 +592,16 @@ TEST_F(SessionTest, LegacyArchivedAnswerClosesRequestWithoutAssumingSuccess)
 	EXPECT_NE(strstr(items->payload_json, "answered"), nullptr);
 	EXPECT_EQ(strstr(items->payload_json, "success"), nullptr);
 	EXPECT_EQ(items->next->payload_json, nullptr);
-	morph_array_t messages = {};
+	nb_vec messages = {};
 	struct chat_message slot = {};
-	ASSERT_EQ(morph_array_init(&messages, 4, sizeof(slot)), 0);
+	ASSERT_EQ((nb_vec_init(&messages, sizeof(slot)),
+		   nb_vec_reserve(&messages, 4) ? 0 : NB_ERR_NOMEM),
+		  0);
 	ASSERT_EQ(agent_history_messages_copy(NULL, items, &messages), 0);
-	auto *request = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
+	auto *request = static_cast<struct chat_message *>(nb_vec_at(&messages, 0));
 	EXPECT_NE(strstr(request->content, "execution ended: answered"), nullptr);
 	EXPECT_EQ(tokenizer_count(tok, request->content), items->token_count);
-	request = static_cast<struct chat_message *>(morph_array_borrow(&messages, 1));
+	request = static_cast<struct chat_message *>(nb_vec_at(&messages, 1));
 	EXPECT_STREQ(request->content, "Continue testing");
 	struct agent_history_diagnostic diagnostic = {};
 	ASSERT_EQ(agent_history_diagnose(items, tok, &diagnostic), 0);
@@ -619,16 +624,18 @@ TEST_F(SessionTest, SnapshotBoundaryPrecedesLaterFinalAnswer)
 	strcpy(answer.kind, "assistant_message");
 	answer.sequence_no = 11;
 	answer.content = const_cast<char *>("Self-test complete: 34 PASS, 0 FAIL");
-	morph_array_t messages = {};
+	nb_vec messages = {};
 	struct chat_message slot = {};
-	ASSERT_EQ(morph_array_init(&messages, 4, sizeof(slot)), 0);
+	ASSERT_EQ((nb_vec_init(&messages, sizeof(slot)),
+		   nb_vec_reserve(&messages, 4) ? 0 : NB_ERR_NOMEM),
+		  0);
 	ASSERT_EQ(agent_history_messages_copy(NULL, &summary, &messages), 0);
-	ASSERT_EQ(messages.nelts, 2U);
-	auto *message = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
+	ASSERT_EQ(messages.len, 2U);
+	auto *message = static_cast<struct chat_message *>(nb_vec_at(&messages, 0));
 	EXPECT_NE(strstr(message->content, "sequence 9"), nullptr);
 	EXPECT_NE(strstr(message->content, "supersede this snapshot"), nullptr);
 	EXPECT_TRUE(message->is_context_summary);
-	message = static_cast<struct chat_message *>(morph_array_borrow(&messages, 1));
+	message = static_cast<struct chat_message *>(nb_vec_at(&messages, 1));
 	EXPECT_STREQ(message->content, "Self-test complete: 34 PASS, 0 FAIL");
 	agent_chat_messages_cleanup(&messages);
 }
@@ -973,7 +980,7 @@ TEST_F(SessionTest, ToolResultTokenLimitIncludesRedactionAndOmissionMarker)
 			EXPECT_EQ(truncated, 1);
 			EXPECT_LE(tokenizer_count(counter, prepared), limit);
 			EXPECT_EQ(strstr(prepared, "short-secret"), nullptr);
-			EXPECT_EQ(utf8valid(prepared), nullptr);
+			EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(prepared), NULL), NB_UTF8_OK);
 			if (limit >= 64) {
 				EXPECT_NE(strstr(prepared, "HEAD"), nullptr);
 				EXPECT_NE(strstr(prepared, "TAIL"), nullptr);
@@ -1044,7 +1051,7 @@ TEST_F(SessionTest, HistoryWritesKeepConnectionResultsAcrossConcurrentUpdates) {
 	std::atomic<int> update_error{SQLITE_OK};
 	std::thread worker([&] {
 		while (!stop.load()) {
-			struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {};
+			struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {};
 			int lock_rc = db_lock_acquire(&db, &lock);
 			if (lock_rc != 0) {
 				update_error.store(lock_rc);
@@ -1088,10 +1095,11 @@ TEST_F(SessionTest, HistoryWritesKeepConnectionResultsAcrossConcurrentUpdates) {
 TEST_F(SessionTest, HistoryBuilderUsesProviderNeutralCallIds) {
 	struct model_history_item call = {};
 	struct model_history_item result = {};
-	morph_array_t messages;
+	nb_vec messages;
 
-	ASSERT_EQ(morph_array_init(&messages, 2,
-		sizeof(struct chat_message)), 0);
+	ASSERT_EQ((nb_vec_init(&messages, sizeof(struct chat_message)),
+		   nb_vec_reserve(&messages, 2) ? 0 : NB_ERR_NOMEM),
+		  0);
 	std::strcpy(call.kind, "assistant_tool_calls");
 	call.payload_json = const_cast<char *>(
 		"{\"reasoning_content\":\"inspect state\",\"calls\":[{"
@@ -1106,9 +1114,9 @@ TEST_F(SessionTest, HistoryBuilderUsesProviderNeutralCallIds) {
 	result.provider_call_id = const_cast<char *>("provider_1");
 	result.active = 1;
 	ASSERT_EQ(agent_history_messages_copy(NULL, &call, &messages), 0);
-	ASSERT_EQ(messages.nelts, 2U);
-	auto *assistant = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
-	auto *tool = static_cast<struct chat_message *>(morph_array_borrow(&messages, 1));
+	ASSERT_EQ(messages.len, 2U);
+	auto *assistant = static_cast<struct chat_message *>(nb_vec_at(&messages, 0));
+	auto *tool = static_cast<struct chat_message *>(nb_vec_at(&messages, 1));
 	ASSERT_NE(assistant, nullptr);
 	ASSERT_NE(tool, nullptr);
 	ASSERT_EQ(assistant->tool_call_count, 1);
@@ -1120,10 +1128,11 @@ TEST_F(SessionTest, HistoryBuilderUsesProviderNeutralCallIds) {
 
 TEST_F(SessionTest, HistoryBuilderMigratesLegacyBashExecCalls) {
 	struct model_history_item item = {};
-	morph_array_t messages;
+	nb_vec messages;
 
-	ASSERT_EQ(morph_array_init(&messages, 1,
-		sizeof(struct chat_message)), 0);
+	ASSERT_EQ((nb_vec_init(&messages, sizeof(struct chat_message)),
+		   nb_vec_reserve(&messages, 1) ? 0 : NB_ERR_NOMEM),
+		  0);
 	std::strcpy(item.kind, "assistant_tool_calls");
 	item.payload_json = const_cast<char *>(
 		"{\"calls\":[{\"tool_call_id\":\"legacy_1\","
@@ -1135,8 +1144,8 @@ TEST_F(SessionTest, HistoryBuilderMigratesLegacyBashExecCalls) {
 		"\\\"write_paths\\\":[\\\"/tmp\\\"]}\"}]}");
 	item.active = 1;
 	ASSERT_EQ(agent_history_messages_copy(NULL, &item, &messages), 0);
-	ASSERT_EQ(messages.nelts, 1U);
-	auto *message = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
+	ASSERT_EQ(messages.len, 1U);
+	auto *message = static_cast<struct chat_message *>(nb_vec_at(&messages, 0));
 	ASSERT_NE(message, nullptr);
 	ASSERT_EQ(message->tool_call_count, 1);
 	EXPECT_STREQ(message->tool_calls[0].name, "exec");
@@ -1233,7 +1242,7 @@ TEST_F(SessionTest, HistoryDiagnoseAndRepairNormalizesInvalidItems) {
 
 TEST_F(SessionTest, FreeformToolHistoryPreservesRawInput) {
 	struct model_history_item item = {};
-	morph_array_t messages = {};
+	nb_vec messages = {};
 	const char *raw =
 		"*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch";
 	std::string payload =
@@ -1247,11 +1256,12 @@ TEST_F(SessionTest, FreeformToolHistoryPreservesRawInput) {
 	std::strcpy(item.role, "assistant");
 	item.payload_json = const_cast<char *>(payload.c_str());
 	item.active = 1;
-	ASSERT_EQ(morph_array_init(&messages, 2,
-		sizeof(struct chat_message)), 0);
+	ASSERT_EQ((nb_vec_init(&messages, sizeof(struct chat_message)),
+		   nb_vec_reserve(&messages, 2) ? 0 : NB_ERR_NOMEM),
+		  0);
 	ASSERT_EQ(agent_history_messages_copy(NULL, &item, &messages), 0);
-	ASSERT_EQ(messages.nelts, 1U);
-	auto *message = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
+	ASSERT_EQ(messages.len, 1U);
+	auto *message = static_cast<struct chat_message *>(nb_vec_at(&messages, 0));
 	ASSERT_NE(message, nullptr);
 	ASSERT_EQ(message->tool_call_count, 1);
 	EXPECT_EQ(message->tool_calls[0].input_kind, TOOL_INPUT_TEXT);
@@ -1297,18 +1307,20 @@ TEST_F(SessionTest, ToolCallRedactionPreservesJsonAndSourceTemplates) {
 	EXPECT_EQ(std::strstr(items->payload_json, "QUJDRA=="), nullptr);
 	EXPECT_EQ(std::strstr(items->payload_json, "secret-value"), nullptr);
 	EXPECT_EQ(items->token_count, tokenizer_count(nullptr, items->payload_json));
-	morph_array_t messages = {};
-	ASSERT_EQ(morph_array_init(&messages, 2, sizeof(struct chat_message)), 0);
+	nb_vec messages = {};
+	ASSERT_EQ((nb_vec_init(&messages, sizeof(struct chat_message)),
+		   nb_vec_reserve(&messages, 2) ? 0 : NB_ERR_NOMEM),
+		  0);
 	ASSERT_EQ(agent_history_messages_copy(NULL, items, &messages), 0);
-	ASSERT_EQ(messages.nelts, 2U);
-	auto *message = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
+	ASSERT_EQ(messages.len, 2U);
+	auto *message = static_cast<struct chat_message *>(nb_vec_at(&messages, 0));
 	cJSON *args = cJSON_Parse(message->tool_calls[0].arguments);
 	ASSERT_NE(args, nullptr);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(args, "source")), source);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(args, "image")),
 		"[binary data omitted]");
 	cJSON_Delete(args);
-	message = static_cast<struct chat_message *>(morph_array_borrow(&messages, 1));
+	message = static_cast<struct chat_message *>(nb_vec_at(&messages, 1));
 	EXPECT_STREQ(message->tool_calls[0].arguments, source);
 	agent_chat_messages_cleanup(&messages);
 	model_history_free_list(items);
@@ -1410,7 +1422,7 @@ TEST_F(SessionTest, AutomaticCompactionFailurePreservesHistoryAtEveryBudget)
 	react.compress.summarize = history_summary_failure;
 	react.history_items = model_history_list(&db, s.id, 1, &count);
 	ASSERT_NE(react.history_items, nullptr);
-	EXPECT_EQ(agent_history_compact(&react, 0), -EIO);
+	EXPECT_EQ(agent_history_compact(&react, 0), NB_ERR_IO);
 	EXPECT_EQ(model_history_count(&db, s.id, 1), 1);
 	EXPECT_EQ(model_history_compaction_count(&db, s.id), 0);
 
@@ -1419,7 +1431,7 @@ TEST_F(SessionTest, AutomaticCompactionFailurePreservesHistoryAtEveryBudget)
 		nullptr, nullptr, nullptr), SQLITE_OK);
 	model_history_free_list(react.history_items);
 	react.history_items = model_history_list(&db, s.id, 1, &count);
-	ASSERT_EQ(agent_history_compact(&react, 0), -EIO);
+	ASSERT_EQ(agent_history_compact(&react, 0), NB_ERR_IO);
 	EXPECT_EQ(model_history_compaction_count(&db, s.id), 0);
 	bool found_fallback = false;
 	for (struct model_history_item *cur = react.history_items; cur;
@@ -1457,7 +1469,7 @@ TEST_F(SessionTest, ManualCompactionFailureLeavesHistoryUnchanged) {
 	react.compress.max_context_tokens = 100;
 	react.compress.summarize = history_summary_failure;
 	react.history_items = model_history_list(&db, s.id, 1, &count);
-	EXPECT_EQ(agent_history_compact(&react, 1), -EIO);
+	EXPECT_EQ(agent_history_compact(&react, 1), NB_ERR_IO);
 	EXPECT_EQ(model_history_count(&db, s.id, 1), 1);
 	EXPECT_EQ(model_history_compaction_count(&db, s.id), 0);
 	model_history_free_list(react.history_items);
@@ -1466,7 +1478,7 @@ TEST_F(SessionTest, ManualCompactionFailureLeavesHistoryUnchanged) {
 TEST_F(SessionTest, BackgroundReceiptIsReplayableAndIdempotent) {
 	struct session s;
 	struct react_context react = {};
-	morph_array_t messages;
+	nb_vec messages;
 	int count = 0;
 
 	ASSERT_EQ(session_create(&db, "history_receipt", "test", &s), 0);
@@ -1484,11 +1496,12 @@ TEST_F(SessionTest, BackgroundReceiptIsReplayableAndIdempotent) {
 	ASSERT_NE(items, nullptr);
 	EXPECT_STREQ(items->kind, "background_receipt");
 	EXPECT_NE(std::strstr(items->content, "ios_release"), nullptr);
-	ASSERT_EQ(morph_array_init(&messages, 1,
-		sizeof(struct chat_message)), 0);
+	ASSERT_EQ((nb_vec_init(&messages, sizeof(struct chat_message)),
+		   nb_vec_reserve(&messages, 1) ? 0 : NB_ERR_NOMEM),
+		  0);
 	ASSERT_EQ(agent_history_messages_copy(NULL, items, &messages), 0);
-	ASSERT_EQ(messages.nelts, 1U);
-	auto *message = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
+	ASSERT_EQ(messages.len, 1U);
+	auto *message = static_cast<struct chat_message *>(nb_vec_at(&messages, 0));
 	ASSERT_NE(message, nullptr);
 	EXPECT_STREQ(message->role, "system");
 	agent_chat_messages_cleanup(&messages);
@@ -1522,12 +1535,14 @@ TEST_F(SessionTest, MemoryMaintenanceIsNeitherPersistedNorReplayed) {
 	meaningful.content = const_cast<char *>("archive created");
 	meaningful.payload_json = const_cast<char *>("{\"task\":\"ios_release\"}");
 	metadata.next = &meaningful;
-	morph_array_t messages;
+	nb_vec messages;
 	struct chat_message message = {};
-	ASSERT_EQ(morph_array_init(&messages, 4, sizeof(message)), 0);
+	ASSERT_EQ((nb_vec_init(&messages, sizeof(message)),
+		   nb_vec_reserve(&messages, 4) ? 0 : NB_ERR_NOMEM),
+		  0);
 	ASSERT_EQ(agent_history_messages_copy(NULL, &legacy, &messages), 0);
-	ASSERT_EQ(messages.nelts, 1U);
-	auto *actual = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
+	ASSERT_EQ(messages.len, 1U);
+	auto *actual = static_cast<struct chat_message *>(nb_vec_at(&messages, 0));
 	EXPECT_STREQ(actual->content, "archive created");
 	agent_chat_messages_cleanup(&messages);
 }
@@ -1683,7 +1698,7 @@ TEST_F(SessionTest, ToolResultRepairsInvalidUtf8AndPreservesUsefulEnds)
 	char *prepared = nullptr;
 	ASSERT_EQ(agent_history_tool_content_copy(&ctx, text.c_str(), &prepared, nullptr), 0);
 	ASSERT_NE(prepared, nullptr);
-	EXPECT_EQ(utf8valid(prepared), nullptr);
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(prepared), NULL), NB_UTF8_OK);
 	EXPECT_LE(tokenizer_count(nullptr, prepared), 128);
 	EXPECT_NE(strstr(prepared, "HEAD"), nullptr);
 	EXPECT_NE(strstr(prepared, "TAIL"), nullptr);
@@ -1717,21 +1732,21 @@ TEST_F(SessionTest, HistoryReplayPreservesLongToolNamesAndLocalIds)
 	int count = 0;
 	auto *items = model_history_list(&db, session.id, 1, &count);
 	ASSERT_NE(items, nullptr);
-	morph_array_t messages{};
+	nb_vec messages{};
 	struct chat_message sample{};
-	ASSERT_EQ(morph_array_init(&messages, 2, sizeof(sample)), 0);
+	ASSERT_EQ((nb_vec_init(&messages, sizeof(sample)),
+		   nb_vec_reserve(&messages, 2) ? 0 : NB_ERR_NOMEM),
+		  0);
 	ASSERT_EQ(agent_history_messages_copy(nullptr, items, &messages), 0);
-	ASSERT_EQ(messages.nelts, 4u);
+	ASSERT_EQ(messages.len, 4u);
 	for (size_t i = 0; i < 2; i++) {
 		std::string expected = local + std::to_string(i);
-		auto *assistant = static_cast<struct chat_message *>(
-			morph_array_borrow(&messages, i * 2));
+		auto *assistant = static_cast<struct chat_message *>(nb_vec_at(&messages, i * 2));
 		ASSERT_EQ(assistant->tool_call_count, 1);
 		EXPECT_STREQ(assistant->tool_calls[0].name, name.c_str());
 		EXPECT_STREQ(assistant->tool_calls[0].id, expected.c_str());
 		EXPECT_STREQ(assistant->tool_calls[0].tool_call_id, expected.c_str());
-		auto *result = static_cast<struct chat_message *>(
-			morph_array_borrow(&messages, i * 2 + 1));
+		auto *result = static_cast<struct chat_message *>(nb_vec_at(&messages, i * 2 + 1));
 		EXPECT_STREQ(result->tool_call_id, expected.c_str());
 	}
 	agent_chat_messages_cleanup(&messages);

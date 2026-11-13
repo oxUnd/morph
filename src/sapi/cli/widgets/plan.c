@@ -1,12 +1,14 @@
 #include "sapi/cli/widgets/plan.h"
+#include "nb/err.h"
 #include "sapi/cli/presentation/messages.h"
 #include <morph/tui/widget.h>
 #include <morph/tui/widgets/text_view.h>
 
 #include "sapi/cli/widgets/notice.h"
 #include "sapi/cli/presentation/style.h"
-#include "util/cleanup.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 #include <errno.h>
 #include <string.h>
 
@@ -26,28 +28,29 @@ static enum cli_notice_status cli_plan_step_status(const cJSON *step)
 	return CLI_NOTICE_PENDING;
 }
 
-static int cli_plan_line(morph_buf_t *out, const char *prefix, const char *text,
-			int columns, int styled, enum cli_notice_status status)
+static int cli_plan_line(nb_buf *out, const char *prefix, const char *text, int columns, int styled,
+			 enum cli_notice_status status)
 {
-	char *safe MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
-		text, strlen(text), UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		text, strlen(text), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 	if (!safe)
-		return -ENOMEM;
-	int width = columns - (int)CLI_CONTENT_RIGHT_PADDING - (int)utf8_display_width(prefix) - 2;
+		return NB_ERR_NOMEM;
+	int width = columns - (int)CLI_CONTENT_RIGHT_PADDING - (int)nb_utf8_width_cstr(prefix) - 2;
 	if (width < 1)
 		width = 1;
-	const char *end = utf8_advance_display_width_borrow(safe, (size_t)width);
+	const char *end = morph_terminal_advance_display_width_borrow(safe, (size_t)width);
 	int clipped = *end != '\0';
 	if (clipped)
-		end = utf8_advance_display_width_borrow(safe, (size_t)(width - 1));
-	int rc = morph_buf_printf(out, "%s%s%s%s ", prefix,
-		styled ? cli_notice_color(status) : "", cli_notice_marker(status),
-		styled ? ANSI_RESET : "");
+		end = morph_terminal_advance_display_width_borrow(safe, (size_t)(width - 1));
+	int rc = (nb_buf_printf(out, "%s%s%s%s ", prefix, styled ? cli_notice_color(status) : "",
+				cli_notice_marker(status), styled ? ANSI_RESET : "")
+			  ? 0
+			  : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_append(out, safe, (size_t)(end - safe));
+		rc = (nb_buf_append(out, safe, (size_t)(end - safe)) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && clipped)
-		rc = morph_buf_puts(out, "…");
-	return rc != 0 ? rc : morph_buf_putc(out, '\n');
+		rc = (nb_buf_append_cstr(out, "…") ? 0 : NB_ERR_NOMEM);
+	return rc != 0 ? rc : (nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM);
 }
 
 static enum cli_notice_status cli_plan_status(const cJSON *steps, int *completed_out)
@@ -74,20 +77,24 @@ static enum cli_notice_status cli_plan_status(const cJSON *steps, int *completed
 	return status;
 }
 
-static int cli_plan_one(morph_buf_t *out, const cJSON *steps, const struct cli_plan_style *style)
+static int cli_plan_one(nb_buf *out, const cJSON *steps, const struct cli_plan_style *style)
 {
 	int completed = 0;
 	int count = cJSON_GetArraySize(steps);
 	enum cli_notice_status status = cli_plan_status(steps, &completed);
 	const cJSON *step;
-	morph_buf_t heading MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_printf(&heading, "Plan · %d/%d completed", completed, count);
+	nb_buf heading NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_printf(&heading, "Plan · %d/%d completed", completed, count)
+			  ? 0
+			  : NB_ERR_NOMEM);
 	if (rc == 0 && style->status_heading)
-		rc = cli_plan_line(out, "", morph_buf_cstr_borrow(&heading), style->columns,
-			style->styled, status);
+		rc = cli_plan_line(out, "", nb_buf_cstr(&heading), style->columns, style->styled,
+				   status);
 	else if (rc == 0)
-		rc = morph_buf_printf(out, "%s%s%s\n", style->styled ? ANSI_DIM : "",
-			morph_buf_cstr_borrow(&heading), style->styled ? ANSI_RESET : "");
+		rc = (nb_buf_printf(out, "%s%s%s\n", style->styled ? ANSI_DIM : "",
+				    nb_buf_cstr(&heading), style->styled ? ANSI_RESET : "")
+			      ? 0
+			      : NB_ERR_NOMEM);
 	cJSON_ArrayForEach(step, steps) {
 		const char *description = cJSON_GetStringValue(
 			cJSON_GetObjectItemCaseSensitive(step, "description"));
@@ -136,10 +143,10 @@ int cli_plan_renders(const cJSON *state)
 	return 0;
 }
 
-int cli_plan_append(morph_buf_t *out, const cJSON *state, const struct cli_plan_style *style)
+int cli_plan_append(nb_buf *out, const cJSON *state, const struct cli_plan_style *style)
 {
 	if (!out || !state || !style)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	const cJSON *plans = cJSON_GetObjectItemCaseSensitive(state, "plans");
 	const char *key = "id";
 	const char *selected = cJSON_GetStringValue(
@@ -175,16 +182,16 @@ static int cli_plan_widget_measure(struct morph_tui_view *view, int width,
 {
 	struct cli_plan_widget *widget = (struct cli_plan_widget *)view;
 	if (widget->columns != width) {
-		morph_buf_t rendered MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
 		const struct cli_plan_style style = {
 			.columns = width + (int)CLI_CONTENT_RIGHT_PADDING,
 			.styled = widget->styled, .status_heading = 1};
 		int rc = cli_plan_append(&rendered, widget->state, &style);
-		while (!rc && rendered.len && rendered.data[rendered.len - 1] == '\n')
-			rendered.data[--rendered.len] = '\0';
+		while (!rc && rendered.len && rendered.ptr[rendered.len - 1] == '\n')
+			rendered.ptr[--rendered.len] = '\0';
 		if (!rc)
-			rc = cli_messages_set_rendered_view(
-				widget->body, morph_buf_cstr_borrow(&rendered), widget->styled);
+			rc = cli_messages_set_rendered_view(widget->body, nb_buf_cstr(&rendered),
+							    widget->styled);
 		if (rc)
 			return rc;
 		widget->columns = width;
@@ -213,7 +220,7 @@ struct morph_tui_view *cli_plan_add_borrow(struct morph_tui_builder *builder,
 	struct morph_tui_view *parent, const cJSON *state, int styled)
 {
 	if (!state) {
-		morph_tui_builder_fail(builder, -EINVAL);
+		morph_tui_builder_fail(builder, NB_ERR_INVAL);
 		return NULL;
 	}
 	const struct morph_tui_view_options options = {
@@ -225,7 +232,7 @@ struct morph_tui_view *cli_plan_add_borrow(struct morph_tui_builder *builder,
 	struct morph_tui_view *view = &widget->base.view;
 	widget->state = cJSON_Duplicate(state, 1);
 	if (!widget->state)
-		morph_tui_builder_fail(builder, -ENOMEM);
+		morph_tui_builder_fail(builder, NB_ERR_NOMEM);
 	widget->columns = -1;
 	widget->styled = styled;
 	widget->body = morph_tui_widget_text_view_add_borrow(builder, view, "", NULL);

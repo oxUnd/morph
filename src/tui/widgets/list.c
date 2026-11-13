@@ -1,4 +1,5 @@
 #include <morph/tui/widgets/list.h>
+#include "nb/err.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -157,19 +158,19 @@ int morph_tui_widget_list_groups_init(struct morph_tui_widget_list_groups *group
 	size_t item = 0;
 
 	if (!groups || (group_count && !counts))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(groups, 0, sizeof(*groups));
 	for (size_t g = 0; g < group_count; g++) {
 		if (counts[g] > SIZE_MAX - row_count)
-			return -EOVERFLOW;
+			return NB_ERR_RANGE;
 		row_count += counts[g];
 		if (counts[g] > SIZE_MAX - item_count)
-			return -EOVERFLOW;
+			return NB_ERR_RANGE;
 		item_count += counts[g];
 	}
 	if (row_count > SIZE_MAX / sizeof(*groups->row_item) ||
 	    item_count > SIZE_MAX / sizeof(*groups->item_row))
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	groups->row_item = calloc(row_count ? row_count : 1, sizeof(*groups->row_item));
 	groups->row_group = calloc(row_count ? row_count : 1, sizeof(*groups->row_group));
 	groups->item_row =
@@ -177,7 +178,7 @@ int morph_tui_widget_list_groups_init(struct morph_tui_widget_list_groups *group
 	if (!groups->row_item || !groups->row_group ||
 	    (item_count && !groups->item_row)) {
 		morph_tui_widget_list_groups_cleanup(groups);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	for (size_t g = 0; g < group_count; g++) {
 		groups->row_item[row] = SIZE_MAX;

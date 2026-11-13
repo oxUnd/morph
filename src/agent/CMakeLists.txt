@@ -1,3 +1,7 @@
+add_library(morph-bpe STATIC bpe.c)
+target_include_directories(morph-bpe PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(morph-bpe PUBLIC nbase::nbase morph-app-data)
+
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
 	"${CMAKE_CURRENT_SOURCE_DIR}/sources.list")
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/sources.list" MORPH_AGENT_SOURCES)
@@ -8,7 +12,7 @@ target_include_directories(morph-agent PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 )
 target_link_libraries(morph-agent PUBLIC
-	morph-util morph-permission morph-prompt morph-db morph-session morph-persistence
-	morph-models morph-http morph-event morph-ipc Threads::Threads)
+	nbase::nbase morph-cjson morph-permission morph-prompt morph-db morph-session morph-persistence
+	morph-models morph-http morph-event morph-ipc morph-bpe morph-terminal morph-regex Threads::Threads)
 
 add_subdirectory(tools)

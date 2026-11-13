@@ -1,13 +1,14 @@
 #include "runtime/hooks_internal.h"
 
 #include "agent/tokenizer.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/utf8.h"
-#include "util/cleanup.h"
-#include "util/str.h"
-#include "util/json.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "nb/utf8.h"
+#include "nb/cleanup.h"
+#include "nb/str.h"
+#include "cJSON.h"
 
 #include <errno.h>
 #include <regex.h>
@@ -21,66 +22,66 @@
 static int hook_context_file_create(struct hook_manager *manager, const char *text,
 				    char path[PATH_MAX])
 {
-	char *directory MORPH_CLEANUP(morph_charp_cleanup) =
-		file_expand_path_copy(manager->config->general.output_dir);
-	if (!directory)
-		return -ENOMEM;
-	int rc = file_ensure_dir(directory);
-	if (rc == 0)
-		rc = file_path_join(path, PATH_MAX, directory, "hook-context-XXXXXX");
-	if (rc != 0)
+	nb_buf directory NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf temporary NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = nb_path_expand(&directory, manager->config->general.output_dir, NULL);
+	if (rc == NB_OK)
+		rc = nb_file_mkdir(nb_buf_cstr(&directory), true, NULL);
+	if (rc == NB_OK)
+		rc = nb_file_temp_in(&temporary, nb_buf_cstr(&directory), NULL, NULL);
+	if (rc != NB_OK)
 		return rc;
-	int fd = mkstemp(path);
-	if (fd < 0)
-		return morph_error_from_errno(errno);
-	if (close(fd) != 0) {
-		rc = morph_error_from_errno(errno);
-		(void)unlink(path);
-		return rc;
-	}
-	rc = file_write_atomic(path, text, strlen(text));
-	if (rc != 0)
-		(void)unlink(path);
-	return rc;
+	rc = nb_str_copy_to(nb_buf_str(&temporary), path, PATH_MAX);
+	if (rc == NB_OK)
+		rc = nb_file_write_all_atomic(
+			path, text, strlen(text),
+			&(nb_file_write_options){.mode = 0600, .sync_dir = true}, NULL);
+	if (rc != NB_OK)
+		(void)nb_file_remove(nb_buf_cstr(&temporary), NULL);
+	return rc == NB_ERR_RANGE ? NB_ERR_NAME_TOO_LONG : rc;
 }
 
-static int append_context(struct hook_manager *manager, morph_buf_t *context,
-			  struct hook_entry *entry, const char *text)
+static int append_context(struct hook_manager *manager, nb_buf *context, struct hook_entry *entry,
+			  const char *text)
 {
 	char path[PATH_MAX];
-	char *preview MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *preview NB_CLEANUP(nb_charp_cleanup) = NULL;
 	const char *shown = text;
 	int rc = 0;
 	int saved = 0;
 
 	if (!text || !*text)
 		return 0;
-	if (utf8valid(text))
-		return MORPH_ERR_PROTOCOL;
+	if (nb_utf8_validate(nb_str_from_cstr(text), NULL))
+		return NB_ERR_PROTOCOL;
 	if (entry->context_limit > 0 && tokenizer_estimate_tokens(text) > entry->context_limit) {
 		saved = hook_context_file_create(manager, text, path) == 0;
 		/* The shared estimator uses tokens; clamp only at UTF-8 boundaries. */
 		size_t bytes = strlen(text);
-		preview = utf8_dup_clamped(text, bytes);
+		preview = nb_utf8_ellipsize_bytes(text, bytes);
 		if (!preview)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		while (tokenizer_estimate_tokens(preview) > entry->context_limit && bytes > 0) {
 			bytes /= 2;
-			preview[utf8_clamp_bytes(preview, bytes)] = '\0';
+			preview[nb_utf8_clamp_bytes(preview, bytes)] = '\0';
 		}
 		shown = preview;
 	}
-	rc = morph_buf_printf(context, "[Hook %s / %s]\n%s\n", entry->id, entry->event, shown);
+	rc = (nb_buf_printf(context, "[Hook %s / %s]\n%s\n", entry->id, entry->event, shown)
+		      ? 0
+		      : NB_ERR_NOMEM);
 	if (rc == 0 && preview && saved)
-		rc = morph_buf_printf(context, "Full hook context: %s\n", path);
+		rc = (nb_buf_printf(context, "Full hook context: %s\n", path) ? 0 : NB_ERR_NOMEM);
 	else if (rc == 0 && preview)
-		rc = morph_buf_puts(context, "[Full hook context could not be saved.]\n");
+		rc = (nb_buf_append_cstr(context, "[Full hook context could not be saved.]\n")
+			      ? 0
+			      : NB_ERR_NOMEM);
 	return rc;
 }
 
-static morph_str_t hook_trim_borrow(const char *text)
+static nb_str hook_trim_borrow(const char *text)
 {
-	morph_str_t trimmed = {0, text};
+	nb_str trimmed = nb_str_from_parts(text, 0);
 	size_t length = strlen(text), offset = 0;
 	int started = 0;
 
@@ -88,17 +89,17 @@ static morph_str_t hook_trim_borrow(const char *text)
 		unsigned cp;
 		size_t bytes;
 
-		if (!utf8_decode_codepoint(text + offset, length - offset, &cp, &bytes))
+		if (!nb_utf8_read(text + offset, length - offset, &cp, &bytes))
 			break;
 		int space = cp == ' ' || (cp >= '\t' && cp <= '\r') || cp == 0x85 ||
-			utf8_is_unicode_space_cp(cp);
+			    nb_utf8_is_unicode_space_cp(cp);
 
 		if (!space) {
 			if (!started) {
-				trimmed.data = text + offset;
+				trimmed.ptr = text + offset;
 				started = 1;
 			}
-			trimmed.len = (size_t)(text + offset + bytes - trimmed.data);
+			trimmed.len = (size_t)(text + offset + bytes - trimmed.ptr);
 		}
 		offset += bytes;
 	}
@@ -182,21 +183,20 @@ static int hook_output_fields_valid(const cJSON *root, const char *event)
 		 strcmp(decision, "ask") == 0);
 }
 
-static int hook_append_reason(morph_buf_t *reason, const char *text)
+static int hook_append_reason(nb_buf *reason, const char *text)
 {
-	morph_str_t trimmed = hook_trim_borrow(text);
+	nb_str trimmed = hook_trim_borrow(text);
 	int rc;
 
-	if (utf8valid(text) || !trimmed.len)
-		return MORPH_ERR_PROTOCOL;
-	rc = reason->len ? morph_buf_puts(reason, "\n\n") : 0;
+	if (nb_utf8_validate(nb_str_from_cstr(text), NULL) || !trimmed.len)
+		return NB_ERR_PROTOCOL;
+	rc = reason->len ? (nb_buf_append_cstr(reason, "\n\n") ? 0 : NB_ERR_NOMEM) : 0;
 	if (rc == 0)
-		rc = morph_buf_append(reason, trimmed.data, trimmed.len);
+		rc = (nb_buf_append(reason, trimmed.ptr, trimmed.len) ? 0 : NB_ERR_NOMEM);
 	return rc;
 }
 
-static int hook_decode_pre_tool(const cJSON *root, morph_buf_t *reason, cJSON **updated,
-				int *blocked)
+static int hook_decode_pre_tool(const cJSON *root, nb_buf *reason, cJSON **updated, int *blocked)
 {
 	const cJSON *specific = cJSON_GetObjectItemCaseSensitive(root, "hookSpecificOutput");
 	const cJSON *cont = cJSON_GetObjectItemCaseSensitive(root, "continue");
@@ -209,7 +209,7 @@ static int hook_decode_pre_tool(const cJSON *root, morph_buf_t *reason, cJSON **
 
 	if (cJSON_IsFalse(cont) || hook_has_value(root, "stopReason") ||
 	    cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "suppressOutput")))
-		return MORPH_ERR_PROTOCOL;
+		return NB_ERR_PROTOCOL;
 	if (!use_specific) {
 		decision = hook_json_string_borrow(root, "decision");
 		if (strcmp(decision, "block") == 0) {
@@ -219,11 +219,12 @@ static int hook_decode_pre_tool(const cJSON *root, morph_buf_t *reason, cJSON **
 			return rc;
 		}
 		return hook_has_value(root, "decision") || hook_has_value(root, "reason")
-			? MORPH_ERR_PROTOCOL : 0;
+			       ? NB_ERR_PROTOCOL
+			       : 0;
 	}
 	if (strcmp(decision, "deny") == 0) {
 		if (hook_has_value(specific, "updatedInput"))
-			return MORPH_ERR_PROTOCOL;
+			return NB_ERR_PROTOCOL;
 		rc = hook_append_reason(reason,
 			hook_json_string_borrow(specific, "permissionDecisionReason"));
 		if (rc == 0)
@@ -231,23 +232,23 @@ static int hook_decode_pre_tool(const cJSON *root, morph_buf_t *reason, cJSON **
 		return rc;
 	}
 	if (strcmp(decision, "allow") != 0 || !cJSON_IsObject(replacement))
-		return MORPH_ERR_PROTOCOL;
-	cJSON *copy MORPH_CLEANUP(morph_json_cleanup) = cJSON_Duplicate(replacement, 1);
+		return NB_ERR_PROTOCOL;
+	cJSON *copy NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Duplicate(replacement, 1);
 
 	if (!copy)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	cJSON_Delete(*updated);
-	*updated = morph_json_steal(&copy);
+	*updated = cJSON_StealOwner(&copy);
 	return 0;
 }
 
 int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const char *event,
-		       morph_buf_t *context, morph_buf_t *reason, cJSON **updated, int *blocked,
-		       int *ask, int *terminate)
+		       nb_buf *context, nb_buf *reason, cJSON **updated, int *blocked, int *ask,
+		       int *terminate)
 {
-	const char *text = morph_buf_cstr_borrow(&run->out);
-	char *trimmed_text MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	const char *text = nb_buf_cstr(&run->out);
+	char *trimmed_text NB_CLEANUP(nb_charp_cleanup) = NULL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	const cJSON *specific;
 	int rc = 0;
 	int controls = strcmp(event, "PreToolUse") == 0 || strcmp(event, "Stop") == 0 ||
@@ -264,7 +265,7 @@ int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const
 	if (run->exit_code == 2) {
 		if (!controls)
 			return MORPH_ERR_PROCESSING;
-		rc = hook_append_reason(reason, morph_buf_cstr_borrow(&run->err));
+		rc = hook_append_reason(reason, nb_buf_cstr(&run->err));
 		if (rc == 0)
 			*blocked = 1;
 		return rc;
@@ -273,38 +274,38 @@ int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const
 		return MORPH_ERR_PROCESSING;
 	if (strcmp(event, "SessionEnd") == 0)
 		return 0;
-	if (utf8valid(text))
-		return MORPH_ERR_PROTOCOL;
-	morph_str_t trimmed = hook_trim_borrow(text);
+	if (nb_utf8_validate(nb_str_from_cstr(text), NULL))
+		return NB_ERR_PROTOCOL;
+	nb_str trimmed = hook_trim_borrow(text);
 
 	if (!trimmed.len)
 		return 0;
-	trimmed_text = morph_str_cstr_copy(trimmed);
+	trimmed_text = strndup((trimmed).ptr, (trimmed).len);
 	if (!trimmed_text)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	root = cJSON_ParseWithOpts(trimmed_text, NULL, 1);
 	if (!root) {
 		const char *start = trimmed_text;
 
 		if (*start == '{' || *start == '[')
-			return MORPH_ERR_PROTOCOL;
+			return NB_ERR_PROTOCOL;
 		if (strcmp(event, "SessionStart") == 0 || strcmp(event, "UserPromptSubmit") == 0)
 			return append_context(manager, context, run->entry, trimmed_text);
 		if (strcmp(event, "PreToolUse") == 0 || strcmp(event, "PostToolUse") == 0 ||
 		    strcmp(event, "PreCompact") == 0 || strcmp(event, "PostCompact") == 0 ||
 		    strcmp(event, "SessionEnd") == 0)
 			return 0;
-		return MORPH_ERR_PROTOCOL;
+		return NB_ERR_PROTOCOL;
 	}
 	if (!cJSON_IsObject(root) || !hook_json_unique_fields(root, 0) ||
 	    !hook_output_fields_valid(root, event))
-		return MORPH_ERR_PROTOCOL;
+		return NB_ERR_PROTOCOL;
 	const char *system_message = hook_json_string_borrow(root, "systemMessage");
 
 	if (*system_message) {
 		run->system_message = strdup(system_message);
 		if (!run->system_message)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 	}
 	specific = cJSON_GetObjectItemCaseSensitive(root, "hookSpecificOutput");
 	const cJSON *cont = cJSON_GetObjectItemCaseSensitive(root, "continue");
@@ -347,13 +348,13 @@ int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const
 		}
 	} else if (post_tool && (cJSON_IsTrue(suppress) ||
 			       hook_has_value(specific, "updatedMCPToolOutput"))) {
-		rc = MORPH_ERR_PROTOCOL;
+		rc = NB_ERR_PROTOCOL;
 	} else if (strcmp(decision, "block") == 0) {
 		rc = hook_append_reason(reason, feedback);
 		if (rc == 0)
 			*blocked = 1;
 	} else if (post_tool && hook_has_value(root, "reason")) {
-		rc = MORPH_ERR_PROTOCOL;
+		rc = NB_ERR_PROTOCOL;
 	}
 	if (rc == 0 && specific && !startup_context &&
 	    !(post_tool && (cJSON_IsTrue(suppress) ||

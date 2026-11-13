@@ -3,7 +3,7 @@
 extern "C" {
 #include "event/event.h"
 #include "runtime/runtime.h"
-#include "util/error.h"
+#include "errors.h"
 }
 
 #include <cstdio>
@@ -118,8 +118,8 @@ TEST_F(RuntimeLifecycleTest, ContextTokensExcludeCompactedHistoryAndBilledUsage)
 	sql = "INSERT INTO messages(session_id,role,content,token_count,created_at) VALUES (" +
 		std::to_string(created.id) + ",'user','legacy history',10,1)";
 	ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
-	EXPECT_EQ(runtime_session_context_tokens(instance, created.id, &tokens), -ENODATA);
-	EXPECT_EQ(runtime_session_context_tokens(nullptr, created.id, &tokens), -EINVAL);
+	EXPECT_EQ(runtime_session_context_tokens(instance, created.id, &tokens), NB_ERR_NO_DATA);
+	EXPECT_EQ(runtime_session_context_tokens(nullptr, created.id, &tokens), NB_ERR_INVAL);
 	sqlite3_close(db);
 	runtime_close(instance);
 }
@@ -229,8 +229,8 @@ TEST_F(RuntimeLifecycleTest, RejectsInvalidOpenArguments)
 	runtime *instance = nullptr;
 	runtime_options options{};
 
-	EXPECT_EQ(runtime_open(nullptr, &instance), -EINVAL);
-	EXPECT_EQ(runtime_open(&options, &instance), -EINVAL);
+	EXPECT_EQ(runtime_open(nullptr, &instance), NB_ERR_INVAL);
+	EXPECT_EQ(runtime_open(&options, &instance), NB_ERR_INVAL);
 }
 
 TEST_F(RuntimeLifecycleTest, CloseStopsOwnedTaskWorker)

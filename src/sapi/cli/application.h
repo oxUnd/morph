@@ -1,14 +1,15 @@
 #ifndef MORPH_CLI_APPLICATION_H
 #define MORPH_CLI_APPLICATION_H
 
-struct morph_log;
+struct nb_log;
 #include "config/config.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/services/recap.h"
-#include "util/buf.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include "sapi/cli/models/composer.h"
 #include "sapi/cli/models/agents.h"
-#include "util/signals.h"
+#include "nb/signal.h"
 #include <morph/tui/application.h>
 #include "sapi/cli/models/presentation.h"
 #include <stdint.h>
@@ -31,14 +32,14 @@ struct cli_application {
 	struct cli_chat_page *chat;
 	struct cli_presenter_state *presenter;
 	struct cli_input_state *input;
-	struct morph_log *logger;
+	struct nb_log *logger;
 	struct cli_output output;
 	struct cli_composer_model composer;
-	struct morph_signal_listener signals;
+	nb_signal_listener *signals;
 	int signals_ready;
-	volatile sig_atomic_t terminate_requested;
-	volatile sig_atomic_t interrupted;
-	volatile sig_atomic_t resized;
+	nb_atomic_int terminate_requested;
+	nb_atomic_int interrupted;
+	nb_atomic_int resized;
 
 	struct cli_recap_state recap;
 	struct runtime *runtime;
@@ -73,7 +74,7 @@ struct cli_application {
 	void *event_user_data;
 };
 
-int cli_application_init(struct cli_application *ctx, struct morph_log *logger,
+int cli_application_init(struct cli_application *ctx, struct nb_log *logger,
 			 const char *config_path, const char *db_path, const char *workdir,
 			 const char *session_name, const char *resume_ref,
 			 enum cli_presentation_mode mode);

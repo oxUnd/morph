@@ -1,13 +1,14 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 extern "C" {
 #include "agent/tools/dynamic_tools.h"
 #include "agent/tools/dynamic_tool_store.h"
 #include "agent/tool_context.h"
 #include "config/config.h"
 #include "cJSON.h"
-#include "util/file.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/file.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 }
 #include <cstdio>
 #include <cstdlib>
@@ -111,7 +112,7 @@ TEST_F(DynamicToolsTest, ManagementContextSurvivesCreateToolRemoval)
 {
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 	ASSERT_EQ(tool_unregister(&reg, "tool_create"), 0);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	ASSERT_EQ(tool_exec(&reg, "tool_history", "{\"name\":\"not_created\"}", &result), 0);
 	ASSERT_NE(result.data, nullptr);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "name")), "not_created");
@@ -121,14 +122,14 @@ TEST_F(DynamicToolsTest, ManagementContextSurvivesCreateToolRemoval)
 TEST_F(DynamicToolsTest, RetainedManagementHandleOwnsContextAfterAllToolsAreRemoved)
 {
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
-	struct tool_handle retained MORPH_CLEANUP(tool_handle_release) = {};
+	struct tool_handle retained NB_CLEANUP(tool_handle_release) = {};
 	ASSERT_EQ(tool_registry_acquire(&reg, "tool_history", &retained), 0);
 	const char *names[] = {"tool_create",  "tool_promote", "tool_delete",
 			       "tool_history", "tool_diff",    "tool_rollback"};
 	for (const char *name : names)
 		ASSERT_EQ(tool_unregister(&reg, name), 0);
 	EXPECT_EQ(reg.count, 0);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	ASSERT_EQ(retained.exec("{\"name\":\"not_created\"}", &result, retained.user_data), 0);
 	ASSERT_NE(result.data, nullptr);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "name")), "not_created");
@@ -151,8 +152,8 @@ TEST_F(DynamicToolsTest, CreateAndCallSessionTool)
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "upper_js", "{\"text\":\"hello\"}",
 			    &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	cJSON *root_json = cJSON_Parse(result.text.data);
+	ASSERT_NE(result.text.ptr, nullptr);
+	cJSON *root_json = cJSON_Parse(result.text.ptr);
 	ASSERT_NE(root_json, nullptr);
 	cJSON *text = cJSON_GetObjectItem(root_json, "text");
 	ASSERT_TRUE(cJSON_IsString(text));
@@ -181,8 +182,8 @@ TEST_F(DynamicToolsTest, ToolCreateUsesUpdatedSessionDirectory)
 	std::string expected = root +
 		"/session/sess_1234abcd/session_scoped/tool.js";
 	std::string old = root + "/session/default/session_scoped/tool.js";
-	EXPECT_TRUE(file_exists(expected.c_str()));
-	EXPECT_FALSE(file_exists(old.c_str()));
+	EXPECT_TRUE(nb_file_exists(expected.c_str()));
+	EXPECT_FALSE(nb_file_exists(old.c_str()));
 }
 
 TEST_F(DynamicToolsTest, LargeSchemasAndDescriptionsSurviveCreationAndReload)
@@ -190,7 +191,7 @@ TEST_F(DynamicToolsTest, LargeSchemasAndDescriptionsSurviveCreationAndReload)
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 	const std::string description = std::string(24000, 'd') + "description_tail";
 	const std::string schema_text = std::string(100000, 's') + "schema_tail";
-	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *args NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	ASSERT_NE(args, nullptr);
 	ASSERT_NE(cJSON_AddStringToObject(args, "name", "large_contract"), nullptr);
 	ASSERT_NE(cJSON_AddStringToObject(args, "description", description.c_str()), nullptr);
@@ -204,16 +205,16 @@ TEST_F(DynamicToolsTest, LargeSchemasAndDescriptionsSurviveCreationAndReload)
 		ASSERT_NE(cJSON_AddStringToObject(schema, "description", schema_text.c_str()),
 		nullptr);
 	}
-	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(args);
+	char *json NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(args);
 	ASSERT_NE(json, nullptr);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	ASSERT_EQ(tool_exec(&reg, "tool_create", json, &result), 0);
 	for (int iteration = 0; iteration < 2; iteration++) {
 		auto *entry = tool_borrow(&reg, "large_contract");
 		ASSERT_NE(entry, nullptr);
 		EXPECT_STREQ(entry->desc.description, description.c_str());
 		for (const char *schema : {entry->desc.input_schema, entry->desc.output_schema}) {
-			cJSON *parsed MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(schema);
+			cJSON *parsed NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(schema);
 			ASSERT_NE(parsed, nullptr);
 			EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(parsed,
 			"description")),
@@ -231,16 +232,16 @@ TEST_F(DynamicToolsTest, OutputOverflowReportsItsBudgetBeforeParsingPartialJson)
 {
 	cfg.dynamic_tools.default_max_output_bytes = 256;
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	const std::string args = create_args("large_output",
 		"function run() { return { text: 'x'.repeat(4096) }; }");
 	ASSERT_EQ(tool_exec(&reg, "tool_create", args.c_str(), &result), 0);
 	tool_result_cleanup(&result);
-	EXPECT_EQ(tool_exec(&reg, "large_output", "{}", &result), -EFBIG);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("256-byte capture limit"), std::string::npos);
-	EXPECT_EQ(std::string(result.text.data).find("invalid dynamic tool response"),
-		std::string::npos);
+	EXPECT_EQ(tool_exec(&reg, "large_output", "{}", &result), NB_ERR_TOO_BIG);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("256-byte capture limit"), std::string::npos);
+	EXPECT_EQ(std::string(result.text.ptr).find("invalid dynamic tool response"),
+		  std::string::npos);
 }
 
 TEST_F(DynamicToolsTest, InitLoadsExistingSessionTools)
@@ -270,9 +271,8 @@ TEST_F(DynamicToolsTest, InitLoadsExistingSessionTools)
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg2, "session_reload", "{\"value\":41}",
 			    &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"value\":42"),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"value\":42"), std::string::npos);
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&reg2);
 	tool_context_destroy(tctx2);
@@ -293,10 +293,9 @@ TEST_F(DynamicToolsTest, SetSessionIdLoadsExistingSessionTools)
 		"  return { text: String(args.text).toUpperCase() };"
 		"}";
 
-	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
-	ASSERT_EQ(file_write_all(meta.c_str(), meta_json, strlen(meta_json)),
-		  0);
-	ASSERT_EQ(file_write_all(js.c_str(), source, strlen(source)), 0);
+	ASSERT_EQ(nb_file_mkdir(dir.c_str(), true, NULL), 0);
+	ASSERT_EQ(nb_file_write_all(meta.c_str(), meta_json, strlen(meta_json), NULL), 0);
+	ASSERT_EQ(nb_file_write_all(js.c_str(), source, strlen(source), NULL), 0);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools,
 				     "default"), 0);
 	EXPECT_EQ(tool_borrow(&reg, "later_tool"), nullptr);
@@ -307,9 +306,8 @@ TEST_F(DynamicToolsTest, SetSessionIdLoadsExistingSessionTools)
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "later_tool", "{\"text\":\"hello\"}",
 			    &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"text\":\"HELLO\""),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"text\":\"HELLO\""), std::string::npos);
 	tool_result_cleanup(&result);
 }
 
@@ -326,10 +324,9 @@ TEST_F(DynamicToolsTest, EmptySessionDoesNotFallbackToDefault)
 		"function run(args) { return { ok: true }; }";
 	struct tool_result result;
 
-	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
-	ASSERT_EQ(file_write_all(meta.c_str(), meta_json, strlen(meta_json)),
-		  0);
-	ASSERT_EQ(file_write_all(js.c_str(), source, strlen(source)), 0);
+	ASSERT_EQ(nb_file_mkdir(dir.c_str(), true, NULL), 0);
+	ASSERT_EQ(nb_file_write_all(meta.c_str(), meta_json, strlen(meta_json), NULL), 0);
+	ASSERT_EQ(nb_file_write_all(js.c_str(), source, strlen(source), NULL), 0);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, ""),
 		  0);
 	EXPECT_EQ(tool_borrow(&reg, "default_tool"), nullptr);
@@ -338,13 +335,11 @@ TEST_F(DynamicToolsTest, EmptySessionDoesNotFallbackToDefault)
 	ASSERT_LT(tool_exec(&reg, "tool_create", create_args("empty_session_tool", source).c_str(),
 			    &result),
 		  0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find(
-			  "create_tool_dir"),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("create_tool_dir"), std::string::npos);
 	tool_result_cleanup(&result);
-	EXPECT_FALSE(file_exists((root +
-		"/session/default/empty_session_tool/tool.js").c_str()));
+	EXPECT_FALSE(
+		nb_file_exists((root + "/session/default/empty_session_tool/tool.js").c_str()));
 }
 
 TEST_F(DynamicToolsTest, ToolCreateUpdatesExistingDynamicTool)
@@ -364,25 +359,22 @@ TEST_F(DynamicToolsTest, ToolCreateUpdatesExistingDynamicTool)
 	ASSERT_EQ(tool_exec(&reg, "tool_create",
 			    create_args("replace_me", first).c_str(),
 			    &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"registered\""),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"registered\""), std::string::npos);
 	tool_result_cleanup(&result);
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_create",
 			    create_args("replace_me", second).c_str(),
 			    &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"updated\""),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"updated\""), std::string::npos);
 	tool_result_cleanup(&result);
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "replace_me", "{}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"value\":2"),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"value\":2"), std::string::npos);
 	tool_result_cleanup(&result);
 }
 
@@ -410,20 +402,18 @@ TEST_F(DynamicToolsTest, ToolHistoryDiffAndRollbackUpdatedTool)
 	ASSERT_EQ(tool_exec(&reg, "tool_create",
 			    create_args("versioned_tool", second).c_str(),
 			    &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	checkpoint_id = json_string_field(result.text.data, "checkpoint_id");
+	ASSERT_NE(result.text.ptr, nullptr);
+	checkpoint_id = json_string_field(result.text.ptr, "checkpoint_id");
 	EXPECT_EQ(checkpoint_id, "0002");
-	EXPECT_NE(std::string(result.text.data).find("\"old_hash\""),
-		  std::string::npos);
+	EXPECT_NE(std::string(result.text.ptr).find("\"old_hash\""), std::string::npos);
 	tool_result_cleanup(&result);
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_history",
 			    "{\"name\":\"versioned_tool\"}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"id\":\"0002\""),
-		  std::string::npos);
-	EXPECT_NE(std::string(result.text.data).find("\"before_state\":\"present\""),
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"id\":\"0002\""), std::string::npos);
+	EXPECT_NE(std::string(result.text.ptr).find("\"before_state\":\"present\""),
 		  std::string::npos);
 	tool_result_cleanup(&result);
 
@@ -431,39 +421,32 @@ TEST_F(DynamicToolsTest, ToolHistoryDiffAndRollbackUpdatedTool)
 	ASSERT_EQ(tool_exec(&reg, "tool_diff",
 			    "{\"name\":\"versioned_tool\",\"checkpoint_id\":\"0002\"}",
 			    &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("--- a/tool.js"),
-		  std::string::npos);
-	EXPECT_NE(std::string(result.text.data).find("-function run(args)"),
-		  std::string::npos);
-	EXPECT_NE(std::string(result.text.data).find("+function run(args)"),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("--- a/tool.js"), std::string::npos);
+	EXPECT_NE(std::string(result.text.ptr).find("-function run(args)"), std::string::npos);
+	EXPECT_NE(std::string(result.text.ptr).find("+function run(args)"), std::string::npos);
 	tool_result_cleanup(&result);
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_rollback",
 			    "{\"name\":\"versioned_tool\",\"checkpoint_id\":\"0002\"}",
 			    &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"rolled_back\""),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"rolled_back\""), std::string::npos);
 	tool_result_cleanup(&result);
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "versioned_tool", "{}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"value\":1"),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"value\":1"), std::string::npos);
 	tool_result_cleanup(&result);
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_history",
 			    "{\"name\":\"versioned_tool\"}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_EQ(std::string(result.text.data).find("\"id\":\"0002\""),
-		  std::string::npos);
-	EXPECT_NE(std::string(result.text.data).find("\"id\":\"0001\""),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_EQ(std::string(result.text.ptr).find("\"id\":\"0002\""), std::string::npos);
+	EXPECT_NE(std::string(result.text.ptr).find("\"id\":\"0001\""), std::string::npos);
 	tool_result_cleanup(&result);
 }
 
@@ -481,24 +464,23 @@ TEST_F(DynamicToolsTest, ToolRollbackCreationRemovesSessionTool)
 	ASSERT_EQ(tool_exec(&reg, "tool_create",
 			    create_args("new_then_undo", source).c_str(),
 			    &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"checkpoint_id\":\"0001\""),
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"checkpoint_id\":\"0001\""),
 		  std::string::npos);
 	tool_result_cleanup(&result);
 	ASSERT_NE(tool_borrow(&reg, "new_then_undo"), nullptr);
-	ASSERT_TRUE(file_exists(dir.c_str()));
+	ASSERT_TRUE(nb_file_exists(dir.c_str()));
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_rollback",
 			    "{\"name\":\"new_then_undo\",\"checkpoint_id\":\"0001\"}",
 			    &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"state\":\"absent\""),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"state\":\"absent\""), std::string::npos);
 	tool_result_cleanup(&result);
 
 	EXPECT_EQ(tool_borrow(&reg, "new_then_undo"), nullptr);
-	EXPECT_FALSE(file_exists(dir.c_str()));
+	EXPECT_FALSE(nb_file_exists(dir.c_str()));
 }
 
 TEST_F(DynamicToolsTest, ToolCreateDoesNotOverwriteStaticTool)
@@ -521,16 +503,14 @@ TEST_F(DynamicToolsTest, ToolCreateDoesNotOverwriteStaticTool)
 	ASSERT_LT(
 		tool_exec(&reg, "tool_create", create_args("static_tool", source).c_str(), &result),
 		0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("already exists"),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("already exists"), std::string::npos);
 	tool_result_cleanup(&result);
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "static_tool", "{}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"static\":true"),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"static\":true"), std::string::npos);
 	tool_result_cleanup(&result);
 }
 
@@ -540,7 +520,7 @@ TEST_F(DynamicToolsTest, ServerProfileDeniesFileReadByDefault)
 		sizeof(cfg.dynamic_tools.mode) - 1);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 	std::string file = root + "/secret.txt";
-	ASSERT_EQ(file_write_all(file.c_str(), "secret", 6), 0);
+	ASSERT_EQ(nb_file_write_all(file.c_str(), "secret", 6, NULL), 0);
 	std::string source =
 		"function run(args) {"
 		"  return morph.fs.readText(args.path);"
@@ -554,17 +534,19 @@ TEST_F(DynamicToolsTest, ServerProfileDeniesFileReadByDefault)
 	std::string call = "{\"path\":\"" + file + "\"}";
 	tool_result_init(&result);
 	EXPECT_NE(tool_exec(&reg, "read_secret", call.c_str(), &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("capability denied"),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("capability denied"), std::string::npos);
 	tool_result_cleanup(&result);
 }
 
 TEST_F(DynamicToolsTest, ToolUsesProfileCapabilitiesWithoutArgs)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 	std::string file = root + "/note.txt";
-	ASSERT_EQ(file_write_all(file.c_str(), "secret", 6), 0);
+	ASSERT_EQ(nb_file_write_all(file.c_str(), "secret", 6, NULL), 0);
 	std::string source =
 		"function run(args) {"
 		"  return { text: morph.fs.readText(args.path) };"
@@ -580,7 +562,15 @@ TEST_F(DynamicToolsTest, ToolUsesProfileCapabilitiesWithoutArgs)
 		std::string meta_path =
 			root + "/session/sess/read_profile/tool.json";
 		size_t meta_len = 0;
-		char *meta = file_read_all_copy(meta_path.c_str(), &meta_len);
+		char *meta =
+			(nb_file_read_all(meta_path.c_str(), &file_value_1, 0, NULL) == NB_OK &&
+					 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) +
+								       1)) != NULL
+				 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
+					   nb_buf_len(&file_value_1) + 1),
+				    *(&meta_len) = nb_buf_len(&file_value_1),
+				    nb_charp_steal(&file_copy_1))
+				 : NULL);
 
 		ASSERT_NE(meta, nullptr);
 		(void)meta_len;
@@ -591,14 +581,16 @@ TEST_F(DynamicToolsTest, ToolUsesProfileCapabilitiesWithoutArgs)
 	std::string call = "{\"path\":\"" + file + "\"}";
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "read_profile", call.c_str(), &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"text\":\"secret\""),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"text\":\"secret\""), std::string::npos);
 	tool_result_cleanup(&result);
 }
 
 TEST_F(DynamicToolsTest, RelativeFsPathsAndExecUseToolContextRoots)
 {
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	std::string workdir = root + "/work";
 	std::string output_dir = root + "/configured-output";
 	std::string input = workdir + "/input.txt";
@@ -611,9 +603,9 @@ TEST_F(DynamicToolsTest, RelativeFsPathsAndExecUseToolContextRoots)
 		"}";
 	struct tool_result result;
 
-	ASSERT_EQ(file_ensure_dir(workdir.c_str()), 0);
-	ASSERT_EQ(file_ensure_dir(output_dir.c_str()), 0);
-	ASSERT_EQ(file_write_all(input.c_str(), "from-workdir", 12), 0);
+	ASSERT_EQ(nb_file_mkdir(workdir.c_str(), true, NULL), 0);
+	ASSERT_EQ(nb_file_mkdir(output_dir.c_str(), true, NULL), 0);
+	ASSERT_EQ(nb_file_write_all(input.c_str(), "from-workdir", 12, NULL), 0);
 	tool_context_destroy(tctx);
 	tctx = tool_context_create(NULL, workdir.c_str(), output_dir.c_str());
 	ASSERT_NE(tctx, nullptr);
@@ -631,15 +623,23 @@ TEST_F(DynamicToolsTest, RelativeFsPathsAndExecUseToolContextRoots)
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "relative_fs", "{}", &result), 0)
-		<< (result.text.data ? result.text.data : "(no result)");
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_EQ(json_string_field(result.text.data, "text"), "from-workdir");
-	EXPECT_EQ(json_string_field(result.text.data, "cwd"), tool_context_workdir_borrow(tctx));
-	EXPECT_TRUE(file_exists(output.c_str()));
-	EXPECT_FALSE(file_exists((workdir + "/result.txt").c_str()));
+		<< (result.text.ptr ? result.text.ptr : "(no result)");
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_EQ(json_string_field(result.text.ptr, "text"), "from-workdir");
+	EXPECT_EQ(json_string_field(result.text.ptr, "cwd"), tool_context_workdir_borrow(tctx));
+	EXPECT_TRUE(nb_file_exists(output.c_str()));
+	EXPECT_FALSE(nb_file_exists((workdir + "/result.txt").c_str()));
 	{
 		size_t len = 0;
-		char *written = file_read_all_copy(output.c_str(), &len);
+		char *written =
+			(nb_file_read_all(output.c_str(), &file_value_2, 0, NULL) == NB_OK &&
+					 (file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) +
+								       1)) != NULL
+				 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
+					   nb_buf_len(&file_value_2) + 1),
+				    *(&len) = nb_buf_len(&file_value_2),
+				    nb_charp_steal(&file_copy_2))
+				 : NULL);
 
 		ASSERT_NE(written, nullptr);
 		EXPECT_EQ(std::string(written, len), "from-workdir-written");
@@ -667,8 +667,8 @@ TEST_F(DynamicToolsTest, RelativeMediaPathsUseToolContextRoots)
 		"}";
 	struct tool_result result;
 
-	ASSERT_EQ(file_ensure_dir(workdir.c_str()), 0);
-	ASSERT_EQ(file_ensure_dir(output_dir.c_str()), 0);
+	ASSERT_EQ(nb_file_mkdir(workdir.c_str(), true, NULL), 0);
+	ASSERT_EQ(nb_file_mkdir(output_dir.c_str(), true, NULL), 0);
 	tool_context_destroy(tctx);
 	tctx = tool_context_create(NULL, workdir.c_str(), output_dir.c_str());
 	ASSERT_NE(tctx, nullptr);
@@ -682,12 +682,11 @@ TEST_F(DynamicToolsTest, RelativeMediaPathsUseToolContextRoots)
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "relative_media", "{}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"width\":12"),
-		  std::string::npos);
-	EXPECT_TRUE(file_exists((output_dir + "/source.png").c_str()));
-	EXPECT_TRUE(file_exists((output_dir + "/resized.png").c_str()));
-	EXPECT_FALSE(file_exists((workdir + "/source.png").c_str()));
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"width\":12"), std::string::npos);
+	EXPECT_TRUE(nb_file_exists((output_dir + "/source.png").c_str()));
+	EXPECT_TRUE(nb_file_exists((output_dir + "/resized.png").c_str()));
+	EXPECT_FALSE(nb_file_exists((workdir + "/source.png").c_str()));
 	tool_result_cleanup(&result);
 }
 
@@ -707,11 +706,10 @@ TEST_F(DynamicToolsTest, PersistentToolIgnoresStoredCapabilities)
 		"  return { text: morph.fs.readText(args.path) };"
 		"}";
 
-	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
-	ASSERT_EQ(file_write_all(meta.c_str(), meta_json, strlen(meta_json)),
-		  0);
-	ASSERT_EQ(file_write_all(js.c_str(), source, strlen(source)), 0);
-	ASSERT_EQ(file_write_all(file.c_str(), "loaded", 6), 0);
+	ASSERT_EQ(nb_file_mkdir(dir.c_str(), true, NULL), 0);
+	ASSERT_EQ(nb_file_write_all(meta.c_str(), meta_json, strlen(meta_json), NULL), 0);
+	ASSERT_EQ(nb_file_write_all(js.c_str(), source, strlen(source), NULL), 0);
+	ASSERT_EQ(nb_file_write_all(file.c_str(), "loaded", 6, NULL), 0);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"),
 		  0);
 
@@ -719,9 +717,8 @@ TEST_F(DynamicToolsTest, PersistentToolIgnoresStoredCapabilities)
 	struct tool_result result;
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "old_caps", call.c_str(), &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"text\":\"loaded\""),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"text\":\"loaded\""), std::string::npos);
 	tool_result_cleanup(&result);
 }
 
@@ -748,9 +745,8 @@ TEST_F(DynamicToolsTest, PromoteLoadsInNewRegistry)
 	EXPECT_NE(tool_borrow(&reg2, "inc_js"), nullptr);
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg2, "inc_js", "{\"value\":41}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"value\":42"),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"value\":42"), std::string::npos);
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&reg2);
 	tool_context_destroy(tctx2);
@@ -772,14 +768,14 @@ TEST_F(DynamicToolsTest, ToolDeleteRemovesSessionTool)
 	ASSERT_NE(entry, nullptr);
 	EXPECT_EQ(entry->origin, TOOL_ORIGIN_DYNAMIC_SESSION);
 	std::string dir = root + "/session/sess/delete_session";
-	ASSERT_TRUE(file_exists(dir.c_str()));
+	ASSERT_TRUE(nb_file_exists(dir.c_str()));
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_delete",
 			    "{\"name\":\"delete_session\"}", &result), 0);
 	tool_result_cleanup(&result);
 	EXPECT_EQ(tool_borrow(&reg, "delete_session"), nullptr);
-	EXPECT_FALSE(file_exists(dir.c_str()));
+	EXPECT_FALSE(nb_file_exists(dir.c_str()));
 }
 
 TEST_F(DynamicToolsTest, ToolDeleteRemovesPersistentTool)
@@ -802,14 +798,14 @@ TEST_F(DynamicToolsTest, ToolDeleteRemovesPersistentTool)
 	ASSERT_NE(entry, nullptr);
 	EXPECT_EQ(entry->origin, TOOL_ORIGIN_DYNAMIC_PERSISTENT);
 	std::string dir = root + "/persistent/delete_persistent";
-	ASSERT_TRUE(file_exists(dir.c_str()));
+	ASSERT_TRUE(nb_file_exists(dir.c_str()));
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_delete",
 			    "{\"name\":\"delete_persistent\"}", &result), 0);
 	tool_result_cleanup(&result);
 	EXPECT_EQ(tool_borrow(&reg, "delete_persistent"), nullptr);
-	EXPECT_FALSE(file_exists(dir.c_str()));
+	EXPECT_FALSE(nb_file_exists(dir.c_str()));
 }
 
 TEST_F(DynamicToolsTest, ToolDeleteRejectsStaticTool)
@@ -828,9 +824,8 @@ TEST_F(DynamicToolsTest, ToolDeleteRejectsStaticTool)
 
 	tool_result_init(&result);
 	ASSERT_LT(tool_exec(&reg, "tool_delete", "{\"name\":\"static_tool\"}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("only delete dynamic"),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("only delete dynamic"), std::string::npos);
 	tool_result_cleanup(&result);
 	EXPECT_NE(tool_borrow(&reg, "static_tool"), nullptr);
 }
@@ -850,13 +845,11 @@ TEST_F(DynamicToolsTest, ToolDeleteSessionReloadsShadowedPersistentTool)
 		"function run(args) { return { value: 20 }; }";
 	struct tool_result result;
 
-	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
-	ASSERT_EQ(file_write_all(meta.c_str(), meta_json, strlen(meta_json)),
+	ASSERT_EQ(nb_file_mkdir(dir.c_str(), true, NULL), 0);
+	ASSERT_EQ(nb_file_write_all(meta.c_str(), meta_json, strlen(meta_json), NULL), 0);
+	ASSERT_EQ(nb_file_write_all(js.c_str(), persistent_source, strlen(persistent_source), NULL),
 		  0);
-	ASSERT_EQ(file_write_all(js.c_str(), persistent_source,
-				 strlen(persistent_source)), 0);
-	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"),
-		  0);
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 	struct tool_entry *entry = tool_borrow(&reg, "shadowed_tool");
 	ASSERT_NE(entry, nullptr);
 	EXPECT_EQ(entry->origin, TOOL_ORIGIN_DYNAMIC_PERSISTENT);
@@ -881,12 +874,10 @@ TEST_F(DynamicToolsTest, ToolDeleteSessionReloadsShadowedPersistentTool)
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "shadowed_tool", "{}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"value\":10"),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"value\":10"), std::string::npos);
 	tool_result_cleanup(&result);
-	EXPECT_FALSE(file_exists((root +
-		"/session/sess/shadowed_tool").c_str()));
+	EXPECT_FALSE(nb_file_exists((root + "/session/sess/shadowed_tool").c_str()));
 }
 
 TEST_F(DynamicToolsTest, ToolDeleteRefusesPersistentPathMismatch)
@@ -902,21 +893,19 @@ TEST_F(DynamicToolsTest, ToolDeleteRefusesPersistentPathMismatch)
 		"function run(args) { return { ok: true }; }";
 	struct tool_result result;
 
-	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
-	ASSERT_EQ(file_write_all(meta.c_str(), meta_json, strlen(meta_json)),
-		  0);
-	ASSERT_EQ(file_write_all(js.c_str(), source, strlen(source)), 0);
+	ASSERT_EQ(nb_file_mkdir(dir.c_str(), true, NULL), 0);
+	ASSERT_EQ(nb_file_write_all(meta.c_str(), meta_json, strlen(meta_json), NULL), 0);
+	ASSERT_EQ(nb_file_write_all(js.c_str(), source, strlen(source), NULL), 0);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"),
 		  0);
 	ASSERT_NE(tool_borrow(&reg, "mismatch_tool"), nullptr);
 
 	tool_result_init(&result);
 	ASSERT_LT(tool_exec(&reg, "tool_delete", "{\"name\":\"mismatch_tool\"}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("deletion refused"),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("deletion refused"), std::string::npos);
 	tool_result_cleanup(&result);
-	EXPECT_TRUE(file_exists(dir.c_str()));
+	EXPECT_TRUE(nb_file_exists(dir.c_str()));
 	EXPECT_NE(tool_borrow(&reg, "mismatch_tool"), nullptr);
 }
 
@@ -933,21 +922,19 @@ TEST_F(DynamicToolsTest, ToolDeleteRefusesSessionPathMismatch)
 		"function run(args) { return { ok: true }; }";
 	struct tool_result result;
 
-	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
-	ASSERT_EQ(file_write_all(meta.c_str(), meta_json, strlen(meta_json)),
-		  0);
-	ASSERT_EQ(file_write_all(js.c_str(), source, strlen(source)), 0);
+	ASSERT_EQ(nb_file_mkdir(dir.c_str(), true, NULL), 0);
+	ASSERT_EQ(nb_file_write_all(meta.c_str(), meta_json, strlen(meta_json), NULL), 0);
+	ASSERT_EQ(nb_file_write_all(js.c_str(), source, strlen(source), NULL), 0);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"),
 		  0);
 	ASSERT_NE(tool_borrow(&reg, "session_mismatch"), nullptr);
 
 	tool_result_init(&result);
 	ASSERT_LT(tool_exec(&reg, "tool_delete", "{\"name\":\"session_mismatch\"}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("deletion refused"),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("deletion refused"), std::string::npos);
 	tool_result_cleanup(&result);
-	EXPECT_TRUE(file_exists(dir.c_str()));
+	EXPECT_TRUE(nb_file_exists(dir.c_str()));
 	EXPECT_NE(tool_borrow(&reg, "session_mismatch"), nullptr);
 }
 
@@ -977,7 +964,7 @@ TEST_F(DynamicToolsTest, CanvasApiCreatesImage)
 	std::string call = "{\"text\":\"ok\",\"output\":\"" + output + "\"}";
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "canvas_make", call.c_str(), &result), 0);
-	EXPECT_TRUE(file_exists(output.c_str()));
+	EXPECT_TRUE(nb_file_exists(output.c_str()));
 	tool_result_cleanup(&result);
 }
 
@@ -1041,9 +1028,8 @@ TEST_F(DynamicToolsTest, CanvasTextPositioningAffectsRendering)
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "canvas_text_position", call.c_str(), &result),
 		  0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"ok\":true"),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"ok\":true"), std::string::npos);
 	tool_result_cleanup(&result);
 }
 
@@ -1074,10 +1060,9 @@ TEST_F(DynamicToolsTest, ImageApiResizesImage)
 		output + "\"}";
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "image_resize", call.c_str(), &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"width\":16"),
-		  std::string::npos);
-	EXPECT_TRUE(file_exists(output.c_str()));
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"width\":16"), std::string::npos);
+	EXPECT_TRUE(nb_file_exists(output.c_str()));
 	tool_result_cleanup(&result);
 }
 
@@ -1132,12 +1117,10 @@ TEST_F(DynamicToolsTest, ImageApiLoadsAndCompositesImage)
 		base + "\",\"output\":\"" + output + "\"}";
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "image_composite", call.c_str(), &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"width\":80"),
-		  std::string::npos);
-	EXPECT_NE(std::string(result.text.data).find("\"height\":48"),
-		  std::string::npos);
-	EXPECT_TRUE(file_exists(output.c_str()));
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"width\":80"), std::string::npos);
+	EXPECT_NE(std::string(result.text.ptr).find("\"height\":48"), std::string::npos);
+	EXPECT_TRUE(nb_file_exists(output.c_str()));
 	tool_result_cleanup(&result);
 }
 
@@ -1170,12 +1153,10 @@ TEST_F(DynamicToolsTest, ImageApiExtendsImageWithBackground)
 		output + "\"}";
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "image_extend", call.c_str(), &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"width\":36"),
-		  std::string::npos);
-	EXPECT_NE(std::string(result.text.data).find("\"height\":20"),
-		  std::string::npos);
-	EXPECT_TRUE(file_exists(output.c_str()));
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"width\":36"), std::string::npos);
+	EXPECT_NE(std::string(result.text.ptr).find("\"height\":20"), std::string::npos);
+	EXPECT_TRUE(nb_file_exists(output.c_str()));
 	tool_result_cleanup(&result);
 }
 
@@ -1209,12 +1190,10 @@ TEST_F(DynamicToolsTest, ImageApiFramesImage)
 		output + "\"}";
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "image_frame", call.c_str(), &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"width\":64"),
-		  std::string::npos);
-	EXPECT_NE(std::string(result.text.data).find("\"height\":60"),
-		  std::string::npos);
-	EXPECT_TRUE(file_exists(output.c_str()));
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"width\":64"), std::string::npos);
+	EXPECT_NE(std::string(result.text.ptr).find("\"height\":60"), std::string::npos);
+	EXPECT_TRUE(nb_file_exists(output.c_str()));
 	tool_result_cleanup(&result);
 }
 
@@ -1230,9 +1209,8 @@ TEST_F(DynamicToolsTest, ToolCreateRejectsRequire)
 	ASSERT_LT(
 		tool_exec(&reg, "tool_create", create_args("bad_require", source).c_str(), &result),
 		0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("forbidden token"),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("forbidden token"), std::string::npos);
 	tool_result_cleanup(&result);
 }
 
@@ -1259,9 +1237,8 @@ TEST_F(DynamicToolsTest, WebAssemblyApiCallsExport)
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "wasm_add", "{\"a\":20,\"b\":22}",
 			    &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"value\":42"),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"value\":42"), std::string::npos);
 	tool_result_cleanup(&result);
 }
 
@@ -1288,9 +1265,8 @@ TEST_F(DynamicToolsTest, ServerProfileDeniesImageCapability)
 	std::string call = "{\"output\":\"" + output + "\"}";
 	tool_result_init(&result);
 	EXPECT_NE(tool_exec(&reg, "canvas_denied", call.c_str(), &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("capability denied"),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("capability denied"), std::string::npos);
 	tool_result_cleanup(&result);
 }
 
@@ -1298,9 +1274,9 @@ TEST_F(DynamicToolsTest, FilesystemAllowlistRejectsSiblingPrefixesAndSymlinks)
 {
 	std::string allowed = root + "/allowed";
 	std::string sibling = root + "/allowed-other";
-	ASSERT_EQ(file_ensure_dir(allowed.c_str()), 0);
-	ASSERT_EQ(file_ensure_dir(sibling.c_str()), 0);
-	ASSERT_EQ(file_write_all((sibling + "/secret").c_str(), "secret", 6), 0);
+	ASSERT_EQ(nb_file_mkdir(allowed.c_str(), true, NULL), 0);
+	ASSERT_EQ(nb_file_mkdir(sibling.c_str(), true, NULL), 0);
+	ASSERT_EQ(nb_file_write_all((sibling + "/secret").c_str(), "secret", 6, NULL), 0);
 	ASSERT_EQ(symlink(sibling.c_str(), (allowed + "/escape").c_str()), 0);
 	snprintf(cfg.dynamic_tools.local.allowed_read_paths[0],
 		sizeof(cfg.dynamic_tools.local.allowed_read_paths[0]), "%s", allowed.c_str());
@@ -1334,7 +1310,7 @@ TEST_F(DynamicToolsTest, FilesystemAllowlistRejectsSiblingPrefixesAndSymlinks)
 		EXPECT_NE(tool_exec(&reg, "boundary_probe", args.c_str(), &result), 0);
 		tool_result_cleanup(&result);
 	}
-	EXPECT_FALSE(file_exists((sibling + "/result").c_str()));
+	EXPECT_FALSE(nb_file_exists((sibling + "/result").c_str()));
 }
 
 TEST_F(DynamicToolsTest, MetadataCommitKeepsSourceCoherentAfterInterruptedMirrorWrite)
@@ -1350,14 +1326,15 @@ TEST_F(DynamicToolsTest, MetadataCommitKeepsSourceCoherentAfterInterruptedMirror
 		  0);
 	tool_result_cleanup(&result);
 	std::string source = root + "/session/sess/committed/tool.js";
-	ASSERT_EQ(file_write_all(source.c_str(), "throw new Error('uncommitted');", 31), 0);
+	ASSERT_EQ(nb_file_write_all(source.c_str(), "throw new Error('uncommitted');", 31, NULL),
+		  0);
 	tool_registry_cleanup(&reg);
 	tool_registry_init(nullptr, &reg);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "committed", "{}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("committed"), std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("committed"), std::string::npos);
 	tool_result_cleanup(&result);
 }
 
@@ -1369,9 +1346,9 @@ TEST_F(DynamicToolsTest, InvalidSourceNeverCreatesAPublishedToolDirectory)
 	EXPECT_LT(tool_exec(&reg, "tool_create",
 			    create_args("invalid_candidate", "function run(").c_str(), &result),
 		  0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("check_js"), std::string::npos);
-	EXPECT_FALSE(file_exists((root + "/session/sess/invalid_candidate").c_str()));
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("check_js"), std::string::npos);
+	EXPECT_FALSE(nb_file_exists((root + "/session/sess/invalid_candidate").c_str()));
 	EXPECT_EQ(tool_borrow(&reg, "invalid_candidate"), nullptr);
 	tool_result_cleanup(&result);
 }
@@ -1419,8 +1396,8 @@ TEST_F(DynamicToolsTest, ApprovalRegistryGrowthCannotInvalidateTheCheckpointSour
 	tool_context_set_operation_approval(tctx, nullptr, nullptr);
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "approved_update", "{}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"version\":2"), std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"version\":2"), std::string::npos);
 	tool_result_cleanup(&result);
 }
 
@@ -1447,7 +1424,7 @@ TEST_F(DynamicToolsTest, RetainedExecutionKeepsItsSourceAfterUpdateAndDeletion)
 	tool_result_cleanup(&result);
 	tool_result_init(&result);
 	EXPECT_EQ(tool_exec(&reg, "retained", "{}", &result), 0);
-	EXPECT_NE(std::string(result.text.data ? result.text.data : "").find("\"version\":2"),
+	EXPECT_NE(std::string(result.text.ptr ? result.text.ptr : "").find("\"version\":2"),
 		  std::string::npos);
 	tool_result_cleanup(&result);
 	tool_result_init(&result);
@@ -1458,7 +1435,7 @@ TEST_F(DynamicToolsTest, RetainedExecutionKeepsItsSourceAfterUpdateAndDeletion)
 	tool_result_init(&result);
 	EXPECT_EQ(retained.exec("{}", &result, retained.user_data), 0);
 	EXPECT_EQ(tool_result_finalize(&result), 0);
-	EXPECT_NE(std::string(result.text.data ? result.text.data : "").find("\"version\":1"),
+	EXPECT_NE(std::string(result.text.ptr ? result.text.ptr : "").find("\"version\":1"),
 		  std::string::npos);
 	tool_result_cleanup(&result);
 	tool_handle_release(&retained);
@@ -1493,7 +1470,7 @@ TEST_F(DynamicToolsTest, ImageCanvasFilesystemAndWasmBindingsCoexist)
 	tool_result_init(&result);
 	std::string call = "{\"output\":\"" + root + "/all-bindings.png\"}";
 	ASSERT_EQ(tool_exec(&reg, "all_bindings", call.c_str(), &result), 0);
-	cJSON *response = cJSON_Parse(result.text.data);
+	cJSON *response = cJSON_Parse(result.text.ptr);
 	ASSERT_NE(response, nullptr);
 	EXPECT_EQ(cJSON_GetObjectItem(response, "width")->valueint, 8);
 	EXPECT_EQ(cJSON_GetObjectItem(response, "height")->valueint, 4);
@@ -1514,8 +1491,8 @@ TEST_F(DynamicToolsTest, RejectsNodeBufferWhileSupportingHostToBufferMethods)
 				    .c_str(),
 			    &result),
 		  0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("forbidden token"), std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("forbidden token"), std::string::npos);
 	tool_result_cleanup(&result);
 }
 
@@ -1548,7 +1525,7 @@ TEST_F(DynamicToolsTest, FilesystemRetainsTemporaryBufferAndRejectsInvalidRanges
 		"  return { first: bytes[0], second: bytes[1], rangeError, indexError,"
 		"    getterError, detachedError, emptyBytes };"
 		"}";
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
 	ASSERT_EQ(
 		tool_exec(&reg, "tool_create", create_args("buffer_view", source).c_str(), &result),
@@ -1557,7 +1534,7 @@ TEST_F(DynamicToolsTest, FilesystemRetainsTemporaryBufferAndRejectsInvalidRanges
 	tool_result_init(&result);
 	const std::string call = "{\"output\":\"" + root + "/buffer-view.bin\"}";
 	ASSERT_EQ(tool_exec(&reg, "buffer_view", call.c_str(), &result), 0);
-	cJSON *response = cJSON_Parse(result.text.data);
+	cJSON *response = cJSON_Parse(result.text.ptr);
 	ASSERT_NE(response, nullptr);
 	EXPECT_EQ(cJSON_GetObjectItem(response, "first")->valueint, 34);
 	EXPECT_EQ(cJSON_GetObjectItem(response, "second")->valueint, 51);
@@ -1584,7 +1561,7 @@ TEST_F(DynamicToolsTest, LazyImageOwnsEncodedInputAfterSourceMutation)
 		"  const metadata = morph.image.open(result).metadata();"
 		"  return { width: metadata.width, height: metadata.height };"
 		"}";
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
 	ASSERT_EQ(
 		tool_exec(&reg, "tool_create", create_args("image_copy", source).c_str(), &result),
@@ -1592,7 +1569,7 @@ TEST_F(DynamicToolsTest, LazyImageOwnsEncodedInputAfterSourceMutation)
 	tool_result_cleanup(&result);
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "image_copy", "{}", &result), 0);
-	cJSON *response = cJSON_Parse(result.text.data);
+	cJSON *response = cJSON_Parse(result.text.ptr);
 	ASSERT_NE(response, nullptr);
 	EXPECT_EQ(cJSON_GetObjectItem(response, "width")->valueint, 4);
 	EXPECT_EQ(cJSON_GetObjectItem(response, "height")->valueint, 2);
@@ -1606,18 +1583,20 @@ TEST_F(DynamicToolsTest, DefinitionReadCopyAndUpdateUseTheSameSourceErrors)
 	const std::string source = dir + "/tool.js";
 	const std::string destination_meta = root + "/copy.json";
 	const std::string destination_source = root + "/copy.js";
-	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
+	ASSERT_EQ(nb_file_mkdir(dir.c_str(), true, NULL), 0);
 	struct {
 		const char *metadata;
 		int error;
 	} cases[] = {
-		{"{\"name\":\"legacy\"}", -ENOENT},
-		{"{invalid", MORPH_ERR_PARSE},
-		{"{\"name\":\"legacy\",\"source\":42}", MORPH_ERR_FORMAT},
+		{"{\"name\":\"legacy\"}", NB_ERR_NOT_FOUND},
+		{"{invalid", NB_ERR_PARSE},
+		{"{\"name\":\"legacy\",\"source\":42}", NB_ERR_FORMAT},
 	};
 	for (const auto &item : cases) {
 		SCOPED_TRACE(item.metadata);
-		ASSERT_EQ(file_write_all(meta.c_str(), item.metadata, strlen(item.metadata)), 0);
+		ASSERT_EQ(
+			nb_file_write_all(meta.c_str(), item.metadata, strlen(item.metadata), NULL),
+			0);
 		struct dynamic_tool_definition definition{};
 		EXPECT_EQ(dynamic_tool_store_load_definition(meta.c_str(), source.c_str(),
 							     &definition),
@@ -1635,14 +1614,17 @@ TEST_F(DynamicToolsTest, DefinitionReadCopyAndUpdateUseTheSameSourceErrors)
 				  &tool, "function run(args) { return args; }"),
 			  item.error);
 		EXPECT_EQ(tool.source, nullptr);
-		EXPECT_FALSE(file_exists(source.c_str()));
-		EXPECT_FALSE(file_exists(destination_meta.c_str()));
-		EXPECT_FALSE(file_exists(destination_source.c_str()));
+		EXPECT_FALSE(nb_file_exists(source.c_str()));
+		EXPECT_FALSE(nb_file_exists(destination_meta.c_str()));
+		EXPECT_FALSE(nb_file_exists(destination_source.c_str()));
 	}
 }
 
 TEST_F(DynamicToolsTest, DefinitionCopyUsesCommittedSourceAndPreservesUnknownMetadata)
 {
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_3 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	const std::string dir = root + "/definition";
 	const std::string meta = dir + "/tool.json";
 	const std::string mirror = dir + "/tool.js";
@@ -1650,9 +1632,9 @@ TEST_F(DynamicToolsTest, DefinitionCopyUsesCommittedSourceAndPreservesUnknownMet
 	const std::string copy_source = root + "/copied.js";
 	const char metadata[] = "{\"name\":\"committed\",\"source\":\"committed source\","
 				"\"extension\":{\"version\":7}}";
-	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
-	ASSERT_EQ(file_write_all(meta.c_str(), metadata, strlen(metadata)), 0);
-	ASSERT_FALSE(file_exists(mirror.c_str()));
+	ASSERT_EQ(nb_file_mkdir(dir.c_str(), true, NULL), 0);
+	ASSERT_EQ(nb_file_write_all(meta.c_str(), metadata, strlen(metadata), NULL), 0);
+	ASSERT_FALSE(nb_file_exists(mirror.c_str()));
 	EXPECT_EQ(dynamic_tool_store_copy_tool_snapshot(meta.c_str(), mirror.c_str(),
 							copy_meta.c_str(), copy_source.c_str()),
 		  0);
@@ -1669,7 +1651,14 @@ TEST_F(DynamicToolsTest, DefinitionCopyUsesCommittedSourceAndPreservesUnknownMet
 	ASSERT_TRUE(cJSON_IsObject(extension));
 	EXPECT_EQ(cJSON_GetObjectItem(extension, "version")->valueint, 7);
 	dynamic_tool_store_definition_cleanup(&definition);
-	char *copied = file_read_all_copy(copy_source.c_str(), nullptr);
+	char *copied =
+		(nb_file_read_all(copy_source.c_str(), &file_value_3, 0, NULL) == NB_OK &&
+				 (file_copy_3 = (char *)malloc(nb_buf_len(&file_value_3) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_3, nb_buf_cstr(&file_value_3),
+				   nb_buf_len(&file_value_3) + 1),
+			    nb_charp_steal(&file_copy_3))
+			 : NULL);
 	ASSERT_NE(copied, nullptr);
 	EXPECT_STREQ(copied, "committed source");
 	free(copied);
@@ -1693,8 +1682,8 @@ TEST_F(DynamicToolsTest, SessionReloadUsesCommittedDefinitionWithoutASourceMirro
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 	tool_result_init(&result);
 	EXPECT_EQ(tool_exec(&reg, "without_mirror", "{}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"value\":42"), std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find("\"value\":42"), std::string::npos);
 	tool_result_cleanup(&result);
 }
 
@@ -1708,9 +1697,9 @@ TEST_F(DynamicToolsTest, LegacyDefinitionsNormalizeBeforeCopyAndUpdate)
 	const char metadata[] = "{\"name\":\"legacy\",\"input_schema\":{\"type\":\"object\"}}";
 	const char original[] = "function run(args) { return { value: 1 }; }";
 	const char updated[] = "function run(args) { return { value: 2 }; }";
-	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
-	ASSERT_EQ(file_write_all(meta.c_str(), metadata, strlen(metadata)), 0);
-	ASSERT_EQ(file_write_all(source.c_str(), original, strlen(original)), 0);
+	ASSERT_EQ(nb_file_mkdir(dir.c_str(), true, NULL), 0);
+	ASSERT_EQ(nb_file_write_all(meta.c_str(), metadata, strlen(metadata), NULL), 0);
+	ASSERT_EQ(nb_file_write_all(source.c_str(), original, strlen(original), NULL), 0);
 	struct dynamic_tool_definition definition{};
 	ASSERT_EQ(dynamic_tool_store_load_definition(meta.c_str(), source.c_str(), &definition), 0);
 	EXPECT_TRUE(definition.legacy_source);

@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/sync.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "agent/plan.h"
@@ -86,7 +87,8 @@ static int cli_sync_command_now(struct cli_application *ctx)
 	if (rc == 0)
 		CMD_OK(ctx, "sync completed");
 	else
-		CMD_ERROR(ctx, "sync failed: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "sync failed: %s",
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	return rc;
 }
 
@@ -97,9 +99,9 @@ static int cli_sync_command_conflicts(struct cli_application *ctx)
 	int rc;
 
 	rc = runtime_sync_conflicts(ctx->runtime, &items, &count);
-	if (rc == -ENOENT) {
+	if (rc == NB_ERR_NOT_FOUND) {
 		CMD_ERROR(ctx, "sync manifest not found");
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	}
 	if (rc != 0)
 		return rc;
@@ -130,14 +132,15 @@ static int cli_sync_command_restore(struct cli_application *ctx, const char *id)
 
 	if (!id || !id[0]) {
 		CMD_ERROR(ctx, "usage: /sync restore <trash-id>");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	trash_id = atoll(id);
 	rc = runtime_sync_restore(ctx->runtime, trash_id);
 	if (rc == 0)
 		CMD_OK(ctx, "restored trash entry %s", id);
 	else
-		CMD_ERROR(ctx, "restore failed: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "restore failed: %s",
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	return rc;
 }
 
@@ -204,13 +207,14 @@ static int cli_sync_command_restore_db(struct cli_application *ctx, const char *
 
 	if (!snapshot_id || !destination) {
 		CMD_ERROR(ctx, "usage: /sync restore-db <snapshot-id> <destination>");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	rc = runtime_sync_restore_db(ctx->runtime, snapshot_id, destination);
 	if (rc == 0)
 		CMD_OK(ctx, "restored database to %s", destination);
 	else
-		CMD_ERROR(ctx, "database restore failed: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "database restore failed: %s",
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	return rc;
 }
 
@@ -250,7 +254,8 @@ static int cli_sync_command_replace_db(struct cli_application *ctx, const char *
 
 	rc = runtime_sync_prepare_db_replace(ctx->runtime, snapshot_id, &plan);
 	if (rc != 0) {
-		CMD_ERROR(ctx, "database restore preparation failed: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "database restore preparation failed: %s",
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 	if (!confirmed && !cli_sync_confirm_db_replace(ctx, plan.path)) {
@@ -289,7 +294,7 @@ static int cli_sync_cmd(struct cli_application *ctx, int argc, char **argv)
 		if (!snapshot_id) {
 			CMD_ERROR(ctx, "usage: /sync restore-db <snapshot-id> "
 				       "[destination|--yes]");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 		if (destination && !yes)
 			return cli_sync_command_restore_db(ctx, snapshot_id, destination);
@@ -298,7 +303,7 @@ static int cli_sync_cmd(struct cli_application *ctx, int argc, char **argv)
 	CMD_ERROR(ctx, "usage: /sync [status|now|conflicts|restore <trash-id>|"
 		       "backups [path]|restore-db <snapshot-id> "
 		       "[destination|--yes]]");
-	return -EINVAL;
+	return NB_ERR_INVAL;
 }
 
 struct cli_command_group cli_sync_commands(void)

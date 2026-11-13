@@ -5,18 +5,20 @@
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/widgets/feed.h"
 #include "runtime/runtime.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/cleanup.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "nb/cleanup.h"
 #include <stdlib.h>
 #include <string.h>
 
 void cli_session_history_print_resume_hint(struct cli_application *ctx)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	struct session session;
 	const char *config_path;
 	const char *workdir;
-	char *resolved_config MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *resolved_config NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	if (!ctx || !ctx->runtime || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
@@ -24,7 +26,14 @@ void cli_session_history_print_resume_hint(struct cli_application *ctx)
 		return;
 	config_path = runtime_config_path_borrow(ctx->runtime);
 	resolved_config =
-		config_path && config_path[0] ? file_resolve_path_copy(config_path) : NULL;
+		config_path && config_path[0]
+			? (nb_path_expand(&file_value_1, config_path, NULL) == NB_OK &&
+					   nb_path_canonical_missing(&file_value_1,
+								     nb_buf_cstr(&file_value_1),
+								     NULL) == NB_OK
+				   ? strdup(nb_buf_cstr(&file_value_1))
+				   : NULL)
+			: NULL;
 	workdir = runtime_workdir_borrow(ctx->runtime);
 	cli_history_render_resume_hint(ctx, session.display_id,
 				       resolved_config ? resolved_config : config_path,
@@ -39,13 +48,11 @@ int cli_session_history_restore(struct cli_application *ctx)
 	int rc;
 
 	if (!ctx || !ctx->runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	/* Session commands retain their existing plain and NDJSON contracts. */
 	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return 0;
-	int reset_rc = cli_chat_reset(ctx);
-	if (reset_rc)
-		return reset_rc;
+	/* Submitted commands and existing scrollback remain visible on session changes. */
 	items = runtime_session_model_history_current_copy(ctx->runtime, 0, &count);
 	if (!items)
 		messages = runtime_session_messages_current_copy(ctx->runtime, &count);

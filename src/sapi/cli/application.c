@@ -1,6 +1,8 @@
 #include "sapi/cli/application.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
+#include "nb/time.h"
 #include "sapi/cli/adapters/input/state.h"
 #include "sapi/cli/adapters/runtime/dispatch.h"
 #include "sapi/cli/services/turn.h"
@@ -77,8 +79,10 @@ void cli_application_panel_complete(struct cli_application *ctx, void *data,
 	    !morph_tui_application_transition_pending(cli_application_tui_borrow(ctx)) &&
 	    morph_tui_application_depth(cli_application_tui_borrow(ctx)) <= 1) {
 		ctx->application_command = 0;
-		if (result < 0 && result != -ECANCELED)
-			CMD_ERROR(ctx, "%s", morph_strerror(result));
+		if (result < 0 && result != NB_ERR_CANCELLED)
+			CMD_ERROR(
+				ctx, "%s",
+				nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, result));
 		cli_presentation_command_end(ctx);
 	}
 }
@@ -97,11 +101,11 @@ int cli_application_present_screen_with_flags(struct cli_application *ctx,
 {
 	if (!ctx || !cli_application_tui_borrow(ctx) || !ops || !ops->update || !ops->draw ||
 	    !complete)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct cli_application_screen *screen = calloc(1, sizeof(*screen));
 
 	if (!screen)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	*screen = (struct cli_application_screen){
 		.ctx = ctx, .ops = *ops, .data = data, .complete = complete};
 	static const struct morph_tui_controller_ops controller_ops = {
@@ -141,7 +145,7 @@ static void cli_application_prepare_termination(struct morph_tui_application *ba
 	ctx->running = 0;
 	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE)
 		(void)cli_event_queue_set_events_enabled(ctx, 0);
-	(void)cli_chat_panel_cancel(ctx, -ECANCELED);
+	(void)cli_chat_panel_cancel(ctx, NB_ERR_CANCELLED);
 	(void)cli_event_queue_stop_owner_calls(ctx);
 	if (ctx->input_job && ctx->input_job->active) {
 		runtime_cancel_turn(ctx->runtime);
@@ -156,7 +160,8 @@ static int cli_application_copy_selection(void *data, const char *text)
 	int rc = cli_clipboard_copy_text(ctx, text);
 
 	if (rc < 0)
-		CMD_ERROR(ctx, "Copy failed: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "Copy failed: %s",
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	else if (rc == CLI_CLIPBOARD_REQUESTED)
 		cli_output_printf(ctx, "Copy requested from terminal\n");
 	return 0;
@@ -168,7 +173,8 @@ static void cli_application_run_session(struct cli_application *ctx, struct cli_
 	int app_rc = cli_chat_create(ctx, job, &page);
 
 	if (app_rc) {
-		CMD_ERROR(ctx, "Application failed: %s", morph_strerror(app_rc));
+		CMD_ERROR(ctx, "Application failed: %s",
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, app_rc));
 		return;
 	}
 	const struct morph_tui_application_options options = cli_chat_options(page);
@@ -199,7 +205,8 @@ static void cli_application_run_interactive(struct cli_application *ctx)
 	int rc = cli_command_job_init(&job);
 
 	if (rc) {
-		CMD_ERROR(ctx, "failed to initialize command worker: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "failed to initialize command worker: %s",
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return;
 	}
 	ctx->input_job = &job;
@@ -229,7 +236,7 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 	int rc;
 
 	if (!ctx)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	ctx->presentation_mode = mode;
 	cli_output_set_structured(ctx, mode == CLI_PRESENT_EVENTS_JSON);
 	ctx->event_cb = cli_runtime_events_callback;
@@ -315,33 +322,36 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 	}
 	rc = runtime_sync_start_instance(ctx->runtime, NULL, NULL);
 	if (rc != 0)
-		log_warn(ctx ? ctx->logger : NULL, "failed to start sync worker: %s",
-			 morph_strerror(rc));
+		nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_WARN,
+			     "failed to start sync worker: %s",
+			     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	return 0;
 }
 
-int cli_application_init(struct cli_application *ctx, struct morph_log *logger,
+int cli_application_init(struct cli_application *ctx, struct nb_log *logger,
 			 const char *config_path, const char *db_path, const char *workdir,
 			 const char *session_name, const char *resume_ref,
 			 enum cli_presentation_mode mode)
 {
 	if (!ctx)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(ctx, 0, sizeof(*ctx));
 	ctx->input_execute = cli_command_input_execute;
 	ctx->logger = logger;
-	int rc = morph_signal_listener_start(&ctx->signals, cli_signal_received, ctx);
+	int rc = nb_signal_listener_start(&ctx->signals,
+					  (const int[]){SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGWINCH},
+					  5, cli_signal_received, ctx, NULL);
 
 	if (rc == 0) {
 		rc = cli_application_initialize(ctx, config_path, db_path, workdir, session_name,
 						resume_ref, mode);
 		if (rc != 0) {
-			morph_signal_listener_stop(&ctx->signals);
+			nb_signal_listener_stop(&ctx->signals, NULL);
 		} else {
 			__atomic_store_n(&ctx->signals_ready, 1, __ATOMIC_RELEASE);
-			if (morph_signal_flag_get(&ctx->interrupted)) {
+			if (nb_atomic_int_load(&ctx->interrupted)) {
 				cli_application_shutdown(ctx);
-				return -EINTR;
+				return NB_ERR_INTERRUPTED;
 			}
 		}
 	}
@@ -355,20 +365,20 @@ int cli_application_init(struct cli_application *ctx, struct morph_log *logger,
 static void cli_application_run_structured(struct cli_application *ctx)
 {
 	char line[BUFSIZ];
-	morph_buf_t input;
+	nb_buf input NB_CLEANUP(nb_buf_cleanup) = {0};
 	struct cli_command_job job;
 	int rc;
 
 	rc = cli_command_job_init(&job);
 	if (rc != 0)
 		return;
-	rc = morph_buf_init(&input, BUFSIZ);
+	rc = (nb_buf_init(&input), nb_buf_reserve(&input, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
 		cli_command_job_cleanup(&job);
 		return;
 	}
 	while (ctx->running || job.active) {
-		if (morph_signal_flag_get(&ctx->terminate_requested)) {
+		if (nb_atomic_int_load(&ctx->terminate_requested)) {
 			ctx->running = 0;
 			if (!job.active)
 				break;
@@ -389,7 +399,7 @@ static void cli_application_run_structured(struct cli_application *ctx)
 		rc = poll(fds, (nfds_t)nfds, poll_timeout);
 		if (rc < 0) {
 			if (errno == EINTR) {
-				morph_signal_flag_set(&ctx->interrupted, 0);
+				nb_atomic_int_store(&ctx->interrupted, 0);
 				continue;
 			}
 			break;
@@ -407,7 +417,7 @@ static void cli_application_run_structured(struct cli_application *ctx)
 			size_t len;
 			int complete = 0;
 
-			morph_buf_reset(&input);
+			nb_buf_clear(&input);
 			while (!complete && ctx->running) {
 				int continuation;
 
@@ -430,19 +440,17 @@ static void cli_application_run_structured(struct cli_application *ctx)
 					len--;
 					complete = 0;
 				}
-				rc = morph_buf_append(&input, line, len);
+				rc = (nb_buf_append(&input, line, len) ? 0 : NB_ERR_NOMEM);
 				if (rc == 0 && continuation)
-					rc = morph_buf_putc(&input, '\n');
+					rc = (nb_buf_append_char(&input, '\n') ? 0 : NB_ERR_NOMEM);
 				if (rc != 0) {
-					morph_buf_reset(&input);
+					nb_buf_clear(&input);
 					break;
 				}
 			}
-			if (input.len > 0 &&
-			    !cli_interaction_is_frame(morph_buf_cstr_borrow(&input))) {
+			if (input.len > 0 && !cli_interaction_is_frame(nb_buf_cstr(&input))) {
 				cli_turn_begin(ctx);
-				rc = cli_command_job_start(&job, ctx,
-							   morph_buf_cstr_borrow(&input));
+				rc = cli_command_job_start(&job, ctx, nb_buf_cstr(&input));
 				if (rc != 0)
 					cli_turn_finish(ctx, rc);
 			}
@@ -454,30 +462,30 @@ static void cli_application_run_structured(struct cli_application *ctx)
 		(void)cli_event_queue_drain(ctx);
 		cli_turn_finish(ctx, command_rc);
 	}
-	morph_buf_cleanup(&input);
+	nb_buf_cleanup(&input);
 	cli_command_job_cleanup(&job);
 }
 
 static void cli_application_run_plain(struct cli_application *ctx)
 {
-	morph_buf_t input;
+	nb_buf input NB_CLEANUP(nb_buf_cleanup) = {0};
 	struct cli_command_job job;
 	char line[BUFSIZ];
 	int prompt = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
 
 	if (cli_command_job_init(&job) != 0)
 		return;
-	if (morph_buf_init(&input, BUFSIZ) != 0) {
+	if ((nb_buf_init(&input), nb_buf_reserve(&input, BUFSIZ) ? 0 : NB_ERR_NOMEM) != 0) {
 		cli_command_job_cleanup(&job);
 		return;
 	}
 	while (ctx->running) {
-		if (morph_signal_flag_get(&ctx->terminate_requested))
+		if (nb_atomic_int_load(&ctx->terminate_requested))
 			break;
 		int complete = 0;
 
 		(void)cli_event_queue_drain(ctx);
-		morph_buf_reset(&input);
+		nb_buf_clear(&input);
 		while (!complete) {
 			size_t len;
 			int has_newline;
@@ -489,9 +497,9 @@ static void cli_application_run_plain(struct cli_application *ctx)
 			}
 			cli_cancel_state_reset(ctx);
 			if (!cli_input_fgets(ctx, line, sizeof(line), stdin)) {
-				if (morph_signal_flag_take(&ctx->interrupted)) {
+				if (nb_atomic_int_exchange(&ctx->interrupted, 0)) {
 					clearerr(stdin);
-					morph_buf_reset(&input);
+					nb_buf_clear(&input);
 					break;
 				}
 				if (feof(stdin)) {
@@ -510,15 +518,15 @@ static void cli_application_run_plain(struct cli_application *ctx)
 			continuation = has_newline && len > 0 && line[len - 1] == '\\';
 			if (continuation)
 				len--;
-			if (morph_buf_append(&input, line, len) != 0) {
+			if ((nb_buf_append(&input, line, len) ? 0 : NB_ERR_NOMEM) != 0) {
 				CMD_ERROR(ctx, "input is too large");
-				morph_buf_reset(&input);
+				nb_buf_clear(&input);
 				break;
 			}
 			if (continuation) {
-				if (morph_buf_putc(&input, '\n') != 0) {
+				if ((nb_buf_append_char(&input, '\n') ? 0 : NB_ERR_NOMEM) != 0) {
 					CMD_ERROR(ctx, "input is too large");
-					morph_buf_reset(&input);
+					nb_buf_clear(&input);
 					break;
 				}
 			} else if (has_newline) {
@@ -529,7 +537,7 @@ static void cli_application_run_plain(struct cli_application *ctx)
 			int turn_rc;
 
 			cli_turn_begin(ctx);
-			turn_rc = cli_command_job_start(&job, ctx, morph_buf_cstr_borrow(&input));
+			turn_rc = cli_command_job_start(&job, ctx, nb_buf_cstr(&input));
 			if (turn_rc == 0)
 				turn_rc = cli_command_job_wait(&job);
 			(void)cli_event_queue_drain(ctx);
@@ -537,7 +545,7 @@ static void cli_application_run_plain(struct cli_application *ctx)
 		}
 		(void)cli_event_queue_drain(ctx);
 	}
-	morph_buf_cleanup(&input);
+	nb_buf_cleanup(&input);
 	cli_command_job_cleanup(&job);
 }
 
@@ -550,12 +558,13 @@ void cli_application_run(struct cli_application *ctx)
 	int plain = !isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO) ||
 		    (term && strcmp(term, "dumb") == 0);
 	int standalone_resume = plain;
-	morph_buf_t directory;
+	nb_buf directory NB_CLEANUP(nb_buf_cleanup) = {0};
 
 	if (!ctx)
 		return;
 	if (cli_scheduler_start(ctx) != 0)
-		log_warn(ctx ? ctx->logger : NULL, "failed to start task scheduler");
+		nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_WARN,
+			     "failed to start task scheduler");
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
 		(void)setvbuf(stdin, NULL, _IONBF, 0);
 		cli_application_run_structured(ctx);
@@ -569,30 +578,31 @@ void cli_application_run(struct cli_application *ctx)
 	config = runtime_config_borrow(ctx->runtime);
 	workdir = runtime_workdir_borrow(ctx->runtime);
 	memset(&directory, 0, sizeof(directory));
-	if (morph_buf_init(&directory, BUFSIZ) != 0)
+	if ((nb_buf_init(&directory), nb_buf_reserve(&directory, BUFSIZ) ? 0 : NB_ERR_NOMEM) != 0)
 		return;
 	home = getenv("HOME");
 	if (workdir && workdir[0] && home && home[0] && strncmp(workdir, home, strlen(home)) == 0 &&
 	    (workdir[strlen(home)] == '\0' || workdir[strlen(home)] == '/')) {
-		(void)morph_buf_putc(&directory, '~');
-		(void)morph_buf_puts(&directory, workdir + strlen(home));
+		(void)nb_buf_append_char(&directory, '~');
+		(void)nb_buf_append_cstr(&directory, workdir + strlen(home));
 	} else {
-		(void)morph_buf_puts(&directory, workdir && workdir[0] ? workdir : ".");
+		(void)nb_buf_append_cstr(&directory, workdir && workdir[0] ? workdir : ".");
 	}
 	if (plain && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO))
 		cli_banner_print(ctx, config ? config->models.text.model : NULL,
-				 morph_buf_cstr_borrow(&directory));
-	morph_buf_cleanup(&directory);
+				 nb_buf_cstr(&directory));
+	nb_buf_cleanup(&directory);
 	int hooks_rc = cli_hooks_startup(ctx);
 	if (hooks_rc != 0)
-		log_warn(ctx ? ctx->logger : NULL, "hook trust review failed: %s",
-			 morph_strerror(hooks_rc));
+		nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_WARN, "hook trust review failed: %s",
+			     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, hooks_rc));
 	if (plain && ctx->session_history_pending) {
 		ctx->session_history_pending = 0;
 		int rc = cli_session_history_restore(ctx);
 
 		if (rc)
-			CMD_ERROR(ctx, "failed to restore session history: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "failed to restore session history: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	}
 	/* The chat controller opens the startup picker on its own controller stack. */
 	if (ctx->resume_requested && standalone_resume) {
@@ -600,7 +610,8 @@ void cli_application_run(struct cli_application *ctx)
 		int rc = cli_resume_show(ctx);
 
 		if (rc)
-			CMD_ERROR(ctx, "failed to open sessions: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "failed to open sessions: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	}
 
 	if (plain) {
@@ -614,7 +625,7 @@ void cli_application_run(struct cli_application *ctx)
 
 static void cli_application_emit_trace_json(struct cli_application *ctx, double elapsed)
 {
-	struct runtime_turn_status status MORPH_CLEANUP(runtime_turn_status_cleanup) = {0};
+	struct runtime_turn_status status NB_CLEANUP(runtime_turn_status_cleanup) = {0};
 	cJSON *root;
 	cJSON *steps;
 	char *json;
@@ -644,7 +655,9 @@ static void cli_application_emit_trace_json(struct cli_application *ctx, double 
 	cJSON_AddStringToObject(root, "outcome", react_outcome_name(status.outcome));
 	if (status.last_error_code < 0) {
 		cJSON_AddNumberToObject(root, "error_code", status.last_error_code);
-		cJSON_AddStringToObject(root, "error", morph_strerror(status.last_error_code));
+		cJSON_AddStringToObject(root, "error",
+					nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+						   status.last_error_code));
 	}
 	if (status.outcome_reason && status.outcome_reason[0])
 		cJSON_AddStringToObject(root, "reason", status.outcome_reason);
@@ -679,8 +692,8 @@ static void cli_application_emit_trace_json(struct cli_application *ctx, double 
 void cli_application_run_once(struct cli_application *ctx, const char *prompt)
 {
 	struct cli_command_job job;
-	struct timespec started;
-	struct timespec finished;
+	int64_t started;
+	int64_t finished;
 	int saved_stdout = -1;
 	int job_initialized = 0;
 	int job_rc;
@@ -688,7 +701,7 @@ void cli_application_run_once(struct cli_application *ctx, const char *prompt)
 
 	if (!ctx || !prompt)
 		return;
-	clock_gettime(CLOCK_MONOTONIC, &started);
+	started = nb_time_monotonic_ns();
 	cli_cancel_state_reset(ctx);
 
 	/*
@@ -717,9 +730,8 @@ void cli_application_run_once(struct cli_application *ctx, const char *prompt)
 		(void)dup2(saved_stdout, STDOUT_FILENO);
 		close(saved_stdout);
 	}
-	clock_gettime(CLOCK_MONOTONIC, &finished);
-	elapsed = (double)(finished.tv_sec - started.tv_sec) +
-		  (double)(finished.tv_nsec - started.tv_nsec) / 1e9;
+	finished = nb_time_monotonic_ns();
+	elapsed = started > 0 && finished >= started ? (double)(finished - started) / 1e9 : 0.0;
 	if (ctx->trace_json)
 		cli_application_emit_trace_json(ctx, elapsed);
 }
@@ -734,7 +746,7 @@ void cli_application_shutdown(struct cli_application *ctx)
 		(void)cli_event_queue_set_events_enabled(ctx, 0);
 		ctx->presentation_ready = 0;
 	}
-	morph_signal_listener_stop(&ctx->signals);
+	nb_signal_listener_stop(&ctx->signals, NULL);
 	cli_callbacks_cleanup(ctx);
 	runtime_close(ctx->runtime);
 	ctx->runtime = NULL;
@@ -747,5 +759,5 @@ void cli_application_shutdown(struct cli_application *ctx)
 	cli_feed_cleanup(ctx);
 	cli_input_cleanup(ctx);
 	cli_output_set_structured(ctx, 0);
-	log_info(ctx ? ctx->logger : NULL, "cli shutdown complete");
+	nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_INFO, "cli shutdown complete");
 }

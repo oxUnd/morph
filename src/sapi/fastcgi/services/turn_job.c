@@ -1,4 +1,5 @@
 #include "sapi/fastcgi/services/turn_job.h"
+#include "nb/time.h"
 #include "sapi/fastcgi/services/turn_job_internal.h"
 #include "sapi/fastcgi/agent_bridge.h"
 #include "sapi/fastcgi/session_store.h"
@@ -7,8 +8,7 @@
 #include "sapi/fastcgi/storage/quota.h"
 #include "sapi/fastcgi/event_sink.h"
 #include "cJSON.h"
-#include "util/error.h"
-#include "util/child_io.h"
+#include "errors.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -88,9 +88,12 @@ static int turn_job_execute(struct fcgi_turn_job *j, struct runtime **runtime)
 
 			if (err) {
 				cJSON_AddStringToObject(err, "turn_id", j->turn_id);
-				cJSON_AddStringToObject(err, "message", morph_strerror(run_rc));
+				cJSON_AddStringToObject(err, "message",
+							nb_err_str(morph_error_descriptions(),
+								   MORPH_ERROR_COUNT, run_rc));
 				cJSON_AddBoolToObject(err, "retryable",
-						      run_rc == -ETIMEDOUT || run_rc == -EAGAIN);
+						      run_rc == NB_ERR_TIMEOUT ||
+							      run_rc == NB_ERR_AGAIN);
 				json = cJSON_PrintUnformatted(err);
 				cJSON_Delete(err);
 			}
@@ -99,7 +102,7 @@ static int turn_job_execute(struct fcgi_turn_job *j, struct runtime **runtime)
 			free(json);
 			return 0;
 		}
-		waited_ms = morph_io_now_ms() - j->enqueued_ms;
+		waited_ms = nb_time_monotonic_ms() - j->enqueued_ms;
 		{
 			cJSON *start = cJSON_CreateObject();
 			char *json = NULL;
@@ -125,7 +128,9 @@ static int turn_job_execute(struct fcgi_turn_job *j, struct runtime **runtime)
 
 			if (err) {
 				cJSON_AddStringToObject(err, "turn_id", j->turn_id);
-				cJSON_AddStringToObject(err, "message", morph_strerror(run_rc));
+				cJSON_AddStringToObject(err, "message",
+							nb_err_str(morph_error_descriptions(),
+								   MORPH_ERROR_COUNT, run_rc));
 				json = cJSON_PrintUnformatted(err);
 				cJSON_Delete(err);
 			}
@@ -171,12 +176,12 @@ static void *turn_thread(void *arg)
 	int ok;
 
 	atomic_init(&j->heartbeat_stop, 0);
-	if (pthread_create(&j->heartbeat_thread, NULL, turn_heartbeat_thread, j) == 0)
+	if (nb_thread_create(&j->heartbeat_thread, turn_heartbeat_thread, j, NULL) == 0)
 		j->heartbeat_started = 1;
 	ok = turn_job_execute(j, &runtime);
 	if (j->heartbeat_started) {
 		atomic_store(&j->heartbeat_stop, 1);
-		pthread_join(j->heartbeat_thread, NULL);
+		nb_thread_join_take(&j->heartbeat_thread, NULL);
 		j->heartbeat_started = 0;
 	}
 	fcgi_turn_ticket_cleanup(&j->ticket);
@@ -239,15 +244,15 @@ int fcgi_turn_job_submit(struct fcgi_bridge *bridge, struct session_store *store
 			 struct fcgi_turn_receipt *receipt)
 {
 	struct fcgi_turn_job *job;
-	pthread_t thread;
+	nb_thread *thread;
 	int rc;
 
 	if (!bridge || !store || !session_id || !user_id || !input || !receipt)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*receipt = (struct fcgi_turn_receipt){.failure = FCGI_TURN_FAILURE_INTERNAL};
 	job = calloc(1, sizeof(*job));
 	if (!job)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	job->bridge = bridge;
 	job->store = store;
 	snprintf(job->session_id, sizeof(job->session_id), "%s", session_id);
@@ -255,27 +260,27 @@ int fcgi_turn_job_submit(struct fcgi_bridge *bridge, struct session_store *store
 	rc = store_quota_begin_turn(store, user_id, session_id, job->turn_id);
 	if (rc) {
 		free(job);
-		receipt->failure = rc == -EDQUOT   ? FCGI_TURN_FAILURE_DAILY_QUOTA
-				   : rc == -EAGAIN ? FCGI_TURN_FAILURE_CONCURRENCY_QUOTA
-						   : FCGI_TURN_FAILURE_INTERNAL;
+		receipt->failure = rc == NB_ERR_NO_SPACE ? FCGI_TURN_FAILURE_DAILY_QUOTA
+				   : rc == NB_ERR_AGAIN	 ? FCGI_TURN_FAILURE_CONCURRENCY_QUOTA
+							 : FCGI_TURN_FAILURE_INTERNAL;
 		return rc;
 	}
 	job->input = strdup(input);
 	if (!job->input) {
 		store_quota_end_turn(store, job->turn_id);
 		free(job);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	rc = fcgi_bridge_turn_enqueue(bridge, session_id, &job->ticket, &job->queue_position);
 	if (rc) {
 		store_quota_end_turn(store, job->turn_id);
 		free(job->input);
 		free(job);
-		receipt->failure =
-			rc == -EAGAIN ? FCGI_TURN_FAILURE_QUEUE_FULL : FCGI_TURN_FAILURE_SHUTDOWN;
+		receipt->failure = rc == NB_ERR_AGAIN ? FCGI_TURN_FAILURE_QUEUE_FULL
+						      : FCGI_TURN_FAILURE_SHUTDOWN;
 		return rc;
 	}
-	job->enqueued_ms = morph_io_now_ms();
+	job->enqueued_ms = nb_time_monotonic_ms();
 	cJSON *queued = cJSON_CreateObject();
 	char *json = NULL;
 
@@ -293,18 +298,19 @@ int fcgi_turn_job_submit(struct fcgi_bridge *bridge, struct session_store *store
 		snprintf(receipt->turn_id, sizeof(receipt->turn_id), "%s", job->turn_id);
 		receipt->queue_position = job->queue_position;
 		receipt->failure = FCGI_TURN_FAILURE_THREAD;
-		int error = pthread_create(&thread, NULL, turn_thread, job);
+		int error = nb_thread_create(&thread, turn_thread, job,
+					     &(nb_thread_options){.detached = true});
 
 		if (!error) {
 			receipt->failure = FCGI_TURN_FAILURE_NONE;
-			pthread_detach(thread);
+			nb_thread_free(thread);
 			return 0;
 		}
-		rc = -error;
+		rc = error;
 		fcgi_bridge_turn_end(bridge);
 	}
 	fcgi_turn_ticket_cleanup(&job->ticket);
-	turn_job_publish_abort(job, morph_strerror(rc));
+	turn_job_publish_abort(job, nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	store_quota_end_turn(store, job->turn_id);
 	free(job->input);
 	free(job);

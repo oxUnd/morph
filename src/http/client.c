@@ -1,7 +1,7 @@
 #include "client.h"
-#include "util/log.h"
-#include "util/error.h"
-#include "util/cleanup.h"
+#include "nb/log.h"
+#include "errors.h"
+#include "nb/cleanup.h"
 #include <errno.h>
 #include <curl/curl.h>
 #include <limits.h>
@@ -49,11 +49,11 @@ static int curl_debug_cb(CURL *handle, curl_infotype type, char *data, size_t si
 	(void)handle;
 	(void)userp;
 	if (type == CURLINFO_HEADER_OUT) {
-		log_dbg(userp ? ((const struct http_control *)userp)->logger : NULL, ">> %.*s",
-			(int)size, data);
+		nb_log_write(userp ? ((const struct http_control *)userp)->logger : NULL,
+			     NB_LOG_DEBUG, ">> %.*s", (int)size, data);
 	} else if (type == CURLINFO_HEADER_IN) {
-		log_dbg(userp ? ((const struct http_control *)userp)->logger : NULL, "<< %.*s",
-			(int)size, data);
+		nb_log_write(userp ? ((const struct http_control *)userp)->logger : NULL,
+			     NB_LOG_DEBUG, "<< %.*s", (int)size, data);
 	}
 	return 0;
 }
@@ -92,14 +92,14 @@ static void curl_apply_common_opts(CURL *curl, char *errbuf, const struct http_c
 	}
 }
 
-static void curl_log_error(struct morph_log *logger, const char *what, CURLcode rc,
-			   const char *errbuf)
+static void curl_log_error(struct nb_log *logger, const char *what, CURLcode rc, const char *errbuf)
 {
 	if (errbuf && *errbuf) {
-		log_err(logger, "%s failed: curl=%d %s (%s)", what, (int)rc, curl_easy_strerror(rc),
-			errbuf);
+		nb_log_write(logger, NB_LOG_ERROR, "%s failed: curl=%d %s (%s)", what, (int)rc,
+			     curl_easy_strerror(rc), errbuf);
 	} else {
-		log_err(logger, "%s failed: curl=%d %s", what, (int)rc, curl_easy_strerror(rc));
+		nb_log_write(logger, NB_LOG_ERROR, "%s failed: curl=%d %s", what, (int)rc,
+			     curl_easy_strerror(rc));
 	}
 }
 
@@ -107,7 +107,7 @@ static int http_cancelled(const struct http_control *control)
 {
 	if (!control)
 		return 0;
-	return morph_cancel_token_is_cancelled(control->cancel_token) ||
+	return nb_cancel_requested(control->cancel_token) ||
 	       (control->cancel_flag && __atomic_load_n(control->cancel_flag, __ATOMIC_RELAXED)) ||
 	       (control->interrupt_check && control->interrupt_check(control->interrupt_user_data));
 }
@@ -175,16 +175,16 @@ int http_wait_cancelable(const struct http_control *control, unsigned int millis
 		if (current > slice_ms)
 			current = slice_ms;
 		if (http_cancelled(control))
-			return -ECANCELED;
+			return NB_ERR_CANCELLED;
 		delay.tv_sec = current / 1000;
 		delay.tv_nsec = (long)(current % 1000) * 1000000L;
 		while (nanosleep(&delay, &delay) != 0 && errno == EINTR) {
 			if (http_cancelled(control))
-				return -ECANCELED;
+				return NB_ERR_CANCELLED;
 		}
 		waited += current;
 	}
-	return http_cancelled(control) ? -ECANCELED : 0;
+	return http_cancelled(control) ? NB_ERR_CANCELLED : 0;
 }
 
 static int http_xferinfo_cb(void *clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal,
@@ -222,25 +222,27 @@ static int http_transfer_result(const struct http_control *control, CURLcode rc,
 	if (rc == CURLE_OK)
 		return 0;
 	if (http_cancelled(control))
-		return -ECANCELED;
+		return NB_ERR_CANCELLED;
 	curl_log_error(control ? control->logger : NULL, "http request", rc, errbuf);
 	if (rc == CURLE_OPERATION_TIMEDOUT)
-		return -ETIMEDOUT;
+		return NB_ERR_TIMEOUT;
 	if (rc == CURLE_OUT_OF_MEMORY)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	return MORPH_ERR_NETWORK;
 }
 
-int http_init(struct morph_log *logger)
+int http_init(struct nb_log *logger)
 {
 	CURLcode rc;
 
 	rc = curl_global_init(CURL_GLOBAL_DEFAULT);
 	if (rc != CURLE_OK) {
-		log_err(logger, "curl_global_init failed: %s", curl_easy_strerror(rc));
-		return MORPH_TRACE_ERROR(logger, MORPH_ERR_NETWORK);
+		nb_log_write(logger, NB_LOG_ERROR, "curl_global_init failed: %s",
+			     curl_easy_strerror(rc));
+		return nb_err_trace(logger, MORPH_ERR_NETWORK, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	}
-	log_info(logger, "http client initialized");
+	nb_log_write(logger, NB_LOG_INFO, "http client initialized");
 	return 0;
 }
 
@@ -257,10 +259,11 @@ static size_t write_cb(void *ptr, size_t size, size_t nmemb, void *data)
 	if (size != 0 && nmemb > SIZE_MAX / size)
 		return 0;
 	if (resp->body.cap == 0) {
-		if (morph_buf_init(&resp->body, 65536) != 0)
+		if ((nb_buf_init(&resp->body),
+		     nb_buf_reserve(&resp->body, 65536) ? 0 : NB_ERR_NOMEM) != 0)
 			return 0;
 	}
-	if (morph_buf_append(&resp->body, (const char *)ptr, total) != 0)
+	if ((nb_buf_append(&resp->body, (const char *)ptr, total) ? 0 : NB_ERR_NOMEM) != 0)
 		return 0;
 	return total;
 }
@@ -278,18 +281,18 @@ static size_t bounded_write_cb(void *data, size_t size, size_t count, void *opaq
 	size_t written;
 
 	if (size && count > SIZE_MAX / size) {
-		writer->error = -EOVERFLOW;
+		writer->error = NB_ERR_RANGE;
 		return 0;
 	}
 	length = size * count;
 	if (writer->limit && (writer->response->body.len > writer->limit ||
 			      length > writer->limit - writer->response->body.len)) {
-		writer->error = -EFBIG;
+		writer->error = NB_ERR_TOO_BIG;
 		return 0;
 	}
 	written = write_cb(data, size, count, writer->response);
-	if (written != length && writer->response->body.failed)
-		writer->error = writer->response->body.failed;
+	if (written != length && nb_buf_status(&writer->response->body))
+		writer->error = nb_buf_status(&writer->response->body);
 	return written;
 }
 
@@ -301,10 +304,11 @@ static size_t header_cb(char *ptr, size_t size, size_t nmemb, void *data)
 	if (size != 0 && nmemb > SIZE_MAX / size)
 		return 0;
 	if (resp->headers.cap == 0) {
-		if (morph_buf_init(&resp->headers, 4096) != 0)
+		if ((nb_buf_init(&resp->headers),
+		     nb_buf_reserve(&resp->headers, 4096) ? 0 : NB_ERR_NOMEM) != 0)
 			return 0;
 	}
-	if (morph_buf_append(&resp->headers, (const char *)ptr, total) != 0)
+	if ((nb_buf_append(&resp->headers, (const char *)ptr, total) ? 0 : NB_ERR_NOMEM) != 0)
 		return 0;
 	return total;
 }
@@ -314,10 +318,10 @@ static int append_header(struct curl_slist **headers, const char *header)
 	struct curl_slist *new_headers;
 
 	if (!headers || !header)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	new_headers = curl_slist_append(*headers, header);
 	if (!new_headers)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	*headers = new_headers;
 	return 0;
 }
@@ -354,7 +358,7 @@ static int do_request(const struct http_control *control, const char *url, const
 {
 	struct response_writer writer = {.response = resp, .limit = body_limit};
 	CURLcode curl_rc;
-	struct http_transfer transfer MORPH_CLEANUP(http_transfer_cleanup) = {0};
+	struct http_transfer transfer NB_CLEANUP(http_transfer_cleanup) = {0};
 	char errbuf[CURL_ERROR_SIZE];
 	long status = 0;
 	int is_post;
@@ -367,7 +371,9 @@ static int do_request(const struct http_control *control, const char *url, const
 
 	transfer.curl = curl_easy_init();
 	if (!transfer.curl) {
-		return MORPH_TRACE_ERROR(control ? control->logger : NULL, -ENOMEM);
+		return nb_err_trace(control ? control->logger : NULL, NB_ERR_NOMEM,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
 	}
 
 	rc = append_content_type_header(&transfer.headers, content_type);
@@ -412,9 +418,9 @@ static int do_request(const struct http_control *control, const char *url, const
 static int http_response_prepare_empty(struct http_response *response)
 {
 	if (!response)
-		return -EINVAL;
-	if (response->body.data || response->headers.data)
-		return -EEXIST;
+		return NB_ERR_INVAL;
+	if (response->body.ptr || response->headers.ptr)
+		return NB_ERR_EXISTS;
 	memset(response, 0, sizeof(*response));
 	return 0;
 }
@@ -422,7 +428,9 @@ static int http_response_prepare_empty(struct http_response *response)
 int http_get(const struct http_control *control, const char *url, struct http_response *resp)
 {
 	if (!url || !resp)
-		return MORPH_TRACE_ERROR(control ? control->logger : NULL, -EINVAL);
+		return nb_err_trace(control ? control->logger : NULL, NB_ERR_INVAL,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
 	int rc = http_response_prepare_empty(resp);
 	if (rc != 0)
 		return rc;
@@ -434,7 +442,7 @@ int http_get_ex_timeout_limit(const struct http_control *control, const char *ur
 			      long timeout_seconds, size_t body_limit, struct http_response *resp)
 {
 	if (!url || !resp || timeout_seconds <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int rc = http_response_prepare_empty(resp);
 	if (rc != 0)
 		return rc;
@@ -460,7 +468,7 @@ int http_post(const struct http_control *control, const char *url, const char *b
 	      size_t body_len, const char *content_type, struct http_response *resp)
 {
 	if (!url || !resp)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int rc = http_response_prepare_empty(resp);
 	if (rc != 0)
 		return rc;
@@ -473,7 +481,7 @@ int http_post_ex(const struct http_control *control, const char *url, const char
 		 int extra_header_count, struct http_response *resp)
 {
 	if (!url || !resp)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int rc = http_response_prepare_empty(resp);
 	if (rc != 0)
 		return rc;
@@ -486,7 +494,9 @@ int http_post_ex_timeout(const struct http_control *control, const char *url, co
 			 int extra_header_count, long timeout_seconds, struct http_response *resp)
 {
 	if (!url || !resp)
-		return MORPH_TRACE_ERROR(control ? control->logger : NULL, -EINVAL);
+		return nb_err_trace(control ? control->logger : NULL, NB_ERR_INVAL,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
 	int rc = http_response_prepare_empty(resp);
 	if (rc != 0)
 		return rc;
@@ -499,14 +509,16 @@ int http_post_multipart_ex(const struct http_control *control, const char *url,
 			   const char **extra_headers, int extra_header_count, long timeout_seconds,
 			   struct http_response *resp)
 {
-	struct http_transfer transfer MORPH_CLEANUP(http_transfer_cleanup) = {0};
+	struct http_transfer transfer NB_CLEANUP(http_transfer_cleanup) = {0};
 	CURLcode curl_rc;
 	char errbuf[CURL_ERROR_SIZE];
 	long status = 0;
 	int rc = 0;
 
 	if (!url || !parts || part_count <= 0 || !resp)
-		return MORPH_TRACE_ERROR(control ? control->logger : NULL, -EINVAL);
+		return nb_err_trace(control ? control->logger : NULL, NB_ERR_INVAL,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
 	rc = http_response_prepare_empty(resp);
 	if (rc != 0)
 		return rc;
@@ -516,41 +528,43 @@ int http_post_multipart_ex(const struct http_control *control, const char *url,
 	transfer.initialized = 1;
 	transfer.curl = curl_easy_init();
 	if (!transfer.curl) {
-		return MORPH_TRACE_ERROR(control ? control->logger : NULL, -ENOMEM);
+		return nb_err_trace(control ? control->logger : NULL, NB_ERR_NOMEM,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
 	}
 	transfer.mime = curl_mime_init(transfer.curl);
 	if (!transfer.mime) {
-		rc = -ENOMEM;
+		rc = NB_ERR_NOMEM;
 		return rc;
 	}
 	for (int i = 0; i < part_count; i++) {
 		curl_mimepart *part;
 
 		if (!parts[i].name || !parts[i].value) {
-			rc = -EINVAL;
+			rc = NB_ERR_INVAL;
 			return rc;
 		}
 		part = curl_mime_addpart(transfer.mime);
 		if (!part) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			return rc;
 		}
 		if (curl_mime_name(part, parts[i].name) != CURLE_OK) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			return rc;
 		}
 		if (parts[i].kind == HTTP_MULTIPART_FILE) {
 			if (curl_mime_filedata(part, parts[i].value) != CURLE_OK) {
-				rc = -EINVAL;
+				rc = NB_ERR_INVAL;
 				return rc;
 			}
 		} else if (curl_mime_data(part, parts[i].value, CURL_ZERO_TERMINATED) != CURLE_OK) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			return rc;
 		}
 		if (parts[i].content_type &&
 		    curl_mime_type(part, parts[i].content_type) != CURLE_OK) {
-			rc = -EINVAL;
+			rc = NB_ERR_INVAL;
 			return rc;
 		}
 	}
@@ -593,7 +607,8 @@ static size_t sse_write_cb(void *ptr, size_t size, size_t nmemb, void *data)
 	if (size != 0 && nmemb > SIZE_MAX / size)
 		return 0;
 	total = size * nmemb;
-	log_dbg(control ? control->logger : NULL, "sse_write_cb: received %zu bytes", total);
+	nb_log_write(control ? control->logger : NULL, NB_LOG_DEBUG,
+		     "sse_write_cb: received %zu bytes", total);
 	if (http_cancelled(control))
 		return 0;
 	if (swd->cb) {
@@ -643,7 +658,7 @@ static int do_sse_request(const struct http_control *control, const char *url, c
 	if (!metadata)
 		metadata = &local_metadata;
 	metadata->retry_after_seconds = 0;
-	struct http_transfer transfer MORPH_CLEANUP(http_transfer_cleanup) = {0};
+	struct http_transfer transfer NB_CLEANUP(http_transfer_cleanup) = {0};
 	char ct[256];
 	struct sse_write_data swd;
 	CURLcode curl_rc;
@@ -652,7 +667,7 @@ static int do_sse_request(const struct http_control *control, const char *url, c
 	int rc;
 
 	if (!url || !cb)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = http_init(control ? control->logger : NULL);
 	if (rc != 0)
 		return rc;
@@ -660,7 +675,9 @@ static int do_sse_request(const struct http_control *control, const char *url, c
 
 	transfer.curl = curl_easy_init();
 	if (!transfer.curl) {
-		return MORPH_TRACE_ERROR(control ? control->logger : NULL, -ENOMEM);
+		return nb_err_trace(control ? control->logger : NULL, NB_ERR_NOMEM,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
 	}
 
 	snprintf(ct, sizeof(ct), "Content-Type: %s",
@@ -692,8 +709,8 @@ static int do_sse_request(const struct http_control *control, const char *url, c
 	curl_easy_setopt(transfer.curl, CURLOPT_POSTFIELDS, body ? body : "");
 	curl_easy_setopt(transfer.curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_len);
 
-	log_dbg(control ? control->logger : NULL,
-		"http sse: request timeout disabled, idle_timeout=%lds", idle_timeout);
+	nb_log_write(control ? control->logger : NULL, NB_LOG_DEBUG,
+		     "http sse: request timeout disabled, idle_timeout=%lds", idle_timeout);
 	curl_rc = http_perform_cancelable(transfer.curl, NULL, control);
 
 	if (swd.callback_rc != 0) {
@@ -754,8 +771,8 @@ void http_response_free(struct http_response *resp)
 {
 	if (!resp)
 		return;
-	morph_buf_cleanup(&resp->body);
-	morph_buf_cleanup(&resp->headers);
+	nb_buf_cleanup(&resp->body);
+	nb_buf_cleanup(&resp->headers);
 	memset(resp, 0, sizeof(*resp));
 }
 
@@ -766,7 +783,7 @@ static size_t session_write_cb(void *ptr, size_t size, size_t nmemb, void *data)
 	struct http_session *s = data;
 	size_t total = size * nmemb;
 
-	if (morph_buf_append(&s->resp_body, (const char *)ptr, total) != 0)
+	if ((nb_buf_append(&s->resp_body, (const char *)ptr, total) ? 0 : NB_ERR_NOMEM) != 0)
 		return 0;
 	return total;
 }
@@ -776,15 +793,15 @@ static size_t session_header_cb(void *ptr, size_t size, size_t nmemb, void *data
 	struct http_session *s = data;
 	size_t total = size * nmemb;
 
-	if (morph_buf_append(&s->resp_headers, (const char *)ptr, total) != 0)
+	if ((nb_buf_append(&s->resp_headers, (const char *)ptr, total) ? 0 : NB_ERR_NOMEM) != 0)
 		return 0;
 	return total;
 }
 
-int http_session_init(struct morph_log *logger, struct http_session *s)
+int http_session_init(struct nb_log *logger, struct http_session *s)
 {
 	if (!s)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int rc = http_init(logger);
 
 	if (rc != 0)
@@ -794,20 +811,24 @@ int http_session_init(struct morph_log *logger, struct http_session *s)
 	s->curl = curl_easy_init();
 	if (!s->curl) {
 		http_cleanup();
-		return MORPH_TRACE_ERROR(logger, -ENOMEM);
+		return nb_err_trace(logger, NB_ERR_NOMEM, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	}
 	/* Keep the connection pool alive across cancellable session requests. */
 	s->multi = curl_multi_init();
 	if (!s->multi) {
 		http_session_cleanup(s);
-		return MORPH_TRACE_ERROR(logger, -ENOMEM);
+		return nb_err_trace(logger, NB_ERR_NOMEM, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	}
-	rc = morph_buf_init(&s->resp_body, 4096);
+	rc = (nb_buf_init(&s->resp_body), nb_buf_reserve(&s->resp_body, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_init(&s->resp_headers, 2048);
+		rc = (nb_buf_init(&s->resp_headers),
+		      nb_buf_reserve(&s->resp_headers, 2048) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
 		http_session_cleanup(s);
-		return MORPH_TRACE_ERROR(logger, rc);
+		return nb_err_trace(logger, rc, morph_error_descriptions(), MORPH_ERROR_COUNT,
+				    __FILE__, __LINE__);
 	}
 	s->status_code = 0;
 	s->initialized = 1;
@@ -827,8 +848,8 @@ void http_session_cleanup(struct http_session *s)
 		s->curl = NULL;
 		http_cleanup();
 	}
-	morph_buf_cleanup(&s->resp_body);
-	morph_buf_cleanup(&s->resp_headers);
+	nb_buf_cleanup(&s->resp_body);
+	nb_buf_cleanup(&s->resp_headers);
 	s->initialized = 0;
 }
 
@@ -836,8 +857,8 @@ void http_session_reset(struct http_session *s)
 {
 	if (!s)
 		return;
-	morph_buf_reset(&s->resp_body);
-	morph_buf_reset(&s->resp_headers);
+	nb_buf_clear(&s->resp_body);
+	nb_buf_clear(&s->resp_headers);
 	s->status_code = 0;
 }
 
@@ -845,7 +866,7 @@ int http_session_post(const struct http_control *control, struct http_session *s
 		      const char *body, size_t body_len, const char *content_type,
 		      const char **extra_headers, int extra_header_count, long timeout_seconds)
 {
-	struct http_transfer transfer MORPH_CLEANUP(http_transfer_cleanup) = {0};
+	struct http_transfer transfer NB_CLEANUP(http_transfer_cleanup) = {0};
 	struct http_control request_control = control ? *control : (struct http_control){0};
 	CURLcode curl_rc;
 	char errbuf[CURL_ERROR_SIZE];
@@ -853,7 +874,7 @@ int http_session_post(const struct http_control *control, struct http_session *s
 	int rc;
 
 	if (!s || !s->curl || !url)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	if (!request_control.logger)
 		request_control.logger = s->logger;
@@ -898,7 +919,7 @@ const char *http_session_body_borrow(struct http_session *s, size_t *len)
 		return NULL;
 	if (len)
 		*len = s->resp_body.len;
-	return morph_buf_cstr_borrow(&s->resp_body);
+	return nb_buf_cstr(&s->resp_body);
 }
 
 long http_session_status(struct http_session *s)
@@ -912,7 +933,7 @@ char *http_session_header_copy(struct http_session *s, const char *name)
 {
 	if (!s || !name)
 		return NULL;
-	const char *hdrs = morph_buf_cstr_borrow(&s->resp_headers);
+	const char *hdrs = nb_buf_cstr(&s->resp_headers);
 	if (!hdrs)
 		return NULL;
 	size_t name_len = strlen(name);

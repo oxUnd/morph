@@ -1,5 +1,7 @@
+#include "errors.h"
 #include <gtest/gtest.h>
-#include "util/cleanup.h"
+#include "nb/err.h"
+#include "nb/cleanup.h"
 
 #include "agent/react.h"
 #include "agent/history.h"
@@ -19,8 +21,8 @@
 #include <future>
 #include <chrono>
 #include <utility>
-#include "util/utf8.h"
-#include "util/json.h"
+#include "nb/utf8.h"
+#include "cJSON.h"
 
 class AgentTurnTest : public ::testing::Test {
 protected:
@@ -57,7 +59,7 @@ protected:
 static int agent_turn_summary(const char *, void *, char **out)
 {
 	*out = strdup("old work checkpoint");
-	return *out ? 0 : -ENOMEM;
+	return *out ? 0 : NB_ERR_NOMEM;
 }
 
 static void agent_turn_test_messages_cleanup(struct message **messages)
@@ -180,10 +182,12 @@ TEST_F(AgentTurnTest, PersistsExecutionOutcomeWithoutInventingTaskCompletion)
 		struct agent_turn turn;
 		ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
 		react->outcome = outcome;
-		react->last_error_code = outcome == REACT_OUTCOME_SUCCESS ? 0 : -EIO;
+		react->last_error_code = outcome == REACT_OUTCOME_SUCCESS ? 0 : NB_ERR_IO;
 		react->state = outcome == REACT_OUTCOME_SUCCESS ?
 			REACT_STATE_DONE : REACT_STATE_ABORT;
+		free(react->final_answer);
 		react->final_answer = strdup("Execution result");
+		ASSERT_NE(react->final_answer, nullptr);
 		ASSERT_EQ(agent_turn_finish(&turn, nullptr), 0);
 		int count = 0;
 		auto *items = model_history_list(&db, sess.id, 0, &count);
@@ -201,7 +205,7 @@ TEST_F(AgentTurnTest, PersistsExecutionOutcomeWithoutInventingTaskCompletion)
 			id.c_str());
 		EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(record, "finished")));
 		EXPECT_EQ(cJSON_GetObjectItem(record, "error_code")->valueint,
-			outcome == REACT_OUTCOME_SUCCESS ? 0 : -EIO);
+			  outcome == REACT_OUTCOME_SUCCESS ? 0 : NB_ERR_IO);
 		EXPECT_EQ(cJSON_GetObjectItem(record, "task_completed"), nullptr);
 		cJSON_Delete(payload);
 		model_history_free_list(items);
@@ -275,8 +279,8 @@ TEST_F(AgentTurnTest, NonRetryableFailureKeepsRequestAndBlockerForResume)
 	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
 	react->state = REACT_STATE_ABORT;
 	react->outcome = REACT_OUTCOME_TOOL_ERROR;
-	react->terminal_tool_error = -EIO;
-	react->last_error_code = -EIO;
+	react->terminal_tool_error = NB_ERR_IO;
+	react->last_error_code = NB_ERR_IO;
 	react->final_answer = strdup("The screen is locked. Unlock before continuing.");
 	ASSERT_EQ(agent_turn_finish(&turn, nullptr), 0);
 	int count = 0;
@@ -295,7 +299,7 @@ TEST_F(AgentTurnTest, NonRetryableFailureKeepsRequestAndBlockerForResume)
 static int agent_turn_failing_summary(const char *, void *, char **out)
 {
 	*out = nullptr;
-	return -EIO;
+	return NB_ERR_IO;
 }
 
 TEST_F(AgentTurnTest, BeginLoadsHistoryAndFinishPersistsTurn)
@@ -334,7 +338,7 @@ TEST_F(AgentTurnTest, BeginLoadsHistoryAndFinishPersistsTurn)
 
 	struct agent_turn_result result;
 	ASSERT_EQ(agent_turn_finish(&turn, &result), 0);
-	ASSERT_EQ(agent_turn_finish(&turn, nullptr), -EALREADY);
+	ASSERT_EQ(agent_turn_finish(&turn, nullptr), NB_ERR_STATE);
 	EXPECT_TRUE(result.trace_saved);
 	EXPECT_EQ(result.trace_rc, 0);
 	EXPECT_TRUE(result.user_saved);
@@ -537,8 +541,7 @@ TEST_F(AgentTurnTest, MemoryRetainsUserCorrectionsAndExcludesHookPrompts)
 	ASSERT_NE(react->final_answer, nullptr);
 	ASSERT_EQ(agent_turn_finish(&turn, &result), 0);
 	EXPECT_TRUE(result.memory_ran_inline);
-	char *memory MORPH_CLEANUP(morph_charp_cleanup) =
-		memory_session_text_create(&db, sess.id, 0);
+	char *memory NB_CLEANUP(nb_charp_cleanup) = memory_session_text_create(&db, sess.id, 0);
 
 	ASSERT_NE(memory, nullptr);
 	EXPECT_NE(strstr(memory, "USER_REQUEST_SENTINEL"), nullptr);
@@ -569,8 +572,9 @@ TEST_F(AgentTurnTest, FailedTurnKeepsUserWithoutPoisoningNextTurn)
 	call.arguments = const_cast<char *>("{not-json");
 	ASSERT_EQ(agent_history_record_tool_calls(react, nullptr, nullptr,
 		&call, 1), 0);
-	ASSERT_EQ(agent_history_record_tool_result(react, "local_failed",
-		"provider_failed", "exec", "invalid arguments", -EINVAL), 0);
+	ASSERT_EQ(agent_history_record_tool_result(react, "local_failed", "provider_failed", "exec",
+						   "invalid arguments", NB_ERR_INVAL),
+		  0);
 	react->final_answer = strdup(
 		"LLM repeatedly returned an empty response.");
 	ASSERT_NE(react->final_answer, nullptr);
@@ -580,7 +584,7 @@ TEST_F(AgentTurnTest, FailedTurnKeepsUserWithoutPoisoningNextTurn)
 	EXPECT_EQ(model_history_count(&db, sess.id, 1), 1);
 	EXPECT_EQ(model_history_count(&db, sess.id, 0), 3);
 
-	struct message *transcript MORPH_CLEANUP(agent_turn_test_messages_cleanup) =
+	struct message *transcript NB_CLEANUP(agent_turn_test_messages_cleanup) =
 		message_list(&db, sess.id, &count);
 	ASSERT_EQ(count, 2);
 	ASSERT_NE(transcript, nullptr);
@@ -605,6 +609,7 @@ TEST_F(AgentTurnTest, FailedTurnKeepsUserWithoutPoisoningNextTurn)
 	EXPECT_STREQ(active->next->turn_id, "turn_next");
 	EXPECT_STREQ(active->next->kind, "user_message");
 	model_history_free_list(active);
+	free(react->final_answer);
 	react->final_answer = strdup("recovered");
 	ASSERT_NE(react->final_answer, nullptr);
 	react->state = REACT_STATE_DONE;
@@ -639,7 +644,7 @@ TEST_F(AgentTurnTest, CancelledTurnKeepsOriginalRequestAndEverySteeringMessage)
 	ASSERT_EQ(agent_history_record_user_steer(react, "use component padding", 2), 0);
 	react->state = REACT_STATE_ABORT;
 	react->outcome = REACT_OUTCOME_CANCELLED;
-	react->last_error_code = -ECANCELED;
+	react->last_error_code = NB_ERR_CANCELLED;
 	ASSERT_EQ(agent_turn_finish(&turn, nullptr), 0);
 	EXPECT_EQ(model_history_count(&db, sess.id, 1), 3);
 	EXPECT_EQ(message_count(&db, sess.id), 1);
@@ -649,15 +654,15 @@ TEST_F(AgentTurnTest, CancelledTurnKeepsOriginalRequestAndEverySteeringMessage)
 	continuation.turn_id = "continue-cancelled-request";
 	struct agent_turn next{};
 	ASSERT_EQ(agent_turn_begin(&next, &runtime, &continuation), 0);
-	morph_array_t messages MORPH_CLEANUP(agent_chat_messages_cleanup) = {};
+	nb_vec messages NB_CLEANUP(agent_chat_messages_cleanup) = {};
 	ASSERT_EQ(agent_history_messages_copy(nullptr, react->history_items, &messages), 0);
-	ASSERT_EQ(messages.nelts, 3U);
+	ASSERT_EQ(messages.len, 3U);
 	const char *expected[] = {
 		"unfinished model request", "preserve the visual layout", "use component padding",
 	};
-	for (size_t index = 0; index < messages.nelts; index++) {
-		const auto *message = static_cast<const struct chat_message *>(
-			morph_array_borrow(&messages, index));
+	for (size_t index = 0; index < messages.len; index++) {
+		const auto *message =
+			static_cast<const struct chat_message *>(nb_vec_at(&messages, index));
 		SCOPED_TRACE(index);
 		EXPECT_STREQ(message->role, "user");
 		ASSERT_NE(message->content, nullptr);
@@ -675,7 +680,7 @@ TEST_F(AgentTurnTest, CancelledTurnKeepsOriginalRequestAndEverySteeringMessage)
 	ASSERT_EQ(agent_session_load_history(&runtime), 0);
 	EXPECT_EQ(model_history_count(&db, sess.id, 1), 5);
 	int count = 0;
-	struct message *transcript MORPH_CLEANUP(agent_turn_test_messages_cleanup) =
+	struct message *transcript NB_CLEANUP(agent_turn_test_messages_cleanup) =
 		message_list(&db, sess.id, &count);
 	ASSERT_EQ(count, 3);
 	ASSERT_NE(transcript, nullptr);
@@ -703,8 +708,9 @@ TEST_F(AgentTurnTest, CancelledTurnDoesNotReplayToolsOrPartialFinalDespiteEarlie
 	call.name = const_cast<char *>("exec");
 	call.arguments = const_cast<char *>("{\"command\":\"inspect workspace\"}");
 	ASSERT_EQ(agent_history_record_tool_calls(react, nullptr, nullptr, &call, 1), 0);
-	ASSERT_EQ(agent_history_record_tool_result(react, call.tool_call_id, call.id,
-		call.name, "earlier tool failed", -EIO), 0);
+	ASSERT_EQ(agent_history_record_tool_result(react, call.tool_call_id, call.id, call.name,
+						   "earlier tool failed", NB_ERR_IO),
+		  0);
 	ASSERT_EQ(agent_history_record_user_steer(react, "also preserve the box model", 1), 0);
 	call.id = const_cast<char *>("provider-pending");
 	call.tool_call_id = const_cast<char *>("local-pending");
@@ -714,8 +720,8 @@ TEST_F(AgentTurnTest, CancelledTurnDoesNotReplayToolsOrPartialFinalDespiteEarlie
 	ASSERT_NE(react->final_answer, nullptr);
 	react->state = REACT_STATE_ABORT;
 	react->outcome = REACT_OUTCOME_CANCELLED;
-	react->last_error_code = -ECANCELED;
-	react->terminal_tool_error = -EIO;
+	react->last_error_code = NB_ERR_CANCELLED;
+	react->terminal_tool_error = NB_ERR_IO;
 	ASSERT_EQ(agent_turn_finish(&turn, nullptr), 0);
 	EXPECT_EQ(model_history_count(&db, sess.id, 0), 5);
 	EXPECT_EQ(model_history_count(&db, sess.id, 1), 2);
@@ -724,12 +730,12 @@ TEST_F(AgentTurnTest, CancelledTurnDoesNotReplayToolsOrPartialFinalDespiteEarlie
 	ASSERT_EQ(agent_history_diagnose(react->history_items, tok, &diagnostic), 0);
 	EXPECT_EQ(diagnostic.dangling_calls, 0);
 	EXPECT_EQ(diagnostic.orphan_results, 0);
-	morph_array_t messages MORPH_CLEANUP(agent_chat_messages_cleanup) = {};
+	nb_vec messages NB_CLEANUP(agent_chat_messages_cleanup) = {};
 	ASSERT_EQ(agent_history_messages_copy(nullptr, react->history_items, &messages), 0);
-	ASSERT_EQ(messages.nelts, 2U);
-	for (size_t index = 0; index < messages.nelts; index++) {
-		const auto *message = static_cast<const struct chat_message *>(
-			morph_array_borrow(&messages, index));
+	ASSERT_EQ(messages.len, 2U);
+	for (size_t index = 0; index < messages.len; index++) {
+		const auto *message =
+			static_cast<const struct chat_message *>(nb_vec_at(&messages, index));
 		EXPECT_STREQ(message->role, "user");
 		ASSERT_NE(message->content, nullptr);
 		EXPECT_EQ(strstr(message->content, "partial final answer"), nullptr);
@@ -737,7 +743,7 @@ TEST_F(AgentTurnTest, CancelledTurnDoesNotReplayToolsOrPartialFinalDespiteEarlie
 		EXPECT_EQ(message->tool_call_count, 0);
 	}
 	int count = 0;
-	struct message *transcript MORPH_CLEANUP(agent_turn_test_messages_cleanup) =
+	struct message *transcript NB_CLEANUP(agent_turn_test_messages_cleanup) =
 		message_list(&db, sess.id, &count);
 	ASSERT_EQ(count, 2);
 	ASSERT_NE(transcript, nullptr);
@@ -768,7 +774,7 @@ TEST_F(AgentTurnTest, CancelledOutcomeWriteFailureRollsBackHistoryDeactivation)
 	ASSERT_EQ(agent_history_record_tool_result(react, call.tool_call_id, call.id,
 		call.name, "tool evidence must survive a failed commit", 0), 0);
 	int count = 0;
-	struct model_history_item *before MORPH_CLEANUP(agent_turn_test_history_cleanup) =
+	struct model_history_item *before NB_CLEANUP(agent_turn_test_history_cleanup) =
 		model_history_list(&db, sess.id, 0, &count);
 	ASSERT_EQ(count, 4);
 	ASSERT_EQ(db_exec(&db, "CREATE TRIGGER reject_cancelled_outcome BEFORE UPDATE OF "
@@ -776,7 +782,7 @@ TEST_F(AgentTurnTest, CancelledOutcomeWriteFailureRollsBackHistoryDeactivation)
 		"SELECT RAISE(ABORT, 'injected cancelled outcome failure'); END;"), 0);
 	react->state = REACT_STATE_ABORT;
 	react->outcome = REACT_OUTCOME_CANCELLED;
-	react->last_error_code = -ECANCELED;
+	react->last_error_code = NB_ERR_CANCELLED;
 	react->final_answer = strdup("partial answer cannot be committed");
 	ASSERT_NE(react->final_answer, nullptr);
 	struct agent_turn_result result{};
@@ -785,7 +791,7 @@ TEST_F(AgentTurnTest, CancelledOutcomeWriteFailureRollsBackHistoryDeactivation)
 	EXPECT_EQ(sqlite3_get_autocommit(db.handle), 1);
 	EXPECT_EQ(message_count(&db, sess.id), 1);
 	EXPECT_EQ(model_history_count(&db, sess.id, 1), 4);
-	struct model_history_item *after MORPH_CLEANUP(agent_turn_test_history_cleanup) =
+	struct model_history_item *after NB_CLEANUP(agent_turn_test_history_cleanup) =
 		model_history_list(&db, sess.id, 0, &count);
 	ASSERT_EQ(count, 4);
 	for (auto *saved = before, *current = after; saved; saved = saved->next) {
@@ -837,7 +843,7 @@ TEST_F(AgentTurnTest, CancelledCompactionOrHookKeepsCheckpointAndExecutedWork)
 		react->hook_continuation_count = compacted ? 0 : 1;
 		react->state = REACT_STATE_ABORT;
 		react->outcome = REACT_OUTCOME_CANCELLED;
-		react->last_error_code = -ECANCELED;
+		react->last_error_code = NB_ERR_CANCELLED;
 		ASSERT_EQ(agent_turn_finish(&turn, nullptr), 0);
 		ASSERT_EQ(agent_session_load_history(&runtime), 0);
 		bool found_summary = false;
@@ -898,7 +904,7 @@ TEST_F(AgentTurnTest, FailedCompactionKeepsExecutedWorkAndCheckpointOnResume)
 	checkpoint.active = 1;
 	ASSERT_EQ(model_history_add(&db, &checkpoint, nullptr), 0);
 	react->in_turn_compaction_count = 2;
-	react->last_error_code = MORPH_ERR_PROTOCOL;
+	react->last_error_code = NB_ERR_PROTOCOL;
 	react->state = REACT_STATE_ABORT;
 	react->outcome = REACT_OUTCOME_LLM_ERROR;
 	ASSERT_EQ(agent_turn_finish(&turn, nullptr), 0);
@@ -1034,12 +1040,14 @@ TEST_F(AgentTurnTest, AssistantReasoningSurvivesHistoryReloadAndReset)
 	ASSERT_NE(react->final_reasoning_content, nullptr);
 	ASSERT_EQ(agent_history_record_assistant(react, "Final answer"), 0);
 	ASSERT_EQ(agent_history_reload(react), 0);
-	morph_array_t messages MORPH_CLEANUP(agent_chat_messages_cleanup) = {};
+	nb_vec messages NB_CLEANUP(agent_chat_messages_cleanup) = {};
 
-	ASSERT_EQ(morph_array_init(&messages, 2, sizeof(struct chat_message)), 0);
+	ASSERT_EQ((nb_vec_init(&messages, sizeof(struct chat_message)),
+		   nb_vec_reserve(&messages, 2) ? 0 : NB_ERR_NOMEM),
+		  0);
 	ASSERT_EQ(agent_history_messages_copy(NULL, react->history_items, &messages), 0);
-	ASSERT_EQ(messages.nelts, 1U);
-	auto *message = static_cast<struct chat_message *>(morph_array_borrow(&messages, 0));
+	ASSERT_EQ(messages.len, 1U);
+	auto *message = static_cast<struct chat_message *>(nb_vec_at(&messages, 0));
 	EXPECT_STREQ(message->content, "Final answer");
 	EXPECT_STREQ(message->reasoning_content, "Original final reasoning");
 	react_reset(react);
@@ -1051,19 +1059,19 @@ TEST_F(AgentTurnTest, ChatHistoryPlacesSummaryBeforePreservedUser)
 {
 	struct model_history_item user = {};
 	struct model_history_item summary = {};
-	morph_array_t messages MORPH_CLEANUP(agent_chat_messages_cleanup) = {};
+	nb_vec messages NB_CLEANUP(agent_chat_messages_cleanup) = {};
 
 	std::strcpy(user.kind, "user_message");
 	user.content = const_cast<char *>("exact current request");
 	user.next = &summary;
 	std::strcpy(summary.kind, "compaction_summary");
 	summary.content = const_cast<char *>("earlier context summary");
-	ASSERT_EQ(morph_array_init(&messages, 2,
-		sizeof(struct chat_message)), 0);
+	ASSERT_EQ((nb_vec_init(&messages, sizeof(struct chat_message)),
+		   nb_vec_reserve(&messages, 2) ? 0 : NB_ERR_NOMEM),
+		  0);
 	ASSERT_EQ(agent_history_messages_copy(NULL, &user, &messages), 0);
-	ASSERT_EQ(messages.nelts, 2U);
-	struct chat_message *built =
-		static_cast<struct chat_message *>(messages.elts);
+	ASSERT_EQ(messages.len, 2U);
+	struct chat_message *built = static_cast<struct chat_message *>(((void *)messages.data));
 	EXPECT_STREQ(built[0].role, "assistant");
 	EXPECT_TRUE(built[0].is_context_summary);
 	EXPECT_NE(strstr(built[0].content, "earlier context summary"), nullptr);
@@ -1095,7 +1103,7 @@ TEST_F(AgentTurnTest, InTurnCompactionPreservesHistoryWhenSummaryFails)
 	react->compress.summarize = agent_turn_failing_summary;
 	ASSERT_EQ(react_set_turn_id(react, "turn_fallback"), 0);
 	ASSERT_EQ(agent_history_reload(react), 0);
-	EXPECT_EQ(agent_history_compact_with_trigger(react, 1, "in_turn_1"), -EIO);
+	EXPECT_EQ(agent_history_compact_with_trigger(react, 1, "in_turn_1"), NB_ERR_IO);
 
 	int count = 0;
 	struct model_history_item *items = model_history_list(&db, sess.id, 1,
@@ -1160,7 +1168,7 @@ TEST_F(AgentTurnTest, CompactionReplayFailureRollsBackDatabaseAndMemory)
 	react->compress.summarize = agent_turn_summary;
 	ASSERT_EQ(agent_history_reload(react), 0);
 	auto *original = react->history_items;
-	EXPECT_EQ(agent_history_compact(react, 1), MORPH_ERR_PARSE);
+	EXPECT_EQ(agent_history_compact(react, 1), NB_ERR_PARSE);
 	EXPECT_EQ(react->history_items, original);
 	EXPECT_EQ(model_history_compaction_count(&db, sess.id), 0);
 	EXPECT_EQ(model_history_count(&db, sess.id, 0), 1);
@@ -1174,7 +1182,7 @@ static int agent_turn_unicode_summary(const char *, void *, char **out)
 	for (int i = 0; i < 300; i++)
 		summary += "待验证的构建结果🙂";
 	*out = strdup(summary.c_str());
-	return *out ? 0 : -ENOMEM;
+	return *out ? 0 : NB_ERR_NOMEM;
 }
 
 TEST_F(AgentTurnTest, OversizedUnicodeCheckpointIsRejectedWithoutTruncation)
@@ -1194,7 +1202,7 @@ TEST_F(AgentTurnTest, OversizedUnicodeCheckpointIsRejectedWithoutTruncation)
 	react->compress.compaction_summary_max_tokens = 30;
 	react->compress.summarize = agent_turn_unicode_summary;
 	ASSERT_EQ(agent_history_reload(react), 0);
-	EXPECT_EQ(agent_history_compact(react, 1), MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(agent_history_compact(react, 1), NB_ERR_PROTOCOL);
 	ASSERT_NE(react->history_items, nullptr);
 	EXPECT_STREQ(react->history_items->kind, "user_message");
 	EXPECT_STREQ(react->history_items->content, "objective");
@@ -1332,12 +1340,12 @@ TEST_F(AgentTurnTest, LargeAgentReportsCannotRemoveRunningAgentsFromModelObserva
 		"{\"agent_id\":\"/root/platform\",\"status\":\"completed\",\"result\":\"" + report +
 		"\"},{\"agent_id\":\"/root/containers/map\",\"status\":\"running\"},"
 		"{\"agent_id\":\"/root/containers/buf\",\"status\":\"running\"}]}}";
-	char *prepared MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	char *prepared NB_CLEANUP(nb_charp_cleanup) = nullptr;
 	int truncated = 0;
 	ASSERT_EQ(agent_history_tool_content_copy(react, input.c_str(), &prepared, &truncated), 0);
 	EXPECT_EQ(truncated, 1);
 	EXPECT_LE(tokenizer_count(react->tokenizer, prepared), 512);
-	cJSON *json MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(prepared);
+	cJSON *json NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(prepared);
 	ASSERT_NE(json, nullptr);
 	cJSON *data = cJSON_GetObjectItemCaseSensitive(json, "data");
 	cJSON *agents = cJSON_GetObjectItemCaseSensitive(data, "agents");
@@ -1360,8 +1368,9 @@ TEST_F(AgentTurnTest, ImpossibleAgentStatusBudgetFailsExplicitlyInsteadOfHidingA
 	react->history_tool_result_tokens = 8;
 	const char *input = "{\"ok\":true,\"data\":{\"agents\":["
 		"{\"agent_id\":\"/root/still-running\",\"status\":\"running\"}]}}";
-	char *prepared MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
-	EXPECT_EQ(agent_history_tool_content_copy(react, input, &prepared, nullptr), -E2BIG);
+	char *prepared NB_CLEANUP(nb_charp_cleanup) = nullptr;
+	EXPECT_EQ(agent_history_tool_content_copy(react, input, &prepared, nullptr),
+		  NB_ERR_TOO_BIG);
 	EXPECT_EQ(prepared, nullptr);
 }
 
@@ -1372,7 +1381,7 @@ TEST_F(AgentTurnTest, AgentReportPageTruncationAdvancesOnlyPastTheVisibleUtf8Pre
 	for (int i = 0; i < 1000; i++)
 		report += "verified 中文 evidence; ";
 	for (bool originally_more : {false, true}) {
-		cJSON *source MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		cJSON *source NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 		cJSON_AddBoolToObject(source, "ok", 1);
 		cJSON *data = cJSON_AddObjectToObject(source, "data");
 		cJSON *agent = cJSON_AddObjectToObject(data, "agent");
@@ -1385,17 +1394,17 @@ TEST_F(AgentTurnTest, AgentReportPageTruncationAdvancesOnlyPastTheVisibleUtf8Pre
 		cJSON_AddBoolToObject(data, "has_more", originally_more);
 		if (originally_more)
 			cJSON_AddNumberToObject(data, "next_offset", static_cast<double>(12 + report.size()));
-		char *input MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(source);
-		char *prepared MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+		char *input NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(source);
+		char *prepared NB_CLEANUP(nb_charp_cleanup) = nullptr;
 		ASSERT_EQ(agent_history_tool_content_copy(react, input, &prepared, nullptr), 0);
 		EXPECT_LE(tokenizer_count(react->tokenizer, prepared), 256);
-		cJSON *json MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(prepared);
+		cJSON *json NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(prepared);
 		cJSON *page = cJSON_GetObjectItemCaseSensitive(json, "data");
 		const char *visible = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(page, "result"));
 		ASSERT_NE(visible, nullptr);
 		EXPECT_GT(strlen(visible), 0u);
 		EXPECT_EQ(report.compare(0, strlen(visible), visible), 0);
-		EXPECT_EQ(utf8valid(visible), nullptr);
+		EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(visible), NULL), NB_UTF8_OK);
 		EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(page, "has_more")));
 		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(page, "next_offset")),
 			  static_cast<double>(12 + strlen(visible)));
@@ -1453,7 +1462,7 @@ TEST_F(AgentTurnTest, RepeatedCompactionSummarizesOldFactsAndKeepsRecentExchange
 	react->compress.summarize = [](const char *input, void *data, char **out) -> int {
 		*static_cast<std::string *>(data) = input;
 		*out = strdup("Video rendered at /tmp/video.mp4; review pending; render passed.");
-		return *out ? 0 : -ENOMEM;
+		return *out ? 0 : NB_ERR_NOMEM;
 	};
 	ASSERT_EQ(agent_history_reload(react), 0);
 	ASSERT_EQ(agent_history_compact(react, 1), 1);
@@ -1509,10 +1518,10 @@ TEST_F(AgentTurnTest, CompactionRejectsHistoryGrowthAfterSnapshotWithoutLosingNe
 		item.active = 1;
 		EXPECT_EQ(model_history_add(ctx->history_db, &item, nullptr), 0);
 		*out = strdup("Earlier objective checkpoint");
-		return *out ? 0 : -ENOMEM;
+		return *out ? 0 : NB_ERR_NOMEM;
 	};
 	ASSERT_EQ(agent_history_reload(react), 0);
-	EXPECT_EQ(agent_history_compact(react, 1), -EAGAIN);
+	EXPECT_EQ(agent_history_compact(react, 1), NB_ERR_AGAIN);
 	EXPECT_EQ(model_history_count(&db, sess.id, 1), 2);
 	EXPECT_EQ(model_history_compaction_count(&db, sess.id), 0);
 	EXPECT_TRUE(sqlite3_get_autocommit(db.handle));
@@ -1550,12 +1559,12 @@ TEST_F(AgentTurnTest, FailedCompactionDoesNotRollbackAnotherThreadsSession)
 			});
 		ready.wait();
 		probe->status = probe->writer.wait_for(std::chrono::milliseconds(50));
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	};
 	int rc = agent_history_compact_validated(react, 1, "manual", validate, &state);
 	ASSERT_TRUE(state.writer.valid());
 	EXPECT_EQ(state.writer.get(), 0);
-	EXPECT_EQ(rc, -EINVAL);
+	EXPECT_EQ(rc, NB_ERR_INVAL);
 	EXPECT_EQ(state.status, std::future_status::timeout);
 	struct session loaded{};
 	ASSERT_EQ(session_get_by_id(&db, state.created_id, &loaded), 0);
@@ -1586,7 +1595,7 @@ TEST_F(AgentTurnTest, OversizedCheckpointIsRewrittenWithoutLosingVerification)
 			EXPECT_NE(std::strstr(input, "at most 50 tokens"), nullptr);
 			*out = strdup("Completed: rendered. Pending: visual review. Verification: build passed.");
 		}
-		return *out ? 0 : -ENOMEM;
+		return *out ? 0 : NB_ERR_NOMEM;
 	};
 	ASSERT_EQ(agent_history_reload(react), 0);
 	ASSERT_EQ(agent_history_compact(react, 1), 1);

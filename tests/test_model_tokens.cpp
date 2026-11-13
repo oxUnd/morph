@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
 #include "models/llm.h"
 #include "models/image_provider.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "agent/tokenizer.h"
 #include "agent/react_request.h"
-#include "util/error.h"
+#include "errors.h"
 #include <climits>
 #include <cstring>
 #include <string>
@@ -143,8 +143,9 @@ TEST(ModelTokenBudgetTest, SaturatesLargeEstimatesAndRejectsInvalidArrays)
 	EXPECT_EQ(model_estimate_input_tokens(&model, "instructions", nullptr, 0,
 		nullptr, 0, large_counter, nullptr, &tokens), 0);
 	EXPECT_EQ(tokens, INT_MAX);
-	EXPECT_EQ(model_estimate_input_tokens(&model, "", nullptr, 1,
-		nullptr, 0, count_input_text, nullptr, &tokens), -EINVAL);
+	EXPECT_EQ(model_estimate_input_tokens(&model, "", nullptr, 1, nullptr, 0, count_input_text,
+					      nullptr, &tokens),
+		  NB_ERR_INVAL);
 }
 
 TEST(ModelTokenBudgetTest, ReservesFullOutputAndProtocolWithoutHalfWindowClamp)
@@ -187,7 +188,7 @@ TEST(ModelCloneTest, CopiesConfigurationAndResetsRequestState)
 	source->retry_count = 2;
 	source->poll_interval_seconds = 3;
 	source->poll_timeout_seconds = 17;
-	morph_cancel_token cancelled{};
+	nb_cancel cancelled{};
 	model_usage_sink sink{};
 	source->http.cancel_token = &cancelled;
 	source->usage_sink = &sink;
@@ -232,9 +233,9 @@ TEST(ModelCredentialTest, LongCredentialClonesOwnIndependentCompleteValues)
 	EXPECT_NE(source->api_key_owned, copy->api_key_owned);
 	model_destroy(source);
 	EXPECT_STREQ(model_api_key_borrow(copy), key.c_str());
-	morph_buf_t header MORPH_CLEANUP(morph_buf_cleanup) = {};
+	nb_buf header NB_CLEANUP(nb_buf_cleanup) = {};
 	ASSERT_EQ(model_authorization_header_create(copy, &header), 0);
-	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&header)), "Authorization: Bearer " + key);
+	EXPECT_EQ(std::string(nb_buf_cstr(&header)), "Authorization: Bearer " + key);
 	model_destroy(copy);
 }
 
@@ -244,12 +245,11 @@ TEST(ModelCredentialTest, ImageRequestMetadataPreservesTheCompleteCredential)
 	auto *model = model_llm_create(nullptr, "openai", "image", "https://example.test/v1",
 		key.c_str());
 	ASSERT_NE(model, nullptr);
-	morph_buf_t url MORPH_CLEANUP(morph_buf_cleanup) = {};
-	morph_buf_t authorization MORPH_CLEANUP(morph_buf_cleanup) = {};
+	nb_buf url NB_CLEANUP(nb_buf_cleanup) = {};
+	nb_buf authorization NB_CLEANUP(nb_buf_cleanup) = {};
 	ASSERT_EQ(image_provider_build_request_meta(model, "/images/generations", &url,
 		&authorization), 0);
-	EXPECT_STREQ(morph_buf_cstr_borrow(&url), "https://example.test/v1/images/generations");
-	EXPECT_EQ(std::string(morph_buf_cstr_borrow(&authorization)),
-		  "Authorization: Bearer " + key);
+	EXPECT_STREQ(nb_buf_cstr(&url), "https://example.test/v1/images/generations");
+	EXPECT_EQ(std::string(nb_buf_cstr(&authorization)), "Authorization: Bearer " + key);
 	model_destroy(model);
 }

@@ -1,12 +1,12 @@
 #ifndef TOKENIZER_H
 #define TOKENIZER_H
 
-struct morph_log;
+struct nb_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-struct tokenizer *tokenizer_create(struct morph_log *logger, const char *model_name,
+struct tokenizer *tokenizer_create(struct nb_log *logger, const char *model_name,
 				   int context_limit);
 void tokenizer_destroy(struct tokenizer *tok);
 int tokenizer_count(struct tokenizer *tok, const char *text);

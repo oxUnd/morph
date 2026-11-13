@@ -1,10 +1,11 @@
 #include "sapi/cli/services/composer.h"
 #include "sapi/cli/adapters/media/image_probe.h"
 #include "sapi/cli/models/composer.h"
-#include "util/buf.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/file.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/file.h"
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
@@ -14,6 +15,8 @@
 int cli_composer_service_add_image(struct cli_composer_model *composer, const char *path,
 				   const char **label)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	char *expanded;
 	char *absolute;
 	int width;
@@ -21,14 +24,16 @@ int cli_composer_service_add_image(struct cli_composer_model *composer, const ch
 	int rc;
 
 	if (!composer || !path || !label)
-		return -EINVAL;
-	expanded = file_expand_path_copy(path);
+		return NB_ERR_INVAL;
+	expanded = (nb_path_expand(&file_value_1, path, NULL) == NB_OK
+			    ? strdup(nb_buf_cstr(&file_value_1))
+			    : NULL);
 	if (!expanded)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	absolute = realpath(expanded, NULL);
 	free(expanded);
 	if (!absolute)
-		return morph_error_from_errno(errno);
+		return nb_status_from_errno(errno, NULL);
 	rc = cli_media_image_probe_info(absolute, &width, &height);
 	if (rc != 0) {
 		free(absolute);
@@ -42,23 +47,25 @@ int cli_composer_service_add_image(struct cli_composer_model *composer, const ch
 int cli_composer_service_convert_paths_copy(struct cli_composer_model *composer,
 					    const char *input, char **output)
 {
-	morph_buf_t path MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_t result MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+
+	nb_buf path NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf result NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *cursor = input;
 	const char *consumed = input;
 	int converted = 0;
 	int rc;
 
 	if (!composer || !input || !output)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*output)
-		return -EEXIST;
-	rc = morph_buf_init(&path, BUFSIZ);
+		return NB_ERR_EXISTS;
+	rc = (nb_buf_init(&path), nb_buf_reserve(&path, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_init(&result, strlen(input) + 1);
+	rc = (nb_buf_init(&result), nb_buf_reserve(&result, strlen(input) + 1) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
-		morph_buf_cleanup(&path);
+		nb_buf_cleanup(&path);
 		return rc;
 	}
 	while (*cursor) {
@@ -72,26 +79,28 @@ int cli_composer_service_convert_paths_copy(struct cli_composer_model *composer,
 		if (!*cursor)
 			break;
 		start = cursor;
-		morph_buf_reset(&path);
+		nb_buf_clear(&path);
 		while (*cursor && (quote || !isspace((unsigned char)*cursor))) {
 			char ch = *cursor++;
 
 			if (ch == '\\' && quote != '\'' && *cursor) {
-				(void)morph_buf_putc(&path, *cursor++);
+				(void)nb_buf_append_char(&path, *cursor++);
 			} else if (ch == quote) {
 				quote = 0;
 			} else if (!quote && (ch == '\'' || ch == '"')) {
 				quote = ch;
 			} else {
-				(void)morph_buf_putc(&path, ch);
+				(void)nb_buf_append_char(&path, ch);
 			}
 		}
-		if (quote || path.failed)
+		if (quote || nb_buf_status(&path))
 			break;
-		expanded = file_expand_path_copy(morph_buf_cstr_borrow(&path));
+		expanded = (nb_path_expand(&file_value_2, nb_buf_cstr(&path), NULL) == NB_OK
+				    ? strdup(nb_buf_cstr(&file_value_2))
+				    : NULL);
 		if (!expanded)
 			break;
-		if (!file_exists(expanded)) {
+		if (!nb_file_exists(expanded)) {
 			free(expanded);
 			continue;
 		}
@@ -99,19 +108,19 @@ int cli_composer_service_convert_paths_copy(struct cli_composer_model *composer,
 		free(expanded);
 		if (rc != 0)
 			continue;
-		(void)morph_buf_append(&result, consumed, (size_t)(start - consumed));
-		(void)morph_buf_puts(&result, label);
+		(void)nb_buf_append(&result, consumed, (size_t)(start - consumed));
+		(void)nb_buf_append_cstr(&result, label);
 		consumed = cursor;
 		converted++;
 	}
-	(void)morph_buf_puts(&result, consumed);
-	if (result.failed || path.failed)
-		rc = -ENOMEM;
+	(void)nb_buf_append_cstr(&result, consumed);
+	if (nb_buf_status(&result) || nb_buf_status(&path))
+		rc = NB_ERR_NOMEM;
 	else {
-		*output = morph_buf_detach(&result);
-		rc = converted;
+		*output = (nb_buf_ok(&result) ? strdup(nb_buf_cstr(&result)) : NULL);
+		rc = *output ? converted : NB_ERR_NOMEM;
 	}
-	morph_buf_cleanup(&result);
-	morph_buf_cleanup(&path);
+	nb_buf_cleanup(&result);
+	nb_buf_cleanup(&path);
 	return rc;
 }

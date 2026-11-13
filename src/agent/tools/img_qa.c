@@ -3,11 +3,12 @@
 #include "models/llm.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/image_util.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "media/image.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -36,13 +37,13 @@ static int img_qa_int_arg(cJSON *root, const char *name, int fallback,
 	if (!cJSON_IsNumber(item)) {
 		(void)tool_result_error_format(result, "tool_failed", "'%s' must be an integer",
 					       name);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	value = item->valueint;
 	if (item->valuedouble != (double)value || value < min || value > max) {
 		(void)tool_result_error_format(result, "tool_failed",
 					       "'%s' must be between %d and %d", name, min, max);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	return value;
 }
@@ -50,20 +51,20 @@ static int img_qa_int_arg(cJSON *root, const char *name, int fallback,
 static int img_qa_report_call_error(struct tool_result *result, struct model *llm)
 {
 	if (!result)
-		return -EINVAL;
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		return NB_ERR_INVAL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	if (!root || !cJSON_AddStringToObject(root, "error", "image QA LLM call failed"))
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (llm && llm->last_error[0] && !cJSON_AddStringToObject(root, "detail", llm->last_error))
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (!cJSON_AddStringToObject(root, "hint",
 				     "img_qa uses [model.vision]; configure it to a vision-capable "
 				     "chat model. img_gen uses [model.image], so image generation "
 				     "can work while image QA fails."))
-		return -ENOMEM;
-	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(root);
+		return NB_ERR_NOMEM;
+	char *json NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(root);
 	if (!json)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	return tool_result_success_json_text_copy(result, json);
 }
 
@@ -82,8 +83,8 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
 	struct model *llm = ctx ? ctx->llm : NULL;
 	int rc = 0;
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	struct tool_runtime_stream_sink stream;
 	struct model_image_chat_options opts;
 	char resolved_path[PATH_MAX];
@@ -94,7 +95,7 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 	resolved_path[0] = '\0';
 
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!llm || !model_api_key_borrow(llm)[0]) {
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"no multimodal LLM configured\"}");
@@ -103,13 +104,13 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 	if (!llm->chat_with_image) {
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"LLM does not support image input\"}");
-		return -ENOSYS;
+		return NB_ERR_UNSUPPORTED;
 	}
 
 	root = cJSON_Parse(args_json);
 	if (!root) {
 		(void)tool_result_success_json_text_copy(result, "{\"error\":\"invalid JSON\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	cJSON *fp = cJSON_GetObjectItem(root, "file_path");
@@ -136,7 +137,7 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 			strcmp(detail->valuestring, "original") != 0))) {
 		(void)tool_result_error_copy(result, "invalid_detail",
 			"'detail' must be 'high' or 'original'");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	int image_budget = detail && strcmp(detail->valuestring, "original") == 0
 		? MORPH_IMAGE_MAX_DIMENSION : 2048;
@@ -152,7 +153,7 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 			result, "{\"error\":\"missing 'file_path' parameter. "
 				"Usage: img_qa({\\\"file_path\\\": \\\"img.png\\\", "
 				"\\\"prompt\\\": \\\"What is in this image?\\\"})\"}");
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 		return rc;
 	}
 
@@ -161,7 +162,7 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 						 file_path, resolved_path,
 						 sizeof(resolved_path));
 		if (rc < 0) {
-			if (rc == -ENOENT)
+			if (rc == NB_ERR_NOT_FOUND)
 				(void)tool_result_success_json_text_copy(
 					result, "{\"error\":\"image file not found\"}");
 			else
@@ -174,12 +175,12 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 		if (strlen(file_path) >= sizeof(resolved_path)) {
 			(void)tool_result_error_copy(result, "path_too_long",
 				"Image path exceeds the filesystem path limit");
-			return -ENAMETOOLONG;
+			return NB_ERR_NAME_TOO_LONG;
 		}
 		memcpy(resolved_path, file_path, strlen(file_path) + 1);
 	}
 
-	rc = morph_buf_init(&buf, 8192);
+	rc = (nb_buf_init(&buf), nb_buf_reserve(&buf, 8192) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"buffer allocation failed\"}");
@@ -199,12 +200,12 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 				  prompt, resolved_path, &opts, tool_runtime_stream_to_buf_cb,
 				  &stream);
 	if (rc < 0) {
-		morph_buf_cleanup(&buf);
+		nb_buf_cleanup(&buf);
 		(void)img_qa_report_call_error(result, llm);
 		return rc;
 	}
 
-	rc = tool_result_success_json_text_copy(result, morph_buf_cstr_borrow(&buf));
+	rc = tool_result_success_json_text_copy(result, nb_buf_cstr(&buf));
 	if (rc < 0)
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"buffer allocation failed\"}");
@@ -216,13 +217,13 @@ int img_qa_init(struct tool_registry *reg, struct model *llm,
 		struct tool_context *tctx)
 {
 	if (!reg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct img_qa_context *ctx = calloc(1, sizeof(*ctx));
 	if (!ctx)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	ctx->llm = llm;
 	ctx->tctx = tctx;
-	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
+	struct tool_spec spec NB_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.flags = TOOL_FLAG_READONLY | TOOL_FLAG_MEDIA,
 		.name = "img_qa",

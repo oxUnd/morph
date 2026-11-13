@@ -1,4 +1,5 @@
 #include "sapi/cli/presentation/jobs.h"
+#include "nb/err.h"
 
 #include "sapi/cli/application.h"
 #include "sapi/cli/models/jobs.h"
@@ -9,7 +10,7 @@
 #include "sapi/cli/widgets/list.h"
 #include "sapi/cli/widgets/notice.h"
 #include "cJSON.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -27,11 +28,14 @@ int cli_jobs_event(struct cli_application *ctx, const struct morph_event *event)
 	int rc;
 
 	if (!ctx || !event)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (event->name && (!strcmp(event->name, "background.wait.begin") ||
 			    !strcmp(event->name, "background.wait.end"))) {
 		if (ctx->jobs) {
-			morph_array_foreach (job, &ctx->jobs->entries, struct cli_jobs_job) {
+			for (size_t _i_ = 0;
+			     _i_ < nb_vec_len(&ctx->jobs->entries) &&
+			     (job = (struct cli_jobs_job *)nb_vec_at(&ctx->jobs->entries, _i_));
+			     _i_++) {
 				if (!strcmp(cli_jobs_job_string(job->data, "session_id"),
 					    cli_jobs_job_string(event->data, "session_id"))) {
 					if (!strcmp(event->name, "background.wait.begin"))
@@ -64,23 +68,24 @@ int cli_jobs_event(struct cli_application *ctx, const struct morph_event *event)
 					       : cli_jobs_job_string(event->data, "command"));
 			cli_feed_history_begin(ctx);
 			if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
-				morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
+				nb_buf title NB_CLEANUP(nb_buf_cleanup) = {0};
 				const char *status = cli_jobs_job_string(event->data, "status");
 				int timeout = strstr(status, "timeout") || strstr(status, "timed_out");
 				const cJSON *exit_code =
 					cJSON_GetObjectItemCaseSensitive(event->data, "exit_code");
 
-				(void)morph_buf_printf(&title, "%s · %s", safe,
-						       timeout ? "TIMEOUT" : status);
+				(void)nb_buf_printf(&title, "%s · %s", safe,
+						    timeout ? "TIMEOUT" : status);
 				if (cJSON_IsNumber(exit_code))
-					(void)morph_buf_printf(&title, " %d", exit_code->valueint);
-				(void)morph_buf_printf(&title, " · /jobs %.8s",
-						       cli_jobs_job_short_id(event->data));
+					(void)nb_buf_printf(&title, " %d", exit_code->valueint);
+				(void)nb_buf_printf(&title, " · /jobs %.8s",
+						    cli_jobs_job_short_id(event->data));
 				(void)cli_feed_notice_write(
-					ctx, cli_jobs_job_cancelled(event->data) ? CLI_NOTICE_CANCELLED
-					     : cli_jobs_job_failed(event->data) ? CLI_NOTICE_FAILED
-									       : CLI_NOTICE_DONE,
-					morph_buf_cstr_borrow(&title), NULL, NULL);
+					ctx,
+					cli_jobs_job_cancelled(event->data) ? CLI_NOTICE_CANCELLED
+					: cli_jobs_job_failed(event->data)  ? CLI_NOTICE_FAILED
+									    : CLI_NOTICE_DONE,
+					nb_buf_cstr(&title), NULL, NULL);
 			} else {
 				const cJSON *exit_code =
 					cJSON_GetObjectItemCaseSensitive(event->data, "exit_code");

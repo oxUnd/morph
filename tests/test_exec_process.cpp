@@ -1,17 +1,18 @@
 #include "exec/process.h"
+#include "nb/err.h"
 #include "config/config.h"
 #include "agent/tools/exec_tool.h"
 #include "agent/tools/exec_jobs.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "agent/tools/request_permissions.h"
 #include "agent/tool.h"
 #include "agent/tool_runtime.h"
 #include "agent/tool_context.h"
 #include "permission/context.h"
 #include "sandbox/sandbox.h"
-#include "util/file.h"
-#include "util/utf8.h"
-#include "util/json.h"
+#include "nb/file.h"
+#include "nb/utf8.h"
+#include "cJSON.h"
 
 #include <gtest/gtest.h>
 
@@ -88,7 +89,7 @@ public:
 	{
 		char name[] = "/tmp/morph_process_scratch_XXXXXX";
 		if (mkdtemp(name)) {
-			char *resolved MORPH_CLEANUP(morph_charp_cleanup) = realpath(name, nullptr);
+			char *resolved NB_CLEANUP(nb_charp_cleanup) = realpath(name, nullptr);
 			if (resolved) {
 				path = resolved;
 			}
@@ -171,32 +172,33 @@ TEST(ExecToolTest, RegistersExecAndBackgroundTools)
 	EXPECT_NE(tool_borrow(&registry, "exec"), nullptr);
 	EXPECT_NE(tool_borrow(&registry, "background"), nullptr);
 	EXPECT_EQ(tool_borrow(&registry, "process"), nullptr);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
-	EXPECT_EQ(tool_exec(&registry, "process", R"({"action":"list"})", &result), -ENOENT);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::strstr(result.text.data, "deprecated"), nullptr);
-	EXPECT_NE(std::strstr(result.text.data, "Use background"), nullptr);
+	EXPECT_EQ(tool_exec(&registry, "process", R"({"action":"list"})", &result),
+		  NB_ERR_NOT_FOUND);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::strstr(result.text.ptr, "deprecated"), nullptr);
+	EXPECT_NE(std::strstr(result.text.ptr, "Use background"), nullptr);
 	tool_registry_cleanup(&registry);
 }
 
 TEST(ExecToolTest, CommandIsTheOnlyCommandParameter)
 {
-	struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry registry NB_CLEANUP(tool_registry_cleanup) = {};
 	tool_registry_init(nullptr, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, nullptr, nullptr), 0);
 	auto *entry = tool_borrow(&registry, "exec");
 	ASSERT_NE(entry, nullptr);
-	cJSON *schema MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(entry->desc.input_schema);
+	cJSON *schema NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(entry->desc.input_schema);
 	ASSERT_NE(schema, nullptr);
 	auto *properties = cJSON_GetObjectItem(schema, "properties");
 	EXPECT_NE(cJSON_GetObjectItem(properties, "command"), nullptr);
 	EXPECT_EQ(cJSON_GetObjectItem(properties, "cmd"), nullptr);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
 	EXPECT_EQ(tool_exec(&registry, "exec", R"({"cmd":"printf must-not-run"})", &result),
-		  -EINVAL);
-	EXPECT_EQ(result.text.data ? std::strstr(result.text.data, "must-not-run") : nullptr,
+		  NB_ERR_INVAL);
+	EXPECT_EQ(result.text.ptr ? std::strstr(result.text.ptr, "must-not-run") : nullptr,
 		  nullptr);
 }
 
@@ -209,7 +211,8 @@ TEST(ExecToolTest, HostExecutionRequiresUserConfigOptIn)
 	ASSERT_EQ(exec_tool_init(&registry, nullptr, nullptr), 0);
 	tool_result_init(&result);
 	EXPECT_EQ(tool_exec(&registry, "exec",
-		"{\"command\":\"printf must-not-run\",\"host\":true}", &result), -EACCES);
+			    "{\"command\":\"printf must-not-run\",\"host\":true}", &result),
+		  NB_ERR_PERMISSION);
 	ASSERT_NE(result.envelope, nullptr);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
 		cJSON_GetObjectItem(result.envelope, "error"), "code")),
@@ -273,8 +276,9 @@ TEST(ExecToolTest, HostExecutionStillHonorsCommandDenial)
 	struct tool_result result;
 	tool_result_init(&result);
 	EXPECT_EQ(tool_exec(&registry, "exec",
-		"{\"command\":\"printf must-not-run\",\"workdir\":\"/\",\"host\":true}",
-		&result), -EACCES);
+			    "{\"command\":\"printf must-not-run\",\"workdir\":\"/\",\"host\":true}",
+			    &result),
+		  NB_ERR_PERMISSION);
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&registry);
 	tool_context_destroy(tctx);
@@ -345,11 +349,11 @@ TEST(ExecToolTest, ReportsUnavailableApprovalWithoutClaimingItIsPending)
 	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
 	tool_result_init(&result);
-	EXPECT_EQ(tool_exec(
-		&registry, "exec",
-		"{\"command\":\"printf test\",\"workdir\":\"/\","
-		"\"yield_time_ms\":1000}",
-		&result), -EPERM);
+	EXPECT_EQ(tool_exec(&registry, "exec",
+			    "{\"command\":\"printf test\",\"workdir\":\"/\","
+			    "\"yield_time_ms\":1000}",
+			    &result),
+		  NB_ERR_NOT_PERMITTED);
 	ASSERT_NE(result.envelope, nullptr);
 	cJSON *error = cJSON_GetObjectItem(result.envelope, "error");
 	ASSERT_NE(error, nullptr);
@@ -668,7 +672,7 @@ TEST_F(ProcessTest, ReportsInvalidWorkdir)
 
 	options.command = "true";
 	options.workdir = "/path/that/does/not/exist";
-	EXPECT_EQ(process_spawn(manager, &options, session_id, nullptr), -ENOENT);
+	EXPECT_EQ(process_spawn(manager, &options, session_id, nullptr), NB_ERR_NOT_FOUND);
 }
 
 TEST_F(ProcessTest, YieldReturnsRunningSessionAndPollIsIncremental)
@@ -746,7 +750,7 @@ TEST_F(ProcessTest, ImmediateKillAfterSpawnReachesTheIsolatedGroup)
 		char id[PROCESS_SESSION_ID_MAX] = {};
 		ASSERT_EQ(process_spawn(manager, &options, id, nullptr), 0);
 		ASSERT_EQ(process_session_kill(manager, id), 0);
-		struct process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {};
+		struct process_snapshot snapshot NB_CLEANUP(process_snapshot_cleanup) = {};
 		ASSERT_EQ(process_session_wait(manager, id, nullptr, 2000,
 			nullptr, nullptr, &snapshot), 0);
 		EXPECT_EQ(snapshot.state, PROCESS_KILLED);
@@ -779,7 +783,7 @@ TEST_F(ProcessTest, RepeatedStopAfterExitPreservesTheCollectedResult)
 	options.command = "printf verified-exit; exit 7";
 	options.yield_time_ms = 2000;
 	char id[PROCESS_SESSION_ID_MAX];
-	process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	process_snapshot snapshot NB_CLEANUP(process_snapshot_cleanup) = {};
 	ASSERT_EQ(process_spawn(manager, &options, id, &snapshot), 0);
 	ASSERT_EQ(snapshot.state, PROCESS_EXITED);
 	ASSERT_EQ(snapshot.exit_code, 7);
@@ -787,15 +791,15 @@ TEST_F(ProcessTest, RepeatedStopAfterExitPreservesTheCollectedResult)
 		EXPECT_EQ(process_session_interrupt(manager, id), 0);
 		EXPECT_EQ(process_session_kill(manager, id), 0);
 	}
-	process_snapshot final MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	process_snapshot final NB_CLEANUP(process_snapshot_cleanup) = {};
 	process_cursor start{};
 	ASSERT_EQ(process_session_poll(manager, id, &start, 0, nullptr, nullptr, &final), 0);
 	EXPECT_EQ(final.state, PROCESS_EXITED);
 	EXPECT_EQ(final.exit_code, 7);
 	EXPECT_STREQ(final.stdout_text, "verified-exit");
 	EXPECT_EQ(final.duration_ms, snapshot.duration_ms);
-	EXPECT_EQ(process_session_write(manager, id, "x", 1), -EPIPE);
-	EXPECT_EQ(process_session_kill(manager, "missing-session"), -ENOENT);
+	EXPECT_EQ(process_session_write(manager, id, "x", 1), NB_ERR_BROKEN_PIPE);
+	EXPECT_EQ(process_session_kill(manager, "missing-session"), NB_ERR_NOT_FOUND);
 }
 
 TEST_F(ProcessTest, PrivateScratchEnvironmentRetainsWritesWithoutGlobalTemporaryAccess)
@@ -813,7 +817,7 @@ TEST_F(ProcessTest, PrivateScratchEnvironmentRetainsWritesWithoutGlobalTemporary
 		"if (printf denied > '" + outside + "') 2>/dev/null; then exit 23; fi; "
 		"printf scratch-only";
 	char *write_paths[] = {scratch.data()};
-	struct sandbox_config sandbox = {};
+	struct sandbox_config sandbox NB_CLEANUP(sandbox_config_cleanup) = {};
 	sandbox.path_policy_enabled = 1;
 	sandbox.read_all = 1;
 	sandbox.process_exec = 1;
@@ -829,8 +833,10 @@ TEST_F(ProcessTest, PrivateScratchEnvironmentRetainsWritesWithoutGlobalTemporary
 	options.sandbox = &sandbox;
 	options.yield_time_ms = 3000;
 	char id[PROCESS_SESSION_ID_MAX];
-	process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	process_snapshot snapshot NB_CLEANUP(process_snapshot_cleanup) = {};
 	ASSERT_EQ(process_spawn(manager, &options, id, &snapshot), 0);
+	EXPECT_TRUE(sandbox.temporary_paths_ready);
+	EXPECT_GT(sandbox.temporary_paths.count, 0u);
 	ASSERT_EQ(snapshot.state, PROCESS_EXITED);
 	EXPECT_EQ(snapshot.exit_code, 0) << snapshot.stderr_text;
 	EXPECT_STREQ(snapshot.stdout_text, "scratch-only");
@@ -859,7 +865,7 @@ TEST_F(ProcessTest, TempdirHonoringShellUsesPrivateScratchForLargeHereDocuments)
 	std::string command = "cat <<'MORPH_PRIVATE_EOF' > \"$TMPDIR/document\"\n" + body +
 		"\nMORPH_PRIVATE_EOF\n";
 	char *paths[] = {directory.path.data()};
-	struct sandbox_config sandbox = {};
+	struct sandbox_config sandbox NB_CLEANUP(sandbox_config_cleanup) = {};
 	sandbox.path_policy_enabled = 1;
 	sandbox.read_all = 1;
 	sandbox.process_exec = 1;
@@ -875,8 +881,10 @@ TEST_F(ProcessTest, TempdirHonoringShellUsesPrivateScratchForLargeHereDocuments)
 	options.sandbox = &sandbox;
 	options.yield_time_ms = 3000;
 	char id[PROCESS_SESSION_ID_MAX];
-	process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	process_snapshot snapshot NB_CLEANUP(process_snapshot_cleanup) = {};
 	ASSERT_EQ(process_spawn(manager, &options, id, &snapshot), 0);
+	EXPECT_TRUE(sandbox.temporary_paths_ready);
+	EXPECT_GT(sandbox.temporary_paths.count, 0u);
 	ASSERT_EQ(snapshot.state, PROCESS_EXITED);
 	EXPECT_EQ(snapshot.exit_code, 0) << snapshot.stderr_text;
 	ASSERT_TRUE(std::filesystem::exists(directory.path + "/document"));
@@ -898,22 +906,22 @@ TEST(ExecToolTest, LegacyShellHereDocumentFailureExplainsThePrivateScratchAltern
 		context_guard(context, tool_context_destroy);
 	struct permission_policy policy{PERMISSION_READ_ONLY, PERMISSION_NEVER, PERMISSION_USER};
 	ASSERT_EQ(tool_context_set_permission_policy(context, &policy), 0);
-	struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry registry NB_CLEANUP(tool_registry_cleanup) = {};
 	tool_registry_init(nullptr, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, context, &config.exec), 0);
 	std::string command = "cat <<'MORPH_EOF'\n" + std::string(32768, 'x') + "\nMORPH_EOF\n";
-	cJSON *arguments MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *arguments NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	ASSERT_NE(arguments, nullptr);
 	cJSON_AddStringToObject(arguments, "command", command.c_str());
 	cJSON_AddNumberToObject(arguments, "yield_time_ms", 3000);
-	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(arguments);
+	char *json NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(arguments);
 	ASSERT_NE(json, nullptr);
 	struct tool_runtime_context runtime{};
 	runtime.agent_id = "/root/probe";
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
 	result.runtime = &runtime;
-	ASSERT_EQ(tool_exec(&registry, "exec", json, &result), 0) << result.text.data;
+	ASSERT_EQ(tool_exec(&registry, "exec", json, &result), 0) << result.text.ptr;
 	EXPECT_NE(cJSON_GetNumberValue(
 		cJSON_GetObjectItemCaseSensitive(result.data, "exit_code")), 0);
 	const char *error = cJSON_GetStringValue(
@@ -947,7 +955,7 @@ TEST_F(ProcessTest, CancellationStopsTheInitialYieldPromptly)
 	int rc = process_spawn(manager, &options, id, nullptr);
 	auto elapsed = std::chrono::steady_clock::now() - start;
 	canceller.join();
-	EXPECT_EQ(rc, -ECANCELED);
+	EXPECT_EQ(rc, NB_ERR_CANCELLED);
 	EXPECT_LT(elapsed, std::chrono::milliseconds(500));
 	ASSERT_NE(id[0], '\0');
 	EXPECT_EQ(process_session_kill(manager, id), 0);
@@ -1148,7 +1156,9 @@ TEST(ExecToolTest, DynamicCommandsStillUseApprovalOutsideTrustedScope)
 	struct tool_result result;
 	tool_result_init(&result);
 	EXPECT_EQ(tool_exec(&registry, "exec",
-		"{\"command\":\"CMD=printf; $CMD dynamic\",\"workdir\":\"/\"}", &result), -EACCES);
+			    "{\"command\":\"CMD=printf; $CMD dynamic\",\"workdir\":\"/\"}",
+			    &result),
+		  NB_ERR_PERMISSION);
 	EXPECT_EQ(approval.calls, 1);
 	EXPECT_NE(std::find(approval.programs.begin(), approval.programs.end(), "shell"),
 		approval.programs.end());
@@ -1168,8 +1178,8 @@ TEST(ExecToolTest, SandboxReceivesProfileAfterMoreThan32SessionGrants)
 	std::string base(temp);
 	std::string work = base + "/work";
 	std::string profile = base + "/profile";
-	ASSERT_EQ(file_ensure_dir(work.c_str()), 0);
-	ASSERT_EQ(file_ensure_dir(profile.c_str()), 0);
+	ASSERT_EQ(nb_file_mkdir(work.c_str(), true, NULL), 0);
+	ASSERT_EQ(nb_file_mkdir(profile.c_str(), true, NULL), 0);
 	auto *tctx = tool_context_create(NULL, work.c_str(), work.c_str());
 	ASSERT_NE(tctx, nullptr);
 	struct tool_registry registry;
@@ -1194,7 +1204,7 @@ TEST(ExecToolTest, SandboxReceivesProfileAfterMoreThan32SessionGrants)
 	ASSERT_EQ(tool_exec(&registry, "exec", json, &result), 0);
 	ASSERT_NE(result.data, nullptr);
 	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0);
-	EXPECT_TRUE(file_exists((profile + "/result").c_str()));
+	EXPECT_TRUE(nb_file_exists((profile + "/result").c_str()));
 	tool_result_cleanup(&result);
 	free(json);
 	cJSON_Delete(args);
@@ -1298,15 +1308,18 @@ TEST(ExecToolTest, DirectoryPermissionsFollowPathsAcrossToolsAndPrograms)
 	EXPECT_EQ(execute("cat '" + target + "/first' > '" + target + "/third'"), 0);
 	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
 		(target + "/native").c_str(), nullptr, 0), 0);
-	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_DELETE,
-		(target + "/first").c_str(), nullptr, 0), -EACCES);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_DELETE, (target + "/first").c_str(),
+					      nullptr, 0),
+		  NB_ERR_PERMISSION);
 	EXPECT_NE(execute("rm '" + target + "/first'"), 0);
 	EXPECT_NE(execute("printf denied > '" + sibling + "/denied'"), 0);
-	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
-		(sibling + "/denied").c_str(), nullptr, 0), -EACCES);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE, (sibling + "/denied").c_str(),
+					      nullptr, 0),
+		  NB_ERR_PERMISSION);
 	std::filesystem::create_directory_symlink(sibling, target + "/escape");
 	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
-		(target + "/escape/denied").c_str(), nullptr, 0), -EACCES);
+					      (target + "/escape/denied").c_str(), nullptr, 0),
+		  NB_ERR_PERMISSION);
 	EXPECT_NE(execute("printf denied > '" + target + "/escape/denied'"), 0);
 	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_READ,
 		(target + "/first").c_str(), nullptr, 0), 0);
@@ -1318,10 +1331,12 @@ TEST(ExecToolTest, DirectoryPermissionsFollowPathsAcrossToolsAndPrograms)
 	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_DELETE,
 		(target + "/first").c_str(), nullptr, 0), 0);
 	tool_context_clear_turn_grants(tctx);
-	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_DELETE,
-		(target + "/first").c_str(), nullptr, 0), -EACCES);
-	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_READ,
-		(target + "/first").c_str(), nullptr, 0), -EACCES);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_DELETE, (target + "/first").c_str(),
+					      nullptr, 0),
+		  NB_ERR_PERMISSION);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_READ, (target + "/first").c_str(),
+					      nullptr, 0),
+		  NB_ERR_PERMISSION);
 	EXPECT_EQ(execute("printf session > '" + target + "/session'"), 0);
 	EXPECT_NE(execute("rm '" + target + "/first'"), 0);
 	request("read", "turn");
@@ -1368,8 +1383,8 @@ TEST_F(ProcessTest, CancellingWaitLeavesChildRunning)
 	process_cursor cursor = snapshot.next_cursor;
 	process_snapshot_cleanup(&snapshot);
 	EXPECT_EQ(process_session_poll(
-		      manager, id, &cursor, 2000, [](void *) { return 1; }, nullptr, &snapshot),
-		  -ECANCELED);
+			  manager, id, &cursor, 2000, [](void *) { return 1; }, nullptr, &snapshot),
+		  NB_ERR_CANCELLED);
 	ASSERT_EQ(process_session_snapshot(manager, id, &snapshot), 0);
 	EXPECT_EQ(snapshot.state, PROCESS_RUNNING);
 	process_snapshot_cleanup(&snapshot);
@@ -1406,8 +1421,9 @@ TEST_F(ProcessTest, ExitWaitCancellationDoesNotTerminateTheChild)
 	process_snapshot snapshot{};
 	ASSERT_EQ(process_spawn(manager, &options, id, &snapshot), 0);
 	process_snapshot_cleanup(&snapshot);
-	EXPECT_EQ(process_session_wait(manager, id, nullptr, 2000,
-		[](void *) { return 1; }, nullptr, &snapshot), -ECANCELED);
+	EXPECT_EQ(process_session_wait(
+			  manager, id, nullptr, 2000, [](void *) { return 1; }, nullptr, &snapshot),
+		  NB_ERR_CANCELLED);
 	ASSERT_EQ(process_session_status(manager, id, &snapshot), 0);
 	EXPECT_EQ(snapshot.state, PROCESS_RUNNING);
 }
@@ -1509,7 +1525,7 @@ TEST(ExecToolTest, AsyncJobsNotifyOnceKeepOwnershipAndDoNotConsumeToolOutput)
 	context.memory_session_id = 43;
 	tool_result_init(&result);
 	result.runtime = &context;
-	EXPECT_EQ(tool_exec(&registry, "background", args.c_str(), &result), -ENOENT);
+	EXPECT_EQ(tool_exec(&registry, "background", args.c_str(), &result), NB_ERR_NOT_FOUND);
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&registry);
 	EXPECT_EQ(events.names.size(), 2u);
@@ -1681,7 +1697,7 @@ TEST(ExecToolTest, ProcessRejectsInvalidWaitValuesBeforeWritingInput)
 		std::string args = "{\"action\":\"write\",\"session_id\":\"" + id +
 			"\",\"input\":\"bad\\n\",\"wait_ms\":" + budget + "}";
 		tool_result_init(&result);
-		EXPECT_EQ(tool_exec(&registry, "background", args.c_str(), &result), -EINVAL);
+		EXPECT_EQ(tool_exec(&registry, "background", args.c_str(), &result), NB_ERR_INVAL);
 		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
 			cJSON_GetObjectItem(result.envelope, "error"), "code")), "invalid_request");
 		tool_result_cleanup(&result);
@@ -1704,8 +1720,9 @@ TEST(ExecToolTest, ProcessRejectsInvalidWaitValuesBeforeWritingInput)
 TEST_F(ProcessTest, RawWaitSupportsLongBudgetsAndRejectsDeadlineOverflow)
 {
 	process_snapshot snapshot{};
-	EXPECT_EQ(process_session_wait(manager, "not-needed", nullptr,
-		UINT64_MAX, nullptr, nullptr, &snapshot), -EOVERFLOW);
+	EXPECT_EQ(process_session_wait(manager, "not-needed", nullptr, UINT64_MAX, nullptr, nullptr,
+				       &snapshot),
+		  NB_ERR_RANGE);
 	process_spawn_options options{};
 	options.command = "printf done";
 	options.background = 1;
@@ -1749,7 +1766,7 @@ TEST(ExecToolTest, ConfiguredWaitRangeControlsSchemaRuntimeAndToolTimeout)
 			tool_result_init(&result);
 			bool allowed = std::stoi(budget) <= maximum;
 			EXPECT_EQ(tool_exec(&registry, "background", args.c_str(), &result),
-				allowed ? 0 : -EINVAL);
+				  allowed ? 0 : NB_ERR_INVAL);
 			if (allowed)
 				EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data,
 					"wait_ms")), maximum);
@@ -1770,11 +1787,11 @@ TEST(ExecToolTest, RetainedJobsOwnerSurvivesToolUnregistration)
 	struct tool_registry registry;
 	tool_registry_init(nullptr, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, nullptr, nullptr), 0);
-	struct exec_tool_jobs_handle owner MORPH_CLEANUP(exec_tool_jobs_release) = {};
+	struct exec_tool_jobs_handle owner NB_CLEANUP(exec_tool_jobs_release) = {};
 	ASSERT_EQ(exec_tool_jobs_acquire(&registry, &owner), 0);
 	ASSERT_NE(owner.jobs, nullptr);
 	auto *jobs = owner.jobs;
-	EXPECT_EQ(exec_tool_jobs_acquire(&registry, &owner), -EALREADY);
+	EXPECT_EQ(exec_tool_jobs_acquire(&registry, &owner), NB_ERR_STATE);
 	EXPECT_EQ(owner.jobs, jobs);
 	ASSERT_EQ(tool_unregister(&registry, "exec"), 0);
 	ASSERT_EQ(tool_unregister(&registry, "background"), 0);
@@ -1791,24 +1808,24 @@ TEST_F(ProcessTest, SnapshotCopiesRejectOccupiedOwnersBeforeStartingWork)
 	options.command = "printf source; printf diagnostic >&2";
 	options.yield_time_ms = 1000;
 	char id[PROCESS_SESSION_ID_MAX];
-	process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	process_snapshot snapshot NB_CLEANUP(process_snapshot_cleanup) = {};
 	ASSERT_EQ(process_spawn(manager, &options, id, &snapshot), 0);
 	ASSERT_STREQ(snapshot.stdout_text, "source");
 	ASSERT_STREQ(snapshot.stderr_text, "diagnostic");
 	char *saved = snapshot.stdout_text;
 	char rejected_id[PROCESS_SESSION_ID_MAX] = "unchanged";
-	EXPECT_EQ(process_spawn(manager, &options, rejected_id, &snapshot), -EEXIST);
+	EXPECT_EQ(process_spawn(manager, &options, rejected_id, &snapshot), NB_ERR_EXISTS);
 	EXPECT_STREQ(rejected_id, "unchanged");
 	EXPECT_EQ(process_session_poll(manager, id, nullptr, 0, nullptr, nullptr, &snapshot),
-		  -EEXIST);
+		  NB_ERR_EXISTS);
 	EXPECT_EQ(process_session_wait(manager, id, nullptr, 0, nullptr, nullptr, &snapshot),
-		  -EEXIST);
-	EXPECT_EQ(process_session_inspect(manager, id, 1, &snapshot), -EEXIST);
-	EXPECT_EQ(process_session_snapshot(manager, id, &snapshot), -EEXIST);
-	EXPECT_EQ(process_session_status(manager, id, &snapshot), -EEXIST);
+		  NB_ERR_EXISTS);
+	EXPECT_EQ(process_session_inspect(manager, id, 1, &snapshot), NB_ERR_EXISTS);
+	EXPECT_EQ(process_session_snapshot(manager, id, &snapshot), NB_ERR_EXISTS);
+	EXPECT_EQ(process_session_status(manager, id, &snapshot), NB_ERR_EXISTS);
 	EXPECT_EQ(snapshot.stdout_text, saved);
 	auto *saved_manager = manager;
-	EXPECT_EQ(process_manager_create(nullptr, &manager), -EEXIST);
+	EXPECT_EQ(process_manager_create(nullptr, &manager), NB_ERR_EXISTS);
 	EXPECT_EQ(manager, saved_manager);
 	process_manager_destroy(manager);
 	manager = nullptr;
@@ -1821,14 +1838,14 @@ TEST(ExecToolTest, JobsConstructorsAndSnapshotsRejectOccupiedOwners)
 	struct exec_jobs *jobs = nullptr;
 	ASSERT_EQ(exec_jobs_create(&jobs), 0);
 	auto *owner = jobs;
-	EXPECT_EQ(exec_jobs_create(&jobs), -EALREADY);
+	EXPECT_EQ(exec_jobs_create(&jobs), NB_ERR_STATE);
 	EXPECT_EQ(jobs, owner);
 	cJSON *snapshot = cJSON_CreateArray();
 	ASSERT_NE(snapshot, nullptr);
 	auto *snapshot_owner = snapshot;
-	EXPECT_EQ(exec_jobs_list(jobs, 1, &snapshot), -EALREADY);
-	EXPECT_EQ(exec_jobs_read(jobs, 1, "missing", &snapshot), -EALREADY);
-	EXPECT_EQ(exec_jobs_wait(jobs, 1, "turn", nullptr, nullptr, &snapshot), -EALREADY);
+	EXPECT_EQ(exec_jobs_list(jobs, 1, &snapshot), NB_ERR_STATE);
+	EXPECT_EQ(exec_jobs_read(jobs, 1, "missing", &snapshot), NB_ERR_STATE);
+	EXPECT_EQ(exec_jobs_wait(jobs, 1, "turn", nullptr, nullptr, &snapshot), NB_ERR_STATE);
 	EXPECT_EQ(snapshot, snapshot_owner);
 	cJSON_Delete(snapshot);
 	exec_jobs_destroy(jobs);
@@ -1836,13 +1853,16 @@ TEST(ExecToolTest, JobsConstructorsAndSnapshotsRejectOccupiedOwners)
 
 TEST_F(ProcessTest, SpoolPreservesOutputBeforeTheMemoryWindow)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	process_spawn_options options{};
 	options.command = "printf 'BEGIN\n'; dd if=/dev/zero bs=1024 count=256 2>/dev/null | "
 		"tr '\\000' x; printf '\nEND\n'";
 	options.background = 1;
 	char id[PROCESS_SESSION_ID_MAX];
 	ASSERT_EQ(process_spawn(manager, &options, id, nullptr), 0);
-	process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	process_snapshot snapshot NB_CLEANUP(process_snapshot_cleanup) = {};
 	process_cursor cursor{};
 	ASSERT_EQ(process_session_wait(manager, id, &cursor, 10000, nullptr, nullptr,
 		&snapshot), 0);
@@ -1856,12 +1876,18 @@ TEST_F(ProcessTest, SpoolPreservesOutputBeforeTheMemoryWindow)
 	EXPECT_EQ(snapshot.stdout_unrecoverable_bytes, 0u);
 	EXPECT_FALSE(snapshot.stdout_path_truncated);
 	EXPECT_EQ(snapshot.stdout_capture_error, 0);
-	char *stored MORPH_CLEANUP(morph_charp_cleanup) =
-		file_read_all_copy(snapshot.stdout_path, nullptr);
+	char *stored NB_CLEANUP(nb_charp_cleanup) =
+		(nb_file_read_all(snapshot.stdout_path, &file_value_1, 0, NULL) == NB_OK &&
+				 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
+				   nb_buf_len(&file_value_1) + 1),
+			    nb_charp_steal(&file_copy_1))
+			 : NULL);
 	ASSERT_NE(stored, nullptr);
 	EXPECT_EQ(std::string(stored), expected);
 	EXPECT_EQ(snapshot.next_cursor.stdout_offset, expected.size());
-	process_snapshot later MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	process_snapshot later NB_CLEANUP(process_snapshot_cleanup) = {};
 	ASSERT_EQ(process_session_poll(manager, id, &snapshot.next_cursor, 0, nullptr, nullptr,
 		&later), 0);
 	EXPECT_STREQ(later.stdout_text, "");
@@ -1880,7 +1906,7 @@ TEST_F(ProcessTest, SpoolQuotaReportsTheExactUnrecoverableRange)
 	options.background = 1;
 	char id[PROCESS_SESSION_ID_MAX];
 	ASSERT_EQ(process_spawn(manager, &options, id, nullptr), 0);
-	process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	process_snapshot snapshot NB_CLEANUP(process_snapshot_cleanup) = {};
 	process_cursor cursor{};
 	ASSERT_EQ(process_session_wait(manager, id, &cursor, 60000, nullptr, nullptr,
 		&snapshot), 0);
@@ -1896,7 +1922,7 @@ TEST_F(ProcessTest, SpoolQuotaReportsTheExactUnrecoverableRange)
 	EXPECT_EQ(std::filesystem::file_size(snapshot.stdout_path), PROCESS_SPOOL_MAX_BYTES);
 	options.command = "printf after-quota";
 	ASSERT_EQ(process_spawn(manager, &options, id, nullptr), 0);
-	process_snapshot next MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	process_snapshot next NB_CLEANUP(process_snapshot_cleanup) = {};
 	ASSERT_EQ(process_session_wait(manager, id, &cursor, 3000, nullptr, nullptr, &next), 0);
 	EXPECT_STREQ(next.stdout_text, "after-quota");
 	EXPECT_EQ(next.stdout_path_bytes, 0u);
@@ -1930,6 +1956,11 @@ private:
 
 TEST_F(ProcessTest, SecretsAreRedactedBeforeChunkPollAndSpoolBoundaries)
 {
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_3 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	ProcessSecretEnvironment environment("morph-secret-boundary-abcdefghijk");
 	process_manager_destroy(manager);
 	manager = nullptr;
@@ -1945,24 +1976,36 @@ TEST_F(ProcessTest, SecretsAreRedactedBeforeChunkPollAndSpoolBoundaries)
 	options.background = 1;
 	char id[PROCESS_SESSION_ID_MAX];
 	ASSERT_EQ(process_spawn(manager, &options, id, nullptr), 0);
-	process_snapshot first MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	process_snapshot first NB_CLEANUP(process_snapshot_cleanup) = {};
 	process_cursor start{};
 	ASSERT_EQ(process_session_poll(manager, id, &start, 2000, nullptr, nullptr, &first), 0);
 	ASSERT_EQ(first.state, PROCESS_RUNNING);
 	EXPECT_STREQ(first.stdout_text, "prefix");
 	EXPECT_EQ(first.next_cursor.stdout_offset, 6u);
-	char *prefix MORPH_CLEANUP(morph_charp_cleanup) =
-		file_read_all_copy(first.stdout_path, nullptr);
+	char *prefix NB_CLEANUP(nb_charp_cleanup) =
+		(nb_file_read_all(first.stdout_path, &file_value_2, 0, NULL) == NB_OK &&
+				 (file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
+				   nb_buf_len(&file_value_2) + 1),
+			    nb_charp_steal(&file_copy_2))
+			 : NULL);
 	ASSERT_NE(prefix, nullptr);
 	EXPECT_STREQ(prefix, "prefix");
 	ASSERT_EQ(process_session_write(manager, id, "continue\n", 9), 0);
-	process_snapshot last MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	process_snapshot last NB_CLEANUP(process_snapshot_cleanup) = {};
 	ASSERT_EQ(process_session_wait(manager, id, &first.next_cursor, 3000, nullptr, nullptr,
 		&last), 0);
 	EXPECT_STREQ(last.stdout_text, "[REDACTED:OPENAI_API_KEY]suffix");
 	EXPECT_STREQ(last.stdout_path, first.stdout_path);
-	char *stored MORPH_CLEANUP(morph_charp_cleanup) =
-		file_read_all_copy(last.stdout_path, nullptr);
+	char *stored NB_CLEANUP(nb_charp_cleanup) =
+		(nb_file_read_all(last.stdout_path, &file_value_3, 0, NULL) == NB_OK &&
+				 (file_copy_3 = (char *)malloc(nb_buf_len(&file_value_3) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_3, nb_buf_cstr(&file_value_3),
+				   nb_buf_len(&file_value_3) + 1),
+			    nb_charp_steal(&file_copy_3))
+			 : NULL);
 	ASSERT_NE(stored, nullptr);
 	EXPECT_STREQ(stored, "prefix[REDACTED:OPENAI_API_KEY]suffix");
 	EXPECT_EQ(last.next_cursor.stdout_offset, std::strlen(stored));
@@ -1972,26 +2015,35 @@ TEST_F(ProcessTest, SecretsAreRedactedBeforeChunkPollAndSpoolBoundaries)
 
 TEST_F(ProcessTest, UnicodePreviewBoundariesPreserveTheCompleteSpool)
 {
+	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_4 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	process_spawn_options options{};
 	options.command = "i=0; while [ \"$i\" -lt 24000 ]; do printf '\\344\\270\\255'; "
 		"i=$((i+1)); done";
 	options.background = 1;
 	char id[PROCESS_SESSION_ID_MAX];
 	ASSERT_EQ(process_spawn(manager, &options, id, nullptr), 0);
-	process_snapshot snapshot MORPH_CLEANUP(process_snapshot_cleanup) = {};
+	process_snapshot snapshot NB_CLEANUP(process_snapshot_cleanup) = {};
 	process_cursor start{};
 	ASSERT_EQ(process_session_wait(manager, id, &start, 10000, nullptr, nullptr, &snapshot), 0);
 	ASSERT_EQ(snapshot.state, PROCESS_EXITED);
 	ASSERT_NE(snapshot.stdout_text, nullptr);
-	EXPECT_EQ(utf8valid(snapshot.stdout_text), nullptr);
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(snapshot.stdout_text), NULL), NB_UTF8_OK);
 	EXPECT_TRUE(snapshot.stdout_truncated);
 	EXPECT_FALSE(snapshot.stdout_path_truncated);
-	char *stored MORPH_CLEANUP(morph_charp_cleanup) =
-		file_read_all_copy(snapshot.stdout_path, nullptr);
+	char *stored NB_CLEANUP(nb_charp_cleanup) =
+		(nb_file_read_all(snapshot.stdout_path, &file_value_4, 0, NULL) == NB_OK &&
+				 (file_copy_4 = (char *)malloc(nb_buf_len(&file_value_4) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_4, nb_buf_cstr(&file_value_4),
+				   nb_buf_len(&file_value_4) + 1),
+			    nb_charp_steal(&file_copy_4))
+			 : NULL);
 	ASSERT_NE(stored, nullptr);
-	EXPECT_EQ(utf8valid(stored), nullptr);
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(stored), NULL), NB_UTF8_OK);
 	EXPECT_EQ(std::strlen(stored), 72000u);
-	EXPECT_EQ(utf8len(stored), 24000u);
+	EXPECT_EQ(nb_utf8_count(nb_str_from_cstr(stored)), 24000u);
 	EXPECT_EQ(snapshot.stdout_path_bytes, 72000u);
 	EXPECT_EQ(snapshot.stdout_retained_from % 3, 0u);
 }

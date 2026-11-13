@@ -8,7 +8,8 @@ extern "C" {
 #include "config/config.h"
 #include "db/database.h"
 #include "event/event.h"
-#include "util/buf.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include "http/client.h"
 #include "agent/tools/ask_user.h"
 #include "cJSON.h"
@@ -69,7 +70,7 @@ struct tool_runtime_stream_sink {
 	const struct tool_runtime_context *runtime;
 	const char *tool;
 	const char *kind;
-	morph_buf_t *buf;
+	nb_buf *buf;
 };
 
 int tool_runtime_emit_stream(const struct tool_runtime_context *ctx, const char *tool,

@@ -320,7 +320,8 @@ Runtime state and callback lifetimes are described in [State ownership](state-ow
 
 Runtime owns one `tool_context` backed by `morph-permission`. The independent
 library owns access/approval/reviewer evaluation, grants and review routing;
-it depends on util/database/threads, with no model, config or frontend dependency.
+it depends on nbase, the database and command analysis, with no model, config or
+frontend dependency.
 Copied child registries borrow this same authority. The tool-call gate handles
 opaque tools; path-aware tools and exec describe concrete operations instead.
 `TOOL_FLAG_INTERNAL_APPROVAL` selects that concrete check, never an exemption.

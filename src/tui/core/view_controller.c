@@ -1,5 +1,5 @@
 #include "view_internal.h"
-#include "util/error.h"
+#include "errors.h"
 
 #include <stdlib.h>
 
@@ -71,7 +71,7 @@ static void core_view_controller_close(void *data, int result)
 {
 	struct morph_tui_view_controller *controller = data;
 
-	morph_buf_cleanup(&controller->state->text);
+	nb_buf_cleanup(&controller->state->text);
 	core_view_scope_destroy(controller);
 	if (controller->ops->destroy)
 		controller->ops->destroy(controller, result);
@@ -102,7 +102,7 @@ static int core_view_controller_mouse(struct morph_tui_view *view,
 	children.top = content.top;
 	children.bottom = content.bottom;
 	children.y -= view->state->scroll_y;
-	for (size_t i = view->state->children.nelts; i > 0; i--) {
+	for (size_t i = view->state->children.len; i > 0; i--) {
 		int rc = core_view_controller_mouse(morph_tui_view_child_borrow(view, i - 1),
 						    &children, event);
 
@@ -158,7 +158,7 @@ static int core_view_controller_mouse_content(struct morph_tui_view *view,
 	canvas.top = content.top;
 	canvas.bottom = content.bottom;
 	canvas.y -= view->state->scroll_y;
-	for (size_t i = 0; i < view->state->children.nelts; i++) {
+	for (size_t i = 0; i < view->state->children.len; i++) {
 		if (core_view_controller_mouse_content(morph_tui_view_child_borrow(view, i),
 							&canvas, target, result))
 			return 1;
@@ -254,9 +254,8 @@ static int core_view_controller_dispatch(void *data, struct morph_tui_applicatio
 			 * sender or parent released by clear_children during dispatch. */
 			if (revision != state->structure_revision) {
 				int alive = 0;
-				for (size_t i = 0; i < state->views.nelts; i++) {
-					struct morph_tui_view **slot =
-						morph_array_borrow(&state->views, i);
+				for (size_t i = 0; i < state->views.len; i++) {
+					struct morph_tui_view **slot = nb_vec_at(&state->views, i);
 					alive |= *slot == view;
 				}
 				if (!alive)
@@ -306,22 +305,22 @@ static int core_view_controller_event(void *data, struct morph_tui_application *
 	struct morph_tui_view *target = event->pasting ? state->paste_target : state->focus;
 
 	if (target != state->text_target || event->key == MORPH_TUI_KEY_PASTE_BEGIN) {
-		utf8_terminal_sanitizer_reset(&state->sanitizer);
+		morph_terminal_sanitizer_reset(&state->sanitizer);
 		state->text_target = target;
 	}
 	if (event->key >= 32 && event->key < 256 && event->key != 127) {
 		char byte = (char)event->key;
 		struct morph_tui_event text = *event;
 
-		morph_buf_reset(&state->text);
-		int rc = utf8_terminal_sanitize_feed(&state->sanitizer, &state->text, &byte, 1, 0);
+		nb_buf_clear(&state->text);
+		int rc = morph_terminal_sanitize_feed(&state->sanitizer, &state->text, &byte, 1, 0);
 
 		if (rc)
 			return rc;
 		if (!state->text.len)
 			return 1;
 		text.type = event->pasting ? MORPH_TUI_EVENT_PASTE : MORPH_TUI_EVENT_TEXT;
-		text.text = morph_buf_cstr_borrow(&state->text);
+		text.text = nb_buf_cstr(&state->text);
 		text.text_length = state->text.len;
 		return core_view_controller_dispatch(data, app, &text);
 	}
@@ -329,7 +328,7 @@ static int core_view_controller_event(void *data, struct morph_tui_application *
 
 	if (event->key == MORPH_TUI_KEY_PASTE_END) {
 		state->paste_target = NULL;
-		utf8_terminal_sanitizer_reset(&state->sanitizer);
+		morph_terminal_sanitizer_reset(&state->sanitizer);
 	}
 	return rc;
 }
@@ -338,7 +337,7 @@ int morph_tui_view_controller_present_borrow(struct morph_tui_application *app,
 					     const struct morph_tui_view_controller_spec *spec)
 {
 	if (!morph_tui_application_is_owner(app))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct morph_tui_view_controller *controller = NULL;
 
 	if (!spec || !spec->ops || !spec->ops->build || spec->tick_ms < 0 ||
@@ -346,18 +345,18 @@ int morph_tui_view_controller_present_borrow(struct morph_tui_application *app,
 		MORPH_TUI_TERMINAL_SESSION_PASTE | MORPH_TUI_TERMINAL_SESSION_MOUSE |
 		MORPH_TUI_TERMINAL_SESSION_FOCUS)) ||
 	    (spec->size && spec->size < sizeof(*controller)))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	size_t size = spec->size ? spec->size : sizeof(*controller);
 
 	controller = calloc(1, size);
 	if (!controller)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	controller->ops = spec->ops;
 	controller->data = spec->data;
 	controller->state = calloc(1, sizeof(*controller->state));
 	if (!controller->state) {
 		free(controller);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	struct morph_tui_view_controller_state *state = controller->state;
 
@@ -365,17 +364,19 @@ int morph_tui_view_controller_present_borrow(struct morph_tui_application *app,
 	state->quit_key = spec->quit_key;
 	state->builder.controller = controller;
 	struct morph_tui_view *view;
-	int rc = morph_array_init(&state->views, 16, sizeof(view));
+	int rc = (nb_vec_init(&state->views, sizeof(view)),
+		  nb_vec_reserve(&state->views, 16) ? 0 : NB_ERR_NOMEM);
 
 	if (!rc)
-		rc = morph_buf_init(&state->text, 16);
-	utf8_terminal_sanitizer_init(&state->sanitizer, UTF8_TERMINAL_TEXT_SINGLE_LINE);
+		rc = (nb_buf_init(&state->text),
+		      nb_buf_reserve(&state->text, 16) ? 0 : NB_ERR_NOMEM);
+	morph_terminal_sanitizer_init(&state->sanitizer, MORPH_TERMINAL_TEXT_SINGLE_LINE);
 
 	if (!rc) {
 		controller->ops->build(controller, &state->builder);
 		rc = state->builder.error;
 		if (!rc && !state->root)
-			rc = -EINVAL;
+			rc = NB_ERR_INVAL;
 	}
 	static const struct morph_tui_controller_ops ops = {
 		.event = core_view_controller_event,
@@ -405,7 +406,7 @@ int morph_tui_view_controller_present_borrow(struct morph_tui_application *app,
 int morph_tui_view_controller_dismiss(struct morph_tui_view_controller *controller, int result)
 {
 	if (!controller || !controller->state->visible)
-		return -EBUSY;
+		return NB_ERR_BUSY;
 	return morph_tui_application_dismiss_controller(controller->state->app, result);
 }
 

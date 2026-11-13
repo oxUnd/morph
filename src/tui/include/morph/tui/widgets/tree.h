@@ -3,7 +3,8 @@
 
 #include <morph/tui/layout.h>
 #include <morph/tui/widgets/list.h>
-#include "util/array.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -24,8 +25,8 @@ struct morph_tui_widget_tree_node {
 };
 
 struct morph_tui_widget_tree {
-	morph_array_t nodes;
-	morph_array_t visible;
+	nb_vec nodes;
+	nb_vec visible;
 	struct morph_tui_widget_list_state list;
 	size_t first_root;
 	size_t last_root;
@@ -40,18 +41,18 @@ size_t morph_tui_widget_tree_add(struct morph_tui_widget_tree *tree, size_t pare
 int morph_tui_widget_tree_update(struct morph_tui_widget_tree *tree, int key, size_t page);
 size_t morph_tui_widget_tree_selected(const struct morph_tui_widget_tree *tree);
 /* Render visible nodes as newline-separated rows, bounded by display columns. */
-int morph_tui_widget_tree_render(struct morph_tui_widget_tree *tree, morph_buf_t *output,
-				 int columns, size_t first, size_t rows);
-int morph_tui_widget_tree_draw(struct morph_tui_widget_tree *tree, morph_buf_t *commands,
+int morph_tui_widget_tree_render(struct morph_tui_widget_tree *tree, nb_buf *output, int columns,
+				 size_t first, size_t rows);
+int morph_tui_widget_tree_draw(struct morph_tui_widget_tree *tree, nb_buf *commands,
 			       struct morph_tui_terminal_rect area, const char *normal,
 			       const char *selected);
 /* Shared geometry for incremental reports that cannot retain a full model. */
 /* Marker and styles are trusted terminal formatting; text is sanitized. */
-int morph_tui_widget_tree_row(morph_buf_t *output, const char *ancestor, int is_last,
-			      const char *marker, const char *label, const char *description,
-			      int label_width, int columns, const char *style, const char *reset);
+int morph_tui_widget_tree_row(nb_buf *output, const char *ancestor, int is_last, const char *marker,
+			      const char *label, const char *description, int label_width,
+			      int columns, const char *style, const char *reset);
 const char *morph_tui_widget_tree_branch(int is_last, int continuation);
-int morph_tui_widget_tree_prefix(morph_buf_t *output, const int *ancestors_last, size_t depth,
+int morph_tui_widget_tree_prefix(nb_buf *output, const int *ancestors_last, size_t depth,
 				 int is_last, int continuation, size_t indent);
 
 #ifdef __cplusplus

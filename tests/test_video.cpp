@@ -7,8 +7,8 @@ extern "C" {
 #include "models/llm.h"
 #include "models/video_gen.h"
 #include "models/video_provider.h"
-#include "util/error.h"
-#include "util/base64.h"
+#include "errors.h"
+#include "encoding_fixture.h"
 #include <unistd.h>
 }
 
@@ -123,9 +123,9 @@ TEST(VideoAdapterTest, RejectsUnsupportedReferencesBeforeNetworkRequest)
 	struct video_result result{};
 	const char *videos[] = {"reference.mp4"};
 
-	EXPECT_EQ(video_gen_create(&model, "test", nullptr, 0, videos, 1,
-				   nullptr, 0, -1, 5, nullptr, &result),
-		  -ENOTSUP);
+	EXPECT_EQ(video_gen_create(&model, "test", nullptr, 0, videos, 1, nullptr, 0, -1, 5,
+				   nullptr, &result),
+		  NB_ERR_UNSUPPORTED);
 	EXPECT_NE(std::strstr(result.error_msg, "reference videos"), nullptr);
 }
 
@@ -137,16 +137,16 @@ TEST(VideoAdapterTest, ValidatesReferenceAudioCombination)
 	const char *images[] = {"reference.png"};
 	const char *audios[] = {"reference.mp3"};
 
-	EXPECT_EQ(video_gen_create(&model, "test", nullptr, 0, nullptr, 0,
-				   audios, 1, -1, 5, nullptr, &result),
-		  -EINVAL);
+	EXPECT_EQ(video_gen_create(&model, "test", nullptr, 0, nullptr, 0, audios, 1, -1, 5,
+				   nullptr, &result),
+		  NB_ERR_INVAL);
 	EXPECT_NE(std::strstr(result.error_msg, "requires a reference image"),
 		  nullptr);
 
 	memset(&result, 0, sizeof(result));
-	EXPECT_EQ(video_gen_create(&model, "test", images, 1, nullptr, 0,
-				   audios, 1, 0, 5, nullptr, &result),
-		  -EINVAL);
+	EXPECT_EQ(video_gen_create(&model, "test", images, 1, nullptr, 0, audios, 1, 0, 5, nullptr,
+				   &result),
+		  NB_ERR_INVAL);
 	EXPECT_NE(std::strstr(result.error_msg, "generate_audio=true"), nullptr);
 }
 
@@ -183,8 +183,9 @@ TEST(VideoAdapterTest, RejectsOversizedLocalVideoBeforeNetworkRequest)
 	strcpy(model.api_base, "http://127.0.0.1:1");
 	struct video_result result{};
 	const char *videos[] = {path};
-	EXPECT_EQ(video_gen_create(&model, "test", nullptr, 0, videos, 1,
-		nullptr, 0, -1, 5, nullptr, &result), -EFBIG);
+	EXPECT_EQ(video_gen_create(&model, "test", nullptr, 0, videos, 1, nullptr, 0, -1, 5,
+				   nullptr, &result),
+		  NB_ERR_TOO_BIG);
 	EXPECT_NE(strstr(result.error_msg, "media reference"), nullptr);
 	unlink(path);
 }
@@ -320,7 +321,7 @@ TEST(VideoPollingTest, CancellationStopsWaitingAndBlockedQueries)
 						   : VideoTaskServer::WAITING);
 		ASSERT_TRUE(server.start());
 		model model = video_poll_model(server);
-		morph_cancel_token token{};
+		nb_cancel token{};
 		model.http.cancel_token = &token;
 		if (!block_query)
 			model.poll_interval_seconds = 5;
@@ -331,13 +332,13 @@ TEST(VideoPollingTest, CancellationStopsWaitingAndBlockedQueries)
 			       std::chrono::steady_clock::now() < deadline)
 				std::this_thread::sleep_for(std::chrono::milliseconds(5));
 			std::this_thread::sleep_for(std::chrono::milliseconds(100));
-			morph_cancel_token_cancel(&token);
+			nb_cancel_request(&token);
 		});
 		auto start = std::chrono::steady_clock::now();
 		int rc = video_gen_create(&model, "test", nullptr, 0, nullptr, 0, nullptr, 0, -1, 5,
 					  nullptr, &result);
 		cancel.join();
-		EXPECT_EQ(rc, -ECANCELED);
+		EXPECT_EQ(rc, NB_ERR_CANCELLED);
 		EXPECT_TRUE(server.submitted);
 		EXPECT_EQ(server.queried.load(), block_query);
 		EXPECT_LT(std::chrono::steady_clock::now() - start,
@@ -357,7 +358,7 @@ TEST(VideoPollingTest, OverallDeadlineBoundsAnIntervalLongerThanTheBudget)
 	auto start = std::chrono::steady_clock::now();
 	EXPECT_EQ(video_gen_create(&model, "test", nullptr, 0, nullptr, 0, nullptr, 0, -1, 5,
 				   nullptr, &result),
-		  -ETIMEDOUT);
+		  NB_ERR_TIMEOUT);
 	EXPECT_TRUE(server.submitted);
 	EXPECT_FALSE(server.queried);
 	EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(1800));

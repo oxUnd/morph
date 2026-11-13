@@ -1,8 +1,9 @@
 #include "js_process.h"
 #include "runner_api.h"
-#include "util/buf.h"
-#include "util/child_io.h"
-#include "util/error.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/process.h"
+#include "errors.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -15,109 +16,52 @@
 
 extern char **environ;
 
-static int spawn_command(const char *command, pid_t *pid, int *output, int *error)
-{
-	posix_spawn_file_actions_t actions;
-	posix_spawnattr_t attributes;
-	int output_pipe[2] = {-1, -1};
-	int error_pipe[2] = {-1, -1};
-	char *const arguments[] = {"sh", "-c", (char *)command, NULL};
-	short flags = POSIX_SPAWN_SETPGROUP;
-	int rc;
-
-	*output = -1;
-	*error = -1;
-	rc = posix_spawn_file_actions_init(&actions);
-	if (rc != 0)
-		return -rc;
-	rc = posix_spawnattr_init(&attributes);
-	if (rc != 0) {
-		posix_spawn_file_actions_destroy(&actions);
-		return -rc;
-	}
-#ifdef POSIX_SPAWN_CLOEXEC_DEFAULT
-	flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
-#endif
-	rc = -posix_spawnattr_setflags(&attributes, flags);
-	if (rc == 0)
-		rc = -posix_spawnattr_setpgroup(&attributes, 0);
-	if (rc == 0)
-		rc = morph_io_pipe(output_pipe);
-	if (rc == 0)
-		rc = morph_io_pipe(error_pipe);
-	if (rc == 0)
-		rc = -posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null",
-						       O_RDONLY, 0);
-	if (rc == 0)
-		rc = -posix_spawn_file_actions_adddup2(&actions, output_pipe[1], STDOUT_FILENO);
-	if (rc == 0)
-		rc = -posix_spawn_file_actions_adddup2(&actions, error_pipe[1], STDERR_FILENO);
-	for (size_t i = 0; rc == 0 && i < sizeof(output_pipe) / sizeof(output_pipe[0]); i++) {
-		rc = -posix_spawn_file_actions_addclose(&actions, output_pipe[i]);
-		if (rc == 0)
-			rc = -posix_spawn_file_actions_addclose(&actions, error_pipe[i]);
-	}
-	if (rc == 0)
-		rc = -posix_spawn(pid, "/bin/sh", &actions, &attributes, arguments, environ);
-	if (rc == 0) {
-		*output = output_pipe[0];
-		*error = error_pipe[0];
-		output_pipe[0] = -1;
-		error_pipe[0] = -1;
-	}
-	for (size_t i = 0; i < sizeof(output_pipe) / sizeof(output_pipe[0]); i++) {
-		if (output_pipe[i] >= 0)
-			close(output_pipe[i]);
-		if (error_pipe[i] >= 0)
-			close(error_pipe[i]);
-	}
-	posix_spawnattr_destroy(&attributes);
-	posix_spawn_file_actions_destroy(&actions);
-	return rc;
-}
-
-static int capture_command(JSContext *ctx, const char *command, morph_buf_t *output,
-			   morph_buf_t *error, int *status)
+static int capture_command(JSContext *ctx, const char *command, nb_buf *output, nb_buf *error,
+			   int *status, int *signal_number)
 {
 	struct runner_state *state = JS_GetRuntimeOpaque(JS_GetRuntime(ctx));
-	int output_fd = -1;
-	int error_fd = -1;
 	int timeout_ms = 0;
 	size_t capture_limit = runner_capture_limit(ctx);
-	pid_t pid;
-	int rc;
-
 	if (state && state->deadline > 0) {
 		time_t remaining = state->deadline - time(NULL);
-
 		if (remaining <= 0)
-			return -ETIMEDOUT;
+			return NB_ERR_TIMEOUT;
 		timeout_ms = remaining > INT_MAX / 1000 ? INT_MAX : (int)remaining * 1000;
 	}
-	rc = morph_buf_init(output, BUFSIZ);
-	if (rc == 0)
-		rc = morph_buf_init(error, BUFSIZ);
-	if (rc == 0)
-		rc = spawn_command(command, &pid, &output_fd, &error_fd);
-	if (rc != 0)
+	const char *argv[] = {"/bin/sh", "-c", command, NULL};
+	nb_process_options options = {
+		.argv = argv,
+		.new_group = true,
+		.close_fds = true,
+		.stdin_mode = NB_PROCESS_NULL,
+	};
+	nb_process *child NB_CLEANUP(nb_process_cleanup) = NULL;
+	int rc = nb_process_spawn(&options, &child, NULL);
+	if (rc != NB_OK)
 		return rc;
-	rc = morph_child_exchange(pid, -1, output_fd, error_fd, NULL, 0, timeout_ms,
-				  capture_limit + 1, NULL, NULL, output, error, status);
-	close(output_fd);
-	close(error_fd);
-	if (rc == 0 && (output->len > capture_limit || error->len > capture_limit))
-		rc = -EFBIG;
+	bool truncated_out = false, truncated_err = false;
+	nb_process_exchange_options exchange = {
+		.timeout_ms = timeout_ms,
+		.max_output = capture_limit,
+		.stdout_truncated = &truncated_out,
+		.stderr_truncated = &truncated_err,
+	};
+	rc = nb_process_exchange(child, "", 0, &exchange, output, error, status, NULL);
+	*signal_number = nb_process_exit_signal(child);
+	if (rc == NB_OK && (truncated_out || truncated_err))
+		return NB_ERR_TOO_BIG;
 	return rc;
 }
 
 static JSValue js_exec(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
-	morph_buf_t output = {0};
-	morph_buf_t error = {0};
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf error NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *command;
 	size_t command_len;
 	JSValue value;
 	int status = 0;
+	int signal_number = 0;
 	int rc;
 
 	(void)this_val;
@@ -136,23 +80,24 @@ static JSValue js_exec(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
 		JS_FreeCString(ctx, command);
 		return JS_ThrowTypeError(ctx, "command denied");
 	}
-	rc = capture_command(ctx, command, &output, &error, &status);
+	rc = capture_command(ctx, command, &output, &error, &status, &signal_number);
 	JS_FreeCString(ctx, command);
-	if (rc == -EFBIG)
+	if (rc == NB_ERR_TOO_BIG)
 		value = JS_ThrowRangeError(ctx, "command failed: output exceeded the configured "
 					 "capture limit of %zu bytes", runner_capture_limit(ctx));
 	else if (rc != 0)
-		value = JS_ThrowInternalError(ctx, "command failed: %s", morph_strerror(rc));
-	else if (WIFSIGNALED(status))
+		value = JS_ThrowInternalError(
+			ctx, "command failed: %s",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+	else if (signal_number != 0)
 		value = JS_ThrowInternalError(ctx, "command terminated by signal %d",
-					      WTERMSIG(status));
-	else if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
-		value = JS_ThrowInternalError(ctx, "command exited with status %d",
-					      WIFEXITED(status) ? WEXITSTATUS(status) : 1);
+					      signal_number);
+	else if (status != 0)
+		value = JS_ThrowInternalError(ctx, "command exited with status %d", status);
 	else
-		value = JS_NewStringLen(ctx, morph_buf_cstr_borrow(&output), output.len);
-	morph_buf_cleanup(&error);
-	morph_buf_cleanup(&output);
+		value = JS_NewStringLen(ctx, nb_buf_cstr(&output), output.len);
+	nb_buf_cleanup(&error);
+	nb_buf_cleanup(&output);
 	return value;
 }
 

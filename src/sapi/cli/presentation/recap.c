@@ -5,10 +5,12 @@
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/widgets/feed_block.h"
-#include "util/buf.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/utf8.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 
 #include <errno.h>
 #include <stdio.h>
@@ -19,11 +21,11 @@
 static void cli_recap_print_text(struct cli_application *ctx, const char *label,
 				 const char *text)
 {
-	char *safe = utf8_terminal_sanitize_dup(text, strlen(text),
-						UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	char *safe = morph_terminal_sanitize_dup(text, strlen(text),
+						 MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 	const char *line = safe;
 	size_t columns = (size_t)cli_feed_columns(ctx);
-	size_t indent = utf8_display_width(label);
+	size_t indent = nb_utf8_width_cstr(label);
 	int first = 1;
 
 	if (!safe)
@@ -35,10 +37,10 @@ static void cli_recap_print_text(struct cli_application *ctx, const char *label,
 	}
 	while (*line) {
 		size_t width = columns > indent + 1 ? columns - indent - 1 : 2;
-		const char *end = utf8_advance_display_width_borrow(line, width);
+		const char *end = morph_terminal_advance_display_width_borrow(line, width);
 
 		if (end == line)
-			end = utf8_advance_codepoints_borrow(line, 1);
+			end = nb_utf8_advance(line, 1);
 		cli_output_printf(ctx, "%s%.*s%.*s\n", first ? label : "",
 				  first ? 0 : (int)indent,
 				  "                                  ",
@@ -58,12 +60,12 @@ static void cli_recap_render_show(struct cli_application *ctx, const char *summa
 		return;
 	cli_feed_history_begin(ctx);
 	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
-		morph_buf_t footer MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf footer NB_CLEANUP(nb_buf_cleanup) = {0};
 
 		if (next && *next)
-			(void)morph_buf_printf(&footer, "Next: %s", next);
+			(void)nb_buf_printf(&footer, "Next: %s", next);
 		(void)cli_feed_notice_write(ctx, CLI_NOTICE_SYSTEM, "Recap:", summary,
-					    morph_buf_cstr_borrow(&footer));
+					    nb_buf_cstr(&footer));
 	} else {
 		if (cli_output_color_enabled(ctx))
 			cli_output_printf(ctx, ANSI_DIM "\033[3m");
@@ -82,24 +84,24 @@ static void cli_recap_render_failed(struct cli_application *ctx, int code)
 {
 	if (!ctx)
 		return;
-	if (code == -EBUSY)
+	if (code == NB_ERR_BUSY)
 		cli_output_printf(ctx, CLI_FEED_FAILED_STYLE CLI_FEED_FAILED
 				  " Error  " ANSI_RESET
 				  "Wait for the current task to finish before running "
 				  "/recap.\n");
-	else if (code == -EALREADY)
+	else if (code == NB_ERR_STATE)
 		cli_output_printf(ctx, CLI_FEED_FAILED_STYLE CLI_FEED_FAILED
 				  " Error  " ANSI_RESET
 				  "A conversation recap is already being generated.\n");
-	else if (code == -ENODATA)
+	else if (code == NB_ERR_NO_DATA)
 		cli_output_printf(ctx, CLI_FEED_FAILED_STYLE CLI_FEED_FAILED
 				  " Error  " ANSI_RESET
 				  "There is no conversation history to recap.\n");
 	else
-		cli_output_printf(ctx, CLI_FEED_FAILED_STYLE CLI_FEED_FAILED
-				  " Error  " ANSI_RESET
-				  "Could not generate a recap: %s\n",
-				  morph_strerror(code));
+		cli_output_printf(ctx,
+				  CLI_FEED_FAILED_STYLE CLI_FEED_FAILED
+				  " Error  " ANSI_RESET "Could not generate a recap: %s\n",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, code));
 }
 
 static const struct cli_recap_renderer cli_recap_presentation_renderer = {

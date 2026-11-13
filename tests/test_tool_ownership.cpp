@@ -1,7 +1,8 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 
 #include "agent/tool_registry.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 
 #include <cerrno>
 #include <cstdlib>
@@ -39,13 +40,13 @@ TEST(TestToolOwnership, BorrowRegistrationRejectsAnOwnerWithoutConsumingIt)
 {
 	int destroyed = 0;
 	{
-		struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
+		struct tool_registry registry NB_CLEANUP(tool_registry_cleanup) = {};
 		tool_registry_init(nullptr, &registry);
-		struct tool_spec source MORPH_CLEANUP(tool_spec_cleanup) = {};
+		struct tool_spec source NB_CLEANUP(tool_spec_cleanup) = {};
 		ownership_spec_init(&source, "owned", &destroyed);
 		void *original = source.user_data;
-		EXPECT_EQ(tool_register_borrow(&registry, &source), -EINVAL);
-		EXPECT_EQ(tool_register_replace_borrow(&registry, &source, 0), -EINVAL);
+		EXPECT_EQ(tool_register_borrow(&registry, &source), NB_ERR_INVAL);
+		EXPECT_EQ(tool_register_replace_borrow(&registry, &source, 0), NB_ERR_INVAL);
 		EXPECT_EQ(source.user_data, original);
 		EXPECT_EQ(source.user_data_destroy, ownership_destroy);
 		EXPECT_EQ(registry.count, 0);
@@ -57,9 +58,9 @@ TEST(TestToolOwnership, BorrowRegistrationRejectsAnOwnerWithoutConsumingIt)
 TEST(TestToolOwnership, SuccessfulTakeClearsSourceAndRetainsDescriptorMetadata)
 {
 	int destroyed = 0;
-	struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry registry NB_CLEANUP(tool_registry_cleanup) = {};
 	tool_registry_init(nullptr, &registry);
-	struct tool_spec source MORPH_CLEANUP(tool_spec_cleanup) = {};
+	struct tool_spec source NB_CLEANUP(tool_spec_cleanup) = {};
 	ownership_spec_init(&source, "owned", &destroyed);
 	void *original = source.user_data;
 	ASSERT_EQ(tool_register_take(&registry, &source), 0);
@@ -77,16 +78,16 @@ TEST(TestToolOwnership, SuccessfulTakeClearsSourceAndRetainsDescriptorMetadata)
 TEST(TestToolOwnership, FailedTakePreservesSourceAndExistingRegistration)
 {
 	int destroyed = 0;
-	struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry registry NB_CLEANUP(tool_registry_cleanup) = {};
 	tool_registry_init(nullptr, &registry);
-	struct tool_spec original MORPH_CLEANUP(tool_spec_cleanup) = {};
+	struct tool_spec original NB_CLEANUP(tool_spec_cleanup) = {};
 	ownership_spec_init(&original, "duplicate", &destroyed);
 	void *registered_data = original.user_data;
 	ASSERT_EQ(tool_register_take(&registry, &original), 0);
-	struct tool_spec rejected MORPH_CLEANUP(tool_spec_cleanup) = {};
+	struct tool_spec rejected NB_CLEANUP(tool_spec_cleanup) = {};
 	ownership_spec_init(&rejected, "duplicate", &destroyed);
 	void *rejected_data = rejected.user_data;
-	EXPECT_EQ(tool_register_take(&registry, &rejected), -EEXIST);
+	EXPECT_EQ(tool_register_take(&registry, &rejected), NB_ERR_EXISTS);
 	EXPECT_EQ(rejected.user_data, rejected_data);
 	EXPECT_EQ(rejected.user_data_destroy, ownership_destroy);
 	EXPECT_EQ(registry.count, 1);
@@ -101,17 +102,18 @@ TEST(TestToolOwnership, FailedTakePreservesSourceAndExistingRegistration)
 TEST(TestToolOwnership, ReplacementTakesOnlyAfterValidationAndRetainsOldExecution)
 {
 	int destroyed = 0;
-	struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry registry NB_CLEANUP(tool_registry_cleanup) = {};
 	tool_registry_init(nullptr, &registry);
-	struct tool_spec first MORPH_CLEANUP(tool_spec_cleanup) = {};
+	struct tool_spec first NB_CLEANUP(tool_spec_cleanup) = {};
 	ownership_spec_init(&first, "versioned", &destroyed);
 	ASSERT_EQ(tool_register_take(&registry, &first), 0);
-	struct tool_handle old MORPH_CLEANUP(tool_handle_release) = {};
+	struct tool_handle old NB_CLEANUP(tool_handle_release) = {};
 	ASSERT_EQ(tool_registry_acquire(&registry, "versioned", &old), 0);
-	struct tool_spec replacement MORPH_CLEANUP(tool_spec_cleanup) = {};
+	struct tool_spec replacement NB_CLEANUP(tool_spec_cleanup) = {};
 	ownership_spec_init(&replacement, "versioned", &destroyed);
 	void *replacement_data = replacement.user_data;
-	EXPECT_EQ(tool_register_replace_take(&registry, &replacement, TOOL_FLAG_DYNAMIC), -EEXIST);
+	EXPECT_EQ(tool_register_replace_take(&registry, &replacement, TOOL_FLAG_DYNAMIC),
+		  NB_ERR_EXISTS);
 	EXPECT_EQ(replacement.user_data, replacement_data);
 	EXPECT_EQ(tool_borrow(&registry, "versioned")->user_data, old.user_data);
 	EXPECT_EQ(destroyed, 0);
@@ -130,9 +132,9 @@ TEST(TestToolOwnership, BorrowedRegistrationLeavesDestructionWithItsOwner)
 {
 	int destroyed = 0;
 	{
-		struct tool_spec owner MORPH_CLEANUP(tool_spec_cleanup) = {};
+		struct tool_spec owner NB_CLEANUP(tool_spec_cleanup) = {};
 		ownership_spec_init(&owner, "owner", &destroyed);
-		struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
+		struct tool_registry registry NB_CLEANUP(tool_registry_cleanup) = {};
 		tool_registry_init(nullptr, &registry);
 		struct tool_spec borrowed{};
 		borrowed.name = "borrowed";
@@ -157,11 +159,11 @@ TEST(TestToolOwnership, DescriptorCloneRejectsOccupiedOwnerAndMoveReplacesIt)
 	struct tool_desc next_view{};
 	next_view.name = "next";
 	next_view.description = "Next descriptor";
-	struct tool_desc first MORPH_CLEANUP(tool_desc_cleanup) = {};
-	struct tool_desc next MORPH_CLEANUP(tool_desc_cleanup) = {};
+	struct tool_desc first NB_CLEANUP(tool_desc_cleanup) = {};
+	struct tool_desc next NB_CLEANUP(tool_desc_cleanup) = {};
 	ASSERT_EQ(tool_desc_clone(&first_view, &first), 0);
 	const char *original = first.name;
-	EXPECT_EQ(tool_desc_clone(&next_view, &first), -EEXIST);
+	EXPECT_EQ(tool_desc_clone(&next_view, &first), NB_ERR_EXISTS);
 	EXPECT_EQ(first.name, original);
 	EXPECT_STREQ(first.name, "first");
 	ASSERT_EQ(tool_desc_clone(&next_view, &next), 0);
@@ -179,15 +181,15 @@ TEST(TestToolOwnership, DescriptorCloneRejectsOccupiedOwnerAndMoveReplacesIt)
 TEST(TestToolOwnership, AcquiringIntoRetainedHandlePreservesItsBinding)
 {
 	int destroyed = 0;
-	struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry registry NB_CLEANUP(tool_registry_cleanup) = {};
 	tool_registry_init(nullptr, &registry);
-	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {};
+	struct tool_spec spec NB_CLEANUP(tool_spec_cleanup) = {};
 	ownership_spec_init(&spec, "first", &destroyed);
 	ASSERT_EQ(tool_register_take(&registry, &spec), 0);
-	struct tool_handle handle MORPH_CLEANUP(tool_handle_release) = {};
+	struct tool_handle handle NB_CLEANUP(tool_handle_release) = {};
 	ASSERT_EQ(tool_registry_acquire(&registry, "first", &handle), 0);
 	auto *binding = handle.binding;
-	EXPECT_EQ(tool_registry_acquire(&registry, "first", &handle), -EALREADY);
+	EXPECT_EQ(tool_registry_acquire(&registry, "first", &handle), NB_ERR_STATE);
 	EXPECT_EQ(handle.binding, binding);
 	ASSERT_EQ(tool_unregister(&registry, "first"), 0);
 	EXPECT_EQ(destroyed, 0);
@@ -198,12 +200,12 @@ TEST(TestToolOwnership, AcquiringIntoRetainedHandlePreservesItsBinding)
 TEST(TestToolOwnership, RegistryCopyRollsBackEarlierEntriesAndRejectsPopulatedTarget)
 {
 	int destroyed = 0;
-	struct tool_registry source MORPH_CLEANUP(tool_registry_cleanup) = {};
-	struct tool_registry target MORPH_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry source NB_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry target NB_CLEANUP(tool_registry_cleanup) = {};
 	tool_registry_init(nullptr, &source);
 	tool_registry_init(nullptr, &target);
 	for (const char *name : {"first", "invalid"}) {
-		struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {};
+		struct tool_spec spec NB_CLEANUP(tool_spec_cleanup) = {};
 		ownership_spec_init(&spec, name, &destroyed);
 		ASSERT_EQ(tool_register_take(&source, &spec), 0);
 	}
@@ -216,9 +218,9 @@ TEST(TestToolOwnership, RegistryCopyRollsBackEarlierEntriesAndRejectsPopulatedTa
 	EXPECT_EQ(target.count, 0);
 	EXPECT_EQ(target.entries, nullptr);
 	EXPECT_EQ(destroyed, 0);
-	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {};
+	struct tool_spec spec NB_CLEANUP(tool_spec_cleanup) = {};
 	ownership_spec_init(&spec, "retained", &destroyed);
 	ASSERT_EQ(tool_register_take(&target, &spec), 0);
-	EXPECT_EQ(tool_registry_copy(&target, &source), -EALREADY);
+	EXPECT_EQ(tool_registry_copy(&target, &source), NB_ERR_STATE);
 	EXPECT_NE(tool_borrow(&target, "retained"), nullptr);
 }

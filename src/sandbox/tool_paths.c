@@ -1,9 +1,11 @@
 #include "tool_paths.h"
-#include "util/array.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/log.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "nb/log.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -18,15 +20,11 @@ enum path_base {
 	PATH_ABSOLUTE,
 	PATH_CACHE,
 	PATH_LIST,
-#ifdef __APPLE__
-	PATH_DARWIN_TEMP,
-#endif
 };
 
 enum path_kind {
 	PATH_DIRECTORY,
 	PATH_EXISTING_DIRECTORY,
-	PATH_TEMP_DIRECTORY,
 	PATH_DEVICE,
 };
 
@@ -54,12 +52,6 @@ static const struct tool_path tool_paths[] = {
 	TOOL_DIR("xdg-state", PATH_HOME, ".local/state", NULL),
 	TOOL_DIR("xdg-state", PATH_HOME, ".local/state", "XDG_STATE_HOME"),
 	{"xdg-runtime", PATH_ABSOLUTE, "", "XDG_RUNTIME_DIR", PATH_EXISTING_DIRECTORY},
-	{"temporary", PATH_ABSOLUTE, "", "TMPDIR", PATH_TEMP_DIRECTORY},
-	{"temporary", PATH_ABSOLUTE, "/tmp", NULL, PATH_TEMP_DIRECTORY},
-	{"temporary", PATH_ABSOLUTE, "/var/tmp", NULL, PATH_TEMP_DIRECTORY},
-#ifdef __APPLE__
-	{"temporary", PATH_DARWIN_TEMP, "", NULL, PATH_TEMP_DIRECTORY},
-#endif
 	{"terminal", PATH_ABSOLUTE, "/dev/tty", NULL, PATH_DEVICE},
 #ifdef __APPLE__
 	TOOL_DIR("macos-cache", PATH_HOME, "Library/Caches", NULL),
@@ -253,24 +245,24 @@ static const struct tool_path tool_paths[] = {
 #endif
 };
 
-static int append_unique(morph_array_t *paths, const char *path)
+static int append_unique(nb_vec *paths, const char *path)
 {
-	for (size_t i = 0; i < paths->nelts; i++) {
-		char **existing = morph_array_borrow(paths, i);
+	for (size_t i = 0; i < paths->len; i++) {
+		char **existing = nb_vec_at(paths, i);
 		if (strcmp(*existing, path) == 0)
 			return 0;
 	}
-	char *owned MORPH_CLEANUP(morph_charp_cleanup) = strdup(path);
+	char *owned NB_CLEANUP(nb_charp_cleanup) = strdup(path);
 	if (!owned)
-		return -ENOMEM;
-	char **slot = morph_array_push_borrow(paths);
+		return NB_ERR_NOMEM;
+	char **slot = nb_vec_push(paths);
 	if (!slot)
-		return -ENOMEM;
-	*slot = morph_charp_steal(&owned);
+		return NB_ERR_NOMEM;
+	*slot = nb_charp_steal(&owned);
 	return 0;
 }
 
-static int copy_paths(morph_array_t *dst, char **src, int count)
+static int copy_paths(nb_vec *dst, char **src, int count)
 {
 	for (int i = 0; i < count; i++) {
 		char resolved[PATH_MAX];
@@ -288,37 +280,24 @@ static int resolve_tool_path(const struct tool_path *entry, const char *home, ch
 {
 	const char *override = entry->env ? getenv(entry->env) : NULL;
 	const char *cache = getenv("XDG_CACHE_HOME");
-	morph_buf_t path MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf path NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc;
 
-#ifdef __APPLE__
-	if (entry->base == PATH_DARWIN_TEMP) {
-		char temp[PATH_MAX];
-		size_t length = confstr(_CS_DARWIN_USER_TEMP_DIR, temp, sizeof(temp));
-
-		if (length == 0 || length > sizeof(temp))
-			return 0;
-		*result = strdup(temp);
-		if (!*result)
-			return -ENOMEM;
-		return 0;
-	}
-#endif
-	rc = morph_buf_init(&path, 128);
+	rc = (nb_buf_init(&path), nb_buf_reserve(&path, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	if (override && *override) {
 		if (override[0] != '/')
 			return 0;
-		(void)morph_buf_puts(&path, override);
+		(void)nb_buf_append_cstr(&path, override);
 	} else if (entry->base == PATH_ABSOLUTE) {
 		if (!*entry->suffix)
 			return 0;
-		(void)morph_buf_puts(&path, entry->suffix);
+		(void)nb_buf_append_cstr(&path, entry->suffix);
 	} else if (entry->base == PATH_CACHE && cache && *cache) {
 		if (cache[0] != '/')
 			return 0;
-		(void)morph_buf_printf(&path, "%s/%s", cache, entry->suffix);
+		(void)nb_buf_printf(&path, "%s/%s", cache, entry->suffix);
 	} else {
 #ifdef __APPLE__
 		const char *cache_suffix = "Library/Caches";
@@ -326,16 +305,14 @@ static int resolve_tool_path(const struct tool_path *entry, const char *home, ch
 		const char *cache_suffix = ".cache";
 #endif
 		if (entry->base == PATH_CACHE)
-			(void)morph_buf_printf(&path, "%s/%s/%s", home,
-				cache_suffix, entry->suffix);
+			(void)nb_buf_printf(&path, "%s/%s/%s", home, cache_suffix, entry->suffix);
 		else
-			(void)morph_buf_printf(&path, "%s/%s", home,
-				entry->suffix);
+			(void)nb_buf_printf(&path, "%s/%s", home, entry->suffix);
 	}
-	if (path.failed)
-		return path.failed;
-	*result = morph_buf_detach(&path);
-	return 0;
+	if (nb_buf_status(&path))
+		return nb_buf_status(&path);
+	*result = (nb_buf_ok(&path) ? strdup(nb_buf_cstr(&path)) : NULL);
+	return *result ? 0 : NB_ERR_NOMEM;
 }
 
 static int prepare_path(const char *path, enum path_kind kind)
@@ -344,34 +321,34 @@ static int prepare_path(const char *path, enum path_kind kind)
 	int rc;
 
 	if (kind == PATH_DIRECTORY) {
-		rc = file_ensure_dir(path);
+		rc = nb_file_mkdir(path, true, NULL);
 		if (rc != 0)
 			return rc;
 	}
 	if (stat(path, &st) != 0)
-		return morph_error_from_errno(errno);
+		return nb_status_from_errno(errno, NULL);
 	if (kind == PATH_DEVICE ? !S_ISCHR(st.st_mode) : !S_ISDIR(st.st_mode))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return 0;
 }
 
-static int append_tool_path(struct morph_log *logger, const struct tool_path *entry,
-			    const char *path, const char *home, morph_array_t *reads,
-			    morph_array_t *writes, morph_array_t *deletes)
+static int append_tool_path(struct nb_log *logger, const struct tool_path *entry, const char *path,
+			    const char *home, nb_vec *reads, nb_vec *writes, nb_vec *deletes)
 {
 	char resolved[PATH_MAX];
 	int rc;
 
-	if (!path || path[0] != '/' || strlen(path) >= PATH_MAX ||
-	    strstr(path, "/..") || path_is_within(home, path))
+	if (!path || path[0] != '/' || strlen(path) >= PATH_MAX || strstr(path, "/..") ||
+	    nb_path_is_within(home, path, true))
 		return 0;
 	if (prepare_path(path, entry->kind) != 0 || !realpath(path, resolved)) {
-		log_dbg(logger, "sandbox: skipping unavailable %s path", entry->tool);
+		nb_log_write(logger, NB_LOG_DEBUG, "sandbox: skipping unavailable %s path",
+			     entry->tool);
 		return 0;
 	}
-	if (path_is_within(home, resolved))
+	if (nb_path_is_within(home, resolved, true))
 		return 0;
-	log_dbg(logger, "sandbox: tool path %s: %s", entry->tool, resolved);
+	nb_log_write(logger, NB_LOG_DEBUG, "sandbox: tool path %s: %s", entry->tool, resolved);
 	rc = append_unique(reads, resolved);
 	if (rc == 0)
 		rc = append_unique(writes, resolved);
@@ -382,7 +359,7 @@ static int append_tool_path(struct morph_log *logger, const struct tool_path *en
 
 int sandbox_prepare_tool_paths(struct sandbox_config *cfg)
 {
-	struct sandbox_path_set paths MORPH_CLEANUP(sandbox_path_set_cleanup) = {0};
+	struct sandbox_path_set paths NB_CLEANUP(sandbox_path_set_cleanup) = {0};
 	const char *home_env = getenv("HOME");
 	char home[PATH_MAX];
 	size_t extra = sizeof(tool_paths) / sizeof(tool_paths[0]);
@@ -390,7 +367,10 @@ int sandbox_prepare_tool_paths(struct sandbox_config *cfg)
 
 	if (!cfg || !cfg->path_policy_enabled || cfg->read_paths_count < 0 ||
 	    cfg->write_paths_count < 0 || cfg->delete_paths_count < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
+	rc = sandbox_prepare_temporary_paths(cfg, NULL);
+	if (rc != NB_OK)
+		return rc;
 	if (!home_env || !realpath(home_env, home) || strcmp(home, "/") == 0)
 		return 0;
 	for (size_t i = 0; i < sizeof(tool_paths) / sizeof(tool_paths[0]); i++) {
@@ -404,14 +384,19 @@ int sandbox_prepare_tool_paths(struct sandbox_config *cfg)
 			}
 		}
 	}
-	rc = morph_array_init(&paths.read, (size_t)cfg->read_paths_count + extra,
-			      sizeof(*cfg->read_paths));
+	rc = (nb_vec_init(&paths.read, sizeof(*cfg->read_paths)),
+	      nb_vec_reserve(&paths.read, (size_t)cfg->read_paths_count + extra) ? 0
+										 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_array_init(&paths.write, (size_t)cfg->write_paths_count + extra,
-				      sizeof(*cfg->write_paths));
+		rc = (nb_vec_init(&paths.write, sizeof(*cfg->write_paths)),
+		      nb_vec_reserve(&paths.write, (size_t)cfg->write_paths_count + extra)
+			      ? 0
+			      : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_array_init(&paths.remove, (size_t)cfg->delete_paths_count + extra,
-				      sizeof(*cfg->delete_paths));
+		rc = (nb_vec_init(&paths.remove, sizeof(*cfg->delete_paths)),
+		      nb_vec_reserve(&paths.remove, (size_t)cfg->delete_paths_count + extra)
+			      ? 0
+			      : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = copy_paths(&paths.read, cfg->read_paths, cfg->read_paths_count);
 	if (rc == 0)
@@ -422,18 +407,16 @@ int sandbox_prepare_tool_paths(struct sandbox_config *cfg)
 		return rc;
 	for (size_t i = 0; i < sizeof(tool_paths) / sizeof(tool_paths[0]); i++) {
 		const struct tool_path *entry = &tool_paths[i];
-		char *path MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+		char *path NB_CLEANUP(nb_charp_cleanup) = NULL;
 		const char *value = entry->env ? getenv(entry->env) : NULL;
 
-		if (entry->kind == PATH_TEMP_DIRECTORY && !cfg->allow_temp)
-			continue;
 		if (entry->base == PATH_LIST && value && *value) {
-			char *parts MORPH_CLEANUP(morph_charp_cleanup) = strdup(value);
+			char *parts NB_CLEANUP(nb_charp_cleanup) = strdup(value);
 			char *part;
 			char *save = NULL;
 
 			if (!parts)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			for (part = strtok_r(parts, ":", &save); part;
 			     part = strtok_r(NULL, ":", &save)) {
 				rc = append_tool_path(cfg ? cfg->logger : NULL, entry, part, home,
@@ -450,9 +433,8 @@ int sandbox_prepare_tool_paths(struct sandbox_config *cfg)
 		if (rc != 0)
 			return rc;
 	}
-	if (paths.read.nelts > INT_MAX || paths.write.nelts > INT_MAX ||
-	    paths.remove.nelts > INT_MAX)
-		return -EOVERFLOW;
+	if (paths.read.len > INT_MAX || paths.write.len > INT_MAX || paths.remove.len > INT_MAX)
+		return NB_ERR_RANGE;
 	sandbox_config_paths_move(cfg, &paths);
 	return 0;
 }

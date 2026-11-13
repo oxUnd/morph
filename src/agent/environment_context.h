@@ -24,8 +24,7 @@ int environment_context_create(struct environment_context *out,
 			       const struct prompt_context_input *input);
 void environment_context_cleanup(struct environment_context *ctx);
 /* Pure serialization; does not read environment variables or the OS. */
-int environment_context_render(const struct environment_context *ctx,
-	morph_buf_t *out);
+int environment_context_render(const struct environment_context *ctx, nb_buf *out);
 
 #ifdef __cplusplus
 }

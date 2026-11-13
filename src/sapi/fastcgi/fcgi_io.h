@@ -3,6 +3,7 @@
 #define MORPH_FCGI_IO_H
 
 #include <fcgiapp.h>
+#include "nb/thread.h"
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -21,7 +22,7 @@ typedef struct {
 struct fcgi_bridge;
 struct fcgi_auth;
 struct fcgi_stream_pool;
-struct morph_log;
+struct nb_log;
 
 struct fcgi_metrics {
 	unsigned long long requests_total;
@@ -37,8 +38,8 @@ typedef struct request_s {
 	FCGX_Request    *fcgx;
 	struct fcgi_stream_pool *streams;
 	struct fcgi_metrics     *metrics;
-	struct morph_log        *logger;
-	volatile sig_atomic_t   *shutdown;
+	struct nb_log *logger;
+	nb_atomic_int *shutdown;
 	int               handed_off;
 	int               status;
 	long long         started_ms;

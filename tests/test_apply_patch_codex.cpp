@@ -1,8 +1,9 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 
 extern "C" {
 #include "agent/patch.h"
-#include "util/file.h"
+#include "nb/file.h"
 }
 
 #include <algorithm>
@@ -216,7 +217,7 @@ TEST_F(CodexFocusedPatchTest, PatternLongerThanInputFailsWithoutMutation)
 		"+changed\n"
 		"*** End Patch";
 
-	EXPECT_EQ(apply(patch), -EINVAL);
+	EXPECT_EQ(apply(patch), NB_ERR_INVAL);
 	EXPECT_EQ(read_text(directory / "short.txt"), "one\n");
 }
 
@@ -229,7 +230,7 @@ TEST_F(CodexFocusedPatchTest, RejectsContentAfterEndPatch)
 		"*** End Patch\n"
 		"trailing";
 
-	EXPECT_EQ(apply(patch), -EINVAL);
+	EXPECT_EQ(apply(patch), NB_ERR_INVAL);
 	EXPECT_FALSE(fs::exists(directory / "value.txt"));
 }
 

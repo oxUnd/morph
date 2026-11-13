@@ -3,12 +3,13 @@
 #include "prompt_context.h"
 #include "react.h"
 #include "tokenizer.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/log.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/log.h"
+#include "nb/utf8.h"
 #include <errno.h>
 #include <limits.h>
 #include <ctype.h>
@@ -18,25 +19,25 @@
 #include <time.h>
 #include "http/client.h"
 
-static struct chat_message *history_push_message(morph_array_t *messages)
+static struct chat_message *history_push_message(nb_vec *messages)
 {
-	struct chat_message *message = morph_array_push_borrow(messages);
+	struct chat_message *message = nb_vec_push(messages);
 
 	if (message)
 		memset(message, 0, sizeof(*message));
 	return message;
 }
 
-static int history_add_text_message(morph_array_t *messages, const char *role, const char *content)
+static int history_add_text_message(nb_vec *messages, const char *role, const char *content)
 {
 	struct chat_message *message = history_push_message(messages);
 
 	if (!message)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	message->role = strdup(role ? role : "user");
 	message->content = strdup(content ? content : "");
 	if (!message->role || !message->content)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	return 0;
 }
 
@@ -83,51 +84,51 @@ int agent_history_tool_arguments_copy(const char *arguments, char **normalized)
 	const char *raw = arguments ? arguments : "{}";
 	cJSON *parsed;
 	cJSON *fallback;
-	char *json MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
+	char *json NB_CLEANUP(cJSON_FreeTextOwner) = NULL;
 
 	if (!normalized)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*normalized)
-		return -EALREADY;
+		return NB_ERR_STATE;
 	parsed = cJSON_ParseWithOpts(raw, NULL, 1);
 	if (cJSON_IsObject(parsed)) {
 		cJSON_Delete(parsed);
 		*normalized = strdup(raw);
 		if (!*normalized)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		return 0;
 	}
 	cJSON_Delete(parsed);
 	fallback = cJSON_CreateObject();
 	if (!fallback)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (!cJSON_AddStringToObject(fallback, "_morph_invalid_arguments", raw) ||
 	    !cJSON_AddStringToObject(fallback, "_morph_recovery",
 				     "Reissue this tool call with a valid JSON object.")) {
 		cJSON_Delete(fallback);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	json = cJSON_PrintUnformatted(fallback);
 	cJSON_Delete(fallback);
 	if (!json)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	*normalized = strdup(json);
-	return *normalized ? 0 : -ENOMEM;
+	return *normalized ? 0 : NB_ERR_NOMEM;
 }
 
 int agent_history_migrate_legacy_tool_call(struct tool_call *call)
 {
 	cJSON *arguments;
-	char *normalized MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
-	char *owned MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *normalized NB_CLEANUP(cJSON_FreeTextOwner) = NULL;
+	char *owned NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	if (!call || !call->name || strcmp(call->name, "bash_exec") != 0)
 		return 0;
-	char *name MORPH_CLEANUP(morph_charp_cleanup) = strdup("exec");
+	char *name NB_CLEANUP(nb_charp_cleanup) = strdup("exec");
 	if (!name)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	free(call->name);
-	call->name = morph_charp_steal(&name);
+	call->name = nb_charp_steal(&name);
 	if (call->input_kind != TOOL_INPUT_JSON || !call->arguments)
 		return 0;
 	arguments = cJSON_Parse(call->arguments);
@@ -141,17 +142,17 @@ int agent_history_migrate_legacy_tool_call(struct tool_call *call)
 	normalized = cJSON_PrintUnformatted(arguments);
 	cJSON_Delete(arguments);
 	if (!normalized)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	owned = strdup(normalized);
 	if (!owned)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	free(call->arguments);
-	call->arguments = morph_charp_steal(&owned);
+	call->arguments = nb_charp_steal(&owned);
 	return 0;
 }
 
-static int history_add_tool_calls(struct morph_log *logger, const struct model_history_item *item,
-				  morph_array_t *messages)
+static int history_add_tool_calls(struct nb_log *logger, const struct model_history_item *item,
+				  nb_vec *messages)
 {
 	struct chat_message *message;
 	cJSON *calls;
@@ -160,20 +161,21 @@ static int history_add_tool_calls(struct morph_log *logger, const struct model_h
 
 	root = item->payload_json ? cJSON_ParseWithOpts(item->payload_json, NULL, 1) : NULL;
 	if (!root) {
-		log_err(logger, "history replay: invalid tool payload at item %lld, sequence %lld",
-			(long long)item->id, (long long)item->sequence_no);
-		return MORPH_ERR_PARSE;
+		nb_log_write(logger, NB_LOG_ERROR,
+			     "history replay: invalid tool payload at item %lld, sequence %lld",
+			     (long long)item->id, (long long)item->sequence_no);
+		return NB_ERR_PARSE;
 	}
 	calls = cJSON_GetObjectItem(root, "calls");
 	count = cJSON_IsArray(calls) ? cJSON_GetArraySize(calls) : 0;
 	if (count <= 0) {
 		cJSON_Delete(root);
-		return MORPH_ERR_PROTOCOL;
+		return NB_ERR_PROTOCOL;
 	}
 	message = history_push_message(messages);
 	if (!message) {
 		cJSON_Delete(root);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	message->role = strdup("assistant");
 	message->content = item->content && item->content[0] ? strdup(item->content) : NULL;
@@ -184,7 +186,7 @@ static int history_add_tool_calls(struct morph_log *logger, const struct model_h
 	if (!message->role || !message->tool_calls ||
 	    (cJSON_IsString(reasoning) && !message->reasoning_content)) {
 		cJSON_Delete(root);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	memset(message->tool_calls, 0, (size_t)count * sizeof(*message->tool_calls));
 	message->tool_call_count = count;
@@ -201,7 +203,7 @@ static int history_add_tool_calls(struct morph_log *logger, const struct model_h
 		    !cJSON_IsString(name) ||
 		    !history_tool_input_borrow(call, &input_kind, &input)) {
 			cJSON_Delete(root);
-			return MORPH_ERR_PROTOCOL;
+			return NB_ERR_PROTOCOL;
 		}
 		/* Replayed IDs are provider-neutral Morph IDs. */
 		tool_call->id = strdup(local_id->valuestring);
@@ -212,7 +214,7 @@ static int history_add_tool_calls(struct morph_log *logger, const struct model_h
 		if (!tool_call->id || !tool_call->tool_call_id || !tool_call->name ||
 		    !tool_call->arguments) {
 			cJSON_Delete(root);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		int migrate_rc = agent_history_migrate_legacy_tool_call(tool_call);
 
@@ -225,23 +227,22 @@ static int history_add_tool_calls(struct morph_log *logger, const struct model_h
 	return 0;
 }
 
-static int history_add_tool_result(const struct model_history_item *item, morph_array_t *messages)
+static int history_add_tool_result(const struct model_history_item *item, nb_vec *messages)
 {
 	struct chat_message *message = history_push_message(messages);
 	const char *call_id = item->tool_call_id ? item->tool_call_id : item->provider_call_id;
 
 	if (!message)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	message->role = strdup("tool");
 	message->content = strdup(item->content ? item->content : "");
 	message->tool_call_id = strdup(call_id ? call_id : "");
 	if (!message->role || !message->content || !message->tool_call_id)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	return 0;
 }
 
-static int history_add_assistant_message(const struct model_history_item *item,
-					 morph_array_t *messages)
+static int history_add_assistant_message(const struct model_history_item *item, nb_vec *messages)
 {
 	int rc = history_add_text_message(messages, "assistant", item->content);
 	cJSON *payload;
@@ -252,13 +253,13 @@ static int history_add_assistant_message(const struct model_history_item *item,
 		return rc;
 	payload = cJSON_ParseWithOpts(item->payload_json, NULL, 1);
 	if (!payload)
-		return MORPH_ERR_PARSE;
+		return NB_ERR_PARSE;
 	reasoning = cJSON_GetObjectItemCaseSensitive(payload, "reasoning_content");
-	message = morph_array_borrow(messages, messages->nelts - 1);
+	message = nb_vec_at(messages, messages->len - 1);
 	if (cJSON_IsString(reasoning)) {
 		message->reasoning_content = strdup(reasoning->valuestring);
 		if (!message->reasoning_content)
-			rc = (-ENOMEM);
+			rc = (NB_ERR_NOMEM);
 	}
 	cJSON_Delete(payload);
 	return rc;
@@ -280,34 +281,42 @@ char *history_user_content_create(const struct model_history_item *item)
 	const cJSON *outcome = cJSON_GetObjectItemCaseSensitive(payload, "turn_outcome");
 	const cJSON *status = cJSON_GetObjectItemCaseSensitive(outcome, "status");
 	const cJSON *finished = cJSON_GetObjectItemCaseSensitive(outcome, "finished");
-	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_init(&text, 256);
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&text), nb_buf_reserve(&text, 256) ? 0 : NB_ERR_NOMEM);
 
 	if (rc == 0)
-		rc = morph_buf_puts(&text, item->content ? item->content : "");
+		rc = (nb_buf_append_cstr(&text, item->content ? item->content : "") ? 0
+										    : NB_ERR_NOMEM);
 	if (rc == 0 && cJSON_IsString(status) && cJSON_IsTrue(finished)) {
-		rc = morph_buf_printf(
-			&text, "\n\n[Historical turn execution ended: %s. ",
-			status->valuestring);
+		rc = (nb_buf_printf(&text, "\n\n[Historical turn execution ended: %s. ",
+				    status->valuestring)
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (rc == 0 && strcmp(status->valuestring, "cancelled") == 0)
-			rc = morph_buf_puts(
-				&text,
-				"Execution was stopped by the user; the request and follow-up "
-				"instructions remain context for later turns. Tool side effects "
-				"are not rolled back. Inspect current files or external state "
-				"before repeating actions. ");
+			rc = (nb_buf_append_cstr(&text, "Execution was stopped by the user; the "
+							"request and follow-up "
+							"instructions remain context for later "
+							"turns. Tool side effects "
+							"are not rolled back. Inspect current "
+							"files or external state "
+							"before repeating actions. ")
+				      ? 0
+				      : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_puts(
-				&text, "This records execution status, not completion of a "
-				"broader objective. Later results supersede earlier checkpoint "
-				"TODOs for this turn.]");
+			rc = (nb_buf_append_cstr(
+				      &text, "This records execution status, not completion of a "
+					     "broader objective. Later results supersede earlier "
+					     "checkpoint "
+					     "TODOs for this turn.]")
+				      ? 0
+				      : NB_ERR_NOMEM);
 	}
 	cJSON_Delete(payload);
 	if (rc != 0) {
-		morph_buf_cleanup(&text);
+		nb_buf_cleanup(&text);
 		return NULL;
 	}
-	return morph_buf_detach(&text);
+	return (nb_buf_ok(&text) ? strdup(nb_buf_cstr(&text)) : NULL);
 }
 
 int history_item_tokens(const struct model_history_item *item, struct tokenizer *tokenizer,
@@ -318,7 +327,7 @@ int history_item_tokens(const struct model_history_item *item, struct tokenizer 
 		int tokens;
 
 		if (!rendered)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		tokens = tokenizer_count(tokenizer, rendered);
 		free(rendered);
 		return tokens;
@@ -355,41 +364,43 @@ int agent_history_item_replayable(const struct model_history_item *item)
 	       strcmp(item->kind, "compaction_summary") == 0;
 }
 
-static int history_build_chat_messages(struct morph_log *logger,
-				       const struct model_history_item *items,
-				       morph_array_t *messages)
+static int history_build_chat_messages(struct nb_log *logger,
+				       const struct model_history_item *items, nb_vec *messages)
 {
 	const struct model_history_item *item = items;
 	int rc;
 
 	if (!messages)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	while (item) {
 		if (strcmp(item->kind, "compaction_summary") == 0) {
-			morph_buf_t snapshot MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			nb_buf snapshot NB_CLEANUP(nb_buf_cleanup) = {0};
 
-			rc = morph_buf_init(&snapshot, 256);
+			rc = (nb_buf_init(&snapshot),
+			      nb_buf_reserve(&snapshot, 256) ? 0 : NB_ERR_NOMEM);
 			if (rc == 0)
-				rc = morph_buf_printf(
-					&snapshot,
-					"Snapshot through history sequence %lld. Later "
-					"messages and turn outcomes supersede this snapshot; "
-					"its pending work may already be resolved below.\n%s",
-					(long long)(item->sequence_no > 0 ? item->sequence_no - 1
-									  : 0),
-					item->content ? item->content : "");
+				rc = (nb_buf_printf(
+					      &snapshot,
+					      "Snapshot through history sequence %lld. Later "
+					      "messages and turn outcomes supersede this snapshot; "
+					      "its pending work may already be resolved below.\n%s",
+					      (long long)(item->sequence_no > 0
+								  ? item->sequence_no - 1
+								  : 0),
+					      item->content ? item->content : "")
+					      ? 0
+					      : NB_ERR_NOMEM);
 			if (rc != 0)
 				return rc;
-			char *reference MORPH_CLEANUP(morph_charp_cleanup) =
-				prompt_reference_create(morph_buf_cstr_borrow(&snapshot));
+			char *reference NB_CLEANUP(nb_charp_cleanup) =
+				prompt_reference_create(nb_buf_cstr(&snapshot));
 
 			if (!reference)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			rc = history_add_text_message(messages, "assistant", reference);
 			if (rc != 0)
 				return rc;
-			struct chat_message *message =
-				morph_array_borrow(messages, messages->nelts - 1);
+			struct chat_message *message = nb_vec_at(messages, messages->len - 1);
 
 			message->is_context_summary = 1;
 		}
@@ -411,7 +422,7 @@ static int history_build_chat_messages(struct morph_log *logger,
 			char *content = history_user_content_create(item);
 
 			if (!content)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			rc = history_add_text_message(messages, "user", content);
 			free(content);
 		} else if (strcmp(item->kind, "assistant_message") == 0)
@@ -427,29 +438,29 @@ static int history_build_chat_messages(struct morph_log *logger,
 	return 0;
 }
 
-void agent_chat_messages_cleanup(morph_array_t *messages)
+void agent_chat_messages_cleanup(nb_vec *messages)
 {
 	if (!messages)
 		return;
-	for (size_t i = 0; i < messages->nelts; i++)
-		chat_message_cleanup(morph_array_borrow(messages, i));
-	morph_array_cleanup(messages);
+	for (size_t i = 0; i < messages->len; i++)
+		chat_message_cleanup(nb_vec_at(messages, i));
+	nb_vec_cleanup(messages);
 }
 
-int agent_history_messages_copy(struct morph_log *logger, const struct model_history_item *items,
-				morph_array_t *messages)
+int agent_history_messages_copy(struct nb_log *logger, const struct model_history_item *items,
+				nb_vec *messages)
 {
-	morph_array_t candidate MORPH_CLEANUP(agent_chat_messages_cleanup) = {0};
+	nb_vec candidate NB_CLEANUP(agent_chat_messages_cleanup) = {0};
 	int rc;
 
 	if (!messages)
-		return -EINVAL;
-	if (messages->nelts)
-		return -EALREADY;
-	if (messages->elts && messages->size != sizeof(struct chat_message))
-		return -EINVAL;
-	rc = morph_array_init(&candidate, messages->cap ? messages->cap : 64,
-			      sizeof(struct chat_message));
+		return NB_ERR_INVAL;
+	if (messages->len)
+		return NB_ERR_STATE;
+	if (((void *)messages->data) && messages->elem_size != sizeof(struct chat_message))
+		return NB_ERR_INVAL;
+	rc = (nb_vec_init(&candidate, sizeof(struct chat_message)),
+	      nb_vec_reserve(&candidate, messages->cap ? messages->cap : 64) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = history_build_chat_messages(logger, items, &candidate);
 	if (rc != 0)
@@ -458,7 +469,7 @@ int agent_history_messages_copy(struct morph_log *logger, const struct model_his
 	return 0;
 }
 
-void agent_chat_messages_move(morph_array_t *out, morph_array_t *source)
+void agent_chat_messages_move(nb_vec *out, nb_vec *source)
 {
 	if (!out || !source || out == source)
 		return;

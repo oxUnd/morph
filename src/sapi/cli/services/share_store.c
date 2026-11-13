@@ -1,111 +1,91 @@
 #include "sapi/cli/services/share_store.h"
-#include "util/cleanup.h"
+#include "nb/err.h"
+#include "nb/cleanup.h"
 #include "cJSON.h"
 #include "sapi/cli/presentation/share.h"
-#include "util/file.h"
+#include "nb/file.h"
+#include "nb/file.h"
+#include "nb/random.h"
+#include "nb/encoding.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-static int cli_share_store_share_write(int fd, const morph_buf_t *html)
-{
-	for (size_t written = 0; written < html->len;) {
-		ssize_t size = write(fd, html->data + written, html->len - written);
-		if (size < 0 && errno == EINTR)
-			continue;
-		if (size <= 0)
-			return size < 0 ? -errno : -EIO;
-		written += (size_t)size;
-	}
-	if (fsync(fd) != 0)
-		return morph_error_from_errno(errno);
-	return 0;
-}
-
-/* The staging file is private; readers see the final name only after a full write. */
+/* Reserve a private random filename; publication never overwrites a share. */
 static int cli_share_store_share_publish(const char *directory, const char *stamp,
-					 const morph_buf_t *html, char **out_path)
+					 const nb_buf *html, char **out_path)
 {
-	morph_buf_t staging = {0};
-	int rc = morph_buf_init(&staging, 128);
-	if (rc)
+	unsigned char random[12];
+	nb_buf name NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf path NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf suffix NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = nb_random_bytes(random, sizeof(random), NULL);
+	if (rc != NB_OK)
 		return rc;
-	rc = morph_buf_printf(&staging, "%s/.morph-share-%s-XXXXXX", directory, stamp);
-	if (rc) {
-		morph_buf_cleanup(&staging);
+	if (!nb_buf_printf(&name, "morph-share-%s-", stamp))
+		return NB_ERR_NOMEM;
+	rc = nb_hex_encode(random, sizeof(random), false, &suffix, NULL);
+	if (rc != NB_OK)
 		return rc;
-	}
-	int fd = mkstemp(staging.data);
-	if (fd < 0) {
-		rc = morph_error_from_errno(errno);
-		morph_buf_cleanup(&staging);
+	if (!nb_buf_append_str(&name, nb_buf_str(&suffix)) || !nb_buf_append_cstr(&name, ".html"))
+		return NB_ERR_NOMEM;
+	rc = nb_path_join(&path, directory, nb_buf_cstr(&name));
+	if (rc != NB_OK)
 		return rc;
-	}
-	/* Remove the staging basename's leading dot for the public filename. */
-	const char *base = strrchr(staging.data, '/') + 1;
-	char *target = file_path_join_alloc(directory, base + 1);
-	char *published = target ? file_path_append_alloc(target, ".html") : NULL;
-	free(target);
-	int linked = 0;
+	char *published NB_CLEANUP(nb_charp_cleanup) = strdup(nb_buf_cstr(&path));
 	if (!published)
-		rc = (-ENOMEM);
-	else
-		rc = cli_share_store_share_write(fd, html);
-	if (close(fd) != 0 && !rc)
-		rc = morph_error_from_errno(errno);
-	if (!rc) {
-		if (link(staging.data, published) != 0)
-			rc = morph_error_from_errno(errno);
-		else
-			linked = 1;
-	}
-	if (unlink(staging.data) != 0 && !rc)
-		rc = morph_error_from_errno(errno);
-	if (rc) {
-		if (linked)
-			(void)unlink(published);
-		free(published);
-	} else {
-		*out_path = published;
-	}
-	morph_buf_cleanup(&staging);
-	return rc;
+		return NB_ERR_NOMEM;
+	nb_file_write_options options = {
+		.new_file_mode = 0600,
+		.create_only = true,
+		.sync_dir = true,
+	};
+	rc = nb_file_write_all_atomic(nb_buf_cstr(&path), nb_buf_cstr(html), nb_buf_len(html),
+				      &options, NULL);
+	if (rc != NB_OK)
+		return rc;
+	*out_path = nb_charp_steal(&published);
+	return NB_OK;
 }
 
 int cli_share_store_save(const cJSON *document, char **out_path)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	if (!out_path)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out_path)
-		return -EEXIST;
-	morph_buf_t html MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_init(&html, 4096);
+		return NB_ERR_EXISTS;
+	nb_buf html NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&html), nb_buf_reserve(&html, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc)
 		return rc;
-	char *directory MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *directory NB_CLEANUP(nb_charp_cleanup) = NULL;
 	time_t now = time(NULL);
 	rc = cli_share_html(document, now, &html);
 	if (rc)
 		return rc;
 	const char *home = getenv("HOME");
 	if (!home || !home[0]) {
-		rc = (-ENOENT);
+		rc = (NB_ERR_NOT_FOUND);
 		return rc;
 	}
-	directory = file_path_join_alloc(home, "Downloads");
+	directory = (nb_path_concat(&file_value_1, home, "Downloads") == NB_OK
+			     ? strdup(nb_buf_cstr(&file_value_1))
+			     : NULL);
 	if (!directory) {
-		rc = (-ENOMEM);
+		rc = (NB_ERR_NOMEM);
 		return rc;
 	}
-	rc = file_ensure_dir(directory);
+	rc = nb_file_mkdir(directory, true, NULL);
 	if (rc)
 		return rc;
 	struct tm local;
 	char stamp[32];
 	if (!localtime_r(&now, &local) ||
 	    !strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local)) {
-		rc = (-EINVAL);
+		rc = (NB_ERR_INVAL);
 		return rc;
 	}
 	rc = cli_share_store_share_publish(directory, stamp, &html, out_path);

@@ -2,7 +2,7 @@
 #define MORPH_TOOL_RESULT_H
 
 #include "agent/tool_artifact.h"
-#include "util/str.h"
+#include "nb/str.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,7 +14,7 @@ struct tool_result {
 	/* Borrowed execution input, valid until the tool call returns. */
 	const struct tool_runtime_context *runtime;
 	cJSON *envelope;
-	morph_str_t text;
+	nb_str text;
 	char *owned;
 	cJSON *data;
 	cJSON *ui;

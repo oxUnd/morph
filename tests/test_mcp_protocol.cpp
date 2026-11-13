@@ -1,8 +1,10 @@
+#include "errors.h"
 #include <gtest/gtest.h>
+#include "nb/err.h"
 
 extern "C" {
 #include "mcp/mcp_internal.h"
-#include "util/base64.h"
+#include "encoding_fixture.h"
 }
 
 #include <atomic>
@@ -30,14 +32,15 @@ protected:
 	{
 		client.config.transport = MCP_TRANSPORT_STREAMABLE_HTTP;
 		client.protocol = mcp_protocol_borrow(MCP_PROTOCOL_VERSION);
-		pthread_mutex_init(&client.lock, nullptr);
+		client.lock = nb_mutex_new(0);
+		ASSERT_NE(client.lock, nullptr);
 	}
 
 	void TearDown() override
 	{
 		mcp_wire_request_cleanup(&wire);
 		mcp_protocol_reset(&client);
-		pthread_mutex_destroy(&client.lock);
+		(nb_mutex_free(client.lock), client.lock = NULL);
 	}
 
 	int encode(const char *method, const char *params)
@@ -57,9 +60,9 @@ protected:
 	std::string header(const char *name)
 	{
 		std::string prefix = std::string(name) + ": ";
-		for (size_t i = 0; i < wire.headers.nelts; i++) {
+		for (size_t i = 0; i < wire.headers.len; i++) {
 			std::string value =
-				*static_cast<const char **>(morph_array_borrow(&wire.headers, i));
+				*static_cast<const char **>(nb_vec_at(&wire.headers, i));
 			if (value.compare(0, prefix.size(), prefix) == 0)
 				return value.substr(prefix.size());
 		}
@@ -116,7 +119,7 @@ TEST_F(McpCodecTest, NestedMirrorsUseExactPropertyPathsAndPrimitiveValues)
 	EXPECT_EQ(header("Mcp-Param-Enabled"), "false");
 	EXPECT_EQ(header("Mcp-Param-Missing"), "");
 	EXPECT_EQ(header("Mcp-Param-Optional"), "");
-	EXPECT_EQ(wire.headers.nelts, 6U);
+	EXPECT_EQ(wire.headers.len, 6U);
 }
 
 TEST_F(McpCodecTest, HeaderEncodingPreservesUnicodeWhitespaceControlsAndSentinels)
@@ -127,8 +130,8 @@ TEST_F(McpCodecTest, HeaderEncodingPreservesUnicodeWhitespaceControlsAndSentinel
 		cJSON_AddStringToObject(params, "uri", value);
 		char *json = cJSON_PrintUnformatted(params);
 		ASSERT_EQ(encode("resources/read", json), 0);
-		char *encoded = base64_encode_copy(reinterpret_cast<const unsigned char *>(value),
-						   strlen(value));
+		char *encoded = test_encode_bytes(reinterpret_cast<const unsigned char *>(value),
+						  strlen(value));
 		ASSERT_NE(encoded, nullptr);
 		EXPECT_EQ(header("Mcp-Name"), "=?base64?" + std::string(encoded) + "?=");
 		free(encoded);
@@ -151,7 +154,7 @@ TEST_F(McpCodecTest, RejectsInvalidOrUnreachableAnnotationsAndDuplicateHeaderNam
 		R"({"$defs":{"a":{"type":"string","x-mcp-header":"A"}}})"
 	};
 	for (const char *schema : invalid)
-		EXPECT_EQ(cache(schema), -EINVAL) << schema;
+		EXPECT_EQ(cache(schema), NB_ERR_INVAL) << schema;
 	EXPECT_EQ(cache(R"({"type":"object","properties":{"x-mcp-header":{
 		"type":"string","enum":[{"x-mcp-header":"this is instance data"}]}}})"), 0);
 }
@@ -159,14 +162,14 @@ TEST_F(McpCodecTest, RejectsInvalidOrUnreachableAnnotationsAndDuplicateHeaderNam
 TEST_F(McpCodecTest, RejectsUnsafeIntegerValuesAndDoesNotReuseStaleSessionHeaders)
 {
 	ASSERT_EQ(cache(R"({"properties":{"n":{"type":"integer","x-mcp-header":"N"}}})"), 0);
-	EXPECT_EQ(encode("tools/call", R"({"name":"tool","arguments":{"n":1.5}})"), -EINVAL);
+	EXPECT_EQ(encode("tools/call", R"({"name":"tool","arguments":{"n":1.5}})"), NB_ERR_INVAL);
 	EXPECT_EQ(encode("tools/call", R"({"name":"tool","arguments":{"n":9007199254740992}})"),
-		-EINVAL);
+		  NB_ERR_INVAL);
 	client.session_id = strdup("stale-legacy-session");
 	ASSERT_EQ(encode("ping", nullptr), 0);
 	EXPECT_EQ(header("Mcp-Session-Id"), "");
-	EXPECT_EQ(encode("ping", "[]"), MORPH_ERR_PARSE);
-	EXPECT_EQ(encode("ping", "{\"_meta\":false}"), -EINVAL);
+	EXPECT_EQ(encode("ping", "[]"), NB_ERR_PARSE);
+	EXPECT_EQ(encode("ping", "{\"_meta\":false}"), NB_ERR_INVAL);
 }
 
 class McpStdioProtocolTest : public ::testing::Test {
@@ -224,13 +227,14 @@ done
 		client.stdin_fd = -1;
 		client.stdout_fd = -1;
 		client.server_pid = -1;
-		pthread_mutex_init(&client.lock, nullptr);
+		client.lock = nb_mutex_new(0);
+		ASSERT_NE(client.lock, nullptr);
 	}
 
 	void TearDown() override
 	{
 		mcp_disconnect(&client);
-		pthread_mutex_destroy(&client.lock);
+		(nb_mutex_free(client.lock), client.lock = NULL);
 		std::filesystem::remove_all(directory);
 	}
 
@@ -302,7 +306,7 @@ TEST_F(McpStdioProtocolTest, SilentProbeHasBoundedTimeoutAndFallsBack)
 
 TEST_F(McpStdioProtocolTest, RecognizedModernErrorNeverDowngrades)
 {
-	EXPECT_EQ(connect("unsupported"), -EPROTONOSUPPORT);
+	EXPECT_EQ(connect("unsupported"), NB_ERR_UNSUPPORTED);
 	EXPECT_EQ(wire_log().find("\"method\":\"initialize\""), std::string::npos);
 	EXPECT_EQ(client.connected, 0);
 	EXPECT_EQ(client.protocol, nullptr);
@@ -310,19 +314,19 @@ TEST_F(McpStdioProtocolTest, RecognizedModernErrorNeverDowngrades)
 
 TEST_F(McpStdioProtocolTest, MalformedDiscoveryAndUnknownLegacyVersionAreRejected)
 {
-	EXPECT_EQ(connect("malformed"), MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(connect("malformed"), NB_ERR_PROTOCOL);
 	EXPECT_EQ(wire_log().find("\"method\":\"initialize\""), std::string::npos);
-	EXPECT_EQ(connect("legacy_unknown"), -EPROTONOSUPPORT);
+	EXPECT_EQ(connect("legacy_unknown"), NB_ERR_UNSUPPORTED);
 	EXPECT_EQ(client.connected, 0);
 }
 
 TEST_F(McpStdioProtocolTest, IncompleteAndUnknownResultsAreNotReportedAsSuccess)
 {
 	ASSERT_EQ(connect("input"), 0);
-	EXPECT_EQ(mcp_ping(&client), -ENOTSUP);
+	EXPECT_EQ(mcp_ping(&client), NB_ERR_UNSUPPORTED);
 	mcp_disconnect(&client);
 	ASSERT_EQ(connect("extension"), 0);
-	EXPECT_EQ(mcp_ping(&client), MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(mcp_ping(&client), NB_ERR_PROTOCOL);
 }
 
 struct McpHttpReply {
@@ -466,13 +470,14 @@ protected:
 		ASSERT_EQ(http_init(NULL), 0);
 		client.config.transport = MCP_TRANSPORT_STREAMABLE_HTTP;
 		client.next_req_id = 1;
-		pthread_mutex_init(&client.lock, nullptr);
+		client.lock = nb_mutex_new(0);
+		ASSERT_NE(client.lock, nullptr);
 	}
 
 	void TearDown() override
 	{
 		mcp_disconnect(&client);
-		pthread_mutex_destroy(&client.lock);
+		(nb_mutex_free(client.lock), client.lock = NULL);
 		http_cleanup();
 	}
 
@@ -535,7 +540,7 @@ TEST_F(McpHttpProtocolTest, ModernCallsMirrorSchemaHeadersAndCorrelateSseRespons
 		EXPECT_NE(wire.body.find("io.modelcontextprotocol/clientCapabilities"),
 			std::string::npos);
 	}
-	EXPECT_FALSE(morph_strmap_contains(&client.tool_schemas, "bad"));
+	EXPECT_FALSE(nb_map_has_cstr(client.tool_schemas, "bad"));
 }
 
 TEST_F(McpHttpProtocolTest, LegacyFallbackKeepsSessionAndServerSelectedVersion)
@@ -588,7 +593,7 @@ TEST_F(McpHttpProtocolTest, AuthAndServerFailuresNeverSelectLegacyProtocol)
 			return reply;
 		});
 		ASSERT_NE(server.port, 0U);
-		EXPECT_EQ(connect(server), status < 500 ? -EACCES : MORPH_ERR_API);
+		EXPECT_EQ(connect(server), status < 500 ? NB_ERR_PERMISSION : MORPH_ERR_API);
 		EXPECT_EQ(server.captured().size(), 1U);
 		EXPECT_EQ(client.connected, 0);
 		EXPECT_EQ(client.protocol, nullptr);
@@ -607,7 +612,7 @@ TEST_F(McpHttpProtocolTest, RecognizedModernErrorsAndMalformedSuccessNeverDowngr
 			return reply;
 		});
 		ASSERT_NE(server.port, 0U);
-		EXPECT_EQ(connect(server), code == -32022 ? -EPROTONOSUPPORT : MORPH_ERR_PROTOCOL);
+		EXPECT_EQ(connect(server), code == -32022 ? NB_ERR_UNSUPPORTED : NB_ERR_PROTOCOL);
 		EXPECT_EQ(server.captured().size(), 1U);
 	}
 }
@@ -628,7 +633,7 @@ TEST_F(McpCodecTest, HeaderListGrowsBeyondSmallFixedArrays)
 	ASSERT_EQ(mcp_protocol_cache_tool_copy(&client, "tool", schema), 0);
 	char *json = cJSON_PrintUnformatted(params);
 	ASSERT_EQ(encode("tools/call", json), 0);
-	EXPECT_EQ(wire.headers.nelts, 35U);
+	EXPECT_EQ(wire.headers.len, 35U);
 	EXPECT_EQ(header("Mcp-Param-p31"), "value");
 	cJSON_free(json);
 	cJSON_Delete(schema);
@@ -648,7 +653,7 @@ TEST_F(McpCodecTest, DecoderRejectsInvalidFramingAndPreservesCorrelatedErrors)
 		struct mcp_wire_reply reply = {};
 		reply.json = const_cast<char *>(json);
 		cJSON *object = nullptr;
-		EXPECT_EQ(mcp_protocol_decode(nullptr, &reply, 7, &object), MORPH_ERR_PROTOCOL);
+		EXPECT_EQ(mcp_protocol_decode(nullptr, &reply, 7, &object), NB_ERR_PROTOCOL);
 		EXPECT_EQ(object, nullptr);
 	}
 	struct mcp_wire_reply reply = {};
@@ -656,7 +661,7 @@ TEST_F(McpCodecTest, DecoderRejectsInvalidFramingAndPreservesCorrelatedErrors)
 		R"({"jsonrpc":"2.0","id":7,"error":{"code":-32022,"message":"Unsupported"}})");
 	reply.http_status = 400;
 	cJSON *object = nullptr;
-	EXPECT_EQ(mcp_protocol_decode(nullptr, &reply, 7, &object), MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(mcp_protocol_decode(nullptr, &reply, 7, &object), NB_ERR_PROTOCOL);
 	ASSERT_NE(object, nullptr);
 	EXPECT_EQ(cJSON_GetObjectItem(cJSON_GetObjectItem(object, "error"), "code")->valueint,
 		-32022);
@@ -669,13 +674,13 @@ TEST_F(McpStdioProtocolTest, PinnedLegacySkipsProbeAndRejectsDifferentServerVers
 	ASSERT_EQ(connect("legacy"), 0);
 	EXPECT_EQ(wire_log().find("server/discover"), std::string::npos);
 	mcp_disconnect(&client);
-	EXPECT_EQ(connect("legacy_november"), -EPROTONOSUPPORT);
+	EXPECT_EQ(connect("legacy_november"), NB_ERR_UNSUPPORTED);
 }
 
 TEST_F(McpStdioProtocolTest, PinnedModernNeverFallsBackToLegacyHandshake)
 {
 	strcpy(client.config.protocol_version, MCP_PROTOCOL_VERSION);
-	EXPECT_EQ(connect("legacy"), -EPROTONOSUPPORT);
+	EXPECT_EQ(connect("legacy"), NB_ERR_UNSUPPORTED);
 	EXPECT_EQ(wire_log().find("\"method\":\"initialize\""), std::string::npos);
 	ASSERT_EQ(connect("modern"), 0);
 	EXPECT_STREQ(client.negotiated_version, MCP_PROTOCOL_VERSION);
@@ -702,7 +707,7 @@ TEST_F(McpCodecTest, ResetDropsSessionAdapterCapabilitiesAndCachedSchemas)
 	EXPECT_EQ(client.session_id, nullptr);
 	EXPECT_EQ(client.supports_tools, 0);
 	EXPECT_EQ(client.negotiated_version[0], '\0');
-	EXPECT_EQ(client.tool_schemas.entries, nullptr);
+	EXPECT_EQ(client.tool_schemas, nullptr);
 }
 
 TEST_F(McpHttpProtocolTest, LegacyJsonRpcErrorOnHttpSuccessAllowsHandshakeFallback)
@@ -775,19 +780,19 @@ TEST_F(McpCodecTest, EncodingRejectsOccupiedAndPreservesFailedOutput)
 {
 	ASSERT_EQ(encode("ping", nullptr), 0);
 	char *original = wire.json;
-	void *headers = wire.headers.elts;
+	void *headers = ((void *)wire.headers.data);
 	EXPECT_EQ(mcp_protocol_encode(&client, client.protocol, 8, "ping", nullptr, &wire),
-		  -EEXIST);
+		  NB_ERR_EXISTS);
 	EXPECT_EQ(wire.json, original);
-	EXPECT_EQ(wire.headers.elts, headers);
+	EXPECT_EQ(((void *)wire.headers.data), headers);
 	EXPECT_EQ(wire.id, 7);
 	mcp_wire_request_cleanup(&wire);
 	wire.id = 37;
 	EXPECT_EQ(mcp_protocol_encode(&client, client.protocol, 8, "ping", "[]", &wire),
-		  MORPH_ERR_PARSE);
+		  NB_ERR_PARSE);
 	EXPECT_EQ(wire.id, 37);
 	EXPECT_EQ(wire.json, nullptr);
-	EXPECT_EQ(wire.headers.elts, nullptr);
+	EXPECT_EQ(((void *)wire.headers.data), nullptr);
 }
 
 TEST_F(McpCodecTest, DecoderRejectsOccupiedOutputAndCreatesIndependentJson)
@@ -795,20 +800,20 @@ TEST_F(McpCodecTest, DecoderRejectsOccupiedOutputAndCreatesIndependentJson)
 	char text[] = "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"value\":\"independent\"}}";
 	struct mcp_wire_reply reply = {};
 	reply.json = text;
-	cJSON *object MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateString("original");
+	cJSON *object NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateString("original");
 	ASSERT_NE(object, nullptr);
 	cJSON *original = object;
-	EXPECT_EQ(mcp_protocol_decode(nullptr, &reply, 7, &object), -EEXIST);
+	EXPECT_EQ(mcp_protocol_decode(nullptr, &reply, 7, &object), NB_ERR_EXISTS);
 	EXPECT_EQ(object, original);
 	EXPECT_STREQ(cJSON_GetStringValue(object), "original");
-	morph_json_cleanup(&object);
+	cJSON_DeleteOwner(&object);
 	ASSERT_EQ(mcp_protocol_decode(nullptr, &reply, 7, &object), 0);
 	memset(text, 'x', sizeof(text) - 1);
 	EXPECT_STREQ(cJSON_GetStringValue(
 			     cJSON_GetObjectItem(cJSON_GetObjectItem(object, "result"), "value")),
 		     "independent");
-	EXPECT_EQ(mcp_protocol_decode(nullptr, nullptr, 7, &object), -EINVAL);
-	EXPECT_EQ(mcp_protocol_decode(nullptr, &reply, 7, nullptr), -EINVAL);
+	EXPECT_EQ(mcp_protocol_decode(nullptr, nullptr, 7, &object), NB_ERR_INVAL);
+	EXPECT_EQ(mcp_protocol_decode(nullptr, &reply, 7, nullptr), NB_ERR_INVAL);
 }
 
 TEST_F(McpHttpProtocolTest, ExchangeRejectsOccupiedAndPreservesFailedOutput)
@@ -817,16 +822,16 @@ TEST_F(McpHttpProtocolTest, ExchangeRejectsOccupiedAndPreservesFailedOutput)
 	struct mcp_wire_request request = {};
 	request.id = 1;
 	request.json = const_cast<char *>("{}");
-	struct mcp_wire_reply reply MORPH_CLEANUP(mcp_wire_reply_cleanup) = {};
+	struct mcp_wire_reply reply NB_CLEANUP(mcp_wire_reply_cleanup) = {};
 	reply.json = strdup("original");
 	ASSERT_NE(reply.json, nullptr);
 	char *original = reply.json;
-	EXPECT_EQ(mcp_http_exchange(&client, &request, 1000, &reply), -EEXIST);
+	EXPECT_EQ(mcp_http_exchange(&client, &request, 1000, &reply), NB_ERR_EXISTS);
 	EXPECT_EQ(reply.json, original);
 	EXPECT_STREQ(reply.json, "original");
 	mcp_wire_reply_cleanup(&reply);
 	reply.http_status = 418;
-	EXPECT_EQ(mcp_http_exchange(&client, &request, 1000, &reply), -EINVAL);
+	EXPECT_EQ(mcp_http_exchange(&client, &request, 1000, &reply), NB_ERR_INVAL);
 	EXPECT_EQ(reply.http_status, 418);
 	EXPECT_EQ(reply.json, nullptr);
 	EXPECT_EQ(reply.session_id, nullptr);
@@ -839,15 +844,15 @@ TEST_F(McpCodecTest, HeaderCopyFailurePreservesExistingOwnedElements)
 			"\"x-mcp-header\":\"Second\"}}}"),
 		  0);
 	ASSERT_EQ(encode("ping", nullptr), 0);
-	size_t count = wire.headers.nelts;
+	size_t count = wire.headers.len;
 	std::vector<std::string> original;
 	for (size_t i = 0; i < count; i++)
-		original.emplace_back(*static_cast<char **>(morph_array_borrow(&wire.headers, i)));
-	cJSON *params MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
+		original.emplace_back(*static_cast<char **>(nb_vec_at(&wire.headers, i)));
+	cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(
 		"{\"name\":\"tool\",\"arguments\":{\"first\":\"valid\",\"second\":{}}}");
 	ASSERT_NE(params, nullptr);
-	EXPECT_EQ(mcp_protocol_tool_headers_copy(&client, params, &wire.headers), -EINVAL);
-	ASSERT_EQ(wire.headers.nelts, count);
+	EXPECT_EQ(mcp_protocol_tool_headers_copy(&client, params, &wire.headers), NB_ERR_INVAL);
+	ASSERT_EQ(wire.headers.len, count);
 	for (size_t i = 0; i < count; i++)
-		EXPECT_EQ(*static_cast<char **>(morph_array_borrow(&wire.headers, i)), original[i]);
+		EXPECT_EQ(*static_cast<char **>(nb_vec_at(&wire.headers, i)), original[i]);
 }

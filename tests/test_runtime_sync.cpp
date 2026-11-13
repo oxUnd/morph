@@ -1,7 +1,8 @@
 #include "runtime_test_support.hpp"
+#include "nb/err.h"
 
 extern "C" {
-#include "util/file.h"
+#include "nb/file.h"
 }
 
 #include <cerrno>
@@ -27,8 +28,8 @@ TEST(RuntimeSyncFacadeTest, ConfigMappingCopiesAndClampsValues)
 	EXPECT_STREQ(output.sync_dir, "/fallback");
 	EXPECT_EQ(output.include_count, 1);
 	EXPECT_STREQ(output.include[0], "config.toml");
-	EXPECT_EQ(runtime_sync_config_from_config(nullptr, "/source", nullptr,
-		nullptr, &output), -EINVAL);
+	EXPECT_EQ(runtime_sync_config_from_config(nullptr, "/source", nullptr, nullptr, &output),
+		  NB_ERR_INVAL);
 }
 
 TEST_F(RuntimeFacadeTest, DisabledSyncHasStableEmptyStatus)
@@ -76,7 +77,7 @@ TEST_F(RuntimeFacadeTest, MissingManifestAndInvalidRestoreAreReported)
 	Open(&options);
 	struct runtime_sync_conflict *items = nullptr;
 	int count = 0;
-	EXPECT_EQ(runtime_sync_conflicts(instance, &items, &count), -ENOENT);
-	EXPECT_EQ(runtime_sync_restore(instance, 0), -EINVAL);
+	EXPECT_EQ(runtime_sync_conflicts(instance, &items, &count), NB_ERR_NOT_FOUND);
+	EXPECT_EQ(runtime_sync_restore(instance, 0), NB_ERR_INVAL);
 	runtime_sync_conflicts_free(nullptr);
 }

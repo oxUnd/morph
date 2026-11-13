@@ -6,14 +6,15 @@ extern "C" {
 #endif
 
 #include <limits.h>
+#include "nb/err.h"
 #include <stddef.h>
-#include <pthread.h>
+#include "nb/thread.h"
 #include <sys/types.h>
 
 #include "http/client.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/strmap.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "nb/map.h"
 #include "agent/tool.h"
 
 #define MCP_PROTOCOL_VERSION   "2026-07-28"
@@ -32,7 +33,7 @@ enum mcp_transport_type {
 
 /* Discovery arrays own every string until the matching descriptor free call. */
 /* MCP tool descriptor returned by tools/list */
-struct morph_log;
+struct nb_log;
 
 struct mcp_tool_desc {
 	const char *name;
@@ -60,7 +61,7 @@ struct mcp_prompt_desc {
 
 /* One MCP server configuration */
 struct mcp_server_config {
-	struct morph_log *logger;
+	struct nb_log *logger;
 	char name[MCP_NAME_MAX];
 	enum mcp_transport_type transport;
 	/* stdio */
@@ -94,7 +95,7 @@ struct mcp_client {
 	int (*interrupt_check)(void *);
 	void *interrupt_user_data;
 	const struct mcp_protocol_adapter *protocol;
-	morph_strmap_t tool_schemas;
+	nb_map *tool_schemas;
 	char negotiated_version[32];
 	char server_name[MCP_NAME_MAX];
 	char server_version[64];
@@ -104,30 +105,31 @@ struct mcp_client {
 	int supports_prompts;
 	int tools_list_changed;
 	/* stdio transport state */
+	struct nb_process *child;
 	pid_t server_pid;
 	int stdin_fd;
 	int stdout_fd;
-	morph_buf_t read_buffer;
+	nb_buf read_buffer;
 	/* http transport state */
 	struct http_session session;
 	char *session_id;
 	/* JSON-RPC id counter */
 	int next_req_id;
 	/* thread safety */
-	pthread_mutex_t lock;
+	nb_mutex *lock;
 };
 
 /* Registry of all MCP server clients */
 struct mcp_registry {
-	struct morph_log *logger;
+	struct nb_log *logger;
 	struct mcp_client *servers[MCP_MAX_SERVERS];
 	int count;
-	morph_strmap_t by_name;
+	nb_map *by_name;
 };
 
 /* ----- Registry ----- */
 
-void mcp_registry_init(struct morph_log *logger, struct mcp_registry *reg);
+void mcp_registry_init(struct nb_log *logger, struct mcp_registry *reg);
 int mcp_registry_add(struct mcp_registry *reg, const struct mcp_server_config *cfg);
 /* Borrowed client until registry cleanup; callers exclude concurrent cleanup. */
 struct mcp_client *mcp_registry_borrow(struct mcp_registry *reg, const char *name);
@@ -178,7 +180,7 @@ int mcp_test_connection(const struct mcp_server_config *cfg,
 /* Independent malloc-owned text; caller frees it. */
 char *mcp_http_sse_json_create(const char *raw, size_t len);
 int mcp_http_url_uses_auth_token(const char *url);
-/* *out_url starts NULL; occupied: -EEXIST. Success creates malloc-owned text;
+/* *out_url starts NULL; occupied: NB_ERR_EXISTS. Success creates malloc-owned text;
  * failure preserves the output. */
 int mcp_http_request_url_create(const struct mcp_server_config *cfg, char **out_url);
 

@@ -1,7 +1,8 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 
 extern "C" {
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/adapters/runtime/events.h"
 #include "sapi/cli/commands/media.h"
@@ -11,10 +12,10 @@ extern "C" {
 #include "sapi/cli/widgets/list.h"
 #include "sapi/cli/models/composer.h"
 #include "sapi/cli/services/composer.h"
-#include "util/file.h"
+#include "nb/file.h"
 #include "event/event.h"
-#include "util/utf8.h"
-#include "util/json.h"
+#include "nb/utf8.h"
+#include "cJSON.h"
 #include "db/database.h"
 
 }
@@ -573,7 +574,7 @@ TEST(CliListTest, JsonModeReportsUnknownCommandWithoutBareText)
 	std::string output = testing::internal::GetCapturedStdout();
 	std::vector<cJSON *> events = cli_test_parse_ndjson(output);
 
-	ASSERT_EQ(rc, -ENOENT);
+	ASSERT_EQ(rc, NB_ERR_NOT_FOUND);
 	ASSERT_EQ(events.size(), 2u);
 	ASSERT_NE(events[0], nullptr);
 	ASSERT_NE(events[1], nullptr);
@@ -581,8 +582,7 @@ TEST(CliListTest, JsonModeReportsUnknownCommandWithoutBareText)
 		events[1], "name")), "command.failed");
 	cJSON *data = cJSON_GetObjectItem(events[1], "data");
 	ASSERT_TRUE(cJSON_IsObject(data));
-	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(
-		data, "error_code")), -ENOENT);
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data, "error_code")), NB_ERR_NOT_FOUND);
 	const char *captured = cJSON_GetStringValue(
 		cJSON_GetObjectItem(data, "output"));
 	ASSERT_NE(captured, nullptr);
@@ -704,7 +704,7 @@ TEST(CliListTest, SyncQueriesUseGroupedTrees)
 	runtime = nullptr;
 	ASSERT_EQ(morph_sync_apply_db_replace(&context.db_restore_plan), 0);
 	ASSERT_EQ(runtime_open(&options, &runtime), 0);
-	EXPECT_FALSE(file_exists(context.db_restore_plan.journal));
+	EXPECT_FALSE(nb_file_exists(context.db_restore_plan.journal));
 
 	runtime_close(runtime);
 	std::error_code error;
@@ -724,8 +724,8 @@ TEST(CliListTest, TasksCommandUsesActiveAndCompactHistoryTrees)
 	struct cli_application context{};
 	struct session current{};
 	struct scheduled_task_input input{};
-	struct scheduled_task active MORPH_CLEANUP(scheduled_task_cleanup) = {};
-	struct scheduled_task history MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task active NB_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task history NB_CLEANUP(scheduled_task_cleanup) = {};
 	std::string database;
 
 	ASSERT_NE(directory, nullptr);
@@ -777,7 +777,7 @@ TEST(CliListTest, CommandArgumentOverflowIsExplicitForFixedConsumers)
 {
 	char input[] = "one two three";
 	char *arguments[3] = {};
-	EXPECT_EQ(cli_argv_split(input, arguments, 3), -E2BIG);
+	EXPECT_EQ(cli_argv_split(input, arguments, 3), NB_ERR_TOO_BIG);
 	EXPECT_EQ(arguments[2], nullptr);
 }
 
@@ -819,14 +819,13 @@ TEST(CliListTest, ScheduledTaskCommandsPreserveLongPromptsAndAllArguments)
 	ASSERT_EQ(count, 2);
 	int64_t task_id = tasks[0].id;
 	for (int i = 0; i < count; i++) {
-		cJSON *payload MORPH_CLEANUP(morph_json_cleanup) =
-		cJSON_Parse(tasks[i].payload_json);
+		cJSON *payload NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(tasks[i].payload_json);
 		ASSERT_NE(payload, nullptr);
 		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(payload,
 		"prompt")),
 			     prompt.c_str());
 		EXPECT_LT(strlen(tasks[i].title), static_cast<size_t>(SCHEDULED_TASK_TEXT_MAX));
-		EXPECT_EQ(utf8valid(tasks[i].title), nullptr);
+		EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(tasks[i].title), NULL), NB_UTF8_OK);
 	}
 	tasks_owner.reset();
 	std::string updated = prompt + " UPDATED_END_MARKER";
@@ -835,9 +834,9 @@ TEST(CliListTest, ScheduledTaskCommandsPreserveLongPromptsAndAllArguments)
 	int rc = cli_command_dispatch(&context, command.c_str());
 	(void)testing::internal::GetCapturedStdout();
 	ASSERT_EQ(rc, 0);
-	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
 	ASSERT_EQ(runtime_task_copy(runtime, task_id, &task), 0);
-	cJSON *payload MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(task.payload_json);
+	cJSON *payload NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(task.payload_json);
 	ASSERT_NE(payload, nullptr);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(payload, "prompt")),
 		     updated.c_str());
@@ -880,7 +879,8 @@ TEST(CliMediaInputTest, ComposerKeepsImageReferencesAndAtomicBoundaries)
 	ASSERT_EQ(cli_composer_service_convert_paths_copy(&composer, input.c_str(), &converted), 2);
 	ASSERT_NE(converted, nullptr);
 	char *saved = converted;
-	EXPECT_EQ(cli_composer_service_convert_paths_copy(&composer, "", &converted), -EEXIST);
+	EXPECT_EQ(cli_composer_service_convert_paths_copy(&composer, "", &converted),
+		  NB_ERR_EXISTS);
 	EXPECT_EQ(converted, saved);
 	EXPECT_STREQ(converted, "before\n\t[IMAGE#3]  [IMAGE#4]\nafter");
 	free(converted);

@@ -1,4 +1,7 @@
 #include "runtime_test_support.hpp"
+#include "nb/time.h"
+#include <string.h>
+#include "nb/err.h"
 
 extern "C" {
 #include "sapi/cli/application.h"
@@ -6,9 +9,9 @@ extern "C" {
 #include "sapi/cli/adapters/clipboard/clipboard.h"
 #include "sapi/cli/adapters/runtime/events.h"
 #include "sapi/cli/presentation/output.h"
-#include "util/file.h"
-#include "util/cleanup.h"
-#include "util/child_io.h"
+#include "nb/file.h"
+#include "nb/cleanup.h"
+#include "nb/time.h"
 }
 
 #include <optional>
@@ -69,7 +72,9 @@ protected:
 		for (const char *name : {"pbcopy", "wl-copy", "xclip", "xsel"}) {
 			std::string path = binaries + "/" + name;
 			std::string script = "#!/bin/sh\n" + body + "\n";
-			ASSERT_EQ(file_write_all(path.c_str(), script.c_str(), script.size()), 0);
+			ASSERT_EQ(nb_file_write_all(path.c_str(), script.c_str(), script.size(),
+						    NULL),
+				  0);
 			ASSERT_EQ(chmod(path.c_str(), 0700), 0);
 		}
 	}
@@ -87,8 +92,18 @@ protected:
 
 	std::string Clipboard()
 	{
+		nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
+		char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 		size_t length = 0;
-		char *bytes = file_read_all_copy(copied.c_str(), &length);
+		char *bytes = (nb_file_read_all(copied.c_str(), &file_value_1, 0, NULL) == NB_OK &&
+					       (file_copy_1 = (char *)malloc(
+							nb_buf_len(&file_value_1) + 1)) != NULL
+				       ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
+						 nb_buf_len(&file_value_1) + 1),
+					  *(&length) = nb_buf_len(&file_value_1),
+					  nb_charp_steal(&file_copy_1))
+				       : NULL);
 		if (!bytes)
 			return {};
 		std::string result(bytes, length);
@@ -106,11 +121,11 @@ TEST_F(CliCopyTest, SelectsLastAnswerWithoutPreamblesToolsOrCompactionFiltering)
 	Add("tool_result", "Tool output");
 	Add("compaction_summary", "Internal summary");
 	Add("assistant_message", "");
-	char *text MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	char *text NB_CLEANUP(nb_charp_cleanup) = nullptr;
 	ASSERT_EQ(runtime_session_last_answer_copy(instance, &text), 0);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, answer);
-	morph_charp_cleanup(&text);
+	nb_charp_cleanup(&text);
 	testing::internal::CaptureStdout();
 	int rc = cli_command_dispatch(&ctx, "/copy");
 	std::string receipt = testing::internal::GetCapturedStdout();
@@ -125,19 +140,19 @@ TEST_F(CliCopyTest, LegacyAnswersSurviveReloadAndNeverCrossSessions)
 	ASSERT_EQ(message_add(&db, current.id, "assistant", "Legacy answer", 1), 0);
 	ASSERT_EQ(message_add(&db, current.id, "user", "Unanswered question", 1), 0);
 	ASSERT_EQ(runtime_session_reload_current(instance), 0);
-	char *text MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	char *text NB_CLEANUP(nb_charp_cleanup) = nullptr;
 	ASSERT_EQ(runtime_session_last_answer_copy(instance, &text), 0);
 	EXPECT_STREQ(text, "Legacy answer");
-	morph_charp_cleanup(&text);
+	nb_charp_cleanup(&text);
 	ASSERT_EQ(runtime_session_create_and_select(instance, "empty", &current), 0);
-	EXPECT_EQ(runtime_session_last_answer_copy(instance, &text), -ENODATA);
+	EXPECT_EQ(runtime_session_last_answer_copy(instance, &text), NB_ERR_NO_DATA);
 	EXPECT_EQ(text, nullptr);
 	testing::internal::CaptureStdout();
 	int rc = cli_command_dispatch(&ctx, "/copy");
 	std::string receipt = testing::internal::GetCapturedStdout();
-	EXPECT_EQ(rc, -ENODATA);
+	EXPECT_EQ(rc, NB_ERR_NO_DATA);
 	EXPECT_NE(receipt.find("no assistant answer"), std::string::npos);
-	EXPECT_FALSE(file_exists(copied.c_str()));
+	EXPECT_FALSE(nb_file_exists(copied.c_str()));
 }
 
 TEST_F(CliCopyTest, NativeClipboardPreservesAnswersBeyondPipeAndOsc52Limits)
@@ -160,15 +175,15 @@ TEST_F(CliCopyTest, ClipboardErrorsDoNotKillTheHostOrReportSuccess)
 	EXPECT_LT(rc, 0);
 	EXPECT_NE(receipt.find("copy failed"), std::string::npos);
 	EXPECT_EQ(receipt.find("copied last answer"), std::string::npos);
-	EXPECT_FALSE(file_exists(copied.c_str()));
+	EXPECT_FALSE(nb_file_exists(copied.c_str()));
 }
 
 TEST_F(CliCopyTest, ClipboardHelperTimeoutIsBounded)
 {
 	Backends("exec /bin/sleep 30");
-	int64_t started = morph_io_now_ms();
-	EXPECT_EQ(cli_clipboard_copy_text(&ctx, "Answer"), -ETIMEDOUT);
-	EXPECT_LT(morph_io_now_ms() - started, 8000);
+	int64_t started = nb_time_monotonic_ms();
+	EXPECT_EQ(cli_clipboard_copy_text(&ctx, "Answer"), NB_ERR_TIMEOUT);
+	EXPECT_LT(nb_time_monotonic_ms() - started, 8000);
 }
 
 TEST_F(CliCopyTest, CommandArgumentsAndEmptyInputLeaveClipboardAlone)
@@ -177,11 +192,11 @@ TEST_F(CliCopyTest, CommandArgumentsAndEmptyInputLeaveClipboardAlone)
 	testing::internal::CaptureStdout();
 	int rc = cli_command_dispatch(&ctx, "/copy other");
 	std::string receipt = testing::internal::GetCapturedStdout();
-	EXPECT_EQ(rc, -EINVAL);
+	EXPECT_EQ(rc, NB_ERR_INVAL);
 	EXPECT_NE(receipt.find("usage: /copy"), std::string::npos);
-	EXPECT_EQ(cli_clipboard_copy_text(&ctx, ""), -ENODATA);
-	EXPECT_EQ(runtime_session_last_answer_copy(nullptr, nullptr), -EINVAL);
-	EXPECT_FALSE(file_exists(copied.c_str()));
+	EXPECT_EQ(cli_clipboard_copy_text(&ctx, ""), NB_ERR_NO_DATA);
+	EXPECT_EQ(runtime_session_last_answer_copy(nullptr, nullptr), NB_ERR_INVAL);
+	EXPECT_FALSE(nb_file_exists(copied.c_str()));
 }
 
 TEST_F(CliCopyTest, JsonCopyKeepsAnswerOutOfEventsAndReportsNativeFailure)

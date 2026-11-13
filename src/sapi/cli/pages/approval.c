@@ -1,8 +1,9 @@
 #include "sapi/cli/pages/approval.h"
+#include "nb/err.h"
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/style.h"
-#include "util/terminal_size.h"
+#include <morph/tui/terminal/size.h>
 #include <morph/tui/terminal.h>
 #include "sapi/cli/adapters/input/state.h"
 #include "agent/tool_context.h"
@@ -29,7 +30,7 @@ static int cli_approval_select_choice(struct cli_application *ctx, int scoped, i
 	int verdict = 0;
 
 	if (!isatty(STDOUT_FILENO))
-		return -ENOTTY;
+		return NB_ERR_NOT_TERMINAL;
 	if (!isatty(STDIN_FILENO)) {
 		/* Open the actual device: macOS poll rejects the /dev/tty alias. */
 		const char *path = ttyname(STDOUT_FILENO);
@@ -40,7 +41,7 @@ static int cli_approval_select_choice(struct cli_application *ctx, int scoped, i
 	if (!morph_tui_terminal_available(input, stdout)) {
 		if (tty)
 			fclose(tty);
-		return -ENOTTY;
+		return NB_ERR_NOT_TERMINAL;
 	}
 	items[count] = "Yes once";
 	verdicts[count++] = 1;
@@ -65,9 +66,11 @@ static int cli_approval_select_choice(struct cli_application *ctx, int scoped, i
 	if (!rc) {
 		cli_output_printf(ctx, "\n");
 		fflush(stdout);
-		rc = cli_chat_flush(ctx);
-		if (!rc)
+		rc = cli_chat_prompt_begin(ctx, (int)count + 2);
+		if (!rc) {
 			rc = morph_tui_widget_select_run(&state, &options, input, stdout, NULL);
+			cli_chat_prompt_end(ctx);
+		}
 	}
 	if (!rc)
 		verdict = verdicts[state.menu.list.index];
@@ -91,7 +94,7 @@ static int cli_approval_read_choice(struct cli_application *ctx, int scoped, int
 		cli_readline_prompt_copy(ctx, cli_output_is_structured(ctx) ? "" : approval_prompt);
 	if (!rl_input) {
 		cli_output_printf(ctx, "\n");
-		return -ECANCELED;
+		return NB_ERR_CANCELLED;
 	}
 	if (!ephemeral && (rl_input[0] == 'a' || rl_input[0] == 'A'))
 		v = scoped ? 3 : 2;
@@ -118,12 +121,12 @@ static int cli_approval_read_choice(struct cli_application *ctx, int scoped, int
 	FILE *tty = fopen("/dev/tty", "r");
 	if (!tty) {
 		cli_output_printf(ctx, "\n");
-		return -ECANCELED;
+		return NB_ERR_CANCELLED;
 	}
 	if (!cli_input_fgets(ctx, buf, sizeof(buf), tty)) {
 		fclose(tty);
 		cli_output_printf(ctx, "\n");
-		return -ECANCELED;
+		return NB_ERR_CANCELLED;
 	}
 	fclose(tty);
 
@@ -144,33 +147,33 @@ static int cli_approval_prompt_approval(struct cli_application *ctx, const char 
 					int scoped, int ephemeral)
 {
 	if (ctx->input->prompt_lock_ready)
-		pthread_mutex_lock(&ctx->input->prompt_lock);
+		nb_mutex_lock(ctx->input->prompt_lock);
 	int v = cli_approval_select_choice(ctx, scoped, ephemeral);
 
-	if (v == -ENOTTY)
+	if (v == NB_ERR_NOT_TERMINAL)
 		v = cli_approval_read_choice(ctx, scoped, ephemeral);
 	if (v < 0) {
 		if (ctx->input->prompt_lock_ready)
-			pthread_mutex_unlock(&ctx->input->prompt_lock);
+			nb_mutex_unlock(ctx->input->prompt_lock);
 		return 0;
 	}
 
 	if (v > 0) {
 		cli_output_printf(ctx, ANSI_GREEN CLI_FEED_DONE " Approved" ANSI_RESET " (");
 		(void)cli_output_print_untrusted(ctx, subject ? subject : "",
-						 UTF8_TERMINAL_TEXT_SINGLE_LINE);
+						 MORPH_TERMINAL_TEXT_SINGLE_LINE);
 		cli_output_printf(ctx, "%s)\n",
 		       scoped && v == 2 ? ", session" : (v == (scoped ? 3 : 2) ? ", always" : ""));
 	} else {
 		cli_output_printf(ctx, ANSI_DIM CLI_FEED_CANCELLED " Denied" ANSI_RESET " (");
 		(void)cli_output_print_untrusted(ctx, subject ? subject : "",
-						 UTF8_TERMINAL_TEXT_SINGLE_LINE);
+						 MORPH_TERMINAL_TEXT_SINGLE_LINE);
 		cli_output_printf(ctx, ")\n");
 	}
 
 	fflush(stdout);
 	if (ctx->input->prompt_lock_ready)
-		pthread_mutex_unlock(&ctx->input->prompt_lock);
+		nb_mutex_unlock(ctx->input->prompt_lock);
 	return v;
 }
 
@@ -244,10 +247,10 @@ static void cli_approval_card_rule(struct cli_application *ctx, size_t width, co
 
 	cli_output_printf(ctx, ANSI_YELLOW "%s", title ? "╭" : "╰");
 	if (title && width > 5) {
-		const char *end = utf8_advance_display_width_borrow(title, width - 5);
+		const char *end = morph_terminal_advance_display_width_borrow(title, width - 5);
 
 		cli_output_printf(ctx, "─ " ANSI_BOLD);
-		fwrite(title, 1, (size_t)(end - title), stdout);
+		cli_output_printf(ctx, "%.*s", (int)(end - title), title);
 		cli_output_printf(ctx, ANSI_RESET ANSI_YELLOW " ");
 		/* Approval titles contain only ASCII. */
 		used = 4u + (size_t)(end - title);
@@ -267,8 +270,8 @@ static void cli_approval_card_field(struct cli_application *ctx, size_t width, c
 
 	if (!value)
 		value = "";
-	safe = utf8_terminal_sanitize_dup(value, strlen(value), UTF8_TERMINAL_TEXT_SINGLE_LINE,
-					  NULL);
+	safe = morph_terminal_sanitize_dup(value, strlen(value), MORPH_TERMINAL_TEXT_SINGLE_LINE,
+					   NULL);
 	if (!safe)
 		return;
 	if (width == 0) {
@@ -285,15 +288,15 @@ static void cli_approval_card_field(struct cli_application *ctx, size_t width, c
 	line = safe;
 	do {
 		size_t budget = width - 4u - indent;
-		char *end = (char *)utf8_advance_display_width_borrow(line, budget);
+		char *end = (char *)morph_terminal_advance_display_width_borrow(line, budget);
 		char saved = *end;
 
 		*end = '\0';
-		size_t used = indent + utf8_display_width(line);
+		size_t used = indent + nb_utf8_width_cstr(line);
 
 		cli_output_printf(ctx, ANSI_YELLOW "│ " ANSI_RESET);
 		if (indent) {
-			size_t label_width = first ? utf8_display_width(label) : 0u;
+			size_t label_width = first ? nb_utf8_width_cstr(label) : 0u;
 
 			if (first)
 				cli_output_printf(ctx, "%s", label);
@@ -301,7 +304,7 @@ static void cli_approval_card_field(struct cli_application *ctx, size_t width, c
 				cli_output_putchar(ctx, ' ');
 		}
 		cli_output_printf(ctx, "%s", style);
-		fwrite(line, 1, (size_t)(end - line), stdout);
+		cli_output_printf(ctx, "%s", line);
 		*end = saved;
 		cli_output_printf(ctx, ANSI_RESET);
 		for (; used < width - 4u; used++)
@@ -453,7 +456,7 @@ static int cli_approval_json_add_optional_string(cJSON *object, const char *name
 	if (!value || !value[0])
 		return 0;
 	if (!cJSON_AddStringToObject(object, name, value))
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	return 0;
 }
 
@@ -549,18 +552,18 @@ void cli_approval_render_operation(struct cli_application *ctx, const struct too
 		if (op->action)
 			cli_approval_card_field(ctx, width, "Command", op->action, ANSI_BOLD);
 		if (op->programs_count > 0) {
-			morph_buf_t programs;
+			nb_buf programs NB_CLEANUP(nb_buf_cleanup) = {0};
 
-			if (morph_buf_init(&programs, 128) == 0) {
+			if ((nb_buf_init(&programs),
+			     nb_buf_reserve(&programs, 128) ? 0 : NB_ERR_NOMEM) == 0) {
 				for (int i = 0; i < op->programs_count; i++) {
 					if (i > 0)
-						(void)morph_buf_puts(&programs, ", ");
-					(void)morph_buf_puts(&programs, op->programs[i]);
+						(void)nb_buf_append_cstr(&programs, ", ");
+					(void)nb_buf_append_cstr(&programs, op->programs[i]);
 				}
 				cli_approval_card_field(ctx, width, "Programs",
-							morph_buf_cstr_borrow(&programs),
-							ANSI_BOLD);
-				morph_buf_cleanup(&programs);
+							nb_buf_cstr(&programs), ANSI_BOLD);
+				nb_buf_cleanup(&programs);
 			}
 		}
 	} else if (op->target && *op->target) {

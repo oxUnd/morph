@@ -1,11 +1,11 @@
 #include "sapi/cli/commands/hooks.h"
+#include "nb/err.h"
 #include "sapi/cli/presentation/output.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "cJSON.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/commands/registry.h"
-#include "util/sha256.h"
 #include "sapi/cli/pages/hooks.h"
 #include "sapi/cli/pages/setup/controls.h"
 
@@ -38,19 +38,9 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 	}
 	if (strcmp(action, "project") == 0) {
 		const char *cwd = runtime_workdir_borrow(ctx->runtime);
-		struct sha256_ctx sha;
-		unsigned char hash[32];
 		char digest[65];
-		static const char hex[] = "0123456789abcdef";
 
-		sha256_init(&sha);
-		sha256_update(&sha, (const unsigned char *)cwd, strlen(cwd));
-		sha256_final(&sha, hash);
-		for (size_t i = 0; i < sizeof(hash); i++) {
-			digest[i * 2] = hex[hash[i] >> 4];
-			digest[i * 2 + 1] = hex[hash[i] & 15];
-		}
-		digest[64] = '\0';
+		runtime_hooks_workspace_token(ctx->runtime, digest);
 		cli_output_printf(ctx,
 		       "Workspace: %s\nReview token: %s\n"
 		       "Trust: /hooks trust-project workspace %s\n",
@@ -78,7 +68,7 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 			       digest, digest);
 		}
 	} else if (strcmp(action, "review") == 0 && argc == 3) {
-		rc = -ENOENT;
+		rc = NB_ERR_NOT_FOUND;
 		cJSON_ArrayForEach (row, rows) {
 			if (strcmp(cli_hooks_hook_field(row, "id"), argv[2]) != 0)
 				continue;
@@ -113,7 +103,7 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 	} else {
 		cli_output_printf(ctx, "Usage: /hooks [list|check|project|review-all|review <id>|"
 			    "trust|enable|disable|revoke <id> <digest>]\n");
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 	}
 	cJSON_Delete(rows);
 	return rc;

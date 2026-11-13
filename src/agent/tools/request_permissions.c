@@ -1,12 +1,14 @@
 #include "request_permissions.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
-#include "util/error.h"
-#include "util/buf.h"
-#include "util/cleanup.h"
-#include "util/array.h"
+#include "errors.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 #include "cJSON.h"
-#include "util/json.h"
+#include "cJSON.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -27,7 +29,7 @@ static const struct {
 	{"delete", TOOL_PATH_ACCESS_DELETE},
 };
 
-static int collect_requests(cJSON *file_system, morph_array_t *requests, const char **failed_path)
+static int collect_requests(cJSON *file_system, nb_vec *requests, const char **failed_path)
 {
 	for (size_t i = 0; i < sizeof(permissions) / sizeof(permissions[0]); i++) {
 		cJSON *paths = cJSON_GetObjectItemCaseSensitive(file_system, permissions[i].name);
@@ -36,12 +38,12 @@ static int collect_requests(cJSON *file_system, morph_array_t *requests, const c
 		if (!paths)
 			continue;
 		if (!cJSON_IsArray(paths))
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		cJSON_ArrayForEach(path, paths) {
 			char canonical[PATH_MAX];
 
 			if (!cJSON_IsString(path))
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			*failed_path = path->valuestring;
 			/* Merge before validating a path created by the same write request. */
 			int rc = tool_context_resolve_directory_access(path->valuestring,
@@ -52,7 +54,10 @@ static int collect_requests(cJSON *file_system, morph_array_t *requests, const c
 			struct directory_request *entry;
 			int found = 0;
 
-			morph_array_foreach(entry, requests, struct directory_request) {
+			for (size_t _i_ = 0;
+			     _i_ < nb_vec_len(requests) &&
+			     (entry = (struct directory_request *)nb_vec_at(requests, _i_));
+			     _i_++) {
 				if (strcmp(entry->path, canonical) == 0) {
 					entry->access |= permissions[i].access;
 					found = 1;
@@ -61,11 +66,11 @@ static int collect_requests(cJSON *file_system, morph_array_t *requests, const c
 			}
 			if (found)
 				continue;
-			char *copy MORPH_CLEANUP(morph_charp_cleanup) = strdup(canonical);
+			char *copy NB_CLEANUP(nb_charp_cleanup) = strdup(canonical);
 
-			entry = copy ? morph_array_push_borrow(requests) : NULL;
+			entry = copy ? nb_vec_push(requests) : NULL;
 			if (!entry)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			entry->path = copy;
 			copy = NULL;
 			entry->access = permissions[i].access;
@@ -74,7 +79,9 @@ static int collect_requests(cJSON *file_system, morph_array_t *requests, const c
 	struct directory_request *entry;
 
 	/* Validate every directory before asking the user about any of them. */
-	morph_array_foreach(entry, requests, struct directory_request) {
+	for (size_t _i_ = 0; _i_ < nb_vec_len(requests) &&
+			     (entry = (struct directory_request *)nb_vec_at(requests, _i_));
+	     _i_++) {
 		char canonical[PATH_MAX];
 
 		*failed_path = entry->path;
@@ -87,16 +94,16 @@ static int collect_requests(cJSON *file_system, morph_array_t *requests, const c
 	return 0;
 }
 
-static void directory_requests_cleanup(morph_array_t *requests)
+static void directory_requests_cleanup(nb_vec *requests)
 {
 	if (!requests)
 		return;
-	for (size_t i = 0; i < requests->nelts; i++) {
-		struct directory_request *entry = morph_array_borrow(requests, i);
+	for (size_t i = 0; i < requests->len; i++) {
+		struct directory_request *entry = nb_vec_at(requests, i);
 		free(entry->path);
 		entry->path = NULL;
 	}
-	morph_array_cleanup(requests);
+	nb_vec_cleanup(requests);
 }
 
 static int request_parent_first(const void *left, const void *right)
@@ -114,23 +121,24 @@ static int request_parent_first(const void *left, const void *right)
 static int permission_error(struct tool_result *result, int error,
 	const char *path, int validation)
 {
-	const char *code = validation ? "invalid_arguments" :
-		error == -EACCES ? "permission_denied" :
-		error == -EPERM ? "approval_unavailable" : "permission_request_failed";
+	const char *code = validation			   ? "invalid_arguments"
+			   : error == NB_ERR_PERMISSION	   ? "permission_denied"
+			   : error == NB_ERR_NOT_PERMITTED ? "approval_unavailable"
+							   : "permission_request_failed";
 
-	return tool_result_error_format(result, code, "Directory permission request failed%s%s: %s",
-					path ? " for " : "", path ? path : "",
-					morph_strerror(error));
+	return tool_result_error_format(
+		result, code, "Directory permission request failed%s%s: %s", path ? " for " : "",
+		path ? path : "", nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, error));
 }
 
 static int request_permissions_run(const char *args_json,
 	struct tool_result *result, void *user_data)
 {
 	struct tool_context *tctx = user_data;
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) =
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) =
 		args_json ? cJSON_ParseWithOpts(args_json, NULL, 1) : NULL;
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	morph_array_t requests MORPH_CLEANUP(directory_requests_cleanup) = {0};
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	nb_vec requests NB_CLEANUP(directory_requests_cleanup) = {0};
 	const char *failed_path = NULL;
 	struct directory_request *entry;
 	int rc;
@@ -155,7 +163,8 @@ static int request_permissions_run(const char *args_json,
 			result, "invalid_arguments",
 			"permissions.file_system is required; scope must be turn or session.");
 	}
-	rc = morph_array_init(&requests, 8, sizeof(*entry));
+	rc = (nb_vec_init(&requests, sizeof(*entry)),
+	      nb_vec_reserve(&requests, 8) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	rc = collect_requests(file_system, &requests, &failed_path);
@@ -163,23 +172,25 @@ static int request_permissions_run(const char *args_json,
 		rc = permission_error(result, rc, failed_path, 1);
 		return rc;
 	}
-	qsort(requests.elts, requests.nelts, requests.size, request_parent_first);
+	qsort(((void *)requests.data), requests.len, requests.elem_size, request_parent_first);
 	data = cJSON_CreateObject();
 	cJSON *granted[sizeof(permissions) / sizeof(permissions[0])] = {0};
 
 	if (!data || !cJSON_AddStringToObject(data, "scope", scope) ||
 	    !cJSON_AddStringToObject(data, "principal", "*")) {
-		rc = (-ENOMEM);
+		rc = (NB_ERR_NOMEM);
 		return rc;
 	}
 	for (size_t i = 0; i < sizeof(permissions) / sizeof(permissions[0]); i++) {
 		granted[i] = cJSON_AddArrayToObject(data, permissions[i].name);
 		if (!granted[i]) {
-			rc = (-ENOMEM);
+			rc = (NB_ERR_NOMEM);
 			return rc;
 		}
 	}
-	morph_array_foreach(entry, &requests, struct directory_request) {
+	for (size_t _i_ = 0; _i_ < nb_vec_len(&requests) &&
+			     (entry = (struct directory_request *)nb_vec_at(&requests, _i_));
+	     _i_++) {
 		struct tool_directory_access_request request = {
 			.access = entry->access, .principal = "*", .command = command,
 			.path = entry->path, .reason = reason,
@@ -200,7 +211,7 @@ static int request_permissions_run(const char *args_json,
 
 			if (!path || !cJSON_AddItemToArray(granted[i], path)) {
 				cJSON_Delete(path);
-				rc = (-ENOMEM);
+				rc = (NB_ERR_NOMEM);
 				return rc;
 			}
 		}
@@ -231,7 +242,7 @@ int request_permissions_init(struct tool_registry *reg,
 	int rc;
 
 	if (!reg || !tctx)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = tool_register_borrow(
 		reg,
 		&(struct tool_spec){

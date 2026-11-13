@@ -105,8 +105,9 @@ def main():
                     assert len(payloads) == 1, terminal.raw[before:]
                     assert base64.b64decode(payloads[0]) == b'**LEGACY_ANSWER**'
                     with sqlite3.connect(database) as db:
-                        db.execute("UPDATE model_history_items SET content=? WHERE session_id=? "
-                                   "AND kind='assistant_message'", ('x' * 100001, legacy))
+                        updated = db.execute("UPDATE messages SET content=? WHERE session_id=? "
+                                             "AND role='assistant'", ('x' * 100001, legacy))
+                        assert updated.rowcount == 1, updated.rowcount
                     before = len(terminal.raw)
                     terminal.send('/copy\r')
                     screen = frame(terminal, f'{columns}: oversized fallback fails without truncation')
@@ -114,8 +115,9 @@ def main():
                     assert '\x1b]52;' not in terminal.raw[before:], terminal.raw[before:]
                     assert copied.read_bytes() == b'**LEGACY_ANSWER**'
                     with sqlite3.connect(database) as db:
-                        db.execute("UPDATE model_history_items SET content=? WHERE session_id=? "
-                                   "AND kind='assistant_message'", ('**LEGACY_ANSWER**', legacy))
+                        updated = db.execute("UPDATE messages SET content=? WHERE session_id=? "
+                                             "AND role='assistant'", ('**LEGACY_ANSWER**', legacy))
+                        assert updated.rowcount == 1, updated.rowcount
                     failed.unlink()
                     terminal.send('Provide the next answer\r')
                     _, release = terminal.request()

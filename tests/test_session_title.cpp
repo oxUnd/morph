@@ -1,4 +1,5 @@
 #include "model_metadata_test_support.hpp"
+#include "nb/err.h"
 
 using SessionTitleTest = RuntimeMetadataTest;
 
@@ -26,8 +27,8 @@ TEST(SessionTitleParser, TruncatesByUnicodeCharacters)
 		input += "猫";
 	char *title = runtime_title_parse(("{\"title\":\"" + input + "\"}").c_str());
 	ASSERT_NE(title, nullptr);
-	EXPECT_EQ(utf8valid(title), nullptr);
-	EXPECT_EQ(utf8len(title), SESSION_TITLE_MAX_CHARS);
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(title), NULL), NB_UTF8_OK);
+	EXPECT_EQ(nb_utf8_count(nb_str_from_cstr(title)), SESSION_TITLE_MAX_CHARS);
 	free(title);
 }
 
@@ -98,7 +99,7 @@ TEST_F(SessionTitleTest, DeletedSessionsAreNotRecreated)
 	Release();
 	runtime_title_stop(instance);
 	struct session session{};
-	EXPECT_EQ(session_get_by_id(&instance->context.database, id, &session), -ENOENT);
+	EXPECT_EQ(session_get_by_id(&instance->context.database, id, &session), NB_ERR_NOT_FOUND);
 }
 
 TEST_F(SessionTitleTest, DuplicateTitlesReceiveStableIdentitySuffix)
@@ -133,7 +134,7 @@ TEST_F(SessionTitleTest, InFlightRequestsAreDeduplicatedAndInputIsBounded)
 		const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(
 			cJSON_GetArrayItem(messages, i), "content"));
 		ASSERT_NE(text, nullptr);
-		EXPECT_EQ(utf8valid(text), nullptr);
+		EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(text), NULL), NB_UTF8_OK);
 		bytes += strlen(text);
 	}
 	EXPECT_LE(bytes, SESSION_TITLE_PROMPT_MAX_BYTES);
@@ -159,7 +160,7 @@ static int foreground_reply(struct model *, const char *, struct chat_message *,
 			    void *)
 {
 	response->content = strdup("Task complete.");
-	return response->content ? 200 : -ENOMEM;
+	return response->content ? 200 : NB_ERR_NOMEM;
 }
 
 TEST_F(SessionTitleTest, ForegroundTurnFinishesWhileTitleResponseIsBlocked)

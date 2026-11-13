@@ -1,7 +1,7 @@
 #ifndef LLM_H
 #define LLM_H
 
-struct morph_log;
+struct nb_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -175,10 +175,10 @@ int model_input_snapshot_create(const struct model *model, const char *system_pr
 				const struct chat_message *messages, int msg_count,
 				const struct tool_desc *tools, int tool_count, cJSON **out);
 
-struct model *model_llm_create(struct morph_log *logger, const char *provider, const char *model_id,
+struct model *model_llm_create(struct nb_log *logger, const char *provider, const char *model_id,
 			       const char *api_base, const char *api_key);
 /* Independent configured LLM; request cancellation, errors and usage are reset. */
-struct model *model_llm_clone(const struct model *source, struct morph_log *logger);
+struct model *model_llm_clone(const struct model *source, struct nb_log *logger);
 int model_llm_set_reasoning_effort(struct model *model, const char *effort);
 void model_destroy(struct model *m);
 /* Initialize a request view in caller storage. Resources and callback state are
@@ -189,7 +189,7 @@ struct model *model_request_view_init(const struct model *source,
 void model_report_usage(const struct model *model, const struct model_usage *usage);
 const char *model_api_key_borrow(const struct model *model);
 /* Empty output required; creates an independently owned complete HTTP header. */
-int model_authorization_header_create(const struct model *model, morph_buf_t *header);
+int model_authorization_header_create(const struct model *model, nb_buf *header);
 
 /* Each clone owns its fields; destination must be zero-initialized. */
 int tool_call_clone(const struct tool_call *source, struct tool_call *out);

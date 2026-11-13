@@ -1,9 +1,11 @@
 #include "sapi/cli/adapters/media/image_loader.h"
 #include "stb_image.h"
 #include "http/client.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/image_util.h"
+#include "nb/buf.h"
+#include "nb/file.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "media/image.h"
 #include "stb_image_write.h"
 
 #include <curl/curl.h>
@@ -20,7 +22,7 @@
 
 static size_t cli_image_loader_receive(char *data, size_t size, size_t count, void *user)
 {
-	morph_buf_t *buffer = user;
+	nb_buf *buffer = user;
 	size_t bytes;
 
 	if (size && count > CLI_IMAGE_LOADER_IMAGE_MAX_BYTES / size)
@@ -28,17 +30,17 @@ static size_t cli_image_loader_receive(char *data, size_t size, size_t count, vo
 	bytes = size * count;
 	if (bytes > CLI_IMAGE_LOADER_IMAGE_MAX_BYTES - buffer->len)
 		return 0;
-	return morph_buf_append(buffer, data, bytes) == 0 ? bytes : 0;
+	return (nb_buf_append(buffer, data, bytes) ? 0 : NB_ERR_NOMEM) == 0 ? bytes : 0;
 }
 
-static int cli_image_loader_fetch(const char *url, morph_buf_t *buffer)
+static int cli_image_loader_fetch(const char *url, nb_buf *buffer)
 {
 	CURL *curl = curl_easy_init();
 	CURLcode result;
 	long status = 0;
 
 	if (!curl)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	http_apply_ca_env(curl);
 	curl_easy_setopt(curl, CURLOPT_URL, url);
 	curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
@@ -60,7 +62,7 @@ static int cli_image_loader_fetch(const char *url, morph_buf_t *buffer)
 	return 0;
 }
 
-static int cli_image_loader_read(const char *url, morph_buf_t *buffer)
+static int cli_image_loader_read(const char *url, nb_buf *buffer)
 {
 	const char *path = strncmp(url, "file://", 7) == 0 ? url + 7 : url;
 	char bytes[BUFSIZ];
@@ -72,27 +74,27 @@ static int cli_image_loader_read(const char *url, morph_buf_t *buffer)
 	if (strncmp(url, "https://", 8) == 0 || strncmp(url, "http://", 7) == 0)
 		return cli_image_loader_fetch(url, buffer);
 	if (stat(path, &info) != 0)
-		return -errno;
+		return nb_status_from_errno(errno, NULL);
 	if (!S_ISREG(info.st_mode) || info.st_size > CLI_IMAGE_LOADER_IMAGE_MAX_BYTES)
-		return -EFBIG;
+		return NB_ERR_TOO_BIG;
 	file = fopen(path, "rb");
 	if (!file)
-		return -errno;
+		return nb_status_from_errno(errno, NULL);
 	while ((count = fread(bytes, 1, sizeof(bytes), file)) > 0) {
 		if (cli_image_loader_receive(bytes, 1, count, buffer) != count) {
-			rc = (-EFBIG);
+			rc = (NB_ERR_TOO_BIG);
 			break;
 		}
 	}
 	if (ferror(file))
-		rc = (-EIO);
+		rc = (NB_ERR_IO);
 	fclose(file);
 	return rc;
 }
 
-static unsigned char *cli_image_loader_decode(const morph_buf_t *buffer, int *w, int *h)
+static unsigned char *cli_image_loader_decode(const nb_buf *buffer, int *w, int *h)
 {
-	const unsigned char *data = (const unsigned char *)morph_buf_cstr_borrow(buffer);
+	const unsigned char *data = (const unsigned char *)nb_buf_cstr(buffer);
 	int channels;
 	size_t bytes;
 	unsigned char *pixels;
@@ -116,38 +118,37 @@ static unsigned char *cli_image_loader_decode(const morph_buf_t *buffer, int *w,
 
 int cli_image_loader_load(const char *url, char **path, void *user)
 {
-	morph_buf_t buffer;
+	nb_buf buffer NB_CLEANUP(nb_buf_cleanup) = {0};
 	unsigned char *pixels;
-	char temporary[] = "/tmp/morph-markdown-image-XXXXXX";
-	int w, h, fd, rc;
+	nb_buf temporary_path NB_CLEANUP(nb_buf_cleanup) = {0};
+	int w, h, rc;
 
 	(void)user;
 	if (!url || !path)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*path)
-		return -EEXIST;
-	rc = morph_buf_init(&buffer, BUFSIZ);
+		return NB_ERR_EXISTS;
+	rc = (nb_buf_init(&buffer), nb_buf_reserve(&buffer, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	rc = cli_image_loader_read(url, &buffer);
 	pixels = rc == 0 ? cli_image_loader_decode(&buffer, &w, &h) : NULL;
-	morph_buf_cleanup(&buffer);
+	nb_buf_cleanup(&buffer);
 	if (!pixels)
-		return rc != 0 ? rc : MORPH_ERR_FORMAT;
-	fd = mkstemp(temporary);
-	if (fd < 0) {
-		rc = -errno;
+		return rc != 0 ? rc : NB_ERR_FORMAT;
+	rc = nb_file_temp_in(&temporary_path, "/tmp", NULL, NULL);
+	if (rc != NB_OK) {
 		free(pixels);
 		return rc;
 	}
-	close(fd);
+	const char *temporary = nb_buf_cstr(&temporary_path);
 	rc = stbi_write_png(temporary, w, h, 4, pixels, w * 4);
 	free(pixels);
 	if (rc)
 		*path = strdup(temporary);
 	if (!*path) {
 		unlink(temporary);
-		return rc ? -ENOMEM : -EIO;
+		return rc ? NB_ERR_NOMEM : NB_ERR_IO;
 	}
 	return 0;
 }

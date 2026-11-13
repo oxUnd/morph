@@ -1,11 +1,15 @@
 #include <gtest/gtest.h>
+#include <string.h>
+#include <stdlib.h>
+#include "nb/cleanup.h"
+#include "nb/err.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
 #include "agent/tool_runtime.h"
 #include "agent/tools/file_read.h"
-#include "util/cancel.h"
-#include "util/file.h"
-#include "util/utf8.h"
+#include "nb/cancel.h"
+#include "nb/file.h"
+#include "nb/utf8.h"
 #include <fcntl.h>
 #include <string>
 #include <sys/stat.h>
@@ -43,7 +47,7 @@ protected:
 
 	void Write(const std::string &content)
 	{
-		ASSERT_EQ(file_write_all(path.c_str(), content.data(), content.size()), 0);
+		ASSERT_EQ(nb_file_write_all(path.c_str(), content.data(), content.size(), NULL), 0);
 	}
 
 	cJSON *Read(const char *options = "{}")
@@ -155,7 +159,7 @@ TEST_F(FileReadTest, Utf8CharactersAcrossInputBufferBoundaries)
 		cJSON *data = Read();
 		ASSERT_EQ(status, 0);
 		EXPECT_EQ(Text(data), original);
-		EXPECT_EQ(utf8valid(Text(data).c_str()), nullptr);
+		EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(Text(data).c_str()), NULL), NB_UTF8_OK);
 	}
 }
 
@@ -170,7 +174,7 @@ TEST_F(FileReadTest, ByteBudgetNeverSplitsUtf8AndContinuationIsLossless)
 		ASSERT_EQ(status, 0);
 		std::string chunk = Text(data);
 		EXPECT_LE(chunk.size(), 4u);
-		EXPECT_EQ(utf8valid(chunk.c_str()), nullptr);
+		EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(chunk.c_str()), NULL), NB_UTF8_OK);
 		reconstructed += chunk;
 		if (!Flag(data, "truncated"))
 			break;
@@ -194,7 +198,7 @@ TEST_F(FileReadTest, LongLineFragmentsDoNotLoseSuffix)
 		cJSON *data = Read(options.c_str());
 		ASSERT_EQ(status, 0);
 		std::string chunk = Text(data);
-		EXPECT_EQ(utf8valid(chunk.c_str()), nullptr);
+		EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(chunk.c_str()), NULL), NB_UTF8_OK);
 		reconstructed += chunk;
 		if (!Flag(data, "truncated"))
 			break;
@@ -258,7 +262,40 @@ TEST_F(FileReadTest, InvalidUtf8AndIncompleteCharactersReturnHex)
 		cJSON *data = Read();
 		ASSERT_EQ(status, 0);
 		EXPECT_TRUE(Flag(data, "binary"));
-		EXPECT_EQ(utf8valid(Text(data, "preview").c_str()), nullptr);
+		EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(Text(data, "preview").c_str()), NULL),
+			  NB_UTF8_OK);
+	}
+}
+
+TEST_F(FileReadTest, BinaryPreviewKeepsExactLowercaseBytesAnd64ByteLimit)
+{
+	Write("");
+	cJSON *data = Read();
+	ASSERT_EQ(status, 0);
+	EXPECT_FALSE(Flag(data, "binary"));
+	EXPECT_EQ(Text(data), "");
+	EXPECT_EQ(cJSON_GetObjectItem(data, "preview"), nullptr);
+
+	const std::string full_preview = "00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f "
+					 "10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f "
+					 "20 21 22 23 24 25 26 27 28 29 2a 2b 2c 2d 2e 2f "
+					 "30 31 32 33 34 35 36 37 38 39 3a 3b 3c 3d 3e 3f";
+	for (size_t count : {1u, 2u, 64u, 65u}) {
+		SCOPED_TRACE(count);
+		std::string original;
+		for (size_t i = 0; i < count; i++)
+			original.push_back(static_cast<char>(i));
+		if (count == 2)
+			original[1] = static_cast<char>(0xff);
+		Write(original);
+		data = Read();
+		ASSERT_EQ(status, 0);
+		EXPECT_TRUE(Flag(data, "binary"));
+		EXPECT_EQ(cJSON_GetObjectItem(data, "content"), nullptr);
+		EXPECT_EQ(Text(data, "preview_format"), "hex");
+		EXPECT_EQ(Text(data, "preview"), count == 1   ? "00"
+						 : count == 2 ? "00 ff"
+							      : full_preview);
 	}
 }
 
@@ -295,7 +332,7 @@ TEST_F(FileReadTest, RejectsInvalidNumericArguments)
 		"{\"offset\":null}", "{\"limit\":1000001}", "{\"offset\":1e999}"}) {
 		SCOPED_TRACE(options);
 		Read(options);
-		EXPECT_EQ(status, -EINVAL);
+		EXPECT_EQ(status, NB_ERR_INVAL);
 		EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(result.envelope, "ok")));
 	}
 }
@@ -304,9 +341,9 @@ TEST_F(FileReadTest, RejectsCursorInsideUtf8Character)
 {
 	Write("中text");
 	Read("{\"byte_offset\":1}");
-	EXPECT_EQ(status, -EINVAL);
+	EXPECT_EQ(status, NB_ERR_INVAL);
 	Read("{\"byte_offset\":100}");
-	EXPECT_EQ(status, -EINVAL);
+	EXPECT_EQ(status, NB_ERR_INVAL);
 	cJSON *data = Read("{\"byte_offset\":7}");
 	EXPECT_EQ(status, 0);
 	EXPECT_EQ(Text(data), "");
@@ -321,25 +358,25 @@ TEST_F(FileReadTest, DetectsChangedFileOnContinuation)
 	std::string options = "{\"byte_offset\":6,\"expected_version\":\"" + version + "\"}";
 	Write("first\nchanged");
 	Read(options.c_str());
-	EXPECT_EQ(status, -ESTALE);
+	EXPECT_EQ(status, NB_ERR_STALE);
 }
 
 TEST_F(FileReadTest, RejectsNonRegularFileWithoutBlocking)
 {
 	ASSERT_EQ(mkfifo(path.c_str(), 0600), 0);
 	Read();
-	EXPECT_EQ(status, -ENOTSUP);
+	EXPECT_EQ(status, NB_ERR_UNSUPPORTED);
 	unlink(path.c_str());
 	ASSERT_EQ(mkdir(path.c_str(), 0700), 0);
 	Read();
-	EXPECT_EQ(status, -EISDIR);
+	EXPECT_EQ(status, NB_ERR_IS_DIR);
 	rmdir(path.c_str());
 }
 
 TEST_F(FileReadTest, PreservesMissingFileError)
 {
 	Read();
-	EXPECT_EQ(status, -ENOENT);
+	EXPECT_EQ(status, NB_ERR_NOT_FOUND);
 }
 
 TEST_F(FileReadTest, HugeSparseFileStopsBeforeReadingTail)
@@ -361,11 +398,11 @@ TEST_F(FileReadTest, HugeSparseFileStopsBeforeReadingTail)
 TEST_F(FileReadTest, CancellationBeforeReading)
 {
 	Write("text");
-	struct morph_cancel_token token = {};
-	morph_cancel_token_cancel(&token);
+	struct nb_cancel token = {};
+	nb_cancel_request(&token);
 	runtime.http.cancel_token = &token;
 	Read();
-	EXPECT_EQ(status, -ECANCELED);
+	EXPECT_EQ(status, NB_ERR_CANCELLED);
 }
 
 TEST_F(FileReadTest, CancellationWhileSkippingLines)
@@ -378,7 +415,7 @@ TEST_F(FileReadTest, CancellationWhileSkippingLines)
 		return ++*count >= 5 ? 1 : 0;
 	};
 	Read("{\"offset\":100}");
-	EXPECT_EQ(status, -ECANCELED);
+	EXPECT_EQ(status, NB_ERR_CANCELLED);
 	EXPECT_EQ(checks, 5);
 }
 
@@ -402,7 +439,7 @@ TEST_F(FileReadTest, DetectsChangesDuringReading)
 		return 0;
 	};
 	Read();
-	EXPECT_EQ(status, -ESTALE);
+	EXPECT_EQ(status, NB_ERR_STALE);
 }
 
 TEST_F(FileReadTest, MixedTextPaginationReconstructsEverySourceByte)
@@ -425,7 +462,8 @@ TEST_F(FileReadTest, MixedTextPaginationReconstructsEverySourceByte)
 			ASSERT_EQ(status, 0);
 			std::string chunk = Text(data);
 			ASSERT_FALSE(chunk.empty());
-			EXPECT_EQ(utf8valid(chunk.c_str()), nullptr);
+			EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(chunk.c_str()), NULL),
+				  NB_UTF8_OK);
 			EXPECT_LE(chunk.size(), static_cast<size_t>(budget));
 			assembled += chunk;
 			if (!Flag(data, "truncated"))
@@ -449,7 +487,7 @@ TEST_F(FileReadTest, PreservesAccessDeniedError)
 	Write("private");
 	ASSERT_EQ(chmod(path.c_str(), 0000), 0);
 	Read();
-	EXPECT_EQ(status, -EACCES);
+	EXPECT_EQ(status, NB_ERR_PERMISSION);
 	ASSERT_EQ(chmod(path.c_str(), 0600), 0);
 }
 
@@ -463,6 +501,6 @@ TEST_F(FileReadTest, CancellationWhileReadingText)
 		return ++*count >= 3 ? 1 : 0;
 	};
 	Read();
-	EXPECT_EQ(status, -ECANCELED);
+	EXPECT_EQ(status, NB_ERR_CANCELLED);
 	EXPECT_EQ(checks, 3);
 }

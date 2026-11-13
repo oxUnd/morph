@@ -2,7 +2,8 @@
 #define MORPH_CLI_WIDGETS_AGENTS_BROWSER_H
 
 #include "agent/agent_control.h"
-#include "util/buf.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include <morph/tui/widgets/list.h>
 
 enum cli_agents_browser_filter {
@@ -43,7 +44,7 @@ void cli_agents_browser_select(struct cli_agents_browser_state *state,
 			       const struct cli_agents_browser_data *data, size_t index);
 int cli_agents_browser_update(struct cli_agents_browser_state *state,
 			      const struct cli_agents_browser_data *data, int key);
-int cli_agents_browser_append(morph_buf_t *out, struct cli_agents_browser_state *state,
+int cli_agents_browser_append(nb_buf *out, struct cli_agents_browser_state *state,
 			      const struct cli_agents_browser_data *data, int columns, int rows,
 			      int styled);
 

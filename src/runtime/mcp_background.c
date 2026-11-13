@@ -1,8 +1,9 @@
 #include "runtime/runtime_internal.h"
 #include "runtime/bootstrap.h"
 #include "runtime/mcp.h"
-#include "util/error.h"
-#include "util/log.h"
+#include "errors.h"
+#include "nb/log.h"
+#include "nb/time.h"
 
 #include <errno.h>
 #include <string.h>
@@ -10,10 +11,9 @@
 
 int64_t runtime_mcp_now_ms(void)
 {
-	struct timespec now;
+	int64_t now = nb_time_monotonic_ns();
 
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+	return now > 0 ? now / 1000000 : 0;
 }
 
 struct runtime_mcp_job *runtime_mcp_job_find(struct runtime *runtime,
@@ -32,10 +32,10 @@ static int job_interrupted(void *opaque)
 	int cancelled;
 	enum runtime_mcp_state state;
 
-	pthread_mutex_lock(&job->lock);
-	cancelled = morph_cancel_token_is_cancelled(&job->cancel);
+	nb_mutex_lock(job->lock);
+	cancelled = nb_cancel_requested(&job->cancel);
 	state = job->state;
-	pthread_mutex_unlock(&job->lock);
+	nb_mutex_unlock(job->lock);
 	if (cancelled)
 		return 1;
 	return state != RUNTIME_MCP_REGISTERING &&
@@ -46,27 +46,27 @@ static int job_interrupted(void *opaque)
 
 static void job_state(struct runtime_mcp_job *job, enum runtime_mcp_state state)
 {
-	pthread_mutex_lock(&job->lock);
+	nb_mutex_lock(job->lock);
 	job->state = state;
-	pthread_mutex_unlock(&job->lock);
+	nb_mutex_unlock(job->lock);
 }
 
 static int job_event(const struct morph_event *event, void *opaque);
 
 /** \brief Acquire an owner lock without preventing background job cancellation. */
-static int job_lock(struct runtime_mcp_job *job, pthread_mutex_t *mutex)
+static int job_lock(struct runtime_mcp_job *job, nb_mutex *mutex)
 {
 	struct timespec pause = {.tv_nsec = 10000000};
 	for (;;) {
 		if (job_interrupted(job)) {
-			return -ECANCELED;
+			return NB_ERR_CANCELLED;
 		}
-		int rc = pthread_mutex_trylock(mutex);
+		int rc = nb_mutex_trylock(mutex);
 		if (rc == 0) {
 			return 0;
 		}
-		if (rc != EBUSY) {
-			return -rc;
+		if (rc != NB_ERR_BUSY) {
+			return rc;
 		}
 		nanosleep(&pause, NULL);
 	}
@@ -83,16 +83,18 @@ static int job_publish(struct runtime_mcp_job *job, struct tool_registry *pendin
 	runtime_mcp_emit(job_event, job, "mcp.registering", "pending",
 		"Waiting to register MCP capabilities between turns",
 		&job->client->config, -1, -1, -1, 0);
-	rc = job_lock(job, &ctx->execution_lock);
+	rc = job_lock(job, ctx->execution_lock);
 	if (rc != 0) {
-		return MORPH_TRACE_ERROR(job->runtime->options.logger, rc);
+		return nb_err_trace(job->runtime->options.logger, rc, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	}
-	rc = job_lock(job, &ctx->tools.mutation_mutex);
+	rc = job_lock(job, ctx->tools.mutation_mutex);
 	if (rc != 0) {
-		pthread_mutex_unlock(&ctx->execution_lock);
-		return MORPH_TRACE_ERROR(job->runtime->options.logger, rc);
+		nb_mutex_unlock(ctx->execution_lock);
+		return nb_err_trace(job->runtime->options.logger, rc, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	}
-	pthread_mutex_lock(&ctx->tool_registry_lock);
+	nb_mutex_lock(ctx->tool_registry_lock);
 	/* Background sub-agents can still mutate the parent registry between turns.
 	 * Keep lookup/copy publication exclusive, with mutation before the data lock. */
 	tool_registry_lock(&ctx->tools);
@@ -115,7 +117,7 @@ static int job_publish(struct runtime_mcp_job *job, struct tool_registry *pendin
 		};
 
 		if (tool_borrow(&ctx->tools, spec.name)) {
-			rc = -EEXIST;
+			rc = NB_ERR_EXISTS;
 			break;
 		}
 		rc = tool_register_copy(&ctx->tools, entry);
@@ -130,9 +132,9 @@ static int job_publish(struct runtime_mcp_job *job, struct tool_registry *pendin
 	if (rc == 0)
 		runtime_bootstrap_tool_flags(&ctx->tools, &ctx->config);
 	tool_registry_unlock(&ctx->tools);
-	pthread_mutex_unlock(&ctx->tool_registry_lock);
-	pthread_mutex_unlock(&ctx->tools.mutation_mutex);
-	pthread_mutex_unlock(&ctx->execution_lock);
+	nb_mutex_unlock(ctx->tool_registry_lock);
+	nb_mutex_unlock(ctx->tools.mutation_mutex);
+	nb_mutex_unlock(ctx->execution_lock);
 	return rc;
 }
 
@@ -177,20 +179,20 @@ static void *job_run(void *opaque)
 	tool_registry_cleanup(&pending);
 	if (rc != 0)
 		mcp_disconnect(job->client);
-	pthread_mutex_lock(&job->lock);
-	if (rc != 0 && morph_cancel_token_is_cancelled(&job->cancel))
-		rc = -ECANCELED;
+	nb_mutex_lock(job->lock);
+	if (rc != 0 && nb_cancel_requested(&job->cancel))
+		rc = NB_ERR_CANCELLED;
 	else if (rc != 0 && job->client->config.connect_timeout > 0 &&
 		 runtime_mcp_now_ms() - job->started_ms >=
 		 (int64_t)job->client->config.connect_timeout * 1000)
-		rc = -ETIMEDOUT;
+		rc = NB_ERR_TIMEOUT;
 	job->client->discovery_error = rc;
 	job->client->capabilities_registered = rc == 0;
 	job->error_code = rc;
 	job->elapsed_ms = runtime_mcp_now_ms() - job->started_ms;
 	job->state = rc == 0 ? RUNTIME_MCP_READY : RUNTIME_MCP_FAILED;
 	job->active = 0;
-	pthread_mutex_unlock(&job->lock);
+	nb_mutex_unlock(job->lock);
 	runtime_mcp_emit(job_event, job,
 		rc == 0 ? "mcp.ready" : "mcp.failed",
 		rc == 0 ? "ready" : "failed", "MCP initialization finished",
@@ -208,10 +210,11 @@ int runtime_mcp_background_start(struct runtime *runtime)
 		if (!client->config.auto_connect)
 			continue;
 		job = &runtime->mcp_jobs[runtime->mcp_job_count];
-		rc = pthread_mutex_init(&job->lock, NULL);
+		rc = ((job->lock = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
 		if (rc != 0) {
-			log_warn(job->runtime->options.logger, "mcp: worker lock failed: %s",
-				 morph_strerror(-rc));
+			nb_log_write(job->runtime->options.logger, NB_LOG_WARN,
+				     "mcp: worker lock failed: %s",
+				     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			continue;
 		}
 		job->runtime = runtime;
@@ -220,16 +223,17 @@ int runtime_mcp_background_start(struct runtime *runtime)
 		job->active = 1;
 		job->started_ms = runtime_mcp_now_ms();
 		runtime->mcp_job_count++;
-		rc = pthread_create(&job->thread, NULL, job_run, job);
+		rc = nb_thread_create(&job->thread, job_run, job, NULL);
 		if (rc == 0) {
 			job->started = 1;
 		} else {
 			job->active = 0;
 			job->state = RUNTIME_MCP_FAILED;
-			job->error_code = -rc;
+			job->error_code = rc;
 			runtime_mcp_emit(runtime->options.event_cb,
-				runtime->options.event_user_data, "mcp.failed", "failed",
-				"MCP worker could not start", &client->config, -1, -1, -1, -rc);
+					 runtime->options.event_user_data, "mcp.failed", "failed",
+					 "MCP worker could not start", &client->config, -1, -1, -1,
+					 rc);
 		}
 	}
 	return 0;
@@ -240,16 +244,16 @@ void runtime_mcp_background_stop(struct runtime *runtime)
 	for (int i = 0; i < runtime->mcp_job_count; i++) {
 		struct runtime_mcp_job *job = &runtime->mcp_jobs[i];
 
-		pthread_mutex_lock(&job->lock);
-		morph_cancel_token_cancel(&job->cancel);
-		pthread_mutex_unlock(&job->lock);
+		nb_mutex_lock(job->lock);
+		nb_cancel_request(&job->cancel);
+		nb_mutex_unlock(job->lock);
 	}
 	for (int i = 0; i < runtime->mcp_job_count; i++) {
 		struct runtime_mcp_job *job = &runtime->mcp_jobs[i];
 
 		if (job->started)
-			pthread_join(job->thread, NULL);
-		pthread_mutex_destroy(&job->lock);
+			nb_thread_join_take(&job->thread, NULL);
+		(nb_mutex_free(job->lock), job->lock = NULL);
 	}
 	runtime->mcp_job_count = 0;
 }

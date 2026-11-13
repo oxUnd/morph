@@ -8,6 +8,6 @@ target_include_directories(morph-exec PUBLIC
 )
 
 target_link_libraries(morph-exec PUBLIC
-	morph-util
+	nbase::nbase morph-cjson
 	morph-sandbox
 )

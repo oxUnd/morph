@@ -6,9 +6,12 @@ extern "C" {
 #endif
 
 #include <stddef.h>
+#include "nb/thread.h"
+#include "nb/err.h"
 #include <signal.h>
-#include "util/buf.h"
-#include "util/cancel.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/cancel.h"
 
 typedef int (*http_callback)(const char *data, size_t len, void *user_data);
 
@@ -16,20 +19,20 @@ typedef int (*http_callback)(const char *data, size_t len, void *user_data);
 typedef void CURL;
 #endif
 
-struct morph_log;
+struct nb_log;
 
 struct http_control {
-	struct morph_log *logger;
-	const volatile sig_atomic_t *cancel_flag;
-	const struct morph_cancel_token *cancel_token;
+	struct nb_log *logger;
+	const nb_atomic_int *cancel_flag;
+	const struct nb_cancel *cancel_token;
 	int (*interrupt_check)(void *);
 	void *interrupt_user_data;
 };
 
 struct http_response {
 	int status_code;
-	morph_buf_t body;
-	morph_buf_t headers;
+	nb_buf body;
+	nb_buf headers;
 };
 
 struct http_request {
@@ -55,23 +58,23 @@ struct http_multipart_part {
 };
 
 struct http_session {
-	struct morph_log *logger;
+	struct nb_log *logger;
 	CURL *curl;
 	void *multi;
-	morph_buf_t resp_body;
-	morph_buf_t resp_headers;
+	nb_buf resp_body;
+	nb_buf resp_headers;
 	long status_code;
 	int initialized;
 };
 
-int http_init(struct morph_log *logger);
+int http_init(struct nb_log *logger);
 void http_cleanup(void);
 /* Use nonempty CURL_CA_BUNDLE, then SSL_CERT_FILE, plus SSL_CERT_DIR. */
 void http_apply_ca_env(CURL *curl);
 int http_wait_cancelable(const struct http_control *control, unsigned int milliseconds);
 
 /* Requests borrow all inputs during the call. Response outputs must have no
- * owned buffers (initialize with {0}); occupied outputs return -EEXIST. Even
+ * owned buffers (initialize with {0}); occupied outputs return NB_ERR_EXISTS. Even
  * failed transfers can return owned partial responses: always call
  * http_response_free() before reuse or leaving scope. */
 int http_get(const struct http_control *control, const char *url, struct http_response *resp);
@@ -117,7 +120,7 @@ void http_response_free(struct http_response *resp);
 
 /* ---- HTTP Session (persistent curl handle) ---- */
 
-int http_session_init(struct morph_log *logger, struct http_session *s);
+int http_session_init(struct nb_log *logger, struct http_session *s);
 void http_session_cleanup(struct http_session *s);
 void http_session_reset(struct http_session *s);
 int http_session_post(const struct http_control *control, struct http_session *s, const char *url,

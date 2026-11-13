@@ -2,7 +2,7 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/adapters/input/state.h"
 #include "sapi/cli/application_internal.h"
-#include "util/error.h"
+#include "errors.h"
 #include <ffi.h>
 #include <stdlib.h>
 #include <string.h>
@@ -84,7 +84,7 @@ static void *cli_callbacks_bind_callback(struct cli_application *ctx, enum cli_c
 	}
 	binding = calloc(1, sizeof(*binding));
 	if (!binding) {
-		ctx->input->callback_error = -ENOMEM;
+		ctx->input->callback_error = NB_ERR_NOMEM;
 		return NULL;
 	}
 	binding->ctx = ctx;
@@ -115,7 +115,7 @@ static void *cli_callbacks_bind_callback(struct cli_application *ctx, enum cli_c
 		if (binding->closure)
 			ffi_closure_free(binding->closure);
 		free(binding);
-		ctx->input->callback_error = -ENOMEM;
+		ctx->input->callback_error = NB_ERR_NOMEM;
 		return NULL;
 	}
 	binding->next = ctx->input->callbacks;

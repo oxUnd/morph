@@ -6264,12 +6264,14 @@ static void stbir__resample_vertical_gather(stbir__info const * stbir_info, stbi
     STBIR_ASSERT( total > 0 );
     do {
       float const * inputs[8];
+      STBIR_VERTICAL_GATHERFUNC * gather;
       int i, cnt = total; if ( cnt > 8 ) cnt = 8;
       for( i = 0 ; i < cnt ; i++ )
         inputs[ i ] = stbir__get_ring_buffer_scanline(stbir_info, split_info, k+i+contrib_n0 );
 
       // call the N scanlines at a time function (up to 8 scanlines of blending at once)
-      ((k==0)?stbir__vertical_gathers:stbir__vertical_gathers_continues)[cnt-1]( (vertical_first) ? decode_buffer : encode_buffer, vertical_coefficients + k, inputs, inputs[0] + width_times_channels );
+      gather = (k==0) ? stbir__vertical_gathers[cnt-1] : stbir__vertical_gathers_continues[cnt-1];
+      gather( (vertical_first) ? decode_buffer : encode_buffer, vertical_coefficients + k, inputs, inputs[0] + width_times_channels );
       k += cnt;
       total -= cnt;
     } while ( total );
@@ -6421,6 +6423,7 @@ static void stbir__resample_vertical_scatter(stbir__info const * stbir_info, stb
     STBIR_ASSERT( total > 0 );
     do {
       float * outputs[8];
+      STBIR_VERTICAL_SCATTERFUNC * scatter;
       int i, n = total; if ( n > 8 ) n = 8;
       for( i = 0 ; i < n ; i++ )
       {
@@ -6432,7 +6435,8 @@ static void stbir__resample_vertical_scatter(stbir__info const * stbir_info, stb
         }
       }
       // call the scatter to N scanlines at a time function (up to 8 scanlines of scattering at once)
-      ((STBIR__FLOAT_BUFFER_IS_EMPTY( outputs[0] ))?stbir__vertical_scatter_sets:stbir__vertical_scatter_blends)[n-1]( outputs, vertical_coefficients + k, vertical_buffer, vertical_buffer_end );
+      scatter = STBIR__FLOAT_BUFFER_IS_EMPTY( outputs[0] ) ? stbir__vertical_scatter_sets[n-1] : stbir__vertical_scatter_blends[n-1];
+      scatter( outputs, vertical_coefficients + k, vertical_buffer, vertical_buffer_end );
       k += n;
       total -= n;
     } while ( total );

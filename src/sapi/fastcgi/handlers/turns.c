@@ -2,7 +2,7 @@
 #include "sapi/fastcgi/services/turn_job.h"
 #include "sapi/fastcgi/storage/sessions.h"
 #include "cJSON.h"
-#include "util/error.h"
+#include "errors.h"
 
 #include <stdlib.h>
 
@@ -43,9 +43,10 @@ void handle_post_turn(request_t *request)
 	if (rc && (receipt.failure == FCGI_TURN_FAILURE_DAILY_QUOTA ||
 		   receipt.failure == FCGI_TURN_FAILURE_CONCURRENCY_QUOTA)) {
 		reply_json(request, 429,
-			   rc == -EDQUOT ? "{\"error\":\"quota_exceeded\",\"resource\":\"turns\"}"
-					 : "{\"error\":\"quota_exceeded\",\"resource\":"
-					   "\"concurrent_turns\"}");
+			   rc == NB_ERR_NO_SPACE
+				   ? "{\"error\":\"quota_exceeded\",\"resource\":\"turns\"}"
+				   : "{\"error\":\"quota_exceeded\",\"resource\":"
+				     "\"concurrent_turns\"}");
 		return;
 	}
 	if (rc && receipt.failure == FCGI_TURN_FAILURE_QUEUE_FULL) {

@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 
 extern "C" {
 #include "runtime/runtime_internal.h"
@@ -162,16 +163,16 @@ TEST_F(RuntimeMcpBackgroundTest, ReturnsBeforeSlowServersAndConnectsIndependentl
 			std::filesystem::exists(directory + "/fast.started");
 	}));
 	EXPECT_TRUE(state("slow", RUNTIME_MCP_CONNECTING));
-	EXPECT_EQ(runtime_mcp_connect(instance, "slow"), -EAGAIN);
+	EXPECT_EQ(runtime_mcp_connect(instance, "slow"), NB_ERR_AGAIN);
 	struct mcp_tool_desc *list = nullptr;
 	int count = 0;
-	EXPECT_EQ(runtime_mcp_list_tools(instance, "slow", &list, &count), -EAGAIN);
+	EXPECT_EQ(runtime_mcp_list_tools(instance, "slow", &list, &count), NB_ERR_AGAIN);
 	release("fast");
 	ASSERT_TRUE(wait([&] { return state("fast", RUNTIME_MCP_READY); }));
 	EXPECT_TRUE(state("slow", RUNTIME_MCP_CONNECTING));
 	struct tool_desc desc = {};
 	EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_fast__echo", &desc), 0);
-	EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_slow__echo", &desc), -ENOENT);
+	EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_slow__echo", &desc), NB_ERR_NOT_FOUND);
 	release("slow");
 	ASSERT_TRUE(wait([&] { return state("slow", RUNTIME_MCP_READY); }));
 	EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_slow__echo", &desc), 0);
@@ -181,7 +182,7 @@ TEST_F(RuntimeMcpBackgroundTest, PublishesOnlyBetweenTurns)
 {
 	server("gated", 1);
 	ASSERT_EQ(open(), 0);
-	pthread_mutex_lock(&instance->context.execution_lock);
+	nb_mutex_lock(instance->context.execution_lock);
 	int before = instance->context.tools.count;
 	release("gated");
 	bool registering = wait([&] { return state("gated", RUNTIME_MCP_REGISTERING); });
@@ -190,7 +191,7 @@ TEST_F(RuntimeMcpBackgroundTest, PublishesOnlyBetweenTurns)
 	std::this_thread::sleep_for(std::chrono::milliseconds(1100));
 	EXPECT_TRUE(state("gated", RUNTIME_MCP_REGISTERING));
 	EXPECT_EQ(instance->context.tools.count, before);
-	pthread_mutex_unlock(&instance->context.execution_lock);
+	nb_mutex_unlock(instance->context.execution_lock);
 	ASSERT_TRUE(wait([&] { return state("gated", RUNTIME_MCP_READY); }));
 	EXPECT_EQ(runtime_tool_count(instance), before + 1);
 }
@@ -199,7 +200,7 @@ TEST_F(RuntimeMcpBackgroundTest, PublicationWaitsForMutationWithoutBlockingCatal
 {
 	server("mutation_gate", 1);
 	ASSERT_EQ(open(), 0);
-	pthread_mutex_lock(&instance->context.tools.mutation_mutex);
+	nb_mutex_lock(instance->context.tools.mutation_mutex);
 	int before = instance->context.tools.count;
 	release("mutation_gate");
 	EXPECT_TRUE(wait([&] { return state("mutation_gate", RUNTIME_MCP_REGISTERING); }));
@@ -212,7 +213,7 @@ TEST_F(RuntimeMcpBackgroundTest, PublicationWaitsForMutationWithoutBlockingCatal
 		EXPECT_EQ(result.get(), before);
 	}
 	EXPECT_FALSE(state("mutation_gate", RUNTIME_MCP_READY));
-	pthread_mutex_unlock(&instance->context.tools.mutation_mutex);
+	nb_mutex_unlock(instance->context.tools.mutation_mutex);
 	query.join();
 	ASSERT_TRUE(wait([&] { return state("mutation_gate", RUNTIME_MCP_READY); }));
 	EXPECT_EQ(runtime_tool_count(instance), before + 1);
@@ -225,7 +226,7 @@ TEST_F(RuntimeMcpBackgroundTest, TimeoutCleansConnectionAndAllowsRetry)
 	ASSERT_TRUE(wait([&] { return state("retry", RUNTIME_MCP_FAILED); }));
 	struct runtime_mcp_status status = {};
 	ASSERT_EQ(runtime_mcp_find(instance, "retry", &status), 0);
-	EXPECT_EQ(status.error_code, -ETIMEDOUT);
+	EXPECT_EQ(status.error_code, NB_ERR_TIMEOUT);
 	EXPECT_EQ(status.connected, 0);
 	EXPECT_GE(status.elapsed_ms, 1000);
 	EXPECT_EQ(instance->context.mcp.servers[0]->server_pid, -1);
@@ -256,12 +257,12 @@ TEST_F(RuntimeMcpBackgroundTest, CloseCancelsPendingPublicationWithoutDeadlock)
 {
 	server("pending");
 	ASSERT_EQ(open(), 0);
-	pthread_mutex_lock(&instance->context.execution_lock);
+	nb_mutex_lock(instance->context.execution_lock);
 	release("pending");
 	EXPECT_TRUE(wait([&] { return state("pending", RUNTIME_MCP_REGISTERING); }));
 	std::thread closing([&] { runtime_close(instance); });
 	std::this_thread::sleep_for(std::chrono::milliseconds(200));
-	pthread_mutex_unlock(&instance->context.execution_lock);
+	nb_mutex_unlock(instance->context.execution_lock);
 	closing.join();
 	instance = nullptr;
 }
@@ -286,7 +287,8 @@ TEST_F(RuntimeMcpBackgroundTest, DiscoveryFailureDoesNotPublishPartialTools)
 	ASSERT_EQ(open(), 0);
 	ASSERT_TRUE(wait([&] { return state("invalid", RUNTIME_MCP_FAILED); }));
 	struct tool_desc desc = {};
-	EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_invalid__valid", &desc), -ENOENT);
+	EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_invalid__valid", &desc),
+		  NB_ERR_NOT_FOUND);
 }
 
 TEST_F(RuntimeMcpBackgroundTest, DisabledAutoConnectRemainsDisconnected)
@@ -355,10 +357,11 @@ TEST_F(RuntimeMcpBackgroundTest, PublicationCollisionRollsBackNewTools)
 	ASSERT_TRUE(wait([&] { return state("capacity", RUNTIME_MCP_FAILED); }));
 	struct runtime_mcp_status status = {};
 	EXPECT_EQ(runtime_mcp_find(instance, "capacity", &status), 0);
-	EXPECT_EQ(status.error_code, -EEXIST);
+	EXPECT_EQ(status.error_code, NB_ERR_EXISTS);
 	struct tool_desc desc = {};
 	EXPECT_EQ(runtime_tool_count(instance), before + 1);
-	EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_capacity__first", &desc), -ENOENT);
+	EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_capacity__first", &desc),
+		  NB_ERR_NOT_FOUND);
 	EXPECT_EQ(runtime_tool_find_borrow(instance, "mcp_capacity__second", &desc), 0);
 }
 
@@ -452,7 +455,7 @@ TEST_F(RuntimeMcpBackgroundTest, HttpInitializationHonorsConfiguredDeadline)
 	ASSERT_TRUE(wait([&] { return state("http", RUNTIME_MCP_FAILED); }));
 	struct runtime_mcp_status status = {};
 	ASSERT_EQ(runtime_mcp_find(instance, "http", &status), 0);
-	EXPECT_EQ(status.error_code, -ETIMEDOUT);
+	EXPECT_EQ(status.error_code, NB_ERR_TIMEOUT);
 	EXPECT_EQ(status.connected, 0);
 }
 
@@ -478,11 +481,11 @@ TEST_F(RuntimeMcpBackgroundTest, ToolSnapshotsRemainReadableDuringATurn)
 {
 	server("manual", 0, false);
 	ASSERT_EQ(open(), 0);
-	pthread_mutex_lock(&instance->context.execution_lock);
+	nb_mutex_lock(instance->context.execution_lock);
 	EXPECT_GT(runtime_tool_count(instance), 0);
 	struct tool_desc desc = {};
 	EXPECT_EQ(runtime_tool_info_borrow(instance, 0, &desc), 0);
-	pthread_mutex_unlock(&instance->context.execution_lock);
+	nb_mutex_unlock(instance->context.execution_lock);
 }
 
 TEST_F(RuntimeMcpBackgroundTest, SynchronousDiscoveryFailureIsVisible)
@@ -601,7 +604,8 @@ TEST_F(RuntimeMcpBackgroundTest, LiveServerPublishesToolsAndBecomesReady)
 	}, 90000));
 	struct runtime_mcp_status status = {};
 	ASSERT_EQ(runtime_mcp_find(instance, "live", &status), 0);
-	ASSERT_EQ(status.state, RUNTIME_MCP_READY) << morph_strerror(status.error_code);
+	ASSERT_EQ(status.state, RUNTIME_MCP_READY)
+		<< nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, status.error_code);
 	EXPECT_EQ(status.connected, 1);
 	EXPECT_EQ(status.error_code, 0);
 	int published = 0;

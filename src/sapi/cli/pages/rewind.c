@@ -2,9 +2,9 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/widgets/list.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/error.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "errors.h"
 #include <morph/tui/components.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,7 +57,7 @@ static const char *cli_rewind_reason(const struct cli_rewind_picker *picker)
 				   "conversation only.";
 }
 
-static void cli_rewind_cell(morph_buf_t *frame, const struct morph_tui_screen *screen, int row,
+static void cli_rewind_cell(nb_buf *frame, const struct morph_tui_screen *screen, int row,
 			    const char *text, int selected)
 {
 	char compact[BUFSIZ];
@@ -70,8 +70,8 @@ static void cli_rewind_cell(morph_buf_t *frame, const struct morph_tui_screen *s
 static int cli_rewind_draw(void *opaque, const struct morph_tui_screen *screen)
 {
 	struct cli_rewind_picker *picker = opaque;
-	morph_buf_t frame MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_t label MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf frame NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf label NB_CLEANUP(nb_buf_cleanup) = {0};
 	int height = screen->area.height;
 	int first = picker->stage && height >= 10  ? 5
 		    : picker->stage && height >= 8 ? 4
@@ -83,12 +83,12 @@ static int cli_rewind_draw(void *opaque, const struct morph_tui_screen *screen)
 	const cJSON *entries = cJSON_GetObjectItemCaseSensitive(picker->listing, "checkpoints");
 	int count = picker->stage ? 3 : cJSON_GetArraySize(entries);
 	morph_tui_widget_list_state_layout(&picker->menu.list, (size_t)count, (size_t)page);
-	int rc = morph_buf_init(&frame, BUFSIZ);
+	int rc = (nb_buf_init(&frame), nb_buf_reserve(&frame, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_init(&label, 256);
+		rc = (nb_buf_init(&label), nb_buf_reserve(&label, 256) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
-	(void)morph_buf_puts(&frame, "\033[?2026h\033[0m\033[H\033[J");
+	(void)nb_buf_append_cstr(&frame, "\033[?2026h\033[0m\033[H\033[J");
 	cli_rewind_cell(&frame, screen, 1,
 			picker->stage && height < 8 ? cli_rewind_prompt(picker->preview)
 			: picker->stage		    ? "Rewind · choose what to restore"
@@ -99,7 +99,7 @@ static int cli_rewind_draw(void *opaque, const struct morph_tui_screen *screen)
 			if (height >= 8)
 				cli_rewind_cell(&frame, screen, 2,
 						cli_rewind_prompt(picker->preview), 0);
-			(void)morph_buf_printf(
+			(void)nb_buf_printf(
 				&label, "#%lld · %d files · %d conflicts", (long long)picker->id,
 				cJSON_GetArraySize(cJSON_GetObjectItem(picker->preview, "files")),
 				cJSON_GetArraySize(
@@ -108,7 +108,7 @@ static int cli_rewind_draw(void *opaque, const struct morph_tui_screen *screen)
 				&frame, screen, height >= 8 ? 3 : 2,
 				height < 10 && !cli_rewind_available(picker, RUNTIME_REWIND_CODE)
 					? cli_rewind_reason(picker)
-					: morph_buf_cstr_borrow(&label),
+					: nb_buf_cstr(&label),
 				0);
 			if (height >= 10)
 				cli_rewind_cell(&frame, screen, 4,
@@ -132,22 +132,21 @@ static int cli_rewind_draw(void *opaque, const struct morph_tui_screen *screen)
 	for (size_t i = picker->menu.list.first;
 	     i < (size_t)count && i - picker->menu.list.first < picker->menu.list.page;
 	     i++, row++) {
-		morph_buf_reset(&label);
+		nb_buf_clear(&label);
 		if (picker->stage)
-			(void)morph_buf_printf(&label, "%s %s%s",
-					       picker->menu.list.index == i ? ">" : " ", modes[i],
-					       cli_rewind_available(picker, mode_values[i])
-						       ? ""
-						       : " (unavailable)");
+			(void)nb_buf_printf(&label, "%s %s%s",
+					    picker->menu.list.index == i ? ">" : " ", modes[i],
+					    cli_rewind_available(picker, mode_values[i])
+						    ? ""
+						    : " (unavailable)");
 		else {
 			const cJSON *entry = cJSON_GetArrayItem(entries, (int)i);
-			(void)morph_buf_printf(
-				&label, "%s #%lld  %s",
-				picker->menu.list.index == i ? ">" : " ",
+			(void)nb_buf_printf(
+				&label, "%s #%lld  %s", picker->menu.list.index == i ? ">" : " ",
 				(long long)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "id")),
 				cli_rewind_prompt(entry));
 		}
-		cli_rewind_cell(&frame, screen, row, morph_buf_cstr_borrow(&label),
+		cli_rewind_cell(&frame, screen, row, nb_buf_cstr(&label),
 				picker->menu.list.index == i);
 	}
 	if (picker->stage) {
@@ -165,9 +164,9 @@ static int cli_rewind_draw(void *opaque, const struct morph_tui_screen *screen)
 					? "Up/Down Select · Enter Restore · Left Back · Esc Cancel"
 					: "Up/Down Select · Enter Preview · Esc Cancel",
 				0);
-	(void)morph_buf_puts(&frame, "\033[0m\033[?2026l");
-	if (label.failed)
-		return label.failed;
+	(void)nb_buf_append_cstr(&frame, "\033[0m\033[?2026l");
+	if (nb_buf_status(&label))
+		return nb_buf_status(&label);
 	return morph_tui_draw_write(stdout, &frame);
 }
 
@@ -212,12 +211,12 @@ static int cli_rewind_update(void *opaque, const struct morph_tui_event *event)
 			cJSON_GetArrayItem(cJSON_GetObjectItem(picker->listing, "checkpoints"),
 					   (int)picker->menu.list.index);
 		picker->id = (int64_t)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "id"));
-		morph_json_cleanup(&picker->preview);
+		cJSON_DeleteOwner(&picker->preview);
 		int rc = runtime_checkpoint_preview_copy(picker->ctx->runtime, picker->id,
 							 &picker->preview);
 		if (rc)
 			snprintf(picker->error, sizeof(picker->error), "Preview failed: %s",
-				 morph_strerror(rc));
+				 nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		else {
 			picker->error[0] = '\0';
 			picker->stage = 1;
@@ -247,10 +246,10 @@ int cli_rewind_show_take(struct cli_application *ctx, cJSON **listing, cli_rewin
 {
 	if (!ctx || !listing || !*listing || !apply ||
 	    cJSON_GetArraySize(cJSON_GetObjectItem(*listing, "checkpoints")) <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct cli_rewind_picker *picker = calloc(1, sizeof(*picker));
 	if (!picker)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	picker->ctx = ctx;
 	picker->listing = *listing;
 	picker->apply = apply;

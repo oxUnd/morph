@@ -1,14 +1,15 @@
 #include "apply_patch.h"
-#include "util/json.h"
+#include "cJSON.h"
 #include "agent/agent_control.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "agent/patch.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
 #include "agent/tool_runtime.h"
 #include "cJSON.h"
-#include "util/buf.h"
-#include "util/error.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -23,12 +24,12 @@ struct patch_application {
 	int captured;
 	int capture_error;
 	int authorization_error;
-	morph_buf_t authorization_detail;
+	nb_buf authorization_detail;
 };
 
 static void patch_application_cleanup(struct patch_application *application)
 {
-	morph_buf_cleanup(&application->authorization_detail);
+	nb_buf_cleanup(&application->authorization_detail);
 }
 
 static int authorize_patch_path(const char *path, int deletion, void *opaque)
@@ -52,19 +53,26 @@ static int authorize_patch_path(const char *path, int deletion, void *opaque)
 
 	if (rc != 0) {
 		application->authorization_error = rc;
-		if (morph_buf_init(&application->authorization_detail, 256) == 0) {
+		if ((nb_buf_init(&application->authorization_detail),
+		     nb_buf_reserve(&application->authorization_detail, 256) ? 0 : NB_ERR_NOMEM) ==
+		    0) {
 			const char *id = application->runtime ? application->runtime->agent_id : NULL;
-			(void)morph_buf_printf(&application->authorization_detail,
+			(void)nb_buf_printf(
+				&application->authorization_detail,
 				"%s %s '%s' for agent '%s': %s. %s",
-				ownership_error ? "Write ownership denied" : "Permission policy denied",
+				ownership_error ? "Write ownership denied"
+						: "Permission policy denied",
 				deletion ? "deletion of" : "write to", path,
-				id && *id ? id : "/root", morph_strerror(rc),
-				ownership_error == -EBUSY ?
-				"Another active agent owns this path; wait or use a disjoint path." :
-				ownership_error ?
-				"The path must be inside this agent's assigned write_paths." :
-				review.reason[0] ? review.reason :
-				"Permission was not granted. Do not bypass this decision through shell.");
+				id && *id ? id : "/root",
+				nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc),
+				ownership_error == NB_ERR_BUSY
+					? "Another active agent owns this path; wait or use a "
+					  "disjoint path."
+				: ownership_error ? "The path must be inside this agent's assigned "
+						    "write_paths."
+				: review.reason[0] ? review.reason
+						   : "Permission was not granted. Do not bypass "
+						     "this decision through shell.");
 		}
 		return rc;
 	}
@@ -73,7 +81,7 @@ static int authorize_patch_path(const char *path, int deletion, void *opaque)
 	rc = application->checkpoint->capture(application->checkpoint->user_data,
 					      application->checkpoint->id, path);
 	if (rc > 0)
-		rc = MORPH_ERR_PROTOCOL;
+		rc = NB_ERR_PROTOCOL;
 	if (rc != 0)
 		application->capture_error = rc;
 	else
@@ -89,13 +97,13 @@ static int validate_patch_postimage(const char *path, size_t bytes, const char *
 	int rc = checkpoint->validate_write(checkpoint->user_data, checkpoint->id, path,
 		bytes, removed_path);
 
-	return rc > 0 ? MORPH_ERR_PROTOCOL : rc;
+	return rc > 0 ? NB_ERR_PROTOCOL : rc;
 }
 
 static cJSON *patch_checkpoint_status(const struct patch_application *application,
 				      const char *status, int may_have_changed)
 {
-	cJSON *owner MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *owner NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	cJSON *output;
 
 	if (!owner || !cJSON_AddNumberToObject(owner, "id", (double)application->checkpoint->id) ||
@@ -114,8 +122,8 @@ static int patch_failure(struct tool_result *result, const struct patch_applicat
 			 int rc, const char *code, const char *message, const char *status,
 			 int may_have_changed)
 {
-	cJSON *meta MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	cJSON *checkpoint MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *meta NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	cJSON *checkpoint NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	int result_rc;
 
 	if (application->tracking)
@@ -135,8 +143,10 @@ static int patch_failure(struct tool_result *result, const struct patch_applicat
 	meta = cJSON_CreateObject();
 	checkpoint = patch_checkpoint_status(application, status, may_have_changed);
 	if (!meta || !checkpoint)
-		return -ENOMEM;
-	result_rc = morph_json_object_take(meta, "checkpoint", &checkpoint);
+		return NB_ERR_NOMEM;
+	result_rc =
+		(cJSON_AddItemToObject(meta, "checkpoint", checkpoint) ? (checkpoint = NULL, NB_OK)
+								       : NB_ERR_NOMEM);
 	if (result_rc == 0)
 		result_rc = tool_result_set_meta_take(result, &meta);
 	return result_rc != 0 ? result_rc : rc;
@@ -145,35 +155,37 @@ static int patch_failure(struct tool_result *result, const struct patch_applicat
 static int patch_success(struct tool_result *result, const struct patch_application *application,
 			 const struct patch_result *patch_result)
 {
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
-	cJSON *files MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	cJSON *files NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateArray();
 	int rc;
 
 	if (!data || !files || !cJSON_AddBoolToObject(data, "changed", 1) ||
 	    !cJSON_AddStringToObject(data, "workspace_root",
 				     tool_context_workdir_borrow(application->context)))
-		return -ENOMEM;
-	for (size_t i = 0; i < patch_result->changes.nelts; i++) {
-		const struct patch_change *change = morph_array_borrow(&patch_result->changes, i);
-		cJSON *item MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		return NB_ERR_NOMEM;
+	for (size_t i = 0; i < patch_result->changes.len; i++) {
+		const struct patch_change *change = nb_vec_at(&patch_result->changes, i);
+		cJSON *item NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 
 		if (!item || !cJSON_AddStringToObject(item, "path", change->path) ||
 		    !cJSON_AddStringToObject(item, "action", patch_action_name(change->action)) ||
 		    !cJSON_AddNumberToObject(item, "added", change->added) ||
 		    !cJSON_AddNumberToObject(item, "removed", change->removed))
-			return -ENOMEM;
-		rc = morph_json_array_take(files, &item);
+			return NB_ERR_NOMEM;
+		rc = (cJSON_AddItemToArray(files, item) ? (item = NULL, NB_OK) : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
-	rc = morph_json_object_take(data, "files", &files);
+	rc = (cJSON_AddItemToObject(data, "files", files) ? (files = NULL, NB_OK) : NB_ERR_NOMEM);
 	if (rc == 0 && application->tracking) {
-		cJSON *checkpoint MORPH_CLEANUP(morph_json_cleanup) =
+		cJSON *checkpoint NB_CLEANUP(cJSON_DeleteOwner) =
 			patch_checkpoint_status(application, "sealed", 1);
 
 		if (!checkpoint)
-			return -ENOMEM;
-		rc = morph_json_object_take(data, "checkpoint", &checkpoint);
+			return NB_ERR_NOMEM;
+		rc = (cJSON_AddItemToObject(data, "checkpoint", checkpoint)
+			      ? (checkpoint = NULL, NB_OK)
+			      : NB_ERR_NOMEM);
 	}
 	return rc != 0 ? rc : tool_result_success_take(result, &data);
 }
@@ -189,8 +201,8 @@ static void patch_agent_guard_cleanup(struct patch_agent_guard *guard)
 
 static int apply_patch_exec(const char *input, struct tool_result *result, void *user_data)
 {
-	struct patch_result patch_result MORPH_CLEANUP(patch_result_cleanup) = {0};
-	struct patch_application application MORPH_CLEANUP(patch_application_cleanup) = {
+	struct patch_result patch_result NB_CLEANUP(patch_result_cleanup) = {0};
+	struct patch_application application NB_CLEANUP(patch_application_cleanup) = {
 		.context = user_data,
 	};
 	const struct tool_runtime_context *runtime;
@@ -199,10 +211,10 @@ static int apply_patch_exec(const char *input, struct tool_result *result, void 
 	int rc;
 
 	if (!input || !result || !application.context)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	runtime = result->runtime;
 	application.runtime = runtime;
-	struct patch_agent_guard guard MORPH_CLEANUP(patch_agent_guard_cleanup) = {
+	struct patch_agent_guard guard NB_CLEANUP(patch_agent_guard_cleanup) = {
 		.control = runtime ? runtime->agents : NULL,
 	};
 	agent_control_patch_begin(guard.control);
@@ -222,7 +234,7 @@ static int apply_patch_exec(const char *input, struct tool_result *result, void 
 					     0);
 		rc = checkpoint->begin(checkpoint->user_data, checkpoint->id);
 		if (rc != 0)
-			return patch_failure(result, &application, rc < 0 ? rc : MORPH_ERR_PROTOCOL,
+			return patch_failure(result, &application, rc < 0 ? rc : NB_ERR_PROTOCOL,
 					     "checkpoint_begin_failed",
 					     "Could not begin checkpoint tracking.", "begin_failed",
 					     0);
@@ -241,7 +253,7 @@ static int apply_patch_exec(const char *input, struct tool_result *result, void 
 		finish_rc = application.checkpoint->finish(application.checkpoint->user_data,
 							   application.checkpoint->id);
 		if (finish_rc > 0)
-			finish_rc = MORPH_ERR_PROTOCOL;
+			finish_rc = NB_ERR_PROTOCOL;
 	}
 	if (finish_rc != 0)
 		return patch_failure(result, &application, finish_rc, "checkpoint_seal_failed",
@@ -250,21 +262,23 @@ static int apply_patch_exec(const char *input, struct tool_result *result, void 
 				     application.captured > 0 && !application.capture_error &&
 					     !application.authorization_error);
 	if (rc != 0) {
-		const char *code = application.capture_error ? "checkpoint_capture_failed"
-				   : rc == -EACCES	     ? "permission_denied"
-				   : rc == -EPERM	     ? "approval_unavailable"
-							     : "invalid_patch";
+		const char *code = application.capture_error	? "checkpoint_capture_failed"
+				   : rc == NB_ERR_PERMISSION	? "permission_denied"
+				   : rc == NB_ERR_NOT_PERMITTED ? "approval_unavailable"
+								: "invalid_patch";
 		const char *status = application.capture_error ? "capture_failed" : "sealed";
 
-		return patch_failure(result, &application, rc, code,
-				     application.capture_error
-					     ? "Could not capture file preimages before editing."
-				     : application.authorization_detail.len ?
-					     morph_buf_cstr_borrow(&application.authorization_detail)
-				     : error[0] ? error : morph_strerror(rc),
-				     status,
-				     application.captured > 0 && !application.capture_error &&
-					     !application.authorization_error);
+		return patch_failure(
+			result, &application, rc, code,
+			application.capture_error
+				? "Could not capture file preimages before editing."
+			: application.authorization_detail.len
+				? nb_buf_cstr(&application.authorization_detail)
+			: error[0] ? error
+				   : nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc),
+			status,
+			application.captured > 0 && !application.capture_error &&
+				!application.authorization_error);
 	}
 	rc = patch_success(result, &application, &patch_result);
 	if (rc != 0)
@@ -277,7 +291,7 @@ static int apply_patch_exec(const char *input, struct tool_result *result, void 
 
 int apply_patch_init(struct tool_registry *registry, struct tool_context *tool_context)
 {
-	morph_buf_t description MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf description NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *workspace_root;
 	struct tool_spec spec;
 	int rc;
@@ -300,55 +314,59 @@ int apply_patch_init(struct tool_registry *registry, struct tool_context *tool_c
 		"%import common.NEWLINE\"}";
 
 	if (!registry || !tool_context)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	workspace_root = tool_context_workdir_borrow(tool_context);
 	if (!workspace_root || !workspace_root[0])
-		return -EINVAL;
-	rc = morph_buf_init(&description, 1024);
+		return NB_ERR_INVAL;
+	rc = (nb_buf_init(&description), nb_buf_reserve(&description, 1024) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_printf(
-		&description,
-		"Apply a stripped-down Codex patch to text files. The workspace "
-		"root is '%s'. Every patch path is relative to this exact directory; "
-		"do not use absolute paths and do not repeat the workspace directory "
-		"in a path. Use this tool for source editing instead of passing "
-		"source content through shell commands. Main-agent runtime checkpoints capture "
-		"these edits; to undo code, use checkpoint list and preview to select the "
-		"correct turn, then restore_code with its explicit id. Shell, manual, other-tool, "
-		"and sub-agent edits are not captured. Failed patches may have partially "
-		"changed files; inspect the checkpoint and current files before retrying. "
-		"Use the exact envelope '*** Begin Patch\\n*** Add File: "
-		"path\\n+content\\n*** End Patch'. Prefer bare '@@' for Update "
-		"File hunks. An optional anchor after '@@ ' must be one complete "
-		"source line copied verbatim, never a descriptive label. Numeric "
-		"unified-diff ranges are not part of the Codex patch grammar. Hunk lines "
-		"must start with space, +, or -. Move, Update, and Delete File are "
-			"supported. Each complete patch may contain up to 64 KiB. "
-			"Group related edits in one call when they fit. Split larger edits "
-			"into complete patches at natural file or hunk boundaries. "
-		"Every call must be a complete Codex patch. The final *** End Patch "
-		"line must never have a leading +, space, or -. "
-		"Do not emit unified-diff headers such as --- or +++. "
-		"If a patch is truncated or its context does not match, read the "
-		"file again and retry with a smaller complete patch.\n"
-		"Update File example:\n"
-		"*** Begin Patch\n"
-		"*** Update File: relative/path.c\n"
-		"@@\n"
-		" unchanged context\n"
-		"-old line\n"
-		"+new line\n"
-		"*** End Patch\n"
-		"Add File example:\n"
-		"*** Begin Patch\n"
-		"*** Add File: relative/path.c\n"
-		"+first content line\n"
-		"+/* MORPH_CONTINUE */\n"
-		"*** End Patch\n",
-		workspace_root);
+	rc = (nb_buf_printf(
+		      &description,
+		      "Apply a stripped-down Codex patch to text files. The workspace "
+		      "root is '%s'. Every patch path is relative to this exact directory; "
+		      "do not use absolute paths and do not repeat the workspace directory "
+		      "in a path. Use this tool for source editing instead of passing "
+		      "source content through shell commands. Main-agent runtime checkpoints "
+		      "capture "
+		      "these edits; to undo code, use checkpoint list and preview to select the "
+		      "correct turn, then restore_code with its explicit id. Shell, manual, "
+		      "other-tool, "
+		      "and sub-agent edits are not captured. Failed patches may have partially "
+		      "changed files; inspect the checkpoint and current files before retrying. "
+		      "Use the exact envelope '*** Begin Patch\\n*** Add File: "
+		      "path\\n+content\\n*** End Patch'. Prefer bare '@@' for Update "
+		      "File hunks. An optional anchor after '@@ ' must be one complete "
+		      "source line copied verbatim, never a descriptive label. Numeric "
+		      "unified-diff ranges are not part of the Codex patch grammar. Hunk lines "
+		      "must start with space, +, or -. Move, Update, and Delete File are "
+		      "supported. Each complete patch may contain up to 64 KiB. "
+		      "Group related edits in one call when they fit. Split larger edits "
+		      "into complete patches at natural file or hunk boundaries. "
+		      "Every call must be a complete Codex patch. The final *** End Patch "
+		      "line must never have a leading +, space, or -. "
+		      "Do not emit unified-diff headers such as --- or +++. "
+		      "If a patch is truncated or its context does not match, read the "
+		      "file again and retry with a smaller complete patch.\n"
+		      "Update File example:\n"
+		      "*** Begin Patch\n"
+		      "*** Update File: relative/path.c\n"
+		      "@@\n"
+		      " unchanged context\n"
+		      "-old line\n"
+		      "+new line\n"
+		      "*** End Patch\n"
+		      "Add File example:\n"
+		      "*** Begin Patch\n"
+		      "*** Add File: relative/path.c\n"
+		      "+first content line\n"
+		      "+/* MORPH_CONTINUE */\n"
+		      "*** End Patch\n",
+		      workspace_root)
+		      ? 0
+		      : NB_ERR_NOMEM);
 	if (rc != 0) {
-		morph_buf_cleanup(&description);
+		nb_buf_cleanup(&description);
 		return rc;
 	}
 	memset(&spec, 0, sizeof(spec));
@@ -356,7 +374,7 @@ int apply_patch_init(struct tool_registry *registry, struct tool_context *tool_c
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.name = "apply_patch",
 		.title = "Apply patch",
-		.description = morph_buf_cstr_borrow(&description),
+		.description = nb_buf_cstr(&description),
 		.input_kind = TOOL_INPUT_TEXT,
 		.input_format = format,
 		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
@@ -365,6 +383,6 @@ int apply_patch_init(struct tool_registry *registry, struct tool_context *tool_c
 		.user_data = tool_context,
 	};
 	rc = tool_register_borrow(registry, &spec);
-	morph_buf_cleanup(&description);
+	nb_buf_cleanup(&description);
 	return rc;
 }

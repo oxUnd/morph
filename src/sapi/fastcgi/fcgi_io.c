@@ -1,6 +1,6 @@
 #define _GNU_SOURCE
 #include "fcgi_io.h"
-#include "util/error.h"
+#include "errors.h"
 #include "cJSON.h"
 
 #include <stdio.h>
@@ -10,30 +10,35 @@
 int fcgi_read_body(request_t *r, char **out, size_t *len)
 {
 	if (!r || !out || !len)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (r->content_length <= 0) {
 		char *empty = calloc(1, 1);
 		if (!empty)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		*out = empty;
 		*len = 0;
 		return 0;
 	}
-	if (r->content_length > FCGI_MAX_BODY_BYTES) return -EFBIG;
+	if (r->content_length > FCGI_MAX_BODY_BYTES)
+		return NB_ERR_TOO_BIG;
 	if (!r->fcgx || !r->fcgx->in)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	char *buf = malloc((size_t)r->content_length + 1);
-	if (!buf) return -ENOMEM;
+	if (!buf)
+		return NB_ERR_NOMEM;
 
 	size_t offset = 0;
 	while (offset < (size_t)r->content_length) {
 		int got = FCGX_GetStr(buf + offset,
 				     (int)((size_t)r->content_length - offset),
 				     r->fcgx->in);
-		if (got <= 0) { free(buf); return -EIO; }
+		if (got <= 0) {
+			free(buf);
+			return NB_ERR_IO;
+		}
 		offset += (size_t)got;
 	}
 	buf[offset] = '\0';
@@ -213,11 +218,11 @@ void reply_500(request_t *r, const char *msg)
 
 void reply_body_error(request_t *r, int rc)
 {
-	if (rc == -EFBIG)
+	if (rc == NB_ERR_TOO_BIG)
 		reply_json(r, 413,
 			   "{\"error\":\"payload_too_large\","
 			   "\"max_bytes\":4194304}");
-	else if (rc == -ENOMEM)
+	else if (rc == NB_ERR_NOMEM)
 		reply_500(r, "out of memory");
 	else
 		reply_400(r, "invalid request body");
@@ -255,7 +260,9 @@ void sse_write_heartbeat(request_t *r)
 
 int sse_flush(request_t *r)
 {
-	if (FCGX_FFlush(r->fcgx->out) < 0) return -EIO;
-	if (FCGX_GetError(r->fcgx->out)  != 0) return -EIO;
+	if (FCGX_FFlush(r->fcgx->out) < 0)
+		return NB_ERR_IO;
+	if (FCGX_GetError(r->fcgx->out) != 0)
+		return NB_ERR_IO;
 	return 0;
 }

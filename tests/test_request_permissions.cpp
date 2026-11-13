@@ -1,13 +1,16 @@
 #include <gtest/gtest.h>
+#include <string.h>
+#include <stdlib.h>
+#include "nb/err.h"
 
 extern "C" {
 #include "agent/tool_context.h"
 #include "agent/tool.h"
 #include "agent/tools/request_permissions.h"
 #include "db/database.h"
-#include "util/file.h"
+#include "nb/file.h"
 #include "permission/context.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 }
 
 #include <filesystem>
@@ -65,7 +68,7 @@ protected:
 		std::filesystem::create_directories(work);
 		std::filesystem::create_directories(target);
 		std::filesystem::create_directories(sibling);
-		ASSERT_EQ(file_write_all(file.c_str(), "data", 4), 0);
+		ASSERT_EQ(nb_file_write_all(file.c_str(), "data", 4, NULL), 0);
 		context = tool_context_create(NULL, work.c_str(), work.c_str());
 		ASSERT_NE(context, nullptr);
 		tool_context_set_operation_approval(context, approve, this);
@@ -148,8 +151,7 @@ TEST_F(DirectoryPermissionTest, CanonicalDirectoryIsApprovedOnceForAllRequestedO
 	request(all(alias), "session");
 	EXPECT_TRUE(success());
 	EXPECT_EQ(approvals.size(), 1U);
-	struct tool_permission_snapshot snapshot MORPH_CLEANUP(
-		tool_permission_snapshot_cleanup) = {};
+	struct tool_permission_snapshot snapshot NB_CLEANUP(tool_permission_snapshot_cleanup) = {};
 	ASSERT_EQ(tool_context_permission_snapshot_create(context, "/bin/cp", &snapshot), 0);
 	EXPECT_EQ(snapshot.write.count, 1);
 	EXPECT_STREQ(snapshot.write.paths[0], target.c_str());
@@ -176,8 +178,8 @@ TEST_F(DirectoryPermissionTest, ReadOnlyApprovalDoesNotGrantWriteOrDelete)
 	ASSERT_TRUE(success());
 	verdict = TOOL_OP_DENY;
 	EXPECT_EQ(access(TOOL_PATH_READ, file), 0);
-	EXPECT_EQ(access(TOOL_PATH_WRITE, file), -EACCES);
-	EXPECT_EQ(access(TOOL_PATH_DELETE, file), -EACCES);
+	EXPECT_EQ(access(TOOL_PATH_WRITE, file), NB_ERR_PERMISSION);
+	EXPECT_EQ(access(TOOL_PATH_DELETE, file), NB_ERR_PERMISSION);
 }
 
 TEST_F(DirectoryPermissionTest, DenialGrantsNothingAndCreatesNoDirectories)
@@ -217,7 +219,7 @@ TEST_F(DirectoryPermissionTest, ParentGrantAvoidsRedundantChildApprovalWithoutBr
 	ASSERT_TRUE(success());
 	EXPECT_EQ(approvals.size(), 1U);
 	verdict = TOOL_OP_DENY;
-	EXPECT_EQ(access(TOOL_PATH_WRITE, sibling + "/file"), -EACCES);
+	EXPECT_EQ(access(TOOL_PATH_WRITE, sibling + "/file"), NB_ERR_PERMISSION);
 }
 
 TEST_F(DirectoryPermissionTest, TurnGrantsExpireAndSessionUpgradeRequiresOneCombinedApproval)
@@ -287,11 +289,11 @@ TEST_F(DirectoryPermissionTest, PersistenceFailureRollsBackEveryOperation)
 	request(all(target));
 	EXPECT_FALSE(success());
 	verdict = TOOL_OP_DENY;
-	EXPECT_EQ(access(TOOL_PATH_READ, file), -EACCES);
-	EXPECT_EQ(access(TOOL_PATH_WRITE, file), -EACCES);
-	EXPECT_EQ(access(TOOL_PATH_DELETE, file), -EACCES);
+	EXPECT_EQ(access(TOOL_PATH_READ, file), NB_ERR_PERMISSION);
+	EXPECT_EQ(access(TOOL_PATH_WRITE, file), NB_ERR_PERMISSION);
+	EXPECT_EQ(access(TOOL_PATH_DELETE, file), NB_ERR_PERMISSION);
 	ASSERT_EQ(tool_context_reload_persistent_grants(context), 0);
-	EXPECT_EQ(access(TOOL_PATH_READ, file), -EACCES);
+	EXPECT_EQ(access(TOOL_PATH_READ, file), NB_ERR_PERMISSION);
 }
 
 TEST_F(DirectoryPermissionTest, ChildOnlyWriteDoesNotExtendToItsParent)
@@ -305,8 +307,8 @@ TEST_F(DirectoryPermissionTest, ChildOnlyWriteDoesNotExtendToItsParent)
 	EXPECT_EQ(approvals[1].access, TOOL_PATH_ACCESS_WRITE);
 	verdict = TOOL_OP_DENY;
 	EXPECT_EQ(access(TOOL_PATH_WRITE, child + "/file"), 0);
-	EXPECT_EQ(access(TOOL_PATH_WRITE, file), -EACCES);
-	EXPECT_EQ(access(TOOL_PATH_DELETE, child + "/file"), -EACCES);
+	EXPECT_EQ(access(TOOL_PATH_WRITE, file), NB_ERR_PERMISSION);
+	EXPECT_EQ(access(TOOL_PATH_DELETE, child + "/file"), NB_ERR_PERMISSION);
 }
 
 TEST_F(DirectoryPermissionTest, CombinedApprovalIsNotDisguisedAsALegacyDeleteOperation)
@@ -320,7 +322,7 @@ TEST_F(DirectoryPermissionTest, CombinedApprovalIsNotDisguisedAsALegacyDeleteOpe
 	EXPECT_FALSE(success());
 	request("{\"delete\":" + paths(target) + "}");
 	EXPECT_TRUE(success());
-	EXPECT_EQ(access(TOOL_PATH_READ, file), -EACCES);
-	EXPECT_EQ(access(TOOL_PATH_WRITE, file), -EACCES);
+	EXPECT_EQ(access(TOOL_PATH_READ, file), NB_ERR_PERMISSION);
+	EXPECT_EQ(access(TOOL_PATH_WRITE, file), NB_ERR_PERMISSION);
 	EXPECT_EQ(access(TOOL_PATH_DELETE, file), 0);
 }

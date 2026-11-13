@@ -1,6 +1,7 @@
 #include "sapi/cli/commands/runtime.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "ext/ext.h"
 #include "credits.h"
 #include "config/config.h"
@@ -41,7 +42,7 @@ static int cli_runtime_command_help(struct cli_application *ctx, int argc, char 
 		const struct cli_command *e = cli_command_find_borrow(topic);
 			if (!e) {
 				CMD_ERROR(ctx, "unknown command: %s", topic);
-				return -ENOENT;
+				return NB_ERR_NOT_FOUND;
 			}
 			{
 				struct cli_output_segment segments[] = {
@@ -71,14 +72,15 @@ static int cli_runtime_command_copy(struct cli_application *ctx, int argc, char 
 	(void)argv;
 	if (argc != 1) {
 		CMD_ERROR(ctx, "usage: /copy");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	rc = runtime_session_last_answer_copy(ctx->runtime, &answer);
 	if (rc) {
-		if (rc == -ENODATA)
+		if (rc == NB_ERR_NO_DATA)
 			CMD_ERROR(ctx, "no assistant answer to copy in this session");
 		else
-			CMD_ERROR(ctx, "copy failed: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "copy failed: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 	rc = cli_clipboard_copy_text(ctx, answer);
@@ -91,11 +93,12 @@ static int cli_runtime_command_copy(struct cli_application *ctx, int argc, char 
 				"Copy unconfirmed: sent a clipboard request to the terminal.");
 			rc = 0;
 	} else {
-		if (rc == -E2BIG)
+		if (rc == NB_ERR_TOO_BIG)
 			CMD_ERROR(ctx, "copy failed: answer exceeds the terminal "
 				       "clipboard payload limit");
 		else
-			CMD_ERROR(ctx, "copy failed: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "copy failed: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	}
 	return rc;
 }
@@ -105,7 +108,7 @@ static int cli_runtime_command_model(struct cli_application *ctx, int argc, char
 	const char *name = cli_cmd_arg_borrow(argc, argv, 1);
 	if (argc > 2) {
 		CMD_ERROR(ctx, "usage: /model [normal|ultra|status|name]");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	if (!name && ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON &&
 	    cli_application_tui_borrow(ctx))
@@ -113,7 +116,8 @@ static int cli_runtime_command_model(struct cli_application *ctx, int argc, char
 	if (name && (!strcmp(name, "normal") || !strcmp(name, "ultra"))) {
 		int rc = runtime_model_set_ultra(ctx->runtime, !strcmp(name, "ultra"));
 		if (rc != 0) {
-			CMD_ERROR(ctx, "model mode change failed: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "model mode change failed: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
 		cli_readline_sync_mode(ctx, 1);
@@ -121,7 +125,8 @@ static int cli_runtime_command_model(struct cli_application *ctx, int argc, char
 	} else if (name && strcmp(name, "status")) {
 		int rc = runtime_session_set_model(ctx->runtime, name);
 		if (rc != 0) {
-			CMD_ERROR(ctx, "model change failed: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "model change failed: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
 		CMD_OK(ctx, "model switched to: %s", name);
@@ -185,7 +190,7 @@ static void cli_runtime_print_trace_step(struct cli_application *ctx, int number
 			.style = CLI_OUTPUT_STYLE_PLAIN,
 			.text = content,
 			.untrusted = 1,
-			.untrusted_mode = UTF8_TERMINAL_TEXT_SINGLE_LINE,
+			.untrusted_mode = MORPH_TERMINAL_TEXT_SINGLE_LINE,
 		};
 	}
 	if (tool_name) {
@@ -307,7 +312,7 @@ static int cli_runtime_command_trace(struct cli_application *ctx, int argc, char
 		CMD_HEADER(ctx, "ReAct trace (round %d, %s)", round_no,
 			   aborted ? "aborted" : "completed");
 		int count = 0;
-		struct react_step *steps MORPH_CLEANUP(react_steps_clear) =
+		struct react_step *steps NB_CLEANUP(react_steps_clear) =
 			cli_runtime_json_to_react_steps(json, &count);
 		if (steps) {
 			cli_runtime_print_trace_steps(ctx, steps, count,
@@ -319,7 +324,7 @@ static int cli_runtime_command_trace(struct cli_application *ctx, int argc, char
 					{.style = CLI_OUTPUT_STYLE_PLAIN,
 					 .text = json,
 					 .untrusted = 1,
-					 .untrusted_mode = UTF8_TERMINAL_TEXT_SINGLE_LINE},
+					 .untrusted_mode = MORPH_TERMINAL_TEXT_SINGLE_LINE},
 				};
 
 				(void)cli_command_output_segments(
@@ -329,7 +334,7 @@ static int cli_runtime_command_trace(struct cli_application *ctx, int argc, char
 		free(json);
 		return 0;
 	}
-	struct runtime_turn_status status MORPH_CLEANUP(runtime_turn_status_cleanup) = {0};
+	struct runtime_turn_status status NB_CLEANUP(runtime_turn_status_cleanup) = {0};
 	struct session current;
 	if (runtime_turn_status_copy(ctx->runtime, &status) != 0 || status.step_count == 0) {
 		(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 0,
@@ -346,8 +351,8 @@ static int cli_runtime_command_credits(struct cli_application *ctx, int argc, ch
 {
 	struct credit_summary today;
 	struct credit_summary session;
-	morph_buf_t head MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_t tail MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf head NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf tail NB_CLEANUP(nb_buf_cleanup) = {0};
 	const struct config *config;
 	int over_limit = 0;
 	int rc;
@@ -362,32 +367,36 @@ static int cli_runtime_command_credits(struct cli_application *ctx, int argc, ch
 	if (rc != 0)
 		return rc;
 
-	rc = morph_buf_init(&head, 128);
+	rc = (nb_buf_init(&head), nb_buf_reserve(&head, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_init(&tail, 160);
+	rc = (nb_buf_init(&tail), nb_buf_reserve(&tail, 160) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_printf(&head, "credits: %lld", (long long)today.credits);
+	rc = (nb_buf_printf(&head, "credits: %lld", (long long)today.credits) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && config->credits.daily_limit >= 0) {
-		rc = morph_buf_printf(&head, " / %d today", config->credits.daily_limit);
+		rc = (nb_buf_printf(&head, " / %d today", config->credits.daily_limit)
+			      ? 0
+			      : NB_ERR_NOMEM);
 		over_limit = today.credits > config->credits.daily_limit;
 	} else if (rc == 0) {
-		rc = morph_buf_puts(&head, " today");
+		rc = (nb_buf_append_cstr(&head, " today") ? 0 : NB_ERR_NOMEM);
 	}
 	if (rc == 0)
-		rc = morph_buf_printf(&tail, " | est. cost: %.6f %s | session: %lld credits",
-				      today.estimated_cost, config->credits.currency,
-				      (long long)session.credits);
+		rc = (nb_buf_printf(&tail, " | est. cost: %.6f %s | session: %lld credits",
+				    today.estimated_cost, config->credits.currency,
+				    (long long)session.credits)
+			      ? 0
+			      : NB_ERR_NOMEM);
 	if (rc == 0 && session.event_count == 0)
-		rc = morph_buf_puts(&tail, " | no events");
+		rc = (nb_buf_append_cstr(&tail, " | no events") ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	{
 		struct cli_output_segment segments[3] = {
-			{.style = CLI_OUTPUT_STYLE_PLAIN, .text = morph_buf_cstr_borrow(&head)},
+			{.style = CLI_OUTPUT_STYLE_PLAIN, .text = nb_buf_cstr(&head)},
 			{.style = CLI_OUTPUT_STYLE_YELLOW, .text = " (over limit)"},
-			{.style = CLI_OUTPUT_STYLE_PLAIN, .text = morph_buf_cstr_borrow(&tail)},
+			{.style = CLI_OUTPUT_STYLE_PLAIN, .text = nb_buf_cstr(&tail)},
 		};
 
 		(void)cli_command_output_segments(ctx, segments, over_limit ? 3u : 2u, 0, 1);
@@ -436,7 +445,7 @@ static int cli_runtime_command_context(struct cli_application *ctx, int argc, ch
 						  sizeof(segments) / sizeof(segments[0]), 0, 1);
 	}
 	{
-		morph_buf_t kinds_line MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf kinds_line NB_CLEANUP(nb_buf_cleanup) = {0};
 		static const char *const kinds[] = {"user_message",	    "assistant_message",
 						    "assistant_tool_calls", "tool_result",
 						    "compaction_summary",   "background_receipt"};
@@ -444,8 +453,9 @@ static int cli_runtime_command_context(struct cli_application *ctx, int argc, ch
 		struct model_history_item *items =
 			runtime_session_model_history_current_copy(ctx->runtime, 1, &count);
 
-		if (morph_buf_init(&kinds_line, 128) == 0) {
-			(void)morph_buf_puts(&kinds_line, "context by kind:");
+		if ((nb_buf_init(&kinds_line),
+		     nb_buf_reserve(&kinds_line, 128) ? 0 : NB_ERR_NOMEM) == 0) {
+			(void)nb_buf_append_cstr(&kinds_line, "context by kind:");
 		}
 		for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
 			int kind_count = 0;
@@ -457,13 +467,13 @@ static int cli_runtime_command_context(struct cli_application *ctx, int argc, ch
 					kind_tokens += item->token_count;
 				}
 			}
-			if (kind_count > 0 && !kinds_line.failed)
-				(void)morph_buf_printf(&kinds_line, " %s=%d/%dt", kinds[i],
-						       kind_count, kind_tokens);
+			if (kind_count > 0 && !nb_buf_status(&kinds_line))
+				(void)nb_buf_printf(&kinds_line, " %s=%d/%dt", kinds[i], kind_count,
+						    kind_tokens);
 		}
-		if (!kinds_line.failed)
+		if (!nb_buf_status(&kinds_line))
 			(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 0, "%s",
-						       morph_buf_cstr_borrow(&kinds_line));
+						       nb_buf_cstr(&kinds_line));
 		runtime_session_model_history_free(items);
 	}
 	{
@@ -488,7 +498,8 @@ static int cli_runtime_command_compress(struct cli_application *ctx, int argc, c
 	(void)argv;
 	rc = runtime_session_compress(ctx->runtime, NULL, &window_removed, &kept);
 	if (rc < 0) {
-		CMD_ERROR(ctx, "compression failed: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "compression failed: %s",
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 	CMD_OK(ctx, "model history compacted atomically: removed %d active items, kept %d",
@@ -843,7 +854,7 @@ static int cli_runtime_command_recap(struct cli_application *ctx, int argc, char
 	(void)argv;
 	if (argc != 1) {
 		CMD_ERROR(ctx, "usage: /recap");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	return cli_recap_start(ctx, 0);
 }

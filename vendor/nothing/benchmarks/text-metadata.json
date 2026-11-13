@@ -1,0 +1,24 @@
+{
+  "date": "2026-11-12",
+  "machine": "Apple M1 Pro",
+  "os": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "compiler": "Apple clang version 21.0.0 (clang-2100.4.1.1)",
+  "baseline_commit": "2cad93ff52e8c9cb41c66b8d8a66762070bd5656",
+  "build": "CMake Release -O3 -DNDEBUG, C11, static, no LTO; ordinary allocator; single thread",
+  "measurement": "One discarded warmup process pair, then seven alternating before/after pairs per size. No concurrent builds/tests/fuzz during final measurement. No CPU pinning or frequency locking.",
+  "command": "python3 benchmarks/compare_text.py /path/to/before/nbase_bench_text /path/to/after/nbase_bench_text --output benchmarks/text-results.csv",
+  "correctness": "Full decode/encode output checks; before/after workload and checksum equality for all rows",
+  "checks": {
+    "normal_ctest": "21/21 passed",
+    "asan_ubsan_ctest": "21/21 passed; ASAN_OPTIONS=halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1",
+    "fuzz_final": "Homebrew LLVM 23, shared library, ASan+UBSan+libFuzzer, 127586 runs in 21s, seed=20261112, max_len=4096, no crash or sanitizer error"
+  },
+  "source_sha256": {
+    "src/encoding.c": "6ce7589f415cd1ffa5be1d78570910ee00505126c70728433d4cc1b5b0b82cd6",
+    "src/hash.c": "5568b43d9bb8f24bfaae8e6383917ede2c9aaa2ca8c4b7fc084215c184e70475",
+    "src/crc32_table.h": "9447fc788e3bfdd02ad50228532aaddbeda835c7391ccb65bcef8bac5816bc59",
+    "src/utf8.c": "f488d546965c24703b881965683ad3eda209a39fd561fb17f971db79eba3177f",
+    "benchmarks/bench_text.c": "34b028471201ad9e823af78d281f45993d94942059009f0e1ec8c4eeda329617",
+    "benchmarks/compare_text.py": "72c5c234fa07ac8d8f40d28d747ae7e616a1aff2b2c67dc8ee6117f771b0001d"
+  }
+}

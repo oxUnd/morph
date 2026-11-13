@@ -71,6 +71,12 @@ Explicit host and network requests are typed operation fields. Full uses host
 execution; read-only removes default writable project, metadata and tool-cache
 roots while retaining isolated scratch space. Existing process sessions retain
 their spawn-time boundaries, so incompatible live sessions prevent switching.
+Trusted temporary roots come from `permission/trusted_paths`: fixed platform
+roots plus a validated custom directory that cannot contain the original home.
+Sandbox configuration owns one canonical root snapshot captured during parent
+preparation, including any explicit scratch override. Environment filtering and
+child setup never recollect that policy; Landlock and SBPL read the same names.
+A standalone sandbox entry captures missing state before filtering its environment.
 Model-supplied stdin enters the review gate again, including sandboxed sessions
 that may retain earlier filesystem grants after those grants expire.
 Remote MCP authority is enforced at the call boundary, not claimed to be an

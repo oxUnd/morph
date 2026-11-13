@@ -1,0 +1,75 @@
+diff --git a/vendor/cJSON.c b/vendor/cJSON.c
+index 86c134c..2da56ab 100644
+--- a/vendor/cJSON.c
++++ b/vendor/cJSON.c
+@@ -1977,7 +1977,7 @@ static cJSON_bool add_item_to_array(cJSON *array, cJSON *item)
+ {
+     cJSON *child = NULL;
+ 
+-    if ((item == NULL) || (array == NULL) || (array == item))
++    if ((item == NULL) || (array == NULL) || (array == item) || (item->prev != NULL) || (item->next != NULL))
+     {
+         return false;
+     }
+@@ -2033,7 +2033,7 @@ static cJSON_bool add_item_to_object(cJSON * const object, const char * const st
+     char *new_key = NULL;
+     int new_type = cJSON_Invalid;
+ 
+-    if ((object == NULL) || (string == NULL) || (item == NULL) || (object == item))
++    if ((object == NULL) || (string == NULL) || (item == NULL) || (object == item) || (item->prev != NULL) || (item->next != NULL))
+     {
+         return false;
+     }
+@@ -3143,3 +3143,35 @@ CJSON_PUBLIC(void) cJSON_free(void *object)
+     global_hooks.deallocate(object);
+     object = NULL;
+ }
++
++CJSON_PUBLIC(void) cJSON_DeleteOwner(cJSON **owner)
++{
++    if (owner != NULL)
++    {
++        cJSON_Delete(*owner);
++        *owner = NULL;
++    }
++}
++
++CJSON_PUBLIC(void) cJSON_FreeTextOwner(char **owner)
++{
++    if (owner != NULL)
++    {
++        if (*owner != NULL)
++        {
++            cJSON_free(*owner);
++        }
++        *owner = NULL;
++    }
++}
++
++CJSON_PUBLIC(cJSON *) cJSON_StealOwner(cJSON **owner)
++{
++    cJSON *item = NULL;
++    if (owner != NULL)
++    {
++        item = *owner;
++        *owner = NULL;
++    }
++    return item;
++}
+diff --git a/vendor/cJSON.h b/vendor/cJSON.h
+index 88cf0bc..fa93740 100644
+--- a/vendor/cJSON.h
++++ b/vendor/cJSON.h
+@@ -289,6 +289,12 @@ CJSON_PUBLIC(char*) cJSON_SetValuestring(cJSON *object, const char *valuestring)
+ /* Macro for iterating over an array or object */
+ #define cJSON_ArrayForEach(element, array) for(element = (array != NULL) ? (array)->child : NULL; element != NULL; element = element->next)
+ 
++/* Owner operations used with lexical cleanup. Deleting/freeing also clears
++ * the caller's owner; stealing transfers it without allocation. */
++CJSON_PUBLIC(void) cJSON_DeleteOwner(cJSON **owner);
++CJSON_PUBLIC(void) cJSON_FreeTextOwner(char **owner);
++CJSON_PUBLIC(cJSON *) cJSON_StealOwner(cJSON **owner);
++
+ /* malloc/free objects using the malloc/free functions that have been set with cJSON_InitHooks */
+ CJSON_PUBLIC(void *) cJSON_malloc(size_t size);
+ CJSON_PUBLIC(void) cJSON_free(void *object);

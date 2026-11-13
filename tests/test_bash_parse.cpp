@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 extern "C" {
-#include "util/bash_parse.h"
+#include "permission/command_analysis.h"
 }
 
 TEST(BashParseTest, ExtractsCommandAfterEnvironmentAssignments)
@@ -67,9 +67,9 @@ TEST(BashParseTest, QuotedAmpersandIsNotCompound)
 		&result), 0);
 	EXPECT_FALSE(result.has_error);
 	EXPECT_FALSE(result.is_compound);
-	ASSERT_EQ(result.commands.nelts, 1u);
-	const auto *command = static_cast<const struct bash_parse_command *>(
-		morph_array_borrow(&result.commands, 0));
+	ASSERT_EQ(result.commands.len, 1u);
+	const auto *command =
+		static_cast<const struct bash_parse_command *>(nb_vec_at(&result.commands, 0));
 	ASSERT_NE(command, nullptr);
 	EXPECT_STREQ(command->name, "lark-cli");
 	bash_parse_result_cleanup(&result);
@@ -85,9 +85,9 @@ TEST(BashParseTest, PythonOperatorsInsideQuotedArgumentAreNotShellSyntax)
 		&result), 0);
 	EXPECT_FALSE(result.has_error);
 	EXPECT_FALSE(result.is_compound);
-	ASSERT_EQ(result.commands.nelts, 1u);
-	const auto *command = static_cast<const struct bash_parse_command *>(
-		morph_array_borrow(&result.commands, 0));
+	ASSERT_EQ(result.commands.len, 1u);
+	const auto *command =
+		static_cast<const struct bash_parse_command *>(nb_vec_at(&result.commands, 0));
 	ASSERT_NE(command, nullptr);
 	EXPECT_STREQ(command->name, "python3");
 	bash_parse_result_cleanup(&result);
@@ -102,9 +102,9 @@ TEST(BashParseTest, SingleQuotedShellSyntaxIsLiteral)
 		&result), 0);
 	EXPECT_FALSE(result.has_error);
 	EXPECT_FALSE(result.is_compound);
-	ASSERT_EQ(result.commands.nelts, 1u);
-	const auto *command = static_cast<const struct bash_parse_command *>(
-		morph_array_borrow(&result.commands, 0));
+	ASSERT_EQ(result.commands.len, 1u);
+	const auto *command =
+		static_cast<const struct bash_parse_command *>(nb_vec_at(&result.commands, 0));
 	ASSERT_NE(command, nullptr);
 	EXPECT_STREQ(command->name, "python3");
 	bash_parse_result_cleanup(&result);
@@ -118,13 +118,13 @@ TEST(BashParseTest, CollectsPipelineAndCommandSubstitution)
 		"printf '%s' \"$(echo value)\" | rm -f target",
 		&result), 0);
 	EXPECT_TRUE(result.is_compound);
-	ASSERT_EQ(result.commands.nelts, 3u);
-	const auto *first = static_cast<const struct bash_parse_command *>(
-		morph_array_borrow(&result.commands, 0));
-	const auto *nested = static_cast<const struct bash_parse_command *>(
-		morph_array_borrow(&result.commands, 1));
-	const auto *last = static_cast<const struct bash_parse_command *>(
-		morph_array_borrow(&result.commands, 2));
+	ASSERT_EQ(result.commands.len, 3u);
+	const auto *first =
+		static_cast<const struct bash_parse_command *>(nb_vec_at(&result.commands, 0));
+	const auto *nested =
+		static_cast<const struct bash_parse_command *>(nb_vec_at(&result.commands, 1));
+	const auto *last =
+		static_cast<const struct bash_parse_command *>(nb_vec_at(&result.commands, 2));
 	ASSERT_NE(first, nullptr);
 	ASSERT_NE(nested, nullptr);
 	ASSERT_NE(last, nullptr);
@@ -142,9 +142,9 @@ TEST(BashParseTest, HeredocBodyDoesNotCreateCommands)
 		"cat <<'EOF'\n$(echo literal)\nvalue >> output\nEOF",
 		&result), 0);
 	EXPECT_FALSE(result.has_error);
-	ASSERT_EQ(result.commands.nelts, 1u);
-	const auto *command = static_cast<const struct bash_parse_command *>(
-		morph_array_borrow(&result.commands, 0));
+	ASSERT_EQ(result.commands.len, 1u);
+	const auto *command =
+		static_cast<const struct bash_parse_command *>(nb_vec_at(&result.commands, 0));
 	ASSERT_NE(command, nullptr);
 	EXPECT_STREQ(command->name, "cat");
 	bash_parse_result_cleanup(&result);
@@ -173,6 +173,6 @@ TEST(BashParseTest, SemicolonSeparatesCommands)
 
 	ASSERT_EQ(bash_parse_analyze("echo ok; rm target", &result), 0);
 	EXPECT_TRUE(result.is_compound);
-	ASSERT_EQ(result.commands.nelts, 2u);
+	ASSERT_EQ(result.commands.len, 2u);
 	bash_parse_result_cleanup(&result);
 }

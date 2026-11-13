@@ -1,6 +1,6 @@
 #include <morph/tui/widget.h>
 #include "tui/core/view_internal.h"
-#include "util/error.h"
+#include "errors.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -17,9 +17,9 @@ struct morph_tui_widget *morph_tui_widget_add_borrow(struct morph_tui_builder *b
 int morph_tui_widget_set_tag(struct morph_tui_view *view, int tag)
 {
 	if (!view)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	view->state->tag = tag;
 	return 0;
 }
@@ -28,16 +28,16 @@ int morph_tui_widget_emit(struct morph_tui_view *view, enum morph_tui_widget_act
 			  size_t index, const char *text)
 {
 	if (!view)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct morph_tui_view_controller *controller = view->state->controller;
 	if (!view->state->action && !controller->ops->action)
 		return 0;
 	char *copy = text ? strdup(text) : NULL;
 
 	if (text && !copy)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	struct morph_tui_widget_action action = {
 		.sender = view,
 		.type = type,
@@ -58,9 +58,9 @@ int morph_tui_widget_set_action_borrow(struct morph_tui_view *view,
 				       void *data)
 {
 	if (!view)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	view->state->action = action;
 	view->state->action_data = data;
 	return 0;

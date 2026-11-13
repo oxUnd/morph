@@ -1,9 +1,10 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 
 extern "C" {
 #include "runtime/output.h"
 #include "persistence/output_store.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 }
 
 #include <cstring>
@@ -232,8 +233,8 @@ TEST_F(RuntimeOutputTest, ReturnedOutputOwnsItsStringsAfterTheStoredRowIsDeleted
 	int64_t id = 0;
 	ASSERT_EQ(output_store_insert(&db, &input, &id), 0);
 	ASSERT_GT(id, 0);
-	struct output_record first MORPH_CLEANUP(output_record_cleanup) = {};
-	struct output_record second MORPH_CLEANUP(output_record_cleanup) = {};
+	struct output_record first NB_CLEANUP(output_record_cleanup) = {};
+	struct output_record second NB_CLEANUP(output_record_cleanup) = {};
 	ASSERT_EQ(output_store_copy(&db, input.path, &first), 0);
 	ASSERT_EQ(output_store_copy(&db, input.path, &second), 0);
 	EXPECT_NE(first.prompt, second.prompt);
@@ -247,8 +248,8 @@ TEST_F(RuntimeOutputTest, ReturnedOutputOwnsItsStringsAfterTheStoredRowIsDeleted
 
 TEST_F(RuntimeOutputTest, MissingOutputReturnsAnEmptyAndSafelyCleanableOwner)
 {
-	struct output_record record MORPH_CLEANUP(output_record_cleanup) = {};
-	EXPECT_EQ(output_store_copy(&db, "/tmp/missing-output.png", &record), -ENODATA);
+	struct output_record record NB_CLEANUP(output_record_cleanup) = {};
+	EXPECT_EQ(output_store_copy(&db, "/tmp/missing-output.png", &record), NB_ERR_NO_DATA);
 	EXPECT_EQ(record.path, nullptr);
 	EXPECT_EQ(record.prompt, nullptr);
 	EXPECT_EQ(record.id, 0);
@@ -263,12 +264,12 @@ TEST_F(RuntimeOutputTest, OutputReadRejectsAnOccupiedOwnerWithoutChangingItsFiel
 	input.prompt = "owned prompt";
 	int64_t id = 0;
 	ASSERT_EQ(output_store_insert(&db, &input, &id), 0);
-	struct output_record record MORPH_CLEANUP(output_record_cleanup) = {};
+	struct output_record record NB_CLEANUP(output_record_cleanup) = {};
 	ASSERT_EQ(output_store_copy(&db, input.path, &record), 0);
 	char *path = record.path;
 	char *prompt = record.prompt;
 
-	EXPECT_EQ(output_store_copy(&db, input.path, &record), -EEXIST);
+	EXPECT_EQ(output_store_copy(&db, input.path, &record), NB_ERR_EXISTS);
 	EXPECT_EQ(record.path, path);
 	EXPECT_EQ(record.prompt, prompt);
 	EXPECT_STREQ(record.prompt, "owned prompt");

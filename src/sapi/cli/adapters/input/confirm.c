@@ -1,4 +1,5 @@
 #include "sapi/cli/adapters/input/confirm.h"
+#include "nb/err.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -17,7 +18,7 @@ static int cli_confirm_read(char *answer, size_t capacity)
 		return 0;
 	if (!fgets(answer, (int)capacity, tty)) {
 		fclose(tty);
-		return -EIO;
+		return NB_ERR_IO;
 	}
 	fclose(tty);
 	return 1;

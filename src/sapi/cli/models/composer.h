@@ -1,11 +1,12 @@
 #ifndef MORPH_CLI_MODELS_COMPOSER_H
 #define MORPH_CLI_MODELS_COMPOSER_H
 
-#include "util/array.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 #include <stdint.h>
 
 struct cli_composer_model {
-	morph_array_t images;
+	nb_vec images;
 	size_t next_image;
 	int ultra;
 	int mode_ready;

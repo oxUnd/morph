@@ -1,13 +1,13 @@
 # nothing / nbase 全量替换评估与计划
 
-- 日期：2026-11-13。
-- 状态：源码已下载；初步评估完成；实现迁移尚未开始。
+- 日期：2026-11-14。
+- 状态：原生 API 迁移、D01–D09 收敛、旧库删除及实测范围技术验收已完成；nbase 主库许可仍待明确。
 - morph 基线：`df7ca5a4cb4cc9d79713d4de17eff6c576f465f2`。
 - nbase 基线：`cd7efa88aa5c3bbd3825d45d3527e45d7566b716`，版本 `0.1.0`。
 - 上游：[oxund/nothing](https://codeberg.org/oxund/nothing)。仓库名为 nothing，
   实际库名、API 前缀和 CMake target 分别是 nbase、`nb_`、`nbase::nbase`。
-- 本轮产物只有上游源码快照、来源说明和本文；未修改生产代码、测试代码、
-  CMake、现有项目规范或 `.gitignore`。
+- 第 1–6 节保留迁移前的评估依据与原始路径，部分旧文件已删除；
+  现状、替换结果和实际验证边界以第 7、9、10 节为准。
 
 ## 1. 评估目标与结论
 
@@ -15,8 +15,8 @@
 中的重复基础逻辑。** 在 `src/util` 内转调 nbase、保留 `morph_buf_t` 等旧类型，
 或者把 util 整体搬到另一个目录，都不算完成。
 
-当前 nbase 已具备多数容器、编码、哈希、文件、线程和进程原语，适合作为替换基础。
-但尚不能无差别替换：专项探针已复现 nbase 路径解析的堆越界，文件复制存在整文件
+初评时 nbase 已具备多数容器、编码、哈希、文件、线程和进程原语，适合作为替换基础。
+基线仍不能无差别替换：专项探针已复现 nbase 路径解析的堆越界，文件复制存在整文件
 内存加载；Unicode、侵入式队列、C++17 接口，以及进程启动与 I/O 契约存在缺口。
 改动还涉及错误模型、资源所有权、日志、TOML、线程同步和构建依赖。
 这是一次跨模块重构，不是函数重命名任务。
@@ -28,10 +28,10 @@
 评估方式是全仓静态检索、热点函数逐段阅读、上游独立构建及语义探针。
 本文不声称已经逐行审阅全部调用点，也不把上游测试通过等同于 morph 集成通过。
 
-## 2. 已执行的验证
+## 2. 迁移前基线验证
 
-源码导入 `vendor/nothing/`，采用固定提交的完整 `git archive` 快照，共 843 个文件，
-与该提交逐文件比较均一致；没有嵌套 `.git`，没有接入 morph 的构建。
+初次源码导入 `vendor/nothing/`，采用固定提交的完整 `git archive` 快照，共 843 个文件，
+当时与该提交逐文件比较均一致；没有嵌套 `.git`，尚未接入 morph 的构建。
 `README.morph.md` 是另加的来源说明。
 
 环境：macOS 27.0.1 / arm64，AppleClang 21.0.0，CMake 4.4.4。
@@ -70,8 +70,8 @@ WRITE of size 353
 ```
 
 **处理要求：** 上游改用平台保证足够容量的方案，或获取系统分配的结果后正确配对
-释放；增加长路径、解析失败和借用输出的回归。当前提交不能作为生产路径解析后端。
-本轮未修复该问题。最小调用是初始化 `nb_buf/nb_err` 后执行
+释放；增加长路径、解析失败和借用输出的回归。该基线不能直接作为生产路径解析后端。
+实施阶段已修复并加入长路径回归，最终平台证据见第 10 节。最小调用是初始化 `nb_buf/nb_err` 后执行
 `nb_path_canonical(&out, long_existing_path, &err)`；探针链接了本次 ASan 版 nbase。
 
 独立构建可以从项目根目录复现；构建目录放在仓库外：
@@ -94,7 +94,8 @@ cmake -S vendor/nothing -B /tmp/morph-nbase-strict \
 cmake --build /tmp/morph-nbase-strict -j 8
 ```
 
-尚未执行 Linux、Windows、iOS、Android、Valgrind、集成性能基准和 morph 全量测试。
+这些初评探针只覆盖 macOS。实施后的 Linux、MinGW/Wine、Valgrind、
+morph 完整回归和性能基准见第 10–11 节；iOS/Android 未实测。
 本轮没有变更 morph 执行路径，不为其声明迁移后的验证结果。
 
 ## 3. 重复逻辑审阅：应当删掉什么，统一到哪里
@@ -149,7 +150,7 @@ SQLite 在线备份继续使用 SQLite backup API，不能用普通文件复制�
 原子写入，把整份源文件装入内存；现有几份 plain copy 使用固定大小缓冲流式复制。
 因此不能只因为 nbase 有 copy API 就直接替换大文件同步。需先在 nbase 实现有界内存
 的流式复制/临时文件发布，并验证大文件、磁盘满、取消及失败回收。
-当前差异是源码确认的复杂度变化；本轮没有测量 RSS 或吞吐量。
+该差异是初评中源码确认的复杂度变化；最终测量的 RSS 与场景耗时见第 11 节。
 
 ### D03：时间读取与 deadline 换算重复，单位和失败处理分叉
 
@@ -386,20 +387,18 @@ TOML 已有 nbase 对应能力，迁移完成后删除 `morph-toml` 与 `vendor/
 
 | 阶段 | 工作内容 | 完成标准 | 当前状态 |
 | --- | --- | --- | --- |
-| P0：取得源码与评估 | 固定快照、独立测试、逻辑重复和契约盘点 | 交付本文与来源记录 | 已完成本轮初评 |
-| P1：补齐 nbase 前置能力 | 明确库许可证；修长路径越界；补流式复制、C++17、queue、Unicode、cleanup、文件/路径/进程缺口 | 上游或有记录的 vendor patch 通过行为测试，逐项关闭缺口 | 未开始 |
-| P2：建立构建与领域边界 | 接入静态目标，拆分 JSON/媒体/命令分析/资源定位/终端职责，更新规范 | 无新大杂烩库，无依赖环；独立样例可构建 | 未开始 |
-| P3：原生类型全仓替换 | 原子迁移一组共享类型及其所有消费者：buf/vec/str/map/queue/cleanup；重写字段与 owner | 该组所有旧类型/API 清零，测试行为成立；不留长期兼容别名 | 未开始 |
-| P4：按重复逻辑族收敛 | D01–D09 逐组替换本地算法，覆盖 error/log/cancel/thread/TOML/Unicode/进程 | 每组既有 nbase 调用，又确实删除重复实现；保留策略有说明 | 未开始 |
-| P5：删除旧库与验收 | 删除 util 目录、target、清单、包装与旧依赖，更新文档/审计 | 第 8 节全部满足 | 未开始 |
+| P0：取得源码与评估 | 固定快照、独立测试、逻辑重复和契约盘点 | 交付本文与来源记录 | 完成 |
+| P1：补齐 nbase 前置能力 | 明确库许可证；修长路径越界；补流式复制、C++17、queue、Unicode、cleanup、文件/路径/进程缺口 | 上游或有记录的 vendor patch 通过行为测试，逐项关闭缺口 | 技术实现完成；独立库 macOS/Linux/Wine 与 Valgrind 均有实际结果；许可仍待明确 |
+| P2：建立构建与领域边界 | 接入静态目标，拆分 JSON/媒体/命令分析/资源定位/终端职责，更新规范 | 无新大杂烩库，无依赖环；独立样例可构建 | 完成；独立三样例构建及完整 PTY 脚本通过；最终依赖图见第 10 节 |
+| P3：原生类型全仓替换 | 原子迁移一组共享类型及其所有消费者：buf/vec/str/map/queue/cleanup；重写字段与 owner | 该组所有旧类型/API 清零，测试行为成立；不留长期兼容别名 | 完成；生产、测试、扩展和样例均直接采用原生接口 |
+| P4：按重复逻辑族收敛 | D01–D09 逐组替换本地算法，覆盖 error/log/cancel/thread/TOML/Unicode/进程 | 每组既有 nbase 调用，又确实删除重复实现；保留策略有说明 | 完成；重复机制已删除，剩余领域 OS 操作及理由逐项记录于第 10 节 |
+| P5：删除旧库与验收 | 删除 util 目录、target、清单、包装与旧依赖，更新文档/审计 | 第 8 节全部满足 | 已交付源码范围的技术验收完成；完整轮首败均已按原断言闭环，平台/组合边界及许可待定见第 9–10 节 |
 
 P1 的文件/进程扩展可以按后续逻辑族分别落地，但某族的缺口没补齐，就不能把该族
 标为完成。跨模块共有头/类型迁移应按可构建的闭环提交，不能只改库内部。
 P2/P3 期间可以存在尚未迁完的旧代码，但最终不保留永久双栈或兼容层。
 
-建议先用高收益且行为可界定的 D03/D04/D06 验证原生 API 迁移方式，接着完成
-D01/D02/D05/D09，最后处理 D07/D08 的隔离和权限敏感路径。
-这只是实施顺序；所有逻辑族都在最终范围内。
+实施已覆盖全部逻辑族；完成状态与验证边界按第 10 节记录，许可问题独立保留。
 
 ## 8. 全量完成的验收标准
 
@@ -426,13 +425,226 @@ D01/D02/D05/D09，最后处理 D07/D08 的隔离和权限敏感路径。
 10. 对流式参数拼接、SSE/MCP 行缓冲、目录复制和长生命周期容器测量时间/分配/峰值内存；
     没有基准前不宣称性能提升。完成后记录最终依赖图与剩余专用平台代码的理由。
 
-## 9. 当前待解决事项
+## 9. 交付边界与待定事项
 
-- 当前上游没有 nbase 自身许可证文件；仅找到 `tests/toml-test/LICENSE`，其授权不能
-  推定覆盖主库。需要在正式依赖交付前明确并记录主库授权。
-- 已确认长路径堆越界、整文件复制内存开销变化；不能用上游 CTest 通过掩盖这些实现缺口。
-- ABI 尚未冻结且近期接口变化较多；固定提交升级必须重做相关契约验证。
-- 第 4 节所列缺口仍全部存在，本轮没有补上游 API 或隐藏兼容问题。
-- 全仓更深的协议/生命周期去重仍需随实施逐族复查；不能用本文热点清单替代最终审阅。
+- nbase 主库仍缺上游明确许可证；不能用 TOML corpus 或 utf8proc 的许可证推定
+  覆盖 nbase。实现可以在本地验证，正式分发依赖仍需要明确授权。
+- 当前固定快照的技术验证见第 10 节。nbase 公共接口在本轮发生扩展，升级其他
+  快照时仍须重验所有权、原子发布、缺失路径、进程隔离与 C++17 契约。
+- Windows 证据覆盖独立 nbase 的 MinGW 交叉编译与 Wine 执行；没有把它写成
+  MSVC 或完整 morph Windows 前端通过。Android/iOS 本轮没有可交付的受跟踪
+  构建与设备验证，不能由桌面结果推定完成。
+- Linux LSan 需要通过 ptrace 暂停线程；启用严格 seccomp 的子进程不支持这一
+  退出检查组合。独立组件保持 LSan 开启；严格 sandbox 集成仍保留 ASan/UBSan
+  与原权限策略，运行边界和实际结果分别记录，不添加 syscall 白名单或泄漏抑制。
+- 第 11 节已覆盖第 8.10 项的全部基准场景；结果仅描述当前实现，不声明整体提速。
 
-本轮止于评估，接下来应先审阅上述缺口、最终去向和阶段边界，再开展实现。
+## 10. 实施结果与验证记录（2026-11-14，分支 `feat/nothing-migration`）
+
+本节记录最终实现与实际取得的证据。完整首轮的失败和修复重跑分别保留，
+未实测的平台不标为通过。当前源码不再使用旧 util 类型、兼容别名或基础库 facade。
+
+原生库改动已独立提交并推送为
+[`ef0ddba471bd82857f1cc74b9db795446b15e74d`](https://codeberg.org/oxund/nothing/commit/ef0ddba471bd82857f1cc74b9db795446b15e74d)，
+远端分支 `feat/morph-nbase-migration` 的 hash 已通过 `ls-remote` 核对。
+Morph 保留完整源码快照而不是 Git 子模块；858 个原生受跟踪文件与该提交逐字节核对一致，nested Git 元数据保存在源码目录之外。
+Morph 主仓的最终提交与推送由交付记录确认。
+
+### 原生依赖与模块归属
+
+| 职责 | 当前归属与接口 |
+| --- | --- |
+| 通用容器、cleanup、编码/摘要、时间、文件/路径 | 固定源码 `vendor/nothing`，调用方直接使用 `nb_*` |
+| 错误与日志 | `nb_status`/`nb_err`/`nb_log`；`src/errors.h` 仅保存 `NB_ERR_USER` 应用错误目录；前端拥有文件 logger |
+| 线程、条件等待、取消、进程/信号 | nbase heap handle 与原生平台实现；应用 owner 负责创建失败和 stop/join |
+| TOML | `nb_toml` 与借用 AST；删除旧 tomlc17 接线与解析器 |
+| JSON | 独立 `morph-cjson`，业务直接用 cJSON 并提供 typed owner cleanup |
+| Unicode | nbase 内置 utf8proc 2.12.0 / Unicode 18 后端；删除 morph Unicode 包装 |
+| 终端文本、尺寸、状态、动画 | `src/tui/terminal/`；`morph-terminal` 提供 text/size/activity；状态符号仍单点定义 |
+| BPE / 命令分析 / 资源定位 / 图像 | `agent/bpe`、`permission/command_analysis`、`runtime/resources`、`media/image` 的独立领域 target |
+| 旧库 | 删除 `src/util`、其清单和 `morph-util` target；各 target 声明所用原生或领域依赖 |
+
+主要依赖方向如下；通用库由实际使用它的领域 target 声明，不再通过 util 传递。
+图中省略了各业务 target 对 nbase/cJSON 的重复边，具体清单以各模块 CMake 为准。
+
+```mermaid
+flowchart TD
+    CLI[morph-cli] --> Runtime[morph-runtime]
+    FastCGI[morph-fastcgi] --> Runtime
+    CLI --> TUI[morph-tui]
+    Runtime --> Agent[morph-agent]
+    Runtime --> Services[config / credits / event / mcp / session / skill / sync / tools / ext / ipc]
+    Runtime --> Data[morph-app-data]
+    Agent --> Permission[morph-permission]
+    Agent --> Models[morph-models / morph-http]
+    Agent --> State[db / session / persistence]
+    Agent --> BPE[morph-bpe]
+    BPE --> Data
+    Permission --> Analysis[morph-command-analysis]
+    Analysis --> TS[tree-sitter-bash]
+    TUI --> Terminal[morph-terminal]
+    TUI --> Media[morph-media]
+    TUI --> UV[libuv]
+    Terminal --> Native[nbase::nbase]
+    Media --> Native
+    Data --> Native
+    Agent --> Native
+    Agent --> JSON[morph-cjson]
+    Agent --> Regex[morph-regex]
+```
+
+动态工具刷新使用 registry owner 提供的回调，agent 不反向链接 runtime，
+GNU ld 不再依赖重复静态库掩盖依赖环。`morph-cjson`、`morph-regex` 是独立
+第三方 target；媒体编码、命令 AST 和资源定位保持各自领域边界。
+独立 TUI 样例只接入 nbase、media、terminal、TUI 与 libuv，不编译旧 util 子集。
+
+### D01–D09 实施结果
+
+| 逻辑族 | 已删除/收敛的机制 | 保留的领域策略 |
+| --- | --- | --- |
+| D01 原子发布 | 通用写循环、临时文件发布转 `nb_file_write_all_atomic`；新增 `new_file_mode` 与 `published`；日志 sink/轮转亦在 nbase；FastCGI token 以 create-only、0600 原子发布，失败不交付凭据 | 配置授权/锁/内容冲突；setup 的覆盖选择；share 命名；checkpoint 保留 fd-relative no-follow 恢复 |
+| D02 复制/目录 | 两份 sync plain copy、ext copy_file/copy_symlink/remove_tree 内核删除；复制由 nbase 固定内存流式发布；skill 普通复制与有界删除用原生接口，目录快照用 `nb_dir_scan` | ext `.git` 过滤；skill 根约束、链接目标校验、元数据过滤与深度；SQLite 保留在线 backup API |
+| D03 时间 | 单调时钟读取直接 `nb_time_monotonic_ns`，等待使用明确 deadline 单位 | 各 owner 的预算、轮询周期、grace 和显示单位 |
+| D04 流式参数 | 参数/调用表切换原生 buffer/vector，删除 provider 各自的 realloc 拼接机制 | chat/responses item/call ID 路由与状态机 |
+| D05 行消费 | SSE、MCP 和 exec 使用原生 buffer 游标/行操作，避免按每行搬移完整尾部 | SSE data/id/retry/空行协议、MCP 帧限制、exec 输出保留/排空策略 |
+| D06 编解码/摘要 | 删除 util Base64/SHA256；FastCGI HMAC/hex/常量比较、hooks/同步等 hex 和 URL 编码使用原生 API | PBKDF2 记录格式/迭代；Basic 认证保持有 padding、无空白并拒绝 NUL；BLAKE3 数据协议不变；file URL 按段保留 `/` |
+| D07 进程 | 通用 spawn、PATH、标准流配置、交换、信号恢复与取消/超时由 nbase 提供；删除旧 child_io 与 signals | exec session/job、脱敏/落盘、事件和 runtime 生命周期；sandbox 子进程初始化仍是明确的领域回调 |
+| D08 路径 | `nb_path_canonical_missing` 解析已存在祖先并拒绝未创建尾部的 `..`；FastCGI 包含/相对路径算法统一为原生操作 | 权限 allow/deny/grant 和目录边界；checkpoint fd-relative 强约束；可信临时目录由 permission/trusted_paths 产出原生 buffer 快照，sandbox_config 在 parent 准备/环境过滤前持有一次快照；两平台只读同一根集合，移除 HOME 或变更 TMPDIR 后不重采样 |
+| D09 容器结构操作 | buffer/vector/map/queue 原生类型与字段全仓迁移；动态工具历史删除用 `nb_vec_remove` | 元素析构、稳定队列节点、编辑器文本编辑和业务次序 |
+
+原生语义已同步调用方：buffer 变更是 bool/sticky 错误，move 是交换，vector 新槽未
+初始化，map 旧值由接收者负责。需要 malloc owner 的既有领域边界显式检查分配并复制，
+不将 nb storage 交给第三方 free；文件二进制复制保留长度和嵌入 NUL。`nb_file_read_all` 的显式字节上限为 0 时无限；
+两平台在预留容量前与实际读入时均检查，增长竞态超限仍保留原 out。临时文件可转移
+非继承、二进制读写 fd，仍持有 fd 时允许按路径读取；失败保留 path/fd 输出。
+`nb_file_temp_dir(path, dir, prefix, err)` 显式选择父目录与业务前缀，保留 skill
+隐藏 staging 等原有扫描边界。两种 temp API 保留捕获的 OS 原因并映射精确状态。FastCGI token
+记录采用 64 KiB 完整读取上限；超限或格式损坏的文件不参与验证，也不被 prune
+误删，只有已解析且正数的到期时间才触发清理；认证缓存直接接收同次验证
+返回的到期时间，删除第二次 1024 字节读取与子串扫描。
+
+持久数据库通过 `schema_migrations` 的 v3 一次性迁移 `memory_jobs`、
+`sub_agent_tasks`、`agent_threads` 与 `history_compaction_attempts` 的错误码。
+旧应用领域码按固定编号映射；历史负 errno 只对 Linux/Darwin 共同且含义明确的
+数值作精确转换，存在平台歧义或未知的负值记为 `NB_ERR_OS`，不猜测来源平台。
+每条既有记录的 `legacy_error_code` 保留原始数值；非负值保持原值，之后写入的
+原生码不再重解释。四表更新、审计列与 v3 标记处于同一 savepoint，失败时整体
+回滚，嵌入的历史 `event_json` 原文不改。
+旧版备份导入也按来源的 v3 标记决定是否转换；映射只作用于目标插入表达式，
+不修改备份，已有 v3 的原生码与审计值直接保留。
+
+### 保留的专用系统调用与算法
+
+最终复查包含 read/write/fsync/rename、分配增长、时间、编解码和路径操作，
+并未以系统调用检索结果为零作为标准。保留项具有以下领域契约：
+
+| 位置/职责 | 保留原因与原生机制边界 |
+| --- | --- |
+| checkpoint 恢复 | fd-relative、no-follow、对象身份和外部修改冲突检查；逐项恢复与部分失败封存不能等同于整文件替换 |
+| sandbox / permission | Seatbelt、Landlock、seccomp、rlimit 与预先取得的可信根快照是授权/隔离策略；子进程准备通过 nbase 明确回调执行 |
+| exec / IPC / FastCGI / TUI | reactor fd、PTY、网络响应、事件循环及有界输出落盘带有协议/预算语义；通用 spawn/exchange、取消、时钟、temp 与文件发布已经使用 nbase |
+| file-read / file-write | 完整行、范围/偏移读写、截断和权限确认是工具语义；whole-file 原子发布、复制和临时文件创建不再自行实现 |
+| SQLite 备份与恢复 | 事务一致的 online backup、schema v3 和导入映射需要 SQLite 语义，不能用普通文件复制替代 |
+| 文本编辑、BPE、媒体 | 文本范围编辑、词元合并、格式编解码及第三方回调属于领域算法；SSE/MCP 行消费与模型 delta 增长已删除重复搬移/分配机制 |
+
+对象定长分配及 cJSON/stb 等第三方所有者继续按其分配器配对释放。需要跨 allocator
+边界的数据采用明确复制；没有运行中替换全局 allocator、同义基础库适配层或永久双栈。
+
+### 平台与集成验证矩阵
+
+完整首轮及修复重跑分开记账，保留首轮失败事实。下列正常构建不是重新执行一次
+零失败的完整轮；闭环结果来自完整集合加精确修复/新增回归，不替换或削弱原断言。
+
+| 平台/范围 | 实际结果 | 日志与边界 |
+| --- | --- | --- |
+| morph macOS 正常构建 | 全目标最终构建成功，0 warnings/errors | `/tmp/morph-migrate/configure-final-delivery.log`、`/tmp/morph-migrate/build-final-delivery.log`；含最终 helper、resume、ReAct/HITL/AgentTurn 测试 owner、stb 与 native hex |
+| morph macOS 正常 CTest | 首轮 2597 项：2589 通过、6 条件跳过、2 失败，1579.96 s；修复/新增聚合 70/70 通过，253.19 s，覆盖全部首败 | `/tmp/morph-migrate/ctest-full-serial.log`、`/tmp/morph-migrate/ctest-final-regressions.log`；该时点发现 2600 项，合并覆盖 2594 通过、6 跳过、0 未闭环失败；之后新增/修复 fixture 与 stb 的正常聚合 88/88 通过（6.170 s），`/tmp/morph-migrate/mac-final-fixture-regressions.log`；最后 FileRead 25/25（0.065 s）、setup 1/1（34.19 s），`/tmp/morph-migrate/mac-final-file-read.log`、`/tmp/morph-migrate/mac-final-setup.log`；最新 main inventory 2602，合并覆盖 2596 通过、6 条件跳过、0 未闭环失败 |
+| morph Linux arm64 正常构建/CTest | 完整构建 0 warnings；首轮 2600 项含 20 失败，1399.45 s；160/160 修复/新增聚合通过，316.39 s，覆盖全部首败 | `/tmp/morph-linux-build-timer-final.log`、`/tmp/morph-linux-ctest-full.log`、`/tmp/morph-linux-ctest-repair.log`；该时点新发现 2603 项，不能称为 fresh 2603 全量单轮通过 |
+| morph macOS ASan/UBSan | core 初轮 2492 项：2480 通过、6 跳过、6 失败；PTY 初轮 110 项：107 通过、3 失败；这些失败均有修复重跑证据 | 最新聚合 237/237 通过（136.91 s），含完整 ToolContext、TUI 生命周期/UV/timer、图像与新增缩放、MathJax、permissions/manage/jobs；footer/composer 最新强几何断言通过，resume 最新 120/80/60 列通过（110.72 s），其后 resume/list/terminal owner 与采集夹具 30/30 通过（6.892 s），`/tmp/morph-macos-asan-resume-terminal-final.log`。初轮 `/tmp/morph-migration-asan-core.log`、`/tmp/morph-migration-asan-pty.log`，闭环 `/tmp/morph-migration-asan-final-regressions.log`、`/tmp/morph-resume-history-asan-final.log` |
+| morph Linux ASan/UBSan 完整 CTest | 独立快照完整原 2604 项：2595 通过、8 条件跳过、1 个旧 setup 采集夹具失败，2019.17 s；无 sanitizer 报告 | `/tmp/morph-linux-asan-final-ctest.log`；最后 helper freeze 后完整配置/构建均 0 warnings，`/tmp/morph-linux-asan-final-configure-delivery.log`、`/tmp/morph-linux-asan-final-build-delivery.log`；保留严格 sandbox 和全部断言，退出 LSan 阶段设为 0。setup 改为等待新完整帧及目标页独有内容后，原完整用例最新 1/1 通过（30.42 s），`/tmp/morph-linux-asan-final-setup-latest.log`；最后增量 81 项为 80 通过、1 root 权限条件跳过（7.947 s），`/tmp/morph-linux-asan-final-deltas.log`；包含新增 hex 用例的 2605 项合并覆盖为 2597 通过、8 跳过、0 未闭环失败，精确汇总 `/tmp/morph-linux-asan-final-summary.json`，不称为单轮全部通过 |
+| morph Linux 严格 LSan | 最新 2540 个 GTest 的精确集合中，宿主严格 LSan 2512 项：2505 通过、7 条件跳过；四组进程均退出 0 | `/tmp/morph-linux-lsan-coverage-final.json`；28 个严格 sandbox 子进程的 LSan 组合不支持，由上述完整 ASan/UBSan 轮验证其业务语义；真实 MathJax、resume、fixture 泄漏及 stb 诊断均有下表的修复证据 |
+| nbase macOS arm64 | 严格告警构建、独立普通与 ASan/UBSan CTest 均 21/21 通过 | 包含库测试、720 项 TOML 语料和全部示例；`/tmp/morph-nbase-final-tests.log` |
+| nbase Linux arm64 | Docker `NB_WERROR=ON` + ASan/UBSan，21/21 通过；Valgrind 独立全 21 项通过 | `/tmp/morph-nbase-valgrind.log`、`/tmp/morph-nbase-valgrind-results.json`；definite/indirect/possible/errors 均 0，未使用 suppressions；库测试与 basic 示例各有 88 B / 2 blocks still reachable，其余 19 项退出存活为 0；不代表整个 morph 通过 Valgrind |
+| nbase Windows x86_64 | MinGW `NB_WERROR=ON` 全库、测试、示例交叉构建通过；Wine 全 21 项退出码 0 | `/tmp/morph-nbase-wine-results.json`；覆盖原生 process/file/temp/path 等平台契约，非 MSVC 或完整 morph Windows 验证 |
+| MSVC / Android / iOS | 未实测 | 未扩大桌面平台证据的适用范围 |
+
+macOS 正常首轮的 6 个跳过项涉及 live MCP、宿主自动化、文件系统原始名称、
+TMPDIR shell 能力和高并发 spawn 的既有前置条件。Linux 首轮另有 root 下权限
+拒绝、文件名长度、交互进程组与可选 Kitty reflow 等条件跳过；具体名称和原因
+保留在原始 CTest 日志中，未计作执行通过。
+
+### 其他验收证据
+
+| 验证 | 实际结果与边界 |
+| --- | --- |
+| 原生语义与权限 | Unicode/File/ID/Name/权限/密码向量早期分组 132/132；最终完整轮覆盖 Ask/Auto/Full/Read Only、不可用审批、拒绝无写入、历史凭据、事务导入及所有者失败路径 |
+| 严格 C++17 | 全部公共头及 `NB_STR_LIT` / `NB_STR_NULL` 实际展开探针通过 |
+| MathJax 配置所有权 / Linux LSan | `test_md_html` 原 73,362 字节 / 318 次分配泄漏消除；原用例与新 owned/borrowed/失败保留/重复上下文 4 项回归在 `detect_leaks=1` 下 CTest 2/2 通过，日志 `/tmp/morph-mathjax-linux-tests.log`；受跟踪补丁在父 Git/自有 Git/无 Git/symlink 四种布局完成 16 项 fresh/noop/外改保留/冲突拒绝检查，避免子源码无 `.git` 时误继承父仓前缀而 silent skip；`/tmp/morph-mathjax-parent-git-patch-repro.log` |
+| ReAct / HITL / AgentTurn 测试 owner / Linux LSan | 补集首次 1410/1410 断言通过后，退出扫描报告 231,985 B / 179 次分配遗漏；释放 NullContext 返回值；12 个 registry 改为 scope owner（其中 10 个原缺释放），并释放手工覆盖的旧 final_answer。修复后 focused 55/55（8.244 s）与完整补集 1410/1410（128.020 s）均严格 LSan 进程退出 0；`/tmp/morph-linux-asan-lsan-supplement-focused.log`、`/tmp/morph-linux-asan-lsan-supplement-repaired.log`；未关闭检查或删断言 |
+| file-read 最后 hex 收敛 | binary preview 改用 `nb_hex_encode_to`，只保留空格排列；新增精确 0/1/2/64/65 字节边界回归。Mac ASan/UBSan 25/25（0.131 s）；Linux 严格 LSan 24 通过、1 root 权限条件跳过（0.141 s），进程退出 0；`/tmp/morph-macos-asan-file-read-final.log`、`/tmp/morph-linux-lsan-file-read-final.log`；新增 1 项使当时 Linux inventory 为 2540 GTests / 2605 CTest |
+| resume 列表 owner / Linux LSan | plain 路径原 4,720 B / 30 次分配遗漏已修复；同步模型/会话采用 typed scope，异步界面接受后才接管列表，失败保留 caller owner；18 项定向进程退出 0，最终 deferred 57/57（3.899 s）严格 LSan 退出 0，`/tmp/morph-linux-lsan-resume-focused.log`、`/tmp/morph-linux-asan-deferred-repaired.log`；57 是主集合子集，未重复增加覆盖分母 |
+| 独立 JSrunner HostIO / Linux LSan | 未安装 seccomp 的真实 runner 以 `detect_leaks=1`、`UBSAN halt`、`LSAN exitcode=99` 运行 18/18 通过（25.261 s）；`/tmp/morph-linux-js-hostio-lsan.log` |
+| stb resize / Linux UBSan | 保留 bounds/object-size 检查，将 gather/scatter 改为直接索引各自 8 元素表后选择函数；原 `ProbeAndResizeFileExact` 与新增 240 组合回归通过，整个图像组 149/149 严格 LSan 通过；补丁逆向基线 hash 与前向字节一致检查通过 |
+| 无 Readline 与 FastCGI | `readline OFF` + `BUILD_FASTCGI=ON` 独立完整构建通过，CLI `morph --help` 退出码 0；`/tmp/morph-migration-fallback-build-final.log`、`/tmp/morph-migration-fallback-morph-help-final.log`；最新完整构建 0 warnings，未称为 fallback 单独全套 CTest |
+| 独立 TUI 样例 | 在 `/tmp/morph-tui-native-samples` 独立配置/构建 minimal、controls、customization 全 3 个程序，0 warnings；`tests/test_tui_samples_pty.py` 完整通过，含焦点、选择、Unicode、paste、modal、resize、退出恢复与 non-TTY 拒绝；`/tmp/morph-tui-native-samples-final-{build,pty}.log` |
+| 全局状态与结构审计 | 最终真实 FastCGI 编译数据库覆盖 484 翻译单元，0 mutable declarations，`/tmp/morph-migration-global-state-final.log`；控制流约束 3/3 与 CLI layout/status 审计通过，`/tmp/morph-source-control-final.log`、`/tmp/morph-cli-layout-final.log`；保留原规则 |
+| CLI/PTy 行为 | 正常完整轮与修复聚合覆盖 `/copy`、hooks、approval/slash/select、reasoning、recap/composer/live、transcript/reflow、permissions、resume 和 jobs；120/80/60 列原断言、草稿、retained history 与逐帧几何检查保留 |
+| D08 快照与 prompt | 24 项中 23 通过、1 项 macOS 缺少遵守 TMPDIR 的 shell 条件跳过、0 失败；覆盖移除 HOME / 变更 TMPDIR 后仍使用同次根快照、审批与 OS sandbox 同根；`/tmp/morph-d08-snapshot-final.log` |
+
+严格 LSan 的最终集合按名字与真实 inventory 比对，而不是相加日志中的 OK 行：
+image 149 + remaining 952 + supplement 1410 + 新增 binary-preview 1，
+共 2512 个互不重叠的宿主用例；再加 28 个组合不支持项，精确覆盖 Linux
+最新 2540 个 GTest。952 组含 7 个既有条件跳过，其余 2505 项通过；四组进程
+均正常退出 0。`/tmp/morph-linux-lsan-coverage-final.json` 保存逐名分组、结果及各组
+真实环境；补集完整日志也扫描了可见子进程的 sanitizer fatal/report，结果为 0。
+这证明已执行宿主的退出泄漏扫描，不推广为严格 sandbox 内的子进程支持 LSan。
+原在 UBSan 中断前产生的 OK 行未被当作完成过退出扫描的证据。
+
+Linux seccomp/LSan 组合限制有最小独立程序实证：未安装 seccomp 时 ptrace
+返回 ESRCH，安装原策略后返回 EPERM 且 LSan tracer 失败；同一策略只关闭退出
+leak 阶段时进程成功，注入 heap 越界和 signed overflow 仍分别由 ASan/UBSan 报错。
+证据为 `/tmp/morph-sanitizer-*.log`。这与 sanitizer 的
+[Linux StopTheWorld 实现](https://github.com/gcc-mirror/gcc/blob/master/libsanitizer/sanitizer_common/sanitizer_stoptheworld_linux_libcdep.cpp)
+需要 ptrace 暂停线程一致；未放宽 sandbox 权限，也未配置泄漏 suppressions。
+
+`read-lines` 独立扩展亦直接采用 `nb_buf` 与原生路径操作，删除自写增长/路径前缀
+机制；独立 CMake 将 nbase 编译为 PIC 静态库链接 `.so`，Makefile 与清单的
+`make` 构建约定一致。六组黑盒契约覆盖允许根、符号链接逃逸、完整行/末行、
+字节与行号上限、二进制拒绝和 Unicode/JSON 输出；共享库 ABI 实测 CTest
+1/1 通过（0.51 s），相同用例经独立 native executable 的 ASan/UBSan 实测
+1/1 通过（0.88 s），两次严格构建均无警告。
+
+## 11. 可复现的迁移基准（2026-11-13）
+
+基准入口是 `tests/bench_nbase_migration.c`，可选目标
+`morph-nbase-migration-bench` 不参与默认构建或 CTest。复现命令：
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target morph-nbase-migration-bench
+/usr/bin/time -l build/bin/morph-nbase-migration-bench
+```
+
+本次实测环境为 macOS 27.0.1 / arm64、AppleClang 21、Release。下表是一轮
+实际运行，时间包含当前机器负载和文件缓存影响，不构成跨版本或跨平台性能结论。
+参数累积调用真实 `llm_stream_call_input_append`；SSE 调用真实解析器；MCP 项
+仅测其使用的 nbase 分片行缓冲机制，不含网络、JSON 解码或 RPC 路由。
+
+| 场景与负载 | 耗时 ms | nbase alloc 次数 | nbase realloc 次数 | nbase 请求字节峰值 |
+| --- | ---: | ---: | ---: | ---: |
+| 8 个模型调用，各 32,768 段 × 16 字节，合计 4 MiB | 4.763 | 12 | 128 | 8,422,080 |
+| 200,000 个 SSE 事件，9 MB，以 17 字节分片输入 | 26.278 | 4 | 0 | 4,608 |
+| 200,000 个 MCP 行帧，9.4 MB，以 7 字节分片输入 | 24.132 | 1 | 2 | 64 |
+| 目录流式复制，8 个文件 × 8 MiB，共 64 MiB | 50.189 | 43 | 0 | 1,032 |
+| 同一 vec/map，100 轮 × 4,096 条插入、查验删除和清空 | 64.541 | 344 | 0 | 468,976 |
+
+统计 allocator 仅在这个独立进程创建任何 nbase 对象之前安装一次，所有 owner
+析构后才恢复。每个场景结束都验证跟踪的剩余字节为 0。表中峰值是 nbase
+allocator 所见的**请求存活字节**，realloc 按成功前后的净容量记账；不代表 RSS，
+也不计 libc/cJSON 分配、栈、系统缓冲或 realloc 内部瞬时复制。目录场景在计时前
+创建源文件，复制时间不含 fixture 创建、验证或清理；峰值包含计时开始时仍持有的
+512 字节路径缓冲。其余场景的起始存活字节均为 0。
+
+同一整进程的 `/usr/bin/time -l` 实测最大 RSS 为 11,272,192 字节，墙钟 0.53 秒；
+该 RSS 包含全部五个场景、fixture 准备和动态库，不能归给某一行。基准没有部署前
+同等工作负载的测量，因此不声明本次迁移产生了相对提速或 RSS 改善。

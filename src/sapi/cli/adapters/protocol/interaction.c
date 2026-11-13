@@ -1,12 +1,13 @@
 #include "sapi/cli/adapters/protocol/interaction.h"
+#include "nb/time.h"
+#include "nb/err.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/adapters/input/state.h"
 #include "sapi/cli/adapters/input/reader.h"
 #include "cJSON.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/application_internal.h"
-#include "util/child_io.h"
-#include "util/cancel.h"
+#include "nb/cancel.h"
 
 #define CLI_INTERACTION_ID_MAX 64
 #define CLI_INTERACTION_INPUT_MAX (1024 * 1024)
@@ -34,27 +35,27 @@ static int cli_interaction_emit(struct cli_application *ctx, const char *name, c
 	int rc;
 
 	if (!ctx || !name || !phase || !request_id || !kind)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	data = cJSON_CreateObject();
 	if (!data)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (!cJSON_AddStringToObject(data, "request_id", request_id) ||
 	    !cJSON_AddStringToObject(data, "kind", kind)) {
 		cJSON_Delete(data);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (request) {
 		cJSON *copy = cJSON_Duplicate(request, 1);
 
 		if (!copy) {
 			cJSON_Delete(data);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		cJSON_AddItemToObject(data, "request", copy);
 	}
 	if (reason && !cJSON_AddStringToObject(data, "reason", reason)) {
 		cJSON_Delete(data);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	event = (struct morph_event){
 		.type = MORPH_EVENT_INTERACTION,
@@ -69,14 +70,13 @@ static int cli_interaction_emit(struct cli_application *ctx, const char *name, c
 	return rc;
 }
 
-static int cli_interaction_read_line(struct cli_application *ctx, morph_buf_t *line,
-				     int64_t *deadline)
+static int cli_interaction_read_line(struct cli_application *ctx, nb_buf *line, int64_t *deadline)
 {
 	char chunk[BUFSIZ];
 
 	if (!line)
-		return -EINVAL;
-	morph_buf_reset(line);
+		return NB_ERR_INVAL;
+	nb_buf_clear(line);
 	for (;;) {
 		size_t len;
 		int complete;
@@ -84,18 +84,18 @@ static int cli_interaction_read_line(struct cli_application *ctx, morph_buf_t *l
 
 		if (!cli_input_fgets_until(ctx, chunk, sizeof(chunk), stdin, deadline)) {
 			if (feof(stdin))
-				return -ECANCELED;
+				return NB_ERR_CANCELLED;
 			if (errno == EINTR) {
 				clearerr(stdin);
-				if (morph_signal_flag_take(&ctx->interrupted) ||
-				    morph_signal_flag_get(&ctx->terminate_requested) ||
-				    morph_cancel_token_is_cancelled(
-					    ctx->input ? ctx->input->input_cancel_token : NULL)) {
-					return -ECANCELED;
+				if (nb_atomic_int_exchange(&ctx->interrupted, 0) ||
+				    nb_atomic_int_load(&ctx->terminate_requested) ||
+				    nb_cancel_requested(ctx->input ? ctx->input->input_cancel_token
+								   : NULL)) {
+					return NB_ERR_CANCELLED;
 				}
 				continue;
 			}
-			return errno ? -errno : -EIO;
+			return errno ? nb_status_from_errno(errno, NULL) : NB_ERR_IO;
 		}
 		len = strlen(chunk);
 		complete = len > 0 && chunk[len - 1] == '\n';
@@ -104,8 +104,8 @@ static int cli_interaction_read_line(struct cli_application *ctx, morph_buf_t *l
 		if (len > 0 && chunk[len - 1] == '\r')
 			chunk[--len] = '\0';
 		if (line->len > CLI_INTERACTION_INPUT_MAX - len)
-			return -E2BIG;
-		rc = morph_buf_append(line, chunk, len);
+			return NB_ERR_TOO_BIG;
+		rc = (nb_buf_append(line, chunk, len) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 		if (complete)
@@ -122,18 +122,18 @@ static int cli_interaction_parse_response(const char *json, const char *request_
 	cJSON *data;
 
 	if (!json || !request_id || !response_data || !cancelled)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*response_data = NULL;
 	*cancelled = 0;
 	root = cJSON_Parse(json);
 	if (!root)
-		return MORPH_ERR_PARSE;
+		return NB_ERR_PARSE;
 	type = cJSON_GetObjectItemCaseSensitive(root, "type");
 	id = cJSON_GetObjectItemCaseSensitive(root, "request_id");
 	if (!cJSON_IsString(type) || !type->valuestring || !cJSON_IsString(id) ||
 	    !id->valuestring || strcmp(id->valuestring, request_id) != 0) {
 		cJSON_Delete(root);
-		return MORPH_ERR_PROTOCOL;
+		return NB_ERR_PROTOCOL;
 	}
 	if (strcmp(type->valuestring, "interaction.cancel") == 0) {
 		*cancelled = 1;
@@ -142,17 +142,17 @@ static int cli_interaction_parse_response(const char *json, const char *request_
 	}
 	if (strcmp(type->valuestring, "interaction.response") != 0) {
 		cJSON_Delete(root);
-		return MORPH_ERR_PROTOCOL;
+		return NB_ERR_PROTOCOL;
 	}
 	data = cJSON_GetObjectItemCaseSensitive(root, "data");
 	if (!cJSON_IsObject(data)) {
 		cJSON_Delete(root);
-		return MORPH_ERR_PROTOCOL;
+		return NB_ERR_PROTOCOL;
 	}
 	*response_data = cJSON_Duplicate(data, 1);
 	cJSON_Delete(root);
 	if (!*response_data)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	return 0;
 }
 
@@ -162,11 +162,11 @@ static int cli_interaction_request_on_owner(void *opaque)
 	struct cli_application *ctx = call->ctx;
 	(void)ctx;
 	char request_id[CLI_INTERACTION_ID_MAX];
-	morph_buf_t line;
+	nb_buf line NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc;
 
 	if (!call || !call->ctx || !call->kind || !call->response_data)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	call->ctx->interaction_sequence++;
 	snprintf(request_id, sizeof(request_id), "interaction-%llu",
 		 (unsigned long long)call->ctx->interaction_sequence);
@@ -174,7 +174,7 @@ static int cli_interaction_request_on_owner(void *opaque)
 				  call->request_data, NULL);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_init(&line, BUFSIZ);
+	rc = (nb_buf_init(&line), nb_buf_reserve(&line, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	cJSON *policy = cJSON_GetObjectItemCaseSensitive(call->request_data, "response_policy");
@@ -182,7 +182,7 @@ static int cli_interaction_request_on_owner(void *opaque)
 	int64_t deadline = strcmp(call->kind, "ask_user") == 0 && cJSON_IsString(policy) &&
 					   strcmp(policy->valuestring, "optional") == 0 &&
 					   cJSON_IsNumber(timeout) && timeout->valueint > 0
-				   ? morph_io_now_ms() + (int64_t)timeout->valueint * 1000
+				   ? nb_time_monotonic_ms() + (int64_t)timeout->valueint * 1000
 				   : 0;
 	for (;;) {
 		cJSON *response = NULL;
@@ -193,20 +193,22 @@ static int cli_interaction_request_on_owner(void *opaque)
 		if (rc != 0) {
 			cJSON *indices = cJSON_GetObjectItemCaseSensitive(call->request_data,
 									  "recommended_indices");
-			const char *reason = rc == -ETIMEDOUT ? (cJSON_GetArraySize(indices)
-									 ? "timeout_recommended"
-									 : "timeout_no_input")
-							      : morph_strerror(rc);
+			const char *reason =
+				rc == NB_ERR_TIMEOUT
+					? (cJSON_GetArraySize(indices) ? "timeout_recommended"
+								       : "timeout_no_input")
+					: nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+						     rc);
 			(void)cli_interaction_emit(call->ctx,
-						   rc == -ETIMEDOUT ? "interaction.resolved"
-								    : "interaction.cancelled",
-						   rc == -ETIMEDOUT ? "end" : "failed", request_id,
-						   call->kind, NULL, reason);
-			morph_buf_cleanup(&line);
+						   rc == NB_ERR_TIMEOUT ? "interaction.resolved"
+									: "interaction.cancelled",
+						   rc == NB_ERR_TIMEOUT ? "end" : "failed",
+						   request_id, call->kind, NULL, reason);
+			nb_buf_cleanup(&line);
 			return rc;
 		}
 		/* Hosts can report editing activity before they have a complete answer. */
-		cJSON *progress = cJSON_Parse(morph_buf_cstr_borrow(&line));
+		cJSON *progress = cJSON_Parse(nb_buf_cstr(&line));
 		cJSON *type = cJSON_GetObjectItemCaseSensitive(progress, "type");
 		cJSON *id = cJSON_GetObjectItemCaseSensitive(progress, "request_id");
 		int editing = cJSON_IsString(type) &&
@@ -219,35 +221,38 @@ static int cli_interaction_request_on_owner(void *opaque)
 			deadline = 0;
 			continue;
 		}
-		rc = cli_interaction_parse_response(morph_buf_cstr_borrow(&line), request_id,
-						    &response, &cancelled);
+		rc = cli_interaction_parse_response(nb_buf_cstr(&line), request_id, &response,
+						    &cancelled);
 		if (rc != 0) {
-			(void)cli_interaction_emit(call->ctx, "interaction.invalid_response",
-						   "failed", request_id, call->kind, NULL,
-						   morph_strerror(rc));
+			(void)cli_interaction_emit(
+				call->ctx, "interaction.invalid_response", "failed", request_id,
+				call->kind, NULL,
+				nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			continue;
 		}
 		if (cancelled) {
 			(void)cli_interaction_emit(call->ctx, "interaction.cancelled", "failed",
 						   request_id, call->kind, NULL,
 						   "interaction cancelled");
-			morph_buf_cleanup(&line);
-			return -ECANCELED;
+			nb_buf_cleanup(&line);
+			return NB_ERR_CANCELLED;
 		}
 		if (call->validate) {
 			rc = call->validate(response, call->validate_user_data);
 			if (rc != 0) {
 				cJSON_Delete(response);
-				(void)cli_interaction_emit(
-					call->ctx, "interaction.invalid_response", "failed",
-					request_id, call->kind, NULL, morph_strerror(rc));
+				(void)cli_interaction_emit(call->ctx,
+							   "interaction.invalid_response", "failed",
+							   request_id, call->kind, NULL,
+							   nb_err_str(morph_error_descriptions(),
+								      MORPH_ERROR_COUNT, rc));
 				continue;
 			}
 		}
 		*call->response_data = response;
 		(void)cli_interaction_emit(call->ctx, "interaction.resolved", "end", request_id,
 					   call->kind, NULL, NULL);
-		morph_buf_cleanup(&line);
+		nb_buf_cleanup(&line);
 		return 0;
 	}
 }
@@ -272,9 +277,9 @@ int cli_interaction_request(struct cli_application *ctx, const char *kind,
 	struct cli_interaction_call call;
 
 	if (!ctx || !kind || !response_data)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON)
-		return -ENOTSUP;
+		return NB_ERR_UNSUPPORTED;
 	*response_data = NULL;
 	call = (struct cli_interaction_call){
 		.ctx = ctx,
@@ -293,15 +298,15 @@ static int cli_interaction_validate_decision(const cJSON *response_data, void *u
 	cJSON *decision;
 
 	if (!validation || !cJSON_IsObject(response_data))
-		return MORPH_ERR_PROTOCOL;
+		return NB_ERR_PROTOCOL;
 	decision = cJSON_GetObjectItemCaseSensitive(response_data, "decision");
 	if (!cJSON_IsString(decision) || !decision->valuestring)
-		return MORPH_ERR_PROTOCOL;
+		return NB_ERR_PROTOCOL;
 	for (int i = 0; i < validation->allowed_count; i++) {
 		if (strcmp(decision->valuestring, validation->allowed[i]) == 0)
 			return 0;
 	}
-	return -EINVAL;
+	return NB_ERR_INVAL;
 }
 
 int cli_interaction_decision(struct cli_application *ctx, const char *kind, cJSON *request_data,
@@ -316,16 +321,16 @@ int cli_interaction_decision(struct cli_application *ctx, const char *kind, cJSO
 
 	if (!ctx || !kind || !request_data || !allowed || allowed_count <= 0 || !decision ||
 	    decision_size == 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	decisions = cJSON_CreateArray();
 	if (!decisions)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	for (int i = 0; i < allowed_count; i++) {
 		cJSON *item = cJSON_CreateString(allowed[i]);
 
 		if (!item) {
 			cJSON_Delete(decisions);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		cJSON_AddItemToArray(decisions, item);
 	}
@@ -341,7 +346,7 @@ int cli_interaction_decision(struct cli_application *ctx, const char *kind, cJSO
 	value = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(response, "decision"));
 	if (!value || strlen(value) >= decision_size) {
 		cJSON_Delete(response);
-		return MORPH_ERR_PROTOCOL;
+		return NB_ERR_PROTOCOL;
 	}
 	memcpy(decision, value, strlen(value) + 1);
 	cJSON_Delete(response);
@@ -356,7 +361,7 @@ int cli_interaction_confirm(struct cli_application *ctx, const char *kind, cJSON
 	int rc;
 
 	if (!confirmed)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*confirmed = 0;
 	rc = cli_interaction_decision(ctx, kind, request_data, allowed,
 				      (int)(sizeof(allowed) / sizeof(allowed[0])), decision,

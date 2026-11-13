@@ -4,10 +4,10 @@ extern "C" {
 #include "persistence/checkpoint_store.h"
 #include "persistence/credit_store.h"
 #include "session.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "cJSON.h"
 }
 
 #include <cerrno>
@@ -63,16 +63,27 @@ class CheckpointStoreTest : public ::testing::Test
 	{
 		std::filesystem::create_directories(
 			std::filesystem::path(workspace + "/" + path).parent_path());
-		ASSERT_EQ(
-			file_write_all((workspace + "/" + path).c_str(), text.data(), text.size()),
-			0);
+		ASSERT_EQ(nb_file_write_all((workspace + "/" + path).c_str(), text.data(),
+					    text.size(), NULL),
+			  0);
 	}
 
 	std::string Read(const std::string &path)
 	{
+		nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
+		char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 		size_t length = 0;
-		char *text MORPH_CLEANUP(morph_charp_cleanup) =
-			file_read_all_copy((workspace + "/" + path).c_str(), &length);
+		char *text NB_CLEANUP(nb_charp_cleanup) =
+			(nb_file_read_all((workspace + "/" + path).c_str(), &file_value_1, 0,
+					  NULL) == NB_OK &&
+					 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) +
+								       1)) != NULL
+				 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
+					   nb_buf_len(&file_value_1) + 1),
+				    *(&length) = nb_buf_len(&file_value_1),
+				    nb_charp_steal(&file_copy_1))
+				 : NULL);
 		EXPECT_NE(text, nullptr);
 		return text ? std::string(text, length) : std::string();
 	}
@@ -118,11 +129,11 @@ TEST_F(CheckpointStoreTest, DirtyPreimageAndModeSurviveDatabaseReopen)
 	db_close(&database);
 	ASSERT_EQ(db_open(nullptr, &database, database_path.c_str()), 0);
 	ASSERT_EQ(db_init_schema(&database), 0);
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(checkpoint_store_preview_copy(&database, session.id, id, &report), 0);
 	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(report, "files")), 1);
 	EXPECT_TRUE(cJSON_IsString(cJSON_GetObjectItem(report, "workspace_root")));
-	morph_json_cleanup(&report);
+	cJSON_DeleteOwner(&report);
 	ASSERT_EQ(checkpoint_store_restore(&database, session.id, id, CHECKPOINT_RESTORE_CODE,
 					   &report),
 		  0);
@@ -147,7 +158,7 @@ TEST_F(CheckpointStoreTest, RestoresAddsDeletesEmptyFilesAndOverwrittenMoveDesti
 	ASSERT_EQ(unlink((workspace + "/empty").c_str()), 0);
 	Write("new", "created by agent");
 	ASSERT_EQ(checkpoint_store_seal(&database, id), 0);
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(checkpoint_store_preview_copy(&database, session.id, id, &report), 0);
 	ASSERT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(report, "files")), 4);
 	cJSON *row = nullptr;
@@ -155,7 +166,7 @@ TEST_F(CheckpointStoreTest, RestoresAddsDeletesEmptyFilesAndOverwrittenMoveDesti
 		ASSERT_TRUE(cJSON_IsBool(cJSON_GetObjectItem(row, "restore_exists")));
 		EXPECT_NE(cJSON_GetObjectItem(row, "path")->valuestring[0], '/');
 	}
-	morph_json_cleanup(&report);
+	cJSON_DeleteOwner(&report);
 	ASSERT_EQ(checkpoint_store_restore(&database, session.id, id, CHECKPOINT_RESTORE_CODE,
 					   &report),
 		  0);
@@ -179,16 +190,16 @@ TEST_F(CheckpointStoreTest, ExternalModificationRejectsAllCodeWritesButAllowsCon
 	ASSERT_EQ(checkpoint_store_seal(&database, id), 0);
 	Write("a", "user changed this later");
 	ASSERT_EQ(message_add(&database, session.id, "assistant", "later", 1), 0);
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(checkpoint_store_preview_copy(&database, session.id, id, &report), 0);
 	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(report, "conflicts")), 1);
-	morph_json_cleanup(&report);
+	cJSON_DeleteOwner(&report);
 	EXPECT_EQ(checkpoint_store_restore(&database, session.id, id, CHECKPOINT_RESTORE_BOTH,
 					   &report),
-		  -EAGAIN);
+		  NB_ERR_AGAIN);
 	EXPECT_EQ(Read("b"), "b agent");
 	EXPECT_EQ(message_count(&database, session.id), 2);
-	morph_json_cleanup(&report);
+	cJSON_DeleteOwner(&report);
 	ASSERT_EQ(checkpoint_store_restore(&database, session.id, id,
 					   CHECKPOINT_RESTORE_CONVERSATION, &report),
 		  0);
@@ -209,12 +220,12 @@ TEST_F(CheckpointStoreTest, SealDoesNotAbsorbExternalChangesToPreviouslyCaptured
 	ASSERT_EQ(checkpoint_store_capture(&database, id, "b"), 0);
 	Write("b", "b agent");
 	ASSERT_EQ(checkpoint_store_seal(&database, id), 0);
-	EXPECT_EQ(checkpoint_store_capture(&database, id, "a"), -EAGAIN);
+	EXPECT_EQ(checkpoint_store_capture(&database, id, "a"), NB_ERR_AGAIN);
 	ASSERT_EQ(checkpoint_store_seal(&database, id), 0);
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	EXPECT_EQ(checkpoint_store_restore(&database, session.id, id, CHECKPOINT_RESTORE_CODE,
 					   &report),
-		  -EAGAIN);
+		  NB_ERR_AGAIN);
 	EXPECT_EQ(Read("a"), "a manual");
 	EXPECT_EQ(Read("b"), "b agent");
 }
@@ -230,10 +241,10 @@ TEST_F(CheckpointStoreTest, UnwrittenCapturedPathsArePrunedAfterPartialFailure)
 	Write("changed", "first file changed before the patch failed");
 	ASSERT_EQ(checkpoint_store_seal(&database, id), 0);
 	Write("untouched", "manual change after failed patch");
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(checkpoint_store_preview_copy(&database, session.id, id, &report), 0);
 	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(report, "files")), 1);
-	morph_json_cleanup(&report);
+	cJSON_DeleteOwner(&report);
 	ASSERT_EQ(checkpoint_store_restore(&database, session.id, id, CHECKPOINT_RESTORE_CODE,
 					   &report),
 		  0);
@@ -254,16 +265,16 @@ TEST_F(CheckpointStoreTest, RewindPreservesEmptyCurrentCheckpointAndSupportsANew
 	Write("file", "second change");
 	ASSERT_EQ(checkpoint_store_seal(&database, second), 0);
 	int64_t empty = Create("undo the previous change and edit again");
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(checkpoint_store_restore(&database, session.id, second, CHECKPOINT_RESTORE_CODE,
 					   &report),
 		  0);
 	EXPECT_EQ(Read("file"), "first change");
-	EXPECT_EQ(checkpoint_store_capture(&database, second, "file"), -ESTALE);
+	EXPECT_EQ(checkpoint_store_capture(&database, second, "file"), NB_ERR_STALE);
 	ASSERT_EQ(checkpoint_store_capture(&database, empty, "file"), 0);
 	Write("file", "new branch");
 	ASSERT_EQ(checkpoint_store_seal(&database, empty), 0);
-	morph_json_cleanup(&report);
+	cJSON_DeleteOwner(&report);
 	ASSERT_EQ(checkpoint_store_restore(&database, session.id, first, CHECKPOINT_RESTORE_CODE,
 					   &report),
 		  0);
@@ -318,7 +329,7 @@ TEST_F(CheckpointStoreTest,
 	credit.currency = "USD";
 	credit.credits = 42;
 	ASSERT_EQ(credit_store_record_event(&database, &credit), 0);
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(checkpoint_store_restore(&database, session.id, id,
 					   CHECKPOINT_RESTORE_CONVERSATION, &report),
 		  0);
@@ -351,7 +362,7 @@ TEST_F(CheckpointStoreTest, LegacyCheckpointWithoutSkillSnapshotsRestoresNoActiv
 	const std::string sql = "INSERT INTO session_skill_activations VALUES(" +
 				std::to_string(session.id) + ",'future-skill')";
 	ASSERT_EQ(db_exec(&database, sql.c_str()), 0);
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(checkpoint_store_restore(&database, session.id, id,
 					   CHECKPOINT_RESTORE_CONVERSATION, &report),
 		  0);
@@ -373,7 +384,7 @@ TEST_F(CheckpointStoreTest, DatabaseFailureCompensatesCodeAndRollsBackConversati
 			  "ON code_checkpoints WHEN NEW.code_active=0 BEGIN SELECT "
 			  "RAISE(FAIL,'injected'); END"),
 		  0);
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	EXPECT_EQ(checkpoint_store_restore(&database, session.id, id, CHECKPOINT_RESTORE_BOTH,
 					   &report),
 		  MORPH_ERR_DB);
@@ -393,9 +404,9 @@ TEST_F(CheckpointStoreTest, SymlinksHardlinksAndTraversalAreRejectedBeforeMutati
 	std::filesystem::create_symlink("file", workspace + "/symbolic");
 	ASSERT_EQ(link((workspace + "/file").c_str(), (workspace + "/hard").c_str()), 0);
 	int64_t id = Create();
-	EXPECT_EQ(checkpoint_store_capture(&database, id, "symbolic"), -ELOOP);
-	EXPECT_EQ(checkpoint_store_capture(&database, id, "hard"), -ELOOP);
-	EXPECT_EQ(checkpoint_store_capture(&database, id, "../outside"), -EACCES);
+	EXPECT_EQ(checkpoint_store_capture(&database, id, "symbolic"), NB_ERR_LOOP);
+	EXPECT_EQ(checkpoint_store_capture(&database, id, "hard"), NB_ERR_LOOP);
+	EXPECT_EQ(checkpoint_store_capture(&database, id, "../outside"), NB_ERR_PERMISSION);
 	EXPECT_EQ(Read("file"), "keep");
 }
 
@@ -405,17 +416,17 @@ TEST_F(CheckpointStoreTest, FailedSealDoesNotAdoptManualChangesDuringALaterAttem
 	int64_t id = Create();
 	ASSERT_EQ(checkpoint_store_capture(&database, id, "file"), 0);
 	ASSERT_EQ(truncate((workspace + "/file").c_str(), 17 * 1024 * 1024), 0);
-	EXPECT_EQ(checkpoint_store_seal(&database, id), -EFBIG);
+	EXPECT_EQ(checkpoint_store_seal(&database, id), NB_ERR_TOO_BIG);
 	Write("file", "manual after failed seal");
-	EXPECT_EQ(checkpoint_store_capture(&database, id, "other"), -ESTALE);
+	EXPECT_EQ(checkpoint_store_capture(&database, id, "other"), NB_ERR_STALE);
 	int64_t next = Create("new turn after failed seal");
 	ASSERT_EQ(checkpoint_store_capture(&database, next, "other"), 0);
 	Write("other", "new change");
 	ASSERT_EQ(checkpoint_store_seal(&database, next), 0);
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	EXPECT_EQ(checkpoint_store_restore(&database, session.id, id, CHECKPOINT_RESTORE_CODE,
 					   &report),
-		  -ESTALE);
+		  NB_ERR_STALE);
 	EXPECT_EQ(Read("file"), "manual after failed seal");
 }
 
@@ -436,7 +447,7 @@ TEST_F(CheckpointStoreTest, LargeCapturedDataRestoresWithBoundedCompensationCopi
 	EXPECT_EQ(Scalar("SELECT sum(length(before_data)+length(after_data)) FROM "
 		"code_checkpoint_files WHERE checkpoint_id=" + std::to_string(id)),
 		static_cast<int64_t>(file_bytes * 6));
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(checkpoint_store_restore(&database, session.id, id, CHECKPOINT_RESTORE_CODE,
 		&report), 0);
 	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(report, "code_restored")));
@@ -466,13 +477,14 @@ TEST_F(CheckpointStoreTest, ValidatesProspectiveAggregateAndRejectsAnOversizedSe
 		CHECKPOINT_FILE_MAX_BYTES, nullptr), 0);
 	contents.resize(CHECKPOINT_FILE_MAX_BYTES, 'a');
 	Write("large-0", contents);
-	EXPECT_EQ(checkpoint_store_validate_write(&database, id, "large-1",
-		13u * 1024u * 1024u, nullptr), -EFBIG);
+	EXPECT_EQ(checkpoint_store_validate_write(&database, id, "large-1", 13u * 1024u * 1024u,
+						  nullptr),
+		  NB_ERR_TOO_BIG);
 	EXPECT_EQ(std::filesystem::file_size(workspace + "/large-1"), file_bytes);
 	EXPECT_EQ(checkpoint_store_validate_write(&database, id, "moved", file_bytes,
 		"large-1"), 0);
 	EXPECT_EQ(checkpoint_store_validate_write(&database, id, "uncaptured", 1, nullptr),
-		-ESTALE);
+		  NB_ERR_STALE);
 	contents.resize(13u * 1024u * 1024u);
 	Write("large-1", contents);
 	contents.resize(file_bytes);
@@ -483,12 +495,13 @@ TEST_F(CheckpointStoreTest, ValidatesProspectiveAggregateAndRejectsAnOversizedSe
 		std::filesystem::file_size(workspace + "/large-0") +
 		std::filesystem::file_size(workspace + "/large-1") + file_bytes * 4,
 		CHECKPOINT_DATA_MAX_BYTES);
-	EXPECT_EQ(checkpoint_store_seal(&database, id), -EFBIG);
+	EXPECT_EQ(checkpoint_store_seal(&database, id), NB_ERR_TOO_BIG);
 	EXPECT_EQ(Scalar("SELECT code_active FROM code_checkpoints WHERE id=" +
 		std::to_string(id)), 0);
 	EXPECT_EQ(Scalar("SELECT count(*) FROM code_checkpoint_files WHERE checkpoint_id=" +
 		std::to_string(id) + " AND sealed=1"), 0);
-	EXPECT_EQ(checkpoint_store_validate_write(&database, id, "large-0", 1, nullptr), -ESTALE);
+	EXPECT_EQ(checkpoint_store_validate_write(&database, id, "large-0", 1, nullptr),
+		  NB_ERR_STALE);
 }
 
 TEST_F(CheckpointStoreTest, RetentionExpirySessionIsolationAndDeletionCleanSnapshotRows)
@@ -497,21 +510,24 @@ TEST_F(CheckpointStoreTest, RetentionExpirySessionIsolationAndDeletionCleanSnaps
 	int64_t first = Create();
 	for (int i = 0; i < 100; i++)
 		ASSERT_GT(Create(), first);
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(checkpoint_store_list_copy(&database, session.id, &report), 0);
 	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(report, "checkpoints")), 100);
-	morph_json_cleanup(&report);
-	EXPECT_EQ(checkpoint_store_info_copy(&database, session.id, first, &report), -ENOENT);
+	cJSON_DeleteOwner(&report);
+	EXPECT_EQ(checkpoint_store_info_copy(&database, session.id, first, &report),
+		  NB_ERR_NOT_FOUND);
 	int64_t expired = Scalar("SELECT min(id) FROM code_checkpoints");
 	ASSERT_EQ(db_exec(&database, ("UPDATE code_checkpoints SET created_at=0 WHERE id=" +
 				      std::to_string(expired))
 					     .c_str()),
 		  0);
-	EXPECT_EQ(checkpoint_store_info_copy(&database, session.id, expired, &report), -ENOENT);
+	EXPECT_EQ(checkpoint_store_info_copy(&database, session.id, expired, &report),
+		  NB_ERR_NOT_FOUND);
 	int64_t latest = Scalar("SELECT max(id) FROM code_checkpoints");
 	struct session other{};
 	ASSERT_EQ(session_create(&database, "other", "test", &other), 0);
-	EXPECT_EQ(checkpoint_store_info_copy(&database, other.id, latest, &report), -ENOENT);
+	EXPECT_EQ(checkpoint_store_info_copy(&database, other.id, latest, &report),
+		  NB_ERR_NOT_FOUND);
 	ASSERT_GT(Scalar("SELECT count(*) FROM checkpoint_rows_messages"), 0);
 	ASSERT_EQ(session_delete(&database, session.id), 0);
 	EXPECT_EQ(Scalar("SELECT count(*) FROM code_checkpoints"), 0);
@@ -564,7 +580,7 @@ TEST_F(CheckpointStoreTest, FilesystemFailureAfterTheFirstWriteCompensatesWithou
 			  "CREATE TRIGGER checkpoint_filesystem_fault BEFORE DELETE ON messages "
 			  "BEGIN SELECT checkpoint_parent_fault(); END"),
 		  0);
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	EXPECT_NE(checkpoint_store_restore(&database, session.id, id, CHECKPOINT_RESTORE_BOTH,
 					   &report),
 		  0);
@@ -594,11 +610,11 @@ TEST_F(CheckpointStoreTest, ANewTurnPreservesManualEditsAndInvalidatesUnsafeOlde
 	ASSERT_EQ(checkpoint_store_capture(&database, newer, "file"), 0);
 	Write("file", "agent next");
 	ASSERT_EQ(checkpoint_store_seal(&database, newer), 0);
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	EXPECT_EQ(checkpoint_store_restore(&database, session.id, old, CHECKPOINT_RESTORE_CODE,
 					   &report),
-		  -ESTALE);
-	morph_json_cleanup(&report);
+		  NB_ERR_STALE);
+	cJSON_DeleteOwner(&report);
 	ASSERT_EQ(checkpoint_store_restore(&database, session.id, newer, CHECKPOINT_RESTORE_CODE,
 					   &report),
 		  0);
@@ -619,7 +635,7 @@ TEST_F(CheckpointStoreTest, BothRestoreDoesNotInvalidateCodeHistoryInADifferentW
 	ASSERT_EQ(checkpoint_store_capture(&database, root_b, "file"), 0);
 	Write("file", "root b after");
 	ASSERT_EQ(checkpoint_store_seal(&database, root_b), 0);
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(checkpoint_store_restore(&database, session.id, root_a, CHECKPOINT_RESTORE_BOTH,
 					   &report),
 		  0);
@@ -627,7 +643,7 @@ TEST_F(CheckpointStoreTest, BothRestoreDoesNotInvalidateCodeHistoryInADifferentW
 	EXPECT_EQ(Scalar("SELECT code_active FROM code_checkpoints WHERE id=" +
 			 std::to_string(root_b)),
 		  1);
-	morph_json_cleanup(&report);
+	cJSON_DeleteOwner(&report);
 	ASSERT_EQ(checkpoint_store_restore(&database, session.id, root_b, CHECKPOINT_RESTORE_CODE,
 					   &report),
 		  0);

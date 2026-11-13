@@ -1,3 +1,4 @@
 permission.c
 context.c
 path.c
+trusted_paths.c

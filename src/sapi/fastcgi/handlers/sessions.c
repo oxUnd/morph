@@ -1,6 +1,7 @@
 /* sessions.c — session CRUD over fcgi_session_owner ⨝ sessions */
 #define _GNU_SOURCE
 #include "handlers.h"
+#include "nb/err.h"
 #include "sapi/fastcgi/storage/sessions.h"
 #include "../session_store.h"
 
@@ -135,11 +136,11 @@ void handle_update_session(request_t *r)
 	}
 	rc = store_update_session(r->store, sid, r->user_id, name, model);
 	cJSON_Delete(root);
-	if (rc == -ENOENT) {
+	if (rc == NB_ERR_NOT_FOUND) {
 		reply_404(r);
 		return;
 	}
-	if (rc == -EINVAL) {
+	if (rc == NB_ERR_INVAL) {
 		reply_400(r, "nothing to update");
 		return;
 	}
@@ -169,7 +170,7 @@ void handle_list_messages(request_t *r)
 		return;
 	}
 	rc = store_messages_json(r->store, sid, r->user_id, limit, before, &json);
-	if (rc == -ENOENT) {
+	if (rc == NB_ERR_NOT_FOUND) {
 		reply_404(r);
 		return;
 	}
@@ -194,7 +195,7 @@ void handle_delete_session(request_t *r)
 		return;
 	}
 	int rc = store_delete_session(r->store, sid, r->user_id);
-	if (rc == -EAGAIN) {
+	if (rc == NB_ERR_AGAIN) {
 		reply_json(r, 409, "{\"error\":\"turn_in_progress\"}");
 		return;
 	}

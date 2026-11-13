@@ -11,11 +11,11 @@ state and are outside this rule.
 
 Allocation follows the ownership boundary of each resource. Objects use ordinary
 heap allocations and own their buffers and fields. There is no allocator context
-passed through business APIs. `morph_buf`, `morph_array`, and `morph_strmap` manage
+passed through business APIs. `nb_buf`, `nb_vec`, and opaque `nb_map` manage
 growth; an object's typed cleanup releases each owned field.
 
-GCC/Clang scope cleanup is required. Include `util/cleanup.h` and declare local
-owners with `MORPH_CLEANUP(function)`, initialized to `NULL` for pointers or `{0}`
+GCC/Clang scope cleanup is required. Include `nb/cleanup.h` and declare local
+owners with `NB_CLEANUP(function)`, initialized to `NULL` for pointers or `{0}`
 for values. Unsupported compilers fail the build rather than silently omitting
 cleanup. A pointer variable passes `T **` to its cleanup callback; an embedded
 value passes `T *`. Use type-correct adapters, never a `void **` cast. Cleanup
@@ -48,31 +48,31 @@ The API name describes the returned value or the state retained after the call:
 | `*_create`, `*_init` | Constructs a caller-owned object in an empty output slot or initialized value. |
 | `*_add_borrow` | Adds an object to a registry/controller and lends its address; the containing owner destroys it. |
 | `*_take` | Accepts an owner by address, clearing it only after success. Rejection preserves it. |
-| `*_move`, `*_steal`, `*_detach` | Explicit transfer operations. Move replaces the destination, steal cannot fail, and a fallible detach preserves its source on failure. |
+| `*_move`, `*_steal`, `*_detach` | Explicit transfer operations. Application move operations replace the destination; native `nb_buf_move` swaps both handles. Steal cannot fail. Native detach returns allocation capacity needed for `nb_free`. |
 | `*_retain`, `*_acquire` / `*_release` | Holds and releases a shared reference. It extends lifetime without copying the underlying object. |
 | `*_cleanup`, `*_destroy` | Releases an owned resource. Typed cleanup supports empty valid owners. |
 
 Ordinary pointer inputs are borrowed for the call unless the header explicitly
 specifies retention. Scalars, caller-buffer formatting, and immutable
 process-lifetime classifiers such as `*_name` keep their ordinary names. Standard
-`*_dup`/`*_alloc` names already denote allocations. The legacy UTF-8 adapters keep
-their documented compatibility names. Third-party declarations and APIs are not
+`*_dup`/`*_alloc` names already denote allocations. Third-party declarations and APIs are not
 renamed; adapters state the original allocation/free pairing.
 
 For example, this expression lends the buffer text only while creating an
 independent parsed result:
 
 ```c
-return tool_result_success_json_text_copy(result, morph_buf_cstr_borrow(&buf));
+return tool_result_success_json_text_copy(result, nb_buf_cstr(&buf));
 ```
 
 The buffer still belongs to its scope. An explicit transfer instead passes the
 owner's address:
 
 ```c
-cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+/* json_owner_cleanup is this owner's typed cJSON_Delete callback. */
+cJSON *data NB_CLEANUP(json_owner_cleanup) = cJSON_CreateObject();
 if (!data)
-        return -ENOMEM;
+        return NB_ERR_NOMEM;
 return tool_result_success_take(result, &data);
 ```
 
@@ -95,21 +95,20 @@ Storage visitors lend a row only for the callback duration and finalize their
 statement on every exit. Permission snapshots duplicate paths while holding the
 authority lock and own those paths until typed cleanup. Memory and output
 snapshots likewise own every returned field independently of the source. cJSON
-values use `morph_json_cleanup`; printed cJSON text uses
-`morph_json_text_cleanup`/`cJSON_free`. `morph_json_string_take(char **)` consumes
-a malloc-owned string only after successful construction and preserves it on
-failure. Third-party allocation/free pairs remain matched.
+values use a local typed callback that calls `cJSON_Delete`; printed cJSON text uses
+`cJSON_free`. JSON construction uses cJSON directly, and its containing domain
+owner commits ownership only after all fallible preparation succeeds. Third-party allocation/free pairs remain matched.
 
 | State | Owner and lifetime |
 | --- | --- |
-| Logging | CLI `main` or `fcgi_bridge` owns a `morph_log`; runtime components and background jobs borrow its address. Stop writers before `log_shutdown`. A null logger disables logging and diagnostics. Error macros never write to stdout or stderr. |
+| Logging | CLI `main` or `fcgi_bridge` owns an `nb_log *`; runtime components and background jobs borrow its address. Stop writers before `nb_log_free`. A null logger disables logging and diagnostics. Error macros never write to stdout or stderr. |
 | HTTP cancellation and tracing | Every call receives `http_control`. Models carry their default control; tool requests bind a local model copy to the request control. ReAct keeps provider errors and partial-output metadata in its request context instead of writing them back to shared model configuration. Borrowed cancellation tokens, callbacks and logger must remain alive until the call returns. |
 | Tool execution | `tool_result.runtime` borrows the current `tool_runtime_context`. Clearing a result preserves the binding; cleanup removes it. Streaming, user questions and runtime queries use that binding. |
 | Subagents | The runtime owns tasks and child contexts. Each task captures its submission depth; concurrent tasks do not increment shared recursion state. Cancelling a runtime cancels its own active children. |
 | FastCGI | The server owns its bridge pool and authentication cache. Requests and turn jobs explicitly carry the bridge and auth pointers. Destroy services after joining request workers. Output roots are captured when a pool opens. |
 | CLI output | Each `cli_application` embeds its TUI Application base and owns color/structured-output settings, capture destination, prompt lock, composer, completion cache and callback closures. |
 | Readline adapters | Instance-owned libffi closures supply userdata to callbacks whose native ABI has none. Each run deeply clones the keymap and restores native callbacks before freeing closures. Readline itself still supports one active terminal editor per process. |
-| Signals | The frontend owns one `morph_signal_listener`. Start it before application workers (or call `morph_signals_block` before creating them). It consumes blocked signals on its thread and wakes the owning UI. Stop it before freeing the frontend. Children reset their signal mask before exec; MCP spawn explicitly supplies an empty mask. |
+| Signals | The frontend owns one `nb_signal_listener *`. Start it before application workers so they inherit the blocked signal mask. It consumes blocked signals on its thread and wakes the owning UI. Stop it before freeing the frontend. Children reset their signal mask before exec; Native process spawn restores the child signal mask before exec. |
 | Sync serialization | A lock in the source's `.morph-sync/run.lock` serializes syncs for that source, including across processes. Different sources do not share a mutex. |
 
 Dependencies are explicit constructor arguments or fields of an owning context.
@@ -117,22 +116,45 @@ Do not replace removed variables with singleton getters, TLS, environment-variab
 storage, or mutable function-local statics. Environment variables are startup
 configuration, not a place to store active request state.
 
-Use native `return code;` and `rc = code;` so control flow and cleanup remain
-visible. `morph_error_from_errno(errno)` captures a syscall's errno before
-cleanup; zero maps to `-EIO`. `MORPH_TRACE_ERROR(logger, code)` is only a source
-location adapter for the ordinary typed `morph_error_trace` function. It has no
-return statement, assignment, temporary variables or build-dependent branches.
-Both arguments evaluate once in every build, including on success. Logger
-expressions must be free of business side effects; argument evaluation order is
-ordinary C function-call order, not a sequencing guarantee.
+Use explicit `return code;` and `rc = code;` so control flow and cleanup remain
+visible. Capture an OS failure immediately with `nb_status_from_errno(errno, &err)`;
+the portable code is independent of the operating-system errno, which remains in
+`nb_err.os_errno`. Application failure descriptions are the immutable
+`NB_ERR_USER` catalog in `src/errors.h`.
 
-Tracing returns the code unchanged, preserves errno and uses the explicitly
-owned logger at `LOG_DEBUG`. `MORPH_DEBUG=1` enables these file diagnostics in
-both Debug and Release frontends. Null loggers disable diagnostics; no macro or
-tracing function writes to stdout/stderr. Worker contexts carry their logger
-explicitly, so simultaneous runtimes cannot redirect each other's diagnostics.
-Tests compile the same C probes with and without DEBUG and compare evaluation,
-return values, assignment expressions, local-name safety and errno conversion.
+`nb_err_trace` accepts the owned logger, error code, optional description table
+and source location. It returns the code unchanged, preserves errno and records
+at `NB_LOG_DEBUG`. It does not hide return/assignment or render UI. Null loggers
+disable diagnostics; simultaneous runtimes cannot redirect each other's logs.
+The frontend owns the rotated file logger until every borrowing worker joins.
+`MORPH_DEBUG=1` selects debug-level file diagnostics in Debug and Release builds.
+
+Native containers use nbase allocation/free pairs. `nb_buf_move` swaps complete
+handles: the source then owns the destination's former storage. `nb_buf_detach`
+returns the backing allocation and its capacity; release it with `nb_free(ptr,
+capacity)`. Do not pass that allocation to a malloc-owning application or third-
+party API. When an existing domain boundary requires a malloc owner, create an
+explicit checked copy and destroy the temporary native buffer. Binary copies
+include the full length rather than using a C-string duplicate.
+
+`nb_vec` owns its backing storage, not resources held by elements. Pushes produce
+uninitialized slots; construct each slot before it becomes observable. Destroy
+removed elements before `nb_vec_remove`, and never retain slot pointers across
+reserve/push. `nb_dir_listing` owns a snapshot of native name buffers and remains
+valid independently of later directory changes. Its destroy operation handles
+empty/partial valid owners.
+
+`sandbox_config` owns its canonical temporary-root snapshot and path arrays.
+Prepare it before spawning or changing the child environment; repeated preparation
+keeps the existing snapshot. Borrowed names remain valid until
+`sandbox_config_cleanup`, so clearing HOME or changing TMPDIR cannot widen the
+already prepared sandbox. Explicit config transfer clears the source owner.
+
+TOML values and length-aware strings borrow their `nb_toml`; free the document
+after every retained value/view is consumed or copied. Native thread, mutex and
+condition-variable handles are heap owners; initialization can fail and shutdown
+must wake waiters and join workers before releasing synchronization handles.
+`nb_cancel_reset` requires exclusive ownership after readers stop.
 
 Negative return values can also represent expected states, such as a busy
 runtime or a rejected protocol probe. Callers decide whether these require

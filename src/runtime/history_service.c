@@ -1,10 +1,12 @@
 #include "runtime/runtime.h"
 #include "runtime/runtime_internal.h"
 #include "persistence/history_store.h"
-#include "util/strmap.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/json.h"
+#include "nb/map.h"
+#include "nb/str.h"
+#include "nb/utf8.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "cJSON.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -14,33 +16,32 @@
 static int history_lock(struct runtime *runtime)
 {
 	if (!runtime)
-		return -EINVAL;
-	int rc = pthread_mutex_trylock(&runtime->context.execution_lock);
+		return NB_ERR_INVAL;
+	int rc = nb_mutex_trylock(runtime->context.execution_lock);
 
-	return rc == 0 ? 0 : -rc;
-}
-
-static int history_coverage(struct runtime_context *ctx, morph_strmap_t *covered)
-{
-	morph_array_t ids = {0};
-	int rc;
-
-	rc = morph_array_init(&ids, 16, sizeof(int64_t));
-	if (rc == 0)
-		rc = history_store_summary_sources(&ctx->database, ctx->current_session.id, &ids);
-	for (size_t i = 0; rc == 0 && i < ids.nelts; i++) {
-		const int64_t *id = morph_array_borrow(&ids, i);
-		char key[32];
-
-		snprintf(key, sizeof(key), "%lld", (long long)*id);
-		rc = morph_strmap_set_borrow(covered, key, covered);
-	}
-	morph_array_cleanup(&ids);
 	return rc;
 }
 
-static cJSON *history_entry(const struct model_history_item *item,
-	const morph_strmap_t *covered)
+static int history_coverage(struct runtime_context *ctx, nb_map *covered)
+{
+	nb_vec ids = {0};
+	int rc;
+
+	rc = (nb_vec_init(&ids, sizeof(int64_t)), nb_vec_reserve(&ids, 16) ? 0 : NB_ERR_NOMEM);
+	if (rc == 0)
+		rc = history_store_summary_sources(&ctx->database, ctx->current_session.id, &ids);
+	for (size_t i = 0; rc == 0 && i < ids.len; i++) {
+		const int64_t *id = nb_vec_at(&ids, i);
+		char key[32];
+
+		snprintf(key, sizeof(key), "%lld", (long long)*id);
+		rc = nb_map_put_cstr(covered, key, covered, NULL) ? 0 : NB_ERR_NOMEM;
+	}
+	nb_vec_cleanup(&ids);
+	return rc;
+}
+
+static cJSON *history_entry(const struct model_history_item *item, const nb_map *covered)
 {
 	cJSON *entry = cJSON_CreateObject();
 	char key[32];
@@ -60,7 +61,7 @@ static cJSON *history_entry(const struct model_history_item *item,
 			has_original ? "Model output was shortened; a redacted original is retained in metadata." :
 			"Active replay item. Output was shortened before persistence; the original is unavailable.";
 		cJSON_Delete(payload);
-	} else if (!item->active && morph_strmap_contains(covered, key)) {
+	} else if (!item->active && nb_map_has_cstr(covered, key)) {
 		status = "VIA SUMMARY";
 		reason = "Used to produce a summary represented in the active summary chain; original not sent.";
 	} else if (item->active) {
@@ -96,7 +97,6 @@ static int history_legacy_entries(struct runtime_context *ctx, cJSON *entries)
 
 	for (const struct message *msg = messages; msg && rc == 0; msg = msg->next) {
 		struct model_history_item item = {0};
-		morph_strmap_t empty = {0};
 		cJSON *entry;
 
 		item.sequence_no = msg->id;
@@ -104,16 +104,19 @@ static int history_legacy_entries(struct runtime_context *ctx, cJSON *entries)
 		item.token_count = msg->token_count;
 		snprintf(item.kind, sizeof(item.kind), "%s", strcmp(msg->role, "user") == 0 ?
 			"user_message" : "assistant_message");
-		snprintf(item.role, sizeof(item.role), "%s", msg->role);
-		entry = history_entry(&item, &empty);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(msg->role,
+					  nb_utf8_clamp_bytes(msg->role, sizeof(item.role) - 1)),
+			item.role, sizeof(item.role));
+		entry = history_entry(&item, NULL);
 		if (!entry || !cJSON_SetValuestring(cJSON_GetObjectItem(entry, "status"), "LEGACY") ||
 		    !cJSON_SetValuestring(cJSON_GetObjectItem(entry, "reason"),
 			"Display-only legacy history; migrated and validated before the next turn.")) {
 			cJSON_Delete(entry);
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 		} else if (!cJSON_AddItemToArray(entries, entry)) {
 			cJSON_Delete(entry);
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 		}
 	}
 	message_free_list(messages);
@@ -123,8 +126,8 @@ static int history_legacy_entries(struct runtime_context *ctx, cJSON *entries)
 int runtime_session_history_inspect_copy(struct runtime *runtime, cJSON **out)
 {
 	struct model_history_item *items = NULL;
-	morph_strmap_t covered = {0};
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	nb_map *covered = NULL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	cJSON *entries = NULL;
 	int count = 0;
 	int64_t tokens = 0;
@@ -134,17 +137,18 @@ int runtime_session_history_inspect_copy(struct runtime *runtime, cJSON **out)
 	int rc;
 
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	rc = history_lock(runtime);
 	if (rc != 0)
 		return rc;
 	struct runtime_context *ctx = &runtime->context;
 
-	rc = morph_strmap_init(&covered, MORPH_STRMAP_INIT_CAP);
+	covered = nb_map_new_with_cap(16);
+	rc = covered ? 0 : NB_ERR_NOMEM;
 	if (rc == 0 && ctx->current_session.id > 0)
-		rc = history_coverage(ctx, &covered);
+		rc = history_coverage(ctx, covered);
 	if (rc == 0 && ctx->current_session.id > 0) {
 		items = model_history_list(&ctx->database, ctx->current_session.id, 0, &count);
 		if (count < 0)
@@ -153,13 +157,13 @@ int runtime_session_history_inspect_copy(struct runtime *runtime, cJSON **out)
 	root = cJSON_CreateObject();
 	entries = root ? cJSON_AddArrayToObject(root, "entries") : NULL;
 	if (rc == 0 && !entries)
-		rc = -ENOMEM;
+		rc = NB_ERR_NOMEM;
 	for (const struct model_history_item *item = items; item && rc == 0; item = item->next) {
-		cJSON *entry = history_entry(item, &covered);
+		cJSON *entry = history_entry(item, covered);
 
 		if (!entry || !cJSON_AddItemToArray(entries, entry)) {
 			cJSON_Delete(entry);
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			break;
 		}
 		if (item->active && agent_history_item_replayable(item)) {
@@ -183,10 +187,10 @@ int runtime_session_history_inspect_copy(struct runtime *runtime, cJSON **out)
 	     !cJSON_AddNumberToObject(root, "context_limit",
 				      ctx->tokenizer ? ctx->tokenizer->context_limit : 0) ||
 	     !cJSON_AddStringToObject(root, "model", ctx->llm ? ctx->llm->model_id : "")))
-		rc = -ENOMEM;
+		rc = NB_ERR_NOMEM;
 	model_history_free_list(items);
-	morph_strmap_cleanup(&covered);
-	pthread_mutex_unlock(&ctx->execution_lock);
+	nb_map_free(covered);
+	nb_mutex_unlock(ctx->execution_lock);
 	if (rc != 0)
 		return rc;
 	*out = root;
@@ -198,15 +202,15 @@ int runtime_session_history_entry_input_copy(struct runtime *runtime, int64_t se
 {
 	struct model_history_item *items;
 	struct model_history_item *item;
-	morph_array_t messages MORPH_CLEANUP(agent_chat_messages_cleanup) = {0};
-	cJSON *snapshot MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	nb_vec messages NB_CLEANUP(agent_chat_messages_cleanup) = {0};
+	cJSON *snapshot NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	int count = 0;
 	int rc;
 
 	if (!out || sequence <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	rc = history_lock(runtime);
 	if (rc != 0)
 		return rc;
@@ -214,13 +218,14 @@ int runtime_session_history_entry_input_copy(struct runtime *runtime, int64_t se
 
 	items = model_history_list(&ctx->database, ctx->current_session.id, 0, &count);
 	for (item = items; item && item->sequence_no != sequence; item = item->next) {}
-	rc = count < 0 ? MORPH_ERR_DB : item ? 0 : -ENOENT;
+	rc = count < 0 ? MORPH_ERR_DB : item ? 0 : NB_ERR_NOT_FOUND;
 	if (rc == 0 && (!item->active || !agent_history_item_replayable(item)))
-		rc = -ENODATA;
+		rc = NB_ERR_NO_DATA;
 	if (rc == 0) {
 		struct chat_message message;
 
-		rc = morph_array_init(&messages, 4, sizeof(message));
+		rc = (nb_vec_init(&messages, sizeof(message)),
+		      nb_vec_reserve(&messages, 4) ? 0 : NB_ERR_NOMEM);
 	}
 	if (rc == 0) {
 		struct model_history_item one = *item;
@@ -230,10 +235,10 @@ int runtime_session_history_entry_input_copy(struct runtime *runtime, int64_t se
 						 &messages);
 	}
 	if (rc == 0)
-		rc = model_input_snapshot_create(ctx->llm, NULL, messages.elts, (int)messages.nelts,
-						 NULL, 0, &snapshot);
+		rc = model_input_snapshot_create(ctx->llm, NULL, ((void *)messages.data),
+						 (int)messages.len, NULL, 0, &snapshot);
 	model_history_free_list(items);
-	pthread_mutex_unlock(&ctx->execution_lock);
+	nb_mutex_unlock(ctx->execution_lock);
 	if (rc == 0) {
 		*out = snapshot;
 		snapshot = NULL;
@@ -243,21 +248,20 @@ int runtime_session_history_entry_input_copy(struct runtime *runtime, int64_t se
 
 int runtime_session_last_request_copy(struct runtime *runtime, cJSON **out)
 {
-	struct history_request_snapshot snapshot MORPH_CLEANUP(history_request_snapshot_cleanup) = {
-		0};
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	struct history_request_snapshot snapshot NB_CLEANUP(history_request_snapshot_cleanup) = {0};
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	int rc;
 
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	rc = history_lock(runtime);
 	if (rc != 0)
 		return rc;
 	if (runtime->context.current_session.id <= 0) {
-		pthread_mutex_unlock(&runtime->context.execution_lock);
-		return -ENODATA;
+		nb_mutex_unlock(runtime->context.execution_lock);
+		return NB_ERR_NO_DATA;
 	}
 	rc = history_store_request_snapshot(&runtime->context.database,
 					    runtime->context.current_session.id, &snapshot);
@@ -268,9 +272,9 @@ int runtime_session_last_request_copy(struct runtime *runtime, cJSON **out)
 		    !cJSON_AddStringToObject(root, "model", snapshot.model) ||
 		    !cJSON_AddStringToObject(root, "input_json", snapshot.input_json) ||
 		    !cJSON_AddNumberToObject(root, "created_at", (double)snapshot.created_at))
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 	}
-	pthread_mutex_unlock(&runtime->context.execution_lock);
+	nb_mutex_unlock(runtime->context.execution_lock);
 	if (rc != 0)
 		return rc;
 	*out = root;

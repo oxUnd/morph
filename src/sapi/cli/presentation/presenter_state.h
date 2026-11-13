@@ -3,10 +3,13 @@
 
 #include "sapi/cli/presentation/markdown.h"
 #include "mcp/mcp.h"
-#include "util/buf.h"
-#include "util/array.h"
-#include "util/strmap.h"
-#include "util/utf8.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/map.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 
 struct morph_md_kitty;
 
@@ -25,13 +28,13 @@ struct cli_presenter_state {
 	struct cli_markdown_output markdown_output;
 	int mcp_tree_active;
 	char mcp_tree_server[MCP_NAME_MAX];
-	morph_buf_t event_stream;
-	morph_buf_t native_content;
-	morph_buf_t markdown_stream_text;
-	struct utf8_terminal_sanitizer event_stream_sanitizer;
-	struct utf8_terminal_sanitizer markdown_stream_sanitizer;
-	morph_strmap_t rendered_artifacts;
-	morph_strmap_t announced_artifacts;
+	nb_buf event_stream;
+	nb_buf native_content;
+	nb_buf markdown_stream_text;
+	struct morph_terminal_sanitizer event_stream_sanitizer;
+	struct morph_terminal_sanitizer markdown_stream_sanitizer;
+	nb_map *rendered_artifacts;
+	nb_map *announced_artifacts;
 	struct morph_md_kitty *markdown_stream;
 };
 

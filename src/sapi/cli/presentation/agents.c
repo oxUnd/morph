@@ -7,7 +7,7 @@
 #include "sapi/cli/widgets/agents.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/widgets/feed_block.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,10 +17,13 @@ void cli_presentation_agents_flush(struct cli_application *ctx)
 	struct cli_agents_receipt *receipt;
 	int joined = 0;
 
-	if (!ctx || !ctx->agents.receipts.nelts)
+	if (!ctx || !ctx->agents.receipts.len)
 		return;
 	cli_feed_history_begin(ctx);
-	morph_array_foreach (receipt, &ctx->agents.receipts, struct cli_agents_receipt) {
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(&ctx->agents.receipts) &&
+	     (receipt = (struct cli_agents_receipt *)nb_vec_at(&ctx->agents.receipts, _i_));
+	     _i_++) {
 		struct cli_feed_block block = {
 			.kind = CLI_FEED_BLOCK_AGENT_RECEIPT,
 			.join_previous = joined,
@@ -77,12 +80,13 @@ int cli_presentation_agents_event(struct cli_application *ctx,
 		if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
 			(void)cli_feed_block_write(ctx, &block);
 		} else {
-			morph_buf_t line MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			nb_buf line NB_CLEANUP(nb_buf_cleanup) = {0};
 
-			if (morph_buf_init(&line, 128) == 0 &&
+			if ((nb_buf_init(&line), nb_buf_reserve(&line, 128) ? 0 : NB_ERR_NOMEM) ==
+				    0 &&
 			    cli_agents_receipt_append(&line, id, outcome, BUFSIZ,
-					cli_output_color_enabled(ctx)) == 0)
-				cli_output_printf(ctx, "%s", morph_buf_cstr_borrow(&line));
+						      cli_output_color_enabled(ctx)) == 0)
+				cli_output_printf(ctx, "%s", nb_buf_cstr(&line));
 		}
 		cli_feed_history_end(ctx);
 	}

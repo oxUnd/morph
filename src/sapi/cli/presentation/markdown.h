@@ -2,16 +2,16 @@
 #define MORPH_CLI_PRESENTATION_MARKDOWN_H
 
 #include <limits.h>
-#include "util/buf.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 
 struct cli_application;
 
 /* Render a complete bounded document into a caller-owned buffer. No terminal
  * writes, media callbacks or presenter streaming state are involved. */
-int cli_markdown_render_document(morph_buf_t *out, const char *text, int columns,
-				 unsigned int indent);
+int cli_markdown_render_document(nb_buf *out, const char *text, int columns, unsigned int indent);
 /* Captures native media/math as well as text for retained rich-document parsing. */
-int cli_markdown_render_retained(morph_buf_t *out, const char *text, int columns, int styled);
+int cli_markdown_render_retained(nb_buf *out, const char *text, int columns, int styled);
 
 struct cli_markdown_output {
 	struct cli_application *ctx;

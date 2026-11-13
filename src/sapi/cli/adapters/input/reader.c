@@ -1,4 +1,6 @@
 #include "sapi/cli/adapters/input/reader.h"
+#include "nb/time.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/adapters/input/state.h"
@@ -12,8 +14,7 @@
 #include "sapi/cli/services/command_job.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/models/jobs.h"
-#include "util/child_io.h"
-#include "util/cancel.h"
+#include "nb/cancel.h"
 #include <fcntl.h>
 #include <sys/select.h>
 
@@ -33,10 +34,10 @@ char *cli_input_fgets_until(struct cli_application *ctx, char *buffer, size_t ca
 	if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
 		return NULL;
 	while (length + 1 < capacity) {
-		if (ctx && (morph_signal_flag_get(&ctx->interrupted) ||
-			    morph_signal_flag_get(&ctx->terminate_requested) ||
-			    morph_cancel_token_is_cancelled(
-				    ctx->input ? ctx->input->input_cancel_token : NULL))) {
+		if (ctx &&
+		    (nb_atomic_int_load(&ctx->interrupted) ||
+		     nb_atomic_int_load(&ctx->terminate_requested) ||
+		     nb_cancel_requested(ctx->input ? ctx->input->input_cancel_token : NULL))) {
 			error = EINTR;
 			break;
 		}
@@ -58,7 +59,7 @@ char *cli_input_fgets_until(struct cli_application *ctx, char *buffer, size_t ca
 			break;
 		}
 		clearerr(stream);
-		if (deadline && *deadline > 0 && morph_io_now_ms() >= *deadline) {
+		if (deadline && *deadline > 0 && nb_time_monotonic_ms() >= *deadline) {
 			error = ETIMEDOUT;
 			break;
 		}
@@ -93,22 +94,21 @@ static int cli_reader_wait(int fd, int milliseconds)
 
 	if (fd < 0 || fd >= FD_SETSIZE) {
 		errno = EINVAL;
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	FD_ZERO(&input);
 	FD_SET(fd, &input);
 	int rc = select(fd + 1, &input, NULL, NULL, &timeout);
 
-	return rc < 0 ? morph_error_from_errno(errno) : rc;
+	return rc < 0 ? nb_status_from_errno(errno, NULL) : rc;
 }
 
 int cli_poll_getc(struct cli_application *ctx, FILE *stream)
 {
 	int fd = fileno(stream);
 
-	while (!ctx || (!morph_signal_flag_get(&ctx->interrupted) &&
-			!morph_cancel_token_is_cancelled(ctx->input ? ctx->input->input_cancel_token
-								    : NULL))) {
+	while (!ctx || (!nb_atomic_int_load(&ctx->interrupted) &&
+			!nb_cancel_requested(ctx->input ? ctx->input->input_cancel_token : NULL))) {
 		int ready = cli_reader_wait(fd, 100);
 
 		if (ready > 0) {
@@ -146,7 +146,7 @@ int cli_poll_getc(struct cli_application *ctx, FILE *stream)
 		if (ready < 0 && errno != EINTR)
 			return EOF;
 		if (ctx && ctx->input->input_deadline_ms > 0 &&
-		    morph_io_now_ms() >= ctx->input->input_deadline_ms) {
+		    nb_time_monotonic_ms() >= ctx->input->input_deadline_ms) {
 			ctx->input->input_timed_out = 1;
 			rl_done = 1;
 			return EOF;

@@ -1,8 +1,8 @@
 #include "sapi/fastcgi/storage/canvas.h"
 #include "sapi/fastcgi/session_store_internal.h"
 #include "cJSON.h"
-#include "util/error.h"
-#include "util/cleanup.h"
+#include "errors.h"
+#include "nb/cleanup.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -17,7 +17,7 @@ int canvas_list_json(struct session_store *s, const char *session_id, char **out
 			  "FROM fcgi_canvas_nodes WHERE session_id=? ORDER BY updated_at";
 	sqlite3_stmt *st = NULL;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
 
 	cJSON *root = cJSON_CreateObject();
@@ -25,7 +25,7 @@ int canvas_list_json(struct session_store *s, const char *session_id, char **out
 	if (!root || !nodes) {
 		cJSON_Delete(root);
 		sqlite3_finalize(st);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	int step_rc;
 
@@ -45,7 +45,7 @@ int canvas_list_json(struct session_store *s, const char *session_id, char **out
 		if (!item) {
 			cJSON_Delete(root);
 			sqlite3_finalize(st);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		cJSON_AddStringToObject(item, "id", id ? id : "");
 		if (parent)
@@ -76,12 +76,12 @@ int canvas_list_json(struct session_store *s, const char *session_id, char **out
 	sqlite3_finalize(st);
 	if (step_rc != SQLITE_DONE) {
 		cJSON_Delete(root);
-		return -EIO;
+		return NB_ERR_IO;
 	}
 	char *json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
 	if (!json)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	*out_json = json;
 	return 0;
 }
@@ -102,7 +102,7 @@ int canvas_add_node(struct session_store *s, const char *session_id, const char 
 		"VALUES(?,?,'node',0,0,0,0,?,?,?)";
 	sqlite3_stmt *st = NULL;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	sqlite3_bind_text(st, 1, out_node_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 3, node_json ? node_json : "{}", -1, SQLITE_TRANSIENT);
@@ -110,13 +110,13 @@ int canvas_add_node(struct session_store *s, const char *session_id, const char 
 	sqlite3_bind_int64(st, 5, fcgi_store_now());
 	int rc = sqlite3_step(st);
 	sqlite3_finalize(st);
-	return rc == SQLITE_DONE ? 0 : -EIO;
+	return rc == SQLITE_DONE ? 0 : NB_ERR_IO;
 }
 
 int canvas_patch_node(struct session_store *s, const char *session_id, const char *node_id,
 		      const char *patch_json)
 {
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	int lock_rc = db_lock_acquire(&s->db, &lock);
 	if (lock_rc != 0)
 		return lock_rc;
@@ -124,7 +124,7 @@ int canvas_patch_node(struct session_store *s, const char *session_id, const cha
 			  "WHERE id=? AND session_id=?";
 	sqlite3_stmt *st = NULL;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	sqlite3_bind_text(st, 1, patch_json ? patch_json : "{}", -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(st, 2, fcgi_store_now());
 	sqlite3_bind_text(st, 3, node_id, -1, SQLITE_TRANSIENT);
@@ -133,6 +133,6 @@ int canvas_patch_node(struct session_store *s, const char *session_id, const cha
 	int changes = sqlite3_changes(s->db.handle);
 	sqlite3_finalize(st);
 	if (rc != SQLITE_DONE)
-		return -EIO;
-	return changes > 0 ? 0 : -ENOENT;
+		return NB_ERR_IO;
+	return changes > 0 ? 0 : NB_ERR_NOT_FOUND;
 }

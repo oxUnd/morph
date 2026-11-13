@@ -1,10 +1,14 @@
 #ifndef MORPH_CLI_MODELS_TRANSCRIPT_H
 #define MORPH_CLI_MODELS_TRANSCRIPT_H
 
-#include "util/array.h"
-#include "util/buf.h"
-#include "util/utf8.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 #include "event/event.h"
+#include <stdint.h>
 
 struct cJSON;
 struct model_history_item;
@@ -19,8 +23,8 @@ struct cli_transcript_tool {
 	char *error;
 	char *summary;
 	char *patch_preview;
-	morph_buf_t stream;
-	struct utf8_terminal_sanitizer sanitizer;
+	nb_buf stream;
+	struct morph_terminal_sanitizer sanitizer;
 	int state;
 	int timed_out;
 	int historical;
@@ -34,12 +38,13 @@ struct cli_transcript_tool {
 
 struct cli_transcript_reasoning {
 	size_t after_tools;
-	morph_buf_t text;
+	nb_buf text;
 };
 
 struct cli_transcript_model {
-	morph_array_t tools;
-	morph_array_t reasoning;
+	nb_vec tools;
+	nb_vec reasoning;
+	uint64_t revision;
 	int finished;
 	int allocation_failed;
 };

@@ -1,7 +1,8 @@
 #ifndef MORPH_TUI_WIDGET_TEXT_VIEW_H
 #define MORPH_TUI_WIDGET_TEXT_VIEW_H
 
-#include "util/array.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 #include <morph/tui/widget.h>
 
 #ifdef __cplusplus
@@ -16,7 +17,7 @@ struct morph_tui_widget_text_line {
 
 struct morph_tui_widget_text_layout {
 	const char *text;
-	morph_array_t lines;
+	nb_vec lines;
 };
 
 int morph_tui_widget_text_layout_wrap_borrow(struct morph_tui_widget_text_layout *view,

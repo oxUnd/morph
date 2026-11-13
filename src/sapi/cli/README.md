@@ -217,7 +217,7 @@ the textual inspection command for scripts and quick queries.
 
 ## Status presentation
 
-Terminal glyphs come from `util/terminal_status.h`, with CLI aliases and styles in
+Terminal glyphs come from `tui/terminal/status.h`, with CLI aliases and styles in
 `presentation/style.h`: pending `◯` (dim), running `◉` (cyan), completed `●`
 (green), failed `✖` (bold red), and awaiting user input `?` (bold yellow).
 Cancellation/skipping uses `–` (dim); warnings use `⚠` (yellow). Neutral system

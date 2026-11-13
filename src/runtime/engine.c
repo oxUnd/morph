@@ -8,10 +8,8 @@ void runtime_engine_init(struct runtime_engine *engine)
 		memset(engine, 0, sizeof(*engine));
 }
 
-void runtime_engine_configure(struct runtime_engine *engine,
-			      struct db *db,
-			      struct react_context *react,
-			      pthread_mutex_t *execution_lock)
+void runtime_engine_configure(struct runtime_engine *engine, struct db *db,
+			      struct react_context *react, nb_mutex *execution_lock)
 {
 	if (!engine)
 		return;

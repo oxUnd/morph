@@ -3,29 +3,31 @@
 #include "agent/plan.h"
 #include "agent/tool_runtime.h"
 #include "models/llm.h"
-#include "util/log.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/buf.h"
-#include "util/str.h"
-#include "util/utf8.h"
+#include "nb/log.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/str.h"
+#include "nb/utf8.h"
 #include "cJSON.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 #include <stdarg.h>
-#include "util/error.h"
-#include "util/sha256.h"
+#include "errors.h"
+#include "nb/hash.h"
+#include "nb/encoding.h"
 #include "agent/tool_context.h"
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include <pthread.h>
+#include "nb/thread.h"
 
 struct plan_tool_context {
 	unsigned int refs;
-	pthread_mutex_t mutex;
+	nb_mutex *mutex;
 	struct plan_registry *plans;
 	struct tool_context *tctx;
 	struct model *llm;
@@ -35,7 +37,7 @@ static void plan_tool_context_destroy(void *user_data)
 {
 	struct plan_tool_context *ctx = user_data;
 	if (ctx && __atomic_sub_fetch(&ctx->refs, 1, __ATOMIC_ACQ_REL) == 0) {
-		pthread_mutex_destroy(&ctx->mutex);
+		(nb_mutex_free(ctx->mutex), ctx->mutex = NULL);
 		free(ctx);
 	}
 }
@@ -45,8 +47,8 @@ static char *format_plan(struct plan *p)
 	if (!p)
 		return strdup("(no plan)");
 
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_init(&buf, 4096);
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&buf), nb_buf_reserve(&buf, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return NULL;
 
@@ -60,21 +62,21 @@ static char *format_plan(struct plan *p)
 		}
 	}
 
-	rc = morph_buf_printf(&buf, "Plan \"%s\" [%s]", p->name, p->id);
+	rc = (nb_buf_printf(&buf, "Plan \"%s\" [%s]", p->name, p->id) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return NULL;
 
 	if (p->goal[0]) {
-		rc = morph_buf_printf(&buf, "\n  Goal: %s", p->goal);
+		rc = (nb_buf_printf(&buf, "\n  Goal: %s", p->goal) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return NULL;
 	}
 
-	rc = morph_buf_printf(&buf, "\n  %d step(s)", p->step_count);
+	rc = (nb_buf_printf(&buf, "\n  %d step(s)", p->step_count) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return NULL;
 	if (all_done) {
-		rc = morph_buf_puts(&buf, " [completed]");
+		rc = (nb_buf_append_cstr(&buf, " [completed]") ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return NULL;
 	}
@@ -95,14 +97,15 @@ static char *format_plan(struct plan *p)
 		const char *marker = (i == p->active_step && p->active_step >= 0)
 				   ? " <-- active" : "";
 
-		rc = morph_buf_printf(&buf, "\n  [%s] %d. %s%s",
-				      icon, p->steps[i].id,
-				      p->steps[i].description, marker);
+		rc = (nb_buf_printf(&buf, "\n  [%s] %d. %s%s", icon, p->steps[i].id,
+				    p->steps[i].description, marker)
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (rc != 0)
 			return NULL;
 	}
 
-	return morph_buf_detach(&buf);
+	return (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
 }
 
 static const char *plan_status_icon(const char *status)
@@ -125,8 +128,8 @@ static char *format_plans(struct plan_registry *reg)
 	if (!reg || reg->count == 0)
 		return strdup("No plans yet. Use plan create to start one.");
 
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_init(&buf, 4096);
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&buf), nb_buf_reserve(&buf, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return NULL;
 
@@ -143,21 +146,21 @@ static char *format_plans(struct plan_registry *reg)
 			}
 		}
 
-		rc = morph_buf_printf(&buf, "%sPlan \"%s\" [%s]",
-				      i > 0 ? "\n" : "", p->name,
-				      p->id);
+		rc = (nb_buf_printf(&buf, "%sPlan \"%s\" [%s]", i > 0 ? "\n" : "", p->name, p->id)
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (rc != 0)
 			return NULL;
 		if (p->goal[0]) {
-			rc = morph_buf_printf(&buf, "\n  Goal: %s", p->goal);
+			rc = (nb_buf_printf(&buf, "\n  Goal: %s", p->goal) ? 0 : NB_ERR_NOMEM);
 			if (rc != 0)
 				return NULL;
 		}
-		rc = morph_buf_printf(&buf, "\n  %d step(s)", p->step_count);
+		rc = (nb_buf_printf(&buf, "\n  %d step(s)", p->step_count) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return NULL;
 		if (all_done) {
-			rc = morph_buf_puts(&buf, " [all completed]");
+			rc = (nb_buf_append_cstr(&buf, " [all completed]") ? 0 : NB_ERR_NOMEM);
 			if (rc != 0)
 				return NULL;
 		}
@@ -169,15 +172,16 @@ static char *format_plans(struct plan_registry *reg)
 					      p->active_step >= 0)
 					   ? " <-- active" : "";
 
-			rc = morph_buf_printf(&buf, "\n  [%s] %d. %s%s",
-					      icon, s->id,
-					      s->description, marker);
+			rc = (nb_buf_printf(&buf, "\n  [%s] %d. %s%s", icon, s->id, s->description,
+					    marker)
+				      ? 0
+				      : NB_ERR_NOMEM);
 			if (rc != 0)
 				return NULL;
 		}
 	}
 
-	return morph_buf_detach(&buf);
+	return (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
 }
 
 static int plan_all_done(struct plan *p)
@@ -198,11 +202,11 @@ static cJSON *plan_to_json(struct plan *p)
 	if (!p)
 		return NULL;
 
-	cJSON *obj MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *obj NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	if (!obj)
 		return NULL;
 
-	cJSON *steps MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
+	cJSON *steps NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateArray();
 	if (!steps)
 		return NULL;
 
@@ -221,7 +225,7 @@ static cJSON *plan_to_json(struct plan *p)
 
 	for (int i = 0; i < p->step_count; i++) {
 		struct plan_step *s = &p->steps[i];
-		cJSON *step MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		cJSON *step NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 		if (!step)
 			return NULL;
 		if (!cJSON_AddNumberToObject(step, "id", s->id) ||
@@ -234,13 +238,14 @@ static cJSON *plan_to_json(struct plan *p)
 					   i == p->active_step && p->active_step >= 0)) {
 			return NULL;
 		}
-		if (morph_json_array_take(steps, &step) != 0)
+		if ((cJSON_AddItemToArray(steps, step) ? (step = NULL, NB_OK) : NB_ERR_NOMEM) != 0)
 			return NULL;
 	}
 
-	if (morph_json_object_take(obj, "steps", &steps) != 0)
+	if ((cJSON_AddItemToObject(obj, "steps", steps) ? (steps = NULL, NB_OK) : NB_ERR_NOMEM) !=
+	    0)
 		return NULL;
-	return morph_json_steal(&obj);
+	return cJSON_StealOwner(&obj);
 }
 
 static cJSON *plan_registry_to_json(struct plan_registry *reg,
@@ -248,11 +253,11 @@ static cJSON *plan_registry_to_json(struct plan_registry *reg,
 				    const char *selected_plan_id,
 				    const char *selected_plan)
 {
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	if (!root)
 		return NULL;
 
-	cJSON *plans MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
+	cJSON *plans NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateArray();
 	if (!plans)
 		return NULL;
 
@@ -274,24 +279,25 @@ static cJSON *plan_registry_to_json(struct plan_registry *reg,
 
 	if (reg) {
 		for (int i = 0; i < reg->count; i++) {
-			cJSON *item MORPH_CLEANUP(morph_json_cleanup) =
-				plan_to_json(&reg->plans[i]);
+			cJSON *item NB_CLEANUP(cJSON_DeleteOwner) = plan_to_json(&reg->plans[i]);
 			if (!item)
 				return NULL;
-			if (morph_json_array_take(plans, &item) != 0)
+			if ((cJSON_AddItemToArray(plans, item) ? (item = NULL, NB_OK)
+							       : NB_ERR_NOMEM) != 0)
 				return NULL;
 		}
 	}
 
-	if (morph_json_object_take(root, "plans", &plans) != 0)
+	if ((cJSON_AddItemToObject(root, "plans", plans) ? (plans = NULL, NB_OK) : NB_ERR_NOMEM) !=
+	    0)
 		return NULL;
-	return morph_json_steal(&root);
+	return cJSON_StealOwner(&root);
 }
 
 static cJSON *plan_ui_to_json(cJSON *data)
 {
-	cJSON *ui MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
-	cJSON *summary MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *ui NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	cJSON *summary NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	cJSON *item;
 
 	if (!ui)
@@ -331,22 +337,23 @@ static cJSON *plan_ui_to_json(cJSON *data)
 					     item->valuestring))
 			return NULL;
 	}
-	if (morph_json_object_take(ui, "data", &summary) != 0)
+	if ((cJSON_AddItemToObject(ui, "data", summary) ? (summary = NULL, NB_OK) : NB_ERR_NOMEM) !=
+	    0)
 		return NULL;
-	return morph_json_steal(&ui);
+	return cJSON_StealOwner(&ui);
 }
 
 static int attach_plan_state(struct tool_result *result, struct plan_registry *reg,
 			     const char *command, const char *selected_plan_id,
 			     const char *selected_plan)
 {
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) =
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) =
 		plan_registry_to_json(reg, command, selected_plan_id, selected_plan);
 	if (!data)
-		return -ENOMEM;
-	cJSON *ui MORPH_CLEANUP(morph_json_cleanup) = plan_ui_to_json(data);
+		return NB_ERR_NOMEM;
+	cJSON *ui NB_CLEANUP(cJSON_DeleteOwner) = plan_ui_to_json(data);
 	if (!ui)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	int rc = tool_result_success_take(result, &data);
 	if (rc == 0)
 		rc = tool_result_set_ui_take(result, &ui);
@@ -360,26 +367,26 @@ static int set_resultf(struct tool_result *result, const char *fmt, ...)
 
 static int set_resultf(struct tool_result *result, const char *fmt, ...)
 {
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	va_list ap;
 	int rc;
 
 	if (!result || !fmt)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
-	rc = morph_buf_init(&buf, 1024);
+	rc = (nb_buf_init(&buf), nb_buf_reserve(&buf, 1024) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 
 	va_start(ap, fmt);
-	rc = morph_buf_vprintf(&buf, fmt, ap);
+	rc = (nb_buf_vprintf(&buf, fmt, ap) ? 0 : NB_ERR_NOMEM);
 	va_end(ap);
 	if (rc != 0) {
-		morph_buf_cleanup(&buf);
+		nb_buf_cleanup(&buf);
 		return rc;
 	}
 
-	return tool_result_success_json_text_copy(result, morph_buf_cstr_borrow(&buf));
+	return tool_result_success_json_text_copy(result, nb_buf_cstr(&buf));
 }
 
 static int parse_steps_from_text(const char *text, const char **descs,
@@ -449,7 +456,7 @@ static int auto_decompose(const struct tool_runtime_context *runtime, struct mod
 			  const char *goal, const char **step_descs, int max_steps)
 {
 	if (!goal || !step_descs || max_steps <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!llm || !llm->chat || !model_api_key_borrow(llm)[0])
 		return MORPH_ERR_NOT_CONFIGURED;
 
@@ -464,9 +471,9 @@ static int auto_decompose(const struct tool_runtime_context *runtime, struct mod
 	const char *sys = "You are a task planner. Break goals into numbered steps. "
 			  "Output ONLY the numbered list, no preamble.";
 
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	struct tool_runtime_stream_sink stream;
-	int rc2 = morph_buf_init(&buf, 8192);
+	int rc2 = (nb_buf_init(&buf), nb_buf_reserve(&buf, 8192) ? 0 : NB_ERR_NOMEM);
 	if (rc2 != 0) {
 		return rc2;
 	}
@@ -482,13 +489,13 @@ static int auto_decompose(const struct tool_runtime_context *runtime, struct mod
 	int status = llm->chat(llm, sys, messages, 1, NULL, tool_runtime_stream_to_buf_cb, &stream);
 
 	if (status < 0 || buf.len == 0) {
-		morph_buf_cleanup(&buf);
+		nb_buf_cleanup(&buf);
 		return MORPH_ERR_LLM;
 	}
 
-	if (buf.failed)
-		return buf.failed;
-	return parse_steps_from_text(morph_buf_cstr_borrow(&buf), step_descs, max_steps);
+	if (nb_buf_status(&buf))
+		return nb_buf_status(&buf);
+	return parse_steps_from_text(nb_buf_cstr(&buf), step_descs, max_steps);
 }
 
 static void free_step_descs(const char **descs, int count)
@@ -502,14 +509,14 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 	struct plan_tool_context *ctx = user_data;
 
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!ctx || !ctx->plans)
 		return MORPH_ERR_NOT_CONFIGURED;
 
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(args_json);
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(args_json);
 	if (!root) {
 		(void)tool_result_success_json_text_copy(result, "{\"error\":\"invalid JSON\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	cJSON *cmd = cJSON_GetObjectItem(root, "command");
@@ -518,7 +525,7 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"missing 'command' parameter. "
 				"Commands: create, update, get, list\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	const char *command = cmd->valuestring;
@@ -533,7 +540,7 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 
 			(void)tool_result_success_json_text_copy(
 				result, "{\"error\":\"create requires 'name' (string)\"}");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 
 		const char *goal = cJSON_IsString(goal_item)
@@ -579,7 +586,7 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 			(void)tool_result_success_json_text_copy(
 				result, "{\"error\":\"create requires 'steps' (array of strings) "
 					"or a 'goal' string to auto-decompose\"}");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 
 		struct plan *p = plan_add_borrow(ctx->plans, name_item->valuestring, goal,
@@ -592,17 +599,17 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 			(void)tool_result_success_json_text_copy(
 				result, "{\"error\":\"failed to create plan "
 					"(max 8 plans, max 32 steps each)\"}");
-			return -ENOSPC;
+			return NB_ERR_NO_SPACE;
 		}
 
-		char *formatted MORPH_CLEANUP(morph_charp_cleanup) = format_plan(p);
+		char *formatted NB_CLEANUP(nb_charp_cleanup) = format_plan(p);
 		if (!formatted) {
 			if (auto_decomposed)
 				free_step_descs(step_descs, step_count);
 
 			(void)tool_result_success_json_text_copy(result,
 								 "{\"error\":\"out of memory\"}");
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 
 		if (auto_decomposed) {
@@ -625,9 +632,9 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 
 			return rc;
 		}
-		log_info(result && result->runtime ? result->runtime->http.logger : NULL,
-			 "plan: created '%s' with %d steps%s", p->name, p->step_count,
-			 auto_decomposed ? " (auto)" : "");
+		nb_log_write(result && result->runtime ? result->runtime->http.logger : NULL,
+			     NB_LOG_INFO, "plan: created '%s' with %d steps%s", p->name,
+			     p->step_count, auto_decomposed ? " (auto)" : "");
 
 	} else if (strcmp(command, "update") == 0) {
 		cJSON *plan_id_item = cJSON_GetObjectItem(root, "plan_id");
@@ -651,7 +658,7 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 					"'step_id' (int), and 'status' (string). "
 					"Status: pending, in_progress, completed, "
 					"failed, skipped\"}");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 
 		rc = plan_id ? plan_update_step_by_id(ctx->plans, plan_id,
@@ -661,7 +668,7 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 		if (rc < 0) {
 			char err[256];
 			const char *msg;
-			if (rc == -ENOENT)
+			if (rc == NB_ERR_NOT_FOUND)
 				msg = "plan or step not found";
 			else
 				msg = "invalid parameters";
@@ -674,7 +681,7 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 
 		struct plan *p = plan_id ? plan_by_id_borrow(ctx->plans, plan_id)
 					 : plan_borrow(ctx->plans, plan_name);
-		char *formatted MORPH_CLEANUP(morph_charp_cleanup) = p ? format_plan(p) : NULL;
+		char *formatted NB_CLEANUP(nb_charp_cleanup) = p ? format_plan(p) : NULL;
 
 		rc = set_resultf(result, "Step %d marked as '%s'.\n%s",
 				 step_id, status,
@@ -691,9 +698,9 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 
 			return rc;
 		}
-		log_info(result && result->runtime ? result->runtime->http.logger : NULL,
-			 "plan: updated '%s' step %d -> %s",
-			 p ? p->id : (plan_id ? plan_id : plan_name), step_id, status);
+		nb_log_write(result && result->runtime ? result->runtime->http.logger : NULL,
+			     NB_LOG_INFO, "plan: updated '%s' step %d -> %s",
+			     p ? p->id : (plan_id ? plan_id : plan_name), step_id, status);
 
 	} else if (strcmp(command, "get") == 0) {
 		cJSON *plan_id_item = cJSON_GetObjectItem(root, "plan_id");
@@ -711,13 +718,12 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 					plan_id ? plan_id :
 					plan_item->valuestring);
 			} else {
-				char *formatted MORPH_CLEANUP(morph_charp_cleanup) = format_plan(p);
+				char *formatted NB_CLEANUP(nb_charp_cleanup) = format_plan(p);
 				rc = set_resultf(result, "%s",
 					formatted ? formatted : "(empty)");
 			}
 		} else {
-			char *formatted MORPH_CLEANUP(morph_charp_cleanup) =
-				format_plans(ctx->plans);
+			char *formatted NB_CLEANUP(nb_charp_cleanup) = format_plans(ctx->plans);
 			rc = set_resultf(result, "%s",
 					 formatted ? formatted : "(empty)");
 		}
@@ -735,7 +741,7 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 		}
 
 	} else if (strcmp(command, "list") == 0) {
-		char *formatted MORPH_CLEANUP(morph_charp_cleanup) = format_plans(ctx->plans);
+		char *formatted NB_CLEANUP(nb_charp_cleanup) = format_plans(ctx->plans);
 		rc = set_resultf(result, "%s",
 				 formatted ? formatted : "(empty)");
 
@@ -755,7 +761,7 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 			"Commands: create, update, get, list\"}",
 			command);
 
-		return rc != 0 ? rc : -EINVAL;
+		return rc != 0 ? rc : NB_ERR_INVAL;
 	}
 
 	return 0;
@@ -764,37 +770,37 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 static int plan_file_digest(struct plan_tool_context *ctx, const char *path,
 			    char resolved[PATH_MAX], char hex[65])
 {
-	struct sha256_ctx hash;
+	struct nb_sha256_ctx hash;
 	unsigned char digest[32];
 	unsigned char buf[BUFSIZ];
 	struct stat st;
 	int fd;
 	int rc;
 	if (!ctx->tctx || !path)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = tool_context_authorize_path(ctx->tctx, TOOL_PATH_READ, path, resolved, PATH_MAX);
 	if (rc != 0)
 		return rc;
 	fd = open(resolved, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
 	if (fd < 0)
-		return morph_error_from_errno(errno);
+		return nb_status_from_errno(errno, NULL);
 	if (fstat(fd, &st) != 0) {
-		rc = -errno;
+		rc = nb_status_from_errno(errno, NULL);
 		close(fd);
 		return rc;
 	}
 	if (!S_ISREG(st.st_mode) || st.st_size > 64 * 1024 * 1024) {
 		close(fd);
-		return -EFBIG;
+		return NB_ERR_TOO_BIG;
 	}
-	sha256_init(&hash);
+	nb_sha256_init(&hash);
 	size_t total = 0;
 	for (;;) {
 		ssize_t n = read(fd, buf, sizeof(buf));
 		if (n < 0 && errno == EINTR)
 			continue;
 		if (n < 0) {
-			rc = -errno;
+			rc = nb_status_from_errno(errno, NULL);
 			close(fd);
 			return rc;
 		}
@@ -803,14 +809,13 @@ static int plan_file_digest(struct plan_tool_context *ctx, const char *path,
 		total += (size_t)n;
 		if (total > 64u * 1024u * 1024u) {
 			close(fd);
-			return -EFBIG;
+			return NB_ERR_TOO_BIG;
 		}
-		sha256_update(&hash, buf, (size_t)n);
+		nb_sha256_update(&hash, buf, (size_t)n);
 	}
 	close(fd);
-	sha256_final(&hash, digest);
-	for (size_t i = 0; i < sizeof(digest); i++)
-		snprintf(hex + i * 2, 3, "%02x", digest[i]);
+	nb_sha256_final(&hash, digest);
+	(void)nb_hex_encode_to(digest, sizeof(digest), false, hex, 65, NULL);
 	return 0;
 }
 
@@ -826,14 +831,14 @@ static int plan_capture_report(struct plan_tool_context *ctx, const cJSON *args,
 	if (!cJSON_IsArray(files) || cJSON_GetArraySize(files) < 1 ||
 	    cJSON_GetArraySize(files) > 16 || !report || !outcome ||
 	    (strcmp(outcome, "passed") && strcmp(outcome, "failed")))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	state = cJSON_CreateObject();
 	inputs = state ? cJSON_AddArrayToObject(state, "inputs") : NULL;
 	if (!inputs || !cJSON_AddStringToObject(state, "status", "current") ||
 	    !cJSON_AddStringToObject(state, "outcome", outcome) ||
 	    !cJSON_AddStringToObject(state, "report", report)) {
 		cJSON_Delete(state);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	/* Include the report itself so replacing its contents invalidates reuse. */
 	for (int i = -1; i < cJSON_GetArraySize(files); i++) {
@@ -846,25 +851,25 @@ static int plan_capture_report(struct plan_tool_context *ctx, const cJSON *args,
 			break;
 		cJSON *input = cJSON_CreateObject();
 		if (!input) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			break;
 		}
 		cJSON_AddItemToArray(inputs, input);
 		if (!cJSON_AddStringToObject(input, "path", resolved) ||
 		    !cJSON_AddStringToObject(input, "sha256", hex)) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			break;
 		}
 	}
 	char *text = rc == 0 ? cJSON_PrintUnformatted(state) : NULL;
 	if (rc == 0 && (!text || strlen(text) >= sizeof(ctx->plans->plans[0].verification)))
-		rc = text ? -E2BIG : -ENOMEM;
+		rc = text ? NB_ERR_TOO_BIG : NB_ERR_NOMEM;
 	if (rc == 0) {
 		cJSON *value = cJSON_CreateString(text);
 		if (!value ||
 		    !cJSON_ReplaceItemInObjectCaseSensitive(selected, "verification", value)) {
 			cJSON_Delete(value);
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 		}
 	}
 	free(text);
@@ -913,7 +918,7 @@ static int plan_refresh_reports(struct plan_tool_context *ctx)
 			char *text = cJSON_PrintUnformatted(state);
 			if (!text) {
 				cJSON_Delete(state);
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			}
 			snprintf(p->verification, sizeof(p->verification), "%s", text);
 			free(text);
@@ -924,15 +929,18 @@ static int plan_refresh_reports(struct plan_tool_context *ctx)
 	return changed ? plan_registry_save(ctx->plans) : 0;
 }
 
+static int plan_refresh_context(void *user_data)
+{
+	struct plan_tool_context *ctx = user_data;
+	nb_mutex_lock(ctx->mutex);
+	int rc = plan_refresh_reports(ctx);
+	nb_mutex_unlock(ctx->mutex);
+	return rc;
+}
+
 int plan_tool_refresh_reports(struct tool_registry *reg)
 {
-	struct tool_entry *entry = reg ? tool_borrow(reg, "plan") : NULL;
-	struct plan_tool_context *ctx = entry ? entry->user_data : NULL;
-	if (!ctx) return 0;
-	pthread_mutex_lock(&ctx->mutex);
-	int rc = plan_refresh_reports(ctx);
-	pthread_mutex_unlock(&ctx->mutex);
-	return rc;
+	return tool_refresh_context(reg, "plan");
 }
 
 static int plan_tool_exec_checked(const char *args_json, struct tool_result *result, void *user_data)
@@ -945,7 +953,7 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 	int rc;
 	if (!ctx || !ctx->plans || !command) {
 		cJSON_Delete(args);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	rc = plan_refresh_reports(ctx);
 	if (rc != 0) {
@@ -955,7 +963,7 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 	before = plan_registry_json_create(ctx->plans);
 	if (!before) {
 		cJSON_Delete(args);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (!strcmp(command, "checkpoint") || !strcmp(command, "verify"))
 		rc = 0;
@@ -963,7 +971,7 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 		rc = plan_tool_exec_inner(args_json, result, user_data);
 	state = rc == 0 ? plan_registry_json_create(ctx->plans) : NULL;
 	if (rc == 0 && !state)
-		rc = -ENOMEM;
+		rc = NB_ERR_NOMEM;
 	if (rc == 0 && (!strcmp(command, "checkpoint") || !strcmp(command, "create") ||
 			!strcmp(command, "update") || !strcmp(command, "verify"))) {
 		const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(args, "plan_id"));
@@ -984,7 +992,7 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 			}
 		}
 		if (!selected)
-			rc = -ENOENT;
+			rc = NB_ERR_NOT_FOUND;
 		if (rc == 0 && !strcmp(command, "verify"))
 			rc = plan_capture_report(ctx, args, selected);
 		const char *fields[] = {"request", "constraints", "acceptance", "rejected"};
@@ -996,7 +1004,7 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 			if (!copy ||
 			    !cJSON_ReplaceItemInObjectCaseSensitive(selected, fields[i], copy)) {
 				cJSON_Delete(copy);
-				rc = -ENOMEM;
+				rc = NB_ERR_NOMEM;
 				break;
 			}
 		}
@@ -1006,7 +1014,7 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 							 step_id->valueint - 1);
 			const char *step_fields[] = {"evidence", "blocker", "artifact"};
 			if (!step)
-				rc = -ENOENT;
+				rc = NB_ERR_NOT_FOUND;
 			for (size_t i = 0; step && i < sizeof(step_fields) / sizeof(step_fields[0]);
 			     i++) {
 				cJSON *value =
@@ -1017,7 +1025,7 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 				if (!copy || !cJSON_ReplaceItemInObjectCaseSensitive(
 						 step, step_fields[i], copy)) {
 					cJSON_Delete(copy);
-					rc = -ENOMEM;
+					rc = NB_ERR_NOMEM;
 					break;
 				}
 			}
@@ -1033,7 +1041,9 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 	}
 	if (rc != 0) {
 		(void)plan_registry_restore(ctx->plans, before);
-		(void)tool_result_error_copy(result, "plan_checkpoint_failed", morph_strerror(rc));
+		(void)tool_result_error_copy(
+			result, "plan_checkpoint_failed",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	}
 	cJSON_Delete(state);
 	cJSON_Delete(before);
@@ -1044,10 +1054,11 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 static int plan_tool_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct plan_tool_context *ctx = user_data;
-	if (!ctx) return -EINVAL;
-	pthread_mutex_lock(&ctx->mutex);
+	if (!ctx)
+		return NB_ERR_INVAL;
+	nb_mutex_lock(ctx->mutex);
 	int rc = plan_tool_exec_checked(args_json, result, user_data);
-	pthread_mutex_unlock(&ctx->mutex);
+	nb_mutex_unlock(ctx->mutex);
 	return rc;
 }
 
@@ -1067,8 +1078,9 @@ static int update_plan_parse(const cJSON *args, struct plan *candidate)
 	const cJSON *explanation = cJSON_GetObjectItemCaseSensitive(args, "explanation");
 	if (!cJSON_IsObject(args) || !cJSON_IsArray(steps) ||
 	    cJSON_GetArraySize(steps) > PLAN_MAX_STEPS ||
-	    (explanation && (!cJSON_IsString(explanation) || utf8valid(explanation->valuestring))))
-		return -EINVAL;
+	    (explanation && (!cJSON_IsString(explanation) ||
+			     nb_utf8_validate(nb_str_from_cstr(explanation->valuestring), NULL))))
+		return NB_ERR_INVAL;
 	int fields = 0;
 	const cJSON *field;
 	cJSON_ArrayForEach (field, args) {
@@ -1076,7 +1088,7 @@ static int update_plan_parse(const cJSON *args, struct plan *candidate)
 			  : !strcmp(field->string, "explanation") ? 2
 								  : 0;
 		if (!bit || (fields & bit))
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		fields |= bit;
 	}
 	candidate->active_step = -1;
@@ -1087,24 +1099,25 @@ static int update_plan_parse(const cJSON *args, struct plan *candidate)
 			cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "step"));
 		const char *status =
 			cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "status"));
-		if (!cJSON_IsObject(item) || !text || !status || utf8valid(text) ||
+		if (!cJSON_IsObject(item) || !text || !status ||
+		    nb_utf8_validate(nb_str_from_cstr(text), NULL) ||
 		    strlen(text) >= sizeof(candidate->steps[i].description) ||
-		    !morph_str_trim_borrow((morph_str_t){strlen(text), text}).len ||
+		    !nb_str_trim(nb_str_from_cstr(text)).len ||
 		    (strcmp(status, "pending") && strcmp(status, "in_progress") &&
 		     strcmp(status, "completed")))
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		fields = 0;
 		cJSON_ArrayForEach (field, item) {
 			int bit = !strcmp(field->string, "step")     ? 1
 				  : !strcmp(field->string, "status") ? 2
 								     : 0;
 			if (!bit || (fields & bit))
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			fields |= bit;
 		}
 		if (!strcmp(status, "in_progress")) {
 			if (candidate->active_step >= 0)
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			candidate->active_step = i;
 		}
 		candidate->steps[i].id = i + 1;
@@ -1122,26 +1135,27 @@ static int update_plan_apply(struct plan_tool_context *ctx, const cJSON *args,
 	if (!target) {
 		const char *placeholder[] = {"Task plan"};
 		if (ctx->plans->count >= PLAN_MAX_PLANS)
-			return -ENOSPC;
+			return NB_ERR_NO_SPACE;
 		target = plan_add_borrow(ctx->plans, UPDATE_PLAN_NAME, "", placeholder, 1);
 		if (!target)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 	}
 	memcpy(target->steps, candidate->steps, sizeof(target->steps));
 	target->step_count = candidate->step_count;
 	target->active_step = candidate->active_step;
 	*event_data = plan_registry_to_json(ctx->plans, "update_plan", target->id, target->name);
 	if (!*event_data)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	const cJSON *explanation = cJSON_GetObjectItemCaseSensitive(args, "explanation");
 	if (explanation &&
 	    !cJSON_AddStringToObject(*event_data, "explanation", explanation->valuestring))
-		return -ENOMEM;
-	cJSON *steps MORPH_CLEANUP(morph_json_cleanup) =
+		return NB_ERR_NOMEM;
+	cJSON *steps NB_CLEANUP(cJSON_DeleteOwner) =
 		cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(args, "plan"), 1);
 	if (!steps)
-		return -ENOMEM;
-	int rc = morph_json_object_take(*event_data, "plan", &steps);
+		return NB_ERR_NOMEM;
+	int rc = (cJSON_AddItemToObject(*event_data, "plan", steps) ? (steps = NULL, NB_OK)
+								    : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = tool_result_success_text_copy(result, "Plan updated");
 	if (rc == 0)
@@ -1154,15 +1168,15 @@ static int update_plan_apply(struct plan_tool_context *ctx, const cJSON *args,
 static int update_plan_exec(const char *arguments, struct tool_result *result, void *opaque)
 {
 	struct plan_tool_context *ctx = opaque;
-	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(arguments);
-	cJSON *before MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	cJSON *event_data MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	struct plan *candidate MORPH_CLEANUP(update_plan_candidate_cleanup) =
+	cJSON *args NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(arguments);
+	cJSON *before NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	cJSON *event_data NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	struct plan *candidate NB_CLEANUP(update_plan_candidate_cleanup) =
 		calloc(1, sizeof(*candidate));
 	if (!ctx || !result || !ctx->plans)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!candidate)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	int rc = update_plan_parse(args, candidate);
 	if (rc != 0) {
 		(void)tool_result_error_copy(
@@ -1173,17 +1187,19 @@ static int update_plan_exec(const char *arguments, struct tool_result *result, v
 			"or step text are not supported.");
 		return rc;
 	}
-	pthread_mutex_lock(&ctx->mutex);
+	nb_mutex_lock(ctx->mutex);
 	before = plan_registry_json_create(ctx->plans);
-	rc = before ? update_plan_apply(ctx, args, candidate, result, &event_data) : -ENOMEM;
+	rc = before ? update_plan_apply(ctx, args, candidate, result, &event_data) : NB_ERR_NOMEM;
 	if (rc != 0 && before) {
 		int restore_rc = plan_registry_restore(ctx->plans, before);
 		if (restore_rc != 0)
 			rc = restore_rc;
 	}
-	pthread_mutex_unlock(&ctx->mutex);
+	nb_mutex_unlock(ctx->mutex);
 	if (rc != 0) {
-		(void)tool_result_error_copy(result, "plan_update_failed", morph_strerror(rc));
+		(void)tool_result_error_copy(
+			result, "plan_update_failed",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 	const struct tool_runtime_context *runtime = result->runtime;
@@ -1204,7 +1220,7 @@ static int update_plan_exec(const char *arguments, struct tool_result *result, v
 static int update_plan_register(struct tool_registry *reg, struct plan_tool_context *ctx)
 {
 	__atomic_add_fetch(&ctx->refs, 1, __ATOMIC_RELAXED);
-	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
+	struct tool_spec spec NB_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.name = "update_plan",
 		.description = "Update the task checklist with a complete list of steps and "
@@ -1233,19 +1249,22 @@ int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 		   struct model *llm)
 {
 	if (!reg || !plans)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	struct plan_tool_context *ctx = malloc(sizeof(*ctx));
 	if (!ctx)
-		return -ENOMEM;
-	int mutex_rc = pthread_mutex_init(&ctx->mutex, NULL);
-	if (mutex_rc != 0) { free(ctx); return -mutex_rc; }
+		return NB_ERR_NOMEM;
+	int mutex_rc = ((ctx->mutex = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
+	if (mutex_rc != 0) {
+		free(ctx);
+		return mutex_rc;
+	}
 	ctx->refs = 1;
 	ctx->tctx = NULL;
 	ctx->plans = plans;
 	ctx->llm = llm;
 
-	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
+	struct tool_spec spec NB_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.name = "plan",
 		.description = "Create and manage multi-step plans. "
@@ -1300,6 +1319,7 @@ int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 			"},\"required\":[\"command\"]}",
 		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
 		.exec = plan_tool_exec,
+		.refresh_context = plan_refresh_context,
 		.user_data = ctx,
 		.user_data_destroy = plan_tool_context_destroy};
 	int rc = tool_register_take(reg, &spec);
@@ -1311,7 +1331,7 @@ int plan_tool_rebind(struct tool_registry *reg, struct plan_registry *plans,
 {
 	struct tool_entry *entry = reg ? tool_borrow(reg, "plan") : NULL;
 	if (!entry || !plans)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	unsigned int flags = entry->flags;
 	int timeout = entry->timeout_seconds;
 	int disabled = tool_is_disabled(reg, "plan");

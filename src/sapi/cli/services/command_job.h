@@ -1,8 +1,10 @@
 #ifndef MORPH_CLI_SERVICES_COMMAND_JOB_H
 #define MORPH_CLI_SERVICES_COMMAND_JOB_H
 
-#include <pthread.h>
-#include "util/array.h"
+#include "nb/thread.h"
+#include "nb/err.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 
 struct react_action;
 
@@ -14,12 +16,12 @@ struct cli_command_job {
 	char *input;
 	cli_command_job_fn fn;
 	void *user_data;
-	pthread_t thread;
-	pthread_mutex_t mutex;
+	nb_thread *thread;
+	nb_mutex *mutex;
 	int active;
 	int done;
 	int result;
-	morph_array_t prompts;
+	nb_vec prompts;
 	char *delivered_prompt;
 	int expedite_prompts;
 };
@@ -37,7 +39,7 @@ int cli_command_job_prompt_pending(void *opaque);
 int cli_command_job_expedite_prompts(struct cli_command_job *job);
 int cli_command_job_prompt(struct cli_command_job *job, const char *text, const char *display_text);
 /* Each empty items slot receives an independent malloc-owned string. On failure
- * every created slot is NULL and total is zero; occupied slots return -EEXIST. */
+ * every created slot is NULL and total is zero; occupied slots return NB_ERR_EXISTS. */
 int cli_command_job_prompts_copy(struct cli_command_job *job, char **items, size_t capacity,
 				 size_t *total);
 char *cli_command_job_take_prompt(struct cli_command_job *job, char **display_text);

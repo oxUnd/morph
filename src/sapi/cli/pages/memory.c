@@ -2,10 +2,11 @@
 
 #include "sapi/cli/application.h"
 #include "runtime/services.h"
-#include "util/buf.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/json.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "cJSON.h"
 #include "cJSON.h"
 #include <morph/tui/view_controller.h>
 #include <morph/tui/widgets/label.h>
@@ -119,14 +120,14 @@ static const char *cli_memory_row(void *data, size_t index)
 	return page->row;
 }
 
-static int cli_memory_document(struct cli_memory_page *page, morph_buf_t *document)
+static int cli_memory_document(struct cli_memory_page *page, nb_buf *document)
 {
 	const cJSON *report = page->report;
 	cJSON *entries = cJSON_GetObjectItemCaseSensitive(report, "entries");
 	cJSON *entry;
 
 	if (!page->section) {
-		(void)morph_buf_printf(
+		(void)nb_buf_printf(
 			document,
 			"Memory: %s\nProject: %s\nScope: this user, this project\n"
 			"Learning from chats: %s\nSaving past work: %s\n"
@@ -144,12 +145,12 @@ static int cli_memory_document(struct cli_memory_page *page, morph_buf_t *docume
 			(int)cJSON_GetNumberValue(
 				cJSON_GetObjectItemCaseSensitive(report, "reply_char_limit")));
 		for (int section = 2; section <= 5; section++) {
-			(void)morph_buf_printf(document, "%s: %d%s\n",
-					       cli_memory_section_name(section),
-					       cli_memory_section_count(page, section),
-					       page->query && *page->query ? " matching" : "");
+			(void)nb_buf_printf(document, "%s: %d%s\n",
+					    cli_memory_section_name(section),
+					    cli_memory_section_count(page, section),
+					    page->query && *page->query ? " matching" : "");
 		}
-		(void)morph_buf_printf(
+		(void)nb_buf_printf(
 			document,
 			"\nYour active preferences\n%s\n"
 			"Saved facts and tips are inferred from past work; check them before use.\n"
@@ -158,23 +159,23 @@ static int cli_memory_document(struct cli_memory_page *page, morph_buf_t *docume
 			"Retry failed updates with /memory retry after closing this panel.\n",
 			cli_memory_string(report, "preferences"),
 			cli_memory_string(report, "jobs"));
-		(void)morph_buf_puts(document, "\nSaved project summaries\n");
+		(void)nb_buf_append_cstr(document, "\nSaved project summaries\n");
 		int summaries = 0;
 
 		cJSON_ArrayForEach (entry, entries) {
 			if (strcmp(cli_memory_string(entry, "kind"), "summary"))
 				continue;
 			summaries++;
-			(void)morph_buf_printf(document, "\n%s\n%s\nSources: %s\n",
-					       cli_memory_string(entry, "key"),
-					       cli_memory_string(entry, "value"),
-					       cli_memory_string(entry, "details"));
+			(void)nb_buf_printf(document, "\n%s\n%s\nSources: %s\n",
+					    cli_memory_string(entry, "key"),
+					    cli_memory_string(entry, "value"),
+					    cli_memory_string(entry, "details"));
 		}
 		if (!summaries)
-			(void)morph_buf_puts(document, "No saved summary yet. Available notes "
-						       "remain in the memory directory.\n");
+			(void)nb_buf_append_cstr(document, "No saved summary yet. Available notes "
+							   "remain in the memory directory.\n");
 	} else if (page->section == 1) {
-		(void)morph_buf_printf(
+		(void)nb_buf_printf(
 			document,
 			"Your active preferences (this chat > this project > all chats)\n%s\n"
 			"Changes and sources\n%s\n"
@@ -182,7 +183,7 @@ static int cli_memory_document(struct cli_memory_page *page, morph_buf_t *docume
 			cli_memory_string(report, "preferences"),
 			cli_memory_string(report, "history"));
 	} else if (page->section == 6) {
-		(void)morph_buf_printf(
+		(void)nb_buf_printf(
 			document,
 			"Recent memory updates (this chat)\n%s\n"
 			"Retry failed updates with /memory retry after closing this panel.\n",
@@ -191,7 +192,7 @@ static int cli_memory_document(struct cli_memory_page *page, morph_buf_t *docume
 	} else if (page->section == 7) {
 		const char *context = cli_memory_string(report, "reply_memory");
 
-		(void)morph_buf_printf(
+		(void)nb_buf_printf(
 			document,
 			"Memory prepared for the most recent reply\n"
 			"This view is not changed by the panel search.\n"
@@ -211,36 +212,40 @@ static int cli_memory_document(struct cli_memory_page *page, morph_buf_t *docume
 
 			if (localtime_r(&updated, &local))
 				(void)strftime(date, sizeof(date), "%Y-%m-%d %H:%M:%S", &local);
-			(void)morph_buf_printf(
-				document,
-				"[%s #%lld] %s\n%s\n\nSource: %s\n"
-				"Session: %s\nUpdated: %s\nDetails: %s\n\n",
-				cli_memory_record_label(entry),
-				(long long)cJSON_GetNumberValue(
-					cJSON_GetObjectItemCaseSensitive(entry, "id")),
-				cli_memory_string(entry, "key"), cli_memory_string(entry, "value"),
-				cli_memory_string(entry, "source"),
-				cli_memory_string(entry, "session"), date,
-				cli_memory_string(entry, "details"));
+			(void)nb_buf_printf(document,
+					    "[%s #%lld] %s\n%s\n\nSource: %s\n"
+					    "Session: %s\nUpdated: %s\nDetails: %s\n\n",
+					    cli_memory_record_label(entry),
+					    (long long)cJSON_GetNumberValue(
+						    cJSON_GetObjectItemCaseSensitive(entry, "id")),
+					    cli_memory_string(entry, "key"),
+					    cli_memory_string(entry, "value"),
+					    cli_memory_string(entry, "source"),
+					    cli_memory_string(entry, "session"), date,
+					    cli_memory_string(entry, "details"));
 		}
 		if (!shown)
-			(void)morph_buf_puts(document, "No matching memories in this section.\n");
+			(void)nb_buf_append_cstr(document,
+						 "No matching memories in this section.\n");
 	}
-	return document->failed;
+	return nb_buf_status(document);
 }
 
 static int cli_memory_sync(struct cli_memory_page *page)
 {
-	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_init(&text, BUFSIZ);
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf title NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&text), nb_buf_reserve(&text, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 
 	if (rc == 0)
-		rc = morph_buf_init(&title, 128);
+		rc = (nb_buf_init(&title), nb_buf_reserve(&title, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = page->detail ? morph_buf_printf(&title, "morph / memory / %s",
-						     cli_memory_section_name(page->section))
-				  : morph_buf_puts(&title, "morph / memory");
+		rc = page->detail
+			     ? (nb_buf_printf(&title, "morph / memory / %s",
+					      cli_memory_section_name(page->section))
+					? 0
+					: NB_ERR_NOMEM)
+			     : (nb_buf_append_cstr(&title, "morph / memory") ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && page->detail)
 		rc = cli_memory_document(page, &text);
 	if (rc == 0)
@@ -252,14 +257,12 @@ static int cli_memory_sync(struct cli_memory_page *page)
 	if (rc == 0)
 		rc = morph_tui_view_set_hidden(page->document, !page->detail);
 	if (rc == 0)
-		rc = morph_tui_widget_label_set_text_copy(page->title,
-							  morph_buf_cstr_borrow(&title));
+		rc = morph_tui_widget_label_set_text_copy(page->title, nb_buf_cstr(&title));
 	if (rc == 0)
 		rc = morph_tui_widget_label_set_text_copy(
 			page->description, cli_memory_section_description(page->section));
 	if (rc == 0 && page->detail)
-		rc = morph_tui_widget_text_view_set_text_copy(page->document,
-							      morph_buf_cstr_borrow(&text));
+		rc = morph_tui_widget_text_view_set_text_copy(page->document, nb_buf_cstr(&text));
 	if (rc == 0)
 		rc = morph_tui_widget_label_set_text_copy(
 			page->status, page->searching
@@ -282,13 +285,13 @@ static int cli_memory_sync(struct cli_memory_page *page)
 
 static int cli_memory_refresh(struct cli_memory_page *page)
 {
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	int rc = runtime_memory_report_copy(page->ctx->runtime, page->query, &report);
 
 	if (rc != 0)
 		return rc;
 	cJSON_Delete(page->report);
-	page->report = morph_json_steal(&report);
+	page->report = cJSON_StealOwner(&report);
 	return cli_memory_sync(page);
 }
 
@@ -330,12 +333,12 @@ static int cli_memory_action(struct morph_tui_view_controller *controller,
 	}
 	if (action->sender != page->search || action->type != MORPH_TUI_WIDGET_ACTION_SUBMIT)
 		return 0;
-	char *query MORPH_CLEANUP(morph_charp_cleanup) = strdup(action->text ? action->text : "");
+	char *query NB_CLEANUP(nb_charp_cleanup) = strdup(action->text ? action->text : "");
 
 	if (!query)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	free(page->query);
-	page->query = morph_charp_steal(&query);
+	page->query = nb_charp_steal(&query);
 	page->searching = 0;
 	return cli_memory_refresh(page);
 }

@@ -1,17 +1,18 @@
 /* agent_bridge.c -- FastCGI ownership of the shared Morph runtime pool. */
+#include "nb/time.h"
 #include "agent_bridge.h"
 
 #include "agent/tool_runtime.h"
 #include "config/config.h"
 #include "runtime/runtime.h"
-#include "util/error.h"
-#include "util/cleanup.h"
-#include "util/file.h"
-#include "util/log.h"
+#include "errors.h"
+#include "nb/cleanup.h"
+#include "nb/file.h"
+#include "nb/log.h"
 
 #include <errno.h>
 #include <limits.h>
-#include <pthread.h>
+#include "nb/thread.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,12 +40,12 @@ struct fcgi_turn_ticket {
 	struct fcgi_bridge *pool;
 	struct fcgi_turn_ticket *next;
 	char session_id[FCGI_RUNTIME_SESSION_ID_MAX];
-	struct timespec deadline;
+	int64_t deadline_ns;
 	int queued;
 };
 
 struct fcgi_bridge {
-	struct morph_log logger;
+	struct nb_log *logger;
 	struct bridge_runtime_slot *slots;
 	struct fcgi_turn_ticket *turn_head;
 	struct fcgi_turn_ticket *turn_tail;
@@ -61,9 +62,9 @@ struct fcgi_bridge {
 	int outstanding_leases;
 	int stopping;
 	int reaper_started;
-	pthread_t reaper_thread;
-	pthread_mutex_t lock;
-	pthread_cond_t changed;
+	nb_thread *reaper_thread;
+	nb_mutex *lock;
+	nb_cond *changed;
 	char config_path[PATH_MAX];
 	char db_path[PATH_MAX];
 	char output_dir[PATH_MAX];
@@ -94,10 +95,10 @@ static int bridge_copy_path(char *dst, size_t dst_size, const char *src)
 	int written;
 
 	if (!dst || dst_size == 0 || !src || !src[0])
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	written = snprintf(dst, dst_size, "%s", src);
 	if (written < 0 || (size_t)written >= dst_size)
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	return 0;
 }
 
@@ -105,7 +106,7 @@ static void bridge_runtime_options(struct fcgi_bridge *pool, struct runtime_opti
 				   int process_replica)
 {
 	memset(options, 0, sizeof(*options));
-	options->logger = &pool->logger;
+	options->logger = pool->logger;
 	options->config_path = pool->config_path;
 	options->db_path = pool->db_path;
 	options->output_dir_override = pool->output_dir[0] ? pool->output_dir : NULL;
@@ -144,12 +145,6 @@ static void bridge_runtime_close_slots(struct bridge_runtime_slot *slots,
 		runtime_close(slots[i].runtime);
 	if (slot_count > 0)
 		runtime_close(slots[0].runtime);
-}
-
-static void bridge_deadline(struct timespec *deadline, int seconds)
-{
-	clock_gettime(CLOCK_REALTIME, deadline);
-	deadline->tv_sec += seconds;
 }
 
 static int bridge_find_free_slot(struct fcgi_bridge *pool, const char *session_id,
@@ -226,10 +221,9 @@ static void bridge_ticket_unlink(struct fcgi_bridge *pool,
 static void *bridge_reaper_main(void *user_data)
 {
 	struct fcgi_bridge *pool = user_data;
-	pthread_mutex_lock(&pool->lock);
+	nb_mutex_lock(pool->lock);
 	while (!pool->stopping) {
 		struct bridge_runtime_slot victim;
-		struct timespec deadline;
 		int interval;
 		int index = -1;
 
@@ -240,8 +234,8 @@ static void *bridge_reaper_main(void *user_data)
 						   pool->idle_seconds < FCGI_REAPER_INTERVAL_MAX
 					   ? pool->idle_seconds
 					   : FCGI_REAPER_INTERVAL_MAX;
-			bridge_deadline(&deadline, interval);
-			(void)pthread_cond_timedwait(&pool->changed, &pool->lock, &deadline);
+			(void)nb_cond_timedwait(pool->changed, pool->lock,
+						(int64_t)interval * INT64_C(1000000000));
 			continue;
 		}
 		victim = pool->slots[index];
@@ -249,13 +243,13 @@ static void *bridge_reaper_main(void *user_data)
 		if (index != pool->slot_count)
 			pool->slots[index] = pool->slots[pool->slot_count];
 		memset(&pool->slots[pool->slot_count], 0, sizeof(pool->slots[pool->slot_count]));
-		pthread_mutex_unlock(&pool->lock);
+		nb_mutex_unlock(pool->lock);
 		runtime_close(victim.runtime);
-		log_info(&pool->logger, "fastcgi runtime pool shrank: workers=%d",
-			 fcgi_bridge_runtime_count(pool));
-		pthread_mutex_lock(&pool->lock);
+		nb_log_write(pool->logger, NB_LOG_INFO, "fastcgi runtime pool shrank: workers=%d",
+			     fcgi_bridge_runtime_count(pool));
+		nb_mutex_lock(pool->lock);
 	}
-	pthread_mutex_unlock(&pool->lock);
+	nb_mutex_unlock(pool->lock);
 	return NULL;
 }
 
@@ -298,6 +292,8 @@ static int bridge_pool_configure(struct fcgi_bridge *pool, const char *db_path,
 
 static int bridge_initialize(struct fcgi_bridge *pool, const char *db_path)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	const char *config_path;
 	const char *output_dir;
 	char *expanded_output = NULL;
@@ -307,13 +303,13 @@ static int bridge_initialize(struct fcgi_bridge *pool, const char *db_path)
 	int rc;
 
 	if (!db_path || !db_path[0])
-		return -EINVAL;
-	pthread_mutex_lock(&pool->lock);
+		return NB_ERR_INVAL;
+	nb_mutex_lock(pool->lock);
 	if (pool->slots) {
-		pthread_mutex_unlock(&pool->lock);
+		nb_mutex_unlock(pool->lock);
 		return 0;
 	}
-	pthread_mutex_unlock(&pool->lock);
+	nb_mutex_unlock(pool->lock);
 	home = getenv("HOME");
 	config_path = getenv("MORPH_FCGI_CONFIG");
 	if (!config_path || !config_path[0]) {
@@ -325,10 +321,12 @@ static int bridge_initialize(struct fcgi_bridge *pool, const char *db_path)
 	}
 	output_dir = getenv("MORPH_FCGI_OUTPUT_DIR");
 	if (output_dir && output_dir[0]) {
-		expanded_output = file_expand_path_copy(output_dir);
+		expanded_output = (nb_path_expand(&file_value_1, output_dir, NULL) == NB_OK
+					   ? strdup(nb_buf_cstr(&file_value_1))
+					   : NULL);
 		if (!expanded_output)
-			return -ENOMEM;
-		rc = file_ensure_dir(expanded_output);
+			return NB_ERR_NOMEM;
+		rc = nb_file_mkdir(expanded_output, true, NULL);
 		if (rc != 0) {
 			free(expanded_output);
 			return rc;
@@ -338,7 +336,9 @@ static int bridge_initialize(struct fcgi_bridge *pool, const char *db_path)
 	log_file = getenv("MORPH_FCGI_LOG_FILE");
 	if (!log_file || !log_file[0])
 		log_file = "/tmp/morph-fastcgi.log";
-	rc = log_init(&pool->logger, log_file, getenv("MORPH_DEBUG") ? LOG_DEBUG : LOG_INFO);
+	pool->logger = nb_log_new_file(getenv("MORPH_DEBUG") ? NB_LOG_DEBUG : NB_LOG_INFO, log_file,
+				       5 * 1024 * 1024, 3);
+	rc = pool->logger ? 0 : nb_status_from_errno(errno, NULL);
 	if (rc != 0) {
 		free(expanded_output);
 		return rc;
@@ -349,7 +349,7 @@ static int bridge_initialize(struct fcgi_bridge *pool, const char *db_path)
 		return rc;
 	pool->slots = calloc((size_t)pool->max_workers, sizeof(*pool->slots));
 	if (!pool->slots)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	pool->slot_count = 0;
 	pool->starting_workers = 0;
 	pool->waiting_turns = 0;
@@ -361,25 +361,27 @@ static int bridge_initialize(struct fcgi_bridge *pool, const char *db_path)
 			bridge_runtime_close_slots(pool->slots, i);
 			free(pool->slots);
 			pool->slots = NULL;
-			fprintf(stderr, "fcgi-bridge: runtime worker %d "
-				"initialization failed: %s\n", i,
-				morph_strerror(rc));
+			fprintf(stderr,
+				"fcgi-bridge: runtime worker %d "
+				"initialization failed: %s\n",
+				i, nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
 		pool->slots[i].idle_since = time(NULL);
 		pool->slot_count++;
 	}
-	rc = pthread_create(&pool->reaper_thread, NULL, bridge_reaper_main, pool);
+	rc = nb_thread_create(&pool->reaper_thread, bridge_reaper_main, pool, NULL);
 	if (rc != 0) {
 		bridge_runtime_close_slots(pool->slots, pool->slot_count);
 		free(pool->slots);
 		pool->slots = NULL;
 		pool->slot_count = 0;
-		return -rc;
+		return rc;
 	}
 	pool->reaper_started = 1;
-	log_info(&pool->logger, "fastcgi elastic runtime pool ready: min=%d max=%d queue=%d",
-		 pool->min_workers, pool->max_workers, pool->queue_max);
+	nb_log_write(pool->logger, NB_LOG_INFO,
+		     "fastcgi elastic runtime pool ready: min=%d max=%d queue=%d",
+		     pool->min_workers, pool->max_workers, pool->queue_max);
 	return 0;
 }
 
@@ -389,27 +391,27 @@ static void bridge_shutdown(struct fcgi_bridge *pool)
 	int slot_count;
 	int join_reaper;
 
-	pthread_mutex_lock(&pool->lock);
+	nb_mutex_lock(pool->lock);
 	if (!pool->slots) {
-		pthread_mutex_unlock(&pool->lock);
+		nb_mutex_unlock(pool->lock);
 		return;
 	}
 	pool->stopping = 1;
 	join_reaper = pool->reaper_started;
 	pool->reaper_started = 0;
-	pthread_cond_broadcast(&pool->changed);
-	pthread_mutex_unlock(&pool->lock);
+	nb_cond_broadcast(pool->changed);
+	nb_mutex_unlock(pool->lock);
 	if (join_reaper)
-		pthread_join(pool->reaper_thread, NULL);
-	pthread_mutex_lock(&pool->lock);
+		nb_thread_join_take(&pool->reaper_thread, NULL);
+	nb_mutex_lock(pool->lock);
 	while (pool->outstanding_turns > 0 || pool->outstanding_tickets > 0 ||
 	       pool->outstanding_leases > 0)
-		pthread_cond_wait(&pool->changed, &pool->lock);
+		nb_cond_wait(pool->changed, pool->lock);
 	slots = pool->slots;
 	slot_count = pool->slot_count;
 	pool->slots = NULL;
 	pool->slot_count = 0;
-	pthread_mutex_unlock(&pool->lock);
+	nb_mutex_unlock(pool->lock);
 	bridge_runtime_close_slots(slots, slot_count);
 	free(slots);
 }
@@ -418,10 +420,10 @@ struct runtime *fcgi_bridge_runtime_borrow(struct fcgi_bridge *pool)
 {
 	struct runtime *runtime = NULL;
 
-	pthread_mutex_lock(&pool->lock);
+	nb_mutex_lock(pool->lock);
 	if (pool->slots && pool->slot_count > 0)
 		runtime = pool->slots[0].runtime;
-	pthread_mutex_unlock(&pool->lock);
+	nb_mutex_unlock(pool->lock);
 	return runtime;
 }
 
@@ -432,20 +434,21 @@ int fcgi_bridge_turn_enqueue(struct fcgi_bridge *pool, const char *session_id,
 	int rc = 0;
 
 	if (!pool || !session_id || !session_id[0] || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	ticket = calloc(1, sizeof(*ticket));
 	if (!ticket)
-		return -ENOMEM;
-	pthread_mutex_lock(&pool->lock);
+		return NB_ERR_NOMEM;
+	nb_mutex_lock(pool->lock);
 	if (pool->stopping || !pool->slots) {
-		rc = -ESHUTDOWN;
+		rc = NB_ERR_CLOSED;
 	} else if (pool->waiting_turns >= pool->queue_max) {
-		rc = -EAGAIN;
+		rc = NB_ERR_AGAIN;
 	} else {
 		snprintf(ticket->session_id, sizeof(ticket->session_id), "%s", session_id);
-		bridge_deadline(&ticket->deadline, pool->wait_seconds);
+		ticket->deadline_ns = nb_time_deadline_after_ns((int64_t)pool->wait_seconds *
+								INT64_C(1000000000));
 		ticket->queued = 1;
 		ticket->pool = pool;
 		if (pool->turn_tail)
@@ -457,10 +460,10 @@ int fcgi_bridge_turn_enqueue(struct fcgi_bridge *pool, const char *session_id,
 		pool->outstanding_tickets++;
 		if (position)
 			*position = pool->waiting_turns;
-		pthread_cond_broadcast(&pool->changed);
+		nb_cond_broadcast(pool->changed);
 		*out = ticket;
 	}
-	pthread_mutex_unlock(&pool->lock);
+	nb_mutex_unlock(pool->lock);
 	if (rc != 0)
 		free(ticket);
 	return rc;
@@ -474,16 +477,16 @@ static void bridge_ticket_cancel_locked(struct fcgi_bridge *pool, struct fcgi_tu
 	ticket->queued = 0;
 	if (pool->waiting_turns > 0)
 		pool->waiting_turns--;
-	pthread_cond_broadcast(&pool->changed);
+	nb_cond_broadcast(pool->changed);
 }
 
 void fcgi_bridge_turn_cancel(struct fcgi_bridge *pool, struct fcgi_turn_ticket *ticket)
 {
 	if (!pool || !ticket || ticket->pool != pool)
 		return;
-	pthread_mutex_lock(&pool->lock);
+	nb_mutex_lock(pool->lock);
 	bridge_ticket_cancel_locked(pool, ticket);
-	pthread_mutex_unlock(&pool->lock);
+	nb_mutex_unlock(pool->lock);
 }
 
 void fcgi_turn_ticket_destroy(struct fcgi_turn_ticket *ticket)
@@ -494,13 +497,13 @@ void fcgi_turn_ticket_destroy(struct fcgi_turn_ticket *ticket)
 		return;
 	pool = ticket->pool;
 	if (pool) {
-		pthread_mutex_lock(&pool->lock);
+		nb_mutex_lock(pool->lock);
 		bridge_ticket_cancel_locked(pool, ticket);
 		if (pool->outstanding_tickets > 0)
 			pool->outstanding_tickets--;
 		ticket->pool = NULL;
-		pthread_cond_broadcast(&pool->changed);
-		pthread_mutex_unlock(&pool->lock);
+		nb_cond_broadcast(pool->changed);
+		nb_mutex_unlock(pool->lock);
 	}
 	free(ticket);
 }
@@ -522,10 +525,10 @@ int fcgi_bridge_turn_acquire(struct fcgi_bridge *pool, struct fcgi_turn_ticket *
 	int rc = 0;
 
 	if (!pool || !ticket || ticket->pool != pool || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
-	pthread_mutex_lock(&pool->lock);
+		return NB_ERR_EXISTS;
+	nb_mutex_lock(pool->lock);
 	for (;;) {
 		struct runtime *created = NULL;
 		struct fcgi_turn_ticket *first;
@@ -533,22 +536,21 @@ int fcgi_bridge_turn_acquire(struct fcgi_bridge *pool, struct fcgi_turn_ticket *
 		int free_slot;
 
 		if (pool->stopping || !pool->slots) {
-			rc = -ESHUTDOWN;
+			rc = NB_ERR_CLOSED;
 			break;
 		}
 		if (!ticket->queued) {
-			rc = -ECANCELED;
+			rc = NB_ERR_CANCELLED;
 			break;
 		}
 		first = bridge_first_runnable_ticket(pool);
 		if (first != ticket) {
-			rc = pthread_cond_timedwait(&pool->changed, &pool->lock, &ticket->deadline);
-			if (rc == ETIMEDOUT) {
-				rc = -ETIMEDOUT;
+			rc = nb_cond_wait_until(pool->changed, pool->lock, ticket->deadline_ns);
+			if (rc == NB_ERR_TIMEOUT) {
+				rc = NB_ERR_TIMEOUT;
 				break;
 			}
 			if (rc != 0) {
-				rc = -rc;
 				break;
 			}
 			continue;
@@ -569,59 +571,57 @@ int fcgi_bridge_turn_acquire(struct fcgi_bridge *pool, struct fcgi_turn_ticket *
 		if (!session_busy &&
 		    pool->slot_count + pool->starting_workers < pool->max_workers) {
 			pool->starting_workers++;
-			pthread_mutex_unlock(&pool->lock);
+			nb_mutex_unlock(pool->lock);
 			rc = bridge_runtime_open(pool, 1, &created);
-			pthread_mutex_lock(&pool->lock);
+			nb_mutex_lock(pool->lock);
 			pool->starting_workers--;
-			pthread_cond_broadcast(&pool->changed);
+			nb_cond_broadcast(pool->changed);
 			if (rc != 0)
 				break;
 			if (pool->stopping || !pool->slots) {
-				pthread_mutex_unlock(&pool->lock);
+				nb_mutex_unlock(pool->lock);
 				runtime_close(created);
-				pthread_mutex_lock(&pool->lock);
-				rc = -ESHUTDOWN;
+				nb_mutex_lock(pool->lock);
+				rc = NB_ERR_CLOSED;
 				break;
 			}
 			if (pool->slot_count >= pool->max_workers) {
-				pthread_mutex_unlock(&pool->lock);
+				nb_mutex_unlock(pool->lock);
 				runtime_close(created);
-				pthread_mutex_lock(&pool->lock);
+				nb_mutex_lock(pool->lock);
 				continue;
 			}
 			pool->slots[pool->slot_count].runtime = created;
 			pool->slots[pool->slot_count].elastic = 1;
 			pool->slots[pool->slot_count].idle_since = time(NULL);
 			pool->slot_count++;
-			log_info(&pool->logger, "fastcgi runtime pool grew: workers=%d",
-				 pool->slot_count);
+			nb_log_write(pool->logger, NB_LOG_INFO,
+				     "fastcgi runtime pool grew: workers=%d", pool->slot_count);
 			continue;
 		}
-		rc = pthread_cond_timedwait(&pool->changed, &pool->lock, &ticket->deadline);
-		if (rc == ETIMEDOUT) {
-			rc = -ETIMEDOUT;
+		rc = nb_cond_wait_until(pool->changed, pool->lock, ticket->deadline_ns);
+		if (rc == NB_ERR_TIMEOUT) {
+			rc = NB_ERR_TIMEOUT;
 			break;
 		}
-		if (rc != 0) {
-			rc = -rc;
+		if (rc != NB_OK)
 			break;
-		}
 	}
 	if (ticket->queued) {
 		bridge_ticket_unlink(pool, ticket);
 		ticket->queued = 0;
 		if (pool->waiting_turns > 0)
 			pool->waiting_turns--;
-		pthread_cond_broadcast(&pool->changed);
+		nb_cond_broadcast(pool->changed);
 	}
-	pthread_mutex_unlock(&pool->lock);
+	nb_mutex_unlock(pool->lock);
 	return rc;
 }
 
 int fcgi_bridge_runtime_acquire(struct fcgi_bridge *pool, const char *session_id,
 				struct runtime **out)
 {
-	struct fcgi_turn_ticket *ticket MORPH_CLEANUP(fcgi_turn_ticket_cleanup) = NULL;
+	struct fcgi_turn_ticket *ticket NB_CLEANUP(fcgi_turn_ticket_cleanup) = NULL;
 	int rc;
 
 	rc = fcgi_bridge_turn_enqueue(pool, session_id, &ticket, NULL);
@@ -634,7 +634,7 @@ void fcgi_bridge_runtime_release(struct fcgi_bridge *pool, struct runtime *runti
 {
 	if (!runtime)
 		return;
-	pthread_mutex_lock(&pool->lock);
+	nb_mutex_lock(pool->lock);
 	for (int i = 0; i < pool->slot_count; i++) {
 		if (pool->slots[i].runtime != runtime || !pool->slots[i].busy)
 			continue;
@@ -642,32 +642,32 @@ void fcgi_bridge_runtime_release(struct fcgi_bridge *pool, struct runtime *runti
 		pool->outstanding_leases--;
 		pool->slots[i].idle_since = time(NULL);
 		pool->slots[i].session_id[0] = '\0';
-		pthread_cond_broadcast(&pool->changed);
+		nb_cond_broadcast(pool->changed);
 		break;
 	}
-	pthread_mutex_unlock(&pool->lock);
+	nb_mutex_unlock(pool->lock);
 }
 
 int fcgi_bridge_turn_begin(struct fcgi_bridge *pool)
 {
-	pthread_mutex_lock(&pool->lock);
+	nb_mutex_lock(pool->lock);
 	if (pool->stopping || !pool->slots) {
-		pthread_mutex_unlock(&pool->lock);
-		return -ESHUTDOWN;
+		nb_mutex_unlock(pool->lock);
+		return NB_ERR_CLOSED;
 	}
 	pool->outstanding_turns++;
-	pthread_mutex_unlock(&pool->lock);
+	nb_mutex_unlock(pool->lock);
 	return 0;
 }
 
 void fcgi_bridge_turn_end(struct fcgi_bridge *pool)
 {
-	pthread_mutex_lock(&pool->lock);
+	nb_mutex_lock(pool->lock);
 	if (pool->outstanding_turns > 0)
 		pool->outstanding_turns--;
 	if (pool->outstanding_turns == 0)
-		pthread_cond_broadcast(&pool->changed);
-	pthread_mutex_unlock(&pool->lock);
+		nb_cond_broadcast(pool->changed);
+	nb_mutex_unlock(pool->lock);
 }
 
 void fcgi_bridge_pool_status(struct fcgi_bridge *pool, struct fcgi_bridge_pool_status *status)
@@ -675,7 +675,7 @@ void fcgi_bridge_pool_status(struct fcgi_bridge *pool, struct fcgi_bridge_pool_s
 	if (!status)
 		return;
 	memset(status, 0, sizeof(*status));
-	pthread_mutex_lock(&pool->lock);
+	nb_mutex_lock(pool->lock);
 	status->workers = pool->slot_count;
 	status->min_workers = pool->min_workers;
 	status->max_workers = pool->max_workers;
@@ -686,7 +686,7 @@ void fcgi_bridge_pool_status(struct fcgi_bridge *pool, struct fcgi_bridge_pool_s
 	for (int i = 0; i < pool->slot_count; i++)
 		if (pool->slots[i].busy)
 			status->busy_workers++;
-	pthread_mutex_unlock(&pool->lock);
+	nb_mutex_unlock(pool->lock);
 }
 
 int fcgi_bridge_runtime_count(struct fcgi_bridge *pool)
@@ -718,22 +718,22 @@ int fcgi_bridge_init(struct fcgi_bridge **out, const char *db_path)
 	int error;
 
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	pool = calloc(1, sizeof(*pool));
 	if (!pool)
-		return -ENOMEM;
-	error = pthread_mutex_init(&pool->lock, NULL);
+		return NB_ERR_NOMEM;
+	error = ((pool->lock = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
 	if (error) {
 		free(pool);
-		return -error;
+		return error;
 	}
-	error = pthread_cond_init(&pool->changed, NULL);
+	error = ((pool->changed = nb_cond_new()) ? NB_OK : NB_ERR_NOMEM);
 	if (error) {
-		pthread_mutex_destroy(&pool->lock);
+		(nb_mutex_free(pool->lock), pool->lock = NULL);
 		free(pool);
-		return -error;
+		return error;
 	}
 	error = bridge_initialize(pool, db_path);
 	if (error) {
@@ -749,8 +749,9 @@ void fcgi_bridge_shutdown(struct fcgi_bridge *pool)
 	if (!pool)
 		return;
 	bridge_shutdown(pool);
-	log_shutdown(&pool->logger);
-	pthread_cond_destroy(&pool->changed);
-	pthread_mutex_destroy(&pool->lock);
+	nb_log_free(pool->logger);
+	pool->logger = NULL;
+	(nb_cond_free(pool->changed), pool->changed = NULL);
+	(nb_mutex_free(pool->lock), pool->lock = NULL);
 	free(pool);
 }

@@ -1,7 +1,7 @@
 #include "permission_grant.h"
-#include "util/error.h"
-#include "util/cleanup.h"
-#include "util/log.h"
+#include "errors.h"
+#include "nb/cleanup.h"
+#include "nb/log.h"
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -16,8 +16,8 @@ static void grant_stmt_cleanup(sqlite3_stmt **stmt)
 
 static int grant_statement_error(struct db *db, const char *action)
 {
-	log_warn(db->logger, "permission grant %s failed: %s", action,
-		 sqlite3_errmsg(db->handle));
+	nb_log_write(db->logger, NB_LOG_WARN, "permission grant %s failed: %s", action,
+		     sqlite3_errmsg(db->handle));
 	return MORPH_ERR_DB;
 }
 
@@ -28,12 +28,12 @@ int permission_grant_save(struct db *db,
 		"INSERT OR IGNORE INTO permission_grants("
 		"subject,resource_kind,resource,project_root,created_at)"
 		"VALUES(?,?,?,?,strftime('%s','now'))";
-	sqlite3_stmt *stmt MORPH_CLEANUP(grant_stmt_cleanup) = NULL;
+	sqlite3_stmt *stmt NB_CLEANUP(grant_stmt_cleanup) = NULL;
 
 	if (!db || !db->handle || !grant || !grant->subject[0] ||
 	    !grant->resource_kind[0] || !grant->resource[0] ||
 	    !grant->project_root[0])
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK) {
 		return grant_statement_error(db, "save");
 	}
@@ -59,12 +59,12 @@ int permission_grant_each(struct db *db, const char *project_root,
 		"SELECT id,subject,resource_kind,resource,project_root,created_at "
 		"FROM permission_grants WHERE project_root=? ORDER BY id";
 	struct permission_grant grant;
-	sqlite3_stmt *stmt MORPH_CLEANUP(grant_stmt_cleanup) = NULL;
+	sqlite3_stmt *stmt NB_CLEANUP(grant_stmt_cleanup) = NULL;
 	int step;
 	int rc = 0;
 
 	if (!db || !db->handle || !project_root || !*project_root || !fn)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
 		return MORPH_ERR_DB;
 	if (sqlite3_bind_text(stmt, 1, project_root, -1,
@@ -106,12 +106,12 @@ static int delete_grants(struct db *db, const char *sql,
 			 const char *project_root, const char *subject,
 			 int64_t id, int *deleted)
 {
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
-	sqlite3_stmt *stmt MORPH_CLEANUP(grant_stmt_cleanup) = NULL;
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
+	sqlite3_stmt *stmt NB_CLEANUP(grant_stmt_cleanup) = NULL;
 	int bind_index = 1;
 
 	if (!db || !db->handle || !sql || !deleted)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*deleted = 0;
 	int rc = db_lock_acquire(db, &lock);
 	if (rc != 0)
@@ -142,7 +142,7 @@ int permission_grant_delete_id(struct db *db, const char *project_root,
 			       int64_t id, int *deleted)
 {
 	if (!project_root || !*project_root || id <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return delete_grants(db,
 		"DELETE FROM permission_grants WHERE project_root=? AND id=?",
 		project_root, NULL, id, deleted);
@@ -152,7 +152,7 @@ int permission_grant_delete_subject(struct db *db, const char *project_root,
 				    const char *subject, int *deleted)
 {
 	if (!project_root || !*project_root || !subject || !*subject)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return delete_grants(db,
 		"DELETE FROM permission_grants "
 		"WHERE project_root=? AND subject=?",
@@ -163,7 +163,7 @@ int permission_grant_clear_project(struct db *db, const char *project_root,
 				   int *deleted)
 {
 	if (!project_root || !*project_root)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return delete_grants(db,
 		"DELETE FROM permission_grants WHERE project_root=?",
 		project_root, NULL, 0, deleted);

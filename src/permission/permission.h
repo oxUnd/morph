@@ -2,7 +2,7 @@
 #define MORPH_PERMISSION_H
 
 #include "operation.h"
-#include <pthread.h>
+#include "nb/thread.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,7 +61,7 @@ struct permission_context {
 	void *user_data;
 	permission_review_fn model_review;
 	void *model_data;
-	pthread_mutex_t review_lock;
+	nb_mutex *review_lock;
 	unsigned consecutive_denials;
 };
 

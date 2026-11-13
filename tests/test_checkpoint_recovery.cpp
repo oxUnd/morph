@@ -1,11 +1,13 @@
 #include <gtest/gtest.h>
+#include <string.h>
+#include "nb/err.h"
 
 extern "C" {
 #include "persistence/checkpoint_store.h"
 #include "session.h"
-#include "util/cleanup.h"
-#include "util/file.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "nb/file.h"
+#include "cJSON.h"
 }
 
 #include <cerrno>
@@ -93,8 +95,8 @@ class CheckpointRecoveryTest : public ::testing::Test
 	void Write(const char *name, const char *content)
 	{
 		const std::string path = workspace + "/" + name;
-		ASSERT_EQ(file_write_all(path.c_str(), content,
-					 std::char_traits<char>::length(content)),
+		ASSERT_EQ(nb_file_write_all(path.c_str(), content,
+					    std::char_traits<char>::length(content), NULL),
 			  0);
 	}
 
@@ -173,7 +175,7 @@ TEST_F(CheckpointRecoveryTest, RefusedCommitCompensatesCodeAndPreservesLaterConv
 	const int64_t id = PrepareEditedCheckpoint();
 	ASSERT_GT(id, 0);
 	CommitRefusal refusal{workspace + "/a.txt", workspace + "/b.txt"};
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	int rc;
 	{
 		ScopedCommitRefusal hook(database.handle, &refusal);
@@ -207,11 +209,11 @@ TEST_F(CheckpointRecoveryTest, OuterTransactionRejectsCaptureAndRestoreWithoutSi
 	ASSERT_GT(id, 0);
 	Write("uncaptured.txt", "user data\n");
 	ASSERT_EQ(db_exec(&database, "BEGIN"), 0);
-	cJSON *report MORPH_CLEANUP(morph_json_cleanup) = nullptr;
-	EXPECT_EQ(checkpoint_store_capture(&database, id, "uncaptured.txt"), -EBUSY);
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
+	EXPECT_EQ(checkpoint_store_capture(&database, id, "uncaptured.txt"), NB_ERR_BUSY);
 	EXPECT_EQ(checkpoint_store_restore(&database, session.id, id, CHECKPOINT_RESTORE_BOTH,
 					   &report),
-		  -EBUSY);
+		  NB_ERR_BUSY);
 	EXPECT_EQ(report, nullptr);
 	EXPECT_EQ(sqlite3_get_autocommit(database.handle), 0);
 	ExpectLaterState();
@@ -223,4 +225,4 @@ TEST_F(CheckpointRecoveryTest, OuterTransactionRejectsCaptureAndRestoreWithoutSi
 	ExpectNoRecoveryFiles();
 }
 
-} // namespace
+} /* namespace */

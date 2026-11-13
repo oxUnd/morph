@@ -1,7 +1,8 @@
 #include "sapi/fastcgi/storage/users.h"
+#include "nb/cleanup.h"
 #include "sapi/fastcgi/session_store_internal.h"
 #include "cJSON.h"
-#include "util/error.h"
+#include "errors.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -10,7 +11,7 @@
 #include <time.h>
 #include <sqlite3.h>
 #include "sapi/fastcgi/security.h"
-#include "util/name.h"
+#include "nb/str.h"
 
 static int username_valid(const char *username)
 {
@@ -19,7 +20,7 @@ static int username_valid(const char *username)
 	if (!username)
 		return 0;
 	len = strlen(username);
-	return len >= 3 && len <= 63 && morph_name_valid(username, "_-.");
+	return len >= 3 && len <= 63 && nb_str_is_alnum(nb_str_from_cstr(username), "_-.");
 }
 
 int store_setup_required(struct session_store *s)
@@ -50,7 +51,7 @@ int store_create_user(struct session_store *s, const char *username, const char 
 	int rc;
 
 	if (!s || !username_valid(username) || !password || strlen(password) < 8)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = fcgi_random_id("usr_", user_id, sizeof(user_id));
 	if (rc < 0)
 		return rc;
@@ -59,7 +60,7 @@ int store_create_user(struct session_store *s, const char *username, const char 
 		return rc;
 
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, username, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 3, hash, -1, SQLITE_TRANSIENT);
@@ -69,21 +70,21 @@ int store_create_user(struct session_store *s, const char *username, const char 
 	rc = sqlite3_step(st);
 	sqlite3_finalize(st);
 	if (rc == SQLITE_CONSTRAINT)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (rc != SQLITE_DONE)
-		return -EIO;
+		return NB_ERR_IO;
 
 	profile = role && strcmp(role, "admin") == 0 ? "admin" : "free";
 	sql = "INSERT OR REPLACE INTO fcgi_user_quota(user_id,profile)"
 	      " VALUES(?,?)";
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, profile, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(st);
 	sqlite3_finalize(st);
 	if (rc != SQLITE_DONE)
-		return -EIO;
+		return NB_ERR_IO;
 
 	sql = "INSERT OR IGNORE INTO fcgi_usage_storage(user_id,used_bytes)"
 	      " VALUES(?,0)";

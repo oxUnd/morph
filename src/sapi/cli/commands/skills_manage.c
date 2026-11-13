@@ -1,15 +1,16 @@
 #include "sapi/cli/commands/skills_manage.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include <limits.h>
+#include "nb/cleanup.h"
+#include "cJSON.h"
 #include "config/config.h"
 #include "cJSON.h"
 #include "sapi/cli/services/management.h"
 #include "sapi/cli/services/skill_store.h"
-#include "util/data.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/name.h"
-#include "tomlc17.h"
+#include "runtime/resources.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "nb/str.h"
+#include "nb/toml.h"
 #include <errno.h>
 #include <getopt.h>
 #include <stdio.h>
@@ -24,7 +25,7 @@ struct cli_skills_manage_skills_options {
 	const char *path;
 	const char *ref;
 	const char *config;
-	morph_array_t name_storage;
+	nb_vec name_storage;
 	const char **names;
 	int name_count;
 	int global;
@@ -90,8 +91,8 @@ static int cli_skills_manage_skills_parse(int argc, char **argv, const char *con
 {
 	int option;
 
-	int rc = morph_array_init(&options->name_storage, MORPH_ARRAY_INIT_CAP,
-				   sizeof(*options->names));
+	int rc = (nb_vec_init(&options->name_storage, sizeof(*options->names)),
+		  nb_vec_reserve(&options->name_storage, 16) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	options->action = argc ? argv[0] : "--help";
@@ -121,11 +122,11 @@ static int cli_skills_manage_skills_parse(int argc, char **argv, const char *con
 			break;
 		case CLI_SKILLS_MANAGE_SKILLS_OPTION_SKILL:
 		{
-			const char **slot = morph_array_push_borrow(&options->name_storage);
+			const char **slot = nb_vec_push(&options->name_storage);
 			if (!slot)
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			*slot = optarg;
-			options->names = options->name_storage.elts;
+			options->names = (const char **)((void *)options->name_storage.data);
 			options->name_count++;
 			break;
 		}
@@ -142,78 +143,102 @@ static int cli_skills_manage_skills_parse(int argc, char **argv, const char *con
 			options->action = "--help";
 			return 0;
 		default:
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 	}
 	if (strcmp(options->action, "add") == 0 && optind < argc)
 		options->source = argv[optind++];
 	while (optind < argc) {
-		const char **slot = morph_array_push_borrow(&options->name_storage);
+		const char **slot = nb_vec_push(&options->name_storage);
 		if (!slot)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		*slot = argv[optind++];
-		options->names = options->name_storage.elts;
+		options->names = (const char **)((void *)options->name_storage.data);
 		options->name_count++;
 	}
 	if (strcmp(options->action, "add") == 0) {
 		if (!options->source || (options->all && options->name_count) ||
 		    (options->list && (options->all || options->name_count || options->replace)))
-			return -EINVAL;
+			return NB_ERR_INVAL;
 	} else if (options->path || options->ref || options->list || options->all ||
 		   options->replace ||
 		   (strcmp(options->action, "list") == 0 && options->name_count)) {
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	if (strcmp(options->action, "remove") == 0 && !options->name_count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	for (int i = 0; i < options->name_count; i++) {
 		if (!cli_management_name_valid(options->names[i]) ||
 		    strlen(options->names[i]) >= SKILL_NAME_MAX)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 	}
 	if ((options->ref && (!*options->ref || options->ref[0] == '-')) ||
 	    (options->path && !*options->path))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return 0;
 }
 
 static int cli_skills_manage_skills_user_dir(const char *config_path, char **out)
 {
-	char *path = file_expand_path_copy(config_path ? config_path : "~/.morph/config.toml");
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+
+	nb_err parse_error = {0};
+	char *path =
+		(nb_path_expand(&file_value_1, config_path ? config_path : "~/.morph/config.toml",
+				NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&file_value_1))
+			 : NULL);
 	char *text;
-	toml_result_t parsed;
-	toml_datum_t dir;
+	nb_toml *parsed NB_CLEANUP(nb_toml_cleanup) = NULL;
+	const nb_toml_value *dir;
 
 	if (!path)
-		return -ENOMEM;
-	text = file_read_all_copy(path, NULL);
+		return NB_ERR_NOMEM;
+	text = (nb_file_read_all(path, &file_value_2, 0, NULL) == NB_OK &&
+				(file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) + 1)) !=
+					NULL
+			? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
+				  nb_buf_len(&file_value_2) + 1),
+			   nb_charp_steal(&file_copy_2))
+			: NULL);
 	free(path);
 	if (!text) {
 		if (config_path || errno != ENOENT)
-			return -EIO;
-		*out = file_expand_path_copy("~/.morph/skills");
-		return *out ? 0 : -ENOMEM;
+			return NB_ERR_IO;
+		*out = (nb_path_expand(&file_value_3, "~/.morph/skills", NULL) == NB_OK
+				? strdup(nb_buf_cstr(&file_value_3))
+				: NULL);
+		return *out ? 0 : NB_ERR_NOMEM;
 	}
 	if (strlen(text) > 1024 * 1024) {
 		free(text);
-		return -EFBIG;
+		return NB_ERR_TOO_BIG;
 	}
-	parsed = toml_parse(text, (int)strlen(text));
+	parsed = nb_toml_parse(nb_str_from_cstr(text), &parse_error);
 	free(text);
-	if (!parsed.ok) {
-		fprintf(stderr, "morph: invalid config: %s\n", parsed.errmsg);
-		toml_free(parsed);
-		return MORPH_ERR_PARSE;
+	if (!parsed) {
+		fprintf(stderr, "morph: invalid config: %s\n", parse_error.msg);
+		nb_toml_cleanup(&parsed);
+		return NB_ERR_PARSE;
 	}
-	dir = toml_get(toml_get(parsed.toptab, "skill"), "dir");
-	*out = file_expand_path_copy(dir.type == TOML_STRING && dir.u.s[0] ? dir.u.s
-									   : "~/.morph/skills");
-	toml_free(parsed);
-	return *out ? 0 : -ENOMEM;
+	dir = nb_toml_table_get_cstr(nb_toml_table_get_cstr(nb_toml_root(parsed), "skill"), "dir");
+	*out = (nb_path_expand(&file_value_4,
+			       nb_toml_type_of(dir) == NB_TOML_STRING && nb_toml_string(dir).ptr[0]
+				       ? nb_toml_string(dir).ptr
+				       : "~/.morph/skills",
+			       NULL) == NB_OK
+			? strdup(nb_buf_cstr(&file_value_4))
+			: NULL);
+	nb_toml_cleanup(&parsed);
+	return *out ? 0 : NB_ERR_NOMEM;
 }
 
 static int cli_skills_manage_skills_git(const char *root, const char *verb, const char *arg,
-					morph_buf_t *output)
+					nb_buf *output)
 {
 	char *argv[] = {"git",
 			"-c",
@@ -229,34 +254,46 @@ static int cli_skills_manage_skills_git(const char *root, const char *verb, cons
 
 static int cli_skills_manage_skills_repo_name_valid(const char *name)
 {
-	return morph_name_valid(name, "-_.") && name[0] != '.' && name[0] != '-';
+	return nb_str_is_alnum(nb_str_from_cstr(name), "-_.") && name[0] != '.' && name[0] != '-';
 }
 
 static int cli_skills_manage_skills_prepare(const char *source, const char *ref, int force_git,
 					    struct cli_skills_manage_skills_source *prepared)
 {
+	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_5 = NB_OK;
+	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_8 = NB_OK;
+
 	char resolved[PATH_MAX];
 	char git_dir[PATH_MAX];
 	char *cache;
 	struct stat st;
-	morph_buf_t output = {0};
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
 	int local = realpath(source, resolved) != NULL;
 	int rc;
 
 	memset(prepared, 0, sizeof(*prepared));
 	if (local) {
 		if (stat(resolved, &st) != 0 || !S_ISDIR(st.st_mode))
-			return -ENOTDIR;
+			return NB_ERR_NOT_DIR;
 		rc = cli_management_copy_arg(prepared->source, sizeof(prepared->source), resolved);
 		if (rc != 0)
 			return rc;
-		rc = file_path_join(git_dir, sizeof(git_dir), resolved, ".git");
+		rc = ((file_status_5 = nb_path_concat(&file_value_5, resolved, ".git")) != NB_OK
+			      ? file_status_5
+		      : (file_status_5 = nb_str_copy_to(nb_buf_str(&file_value_5), git_dir,
+							sizeof(git_dir))) == NB_ERR_RANGE
+			      ? NB_ERR_NAME_TOO_LONG
+			      : file_status_5);
 		if (rc != 0)
 			return rc;
-		prepared->git = force_git || file_exists(git_dir);
+		prepared->git = force_git || nb_file_exists(git_dir);
 		if (!prepared->git) {
 			if (ref)
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			return cli_management_copy_arg(prepared->root, sizeof(prepared->root),
 						       resolved);
 		}
@@ -271,12 +308,12 @@ static int cli_skills_manage_skills_prepare(const char *source, const char *ref,
 
 			if (!slash || slash == source || strchr(slash + 1, '/') ||
 			    (size_t)(slash - source) >= sizeof(owner))
-				return -ENOENT;
+				return NB_ERR_NOT_FOUND;
 			memcpy(owner, source, (size_t)(slash - source));
 			owner[slash - source] = '\0';
 			if (!cli_management_name_valid(owner) ||
 			    !cli_skills_manage_skills_repo_name_valid(slash + 1))
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			size_t length_source = strlen(source);
 			const char *suffix =
 				length_source > 4 && strcmp(source + length_source - 4, ".git") == 0
@@ -285,29 +322,40 @@ static int cli_skills_manage_skills_prepare(const char *source, const char *ref,
 			int length = snprintf(prepared->source, sizeof(prepared->source),
 					      "https://github.com/%s%s", source, suffix);
 
-			rc = length < 0 || length >= (int)sizeof(prepared->source) ? -ENAMETOOLONG
-										   : 0;
+			rc = length < 0 || length >= (int)sizeof(prepared->source)
+				     ? NB_ERR_NAME_TOO_LONG
+				     : 0;
 		}
 		if (rc != 0)
 			return rc;
 	}
 	if (prepared->source[0] == '-')
-		return -EINVAL;
-	cache = file_expand_path_copy("~/.morph/cache/skills");
+		return NB_ERR_INVAL;
+	cache = (nb_path_expand(&file_value_6, "~/.morph/cache/skills", NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&file_value_6))
+			 : NULL);
 	if (!cache)
-		return -ENOMEM;
-	rc = file_ensure_dir(cache);
-	if (rc == 0)
-		rc = file_path_join(prepared->temporary, sizeof(prepared->temporary), cache,
-				    "checkout-XXXXXX");
+		return NB_ERR_NOMEM;
+	rc = nb_file_mkdir(cache, true, NULL);
+	if (rc == NB_OK)
+		rc = nb_file_temp_dir(&file_value_7, cache, "checkout-", NULL);
 	free(cache);
-	if (rc != 0)
-		return rc;
-	if (!mkdtemp(prepared->temporary)) {
+	if (rc == NB_OK)
+		rc = nb_str_copy_to(nb_buf_str(&file_value_7), prepared->temporary,
+				    sizeof(prepared->temporary));
+	if (rc != NB_OK) {
+		if (!nb_buf_empty(&file_value_7))
+			(void)nb_file_remove_all(nb_buf_cstr(&file_value_7), 0, NULL);
 		prepared->temporary[0] = '\0';
-		return morph_error_from_errno(errno);
+		return rc == NB_ERR_RANGE ? NB_ERR_NAME_TOO_LONG : rc;
 	}
-	rc = file_path_join(prepared->root, sizeof(prepared->root), prepared->temporary, "repo");
+
+	rc = ((file_status_8 = nb_path_concat(&file_value_8, prepared->temporary, "repo")) != NB_OK
+		      ? file_status_8
+	      : (file_status_8 = nb_str_copy_to(nb_buf_str(&file_value_8), prepared->root,
+						sizeof(prepared->root))) == NB_ERR_RANGE
+		      ? NB_ERR_NAME_TOO_LONG
+		      : file_status_8);
 	if (rc != 0)
 		return rc;
 	char *clone[] = {
@@ -338,85 +386,92 @@ static int cli_skills_manage_skills_prepare(const char *source, const char *ref,
 		rc = cli_management_run(prepared->root, checkout, NULL);
 	}
 	if (rc == 0)
-		rc = morph_buf_init(&output, 128);
+		rc = (nb_buf_init(&output), nb_buf_reserve(&output, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = cli_skills_manage_skills_git(prepared->root, "rev-parse", "HEAD", &output);
 	if (rc == 0) {
 		char canonical[PATH_MAX];
 
 		if (!realpath(prepared->root, canonical))
-			rc = -errno;
+			rc = nb_status_from_errno(errno, NULL);
 		else
 			rc = cli_management_copy_arg(prepared->root, sizeof(prepared->root),
 						     canonical);
 	}
 	if (rc == 0) {
 		while (output.len &&
-		       (output.data[output.len - 1] == '\n' || output.data[output.len - 1] == '\r'))
-			output.data[--output.len] = '\0';
+		       (output.ptr[output.len - 1] == '\n' || output.ptr[output.len - 1] == '\r'))
+			output.ptr[--output.len] = '\0';
 		rc = cli_management_copy_arg(prepared->commit, sizeof(prepared->commit),
-					     output.data);
+					     output.ptr);
 	}
-	morph_buf_cleanup(&output);
+	nb_buf_cleanup(&output);
 	return rc;
 }
 
 static int
-cli_skills_manage_skills_scan_source(struct morph_log *logger,
+cli_skills_manage_skills_scan_source(struct nb_log *logger,
 				     const struct cli_skills_manage_skills_source *source,
-				     const char *subdir, morph_array_t *candidates)
+				     const char *subdir, nb_vec *candidates)
 {
+	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_9 = NB_OK;
+
 	char selected[PATH_MAX];
 	char resolved[PATH_MAX];
-	int rc = file_path_join(selected, sizeof(selected), source->root, subdir ? subdir : ".");
+	int rc = ((file_status_9 = nb_path_concat(&file_value_9, source->root,
+						  subdir ? subdir : ".")) != NB_OK
+			  ? file_status_9
+		  : (file_status_9 = nb_str_copy_to(nb_buf_str(&file_value_9), selected,
+						    sizeof(selected))) == NB_ERR_RANGE
+			  ? NB_ERR_NAME_TOO_LONG
+			  : file_status_9);
 
 	if (rc != 0)
 		return rc;
-	if (subdir && file_path_is_absolute(subdir))
-		return -EINVAL;
+	if (subdir && nb_path_is_absolute(subdir))
+		return NB_ERR_INVAL;
 	if (!realpath(selected, resolved))
-		return morph_error_from_errno(errno);
-	if (!path_is_within(resolved, source->root))
-		return -EACCES;
+		return nb_status_from_errno(errno, NULL);
+	if (!nb_path_is_within(resolved, source->root, true))
+		return NB_ERR_PERMISSION;
 	rc = cli_skill_store_scan(logger, resolved, candidates);
 	if (rc != 0)
 		return rc;
-	if (!candidates->nelts)
-		return -ENOENT;
-	for (size_t i = 0; i < candidates->nelts; i++) {
-		const struct cli_skill_candidate *candidate = morph_array_borrow(candidates, i);
+	if (!candidates->len)
+		return NB_ERR_NOT_FOUND;
+	for (size_t i = 0; i < candidates->len; i++) {
+		const struct cli_skill_candidate *candidate = nb_vec_at(candidates, i);
 
 		for (size_t j = 0; j < i; j++) {
-			const struct cli_skill_candidate *previous =
-				morph_array_borrow(candidates, j);
+			const struct cli_skill_candidate *previous = nb_vec_at(candidates, j);
 
 			if (strcmp(candidate->fm.name, previous->fm.name) == 0) {
 				fprintf(stderr,
 					"morph: duplicate skill name '%s'; "
 					"narrow the source with --path\n",
 					candidate->fm.name);
-				return -EEXIST;
+				return NB_ERR_EXISTS;
 			}
 		}
 	}
 	return 0;
 }
 
-static void cli_skills_manage_skills_candidates_print(const morph_array_t *candidates)
+static void cli_skills_manage_skills_candidates_print(const nb_vec *candidates)
 {
-	for (size_t i = 0; i < candidates->nelts; i++) {
-		const struct cli_skill_candidate *candidate = morph_array_borrow(candidates, i);
+	for (size_t i = 0; i < candidates->len; i++) {
+		const struct cli_skill_candidate *candidate = nb_vec_at(candidates, i);
 
 		printf("%zu. %s\t%s\n", i + 1, candidate->fm.name, candidate->fm.description);
 	}
 }
 
 static int cli_skills_manage_skills_select(const struct cli_skills_manage_skills_options *options,
-					   const morph_array_t *candidates,
-					   int *selected)
+					   const nb_vec *candidates, int *selected)
 {
 	if (options->all) {
-		for (size_t i = 0; i < candidates->nelts; i++)
+		for (size_t i = 0; i < candidates->len; i++)
 			selected[i] = 1;
 		return 0;
 	}
@@ -424,9 +479,9 @@ static int cli_skills_manage_skills_select(const struct cli_skills_manage_skills
 		for (int i = 0; i < options->name_count; i++) {
 			int found = 0;
 
-			for (size_t j = 0; j < candidates->nelts; j++) {
+			for (size_t j = 0; j < candidates->len; j++) {
 				const struct cli_skill_candidate *candidate =
-					morph_array_borrow(candidates, j);
+					nb_vec_at(candidates, j);
 
 				if (strcmp(candidate->fm.name, options->names[i]) == 0) {
 					selected[j] = 1;
@@ -436,49 +491,49 @@ static int cli_skills_manage_skills_select(const struct cli_skills_manage_skills
 			if (!found) {
 				fprintf(stderr, "morph: skill not found in source: %s\n",
 					options->names[i]);
-				return -ENOENT;
+				return NB_ERR_NOT_FOUND;
 			}
 		}
 		return 0;
 	}
-	if (candidates->nelts == 1) {
+	if (candidates->len == 1) {
 		selected[0] = 1;
 		return 0;
 	}
 	cli_skills_manage_skills_candidates_print(candidates);
 	if (options->yes || !isatty(STDIN_FILENO)) {
 		fputs("morph: multiple skills; select with --skill NAME or --all\n", stderr);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	fputs("Select skill numbers (comma/space separated), or 'all': ", stderr);
 	fflush(stderr);
-	char *input MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *input NB_CLEANUP(nb_charp_cleanup) = NULL;
 	size_t capacity = 0;
 	char *save = NULL;
 	char *token;
 	int count = 0;
 
 	if (getline(&input, &capacity, stdin) < 0)
-		return -ECANCELED;
+		return NB_ERR_CANCELLED;
 	for (token = strtok_r(input, ", \t\r\n", &save); token;
 	     token = strtok_r(NULL, ", \t\r\n", &save)) {
 		char *end;
 		unsigned long index;
 
 		if (strcmp(token, "all") == 0) {
-			for (size_t i = 0; i < candidates->nelts; i++)
+			for (size_t i = 0; i < candidates->len; i++)
 				selected[i] = 1;
 			count++;
 			continue;
 		}
 		errno = 0;
 		index = strtoul(token, &end, 10);
-		if (errno || *end || index == 0 || index > candidates->nelts)
-			return -EINVAL;
+		if (errno || *end || index == 0 || index > candidates->len)
+			return NB_ERR_INVAL;
 		selected[index - 1] = 1;
 		count++;
 	}
-	return count ? 0 : -ECANCELED;
+	return count ? 0 : NB_ERR_CANCELLED;
 }
 
 static cJSON *
@@ -506,15 +561,19 @@ cli_skills_manage_skills_metadata_create(const struct cli_skills_manage_skills_s
 	return metadata;
 }
 
-static int cli_skills_manage_skills_add(struct morph_log *logger,
+static int cli_skills_manage_skills_add(struct nb_log *logger,
 					const struct cli_skills_manage_skills_options *options,
 					const char *root)
 {
+	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_10 = NB_OK;
+
 	struct cli_skills_manage_skills_source source = {0};
-	morph_array_t candidates = {0};
-	morph_array_t selection MORPH_CLEANUP(morph_array_cleanup) = {0};
+	nb_vec candidates = {0};
+	nb_vec selection NB_CLEANUP(nb_vec_cleanup) = {0};
 	int *selected = NULL;
-	int rc = morph_array_init(&candidates, 16, sizeof(struct cli_skill_candidate));
+	int rc = (nb_vec_init(&candidates, sizeof(struct cli_skill_candidate)),
+		  nb_vec_reserve(&candidates, 16) ? 0 : NB_ERR_NOMEM);
 
 	if (rc != 0)
 		return rc;
@@ -525,29 +584,38 @@ static int cli_skills_manage_skills_add(struct morph_log *logger,
 	if (rc == 0 && options->list)
 		cli_skills_manage_skills_candidates_print(&candidates);
 	if (rc == 0 && !options->list) {
-		rc = morph_array_init(&selection, candidates.nelts, sizeof(*selected));
-		if (rc == 0 && candidates.nelts) {
-			selected = morph_array_push_n_borrow(&selection, candidates.nelts);
+		rc = (nb_vec_init(&selection, sizeof(*selected)),
+		      nb_vec_reserve(&selection, candidates.len) ? 0 : NB_ERR_NOMEM);
+		if (rc == 0 && candidates.len) {
+			selected = nb_vec_push_n(&selection, candidates.len);
 			if (!selected)
-				rc = -ENOMEM;
+				rc = NB_ERR_NOMEM;
+			else
+				memset(selected, 0, candidates.len * sizeof(*selected));
 		}
 	}
 	if (rc == 0 && !options->list)
 		rc = cli_skills_manage_skills_select(options, &candidates, selected);
 	/* Check every destination before installing any selected skill. */
-	for (size_t i = 0; rc == 0 && !options->list && i < candidates.nelts; i++) {
-		const struct cli_skill_candidate *candidate = morph_array_borrow(&candidates, i);
+	for (size_t i = 0; rc == 0 && !options->list && i < candidates.len; i++) {
+		const struct cli_skill_candidate *candidate = nb_vec_at(&candidates, i);
 		char target[PATH_MAX];
 		struct stat st;
 
 		if (!selected[i])
 			continue;
-		rc = file_path_join(target, sizeof(target), root, candidate->fm.name);
+		rc = ((file_status_10 = nb_path_concat(&file_value_10, root, candidate->fm.name)) !=
+				      NB_OK
+			      ? file_status_10
+		      : (file_status_10 = nb_str_copy_to(nb_buf_str(&file_value_10), target,
+							 sizeof(target))) == NB_ERR_RANGE
+			      ? NB_ERR_NAME_TOO_LONG
+			      : file_status_10);
 		if (rc == 0 && lstat(target, &st) == 0) {
 			if (!options->replace)
-				rc = -EEXIST;
+				rc = NB_ERR_EXISTS;
 			else if (!S_ISDIR(st.st_mode))
-				rc = -ELOOP;
+				rc = NB_ERR_LOOP;
 			else {
 				cJSON *metadata = cli_skill_store_metadata_copy(target);
 
@@ -556,8 +624,8 @@ static int cli_skills_manage_skills_add(struct morph_log *logger,
 			}
 		}
 	}
-	for (size_t i = 0; rc == 0 && !options->list && i < candidates.nelts; i++) {
-		const struct cli_skill_candidate *candidate = morph_array_borrow(&candidates, i);
+	for (size_t i = 0; rc == 0 && !options->list && i < candidates.len; i++) {
+		const struct cli_skill_candidate *candidate = nb_vec_at(&candidates, i);
 		cJSON *metadata;
 
 		if (!selected[i])
@@ -565,7 +633,7 @@ static int cli_skills_manage_skills_add(struct morph_log *logger,
 		metadata =
 			cli_skills_manage_skills_metadata_create(&source, candidate, options->ref);
 		rc = metadata ? cli_skill_store_install(root, candidate, metadata, options->replace)
-			      : -ENOMEM;
+			      : NB_ERR_NOMEM;
 		cJSON_Delete(metadata);
 		if (rc == 0)
 			printf("Installed '%s' in %s (%s scope).\n", candidate->fm.name, root,
@@ -577,7 +645,7 @@ static int cli_skills_manage_skills_add(struct morph_log *logger,
 		if (rc == 0)
 			rc = cleanup_rc;
 	}
-	morph_array_cleanup(&candidates);
+	nb_vec_cleanup(&candidates);
 	return rc;
 }
 
@@ -588,7 +656,7 @@ static int cli_skills_manage_skills_list(const struct cli_skills_manage_skills_o
 	int rc;
 
 	if (!registry)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	skill_registry_init(NULL, registry);
 	rc = skill_discover_configured(registry, options->global ? NULL : ".", user_dir);
 	if (rc >= 0 && !options->global) {
@@ -628,14 +696,22 @@ static const char *cli_skills_manage_metadata_string(const cJSON *metadata, cons
 	return cJSON_IsString(item) ? item->valuestring : NULL;
 }
 
-static int cli_skills_manage_skills_update_one(struct morph_log *logger, const char *root,
+static int cli_skills_manage_skills_update_one(struct nb_log *logger, const char *root,
 					       const char *name)
 {
+	nb_buf file_value_11 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_11 = NB_OK;
+
 	char target[PATH_MAX];
 	struct cli_skills_manage_skills_source source = {0};
-	morph_array_t candidates MORPH_CLEANUP(morph_array_cleanup) = {0};
-	cJSON *metadata MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	int rc = file_path_join(target, sizeof(target), root, name);
+	nb_vec candidates NB_CLEANUP(nb_vec_cleanup) = {0};
+	cJSON *metadata NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	int rc = ((file_status_11 = nb_path_concat(&file_value_11, root, name)) != NB_OK
+			  ? file_status_11
+		  : (file_status_11 = nb_str_copy_to(nb_buf_str(&file_value_11), target,
+						     sizeof(target))) == NB_ERR_RANGE
+			  ? NB_ERR_NAME_TOO_LONG
+			  : file_status_11);
 
 	if (rc != 0)
 		return rc;
@@ -649,10 +725,11 @@ static int cli_skills_manage_skills_update_one(struct morph_log *logger, const c
 	const char *ref = cli_skills_manage_metadata_string(metadata, "ref");
 
 	if (!origin || !kind || !path || !ref) {
-		rc = (MORPH_ERR_FORMAT);
+		rc = (NB_ERR_FORMAT);
 		return rc;
 	}
-	rc = morph_array_init(&candidates, 1, sizeof(struct cli_skill_candidate));
+	rc = (nb_vec_init(&candidates, sizeof(struct cli_skill_candidate)),
+	      nb_vec_reserve(&candidates, 1) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = cli_skills_manage_skills_prepare(origin, *ref ? ref : NULL,
 						      strcmp(kind, "git") == 0, &source);
@@ -661,21 +738,20 @@ static int cli_skills_manage_skills_update_one(struct morph_log *logger, const c
 	if (rc == 0) {
 		const struct cli_skill_candidate *candidate = NULL;
 
-		for (size_t i = 0; i < candidates.nelts; i++) {
-			const struct cli_skill_candidate *entry =
-				morph_array_borrow(&candidates, i);
+		for (size_t i = 0; i < candidates.len; i++) {
+			const struct cli_skill_candidate *entry = nb_vec_at(&candidates, i);
 
 			if (strcmp(entry->fm.name, name) == 0)
 				candidate = entry;
 		}
 		if (!candidate)
-			rc = (-ENOENT);
+			rc = (NB_ERR_NOT_FOUND);
 		else {
 			cJSON *updated = cli_skills_manage_skills_metadata_create(
 				&source, candidate, *ref ? ref : NULL);
 
 			rc = updated ? cli_skill_store_install(root, candidate, updated, 1)
-				     : -ENOMEM;
+				     : NB_ERR_NOMEM;
 			cJSON_Delete(updated);
 			if (rc == 0)
 				printf("Updated '%s' in %s.\n", name, root);
@@ -690,11 +766,16 @@ static int cli_skills_manage_skills_update_one(struct morph_log *logger, const c
 	return rc;
 }
 
-static int cli_skills_manage_skills_modify(struct morph_log *logger,
+static int cli_skills_manage_skills_modify(struct nb_log *logger,
 					   const struct cli_skills_manage_skills_options *options,
 					   const char *root)
 {
-	char **names = NULL;
+	int directory_status_1 = NB_OK;
+
+	nb_buf file_value_12 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_12 = NB_OK;
+
+	nb_dir_listing names NB_CLEANUP(nb_dir_listing_destroy) = {0};
 	int count = 0;
 	int rc = 0;
 	int result = 0;
@@ -702,12 +783,19 @@ static int cli_skills_manage_skills_modify(struct morph_log *logger,
 	if (options->name_count) {
 		count = options->name_count;
 	} else {
-		rc = file_list_dirs_copy(root, &names, &count);
+		rc = ((directory_status_1 = nb_dir_scan(root,
+							NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN |
+								NB_DIR_SCAN_FOLLOW_LINKS,
+							&names, NULL)) != NB_OK
+			      ? directory_status_1
+		      : names.names.len > INT_MAX ? NB_ERR_RANGE
+						  : (count = (int)names.names.len, NB_OK));
 		if (rc != 0)
 			return rc;
 	}
 	for (int i = 0; i < count; i++) {
-		const char *name = options->name_count ? options->names[i] : names[i];
+		const char *name = options->name_count ? options->names[i]
+						       : nb_dir_listing_name(&names, (size_t)(i));
 		char target[PATH_MAX];
 		cJSON *metadata;
 		struct stat st;
@@ -715,13 +803,18 @@ static int cli_skills_manage_skills_modify(struct morph_log *logger,
 		if (!cli_management_name_valid(name))
 			continue;
 		rc = 0;
-		rc = file_path_join(target, sizeof(target), root, name);
+		rc = ((file_status_12 = nb_path_concat(&file_value_12, root, name)) != NB_OK
+			      ? file_status_12
+		      : (file_status_12 = nb_str_copy_to(nb_buf_str(&file_value_12), target,
+							 sizeof(target))) == NB_ERR_RANGE
+			      ? NB_ERR_NAME_TOO_LONG
+			      : file_status_12);
 		if (rc != 0)
 			break;
 		if (lstat(target, &st) != 0)
-			rc = -errno;
+			rc = nb_status_from_errno(errno, NULL);
 		else if (!S_ISDIR(st.st_mode))
-			rc = -ELOOP;
+			rc = NB_ERR_LOOP;
 		if (rc != 0) {
 			result = rc;
 			continue;
@@ -744,7 +837,7 @@ static int cli_skills_manage_skills_modify(struct morph_log *logger,
 			result = rc;
 		}
 	}
-	file_free_list(names, options->name_count ? 0 : count);
+	nb_dir_listing_destroy(&names);
 	return result ? result : rc;
 }
 
@@ -757,18 +850,20 @@ static void cli_skills_manage_fd_cleanup(int *owner)
 
 static void cli_skills_manage_options_cleanup(struct cli_skills_manage_skills_options *options)
 {
-	morph_array_cleanup(&options->name_storage);
+	nb_vec_cleanup(&options->name_storage);
 }
 
-int cli_skills_manage_run(struct morph_log *logger, int argc, char **argv, const char *config_path)
+int cli_skills_manage_run(struct nb_log *logger, int argc, char **argv, const char *config_path)
 {
-	struct cli_skills_manage_skills_options options
-	MORPH_CLEANUP(cli_skills_manage_options_cleanup) = {0};
-	char *user_dir MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	char *root MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	char *lock MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	nb_buf file_value_13 NB_CLEANUP(nb_buf_destroy) = {0};
+
+	struct cli_skills_manage_skills_options options NB_CLEANUP(
+		cli_skills_manage_options_cleanup) = {0};
+	char *user_dir NB_CLEANUP(nb_charp_cleanup) = NULL;
+	char *root NB_CLEANUP(nb_charp_cleanup) = NULL;
+	char *lock NB_CLEANUP(nb_charp_cleanup) = NULL;
 	char resolved[PATH_MAX];
-	int fd MORPH_CLEANUP(cli_skills_manage_fd_cleanup) = -1;
+	int fd NB_CLEANUP(cli_skills_manage_fd_cleanup) = -1;
 	int rc = cli_skills_manage_skills_parse(argc, argv, config_path, &options);
 
 	if (rc != 0) {
@@ -793,26 +888,28 @@ int cli_skills_manage_run(struct morph_log *logger, int argc, char **argv, const
 	}
 	root = options.global ? strdup(user_dir) : strdup(".agents/skills");
 	if (!root) {
-		rc = (-ENOMEM);
+		rc = (NB_ERR_NOMEM);
 		return rc == 0 ? 0 : cli_management_error(rc, "skills command failed");
 	}
 	if (!options.list) {
-		rc = file_ensure_dir(root);
+		rc = nb_file_mkdir(root, true, NULL);
 		if (rc != 0)
 			return rc == 0 ? 0 : cli_management_error(rc, "skills command failed");
 		if (!realpath(root, resolved)) {
-			rc = (-errno);
+			rc = (nb_status_from_errno(errno, NULL));
 			return rc == 0 ? 0 : cli_management_error(rc, "skills command failed");
 		}
 		free(root);
 		root = strdup(resolved);
 		if (!root) {
-			rc = (-ENOMEM);
+			rc = (NB_ERR_NOMEM);
 			return rc == 0 ? 0 : cli_management_error(rc, "skills command failed");
 		}
-		lock = file_path_join_alloc(root, ".morph-skills.lock");
+		lock = (nb_path_concat(&file_value_13, root, ".morph-skills.lock") == NB_OK
+				? strdup(nb_buf_cstr(&file_value_13))
+				: NULL);
 		if (!lock) {
-			rc = (-ENOMEM);
+			rc = (NB_ERR_NOMEM);
 			return rc == 0 ? 0 : cli_management_error(rc, "skills command failed");
 		}
 		fd = cli_management_lock(lock);

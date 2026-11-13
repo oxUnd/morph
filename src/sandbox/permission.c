@@ -1,48 +1,51 @@
 #include "permission.h"
+#include "nb/err.h"
 #include "permission/context.h"
 #include "sandbox/tool_paths.h"
-#include "util/array.h"
-#include "util/file.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/file.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
 
-static int append_path(morph_array_t *paths, const char *path)
+static int append_path(nb_vec *paths, const char *path)
 {
 	if (!path || !*path)
 		return 0;
-	char *copy MORPH_CLEANUP(morph_charp_cleanup) = strdup(path);
+	char *copy NB_CLEANUP(nb_charp_cleanup) = strdup(path);
 	if (!copy)
-		return -ENOMEM;
-	char **slot = morph_array_push_borrow(paths);
+		return NB_ERR_NOMEM;
+	char **slot = nb_vec_push(paths);
 	if (!slot)
-		return -ENOMEM;
-	*slot = morph_charp_steal(&copy);
+		return NB_ERR_NOMEM;
+	*slot = nb_charp_steal(&copy);
 	return 0;
 }
 
 static int intersect_paths(char **requested, int count, char **ceiling, int ceiling_count,
-			   morph_array_t *out)
+			   nb_vec *out)
 {
 	if (count < 0 || ceiling_count < 0 || (count && !requested) || (ceiling_count && !ceiling))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (count && ceiling_count > (INT_MAX - 1) / count)
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	for (int i = 0; i < count; i++) {
 		if (!requested[i])
-			return -EINVAL;
+			return NB_ERR_INVAL;
 	}
 	for (int i = 0; i < ceiling_count; i++) {
 		if (!ceiling[i])
-			return -EINVAL;
+			return NB_ERR_INVAL;
 	}
-	int rc = morph_array_init(out, 16, sizeof(*requested));
+	int rc = (nb_vec_init(out, sizeof(*requested)), nb_vec_reserve(out, 16) ? 0 : NB_ERR_NOMEM);
 	for (int i = 0; rc == 0 && i < count; i++) {
 		for (int j = 0; rc == 0 && j < ceiling_count; j++) {
-			const char *intersection = path_is_within(requested[i], ceiling[j]) ?
-				requested[i] : path_is_within(ceiling[j], requested[i]) ?
-				ceiling[j] : NULL;
+			const char *intersection =
+				nb_path_is_within(requested[i], ceiling[j], true)   ? requested[i]
+				: nb_path_is_within(ceiling[j], requested[i], true) ? ceiling[j]
+										    : NULL;
 			if (intersection)
 				rc = append_path(out, intersection);
 		}
@@ -54,15 +57,16 @@ int sandbox_permission_intersect(struct sandbox_config *requested,
 				 const struct sandbox_config *ceiling)
 {
 	if (!requested || !ceiling)
-		return -EINVAL;
-	struct sandbox_path_set paths MORPH_CLEANUP(sandbox_path_set_cleanup) = {0};
+		return NB_ERR_INVAL;
+	struct sandbox_path_set paths NB_CLEANUP(sandbox_path_set_cleanup) = {0};
 	int rc;
 	if (ceiling->read_all || requested->read_all) {
 		const struct sandbox_config *source = ceiling->read_all ? requested : ceiling;
 		if (source->read_paths_count < 0 ||
 		    (source->read_paths_count && !source->read_paths))
-			return -EINVAL;
-		rc = morph_array_init(&paths.read, 16, sizeof(*source->read_paths));
+			return NB_ERR_INVAL;
+		rc = (nb_vec_init(&paths.read, sizeof(*source->read_paths)),
+		      nb_vec_reserve(&paths.read, 16) ? 0 : NB_ERR_NOMEM);
 		for (int i = 0; rc == 0 && i < source->read_paths_count; i++)
 			rc = append_path(&paths.read, source->read_paths[i]);
 	} else {
@@ -90,14 +94,14 @@ int sandbox_permission_prepare(struct tool_context *context, const char *princip
 			       const char *scratch, struct sandbox_config *out)
 {
 	if (!context || !principal || !out)
-		return -EINVAL;
-	if (out->owned_paths.read.elts || out->owned_paths.write.elts ||
-	    out->owned_paths.remove.elts)
-		return -EEXIST;
-	struct tool_permission_snapshot snapshot MORPH_CLEANUP(tool_permission_snapshot_cleanup) = {
-		0};
-	struct sandbox_config prepared MORPH_CLEANUP(sandbox_config_cleanup) = {0};
-	struct sandbox_path_set paths MORPH_CLEANUP(sandbox_path_set_cleanup) = {0};
+		return NB_ERR_INVAL;
+	if (((void *)out->owned_paths.read.data) || ((void *)out->owned_paths.write.data) ||
+	    ((void *)out->owned_paths.remove.data) || out->temporary_paths_ready ||
+	    out->temporary_paths.count)
+		return NB_ERR_EXISTS;
+	struct tool_permission_snapshot snapshot NB_CLEANUP(tool_permission_snapshot_cleanup) = {0};
+	struct sandbox_config prepared NB_CLEANUP(sandbox_config_cleanup) = {0};
+	struct sandbox_path_set paths NB_CLEANUP(sandbox_path_set_cleanup) = {0};
 	int rc = tool_context_permission_snapshot_create(context, principal, &snapshot);
 	if (rc != 0)
 		return rc;
@@ -111,12 +115,12 @@ int sandbox_permission_prepare(struct tool_context *context, const char *princip
 	prepared.allow_ipc = 1;
 	prepared.development_runtime = 1;
 	prepared.allow_temp = access.workspace_write;
-	morph_array_t *arrays[] = {&paths.read, &paths.write, &paths.remove};
+	nb_vec *arrays[] = {&paths.read, &paths.write, &paths.remove};
 	const struct tool_path_snapshot *grants[] = {&snapshot.read, &snapshot.write,
 						     &snapshot.remove};
 	for (size_t op = 0; op < sizeof(arrays) / sizeof(arrays[0]); op++) {
-		rc = morph_array_init(arrays[op], (size_t)grants[op]->count + 3,
-				      sizeof(*grants[op]->paths));
+		rc = (nb_vec_init(arrays[op], sizeof(*grants[op]->paths)),
+		      nb_vec_reserve(arrays[op], (size_t)grants[op]->count + 3) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0 && (access.workspace_write || op == 0))
 			rc = append_path(arrays[op], snapshot.workdir);
 		if (rc == 0 && (access.workspace_write || op == 0))
@@ -129,7 +133,8 @@ int sandbox_permission_prepare(struct tool_context *context, const char *princip
 			return rc;
 	}
 	sandbox_config_paths_move(&prepared, &paths);
-	if (access.workspace_write)
+	rc = sandbox_prepare_temporary_paths(&prepared, scratch);
+	if (rc == NB_OK && access.workspace_write)
 		rc = sandbox_prepare_tool_paths(&prepared);
 	if (rc != 0)
 		return rc;

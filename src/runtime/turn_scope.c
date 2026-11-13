@@ -4,7 +4,9 @@
 #include "runtime/usage.h"
 #include "runtime/engine.h"
 #include "runtime/hooks.h"
-#include "util/error.h"
+#include "errors.h"
+#include "nb/str.h"
+#include "nb/utf8.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -68,7 +70,10 @@ static void runtime_turn_scope_credit_session_id(struct db *db,
 		credit_session_id = s.display_id[0] ? s.display_id : s.name;
 	}
 	if (credit_session_id)
-		snprintf(buf, buf_size, "%s", credit_session_id);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(credit_session_id,
+					  nb_utf8_clamp_bytes(credit_session_id, buf_size - 1)),
+			buf, buf_size);
 }
 
 static void runtime_turn_scope_bind_tool_context(struct runtime_turn_scope_context *ctx,
@@ -99,7 +104,7 @@ int runtime_turn_scope_begin(struct runtime_turn_scope_context *ctx,
 			     const struct runtime_request *request)
 {
 	if (!ctx || !ctx->scope || !ctx->db || !ctx->config || !request || request->session_id <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	{
 		int rc = preference_bind(ctx->db, request->session_id,
 					 request->user_id && request->user_id[0] ? request->user_id
@@ -283,14 +288,14 @@ int runtime_turn_scope_start_hooks(struct runtime_engine *engine,
 			if (rc == 0)
 				rc = hook_manager_dispatch(hooks, "SessionStart", input, &output);
 			if (rc == 0 && cJSON_IsTrue(cJSON_GetObjectItem(output, "terminate")))
-				rc = -EPERM;
+				rc = NB_ERR_NOT_PERMITTED;
 			free(hooks->session_context);
 			hooks->session_context = NULL;
 			const cJSON *extra = cJSON_GetObjectItem(output, "context");
 			if (cJSON_IsString(extra)) {
 				hooks->session_context = strdup(extra->valuestring);
 				if (!hooks->session_context)
-					rc = -ENOMEM;
+					rc = NB_ERR_NOMEM;
 			}
 		}
 		cJSON_Delete(input);
@@ -300,11 +305,12 @@ int runtime_turn_scope_start_hooks(struct runtime_engine *engine,
 			if (cJSON_IsString(reason)) {
 				engine->react->last_error_detail = strdup(reason->valuestring);
 				if (!engine->react->last_error_detail)
-					rc = -ENOMEM;
+					rc = NB_ERR_NOMEM;
 			}
-			engine->react->outcome = rc == -ECANCELED ? REACT_OUTCOME_CANCELLED
-						 : rc == -EPERM	  ? REACT_OUTCOME_GUARDRAIL_DENIED
-								  : REACT_OUTCOME_INTERNAL_ERROR;
+			engine->react->outcome = rc == NB_ERR_CANCELLED ? REACT_OUTCOME_CANCELLED
+						 : rc == NB_ERR_NOT_PERMITTED
+							 ? REACT_OUTCOME_GUARDRAIL_DENIED
+							 : REACT_OUTCOME_INTERNAL_ERROR;
 			engine->react->state = REACT_STATE_ABORT;
 			engine->react->last_error_code = rc;
 		}

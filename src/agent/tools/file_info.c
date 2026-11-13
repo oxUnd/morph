@@ -1,9 +1,10 @@
 #include "file_info.h"
-#include "util/json.h"
-#include "util/cleanup.h"
+#include "nb/err.h"
+#include "cJSON.h"
+#include "nb/cleanup.h"
 #include "agent/tool_context.h"
-#include "util/log.h"
-#include "util/file.h"
+#include "nb/log.h"
+#include "nb/file.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -28,12 +29,13 @@ static const char *file_type_str(mode_t mode)
 static int file_info_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct tool_context *tctx = user_data;
-	if (!result) return -EINVAL;
+	if (!result)
+		return NB_ERR_INVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
 		(void)tool_result_success_json_text_copy(result, "{\"error\":\"invalid JSON\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	cJSON *fp = cJSON_GetObjectItem(root, "file_path");
@@ -43,7 +45,7 @@ static int file_info_exec(const char *args_json, struct tool_result *result, voi
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"missing 'file_path' parameter. "
 				"Usage: file_info({\\\"file_path\\\": \\\"path/to/file\\\"})\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	char resolved_path[PATH_MAX];
@@ -53,7 +55,7 @@ static int file_info_exec(const char *args_json, struct tool_result *result, voi
 						     sizeof(resolved_path));
 		if (rc < 0) {
 			cJSON_Delete(root);
-			if (rc == -ENOENT)
+			if (rc == NB_ERR_NOT_FOUND)
 				(void)tool_result_success_json_text_copy(
 					result, "{\"error\":\"path does not exist\"}");
 			else
@@ -72,7 +74,7 @@ static int file_info_exec(const char *args_json, struct tool_result *result, voi
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text_copy(result,
 							 "{\"error\":\"path does not exist\"}");
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	}
 
 	cJSON *out = cJSON_CreateObject();
@@ -102,7 +104,7 @@ static int file_info_exec(const char *args_json, struct tool_result *result, voi
 	         localtime(&st.st_mtime));
 	cJSON_AddStringToObject(out, "modified", timebuf);
 
-	char *str MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(out);
+	char *str NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(out);
 	cJSON_Delete(out);
 	cJSON_Delete(root);
 	(void)tool_result_success_json_text_copy(result, str);
@@ -111,7 +113,8 @@ static int file_info_exec(const char *args_json, struct tool_result *result, voi
 
 int file_info_init(struct tool_registry *reg, struct tool_context *tctx)
 {
-	if (!reg) return -EINVAL;
+	if (!reg)
+		return NB_ERR_INVAL;
 	return tool_register_borrow(
 		reg,
 		&(struct tool_spec){

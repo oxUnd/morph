@@ -6,9 +6,9 @@
 #include "credits.h"
 #include "session.h"
 #include "cJSON.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "nb/utf8.h"
 #include "agent/tokenizer.h"
 #include "persistence/memory_repository.h"
 #include "persistence/memory_summary_store.h"
@@ -107,12 +107,12 @@ TEST_F(RuntimeQueryTest, PreferenceQueryRecoversWholeValuesOmittedByContextBudge
 	struct memory_options opts = {};
 	opts.enabled = 1;
 	opts.max_reply_chars = 512;
-	char *context MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	char *context NB_CLEANUP(nb_charp_cleanup) = nullptr;
 	ASSERT_EQ(memory_reply_text_create(&db, session.id, "hello", &opts, &context), 0);
 	ASSERT_NE(context, nullptr);
 	EXPECT_EQ(strstr(context, "custom.rule"), nullptr);
 	EXPECT_NE(strstr(context, "omitted records"), nullptr);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
 	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "memory",
@@ -148,7 +148,7 @@ TEST_F(RuntimeQueryTest, LongUnicodePastTaskCanBeRecoveredInBoundedUtf8Pages)
 	ASSERT_EQ(memory_save_turn(&db, session.id, request.c_str(), answer.c_str(), &step, 1,
 				   &options),
 		  0);
-	char *context MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	char *context NB_CLEANUP(nb_charp_cleanup) = nullptr;
 	ASSERT_EQ(memory_reply_text_create(&db, session.id, "previous", &options, &context), 0);
 	ASSERT_NE(context, nullptr);
 	EXPECT_EQ(strstr(context, "REQUEST_TAIL_MARKER"), nullptr);
@@ -160,17 +160,17 @@ TEST_F(RuntimeQueryTest, LongUnicodePastTaskCanBeRecoveredInBoundedUtf8Pages)
 		std::string args = "{\"type\":\"episodes\",\"scope\":\"session\","
 			"\"max_episodes\":1,\"max_chars\":2000,\"offset_chars\":" +
 			std::to_string(offset) + "}";
-		struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+		struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 		tool_result_init(&result);
 		result.runtime = &rt;
 		ASSERT_EQ(tool_exec(&tools, "memory", args.c_str(), &result), 0);
 		ASSERT_NE(result.data, nullptr);
 		const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "text"));
 		ASSERT_NE(text, nullptr);
-		EXPECT_EQ(utf8valid(text), nullptr);
-		EXPECT_LE(utf8len(text), 2000u);
-		EXPECT_LE(tokenizer_estimate_tokens(result.text.data),
-		cfg.context.tool_result_max_tokens);
+		EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(text), NULL), NB_UTF8_OK);
+		EXPECT_LE(nb_utf8_count(nb_str_from_cstr(text)), 2000u);
+		EXPECT_LE(tokenizer_estimate_tokens(result.text.ptr),
+			  cfg.context.tool_result_max_tokens);
 		recovered += text;
 		pages++;
 		if (!cJSON_IsTrue(cJSON_GetObjectItem(result.data, "has_more")))
@@ -201,18 +201,18 @@ TEST_F(RuntimeQueryTest, MemoryPageBudgetIncludesEscapingAndCompatibilityFields)
 	ASSERT_EQ(memory_store_upsert_fact(&db, session.id, "escaped", value.c_str(), "source",
 					  "context", 0.8), 0);
 	cfg.context.tool_result_max_tokens = 512;
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
 	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "memory", "{\"scope\":\"session\",\"type\":\"facts\"}",
 			    &result), 0);
 	ASSERT_NE(result.data, nullptr);
-	EXPECT_LE(tokenizer_estimate_tokens(result.text.data), cfg.context.tool_result_max_tokens);
+	EXPECT_LE(tokenizer_estimate_tokens(result.text.ptr), cfg.context.tool_result_max_tokens);
 	EXPECT_GT(cJSON_GetObjectItem(result.data, "returned_chars")->valueint, 0);
 	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(result.data, "has_more")));
 	const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "text"));
 	ASSERT_NE(text, nullptr);
-	EXPECT_EQ(utf8valid(text), nullptr);
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(text), NULL), NB_UTF8_OK);
 }
 
 TEST_F(RuntimeQueryTest, CreditsReportsTodaySessionAndTotal)
@@ -239,7 +239,7 @@ TEST_F(RuntimeQueryTest, CreditsReportsTodaySessionAndTotal)
 	tool_result_init(&result);
 	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "credits", "{}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
 	cJSON *root = result.data;
 	ASSERT_NE(root, nullptr);
 	cJSON *today = cJSON_GetObjectItem(root, "today");
@@ -288,8 +288,8 @@ TEST_F(RuntimeQueryTest, MemoryQueriesSessionAndType)
 	ASSERT_EQ(tool_exec(&tools, "memory",
 			    "{\"scope\":\"session\",\"type\":\"facts\"}",
 			    &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	cJSON *root = cJSON_Parse(result.text.data);
+	ASSERT_NE(result.text.ptr, nullptr);
+	cJSON *root = cJSON_Parse(result.text.ptr);
 	ASSERT_NE(root, nullptr);
 	cJSON *text = cJSON_GetObjectItem(root, "text");
 	ASSERT_TRUE(cJSON_IsString(text));
@@ -327,8 +327,8 @@ TEST_F(RuntimeQueryTest, MemoryAllScopeIncludesMultipleSessions)
 	tool_result_init(&result);
 	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "memory", "{}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	cJSON *root = cJSON_Parse(result.text.data);
+	ASSERT_NE(result.text.ptr, nullptr);
+	cJSON *root = cJSON_Parse(result.text.ptr);
 	ASSERT_NE(root, nullptr);
 	cJSON *scope = cJSON_GetObjectItem(root, "scope");
 	cJSON *text = cJSON_GetObjectItem(root, "text");
@@ -345,8 +345,8 @@ TEST_F(RuntimeQueryTest, MemoryAllScopeIncludesMultipleSessions)
 	ASSERT_EQ(tool_exec(&tools, "memory",
 			    "{\"scope\":\"all\",\"type\":\"all\"}", &result),
 		  0);
-	ASSERT_NE(result.text.data, nullptr);
-	root = cJSON_Parse(result.text.data);
+	ASSERT_NE(result.text.ptr, nullptr);
+	root = cJSON_Parse(result.text.ptr);
 	ASSERT_NE(root, nullptr);
 	text = cJSON_GetObjectItem(root, "text");
 	ASSERT_TRUE(cJSON_IsString(text));
@@ -391,7 +391,7 @@ TEST_F(RuntimeQueryTest, MemoryUsesConfiguredPastTaskLimitByDefault)
 	ASSERT_EQ(tool_exec(&tools, "memory",
 			    "{\"scope\":\"session\",\"type\":\"episodes\"}",
 			    &result), 0);
-	cJSON *root = cJSON_Parse(result.text.data);
+	cJSON *root = cJSON_Parse(result.text.ptr);
 	ASSERT_NE(root, nullptr);
 	cJSON *text = cJSON_GetObjectItem(root, "text");
 	ASSERT_TRUE(cJSON_IsString(text));
@@ -407,7 +407,7 @@ TEST_F(RuntimeQueryTest, MemoryUsesConfiguredPastTaskLimitByDefault)
 			  "\"max_episodes\":1}",
 			  &result),
 		  0);
-	root = cJSON_Parse(result.text.data);
+	root = cJSON_Parse(result.text.ptr);
 	ASSERT_NE(root, nullptr);
 	text = cJSON_GetObjectItem(root, "text");
 	ASSERT_TRUE(cJSON_IsString(text));
@@ -437,8 +437,8 @@ TEST_F(RuntimeQueryTest, ExplicitPreferenceToolReplacesGenericPreferenceAndRejec
 	ASSERT_EQ(tool_exec(&tools, "memory_preference",
 		"{\"key\":\"code.indent\",\"value\":\"four spaces\",\"scope\":\"personal\","
 		"\"evidence\":\"以后代码缩进使用四个空格\"}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "four spaces"), nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "four spaces"), nullptr);
 	tool_result_cleanup(&result);
 	input.turn_id = "two";
 	input.content = "以后代码缩进使用 Tab";
@@ -477,7 +477,7 @@ TEST_F(RuntimeQueryTest, InputPreparationDoesNotPromoteComplaintOrTemporaryReque
 	for (const char *text : {"Why do you always use English?", "这次用英文回答",
 				 "¿Por qué siempre respondes en inglés?"}) {
 		ASSERT_EQ(memory_accept_input(&db, session.id, text, text, &options), 0);
-		char *effective MORPH_CLEANUP(morph_charp_cleanup) =
+		char *effective NB_CLEANUP(nb_charp_cleanup) =
 			preference_render_copy(&db, session.id, 0);
 		ASSERT_NE(effective, nullptr);
 		EXPECT_STREQ(effective, "");
@@ -544,7 +544,7 @@ TEST_F(RuntimeQueryTest, ProjectSearchRecallsDerivedKnowledgeWithSourcesAndRepor
 			    "\"query\":\"composer\"}",
 			    &result),
 		  0);
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(result.text.data);
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(result.text.ptr);
 	ASSERT_NE(root, nullptr);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(root, "scope")), "project");
 	const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));
@@ -570,7 +570,7 @@ TEST_F(RuntimeQueryTest, PlainTaskAndTipTypesWorkAlongsideOlderTypeNames)
 	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "memory", "{\"type\":\"tips\",\"scope\":\"session\"}", &result),
 		  0);
-	EXPECT_NE(strstr(result.text.data, "Run composer tests"), nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "Run composer tests"), nullptr);
 	tool_result_cleanup(&result);
 	struct memory_options options = {};
 	options.enabled = 1;
@@ -584,7 +584,7 @@ TEST_F(RuntimeQueryTest, PlainTaskAndTipTypesWorkAlongsideOlderTypeNames)
 		tool_result_init(&result);
 		result.runtime = &rt;
 		ASSERT_EQ(tool_exec(&tools, "memory", args.c_str(), &result), 0);
-		EXPECT_NE(strstr(result.text.data, "Verify composer"), nullptr);
+		EXPECT_NE(strstr(result.text.ptr, "Verify composer"), nullptr);
 		tool_result_cleanup(&result);
 	}
 }
@@ -614,7 +614,7 @@ TEST_F(RuntimeQueryTest, ModelCanSaveReadCorrectAndForgetProjectNotesWithVersion
 	SetRuntime(current);
 	ASSERT_EQ(memory_test_user(&db, current.id, "Please correct the saved staging account."),
 		  0);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
 	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "memory",
@@ -640,12 +640,12 @@ TEST_F(RuntimeQueryTest, ModelCanSaveReadCorrectAndForgetProjectNotesWithVersion
 			"\"evidence\":\"Please forget the saved staging account.\"}",
 			&result),
 		0);
-	struct memory_search_result matches MORPH_CLEANUP(memory_search_result_cleanup) = {};
+	struct memory_search_result matches NB_CLEANUP(memory_search_result_cleanup) = {};
 	struct memory_search_options search = {};
 	search.kind = "notes";
 	search.project = 1;
 	ASSERT_EQ(memory_search_records(&db, current.id, &search, &matches), 0);
-	EXPECT_EQ(matches.records.nelts, 0u);
+	EXPECT_EQ(matches.records.len, 0u);
 }
 
 TEST_F(RuntimeQueryTest, ModelNoteSaveIsIdempotentAndRejectsOldOrInventedEvidence)
@@ -658,27 +658,27 @@ TEST_F(RuntimeQueryTest, ModelNoteSaveIsIdempotentAndRejectsOldOrInventedEvidenc
 	ASSERT_EQ(memory_test_user(&db, session.id,
 				   "今後のために、ステージング環境が必要だと覚えてください。"),
 		  0);
-	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *args NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	cJSON_AddStringToObject(args, "action", "save");
 	cJSON_AddStringToObject(args, "title", "ステージング環境");
 	cJSON_AddStringToObject(args, "text", "Staging is required for integration tests");
 	cJSON_AddStringToObject(args, "evidence",
 				"今後のために、ステージング環境が必要だと覚えてください。");
-	char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(args);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	char *json NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(args);
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
 	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "memory_update", json, &result), 0);
 	ASSERT_EQ(tool_exec(&tools, "memory_update", json, &result), 0);
 	cJSON_SetValuestring(cJSON_GetObjectItem(args, "text"),
 			     "Conflicting interpretation of the same event");
-	char *conflict MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(args);
+	char *conflict NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(args);
 	EXPECT_LT(tool_exec(&tools, "memory_update", conflict, &result), 0);
-	struct memory_search_result matches MORPH_CLEANUP(memory_search_result_cleanup) = {};
+	struct memory_search_result matches NB_CLEANUP(memory_search_result_cleanup) = {};
 	struct memory_search_options search = {};
 	search.kind = "notes";
 	ASSERT_EQ(memory_search_records(&db, session.id, &search, &matches), 0);
-	EXPECT_EQ(matches.records.nelts, 1u);
+	EXPECT_EQ(matches.records.len, 1u);
 	ASSERT_EQ(memory_test_user(&db, session.id, "Continue with the next task."), 0);
 	EXPECT_LT(tool_exec(&tools, "memory_update", json, &result), 0);
 }
@@ -697,17 +697,17 @@ TEST_F(RuntimeQueryTest, ModelPreferencesSupportLanguagesBeyondEnglishAndChinese
 	};
 	for (const auto &entry : cases) {
 		ASSERT_EQ(memory_test_user(&db, session.id, entry.first), 0);
-		cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		cJSON *args NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 		cJSON_AddStringToObject(args, "key", "response.language");
 		cJSON_AddStringToObject(args, "value", entry.second);
 		cJSON_AddStringToObject(args, "scope", "personal");
 		cJSON_AddStringToObject(args, "evidence", entry.first);
-		char *json MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(args);
-		struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+		char *json NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(args);
+		struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 		tool_result_init(&result);
 		result.runtime = &rt;
 		ASSERT_EQ(tool_exec(&tools, "memory_preference", json, &result), 0);
-		char *effective MORPH_CLEANUP(morph_charp_cleanup) =
+		char *effective NB_CLEANUP(nb_charp_cleanup) =
 			preference_render_copy(&db, session.id, 0);
 		EXPECT_NE(strstr(effective, entry.second), nullptr);
 	}
@@ -726,7 +726,7 @@ TEST_F(RuntimeQueryTest, MemoryEditsCannotAccessAnotherProjectOrUser)
 	cfg.memory.enabled = 1;
 	SetRuntime(current);
 	ASSERT_EQ(memory_test_user(&db, current.id, "Forget that old saved note."), 0);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
 	result.runtime = &rt;
 	EXPECT_LT(tool_exec(&tools, "memory_update",
@@ -748,7 +748,7 @@ TEST_F(RuntimeQueryTest, SavedNotesRedactCredentialsInContentAndSource)
 	ASSERT_EQ(memory_test_user(&db, session.id,
 				   "Remember staging uses sk-test-do-not-store this key."),
 		  0);
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
 	result.runtime = &rt;
 	ASSERT_EQ(
@@ -758,12 +758,12 @@ TEST_F(RuntimeQueryTest, SavedNotesRedactCredentialsInContentAndSource)
 			  "\"evidence\":\"Remember staging uses sk-test-do-not-store this key.\"}",
 			  &result),
 		0);
-	struct memory_search_result matches MORPH_CLEANUP(memory_search_result_cleanup) = {};
+	struct memory_search_result matches NB_CLEANUP(memory_search_result_cleanup) = {};
 	struct memory_search_options search = {};
 	search.kind = "notes";
 	ASSERT_EQ(memory_search_records(&db, session.id, &search, &matches), 0);
-	ASSERT_EQ(matches.records.nelts, 1u);
-	auto *record = static_cast<struct memory_record *>(morph_array_borrow(&matches.records, 0));
+	ASSERT_EQ(matches.records.len, 1u);
+	auto *record = static_cast<struct memory_record *>(nb_vec_at(&matches.records, 0));
 	EXPECT_EQ(strstr(record->value, "do-not-store"), nullptr);
 	EXPECT_EQ(strstr(record->source, "do-not-store"), nullptr);
 	EXPECT_NE(strstr(record->value, "[REDACTED]"), nullptr);

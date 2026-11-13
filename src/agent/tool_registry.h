@@ -2,9 +2,10 @@
 #define MORPH_TOOL_REGISTRY_H
 
 #include "agent/tool_result.h"
-#include "util/strmap.h"
-#include "util/array.h"
-#include <pthread.h>
+#include "nb/map.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/thread.h"
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -40,7 +41,7 @@ enum tool_input_kind {
 	TOOL_INPUT_TEXT,
 };
 
-struct morph_log;
+struct nb_log;
 
 /* Descriptor strings are borrowed views unless created by tool_desc_clone(). */
 struct tool_desc {
@@ -65,6 +66,8 @@ typedef void (*tool_user_data_destroy_fn)(void *user_data);
 
 struct prompt_context_input;
 typedef void (*tool_environment_fn)(void *user_data, struct prompt_context_input *out);
+/* Refresh domain-owned prompt state before the next model request. */
+typedef int (*tool_refresh_context_fn)(void *user_data);
 
 typedef int (*tool_background_list_fn)(void *user_data, int64_t owner, cJSON **out);
 typedef int (*tool_background_wait_fn)(void *user_data, int64_t owner, const char *turn_id,
@@ -82,6 +85,7 @@ struct tool_spec {
 	const char *input_format;
 	tool_exec_fn exec;
 	tool_environment_fn get_environment;
+	tool_refresh_context_fn refresh_context;
 	tool_background_list_fn background_list;
 	tool_background_wait_fn background_wait;
 	tool_background_cancel_fn background_cancel;
@@ -98,6 +102,7 @@ struct tool_entry {
 	struct tool_desc desc;
 	tool_exec_fn exec;
 	tool_environment_fn get_environment;
+	tool_refresh_context_fn refresh_context;
 	tool_background_list_fn background_list;
 	tool_background_wait_fn background_wait;
 	tool_background_cancel_fn background_cancel;
@@ -118,6 +123,7 @@ struct tool_handle {
 	struct tool_context *permission_context;
 	tool_exec_fn exec;
 	tool_environment_fn get_environment;
+	tool_refresh_context_fn refresh_context;
 	tool_background_list_fn background_list;
 	tool_background_wait_fn background_wait;
 	tool_background_cancel_fn background_cancel;
@@ -130,18 +136,18 @@ struct tool_handle {
 
 struct tool_registry {
 	struct tool_context *permission_context;
-	pthread_mutex_t mutex;
-	pthread_mutex_t mutation_mutex;
+	nb_mutex *mutex;
+	nb_mutex *mutation_mutex;
 	int mutex_ready;
 	int init_error;
-	struct morph_log *logger;
+	struct nb_log *logger;
 	struct tool_entry *entries;
-	morph_array_t storage;
+	nb_vec storage;
 	int count;
 	char disabled[TOOL_DISABLED_MAX][TOOL_NAME_MAX];
 	int disabled_count;
-	morph_strmap_t by_name;
-	morph_strmap_t disabled_by_name;
+	nb_map *by_name;
+	nb_map *disabled_by_name;
 };
 
 /* Recursive data lock: raw entry views require this lock and expire on mutation.
@@ -166,7 +172,7 @@ int tool_register_copy(struct tool_registry *out, const struct tool_entry *entry
  * empty and exclusively owned during copying. Source is locked internally.
  * Failure rolls back additions and preserves the initialized empty target. */
 int tool_registry_copy(struct tool_registry *out, struct tool_registry *source);
-void tool_registry_init(struct morph_log *logger, struct tool_registry *reg);
+void tool_registry_init(struct nb_log *logger, struct tool_registry *reg);
 void tool_registry_cleanup(struct tool_registry *reg);
 const char *tool_origin_name(enum tool_origin origin);
 int tool_entry_set_descriptor_copy(struct tool_entry *entry, const struct tool_spec *spec);
@@ -179,6 +185,9 @@ struct tool_entry *tool_borrow(struct tool_registry *reg, const char *name);
  * Failure leaves an empty handle. No allocation or descriptor copy is needed. */
 int tool_registry_acquire(struct tool_registry *reg, const char *name, struct tool_handle *out);
 void tool_handle_release(struct tool_handle *handle);
+/* Missing tools and tools without a refresh callback are successful no-ops.
+ * The registry retains the binding while running the callback outside its lock. */
+int tool_refresh_context(struct tool_registry *reg, const char *name);
 int tool_set_timeout(struct tool_registry *reg, const char *name, int timeout_seconds);
 int tool_timeout_seconds(struct tool_registry *reg, const char *name);
 void tool_entry_cleanup_user_data(struct tool_registry *reg);

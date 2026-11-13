@@ -1,12 +1,14 @@
 #include "quickjs.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/err.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 #include "runner_api.h"
 #include "js_process.h"
 #include "js_fetch.h"
 #include "cJSON.h"
-#include "util/file.h"
-#include "util/buf.h"
+#include "nb/file.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -32,11 +34,11 @@ static int runner_capture_configure(struct runner_state *state)
 	if (!configured)
 		return 0;
 	if (!*configured || *configured < '0' || *configured > '9')
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	errno = 0;
 	parsed = strtoull(configured, &end, 10);
 	if (errno || *end || !parsed || parsed > INT_MAX)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	state->max_capture_bytes = (size_t)parsed;
 	return 0;
 }
@@ -114,6 +116,9 @@ JSValue runner_throw_cap(JSContext *ctx, const char *cap)
 
 char *runner_authorize_path_copy(JSContext *ctx, const char *path, int write)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	const char *cap = write ? "fs_write" : "fs_read";
 	const char *allow_env =
 		write ? "MORPH_DYNAMIC_ALLOWED_WRITE" : "MORPH_DYNAMIC_ALLOWED_READ";
@@ -130,7 +135,7 @@ char *runner_authorize_path_copy(JSContext *ctx, const char *path, int write)
 		JS_ThrowTypeError(ctx, "%s path is empty", write ? "write" : "read");
 		return NULL;
 	}
-	if (file_path_is_absolute(path)) {
+	if (nb_path_is_absolute(path)) {
 		candidate = strdup(path);
 	} else {
 		root = getenv(root_env);
@@ -139,13 +144,20 @@ char *runner_authorize_path_copy(JSContext *ctx, const char *path, int write)
 					      write ? "output" : "work");
 			return NULL;
 		}
-		candidate = file_path_full_alloc(root, path);
+		candidate = (nb_path_join(&file_value_1, root, path) == NB_OK
+				     ? strdup(nb_buf_cstr(&file_value_1))
+				     : NULL);
 	}
 	if (!candidate) {
 		JS_ThrowOutOfMemory(ctx);
 		return NULL;
 	}
-	resolved = file_resolve_path_copy(candidate);
+	resolved =
+		(nb_path_expand(&file_value_2, candidate, NULL) == NB_OK &&
+				 nb_path_canonical_missing(
+					 &file_value_2, nb_buf_cstr(&file_value_2), NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&file_value_2))
+			 : NULL);
 	free(candidate);
 	if (!resolved) {
 		JS_ThrowInternalError(ctx, "failed to resolve %s path", write ? "write" : "read");
@@ -178,21 +190,21 @@ static int resolve_promise(JSContext *ctx, JSValue *value)
 		JSContext *job_ctx = NULL;
 		int rc = JS_ExecutePendingJob(rt, &job_ctx);
 		if (rc < 0)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		if (rc == 0)
 			break;
 	}
 	state = JS_PromiseState(ctx, *value);
 	if (state == JS_PROMISE_PENDING) {
 		JS_ThrowInternalError(ctx, "promise did not settle");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	result = JS_PromiseResult(ctx, *value);
 	JS_FreeValue(ctx, *value);
 	if (state == JS_PROMISE_REJECTED) {
 		*value = JS_UNDEFINED;
 		(void)JS_Throw(ctx, result);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	*value = result;
 	return 0;
@@ -302,19 +314,22 @@ static void print_exception(JSContext *ctx, int id)
 	JSValue stack = JS_UNDEFINED;
 	const char *msg = JS_ToCString(ctx, exception);
 	const char *stack_str = NULL;
-	morph_buf_t buf;
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 
 	stack = JS_GetPropertyStr(ctx, exception, "stack");
 	if (!JS_IsUndefined(stack) && !JS_IsNull(stack))
 		stack_str = JS_ToCString(ctx, stack);
-	if (morph_buf_init(&buf, 512) == 0) {
-		if (morph_buf_puts(&buf, msg ? msg : "JavaScript exception") == 0 && stack_str &&
-		    *stack_str && morph_buf_puts(&buf, "\nStack:\n") == 0 &&
-		    morph_buf_puts(&buf, stack_str) == 0)
-			print_error_response(id, morph_buf_cstr_borrow(&buf));
+	if ((nb_buf_init(&buf), nb_buf_reserve(&buf, 512) ? 0 : NB_ERR_NOMEM) == 0) {
+		if ((nb_buf_append_cstr(&buf, msg ? msg : "JavaScript exception")
+			     ? 0
+			     : NB_ERR_NOMEM) == 0 &&
+		    stack_str && *stack_str &&
+		    (nb_buf_append_cstr(&buf, "\nStack:\n") ? 0 : NB_ERR_NOMEM) == 0 &&
+		    (nb_buf_append_cstr(&buf, stack_str) ? 0 : NB_ERR_NOMEM) == 0)
+			print_error_response(id, nb_buf_cstr(&buf));
 		else
 			print_error_response(id, msg ? msg : "JavaScript exception");
-		morph_buf_cleanup(&buf);
+		nb_buf_cleanup(&buf);
 	} else {
 		print_error_response(id, msg ? msg : "JavaScript exception");
 	}
@@ -328,6 +343,9 @@ static void print_exception(JSContext *ctx, int id)
 
 static int check_script(JSContext *ctx, const char *path)
 {
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_3 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	char *source;
 	size_t len;
 	JSValue val;
@@ -335,14 +353,20 @@ static int check_script(JSContext *ctx, const char *path)
 	JSValue fn = JS_UNDEFINED;
 	int rc = 0;
 
-	source = file_read_all_copy(path, &len);
+	source = (nb_file_read_all(path, &file_value_3, 0, NULL) == NB_OK &&
+				  (file_copy_3 = (char *)malloc(nb_buf_len(&file_value_3) + 1)) !=
+					  NULL
+			  ? (memcpy(file_copy_3, nb_buf_cstr(&file_value_3),
+				    nb_buf_len(&file_value_3) + 1),
+			     *(&len) = nb_buf_len(&file_value_3), nb_charp_steal(&file_copy_3))
+			  : NULL);
 	if (!source)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	val = JS_Eval(ctx, source, len, path, JS_EVAL_TYPE_GLOBAL);
 	free(source);
 	if (JS_IsException(val)) {
 		print_exception(ctx, 1);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	JS_FreeValue(ctx, val);
 	global = JS_GetGlobalObject(ctx);
@@ -350,7 +374,7 @@ static int check_script(JSContext *ctx, const char *path)
 	if (!JS_IsFunction(ctx, fn)) {
 		print_error_response(1, "script must define global run(args). Example: "
 					"async function run(args) { return { ok: true }; }");
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 	}
 	JS_FreeValue(ctx, fn);
 	JS_FreeValue(ctx, global);
@@ -385,16 +409,19 @@ static void runner_script_values_cleanup(struct runner_script_values *values)
 
 static int run_script(JSContext *ctx, const char *path)
 {
+	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_4 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	char *source = NULL;
-	char *line MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *line NB_CLEANUP(nb_charp_cleanup) = NULL;
 	size_t source_len;
 	size_t line_cap = 0;
 	int id = 1;
 	int rc = 0;
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	JSValue val = JS_UNDEFINED;
 	const char *json_str;
-	struct runner_script_values values MORPH_CLEANUP(runner_script_values_cleanup) = {
+	struct runner_script_values values NB_CLEANUP(runner_script_values_cleanup) = {
 		.ctx = ctx,
 		.json = JS_UNDEFINED,
 		.ret = JS_UNDEFINED,
@@ -404,28 +431,35 @@ static int run_script(JSContext *ctx, const char *path)
 		.request = JS_UNDEFINED,
 	};
 
-	source = file_read_all_copy(path, &source_len);
+	source = (nb_file_read_all(path, &file_value_4, 0, NULL) == NB_OK &&
+				  (file_copy_4 = (char *)malloc(nb_buf_len(&file_value_4) + 1)) !=
+					  NULL
+			  ? (memcpy(file_copy_4, nb_buf_cstr(&file_value_4),
+				    nb_buf_len(&file_value_4) + 1),
+			     *(&source_len) = nb_buf_len(&file_value_4),
+			     nb_charp_steal(&file_copy_4))
+			  : NULL);
 	if (!source)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	val = JS_Eval(ctx, source, source_len, path, JS_EVAL_TYPE_GLOBAL);
 	free(source);
 	source = NULL;
 	if (JS_IsException(val)) {
 		print_exception(ctx, id);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	JS_FreeValue(ctx, val);
 	val = JS_UNDEFINED;
 
 	if (getline(&line, &line_cap, stdin) < 0) {
 		print_error_response(id, "missing JSON-RPC request");
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 		return rc;
 	}
 	root = cJSON_Parse(line);
 	if (!root) {
 		print_error_response(id, "invalid JSON-RPC request");
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 		return rc;
 	}
 	{
@@ -437,14 +471,14 @@ static int run_script(JSContext *ctx, const char *path)
 	values.request = JS_ParseJSON(ctx, line, strlen(line), "<request>");
 	if (JS_IsException(values.request)) {
 		print_exception(ctx, id);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	values.args = JS_GetPropertyStr(ctx, values.request, "params");
 	if (JS_IsUndefined(values.args))
 		values.args = JS_NewObject(ctx);
 	if (JS_IsException(values.args)) {
 		print_exception(ctx, id);
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 		return rc;
 	}
 
@@ -452,24 +486,24 @@ static int run_script(JSContext *ctx, const char *path)
 	values.fn = JS_GetPropertyStr(ctx, values.global, "run");
 	if (!JS_IsFunction(ctx, values.fn)) {
 		print_error_response(id, "script must define global run(args)");
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 		return rc;
 	}
 	values.ret = JS_Call(ctx, values.fn, JS_UNDEFINED, 1, &values.args);
 	if (JS_IsException(values.ret)) {
 		print_exception(ctx, id);
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 		return rc;
 	}
 	if (resolve_promise(ctx, &values.ret) < 0) {
 		print_exception(ctx, id);
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 		return rc;
 	}
 	values.json = JS_JSONStringify(ctx, values.ret, JS_UNDEFINED, JS_UNDEFINED);
 	if (JS_IsException(values.json)) {
 		print_exception(ctx, id);
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 		return rc;
 	}
 	if (JS_IsUndefined(values.json))
@@ -478,7 +512,7 @@ static int run_script(JSContext *ctx, const char *path)
 		json_str = JS_ToCString(ctx, values.json);
 	if (!json_str) {
 		print_exception(ctx, id);
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 		return rc;
 	}
 	fprintf(stdout, "{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":%s}\n", id, json_str);

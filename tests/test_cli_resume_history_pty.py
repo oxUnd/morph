@@ -7,10 +7,11 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import http.server
 
 from test_cli_pty import Model, Terminal, terminal_environment
-from test_cli_transcript_pty import AlternateScreen
+from test_cli_transcript_pty import AlternateScreen, collect_retained_history
 import pexpect
 import pyte
 
@@ -101,6 +102,27 @@ def check_restored(terminal, label):
     assert Model.requests.empty(), 'resume unexpectedly called the model'
 
 
+def retained_history_snapshot(terminal, final_marker):
+    draft = 'UNSENT_RESUME_DRAFT'
+    terminal.send(draft)
+    history = collect_retained_history(terminal, draft, final_marker=final_marker)
+    assert not terminal.duplicate_prompts, terminal.duplicate_prompts
+    terminal.send('\x15')
+    return history
+
+
+def check_resumed_history(terminal, name, markers, before):
+    history = retained_history_snapshot(terminal, markers[-1])
+    compact = ''.join(history.split())
+    previous = ''.join(before.split())
+    assert compact.startswith(previous), (before, history)
+    added = compact[len(previous):]
+    assert added.count('resumedsession:' + name) == 1, history
+    for marker in markers:
+        assert added.count(marker) == 1, (marker, history)
+    return history
+
+
 def main():
     binary = Path(sys.argv[1]).resolve()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
@@ -113,6 +135,11 @@ def main():
                 terminal = start(binary, directory, server.server_port, columns, 'resume')
                 try:
                     terminal.wait_for_composer()
+                    deadline = time.monotonic() + 8
+                    while ('no sessions to resume' not in terminal.raw or
+                           2026 << 5 in terminal.screen.mode):
+                        assert time.monotonic() < deadline, terminal.raw
+                        terminal.pump(.05)
                     assert 'no sessions to resume' in terminal.raw, terminal.raw
                     stop(terminal)
                     database = directory / 'home' / '.morph' / 'data.db'
@@ -154,16 +181,21 @@ def main():
                     screen = terminal.snapshot(f'{columns}: slash resume restores legacy messages')
                     assert 'LEGACY_ANSWER' in screen and 'LEGACY_QUESTION' in screen, screen
                     assert '› /resume' not in screen, screen
+                    retained = retained_history_snapshot(terminal, 'LEGACY_ANSWER')
                     terminal.send('/resume\r')
                     terminal.send('\r')
                     screen = terminal.snapshot(f'{columns}: slash picker Enter restores history')
                     assert 'RESUMED_CONTINUATION_OK' in screen, screen
-                    assert 'resumed session: HistoryNative' in screen, screen
+                    retained = check_resumed_history(terminal, 'HistoryNative', (
+                        'HISTORY_FIRST_QUESTION', 'HISTORY_CHECKING', 'HISTORY_TOOL_OUTPUT',
+                        'HISTORY_FIRST_ANSWER', 'HISTORY_LAST_QUESTION', 'HISTORY_LAST_ANSWER',
+                        'CONTINUE_RESUMED_SESSION', 'RESUMED_CONTINUATION_OK'), retained)
                     terminal.send('/resume\r')
                     terminal.send('\x1b[B\r')
                     screen = terminal.snapshot(f'{columns}: grouped navigation resumes exact item')
                     assert 'LEGACY_ANSWER' in screen, screen
-                    assert 'resumed session: HistoryLegacy' in screen, screen
+                    check_resumed_history(terminal, 'HistoryLegacy',
+                                          ('LEGACY_QUESTION', 'LEGACY_ANSWER'), retained)
                     terminal.send('CONTINUE_PICKED_LEGACY\r')
                     body, release = terminal.request()
                     assert 'LEGACY_ANSWER' in json.dumps(body), body
@@ -189,6 +221,7 @@ def main():
                         terminal = start(binary, directory, server.server_port, columns,
                                          *arguments)
                         terminal.wait_for_composer()
+                        retained_history_snapshot(terminal, 'RESUMED_CONTINUATION_OK')
                         assert 'HISTORY_FIRST_QUESTION' in terminal.raw, terminal.raw[-5000:]
                         assert 'RESUMED_CONTINUATION_OK' in terminal.raw, terminal.raw[-5000:]
                         stop(terminal)

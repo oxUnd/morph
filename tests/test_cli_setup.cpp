@@ -1,5 +1,8 @@
 extern "C" {
+#include <string.h>
+#include "nb/cleanup.h"
 #include "sapi/cli/services/configuration/model.h"
+#include "nb/err.h"
 #include "sapi/cli/services/configuration/role.h"
 }
 #include <gtest/gtest.h>
@@ -11,8 +14,8 @@ extern "C" {
 #include "agent/system_prompt.h"
 #include <filesystem>
 #include "config/config.h"
-#include "util/file.h"
-#include "tomlc17.h"
+#include "nb/file.h"
+#include "nb/toml.h"
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -49,7 +52,7 @@ protected:
 		if (!input || !output) {
 			if (input) fclose(input);
 			if (output) fclose(output);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		fputs(answers.c_str(), input);
 		rewind(input);
@@ -66,6 +69,9 @@ protected:
 };
 
 TEST_F(CliSetupTest, SkipOptionalModels) {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	ASSERT_GE(run_custom(std::string(9, '\n')), 0);
 	struct config cfg;
 	ASSERT_EQ(config_load(NULL, &cfg, path.c_str()), 0);
@@ -81,16 +87,25 @@ TEST_F(CliSetupTest, SkipOptionalModels) {
 	EXPECT_TRUE(cfg.exec.allow_host_execution);
 	EXPECT_TRUE(cfg.react.hitl_auto_approve_readonly);
 	EXPECT_TRUE(cfg.react.hitl_auto_approve_media);
-	char *saved = file_read_all_copy(path.c_str(), nullptr);
+	char *saved =
+		(nb_file_read_all(path.c_str(), &file_value_1, 0, NULL) == NB_OK &&
+				 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
+				   nb_buf_len(&file_value_1) + 1),
+			    nb_charp_steal(&file_copy_1))
+			 : NULL);
 	ASSERT_NE(saved, nullptr);
-	toml_result_t parsed = toml_parse(saved, static_cast<int>(strlen(saved)));
-	ASSERT_TRUE(parsed.ok);
+	nb_toml *parsed = nb_toml_parse(nb_str_from_cstr(saved), nullptr);
+	ASSERT_TRUE(parsed);
 	for (const char *kind : {"image", "video"}) {
-		toml_datum_t entry = toml_get(toml_get(parsed.toptab, "model"), kind);
-		EXPECT_EQ(toml_get(entry, "api_key").type, TOML_UNKNOWN);
-		EXPECT_EQ(toml_get(entry, "api_key_env").type, TOML_UNKNOWN);
+		const nb_toml_value *entry = nb_toml_table_get_cstr(
+			nb_toml_table_get_cstr(nb_toml_root(parsed), "model"), kind);
+		EXPECT_EQ(nb_toml_type_of(nb_toml_table_get_cstr(entry, "api_key")), NB_TOML_NONE);
+		EXPECT_EQ(nb_toml_type_of(nb_toml_table_get_cstr(entry, "api_key_env")),
+			  NB_TOML_NONE);
 	}
-	toml_free(parsed);
+	nb_toml_free(parsed);
 	free(saved);
 }
 
@@ -116,12 +131,22 @@ TEST_F(CliSetupTest, VideoDefaultsConfigureAllModelsWithoutPerModelQuestions) {
 }
 
 TEST_F(CliSetupTest, DefaultsStillRequireSaveAndCannotHideIncompleteCustomModels) {
-	EXPECT_EQ(run_input("\n"), -ECANCELED);
-	EXPECT_FALSE(file_exists(path.c_str()));
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
+	EXPECT_EQ(run_input("\n"), NB_ERR_CANCELLED);
+	EXPECT_FALSE(nb_file_exists(path.c_str()));
 	const std::string old = "[model.text]\nprovider='custom'\nmodel=''\napi_base=''\n";
-	ASSERT_EQ(file_write_all(path.c_str(), old.c_str(), old.size()), 0);
-	EXPECT_EQ(run_input("\n\n", true), -ECANCELED);
-	char *saved = file_read_all_copy(path.c_str(), nullptr);
+	ASSERT_EQ(nb_file_write_all(path.c_str(), old.c_str(), old.size(), NULL), 0);
+	EXPECT_EQ(run_input("\n\n", true), NB_ERR_CANCELLED);
+	char *saved =
+		(nb_file_read_all(path.c_str(), &file_value_2, 0, NULL) == NB_OK &&
+				 (file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
+				   nb_buf_len(&file_value_2) + 1),
+			    nb_charp_steal(&file_copy_2))
+			 : NULL);
 	ASSERT_NE(saved, nullptr);
 	EXPECT_EQ(std::string(saved), old);
 	free(saved);
@@ -161,36 +186,62 @@ TEST(CliSetupDefaults, NewlyRequiredModelsReuseAnExistingProviderAccount) {
 }
 
 TEST_F(CliSetupTest, SetupWritesOnlyTheSelectedCredentialSource) {
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_3 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	ASSERT_GE(run_custom_raw("7\n" + std::string(21, '\n')), 0);
-	char *saved = file_read_all_copy(path.c_str(), nullptr);
+	char *saved =
+		(nb_file_read_all(path.c_str(), &file_value_3, 0, NULL) == NB_OK &&
+				 (file_copy_3 = (char *)malloc(nb_buf_len(&file_value_3) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_3, nb_buf_cstr(&file_value_3),
+				   nb_buf_len(&file_value_3) + 1),
+			    nb_charp_steal(&file_copy_3))
+			 : NULL);
 	ASSERT_NE(saved, nullptr);
-	toml_result_t parsed = toml_parse(saved, static_cast<int>(strlen(saved)));
-	ASSERT_TRUE(parsed.ok);
+	nb_toml *parsed = nb_toml_parse(nb_str_from_cstr(saved), nullptr);
+	ASSERT_TRUE(parsed);
 	for (const char *kind : {"text", "vision", "image", "video"}) {
-		toml_datum_t entry = toml_get(toml_get(parsed.toptab, "model"), kind);
-		EXPECT_EQ(toml_get(entry, "api_key").type, TOML_UNKNOWN) << kind;
-		EXPECT_EQ(toml_get(entry, "api_key_env").type, TOML_STRING) << kind;
+		const nb_toml_value *entry = nb_toml_table_get_cstr(
+			nb_toml_table_get_cstr(nb_toml_root(parsed), "model"), kind);
+		EXPECT_EQ(nb_toml_type_of(nb_toml_table_get_cstr(entry, "api_key")), NB_TOML_NONE)
+			<< kind;
+		EXPECT_EQ(nb_toml_type_of(nb_toml_table_get_cstr(entry, "api_key_env")),
+			  NB_TOML_STRING)
+			<< kind;
 	}
-	toml_free(parsed);
+	nb_toml_free(parsed);
 	free(saved);
 }
 
 TEST_F(CliSetupTest, ReconfigureRemovesEnvironmentFieldWhenKeepingDirectKey) {
+	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_4 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	const std::string old = "[model.text]\nprovider='custom'\nmodel='private'\n"
 		"api_base='http://localhost:1234/v1'\napi_key='fixture-secret'\n"
 		"api_key_env='OLD_KEY' # retain this comment\n";
-	ASSERT_EQ(file_write_all(path.c_str(), old.c_str(), old.size()), 0);
+	ASSERT_EQ(nb_file_write_all(path.c_str(), old.c_str(), old.size(), NULL), 0);
 	ASSERT_GE(run_custom_raw(std::string(11, '\n'), true), 0);
-	char *saved = file_read_all_copy(path.c_str(), nullptr);
+	char *saved =
+		(nb_file_read_all(path.c_str(), &file_value_4, 0, NULL) == NB_OK &&
+				 (file_copy_4 = (char *)malloc(nb_buf_len(&file_value_4) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_4, nb_buf_cstr(&file_value_4),
+				   nb_buf_len(&file_value_4) + 1),
+			    nb_charp_steal(&file_copy_4))
+			 : NULL);
 	ASSERT_NE(saved, nullptr);
-	toml_result_t parsed = toml_parse(saved, static_cast<int>(strlen(saved)));
-	ASSERT_TRUE(parsed.ok);
-	toml_datum_t entry = toml_get(toml_get(parsed.toptab, "model"), "text");
-	EXPECT_STREQ(toml_get(entry, "api_key").u.s, "fixture-secret");
-	EXPECT_EQ(toml_get(entry, "api_key_env").type, TOML_UNKNOWN);
+	nb_toml *parsed = nb_toml_parse(nb_str_from_cstr(saved), nullptr);
+	ASSERT_TRUE(parsed);
+	const nb_toml_value *entry = nb_toml_table_get_cstr(
+		nb_toml_table_get_cstr(nb_toml_root(parsed), "model"), "text");
+	EXPECT_STREQ(nb_toml_string(nb_toml_table_get_cstr(entry, "api_key")).ptr,
+		     "fixture-secret");
+	EXPECT_EQ(nb_toml_type_of(nb_toml_table_get_cstr(entry, "api_key_env")), NB_TOML_NONE);
 	EXPECT_NE(std::string(saved).find("# retain this comment"), std::string::npos);
 	EXPECT_EQ(transcript.find("fixture-secret"), std::string::npos);
-	toml_free(parsed);
+	nb_toml_free(parsed);
 	free(saved);
 }
 
@@ -222,21 +273,25 @@ TEST_F(CliSetupTest, CredentialCleanupPreservesOtherValuesAndAllTomlLayouts) {
 			  0);
 		ASSERT_NE(clean, nullptr);
 		EXPECT_NE(std::string(clean).find(unrelated), std::string::npos);
-		toml_result_t parsed = toml_parse(clean, static_cast<int>(strlen(clean)));
-		ASSERT_TRUE(parsed.ok);
+		nb_toml *parsed = nb_toml_parse(nb_str_from_cstr(clean), nullptr);
+		ASSERT_TRUE(parsed);
 		for (const char *kind : {"text", "vision", "image", "video"}) {
-			toml_datum_t entry = toml_get(toml_get(parsed.toptab, "model"), kind);
-			toml_datum_t direct = toml_get(entry, "api_key");
-			toml_datum_t env = toml_get(entry, "api_key_env");
-			EXPECT_TRUE(direct.type == TOML_UNKNOWN || env.type == TOML_UNKNOWN);
-			if (direct.type == TOML_STRING) EXPECT_NE(direct.u.s[0], '\0');
-			if (env.type == TOML_STRING) EXPECT_NE(env.u.s[0], '\0');
+			const nb_toml_value *entry = nb_toml_table_get_cstr(
+				nb_toml_table_get_cstr(nb_toml_root(parsed), "model"), kind);
+			const nb_toml_value *direct = nb_toml_table_get_cstr(entry, "api_key");
+			const nb_toml_value *env = nb_toml_table_get_cstr(entry, "api_key_env");
+			EXPECT_TRUE(nb_toml_type_of(direct) == NB_TOML_NONE ||
+				    nb_toml_type_of(env) == NB_TOML_NONE);
+			if (nb_toml_type_of(direct) == NB_TOML_STRING)
+				EXPECT_NE(nb_toml_string(direct).ptr[0], '\0');
+			if (nb_toml_type_of(env) == NB_TOML_STRING)
+				EXPECT_NE(nb_toml_string(env).ptr[0], '\0');
 		}
 		char *again = nullptr;
 		EXPECT_EQ(cli_setup_config_credentials_copy(clean, &again), 0);
 		if (again) EXPECT_STREQ(again, clean);
 		free(again);
-		toml_free(parsed);
+		nb_toml_free(parsed);
 		free(clean);
 	}
 }
@@ -276,16 +331,26 @@ TEST_F(CliSetupTest, CustomAndInvalidInputsRoundTrip) {
 }
 
 TEST_F(CliSetupTest, CancellationDoesNotCreateFile) {
-	EXPECT_EQ(run_custom("\n\n"), -ECANCELED);
-	EXPECT_FALSE(file_exists(path.c_str()));
+	EXPECT_EQ(run_custom("\n\n"), NB_ERR_CANCELLED);
+	EXPECT_FALSE(nb_file_exists(path.c_str()));
 }
 
 TEST_F(CliSetupTest, NeverOverwriteExistingConfig) {
+	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_5 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	struct cli_application _cli_output_context = {0};
 	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
-	ASSERT_EQ(file_write_all(path.c_str(), "# keep\n", 7), 0);
-	EXPECT_EQ(run_custom(std::string(9, '\n')), -EEXIST);
-	char *contents = file_read_all_copy(path.c_str(), nullptr);
+	ASSERT_EQ(nb_file_write_all(path.c_str(), "# keep\n", 7, NULL), 0);
+	EXPECT_EQ(run_custom(std::string(9, '\n')), NB_ERR_EXISTS);
+	char *contents =
+		(nb_file_read_all(path.c_str(), &file_value_5, 0, NULL) == NB_OK &&
+				 (file_copy_5 = (char *)malloc(nb_buf_len(&file_value_5) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_5, nb_buf_cstr(&file_value_5),
+				   nb_buf_len(&file_value_5) + 1),
+			    nb_charp_steal(&file_copy_5))
+			 : NULL);
 	ASSERT_NE(contents, nullptr);
 	EXPECT_STREQ(contents, "# keep\n");
 	free(contents);
@@ -295,8 +360,8 @@ TEST_F(CliSetupTest, NeverOverwriteExistingConfig) {
 TEST_F(CliSetupTest, NonInteractiveDoesNotCreateConfig) {
 	struct cli_application _cli_output_context = {0};
 	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
-	EXPECT_EQ(cli_setup_if_missing(&_cli_output_context, path.c_str(), 0), -ENOENT);
-	EXPECT_FALSE(file_exists(path.c_str()));
+	EXPECT_EQ(cli_setup_if_missing(&_cli_output_context, path.c_str(), 0), NB_ERR_NOT_FOUND);
+	EXPECT_FALSE(nb_file_exists(path.c_str()));
 }
 
 TEST_F(CliSetupTest, VisionUsesChatAdapterIndependentlyOfImageGeneration) {
@@ -395,8 +460,8 @@ TEST_F(CliSetupTest, DeepSeekThinkingCanBeEnabledInPlainSetup) {
 }
 
 TEST_F(CliSetupTest, ThinkingPromptValidatesAndCanBeCancelled) {
-	EXPECT_EQ(run_custom("2\n\n\n\ninvalid\n"), -ECANCELED);
-	EXPECT_FALSE(file_exists(path.c_str()));
+	EXPECT_EQ(run_custom("2\n\n\n\ninvalid\n"), NB_ERR_CANCELLED);
+	EXPECT_FALSE(nb_file_exists(path.c_str()));
 	ASSERT_GE(run_custom("2\n\n\n\ninvalid\n1\n\n\n1\n1\n1\n"), 0);
 	struct config cfg;
 	ASSERT_EQ(config_load(NULL, &cfg, path.c_str()), 0);
@@ -426,12 +491,15 @@ TEST_F(CliSetupTest, VideoRoleRequiresAndConfiguresAllFourModels) {
 }
 
 TEST_F(CliSetupTest, VideoRoleCannotSaveBeforeAllRequiredModelsAreCollected) {
-	EXPECT_EQ(run_custom_raw("7\n" + std::string(12, '\n')), -ECANCELED);
-	EXPECT_FALSE(file_exists(path.c_str()));
+	EXPECT_EQ(run_custom_raw("7\n" + std::string(12, '\n')), NB_ERR_CANCELLED);
+	EXPECT_FALSE(nb_file_exists(path.c_str()));
 	EXPECT_TRUE(std::filesystem::is_empty(dir));
 }
 
 TEST_F(CliSetupTest, ReconfigureKeepsValuesCredentialsAndCustomPromptAndCreatesBackup) {
+	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_6 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	const std::string old = "# user comments survive in the backup\n"
 		"[model.text]\nprovider='custom'\nadapter='openai-chat-compatible'\n"
 		"model='private-model'\napi_base='http://localhost:1234/v1'\napi_key='secret'\n"
@@ -440,7 +508,7 @@ TEST_F(CliSetupTest, ReconfigureKeepsValuesCredentialsAndCustomPromptAndCreatesB
 		"[prompt]\nmode='append'\nsystem_prompt_file='/keep/custom.md'\n"
 		"[[mcp.servers]]\nname='custom'\ntransport='stdio'\ncommand='custom-command'\n"
 		"[context]\nkeep_recent_rounds=3\n";
-	ASSERT_EQ(file_write_all(path.c_str(), old.c_str(), old.size()), 0);
+	ASSERT_EQ(nb_file_write_all(path.c_str(), old.c_str(), old.size(), NULL), 0);
 	ASSERT_GE(run_custom_raw(std::string(11, '\n'), true), 0);
 	struct config cfg;
 	ASSERT_EQ(config_load(nullptr, &cfg, path.c_str()), 0);
@@ -461,7 +529,14 @@ TEST_F(CliSetupTest, ReconfigureKeepsValuesCredentialsAndCustomPromptAndCreatesB
 	bool found = false;
 	for (const auto &entry : std::filesystem::directory_iterator(dir)) {
 		if (entry.path().filename().string().find(".backup-") == std::string::npos) continue;
-		char *backup = file_read_all_copy(entry.path().c_str(), nullptr);
+		char *backup =
+			(nb_file_read_all(entry.path().c_str(), &file_value_6, 0, NULL) == NB_OK &&
+					 (file_copy_6 = (char *)malloc(nb_buf_len(&file_value_6) +
+								       1)) != NULL
+				 ? (memcpy(file_copy_6, nb_buf_cstr(&file_value_6),
+					   nb_buf_len(&file_value_6) + 1),
+				    nb_charp_steal(&file_copy_6))
+				 : NULL);
 		ASSERT_NE(backup, nullptr);
 		EXPECT_EQ(std::string(backup), old);
 		free(backup);
@@ -471,33 +546,62 @@ TEST_F(CliSetupTest, ReconfigureKeepsValuesCredentialsAndCustomPromptAndCreatesB
 }
 
 TEST_F(CliSetupTest, ReconfigureCancelAndInvalidConfigLeaveFilesUntouched) {
+	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_7 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	const std::string old = "[memory]\nenabled=false\n";
-	ASSERT_EQ(file_write_all(path.c_str(), old.c_str(), old.size()), 0);
-	EXPECT_EQ(run_custom_raw("", true), -ECANCELED);
-	char *text = file_read_all_copy(path.c_str(), nullptr);
+	ASSERT_EQ(nb_file_write_all(path.c_str(), old.c_str(), old.size(), NULL), 0);
+	EXPECT_EQ(run_custom_raw("", true), NB_ERR_CANCELLED);
+	char *text =
+		(nb_file_read_all(path.c_str(), &file_value_7, 0, NULL) == NB_OK &&
+				 (file_copy_7 = (char *)malloc(nb_buf_len(&file_value_7) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_7, nb_buf_cstr(&file_value_7),
+				   nb_buf_len(&file_value_7) + 1),
+			    nb_charp_steal(&file_copy_7))
+			 : NULL);
 	ASSERT_NE(text, nullptr);
 	EXPECT_EQ(std::string(text), old);
 	free(text);
-	ASSERT_EQ(file_write_all(path.c_str(), "[broken", 7), 0);
+	ASSERT_EQ(nb_file_write_all(path.c_str(), "[broken", 7, NULL), 0);
 	EXPECT_LT(run_custom_raw(std::string(30, '\n'), true), 0);
 	EXPECT_EQ(std::distance(std::filesystem::directory_iterator(dir),
 		std::filesystem::directory_iterator()), 1);
 }
 
 TEST_F(CliSetupTest, RolePromptReplacementPreservesOriginalPromptFiles) {
+	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_8 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_9 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	std::string custom = dir + "/custom.md";
-	ASSERT_EQ(file_write_all(custom.c_str(), "Customized instructions", 23), 0);
+	ASSERT_EQ(nb_file_write_all(custom.c_str(), "Customized instructions", 23, NULL), 0);
 	std::string old = "[prompt]\nmode='replace'\nsystem_prompt_file='" + custom + "'\n";
-	ASSERT_EQ(file_write_all(path.c_str(), old.c_str(), old.size()), 0);
+	ASSERT_EQ(nb_file_write_all(path.c_str(), old.c_str(), old.size(), NULL), 0);
 	ASSERT_GE(run_custom_raw("5\n2\n" + std::string(10, '\n'), true), 0);
 	struct config cfg;
 	ASSERT_EQ(config_load(nullptr, &cfg, path.c_str()), 0);
 	EXPECT_STRNE(cfg.prompt.system_prompt_file, custom.c_str());
-	char *original = file_read_all_copy(custom.c_str(), nullptr);
+	char *original =
+		(nb_file_read_all(custom.c_str(), &file_value_8, 0, NULL) == NB_OK &&
+				 (file_copy_8 = (char *)malloc(nb_buf_len(&file_value_8) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_8, nb_buf_cstr(&file_value_8),
+				   nb_buf_len(&file_value_8) + 1),
+			    nb_charp_steal(&file_copy_8))
+			 : NULL);
 	ASSERT_NE(original, nullptr);
 	EXPECT_STREQ(original, "Customized instructions");
 	free(original);
-	char *generated = file_read_all_copy(cfg.prompt.system_prompt_file, nullptr);
+	char *generated =
+		(nb_file_read_all(cfg.prompt.system_prompt_file, &file_value_9, 0, NULL) == NB_OK &&
+				 (file_copy_9 = (char *)malloc(nb_buf_len(&file_value_9) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_9, nb_buf_cstr(&file_value_9),
+				   nb_buf_len(&file_value_9) + 1),
+			    nb_charp_steal(&file_copy_9))
+			 : NULL);
 	ASSERT_NE(generated, nullptr);
 	EXPECT_NE(std::string(generated).find("author's voice"), std::string::npos);
 	free(generated);
@@ -518,11 +622,21 @@ TEST_F(CliSetupTest, EveryRoleRendersAndUsesExplicitModelRequirements) {
 }
 
 TEST_F(CliSetupTest, ReconfigureUsesSavedVideoRoleAndNeverAddsSkipSteps) {
+	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_10 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	ASSERT_GE(run_custom_raw("7\n" + std::string(21, '\n')), 0);
 	ASSERT_GE(run_custom_raw(std::string(23, '\n'), true), 0);
 	EXPECT_EQ(transcript.find("1) Skip"), std::string::npos);
 	EXPECT_NE(transcript.find("Video model (required)"), std::string::npos);
-	char *saved = file_read_all_copy(path.c_str(), nullptr);
+	char *saved =
+		(nb_file_read_all(path.c_str(), &file_value_10, 0, NULL) == NB_OK &&
+				 (file_copy_10 = (char *)malloc(nb_buf_len(&file_value_10) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_10, nb_buf_cstr(&file_value_10),
+				   nb_buf_len(&file_value_10) + 1),
+			    nb_charp_steal(&file_copy_10))
+			 : NULL);
 	ASSERT_NE(saved, nullptr);
 	EXPECT_EQ(cli_setup_config_role(saved), CLI_SETUP_VIDEO_CREATOR);
 	free(saved);
@@ -530,11 +644,11 @@ TEST_F(CliSetupTest, ReconfigureUsesSavedVideoRoleAndNeverAddsSkipSteps) {
 
 TEST_F(CliSetupTest, ReconfigureRejectsSymlinksAndPublishesPrivateFiles) {
 	std::string target = dir + "/target.toml";
-	ASSERT_EQ(file_write_all(target.c_str(), "[memory]\nenabled=false\n", 23), 0);
+	ASSERT_EQ(nb_file_write_all(target.c_str(), "[memory]\nenabled=false\n", 23, NULL), 0);
 	ASSERT_EQ(symlink(target.c_str(), path.c_str()), 0);
 	EXPECT_LT(run_custom_raw(std::string(20, '\n'), true), 0);
 	ASSERT_EQ(unlink(path.c_str()), 0);
-	ASSERT_EQ(file_write_all(path.c_str(), "[memory]\nenabled=false\n", 23), 0);
+	ASSERT_EQ(nb_file_write_all(path.c_str(), "[memory]\nenabled=false\n", 23, NULL), 0);
 	ASSERT_EQ(chmod(path.c_str(), 0644), 0);
 	ASSERT_GE(run_custom_raw(std::string(11, '\n'), true), 0);
 	struct stat st{};
@@ -566,14 +680,22 @@ TEST_F(CliSetupTest, McpDefaultsVaryByRoleAndReapplicationKeepsExistingEntries) 
 			  0);
 		ASSERT_NE(configured, nullptr);
 		char *saved = configured;
-		EXPECT_EQ(cli_setup_mcp_apply_copy("", role, &configured), -EEXIST);
+		EXPECT_EQ(cli_setup_mcp_apply_copy("", role, &configured), NB_ERR_EXISTS);
 		EXPECT_EQ(configured, saved);
-		toml_result_t parsed = toml_parse(configured, static_cast<int>(strlen(configured)));
-		ASSERT_TRUE(parsed.ok);
-		toml_datum_t servers = toml_get(toml_get(parsed.toptab, "mcp"), "servers");
-		ASSERT_EQ(servers.type, TOML_ARRAY);
-		EXPECT_STREQ(toml_get(servers.u.arr.elem[0], "name").u.s, "exa");
-		EXPECT_STREQ(toml_get(servers.u.arr.elem[0], "url").u.s, "https://mcp.exa.ai/mcp");
+		nb_toml *parsed = nb_toml_parse(nb_str_from_cstr(configured), nullptr);
+		ASSERT_TRUE(parsed);
+		const nb_toml_value *servers = nb_toml_table_get_cstr(
+			nb_toml_table_get_cstr(nb_toml_root(parsed), "mcp"), "servers");
+		ASSERT_EQ(nb_toml_type_of(servers), NB_TOML_ARRAY);
+		EXPECT_STREQ(
+			nb_toml_string(nb_toml_table_get_cstr(
+					       nb_toml_array_get(servers, (size_t)(0)), "name"))
+				.ptr,
+			"exa");
+		EXPECT_STREQ(nb_toml_string(nb_toml_table_get_cstr(
+						    nb_toml_array_get(servers, (size_t)(0)), "url"))
+				     .ptr,
+			     "https://mcp.exa.ai/mcp");
 		int expected = 1 + (role == CLI_SETUP_DEVELOPER || role == CLI_SETUP_RESEARCHER ? 1 : 0) +
 			(role == CLI_SETUP_DESIGNER ? 1 : 0);
 #ifdef __APPLE__
@@ -581,13 +703,13 @@ TEST_F(CliSetupTest, McpDefaultsVaryByRoleAndReapplicationKeepsExistingEntries) 
 		    role == CLI_SETUP_PHOTO_EDITOR || role == CLI_SETUP_DESIGNER ||
 		    role == CLI_SETUP_VIDEO_CREATOR) expected++;
 #endif
-		EXPECT_EQ(servers.u.arr.size, expected);
+		EXPECT_EQ(nb_toml_array_size(servers), expected);
 		char *again = nullptr;
 		ASSERT_EQ(cli_setup_mcp_apply_copy(configured, role, &again), 0);
 		EXPECT_STREQ(again, configured);
 		EXPECT_EQ(std::string(configured).find("# keep\n[exec]\nnetwork=false\n"), 0u);
 		free(again);
-		toml_free(parsed);
+		nb_toml_free(parsed);
 		free(configured);
 	}
 }
@@ -641,22 +763,26 @@ TEST_F(CliSetupTest, LocalMcpDefaultsReflectLaunchersWithoutRunningOrInstallingT
 		if (installed) {
 			for (const char *name : {"npx", "python3", "uvx"}) {
 				std::string executable = dir + "/" + name;
-				ASSERT_EQ(file_write_all(executable.c_str(), "fixture", 7), 0);
+				ASSERT_EQ(nb_file_write_all(executable.c_str(), "fixture", 7, NULL),
+					  0);
 				ASSERT_EQ(chmod(executable.c_str(), 0700), 0);
 			}
 		}
 		char *configured = nullptr;
 		ASSERT_EQ(cli_setup_mcp_apply_copy("", CLI_SETUP_DEVELOPER, &configured), 0);
-		toml_result_t parsed = toml_parse(configured, static_cast<int>(strlen(configured)));
-		ASSERT_TRUE(parsed.ok);
-		toml_datum_t servers = toml_get(toml_get(parsed.toptab, "mcp"), "servers");
-		for (int i = 0; i < servers.u.arr.size; i++) {
-			toml_datum_t entry = servers.u.arr.elem[i];
-			const char *name = toml_get(entry, "name").u.s;
-			EXPECT_EQ(toml_get(entry, "auto_connect").u.boolean,
-				strcmp(name, "exa") == 0 || installed != 0) << name;
+		nb_toml *parsed = nb_toml_parse(nb_str_from_cstr(configured), nullptr);
+		ASSERT_TRUE(parsed);
+		const nb_toml_value *servers = nb_toml_table_get_cstr(
+			nb_toml_table_get_cstr(nb_toml_root(parsed), "mcp"), "servers");
+		for (size_t i = 0; i < nb_toml_array_size(servers); i++) {
+			const nb_toml_value *entry = nb_toml_array_get(servers, (size_t)(i));
+			const char *name =
+				nb_toml_string(nb_toml_table_get_cstr(entry, "name")).ptr;
+			EXPECT_EQ(nb_toml_boolean(nb_toml_table_get_cstr(entry, "auto_connect")),
+				  strcmp(name, "exa") == 0 || installed != 0)
+				<< name;
 		}
-		toml_free(parsed);
+		nb_toml_free(parsed);
 		free(configured);
 	}
 }
@@ -747,6 +873,9 @@ TEST_F(CliSetupTest, SetupReplacesAllStringFormsWhileRetainingTrailingComments) 
 }
 
 TEST_F(CliSetupTest, RoleSnapshotsHaveReadableNamesAndReuseUnchangedContent) {
+	nb_buf file_value_11 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_11 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	ASSERT_GE(run_custom(std::string(9, '\n')), 0);
 	struct config cfg;
 	ASSERT_EQ(config_load(nullptr, &cfg, path.c_str()), 0);
@@ -755,14 +884,21 @@ TEST_F(CliSetupTest, RoleSnapshotsHaveReadableNamesAndReuseUnchangedContent) {
 	ASSERT_GE(run_custom_raw("1\n2\n" + std::string(10, '\n'), true), 0);
 	ASSERT_EQ(config_load(nullptr, &cfg, path.c_str()), 0);
 	EXPECT_EQ(std::string(cfg.prompt.system_prompt_file), first);
-	ASSERT_EQ(file_write_all(first.c_str(), "Custom instructions", 19), 0);
+	ASSERT_EQ(nb_file_write_all(first.c_str(), "Custom instructions", 19, NULL), 0);
 	ASSERT_GE(run_custom_raw("1\n2\n" + std::string(10, '\n'), true), 0);
 	ASSERT_EQ(config_load(nullptr, &cfg, path.c_str()), 0);
 	std::filesystem::path next = cfg.prompt.system_prompt_file;
 	EXPECT_NE(next.string(), first);
 	EXPECT_EQ(next.extension(), ".md");
 	EXPECT_EQ(next.filename().string().find("general-"), 0u);
-	char *custom = file_read_all_copy(first.c_str(), nullptr);
+	char *custom =
+		(nb_file_read_all(first.c_str(), &file_value_11, 0, NULL) == NB_OK &&
+				 (file_copy_11 = (char *)malloc(nb_buf_len(&file_value_11) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_11, nb_buf_cstr(&file_value_11),
+				   nb_buf_len(&file_value_11) + 1),
+			    nb_charp_steal(&file_copy_11))
+			 : NULL);
 	ASSERT_NE(custom, nullptr);
 	EXPECT_STREQ(custom, "Custom instructions");
 	free(custom);
@@ -771,7 +907,7 @@ TEST_F(CliSetupTest, RoleSnapshotsHaveReadableNamesAndReuseUnchangedContent) {
 TEST(CliSetupThinking, OnlyDeepSeekChangesAndOtherOptionsSurvive) {
 	struct config_model_entry entry{};
 	cli_setup_model_defaults(CLI_SETUP_TEXT, 1, &entry);
-	EXPECT_EQ(cli_setup_set_thinking(&entry, 1), -EINVAL);
+	EXPECT_EQ(cli_setup_set_thinking(&entry, 1), NB_ERR_INVAL);
 	EXPECT_STREQ(entry.extra_body_json, "");
 	cli_setup_model_defaults(CLI_SETUP_TEXT, 2, &entry);
 	strcpy(entry.extra_body_json,
@@ -840,7 +976,7 @@ TEST_F(CliSetupTest, ReconfigureKeepsExistingDeepSeekModeBudgetAndTimeout) {
 		"api_key_env='DEEPSEEK_API_KEY'\ncontext_limit=1048576\nmax_tokens=8192\n"
 		"timeout_seconds=120\nretry_count=0\n"
 		"extra_body_json='{\"thinking\":{\"type\":\"disabled\"}}'\n";
-	ASSERT_EQ(file_write_all(path.c_str(), original.c_str(), original.size()), 0);
+	ASSERT_EQ(nb_file_write_all(path.c_str(), original.c_str(), original.size(), NULL), 0);
 	ASSERT_GE(run_custom_raw(std::string(20, '\n'), true), 0);
 	struct config cfg;
 	ASSERT_EQ(config_load(nullptr, &cfg, path.c_str()), 0);
@@ -856,9 +992,9 @@ TEST_F(CliSetupTest, ConfigurationCopiesPreserveExistingOwner)
 	char *text = strdup("[exec]\nnetwork=false\n");
 	ASSERT_NE(text, nullptr);
 	char *saved = text;
-	EXPECT_EQ(cli_setup_config_merge_copy("", "", &text), -EEXIST);
-	EXPECT_EQ(cli_setup_config_credentials_copy("", &text), -EEXIST);
-	EXPECT_EQ(cli_setup_config_mcp_add_copy("", "", &text), -EEXIST);
+	EXPECT_EQ(cli_setup_config_merge_copy("", "", &text), NB_ERR_EXISTS);
+	EXPECT_EQ(cli_setup_config_credentials_copy("", &text), NB_ERR_EXISTS);
+	EXPECT_EQ(cli_setup_config_mcp_add_copy("", "", &text), NB_ERR_EXISTS);
 	EXPECT_EQ(text, saved);
 	EXPECT_STREQ(text, "[exec]\nnetwork=false\n");
 	free(text);

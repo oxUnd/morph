@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/registry.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/commands/ext.h"
@@ -20,8 +21,9 @@
 #include "cJSON.h"
 #include "sapi/cli/presentation/command_output.h"
 #include "sapi/cli/presentation/output.h"
-#include "util/array.h"
-#include "util/cleanup.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
 
 #include <ctype.h>
 #include <limits.h>
@@ -61,19 +63,19 @@ static int cli_registry_command_event_emit(struct cli_application *ctx, const ch
 	int rc;
 
 	if (!ctx || !name || !phase || argc < 1 || !argv || !argv[0])
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	data = cJSON_CreateObject();
 	args = cJSON_CreateArray();
 	if (!data || !args) {
 		cJSON_Delete(data);
 		cJSON_Delete(args);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (!cJSON_AddStringToObject(data, "command", argv[0]) ||
 	    !cJSON_AddStringToObject(data, "input", input ? input : "")) {
 		cJSON_Delete(args);
 		cJSON_Delete(data);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	for (int i = 1; i < argc; i++) {
 		cJSON *arg = cJSON_CreateString(argv[i]);
@@ -81,26 +83,30 @@ static int cli_registry_command_event_emit(struct cli_application *ctx, const ch
 		if (!arg) {
 			cJSON_Delete(args);
 			cJSON_Delete(data);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		cJSON_AddItemToArray(args, arg);
 	}
 	cJSON_AddItemToObject(data, "args", args);
 	if (output && !cJSON_AddStringToObject(data, "output", output)) {
 		cJSON_Delete(data);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (command_rc < 0 &&
 	    (!cJSON_AddNumberToObject(data, "error_code", command_rc) ||
-	     !cJSON_AddStringToObject(data, "error", morph_strerror(command_rc)))) {
+	     !cJSON_AddStringToObject(
+		     data, "error",
+		     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, command_rc)))) {
 		cJSON_Delete(data);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	event = (struct morph_event){
 		.type = MORPH_EVENT_COMMAND,
 		.name = name,
 		.phase = phase,
-		.message = command_rc < 0 ? morph_strerror(command_rc) : NULL,
+		.message = command_rc < 0 ? nb_err_str(morph_error_descriptions(),
+						       MORPH_ERROR_COUNT, command_rc)
+					  : NULL,
 		.data = data,
 		.turn_id = NULL,
 	};
@@ -174,11 +180,11 @@ int cli_argv_split(const char *input, char **argv, int max_args)
 	int count = 0;
 
 	if (!input || !argv || max_args < 1)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	while ((argument = cli_registry_argv_next(&cursor))) {
 		if (count >= max_args - 1) {
 			argv[count] = NULL;
-			return -E2BIG;
+			return NB_ERR_TOO_BIG;
 		}
 		argv[count++] = argument;
 	}
@@ -186,25 +192,26 @@ int cli_argv_split(const char *input, char **argv, int max_args)
 	return count;
 }
 
-static int cli_registry_arguments_create(char *input, morph_array_t *arguments)
+static int cli_registry_arguments_create(char *input, nb_vec *arguments)
 {
 	char *cursor = input;
 	char *argument;
-	int rc = morph_array_init(arguments, MORPH_ARRAY_INIT_CAP, sizeof(argument));
+	int rc = (nb_vec_init(arguments, sizeof(argument)),
+		  nb_vec_reserve(arguments, 16) ? 0 : NB_ERR_NOMEM);
 
 	if (rc != 0)
 		return rc;
 	while ((argument = cli_registry_argv_next(&cursor))) {
-		if (arguments->nelts >= INT_MAX)
-			return -E2BIG;
-		char **slot = morph_array_push_borrow(arguments);
+		if (arguments->len >= INT_MAX)
+			return NB_ERR_TOO_BIG;
+		char **slot = nb_vec_push(arguments);
 		if (!slot)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		*slot = argument;
 	}
-	char **last = morph_array_push_borrow(arguments);
+	char **last = nb_vec_push(arguments);
 	if (!last)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	*last = NULL;
 	return 0;
 }
@@ -216,10 +223,10 @@ const char *cli_cmd_arg_borrow(int argc, char **argv, int idx)
 
 int cli_command_dispatch(struct cli_application *ctx, const char *input)
 {
-	char *buf MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	morph_array_t arguments MORPH_CLEANUP(morph_array_cleanup) = {0};
+	char *buf NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_vec arguments NB_CLEANUP(nb_vec_cleanup) = {0};
 	char **argv;
-	morph_buf_t output;
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
 	int argc;
 	int capture_active = 0;
 	int event_rc;
@@ -227,28 +234,28 @@ int cli_command_dispatch(struct cli_application *ctx, const char *input)
 	const struct cli_command *e;
 
 	if (!input)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	buf = strdup(input);
 	if (!buf)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	rc = cli_registry_arguments_create(buf, &arguments);
 	if (rc != 0)
 		return rc;
-	argv = arguments.elts;
-	argc = (int)(arguments.nelts - 1);
+	argv = ((void *)arguments.data);
+	argc = (int)(arguments.len - 1);
 	if (argc < 1)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (ctx && ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
 		event_rc = cli_registry_command_event_emit(ctx, "command.started", "begin", input,
 							   argc, argv, NULL, 0);
 		if (event_rc != 0)
 			return event_rc;
-		rc = morph_buf_init(&output, BUFSIZ);
+		rc = (nb_buf_init(&output), nb_buf_reserve(&output, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 		rc = cli_output_capture_begin(ctx, &output);
 		if (rc != 0) {
-			morph_buf_cleanup(&output);
+			nb_buf_cleanup(&output);
 			return rc;
 		}
 		capture_active = 1;
@@ -256,7 +263,7 @@ int cli_command_dispatch(struct cli_application *ctx, const char *input)
 	e = cli_command_find_borrow(argv[0]);
 	if (!e) {
 		CMD_ERROR(ctx, "unknown command: %s. Try /help", argv[0]);
-		rc = -ENOENT;
+		rc = NB_ERR_NOT_FOUND;
 	} else {
 		rc = e->handler(ctx, argc, argv);
 	}
@@ -265,8 +272,8 @@ int cli_command_dispatch(struct cli_application *ctx, const char *input)
 	cli_output_capture_end(ctx);
 	event_rc = cli_registry_command_event_emit(
 		ctx, rc < 0 ? "command.failed" : "command.completed", rc < 0 ? "failed" : "end",
-		input, argc, argv, morph_buf_cstr_borrow(&output), rc);
-	morph_buf_cleanup(&output);
+		input, argc, argv, nb_buf_cstr(&output), rc);
+	nb_buf_cleanup(&output);
 	if (event_rc != 0)
 		return event_rc;
 	return rc;
@@ -284,7 +291,7 @@ void cli_print_help(struct cli_application *ctx)
 	while (group_start < num_commands) {
 		const char *category = NULL;
 		int group_end = group_start;
-		morph_array_t items MORPH_CLEANUP(morph_array_cleanup) = {0};
+		nb_vec items NB_CLEANUP(nb_vec_cleanup) = {0};
 		int rc;
 
 		(void)cli_registry_command_at(group_start, &category);
@@ -297,8 +304,8 @@ void cli_print_help(struct cli_application *ctx)
 				break;
 			group_end++;
 		}
-		rc = morph_array_init(&items, (size_t)(group_end - group_start),
-				      sizeof(struct cli_help_item));
+		rc = (nb_vec_init(&items, sizeof(struct cli_help_item)),
+		      nb_vec_reserve(&items, (size_t)(group_end - group_start)) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0) {
 			cli_help_end(ctx);
 			return;
@@ -317,7 +324,7 @@ void cli_print_help(struct cli_application *ctx)
 				desc = cli_registry_command_at(alias_end, NULL)->desc;
 			if (alias_end > i)
 				alias = cli_registry_command_at(i + 1, NULL)->name;
-			item = morph_array_push_borrow(&items);
+			item = nb_vec_push(&items);
 			if (!item) {
 				cli_help_end(ctx);
 				return;
@@ -327,8 +334,8 @@ void cli_print_help(struct cli_application *ctx)
 			item->description = desc;
 			i = alias_end + 1;
 		}
-		cli_help_group(ctx, category ? category : "Other", items.elts, (int)items.nelts,
-			       group_end == num_commands);
+		cli_help_group(ctx, category ? category : "Other", ((void *)items.data),
+			       (int)items.len, group_end == num_commands);
 		group_start = group_end;
 	}
 	cli_help_end(ctx);

@@ -1,10 +1,11 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 
 extern "C" {
 #include "event/event.h"
 #include "cJSON.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 }
 
 TEST(EventTest, TypeName)
@@ -97,13 +98,13 @@ TEST(EventTest, JsonCopyOwnsPayloadAndPreservesOccupiedOutput)
 	event.type = MORPH_EVENT_TOOL;
 	event.name = "tool.completed";
 	event.data = data;
-	cJSON *output MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *output NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(morph_event_json_create(&event, &output), 0);
 	cJSON_Delete(data);
 	event.data = nullptr;
 	EXPECT_STREQ(cJSON_GetObjectItem(output, "data")->valuestring, "source");
 	cJSON *saved = output;
-	EXPECT_EQ(morph_event_json_create(&event, &output), -EEXIST);
+	EXPECT_EQ(morph_event_json_create(&event, &output), NB_ERR_EXISTS);
 	EXPECT_EQ(output, saved);
 	EXPECT_STREQ(cJSON_GetObjectItem(output, "data")->valuestring, "source");
 }

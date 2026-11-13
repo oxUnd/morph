@@ -1,22 +1,24 @@
 #include "sapi/cli/presentation/mcp_tree.h"
+#include "nb/err.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/widgets/list.h"
 #include "sapi/cli/pages/chat.h"
 #include "runtime/runtime.h"
-#include "util/cleanup.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 #include <morph/tui/widgets/tree.h>
 #include <errno.h>
 #include <string.h>
 
-static int cli_mcp_tree_line(morph_buf_t *out, const char *text, const char *prefix,
-	const char *continuation, const char *style, int columns)
+static int cli_mcp_tree_line(nb_buf *out, const char *text, const char *prefix,
+			     const char *continuation, const char *style, int columns)
 {
-	char *safe MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
-		text ? text : "", text ? strlen(text) : 0, UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+	char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		text ? text : "", text ? strlen(text) : 0, MORPH_TERMINAL_TEXT_MULTILINE, NULL);
 	if (!safe)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	for (char *p = safe; *p; p++)
 		if (*p == '\t')
 			*p = ' ';
@@ -25,27 +27,29 @@ static int cli_mcp_tree_line(morph_buf_t *out, const char *text, const char *pre
 	int first = 1;
 	do {
 		const char *branch = first ? prefix : continuation;
-		int available = columns - (int)utf8_display_width_ansi(branch);
+		int available = columns - (int)morph_terminal_display_width_ansi(branch);
 		if (available < 1) {
-			int rc = morph_buf_puts(out, "…\n");
+			int rc = (nb_buf_append_cstr(out, "…\n") ? 0 : NB_ERR_NOMEM);
 			return rc;
 		}
-		const char *end = utf8_advance_display_width_borrow(cursor, (size_t)available);
+		const char *end =
+			morph_terminal_advance_display_width_borrow(cursor, (size_t)available);
 		if (newline && newline < end)
 			end = newline;
-		int rc = morph_buf_puts(out, branch);
+		int rc = (nb_buf_append_cstr(out, branch) ? 0 : NB_ERR_NOMEM);
 		if (!rc)
-			rc = morph_buf_puts(out, style);
+			rc = (nb_buf_append_cstr(out, style) ? 0 : NB_ERR_NOMEM);
 		if (end == cursor && *cursor && *cursor != '\n') {
 			if (!rc)
-				rc = morph_buf_puts(out, "…");
-			end = utf8_advance_codepoints_borrow(cursor, 1);
+				rc = (nb_buf_append_cstr(out, "…") ? 0 : NB_ERR_NOMEM);
+			end = nb_utf8_advance(cursor, 1);
 		} else if (!rc)
-			rc = morph_buf_append(out, cursor, (size_t)(end - cursor));
+			rc = (nb_buf_append(out, cursor, (size_t)(end - cursor)) ? 0
+										 : NB_ERR_NOMEM);
 		if (!rc && *style)
-			rc = morph_buf_puts(out, ANSI_RESET);
+			rc = (nb_buf_append_cstr(out, ANSI_RESET) ? 0 : NB_ERR_NOMEM);
 		if (!rc)
-			rc = morph_buf_putc(out, '\n');
+			rc = (nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM);
 		if (rc)
 			return rc;
 		if (*end == '\n') {
@@ -58,24 +62,24 @@ static int cli_mcp_tree_line(morph_buf_t *out, const char *text, const char *pre
 	return 0;
 }
 
-static int cli_mcp_tree_child(morph_buf_t *out, const int *ancestors, size_t depth,
-	int last, const char *text, int columns, const char *style)
+static int cli_mcp_tree_child(nb_buf *out, const int *ancestors, size_t depth, int last,
+			      const char *text, int columns, const char *style)
 {
-	morph_buf_t prefix MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_t continuation MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf prefix NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf continuation NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc = morph_tui_widget_tree_prefix(&prefix, ancestors, depth, last, 0, 0);
 	if (!rc)
 		rc = morph_tui_widget_tree_prefix(&continuation, ancestors, depth, last, 1, 0);
 	if (!rc)
-		rc = cli_mcp_tree_line(out, text, prefix.data, continuation.data, style, columns);
+		rc = cli_mcp_tree_line(out, text, prefix.ptr, continuation.ptr, style, columns);
 	return rc;
 }
 
 static const char *cli_mcp_tree_state(const struct runtime_mcp_status *server)
 {
-	if (server->error_code == -ECANCELED || server->error_code == -EINTR)
+	if (server->error_code == NB_ERR_CANCELLED || server->error_code == NB_ERR_INTERRUPTED)
 		return "cancelled";
-	if (server->error_code == -ETIMEDOUT)
+	if (server->error_code == NB_ERR_TIMEOUT)
 		return "failed · TIMEOUT";
 	switch (server->state) {
 	case RUNTIME_MCP_DISCONNECTED: return "disconnected";
@@ -90,7 +94,7 @@ static const char *cli_mcp_tree_state(const struct runtime_mcp_status *server)
 
 static const char *cli_mcp_tree_marker(const struct runtime_mcp_status *server, int styled)
 {
-	if (server->error_code == -ECANCELED || server->error_code == -EINTR)
+	if (server->error_code == NB_ERR_CANCELLED || server->error_code == NB_ERR_INTERRUPTED)
 		return styled ? ANSI_DIM CLI_FEED_CANCELLED ANSI_RESET : CLI_FEED_CANCELLED;
 	if (server->error_code < 0 || server->state == RUNTIME_MCP_FAILED)
 		return styled ? CLI_FEED_FAILED_STYLE CLI_FEED_FAILED ANSI_RESET : CLI_FEED_FAILED;
@@ -102,42 +106,52 @@ static const char *cli_mcp_tree_marker(const struct runtime_mcp_status *server, 
 	return styled ? ANSI_DIM CLI_FEED_PENDING ANSI_RESET : CLI_FEED_PENDING;
 }
 
-static int cli_mcp_tree_server(morph_buf_t *out, const struct runtime_mcp_status *server,
-	int columns, int styled)
+static int cli_mcp_tree_server(nb_buf *out, const struct runtime_mcp_status *server, int columns,
+			       int styled)
 {
-	morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_t marker MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_printf(&title, "%s [%s] · %s", server->config.name,
-		server->config.transport == MCP_TRANSPORT_STDIO ? "stdio" : "http",
-		cli_mcp_tree_state(server));
+	nb_buf title NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf marker NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_printf(&title, "%s [%s] · %s", server->config.name,
+				server->config.transport == MCP_TRANSPORT_STDIO ? "stdio" : "http",
+				cli_mcp_tree_state(server))
+			  ? 0
+			  : NB_ERR_NOMEM);
 	if (!rc)
-		rc = morph_buf_printf(&marker, "%s ", cli_mcp_tree_marker(server, styled));
+		rc = (nb_buf_printf(&marker, "%s ", cli_mcp_tree_marker(server, styled))
+			      ? 0
+			      : NB_ERR_NOMEM);
 	if (!rc)
-		rc = cli_mcp_tree_line(out, title.data, marker.data, "│ ",
-			styled ? ANSI_BOLD : "", columns);
+		rc = cli_mcp_tree_line(out, title.ptr, marker.ptr, "│ ", styled ? ANSI_BOLD : "",
+				       columns);
 	if (rc)
 		return rc;
 	int fields = 1 + (server->elapsed_ms > 0) + (server->error_code < 0);
 	if (server->connected)
 		fields += 3;
-	morph_buf_t field MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	rc = morph_buf_printf(&field, "Transport: %s",
-		server->config.transport == MCP_TRANSPORT_STDIO ? "stdio" : "http");
+	nb_buf field NB_CLEANUP(nb_buf_cleanup) = {0};
+	rc = (nb_buf_printf(&field, "Transport: %s",
+			    server->config.transport == MCP_TRANSPORT_STDIO ? "stdio" : "http")
+		      ? 0
+		      : NB_ERR_NOMEM);
 	if (!rc)
-		rc = cli_mcp_tree_child(out, NULL, 0, --fields == 0, field.data, columns, "");
+		rc = cli_mcp_tree_child(out, NULL, 0, --fields == 0, field.ptr, columns, "");
 	if (!rc && server->connected) {
-		morph_buf_reset(&field);
-		rc = morph_buf_printf(&field, "Server: %s v%s", server->server_name,
-			server->server_version);
+		nb_buf_clear(&field);
+		rc = (nb_buf_printf(&field, "Server: %s v%s", server->server_name,
+				    server->server_version)
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (!rc)
-			rc = cli_mcp_tree_child(out, NULL, 0, --fields == 0,
-				field.data, columns, "");
-		morph_buf_reset(&field);
+			rc = cli_mcp_tree_child(out, NULL, 0, --fields == 0, field.ptr, columns,
+						"");
+		nb_buf_clear(&field);
 		if (!rc)
-			rc = morph_buf_printf(&field, "Protocol: %s", server->negotiated_version);
+			rc = (nb_buf_printf(&field, "Protocol: %s", server->negotiated_version)
+				      ? 0
+				      : NB_ERR_NOMEM);
 		if (!rc)
-			rc = cli_mcp_tree_child(out, NULL, 0, --fields == 0,
-				field.data, columns, "");
+			rc = cli_mcp_tree_child(out, NULL, 0, --fields == 0, field.ptr, columns,
+						"");
 		int last = --fields == 0;
 		if (!rc)
 			rc = cli_mcp_tree_child(out, NULL, 0, last, "Capabilities", columns,
@@ -146,42 +160,53 @@ static int cli_mcp_tree_server(morph_buf_t *out, const struct runtime_mcp_status
 		int supported[] = {server->supports_tools, server->supports_resources,
 			server->supports_prompts};
 		for (size_t i = 0; !rc && i < 3; i++) {
-			morph_buf_reset(&field);
-			rc = morph_buf_printf(&field, "%s: %s", labels[i],
-				supported[i] ? "yes" : "no");
+			nb_buf_clear(&field);
+			rc = (nb_buf_printf(&field, "%s: %s", labels[i],
+					    supported[i] ? "yes" : "no")
+				      ? 0
+				      : NB_ERR_NOMEM);
 			if (!rc)
-				rc = cli_mcp_tree_child(out, &last, 1, i == 2,
-					field.data, columns, "");
+				rc = cli_mcp_tree_child(out, &last, 1, i == 2, field.ptr, columns,
+							"");
 		}
 	}
 	if (!rc && server->elapsed_ms > 0) {
-		morph_buf_reset(&field);
-		rc = morph_buf_printf(&field, "Elapsed: %lld ms", (long long)server->elapsed_ms);
+		nb_buf_clear(&field);
+		rc = (nb_buf_printf(&field, "Elapsed: %lld ms", (long long)server->elapsed_ms)
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (!rc)
-			rc = cli_mcp_tree_child(out, NULL, 0, --fields == 0, field.data, columns,
-				styled ? ANSI_DIM : "");
+			rc = cli_mcp_tree_child(out, NULL, 0, --fields == 0, field.ptr, columns,
+						styled ? ANSI_DIM : "");
 	}
 	if (!rc && server->error_code < 0) {
-		morph_buf_reset(&field);
-		rc = morph_buf_printf(&field, "Error: %s", morph_strerror(server->error_code));
+		nb_buf_clear(&field);
+		rc = (nb_buf_printf(&field, "Error: %s",
+				    nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+					       server->error_code))
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (!rc)
-			rc = cli_mcp_tree_child(out, NULL, 0, 1, field.data, columns,
-				styled && server->error_code != -ECANCELED &&
-					server->error_code != -EINTR
-					? CLI_FEED_FAILED_STYLE : styled ? ANSI_DIM : "");
+			rc = cli_mcp_tree_child(out, NULL, 0, 1, field.ptr, columns,
+						styled && server->error_code != NB_ERR_CANCELLED &&
+								server->error_code !=
+									NB_ERR_INTERRUPTED
+							? CLI_FEED_FAILED_STYLE
+						: styled ? ANSI_DIM
+							 : "");
 	}
 	return rc;
 }
 
-int cli_mcp_tree_render(morph_buf_t *out, const struct runtime_mcp_status *servers,
-	size_t count, int columns, int styled)
+int cli_mcp_tree_render(nb_buf *out, const struct runtime_mcp_status *servers, size_t count,
+			int columns, int styled)
 {
 	if (!out || (!servers && count) || columns < 1)
-		return -EINVAL;
-	morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_printf(&title, "MCP servers (%zu)", count);
+		return NB_ERR_INVAL;
+	nb_buf title NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_printf(&title, "MCP servers (%zu)", count) ? 0 : NB_ERR_NOMEM);
 	if (!rc)
-		rc = cli_mcp_tree_line(out, title.data, "", "", styled ? ANSI_BOLD : "", columns);
+		rc = cli_mcp_tree_line(out, title.ptr, "", "", styled ? ANSI_BOLD : "", columns);
 	if (!rc && !count)
 		rc = cli_mcp_tree_child(out, NULL, 0, 1,
 			"(none — add servers to config.toml under [mcp.servers])", columns, "");
@@ -190,15 +215,18 @@ int cli_mcp_tree_render(morph_buf_t *out, const struct runtime_mcp_status *serve
 	return rc;
 }
 
-int cli_mcp_tree_items_render(morph_buf_t *out, const char *kind, const char *server,
-	const struct cli_mcp_tree_item *items, size_t count, int columns, int styled)
+int cli_mcp_tree_items_render(nb_buf *out, const char *kind, const char *server,
+			      const struct cli_mcp_tree_item *items, size_t count, int columns,
+			      int styled)
 {
 	if (!out || !kind || !server || (!items && count) || columns < 1)
-		return -EINVAL;
-	morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_printf(&title, "MCP %s for '%s' (%zu)", kind, server, count);
+		return NB_ERR_INVAL;
+	nb_buf title NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_printf(&title, "MCP %s for '%s' (%zu)", kind, server, count)
+			  ? 0
+			  : NB_ERR_NOMEM);
 	if (!rc)
-		rc = cli_mcp_tree_line(out, title.data, "", "", styled ? ANSI_BOLD : "", columns);
+		rc = cli_mcp_tree_line(out, title.ptr, "", "", styled ? ANSI_BOLD : "", columns);
 	if (!rc && !count)
 		rc = cli_mcp_tree_child(out, NULL, 0, 1, "(none)", columns, "");
 	for (size_t i = 0; !rc && i < count; i++) {
@@ -210,11 +238,11 @@ int cli_mcp_tree_items_render(morph_buf_t *out, const char *kind, const char *se
 			rc = cli_mcp_tree_child(out, &last, 1, !uri,
 				items[i].description, columns, "");
 		if (!rc && uri) {
-			morph_buf_reset(&title);
-			rc = morph_buf_printf(&title, "URI: %s", items[i].uri);
+			nb_buf_clear(&title);
+			rc = (nb_buf_printf(&title, "URI: %s", items[i].uri) ? 0 : NB_ERR_NOMEM);
 			if (!rc)
-				rc = cli_mcp_tree_child(out, &last, 1, 1, title.data, columns,
-					styled ? ANSI_DIM : "");
+				rc = cli_mcp_tree_child(out, &last, 1, 1, title.ptr, columns,
+							styled ? ANSI_DIM : "");
 		}
 	}
 	return rc;
@@ -225,12 +253,12 @@ int cli_mcp_tree_write(struct cli_application *ctx, const struct runtime_mcp_sta
 {
 	if (cli_chat_active(ctx))
 		return cli_chat_mcp_servers(ctx, servers, count);
-	morph_buf_t rendered MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
 	int columns = cli_list_columns() - (int)CLI_CONTENT_RIGHT_PADDING;
 	int rc = cli_mcp_tree_render(&rendered, servers, count, columns > 0 ? columns : 1,
 		cli_output_color_enabled(ctx));
-	if (!rc && cli_output_printf(ctx, "%s", rendered.data) < 0)
-		rc = -EIO;
+	if (!rc && cli_output_printf(ctx, "%s", rendered.ptr) < 0)
+		rc = NB_ERR_IO;
 	return rc;
 }
 
@@ -239,11 +267,11 @@ int cli_mcp_tree_items_write(struct cli_application *ctx, const char *kind, cons
 {
 	if (cli_chat_active(ctx))
 		return cli_chat_mcp_items(ctx, kind, server, items, count);
-	morph_buf_t rendered MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
 	int columns = cli_list_columns() - (int)CLI_CONTENT_RIGHT_PADDING;
 	int rc = cli_mcp_tree_items_render(&rendered, kind, server, items, count,
 		columns > 0 ? columns : 1, cli_output_color_enabled(ctx));
-	if (!rc && cli_output_printf(ctx, "%s", rendered.data) < 0)
-		rc = -EIO;
+	if (!rc && cli_output_printf(ctx, "%s", rendered.ptr) < 0)
+		rc = NB_ERR_IO;
 	return rc;
 }

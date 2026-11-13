@@ -1,9 +1,9 @@
 #include "runtime/runtime_internal.h"
 #include "runtime/hooks.h"
-#include "util/error.h"
-#include "util/sha256.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "errors.h"
+#include "nb/hash.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -11,21 +11,21 @@
 
 int runtime_hooks_snapshot_copy(struct runtime *runtime, cJSON **out)
 {
-	cJSON *snapshot MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *snapshot NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	int rc;
 
 	if (!runtime || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
-	pthread_mutex_lock(&runtime->context.execution_lock);
+		return NB_ERR_EXISTS;
+	nb_mutex_lock(runtime->context.execution_lock);
 	rc = hook_manager_reload(&runtime->context.hooks);
 	if (rc == 0) {
 		snapshot = hook_manager_list(&runtime->context.hooks);
 		if (!snapshot)
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 	}
-	pthread_mutex_unlock(&runtime->context.execution_lock);
+	nb_mutex_unlock(runtime->context.execution_lock);
 	if (rc == 0) {
 		*out = snapshot;
 		snapshot = NULL;
@@ -39,9 +39,9 @@ int runtime_hooks_manage(struct runtime *runtime, const char *action, const char
 	int rc;
 
 	if (!runtime || !action)
-		return -EINVAL;
-	pthread_mutex_lock(&runtime->context.execution_lock);
+		return NB_ERR_INVAL;
+	nb_mutex_lock(runtime->context.execution_lock);
 	rc = hook_manager_action(&runtime->context.hooks, action, id, expected_digest);
-	pthread_mutex_unlock(&runtime->context.execution_lock);
+	nb_mutex_unlock(runtime->context.execution_lock);
 	return rc;
 }

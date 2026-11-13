@@ -1,8 +1,10 @@
 #include "js_wasm.h"
-#include "util/cleanup.h"
+#include "nb/err.h"
+#include "nb/cleanup.h"
 #include "js_values.h"
-#include "util/buf.h"
-#include "util/file.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/file.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -94,7 +96,7 @@ static int read_u32_leb(const uint8_t *buf, size_t len, size_t *pos, uint32_t *o
 		}
 		shift += 7;
 	}
-	return -EINVAL;
+	return NB_ERR_INVAL;
 }
 
 static int parse_wasm_exports(struct wasm_module *module)
@@ -104,7 +106,7 @@ static int parse_wasm_exports(struct wasm_module *module)
 	uint32_t count;
 
 	if (module->len < 8 || memcmp(buf, "\0asm", 4) != 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	while (pos < module->len) {
 		uint8_t id;
 		uint32_t size;
@@ -112,23 +114,23 @@ static int parse_wasm_exports(struct wasm_module *module)
 
 		id = buf[pos++];
 		if (read_u32_leb(buf, module->len, &pos, &size) < 0)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		end = pos + size;
 		if (end > module->len)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		if (id != 7) {
 			pos = end;
 			continue;
 		}
 		if (read_u32_leb(buf, end, &pos, &count) < 0)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		for (uint32_t i = 0; i < count && pos < end; i++) {
 			uint32_t name_len;
 			uint8_t kind;
 			uint32_t index;
 
 			if (read_u32_leb(buf, end, &pos, &name_len) < 0 || pos + name_len > end)
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			if (name_len > 0 && module->export_count < WASM_MAX_EXPORTS) {
 				size_t keep = name_len;
 				if (keep >= sizeof(module->exports[0]))
@@ -138,10 +140,10 @@ static int parse_wasm_exports(struct wasm_module *module)
 			}
 			pos += name_len;
 			if (pos >= end)
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			kind = buf[pos++];
 			if (read_u32_leb(buf, end, &pos, &index) < 0)
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			(void)index;
 			if (kind == 0 && module->export_count < WASM_MAX_EXPORTS)
 				module->export_count++;
@@ -284,8 +286,8 @@ static void wasm_module_owner_cleanup(IM3Module *owner)
 
 static JSValue build_wasm_instance(JSContext *ctx, struct wasm_module *module)
 {
-	struct wasm_instance *inst MORPH_CLEANUP(wasm_instance_owner_cleanup) = NULL;
-	IM3Module m3_module MORPH_CLEANUP(wasm_module_owner_cleanup) = NULL;
+	struct wasm_instance *inst NB_CLEANUP(wasm_instance_owner_cleanup) = NULL;
+	IM3Module m3_module NB_CLEANUP(wasm_module_owner_cleanup) = NULL;
 	M3Result res;
 	JSValue obj;
 	JSValue exports;

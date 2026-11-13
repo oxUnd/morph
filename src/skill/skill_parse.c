@@ -1,10 +1,11 @@
 #include "skill_parse.h"
-#include "util/log.h"
-#include "util/cleanup.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/utf8.h"
+#include "nb/log.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "nb/utf8.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,10 +66,10 @@ static int get_indent(const char *line)
 
 static int copy_scalar(const char *src, char *dst, size_t dst_size)
 {
-	if (utf8valid(src))
-		return MORPH_ERR_FORMAT;
-	if (strlen(src) >= dst_size || utf8len(src) > (dst_size - 1) / 4)
-		return -E2BIG;
+	if (nb_utf8_validate(nb_str_from_cstr(src), NULL))
+		return NB_ERR_FORMAT;
+	if (strlen(src) >= dst_size || nb_utf8_count(nb_str_from_cstr(src)) > (dst_size - 1) / 4)
+		return NB_ERR_TOO_BIG;
 	memcpy(dst, src, strlen(src) + 1);
 	return 0;
 }
@@ -81,8 +82,8 @@ static int strip_quotes(const char *src, char *dst, size_t dst_size)
 		src++;
 		slen -= 2;
 	}
-	char *value MORPH_CLEANUP(morph_charp_cleanup) = strndup(src, slen);
-	return value ? copy_scalar(value, dst, dst_size) : -ENOMEM;
+	char *value NB_CLEANUP(nb_charp_cleanup) = strndup(src, slen);
+	return value ? copy_scalar(value, dst, dst_size) : NB_ERR_NOMEM;
 }
 
 static int parse_yaml_scalar(const char *key, const char *value,
@@ -106,7 +107,7 @@ static int add_metadata(struct skill_frontmatter *fm,
 			 const char *key, const char *value)
 {
 	if (fm->metadata_count >= SKILL_METADATA_MAX)
-		return -E2BIG;
+		return NB_ERR_TOO_BIG;
 	int rc = copy_scalar(key, fm->metadata[fm->metadata_count].key,
 			     sizeof(fm->metadata[fm->metadata_count].key));
 	if (rc == 0)
@@ -124,10 +125,10 @@ static int parse_metadata_line(const char *content,
 	char mkey[SKILL_METADATA_KEY_MAX] = {0};
 	const char *colon = strchr(content, ':');
 	if (!colon || colon == content)
-		return MORPH_ERR_PARSE;
+		return NB_ERR_PARSE;
 	size_t klen = (size_t)(colon - content);
 	if (klen >= sizeof(mkey))
-		return -E2BIG;
+		return NB_ERR_TOO_BIG;
 	memcpy(mkey, content, klen);
 	mkey[klen] = '\0';
 	while (klen > 0 && isspace((unsigned char)mkey[klen - 1]))
@@ -143,17 +144,17 @@ static int parse_metadata_line(const char *content,
 static int parse_yaml_block(const char *yaml, size_t yaml_len,
 			     struct skill_frontmatter *fm)
 {
-	char *copy MORPH_CLEANUP(morph_charp_cleanup) = malloc(yaml_len + 1);
+	char *copy NB_CLEANUP(nb_charp_cleanup) = malloc(yaml_len + 1);
 	if (!copy)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	memcpy(copy, yaml, yaml_len);
 	copy[yaml_len] = '\0';
 
 	char *next_line = NULL;
-	char *current_key MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	morph_buf_t bv MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	if (morph_buf_init(&bv, 256) != 0) {
-		return -ENOMEM;
+	char *current_key NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf bv NB_CLEANUP(nb_buf_cleanup) = {0};
+	if ((nb_buf_init(&bv), nb_buf_reserve(&bv, 256) ? 0 : NB_ERR_NOMEM) != 0) {
+		return NB_ERR_NOMEM;
 	}
 	int in_metadata = 0;
 	int in_block_scalar = 0;
@@ -170,17 +171,18 @@ static int parse_yaml_block(const char *yaml, size_t yaml_len,
 			int indent = get_indent(line);
 			if (line[0] != '\0' && !is_blank_line(line) && indent <= block_indent) {
 				if (bv.len > 0) {
-					while (bv.len > 0 && (bv.data[bv.len - 1] == '\n' || bv.data[bv.len - 1] == '\r'))
+					while (bv.len > 0 && (bv.ptr[bv.len - 1] == '\n' ||
+							      bv.ptr[bv.len - 1] == '\r'))
 						bv.len--;
-					bv.data[bv.len] = '\0';
+					bv.ptr[bv.len] = '\0';
 					if (strcmp(current_key, "metadata") != 0) {
-						rc = parse_yaml_scalar(current_key, bv.data, fm);
+						rc = parse_yaml_scalar(current_key, bv.ptr, fm);
 						if (rc != 0)
 							return rc;
 					}
 				}
-				morph_charp_cleanup(&current_key);
-				morph_buf_reset(&bv);
+				nb_charp_cleanup(&current_key);
+				nb_buf_clear(&bv);
 				in_block_scalar = 0;
 				in_metadata = 0;
 			} else {
@@ -188,8 +190,8 @@ static int parse_yaml_block(const char *yaml, size_t yaml_len,
 				while (*content == ' ' || *content == '\t')
 					content++;
 				if (*content == '\0') {
-					if (morph_buf_putc(&bv, '\n') != 0)
-						return -ENOMEM;
+					if ((nb_buf_append_char(&bv, '\n') ? 0 : NB_ERR_NOMEM) != 0)
+						return NB_ERR_NOMEM;
 					continue;
 				}
 				if (in_metadata) {
@@ -198,10 +200,11 @@ static int parse_yaml_block(const char *yaml, size_t yaml_len,
 						return rc;
 					continue;
 				}
-				if (bv.len > 0 && morph_buf_putc(&bv, '\n') != 0)
-					return -ENOMEM;
-				if (morph_buf_puts(&bv, content) != 0)
-					return -ENOMEM;
+				if (bv.len > 0 &&
+				    (nb_buf_append_char(&bv, '\n') ? 0 : NB_ERR_NOMEM) != 0)
+					return NB_ERR_NOMEM;
+				if ((nb_buf_append_cstr(&bv, content) ? 0 : NB_ERR_NOMEM) != 0)
+					return NB_ERR_NOMEM;
 				continue;
 			}
 		}
@@ -224,9 +227,9 @@ static int parse_yaml_block(const char *yaml, size_t yaml_len,
 			continue;
 
 		size_t klen = (size_t)(colon - content);
-		char *key MORPH_CLEANUP(morph_charp_cleanup) = malloc(klen + 1);
+		char *key NB_CLEANUP(nb_charp_cleanup) = malloc(klen + 1);
 		if (!key)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		memcpy(key, content, klen);
 		key[klen] = '\0';
 		while (klen > 0 && isspace((unsigned char)key[klen - 1]))
@@ -243,11 +246,11 @@ static int parse_yaml_block(const char *yaml, size_t yaml_len,
 
 		if (*vstart == '\0' || *vstart == '|' || *vstart == '>') {
 			if (current_key)
-				morph_charp_cleanup(&current_key);
-			current_key = morph_charp_steal(&key);
+				nb_charp_cleanup(&current_key);
+			current_key = nb_charp_steal(&key);
 			in_block_scalar = 1;
 			block_indent = indent;
-			morph_buf_reset(&bv);
+			nb_buf_clear(&bv);
 			in_metadata = (strcmp(current_key, "metadata") == 0);
 			continue;
 		}
@@ -265,29 +268,30 @@ static int parse_yaml_block(const char *yaml, size_t yaml_len,
 	}
 
 	if (in_block_scalar && current_key && bv.len > 0) {
-		while (bv.len > 0 && (bv.data[bv.len - 1] == '\n' || bv.data[bv.len - 1] == '\r'))
+		while (bv.len > 0 && (bv.ptr[bv.len - 1] == '\n' || bv.ptr[bv.len - 1] == '\r'))
 			bv.len--;
-		bv.data[bv.len] = '\0';
+		bv.ptr[bv.len] = '\0';
 		if (strcmp(current_key, "metadata") != 0)
-			return parse_yaml_scalar(current_key, bv.data, fm);
+			return parse_yaml_scalar(current_key, bv.ptr, fm);
 	}
 	return 0;
 }
 
-int skill_parse(struct morph_log *logger, const char *data, size_t len,
-		struct skill_frontmatter *fm, char **body_out)
+int skill_parse(struct nb_log *logger, const char *data, size_t len, struct skill_frontmatter *fm,
+		char **body_out)
 {
 	if (!data || !fm)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (body_out && *body_out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	memset(fm, 0, sizeof(*fm));
 	const char *end = data + len;
 
 	const char *closing = find_closing_delim(data, len);
 	if (!closing) {
-		log_warn(logger, "skill_parse: no YAML frontmatter delimiters found");
-		return MORPH_ERR_PARSE;
+		nb_log_write(logger, NB_LOG_WARN,
+			     "skill_parse: no YAML frontmatter delimiters found");
+		return NB_ERR_PARSE;
 	}
 
 	const char *yaml_start = data + 3;
@@ -296,10 +300,11 @@ int skill_parse(struct morph_log *logger, const char *data, size_t len,
 
 	size_t yaml_len = (size_t)(closing - yaml_start);
 	if (yaml_len > SKILL_FRONTMATTER_MAX_BYTES)
-		return -E2BIG;
+		return NB_ERR_TOO_BIG;
 	int rc = parse_yaml_block(yaml_start, yaml_len, fm);
 	if (rc != 0) {
-		log_warn(logger, "skill_parse: invalid metadata: %s", morph_strerror(rc));
+		nb_log_write(logger, NB_LOG_WARN, "skill_parse: invalid metadata: %s",
+			     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 
@@ -310,23 +315,33 @@ int skill_parse(struct morph_log *logger, const char *data, size_t len,
 	if (body_out && body_start < end) {
 		*body_out = strndup(body_start, (size_t)(end - body_start));
 		if (!*body_out)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 	}
 
 	return 0;
 }
 
-int skill_parse_file(struct morph_log *logger, const char *path, struct skill_frontmatter *fm,
+int skill_parse_file(struct nb_log *logger, const char *path, struct skill_frontmatter *fm,
 		     char **body_out)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	if (!path || !fm)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	size_t len = 0;
-	char *data = file_read_all_copy(path, &len);
+	char *data =
+		(nb_file_read_all(path, &file_value_1, 0, NULL) == NB_OK &&
+				 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
+				   nb_buf_len(&file_value_1) + 1),
+			    *(&len) = nb_buf_len(&file_value_1), nb_charp_steal(&file_copy_1))
+			 : NULL);
 	if (!data) {
-		log_err(logger, "skill_parse_file: failed to read %s", path);
-		return -ENOENT;
+		nb_log_write(logger, NB_LOG_ERROR, "skill_parse_file: failed to read %s", path);
+		return NB_ERR_NOT_FOUND;
 	}
 
 	int rc = skill_parse(logger, data, len, fm, body_out);
@@ -334,49 +349,50 @@ int skill_parse_file(struct morph_log *logger, const char *path, struct skill_fr
 	return rc;
 }
 
-int skill_parse_frontmatter(struct morph_log *logger, const char *path,
-			    struct skill_frontmatter *fm)
+int skill_parse_frontmatter(struct nb_log *logger, const char *path, struct skill_frontmatter *fm)
 {
-	FILE *file MORPH_CLEANUP(skill_file_cleanup) = NULL;
-	char *line MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	morph_buf_t yaml MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	FILE *file NB_CLEANUP(skill_file_cleanup) = NULL;
+	char *line NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf yaml NB_CLEANUP(nb_buf_cleanup) = {0};
 	size_t capacity = 0;
 	ssize_t length;
 	int rc;
 
 	if (!path || !fm)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(fm, 0, sizeof(*fm));
 	file = fopen(path, "rb");
 	if (!file)
-		return -errno;
+		return nb_status_from_errno(errno, NULL);
 	length = getline(&line, &capacity, file);
 	if (length < 0)
-		return ferror(file) ? -EIO : MORPH_ERR_PARSE;
+		return ferror(file) ? NB_ERR_IO : NB_ERR_PARSE;
 	while (length > 0 && (line[length - 1] == '\r' || line[length - 1] == '\n'))
 		line[--length] = '\0';
 	if (length != 3 || memcmp(line, "---", 3) != 0)
-		return MORPH_ERR_PARSE;
-	rc = morph_buf_init(&yaml, 4096);
+		return NB_ERR_PARSE;
+	rc = (nb_buf_init(&yaml), nb_buf_reserve(&yaml, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	while ((length = getline(&line, &capacity, file)) >= 0) {
 		while (length > 0 && (line[length - 1] == '\r' || line[length - 1] == '\n'))
 			line[--length] = '\0';
 		if (length == 3 && memcmp(line, "---", 3) == 0) {
-			rc = parse_yaml_block(morph_buf_cstr_borrow(&yaml), yaml.len, fm);
+			rc = parse_yaml_block(nb_buf_cstr(&yaml), yaml.len, fm);
 			if (rc != 0)
-				log_warn(logger, "skill_parse: invalid metadata in %s: %s", path,
-					 morph_strerror(rc));
+				nb_log_write(logger, NB_LOG_WARN,
+					     "skill_parse: invalid metadata in %s: %s", path,
+					     nb_err_str(morph_error_descriptions(),
+							MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
 		if ((size_t)length >= SKILL_FRONTMATTER_MAX_BYTES - yaml.len)
-			return -E2BIG;
-		rc = morph_buf_append(&yaml, line, (size_t)length);
+			return NB_ERR_TOO_BIG;
+		rc = (nb_buf_append(&yaml, line, (size_t)length) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_putc(&yaml, '\n');
+			rc = (nb_buf_append_char(&yaml, '\n') ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
-	return ferror(file) ? -EIO : MORPH_ERR_PARSE;
+	return ferror(file) ? NB_ERR_IO : NB_ERR_PARSE;
 }

@@ -2,6 +2,7 @@
 #define MORPH_TUI_INPUT_H
 
 #include <morph/tui/event.h>
+#include "nb/err.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -10,7 +11,7 @@ extern "C" {
 #endif
 
 /* Bytes retain their values; zero means idle or an unsupported sequence.
- * Negative results are errors, including -ECANCELED on input EOF. */
+ * Negative results are errors, including NB_ERR_CANCELLED on input EOF. */
 enum morph_tui_key {
 	MORPH_TUI_KEY_UP = 256,
 	MORPH_TUI_KEY_DOWN,

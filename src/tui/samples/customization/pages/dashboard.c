@@ -49,8 +49,8 @@ static void sample_customization_page_dashboard_build(struct morph_tui_view_cont
 					  "Widget keys, page commands, and app shortcuts", NULL);
 	page->counter = sample_customization_widget_counter_create(
 		builder, root, SAMPLE_CUSTOMIZATION_COUNTER_TAG, app->value, app->step);
-	page->name = morph_tui_widget_text_field_add_borrow(
-		builder, root, morph_buf_cstr_borrow(&app->name), 128, 20, NULL);
+	page->name = morph_tui_widget_text_field_add_borrow(builder, root, nb_buf_cstr(&app->name),
+							    128, 20, NULL);
 	morph_tui_widget_list_add_borrow(builder, root, choices, 3, SAMPLE_CUSTOMIZATION_MENU_TAG,
 					 &fill);
 	page->status = morph_tui_widget_label_add_borrow(builder, root, "Dashboard active", NULL);
@@ -71,8 +71,7 @@ static int sample_customization_page_dashboard_appear(struct morph_tui_view_cont
 	int rc = sample_customization_widget_counter_set(page->counter, app->value, app->step);
 
 	if (!rc && page->name_revision != app->name_revision) {
-		rc = morph_tui_widget_text_field_set_text_copy(page->name,
-							       morph_buf_cstr_borrow(&app->name));
+		rc = morph_tui_widget_text_field_set_text_copy(page->name, nb_buf_cstr(&app->name));
 		if (!rc)
 			page->name_revision = app->name_revision;
 	}

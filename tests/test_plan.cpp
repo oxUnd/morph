@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "nb/cleanup.h"
 #include "agent/plan.h"
 #include "agent/tool.h"
 #include "agent/tools/plan.h"
@@ -70,11 +71,11 @@ TEST(PlanTool, LongCreateOutputIsNotTruncated)
 	struct tool_result result;
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&tools, "plan", args.c_str(), &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
 	ASSERT_NE(result.data, nullptr);
 	ASSERT_NE(result.ui, nullptr);
 
-	EXPECT_GT(strlen(result.text.data), 8192u);
+	EXPECT_GT(strlen(result.text.ptr), 8192u);
 	cJSON *plans_json = cJSON_GetObjectItem(result.data, "plans");
 	ASSERT_TRUE(cJSON_IsArray(plans_json));
 	cJSON *first_plan = cJSON_GetArrayItem(plans_json, 0);
@@ -134,18 +135,14 @@ TEST(PlanTool, RegistryScopedPlanRegistry)
 	ASSERT_EQ(tool_exec(tools2.get(), "plan",
 		"{\"command\":\"list\"}", &result2), 0);
 
-	ASSERT_NE(result1.text.data, nullptr);
-	ASSERT_NE(result2.text.data, nullptr);
+	ASSERT_NE(result1.text.ptr, nullptr);
+	ASSERT_NE(result2.text.ptr, nullptr);
 	ASSERT_NE(result1.data, nullptr);
 	ASSERT_NE(result2.data, nullptr);
-	EXPECT_NE(std::string(result1.text.data).find("first"),
-		  std::string::npos);
-	EXPECT_EQ(std::string(result1.text.data).find("second"),
-		  std::string::npos);
-	EXPECT_NE(std::string(result2.text.data).find("second"),
-		  std::string::npos);
-	EXPECT_EQ(std::string(result2.text.data).find("first"),
-		  std::string::npos);
+	EXPECT_NE(std::string(result1.text.ptr).find("first"), std::string::npos);
+	EXPECT_EQ(std::string(result1.text.ptr).find("second"), std::string::npos);
+	EXPECT_NE(std::string(result2.text.ptr).find("second"), std::string::npos);
+	EXPECT_EQ(std::string(result2.text.ptr).find("first"), std::string::npos);
 
 	tool_result_cleanup(&result1);
 	tool_result_cleanup(&result2);
@@ -195,9 +192,8 @@ TEST(PlanTool, PlanIdSelectsDuplicateNames)
 		second_id + "\"}";
 	ASSERT_EQ(tool_exec(&tools, "plan", get.c_str(), &result), 0);
 	EXPECT_EQ(selected_plan_id(result.data), second_id);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find(second_id),
-		  std::string::npos);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(std::string(result.text.ptr).find(second_id), std::string::npos);
 
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&tools);
@@ -238,7 +234,7 @@ extern "C" {
 #include "db/database.h"
 #include "session.h"
 #include "agent/tool_context.h"
-#include "util/file.h"
+#include "nb/file.h"
 }
 #include <filesystem>
 #include <thread>
@@ -300,8 +296,8 @@ TEST(PlanTool, VerificationReportBecomesStaleWhenAnInputChanges)
 	ASSERT_NE(mkdtemp(dir), nullptr);
 	std::string input = std::string(dir) + "/input.html";
 	std::string report = std::string(dir) + "/report.json";
-	ASSERT_EQ(file_write_all(input.c_str(), "one", 3), 0);
-	ASSERT_EQ(file_write_all(report.c_str(), "passed", 6), 0);
+	ASSERT_EQ(nb_file_write_all(input.c_str(), "one", 3, NULL), 0);
+	ASSERT_EQ(nb_file_write_all(report.c_str(), "passed", 6, NULL), 0);
 	auto plans = std::make_unique<plan_registry>();
 	auto tools = std::make_unique<tool_registry>();
 	plan_registry_init(plans.get());
@@ -321,7 +317,7 @@ TEST(PlanTool, VerificationReportBecomesStaleWhenAnInputChanges)
 	ASSERT_EQ(tool_exec(tools.get(), "plan", args.c_str(), &result), 0);
 	EXPECT_NE(std::string(plans->plans[0].verification).find("current"), std::string::npos);
 	ASSERT_EQ(plan_tool_refresh_reports(tools.get()), 0);
-	ASSERT_EQ(file_write_all(input.c_str(), "two", 3), 0);
+	ASSERT_EQ(nb_file_write_all(input.c_str(), "two", 3, NULL), 0);
 	ASSERT_EQ(plan_tool_refresh_reports(tools.get()), 0);
 	EXPECT_NE(std::string(plans->plans[0].verification).find("stale"), std::string::npos);
 	tool_result_cleanup(&result);

@@ -1,9 +1,9 @@
 #include "tool_registry.h"
 
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/json.h"
-#include "util/log.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "cJSON.h"
+#include "nb/log.h"
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -33,7 +33,7 @@ static void tool_binding_release(struct tool_binding *binding)
 void tool_registry_lock(struct tool_registry *reg)
 {
 	if (reg != NULL && reg->mutex_ready) {
-		pthread_mutex_lock(&reg->mutex);
+		nb_mutex_lock(reg->mutex);
 	}
 }
 
@@ -41,35 +41,27 @@ void tool_registry_lock(struct tool_registry *reg)
 void tool_registry_unlock(struct tool_registry *reg)
 {
 	if (reg != NULL && reg->mutex_ready) {
-		pthread_mutex_unlock(&reg->mutex);
+		nb_mutex_unlock(reg->mutex);
 	}
 }
 
-void tool_registry_init(struct morph_log *logger, struct tool_registry *reg)
+void tool_registry_init(struct nb_log *logger, struct tool_registry *reg)
 {
 	if (!reg)
 		return;
 	memset(reg, 0, sizeof(*reg));
 	reg->logger = logger;
-	pthread_mutexattr_t attributes;
-	int lock_rc = pthread_mutexattr_init(&attributes);
-	if (lock_rc == 0) {
-		lock_rc = pthread_mutexattr_settype(&attributes, PTHREAD_MUTEX_RECURSIVE);
-		if (lock_rc == 0) {
-			lock_rc = pthread_mutex_init(&reg->mutex, &attributes);
-		}
-		if (lock_rc == 0) {
-			lock_rc = pthread_mutex_init(&reg->mutation_mutex, &attributes);
-			if (lock_rc != 0) {
-				pthread_mutex_destroy(&reg->mutex);
-			}
-		}
-		pthread_mutexattr_destroy(&attributes);
+	reg->mutex = nb_mutex_new(NB_MUTEX_RECURSIVE);
+	reg->mutation_mutex = reg->mutex ? nb_mutex_new(NB_MUTEX_RECURSIVE) : NULL;
+	int lock_rc = reg->mutation_mutex ? NB_OK : NB_ERR_NOMEM;
+	if (lock_rc != NB_OK) {
+		nb_mutex_free(reg->mutex);
+		reg->mutex = NULL;
 	}
 	reg->mutex_ready = lock_rc == 0;
-	reg->init_error = -lock_rc;
-	(void)morph_strmap_init(&reg->by_name, TOOL_REGISTRY_INITIAL_CAP);
-	(void)morph_strmap_init(&reg->disabled_by_name, TOOL_DISABLED_MAX);
+	reg->init_error = lock_rc;
+	reg->by_name = nb_map_new_with_cap(TOOL_REGISTRY_INITIAL_CAP);
+	reg->disabled_by_name = nb_map_new_with_cap(TOOL_DISABLED_MAX);
 }
 
 void tool_registry_cleanup(struct tool_registry *reg)
@@ -79,14 +71,16 @@ void tool_registry_cleanup(struct tool_registry *reg)
 		return;
 	for (int i = 0; i < reg->count; i++)
 		tool_desc_cleanup(&reg->entries[i].desc);
-	morph_array_cleanup(&reg->storage);
+	nb_vec_cleanup(&reg->storage);
 	reg->entries = NULL;
 	reg->count = 0;
-	morph_strmap_cleanup(&reg->by_name);
-	morph_strmap_cleanup(&reg->disabled_by_name);
+	nb_map_free(reg->by_name);
+	nb_map_free(reg->disabled_by_name);
+	reg->by_name = NULL;
+	reg->disabled_by_name = NULL;
 	if (reg->mutex_ready) {
-		pthread_mutex_destroy(&reg->mutex);
-		pthread_mutex_destroy(&reg->mutation_mutex);
+		(nb_mutex_free(reg->mutex), reg->mutex = NULL);
+		(nb_mutex_free(reg->mutation_mutex), reg->mutation_mutex = NULL);
 	}
 	reg->mutex_ready = 0;
 }
@@ -128,7 +122,7 @@ static int find_tool(struct tool_registry *reg, const char *name)
 
 	if (!reg || !name)
 		return -1;
-	e = (struct tool_entry *)morph_strmap_borrow(&reg->by_name, name);
+	e = (struct tool_entry *)nb_map_get_cstr(reg->by_name, name);
 	if (e)
 		return (int)(e - reg->entries);
 	for (int i = 0; i < reg->count; i++) {
@@ -142,10 +136,10 @@ static void rebuild_tool_name_index(struct tool_registry *reg)
 {
 	if (!reg)
 		return;
-	morph_strmap_clear(&reg->by_name);
+	nb_map_clear(reg->by_name);
 	for (int i = 0; i < reg->count; i++)
-		(void)morph_strmap_set_borrow(&reg->by_name, reg->entries[i].desc.name,
-					      &reg->entries[i]);
+		(void)nb_map_put_cstr(reg->by_name, reg->entries[i].desc.name, &reg->entries[i],
+				      NULL);
 }
 
 static void tool_enable_remove_disabled(struct tool_registry *reg, const char *name)
@@ -161,10 +155,10 @@ static void tool_enable_remove_disabled(struct tool_registry *reg, const char *n
 		memset(reg->disabled[reg->disabled_count - 1], 0,
 		       sizeof(reg->disabled[reg->disabled_count - 1]));
 		reg->disabled_count--;
-		morph_strmap_clear(&reg->disabled_by_name);
+		nb_map_clear(reg->disabled_by_name);
 		for (int j = 0; j < reg->disabled_count; j++) {
-			(void)morph_strmap_set_borrow(&reg->disabled_by_name, reg->disabled[j],
-						      reg->disabled[j]);
+			(void)nb_map_put_cstr(reg->disabled_by_name, reg->disabled[j],
+					      reg->disabled[j], NULL);
 		}
 		return;
 	}
@@ -172,7 +166,7 @@ static void tool_enable_remove_disabled(struct tool_registry *reg, const char *n
 
 static int tool_schema_validate(const char *schema, int require_closed)
 {
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	cJSON *type;
 	cJSON *props;
 	cJSON *required;
@@ -180,25 +174,25 @@ static int tool_schema_validate(const char *schema, int require_closed)
 	int rc = 0;
 
 	if (!schema || !*schema)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	root = cJSON_Parse(schema);
 	if (!root)
-		return MORPH_ERR_PARSE;
+		return NB_ERR_PARSE;
 	if (!cJSON_IsObject(root)) {
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 		return rc;
 	}
 	type = cJSON_GetObjectItem(root, "type");
 	props = cJSON_GetObjectItem(root, "properties");
 	if (!cJSON_IsString(type) || strcmp(type->valuestring, "object") != 0 ||
 	    (props && !cJSON_IsObject(props))) {
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 		return rc;
 	}
 	if (require_closed) {
 		cJSON *additional = cJSON_GetObjectItem(root, "additionalProperties");
 		if (!cJSON_IsFalse(additional)) {
-			rc = -EINVAL;
+			rc = NB_ERR_INVAL;
 			return rc;
 		}
 	}
@@ -208,12 +202,12 @@ static int tool_schema_validate(const char *schema, int require_closed)
 		{
 			if (!cJSON_IsString(item) ||
 			    (require_closed && !cJSON_GetObjectItem(props, item->valuestring))) {
-				rc = -EINVAL;
+				rc = NB_ERR_INVAL;
 				return rc;
 			}
 		}
 	} else if (required) {
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 	}
 
 	return rc;
@@ -243,7 +237,7 @@ void tool_desc_move(struct tool_desc *out, struct tool_desc *source)
 
 int tool_desc_clone(const struct tool_desc *source, struct tool_desc *out)
 {
-	struct tool_desc copy MORPH_CLEANUP(tool_desc_cleanup) = {0};
+	struct tool_desc copy NB_CLEANUP(tool_desc_cleanup) = {0};
 	const char *values[] = {
 		source ? source->name : NULL,	       source ? source->title : NULL,
 		source ? source->description : NULL,   source ? source->input_schema : NULL,
@@ -252,14 +246,14 @@ int tool_desc_clone(const struct tool_desc *source, struct tool_desc *out)
 				 &copy.input_schema, &copy.output_schema, &copy.input_format};
 
 	if (!source || !out || source == out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (out->name || out->title || out->description || out->input_schema ||
 	    out->output_schema || out->input_format)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
 		*fields[i] = strdup(values[i] ? values[i] : "");
 		if (!*fields[i])
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 	}
 	copy.input_kind = source->input_kind;
 	tool_desc_move(out, &copy);
@@ -268,10 +262,10 @@ int tool_desc_clone(const struct tool_desc *source, struct tool_desc *out)
 
 int tool_entry_set_descriptor_copy(struct tool_entry *entry, const struct tool_spec *spec)
 {
-	struct tool_desc copy MORPH_CLEANUP(tool_desc_cleanup) = {0};
+	struct tool_desc copy NB_CLEANUP(tool_desc_cleanup) = {0};
 
 	if (!entry || !spec || !spec->name)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	const struct tool_desc source = {
 		.name = spec->name,
 		.title = spec->title,
@@ -300,17 +294,17 @@ static int tool_register_unlocked(struct tool_registry *reg, const struct tool_s
 	int rc;
 
 	if (!reg || !spec || !spec->name || !spec->exec)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (reg->count >= INT_MAX)
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	if (find_tool(reg, spec->name) >= 0)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (spec->input_kind == TOOL_INPUT_JSON) {
 		rc = tool_schema_validate(spec->input_schema, 0);
 		if (rc != 0)
 			return rc;
 	} else if (spec->input_kind != TOOL_INPUT_TEXT) {
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	rc = tool_schema_validate(spec->output_schema, 0);
 	if (rc != 0)
@@ -321,21 +315,23 @@ static int tool_register_unlocked(struct tool_registry *reg, const struct tool_s
 	rc = tool_entry_set_descriptor_copy(&value, spec);
 	if (rc != 0)
 		return rc;
-	if (!reg->storage.elts)
-		rc = morph_array_init(&reg->storage, 8, sizeof(value));
+	if (!((void *)reg->storage.data))
+		rc = (nb_vec_init(&reg->storage, sizeof(value)),
+		      nb_vec_reserve(&reg->storage, 8) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
 		tool_desc_cleanup(&value.desc);
 		return rc;
 	}
-	e = morph_array_push_borrow(&reg->storage);
+	e = nb_vec_push(&reg->storage);
 	if (!e) {
 		tool_desc_cleanup(&value.desc);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
-	reg->entries = reg->storage.elts;
+	reg->entries = ((void *)reg->storage.data);
 	tool_entry_move(e, &value);
 	e->exec = spec->exec;
 	e->get_environment = spec->get_environment;
+	e->refresh_context = spec->refresh_context;
 	e->background_list = spec->background_list;
 	e->background_wait = spec->background_wait;
 	e->background_cancel = spec->background_cancel;
@@ -348,9 +344,9 @@ static int tool_register_unlocked(struct tool_registry *reg, const struct tool_s
 	if (binding == NULL) {
 		tool_desc_cleanup(&e->desc);
 		memset(e, 0, sizeof(*e));
-		morph_array_pop(&reg->storage);
+		nb_vec_pop(&reg->storage);
 		rebuild_tool_name_index(reg);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	binding->refs = 1;
 	binding->data = spec->user_data;
@@ -358,7 +354,7 @@ static int tool_register_unlocked(struct tool_registry *reg, const struct tool_s
 	e->binding = binding;
 	reg->count++;
 	rebuild_tool_name_index(reg);
-	log_dbg(reg ? reg->logger : NULL, "tool registered: %s", spec->name);
+	nb_log_write(reg ? reg->logger : NULL, NB_LOG_DEBUG, "tool registered: %s", spec->name);
 	return 0;
 }
 
@@ -367,10 +363,10 @@ static int tool_unregister_unlocked(struct tool_registry *reg, const char *name)
 	int idx;
 
 	if (!reg || !name)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	idx = find_tool(reg, name);
 	if (idx < 0)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	struct tool_binding *binding = reg->entries[idx].binding;
 	struct tool_desc descriptor = {0};
 	tool_desc_move(&descriptor, &reg->entries[idx].desc);
@@ -378,10 +374,10 @@ static int tool_unregister_unlocked(struct tool_registry *reg, const char *name)
 		tool_entry_move(&reg->entries[i], &reg->entries[i + 1]);
 	memset(&reg->entries[reg->count - 1], 0, sizeof(reg->entries[reg->count - 1]));
 	reg->count--;
-	morph_array_pop(&reg->storage);
+	nb_vec_pop(&reg->storage);
 	rebuild_tool_name_index(reg);
 	tool_enable_remove_disabled(reg, name);
-	log_dbg(reg ? reg->logger : NULL, "tool unregistered: %s", name);
+	nb_log_write(reg ? reg->logger : NULL, NB_LOG_DEBUG, "tool unregistered: %s", name);
 	tool_desc_cleanup(&descriptor);
 	tool_binding_release(binding);
 	return 0;
@@ -401,7 +397,7 @@ static int tool_register_impl(struct tool_registry *reg, const struct tool_spec 
 			      struct tool_spec *source)
 {
 	if (!reg || !spec || (!source && spec->user_data_destroy))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (reg->init_error != 0)
 		return reg->init_error;
 	if (!reg->mutex_ready)
@@ -409,7 +405,7 @@ static int tool_register_impl(struct tool_registry *reg, const struct tool_spec 
 	struct tool_spec effective = *spec;
 	if (!source)
 		effective.user_data_destroy = NULL;
-	pthread_mutex_lock(&reg->mutation_mutex);
+	nb_mutex_lock(reg->mutation_mutex);
 	tool_registry_lock(reg);
 	int rc = tool_register_unlocked(reg, &effective);
 	if (rc == 0 && source) {
@@ -417,7 +413,7 @@ static int tool_register_impl(struct tool_registry *reg, const struct tool_spec 
 		source->user_data_destroy = NULL;
 	}
 	tool_registry_unlock(reg);
-	pthread_mutex_unlock(&reg->mutation_mutex);
+	nb_mutex_unlock(reg->mutation_mutex);
 	return rc;
 }
 
@@ -437,7 +433,7 @@ int tool_unregister(struct tool_registry *reg, const char *name)
 	int rc;
 	struct tool_binding *binding = NULL;
 	if (reg == NULL) {
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	if (reg->init_error != 0) {
 		return reg->init_error;
@@ -445,7 +441,7 @@ int tool_unregister(struct tool_registry *reg, const char *name)
 	if (!reg->mutex_ready) {
 		return MORPH_ERR_NOT_INITIALIZED;
 	}
-	pthread_mutex_lock(&reg->mutation_mutex);
+	nb_mutex_lock(reg->mutation_mutex);
 	tool_registry_lock(reg);
 	struct tool_entry *entry = tool_borrow(reg, name);
 	if (entry != NULL) {
@@ -456,7 +452,7 @@ int tool_unregister(struct tool_registry *reg, const char *name)
 	}
 	rc = tool_unregister_unlocked(reg, name);
 	tool_registry_unlock(reg);
-	pthread_mutex_unlock(&reg->mutation_mutex);
+	nb_mutex_unlock(reg->mutation_mutex);
 	tool_binding_release(binding);
 	return rc;
 }
@@ -465,7 +461,7 @@ static int tool_register_replace_impl(struct tool_registry *reg, const struct to
 				      struct tool_spec *source, unsigned int replace_flags)
 {
 	if (!reg || !spec || (!source && spec->user_data_destroy))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (reg->init_error != 0)
 		return reg->init_error;
 	if (!reg->mutex_ready)
@@ -473,7 +469,7 @@ static int tool_register_replace_impl(struct tool_registry *reg, const struct to
 	struct tool_spec effective = *spec;
 	if (!source)
 		effective.user_data_destroy = NULL;
-	struct tool_registry prepared MORPH_CLEANUP(tool_registry_cleanup) = {0};
+	struct tool_registry prepared NB_CLEANUP(tool_registry_cleanup) = {0};
 	struct tool_entry previous = {0};
 	tool_registry_init(reg->logger, &prepared);
 	struct tool_spec borrowed = effective;
@@ -482,12 +478,12 @@ static int tool_register_replace_impl(struct tool_registry *reg, const struct to
 	if (rc != 0)
 		return rc;
 	int replaced = 0;
-	pthread_mutex_lock(&reg->mutation_mutex);
+	nb_mutex_lock(reg->mutation_mutex);
 	tool_registry_lock(reg);
 	int index = find_tool(reg, effective.name);
 	if (index >= 0) {
 		if ((reg->entries[index].flags & replace_flags) != replace_flags) {
-			rc = -EEXIST;
+			rc = NB_ERR_EXISTS;
 		} else {
 			prepared.entries[0].binding->destroy = effective.user_data_destroy;
 			prepared.entries[0].user_data_destroy = effective.user_data_destroy;
@@ -504,7 +500,7 @@ static int tool_register_replace_impl(struct tool_registry *reg, const struct to
 		source->user_data_destroy = NULL;
 	}
 	tool_registry_unlock(reg);
-	pthread_mutex_unlock(&reg->mutation_mutex);
+	nb_mutex_unlock(reg->mutation_mutex);
 	tool_desc_cleanup(&previous.desc);
 	tool_binding_release(previous.binding);
 	return rc != 0 ? rc : replaced;
@@ -531,25 +527,26 @@ int tool_register_replace_take(struct tool_registry *reg, struct tool_spec *sour
 int tool_register_copy(struct tool_registry *out, const struct tool_entry *entry)
 {
 	if (out == NULL || entry == NULL) {
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	struct tool_spec spec = {
-	    .origin = entry->origin,
-	    .name = entry->desc.name,
-	    .title = entry->desc.title,
-	    .description = entry->desc.description,
-	    .input_schema = entry->desc.input_schema,
-	    .output_schema = entry->desc.output_schema,
-	    .input_kind = entry->desc.input_kind,
-	    .input_format = entry->desc.input_format,
-	    .exec = entry->exec,
-	    .get_environment = entry->get_environment,
-	    .background_list = entry->background_list,
-	    .background_wait = entry->background_wait,
-	    .background_cancel = entry->background_cancel,
-	    .user_data = entry->user_data,
-	    .flags = entry->flags,
-	    .timeout_seconds = entry->timeout_seconds,
+		.origin = entry->origin,
+		.name = entry->desc.name,
+		.title = entry->desc.title,
+		.description = entry->desc.description,
+		.input_schema = entry->desc.input_schema,
+		.output_schema = entry->desc.output_schema,
+		.input_kind = entry->desc.input_kind,
+		.input_format = entry->desc.input_format,
+		.exec = entry->exec,
+		.get_environment = entry->get_environment,
+		.refresh_context = entry->refresh_context,
+		.background_list = entry->background_list,
+		.background_wait = entry->background_wait,
+		.background_cancel = entry->background_cancel,
+		.user_data = entry->user_data,
+		.flags = entry->flags,
+		.timeout_seconds = entry->timeout_seconds,
 	};
 	int rc = tool_register_borrow(out, &spec);
 	if (rc == 0) {
@@ -573,14 +570,14 @@ int tool_registry_copy(struct tool_registry *out, struct tool_registry *source)
 {
 	int rc = 0;
 	if (out == NULL || source == NULL || out == source) {
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	if (!out->mutex_ready || out->init_error)
 		return out->init_error ? out->init_error : MORPH_ERR_NOT_INITIALIZED;
 	if (!source->mutex_ready || source->init_error)
 		return source->init_error ? source->init_error : MORPH_ERR_NOT_INITIALIZED;
 	if (out->count || out->disabled_count)
-		return -EALREADY;
+		return NB_ERR_STATE;
 	struct tool_context *previous_context = out->permission_context;
 	tool_registry_lock(source);
 	out->permission_context = source->permission_context;
@@ -596,13 +593,13 @@ int tool_registry_copy(struct tool_registry *out, struct tool_registry *source)
 		tool_entry_cleanup_user_data(out);
 		for (int i = 0; i < out->count; i++)
 			tool_desc_cleanup(&out->entries[i].desc);
-		morph_array_cleanup(&out->storage);
+		nb_vec_cleanup(&out->storage);
 		out->entries = NULL;
 		out->count = 0;
 		out->disabled_count = 0;
 		memset(out->disabled, 0, sizeof(out->disabled));
-		morph_strmap_clear(&out->by_name);
-		morph_strmap_clear(&out->disabled_by_name);
+		nb_map_clear(out->by_name);
+		nb_map_clear(out->disabled_by_name);
 		out->permission_context = previous_context;
 	}
 	return rc;
@@ -623,13 +620,13 @@ int tool_registry_acquire(struct tool_registry *reg, const char *name, struct to
 	struct tool_entry *entry;
 
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (out->binding || out->permission_context || out->exec || out->get_environment ||
-	    out->background_list || out->background_wait || out->background_cancel ||
-	    out->user_data)
-		return -EALREADY;
+	    out->refresh_context || out->background_list || out->background_wait ||
+	    out->background_cancel || out->user_data)
+		return NB_ERR_STATE;
 	if (!reg || !name)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (reg->init_error != 0)
 		return reg->init_error;
 	if (!reg->mutex_ready)
@@ -638,7 +635,7 @@ int tool_registry_acquire(struct tool_registry *reg, const char *name, struct to
 	entry = tool_borrow(reg, name);
 	if (!entry) {
 		tool_registry_unlock(reg);
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	}
 	out->binding = entry->binding;
 	if (out->binding)
@@ -646,6 +643,7 @@ int tool_registry_acquire(struct tool_registry *reg, const char *name, struct to
 	out->permission_context = reg->permission_context;
 	out->exec = entry->exec;
 	out->get_environment = entry->get_environment;
+	out->refresh_context = entry->refresh_context;
 	out->background_list = entry->background_list;
 	out->background_wait = entry->background_wait;
 	out->background_cancel = entry->background_cancel;
@@ -666,15 +664,28 @@ void tool_handle_release(struct tool_handle *handle)
 	memset(handle, 0, sizeof(*handle));
 }
 
+int tool_refresh_context(struct tool_registry *reg, const char *name)
+{
+	if (!reg)
+		return NB_OK;
+	struct tool_handle handle NB_CLEANUP(tool_handle_release) = {0};
+	int rc = tool_registry_acquire(reg, name, &handle);
+	if (rc == NB_ERR_NOT_FOUND)
+		return NB_OK;
+	if (rc != NB_OK)
+		return rc;
+	return handle.refresh_context ? handle.refresh_context(handle.user_data) : NB_OK;
+}
+
 static int tool_set_timeout_locked(struct tool_registry *reg, const char *name, int timeout_seconds)
 {
 	struct tool_entry *e;
 
 	if (!reg || !name)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	e = tool_borrow(reg, name);
 	if (!e)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	e->timeout_seconds = timeout_seconds > 0 ? timeout_seconds : 0;
 	return 0;
 }
@@ -694,16 +705,16 @@ static int tool_timeout_seconds_locked(struct tool_registry *reg, const char *na
 static int tool_disable_locked(struct tool_registry *reg, const char *name)
 {
 	if (!reg || !name)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (reg->disabled_count >= TOOL_DISABLED_MAX)
-		return -ENOSPC;
+		return NB_ERR_NO_SPACE;
 	if (tool_is_disabled(reg, name))
 		return 0;
 	strncpy(reg->disabled[reg->disabled_count], name, TOOL_NAME_MAX - 1);
-	(void)morph_strmap_set_borrow(&reg->disabled_by_name, reg->disabled[reg->disabled_count],
-				      reg->disabled[reg->disabled_count]);
+	(void)nb_map_put_cstr(reg->disabled_by_name, reg->disabled[reg->disabled_count],
+			      reg->disabled[reg->disabled_count], NULL);
 	reg->disabled_count++;
-	log_info(reg ? reg->logger : NULL, "tool disabled: %s", name);
+	nb_log_write(reg ? reg->logger : NULL, NB_LOG_INFO, "tool disabled: %s", name);
 	return 0;
 }
 
@@ -711,7 +722,7 @@ static int tool_is_disabled_locked(const struct tool_registry *reg, const char *
 {
 	if (!reg || !name)
 		return 0;
-	if (morph_strmap_contains(&reg->disabled_by_name, name))
+	if (nb_map_has_cstr(reg->disabled_by_name, name))
 		return 1;
 	for (int i = 0; i < reg->disabled_count; i++) {
 		if (strcmp(reg->disabled[i], name) == 0)

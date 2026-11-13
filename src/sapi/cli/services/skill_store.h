@@ -1,9 +1,10 @@
 #ifndef MORPH_CLI_SERVICES_SKILL_STORE_H
 #define MORPH_CLI_SERVICES_SKILL_STORE_H
 
-struct morph_log;
+struct nb_log;
 #include "skill/skill.h"
-#include "util/array.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 #include "cJSON.h"
 
 #define CLI_SKILL_STORE_INSTALL_METADATA ".morph-install.json"
@@ -14,7 +15,7 @@ struct cli_skill_candidate {
 	char path[PATH_MAX];
 };
 
-int cli_skill_store_scan(struct morph_log *logger, const char *root, morph_array_t *candidates);
+int cli_skill_store_scan(struct nb_log *logger, const char *root, nb_vec *candidates);
 int cli_skill_store_copy(const char *source, const char *destination);
 int cli_skill_store_remove(const char *path);
 int cli_skill_store_digest(const char *path, char digest[CLI_SKILL_STORE_DIGEST_MAX]);

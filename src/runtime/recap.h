@@ -2,6 +2,7 @@
 #define MORPH_RUNTIME_RECAP_H
 
 #include "cJSON.h"
+#include "nb/err.h"
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -21,7 +22,7 @@ struct runtime_recap_progress {
 	int completed_turns;
 };
 
-/* Nonblocking snapshots and requests return -EBUSY during foreground execution. */
+/* Nonblocking snapshots and requests return NB_ERR_BUSY during foreground execution. */
 /* Progress is an empty snapshot before the deferred session is created. */
 int runtime_recap_progress(struct runtime *runtime, struct runtime_recap_progress *out);
 int runtime_recap_request(struct runtime *runtime, int automatic,

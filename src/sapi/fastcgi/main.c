@@ -10,13 +10,15 @@
  *   MORPH_FCGI_TRUST_HDR  trusted proxy identity header, e.g. "X-Remote-User"
  */
 #define _GNU_SOURCE
+#include "nb/cleanup.h"
 #include <fcgiapp.h>
 #include "sapi/fastcgi/storage/events.h"
 #include "sapi/fastcgi/storage/tokens.h"
+#include "nb/time.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
-#include <pthread.h>
+#include "nb/thread.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,10 +34,10 @@
 #include "auth.h"
 #include "agent_bridge.h"
 #include "stream_pool.h"
-#include "util/error.h"
-#include "util/log.h"
-#include "util/name.h"
-#include "util/signals.h"
+#include "errors.h"
+#include "nb/log.h"
+#include "nb/str.h"
+#include "nb/signal.h"
 #include <sys/socket.h>
 
 #define FCGI_WORKERS_DEFAULT "128"
@@ -48,18 +50,18 @@
 
 struct fcgi_server {
 	int listen_fd;
-	volatile sig_atomic_t shutdown;
-	volatile sig_atomic_t listen_closed;
+	nb_atomic_int shutdown;
+	nb_atomic_int listen_closed;
 	struct session_store *store;
 	struct fcgi_bridge *bridge;
 	struct fcgi_auth *auth;
 	struct fcgi_stream_pool *streams;
-	pthread_t maintenance_thread;
+	nb_thread *maintenance_thread;
 	int maintenance_started;
 	char socket_path[PATH_MAX];
 	char trust_param[96];
-	struct morph_signal_listener signals;
-	struct morph_log logger;
+	nb_signal_listener *signals;
+	struct nb_log *logger;
 	int logger_ready;
 	struct fcgi_metrics metrics;
 	unsigned long long request_seq;
@@ -73,11 +75,9 @@ static const char *getenv_or(const char *k, const char *fallback)
 
 static long long now_ms(void)
 {
-	struct timespec ts;
+	int64_t now = nb_time_monotonic_ns();
 
-	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
-		return 0;
-	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+	return now > 0 ? (long long)(now / 1000000) : 0;
 }
 
 static void remove_stale_socket(const char *path)
@@ -110,7 +110,7 @@ static int open_listen(struct fcgi_server *server, const char *spec)
 	int fd = FCGX_OpenSocket(socket_spec, backlog);
 	if (fd < 0) {
 		fprintf(stderr, "FCGX_OpenSocket(%s) failed\n", spec);
-		return -EIO;
+		return NB_ERR_IO;
 	}
 	if (socket_spec[0] == '/')
 		chmod(socket_spec, 0660);
@@ -128,13 +128,13 @@ static int configure_trust_param(struct fcgi_server *server, const char *header)
 	off = strlen(server->trust_param);
 	for (const unsigned char *p = (const unsigned char *)header; *p; p++) {
 		if (off + 1 >= sizeof(server->trust_param))
-			return -ENAMETOOLONG;
-		if (morph_name_char_valid((char)*p, NULL))
+			return NB_ERR_NAME_TOO_LONG;
+		if (nb_ascii_is_alnum((unsigned char)((char)*p)))
 			server->trust_param[off++] = (char)toupper(*p);
 		else if (*p == '-')
 			server->trust_param[off++] = '_';
 		else
-			return -EINVAL;
+			return NB_ERR_INVAL;
 	}
 	server->trust_param[off] = '\0';
 	return 0;
@@ -142,7 +142,7 @@ static int configure_trust_param(struct fcgi_server *server, const char *header)
 
 static void server_stop(struct fcgi_server *server)
 {
-	morph_signal_flag_set(&server->shutdown, 1);
+	nb_atomic_int_store(&server->shutdown, 1);
 	FCGX_ShutdownPending();
 	store_wake_all(server->store);
 	if (!__atomic_exchange_n(&server->listen_closed, 1, __ATOMIC_RELAXED)) {
@@ -162,7 +162,7 @@ static void populate_request(struct fcgi_server *server, request_t *r, FCGX_Requ
 {
 	memset(r, 0, sizeof(*r));
 	r->fcgx = req;
-	r->logger = server->logger_ready ? &server->logger : NULL;
+	r->logger = server->logger_ready ? server->logger : NULL;
 	r->metrics = &server->metrics;
 	r->started_ms = now_ms();
 	__atomic_add_fetch(&server->metrics.requests_total, 1, __ATOMIC_RELAXED);
@@ -238,7 +238,7 @@ static void *worker_main(void *arg)
 		return NULL;
 	}
 
-	while (!morph_signal_flag_get(&server->shutdown)) {
+	while (!nb_atomic_int_load(&server->shutdown)) {
 		int rc = FCGX_Accept_r(req);
 		if (rc < 0)
 			break;
@@ -256,12 +256,12 @@ static void *worker_main(void *arg)
 		if (r.status == 0)
 			r.status = 200;
 		if (r.logger)
-			log_info(r.logger,
-				 "access method=%s path=%s status=%d "
-				 "duration_ms=%lld request_id=%s user=%s "
-				 "stream=%d",
-				 log_method, log_path, r.status, duration, r.request_id, r.user_id,
-				 r.handed_off);
+			nb_log_write(r.logger, NB_LOG_INFO,
+				     "access method=%s path=%s status=%d "
+				     "duration_ms=%lld request_id=%s user=%s "
+				     "stream=%d",
+				     log_method, log_path, r.status, duration, r.request_id,
+				     r.user_id, r.handed_off);
 		__atomic_sub_fetch(&server->metrics.active, 1, __ATOMIC_RELAXED);
 		if (!dispatched) {
 			FCGX_Finish_r(req);
@@ -290,22 +290,21 @@ static void *maintenance_main(void *arg)
 	struct fcgi_server *server = arg;
 	const struct timespec tick = {0, 200 * 1000 * 1000};
 
-	while (!morph_signal_flag_get(&server->shutdown)) {
+	while (!nb_atomic_int_load(&server->shutdown)) {
 		(void)store_maintenance(server->store);
 		(void)login_token_prune();
-		for (int i = 0; i < 300 && !morph_signal_flag_get(&server->shutdown); i++)
+		for (int i = 0; i < 300 && !nb_atomic_int_load(&server->shutdown); i++)
 			nanosleep(&tick, NULL);
 	}
 	return NULL;
 }
 
 static int server_run_workers(struct fcgi_server *server, const char *database,
-	const char *trust_header, int stream_threads, int stream_queue, int workers,
-	const char *listen_spec, pthread_t **thread_storage)
+			      const char *trust_header, int stream_threads, int stream_queue,
+			      int workers, const char *listen_spec, nb_thread ***thread_storage)
 {
-	pthread_t *threads = NULL;
-	pthread_attr_t attributes;
-	int attributes_ready = 0;
+	nb_thread **threads = NULL;
+	nb_thread_options options = {.stack_size = FCGI_WORKER_STACK_SIZE};
 	int started = 0;
 	int result = 0;
 
@@ -326,32 +325,25 @@ static int server_run_workers(struct fcgi_server *server, const char *database,
 		result = 6;
 		return result;
 	}
-	if (pthread_attr_init(&attributes) == 0) {
-		attributes_ready = 1;
-		(void)pthread_attr_setstacksize(&attributes, FCGI_WORKER_STACK_SIZE);
-	}
-	if (pthread_create(&server->maintenance_thread, NULL, maintenance_main, server) == 0)
+	if (nb_thread_create(&server->maintenance_thread, maintenance_main, server, NULL) == 0)
 		server->maintenance_started = 1;
 	fprintf(stderr, "morph-fastcgi: listening on %s, %d workers, db=%s\n", listen_spec, workers,
 		database);
-	for (; started < workers && !morph_signal_flag_get(&server->shutdown); started++) {
-		int error = pthread_create(&threads[started], attributes_ready ? &attributes : NULL,
-					   worker_main, server);
+	for (; started < workers && !nb_atomic_int_load(&server->shutdown); started++) {
+		int error = nb_thread_create(&threads[started], worker_main, server, &options);
 
 		if (error) {
 			fprintf(stderr, "morph-fastcgi: worker creation failed: %s\n",
-				morph_strerror(-error));
+				nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, error));
 			result = 6;
 			server_stop(server);
 			break;
 		}
 	}
-	if (attributes_ready)
-		pthread_attr_destroy(&attributes);
 	for (int i = 0; i < started; i++)
-		pthread_join(threads[i], NULL);
+		nb_thread_join_take(&threads[i], NULL);
 	if (server->maintenance_started) {
-		pthread_join(server->maintenance_thread, NULL);
+		nb_thread_join_take(&server->maintenance_thread, NULL);
 		server->maintenance_started = 0;
 	}
 	return result;
@@ -361,7 +353,7 @@ int main(int argc, char **argv)
 {
 	struct fcgi_server state = {.listen_fd = -1};
 	struct fcgi_server *server = &state;
-	pthread_t *threads = NULL;
+	nb_thread **threads = NULL;
 	int result = 0;
 	const char *listen_spec = getenv_or("MORPH_FCGI_LISTEN", "unix:/run/morph-fastcgi.sock");
 	const char *database = getenv_or("MORPH_FCGI_DB", "/var/lib/morph/morph.db");
@@ -373,7 +365,8 @@ int main(int argc, char **argv)
 
 	(void)argc;
 	(void)argv;
-	if (log_file && *log_file && log_init(&server->logger, log_file, LOG_INFO) == 0)
+	if (log_file && *log_file &&
+	    (server->logger = nb_log_new_file(NB_LOG_INFO, log_file, 5 * 1024 * 1024, 3)))
 		server->logger_ready = 1;
 	if (workers < 1)
 		workers = 1;
@@ -389,22 +382,24 @@ int main(int argc, char **argv)
 		stream_queue = FCGI_STREAM_QUEUE_MAX;
 	if (configure_trust_param(server, trust_header) != 0)
 		return 4;
-	if (morph_signals_block() != 0 || FCGX_Init() != 0)
+	if (FCGX_Init() != 0)
 		return 1;
 	signal(SIGPIPE, SIG_IGN);
 	server->listen_fd = open_listen(server, listen_spec);
 	if (server->listen_fd < 0)
 		return 2;
-	result = morph_signal_listener_start(&server->signals, on_signal, server);
+	result = nb_signal_listener_start(&server->signals,
+					  (const int[]){SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGWINCH},
+					  5, on_signal, server, NULL);
 	if (result != 0) {
 		close(server->listen_fd);
 		return 1;
 	}
 	result = server_run_workers(server, database, trust_header, stream_threads,
 				    stream_queue, workers, listen_spec, &threads);
-	if (!morph_signal_flag_get(&server->listen_closed))
+	if (!nb_atomic_int_load(&server->listen_closed))
 		server_stop(server);
-	morph_signal_listener_stop(&server->signals);
+	nb_signal_listener_stop(&server->signals, NULL);
 	fcgi_stream_pool_destroy(server->streams);
 	server->streams = NULL;
 	if (server->socket_path[0])
@@ -414,7 +409,8 @@ int main(int argc, char **argv)
 	fcgi_bridge_shutdown(server->bridge);
 	session_store_close(server->store);
 	if (server->logger_ready) {
-		log_shutdown(&server->logger);
+		nb_log_free(server->logger);
+		server->logger = NULL;
 		server->logger_ready = 0;
 	}
 	return result;

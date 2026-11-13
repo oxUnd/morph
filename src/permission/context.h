@@ -7,7 +7,8 @@ extern "C" {
 
 #include <limits.h>
 #include <stddef.h>
-#include "util/array.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 
 #define TOOL_CONTEXT_OUTPUT_DIR_MAX PATH_MAX
 #define TOOL_CONTEXT_ALLOW_MAX 32
@@ -29,7 +30,7 @@ struct tool_path_snapshot {
 
 struct tool_permission_snapshot {
 	struct permission_policy policy;
-	struct morph_log *logger;
+	struct nb_log *logger;
 	char *workdir;
 	char *output_dir;
 	struct tool_path_snapshot read;
@@ -59,7 +60,7 @@ void tool_context_reset_denials(struct tool_context *tctx);
 /* Borrowed until context destruction. Configuration is read/updated through the
  * synchronized context operations, rather than by mutating this view. */
 struct permission_context *tool_context_permission_context_borrow(struct tool_context *tctx);
-struct tool_context *tool_context_create(struct morph_log *logger, const char *workdir,
+struct tool_context *tool_context_create(struct nb_log *logger, const char *workdir,
 					 const char *output_dir);
 void tool_context_destroy(struct tool_context *tctx);
 /* Work/output directory strings belong to context and survive until destroy.
@@ -68,7 +69,7 @@ const char *tool_context_workdir_borrow(const struct tool_context *tctx);
 const char *tool_context_output_dir_borrow(const struct tool_context *tctx);
 const char *tool_context_grant_project_root_borrow(const struct tool_context *tctx);
 /* The external logger owner must outlive the context and its workers. */
-struct morph_log *tool_context_logger_borrow(const struct tool_context *tctx);
+struct nb_log *tool_context_logger_borrow(const struct tool_context *tctx);
 void tool_context_set_default_timeout(struct tool_context *tctx, int seconds);
 int tool_context_default_timeout(const struct tool_context *tctx);
 /* Built-in policy paths are independent of bounded user approval grants. */

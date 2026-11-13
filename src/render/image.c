@@ -1,10 +1,11 @@
 #include "image.h"
-#include "util/terminal_size.h"
+#include <morph/tui/terminal/size.h>
 #include "morph_kitty_protocol.h"
-#include "util/buf.h"
-#include "util/log.h"
-#include "util/base64.h"
-#include "util/error.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/log.h"
+#include "nb/encoding.h"
+#include "errors.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -15,8 +16,8 @@
 
 /*
  * stb_image / stb_image_write are already compiled with their
- * STB_*_IMPLEMENTATION macros in src/util/image_util.c (linked via
- * morph-util). Including the headers here without the impl macros
+ * STB_*_IMPLEMENTATION macros in src/media/image.c (linked via
+ * morph-media). Including the headers here without the impl macros
  * just gives us the prototypes; the symbols resolve at link time.
  */
 #include "stb_image.h"
@@ -50,153 +51,70 @@ int image_detect_fmt(const unsigned char *data, size_t len)
 	return 0;
 }
 
-static void write_all(int fd, const char *buf, size_t len)
-{
-	while (len > 0) {
-		ssize_t n = write(fd, buf, len);
-		if (n <= 0)
-			break;
-		buf += n;
-		len -= (size_t)n;
-	}
-}
-
 static int kitty_stdout_write(const char *bytes, size_t len, void *user_data)
 {
-	size_t offset = 0u;
-
 	(void)user_data;
-	while (offset < len) {
-		ssize_t count = write(STDOUT_FILENO, bytes + offset, len - offset);
-
-		if (count < 0)
-			return -errno;
-		if (count == 0)
-			return -EIO;
-		offset += (size_t)count;
-	}
-	return 0;
+	return nb_fd_write_until(STDOUT_FILENO, bytes, len, INT64_MAX, NULL, NULL, NULL);
 }
 
-/* stb_image_write callback: append bytes into a growing buffer. */
-struct png_sink {
-	morph_buf_t buf;
-	int oom;
-};
-
-static void png_sink_write(void *ctx, void *data, int size)
+/* stb_image_write appends binary bytes into a native buffer owner. */
+static void png_sink_write(void *context, void *data, int size)
 {
-	struct png_sink *s = ctx;
-	if (s->oom || size <= 0)
-		return;
-	if (morph_buf_append(&s->buf, data, (size_t)size) != 0)
-		s->oom = 1;
+	if (size > 0)
+		(void)nb_buf_append(context, data, (size_t)size);
 }
 
-/*
- * Read file at path into a freshly malloc'd buffer. Returns 0 on success
- * and stores buf+len. On error returns negative errno; caller does not
- * need to free.
- */
-static int read_file_all(const char *path, unsigned char **out, size_t *out_len)
+/* Kitty accepts PNG/RGB/RGBA, so other source formats are decoded and encoded
+ * as PNG. The caller retains a native binary owner throughout transmission. */
+static int load_as_png(struct nb_log *logger, const char *path, nb_buf *output, int *format)
 {
-	FILE *f = fopen(path, "rb");
-	if (!f)
-		return -EIO;
-	if (fseek(f, 0, SEEK_END) != 0) {
-		fclose(f);
-		return -EIO;
-	}
-	long fsize = ftell(f);
-	if (fsize <= 0) {
-		fclose(f);
-		return -EIO;
-	}
-	if (fseek(f, 0, SEEK_SET) != 0) {
-		fclose(f);
-		return -EIO;
-	}
-	unsigned char *data = malloc((size_t)fsize);
-	if (!data) {
-		fclose(f);
-		return -ENOMEM;
-	}
-	size_t rd = fread(data, 1, (size_t)fsize, f);
-	fclose(f);
-	if (rd != (size_t)fsize) {
-		free(data);
-		return -EIO;
-	}
-	*out = data;
-	*out_len = rd;
-	return 0;
-}
-
-/*
- * Kitty's graphics protocol only accepts f=24 (RGB), f=32 (RGBA),
- * and f=100 (PNG). JPEG/WebP/GIF/BMP are NOT directly supported.
- * If the input is not already PNG, decode it with stb_image and
- * re-encode as PNG before transmitting.
- *
- * On success: *out_data / *out_len is a malloc'd buffer the caller
- * must free; *out_fmt is set to 100.
- */
-static int load_as_png(struct morph_log *logger, const char *path, unsigned char **out_data,
-		       size_t *out_len, int *out_fmt)
-{
-	unsigned char *raw = NULL;
-	size_t raw_len = 0;
-	int rc = read_file_all(path, &raw, &raw_len);
-	if (rc != 0)
+	nb_buf source NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf png NB_CLEANUP(nb_buf_destroy) = {0};
+	int rc = nb_file_read_all(path, &source, 0, NULL);
+	if (rc != NB_OK)
 		return rc;
-
-	int fmt = image_detect_fmt(raw, raw_len);
-	if (fmt == 100) {
-		*out_data = raw;
-		*out_len = raw_len;
-		*out_fmt = 100;
-		return 0;
+	if (image_detect_fmt((const unsigned char *)nb_buf_cstr(&source), nb_buf_len(&source)) ==
+	    100) {
+		nb_buf_move(output, &source);
+		*format = 100;
+		return NB_OK;
 	}
-
-	/* Not PNG (JPEG, or unknown like WebP/GIF/BMP). Decode + reencode. */
-	int w = 0, h = 0, ch = 0;
-	unsigned char *pixels = stbi_load_from_memory(raw, (int)raw_len, &w, &h, &ch, 4);
-	free(raw);
+	if (nb_buf_len(&source) > INT_MAX)
+		return NB_ERR_TOO_BIG;
+	int width = 0;
+	int height = 0;
+	int channels = 0;
+	unsigned char *pixels =
+		stbi_load_from_memory((const unsigned char *)nb_buf_cstr(&source),
+				      (int)nb_buf_len(&source), &width, &height, &channels, 4);
 	if (!pixels) {
-		log_warn(logger, "render_kitty: stbi_load_from_memory failed for '%s': %s", path,
-			 stbi_failure_reason());
-		return -EIO;
+		nb_log_write(logger, NB_LOG_WARN, "cannot decode terminal image '%s': %s", path,
+			     stbi_failure_reason());
+		return NB_ERR_IO;
 	}
-
-	struct png_sink sink;
-	sink.oom = 0;
-	if (morph_buf_init(&sink.buf, 4096) != 0) {
-		stbi_image_free(pixels);
-		return -ENOMEM;
-	}
-	int wrote = stbi_write_png_to_func(png_sink_write, &sink, w, h, 4, pixels, w * 4);
+	int wrote =
+		stbi_write_png_to_func(png_sink_write, &png, width, height, 4, pixels, width * 4);
 	stbi_image_free(pixels);
-	if (!wrote || sink.oom || sink.buf.len == 0) {
-		morph_buf_cleanup(&sink.buf);
-		return -ENOMEM;
-	}
-
-	*out_len = sink.buf.len;
-	*out_data = (unsigned char *)morph_buf_detach(&sink.buf);
-	*out_fmt = 100;
-	return 0;
+	if (!wrote || !nb_buf_ok(&png) || nb_buf_empty(&png))
+		return NB_ERR_NOMEM;
+	nb_buf_move(output, &png);
+	*format = 100;
+	return NB_OK;
 }
 
-static int render_kitty(struct morph_log *logger, const char *path)
+static int render_kitty(struct nb_log *logger, const char *path)
 {
-	unsigned char *data = NULL;
-	size_t rd = 0;
+	nb_buf pixels NB_CLEANUP(nb_buf_destroy) = {0};
 	int fmt = 0;
-	int rc = load_as_png(logger, path, &data, &rd, &fmt);
+	int rc = load_as_png(logger, path, &pixels, &fmt);
 	if (rc != 0) {
-		log_warn(logger, "render_kitty: load_as_png('%s') failed: %d", path, rc);
+		nb_log_write(logger, NB_LOG_WARN, "render_kitty: load_as_png('%s') failed: %s",
+			     path, nb_status_str(rc));
 		return rc;
 	}
+
+	const unsigned char *data = (const unsigned char *)nb_buf_cstr(&pixels);
+	size_t rd = nb_buf_len(&pixels);
 
 	int cols;
 	int rows_limit;
@@ -222,8 +140,7 @@ static int render_kitty(struct morph_log *logger, const char *path)
 	if (rd > (size_t)INT_MAX ||
 	    !stbi_info_from_memory(data, (int)rd, &pixel_width, &pixel_height, &channels) ||
 	    pixel_width <= 0 || pixel_height <= 0) {
-		free(data);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	memset(&ws, 0, sizeof(ws));
 	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
@@ -249,18 +166,19 @@ static int render_kitty(struct morph_log *logger, const char *path)
 			disp_rows = 1;
 	}
 
-	char *b64 = base64_encode_copy(data, rd);
-	free(data);
-	if (!b64)
-		return -ENOMEM;
-	size_t b64_len = strlen(b64);
+	nb_buf encoded NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_status status = nb_base64_encode(data, rd, NB_B64_STD, true, &encoded, NULL);
+	if (status != NB_OK)
+		return NB_ERR_NOMEM;
+	const char *b64 = nb_buf_cstr(&encoded);
+	size_t b64_len = nb_buf_len(&encoded);
 
 	uint32_t image_id = morph_kitty_image_id_new();
-	log_dbg(logger,
-		"render_kitty: path='%s' fmt=%d raw=%zu b64=%zu "
-		"cols=%d placement=%dx%d id=%u chunks=%zu",
-		path, fmt, rd, b64_len, cols, disp_cols, disp_rows, image_id,
-		(b64_len + 4095) / 4096);
+	nb_log_write(logger, NB_LOG_DEBUG,
+		     "render_kitty: path='%s' fmt=%d raw=%zu b64=%zu "
+		     "cols=%d placement=%dx%d id=%u chunks=%zu",
+		     path, fmt, rd, b64_len, cols, disp_cols, disp_rows, image_id,
+		     (b64_len + 4095) / 4096);
 
 	fflush(stdout);
 
@@ -286,55 +204,46 @@ static int render_kitty(struct morph_log *logger, const char *path)
 			hdr_len = snprintf(hdr, sizeof(hdr), "\033_Gm=%d;", is_last ? 0 : 1);
 		}
 
-		write_all(STDOUT_FILENO, hdr, (size_t)hdr_len);
-		write_all(STDOUT_FILENO, b64 + i, chunk);
-		write_all(STDOUT_FILENO, "\033\\", 2);
+		(void)nb_fd_write_until(STDOUT_FILENO, hdr, (size_t)hdr_len, INT64_MAX, NULL, NULL,
+					NULL);
+		(void)nb_fd_write_until(STDOUT_FILENO, b64 + i, chunk, INT64_MAX, NULL, NULL, NULL);
+		(void)nb_fd_write_until(STDOUT_FILENO, "\033\\", 2, INT64_MAX, NULL, NULL, NULL);
 	}
-	free(b64);
 
 	for (int row = 0; row < disp_rows; row++) {
 		rc = morph_kitty_write_placeholder_row(kitty_stdout_write, NULL, image_id,
 						       (unsigned int)row, (unsigned int)disp_cols);
 		if (rc != 0)
 			return rc;
-		write_all(STDOUT_FILENO, "\n", 1);
+		(void)nb_fd_write_until(STDOUT_FILENO, "\n", 1, INT64_MAX, NULL, NULL, NULL);
 	}
 	return 0;
 }
 
 static int render_iterm2(const char *path)
 {
-	FILE *f = fopen(path, "rb");
-	if (!f)
-		return -EIO;
-	fseek(f, 0, SEEK_END);
-	long fsize = ftell(f);
-	fseek(f, 0, SEEK_SET);
-	if (fsize <= 0) {
-		fclose(f);
-		return -EIO;
-	}
-	unsigned char *data = malloc((size_t)fsize);
-	if (!data) {
-		fclose(f);
-		return -ENOMEM;
-	}
-	size_t rd = fread(data, 1, (size_t)fsize, f);
-	fclose(f);
+	nb_buf source NB_CLEANUP(nb_buf_destroy) = {0};
+	int rc = nb_file_read_all(path, &source, 0, NULL);
+	if (rc != NB_OK)
+		return rc;
+	if (nb_buf_empty(&source))
+		return NB_ERR_IO;
+	const unsigned char *data = (const unsigned char *)nb_buf_cstr(&source);
+	size_t rd = nb_buf_len(&source);
 
-	char *b64 = base64_encode_copy(data, rd);
-	free(data);
-	if (!b64)
-		return -ENOMEM;
-	size_t b64_len = strlen(b64);
+	nb_buf encoded NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_status status = nb_base64_encode(data, rd, NB_B64_STD, true, &encoded, NULL);
+	if (status != NB_OK)
+		return NB_ERR_NOMEM;
+	const char *b64 = nb_buf_cstr(&encoded);
+	size_t b64_len = nb_buf_len(&encoded);
 
 	fflush(stdout);
 	char hdr[128];
 	int hdr_len = snprintf(hdr, sizeof(hdr), "\033]1337;File=inline=1;size=%zu:", rd);
-	write_all(STDOUT_FILENO, hdr, (size_t)hdr_len);
-	write_all(STDOUT_FILENO, b64, b64_len);
-	write_all(STDOUT_FILENO, "\a", 1);
-	free(b64);
+	(void)nb_fd_write_until(STDOUT_FILENO, hdr, (size_t)hdr_len, INT64_MAX, NULL, NULL, NULL);
+	(void)nb_fd_write_until(STDOUT_FILENO, b64, b64_len, INT64_MAX, NULL, NULL, NULL);
+	(void)nb_fd_write_until(STDOUT_FILENO, "\a", 1, INT64_MAX, NULL, NULL, NULL);
 	return 0;
 }
 
@@ -355,35 +264,38 @@ int image_terminal_protocol_available(void)
 	return detect_kitty() || detect_iterm2() || detect_sixel();
 }
 
-int image_render_terminal(struct morph_log *logger, const char *path)
+int image_render_terminal(struct nb_log *logger, const char *path)
 {
 	if (!path || !*path) {
-		log_warn(logger, "image_render: no path provided");
-		return -EINVAL;
+		nb_log_write(logger, NB_LOG_WARN, "image_render: no path provided");
+		return NB_ERR_INVAL;
 	}
 
-	log_dbg(logger, "image_render: path='%s' kitty=%d iterm2=%d sixel=%d", path, detect_kitty(),
-		detect_iterm2(), detect_sixel());
+	nb_log_write(logger, NB_LOG_DEBUG, "image_render: path='%s' kitty=%d iterm2=%d sixel=%d",
+		     path, detect_kitty(), detect_iterm2(), detect_sixel());
 
 	if (detect_kitty()) {
-		log_dbg(logger, "image_render: trying kitty protocol");
+		nb_log_write(logger, NB_LOG_DEBUG, "image_render: trying kitty protocol");
 		if (render_kitty(logger, path) == 0)
 			return 0;
-		log_warn(logger, "image_render: kitty protocol failed, trying fallback");
+		nb_log_write(logger, NB_LOG_WARN,
+			     "image_render: kitty protocol failed, trying fallback");
 	}
 	if (detect_iterm2()) {
-		log_dbg(logger, "image_render: trying iterm2 protocol");
+		nb_log_write(logger, NB_LOG_DEBUG, "image_render: trying iterm2 protocol");
 		if (render_iterm2(path) == 0) {
-			write_all(STDOUT_FILENO, "\n", 1);
+			(void)nb_fd_write_until(STDOUT_FILENO, "\n", 1, INT64_MAX, NULL, NULL,
+						NULL);
 			return 0;
 		}
 	}
 	if (detect_sixel()) {
-		log_dbg(logger, "image_render: trying sixel");
+		nb_log_write(logger, NB_LOG_DEBUG, "image_render: trying sixel");
 		if (render_sixel(path) == 0)
 			return 0;
 	}
-	log_dbg(logger, "image_render: no terminal protocol detected, printing path");
+	nb_log_write(logger, NB_LOG_DEBUG,
+		     "image_render: no terminal protocol detected, printing path");
 	printf("(image: %s)\n", path);
 	fflush(stdout);
 	return 0;

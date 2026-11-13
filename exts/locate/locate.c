@@ -11,6 +11,7 @@
  */
 
 #include <stdio.h>
+#include "nb/err.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -33,9 +34,11 @@ static int json_get_int(const char *s, const char *key, int *val)
 	char pat[64];
 	snprintf(pat, sizeof(pat), "\"%s\"", key);
 	const char *p = strstr(s, pat);
-	if (!p) return -1;
+	if (!p)
+		return NB_ERR_INVAL;
 	p = strchr(p + strlen(key) + 2, ':');
-	if (!p) return -1;
+	if (!p)
+		return NB_ERR_INVAL;
 	while (*p && (*p < '0' || *p > '9') && *p != '-') p++;
 	*val = (int)strtol(p, NULL, 10);
 	return 0;
@@ -243,7 +246,8 @@ static int get_location(double *lat, double *lon,
 {
 	@autoreleasepool {
 		LocDel *d = [[LocDel alloc] init];
-		if (!d) return -ENOMEM;
+		if (!d)
+			return NB_ERR_NOMEM;
 		int timedout = 0;
 		CFRunLoopTimerContext timer_context = {0};
 
@@ -253,7 +257,7 @@ static int get_location(double *lat, double *lon,
 
 		if (st == kCLAuthorizationStatusDenied ||
 		    st == kCLAuthorizationStatusRestricted) {
-			return -EPERM;
+			return NB_ERR_NOT_PERMITTED;
 		}
 
 		if (st == kCLAuthorizationStatusNotDetermined)
@@ -281,7 +285,7 @@ static int get_location(double *lat, double *lon,
 		CFRelease(timer);
 
 		if (timedout)
-			return -ETIMEDOUT;
+			return NB_ERR_TIMEOUT;
 
 		/*
 		 * Read loc and err via direct ivar access, NOT property
@@ -293,8 +297,10 @@ static int get_location(double *lat, double *lon,
 		NSError *err = (NSError *)ivar_read(d, "_err");
 		CLLocation *loc = (CLLocation *)ivar_read(d, "_loc");
 
-		if (err) return -EPERM;
-		if (!loc) return -ENODATA;
+		if (err)
+			return NB_ERR_NOT_PERMITTED;
+		if (!loc)
+			return NB_ERR_NO_DATA;
 
 		CLLocationCoordinate2D c = [loc coordinate];
 		*lat = c.latitude;
@@ -308,7 +314,7 @@ static int get_location(double *lat, double *lon,
 		[s getCString:ts maxLength:(NSUInteger)ts_sz
 		     encoding:NSUTF8StringEncoding];
 
-		return (isfinite(*lat) && isfinite(*lon)) ? 0 : -ENODATA;
+		return (isfinite(*lat) && isfinite(*lon)) ? 0 : NB_ERR_NO_DATA;
 	}
 }
 
@@ -375,7 +381,7 @@ static int read_location(sd_bus *bus, sd_bus_error *error, sd_bus_message **repl
 	sd_bus_message_unref(*reply);
 	*reply = NULL;
 	if (rc < 0 || !loc_path || strcmp(loc_path, "/") == 0) {
-		rc = -ENODATA;
+		rc = NB_ERR_NO_DATA;
 		return rc;
 	}
 
@@ -473,7 +479,7 @@ static int get_location(double *lat, double *lon,
 {
 	(void)lat; (void)lon; (void)acc;
 	(void)alt; (void)ts; (void)ts_sz;
-	return -ENOSYS;
+	return NB_ERR_UNSUPPORTED;
 }
 
 #endif
@@ -652,7 +658,7 @@ int main(int argc, char **argv)
 		} else {
 			fprintf(stderr, "Error: %s\n", strerror(-rc));
 #if defined(__APPLE__)
-			if (rc == -EPERM || rc == -ETIMEDOUT)
+			if (rc == NB_ERR_NOT_PERMITTED || rc == NB_ERR_TIMEOUT)
 				fprintf(stderr,
 					"Allow location access in:\n"
 					"  System Settings > Privacy & Security\n"

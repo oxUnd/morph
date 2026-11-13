@@ -4,11 +4,12 @@
 #include "prompt_context.h"
 #include "react.h"
 #include "tokenizer.h"
-#include "util/cleanup.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/log.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/log.h"
+#include "nb/utf8.h"
 #include <errno.h>
 #include <limits.h>
 #include <ctype.h>
@@ -46,7 +47,7 @@ int agent_history_repair_interrupted(struct db *db, int64_t session_id)
 	int rc = 0;
 
 	if (!db || session_id <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	items = model_history_list(db, session_id, 1, &count);
 	for (item = items; item && rc == 0; item = item->next) {
 		cJSON *root;
@@ -152,7 +153,7 @@ int agent_history_diagnose(const struct model_history_item *items, struct tokeni
 	const struct model_history_item *item;
 
 	if (!diagnostic)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(diagnostic, 0, sizeof(*diagnostic));
 	for (item = items; item; item = item->next) {
 		const char *token_text = item->content;
@@ -216,8 +217,8 @@ int agent_history_repair(struct db *db, int64_t session_id, struct tokenizer *to
 	int rc;
 
 	if (!db || session_id <= 0)
-		return -EINVAL;
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+		return NB_ERR_INVAL;
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	rc = db_lock_acquire(db, &lock);
 	if (rc == 0)
 		rc = db_exec(db, "BEGIN IMMEDIATE;");
@@ -291,9 +292,9 @@ int agent_history_repair(struct db *db, int64_t session_id, struct tokenizer *to
 			   !history_call_exists(items, item->tool_call_id,
 						item->provider_call_id)) {
 			active = 0;
-			log_warn(db ? db->logger : NULL,
-				 "deactivating orphan history tool result %lld",
-				 (long long)item->id);
+			nb_log_write(db ? db->logger : NULL, NB_LOG_WARN,
+				     "deactivating orphan history tool result %lld",
+				     (long long)item->id);
 		}
 		tokens = history_item_tokens(item, tokenizer, token_text);
 		if (tokens < 0) {
@@ -321,8 +322,8 @@ int agent_history_repair(struct db *db, int64_t session_id, struct tokenizer *to
 		if (strcmp(item->kind, "tool_result") != 0 ||
 		    history_call_exists(items, item->tool_call_id, item->provider_call_id))
 			continue;
-		log_warn(db ? db->logger : NULL, "deactivating orphan history tool result %lld",
-			 (long long)item->id);
+		nb_log_write(db ? db->logger : NULL, NB_LOG_WARN,
+			     "deactivating orphan history tool result %lld", (long long)item->id);
 		rc = history_store_update_item(db, item->id, 0, item->token_count);
 		if (rc != 0) {
 			model_history_free_list(items);

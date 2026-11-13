@@ -1,16 +1,17 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 #include <climits>
 #include "agent/context.h"
 #include "agent/tokenizer.h"
 #include "agent/react_request.h"
 #include "agent/history.h"
 #include "agent/react_tool_worker.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include <string.h>
 
 static void append_message_owned(struct message_list **head, struct message_list *message)
 {
-	struct message_list *owned MORPH_CLEANUP(msg_list_clear) = message;
+	struct message_list *owned NB_CLEANUP(msg_list_clear) = message;
 	if (owned)
 		EXPECT_EQ(msg_list_append_take(head, &owned), 0);
 }
@@ -28,7 +29,7 @@ protected:
 };
 
 TEST_F(ContextTest, CreateMessage) {
-	struct message_list *m MORPH_CLEANUP(msg_list_clear) =
+	struct message_list *m NB_CLEANUP(msg_list_clear) =
 		msg_list_create("user", "hello world", 3);
 	ASSERT_NE(m, nullptr);
 	EXPECT_STREQ(m->role, "user");
@@ -37,14 +38,13 @@ TEST_F(ContextTest, CreateMessage) {
 }
 
 TEST_F(ContextTest, CreateNullRole) {
-	struct message_list *m MORPH_CLEANUP(msg_list_clear) =
-		msg_list_create(nullptr, "content", 1);
+	struct message_list *m NB_CLEANUP(msg_list_clear) = msg_list_create(nullptr, "content", 1);
 	ASSERT_NE(m, nullptr);
 	EXPECT_STREQ(m->role, "");
 }
 
 TEST_F(ContextTest, AppendMessages) {
-	struct message_list *head MORPH_CLEANUP(msg_list_clear) = nullptr;
+	struct message_list *head NB_CLEANUP(msg_list_clear) = nullptr;
 	append_message_owned(&head, msg_list_create("user", "hi", 1));
 	append_message_owned(&head, msg_list_create("assistant", "hello", 1));
 	append_message_owned(&head, msg_list_create("user", "how are you", 3));
@@ -52,7 +52,7 @@ TEST_F(ContextTest, AppendMessages) {
 }
 
 TEST_F(ContextTest, AppendNull) {
-	struct message_list *head MORPH_CLEANUP(msg_list_clear) = nullptr;
+	struct message_list *head NB_CLEANUP(msg_list_clear) = nullptr;
 	append_message_owned(&head, nullptr);
 	EXPECT_EQ(msg_list_count(head), 0);
 }
@@ -62,7 +62,7 @@ TEST_F(ContextTest, DestroyNull) {
 }
 
 TEST_F(ContextTest, TokenCountWithTokenizer) {
-	struct message_list *head MORPH_CLEANUP(msg_list_clear) = nullptr;
+	struct message_list *head NB_CLEANUP(msg_list_clear) = nullptr;
 	append_message_owned(&head, msg_list_create("user", "hello world", 0));
 	append_message_owned(&head, msg_list_create("assistant", "hi there", 0));
 	int count = context_token_count(head, tok);
@@ -70,7 +70,7 @@ TEST_F(ContextTest, TokenCountWithTokenizer) {
 }
 
 TEST_F(ContextTest, TokenCountWithoutTokenizer) {
-	struct message_list *head MORPH_CLEANUP(msg_list_clear) = nullptr;
+	struct message_list *head NB_CLEANUP(msg_list_clear) = nullptr;
 	append_message_owned(&head, msg_list_create("user", "hello", 5));
 	append_message_owned(&head, msg_list_create("assistant", "hi", 2));
 	int count = context_token_count(head, nullptr);
@@ -89,7 +89,7 @@ TEST_F(ContextTest, NeedsCompress) {
 		.summarize_threshold_ratio = 0.8,
 		.compress_target_ratio = 0.5,
 	};
-	struct message_list *head MORPH_CLEANUP(msg_list_clear) = nullptr;
+	struct message_list *head NB_CLEANUP(msg_list_clear) = nullptr;
 	append_message_owned(&head, msg_list_create("user", "short message", 0));
 	EXPECT_EQ(context_needs_compress(head, tok, &cfg), 0);
 
@@ -108,14 +108,14 @@ TEST_F(ContextTest, NeedsCompress) {
 }
 
 TEST_F(ContextTest, NeedsCompressNullCfg) {
-	struct message_list *head MORPH_CLEANUP(msg_list_clear) = nullptr;
+	struct message_list *head NB_CLEANUP(msg_list_clear) = nullptr;
 	append_message_owned(&head, msg_list_create("user", "test", 1));
 	EXPECT_EQ(context_needs_compress(head, tok, nullptr), 0);
 }
 
 TEST_F(ContextTest, LargeTokenCountsSaturateWithoutDisablingCompression)
 {
-	struct message_list *head MORPH_CLEANUP(msg_list_clear) = nullptr;
+	struct message_list *head NB_CLEANUP(msg_list_clear) = nullptr;
 	append_message_owned(&head, msg_list_create("user", "first", INT_MAX));
 	append_message_owned(&head, msg_list_create("assistant", "second", INT_MAX));
 	EXPECT_EQ(context_token_count(head, tok), INT_MAX);
@@ -129,31 +129,31 @@ TEST_F(ContextTest, LargeTokenCountsSaturateWithoutDisablingCompression)
 
 TEST_F(ContextTest, AppendTakeClearsSourceOnlyOnSuccess)
 {
-	struct message_list *head MORPH_CLEANUP(msg_list_clear) = nullptr;
-	struct message_list *message MORPH_CLEANUP(msg_list_clear) =
+	struct message_list *head NB_CLEANUP(msg_list_clear) = nullptr;
+	struct message_list *message NB_CLEANUP(msg_list_clear) =
 		msg_list_create("user", "owned payload", 1);
 	ASSERT_NE(message, nullptr);
 	auto *original = message;
-	EXPECT_EQ(msg_list_append_take(nullptr, &message), -EINVAL);
+	EXPECT_EQ(msg_list_append_take(nullptr, &message), NB_ERR_INVAL);
 	EXPECT_EQ(message, original);
 	ASSERT_EQ(msg_list_append_take(&head, &message), 0);
 	EXPECT_EQ(message, nullptr);
 	EXPECT_EQ(head, original);
 	EXPECT_STREQ(head->content, "owned payload");
-	EXPECT_EQ(msg_list_append_take(&head, &head), -EINVAL);
+	EXPECT_EQ(msg_list_append_take(&head, &head), NB_ERR_INVAL);
 	EXPECT_EQ(head, original);
 }
 
 TEST_F(ContextTest, RequestOwnsIndependentCopiesAndRejectsOccupiedOutput)
 {
-	struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry registry NB_CLEANUP(tool_registry_cleanup) = {};
 	tool_registry_init(nullptr, &registry);
-	struct react_context *ctx MORPH_CLEANUP(react_context_clear) =
+	struct react_context *ctx NB_CLEANUP(react_context_clear) =
 		react_context_create(&registry, tok, nullptr, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	struct model model{};
-	struct chat_message source MORPH_CLEANUP(chat_message_cleanup) = {};
-	struct react_request_messages request MORPH_CLEANUP(react_request_messages_cleanup) = {};
+	struct chat_message source NB_CLEANUP(chat_message_cleanup) = {};
+	struct react_request_messages request NB_CLEANUP(react_request_messages_cleanup) = {};
 	char prompt[] = "initial system prompt";
 
 	source.role = strdup("assistant");
@@ -164,8 +164,8 @@ TEST_F(ContextTest, RequestOwnsIndependentCopiesAndRejectsOccupiedOutput)
 	source.tool_call_count = 1;
 	source.tool_calls[0].arguments = strdup("{\"input\":1}");
 	ASSERT_EQ(react_request_messages_create(ctx, &model, prompt, &source, 1, &request), 0);
-	ASSERT_EQ(request.messages.nelts, 1U);
-	auto *copy = static_cast<struct chat_message *>(request.messages.elts);
+	ASSERT_EQ(request.messages.len, 1U);
+	auto *copy = static_cast<struct chat_message *>(((void *)request.messages.data));
 	EXPECT_NE(copy->content, source.content);
 	EXPECT_NE(copy->tool_calls, source.tool_calls);
 	EXPECT_NE(copy->tool_calls[0].arguments, source.tool_calls[0].arguments);
@@ -177,15 +177,15 @@ TEST_F(ContextTest, RequestOwnsIndependentCopiesAndRejectsOccupiedOutput)
 	EXPECT_STREQ(copy->tool_calls[0].arguments, "{\"input\":1}");
 	auto *retained = request.system_prompt;
 	EXPECT_EQ(react_request_messages_create(ctx, &model, "replacement", nullptr, 0, &request),
-		  -EALREADY);
+		  NB_ERR_STATE);
 	EXPECT_EQ(request.system_prompt, retained);
 }
 
 TEST_F(ContextTest, WorkerRetainsOptionalPayloadsThatWereNotCollected)
 {
-	struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry registry NB_CLEANUP(tool_registry_cleanup) = {};
 	tool_registry_init(nullptr, &registry);
-	struct react_context *ctx MORPH_CLEANUP(react_context_clear) =
+	struct react_context *ctx NB_CLEANUP(react_context_clear) =
 		react_context_create(&registry, tok, nullptr, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	auto *worker = react_tool_worker_create(&registry, ctx, "test", "{}", "call", "call",
@@ -198,8 +198,8 @@ TEST_F(ContextTest, WorkerRetainsOptionalPayloadsThatWereNotCollected)
 	auto *retained_data = worker->data;
 	auto *retained_ui = worker->ui;
 	auto *retained_meta = worker->meta;
-	char *result MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
-	int rc = -EIO;
+	char *result NB_CLEANUP(nb_charp_cleanup) = nullptr;
+	int rc = NB_ERR_IO;
 	react_tool_worker_collect(worker, &rc, &result, nullptr, nullptr, nullptr, nullptr);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(result, "completed");
@@ -220,40 +220,42 @@ TEST_F(ContextTest, HistoryCopyFailurePreservesEmptyArrayStorage)
 	user.next = &invalid;
 	strcpy(invalid.kind, "assistant_tool_calls");
 	invalid.payload_json = const_cast<char *>("invalid");
-	morph_array_t messages MORPH_CLEANUP(agent_chat_messages_cleanup) = {};
-	ASSERT_EQ(morph_array_init(&messages, 4, sizeof(struct chat_message)), 0);
-	void *storage = messages.elts;
-	EXPECT_EQ(agent_history_messages_copy(nullptr, &user, &messages), MORPH_ERR_PARSE);
-	EXPECT_EQ(messages.elts, storage);
-	EXPECT_EQ(messages.nelts, 0U);
+	nb_vec messages NB_CLEANUP(agent_chat_messages_cleanup) = {};
+	ASSERT_EQ((nb_vec_init(&messages, sizeof(struct chat_message)),
+		   nb_vec_reserve(&messages, 4) ? 0 : NB_ERR_NOMEM),
+		  0);
+	void *storage = ((void *)messages.data);
+	EXPECT_EQ(agent_history_messages_copy(nullptr, &user, &messages), NB_ERR_PARSE);
+	EXPECT_EQ(((void *)messages.data), storage);
+	EXPECT_EQ(messages.len, 0U);
 	user.next = nullptr;
 	ASSERT_EQ(agent_history_messages_copy(nullptr, &user, &messages), 0);
-	ASSERT_EQ(messages.nelts, 1U);
-	storage = messages.elts;
-	EXPECT_EQ(agent_history_messages_copy(nullptr, &user, &messages), -EALREADY);
-	EXPECT_EQ(messages.elts, storage);
+	ASSERT_EQ(messages.len, 1U);
+	storage = ((void *)messages.data);
+	EXPECT_EQ(agent_history_messages_copy(nullptr, &user, &messages), NB_ERR_STATE);
+	EXPECT_EQ(((void *)messages.data), storage);
 }
 
 TEST_F(ContextTest, MessageAndCheckpointConstructorsPreserveOccupiedOutputs)
 {
-	struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry registry NB_CLEANUP(tool_registry_cleanup) = {};
 	tool_registry_init(nullptr, &registry);
-	struct react_context *ctx MORPH_CLEANUP(react_context_clear) =
+	struct react_context *ctx NB_CLEANUP(react_context_clear) =
 		react_context_create(&registry, tok, nullptr, nullptr);
 	ASSERT_NE(ctx, nullptr);
-	morph_array_t messages MORPH_CLEANUP(agent_chat_messages_cleanup) = {};
+	nb_vec messages NB_CLEANUP(agent_chat_messages_cleanup) = {};
 	ASSERT_EQ(react_messages_create(ctx, &messages, "first"), 0);
-	void *storage = messages.elts;
-	EXPECT_EQ(react_messages_create(ctx, &messages, "next"), -EALREADY);
-	EXPECT_EQ(messages.elts, storage);
-	char *owned MORPH_CLEANUP(morph_charp_cleanup) = strdup("retained");
+	void *storage = ((void *)messages.data);
+	EXPECT_EQ(react_messages_create(ctx, &messages, "next"), NB_ERR_STATE);
+	EXPECT_EQ(((void *)messages.data), storage);
+	char *owned NB_CLEANUP(nb_charp_cleanup) = strdup("retained");
 	ASSERT_NE(owned, nullptr);
 	char *owner = owned;
-	EXPECT_EQ(agent_history_tool_arguments_copy("{}", &owned), -EALREADY);
+	EXPECT_EQ(agent_history_tool_arguments_copy("{}", &owned), NB_ERR_STATE);
 	int truncated = 7;
 	EXPECT_EQ(agent_history_tool_content_copy(ctx, "replacement", &owned, &truncated),
-		  -EALREADY);
-	EXPECT_EQ(react_checkpoint_create("input", ctx, &owned), -EALREADY);
+		  NB_ERR_STATE);
+	EXPECT_EQ(react_checkpoint_create("input", ctx, &owned), NB_ERR_STATE);
 	EXPECT_EQ(owned, owner);
 	EXPECT_STREQ(owned, "retained");
 	EXPECT_EQ(truncated, 7);

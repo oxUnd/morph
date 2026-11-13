@@ -3,7 +3,7 @@
 #include "permission/context.h"
 #include "agent/agent_control.h"
 #include "tool_runtime.h"
-#include "util/error.h"
+#include "errors.h"
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -16,19 +16,19 @@ static int tool_error_code(const cJSON *envelope)
 
 	if (code != NULL) {
 		if (strcmp(code, "invalid_arguments") == 0) {
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 		if (strcmp(code, "not_found") == 0) {
-			return -ENOENT;
+			return NB_ERR_NOT_FOUND;
 		}
 		if (strcmp(code, "permission_denied") == 0) {
-			return -EACCES;
+			return NB_ERR_PERMISSION;
 		}
 		if (strcmp(code, "cancelled") == 0) {
-			return -ECANCELED;
+			return NB_ERR_CANCELLED;
 		}
 		if (strcmp(code, "timeout") == 0) {
-			return -ETIMEDOUT;
+			return NB_ERR_TIMEOUT;
 		}
 	}
 	return MORPH_ERR_PROCESSING;
@@ -51,14 +51,14 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 	int result_rc;
 
 	if (result == NULL) {
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	tool_result_clear(result);
 	if (reg == NULL || name == NULL) {
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	rc = tool_registry_acquire(reg, name, &handle);
-	if (rc == -ENOENT) {
+	if (rc == NB_ERR_NOT_FOUND) {
 		const char *replacement =
 			!strcmp(name, "process") && tool_borrow(reg, "background")
 				? " The process tool is deprecated. Use background to manage "
@@ -77,9 +77,9 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 	if (rc != 0)
 		return rc;
 	if (handle.disabled) {
-		rc = -EPERM;
+		rc = NB_ERR_NOT_PERMITTED;
 	} else if (handle.exec == NULL) {
-		rc = -ENOSYS;
+		rc = NB_ERR_UNSUPPORTED;
 	} else {
 		rc = 0;
 	}
@@ -96,7 +96,7 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 			"before taking over its remaining work.");
 		if (result_rc == 0)
 			result_rc = tool_result_finalize(result);
-		return result_rc != 0 ? result_rc : -EAGAIN;
+		return result_rc != 0 ? result_rc : NB_ERR_AGAIN;
 	}
 	if (result->runtime && result->runtime->agents &&
 	    agent_control_shell_readonly(result->runtime->agents, result->runtime->agent_id) &&
@@ -111,7 +111,7 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 			"use apply_patch within assigned write_paths.",
 			name);
 		(void)tool_result_finalize(result);
-		return -EACCES;
+		return NB_ERR_PERMISSION;
 	}
 	if (handle.permission_context &&
 	    (!(handle.flags & (TOOL_FLAG_READONLY | TOOL_FLAG_INTERNAL_APPROVAL)) ||
@@ -128,7 +128,7 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 				result->runtime ? result->runtime->permission_require_user : 0,
 		};
 		rc = tool_context_check_operation(handle.permission_context, &operation);
-		if (rc == -EACCES || rc == -EPERM)
+		if (rc == NB_ERR_PERMISSION || rc == NB_ERR_NOT_PERMITTED)
 			(void)tool_result_error_format(
 				result, "permission_denied",
 				"%s Do not retry through another tool or route to "
@@ -151,13 +151,13 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 	}
 	tool_handle_release(&handle);
 	if (rc > 0) {
-		rc = MORPH_ERR_PROTOCOL;
+		rc = NB_ERR_PROTOCOL;
 	}
 	if (result->envelope != NULL) {
 		ok = cJSON_GetObjectItemCaseSensitive(result->envelope, "ok");
 		if (!cJSON_IsObject(result->envelope) || !cJSON_IsBool(ok)) {
 			if (rc == 0) {
-				rc = MORPH_ERR_PROTOCOL;
+				rc = NB_ERR_PROTOCOL;
 			}
 			tool_result_clear(result);
 		} else if (rc == 0 && cJSON_IsFalse(ok)) {
@@ -170,10 +170,13 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 			char *owned = diagnostic != NULL ? strdup(diagnostic) : NULL;
 			if (diagnostic != NULL && owned == NULL) {
 				tool_result_clear(result);
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			}
 			result_rc = tool_result_error_copy(
-				result, "tool_failed", owned != NULL ? owned : morph_strerror(rc));
+				result, "tool_failed",
+				owned != NULL ? owned
+					      : nb_err_str(morph_error_descriptions(),
+							   MORPH_ERROR_COUNT, rc));
 			free(owned);
 			if (result_rc != 0) {
 				return result_rc;
@@ -181,12 +184,13 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 		}
 	}
 	if (rc < 0 && result->envelope == NULL) {
-		result_rc = tool_result_error_copy(result,
-						   rc == -EINVAL   ? "invalid_arguments"
-						   : rc == -EACCES ? "permission_denied"
-						   : rc == -EPERM  ? "approval_unavailable"
-								   : "tool_failed",
-						   morph_strerror(rc));
+		result_rc = tool_result_error_copy(
+			result,
+			rc == NB_ERR_INVAL	     ? "invalid_arguments"
+			: rc == NB_ERR_PERMISSION    ? "permission_denied"
+			: rc == NB_ERR_NOT_PERMITTED ? "approval_unavailable"
+						     : "tool_failed",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		if (result_rc != 0) {
 			return result_rc;
 		}

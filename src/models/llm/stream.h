@@ -2,8 +2,10 @@
 #define MORPH_LLM_STREAM_H
 
 #include "models/llm.h"
-#include "util/buf.h"
-#include "util/cleanup.h"
+#include "nb/buf.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
 #include "cJSON.h"
 
 #ifdef __cplusplus
@@ -11,15 +13,16 @@ extern "C" {
 #endif
 
 struct llm_stream_ctx {
-	struct morph_log *logger;
+	struct nb_log *logger;
 	sse_callback user_cb;
 	llm_stream_callback stream_cb;
 	void *user_data;
-	morph_buf_t accumulated;
-	morph_buf_t reasoning;
+	nb_buf accumulated;
+	nb_buf reasoning;
 	struct tool_call *tool_calls;
 	int tool_call_count;
-	int tool_call_cap;
+	nb_vec call_storage;
+	nb_vec input_storage;
 	int emitted;
 	int terminal_received;
 	int terminal_error;
@@ -45,8 +48,14 @@ int llm_stream_string_copy(char **owner, const char *text);
  * Call arguments remain owned by ctx until call ownership is moved out. */
 struct tool_call *llm_stream_tool_call_ensure_borrow(struct llm_stream_ctx *ctx, int index);
 
+/* Stream arguments borrow native buffer storage until response publication. */
+int llm_stream_call_input_append(struct llm_stream_ctx *ctx, struct tool_call *call,
+				 const char *delta);
+int llm_stream_call_input_set(struct llm_stream_ctx *ctx, struct tool_call *call,
+			      const char *input);
+
 /* Replace response call ownership, preserving its other fields, and clear ctx calls. */
-void llm_stream_tool_calls_move(struct llm_stream_ctx *ctx, struct chat_response *resp);
+int llm_stream_tool_calls_move(struct llm_stream_ctx *ctx, struct chat_response *resp);
 
 void llm_usage_finalize(struct model *self, struct llm_stream_ctx *ctx, size_t request_bytes);
 

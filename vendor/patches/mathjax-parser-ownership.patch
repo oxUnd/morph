@@ -1,0 +1,316 @@
+diff --git a/include/parser.h b/include/parser.h
+index 60eb256..8a996ae 100644
+--- a/include/parser.h
++++ b/include/parser.h
+@@ -47,11 +47,18 @@ typedef struct {
+   const char** env_names;
+   size_t env_count;
+   int display_math;    /* nonzero = displaystyle mode */
++  /* Zero borrows the configuration. Nonzero transfers all option owners on
++   * successful parser creation and clears the source configuration. Operator
++   * symbols remain borrowed; environment names and macros are owned. */
++  int owns_options;
+ } mjx_parse_opts;
+ 
+ /* Create/destroy parser */
+ mjx_parser* mjx_parser_create(mjx_parse_opts* opts);
+ void        mjx_parser_destroy(mjx_parser* parser);
++/* Frees owned configuration resources and clears the structure; borrowed
++ * configurations are only cleared. Safe for partial/empty initialization. */
++void        mjx_parse_opts_cleanup(mjx_parse_opts* opts);
+ 
+ /* Parse LaTeX math string into AST */
+ mjx_node* mjx_parser_parse_latex(mjx_parser* parser, const char* latex, int display);
+@@ -87,7 +94,7 @@ int mjx_lookup_accent(const char* cmd, uint32_t* cp);
+ const char* mjx_lookup_delimiter(const char* name);
+ 
+ /* Initialize environment handlers */
+-void mjx_parser_init_environments(mjx_parser* parser);
++int mjx_parser_init_environments(mjx_parser* parser);
+ 
+ /* Default operator dictionary */
+ mjx_operator* mjx_default_operators(size_t* count);
+diff --git a/src/api.c b/src/api.c
+index bda0be8..363af3d 100644
+--- a/src/api.c
++++ b/src/api.c
+@@ -82,21 +82,43 @@ mjx_ctx* mjx_init(const mjx_opts* opts) {
+   /* Create parser */
+   mjx_parse_opts popts;
+   memset(&popts, 0, sizeof(popts));
++  popts.owns_options = 1;
+   popts.factory = mjx_factory_create();
+   popts.operators = mjx_default_operators(&popts.operator_count);
+   popts.macros = mjx_default_macros(&popts.macro_count);
++  if (!popts.factory || !popts.operators || !popts.macros) {
++    mjx_parse_opts_cleanup(&popts);
++    mjx_free(ctx);
++    return NULL;
++  }
+   ctx->parser = mjx_parser_create(&popts);
+-  mjx_parser_init_environments(ctx->parser);
++  if (!ctx->parser) {
++    mjx_parse_opts_cleanup(&popts);
++    mjx_free(ctx);
++    return NULL;
++  }
++  if (!mjx_parser_init_environments(ctx->parser)) {
++    mjx_free(ctx);
++    return NULL;
++  }
+ 
+   /* Create layout context */
+   if (ctx->font) {
+     ctx->layout = mjx_layout_ctx_create(ctx->font);
++    if (!ctx->layout) {
++      mjx_free(ctx);
++      return NULL;
++    }
+     ctx->layout->fallback_font = ctx->fallback_font;
+   }
+ 
+   /* Create renderer */
+   if (ctx->font) {
+     ctx->renderer = mjx_renderer_create(ctx->font);
++    if (!ctx->renderer) {
++      mjx_free(ctx);
++      return NULL;
++    }
+     ctx->renderer->fallback_font = ctx->fallback_font;
+     ctx->renderer->fg_color = ctx->fg_color;
+     ctx->renderer->bg_color = ctx->bg_color;
+diff --git a/src/parser/environments.c b/src/parser/environments.c
+index d6b651b..451e256 100644
+--- a/src/parser/environments.c
++++ b/src/parser/environments.c
+@@ -54,20 +54,20 @@ static mjx_node* env_gather(mjx_parser* parser, const char* env_name, mjx_node*
+   return content;
+ }
+ 
+-void mjx_parser_init_environments(mjx_parser* parser) {
+-  if (!parser) return;
+-  mjx_parser_register_env(parser, "matrix", env_matrix);
+-  mjx_parser_register_env(parser, "pmatrix", env_matrix);
+-  mjx_parser_register_env(parser, "bmatrix", env_matrix);
+-  mjx_parser_register_env(parser, "Bmatrix", env_matrix);
+-  mjx_parser_register_env(parser, "vmatrix", env_matrix);
+-  mjx_parser_register_env(parser, "Vmatrix", env_matrix);
+-  mjx_parser_register_env(parser, "cases", env_cases);
+-  mjx_parser_register_env(parser, "aligned", env_aligned);
+-  mjx_parser_register_env(parser, "gathered", env_gather);
+-  mjx_parser_register_env(parser, "split", env_aligned);
+-  mjx_parser_register_env(parser, "align", env_aligned);
+-  mjx_parser_register_env(parser, "alignat", env_aligned);
+-  mjx_parser_register_env(parser, "flalign", env_aligned);
+-  mjx_parser_register_env(parser, "multline", env_gather);
++int mjx_parser_init_environments(mjx_parser* parser) {
++  return parser &&
++    mjx_parser_register_env(parser, "matrix", env_matrix) &&
++    mjx_parser_register_env(parser, "pmatrix", env_matrix) &&
++    mjx_parser_register_env(parser, "bmatrix", env_matrix) &&
++    mjx_parser_register_env(parser, "Bmatrix", env_matrix) &&
++    mjx_parser_register_env(parser, "vmatrix", env_matrix) &&
++    mjx_parser_register_env(parser, "Vmatrix", env_matrix) &&
++    mjx_parser_register_env(parser, "cases", env_cases) &&
++    mjx_parser_register_env(parser, "aligned", env_aligned) &&
++    mjx_parser_register_env(parser, "gathered", env_gather) &&
++    mjx_parser_register_env(parser, "split", env_aligned) &&
++    mjx_parser_register_env(parser, "align", env_aligned) &&
++    mjx_parser_register_env(parser, "alignat", env_aligned) &&
++    mjx_parser_register_env(parser, "flalign", env_aligned) &&
++    mjx_parser_register_env(parser, "multline", env_gather);
+ }
+diff --git a/src/parser/macros.c b/src/parser/macros.c
+index 956e8a4..d1d0c56 100644
+--- a/src/parser/macros.c
++++ b/src/parser/macros.c
+@@ -4,11 +4,16 @@
+ 
+ /* Define a macro */
+ mjx_macro* mjx_macro_create(const char* name, int arg_count, const char* replacement) {
++  if (!name) return NULL;
+   mjx_macro* m = (mjx_macro*)calloc(1, sizeof(mjx_macro));
+   if (!m) return NULL;
+   m->name = strdup(name);
+   m->arg_count = arg_count;
+   m->replacement = replacement ? strdup(replacement) : NULL;
++  if (!m->name || (replacement && !m->replacement)) {
++    mjx_macro_destroy(m);
++    return NULL;
++  }
+   return m;
+ }
+ 
+@@ -68,6 +73,8 @@ static mjx_macro_def FONT_MACROS[] = {
+ };
+ 
+ mjx_macro** mjx_default_macros(size_t* count) {
++  if (!count) return NULL;
++  *count = 0;
+   size_t total = sizeof(BUILTIN_MACROS) / sizeof(BUILTIN_MACROS[0])
+                + sizeof(FONT_MACROS) / sizeof(FONT_MACROS[0]);
+   mjx_macro** macros = (mjx_macro**)calloc(total + 1, sizeof(mjx_macro*));
+@@ -79,16 +86,26 @@ mjx_macro** mjx_default_macros(size_t* count) {
+     macros[idx] = mjx_macro_create(BUILTIN_MACROS[i].name,
+                                     BUILTIN_MACROS[i].arg_count,
+                                     BUILTIN_MACROS[i].replacement);
++    if (!macros[idx]) {
++      for (size_t j = 0; j < idx; j++) mjx_macro_destroy(macros[j]);
++      free(macros);
++      return NULL;
++    }
+     macros[idx]->is_primitive = BUILTIN_MACROS[i].is_primitive;
+-    if (macros[idx]) idx++;
++    idx++;
+   }
+ 
+   for (size_t i = 0; i < sizeof(FONT_MACROS) / sizeof(FONT_MACROS[0]); i++) {
+     macros[idx] = mjx_macro_create(FONT_MACROS[i].name,
+                                     FONT_MACROS[i].arg_count,
+                                     FONT_MACROS[i].replacement);
++    if (!macros[idx]) {
++      for (size_t j = 0; j < idx; j++) mjx_macro_destroy(macros[j]);
++      free(macros);
++      return NULL;
++    }
+     macros[idx]->is_primitive = FONT_MACROS[i].is_primitive;
+-    if (macros[idx]) idx++;
++    idx++;
+   }
+ 
+   *count = idx;
+diff --git a/src/parser/parser.c b/src/parser/parser.c
+index 864b1dc..2ad5d7e 100644
+--- a/src/parser/parser.c
++++ b/src/parser/parser.c
+@@ -10,6 +10,10 @@ struct mjx_parser {
+   mjx_node* result;
+   char error_msg[512];
+   int has_error;
++  size_t borrowed_macros;
++  size_t borrowed_environments;
++  int owns_macro_array;
++  int owns_environment_arrays;
+ };
+ 
+ typedef struct {
+@@ -2389,16 +2393,62 @@ static mjx_node* parse_expression(parse_state* state, int stop_at_brace) {
+   return row;
+ }
+ 
++void mjx_parse_opts_cleanup(mjx_parse_opts* opts) {
++  if (!opts) return;
++  if (opts->owns_options) {
++    mjx_factory_destroy(opts->factory);
++    if (opts->macros) {
++      for (size_t i = 0; i < opts->macro_count; i++)
++        mjx_macro_destroy(opts->macros[i]);
++    }
++    free(opts->macros);
++    free(opts->operators);
++    if (opts->env_names) {
++      for (size_t i = 0; i < opts->env_count; i++)
++        free((void*)opts->env_names[i]);
++    }
++    free(opts->env_names);
++    free(opts->env_handlers);
++  }
++  memset(opts, 0, sizeof(*opts));
++}
++
+ mjx_parser* mjx_parser_create(mjx_parse_opts* opts) {
++  if (opts && ((opts->macro_count && !opts->macros) ||
++               (opts->operator_count && !opts->operators) ||
++               (opts->env_count && (!opts->env_names || !opts->env_handlers))))
++    return NULL;
+   mjx_parser* parser = (mjx_parser*)calloc(1, sizeof(mjx_parser));
+   if (!parser) return NULL;
+-  if (opts) parser->opts = *opts;
++  if (opts) {
++    parser->opts = *opts;
++    if (opts->owns_options) {
++      parser->owns_macro_array = 1;
++      parser->owns_environment_arrays = 1;
++      memset(opts, 0, sizeof(*opts));
++    } else {
++      parser->borrowed_macros = opts->macro_count;
++      parser->borrowed_environments = opts->env_count;
++    }
++  }
+   return parser;
+ }
+ 
+ void mjx_parser_destroy(mjx_parser* parser) {
+   if (!parser) return;
+   if (parser->result) mjx_node_destroy(parser->result);
++  if (!parser->opts.owns_options) {
++    for (size_t i = parser->borrowed_macros; i < parser->opts.macro_count; i++)
++      mjx_macro_destroy(parser->opts.macros[i]);
++    for (size_t i = parser->borrowed_environments; i < parser->opts.env_count; i++)
++      free((void*)parser->opts.env_names[i]);
++    if (parser->owns_macro_array) free(parser->opts.macros);
++    if (parser->owns_environment_arrays) {
++      free(parser->opts.env_names);
++      free(parser->opts.env_handlers);
++    }
++  }
++  mjx_parse_opts_cleanup(&parser->opts);
+   free(parser);
+ }
+ 
+@@ -2529,13 +2579,17 @@ mjx_node* mjx_parser_parse_mathml(mjx_parser* parser, const char* xml, int displ
+ int mjx_parser_register_macro(mjx_parser* parser, const char* name,
+                                int arg_count, const char* replacement) {
+   if (!parser || !name) return 0;
++  if (parser->opts.macro_count >= SIZE_MAX / sizeof(mjx_macro*)) return 0;
+   mjx_macro* m = mjx_macro_create(name, arg_count, replacement);
+   if (!m) return 0;
+   size_t new_count = parser->opts.macro_count + 1;
+-  mjx_macro** new_macros = (mjx_macro**)realloc(parser->opts.macros,
+-                            new_count * sizeof(mjx_macro*));
++  mjx_macro** new_macros = (mjx_macro**)malloc(new_count * sizeof(*new_macros));
+   if (!new_macros) { mjx_macro_destroy(m); return 0; }
++  if (parser->opts.macro_count)
++    memcpy(new_macros, parser->opts.macros, parser->opts.macro_count * sizeof(*new_macros));
++  if (parser->owns_macro_array) free(parser->opts.macros);
+   parser->opts.macros = new_macros;
++  parser->owns_macro_array = 1;
+   parser->opts.macros[parser->opts.macro_count] = m;
+   parser->opts.macro_count = new_count;
+   return 1;
+@@ -2544,17 +2598,28 @@ int mjx_parser_register_macro(mjx_parser* parser, const char* name,
+ int mjx_parser_register_env(mjx_parser* parser, const char* name,
+                              mjx_env_handler handler) {
+   if (!parser || !name || !handler) return 0;
++  if (parser->opts.env_count >= SIZE_MAX / sizeof(mjx_env_handler) ||
++      parser->opts.env_count >= SIZE_MAX / sizeof(const char*)) return 0;
+   size_t new_count = parser->opts.env_count + 1;
+-  mjx_env_handler* new_handlers = (mjx_env_handler*)realloc(
+-    parser->opts.env_handlers, new_count * sizeof(mjx_env_handler));
+-  const char** new_names = (const char**)realloc(
+-    parser->opts.env_names, new_count * sizeof(const char*));
+-  if (!new_handlers || !new_names) {
+-    free(new_handlers); free(new_names); return 0;
++  mjx_env_handler* new_handlers = (mjx_env_handler*)malloc(new_count * sizeof(*new_handlers));
++  const char** new_names = (const char**)malloc(new_count * sizeof(*new_names));
++  char* new_name = strdup(name);
++  if (!new_handlers || !new_names || !new_name) {
++    free(new_handlers); free(new_names); free(new_name); return 0;
++  }
++  if (parser->opts.env_count) {
++    memcpy(new_handlers, parser->opts.env_handlers,
++           parser->opts.env_count * sizeof(*new_handlers));
++    memcpy(new_names, parser->opts.env_names, parser->opts.env_count * sizeof(*new_names));
++  }
++  if (parser->owns_environment_arrays) {
++    free(parser->opts.env_handlers);
++    free(parser->opts.env_names);
+   }
+   parser->opts.env_handlers = new_handlers;
+   parser->opts.env_names = new_names;
+-  parser->opts.env_names[parser->opts.env_count] = strdup(name);
++  parser->owns_environment_arrays = 1;
++  parser->opts.env_names[parser->opts.env_count] = new_name;
+   parser->opts.env_handlers[parser->opts.env_count] = handler;
+   parser->opts.env_count = new_count;
+   return 1;

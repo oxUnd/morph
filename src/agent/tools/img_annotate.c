@@ -1,13 +1,14 @@
-#include "util/signals.h"
-#include "util/json.h"
-#include "util/cleanup.h"
+#include "nb/process.h"
+#include "cJSON.h"
+#include "nb/cleanup.h"
 #include "agent/tool_runtime.h"
 #include "img_annotate.h"
 #include "agent/tool_context.h"
-#include "util/log.h"
-#include "util/file.h"
-#include "util/buf.h"
-#include "util/error.h"
+#include "nb/log.h"
+#include "nb/file.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
 #include "cJSON.h"
 
 #include <errno.h>
@@ -42,7 +43,7 @@ static void img_annotate_context_destroy(void *user_data)
  * Returns a heap-allocated path the caller must free, or NULL on
  * unrecoverable error.
  */
-static char *find_editor_binary(struct morph_log *logger)
+static char *find_editor_binary(struct nb_log *logger)
 {
 	const char *env;
 	char buf[PATH_MAX + 64];
@@ -50,9 +51,9 @@ static char *find_editor_binary(struct morph_log *logger)
 
 	env = getenv("MORPH_EDITOR");
 	if (env && env[0]) {
-		if (file_exists(env))
+		if (nb_file_exists(env))
 			return strdup(env);
-		log_warn(logger, "MORPH_EDITOR=%s not found, falling back", env);
+		nb_log_write(logger, NB_LOG_WARN, "MORPH_EDITOR=%s not found, falling back", env);
 	}
 
 	/*
@@ -65,12 +66,13 @@ static char *find_editor_binary(struct morph_log *logger)
 	if (getcwd(cwd, sizeof(cwd))) {
 		snprintf(buf, sizeof(buf),
 			 "%s/../morph-editor/build/morph-editor", cwd);
-		if (file_exists(buf))
+		if (nb_file_exists(buf))
 			return strdup(buf);
 	}
 
-	log_info(logger, "img_annotate: morph-editor not found locally, "
-			 "will search $PATH");
+	nb_log_write(logger, NB_LOG_INFO,
+		     "img_annotate: morph-editor not found locally, "
+		     "will search $PATH");
 	return strdup("");
 }
 
@@ -80,16 +82,14 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 	char *paths[MAX_IMAGES] = {NULL};
 	int npaths = 0;
 	char *editor_path = NULL;
-	pid_t pid;
-	int pipefd[2];
-	int status;
+	int status = 0;
 	int rc = 0;
 	int i;
 	struct img_annotate_context *ctx = user_data;
 	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
 
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	if (!args_json || !*args_json) {
 		(void)tool_result_success_json_text_copy(
@@ -97,7 +97,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 				"Usage: img_annotate({\\\"path\\\": \\\"image.jpg\\\"}) "
 				"or img_annotate({\\\"paths\\\": "
 				"[\\\"a.jpg\\\",\\\"b.jpg\\\"]})\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	{
@@ -106,7 +106,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		if (!root) {
 			(void)tool_result_success_json_text_copy(
 				result, "{\"error\":\"invalid JSON arguments\"}");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 
 		/*
@@ -120,7 +120,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 				cJSON_Delete(root);
 				(void)tool_result_success_json_text_copy(
 					result, "{\"error\":\"'paths' array is empty\"}");
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			}
 			if (sz > MAX_IMAGES) {
 				cJSON_Delete(root);
@@ -129,7 +129,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 					 "{\"error\":\"too many images "
 					 "(max %d)\"}", MAX_IMAGES);
 				(void)tool_result_success_json_text_copy(result, err);
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			}
 			for (i = 0; i < sz; i++) {
 				cJSON *item = cJSON_GetArrayItem(arr, i);
@@ -142,7 +142,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 					(void)tool_result_success_json_text_copy(
 						result, "{\"error\":\"'paths' contains "
 							"invalid entry\"}");
-					return -EINVAL;
+					return NB_ERR_INVAL;
 				}
 				paths[npaths++] = strdup(item->valuestring);
 			}
@@ -158,7 +158,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 						"\\\"image.jpg\\\"}) or "
 						"img_annotate({\\\"paths\\\": "
 						"[\\\"a.jpg\\\",\\\"b.jpg\\\"]})\"}");
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			}
 			paths[npaths++] = strdup(p->valuestring);
 		}
@@ -173,7 +173,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 				resolved, sizeof(resolved));
 			if (rc < 0) {
 				char err[1100];
-				if (rc == -ENOENT)
+				if (rc == NB_ERR_NOT_FOUND)
 					snprintf(err, sizeof(err),
 						 "{\"error\":\"image file not found: %s\"}",
 						 paths[i]);
@@ -190,9 +190,9 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 			if (!paths[i]) {
 				for (int j = 0; j < npaths; j++)
 					free(paths[j]);
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			}
-		} else if (!file_exists(paths[i])) {
+		} else if (!nb_file_exists(paths[i])) {
 			char err[1100];
 			snprintf(err, sizeof(err),
 				 "{\"error\":\"image file not found: %s\"}",
@@ -200,7 +200,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 			(void)tool_result_success_json_text_copy(result, err);
 			for (int j = 0; j < npaths; j++)
 				free(paths[j]);
-			return -ENOENT;
+			return NB_ERR_NOT_FOUND;
 		}
 	}
 
@@ -212,147 +212,48 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		(void)tool_result_success_json_text_copy(
 			result, "{\"error\":\"could not locate morph-editor binary. "
 				"Set MORPH_EDITOR env var or install morph-editor.\"}");
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	}
 
-	if (pipe(pipefd) < 0) {
-		int err = errno;
-		free(editor_path);
-		for (i = 0; i < npaths; i++)
-			free(paths[i]);
-		(void)tool_result_success_json_text_copy(result, "{\"error\":\"pipe() failed\"}");
-		return -err;
-	}
-
+	const char *argv[MAX_IMAGES + 3];
+	argv[0] = editor_path[0] ? editor_path : "morph-editor";
+	argv[1] = "open";
+	for (i = 0; i < npaths; i++)
+		argv[2 + i] = paths[i];
+	argv[2 + npaths] = NULL;
 	if (ctx && ctx->pause_fn)
 		ctx->pause_fn(ctx->cb_user_data);
-
 	fflush(stdout);
 	fflush(stderr);
-
-	pid = fork();
-	if (pid < 0) {
-		int err = errno;
-		close(pipefd[0]);
-		close(pipefd[1]);
+	nb_process_options options = {
+		.argv = argv,
+		.search_path = !editor_path[0],
+		.close_fds = true,
+		.stdin_mode = NB_PROCESS_INHERIT,
+		.stderr_mode = NB_PROCESS_INHERIT,
+	};
+	nb_process *child NB_CLEANUP(nb_process_cleanup) = NULL;
+	rc = nb_process_spawn(&options, &child, NULL);
+	{
+		nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
+		nb_buf errors NB_CLEANUP(nb_buf_cleanup) = {0};
+		nb_process_exchange_options exchange = {.timeout_ms = -1, .max_output = SIZE_MAX};
+		if (rc == NB_OK)
+			rc = nb_process_exchange(child, "", 0, &exchange, &buf, &errors, &status,
+						 NULL);
 		if (ctx && ctx->resume_fn)
 			ctx->resume_fn(ctx->cb_user_data);
-		free(editor_path);
-		for (i = 0; i < npaths; i++)
-			free(paths[i]);
-		(void)tool_result_success_json_text_copy(result, "{\"error\":\"fork() failed\"}");
-		return -err;
-	}
-
-	if (pid == 0) {
-		morph_signals_reset_child();
-		/*
-		 * Child process: exec morph-editor with all
-		 * image paths.  morph-editor "open" subcommand
-		 * accepts multiple paths for multi-image
-		 * annotation.
-		 *
-		 * Redirect stdout to the pipe so we can capture
-		 * the annotation JSON that morph-editor prints on
-		 * exit (editor_dump_on_quit).  stderr and stdin
-		 * are inherited directly so termbox2 can use
-		 * /dev/tty for rendering and input.
-		 */
-		close(pipefd[0]);
-		if (dup2(pipefd[1], STDOUT_FILENO) < 0)
-			_exit(126);
-		close(pipefd[1]);
-
-		/*
-		 * Build argv: morph-editor open path1 path2 ...
-		 * +1 for program name, +1 for "open", +npaths,
-		 * +1 for NULL sentinel.
-		 */
-		{
-			int argc = 2 + npaths + 1;
-			char **argv = malloc(sizeof(char *) *
-					     (size_t)argc);
-			if (!argv)
-				_exit(126);
-			argv[0] = "morph-editor";
-			argv[1] = "open";
-			for (i = 0; i < npaths; i++)
-				argv[2 + i] = paths[i];
-			argv[2 + npaths] = NULL;
-
-			if (editor_path[0])
-				execv(editor_path, argv);
-			else
-				execvp("morph-editor", argv);
-			_exit(127);
-		}
-	}
-
-	/* Parent: close write end, read annotation JSON from child */
-	close(pipefd[1]);
-
-	{
-		morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		int buf_init_rc = morph_buf_init(&buf, 4096);
-
-		if (buf_init_rc != 0) {
-			close(pipefd[0]);
-			waitpid(pid, &status, 0);
-			if (ctx && ctx->resume_fn)
-				ctx->resume_fn(ctx->cb_user_data);
+		if (rc != NB_OK) {
 			free(editor_path);
 			for (i = 0; i < npaths; i++)
 				free(paths[i]);
-			(void)tool_result_success_json_text_copy(result,
-								 "{\"error\":\"out of memory "
-								 "reading editor output\"}");
-			return -ENOMEM;
+			(void)tool_result_error_format(
+				result, "tool_failed", "Editor failed: %s",
+				nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+			return rc;
 		}
-
-		char tmp[4096];
-		ssize_t n;
-
-		while ((n = read(pipefd[0], tmp, sizeof(tmp))) > 0) {
-			if (buf.len + (size_t)n + 1 > buf.cap) {
-				int grow_rc = morph_buf_reserve(&buf, (size_t)n + 1);
-				if (grow_rc != 0) {
-					morph_buf_cleanup(&buf);
-					close(pipefd[0]);
-					waitpid(pid, &status, 0);
-					if (ctx && ctx->resume_fn)
-						ctx->resume_fn(ctx->cb_user_data);
-					free(editor_path);
-					for (i = 0; i < npaths; i++)
-						free(paths[i]);
-					(void)tool_result_success_json_text_copy(
-						result, "{\"error\":\"out of memory "
-							"reading editor output\"}");
-					return -ENOMEM;
-				}
-			}
-			memcpy(buf.data + buf.len, tmp, (size_t)n);
-			buf.len += (size_t)n;
-		}
-		close(pipefd[0]);
-		buf.data[buf.len] = '\0';
-
-		/*
-		 * Strip trailing newlines — morph-editor
-		 * appends \n via fprintf + editor_dump_on_quit.
-		 */
-		while (buf.len > 0 && buf.data[buf.len - 1] == '\n')
-			buf.data[--buf.len] = '\0';
-
-		/*
-		 * Reap the child process.
-		 */
-		while (waitpid(pid, &status, 0) < 0) {
-			if (errno != EINTR)
-				break;
-		}
-
-		if (ctx && ctx->resume_fn)
-			ctx->resume_fn(ctx->cb_user_data);
+		while (buf.len > 0 && buf.ptr[buf.len - 1] == '\n')
+			nb_buf_truncate(&buf, buf.len - 1);
 
 		if (buf.len == 0) {
 			/*
@@ -360,18 +261,18 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 			 * (e.g. user quit before annotating, or
 			 * image failed to load).
 			 */
-			morph_buf_cleanup(&buf);
+			nb_buf_cleanup(&buf);
 			free(editor_path);
 			for (i = 0; i < npaths; i++)
 				free(paths[i]);
-			if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+			if (status != 0) {
 				char err[256];
 				snprintf(err, sizeof(err),
 					 "{\"error\":\"morph-editor exited "
 					 "with code %d\"}",
-					 WEXITSTATUS(status));
+					 status);
 				(void)tool_result_success_json_text_copy(result, err);
-				return -EIO;
+				return NB_ERR_IO;
 			}
 			(void)tool_result_success_json_text_copy(
 				result, "{\"images\":[],\"bboxes\":[],\"arrows\":[]}");
@@ -386,7 +287,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		 * it in an error envelope.
 		 */
 		{
-			cJSON *root = cJSON_Parse(buf.data);
+			cJSON *root = cJSON_Parse(buf.ptr);
 
 			if (root) {
 				/*
@@ -579,10 +480,10 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 				}
 
 				{
-					char *out MORPH_CLEANUP(morph_json_text_cleanup) =
+					char *out NB_CLEANUP(cJSON_FreeTextOwner) =
 						cJSON_PrintUnformatted(root);
 					cJSON_Delete(root);
-					morph_buf_cleanup(&buf);
+					nb_buf_cleanup(&buf);
 					(void)tool_result_success_json_text_copy(result, out);
 				}
 				free(editor_path);
@@ -598,20 +499,20 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		 */
 		{
 			cJSON *out = cJSON_CreateObject();
-			char *tmp_str MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
+			char *tmp_str NB_CLEANUP(cJSON_FreeTextOwner) = NULL;
 
 			cJSON_AddStringToObject(out, "error",
 						"editor output was not "
 						"valid JSON");
-			cJSON_AddStringToObject(out, "raw_output", buf.data);
+			cJSON_AddStringToObject(out, "raw_output", buf.ptr);
 			tmp_str = cJSON_PrintUnformatted(out);
 			cJSON_Delete(out);
-			morph_buf_cleanup(&buf);
+			nb_buf_cleanup(&buf);
 			free(editor_path);
 			for (i = 0; i < npaths; i++)
 				free(paths[i]);
 			(void)tool_result_success_json_text_copy(result, tmp_str);
-			return MORPH_ERR_PARSE;
+			return NB_ERR_PARSE;
 		}
 	}
 
@@ -625,17 +526,17 @@ int img_annotate_init(struct tool_registry *reg,
 		      struct tool_context *tctx)
 {
 	if (!reg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	struct img_annotate_context *ctx = malloc(sizeof(*ctx));
 	if (!ctx)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	ctx->pause_fn = pause_fn;
 	ctx->resume_fn = resume_fn;
 	ctx->cb_user_data = user_data;
 	ctx->tctx = tctx;
 
-	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
+	struct tool_spec spec NB_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.flags = TOOL_FLAG_MEDIA,
 		.name = "img_annotate",

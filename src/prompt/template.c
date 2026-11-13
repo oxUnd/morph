@@ -1,9 +1,10 @@
 #include "template.h"
-#include "util/cleanup.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/str.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/str.h"
+#include "nb/utf8.h"
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -22,7 +23,7 @@ struct template_context {
 	const struct morph_prompt_template_variable *variables;
 	size_t count;
 	struct morph_prompt_template_error *error;
-	morph_buf_t output;
+	nb_buf output;
 	size_t source_bytes;
 	size_t files;
 	size_t depth;
@@ -36,7 +37,7 @@ struct template_source {
 };
 
 struct template_section {
-	morph_str_t name;
+	nb_str name;
 	size_t opening;
 	size_t depth;
 	int conditional;
@@ -75,11 +76,11 @@ static int identifier_digit(char c)
 	return c >= '0' && c <= '9';
 }
 
-static int variable_name_valid(morph_str_t name)
+static int variable_name_valid(nb_str name)
 {
 	int start = 1;
 	for (size_t i = 0; i < name.len; i++) {
-		char c = name.data[i];
+		char c = name.ptr[i];
 		if (start && !identifier_start(c))
 			return 0;
 		if (!start && c != '.' && !identifier_start(c) && !identifier_digit(c))
@@ -116,10 +117,10 @@ static int template_open(struct template_context *ctx, const char *path)
 {
 	char *copy = strdup(path);
 	if (!copy)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	int directory = fcntl(ctx->root_fd, F_DUPFD_CLOEXEC, 0);
 	if (directory < 0) {
-		int rc = morph_error_from_errno(errno);
+		int rc = nb_status_from_errno(errno, NULL);
 		free(copy);
 		return rc;
 	}
@@ -132,7 +133,7 @@ static int template_open(struct template_context *ctx, const char *path)
 		if (slash)
 			flags |= O_DIRECTORY;
 		int next = openat(directory, component, flags);
-		int rc = next < 0 ? morph_error_from_errno(errno) : 0;
+		int rc = next < 0 ? nb_status_from_errno(errno, NULL) : 0;
 		close(directory);
 		if (rc != 0 || !slash) {
 			free(copy);
@@ -143,7 +144,7 @@ static int template_open(struct template_context *ctx, const char *path)
 	}
 }
 
-static int template_read(struct template_context *ctx, int fd, morph_buf_t *text)
+static int template_read(struct template_context *ctx, int fd, nb_buf *text)
 {
 	char chunk[BUFSIZ];
 	for (;;) {
@@ -151,16 +152,16 @@ static int template_read(struct template_context *ctx, int fd, morph_buf_t *text
 		if (n < 0) {
 			if (errno == EINTR)
 				continue;
-			return morph_error_from_errno(errno);
+			return nb_status_from_errno(errno, NULL);
 		}
 		if (!n)
 			return 0;
 		size_t bytes = (size_t)n;
 		if (bytes > MORPH_PROMPT_TEMPLATE_FILE_MAX - text->len ||
 		    bytes > MORPH_PROMPT_TEMPLATE_TOTAL_MAX - ctx->source_bytes)
-			return -EFBIG;
+			return NB_ERR_TOO_BIG;
 		ctx->source_bytes += bytes;
-		int rc = morph_buf_append(text, chunk, bytes);
+		int rc = (nb_buf_append(text, chunk, bytes) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
@@ -172,21 +173,21 @@ static int append_text(struct template_context *ctx, struct template_source *sou
 	if (!emit)
 		return 0;
 	if (len > MORPH_PROMPT_TEMPLATE_OUTPUT_MAX - ctx->output.len)
-		return template_fail(ctx, source, source->position, -EFBIG,
-			"Rendered prompt exceeds the output limit.");
-	int rc = morph_buf_append(&ctx->output, text, len);
+		return template_fail(ctx, source, source->position, NB_ERR_TOO_BIG,
+				     "Rendered prompt exceeds the output limit.");
+	int rc = (nb_buf_append(&ctx->output, text, len) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return template_fail(ctx, source, source->position, rc,
 			"Cannot allocate rendered prompt.");
 	return 0;
 }
 
-static const struct morph_prompt_template_variable *find_variable(
-		struct template_context *ctx, morph_str_t name)
+static const struct morph_prompt_template_variable *find_variable(struct template_context *ctx,
+								  nb_str name)
 {
 	for (size_t i = 0; i < ctx->count; i++)
 		if (strlen(ctx->variables[i].name) == name.len &&
-		    memcmp(ctx->variables[i].name, name.data, name.len) == 0)
+		    memcmp(ctx->variables[i].name, name.ptr, name.len) == 0)
 			return &ctx->variables[i];
 	return NULL;
 }
@@ -196,13 +197,13 @@ static int tag_space(char c)
 	return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
 
-static morph_str_t trim_tag(morph_str_t tag)
+static nb_str trim_tag(nb_str tag)
 {
-	while (tag.len && tag_space(*tag.data)) {
-		tag.data++;
+	while (tag.len && tag_space(*tag.ptr)) {
+		tag.ptr++;
 		tag.len--;
 	}
-	while (tag.len && tag_space(tag.data[tag.len - 1]))
+	while (tag.len && tag_space(tag.ptr[tag.len - 1]))
 		tag.len--;
 	return tag;
 }
@@ -230,8 +231,9 @@ static int render_body(struct template_context *ctx, struct template_source *sou
 		if (rc != 0)
 			return rc;
 		if (!text[source->position])
-			return section ? template_fail(ctx, source, section->opening, MORPH_ERR_FORMAT,
-				"Section is missing its closing tag.") : 0;
+			return section ? template_fail(ctx, source, section->opening, NB_ERR_FORMAT,
+						       "Section is missing its closing tag.")
+				       : 0;
 		if (text[source->position] == '\\') {
 			source->position++;
 			size_t len = text[source->position] == '\\' ? 1u : 2u;
@@ -244,87 +246,91 @@ static int render_body(struct template_context *ctx, struct template_source *sou
 		size_t offset = source->position;
 		const char *end = strstr(text + offset + 2, "}}");
 		if (!end)
-			return template_fail(ctx, source, offset, MORPH_ERR_FORMAT,
-				"Template tag is missing its closing delimiter.");
-		morph_str_t tag = {.len = (size_t)(end - (text + offset + 2)),
-				   .data = text + offset + 2};
+			return template_fail(ctx, source, offset, NB_ERR_FORMAT,
+					     "Template tag is missing its closing delimiter.");
+		nb_str tag = {.len = (size_t)(end - (text + offset + 2)), .ptr = text + offset + 2};
 		tag = trim_tag(tag);
 		source->position = (size_t)(end - text) + 2;
 		if (!tag.len)
-			return template_fail(ctx, source, offset, MORPH_ERR_FORMAT, "Empty template tag.");
-		if (section && section->conditional &&
-		    morph_strcmp(tag, (morph_str_t)MORPH_STRLIT("else")) == 0) {
+			return template_fail(ctx, source, offset, NB_ERR_FORMAT,
+					     "Empty template tag.");
+		if (section && section->conditional && nb_str_cmp(tag, NB_STR_LIT("else")) == 0) {
 			if (alternate)
-				return template_fail(ctx, source, offset, MORPH_ERR_FORMAT,
+				return template_fail(
+					ctx, source, offset, NB_ERR_FORMAT,
 					"Conditional section has more than one else tag.");
 			alternate = 1;
 			emit = parent_emit && !section->enabled;
 			continue;
 		}
-		char kind = *tag.data;
+		char kind = *tag.ptr;
 		if (kind == '!')
 			continue;
 		if (kind == '>' || kind == '#' || kind == '^' || kind == '/') {
-			tag.data++;
+			tag.ptr++;
 			tag.len--;
 			tag = trim_tag(tag);
 		}
 		if (kind == '>') {
 			if (ctx->root_fd < 0)
-				return template_fail(ctx, source, offset, MORPH_ERR_FORMAT,
-					"Partials require a template bundle root.");
+				return template_fail(ctx, source, offset, NB_ERR_FORMAT,
+						     "Partials require a template bundle root.");
 			if (tag.len >= PATH_MAX)
-				return template_fail(ctx, source, offset, -ENAMETOOLONG,
-					"Partial path exceeds the path limit.");
-			char *path = strndup(tag.data, tag.len);
+				return template_fail(ctx, source, offset, NB_ERR_NAME_TOO_LONG,
+						     "Partial path exceeds the path limit.");
+			char *path = strndup(tag.ptr, tag.len);
 			if (!path)
-				return template_fail(ctx, source, offset, -ENOMEM,
-					"Cannot allocate partial path.");
-			rc = template_path_valid(path) ? render_file(ctx, path, emit) :
-				template_fail(ctx, source, offset, MORPH_ERR_FORMAT,
-					"Partial path must stay below the template root.");
+				return template_fail(ctx, source, offset, NB_ERR_NOMEM,
+						     "Cannot allocate partial path.");
+			rc = template_path_valid(path)
+				     ? render_file(ctx, path, emit)
+				     : template_fail(
+					       ctx, source, offset, NB_ERR_FORMAT,
+					       "Partial path must stay below the template root.");
 			free(path);
 			if (rc != 0)
 				return rc;
 			continue;
 		}
-		morph_str_t closing = tag;
-		int conditional = kind == '#' && tag.len >= 3 &&
-			memcmp(tag.data, "if", 2) == 0 && tag_space(tag.data[2]);
+		nb_str closing = tag;
+		int conditional = kind == '#' && tag.len >= 3 && memcmp(tag.ptr, "if", 2) == 0 &&
+				  tag_space(tag.ptr[2]);
 		if (conditional) {
-			tag.data += 2;
+			tag.ptr += 2;
 			tag.len -= 2;
 			tag = trim_tag(tag);
-			closing = (morph_str_t)MORPH_STRLIT("if");
+			closing = NB_STR_LIT("if");
 		}
 		if (!variable_name_valid(tag))
-			return template_fail(ctx, source, offset, MORPH_ERR_FORMAT,
+			return template_fail(
+				ctx, source, offset, NB_ERR_FORMAT,
 				"Invalid variable name or unsupported template syntax.");
 		if (kind == '/') {
-			if (!section || morph_strcmp(tag, section->name) != 0)
-				return template_fail(ctx, source, offset, MORPH_ERR_FORMAT,
+			if (!section || nb_str_cmp(tag, section->name) != 0)
+				return template_fail(
+					ctx, source, offset, NB_ERR_FORMAT,
 					"Closing tag does not match the current section.");
 			return 0;
 		}
 		const struct morph_prompt_template_variable *variable = find_variable(ctx, tag);
 		if (!variable)
-			return template_fail(ctx, source, offset, MORPH_ERR_FORMAT,
-				"Template references an undefined variable.");
+			return template_fail(ctx, source, offset, NB_ERR_FORMAT,
+					     "Template references an undefined variable.");
 		if (kind == '#' || kind == '^') {
 			if (variable->type != MORPH_PROMPT_TEMPLATE_BOOL)
-				return template_fail(ctx, source, offset, MORPH_ERR_FORMAT,
-					"Sections require a boolean variable.");
+				return template_fail(ctx, source, offset, NB_ERR_FORMAT,
+						     "Sections require a boolean variable.");
 			if (depth >= MORPH_PROMPT_TEMPLATE_SECTION_DEPTH)
-				return template_fail(ctx, source, offset, -ELOOP,
-					"Template section nesting limit exceeded.");
+				return template_fail(ctx, source, offset, NB_ERR_LOOP,
+						     "Template section nesting limit exceeded.");
 			int enabled = kind == '#' ? variable->boolean != 0 : variable->boolean == 0;
 			struct template_section child = {.name = closing, .opening = offset,
 				.depth = depth + 1, .conditional = conditional, .enabled = enabled};
 			rc = render_body(ctx, source, &child, emit);
 		} else {
 			if (variable->type != MORPH_PROMPT_TEMPLATE_STRING)
-				return template_fail(ctx, source, offset, MORPH_ERR_FORMAT,
-					"Substitutions require a string variable.");
+				return template_fail(ctx, source, offset, NB_ERR_FORMAT,
+						     "Substitutions require a string variable.");
 			rc = append_text(ctx, source, variable->string, strlen(variable->string), emit);
 		}
 		if (rc != 0)
@@ -337,69 +343,71 @@ static int render_file(struct template_context *ctx, const char *path, int emit)
 	struct template_source source = {.path = path};
 	if (ctx->depth >= MORPH_PROMPT_TEMPLATE_INCLUDE_DEPTH ||
 	    ctx->files >= MORPH_PROMPT_TEMPLATE_FILES_MAX)
-		return template_fail(ctx, &source, 0, -ELOOP, "Template include limit exceeded.");
+		return template_fail(ctx, &source, 0, NB_ERR_LOOP,
+				     "Template include limit exceeded.");
 	int fd = template_open(ctx, path);
 	if (fd < 0)
 		return template_fail(ctx, &source, 0, fd, "Cannot open template file.");
 	struct stat st;
-	int rc = fstat(fd, &st) == 0 ? 0 : morph_error_from_errno(errno);
+	int rc = fstat(fd, &st) == 0 ? 0 : nb_status_from_errno(errno, NULL);
 	if (rc == 0 && !S_ISREG(st.st_mode))
-		rc = MORPH_ERR_FORMAT;
+		rc = NB_ERR_FORMAT;
 	if (rc == 0 && st.st_size > MORPH_PROMPT_TEMPLATE_FILE_MAX)
-		rc = -EFBIG;
+		rc = NB_ERR_TOO_BIG;
 	for (size_t i = 0; rc == 0 && i < ctx->depth; i++)
 		if (ctx->active[i].device == st.st_dev && ctx->active[i].inode == st.st_ino)
-			rc = -ELOOP;
+			rc = NB_ERR_LOOP;
 	if (rc != 0) {
 		close(fd);
 		return template_fail(ctx, &source, 0, rc,
 			"Template must be a regular file within limits, without include cycles.");
 	}
-	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	rc = morph_buf_init(&text, 0);
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+	rc = (nb_buf_init(&text), nb_buf_reserve(&text, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = template_read(ctx, fd, &text);
 	if (close(fd) != 0 && rc == 0)
-		rc = morph_error_from_errno(errno);
-	if (rc == 0 && (memchr(text.data, '\0', text.len) || utf8nvalid(text.data, text.len)))
-		rc = -EILSEQ;
+		rc = nb_status_from_errno(errno, NULL);
+	if (rc == 0 && (memchr(text.ptr, '\0', text.len) ||
+			nb_utf8_validate(nb_str_from_parts(text.ptr, text.len), NULL)))
+		rc = NB_ERR_ENCODING;
 	if (rc != 0) {
-		morph_buf_cleanup(&text);
+		nb_buf_cleanup(&text);
 		return template_fail(ctx, &source, 0, rc, "Cannot read a valid UTF-8 template within limits.");
 	}
-	source.text = morph_buf_cstr_borrow(&text);
+	source.text = nb_buf_cstr(&text);
 	ctx->active[ctx->depth].device = st.st_dev;
 	ctx->active[ctx->depth].inode = st.st_ino;
 	ctx->depth++;
 	ctx->files++;
 	rc = render_body(ctx, &source, NULL, emit);
 	ctx->depth--;
-	morph_buf_cleanup(&text);
+	nb_buf_cleanup(&text);
 	return rc;
 }
 
 static int validate_variables(struct template_context *ctx)
 {
 	if (ctx->count > MORPH_PROMPT_TEMPLATE_VARIABLES_MAX || (ctx->count && !ctx->variables))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	size_t bytes = 0;
 	for (size_t i = 0; i < ctx->count; i++) {
 		const struct morph_prompt_template_variable *variable = &ctx->variables[i];
-		if (!variable->name || !variable_name_valid((morph_str_t){
-			.len = strlen(variable->name), .data = variable->name}))
-			return -EINVAL;
+		if (!variable->name || !variable_name_valid((nb_str){.len = strlen(variable->name),
+								     .ptr = variable->name}))
+			return NB_ERR_INVAL;
 		for (size_t j = 0; j < i; j++)
 			if (strcmp(variable->name, ctx->variables[j].name) == 0)
-				return -EINVAL;
+				return NB_ERR_INVAL;
 		if (variable->type == MORPH_PROMPT_TEMPLATE_BOOL)
 			continue;
 		if (variable->type != MORPH_PROMPT_TEMPLATE_STRING || !variable->string)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		size_t len = strlen(variable->string);
 		if (len > MORPH_PROMPT_TEMPLATE_TOTAL_MAX - bytes)
-			return -EFBIG;
-		if (utf8valid(variable->string))
-			return -EILSEQ;
+			return NB_ERR_TOO_BIG;
+		if (nb_utf8_validate(nb_str_from_cstr(variable->string), NULL))
+			return NB_ERR_ENCODING;
 		bytes += len;
 	}
 	return 0;
@@ -412,32 +420,36 @@ int morph_prompt_template_render_file(const char *root, const char *entry,
 	if (error)
 		memset(error, 0, sizeof(*error));
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*out = NULL;
 	struct template_context ctx = {.root_fd = -1, .variables = variables,
 		.count = count, .error = error};
 	struct template_source source = {.path = entry ? entry : ""};
 	if (!root || !*root || !template_path_valid(entry))
-		return template_fail(&ctx, &source, 0, -EINVAL, "Invalid template root or entry path.");
+		return template_fail(&ctx, &source, 0, NB_ERR_INVAL,
+				     "Invalid template root or entry path.");
 	int rc = validate_variables(&ctx);
 	if (rc != 0)
 		return template_fail(&ctx, &source, 0, rc, "Invalid template variable bindings.");
 	ctx.root_fd = open(root, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 	if (ctx.root_fd < 0) {
-		rc = morph_error_from_errno(errno);
+		rc = nb_status_from_errno(errno, NULL);
 		return template_fail(&ctx, &source, 0, rc, "Cannot open template root.");
 	}
-	rc = morph_buf_init(&ctx.output, 0);
+	rc = (nb_buf_init(&ctx.output), nb_buf_reserve(&ctx.output, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = render_file(&ctx, entry, 1);
 	else
 		rc = template_fail(&ctx, &source, 0, rc, "Cannot allocate template output.");
 	if (close(ctx.root_fd) != 0 && rc == 0)
-		rc = template_fail(&ctx, &source, 0, morph_error_from_errno(errno),
-			"Cannot close template root.");
-	if (rc == 0)
-		*out = morph_buf_detach(&ctx.output);
-	morph_buf_cleanup(&ctx.output);
+		rc = template_fail(&ctx, &source, 0, nb_status_from_errno(errno, NULL),
+				   "Cannot close template root.");
+	if (rc == 0) {
+		*out = (nb_buf_ok(&ctx.output) ? strdup(nb_buf_cstr(&ctx.output)) : NULL);
+		if (!*out)
+			rc = NB_ERR_NOMEM;
+	}
+	nb_buf_cleanup(&ctx.output);
 	return rc;
 }
 
@@ -448,28 +460,33 @@ int morph_prompt_template_render(const char *text,
 	if (error)
 		memset(error, 0, sizeof(*error));
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*out = NULL;
 	struct template_context ctx = {.root_fd = -1, .variables = variables,
 		.count = count, .error = error};
 	struct template_source source = {.path = "<string>", .text = text};
 	if (!text)
-		return template_fail(&ctx, &source, 0, -EINVAL, "Template text is required.");
+		return template_fail(&ctx, &source, 0, NB_ERR_INVAL, "Template text is required.");
 	size_t len = strnlen(text, MORPH_PROMPT_TEMPLATE_FILE_MAX + 1u);
 	if (len > MORPH_PROMPT_TEMPLATE_FILE_MAX)
-		return template_fail(&ctx, &source, 0, -EFBIG, "Template exceeds the source limit.");
-	if (utf8nvalid(text, len))
-		return template_fail(&ctx, &source, 0, -EILSEQ, "Template must contain valid UTF-8.");
+		return template_fail(&ctx, &source, 0, NB_ERR_TOO_BIG,
+				     "Template exceeds the source limit.");
+	if (nb_utf8_validate(nb_str_from_parts(text, len), NULL))
+		return template_fail(&ctx, &source, 0, NB_ERR_ENCODING,
+				     "Template must contain valid UTF-8.");
 	int rc = validate_variables(&ctx);
 	if (rc != 0)
 		return template_fail(&ctx, &source, 0, rc, "Invalid template variable bindings.");
-	rc = morph_buf_init(&ctx.output, 0);
+	rc = (nb_buf_init(&ctx.output), nb_buf_reserve(&ctx.output, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = render_body(&ctx, &source, NULL, 1);
 	else
 		rc = template_fail(&ctx, &source, 0, rc, "Cannot allocate template output.");
-	if (rc == 0)
-		*out = morph_buf_detach(&ctx.output);
-	morph_buf_cleanup(&ctx.output);
+	if (rc == 0) {
+		*out = (nb_buf_ok(&ctx.output) ? strdup(nb_buf_cstr(&ctx.output)) : NULL);
+		if (!*out)
+			rc = NB_ERR_NOMEM;
+	}
+	nb_buf_cleanup(&ctx.output);
 	return rc;
 }

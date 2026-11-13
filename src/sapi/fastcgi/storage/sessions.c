@@ -1,8 +1,8 @@
 #include "sapi/fastcgi/storage/sessions.h"
 #include "sapi/fastcgi/session_store_internal.h"
 #include "cJSON.h"
-#include "util/error.h"
-#include "util/cleanup.h"
+#include "errors.h"
+#include "nb/cleanup.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -17,21 +17,21 @@ int store_create_session(struct session_store *s, const char *user_id, const cha
 {
 	struct session sess;
 	if (session_create(&s->db, name, model, &sess) != 0)
-		return -EIO;
+		return NB_ERR_IO;
 	if (session_ensure_display_id(&s->db, &sess) != 0)
-		return -EIO;
+		return NB_ERR_IO;
 	snprintf(out_session_id, 64, "%s", sess.display_id);
 
 	const char *sql =
 		"INSERT OR REPLACE INTO fcgi_session_owner(session_id,user_id) VALUES(?,?)";
 	sqlite3_stmt *st = NULL;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	sqlite3_bind_text(st, 1, out_session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
 	int rc = sqlite3_step(st);
 	sqlite3_finalize(st);
-	return rc == SQLITE_DONE ? 0 : -EIO;
+	return rc == SQLITE_DONE ? 0 : NB_ERR_IO;
 }
 
 int store_session_owned_by(struct session_store *s, const char *session_id, const char *user_id)
@@ -62,7 +62,7 @@ int store_list_sessions_page_json(struct session_store *s, const char *user_id, 
 	int step_rc = SQLITE_DONE;
 
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int(st, 2, fetch);
 	sqlite3_bind_int(st, 3, offset > 0 ? offset : 0);
@@ -72,7 +72,7 @@ int store_list_sessions_page_json(struct session_store *s, const char *user_id, 
 	if (!root || !items) {
 		cJSON_Delete(root);
 		sqlite3_finalize(st);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	while ((step_rc = sqlite3_step(st)) == SQLITE_ROW) {
 		const char *id = (const char *)sqlite3_column_text(st, 0);
@@ -90,7 +90,7 @@ int store_list_sessions_page_json(struct session_store *s, const char *user_id, 
 		if (!item) {
 			cJSON_Delete(root);
 			sqlite3_finalize(st);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		cJSON_AddStringToObject(item, "id", id ? id : "");
 		cJSON_AddStringToObject(item, "name", name ? name : "");
@@ -103,7 +103,7 @@ int store_list_sessions_page_json(struct session_store *s, const char *user_id, 
 	sqlite3_finalize(st);
 	if (step_rc != SQLITE_DONE && !has_more) {
 		cJSON_Delete(root);
-		return -EIO;
+		return NB_ERR_IO;
 	}
 	cJSON_AddNumberToObject(root, "limit", lim > 0 ? lim : 0);
 	cJSON_AddNumberToObject(root, "offset", offset > 0 ? offset : 0);
@@ -111,7 +111,7 @@ int store_list_sessions_page_json(struct session_store *s, const char *user_id, 
 	char *json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
 	if (!json)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	*out_json = json;
 	return 0;
 }
@@ -124,7 +124,7 @@ int store_list_sessions_json(struct session_store *s, const char *user_id, char 
 int store_update_session(struct session_store *s, const char *session_id, const char *user_id,
 			 const char *name, const char *model)
 {
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	const char *sql = "UPDATE sessions SET name=COALESCE(?,name), "
 			  "model=COALESCE(?,model), updated_at=? "
 			  "WHERE display_id=? AND EXISTS ("
@@ -134,12 +134,12 @@ int store_update_session(struct session_store *s, const char *session_id, const 
 	int rc;
 
 	if (!name && !model)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = db_lock_acquire(&s->db, &lock);
 	if (rc != 0)
 		return rc;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	if (name)
 		sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
 	else
@@ -155,8 +155,8 @@ int store_update_session(struct session_store *s, const char *session_id, const 
 	rc = sqlite3_step(st);
 	sqlite3_finalize(st);
 	if (rc != SQLITE_DONE)
-		return -EIO;
-	return sqlite3_changes(s->db.handle) > 0 ? 0 : -ENOENT;
+		return NB_ERR_IO;
+	return sqlite3_changes(s->db.handle) > 0 ? 0 : NB_ERR_NOT_FOUND;
 }
 
 int store_messages_json(struct session_store *s, const char *session_id, const char *user_id,
@@ -179,18 +179,18 @@ int store_messages_json(struct session_store *s, const char *session_id, const c
 	if (limit <= 0 || limit > 500)
 		limit = 100;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
 	if (sqlite3_step(st) == SQLITE_ROW)
 		internal_id = sqlite3_column_int64(st, 0);
 	sqlite3_finalize(st);
 	if (internal_id == 0)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 
 	head = message_list(&s->db, internal_id, &total);
 	if (!head && total > 0)
-		return -EIO;
+		return NB_ERR_IO;
 	for (m = head; m; m = m->next)
 		if (before <= 0 || m->id < before)
 			added++;
@@ -201,7 +201,7 @@ int store_messages_json(struct session_store *s, const char *session_id, const c
 	if (!root || !items) {
 		cJSON_Delete(root);
 		message_free_list(head);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	added = 0;
 	for (m = head; m; m = m->next) {
@@ -215,7 +215,7 @@ int store_messages_json(struct session_store *s, const char *session_id, const c
 		if (!item) {
 			cJSON_Delete(root);
 			message_free_list(head);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		cJSON_AddNumberToObject(item, "id", (double)m->id);
 		cJSON_AddStringToObject(item, "role", m->role);
@@ -233,7 +233,7 @@ int store_messages_json(struct session_store *s, const char *session_id, const c
 	json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
 	if (!json)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	*out_json = json;
 	return 0;
 }
@@ -257,46 +257,46 @@ int store_delete_session(struct session_store *s, const char *session_id, const 
 	int rc;
 
 	if (!s || !session_id || !user_id)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	rc = store_transaction_begin(s);
 	if (rc != 0)
 		return rc;
 
 	if (sqlite3_prepare_v2(s->db.handle, chk_owner, -1, &st, NULL) != SQLITE_OK)
-		return store_transaction_end(s, -EIO);
+		return store_transaction_end(s, NB_ERR_IO);
 	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(st);
 	sqlite3_finalize(st);
 	if (rc != SQLITE_ROW)
-		return store_transaction_end(s, rc == SQLITE_DONE ? -ENOENT : -EIO);
+		return store_transaction_end(s, rc == SQLITE_DONE ? NB_ERR_NOT_FOUND : NB_ERR_IO);
 
 	if (sqlite3_prepare_v2(s->db.handle, chk_turns, -1, &st, NULL) != SQLITE_OK)
-		return store_transaction_end(s, -EIO);
+		return store_transaction_end(s, NB_ERR_IO);
 	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(st);
 	int running = (rc == SQLITE_ROW) ? sqlite3_column_int(st, 0) : 0;
 	sqlite3_finalize(st);
 	if (rc != SQLITE_ROW)
-		return store_transaction_end(s, -EIO);
+		return store_transaction_end(s, NB_ERR_IO);
 	if (running > 0)
-		return store_transaction_end(s, -EAGAIN);
+		return store_transaction_end(s, NB_ERR_AGAIN);
 
 	for (int i = 0; del_tables[i]; i++) {
 		if (sqlite3_prepare_v2(s->db.handle, del_tables[i], -1, &st, NULL) != SQLITE_OK)
-			return store_transaction_end(s, -EIO);
+			return store_transaction_end(s, NB_ERR_IO);
 		sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
 		rc = sqlite3_step(st);
 		sqlite3_finalize(st);
 		if (rc != SQLITE_DONE)
-			return store_transaction_end(s, -EIO);
+			return store_transaction_end(s, NB_ERR_IO);
 	}
 
 	if (session_get_by_display_id(&s->db, session_id, &sess) != 0)
-		return store_transaction_end(s, -EIO);
+		return store_transaction_end(s, NB_ERR_IO);
 	if (session_delete(&s->db, sess.id) != 0)
-		return store_transaction_end(s, -EIO);
+		return store_transaction_end(s, NB_ERR_IO);
 
 	return store_transaction_end(s, 0);
 }

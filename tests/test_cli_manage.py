@@ -384,6 +384,7 @@ def test_skills(work):
     require((another / ".agents" / "skills" / "local").exists(), "-w was ignored")
     work.morph("-w", another, "skills", "remove", "local")
     require(not list(install_root.glob(".morph-install-*")), "Staging directories leaked")
+    require(not list(install_root.glob("nbase-*")), "Native staging directories leaked")
     require(not list((work.home / ".morph" / "cache" / "skills").iterdir()),
             "Temporary Git checkouts leaked")
 

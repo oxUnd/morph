@@ -1,10 +1,12 @@
 #include "runtime/scheduler.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 
 #include "cJSON.h"
-#include "util/array.h"
-#include "util/buf.h"
-#include "util/error.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -54,7 +56,7 @@ char *runtime_scheduled_task_display_prompt_copy(const struct scheduled_task *ta
 	const char *user_req;
 	const char *line_end;
 	size_t req_len;
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	char *out;
 
 	if (!task)
@@ -67,79 +69,76 @@ char *runtime_scheduled_task_display_prompt_copy(const struct scheduled_task *ta
 		line_end = strpbrk(user_req, "\r\n");
 		req_len = line_end ? (size_t)(line_end - user_req) :
 			strlen(user_req);
-		if (req_len > 0 && morph_buf_init(&buf, req_len + 96) == 0) {
-			(void)morph_buf_printf(&buf, "%s: %.*s",
-					       task->title[0] ? task->title :
-					       label, (int)req_len, user_req);
-			out = morph_buf_detach(&buf);
-			morph_buf_cleanup(&buf);
+		if (req_len > 0 && (nb_buf_init(&buf),
+				    nb_buf_reserve(&buf, req_len + 96) ? 0 : NB_ERR_NOMEM) == 0) {
+			(void)nb_buf_printf(&buf, "%s: %.*s", task->title[0] ? task->title : label,
+					    (int)req_len, user_req);
+			out = (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
+			nb_buf_cleanup(&buf);
 			return out;
 		}
 	}
-	if (morph_buf_init(&buf, 128) != 0)
+	if ((nb_buf_init(&buf), nb_buf_reserve(&buf, 128) ? 0 : NB_ERR_NOMEM) != 0)
 		return NULL;
-	(void)morph_buf_printf(&buf, "%s: %s", label,
-			       task->title[0] ? task->title : "Untitled");
-	out = morph_buf_detach(&buf);
-	morph_buf_cleanup(&buf);
+	(void)nb_buf_printf(&buf, "%s: %s", label, task->title[0] ? task->title : "Untitled");
+	out = (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
+	nb_buf_cleanup(&buf);
 	return out;
 }
 
 char *runtime_react_error_message_copy(struct react_context *react, int rc)
 {
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *answer;
 	const char *reason;
 	const char *error;
 	const char *outcome;
 	char *out = NULL;
 
-	if (morph_buf_init(&buf, 256) != 0)
+	if ((nb_buf_init(&buf), nb_buf_reserve(&buf, 256) ? 0 : NB_ERR_NOMEM) != 0)
 		return NULL;
 	answer = react && react->final_answer ? react->final_answer : "";
 	reason = react && react->outcome_reason[0] ?
 		react->outcome_reason : NULL;
-	error = morph_strerror(rc);
+	error = nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc);
 	outcome = react ? react_outcome_name(react->outcome) : "unknown";
 	if (answer[0]) {
 		if (reason)
-			(void)morph_buf_printf(&buf, "%s\n\n%s (%s)",
-					       answer, reason, outcome);
+			(void)nb_buf_printf(&buf, "%s\n\n%s (%s)", answer, reason, outcome);
 		else
-			(void)morph_buf_puts(&buf, answer);
+			(void)nb_buf_append_cstr(&buf, answer);
 	} else if (reason) {
-		(void)morph_buf_printf(&buf, "%s (%s): %s", reason,
-				       outcome, error);
+		(void)nb_buf_printf(&buf, "%s (%s): %s", reason, outcome, error);
 	} else {
-		(void)morph_buf_printf(&buf, "%s: %s", outcome, error);
+		(void)nb_buf_printf(&buf, "%s: %s", outcome, error);
 	}
-	out = morph_buf_detach(&buf);
-	morph_buf_cleanup(&buf);
+	out = (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
+	nb_buf_cleanup(&buf);
 	return out;
 }
 
-static int runtime_artifact_path_seen(morph_array_t *paths, const char *path)
+static int runtime_artifact_path_seen(nb_vec *paths, const char *path)
 {
 	if (!paths || !path)
 		return 0;
-	for (size_t i = 0; i < paths->nelts; i++) {
-		const char **seen = morph_array_borrow(paths, i);
+	for (size_t i = 0; i < paths->len; i++) {
+		const char **seen = nb_vec_at(paths, i);
 		if (seen && *seen && strcmp(*seen, path) == 0)
 			return 1;
 	}
 	return 0;
 }
 
-static int runtime_append_react_artifact_markdown(morph_buf_t *body,
-						  struct react_context *react,
+static int runtime_append_react_artifact_markdown(nb_buf *body, struct react_context *react,
 						  const char *answer)
 {
-	morph_array_t paths MORPH_CLEANUP(morph_array_cleanup) = {0};
+	nb_vec paths NB_CLEANUP(nb_vec_cleanup) = {0};
 	struct react_step *step;
 	int appended = 0;
 	int rc;
 
-	rc = morph_array_init(&paths, 4, sizeof(const char *));
+	rc = (nb_vec_init(&paths, sizeof(const char *)),
+	      nb_vec_reserve(&paths, 4) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 
@@ -157,28 +156,29 @@ static int runtime_append_react_artifact_markdown(morph_buf_t *body,
 				continue;
 			if (runtime_artifact_path_seen(&paths, artifact->path))
 				continue;
-			slot = morph_array_push_borrow(&paths);
+			slot = nb_vec_push(&paths);
 			if (!slot) {
-				rc = -ENOMEM;
+				rc = NB_ERR_NOMEM;
 				return rc;
 			}
 			*slot = artifact->path;
 			if (!appended) {
 				if (body->len > 0) {
-					rc = morph_buf_puts(body, "\n\n");
+					rc = (nb_buf_append_cstr(body, "\n\n") ? 0 : NB_ERR_NOMEM);
 					if (rc != 0)
 						return rc;
 				}
 				appended = 1;
 			} else {
-				rc = morph_buf_putc(body, '\n');
+				rc = (nb_buf_append_char(body, '\n') ? 0 : NB_ERR_NOMEM);
 				if (rc != 0)
 					return rc;
 			}
 			label = artifact->label[0] ?
 				artifact->label : "Generated image";
-			rc = morph_buf_printf(body, "![%s](file://%s)",
-					      label, artifact->path);
+			rc = (nb_buf_printf(body, "![%s](file://%s)", label, artifact->path)
+				      ? 0
+				      : NB_ERR_NOMEM);
 			if (rc != 0)
 				return rc;
 		}
@@ -189,19 +189,19 @@ static int runtime_append_react_artifact_markdown(morph_buf_t *body,
 
 char *runtime_react_notification_body_copy(struct react_context *react)
 {
-	morph_buf_t body MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf body NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *answer;
 	int rc;
 
 	answer = react && react->final_answer ? react->final_answer : "";
-	rc = morph_buf_init(&body, 1024);
+	rc = (nb_buf_init(&body), nb_buf_reserve(&body, 1024) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return NULL;
-	rc = morph_buf_puts(&body, answer);
+	rc = (nb_buf_append_cstr(&body, answer) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return NULL;
 	rc = runtime_append_react_artifact_markdown(&body, react, answer);
 	if (rc != 0)
 		return NULL;
-	return morph_buf_detach(&body);
+	return (nb_buf_ok(&body) ? strdup(nb_buf_cstr(&body)) : NULL);
 }

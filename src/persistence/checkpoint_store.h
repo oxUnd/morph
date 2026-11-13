@@ -2,6 +2,7 @@
 #define MORPH_CHECKPOINT_STORE_H
 
 #include "db/database.h"
+#include "nb/err.h"
 #include "cJSON.h"
 
 #define CHECKPOINT_FILE_MAX_BYTES (16U * 1024U * 1024U)
@@ -19,7 +20,7 @@ enum checkpoint_restore_mode {
 };
 
 /* Public operations require autocommit mode; caller-owned transactions return
- * -EBUSY before filesystem access or mutation. Each call holds the DB mutex. */
+ * NB_ERR_BUSY before filesystem access or mutation. Each call holds the DB mutex. */
 
 int checkpoint_store_create(struct db *db, int64_t session_id, const char *workdir,
 			    const char *turn_id, const char *prompt, int64_t *id);
@@ -38,7 +39,7 @@ int checkpoint_store_validate_write(struct db *db, int64_t id, const char *path,
 				    size_t bytes, const char *removed_path);
 int checkpoint_store_seal(struct db *db, int64_t id);
 
-/* JSON output slots start NULL; occupied slots return -EEXIST unchanged.
+/* JSON output slots start NULL; occupied slots return NB_ERR_EXISTS unchanged.
  * Caller owns every returned JSON value and releases it with cJSON_Delete().
  * Restore may return an owned report on failure, including exact conflicts or
  * compensation failures. Code restores verify all affected paths before writes. */

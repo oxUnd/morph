@@ -1,10 +1,12 @@
 #include "sapi/cli/widgets/agents_browser.h"
+#include "nb/err.h"
 
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/widgets/agents.h"
 #include "sapi/cli/widgets/composer_panel.h"
-#include "util/cleanup.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 #include <morph/tui/widgets/text_view.h>
 #include <errno.h>
 #include <stdio.h>
@@ -128,36 +130,39 @@ int cli_agents_browser_update(struct cli_agents_browser_state *state,
 
 static void cli_agents_browser_frame_cleanup(struct cli_composer_panel_frame *frame)
 {
-	morph_buf_cleanup(&frame->content);
+	nb_buf_cleanup(&frame->content);
 }
 
-static int cli_agents_browser_cell(morph_buf_t *out, const char *text, int width, const char *style,
+static int cli_agents_browser_cell(nb_buf *out, const char *text, int width, const char *style,
 				   int styled)
 {
-	char *safe MORPH_CLEANUP(morph_charp_cleanup) = utf8_terminal_sanitize_dup(
-		text, strlen(text), UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		text, strlen(text), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 	if (!safe)
-		return -ENOMEM;
-	morph_buf_t clipped MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_init(&clipped, 128);
-	if (rc == 0 && width > 0 && utf8_display_width(safe) > (size_t)width) {
-		const char *end = utf8_advance_display_width_borrow(safe, (size_t)(width - 1));
-		rc = morph_buf_append(&clipped, safe, (size_t)(end - safe));
+		return NB_ERR_NOMEM;
+	nb_buf clipped NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&clipped), nb_buf_reserve(&clipped, 128) ? 0 : NB_ERR_NOMEM);
+	if (rc == 0 && width > 0 && nb_utf8_width_cstr(safe) > (size_t)width) {
+		const char *end =
+			morph_terminal_advance_display_width_borrow(safe, (size_t)(width - 1));
+		rc = (nb_buf_append(&clipped, safe, (size_t)(end - safe)) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_puts(&clipped, "…");
+			rc = (nb_buf_append_cstr(&clipped, "…") ? 0 : NB_ERR_NOMEM);
 	} else if (rc == 0)
-		rc = morph_buf_puts(&clipped, safe);
-	struct cli_composer_panel_frame frame MORPH_CLEANUP(cli_agents_browser_frame_cleanup) = {
+		rc = (nb_buf_append_cstr(&clipped, safe) ? 0 : NB_ERR_NOMEM);
+	struct cli_composer_panel_frame frame NB_CLEANUP(cli_agents_browser_frame_cleanup) = {
 		.columns = width,
 		.rows = 1,
 		.color = styled,
 	};
 	if (rc == 0)
-		rc = morph_buf_init(&frame.content, 128);
+		rc = (nb_buf_init(&frame.content),
+		      nb_buf_reserve(&frame.content, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = cli_composer_panel_line(&frame, morph_buf_cstr_borrow(&clipped), style);
+		rc = cli_composer_panel_line(&frame, nb_buf_cstr(&clipped), style);
 	if (rc == 0 && frame.content.len)
-		rc = morph_buf_append(out, frame.content.data, frame.content.len - 1);
+		rc = (nb_buf_append(out, frame.content.ptr, frame.content.len - 1) ? 0
+										   : NB_ERR_NOMEM);
 	return rc;
 }
 
@@ -186,7 +191,7 @@ static const char *cli_agents_browser_status_style(enum agent_status status)
 					   : ANSI_DIM;
 }
 
-static int cli_agents_browser_list_row(morph_buf_t *out, const struct cli_agents_browser_data *data,
+static int cli_agents_browser_list_row(nb_buf *out, const struct cli_agents_browser_data *data,
 				       size_t index, int active, int width, int styled)
 {
 	const struct agent_info *agent =
@@ -198,18 +203,20 @@ static int cli_agents_browser_list_row(morph_buf_t *out, const struct cli_agents
 		: index == SIZE_MAX
 			? ""
 			: cli_agents_browser_status_style(cli_agents_browser_status(data, index));
-	morph_buf_t label MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_init(&label, 128);
+	nb_buf label NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&label), nb_buf_reserve(&label, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && index != SIZE_MAX)
-		rc = morph_buf_printf(
-			&label, "%s %s %s%s%s", active ? ">" : " ",
-			cli_agents_browser_marker(cli_agents_browser_status(data, index)),
-			agent ? agent->id : "/root", agent ? "  " : "  Main conversation",
-			agent && agent->description ? agent->description : "");
+		rc = (nb_buf_printf(
+			      &label, "%s %s %s%s%s", active ? ">" : " ",
+			      cli_agents_browser_marker(cli_agents_browser_status(data, index)),
+			      agent ? agent->id : "/root", agent ? "  " : "  Main conversation",
+			      agent && agent->description ? agent->description : "")
+			      ? 0
+			      : NB_ERR_NOMEM);
 	int metadata = width >= 70 ? 23 : 0;
 	if (rc == 0)
-		rc = cli_agents_browser_cell(out, morph_buf_cstr_borrow(&label), width - metadata,
-					     style, styled);
+		rc = cli_agents_browser_cell(out, nb_buf_cstr(&label), width - metadata, style,
+					     styled);
 	if (rc == 0 && metadata) {
 		const char *status =
 			index == SIZE_MAX ? ""
@@ -219,40 +226,46 @@ static int cli_agents_browser_list_row(morph_buf_t *out, const struct cli_agents
 		rc = cli_agents_browser_cell(out, "", 1, style, styled);
 		if (rc == 0)
 			rc = cli_agents_browser_cell(out, status, 14, style, styled);
-		morph_buf_reset(&label);
+		nb_buf_clear(&label);
 		if (agent && agent->started_at_ms > 0) {
 			int64_t end = agent->ended_at_ms > 0 ? agent->ended_at_ms : data->now_ms;
 			if (end >= agent->started_at_ms)
-				rc = morph_buf_printf(
-					&label, "%llds",
-					(long long)((end - agent->started_at_ms) / 1000));
+				rc = (nb_buf_printf(
+					      &label, "%llds",
+					      (long long)((end - agent->started_at_ms) / 1000))
+					      ? 0
+					      : NB_ERR_NOMEM);
 		}
 		if (rc == 0)
-			rc = cli_agents_browser_cell(out, morph_buf_cstr_borrow(&label), 8, style,
-						     styled);
+			rc = cli_agents_browser_cell(out, nb_buf_cstr(&label), 8, style, styled);
 	}
 	return rc;
 }
 
-static int cli_agents_browser_field(morph_buf_t *out, const char *label, const char *value)
+static int cli_agents_browser_field(nb_buf *out, const char *label, const char *value)
 {
-	return morph_buf_printf(out, "\n%s\n%s\n", label, value ? value : "");
+	return (nb_buf_printf(out, "\n%s\n%s\n", label, value ? value : "") ? 0 : NB_ERR_NOMEM);
 }
 
-static int cli_agents_browser_detail(morph_buf_t *out, const struct cli_agents_browser_data *data,
+static int cli_agents_browser_detail(nb_buf *out, const struct cli_agents_browser_data *data,
 				     size_t index, int compact)
 {
 	if (index == SIZE_MAX)
-		return morph_buf_puts(out, "Task details\n\nNo matching agents.\n");
+		return (nb_buf_append_cstr(out, "Task details\n\nNo matching agents.\n")
+				? 0
+				: NB_ERR_NOMEM);
 	const struct agent_info *agent = index ? &data->agents[index - 1] : NULL;
 	if (agent && data->detail && !strcmp(agent->id, data->detail->id))
 		agent = data->detail;
 	enum agent_status status = cli_agents_browser_status(data, index);
 	const char *prompt = agent && agent->description ? agent->description : "Main conversation";
-	int rc = morph_buf_printf(
-		out, "Task details\n\n%s\n%s %s\n", agent ? agent->id : "/root  Main conversation",
-		cli_agents_browser_marker(status),
-		!index && !data->root_running ? "inactive" : cli_agents_status(status));
+	int rc = (nb_buf_printf(out, "Task details\n\n%s\n%s %s\n",
+				agent ? agent->id : "/root  Main conversation",
+				cli_agents_browser_marker(status),
+				!index && !data->root_running ? "inactive"
+							      : cli_agents_status(status))
+			  ? 0
+			  : NB_ERR_NOMEM);
 	if (rc == 0 && compact)
 		rc = cli_agents_browser_field(out, "Prompt", prompt);
 	if (rc == 0)
@@ -274,7 +287,7 @@ static int cli_agents_browser_detail(morph_buf_t *out, const struct cli_agents_b
 	return rc;
 }
 
-static int cli_agents_browser_tabs(morph_buf_t *out, const struct cli_agents_browser_state *state,
+static int cli_agents_browser_tabs(nb_buf *out, const struct cli_agents_browser_state *state,
 				   const struct cli_agents_browser_data *data, int columns,
 				   int styled)
 {
@@ -283,26 +296,26 @@ static int cli_agents_browser_tabs(morph_buf_t *out, const struct cli_agents_bro
 	const char *short_names[] = {"All", "Run", "Wait", "Done", "Fail", "Stop", "Idle"};
 	for (int i = 0; i < CLI_AGENTS_BROWSER_FILTER_COUNT; i++) {
 		if (styled && state->filter == (enum cli_agents_browser_filter)i)
-			(void)morph_buf_puts(out, ANSI_CYAN ANSI_BOLD);
-		(void)morph_buf_printf(
+			(void)nb_buf_append_cstr(out, ANSI_CYAN ANSI_BOLD);
+		(void)nb_buf_printf(
 			out, "%s%s %zu%s  ",
 			!styled && state->filter == (enum cli_agents_browser_filter)i ? "[" : "",
 			columns < 100 ? short_names[i] : names[i],
 			cli_agents_browser_count(data, (enum cli_agents_browser_filter)i),
 			!styled && state->filter == (enum cli_agents_browser_filter)i ? "]" : "");
 		if (styled)
-			(void)morph_buf_puts(out, ANSI_RESET);
+			(void)nb_buf_append_cstr(out, ANSI_RESET);
 	}
-	return out->failed;
+	return nb_buf_status(out);
 }
 
-int cli_agents_browser_append(morph_buf_t *out, struct cli_agents_browser_state *state,
+int cli_agents_browser_append(nb_buf *out, struct cli_agents_browser_state *state,
 			      const struct cli_agents_browser_data *data, int columns, int rows,
 			      int styled)
 {
 	if (!out || !state || !data || data->count < 0 || (data->count > 0 && !data->agents) ||
 	    columns < 1 || rows < 1)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int header = rows >= 8 ? 4 : 1;
 	int footer = rows >= 3 ? 1 : 0;
 	int body = rows - header - footer;
@@ -322,39 +335,41 @@ int cli_agents_browser_append(morph_buf_t *out, struct cli_agents_browser_state 
 					   cli_agents_browser_count(data, state->filter),
 					   (size_t)(list_rows > 0 ? list_rows : 1));
 	size_t selected = cli_agents_browser_selected(state, data);
-	morph_buf_t detail MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_t line MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	struct morph_tui_widget_text_layout layout MORPH_CLEANUP(
+	nb_buf detail NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf line NB_CLEANUP(nb_buf_cleanup) = {0};
+	struct morph_tui_widget_text_layout layout NB_CLEANUP(
 		morph_tui_widget_text_layout_cleanup) = {0};
-	int rc = morph_buf_init(&detail, 256);
+	int rc = (nb_buf_init(&detail), nb_buf_reserve(&detail, 256) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_init(&line, 256);
+		rc = (nb_buf_init(&line), nb_buf_reserve(&line, 256) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = cli_agents_browser_detail(&detail, data, selected, !split);
-	char *safe MORPH_CLEANUP(morph_charp_cleanup) =
-		rc == 0 ? utf8_terminal_sanitize_dup(detail.data, detail.len,
-						     UTF8_TERMINAL_TEXT_MULTILINE, NULL)
+	char *safe NB_CLEANUP(nb_charp_cleanup) =
+		rc == 0 ? morph_terminal_sanitize_dup(detail.ptr, detail.len,
+						      MORPH_TERMINAL_TEXT_MULTILINE, NULL)
 			: NULL;
 	if (rc == 0 && !safe)
-		rc = -ENOMEM;
+		rc = NB_ERR_NOMEM;
 	if (rc == 0)
 		rc = morph_tui_widget_text_layout_wrap_borrow(
 			&layout, safe, (size_t)(right_width > 0 ? right_width : 1));
 	size_t viewport = (size_t)(split ? body : detail_rows);
-	size_t maximum = layout.lines.nelts > viewport ? layout.lines.nelts - viewport : 0;
+	size_t maximum = layout.lines.len > viewport ? layout.lines.len - viewport : 0;
 	if (state->detail_scroll > maximum)
 		state->detail_scroll = maximum;
 	for (int row = 0; rc == 0 && row < rows; row++) {
-		morph_buf_reset(&line);
+		nb_buf_clear(&line);
 		if (row < header) {
 			if (!row)
-				rc = morph_buf_printf(&line, "Agents (%d)  Agent command center",
-						      data->count);
+				rc = (nb_buf_printf(&line, "Agents (%d)  Agent command center",
+						    data->count)
+					      ? 0
+					      : NB_ERR_NOMEM);
 			else if (row == 1)
 				rc = cli_agents_browser_tabs(&line, state, data, columns, styled);
 			else if (row == 2) {
 				for (int col = 0; rc == 0 && col < columns; col++)
-					rc = morph_buf_puts(&line, "─");
+					rc = (nb_buf_append_cstr(&line, "─") ? 0 : NB_ERR_NOMEM);
 			} else {
 				int metadata = left_width >= 70 ? 23 : 0;
 				rc = cli_agents_browser_cell(&line, "Tasks · current session",
@@ -371,14 +386,18 @@ int cli_agents_browser_append(morph_buf_t *out, struct cli_agents_browser_state 
 								     styled);
 			}
 		} else if (footer && row == rows - 1) {
-			rc = morph_buf_puts(
-				&line,
-				state->help ? "Esc back · Enter open · Tab/Shift+Tab filter · "
-					      "Left/Right focus · PageUp/PageDown scroll"
-				: state->detail_focus
-					? "Esc back · ↑/↓ scroll details · Left tasks · Enter open "
-					  "· ? help"
-					: "Esc back · ↑/↓ move · Enter open · Tab filter · ? help");
+			rc = (nb_buf_append_cstr(
+				      &line,
+				      state->help
+					      ? "Esc back · Enter open · Tab/Shift+Tab filter · "
+						"Left/Right focus · PageUp/PageDown scroll"
+				      : state->detail_focus ? "Esc back · ↑/↓ scroll details · "
+							      "Left tasks · Enter open "
+							      "· ? help"
+							    : "Esc back · ↑/↓ move · Enter open · "
+							      "Tab filter · ? help")
+				      ? 0
+				      : NB_ERR_NOMEM);
 		} else {
 			int offset = row - header;
 			int detail_row = split ? offset : offset - list_rows;
@@ -391,20 +410,24 @@ int cli_agents_browser_append(morph_buf_t *out, struct cli_agents_browser_state 
 								 left_width, styled);
 			}
 			if (split)
-				rc = rc == 0 ? morph_buf_puts(&line, " │ ") : rc;
+				rc = rc == 0 ? (nb_buf_append_cstr(&line, " │ ") ? 0 : NB_ERR_NOMEM)
+					     : rc;
 			if (rc == 0 && detail_row >= 0) {
 				size_t index =
 					detail_row ? state->detail_scroll + (size_t)detail_row : 0;
 				const struct morph_tui_widget_text_line *span =
-					morph_array_borrow(&layout.lines, index);
-				morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
-				rc = morph_buf_init(&text, 128);
+					nb_vec_at(&layout.lines, index);
+				nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+				rc = (nb_buf_init(&text),
+				      nb_buf_reserve(&text, 128) ? 0 : NB_ERR_NOMEM);
 				if (rc == 0 && span)
-					rc = morph_buf_append(&text, safe + span->offset,
-							      span->length);
+					rc = (nb_buf_append(&text, safe + span->offset,
+							    span->length)
+						      ? 0
+						      : NB_ERR_NOMEM);
 				if (rc == 0)
 					rc = cli_agents_browser_cell(
-						&line, morph_buf_cstr_borrow(&text), right_width,
+						&line, nb_buf_cstr(&text), right_width,
 						!detail_row ? ANSI_BOLD
 						: index == 3 && selected != SIZE_MAX
 							? cli_agents_browser_status_style(
@@ -414,23 +437,27 @@ int cli_agents_browser_append(morph_buf_t *out, struct cli_agents_browser_state 
 						styled);
 			}
 		}
-		struct cli_composer_panel_frame frame MORPH_CLEANUP(
+		struct cli_composer_panel_frame frame NB_CLEANUP(
 			cli_agents_browser_frame_cleanup) = {
 			.columns = columns,
 			.rows = 1,
 			.color = styled,
 		};
 		if (rc == 0)
-			rc = morph_buf_init(&frame.content, 128);
+			rc = (nb_buf_init(&frame.content),
+			      nb_buf_reserve(&frame.content, 128) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = cli_composer_panel_styled_line(&frame, morph_buf_cstr_borrow(&line));
+			rc = cli_composer_panel_styled_line(&frame, nb_buf_cstr(&line));
 		if (rc == 0 && styled)
-			rc = morph_buf_append(out, frame.content.data, frame.content.len);
+			rc = (nb_buf_append(out, frame.content.ptr, frame.content.len)
+				      ? 0
+				      : NB_ERR_NOMEM);
 		else if (rc == 0) {
-			char *plain MORPH_CLEANUP(morph_charp_cleanup) =
-				utf8_terminal_sanitize_dup(frame.content.data, frame.content.len,
-							   UTF8_TERMINAL_TEXT_MULTILINE, NULL);
-			rc = plain ? morph_buf_puts(out, plain) : -ENOMEM;
+			char *plain NB_CLEANUP(nb_charp_cleanup) =
+				morph_terminal_sanitize_dup(frame.content.ptr, frame.content.len,
+							    MORPH_TERMINAL_TEXT_MULTILINE, NULL);
+			rc = plain ? (nb_buf_append_cstr(out, plain) ? 0 : NB_ERR_NOMEM)
+				   : NB_ERR_NOMEM;
 		}
 	}
 	return rc;

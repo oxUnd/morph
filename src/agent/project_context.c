@@ -1,9 +1,9 @@
 #include "project_context.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/log.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "nb/log.h"
+#include "nb/utf8.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -25,34 +25,34 @@ static int read_guidance(const char *path, size_t budget, char **text)
 #endif
 	int fd = open(path, flags);
 	size_t len = 0;
-	char *data MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *data NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	*text = NULL;
 	if (fd < 0) {
 		if (errno == ENOENT || errno == ENOTDIR)
 			return 0;
-		return morph_error_from_errno(errno);
+		return nb_status_from_errno(errno, NULL);
 	}
 	if (fstat(fd, &info) != 0) {
-		int rc = -errno;
+		int rc = nb_status_from_errno(errno, NULL);
 		close(fd);
 		return rc;
 	}
 	if (!S_ISREG(info.st_mode) || info.st_size < 0 || (uint64_t)info.st_size > budget) {
 		close(fd);
-		return -EFBIG;
+		return NB_ERR_TOO_BIG;
 	}
 	data = calloc(1, budget + 1);
 	if (!data) {
 		close(fd);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	while (len < budget + 1) {
 		ssize_t n = read(fd, data + len, budget + 1 - len);
 		if (n < 0 && errno == EINTR)
 			continue;
 		if (n < 0) {
-			int rc = -errno;
+			int rc = nb_status_from_errno(errno, NULL);
 			close(fd);
 			return rc;
 		}
@@ -62,9 +62,9 @@ static int read_guidance(const char *path, size_t budget, char **text)
 	}
 	close(fd);
 	if (len > budget)
-		return -EFBIG;
-	if (memchr(data, '\0', len) || utf8nvalid(data, len))
-		return -EILSEQ;
+		return NB_ERR_TOO_BIG;
+	if (memchr(data, '\0', len) || nb_utf8_validate(nb_str_from_parts(data, len), NULL))
+		return NB_ERR_ENCODING;
 	data[len] = '\0';
 	if (strspn(data, " \t\r\n") != len) {
 		*text = data;
@@ -73,58 +73,76 @@ static int read_guidance(const char *path, size_t budget, char **text)
 	return 0;
 }
 
-static int append_directory(struct morph_log *logger, morph_buf_t *buf, const char *directory,
-			    int global, size_t budget, size_t *used)
+static int append_directory(struct nb_log *logger, nb_buf *buf, const char *directory, int global,
+			    size_t budget, size_t *used)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_1 = NB_OK;
+
 	static const char *const names[] = { "AGENTS.override.md", "AGENTS.md" };
 
 	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
 		char path[PATH_MAX];
-		char *body MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-		int rc = file_path_join(path, sizeof(path), directory, names[i]);
+		char *body NB_CLEANUP(nb_charp_cleanup) = NULL;
+		int rc = ((file_status_1 = nb_path_concat(&file_value_1, directory, names[i])) !=
+					  NB_OK
+				  ? file_status_1
+			  : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), path,
+							    sizeof(path))) == NB_ERR_RANGE
+				  ? NB_ERR_NAME_TOO_LONG
+				  : file_status_1);
 
 		if (rc != 0)
 			return rc;
 		rc = read_guidance(path, budget, &body);
-		if (rc == -ENOMEM)
+		if (rc == NB_ERR_NOMEM)
 			return rc;
 		if (rc != 0) {
-			log_warn(logger, "project guidance skipped '%s': %s", path,
-				 morph_strerror(rc));
-			return morph_buf_printf(buf,
-				"Project guidance unavailable: %s (%s).\n"
-				"Read this file with file_read before working in its scope.\n",
-				path, morph_strerror(rc));
+			nb_log_write(logger, NB_LOG_WARN, "project guidance skipped '%s': %s", path,
+				     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+			return (nb_buf_printf(buf,
+					      "Project guidance unavailable: %s (%s).\n"
+					      "Read this file with file_read before working in its "
+					      "scope.\n",
+					      path,
+					      nb_err_str(morph_error_descriptions(),
+							 MORPH_ERROR_COUNT, rc))
+					? 0
+					: NB_ERR_NOMEM);
 		}
 		if (!body)
 			continue;
 		size_t len = strlen(body);
 		if (len > budget - *used)
-			return morph_buf_printf(buf,
-				"Project guidance omitted due to budget: %s\n"
-				"Read this file with file_read before working in its scope.\n",
-				path);
+			return (nb_buf_printf(buf,
+					      "Project guidance omitted due to budget: %s\n"
+					      "Read this file with file_read before working in its "
+					      "scope.\n",
+					      path)
+					? 0
+					: NB_ERR_NOMEM);
 		*used += len;
-		return morph_buf_printf(buf,
-			"\nGuidance source: %s\nScope: %s\n%s\n",
-			path, global ? "global defaults" : directory, body);
+		return (nb_buf_printf(buf, "\nGuidance source: %s\nScope: %s\n%s\n", path,
+				      global ? "global defaults" : directory, body)
+				? 0
+				: NB_ERR_NOMEM);
 	}
 	return 0;
 }
 
-int project_context_create_with_budget(struct morph_log *logger,
-				      const struct environment_context *environment,
-				      const char *global_dir, size_t budget, char **out)
+int project_context_create_with_budget(struct nb_log *logger,
+				       const struct environment_context *environment,
+				       const char *global_dir, size_t budget, char **out)
 {
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	size_t used = 0;
 	int rc;
 
-	if (!environment || !out || !budget || budget >= MORPH_BUF_MAX_CAP)
-		return -EINVAL;
+	if (!environment || !out || !budget || budget >= (SIZE_MAX / 2))
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EALREADY;
-	rc = morph_buf_init(&buf, 1024);
+		return NB_ERR_STATE;
+	rc = (nb_buf_init(&buf), nb_buf_reserve(&buf, 1024) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	if (global_dir && *global_dir)
@@ -133,11 +151,11 @@ int project_context_create_with_budget(struct morph_log *logger,
 		return rc;
 	if (environment->cwd) {
 		const char *root = environment->git_root;
-		char *directory MORPH_CLEANUP(morph_charp_cleanup) = strdup(environment->cwd);
+		char *directory NB_CLEANUP(nb_charp_cleanup) = strdup(environment->cwd);
 
 		if (!directory)
-			return -ENOMEM;
-		if (!root || !path_is_within(directory, root))
+			return NB_ERR_NOMEM;
+		if (!root || !nb_path_is_within(directory, root, true))
 			root = environment->cwd;
 		size_t end = strlen(root);
 		size_t len = strlen(directory);
@@ -158,25 +176,31 @@ int project_context_create_with_budget(struct morph_log *logger,
 		}
 	}
 	if (buf.len) {
-		morph_buf_t context MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf context NB_CLEANUP(nb_buf_cleanup) = {0};
 
-		rc = morph_buf_init(&context, buf.len + 256);
+		rc = (nb_buf_init(&context),
+		      nb_buf_reserve(&context, buf.len + 256) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_puts(&context,
-				"Project guidance snapshot. Apply each source only to its "
-				"scope; deeper scopes override broader defaults. Current "
-				"user requests and core requirements take precedence. "
-				"These files do not grant additional permissions.\n");
+			rc = (nb_buf_append_cstr(
+				      &context,
+				      "Project guidance snapshot. Apply each source only to its "
+				      "scope; deeper scopes override broader defaults. Current "
+				      "user requests and core requirements take precedence. "
+				      "These files do not grant additional permissions.\n")
+				      ? 0
+				      : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_puts(&context, buf.data);
+			rc = (nb_buf_append_cstr(&context, buf.ptr) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
-		*out = morph_buf_detach(&context);
+		*out = (nb_buf_ok(&context) ? strdup(nb_buf_cstr(&context)) : NULL);
+		if (!*out)
+			return NB_ERR_NOMEM;
 	}
 	return 0;
 }
 
-int project_context_create(struct morph_log *logger, const struct environment_context *environment,
+int project_context_create(struct nb_log *logger, const struct environment_context *environment,
 			   const char *global_dir, char **out)
 {
 	return project_context_create_with_budget(logger, environment, global_dir,

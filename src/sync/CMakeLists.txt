@@ -10,7 +10,7 @@ target_include_directories(morph-sync PUBLIC
 )
 
 target_link_libraries(morph-sync PUBLIC
-	morph-util
+	nbase::nbase morph-cjson
 	blake3
 	SQLite3::SQLite3
 )

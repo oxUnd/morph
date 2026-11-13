@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 #include <morph/tui/application.h>
 #include <morph/tui/view_controller.h>
 #include <morph/tui/layout.h>
@@ -10,13 +11,15 @@
 #include <morph/tui/widgets/scroll.h>
 #include <morph/tui/widgets/text_field.h>
 #include <morph/tui/widgets/text_view.h>
-#include "util/utf8.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 
 #include <chrono>
 #include <climits>
 #include <cstdlib>
 #include <fcntl.h>
 #include <functional>
+#include <poll.h>
 #include <string>
 #include <sys/ioctl.h>
 #include <thread>
@@ -50,7 +53,7 @@ static void tui_views_build(struct morph_tui_view_controller *controller,
 	model->list = morph_tui_widget_list_add_borrow(builder, model->root, items, 3, 2, &fill);
 	model->label = morph_tui_widget_label_add_borrow(builder, model->root, "Ready", nullptr);
 	if (model->failure)
-		morph_tui_builder_fail(builder, -EIO);
+		morph_tui_builder_fail(builder, NB_ERR_IO);
 }
 
 static void tui_views_close(struct morph_tui_view_controller *controller, int result)
@@ -104,20 +107,22 @@ class TuiViewsTest : public ::testing::Test
 	const struct morph_tui_renderer_ops backend_ops = {
 		+[](struct morph_tui_renderer *backend, struct morph_tui_surface *surface, FILE *) {
 			auto *self = static_cast<TuiViewsTest *>(backend->data);
-			morph_buf_t rows{};
-			int rc = morph_buf_init(&rows, BUFSIZ);
+			nb_buf rows{};
+			int rc = (nb_buf_init(&rows),
+				  nb_buf_reserve(&rows, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 			if (!rc)
 				rc = morph_tui_surface_rows(surface, &rows);
 			if (!rc)
-				self->styled_frame = morph_buf_cstr_borrow(&rows);
+				self->styled_frame = nb_buf_cstr(&rows);
 			char *plain =
-				rc ? nullptr : utf8_strip_ansi_dup(rows.data, rows.len, nullptr);
+				rc ? nullptr
+				   : morph_terminal_strip_ansi_dup(rows.ptr, rows.len, nullptr);
 			if (plain)
 				self->frame = plain;
 			else if (!rc)
-				rc = -ENOMEM;
+				rc = NB_ERR_NOMEM;
 			free(plain);
-			morph_buf_cleanup(&rows);
+			nb_buf_cleanup(&rows);
 			self->cursor_visible = morph_tui_surface_cursor(surface,
 				&self->cursor_x, &self->cursor_y);
 			self->frames++;
@@ -184,6 +189,9 @@ class TuiViewsTest : public ::testing::Test
 	{
 		ASSERT_EQ(write(master, bytes.data(), bytes.size()),
 			  static_cast<ssize_t>(bytes.size()));
+		struct pollfd ready = {fileno(input), POLLIN, 0};
+		ASSERT_EQ(poll(&ready, 1, 2000), 1);
+		ASSERT_NE(ready.revents & POLLIN, 0);
 		for (size_t n = 0; n < bytes.size() + 3; n++)
 			ASSERT_EQ(morph_tui_application_step(app, 0), 0);
 	}
@@ -390,11 +398,11 @@ TEST_F(TuiViewsTest, InsetSettersInvalidateLayoutAndRejectInvalidOrWorkerChanges
 	int before = frames;
 	ASSERT_EQ(morph_tui_view_set_margin(model.list, margin), 0);
 	ASSERT_EQ(morph_tui_view_set_padding(model.list, padding), 0);
-	EXPECT_EQ(morph_tui_view_set_margin(model.list, {-1, 0, 0, 0}), -EINVAL);
-	EXPECT_EQ(morph_tui_view_set_padding(model.list, {0, INT_MAX, 0, 1}), -EINVAL);
+	EXPECT_EQ(morph_tui_view_set_margin(model.list, {-1, 0, 0, 0}), NB_ERR_INVAL);
+	EXPECT_EQ(morph_tui_view_set_padding(model.list, {0, INT_MAX, 0, 1}), NB_ERR_INVAL);
 	std::thread worker([&] {
-		EXPECT_EQ(morph_tui_view_set_margin(model.list, {}), -EPERM);
-		EXPECT_EQ(morph_tui_view_set_padding(model.list, {}), -EPERM);
+		EXPECT_EQ(morph_tui_view_set_margin(model.list, {}), NB_ERR_NOT_PERMITTED);
+		EXPECT_EQ(morph_tui_view_set_padding(model.list, {}), NB_ERR_NOT_PERMITTED);
 	});
 	worker.join();
 	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
@@ -574,9 +582,9 @@ TEST_F(TuiViewsTest, MouseListActivationRespectsPaddingScrollAndDragging)
 TEST_F(TuiViewsTest, BuildFailureClosesControllerAndLeavesNoPresentation)
 {
 	model.failure = true;
-	EXPECT_EQ(present(), -EIO);
+	EXPECT_EQ(present(), NB_ERR_IO);
 	EXPECT_EQ(model.closes, 1);
-	EXPECT_EQ(model.result, -EIO);
+	EXPECT_EQ(model.result, NB_ERR_IO);
 	EXPECT_EQ(morph_tui_application_depth(app), 0U);
 }
 
@@ -590,7 +598,7 @@ TEST_F(TuiViewsTest, CopiedItemsSurviveCallerChangesAndReplacementIsTransactiona
 	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
 	EXPECT_NE(frame.find("Borrowed"), std::string::npos);
 	const char *invalid[] = {"first", nullptr};
-	EXPECT_EQ(morph_tui_widget_list_set_items_copy(model.list, invalid, 2), -EINVAL);
+	EXPECT_EQ(morph_tui_widget_list_set_items_copy(model.list, invalid, 2), NB_ERR_INVAL);
 	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
 	EXPECT_NE(frame.find("Borrowed"), std::string::npos);
 }
@@ -619,7 +627,7 @@ TEST_F(TuiViewsTest, CustomWidgetBaseUsesCanvasAndDestroysExactlyOnceAfterFailed
 					nullptr));
 			if (widget)
 				widget->destroyed = static_cast<int *>(page->data);
-			morph_tui_builder_fail(builder, -EIO);
+			morph_tui_builder_fail(builder, NB_ERR_IO);
 			morph_tui_widget_label_add_borrow(builder, nullptr, "Never created",
 							  nullptr);
 		},
@@ -631,7 +639,7 @@ TEST_F(TuiViewsTest, CustomWidgetBaseUsesCanvasAndDestroysExactlyOnceAfterFailed
 	struct morph_tui_view_controller_spec spec{};
 	spec.ops = &controller;
 	spec.data = &model.widget_closes;
-	EXPECT_EQ(morph_tui_view_controller_present_borrow(app, &spec), -EIO);
+	EXPECT_EQ(morph_tui_view_controller_present_borrow(app, &spec), NB_ERR_IO);
 	EXPECT_EQ(model.widget_closes, 1);
 }
 
@@ -640,7 +648,7 @@ TEST(TuiCanvasTest, ClipsWideCellsCombiningMarksAndUntrustedControls)
 	struct morph_tui_surface *surface = nullptr;
 	ASSERT_EQ(morph_tui_surface_create(&surface), 0);
 	auto *saved = surface;
-	EXPECT_EQ(morph_tui_surface_create(&surface), -EEXIST);
+	EXPECT_EQ(morph_tui_surface_create(&surface), NB_ERR_EXISTS);
 	EXPECT_EQ(surface, saved);
 	ASSERT_EQ(morph_tui_surface_resize(surface, 8, 2), 0);
 	struct morph_tui_canvas root{}, child{};
@@ -648,14 +656,14 @@ TEST(TuiCanvasTest, ClipsWideCellsCombiningMarksAndUntrustedControls)
 	morph_tui_canvas_child_borrow(&root, 1, 0, 4, 1, &child);
 	ASSERT_EQ(morph_tui_canvas_text(&child, -1, 0, "界ab界", 0), 0);
 	ASSERT_EQ(morph_tui_canvas_text(&root, 0, 1, "e\xcc\x81\033[2JX", 0), 0);
-	morph_buf_t rows{};
-	ASSERT_EQ(morph_buf_init(&rows, BUFSIZ), 0);
+	nb_buf rows{};
+	ASSERT_EQ((nb_buf_init(&rows), nb_buf_reserve(&rows, BUFSIZ) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(morph_tui_surface_rows(surface, &rows), 0);
-	char *plain = utf8_strip_ansi_dup(rows.data, rows.len, nullptr);
+	char *plain = morph_terminal_strip_ansi_dup(rows.ptr, rows.len, nullptr);
 	ASSERT_NE(plain, nullptr);
 	EXPECT_EQ(std::string(plain), "  ab    \ne\xcc\x81X      \n");
 	free(plain);
-	morph_buf_cleanup(&rows);
+	nb_buf_cleanup(&rows);
 	morph_tui_surface_destroy(surface);
 }
 
@@ -668,14 +676,14 @@ TEST(TuiCanvasTest, OverwritingEitherHalfOfWideCellClearsTheWholeGlyph)
 	morph_tui_canvas_root_borrow(surface, &canvas);
 	ASSERT_EQ(morph_tui_canvas_text(&canvas, 0, 0, "界ab", 0), 0);
 	ASSERT_EQ(morph_tui_canvas_text(&canvas, 1, 0, "X", 0), 0);
-	morph_buf_t rows{};
-	ASSERT_EQ(morph_buf_init(&rows, 64), 0);
+	nb_buf rows{};
+	ASSERT_EQ((nb_buf_init(&rows), nb_buf_reserve(&rows, 64) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(morph_tui_surface_rows(surface, &rows), 0);
-	char *plain = utf8_strip_ansi_dup(rows.data, rows.len, nullptr);
+	char *plain = morph_terminal_strip_ansi_dup(rows.ptr, rows.len, nullptr);
 	ASSERT_NE(plain, nullptr);
 	EXPECT_EQ(std::string(plain), " Xab\n");
 	free(plain);
-	morph_buf_cleanup(&rows);
+	nb_buf_cleanup(&rows);
 	morph_tui_surface_destroy(surface);
 }
 
@@ -713,7 +721,7 @@ TEST_F(TuiViewsTest, ApplicationSubclassUsesOptionalLaunchEventAndTerminationMet
 			EXPECT_EQ(result, 0);
 			auto *runtime = base;
 			EXPECT_NE(runtime, nullptr);
-			EXPECT_EQ(morph_tui_application_post(runtime, 1), -ECANCELED);
+			EXPECT_EQ(morph_tui_application_post(runtime, 1), NB_ERR_CANCELLED);
 		}};
 	application.base.ops = &application_ops;
 	struct morph_tui_application_options options{};
@@ -791,11 +799,11 @@ TEST_F(TuiViewsTest, WorkerCannotMutateViewsAndMessagesRemainTheUpdateBoundary)
 		terminal_rc = morph_tui_application_restore_terminal(app);
 	});
 	worker.join();
-	EXPECT_EQ(label_rc, -EPERM);
-	EXPECT_EQ(focus_rc, -EPERM);
-	EXPECT_EQ(list_rc, -EPERM);
-	EXPECT_EQ(render_rc, -EPERM);
-	EXPECT_EQ(terminal_rc, -EPERM);
+	EXPECT_EQ(label_rc, NB_ERR_NOT_PERMITTED);
+	EXPECT_EQ(focus_rc, NB_ERR_NOT_PERMITTED);
+	EXPECT_EQ(list_rc, NB_ERR_NOT_PERMITTED);
+	EXPECT_EQ(render_rc, NB_ERR_NOT_PERMITTED);
+	EXPECT_EQ(terminal_rc, NB_ERR_NOT_PERMITTED);
 	EXPECT_EQ(morph_tui_widget_list_selected(model.list), 0U);
 }
 
@@ -827,18 +835,23 @@ TEST_F(TuiViewsTest, ActionFailureStopsAndUnwindsTheControllerScope)
 	ASSERT_EQ(present(), 0);
 	ASSERT_EQ(morph_tui_widget_set_action_borrow(
 			  model.list,
-			  +[](void *, const struct morph_tui_widget_action *) { return -EIO; },
+			  +[](void *, const struct morph_tui_widget_action *) -> int {
+				  return NB_ERR_IO;
+			  },
 			  nullptr),
 		  0);
 	ASSERT_EQ(write(master, "\r", 1), 1);
+	struct pollfd ready = {fileno(input), POLLIN, 0};
+	ASSERT_EQ(poll(&ready, 1, 2000), 1);
+	ASSERT_NE(ready.revents & POLLIN, 0);
 	int rc = 0;
 	for (int i = 0; i < 100 && !rc; i++)
 		rc = morph_tui_application_step(app, 0);
-	EXPECT_EQ(rc, -EIO);
+	EXPECT_EQ(rc, NB_ERR_IO);
 	morph_tui_application_destroy(app);
 	app = nullptr;
 	EXPECT_EQ(model.closes, 1);
-	EXPECT_EQ(model.result, -EIO);
+	EXPECT_EQ(model.result, NB_ERR_IO);
 }
 
 TEST_F(TuiViewsTest, StackRedistributesGrowthAfterMaximumAndSupportsManySubviews)
@@ -939,8 +952,8 @@ TEST_F(TuiViewsTest, TextFieldSetterCopiesAndPreservesValueOnValidationFailure)
 	EXPECT_EQ(std::string(morph_tui_widget_text_field_text_borrow(model.field)), "updated");
 	EXPECT_EQ(morph_tui_widget_text_field_set_text_copy(model.field,
 							    std::string(32, 'a').c_str()),
-		  -E2BIG);
-	EXPECT_EQ(morph_tui_widget_text_field_set_text_copy(model.field, nullptr), -EINVAL);
+		  NB_ERR_TOO_BIG);
+	EXPECT_EQ(morph_tui_widget_text_field_set_text_copy(model.field, nullptr), NB_ERR_INVAL);
 	EXPECT_EQ(std::string(morph_tui_widget_text_field_text_borrow(model.field)), "updated");
 	EXPECT_EQ(morph_tui_window_focus_borrow(morph_tui_application_window_borrow(app)),
 		  model.field);
@@ -1041,7 +1054,8 @@ TEST_F(TuiViewsTest, RichTextMeasuresWrappedContentAndPaintsPaddingInsideMargins
 	struct morph_tui_text_span invalid{};
 	invalid.text = "replacement";
 	invalid.style.foreground = {MORPH_TUI_COLOR_INDEXED, 256};
-	EXPECT_EQ(morph_tui_widget_text_view_set_spans_copy(model.label, &invalid, 1), -EINVAL);
+	EXPECT_EQ(morph_tui_widget_text_view_set_spans_copy(model.label, &invalid, 1),
+		  NB_ERR_INVAL);
 	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
 	EXPECT_NE(frame.find("中ab文c"), std::string::npos);
 	ASSERT_EQ(morph_tui_widget_text_view_set_text_copy(model.label, "a\n"), 0);
@@ -1110,12 +1124,12 @@ TEST(TuiCanvasTest, StyledSpansPreserveCombiningMarksAcrossStyleBoundaries)
 	second.foreground = {MORPH_TUI_COLOR_INDEXED, 2};
 	ASSERT_EQ(morph_tui_canvas_text_styled(&canvas, 0, 0, "e", &first), 0);
 	ASSERT_EQ(morph_tui_canvas_text_styled(&canvas, 1, 0, "\xcc\x81!", &second), 0);
-	morph_buf_t rows{};
-	ASSERT_EQ(morph_buf_init(&rows, 128), 0);
+	nb_buf rows{};
+	ASSERT_EQ((nb_buf_init(&rows), nb_buf_reserve(&rows, 128) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(morph_tui_surface_rows(surface, &rows), 0);
-	EXPECT_NE(std::string(rows.data).find("e\xcc\x81"), std::string::npos);
-	EXPECT_NE(std::string(rows.data).find("38;5;2m!"), std::string::npos);
-	morph_buf_cleanup(&rows);
+	EXPECT_NE(std::string(rows.ptr).find("e\xcc\x81"), std::string::npos);
+	EXPECT_NE(std::string(rows.ptr).find("38;5;2m!"), std::string::npos);
+	nb_buf_cleanup(&rows);
 	morph_tui_surface_destroy(surface);
 }
 
@@ -1123,12 +1137,34 @@ TEST_F(TuiViewsTest, SynchronousRenderFlushesViewsWithoutReadingQueuedInput)
 {
 	ASSERT_EQ(present(), 0);
 	ASSERT_EQ(write(master, "x", 1), 1);
+	struct pollfd ready = {fileno(input), POLLIN, 0};
+	ASSERT_EQ(poll(&ready, 1, 2000), 1);
+	ASSERT_NE(ready.revents & POLLIN, 0);
 	ASSERT_EQ(morph_tui_widget_label_set_text_copy(model.label, "Visible before prompt"), 0);
 	ASSERT_EQ(morph_tui_application_render(app), 0);
 	EXPECT_NE(frame.find("Visible before prompt"), std::string::npos);
 	EXPECT_EQ(model.actions, 0);
 	until([&] { return model.actions > 0; });
 	EXPECT_STREQ(morph_tui_widget_text_field_text_borrow(model.field), "x");
+}
+
+TEST_F(TuiViewsTest, CoveredViewUpdatesWaitUntilItsControllerAppears)
+{
+	ASSERT_EQ(present(), 0);
+	TuiViewModel overlay;
+	struct morph_tui_view_controller_spec spec{};
+	spec.ops = &ops;
+	spec.data = &overlay;
+	ASSERT_EQ(morph_tui_view_controller_present_borrow(app, &spec), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	int settled_frames = frames;
+	ASSERT_EQ(morph_tui_widget_label_set_text_copy(model.label, "Updated while covered"), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_EQ(frames, settled_frames);
+	EXPECT_EQ(frame.find("Updated while covered"), std::string::npos);
+	ASSERT_EQ(morph_tui_view_controller_dismiss(overlay.controller, 0), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_NE(frame.find("Updated while covered"), std::string::npos);
 }
 
 struct TuiPaddingView {
@@ -1374,9 +1410,11 @@ TEST_F(TuiViewsTest, RichHyperlinksAreCopiedWrappedClippedAndRemovedWithTheirTex
 	struct morph_tui_text_span invalid{};
 	invalid.text = "replacement";
 	invalid.hyperlink = "https://example.test/\033]52;c;private\a";
-	EXPECT_EQ(morph_tui_widget_text_view_set_spans_copy(model.label, &invalid, 1), -EINVAL);
+	EXPECT_EQ(morph_tui_widget_text_view_set_spans_copy(model.label, &invalid, 1),
+		  NB_ERR_INVAL);
 	invalid.hyperlink = "https://example.test/\xc2\x9d";
-	EXPECT_EQ(morph_tui_widget_text_view_set_spans_copy(model.label, &invalid, 1), -EINVAL);
+	EXPECT_EQ(morph_tui_widget_text_view_set_spans_copy(model.label, &invalid, 1),
+		  NB_ERR_INVAL);
 	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
 	EXPECT_NE(styled_frame.find(open), std::string::npos);
 	EXPECT_EQ(styled_frame.find("private"), std::string::npos);

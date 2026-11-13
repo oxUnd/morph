@@ -1,7 +1,9 @@
 #include "video_gen.h"
 #include "video_provider.h"
 #include "models/llm.h"
-#include "util/error.h"
+#include "errors.h"
+#include "nb/str.h"
+#include "nb/utf8.h"
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -39,10 +41,10 @@ int video_gen_capabilities(const struct model *model, struct video_capabilities 
 	const struct video_provider_ops *ops;
 
 	if (!model || !caps)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	ops = video_provider_resolve(model);
 	if (!ops)
-		return -ENOTSUP;
+		return NB_ERR_UNSUPPORTED;
 	return ops->capabilities(model, caps);
 }
 
@@ -56,8 +58,12 @@ static int video_capability_error(struct model *self, struct video_result *resul
 		 "video adapter '%s' does not support %s for model '%s'",
 		 adapter ? adapter : "(unknown)", capability, model_id);
 	if (self)
-		snprintf(self->last_error, sizeof(self->last_error), "%s", result->error_msg);
-	return -ENOTSUP;
+		(void)nb_str_copy_to(
+			nb_str_from_parts(result->error_msg,
+					  nb_utf8_clamp_bytes(result->error_msg,
+							      sizeof(self->last_error) - 1)),
+			self->last_error, sizeof(self->last_error));
+	return NB_ERR_UNSUPPORTED;
 }
 
 int video_gen_create(struct model *self, const char *prompt, const char **image_paths,
@@ -75,7 +81,7 @@ int video_gen_create(struct model *self, const char *prompt, const char **image_
 	    num_audios > VIDEO_GEN_MAX_REFERENCE_AUDIOS || (num_images > 0 && !image_paths) ||
 	    (num_videos > 0 && !video_paths) || (num_audios > 0 && !audio_paths) ||
 	    generate_audio < -1 || generate_audio > 1)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(result, 0, sizeof(*result));
 	if (!self->model_id[0]) {
 		snprintf(result->error_msg, sizeof(result->error_msg),
@@ -84,19 +90,19 @@ int video_gen_create(struct model *self, const char *prompt, const char **image_
 	}
 	for (int i = 0; i < num_images; i++)
 		if (!image_paths[i] || !image_paths[i][0])
-			return -EINVAL;
+			return NB_ERR_INVAL;
 	for (int i = 0; i < num_videos; i++)
 		if (!video_paths[i] || !video_paths[i][0])
-			return -EINVAL;
+			return NB_ERR_INVAL;
 	for (int i = 0; i < num_audios; i++)
 		if (!audio_paths[i] || !audio_paths[i][0])
-			return -EINVAL;
+			return NB_ERR_INVAL;
 
 	ops = video_provider_resolve(self);
 	if (!ops) {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "unsupported video adapter for provider '%s'", self->provider);
-		return -ENOTSUP;
+		return NB_ERR_UNSUPPORTED;
 	}
 	rc = ops->capabilities(self, &caps);
 	if (rc != 0) {
@@ -115,12 +121,12 @@ int video_gen_create(struct model *self, const char *prompt, const char **image_
 	if (num_audios > 0 && num_images == 0 && num_videos == 0) {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "reference audio requires a reference image or video");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	if (num_audios > 0 && generate_audio == 0) {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "reference audio requires generate_audio=true");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	if (generate_audio == 1 && !caps.supports_generate_audio)
 		return video_capability_error(self, result, "audio generation");

@@ -1,6 +1,6 @@
 #include "memory_store.h"
 
-#include "util/error.h"
+#include "errors.h"
 
 #include <errno.h>
 
@@ -10,7 +10,7 @@ static int memory_store_exec_delete(struct db *db, const char *sql, int64_t sess
 	int rc;
 
 	if (!db || !db->handle || !sql)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
 		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);

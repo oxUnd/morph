@@ -2,7 +2,8 @@
 #define MORPH_MEMORY_SEARCH_H
 
 #include "memory_store.h"
-#include "util/array.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,7 +25,7 @@ struct memory_record {
 };
 
 struct memory_search_result {
-	morph_array_t records;
+	nb_vec records;
 };
 
 struct memory_search_options {

@@ -1,12 +1,13 @@
 #ifndef EXT_H
 #define EXT_H
 
-struct morph_log;
+struct nb_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #include <limits.h>
+#include "nb/err.h"
 #include "sandbox/sandbox.h"
 #include "agent/tool.h"
 
@@ -45,7 +46,7 @@ struct ext_manifest {
 };
 
 struct ext {
-	struct morph_log *logger;
+	struct nb_log *logger;
 	struct ext_manifest manifest;
 	char path[PATH_MAX];
 	void *dl_handle;
@@ -57,9 +58,9 @@ struct ext {
 
 /* ex must have no owned fields or loaded entrypoint. Success creates an owner;
  * failure leaves ex unchanged. Descriptor views borrow ex's own storage. */
-int ext_load(struct morph_log *logger, struct ext *ex, const char *dir_path);
+int ext_load(struct nb_log *logger, struct ext *ex, const char *dir_path);
 int ext_unload(struct ext *ex);
-/* Borrows ex/args/callback until return; *result_json must be NULL or -EEXIST
+/* Borrows ex/args/callback until return; *result_json must be NULL or NB_ERR_EXISTS
  * leaves it unchanged. Caller frees any returned JSON, including diagnostics on
  * execution failure. Cancellation reaps exec children; native callbacks cooperate. */
 int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,

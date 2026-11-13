@@ -1,11 +1,12 @@
 #include "agent_ui.h"
+#include "nb/err.h"
 
-#include "util/buf.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/strmap.h"
-#include "util/name.h"
-#include "util/utf8.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "nb/str.h"
+#include "nb/utf8.h"
 #include "cJSON.h"
 
 #include <ctype.h>
@@ -27,7 +28,7 @@ struct agent_ui_parser {
 
 static int is_name_char(char c)
 {
-	return morph_name_char_valid(c, "-_:");
+	return nb_str_is_alnum(nb_str_from_parts(&(c), 1), "-_:");
 }
 
 static int is_attr_end(char c)
@@ -62,8 +63,7 @@ static int supported_tag(const char *name)
 	return 0;
 }
 
-static int tag_name_at(const struct agent_ui_parser *p, size_t pos,
-		       size_t prefix_len, morph_buf_t *name)
+static int tag_name_at(const struct agent_ui_parser *p, size_t pos, size_t prefix_len, nb_buf *name)
 {
 	size_t name_start;
 	size_t name_len = 0;
@@ -77,11 +77,11 @@ static int tag_name_at(const struct agent_ui_parser *p, size_t pos,
 		name_len++;
 	if (name_len == 0)
 		return 0;
-	rc = morph_buf_init(name, name_len + 1);
+	rc = (nb_buf_init(name), nb_buf_reserve(name, name_len + 1) ? 0 : NB_ERR_NOMEM);
 	if (rc < 0)
 		return 0;
-	if (morph_buf_append(name, p->input + name_start, name_len) < 0) {
-		morph_buf_cleanup(name);
+	if ((nb_buf_append(name, p->input + name_start, name_len) ? 0 : NB_ERR_NOMEM) < 0) {
+		nb_buf_cleanup(name);
 		return 0;
 	}
 	return 1;
@@ -90,7 +90,7 @@ static int tag_name_at(const struct agent_ui_parser *p, size_t pos,
 static int opening_tag_prefix_len(const struct agent_ui_parser *p,
 				  int *missing_colon)
 {
-	morph_buf_t name;
+	nb_buf name NB_CLEANUP(nb_buf_cleanup) = {0};
 	int ok;
 
 	if (missing_colon)
@@ -105,9 +105,8 @@ static int opening_tag_prefix_len(const struct agent_ui_parser *p,
 	ok = tag_name_at(p, p->pos, 2, &name);
 	if (!ok)
 		return 0;
-	ok = supported_tag(morph_buf_cstr_borrow(&name)) ||
-	     strcmp(morph_buf_cstr_borrow(&name), "ask_user") == 0;
-	morph_buf_cleanup(&name);
+	ok = supported_tag(nb_buf_cstr(&name)) || strcmp(nb_buf_cstr(&name), "ask_user") == 0;
+	nb_buf_cleanup(&name);
 	if (!ok)
 		return 0;
 	if (missing_colon)
@@ -151,7 +150,7 @@ static int closing_tag_prefix_len(const struct agent_ui_parser *p,
 
 static int missing_colon_closing_supported_at(const struct agent_ui_parser *p)
 {
-	morph_buf_t name;
+	nb_buf name NB_CLEANUP(nb_buf_cleanup) = {0};
 	int ok;
 
 	if (!p || p->pos + 3 >= p->len ||
@@ -163,9 +162,8 @@ static int missing_colon_closing_supported_at(const struct agent_ui_parser *p)
 	ok = tag_name_at(p, p->pos, 3, &name);
 	if (!ok)
 		return 0;
-	ok = supported_tag(morph_buf_cstr_borrow(&name)) ||
-	     strcmp(morph_buf_cstr_borrow(&name), "ask_user") == 0;
-	morph_buf_cleanup(&name);
+	ok = supported_tag(nb_buf_cstr(&name)) || strcmp(nb_buf_cstr(&name), "ask_user") == 0;
+	nb_buf_cleanup(&name);
 	return ok;
 }
 
@@ -211,7 +209,7 @@ static int decode_entity_at(const char *s, size_t len, size_t *used, char *out)
 	return 0;
 }
 
-static int append_decoded(morph_buf_t *buf, const char *s, size_t len)
+static int append_decoded(nb_buf *buf, const char *s, size_t len)
 {
 	size_t i = 0;
 
@@ -221,15 +219,15 @@ static int append_decoded(morph_buf_t *buf, const char *s, size_t len)
 
 		if (s[i] == '&' &&
 		    decode_entity_at(s + i, len - i, &used, &decoded)) {
-			int rc = morph_buf_putc(buf, decoded);
+			int rc = (nb_buf_append_char(buf, decoded) ? 0 : NB_ERR_NOMEM);
 
 			if (rc < 0)
 				return rc;
 			i += used;
 			continue;
 		}
-		if (morph_buf_putc(buf, s[i]) < 0)
-			return -ENOMEM;
+		if ((nb_buf_append_char(buf, s[i]) ? 0 : NB_ERR_NOMEM) < 0)
+			return NB_ERR_NOMEM;
 		i++;
 	}
 	return 0;
@@ -238,16 +236,16 @@ static int append_decoded(morph_buf_t *buf, const char *s, size_t len)
 static int json_add_string_n(cJSON *obj, const char *name,
 			     const char *s, size_t len)
 {
-	morph_buf_t buf;
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc;
 
-	rc = morph_buf_init(&buf, len + 1);
+	rc = (nb_buf_init(&buf), nb_buf_reserve(&buf, len + 1) ? 0 : NB_ERR_NOMEM);
 	if (rc < 0)
 		return rc;
 	rc = append_decoded(&buf, s, len);
-	if (rc == 0 && !cJSON_AddStringToObject(obj, name, morph_buf_cstr_borrow(&buf)))
-		rc = -ENOMEM;
-	morph_buf_cleanup(&buf);
+	if (rc == 0 && !cJSON_AddStringToObject(obj, name, nb_buf_cstr(&buf)))
+		rc = NB_ERR_NOMEM;
+	nb_buf_cleanup(&buf);
 	return rc;
 }
 
@@ -286,8 +284,7 @@ static int consume_utf8_quote(const struct agent_ui_parser *p, size_t *pos,
 	unsigned cp;
 	size_t count;
 
-	if (*pos >= p->len ||
-	    !utf8_decode_codepoint(p->input + *pos, p->len - *pos, &cp, &count))
+	if (*pos >= p->len || !nb_utf8_read(p->input + *pos, p->len - *pos, &cp, &count))
 		return 0;
 	if (cp == '"' || cp == 0x201c || cp == 0x201d)
 		*quote = '"';
@@ -305,8 +302,7 @@ static int at_matching_utf8_quote(const struct agent_ui_parser *p,
 	unsigned cp;
 	size_t count;
 
-	if (pos >= p->len ||
-	    !utf8_decode_codepoint(p->input + pos, p->len - pos, &cp, &count))
+	if (pos >= p->len || !nb_utf8_read(p->input + pos, p->len - pos, &cp, &count))
 		return 0;
 	if (cp != (unsigned char)quote &&
 	    !(quote == '"' && cp == 0x201d) && !(quote == '\'' && cp == 0x2019))
@@ -363,33 +359,36 @@ static int parse_attrs(struct agent_ui_parser *p, size_t end, cJSON *attrs)
 		}
 
 		{
-			morph_buf_t key MORPH_CLEANUP(morph_buf_cleanup) = {0};
-			morph_buf_t value MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			nb_buf key NB_CLEANUP(nb_buf_cleanup) = {0};
+			nb_buf value NB_CLEANUP(nb_buf_cleanup) = {0};
 			int rc;
 			size_t value_len = val_end - val_start;
 
 			if (value_len > AGENT_UI_ATTR_VALUE_MAX)
 				value_len = AGENT_UI_ATTR_VALUE_MAX;
-			rc = morph_buf_init(&key, key_len + 1);
+			rc = (nb_buf_init(&key),
+			      nb_buf_reserve(&key, key_len + 1) ? 0 : NB_ERR_NOMEM);
 			if (rc < 0)
 				return rc;
-			rc = morph_buf_init(&value, value_len + 1);
+			rc = (nb_buf_init(&value),
+			      nb_buf_reserve(&value, value_len + 1) ? 0 : NB_ERR_NOMEM);
 			if (rc < 0) {
 				return rc;
 			}
-			if (morph_buf_append(&key, p->input + key_start, key_len) < 0 ||
+			if ((nb_buf_append(&key, p->input + key_start, key_len)
+				     ? 0
+				     : NB_ERR_NOMEM) < 0 ||
 			    append_decoded(&value, p->input + val_start, value_len) < 0 ||
-			    !cJSON_AddStringToObject(attrs, morph_buf_cstr_borrow(&key),
-						     morph_buf_cstr_borrow(&value))) {
-				return -ENOMEM;
+			    !cJSON_AddStringToObject(attrs, nb_buf_cstr(&key),
+						     nb_buf_cstr(&value))) {
+				return NB_ERR_NOMEM;
 			}
 		}
 	}
 	return 0;
 }
 
-static int append_text_node(cJSON *nodes, const char *s, size_t len,
-			    morph_buf_t *plain)
+static int append_text_node(cJSON *nodes, const char *s, size_t len, nb_buf *plain)
 {
 	cJSON *node;
 	int rc = 0;
@@ -398,11 +397,11 @@ static int append_text_node(cJSON *nodes, const char *s, size_t len,
 		return 0;
 	node = cJSON_CreateObject();
 	if (!node)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (!cJSON_AddStringToObject(node, "type", "text") ||
 	    json_add_string_n(node, "text", s, len) < 0) {
 		cJSON_Delete(node);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	cJSON_AddItemToArray(nodes, node);
 	if (plain)
@@ -424,11 +423,10 @@ static int consume_closing(struct agent_ui_parser *p, const char *name)
 	return 1;
 }
 
-static int parse_nodes(struct agent_ui_parser *p, const char *stop_name,
-		       int depth, cJSON *nodes, morph_buf_t *plain);
+static int parse_nodes(struct agent_ui_parser *p, const char *stop_name, int depth, cJSON *nodes,
+		       nb_buf *plain);
 
-static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes,
-			 morph_buf_t *plain)
+static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes, nb_buf *plain)
 {
 	size_t start = p->pos;
 	size_t name_start;
@@ -437,11 +435,11 @@ static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes,
 	int prefix_len;
 	int missing_colon = 0;
 	int self_closing;
-	morph_buf_t name_buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	cJSON *node MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	cJSON *attrs MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	cJSON *children MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	morph_buf_t body MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf name_buf NB_CLEANUP(nb_buf_cleanup) = {0};
+	cJSON *node NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	cJSON *attrs NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	cJSON *children NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	nb_buf body NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc = 0;
 
 	prefix_len = opening_tag_prefix_len(p, &missing_colon);
@@ -459,14 +457,14 @@ static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes,
 		p->pos = start;
 		return append_text_node(nodes, p->input + p->pos, 1, plain);
 	}
-	rc = morph_buf_init(&name_buf, name_len + 1);
+	rc = (nb_buf_init(&name_buf), nb_buf_reserve(&name_buf, name_len + 1) ? 0 : NB_ERR_NOMEM);
 	if (rc < 0)
 		return rc;
-	if (morph_buf_append(&name_buf, p->input + name_start, name_len) < 0) {
-		return -ENOMEM;
+	if ((nb_buf_append(&name_buf, p->input + name_start, name_len) ? 0 : NB_ERR_NOMEM) < 0) {
+		return NB_ERR_NOMEM;
 	}
-	if (!supported_tag(morph_buf_cstr_borrow(&name_buf))) {
-		if (strcmp(morph_buf_cstr_borrow(&name_buf), "ask_user") == 0)
+	if (!supported_tag(nb_buf_cstr(&name_buf))) {
+		if (strcmp(nb_buf_cstr(&name_buf), "ask_user") == 0)
 			add_warning(p, "m:ask_user ignored; use ask_user tool");
 		else
 			add_warning(p, "unsupported m tag left as text");
@@ -490,7 +488,7 @@ static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes,
 					p->len - start, plain);
 	}
 	self_closing = tag_end > start && p->input[tag_end - 1] == '/';
-	if (bodyless_tag(morph_buf_cstr_borrow(&name_buf)) && !self_closing) {
+	if (bodyless_tag(nb_buf_cstr(&name_buf)) && !self_closing) {
 		self_closing = 1;
 		add_warning(p, "bodyless tag treated as self closing");
 	}
@@ -498,12 +496,12 @@ static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes,
 	attrs = cJSON_CreateObject();
 	children = cJSON_CreateArray();
 	if (!node || !attrs || !children) {
-		rc = -ENOMEM;
+		rc = NB_ERR_NOMEM;
 		return rc;
 	}
 	if (!cJSON_AddStringToObject(node, "type", "component") ||
-	    !cJSON_AddStringToObject(node, "component", morph_buf_cstr_borrow(&name_buf))) {
-		rc = -ENOMEM;
+	    !cJSON_AddStringToObject(node, "component", nb_buf_cstr(&name_buf))) {
+		rc = NB_ERR_NOMEM;
 		return rc;
 	}
 	rc = parse_attrs(p, self_closing ? tag_end - 1 : tag_end, attrs);
@@ -511,37 +509,39 @@ static int parse_element(struct agent_ui_parser *p, int depth, cJSON *nodes,
 		return rc;
 	p->pos = tag_end + 1;
 	p->recognized++;
-	rc = morph_buf_init(&body, 128);
+	rc = (nb_buf_init(&body), nb_buf_reserve(&body, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc < 0)
 		return rc;
 	if (!self_closing) {
-		rc = parse_nodes(p, morph_buf_cstr_borrow(&name_buf), depth + 1, children, &body);
+		rc = parse_nodes(p, nb_buf_cstr(&name_buf), depth + 1, children, &body);
 		if (rc < 0)
 			return rc;
 	}
-	if (plain && morph_buf_append(plain, morph_buf_cstr_borrow(&body), body.len) < 0) {
-		rc = -ENOMEM;
+	if (plain && (nb_buf_append(plain, nb_buf_cstr(&body), body.len) ? 0 : NB_ERR_NOMEM) < 0) {
+		rc = NB_ERR_NOMEM;
 		return rc;
 	}
-	if (morph_json_object_take(node, "attrs", &attrs) != 0) {
-		rc = -ENOMEM;
+	if ((cJSON_AddItemToObject(node, "attrs", attrs) ? (attrs = NULL, NB_OK) : NB_ERR_NOMEM) !=
+	    0) {
+		rc = NB_ERR_NOMEM;
 		return rc;
 	}
-	if (!cJSON_AddStringToObject(node, "text", morph_buf_cstr_borrow(&body))) {
-		rc = -ENOMEM;
+	if (!cJSON_AddStringToObject(node, "text", nb_buf_cstr(&body))) {
+		rc = NB_ERR_NOMEM;
 		return rc;
 	}
 	if (cJSON_GetArraySize(children) > 0) {
-		if (morph_json_object_take(node, "children", &children) != 0) {
-			rc = -ENOMEM;
+		if ((cJSON_AddItemToObject(node, "children", children) ? (children = NULL, NB_OK)
+								       : NB_ERR_NOMEM) != 0) {
+			rc = NB_ERR_NOMEM;
 			return rc;
 		}
 	}
-	return morph_json_array_take(nodes, &node);
+	return (cJSON_AddItemToArray(nodes, node) ? (node = NULL, NB_OK) : NB_ERR_NOMEM);
 }
 
-static int parse_nodes(struct agent_ui_parser *p, const char *stop_name,
-		       int depth, cJSON *nodes, morph_buf_t *plain)
+static int parse_nodes(struct agent_ui_parser *p, const char *stop_name, int depth, cJSON *nodes,
+		       nb_buf *plain)
 {
 	while (p->pos < p->len) {
 		size_t text_start;
@@ -603,7 +603,7 @@ static int parse_nodes(struct agent_ui_parser *p, const char *stop_name,
 		p->pos = next;
 		if (append_text_node(nodes, p->input + text_start,
 				     next - text_start, plain) < 0)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 	}
 	if (stop_name)
 		add_warning(p, "missing closing tag accepted");
@@ -612,14 +612,14 @@ static int parse_nodes(struct agent_ui_parser *p, const char *stop_name,
 
 static void agent_ui_parser_cleanup(struct agent_ui_parser *parser)
 {
-	morph_json_cleanup(&parser->warnings);
+	cJSON_DeleteOwner(&parser->warnings);
 }
 
 char *agent_ui_parse_tags_json(const char *input)
 {
-	struct agent_ui_parser parser MORPH_CLEANUP(agent_ui_parser_cleanup) = {0};
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	cJSON *nodes MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	struct agent_ui_parser parser NB_CLEANUP(agent_ui_parser_cleanup) = {0};
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	cJSON *nodes NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	int rc;
 
 	if (!input)
@@ -640,9 +640,12 @@ char *agent_ui_parse_tags_json(const char *input)
 	if (!cJSON_AddNumberToObject(root, "recognized_tags",
 				     parser.recognized))
 		return NULL;
-	if (morph_json_object_take(root, "nodes", &nodes) != 0)
+	if ((cJSON_AddItemToObject(root, "nodes", nodes) ? (nodes = NULL, NB_OK) : NB_ERR_NOMEM) !=
+	    0)
 		return NULL;
-	if (morph_json_object_take(root, "warnings", &parser.warnings) != 0)
+	if ((cJSON_AddItemToObject(root, "warnings", parser.warnings)
+		     ? (parser.warnings = NULL, NB_OK)
+		     : NB_ERR_NOMEM) != 0)
 		return NULL;
 	return cJSON_PrintUnformatted(root);
 }

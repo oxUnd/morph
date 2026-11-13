@@ -22,7 +22,7 @@ enum tool_path_access {
 		TOOL_PATH_ACCESS_DELETE,
 };
 
-struct morph_log;
+struct nb_log;
 struct permission_review;
 
 struct tool_directory_access_request {

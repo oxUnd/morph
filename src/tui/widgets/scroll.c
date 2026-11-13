@@ -1,7 +1,7 @@
 #include <morph/tui/widgets/scroll.h>
 #include <morph/tui/widgets/list.h>
 #include "tui/core/view_internal.h"
-#include "util/error.h"
+#include "errors.h"
 
 struct widget_scroll {
 	struct morph_tui_widget base;
@@ -22,7 +22,7 @@ static int widget_scroll_layout(struct morph_tui_view *view)
 	struct morph_tui_view_rect content = morph_tui_view_content_rect(view);
 	size_t count = morph_tui_view_child_count(view);
 	if (count > 1)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	scroll->page = content.height;
 	scroll->extent = 0;
 	if (count) {
@@ -59,9 +59,9 @@ static const struct morph_tui_view_ops widget_scroll_ops = {
 int morph_tui_widget_scroll_handle_key(struct morph_tui_view *view, int key)
 {
 	if (!view || view->ops != &widget_scroll_ops)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	if (key != MORPH_TUI_KEY_PAGE_UP && key != MORPH_TUI_KEY_PAGE_DOWN &&
 	    key != MORPH_TUI_KEY_UP && key != MORPH_TUI_KEY_DOWN && key != MORPH_TUI_KEY_HOME &&
 	    key != MORPH_TUI_KEY_END)
@@ -79,9 +79,9 @@ int morph_tui_widget_scroll_handle_key(struct morph_tui_view *view, int key)
 int morph_tui_widget_scroll_follow(struct morph_tui_view *view, int enabled)
 {
 	if (!view || view->ops != &widget_scroll_ops)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	((struct widget_scroll *)view)->follow = !!enabled;
 	morph_tui_view_invalidate(view, 1);
 	return 0;

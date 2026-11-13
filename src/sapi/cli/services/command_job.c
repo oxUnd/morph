@@ -1,4 +1,5 @@
 #include "sapi/cli/services/command_job.h"
+#include "nb/err.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/turn.h"
 #include "cJSON.h"
@@ -21,10 +22,10 @@ static void *cli_command_job_run(void *opaque)
 	int result;
 
 	result = job->fn(job->ctx, job->input, job->user_data);
-	pthread_mutex_lock(&job->mutex);
+	nb_mutex_lock(job->mutex);
 	job->result = result;
 	job->done = 1;
-	pthread_mutex_unlock(&job->mutex);
+	nb_mutex_unlock(job->mutex);
 	cli_event_queue_notify(job->ctx);
 	return NULL;
 }
@@ -33,7 +34,7 @@ static int cli_command_job_command_handle(struct cli_application *ctx, const cha
 					  void *user_data)
 {
 	(void)user_data;
-	return ctx->input_execute ? ctx->input_execute(ctx, input) : -ENOTSUP;
+	return ctx->input_execute ? ctx->input_execute(ctx, input) : NB_ERR_UNSUPPORTED;
 }
 
 int cli_command_job_init(struct cli_command_job *job)
@@ -42,14 +43,15 @@ int cli_command_job_init(struct cli_command_job *job)
 	int rc;
 
 	if (!job)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(job, 0, sizeof(*job));
-	rc = pthread_mutex_init(&job->mutex, NULL);
+	rc = ((job->mutex = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
 	if (rc != 0)
-		return -rc;
-	rc = morph_array_init(&job->prompts, MORPH_ARRAY_INIT_CAP, sizeof(prompt));
+		return rc;
+	rc = (nb_vec_init(&job->prompts, sizeof(prompt)),
+	      nb_vec_reserve(&job->prompts, 16) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
-		pthread_mutex_destroy(&job->mutex);
+		(nb_mutex_free(job->mutex), job->mutex = NULL);
 		return rc;
 	}
 	return 0;
@@ -61,16 +63,16 @@ void cli_command_job_cleanup(struct cli_command_job *job)
 		return;
 	if (job->active)
 		(void)cli_command_job_finish(job);
-	for (size_t i = 0; i < job->prompts.nelts; i++) {
-		struct cli_command_job_prompt *prompt = morph_array_borrow(&job->prompts, i);
+	for (size_t i = 0; i < job->prompts.len; i++) {
+		struct cli_command_job_prompt *prompt = nb_vec_at(&job->prompts, i);
 
 		free(prompt->text);
 		free(prompt->payload);
 		free(prompt->display_text);
 	}
-	morph_array_cleanup(&job->prompts);
+	nb_vec_cleanup(&job->prompts);
 	free(job->delivered_prompt);
-	pthread_mutex_destroy(&job->mutex);
+	(nb_mutex_free(job->mutex), job->mutex = NULL);
 }
 
 int cli_command_job_start(struct cli_command_job *job, struct cli_application *ctx,
@@ -85,22 +87,22 @@ int cli_command_job_start_fn(struct cli_command_job *job, struct cli_application
 	int thread_rc;
 
 	if (!job || !ctx || !input || !fn || job->active)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	job->input = strdup(input);
 	if (!job->input)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	job->ctx = ctx;
 	job->fn = fn;
 	job->user_data = user_data;
 	job->done = 0;
 	job->result = 0;
 	job->active = 1;
-	thread_rc = pthread_create(&job->thread, NULL, cli_command_job_run, job);
+	thread_rc = nb_thread_create(&job->thread, cli_command_job_run, job, NULL);
 	if (thread_rc != 0) {
 		job->active = 0;
 		free(job->input);
 		job->input = NULL;
-		return -thread_rc;
+		return thread_rc;
 	}
 	return 0;
 }
@@ -111,9 +113,9 @@ int cli_command_job_done(struct cli_command_job *job)
 
 	if (!job || !job->active)
 		return 0;
-	pthread_mutex_lock(&job->mutex);
+	nb_mutex_lock(job->mutex);
 	done = job->done;
-	pthread_mutex_unlock(&job->mutex);
+	nb_mutex_unlock(job->mutex);
 	return done;
 }
 
@@ -122,8 +124,8 @@ int cli_command_job_finish(struct cli_command_job *job)
 	int result;
 
 	if (!job || !job->active)
-		return -EINVAL;
-	pthread_join(job->thread, NULL);
+		return NB_ERR_INVAL;
+	nb_thread_join_take(&job->thread, NULL);
 	result = job->result;
 	free(job->input);
 	job->input = NULL;
@@ -140,7 +142,7 @@ int cli_command_job_wait(struct cli_command_job *job)
 	int warned = 0;
 
 	if (!job || !job->active || !job->ctx)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	ctx = job->ctx;
 	while (!cli_command_job_done(job)) {
 		struct pollfd fd;
@@ -156,8 +158,8 @@ int cli_command_job_wait(struct cli_command_job *job)
 		if (rc < 0 && errno == EINTR)
 			continue;
 		if (rc < 0 && !warned) {
-			log_warn(ctx ? ctx->logger : NULL, "command UI polling failed: %s",
-				 strerror(errno));
+			nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_WARN,
+				     "command UI polling failed: %s", strerror(errno));
 			warned = 1;
 		}
 		(void)cli_event_queue_drain(ctx);
@@ -175,23 +177,23 @@ int cli_command_job_prompt(struct cli_command_job *job, const char *text, const 
 	int distinct_display;
 
 	if (!job || !text || !text[0])
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	distinct_display = display_text && strcmp(display_text, text) != 0;
 	payload = cJSON_CreateObject();
 	if (!payload)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (!cJSON_AddStringToObject(payload, "text", text)) {
 		cJSON_Delete(payload);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (distinct_display && !cJSON_AddStringToObject(payload, "display_text", display_text)) {
 		cJSON_Delete(payload);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	json = cJSON_PrintUnformatted(payload);
 	cJSON_Delete(payload);
 	if (!json)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	prompt.text = strdup(text);
 	prompt.payload = json;
 	prompt.display_text = distinct_display ? strdup(display_text) : NULL;
@@ -199,18 +201,18 @@ int cli_command_job_prompt(struct cli_command_job *job, const char *text, const 
 		free(prompt.text);
 		free(prompt.display_text);
 		free(json);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
-	pthread_mutex_lock(&job->mutex);
-	slot = morph_array_push_borrow(&job->prompts);
+	nb_mutex_lock(job->mutex);
+	slot = nb_vec_push(&job->prompts);
 	if (slot)
 		*slot = prompt;
-	pthread_mutex_unlock(&job->mutex);
+	nb_mutex_unlock(job->mutex);
 	if (!slot) {
 		free(prompt.text);
 		free(prompt.display_text);
 		free(json);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	return 0;
 }
@@ -222,31 +224,30 @@ int cli_command_job_prompts_copy(struct cli_command_job *job, char **items, size
 	size_t available;
 
 	if (!job || (!items && capacity > 0) || !total)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	for (size_t i = 0; i < capacity; i++) {
 		if (items[i])
-			return -EEXIST;
+			return NB_ERR_EXISTS;
 	}
 	*total = 0;
-	pthread_mutex_lock(&job->mutex);
-	available = job->prompts.nelts;
+	nb_mutex_lock(job->mutex);
+	available = job->prompts.len;
 	while (copied < capacity && copied < available) {
-		const struct cli_command_job_prompt *prompt =
-			morph_array_borrow(&job->prompts, copied);
+		const struct cli_command_job_prompt *prompt = nb_vec_at(&job->prompts, copied);
 
 		items[copied] = strdup(prompt->display_text ? prompt->display_text : prompt->text);
 		if (!items[copied])
 			break;
 		copied++;
 	}
-	pthread_mutex_unlock(&job->mutex);
+	nb_mutex_unlock(job->mutex);
 	if (copied < capacity && copied < available) {
 		while (copied > 0) {
 			copied--;
 			free(items[copied]);
 			items[copied] = NULL;
 		}
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	*total = available;
 	return 0;
@@ -262,20 +263,19 @@ int cli_command_job_drain(void *opaque, struct react_action *out, int timeout)
 	struct cli_command_job_prompt *items;
 
 	(void)timeout;
-	pthread_mutex_lock(&job->mutex);
+	nb_mutex_lock(job->mutex);
 	free(job->delivered_prompt);
 	job->delivered_prompt = NULL;
-	if (job->prompts.nelts > 0) {
-		items = job->prompts.elts;
+	if (job->prompts.len > 0) {
+		items = ((void *)job->prompts.data);
 		job->delivered_prompt = items[0].payload;
 		free(items[0].text);
 		free(items[0].display_text);
-		job->prompts.nelts--;
-		memmove(items, items + 1, job->prompts.nelts * sizeof(*items));
+		nb_vec_remove(&job->prompts, 0);
 	}
-	if (job->prompts.nelts == 0)
+	if (job->prompts.len == 0)
 		job->expedite_prompts = 0;
-	pthread_mutex_unlock(&job->mutex);
+	nb_mutex_unlock(job->mutex);
 	out->type = "prompt";
 	out->payload_json = job->delivered_prompt;
 	if (out->payload_json && job->ctx)
@@ -292,21 +292,20 @@ char *cli_command_job_take_prompt(struct cli_command_job *job, char **display_te
 
 	if (display_text)
 		*display_text = NULL;
-	pthread_mutex_lock(&job->mutex);
-	if (job->prompts.nelts > 0) {
-		items = job->prompts.elts;
+	nb_mutex_lock(job->mutex);
+	if (job->prompts.len > 0) {
+		items = ((void *)job->prompts.data);
 		text = items[0].text;
 		if (display_text)
 			*display_text = items[0].display_text;
 		else
 			free(items[0].display_text);
 		free(items[0].payload);
-		job->prompts.nelts--;
-		memmove(items, items + 1, job->prompts.nelts * sizeof(*items));
+		nb_vec_remove(&job->prompts, 0);
 	}
-	if (job->prompts.nelts == 0)
+	if (job->prompts.len == 0)
 		job->expedite_prompts = 0;
-	pthread_mutex_unlock(&job->mutex);
+	nb_mutex_unlock(job->mutex);
 	return text;
 }
 
@@ -316,10 +315,10 @@ int cli_command_job_expedite_prompts(struct cli_command_job *job)
 
 	if (!job)
 		return 0;
-	pthread_mutex_lock(&job->mutex);
-	pending = job->prompts.nelts > 0;
+	nb_mutex_lock(job->mutex);
+	pending = job->prompts.len > 0;
 	job->expedite_prompts = pending;
-	pthread_mutex_unlock(&job->mutex);
+	nb_mutex_unlock(job->mutex);
 	return pending;
 }
 
@@ -328,8 +327,8 @@ int cli_command_job_prompt_pending(void *opaque)
 	struct cli_command_job *job = opaque;
 	int pending;
 
-	pthread_mutex_lock(&job->mutex);
-	pending = job->expedite_prompts && job->prompts.nelts > 0;
-	pthread_mutex_unlock(&job->mutex);
+	nb_mutex_lock(job->mutex);
+	pending = job->expedite_prompts && job->prompts.len > 0;
+	nb_mutex_unlock(job->mutex);
 	return pending;
 }

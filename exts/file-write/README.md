@@ -35,6 +35,9 @@ Supported operations:
 - `delete`: delete a regular file or empty directory.
 
 `encoding` may be `utf8` or `base64`. Decoded content is capped at 10 MiB.
+Base64 accepts optional padding and ASCII space/tab/CR/LF, and rejects invalid
+characters, misplaced padding and nonzero unused trailing bits. Native `nb_buf`
+owns decoded bytes, including embedded NULs.
 For `patch`, provide `offset` and optional `length`; `length` defaults to 0,
 which inserts content at `offset`.
 
@@ -47,6 +50,11 @@ which inserts content at `offset`.
 - `copy` streams file data and does not apply the 10 MiB content cap.
 - `patch` streams the existing file, but the replacement `content` is still
   capped at 10 MiB per call.
+
+Native nbase atomic publication handles create/replace/copy. New files use mode
+0600; copy and patch retain an existing destination's mode. Patch streams the
+existing file through a native temporary file and publishes with atomic copy,
+so its memory use does not grow with the existing file size.
 
 ## Safety
 

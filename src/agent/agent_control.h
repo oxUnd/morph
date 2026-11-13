@@ -4,7 +4,8 @@
 #include "config/config.h"
 #include "agent/context.h"
 #include "agent/tool_runtime.h"
-#include "util/array.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,7 +62,7 @@ int agent_control_shell_readonly(struct agent_control *control, const char *id);
 
 struct agent_shell_scope {
 	char *scratch;
-	morph_array_t paths;
+	nb_vec paths;
 	char **write_paths;
 	int write_path_count;
 };
@@ -140,9 +141,9 @@ int agent_control_finish_requested(struct agent_control *control, const char *id
 /* Cancel descendants without interrupting the caller or peer branches. */
 int agent_control_interrupt_descendants(struct agent_control *control, const char *id);
 int agent_control_active(struct agent_control *control, int64_t session_id);
-int agent_control_prompt(struct agent_control *control, const char *id, morph_buf_t *out);
+int agent_control_prompt(struct agent_control *control, const char *id, nb_buf *out);
 /* Current assignment state belongs after history and is rebuilt for every request. */
-int agent_control_checkpoint(struct agent_control *control, const char *id, morph_buf_t *out);
+int agent_control_checkpoint(struct agent_control *control, const char *id, nb_buf *out);
 /* Explicit coordination-only assignments suspend investigation until evidence arrives. */
 int agent_control_tool_allowed(struct agent_control *control, const char *id, const char *tool);
 /* New user steering can supply parent work beyond the previous assignment. */

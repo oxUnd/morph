@@ -3,9 +3,10 @@
 #include "sapi/cli/services/configuration/config.h"
 #include "sapi/cli/services/configuration/role.h"
 #include "sapi/cli/models/setup.h"
-#include "util/buf.h"
-#include "util/data.h"
-#include "util/error.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "runtime/resources.h"
+#include "errors.h"
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,22 +50,23 @@ static int cli_mcp_program_available(const char *name)
 	const char *search = getenv("PATH");
 	if (!search)
 		return 0;
-	morph_buf_t path = {0};
-	int rc = morph_buf_init(&path, 128);
+	nb_buf path NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&path), nb_buf_reserve(&path, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	for (const char *part = search;;) {
 		const char *colon = strchr(part, ':');
 		size_t len = colon ? (size_t)(colon - part) : strlen(part);
-		morph_buf_reset(&path);
-		rc = len ? morph_buf_append(&path, part, len) : morph_buf_putc(&path, '.');
+		nb_buf_clear(&path);
+		rc = len ? (nb_buf_append(&path, part, len) ? 0 : NB_ERR_NOMEM)
+			 : (nb_buf_append_char(&path, '.') ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_printf(&path, "/%s", name);
+			rc = (nb_buf_printf(&path, "/%s", name) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			break;
 		struct stat st;
-		if (stat(morph_buf_cstr_borrow(&path), &st) == 0 && S_ISREG(st.st_mode) &&
-		    access(morph_buf_cstr_borrow(&path), X_OK) == 0) {
+		if (stat(nb_buf_cstr(&path), &st) == 0 && S_ISREG(st.st_mode) &&
+		    access(nb_buf_cstr(&path), X_OK) == 0) {
 			rc = 1;
 			break;
 		}
@@ -72,7 +74,7 @@ static int cli_mcp_program_available(const char *name)
 			break;
 		part = colon + 1;
 	}
-	morph_buf_cleanup(&path);
+	nb_buf_cleanup(&path);
 	return rc;
 }
 
@@ -96,32 +98,41 @@ static int cli_mcp_add_desktop(char **text)
 		return python < 0 ? python : uvx;
 	char adapter[PATH_MAX];
 	int found = morph_data_find(adapter, sizeof(adapter), "scripts/macos_mcp_adapter.py") == 0;
-	morph_buf_t server = {0};
-	int rc = morph_buf_init(&server, 0);
+	nb_buf server NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&server), nb_buf_reserve(&server, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_puts(
-			&server,
-			"[[mcp.servers]]\nname = 'macos-computer-use'\ntransport = 'stdio'\n");
+		rc = (nb_buf_append_cstr(
+			      &server,
+			      "[[mcp.servers]]\nname = 'macos-computer-use'\ntransport = 'stdio'\n")
+			      ? 0
+			      : NB_ERR_NOMEM);
 	if (rc == 0 && found) {
 		cJSON *value = cJSON_CreateString(adapter);
 		char *encoded = value ? cJSON_PrintUnformatted(value) : NULL;
 		cJSON_Delete(value);
-		rc = encoded ? morph_buf_printf(&server,
-						"command = 'python3'\nargs = [%s, '--', "
-						"'uvx', 'macos-computer-use-kit==0.3.2', 'mcp']\n",
-						encoded)
-			     : -ENOMEM;
+		rc = encoded ? (nb_buf_printf(&server,
+					      "command = 'python3'\nargs = [%s, '--', "
+					      "'uvx', 'macos-computer-use-kit==0.3.2', 'mcp']\n",
+					      encoded)
+					? 0
+					: NB_ERR_NOMEM)
+			     : NB_ERR_NOMEM;
 		free(encoded);
 	} else if (rc == 0) {
-		rc = morph_buf_puts(&server, "command = 'uvx'\n"
-					     "args = ['macos-computer-use-kit==0.3.2', 'mcp']\n");
+		rc = (nb_buf_append_cstr(&server,
+					 "command = 'uvx'\n"
+					 "args = ['macos-computer-use-kit==0.3.2', 'mcp']\n")
+			      ? 0
+			      : NB_ERR_NOMEM);
 	}
 	if (rc == 0)
-		rc = morph_buf_printf(&server, "auto_connect = %s\nconnect_timeout = 120\n",
-				      uvx && (!found || python) ? "true" : "false");
+		rc = (nb_buf_printf(&server, "auto_connect = %s\nconnect_timeout = 120\n",
+				    uvx && (!found || python) ? "true" : "false")
+			      ? 0
+			      : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = cli_mcp_add_server(text, morph_buf_cstr_borrow(&server));
-	morph_buf_cleanup(&server);
+		rc = cli_mcp_add_server(text, nb_buf_cstr(&server));
+	nb_buf_cleanup(&server);
 	return rc;
 }
 #endif
@@ -129,14 +140,14 @@ static int cli_mcp_add_desktop(char **text)
 int cli_setup_mcp_apply_copy(const char *text, int role, char **out)
 {
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (!text)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	char *current = strdup(text);
 	if (!current)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	int rc = cli_mcp_add_server(
 		&current,
 		"[[mcp.servers]]\nname = 'exa'\ntransport = 'http'\n"
@@ -173,26 +184,25 @@ int cli_setup_mcp_apply_copy(const char *text, int role, char **out)
 	return rc;
 }
 
-int cli_setup_mcp_notes(int role, morph_buf_t *output)
+int cli_setup_mcp_notes(int role, nb_buf *output)
 {
-	morph_buf_printf(output, "%s\n", cli_setup_mcp_summary(role));
+	nb_buf_printf(output, "%s\n", cli_setup_mcp_summary(role));
 	if (cli_mcp_browser_role(role) && cli_mcp_program_available("npx") == 0)
-		morph_buf_printf(output, "To connect Playwright, install Node.js 18+ with npx, "
-					 "then /mcp connect playwright.\n");
+		nb_buf_printf(output, "To connect Playwright, install Node.js 18+ with npx, "
+				      "then /mcp connect playwright.\n");
 #ifdef __APPLE__
 	if (cli_mcp_desktop_role(role))
-		morph_buf_printf(
+		nb_buf_printf(
 			output,
 			"Computer Use needs macOS Accessibility and Screen Recording access.\n");
 	if (cli_mcp_desktop_role(role) && cli_mcp_program_available("uvx") == 0)
-		morph_buf_printf(output, "Install uvx, then /mcp connect macos-computer-use.\n");
+		nb_buf_printf(output, "Install uvx, then /mcp connect macos-computer-use.\n");
 	if (cli_mcp_desktop_role(role) && cli_mcp_program_available("python3") == 0)
-		morph_buf_printf(output,
-				 "Install Python 3 to use the Computer Use launch adapter.\n");
+		nb_buf_printf(output, "Install Python 3 to use the Computer Use launch adapter.\n");
 #endif
 	if (role == CLI_SETUP_DESIGNER)
-		morph_buf_printf(
+		nb_buf_printf(
 			output,
 			"Enable Figma's desktop MCP server, then /mcp connect figma-desktop.\n");
-	return output->failed;
+	return nb_buf_status(output);
 }

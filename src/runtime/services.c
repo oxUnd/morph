@@ -1,4 +1,5 @@
 #include "runtime/services.h"
+#include "nb/err.h"
 
 #include "agent/memory.h"
 #include "agent/tools/skill_activate.h"
@@ -7,9 +8,10 @@
 #include "agent/compress.h"
 #include "agent/history.h"
 #include "agent/turn.h"
-#include "util/cleanup.h"
-#include "util/id.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "nb/random.h"
+#include "nb/encoding.h"
+#include "cJSON.h"
 #include "runtime/scheduler.h"
 #include "cJSON.h"
 
@@ -25,7 +27,7 @@ static int runtime_string_copy(const char *source, char **out)
 	if (!source)
 		return 0;
 	*out = strdup(source);
-	return *out ? 0 : -ENOMEM;
+	return *out ? 0 : NB_ERR_NOMEM;
 }
 
 void runtime_turn_status_cleanup(struct runtime_turn_status *status)
@@ -58,10 +60,10 @@ static int runtime_turn_status_copy_locked(const struct react_context *react,
 	int rc;
 
 	if (react->step_count < 0 || (size_t)react->step_count > SIZE_MAX / sizeof(*out->steps))
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	for (const struct react_step *step = react->steps; step; step = step->next) {
 		if (count == INT_MAX || count >= SIZE_MAX / sizeof(*out->steps))
-			return -EOVERFLOW;
+			return NB_ERR_RANGE;
 		count++;
 	}
 	out->state = react->state;
@@ -78,7 +80,7 @@ static int runtime_turn_status_copy_locked(const struct react_context *react,
 	if (count) {
 		out->steps = calloc(count, sizeof(*out->steps));
 		if (!out->steps)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 	}
 	out->step_count = (int)count;
 	size_t index = 0;
@@ -100,18 +102,18 @@ static int runtime_turn_status_copy_locked(const struct react_context *react,
 
 int runtime_turn_status_copy(struct runtime *runtime, struct runtime_turn_status *out)
 {
-	struct runtime_turn_status value MORPH_CLEANUP(runtime_turn_status_cleanup) = {0};
+	struct runtime_turn_status value NB_CLEANUP(runtime_turn_status_cleanup) = {0};
 	int rc;
 
 	if (!runtime || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (out->steps || out->outcome_reason || out->error_detail || out->final_answer)
-		return -EEXIST;
-	pthread_mutex_lock(&runtime->context.execution_lock);
+		return NB_ERR_EXISTS;
+	nb_mutex_lock(runtime->context.execution_lock);
 	rc = runtime->context.react
 		     ? runtime_turn_status_copy_locked(runtime->context.react, &value)
-		     : -ENOENT;
-	pthread_mutex_unlock(&runtime->context.execution_lock);
+		     : NB_ERR_NOT_FOUND;
+	nb_mutex_unlock(runtime->context.execution_lock);
 	if (rc == 0)
 		runtime_turn_status_move(out, &value);
 	return rc;
@@ -122,9 +124,9 @@ char *runtime_turn_notification_body_copy(struct runtime *runtime)
 	char *out;
 	if (!runtime)
 		return NULL;
-	pthread_mutex_lock(&runtime->context.execution_lock);
+	nb_mutex_lock(runtime->context.execution_lock);
 	out = runtime_react_notification_body_copy(runtime->context.react);
-	pthread_mutex_unlock(&runtime->context.execution_lock);
+	nb_mutex_unlock(runtime->context.execution_lock);
 	return out;
 }
 
@@ -133,16 +135,16 @@ char *runtime_turn_error_message_copy(struct runtime *runtime, int rc)
 	char *out;
 	if (!runtime)
 		return NULL;
-	pthread_mutex_lock(&runtime->context.execution_lock);
+	nb_mutex_lock(runtime->context.execution_lock);
 	out = runtime_react_error_message_copy(runtime->context.react, rc);
-	pthread_mutex_unlock(&runtime->context.execution_lock);
+	nb_mutex_unlock(runtime->context.execution_lock);
 	return out;
 }
 
 char *runtime_turn_error_json_copy(struct runtime *runtime)
 {
-	struct runtime_turn_status status MORPH_CLEANUP(runtime_turn_status_cleanup) = {0};
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	struct runtime_turn_status status NB_CLEANUP(runtime_turn_status_cleanup) = {0};
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	int rc;
 
 	if (runtime_turn_status_copy(runtime, &status) != 0)
@@ -159,21 +161,23 @@ char *runtime_turn_error_json_copy(struct runtime *runtime)
 		return NULL;
 	if (rc < 0) {
 		if (!cJSON_AddNumberToObject(root, "error_code", rc) ||
-		    !cJSON_AddStringToObject(root, "error", morph_strerror(rc)))
+		    !cJSON_AddStringToObject(
+			    root, "error",
+			    nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc)))
 			return NULL;
 	}
 	if (status.final_answer && !cJSON_AddStringToObject(root, "text", status.final_answer))
 		return NULL;
-	return morph_json_print_copy(root);
+	return cJSON_PrintUnformatted(root);
 }
 
 int runtime_session_list_query(struct runtime *runtime, struct session **out,
 			       int *count, int limit, const char *filter)
 {
 	if (!runtime || !out || !count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	*count = 0;
 	return session_list(&runtime->context.database, out, count, limit, filter);
 }
@@ -186,7 +190,7 @@ int runtime_session_count_all(struct runtime *runtime)
 int runtime_agent_budget(struct runtime *runtime, struct agent_budget *out)
 {
 	if (!runtime || !runtime->context.agents)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	return agent_control_budget_copy(runtime->context.agents, out);
 }
 
@@ -195,12 +199,12 @@ int runtime_agent_list(struct runtime *runtime,
 			   struct agent_info **out, int *count)
 {
 	if (!out || !count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	*count = 0;
 	if (!runtime || !runtime->context.agents)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	return agent_control_list_copy(runtime->context.agents, parent_session_id, out,
 						count);
 }
@@ -208,7 +212,7 @@ int runtime_agent_list(struct runtime *runtime,
 int runtime_agent_read(struct runtime *runtime, const char *id, struct agent_info **out)
 {
 	if (!runtime || !runtime->context.agents)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	return agent_control_read_copy(runtime->context.agents, id, out);
 }
 
@@ -216,7 +220,7 @@ int runtime_agent_activity(struct runtime *runtime, int64_t parent_session_id,
 	struct agent_info **out, int *count)
 {
 	if (!runtime || !runtime->context.agents)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	return agent_control_activity_copy(runtime->context.agents, parent_session_id, out, count);
 }
 
@@ -224,7 +228,7 @@ int runtime_agent_subscribe(struct runtime *runtime, const char *id,
 	char ***events, int *count, int64_t *sequence)
 {
 	if (!runtime || !runtime->context.agents)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	return agent_control_subscribe(runtime->context.agents, id, events, count, sequence);
 }
 
@@ -232,12 +236,12 @@ static int runtime_agent_interaction(struct runtime *runtime, const char *operat
 	const char *id, const char *message)
 {
 	if (!runtime || !runtime->context.agents || !id || !*id)
-		return -EINVAL;
-	cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
-	cJSON *out MORPH_CLEANUP(morph_json_cleanup) = NULL;
+		return NB_ERR_INVAL;
+	cJSON *args NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	cJSON *out NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	if (!args || !cJSON_AddStringToObject(args, "target", id) ||
 	    (message && !cJSON_AddStringToObject(args, "message", message)))
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	struct runtime_agent_actor actor = {0};
 	int rc = runtime_agent_actor_begin(runtime, &actor);
 	if (rc != 0)
@@ -250,7 +254,7 @@ static int runtime_agent_interaction(struct runtime *runtime, const char *operat
 int runtime_agent_followup(struct runtime *runtime, const char *id, const char *message)
 {
 	if (!message || !*message)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return runtime_agent_interaction(runtime, "followup_task", id, message);
 }
 
@@ -268,7 +272,7 @@ void runtime_agent_list_free(struct agent_info *tasks,
 int runtime_agent_select(struct runtime *runtime, const char *task_id)
 {
 	if (!runtime || !runtime->context.agents)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	return agent_control_select(runtime->context.agents,
 					     task_id);
 }
@@ -277,12 +281,12 @@ int runtime_agent_events(struct runtime *runtime, const char *task_id,
 			     char ***events, int *count)
 {
 	if (!events || !count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*events)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	*count = 0;
 	if (!runtime || !runtime->context.agents)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	return agent_control_events_copy(runtime->context.agents, task_id, events,
 						  count);
 }
@@ -299,7 +303,7 @@ int runtime_session_find_ref(struct runtime *runtime, const char *ref,
 	long long id;
 	int rc;
 	if (!runtime || !ref || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = session_get_by_name(&runtime->context.database, ref, out);
 	if (rc != 0)
 		rc = session_get_by_display_id(&runtime->context.database, ref, out);
@@ -308,7 +312,7 @@ int runtime_session_find_ref(struct runtime *runtime, const char *ref,
 	errno = 0;
 	id = strtoll(ref, &end, 10);
 	if (*end != '\0' || errno != 0 || id <= 0)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	return session_get_by_id(&runtime->context.database, (int64_t)id, out);
 }
 
@@ -319,11 +323,11 @@ int runtime_session_select_existing(struct runtime *runtime, int64_t id,
 	struct session session;
 	int rc;
 	if (!ctx || id <= 0)
-		return -EINVAL;
-	pthread_mutex_lock(&ctx->execution_lock);
+		return NB_ERR_INVAL;
+	nb_mutex_lock(ctx->execution_lock);
 	rc = runtime_agent_session_begin(runtime);
 	if (rc != 0) {
-		pthread_mutex_unlock(&ctx->execution_lock);
+		nb_mutex_unlock(ctx->execution_lock);
 		return rc;
 	}
 	rc = session_get_by_id(&ctx->database, id, &session);
@@ -340,7 +344,7 @@ int runtime_session_select_existing(struct runtime *runtime, int64_t id,
 			*out = session;
 	}
 	runtime_agent_actor_end(runtime);
-	pthread_mutex_unlock(&ctx->execution_lock);
+	nb_mutex_unlock(ctx->execution_lock);
 	return rc;
 }
 
@@ -350,7 +354,7 @@ int runtime_session_set_model(struct runtime *runtime, const char *model)
 	int rc;
 
 	if (!ctx || !model || !model[0])
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (ctx->current_session.id > 0) {
 		rc = session_update_model(&ctx->database,
 					  ctx->current_session.id, model);
@@ -375,7 +379,7 @@ int runtime_turn_prepare_tools(struct runtime *runtime, int64_t now)
 {
 	struct runtime_context *ctx = runtime ? &runtime->context : NULL;
 	if (!ctx)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	(void)runtime_context_select_plan_session(ctx, ctx->current_session.id);
 	(void)scheduled_tasks_tool_set_time_anchor(&ctx->tools, now);
 	return scheduled_tasks_tool_set_source_session(&ctx->tools,
@@ -389,7 +393,7 @@ int runtime_session_context_stats(struct runtime *runtime, int *messages,
 	int count = 0;
 	int total = 0;
 	if (!runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	list = message_list(&runtime->context.database,
 			    runtime->context.current_session.id, &count);
 	for (struct message *item = list; item; item = item->next)
@@ -415,14 +419,14 @@ int runtime_session_model_context_stats(struct runtime *runtime,
 	int *active_items, int *tokens, int *tool_tokens,
 	int *compactions, int *limit)
 {
-	sqlite3_stmt *statement MORPH_CLEANUP(runtime_statement_cleanup) = NULL;
+	sqlite3_stmt *statement NB_CLEANUP(runtime_statement_cleanup) = NULL;
 	int64_t total = 0;
 	int64_t tools = 0;
 	int replay_items = 0;
 	int compact_count = 0;
 
 	if (!runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	/* Deferred sessions have no persisted history or compactions. */
 	if (runtime->context.current_session.id > 0) {
 		/* Only receipts need their body to decide replayability. Avoid copying
@@ -437,7 +441,9 @@ int runtime_session_model_context_stats(struct runtime *runtime,
 		if (rc == SQLITE_OK)
 			rc = sqlite3_bind_int64(statement, 1, runtime->context.current_session.id);
 		if (rc != SQLITE_OK)
-			return MORPH_TRACE_ERROR(runtime->options.logger, MORPH_ERR_DB);
+			return nb_err_trace(runtime->options.logger, MORPH_ERR_DB,
+					    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+					    __LINE__);
 		while ((rc = sqlite3_step(statement)) == SQLITE_ROW) {
 			struct model_history_item item = {0};
 			const char *kind = (const char *)sqlite3_column_text(statement, 0);
@@ -451,17 +457,19 @@ int runtime_session_model_context_stats(struct runtime *runtime,
 			if (!agent_history_item_replayable(&item))
 				continue;
 			if (replay_items == INT_MAX)
-				return -EOVERFLOW;
+				return NB_ERR_RANGE;
 			replay_items++;
 			total += item.token_count;
 			if (strcmp(item.kind, "tool_result") == 0)
 				tools += item.token_count;
 		}
 		if (rc != SQLITE_DONE)
-			return MORPH_TRACE_ERROR(runtime->options.logger, MORPH_ERR_DB);
+			return nb_err_trace(runtime->options.logger, MORPH_ERR_DB,
+					    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+					    __LINE__);
 	}
 	if (total > INT_MAX || total < INT_MIN || tools > INT_MAX || tools < INT_MIN)
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	if (runtime->context.current_session.id > 0)
 		compact_count = model_history_compaction_count(
 			&runtime->context.database, runtime->context.current_session.id);
@@ -492,12 +500,16 @@ int runtime_session_compaction_status(struct runtime *runtime,
 	int rc;
 
 	if (!runtime || !status)
-		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, -EINVAL);
+		return nb_err_trace(runtime ? runtime->options.logger : NULL, NB_ERR_INVAL,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
 	memset(status, 0, sizeof(*status));
 	rc = sqlite3_prepare_v2(runtime->context.database.handle, sql, -1,
 		&stmt, NULL);
 	if (rc != SQLITE_OK)
-		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, MORPH_ERR_DB);
+		return nb_err_trace(runtime ? runtime->options.logger : NULL, MORPH_ERR_DB,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
 	sqlite3_bind_int64(stmt, 1, runtime->context.current_session.id);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {
@@ -515,7 +527,7 @@ int runtime_session_compaction_status(struct runtime *runtime,
 		status->error_code = sqlite3_column_int(stmt, 4);
 		rc = 0;
 	} else if (rc == SQLITE_DONE) {
-		rc = -ENOENT;
+		rc = NB_ERR_NOT_FOUND;
 	} else {
 		rc = MORPH_ERR_DB;
 	}
@@ -535,6 +547,9 @@ int runtime_session_compress(struct runtime *runtime,
 				     int *trace_removed,
 				     int *window_removed, int *kept)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_1 = NB_OK;
+
 	struct runtime_context *ctx = runtime ? &runtime->context : NULL;
 	struct react_context *react;
 	char previous_turn_id[sizeof(react->turn_id)];
@@ -544,10 +559,10 @@ int runtime_session_compress(struct runtime *runtime,
 	int rc;
 
 	if (!ctx)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	react = ctx->react;
 	if (!react)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = agent_session_load_history(&(struct agent_session_runtime) {
 		.db = &ctx->database,
 		.session_id = ctx->current_session.id,
@@ -564,8 +579,16 @@ int runtime_session_compress(struct runtime *runtime,
 	react->history_enabled = 1;
 	memcpy(previous_turn_id, react->turn_id, sizeof(previous_turn_id));
 	previous_turn_id_user_set = react->turn_id_user_set;
-	rc = morph_random_id("compact_", react->turn_id,
-			    sizeof(react->turn_id));
+	rc = ((file_status_1 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+				: !(nb_buf_clear(&file_value_1),
+				    nb_buf_append_cstr(&file_value_1, "compact_"))
+					? NB_ERR_NOMEM
+					: nb_random_hex(&file_value_1, 16, NULL))) != NB_OK
+		      ? file_status_1
+	      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), react->turn_id,
+						sizeof(react->turn_id))) == NB_ERR_RANGE
+		      ? NB_ERR_NO_SPACE
+		      : file_status_1);
 	if (rc != 0) {
 		memcpy(react->turn_id, previous_turn_id,
 		       sizeof(react->turn_id));
@@ -624,11 +647,11 @@ int runtime_tool_count(const struct runtime *runtime)
 
 	if (!runtime)
 		return 0;
-	pthread_mutex_lock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
+	nb_mutex_lock(runtime->context.tool_registry_lock);
 	tool_registry_lock((struct tool_registry *)&runtime->context.tools);
 	count = runtime->context.tools.count;
 	tool_registry_unlock((struct tool_registry *)&runtime->context.tools);
-	pthread_mutex_unlock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
+	nb_mutex_unlock(runtime->context.tool_registry_lock);
 	return count;
 }
 
@@ -639,12 +662,12 @@ static int runtime_tool_get(const struct runtime *runtime, int index,
 	int rc = 0;
 
 	if (!runtime || index < 0)
-		return -EINVAL;
-	pthread_mutex_lock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
+		return NB_ERR_INVAL;
+	nb_mutex_lock(runtime->context.tool_registry_lock);
 	tool_registry_lock((struct tool_registry *)&runtime->context.tools);
 	tools = &runtime->context.tools;
 	if (index >= tools->count) {
-		rc = -EINVAL;
+		rc = NB_ERR_INVAL;
 	} else {
 		if (desc)
 			*desc = tools->entries[index].desc;
@@ -656,28 +679,28 @@ static int runtime_tool_get(const struct runtime *runtime, int index,
 			*origin = tools->entries[index].origin;
 	}
 	tool_registry_unlock((struct tool_registry *)&runtime->context.tools);
-	pthread_mutex_unlock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
+	nb_mutex_unlock(runtime->context.tool_registry_lock);
 	return rc;
 }
 
 int runtime_tool_info_borrow(const struct runtime *runtime, int index, struct tool_desc *out)
 {
-	return out ? runtime_tool_get(runtime, index, out, NULL, NULL, NULL) : -EINVAL;
+	return out ? runtime_tool_get(runtime, index, out, NULL, NULL, NULL) : NB_ERR_INVAL;
 }
 
 int runtime_tool_flags(const struct runtime *runtime, int index, unsigned *out)
 {
-	return out ? runtime_tool_get(runtime, index, NULL, out, NULL, NULL) : -EINVAL;
+	return out ? runtime_tool_get(runtime, index, NULL, out, NULL, NULL) : NB_ERR_INVAL;
 }
 
 int runtime_tool_enabled(const struct runtime *runtime, int index, int *out)
 {
-	return out ? runtime_tool_get(runtime, index, NULL, NULL, out, NULL) : -EINVAL;
+	return out ? runtime_tool_get(runtime, index, NULL, NULL, out, NULL) : NB_ERR_INVAL;
 }
 
 int runtime_tool_origin(const struct runtime *runtime, int index, enum tool_origin *out)
 {
-	return out ? runtime_tool_get(runtime, index, NULL, NULL, NULL, out) : -EINVAL;
+	return out ? runtime_tool_get(runtime, index, NULL, NULL, NULL, out) : NB_ERR_INVAL;
 }
 
 int runtime_tool_find_borrow(const struct runtime *runtime, const char *name, struct tool_desc *out)
@@ -685,15 +708,15 @@ int runtime_tool_find_borrow(const struct runtime *runtime, const char *name, st
 	struct tool_entry *entry;
 
 	if (!runtime || !name || !out)
-		return -EINVAL;
-	pthread_mutex_lock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
+		return NB_ERR_INVAL;
+	nb_mutex_lock(runtime->context.tool_registry_lock);
 	tool_registry_lock((struct tool_registry *)&runtime->context.tools);
 	entry = tool_borrow((struct tool_registry *)&runtime->context.tools, name);
 	if (entry)
 		*out = entry->desc;
 	tool_registry_unlock((struct tool_registry *)&runtime->context.tools);
-	pthread_mutex_unlock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
-	return entry ? 0 : -ENOENT;
+	nb_mutex_unlock(runtime->context.tool_registry_lock);
+	return entry ? 0 : NB_ERR_NOT_FOUND;
 }
 
 int runtime_skill_count(const struct runtime *runtime)
@@ -705,7 +728,7 @@ int runtime_skill_info_borrow(const struct runtime *runtime, int index, struct s
 {
 	if (!runtime || !runtime->context.skills || !out || index < 0 ||
 	    index >= runtime->context.skills->count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*out = *skill_entry_borrow_at(runtime->context.skills, (size_t)index);
 	return 0;
 }
@@ -715,10 +738,10 @@ int runtime_skill_find_borrow(const struct runtime *runtime, const char *name,
 {
 	struct skill_entry *entry;
 	if (!runtime || !runtime->context.skills || !name || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	entry = skill_borrow(runtime->context.skills, name);
 	if (!entry)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	*out = *entry;
 	return 0;
 }
@@ -726,7 +749,7 @@ int runtime_skill_find_borrow(const struct runtime *runtime, const char *name,
 static void runtime_skill_unlock(struct runtime_context **context)
 {
 	if (context && *context) {
-		pthread_mutex_unlock(&(*context)->execution_lock);
+		nb_mutex_unlock((*context)->execution_lock);
 		*context = NULL;
 	}
 }
@@ -737,22 +760,22 @@ int runtime_skill_set_active(struct runtime *runtime, const char *name,
 	if (changed)
 		*changed = 0;
 	if (!runtime || !runtime->context.skills || !name)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct skill_entry *known = skill_borrow(runtime->context.skills, name);
 	if (!known)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	if (active && !known->enabled)
-		return -EACCES;
+		return NB_ERR_PERMISSION;
 	int rc = runtime_ensure_current_session(runtime);
 	if (rc != 0)
 		return rc;
-	rc = pthread_mutex_trylock(&runtime->context.execution_lock);
+	rc = nb_mutex_trylock(runtime->context.execution_lock);
 	if (rc != 0)
-		return -rc;
-	struct runtime_context *context MORPH_CLEANUP(runtime_skill_unlock) = &runtime->context;
+		return rc;
+	struct runtime_context *context NB_CLEANUP(runtime_skill_unlock) = &runtime->context;
 	struct skill_entry *entry = skill_borrow(context->skills, name);
 	if (!entry)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	int before = entry->activated;
 	rc = skill_activate_session(context->skills, &context->database,
 		context->current_session.id, name, active);
@@ -766,7 +789,7 @@ static int runtime_preferences_bind(struct runtime *runtime)
 	int rc;
 
 	if (!runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = runtime_ensure_current_session(runtime);
 	if (rc != 0)
 		return rc;
@@ -831,7 +854,7 @@ int runtime_memory_report_copy(struct runtime *runtime, const char *query, cJSON
 	if (!cJSON_AddStringToObject(*out, "reply_memory", reply_memory ? reply_memory : "")) {
 		cJSON_Delete(*out);
 		*out = NULL;
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	return 0;
 }
@@ -839,7 +862,7 @@ int runtime_memory_report_copy(struct runtime *runtime, const char *query, cJSON
 int runtime_memory_retry_current(struct runtime *runtime)
 {
 	if (!runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!runtime->context.memory_options.enabled)
 		return MORPH_ERR_NOT_CONFIGURED;
 	int rc = runtime_preferences_bind(runtime);
@@ -854,7 +877,7 @@ int runtime_memory_clear_current(struct runtime *runtime, enum memory_clear_scop
 {
 	int rc;
 	if (!runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = memory_clear(&runtime->context.database, runtime->context.current_session.id, scope);
 	if (rc == 0 && runtime->context.react)
 		react_set_memory_reply_text_copy(runtime->context.react, NULL);
@@ -864,8 +887,8 @@ int runtime_memory_clear_current(struct runtime *runtime, enum memory_clear_scop
 int runtime_credit_summary_today_get(struct runtime *runtime,
 				     struct credit_summary *out)
 {
-	return runtime && out ? credit_summary_today(&runtime->context.database,
-						     "local", out) : -EINVAL;
+	return runtime && out ? credit_summary_today(&runtime->context.database, "local", out)
+			      : NB_ERR_INVAL;
 }
 
 int runtime_credit_summary_current_get(struct runtime *runtime,
@@ -873,7 +896,7 @@ int runtime_credit_summary_current_get(struct runtime *runtime,
 {
 	char key[64];
 	if (!runtime || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	runtime_context_credit_session_key(&runtime->context, key, sizeof(key));
 	return credit_summary_session(&runtime->context.database, key, out);
 }
@@ -886,7 +909,7 @@ int runtime_credit_record_media(struct runtime *runtime, const char *kind,
 	struct credit_event event;
 	char key[64];
 	if (!runtime || !kind)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	runtime_context_credit_session_key(&runtime->context, key, sizeof(key));
 	memset(&event, 0, sizeof(event));
 	event.user_id = "local";

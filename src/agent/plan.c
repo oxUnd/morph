@@ -1,7 +1,9 @@
 #include "plan.h"
-#include "util/id.h"
-#include "util/error.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "nb/random.h"
+#include "nb/encoding.h"
+#include "errors.h"
+#include "nb/utf8.h"
 #include "db/database.h"
 #include <stdlib.h>
 
@@ -40,18 +42,30 @@ struct plan *plan_by_id_borrow(struct plan_registry *reg, const char *id)
 
 static int plan_generate_id(struct plan_registry *reg, char *id, size_t size)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_1 = NB_OK;
+
 	int rc;
 
 	if (!reg || !id || size < PLAN_ID_MAX)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	for (int tries = 0; tries < 16; tries++) {
-		rc = morph_random_id("pln_", id, size);
+		rc = ((file_status_1 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+					: !(nb_buf_clear(&file_value_1),
+					    nb_buf_append_cstr(&file_value_1, "pln_"))
+						? NB_ERR_NOMEM
+						: nb_random_hex(&file_value_1, 16, NULL))) != NB_OK
+			      ? file_status_1
+		      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), id, size)) ==
+				      NB_ERR_RANGE
+			      ? NB_ERR_NO_SPACE
+			      : file_status_1);
 		if (rc < 0)
 			return rc;
 		if (!plan_by_id_borrow(reg, id))
 			return 0;
 	}
-	return -EEXIST;
+	return NB_ERR_EXISTS;
 }
 
 static int append_str(char *buf, size_t buf_size, size_t *pos, const char *fmt, ...)
@@ -60,7 +74,7 @@ static int append_str(char *buf, size_t buf_size, size_t *pos, const char *fmt, 
 static int append_str(char *buf, size_t buf_size, size_t *pos, const char *fmt, ...)
 {
 	if (*pos >= buf_size - 1)
-		return -ENOSPC;
+		return NB_ERR_NO_SPACE;
 
 	va_list args;
 	va_start(args, fmt);
@@ -68,11 +82,11 @@ static int append_str(char *buf, size_t buf_size, size_t *pos, const char *fmt, 
 	va_end(args);
 
 	if (rc < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if ((size_t)rc >= buf_size - *pos) {
 		*pos = buf_size - 1;
 		buf[*pos] = '\0';
-		return -ENOSPC;
+		return NB_ERR_NO_SPACE;
 	}
 	*pos += (size_t)rc;
 	return 0;
@@ -124,7 +138,7 @@ static int plan_update_step_ptr(struct plan *p, int step_id,
 				const char *status)
 {
 	if (!p || !status)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	int idx = -1;
 	for (int i = 0; i < p->step_count; i++) {
@@ -134,7 +148,7 @@ static int plan_update_step_ptr(struct plan *p, int step_id,
 		}
 	}
 	if (idx < 0)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 
 	strncpy(p->steps[idx].status, status, sizeof(p->steps[idx].status) - 1);
 
@@ -170,10 +184,10 @@ int plan_update_step(struct plan_registry *reg, const char *plan_name,
 	struct plan *p;
 
 	if (!reg || !plan_name || !status)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	p = plan_find_by_name(reg, plan_name);
 	if (!p)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	return plan_update_step_ptr(p, step_id, status);
 }
 
@@ -183,10 +197,10 @@ int plan_update_step_by_id(struct plan_registry *reg, const char *plan_id,
 	struct plan *p;
 
 	if (!reg || !plan_id || !status)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	p = plan_by_id_borrow(reg, plan_id);
 	if (!p)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	return plan_update_step_ptr(p, step_id, status);
 }
 
@@ -208,7 +222,7 @@ static const char *status_icon(const char *status)
 int plan_format(struct plan_registry *reg, char *buf, size_t buf_size)
 {
 	if (!reg || !buf || buf_size == 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (reg->count == 0) {
 		snprintf(buf, buf_size,
 			"No plans yet. Use plan create to start one.");
@@ -346,8 +360,8 @@ static int plan_restore_text(const cJSON *obj, const char *key, char *dst, size_
 	if (!value)
 		return 0;
 	if (!cJSON_IsString(value) || strlen(value->valuestring) >= cap ||
-	    utf8valid(value->valuestring))
-		return MORPH_ERR_FORMAT;
+	    nb_utf8_validate(nb_str_from_cstr(value->valuestring), NULL))
+		return NB_ERR_FORMAT;
 	memcpy(dst, value->valuestring, strlen(value->valuestring) + 1);
 	return 0;
 }
@@ -357,10 +371,10 @@ int plan_registry_restore(struct plan_registry *reg, const cJSON *json)
 	struct plan_registry *copy;
 	int rc = 0;
 	if (!reg || !cJSON_IsArray(json) || cJSON_GetArraySize(json) > PLAN_MAX_PLANS)
-		return MORPH_ERR_FORMAT;
+		return NB_ERR_FORMAT;
 	copy = calloc(1, sizeof(*copy));
 	if (!copy)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	copy->db = reg->db;
 	copy->session_id = reg->session_id;
 	copy->count = cJSON_GetArraySize(json);
@@ -384,7 +398,7 @@ int plan_registry_restore(struct plan_registry *reg, const cJSON *json)
 #undef PLAN_READ
 		if (!p->id[0] || !p->name[0] || !cJSON_IsArray(steps) ||
 		    cJSON_GetArraySize(steps) > PLAN_MAX_STEPS) {
-			rc = MORPH_ERR_FORMAT;
+			rc = NB_ERR_FORMAT;
 			break;
 		}
 		p->step_count = cJSON_GetArraySize(steps);
@@ -409,7 +423,7 @@ int plan_registry_restore(struct plan_registry *reg, const cJSON *json)
 			else if (strcmp(step->status, "pending") &&
 				 strcmp(step->status, "completed") &&
 				 strcmp(step->status, "failed") && strcmp(step->status, "skipped"))
-				rc = MORPH_ERR_FORMAT;
+				rc = NB_ERR_FORMAT;
 		}
 	}
 	if (rc == 0)
@@ -430,7 +444,7 @@ int plan_registry_save(struct plan_registry *reg)
 	text = json ? cJSON_PrintUnformatted(json) : NULL;
 	cJSON_Delete(json);
 	if (!text)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	rc = sqlite3_prepare_v2(
 	    reg->db->handle,
 	    "INSERT INTO session_plans(session_id,state_json) VALUES(?,?) "
@@ -451,7 +465,7 @@ int plan_registry_bind(struct plan_registry *reg, struct db *db, int64_t session
 	sqlite3_stmt *stmt = NULL;
 	int rc;
 	if (!reg || !db || session_id <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (reg->db == db && reg->session_id == session_id)
 		return 0;
 	rc = sqlite3_prepare_v2(

@@ -1,11 +1,12 @@
 #include "runtime/approval.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 
 #include "runtime/runtime_internal.h"
 #include "agent/tokenizer.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/json.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "cJSON.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,10 +18,10 @@ int runtime_approval_parse(const char *text, struct permission_review *out)
 	const char *verdict;
 	const char *reason;
 	const char *end = NULL;
-	int rc = -EPROTO;
+	int rc = NB_ERR_PROTOCOL;
 
 	if (!text || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(out, 0, sizeof(*out));
 	json = cJSON_ParseWithOpts(text, &end, 1);
 	verdict = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(json, "verdict"));
@@ -91,8 +92,8 @@ static int review_user(const struct tool_operation *operation, struct permission
 	void *approval_user_data = NULL;
 
 	tool_context_operation_approval_borrow(ctx->tctx, &approval, &approval_user_data);
-	if (morph_cancel_token_is_cancelled(&ctx->react->cancel_token))
-		return -ECANCELED;
+	if (nb_cancel_requested(&ctx->react->cancel_token))
+		return NB_ERR_CANCELLED;
 	approval_event(runtime, operation, "user", "begin", NULL);
 	if (operation->kind == TOOL_OP_TOOL_CALL && !operation->host && !operation->network &&
 	    ctx->react->hitl.approval_cb) {
@@ -108,7 +109,7 @@ static int review_user(const struct tool_operation *operation, struct permission
 	} else {
 		snprintf(out->reason, sizeof(out->reason), "Human approval is unavailable.");
 		approval_event(runtime, operation, "user", "failed", out);
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	}
 	approval_event(runtime, operation, "user", "end", out);
 	return 0;
@@ -134,14 +135,14 @@ static int review_model(const struct tool_operation *operation, struct permissio
 	struct runtime_context *ctx = &runtime->context;
 	const struct config_model_entry *configured = &ctx->config.models.approval;
 	const struct model *source = ctx->llm;
-	struct model *model MORPH_CLEANUP(approval_model_cleanup) = NULL;
+	struct model *model NB_CLEANUP(approval_model_cleanup) = NULL;
 	struct model_usage_sink usage_sink = {.callback = approval_usage};
-	struct chat_response response MORPH_CLEANUP(chat_response_free) = {0};
+	struct chat_response response NB_CLEANUP(chat_response_free) = {0};
 	struct chat_message message = {.role = "user"};
-	cJSON *input MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	char *payload MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
+	cJSON *input NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	char *payload NB_CLEANUP(cJSON_FreeTextOwner) = NULL;
 	const char *key;
-	char *objective MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *objective NB_CLEANUP(nb_charp_cleanup) = NULL;
 	int rc;
 	static const char instructions[] =
 		"Review one proposed agent action against the user's stated objective. "
@@ -153,8 +154,8 @@ static int review_model(const struct tool_operation *operation, struct permissio
 		"verdict (allow, deny, or defer) and reason (a concise explanation). "
 		"You have no tools and cannot authorize future actions.";
 
-	if (morph_cancel_token_is_cancelled(&ctx->react->cancel_token))
-		return -ECANCELED;
+	if (nb_cancel_requested(&ctx->react->cancel_token))
+		return NB_ERR_CANCELLED;
 	if (!source && !configured->model[0])
 		return MORPH_ERR_NOT_CONFIGURED;
 	if (!configured->model[0]) {
@@ -178,16 +179,16 @@ static int review_model(const struct tool_operation *operation, struct permissio
 		}
 	}
 	if (!model)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	usage_sink.user_data = source ? source->usage_sink : NULL;
 	model->usage_sink = &usage_sink;
 	approval_event(runtime, operation, "model", "begin", NULL);
 	model->http.cancel_token = &ctx->react->cancel_token;
-	pthread_mutex_lock(&ctx->approval_objective_lock);
+	nb_mutex_lock(ctx->approval_objective_lock);
 	objective = strdup(ctx->approval_objective ? ctx->approval_objective : "");
-	pthread_mutex_unlock(&ctx->approval_objective_lock);
+	nb_mutex_unlock(ctx->approval_objective_lock);
 	if (!objective)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	input = cJSON_CreateObject();
 	int complete =
 		input && cJSON_AddStringToObject(input, "user_objective", objective) &&
@@ -207,19 +208,19 @@ static int review_model(const struct tool_operation *operation, struct permissio
 	message.content = payload;
 	int input_tokens = 0;
 	rc = payload ? model_estimate_input_tokens(model, instructions, &message, 1, NULL, 0,
-						  approval_count_tokens, ctx->tokenizer,
-						  &input_tokens)
-		     : -ENOMEM;
+						   approval_count_tokens, ctx->tokenizer,
+						   &input_tokens)
+		     : NB_ERR_NOMEM;
 	if (rc == 0 && model->context_limit > 0 &&
 	    (int64_t)input_tokens + model->max_tokens > model->context_limit)
-		rc = -E2BIG;
+		rc = NB_ERR_TOO_BIG;
 	if (rc == 0)
 		rc = model->chat_with_tools(model, instructions, &message, 1, NULL, 0, &response,
 					   NULL, NULL);
 	if (rc >= 0 && !strcmp(response.usage.finish_reason, "length"))
 		rc = MORPH_ERR_LLM;
 	if (rc >= 0)
-		rc = response.tool_call_count ? -EPROTO
+		rc = response.tool_call_count ? NB_ERR_PROTOCOL
 					      : runtime_approval_parse(response.content, out);
 	if (rc != 0)
 		out->defer = 1;
@@ -230,7 +231,7 @@ static int review_model(const struct tool_operation *operation, struct permissio
 int runtime_approval_init(struct runtime *runtime)
 {
 	if (!runtime || !runtime->context.tctx)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	tool_context_set_review_adapters(runtime->context.tctx, review_user, runtime, review_model,
 					 runtime);
 	return 0;

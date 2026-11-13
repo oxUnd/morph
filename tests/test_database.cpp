@@ -1,9 +1,14 @@
 #include <gtest/gtest.h>
+#include <stdlib.h>
+#include "nb/cleanup.h"
 #include "db/database.h"
 #include "db/permission_grant.h"
-#include "util/file.h"
+#include "errors.h"
+#include "nb/buf.h"
+#include "nb/file.h"
 #include <cstdio>
 #include <cstring>
+#include <utility>
 
 class DatabaseTest : public ::testing::Test {
 protected:
@@ -24,7 +29,7 @@ TEST_F(DatabaseTest, OpenClose) {
 	int rc = db_open(NULL, &db, db_path);
 	EXPECT_EQ(rc, 0);
 	db_close(&db);
-	EXPECT_EQ(file_exists(db_path), 1);
+	EXPECT_EQ(nb_file_exists(db_path), 1);
 }
 
 TEST_F(DatabaseTest, InitSchema) {
@@ -176,6 +181,258 @@ TEST_F(DatabaseTest, RetiresOnlyLegacyMemoryMaintenanceReceipts) {
 	}
 	EXPECT_EQ(sqlite3_step(stmt), SQLITE_DONE);
 	sqlite3_finalize(stmt);
+}
+
+static int database_prepare_legacy_errors(struct db *database)
+{
+	return db_exec(database,
+		       "DELETE FROM schema_migrations WHERE version=3;"
+		       "ALTER TABLE memory_jobs DROP COLUMN legacy_error_code;"
+		       "ALTER TABLE sub_agent_tasks DROP COLUMN legacy_error_code;"
+		       "ALTER TABLE agent_threads DROP COLUMN legacy_error_code;"
+		       "ALTER TABLE history_compaction_attempts DROP COLUMN legacy_error_code;"
+		       "INSERT INTO sessions(id,name,created_at,updated_at) VALUES(1,'legacy',1,1);"
+		       "CREATE TABLE migration_error_cases(id INTEGER PRIMARY KEY,code "
+		       "INTEGER,expected INTEGER);");
+}
+
+static int database_seed_legacy_errors(struct db *database)
+{
+	return db_exec(
+		database,
+		"INSERT INTO memory_jobs(id,session_id,generation,payload,error_code) "
+		"SELECT id,1,0,'{}',code FROM migration_error_cases;"
+		"INSERT INTO sub_agent_tasks(task_id,parent_session_id,agent_name,description,"
+		"mode,status,started_at,error_code) "
+		"SELECT CAST(id AS TEXT),1,'agent','scope','auto',0,1,code FROM "
+		"migration_error_cases;"
+		"INSERT INTO agent_threads(root_session_id,agent_id,parent_agent_id,session_id,"
+		"model,effort,depth,description,status,started_at,error_code) "
+		"SELECT 1,CAST(id AS TEXT),'/root',1,'test','',1,'scope',0,1,code "
+		"FROM migration_error_cases;"
+		"INSERT INTO history_compaction_attempts(id,session_id,trigger_kind,status,"
+		"created_at,error_code) "
+		"SELECT id,1,'manual','failed',1,code FROM migration_error_cases;"
+		"INSERT INTO sub_agent_events(task_id,event_json,created_at) "
+		"VALUES('1','{ \"error_code\": -261, \"nested\": { \"code\": -2 } }',1);");
+}
+
+static int database_insert_legacy_error(struct db *database, size_t id, int legacy, int current)
+{
+	nb_buf sql NB_CLEANUP(nb_buf_cleanup) = {};
+
+	if (!nb_buf_printf(&sql, "INSERT INTO migration_error_cases VALUES(%zu,%d,%d)", id, legacy,
+			   current))
+		return nb_buf_status(&sql);
+	return db_exec(database, nb_buf_cstr(&sql));
+}
+
+static void database_statement_cleanup(sqlite3_stmt **statement)
+{
+	if (*statement)
+		sqlite3_finalize(*statement);
+}
+
+static int database_scalar(struct db *database, const char *sql)
+{
+	sqlite3_stmt *statement NB_CLEANUP(database_statement_cleanup) = nullptr;
+
+	if (sqlite3_prepare_v2(database->handle, sql, -1, &statement, nullptr) != SQLITE_OK)
+		return -1;
+	if (sqlite3_step(statement) != SQLITE_ROW)
+		return -1;
+	return sqlite3_column_int(statement, 0);
+}
+
+static void database_expect_migrated_errors(struct db *database)
+{
+	const char *const tables[] = {
+		"memory_jobs",
+		"sub_agent_tasks",
+		"agent_threads",
+		"history_compaction_attempts",
+	};
+	for (const char *table : tables) {
+		nb_buf sql NB_CLEANUP(nb_buf_cleanup) = {};
+
+		ASSERT_TRUE(nb_buf_printf(
+			&sql,
+			"SELECT count(*) FROM %s AS actual JOIN migration_error_cases AS expected "
+			"ON actual.rowid=expected.id WHERE actual.error_code<>expected.expected "
+			"OR actual.legacy_error_code IS NOT expected.code",
+			table));
+		EXPECT_EQ(database_scalar(database, nb_buf_cstr(&sql)), 0) << table;
+		nb_buf_clear(&sql);
+		ASSERT_TRUE(nb_buf_printf(&sql, "SELECT count(*) FROM %s", table));
+		EXPECT_EQ(database_scalar(database, nb_buf_cstr(&sql)),
+			  database_scalar(database, "SELECT count(*) FROM migration_error_cases"))
+			<< table;
+	}
+	EXPECT_EQ(database_scalar(database, "SELECT count(*) FROM schema_migrations WHERE "
+					    "version=3 AND name='nbase_error_codes'"),
+		  1);
+	EXPECT_EQ(database_scalar(database,
+				  "SELECT count(*) FROM sub_agent_events WHERE event_json="
+				  "'{ \"error_code\": -261, \"nested\": { \"code\": -2 } }'"),
+		  1);
+}
+
+TEST_F(DatabaseTest, LegacyErrorCodesMigrateOnceWithExactAuditValues)
+{
+	const std::pair<int, int> cases[] = {
+		{-257, MORPH_ERR_NOT_CONFIGURED},
+		{-258, MORPH_ERR_NOT_INITIALIZED},
+		{-259, MORPH_ERR_API},
+		{-260, MORPH_ERR_NETWORK},
+		{-261, NB_ERR_PARSE},
+		{-262, NB_ERR_PROTOCOL},
+		{-263, MORPH_ERR_DB},
+		{-264, NB_ERR_FORMAT},
+		{-265, MORPH_ERR_PROCESSING},
+		{-266, MORPH_ERR_SANDBOX},
+		{-267, MORPH_ERR_LOAD},
+		{-268, MORPH_ERR_LLM},
+		{-269, MORPH_ERR_REACT_MAX_ITERATIONS},
+		{-270, MORPH_ERR_CONFIG},
+		{-271, MORPH_ERR_CONTEXT_LIMIT},
+		{-272, MORPH_ERR_TOKEN_BUDGET},
+		{-273, MORPH_ERR_AGENT_BUDGET},
+		{-274, MORPH_ERR_REQUEST_BUDGET},
+		{-1, NB_ERR_NOT_PERMITTED},
+		{-2, NB_ERR_NOT_FOUND},
+		{-4, NB_ERR_INTERRUPTED},
+		{-5, NB_ERR_IO},
+		{-7, NB_ERR_TOO_BIG},
+		{-9, NB_ERR_BAD_HANDLE},
+		{-10, NB_ERR_NO_CHILD},
+		{-12, NB_ERR_NOMEM},
+		{-13, NB_ERR_PERMISSION},
+		{-16, NB_ERR_BUSY},
+		{-17, NB_ERR_EXISTS},
+		{-18, NB_ERR_CROSS_DEVICE},
+		{-20, NB_ERR_NOT_DIR},
+		{-21, NB_ERR_IS_DIR},
+		{-22, NB_ERR_INVAL},
+		{-24, NB_ERR_RESOURCE},
+		{-25, NB_ERR_NOT_TERMINAL},
+		{-27, NB_ERR_TOO_BIG},
+		{-28, NB_ERR_NO_SPACE},
+		{-32, NB_ERR_BROKEN_PIPE},
+		{-34, NB_ERR_RANGE},
+		{-11, NB_ERR_OS},
+		{-35, NB_ERR_OS},
+		{-60, NB_ERR_OS},
+		{-89, NB_ERR_OS},
+		{-125, NB_ERR_OS},
+		{-65535, NB_ERR_OS},
+		{INT_MIN, NB_ERR_OS},
+		{0, 0},
+		{42, 42},
+	};
+	ASSERT_EQ(db_open(nullptr, &db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(database_prepare_legacy_errors(&db), 0);
+	for (size_t index = 0; index < sizeof(cases) / sizeof(cases[0]); index++) {
+		ASSERT_EQ(database_insert_legacy_error(&db, index + 1, cases[index].first,
+						       cases[index].second),
+			  0);
+	}
+	ASSERT_EQ(database_seed_legacy_errors(&db), 0);
+	db_close(&db);
+	ASSERT_EQ(db_open(nullptr, &db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	database_expect_migrated_errors(&db);
+	db_close(&db);
+	ASSERT_EQ(db_open(nullptr, &db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	database_expect_migrated_errors(&db);
+}
+
+TEST_F(DatabaseTest, NewDatabaseNeverReinterpretsNativeErrorCodes)
+{
+	ASSERT_EQ(db_open(nullptr, &db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(db_exec(&db, "INSERT INTO sessions(id,name,created_at,updated_at) "
+			       "VALUES(1,'native',1,1);"),
+		  0);
+	nb_buf sql NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_TRUE(
+		nb_buf_printf(&sql,
+			      "INSERT INTO memory_jobs(session_id,generation,payload,error_code) "
+			      "VALUES(1,0,'{}',%d)",
+			      NB_ERR_CANCELLED));
+	ASSERT_EQ(db_exec(&db, nb_buf_cstr(&sql)), 0);
+	db_close(&db);
+	ASSERT_EQ(db_open(nullptr, &db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	EXPECT_EQ(database_scalar(&db, "SELECT error_code FROM memory_jobs"), NB_ERR_CANCELLED);
+	EXPECT_EQ(database_scalar(
+			  &db, "SELECT count(*) FROM memory_jobs WHERE legacy_error_code IS NULL"),
+		  1);
+}
+
+TEST_F(DatabaseTest, LegacyErrorMigrationRollsBackSchemaAndRowsOnFailure)
+{
+	ASSERT_EQ(db_open(nullptr, &db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(database_prepare_legacy_errors(&db), 0);
+	ASSERT_EQ(database_insert_legacy_error(&db, 1, -261, NB_ERR_PARSE), 0);
+	ASSERT_EQ(database_seed_legacy_errors(&db), 0);
+	ASSERT_EQ(db_exec(&db,
+			  "CREATE TRIGGER reject_error_migration BEFORE UPDATE OF error_code ON "
+			  "agent_threads "
+			  "BEGIN SELECT RAISE(ABORT,'injected error migration failure'); END;"),
+		  0);
+	EXPECT_EQ(db_init_schema(&db), MORPH_ERR_DB);
+	const char *const tables[] = {
+		"memory_jobs",
+		"sub_agent_tasks",
+		"agent_threads",
+		"history_compaction_attempts",
+	};
+	for (const char *table : tables) {
+		EXPECT_NE(sqlite3_table_column_metadata(db.handle, nullptr, table,
+							"legacy_error_code", nullptr, nullptr,
+							nullptr, nullptr, nullptr),
+			  SQLITE_OK)
+			<< table;
+		nb_buf sql NB_CLEANUP(nb_buf_cleanup) = {};
+		ASSERT_TRUE(nb_buf_printf(&sql, "SELECT error_code FROM %s", table));
+		EXPECT_EQ(database_scalar(&db, nb_buf_cstr(&sql)), -261) << table;
+	}
+	EXPECT_EQ(database_scalar(&db, "SELECT count(*) FROM schema_migrations WHERE version=3"),
+		  0);
+	ASSERT_EQ(db_exec(&db, "BEGIN; ROLLBACK; DROP TRIGGER reject_error_migration;"), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	database_expect_migrated_errors(&db);
+}
+
+TEST_F(DatabaseTest, LegacyErrorMigrationCommitsVersionOnlyAfterAllUpdatesSucceed)
+{
+	ASSERT_EQ(db_open(nullptr, &db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(database_prepare_legacy_errors(&db), 0);
+	ASSERT_EQ(database_insert_legacy_error(&db, 1, -261, NB_ERR_PARSE), 0);
+	ASSERT_EQ(database_seed_legacy_errors(&db), 0);
+	ASSERT_EQ(db_exec(&db,
+			  "CREATE TRIGGER reject_error_version BEFORE INSERT ON schema_migrations "
+			  "WHEN NEW.version=3 BEGIN SELECT RAISE(ABORT,'injected version "
+			  "failure'); END;"),
+		  0);
+	EXPECT_EQ(db_init_schema(&db), MORPH_ERR_DB);
+	EXPECT_EQ(database_scalar(&db, "SELECT error_code FROM memory_jobs"), -261);
+	EXPECT_EQ(database_scalar(&db, "SELECT error_code FROM history_compaction_attempts"), -261);
+	EXPECT_EQ(database_scalar(&db, "SELECT count(*) FROM schema_migrations WHERE version=3"),
+		  0);
+	ASSERT_EQ(db_exec(&db, "DROP TRIGGER reject_error_version; SAVEPOINT caller;"), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	database_expect_migrated_errors(&db);
+	ASSERT_EQ(db_exec(&db, "ROLLBACK TO caller; RELEASE caller;"), 0);
+	EXPECT_EQ(database_scalar(&db, "SELECT error_code FROM memory_jobs"), -261);
+	EXPECT_EQ(database_scalar(&db, "SELECT count(*) FROM schema_migrations WHERE version=3"),
+		  0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	database_expect_migrated_errors(&db);
 }
 
 TEST_F(DatabaseTest, MessagesHaveTurnIdColumn) {

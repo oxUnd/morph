@@ -1,10 +1,12 @@
 #include "preferences.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/id.h"
-#include "util/utf8.h"
-#include "util/name.h"
-#include "util/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/random.h"
+#include "nb/encoding.h"
+#include "nb/utf8.h"
+#include "nb/str.h"
+#include "nb/cleanup.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,12 +30,12 @@ const char *preference_key_borrow(const char *key)
 int preference_bind(struct db *db, int64_t session_id,
 		    const char *owner, const char *project)
 {
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	sqlite3_stmt *stmt = NULL;
 	int rc;
 
 	if (!db || !db->handle || session_id <= 0 || !owner || !*owner)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = db_lock_acquire(db, &lock);
 	if (rc != 0)
 		return rc;
@@ -54,30 +56,33 @@ int preference_bind(struct db *db, int64_t session_id,
 	if (rc != SQLITE_DONE)
 		return MORPH_ERR_DB;
 	if (!sqlite3_changes(db->handle))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	return 0;
 }
 
 static int preference_valid_key(const char *key)
 {
-	return key && strlen(key) <= 128 && morph_name_valid(key, "._-");
+	return key && strlen(key) <= 128 && nb_str_is_alnum(nb_str_from_cstr(key), "._-");
 }
 
 int preference_set(struct db *db, int64_t session_id, const char *scope,
 		   const char *key, const char *value, const char *source,
 		   const char *event_token)
 {
-	struct db_lock lock MORPH_CLEANUP(db_lock_cleanup) = {0};
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_1 = NB_OK;
+
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	sqlite3_stmt *stmt = NULL;
 	char token[64];
 	int rc;
 
 	key = preference_key_borrow(key);
 	if (!db || !db->handle || !preference_valid_key(key) || !scope ||
-	    (strcmp(scope, "personal") && strcmp(scope, "project") &&
-	     strcmp(scope, "session")) ||
-	    (value && (!*value || strlen(value) > 1024 || utf8valid(value))))
-		return -EINVAL;
+	    (strcmp(scope, "personal") && strcmp(scope, "project") && strcmp(scope, "session")) ||
+	    (value &&
+	     (!*value || strlen(value) > 1024 || nb_utf8_validate(nb_str_from_cstr(value), NULL))))
+		return NB_ERR_INVAL;
 	if (value && !strcmp(key, "response.language")) {
 		if (!strcmp(value, "zh") || !strcmp(value, "中文"))
 			value = "Chinese";
@@ -85,7 +90,16 @@ int preference_set(struct db *db, int64_t session_id, const char *scope,
 			value = "English";
 	}
 	if (!event_token || !*event_token) {
-		rc = morph_random_id("pref_", token, sizeof(token));
+		rc = ((file_status_1 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+					: !(nb_buf_clear(&file_value_1),
+					    nb_buf_append_cstr(&file_value_1, "pref_"))
+						? NB_ERR_NOMEM
+						: nb_random_hex(&file_value_1, 16, NULL))) != NB_OK
+			      ? file_status_1
+		      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), token,
+							sizeof(token))) == NB_ERR_RANGE
+			      ? NB_ERR_NO_SPACE
+			      : file_status_1);
 		if (rc != 0)
 			return rc;
 		event_token = token;
@@ -104,7 +118,7 @@ int preference_set(struct db *db, int64_t session_id, const char *scope,
 	sqlite3_finalize(stmt);
 	stmt = NULL;
 	if (rc != SQLITE_ROW)
-		return rc == SQLITE_DONE ? -ENOENT : MORPH_ERR_DB;
+		return rc == SQLITE_DONE ? NB_ERR_NOT_FOUND : MORPH_ERR_DB;
 	/* One atomic append is the update. The latest revision per semantic key
 	 * is authoritative; NULL is a tombstone, not permission to resurrect it.
 	 * Only input ingestion / explicit commands call this API, never jobs. */
@@ -156,7 +170,7 @@ int preference_set(struct db *db, int64_t session_id, const char *scope,
 		int same = rc == SQLITE_ROW && sqlite3_column_int(stmt, 0);
 		sqlite3_finalize(stmt);
 		if (!same)
-			return -ESTALE;
+			return NB_ERR_STALE;
 	}
 	return 0;
 }
@@ -193,11 +207,11 @@ static void preference_statement_cleanup(sqlite3_stmt **owner)
 int preference_visit_effective(struct db *db, int64_t session_id,
 			       preference_visit_fn visit, void *data)
 {
-	sqlite3_stmt *stmt MORPH_CLEANUP(preference_statement_cleanup) = NULL;
+	sqlite3_stmt *stmt NB_CLEANUP(preference_statement_cleanup) = NULL;
 	int rc;
 
 	if (!db || !db->handle || !visit)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = sqlite3_prepare_v2(db->handle, preference_query_borrow(0), -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
 		return MORPH_ERR_DB;
@@ -218,10 +232,11 @@ char *preference_render_copy(struct db *db, int64_t session_id, int history)
 {
 	const char *sql = preference_query_borrow(history);
 	sqlite3_stmt *stmt = NULL;
-	morph_buf_t buf;
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc;
 
-	if (!db || !db->handle || morph_buf_init(&buf, 512) != 0)
+	if (!db || !db->handle ||
+	    (nb_buf_init(&buf), nb_buf_reserve(&buf, 512) ? 0 : NB_ERR_NOMEM) != 0)
 		return NULL;
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc == SQLITE_OK) {
@@ -232,14 +247,17 @@ char *preference_render_copy(struct db *db, int64_t session_id, int history)
 			const char *scope = (const char *)sqlite3_column_text(stmt, 2);
 			const char *source = (const char *)sqlite3_column_text(stmt, 4);
 
-			if (morph_buf_printf(&buf, "- %s: %s [%s; revision=%lld]\n",
-				key, value ? value : "(unset)", scope,
-				(long long)sqlite3_column_int64(stmt, 3)) != 0) {
+			if ((nb_buf_printf(&buf, "- %s: %s [%s; revision=%lld]\n", key,
+					   value ? value : "(unset)", scope,
+					   (long long)sqlite3_column_int64(stmt, 3))
+				     ? 0
+				     : NB_ERR_NOMEM) != 0) {
 				rc = SQLITE_NOMEM;
 				break;
 			}
-			if (history && morph_buf_printf(&buf, "  source: %s\n",
-						       source ? source : "") != 0) {
+			if (history && (nb_buf_printf(&buf, "  source: %s\n", source ? source : "")
+						? 0
+						: NB_ERR_NOMEM) != 0) {
 				rc = SQLITE_NOMEM;
 				break;
 			}
@@ -247,10 +265,10 @@ char *preference_render_copy(struct db *db, int64_t session_id, int history)
 	}
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE) {
-		morph_buf_cleanup(&buf);
+		nb_buf_cleanup(&buf);
 		return NULL;
 	}
-	return morph_buf_detach(&buf);
+	return (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
 }
 
 int preference_clear_session(struct db *db, int64_t session_id)

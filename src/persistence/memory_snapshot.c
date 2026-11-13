@@ -1,7 +1,7 @@
 #include "memory_snapshot.h"
 
-#include "util/cleanup.h"
-#include "util/error.h"
+#include "nb/cleanup.h"
+#include "errors.h"
 
 #include <errno.h>
 #include <string.h>
@@ -13,7 +13,7 @@ static char *snapshot_text(sqlite3_stmt *stmt, int column, int *error)
 	char *copy = text ? strdup(text) : NULL;
 
 	if (text && !copy)
-		*error = -ENOMEM;
+		*error = NB_ERR_NOMEM;
 	return copy;
 }
 
@@ -43,10 +43,10 @@ static int snapshot_facts(struct db *db, int64_t session_id,
 	sqlite3_bind_int64(stmt, 1, session_id);
 	sqlite3_bind_int(stmt, 2, options->facts_limit);
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-		struct memory_fact_record *record = morph_array_push_borrow(&snapshot->facts);
+		struct memory_fact_record *record = nb_vec_push(&snapshot->facts);
 
 		if (!record) {
-			error = -ENOMEM;
+			error = NB_ERR_NOMEM;
 			break;
 		}
 		memset(record, 0, sizeof(*record));
@@ -75,10 +75,10 @@ static int snapshot_rules(struct db *db, int64_t session_id, struct memory_snaps
 		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-		struct memory_rule_record *record = morph_array_push_borrow(&snapshot->rules);
+		struct memory_rule_record *record = nb_vec_push(&snapshot->rules);
 
 		if (!record) {
-			error = -ENOMEM;
+			error = NB_ERR_NOMEM;
 			break;
 		}
 		memset(record, 0, sizeof(*record));
@@ -107,10 +107,10 @@ static int snapshot_tasks(struct db *db, int64_t session_id, int limit,
 	sqlite3_bind_int64(stmt, 1, session_id);
 	sqlite3_bind_int(stmt, 2, limit);
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-		struct memory_task_record *record = morph_array_push_borrow(&snapshot->tasks);
+		struct memory_task_record *record = nb_vec_push(&snapshot->tasks);
 
 		if (!record) {
-			error = -ENOMEM;
+			error = NB_ERR_NOMEM;
 			break;
 		}
 		memset(record, 0, sizeof(*record));
@@ -156,10 +156,10 @@ static int snapshot_changes(struct db *db, int64_t session_id, int limit,
 	sqlite3_bind_int64(stmt, 1, session_id);
 	sqlite3_bind_int(stmt, 2, limit);
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-		struct memory_change_record *record = morph_array_push_borrow(&snapshot->changes);
+		struct memory_change_record *record = nb_vec_push(&snapshot->changes);
 
 		if (!record) {
-			error = -ENOMEM;
+			error = NB_ERR_NOMEM;
 			break;
 		}
 		memset(record, 0, sizeof(*record));
@@ -198,34 +198,34 @@ void memory_snapshot_cleanup(struct memory_snapshot *snapshot)
 {
 	if (!snapshot)
 		return;
-	for (size_t i = 0; i < snapshot->facts.nelts; i++) {
-		struct memory_fact_record *record = morph_array_borrow(&snapshot->facts, i);
+	for (size_t i = 0; i < snapshot->facts.len; i++) {
+		struct memory_fact_record *record = nb_vec_at(&snapshot->facts, i);
 		free(record->key);
 		free(record->value);
 		free(record->category);
 	}
-	for (size_t i = 0; i < snapshot->rules.nelts; i++) {
-		struct memory_rule_record *record = morph_array_borrow(&snapshot->rules, i);
+	for (size_t i = 0; i < snapshot->rules.len; i++) {
+		struct memory_rule_record *record = nb_vec_at(&snapshot->rules, i);
 		free(record->text);
 	}
-	for (size_t i = 0; i < snapshot->tasks.nelts; i++) {
-		struct memory_task_record *record = morph_array_borrow(&snapshot->tasks, i);
+	for (size_t i = 0; i < snapshot->tasks.len; i++) {
+		struct memory_task_record *record = nb_vec_at(&snapshot->tasks, i);
 		free(record->summary);
 		free(record->decisions);
 		free(record->artifacts);
 		free(record->tools);
 	}
-	for (size_t i = 0; i < snapshot->changes.nelts; i++) {
-		struct memory_change_record *record = morph_array_borrow(&snapshot->changes, i);
+	for (size_t i = 0; i < snapshot->changes.len; i++) {
+		struct memory_change_record *record = nb_vec_at(&snapshot->changes, i);
 		free(record->key);
 		free(record->old_value);
 		free(record->new_value);
 	}
 	free(snapshot->user_summary);
-	morph_array_cleanup(&snapshot->facts);
-	morph_array_cleanup(&snapshot->rules);
-	morph_array_cleanup(&snapshot->tasks);
-	morph_array_cleanup(&snapshot->changes);
+	nb_vec_cleanup(&snapshot->facts);
+	nb_vec_cleanup(&snapshot->rules);
+	nb_vec_cleanup(&snapshot->tasks);
+	nb_vec_cleanup(&snapshot->changes);
 	memset(snapshot, 0, sizeof(*snapshot));
 }
 
@@ -239,7 +239,7 @@ static void memory_snapshot_move(struct memory_snapshot *destination,
 int memory_snapshot_read(struct db *db, int64_t session_id,
 			 const struct memory_snapshot_options *options, struct memory_snapshot *out)
 {
-	struct memory_snapshot value MORPH_CLEANUP(memory_snapshot_cleanup) = {0};
+	struct memory_snapshot value NB_CLEANUP(memory_snapshot_cleanup) = {0};
 	struct memory_fact_record fact;
 	struct memory_rule_record rule;
 	struct memory_task_record task;
@@ -247,17 +247,21 @@ int memory_snapshot_read(struct db *db, int64_t session_id,
 	int rc;
 
 	if (!db || !db->handle || !options || !out)
-		return -EINVAL;
-	if (out->user_summary || out->facts.elts || out->rules.elts || out->tasks.elts ||
-	    out->changes.elts)
-		return -EEXIST;
-	rc = morph_array_init(&value.facts, 8, sizeof(fact));
+		return NB_ERR_INVAL;
+	if (out->user_summary || ((void *)out->facts.data) || ((void *)out->rules.data) ||
+	    ((void *)out->tasks.data) || ((void *)out->changes.data))
+		return NB_ERR_EXISTS;
+	rc = (nb_vec_init(&value.facts, sizeof(fact)),
+	      nb_vec_reserve(&value.facts, 8) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_array_init(&value.rules, 8, sizeof(rule));
+		rc = (nb_vec_init(&value.rules, sizeof(rule)),
+		      nb_vec_reserve(&value.rules, 8) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_array_init(&value.tasks, 8, sizeof(task));
+		rc = (nb_vec_init(&value.tasks, sizeof(task)),
+		      nb_vec_reserve(&value.tasks, 8) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_array_init(&value.changes, 8, sizeof(change));
+		rc = (nb_vec_init(&value.changes, sizeof(change)),
+		      nb_vec_reserve(&value.changes, 8) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && options->facts_limit)
 		rc = snapshot_facts(db, session_id, options, &value);
 	if (rc == 0 && options->include_rules)

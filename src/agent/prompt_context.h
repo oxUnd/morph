@@ -1,8 +1,9 @@
 #ifndef MORPH_PROMPT_CONTEXT_H
 #define MORPH_PROMPT_CONTEXT_H
 
-#include "util/cleanup.h"
-#include "util/buf.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,7 +19,7 @@ struct prompt_context_input {
 /* Providers run once per turn in declaration order, outside history. */
 struct prompt_context_provider {
 	const char *name;
-	int (*collect_render)(const struct prompt_context_input *input, morph_buf_t *out);
+	int (*collect_render)(const struct prompt_context_input *input, nb_buf *out);
 };
 
 int prompt_context_create(const struct prompt_context_provider *providers, size_t count,

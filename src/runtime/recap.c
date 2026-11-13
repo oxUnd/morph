@@ -3,11 +3,12 @@
 #include "runtime/usage.h"
 #include "persistence/history_store.h"
 #include "credits.h"
-#include "util/cleanup.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/str.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/str.h"
+#include "nb/utf8.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -34,9 +35,9 @@ static const char recap_instructions[] =
 	"revive rejected ideas, or request unnecessary approval.";
 
 struct runtime_recap_job {
-	pthread_t thread;
-	pthread_mutex_t lock;
-	struct morph_cancel_token cancel;
+	nb_thread *thread;
+	nb_mutex *lock;
+	struct nb_cancel cancel;
 	int done;
 	int automatic;
 	struct runtime_recap_progress progress;
@@ -51,20 +52,19 @@ struct runtime_recap_job {
 
 static int recap_string(cJSON *value, size_t limit, int nullable)
 {
-	morph_str_t trimmed;
+	nb_str trimmed;
 	char *text;
 	int ok;
 
 	if (nullable && cJSON_IsNull(value))
 		return 1;
-	if (!cJSON_IsString(value) || utf8valid(value->valuestring))
+	if (!cJSON_IsString(value) || nb_utf8_validate(nb_str_from_cstr(value->valuestring), NULL))
 		return 0;
-	trimmed = morph_str_trim_borrow(
-		(morph_str_t){strlen(value->valuestring), value->valuestring});
-	text = strndup(trimmed.data, trimmed.len);
+	trimmed = nb_str_trim(nb_str_from_cstr(value->valuestring));
+	text = strndup(trimmed.ptr, trimmed.len);
 	if (!text)
 		return 0;
-	ok = (nullable || text[0]) && utf8len(text) <= limit &&
+	ok = (nullable || text[0]) && nb_utf8_count(nb_str_from_cstr(text)) <= limit &&
 	     cJSON_SetValuestring(value, text) != NULL;
 	free(text);
 	return ok;
@@ -99,7 +99,8 @@ static int recap_progress_locked(struct runtime *runtime, struct runtime_recap_p
 		out->history_id = stored.latest_id;
 		out->completed_turns = stored.completed_turns;
 	}
-	return MORPH_TRACE_ERROR(runtime->options.logger, rc);
+	return nb_err_trace(runtime->options.logger, rc, morph_error_descriptions(),
+			    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 }
 
 int runtime_recap_progress(struct runtime *runtime, struct runtime_recap_progress *out)
@@ -107,11 +108,15 @@ int runtime_recap_progress(struct runtime *runtime, struct runtime_recap_progres
 	int rc;
 
 	if (!runtime || !out)
-		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, -EINVAL);
-	if (pthread_mutex_trylock(&runtime->context.execution_lock) != 0)
-		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, -EBUSY);
+		return nb_err_trace(runtime ? runtime->options.logger : NULL, NB_ERR_INVAL,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
+	if (nb_mutex_trylock(runtime->context.execution_lock) != 0)
+		return nb_err_trace(runtime ? runtime->options.logger : NULL, NB_ERR_BUSY,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
 	rc = recap_progress_locked(runtime, out);
-	pthread_mutex_unlock(&runtime->context.execution_lock);
+	nb_mutex_unlock(runtime->context.execution_lock);
 	return rc;
 }
 
@@ -128,7 +133,7 @@ int runtime_recap_is_current(struct runtime *runtime, const struct runtime_recap
 static char *recap_excerpt(const char *text, size_t budget)
 {
 	static const char marker[] = "\n[... excerpted ...]\n";
-	morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf out NB_CLEANUP(nb_buf_cleanup) = {0};
 	size_t length = strlen(text);
 	size_t half;
 	size_t offset;
@@ -138,19 +143,19 @@ static char *recap_excerpt(const char *text, size_t budget)
 	if (length <= budget)
 		return strdup(text);
 	if (budget <= sizeof(marker))
-		return utf8_dup_clamped(text, budget);
+		return nb_utf8_ellipsize_bytes(text, budget);
 	half = (budget - strlen(marker)) / 2;
 	offset = length - half;
-	tail = text + utf8_clamp_bytes(text, offset);
+	tail = text + nb_utf8_clamp_bytes(text, offset);
 	if (tail < text + offset)
-		tail = utf8_advance_codepoints_borrow(tail, 1);
-	if (morph_buf_init(&out, budget + 1) != 0)
+		tail = nb_utf8_advance(tail, 1);
+	if ((nb_buf_init(&out), nb_buf_reserve(&out, budget + 1) ? 0 : NB_ERR_NOMEM) != 0)
 		return NULL;
-	(void)morph_buf_append(&out, text, utf8_clamp_bytes(text, half));
-	(void)morph_buf_puts(&out, marker);
-	(void)morph_buf_puts(&out, tail);
-	result = morph_buf_detach(&out);
-	morph_buf_cleanup(&out);
+	(void)nb_buf_append(&out, text, nb_utf8_clamp_bytes(text, half));
+	(void)nb_buf_append_cstr(&out, marker);
+	(void)nb_buf_append_cstr(&out, tail);
+	result = (nb_buf_ok(&out) ? strdup(nb_buf_cstr(&out)) : NULL);
+	nb_buf_cleanup(&out);
 	return result;
 }
 
@@ -160,23 +165,22 @@ struct recap_visible_message {
 };
 
 struct recap_history_input {
-	morph_array_t messages;
+	nb_vec messages;
 	size_t budget;
 };
 
 static int recap_collect_message(const struct message *message, void *data)
 {
 	struct recap_history_input *input = data;
-	char *role MORPH_CLEANUP(morph_charp_cleanup) = strdup(message->role);
-	char *text MORPH_CLEANUP(morph_charp_cleanup) =
-		recap_excerpt(message->content, input->budget);
+	char *role NB_CLEANUP(nb_charp_cleanup) = strdup(message->role);
+	char *text NB_CLEANUP(nb_charp_cleanup) = recap_excerpt(message->content, input->budget);
 
 	if (!role || !text)
-		return -ENOMEM;
-	struct recap_visible_message *slot = morph_array_push_borrow(&input->messages);
+		return NB_ERR_NOMEM;
+	struct recap_visible_message *slot = nb_vec_push(&input->messages);
 
 	if (!slot)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	slot->role = role;
 	slot->text = text;
 	role = NULL;
@@ -186,50 +190,50 @@ static int recap_collect_message(const struct message *message, void *data)
 
 static void recap_history_input_cleanup(struct recap_history_input *input)
 {
-	for (size_t i = 0; i < input->messages.nelts; i++) {
-		struct recap_visible_message *message = morph_array_borrow(&input->messages, i);
+	for (size_t i = 0; i < input->messages.len; i++) {
+		struct recap_visible_message *message = nb_vec_at(&input->messages, i);
 
 		free(message->role);
 		free(message->text);
 	}
-	morph_array_cleanup(&input->messages);
+	nb_vec_cleanup(&input->messages);
 }
 
 static char *recap_history(struct db *db, int64_t session_id)
 {
-	struct recap_history_input input MORPH_CLEANUP(recap_history_input_cleanup) = {0};
+	struct recap_history_input input NB_CLEANUP(recap_history_input_cleanup) = {0};
 	struct recap_visible_message message;
-	morph_buf_t prompt MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf prompt NB_CLEANUP(nb_buf_cleanup) = {0};
 	char *result = NULL;
 	int rc;
 
 	input.budget =
 		(RECAP_PROMPT_MAX_BYTES - strlen(recap_instructions)) / RECAP_HISTORY_MESSAGES - 16;
-	rc = morph_array_init(&input.messages, RECAP_HISTORY_MESSAGES, sizeof(message));
+	rc = (nb_vec_init(&input.messages, sizeof(message)),
+	      nb_vec_reserve(&input.messages, RECAP_HISTORY_MESSAGES) ? 0 : NB_ERR_NOMEM);
 	if (!rc)
-		rc = morph_buf_init(&prompt, 1024);
+		rc = (nb_buf_init(&prompt), nb_buf_reserve(&prompt, 1024) ? 0 : NB_ERR_NOMEM);
 	if (!rc)
 		rc = history_store_visit_recent_messages(db, session_id, RECAP_HISTORY_MESSAGES,
 							 recap_collect_message, &input);
-	size_t visible_count = input.messages.nelts;
+	size_t visible_count = input.messages.len;
 
 	if (!rc) {
 		while (visible_count) {
 			struct recap_visible_message *oldest =
-				morph_array_borrow(&input.messages, visible_count - 1);
+				nb_vec_at(&input.messages, visible_count - 1);
 
 			if (strcmp(oldest->role, "assistant") != 0)
 				break;
 			visible_count--;
 		}
 		for (size_t i = visible_count; i > 0; i--) {
-			struct recap_visible_message *item =
-				morph_array_borrow(&input.messages, i - 1);
+			struct recap_visible_message *item = nb_vec_at(&input.messages, i - 1);
 
-			(void)morph_buf_printf(&prompt, "%s: %s\n\n", item->role, item->text);
+			(void)nb_buf_printf(&prompt, "%s: %s\n\n", item->role, item->text);
 		}
-		if (visible_count && !prompt.failed)
-			result = morph_buf_detach(&prompt);
+		if (visible_count && !nb_buf_status(&prompt))
+			result = (nb_buf_ok(&prompt) ? strdup(nb_buf_cstr(&prompt)) : NULL);
 	}
 	return result;
 }
@@ -269,10 +273,10 @@ static void recap_bill(struct runtime_recap_job *job, const struct model_usage *
 static void *recap_worker(void *opaque)
 {
 	struct runtime_recap_job *job = opaque;
-	struct chat_response response MORPH_CLEANUP(chat_response_free) = {0};
+	struct chat_response response NB_CLEANUP(chat_response_free) = {0};
 	struct chat_message message = {.role = "user", .content = job->prompt};
 	cJSON *result = NULL;
-	int rc = -ENOMEM;
+	int rc = NB_ERR_NOMEM;
 
 	recap_event(job, "begin", NULL, 0);
 	job->model->http.cancel_token = &job->cancel;
@@ -281,16 +285,16 @@ static void *recap_worker(void *opaque)
 	if (rc >= 0) {
 		result = response.tool_call_count == 0 ? runtime_recap_parse(response.content)
 						       : NULL;
-		rc = result ? 0 : MORPH_ERR_PROTOCOL;
+		rc = result ? 0 : NB_ERR_PROTOCOL;
 	}
 	recap_bill(job, &response.usage);
-	if (morph_cancel_token_is_cancelled(&job->cancel))
-		rc = -ECANCELED;
+	if (nb_cancel_requested(&job->cancel))
+		rc = NB_ERR_CANCELLED;
 	recap_event(job, "end", rc == 0 ? result : NULL, rc);
 	cJSON_Delete(result);
-	pthread_mutex_lock(&job->lock);
+	nb_mutex_lock(job->lock);
 	job->done = 1;
-	pthread_mutex_unlock(&job->lock);
+	nb_mutex_unlock(job->lock);
 	return NULL;
 }
 
@@ -298,7 +302,7 @@ static void recap_job_free(struct runtime_recap_job *job)
 {
 	model_destroy(job->model);
 	free(job->prompt);
-	pthread_mutex_destroy(&job->lock);
+	(nb_mutex_free(job->lock), job->lock = NULL);
 	free(job);
 }
 
@@ -313,39 +317,47 @@ static int recap_start_locked(struct runtime *runtime, int automatic)
 	if (job) {
 		int done;
 
-		pthread_mutex_lock(&job->lock);
+		nb_mutex_lock(job->lock);
 		done = job->done;
-		pthread_mutex_unlock(&job->lock);
+		nb_mutex_unlock(job->lock);
 		if (!done)
-			return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL,
-						 -EALREADY);
-		pthread_join(job->thread, NULL);
+			return nb_err_trace(runtime ? runtime->options.logger : NULL, NB_ERR_STATE,
+					    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+					    __LINE__);
+		nb_thread_join_take(&job->thread, NULL);
 		recap_job_free(job);
 		runtime->recap_job = NULL;
 	}
 	if (!source || !model_api_key_borrow(source)[0])
-		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL,
-					 MORPH_ERR_NOT_CONFIGURED);
+		return nb_err_trace(runtime ? runtime->options.logger : NULL,
+				    MORPH_ERR_NOT_CONFIGURED, morph_error_descriptions(),
+				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	if (ctx->current_session.id <= 0)
-		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, -ENODATA);
+		return nb_err_trace(runtime ? runtime->options.logger : NULL, NB_ERR_NO_DATA,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
 	job = calloc(1, sizeof(*job));
 	if (!job)
-		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, -ENOMEM);
-	rc = pthread_mutex_init(&job->lock, NULL);
+		return nb_err_trace(runtime ? runtime->options.logger : NULL, NB_ERR_NOMEM,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
+	rc = ((job->lock = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
 	if (rc != 0) {
 		free(job);
-		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, -rc);
+		return nb_err_trace(runtime ? runtime->options.logger : NULL, rc,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
 	}
 	rc = recap_progress_locked(runtime, &job->progress);
 	if (rc == 0 && job->progress.history_id == 0)
-		rc = -ENODATA;
+		rc = NB_ERR_NO_DATA;
 	if (rc == 0)
 		rc = session_get_by_id(&ctx->database, job->progress.session_id, &session);
 	if (rc == 0) {
 		job->prompt = recap_history(&ctx->database, session.id);
 		job->model = model_llm_clone(source, runtime->options.logger);
 		if (!job->prompt || !job->model)
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 	}
 	if (rc == 0) {
 		job->model->max_tokens = RECAP_OUTPUT_TOKENS;
@@ -358,11 +370,13 @@ static int recap_start_locked(struct runtime *runtime, int automatic)
 		memcpy(job->database, ctx->database.path, sizeof(job->database));
 		memcpy(job->identity, session.display_id, sizeof(job->identity));
 		job->progress.revision = runtime->recap_revision + 1;
-		rc = -pthread_create(&job->thread, NULL, recap_worker, job);
+		rc = nb_thread_create(&job->thread, recap_worker, job, NULL);
 	}
 	if (rc != 0) {
 		recap_job_free(job);
-		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, rc);
+		return nb_err_trace(runtime ? runtime->options.logger : NULL, rc,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
 	}
 	runtime->recap_job = job;
 	runtime->recap_revision = job->progress.revision;
@@ -375,33 +389,39 @@ int runtime_recap_request(struct runtime *runtime, int automatic,
 	int rc;
 
 	if (!runtime || !runtime->options.event_cb)
-		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, -EINVAL);
-	if (pthread_mutex_trylock(&runtime->context.execution_lock) != 0)
-		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, -EBUSY);
+		return nb_err_trace(runtime ? runtime->options.logger : NULL, NB_ERR_INVAL,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
+	if (nb_mutex_trylock(runtime->context.execution_lock) != 0)
+		return nb_err_trace(runtime ? runtime->options.logger : NULL, NB_ERR_BUSY,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
 	if (automatic && !runtime->context.config.general.auto_recap) {
-		pthread_mutex_unlock(&runtime->context.execution_lock);
-		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, -ECANCELED);
+		nb_mutex_unlock(runtime->context.execution_lock);
+		return nb_err_trace(runtime ? runtime->options.logger : NULL, NB_ERR_CANCELLED,
+				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				    __LINE__);
 	}
 	rc = recap_start_locked(runtime, automatic);
 	if (rc == 0 && out)
 		*out = runtime->recap_job->progress;
-	pthread_mutex_unlock(&runtime->context.execution_lock);
+	nb_mutex_unlock(runtime->context.execution_lock);
 	return rc;
 }
 
 void runtime_recap_cancel(struct runtime *runtime)
 {
-	if (!runtime || pthread_mutex_trylock(&runtime->context.execution_lock) != 0)
+	if (!runtime || nb_mutex_trylock(runtime->context.execution_lock) != 0)
 		return;
 	runtime_recap_invalidate(runtime);
-	pthread_mutex_unlock(&runtime->context.execution_lock);
+	nb_mutex_unlock(runtime->context.execution_lock);
 }
 
 void runtime_recap_invalidate(struct runtime *runtime)
 {
 	runtime->recap_revision++;
 	if (runtime->recap_job)
-		morph_cancel_token_cancel(&runtime->recap_job->cancel);
+		nb_cancel_request(&runtime->recap_job->cancel);
 }
 
 void runtime_recap_stop(struct runtime *runtime)
@@ -411,7 +431,7 @@ void runtime_recap_stop(struct runtime *runtime)
 	if (!job)
 		return;
 	runtime_recap_invalidate(runtime);
-	pthread_join(job->thread, NULL);
+	nb_thread_join_take(&job->thread, NULL);
 	recap_job_free(job);
 	runtime->recap_job = NULL;
 }

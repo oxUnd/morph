@@ -1,6 +1,7 @@
 #include "agent/environment_context.h"
+#include "nb/err.h"
 #include "agent/prompt_context.h"
-#include "util/utf8.h"
+#include "nb/utf8.h"
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <fstream>
@@ -15,11 +16,11 @@ namespace {
 
 std::string render(const environment_context &ctx)
 {
-	morph_buf_t buf;
-	EXPECT_EQ(morph_buf_init(&buf, 128), 0);
+	nb_buf buf;
+	EXPECT_EQ((nb_buf_init(&buf), nb_buf_reserve(&buf, 128) ? 0 : NB_ERR_NOMEM), 0);
 	EXPECT_EQ(environment_context_render(&ctx, &buf), 0);
-	std::string result = morph_buf_cstr_borrow(&buf);
-	morph_buf_cleanup(&buf);
+	std::string result = nb_buf_cstr(&buf);
+	nb_buf_cleanup(&buf);
 	return result;
 }
 
@@ -193,7 +194,7 @@ TEST(EnvironmentRenderTest, InvalidUtf8ControlsAndNewlines)
 	environment_context ctx{};
 	ctx.cwd = "/tmp/路径\xff\x01\n\t";
 	auto text = render(ctx);
-	EXPECT_EQ(utf8valid(text.c_str()), nullptr);
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(text.c_str()), NULL), NB_UTF8_OK);
 	EXPECT_NE(text.find("/tmp/路径&#10;&#9;"), std::string::npos);
 	ctx.cwd = "\x01\xff\xed\xa0\x80\xef\xbf\xbe";
 	EXPECT_EQ(render(ctx).find("<cwd>"), std::string::npos);
@@ -331,7 +332,7 @@ TEST_F(EnvironmentContextTest, NearestInvalidGitMarkerDoesNotExposeParentBranch)
 
 TEST_F(EnvironmentContextTest, ExplicitSandboxIsCopiedAndEscaped)
 {
-	environment_context ctx MORPH_CLEANUP(environment_context_cleanup) = {};
+	environment_context ctx NB_CLEANUP(environment_context_cleanup) = {};
 	prompt_context_input input{directory.c_str(), nullptr, "read-only<&>"};
 	ASSERT_EQ(environment_context_create(&ctx, &input), 0);
 	EXPECT_NE(render(ctx).find("<sandbox>read-only&lt;&amp;&gt;</sandbox>"),
@@ -355,35 +356,35 @@ TEST_F(EnvironmentContextTest, GitOverrideIsNotGuessed)
 	EXPECT_EQ(collect(directory.c_str()).git_branch, nullptr);
 }
 
-static int provider_a(const prompt_context_input *, morph_buf_t *out)
+static int provider_a(const prompt_context_input *, nb_buf *out)
 {
-	return morph_buf_puts(out, "A\n");
+	return (nb_buf_append_cstr(out, "A\n") ? 0 : NB_ERR_NOMEM);
 }
-static int provider_b(const prompt_context_input *, morph_buf_t *out)
+static int provider_b(const prompt_context_input *, nb_buf *out)
 {
-	return morph_buf_puts(out, "B\n");
+	return (nb_buf_append_cstr(out, "B\n") ? 0 : NB_ERR_NOMEM);
 }
 
 TEST_F(EnvironmentContextTest, ProvidersPreserveOrderAndRejectDuplicates)
 {
 	prompt_context_provider providers[] = {{"a", provider_a}, {"b", provider_b}};
-	char *text MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
+	char *text NB_CLEANUP(nb_charp_cleanup) = nullptr;
 	ASSERT_EQ(prompt_context_create(providers, 2, nullptr, &text), 0);
 	EXPECT_STREQ(text, "A\nB\n");
 	auto *retained = text;
-	EXPECT_EQ(prompt_context_create(providers, 2, nullptr, &text), -EALREADY);
+	EXPECT_EQ(prompt_context_create(providers, 2, nullptr, &text), NB_ERR_STATE);
 	EXPECT_EQ(text, retained);
-	morph_charp_cleanup(&text);
+	nb_charp_cleanup(&text);
 	providers[1].name = "a";
-	EXPECT_EQ(prompt_context_create(providers, 2, nullptr, &text), -EINVAL);
+	EXPECT_EQ(prompt_context_create(providers, 2, nullptr, &text), NB_ERR_INVAL);
 	EXPECT_EQ(text, nullptr);
 }
 
 TEST_F(EnvironmentContextTest, InvalidArguments)
 {
 	environment_context ctx{};
-	EXPECT_EQ(environment_context_create(nullptr, nullptr), -EINVAL);
-	EXPECT_EQ(environment_context_render(&ctx, nullptr), -EINVAL);
+	EXPECT_EQ(environment_context_create(nullptr, nullptr), NB_ERR_INVAL);
+	EXPECT_EQ(environment_context_render(&ctx, nullptr), NB_ERR_INVAL);
 }
 
 TEST_F(EnvironmentContextTest, CollectionPreservesOccupiedOwner)
@@ -391,7 +392,7 @@ TEST_F(EnvironmentContextTest, CollectionPreservesOccupiedOwner)
 	auto ctx = collect(directory.c_str(), "/bin/sh");
 	const char *retained = ctx.cwd;
 	prompt_context_input input{directory.c_str(), "/bin/bash", nullptr};
-	EXPECT_EQ(environment_context_create(&ctx, &input), -EALREADY);
+	EXPECT_EQ(environment_context_create(&ctx, &input), NB_ERR_STATE);
 	EXPECT_EQ(ctx.cwd, retained);
 	EXPECT_STREQ(ctx.shell, "/bin/sh");
 }

@@ -1,7 +1,9 @@
 #include "compress.h"
+#include "nb/err.h"
 #include "agent/tokenizer.h"
-#include "util/cleanup.h"
-#include "util/buf.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,11 +64,11 @@ int compress_sliding_window(struct message_list **head, int keep_rounds,
 			   struct compress_result *result)
 {
 	if (!head || !*head || keep_rounds < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (result->summary || result->preserved)
-		return -EALREADY;
+		return NB_ERR_STATE;
 
 	int total = msg_list_count(*head);
 	int to_preserve = keep_rounds * 2;
@@ -104,9 +106,9 @@ int compress_react_trace(struct message_list **head,
 			 struct compress_result *result)
 {
 	if (!head || !result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (result->summary || result->preserved)
-		return -EALREADY;
+		return NB_ERR_STATE;
 	struct message_list *cur = *head;
 	struct message_list *prev = NULL;
 	int removed = 0;
@@ -191,11 +193,11 @@ static int compress_summarize_into(struct message_list **head, int keep_rounds, 
 				   void *fn_user, struct compress_result *result)
 {
 	if (!head || !*head || keep_rounds < 0 || !fn)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (result->summary || result->preserved)
-		return -EALREADY;
+		return NB_ERR_STATE;
 
 	memset(result, 0, sizeof(*result));
 	result->original_tokens = context_token_count(*head, NULL);
@@ -209,8 +211,8 @@ static int compress_summarize_into(struct message_list **head, int keep_rounds, 
 	struct message_list *cur = *head;
 	struct message_list *split = NULL;
 	int idx = 0;
-	morph_buf_t text_buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int text_ok = morph_buf_init(&text_buf, 8192);
+	nb_buf text_buf NB_CLEANUP(nb_buf_cleanup) = {0};
+	int text_ok = (nb_buf_init(&text_buf), nb_buf_reserve(&text_buf, 8192) ? 0 : NB_ERR_NOMEM);
 	if (text_ok != 0)
 		return text_ok;
 
@@ -221,10 +223,11 @@ static int compress_summarize_into(struct message_list **head, int keep_rounds, 
 			cur = cur->next;
 			continue;
 		}
-		if (morph_buf_printf(&text_buf, "[%s]: %s\n",
-				     cur->role, cur->content) != 0) {
-			morph_buf_cleanup(&text_buf);
-			return -ENOMEM;
+		if ((nb_buf_printf(&text_buf, "[%s]: %s\n", cur->role, cur->content)
+			     ? 0
+			     : NB_ERR_NOMEM) != 0) {
+			nb_buf_cleanup(&text_buf);
+			return NB_ERR_NOMEM;
 		}
 		split = cur;
 		idx++;
@@ -232,22 +235,22 @@ static int compress_summarize_into(struct message_list **head, int keep_rounds, 
 	}
 
 	if (text_buf.len == 0) {
-		morph_buf_cleanup(&text_buf);
+		nb_buf_cleanup(&text_buf);
 		return 0;
 	}
 
 	char *summary = NULL;
-	int rc = fn(morph_buf_cstr_borrow(&text_buf), fn_user, &summary);
-	morph_buf_cleanup(&text_buf);
+	int rc = fn(nb_buf_cstr(&text_buf), fn_user, &summary);
+	nb_buf_cleanup(&text_buf);
 	if (rc < 0 || !summary || !summary[0]) {
 		free(summary);
-		return rc < 0 ? rc : MORPH_ERR_PROTOCOL;
+		return rc < 0 ? rc : NB_ERR_PROTOCOL;
 	}
 
 	struct message_list *summary_msg = msg_list_create("system", summary, 0);
 	free(summary);
 	if (!summary_msg)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	summary_msg->token_count = tokenizer_estimate_tokens(summary_msg->content);
 	summary_msg->is_reference = 1;
 
@@ -293,13 +296,13 @@ static int compress_summarize_into(struct message_list **head, int keep_rounds, 
 int compress_summarize(struct message_list **head, int keep_rounds, summarize_fn fn, void *fn_user,
 		       struct compress_result *result)
 {
-	struct compress_result candidate MORPH_CLEANUP(compress_result_cleanup) = {0};
+	struct compress_result candidate NB_CLEANUP(compress_result_cleanup) = {0};
 	int rc;
 
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (result->summary || result->preserved)
-		return -EALREADY;
+		return NB_ERR_STATE;
 	rc = compress_summarize_into(head, keep_rounds, fn, fn_user, &candidate);
 	if (rc < 0)
 		return rc;

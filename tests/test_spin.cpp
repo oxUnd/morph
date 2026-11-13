@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
-#include "util/spin.h"
-#include "util/utf8.h"
+#include "nb/thread.h"
+#include <morph/tui/terminal/activity.h>
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -110,7 +112,7 @@ TEST(SpinSetSub, Utf8TruncationSafe)
 	EXPECT_LT(len, sizeof(ctx.submessage));
 	EXPECT_GT(len, 0u);
 
-	EXPECT_EQ(utf8nvalid(ctx.submessage, len), nullptr);
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_parts(ctx.submessage, len), NULL), NB_UTF8_OK);
 
 	spin_destroy(&ctx);
 	fclose(devnull);
@@ -139,7 +141,7 @@ TEST(SpinSetSub, InvalidUtf8IsSanitized)
 
 	const char invalid[] = "abc\xe4\xb8""def\xff""ghi";
 	spin_set_sub(&ctx, invalid);
-	EXPECT_EQ(utf8valid(ctx.submessage), nullptr);
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(ctx.submessage), NULL), NB_UTF8_OK);
 	EXPECT_STREQ(ctx.submessage, "abcdefghi");
 
 	spin_destroy(&ctx);
@@ -155,7 +157,7 @@ TEST(SpinUpdate, InvalidUtf8IsSanitized)
 
 	spin_start(&ctx, SPIN_STATE_THINKING, "Initial");
 	spin_update(&ctx, "hello\xe4\xb8""world");
-	EXPECT_EQ(utf8valid(ctx.message), nullptr);
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(ctx.message), NULL), NB_UTF8_OK);
 	EXPECT_STREQ(ctx.message, "helloworld");
 	spin_stop(&ctx, SPIN_STATE_COMPLETE, "Done");
 	spin_destroy(&ctx);
@@ -165,10 +167,10 @@ TEST(SpinUpdate, InvalidUtf8IsSanitized)
 TEST(Utf8Util, TailColumnsKeepsWholeCodepoints)
 {
 	const char *s = "ab\xe4\xb8\xad" "cd";
-	const char *tail = utf8_suffix_display_width_borrow(s, 4);
+	const char *tail = morph_terminal_suffix_display_width_borrow(s, 4);
 
 	EXPECT_STREQ(tail, "\xe4\xb8\xad" "cd");
-	EXPECT_EQ(utf8_display_width(tail), 4u);
+	EXPECT_EQ(nb_utf8_width_cstr(tail), 4u);
 }
 
 TEST(Utf8Util, CopySanitizedDisplayWidthDropsInvalidBytes)
@@ -176,12 +178,11 @@ TEST(Utf8Util, CopySanitizedDisplayWidthDropsInvalidBytes)
 	char out[16];
 	const char invalid[] = "ab\xe4\xb8""X\xff""cd";
 
-	size_t width = utf8_copy_sanitized_display_width(out, sizeof(out),
-							 invalid, 5);
+	size_t width = morph_terminal_copy_sanitized_display_width(out, sizeof(out), invalid, 5);
 
 	EXPECT_STREQ(out, "abXcd");
 	EXPECT_EQ(width, 5u);
-	EXPECT_EQ(utf8valid(out), nullptr);
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(out), NULL), NB_UTF8_OK);
 }
 
 TEST(Utf8Util, StripAnsiHandlesCsiAndOsc)
@@ -190,7 +191,7 @@ TEST(Utf8Util, StripAnsiHandlesCsiAndOsc)
 		"\033[31m\xe7\xba\xa2\033[0mX\033]0;title\aY";
 	char out[32];
 
-	size_t len = utf8_strip_ansi(out, input, strlen(input));
+	size_t len = morph_terminal_strip_ansi(out, input, strlen(input));
 
 	EXPECT_STREQ(out, "\xe7\xba\xa2XY");
 	EXPECT_EQ(len, strlen(out));
@@ -218,7 +219,8 @@ TEST(SpinRender, ChineseMarqueeFramesAreValidUtf8)
 		ctx.frame = i;
 		spin_render(&ctx);
 		fflush(mem);
-		ASSERT_EQ(utf8valid(buf), nullptr) << "invalid frame " << i;
+		ASSERT_EQ(nb_utf8_validate(nb_str_from_cstr(buf), NULL), NB_UTF8_OK)
+			<< "invalid frame " << i;
 	}
 
 	ctx.running = 0;
@@ -246,10 +248,9 @@ TEST(SpinRender, ShimmerPreservesUtf8AndMovesHighlight)
 	fflush(mem);
 	std::string first(buf, len);
 	std::string plain(first.size() + 1, '\0');
-	size_t plain_len = utf8_strip_ansi(
-		plain.data(), first.data(), first.size());
+	size_t plain_len = morph_terminal_strip_ansi(plain.data(), first.data(), first.size());
 	plain.resize(plain_len);
-	ASSERT_EQ(utf8valid(buf), nullptr);
+	ASSERT_EQ(nb_utf8_validate(nb_str_from_cstr(buf), NULL), NB_UTF8_OK);
 	EXPECT_NE(first.find("\033[1;36m◉\033[0m "), std::string::npos);
 	EXPECT_NE(plain.find("Reasoning… 中文"), std::string::npos);
 
@@ -257,7 +258,7 @@ TEST(SpinRender, ShimmerPreservesUtf8AndMovesHighlight)
 	spin_render(&ctx);
 	fflush(mem);
 	std::string second(buf + first.size(), len - first.size());
-	ASSERT_EQ(utf8valid(buf), nullptr);
+	ASSERT_EQ(nb_utf8_validate(nb_str_from_cstr(buf), NULL), NB_UTF8_OK);
 	EXPECT_NE(second.find("\033[38;5;242mR"), std::string::npos);
 	EXPECT_NE(first, second);
 
@@ -271,11 +272,11 @@ TEST(Utf8AdvanceDisplayWidth, DoesNotSplitWideCharacters)
 {
 	const char *s = "A\xe4\xb8\xad""B";
 
-	EXPECT_EQ(utf8_advance_display_width_borrow(s, 0), s);
-	EXPECT_EQ(utf8_advance_display_width_borrow(s, 1), s + 1);
-	EXPECT_EQ(utf8_advance_display_width_borrow(s, 2), s + 1);
-	EXPECT_EQ(utf8_advance_display_width_borrow(s, 3), s + 4);
-	EXPECT_EQ(utf8_advance_display_width_borrow(s, 4), s + 5);
+	EXPECT_EQ(morph_terminal_advance_display_width_borrow(s, 0), s);
+	EXPECT_EQ(morph_terminal_advance_display_width_borrow(s, 1), s + 1);
+	EXPECT_EQ(morph_terminal_advance_display_width_borrow(s, 2), s + 1);
+	EXPECT_EQ(morph_terminal_advance_display_width_borrow(s, 3), s + 4);
+	EXPECT_EQ(morph_terminal_advance_display_width_borrow(s, 4), s + 5);
 }
 
 TEST(SpinSetSub, ExactBufferSize)
@@ -343,7 +344,7 @@ TEST(SpinClear, ClearNoCrash)
 
 TEST(SpinCancelFlag, SetCancelFlag)
 {
-	volatile sig_atomic_t flag = 0;
+	nb_atomic_int flag = 0;
 	struct spin_context ctx;
 	spin_init(&ctx, NULL);
 	spin_set_cancel_flag(&ctx, &flag);
@@ -355,6 +356,6 @@ TEST(SpinCancelFlag, SetCancelFlag)
 
 TEST(SpinCancelFlag, NullContext)
 {
-	volatile sig_atomic_t flag = 0;
+	nb_atomic_int flag = 0;
 	EXPECT_NO_FATAL_FAILURE(spin_set_cancel_flag(NULL, &flag));
 }

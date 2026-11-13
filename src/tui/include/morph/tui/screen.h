@@ -2,6 +2,7 @@
 #define MORPH_TUI_SCREEN_H
 
 #include <morph/tui/event.h>
+#include "nb/thread.h"
 #include <morph/tui/input.h>
 #include <morph/tui/layout.h>
 #include <morph/tui/terminal.h>
@@ -16,7 +17,7 @@ struct morph_tui_screen {
 	struct morph_tui_terminal_session session;
 	struct morph_tui_input input;
 	struct morph_tui_terminal_rect area;
-	const volatile sig_atomic_t *interrupted;
+	const nb_atomic_int *interrupted;
 	int output_fd;
 	int pasting;
 	int dirty;

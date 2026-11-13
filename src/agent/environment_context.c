@@ -1,7 +1,7 @@
 #include "environment_context.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/utf8.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -85,7 +85,7 @@ static const char *shell_name(const char *value)
 }
 
 /* Decode with the shared UTF-8 API; drop malformed and XML-illegal data. */
-static int xml_field(morph_buf_t *out, const char *name, const char *value)
+static int xml_field(nb_buf *out, const char *name, const char *value)
 {
 	size_t start = out->len;
 	size_t content_start;
@@ -93,7 +93,7 @@ static int xml_field(morph_buf_t *out, const char *name, const char *value)
 
 	if (!value || !*value)
 		return 0;
-	morph_buf_printf(out, "  <%s>", name);
+	nb_buf_printf(out, "  <%s>", name);
 	content_start = out->len;
 	remaining = strlen(value);
 	while (remaining) {
@@ -101,7 +101,7 @@ static int xml_field(morph_buf_t *out, const char *name, const char *value)
 		size_t bytes;
 		const char *escaped = NULL;
 
-		if (!utf8_decode_codepoint(value, remaining, &cp, &bytes)) {
+		if (!nb_utf8_read(value, remaining, &cp, &bytes)) {
 			value++;
 			remaining--;
 			continue;
@@ -118,27 +118,26 @@ static int xml_field(morph_buf_t *out, const char *name, const char *value)
 		default: break;
 		}
 		if (escaped)
-			morph_buf_puts(out, escaped);
+			nb_buf_append_cstr(out, escaped);
 		else if ((cp >= 0x20 && cp <= 0xd7ff) ||
 			 (cp >= 0xe000 && cp <= 0xfffd) ||
 			 (cp >= 0x10000 && cp <= 0x10ffff))
-			morph_buf_append(out, value, bytes);
+			nb_buf_append(out, value, bytes);
 		value += bytes;
 		remaining -= bytes;
 	}
-	if (out->failed)
-		return out->failed;
+	if (nb_buf_status(out))
+		return nb_buf_status(out);
 	if (out->len == content_start)
-		return morph_buf_truncate(out, start);
-	return morph_buf_printf(out, "</%s>\n", name);
+		return (nb_buf_truncate(out, start), 0);
+	return (nb_buf_printf(out, "</%s>\n", name) ? 0 : NB_ERR_NOMEM);
 }
 
-int environment_context_render(const struct environment_context *ctx,
-	morph_buf_t *out)
+int environment_context_render(const struct environment_context *ctx, nb_buf *out)
 {
 	int rc;
 	if (!ctx || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	const struct { const char *name; const char *value; } fields[] = {
 		{ "cwd", ctx->cwd },
 		{ "shell", shell_name(ctx->shell) },
@@ -151,12 +150,12 @@ int environment_context_render(const struct environment_context *ctx,
 		{ "sandbox", ctx->sandbox },
 	};
 
-	rc = morph_buf_puts(out, "<environment_context>\n");
+	rc = (nb_buf_append_cstr(out, "<environment_context>\n") ? 0 : NB_ERR_NOMEM);
 	for (size_t i = 0; rc == 0 && i < sizeof(fields) / sizeof(fields[0]); i++)
 		rc = xml_field(out, fields[i].name, fields[i].value);
 	if (rc != 0)
 		return rc;
-	return morph_buf_puts(out, "</environment_context>\n");
+	return (nb_buf_append_cstr(out, "</environment_context>\n") ? 0 : NB_ERR_NOMEM);
 }
 
 struct environment_collector {
@@ -169,7 +168,7 @@ static void *collect_alloc(struct environment_collector *collector, size_t size)
 	void *result = calloc(1, size);
 
 	if (!result)
-		collector->error = (-ENOMEM);
+		collector->error = (NB_ERR_NOMEM);
 	return result;
 }
 #endif
@@ -182,7 +181,7 @@ static char *copy_value(struct environment_collector *collector, const char *val
 		return NULL;
 	copy = strdup(value);
 	if (!copy)
-		collector->error = (-ENOMEM);
+		collector->error = (NB_ERR_NOMEM);
 	return copy;
 }
 
@@ -210,11 +209,10 @@ static wchar_t *wide_path(struct environment_collector *collector, const char *p
 
 static char *full_path(struct environment_collector *collector, const char *path)
 {
-	wchar_t *input MORPH_CLEANUP(wide_cleanup) =
-		wide_path(collector, path && *path ? path : ".");
+	wchar_t *input NB_CLEANUP(wide_cleanup) = wide_path(collector, path && *path ? path : ".");
 	DWORD count;
 	DWORD written;
-	wchar_t *wide MORPH_CLEANUP(wide_cleanup) = NULL;
+	wchar_t *wide NB_CLEANUP(wide_cleanup) = NULL;
 	char *utf8;
 	int bytes;
 
@@ -254,19 +252,19 @@ static char *full_path(struct environment_collector *collector, const char *path
 
 static char *join_path(struct environment_collector *collector, const char *base, const char *name)
 {
-	morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc;
 
 	if (!base)
 		return NULL;
-	rc = morph_buf_init(&buf, 128);
+	rc = (nb_buf_init(&buf), nb_buf_reserve(&buf, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_printf(&buf, "%s/%s", base, name);
+		rc = (nb_buf_printf(&buf, "%s/%s", base, name) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
 		collector->error = (rc);
 		return NULL;
 	}
-	return morph_buf_detach(&buf);
+	return (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
 }
 
 /* 0: absent, 1: file, 2: directory, -1: unavailable or unsupported. */
@@ -275,7 +273,7 @@ static int path_kind(struct environment_collector *collector, const char *path)
 	if (!path)
 		return -1;
 #ifdef _WIN32
-	wchar_t *wide MORPH_CLEANUP(wide_cleanup) = wide_path(collector, path);
+	wchar_t *wide NB_CLEANUP(wide_cleanup) = wide_path(collector, path);
 	DWORD attributes = wide ? GetFileAttributesW(wide) : INVALID_FILE_ATTRIBUTES;
 
 	if (attributes == INVALID_FILE_ATTRIBUTES)
@@ -300,7 +298,7 @@ static char *read_metadata(struct environment_collector *collector, const char *
 #ifdef _WIN32
 	if (path_kind(collector, path) != 1)
 		return NULL;
-	wchar_t *wide MORPH_CLEANUP(wide_cleanup) = wide_path(collector, path);
+	wchar_t *wide NB_CLEANUP(wide_cleanup) = wide_path(collector, path);
 	FILE *file = wide ? _wfopen(wide, L"rb") : NULL;
 	struct _stat info;
 
@@ -352,7 +350,7 @@ static int is_absolute(const char *path)
 
 static void collect_git(struct environment_context *out, struct environment_collector *collector)
 {
-	char *dir MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *dir NB_CLEANUP(nb_charp_cleanup) = NULL;
 #ifndef _WIN32
 	struct stat origin;
 #endif
@@ -368,11 +366,11 @@ static void collect_git(struct environment_context *out, struct environment_coll
 #endif
 	dir = copy_value(collector, out->cwd);
 	while (dir && *dir) {
-		char *dotgit MORPH_CLEANUP(morph_charp_cleanup) = join_path(collector, dir, ".git");
-		char *link MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-		char *resolved MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-		char *head_path MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-		char *head MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+		char *dotgit NB_CLEANUP(nb_charp_cleanup) = join_path(collector, dir, ".git");
+		char *link NB_CLEANUP(nb_charp_cleanup) = NULL;
+		char *resolved NB_CLEANUP(nb_charp_cleanup) = NULL;
+		char *head_path NB_CLEANUP(nb_charp_cleanup) = NULL;
+		char *head NB_CLEANUP(nb_charp_cleanup) = NULL;
 		const char *gitdir = dotgit;
 		char *slash;
 		int kind;
@@ -398,19 +396,19 @@ static void collect_git(struct environment_context *out, struct environment_coll
 			return;
 		head = read_metadata(collector, head_path);
 		if (head && !strchr(head, '\n') && !strchr(head, '\r')) {
-			char *common_path MORPH_CLEANUP(morph_charp_cleanup) =
+			char *common_path NB_CLEANUP(nb_charp_cleanup) =
 				join_path(collector, gitdir, "commondir");
-			char *common MORPH_CLEANUP(morph_charp_cleanup) =
+			char *common NB_CLEANUP(nb_charp_cleanup) =
 				common_path ? read_metadata(collector, common_path) : NULL;
-			char *common_base MORPH_CLEANUP(morph_charp_cleanup) =
+			char *common_base NB_CLEANUP(nb_charp_cleanup) =
 				common && !is_absolute(common)
 					? join_path(collector, gitdir, common)
 					: NULL;
 			const char *base =
 				common ? (is_absolute(common) ? common : common_base) : gitdir;
-			char *objects MORPH_CLEANUP(morph_charp_cleanup) =
+			char *objects NB_CLEANUP(nb_charp_cleanup) =
 				join_path(collector, base, "objects");
-			char *refs MORPH_CLEANUP(morph_charp_cleanup) =
+			char *refs NB_CLEANUP(nb_charp_cleanup) =
 				join_path(collector, base, "refs");
 
 			if (path_kind(collector, objects) != 2 || path_kind(collector, refs) != 2)
@@ -473,7 +471,7 @@ static char *timezone_identity(struct environment_collector *collector)
 		name = strstr(tz, "/zoneinfo/");
 		name = name ? name + strlen("/zoneinfo/") : tz;
 #ifndef _WIN32
-		char *zone_path MORPH_CLEANUP(morph_charp_cleanup) =
+		char *zone_path NB_CLEANUP(nb_charp_cleanup) =
 			join_path(collector, "/usr/share/zoneinfo", name);
 		if (iana_name(name) && path_kind(collector, zone_path) == 1)
 			return copy_value(collector, name);
@@ -510,10 +508,10 @@ int environment_context_create(struct environment_context *out,
 	int have_local;
 
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (out->cwd || out->shell || out->os || out->arch || out->current_date || out->timezone ||
 	    out->git_branch || out->git_root || out->sandbox)
-		return -EALREADY;
+		return NB_ERR_STATE;
 	memset(out, 0, sizeof(*out));
 	out->cwd = full_path(collector, input ? input->cwd : NULL);
 	if (out->cwd && path_kind(collector, out->cwd) != 2) {
@@ -564,15 +562,18 @@ int environment_context_create(struct environment_context *out,
 	out->timezone = timezone_identity(collector);
 	if (!out->timezone && have_local &&
 	    strftime(offset, sizeof(offset), "%z", &local) == 5) {
-		morph_buf_t buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
-		int rc = morph_buf_init(&buf, ENV_OFFSET_CAP);
+		nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
+		int rc = (nb_buf_init(&buf),
+			  nb_buf_reserve(&buf, ENV_OFFSET_CAP) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_printf(&buf, "UTC%.3s:%.2s", offset, offset + 3);
+			rc = (nb_buf_printf(&buf, "UTC%.3s:%.2s", offset, offset + 3)
+				      ? 0
+				      : NB_ERR_NOMEM);
 		if (rc != 0) {
 			environment_context_cleanup(out);
 			return rc;
 		}
-		out->timezone = morph_buf_detach(&buf);
+		out->timezone = (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
 	}
 	collect_git(out, collector);
 	if (collector->error) {

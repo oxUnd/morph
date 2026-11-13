@@ -1,10 +1,13 @@
 #include "sandbox.h"
-#include "util/array.h"
-#include "util/cleanup.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/log.h"
+#include "permission/trusted_paths.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "nb/log.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -22,12 +25,14 @@ void sandbox_path_set_cleanup(struct sandbox_path_set *paths)
 {
 	if (!paths)
 		return;
-	morph_array_t *arrays[] = {&paths->read, &paths->write, &paths->remove};
+	nb_vec *arrays[] = {&paths->read, &paths->write, &paths->remove};
 	for (size_t i = 0; i < sizeof(arrays) / sizeof(arrays[0]); i++) {
 		char **path;
-		morph_array_foreach (path, arrays[i], char *)
+		for (size_t _i_ = 0;
+		     _i_ < nb_vec_len(arrays[i]) && (path = (char **)nb_vec_at(arrays[i], _i_));
+		     _i_++)
 			free(*path);
-		morph_array_cleanup(arrays[i]);
+		nb_vec_cleanup(arrays[i]);
 	}
 }
 
@@ -38,12 +43,12 @@ void sandbox_config_paths_move(struct sandbox_config *config, struct sandbox_pat
 	sandbox_path_set_cleanup(&config->owned_paths);
 	config->owned_paths = *paths;
 	memset(paths, 0, sizeof(*paths));
-	config->read_paths = config->owned_paths.read.elts;
-	config->read_paths_count = (int)config->owned_paths.read.nelts;
-	config->write_paths = config->owned_paths.write.elts;
-	config->write_paths_count = (int)config->owned_paths.write.nelts;
-	config->delete_paths = config->owned_paths.remove.elts;
-	config->delete_paths_count = (int)config->owned_paths.remove.nelts;
+	config->read_paths = ((void *)config->owned_paths.read.data);
+	config->read_paths_count = (int)config->owned_paths.read.len;
+	config->write_paths = ((void *)config->owned_paths.write.data);
+	config->write_paths_count = (int)config->owned_paths.write.len;
+	config->delete_paths = ((void *)config->owned_paths.remove.data);
+	config->delete_paths_count = (int)config->owned_paths.remove.len;
 }
 
 void sandbox_config_cleanup(struct sandbox_config *config)
@@ -51,10 +56,24 @@ void sandbox_config_cleanup(struct sandbox_config *config)
 	if (!config)
 		return;
 	sandbox_path_set_cleanup(&config->owned_paths);
+	permission_temporary_paths_cleanup(&config->temporary_paths);
 	memset(config, 0, sizeof(*config));
 }
 
-int sandbox_apply_rlimits(struct morph_log *logger, unsigned int permissions, int max_memory_mb,
+int sandbox_prepare_temporary_paths(struct sandbox_config *config, const char *temp_dir)
+{
+	if (!config)
+		return NB_ERR_INVAL;
+	if (config->temporary_paths_ready)
+		return NB_OK;
+	int rc = permission_temporary_paths_collect(
+		&config->temporary_paths, temp_dir ? temp_dir : getenv("TMPDIR"), getenv("HOME"));
+	if (rc == NB_OK)
+		config->temporary_paths_ready = 1;
+	return rc;
+}
+
+int sandbox_apply_rlimits(struct nb_log *logger, unsigned int permissions, int max_memory_mb,
 			  int max_cpu_seconds, int max_file_size_mb, int max_processes,
 			  int max_open_files)
 {
@@ -74,23 +93,27 @@ int sandbox_apply_rlimits(struct morph_log *logger, unsigned int permissions, in
 			rl.rlim_max = (rlim_t)max_memory_mb * 1024 * 1024;
 #ifdef RLIMIT_AS
 			if (setrlimit(RLIMIT_AS, &rl) != 0) {
-				log_warn(logger, "sandbox: setrlimit RLIMIT_AS failed: %s",
-					 strerror(errno));
+				nb_log_write(logger, NB_LOG_WARN,
+					     "sandbox: setrlimit RLIMIT_AS failed: %s",
+					     strerror(errno));
 			} else {
-				log_info(logger, "sandbox: RLIMIT_AS set to %dMB", max_memory_mb);
+				nb_log_write(logger, NB_LOG_INFO, "sandbox: RLIMIT_AS set to %dMB",
+					     max_memory_mb);
 			}
 #else
-			log_info(logger, "sandbox: RLIMIT_AS not available on this OS");
+			nb_log_write(logger, NB_LOG_INFO,
+				     "sandbox: RLIMIT_AS not available on this OS");
 #endif
 		} else {
-			log_info(logger, "sandbox: RLIMIT_AS skipped (EXT_PERM_EXEC set)");
+			nb_log_write(logger, NB_LOG_INFO,
+				     "sandbox: RLIMIT_AS skipped (EXT_PERM_EXEC set)");
 		}
 #ifdef RLIMIT_DATA
 		rl.rlim_cur = (rlim_t)max_memory_mb * 1024 * 1024;
 		rl.rlim_max = (rlim_t)max_memory_mb * 1024 * 1024;
 		if (setrlimit(RLIMIT_DATA, &rl) != 0) {
-			log_warn(logger, "sandbox: setrlimit RLIMIT_DATA failed: %s",
-				 strerror(errno));
+			nb_log_write(logger, NB_LOG_WARN,
+				     "sandbox: setrlimit RLIMIT_DATA failed: %s", strerror(errno));
 		}
 #endif
 	}
@@ -99,10 +122,11 @@ int sandbox_apply_rlimits(struct morph_log *logger, unsigned int permissions, in
 		rl.rlim_cur = (rlim_t)max_cpu_seconds;
 		rl.rlim_max = (rlim_t)max_cpu_seconds + 1;
 		if (setrlimit(RLIMIT_CPU, &rl) != 0) {
-			log_warn(logger, "sandbox: setrlimit RLIMIT_CPU failed: %s",
-				 strerror(errno));
+			nb_log_write(logger, NB_LOG_WARN,
+				     "sandbox: setrlimit RLIMIT_CPU failed: %s", strerror(errno));
 		} else {
-			log_info(logger, "sandbox: RLIMIT_CPU set to %ds", max_cpu_seconds);
+			nb_log_write(logger, NB_LOG_INFO, "sandbox: RLIMIT_CPU set to %ds",
+				     max_cpu_seconds);
 		}
 	}
 
@@ -110,10 +134,11 @@ int sandbox_apply_rlimits(struct morph_log *logger, unsigned int permissions, in
 		rl.rlim_cur = (rlim_t)max_file_size_mb * 1024 * 1024;
 		rl.rlim_max = (rlim_t)max_file_size_mb * 1024 * 1024;
 		if (setrlimit(RLIMIT_FSIZE, &rl) != 0) {
-			log_warn(logger, "sandbox: setrlimit RLIMIT_FSIZE failed: %s",
-				 strerror(errno));
+			nb_log_write(logger, NB_LOG_WARN,
+				     "sandbox: setrlimit RLIMIT_FSIZE failed: %s", strerror(errno));
 		} else {
-			log_info(logger, "sandbox: RLIMIT_FSIZE set to %dMB", max_file_size_mb);
+			nb_log_write(logger, NB_LOG_INFO, "sandbox: RLIMIT_FSIZE set to %dMB",
+				     max_file_size_mb);
 		}
 	}
 
@@ -122,10 +147,11 @@ int sandbox_apply_rlimits(struct morph_log *logger, unsigned int permissions, in
 		rl.rlim_cur = (rlim_t)max_processes;
 		rl.rlim_max = (rlim_t)max_processes;
 		if (setrlimit(RLIMIT_NPROC, &rl) != 0) {
-			log_warn(logger, "sandbox: setrlimit RLIMIT_NPROC failed: %s",
-				 strerror(errno));
+			nb_log_write(logger, NB_LOG_WARN,
+				     "sandbox: setrlimit RLIMIT_NPROC failed: %s", strerror(errno));
 		} else {
-			log_info(logger, "sandbox: RLIMIT_NPROC set to %d", max_processes);
+			nb_log_write(logger, NB_LOG_INFO, "sandbox: RLIMIT_NPROC set to %d",
+				     max_processes);
 		}
 	}
 #else
@@ -135,17 +161,19 @@ int sandbox_apply_rlimits(struct morph_log *logger, unsigned int permissions, in
 	rl.rlim_cur = max_open_files > 0 ? (rlim_t)max_open_files : 1024;
 	rl.rlim_max = max_open_files > 0 ? (rlim_t)max_open_files : 1024;
 	if (setrlimit(RLIMIT_NOFILE, &rl) != 0) {
-		log_warn(logger, "sandbox: setrlimit RLIMIT_NOFILE failed: %s", strerror(errno));
+		nb_log_write(logger, NB_LOG_WARN, "sandbox: setrlimit RLIMIT_NOFILE failed: %s",
+			     strerror(errno));
 	} else {
-		log_info(logger, "sandbox: RLIMIT_NOFILE set to %d",
-			 max_open_files > 0 ? max_open_files : 1024);
+		nb_log_write(logger, NB_LOG_INFO, "sandbox: RLIMIT_NOFILE set to %d",
+			     max_open_files > 0 ? max_open_files : 1024);
 	}
 
 	/* Disable core dumps to avoid leaking sensitive memory */
 	rl.rlim_cur = 0;
 	rl.rlim_max = 0;
 	if (setrlimit(RLIMIT_CORE, &rl) != 0) {
-		log_warn(logger, "sandbox: setrlimit RLIMIT_CORE failed: %s", strerror(errno));
+		nb_log_write(logger, NB_LOG_WARN, "sandbox: setrlimit RLIMIT_CORE failed: %s",
+			     strerror(errno));
 	}
 
 	(void)permissions;
@@ -191,13 +219,13 @@ static int env_in_allow_list(const char *name,
 	return 0;
 }
 
-int sandbox_apply_env(struct morph_log *logger, const char *const *allowed_env, int count,
+int sandbox_apply_env(struct nb_log *logger, const char *const *allowed_env, int count,
 		      unsigned int permissions)
 {
 	/* If ENV permission is set with no explicit allow list, leave
 	 * the environment untouched — the caller has opted in. */
 	if ((permissions & EXT_PERM_ENV) && (count <= 0 || !allowed_env)) {
-		log_info(logger, "sandbox: env unrestricted (EXT_PERM_ENV set)");
+		nb_log_write(logger, NB_LOG_INFO, "sandbox: env unrestricted (EXT_PERM_ENV set)");
 		return 0;
 	}
 
@@ -212,7 +240,7 @@ int sandbox_apply_env(struct morph_log *logger, const char *const *allowed_env, 
 
 	char **names = calloc((size_t)env_count, sizeof(char *));
 	if (!names)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 
 	int n_names = 0;
 	for (int i = 0; i < env_count; i++) {
@@ -244,32 +272,14 @@ int sandbox_apply_env(struct morph_log *logger, const char *const *allowed_env, 
 	}
 	free(names);
 
-	log_info(logger, "sandbox: env filtered (%d vars removed, %d allowed)", removed, count);
+	nb_log_write(logger, NB_LOG_INFO, "sandbox: env filtered (%d vars removed, %d allowed)",
+		     removed, count);
 	return 0;
 }
 
 /* ────────────────────────────────────────────────────────────────
  * Filesystem path restrictions
  * ──────────────────────────────────────────────────────────────── */
-
-#if defined(__linux__) || defined(__APPLE__)
-static int sandbox_resolve_custom_temp(char *resolved)
-{
-	const char *temp = getenv("TMPDIR");
-	const char *home = getenv("HOME");
-	char resolved_home[PATH_MAX];
-	struct stat st;
-
-	if (!temp || temp[0] != '/' || !realpath(temp, resolved) ||
-	    strcmp(resolved, "/") == 0 || stat(resolved, &st) != 0 ||
-	    !S_ISDIR(st.st_mode))
-		return 0;
-	if (home && realpath(home, resolved_home) &&
-	    path_is_within(resolved_home, resolved))
-		return 0;
-	return 1;
-}
-#endif
 
 #ifdef __linux__
 
@@ -365,48 +375,34 @@ static int sandbox_add_landlock_pty(int ruleset_fd, uint64_t access)
 		if (fd < 0) {
 			if (errno == ENOENT)
 				continue;
-			return morph_error_from_errno(errno);
+			return nb_status_from_errno(errno, NULL);
 		}
 		if (ll_add_rule(ruleset_fd, fd, access) < 0) {
 			int err = errno;
 
 			close(fd);
-			return -err;
+			return nb_status_from_errno(err, NULL);
 		}
 		close(fd);
 	}
 	return 0;
 }
 
-static int sandbox_add_landlock_temp(int ruleset_fd, uint64_t access)
+static int sandbox_add_landlock_temp(int ruleset_fd, uint64_t access,
+				     const struct permission_temporary_paths *paths)
 {
-	char custom[PATH_MAX];
-	const char *const paths[] = {
-		"/tmp", "/var/tmp",
-		sandbox_resolve_custom_temp(custom) ? custom : NULL, NULL
-	};
-
-	for (int i = 0; paths[i]; i++) {
-		int fd;
-
-		if (paths[i][0] != '/')
-			continue;
-		fd = open(paths[i], O_PATH | O_CLOEXEC);
-
-		if (fd < 0) {
-			if (errno == ENOENT)
-				continue;
-			return morph_error_from_errno(errno);
-		}
+	for (size_t i = 0; i < paths->count; i++) {
+		int fd = open(nb_buf_cstr(&paths->roots[i]), O_PATH | O_CLOEXEC);
+		if (fd < 0)
+			return nb_status_from_errno(errno, NULL);
 		if (ll_add_rule(ruleset_fd, fd, access) < 0) {
-			int err = errno;
-
+			int captured = errno;
 			close(fd);
-			return -err;
+			return nb_status_from_errno(captured, NULL);
 		}
 		close(fd);
 	}
-	return 0;
+	return NB_OK;
 }
 
 static int sandbox_add_landlock_ipc(int ruleset_fd, uint64_t access)
@@ -416,13 +412,13 @@ static int sandbox_add_landlock_ipc(int ruleset_fd, uint64_t access)
 	if (fd < 0) {
 		if (errno == ENOENT)
 			return 0;
-		return morph_error_from_errno(errno);
+		return nb_status_from_errno(errno, NULL);
 	}
 	if (ll_add_rule(ruleset_fd, fd, access) < 0) {
 		int err = errno;
 
 		close(fd);
-		return -err;
+		return nb_status_from_errno(err, NULL);
 	}
 	close(fd);
 	return 0;
@@ -447,21 +443,22 @@ static int sandbox_add_landlock_runtime_proc(int ruleset_fd, uint64_t access,
 		if (fd < 0) {
 			if (errno == ENOENT)
 				continue;
-			return morph_error_from_errno(errno);
+			return nb_status_from_errno(errno, NULL);
 		}
 		if (ll_add_rule(ruleset_fd, fd, access) < 0) {
 			int err = errno;
 
 			close(fd);
-			return -err;
+			return nb_status_from_errno(err, NULL);
 		}
 		close(fd);
 	}
 	return 0;
 }
 
-int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int count,
-		     unsigned int permissions)
+static int sandbox_apply_fs_paths(struct nb_log *logger, const char **allowed_paths, int count,
+				  unsigned int permissions,
+				  const struct permission_temporary_paths *temporary)
 {
 	int abi;
 	/*
@@ -473,12 +470,14 @@ int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int c
 	abi = ll_get_abi();
 	if (abi < 0) {
 		if (errno == EOPNOTSUPP || errno == ENOSYS) {
-			log_err(logger, "sandbox: landlock not supported by kernel");
-			return -ENOSYS;
+			nb_log_write(logger, NB_LOG_ERROR,
+				     "sandbox: landlock not supported by kernel");
+			return NB_ERR_UNSUPPORTED;
 		}
 		int err = errno;
-		log_err(logger, "sandbox: landlock probe failed: %s", strerror(err));
-		return -err;
+		nb_log_write(logger, NB_LOG_ERROR, "sandbox: landlock probe failed: %s",
+			     strerror(err));
+		return nb_status_from_errno(err, NULL);
 	}
 
 	/*
@@ -548,8 +547,9 @@ int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int c
 	int ruleset_fd = ll_create_ruleset(handled);
 	if (ruleset_fd < 0) {
 		int err = errno;
-		log_err(logger, "sandbox: landlock create_ruleset failed: %s", strerror(err));
-		return -err;
+		nb_log_write(logger, NB_LOG_ERROR, "sandbox: landlock create_ruleset failed: %s",
+			     strerror(err));
+		return nb_status_from_errno(err, NULL);
 	}
 
 	/*
@@ -566,20 +566,22 @@ int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int c
 			continue;
 		int fd = open(allowed_paths[i], O_PATH | O_CLOEXEC);
 		if (fd < 0) {
-			log_warn(logger, "sandbox: landlock: cannot open path '%s': %s",
-				 allowed_paths[i], strerror(errno));
+			nb_log_write(logger, NB_LOG_WARN,
+				     "sandbox: landlock: cannot open path '%s': %s",
+				     allowed_paths[i], strerror(errno));
 			continue;
 		}
 		if (ll_add_rule(ruleset_fd, fd, path_access) < 0) {
-			log_warn(logger, "sandbox: landlock: add_rule for '%s' failed: %s",
-				 allowed_paths[i], strerror(errno));
+			nb_log_write(logger, NB_LOG_WARN,
+				     "sandbox: landlock: add_rule for '%s' failed: %s",
+				     allowed_paths[i], strerror(errno));
 			close(fd);
 			continue;
 		}
-		log_info(logger,
-			 "sandbox: landlock: allowed path '%s' "
-			 "(access=0x%llx)",
-			 allowed_paths[i], (unsigned long long)path_access);
+		nb_log_write(logger, NB_LOG_INFO,
+			     "sandbox: landlock: allowed path '%s' "
+			     "(access=0x%llx)",
+			     allowed_paths[i], (unsigned long long)path_access);
 		close(fd);
 	}
 	if (permissions & EXT_PERM_PTY) {
@@ -596,13 +598,13 @@ int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int c
 			return pty_rc;
 		}
 		if (abi < 5)
-			log_warn(logger, "sandbox: Landlock ABI %d cannot scope PTY ioctl", abi);
+			nb_log_write(logger, NB_LOG_WARN,
+				     "sandbox: Landlock ABI %d cannot scope PTY ioctl", abi);
 	}
 	if (permissions & EXT_PERM_TEMP) {
 		uint64_t temp_access = handled &
 			(write_access | read_access);
-		int temp_rc = sandbox_add_landlock_temp(ruleset_fd,
-			temp_access);
+		int temp_rc = sandbox_add_landlock_temp(ruleset_fd, temp_access, temporary);
 
 		if (temp_rc != 0) {
 			close(ruleset_fd);
@@ -628,14 +630,14 @@ int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int c
 			int err = errno;
 
 			close(ruleset_fd);
-			return -err;
+			return nb_status_from_errno(err, NULL);
 		}
 		if (ll_add_rule(ruleset_fd, fd, dev_null_access) < 0) {
 			int err = errno;
 
 			close(fd);
 			close(ruleset_fd);
-			return -err;
+			return nb_status_from_errno(err, NULL);
 		}
 		close(fd);
 	}
@@ -668,15 +670,15 @@ int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int c
 			if (fd < 0)
 				continue;
 			if (ll_add_rule(ruleset_fd, fd, read_access) < 0) {
-				log_warn(logger,
-					 "sandbox: landlock: system path "
-					 "'%s' add_rule failed: %s",
-					 sys_paths[i], strerror(errno));
+				nb_log_write(logger, NB_LOG_WARN,
+					     "sandbox: landlock: system path "
+					     "'%s' add_rule failed: %s",
+					     sys_paths[i], strerror(errno));
 			} else {
-				log_info(logger,
-					 "sandbox: landlock: system path "
-					 "'%s' (read+exec)",
-					 sys_paths[i]);
+				nb_log_write(logger, NB_LOG_INFO,
+					     "sandbox: landlock: system path "
+					     "'%s' (read+exec)",
+					     sys_paths[i]);
 			}
 			close(fd);
 		}
@@ -697,27 +699,40 @@ int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int c
 	 */
 	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
 		int err = errno;
-		log_err(logger, "sandbox: landlock: PR_SET_NO_NEW_PRIVS failed: %s", strerror(err));
+		nb_log_write(logger, NB_LOG_ERROR,
+			     "sandbox: landlock: PR_SET_NO_NEW_PRIVS failed: %s", strerror(err));
 		close(ruleset_fd);
-		return -err;
+		return nb_status_from_errno(err, NULL);
 	}
 
 	if (ll_restrict_self(ruleset_fd) < 0) {
 		int err = errno;
-		log_err(logger, "sandbox: landlock: restrict_self failed: %s", strerror(err));
+		nb_log_write(logger, NB_LOG_ERROR, "sandbox: landlock: restrict_self failed: %s",
+			     strerror(err));
 		close(ruleset_fd);
-		return -err;
+		return nb_status_from_errno(err, NULL);
 	}
 
 	close(ruleset_fd);
-	log_info(logger,
-		 "sandbox: landlock fs restrictions applied "
-		 "(perms=0x%x, %d allowed paths)",
-		 permissions, count);
+	nb_log_write(logger, NB_LOG_INFO,
+		     "sandbox: landlock fs restrictions applied "
+		     "(perms=0x%x, %d allowed paths)",
+		     permissions, count);
 	return 0;
 }
 
-static int sandbox_add_landlock_paths(struct morph_log *logger, int ruleset_fd, char **paths,
+int sandbox_apply_fs(struct nb_log *logger, const char **allowed_paths, int count,
+		     unsigned int permissions)
+{
+	struct permission_temporary_paths temporary NB_CLEANUP(
+		permission_temporary_paths_cleanup) = {0};
+	int rc = permission_temporary_paths_collect(&temporary, getenv("TMPDIR"), getenv("HOME"));
+	if (rc != NB_OK)
+		return rc;
+	return sandbox_apply_fs_paths(logger, allowed_paths, count, permissions, &temporary);
+}
+
+static int sandbox_add_landlock_paths(struct nb_log *logger, int ruleset_fd, char **paths,
 				      int count, uint64_t access)
 {
 	for (int i = 0; i < count; i++) {
@@ -732,13 +747,14 @@ static int sandbox_add_landlock_paths(struct morph_log *logger, int ruleset_fd, 
 			 * exist on this host; skipping one must not
 			 * disable the whole sandbox.
 			 */
-			log_warn(logger, "sandbox: skipping policy path '%s': %s", paths[i],
-				 strerror(errno));
+			nb_log_write(logger, NB_LOG_WARN, "sandbox: skipping policy path '%s': %s",
+				     paths[i], strerror(errno));
 			continue;
 		}
 		if (ll_add_rule(ruleset_fd, fd, access) < 0) {
-			log_warn(logger, "sandbox: cannot add policy path '%s': %s", paths[i],
-				 strerror(errno));
+			nb_log_write(logger, NB_LOG_WARN,
+				     "sandbox: cannot add policy path '%s': %s", paths[i],
+				     strerror(errno));
 			close(fd);
 			continue;
 		}
@@ -769,12 +785,12 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 	int rc;
 
 	if (!cfg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	abi = ll_get_abi();
 	if (abi < 0) {
 		if (errno == EOPNOTSUPP || errno == ENOSYS)
-			return -ENOSYS;
-		return morph_error_from_errno(errno);
+			return NB_ERR_UNSUPPORTED;
+		return nb_status_from_errno(errno, NULL);
 	}
 	if (abi < 2)
 		delete_access &= ~LANDLOCK_ACCESS_FS_REFER;
@@ -787,7 +803,7 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 		handled |= LANDLOCK_ACCESS_FS_IOCTL_DEV;
 	ruleset_fd = ll_create_ruleset(handled);
 	if (ruleset_fd < 0)
-		return morph_error_from_errno(errno);
+		return nb_status_from_errno(errno, NULL);
 	if (!cfg->read_all) {
 		rc = sandbox_add_landlock_paths(cfg->logger, ruleset_fd, cfg->read_paths,
 						cfg->read_paths_count, read_access);
@@ -837,14 +853,14 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 			pty_access |= LANDLOCK_ACCESS_FS_IOCTL_DEV;
 		rc = sandbox_add_landlock_pty(ruleset_fd, pty_access);
 		if (rc == 0 && abi < 5)
-			log_warn(cfg->logger, "sandbox: Landlock ABI %d cannot scope PTY ioctl",
-				 abi);
+			nb_log_write(cfg->logger, NB_LOG_WARN,
+				     "sandbox: Landlock ABI %d cannot scope PTY ioctl", abi);
 	}
 	if (rc == 0 && cfg->allow_temp) {
 		uint64_t temp_access = write_access | delete_access |
 			(handled & read_access);
 
-		rc = sandbox_add_landlock_temp(ruleset_fd, temp_access);
+		rc = sandbox_add_landlock_temp(ruleset_fd, temp_access, &cfg->temporary_paths);
 	}
 	if (rc == 0 && cfg->allow_ipc) {
 		uint64_t ipc_access = write_access | delete_access |
@@ -860,13 +876,13 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 		int err = errno;
 
 		close(ruleset_fd);
-		return -err;
+		return nb_status_from_errno(err, NULL);
 	}
 	if (ll_restrict_self(ruleset_fd) < 0) {
 		int err = errno;
 
 		close(ruleset_fd);
-		return -err;
+		return nb_status_from_errno(err, NULL);
 	}
 	close(ruleset_fd);
 	return 0;
@@ -897,65 +913,45 @@ extern void sandbox_free_error(char *errorbuf);
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
-static int sandbox_sbpl_subpath(morph_buf_t *profile, const char *path)
+static int sandbox_sbpl_subpath(nb_buf *profile, const char *path)
 {
 	int rc;
 
 	if (!profile || !path)
-		return -EINVAL;
-	rc = morph_buf_puts(profile, "(subpath \"");
+		return NB_ERR_INVAL;
+	rc = (nb_buf_append_cstr(profile, "(subpath \"") ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	for (const unsigned char *p = (const unsigned char *)path; *p; p++) {
 		if (*p < 0x20 || *p == 0x7f)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		if (*p == '\\' || *p == '"')
-			rc = morph_buf_putc(profile, '\\');
+			rc = (nb_buf_append_char(profile, '\\') ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
-			rc = morph_buf_putc(profile, (char)*p);
+			rc = (nb_buf_append_char(profile, (char)*p) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
-	return morph_buf_puts(profile, "\")");
+	return (nb_buf_append_cstr(profile, "\")") ? 0 : NB_ERR_NOMEM);
 }
 
-static int sandbox_sbpl_path_rule(morph_buf_t *profile, const char *operations,
-				  const char *path)
+static int sandbox_sbpl_path_rule(nb_buf *profile, const char *operations, const char *path)
 {
 	if (!profile || !operations || !path)
-		return -EINVAL;
-	int rc = morph_buf_printf(profile, "(allow %s ", operations);
+		return NB_ERR_INVAL;
+	int rc = (nb_buf_printf(profile, "(allow %s ", operations) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = sandbox_sbpl_subpath(profile, path);
-	return rc == 0 ? morph_buf_puts(profile, ")\n") : rc;
+	return rc == 0 ? (nb_buf_append_cstr(profile, ")\n") ? 0 : NB_ERR_NOMEM) : rc;
 }
 
-static int sandbox_sbpl_darwin_user_dir(morph_buf_t *profile, int name)
+static int sandbox_sbpl_base(nb_buf *profile)
 {
-	char path[PATH_MAX];
-	char resolved[PATH_MAX];
-	size_t length;
-	int rc;
-
-	length = confstr(name, path, sizeof(path));
-	if (length == 0)
-		return 0;
-	if (length > sizeof(path))
-		return -ENAMETOOLONG;
-	if (!realpath(path, resolved))
-		return morph_error_from_errno(errno);
-	rc = sandbox_sbpl_path_rule(profile, "file-read*", resolved);
-	if (rc != 0)
-		return rc;
-	return sandbox_sbpl_path_rule(profile, "file-write*", resolved);
-}
-
-static int sandbox_sbpl_base(morph_buf_t *profile)
-{
-	return morph_buf_puts(profile,
-		"(version 1)\n"
-		"(deny default)\n"
-		"(allow file-read-metadata)\n");
+	return (nb_buf_append_cstr(profile, "(version 1)\n"
+					    "(deny default)\n"
+					    "(allow file-read-metadata)\n")
+			? 0
+			: NB_ERR_NOMEM);
 }
 
 /*
@@ -968,8 +964,7 @@ static int sandbox_sbpl_base(morph_buf_t *profile)
  * The actual security boundary remains filesystem data/write access and
  * network access, which are emitted separately from this runtime policy.
  */
-static int sandbox_sbpl_runtime(morph_buf_t *profile,
-				const struct sandbox_config *cfg)
+static int sandbox_sbpl_runtime(nb_buf *profile, const struct sandbox_config *cfg)
 {
 	static const char *const runtime_read_paths[] = {
 		"/Applications",
@@ -987,43 +982,46 @@ static int sandbox_sbpl_runtime(morph_buf_t *profile,
 	};
 	int rc;
 
-	rc = morph_buf_puts(profile,
-		"(allow process-exec)\n"
-		"(allow process-fork)\n"
-		"(allow signal (target same-sandbox))\n"
-		"(allow process-info*)\n"
-		"(allow mach-lookup)\n"
-		"(allow mach-register)\n"
-		"(allow ipc-posix-sem)\n"
-		"(allow ipc-posix-shm-read* ipc-posix-shm-write*)\n"
-		"(allow sysctl-read)\n"
-		"(allow pseudo-tty)\n"
-		"(allow file-read* file-write* file-ioctl "
-		"(literal \"/dev/null\"))\n"
-		"(allow file-read* file-write* file-ioctl "
-		"(literal \"/dev/zero\"))\n"
-		"(allow file-read* (literal \"/dev/random\"))\n"
-		"(allow file-read* (literal \"/dev/urandom\"))\n"
-		"(allow file-read* file-write* file-ioctl "
-		"(literal \"/dev/ptmx\"))\n"
-		"(allow file-read* file-write*\n"
-		"  (require-all (regex #\"^/dev/ttys[0-9]+\")\n"
-		"    (extension \"com.apple.sandbox.pty\")))\n"
-		"(allow file-ioctl (regex #\"^/dev/ttys[0-9]+\"))\n"
-		"(allow iokit-open\n"
-		"  (iokit-registry-entry-class \"RootDomainUserClient\"))\n");
+	rc = (nb_buf_append_cstr(profile,
+				 "(allow process-exec)\n"
+				 "(allow process-fork)\n"
+				 "(allow signal (target same-sandbox))\n"
+				 "(allow process-info*)\n"
+				 "(allow mach-lookup)\n"
+				 "(allow mach-register)\n"
+				 "(allow ipc-posix-sem)\n"
+				 "(allow ipc-posix-shm-read* ipc-posix-shm-write*)\n"
+				 "(allow sysctl-read)\n"
+				 "(allow pseudo-tty)\n"
+				 "(allow file-read* file-write* file-ioctl "
+				 "(literal \"/dev/null\"))\n"
+				 "(allow file-read* file-write* file-ioctl "
+				 "(literal \"/dev/zero\"))\n"
+				 "(allow file-read* (literal \"/dev/random\"))\n"
+				 "(allow file-read* (literal \"/dev/urandom\"))\n"
+				 "(allow file-read* file-write* file-ioctl "
+				 "(literal \"/dev/ptmx\"))\n"
+				 "(allow file-read* file-write*\n"
+				 "  (require-all (regex #\"^/dev/ttys[0-9]+\")\n"
+				 "    (extension \"com.apple.sandbox.pty\")))\n"
+				 "(allow file-ioctl (regex #\"^/dev/ttys[0-9]+\"))\n"
+				 "(allow iokit-open\n"
+				 "  (iokit-registry-entry-class \"RootDomainUserClient\"))\n")
+		      ? 0
+		      : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 
 	/* GPU/IOSurface, simulator IPC and cross-session process control. */
 	if (cfg->development_runtime) {
-		rc = morph_buf_puts(profile,
-			"(allow iokit*)\n"
-			"(allow ipc-sysv*)\n"
-			"(allow signal)\n"
-			"(allow file-ioctl)\n"
-			"(allow user-preference*)\n"
-			"(allow distributed-notification-post)\n");
+		rc = (nb_buf_append_cstr(profile, "(allow iokit*)\n"
+						  "(allow ipc-sysv*)\n"
+						  "(allow signal)\n"
+						  "(allow file-ioctl)\n"
+						  "(allow user-preference*)\n"
+						  "(allow distributed-notification-post)\n")
+			      ? 0
+			      : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
@@ -1038,29 +1036,17 @@ static int sandbox_sbpl_runtime(morph_buf_t *profile,
 	return 0;
 }
 
-static int sandbox_sbpl_temp(morph_buf_t *profile)
+static int sandbox_sbpl_temp(nb_buf *profile, const struct permission_temporary_paths *paths)
 {
-	char resolved[PATH_MAX];
-	int rc;
-
-	if (sandbox_resolve_custom_temp(resolved)) {
-		rc = sandbox_sbpl_path_rule(profile, "file-read* file-write*", resolved);
-		if (rc != 0)
-			return rc;
-	}
-	rc = sandbox_sbpl_darwin_user_dir(profile, _CS_DARWIN_USER_TEMP_DIR);
-	if (rc != 0)
-		return rc;
-
-	rc = sandbox_sbpl_path_rule(profile, "file-read* file-write*", "/private/var/tmp");
-	if (rc != 0)
-		return rc;
-
-	return sandbox_sbpl_path_rule(profile, "file-read* file-write*", "/private/tmp");
+	int rc = NB_OK;
+	for (size_t i = 0; rc == NB_OK && i < paths->count; i++)
+		rc = sandbox_sbpl_path_rule(profile, "file-read* file-write*",
+					    nb_buf_cstr(&paths->roots[i]));
+	return rc;
 }
 
-static int sandbox_sbpl_write_rule(morph_buf_t *profile, const struct sandbox_config *cfg,
-				    const char *path)
+static int sandbox_sbpl_write_rule(nb_buf *profile, const struct sandbox_config *cfg,
+				   const char *path)
 {
 	/* Modern utimensat/futimens need the aggregate write operation. Keep
 	 * unlink separate by excluding every authorized delete scope from its deny. */
@@ -1069,37 +1055,31 @@ static int sandbox_sbpl_write_rule(morph_buf_t *profile, const struct sandbox_co
 		delete_scopes += cfg->delete_paths && cfg->delete_paths[i];
 	int rc = sandbox_sbpl_path_rule(profile, "file-write*", path);
 	if (rc == 0)
-		rc = morph_buf_puts(profile, delete_scopes
-			? "(deny file-write-unlink (require-all " : "(deny file-write-unlink ");
+		rc = (nb_buf_append_cstr(profile, delete_scopes
+							  ? "(deny file-write-unlink (require-all "
+							  : "(deny file-write-unlink ")
+			      ? 0
+			      : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = sandbox_sbpl_subpath(profile, path);
 	if (rc != 0 || !delete_scopes)
-		return rc == 0 ? morph_buf_puts(profile, ")\n") : rc;
+		return rc == 0 ? (nb_buf_append_cstr(profile, ")\n") ? 0 : NB_ERR_NOMEM) : rc;
 	if (rc == 0)
-		rc = morph_buf_puts(profile, " (require-not (require-any ");
+		rc = (nb_buf_append_cstr(profile, " (require-not (require-any ") ? 0
+										 : NB_ERR_NOMEM);
 	for (int i = 0; rc == 0 && i < cfg->delete_paths_count; i++) {
 		if (cfg->delete_paths && cfg->delete_paths[i])
 			rc = sandbox_sbpl_subpath(profile, cfg->delete_paths[i]);
 	}
-	if (rc == 0 && cfg->allow_temp) {
-		char resolved[PATH_MAX];
-		char temp[PATH_MAX];
-		if (sandbox_resolve_custom_temp(resolved))
-			rc = sandbox_sbpl_subpath(profile, resolved);
-		size_t length = confstr(_CS_DARWIN_USER_TEMP_DIR, temp, sizeof(temp));
-		if (rc == 0 && length > sizeof(temp))
-			rc = -ENAMETOOLONG;
-		if (rc == 0 && length && realpath(temp, resolved))
-			rc = sandbox_sbpl_subpath(profile, resolved);
-		if (rc == 0)
-			rc = morph_buf_puts(profile, "(subpath \"/private/tmp\")"
-					     "(subpath \"/private/var/tmp\")");
+	if (rc == NB_OK && cfg->allow_temp) {
+		for (size_t i = 0; rc == NB_OK && i < cfg->temporary_paths.count; i++)
+			rc = sandbox_sbpl_subpath(profile,
+						  nb_buf_cstr(&cfg->temporary_paths.roots[i]));
 	}
-	return rc == 0 ? morph_buf_puts(profile, "))))\n") : rc;
+	return rc == 0 ? (nb_buf_append_cstr(profile, "))))\n") ? 0 : NB_ERR_NOMEM) : rc;
 }
 
-static int sandbox_sbpl_filesystem(morph_buf_t *profile,
-				   const struct sandbox_config *cfg)
+static int sandbox_sbpl_filesystem(nb_buf *profile, const struct sandbox_config *cfg)
 {
 	char **paths;
 	int count;
@@ -1109,14 +1089,15 @@ static int sandbox_sbpl_filesystem(morph_buf_t *profile,
 	 * Let runtimes traverse/probe the root without granting arbitrary file
 	 * contents.  The actual readable subtrees are emitted below.
 	 */
-	rc = morph_buf_puts(profile,
-		"(allow file-read-data (literal \"/\"))\n"
-		"(allow file-write-data (literal \"/dev/null\"))\n");
+	rc = (nb_buf_append_cstr(profile, "(allow file-read-data (literal \"/\"))\n"
+					  "(allow file-write-data (literal \"/dev/null\"))\n")
+		      ? 0
+		      : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 
 	if (cfg->path_policy_enabled && cfg->read_all) {
-		rc = morph_buf_puts(profile, "(allow file-read*)\n");
+		rc = (nb_buf_append_cstr(profile, "(allow file-read*)\n") ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	} else {
@@ -1137,7 +1118,7 @@ static int sandbox_sbpl_filesystem(morph_buf_t *profile,
 	if ((cfg->path_policy_enabled && cfg->allow_temp) ||
 	    (!cfg->path_policy_enabled &&
 	     (cfg->permissions & EXT_PERM_TEMP))) {
-		rc = sandbox_sbpl_temp(profile);
+		rc = sandbox_sbpl_temp(profile, &cfg->temporary_paths);
 		if (rc != 0)
 			return rc;
 	}
@@ -1177,11 +1158,10 @@ static int sandbox_sbpl_filesystem(morph_buf_t *profile,
 		return 0;
 	}
 
-	return morph_buf_puts(profile, "(allow file-write*)\n");
+	return (nb_buf_append_cstr(profile, "(allow file-write*)\n") ? 0 : NB_ERR_NOMEM);
 }
 
-static int sandbox_sbpl_network(morph_buf_t *profile,
-				const struct sandbox_config *cfg)
+static int sandbox_sbpl_network(nb_buf *profile, const struct sandbox_config *cfg)
 {
 	int network_access;
 
@@ -1190,10 +1170,10 @@ static int sandbox_sbpl_network(morph_buf_t *profile,
 	if (!network_access)
 		return 0;
 
-	return morph_buf_puts(profile, "(allow network*)\n");
+	return (nb_buf_append_cstr(profile, "(allow network*)\n") ? 0 : NB_ERR_NOMEM);
 }
 
-int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int count,
+int sandbox_apply_fs(struct nb_log *logger, const char **allowed_paths, int count,
 		     unsigned int permissions)
 {
 	/*
@@ -1205,23 +1185,27 @@ int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int c
 	(void)allowed_paths;
 	(void)count;
 	(void)permissions;
-	log_info(logger, "sandbox: macOS fs restrictions deferred to "
-			 "sandbox_enter_darwin (SBPL profile)");
+	nb_log_write(logger, NB_LOG_INFO,
+		     "sandbox: macOS fs restrictions deferred to "
+		     "sandbox_enter_darwin (SBPL profile)");
 	return 0;
 }
 
 int sandbox_enter_darwin(struct sandbox_config *cfg)
 {
-	morph_buf_t sbpl;
+	nb_buf sbpl NB_CLEANUP(nb_buf_cleanup) = {0};
 	char *profile;
 	char *errorbuf = NULL;
 	int rc;
 	int rv;
 
 	if (!cfg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
-	rc = morph_buf_init(&sbpl, 4096);
+	rc = sandbox_prepare_temporary_paths(cfg, NULL);
+	if (rc != NB_OK)
+		return rc;
+	rc = (nb_buf_init(&sbpl), nb_buf_reserve(&sbpl, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 
@@ -1233,31 +1217,33 @@ int sandbox_enter_darwin(struct sandbox_config *cfg)
 	if (rc == 0)
 		rc = sandbox_sbpl_network(&sbpl, cfg);
 
-	if (rc != 0 || sbpl.failed) {
-		morph_buf_cleanup(&sbpl);
-		return rc != 0 ? rc : -ENOMEM;
+	if (rc != 0 || nb_buf_status(&sbpl)) {
+		nb_buf_cleanup(&sbpl);
+		return rc != 0 ? rc : NB_ERR_NOMEM;
 	}
 
-	profile = morph_buf_detach(&sbpl);
+	profile = (nb_buf_ok(&sbpl) ? strdup(nb_buf_cstr(&sbpl)) : NULL);
 	if (!profile)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 
-	log_info(cfg ? cfg->logger : NULL, "sandbox: macOS SBPL profile:\n%s", profile);
+	nb_log_write(cfg ? cfg->logger : NULL, NB_LOG_INFO, "sandbox: macOS SBPL profile:\n%s",
+		     profile);
 	rv = sandbox_init(profile, 0, &errorbuf);
 	free(profile);
 
 	if (rv != 0) {
-		log_warn(cfg ? cfg->logger : NULL, "sandbox: sandbox_init failed: %s",
-			 errorbuf ? errorbuf : "unknown error");
+		nb_log_write(cfg ? cfg->logger : NULL, NB_LOG_WARN,
+			     "sandbox: sandbox_init failed: %s",
+			     errorbuf ? errorbuf : "unknown error");
 		if (errorbuf)
 			sandbox_free_error(errorbuf);
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	}
 
 	if (errorbuf)
 		sandbox_free_error(errorbuf);
 
-	log_info(cfg ? cfg->logger : NULL, "sandbox: macOS sandbox_init applied");
+	nb_log_write(cfg ? cfg->logger : NULL, NB_LOG_INFO, "sandbox: macOS sandbox_init applied");
 	return 0;
 }
 
@@ -1265,14 +1251,15 @@ int sandbox_enter_darwin(struct sandbox_config *cfg)
 
 #else /* Neither Linux nor macOS */
 
-int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int count,
+int sandbox_apply_fs(struct nb_log *logger, const char **allowed_paths, int count,
 		     unsigned int permissions)
 {
 	(void)allowed_paths;
 	(void)count;
 	(void)permissions;
-	log_info(logger, "sandbox: filesystem path restrictions not available "
-			 "on this platform");
+	nb_log_write(logger, NB_LOG_INFO,
+		     "sandbox: filesystem path restrictions not available "
+		     "on this platform");
 	return 0;
 }
 
@@ -1303,11 +1290,11 @@ int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int c
 #define SECCOMP_ARCH_NR AUDIT_ARCH_X86_64
 #endif
 
-static int fb_append(morph_array_t *fb, struct sock_filter insn)
+static int fb_append(nb_vec *fb, struct sock_filter insn)
 {
-	struct sock_filter *slot = morph_array_push_borrow(fb);
+	struct sock_filter *slot = nb_vec_push(fb);
 	if (!slot)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	*slot = insn;
 	return 0;
 }
@@ -1322,23 +1309,23 @@ static int fb_append(morph_array_t *fb, struct sock_filter insn)
  * EPERM so callers degrade gracefully instead of being killed.
  */
 
-static int fb_stmt(morph_array_t *fb, unsigned int code, unsigned int k)
+static int fb_stmt(nb_vec *fb, unsigned int code, unsigned int k)
 {
 	return fb_append(fb, (struct sock_filter)BPF_STMT(code, k));
 }
 
-static int fb_jump(morph_array_t *fb, unsigned int code, unsigned int k,
-		   unsigned char jt, unsigned char jf)
+static int fb_jump(nb_vec *fb, unsigned int code, unsigned int k, unsigned char jt,
+		   unsigned char jf)
 {
 	return fb_append(fb, (struct sock_filter)BPF_JUMP(code, k, jt, jf));
 }
 
-static int fb_ret(morph_array_t *fb, unsigned int action)
+static int fb_ret(nb_vec *fb, unsigned int action)
 {
 	return fb_stmt(fb, BPF_RET | BPF_K, action);
 }
 
-static int fb_deny_syscall(morph_array_t *fb, int nr)
+static int fb_deny_syscall(nb_vec *fb, int nr)
 {
 	int rc;
 
@@ -1355,7 +1342,7 @@ static int fb_deny_syscall(morph_array_t *fb, int nr)
  * self-contained block that reloads the syscall number afterwards so
  * the linear nr dispatch can continue.
  */
-static int fb_deny_ip_socket(morph_array_t *fb, int nr)
+static int fb_deny_ip_socket(nb_vec *fb, int nr)
 {
 	int rc;
 
@@ -1379,12 +1366,13 @@ static int fb_deny_ip_socket(morph_array_t *fb, int nr)
 		(unsigned int)offsetof(struct seccomp_data, nr));
 }
 
-int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions)
+int sandbox_apply_seccomp(struct nb_log *logger, unsigned int permissions)
 {
-	morph_array_t fb MORPH_CLEANUP(morph_array_cleanup) = {0};
+	nb_vec fb NB_CLEANUP(nb_vec_cleanup) = {0};
 	int rc;
 
-	rc = morph_array_init(&fb, 128, sizeof(struct sock_filter));
+	rc = (nb_vec_init(&fb, sizeof(struct sock_filter)),
+	      nb_vec_reserve(&fb, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc < 0)
 		return rc;
 
@@ -1674,25 +1662,27 @@ int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions)
 	 * (landlock).  Setting it again is harmless.
 	 */
 	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
-		rc = -errno;
-		log_err(logger, "sandbox: PR_SET_NO_NEW_PRIVS failed: %s", strerror(errno));
+		rc = nb_status_from_errno(errno, NULL);
+		nb_log_write(logger, NB_LOG_ERROR, "sandbox: PR_SET_NO_NEW_PRIVS failed: %s",
+			     strerror(errno));
 		return rc;
 	}
 
 	struct sock_fprog prog;
 
-	prog.len = (unsigned short)fb.nelts;
-	prog.filter = fb.elts;
+	prog.len = (unsigned short)fb.len;
+	prog.filter = nb_vec_at_mut(&fb, 0);
 	if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) < 0) {
-		rc = -errno;
-		log_err(logger, "sandbox: SECCOMP_MODE_FILTER failed: %s", strerror(errno));
+		rc = nb_status_from_errno(errno, NULL);
+		nb_log_write(logger, NB_LOG_ERROR, "sandbox: SECCOMP_MODE_FILTER failed: %s",
+			     strerror(errno));
 		return rc;
 	}
 
-	log_info(logger,
-		 "sandbox: seccomp denylist installed (%zu instructions, "
-		 "perms=0x%x)",
-		 fb.nelts, permissions);
+	nb_log_write(logger, NB_LOG_INFO,
+		     "sandbox: seccomp denylist installed (%zu instructions, "
+		     "perms=0x%x)",
+		     fb.len, permissions);
 	return 0;
 }
 
@@ -1701,46 +1691,16 @@ int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions)
 
 #if !defined(__linux__)
 
-int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions)
+int sandbox_apply_seccomp(struct nb_log *logger, unsigned int permissions)
 {
 	(void)permissions;
-	log_info(logger, "sandbox: seccomp-bpf not available on this platform, "
-			 "using rlimits only");
+	nb_log_write(logger, NB_LOG_INFO,
+		     "sandbox: seccomp-bpf not available on this platform, "
+		     "using rlimits only");
 	return 0;
 }
 
 #endif /* !__linux__ */
-
-int sandbox_start_isolated_session(void)
-{
-	if (setsid() < 0)
-		return morph_error_from_errno(errno);
-	return 0;
-}
-
-int sandbox_close_inherited_fds(void)
-{
-#if defined(__linux__) && defined(__NR_close_range)
-	if (syscall(__NR_close_range, (unsigned int)(STDERR_FILENO + 1),
-		    UINT_MAX, 0) == 0)
-		return 0;
-	if (errno != ENOSYS && errno != EINVAL)
-		return morph_error_from_errno(errno);
-#endif
-	struct rlimit rl;
-	rlim_t limit;
-
-	if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY)
-		limit = rl.rlim_cur;
-	else {
-		long open_max = sysconf(_SC_OPEN_MAX);
-
-		limit = open_max > 0 ? (rlim_t)open_max : (rlim_t)1024;
-	}
-	for (rlim_t fd = (rlim_t)(STDERR_FILENO + 1); fd < limit; fd++)
-		(void)close((int)fd);
-	return 0;
-}
 
 int sandbox_enter(struct sandbox_config *cfg)
 {
@@ -1748,7 +1708,10 @@ int sandbox_enter(struct sandbox_config *cfg)
 	int rc;
 
 	if (!cfg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
+	rc = sandbox_prepare_temporary_paths(cfg, NULL);
+	if (rc != NB_OK)
+		return rc;
 	effective_permissions = cfg->permissions;
 	if (cfg->path_policy_enabled) {
 		effective_permissions = 0;
@@ -1772,10 +1735,10 @@ int sandbox_enter(struct sandbox_config *cfg)
 	if (cfg->development_runtime)
 		effective_permissions |= EXT_PERM_ENV;
 
-	log_info(cfg ? cfg->logger : NULL,
-		 "sandbox_enter: perms=0x%x mem=%dMB cpu=%ds fsize=%dMB nproc=%d", cfg->permissions,
-		 cfg->max_memory_mb, cfg->max_cpu_seconds, cfg->max_file_size_mb,
-		 cfg->max_processes);
+	nb_log_write(cfg ? cfg->logger : NULL, NB_LOG_INFO,
+		     "sandbox_enter: perms=0x%x mem=%dMB cpu=%ds fsize=%dMB nproc=%d",
+		     cfg->permissions, cfg->max_memory_mb, cfg->max_cpu_seconds,
+		     cfg->max_file_size_mb, cfg->max_processes);
 
 	rc = sandbox_apply_env(cfg ? cfg->logger : NULL, (const char *const *)cfg->allowed_env,
 			       cfg->allowed_env_count, effective_permissions);
@@ -1792,9 +1755,13 @@ int sandbox_enter(struct sandbox_config *cfg)
 	if (cfg->path_policy_enabled)
 		rc = sandbox_apply_path_policy(cfg);
 	else
+		rc = sandbox_apply_fs_paths(cfg->logger, (const char **)cfg->allowed_paths,
+					    cfg->allowed_paths_count, effective_permissions,
+					    &cfg->temporary_paths);
+#else
+	rc = sandbox_apply_fs(cfg->logger, (const char **)cfg->allowed_paths,
+			      cfg->allowed_paths_count, effective_permissions);
 #endif
-		rc = sandbox_apply_fs(cfg ? cfg->logger : NULL, (const char **)cfg->allowed_paths,
-				      cfg->allowed_paths_count, effective_permissions);
 	if (rc < 0)
 		return rc;
 
@@ -1807,8 +1774,9 @@ int sandbox_enter(struct sandbox_config *cfg)
 	if (rc < 0)
 		return rc;
 #else
-	log_err(cfg->logger, "sandbox: no platform-specific isolation available");
-	return -ENOSYS;
+	nb_log_write(cfg->logger, NB_LOG_ERROR,
+		     "sandbox: no platform-specific isolation available");
+	return NB_ERR_UNSUPPORTED;
 #endif
 
 	return 0;

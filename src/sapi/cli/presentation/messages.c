@@ -1,10 +1,12 @@
 #include "sapi/cli/presentation/messages.h"
+#include "nb/err.h"
 
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
-#include "util/cleanup.h"
-#include "util/utf8.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 #include <morph/tui/widgets/text_view.h>
 #include <errno.h>
 #include <limits.h>
@@ -73,24 +75,28 @@ static void cli_messages_sgr_apply(struct cli_messages_sgr *state, const int *va
 	}
 }
 
-static int cli_messages_sgr_color(morph_buf_t *out, const struct cli_messages_color *color)
+static int cli_messages_sgr_color(nb_buf *out, const struct cli_messages_color *color)
 {
 	if (!color->code)
 		return 0;
 	if (color->mode == 5)
-		return morph_buf_printf(out, "\033[%d;5;%dm", color->code, color->values[0]);
+		return (nb_buf_printf(out, "\033[%d;5;%dm", color->code, color->values[0])
+				? 0
+				: NB_ERR_NOMEM);
 	if (color->mode == 2)
-		return morph_buf_printf(out, "\033[%d;2;%d;%d;%dm", color->code, color->values[0],
-					color->values[1], color->values[2]);
-	return morph_buf_printf(out, "\033[%dm", color->code);
+		return (nb_buf_printf(out, "\033[%d;2;%d;%d;%dm", color->code, color->values[0],
+				      color->values[1], color->values[2])
+				? 0
+				: NB_ERR_NOMEM);
+	return (nb_buf_printf(out, "\033[%dm", color->code) ? 0 : NB_ERR_NOMEM);
 }
 
-static int cli_messages_sgr_write(morph_buf_t *out, const struct cli_messages_sgr *state)
+static int cli_messages_sgr_write(nb_buf *out, const struct cli_messages_sgr *state)
 {
-	int rc = morph_buf_puts(out, ANSI_RESET);
+	int rc = (nb_buf_append_cstr(out, ANSI_RESET) ? 0 : NB_ERR_NOMEM);
 	for (unsigned code = 1; rc == 0 && code <= 9; code++)
 		if (state->attributes & (1u << code))
-			rc = morph_buf_printf(out, "\033[%um", code);
+			rc = (nb_buf_printf(out, "\033[%um", code) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = cli_messages_sgr_color(out, &state->foreground);
 	if (rc == 0)
@@ -151,11 +157,11 @@ static size_t cli_messages_escape(const char *bytes, size_t length, struct cli_m
 	return 2;
 }
 
-int cli_messages_append_rendered(morph_buf_t *out, const char *bytes, size_t length, int columns,
+int cli_messages_append_rendered(nb_buf *out, const char *bytes, size_t length, int columns,
 				 int styled)
 {
 	if (!out || (!bytes && length))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct cli_messages_sgr state = {0};
 	size_t column = 0;
 	int started = 0;
@@ -170,33 +176,36 @@ int cli_messages_append_rendered(morph_buf_t *out, const char *bytes, size_t len
 		}
 		unsigned cp = 0;
 		size_t step = 0;
-		if (!utf8_decode_codepoint(bytes + offset, length - offset, &cp, &step)) {
+		if (!nb_utf8_read(bytes + offset, length - offset, &cp, &step)) {
 			offset++;
 			continue;
 		}
 		if (cp == '\n') {
 			if (styled)
-				rc = morph_buf_puts(out, ANSI_RESET);
+				rc = (nb_buf_append_cstr(out, ANSI_RESET) ? 0 : NB_ERR_NOMEM);
 			if (rc == 0)
-				rc = morph_buf_putc(out, '\n');
+				rc = (nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM);
 			column = 0;
 			started = 0;
 		} else if (cp == '\t' || (cp >= 0x20u && !(cp >= 0x7fu && cp <= 0x9fu))) {
-			int cell_width = cp == '\t' ? 1 : utf8_codepoint_width(cp);
+			int cell_width = cp == '\t' ? 1 : nb_utf8_width_cp(cp);
 			size_t cells = cell_width > 0 ? (size_t)cell_width : 0u;
 			if (column && cells > width - column) {
 				if (styled)
-					rc = morph_buf_puts(out, ANSI_RESET);
+					rc = (nb_buf_append_cstr(out, ANSI_RESET) ? 0
+										  : NB_ERR_NOMEM);
 				if (rc == 0)
-					rc = morph_buf_putc(out, '\n');
+					rc = (nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM);
 				column = 0;
 				started = 0;
 			}
 			if (rc == 0 && styled && !started)
 				rc = cli_messages_sgr_write(out, &state);
 			if (rc == 0)
-				rc = cp == '\t' ? morph_buf_putc(out, ' ')
-						: morph_buf_append(out, bytes + offset, step);
+				rc = cp == '\t' ? (nb_buf_append_char(out, ' ') ? 0 : NB_ERR_NOMEM)
+						: (nb_buf_append(out, bytes + offset, step)
+							   ? 0
+							   : NB_ERR_NOMEM);
 			column += cells;
 			if (column > width)
 				column = width;
@@ -205,48 +214,54 @@ int cli_messages_append_rendered(morph_buf_t *out, const char *bytes, size_t len
 		offset += step;
 	}
 	if (rc == 0 && styled && started)
-		rc = morph_buf_puts(out, ANSI_RESET);
+		rc = (nb_buf_append_cstr(out, ANSI_RESET) ? 0 : NB_ERR_NOMEM);
 	return rc;
 }
 
-static int cli_messages_spaces(morph_buf_t *out, size_t count)
+static int cli_messages_spaces(nb_buf *out, size_t count)
 {
 	for (size_t i = 0; i < count; i++) {
-		int rc = morph_buf_putc(out, ' ');
+		int rc = (nb_buf_append_char(out, ' ') ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
 	return 0;
 }
 
-static int cli_messages_user_row(morph_buf_t *out, const char *text, size_t length, int first,
+static int cli_messages_user_row(nb_buf *out, const char *text, size_t length, int first,
 				 size_t width, const struct cli_message_style *style)
 {
 	const char *marker = style->ultra ? "» " : style->styled ? "› " : "> ";
 	size_t prefix = 2u;
-	int rc = style->styled ? morph_buf_puts(out, ANSI_RESET CLI_INPUT_BACKGROUND) : 0;
+	int rc = style->styled
+			 ? (nb_buf_append_cstr(out, ANSI_RESET CLI_INPUT_BACKGROUND) ? 0
+										     : NB_ERR_NOMEM)
+			 : 0;
 	if (rc == 0 && first && style->styled)
-		rc = morph_buf_puts(out,
-				    style->ultra ? CLI_INPUT_ULTRA_COLOR : CLI_INPUT_MARKER_COLOR);
+		rc = (nb_buf_append_cstr(out, style->ultra ? CLI_INPUT_ULTRA_COLOR
+							   : CLI_INPUT_MARKER_COLOR)
+			      ? 0
+			      : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = first ? morph_buf_puts(out, marker) : cli_messages_spaces(out, prefix);
+		rc = first ? (nb_buf_append_cstr(out, marker) ? 0 : NB_ERR_NOMEM)
+			   : cli_messages_spaces(out, prefix);
 	if (rc == 0 && first && style->styled)
-		rc = morph_buf_puts(out, ANSI_RESET CLI_INPUT_BACKGROUND);
+		rc = (nb_buf_append_cstr(out, ANSI_RESET CLI_INPUT_BACKGROUND) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_append(out, text, length);
+		rc = (nb_buf_append(out, text, length) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && style->styled) {
-		char *line MORPH_CLEANUP(morph_charp_cleanup) = strndup(text, length);
+		char *line NB_CLEANUP(nb_charp_cleanup) = strndup(text, length);
 		if (!line)
-			return -ENOMEM;
-		size_t used = prefix + utf8_display_width(line);
+			return NB_ERR_NOMEM;
+		size_t used = prefix + nb_utf8_width_cstr(line);
 		rc = cli_messages_spaces(out, used < width ? width - used : 0);
 		if (rc == 0)
-			rc = morph_buf_puts(out, ANSI_RESET);
+			rc = (nb_buf_append_cstr(out, ANSI_RESET) ? 0 : NB_ERR_NOMEM);
 	}
-	return rc != 0 ? rc : morph_buf_putc(out, '\n');
+	return rc != 0 ? rc : (nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM);
 }
 
-static int cli_messages_user(morph_buf_t *out, char *safe, const struct cli_message_style *style)
+static int cli_messages_user(nb_buf *out, char *safe, const struct cli_message_style *style)
 {
 	size_t width = style->columns > 0 ? (size_t)style->columns : 1u;
 	size_t content_width = width > 1 ? width - 1 : 1u;
@@ -255,11 +270,11 @@ static int cli_messages_user(morph_buf_t *out, char *safe, const struct cli_mess
 	int rc = 0;
 
 	if (rc == 0 && style->styled) {
-		rc = morph_buf_puts(out, ANSI_RESET CLI_INPUT_BACKGROUND);
+		rc = (nb_buf_append_cstr(out, ANSI_RESET CLI_INPUT_BACKGROUND) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
 			rc = cli_messages_spaces(out, width);
 		if (rc == 0)
-			rc = morph_buf_puts(out, ANSI_RESET "\n");
+			rc = (nb_buf_append_cstr(out, ANSI_RESET "\n") ? 0 : NB_ERR_NOMEM);
 	}
 	int first = 1;
 	for (char *line = safe; line && rc == 0;) {
@@ -268,9 +283,10 @@ static int cli_messages_user(morph_buf_t *out, char *safe, const struct cli_mess
 			*newline = '\0';
 		const char *cursor = line;
 		do {
-			const char *end = utf8_advance_display_width_borrow(cursor, body_width);
+			const char *end =
+				morph_terminal_advance_display_width_borrow(cursor, body_width);
 			if (end == cursor && *cursor)
-				end += utf8_next_codepoint_len(cursor, strnlen(cursor, 4));
+				end += nb_utf8_next_codepoint_len(cursor, strnlen(cursor, 4));
 			rc = cli_messages_user_row(out, cursor, (size_t)(end - cursor), first,
 						   width, style);
 			first = 0;
@@ -279,28 +295,28 @@ static int cli_messages_user(morph_buf_t *out, char *safe, const struct cli_mess
 		line = newline ? newline + 1 : NULL;
 	}
 	if (rc == 0 && style->styled) {
-		rc = morph_buf_puts(out, ANSI_RESET CLI_INPUT_BACKGROUND);
+		rc = (nb_buf_append_cstr(out, ANSI_RESET CLI_INPUT_BACKGROUND) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
 			rc = cli_messages_spaces(out, width);
 		if (rc == 0)
-			rc = morph_buf_puts(out, ANSI_RESET "\n");
+			rc = (nb_buf_append_cstr(out, ANSI_RESET "\n") ? 0 : NB_ERR_NOMEM);
 	}
-	return rc != 0 ? rc : morph_buf_putc(out, '\n');
+	return rc != 0 ? rc : (nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM);
 }
 
-int cli_messages_append(morph_buf_t *out, enum cli_message_kind kind, const char *text,
+int cli_messages_append(nb_buf *out, enum cli_message_kind kind, const char *text,
 			struct cli_message_style *style)
 {
 	if (!out || !style || kind < CLI_MESSAGE_USER || kind > CLI_MESSAGE_ASSISTANT)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!text || !*text)
 		return 0;
-	char *safe MORPH_CLEANUP(morph_charp_cleanup) =
-		utf8_terminal_sanitize_dup(text, strlen(text), UTF8_TERMINAL_TEXT_MULTILINE, NULL);
-	morph_buf_t document MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		text, strlen(text), MORPH_TERMINAL_TEXT_MULTILINE, NULL);
+	nb_buf document NB_CLEANUP(nb_buf_cleanup) = {0};
 	if (!safe)
-		return -ENOMEM;
-	int rc = morph_buf_init(&document, 256);
+		return NB_ERR_NOMEM;
+	int rc = (nb_buf_init(&document), nb_buf_reserve(&document, 256) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	for (char *p = safe; *p; p++)
@@ -316,67 +332,73 @@ int cli_messages_append(morph_buf_t *out, enum cli_message_kind kind, const char
 					return 0;
 				size_t width =
 					style->columns > 4 ? (size_t)(style->columns - 4) : 1u;
-				const char *end = utf8_advance_display_width_borrow(
+				const char *end = morph_terminal_advance_display_width_borrow(
 					start, width > 1 ? width - 1 : 1u);
 				const char *newline = strchr(start, '\n');
 				if (newline && newline < end)
 					end = newline;
-				rc = morph_buf_printf(&document, "%s%.*s%s%s\n",
-						      style->styled ? ANSI_DIM "\033[3m" : "",
-						      (int)(end - start), start, *end ? "…" : "",
-						      style->styled ? ANSI_RESET : "");
+				rc = (nb_buf_printf(&document, "%s%.*s%s%s\n",
+						    style->styled ? ANSI_DIM "\033[3m" : "",
+						    (int)(end - start), start, *end ? "…" : "",
+						    style->styled ? ANSI_RESET : "")
+					      ? 0
+					      : NB_ERR_NOMEM);
 			} else {
-				rc = morph_buf_printf(&document, "%s%s%s\n",
-						      style->styled ? ANSI_DIM "\033[3m" : "", safe,
-						      style->styled ? ANSI_RESET : "");
+				rc = (nb_buf_printf(&document, "%s%s%s\n",
+						    style->styled ? ANSI_DIM "\033[3m" : "", safe,
+						    style->styled ? ANSI_RESET : "")
+					      ? 0
+					      : NB_ERR_NOMEM);
 			}
 		}
 		if (rc == 0 && kind == CLI_MESSAGE_ASSISTANT) {
-			rc = morph_buf_printf(&document, "%s" CLI_FEED_MESSAGE "%s ",
-					      style->styled ? ANSI_BOLD : "",
-					      style->styled ? ANSI_RESET : "");
+			rc = (nb_buf_printf(&document, "%s" CLI_FEED_MESSAGE "%s ",
+					    style->styled ? ANSI_BOLD : "",
+					    style->styled ? ANSI_RESET : "")
+				      ? 0
+				      : NB_ERR_NOMEM);
 			if (rc == 0)
 				rc = cli_markdown_render_document(&document, safe, style->columns,
 								  2u);
 			int tail = 0;
-			cli_output_track_tail(&tail, morph_buf_cstr_borrow(&document),
-					      document.len);
+			cli_output_track_tail(&tail, nb_buf_cstr(&document), document.len);
 			while (rc == 0 && tail++ < 2)
-				rc = morph_buf_putc(&document, '\n');
+				rc = (nb_buf_append_char(&document, '\n') ? 0 : NB_ERR_NOMEM);
 		}
 	}
 	int columns = kind == CLI_MESSAGE_USER ? style->columns :
 		style->columns > 1 ? style->columns - 1 : 1;
-	morph_buf_t rendered MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
 
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_init(&rendered, document.len + 16);
+	rc = (nb_buf_init(&rendered),
+	      nb_buf_reserve(&rendered, document.len + 16) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = cli_messages_append_rendered(
-			&rendered, morph_buf_cstr_borrow(&document), document.len,
-			columns > 0 ? columns : 1, style->styled);
+		rc = cli_messages_append_rendered(&rendered, nb_buf_cstr(&document), document.len,
+						  columns > 0 ? columns : 1, style->styled);
 	if (rc != 0)
 		return rc;
 	struct morph_tui_view_insets margin = style->margin;
 
 	if (!margin.top && !margin.right && !margin.bottom && !margin.left)
 		margin.top = 1;
-	return cli_output_block_append(out, morph_buf_cstr_borrow(&rendered), margin,
+	return cli_output_block_append(out, nb_buf_cstr(&rendered), margin,
 				       &style->trailing_newlines);
 }
 
 int cli_messages_set_rendered_view(struct morph_tui_view *view, const char *text, int styled)
 {
 	if (!view || !text)
-		return -EINVAL;
-	morph_array_t spans MORPH_CLEANUP(morph_array_cleanup) = {0};
-	morph_buf_t bytes MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_t hyperlink MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		return NB_ERR_INVAL;
+	nb_vec spans NB_CLEANUP(nb_vec_cleanup) = {0};
+	nb_buf bytes NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf hyperlink NB_CLEANUP(nb_buf_cleanup) = {0};
 	struct morph_tui_text_span span;
-	int rc = morph_array_init(&spans, 16, sizeof(span));
+	int rc = (nb_vec_init(&spans, sizeof(span)), nb_vec_reserve(&spans, 16) ? 0 : NB_ERR_NOMEM);
 	if (!rc)
-		rc = morph_buf_init(&bytes, strlen(text) + 1);
+		rc = (nb_buf_init(&bytes),
+		      nb_buf_reserve(&bytes, strlen(text) + 1) ? 0 : NB_ERR_NOMEM);
 	struct cli_messages_sgr state = {0};
 	size_t length = strlen(text);
 	for (size_t i = 0; !rc && i < length;) {
@@ -386,8 +408,10 @@ int cli_messages_set_rendered_view(struct morph_tui_view *view, const char *text
 				if (uri) {
 					uri++;
 					size_t uri_length = strcspn(uri, "\a\033");
-					morph_buf_reset(&hyperlink);
-					rc = morph_buf_append(&hyperlink, uri, uri_length);
+					nb_buf_clear(&hyperlink);
+					rc = (nb_buf_append(&hyperlink, uri, uri_length)
+						      ? 0
+						      : NB_ERR_NOMEM);
 				}
 			}
 			i += cli_messages_escape(text + i, length - i, &state);
@@ -415,46 +439,48 @@ int cli_messages_set_rendered_view(struct morph_tui_view *view, const char *text
 		}
 		/* Store offsets until the growable text buffer has its final address. */
 		span.text = NULL;
-		rc = morph_buf_append(&bytes, text + start, i - start);
+		rc = (nb_buf_append(&bytes, text + start, i - start) ? 0 : NB_ERR_NOMEM);
 		if (!rc)
-			rc = morph_buf_putc(&bytes, '\0');
+			rc = (nb_buf_append_char(&bytes, '\0') ? 0 : NB_ERR_NOMEM);
 		if (!rc)
-			rc = morph_buf_puts(&bytes,
-				styled && hyperlink.len ? hyperlink.data : "");
+			rc = (nb_buf_append_cstr(&bytes,
+						 styled && hyperlink.len ? hyperlink.ptr : "")
+				      ? 0
+				      : NB_ERR_NOMEM);
 		if (!rc)
-			rc = morph_buf_putc(&bytes, '\0');
-		struct morph_tui_text_span *slot = rc ? NULL : morph_array_push_borrow(&spans);
+			rc = (nb_buf_append_char(&bytes, '\0') ? 0 : NB_ERR_NOMEM);
+		struct morph_tui_text_span *slot = rc ? NULL : nb_vec_push(&spans);
 		if (!rc && !slot)
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 		if (!rc)
 			*slot = span;
 	}
 	if (rc)
 		return rc;
 	size_t offset = 0;
-	for (size_t i = 0; i < spans.nelts; i++) {
-		struct morph_tui_text_span *slot = morph_array_borrow(&spans, i);
-		slot->text = bytes.data + offset;
+	for (size_t i = 0; i < spans.len; i++) {
+		struct morph_tui_text_span *slot = nb_vec_at(&spans, i);
+		slot->text = bytes.ptr + offset;
 		offset += strlen(slot->text) + 1;
-		slot->hyperlink = bytes.data[offset] ? bytes.data + offset : NULL;
-		offset += strlen(bytes.data + offset) + 1;
+		slot->hyperlink = bytes.ptr[offset] ? bytes.ptr + offset : NULL;
+		offset += strlen(bytes.ptr + offset) + 1;
 	}
 	/* Component/Stack geometry owns external separation. Preserve interior
 	 * blank lines while removing legacy formatter boundary newlines. */
-	for (size_t i = 0; i < spans.nelts; i++) {
-		struct morph_tui_text_span *slot = morph_array_borrow(&spans, i);
+	for (size_t i = 0; i < spans.len; i++) {
+		struct morph_tui_text_span *slot = nb_vec_at(&spans, i);
 		while (*slot->text == '\n' || *slot->text == '\r')
 			slot->text++;
 		if (*slot->text)
 			break;
 	}
-	for (size_t i = spans.nelts; i > 0; i--) {
-		struct morph_tui_text_span *slot = morph_array_borrow(&spans, i - 1);
+	for (size_t i = spans.len; i > 0; i--) {
+		struct morph_tui_text_span *slot = nb_vec_at(&spans, i - 1);
 		char *end = (char *)slot->text + strlen(slot->text);
 		while (end > slot->text && (end[-1] == '\n' || end[-1] == '\r'))
 			*--end = '\0';
 		if (end > slot->text)
 			break;
 	}
-	return morph_tui_widget_text_view_set_spans_copy(view, spans.elts, spans.nelts);
+	return morph_tui_widget_text_view_set_spans_copy(view, ((void *)spans.data), spans.len);
 }

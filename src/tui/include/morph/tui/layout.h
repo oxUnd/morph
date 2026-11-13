@@ -1,7 +1,8 @@
 #ifndef MORPH_TUI_LAYOUT_H
 #define MORPH_TUI_LAYOUT_H
 
-#include "util/buf.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include <morph/tui/view.h>
 
 #ifdef __cplusplus
@@ -32,7 +33,7 @@ struct morph_tui_terminal_rect
 morph_tui_terminal_rect_take_top(struct morph_tui_terminal_rect *area, int height);
 struct morph_tui_terminal_rect
 morph_tui_terminal_rect_take_left(struct morph_tui_terminal_rect *area, int width);
-int morph_tui_draw_region_cell(morph_buf_t *commands, struct morph_tui_terminal_rect area, int row,
+int morph_tui_draw_region_cell(nb_buf *commands, struct morph_tui_terminal_rect area, int row,
 			       int column, int width, const char *text, const char *style);
 
 #ifdef __cplusplus

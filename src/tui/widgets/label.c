@@ -1,6 +1,7 @@
 #include <morph/tui/widgets/label.h>
-#include "util/error.h"
-#include "util/utf8.h"
+#include "errors.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 
 #include <limits.h>
 #include <stdlib.h>
@@ -15,11 +16,11 @@ static int widget_label_measure(struct morph_tui_view *view, int width,
 				struct morph_tui_view_size *size)
 {
 	struct widget_label *label = (struct widget_label *)view;
-	size_t cells = utf8_display_width(label->text ? label->text : "");
+	size_t cells = nb_utf8_width_cstr(label->text ? label->text : "");
 
 	(void)width;
 	if (cells > INT_MAX)
-		return -EOVERFLOW;
+		return NB_ERR_RANGE;
 	*size = (struct morph_tui_view_size){(int)cells, 1};
 	return 0;
 }
@@ -39,23 +40,23 @@ static void widget_label_destroy(struct morph_tui_view *view)
 int morph_tui_widget_label_set_text_copy(struct morph_tui_view *view, const char *text)
 {
 	if (!view || !text || !view->ops || view->ops->draw != widget_label_draw)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct widget_label *label = (struct widget_label *)view;
 
 	if (label->text && strcmp(label->text, text) == 0)
 		return 0;
-	char *copy = utf8_terminal_sanitize_dup(text, strlen(text), UTF8_TERMINAL_TEXT_SINGLE_LINE,
-						NULL);
+	char *copy = morph_terminal_sanitize_dup(text, strlen(text),
+						 MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 
 	if (!copy)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (label->text && strcmp(label->text, copy) == 0) {
 		free(copy);
 		return 0;
 	}
-	int resized = !label->text || utf8_display_width(label->text) != utf8_display_width(copy);
+	int resized = !label->text || nb_utf8_width_cstr(label->text) != nb_utf8_width_cstr(copy);
 
 	free(label->text);
 	label->text = copy;

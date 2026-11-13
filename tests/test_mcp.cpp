@@ -1,12 +1,14 @@
 #include <gtest/gtest.h>
+#include "nb/time.h"
 #include "mcp/mcp_internal.h"
 #include "agent/agent_control.h"
 #include "agent/tool_runtime.h"
 #include "models/llm.h"
 #include "db/database.h"
-#include "util/error.h"
-#include "util/cleanup.h"
-#include "util/child_io.h"
+#include "errors.h"
+#include "nb/cleanup.h"
+#include "nb/process.h"
+#include "nb/time.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -36,11 +38,11 @@ static int mcp_parse_result(const char *json, char **out)
 	cJSON *object = nullptr;
 	int rc = mcp_protocol_decode(nullptr, &reply, request_id, &object);
 	if (rc == 0 && out) {
-		char *text MORPH_CLEANUP(morph_json_text_cleanup) =
-			morph_json_print_copy(cJSON_GetObjectItem(object, "result"));
+		char *text NB_CLEANUP(cJSON_FreeTextOwner) =
+			cJSON_PrintUnformatted(cJSON_GetObjectItem(object, "result"));
 		*out = text ? strdup(text) : nullptr;
 		if (!*out)
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 	}
 	cJSON_Delete(object);
 	return rc;
@@ -110,7 +112,7 @@ TEST_F(McpRegistryTest, GetExistingServer) {
 	ASSERT_NE(client, nullptr);
 	EXPECT_STREQ(client->config.name, "find-me");
 	EXPECT_EQ(client->config.transport, MCP_TRANSPORT_STDIO);
-	EXPECT_EQ(morph_strmap_borrow(&reg.by_name, "find-me"), client);
+	EXPECT_EQ(nb_map_get_cstr(reg.by_name, "find-me"), client);
 }
 
 TEST_F(McpRegistryTest, GetNonexistentServer) {
@@ -121,26 +123,26 @@ TEST_F(McpRegistryTest, GetNonexistentServer) {
 TEST_F(McpRegistryTest, DuplicateNameRejected) {
 	struct mcp_server_config cfg = make_stdio_cfg("dup");
 	EXPECT_EQ(mcp_registry_add(&reg, &cfg), 0);
-	EXPECT_EQ(mcp_registry_add(&reg, &cfg), -EEXIST);
+	EXPECT_EQ(mcp_registry_add(&reg, &cfg), NB_ERR_EXISTS);
 	EXPECT_EQ(reg.count, 1);
 }
 
 TEST_F(McpRegistryTest, EmptyNameRejected) {
 	struct mcp_server_config cfg;
 	memset(&cfg, 0, sizeof(cfg));
-	EXPECT_EQ(mcp_registry_add(&reg, &cfg), -EINVAL);
+	EXPECT_EQ(mcp_registry_add(&reg, &cfg), NB_ERR_INVAL);
 	EXPECT_EQ(reg.count, 0);
 }
 
 TEST_F(McpRegistryTest, NullRegistry) {
 	struct mcp_server_config cfg = make_stdio_cfg("x");
-	EXPECT_EQ(mcp_registry_add(nullptr, &cfg), -EINVAL);
+	EXPECT_EQ(mcp_registry_add(nullptr, &cfg), NB_ERR_INVAL);
 	EXPECT_EQ(mcp_registry_count(nullptr), 0);
 	EXPECT_EQ(mcp_registry_borrow(nullptr, "x"), nullptr);
 }
 
 TEST_F(McpRegistryTest, NullConfig) {
-	EXPECT_EQ(mcp_registry_add(&reg, nullptr), -EINVAL);
+	EXPECT_EQ(mcp_registry_add(&reg, nullptr), NB_ERR_INVAL);
 }
 
 TEST_F(McpRegistryTest, NullName) {
@@ -159,7 +161,7 @@ TEST_F(McpRegistryTest, MaxServers) {
 		EXPECT_EQ(mcp_registry_add(&reg, &cfg), 0);
 	}
 	snprintf(cfg.name, MCP_NAME_MAX, "overflow");
-	EXPECT_EQ(mcp_registry_add(&reg, &cfg), -ENOSPC);
+	EXPECT_EQ(mcp_registry_add(&reg, &cfg), NB_ERR_NO_SPACE);
 	EXPECT_EQ(reg.count, MCP_MAX_SERVERS);
 }
 
@@ -291,7 +293,7 @@ TEST_F(McpJsonRpcTest, ParseResultError) {
 	const char *resp = "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32600,\"message\":\"Invalid Request\"}}";
 	char *result = nullptr;
 	int rc = mcp_parse_result(resp, &result);
-	EXPECT_EQ(rc, MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(rc, NB_ERR_PROTOCOL);
 	free(result);
 }
 
@@ -299,7 +301,7 @@ TEST_F(McpJsonRpcTest, ParseResultErrorWithoutCode) {
 	const char *resp = "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"message\":\"unknown\"}}";
 	char *result = nullptr;
 	int rc = mcp_parse_result(resp, &result);
-	EXPECT_EQ(rc, MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(rc, NB_ERR_PROTOCOL);
 	free(result);
 }
 
@@ -307,20 +309,20 @@ TEST_F(McpJsonRpcTest, ParseResultInvalidJson) {
 	const char *resp = "not json at all";
 	char *result = nullptr;
 	int rc = mcp_parse_result(resp, &result);
-	EXPECT_EQ(rc, MORPH_ERR_PARSE);
+	EXPECT_EQ(rc, NB_ERR_PARSE);
 	free(result);
 }
 
 TEST_F(McpJsonRpcTest, RejectsNonObjectResult) {
 	const char *resp = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}";
 	int rc = mcp_parse_result(resp, nullptr);
-	EXPECT_EQ(rc, MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(rc, NB_ERR_PROTOCOL);
 }
 
 TEST_F(McpJsonRpcTest, ParseResultNullInput) {
 	char *result = nullptr;
 	int rc = mcp_parse_result(nullptr, &result);
-	EXPECT_EQ(rc, MORPH_ERR_PARSE);
+	EXPECT_EQ(rc, NB_ERR_PARSE);
 	free(result);
 }
 
@@ -335,98 +337,99 @@ protected:
 		client.server_pid = -1;
 		client.stdin_fd = -1;
 		client.stdout_fd = -1;
-		pthread_mutex_init(&client.lock, nullptr);
+		client.lock = nb_mutex_new(0);
+		ASSERT_NE(client.lock, nullptr);
 	}
 
 	void TearDown() override {
-		pthread_mutex_destroy(&client.lock);
+		(nb_mutex_free(client.lock), client.lock = NULL);
 	}
 };
 
 TEST_F(McpNullParamTest, ListToolsNullClient) {
 	struct mcp_tool_desc *tools = nullptr;
 	int count = 0;
-	EXPECT_EQ(mcp_list_tools_copy(nullptr, &tools, &count), -EINVAL);
+	EXPECT_EQ(mcp_list_tools_copy(nullptr, &tools, &count), NB_ERR_INVAL);
 }
 
 TEST_F(McpNullParamTest, ListToolsNullOutTools) {
 	int count = 0;
-	EXPECT_EQ(mcp_list_tools_copy(&client, nullptr, &count), -EINVAL);
+	EXPECT_EQ(mcp_list_tools_copy(&client, nullptr, &count), NB_ERR_INVAL);
 }
 
 TEST_F(McpNullParamTest, ListToolsNullOutCount) {
 	struct mcp_tool_desc *tools = nullptr;
-	EXPECT_EQ(mcp_list_tools_copy(&client, &tools, nullptr), -EINVAL);
+	EXPECT_EQ(mcp_list_tools_copy(&client, &tools, nullptr), NB_ERR_INVAL);
 }
 
 TEST_F(McpNullParamTest, CallToolNullClient) {
 	struct tool_result result;
 	tool_result_init(&result);
-	EXPECT_EQ(mcp_call_tool(nullptr, "tool", "{}", &result), -EINVAL);
+	EXPECT_EQ(mcp_call_tool(nullptr, "tool", "{}", &result), NB_ERR_INVAL);
 }
 
 TEST_F(McpNullParamTest, CallToolNullName) {
 	struct tool_result result;
 	tool_result_init(&result);
-	EXPECT_EQ(mcp_call_tool(&client, nullptr, "{}", &result), -EINVAL);
+	EXPECT_EQ(mcp_call_tool(&client, nullptr, "{}", &result), NB_ERR_INVAL);
 }
 
 TEST_F(McpNullParamTest, CallToolNullOut) {
-	EXPECT_EQ(mcp_call_tool(&client, "tool", "{}", nullptr), -EINVAL);
+	EXPECT_EQ(mcp_call_tool(&client, "tool", "{}", nullptr), NB_ERR_INVAL);
 }
 
 TEST_F(McpNullParamTest, ListResourcesNullClient) {
 	struct mcp_resource_desc *res = nullptr;
 	int count = 0;
-	EXPECT_EQ(mcp_list_resources_copy(nullptr, &res, &count), -EINVAL);
+	EXPECT_EQ(mcp_list_resources_copy(nullptr, &res, &count), NB_ERR_INVAL);
 }
 
 TEST_F(McpNullParamTest, ReadResourceNullClient) {
 	struct tool_result content;
 	tool_result_init(&content);
-	EXPECT_EQ(mcp_read_resource(nullptr, "uri://x", &content), -EINVAL);
+	EXPECT_EQ(mcp_read_resource(nullptr, "uri://x", &content), NB_ERR_INVAL);
 	tool_result_cleanup(&content);
 }
 
 TEST_F(McpNullParamTest, ReadResourceNullUri) {
 	struct tool_result content;
 	tool_result_init(&content);
-	EXPECT_EQ(mcp_read_resource(&client, nullptr, &content), -EINVAL);
+	EXPECT_EQ(mcp_read_resource(&client, nullptr, &content), NB_ERR_INVAL);
 	tool_result_cleanup(&content);
 }
 
 TEST_F(McpNullParamTest, ReadResourceNullOut) {
-	EXPECT_EQ(mcp_read_resource(&client, "uri://x", nullptr), -EINVAL);
+	EXPECT_EQ(mcp_read_resource(&client, "uri://x", nullptr), NB_ERR_INVAL);
 }
 
 TEST_F(McpNullParamTest, ListPromptsNullClient) {
 	struct mcp_prompt_desc *prompts = nullptr;
 	int count = 0;
-	EXPECT_EQ(mcp_list_prompts_copy(nullptr, &prompts, &count), -EINVAL);
+	EXPECT_EQ(mcp_list_prompts_copy(nullptr, &prompts, &count), NB_ERR_INVAL);
 }
 
 TEST_F(McpNullParamTest, GetPromptNullClient) {
 	struct tool_result result;
 	tool_result_init(&result);
-	EXPECT_EQ(mcp_get_prompt(nullptr, "prompt", "{}", &result), -EINVAL);
+	EXPECT_EQ(mcp_get_prompt(nullptr, "prompt", "{}", &result), NB_ERR_INVAL);
 }
 
 TEST_F(McpNullParamTest, GetPromptNullName) {
 	struct tool_result result;
 	tool_result_init(&result);
-	EXPECT_EQ(mcp_get_prompt(&client, nullptr, "{}", &result), -EINVAL);
+	EXPECT_EQ(mcp_get_prompt(&client, nullptr, "{}", &result), NB_ERR_INVAL);
 }
 
 TEST_F(McpNullParamTest, GetPromptNullOut) {
-	EXPECT_EQ(mcp_get_prompt(&client, "prompt", "{}", nullptr), -EINVAL);
+	EXPECT_EQ(mcp_get_prompt(&client, "prompt", "{}", nullptr), NB_ERR_INVAL);
 }
 
 TEST_F(McpNullParamTest, PingNullClient) {
-	EXPECT_EQ(mcp_ping(nullptr), -EINVAL);
+	EXPECT_EQ(mcp_ping(nullptr), NB_ERR_INVAL);
 }
 
 TEST_F(McpNullParamTest, InitializeNullClient) {
-	EXPECT_EQ(mcp_initialize(nullptr), -EINVAL);
+	EXPECT_EQ(mcp_initialize(nullptr), NB_ERR_INVAL);
 }
 
 TEST_F(McpNullParamTest, DisconnectNullClient) {
@@ -434,40 +437,40 @@ TEST_F(McpNullParamTest, DisconnectNullClient) {
 }
 
 TEST_F(McpNullParamTest, EnsureConnectedNullClient) {
-	EXPECT_EQ(mcp_ensure_connected(nullptr), -EINVAL);
+	EXPECT_EQ(mcp_ensure_connected(nullptr), NB_ERR_INVAL);
 }
 
 TEST_F(McpNullParamTest, RegisterServerToolsNullClient) {
 	struct tool_registry reg;
 	tool_registry_init(NULL, &reg);
-	EXPECT_EQ(mcp_register_server_tools(nullptr, &reg), -EINVAL);
+	EXPECT_EQ(mcp_register_server_tools(nullptr, &reg), NB_ERR_INVAL);
 	tool_registry_cleanup(&reg);
 }
 
 TEST_F(McpNullParamTest, RegisterServerToolsNullReg) {
-	EXPECT_EQ(mcp_register_server_tools(&client, nullptr), -EINVAL);
+	EXPECT_EQ(mcp_register_server_tools(&client, nullptr), NB_ERR_INVAL);
 }
 
 TEST_F(McpNullParamTest, RegisterServerResourcesNullClient) {
 	struct tool_registry reg;
 	tool_registry_init(NULL, &reg);
-	EXPECT_EQ(mcp_register_server_resources(nullptr, &reg), -EINVAL);
+	EXPECT_EQ(mcp_register_server_resources(nullptr, &reg), NB_ERR_INVAL);
 	tool_registry_cleanup(&reg);
 }
 
 TEST_F(McpNullParamTest, RegisterServerResourcesNullReg) {
-	EXPECT_EQ(mcp_register_server_resources(&client, nullptr), -EINVAL);
+	EXPECT_EQ(mcp_register_server_resources(&client, nullptr), NB_ERR_INVAL);
 }
 
 TEST_F(McpNullParamTest, RegisterServerPromptsNullClient) {
 	struct tool_registry reg;
 	tool_registry_init(NULL, &reg);
-	EXPECT_EQ(mcp_register_server_prompts(nullptr, &reg), -EINVAL);
+	EXPECT_EQ(mcp_register_server_prompts(nullptr, &reg), NB_ERR_INVAL);
 	tool_registry_cleanup(&reg);
 }
 
 TEST_F(McpNullParamTest, RegisterServerPromptsNullReg) {
-	EXPECT_EQ(mcp_register_server_prompts(&client, nullptr), -EINVAL);
+	EXPECT_EQ(mcp_register_server_prompts(&client, nullptr), NB_ERR_INVAL);
 }
 
 /* ----- Struct size / layout checks ----- */
@@ -537,7 +540,7 @@ TEST(McpOwnedDescriptorsTest, ResourcesAndPromptsReleasePartialResults)
 class McpStrdupTest : public ::testing::Test {};
 
 TEST_F(McpStrdupTest, StrdupResultNullInput) {
-	EXPECT_EQ(mcp_parse_result(nullptr, nullptr), MORPH_ERR_PARSE);
+	EXPECT_EQ(mcp_parse_result(nullptr, nullptr), NB_ERR_PARSE);
 }
 
 /* ----- SSE JSON extraction from MCP HTTP responses ----- */
@@ -705,7 +708,8 @@ protected:
 		client.server_pid = -1;
 		client.next_req_id = 1;
 		client.protocol = mcp_protocol_borrow("2025-06-18");
-		pthread_mutex_init(&client.lock, nullptr);
+		client.lock = nb_mutex_new(0);
+		ASSERT_NE(client.lock, nullptr);
 	}
 
 	void TearDown() override
@@ -713,13 +717,15 @@ protected:
 		mcp_disconnect(&client);
 		close(request_read);
 		close(response_write);
-		pthread_mutex_destroy(&client.lock);
+		(nb_mutex_free(client.lock), client.lock = NULL);
 	}
 
 	void send(const std::string &message)
 	{
-		EXPECT_EQ(morph_io_write(response_write, message.data(), message.size(),
-			morph_io_now_ms() + 10000, nullptr, nullptr), 0);
+		EXPECT_EQ(nb_fd_write_until(response_write, message.data(), message.size(),
+					    (nb_time_monotonic_ms() + 10000) * 1000000, nullptr,
+					    nullptr, nullptr),
+			  0);
 	}
 };
 
@@ -770,7 +776,7 @@ TEST_F(McpStdioFramingTest, NotificationsDoNotResetRequestDeadline)
 	int rc = mcp_request(&client, "initialize", nullptr, &response);
 	auto elapsed = std::chrono::steady_clock::now() - start;
 	producer.join();
-	EXPECT_EQ(rc, -ETIMEDOUT);
+	EXPECT_EQ(rc, NB_ERR_TIMEOUT);
 	EXPECT_EQ(response, nullptr);
 	EXPECT_LT(elapsed, std::chrono::milliseconds(1500));
 }
@@ -780,7 +786,7 @@ TEST_F(McpStdioFramingTest, DeadServerReturnsPipeErrorWithoutSignallingHost)
 	close(request_read);
 	request_read = -1;
 	char *response = nullptr;
-	EXPECT_EQ(mcp_request(&client, "initialize", nullptr, &response), -EPIPE);
+	EXPECT_EQ(mcp_request(&client, "initialize", nullptr, &response), NB_ERR_BROKEN_PIPE);
 	EXPECT_EQ(response, nullptr);
 }
 
@@ -854,8 +860,8 @@ TEST_F(McpStdioFramingTest, ReadOnlyAnnotationsSurvivePagesAndChildRegistryCopie
 		"\"inputSchema\":{\"type\":\"object\"}}]}}\n"
 		"{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\","
 		"\"text\":\"classified search result\"}]}}\n");
-	struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
-	struct tool_registry child MORPH_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry registry NB_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry child NB_CLEANUP(tool_registry_cleanup) = {};
 	tool_registry_init(nullptr, &registry);
 	tool_registry_init(nullptr, &child);
 	ASSERT_EQ(mcp_register_server_tools(&client, &registry), 4);
@@ -865,7 +871,7 @@ TEST_F(McpStdioFramingTest, ReadOnlyAnnotationsSurvivePagesAndChildRegistryCopie
 	for (const char *name : {"mcp_classified__write", "mcp_classified__unknown",
 				 "mcp_classified__malformed"})
 		EXPECT_FALSE(tool_is_readonly(&child, name));
-	struct db database MORPH_CLEANUP(db_close) = {};
+	struct db database NB_CLEANUP(db_close) = {};
 	ASSERT_EQ(db_open(nullptr, &database, ":memory:"), 0);
 	struct model model = {};
 	struct config_agents config = {};
@@ -881,12 +887,12 @@ TEST_F(McpStdioFramingTest, ReadOnlyAnnotationsSurvivePagesAndChildRegistryCopie
 	struct tool_runtime_context runtime = {};
 	runtime.agents = control;
 	runtime.agent_id = "/root/reader";
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	tool_result_init(&result);
 	result.runtime = &runtime;
 	for (const char *name : {"mcp_classified__write", "mcp_classified__unknown",
 				 "mcp_classified__malformed"}) {
-		EXPECT_EQ(tool_exec(&child, name, "{}", &result), -EACCES);
+		EXPECT_EQ(tool_exec(&child, name, "{}", &result), NB_ERR_PERMISSION);
 		const cJSON *error = cJSON_GetObjectItemCaseSensitive(result.envelope, "error");
 		const char *message = cJSON_GetStringValue(
 			cJSON_GetObjectItemCaseSensitive(error, "message"));
@@ -895,8 +901,8 @@ TEST_F(McpStdioFramingTest, ReadOnlyAnnotationsSurvivePagesAndChildRegistryCopie
 		EXPECT_EQ(strstr(message, "Concurrent agent writes"), nullptr);
 	}
 	ASSERT_EQ(tool_exec(&child, "mcp_classified__search", "{}", &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "classified search result"), nullptr);
+	ASSERT_NE(result.text.ptr, nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "classified search result"), nullptr);
 }
 
 TEST_F(McpStdioFramingTest, RediscoveryUpdatesReadOnlyMetadataAndPreservesTimeout)
@@ -912,7 +918,7 @@ TEST_F(McpStdioFramingTest, RediscoveryUpdatesReadOnlyMetadataAndPreservesTimeou
 		"{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[{\"name\":\"query\","
 		"\"annotations\":{\"readOnlyHint\":false},"
 		"\"inputSchema\":{\"type\":\"object\"}}]}}\n");
-	struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry registry NB_CLEANUP(tool_registry_cleanup) = {};
 	tool_registry_init(nullptr, &registry);
 	ASSERT_EQ(mcp_register_server_tools(&client, &registry), 1);
 	EXPECT_FALSE(tool_is_readonly(&registry, "mcp_refresh__query"));
@@ -938,8 +944,8 @@ TEST_F(McpStdioFramingTest, ConfiguredReadOnlySurvivesRemoteHintRevocationAndCop
 		"\"inputSchema\":{\"type\":\"object\"}}]}}\n"
 		"{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[{\"name\":\"query\","
 		"\"inputSchema\":{\"type\":\"object\"}}]}}\n");
-	struct tool_registry registry MORPH_CLEANUP(tool_registry_cleanup) = {};
-	struct tool_registry child MORPH_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry registry NB_CLEANUP(tool_registry_cleanup) = {};
+	struct tool_registry child NB_CLEANUP(tool_registry_cleanup) = {};
 	tool_registry_init(nullptr, &registry);
 	tool_registry_init(nullptr, &child);
 	ASSERT_EQ(mcp_register_server_tools(&client, &registry), 1);
@@ -964,7 +970,7 @@ TEST_F(McpStdioFramingTest, RejectsCyclicPaginationWithoutPartialResults)
 		"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[],\"nextCursor\":\"same\"}}\n");
 	struct mcp_tool_desc *entries = nullptr;
 	int count = 0;
-	EXPECT_EQ(mcp_list_tools_copy(&client, &entries, &count), MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(mcp_list_tools_copy(&client, &entries, &count), NB_ERR_PROTOCOL);
 	EXPECT_EQ(entries, nullptr);
 	EXPECT_EQ(count, 0);
 }
@@ -1126,7 +1132,8 @@ TEST(McpHttpPayloadTest, LongBearerTokenAndSessionHeaderAreNotTruncated)
 	struct mcp_client client = {};
 	client.config.transport = MCP_TRANSPORT_STREAMABLE_HTTP;
 	client.next_req_id = 1;
-	pthread_mutex_init(&client.lock, nullptr);
+	client.lock = nb_mutex_new(0);
+	ASSERT_NE(client.lock, nullptr);
 	snprintf(client.config.http_url, sizeof(client.config.http_url),
 		"http://127.0.0.1:%u/mcp", static_cast<unsigned>(ntohs(address.sin_port)));
 	strcpy(client.config.http_auth_token_env, "MORPH_TEST_MCP_LONG_TOKEN");
@@ -1141,7 +1148,7 @@ TEST(McpHttpPayloadTest, LongBearerTokenAndSessionHeaderAreNotTruncated)
 	EXPECT_NE(request.find("Authorization: Bearer " + token + "\r\n"), std::string::npos);
 	EXPECT_NE(request.find("Mcp-Session-Id: " + session + "\r\n"), std::string::npos);
 	mcp_disconnect(&client);
-	pthread_mutex_destroy(&client.lock);
+	(nb_mutex_free(client.lock), client.lock = NULL);
 	http_cleanup();
 	unsetenv("MORPH_TEST_MCP_LONG_TOKEN");
 }
@@ -1184,7 +1191,7 @@ TEST_F(McpStdioFramingTest, MidPaginationMethodNotFoundRemainsAnError)
 		"\"message\":\"Missing handler\"}}\n");
 	struct mcp_prompt_desc *prompts = nullptr;
 	int count = -1;
-	EXPECT_EQ(mcp_list_prompts_copy(&client, &prompts, &count), -ENOSYS);
+	EXPECT_EQ(mcp_list_prompts_copy(&client, &prompts, &count), NB_ERR_UNSUPPORTED);
 	EXPECT_EQ(prompts, nullptr);
 	EXPECT_EQ(count, 0);
 	EXPECT_EQ(client.supports_prompts, 1);
@@ -1200,7 +1207,7 @@ TEST_F(McpStdioFramingTest, OtherRemoteErrorsAndMalformedResultsAreNotMissingCap
 	struct mcp_prompt_desc *prompts = nullptr;
 	int count = -1;
 	for (int i = 0; i < 3; i++) {
-		EXPECT_EQ(mcp_list_prompts_copy(&client, &prompts, &count), MORPH_ERR_PROTOCOL);
+		EXPECT_EQ(mcp_list_prompts_copy(&client, &prompts, &count), NB_ERR_PROTOCOL);
 		EXPECT_EQ(client.supports_prompts, 1);
 		EXPECT_EQ(prompts, nullptr);
 		EXPECT_EQ(count, 0);
@@ -1211,21 +1218,21 @@ TEST_F(McpHttpAuthUrlTest, UrlCreationRejectsAnOccupiedOwner)
 {
 	struct mcp_server_config config = {};
 	strcpy(config.http_url, "https://example.com/mcp");
-	char *url MORPH_CLEANUP(morph_charp_cleanup) = strdup("original");
+	char *url NB_CLEANUP(nb_charp_cleanup) = strdup("original");
 	ASSERT_NE(url, nullptr);
 	char *original = url;
-	EXPECT_EQ(mcp_http_request_url_create(&config, &url), -EEXIST);
+	EXPECT_EQ(mcp_http_request_url_create(&config, &url), NB_ERR_EXISTS);
 	EXPECT_EQ(url, original);
 	EXPECT_STREQ(url, "original");
 }
 
 TEST_F(McpStdioFramingTest, RequestRejectsAnOccupiedOwnerBeforeSending)
 {
-	char *response MORPH_CLEANUP(morph_charp_cleanup) = strdup("original");
+	char *response NB_CLEANUP(nb_charp_cleanup) = strdup("original");
 	ASSERT_NE(response, nullptr);
 	char *original = response;
 	int request_id = client.next_req_id;
-	EXPECT_EQ(mcp_request(&client, "ping", nullptr, &response), -EEXIST);
+	EXPECT_EQ(mcp_request(&client, "ping", nullptr, &response), NB_ERR_EXISTS);
 	EXPECT_EQ(response, original);
 	EXPECT_STREQ(response, "original");
 	EXPECT_EQ(client.next_req_id, request_id);
@@ -1239,11 +1246,11 @@ TEST_F(McpStdioFramingTest, NegativeRemoteStatusRetainsOwnedDiagnostics)
 {
 	send("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,"
 	     "\"message\":\"retained diagnostic\"}}\n");
-	char *response MORPH_CLEANUP(morph_charp_cleanup) = nullptr;
-	EXPECT_EQ(mcp_request(&client, "unknown", nullptr, &response), -ENOSYS);
+	char *response NB_CLEANUP(nb_charp_cleanup) = nullptr;
+	EXPECT_EQ(mcp_request(&client, "unknown", nullptr, &response), NB_ERR_UNSUPPORTED);
 	ASSERT_NE(response, nullptr);
 	EXPECT_NE(strstr(response, "retained diagnostic"), nullptr);
-	cJSON *error MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(response);
+	cJSON *error NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(response);
 	ASSERT_NE(error, nullptr);
 	EXPECT_EQ(cJSON_GetObjectItem(cJSON_GetObjectItem(error, "error"), "code")->valueint,
 		  -32601);
@@ -1254,18 +1261,18 @@ TEST_F(McpStdioFramingTest, ExchangePreservesOccupiedAndFailedOutput)
 	struct mcp_wire_request request = {};
 	request.id = 1;
 	request.json = const_cast<char *>("{}");
-	struct mcp_wire_reply reply MORPH_CLEANUP(mcp_wire_reply_cleanup) = {};
+	struct mcp_wire_reply reply NB_CLEANUP(mcp_wire_reply_cleanup) = {};
 	reply.session_id = strdup("original");
 	ASSERT_NE(reply.session_id, nullptr);
 	char *original = reply.session_id;
-	EXPECT_EQ(mcp_stdio_exchange(&client, &request, 1000, &reply), -EEXIST);
+	EXPECT_EQ(mcp_stdio_exchange(&client, &request, 1000, &reply), NB_ERR_EXISTS);
 	EXPECT_EQ(reply.session_id, original);
 	EXPECT_STREQ(reply.session_id, "original");
 	mcp_wire_reply_cleanup(&reply);
 	reply.http_status = 418;
 	close(request_read);
 	request_read = -1;
-	EXPECT_EQ(mcp_stdio_exchange(&client, &request, 1000, &reply), -EPIPE);
+	EXPECT_EQ(mcp_stdio_exchange(&client, &request, 1000, &reply), NB_ERR_BROKEN_PIPE);
 	EXPECT_EQ(reply.http_status, 418);
 	EXPECT_EQ(reply.json, nullptr);
 	EXPECT_EQ(reply.session_id, nullptr);

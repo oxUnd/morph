@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "prompt/template.h"
 #include "agent/system_prompt.h"
-#include "util/error.h"
+#include "errors.h"
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -162,12 +162,12 @@ TEST_F(PromptTemplateTest, RejectsMalformedConditionalsWithoutImplicitExpression
 		"{{#if model == 'x'}}x{{/if}}", "{{#if flag}}{{#flag}}{{/if}}{{/flag}}",
 		"{{else}}", "{{/if}}"}) {
 		SCOPED_TRACE(text);
-		EXPECT_EQ(render(text, variables), MORPH_ERR_FORMAT);
+		EXPECT_EQ(render(text, variables), NB_ERR_FORMAT);
 	}
 	EXPECT_EQ(render("{{#if flag}}x{{else}}y{{/if}}",
-		{{"flag", MORPH_PROMPT_TEMPLATE_STRING, "true", 0}}), MORPH_ERR_FORMAT);
-	EXPECT_EQ(render("line\n{{#if flag}}x{{else}}y{{else}}z{{/if}}", variables),
-		MORPH_ERR_FORMAT);
+			 {{"flag", MORPH_PROMPT_TEMPLATE_STRING, "true", 0}}),
+		  NB_ERR_FORMAT);
+	EXPECT_EQ(render("line\n{{#if flag}}x{{else}}y{{else}}z{{/if}}", variables), NB_ERR_FORMAT);
 	EXPECT_EQ(error.line, 2u);
 	EXPECT_EQ(error.column, 23u);
 }
@@ -177,16 +177,16 @@ TEST_F(PromptTemplateTest, ValidatesBothConditionalBranchesAndAllPartialReferenc
 		const std::vector<Variable> variables{
 			{"flag", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, enabled}};
 		EXPECT_EQ(render("{{#if flag}}{{missing}}{{else}}ok{{/if}}", variables),
-			MORPH_ERR_FORMAT);
+			  NB_ERR_FORMAT);
 		EXPECT_EQ(render("{{#if flag}}ok{{else}}{{missing}}{{/if}}", variables),
-			MORPH_ERR_FORMAT);
+			  NB_ERR_FORMAT);
 		write("main.txt", "{{#if flag}}{{>missing.txt}}{{else}}ok{{/if}}");
-		EXPECT_EQ(render_file("main.txt", variables), -ENOENT);
+		EXPECT_EQ(render_file("main.txt", variables), NB_ERR_NOT_FOUND);
 		write("main.txt", "{{#if flag}}ok{{else}}{{>missing.txt}}{{/if}}");
-		EXPECT_EQ(render_file("main.txt", variables), -ENOENT);
+		EXPECT_EQ(render_file("main.txt", variables), NB_ERR_NOT_FOUND);
 		write("main.txt", "{{#if flag}}ok{{else}}{{>bad.txt}}{{/if}}");
 		write("bad.txt", "{{#if flag}}unclosed");
-		EXPECT_EQ(render_file("main.txt", variables), MORPH_ERR_FORMAT);
+		EXPECT_EQ(render_file("main.txt", variables), NB_ERR_FORMAT);
 		EXPECT_STREQ(error.path, "bad.txt");
 	}
 }
@@ -207,10 +207,11 @@ TEST_F(PromptTemplateTest, ComposesRoleAndModelGuidanceFromFreshCallerBindings) 
 			"Role: Researcher\nstandard");
 	}
 	write("models/reasoning.txt", "{{else}}");
-	EXPECT_EQ(render_file("main.txt", {
-		{"role.name", MORPH_PROMPT_TEMPLATE_STRING, "Researcher", 0},
-		{"model.text.reasoning_enabled", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 1}}),
-		MORPH_ERR_FORMAT);
+	EXPECT_EQ(render_file("main.txt",
+			      {{"role.name", MORPH_PROMPT_TEMPLATE_STRING, "Researcher", 0},
+			       {"model.text.reasoning_enabled", MORPH_PROMPT_TEMPLATE_BOOL, nullptr,
+				1}}),
+		  NB_ERR_FORMAT);
 }
 
 TEST_F(PromptTemplateTest, ConditionalBranchesEnforceDepthAndSelectedOutputLimits) {
@@ -222,13 +223,13 @@ TEST_F(PromptTemplateTest, ConditionalBranchesEnforceDepthAndSelectedOutputLimit
 	const std::vector<Variable> variables{{"flag", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 1}};
 	ASSERT_EQ(render(opening + closing, variables), 0);
 	EXPECT_TRUE(rendered.empty());
-	EXPECT_EQ(render("{{#if flag}}" + opening + closing + "{{/if}}", variables), -ELOOP);
+	EXPECT_EQ(render("{{#if flag}}" + opening + closing + "{{/if}}", variables), NB_ERR_LOOP);
 	std::string maximum(MORPH_PROMPT_TEMPLATE_OUTPUT_MAX, 'x');
 	for (int enabled : {0, 1}) {
 		int rc = render("{{#if flag}}ok{{else}}{{x}}x{{/if}}", {
 			{"flag", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, enabled},
 			{"x", MORPH_PROMPT_TEMPLATE_STRING, maximum.c_str(), 0}});
-		EXPECT_EQ(rc, enabled ? 0 : -EFBIG);
+		EXPECT_EQ(rc, enabled ? 0 : NB_ERR_TOO_BIG);
 		if (enabled)
 			EXPECT_EQ(rendered, "ok");
 	}
@@ -246,33 +247,34 @@ TEST_F(PromptTemplateTest, CallersCanRefreshBindingsWithoutCachedState) {
 }
 
 TEST_F(PromptTemplateTest, RejectsUnknownVariablesAndTypeCoercion) {
-	EXPECT_EQ(render("{{unknown}}"), MORPH_ERR_FORMAT);
+	EXPECT_EQ(render("{{unknown}}"), NB_ERR_FORMAT);
 	EXPECT_EQ(render("{{flag}}", {{"flag", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 1}}),
-		MORPH_ERR_FORMAT);
-	EXPECT_EQ(render("{{#name}}x{{/name}}",
-		{{"name", MORPH_PROMPT_TEMPLATE_STRING, "true", 0}}), MORPH_ERR_FORMAT);
+		  NB_ERR_FORMAT);
+	EXPECT_EQ(
+		render("{{#name}}x{{/name}}", {{"name", MORPH_PROMPT_TEMPLATE_STRING, "true", 0}}),
+		NB_ERR_FORMAT);
 }
 
 TEST_F(PromptTemplateTest, ValidatesReferencesAndSyntaxInInactiveBranches) {
 	const std::vector<Variable> variables{{"off", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 0}};
-	EXPECT_EQ(render("{{#off}}{{unknown}}{{/off}}", variables), MORPH_ERR_FORMAT);
-	EXPECT_EQ(render("{{#off}}{{#off}}x{{/off}}", variables), MORPH_ERR_FORMAT);
+	EXPECT_EQ(render("{{#off}}{{unknown}}{{/off}}", variables), NB_ERR_FORMAT);
+	EXPECT_EQ(render("{{#off}}{{#off}}x{{/off}}", variables), NB_ERR_FORMAT);
 	write("main.txt", "{{#off}}{{>missing.txt}}{{/off}}");
-	EXPECT_EQ(render_file("main.txt", variables), -ENOENT);
+	EXPECT_EQ(render_file("main.txt", variables), NB_ERR_NOT_FOUND);
 	write("main.txt", "{{#off}}{{>partial.txt}}{{/off}}");
 	write("partial.txt", "{{unknown}}");
-	EXPECT_EQ(render_file("main.txt", variables), MORPH_ERR_FORMAT);
+	EXPECT_EQ(render_file("main.txt", variables), NB_ERR_FORMAT);
 	EXPECT_STREQ(error.path, "partial.txt");
 }
 
 TEST_F(PromptTemplateTest, ReportsExactSourceAndByteLocationWithoutVariableValues) {
-	EXPECT_EQ(render("first\n你好 {{missing}}"), MORPH_ERR_FORMAT);
+	EXPECT_EQ(render("first\n你好 {{missing}}"), NB_ERR_FORMAT);
 	EXPECT_STREQ(error.path, "<string>");
 	EXPECT_EQ(error.line, 2u);
 	EXPECT_EQ(error.column, 8u);
 	write("main.txt", "{{>part.txt}}");
 	write("part.txt", "x\n  {{unknown}}");
-	EXPECT_EQ(render_file("main.txt"), MORPH_ERR_FORMAT);
+	EXPECT_EQ(render_file("main.txt"), NB_ERR_FORMAT);
 	EXPECT_STREQ(error.path, "part.txt");
 	EXPECT_EQ(error.line, 2u);
 	EXPECT_EQ(error.column, 3u);
@@ -284,22 +286,24 @@ TEST_F(PromptTemplateTest, RejectsMalformedTagsSectionsAndUnsupportedSyntax) {
 		"{{/a}}", "{{#a}}", "{{#a}}{{/b}}", "{{#a}}{{#b}}{{/a}}{{/b}}"}) {
 		SCOPED_TRACE(text);
 		EXPECT_EQ(render(text, {{"a", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 1},
-			{"b", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 1}}), MORPH_ERR_FORMAT);
+					{"b", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 1}}),
+			  NB_ERR_FORMAT);
 	}
 }
 
 TEST_F(PromptTemplateTest, ValidatesBindingsEvenWhenUnused) {
 	EXPECT_EQ(render("", {{"x", MORPH_PROMPT_TEMPLATE_STRING, "", 0},
-		{"x", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 0}}), -EINVAL);
-	EXPECT_EQ(render("", {{nullptr, MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 0}}), -EINVAL);
-	EXPECT_EQ(render("", {{"a..b", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 0}}), -EINVAL);
-	EXPECT_EQ(render("", {{"x", MORPH_PROMPT_TEMPLATE_STRING, nullptr, 0}}), -EINVAL);
+			      {"x", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 0}}),
+		  NB_ERR_INVAL);
+	EXPECT_EQ(render("", {{nullptr, MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 0}}), NB_ERR_INVAL);
+	EXPECT_EQ(render("", {{"a..b", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 0}}), NB_ERR_INVAL);
+	EXPECT_EQ(render("", {{"x", MORPH_PROMPT_TEMPLATE_STRING, nullptr, 0}}), NB_ERR_INVAL);
 	EXPECT_EQ(render("", {{"x", static_cast<morph_prompt_template_type>(42), "", 0}}),
-		-EINVAL);
-	EXPECT_EQ(render("", {{"x", MORPH_PROMPT_TEMPLATE_STRING, "\xff", 0}}), -EILSEQ);
+		  NB_ERR_INVAL);
+	EXPECT_EQ(render("", {{"x", MORPH_PROMPT_TEMPLATE_STRING, "\xff", 0}}), NB_ERR_ENCODING);
 	std::vector<Variable> too_many(MORPH_PROMPT_TEMPLATE_VARIABLES_MAX + 1,
 		{"x", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 0});
-	EXPECT_EQ(render("", too_many), -EINVAL);
+	EXPECT_EQ(render("", too_many), NB_ERR_INVAL);
 }
 
 TEST_F(PromptTemplateTest, IncludesRootedPartialsWithSharedBindingsAndExactWhitespace) {
@@ -310,28 +314,28 @@ TEST_F(PromptTemplateTest, IncludesRootedPartialsWithSharedBindingsAndExactWhite
 		{"flag", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 1},
 		{"text", MORPH_PROMPT_TEMPLATE_STRING, "literal {{unknown}}", 0}}), 0);
 	EXPECT_EQ(rendered, "start\nliteral {{unknown}}\nliteral {{unknown}}\nend\n");
-	EXPECT_EQ(render("{{>common/one.txt}}"), MORPH_ERR_FORMAT);
+	EXPECT_EQ(render("{{>common/one.txt}}"), NB_ERR_FORMAT);
 }
 
 TEST_F(PromptTemplateTest, SectionsCannotCrossFileBoundaries) {
 	write("main.txt", "{{#flag}}{{>partial.txt}}{{/flag}}");
 	write("partial.txt", "{{/flag}}");
 	EXPECT_EQ(render_file("main.txt", {{"flag", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 1}}),
-		MORPH_ERR_FORMAT);
+		  NB_ERR_FORMAT);
 }
 
 TEST_F(PromptTemplateTest, RejectsUnsafeEntryAndPartialPaths) {
 	for (const char *path : {"", "/etc/passwd", "../outside.txt", "./main.txt",
 		"a/../main.txt", "a//main.txt", "a/", "a\\b", "a b"}) {
 		SCOPED_TRACE(path);
-		EXPECT_EQ(render_file(path), -EINVAL);
+		EXPECT_EQ(render_file(path), NB_ERR_INVAL);
 		write("main.txt", std::string("{{>") + path + "}}");
-		EXPECT_EQ(render_file("main.txt"), MORPH_ERR_FORMAT);
+		EXPECT_EQ(render_file("main.txt"), NB_ERR_FORMAT);
 	}
 	std::string long_path(PATH_MAX, 'a');
-	EXPECT_EQ(render_file(long_path), -EINVAL);
+	EXPECT_EQ(render_file(long_path), NB_ERR_INVAL);
 	write("main.txt", "{{>" + long_path + "}}");
-	EXPECT_EQ(render_file("main.txt"), -ENAMETOOLONG);
+	EXPECT_EQ(render_file("main.txt"), NB_ERR_NAME_TOO_LONG);
 }
 
 TEST_F(PromptTemplateTest, RejectsFileAndDirectorySymlinksAndSpecialFiles) {
@@ -343,19 +347,19 @@ TEST_F(PromptTemplateTest, RejectsFileAndDirectorySymlinksAndSpecialFiles) {
 	write("main.txt", "{{>alias.txt}}");
 	EXPECT_LT(render_file("main.txt"), 0);
 	ASSERT_EQ(mkfifo((root / "pipe.txt").c_str(), 0600), 0);
-	EXPECT_EQ(render_file("pipe.txt"), MORPH_ERR_FORMAT);
-	EXPECT_EQ(render_file("real"), MORPH_ERR_FORMAT);
+	EXPECT_EQ(render_file("pipe.txt"), NB_ERR_FORMAT);
+	EXPECT_EQ(render_file("real"), NB_ERR_FORMAT);
 }
 
 TEST_F(PromptTemplateTest, DetectsDirectIndirectAndHardLinkIncludeCycles) {
 	write("main.txt", "{{>main.txt}}");
-	EXPECT_EQ(render_file("main.txt"), -ELOOP);
+	EXPECT_EQ(render_file("main.txt"), NB_ERR_LOOP);
 	write("main.txt", "{{>other.txt}}");
 	write("other.txt", "{{>main.txt}}");
-	EXPECT_EQ(render_file("main.txt"), -ELOOP);
+	EXPECT_EQ(render_file("main.txt"), NB_ERR_LOOP);
 	write("main.txt", "{{>alias.txt}}");
 	ASSERT_EQ(link((root / "main.txt").c_str(), (root / "alias.txt").c_str()), 0);
-	EXPECT_EQ(render_file("main.txt"), -ELOOP);
+	EXPECT_EQ(render_file("main.txt"), NB_ERR_LOOP);
 }
 
 TEST_F(PromptTemplateTest, EnforcesIncludeDepthAndFileLoadLimits) {
@@ -366,7 +370,7 @@ TEST_F(PromptTemplateTest, EnforcesIncludeDepthAndFileLoadLimits) {
 	ASSERT_EQ(render_file("0.txt"), 0);
 	EXPECT_EQ(rendered, "ok");
 	write(std::to_string(MORPH_PROMPT_TEMPLATE_INCLUDE_DEPTH - 1) + ".txt", "{{>0.txt}}");
-	EXPECT_EQ(render_file("0.txt"), -ELOOP);
+	EXPECT_EQ(render_file("0.txt"), NB_ERR_LOOP);
 	write("empty.txt", "");
 	std::string many;
 	for (unsigned i = 0; i < MORPH_PROMPT_TEMPLATE_FILES_MAX - 1; i++)
@@ -374,7 +378,7 @@ TEST_F(PromptTemplateTest, EnforcesIncludeDepthAndFileLoadLimits) {
 	write("main.txt", many);
 	EXPECT_EQ(render_file("main.txt"), 0);
 	write("main.txt", many + "{{>empty.txt}}");
-	EXPECT_EQ(render_file("main.txt"), -ELOOP);
+	EXPECT_EQ(render_file("main.txt"), NB_ERR_LOOP);
 }
 
 TEST_F(PromptTemplateTest, EnforcesSectionDepthIncludingInactiveSections) {
@@ -385,19 +389,19 @@ TEST_F(PromptTemplateTest, EnforcesSectionDepthIncludingInactiveSections) {
 	}
 	const std::vector<Variable> variables{{"flag", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 0}};
 	EXPECT_EQ(render(opening + closing, variables), 0);
-	EXPECT_EQ(render("{{#flag}}" + opening + closing + "{{/flag}}", variables), -ELOOP);
+	EXPECT_EQ(render("{{#flag}}" + opening + closing + "{{/flag}}", variables), NB_ERR_LOOP);
 }
 
 TEST_F(PromptTemplateTest, EnforcesPerFileAndAggregateSourceLimits) {
 	std::string maximum(MORPH_PROMPT_TEMPLATE_FILE_MAX, 'a');
 	EXPECT_EQ(render(maximum), 0);
-	EXPECT_EQ(render(maximum + "a"), -EFBIG);
+	EXPECT_EQ(render(maximum + "a"), NB_ERR_TOO_BIG);
 	write("large.txt", maximum);
 	EXPECT_EQ(render_file("large.txt"), 0);
 	write("main.txt", "{{>large.txt}}{{>large.txt}}{{>large.txt}}{{>large.txt}}");
-	EXPECT_EQ(render_file("main.txt"), -EFBIG);
+	EXPECT_EQ(render_file("main.txt"), NB_ERR_TOO_BIG);
 	write("large.txt", maximum + "a");
-	EXPECT_EQ(render_file("large.txt"), -EFBIG);
+	EXPECT_EQ(render_file("large.txt"), NB_ERR_TOO_BIG);
 }
 
 TEST_F(PromptTemplateTest, EnforcesOutputAndAggregateBindingLimits) {
@@ -405,28 +409,29 @@ TEST_F(PromptTemplateTest, EnforcesOutputAndAggregateBindingLimits) {
 	std::vector<Variable> variables{{"x", MORPH_PROMPT_TEMPLATE_STRING, maximum.c_str(), 0}};
 	ASSERT_EQ(render("{{x}}", variables), 0);
 	EXPECT_EQ(rendered.size(), maximum.size());
-	EXPECT_EQ(render("{{x}}x", variables), -EFBIG);
+	EXPECT_EQ(render("{{x}}x", variables), NB_ERR_TOO_BIG);
 	variables.push_back({"y", MORPH_PROMPT_TEMPLATE_STRING, "y", 0});
-	EXPECT_EQ(render("", variables), -EFBIG);
+	EXPECT_EQ(render("", variables), NB_ERR_TOO_BIG);
 }
 
 TEST_F(PromptTemplateTest, RejectsInvalidUtf8AndEmbeddedNulFiles) {
-	EXPECT_EQ(render("\xff"), -EILSEQ);
+	EXPECT_EQ(render("\xff"), NB_ERR_ENCODING);
 	write("main.txt", std::string("a\0b", 3));
-	EXPECT_EQ(render_file("main.txt"), -EILSEQ);
+	EXPECT_EQ(render_file("main.txt"), NB_ERR_ENCODING);
 	write("main.txt", "\xc0\xaf");
-	EXPECT_EQ(render_file("main.txt"), -EILSEQ);
+	EXPECT_EQ(render_file("main.txt"), NB_ERR_ENCODING);
 }
 
 TEST_F(PromptTemplateTest, ErrorsClearOutputAndDiagnosticsAndAllowNullDiagnostics) {
 	char *output = reinterpret_cast<char *>(1);
-	EXPECT_EQ(morph_prompt_template_render(nullptr, nullptr, 0, &output, &error), -EINVAL);
+	EXPECT_EQ(morph_prompt_template_render(nullptr, nullptr, 0, &output, &error), NB_ERR_INVAL);
 	EXPECT_EQ(output, nullptr);
-	EXPECT_EQ(morph_prompt_template_render("", nullptr, 1, &output, nullptr), -EINVAL);
+	EXPECT_EQ(morph_prompt_template_render("", nullptr, 1, &output, nullptr), NB_ERR_INVAL);
 	EXPECT_EQ(output, nullptr);
-	EXPECT_EQ(morph_prompt_template_render("", nullptr, 0, nullptr, nullptr), -EINVAL);
+	EXPECT_EQ(morph_prompt_template_render("", nullptr, 0, nullptr, nullptr), NB_ERR_INVAL);
 	EXPECT_EQ(morph_prompt_template_render_file("/nonexistent-morph-prompt-root", "x.txt",
-		nullptr, 0, &output, &error), -ENOENT);
+						    nullptr, 0, &output, &error),
+		  NB_ERR_NOT_FOUND);
 	EXPECT_EQ(output, nullptr);
 	EXPECT_EQ(render("valid"), 0);
 	EXPECT_EQ(error.path[0], '\0');

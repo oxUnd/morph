@@ -2,7 +2,8 @@
 #define MORPH_CLI_MODELS_JOBS_H
 
 #include "cJSON.h"
-#include "util/array.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 #include <stdint.h>
 
 struct cli_jobs_job {
@@ -12,7 +13,7 @@ struct cli_jobs_job {
 };
 
 struct cli_jobs {
-	morph_array_t entries;
+	nb_vec entries;
 	int64_t session_id;
 };
 

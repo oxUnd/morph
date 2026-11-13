@@ -1,19 +1,19 @@
 #ifndef MORPH_RUNTIME_TASK_WORKER_H
 #define MORPH_RUNTIME_TASK_WORKER_H
 
-struct morph_log;
+struct nb_log;
 #include "agent/tools/scheduled_tasks.h"
 #include "db/database.h"
 #include "runtime/tasks.h"
 
 #include <limits.h>
-#include <pthread.h>
+#include "nb/thread.h"
 
 struct runtime_task_worker {
-	struct morph_log *logger;
-	pthread_t thread;
-	pthread_mutex_t lock;
-	pthread_cond_t cond;
+	struct nb_log *logger;
+	nb_thread *thread;
+	nb_mutex *lock;
+	nb_cond *cond;
 	int started;
 	int stop;
 	char db_path[PATH_MAX];

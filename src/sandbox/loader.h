@@ -1,3 +1,4 @@
+#include "nb/err.h"
 #ifndef LOADER_H
 #define LOADER_H
 
@@ -7,7 +8,7 @@ extern "C" {
 
 struct ext;
 
-/* ex must not already hold a library/entrypoint; occupied: -EEXIST.
+/* ex must not already hold a library/entrypoint; occupied: NB_ERR_EXISTS.
  * Failure preserves it. The manifest is borrowed for loading the backend. */
 int ext_load_so(struct ext *ex, const char *path);
 int ext_load_exec(struct ext *ex, const char *path);

@@ -1,4 +1,6 @@
+#include "errors.h"
 #include <gtest/gtest.h>
+#include "nb/err.h"
 
 extern "C" {
 #include "agent/patch.h"
@@ -7,9 +9,10 @@ extern "C" {
 #include "agent/tools/apply_patch.h"
 #include "agent/tools/checkpoint.h"
 #include "agent/tool_runtime.h"
-#include "util/cleanup.h"
-#include "util/buf.h"
-#include "util/file.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/file.h"
 }
 
 #include <cerrno>
@@ -47,13 +50,24 @@ protected:
 
 	void write_file(const char *name, const char *content)
 	{
-		ASSERT_EQ(file_write_all(path(name).c_str(), content,
-			std::strlen(content)), 0);
+		ASSERT_EQ(
+			nb_file_write_all(path(name).c_str(), content, std::strlen(content), NULL),
+			0);
 	}
 
 	std::string read_file(const char *name)
 	{
-		char *content = file_read_all_copy(path(name).c_str(), nullptr);
+		nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
+		char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
+		char *content =
+			(nb_file_read_all(path(name).c_str(), &file_value_1, 0, NULL) == NB_OK &&
+					 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) +
+								       1)) != NULL
+				 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
+					   nb_buf_len(&file_value_1) + 1),
+				    nb_charp_steal(&file_copy_1))
+				 : NULL);
 		EXPECT_NE(content, nullptr);
 		std::string value = content ? content : "";
 		std::free(content);
@@ -69,15 +83,15 @@ protected:
 	std::string preview(const char *input, int *rc, char *error,
 			    size_t error_size)
 	{
-		morph_buf_t out;
+		nb_buf out;
 		std::string text;
 
-		if (morph_buf_init(&out, 256) != 0)
+		if ((nb_buf_init(&out), nb_buf_reserve(&out, 256) ? 0 : NB_ERR_NOMEM) != 0)
 			return text;
 		*rc = patch_preview(dir, input, &out, error, error_size);
 		if (*rc == 0)
-			text = morph_buf_cstr_borrow(&out);
-		morph_buf_cleanup(&out);
+			text = nb_buf_cstr(&out);
+		nb_buf_cleanup(&out);
 		return text;
 	}
 };
@@ -130,7 +144,7 @@ static int tracking_capture(void *opaque, int64_t id, const char *path)
 	EXPECT_EQ(id, 42);
 	EXPECT_TRUE(recorder.active);
 	if (name == recorder.fail_capture)
-		return -EIO;
+		return NB_ERR_IO;
 	recorder.paths.emplace_back(path);
 	recorder.before[name] = tracking_file_contents(path);
 	return 0;
@@ -173,7 +187,7 @@ static int tracking_request(void *opaque, const char *action, int64_t id, cJSON 
 	recorder.requested_id = id;
 	*out = cJSON_CreateObject();
 	if (!*out)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	cJSON_AddStringToObject(*out, "action", action);
 	cJSON_AddNumberToObject(*out, "id", static_cast<double>(id));
 	cJSON_AddBoolToObject(*out, "restored", 0);
@@ -228,7 +242,7 @@ TEST_F(PatchTrackingTest, CapturesEveryPreimageBeforeEditsIncludingMoveDestinati
 	write_file("first.txt", "old first\n");
 	write_file("source.txt", "old source\n");
 	write_file("destination.txt", "user destination\n");
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	ASSERT_EQ(run("apply_patch",
 		      "*** Begin Patch\n*** Update File: first.txt\n@@\n-old first\n+new first\n"
 		      "*** Update File: source.txt\n*** Move to: destination.txt\n@@\n"
@@ -254,14 +268,14 @@ TEST_F(PatchTrackingTest, BeginOrCaptureFailureNeverMutatesFiles)
 	write_file("second.txt", "second\n");
 	const char *patch = "*** Begin Patch\n*** Update File: first.txt\n@@\n-first\n+changed\n"
 			    "*** Update File: second.txt\n@@\n-second\n+changed\n*** End Patch";
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
-	recorder.begin_error = -EIO;
-	EXPECT_EQ(run("apply_patch", patch, &result), -EIO);
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
+	recorder.begin_error = NB_ERR_IO;
+	EXPECT_EQ(run("apply_patch", patch, &result), NB_ERR_IO);
 	EXPECT_EQ(recorder.finish_count, 0);
 	EXPECT_EQ(read_file("first.txt"), "first\n");
 	recorder.begin_error = 0;
 	recorder.fail_capture = "second.txt";
-	EXPECT_EQ(run("apply_patch", patch, &result), -EIO);
+	EXPECT_EQ(run("apply_patch", patch, &result), NB_ERR_IO);
 	EXPECT_EQ(recorder.finish_count, 1);
 	EXPECT_FALSE(recorder.active);
 	EXPECT_EQ(read_file("first.txt"), "first\n");
@@ -279,7 +293,7 @@ TEST_F(PatchTrackingTest, BeginOrCaptureFailureNeverMutatesFiles)
 
 TEST_F(PatchTrackingTest, ParseFailureAndPermissionDenialStillFinishWithoutCapture)
 {
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	EXPECT_LT(run("apply_patch", "invalid patch", &result), 0);
 	EXPECT_EQ(recorder.finish_count, 1);
 	EXPECT_TRUE(recorder.paths.empty());
@@ -299,7 +313,7 @@ TEST_F(PatchTrackingTest, PartialPatchFailureSealsChangesAndReportsRisk)
 {
 	write_file("first.txt", "before\n");
 	write_file("second.txt", "actual\n");
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	EXPECT_LT(run("apply_patch",
 		      "*** Begin Patch\n*** Update File: first.txt\n@@\n-before\n+after\n"
 		      "*** Update File: second.txt\n@@\n-missing\n+changed\n*** End Patch",
@@ -311,17 +325,17 @@ TEST_F(PatchTrackingTest, PartialPatchFailureSealsChangesAndReportsRisk)
 	const cJSON *checkpoint = cJSON_GetObjectItem(result.meta, "checkpoint");
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(checkpoint, "status")), "sealed");
 	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(checkpoint, "changes_may_have_applied")));
-	EXPECT_NE(strstr(result.text.data, "Files may already have changed"), nullptr);
+	EXPECT_NE(strstr(result.text.ptr, "Files may already have changed"), nullptr);
 }
 
 TEST_F(PatchTrackingTest, SealFailureAfterEditingIsNeverReportedAsSuccess)
 {
-	recorder.finish_error = -EIO;
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	recorder.finish_error = NB_ERR_IO;
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	EXPECT_EQ(run("apply_patch",
 		      "*** Begin Patch\n*** Add File: changed.txt\n+created\n*** End Patch",
 		      &result),
-		  -EIO);
+		  NB_ERR_IO);
 	EXPECT_EQ(read_file("changed.txt"), "created\n");
 	EXPECT_EQ(recorder.finish_count, 1);
 	EXPECT_FALSE(recorder.active);
@@ -336,18 +350,20 @@ TEST_F(PatchTrackingTest, RejectsOversizedPostimageBeforeWritingAndStillSeals)
 {
 	runtime.checkpoint.max_file_bytes = 8;
 	write_file("file.txt", "ok\n");
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	EXPECT_EQ(run("apply_patch",
-		"*** Begin Patch\n*** Update File: file.txt\n@@\n-ok\n+too much content\n"
-		"*** End Patch", &result), -EFBIG);
+		      "*** Begin Patch\n*** Update File: file.txt\n@@\n-ok\n+too much content\n"
+		      "*** End Patch",
+		      &result),
+		  NB_ERR_TOO_BIG);
 	EXPECT_EQ(read_file("file.txt"), "ok\n");
 	EXPECT_EQ(recorder.finish_count, 1);
-	EXPECT_NE(std::string(result.text.data).find("8-byte checkpoint limit"), std::string::npos);
+	EXPECT_NE(std::string(result.text.ptr).find("8-byte checkpoint limit"), std::string::npos);
 	tool_result_cleanup(&result);
 	EXPECT_EQ(run("apply_patch",
-		"*** Begin Patch\n*** Add File: new.txt\n+too much content\n*** End Patch",
-		&result),
-		-EFBIG);
+		      "*** Begin Patch\n*** Add File: new.txt\n+too much content\n*** End Patch",
+		      &result),
+		  NB_ERR_TOO_BIG);
 	EXPECT_FALSE(std::filesystem::exists(path("new.txt")));
 	EXPECT_EQ(recorder.finish_count, 2);
 }
@@ -355,27 +371,29 @@ TEST_F(PatchTrackingTest, RejectsOversizedPostimageBeforeWritingAndStillSeals)
 TEST_F(PatchTrackingTest, AggregateValidationRejectsAWriteAndStillSealsTheAttempt)
 {
 	runtime.checkpoint.validate_write = tracking_validate_write;
-	recorder.validation_error = -EFBIG;
+	recorder.validation_error = NB_ERR_TOO_BIG;
 	write_file("file.txt", "before\n");
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	EXPECT_EQ(run("apply_patch",
-		"*** Begin Patch\n*** Update File: file.txt\n@@\n-before\n+after\n*** End Patch",
-		&result), -EFBIG);
+		      "*** Begin Patch\n*** Update File: file.txt\n@@\n-before\n+after\n*** End "
+		      "Patch",
+		      &result),
+		  NB_ERR_TOO_BIG);
 	EXPECT_EQ(read_file("file.txt"), "before\n");
 	EXPECT_EQ(recorder.validation_count, 1);
 	EXPECT_EQ(recorder.validated_bytes, 6u);
 	EXPECT_EQ(recorder.validated_target, "file.txt");
 	EXPECT_EQ(recorder.validated_removed, "");
 	EXPECT_EQ(recorder.finish_count, 1);
-	EXPECT_NE(std::string(result.text.data).find("postimage budget rejected"),
-		std::string::npos);
+	EXPECT_NE(std::string(result.text.ptr).find("postimage budget rejected"),
+		  std::string::npos);
 }
 
 TEST_F(PatchTrackingTest, MoveValidationCombinesTheDestinationWriteAndSourceRemoval)
 {
 	runtime.checkpoint.validate_write = tracking_validate_write;
 	write_file("old.txt", "old\n");
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	ASSERT_EQ(run("apply_patch",
 		"*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n@@\n-old\n+new\n"
 		"*** End Patch", &result), 0);
@@ -389,7 +407,7 @@ TEST_F(PatchTrackingTest, MoveValidationCombinesTheDestinationWriteAndSourceRemo
 
 TEST_F(PatchTrackingTest, CheckpointRequiresExplicitTargetAndRetainsConflictDetails)
 {
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	ASSERT_EQ(run("checkpoint", "{\"action\":\"list\"}", &result), 0);
 	EXPECT_EQ(recorder.requested_id, 0);
 	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "current_checkpoint_id")), 42);
@@ -397,13 +415,14 @@ TEST_F(PatchTrackingTest, CheckpointRequiresExplicitTargetAndRetainsConflictDeta
 	     {"{\"action\":\"preview\"}", "{\"action\":\"restore_code\"}",
 	      "{\"action\":\"preview\",\"id\":1.5}", "{\"action\":\"restore_code\",\"id\":0}",
 	      "{\"action\":\"preview\",\"id\":1e30}", "{\"action\":\"rewind\",\"id\":42}"})
-		EXPECT_EQ(run("checkpoint", input, &result), -EINVAL);
+		EXPECT_EQ(run("checkpoint", input, &result), NB_ERR_INVAL);
 	EXPECT_EQ(recorder.request_count, 1);
 	ASSERT_EQ(run("checkpoint", "{\"action\":\"preview\",\"id\":42}", &result), 0);
 	EXPECT_EQ(recorder.requested_action, "preview");
 	EXPECT_EQ(recorder.requested_id, 42);
-	recorder.request_error = -EAGAIN;
-	EXPECT_EQ(run("checkpoint", "{\"action\":\"restore_code\",\"id\":42}", &result), -EAGAIN);
+	recorder.request_error = NB_ERR_AGAIN;
+	EXPECT_EQ(run("checkpoint", "{\"action\":\"restore_code\",\"id\":42}", &result),
+		  NB_ERR_AGAIN);
 	const cJSON *checkpoint = cJSON_GetObjectItem(result.meta, "checkpoint");
 	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(checkpoint, "conflicts")), 1);
 }
@@ -411,14 +430,15 @@ TEST_F(PatchTrackingTest, CheckpointRequiresExplicitTargetAndRetainsConflictDeta
 TEST_F(PatchTrackingTest, SubagentEditsKeepLegacyBehaviorAndCannotRequestRestore)
 {
 	runtime.agent_depth = 1;
-	struct tool_result result MORPH_CLEANUP(tool_result_cleanup) = {};
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
 	ASSERT_EQ(run("apply_patch",
 		      "*** Begin Patch\n*** Add File: child.txt\n+child\n*** End Patch", &result),
 		  0);
 	EXPECT_EQ(read_file("child.txt"), "child\n");
 	EXPECT_EQ(recorder.begin_count, 0);
 	EXPECT_EQ(recorder.finish_count, 0);
-	EXPECT_EQ(run("checkpoint", "{\"action\":\"restore_code\",\"id\":42}", &result), -EPERM);
+	EXPECT_EQ(run("checkpoint", "{\"action\":\"restore_code\",\"id\":42}", &result),
+		  NB_ERR_NOT_PERMITTED);
 	EXPECT_EQ(recorder.request_count, 0);
 }
 
@@ -441,7 +461,7 @@ TEST_F(PatchTest, AddsUpdatesAndDeletesFiles)
 	char error[512];
 
 	ASSERT_EQ(apply(input, &result, error, sizeof(error)), 0) << error;
-	EXPECT_EQ(result.changes.nelts, 3U);
+	EXPECT_EQ(result.changes.len, 3U);
 	EXPECT_EQ(read_file("add.txt"), "created\n");
 	EXPECT_EQ(read_file("update.txt"), "alpha\ngamma\n");
 	EXPECT_EQ(access(path("delete.txt").c_str(), F_OK), -1);
@@ -495,7 +515,7 @@ TEST_F(PatchTest, UsesSemanticHunkContextLikeCodex)
 		"-missing\n"
 		"+other\n"
 		"*** End Patch";
-	EXPECT_EQ(apply(invalid, &result, error, sizeof(error)), -EINVAL);
+	EXPECT_EQ(apply(invalid, &result, error, sizeof(error)), NB_ERR_INVAL);
 	EXPECT_NE(std::strstr(error, "expected lines"), nullptr);
 	EXPECT_NE(std::strstr(error, "patch line 3"), nullptr);
 }
@@ -512,7 +532,7 @@ TEST_F(PatchTest, MissingFileErrorIncludesResolvedWorkspacePath)
 	struct patch_result result{};
 	char error[512];
 
-	EXPECT_EQ(apply(input, &result, error, sizeof(error)), -ENOENT);
+	EXPECT_EQ(apply(input, &result, error, sizeof(error)), NB_ERR_NOT_FOUND);
 	EXPECT_NE(std::strstr(error, dir), nullptr);
 	EXPECT_NE(std::strstr(error, "missing.txt"), nullptr);
 }
@@ -547,7 +567,7 @@ TEST_F(PatchTest, AppliesSingleUpdateHunkWithoutHeader)
 	ASSERT_EQ(apply(input, &result, error, sizeof(error)), 0) << error;
 	EXPECT_NE(read_file("todo.c").find("fseek(f, 0, SEEK_END)"),
 		  std::string::npos);
-	EXPECT_EQ(result.changes.nelts, 1U);
+	EXPECT_EQ(result.changes.len, 1U);
 	patch_result_cleanup(&result);
 }
 
@@ -569,7 +589,7 @@ TEST_F(PatchTest, FailureAfterSuccessKeepsEarlierChangesLikeCodex)
 	struct patch_result result{};
 	char error[512];
 
-	EXPECT_EQ(apply(input, &result, error, sizeof(error)), -EINVAL);
+	EXPECT_EQ(apply(input, &result, error, sizeof(error)), NB_ERR_INVAL);
 	EXPECT_NE(std::strstr(error, "expected lines"), nullptr);
 	EXPECT_EQ(read_file("first.txt"), "after\n");
 	EXPECT_EQ(read_file("second.txt"), "actual\n");
@@ -620,8 +640,8 @@ TEST_F(PatchTest, RejectsTraversalAndAbsolutePaths)
 	struct patch_result result{};
 	char error[512];
 
-	EXPECT_EQ(apply(traversal, &result, error, sizeof(error)), -EINVAL);
-	EXPECT_EQ(apply(absolute, &result, error, sizeof(error)), -EINVAL);
+	EXPECT_EQ(apply(traversal, &result, error, sizeof(error)), NB_ERR_INVAL);
+	EXPECT_EQ(apply(absolute, &result, error, sizeof(error)), NB_ERR_INVAL);
 }
 
 TEST_F(PatchTest, AddFileErrorReportsPatchLine)
@@ -635,7 +655,7 @@ TEST_F(PatchTest, AddFileErrorReportsPatchLine)
 	struct patch_result result{};
 	char error[512];
 
-	EXPECT_EQ(apply(input, &result, error, sizeof(error)), -EINVAL);
+	EXPECT_EQ(apply(input, &result, error, sizeof(error)), NB_ERR_INVAL);
 	EXPECT_STREQ(error, "invalid add-file line 4 in broken.txt: "
 		     "content lines must start with '+'");
 }
@@ -654,7 +674,7 @@ TEST_F(PatchTest, RejectsSymbolicLinkTargets)
 	struct patch_result result{};
 	char error[512];
 
-	EXPECT_EQ(apply(input, &result, error, sizeof(error)), -ELOOP);
+	EXPECT_EQ(apply(input, &result, error, sizeof(error)), NB_ERR_LOOP);
 	EXPECT_EQ(read_file("real.txt"), "value\n");
 }
 
@@ -819,7 +839,7 @@ TEST_F(PatchTest, PreviewFailsWhenContextIsMissing)
 	int rc = 0;
 
 	EXPECT_EQ(preview(input, &rc, error, sizeof(error)), "");
-	EXPECT_EQ(rc, -EINVAL);
+	EXPECT_EQ(rc, NB_ERR_INVAL);
 	EXPECT_NE(std::strstr(error, "failed to find expected lines"), nullptr);
 	EXPECT_EQ(read_file("target.txt"), "one\ntwo\n");
 }

@@ -1,8 +1,11 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
+#include "nb/process.h"
+#include "nb/file.h"
 extern "C" {
 #include "sandbox/sandbox.h"
 #include "sandbox/tool_paths.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "agent/tool_context.h"
 #include "permission/context_internal.h"
 #include "agent/tool.h"
@@ -212,39 +215,55 @@ TEST(SandboxRlimitTest, NofileCustomLimit)
 
 TEST(SandboxFdTest, ClosesDescriptorsAboveStandardStreams)
 {
-	int rc = run_in_child([]() {
-		int fds[2];
-
-		if (pipe(fds) != 0)
-			return 10;
-		if (sandbox_close_inherited_fds() != 0)
-			return 11;
-		errno = 0;
-		if (fcntl(fds[0], F_GETFD) != -1 || errno != EBADF)
-			return 12;
-		errno = 0;
-		if (fcntl(fds[1], F_GETFD) != -1 || errno != EBADF)
-			return 13;
-		return 0;
-	});
-
-	EXPECT_EQ(rc, 0);
+	int fds[2];
+	ASSERT_EQ(pipe(fds), 0);
+	const char *argv[] = {"/usr/bin/true", nullptr};
+	nb_process_options options{};
+	options.argv = argv;
+	options.close_fds = true;
+	options.stdin_mode = NB_PROCESS_NULL;
+	options.stdout_mode = NB_PROCESS_NULL;
+	options.stderr_mode = NB_PROCESS_NULL;
+	options.prepare_ctx = fds;
+	options.prepare = +[](void *opaque) -> nb_status {
+		const int *borrowed = static_cast<const int *>(opaque);
+		for (int i = 0; i < 2; i++) {
+			errno = 0;
+			if (fcntl(borrowed[i], F_GETFD) != -1 || errno != EBADF)
+				return NB_ERR_STATE;
+		}
+		return NB_OK;
+	};
+	nb_process *child NB_CLEANUP(nb_process_cleanup) = nullptr;
+	int rc = nb_process_spawn(&options, &child, nullptr);
+	close(fds[0]);
+	close(fds[1]);
+	ASSERT_EQ(rc, NB_OK);
+	int code = -1;
+	ASSERT_EQ(nb_process_wait(child, -1, &code, nullptr, nullptr), NB_OK);
+	EXPECT_EQ(code, 0);
 }
 
 TEST(SandboxSessionTest, StartsNewTerminalSession)
 {
 	pid_t parent_session = getsid(0);
-	int rc = run_in_child([&]() {
-		if (sandbox_start_isolated_session() != 0)
-			return 10;
-		if (getsid(0) != getpid())
-			return 11;
-		if (getsid(0) == parent_session)
-			return 12;
-		return 0;
-	});
-
-	EXPECT_EQ(rc, 0);
+	const char *argv[] = {"/usr/bin/true", nullptr};
+	nb_process_options options{};
+	options.argv = argv;
+	options.new_session = true;
+	options.stdin_mode = NB_PROCESS_NULL;
+	options.stdout_mode = NB_PROCESS_NULL;
+	options.stderr_mode = NB_PROCESS_NULL;
+	options.prepare_ctx = &parent_session;
+	options.prepare = +[](void *opaque) -> nb_status {
+		pid_t previous = *static_cast<const pid_t *>(opaque);
+		return getsid(0) == getpid() && getsid(0) != previous ? NB_OK : NB_ERR_STATE;
+	};
+	nb_process *child NB_CLEANUP(nb_process_cleanup) = nullptr;
+	ASSERT_EQ(nb_process_spawn(&options, &child, nullptr), NB_OK);
+	int code = -1;
+	ASSERT_EQ(nb_process_wait(child, -1, &code, nullptr, nullptr), NB_OK);
+	EXPECT_EQ(code, 0);
 }
 
 /* ------------------------------------------------------------------
@@ -290,7 +309,7 @@ TEST(SandboxEnterTest, MacOSDevelopmentRuntimeAllowsSurfaceAndHostProcessProbe)
 	EXPECT_EXIT({
 	int rc = [&]() {
 		pid_t parent = getppid();
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
 		cfg.development_runtime = 1;
@@ -320,7 +339,7 @@ TEST(SandboxEnterTest, MacOSMetadataAccessDoesNotGrantFileContents)
 	close(fd);
 	int rc = run_in_child([&]() {
 		char *read_paths[] = { (char *)"/dev" };
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_paths = read_paths;
@@ -349,8 +368,7 @@ TEST(SandboxEnterTest, MacOSDeniesUnauthorizedWrite)
 			return 10;
 		close(fd);
 
-		struct sandbox_config cfg;
-		memset(&cfg, 0, sizeof(cfg));
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 		cfg.permissions = 0; /* No FILESYS perm => writes denied */
 
 		if (sandbox_enter(&cfg) != 0) {
@@ -387,7 +405,7 @@ TEST(SandboxEnterTest, MacOSAllowsOptInProcessTempReadWriteCreateAndChmod)
 	close(fd);
 
 	int rc = run_in_child([&]() {
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 		char created_path[PATH_MAX];
 		cfg.allow_temp = 1;
 		cfg.path_policy_enabled = 1;
@@ -435,7 +453,7 @@ TEST(SandboxEnterTest, MacOSAllowsOptInProcessTempReadWriteCreateAndChmod)
 TEST(SandboxEnterTest, MacOSAllowsOptInPtyAllocation)
 {
 	int rc = run_in_child([]() {
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
@@ -461,7 +479,7 @@ TEST(SandboxEnterTest, MacOSAllowsOptInPtyAllocation)
 TEST(SandboxEnterTest, LinuxAllowsOptInPtyAllocation)
 {
 	int rc = run_in_child([]() {
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
@@ -490,7 +508,7 @@ TEST(SandboxEnterTest, LinuxAllowsOptInPosixSharedMemory)
 			   static_cast<long>(getpid())), 0);
 	shm_unlink(shm_name);
 	int rc = run_in_child([&]() {
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
@@ -522,7 +540,7 @@ TEST(SandboxEnterTest, LinuxProcessInfoControlsOtherProcEntries)
 	ASSERT_GT(snprintf(parent_cmdline, sizeof(parent_cmdline),
 			   "/proc/%ld/cmdline", static_cast<long>(getpid())), 0);
 	int rc = run_in_child([&]() {
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.process_exec = 1;
@@ -546,7 +564,7 @@ TEST(SandboxEnterTest, LinuxProcessInfoAllowsOtherProcEntries)
 	ASSERT_GT(snprintf(parent_cmdline, sizeof(parent_cmdline),
 			   "/proc/%ld/cmdline", static_cast<long>(getpid())), 0);
 	int rc = run_in_child([&]() {
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.process_exec = 1;
@@ -574,7 +592,7 @@ TEST(SandboxEnterTest, LinuxProcessInfoAllowsOtherProcEntries)
 TEST(SandboxSeccompTest, AllowsUnlistedSyscalls)
 {
 	int rc = run_in_child([]() {
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
@@ -594,7 +612,7 @@ TEST(SandboxSeccompTest, DeniesDangerousSyscallsWithEperm)
 {
 #if defined(SYS_io_uring_setup)
 	int rc = run_in_child([]() {
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
@@ -616,7 +634,7 @@ TEST(SandboxSeccompTest, DeniesDangerousSyscallsWithEperm)
 TEST(SandboxSeccompTest, AllowsUnixSocketpairWithoutNetwork)
 {
 	int rc = run_in_child([]() {
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 		int fds[2];
 
 		cfg.path_policy_enabled = 1;
@@ -636,7 +654,7 @@ TEST(SandboxSeccompTest, AllowsUnixSocketpairWithoutNetwork)
 TEST(SandboxSeccompTest, DeniesInternetSocketsWithoutNetwork)
 {
 	int rc = run_in_child([]() {
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
@@ -662,7 +680,7 @@ TEST(SandboxSeccompTest, RunsPythonIfAvailable)
 		GTEST_SKIP() << "python3 not installed";
 
 	int rc = run_in_child([]() {
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 		char *write_paths[] = { (char *)"/tmp" };
 
 		cfg.path_policy_enabled = 1;
@@ -686,7 +704,7 @@ TEST(SandboxSeccompTest, RunsPythonIfAvailable)
 
 TEST(SandboxEnterTest, RejectsNullConfig)
 {
-	EXPECT_EQ(sandbox_enter(NULL), -EINVAL);
+	EXPECT_EQ(sandbox_enter(NULL), NB_ERR_INVAL);
 }
 
 TEST(SandboxEnterTest, PathPolicySeparatesWriteAndDelete)
@@ -715,7 +733,7 @@ TEST(SandboxEnterTest, PathPolicySeparatesWriteAndDelete)
 	int rc = run_in_child([&]() {
 		char *write_paths[] = {write_dir, resolved_write_dir};
 		char *delete_paths[] = {delete_dir, resolved_delete_dir};
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
@@ -773,7 +791,7 @@ TEST(SandboxEnterTest, ModernTimestampsPreserveWriteAndNestedDeleteScopes)
 	EXPECT_EQ(run_in_child([&]() {
 		char *writes[] = {writable.data()};
 		char *deletes[] = {removable.data()};
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
 		cfg.write_paths = writes;
@@ -810,19 +828,21 @@ TEST(SandboxEnterTest, TemporaryDirectorySupportsModernTimestamps)
 	ASSERT_NE(mkdtemp(directory), nullptr);
 	std::string path = std::string(directory) + "/probe";
 	EXPECT_EQ(run_in_child([&]() {
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
-		cfg.path_policy_enabled = 1;
-		cfg.read_all = 1;
-		cfg.allow_temp = 1;
-		if (sandbox_enter(&cfg) != 0)
-			return 10;
-		int fd = open(path.c_str(), O_CREAT | O_RDWR, 0600);
-		if (fd < 0)
-			return 11;
-		int rc = futimens(fd, nullptr);
-		close(fd);
-		return rc == 0 && utimensat(AT_FDCWD, path.c_str(), nullptr, 0) == 0 ? 0 : 12;
-	}), 0);
+			  struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
+			  cfg.path_policy_enabled = 1;
+			  cfg.read_all = 1;
+			  cfg.allow_temp = 1;
+			  if (sandbox_enter(&cfg) != 0)
+				  return 10;
+			  int fd = open(path.c_str(), O_CREAT | O_RDWR, 0600);
+			  if (fd < 0)
+				  return 11;
+			  int rc = futimens(fd, nullptr);
+			  close(fd);
+			  return rc == 0 && utimensat(AT_FDCWD, path.c_str(), nullptr, 0) == 0 ? 0
+											       : 12;
+		  }),
+		  0);
 	std::filesystem::remove_all(directory);
 }
 #endif
@@ -836,7 +856,7 @@ TEST(SandboxEnterTest, PathPolicyAllowsDevNullWrite)
 	ASSERT_GE(fd, 0);
 	close(fd);
 	int rc = run_in_child([&]() {
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
@@ -865,7 +885,7 @@ TEST(SandboxEnterTest, PathPolicyAllowsDevNullWrite)
 TEST(SandboxEnterTest, LegacyPolicyAllowsDevNullWrite)
 {
 	int rc = run_in_child([]() {
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 
 		if (sandbox_enter(&cfg) != 0)
 			return 10;
@@ -909,7 +929,7 @@ static int create_loopback_listener(uint16_t *port)
 static int sandbox_loopback_connect(uint16_t port, int network_access)
 {
 	return run_in_child([=]() {
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 		struct sockaddr_in address = {};
 
 		cfg.path_policy_enabled = 1;
@@ -975,7 +995,7 @@ TEST(SandboxToolPathsTest, CacheLifecycleAndIsolation)
 		if (mkdir((home + "/runtime").c_str(), 0700) != 0)
 			return 23;
 		setenv("npm_config_cache", (home + "/custom-npm").c_str(), 1);
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
 		if (sandbox_prepare_tool_paths(&cfg) != 0)
@@ -989,7 +1009,7 @@ TEST(SandboxToolPathsTest, CacheLifecycleAndIsolation)
 		/* Invalid overrides must not widen the policy or create cwd caches. */
 		setenv("npm_config_cache", "/", 1);
 		setenv("PIP_CACHE_DIR", "relative-cache", 1);
-		struct sandbox_config invalid MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config invalid NB_CLEANUP(sandbox_config_cleanup) = {};
 		invalid.path_policy_enabled = 1;
 		if (sandbox_prepare_tool_paths(&invalid) != 0)
 			return 21;
@@ -1086,9 +1106,9 @@ TEST(SandboxToolPathsTest, CacheLifecycleAndIsolation)
 
 TEST(SandboxToolPathsTest, RejectsInvalidArguments)
 {
-	struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
-	EXPECT_EQ(sandbox_prepare_tool_paths(nullptr), -EINVAL);
-	EXPECT_EQ(sandbox_prepare_tool_paths(&cfg), -EINVAL);
+	struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
+	EXPECT_EQ(sandbox_prepare_tool_paths(nullptr), NB_ERR_INVAL);
+	EXPECT_EQ(sandbox_prepare_tool_paths(&cfg), NB_ERR_INVAL);
 }
 
 TEST(SandboxEnterTest, VarTmpFollowsTempCapability)
@@ -1098,7 +1118,7 @@ TEST(SandboxEnterTest, VarTmpFollowsTempCapability)
 	std::string path = std::string(dir) + "/state";
 	for (int allow : {0, 1}) {
 		int rc = run_in_child([&]() {
-			struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+			struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 			cfg.path_policy_enabled = 1;
 			cfg.read_all = 1;
 			cfg.allow_temp = allow;
@@ -1139,7 +1159,7 @@ TEST(SandboxEnterTest, CustomTmpdirFollowsTempCapability)
 	for (int mode : {0, 1, 2, 3}) {
 		int rc = run_in_child([&]() {
 			setenv("TMPDIR", mode == 2 ? "/" : mode == 3 ? home : dir, 1);
-			struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+			struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 			cfg.path_policy_enabled = 1;
 			cfg.read_all = 1;
 			cfg.allow_temp = mode != 0;
@@ -1160,6 +1180,72 @@ TEST(SandboxEnterTest, CustomTmpdirFollowsTempCapability)
 	}
 	unlink(path.c_str());
 	rmdir(dir);
+}
+
+TEST(SandboxEnterTest, RejectedTemporaryAncestorStaysRejectedAfterHomeRemoval)
+{
+	const char *original_home = getenv("HOME");
+	ASSERT_NE(original_home, nullptr);
+	char directory[PATH_MAX];
+	ASSERT_LT(snprintf(directory, sizeof(directory), "%s/.morph_temp_snapshot_XXXXXX",
+			   original_home),
+		  static_cast<int>(sizeof(directory)));
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	std::string fake_home = std::string(directory) + "/home";
+	ASSERT_EQ(nb_file_mkdir(fake_home.c_str(), false, nullptr), NB_OK);
+	nb_buf canonical NB_CLEANUP(nb_buf_destroy) = {};
+	ASSERT_EQ(nb_path_canonical(&canonical, directory, nullptr), NB_OK);
+	struct permission_temporary_paths defaults NB_CLEANUP(
+		permission_temporary_paths_cleanup) = {};
+	ASSERT_EQ(permission_temporary_paths_collect(&defaults, nullptr, original_home), NB_OK);
+	for (size_t i = 0; i < defaults.count; i++) {
+		if (nb_path_is_within(nb_buf_cstr(&canonical), nb_buf_cstr(&defaults.roots[i]),
+				      false)) {
+			EXPECT_EQ(nb_file_remove_all(directory, 0, nullptr), NB_OK);
+			GTEST_SKIP() << "HOME is already inside a default temporary root";
+		}
+	}
+	std::string denied = std::string(directory) + "/must-stay-denied";
+	int result = run_in_child([&]() {
+		if (setenv("HOME", fake_home.c_str(), 1) != 0 ||
+		    setenv("TMPDIR", directory, 1) != 0)
+			return 20;
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
+		cfg.allow_temp = 1;
+		if (sandbox_prepare_temporary_paths(&cfg, nullptr) != NB_OK ||
+		    !cfg.temporary_paths_ready)
+			return 21;
+		for (size_t i = 0; i < cfg.temporary_paths.count; i++) {
+			if (strcmp(nb_buf_cstr(&cfg.temporary_paths.roots[i]),
+				   nb_buf_cstr(&canonical)) == 0)
+				return 22;
+		}
+		const char *first = nb_buf_cstr(&cfg.temporary_paths.roots[0]);
+		size_t count = cfg.temporary_paths.count;
+		const char *allowed[] = {"PATH"};
+		if (sandbox_apply_env(nullptr, allowed, 1, 0) != NB_OK || unsetenv("HOME") != 0)
+			return 23;
+		/* A launcher may narrow the filtered environment further. Rebuilding
+		 * policy now would accept TMPDIR without the original HOME bound. */
+		if (getenv("HOME") || !getenv("TMPDIR") ||
+		    sandbox_prepare_temporary_paths(&cfg, nullptr) != NB_OK ||
+		    cfg.temporary_paths.count != count ||
+		    nb_buf_cstr(&cfg.temporary_paths.roots[0]) != first)
+			return 24;
+		if (sandbox_enter(&cfg) != NB_OK)
+			return 25;
+		int fd = open(denied.c_str(), O_CREAT | O_WRONLY, 0600);
+		if (fd >= 0) {
+			close(fd);
+			return 26;
+		}
+		return errno == EACCES || errno == EPERM ? 0 : 27;
+	});
+	EXPECT_EQ(result, 0);
+	EXPECT_FALSE(std::filesystem::exists(denied));
+	EXPECT_EQ(nb_file_remove_all(directory, 0, nullptr), NB_OK);
 }
 
 TEST(SandboxToolPathsTest, OverridesListsAndExistingGrants)
@@ -1188,7 +1274,7 @@ TEST(SandboxToolPathsTest, OverridesListsAndExistingGrants)
 		setenv("GOPATH", gopath.c_str(), 1);
 		std::string explicit_path = base + "/explicit";
 		char *grants[] = {explicit_path.data()};
-		struct sandbox_config cfg MORPH_CLEANUP(sandbox_config_cleanup) = {};
+		struct sandbox_config cfg NB_CLEANUP(sandbox_config_cleanup) = {};
 		cfg.path_policy_enabled = 1;
 		cfg.read_all = 1;
 		cfg.write_paths = grants;
@@ -1262,7 +1348,7 @@ TEST(SandboxToolPathsTest, ApprovalUsesTheSameDeveloperPresets)
 		if (exec_tool_init(&registry, tctx, nullptr) != 0 ||
 		    request_permissions_init(&registry, tctx) != 0)
 			return 12;
-		if (tctx->builtin_paths.nelts <= TOOL_CONTEXT_ALLOW_MAX)
+		if (tctx->builtin_paths.len <= TOOL_CONTEXT_ALLOW_MAX)
 			return 13;
 		const char *roots[] = {".gradle", ".config", ".morph/skills", ".codex"};
 		for (const char *root : roots) {
@@ -1330,8 +1416,8 @@ TEST(SandboxToolPathsTest, ApprovalUsesTheSameDeveloperPresets)
 			return 20;
 		for (const std::string &file : {home + "/.gradle-other/config",
 				home + "/.gradle/escape/config", home + "/.morph/config.toml"}) {
-			if (tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
-				file.c_str(), NULL, 0) != -EACCES)
+			if (tool_context_authorize_path(tctx, TOOL_PATH_WRITE, file.c_str(), NULL,
+							0) != NB_ERR_PERMISSION)
 				return 21;
 		}
 		if (approvals != 3)
@@ -1341,7 +1427,8 @@ TEST(SandboxToolPathsTest, ApprovalUsesTheSameDeveloperPresets)
 		    symlink(outside.c_str(), (home + "/.gradle").c_str()) != 0)
 			return 23;
 		if (tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
-			(home + "/.gradle/config").c_str(), NULL, 0) != -EACCES ||
+						(home + "/.gradle/config").c_str(), NULL,
+						0) != NB_ERR_PERMISSION ||
 		    approvals != 4)
 			return 24;
 		tool_registry_cleanup(&registry);

@@ -7,8 +7,9 @@ extern "C" {
 
 #include <limits.h>
 #include <stddef.h>
-#include "util/strmap.h"
-#include "util/array.h"
+#include "nb/map.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 
 #define SKILL_NAME_MAX_CHARS 64
 #define SKILL_DESC_MAX_CHARS 1024
@@ -19,7 +20,7 @@ extern "C" {
 #define SKILL_METADATA_KEY_MAX (63 * 4 + 1)
 #define SKILL_METADATA_VAL_MAX (255 * 4 + 1)
 
-struct morph_log;
+struct nb_log;
 
 struct skill_metadata_entry {
 	char key[SKILL_METADATA_KEY_MAX];
@@ -37,7 +38,7 @@ struct skill_frontmatter {
 };
 
 struct skill_entry {
-	struct morph_log *logger;
+	struct nb_log *logger;
 	struct skill_frontmatter fm;
 	char skill_dir[SKILL_PATH_MAX];
 	char skill_md_path[SKILL_PATH_MAX];
@@ -48,13 +49,13 @@ struct skill_entry {
 };
 
 struct skill_registry {
-	struct morph_log *logger;
-	morph_array_t entries;
+	struct nb_log *logger;
+	nb_vec entries;
 	int count;
-	morph_strmap_t by_name;
+	nb_map *by_name;
 };
 
-void skill_registry_init(struct morph_log *logger, struct skill_registry *reg);
+void skill_registry_init(struct nb_log *logger, struct skill_registry *reg);
 void skill_registry_cleanup(struct skill_registry *reg);
 int skill_discover(struct skill_registry *reg, const char *dir_path);
 /* Project skills take precedence; NULL workdir omits project discovery. */

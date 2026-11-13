@@ -1,33 +1,38 @@
-#include "util/error.h"
-#include "util/log.h"
+#include "errors.h"
+#include "nb/log.h"
 
-int error_probe_return(struct morph_log *logger, int code,
-		       int *code_evaluations, int *logger_evaluations)
+int error_probe_return(struct nb_log *logger, int code, int *code_evaluations,
+		       int *logger_evaluations)
 {
 	(void)logger;
 	(void)logger_evaluations;
-	return MORPH_TRACE_ERROR((++*logger_evaluations, logger), (++*code_evaluations, code));
+	return nb_err_trace((++*logger_evaluations, logger), (++*code_evaluations, code),
+			    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__, __LINE__);
 }
 
-int error_probe_set(struct morph_log *logger, int code, int *evaluations)
+int error_probe_set(struct nb_log *logger, int code, int *evaluations)
 {
 	int result = 0;
 
 	(void)logger;
-	result = MORPH_TRACE_ERROR(logger, (++*evaluations, code));
+	result = nb_err_trace(logger, (++*evaluations, code), morph_error_descriptions(),
+			      MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	return result;
 }
 
-int error_probe_errno(struct morph_log *logger, int assign)
+int error_probe_errno(struct nb_log *logger, int assign)
 {
 	int result;
 
 	(void)logger;
 	if (assign) {
-		result = MORPH_TRACE_ERROR(logger, morph_error_from_errno(errno));
+		result = nb_err_trace(logger, nb_status_from_errno(errno, NULL),
+				      morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+				      __LINE__);
 		return result;
 	}
-	return MORPH_TRACE_ERROR(logger, morph_error_from_errno(errno));
+	return nb_err_trace(logger, nb_status_from_errno(errno, NULL), morph_error_descriptions(),
+			    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 }
 
 int error_probe_without_context(int assign)
@@ -52,7 +57,8 @@ int error_probe_local_name(void)
 {
 	int _rc_ = -5;
 
-	return MORPH_TRACE_ERROR(NULL, _rc_);
+	return nb_err_trace(NULL, _rc_, morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+			    __LINE__);
 }
 
 int error_probe_assignment(void)

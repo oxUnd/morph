@@ -14,7 +14,7 @@
 #include "skill/skill.h"
 #include <limits.h>
 
-struct morph_log;
+struct nb_log;
 struct exec_tool_jobs_handle;
 
 struct runtime_models {
@@ -29,7 +29,7 @@ struct runtime_models {
 
 struct runtime_bootstrap_profile {
 	struct runtime *owner;
-	struct morph_log *logger;
+	struct nb_log *logger;
 	struct config *config;
 	struct db *db;
 	struct tool_registry *tools;

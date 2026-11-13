@@ -1,11 +1,12 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 
 extern "C" {
 #include "agent/tool_context.h"
 #include "config/config.h"
 #include "runtime/services.h"
 #include "sapi/fastcgi/agent_bridge.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 }
 
 #include <cstdlib>
@@ -22,7 +23,7 @@ extern "C" int fcgi_turn_ask_user(
 	const struct ask_user_options *,
 	char ***, int *, void *)
 {
-	return -ENOTSUP;
+	return NB_ERR_UNSUPPORTED;
 }
 
 extern "C" enum tool_operation_verdict fcgi_turn_operation_approval(
@@ -135,7 +136,7 @@ TEST(FastcgiRuntimeTest, SharedBootstrapLoadsSkillsMcpAndServerTools)
 	}
 	EXPECT_EQ(pool.waiting_turns, 1);
 	struct runtime *rejected = nullptr;
-	EXPECT_EQ(fcgi_bridge_runtime_acquire(bridge, "queue-d", &rejected), -EAGAIN);
+	EXPECT_EQ(fcgi_bridge_runtime_acquire(bridge, "queue-d", &rejected), NB_ERR_AGAIN);
 	fcgi_bridge_runtime_release(bridge, first);
 	ASSERT_EQ(queued.wait_for(std::chrono::seconds(2)),
 		  std::future_status::ready);
@@ -145,11 +146,11 @@ TEST(FastcgiRuntimeTest, SharedBootstrapLoadsSkillsMcpAndServerTools)
 	fcgi_bridge_runtime_release(bridge, second);
 	first = nullptr;
 	ASSERT_EQ(fcgi_bridge_runtime_acquire(bridge, "ticket-held", &first), 0);
-	struct fcgi_turn_ticket *ticket MORPH_CLEANUP(fcgi_turn_ticket_cleanup) = nullptr;
+	struct fcgi_turn_ticket *ticket NB_CLEANUP(fcgi_turn_ticket_cleanup) = nullptr;
 	ASSERT_EQ(fcgi_bridge_turn_enqueue(bridge, "ticket-held", &ticket, nullptr), 0);
 	struct fcgi_turn_ticket *original = ticket;
 	struct runtime *timed_out = nullptr;
-	EXPECT_EQ(fcgi_bridge_turn_acquire(bridge, ticket, &timed_out), -ETIMEDOUT);
+	EXPECT_EQ(fcgi_bridge_turn_acquire(bridge, ticket, &timed_out), NB_ERR_TIMEOUT);
 	EXPECT_EQ(ticket, original);
 	EXPECT_EQ(timed_out, nullptr);
 	fcgi_bridge_pool_status(bridge, &pool);
@@ -168,7 +169,7 @@ TEST(FastcgiRuntimeTest, SharedBootstrapLoadsSkillsMcpAndServerTools)
 	fcgi_bridge_turn_cancel(bridge, ticket);
 	ASSERT_EQ(cancelled.wait_for(std::chrono::seconds(2)), std::future_status::ready);
 	auto cancelled_result = cancelled.get();
-	EXPECT_EQ(cancelled_result.first, -ECANCELED);
+	EXPECT_EQ(cancelled_result.first, NB_ERR_CANCELLED);
 	EXPECT_EQ(cancelled_result.second, nullptr);
 	EXPECT_EQ(ticket, original);
 	fcgi_turn_ticket_cleanup(&ticket);

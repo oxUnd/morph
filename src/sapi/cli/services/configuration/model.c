@@ -1,6 +1,6 @@
 #include "sapi/cli/services/configuration/model.h"
 #include "sapi/cli/services/configuration/role.h"
-#include "util/error.h"
+#include "errors.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <limits.h>
@@ -155,18 +155,18 @@ int cli_setup_set_thinking(struct config_model_entry *entry, int enabled)
 	int rc = 0;
 
 	if (strcmp(entry->adapter, "deepseek") != 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int previous_output = cli_model_recommended_output(entry);
 	if (entry->extra_body_json[0]) {
 		root = cJSON_ParseWithOpts(entry->extra_body_json, NULL, 1);
 		if (!cJSON_IsObject(root)) {
 			cJSON_Delete(root);
-			return MORPH_ERR_PARSE;
+			return NB_ERR_PARSE;
 		}
 	} else {
 		root = cJSON_CreateObject();
 		if (!root)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 	}
 	thinking = cJSON_GetObjectItemCaseSensitive(root, "thinking");
 	if (!cJSON_IsObject(thinking)) {
@@ -175,27 +175,27 @@ int cli_setup_set_thinking(struct config_model_entry *entry, int enabled)
 	}
 	if (!thinking) {
 		cJSON_Delete(root);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	cJSON_DeleteItemFromObjectCaseSensitive(thinking, "type");
 	if (!cJSON_AddStringToObject(thinking, "type", enabled ? "enabled" : "disabled")) {
 		cJSON_Delete(root);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	const cJSON *effort = cJSON_GetObjectItemCaseSensitive(root, "reasoning_effort");
 	if (enabled && (!cJSON_IsString(effort) || strcmp(effort->valuestring, "none") == 0)) {
 		cJSON_DeleteItemFromObjectCaseSensitive(root, "reasoning_effort");
 		if (!cJSON_AddStringToObject(root, "reasoning_effort", "high")) {
 			cJSON_Delete(root);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 	}
 	json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
 	if (!json)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (strlen(json) >= sizeof(entry->extra_body_json))
-		rc = (-E2BIG);
+		rc = (NB_ERR_TOO_BIG);
 	else
 		strcpy(entry->extra_body_json, json);
 	free(json);
@@ -226,14 +226,14 @@ int cli_setup_token_ceiling(const struct config_model_entry *entry, int output)
 int cli_setup_parse_token_count(const char *text, int minimum, int maximum, int *value)
 {
 	if (!text || !*text || !value)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	for (const char *p = text; *p; p++)
 		if (*p < '0' || *p > '9')
-			return -EINVAL;
+			return NB_ERR_INVAL;
 	errno = 0;
 	long parsed = strtol(text, NULL, 10);
 	if (errno == ERANGE || parsed < minimum || parsed > maximum)
-		return -ERANGE;
+		return NB_ERR_RANGE;
 	*value = (int)parsed;
 	return 0;
 }

@@ -1,8 +1,8 @@
 #include "dynamic_tools.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "dynamic_tool_service.h"
 #include "dynamic_tool_internal.h"
-#include "util/error.h"
+#include "errors.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -109,8 +109,8 @@ static int dynamic_tools_register(struct tool_registry *reg, const struct tool_s
 				  struct dynamic_tools_context *ctx)
 {
 	if (!descriptor || descriptor->user_data_destroy || !ctx)
-		return -EINVAL;
-	struct tool_spec owner MORPH_CLEANUP(tool_spec_cleanup) = *descriptor;
+		return NB_ERR_INVAL;
+	struct tool_spec owner NB_CLEANUP(tool_spec_cleanup) = *descriptor;
 	__atomic_add_fetch(&ctx->refs, 1, __ATOMIC_RELAXED);
 	owner.user_data = ctx;
 	owner.user_data_destroy = dynamic_tools_context_destroy;
@@ -124,13 +124,13 @@ int dynamic_tools_set_session_id(struct tool_registry *reg, const char *session_
 	int rc;
 
 	if (!reg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	entry = tool_borrow(reg, "tool_create");
 	if (!entry)
 		return 0;
 	ctx = entry->user_data;
 	if (!ctx)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	snprintf(ctx->session_id, sizeof(ctx->session_id), "%s", session_id ? session_id : "");
 	if (!ctx->session_id[0])
 		return 0;
@@ -150,16 +150,16 @@ int dynamic_tools_load_persistent(struct tool_registry *reg, struct tool_context
 int dynamic_tools_init(struct tool_registry *reg, struct tool_context *tctx,
 		       const struct config_dynamic_tools *cfg, const char *session_id)
 {
-	struct dynamic_tools_context *ctx MORPH_CLEANUP(dynamic_tools_context_cleanup) = NULL;
+	struct dynamic_tools_context *ctx NB_CLEANUP(dynamic_tools_context_cleanup) = NULL;
 	int rc;
 
 	if (!reg || !cfg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!cfg->enabled)
 		return 0;
 	ctx = calloc(1, sizeof(*ctx));
 	if (!ctx)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	ctx->refs = 1;
 	ctx->reg = reg;
 	ctx->tctx = tctx;
@@ -286,7 +286,7 @@ int dynamic_tools_rebind(struct tool_registry *reg, struct tool_context *context
 			 const struct config_dynamic_tools *config, const char *session)
 {
 	if (!reg || !config)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct settings {
 		const char *name;
 		unsigned int flags;

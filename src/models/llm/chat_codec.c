@@ -1,15 +1,15 @@
 #include "chat_codec.h"
-#include "util/log.h"
-#include "util/json.h"
-#include "util/error.h"
-#include "util/cleanup.h"
+#include "nb/log.h"
+#include "cJSON.h"
+#include "errors.h"
+#include "nb/cleanup.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
-#include "util/utf8.h"
+#include "nb/utf8.h"
 
 static cJSON *build_simple_messages_cjson(const char *system_prompt, const char **messages, int n)
 {
@@ -44,7 +44,7 @@ static cJSON *build_simple_messages_cjson(const char *system_prompt, const char 
 	return arr;
 }
 
-int llm_chat_body_create(struct morph_log *logger, const char *model_id, const char *system_prompt,
+int llm_chat_body_create(struct nb_log *logger, const char *model_id, const char *system_prompt,
 			 const char **messages, int n, int max_tokens, int stream,
 			 const char *extra_body_json, const struct llm_adapter *adapter,
 			 int disable_thinking, char **out_body, size_t *out_body_len)
@@ -54,15 +54,15 @@ int llm_chat_body_create(struct morph_log *logger, const char *model_id, const c
 	char *body;
 
 	if (!model_id || !out_body || !out_body_len)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out_body)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	root = cJSON_CreateObject();
 	msgs = build_simple_messages_cjson(system_prompt, messages, n);
 	if (!root || !msgs) {
 		cJSON_Delete(root);
 		cJSON_Delete(msgs);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	cJSON_AddStringToObject(root, "model", model_id);
 	cJSON_AddItemToObject(root, "messages", msgs);
@@ -83,10 +83,10 @@ int llm_chat_body_create(struct morph_log *logger, const char *model_id, const c
 		cJSON_Delete(root);
 		return rc;
 	}
-	body = morph_json_print_copy(root);
+	body = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
 	if (!body)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	*out_body = body;
 	*out_body_len = strlen(body);
 	return 0;
@@ -101,7 +101,8 @@ int llm_chat_decode_event(const char *event, const char *data, void *ud)
 
 	if (strcmp(data, "[DONE]") == 0) {
 		ctx->terminal_received = 1;
-		log_dbg(ctx ? ctx->logger : NULL, "llm_chat_decode_event: [DONE]");
+		nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_DEBUG,
+			     "llm_chat_decode_event: [DONE]");
 		return 0;
 	}
 
@@ -154,7 +155,7 @@ int llm_chat_decode_event(const char *event, const char *data, void *ud)
 
 	cJSON *reasoning = cJSON_GetObjectItem(delta, "reasoning_content");
 	if (cJSON_IsString(reasoning) && reasoning->valuestring) {
-		(void)morph_buf_puts(&ctx->reasoning, reasoning->valuestring);
+		(void)nb_buf_append_cstr(&ctx->reasoning, reasoning->valuestring);
 		int rc = llm_stream_emit(ctx, LLM_STREAM_REASONING, reasoning->valuestring);
 		if (rc != 0) {
 			cJSON_Delete(root);
@@ -172,7 +173,7 @@ int llm_chat_decode_event(const char *event, const char *data, void *ud)
 			struct tool_call *tc = llm_stream_tool_call_ensure_borrow(ctx, index);
 			if (!tc) {
 				cJSON_Delete(root);
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			}
 
 			cJSON *id_item = cJSON_GetObjectItem(tc_item, "id");
@@ -197,23 +198,11 @@ int llm_chat_decode_event(const char *event, const char *data, void *ud)
 				}
 				cJSON *args_item = cJSON_GetObjectItem(func_obj, "arguments");
 				if (cJSON_IsString(args_item) && args_item->valuestring) {
-					size_t existing = tc->arguments ? strlen(tc->arguments) : 0;
-					size_t add_len = strlen(args_item->valuestring);
-					if (add_len > SIZE_MAX - existing - 1) {
+					int rc = llm_stream_call_input_append(
+						ctx, tc, args_item->valuestring);
+					if (rc) {
 						cJSON_Delete(root);
-						return -EOVERFLOW;
-					}
-					char *new_args =
-						realloc(tc->arguments, existing + add_len + 1);
-					if (!new_args) {
-						cJSON_Delete(root);
-						return -ENOMEM;
-					}
-					{
-						tc->arguments = new_args;
-						memcpy(tc->arguments + existing,
-						       args_item->valuestring, add_len);
-						tc->arguments[existing + add_len] = '\0';
+						return rc;
 					}
 				}
 			}
@@ -316,13 +305,13 @@ static cJSON *build_structured_messages_cjson(const char *system_prompt,
 
 static cJSON *build_tools_cjson(const struct tool_desc *tools, int tool_count)
 {
-	cJSON *array MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateArray();
+	cJSON *array NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateArray();
 	if (!array)
 		return NULL;
 	for (int i = 0; i < tool_count; i++) {
-		cJSON *tool MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
-		cJSON *function MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
-		cJSON *params MORPH_CLEANUP(morph_json_cleanup) = NULL;
+		cJSON *tool NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+		cJSON *function NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+		cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 		if (!tool || !function || !cJSON_AddStringToObject(tool, "type", "function") ||
 		    !cJSON_AddStringToObject(function, "name", tools[i].name) ||
 		    !cJSON_AddStringToObject(function, "description",
@@ -339,14 +328,17 @@ static cJSON *build_tools_cjson(const struct tool_desc *tools, int tool_count)
 		} else if (tools[i].input_schema && tools[i].input_schema[0]) {
 			params = cJSON_Parse(tools[i].input_schema);
 		}
-		cJSON *schema MORPH_CLEANUP(morph_json_cleanup) = llm_codec_schema_copy(params);
+		cJSON *schema NB_CLEANUP(cJSON_DeleteOwner) = llm_codec_schema_copy(params);
 		if (!schema && (cJSON_IsObject(params) || cJSON_IsArray(params)))
 			return NULL;
 		if (!schema)
 			schema = cJSON_Parse("{\"type\":\"object\",\"properties\":{}}");
-		if (!schema || morph_json_object_take(function, "parameters", &schema) != 0 ||
-		    morph_json_object_take(tool, "function", &function) != 0 ||
-		    morph_json_array_take(array, &tool) != 0)
+		if (!schema ||
+		    (cJSON_AddItemToObject(function, "parameters", schema) ? (schema = NULL, NB_OK)
+									   : NB_ERR_NOMEM) != 0 ||
+		    (cJSON_AddItemToObject(tool, "function", function) ? (function = NULL, NB_OK)
+								       : NB_ERR_NOMEM) != 0 ||
+		    (cJSON_AddItemToArray(array, tool) ? (tool = NULL, NB_OK) : NB_ERR_NOMEM) != 0)
 			return NULL;
 	}
 	cJSON *owned = array;

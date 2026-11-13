@@ -29,7 +29,7 @@ const struct llm_codec *llm_codec_borrow(const struct model *model);
  * allocation failure returns NULL without modifying or consuming params. */
 cJSON *llm_codec_schema_copy(const cJSON *params);
 
-int llm_codec_add_options(struct morph_log *logger, cJSON *root, const char *json);
+int llm_codec_add_options(struct nb_log *logger, cJSON *root, const char *json);
 
 #ifdef __cplusplus
 }

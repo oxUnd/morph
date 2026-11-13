@@ -1,13 +1,13 @@
 #include "vid_gen.h"
-#include "util/json.h"
-#include "util/cleanup.h"
+#include "cJSON.h"
+#include "nb/cleanup.h"
 #include "agent/tool_runtime.h"
 #include "models/llm.h"
 #include "agent/tool_context.h"
 #include "models/video_gen.h"
 #include "render/video.h"
-#include "util/log.h"
-#include "util/error.h"
+#include "nb/log.h"
+#include "errors.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -57,7 +57,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
 
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
 	const char *prompt = NULL;
@@ -88,7 +88,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 				cJSON_Delete(root);
 				(void)tool_result_success_json_text_copy(
 					result, "{\"error\":\"too many reference images\"}");
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			}
 			for (int i = 0; i < n; i++) {
 				cJSON *item = cJSON_GetArrayItem(ri, i);
@@ -108,7 +108,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 				cJSON_Delete(root);
 				(void)tool_result_success_json_text_copy(
 					result, "{\"error\":\"too many reference videos\"}");
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			}
 			for (int i = 0; i < n; i++) {
 				cJSON *item = cJSON_GetArrayItem(rv, i);
@@ -128,7 +128,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 				cJSON_Delete(root);
 				(void)tool_result_success_json_text_copy(
 					result, "{\"error\":\"too many reference audios\"}");
-				return -EINVAL;
+				return NB_ERR_INVAL;
 			}
 			for (int i = 0; i < n; i++) {
 				cJSON *audio = cJSON_GetArrayItem(ra, i);
@@ -153,7 +153,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 				"\\\"reference_images\\\": [\\\"img1.jpg\\\", \\\"img2.png\\\"], "
 				"\\\"reference_videos\\\": [\\\"clip1.mp4\\\"], "
 				"\\\"reference_audios\\\": [\\\"music.mp3\\\"]})\"}");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 
 	char resolved_images[VIDEO_GEN_MAX_REFERENCE_IMAGES][PATH_MAX];
@@ -171,7 +171,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 				resolved_images[i], sizeof(resolved_images[i]));
 			if (rc < 0) {
 				cJSON_Delete(root);
-				if (rc == -ENOENT)
+				if (rc == NB_ERR_NOT_FOUND)
 					(void)tool_result_success_json_text_copy(
 						result,
 						"{\"error\":\"reference image not found\"}");
@@ -194,7 +194,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 				resolved_videos[i], sizeof(resolved_videos[i]));
 			if (rc < 0) {
 				cJSON_Delete(root);
-				if (rc == -ENOENT)
+				if (rc == NB_ERR_NOT_FOUND)
 					(void)tool_result_success_json_text_copy(
 						result,
 						"{\"error\":\"reference video not found\"}");
@@ -214,7 +214,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 			cJSON_Delete(root);
 			(void)tool_result_success_json_text_copy(
 				result, "{\"error\":\"reference audio must be MP3 or WAV\"}");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 		if (tctx && !is_http_url(audio_paths[i])) {
 			int auth_rc = tool_context_authorize_path(
@@ -222,7 +222,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 				resolved_audios[i], sizeof(resolved_audios[i]));
 			if (auth_rc < 0) {
 				cJSON_Delete(root);
-				if (auth_rc == -ENOENT)
+				if (auth_rc == NB_ERR_NOT_FOUND)
 					(void)tool_result_success_json_text_copy(
 						result,
 						"{\"error\":\"reference audio not found\"}");
@@ -250,7 +250,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 
 	if (rc < 0) {
 		if (vid_res.error_msg[0]) {
-			char *buf MORPH_CLEANUP(morph_charp_cleanup) =
+			char *buf NB_CLEANUP(nb_charp_cleanup) =
 				malloc(strlen(vid_res.error_msg) + 64);
 			if (buf) {
 				snprintf(buf, strlen(vid_res.error_msg) + 64,
@@ -264,22 +264,22 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 			char err_buf[256];
 			snprintf(err_buf, sizeof(err_buf),
 				 "{\"error\":\"video generation failed: %s\"}",
-				 morph_strerror(rc));
+				 nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			(void)tool_result_success_json_text_copy(result, err_buf);
 		}
 		return rc;
 	}
 
 	size_t msg_len = strlen(vid_res.path) + 64;
-	char *msg MORPH_CLEANUP(morph_charp_cleanup) = malloc(msg_len);
+	char *msg NB_CLEANUP(nb_charp_cleanup) = malloc(msg_len);
 	if (!msg)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	snprintf(msg, msg_len, "video generated: %s (%ds)",
 		 vid_res.path, vid_res.duration_seconds);
 	(void)tool_result_success_json_text_copy(result, msg);
 	(void)tool_result_add_video_copy(result, vid_res.path, vid_res.duration_seconds);
-	log_dbg(result && result->runtime ? result->runtime->http.logger : NULL, "vid_gen: %s",
-		msg);
+	nb_log_write(result && result->runtime ? result->runtime->http.logger : NULL, NB_LOG_DEBUG,
+		     "vid_gen: %s", msg);
 
 	return 0;
 }
@@ -288,11 +288,11 @@ int vid_gen_init(struct tool_registry *reg, struct model *video_llm,
 		 struct tool_context *tctx)
 {
 	if (!reg)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 
 	struct vid_gen_context *ctx = malloc(sizeof(*ctx));
 	if (!ctx)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	ctx->video_llm = video_llm;
 	ctx->tctx = tctx;
 
@@ -322,7 +322,7 @@ int vid_gen_init(struct tool_registry *reg, struct model *video_llm,
 		"with reference_audios\"},"
 		"\"duration\":{\"type\":\"integer\",\"description\":\"Video duration "
 		"in seconds\"}},\"required\":[\"prompt\"]}";
-	struct tool_spec spec MORPH_CLEANUP(tool_spec_cleanup) = {
+	struct tool_spec spec NB_CLEANUP(tool_spec_cleanup) = {
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.flags = TOOL_FLAG_MEDIA,
 		.name = "vid_gen",

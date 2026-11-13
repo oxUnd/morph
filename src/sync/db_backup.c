@@ -1,13 +1,16 @@
 #include "sync/db_backup.h"
-#include "util/array.h"
-#include "util/error.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/file.h"
-#include "util/id.h"
-#include "util/log.h"
-#include "util/strmap.h"
-#include "util/name.h"
+#include <limits.h>
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "nb/file.h"
+#include "nb/random.h"
+#include "nb/encoding.h"
+#include "nb/log.h"
+#include "nb/map.h"
+#include "nb/str.h"
 #include "content_hash.h"
 #include "cJSON.h"
 #include <sqlite3.h>
@@ -28,7 +31,7 @@
 struct snapshot_scan {
 	const struct morph_sync_config *cfg;
 	const char *path_filter;
-	morph_array_t *items;
+	nb_vec *items;
 	int rc;
 };
 
@@ -99,56 +102,28 @@ static int ensure_parent(const char *path)
 	char parent[PATH_MAX];
 	char *slash;
 
-	strncpy(parent, path, sizeof(parent) - 1);
+	(void)nb_str_copy_to(nb_str_from_parts((path), strnlen((path), sizeof(parent) - 1)), parent,
+			     sizeof(parent));
 	parent[sizeof(parent) - 1] = '\0';
 	slash = strrchr(parent, '/');
 	if (!slash)
 		return 0;
 	*slash = '\0';
-	return parent[0] ? file_ensure_dir(parent) : 0;
-}
-
-static int copy_plain(const char *source, const char *destination)
-{
-	unsigned char buffer[BUFSIZ];
-	FILE *input;
-	FILE *output;
-	size_t read_size;
-
-	input = fopen(source, "rb");
-	if (!input)
-		return morph_error_from_errno(errno);
-	if (ensure_parent(destination) != 0) {
-		fclose(input);
-		return -EIO;
-	}
-	output = fopen(destination, "wb");
-	if (!output) {
-		fclose(input);
-		return morph_error_from_errno(errno);
-	}
-	while ((read_size = fread(buffer, 1, sizeof(buffer), input)) > 0) {
-		if (fwrite(buffer, 1, read_size, output) != read_size) {
-			fclose(input);
-			fclose(output);
-			return -EIO;
-		}
-	}
-	if (ferror(input) || fflush(output) != 0) {
-		fclose(input);
-		fclose(output);
-		return -EIO;
-	}
-	fclose(input);
-	if (fclose(output) != 0)
-		return -EIO;
-	return 0;
+	return parent[0] ? nb_file_mkdir(parent, true, NULL) : 0;
 }
 
 static int store_path(const struct morph_sync_config *cfg, const char *rel,
 		      char out[PATH_MAX])
 {
-	return file_path_join(out, PATH_MAX, cfg->sync_dir, rel);
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_1 = NB_OK;
+
+	return ((file_status_1 = nb_path_concat(&file_value_1, cfg->sync_dir, rel)) != NB_OK
+			? file_status_1
+		: (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), out, PATH_MAX)) ==
+				NB_ERR_RANGE
+			? NB_ERR_NAME_TOO_LONG
+			: file_status_1);
 }
 
 static int store_stat(const struct morph_sync_config *cfg, const char *rel,
@@ -162,9 +137,9 @@ static int store_stat(const struct morph_sync_config *cfg, const char *rel,
 		return cfg->remote_backend->stat(cfg->remote_backend->user_data,
 					 rel, result);
 	if (store_path(cfg, rel, path) != 0)
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	if (stat(path, &st) != 0)
-		return errno == ENOENT ? 0 : -errno;
+		return errno == ENOENT ? 0 : nb_status_from_errno(errno, NULL);
 	result->exists = 1;
 	result->is_dir = S_ISDIR(st.st_mode);
 	result->size = (int64_t)st.st_size;
@@ -176,34 +151,16 @@ static int store_put(const struct morph_sync_config *cfg, const char *source,
 		     const char *rel)
 {
 	char destination[PATH_MAX];
-	char temporary[PATH_MAX];
-	char random_id[64];
-	int rc;
 
 	if (cfg->remote_backend)
 		return cfg->remote_backend->copy_from_local(
 			cfg->remote_backend->user_data, source, rel, 0);
-	rc = store_path(cfg, rel, destination);
+	int rc = store_path(cfg, rel, destination);
+	if (rc == 0)
+		rc = ensure_parent(destination);
 	if (rc != 0)
 		return rc;
-	rc = ensure_parent(destination);
-	if (rc != 0)
-		return rc;
-	rc = morph_random_id("tmp_", random_id, sizeof(random_id));
-	if (rc != 0)
-		return rc;
-	if (snprintf(temporary, sizeof(temporary), "%s.%s", destination,
-		     random_id) >= (int)sizeof(temporary))
-		return -ENAMETOOLONG;
-	rc = copy_plain(source, temporary);
-	if (rc != 0)
-		return rc;
-	if (rename(temporary, destination) != 0) {
-		int saved = errno;
-		(void)unlink(temporary);
-		return -saved;
-	}
-	return 0;
+	return nb_file_copy(source, destination, &(nb_file_copy_options){.overwrite = true}, NULL);
 }
 
 static int store_get(const struct morph_sync_config *cfg, const char *rel,
@@ -215,8 +172,11 @@ static int store_get(const struct morph_sync_config *cfg, const char *rel,
 		return cfg->remote_backend->copy_to_local(
 			cfg->remote_backend->user_data, rel, destination);
 	if (store_path(cfg, rel, source) != 0)
-		return -ENAMETOOLONG;
-	return copy_plain(source, destination);
+		return NB_ERR_NAME_TOO_LONG;
+	int rc = ensure_parent(destination);
+	if (rc != NB_OK)
+		return rc;
+	return nb_file_copy(source, destination, &(nb_file_copy_options){.overwrite = true}, NULL);
 }
 
 int sync_db_quick_check(const char *path)
@@ -276,10 +236,10 @@ int sync_db_is_sqlite(const char *path)
 static int sqlite_snapshot(const char *source, const char *destination,
 			   int *page_size)
 {
-	sqlite3 *output MORPH_CLEANUP(backup_database_cleanup) = NULL;
-	sqlite3 *input MORPH_CLEANUP(backup_database_cleanup) = NULL;
-	sqlite3_stmt *statement MORPH_CLEANUP(backup_stmt_cleanup) = NULL;
-	sqlite3_backup *backup MORPH_CLEANUP(backup_transfer_cleanup) = NULL;
+	sqlite3 *output NB_CLEANUP(backup_database_cleanup) = NULL;
+	sqlite3 *input NB_CLEANUP(backup_database_cleanup) = NULL;
+	sqlite3_stmt *statement NB_CLEANUP(backup_stmt_cleanup) = NULL;
+	sqlite3_backup *backup NB_CLEANUP(backup_transfer_cleanup) = NULL;
 	int busy_retries = 0;
 	int rc;
 
@@ -326,57 +286,112 @@ static int sqlite_snapshot(const char *source, const char *destination,
 static int device_id_get(const struct morph_sync_config *cfg,
 			 char out[MORPH_SYNC_DEVICE_ID_MAX])
 {
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_3 = NB_OK;
+	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_4 = NB_OK;
+	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_5 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_6 = NB_OK;
+
 	char directory[PATH_MAX];
 	char path[PATH_MAX];
 	char *stored;
 	int rc;
 
-	rc = file_path_join(directory, sizeof(directory), cfg->source_dir,
-			    ".morph-sync");
+	rc = ((file_status_3 = nb_path_concat(&file_value_3, cfg->source_dir, ".morph-sync")) !=
+			      NB_OK
+		      ? file_status_3
+	      : (file_status_3 = nb_str_copy_to(nb_buf_str(&file_value_3), directory,
+						sizeof(directory))) == NB_ERR_RANGE
+		      ? NB_ERR_NAME_TOO_LONG
+		      : file_status_3);
 	if (rc != 0)
 		return rc;
-	rc = file_ensure_dir(directory);
+	rc = nb_file_mkdir(directory, true, NULL);
 	if (rc != 0)
 		return rc;
-	rc = file_path_join(path, sizeof(path), directory, "device-id");
+	rc = ((file_status_4 = nb_path_concat(&file_value_4, directory, "device-id")) != NB_OK
+		      ? file_status_4
+	      : (file_status_4 = nb_str_copy_to(nb_buf_str(&file_value_4), path, sizeof(path))) ==
+			      NB_ERR_RANGE
+		      ? NB_ERR_NAME_TOO_LONG
+		      : file_status_4);
 	if (rc != 0)
 		return rc;
-	stored = file_read_all_copy(path, NULL);
+	stored = (nb_file_read_all(path, &file_value_5, 0, NULL) == NB_OK &&
+				  (file_copy_5 = (char *)malloc(nb_buf_len(&file_value_5) + 1)) !=
+					  NULL
+			  ? (memcpy(file_copy_5, nb_buf_cstr(&file_value_5),
+				    nb_buf_len(&file_value_5) + 1),
+			     nb_charp_steal(&file_copy_5))
+			  : NULL);
 	if (stored) {
 		stored[strcspn(stored, "\r\n")] = '\0';
 		if (stored[0]) {
-			strncpy(out, stored, MORPH_SYNC_DEVICE_ID_MAX - 1);
+			(void)nb_str_copy_to(
+				nb_str_from_parts((stored),
+						  strnlen((stored), MORPH_SYNC_DEVICE_ID_MAX - 1)),
+				out, MORPH_SYNC_DEVICE_ID_MAX);
 			free(stored);
 			return 0;
 		}
 		free(stored);
 	}
-	rc = morph_random_id("dev_", out, MORPH_SYNC_DEVICE_ID_MAX);
+	rc = ((file_status_6 =
+		       ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+			: !(nb_buf_clear(&file_value_6), nb_buf_append_cstr(&file_value_6, "dev_"))
+				? NB_ERR_NOMEM
+				: nb_random_hex(&file_value_6, 16, NULL))) != NB_OK
+		      ? file_status_6
+	      : (file_status_6 = nb_str_copy_to(nb_buf_str(&file_value_6), out,
+						MORPH_SYNC_DEVICE_ID_MAX)) == NB_ERR_RANGE
+		      ? NB_ERR_NO_SPACE
+		      : file_status_6);
 	if (rc != 0)
 		return rc;
-	return file_write_all(path, out, strlen(out));
+	return nb_file_write_all(path, out, strlen(out), NULL);
 }
 
 static int db_cursor_path(const struct morph_sync_config *cfg,
 			  const char *database_key, char out[PATH_MAX])
 {
+	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_7 = NB_OK;
+	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_8 = NB_OK;
+
 	char directory[PATH_MAX];
 	int rc;
 
-	rc = file_path_join(directory, sizeof(directory), cfg->source_dir,
-			    ".morph-sync/db-state");
+	rc = ((file_status_7 = nb_path_concat(&file_value_7, cfg->source_dir,
+					      ".morph-sync/db-state")) != NB_OK
+		      ? file_status_7
+	      : (file_status_7 = nb_str_copy_to(nb_buf_str(&file_value_7), directory,
+						sizeof(directory))) == NB_ERR_RANGE
+		      ? NB_ERR_NAME_TOO_LONG
+		      : file_status_7);
 	if (rc != 0)
 		return rc;
-	rc = file_ensure_dir(directory);
+	rc = nb_file_mkdir(directory, true, NULL);
 	if (rc != 0)
 		return rc;
-	return file_path_join(out, PATH_MAX, directory, database_key);
+	return ((file_status_8 = nb_path_concat(&file_value_8, directory, database_key)) != NB_OK
+			? file_status_8
+		: (file_status_8 = nb_str_copy_to(nb_buf_str(&file_value_8), out, PATH_MAX)) ==
+				NB_ERR_RANGE
+			? NB_ERR_NAME_TOO_LONG
+			: file_status_8);
 }
 
 static int db_cursor_matches(const struct morph_sync_config *cfg,
 			     const char *database_key, const char *device,
 			     const char *database_hash)
 {
+	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_9 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	char path[PATH_MAX];
 	char expected[MORPH_SYNC_DEVICE_ID_MAX + MORPH_SYNC_HASH_LEN + 2];
 	char *stored;
@@ -384,7 +399,13 @@ static int db_cursor_matches(const struct morph_sync_config *cfg,
 
 	if (db_cursor_path(cfg, database_key, path) != 0)
 		return 0;
-	stored = file_read_all_copy(path, NULL);
+	stored = (nb_file_read_all(path, &file_value_9, 0, NULL) == NB_OK &&
+				  (file_copy_9 = (char *)malloc(nb_buf_len(&file_value_9) + 1)) !=
+					  NULL
+			  ? (memcpy(file_copy_9, nb_buf_cstr(&file_value_9),
+				    nb_buf_len(&file_value_9) + 1),
+			     nb_charp_steal(&file_copy_9))
+			  : NULL);
 	if (!stored)
 		return 0;
 	snprintf(expected, sizeof(expected), "%s %s", device, database_hash);
@@ -407,40 +428,59 @@ static int db_cursor_put(const struct morph_sync_config *cfg,
 		return rc;
 	if (snprintf(value, sizeof(value), "%s %s", device, database_hash) >=
 	    (int)sizeof(value))
-		return -ENAMETOOLONG;
-	return file_write_all(path, value, strlen(value));
+		return NB_ERR_NAME_TOO_LONG;
+	return nb_file_write_all(path, value, strlen(value), NULL);
 }
 
 static int staging_path(const struct morph_sync_config *cfg, const char *suffix,
 			char out[PATH_MAX])
 {
+	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_10 = NB_OK;
+	nb_buf file_value_11 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_11 = NB_OK;
+
 	char directory[PATH_MAX];
 	char random_id[64];
 	int rc;
 
 	out[0] = '\0';
-	rc = file_path_join(directory, sizeof(directory), cfg->sync_dir,
-			    ".morph-sync/staging");
+	rc = ((file_status_10 = nb_path_concat(&file_value_10, cfg->sync_dir,
+					       ".morph-sync/staging")) != NB_OK
+		      ? file_status_10
+	      : (file_status_10 = nb_str_copy_to(nb_buf_str(&file_value_10), directory,
+						 sizeof(directory))) == NB_ERR_RANGE
+		      ? NB_ERR_NAME_TOO_LONG
+		      : file_status_10);
 	if (rc != 0)
 		return rc;
-	rc = file_ensure_dir(directory);
+	rc = nb_file_mkdir(directory, true, NULL);
 	if (rc != 0)
 		return rc;
-	rc = morph_random_id("db_", random_id, sizeof(random_id));
+	rc = ((file_status_11 =
+		       ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+			: !(nb_buf_clear(&file_value_11), nb_buf_append_cstr(&file_value_11, "db_"))
+				? NB_ERR_NOMEM
+				: nb_random_hex(&file_value_11, 16, NULL))) != NB_OK
+		      ? file_status_11
+	      : (file_status_11 = nb_str_copy_to(nb_buf_str(&file_value_11), random_id,
+						 sizeof(random_id))) == NB_ERR_RANGE
+		      ? NB_ERR_NO_SPACE
+		      : file_status_11);
 	if (rc != 0)
 		return rc;
 	int length = snprintf(out, PATH_MAX, "%s/%s%s", directory, random_id,
 			      suffix ? suffix : "");
 	if (length < 0 || length >= PATH_MAX) {
 		out[0] = '\0';
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	}
 	return 0;
 }
 
 static int json_add_string(cJSON *object, const char *name, const char *value)
 {
-	return cJSON_AddStringToObject(object, name, value) ? 0 : -ENOMEM;
+	return cJSON_AddStringToObject(object, name, value) ? 0 : NB_ERR_NOMEM;
 }
 
 /* Bundle display history into the core snapshot, never into the live database.
@@ -449,23 +489,32 @@ static int json_add_string(cJSON *object, const char *name, const char *value)
 static int snapshot_include_display(const struct morph_sync_config *cfg,
 				    const char *rel, const char *snapshot)
 {
+	nb_buf file_value_12 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_12 = NB_OK;
+
 	char source[PATH_MAX];
-	struct backup_staging staging MORPH_CLEANUP(backup_staging_cleanup) = {0};
+	struct backup_staging staging NB_CLEANUP(backup_staging_cleanup) = {0};
 	struct stat st;
-	sqlite3 *db MORPH_CLEANUP(backup_database_cleanup) = NULL;
-	sqlite3_stmt *attach MORPH_CLEANUP(backup_stmt_cleanup) = NULL;
+	sqlite3 *db NB_CLEANUP(backup_database_cleanup) = NULL;
+	sqlite3_stmt *attach NB_CLEANUP(backup_stmt_cleanup) = NULL;
 	int page_size = 0;
 	int rc;
 
 	if (strcmp(rel, "data.db") != 0)
 		return 0;
-	rc = file_path_join(source, sizeof(source), cfg->source_dir, "ui-history.db");
+	rc = ((file_status_12 = nb_path_concat(&file_value_12, cfg->source_dir, "ui-history.db")) !=
+			      NB_OK
+		      ? file_status_12
+	      : (file_status_12 = nb_str_copy_to(nb_buf_str(&file_value_12), source,
+						 sizeof(source))) == NB_ERR_RANGE
+		      ? NB_ERR_NAME_TOO_LONG
+		      : file_status_12);
 	if (rc != 0)
 		return rc;
 	if (stat(source, &st) != 0) {
 		if (errno == ENOENT)
 			return 0;
-		return morph_error_from_errno(errno);
+		return nb_status_from_errno(errno, NULL);
 	}
 	rc = staging_path(cfg, ".display.db", staging.snapshot);
 	if (rc != 0)
@@ -516,7 +565,10 @@ static int snapshot_include_display(const struct morph_sync_config *cfg,
 int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *rel,
 			      const char *path, struct morph_sync_status *status, int update_cursor)
 {
-	struct backup_staging staging MORPH_CLEANUP(backup_staging_cleanup) = {0};
+	nb_buf file_value_13 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_13 = NB_OK;
+
+	struct backup_staging staging NB_CLEANUP(backup_staging_cleanup) = {0};
 	char object_rel[PATH_MAX];
 	char manifest_rel[PATH_MAX];
 	char database_hash[MORPH_SYNC_HASH_LEN];
@@ -525,17 +577,17 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 	char snapshot_id[MORPH_SYNC_SNAPSHOT_ID_MAX];
 	char version_id[MORPH_SYNC_HASH_LEN];
 	struct morph_sync_backend_stat remote_stat;
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	cJSON *chunks MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	unsigned char *buffer MORPH_CLEANUP(backup_bytes_cleanup) = NULL;
-	char *json MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
-	FILE *snapshot MORPH_CLEANUP(backup_file_cleanup) = NULL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	cJSON *chunks NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	unsigned char *buffer NB_CLEANUP(backup_bytes_cleanup) = NULL;
+	char *json NB_CLEANUP(cJSON_FreeTextOwner) = NULL;
+	FILE *snapshot NB_CLEANUP(backup_file_cleanup) = NULL;
 	int page_size = 0;
 	size_t chunk_size;
 	int rc;
 
 	if (!sync_db_backend_valid(cfg) || !rel || !path || !status)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = staging_path(cfg, ".db", staging.snapshot);
 	if (rc != 0)
 		return rc;
@@ -548,7 +600,7 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 			return rc;
 	}
 	if (!sync_db_quick_check(staging.snapshot)) {
-		return MORPH_ERR_FORMAT;
+		return NB_ERR_FORMAT;
 	}
 	rc = sync_hash_file(staging.snapshot, database_hash);
 	if (rc != 0)
@@ -561,21 +613,34 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 					       database_hash))
 		return rc;
 	if (update_cursor) {
-		rc = morph_random_id("ver_", version_id, sizeof(version_id));
+		rc = ((file_status_13 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+					 : !(nb_buf_clear(&file_value_13),
+					     nb_buf_append_cstr(&file_value_13, "ver_"))
+						 ? NB_ERR_NOMEM
+						 : nb_random_hex(&file_value_13, 16, NULL))) !=
+				      NB_OK
+			      ? file_status_13
+		      : (file_status_13 = nb_str_copy_to(nb_buf_str(&file_value_13), version_id,
+							 sizeof(version_id))) == NB_ERR_RANGE
+			      ? NB_ERR_NO_SPACE
+			      : file_status_13);
 		if (rc != 0)
 			return rc;
 	} else {
-		strncpy(version_id, database_hash, sizeof(version_id) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts((database_hash),
+					  strnlen((database_hash), sizeof(version_id) - 1)),
+			version_id, sizeof(version_id));
 		version_id[sizeof(version_id) - 1] = '\0';
 	}
 	if (snprintf(snapshot_id, sizeof(snapshot_id), "%s-%s-%s",
 		     database_key, device, version_id) >=
 	    (int)sizeof(snapshot_id)) {
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	}
 	if (snprintf(manifest_rel, sizeof(manifest_rel), "%s/%s.json",
 		     DB_SNAPSHOT_DIR, snapshot_id) >= (int)sizeof(manifest_rel)) {
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	}
 	rc = store_stat(cfg, manifest_rel, &remote_stat);
 	if (rc != 0 || remote_stat.exists)
@@ -584,20 +649,20 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 	root = cJSON_CreateObject();
 	chunks = cJSON_CreateArray();
 	if (!root || !chunks) {
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	cJSON_AddNumberToObject(root, "version", 1);
 	if (json_add_string(root, "snapshot_id", snapshot_id) != 0 ||
 	    json_add_string(root, "path", rel) != 0 ||
 	    json_add_string(root, "device_id", device) != 0 ||
 	    json_add_string(root, "database_hash", database_hash) != 0) {
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	cJSON_AddNumberToObject(root, "created_at", (double)time(NULL));
 	{
 		struct stat st;
 		if (stat(staging.snapshot, &st) != 0) {
-			return -errno;
+			return nb_status_from_errno(errno, NULL);
 		}
 		cJSON_AddNumberToObject(root, "database_size", (double)st.st_size);
 	}
@@ -606,16 +671,17 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 	if (chunk_size == 0)
 		chunk_size = (size_t)page_size;
 	cJSON_AddNumberToObject(root, "chunk_size", (double)chunk_size);
-	rc = morph_json_object_take(root, "chunks", &chunks);
+	rc = (cJSON_AddItemToObject(root, "chunks", chunks) ? (chunks = NULL, NB_OK)
+							    : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	buffer = malloc(chunk_size);
 	if (!buffer) {
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	snapshot = fopen(staging.snapshot, "rb");
 	if (!snapshot) {
-		return -errno;
+		return nb_status_from_errno(errno, NULL);
 	}
 	rc = staging_path(cfg, ".chunk", staging.chunk);
 	if (rc != 0)
@@ -630,13 +696,13 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 		if (snprintf(object_rel, sizeof(object_rel), "%s/%.2s/%s",
 			     DB_OBJECT_DIR, chunk_hash, chunk_hash) >=
 		    (int)sizeof(object_rel)) {
-			return -ENAMETOOLONG;
+			return NB_ERR_NAME_TOO_LONG;
 		}
 		rc = store_stat(cfg, object_rel, &remote_stat);
 		if (rc != 0)
 			return rc;
 		if (!remote_stat.exists) {
-			rc = file_write_all(staging.chunk, (const char *)buffer, amount);
+			rc = nb_file_write_all(staging.chunk, (const char *)buffer, amount, NULL);
 			if (rc != 0)
 				return rc;
 			rc = store_put(cfg, staging.chunk, object_rel);
@@ -651,18 +717,18 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 		if (!item || !cJSON_AddStringToObject(item, "hash", chunk_hash) ||
 		    !cJSON_AddNumberToObject(item, "size", (double)amount)) {
 			cJSON_Delete(item);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		cJSON_AddItemToArray(cJSON_GetObjectItem(root, "chunks"), item);
 	}
 	if (ferror(snapshot)) {
-		return -EIO;
+		return NB_ERR_IO;
 	}
 	json = cJSON_PrintUnformatted(root);
 	if (!json) {
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
-	rc = file_write_all(staging.chunk, json, strlen(json));
+	rc = nb_file_write_all(staging.chunk, json, strlen(json), NULL);
 	if (rc == 0)
 		rc = store_put(cfg, staging.chunk, manifest_rel);
 	if (rc == 0 && update_cursor)
@@ -677,10 +743,15 @@ int sync_db_backup_create(const struct morph_sync_config *cfg,
 			  const char *rel, const char *path,
 			  struct morph_sync_status *status)
 {
+	int directory_status_1 = NB_OK;
+
+	nb_buf file_value_14 NB_CLEANUP(nb_buf_destroy) = {0};
+	int file_status_14 = NB_OK;
+
 	char directory[PATH_MAX];
 	char prefix[PATH_MAX];
 	char conflict_path[PATH_MAX];
-	char **names = NULL;
+	nb_dir_listing names NB_CLEANUP(nb_dir_listing_destroy) = {0};
 	char *slash;
 	const char *base;
 	int count = 0;
@@ -689,42 +760,59 @@ int sync_db_backup_create(const struct morph_sync_config *cfg,
 	rc = sync_db_backup_create_one(cfg, rel, path, status, 1);
 	if (rc != 0)
 		return rc;
-	strncpy(directory, path, sizeof(directory) - 1);
+	(void)nb_str_copy_to(nb_str_from_parts((path), strnlen((path), sizeof(directory) - 1)),
+			     directory, sizeof(directory));
 	directory[sizeof(directory) - 1] = '\0';
 	slash = strrchr(directory, '/');
 	if (slash) {
 		*slash = '\0';
 		base = slash + 1;
 	} else {
-		strncpy(directory, ".", sizeof(directory) - 1);
+		(void)nb_str_copy_to(NB_STR_LIT("."), directory, sizeof(directory));
 		base = path;
 	}
 	if (snprintf(prefix, sizeof(prefix), "%s.conflict.", base) >=
 	    (int)sizeof(prefix))
-		return -ENAMETOOLONG;
-	rc = file_list_files_copy(directory, &names, &count);
-	if (rc == -ENOENT)
+		return NB_ERR_NAME_TOO_LONG;
+	rc = ((directory_status_1 = nb_dir_scan(
+		       directory, NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT | NB_DIR_SCAN_FOLLOW_LINKS,
+		       &names, NULL)) != NB_OK
+		      ? directory_status_1
+	      : names.names.len > INT_MAX ? NB_ERR_RANGE
+					  : (count = (int)names.names.len, NB_OK));
+	if (rc == NB_ERR_NOT_FOUND)
 		return 0;
 	for (int i = 0; rc == 0 && i < count; i++) {
-		if (strncmp(names[i], prefix, strlen(prefix)) != 0)
+		if (strncmp(nb_dir_listing_name(&names, (size_t)(i)), prefix, strlen(prefix)) != 0)
 			continue;
-		rc = file_path_join(conflict_path, sizeof(conflict_path),
-				    directory, names[i]);
+		rc = ((file_status_14 = nb_path_concat(&file_value_14, directory,
+						       nb_dir_listing_name(&names, (size_t)(i)))) !=
+				      NB_OK
+			      ? file_status_14
+		      : (file_status_14 = nb_str_copy_to(nb_buf_str(&file_value_14), conflict_path,
+							 sizeof(conflict_path))) == NB_ERR_RANGE
+			      ? NB_ERR_NAME_TOO_LONG
+			      : file_status_14);
 		if (rc == 0 && sync_db_is_sqlite(conflict_path))
 			rc = sync_db_backup_create_one(cfg, rel, conflict_path, status, 0);
 	}
-	file_free_list(names, count);
+	nb_dir_listing_destroy(&names);
 	return rc;
 }
 
 static int snapshot_id_valid(const char *snapshot_id)
 {
-	return morph_name_valid(snapshot_id, "-_");
+	return nb_str_is_alnum(nb_str_from_cstr(snapshot_id), "-_");
 }
 
 static int manifest_load(const struct morph_sync_config *cfg, const char *name,
 			 cJSON **out)
 {
+	nb_buf file_value_15 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_15 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf file_value_16 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_16 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	char rel[PATH_MAX];
 	char local[PATH_MAX] = { 0 };
 	char direct[PATH_MAX];
@@ -733,7 +821,7 @@ static int manifest_load(const struct morph_sync_config *cfg, const char *name,
 
 	if (snprintf(rel, sizeof(rel), "%s/%s", DB_SNAPSHOT_DIR, name) >=
 	    (int)sizeof(rel))
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	if (cfg->remote_backend) {
 		rc = staging_path(cfg, ".json", local);
 		if (rc != 0)
@@ -741,19 +829,31 @@ static int manifest_load(const struct morph_sync_config *cfg, const char *name,
 		rc = store_get(cfg, rel, local);
 		if (rc != 0)
 			return rc;
-		text = file_read_all_copy(local, NULL);
+		text = (nb_file_read_all(local, &file_value_15, 0, NULL) == NB_OK &&
+					(file_copy_15 = (char *)malloc(nb_buf_len(&file_value_15) +
+								       1)) != NULL
+				? (memcpy(file_copy_15, nb_buf_cstr(&file_value_15),
+					  nb_buf_len(&file_value_15) + 1),
+				   nb_charp_steal(&file_copy_15))
+				: NULL);
 		(void)unlink(local);
 	} else {
 		rc = store_path(cfg, rel, direct);
 		if (rc != 0)
 			return rc;
-		text = file_read_all_copy(direct, NULL);
+		text = (nb_file_read_all(direct, &file_value_16, 0, NULL) == NB_OK &&
+					(file_copy_16 = (char *)malloc(nb_buf_len(&file_value_16) +
+								       1)) != NULL
+				? (memcpy(file_copy_16, nb_buf_cstr(&file_value_16),
+					  nb_buf_len(&file_value_16) + 1),
+				   nb_charp_steal(&file_copy_16))
+				: NULL);
 	}
 	if (!text)
-		return -ENOENT;
+		return NB_ERR_NOT_FOUND;
 	*out = cJSON_Parse(text);
 	free(text);
-	return *out ? 0 : MORPH_ERR_PARSE;
+	return *out ? 0 : NB_ERR_PARSE;
 }
 
 static int backup_from_json(cJSON *root, struct morph_sync_backup *backup)
@@ -768,14 +868,24 @@ static int backup_from_json(cJSON *root, struct morph_sync_backup *backup)
 	if (!cJSON_IsString(snapshot_id) || !cJSON_IsString(path) ||
 	    !cJSON_IsString(device) || !cJSON_IsString(hash) ||
 	    !cJSON_IsNumber(created) || !cJSON_IsNumber(size))
-		return MORPH_ERR_PARSE;
+		return NB_ERR_PARSE;
 	memset(backup, 0, sizeof(*backup));
-	strncpy(backup->snapshot_id, snapshot_id->valuestring,
-		sizeof(backup->snapshot_id) - 1);
-	strncpy(backup->path, path->valuestring, sizeof(backup->path) - 1);
-	strncpy(backup->device_id, device->valuestring,
-		sizeof(backup->device_id) - 1);
-	strncpy(backup->hash, hash->valuestring, sizeof(backup->hash) - 1);
+	(void)nb_str_copy_to(nb_str_from_parts((snapshot_id->valuestring),
+					       strnlen((snapshot_id->valuestring),
+						       sizeof(backup->snapshot_id) - 1)),
+			     backup->snapshot_id, sizeof(backup->snapshot_id));
+	(void)nb_str_copy_to(
+		nb_str_from_parts((path->valuestring),
+				  strnlen((path->valuestring), sizeof(backup->path) - 1)),
+		backup->path, sizeof(backup->path));
+	(void)nb_str_copy_to(
+		nb_str_from_parts((device->valuestring),
+				  strnlen((device->valuestring), sizeof(backup->device_id) - 1)),
+		backup->device_id, sizeof(backup->device_id));
+	(void)nb_str_copy_to(
+		nb_str_from_parts((hash->valuestring),
+				  strnlen((hash->valuestring), sizeof(backup->hash) - 1)),
+		backup->hash, sizeof(backup->hash));
 	backup->created_at = (int64_t)created->valuedouble;
 	backup->size = (int64_t)size->valuedouble;
 	return 0;
@@ -794,20 +904,20 @@ static int snapshot_scan_name(struct snapshot_scan *scan, const char *name)
 	rc = manifest_load(scan->cfg, name, &root);
 	if (rc != 0)
 		return rc;
-	backup = morph_array_push_borrow(scan->items);
+	backup = nb_vec_push(scan->items);
 	if (!backup) {
 		cJSON_Delete(root);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	rc = backup_from_json(root, backup);
 	cJSON_Delete(root);
 	if (rc != 0) {
-		scan->items->nelts--;
+		scan->items->len--;
 		return rc;
 	}
 	if (scan->path_filter && scan->path_filter[0] &&
 	    strcmp(scan->path_filter, backup->path) != 0)
-		scan->items->nelts--;
+		scan->items->len--;
 	return 0;
 }
 
@@ -816,7 +926,7 @@ static int snapshot_remote_cb(const char *name, int is_dir, void *user_data)
 	struct snapshot_scan *scan = user_data;
 
 	if (!scan || scan->rc != 0 || is_dir)
-		return scan ? scan->rc : -EINVAL;
+		return scan ? scan->rc : NB_ERR_INVAL;
 	scan->rc = snapshot_scan_name(scan, name);
 	return scan->rc;
 }
@@ -835,18 +945,21 @@ int morph_sync_backups(const struct morph_sync_config *cfg,
 			const char *path, struct morph_sync_backup **out,
 			int *count)
 {
+	int directory_status_1 = NB_OK;
+
 	struct snapshot_scan scan;
-	morph_array_t items;
+	nb_vec items;
 	char directory[PATH_MAX];
-	char **names = NULL;
+	nb_dir_listing names NB_CLEANUP(nb_dir_listing_destroy) = {0};
 	int name_count = 0;
 	int rc;
 
 	if (!sync_db_backend_valid(cfg) || !out || !count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*out = NULL;
 	*count = 0;
-	rc = morph_array_init(&items, 8, sizeof(struct morph_sync_backup));
+	rc = (nb_vec_init(&items, sizeof(struct morph_sync_backup)),
+	      nb_vec_reserve(&items, 8) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	memset(&scan, 0, sizeof(scan));
@@ -861,22 +974,38 @@ int morph_sync_backups(const struct morph_sync_config *cfg,
 	} else {
 		rc = store_path(cfg, DB_SNAPSHOT_DIR, directory);
 		if (rc == 0)
-			rc = file_list_files_copy(directory, &names, &name_count);
-		if (rc == -ENOENT)
+			rc = ((directory_status_1 =
+				       nb_dir_scan(directory,
+						   NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT |
+							   NB_DIR_SCAN_FOLLOW_LINKS,
+						   &names, NULL)) != NB_OK
+				      ? directory_status_1
+			      : names.names.len > INT_MAX
+				      ? NB_ERR_RANGE
+				      : (name_count = (int)names.names.len, NB_OK));
+		if (rc == NB_ERR_NOT_FOUND)
 			rc = 0;
 		for (int i = 0; rc == 0 && i < name_count; i++)
-			rc = snapshot_scan_name(&scan, names[i]);
-		file_free_list(names, name_count);
+			rc = snapshot_scan_name(&scan, nb_dir_listing_name(&names, (size_t)(i)));
+		nb_dir_listing_destroy(&names);
 	}
 	if (rc != 0) {
-		morph_array_cleanup(&items);
+		nb_vec_cleanup(&items);
 		return rc;
 	}
-	if (items.nelts > 1)
-		qsort(items.elts, items.nelts, sizeof(struct morph_sync_backup),
+	if (items.len > 1)
+		qsort(((void *)items.data), items.len, sizeof(struct morph_sync_backup),
 		      backup_compare);
-	*out = items.elts;
-	*count = (int)items.nelts;
+	*out = items.len ? malloc(items.len * items.elem_size) : NULL;
+	if (items.len && !*out) {
+		nb_vec_cleanup(&items);
+		return NB_ERR_NOMEM;
+	}
+	if (items.len)
+		memcpy(*out, items.data, items.len * items.elem_size);
+	*count = (int)items.len;
+	items.len = 0;
+	nb_vec_cleanup(&items);
 	return 0;
 }
 
@@ -888,41 +1017,35 @@ void morph_sync_backups_free(struct morph_sync_backup *items)
 static int restore_chunk(const struct morph_sync_config *cfg, cJSON *item,
 			 FILE *output, const char *temporary_chunk)
 {
+	nb_buf data NB_CLEANUP(nb_buf_cleanup) = {0};
 	char object_rel[PATH_MAX];
 	char actual_hash[MORPH_SYNC_HASH_LEN];
 	cJSON *hash = cJSON_GetObjectItem(item, "hash");
 	cJSON *size = cJSON_GetObjectItem(item, "size");
-	char *data;
-	size_t data_size;
-	int rc;
 
 	if (!cJSON_IsString(hash) || strlen(hash->valuestring) != 64 ||
 	    !cJSON_IsNumber(size) || size->valuedouble < 0)
-		return MORPH_ERR_PARSE;
+		return NB_ERR_PARSE;
 	if (snprintf(object_rel, sizeof(object_rel), "%s/%.2s/%s",
 		     DB_OBJECT_DIR, hash->valuestring, hash->valuestring) >=
 	    (int)sizeof(object_rel))
-		return -ENAMETOOLONG;
-	rc = store_get(cfg, object_rel, temporary_chunk);
+		return NB_ERR_NAME_TOO_LONG;
+	int rc = store_get(cfg, object_rel, temporary_chunk);
 	if (rc != 0)
 		return rc;
-	data = file_read_all_copy(temporary_chunk, &data_size);
+	rc = nb_file_read_all(temporary_chunk, &data, 0, NULL);
 	(void)unlink(temporary_chunk);
-	if (!data)
-		return -EIO;
-	sync_hash_bytes(data, data_size, actual_hash);
-	if (data_size != (size_t)size->valuedouble ||
+	if (rc != 0)
+		return rc;
+	sync_hash_bytes(nb_buf_cstr(&data), nb_buf_len(&data), actual_hash);
+	if (nb_buf_len(&data) != (size_t)size->valuedouble ||
 	    strcmp(actual_hash, hash->valuestring) != 0) {
-		log_err(cfg ? cfg->logger : NULL, "database backup chunk failed verification: %s",
-			hash->valuestring);
-		free(data);
-		return MORPH_ERR_FORMAT;
+		nb_log_write(cfg ? cfg->logger : NULL, NB_LOG_ERROR,
+			     "database backup chunk failed verification: %s", hash->valuestring);
+		return NB_ERR_FORMAT;
 	}
-	if (fwrite(data, 1, data_size, output) != data_size) {
-		free(data);
-		return -EIO;
-	}
-	free(data);
+	if (fwrite(nb_buf_cstr(&data), 1, nb_buf_len(&data), output) != nb_buf_len(&data))
+		return NB_ERR_IO;
 	return 0;
 }
 
@@ -930,24 +1053,26 @@ int morph_sync_restore_db(const struct morph_sync_config *cfg,
 			  const char *snapshot_id, const char *destination)
 {
 	char manifest_name[MORPH_SYNC_SNAPSHOT_ID_MAX + 8];
-	struct backup_staging staging MORPH_CLEANUP(backup_staging_cleanup) = {0};
+	struct backup_staging staging NB_CLEANUP(backup_staging_cleanup) = {0};
 	char actual_hash[MORPH_SYNC_HASH_LEN];
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	nb_buf parent NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf temporary NB_CLEANUP(nb_buf_cleanup) = {0};
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	cJSON *chunks;
 	cJSON *expected_hash;
 	cJSON *expected_size;
 	struct stat st;
-	FILE *output MORPH_CLEANUP(backup_file_cleanup) = NULL;
+	FILE *output NB_CLEANUP(backup_file_cleanup) = NULL;
 	int rc;
 
 	if (!sync_db_backend_valid(cfg) || !snapshot_id_valid(snapshot_id) || !destination ||
 	    !destination[0])
-		return -EINVAL;
-	if (file_exists(destination))
-		return -EEXIST;
+		return NB_ERR_INVAL;
+	if (nb_file_exists(destination))
+		return NB_ERR_EXISTS;
 	if (snprintf(manifest_name, sizeof(manifest_name), "%s.json",
 		     snapshot_id) >= (int)sizeof(manifest_name))
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	rc = manifest_load(cfg, manifest_name, &root);
 	if (rc != 0)
 		return rc;
@@ -956,23 +1081,27 @@ int morph_sync_restore_db(const struct morph_sync_config *cfg,
 	expected_size = cJSON_GetObjectItem(root, "database_size");
 	if (!cJSON_IsArray(chunks) || !cJSON_IsString(expected_hash) ||
 	    !cJSON_IsNumber(expected_size)) {
-		return MORPH_ERR_PARSE;
+		return NB_ERR_PARSE;
 	}
 	rc = ensure_parent(destination);
 	if (rc != 0)
 		return rc;
-	int path_length = snprintf(staging.snapshot, sizeof(staging.snapshot),
-				   "%s.restore.tmp.%u", destination, (unsigned)getpid());
-	if (path_length < 0 || path_length >= (int)sizeof(staging.snapshot)) {
-		staging.snapshot[0] = '\0';
-		return -ENAMETOOLONG;
+	rc = nb_path_dirname(&parent, destination);
+	if (rc == 0)
+		rc = nb_file_temp_in(&temporary, nb_buf_cstr(&parent), NULL, NULL);
+	if (rc != 0)
+		return rc;
+	if (nb_buf_len(&temporary) >= sizeof(staging.snapshot)) {
+		(void)nb_file_remove(nb_buf_cstr(&temporary), NULL);
+		return NB_ERR_NAME_TOO_LONG;
 	}
+	memcpy(staging.snapshot, nb_buf_cstr(&temporary), nb_buf_len(&temporary) + 1);
 	rc = staging_path(cfg, ".chunk", staging.chunk);
 	if (rc != 0)
 		return rc;
 	output = fopen(staging.snapshot, "wb");
 	if (!output) {
-		return -errno;
+		return nb_status_from_errno(errno, NULL);
 	}
 	cJSON *item;
 	cJSON_ArrayForEach(item, chunks) {
@@ -984,27 +1113,25 @@ int morph_sync_restore_db(const struct morph_sync_config *cfg,
 	int close_rc = fclose(output);
 	output = NULL;
 	if (flush_rc != 0 || close_rc != 0)
-		return -EIO;
+		return NB_ERR_IO;
 	if (stat(staging.snapshot, &st) != 0 ||
 	    (int64_t)st.st_size != (int64_t)expected_size->valuedouble) {
-		log_err(cfg ? cfg->logger : NULL, "database restore size mismatch for %s",
-			snapshot_id);
-		return MORPH_ERR_FORMAT;
+		nb_log_write(cfg ? cfg->logger : NULL, NB_LOG_ERROR,
+			     "database restore size mismatch for %s", snapshot_id);
+		return NB_ERR_FORMAT;
 	}
 	rc = sync_hash_file(staging.snapshot, actual_hash);
 	if (rc != 0)
 		return rc;
 	if (strcmp(actual_hash, expected_hash->valuestring) != 0 ||
 	    !sync_db_quick_check(staging.snapshot)) {
-		log_err(cfg ? cfg->logger : NULL, "database restore integrity check failed for %s",
-			snapshot_id);
-		return MORPH_ERR_FORMAT;
+		nb_log_write(cfg ? cfg->logger : NULL, NB_LOG_ERROR,
+			     "database restore integrity check failed for %s", snapshot_id);
+		return NB_ERR_FORMAT;
 	}
-	if (rename(staging.snapshot, destination) != 0) {
-		return -errno;
-	}
-	staging.keep_snapshot = 1;
-	return 0;
+	return nb_file_copy(staging.snapshot, destination,
+			    &(nb_file_copy_options){.preserve_mode = true, .nofollow_source = true},
+			    NULL);
 }
 
 static int store_delete(const struct morph_sync_config *cfg, const char *rel)
@@ -1015,15 +1142,15 @@ static int store_delete(const struct morph_sync_config *cfg, const char *rel)
 		return cfg->remote_backend->delete_file(
 			cfg->remote_backend->user_data, rel);
 	if (store_path(cfg, rel, path) != 0)
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	if (unlink(path) != 0 && errno != ENOENT)
-		return morph_error_from_errno(errno);
+		return nb_status_from_errno(errno, NULL);
 	return 0;
 }
 
 struct retention_scan {
 	const struct morph_sync_config *cfg;
-	morph_array_t *snapshots;
+	nb_vec *snapshots;
 	int rc;
 };
 
@@ -1039,17 +1166,18 @@ static int retention_add_name(struct retention_scan *scan, const char *name)
 	rc = manifest_load(scan->cfg, name, &root);
 	if (rc != 0)
 		return rc;
-	stored = morph_array_push_borrow(scan->snapshots);
+	stored = nb_vec_push(scan->snapshots);
 	if (!stored) {
 		cJSON_Delete(root);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	memset(stored, 0, sizeof(*stored));
-	strncpy(stored->name, name, sizeof(stored->name) - 1);
+	(void)nb_str_copy_to(nb_str_from_parts((name), strnlen((name), sizeof(stored->name) - 1)),
+			     stored->name, sizeof(stored->name));
 	rc = backup_from_json(root, &stored->backup);
 	cJSON_Delete(root);
 	if (rc != 0)
-		scan->snapshots->nelts--;
+		scan->snapshots->len--;
 	return rc;
 }
 
@@ -1058,17 +1186,18 @@ static int retention_remote_cb(const char *name, int is_dir, void *user_data)
 	struct retention_scan *scan = user_data;
 
 	if (!scan || scan->rc != 0 || is_dir)
-		return scan ? scan->rc : -EINVAL;
+		return scan ? scan->rc : NB_ERR_INVAL;
 	scan->rc = retention_add_name(scan, name);
 	return scan->rc;
 }
 
-static int retention_collect(const struct morph_sync_config *cfg,
-			     morph_array_t *snapshots)
+static int retention_collect(const struct morph_sync_config *cfg, nb_vec *snapshots)
 {
+	int directory_status_1 = NB_OK;
+
 	struct retention_scan scan;
 	char directory[PATH_MAX];
-	char **names = NULL;
+	nb_dir_listing names NB_CLEANUP(nb_dir_listing_destroy) = {0};
 	int count = 0;
 	int rc;
 
@@ -1083,12 +1212,17 @@ static int retention_collect(const struct morph_sync_config *cfg,
 	rc = store_path(cfg, DB_SNAPSHOT_DIR, directory);
 	if (rc != 0)
 		return rc;
-	rc = file_list_files_copy(directory, &names, &count);
-	if (rc == -ENOENT)
+	rc = ((directory_status_1 = nb_dir_scan(
+		       directory, NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT | NB_DIR_SCAN_FOLLOW_LINKS,
+		       &names, NULL)) != NB_OK
+		      ? directory_status_1
+	      : names.names.len > INT_MAX ? NB_ERR_RANGE
+					  : (count = (int)names.names.len, NB_OK));
+	if (rc == NB_ERR_NOT_FOUND)
 		return 0;
 	for (int i = 0; rc == 0 && i < count; i++)
-		rc = retention_add_name(&scan, names[i]);
-	file_free_list(names, count);
+		rc = retention_add_name(&scan, nb_dir_listing_name(&names, (size_t)(i)));
+	nb_dir_listing_destroy(&names);
 	return rc;
 }
 
@@ -1113,8 +1247,8 @@ static int snapshot_is_latest(const struct stored_snapshot *items, size_t count,
 	return 1;
 }
 
-static int live_chunks_add(const struct morph_sync_config *cfg,
-			   const char *manifest_name, morph_strmap_t *live)
+static int live_chunks_add(const struct morph_sync_config *cfg, const char *manifest_name,
+			   nb_map *live)
 {
 	cJSON *root = NULL;
 	cJSON *chunks;
@@ -1127,17 +1261,18 @@ static int live_chunks_add(const struct morph_sync_config *cfg,
 	chunks = cJSON_GetObjectItem(root, "chunks");
 	if (!cJSON_IsArray(chunks)) {
 		cJSON_Delete(root);
-		return MORPH_ERR_PARSE;
+		return NB_ERR_PARSE;
 	}
 	cJSON_ArrayForEach(item, chunks) {
 		cJSON *hash = cJSON_GetObjectItem(item, "hash");
 		if (!cJSON_IsString(hash)) {
-			rc = MORPH_ERR_PARSE;
+			rc = NB_ERR_PARSE;
 			break;
 		}
-		rc = morph_strmap_set_borrow(live, hash->valuestring, (void *)(uintptr_t)1);
-		if (rc != 0)
+		if (!nb_map_put_cstr(live, hash->valuestring, (void *)(uintptr_t)1, NULL)) {
+			rc = NB_ERR_NOMEM;
 			break;
+		}
 	}
 	cJSON_Delete(root);
 	return rc;
@@ -1145,7 +1280,7 @@ static int live_chunks_add(const struct morph_sync_config *cfg,
 
 struct object_gc {
 	const struct morph_sync_config *cfg;
-	morph_strmap_t *live;
+	nb_map *live;
 	int64_t cutoff;
 	char directory[PATH_MAX];
 	int rc;
@@ -1157,11 +1292,11 @@ static int object_gc_one(struct object_gc *gc, const char *name)
 	char rel[PATH_MAX];
 	int rc;
 
-	if (morph_strmap_contains(gc->live, name))
+	if (nb_map_has_cstr(gc->live, name))
 		return 0;
 	if (snprintf(rel, sizeof(rel), "%s/%s", gc->directory, name) >=
 	    (int)sizeof(rel))
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	rc = store_stat(gc->cfg, rel, &st);
 	if (rc != 0)
 		return rc;
@@ -1175,7 +1310,7 @@ static int object_file_cb(const char *name, int is_dir, void *user_data)
 	struct object_gc *gc = user_data;
 
 	if (!gc || gc->rc != 0 || is_dir)
-		return gc ? gc->rc : -EINVAL;
+		return gc ? gc->rc : NB_ERR_INVAL;
 	gc->rc = object_gc_one(gc, name);
 	return gc->rc;
 }
@@ -1186,11 +1321,11 @@ static int object_prefix_cb(const char *name, int is_dir, void *user_data)
 	struct object_gc child;
 
 	if (!gc || gc->rc != 0 || !is_dir)
-		return gc ? gc->rc : -EINVAL;
+		return gc ? gc->rc : NB_ERR_INVAL;
 	child = *gc;
 	if (snprintf(child.directory, sizeof(child.directory), "%s/%s",
 		     DB_OBJECT_DIR, name) >= (int)sizeof(child.directory))
-		return -ENAMETOOLONG;
+		return NB_ERR_NAME_TOO_LONG;
 	gc->rc = gc->cfg->remote_backend->list(
 		gc->cfg->remote_backend->user_data, child.directory,
 		object_file_cb, &child);
@@ -1201,70 +1336,86 @@ static int object_prefix_cb(const char *name, int is_dir, void *user_data)
 
 static int object_gc_local(struct object_gc *gc)
 {
+	int directory_status_1 = NB_OK;
+	int directory_status_2 = NB_OK;
+
 	char root[PATH_MAX];
-	char **prefixes = NULL;
+	nb_dir_listing prefixes NB_CLEANUP(nb_dir_listing_destroy) = {0};
 	int prefix_count = 0;
 	int rc;
 
 	rc = store_path(gc->cfg, DB_OBJECT_DIR, root);
 	if (rc != 0)
 		return rc;
-	rc = file_list_dirs_copy(root, &prefixes, &prefix_count);
-	if (rc == -ENOENT)
+	rc = ((directory_status_1 = nb_dir_scan(
+		       root, NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN | NB_DIR_SCAN_FOLLOW_LINKS,
+		       &prefixes, NULL)) != NB_OK
+		      ? directory_status_1
+	      : prefixes.names.len > INT_MAX ? NB_ERR_RANGE
+					     : (prefix_count = (int)prefixes.names.len, NB_OK));
+	if (rc == NB_ERR_NOT_FOUND)
 		return 0;
 	for (int i = 0; rc == 0 && i < prefix_count; i++) {
 		char directory[PATH_MAX];
-		char **names = NULL;
+		nb_dir_listing names NB_CLEANUP(nb_dir_listing_destroy) = {0};
 		int count = 0;
-		if (snprintf(gc->directory, sizeof(gc->directory), "%s/%s",
-			     DB_OBJECT_DIR, prefixes[i]) >=
+		if (snprintf(gc->directory, sizeof(gc->directory), "%s/%s", DB_OBJECT_DIR,
+			     nb_dir_listing_name(&prefixes, (size_t)(i))) >=
 		    (int)sizeof(gc->directory)) {
-			rc = -ENAMETOOLONG;
+			rc = NB_ERR_NAME_TOO_LONG;
 			break;
 		}
 		rc = store_path(gc->cfg, gc->directory, directory);
 		if (rc == 0)
-			rc = file_list_files_copy(directory, &names, &count);
+			rc = ((directory_status_2 =
+				       nb_dir_scan(directory,
+						   NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT |
+							   NB_DIR_SCAN_FOLLOW_LINKS,
+						   &names, NULL)) != NB_OK
+				      ? directory_status_2
+			      : names.names.len > INT_MAX ? NB_ERR_RANGE
+							  : (count = (int)names.names.len, NB_OK));
 		for (int j = 0; rc == 0 && j < count; j++)
-			rc = object_gc_one(gc, names[j]);
-		file_free_list(names, count);
+			rc = object_gc_one(gc, nb_dir_listing_name(&names, (size_t)(j)));
+		nb_dir_listing_destroy(&names);
 	}
-	file_free_list(prefixes, prefix_count);
+	nb_dir_listing_destroy(&prefixes);
 	return rc;
 }
 
 int sync_db_backup_cleanup(const struct morph_sync_config *cfg)
 {
-	morph_array_t snapshots;
-	morph_strmap_t live;
+	nb_vec snapshots;
+	nb_map *live = NULL;
 	struct stored_snapshot *items;
 	struct object_gc gc;
 	int64_t cutoff;
 	int rc;
 
 	if (!sync_db_backend_valid(cfg))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (cfg->retention_days <= 0)
 		return 0;
 	cutoff = (int64_t)time(NULL) -
 		((int64_t)cfg->retention_days * 24 * 60 * 60);
-	rc = morph_array_init(&snapshots, 8, sizeof(struct stored_snapshot));
+	rc = (nb_vec_init(&snapshots, sizeof(struct stored_snapshot)),
+	      nb_vec_reserve(&snapshots, 8) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	rc = retention_collect(cfg, &snapshots);
 	if (rc != 0) {
-		morph_array_cleanup(&snapshots);
+		nb_vec_cleanup(&snapshots);
 		return rc;
 	}
-	items = snapshots.elts;
-	for (size_t i = 0; i < snapshots.nelts; i++) {
+	items = ((void *)snapshots.data);
+	for (size_t i = 0; i < snapshots.len; i++) {
 		char rel[PATH_MAX];
 		if (items[i].backup.created_at >= cutoff ||
-		    snapshot_is_latest(items, snapshots.nelts, i))
+		    snapshot_is_latest(items, snapshots.len, i))
 			continue;
 		if (snprintf(rel, sizeof(rel), "%s/%s", DB_SNAPSHOT_DIR,
 			     items[i].name) >= (int)sizeof(rel)) {
-			rc = -ENAMETOOLONG;
+			rc = NB_ERR_NAME_TOO_LONG;
 			break;
 		}
 		rc = store_delete(cfg, rel);
@@ -1272,19 +1423,22 @@ int sync_db_backup_cleanup(const struct morph_sync_config *cfg)
 			break;
 		items[i].removed = 1;
 	}
-	if (rc == 0)
-		rc = morph_strmap_init(&live, 64);
+	if (rc == 0) {
+		live = nb_map_new_with_cap(64);
+		if (!live)
+			rc = NB_ERR_NOMEM;
+	}
 	if (rc != 0) {
-		morph_array_cleanup(&snapshots);
+		nb_vec_cleanup(&snapshots);
 		return rc;
 	}
-	for (size_t i = 0; rc == 0 && i < snapshots.nelts; i++) {
+	for (size_t i = 0; rc == 0 && i < snapshots.len; i++) {
 		if (!items[i].removed)
-			rc = live_chunks_add(cfg, items[i].name, &live);
+			rc = live_chunks_add(cfg, items[i].name, live);
 	}
 	memset(&gc, 0, sizeof(gc));
 	gc.cfg = cfg;
-	gc.live = &live;
+	gc.live = live;
 	gc.cutoff = cutoff;
 	if (rc == 0 && cfg->remote_backend)
 		rc = cfg->remote_backend->list(cfg->remote_backend->user_data,
@@ -1293,7 +1447,7 @@ int sync_db_backup_cleanup(const struct morph_sync_config *cfg)
 		rc = object_gc_local(&gc);
 	if (rc == 0)
 		rc = gc.rc;
-	morph_strmap_cleanup(&live);
-	morph_array_cleanup(&snapshots);
+	nb_map_free(live);
+	nb_vec_cleanup(&snapshots);
 	return rc;
 }

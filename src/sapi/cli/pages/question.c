@@ -1,4 +1,6 @@
 #include "sapi/cli/pages/question.h"
+#include "nb/time.h"
+#include "nb/err.h"
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/style.h"
@@ -14,14 +16,13 @@
 #include "sapi/cli/adapters/protocol/interaction.h"
 #include <morph/tui/widgets/select.h>
 #include <morph/tui/terminal.h>
-#include "util/child_io.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 
 static int cli_question_set_ask_user_answers(char ***answers, int *answers_count,
 					     const char *const *values, int values_count)
 {
 	if (!answers || !answers_count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*answers = NULL;
 	*answers_count = 0;
 	if (values_count <= 0)
@@ -29,14 +30,14 @@ static int cli_question_set_ask_user_answers(char ***answers, int *answers_count
 
 	char **out = calloc((size_t)values_count, sizeof(char *));
 	if (!out)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	for (int i = 0; i < values_count; i++) {
 		out[i] = strdup(values[i] ? values[i] : "");
 		if (!out[i]) {
 			for (int j = 0; j < i; j++)
 				free(out[j]);
 			free(out);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 	}
 	*answers = out;
@@ -99,26 +100,26 @@ static int cli_question_validate_ask_user_response(const cJSON *response_data, v
 	int count;
 
 	if (!validation || !cJSON_IsObject(response_data))
-		return MORPH_ERR_PROTOCOL;
+		return NB_ERR_PROTOCOL;
 	answers = cJSON_GetObjectItemCaseSensitive(response_data, "answers");
 	if (!cJSON_IsArray(answers))
-		return MORPH_ERR_PROTOCOL;
+		return NB_ERR_PROTOCOL;
 	count = cJSON_GetArraySize(answers);
 	if (count < validation->min_choices || count > 64 ||
 	    (validation->max_choices > 0 && count > validation->max_choices) ||
 	    ((!validation->selection_mode || strcmp(validation->selection_mode, "multi") != 0) &&
 	     count > 1))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	for (int i = 0; i < count; i++) {
 		cJSON *answer = cJSON_GetArrayItem(answers, i);
 
 		if (!cJSON_IsString(answer) || !answer->valuestring || !answer->valuestring[0])
-			return MORPH_ERR_PROTOCOL;
+			return NB_ERR_PROTOCOL;
 		for (int j = 0; j < i; j++) {
 			cJSON *previous = cJSON_GetArrayItem(answers, j);
 
 			if (strcmp(answer->valuestring, previous->valuestring) == 0)
-				return -EINVAL;
+				return NB_ERR_INVAL;
 		}
 	}
 	return 0;
@@ -144,7 +145,7 @@ static int cli_question_json_ask_user(struct cli_application *ctx, const char *q
 	if (!request || !choices_json) {
 		cJSON_Delete(request);
 		cJSON_Delete(choices_json);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (!cJSON_AddStringToObject(request, "question", question ? question : "") ||
 	    !cJSON_AddStringToObject(request, "selection_mode",
@@ -153,7 +154,7 @@ static int cli_question_json_ask_user(struct cli_application *ctx, const char *q
 	    !cJSON_AddNumberToObject(request, "max_choices", max_choices)) {
 		cJSON_Delete(choices_json);
 		cJSON_Delete(request);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	for (int i = 0; i < choices_count; i++) {
 		cJSON *choice = cJSON_CreateString(choices[i] ? choices[i] : "");
@@ -161,7 +162,7 @@ static int cli_question_json_ask_user(struct cli_application *ctx, const char *q
 		if (!choice) {
 			cJSON_Delete(choices_json);
 			cJSON_Delete(request);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		cJSON_AddItemToArray(choices_json, choice);
 	}
@@ -225,7 +226,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 	int multi = selection_mode && strcmp(selection_mode, "multi") == 0;
 	if (!ctx || !answers || !answers_count || choices_count < 0 || choices_count > 64 ||
 	    min_choices < 0 || max_choices < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*answers = NULL;
 	*answers_count = 0;
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
@@ -236,7 +237,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 	cli_cancel_monitor_clear(ctx);
 	cli_presentation_prepare_prompt(ctx);
 	cli_output_printf(ctx, CLI_FEED_QUESTION_STYLE CLI_FEED_QUESTION " ");
-	(void)cli_output_print_untrusted(ctx, question, UTF8_TERMINAL_TEXT_SINGLE_LINE);
+	(void)cli_output_print_untrusted(ctx, question, MORPH_TERMINAL_TEXT_SINGLE_LINE);
 	cli_output_printf(ctx, ANSI_RESET "\n");
 	int timeout = options && options->optional ? options->timeout_seconds : 0;
 	char hint[160];
@@ -246,7 +247,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 	else
 		snprintf(hint, sizeof(hint), "  Waiting for your answer · Esc cancel");
 
-	int use_selector = choices_count > 0 || timeout;
+	int use_selector = choices_count > 0 || timeout || cli_chat_active(ctx);
 #ifndef HAVE_READLINE
 	/* Canonical terminal input can discard long lines before fgets sees them. */
 	use_selector = 1;
@@ -272,15 +273,21 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 				int recommended = 0;
 				for (int j = 0; options && j < options->recommended_count; j++)
 					recommended |= options->recommended_indices[j] == i;
-				morph_buf_t label = {0};
-				label_rc = morph_buf_init(&label, 128);
+				nb_buf label NB_CLEANUP(nb_buf_cleanup) = {0};
+				label_rc = (nb_buf_init(&label),
+					    nb_buf_reserve(&label, 128) ? 0 : NB_ERR_NOMEM);
 				if (!label_rc)
-					label_rc = morph_buf_printf(&label, "%s%s", choices[i],
-								    recommended ? " (Recommended)"
-										: "");
-				if (!label_rc)
-					labels[i] = morph_buf_detach(&label);
-				morph_buf_cleanup(&label);
+					label_rc =
+						(nb_buf_printf(&label, "%s%s", choices[i],
+							       recommended ? " (Recommended)" : "")
+							 ? 0
+							 : NB_ERR_NOMEM);
+				if (!label_rc) {
+					labels[i] = strdup(nb_buf_cstr(&label));
+					if (!labels[i])
+						label_rc = NB_ERR_NOMEM;
+				}
+				nb_buf_cleanup(&label);
 				items[i] = labels[i];
 				if (label_rc)
 					break;
@@ -315,11 +322,14 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 				state.menu.list.index = (size_t)options->recommended_indices[0];
 			}
 			if (!rc)
-				rc = cli_chat_flush(ctx);
-			if (!rc)
+				rc = cli_chat_prompt_begin(
+					ctx, choices_count > 7 ? 12 : choices_count + 5);
+			if (!rc) {
 				rc = morph_tui_widget_select_run(&state, &select_options, input,
 								 stdout, &custom);
-			if (rc == -ECANCELED || rc == -EINTR)
+				cli_chat_prompt_end(ctx);
+			}
+			if (rc == NB_ERR_CANCELLED || rc == NB_ERR_INTERRUPTED)
 				cli_request_cancel(ctx);
 			if (!rc) {
 				const char *values[64];
@@ -339,7 +349,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 						       " " ANSI_RESET, i + 1 < count ? "├ " : "└ ");
 						(void)cli_output_print_untrusted(
 							ctx, values[i],
-							UTF8_TERMINAL_TEXT_SINGLE_LINE);
+							MORPH_TERMINAL_TEXT_SINGLE_LINE);
 						cli_output_printf(ctx, "\n");
 					}
 				}
@@ -350,7 +360,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 			free(custom);
 			if (tty)
 				fclose(tty);
-			if (rc == -ETIMEDOUT)
+			if (rc == NB_ERR_TIMEOUT)
 				cli_output_printf(ctx, "  No response; %s.\n",
 				       options->recommended_count
 					       ? "continuing with recommended choices"
@@ -367,7 +377,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 		for (int i = 0; i < choices_count; i++) {
 			cli_output_printf(ctx, "  %d. ", i + 1);
 			(void)cli_output_print_untrusted(ctx, choices[i],
-							 UTF8_TERMINAL_TEXT_SINGLE_LINE);
+							 MORPH_TERMINAL_TEXT_SINGLE_LINE);
 			for (int j = 0; options && j < options->recommended_count; j++) {
 				if (options->recommended_indices[j] == i)
 					cli_output_printf(ctx, " (Recommended)");
@@ -403,7 +413,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 		int64_t previous_deadline = ctx->input->input_deadline_ms;
 		int previous_timed_out = ctx->input->input_timed_out;
 		ctx->input->input_deadline_ms =
-			timeout ? morph_io_now_ms() + (int64_t)timeout * 1000 : 0;
+			timeout ? nb_time_monotonic_ms() + (int64_t)timeout * 1000 : 0;
 		ctx->input->input_timed_out = 0;
 		if (tty) {
 			input = cli_reader_prompt_stream_copy(ctx, readline_prompt, tty);
@@ -416,11 +426,11 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 		ctx->input->input_timed_out = previous_timed_out;
 		if (timed_out) {
 			free(input);
-			return -ETIMEDOUT;
+			return NB_ERR_TIMEOUT;
 		}
 		if (!input) {
 			cli_output_printf(ctx, "\n");
-			return -EIO;
+			return NB_ERR_IO;
 		}
 		if (!input[0] && options && options->recommended_count) {
 			free(input);
@@ -451,23 +461,23 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 	}
 #else
 	fflush(stdout);
-	morph_buf_t line MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf line NB_CLEANUP(nb_buf_cleanup) = {0};
 	char chunk[BUFSIZ];
-	int line_rc = morph_buf_init(&line, BUFSIZ);
+	int line_rc = (nb_buf_init(&line), nb_buf_reserve(&line, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (line_rc != 0)
 		return line_rc;
 	FILE *tty = fopen("/dev/tty", "r");
 	if (!tty) {
 		cli_output_printf(ctx, "\n");
-		return -ENOTTY;
+		return NB_ERR_NOT_TERMINAL;
 	}
-	int64_t deadline = timeout ? morph_io_now_ms() + (int64_t)timeout * 1000 : 0;
+	int64_t deadline = timeout ? nb_time_monotonic_ms() + (int64_t)timeout * 1000 : 0;
 	for (;;) {
 		if (!cli_input_fgets_until(ctx, chunk, sizeof(chunk), tty, &deadline)) {
 			int read_error = errno;
 			fclose(tty);
 			cli_output_printf(ctx, "\n");
-			return read_error ? morph_error_from_errno(read_error) : -EIO;
+			return read_error ? nb_status_from_errno(read_error, NULL) : NB_ERR_IO;
 		}
 		size_t length = strlen(chunk);
 		int complete = length && chunk[length - 1] == '\n';
@@ -475,9 +485,9 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 			chunk[--length] = '\0';
 		if (length > ASK_USER_ANSWER_MAX_BYTES - line.len) {
 			fclose(tty);
-			return -E2BIG;
+			return NB_ERR_TOO_BIG;
 		}
-		line_rc = morph_buf_append(&line, chunk, length);
+		line_rc = (nb_buf_append(&line, chunk, length) ? 0 : NB_ERR_NOMEM);
 		if (line_rc != 0) {
 			fclose(tty);
 			return line_rc;
@@ -486,7 +496,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 			break;
 	}
 	fclose(tty);
-	char *buf = line.data;
+	char *buf = line.ptr;
 
 	if (line.len && buf[line.len - 1] == '\r')
 		buf[--line.len] = '\0';
@@ -517,7 +527,7 @@ int cli_question_callback(const char *question, const char *const *choices, int 
 {
 	struct cli_application *ctx = user_data;
 	if (!ctx)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (ctx->events && !cli_event_queue_is_owner(ctx)) {
 		struct cli_question_ask_user_call call = {
 			ctx,	     question,	  choices, choices_count, selection_mode,
@@ -525,7 +535,7 @@ int cli_question_callback(const char *question, const char *const *choices, int 
 		};
 		return cli_event_queue_call_owner(ctx, cli_question_ask_user_on_owner, &call);
 	}
-	const struct morph_cancel_token *previous = ctx->input->input_cancel_token;
+	const struct nb_cancel *previous = ctx->input->input_cancel_token;
 	ctx->input->input_cancel_token = options ? options->cancel_token : NULL;
 	int rc = cli_question_ask_user_prompt(question, choices, choices_count, selection_mode,
 					      min_choices, max_choices, options, answers,

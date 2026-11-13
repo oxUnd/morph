@@ -1,9 +1,10 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 
 extern "C" {
 #include "agent/react_stream.h"
-#include "util/signals.h"
-#include "util/utf8.h"
+#include "nb/signal.h"
+#include "nb/utf8.h"
 }
 
 #include <string>
@@ -14,7 +15,7 @@ class ReactStreamTest : public ::testing::Test
 {
       protected:
 	struct react_stream stream{};
-	volatile sig_atomic_t cancelled = 0;
+	nb_atomic_int cancelled = 0;
 	int emit_error = 0;
 	int calls = 0;
 	int reentrant_result = 0;
@@ -26,7 +27,7 @@ class ReactStreamTest : public ::testing::Test
 		auto *self = static_cast<ReactStreamTest *>(opaque);
 
 		self->calls++;
-		EXPECT_EQ(utf8valid(text), nullptr);
+		EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(text), NULL), NB_UTF8_OK);
 		self->deltas.emplace_back(type, text);
 		if (self->reenter)
 			self->reentrant_result = react_stream_cb("nested", &self->stream);
@@ -75,7 +76,7 @@ TEST_F(ReactStreamTest, LegacyMarkersAndUtf8SurviveEveryByteBoundary)
 		ASSERT_EQ(react_stream_finish(&stream), 0);
 		EXPECT_EQ(text(REACT_STEP_THOUGHT), thought);
 		EXPECT_EQ(text(REACT_STEP_FINAL), answer);
-		EXPECT_EQ(morph_buf_cstr_borrow(&stream.text), input);
+		EXPECT_EQ(nb_buf_cstr(&stream.text), input);
 		struct react_stream_options options = stream.options;
 
 		react_stream_cleanup(&stream);
@@ -103,7 +104,7 @@ TEST_F(ReactStreamTest, NativeContentKeepsLiteralMarkersAndSeparateReasoning)
 	EXPECT_EQ(text(REACT_STEP_REASONING), reasoning);
 	EXPECT_EQ(text(REACT_STEP_CONTENT), content);
 	EXPECT_TRUE(text(REACT_STEP_FINAL).empty());
-	EXPECT_EQ(morph_buf_cstr_borrow(&stream.text), content);
+	EXPECT_EQ(nb_buf_cstr(&stream.text), content);
 }
 
 TEST_F(ReactStreamTest, InlineAndIncompleteMarkersRemainOrdinaryText)
@@ -133,10 +134,11 @@ TEST_F(ReactStreamTest, LongIndentationAndCarriageReturnsKeepMarkerBoundaries)
 
 TEST_F(ReactStreamTest, CancellationPreventsReasoningAndContentCallbacks)
 {
-	morph_signal_flag_set(&cancelled, 1);
-	EXPECT_EQ(react_stream_cb("cancelled", &stream), -EINTR);
-	EXPECT_EQ(react_typed_stream_cb(LLM_STREAM_REASONING, "cancelled", &stream), -EINTR);
-	EXPECT_EQ(react_stream_finish(&stream), -EINTR);
+	nb_atomic_int_store(&cancelled, 1);
+	EXPECT_EQ(react_stream_cb("cancelled", &stream), NB_ERR_INTERRUPTED);
+	EXPECT_EQ(react_typed_stream_cb(LLM_STREAM_REASONING, "cancelled", &stream),
+		  NB_ERR_INTERRUPTED);
+	EXPECT_EQ(react_stream_finish(&stream), NB_ERR_INTERRUPTED);
 	EXPECT_EQ(stream.text.len, 0u);
 	EXPECT_EQ(calls, 0);
 }
@@ -158,35 +160,35 @@ TEST_F(ReactStreamTest, IncompleteReasoningUtf8Fails)
 {
 	ASSERT_EQ(react_typed_stream_cb(LLM_STREAM_REASONING, "live\xe4\xb8", &stream), 0);
 	EXPECT_EQ(text(REACT_STEP_REASONING), "live");
-	EXPECT_EQ(react_stream_finish(&stream), MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(react_stream_finish(&stream), NB_ERR_PROTOCOL);
 }
 
 TEST_F(ReactStreamTest, SinkFailureIsStickyAndNeverReplaysAcceptedBytes)
 {
-	emit_error = -EIO;
-	EXPECT_EQ(react_typed_stream_cb(LLM_STREAM_CONTENT, "one", &stream), -EIO);
-	EXPECT_EQ(react_stream_cb("two", &stream), -EIO);
-	EXPECT_EQ(react_stream_finish(&stream), -EIO);
+	emit_error = NB_ERR_IO;
+	EXPECT_EQ(react_typed_stream_cb(LLM_STREAM_CONTENT, "one", &stream), NB_ERR_IO);
+	EXPECT_EQ(react_stream_cb("two", &stream), NB_ERR_IO);
+	EXPECT_EQ(react_stream_finish(&stream), NB_ERR_IO);
 	EXPECT_EQ(calls, 1);
-	EXPECT_EQ(morph_buf_cstr_borrow(&stream.text), std::string("one"));
+	EXPECT_EQ(nb_buf_cstr(&stream.text), std::string("one"));
 }
 
 TEST_F(ReactStreamTest, IncompleteUtf8FailsInsteadOfSilentlyDroppingBytes)
 {
 	ASSERT_EQ(react_typed_stream_cb(LLM_STREAM_CONTENT, "ok\xe4\xb8", &stream), 0);
-	EXPECT_EQ(react_stream_finish(&stream), MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(react_stream_finish(&stream), NB_ERR_PROTOCOL);
 	EXPECT_EQ(text(REACT_STEP_CONTENT), "ok");
-	EXPECT_EQ(react_stream_cb("more", &stream), MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(react_stream_cb("more", &stream), NB_ERR_PROTOCOL);
 }
 
 TEST_F(ReactStreamTest, ReentrantInputCannotInvalidateTheBorrowedDelta)
 {
 	reenter = true;
 	ASSERT_EQ(react_typed_stream_cb(LLM_STREAM_CONTENT, "original", &stream), 0);
-	EXPECT_EQ(reentrant_result, -EBUSY);
+	EXPECT_EQ(reentrant_result, NB_ERR_BUSY);
 	ASSERT_EQ(react_stream_finish(&stream), 0);
 	EXPECT_EQ(text(REACT_STEP_CONTENT), "original");
-	EXPECT_EQ(morph_buf_cstr_borrow(&stream.text), std::string("original"));
+	EXPECT_EQ(nb_buf_cstr(&stream.text), std::string("original"));
 }
 
 TEST_F(ReactStreamTest, LargeResponsesPreserveAllBytesAcrossBufferGrowth)
@@ -200,5 +202,5 @@ TEST_F(ReactStreamTest, LargeResponsesPreserveAllBytesAcrossBufferGrowth)
 	}
 	ASSERT_EQ(react_stream_finish(&stream), 0);
 	EXPECT_EQ(text(REACT_STEP_CONTENT), input);
-	EXPECT_EQ(morph_buf_cstr_borrow(&stream.text), input);
+	EXPECT_EQ(nb_buf_cstr(&stream.text), input);
 }

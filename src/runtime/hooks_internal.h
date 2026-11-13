@@ -3,7 +3,8 @@
 
 #include "runtime/hooks.h"
 #include "exec/process.h"
-#include "util/buf.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 
 #include <regex.h>
 
@@ -38,8 +39,8 @@ struct hook_entry {
 struct hook_run {
 	struct hook_entry *entry;
 	char session[PROCESS_SESSION_ID_MAX];
-	morph_buf_t out;
-	morph_buf_t err;
+	nb_buf out;
+	nb_buf err;
 	char *system_message;
 	int done;
 	int rc;
@@ -53,8 +54,8 @@ struct hook_run {
 const char *hook_entry_state(struct hook_manager *manager, struct hook_entry *entry);
 const char *hook_json_string_borrow(const cJSON *obj, const char *key);
 int hook_decode_output(struct hook_manager *manager, struct hook_run *run, const char *event,
-		       morph_buf_t *context, morph_buf_t *reason, cJSON **updated, int *blocked,
-		       int *ask, int *terminate);
+		       nb_buf *context, nb_buf *reason, cJSON **updated, int *blocked, int *ask,
+		       int *terminate);
 int hook_event_ignores_matcher(const char *event);
 int hook_json_unique_fields(const cJSON *value, int depth);
 int hook_refresh_trust(struct hook_manager *manager, struct hook_entry *entry);

@@ -2,7 +2,7 @@
 #define MORPH_SANDBOX_PERMISSION_H
 
 #include "sandbox.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 
 struct tool_context;
 int sandbox_permission_prepare(struct tool_context *context, const char *principal,

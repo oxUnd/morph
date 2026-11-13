@@ -1,9 +1,10 @@
 #include "tool_result.h"
 
-#include "util/buf.h"
-#include "util/cleanup.h"
-#include "util/error.h"
-#include "util/json.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "cJSON.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -32,7 +33,7 @@ static void tool_result_release_payload(struct tool_result *result)
 	result->data = NULL;
 	result->ui = NULL;
 	result->meta = NULL;
-	result->text = (morph_str_t)MORPH_STR_NULL;
+	result->text = NB_STR_NULL;
 }
 
 void tool_result_clear(struct tool_result *result)
@@ -71,20 +72,20 @@ static int tool_result_aliases(const struct tool_result *result, const cJSON *va
 /* The key is a static literal. Attaching it cannot allocate a key string. */
 static int json_add_copy(cJSON *object, const char *key, const cJSON *value)
 {
-	cJSON *copy MORPH_CLEANUP(morph_json_cleanup) = cJSON_Duplicate(value, 1);
+	cJSON *copy NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Duplicate(value, 1);
 
 	if (!copy)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (!cJSON_AddItemToObjectCS(object, key, copy))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	copy = NULL;
 	return 0;
 }
 
 static cJSON *tool_result_copy_envelope(const struct tool_result *result)
 {
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	cJSON *empty MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	cJSON *empty NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	cJSON *output;
 
 	if (result->envelope)
@@ -112,22 +113,22 @@ static cJSON *tool_result_copy_envelope(const struct tool_result *result)
 
 int tool_result_success_take(struct tool_result *result, cJSON **data)
 {
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	cJSON *empty MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	cJSON *empty NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 
 	if (!result || !data || data == &result->envelope || data == &result->data ||
 	    data == &result->ui || data == &result->meta || tool_result_aliases(result, *data))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	root = cJSON_CreateObject();
 	if (!root || !cJSON_AddBoolToObject(root, "ok", 1))
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (!*data) {
 		empty = cJSON_CreateObject();
 		if (!empty)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 	}
 	if (!cJSON_AddItemToObjectCS(root, "data", *data ? *data : empty))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*data = NULL;
 	empty = NULL;
 	tool_result_commit(result, &root, 0);
@@ -136,48 +137,48 @@ int tool_result_success_take(struct tool_result *result, cJSON **data)
 
 int tool_result_success_copy(struct tool_result *result, const cJSON *data)
 {
-	cJSON *copy MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *copy NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (data) {
 		copy = cJSON_Duplicate(data, 1);
 		if (!copy)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 	}
 	return tool_result_success_take(result, &copy);
 }
 
 int tool_result_success_text_copy(struct tool_result *result, const char *text)
 {
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	data = cJSON_CreateObject();
 	if (!data || !cJSON_AddStringToObject(data, "text", text ? text : ""))
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	return tool_result_success_take(result, &data);
 }
 
 static int tool_result_error_details_take(struct tool_result *result, const char *code,
 					  const char *message, cJSON **details)
 {
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
-	cJSON *error MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	cJSON *error NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 
 	if (!root || !error || !cJSON_AddBoolToObject(root, "ok", 0) ||
 	    !cJSON_AddStringToObject(error, "code", code ? code : "tool_failed") ||
 	    !cJSON_AddStringToObject(error, "message", message ? message : ""))
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	/* All fallible work is complete before the incoming node is attached. */
 	if (!cJSON_AddItemToObjectCS(root, "error", error))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	cJSON *attached_error = error;
 
 	error = NULL;
 	if (!cJSON_AddItemToObjectCS(attached_error, "details", *details))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*details = NULL;
 	tool_result_commit(result, &root, 0);
 	return 0;
@@ -185,12 +186,12 @@ static int tool_result_error_details_take(struct tool_result *result, const char
 
 int tool_result_success_json_text_copy(struct tool_result *result, const char *json)
 {
-	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!json)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	data = cJSON_Parse(json);
 	if (!data)
 		return tool_result_success_text_copy(result, json);
@@ -213,7 +214,7 @@ int tool_result_success_json_text_take(struct tool_result *result, char **json)
 	int rc;
 
 	if (!result || !json || json == &result->owned || (*json && *json == result->owned))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = tool_result_success_json_text_copy(result, *json);
 	if (rc == 0) {
 		free(*json);
@@ -224,67 +225,67 @@ int tool_result_success_json_text_take(struct tool_result *result, char **json)
 
 int tool_result_success_format(struct tool_result *result, const char *fmt, ...)
 {
-	morph_buf_t message MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf message NB_CLEANUP(nb_buf_cleanup) = {0};
 	va_list arguments;
 	int rc;
 
 	if (!result || !fmt)
-		return -EINVAL;
-	rc = morph_buf_init(&message, 128);
+		return NB_ERR_INVAL;
+	rc = (nb_buf_init(&message), nb_buf_reserve(&message, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	va_start(arguments, fmt);
-	rc = morph_buf_vprintf(&message, fmt, arguments);
+	rc = (nb_buf_vprintf(&message, fmt, arguments) ? 0 : NB_ERR_NOMEM);
 	va_end(arguments);
 	if (rc != 0)
 		return rc;
-	return tool_result_success_json_text_copy(result, morph_buf_cstr_borrow(&message));
+	return tool_result_success_json_text_copy(result, nb_buf_cstr(&message));
 }
 
 int tool_result_error_copy(struct tool_result *result, const char *code, const char *message)
 {
-	cJSON *details MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *details NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	details = cJSON_CreateObject();
 	if (!details)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	return tool_result_error_details_take(result, code, message, &details);
 }
 
 int tool_result_error_format(struct tool_result *result, const char *code, const char *fmt, ...)
 {
-	morph_buf_t message MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf message NB_CLEANUP(nb_buf_cleanup) = {0};
 	va_list arguments;
 	int rc;
 
 	if (!result || !fmt)
-		return -EINVAL;
-	rc = morph_buf_init(&message, 128);
+		return NB_ERR_INVAL;
+	rc = (nb_buf_init(&message), nb_buf_reserve(&message, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	va_start(arguments, fmt);
-	rc = morph_buf_vprintf(&message, fmt, arguments);
+	rc = (nb_buf_vprintf(&message, fmt, arguments) ? 0 : NB_ERR_NOMEM);
 	va_end(arguments);
 	if (rc != 0)
 		return rc;
-	return tool_result_error_copy(result, code, morph_buf_cstr_borrow(&message));
+	return tool_result_error_copy(result, code, nb_buf_cstr(&message));
 }
 
 static int tool_result_field_take(struct tool_result *result, const char *key, cJSON **value)
 {
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 
 	if (!result || !value || !*value || value == &result->envelope || value == &result->data ||
 	    value == &result->ui || value == &result->meta || tool_result_aliases(result, *value))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	root = tool_result_copy_envelope(result);
 	if (!root)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	cJSON_DeleteItemFromObjectCaseSensitive(root, key);
 	if (!cJSON_AddItemToObjectCS(root, key, *value))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*value = NULL;
 	tool_result_commit(result, &root, 1);
 	return 0;
@@ -302,13 +303,13 @@ int tool_result_set_meta_take(struct tool_result *result, cJSON **meta)
 
 static int tool_result_field_copy(struct tool_result *result, const char *key, const cJSON *value)
 {
-	cJSON *copy MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *copy NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 
 	if (!result || !value)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	copy = cJSON_Duplicate(value, 1);
 	if (!copy)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	return tool_result_field_take(result, key, &copy);
 }
 
@@ -324,27 +325,27 @@ int tool_result_set_meta_copy(struct tool_result *result, const cJSON *meta)
 
 int tool_result_finalize(struct tool_result *result)
 {
-	cJSON *root MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	cJSON *artifacts MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	cJSON *meta MORPH_CLEANUP(morph_json_cleanup) = NULL;
-	char *json MORPH_CLEANUP(morph_json_text_cleanup) = NULL;
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	cJSON *artifacts NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	cJSON *meta NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	char *json NB_CLEANUP(cJSON_FreeTextOwner) = NULL;
 
 	if (!result)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	root = tool_result_copy_envelope(result);
 	artifacts = tool_artifact_list_json_create(&result->artifacts);
 	if (!root || !artifacts)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	cJSON_DeleteItemFromObjectCaseSensitive(root, "artifacts");
 	if (!cJSON_AddItemToObjectCS(root, "artifacts", artifacts))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	artifacts = NULL;
 	if (!cJSON_GetObjectItemCaseSensitive(root, "ui") && !cJSON_AddNullToObject(root, "ui"))
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (!cJSON_GetObjectItemCaseSensitive(root, "meta")) {
 		meta = cJSON_CreateObject();
 		if (!meta || !cJSON_AddItemToObjectCS(root, "meta", meta))
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		meta = NULL;
 	}
 	const cJSON *data = cJSON_GetObjectItemCaseSensitive(root, "data");
@@ -355,20 +356,20 @@ int tool_result_finalize(struct tool_result *result)
 			if (!item->string || cJSON_GetObjectItem(root, item->string) ||
 			    cJSON_IsArray(item) || cJSON_IsObject(item))
 				continue;
-			cJSON *copy MORPH_CLEANUP(morph_json_cleanup) = cJSON_Duplicate(item, 1);
+			cJSON *copy NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Duplicate(item, 1);
 
 			if (!copy || !cJSON_AddItemToObject(root, item->string, copy))
-				return -ENOMEM;
+				return NB_ERR_NOMEM;
 			copy = NULL;
 		}
 	}
 	json = cJSON_PrintUnformatted(root);
 	if (!json)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	tool_result_commit(result, &root, 1);
 	result->owned = json;
 	json = NULL;
-	result->text.data = result->owned;
+	result->text.ptr = result->owned;
 	result->text.len = strlen(result->owned);
 	return 0;
 }
@@ -379,9 +380,9 @@ int tool_result_add_artifact_copy(struct tool_result *result, enum tool_artifact
 	struct tool_artifact *artifact;
 
 	if (!result || !path || !*path)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (result->artifacts.count >= TOOL_ARTIFACT_MAX)
-		return -ENOSPC;
+		return NB_ERR_NO_SPACE;
 	artifact = &result->artifacts.items[result->artifacts.count++];
 	memset(artifact, 0, sizeof(*artifact));
 	artifact->kind = kind;
@@ -434,7 +435,7 @@ int tool_result_set_artifacts_copy(struct tool_result *result, const cJSON *arti
 	int rc = 0;
 
 	if (!result || !artifacts)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (cJSON_IsArray(artifacts)) {
 		const cJSON *item;
 
@@ -448,7 +449,7 @@ int tool_result_set_artifacts_copy(struct tool_result *result, const cJSON *arti
 		if (rc != 0)
 			return rc;
 	} else {
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	result->artifacts = parsed.artifacts;
 	return 0;
@@ -461,7 +462,7 @@ int tool_result_set_artifacts_take(struct tool_result *result, cJSON **artifacts
 	if (!result || !artifacts || artifacts == &result->envelope || artifacts == &result->data ||
 	    artifacts == &result->ui || artifacts == &result->meta ||
 	    tool_result_aliases(result, *artifacts))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = tool_result_set_artifacts_copy(result, *artifacts);
 	if (rc == 0) {
 		cJSON_Delete(*artifacts);

@@ -1,9 +1,10 @@
 #include <gtest/gtest.h>
+#include "nb/cleanup.h"
 #include "agent/tools/config_write.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
-#include "util/error.h"
-#include "util/file.h"
+#include "errors.h"
+#include "nb/file.h"
 #include "cJSON.h"
 #include <string>
 #include <cstdio>
@@ -71,8 +72,7 @@ static enum tool_operation_verdict mutating_approval_cb(
 
 	(void)op;
 	state->calls++;
-	(void)file_write_all(state->path, state->content,
-		std::strlen(state->content));
+	(void)nb_file_write_all(state->path, state->content, std::strlen(state->content), NULL);
 	return TOOL_OP_ALLOW;
 }
 
@@ -94,7 +94,7 @@ static std::string exec_config_edit(struct tool_registry *reg,
 	int rc = tool_exec(reg, "config_edit", args.c_str(), &result);
 	if (out_rc)
 		*out_rc = rc;
-	std::string text(result.text.data ? result.text.data : "");
+	std::string text(result.text.ptr ? result.text.ptr : "");
 	tool_result_cleanup(&result);
 	return text;
 }
@@ -139,6 +139,9 @@ TEST_F(ConfigEditTest, WritesApprovedValidToml)
 
 TEST_F(ConfigEditTest, FullAccessWritesWithoutApproval)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	struct approval_state state = { TOOL_OP_DENY, 0, "" };
 	tool_context_set_operation_approval(tctx, approval_cb, &state);
 	ASSERT_EQ(config_edit_init(&reg, tctx, config_path), 0);
@@ -158,7 +161,13 @@ TEST_F(ConfigEditTest, FullAccessWritesWithoutApproval)
 
 		ASSERT_EQ(rc, 0) << out;
 		EXPECT_EQ(state.calls, 0);
-		char *edited = file_read_all_copy(config_path, nullptr);
+		char *edited = (nb_file_read_all(config_path, &file_value_1, 0, NULL) == NB_OK &&
+						(file_copy_1 = (char *)malloc(
+							 nb_buf_len(&file_value_1) + 1)) != NULL
+					? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
+						  nb_buf_len(&file_value_1) + 1),
+					   nb_charp_steal(&file_copy_1))
+					: NULL);
 		ASSERT_NE(edited, nullptr);
 		EXPECT_STREQ(edited, toml);
 		std::free(edited);
@@ -167,11 +176,14 @@ TEST_F(ConfigEditTest, FullAccessWritesWithoutApproval)
 
 TEST_F(ConfigEditTest, RestrictedAccessNeverDeniesWithoutWriting)
 {
+	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	struct approval_state state = { TOOL_OP_ALLOW, 0, "" };
 	tool_context_set_operation_approval(tctx, approval_cb, &state);
 	ASSERT_EQ(config_edit_init(&reg, tctx, config_path), 0);
 	const char *original = "[general]\ndefault_session = \"before\"\n";
-	ASSERT_EQ(file_write_all(config_path, original, std::strlen(original)), 0);
+	ASSERT_EQ(nb_file_write_all(config_path, original, std::strlen(original), NULL), 0);
 	const char *desired = "[general]\ndefault_session = \"after\"\n";
 	std::string args = std::string("{\"reason\":\"change session\",\"content\":")
 		+ json_escape(desired) + "}";
@@ -184,9 +196,15 @@ TEST_F(ConfigEditTest, RestrictedAccessNeverDeniesWithoutWriting)
 		int rc = 0;
 		std::string out = exec_config_edit(&reg, args, &rc);
 
-		EXPECT_EQ(rc, -EACCES) << out;
+		EXPECT_EQ(rc, NB_ERR_PERMISSION) << out;
 		EXPECT_EQ(state.calls, 0);
-		char *current = file_read_all_copy(config_path, nullptr);
+		char *current = (nb_file_read_all(config_path, &file_value_2, 0, NULL) == NB_OK &&
+						 (file_copy_2 = (char *)malloc(
+							  nb_buf_len(&file_value_2) + 1)) != NULL
+					 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
+						   nb_buf_len(&file_value_2) + 1),
+					    nb_charp_steal(&file_copy_2))
+					 : NULL);
 		ASSERT_NE(current, nullptr);
 		EXPECT_STREQ(current, original);
 		std::free(current);
@@ -208,7 +226,7 @@ TEST_F(ConfigEditTest, DeniesOtherPath)
 	int rc = 0;
 	std::string out = exec_config_edit(&reg, args, &rc);
 
-	EXPECT_EQ(rc, -EACCES);
+	EXPECT_EQ(rc, NB_ERR_PERMISSION);
 	EXPECT_EQ(state.calls, 0);
 	EXPECT_NE(out.find("active Morph config"), std::string::npos);
 }
@@ -224,7 +242,7 @@ TEST_F(ConfigEditTest, RejectsInvalidToml)
 	int rc = 0;
 	std::string out = exec_config_edit(&reg, args, &rc);
 
-	EXPECT_EQ(rc, MORPH_ERR_PARSE);
+	EXPECT_EQ(rc, NB_ERR_PARSE);
 	EXPECT_EQ(state.calls, 0);
 	EXPECT_NE(out.find("invalid configuration"), std::string::npos);
 }
@@ -277,7 +295,7 @@ TEST_F(ConfigEditTest, DeniedApprovalDoesNotWrite)
 	int rc = 0;
 	std::string out = exec_config_edit(&reg, args, &rc);
 
-	EXPECT_EQ(rc, -EACCES);
+	EXPECT_EQ(rc, NB_ERR_PERMISSION);
 	EXPECT_EQ(state.calls, 1);
 	EXPECT_EQ(access(config_path, F_OK), -1);
 	EXPECT_NE(out.find("denied"), std::string::npos);
@@ -285,12 +303,17 @@ TEST_F(ConfigEditTest, DeniedApprovalDoesNotWrite)
 
 TEST_F(ConfigEditTest, PatchPreservesFormattingAndCreatesBackup)
 {
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_3 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_4 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	struct approval_state state = { TOOL_OP_ALLOW, 0, "" };
 	tool_context_set_operation_approval(tctx, approval_cb, &state);
 	ASSERT_EQ(config_edit_init(&reg, tctx, config_path), 0);
 	const char *original =
 		"# keep this comment\n[model.text]\nmax_tokens = 4096\n";
-	ASSERT_EQ(file_write_all(config_path, original, std::strlen(original)), 0);
+	ASSERT_EQ(nb_file_write_all(config_path, original, std::strlen(original), NULL), 0);
 	const char *patch =
 		"*** Begin Patch\n"
 		"*** Update File: config.toml\n"
@@ -305,8 +328,23 @@ TEST_F(ConfigEditTest, PatchPreservesFormattingAndCreatesBackup)
 
 	EXPECT_EQ(rc, 0) << out;
 	EXPECT_EQ(state.calls, 1);
-	char *edited = file_read_all_copy(config_path, nullptr);
-	char *backup = file_read_all_copy((std::string(config_path) + ".bak").c_str(), nullptr);
+	char *edited =
+		(nb_file_read_all(config_path, &file_value_3, 0, NULL) == NB_OK &&
+				 (file_copy_3 = (char *)malloc(nb_buf_len(&file_value_3) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_3, nb_buf_cstr(&file_value_3),
+				   nb_buf_len(&file_value_3) + 1),
+			    nb_charp_steal(&file_copy_3))
+			 : NULL);
+	char *backup =
+		(nb_file_read_all((std::string(config_path) + ".bak").c_str(), &file_value_4, 0,
+				  NULL) == NB_OK &&
+				 (file_copy_4 = (char *)malloc(nb_buf_len(&file_value_4) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_4, nb_buf_cstr(&file_value_4),
+				   nb_buf_len(&file_value_4) + 1),
+			    nb_charp_steal(&file_copy_4))
+			 : NULL);
 	ASSERT_NE(edited, nullptr);
 	ASSERT_NE(backup, nullptr);
 	EXPECT_NE(std::strstr(edited, "# keep this comment"), nullptr);
@@ -320,11 +358,14 @@ TEST_F(ConfigEditTest, PatchPreservesFormattingAndCreatesBackup)
 
 TEST_F(ConfigEditTest, RejectsPatchForAnotherFile)
 {
+	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_5 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	struct approval_state state = { TOOL_OP_ALLOW, 0, "" };
 	tool_context_set_operation_approval(tctx, approval_cb, &state);
 	ASSERT_EQ(config_edit_init(&reg, tctx, config_path), 0);
 	const char *original = "[general]\ndefault_session = \"before\"\n";
-	ASSERT_EQ(file_write_all(config_path, original, std::strlen(original)), 0);
+	ASSERT_EQ(nb_file_write_all(config_path, original, std::strlen(original), NULL), 0);
 	const char *patch =
 		"*** Begin Patch\n*** Update File: other.toml\n@@\n"
 		"-default_session = \"before\"\n"
@@ -334,10 +375,17 @@ TEST_F(ConfigEditTest, RejectsPatchForAnotherFile)
 	int rc = 0;
 	std::string out = exec_config_edit(&reg, args, &rc);
 
-	EXPECT_EQ(rc, -EACCES);
+	EXPECT_EQ(rc, NB_ERR_PERMISSION);
 	EXPECT_EQ(state.calls, 0);
 	EXPECT_NE(out.find("only update config.toml"), std::string::npos);
-	char *current = file_read_all_copy(config_path, nullptr);
+	char *current =
+		(nb_file_read_all(config_path, &file_value_5, 0, NULL) == NB_OK &&
+				 (file_copy_5 = (char *)malloc(nb_buf_len(&file_value_5) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_5, nb_buf_cstr(&file_value_5),
+				   nb_buf_len(&file_value_5) + 1),
+			    nb_charp_steal(&file_copy_5))
+			 : NULL);
 	ASSERT_NE(current, nullptr);
 	EXPECT_STREQ(current, original);
 	std::free(current);
@@ -345,11 +393,14 @@ TEST_F(ConfigEditTest, RejectsPatchForAnotherFile)
 
 TEST_F(ConfigEditTest, RejectsInvalidPatchedConfigBeforeApproval)
 {
+	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_6 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	struct approval_state state = { TOOL_OP_ALLOW, 0, "" };
 	tool_context_set_operation_approval(tctx, approval_cb, &state);
 	ASSERT_EQ(config_edit_init(&reg, tctx, config_path), 0);
 	const char *original = "[react]\nmax_iterations = 10\n";
-	ASSERT_EQ(file_write_all(config_path, original, std::strlen(original)), 0);
+	ASSERT_EQ(nb_file_write_all(config_path, original, std::strlen(original), NULL), 0);
 	const char *patch =
 		"*** Begin Patch\n*** Update File: config.toml\n@@\n"
 		"-max_iterations = 10\n"
@@ -362,7 +413,14 @@ TEST_F(ConfigEditTest, RejectsInvalidPatchedConfigBeforeApproval)
 	EXPECT_EQ(rc, MORPH_ERR_CONFIG);
 	EXPECT_EQ(state.calls, 0);
 	EXPECT_NE(out.find("react.max_iterations"), std::string::npos);
-	char *current = file_read_all_copy(config_path, nullptr);
+	char *current =
+		(nb_file_read_all(config_path, &file_value_6, 0, NULL) == NB_OK &&
+				 (file_copy_6 = (char *)malloc(nb_buf_len(&file_value_6) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_6, nb_buf_cstr(&file_value_6),
+				   nb_buf_len(&file_value_6) + 1),
+			    nb_charp_steal(&file_copy_6))
+			 : NULL);
 	ASSERT_NE(current, nullptr);
 	EXPECT_STREQ(current, original);
 	std::free(current);
@@ -370,6 +428,9 @@ TEST_F(ConfigEditTest, RejectsInvalidPatchedConfigBeforeApproval)
 
 TEST_F(ConfigEditTest, DetectsConcurrentConfigChange)
 {
+	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_7 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	const char *original = "[general]\ndefault_session = \"before\"\n";
 	const char *concurrent = "[general]\ndefault_session = \"other\"\n";
 	struct mutating_approval_state state = {
@@ -377,17 +438,24 @@ TEST_F(ConfigEditTest, DetectsConcurrentConfigChange)
 	};
 	tool_context_set_operation_approval(tctx, mutating_approval_cb, &state);
 	ASSERT_EQ(config_edit_init(&reg, tctx, config_path), 0);
-	ASSERT_EQ(file_write_all(config_path, original, std::strlen(original)), 0);
+	ASSERT_EQ(nb_file_write_all(config_path, original, std::strlen(original), NULL), 0);
 	const char *desired = "[general]\ndefault_session = \"after\"\n";
 	std::string args = std::string("{\"reason\":\"change session\",")
 		+ "\"content\":" + json_escape(desired) + "}";
 	int rc = 0;
 	std::string out = exec_config_edit(&reg, args, &rc);
 
-	EXPECT_EQ(rc, -EAGAIN);
+	EXPECT_EQ(rc, NB_ERR_AGAIN);
 	EXPECT_EQ(state.calls, 1);
 	EXPECT_NE(out.find("changed during approval"), std::string::npos);
-	char *current = file_read_all_copy(config_path, nullptr);
+	char *current =
+		(nb_file_read_all(config_path, &file_value_7, 0, NULL) == NB_OK &&
+				 (file_copy_7 = (char *)malloc(nb_buf_len(&file_value_7) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_7, nb_buf_cstr(&file_value_7),
+				   nb_buf_len(&file_value_7) + 1),
+			    nb_charp_steal(&file_copy_7))
+			 : NULL);
 	ASSERT_NE(current, nullptr);
 	EXPECT_STREQ(current, concurrent);
 	std::free(current);
@@ -402,18 +470,21 @@ TEST_F(ConfigEditTest, RequiresApprovalContext)
 	int rc = 0;
 	std::string out = exec_config_edit(&reg, args, &rc);
 
-	EXPECT_EQ(rc, -EACCES);
+	EXPECT_EQ(rc, NB_ERR_PERMISSION);
 	EXPECT_EQ(access(config_path, F_OK), -1);
 	EXPECT_NE(out.find("approval context"), std::string::npos);
 }
 
 TEST_F(ConfigEditTest, RejectsSymlinkConfig)
 {
+	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_copy_8 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	struct approval_state state = { TOOL_OP_ALLOW, 0, "" };
 	tool_context_set_operation_approval(tctx, approval_cb, &state);
 	ASSERT_EQ(config_edit_init(&reg, tctx, config_path), 0);
 	const char *original = "[general]\ndefault_session = \"target\"\n";
-	ASSERT_EQ(file_write_all(other_path, original, std::strlen(original)), 0);
+	ASSERT_EQ(nb_file_write_all(other_path, original, std::strlen(original), NULL), 0);
 	ASSERT_EQ(symlink(other_path, config_path), 0);
 	const char *desired = "[general]\ndefault_session = \"changed\"\n";
 	std::string args = std::string("{\"reason\":\"edit link\",\"content\":")
@@ -421,10 +492,17 @@ TEST_F(ConfigEditTest, RejectsSymlinkConfig)
 	int rc = 0;
 	std::string out = exec_config_edit(&reg, args, &rc);
 
-	EXPECT_EQ(rc, -ELOOP);
+	EXPECT_EQ(rc, NB_ERR_LOOP);
 	EXPECT_EQ(state.calls, 0);
 	EXPECT_NE(out.find("not a symlink"), std::string::npos);
-	char *current = file_read_all_copy(other_path, nullptr);
+	char *current =
+		(nb_file_read_all(other_path, &file_value_8, 0, NULL) == NB_OK &&
+				 (file_copy_8 = (char *)malloc(nb_buf_len(&file_value_8) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_8, nb_buf_cstr(&file_value_8),
+				   nb_buf_len(&file_value_8) + 1),
+			    nb_charp_steal(&file_copy_8))
+			 : NULL);
 	ASSERT_NE(current, nullptr);
 	EXPECT_STREQ(current, original);
 	std::free(current);

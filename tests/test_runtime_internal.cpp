@@ -1,8 +1,10 @@
+#include "errors.h"
 #include <gtest/gtest.h>
+#include "nb/err.h"
 #include <thread>
 
 extern "C" {
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include "credits.h"
 #include "agent/system_prompt.h"
 #include "agent/tools/img_gen.h"
@@ -12,7 +14,7 @@ extern "C" {
 #include "runtime/turn_scope.h"
 #include "runtime/usage.h"
 #include "models/llm.h"
-#include "util/file.h"
+#include "nb/file.h"
 }
 
 #include <cstdlib>
@@ -38,7 +40,7 @@ protected:
 
 	std::string write(const char *name, const std::string &content) {
 		std::string path = std::string(dir) + "/" + name;
-		EXPECT_EQ(file_write_all(path.c_str(), content.data(), content.size()), 0);
+		EXPECT_EQ(nb_file_write_all(path.c_str(), content.data(), content.size(), NULL), 0);
 		return path;
 	}
 };
@@ -48,7 +50,7 @@ TEST_F(PromptLoadTest, OccupiedSnapshotIsPreservedBeforeReadingSources)
 	auto path = write("owned.txt", "initial");
 	ASSERT_EQ(morph_prompt_load(nullptr, path.c_str(), nullptr, &text), 0);
 	char *owner = text;
-	EXPECT_EQ(morph_prompt_load(nullptr, "missing", nullptr, &text), -EALREADY);
+	EXPECT_EQ(morph_prompt_load(nullptr, "missing", nullptr, &text), NB_ERR_STATE);
 	EXPECT_EQ(text, owner);
 	EXPECT_STREQ(text, "initial");
 }
@@ -61,7 +63,7 @@ TEST_F(PromptLoadTest, NoSourceDiffersFromExplicitEmptyFile)
 	ASSERT_EQ(morph_prompt_load(NULL, path.c_str(), nullptr, &text), 0);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "");
-	EXPECT_EQ(morph_prompt_load(NULL, nullptr, nullptr, nullptr), -EINVAL);
+	EXPECT_EQ(morph_prompt_load(NULL, nullptr, nullptr, nullptr), NB_ERR_INVAL);
 }
 
 TEST_F(PromptLoadTest, FilePrecedesSortedDirectoryFragments)
@@ -94,10 +96,10 @@ TEST_F(PromptLoadTest, LargeUtf8FileIsNotTruncated)
 TEST_F(PromptLoadTest, RejectsInvalidEncodingAndEmbeddedNul)
 {
 	auto path = write("invalid.txt", std::string("a\0b", 3));
-	EXPECT_EQ(morph_prompt_load(NULL, path.c_str(), "", &text), -EILSEQ);
+	EXPECT_EQ(morph_prompt_load(NULL, path.c_str(), "", &text), NB_ERR_ENCODING);
 	EXPECT_EQ(text, nullptr);
 	write("invalid.txt", "\xff");
-	EXPECT_EQ(morph_prompt_load(NULL, path.c_str(), "", &text), -EILSEQ);
+	EXPECT_EQ(morph_prompt_load(NULL, path.c_str(), "", &text), NB_ERR_ENCODING);
 	EXPECT_EQ(text, nullptr);
 }
 
@@ -105,11 +107,11 @@ TEST_F(PromptLoadTest, MissingSourcesDoNotReturnPartialContent)
 {
 	auto base = write("base.txt", "valid");
 	std::string missing = std::string(dir) + "/missing";
-	EXPECT_EQ(morph_prompt_load(NULL, missing.c_str(), "", &text), -ENOENT);
+	EXPECT_EQ(morph_prompt_load(NULL, missing.c_str(), "", &text), NB_ERR_NOT_FOUND);
 	EXPECT_EQ(text, nullptr);
 	EXPECT_LT(morph_prompt_load(NULL, base.c_str(), missing.c_str(), &text), 0);
 	EXPECT_EQ(text, nullptr);
-	EXPECT_EQ(morph_prompt_load(NULL, dir, "", &text), -EINVAL);
+	EXPECT_EQ(morph_prompt_load(NULL, dir, "", &text), NB_ERR_INVAL);
 	EXPECT_EQ(text, nullptr);
 }
 
@@ -117,7 +119,7 @@ TEST_F(PromptLoadTest, InvalidFragmentRejectsWholePrompt)
 {
 	write("10-good.txt", "valid");
 	write("20-bad.txt", "\xff");
-	EXPECT_EQ(morph_prompt_load(NULL, "", dir, &text), -EILSEQ);
+	EXPECT_EQ(morph_prompt_load(NULL, "", dir, &text), NB_ERR_ENCODING);
 	EXPECT_EQ(text, nullptr);
 }
 
@@ -163,7 +165,7 @@ TEST_F(PromptLoadTest, BootstrapPromptFailureReleasesPartialModels)
 	profile.tools = &tools;
 	profile.models = &models;
 	profile.process_replica = 1;
-	EXPECT_EQ(runtime_bootstrap_models(&profile), -ENOENT);
+	EXPECT_EQ(runtime_bootstrap_models(&profile), NB_ERR_NOT_FOUND);
 	EXPECT_EQ(models.react, nullptr);
 	EXPECT_EQ(models.tokenizer, nullptr);
 	runtime_bootstrap_cleanup_models(&models);
@@ -276,7 +278,7 @@ TEST(RuntimeInternalTest, TurnScopeAppliesPerRequestUserIsolation)
 	EXPECT_EQ(react.tool_runtime.memory_visible_user_data, &marker);
 	runtime_turn_scope_finish(&context);
 	request.user_id = "another-tenant";
-	EXPECT_EQ(runtime_turn_scope_begin(&context, &request), -EPERM);
+	EXPECT_EQ(runtime_turn_scope_begin(&context, &request), NB_ERR_NOT_PERMITTED);
 	db_close(&db);
 }
 
@@ -406,7 +408,7 @@ TEST(RuntimeInternalTest, UsageBindingRestoresPreviousValue)
 
 TEST(RuntimeInternalTest, ScheduledTaskPayloadHelpersHandleValidAndInvalidJson)
 {
-	struct scheduled_task task MORPH_CLEANUP(scheduled_task_cleanup) = {};
+	struct scheduled_task task NB_CLEANUP(scheduled_task_cleanup) = {};
 	std::strncpy(task.title, "Daily report", sizeof(task.title) - 1);
 	task.payload_json = strdup("{\"prompt\":\"User request: summarize today\\nDetails\","
 				   "\"turn_id\":\"turn-7\"}");
@@ -423,7 +425,7 @@ TEST(RuntimeInternalTest, ScheduledTaskPayloadHelpersHandleValidAndInvalidJson)
 	std::free(prompt);
 	std::free(turn_id);
 	std::free(display);
-	morph_charp_cleanup(&task.payload_json);
+	nb_charp_cleanup(&task.payload_json);
 	task.payload_json = strdup("not-json");
 	ASSERT_NE(task.payload_json, nullptr);
 	EXPECT_EQ(runtime_scheduled_task_prompt_copy(&task), nullptr);
@@ -437,7 +439,7 @@ TEST(RuntimeInternalTest, ErrorAndNotificationTextUseReactSnapshot)
 	std::strncpy(react.outcome_reason, "provider failed",
 		sizeof(react.outcome_reason) - 1);
 	react.final_answer = const_cast<char *>("partial answer");
-	char *error = runtime_react_error_message_copy(&react, -EIO);
+	char *error = runtime_react_error_message_copy(&react, NB_ERR_IO);
 	char *notification = runtime_react_notification_body_copy(&react);
 	ASSERT_NE(error, nullptr);
 	ASSERT_NE(notification, nullptr);

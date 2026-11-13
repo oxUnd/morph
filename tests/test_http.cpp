@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 #include "http/client.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
@@ -25,7 +26,7 @@ TEST_F(HttpTest, InitCleanup) {
 }
 
 TEST_F(HttpTest, GetInvalid) {
-	struct http_response resp MORPH_CLEANUP(http_response_free) = {};
+	struct http_response resp NB_CLEANUP(http_response_free) = {};
 	int rc = http_get(NULL, "http://127.0.0.1:1/nonexistent", &resp);
 	EXPECT_NE(rc, 0);
 }
@@ -40,12 +41,12 @@ TEST_F(HttpTest, ResponseFreeNull) {
 }
 
 TEST_F(HttpTest, GetNullUrl) {
-	struct http_response resp MORPH_CLEANUP(http_response_free) = {};
+	struct http_response resp NB_CLEANUP(http_response_free) = {};
 	EXPECT_NE(http_get(NULL, nullptr, &resp), 0);
 }
 
 TEST_F(HttpTest, PostNullUrl) {
-	struct http_response resp MORPH_CLEANUP(http_response_free) = {};
+	struct http_response resp NB_CLEANUP(http_response_free) = {};
 	EXPECT_NE(http_post(NULL, nullptr, "", 0, "", &resp), 0);
 }
 
@@ -75,10 +76,10 @@ TEST_F(HttpTest, PostTimeoutReturnsTimedOut) {
 	char url[128];
 	snprintf(url, sizeof(url), "http://127.0.0.1:%u/",
 		 static_cast<unsigned>(ntohs(addr.sin_port)));
-	struct http_response resp MORPH_CLEANUP(http_response_free) = {};
+	struct http_response resp NB_CLEANUP(http_response_free) = {};
 	int rc = http_post_ex_timeout(NULL, url, "{}", 2, "application/json", nullptr, 0, 1, &resp);
 
-	EXPECT_EQ(rc, -ETIMEDOUT);
+	EXPECT_EQ(rc, NB_ERR_TIMEOUT);
 	http_response_free(&resp);
 	server.join();
 }
@@ -112,12 +113,12 @@ TEST_F(HttpTest, CancellationInterruptsSilentPeersPromptly) {
 			if (peer >= 0) close(peer);
 			close(listener);
 		});
-		morph_cancel_token token{};
+		nb_cancel token{};
 		http_control control{};
 		control.cancel_token = &token;
 		std::thread canceller([&] {
 			std::this_thread::sleep_for(std::chrono::milliseconds(100));
-			morph_cancel_token_cancel(&token);
+			nb_cancel_request(&token);
 		});
 		char url[128];
 		snprintf(url, sizeof(url), "http://127.0.0.1:%u/",
@@ -149,32 +150,32 @@ TEST_F(HttpTest, CancellationInterruptsSilentPeersPromptly) {
 		server.join();
 		http_response_free(&response);
 		http_session_cleanup(&session);
-		EXPECT_EQ(rc, -ECANCELED);
+		EXPECT_EQ(rc, NB_ERR_CANCELLED);
 		EXPECT_LT(elapsed, std::chrono::milliseconds(500));
 	}
 }
 
 TEST(CancelTokenTest, ResetCancelAndQuery) {
-	struct morph_cancel_token token;
-	morph_cancel_token_reset(&token);
-	EXPECT_EQ(morph_cancel_token_is_cancelled(&token), 0);
-	morph_cancel_token_cancel(&token);
-	EXPECT_EQ(morph_cancel_token_is_cancelled(&token), 1);
-	morph_cancel_token_reset(&token);
-	EXPECT_EQ(morph_cancel_token_is_cancelled(&token), 0);
+	struct nb_cancel token;
+	nb_cancel_reset(&token);
+	EXPECT_EQ(nb_cancel_requested(&token), 0);
+	nb_cancel_request(&token);
+	EXPECT_EQ(nb_cancel_requested(&token), 1);
+	nb_cancel_reset(&token);
+	EXPECT_EQ(nb_cancel_requested(&token), 0);
 }
 
 TEST(CancelTokenTest, RetryWaitStopsWhenCancelled) {
-	struct morph_cancel_token token;
-	morph_cancel_token_reset(&token);
+	struct nb_cancel token;
+	nb_cancel_reset(&token);
 	struct http_control control{};
 	control.cancel_token = &token;
 	std::thread canceller([&token]() {
 		std::this_thread::sleep_for(std::chrono::milliseconds(50));
-		morph_cancel_token_cancel(&token);
+		nb_cancel_request(&token);
 	});
 	auto started = std::chrono::steady_clock::now();
-	EXPECT_EQ(http_wait_cancelable(&control, 5000), -ECANCELED);
+	EXPECT_EQ(http_wait_cancelable(&control, 5000), NB_ERR_CANCELLED);
 	auto elapsed = std::chrono::steady_clock::now() - started;
 	EXPECT_LT(elapsed, std::chrono::seconds(1));
 	canceller.join();
@@ -216,8 +217,8 @@ TEST_F(HttpSessionTest, CleanupNull) {
 
 TEST_F(HttpSessionTest, ResetClearsBuffers) {
 	ASSERT_EQ(http_session_init(NULL, &session), 0);
-	morph_buf_puts(&session.resp_body, "hello");
-	morph_buf_puts(&session.resp_headers, "X-Test: hi\r\n");
+	nb_buf_append_cstr(&session.resp_body, "hello");
+	nb_buf_append_cstr(&session.resp_headers, "X-Test: hi\r\n");
 	session.status_code = 200;
 	http_session_reset(&session);
 	EXPECT_EQ(session.resp_body.len, 0);
@@ -254,12 +255,12 @@ TEST_F(HttpSessionTest, BodyAndStatus) {
 	EXPECT_EQ(http_session_status(nullptr), 0);
 }
 
-/* ----- http_response with morph_buf_t ----- */
+/* ----- http_response with nb_buf ----- */
 
 TEST_F(HttpTest, ResponseFreeWithMorphBuf) {
-	struct http_response resp MORPH_CLEANUP(http_response_free) = {};
-	EXPECT_EQ(resp.body.data, nullptr);
-	EXPECT_EQ(resp.headers.data, nullptr);
+	struct http_response resp NB_CLEANUP(http_response_free) = {};
+	EXPECT_EQ(resp.body.ptr, nullptr);
+	EXPECT_EQ(resp.headers.ptr, nullptr);
 	EXPECT_NO_FATAL_FAILURE(http_response_free(&resp));
 }
 
@@ -312,31 +313,34 @@ TEST_F(HttpTest, SessionAndMultipartPreserveTimeoutErrors)
 		server.join();
 		http_response_free(&response);
 		http_session_cleanup(&session);
-		EXPECT_EQ(rc, -ETIMEDOUT);
+		EXPECT_EQ(rc, NB_ERR_TIMEOUT);
 	}
 }
 
 TEST_F(HttpTest, RequestsPreserveOccupiedResponseWithoutStartingTransfer)
 {
 	struct http_response response = {};
-	ASSERT_EQ(morph_buf_init(&response.body, 16), 0);
-	ASSERT_EQ(morph_buf_puts(&response.body, "owned"), 0);
+	ASSERT_EQ((nb_buf_init(&response.body),
+		   nb_buf_reserve(&response.body, 16) ? 0 : NB_ERR_NOMEM),
+		  0);
+	ASSERT_EQ((nb_buf_append_cstr(&response.body, "owned") ? 0 : NB_ERR_NOMEM), 0);
 	response.status_code = 201;
-	char *saved = response.body.data;
+	char *saved = response.body.ptr;
 	const char *url = "http://127.0.0.1:1/";
-	EXPECT_EQ(http_get(nullptr, url, &response), -EEXIST);
-	EXPECT_EQ(http_get_ex_timeout_limit(nullptr, url, nullptr, 0, 1, 16, &response), -EEXIST);
-	EXPECT_EQ(http_post(nullptr, url, "", 0, nullptr, &response), -EEXIST);
-	EXPECT_EQ(http_post_ex(nullptr, url, "", 0, nullptr, nullptr, 0, &response), -EEXIST);
+	EXPECT_EQ(http_get(nullptr, url, &response), NB_ERR_EXISTS);
+	EXPECT_EQ(http_get_ex_timeout_limit(nullptr, url, nullptr, 0, 1, 16, &response),
+		  NB_ERR_EXISTS);
+	EXPECT_EQ(http_post(nullptr, url, "", 0, nullptr, &response), NB_ERR_EXISTS);
+	EXPECT_EQ(http_post_ex(nullptr, url, "", 0, nullptr, nullptr, 0, &response), NB_ERR_EXISTS);
 	EXPECT_EQ(http_post_ex_timeout(nullptr, url, "", 0, nullptr, nullptr, 0, 1, &response),
-		  -EEXIST);
+		  NB_ERR_EXISTS);
 	http_multipart_part part{};
 	part.name = "field";
 	part.value = "input";
 	EXPECT_EQ(http_post_multipart_ex(nullptr, url, &part, 1, nullptr, 0, 1, &response),
-		  -EEXIST);
-	EXPECT_EQ(response.body.data, saved);
-	EXPECT_STREQ(response.body.data, "owned");
+		  NB_ERR_EXISTS);
+	EXPECT_EQ(response.body.ptr, saved);
+	EXPECT_STREQ(response.body.ptr, "owned");
 	EXPECT_EQ(response.status_code, 201);
 	http_response_free(&response);
 }

@@ -3,8 +3,8 @@
 #include "sapi/fastcgi/storage/events.h"
 #include "sapi/fastcgi/event_sink.h"
 #include "cJSON.h"
-#include "util/error.h"
-#include "util/child_io.h"
+#include "errors.h"
+#include "nb/time.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,10 +29,9 @@ static char *event_data_string(cJSON *data, const char *key)
 
 static int64_t turn_mono_ms(void)
 {
-	struct timespec ts;
+	int64_t now = nb_time_monotonic_ns();
 
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+	return now > 0 ? now / 1000000 : 0;
 }
 
 static void turn_flush_thought(struct fcgi_turn_job *j)
@@ -91,7 +90,7 @@ int fcgi_turn_events_callback(const struct morph_event *ev, void *u)
 	const char *turn_id;
 
 	if (!j || !ev)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	data = ev->data;
 	turn_id = ev->turn_id ? ev->turn_id : j->turn_id;
 
@@ -107,13 +106,13 @@ int fcgi_turn_events_callback(const struct morph_event *ev, void *u)
 		char *txt;
 
 		if (!root)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		cJSON_AddStringToObject(root, "turn_id", turn_id ? turn_id : "");
 		if (!copy)
 			copy = cJSON_CreateObject();
 		if (!copy) {
 			cJSON_Delete(root);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		cJSON_AddItemToObject(root, "data", copy);
 		txt = cJSON_PrintUnformatted(root);

@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "agent/react_output.h"
+#include "nb/thread.h"
 #include <stdint.h>
 #include <signal.h>
 #include "agent/tool.h"
@@ -16,7 +17,7 @@ extern "C" {
 #include "agent/tools/ask_user.h"
 #include "event/event.h"
 #include "skill/skill.h"
-#include "util/cancel.h"
+#include "nb/cancel.h"
 
 enum react_state {
 	REACT_STATE_INIT,
@@ -42,7 +43,7 @@ enum react_outcome {
 	REACT_OUTCOME_INTERNAL_ERROR,
 };
 
-struct morph_log;
+struct nb_log;
 
 struct react_step {
 	enum react_step_type type;
@@ -101,7 +102,7 @@ struct react_context {
 	/* Optional internal adapter, borrowed until all workers have been drained. */
 	const struct react_thread_ops *thread_ops;
 	struct async_tool_call *retired_tool_calls;
-	struct morph_log *logger;
+	struct nb_log *logger;
 	agent_hook_fn hook_fn;
 	void *hook_user;
 	int hook_continuation_count;
@@ -162,9 +163,9 @@ struct react_context {
 	int agent_finalize_interrupted;
 	int agent_finishing;
 	int agent_summary_attempts;
-	volatile sig_atomic_t cancelled;
-	volatile sig_atomic_t preserve_background_on_cancel;
-	struct morph_cancel_token cancel_token;
+	nb_atomic_int cancelled;
+	nb_atomic_int preserve_background_on_cancel;
+	struct nb_cancel cancel_token;
 	int force_compaction;
 	int context_recovery_count;
 	int ineffective_compactions;

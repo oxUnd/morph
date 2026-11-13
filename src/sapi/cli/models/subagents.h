@@ -2,8 +2,10 @@
 #define MORPH_CLI_MODELS_SUBAGENTS_H
 
 #include "event/event.h"
-#include "util/array.h"
-#include "util/buf.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include <stdint.h>
 
 struct cli_transcript_model;
@@ -17,12 +19,12 @@ enum cli_subagents_segment_kind {
 struct cli_subagents_segment {
 	enum cli_subagents_segment_kind kind;
 	size_t tool_index;
-	morph_buf_t text;
+	nb_buf text;
 };
 struct cli_subagents_thread {
 	char id[256];
 	struct cli_transcript_model *transcript;
-	morph_array_t segments;
+	nb_vec segments;
 	int has_content;
 	int64_t sequence;
 	int reasoning_open;

@@ -9,7 +9,7 @@ extern "C" {
 #include "agent/tokenizer.h"
 #include "models/llm.h"
 #include "session.h"
-#include "util/error.h"
+#include "errors.h"
 }
 
 #include <cstring>
@@ -266,14 +266,14 @@ TEST_F(UpdatePlanToolTest, InvalidInputsNeverReplaceTheSavedPlanOrEmitUpdates)
 	      R"({"plan":[],"unknown":true})", R"({"plan":[],"plan":[]})",
 	      R"({"plan":[{"step":"one","status":"in_progress"},
 			{"step":"two","status":"in_progress"}]})"}) {
-		EXPECT_EQ(Update(invalid), -EINVAL) << invalid;
+		EXPECT_EQ(Update(invalid), NB_ERR_INVAL) << invalid;
 		EXPECT_STREQ(plans->plans[0].id, id.c_str());
 		EXPECT_STREQ(plans->plans[0].steps[0].description, "Keep this step");
 		EXPECT_EQ(morph_event_recorder_count(&events), 1u);
 	}
 	std::string long_step =
 		"{\"plan\":[{\"step\":\"" + std::string(300, 'x') + "\",\"status\":\"pending\"}]}";
-	EXPECT_EQ(Update(long_step.c_str()), -EINVAL);
+	EXPECT_EQ(Update(long_step.c_str()), NB_ERR_INVAL);
 	std::string oversized = "{\"plan\":[";
 	for (int i = 0; i <= PLAN_MAX_STEPS; i++) {
 		if (i)
@@ -281,7 +281,7 @@ TEST_F(UpdatePlanToolTest, InvalidInputsNeverReplaceTheSavedPlanOrEmitUpdates)
 		oversized += R"({"step":"Step","status":"pending"})";
 	}
 	oversized += "]}";
-	EXPECT_EQ(Update(oversized.c_str()), -EINVAL);
+	EXPECT_EQ(Update(oversized.c_str()), NB_ERR_INVAL);
 	EXPECT_STREQ(plans->plans[0].steps[0].description, "Keep this step");
 }
 

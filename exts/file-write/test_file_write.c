@@ -1,10 +1,13 @@
 #include "file_write.h"
+#include "nb/cleanup.h"
+#include "nb/err.h"
 
 #include "agent/tool_context.h"
 #include "cJSON.h"
-#include "util/file.h"
+#include "nb/file.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,11 +22,27 @@ static void expect_true(int *failures, int cond, const char *msg)
 	}
 }
 
+static void test_fd_cleanup(int *fd)
+{
+	if (*fd >= 0)
+		(void)close(*fd);
+	*fd = -1;
+}
+
 static char *read_file(const char *path)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	size_t len;
 
-	return file_read_all_copy(path, &len);
+	return (nb_file_read_all(path, &file_value_1, 0, NULL) == NB_OK &&
+				(file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
+					NULL
+			? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
+				  nb_buf_len(&file_value_1) + 1),
+			   *(&len) = nb_buf_len(&file_value_1), nb_charp_steal(&file_copy_1))
+			: NULL);
 }
 
 static int run_tool(struct tool_registry *reg, const char *json,
@@ -39,7 +58,7 @@ static int result_ok(struct tool_result *result)
 	cJSON *ok;
 	int value;
 
-	root = cJSON_Parse(result->text.data ? result->text.data : "");
+	root = cJSON_Parse(result->text.ptr ? result->text.ptr : "");
 	if (!root)
 		return 0;
 	ok = cJSON_GetObjectItem(root, "ok");
@@ -54,7 +73,7 @@ static int result_code(struct tool_result *result)
 	cJSON *code;
 	int value;
 
-	root = cJSON_Parse(result->text.data ? result->text.data : "");
+	root = cJSON_Parse(result->text.ptr ? result->text.ptr : "");
 	if (!root)
 		return 0;
 	cJSON *error = cJSON_GetObjectItem(root, "error");
@@ -88,8 +107,8 @@ static void test_write_overwrite_append(int *failures)
 	struct tool_result result;
 	char *data;
 
-	file_ensure_dir("/tmp/morph_fw_work");
-	file_ensure_dir("/tmp/morph_fw_out");
+	nb_file_mkdir("/tmp/morph_fw_work", true, NULL);
+	nb_file_mkdir("/tmp/morph_fw_out", true, NULL);
 	setup_registry(failures, &reg, &tctx, "/tmp/morph_fw_work", "/tmp/morph_fw_out");
 	tool_result_init(&result);
 
@@ -102,7 +121,7 @@ static void test_write_overwrite_append(int *failures)
 
 	run_tool(&reg, "{\"op\":\"write\",\"path\":\"a.txt\",\"content\":\"two\"}",
 		 &result);
-	expect_true(failures, !result_ok(&result) && result_code(&result) == -EEXIST,
+	expect_true(failures, !result_ok(&result) && result_code(&result) == NB_ERR_EXISTS,
 		    "write existing fails");
 
 	run_tool(&reg,
@@ -128,9 +147,9 @@ static void test_mkdir_copy_rename_delete(int *failures)
 	struct tool_result result;
 	char *data;
 
-	file_ensure_dir("/tmp/morph_fw_work");
-	file_ensure_dir("/tmp/morph_fw_out");
-	file_write_all("/tmp/morph_fw_work/source.txt", "copy", 4);
+	nb_file_mkdir("/tmp/morph_fw_work", true, NULL);
+	nb_file_mkdir("/tmp/morph_fw_out", true, NULL);
+	nb_file_write_all("/tmp/morph_fw_work/source.txt", "copy", 4, NULL);
 	setup_registry(failures, &reg, &tctx, "/tmp/morph_fw_work", "/tmp/morph_fw_out");
 	tool_result_init(&result);
 
@@ -173,8 +192,8 @@ static void test_base64_and_authorization(int *failures)
 	struct tool_result result;
 	char *data;
 
-	file_ensure_dir("/tmp/morph_fw_work");
-	file_ensure_dir("/tmp/morph_fw_out");
+	nb_file_mkdir("/tmp/morph_fw_work", true, NULL);
+	nb_file_mkdir("/tmp/morph_fw_out", true, NULL);
 	setup_registry(failures, &reg, &tctx, "/tmp/morph_fw_work", "/tmp/morph_fw_out");
 	tool_result_init(&result);
 
@@ -189,6 +208,35 @@ static void test_base64_and_authorization(int *failures)
 			    (unsigned char)data[2] == 2,
 		    "base64 bytes");
 	free(data);
+
+	const char *accepted[] = {"AAE=", "AAE", " A A E = \\n\\t"};
+	for (size_t i = 0; i < sizeof(accepted) / sizeof(accepted[0]); i++) {
+		char request[256];
+		snprintf(request, sizeof(request),
+			 "{\"op\":\"overwrite\",\"path\":\"b.bin\",\"content\":\"%s\","
+			 "\"encoding\":\"base64\"}",
+			 accepted[i]);
+		run_tool(&reg, request, &result);
+		expect_true(failures, result_ok(&result), "base64 padding and whitespace");
+		data = read_file("/tmp/morph_fw_out/b.bin");
+		expect_true(failures, data && data[0] == 0 && data[1] == 1, "base64 binary length");
+		free(data);
+	}
+	const char *rejected[] = {"A", "A===", "AA=E", "AAE$", "AAE==", "AB=="};
+	for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
+		char request[256];
+		snprintf(request, sizeof(request),
+			 "{\"op\":\"overwrite\",\"path\":\"b.bin\",\"content\":\"%s\","
+			 "\"encoding\":\"base64\"}",
+			 rejected[i]);
+		run_tool(&reg, request, &result);
+		expect_true(failures, !result_ok(&result) && result_code(&result) == NB_ERR_INVAL,
+			    "malformed base64 rejected");
+		data = read_file("/tmp/morph_fw_out/b.bin");
+		expect_true(failures, data && data[0] == 0 && data[1] == 1,
+			    "invalid base64 preserves destination");
+		free(data);
+	}
 
 	run_tool(&reg,
 		 "{\"op\":\"overwrite\",\"path\":\"/tmp/morph_fw_denied.txt\","
@@ -207,8 +255,8 @@ static void test_patch(int *failures)
 	struct tool_result result;
 	char *data;
 
-	file_ensure_dir("/tmp/morph_fw_work");
-	file_ensure_dir("/tmp/morph_fw_out");
+	nb_file_mkdir("/tmp/morph_fw_work", true, NULL);
+	nb_file_mkdir("/tmp/morph_fw_out", true, NULL);
 	setup_registry(failures, &reg, &tctx, "/tmp/morph_fw_work", "/tmp/morph_fw_out");
 	tool_result_init(&result);
 
@@ -217,22 +265,35 @@ static void test_patch(int *failures)
 		 "\"content\":\"hello brave world\"}",
 		 &result);
 	expect_true(failures, result_ok(&result), "patch setup succeeds");
+	expect_true(failures, nb_file_set_mode("/tmp/morph_fw_out/patch.txt", 0750, NULL) == NB_OK,
+		    "patch executable mode setup");
 
 	run_tool(&reg,
 		 "{\"op\":\"patch\",\"path\":\"patch.txt\",\"offset\":6,"
 		 "\"length\":5,\"content\":\"small\"}",
 		 &result);
 	expect_true(failures, result_ok(&result), "patch replace succeeds");
+	nb_file_info info;
+	expect_true(failures,
+		    nb_file_stat("/tmp/morph_fw_out/patch.txt", false, &info, NULL) == NB_OK &&
+			    (info.mode & 0777u) == 0750u,
+		    "patch preserves executable mode");
 	data = read_file("/tmp/morph_fw_out/patch.txt");
 	expect_true(failures, data && strcmp(data, "hello small world") == 0,
 		    "patch replace content");
 	free(data);
 
+	expect_true(failures, nb_file_set_mode("/tmp/morph_fw_out/patch.txt", 0640, NULL) == NB_OK,
+		    "patch group-readable mode setup");
 	run_tool(&reg,
 		 "{\"op\":\"patch\",\"path\":\"patch.txt\",\"offset\":11,"
 		 "\"length\":0,\"content\":\" blue\"}",
 		 &result);
 	expect_true(failures, result_ok(&result), "patch insert succeeds");
+	expect_true(failures,
+		    nb_file_stat("/tmp/morph_fw_out/patch.txt", false, &info, NULL) == NB_OK &&
+			    (info.mode & 0777u) == 0640u,
+		    "patch preserves group-readable mode");
 	data = read_file("/tmp/morph_fw_out/patch.txt");
 	expect_true(failures, data && strcmp(data, "hello small blue world") == 0,
 		    "patch insert content");
@@ -242,8 +303,33 @@ static void test_patch(int *failures)
 		 "{\"op\":\"patch\",\"path\":\"patch.txt\",\"offset\":100,"
 		 "\"length\":1,\"content\":\"bad\"}",
 		 &result);
-	expect_true(failures, !result_ok(&result) && result_code(&result) == -ERANGE,
+	expect_true(failures, !result_ok(&result) && result_code(&result) == NB_ERR_RANGE,
 		    "patch out of range fails");
+
+	const char *large_path = "/tmp/morph_fw_out/large-patch.bin";
+	const off_t large_size = 12 * 1024 * 1024;
+	expect_true(failures,
+		    nb_file_write_all(large_path, "", 0, NULL) == NB_OK &&
+			    truncate(large_path, large_size) == 0,
+		    "large sparse patch setup");
+	run_tool(&reg,
+		 "{\"op\":\"patch\",\"path\":\"large-patch.bin\",\"offset\":6291456,"
+		 "\"length\":4,\"content\":\"XYZ\"}",
+		 &result);
+	expect_true(failures, result_ok(&result), "patch larger than content limit succeeds");
+	uint64_t size_after = 0;
+	expect_true(failures,
+		    nb_file_size(large_path, &size_after, NULL) == NB_OK &&
+			    size_after == (uint64_t)large_size - 1u,
+		    "large patch size");
+	int fd NB_CLEANUP(test_fd_cleanup) = open(large_path, O_RDONLY);
+	char inserted[3] = {0};
+	char last = 1;
+	expect_true(failures,
+		    fd >= 0 && pread(fd, inserted, sizeof(inserted), 6291456) == 3 &&
+			    memcmp(inserted, "XYZ", sizeof(inserted)) == 0 &&
+			    pread(fd, &last, 1, large_size - 2) == 1 && last == 0,
+		    "large patch preserves binary tail");
 
 	tool_result_cleanup(&result);
 	cleanup_registry(&reg, tctx);

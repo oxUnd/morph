@@ -1,11 +1,11 @@
 #ifndef MORPH_RUNTIME_ENGINE_H
 #define MORPH_RUNTIME_ENGINE_H
 
-struct morph_log;
+struct nb_log;
 #include "agent/turn.h"
 #include "runtime/request.h"
 #include "runtime/result.h"
-#include <pthread.h>
+#include "nb/thread.h"
 #include <stdint.h>
 
 struct runtime_turn_state {
@@ -23,7 +23,7 @@ struct hook_manager;
 struct runtime_turn_scope;
 
 struct runtime_engine {
-	struct morph_log *logger;
+	struct nb_log *logger;
 	struct tool_context *tool_context;
 	struct hook_manager *hooks;
 	struct db *db;
@@ -32,7 +32,7 @@ struct runtime_engine {
 	const struct memory_options *memory_options;
 	agent_turn_background_cb background_cb;
 	void *background_user_data;
-	pthread_mutex_t *execution_lock;
+	nb_mutex *execution_lock;
 	struct runtime_turn_state turn_state;
 	struct runtime_turn_scope *turn_scope;
 	runtime_prepare_turn_fn prepare_turn;
@@ -43,7 +43,7 @@ struct runtime_engine {
 
 void runtime_engine_init(struct runtime_engine *engine);
 void runtime_engine_configure(struct runtime_engine *engine, struct db *db,
-			      struct react_context *react, pthread_mutex_t *execution_lock);
+			      struct react_context *react, nb_mutex *execution_lock);
 void runtime_engine_cleanup(struct runtime_engine *engine);
 struct react_context *runtime_engine_active_react_borrow(struct runtime_engine *engine);
 

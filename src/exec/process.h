@@ -1,7 +1,7 @@
 #ifndef MORPH_PROCESS_H
 #define MORPH_PROCESS_H
 
-struct morph_log;
+struct nb_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -40,7 +40,7 @@ struct process_manager_config {
 struct process_manager;
 
 struct process_spawn_options {
-	struct morph_log *logger;
+	struct nb_log *logger;
 	const char *command;
 	const char *workdir;
 	/* Optional private scratch, borrowed until spawn returns. */

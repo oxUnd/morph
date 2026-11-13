@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 #include "agent_http_test_support.hpp"
 
 extern "C" {
@@ -8,9 +9,9 @@ extern "C" {
 #include "agent/tokenizer.h"
 #include "models/llm.h"
 #include "session.h"
-#include "util/utf8.h"
-#include "util/json.h"
-#include "util/cleanup.h"
+#include "nb/utf8.h"
+#include "cJSON.h"
+#include "nb/cleanup.h"
 }
 
 #include <future>
@@ -37,7 +38,7 @@ class AgentEventBatchingTest : public testing::Test
 	int live_deltas = 0;
 	int first_delta_stored = -1;
 	bool subscribe_on_start = false;
-	int subscription_rc = -EINPROGRESS;
+	int subscription_rc = NB_ERR_IN_PROGRESS;
 
 	void SetUp() override
 	{
@@ -116,9 +117,9 @@ class AgentEventBatchingTest : public testing::Test
 
 	void spawn()
 	{
-		cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
+		cJSON *args NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(
 			R"({"task_name":"stream","message":"Inspect independently","fork_turns":"none"})");
-		cJSON *out MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+		cJSON *out NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 		EXPECT_EQ(agent_control_call(control, "spawn_agent", args, &runtime, &out), 0);
 	}
 
@@ -156,7 +157,7 @@ TEST_F(AgentEventBatchingTest, ImmediateSubscriptionInitializesBeforeFirstChildE
 	EXPECT_GT(count, 0);
 	EXPECT_EQ(frontier, live_sequences.back());
 	for (int i = 0; i < count; i++) {
-		cJSON *record MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(snapshot[i]);
+		cJSON *record NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(snapshot[i]);
 		const cJSON *sequence = cJSON_GetObjectItemCaseSensitive(
 			cJSON_GetObjectItemCaseSensitive(record, "data"), "agent_event_sequence");
 		ASSERT_TRUE(cJSON_IsNumber(sequence));
@@ -191,9 +192,9 @@ TEST_F(AgentEventBatchingTest, RestoredSubscriptionPreservesFrontierAcrossFollow
 	EXPECT_EQ(restored, previous);
 	EXPECT_GT(count, 0);
 	agent_control_free_events(snapshot, count);
-	cJSON *args MORPH_CLEANUP(morph_json_cleanup) =
+	cJSON *args NB_CLEANUP(cJSON_DeleteOwner) =
 		cJSON_Parse(R"({"target":"stream","message":"Follow up after restart"})");
-	cJSON *out MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+	cJSON *out NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(agent_control_call(control, "followup_task", args, &runtime, &out), 0);
 	agent_control_join(control);
 	ASSERT_FALSE(live_sequences.empty());
@@ -216,9 +217,9 @@ TEST_F(AgentEventBatchingTest, CoalescesReasoningWithoutDelayingSelectedLiveStre
 	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	spec.flags = TOOL_FLAG_READONLY;
 	spec.exec = [](const char *, struct tool_result *result, void *) -> int {
-		cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
+		cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 		if (!data || !cJSON_AddStringToObject(data, "text", "思考👩‍💻。"))
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		struct morph_event event{};
 		event.type = MORPH_EVENT_REACT;
 		event.name = "react.reasoning.delta";
@@ -250,14 +251,14 @@ TEST_F(AgentEventBatchingTest, CoalescesReasoningWithoutDelayingSelectedLiveStre
 	int records = 0;
 	bool left_reasoning = false;
 	for (const auto &json : events()) {
-		cJSON *event MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(json.c_str());
+		cJSON *event NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(json.c_str());
 		const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(event, "name"));
 		if (name && !strcmp(name, "react.reasoning.delta")) {
 			EXPECT_FALSE(left_reasoning);
 			const char *text = cJSON_GetStringValue(
 				cJSON_GetObjectItem(cJSON_GetObjectItem(event, "data"), "text"));
 			ASSERT_NE(text, nullptr);
-			EXPECT_EQ(utf8valid(text), nullptr);
+			EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(text), NULL), NB_UTF8_OK);
 			EXPECT_LE(strlen(text), 8192u);
 			stored += text;
 			records++;
@@ -310,7 +311,7 @@ TEST_F(AgentEventBatchingTest, FlushesAtToolStreamKindAndTurnBoundariesWithoutLo
 	std::vector<std::string> chunks;
 	std::vector<std::string> turns;
 	for (const auto &json : events()) {
-		cJSON *event MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(json.c_str());
+		cJSON *event NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(json.c_str());
 		const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(event, "name"));
 		if (name && !strcmp(name, "tool.stream.delta")) {
 			const char *text = cJSON_GetStringValue(

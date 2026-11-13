@@ -2,8 +2,9 @@
 
 extern "C" {
 #include "sapi/cli/widgets/composer_panel.h"
-#include "util/error.h"
-#include "util/utf8.h"
+#include "errors.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 }
 
 #include <string>
@@ -15,7 +16,9 @@ class CliComposerPanelTest : public testing::Test
 
 	void SetUp() override
 	{
-		ASSERT_EQ(morph_buf_init(&frame.content, 128), 0);
+		ASSERT_EQ((nb_buf_init(&frame.content),
+			   nb_buf_reserve(&frame.content, 128) ? 0 : NB_ERR_NOMEM),
+			  0);
 		frame.columns = 8;
 		frame.rows = 2;
 		frame.color = 1;
@@ -23,19 +26,19 @@ class CliComposerPanelTest : public testing::Test
 
 	void TearDown() override
 	{
-		morph_buf_cleanup(&frame.content);
+		nb_buf_cleanup(&frame.content);
 	}
 
 	std::string Content()
 	{
-		return std::string(morph_buf_cstr_borrow(&frame.content), frame.content.len);
+		return std::string(nb_buf_cstr(&frame.content), frame.content.len);
 	}
 
 	std::string Plain()
 	{
 		std::string plain(frame.content.len + 1, '\0');
-		const size_t size = utf8_strip_ansi(
-			plain.data(), morph_buf_cstr_borrow(&frame.content), frame.content.len);
+		const size_t size = morph_terminal_strip_ansi(
+			plain.data(), nb_buf_cstr(&frame.content), frame.content.len);
 		plain.resize(size);
 		return plain;
 	}
@@ -51,8 +54,8 @@ TEST_F(CliComposerPanelTest, RowBudgetAndCellClippingKeepOnePhysicalLinePerEntry
 	EXPECT_EQ(frame.line_count, 2);
 	EXPECT_EQ(Content(), painted);
 	EXPECT_EQ(Plain(), "中文a\nsecon\n");
-	EXPECT_EQ(utf8_display_width_ansi("\033[44;97m中文a\033[0m"), 5u);
-	EXPECT_EQ(utf8valid(Content().c_str()), nullptr);
+	EXPECT_EQ(morph_terminal_display_width_ansi("\033[44;97m中文a\033[0m"), 5u);
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(Content().c_str()), NULL), NB_UTF8_OK);
 }
 
 TEST_F(CliComposerPanelTest, WideCodepointsNeverOverflowTheLastCellAndPaddingKeepsBackground)
@@ -92,7 +95,7 @@ TEST_F(CliComposerPanelTest, TrustedRendererSgrSurvivesClippingAndOtherControlsA
 	EXPECT_NE(Content().find("\033[1m"), std::string::npos);
 	EXPECT_EQ(Content().find("\033[999A"), std::string::npos);
 	EXPECT_EQ(Content().find("\033]"), std::string::npos);
-	EXPECT_EQ(utf8valid(Content().c_str()), nullptr);
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(Content().c_str()), NULL), NB_UTF8_OK);
 }
 
 TEST_F(CliComposerPanelTest, DisabledColorKeepsTextWithoutRendererStyles)
@@ -105,10 +108,10 @@ TEST_F(CliComposerPanelTest, DisabledColorKeepsTextWithoutRendererStyles)
 
 TEST_F(CliComposerPanelTest, BufferFailuresPropagateWithoutAddingRows)
 {
-	frame.content.failed = -ENOMEM;
-	EXPECT_EQ(cli_composer_panel_line(&frame, "text", nullptr), -ENOMEM);
+	frame.content.error = NB_ERR_NOMEM;
+	EXPECT_EQ(cli_composer_panel_line(&frame, "text", nullptr), NB_ERR_NOMEM);
 	EXPECT_EQ(frame.line_count, 0);
-	EXPECT_EQ(frame.content.failed, -ENOMEM);
+	EXPECT_EQ(nb_buf_status(&frame.content), NB_ERR_NOMEM);
 }
 
 TEST(CliComposerPanelLifecycleTest, FailedPresentationPreservesCallerOwnedData)
@@ -119,6 +122,6 @@ TEST(CliComposerPanelLifecycleTest, FailedPresentationPreservesCallerOwnedData)
 	ops.draw = [](void *, struct cli_composer_panel_frame *) { return 0; };
 	ops.update = [](void *, const struct morph_tui_event *) { return 0; };
 	ops.complete = [](void *data, int) { ++*static_cast<int *>(data); };
-	EXPECT_EQ(cli_composer_panel_show(nullptr, &options, &ops, &completions), -EINVAL);
+	EXPECT_EQ(cli_composer_panel_show(nullptr, &options, &ops, &completions), NB_ERR_INVAL);
 	EXPECT_EQ(completions, 0);
 }

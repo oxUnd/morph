@@ -1977,7 +1977,7 @@ static cJSON_bool add_item_to_array(cJSON *array, cJSON *item)
 {
     cJSON *child = NULL;
 
-    if ((item == NULL) || (array == NULL) || (array == item))
+    if ((item == NULL) || (array == NULL) || (array == item) || (item->prev != NULL) || (item->next != NULL))
     {
         return false;
     }
@@ -2033,7 +2033,7 @@ static cJSON_bool add_item_to_object(cJSON * const object, const char * const st
     char *new_key = NULL;
     int new_type = cJSON_Invalid;
 
-    if ((object == NULL) || (string == NULL) || (item == NULL) || (object == item))
+    if ((object == NULL) || (string == NULL) || (item == NULL) || (object == item) || (item->prev != NULL) || (item->next != NULL))
     {
         return false;
     }
@@ -3142,4 +3142,36 @@ CJSON_PUBLIC(void) cJSON_free(void *object)
 {
     global_hooks.deallocate(object);
     object = NULL;
+}
+
+CJSON_PUBLIC(void) cJSON_DeleteOwner(cJSON **owner)
+{
+    if (owner != NULL)
+    {
+        cJSON_Delete(*owner);
+        *owner = NULL;
+    }
+}
+
+CJSON_PUBLIC(void) cJSON_FreeTextOwner(char **owner)
+{
+    if (owner != NULL)
+    {
+        if (*owner != NULL)
+        {
+            cJSON_free(*owner);
+        }
+        *owner = NULL;
+    }
+}
+
+CJSON_PUBLIC(cJSON *) cJSON_StealOwner(cJSON **owner)
+{
+    cJSON *item = NULL;
+    if (owner != NULL)
+    {
+        item = *owner;
+        *owner = NULL;
+    }
+    return item;
 }

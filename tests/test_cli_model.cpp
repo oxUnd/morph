@@ -1,11 +1,12 @@
 #include "runtime_test_support.hpp"
+#include "nb/err.h"
 
 extern "C" {
 #include "runtime/runtime_internal.h"
 #include "runtime/model.h"
 #include "sapi/cli/models/composer.h"
-#include "util/cleanup.h"
-#include "util/file.h"
+#include "nb/cleanup.h"
+#include "nb/file.h"
 }
 
 #include <cstring>
@@ -27,11 +28,11 @@ TEST_F(RuntimeFacadeTest, ModelModeChangesPersistWithoutChangingProviderParamete
 	EXPECT_EQ(ultra, 1);
 	EXPECT_EQ(before, instance->context.llm->extra_body_json);
 	EXPECT_STREQ(instance->context.config.agents.multi_agent_mode, "proactive");
-	morph_buf_t prompt{};
-	ASSERT_EQ(morph_buf_init(&prompt, 1024), 0);
+	nb_buf prompt{};
+	ASSERT_EQ((nb_buf_init(&prompt), nb_buf_reserve(&prompt, 1024) ? 0 : NB_ERR_NOMEM), 0);
 	ASSERT_EQ(agent_control_prompt(instance->context.agents, "/root", &prompt), 0);
-	EXPECT_NE(strstr(morph_buf_cstr_borrow(&prompt), "Proactive multi-agent"), nullptr);
-	morph_buf_cleanup(&prompt);
+	EXPECT_NE(strstr(nb_buf_cstr(&prompt), "Proactive multi-agent"), nullptr);
+	nb_buf_cleanup(&prompt);
 	struct config saved{};
 	ASSERT_EQ(config_load(nullptr, &saved, config_path.c_str()), 0);
 	EXPECT_STREQ(saved.agents.multi_agent_mode, "proactive");
@@ -51,10 +52,10 @@ TEST_F(RuntimeFacadeTest, ModelModeFailureAndBusyRuntimePreserveSelection)
 	options.config_path = config_path.c_str();
 	options.enable_multi_agent = 1;
 	Open(&options);
-	pthread_mutex_lock(&instance->context.execution_lock);
+	nb_mutex_lock(instance->context.execution_lock);
 	int rc = runtime_model_set_ultra(instance, 1);
-	pthread_mutex_unlock(&instance->context.execution_lock);
-	EXPECT_EQ(rc, -EBUSY);
+	nb_mutex_unlock(instance->context.execution_lock);
+	EXPECT_EQ(rc, NB_ERR_BUSY);
 	std::filesystem::remove(config_path);
 	std::filesystem::create_directory(config_path);
 	EXPECT_LT(runtime_model_set_ultra(instance, 1), 0);

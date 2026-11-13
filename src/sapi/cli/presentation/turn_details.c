@@ -1,11 +1,12 @@
 #include "sapi/cli/presentation/turn_details.h"
+#include "nb/err.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/widgets/transcript.h"
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/services/recap.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include <morph/tui/application.h>
 #include <morph/tui/input.h>
 #include <morph/tui/terminal.h>
@@ -25,6 +26,8 @@ struct cli_turn_details {
 	struct morph_tui_view_controller *controller;
 	struct morph_tui_view *counter, *scroll, *body;
 	char *rendered;
+	const struct cli_transcript_model *model;
+	uint64_t revision;
 	int open, visible, columns, dirty;
 };
 
@@ -39,7 +42,7 @@ static int cli_turn_details_prepare(struct cli_application *ctx)
 	if (!ctx->details) {
 		ctx->details = calloc(1, sizeof(*ctx->details));
 		if (!ctx->details)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		ctx->details->ctx = ctx;
 	}
 	return 0;
@@ -61,19 +64,20 @@ static int cli_turn_details_document_measure(struct morph_tui_view *view, int wi
 	struct cli_turn_details_document *document = (struct cli_turn_details_document *)view;
 	struct cli_turn_details *page = document->page;
 	if (page->dirty || page->columns != width) {
-		morph_buf_t rendered MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
 		int rc = cli_transcript_render_details(page->ctx, page->ctx->transcript, &rendered);
 		/* A terminal newline ends its row; it does not add another document row. */
-		if (!rc && rendered.len && rendered.data[rendered.len - 1] == '\n')
-			rendered.data[--rendered.len] = '\0';
-		if (!rc && (!page->rendered || strcmp(page->rendered,
-			morph_buf_cstr_borrow(&rendered)))) {
-			rc = cli_messages_set_rendered_view(
-				document->text, morph_buf_cstr_borrow(&rendered),
-				cli_output_color_enabled(page->ctx));
+		if (!rc && rendered.len && rendered.ptr[rendered.len - 1] == '\n')
+			rendered.ptr[--rendered.len] = '\0';
+		if (!rc && (!page->rendered || strcmp(page->rendered, nb_buf_cstr(&rendered)))) {
+			char *copy NB_CLEANUP(nb_charp_cleanup) = strdup(nb_buf_cstr(&rendered));
+			if (!copy)
+				return NB_ERR_NOMEM;
+			rc = cli_messages_set_rendered_view(document->text, nb_buf_cstr(&rendered),
+							    cli_output_color_enabled(page->ctx));
 			if (!rc) {
 				free(page->rendered);
-				page->rendered = morph_buf_detach(&rendered);
+				page->rendered = nb_charp_steal(&copy);
 			}
 		}
 		if (rc)
@@ -94,12 +98,21 @@ static int cli_turn_details_refresh(struct cli_turn_details *page)
 {
 	if (!page->controller)
 		return 0;
-	morph_buf_t counter MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_printf(&counter, "  · %zu calls",
-		page->ctx->transcript ? page->ctx->transcript->tools.nelts : 0);
+	const struct cli_transcript_model *model = page->ctx->transcript;
+	uint64_t revision = model ? model->revision : 0;
+	if (page->model == model && page->revision == revision && page->columns >= 0)
+		return 0;
+	nb_buf counter NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_printf(&counter, "  · %zu calls",
+				page->ctx->transcript ? page->ctx->transcript->tools.len : 0)
+			  ? 0
+			  : NB_ERR_NOMEM);
 	if (!rc)
-		rc = morph_tui_widget_label_set_text_copy(page->counter,
-			morph_buf_cstr_borrow(&counter));
+		rc = morph_tui_widget_label_set_text_copy(page->counter, nb_buf_cstr(&counter));
+	if (rc)
+		return rc;
+	page->model = model;
+	page->revision = revision;
 	page->dirty = 1;
 	morph_tui_view_invalidate(page->body, 1);
 	return rc;
@@ -132,12 +145,12 @@ void cli_turn_details_render(struct cli_application *ctx, int scroll)
 		return;
 	}
 	/* Stateless callers request a transcript snapshot outside the interactive page. */
-	morph_buf_t rendered MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
 	int visible = page->visible;
 	page->visible = 1;
 	int rc = cli_transcript_render_details(ctx, ctx->transcript, &rendered);
 	if (!rc)
-		(void)cli_output_printf(ctx, "%s", morph_buf_cstr_borrow(&rendered));
+		(void)cli_output_printf(ctx, "%s", nb_buf_cstr(&rendered));
 	page->visible = visible;
 }
 

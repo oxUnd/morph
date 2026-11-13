@@ -1,10 +1,12 @@
 #include "js_fetch.h"
 #include "runner_api.h"
 #include "http/client.h"
-#include "util/error.h"
-#include "util/array.h"
-#include "util/buf.h"
-#include "util/cleanup.h"
+#include "errors.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/cleanup.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -17,15 +19,15 @@ struct fetch_headers {
 	JSValue object;
 	JSPropertyEnum *properties;
 	uint32_t count;
-	morph_array_t lines;
+	nb_vec lines;
 	size_t bytes;
 };
 
 static void fetch_headers_cleanup(struct fetch_headers *headers)
 {
-	for (size_t i = 0; i < headers->lines.nelts; i++)
-		free(*(char **)morph_array_borrow(&headers->lines, i));
-	morph_array_cleanup(&headers->lines);
+	for (size_t i = 0; i < headers->lines.len; i++)
+		free(*(char **)nb_vec_at(&headers->lines, i));
+	nb_vec_cleanup(&headers->lines);
 	JS_FreePropertyEnum(headers->ctx, headers->properties, headers->count);
 	JS_FreeValue(headers->ctx, headers->object);
 }
@@ -49,10 +51,12 @@ static void fetch_header_pair_cleanup(struct fetch_header_pair *pair)
 static int fetch_header_append(struct fetch_headers *headers, JSAtom atom)
 {
 	JSContext *ctx = headers->ctx;
-	struct fetch_header_pair pair MORPH_CLEANUP(fetch_header_pair_cleanup) = {
-		.ctx = ctx, .name = JS_UNDEFINED, .value = JS_UNDEFINED,
+	struct fetch_header_pair pair NB_CLEANUP(fetch_header_pair_cleanup) = {
+		.ctx = ctx,
+		.name = JS_UNDEFINED,
+		.value = JS_UNDEFINED,
 	};
-	morph_buf_t line MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf line NB_CLEANUP(nb_buf_cleanup) = {0};
 	size_t name_len;
 	size_t value_len;
 	size_t limit = runner_capture_limit(ctx);
@@ -61,11 +65,11 @@ static int fetch_header_append(struct fetch_headers *headers, JSAtom atom)
 	pair.name = JS_AtomToValue(ctx, atom);
 	pair.value = JS_GetProperty(ctx, headers->object, atom);
 	if (JS_IsException(pair.name) || JS_IsException(pair.value))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	pair.name_text = JS_ToCStringLen(ctx, &name_len, pair.name);
 	pair.value_text = JS_ToCStringLen(ctx, &value_len, pair.value);
 	if (!pair.name_text || !pair.value_text)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int valid = name_len > 0;
 	for (size_t i = 0; valid && i < name_len; i++) {
 		unsigned char c = (unsigned char)pair.name_text[i];
@@ -79,27 +83,31 @@ static int fetch_header_append(struct fetch_headers *headers, JSAtom atom)
 	if (!valid) {
 		JS_ThrowTypeError(ctx, "fetch headers contain an invalid name or "
 				 "control character");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	if (name_len > limit || value_len > limit - name_len ||
 	    name_len + value_len > limit - (limit >= 2 ? 2 : limit)) {
 		JS_ThrowRangeError(ctx, "fetch headers exceed the configured capture limit");
-		return -EFBIG;
+		return NB_ERR_TOO_BIG;
 	}
-	rc = morph_buf_printf(&line, "%s: %s", pair.name_text, pair.value_text);
+	rc = (nb_buf_printf(&line, "%s: %s", pair.name_text, pair.value_text) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && line.len > limit - headers->bytes)
-		rc = -EFBIG;
+		rc = NB_ERR_TOO_BIG;
 	if (rc == 0) {
-		char **slot = morph_array_push_borrow(&headers->lines);
+		char **slot = nb_vec_push(&headers->lines);
 		if (!slot)
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 		else {
 			headers->bytes += line.len;
-			*slot = morph_buf_detach(&line);
+			*slot = (nb_buf_ok(&line) ? strdup(nb_buf_cstr(&line)) : NULL);
+			if (!*slot)
+				rc = NB_ERR_NOMEM;
 		}
 	}
 	if (rc != 0)
-		JS_ThrowInternalError(ctx, "fetch headers failed: %s", morph_strerror(rc));
+		JS_ThrowInternalError(
+			ctx, "fetch headers failed: %s",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	return rc;
 }
 
@@ -113,25 +121,26 @@ static int fetch_headers_create(struct fetch_headers *headers, JSValueConst opti
 		return 0;
 	if (!JS_IsObject(options)) {
 		JS_ThrowTypeError(ctx, "fetch options must be an object");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	headers->object = JS_GetPropertyStr(ctx, options, "headers");
 	if (JS_IsException(headers->object))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (JS_IsUndefined(headers->object) || JS_IsNull(headers->object))
 		return 0;
 	if (!JS_IsObject(headers->object)) {
 		JS_ThrowTypeError(ctx, "fetch headers must be an object");
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	if (JS_GetOwnPropertyNames(ctx, &headers->properties, &headers->count, headers->object,
 				 JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) != 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (headers->count > INT_MAX) {
 		JS_ThrowRangeError(ctx, "fetch has too many request headers");
-		return -EFBIG;
+		return NB_ERR_TOO_BIG;
 	}
-	rc = morph_array_init(&headers->lines, headers->count, sizeof(*line_slot));
+	rc = (nb_vec_init(&headers->lines, sizeof(*line_slot)),
+	      nb_vec_reserve(&headers->lines, headers->count) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
 		JS_ThrowOutOfMemory(ctx);
 		return rc;
@@ -252,8 +261,9 @@ static JSValue js_fetch(JSContext *ctx, JSValueConst this_val, int argc, JSValue
 		.interrupt_user_data = state,
 	};
 	struct http_response response = {0};
-	struct fetch_headers headers MORPH_CLEANUP(fetch_headers_cleanup) = {
-		.ctx = ctx, .object = JS_UNDEFINED,
+	struct fetch_headers headers NB_CLEANUP(fetch_headers_cleanup) = {
+		.ctx = ctx,
+		.object = JS_UNDEFINED,
 	};
 	const char *url;
 	size_t url_len;
@@ -285,16 +295,19 @@ static JSValue js_fetch(JSContext *ctx, JSValueConst this_val, int argc, JSValue
 		JS_FreeCString(ctx, url);
 		return JS_EXCEPTION;
 	}
-	rc = http_get_ex_timeout_limit(&control, url, headers.lines.elts, (int)headers.lines.nelts,
-				       30, runner_capture_limit(ctx), &response);
-	if (rc == -EFBIG)
+	rc = http_get_ex_timeout_limit(&control, url, ((void *)headers.lines.data),
+				       (int)headers.lines.len, 30, runner_capture_limit(ctx),
+				       &response);
+	if (rc == NB_ERR_TOO_BIG)
 		value = JS_ThrowRangeError(ctx, "fetch failed: response exceeded the configured "
 					 "capture limit of %zu bytes; use headers with Range "
 					 "to retrieve smaller ranges", runner_capture_limit(ctx));
 	else if (rc != 0)
-		value = JS_ThrowInternalError(ctx, "fetch failed: %s", morph_strerror(rc));
+		value = JS_ThrowInternalError(
+			ctx, "fetch failed: %s",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	else
-		value = make_fetch_response(ctx, url, response.body.data ? response.body.data : "",
+		value = make_fetch_response(ctx, url, response.body.ptr ? response.body.ptr : "",
 					    response.body.len, response.status_code);
 	http_response_free(&response);
 	JS_FreeCString(ctx, url);

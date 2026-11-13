@@ -1,9 +1,11 @@
 #ifndef SANDBOX_H
 #define SANDBOX_H
 
-#include "util/array.h"
+#include "nb/vec.h"
+#include "permission/trusted_paths.h"
+#include "nb/cleanup.h"
 
-struct morph_log;
+struct nb_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -19,15 +21,17 @@ extern "C" {
 
 /* These arrays own independently allocated path strings. */
 struct sandbox_path_set {
-	morph_array_t read;
-	morph_array_t write;
-	morph_array_t remove;
+	nb_vec read;
+	nb_vec write;
+	nb_vec remove;
 };
 
 struct sandbox_config {
 	/* Public path pointers borrow from this owner after preparation. */
 	struct sandbox_path_set owned_paths;
-	struct morph_log *logger;
+	struct permission_temporary_paths temporary_paths;
+	int temporary_paths_ready;
+	struct nb_log *logger;
 	unsigned int permissions;
 	int path_policy_enabled;
 	int read_all;
@@ -61,18 +65,19 @@ struct sandbox_config {
 void sandbox_path_set_cleanup(struct sandbox_path_set *paths);
 void sandbox_config_paths_move(struct sandbox_config *config, struct sandbox_path_set *paths);
 void sandbox_config_cleanup(struct sandbox_config *config);
+/* Capture before child environment filtering. Idempotent; optional temp_dir
+ * replaces TMPDIR only for this first snapshot. Config owns every root name. */
+int sandbox_prepare_temporary_paths(struct sandbox_config *config, const char *temp_dir);
 
 int sandbox_enter(struct sandbox_config *cfg);
-int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions);
-int sandbox_apply_rlimits(struct morph_log *logger, unsigned int permissions, int max_memory_mb,
+int sandbox_apply_seccomp(struct nb_log *logger, unsigned int permissions);
+int sandbox_apply_rlimits(struct nb_log *logger, unsigned int permissions, int max_memory_mb,
 			  int max_cpu_seconds, int max_file_size_mb, int max_processes,
 			  int max_open_files);
-int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int count,
+int sandbox_apply_fs(struct nb_log *logger, const char **allowed_paths, int count,
 		     unsigned int permissions);
-int sandbox_apply_env(struct morph_log *logger, const char *const *allowed_env, int count,
+int sandbox_apply_env(struct nb_log *logger, const char *const *allowed_env, int count,
 		      unsigned int permissions);
-int sandbox_start_isolated_session(void);
-int sandbox_close_inherited_fds(void);
 
 #ifdef __cplusplus
 }

@@ -1,6 +1,6 @@
 #include "history_store.h"
-#include "util/cleanup.h"
-#include "util/error.h"
+#include "nb/cleanup.h"
+#include "errors.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -11,7 +11,7 @@ static int prepare_session_query(struct db *db, const char *sql, int64_t session
 				 sqlite3_stmt **stmt)
 {
 	if (!db || !db->handle || session_id <= 0 || !stmt)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (sqlite3_prepare_v2(db->handle, sql, -1, stmt, NULL) != SQLITE_OK)
 		return MORPH_ERR_DB;
 	if (sqlite3_bind_int64(*stmt, 1, session_id) != SQLITE_OK) {
@@ -41,7 +41,7 @@ int history_store_context_tokens(struct db *db, int64_t session_id, int64_t *tok
 	int rc;
 
 	if (!tokens)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*tokens = 0;
 	rc = prepare_session_query(
 		db,
@@ -54,8 +54,9 @@ int history_store_context_tokens(struct db *db, int64_t session_id, int64_t *tok
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {
 		*tokens = sqlite3_column_int64(stmt, 0);
-		rc = sqlite3_column_int64(stmt, 1) == 0 && sqlite3_column_int(stmt, 2) ? -ENODATA
-										       : 0;
+		rc = sqlite3_column_int64(stmt, 1) == 0 && sqlite3_column_int(stmt, 2)
+			     ? NB_ERR_NO_DATA
+			     : 0;
 	} else {
 		rc = MORPH_ERR_DB;
 	}
@@ -66,7 +67,7 @@ int history_store_context_tokens(struct db *db, int64_t session_id, int64_t *tok
 static int read_text(struct db *db, int64_t session_id, const char *sql, int64_t sequence,
 		     char **out)
 {
-	char *text_value MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *text_value NB_CLEANUP(nb_charp_cleanup) = NULL;
 	sqlite3_stmt *stmt = NULL;
 	int rc = prepare_session_query(db, sql, session_id, &stmt);
 
@@ -79,13 +80,13 @@ static int read_text(struct db *db, int64_t session_id, const char *sql, int64_t
 		const char *text = column_text(stmt, 0);
 
 		text_value = strdup(text ? text : "");
-		rc = text_value ? 0 : -ENOMEM;
+		rc = text_value ? 0 : NB_ERR_NOMEM;
 	} else {
-		rc = rc == SQLITE_DONE ? -ENODATA : MORPH_ERR_DB;
+		rc = rc == SQLITE_DONE ? NB_ERR_NO_DATA : MORPH_ERR_DB;
 	}
 	sqlite3_finalize(stmt);
 	if (rc == 0)
-		*out = morph_charp_steal(&text_value);
+		*out = nb_charp_steal(&text_value);
 	return rc;
 }
 
@@ -94,15 +95,15 @@ int history_store_last_answer_copy(struct db *db, int64_t session_id, char **ans
 	int rc;
 
 	if (!answer)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*answer)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	rc = read_text(db, session_id,
 		       "SELECT content FROM model_history_items WHERE session_id=? "
 		       "AND kind='assistant_message' AND length(content)>0 "
 		       "ORDER BY sequence_no DESC LIMIT 1",
 		       0, answer);
-	if (rc == -ENODATA)
+	if (rc == NB_ERR_NO_DATA)
 		rc = read_text(
 			db, session_id,
 			"SELECT content FROM messages WHERE session_id=? AND role='assistant' "
@@ -115,9 +116,9 @@ int history_store_previous_question_copy(struct db *db, int64_t session_id, int6
 					 char **question)
 {
 	if (!question)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*question)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	return read_text(db, session_id,
 			 "SELECT content FROM model_history_items WHERE session_id=? "
 			 "AND sequence_no<? AND kind='user_message' "
@@ -125,14 +126,14 @@ int history_store_previous_question_copy(struct db *db, int64_t session_id, int6
 			 before_sequence, question);
 }
 
-int history_store_summary_sources(struct db *db, int64_t session_id, morph_array_t *ids)
+int history_store_summary_sources(struct db *db, int64_t session_id, nb_vec *ids)
 {
 	sqlite3_stmt *stmt = NULL;
 	int step;
 	int rc;
 
 	if (!ids)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = prepare_session_query(
 		db,
 		"WITH RECURSIVE covered(id) AS ("
@@ -145,10 +146,10 @@ int history_store_summary_sources(struct db *db, int64_t session_id, morph_array
 	if (rc != 0)
 		return rc;
 	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
-		int64_t *id = morph_array_push_borrow(ids);
+		int64_t *id = nb_vec_push(ids);
 
 		if (!id) {
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 			break;
 		}
 		*id = sqlite3_column_int64(stmt, 0);
@@ -177,15 +178,15 @@ static void history_request_snapshot_move(struct history_request_snapshot *desti
 int history_store_request_snapshot(struct db *db, int64_t session_id,
 				   struct history_request_snapshot *out)
 {
-	struct history_request_snapshot value MORPH_CLEANUP(history_request_snapshot_cleanup) = {0};
+	struct history_request_snapshot value NB_CLEANUP(history_request_snapshot_cleanup) = {0};
 	struct history_request_snapshot *snapshot = &value;
 	sqlite3_stmt *stmt = NULL;
 	int rc;
 
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (out->turn_id || out->provider || out->model || out->input_json)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	rc = prepare_session_query(
 		db,
 		"SELECT turn_id,provider,model,input_json,created_at FROM model_request_snapshots "
@@ -217,8 +218,8 @@ int history_store_request_snapshot(struct db *db, int64_t session_id,
 	if (rc == SQLITE_ROW)
 		history_request_snapshot_move(out, &value);
 	return rc == SQLITE_ROW	    ? 0
-	       : rc == SQLITE_DONE  ? -ENODATA
-	       : rc == SQLITE_NOMEM ? -ENOMEM
+	       : rc == SQLITE_DONE  ? NB_ERR_NO_DATA
+	       : rc == SQLITE_NOMEM ? NB_ERR_NOMEM
 				    : MORPH_ERR_DB;
 }
 
@@ -230,7 +231,7 @@ static int visit_messages(struct db *db, int64_t session_id, const char *sql, in
 	int rc;
 
 	if (!visitor)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = prepare_session_query(db, sql, session_id, &stmt);
 	if (rc != 0)
 		return rc;
@@ -266,7 +267,7 @@ int history_store_visit_recent_messages(struct db *db, int64_t session_id, int l
 					history_message_visitor visitor, void *data)
 {
 	if (limit <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return visit_messages(
 		db, session_id,
 		"SELECT id,role,content,turn_id,created_at FROM messages WHERE session_id=? "
@@ -283,7 +284,7 @@ int history_store_visit_display(struct db *db, int64_t session_id, history_displ
 	int rc;
 
 	if (!visitor)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = prepare_session_query(
 		db,
 		"SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_ui_messages' "
@@ -295,7 +296,7 @@ int history_store_visit_display(struct db *db, int64_t session_id, history_displ
 	sqlite3_finalize(stmt);
 	stmt = NULL;
 	if (step != SQLITE_ROW)
-		return step == SQLITE_DONE ? -ENODATA : MORPH_ERR_DB;
+		return step == SQLITE_DONE ? NB_ERR_NO_DATA : MORPH_ERR_DB;
 	rc = prepare_session_query(
 		db,
 		"SELECT type,content,attachments_json,structured_data,agent_ui_ir,"
@@ -338,7 +339,7 @@ int history_store_visit_traces(struct db *db, int64_t session_id, history_trace_
 	int rc;
 
 	if (!visitor)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = prepare_session_query(db,
 				   "SELECT id,steps_json,created_at FROM react_traces "
 				   "WHERE session_id=? AND aborted=0 ORDER BY created_at,id",
@@ -372,7 +373,7 @@ static int visit_share_items(struct db *db, int64_t session_id, const char *sql,
 	int rc;
 
 	if (!visitor)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = prepare_session_query(db, sql, session_id, &stmt);
 	if (rc != 0)
 		return rc;
@@ -414,7 +415,7 @@ int history_store_visit_turn(struct db *db, int64_t session_id, const char *turn
 			     int64_t before_sequence, history_item_visitor visitor, void *data)
 {
 	if (!turn_id)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return visit_share_items(
 		db, session_id,
 		"SELECT " SHARE_COLUMNS " FROM model_history_items WHERE session_id=? "
@@ -426,15 +427,15 @@ int history_store_visit_turn(struct db *db, int64_t session_id, const char *turn
 int history_store_legacy_answer_copy(struct db *db, int64_t session_id, char **answer,
 				     char **question)
 {
-	char *answer_value MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	char *question_value MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *answer_value NB_CLEANUP(nb_charp_cleanup) = NULL;
+	char *question_value NB_CLEANUP(nb_charp_cleanup) = NULL;
 	sqlite3_stmt *stmt = NULL;
 	int rc;
 
 	if (!answer || !question || answer == question)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*answer || *question)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	rc = prepare_session_query(
 		db,
 		"SELECT a.content,u.content FROM messages a JOIN messages u ON u.id=("
@@ -454,14 +455,14 @@ int history_store_legacy_answer_copy(struct db *db, int64_t session_id, char **a
 
 		answer_value = strdup(answer_text ? answer_text : "");
 		question_value = strdup(question_text ? question_text : "");
-		rc = answer_value && question_value ? 0 : -ENOMEM;
+		rc = answer_value && question_value ? 0 : NB_ERR_NOMEM;
 	} else {
-		rc = rc == SQLITE_DONE ? -ENODATA : MORPH_ERR_DB;
+		rc = rc == SQLITE_DONE ? NB_ERR_NO_DATA : MORPH_ERR_DB;
 	}
 	sqlite3_finalize(stmt);
 	if (rc == 0) {
-		*answer = morph_charp_steal(&answer_value);
-		*question = morph_charp_steal(&question_value);
+		*answer = nb_charp_steal(&answer_value);
+		*question = nb_charp_steal(&question_value);
 	}
 	return rc;
 }
@@ -473,7 +474,7 @@ int history_store_visible_progress(struct db *db, int64_t session_id,
 	int rc;
 
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	memset(out, 0, sizeof(*out));
 	rc = prepare_session_query(
 		db,
@@ -498,7 +499,7 @@ int history_store_update_item(struct db *db, int64_t id, int active, int token_c
 	int rc;
 
 	if (!db || !db->handle || id <= 0 || token_count < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = sqlite3_prepare_v2(db->handle,
 				"UPDATE model_history_items SET active=?,token_count=? WHERE id=?",
 				-1, &stmt, NULL);
@@ -521,7 +522,7 @@ int history_store_refresh_retention_tokens(struct db *db, int64_t session_id,
 	int error = 0;
 
 	if (!count)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = prepare_session_query(
 		db,
 		"SELECT a.id,a.kind,a.content,a.payload_json FROM model_history_items a "
@@ -573,7 +574,7 @@ int history_store_add_summary_sources(struct db *db, int64_t summary_id, const i
 	int rc;
 
 	if (!db || !db->handle || summary_id <= 0 || (count && !ids))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	rc = sqlite3_prepare_v2(
 		db->handle,
 		"INSERT INTO history_summary_sources(summary_item_id,source_item_id) VALUES(?,?)",
@@ -599,7 +600,7 @@ int history_store_last_sequence(struct db *db, int64_t session_id, int64_t *sequ
 	int rc;
 
 	if (!sequence)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*sequence = 0;
 	rc = prepare_session_query(
 		db,

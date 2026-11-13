@@ -1,4 +1,5 @@
 #include "sapi/cli/widgets/composer.h"
+#include "nb/err.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/models/composer.h"
 #include "sapi/cli/presentation/output.h"
@@ -90,7 +91,7 @@ static const struct morph_tui_view_ops cli_composer_ops = {
 int cli_composer_fit(struct morph_tui_view *view, int width, int height, int preceding_separator)
 {
 	if (!view || view->ops != &cli_composer_ops || width < 0 || height < 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct cli_composer *composer = (struct cli_composer *)view;
 	struct morph_tui_view_size editor;
 	int rc = morph_tui_view_measure(composer->editor, width, &editor);
@@ -109,9 +110,9 @@ int cli_composer_fit(struct morph_tui_view *view, int width, int height, int pre
 int cli_composer_update(struct morph_tui_view *view, int64_t now_ms)
 {
 	if (!view || view->ops != &cli_composer_ops)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct cli_composer *composer = (struct cli_composer *)view;
 	int frame = cli_composer_model_animation_frame(&composer->ctx->composer, now_ms);
 	if (!cli_output_color_enabled(composer->ctx) || frame >= 30)
@@ -129,7 +130,7 @@ struct morph_tui_view *cli_composer_add_borrow(struct morph_tui_builder *builder
 					       struct morph_tui_view **editor_borrow)
 {
 	if (!ctx || !editor_borrow) {
-		morph_tui_builder_fail(builder, -EINVAL);
+		morph_tui_builder_fail(builder, NB_ERR_INVAL);
 		return NULL;
 	}
 	*editor_borrow = NULL;

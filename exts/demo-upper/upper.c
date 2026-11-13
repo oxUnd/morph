@@ -1,3 +1,4 @@
+#include "nb/err.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -6,20 +7,20 @@
 int ext_run(const char *args_json, char **result_json)
 {
 	if (!args_json || !result_json)
-		return -1;
+		return NB_ERR_INVAL;
 
 	const char *key = strstr(args_json, "\"text\"");
 	if (!key) {
 		*result_json = strdup(
 			"{\"error\":\"missing text param\"}");
-		return -1;
+		return NB_ERR_INVAL;
 	}
 
 	const char *val_start = strchr(key + 6, '"');
 	if (!val_start) {
 		*result_json = strdup(
 			"{\"error\":\"malformed text value\"}");
-		return -1;
+		return NB_ERR_INVAL;
 	}
 	val_start++;
 
@@ -36,7 +37,7 @@ int ext_run(const char *args_json, char **result_json)
 	if (!text) {
 		*result_json = strdup(
 			"{\"error\":\"out of memory\"}");
-		return -1;
+		return NB_ERR_NOMEM;
 	}
 
 	size_t j = 0;
@@ -67,7 +68,7 @@ int ext_run(const char *args_json, char **result_json)
 		free(text);
 		*result_json = strdup(
 			"{\"error\":\"out of memory\"}");
-		return -1;
+		return NB_ERR_NOMEM;
 	}
 	snprintf(buf, buf_size,
 		 "{\"result\":\"%s\"}", text);

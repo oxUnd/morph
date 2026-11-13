@@ -10,11 +10,11 @@ struct tool_call_grant {
 };
 
 struct tool_context {
-	pthread_mutex_t authority_lock;
+	nb_mutex *authority_lock;
 	struct permission_context permissions;
 	struct tool_call_grant tool_calls[TOOL_CONTEXT_ALLOW_MAX];
 	int tool_calls_count;
-	struct morph_log *logger;
+	struct nb_log *logger;
 	char workdir[TOOL_CONTEXT_OUTPUT_DIR_MAX];
 	char output_dir[TOOL_CONTEXT_OUTPUT_DIR_MAX];
 	tool_operation_approval_fn operation_approval_fn;
@@ -29,9 +29,9 @@ struct tool_context {
 	int allowed_commands_count;
 	char exec_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
 	int exec_allowed_dirs_count;
-	morph_array_t builtin_paths;
-	morph_array_t scoped_grants;
-	morph_array_t persistent_grants;
+	nb_vec builtin_paths;
+	nb_vec scoped_grants;
+	nb_vec persistent_grants;
 	struct db *grant_db;
 	char grant_project_root[TOOL_CONTEXT_ALLOW_PATH_MAX];
 	int default_timeout_seconds;

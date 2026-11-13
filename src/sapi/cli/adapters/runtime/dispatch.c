@@ -1,4 +1,5 @@
 #include "sapi/cli/adapters/runtime/dispatch.h"
+#include "nb/err.h"
 #include "sapi/cli/adapters/runtime/events.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/event_queue.h"
@@ -34,7 +35,7 @@ int cli_dispatch_event(struct cli_application *ctx, const struct cli_event_queue
 
 		/* A prompt consumes its cancellation key. Do not apply that
 		 * key again to the composer draft restored by its adapter. */
-		if (result == -ECANCELED || result == -EINTR)
+		if (result == NB_ERR_CANCELLED || result == NB_ERR_INTERRUPTED)
 			cli_cancel_state_reset(ctx);
 		if (updating)
 			cli_feed_update_begin(ctx);

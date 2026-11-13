@@ -1,10 +1,11 @@
 #include "sapi/cli/pages/permissions.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/widgets/composer_panel.h"
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 #include <morph/tui/components.h>
 #include <errno.h>
 #include <stdlib.h>
@@ -34,7 +35,7 @@ static int cli_permissions_draw(void *opaque, struct cli_composer_panel_frame *f
 		"Read files; ask before edits or network.",
 	};
 	const char *current = runtime_permission_preset_name(&picker->current);
-	morph_buf_t label MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf label NB_CLEANUP(nb_buf_cleanup) = {0};
 	int selected_index = picker->menu.list.index < 4 ? (int)picker->menu.list.index : 0;
 	int budget = frame->rows;
 	int header = budget >= 7 ? 2 : 1;
@@ -46,7 +47,7 @@ static int cli_permissions_draw(void *opaque, struct cli_composer_panel_frame *f
 	if (page > 4)
 		page = 4;
 	morph_tui_widget_list_state_layout(&picker->menu.list, 4, (size_t)page);
-	int rc = morph_buf_init(&label, 128);
+	int rc = (nb_buf_init(&label), nb_buf_reserve(&label, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	(void)cli_composer_panel_line(frame, "  Update Model Permissions",
@@ -54,21 +55,21 @@ static int cli_permissions_draw(void *opaque, struct cli_composer_panel_frame *f
 	if (header == 2)
 		(void)cli_composer_panel_line(frame, "", CLI_INPUT_BACKGROUND);
 	if (custom) {
-		(void)morph_buf_printf(&label, "  Custom: %s / %s / %s",
-				       permission_access_name(picker->current.access),
-				       permission_approval_name(picker->current.approval),
-				       permission_reviewer_name(picker->current.reviewer));
-		(void)cli_composer_panel_line(frame, morph_buf_cstr_borrow(&label),
+		(void)nb_buf_printf(&label, "  Custom: %s / %s / %s",
+				    permission_access_name(picker->current.access),
+				    permission_approval_name(picker->current.approval),
+				    permission_reviewer_name(picker->current.reviewer));
+		(void)cli_composer_panel_line(frame, nb_buf_cstr(&label),
 					      CLI_INPUT_BACKGROUND ANSI_DIM);
 	}
 	for (size_t i = picker->menu.list.first;
 	     i < 4 && i - picker->menu.list.first < picker->menu.list.page; i++) {
 		int selected = picker->menu.list.index == i;
-		morph_buf_reset(&label);
-		(void)morph_buf_printf(
-			&label, "%s %zu. %s%s", selected ? ">" : " ", i + 1, labels[i],
-			!strcmp(current, cli_permissions_preset((int)i)) ? " (current)" : "");
-		(void)cli_composer_panel_line(frame, morph_buf_cstr_borrow(&label),
+		nb_buf_clear(&label);
+		(void)nb_buf_printf(&label, "%s %zu. %s%s", selected ? ">" : " ", i + 1, labels[i],
+				    !strcmp(current, cli_permissions_preset((int)i)) ? " (current)"
+										     : "");
+		(void)cli_composer_panel_line(frame, nb_buf_cstr(&label),
 					      selected ? "\033[44;97m" : CLI_INPUT_BACKGROUND);
 	}
 	if (footer == 3) {
@@ -79,7 +80,7 @@ static int cli_permissions_draw(void *opaque, struct cli_composer_panel_frame *f
 	if (footer)
 		(void)cli_composer_panel_line(frame, "  Up/Down Select  Enter Apply  Esc Cancel",
 					      CLI_INPUT_BACKGROUND ANSI_DIM);
-	return label.failed;
+	return nb_buf_status(&label);
 }
 
 static int cli_permissions_event(void *opaque, const struct morph_tui_event *event)
@@ -110,7 +111,8 @@ static void cli_permissions_complete(void *opaque, int result)
 		if (rc == 0)
 			CMD_OK(ctx, "permissions: %s", runtime_permission_preset_name(&policy));
 		else
-			CMD_ERROR(ctx, "permission change failed: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "permission change failed: %s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	}
 	free(picker);
 }
@@ -128,7 +130,7 @@ int cli_permissions_show(struct cli_application *ctx)
 		.tick_ms = 100,
 	};
 	if (!picker)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	picker->application = ctx;
 	picker->selection = -1;
 	picker->menu.list.flags = MORPH_TUI_WIDGET_LIST_WRAP | MORPH_TUI_WIDGET_LIST_DIGITS;

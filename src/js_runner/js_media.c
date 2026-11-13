@@ -1,4 +1,5 @@
 #include "runner_api.h"
+#include "nb/err.h"
 #include "js_image.h"
 #include "js_canvas.h"
 #include "js_fs.h"
@@ -19,7 +20,7 @@ static JSValue js_require_disabled(JSContext *ctx, JSValueConst this_val, int ar
 int js_media_init(void)
 {
 	if (VIPS_INIT("morph-js-runner"))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return 0;
 }
 

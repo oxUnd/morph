@@ -6,20 +6,22 @@ extern "C" {
 #endif
 
 #include "agent/tool.h"
+#include "nb/err.h"
 
 #define ASK_USER_CHOICES_MAX 64
 #define ASK_USER_TIMEOUT_DEFAULT 60
 #define ASK_USER_ANSWER_MAX_BYTES (1024u * 1024u)
 
 /* Borrowed for the duration of the callback. Required questions have no deadline.
- * Return -ETIMEDOUT only for an untouched optional prompt; cancellation must
- * return -ECANCELED/-EINTR. Once the user starts answering, disable the deadline. */
+ * Return NB_ERR_TIMEOUT only for an untouched optional prompt; cancellation must
+ * return NB_ERR_CANCELLED/NB_ERR_INTERRUPTED. Once the user starts answering, disable the deadline.
+ */
 struct ask_user_options {
 	int recommended_indices[ASK_USER_CHOICES_MAX];
 	int recommended_count;
 	int optional;
 	int timeout_seconds;
-	const struct morph_cancel_token *cancel_token;
+	const struct nb_cancel *cancel_token;
 };
 
 int ask_user_options_to_json(cJSON *data, const struct ask_user_options *options);

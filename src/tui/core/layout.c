@@ -1,6 +1,6 @@
 #include <morph/tui/layout.h>
 #include <morph/tui/draw.h>
-#include "util/error.h"
+#include "errors.h"
 
 static int core_layout_clamp_extent(int extent, int available)
 {
@@ -42,7 +42,7 @@ morph_tui_terminal_rect_take_left(struct morph_tui_terminal_rect *area, int widt
 	return result;
 }
 
-int morph_tui_draw_region_cell(morph_buf_t *commands, struct morph_tui_terminal_rect area, int row,
+int morph_tui_draw_region_cell(nb_buf *commands, struct morph_tui_terminal_rect area, int row,
 			       int column, int width, const char *text, const char *style)
 {
 	if (row < 0 || column < 0 || row >= area.height || column >= area.width)

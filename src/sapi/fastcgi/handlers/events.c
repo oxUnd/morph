@@ -7,11 +7,12 @@
  */
 #define _GNU_SOURCE
 #include "handlers.h"
+#include "nb/err.h"
 #include "sapi/fastcgi/storage/sessions.h"
 #include "sapi/fastcgi/storage/events.h"
 #include "../session_store.h"
 #include "../stream_pool.h"
-#include "util/signals.h"
+#include "nb/signal.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -51,12 +52,12 @@ static void sse_serve(request_t *r)
 	while (time(NULL) - start < SSE_MAX_LIFETIME) {
 		struct event_record rec = {0};
 
-		if (r->shutdown && morph_signal_flag_get(r->shutdown))
+		if (r->shutdown && nb_atomic_int_load(r->shutdown))
 			break;
 		int got = events_wait_after(r->store, sid, last_id, SSE_HEARTBEAT_SEC, &rec);
 		if (got < 0)
 			break;
-		if (r->shutdown && morph_signal_flag_get(r->shutdown)) {
+		if (r->shutdown && nb_atomic_int_load(r->shutdown)) {
 			free(rec.payload_json);
 			break;
 		}
@@ -93,11 +94,11 @@ void handle_sse(request_t *r)
 	rc = fcgi_stream_pool_submit_take(r->streams, &r, sse_serve);
 	if (rc == 0)
 		return;
-	if (rc == -EAGAIN) {
+	if (rc == NB_ERR_AGAIN) {
 		reply_json(r, 503, "{\"error\":\"stream_queue_full\"}");
 		return;
 	}
-	if (rc == -ESHUTDOWN) {
+	if (rc == NB_ERR_CLOSED) {
 		reply_json(r, 503, "{\"error\":\"shutting_down\"}");
 		return;
 	}

@@ -1,9 +1,11 @@
 #include "js_image.h"
+#include "nb/err.h"
 #include "js_values.h"
 #include "js_canvas.h"
-#include "util/buf.h"
-#include "util/file.h"
-#include "util/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "nb/file.h"
+#include "nb/cleanup.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -163,7 +165,7 @@ static VipsImage *sharp_load_input(JSContext *ctx, JSValueConst value)
 {
 	const char *path;
 	char *resolved;
-	struct js_buffer_view view MORPH_CLEANUP(js_buffer_view_cleanup) = {0};
+	struct js_buffer_view view NB_CLEANUP(js_buffer_view_cleanup) = {0};
 	const uint8_t *bytes;
 	size_t len;
 	VipsImage *image;
@@ -210,7 +212,7 @@ static VipsImage *sharp_load_input(JSContext *ctx, JSValueConst value)
 	}
 	rc = js_values_buffer_borrow(ctx, value, &view);
 	if (rc < 0) {
-		if (rc == -ENOTSUP)
+		if (rc == NB_ERR_UNSUPPORTED)
 			JS_ThrowTypeError(ctx, "sharp(input) requires a path string, "
 					       "ArrayBuffer, or typed array");
 		return NULL;
@@ -320,15 +322,15 @@ static int write_image_stb(const char *path, VipsImage *image)
 	int ok = 0;
 
 	if (!path || !image)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	width = vips_image_get_width(image);
 	height = vips_image_get_height(image);
 	bands = vips_image_get_bands(image);
 	if (width <= 0 || height <= 0 || bands <= 0 || bands > 4)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	mem = vips_image_write_to_memory(image, &len);
 	if (!mem)
-		return -EIO;
+		return NB_ERR_IO;
 	if (js_image_path_ext_is(path, ".jpg") || js_image_path_ext_is(path, ".jpeg")) {
 		if (bands == 4) {
 			unsigned char *src = mem;
@@ -352,21 +354,21 @@ static int write_image_stb(const char *path, VipsImage *image)
 		ok = stbi_write_png(path, width, height, bands, mem, width * bands);
 	}
 	g_free(mem);
-	return ok ? 0 : -EIO;
+	return ok ? 0 : NB_ERR_IO;
 }
 
 static void stb_buf_write(void *context, void *data, int size)
 {
-	morph_buf_t *buf = context;
+	nb_buf *buf = context;
 
 	if (!buf || !data || size <= 0)
 		return;
-	(void)morph_buf_append(buf, data, (size_t)size);
+	(void)nb_buf_append(buf, data, (size_t)size);
 }
 
 static int write_image_stb_buffer(const char *format, VipsImage *image, void **out, size_t *out_len)
 {
-	morph_buf_t buf;
+	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	void *mem;
 	size_t len;
 	int width;
@@ -375,20 +377,20 @@ static int write_image_stb_buffer(const char *format, VipsImage *image, void **o
 	int ok = 0;
 
 	if (!format || !image || !out || !out_len)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*out = NULL;
 	*out_len = 0;
 	width = vips_image_get_width(image);
 	height = vips_image_get_height(image);
 	bands = vips_image_get_bands(image);
 	if (width <= 0 || height <= 0 || bands <= 0 || bands > 4)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	mem = vips_image_write_to_memory(image, &len);
 	if (!mem)
-		return -EIO;
-	if (morph_buf_init(&buf, 8192) != 0) {
+		return NB_ERR_IO;
+	if ((nb_buf_init(&buf), nb_buf_reserve(&buf, 8192) ? 0 : NB_ERR_NOMEM) != 0) {
 		g_free(mem);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (strcmp(format, ".jpg") == 0 || strcmp(format, ".jpeg") == 0) {
 		if (bands == 4) {
@@ -417,11 +419,20 @@ static int write_image_stb_buffer(const char *format, VipsImage *image, void **o
 	}
 	g_free(mem);
 	if (!ok) {
-		morph_buf_cleanup(&buf);
-		return -EIO;
+		nb_buf_cleanup(&buf);
+		return NB_ERR_IO;
 	}
-	*out = buf.data;
-	*out_len = buf.len;
+	if (!nb_buf_ok(&buf))
+		return nb_buf_status(&buf);
+	size_t size = nb_buf_len(&buf);
+	unsigned char *encoded NB_CLEANUP(nb_ucharp_cleanup) = malloc(size + 1);
+	if (!encoded)
+		return NB_ERR_NOMEM;
+	memcpy(encoded, nb_buf_cstr(&buf), size);
+	encoded[size] = '\0';
+	*out = encoded;
+	encoded = NULL;
+	*out_len = size;
 	return 0;
 }
 
@@ -433,7 +444,7 @@ static int parse_js_color(JSContext *ctx, JSValueConst value, double color[4])
 	unsigned int bv;
 
 	if (!color)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	color[0] = 0.0;
 	color[1] = 0.0;
 	color[2] = 0.0;
@@ -441,7 +452,7 @@ static int parse_js_color(JSContext *ctx, JSValueConst value, double color[4])
 	if (JS_IsString(value)) {
 		s = JS_ToCString(ctx, value);
 		if (!s)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		if (strcmp(s, "white") == 0) {
 			color[0] = 255.0;
 			color[1] = 255.0;
@@ -1255,7 +1266,7 @@ static JSValue js_image_frame_fn(JSContext *ctx, JSValueConst this_val, int argc
 		frame_h += pad;
 	surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, frame_w, frame_h);
 	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
-		rc = -EIO;
+		rc = NB_ERR_IO;
 	} else {
 		cr = cairo_create(surface);
 		if (style && strcmp(style, "neon") == 0)

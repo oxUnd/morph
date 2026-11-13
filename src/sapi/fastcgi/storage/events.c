@@ -1,7 +1,8 @@
 #include "sapi/fastcgi/storage/events.h"
+#include "nb/time.h"
 #include "sapi/fastcgi/session_store_internal.h"
 #include "cJSON.h"
-#include "util/error.h"
+#include "errors.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -12,7 +13,7 @@
 
 struct event_subscriber {
 	char session_id[64];
-	pthread_cond_t cv;
+	nb_cond *cv;
 	struct event_subscriber *next;
 };
 
@@ -22,7 +23,7 @@ int events_publish(struct session_store *s, const char *session_id, const char *
 	const char *sql = "INSERT INTO fcgi_events(session_id,type,payload,ts) VALUES(?,?,?,?)";
 	sqlite3_stmt *st = NULL;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, type, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 3, payload ? payload : "{}", -1, SQLITE_TRANSIENT);
@@ -30,14 +31,14 @@ int events_publish(struct session_store *s, const char *session_id, const char *
 	int rc = sqlite3_step(st);
 	sqlite3_finalize(st);
 	if (rc != SQLITE_DONE)
-		return -EIO;
+		return NB_ERR_IO;
 
-	pthread_mutex_lock(&s->mu);
+	nb_mutex_lock(s->mu);
 	for (struct event_subscriber *sub = s->subs; sub; sub = sub->next) {
 		if (session_id && strcmp(sub->session_id, session_id) == 0)
-			pthread_cond_signal(&sub->cv);
+			nb_cond_signal(sub->cv);
 	}
-	pthread_mutex_unlock(&s->mu);
+	nb_mutex_unlock(s->mu);
 	return 0;
 }
 
@@ -51,7 +52,7 @@ static int events_fetch_batch(struct session_store *s, const char *session_id, i
 
 	*count = 0;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(st, 2, last_id);
 	sqlite3_bind_int(st, 3, limit);
@@ -67,7 +68,7 @@ static int events_fetch_batch(struct session_store *s, const char *session_id, i
 			for (int i = 0; i < n; i++)
 				free(out[i].payload_json);
 			sqlite3_finalize(st);
-			return -EIO;
+			return NB_ERR_IO;
 		}
 		memset(&out[n], 0, sizeof(out[n]));
 		out[n].id = sqlite3_column_int64(st, 0);
@@ -80,7 +81,7 @@ static int events_fetch_batch(struct session_store *s, const char *session_id, i
 			for (int i = 0; i <= n; i++)
 				free(out[i].payload_json);
 			sqlite3_finalize(st);
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		}
 		n++;
 	}
@@ -94,36 +95,33 @@ int events_wait_batch(struct session_store *s, const char *session_id, int64_t l
 {
 	struct event_subscriber *sub;
 	struct event_subscriber **pp;
-	struct timespec deadline;
 	int rc;
 
 	if (!s || !session_id || !out || !count || max <= 0)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	*count = 0;
-	pthread_mutex_lock(&s->mu);
+	nb_mutex_lock(s->mu);
 	sub = calloc(1, sizeof(*sub));
 	if (!sub) {
-		pthread_mutex_unlock(&s->mu);
-		return -ENOMEM;
+		nb_mutex_unlock(s->mu);
+		return NB_ERR_NOMEM;
 	}
 	snprintf(sub->session_id, sizeof(sub->session_id), "%s", session_id);
-	if (pthread_cond_init(&sub->cv, NULL) != 0) {
+	if (((sub->cv = nb_cond_new()) ? NB_OK : NB_ERR_NOMEM) != 0) {
 		free(sub);
-		pthread_mutex_unlock(&s->mu);
-		return -EIO;
+		nb_mutex_unlock(s->mu);
+		return NB_ERR_IO;
 	}
 	sub->next = s->subs;
 	s->subs = sub;
 
 	rc = events_fetch_batch(s, session_id, last_id, max, out, count);
 	if (rc == 0 && *count == 0 && timeout_sec > 0) {
-		clock_gettime(CLOCK_REALTIME, &deadline);
-		deadline.tv_sec += timeout_sec;
-		rc = pthread_cond_timedwait(&sub->cv, &s->mu, &deadline);
-		if (rc == ETIMEDOUT)
+		rc = nb_cond_timedwait(sub->cv, s->mu, (int64_t)timeout_sec * INT64_C(1000000000));
+		if (rc == NB_ERR_TIMEOUT)
 			rc = 0;
 		else if (rc != 0)
-			rc = -EIO;
+			rc = NB_ERR_IO;
 		else
 			rc = events_fetch_batch(s, session_id, last_id, max, out, count);
 	}
@@ -133,8 +131,8 @@ int events_wait_batch(struct session_store *s, const char *session_id, int64_t l
 			break;
 		}
 	}
-	pthread_mutex_unlock(&s->mu);
-	pthread_cond_destroy(&sub->cv);
+	nb_mutex_unlock(s->mu);
+	(nb_cond_free(sub->cv), sub->cv = NULL);
 	free(sub);
 	return rc;
 }
@@ -156,7 +154,7 @@ int actions_enqueue(struct session_store *s, const char *session_id, const char 
 	const char *sql = "INSERT INTO fcgi_actions(session_id,type,payload,ts) VALUES(?,?,?,?)";
 	sqlite3_stmt *st = NULL;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		return -EIO;
+		return NB_ERR_IO;
 	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, type, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 3, payload ? payload : "{}", -1, SQLITE_TRANSIENT);
@@ -164,7 +162,7 @@ int actions_enqueue(struct session_store *s, const char *session_id, const char 
 	int rc = sqlite3_step(st);
 	sqlite3_finalize(st);
 	if (rc != SQLITE_DONE)
-		return -EIO;
+		return NB_ERR_IO;
 
 	actions_signal(s, session_id);
 	return 0;
@@ -179,7 +177,7 @@ int actions_drain_one(struct session_store *s, const char *session_id, struct ac
 			   "WHERE session_id=? AND consumed=0 ORDER BY id LIMIT 1";
 	sqlite3_stmt *st = NULL;
 	if (sqlite3_prepare_v2(s->db.handle, qsql, -1, &st, NULL) != SQLITE_OK) {
-		(void)store_transaction_end(s, -EIO);
+		(void)store_transaction_end(s, NB_ERR_IO);
 		return 0;
 	}
 	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
@@ -218,47 +216,44 @@ int actions_drain_one(struct session_store *s, const char *session_id, struct ac
 void actions_signal(struct session_store *s, const char *session_id)
 {
 	(void)session_id;
-	pthread_mutex_lock(&s->mu);
-	pthread_cond_broadcast(&s->cv);
-	pthread_mutex_unlock(&s->mu);
+	nb_mutex_lock(s->mu);
+	nb_cond_broadcast(s->cv);
+	nb_mutex_unlock(s->mu);
 }
 
 void store_wake_all(struct session_store *s)
 {
 	if (!s)
 		return;
-	pthread_mutex_lock(&s->mu);
+	nb_mutex_lock(s->mu);
 	for (struct event_subscriber *sub = s->subs; sub; sub = sub->next)
-		pthread_cond_signal(&sub->cv);
-	pthread_cond_broadcast(&s->cv);
-	pthread_mutex_unlock(&s->mu);
+		nb_cond_signal(sub->cv);
+	nb_cond_broadcast(s->cv);
+	nb_mutex_unlock(s->mu);
 }
 
 int actions_wait(struct session_store *s, const char *session_id, int timeout_sec)
 {
 	(void)session_id;
-	struct timespec deadline;
-	clock_gettime(CLOCK_REALTIME, &deadline);
-	deadline.tv_sec += timeout_sec;
-	pthread_mutex_lock(&s->mu);
-	int rc = pthread_cond_timedwait(&s->cv, &s->mu, &deadline);
-	pthread_mutex_unlock(&s->mu);
-	return rc == ETIMEDOUT ? 0 : 1;
+	nb_mutex_lock(s->mu);
+	int rc = nb_cond_timedwait(s->cv, s->mu, (int64_t)timeout_sec * INT64_C(1000000000));
+	nb_mutex_unlock(s->mu);
+	return rc == NB_ERR_TIMEOUT ? 0 : rc == NB_OK ? 1 : rc;
 }
 
 void store_events_cleanup(struct session_store *s)
 {
 	struct event_subscriber *subscriber;
 
-	pthread_mutex_lock(&s->mu);
+	nb_mutex_lock(s->mu);
 	subscriber = s->subs;
 	while (subscriber) {
 		struct event_subscriber *next = subscriber->next;
 
-		pthread_cond_destroy(&subscriber->cv);
+		(nb_cond_free(subscriber->cv), subscriber->cv = NULL);
 		free(subscriber);
 		subscriber = next;
 	}
 	s->subs = NULL;
-	pthread_mutex_unlock(&s->mu);
+	nb_mutex_unlock(s->mu);
 }

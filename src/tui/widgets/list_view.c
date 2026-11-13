@@ -1,6 +1,7 @@
 #include <morph/tui/widgets/list.h>
-#include "util/error.h"
-#include "util/utf8.h"
+#include "errors.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 
 #include <limits.h>
 #include <stdlib.h>
@@ -176,26 +177,26 @@ int morph_tui_widget_list_set_items_copy(struct morph_tui_view *view, const char
 					 size_t count)
 {
 	if (!widget_list_view_valid(view) || (count && !items))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct widget_list_view replacement = {0};
 
 	if (count) {
 		replacement.items = calloc(count, sizeof(*replacement.items));
 		if (!replacement.items)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 	}
 	int rc = 0;
 
 	for (size_t i = 0; i < count && !rc; i++) {
 		if (!items[i])
-			rc = -EINVAL;
+			rc = NB_ERR_INVAL;
 		else {
-			replacement.items[i] = utf8_terminal_sanitize_dup(
-				items[i], strlen(items[i]), UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+			replacement.items[i] = morph_terminal_sanitize_dup(
+				items[i], strlen(items[i]), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 			if (!replacement.items[i])
-				rc = -ENOMEM;
+				rc = NB_ERR_NOMEM;
 			else
 				replacement.owned_count++;
 		}
@@ -227,9 +228,9 @@ int morph_tui_widget_list_set_source_borrow(struct morph_tui_view *view, size_t 
 					    morph_tui_widget_list_source_fn text, void *data)
 {
 	if (!widget_list_view_valid(view) || (count && !text))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct widget_list_view *list = (struct widget_list_view *)view;
 	int resized = list->menu.list.count != count;
 
@@ -251,9 +252,9 @@ size_t morph_tui_widget_list_selected(const struct morph_tui_view *view)
 int morph_tui_widget_list_set_navigation(struct morph_tui_view *view, unsigned flags)
 {
 	if (!widget_list_view_valid(view))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	((struct widget_list_view *)view)->menu.list.flags = flags;
 	return 0;
 }
@@ -261,13 +262,13 @@ int morph_tui_widget_list_set_navigation(struct morph_tui_view *view, unsigned f
 int morph_tui_widget_list_select(struct morph_tui_view *view, size_t index)
 {
 	if (!widget_list_view_valid(view))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct widget_list_view *list = (struct widget_list_view *)view;
 
 	if (index >= list->menu.list.count)
-		return -ERANGE;
+		return NB_ERR_RANGE;
 	if (list->menu.list.index == index)
 		return 0;
 	list->mouse_pressed = 0;

@@ -289,6 +289,12 @@ CJSON_PUBLIC(char*) cJSON_SetValuestring(cJSON *object, const char *valuestring)
 /* Macro for iterating over an array or object */
 #define cJSON_ArrayForEach(element, array) for(element = (array != NULL) ? (array)->child : NULL; element != NULL; element = element->next)
 
+/* Owner operations used with lexical cleanup. Deleting/freeing also clears
+ * the caller's owner; stealing transfers it without allocation. */
+CJSON_PUBLIC(void) cJSON_DeleteOwner(cJSON **owner);
+CJSON_PUBLIC(void) cJSON_FreeTextOwner(char **owner);
+CJSON_PUBLIC(cJSON *) cJSON_StealOwner(cJSON **owner);
+
 /* malloc/free objects using the malloc/free functions that have been set with cJSON_InitHooks */
 CJSON_PUBLIC(void *) cJSON_malloc(size_t size);
 CJSON_PUBLIC(void) cJSON_free(void *object);

@@ -1,12 +1,13 @@
 #include "runtime/model.h"
 
+#include <stdlib.h>
 #include "runtime/runtime_internal.h"
 #include "agent/agent_control.h"
 #include "config/edit.h"
-#include "util/cleanup.h"
-#include "util/file.h"
-#include "util/json.h"
-#include "util/error.h"
+#include "nb/cleanup.h"
+#include "nb/file.h"
+#include "cJSON.h"
+#include "errors.h"
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -22,25 +23,36 @@ static void model_lock_cleanup(int *fd)
 
 static int model_save_mode(struct runtime *runtime, int ultra)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	const char *path = runtime->context.config_path;
 	if (!*path)
-		return -ENOENT;
-	morph_buf_t lock_path MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_buf_init(&lock_path, strlen(path) + 6);
+		return NB_ERR_NOT_FOUND;
+	nb_buf lock_path NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&lock_path),
+		  nb_buf_reserve(&lock_path, strlen(path) + 6) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = morph_buf_printf(&lock_path, "%s.lock", path);
+		rc = (nb_buf_printf(&lock_path, "%s.lock", path) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
-	int fd MORPH_CLEANUP(model_lock_cleanup) =
-		open(morph_buf_cstr_borrow(&lock_path), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+	int fd NB_CLEANUP(model_lock_cleanup) =
+		open(nb_buf_cstr(&lock_path), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
 	if (fd < 0)
-		return morph_error_from_errno(errno);
+		return nb_status_from_errno(errno, NULL);
 	if (flock(fd, LOCK_EX | LOCK_NB) != 0)
-		return morph_error_from_errno(errno);
-	char *before MORPH_CLEANUP(morph_charp_cleanup) = file_read_all_copy(path, NULL);
-	char *after MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+		return nb_status_from_errno(errno, NULL);
+	char *before NB_CLEANUP(nb_charp_cleanup) =
+		(nb_file_read_all(path, &file_value_1, 0, NULL) == NB_OK &&
+				 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
+					 NULL
+			 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
+				   nb_buf_len(&file_value_1) + 1),
+			    nb_charp_steal(&file_copy_1))
+			 : NULL);
+	char *after NB_CLEANUP(nb_charp_cleanup) = NULL;
 	if (!before)
-		return errno ? morph_error_from_errno(errno) : -EIO;
+		return errno ? nb_status_from_errno(errno, NULL) : NB_ERR_IO;
 	rc = config_text_merge_copy(before,
 				    ultra ? "[agents]\nmulti_agent_mode = \"proactive\"\n"
 					  : "[agents]\nmulti_agent_mode = \"explicit\"\n",
@@ -49,23 +61,25 @@ static int model_save_mode(struct runtime *runtime, int ultra)
 	if (rc == 0)
 		rc = config_validate_text(after, &error);
 	if (rc == 0)
-		rc = file_write_atomic(path, after, strlen(after));
+		rc = nb_file_write_all_atomic(
+			path, after, strlen(after),
+			&(nb_file_write_options){.new_file_mode = 0600, .sync_dir = true}, NULL);
 	return rc;
 }
 
 int runtime_model_get_ultra(struct runtime *runtime, int *ultra)
 {
 	if (!runtime || !ultra)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct runtime_context *ctx = &runtime->context;
-	if (pthread_mutex_trylock(&ctx->execution_lock) != 0)
-		return -EBUSY;
+	if (nb_mutex_trylock(ctx->execution_lock) != 0)
+		return NB_ERR_BUSY;
 	*ultra = 0;
 	if (ctx->agents && ctx->config.agents.enabled) {
 		const char *mode = ctx->config.agents.multi_agent_mode;
 		*ultra = !strcmp(mode, "proactive");
 		if (!strcmp(mode, "auto")) {
-			cJSON *extra MORPH_CLEANUP(morph_json_cleanup) =
+			cJSON *extra NB_CLEANUP(cJSON_DeleteOwner) =
 				cJSON_Parse(ctx->llm ? ctx->llm->extra_body_json : "{}");
 			const char *effort = cJSON_GetStringValue(
 				cJSON_GetObjectItemCaseSensitive(extra, "reasoning_effort"));
@@ -76,28 +90,28 @@ int runtime_model_get_ultra(struct runtime *runtime, int *ultra)
 			*ultra = effort && !strcmp(effort, "ultra");
 		}
 	}
-	pthread_mutex_unlock(&ctx->execution_lock);
+	nb_mutex_unlock(ctx->execution_lock);
 	return 0;
 }
 
 int runtime_model_set_ultra(struct runtime *runtime, int ultra)
 {
 	if (!runtime || (ultra != 0 && ultra != 1))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	struct runtime_context *ctx = &runtime->context;
-	if (pthread_mutex_trylock(&ctx->execution_lock) != 0)
-		return -EBUSY;
+	if (nb_mutex_trylock(ctx->execution_lock) != 0)
+		return NB_ERR_BUSY;
 	int rc = 0;
 	if (ultra && (!ctx->agents || !ctx->config.agents.enabled))
-		rc = -ENOTSUP;
+		rc = NB_ERR_UNSUPPORTED;
 	if (rc == 0 && agent_control_active(ctx->agents, 0))
-		rc = -EBUSY;
+		rc = NB_ERR_BUSY;
 	if (rc == 0)
 		rc = model_save_mode(runtime, ultra);
 	if (rc == 0) {
 		strcpy(ctx->config.agents.multi_agent_mode, ultra ? "proactive" : "explicit");
 		agent_control_set_proactive(ctx->agents, ultra);
 	}
-	pthread_mutex_unlock(&ctx->execution_lock);
+	nb_mutex_unlock(ctx->execution_lock);
 	return rc;
 }

@@ -2,7 +2,9 @@
 #define MORPH_MEMORY_SNAPSHOT_H
 
 #include "db/database.h"
-#include "util/array.h"
+#include "nb/err.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,14 +52,14 @@ struct memory_snapshot_options {
 
 struct memory_snapshot {
 	char *user_summary;
-	morph_array_t facts;
-	morph_array_t rules;
-	morph_array_t tasks;
-	morph_array_t changes;
+	nb_vec facts;
+	nb_vec rules;
+	nb_vec tasks;
+	nb_vec changes;
 	int task_count;
 };
 
-/* Outputs must be zero-initialized and empty. Occupied owners return -EEXIST. */
+/* Outputs must be zero-initialized and empty. Occupied owners return NB_ERR_EXISTS. */
 /* A snapshot owns every row and string until cleanup. No SQLite view escapes. */
 int memory_snapshot_read(struct db *db, int64_t session_id,
 			 const struct memory_snapshot_options *options,

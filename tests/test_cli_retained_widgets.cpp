@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "nb/err.h"
 
 extern "C" {
 #include "sapi/cli/models/transcript.h"
@@ -9,7 +10,8 @@ extern "C" {
 #include "sapi/cli/widgets/composer.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
-#include "util/utf8.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
 #include <morph/tui/application.h>
 #include <morph/tui/view_controller.h>
 #include <morph/tui/window.h>
@@ -17,7 +19,7 @@ extern "C" {
 #include <morph/tui/widgets/text_field.h>
 #include <morph/tui/widgets/editor.h>
 #include <morph/tui/widgets/list.h>
-#include "util/cleanup.h"
+#include "nb/cleanup.h"
 }
 
 #include <cstdlib>
@@ -29,7 +31,7 @@ extern "C" {
 
 static std::string retained_normalized(const char *text)
 {
-	char *plain = utf8_strip_ansi_dup(text, strlen(text), nullptr);
+	char *plain = morph_terminal_strip_ansi_dup(text, strlen(text), nullptr);
 	std::string value = plain ? plain : "";
 	free(plain);
 	std::string result;
@@ -71,12 +73,12 @@ class CliRetainedWidgetsTest : public ::testing::Test
 	const struct morph_tui_renderer_ops renderer_ops = {
 		+[](struct morph_tui_renderer *backend, struct morph_tui_surface *surface, FILE *) {
 			auto *self = static_cast<CliRetainedWidgetsTest *>(backend->data);
-			morph_buf_t rows{};
+			nb_buf rows{};
 			int rc = morph_tui_surface_rows(surface, &rows);
 			if (!rc)
-				self->frame = morph_buf_cstr_borrow(&rows);
+				self->frame = nb_buf_cstr(&rows);
 			(void)morph_tui_surface_cursor(surface, &self->cursor_x, &self->cursor_y);
-			morph_buf_cleanup(&rows);
+			nb_buf_cleanup(&rows);
 			return rc;
 		}, nullptr};
 	const struct morph_tui_view_controller_ops ops = {
@@ -143,7 +145,7 @@ class CliRetainedWidgetsTest : public ::testing::Test
 		morph_tui_application_destroy(app);
 		cli_composer_model_cleanup(&ctx.composer);
 		cJSON_Delete(plan);
-		morph_buf_cleanup(&tool.stream);
+		nb_buf_cleanup(&tool.stream);
 		if (input)
 			fclose(input);
 		if (output)
@@ -176,7 +178,7 @@ class CliRetainedWidgetsTest : public ::testing::Test
 	{
 		EXPECT_EQ(morph_tui_view_get_options(component).padding.right, 2);
 		EXPECT_EQ(morph_tui_view_content_rect(component).width, columns - 2);
-		morph_buf_t expected{};
+		nb_buf expected{};
 		if (kind == Tool)
 			ASSERT_EQ(cli_transcript_tool_append(&expected, &tool, columns, 1, details),
 					  0);
@@ -188,8 +190,9 @@ class CliRetainedWidgetsTest : public ::testing::Test
 		}
 		EXPECT_EQ(morph_tui_view_frame(component).y, 1);
 		EXPECT_EQ(retained_normalized(frame.c_str()).substr(1),
-			retained_normalized(morph_buf_cstr_borrow(&expected))) << columns;
-		morph_buf_cleanup(&expected);
+			  retained_normalized(nb_buf_cstr(&expected)))
+			<< columns;
+		nb_buf_cleanup(&expected);
 	}
 };
 
@@ -257,7 +260,9 @@ TEST_F(CliRetainedWidgetsTest, LiveToolKeepsThreeTailRowsAndBranchPrefix)
 {
 	tool.state = 0;
 	tool.ended = tool.started;
-	ASSERT_EQ(morph_buf_puts(&tool.stream, "discarded\none\ntwo\nthree\n"), 0);
+	ASSERT_EQ((nb_buf_append_cstr(&tool.stream, "discarded\none\ntwo\nthree\n") ? 0
+										    : NB_ERR_NOMEM),
+		  0);
 	Present();
 	std::string plain = retained_normalized(frame.c_str());
 	EXPECT_EQ(plain.find("discarded"), std::string::npos);
@@ -440,7 +445,7 @@ TEST_F(CliRetainedWidgetsTest, ComposerImageChipsKeepColorsWrappingAtomicEditsAn
 	EXPECT_STREQ(morph_tui_widget_text_field_text_borrow(editor), "Compare [IMAGE#1]");
 	ASSERT_EQ(morph_tui_widget_text_field_replace_range_copy(editor, 0, 7, "中文"), 0);
 	EXPECT_STREQ(morph_tui_widget_text_field_text_borrow(editor), "中文 [IMAGE#1]");
-	EXPECT_EQ(morph_tui_widget_text_field_set_cursor(editor, 1), -EINVAL);
+	EXPECT_EQ(morph_tui_widget_text_field_set_cursor(editor, 1), NB_ERR_INVAL);
 }
 
 TEST_F(CliRetainedWidgetsTest, ComposerNoColorKeepsUltraPaddingSteady)
@@ -466,51 +471,53 @@ TEST_F(CliRetainedWidgetsTest, ComposerNoColorKeepsUltraPaddingSteady)
 
 TEST(CliEditorStateTest, AtomicRangeUndoRestoresCompleteUtf8TextAndCursor)
 {
-	struct morph_tui_widget_editor_state editor
-		MORPH_CLEANUP(morph_tui_widget_editor_state_cleanup) = {};
+	struct morph_tui_widget_editor_state editor NB_CLEANUP(
+		morph_tui_widget_editor_state_cleanup) = {};
 	const char original[] = "A中[IMAGE#1]Z";
 	const size_t start = strlen("A中"), end = strlen("A中[IMAGE#1]");
 	ASSERT_EQ(morph_tui_widget_editor_state_init(&editor, original, 128, 0), 0);
 	ASSERT_EQ(morph_tui_widget_editor_state_set_cursor(&editor, end), 0);
 	ASSERT_EQ(morph_tui_widget_editor_state_replace_range_copy(&editor, start, end, ""), 0);
-	EXPECT_STREQ(editor.text.data, "A中Z");
+	EXPECT_STREQ(editor.text.ptr, "A中Z");
 	EXPECT_EQ(editor.cursor, start);
-	const size_t history = editor.undo.nelts;
-	EXPECT_EQ(morph_tui_widget_editor_state_set_cursor(&editor, 2), -EINVAL);
-	EXPECT_EQ(morph_tui_widget_editor_state_replace_range_copy(&editor, 2, start, ""), -EINVAL);
+	const size_t history = editor.undo.len;
+	EXPECT_EQ(morph_tui_widget_editor_state_set_cursor(&editor, 2), NB_ERR_INVAL);
+	EXPECT_EQ(morph_tui_widget_editor_state_replace_range_copy(&editor, 2, start, ""),
+		  NB_ERR_INVAL);
 	EXPECT_EQ(morph_tui_widget_editor_state_replace_range_copy(&editor, start, start, "\xff"),
-		  MORPH_ERR_FORMAT);
+		  NB_ERR_FORMAT);
 	const std::string too_long(128, 'x');
-	EXPECT_EQ(morph_tui_widget_editor_state_replace_range_copy(
-		&editor, start, start, too_long.c_str()), -E2BIG);
-	EXPECT_STREQ(editor.text.data, "A中Z");
+	EXPECT_EQ(morph_tui_widget_editor_state_replace_range_copy(&editor, start, start,
+								   too_long.c_str()),
+		  NB_ERR_TOO_BIG);
+	EXPECT_STREQ(editor.text.ptr, "A中Z");
 	EXPECT_EQ(editor.cursor, start);
-	EXPECT_EQ(editor.undo.nelts, history);
+	EXPECT_EQ(editor.undo.len, history);
 	EXPECT_EQ(morph_tui_widget_editor_state_update(&editor, 31), MORPH_TUI_WIDGET_CHANGED);
-	EXPECT_STREQ(editor.text.data, original);
+	EXPECT_STREQ(editor.text.ptr, original);
 	EXPECT_EQ(editor.cursor, end);
 	EXPECT_EQ(morph_tui_widget_editor_state_undo(&editor), MORPH_TUI_WIDGET_UNHANDLED);
 }
 
 TEST(CliEditorStateTest, TypedUtf8AndSecretEditingKeepUndoOwnershipSafe)
 {
-	struct morph_tui_widget_editor_state editor
-		MORPH_CLEANUP(morph_tui_widget_editor_state_cleanup) = {};
+	struct morph_tui_widget_editor_state editor NB_CLEANUP(
+		morph_tui_widget_editor_state_cleanup) = {};
 	ASSERT_EQ(morph_tui_widget_editor_state_init(&editor, "A", 64, 0), 0);
 	const std::string input = "中";
 	for (unsigned char byte : input)
 		ASSERT_EQ(morph_tui_widget_editor_state_update(&editor, byte),
 			  MORPH_TUI_WIDGET_CHANGED);
-	EXPECT_STREQ(editor.text.data, "A中");
+	EXPECT_STREQ(editor.text.ptr, "A中");
 	EXPECT_EQ(morph_tui_widget_editor_state_undo(&editor), MORPH_TUI_WIDGET_CHANGED);
-	EXPECT_STREQ(editor.text.data, "A");
+	EXPECT_STREQ(editor.text.ptr, "A");
 	EXPECT_EQ(editor.cursor, 1u);
-	struct morph_tui_widget_editor_state secret
-		MORPH_CLEANUP(morph_tui_widget_editor_state_cleanup) = {};
+	struct morph_tui_widget_editor_state secret NB_CLEANUP(
+		morph_tui_widget_editor_state_cleanup) = {};
 	ASSERT_EQ(morph_tui_widget_editor_state_init(&secret, "secret", 64, 1), 0);
 	ASSERT_EQ(morph_tui_widget_editor_state_replace_range_copy(&secret, 6, 6, "x"), 0);
 	ASSERT_EQ(morph_tui_widget_editor_state_update(&secret, 127), MORPH_TUI_WIDGET_CHANGED);
-	EXPECT_EQ(secret.undo.nelts, 0u);
+	EXPECT_EQ(secret.undo.len, 0u);
 	EXPECT_EQ(morph_tui_widget_editor_state_undo(&secret), MORPH_TUI_WIDGET_UNHANDLED);
-	EXPECT_STREQ(secret.text.data, "secret");
+	EXPECT_STREQ(secret.text.ptr, "secret");
 }

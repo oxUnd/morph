@@ -1,9 +1,9 @@
 #include "runtime/runtime.h"
 #include "runtime/runtime_internal.h"
 #include "persistence/history_store.h"
-#include "util/cleanup.h"
-#include "util/json.h"
-#include "util/error.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
+#include "errors.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -39,7 +39,7 @@ static int share_question(cJSON *document, const char *text)
 	if (!question || !cJSON_AddItemToArray(
 		cJSON_GetObjectItemCaseSensitive(document, "questions"), question)) {
 		cJSON_Delete(question);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	return 0;
 }
@@ -54,7 +54,7 @@ static int share_step(cJSON *document, const struct model_history_item *row)
 
 	if (metadata[0] && !cJSON_IsObject(payload)) {
 		cJSON_Delete(payload);
-		return MORPH_ERR_PARSE;
+		return NB_ERR_PARSE;
 	}
 	status = share_string(payload, "status");
 	step = cJSON_CreateObject();
@@ -66,7 +66,7 @@ static int share_step(cJSON *document, const struct model_history_item *row)
 	if (!ok || !cJSON_AddItemToArray(
 		cJSON_GetObjectItemCaseSensitive(document, "steps"), step)) {
 		cJSON_Delete(step);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	return 0;
 }
@@ -85,7 +85,7 @@ static int share_turn_question(const struct model_history_item *item, void *data
 	payload = metadata[0] ? cJSON_Parse(metadata) : NULL;
 	if (metadata[0] && !cJSON_IsObject(payload)) {
 		cJSON_Delete(payload);
-		return MORPH_ERR_PARSE;
+		return NB_ERR_PARSE;
 	}
 	outcome = cJSON_GetObjectItemCaseSensitive(payload, "turn_outcome");
 	status = share_string(outcome, "status");
@@ -126,7 +126,7 @@ static int share_answer(const struct model_history_item *item, void *data)
 		return rc;
 	document = share_document(share_text(item->content));
 	if (!document)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (migrated) {
 		char *question = NULL;
 
@@ -144,7 +144,7 @@ static int share_answer(const struct model_history_item *item, void *data)
 		return 1;
 	}
 	cJSON_Delete(document);
-	return rc == -ENODATA ? 0 : rc;
+	return rc == NB_ERR_NO_DATA ? 0 : rc;
 }
 
 static int share_history(struct db *db, int64_t session_id, cJSON **out)
@@ -152,20 +152,20 @@ static int share_history(struct db *db, int64_t session_id, cJSON **out)
 	struct share_context context = {.db = db, .session_id = session_id, .out = out};
 	int rc = history_store_visit_answers(db, session_id, share_answer, &context);
 
-	return rc != 0 ? rc : *out ? 0 : -ENODATA;
+	return rc != 0 ? rc : *out ? 0 : NB_ERR_NO_DATA;
 }
 
 static int share_legacy(struct db *db, int64_t session_id, cJSON **out)
 {
-	char *answer MORPH_CLEANUP(morph_charp_cleanup) = NULL;
-	char *question MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *answer NB_CLEANUP(nb_charp_cleanup) = NULL;
+	char *question NB_CLEANUP(nb_charp_cleanup) = NULL;
 	cJSON *document = NULL;
 	int rc;
 
 	rc = history_store_legacy_answer_copy(db, session_id, &answer, &question);
 	if (rc == 0) {
 		document = share_document(answer);
-		rc = document ? share_question(document, question) : -ENOMEM;
+		rc = document ? share_question(document, question) : NB_ERR_NOMEM;
 	}
 	if (rc == 0)
 		*out = document;
@@ -177,28 +177,28 @@ static int share_legacy(struct db *db, int64_t session_id, cJSON **out)
 int runtime_session_share_current(struct runtime *runtime, cJSON **out)
 {
 	struct runtime_context *context;
-	cJSON *document MORPH_CLEANUP(morph_json_cleanup) = NULL;
+	cJSON *document NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	int rc;
 
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (!runtime)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	context = &runtime->context;
-	rc = pthread_mutex_trylock(&context->execution_lock);
+	rc = nb_mutex_trylock(context->execution_lock);
 	if (rc != 0)
-		return -rc;
+		return rc;
 	if (context->current_session.id <= 0) {
-		rc = -ENODATA;
+		rc = NB_ERR_NO_DATA;
 	} else {
 		rc = share_history(&context->database, context->current_session.id, &document);
-		if (rc == -ENODATA)
+		if (rc == NB_ERR_NO_DATA)
 			rc = share_legacy(&context->database, context->current_session.id,
 					  &document);
 	}
-	pthread_mutex_unlock(&context->execution_lock);
+	nb_mutex_unlock(context->execution_lock);
 	if (rc == 0) {
 		*out = document;
 		document = NULL;

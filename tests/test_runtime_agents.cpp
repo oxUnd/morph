@@ -1,12 +1,13 @@
 #include "runtime_test_support.hpp"
+#include "nb/err.h"
 #include "agent_http_test_support.hpp"
 
 extern "C" {
 #include "agent/agent_control.h"
 #include "agent/tool.h"
 #include "runtime/runtime_internal.h"
-#include "util/cleanup.h"
-#include "util/json.h"
+#include "nb/cleanup.h"
+#include "cJSON.h"
 }
 
 #include <atomic>
@@ -157,12 +158,12 @@ class RuntimeAgentsTest : public RuntimeFacadeTest
 		int rc = runtime_agent_actor_begin(instance, &actor);
 		if (rc != 0)
 			return rc;
-		cJSON *args MORPH_CLEANUP(morph_json_cleanup) = cJSON_CreateObject();
-		cJSON *out MORPH_CLEANUP(morph_json_cleanup) = nullptr;
+		cJSON *args NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+		cJSON *out NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 		if (!args || !cJSON_AddStringToObject(args, "task_name", name) ||
 		    !cJSON_AddStringToObject(args, "message", "Inspect independently") ||
 		    !cJSON_AddStringToObject(args, "fork_turns", "none"))
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 		else
 			rc = agent_control_call(instance->context.agents, "spawn_agent", args,
 						&actor.context, &out);
@@ -174,9 +175,9 @@ class RuntimeAgentsTest : public RuntimeFacadeTest
 	{
 		auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
 		while (std::chrono::steady_clock::now() < deadline) {
-			pthread_mutex_lock(&owner->context.agent_interaction_lock);
+			nb_mutex_lock(owner->context.agent_interaction_lock);
 			bool found = owner->context.agent_phase == phase;
-			pthread_mutex_unlock(&owner->context.agent_interaction_lock);
+			nb_mutex_unlock(owner->context.agent_interaction_lock);
 			if (found)
 				return true;
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -254,11 +255,11 @@ TEST_F(RuntimeAgentsTest, FinishingRejectsIdleRestartsAndStillAcceptsRunningWork
 	ASSERT_TRUE(AwaitPhase(instance, RUNTIME_AGENTS_FINISHING));
 	auto started = std::chrono::steady_clock::now();
 	EXPECT_EQ(runtime_agent_followup(instance, "/root/worker", "Restart during finish"),
-		  -EBUSY);
+		  NB_ERR_BUSY);
 	EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(1));
 	EXPECT_EQ(runtime_agent_followup(instance, "/root/blocker", "Steer active work"), 0);
 	gate.Release();
-	EXPECT_EQ(primary.get(), -ECANCELED);
+	EXPECT_EQ(primary.get(), NB_ERR_CANCELLED);
 	EXPECT_EQ(runtime_agent_followup(instance, "/root/worker", "Restart after finish"), 0);
 	agent_control_join(instance->context.agents);
 }
@@ -268,9 +269,9 @@ TEST_F(RuntimeAgentsTest, IdleWorkerProtectsSessionNavigationAndShutdownCancelsA
 	Start();
 	ASSERT_EQ(Spawn("blocker"), 0);
 	ASSERT_TRUE(gate.Await());
-	EXPECT_EQ(runtime_session_select(instance, "another", nullptr, nullptr), -EBUSY);
-	EXPECT_EQ(runtime_session_create_and_select(instance, "another", nullptr), -EBUSY);
-	EXPECT_EQ(runtime_session_delete_and_update(instance, root_session), -EBUSY);
+	EXPECT_EQ(runtime_session_select(instance, "another", nullptr, nullptr), NB_ERR_BUSY);
+	EXPECT_EQ(runtime_session_create_and_select(instance, "another", nullptr), NB_ERR_BUSY);
+	EXPECT_EQ(runtime_session_delete_and_update(instance, root_session), NB_ERR_BUSY);
 	int64_t current = 0;
 	EXPECT_EQ(runtime_session_current_id(instance, &current), 0);
 	EXPECT_EQ(current, root_session);
@@ -278,7 +279,7 @@ TEST_F(RuntimeAgentsTest, IdleWorkerProtectsSessionNavigationAndShutdownCancelsA
 	instance = nullptr;
 	auto closing = std::async(std::launch::async, [owner] { runtime_close(owner); });
 	ASSERT_TRUE(AwaitPhase(owner, RUNTIME_AGENTS_CLOSING));
-	EXPECT_EQ(runtime_agent_followup(owner, "/root/blocker", "Too late"), -ECANCELED);
+	EXPECT_EQ(runtime_agent_followup(owner, "/root/blocker", "Too late"), NB_ERR_CANCELLED);
 	EXPECT_EQ(closing.wait_for(std::chrono::milliseconds(20)), std::future_status::timeout);
 	gate.Release();
 	closing.get();

@@ -1,9 +1,12 @@
 #include "runtime/mcp.h"
-#include "util/cleanup.h"
+#include "nb/str.h"
+#include "nb/utf8.h"
+#include "nb/cleanup.h"
 
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/log.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/log.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -23,10 +26,10 @@ static const char *runtime_mcp_error_text(
 	const char *token;
 
 	if (!server || !buf || buf_cap == 0)
-		return morph_strerror(error_code);
+		return nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, error_code);
 	if (server->transport != MCP_TRANSPORT_STREAMABLE_HTTP ||
 	    error_code != MORPH_ERR_NOT_CONFIGURED)
-		return morph_strerror(error_code);
+		return nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, error_code);
 	if (!server->http_auth_token_env[0]) {
 		snprintf(buf, buf_cap, "MCP authentication token is not configured");
 		return buf;
@@ -38,7 +41,7 @@ static const char *runtime_mcp_error_text(
 			 server->http_auth_token_env);
 		return buf;
 	}
-	return morph_strerror(error_code);
+	return nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, error_code);
 }
 
 void runtime_mcp_emit(morph_event_cb cb, void *user_data,
@@ -49,7 +52,7 @@ void runtime_mcp_emit(morph_event_cb cb, void *user_data,
 			     int error_code)
 {
 	cJSON *data;
-	morph_buf_t message_buf MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf message_buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *effective_message = message;
 	const char *error_text;
 	char error_buf[256];
@@ -59,41 +62,35 @@ void runtime_mcp_emit(morph_event_cb cb, void *user_data,
 	error_text = runtime_mcp_error_text(server, error_code, error_buf,
 					    sizeof(error_buf));
 	memset(&message_buf, 0, sizeof(message_buf));
-	if (morph_buf_init(&message_buf, 128) == 0) {
+	if ((nb_buf_init(&message_buf), nb_buf_reserve(&message_buf, 128) ? 0 : NB_ERR_NOMEM) ==
+	    0) {
 		if (strcmp(name, "mcp.connecting") == 0)
-			(void)morph_buf_printf(&message_buf, "Connecting to %s",
-					       server->name);
+			(void)nb_buf_printf(&message_buf, "Connecting to %s", server->name);
 		else if (strcmp(name, "mcp.connected") == 0)
-			(void)morph_buf_printf(&message_buf, "%s connected",
-					       server->name);
+			(void)nb_buf_printf(&message_buf, "%s connected", server->name);
 		else if (strcmp(name, "mcp.discovering") == 0)
-			(void)morph_buf_printf(&message_buf,
-					       "Discovering %s capabilities",
-					       server->name);
+			(void)nb_buf_printf(&message_buf, "Discovering %s capabilities",
+					    server->name);
 		else if (strcmp(name, "mcp.ready") == 0) {
 			if (tools >= 0 || resources >= 0 || prompts >= 0)
-				(void)morph_buf_printf(
-					&message_buf,
-					"%s ready (%d tools, %d resources, "
-					"%d prompts)",
-					server->name, tools, resources, prompts);
+				(void)nb_buf_printf(&message_buf,
+						    "%s ready (%d tools, %d resources, "
+						    "%d prompts)",
+						    server->name, tools, resources, prompts);
 			else
-				(void)morph_buf_printf(&message_buf, "%s ready",
-						       server->name);
+				(void)nb_buf_printf(&message_buf, "%s ready", server->name);
 		}
 		else if (strcmp(name, "mcp.failed") == 0)
-			(void)morph_buf_printf(&message_buf, "%s failed: %s",
-					       server->name,
-					       error_text);
+			(void)nb_buf_printf(&message_buf, "%s failed: %s", server->name,
+					    error_text);
 		else if (strcmp(name, "mcp.disconnected") == 0)
-			(void)morph_buf_printf(&message_buf, "%s disconnected",
-					       server->name);
+			(void)nb_buf_printf(&message_buf, "%s disconnected", server->name);
 		if (message_buf.len > 0)
-			effective_message = morph_buf_cstr_borrow(&message_buf);
+			effective_message = nb_buf_cstr(&message_buf);
 	}
 	data = cJSON_CreateObject();
 	if (!data) {
-		morph_buf_cleanup(&message_buf);
+		nb_buf_cleanup(&message_buf);
 		return;
 	}
 	cJSON_AddStringToObject(data, "server", server->name);
@@ -117,42 +114,63 @@ void runtime_mcp_emit(morph_event_cb cb, void *user_data,
 	(void)morph_event_emit_simple(cb, user_data, MORPH_EVENT_MCP,
 				     name, phase, effective_message, data);
 	cJSON_Delete(data);
-	morph_buf_cleanup(&message_buf);
+	nb_buf_cleanup(&message_buf);
 }
 
 int runtime_mcp_server_config_from_config(const struct config_mcp_server *config,
 					  struct mcp_server_config *out)
 {
 	if (!config || !out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (config->args_count < 0 || config->args_count > MCP_CMD_MAX ||
 	    config->env_count < 0 || config->env_count > MCP_ENV_MAX)
-		return -E2BIG;
+		return NB_ERR_TOO_BIG;
 	memset(out, 0, sizeof(*out));
-	strncpy(out->name, config->name, MCP_NAME_MAX - 1);
+	(void)nb_str_copy_to(nb_str_from_parts(config->name,
+					       nb_utf8_clamp_bytes(config->name, MCP_NAME_MAX - 1)),
+			     out->name, (MCP_NAME_MAX - 1) + 1);
 	out->transport = strcmp(config->transport, "http") == 0
 		? MCP_TRANSPORT_STREAMABLE_HTTP
 		: MCP_TRANSPORT_STDIO;
 	if (out->transport == MCP_TRANSPORT_STDIO) {
-		strncpy(out->command, config->command,
-			sizeof(out->command) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(
+				config->command,
+				nb_utf8_clamp_bytes(config->command, sizeof(out->command) - 1)),
+			out->command, (sizeof(out->command) - 1) + 1);
 		out->cmd_args_count = config->args_count;
 		for (int i = 0; i < out->cmd_args_count; i++)
-			strncpy(out->cmd_args[i], config->args[i],
-				MCP_CMD_ARG_MAX - 1);
+			(void)nb_str_copy_to(
+				nb_str_from_parts(
+					config->args[i],
+					nb_utf8_clamp_bytes(config->args[i], MCP_CMD_ARG_MAX - 1)),
+				out->cmd_args[i], (MCP_CMD_ARG_MAX - 1) + 1);
 		out->env_count = config->env_count;
 		for (int i = 0; i < out->env_count; i++) {
-			strncpy(out->env_keys[i], config->env_keys[i],
-				sizeof(out->env_keys[i]) - 1);
-			strncpy(out->env_vals[i], config->env_vals[i],
-				MCP_ENV_VAL_MAX - 1);
+			(void)nb_str_copy_to(
+				nb_str_from_parts(
+					config->env_keys[i],
+					nb_utf8_clamp_bytes(config->env_keys[i],
+							    sizeof(out->env_keys[i]) - 1)),
+				out->env_keys[i], (sizeof(out->env_keys[i]) - 1) + 1);
+			(void)nb_str_copy_to(
+				nb_str_from_parts(config->env_vals[i],
+						  nb_utf8_clamp_bytes(config->env_vals[i],
+								      MCP_ENV_VAL_MAX - 1)),
+				out->env_vals[i], (MCP_ENV_VAL_MAX - 1) + 1);
 		}
 	} else {
-		strncpy(out->http_url, config->http_url,
-			sizeof(out->http_url) - 1);
-		strncpy(out->http_auth_token_env,
-			config->http_auth_token_env,
-			sizeof(out->http_auth_token_env) - 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(
+				config->http_url,
+				nb_utf8_clamp_bytes(config->http_url, sizeof(out->http_url) - 1)),
+			out->http_url, (sizeof(out->http_url) - 1) + 1);
+		(void)nb_str_copy_to(
+			nb_str_from_parts(
+				config->http_auth_token_env,
+				nb_utf8_clamp_bytes(config->http_auth_token_env,
+						    sizeof(out->http_auth_token_env) - 1)),
+			out->http_auth_token_env, (sizeof(out->http_auth_token_env) - 1) + 1);
 	}
 	memcpy(out->protocol_version, config->protocol_version, sizeof(out->protocol_version));
 	out->auto_connect = config->auto_connect;
@@ -166,7 +184,7 @@ int runtime_mcp_register_configured(struct mcp_registry *registry,
 	int rc;
 
 	if (!registry || !config)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	mcp_registry_init(registry ? registry->logger : NULL, registry);
 	for (int i = 0; i < config->server_count; i++) {
 		struct mcp_server_config server;
@@ -188,7 +206,7 @@ int runtime_mcp_client_connect(struct mcp_client *client,
 	int rc;
 
 	if (!client)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	runtime_mcp_emit(event_cb, event_user_data, "mcp.connecting",
 			 "begin", "Connecting MCP server", &client->config,
 			 -1, -1, -1, 0);
@@ -211,7 +229,7 @@ int runtime_mcp_client_disconnect(struct mcp_client *client,
 				  void *event_user_data)
 {
 	if (!client)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	mcp_disconnect(client);
 	client->discovery_error = 0;
 	client->capabilities_registered = 0;
@@ -235,7 +253,7 @@ int runtime_mcp_client_discover(struct mcp_client *client,
 	int rc;
 
 	if (!client || !tools)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	runtime_mcp_emit(event_cb, event_user_data, "mcp.discovering",
 			 "begin", "Discovering MCP capabilities",
 			 &client->config, -1, -1, -1, 0);
@@ -263,7 +281,7 @@ int runtime_mcp_client_discover(struct mcp_client *client,
 	return 0;
 }
 
-int runtime_mcp_init_from_config(struct morph_log *logger, struct mcp_registry *registry,
+int runtime_mcp_init_from_config(struct nb_log *logger, struct mcp_registry *registry,
 				 const struct config_mcp *config, struct tool_registry *tools,
 				 int connect_configured, morph_event_cb event_cb,
 				 void *event_user_data)
@@ -271,7 +289,7 @@ int runtime_mcp_init_from_config(struct morph_log *logger, struct mcp_registry *
 	int rc;
 
 	if (!registry || !config)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	mcp_registry_init(logger, registry);
 	for (int i = 0; i < config->server_count; i++) {
 		struct mcp_server_config server;
@@ -280,14 +298,16 @@ int runtime_mcp_init_from_config(struct morph_log *logger, struct mcp_registry *
 		rc = runtime_mcp_server_config_from_config(&config->servers[i],
 							   &server);
 		if (rc != 0) {
-			log_warn(logger, "runtime: mcp config skipped at index %d: %s", i,
-				 morph_strerror(rc));
+			nb_log_write(logger, NB_LOG_WARN,
+				     "runtime: mcp config skipped at index %d: %s", i,
+				     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			continue;
 		}
 		rc = mcp_registry_add(registry, &server);
 		if (rc != 0) {
-			log_warn(logger, "runtime: mcp add failed for '%s': %s", server.name,
-				 morph_strerror(rc));
+			nb_log_write(logger, NB_LOG_WARN, "runtime: mcp add failed for '%s': %s",
+				     server.name,
+				     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			continue;
 		}
 		if (!connect_configured || !server.auto_connect)
@@ -298,8 +318,9 @@ int runtime_mcp_init_from_config(struct morph_log *logger, struct mcp_registry *
 		rc = runtime_mcp_client_connect(client, event_cb,
 						event_user_data);
 		if (rc != 0) {
-			log_warn(logger, "runtime: mcp connect failed for '%s': %s", server.name,
-				 morph_strerror(rc));
+			nb_log_write(logger, NB_LOG_WARN,
+				     "runtime: mcp connect failed for '%s': %s", server.name,
+				     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			continue;
 		}
 		if (tools) {
@@ -307,16 +328,18 @@ int runtime_mcp_init_from_config(struct morph_log *logger, struct mcp_registry *
 				client, tools, event_cb, event_user_data,
 				NULL, NULL, NULL);
 			if (rc != 0)
-				log_warn(logger,
-					 "runtime: mcp discovery failed for "
-					 "'%s': %s",
-					 server.name, morph_strerror(rc));
+				nb_log_write(logger, NB_LOG_WARN,
+					     "runtime: mcp discovery failed for "
+					     "'%s': %s",
+					     server.name,
+					     nb_err_str(morph_error_descriptions(),
+							MORPH_ERROR_COUNT, rc));
 		} else {
 			runtime_mcp_emit(event_cb, event_user_data, "mcp.ready",
 					 "ready", "MCP server ready", &server,
 					 -1, -1, -1, 0);
 		}
-		log_info(logger, "runtime: mcp auto-connected '%s'", server.name);
+		nb_log_write(logger, NB_LOG_INFO, "runtime: mcp auto-connected '%s'", server.name);
 	}
 	return 0;
 }

@@ -1,7 +1,8 @@
 #ifndef MORPH_CLI_WIDGETS_PLAN_H
 #define MORPH_CLI_WIDGETS_PLAN_H
 
-#include "util/buf.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include "cJSON.h"
 #include <morph/tui/view.h>
 
@@ -12,7 +13,7 @@ struct cli_plan_style {
 };
 
 int cli_plan_renders(const cJSON *state);
-int cli_plan_append(morph_buf_t *out, const cJSON *state, const struct cli_plan_style *style);
+int cli_plan_append(nb_buf *out, const cJSON *state, const struct cli_plan_style *style);
 struct morph_tui_view *cli_plan_add_borrow(struct morph_tui_builder *,
 	struct morph_tui_view *parent, const cJSON *state, int styled);
 

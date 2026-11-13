@@ -1,10 +1,13 @@
 #include "sapi/cli/widgets/rich_document.h"
+#include "nb/err.h"
 #include "sapi/cli/presentation/messages.h"
-#include "util/array.h"
-#include "util/base64.h"
-#include "util/cleanup.h"
-#include "util/sha256.h"
-#include "util/utf8.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/encoding.h"
+#include "media/image.h"
+#include "nb/cleanup.h"
+#include "nb/hash.h"
+#include "nb/utf8.h"
 #include <morph/tui/media.h>
 #include <morph/tui/widgets/image.h>
 #include <morph/tui/widgets/text_view.h>
@@ -17,14 +20,14 @@
 struct cli_rich_document_image {
 	struct morph_tui_media_asset *asset;
 	struct morph_tui_view *view;
-	morph_buf_t encoded;
+	nb_buf encoded;
 	unsigned id, format, pixel_width, pixel_height;
 	int x, y, columns, rows, placed;
-	unsigned char digest[SHA256_DIGEST_SIZE];
+	unsigned char digest[NB_SHA256_DIGEST_SIZE];
 };
 
 struct cli_rich_document_images {
-	morph_array_t items;
+	nb_vec items;
 };
 
 struct cli_rich_document {
@@ -38,11 +41,14 @@ struct cli_rich_document {
 static void cli_rich_document_images_cleanup(struct cli_rich_document_images *images)
 {
 	struct cli_rich_document_image *image;
-	morph_array_foreach (image, &images->items, struct cli_rich_document_image) {
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(&images->items) &&
+	     (image = (struct cli_rich_document_image *)nb_vec_at(&images->items, _i_));
+	     _i_++) {
 		morph_tui_media_asset_destroy(image->asset);
-		morph_buf_cleanup(&image->encoded);
+		nb_buf_cleanup(&image->encoded);
 	}
-	morph_array_cleanup(&images->items);
+	nb_vec_cleanup(&images->items);
 }
 
 static int cli_rich_document_measure(struct morph_tui_view *view, int width,
@@ -59,7 +65,10 @@ static int cli_rich_document_layout(struct morph_tui_view *view)
 	if (!rc && document->media)
 		rc = morph_tui_view_arrange(document->media, content);
 	struct cli_rich_document_image *image;
-	morph_array_foreach (image, &document->images.items, struct cli_rich_document_image) {
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(&document->images.items) &&
+	     (image = (struct cli_rich_document_image *)nb_vec_at(&document->images.items, _i_));
+	     _i_++) {
 		if (rc || !image->view)
 			continue;
 		rc = morph_tui_view_arrange(image->view, (struct morph_tui_view_rect){
@@ -101,9 +110,9 @@ static int cli_rich_document_transfer(struct cli_rich_document *document,
 {
 	unsigned id = cli_rich_document_parameter(header, header_length, 'i');
 	if (id) {
-		struct cli_rich_document_image *slot = morph_array_push_borrow(&images->items);
+		struct cli_rich_document_image *slot = nb_vec_push(&images->items);
 		if (!slot)
-			return -ENOMEM;
+			return NB_ERR_NOMEM;
 		*slot = (struct cli_rich_document_image){0};
 		slot->id = id;
 		slot->format = cli_rich_document_parameter(header, header_length, 'f');
@@ -112,34 +121,37 @@ static int cli_rich_document_transfer(struct cli_rich_document *document,
 		unsigned columns = cli_rich_document_parameter(header, header_length, 'c');
 		unsigned rows = cli_rich_document_parameter(header, header_length, 'r');
 		if (!columns || columns > INT_MAX || !rows || rows > INT_MAX)
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		slot->columns = (int)columns;
 		slot->rows = (int)rows;
 	}
-	if (!images->items.nelts)
-		return -EINVAL;
-	struct cli_rich_document_image *image =
-		morph_array_borrow(&images->items, images->items.nelts - 1);
+	if (!images->items.len)
+		return NB_ERR_INVAL;
+	struct cli_rich_document_image *image = nb_vec_at(&images->items, images->items.len - 1);
 	if (image->encoded.len > MORPH_MEDIA_MAX_FILE_BYTES * 2u ||
 	    length > MORPH_MEDIA_MAX_FILE_BYTES * 2u - image->encoded.len)
-		return -EFBIG;
-	int rc = morph_buf_append(&image->encoded, payload, length);
+		return NB_ERR_TOO_BIG;
+	int rc = (nb_buf_append(&image->encoded, payload, length) ? 0 : NB_ERR_NOMEM);
 	if (rc || cli_rich_document_parameter(header, header_length, 'm'))
 		return rc;
-	size_t decoded_length = 0;
-	unsigned char *decoded MORPH_CLEANUP(morph_ucharp_cleanup) =
-		base64_decode_copy(morph_buf_cstr_borrow(&image->encoded), &decoded_length);
-	if (!decoded)
-		return MORPH_ERR_FORMAT;
+	nb_buf decoded_bytes NB_CLEANUP(nb_buf_destroy) = {0};
+	if (nb_base64_decode(nb_str_from_cstr(nb_buf_cstr(&image->encoded)), NB_B64_STD,
+			     &decoded_bytes, NULL) != NB_OK)
+		return NB_ERR_FORMAT;
+	size_t decoded_length = nb_buf_len(&decoded_bytes);
+	const unsigned char *decoded = (const unsigned char *)nb_buf_cstr(&decoded_bytes);
 	if (decoded_length > MORPH_MEDIA_MAX_FILE_BYTES)
-		return -EFBIG;
-	struct sha256_ctx hash;
-	sha256_init(&hash);
-	sha256_update(&hash, decoded, decoded_length);
-	sha256_final(&hash, image->digest);
-	morph_buf_cleanup(&image->encoded);
+		return NB_ERR_TOO_BIG;
+	struct nb_sha256_ctx hash;
+	nb_sha256_init(&hash);
+	nb_sha256_update(&hash, decoded, decoded_length);
+	nb_sha256_final(&hash, image->digest);
+	nb_buf_cleanup(&image->encoded);
 	struct cli_rich_document_image *old;
-	morph_array_foreach (old, &document->images.items, struct cli_rich_document_image) {
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(&document->images.items) &&
+	     (old = (struct cli_rich_document_image *)nb_vec_at(&document->images.items, _i_));
+	     _i_++) {
 		if (old->asset && old->format == image->format &&
 		    old->pixel_width == image->pixel_width &&
 		    old->pixel_height == image->pixel_height &&
@@ -155,16 +167,17 @@ static int cli_rich_document_transfer(struct cli_rich_document *document,
 	    image->pixel_width > INT_MAX || image->pixel_height > INT_MAX ||
 	    (size_t)image->pixel_width > decoded_length / 4u / image->pixel_height ||
 	    (size_t)image->pixel_width * image->pixel_height * 4u != decoded_length)
-		return MORPH_ERR_FORMAT;
+		return NB_ERR_FORMAT;
 	return morph_tui_media_asset_create_rgba_copy(&image->asset, decoded,
 		(int)image->pixel_width, (int)image->pixel_height);
 }
 
 static int cli_rich_document_parse(struct cli_rich_document *document,
-	struct cli_rich_document_images *images, morph_buf_t *text, const char *source)
+				   struct cli_rich_document_images *images, nb_buf *text,
+				   const char *source)
 {
-	morph_buf_t style MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	morph_buf_t saved MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	nb_buf style NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf saved NB_CLEANUP(nb_buf_cleanup) = {0};
 	size_t length = strlen(source);
 	unsigned foreground = 0;
 	int x = 0, y = 0, placeholder = 0;
@@ -174,25 +187,31 @@ static int cli_rich_document_parse(struct cli_rich_document *document,
 			if (source[i + 1] == '_' && i + 2 < length && source[i + 2] == 'G') {
 				const char *end = strstr(source + i + 3, "\033\\");
 				if (!end)
-					return -EAGAIN;
+					return NB_ERR_AGAIN;
 				const char *separator = memchr(source + i + 3, ';',
 					(size_t)(end - (source + i + 3)));
 				if (!separator)
-					return MORPH_ERR_FORMAT;
+					return NB_ERR_FORMAT;
 				rc = cli_rich_document_transfer(document, images, source + i + 3,
 					(size_t)(separator - (source + i + 3)), separator + 1,
 					(size_t)(end - separator - 1));
 				i = (size_t)(end - source) + 2;
 			} else if (source[i + 1] == '7') {
-				morph_buf_reset(&saved);
-				rc = morph_buf_puts(&saved, style.data ? style.data : "\033[0m");
+				nb_buf_clear(&saved);
+				rc = (nb_buf_append_cstr(&saved, style.ptr ? style.ptr : "\033[0m")
+					      ? 0
+					      : NB_ERR_NOMEM);
 				i += 2;
 			} else if (source[i + 1] == '8') {
-				rc = morph_buf_puts(text, saved.data ? saved.data : "\033[0m");
-				morph_buf_reset(&style);
+				rc = (nb_buf_append_cstr(text, saved.ptr ? saved.ptr : "\033[0m")
+					      ? 0
+					      : NB_ERR_NOMEM);
+				nb_buf_clear(&style);
 				if (!rc)
-					rc = morph_buf_puts(&style,
-						saved.data ? saved.data : "\033[0m");
+					rc = (nb_buf_append_cstr(&style,
+								 saved.ptr ? saved.ptr : "\033[0m")
+						      ? 0
+						      : NB_ERR_NOMEM);
 				i += 2;
 			} else if (source[i + 1] == '[') {
 				size_t end = i + 2;
@@ -201,7 +220,7 @@ static int cli_rich_document_parse(struct cli_rich_document *document,
 					(unsigned char)source[end] > 0x7eu))
 					end++;
 				if (end == length)
-					return -EAGAIN;
+					return NB_ERR_AGAIN;
 				if (source[end] == 'm') {
 					unsigned r, g, b;
 					if ((sscanf(source + i,
@@ -210,12 +229,15 @@ static int cli_rich_document_parse(struct cli_rich_document *document,
 						"\033[38:2:%u:%u:%um", &r, &g, &b) == 3) &&
 					    r <= 255u && g <= 255u && b <= 255u)
 						foreground = r * 65536u + g * 256u + b;
-					rc = morph_buf_append(text, source + i, end - i + 1);
+					rc = (nb_buf_append(text, source + i, end - i + 1)
+						      ? 0
+						      : NB_ERR_NOMEM);
 					if (end - i == 3 && !memcmp(source + i, "\033[0m", 4))
-						morph_buf_reset(&style);
+						nb_buf_clear(&style);
 					if (!rc)
-						rc = morph_buf_append(&style, source + i,
-							end - i + 1);
+						rc = (nb_buf_append(&style, source + i, end - i + 1)
+							      ? 0
+							      : NB_ERR_NOMEM);
 				}
 				i = end + 1;
 			} else if (source[i + 1] == ']') {
@@ -225,9 +247,9 @@ static int cli_rich_document_parse(struct cli_rich_document *document,
 					 source[end + 1] == '\\'))
 					end++;
 				if (end == length)
-					return -EAGAIN;
+					return NB_ERR_AGAIN;
 				end += source[end] == '\a' ? 1 : 2;
-				rc = morph_buf_append(text, source + i, end - i);
+				rc = (nb_buf_append(text, source + i, end - i) ? 0 : NB_ERR_NOMEM);
 				i = end;
 			} else
 				i += 2;
@@ -237,13 +259,15 @@ static int cli_rich_document_parse(struct cli_rich_document *document,
 		}
 		unsigned cp;
 		size_t bytes;
-		if (!utf8_decode_codepoint(source + i, length - i, &cp, &bytes))
-			return MORPH_ERR_FORMAT;
+		if (!nb_utf8_read(source + i, length - i, &cp, &bytes))
+			return NB_ERR_FORMAT;
 		if (cp == 0x10eeeeu) {
 			struct cli_rich_document_image *image;
 			int found = 0;
-			morph_array_foreach (image, &images->items,
-				struct cli_rich_document_image) {
+			for (size_t _i_ = 0; _i_ < nb_vec_len(&images->items) &&
+					     (image = (struct cli_rich_document_image *)nb_vec_at(
+						      &images->items, _i_));
+			     _i_++) {
 				if ((image->id & 0xffffffu) == foreground) {
 					if (!image->placed) {
 						image->x = x;
@@ -254,20 +278,20 @@ static int cli_rich_document_parse(struct cli_rich_document *document,
 					break;
 				}
 			}
-			rc = found ? morph_buf_putc(text, ' ') :
-				morph_buf_append(text, source + i, bytes);
+			rc = found ? (nb_buf_append_char(text, ' ') ? 0 : NB_ERR_NOMEM)
+				   : nb_buf_append(text, source + i, bytes);
 			x++;
 			placeholder = found;
-		} else if (placeholder && utf8_classify_codepoint(cp) == UTF8_CLASS_MARK) {
+		} else if (placeholder && nb_utf8_classify_codepoint(cp) == NB_UTF8_CLASS_MARK) {
 			/* The framework media widget owns placeholder generation. */
 		} else {
 			placeholder = 0;
-			rc = morph_buf_append(text, source + i, bytes);
+			rc = (nb_buf_append(text, source + i, bytes) ? 0 : NB_ERR_NOMEM);
 			if (cp == '\n') {
 				x = 0;
 				y++;
 			} else if (cp != '\r')
-				x += utf8_codepoint_width(cp) > 0 ? utf8_codepoint_width(cp) : 0;
+				x += nb_utf8_width_cp(cp) > 0 ? nb_utf8_width_cp(cp) : 0;
 		}
 		if (rc)
 			return rc;
@@ -298,24 +322,24 @@ static int cli_rich_document_leading_rows(const char *text)
 int cli_rich_document_set_rendered_copy(struct morph_tui_view *view, const char *source, int styled)
 {
 	if (!view || view->ops != &cli_rich_document_ops || !source)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!morph_tui_view_is_owner(view))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct cli_rich_document *document = (struct cli_rich_document *)view;
-	struct cli_rich_document_images
-		images MORPH_CLEANUP(cli_rich_document_images_cleanup) = {0};
+	struct cli_rich_document_images images NB_CLEANUP(cli_rich_document_images_cleanup) = {0};
 	struct cli_rich_document_image image;
-	morph_buf_t text MORPH_CLEANUP(morph_buf_cleanup) = {0};
-	int rc = morph_array_init(&images.items, 4, sizeof(image));
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_vec_init(&images.items, sizeof(image)),
+		  nb_vec_reserve(&images.items, 4) ? 0 : NB_ERR_NOMEM);
 	if (!rc)
-		rc = morph_buf_init(&text, 256);
+		rc = (nb_buf_init(&text), nb_buf_reserve(&text, 256) ? 0 : NB_ERR_NOMEM);
 	if (!rc)
 		rc = cli_rich_document_parse(document, &images, &text, source);
 	if (rc)
 		return rc;
 	/* Keep text controls stable: replacing each one would scan the owning
 	 * controller's entire View scope once per restored message. */
-	rc = cli_messages_set_rendered_view(document->text, morph_buf_cstr_borrow(&text), styled);
+	rc = cli_messages_set_rendered_view(document->text, nb_buf_cstr(&text), styled);
 	if (rc)
 		return rc;
 	if (document->media && morph_tui_view_child_count(document->media)) {
@@ -323,12 +347,18 @@ int cli_rich_document_set_rendered_copy(struct morph_tui_view *view, const char 
 		if (rc)
 			return rc;
 		struct cli_rich_document_image *old;
-		morph_array_foreach (old, &document->images.items, struct cli_rich_document_image)
+		for (size_t _i_ = 0; _i_ < nb_vec_len(&document->images.items) &&
+				     (old = (struct cli_rich_document_image *)nb_vec_at(
+					      &document->images.items, _i_));
+		     _i_++)
 			old->view = NULL;
 	}
 	struct cli_rich_document_image *entry;
-	int leading = cli_rich_document_leading_rows(morph_buf_cstr_borrow(&text));
-	morph_array_foreach (entry, &images.items, struct cli_rich_document_image) {
+	int leading = cli_rich_document_leading_rows(nb_buf_cstr(&text));
+	for (size_t _i_ = 0;
+	     _i_ < nb_vec_len(&images.items) &&
+	     (entry = (struct cli_rich_document_image *)nb_vec_at(&images.items, _i_));
+	     _i_++) {
 		if (!entry->asset || !entry->placed)
 			continue;
 		if (!document->media) {
@@ -351,7 +381,7 @@ int cli_rich_document_set_rendered_copy(struct morph_tui_view *view, const char 
 			return rc;
 	}
 	cli_rich_document_images_cleanup(&document->images);
-	rc = morph_array_take(&document->images.items, &images.items);
+	rc = (nb_vec_move(&document->images.items, &images.items), 0);
 	if (!rc)
 		morph_tui_view_invalidate(view, 1);
 	return rc ? rc : morph_tui_builder_error(document->builder);

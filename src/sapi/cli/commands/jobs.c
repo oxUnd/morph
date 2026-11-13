@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/jobs.h"
+#include "nb/err.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "cJSON.h"
@@ -14,19 +15,21 @@ static int cli_jobs_command_jobs(struct cli_application *ctx, int argc, char **a
 		id = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!id) {
 			CMD_ERROR(ctx, "usage: /jobs stop <id>");
-			return -EINVAL;
+			return NB_ERR_INVAL;
 		}
 		int rc = runtime_process_stop(ctx->runtime, id);
 		if (!rc)
 			CMD_OK(ctx, "stop requested: %s", id);
 		else
-			CMD_ERROR(ctx, "%s", morph_strerror(rc));
+			CMD_ERROR(ctx, "%s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE && isatty(STDIN_FILENO)) {
 		int rc = cli_jobs_view(ctx, id);
 		if (rc)
-			CMD_ERROR(ctx, "%s", morph_strerror(rc));
+			CMD_ERROR(ctx, "%s",
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 	cJSON *data = NULL;
@@ -35,7 +38,7 @@ static int cli_jobs_command_jobs(struct cli_application *ctx, int argc, char **a
 	if (!rc) {
 		char *json = cJSON_Print(data);
 		if (!json)
-			rc = -ENOMEM;
+			rc = NB_ERR_NOMEM;
 		else {
 			cli_output_printf(ctx, "%s\n", json);
 			free(json);
@@ -43,7 +46,7 @@ static int cli_jobs_command_jobs(struct cli_application *ctx, int argc, char **a
 	}
 	cJSON_Delete(data);
 	if (rc)
-		CMD_ERROR(ctx, "%s", morph_strerror(rc));
+		CMD_ERROR(ctx, "%s", nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	return rc;
 }
 

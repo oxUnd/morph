@@ -1,7 +1,7 @@
 #include "sapi/cli/commands/options.h"
 #include "sapi/cli/presentation/output.h"
 #include "event/event.h"
-#include "util/error.h"
+#include "errors.h"
 #include "cJSON.h"
 #include <getopt.h>
 #include <stdio.h>
@@ -22,18 +22,18 @@ static int cli_options_emit_option_event(const char *name, const char *phase, co
 	if (!data || !args) {
 		cJSON_Delete(data);
 		cJSON_Delete(args);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	if (!cJSON_AddStringToObject(data, "command", command) ||
 	    !cJSON_AddStringToObject(data, "input", command)) {
 		cJSON_Delete(args);
 		cJSON_Delete(data);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	cJSON_AddItemToObject(data, "args", args);
 	if (output && !cJSON_AddStringToObject(data, "output", output)) {
 		cJSON_Delete(data);
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	}
 	event = (struct morph_event){
 		.type = MORPH_EVENT_COMMAND,
@@ -46,7 +46,7 @@ static int cli_options_emit_option_event(const char *name, const char *phase, co
 	json = morph_event_json_text_copy(&event);
 	cJSON_Delete(data);
 	if (!json)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	rc = cli_output_write_json(json);
 	free(json);
 	return rc;

@@ -7,12 +7,14 @@
 #include "sapi/cli/services/configuration/config.h"
 #include "sapi/cli/services/configuration/mcp.h"
 #include "sapi/cli/services/management.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/file.h"
-#include "util/utf8.h"
-#include "util/name.h"
-#include "tomlc17.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/file.h"
+#include "nb/random.h"
+#include "nb/utf8.h"
+#include "nb/str.h"
+#include "nb/toml.h"
 #include <ctype.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -22,15 +24,15 @@
 
 static void cli_wizard_mcp_notes(int role, FILE *output)
 {
-	morph_buf_t notes;
-	int rc = morph_buf_init(&notes, 128);
+	nb_buf notes NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&notes), nb_buf_reserve(&notes, 128) ? 0 : NB_ERR_NOMEM);
 
 	if (rc)
 		return;
 	rc = cli_setup_mcp_notes(role, &notes);
 	if (!rc)
-		(void)cli_setup_print(output, "%s", morph_buf_cstr_borrow(&notes));
-	morph_buf_cleanup(&notes);
+		(void)cli_setup_print(output, "%s", nb_buf_cstr(&notes));
+	nb_buf_cleanup(&notes);
 }
 
 static int cli_wizard_prompt(FILE *in, FILE *out, const char *label, const char *fallback,
@@ -45,7 +47,7 @@ static int cli_wizard_prompt(FILE *in, FILE *out, const char *label, const char 
 		ssize_t len = getline(&line, &capacity, in);
 		if (len < 0) {
 			free(line);
-			return -ECANCELED;
+			return NB_ERR_CANCELLED;
 		}
 		int embedded_nul = memchr(line, '\0', (size_t)len) != NULL;
 		while (len > 0 && isspace((unsigned char)line[len - 1]))
@@ -55,7 +57,7 @@ static int cli_wizard_prompt(FILE *in, FILE *out, const char *label, const char 
 			start++;
 		const char *chosen = *start ? start : fallback;
 		int valid = !embedded_nul && *chosen && strlen(chosen) < cap &&
-			    utf8valid(chosen) == NULL;
+			    nb_utf8_validate(nb_str_from_cstr(chosen), NULL) == NB_UTF8_OK;
 		for (const char *p = chosen; *p; p++)
 			if ((unsigned char)*p < 32 || *p == 127)
 				valid = 0;
@@ -177,67 +179,59 @@ static int cli_wizard_configure_model(FILE *in, FILE *out, int kind,
 				       sizeof(entry->api_key_env));
 		if (rc < 0)
 			return rc;
-		if (morph_env_name_valid(entry->api_key_env))
+		if ((nb_str_is_alnum(nb_str_from_cstr(entry->api_key_env), "_") &&
+		     !((entry->api_key_env)[0] >= '0' && (entry->api_key_env)[0] <= '9')))
 			return 0;
 		fprintf(out, "Use letters, digits and underscores; start with a letter or "
 			     "underscore.\n");
 	}
 }
 
-static void cli_wizard_append_field(morph_buf_t *buf, const char *key, const char *value)
+static void cli_wizard_append_field(nb_buf *buf, const char *key, const char *value)
 {
 	cJSON *string = cJSON_CreateString(value);
 	char *encoded = string ? cJSON_PrintUnformatted(string) : NULL;
 	cJSON_Delete(string);
 	if (!encoded) {
-		buf->failed = -ENOMEM;
+		nb_buf_set_error(buf, NB_ERR_NOMEM);
 		return;
 	}
-	morph_buf_printf(buf, "%s = %s\n", key, encoded);
+	nb_buf_printf(buf, "%s = %s\n", key, encoded);
 	free(encoded);
 }
 
-static int cli_wizard_unique_file(const char *path, const char *suffix, const char *text,
-				  char **created);
+static int cli_wizard_unique_file(const char *path, const char *suffix, const char *extension,
+				  const char *text, char **created);
 
 static int cli_wizard_save_config(const char *path, const char *text, int replace, int *published)
 {
 	if (published)
 		*published = 0;
-	char *parent = strdup(path);
+	char *parent NB_CLEANUP(nb_charp_cleanup) = strdup(path);
 	if (!parent)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	char *slash = strrchr(parent, '/');
 	if (slash) {
 		if (slash == parent)
 			slash[1] = '\0';
 		else
 			*slash = '\0';
-	} else
+	} else {
 		strcpy(parent, ".");
-	int rc = file_ensure_dir(parent);
-	int directory = rc == 0 ? open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC) : -1;
-	if (rc == 0 && directory < 0)
-		rc = morph_error_from_errno(errno);
-	free(parent);
-	if (rc != 0)
-		return rc;
-	char *temporary = NULL;
-	rc = cli_wizard_unique_file(path, ".setup-XXXXXX", text, &temporary);
-	if (rc == 0) {
-		int result = replace ? rename(temporary, path) : link(temporary, path);
-		if (result != 0)
-			rc = morph_error_from_errno(errno);
-		else if (published)
-			*published = 1;
 	}
-	if (temporary)
-		unlink(temporary);
-	free(temporary);
-	if (rc == 0 && fsync(directory) != 0)
-		rc = morph_error_from_errno(errno);
-	if (close(directory) != 0 && rc == 0)
-		rc = morph_error_from_errno(errno);
+	int rc = nb_file_mkdir(parent, true, NULL);
+	if (rc != NB_OK)
+		return rc;
+	bool committed = false;
+	nb_file_write_options options = {
+		.mode = 0600,
+		.create_only = !replace,
+		.sync_dir = true,
+		.published = &committed,
+	};
+	rc = nb_file_write_all_atomic(path, text, strlen(text), &options, NULL);
+	if (published)
+		*published = committed;
 	return rc;
 }
 
@@ -322,7 +316,7 @@ static int cli_wizard_collect_plain(struct cli_setup_state *state, const char *p
 		if (selected < 0)
 			return selected;
 		if (selected == 4)
-			return -ECANCELED;
+			return NB_ERR_CANCELLED;
 		if (selected == 1 && complete)
 			return 0;
 		if (selected == 1) {
@@ -344,36 +338,49 @@ static int cli_wizard_collect_plain(struct cli_setup_state *state, const char *p
 static int cli_wizard_load_existing(const char *path, struct cli_setup_state *state,
 				    char **original)
 {
+	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
+	nb_err parse_error = {0};
 	struct stat st;
 	if (lstat(path, &st) != 0)
-		return errno == ENOENT ? 0 : morph_error_from_errno(errno);
+		return errno == ENOENT ? 0 : nb_status_from_errno(errno, NULL);
 	if (!S_ISREG(st.st_mode))
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (!state->reconfigure)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	if (st.st_size > 1024 * 1024)
-		return -EFBIG;
+		return NB_ERR_TOO_BIG;
 	size_t len;
-	*original = file_read_all_copy(path, &len);
+	*original = (nb_file_read_all(path, &file_value_1, 0, NULL) == NB_OK &&
+				     (file_copy_1 =
+					      (char *)malloc(nb_buf_len(&file_value_1) + 1)) != NULL
+			     ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
+				       nb_buf_len(&file_value_1) + 1),
+				*(&len) = nb_buf_len(&file_value_1), nb_charp_steal(&file_copy_1))
+			     : NULL);
 	if (!*original)
-		return morph_error_from_errno(errno);
-	if (memchr(*original, '\0', len) || utf8nvalid(*original, len))
-		return -EILSEQ;
+		return nb_status_from_errno(errno, NULL);
+	if (memchr(*original, '\0', len) ||
+	    nb_utf8_validate(nb_str_from_parts(*original, len), NULL))
+		return NB_ERR_ENCODING;
 	struct config *config = calloc(1, sizeof(*config));
 	if (!config)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	int rc = config_load(NULL, config, path);
 	if (rc == 0) {
 		const struct config_model_entry *models[] = {
 			&config->models.text, &config->models.vision, &config->models.image,
 			&config->models.video};
 		const char *names[] = {"text", "vision", "image", "video"};
-		toml_result_t parsed = toml_parse(*original, (int)len);
-		toml_datum_t model = toml_get(parsed.toptab, "model");
+		nb_toml *parsed NB_CLEANUP(nb_toml_cleanup) =
+			nb_toml_parse(nb_str_from_parts(*original, len), &parse_error);
+		const nb_toml_value *model = nb_toml_table_get_cstr(nb_toml_root(parsed), "model");
 		for (int i = 0; i < CLI_SETUP_MODEL_COUNT; i++)
-			if (toml_get(model, names[i]).type == TOML_TABLE)
+			if (nb_toml_type_of(nb_toml_table_get_cstr(model, names[i])) ==
+			    NB_TOML_TABLE)
 				state->entries[i] = *models[i];
-		toml_free(parsed);
+		nb_toml_cleanup(&parsed);
 		state->role = cli_setup_config_role(*original);
 		state->existing_config = 1;
 		state->existing_prompt =
@@ -384,64 +391,82 @@ static int cli_wizard_load_existing(const char *path, struct cli_setup_state *st
 	return rc;
 }
 
-static int cli_wizard_unique_file(const char *path, const char *suffix, const char *text,
-				  char **created)
+static int cli_wizard_unique_file(const char *path, const char *suffix, const char *extension,
+				  const char *text, char **created)
 {
-	*created = file_path_append_alloc(path, suffix);
-	if (!*created)
-		return -ENOMEM;
-	size_t suffix_len = strlen(suffix);
-	int markdown = suffix_len >= 3 && strcmp(suffix + suffix_len - 3, ".md") == 0;
-	int fd = markdown ? mkstemps(*created, 3) : mkstemp(*created);
-	if (fd < 0) {
-		int rc = morph_error_from_errno(errno);
-		free(*created);
-		*created = NULL;
-		return rc;
+	nb_buf candidate NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf random NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_file_write_options options = {
+		.mode = 0600,
+		.create_only = true,
+		.sync_dir = true,
+	};
+	*created = NULL;
+	for (int attempt = 0; attempt < 16; attempt++) {
+		nb_buf_clear(&random);
+		int rc = nb_random_hex(&random, 6, NULL);
+		if (rc != NB_OK)
+			return rc;
+		nb_buf_clear(&candidate);
+		if (!nb_buf_printf(&candidate, "%s%s%s%s", path, suffix, nb_buf_cstr(&random),
+				   extension))
+			return nb_buf_status(&candidate);
+		char *name NB_CLEANUP(nb_charp_cleanup) = strdup(nb_buf_cstr(&candidate));
+		if (!name)
+			return NB_ERR_NOMEM;
+		bool published = false;
+		options.published = &published;
+		rc = nb_file_write_all_atomic(name, text, strlen(text), &options, NULL);
+		if (published)
+			*created = nb_charp_steal(&name);
+		if (rc != NB_ERR_EXISTS)
+			return rc;
 	}
-	size_t offset = 0;
-	size_t len = strlen(text);
-	int rc = 0;
-	while (offset < len) {
-		ssize_t n = write(fd, text + offset, len - offset);
-		if (n < 0 && errno == EINTR)
-			continue;
-		if (n <= 0) {
-			rc = morph_error_from_errno(errno);
-			break;
-		}
-		offset += (size_t)n;
-	}
-	if (rc == 0 && fsync(fd) != 0)
-		rc = morph_error_from_errno(errno);
-	if (close(fd) != 0 && rc == 0)
-		rc = morph_error_from_errno(errno);
-	if (rc != 0) {
-		unlink(*created);
-		free(*created);
-		*created = NULL;
-	}
-	return rc;
+	return NB_ERR_EXISTS;
 }
 
 static int cli_wizard_role_snapshot(const char *path, int role, const char *text, char **snapshot,
 				    int *created)
 {
+	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_6 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	*snapshot = NULL;
 	*created = 0;
-	char *directory = file_path_append_alloc(path, ".prompts");
+	char *directory =
+		(nb_buf_clear(&file_value_3), nb_buf_printf(&file_value_3, "%s%s", path, ".prompts")
+						      ? strdup(nb_buf_cstr(&file_value_3))
+						      : NULL);
 	if (!directory)
-		return -ENOMEM;
-	int rc = file_ensure_dir(directory);
-	char *base = rc == 0 ? file_path_join_alloc(directory, cli_setup_role_get(role).id) : NULL;
-	char *named = base ? file_path_append_alloc(base, ".md") : NULL;
+		return NB_ERR_NOMEM;
+	int rc = nb_file_mkdir(directory, true, NULL);
+	char *base = rc == 0 ? (nb_path_concat(&file_value_4, directory,
+					       cli_setup_role_get(role).id) == NB_OK
+					? strdup(nb_buf_cstr(&file_value_4))
+					: NULL)
+			     : NULL;
+	char *named = base ? (nb_buf_clear(&file_value_5),
+			      nb_buf_printf(&file_value_5, "%s%s", base, ".md")
+				      ? strdup(nb_buf_cstr(&file_value_5))
+				      : NULL)
+			   : NULL;
 	if (rc == 0 && !named)
-		rc = -ENOMEM;
+		rc = NB_ERR_NOMEM;
 	if (rc == 0) {
 		struct stat st;
 		if (lstat(named, &st) == 0 && S_ISREG(st.st_mode) && st.st_size >= 0 &&
 		    (size_t)st.st_size == strlen(text)) {
-			char *current = file_read_all_copy(named, NULL);
+			char *current =
+				(nb_file_read_all(named, &file_value_6, 0, NULL) == NB_OK &&
+						 (file_copy_6 = (char *)malloc(
+							  nb_buf_len(&file_value_6) + 1)) != NULL
+					 ? (memcpy(file_copy_6, nb_buf_cstr(&file_value_6),
+						   nb_buf_len(&file_value_6) + 1),
+					    nb_charp_steal(&file_copy_6))
+					 : NULL);
 			int same = current && strcmp(current, text) == 0;
 			free(current);
 			if (same) {
@@ -452,21 +477,11 @@ static int cli_wizard_role_snapshot(const char *path, int role, const char *text
 			}
 		}
 		rc = cli_wizard_save_config(named, text, 0, created);
-		if (rc == -EEXIST) {
+		if (rc == NB_ERR_EXISTS) {
 			/* Preserve a customized or concurrently published named snapshot. */
-			rc = cli_wizard_unique_file(base, "-XXXXXX.md", text, snapshot);
-			if (rc == 0) {
+			rc = cli_wizard_unique_file(base, "-", ".md", text, snapshot);
+			if (*snapshot)
 				*created = 1;
-				int fd = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-				if (fd < 0)
-					rc = morph_error_from_errno(errno);
-				else {
-					if (fsync(fd) != 0)
-						rc = morph_error_from_errno(errno);
-					if (close(fd) != 0 && rc == 0)
-						rc = morph_error_from_errno(errno);
-				}
-			}
 		} else if (rc == 0 || *created) {
 			*snapshot = named;
 			named = NULL;
@@ -481,26 +496,40 @@ static int cli_wizard_role_snapshot(const char *path, int role, const char *text
 static int cli_wizard_publish_setup(const char *path, const char *original, const char *text,
 				    FILE *output)
 {
+	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_8 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	if (!original)
 		return cli_wizard_save_config(path, text, 0, NULL);
-	char *lock_path = file_path_append_alloc(path, ".lock");
+	char *lock_path =
+		(nb_buf_clear(&file_value_7), nb_buf_printf(&file_value_7, "%s%s", path, ".lock")
+						      ? strdup(nb_buf_cstr(&file_value_7))
+						      : NULL);
 	if (!lock_path)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	int lock = cli_management_lock(lock_path);
 	free(lock_path);
 	if (lock < 0)
 		return lock;
 	struct stat st;
-	int rc = lstat(path, &st) == 0 ? 0 : morph_error_from_errno(errno);
+	int rc = lstat(path, &st) == 0 ? 0 : nb_status_from_errno(errno, NULL);
 	if (rc == 0 && !S_ISREG(st.st_mode))
-		rc = -EINVAL;
-	char *current = rc == 0 ? file_read_all_copy(path, NULL) : NULL;
+		rc = NB_ERR_INVAL;
+	char *current = rc == 0 ? (nb_file_read_all(path, &file_value_8, 0, NULL) == NB_OK &&
+						   (file_copy_8 = (char *)malloc(
+							    nb_buf_len(&file_value_8) + 1)) != NULL
+					   ? (memcpy(file_copy_8, nb_buf_cstr(&file_value_8),
+						     nb_buf_len(&file_value_8) + 1),
+					      nb_charp_steal(&file_copy_8))
+					   : NULL)
+				: NULL;
 	if (rc == 0 && (!current || strcmp(current, original) != 0))
-		rc = -ESTALE;
+		rc = NB_ERR_STALE;
 	free(current);
 	char *backup = NULL;
 	if (rc == 0)
-		rc = cli_wizard_unique_file(path, ".backup-XXXXXX", original, &backup);
+		rc = cli_wizard_unique_file(path, ".backup-", "", original, &backup);
 	if (rc == 0)
 		rc = cli_wizard_save_config(path, text, 1, NULL);
 	if (backup)
@@ -513,6 +542,9 @@ static int cli_wizard_publish_setup(const char *path, const char *original, cons
 static int cli_wizard_save_setup(struct cli_setup_state *state, const char *path,
 				 const char *original, FILE *output)
 {
+	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_copy_9 NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 	const char *names[] = {"text", "vision", "image", "video"};
 	for (int i = 0; i < CLI_SETUP_MODEL_COUNT; i++)
 		if (cli_setup_role_requires(state->role, i) &&
@@ -522,8 +554,8 @@ static int cli_wizard_save_setup(struct cli_setup_state *state, const char *path
 	char *snapshot = NULL;
 	int snapshot_created = 0;
 	char *merged = NULL;
-	morph_buf_t patch = {0};
-	int rc = morph_buf_init(&patch, 0);
+	nb_buf patch NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = (nb_buf_init(&patch), nb_buf_reserve(&patch, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	if (state->replace_prompt) {
@@ -532,16 +564,16 @@ static int cli_wizard_save_setup(struct cli_setup_state *state, const char *path
 			rc = cli_wizard_role_snapshot(path, state->role, prompt_text, &snapshot,
 						      &snapshot_created);
 		if (rc == 0) {
-			morph_buf_puts(&patch, "[prompt]\nmode = \"replace\"\n");
+			nb_buf_append_cstr(&patch, "[prompt]\nmode = \"replace\"\n");
 			cli_wizard_append_field(&patch, "system_prompt_file", snapshot);
 			cli_wizard_append_field(&patch, "system_prompt_dir", "");
 		}
 	}
-	morph_buf_puts(&patch, "\n[setup]\n");
+	nb_buf_append_cstr(&patch, "\n[setup]\n");
 	cli_wizard_append_field(&patch, "role", cli_setup_role_get(state->role).id);
 	for (int i = 0; i < CLI_SETUP_MODEL_COUNT; i++) {
 		struct config_model_entry *entry = &state->entries[i];
-		morph_buf_printf(&patch, "\n[model.%s]\n", names[i]);
+		nb_buf_printf(&patch, "\n[model.%s]\n", names[i]);
 		cli_wizard_append_field(&patch, "provider", entry->provider);
 		cli_wizard_append_field(&patch, "adapter", entry->adapter);
 		cli_wizard_append_field(&patch, "model", entry->model);
@@ -550,36 +582,36 @@ static int cli_wizard_save_setup(struct cli_setup_state *state, const char *path
 		cli_wizard_append_field(&patch, "api_key_env", entry->api_key_env);
 		cli_wizard_append_field(&patch, "extra_body_json", entry->extra_body_json);
 		if ((i == CLI_SETUP_TEXT || i == CLI_SETUP_VISION) && entry->model[0])
-			morph_buf_printf(&patch, "context_limit = %d\nmax_tokens = %d\n",
-					 entry->context_limit, entry->max_tokens);
+			nb_buf_printf(&patch, "context_limit = %d\nmax_tokens = %d\n",
+				      entry->context_limit, entry->max_tokens);
 		if (!entry->model[0])
 			continue;
 		if (entry->timeout_seconds > 0)
-			morph_buf_printf(&patch, "timeout_seconds = %d\n", entry->timeout_seconds);
+			nb_buf_printf(&patch, "timeout_seconds = %d\n", entry->timeout_seconds);
 		if (i == CLI_SETUP_TEXT || i == CLI_SETUP_VISION)
-			morph_buf_printf(&patch, "retry_count = %d\n", entry->retry_count);
+			nb_buf_printf(&patch, "retry_count = %d\n", entry->retry_count);
 		if (i == CLI_SETUP_VIDEO) {
 			if (entry->poll_interval_seconds > 0)
-				morph_buf_printf(&patch, "poll_interval_seconds = %d\n",
-						 entry->poll_interval_seconds);
+				nb_buf_printf(&patch, "poll_interval_seconds = %d\n",
+					      entry->poll_interval_seconds);
 			if (entry->poll_timeout_seconds > 0)
-				morph_buf_printf(&patch, "poll_timeout_seconds = %d\n",
-						 entry->poll_timeout_seconds);
+				nb_buf_printf(&patch, "poll_timeout_seconds = %d\n",
+					      entry->poll_timeout_seconds);
 		}
 	}
 	if (!original)
-		morph_buf_puts(&patch, "\n[exec]\nnetwork = true\n");
+		nb_buf_append_cstr(&patch, "\n[exec]\nnetwork = true\n");
 	else
-		morph_buf_puts(&patch, "\n[exec]\n");
-	morph_buf_puts(
+		nb_buf_append_cstr(&patch, "\n[exec]\n");
+	nb_buf_append_cstr(
 		&patch,
 		"allow_host_execution = true\n"
 		"\n[react]\nhitl_auto_approve_readonly = true\nhitl_auto_approve_media = true\n");
 	if (rc == 0)
-		rc = patch.failed;
+		rc = nb_buf_status(&patch);
 	if (rc == 0)
-		rc = cli_setup_config_merge_copy(original ? original : "",
-						 morph_buf_cstr_borrow(&patch), &merged);
+		rc = cli_setup_config_merge_copy(original ? original : "", nb_buf_cstr(&patch),
+						 &merged);
 	if (rc == 0) {
 		char *credentials = NULL;
 		rc = cli_setup_config_credentials_copy(merged, &credentials);
@@ -599,7 +631,13 @@ static int cli_wizard_save_setup(struct cli_setup_state *state, const char *path
 		rc = cli_wizard_publish_setup(path, original, merged, output);
 	if (rc != 0 && snapshot && snapshot_created) {
 		/* A directory sync failure can follow a successful atomic replacement. */
-		char *published = file_read_all_copy(path, NULL);
+		char *published = (nb_file_read_all(path, &file_value_9, 0, NULL) == NB_OK &&
+						   (file_copy_9 = (char *)malloc(
+							    nb_buf_len(&file_value_9) + 1)) != NULL
+					   ? (memcpy(file_copy_9, nb_buf_cstr(&file_value_9),
+						     nb_buf_len(&file_value_9) + 1),
+					      nb_charp_steal(&file_copy_9))
+					   : NULL);
 		if (!published || !merged || strcmp(published, merged) != 0)
 			unlink(snapshot);
 		free(published);
@@ -607,23 +645,31 @@ static int cli_wizard_save_setup(struct cli_setup_state *state, const char *path
 	free(prompt_text);
 	free(snapshot);
 	free(merged);
-	morph_buf_cleanup(&patch);
+	nb_buf_cleanup(&patch);
 	return rc;
 }
 
 static int cli_wizard_setup_run(struct cli_application *ctx, const char *path, FILE *input,
 				FILE *output, int reconfigure)
 {
+	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_value_11 NB_CLEANUP(nb_buf_destroy) = {0};
+
 	struct cli_setup_state state = {.reconfigure = reconfigure};
 	char *original = NULL;
 	char current[PATH_MAX];
-	char *expanded = path ? file_expand_path_copy(path) : NULL;
+	char *expanded = path ? (nb_path_expand(&file_value_10, path, NULL) == NB_OK
+					 ? strdup(nb_buf_cstr(&file_value_10))
+					 : NULL)
+			      : NULL;
 	char *full = expanded && getcwd(current, sizeof(current))
-			     ? file_path_full_alloc(current, expanded)
+			     ? (nb_path_join(&file_value_11, current, expanded) == NB_OK
+					? strdup(nb_buf_cstr(&file_value_11))
+					: NULL)
 			     : NULL;
 	free(expanded);
 	if (!full)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	int rc = cli_wizard_load_existing(full, &state, &original);
 	if (rc == 0)
 		rc = cli_setup_controls_available(input, output)
@@ -703,22 +749,28 @@ int cli_setup_command(struct cli_application *ctx, int argc, char **argv, const 
 	}
 	int rc = cli_setup_reconfigure(ctx, path ? path : "~/.morph/config.toml", stdin, stderr);
 	if (rc < 0)
-		fprintf(stderr, "morph: setup failed: %s\n", morph_strerror(rc));
+		fprintf(stderr, "morph: setup failed: %s\n",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	return rc < 0 ? 1 : 0;
 }
 
 int cli_setup_if_missing(struct cli_application *ctx, const char *path, int interactive)
 {
-	char *expanded = file_expand_path_copy(path ? path : "~/.morph/config.toml");
+	nb_buf file_value_12 NB_CLEANUP(nb_buf_destroy) = {0};
+
+	char *expanded =
+		(nb_path_expand(&file_value_12, path ? path : "~/.morph/config.toml", NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&file_value_12))
+			 : NULL);
 	if (!expanded)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	struct stat st;
 	if (lstat(expanded, &st) == 0) {
 		free(expanded);
 		return 0;
 	}
-	int rc = -errno;
-	if (rc == -ENOENT) {
+	int rc = nb_status_from_errno(errno, NULL);
+	if (rc == NB_ERR_NOT_FOUND) {
 		if (interactive && isatty(STDIN_FILENO) && isatty(STDERR_FILENO)) {
 			rc = cli_setup(ctx, expanded, stdin, stderr);
 			if (rc >= 0)
@@ -731,10 +783,11 @@ int cli_setup_if_missing(struct cli_application *ctx, const char *path, int inte
 				expanded);
 		}
 	}
-	if (rc == -ECANCELED)
+	if (rc == NB_ERR_CANCELLED)
 		fprintf(stderr, "Setup canceled. No configuration was saved.\n");
 	else if (rc < 0)
-		fprintf(stderr, "morph: setup failed: %s\n", morph_strerror(rc));
+		fprintf(stderr, "morph: setup failed: %s\n",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	free(expanded);
 	if (rc < 0)
 		return rc;

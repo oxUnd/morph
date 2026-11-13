@@ -5,8 +5,10 @@
 extern "C" {
 #endif
 
-#include "util/array.h"
-#include "util/buf.h"
+#include "nb/vec.h"
+#include "nb/cleanup.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
 #include <limits.h>
 
 enum patch_action {
@@ -23,7 +25,7 @@ struct patch_change {
 };
 
 struct patch_result {
-	morph_array_t changes;
+	nb_vec changes;
 };
 
 typedef int (*patch_authorize_fn)(const char *path, int deletion, void *user_data);
@@ -56,8 +58,8 @@ int patch_apply(const char *workdir, const char *input,
  * negative error when the patch cannot be previewed; callers may then fall
  * back to showing the raw patch text.
  */
-int patch_preview(const char *workdir, const char *input, morph_buf_t *out,
-		  char *error, size_t error_size);
+int patch_preview(const char *workdir, const char *input, nb_buf *out, char *error,
+		  size_t error_size);
 void patch_result_cleanup(struct patch_result *result);
 const char *patch_action_name(enum patch_action action);
 

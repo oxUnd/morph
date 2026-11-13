@@ -8,11 +8,12 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/status.h"
 #include "sapi/cli/presentation/style.h"
-#include "util/log.h"
-#include "util/file.h"
-#include "util/buf.h"
-#include "util/error.h"
-#include "util/utf8.h"
+#include "nb/log.h"
+#include "nb/file.h"
+#include "nb/buf.h"
+#include "nb/cleanup.h"
+#include "errors.h"
+#include "nb/utf8.h"
 #include <errno.h>
 #include <limits.h>
 #include <pthread.h>

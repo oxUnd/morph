@@ -2,16 +2,16 @@
 #include <morph/tui/view_controller.h>
 #include <morph/tui/window.h>
 #include "application_loop.h"
-#include "util/error.h"
-#include "util/signals.h"
+#include "errors.h"
+#include "nb/signal.h"
 
 #include <stdlib.h>
 
 struct morph_tui_application_state {
 	struct core_application_loop *loop;
 	struct morph_tui_application_options options;
-	struct morph_signal_listener signals;
-	volatile sig_atomic_t signal;
+	nb_signal_listener *signals;
+	nb_atomic_int signal;
 	int launched, launching, closing, result;
 };
 
@@ -32,7 +32,7 @@ static void core_runner_signal(int number, void *data)
 	struct morph_tui_application *app = data;
 
 	if (number != SIGWINCH)
-		morph_signal_flag_set(&app->state->signal, number);
+		nb_atomic_int_store(&app->state->signal, number);
 	(void)morph_tui_application_wake(app);
 }
 
@@ -40,7 +40,7 @@ static int core_runner_event(void *data, struct morph_tui_application *app,
 			     const struct morph_tui_event *event)
 {
 	struct morph_tui_application_state *state = app->state;
-	int number = morph_signal_flag_take(&state->signal);
+	int number = nb_atomic_int_exchange(&state->signal, 0);
 
 	(void)data;
 	if (number) {
@@ -69,13 +69,13 @@ int morph_tui_application_init(struct morph_tui_application *app,
 			       const struct morph_tui_application_options *options)
 {
 	if (!app)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (app->state)
-		return -EBUSY;
+		return NB_ERR_BUSY;
 	struct morph_tui_application_state *state = calloc(1, sizeof(*state));
 
 	if (!state)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	if (options)
 		state->options = *options;
 	app->state = state;
@@ -92,9 +92,11 @@ int morph_tui_application_init(struct morph_tui_application *app,
 		rc = morph_tui_window_set_event_handler_borrow(
 			morph_tui_application_window_borrow(app), core_runner_input, app);
 	if (!rc && !state->options.external_signals)
-		rc = morph_signal_listener_start(&state->signals, core_runner_signal, app);
+		rc = nb_signal_listener_start(
+			&state->signals, (const int[]){SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGWINCH},
+			5, core_runner_signal, app, NULL);
 	if (rc) {
-		morph_signal_listener_stop(&state->signals);
+		nb_signal_listener_stop(&state->signals, NULL);
 		core_application_loop_destroy(state->loop);
 		free(state);
 		app->state = NULL;
@@ -110,13 +112,13 @@ int morph_tui_application_init(struct morph_tui_application *app,
 static int core_runner_launch(struct morph_tui_application *app)
 {
 	if (!morph_tui_application_is_owner(app))
-		return -EPERM;
+		return NB_ERR_NOT_PERMITTED;
 	struct morph_tui_application_state *state = app->state;
 
 	if (state->closing)
-		return -ECANCELED;
+		return NB_ERR_CANCELLED;
 	if (state->launching)
-		return -EBUSY;
+		return NB_ERR_BUSY;
 	if (state->launched)
 		return 0;
 	state->launching = 1;
@@ -136,7 +138,7 @@ int morph_tui_application_run(struct morph_tui_application *app)
 	if (rc)
 		return rc;
 	rc = core_application_loop_run(app->state->loop);
-	if (rc != -EBUSY)
+	if (rc != NB_ERR_BUSY)
 		app->state->result = rc;
 	return rc;
 }
@@ -144,14 +146,14 @@ int morph_tui_application_run(struct morph_tui_application *app)
 int morph_tui_application_render(struct morph_tui_application *app)
 {
 	if (!app || !app->state)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return core_application_loop_render(app->state->loop);
 }
 
 int morph_tui_application_restore_terminal(struct morph_tui_application *app)
 {
 	if (!app || !app->state)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	return core_application_loop_restore_terminal(app->state->loop);
 }
 
@@ -162,7 +164,7 @@ int morph_tui_application_step(struct morph_tui_application *app, int wait)
 	if (rc)
 		return rc;
 	rc = core_application_loop_step(app->state->loop, wait);
-	if (rc != -EBUSY)
+	if (rc != NB_ERR_BUSY)
 		app->state->result = rc;
 	return rc;
 }
@@ -186,7 +188,7 @@ void morph_tui_application_deinit(struct morph_tui_application *app)
 	core_application_loop_stop(state->loop, state->result);
 	if (app->ops && app->ops->prepare_termination)
 		app->ops->prepare_termination(app, state->result);
-	morph_signal_listener_stop(&state->signals);
+	nb_signal_listener_stop(&state->signals, NULL);
 	core_application_loop_destroy(state->loop);
 	state->loop = NULL;
 	if (app->ops && app->ops->terminate)
@@ -199,13 +201,13 @@ int morph_tui_application_create(const struct morph_tui_application_options *opt
 				 struct morph_tui_application **out)
 {
 	if (!out)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	if (*out)
-		return -EEXIST;
+		return NB_ERR_EXISTS;
 	struct morph_tui_application *app = calloc(1, sizeof(*app));
 
 	if (!app)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	int rc = morph_tui_application_init(app, options);
 
 	if (rc)
@@ -295,13 +297,13 @@ int morph_tui_application_dismiss_controller(struct morph_tui_application *app, 
 int morph_tui_application_main(struct morph_tui_application *app,
 			       const struct morph_tui_view_controller_spec *root)
 {
-	int rc = !app || !root ? -EINVAL : app->state ? -EBUSY : 0;
+	int rc = !app || !root ? NB_ERR_INVAL : app->state ? NB_ERR_BUSY : 0;
 	int initialized = 0;
 
 	if (!rc) {
 		rc = morph_tui_terminal_available(stdin, stdout)
 			     ? morph_tui_application_init(app, NULL)
-			     : -ENOTTY;
+			     : NB_ERR_NOT_TERMINAL;
 		initialized = rc == 0;
 	}
 
@@ -315,7 +317,8 @@ int morph_tui_application_main(struct morph_tui_application *app,
 		morph_tui_application_deinit(app);
 	}
 	if (rc < 0) {
-		fprintf(stderr, "TUI application failed: %s\n", morph_strerror(rc));
+		fprintf(stderr, "TUI application failed: %s\n",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return EXIT_FAILURE;
 	}
 	return rc;

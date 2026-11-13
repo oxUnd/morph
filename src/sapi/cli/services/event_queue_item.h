@@ -2,7 +2,7 @@
 #define MORPH_CLI_SERVICES_EVENT_QUEUE_ITEM_H
 
 #include "event/event.h"
-#include "util/queue.h"
+#include "nb/queue.h"
 
 enum cli_event_queue_item_kind {
 	CLI_EVENT_QUEUE_UI_ITEM_MORPH_EVENT,
@@ -13,7 +13,7 @@ enum cli_event_queue_item_kind {
 struct cli_event_queue_owner_call;
 
 struct cli_event_queue_item {
-	morph_queue_t link;
+	nb_queue link;
 	enum cli_event_queue_item_kind kind;
 	struct morph_event event;
 	char *name;

@@ -1,6 +1,8 @@
 #include "stream.h"
-#include "util/log.h"
-#include "util/error.h"
+#include "nb/str.h"
+#include "nb/utf8.h"
+#include "nb/log.h"
+#include "errors.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -18,34 +20,55 @@ void llm_usage_copy(char *dst, size_t dst_cap, const char *src)
 {
 	if (!dst || dst_cap == 0 || !src)
 		return;
-	strncpy(dst, src, dst_cap - 1);
+	(void)nb_str_copy_to(nb_str_from_parts(src, nb_utf8_clamp_bytes(src, dst_cap - 1)), dst,
+			     (dst_cap - 1) + 1);
 	dst[dst_cap - 1] = '\0';
+}
+
+static void llm_stream_calls_clear(struct llm_stream_ctx *ctx)
+{
+	for (size_t i = 0; i < ctx->call_storage.len; i++) {
+		struct tool_call *call = nb_vec_at(&ctx->call_storage, i);
+		nb_buf *input = nb_vec_at(&ctx->input_storage, i);
+		if (input && call->arguments == input->ptr)
+			call->arguments = NULL;
+		tool_call_cleanup(call);
+		nb_buf_destroy(input);
+	}
+	nb_vec_clear(&ctx->call_storage);
+	nb_vec_clear(&ctx->input_storage);
+	ctx->tool_calls = NULL;
+	ctx->tool_call_count = 0;
 }
 
 void llm_stream_cleanup(struct llm_stream_ctx *ctx)
 {
 	if (!ctx)
 		return;
-	morph_buf_cleanup(&ctx->accumulated);
-	morph_buf_cleanup(&ctx->reasoning);
+	nb_buf_destroy(&ctx->accumulated);
+	nb_buf_destroy(&ctx->reasoning);
 	free(ctx->terminal_detail);
-	for (int i = 0; i < ctx->tool_call_count; i++)
-		tool_call_cleanup(&ctx->tool_calls[i]);
-	free(ctx->tool_calls);
+	llm_stream_calls_clear(ctx);
+	nb_vec_destroy(&ctx->call_storage);
+	nb_vec_destroy(&ctx->input_storage);
 	memset(ctx, 0, sizeof(*ctx));
 }
 
 void llm_stream_init(struct llm_stream_ctx *ctx, sse_callback cb, void *user_data)
 {
 	memset(ctx, 0, sizeof(*ctx));
+	nb_vec_init(&ctx->call_storage, sizeof(struct tool_call));
+	nb_vec_init(&ctx->input_storage, sizeof(nb_buf));
 	ctx->user_cb = cb;
 	ctx->user_data = user_data;
-	int rc = morph_buf_init(&ctx->accumulated, 8192);
+	int rc = (nb_buf_init(&ctx->accumulated),
+		  nb_buf_reserve(&ctx->accumulated, 8192) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
-		ctx->accumulated.failed = rc;
-	rc = morph_buf_init(&ctx->reasoning, 8192);
+		nb_buf_set_error(&ctx->accumulated, rc);
+	rc = (nb_buf_init(&ctx->reasoning),
+	      nb_buf_reserve(&ctx->reasoning, 8192) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
-		ctx->reasoning.failed = rc;
+		nb_buf_set_error(&ctx->reasoning, rc);
 }
 
 void llm_stream_init_typed(struct llm_stream_ctx *ctx, llm_stream_callback cb, void *user_data)
@@ -56,7 +79,7 @@ void llm_stream_init_typed(struct llm_stream_ctx *ctx, llm_stream_callback cb, v
 
 void llm_stream_append(struct llm_stream_ctx *ctx, const char *text)
 {
-	(void)morph_buf_puts(&ctx->accumulated, text);
+	(void)nb_buf_append_cstr(&ctx->accumulated, text);
 }
 
 int llm_stream_emit(struct llm_stream_ctx *ctx, enum llm_stream_kind kind, const char *text)
@@ -73,52 +96,106 @@ int llm_stream_emit(struct llm_stream_ctx *ctx, enum llm_stream_kind kind, const
 
 int llm_stream_string_copy(char **owner, const char *text)
 {
-	char *copy MORPH_CLEANUP(morph_charp_cleanup) = NULL;
+	char *copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	if (!owner || !text)
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	copy = strdup(text);
 	if (!copy)
-		return -ENOMEM;
+		return NB_ERR_NOMEM;
 	free(*owner);
-	*owner = morph_charp_steal(&copy);
+	*owner = nb_charp_steal(&copy);
 	return 0;
 }
 
 struct tool_call *llm_stream_tool_call_ensure_borrow(struct llm_stream_ctx *ctx, int index)
 {
-	if (index < 0 || index > INT_MAX - 4)
+	if (!ctx || index < 0 || index > INT_MAX - 4)
 		return NULL;
-	if (index >= ctx->tool_call_cap) {
-		int new_cap = index + 4;
-		if ((size_t)new_cap > SIZE_MAX / sizeof(*ctx->tool_calls))
-			return NULL;
-		struct tool_call *next =
-			realloc(ctx->tool_calls, (size_t)new_cap * sizeof(*ctx->tool_calls));
-		if (!next)
-			return NULL;
-		for (int i = ctx->tool_call_cap; i < new_cap; i++)
-			memset(&next[i], 0, sizeof(next[i]));
-		ctx->tool_calls = next;
-		ctx->tool_call_cap = new_cap;
+	size_t count = (size_t)index + 1;
+	if (!nb_vec_reserve(&ctx->call_storage, count))
+		return NULL;
+	ctx->tool_calls = (struct tool_call *)ctx->call_storage.data;
+	if (!nb_vec_reserve(&ctx->input_storage, count))
+		return NULL;
+	if (count > ctx->call_storage.len) {
+		size_t added = count - ctx->call_storage.len;
+		void *calls = nb_vec_push_n(&ctx->call_storage, added);
+		void *inputs = nb_vec_push_n(&ctx->input_storage, added);
+		memset(calls, 0, added * ctx->call_storage.elem_size);
+		memset(inputs, 0, added * ctx->input_storage.elem_size);
+		ctx->tool_call_count = (int)count;
 	}
-	if (index >= ctx->tool_call_count)
-		ctx->tool_call_count = index + 1;
-	return &ctx->tool_calls[index];
+	return nb_vec_at(&ctx->call_storage, (size_t)index);
 }
 
-void llm_stream_tool_calls_move(struct llm_stream_ctx *ctx, struct chat_response *resp)
+static nb_buf *llm_stream_call_input_borrow(struct llm_stream_ctx *ctx, struct tool_call *call)
+{
+	if (!ctx || !call || !ctx->tool_calls)
+		return NULL;
+	ptrdiff_t index = call - ctx->tool_calls;
+	if (index < 0 || index >= ctx->tool_call_count)
+		return NULL;
+	return nb_vec_at(&ctx->input_storage, (size_t)index);
+}
+
+int llm_stream_call_input_append(struct llm_stream_ctx *ctx, struct tool_call *call,
+				 const char *delta)
+{
+	nb_buf *input = llm_stream_call_input_borrow(ctx, call);
+	if (!input)
+		return NB_ERR_PROTOCOL;
+	char *external = call->arguments != input->ptr ? call->arguments : NULL;
+	if (external && !nb_buf_append_cstr(input, external))
+		return NB_ERR_NOMEM;
+	if (!nb_buf_reserve(input, 0) || !nb_buf_append_cstr(input, delta ? delta : ""))
+		return NB_ERR_NOMEM;
+	free(external);
+	call->arguments = input->ptr;
+	return 0;
+}
+
+int llm_stream_call_input_set(struct llm_stream_ctx *ctx, struct tool_call *call, const char *text)
+{
+	nb_buf *input = llm_stream_call_input_borrow(ctx, call);
+	nb_buf candidate NB_CLEANUP(nb_buf_cleanup) = {0};
+	if (!input)
+		return NB_ERR_PROTOCOL;
+	if (!nb_buf_reserve(&candidate, 0) || !nb_buf_append_cstr(&candidate, text ? text : ""))
+		return NB_ERR_NOMEM;
+	if (call->arguments && call->arguments != input->ptr)
+		free(call->arguments);
+	nb_buf_move(input, &candidate);
+	call->arguments = input->ptr;
+	return 0;
+}
+
+int llm_stream_tool_calls_move(struct llm_stream_ctx *ctx, struct chat_response *resp)
 {
 	if (!ctx || !resp)
-		return;
-	for (int i = 0; resp->tool_calls && i < resp->tool_call_count; i++)
+		return NB_ERR_INVAL;
+	struct chat_response candidate NB_CLEANUP(chat_response_free) = {0};
+	if (ctx->tool_call_count) {
+		candidate.tool_calls =
+			calloc((size_t)ctx->tool_call_count, sizeof(*candidate.tool_calls));
+		if (!candidate.tool_calls)
+			return NB_ERR_NOMEM;
+	}
+	for (int i = 0; i < ctx->tool_call_count; i++) {
+		candidate.tool_call_count = i + 1;
+		int rc = tool_call_clone(&ctx->tool_calls[i], &candidate.tool_calls[i]);
+		if (rc)
+			return rc;
+	}
+	for (int i = 0; i < resp->tool_call_count; i++)
 		tool_call_cleanup(&resp->tool_calls[i]);
 	free(resp->tool_calls);
-	resp->tool_calls = ctx->tool_calls;
-	resp->tool_call_count = ctx->tool_call_count;
-	ctx->tool_calls = NULL;
-	ctx->tool_call_count = 0;
-	ctx->tool_call_cap = 0;
+	resp->tool_calls = candidate.tool_calls;
+	resp->tool_call_count = candidate.tool_call_count;
+	candidate.tool_calls = NULL;
+	candidate.tool_call_count = 0;
+	llm_stream_calls_clear(ctx);
+	return 0;
 }
 
 void llm_usage_finalize(struct model *self, struct llm_stream_ctx *ctx, size_t request_bytes)
@@ -239,7 +316,8 @@ void llm_stream_parse_usage(struct llm_stream_ctx *ctx, cJSON *root)
 	llm_usage_parse_details(&ctx->usage, usage_obj);
 	llm_usage_copy(ctx->usage.usage_source, sizeof(ctx->usage.usage_source), "provider");
 	if (ctx->usage.input_tokens > 0)
-		log_dbg(ctx ? ctx->logger : NULL,
+		nb_log_write(
+			ctx ? ctx->logger : NULL, NB_LOG_DEBUG,
 			"llm usage: prompt cache %lld/%lld input tokens (%.1f%% hit)",
 			(long long)ctx->usage.cached_tokens, (long long)ctx->usage.input_tokens,
 			(double)ctx->usage.cached_tokens * 100.0 / (double)ctx->usage.input_tokens);

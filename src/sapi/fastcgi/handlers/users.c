@@ -1,6 +1,7 @@
 /* users.c — install, signup, and current-user quota endpoints */
 #define _GNU_SOURCE
 #include "handlers.h"
+#include "nb/err.h"
 #include "sapi/fastcgi/storage/users.h"
 #include "sapi/fastcgi/storage/quota.h"
 #include "sapi/fastcgi/storage/tokens.h"
@@ -50,7 +51,7 @@ static int read_user_password(request_t *r, char **body_out, cJSON **root_out,
 	if (!cJSON_IsObject(root)) {
 		cJSON_Delete(root);
 		free(body);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	u = cJSON_GetObjectItem(root, "username");
 	p = cJSON_GetObjectItem(root, "password");
@@ -58,7 +59,7 @@ static int read_user_password(request_t *r, char **body_out, cJSON **root_out,
 	if (!cJSON_IsString(u) || !u->valuestring || !cJSON_IsString(p) || !p->valuestring) {
 		cJSON_Delete(root);
 		free(body);
-		return -EINVAL;
+		return NB_ERR_INVAL;
 	}
 	*body_out = body;
 	*root_out = root;
@@ -87,7 +88,7 @@ void handle_install(request_t *r)
 	rc = read_user_password(r, &body, &root, &username, &password, &signup_code);
 	(void)signup_code;
 	if (rc < 0) {
-		if (rc == -EINVAL)
+		if (rc == NB_ERR_INVAL)
 			reply_400(r, "invalid json");
 		else
 			reply_body_error(r, rc);
@@ -97,11 +98,11 @@ void handle_install(request_t *r)
 	rc = store_create_user(r->store, username, password, "admin", user_id);
 	cJSON_Delete(root);
 	free(body);
-	if (rc == -EEXIST) {
+	if (rc == NB_ERR_EXISTS) {
 		reply_json(r, 409, "{\"error\":\"user_exists\"}");
 		return;
 	}
-	if (rc == -EINVAL) {
+	if (rc == NB_ERR_INVAL) {
 		reply_400(r, "invalid username or password");
 		return;
 	}
@@ -142,7 +143,7 @@ void handle_signup(request_t *r)
 	}
 	rc = read_user_password(r, &body, &root, &username, &password, &signup_code);
 	if (rc < 0) {
-		if (rc == -EINVAL)
+		if (rc == NB_ERR_INVAL)
 			reply_400(r, "invalid json");
 		else
 			reply_body_error(r, rc);
@@ -159,11 +160,11 @@ void handle_signup(request_t *r)
 	rc = store_create_user(r->store, username, password, "user", user_id);
 	cJSON_Delete(root);
 	free(body);
-	if (rc == -EEXIST) {
+	if (rc == NB_ERR_EXISTS) {
 		reply_json(r, 409, "{\"error\":\"user_exists\"}");
 		return;
 	}
-	if (rc == -EINVAL) {
+	if (rc == NB_ERR_INVAL) {
 		reply_400(r, "invalid username or password");
 		return;
 	}

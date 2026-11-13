@@ -1,5 +1,10 @@
 # src 稳定性、扩展性与鲁棒性改进设计
 
+> 迁移后说明（2026-11-13）：本计划保留历史实施依据及原始路径。其底层容器、
+> 错误、取消、线程和进程 I/O 已由固定 nbase 原生 API 接管，旧 `src/util` 与
+> `morph-util` 已删除。现行契约见 [nbase 迁移结果](nothing-migration-assessment.zh-CN.md#10-实施进度2026-11-13分支-featnothing-migration)
+> 和 [所有权规范](state-ownership.md)；历史 helper 名称不再作为可调用接口。
+
 - 状态：本次复核发现的实现遗漏已修复，本机可执行门禁通过；完整验证覆盖尚非 100%。
 - 文档版本：v4，补充二次复核、错误路径修复及验证边界。
 - 日期：2026-10-30。
@@ -442,10 +447,11 @@ cleanup 要求全部执行者已回收；runtime 关闭顺序已满足这一前�
 
 ### 5.5 底层进程 I/O
 
-`util/child_io.h` 提供 `morph_io_write()` 和 `morph_child_exchange()`，参数只包含
-fd、输入、deadline/超时、取消和输出预算，不包含工具、runtime 或 UI 对象。
-后者接管 child 和 stdin writer，借用 stdout/stderr 和已初始化缓冲区至返回；
-前者借用 fd，恢复原 flags，并在线程内屏蔽和消费自身产生的 SIGPIPE。
+现行底层接口为 `nb/process.h`：`nb_process_spawn`、
+`nb_process_stdin_write_until` 和 `nb_process_exchange`。参数描述标准流、输入、
+deadline/超时、取消、输出预算和进程隔离，不包含工具、runtime 或 UI 对象。
+process owner 持有子进程与管道生命周期；调用者持有原生输出缓冲。交换返回后
+仍由 owner 统一释放进程，失败状态、截断与退出码分别表达。
 
 - 输入内存借用至通信结束；输出由调用者持有并通过统一 cleanup 释放。
 - fd 是借用还是接管必须逐项声明，成功和失败都按相同约定处理，避免重复 close。

@@ -8,7 +8,23 @@ large local text file into context without reading the full file.
 
 ```sh
 make -C exts/read-lines
+make -C exts/read-lines test
 ```
+
+CMake builds the vendored nbase static library with position independent code
+and links it directly into the extension. No dependencies are fetched. A
+separate build directory supports ASan/UBSan without loading sanitizer code
+into the Python test runner:
+
+```sh
+cmake -S exts/read-lines -B /tmp/read-lines-asan -DNB_SANITIZE=ON
+cmake --build /tmp/read-lines-asan
+ctest --test-dir /tmp/read-lines-asan --output-on-failure
+```
+
+The same black-box cases exercise either the shared extension ABI or a native
+sanitized executable, including roots, symlinks, complete lines, byte caps,
+line-number overhead, binary rejection and Unicode/JSON output.
 
 Install locally:
 
@@ -49,8 +65,8 @@ Set `MORPH_READ_LINES_ROOTS` to override the allowlist. Use `:` between roots:
 export MORPH_READ_LINES_ROOTS="/path/to/skills:/path/to/datasets"
 ```
 
-Each requested file is resolved with `realpath()` and must remain under one of
-the allowed roots.
+Each requested file is resolved by `nb_path_canonical` and must remain under one
+of the allowed roots according to `nb_path_is_within`.
 
 ## Example Output
 
