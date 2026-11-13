@@ -113,6 +113,13 @@ int cli_subagents_thread_event(struct cli_subagents_thread *thread, const struct
 			thread->has_content = 1;
 		}
 		thread->content_open = 0;
+	} else if (!strcmp(name, "plan.updated")) {
+		char *state MORPH_CLEANUP(morph_json_text_cleanup) = cJSON_PrintUnformatted(event->data);
+		if (!state)
+			return -ENOMEM;
+		rc = cli_subagents_append(thread, CLI_SUBAGENTS_PLAN, state, 1);
+		thread->reasoning_open = 0;
+		thread->content_open = 0;
 	} else if (!strcmp(name, "react.final") && !thread->content_seen) {
 		rc = cli_subagents_append(thread, CLI_SUBAGENTS_ASSISTANT, text, 1);
 		thread->content_seen = 1;

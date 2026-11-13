@@ -439,6 +439,34 @@ TEST(CliSubagentsTest, UserBlocksMatchThePrimaryFeedWithoutCaptureOrCursorContro
 	subagents_expect_sgr_rows(document, 80, true);
 }
 
+TEST(CliSubagentsTest, PlanUpdatesUseTheSameWidgetAndBoundaryAsThePrimaryFeed)
+{
+	struct cli_subagents_thread *owner = nullptr;
+	ASSERT_EQ(cli_subagents_thread_create("/root/reader", &owner), 0);
+	SubagentThread thread(owner, cli_subagents_thread_destroy);
+	ASSERT_EQ(subagents_text_event(thread.get(), "react.content.end", "BEFORE_PLAN"), 0);
+	cJSON *data MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
+		R"({"agent_id":"/root/reader","plans":[{"steps":[
+		{"description":"Inspect parser","status":"in_progress"}]}]})");
+	ASSERT_NE(data, nullptr);
+	struct morph_event event{};
+	event.name = "plan.updated";
+	event.type = MORPH_EVENT_BACKGROUND;
+	event.data = data;
+	ASSERT_EQ(cli_subagents_thread_event(thread.get(), &event), 0);
+	ASSERT_EQ(subagents_text_event(thread.get(), "react.content.end", "AFTER_PLAN"), 0);
+	struct cli_application ctx{};
+	cli_output_set_color_enabled(&ctx, 0);
+	for (int columns : {120, 80, 60}) {
+		morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {};
+		ASSERT_EQ(cli_subagents_transcript(&ctx, thread.get(), &out, columns, 0), 0);
+		std::string text = subagents_plain(out);
+		EXPECT_NE(text.find("BEFORE_PLAN\n\n◉ Plan · 0/1 completed\n└ ◉ Inspect parser\n\n"),
+			std::string::npos);
+		EXPECT_NE(text.find("AFTER_PLAN"), std::string::npos);
+	}
+}
+
 TEST(CliSubagentsTest, AssistantMarkdownUsesFeedStylesAndKeepsRootStreamsUntouched)
 {
 	auto thread = make_thread("/root/worker");

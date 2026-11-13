@@ -33,6 +33,9 @@ add_library(morph-cli STATIC
 	widgets/feed.c
 	widgets/feed_block.c
 	widgets/list.c
+	widgets/notice.c
+	widgets/notification.c
+	widgets/plan.c
 	widgets/shell_style.c
 	widgets/transcript.c
 

@@ -6,6 +6,8 @@
 #include "sapi/cli/widgets/agents.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/widgets/transcript.h"
+#include "sapi/cli/widgets/plan.h"
+#include "sapi/cli/widgets/notice.h"
 #include "util/cleanup.h"
 #include <errno.h>
 
@@ -35,11 +37,21 @@ int cli_feed_block_append(morph_buf_t *out, const struct cli_feed_block *block,
 	}
 	case CLI_FEED_BLOCK_TOOL:
 		rc = cli_transcript_tool_append(&body, block->content.tool,
-			style->columns, style->styled, 0);
+			style->columns, style->styled, block->details);
 		break;
 	case CLI_FEED_BLOCK_AGENT_RECEIPT:
 		rc = cli_agents_receipt_append(&body, block->content.agent.id,
 			block->content.agent.status, style->columns, style->styled);
+		break;
+	case CLI_FEED_BLOCK_PLAN: {
+		struct cli_plan_style plan = {
+			.columns = style->columns, .styled = style->styled, .status_heading = 1,
+		};
+		rc = cli_plan_append(&body, block->content.plan, &plan);
+		break;
+	}
+	case CLI_FEED_BLOCK_NOTICE:
+		rc = cli_notice_append(&body, block->content.notice, style->columns, style->styled);
 		break;
 	default:
 		return -EINVAL;
@@ -72,4 +84,16 @@ int cli_feed_block_write(struct cli_application *ctx, const struct cli_feed_bloc
 	if (rc == 0 && document.len)
 		rc = cli_output_printf(ctx, "%s", morph_buf_cstr_borrow(&document));
 	return rc < 0 ? rc : 0;
+}
+
+int cli_feed_notice_write(struct cli_application *ctx, enum cli_notice_status status,
+			  const char *title, const char *detail, const char *footer)
+{
+	struct cli_notice notice = {
+		.status = status, .title = title, .detail = detail, .footer = footer,
+	};
+	struct cli_feed_block block = {
+		.kind = CLI_FEED_BLOCK_NOTICE, .content.notice = &notice,
+	};
+	return cli_feed_block_write(ctx, &block);
 }

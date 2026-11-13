@@ -3,6 +3,8 @@
 #include "credits.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/widgets/feed_block.h"
+#include "util/cleanup.h"
 
 void cli_runtime_observer_pause(void *user_data)
 {
@@ -29,8 +31,16 @@ static int cli_runtime_observer_credit_warning_on_owner(void *opaque)
 	(void)ctx;
 
 	cli_feed_history_begin(warning->ctx);
+	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
+		morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		(void)morph_buf_printf(&title, "Credits warning: %lld / %d today",
+			(long long)warning->credits, warning->daily_limit);
+		(void)cli_feed_notice_write(ctx, CLI_NOTICE_WARNING,
+			morph_buf_cstr_borrow(&title), NULL, NULL);
+	} else {
 	printf(ctx, ANSI_YELLOW "credits warning: %lld / %d today" ANSI_RESET "\n",
 	       (long long)warning->credits, warning->daily_limit);
+	}
 	cli_feed_history_end(warning->ctx);
 	return 0;
 }

@@ -4,6 +4,8 @@
 #include "config/config.h"
 #include "cJSON.h"
 #include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/widgets/feed_block.h"
+#include "util/cleanup.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/application_internal.h"
 
@@ -271,6 +273,13 @@ void cli_recap_event(struct cli_application *ctx, const struct morph_event *even
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 		return;
 	cli_feed_history_begin(ctx);
+	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
+		morph_buf_t footer MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		if (next && *next)
+			(void)morph_buf_printf(&footer, "Next: %s", next);
+		(void)cli_feed_notice_write(ctx, CLI_NOTICE_SYSTEM, "Recap:", summary,
+			morph_buf_cstr_borrow(&footer));
+	} else {
 	if (cli_output_color_enabled(ctx))
 		printf(ctx, ANSI_DIM "\033[3m");
 	cli_recap_print_text(ctx, "  ↳ Recap: ", summary);
@@ -279,6 +288,7 @@ void cli_recap_event(struct cli_application *ctx, const struct morph_event *even
 	if (cli_output_color_enabled(ctx))
 		printf(ctx, ANSI_RESET);
 	printf(ctx, "\n");
+	}
 	fflush(stdout);
 	cli_feed_history_end(ctx);
 }

@@ -3,6 +3,7 @@
 
 #include "agent/agent_control.h"
 #include "util/buf.h"
+#include "sapi/cli/widgets/notice.h"
 
 struct cli_application;
 struct cli_transcript_tool;
@@ -11,15 +12,20 @@ enum cli_feed_block_kind {
 	CLI_FEED_BLOCK_REASONING,
 	CLI_FEED_BLOCK_TOOL,
 	CLI_FEED_BLOCK_AGENT_RECEIPT,
+	CLI_FEED_BLOCK_PLAN,
+	CLI_FEED_BLOCK_NOTICE,
 };
 
 /* All content is borrowed for rendering. Components do not own outer spacing. */
 struct cli_feed_block {
 	enum cli_feed_block_kind kind;
 	int join_previous;
+	int details;
 	union {
 		const char *reasoning;
 		const struct cli_transcript_tool *tool;
+		const struct cJSON *plan;
+		const struct cli_notice *notice;
 		struct {
 			const char *id;
 			enum agent_status status;
@@ -37,5 +43,7 @@ int cli_feed_block_leading_rows(int trailing_newlines);
 int cli_feed_block_append(morph_buf_t *out, const struct cli_feed_block *block,
 			 struct cli_feed_block_style *style);
 int cli_feed_block_write(struct cli_application *ctx, const struct cli_feed_block *block);
+int cli_feed_notice_write(struct cli_application *ctx, enum cli_notice_status status,
+			  const char *title, const char *detail, const char *footer);
 
 #endif

@@ -6,6 +6,8 @@
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/widgets/feed_block.h"
+#include "util/cleanup.h"
 #include "sapi/cli/widgets/list.h"
 #include <morph/tui/components.h>
 #include <morph/tui/view_controller.h>
@@ -157,6 +159,20 @@ int cli_jobs_event(struct cli_application *ctx, const struct morph_event *event)
 				description[0] ? description
 					       : cli_jobs_job_string(event->data, "command"));
 			cli_feed_history_begin(ctx);
+			if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
+				morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
+				const char *status = cli_jobs_job_string(event->data, "status");
+				int timeout = strstr(status, "timeout") || strstr(status, "timed_out");
+				(void)morph_buf_printf(&title, "%s · %s", safe, timeout ? "TIMEOUT" : status);
+				const cJSON *exit_code = cJSON_GetObjectItemCaseSensitive(event->data, "exit_code");
+				if (cJSON_IsNumber(exit_code))
+					(void)morph_buf_printf(&title, " %d", exit_code->valueint);
+				(void)morph_buf_printf(&title, " · /jobs %.8s", cli_jobs_job_short_id(event->data));
+				(void)cli_feed_notice_write(ctx,
+					cli_jobs_job_cancelled(event->data) ? CLI_NOTICE_CANCELLED
+					: cli_jobs_job_failed(event->data) ? CLI_NOTICE_FAILED : CLI_NOTICE_DONE,
+					morph_buf_cstr_borrow(&title), NULL, NULL);
+			} else {
 			printf(ctx, "%s%s" ANSI_RESET " %s · %s",
 			       cli_jobs_job_cancelled(event->data) ? ANSI_DIM
 			       : cli_jobs_job_failed(event->data)
@@ -169,6 +185,7 @@ int cli_jobs_event(struct cli_application *ctx, const struct morph_event *event)
 			if (cJSON_IsNumber(exit_code))
 				printf(ctx, " %d", exit_code->valueint);
 			printf(ctx, " · /jobs %.8s\n", cli_jobs_job_short_id(event->data));
+			}
 			cli_feed_history_end(ctx);
 		}
 	}

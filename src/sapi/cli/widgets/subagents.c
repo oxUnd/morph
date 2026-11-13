@@ -6,6 +6,8 @@
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/widgets/transcript.h"
+#include "sapi/cli/widgets/feed_block.h"
+#include "util/json.h"
 #include "util/cleanup.h"
 #include <errno.h>
 
@@ -24,24 +26,28 @@ int cli_subagents_transcript(struct cli_application *ctx, const struct cli_subag
 	int rc = 0;
 	const struct cli_subagents_segment *segment;
 	morph_array_foreach (segment, &thread->segments, struct cli_subagents_segment) {
-		if (segment->kind == CLI_SUBAGENTS_TOOL) {
-			const struct cli_transcript_tool *tool =
-				morph_array_borrow(&thread->transcript->tools, segment->tool_index);
-			if (tool) {
-				morph_buf_t block MORPH_CLEANUP(morph_buf_cleanup) = {0};
-				rc = morph_buf_init(&block, 256);
-				if (rc == 0)
-					rc = cli_transcript_tool_append(&block, tool, columns,
-									style.styled, details);
-				if (rc == 0 && block.len) {
-					if (style.trailing_newlines < 2)
-						rc = morph_buf_putc(out, '\n');
-					if (rc == 0)
-						rc = morph_buf_append(out, block.data, block.len);
-					cli_output_track_tail(&style.trailing_newlines, block.data,
-							      block.len);
-				}
+		if (segment->kind == CLI_SUBAGENTS_TOOL || segment->kind == CLI_SUBAGENTS_PLAN) {
+			struct cli_feed_block_style feed = {
+				.columns = columns, .styled = style.styled,
+				.trailing_newlines = style.trailing_newlines,
+			};
+			struct cli_feed_block block = {.details = details};
+			cJSON *plan MORPH_CLEANUP(morph_json_cleanup) = NULL;
+			if (segment->kind == CLI_SUBAGENTS_PLAN) {
+				plan = cJSON_Parse(morph_buf_cstr_borrow(&segment->text));
+				if (!plan)
+					continue;
+				block.kind = CLI_FEED_BLOCK_PLAN;
+				block.content.plan = plan;
+			} else {
+				block.kind = CLI_FEED_BLOCK_TOOL;
+				block.content.tool = morph_array_borrow(&thread->transcript->tools,
+					segment->tool_index);
+				if (!block.content.tool)
+					continue;
 			}
+			rc = cli_feed_block_append(out, &block, &feed);
+			style.trailing_newlines = feed.trailing_newlines;
 		} else {
 			enum cli_message_kind kind =
 				segment->kind == CLI_SUBAGENTS_USER	   ? CLI_MESSAGE_USER

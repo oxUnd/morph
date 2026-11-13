@@ -365,6 +365,102 @@ def check_agent_spacing(driver):
                 child.close(force=True)
 
 
+def check_plan_and_notice_spacing(driver):
+    events = [{'name': 'react.content.end', 'data': {'text': 'BEFORE_PLAN'}}]
+    events.append({'name': 'plan.updated', 'data': {'plans': [{'steps': [
+        {'description': 'PLAN_DONE', 'status': 'completed'},
+        {'description': 'PLAN_ACTIVE 中文🙂', 'status': 'in_progress'},
+        {'description': 'PLAN_PENDING', 'status': 'pending'},
+    ]}]}})
+    events.extend([
+        {'name': 'react.content.end', 'data': {'text': 'AFTER_PLAN'}},
+        {'name': 'hook.failed', 'message': 'NOTICE_HOOK', 'data': {'event': 'PostToolUse'}},
+        {'name': 'react.content.end', 'data': {'text': 'AFTER_HOOK'}},
+        {'name': 'history.warning', 'phase': 'warning', 'message': 'NOTICE_WARNING'},
+        {'name': 'react.content.end', 'data': {'text': 'AFTER_WARNING'}},
+        {'name': 'react.compaction.completed', 'data': {'before_tokens': 1000, 'after_tokens': 100}},
+        {'name': 'react.content.end', 'data': {'text': 'AFTER_COMPACTION'}},
+        {'name': 'task.created', 'phase': 'end', 'message': 'NOTICE_TASK',
+         'turn_active': False},
+        {'name': 'react.content.end', 'data': {'text': 'AFTER_TASK'}, 'turn_active': True},
+    ])
+    with tempfile.TemporaryDirectory(prefix='morph-plan-spacing-') as temp:
+        fixture = Path(temp) / 'events.jsonl'
+        fixture.write_text(''.join(json.dumps(event) + '\n' for event in events))
+        for width in (120, 80, 60):
+            child = pexpect.spawn(str(driver), ['--replay-events', str(fixture)],
+                                  encoding='utf-8', dimensions=(48, width))
+            try:
+                child.expect('AFTER_TASK')
+                raw = child.before + child.after
+                child.expect(pexpect.TIMEOUT, timeout=.2)
+                raw += child.before
+                screen = pyte.Screen(width, 48)
+                pyte.Stream(screen).feed(raw)
+                rows = screen.display
+                text = '\n'.join(rows)
+                labels = ('BEFORE_PLAN', '◉ Plan', 'PLAN_DONE', 'PLAN_ACTIVE', 'PLAN_PENDING',
+                          'AFTER_PLAN', 'NOTICE_HOOK', 'AFTER_HOOK', 'NOTICE_WARNING',
+                          'AFTER_WARNING', 'Context compacted', 'AFTER_COMPACTION',
+                          'NOTICE_TASK', 'AFTER_TASK')
+                previous = None
+                for label in labels:
+                    row = next(i for i, line in enumerate(rows) if label in line)
+                    if previous is not None:
+                        assert row - previous == (1 if label.startswith('PLAN_') else 2), text
+                    previous = row
+                for label, marker in (('NOTICE_HOOK', '✖'), ('NOTICE_WARNING', '⚠'),
+                                      ('Context compacted', '●'), ('NOTICE_TASK', '●')):
+                    row = next(line for line in rows if label in line)
+                    assert row.startswith(marker + ' '), text
+                assert '├ ● PLAN_DONE' in text and '└ ◯ PLAN_PENDING' in text, text
+                assert '\x1b[2J' not in raw and '\x1b[3J' not in raw, raw
+                print(f'checked: {width} columns: plan/notice widget boundaries and markers')
+            finally:
+                child.close(force=True)
+
+
+def check_live_plan_draft(driver, port):
+    for width in (120, 80, 60):
+        with tempfile.TemporaryDirectory(prefix='morph-plan-draft-') as temp:
+            terminal = Terminal(driver, Path(temp), port, hooks_enabled=False)
+            releases = []
+            try:
+                terminal.child.setwinsize(24, width)
+                terminal.screen = pyte.Screen(width, 24)
+                terminal.stream = pyte.Stream(terminal.screen)
+                terminal.wait_for_composer()
+                terminal.send('show a plan\r')
+                _, release = terminal.request()
+                releases.append(release)
+                draft = 'DRAFT_' * (width // 5) + 'END'
+                terminal.send(draft)
+                before = terminal.snapshot(f'{width}: wrapped unsent draft before plan')
+                prompt = max(i for i, row in enumerate(before.splitlines()) if row.startswith('› '))
+                release.delta = {'tool_calls': [{'index': 0, 'id': 'plan-widget',
+                    'type': 'function', 'function': {'name': 'update_plan',
+                    'arguments': json.dumps({'plan': [
+                        {'step': 'LIVE_PLAN_DONE', 'status': 'completed'},
+                        {'step': 'LIVE_PLAN_ACTIVE', 'status': 'in_progress'},
+                        {'step': 'LIVE_PLAN_PENDING', 'status': 'pending'},
+                    ]})}}]}
+                release.set()
+                _, follow = terminal.request()
+                releases.append(follow)
+                after = terminal.snapshot(f'{width}: plan keeps wrapped unsent draft anchored')
+                rows = after.splitlines()
+                assert max(i for i, row in enumerate(rows) if row.startswith('› ')) == prompt, after
+                assert 'END' in after and after.count('LIVE_PLAN_ACTIVE') == 1, after
+                assert any(row.startswith('◉ Plan') for row in rows), after
+                assert not terminal.duplicate_prompts, terminal.duplicate_prompts
+                follow.set()
+                terminal.pump(.5)
+            finally:
+                for release in releases:
+                    release.set()
+                terminal.child.close(force=True)
+
+
 def check_final_spacing(driver, port):
     replies = [
         'FINAL_SENTINEL plain answer.',
@@ -434,10 +530,12 @@ def main():
     check_feed_replay(driver)
     check_tool_spacing(driver)
     check_agent_spacing(driver)
+    check_plan_and_notice_spacing(driver)
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     check_final_spacing(driver, server.server_port)
+    check_live_plan_draft(driver, server.server_port)
     with tempfile.TemporaryDirectory(prefix='morph-transcript-') as temp:
         directory = Path(temp)
         (directory / 'first.txt').write_text('FIRST_PRIVATE_RESULT\n', encoding='utf-8')

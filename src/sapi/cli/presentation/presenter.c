@@ -13,6 +13,7 @@
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/widgets/feed_block.h"
+#include "sapi/cli/widgets/plan.h"
 #include "sapi/cli/widgets/transcript.h"
 #include "sapi/cli/services/transcript.h"
 #include "sapi/cli/adapters/media/renderer.h"
@@ -593,8 +594,8 @@ void cli_presentation_hook_prompt(struct cli_application *ctx, const char *text)
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
 		cli_presenter_print_plain_labeled(ctx, "hook continuation", text);
 	else {
-		printf(ctx, "\n" ANSI_DIM "  Stop hook requested continuation\n" ANSI_RESET);
-		cli_presenter_print_indented(ctx, "  ", text);
+		(void)cli_feed_notice_write(ctx, CLI_NOTICE_RUNNING,
+			"Stop hook requested continuation", text, NULL);
 	}
 }
 
@@ -931,112 +932,33 @@ static void cli_presenter_tool_end(struct cli_application *ctx, const struct mor
 	}
 }
 
-static const char *cli_presenter_plan_mark(const char *status, int active)
-{
-	if (active)
-		return CLI_FEED_RUNNING;
-	if (status && strcmp(status, "completed") == 0)
-		return CLI_FEED_DONE;
-	if (status && strcmp(status, "failed") == 0)
-		return CLI_FEED_FAILED;
-	if (status && strcmp(status, "skipped") == 0)
-		return CLI_FEED_CANCELLED;
-	return CLI_FEED_PENDING;
-}
-
 static int cli_presenter_plan(struct cli_application *ctx, const struct morph_event *ev)
 {
-	cJSON *result;
-	cJSON *plans;
-	cJSON *plan;
-	const char *selected;
-	const char *selected_key = "id";
-	int printed = 0;
-
 	if (!ev || !cJSON_IsObject(ev->data))
 		return 0;
-	if (ev->name && !strcmp(ev->name, "plan.updated")) {
-		result = ev->data;
-	} else {
+	const cJSON *state = ev->data;
+	if (!ev->name || strcmp(ev->name, "plan.updated")) {
 		const char *tool = cli_presenter_event_string(ev, "tool");
 		if (!tool || strcmp(tool, "plan"))
 			return 0;
-		result = cJSON_GetObjectItemCaseSensitive(ev->data, "data");
+		state = cJSON_GetObjectItemCaseSensitive(ev->data, "data");
 	}
-	plans = cJSON_IsObject(result) ? cJSON_GetObjectItemCaseSensitive(result, "plans") : NULL;
-	if (!cJSON_IsArray(plans))
+	if (!cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(state, "plans")))
 		return 0;
-	selected =
-		cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(result, "selected_plan_id"));
-	if (!selected) {
-		selected = cJSON_GetStringValue(
-			cJSON_GetObjectItemCaseSensitive(result, "selected_plan"));
-		selected_key = "name";
+	if (!cli_plan_renders(state))
+		return 0;
+	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
+		morph_buf_t body MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		struct cli_plan_style style = {.columns = BUFSIZ};
+		if (cli_plan_append(&body, state, &style) == 0 && body.len)
+			printf(ctx, "%s", morph_buf_cstr_borrow(&body));
+	} else {
+		struct cli_feed_block block = {
+			.kind = CLI_FEED_BLOCK_PLAN, .content.plan = state,
+		};
+		(void)cli_feed_block_write(ctx, &block);
 	}
-	cJSON_ArrayForEach (plan, plans) {
-		cJSON *steps;
-		cJSON *step;
-		int completed = 0;
-		int count;
-
-		if (!cJSON_IsObject(plan))
-			continue;
-		if (selected) {
-			const char *value = cJSON_GetStringValue(
-				cJSON_GetObjectItemCaseSensitive(plan, selected_key));
-
-			if (!value || strcmp(value, selected) != 0)
-				continue;
-		}
-		steps = cJSON_GetObjectItemCaseSensitive(plan, "steps");
-		if (!cJSON_IsArray(steps))
-			continue;
-		count = cJSON_GetArraySize(steps);
-		cJSON_ArrayForEach (step, steps) {
-			const cJSON *status = cJSON_GetObjectItemCaseSensitive(step, "status");
-
-			if (cJSON_IsString(status) && strcmp(status->valuestring, "completed") == 0)
-				completed++;
-		}
-		printf(ctx, ANSI_DIM "Plan · %d/%d completed" ANSI_RESET "\n", completed,
-		       count);
-		printed = 1;
-		cJSON_ArrayForEach (step, steps) {
-			cJSON *description;
-			cJSON *status;
-			cJSON *active;
-			const char *mark;
-			const char *color;
-
-			if (!cJSON_IsObject(step))
-				continue;
-			description = cJSON_GetObjectItemCaseSensitive(step, "description");
-			status = cJSON_GetObjectItemCaseSensitive(step, "status");
-			active = cJSON_GetObjectItemCaseSensitive(step, "active");
-			if (!cJSON_IsString(description))
-				continue;
-			mark = cli_presenter_plan_mark(cJSON_IsString(status) ? status->valuestring
-									      : NULL,
-						       cJSON_IsTrue(active));
-			color = strcmp(mark, CLI_FEED_DONE) == 0      ? ANSI_GREEN
-				: strcmp(mark, CLI_FEED_FAILED) == 0  ? CLI_FEED_FAILED_STYLE
-				: strcmp(mark, CLI_FEED_RUNNING) == 0 ? ANSI_CYAN
-								      : ANSI_DIM;
-			const cJSON *next = step->next;
-
-			while (next && (!cJSON_IsObject(next) ||
-				       !cJSON_IsString(cJSON_GetObjectItemCaseSensitive(
-					       next, "description"))))
-				next = next->next;
-			printf(ctx, "%s%s%s" ANSI_RESET " ", next ? "├ " : "└ ", color, mark);
-			cli_presenter_print_safe_inline(ctx, description->valuestring,
-							CLI_PRESENTER_EVENT_TEXT_MAX);
-			printf(ctx, "\n");
-		}
-		if (selected)
-			break;
-	}
-	return printed;
+	return 1;
 }
 
 static void cli_presenter_observation(struct cli_application *ctx, const struct morph_event *ev)
@@ -1100,8 +1022,7 @@ static void cli_presenter_reflection(struct cli_application *ctx, const struct m
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
 		cli_presenter_print_plain_labeled(ctx, "guardrail", text);
 	else if (text && text[0])
-		cli_presenter_print_indented(
-			ctx, ANSI_YELLOW CLI_FEED_WARNING " Guardrail · " ANSI_RESET, text);
+		(void)cli_feed_notice_write(ctx, CLI_NOTICE_WARNING, "Guardrail", text, NULL);
 }
 
 static void cli_presenter_token_label(int tokens, char *label, size_t size)
@@ -1128,7 +1049,6 @@ static void cli_presenter_compaction(struct cli_application *ctx, const struct m
 		} else if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
 			cli_presenter_clear_status(ctx);
 			cli_presenter_print_stream(ctx);
-			printf(ctx, "\n");
 			cli_feed_activity_set(ctx, "Compacting context…");
 		}
 		return;
@@ -1148,36 +1068,22 @@ static void cli_presenter_compaction(struct cli_application *ctx, const struct m
 	}
 	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
-	if (elapsed < 0)
-		printf(ctx, "\n");
+	morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
 	if (failed) {
-		printf(ctx, CLI_FEED_FAILED_STYLE CLI_FEED_FAILED " Context compression failed · ");
-		cli_presenter_print_safe_inline(ctx, error ? error : "unknown error",
-						CLI_PRESENTER_EVENT_TEXT_MAX);
+		(void)morph_buf_printf(&title, "Context compression failed · %s",
+			error ? error : "unknown error");
 	} else {
 		char before_label[32];
 		char after_label[32];
-		char line[BUFSIZ];
-		char clipped[BUFSIZ];
-		int columns = cli_feed_columns(ctx) - 1;
-
 		cli_presenter_token_label(before, before_label, sizeof(before_label));
 		cli_presenter_token_label(after, after_label, sizeof(after_label));
-		if (elapsed >= 0)
-			snprintf(line, sizeof(line), CLI_FEED_DONE
-				 " Context compacted  %s → %s · %llds",
-				 before_label, after_label, (long long)(elapsed / 1000));
-		else
-			snprintf(line, sizeof(line), CLI_FEED_DONE
-				 " Context compacted  %s → %s", before_label,
-				 after_label);
-		(void)utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), line,
-							 (size_t)(columns > 0 ? columns : 1), 0);
-		printf(ctx, ANSI_GREEN "%s", clipped);
+		(void)morph_buf_printf(&title, "Context compacted  %s → %s", before_label,
+			after_label);
 	}
-	if (failed && elapsed >= 0)
-		printf(ctx, " · %llds", (long long)(elapsed / 1000));
-	printf(ctx, ANSI_RESET "\n\n");
+	if (elapsed >= 0)
+		(void)morph_buf_printf(&title, " · %llds", (long long)(elapsed / 1000));
+	(void)cli_feed_notice_write(ctx, failed ? CLI_NOTICE_FAILED : CLI_NOTICE_DONE,
+		morph_buf_cstr_borrow(&title), NULL, NULL);
 	fflush(stdout);
 	if (!failed && ctx->turn_active)
 		cli_presenter_model_wait(ctx);
@@ -1250,7 +1156,7 @@ static void cli_presenter_turn_end(struct cli_application *ctx, const struct mor
 		if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
 			printf(ctx, "cancelled\n");
 		else
-			printf(ctx, "\n" ANSI_DIM CLI_FEED_CANCELLED " Cancelled" ANSI_RESET "\n");
+			(void)cli_feed_notice_write(ctx, CLI_NOTICE_CANCELLED, "Cancelled", NULL, NULL);
 		ctx->presenter->final_rendered = 1;
 		return;
 	}
@@ -1266,16 +1172,11 @@ static void cli_presenter_turn_end(struct cli_application *ctx, const struct mor
 		}
 		printf(ctx, "\n");
 	} else {
-		printf(ctx, "\n" CLI_FEED_FAILED_STYLE CLI_FEED_FAILED " Error" ANSI_RESET " ");
-		cli_presenter_print_safe_inline(ctx,
-						error ? error : (outcome ? outcome : "turn failed"),
-						CLI_PRESENTER_EVENT_TEXT_MAX);
-		if (detail && detail[0]) {
-			printf(ctx, ANSI_DIM " (");
-			cli_presenter_print_safe_inline(ctx, detail, CLI_PRESENTER_EVENT_TEXT_MAX);
-			printf(ctx, ")" ANSI_RESET);
-		}
-		printf(ctx, "\n");
+		morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		(void)morph_buf_printf(&title, "Error %s",
+			error ? error : (outcome ? outcome : "turn failed"));
+		(void)cli_feed_notice_write(ctx, CLI_NOTICE_FAILED,
+			morph_buf_cstr_borrow(&title), detail, NULL);
 	}
 	ctx->presenter->final_rendered = 1;
 }
@@ -1314,21 +1215,15 @@ static void cli_presenter_auth(struct cli_application *ctx, const struct morph_e
 		}
 		printf(ctx, "\n");
 	} else {
-		printf(ctx, "\n" CLI_FEED_QUESTION_STYLE CLI_FEED_QUESTION
-			    " Authentication required" ANSI_RESET " for ");
-		cli_presenter_print_safe_inline(ctx, backend, CLI_PRESENTER_EVENT_TEXT_MAX);
-		if (tool && tool[0]) {
-			printf(ctx, " tool " ANSI_BOLD);
-			cli_presenter_print_safe_inline(ctx, tool, TOOL_NAME_MAX);
-			printf(ctx, ANSI_RESET);
-		}
-		if (env_name && env_name[0]) {
-			printf(ctx, ANSI_DIM " · export ");
-			cli_presenter_print_safe_inline(ctx, env_name,
-							CLI_PRESENTER_EVENT_TEXT_MAX);
-			printf(ctx, ANSI_RESET);
-		}
-		printf(ctx, "\n");
+		morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		morph_buf_t detail MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		(void)morph_buf_printf(&title, "Authentication required for %s", backend);
+		if (tool && *tool)
+			(void)morph_buf_printf(&title, " tool %s", tool);
+		if (env_name && *env_name)
+			(void)morph_buf_printf(&detail, "export %s", env_name);
+		(void)cli_feed_notice_write(ctx, CLI_NOTICE_QUESTION,
+			morph_buf_cstr_borrow(&title), morph_buf_cstr_borrow(&detail), NULL);
 	}
 }
 
@@ -1364,79 +1259,58 @@ static void cli_presenter_artifact(struct cli_application *ctx, const struct mor
 	cli_presenter_resume_status(ctx, status_paused);
 }
 
-static void cli_presenter_mcp_tree_start(struct cli_application *ctx, const char *server)
-{
-	printf(ctx, "\n" ANSI_DIM CLI_FEED_SYSTEM ANSI_RESET " " ANSI_BOLD "MCP ");
-	cli_presenter_print_safe_inline(ctx, server, CLI_PRESENTER_EVENT_TEXT_MAX);
-	printf(ctx, ANSI_RESET "\n");
-	strncpy(ctx->presenter->mcp_tree_server, server,
-		sizeof(ctx->presenter->mcp_tree_server) - 1);
-	ctx->presenter->mcp_tree_server[sizeof(ctx->presenter->mcp_tree_server) - 1] = '\0';
-	ctx->presenter->mcp_tree_active = 1;
-}
-
-static void cli_presenter_mcp_ready(struct cli_application *ctx, const struct morph_event *ev)
-{
-	cJSON *tools = cli_presenter_event_item(ev, "tools");
-	cJSON *resources = cli_presenter_event_item(ev, "resources");
-	cJSON *prompts = cli_presenter_event_item(ev, "prompts");
-
-	printf(ctx, ANSI_GREEN CLI_FEED_DONE " Ready" ANSI_RESET);
-	if (cJSON_IsNumber(tools) && cJSON_IsNumber(resources) && cJSON_IsNumber(prompts)) {
-		printf(ctx, ANSI_DIM " · %d tools, %d resources, %d prompts" ANSI_RESET,
-		       tools->valueint, resources->valueint, prompts->valueint);
-	}
-}
-
 static void cli_presenter_mcp(struct cli_application *ctx, const struct morph_event *ev)
 {
-	const char *server = cli_presenter_event_string(ev, "server");
-	const char *error = cli_presenter_event_string(ev, "error");
-	const char *label;
-	int is_last;
-	int failed;
-	int status_paused;
-
 	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
-	if (!server || !server[0])
+	const char *server = cli_presenter_event_string(ev, "server");
+	const char *error = cli_presenter_event_string(ev, "error");
+	if (!server || !*server)
 		server = "server";
-	status_paused = cli_presenter_pause_status(ctx);
-	if (!ctx->presenter->mcp_tree_active ||
-	    strcmp(ctx->presenter->mcp_tree_server, server) != 0)
-		cli_presenter_mcp_tree_start(ctx, server);
-	failed = ev->name && strcmp(ev->name, "mcp.failed") == 0;
-	is_last = failed || (ev->name && (strcmp(ev->name, "mcp.ready") == 0 ||
-					  strcmp(ev->name, "mcp.disconnected") == 0));
-	cli_list_tree_prefix(ctx, NULL, 0, is_last, 0);
-	if (failed) {
-		printf(ctx, CLI_FEED_FAILED_STYLE CLI_FEED_FAILED " Failed" ANSI_RESET);
-		if (error && error[0]) {
-			printf(ctx, ANSI_DIM " · ");
-			cli_presenter_print_safe_inline(ctx, error, CLI_PRESENTER_EVENT_TEXT_MAX);
-			printf(ctx, ANSI_RESET);
-		}
-	} else if (ev->name && strcmp(ev->name, "mcp.ready") == 0) {
-		cli_presenter_mcp_ready(ctx, ev);
-	} else {
-		if (ev->name && strcmp(ev->name, "mcp.connecting") == 0)
-			label = "Connecting";
-		else if (ev->name && strcmp(ev->name, "mcp.connected") == 0)
-			label = "Connected";
-		else if (ev->name && strcmp(ev->name, "mcp.discovering") == 0)
-			label = "Discovering capabilities";
-		else if (ev->name && strcmp(ev->name, "mcp.disconnected") == 0)
-			label = "Disconnected";
-		else
-			label = ev->message ? ev->message : "Updated";
-		cli_presenter_print_safe_inline(ctx, label, CLI_PRESENTER_EVENT_TEXT_MAX);
+	int paused = cli_presenter_pause_status(ctx);
+	if (!ctx->presenter->mcp_tree_active || strcmp(ctx->presenter->mcp_tree_server, server)) {
+		morph_buf_t root MORPH_CLEANUP(morph_buf_cleanup) = {0};
+		(void)morph_buf_printf(&root, "MCP %s", server);
+		(void)cli_feed_notice_write(ctx, CLI_NOTICE_SYSTEM,
+			morph_buf_cstr_borrow(&root), NULL, NULL);
+		strncpy(ctx->presenter->mcp_tree_server, server,
+			sizeof(ctx->presenter->mcp_tree_server) - 1);
+		ctx->presenter->mcp_tree_server[sizeof(ctx->presenter->mcp_tree_server) - 1] = '\0';
+		ctx->presenter->mcp_tree_active = 1;
 	}
-	printf(ctx, "\n");
-	if (is_last) {
+	int failed = ev->name && !strcmp(ev->name, "mcp.failed");
+	int ready = ev->name && !strcmp(ev->name, "mcp.ready");
+	int disconnected = ev->name && !strcmp(ev->name, "mcp.disconnected");
+	int connected = ev->name && !strcmp(ev->name, "mcp.connected");
+	int last = failed || ready || disconnected;
+	const char *label = failed ? "Failed" : ready ? "Ready" : disconnected ? "Disconnected"
+		: connected ? "Connected" : ev->name && !strcmp(ev->name, "mcp.connecting")
+		? "Connecting" : ev->name && !strcmp(ev->name, "mcp.discovering")
+		? "Discovering capabilities" : ev->message ? ev->message : "Updated";
+	morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	(void)morph_buf_puts(&title, label);
+	if (failed && error && *error)
+		(void)morph_buf_printf(&title, " · %s", error);
+	if (ready && cJSON_IsNumber(cli_presenter_event_item(ev, "tools")) &&
+	    cJSON_IsNumber(cli_presenter_event_item(ev, "resources")) &&
+	    cJSON_IsNumber(cli_presenter_event_item(ev, "prompts")))
+		(void)morph_buf_printf(&title, " · %d tools, %d resources, %d prompts",
+			cli_presenter_event_int(ev, "tools"), cli_presenter_event_int(ev, "resources"),
+			cli_presenter_event_int(ev, "prompts"));
+	struct cli_notice notice = {
+		.status = failed ? CLI_NOTICE_FAILED : disconnected ? CLI_NOTICE_CANCELLED
+			: ready || connected ? CLI_NOTICE_DONE : CLI_NOTICE_RUNNING,
+		.title = morph_buf_cstr_borrow(&title), .tree_branch = last ? 2 : 1,
+	};
+	struct cli_feed_block block = {
+		.kind = CLI_FEED_BLOCK_NOTICE, .join_previous = 1, .content.notice = &notice,
+	};
+	(void)cli_feed_block_write(ctx, &block);
+	if (last) {
 		ctx->presenter->mcp_tree_active = 0;
 		ctx->presenter->mcp_tree_server[0] = '\0';
 	}
-	cli_presenter_resume_status(ctx, status_paused);
+	cli_presenter_resume_status(ctx, paused);
 }
 
 static void cli_presenter_auxiliary(struct cli_application *ctx, const struct morph_event *ev)
@@ -1465,11 +1339,11 @@ static void cli_presenter_auxiliary(struct cli_application *ctx, const struct mo
 		if ((ev->name && strstr(ev->name, "failed")) ||
 		    cli_presenter_event_error_code(ev) < 0) {
 			status_paused = cli_presenter_pause_status(ctx);
-			printf(ctx, "\n" CLI_FEED_FAILED_STYLE CLI_FEED_FAILED " Background · ");
-			cli_presenter_print_safe_inline(
-				ctx, ev->message ? ev->message : (ev->name ? ev->name : "failed"),
-				CLI_PRESENTER_EVENT_TEXT_MAX);
-			printf(ctx, ANSI_RESET "\n");
+			morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			(void)morph_buf_printf(&title, "Background · %s",
+				ev->message ? ev->message : (ev->name ? ev->name : "failed"));
+			(void)cli_feed_notice_write(ctx, CLI_NOTICE_FAILED,
+				morph_buf_cstr_borrow(&title), NULL, NULL);
 			cli_presenter_resume_status(ctx, status_paused);
 		} else if (ev->phase && (strcmp(ev->phase, "begin") == 0 ||
 					 strcmp(ev->phase, "progress") == 0)) {
@@ -1489,16 +1363,10 @@ static void cli_presenter_auxiliary(struct cli_application *ctx, const struct mo
 			const char *error = cli_presenter_event_string(ev, "error");
 
 			status_paused = cli_presenter_pause_status(ctx);
-			printf(ctx, "\n" CLI_FEED_FAILED_STYLE CLI_FEED_FAILED ANSI_RESET " MCP ");
-			cli_presenter_print_safe_inline(ctx, server ? server : "server",
-							CLI_PRESENTER_EVENT_TEXT_MAX);
-			printf(ctx, ANSI_DIM " · failed" ANSI_RESET "\n");
-			if (error && error[0]) {
-				printf(ctx, "  ");
-				cli_presenter_print_safe_inline(ctx, error,
-								CLI_PRESENTER_EVENT_TEXT_MAX);
-				printf(ctx, "\n");
-			}
+			morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			(void)morph_buf_printf(&title, "MCP %s · failed", server ? server : "server");
+			(void)cli_feed_notice_write(ctx, CLI_NOTICE_FAILED,
+				morph_buf_cstr_borrow(&title), error, NULL);
 			cli_presenter_resume_status(ctx, status_paused);
 		}
 		return;
@@ -1510,17 +1378,16 @@ static void cli_presenter_auxiliary(struct cli_application *ctx, const struct mo
 	else
 		return;
 	status_paused = cli_presenter_pause_status(ctx);
-	printf(ctx, "\n%s%s" ANSI_RESET " %s · ",
-	       ev->type == MORPH_EVENT_ERROR || cli_presenter_event_error_code(ev) < 0
-		       ? CLI_FEED_FAILED_STYLE
-										       : ANSI_DIM,
-	       ev->type == MORPH_EVENT_ERROR || cli_presenter_event_error_code(ev) < 0
-		       ? CLI_FEED_FAILED
-		       : CLI_FEED_SYSTEM,
-	       prefix);
-	cli_presenter_print_safe_inline(ctx, ev->message ? ev->message : (ev->name ? ev->name : ""),
-					CLI_PRESENTER_EVENT_TEXT_MAX);
-	printf(ctx, ANSI_RESET "\n");
+	morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
+	(void)morph_buf_printf(&title, "%s · %s", prefix,
+		ev->message ? ev->message : (ev->name ? ev->name : ""));
+	enum cli_notice_status status = ev->type == MORPH_EVENT_ERROR ||
+		cli_presenter_event_error_code(ev) < 0 ? CLI_NOTICE_FAILED
+		: ev->name && strstr(ev->name, "cancelled") ? CLI_NOTICE_CANCELLED
+		: ev->phase && (!strcmp(ev->phase, "begin") || !strcmp(ev->phase, "progress"))
+		? CLI_NOTICE_RUNNING : ev->phase && !strcmp(ev->phase, "end")
+		? CLI_NOTICE_DONE : CLI_NOTICE_SYSTEM;
+	(void)cli_feed_notice_write(ctx, status, morph_buf_cstr_borrow(&title), NULL, NULL);
 	cli_presenter_resume_status(ctx, status_paused);
 }
 
@@ -1657,6 +1524,18 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 				int paused = cli_presenter_pause_status(ctx);
 				const char *boundary = cli_presenter_event_string(ev, "event");
 
+				if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
+					morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
+					(void)morph_buf_printf(&title, "Hook%s%s · %s",
+						boundary ? " " : "", boundary ? boundary : "",
+						ev->message ? ev->message : ev->name);
+					const char *error = cli_presenter_event_string(ev, "error");
+					enum cli_notice_status status = !strcmp(ev->name, "hook.failed")
+						? CLI_NOTICE_FAILED : !strcmp(ev->name, "hook.blocked")
+						? CLI_NOTICE_QUESTION : CLI_NOTICE_SYSTEM;
+					(void)cli_feed_notice_write(ctx, status,
+						morph_buf_cstr_borrow(&title), error, NULL);
+				} else {
 				printf(ctx, "\n" ANSI_YELLOW "  Hook%s%s · ", boundary ? " " : "",
 				       boundary ? boundary : "");
 				cli_presenter_print_safe_inline(
@@ -1669,6 +1548,7 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 						ctx, error, CLI_PRESENTER_EVENT_TEXT_MAX);
 				}
 				printf(ctx, ANSI_RESET "\n");
+				}
 				cli_presenter_resume_status(ctx, paused);
 			}
 		}
@@ -1677,10 +1557,18 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 	if (ev->type == MORPH_EVENT_BACKGROUND && ev->phase && strcmp(ev->phase, "warning") == 0) {
 		int paused = cli_presenter_pause_status(ctx);
 
+		if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
+			morph_buf_t title MORPH_CLEANUP(morph_buf_cleanup) = {0};
+			(void)morph_buf_printf(&title, "Warning · %s",
+				ev->message ? ev->message : ev->name);
+			(void)cli_feed_notice_write(ctx, CLI_NOTICE_WARNING,
+				morph_buf_cstr_borrow(&title), NULL, NULL);
+		} else {
 		printf(ctx, "\n" ANSI_YELLOW CLI_FEED_WARNING " Warning · ");
 		cli_presenter_print_safe_inline(ctx, ev->message ? ev->message : ev->name,
 						CLI_PRESENTER_EVENT_TEXT_MAX);
 		printf(ctx, ANSI_RESET "\n");
+		}
 		cli_presenter_resume_status(ctx, paused);
 		return 0;
 	}

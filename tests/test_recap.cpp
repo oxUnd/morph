@@ -197,7 +197,7 @@ TEST_F(RecapTest, RecapRendersWithoutInventingNextAndPreservesDraftState)
 	cJSON *data = WaitEnd();
 	ASSERT_NE(data, nullptr);
 	std::string output = Render(data, &ctx);
-	EXPECT_NE(output.find("↳ Recap:"), std::string::npos);
+	EXPECT_NE(output.find("◇ Recap:"), std::string::npos);
 	EXPECT_NE(output.find("installation remains unverified"), std::string::npos);
 	EXPECT_EQ(output.find("Next:"), std::string::npos);
 	EXPECT_FALSE(ctx.recap.pending);

@@ -12,6 +12,7 @@ enum cli_subagents_segment_kind {
 	CLI_SUBAGENTS_REASONING,
 	CLI_SUBAGENTS_ASSISTANT,
 	CLI_SUBAGENTS_TOOL,
+	CLI_SUBAGENTS_PLAN,
 };
 struct cli_subagents_segment {
 	enum cli_subagents_segment_kind kind;

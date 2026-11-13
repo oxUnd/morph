@@ -263,7 +263,7 @@ def main():
             notification = terminal.snapshot('task markdown notification preserves draft')
             assert 'DNS check complete' in notification, notification
             assert next(row for row in notification.splitlines()
-                        if 'DNS check complete' in row).startswith('  DNS'), notification
+                        if 'DNS check complete' in row).startswith('├ DNS'), notification
             assert '**' not in notification and '|---|---|' not in notification, notification
             assert '10.1.0.2' in notification and 'inbox #' in notification, notification
             assert 'preserved task draft' in notification, notification

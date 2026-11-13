@@ -72,6 +72,21 @@ static int replay_feed(const char *path)
 		event.name = name->valuestring;
 		event.type =
 			strncmp(event.name, "tool.", 5) == 0 ? MORPH_EVENT_TOOL : MORPH_EVENT_REACT;
+		if (!strncmp(event.name, "mcp.", 4))
+			event.type = MORPH_EVENT_MCP;
+		else if (!strncmp(event.name, "task.", 5))
+			event.type = MORPH_EVENT_TASK;
+		else if (!strncmp(event.name, "hook.", 5) || !strncmp(event.name, "plan.", 5) ||
+			 !strncmp(event.name, "agent.", 6) || !strncmp(event.name, "process.", 8) ||
+			 !strncmp(event.name, "background.", 11) || !strncmp(event.name, "history.", 8))
+			event.type = MORPH_EVENT_BACKGROUND;
+		const cJSON *phase = cJSON_GetObjectItemCaseSensitive(json, "phase");
+		const cJSON *message = cJSON_GetObjectItemCaseSensitive(json, "message");
+		const cJSON *turn_active = cJSON_GetObjectItemCaseSensitive(json, "turn_active");
+		if (cJSON_IsBool(turn_active))
+			ctx.turn_active = cJSON_IsTrue(turn_active);
+		event.phase = cJSON_GetStringValue(phase);
+		event.message = cJSON_GetStringValue(message);
 		event.data = cJSON_GetObjectItemCaseSensitive(json, "data");
 		rc = cli_presentation_event(&ctx, &event);
 		cJSON_Delete(json);

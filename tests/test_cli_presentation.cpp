@@ -22,6 +22,8 @@ extern "C" {
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/widgets/feed_block.h"
+#include "sapi/cli/widgets/plan.h"
 #include "sapi/cli/widgets/list.h"
 #include "sapi/cli/widgets/shell_style.h"
 #include "util/utf8.h"
@@ -699,7 +701,7 @@ TEST_F(CliPresentationTest, CompactionReplacesLiveStateWithOneIndependentHistory
 	EXPECT_GE(cli_feed_activity_elapsed_ms(&ctx), 0);
 	Emit(MORPH_EVENT_REACT, "react.compaction.completed", "end", data);
 	std::string output = testing::internal::GetCapturedStdout();
-	EXPECT_NE(output.find("\n● Context compacted  104k → 69k · 0s\n\n"), std::string::npos);
+	EXPECT_NE(output.find("\n● Context compacted  104k → 69k · 0s\n"), std::string::npos);
 	EXPECT_EQ(output.find("Context compacted"), output.rfind("Context compacted"));
 	EXPECT_EQ(output.find("└"), std::string::npos);
 	EXPECT_EQ(cli_feed_activity_elapsed_ms(&ctx), -1);
@@ -1592,7 +1594,7 @@ TEST_F(CliPresentationTest, InteractiveRendersMcpFailureAsOneTree)
 
 	ASSERT_NE(root, std::string::npos);
 	EXPECT_EQ(output.find("MCP meego", root + 1), std::string::npos);
-	EXPECT_NE(output.find("├ Connecting"), std::string::npos);
+	EXPECT_NE(output.find("├ ◉ Connecting"), std::string::npos);
 	EXPECT_NE(output.find("└ ✖ Failed · Missing MCP token: environment variable "
 			      "'MEEGO_TOKEN' is not set"),
 		  std::string::npos);
@@ -1629,9 +1631,9 @@ TEST_F(CliPresentationTest, InteractiveRendersMcpSuccessAsOneTree)
 
 	ASSERT_NE(root, std::string::npos);
 	EXPECT_EQ(output.find("MCP meego", root + 1), std::string::npos);
-	EXPECT_NE(output.find("├ Connecting"), std::string::npos);
-	EXPECT_NE(output.find("├ Connected"), std::string::npos);
-	EXPECT_NE(output.find("├ Discovering capabilities"), std::string::npos);
+	EXPECT_NE(output.find("├ ◉ Connecting"), std::string::npos);
+	EXPECT_NE(output.find("├ ● Connected"), std::string::npos);
+	EXPECT_NE(output.find("├ ◉ Discovering capabilities"), std::string::npos);
 	EXPECT_NE(output.find("└ ● Ready · 12 tools, 3 resources, 2 prompts"), std::string::npos);
 	EXPECT_EQ(ctx.presenter->mcp_tree_active, 0);
 	EXPECT_EQ(cli_feed_live_active(&ctx), 1);
@@ -2372,6 +2374,78 @@ TEST_F(CliPresentationTest, InteractiveRendersStructuredPlan)
 	cJSON_Delete(event_data);
 }
 
+TEST(CliPlanWidgetTest, StatusesAndUnsafeDescriptionsUseSharedMarkersWithinTheWidth)
+{
+	struct status_case {
+		const char *status;
+		const char *marker;
+	} cases[] = {{"pending", "◯"}, {"in_progress", "◉"}, {"completed", "●"},
+		     {"failed", "✖"}, {"skipped", "–"}};
+	for (int columns : {120, 80, 60}) {
+		for (const auto &item : cases) {
+			SCOPED_TRACE(std::to_string(columns) + item.status);
+			cJSON *state MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
+				R"({"plans":[{"steps":[{"description":"Inspect parser"}]}]})");
+			ASSERT_NE(state, nullptr);
+			cJSON *step = cJSON_GetArrayItem(cJSON_GetObjectItem(
+				cJSON_GetArrayItem(cJSON_GetObjectItem(state, "plans"), 0), "steps"), 0);
+			cJSON_AddStringToObject(step, "status", item.status);
+			std::string text = "Inspect parser\033[2J\n";
+			for (int i = 0; i < 80; i++)
+				text += "中文🙂";
+			cJSON_ReplaceItemInObject(step, "description", cJSON_CreateString(text.c_str()));
+			struct cli_plan_style style{columns, 1, 1};
+			morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {};
+			ASSERT_EQ(cli_plan_append(&out, state, &style), 0);
+			std::string output = morph_buf_cstr_borrow(&out);
+			EXPECT_NE(output.find(std::string(item.marker) + "\033[0m Plan"), std::string::npos);
+			EXPECT_EQ(output.find("\033[2J"), std::string::npos);
+			EXPECT_NE(output.find("…"), std::string::npos);
+			std::istringstream lines(output);
+			std::string line;
+			while (std::getline(lines, line))
+				EXPECT_LE(utf8_display_width_ansi(line.c_str()),
+					static_cast<size_t>(columns - 2));
+		}
+	}
+}
+
+TEST(CliPlanWidgetTest, PlanAndNoticeShareExactlyOneSeparatorWithOtherFeedBlocks)
+{
+	cJSON *state MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
+		R"({"plans":[{"steps":[{"description":"Inspect parser","status":"in_progress"}]}]})");
+	ASSERT_NE(state, nullptr);
+	for (int columns : {120, 80, 60}) {
+		morph_buf_t out MORPH_CLEANUP(morph_buf_cleanup) = {};
+		ASSERT_EQ(morph_buf_puts(&out, "BEFORE\n"), 0);
+		struct cli_feed_block_style style{columns, 0, 1};
+		struct cli_feed_block plan{};
+		plan.kind = CLI_FEED_BLOCK_PLAN;
+		plan.content.plan = state;
+		ASSERT_EQ(cli_feed_block_append(&out, &plan, &style), 0);
+		struct cli_notice notice{CLI_NOTICE_WARNING, "Warning", nullptr, nullptr, 0};
+		struct cli_feed_block block{};
+		block.kind = CLI_FEED_BLOCK_NOTICE;
+		block.content.notice = &notice;
+		ASSERT_EQ(cli_feed_block_append(&out, &block, &style), 0);
+		EXPECT_STREQ(morph_buf_cstr_borrow(&out),
+			"BEFORE\n\n◉ Plan · 0/1 completed\n└ ◉ Inspect parser\n\n⚠ Warning\n");
+		EXPECT_EQ(style.trailing_newlines, 1);
+	}
+}
+
+TEST_F(CliPresentationTest, PlainPlanUpdateKeepsItsExistingTextContract)
+{
+	ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
+	cJSON *state MORPH_CLEANUP(morph_json_cleanup) = cJSON_Parse(
+		R"({"plans":[{"steps":[{"description":"Inspect parser","status":"in_progress"}]}]})");
+	ASSERT_NE(state, nullptr);
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_BACKGROUND, "plan.updated", "end", state);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_EQ(output, "Plan · 0/1 completed\n└ ◉ Inspect parser\n");
+}
+
 TEST_F(CliPresentationTest, InteractivePlanOperationsRenderOnlySelectedId)
 {
 	cJSON *event_data = cJSON_Parse(R"({"tool":"plan","text":"plan state","data":{
@@ -2395,7 +2469,7 @@ TEST_F(CliPresentationTest, InteractivePlanOperationsRenderOnlySelectedId)
 		Emit(MORPH_EVENT_REACT, "react.observation", "end", event_data);
 		std::string output = testing::internal::GetCapturedStdout();
 
-		EXPECT_EQ(output, "Plan · 0/1 completed\n└ ◉ Current work\n");
+		EXPECT_EQ(output, "\n◉ Plan · 0/1 completed\n└ ◉ Current work\n");
 	}
 
 	/* A selected completed plan must still be visible when queried directly. */
@@ -2403,7 +2477,7 @@ TEST_F(CliPresentationTest, InteractivePlanOperationsRenderOnlySelectedId)
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.observation", "end", event_data);
 	std::string output = testing::internal::GetCapturedStdout();
-	EXPECT_EQ(output, "Plan · 1/1 completed\n└ ● Previous completed work\n");
+	EXPECT_EQ(output, "\n● Plan · 1/1 completed\n└ ● Previous completed work\n");
 	cJSON_Delete(event_data);
 }
 
@@ -2425,7 +2499,25 @@ TEST_F(CliPresentationTest, InteractivePlanGetByNameRendersFirstMatch)
 	Emit(MORPH_EVENT_REACT, "react.observation", "end", event_data);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_EQ(output, "Plan · 1/1 completed\n└ ● Selected work\n");
+	EXPECT_EQ(output, "\n● Plan · 1/1 completed\n└ ● Selected work\n");
+	cJSON_Delete(event_data);
+}
+
+TEST_F(CliPresentationTest, UnmatchedPlanSelectionKeepsTheObservationResult)
+{
+	cJSON *event_data = cJSON_Parse(R"({"tool":"plan","text":"plan state","data":{
+		"selected_plan_id":"missing","plans":[
+		{"id":"current","steps":[
+			{"description":"Current work","status":"in_progress"}]}]}})");
+	ASSERT_NE(event_data, nullptr);
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.observation", "end", event_data);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_EQ(output.find("Plan ·"), std::string::npos);
+	EXPECT_NE(output.find("selected_plan_id"), std::string::npos);
+	EXPECT_NE(output.find("missing"), std::string::npos);
 	cJSON_Delete(event_data);
 }
 
@@ -2450,8 +2542,8 @@ TEST_F(CliPresentationTest, InteractivePlanQueriesWithoutSelectionRenderAllPlans
 		Emit(MORPH_EVENT_REACT, "react.observation", "end", event_data);
 		std::string output = testing::internal::GetCapturedStdout();
 
-		EXPECT_EQ(output, "Plan · 1/1 completed\n└ ● Previous work\n"
-				  "Plan · 0/1 completed\n└ ◯ Current work\n");
+		EXPECT_EQ(output, "\n● Plan · 1/1 completed\n└ ● Previous work\n"
+				  "◯ Plan · 0/1 completed\n└ ◯ Current work\n");
 	}
 	cJSON_Delete(event_data);
 }
