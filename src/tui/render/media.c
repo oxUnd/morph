@@ -12,6 +12,7 @@
 
 struct morph_tui_media_asset {
 	unsigned char *pixels;
+	void (*release_pixels)(void *);
 	int width, height;
 	atomic_uint references;
 	uint64_t key;
@@ -40,6 +41,27 @@ static struct morph_tui_media_asset *render_media_asset_steal(struct morph_tui_m
 	return asset;
 }
 
+static int render_media_asset_pixels_take(struct morph_tui_media_asset **out,
+					 unsigned char **pixels, int width, int height,
+					 void (*release_pixels)(void *))
+{
+	struct morph_tui_media_asset *asset NB_CLEANUP(render_media_asset_cleanup) =
+		calloc(1, sizeof(*asset));
+	if (!asset)
+		return NB_ERR_NOMEM;
+	atomic_init(&asset->references, 1);
+	asset->pixels = *pixels;
+	asset->release_pixels = release_pixels;
+	asset->width = width;
+	asset->height = height;
+	asset->key = render_media_hash(UINT64_C(14695981039346656037), &width, sizeof(width));
+	asset->key = render_media_hash(asset->key, &height, sizeof(height));
+	asset->key = render_media_hash(asset->key, *pixels, (size_t)width * (size_t)height * 4u);
+	*pixels = NULL;
+	*out = render_media_asset_steal(&asset);
+	return NB_OK;
+}
+
 int morph_tui_media_asset_create_rgba_copy(struct morph_tui_media_asset **out,
 					  const unsigned char *pixels, int width, int height)
 {
@@ -49,22 +71,11 @@ int morph_tui_media_asset_create_rgba_copy(struct morph_tui_media_asset **out,
 	int rc = image_pixel_bytes(width, height, 4, &bytes);
 	if (rc)
 		return rc;
-	struct morph_tui_media_asset *asset NB_CLEANUP(render_media_asset_cleanup) =
-		calloc(1, sizeof(*asset));
-	if (!asset)
+	unsigned char *copy NB_CLEANUP(nb_ucharp_cleanup) = malloc(bytes);
+	if (!copy)
 		return NB_ERR_NOMEM;
-	atomic_init(&asset->references, 1);
-	asset->pixels = malloc(bytes);
-	if (!asset->pixels)
-		return NB_ERR_NOMEM;
-	memcpy(asset->pixels, pixels, bytes);
-	asset->width = width;
-	asset->height = height;
-	asset->key = render_media_hash(UINT64_C(14695981039346656037), &width, sizeof(width));
-	asset->key = render_media_hash(asset->key, &height, sizeof(height));
-	asset->key = render_media_hash(asset->key, pixels, bytes);
-	*out = render_media_asset_steal(&asset);
-	return 0;
+	memcpy(copy, pixels, bytes);
+	return render_media_asset_pixels_take(out, &copy, width, height, free);
 }
 
 static void render_media_pixels_cleanup(unsigned char **pixels)
@@ -91,7 +102,7 @@ int morph_tui_media_asset_create_png_copy(struct morph_tui_media_asset **out,
 		stbi_load_from_memory(bytes, (int)length, &width, &height, &channels, 4);
 	if (!pixels)
 		return NB_ERR_FORMAT;
-	return morph_tui_media_asset_create_rgba_copy(out, pixels, width, height);
+	return render_media_asset_pixels_take(out, &pixels, width, height, stbi_image_free);
 }
 
 struct morph_tui_media_asset *morph_tui_media_asset_retain(struct morph_tui_media_asset *asset)
@@ -105,7 +116,8 @@ void morph_tui_media_asset_destroy(struct morph_tui_media_asset *asset)
 {
 	if (!asset || atomic_fetch_sub_explicit(&asset->references, 1u, memory_order_acq_rel) != 1u)
 		return;
-	free(asset->pixels);
+	if (asset->pixels)
+		asset->release_pixels(asset->pixels);
 	free(asset);
 }
 

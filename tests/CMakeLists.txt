@@ -549,3 +549,8 @@ target_link_libraries(morph-nbase-migration-bench PRIVATE
 	morph-models morph-http nbase::nbase)
 set_target_properties(morph-nbase-migration-bench PROPERTIES
 	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
+
+add_executable(morph-memory-usage-bench EXCLUDE_FROM_ALL bench_memory_usage.c)
+target_link_libraries(morph-memory-usage-bench PRIVATE morph-cli)
+set_target_properties(morph-memory-usage-bench PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})

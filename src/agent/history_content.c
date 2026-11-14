@@ -59,7 +59,7 @@ static char *history_redact(const char *text)
 
 	if (!text)
 		return NULL;
-	rc = (nb_buf_init(&buf), nb_buf_reserve(&buf, strlen(text) + 1) ? 0 : NB_ERR_NOMEM);
+	rc = (nb_buf_init(&buf), nb_buf_reserve(&buf, strnlen(text, 4095)) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return NULL;
 	cur = text;
@@ -125,7 +125,7 @@ static char *history_redact_exact(const char *text, const char *secret)
 		return NULL;
 	if (!secret || strlen(secret) < 4)
 		return strdup(text);
-	rc = (nb_buf_init(&buf), nb_buf_reserve(&buf, strlen(text) + 1) ? 0 : NB_ERR_NOMEM);
+	rc = (nb_buf_init(&buf), nb_buf_reserve(&buf, strnlen(text, 4095)) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return NULL;
 	cur = text;
@@ -153,7 +153,10 @@ char *history_redacted_text_create(struct react_context *ctx, const char *text)
 	if (!safe)
 		return NULL;
 	for (int i = 0; ctx && i < ctx->history_secret_count; i++) {
-		char *next = history_redact_exact(safe, ctx->history_secrets[i]);
+		const char *secret = ctx->history_secrets[i];
+		if (!secret || strlen(secret) < 4 || !strstr(safe, secret))
+			continue;
+		char *next = history_redact_exact(safe, secret);
 
 		free(safe);
 		safe = next;

@@ -97,12 +97,9 @@ static void permission_file_lock_cleanup(nb_file_lock **lock)
 static int permission_save_policy(struct runtime *runtime, const struct permission_policy *policy)
 {
 	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int read_status_1 = NB_OK;
-	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	nb_buf patch NB_CLEANUP(nb_buf_cleanup) = {0};
 	nb_buf lock_path NB_CLEANUP(nb_buf_cleanup) = {0};
-	char *before = NULL;
 	char *after = NULL;
 	struct config_validation_error validation = {0};
 	const char *path = runtime->context.config_path;
@@ -117,18 +114,8 @@ static int permission_save_policy(struct runtime *runtime, const struct permissi
 		rc = (nb_buf_printf(&lock_path, "%s.lock", path) ? 0 : NB_ERR_NOMEM);
 	if (rc == NB_OK)
 		rc = nb_file_lock_acquire(nb_buf_cstr(&lock_path), true, false, &lock, NULL);
-	if (rc == 0) {
-		before = ((read_status_1 = nb_file_read_all(path, &file_value_1, 0,
-			NULL)) == NB_OK &&
-					  (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) +
-									1)) != NULL
-				  ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
-					    nb_buf_len(&file_value_1) + 1),
-				     nb_charp_steal(&file_copy_1))
-				  : NULL);
-		if (!before)
-			rc = read_status_1 != NB_OK ? read_status_1 : NB_ERR_NOMEM;
-	}
+	if (rc == NB_OK)
+		rc = nb_file_read_all(path, &file_value_1, 0, NULL);
 	if (rc == 0)
 		rc = (nb_buf_init(&patch), nb_buf_reserve(&patch, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
@@ -141,7 +128,8 @@ static int permission_save_policy(struct runtime *runtime, const struct permissi
 			      ? 0
 			      : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = config_text_merge_copy(before, nb_buf_cstr(&patch), &after);
+		rc = config_text_merge_copy(nb_buf_cstr(&file_value_1),
+					    nb_buf_cstr(&patch), &after);
 	if (rc == 0)
 		rc = config_validate_text(after, &validation);
 	if (rc == 0)
@@ -149,7 +137,6 @@ static int permission_save_policy(struct runtime *runtime, const struct permissi
 			path, after, strlen(after),
 			&(nb_file_write_options){.new_file_mode = 0600, .sync_dir = true}, NULL);
 	free(after);
-	free(before);
 	nb_buf_cleanup(&patch);
 	nb_buf_cleanup(&lock_path);
 	return rc;

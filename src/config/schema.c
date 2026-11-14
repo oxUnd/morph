@@ -1035,31 +1035,14 @@ int config_validate_file_with_warnings(const char *path,
 			    config_validation_warning_fn warning_fn,
 			    void *warning_user_data)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int read_status_2 = NB_OK;
-	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
-
-	char *text;
-	size_t length = 0;
-	int rc;
-
+	nb_buf text NB_CLEANUP(nb_buf_destroy) = {0};
 	if (!path)
 		return NB_ERR_INVAL;
-	errno = 0;
-	text = ((read_status_2 = nb_file_read_all(path, &file_value_2, 0, NULL)) == NB_OK &&
-				(file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) + 1)) !=
-					NULL
-			? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
-				  nb_buf_len(&file_value_2) + 1),
-			   *(&length) = nb_buf_len(&file_value_2), nb_charp_steal(&file_copy_2))
-			: NULL);
-	if (!text)
-		return read_status_2 != NB_OK ? read_status_2 : NB_ERR_NOMEM;
-	(void)length;
-	rc = config_validate_text_internal(text, error, warning_fn,
-		warning_user_data, 1);
-	free(text);
-	return rc;
+	int rc = nb_file_read_all(path, &text, 0, NULL);
+	if (rc != NB_OK)
+		return rc;
+	return config_validate_text_internal(nb_buf_cstr(&text), error, warning_fn,
+					     warning_user_data, 1);
 }
 
 int config_validate_file(const char *path, struct config_validation_error *error)

@@ -61,14 +61,8 @@ void llm_stream_init(struct llm_stream_ctx *ctx, sse_callback cb, void *user_dat
 	nb_vec_init(&ctx->input_storage, sizeof(nb_buf));
 	ctx->user_cb = cb;
 	ctx->user_data = user_data;
-	int rc = (nb_buf_init(&ctx->accumulated),
-		  nb_buf_reserve(&ctx->accumulated, 8192) ? 0 : NB_ERR_NOMEM);
-	if (rc != 0)
-		nb_buf_set_error(&ctx->accumulated, rc);
-	rc = (nb_buf_init(&ctx->reasoning),
-	      nb_buf_reserve(&ctx->reasoning, 8192) ? 0 : NB_ERR_NOMEM);
-	if (rc != 0)
-		nb_buf_set_error(&ctx->reasoning, rc);
+	nb_buf_init(&ctx->accumulated);
+	nb_buf_init(&ctx->reasoning);
 }
 
 void llm_stream_init_typed(struct llm_stream_ctx *ctx, llm_stream_callback cb, void *user_data)
@@ -181,11 +175,27 @@ int llm_stream_tool_calls_move(struct llm_stream_ctx *ctx, struct chat_response 
 		if (!candidate.tool_calls)
 			return NB_ERR_NOMEM;
 	}
+	/* Prepare native-buffer copies before transferring any ordinary heap owner. */
 	for (int i = 0; i < ctx->tool_call_count; i++) {
+		const struct tool_call *source = &ctx->tool_calls[i];
+		const nb_buf *input = nb_vec_at(&ctx->input_storage, (size_t)i);
 		candidate.tool_call_count = i + 1;
-		int rc = tool_call_clone(&ctx->tool_calls[i], &candidate.tool_calls[i]);
-		if (rc)
-			return rc;
+		if (source->arguments && source->arguments == input->ptr) {
+			candidate.tool_calls[i].arguments = strdup(source->arguments);
+			if (!candidate.tool_calls[i].arguments)
+				return NB_ERR_NOMEM;
+		}
+	}
+	for (int i = 0; i < ctx->tool_call_count; i++) {
+		struct tool_call *source = &ctx->tool_calls[i];
+		struct tool_call *target = &candidate.tool_calls[i];
+		target->id = nb_charp_steal(&source->id);
+		target->tool_call_id = nb_charp_steal(&source->tool_call_id);
+		target->name = nb_charp_steal(&source->name);
+		target->provider_item_id = nb_charp_steal(&source->provider_item_id);
+		target->input_kind = source->input_kind;
+		if (!target->arguments)
+			target->arguments = nb_charp_steal(&source->arguments);
 	}
 	for (int i = 0; i < resp->tool_call_count; i++)
 		tool_call_cleanup(&resp->tool_calls[i]);

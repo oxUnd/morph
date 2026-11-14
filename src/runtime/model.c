@@ -24,8 +24,6 @@ static void model_lock_cleanup(nb_file_lock **lock)
 static int model_save_mode(struct runtime *runtime, int ultra)
 {
 	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int read_status_1 = NB_OK;
-	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	const char *path = runtime->context.config_path;
 	if (!*path)
@@ -41,18 +39,11 @@ static int model_save_mode(struct runtime *runtime, int ultra)
 	rc = nb_file_lock_acquire(nb_buf_cstr(&lock_path), true, false, &lock, NULL);
 	if (rc != NB_OK)
 		return rc;
-	char *before NB_CLEANUP(nb_charp_cleanup) =
-		((read_status_1 = nb_file_read_all(path, &file_value_1, 0, NULL)) == NB_OK &&
-				 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
-				   nb_buf_len(&file_value_1) + 1),
-			    nb_charp_steal(&file_copy_1))
-			 : NULL);
+	rc = nb_file_read_all(path, &file_value_1, 0, NULL);
+	if (rc != NB_OK)
+		return rc;
 	char *after NB_CLEANUP(nb_charp_cleanup) = NULL;
-	if (!before)
-		return read_status_1 != NB_OK ? read_status_1 : NB_ERR_NOMEM;
-	rc = config_text_merge_copy(before,
+	rc = config_text_merge_copy(nb_buf_cstr(&file_value_1),
 				    ultra ? "[agents]\nmulti_agent_mode = \"proactive\"\n"
 					  : "[agents]\nmulti_agent_mode = \"explicit\"\n",
 				    &after);

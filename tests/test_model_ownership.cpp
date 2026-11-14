@@ -196,6 +196,35 @@ TEST(TestModelOwnership, StreamTransfersCallsWithoutRetainingAnOwner)
 	EXPECT_EQ(response.tool_call_count, 0);
 }
 
+TEST(TestModelOwnership, StreamPublicationMovesMetadataAndCopiesOnlyNativeArguments)
+{
+	struct llm_stream_ctx stream NB_CLEANUP(llm_stream_cleanup) = {};
+	struct chat_response response NB_CLEANUP(chat_response_free) = {};
+	llm_stream_init(&stream, nullptr, nullptr);
+	struct tool_call *call = llm_stream_tool_call_ensure_borrow(&stream, 0);
+	ASSERT_NE(call, nullptr);
+	call->id = strdup("call");
+	call->name = strdup("tool");
+	call->tool_call_id = strdup("wire-call");
+	call->provider_item_id = strdup("item");
+	ASSERT_NE(call->id, nullptr);
+	ASSERT_NE(call->name, nullptr);
+	ASSERT_NE(call->tool_call_id, nullptr);
+	ASSERT_NE(call->provider_item_id, nullptr);
+	ASSERT_EQ(llm_stream_call_input_append(&stream, call, "argument"), 0);
+	char *id = call->id, *name = call->name, *arguments = call->arguments;
+	char *wire = call->tool_call_id, *item = call->provider_item_id;
+	ASSERT_EQ(llm_stream_tool_calls_move(&stream, &response), 0);
+	EXPECT_EQ(response.tool_calls[0].id, id);
+	EXPECT_EQ(response.tool_calls[0].name, name);
+	EXPECT_EQ(response.tool_calls[0].tool_call_id, wire);
+	EXPECT_EQ(response.tool_calls[0].provider_item_id, item);
+	EXPECT_NE(response.tool_calls[0].arguments, arguments);
+	llm_stream_cleanup(&stream);
+	EXPECT_STREQ(response.tool_calls[0].arguments, "argument");
+	EXPECT_STREQ(response.tool_calls[0].name, "tool");
+}
+
 TEST(TestModelOwnership, StreamRejectsInvalidIndicesWithoutChangingCalls)
 {
 	struct llm_stream_ctx stream NB_CLEANUP(llm_stream_cleanup) = {};

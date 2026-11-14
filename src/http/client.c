@@ -12,6 +12,8 @@
 
 #define HTTP_SSE_DEFAULT_TIMEOUT_SECONDS 300L
 #define HTTP_CONNECT_TIMEOUT_SECONDS 10L
+#define HTTP_SESSION_BODY_RETAIN_BYTES (1024u * 1024u)
+#define HTTP_SESSION_HEADERS_RETAIN_BYTES (64u * 1024u)
 
 struct http_transfer {
 	CURL *curl;
@@ -857,8 +859,15 @@ void http_session_reset(struct http_session *s)
 {
 	if (!s)
 		return;
-	nb_buf_clear(&s->resp_body);
-	nb_buf_clear(&s->resp_headers);
+	/* Reuse ordinary responses without pinning an exceptional response's capacity. */
+	if (s->resp_body.cap > HTTP_SESSION_BODY_RETAIN_BYTES)
+		nb_buf_destroy(&s->resp_body);
+	else
+		nb_buf_clear(&s->resp_body);
+	if (s->resp_headers.cap > HTTP_SESSION_HEADERS_RETAIN_BYTES)
+		nb_buf_destroy(&s->resp_headers);
+	else
+		nb_buf_clear(&s->resp_headers);
 	s->status_code = 0;
 }
 

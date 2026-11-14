@@ -226,6 +226,31 @@ TEST_F(HttpSessionTest, ResetClearsBuffers) {
 	EXPECT_EQ(session.status_code, 0);
 }
 
+TEST_F(HttpSessionTest, ResetReusesSmallResponsesAndReleasesExceptionalCapacity)
+{
+	ASSERT_EQ(http_session_init(NULL, &session), 0);
+	ASSERT_TRUE(nb_buf_append_cstr(&session.resp_body, "small response"));
+	char *body = session.resp_body.ptr;
+	char *headers = session.resp_headers.ptr;
+	http_session_reset(&session);
+	EXPECT_EQ(session.resp_body.ptr, body);
+	EXPECT_EQ(session.resp_headers.ptr, headers);
+	ASSERT_TRUE(nb_buf_reserve(&session.resp_body, 8u * 1024u * 1024u));
+	ASSERT_TRUE(nb_buf_reserve(&session.resp_headers, 128u * 1024u));
+	ASSERT_TRUE(nb_buf_append_cstr(&session.resp_body, "large response"));
+	session.status_code = 200;
+	http_session_reset(&session);
+	EXPECT_EQ(session.resp_body.cap, 0u);
+	EXPECT_EQ(session.resp_headers.cap, 0u);
+	EXPECT_EQ(session.status_code, 0);
+	size_t size = 123;
+	EXPECT_STREQ(http_session_body_borrow(&session, &size), "");
+	EXPECT_EQ(size, 0u);
+	ASSERT_TRUE(nb_buf_append_cstr(&session.resp_body, "next response"));
+	EXPECT_STREQ(http_session_body_borrow(&session, &size), "next response");
+	EXPECT_EQ(size, strlen("next response"));
+}
+
 TEST_F(HttpSessionTest, PostInvalidUrl) {
 	ASSERT_EQ(http_session_init(NULL, &session), 0);
 	int rc = http_session_post(NULL, &session, "http://127.0.0.1:1/nonexistent", "{}", 2,

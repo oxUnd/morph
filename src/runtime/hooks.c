@@ -385,10 +385,9 @@ static void hook_json_error_position(struct hook_manager *manager, const char *t
 static int load_json_file(struct hook_manager *manager, const char *path, int project)
 {
 	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct stat st;
-	char *text;
+	const char *text;
 	cJSON *root;
 	int rc;
 	const char *parse_end = NULL;
@@ -411,15 +410,9 @@ static int load_json_file(struct hook_manager *manager, const char *path, int pr
 		return hook_load_error(
 			manager, path, NB_ERR_TOO_BIG,
 			"Hooks configuration must be a regular file within the size limit.");
-	text = (nb_file_read_all(path, &file_value_2, 0, NULL) == NB_OK &&
-				(file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) + 1)) !=
-					NULL
-			? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
-				  nb_buf_len(&file_value_2) + 1),
-			   nb_charp_steal(&file_copy_2))
-			: NULL);
-	if (!text)
+	if (nb_file_read_all(path, &file_value_2, 0, NULL) != NB_OK)
 		return hook_load_error(manager, path, NB_ERR_IO, NULL);
+	text = nb_buf_cstr(&file_value_2);
 	root = cJSON_ParseWithOpts(text, &parse_end, 1);
 	if (!root) {
 		hook_json_error_position(manager, text, parse_end);
@@ -429,10 +422,9 @@ static int load_json_file(struct hook_manager *manager, const char *path, int pr
 				? "Invalid JSON syntax; check quotes, commas, and brackets."
 				: "Unexpected end of JSON input; expected a complete JSON "
 				  "document.");
-		free(text);
 		return rc;
 	}
-	free(text);
+	nb_buf_destroy(&file_value_2);
 	rc = load_object(manager, cJSON_GetObjectItemCaseSensitive(root, "hooks"), path, project);
 	cJSON_Delete(root);
 	if (rc != 0)

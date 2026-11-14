@@ -35,7 +35,7 @@ struct native_media_snapshot {
 
 struct native_media_cache {
 	struct native_media_key key;
-	char *base64;
+	nb_buf base64;
 	nb_buf sixel;
 	int sixel_width, sixel_height;
 	size_t png_bytes;
@@ -98,7 +98,7 @@ static void native_media_cache_cleanup(struct native_media_cache **owner)
 {
 	if (!owner || !*owner)
 		return;
-	free((*owner)->base64);
+	nb_buf_destroy(&(*owner)->base64);
 	nb_buf_cleanup(&(*owner)->sixel);
 	free(*owner);
 	*owner = NULL;
@@ -244,19 +244,20 @@ static int native_media_cache_borrow(struct render_native_media *media,
 		calloc(1, sizeof(*entry));
 	if (!entry)
 		return NB_ERR_NOMEM;
-	nb_buf png NB_CLEANUP(nb_buf_cleanup) = {0};
-	int rc = morph_tui_media_asset_png_append(placement->asset, key.x, key.y,
-						 key.width, key.height, &png);
-	if (rc)
-		return rc;
-	nb_buf payload NB_CLEANUP(nb_buf_destroy) = {0};
-	if (nb_base64_encode(png.ptr, png.len, NB_B64_STD, true, &payload, NULL) != NB_OK)
-		return NB_ERR_NOMEM;
-	entry->base64 = strdup(nb_buf_cstr(&payload));
-	if (!entry->base64)
-		return NB_ERR_NOMEM;
+	/* Sixel consumes pixels directly; PNG and Base64 are only used by Kitty/iTerm. */
+	if (media->protocol != NATIVE_MEDIA_SIXEL) {
+		nb_buf png NB_CLEANUP(nb_buf_destroy) = {0};
+		int rc = morph_tui_media_asset_png_append(placement->asset, key.x, key.y,
+							 key.width, key.height, &png);
+		if (rc)
+			return rc;
+		rc = nb_base64_encode(png.ptr, png.len, NB_B64_STD, true, &entry->base64, NULL);
+		if (rc != NB_OK)
+			return rc;
+		(void)nb_buf_shrink(&entry->base64);
+		entry->png_bytes = png.len;
+	}
 	entry->key = key;
-	entry->png_bytes = png.len;
 	if (!media->next_image_id)
 		media->next_image_id++;
 	entry->image_id = media->next_image_id++;
@@ -270,7 +271,7 @@ static int native_media_cache_borrow(struct render_native_media *media,
 
 static int native_media_kitty_transmit(struct native_media_cache *entry, nb_buf *out)
 {
-	size_t length = strlen(entry->base64);
+	size_t length = nb_buf_len(&entry->base64);
 	for (size_t offset = 0; offset < length; offset += 4096) {
 		size_t chunk = length - offset < 4096 ? length - offset : 4096;
 		int more = offset + chunk < length;
@@ -280,7 +281,8 @@ static int native_media_kitty_transmit(struct native_media_cache *entry, nb_buf 
 					   ? 0
 					   : NB_ERR_NOMEM);
 		if (!rc)
-			rc = (nb_buf_append(out, entry->base64 + offset, chunk) ? 0 : NB_ERR_NOMEM);
+			rc = nb_buf_append(out, nb_buf_cstr(&entry->base64) + offset, chunk)
+				     ? 0 : NB_ERR_NOMEM;
 		if (!rc)
 			rc = (nb_buf_append_cstr(out, "\033\\") ? 0 : NB_ERR_NOMEM);
 		if (rc)
@@ -426,7 +428,7 @@ static void native_media_trim(struct render_native_media *media, nb_buf *out)
 	size_t bytes = 0;
 	for (size_t i = 0; i < media->cache.len; i++) {
 		struct native_media_cache **slot = nb_vec_at(&media->cache, i);
-		bytes += strlen((*slot)->base64) + (*slot)->sixel.cap;
+		bytes += (*slot)->base64.cap + (*slot)->sixel.cap;
 	}
 	for (size_t i = 0;
 	     i < media->cache.len && (media->cache.len > 128 || bytes > 32u * 1024u * 1024u);) {
@@ -438,7 +440,7 @@ static void native_media_trim(struct render_native_media *media, nb_buf *out)
 		if (media->protocol == NATIVE_MEDIA_KITTY)
 			(void)nb_buf_printf(out, "\033_Ga=d,d=I,i=%u,q=2;\033\\",
 					    (*slot)->image_id);
-		bytes -= strlen((*slot)->base64) + (*slot)->sixel.cap;
+		bytes -= (*slot)->base64.cap + (*slot)->sixel.cap;
 		native_media_cache_cleanup(slot);
 		nb_vec_remove(&media->cache, i);
 	}
@@ -497,7 +499,7 @@ int render_native_media_append(struct render_native_media *media,
 					    "\033]1337;File=inline=1;size=%zu;width=%d;height=%d;"
 					    "preserveAspectRatio=0:%s\a",
 					    entry->png_bytes, placement->width, placement->height,
-					    entry->base64)
+					    nb_buf_cstr(&entry->base64))
 				      ? 0
 				      : NB_ERR_NOMEM);
 		else if (!rc)

@@ -236,6 +236,7 @@ int image_encode_base64_copy(const char *path, int max_dim, struct image_encoded
 						       (stbir_pixel_layout)output_channels))
 				return MORPH_ERR_PROCESSING;
 			encoded_pixels = resized;
+			image_pixels_cleanup(&pixels);
 		}
 		rc = (nb_buf_init(&sink.buf),
 		      nb_buf_reserve(&sink.buf, (size_t)resized_width * (size_t)resized_height)
@@ -256,10 +257,13 @@ int image_encode_base64_copy(const char *path, int max_dim, struct image_encoded
 		}
 		if (!write_ok || sink.rc != 0 || sink.buf.len == 0)
 			return sink.rc != 0 ? sink.rc : MORPH_ERR_PROCESSING;
+		image_pixels_cleanup(&pixels);
+		image_resized_pixels_cleanup(&resized);
 		nb_buf payload NB_CLEANUP(nb_buf_destroy) = {0};
 		if (nb_base64_encode(sink.buf.ptr, sink.buf.len, NB_B64_STD, true, &payload,
 				     NULL) != NB_OK)
 			return NB_ERR_NOMEM;
+		image_encode_sink_cleanup(&sink);
 		candidate.base64 = strdup(nb_buf_cstr(&payload));
 		if (!candidate.base64)
 			return NB_ERR_NOMEM;

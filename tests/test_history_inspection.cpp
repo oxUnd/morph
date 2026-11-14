@@ -10,6 +10,7 @@ extern "C" {
 #include "cJSON.h"
 #include "errors.h"
 #include "persistence/history_store.h"
+#include "agent/history_internal.h"
 }
 
 class HistoryInspectionTest : public RuntimeFacadeTest
@@ -440,4 +441,20 @@ TEST_F(HistoryInspectionTest, RecentVisibleRecordsAndProgressUseTheSameRows)
 		  NB_ERR_CANCELLED);
 	ASSERT_EQ(history_store_visible_progress(&db, session.id, &progress), 0);
 	EXPECT_EQ(progress.latest_id, latest);
+}
+
+TEST(HistoryMemoryTest, RedactionPreservesSurroundingTextAndRegisteredSecrets)
+{
+	std::string binary(2u * 1024u * 1024u, 'A');
+	std::string source = "before data:image/png;base64," + binary + " after exact-secret";
+	struct react_context context{};
+	context.history_secrets[0] = const_cast<char *>("absent-secret");
+	context.history_secrets[1] = const_cast<char *>("exact-secret");
+	context.history_secret_count = 2;
+	char *safe NB_CLEANUP(nb_charp_cleanup) =
+		history_redacted_text_create(&context, source.c_str());
+	ASSERT_NE(safe, nullptr);
+	EXPECT_STREQ(safe, "before [binary data omitted] after [REDACTED]");
+	EXPECT_EQ(source.size(), binary.size() +
+		  strlen("before data:image/png;base64, after exact-secret"));
 }
